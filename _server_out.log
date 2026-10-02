@@ -269,3 +269,211 @@ INFO:     127.0.0.1:55464 - "GET /api/works/work_001/cards/card_001/progress HTT
 INFO:     127.0.0.1:62443 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
 2026-10-02 17:20:18 [info     ] tool_calls_received            count=3 model=main names=['edit_card', 'edit_card', 'edit_card']
 2026-10-02 17:20:18 [info     ] model_call_success             latency_ms=132625 model=main tokens=27916
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50360 - "GET /work/work_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /static/style.css?v=9.2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57706 - "GET /static/api.js?v=9.2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49770 - "GET /static/workspace.js?v=9.2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49770 - "GET /api/works/work_001/canvas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49770 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /api/works/work_001/cards/card_002 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57706 - "GET /api/works/work_001/cards/card_003 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57047 - "GET /api/works/work_001/cards/card_004 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51456 - "GET /api/works/work_001/cards/card_005 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60389 - "GET /api/works/work_001/cards/card_006 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49770 - "GET /api/works/work_001/cards/card_007 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /api/works/work_001/cards/card_008 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /static/shelf.js?v=9.2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /api/works HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /work/work_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /api/works/work_001/canvas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65017 - "GET /api/works/work_001/cards/card_002 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50436 - "GET /api/works/work_001/cards/card_003 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55948 - "GET /api/works/work_001/cards/card_004 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65017 - "GET /api/works/work_001/cards/card_008 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54128 - "GET /api/works/work_001/cards/card_005 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60885 - "GET /api/works/work_001/cards/card_006 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50652 - "GET /api/works/work_001/cards/card_007 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50652 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50652 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+2026-10-02 17:21:42 [info     ] tool_calls_received            count=9 model=main names=['edit_card', 'edit_card', 'edit_card', 'edit_card', 'link_cards', 'link_cards', 'link_cards', 'link_cards', 'link_cards']
+2026-10-02 17:21:42 [info     ] model_call_success             latency_ms=82702 model=main tokens=25494
+2026-10-02 17:22:29 [info     ] model_call_success             latency_ms=45608 model=main tokens=23536
+INFO:     127.0.0.1:59292 - "GET /api/progress HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54591 - "GET /work/work_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54591 - "GET /static/api.js?v=9.2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49670 - "GET /static/workspace.js?v=9.2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49670 - "GET /api/works/work_001/canvas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49670 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54591 - "GET /api/works/work_001/cards/card_002 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53832 - "GET /api/works/work_001/cards/card_003 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55258 - "GET /api/works/work_001/cards/card_004 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58832 - "GET /api/works/work_001/cards/card_005 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49670 - "GET /api/works/work_001/cards/card_007 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58529 - "GET /api/works/work_001/cards/card_006 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54591 - "GET /api/works/work_001/cards/card_008 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET /api/works/work_001/cards/card_003 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET /api/works/work_001/cards/card_003/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET /static/shelf.js?v=9.2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET /api/works HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET /work/work_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET /api/works/work_001/canvas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61038 - "GET /api/works/work_001/cards/card_002 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61314 - "GET /api/works/work_001/cards/card_003 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51421 - "GET /api/works/work_001/cards/card_004 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53397 - "GET /api/works/work_001/cards/card_005 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63022 - "GET /api/works/work_001/cards/card_007 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59939 - "GET /api/works/work_001/cards/card_006 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61038 - "GET /api/works/work_001/cards/card_008 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61038 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61038 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm.set_verbose=True'.
+
+2026-10-02 17:29:06 [warning  ] model_call_retry               attempt=1 error="litellm.RateLimitError: RateLimitError: OpenAIException - Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}" model_name=viewpoint_zhipu traceback='Traceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 898, in acompletion\n    headers, response = await self.make_openai_chat_completion_request(\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 603, in make_openai_chat_completion_request\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 591, in make_openai_chat_completion_request\n    await openai_aclient.chat.completions.with_raw_response.create(\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_legacy_response.py", line 386, in wrapped\n    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))\n                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\resources\\chat\\completions\\completions.py", line 2883, in create\n    return await self._post(\n           ^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_base_client.py", line 1977, in post\n    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_base_client.py", line 1762, in request\n    raise self._make_status_error_from_response(err.response) from None\nopenai.RateLimitError: Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\main.py", line 455, in acompletion\n    response = await init_response\n               ^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 929, in acompletion\n    raise OpenAIError(\nlitellm.llms.OpenAI.openai.OpenAIError: Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\src\\model_gateway\\gateway.py", line 164, in call\n    response = await litellm.acompletion(**kwargs)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\utils.py", line 1221, in wrapper_async\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\utils.py", line 1077, in wrapper_async\n    result = await original_function(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\main.py", line 477, in acompletion\n    raise exception_type(\n          ^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py", line 2116, in exception_type\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py", line 378, in exception_type\n    raise RateLimitError(\nlitellm.exceptions.RateLimitError: litellm.RateLimitError: RateLimitError: OpenAIException - Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n'
+INFO:     127.0.0.1:49669 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49669 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49669 - "GET /api/works/work_001/canvas HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm.set_verbose=True'.
+
+2026-10-02 17:29:10 [warning  ] model_call_retry               attempt=2 error="litellm.RateLimitError: RateLimitError: OpenAIException - Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}" model_name=viewpoint_zhipu traceback='Traceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 898, in acompletion\n    headers, response = await self.make_openai_chat_completion_request(\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 603, in make_openai_chat_completion_request\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 591, in make_openai_chat_completion_request\n    await openai_aclient.chat.completions.with_raw_response.create(\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_legacy_response.py", line 386, in wrapped\n    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))\n                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\resources\\chat\\completions\\completions.py", line 2883, in create\n    return await self._post(\n           ^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_base_client.py", line 1977, in post\n    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_base_client.py", line 1762, in request\n    raise self._make_status_error_from_response(err.response) from None\nopenai.RateLimitError: Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\main.py", line 455, in acompletion\n    response = await init_response\n               ^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 929, in acompletion\n    raise OpenAIError(\nlitellm.llms.OpenAI.openai.OpenAIError: Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\src\\model_gateway\\gateway.py", line 164, in call\n    response = await litellm.acompletion(**kwargs)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\utils.py", line 1221, in wrapper_async\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\utils.py", line 1077, in wrapper_async\n    result = await original_function(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\main.py", line 477, in acompletion\n    raise exception_type(\n          ^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py", line 2116, in exception_type\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py", line 378, in exception_type\n    raise RateLimitError(\nlitellm.exceptions.RateLimitError: litellm.RateLimitError: RateLimitError: OpenAIException - Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n'
+2026-10-02 17:29:10 [warning  ] retry_grading_giveup           attempt=2 elapsed_seconds=5 model=viewpoint_zhipu reason=rate_limit
+2026-10-02 17:29:10 [warning  ] model_fallback                 fallback=fallback original=viewpoint_zhipu
+INFO:     127.0.0.1:49669 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49669 - "GET /work/work_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53944 - "GET /static/api.js?v=9.2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:58055 - "GET /static/workspace.js?v=9.2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/canvas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53944 - "GET /api/works/work_001/cards/card_002 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60713 - "GET /api/works/work_001/cards/card_003 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57132 - "GET /api/works/work_001/cards/card_004 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51199 - "GET /api/works/work_001/cards/card_005 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_007 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51892 - "GET /api/works/work_001/cards/card_006 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53944 - "GET /api/works/work_001/cards/card_008 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60568 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60568 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49758 - "GET /api/works/work_001/canvas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49758 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49758 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+2026-10-02 17:29:35 [info     ] model_call_success             latency_ms=31045 model=viewpoint_minimax tokens=11371
+2026-10-02 17:29:42 [info     ] model_call_success             latency_ms=37812 model=viewpoint_qwen tokens=12490
+2026-10-02 17:29:44 [info     ] model_call_success             latency_ms=34265 model=fallback tokens=13267
+2026-10-02 17:31:11 [info     ] tool_calls_received            count=5 model=main names=['web_search', 'web_search', 'web_search', 'web_search', 'web_search']
+2026-10-02 17:31:11 [info     ] model_call_success             latency_ms=87125 model=main tokens=24576
+2026-10-02 17:32:13 [info     ] tool_calls_received            count=2 model=main names=['list_manuscript', 'search_manuscript']
+2026-10-02 17:32:13 [info     ] model_call_success             latency_ms=59795 model=main tokens=17504
+2026-10-02 17:33:06 [info     ] model_call_success             latency_ms=52407 model=main tokens=17523
+INFO:     127.0.0.1:62924 - "GET /work/work_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62924 - "GET /static/api.js?v=9.2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60642 - "GET /static/workspace.js?v=9.2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60642 - "GET /api/works/work_001/canvas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60642 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62924 - "GET /api/works/work_001/cards/card_002 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53352 - "GET /api/works/work_001/cards/card_003 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64811 - "GET /api/works/work_001/cards/card_004 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54852 - "GET /api/works/work_001/cards/card_005 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60642 - "GET /api/works/work_001/cards/card_007 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62924 - "GET /api/works/work_001/cards/card_008 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53432 - "GET /api/works/work_001/cards/card_006 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53432 - "GET /api/works/work_001/cards/card_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53432 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm.set_verbose=True'.
+
+2026-10-02 17:40:04 [warning  ] model_call_retry               attempt=1 error="litellm.RateLimitError: RateLimitError: OpenAIException - Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}" model_name=viewpoint_zhipu traceback='Traceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 898, in acompletion\n    headers, response = await self.make_openai_chat_completion_request(\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 603, in make_openai_chat_completion_request\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 591, in make_openai_chat_completion_request\n    await openai_aclient.chat.completions.with_raw_response.create(\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_legacy_response.py", line 386, in wrapped\n    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))\n                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\resources\\chat\\completions\\completions.py", line 2883, in create\n    return await self._post(\n           ^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_base_client.py", line 1977, in post\n    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_base_client.py", line 1762, in request\n    raise self._make_status_error_from_response(err.response) from None\nopenai.RateLimitError: Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\main.py", line 455, in acompletion\n    response = await init_response\n               ^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 929, in acompletion\n    raise OpenAIError(\nlitellm.llms.OpenAI.openai.OpenAIError: Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\src\\model_gateway\\gateway.py", line 164, in call\n    response = await litellm.acompletion(**kwargs)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\utils.py", line 1221, in wrapper_async\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\utils.py", line 1077, in wrapper_async\n    result = await original_function(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\main.py", line 477, in acompletion\n    raise exception_type(\n          ^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py", line 2116, in exception_type\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py", line 378, in exception_type\n    raise RateLimitError(\nlitellm.exceptions.RateLimitError: litellm.RateLimitError: RateLimitError: OpenAIException - Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n'
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm.set_verbose=True'.
+
+2026-10-02 17:40:08 [warning  ] model_call_retry               attempt=2 error="litellm.RateLimitError: RateLimitError: OpenAIException - Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}" model_name=viewpoint_zhipu traceback='Traceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 898, in acompletion\n    headers, response = await self.make_openai_chat_completion_request(\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 603, in make_openai_chat_completion_request\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 591, in make_openai_chat_completion_request\n    await openai_aclient.chat.completions.with_raw_response.create(\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_legacy_response.py", line 386, in wrapped\n    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))\n                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\resources\\chat\\completions\\completions.py", line 2883, in create\n    return await self._post(\n           ^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_base_client.py", line 1977, in post\n    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\openai\\_base_client.py", line 1762, in request\n    raise self._make_status_error_from_response(err.response) from None\nopenai.RateLimitError: Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\main.py", line 455, in acompletion\n    response = await init_response\n               ^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\llms\\OpenAI\\openai.py", line 929, in acompletion\n    raise OpenAIError(\nlitellm.llms.OpenAI.openai.OpenAIError: Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "D:\\AI_station\\推演agent\\src\\model_gateway\\gateway.py", line 164, in call\n    response = await litellm.acompletion(**kwargs)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\utils.py", line 1221, in wrapper_async\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\utils.py", line 1077, in wrapper_async\n    result = await original_function(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\main.py", line 477, in acompletion\n    raise exception_type(\n          ^^^^^^^^^^^^^^^\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py", line 2116, in exception_type\n    raise e\n  File "D:\\AI_station\\推演agent\\.venv\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py", line 378, in exception_type\n    raise RateLimitError(\nlitellm.exceptions.RateLimitError: litellm.RateLimitError: RateLimitError: OpenAIException - Error code: 429 - {\'error\': {\'code\': \'1113\', \'message\': \'余额不足或无可用资源包,请充值。\'}}\n'
+2026-10-02 17:40:08 [warning  ] retry_grading_giveup           attempt=2 elapsed_seconds=5 model=viewpoint_zhipu reason=rate_limit
+2026-10-02 17:40:08 [warning  ] model_fallback                 fallback=fallback original=viewpoint_zhipu
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51671 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+2026-10-02 17:40:50 [info     ] model_call_success             latency_ms=48420 model=viewpoint_qwen tokens=14595
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+2026-10-02 17:40:57 [info     ] model_call_success             latency_ms=49500 model=fallback tokens=15712
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58055 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+2026-10-02 17:41:12 [info     ] model_call_success             latency_ms=69500 model=viewpoint_minimax tokens=14136
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49779 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53436 - "GET /api/works/work_001/cards/card_001/session HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53436 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
