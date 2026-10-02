@@ -72,6 +72,12 @@
       "target": "card_004",
       "type": "先后",
       "note": "02 货币机制 → 03 两本账（重估/现金流）"
+    },
+    {
+      "source": "card_001",
+      "target": "card_005",
+      "type": "先后",
+      "note": "03 两本账 → 04 新逻辑六环"
     }
   ],
   "positions": {}
