@@ -3,14 +3,14 @@ title: "股权财政"
 source: "用户直接创建"
 card_type: "剧本"
 parent: ""
-content_hash: "bd81ec0cfd40eb24c2964d3cf8a5702a10be9412ddef50a66f91c5ab1165c307"
+content_hash: "4b5f629ccda32001ceb57172ee715c5fd5df2a8041238e1481c35bdc7fbb9c6c"
 tags: []
-relations: []
+relations: [{"target": "card_003", "type": "先后", "note": "01 原点（重估需求）→ 02 放水全链与信用机制"}]
 session_ref: "sessions/session_001.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-02T16:09:00.575641+08:00"
-updated_at: "2026-10-02T16:16:02.322124+08:00"
+updated_at: "2026-10-02T17:21:42.803702+08:00"
 ---
 
 ## 职责区
@@ -66,3 +66,4 @@ updated_at: "2026-10-02T16:16:02.322124+08:00"
 - [2026-10-02T16:09:00.575641+08:00] 卡片创建
 - [2026-10-02T16:15:31.081458+08:00] 由「股权财政」对话编辑正文
 - [2026-10-02T16:16:02.322124+08:00] 由「股权财政」对话编辑正文
+- [2026-10-02T17:21:42.803702+08:00] 由「股权财政」对话建立关系：先后 → card_003

@@ -60,6 +60,13 @@
       "created_at": "2026-10-02T16:17:12.545021+08:00"
     }
   ],
-  "relations": [],
+  "relations": [
+    {
+      "source": "card_001",
+      "target": "card_003",
+      "type": "先后",
+      "note": "01 原点（重估需求）→ 02 放水全链与信用机制"
+    }
+  ],
   "positions": {}
 }
