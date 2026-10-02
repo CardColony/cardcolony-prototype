@@ -1,0 +1,16 @@
+{
+  "project_name": "推演agent",
+  "work_id": "work_001",
+  "created_at": "2026-10-02T13:42:43.114229+08:00",
+  "cards": [
+    {
+      "card_id": "card_001",
+      "title": "股权财政",
+      "card_type": "剧本",
+      "parent": "",
+      "created_at": "2026-10-02T13:42:43.113228+08:00"
+    }
+  ],
+  "relations": [],
+  "positions": {}
+}
