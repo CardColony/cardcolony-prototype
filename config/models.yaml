@@ -1,7 +1,11 @@
 # 模型配置，密钥走环境变量不硬编码
 # 2026-10-02 用户裁定席位（全部为端点实测存在的真实 ID）：
-#   思考席：MiniMax-M3 / qwen3.8-max / glm-5.3（三家并发出观点）
+#   思考席：MiniMax-M3 / qwen3.8-max / deepseek-v4-pro（三家并发出观点）
 #   统合官：deepseek-v4.1-flash（阿里云，拿三份观点产出唯一回复，唯一建卡/工具出口）
+#
+# 2026-10-02 17:33 智谱余额耗尽（429），glm-5.3 席位与 web_search 双双停摆——
+#   第三席换 deepseek-v4-pro（DeepSeek 官方 key，双端点实测 200，2.7s，答案准确）。
+#   至此三家思考席为三个独立厂商：MiniMax / 阿里云 / DeepSeek 官方。
 #
 # 2026-10-02 拆闸裁定：不允许设置任意 max_tokens，不允许墙钟类闸。
 #   - 所有 max_tokens / timeout 全部移除（None = 不传，模型按端点自然行为返回）
@@ -64,12 +68,11 @@ models:
     retry:
       max_attempts: 2
 
-  # 席位三 glm-5.3（智谱开放平台，OpenAI 兼容）
-  viewpoint_zhipu:
-    provider: openai
-    model: glm-5.3
-    api_key_env: ZHIPU_CODING_API_KEY
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
+  # 席位三 deepseek-v4-pro（DeepSeek 官方；17:33 实测 api.deepseek.com 双路径 200，2.7s）
+  viewpoint_deepseek:
+    provider: deepseek
+    model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
     temperature: 0.7
     retry:
       max_attempts: 2
@@ -77,7 +80,7 @@ models:
 # simple 多模型编排：三思考席并发 + 统合官总结。
 simple:
   enabled: true
-  viewpoints: [viewpoint_minimax, viewpoint_qwen, viewpoint_zhipu]
+  viewpoints: [viewpoint_minimax, viewpoint_qwen, viewpoint_deepseek]
 
 # 重试分级：关闭 —— 总时长熔断（300 秒）属墙钟类闸，拆闸裁定移除。
 retry_grading:
