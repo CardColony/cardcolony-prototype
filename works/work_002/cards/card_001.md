@@ -3,14 +3,14 @@ title: "白板验证_临时"
 source: "用户直接创建"
 card_type: "剧本"
 parent: ""
-content_hash: "c93e442a684b28b3d91e850af93df612b9ddd56c9e1bb6d4eb9285d787f8777f"
+content_hash: "744ffc4459dad015f96879833e2165134fb140b8abd2a05b8f3e7137f936704f"
 tags: []
-relations: []
+relations: [{"target": "card_003", "type": "关联", "note": "指标表由 card_002 抽取，口径列未定，随来源补充逐行回填"}]
 session_ref: "sessions/session_001.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-02T15:54:34.383308+08:00"
-updated_at: "2026-10-02T15:57:59.620971+08:00"
+updated_at: "2026-10-02T16:02:52.919956+08:00"
 ---
 
 ## 职责区
@@ -37,3 +37,4 @@ updated_at: "2026-10-02T15:57:59.620971+08:00"
 
 - [2026-10-02T15:54:34.383308+08:00] 卡片创建
 - [2026-10-02T15:57:59.620971+08:00] 由「白板验证_临时」对话编辑正文
+- [2026-10-02T16:02:52.919956+08:00] 由「白板验证_临时」对话建立关系：关联 → card_003

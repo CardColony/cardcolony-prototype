@@ -39,6 +39,13 @@
       "created_at": "2026-10-02T15:58:26.328455+08:00"
     }
   ],
-  "relations": [],
+  "relations": [
+    {
+      "source": "card_001",
+      "target": "card_003",
+      "type": "关联",
+      "note": "指标表由 card_002 抽取，口径列未定，随来源补充逐行回填"
+    }
+  ],
   "positions": {}
 }
