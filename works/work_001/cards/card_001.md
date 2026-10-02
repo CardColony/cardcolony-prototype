@@ -3,14 +3,14 @@ title: "股权财政"
 source: "用户直接创建"
 card_type: "剧本"
 parent: ""
-content_hash: "8ae94f11761e2bc58c11efa1ed71fdee2076883e4beb23e9eb2bd2a482565f54"
+content_hash: "d88146a7200a188da277b99fb4b382565fa8e9ca45755f15e4852c9e8f557829"
 tags: []
-relations: [{"target": "card_008", "type": "关联", "note": "07 X0 触发测试是全部里程碑的汇聚判据"}]
+relations: []
 session_ref: "sessions/session_001.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-02T16:09:00.575641+08:00"
-updated_at: "2026-10-03T07:34:51.000152+08:00"
+updated_at: "2026-10-03T07:34:52.576049+08:00"
 ---
 
 ## 职责区
@@ -75,3 +75,4 @@ updated_at: "2026-10-03T07:34:51.000152+08:00"
 - [2026-10-03T07:34:46.321536+08:00] 用户删除关系：先后 → card_004
 - [2026-10-03T07:34:48.784063+08:00] 用户删除关系：先后 → card_005
 - [2026-10-03T07:34:51.000152+08:00] 用户删除关系：关联 → card_006
+- [2026-10-03T07:34:52.576049+08:00] 用户删除关系：关联 → card_008
