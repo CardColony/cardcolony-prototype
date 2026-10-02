@@ -9,6 +9,13 @@
       "card_type": "剧本",
       "parent": "",
       "created_at": "2026-10-02T13:33:29.873676+08:00"
+    },
+    {
+      "card_id": "card_002",
+      "title": "目标",
+      "card_type": "节点",
+      "parent": "card_001",
+      "created_at": "2026-10-02T13:33:30.258178+08:00"
     }
   ],
   "relations": [],
