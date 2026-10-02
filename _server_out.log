@@ -1,0 +1,4 @@
+INFO:     127.0.0.1:64685 - "GET /api/works HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64685 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61523 - "GET /api/works HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61523 - "GET /api/works/work_001/cards/card_001/progress HTTP/1.1" 200 OK
