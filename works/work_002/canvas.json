@@ -1,0 +1,16 @@
+{
+  "project_name": "推演agent",
+  "work_id": "work_002",
+  "created_at": "2026-10-02T23:33:26.941506+08:00",
+  "cards": [
+    {
+      "card_id": "card_001",
+      "title": "护栏补测_临时",
+      "card_type": "剧本",
+      "parent": "",
+      "created_at": "2026-10-02T23:33:26.941007+08:00"
+    }
+  ],
+  "relations": [],
+  "positions": {}
+}
