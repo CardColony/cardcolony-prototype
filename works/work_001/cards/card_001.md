@@ -3,14 +3,14 @@ title: "股权财政"
 source: "用户直接创建"
 card_type: "剧本"
 parent: ""
-content_hash: "a43664547eea14240b36f780afbb36372f49e117a89cf903f3c4a0729f22c4b3"
+content_hash: "fc9314c3147a65df4b3b5b3ff139cedd7d10303bb730dafcdbbf8e2c3363c27b"
 tags: []
-relations: [{"target": "card_003", "type": "先后", "note": "01 原点（重估需求）→ 02 放水全链与信用机制"}, {"target": "card_004", "type": "先后", "note": "02 货币机制 → 03 两本账（重估/现金流）"}, {"target": "card_005", "type": "先后", "note": "03 两本账 → 04 新逻辑六环"}, {"target": "card_006", "type": "关联", "note": "04 六环 ↔ 05 汇金作为操作系统"}, {"target": "card_008", "type": "关联", "note": "07 X0 触发测试是全部里程碑的汇聚判据"}]
+relations: [{"target": "card_004", "type": "先后", "note": "02 货币机制 → 03 两本账（重估/现金流）"}, {"target": "card_005", "type": "先后", "note": "03 两本账 → 04 新逻辑六环"}, {"target": "card_006", "type": "关联", "note": "04 六环 ↔ 05 汇金作为操作系统"}, {"target": "card_008", "type": "关联", "note": "07 X0 触发测试是全部里程碑的汇聚判据"}]
 session_ref: "sessions/session_001.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-02T16:09:00.575641+08:00"
-updated_at: "2026-10-02T17:21:43.433143+08:00"
+updated_at: "2026-10-03T07:34:44.126847+08:00"
 ---
 
 ## 职责区
@@ -71,3 +71,4 @@ updated_at: "2026-10-02T17:21:43.433143+08:00"
 - [2026-10-02T17:21:43.168260+08:00] 由「股权财政」对话建立关系：先后 → card_005
 - [2026-10-02T17:21:43.302429+08:00] 由「股权财政」对话建立关系：关联 → card_006
 - [2026-10-02T17:21:43.433143+08:00] 由「股权财政」对话建立关系：关联 → card_008
+- [2026-10-03T07:34:44.126847+08:00] 用户删除关系：先后 → card_003
