@@ -78,6 +78,12 @@
       "target": "card_005",
       "type": "先后",
       "note": "03 两本账 → 04 新逻辑六环"
+    },
+    {
+      "source": "card_001",
+      "target": "card_006",
+      "type": "关联",
+      "note": "04 六环 ↔ 05 汇金作为操作系统"
     }
   ],
   "positions": {}
