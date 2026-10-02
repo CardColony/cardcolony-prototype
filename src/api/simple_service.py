@@ -22,13 +22,10 @@ from typing import Any, Optional
 from . import model_service
 from .card_proposal import parse_proposals
 
-# 观点模型追加的 system 指令（原 system_prompt 不改，只追加）
-VIEWPOINT_SUFFIX = (
-    "\n\n你是观点参谋，只输出对本轮问题的分析观点，"
-    "不使用任何工具、不输出建卡协议块。"
-)
-
-VIEWPOINT_HEADER = "## 参考观点（独立模型所出，仅供参考，可采纳可反驳）"
+# [无内容预设改造 2026-10-02] 观点席不再追加任何身份/产出指令：
+# 不用工具已由 tools=None 机械保证，协议块由 clean_viewpoint_text 机械剥离。
+# 统合头中性化：只陈述事实，不含"可采纳可反驳"等处理方式指令。
+VIEWPOINT_HEADER = "## 其他模型的输出"
 
 # MiniMax M 系回复自带 <think>...</think> 推理块，确定性剥离
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -78,7 +75,7 @@ async def _call_viewpoint(
     try:
         result = await gw.call(
             name,
-            system_prompt + VIEWPOINT_SUFFIX,
+            system_prompt,
             user_prompt,
             temperature=float(models_cfg[name].get("temperature", 0.7)),
             skip_completion_marker=True,

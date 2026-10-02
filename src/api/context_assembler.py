@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from ..storage import manuscript_store, methodology_store, work_store
+from ..storage import manuscript_store, work_store
 from ..storage.card_store import _card_path, _meta_of, _subtree_ids
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 
@@ -126,18 +126,8 @@ def build_manuscript_line(chapters: list[dict[str, Any]]) -> str:
     )
 
 
-def build_methodology_line(entries: list[dict[str, Any]]) -> str:
-    """[phase9-B] 纯函数：由 methodology_store.list_all 结果生成方法论目录段。
-
-    空列表返回空串（库空一个字都不加）。数据由调用方读好传入，本函数不做 I/O。
-    """
-    if not entries:
-        return ""
-    lines = [f"方法论库：共 {len(entries)} 条，可用 read_methodology(id) 查阅全文。"]
-    for e in entries:
-        tags = "，".join(e.get("tags") or [])
-        lines.append(f"- {e.get('id','')}｜{e.get('title','')}｜{tags}")
-    return "\n".join(lines)
+# [无内容预设改造 2026-10-02] build_methodology_line 已删除：
+# 方法论库自动注入是模型自我繁殖污染链的一环（m_0001 事件），不再进入任何上下文。
 
 
 def build_anchor_block(
@@ -224,18 +214,16 @@ def build_context_block(
 
     blocks: list[str] = []
 
-    # 1. 宪法（剧本卡结论区全文；当前卡是剧本卡则跳过）
+    # 1. 树根卡结论（剧本卡结论区全文；当前卡是树根卡则跳过）——[无内容预设改造] 去"宪法"定名
     if not is_work_card and wc_id and wc_id in cards:
         constitution = cards[wc_id]["sections"].get("conclusion", "").strip()
         if constitution:
-            blocks.append("## 宪法（剧本卡结论）\n\n" + constitution)
+            blocks.append("## 剧本卡（树根）结论\n\n" + constitution)
 
     # 1.5 [phase8.6-F] 目标锚：锚定剧本卡的卡结论全文，全局推送（锚卡自身对话时为空）
     anchor_block = build_anchor_block(cards, wc_id, current_id)
     if anchor_block:
-        blocks.append(
-            "## 目标锚（全树之锚，重大推演变化须核对是否仍通向它）\n\n" + anchor_block
-        )
+        blocks.append("## 目标锚\n\n" + anchor_block)
 
     # 2. 血统链（剧本卡 → 当前卡的父卡，每张【标题｜类型】+ 结论全文）
     if not is_work_card:
@@ -265,11 +253,6 @@ def build_context_block(
     manuscript_line = build_manuscript_line(manuscript_store.list_chapters(work_id))
     if manuscript_line:
         blocks.append(manuscript_line)
-
-    # 3.6 方法论目录（[phase9-B] 原文统计行之后；库空一个字都不追加）
-    methodology_line = build_methodology_line(methodology_store.list_all())
-    if methodology_line:
-        blocks.append(methodology_line)
 
     # 4. 契约（relations 指向的卡）
     rels = cur["meta"].get("relations") or []
