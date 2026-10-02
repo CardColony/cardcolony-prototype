@@ -37,6 +37,13 @@
       "card_type": "假设",
       "parent": "card_001",
       "created_at": "2026-10-02T13:48:43.454507+08:00"
+    },
+    {
+      "card_id": "card_006",
+      "title": "假设：机制反转——蓄水池论 vs 抵押品更换",
+      "card_type": "假设",
+      "parent": "card_001",
+      "created_at": "2026-10-02T13:48:43.716870+08:00"
     }
   ],
   "relations": [
