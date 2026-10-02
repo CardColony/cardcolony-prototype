@@ -72,6 +72,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-02T17:53:49.242801+08:00"
+    },
+    {
+      "card_id": "card_011",
+      "title": "09 里程碑进度表（924 → 目标）",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-02T18:04:10.721555+08:00"
     }
   ],
   "relations": [
