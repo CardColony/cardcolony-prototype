@@ -16,6 +16,41 @@
       "card_type": "节点",
       "parent": "card_001",
       "created_at": "2026-10-02T10:56:20.462472+08:00"
+    },
+    {
+      "card_id": "card_003",
+      "title": "土地财政轴心耗尽",
+      "card_type": "节点",
+      "parent": "card_002",
+      "created_at": "2026-10-02T11:35:33.295033+08:00"
+    },
+    {
+      "card_id": "card_004",
+      "title": "实体换轴：制造到科技",
+      "card_type": "节点",
+      "parent": "card_002",
+      "created_at": "2026-10-02T11:35:33.399929+08:00"
+    },
+    {
+      "card_id": "card_005",
+      "title": "价值锚定物从房产切到股权",
+      "card_type": "节点",
+      "parent": "card_002",
+      "created_at": "2026-10-02T11:35:33.506297+08:00"
+    },
+    {
+      "card_id": "card_006",
+      "title": "承接主体与筹码转移",
+      "card_type": "节点",
+      "parent": "card_002",
+      "created_at": "2026-10-02T11:35:33.637621+08:00"
+    },
+    {
+      "card_id": "card_007",
+      "title": "替代率检验：股权财政补不补得上缺口",
+      "card_type": "节点",
+      "parent": "card_002",
+      "created_at": "2026-10-02T11:35:33.808172+08:00"
     }
   ],
   "relations": [

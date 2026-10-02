@@ -1,83 +1,84 @@
 # 模型配置，密钥走环境变量不硬编码
-models:
-  # 主模型（讯飞星辰）
-  main:
-    provider: openai                    # 讯飞是 OpenAI 兼容协议
-    model: astron-code-latest
-    api_key_env: XFYUN_API_KEY
-    base_url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
-    temperature: 0.3
-    context_window: 500000      # 模型输入窗口（token），前端显示上下文总量用
-    max_tokens: 20480           # 输出上限；截断续写机制兜底，正常不触发
-    timeout: 180                        # 讯飞不稳定，超时放宽
-    completion_marker: "已完成"          # 语义完成检测：不含此标记则重试
-    retry:
-      max_attempts: 20                 # 讯飞频繁断联，大量重试
-      backoff_seconds: 3
+# 2026-10-02 用户裁定席位（全部为端点实测存在的真实 ID）：
+#   思考席：MiniMax-M3 / qwen3.8-max / glm-5.3（三家并发出观点）
+#   统合官：deepseek-v4.1-flash（阿里云，拿三份观点产出唯一回复，唯一建卡/工具出口）
+#
+# 2026-10-02 拆闸裁定：不允许设置任意 max_tokens，不允许墙钟类闸。
+#   - 所有 max_tokens / timeout 全部移除（None = 不传，模型按端点自然行为返回）
+#   - retry_grading 关闭（总时长熔断 300 秒是墙钟）
+#   - simple 段 viewpoint_timeout / viewpoint_max_tokens 删除
+#   （原项目带的 2048 限额是空观点根因：思考型模型额度被思考烧光，正文为空）
+#
+# 保留的供应商模式参数（模式选择，不是资源闸）：
+#   - MiniMax thinking:disabled —— 不关则思考无标签混进正文（实测）
+#   - qwen enable_thinking:false —— 思考模式下正文为空（实测），关掉后正文干净
+#   - glm-5.3 不设任何参数 —— 端点声明始终思考无法关闭，任它思考；
+#     若正文为空，网关的 reasoning_content 兜底（原项目自带）会接住思考内容
 
-  # 备选模型（主模型降级用，使用 DeepSeek V4 Pro 避免 OpenAI 地区限制）
+models:
+  # 统合官（simple 链路总结席，兼深度工具链主模型）
+  main:
+    provider: openai                    # 阿里云 token-plan 为 OpenAI 兼容协议
+    model: deepseek-v4.1-flash
+    api_key_env: ALIYUN_TOKEN_PLAN_API_KEY
+    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    temperature: 0.3
+    context_window: 128000      # 模型输入窗口（token），前端显示上下文总量用
+    retry:
+      max_attempts: 5
+      backoff_seconds: 2
+
+  # 备选模型（统合官降级用）
   fallback:
     provider: deepseek
     model: deepseek-v4-pro
     api_key_env: DEEPSEEK_API_KEY
     temperature: 0.3
-    context_window: 128000      # 模型输入窗口（token），前端显示上下文总量用
-    max_tokens: 20480           # 输出上限；截断续写机制兜底，正常不触发
-    timeout: 120
-
-  # ========== [phase9-D] 观点模型（simple 多模型审议用，2026-07-29 实测连通） ==========
-  # kimi（moonshot）探测 401 Invalid Authentication，未写入；报错见 phase9 完工报告。
-  viewpoint_deepseek:
-    provider: deepseek
-    model: deepseek-v4-flash        # 2026-07 用户裁定：观点席 pro 换 flash（fallback 仍是 pro，不属三观点席）
-    api_key_env: DEEPSEEK_API_KEY
-    temperature: 0.7
-    max_tokens: 2048
-    timeout: 60
-    extra_body:                     # flash 是推理模型，草稿与正文共用 max_tokens；不关思考则长上下文时草稿吃光额度、正文为空（2026-07 实测）
-      thinking:
-        type: disabled
+    context_window: 128000
     retry:
-      max_attempts: 2
+      max_attempts: 3
+      backoff_seconds: 2
 
+  # ========== 思考席（simple 多模型审议，三席并发） ==========
   viewpoint_minimax:
     provider: openai                    # MiniMax OpenAI 兼容协议
     model: MiniMax-M3
     api_key_env: MINIMAX_API_KEY
     base_url: "https://api.minimaxi.com/v1"
     temperature: 0.7
-    max_tokens: 2048
-    timeout: 60
+    extra_body:
+      thinking:
+        type: disabled
     retry:
       max_attempts: 2
 
-  # astron 观点席位（2026-07-29 用户裁定：astron 也参与观点生成，再由 astron 统合）
-  # 与 main 同一模型同一密钥，独立条目只为观点档参数（高温、短输出、少重试）
-  viewpoint_astron:
+  # 席位二 qwen3.8-max（阿里云 token-plan）
+  viewpoint_qwen:
     provider: openai
-    model: astron-code-latest
-    api_key_env: XFYUN_API_KEY
-    base_url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+    model: qwen3.8-max
+    api_key_env: ALIYUN_TOKEN_PLAN_API_KEY
+    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
     temperature: 0.7
-    max_tokens: 2048
-    timeout: 60
+    extra_body:
+      enable_thinking: false
     retry:
       max_attempts: 2
 
-# [phase9-D] simple 多模型编排配置：观点并发 + 单模型统合。
-# enabled: false 时完全退回单模型现行为（一键回退开关）。
+  # 席位三 glm-5.3（智谱开放平台，OpenAI 兼容）
+  viewpoint_zhipu:
+    provider: openai
+    model: glm-5.3
+    api_key_env: ZHIPU_CODING_API_KEY
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    temperature: 0.7
+    retry:
+      max_attempts: 2
+
+# simple 多模型编排：三思考席并发 + 统合官总结。
 simple:
   enabled: true
-  viewpoints: [viewpoint_deepseek, viewpoint_minimax, viewpoint_astron]   # kimi 探测未通过，裁剪
-  viewpoint_timeout: 60
-  viewpoint_max_tokens: 2048
+  viewpoints: [viewpoint_minimax, viewpoint_qwen, viewpoint_zhipu]
 
-# 重试分级（模型网关重试分级施工）：按错误类别钳制重试次数 + 总时长熔断。
-# enabled: false 时回退旧一刀切行为（一键回退开关）。
-# 顶层节，不改动上面任何模型条目的 max_attempts（讯飞 20 由分级钳制生效）。
+# 重试分级：关闭 —— 总时长熔断（300 秒）属墙钟类闸，拆闸裁定移除。
 retry_grading:
-  enabled: true
-  total_budget_seconds: 300
-  class_caps:
-    auth: 1
-    timeout: 2
+  enabled: false

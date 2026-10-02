@@ -47,8 +47,8 @@ class ModelGateway:
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.5,
-        max_tokens: int = 2048,
-        timeout: int = 120,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
         skip_completion_marker: bool = False,
         tools: list[dict[str, Any]] | None = None,
         on_status: Any = None,
@@ -118,10 +118,14 @@ class ModelGateway:
                     "model": f"{provider}/{model}",
                     "messages": messages,
                     "temperature": temperature,
-                    "max_tokens": max_tokens,
                     "api_key": api_key,
-                    "timeout": timeout,
                 }
+                # [拆闸裁定 2026-10-02] max_tokens/timeout 仅在显式设置时传入；
+                # None = 不设，模型按端点自然行为返回（禁止任何输出限制与墙钟）
+                if max_tokens is not None:
+                    kwargs["max_tokens"] = max_tokens
+                if timeout is not None:
+                    kwargs["timeout"] = timeout
                 # 支持自定义 base_url（如讯飞星辰等 OpenAI 兼容提供商）
                 if model_config.get("base_url"):
                     kwargs["api_base"] = model_config["base_url"]
@@ -497,8 +501,8 @@ class ModelGateway:
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.5,
-        max_tokens: int = 2048,
-        timeout: int = 120,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
         on_status: Any = None,
         tools: list[dict[str, Any]] | None = None,
     ):
@@ -531,11 +535,13 @@ class ModelGateway:
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": temperature,
-                    "max_tokens": max_tokens,
                     "api_key": api_key,
-                    "timeout": timeout,
                     "stream": True,
                 }
+                if max_tokens is not None:
+                    kwargs["max_tokens"] = max_tokens
+                if timeout is not None:
+                    kwargs["timeout"] = timeout
                 if model_config.get("base_url"):
                     kwargs["api_base"] = model_config["base_url"]
                 # 提供商私有参数透传（与非流式路径同款）
@@ -607,8 +613,8 @@ class MockGateway:
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.5,
-        max_tokens: int = 2048,
-        timeout: int = 120,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
         skip_completion_marker: bool = False,
         tools: list[dict[str, Any]] | None = None,
         on_status: Any = None,
@@ -656,7 +662,7 @@ class MockGateway:
         }
 
     async def stream_call(self, model_name, system_prompt, user_prompt, temperature=0.5,
-                           max_tokens=2048, timeout=120, on_status=None, tools=None):
+                           max_tokens=None, timeout=None, on_status=None, tools=None):
         """stage_FE4：mock 流式调用（async generator）。"""
         if on_status:
             try:
