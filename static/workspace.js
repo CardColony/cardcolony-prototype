@@ -1,0 +1,482 @@
+/* workspace.js - 卡片工作区（左35%资料 + 右65%讨论区） */
+(function () {
+  "use strict";
+
+  const WORK_ID = window.__WORK_ID__;
+  const ws = document.getElementById("workspace");
+  const wsLeft = document.getElementById("wsLeft");
+  const chatArea = document.getElementById("chatArea");
+  const inputBox = document.getElementById("inputBox");
+  const sendBtn = document.getElementById("sendBtn");
+
+  let currentCard = null;     // 完整 card 数据 {meta, body}
+  let lastSentContent = "";   // 用于失败重发（不重复追加用户消息）
+
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function formatMsgContent(text) {
+    // 换行转 <br>，```代码块``` 转 <pre>
+    const parts = text.split(/```/);
+    let html = "";
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) {
+        // 代码块
+        html += `<pre>${escapeHtml(parts[i])}</pre>`;
+      } else {
+        html += escapeHtml(parts[i]).replace(/\n/g, "<br>");
+      }
+    }
+    return html;
+  }
+
+  async function open(cardId) {
+    try {
+      const card = await API.getCard(WORK_ID, cardId);
+      currentCard = card;
+      await renderLeft();
+      await renderChat();
+      ws.classList.add("active");
+      // [phase8.4.1] display:none 期间 scrollHeight=0，renderChat 里的滚底是空操作；
+      // 必须在面板激活（可见、完成排版）之后再锁定到最新消息
+      scrollChatBottom();
+      // [phase8.6-C] 同理：textarea auto-grow 必须在面板可见后执行
+      autoGrowAll();
+    } catch (e) { /* toast 已处理 */ }
+  }
+  window.Workspace = { open };
+
+  async function renderLeft() {
+    const m = currentCard.meta;
+    const b = currentCard.body;
+
+    const relations = m.relations || [];
+    // [phase8.6-E] 每条关系尾部 ✕ 删除按钮（data-idx 定位）
+    const relationsHtml = relations.length === 0
+      ? `<div class="rej-empty">（无关系）</div>`
+      : relations.map((r, i) => `<div class="rel-item" data-target="${escapeHtml(r.target || "")}">
+            <span class="rel-type">${escapeHtml(r.type || "")} →</span>
+            <span>${escapeHtml(r.target || "")}</span>
+            <button class="rel-del" data-idx="${i}" title="删除该关系">✕</button>
+          </div>`).join("");
+
+    // [phase8.6-E] 添加关系行：目标卡下拉（画布卡集，排除自身）+ 类型下拉
+    const canvasCards = (window.GetCanvasState ? (window.GetCanvasState().cards || []) : [])
+      .filter(c => c.card_id !== m.card_id);
+    const targetOptions = canvasCards
+      .map(c => `<option value="${escapeHtml(c.card_id)}">${escapeHtml(c.card_id)} · ${escapeHtml(c.title)}</option>`)
+      .join("");
+    const relAddHtml = `
+      <div class="rel-add-row">
+        <select id="relTargetSel"><option value="">＋ 添加关系：选目标卡</option>${targetOptions}</select>
+        <select id="relTypeSel">
+          <option value="先后">先后</option>
+          <option value="锚定">锚定</option>
+          <option value="兑现">兑现</option>
+          <option value="关联">关联</option>
+        </select>
+        <button class="btn" id="relAddBtn">确定</button>
+      </div>`;
+
+    const rejections = (b.rejections || "").trim();
+    const rejHtml = rejections
+      ? rejections.split("\n").filter(s => s.trim()).map(line => `<div class="rej-item">${escapeHtml(line)}</div>`).join("")
+      : `<div class="rej-empty">（暂无否决）</div>`;
+
+    const history = b.history || [];
+    const historyCount = history.length;
+
+    wsLeft.innerHTML = `
+      <button class="ws-back" id="wsBackBtn" title="返回画布（重拉画布数据）">← 返回画布</button>
+      <div class="ws-title" id="wsTitle">${escapeHtml(m.title)}</div>
+      <div style="margin:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span class="type-badge" data-type="${escapeHtml(m.card_type)}">${escapeHtml(m.card_type)}卡</span>
+        <span style="font-size:11px;color:var(--dimmer);margin-left:auto;">${escapeHtml(m.card_id)} · ${escapeHtml(m.source)}</span>
+      </div>
+
+      <div class="blocktitle">职责区 · charter <span class="note">由上级卡对话创建 · 可编辑</span></div>
+      <textarea class="ws-edit" id="charterEdit" placeholder="使命 / 方法 / 权能">${escapeHtml(b.charter || "")}</textarea>
+      <div class="edit-row">
+        <button class="btn" id="saveCharter">保存职责区</button>
+        <span class="save-status" id="charterStatus"></span>
+      </div>
+
+      <div class="blocktitle">结论区</div>
+      <textarea class="ws-edit" id="conclusionEdit" placeholder="本卡的结论（第一条建议是一句话摘要）">${escapeHtml(b.conclusion || "")}</textarea>
+      <div class="edit-row">
+        <button class="btn" id="saveConclusion">保存结论</button>
+        <span class="save-status" id="conclusionStatus"></span>
+      </div>
+
+      <div class="blocktitle">否决记录</div>
+      ${rejHtml}
+
+      <div class="blocktitle">关系</div>
+      ${relationsHtml}
+      ${relAddHtml}
+
+      <div class="blocktitle">修改历史（${historyCount} 条）</div>
+      <div class="history-block">
+        <div class="history-toggle" id="historyToggle">▸ 展开/折叠</div>
+        <div class="history-list" id="historyList">
+          ${history.slice().reverse().map(h => `<div class="h-item">${escapeHtml(h)}</div>`).join("")}
+        </div>
+      </div>
+
+      <div class="blocktitle">＋ 建子卡</div>
+      <div class="add-child-row">
+        <input type="text" id="childTitle" placeholder="子卡标题">
+        <select id="childType">
+          <option value="线索">线索</option>
+          <option value="世界观">世界观</option>
+          <option value="行为体">行为体</option>
+          <option value="节点">节点</option>
+          <option value="假设">假设</option>
+        </select>
+        <button class="btn" id="addChildBtn">建</button>
+      </div>
+    `;
+
+    bindLeftEvents();
+    // [phase8.6-C] 面板已可见时（如保存后重渲染）立即撑高；首次 open 由 active 后统一触发
+    autoGrowAll();
+  }
+
+  // [phase8.6-C] 文本区高度自适应：内容多高就多高，上限由 CSS max-height 兜底
+  function autoGrowEl(el) {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = el.scrollHeight + "px";
+  }
+  function autoGrowAll() {
+    autoGrowEl(document.getElementById("charterEdit"));
+    autoGrowEl(document.getElementById("conclusionEdit"));
+  }
+
+  function bindLeftEvents() {
+    // [phase8.6-C] 输入时实时撑高
+    ["charterEdit", "conclusionEdit"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener("input", () => autoGrowEl(el));
+    });
+
+    // 返回画布（必须用 ReloadCanvas：对话中可能生了新卡，需要重拉画布数据）
+    document.getElementById("wsBackBtn").onclick = () => window.ReloadCanvas();
+
+    // 标题编辑
+    const titleEl = document.getElementById("wsTitle");
+    titleEl.onclick = () => {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "ws-title-edit";
+      input.value = currentCard.meta.title;
+      titleEl.replaceWith(input);
+      input.focus();
+      input.select();
+      const save = async () => {
+        const v = input.value.trim();
+        if (!v) { API.toast("标题不能为空", "error"); return; }
+        if (v === currentCard.meta.title) { input.replaceWith(titleEl); return; }
+        try {
+          const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { title: v }, "用户修改标题");
+          currentCard = r;
+          await renderLeft();
+        } catch (e) { /* toast 已处理 */ }
+      };
+      input.onblur = save;
+      input.onkeydown = (e) => {
+        if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+        if (e.key === "Escape") { input.value = currentCard.meta.title; input.blur(); }
+      };
+    };
+
+    // charter 保存
+    document.getElementById("saveCharter").onclick = async () => {
+      const v = document.getElementById("charterEdit").value;
+      const status = document.getElementById("charterStatus");
+      status.textContent = "保存中…";
+      try {
+        const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { charter: v }, "用户编辑职责区");
+        currentCard = r;
+        status.textContent = "已保存";
+        setTimeout(() => status.textContent = "", 2000);
+      } catch (e) { status.textContent = "失败"; }
+    };
+
+    // conclusion 保存
+    document.getElementById("saveConclusion").onclick = async () => {
+      const v = document.getElementById("conclusionEdit").value;
+      const status = document.getElementById("conclusionStatus");
+      status.textContent = "保存中…";
+      try {
+        const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { conclusion: v }, "用户编辑结论区");
+        currentCard = r;
+        status.textContent = "已保存";
+        setTimeout(() => status.textContent = "", 2000);
+      } catch (e) { status.textContent = "失败"; }
+    };
+
+    // 关系项跳转
+    wsLeft.querySelectorAll(".rel-item").forEach(item => {
+      item.onclick = () => {
+        const target = item.dataset.target;
+        if (target) open(target);
+      };
+    });
+
+    // [phase8.6-E] 删除关系：PATCH 删除该条后的完整数组，成功后就地重渲染
+    wsLeft.querySelectorAll(".rel-del").forEach(btn => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.idx, 10);
+        const rels = (currentCard.meta.relations || []).slice();
+        if (isNaN(idx) || idx < 0 || idx >= rels.length) return;
+        const removed = rels.splice(idx, 1)[0];
+        try {
+          const r = await API.patchCard(WORK_ID, currentCard.meta.card_id,
+            { relations: rels }, `用户删除关系：${removed.type || ""} → ${removed.target || ""}`);
+          currentCard = r;
+          await renderLeft();
+        } catch (e2) { /* toast 已处理 */ }
+      };
+    });
+
+    // [phase8.6-E] 添加关系：目标 + 类型 → PATCH 追加，成功后就地重渲染
+    const relAddBtn = document.getElementById("relAddBtn");
+    if (relAddBtn) {
+      relAddBtn.onclick = async () => {
+        const target = document.getElementById("relTargetSel").value;
+        const type = document.getElementById("relTypeSel").value;
+        if (!target) { API.toast("请选择目标卡", "error"); return; }
+        const rels = (currentCard.meta.relations || []).slice();
+        if (rels.some(r => r.target === target && r.type === type)) {
+          API.toast("该关系已存在", "error"); return;
+        }
+        rels.push({ target, type });
+        try {
+          const r = await API.patchCard(WORK_ID, currentCard.meta.card_id,
+            { relations: rels }, `用户添加关系：${type} → ${target}`);
+          currentCard = r;
+          await renderLeft();
+        } catch (e2) { /* toast 已处理 */ }
+      };
+    }
+
+    // 历史折叠
+    document.getElementById("historyToggle").onclick = () => {
+      const list = document.getElementById("historyList");
+      list.classList.toggle("expanded");
+    };
+
+    // 建子卡
+    document.getElementById("addChildBtn").onclick = async () => {
+      const title = document.getElementById("childTitle").value.trim();
+      if (!title) { API.toast("请输入子卡标题", "error"); return; }
+      const ctype = document.getElementById("childType").value;
+      try {
+        await API.createCard(WORK_ID, {
+          title, source: "用户直接创建",
+          card_type: ctype, parent: currentCard.meta.card_id,
+        });
+        document.getElementById("childTitle").value = "";
+        API.toast("已建子卡：" + title, "success");
+      } catch (e) { /* toast 已处理 */ }
+    };
+    document.getElementById("childTitle").onkeydown = (e) => {
+      if (e.key === "Enter") document.getElementById("addChildBtn").click();
+    };
+  }
+
+  // ==================== 讨论区 ====================
+  async function renderChat() {
+    chatArea.innerHTML = "";
+    try {
+      const msgs = await API.getSession(WORK_ID, currentCard.meta.card_id);
+      for (const m of msgs) appendMessage(m.role, m.content, m.model);
+    } catch (e) { /* toast 已处理 */ }
+    scrollChatBottom();
+  }
+
+  function appendMessage(role, content, model) {
+    const el = document.createElement("div");
+    el.className = "msg " + (role === "user" ? "user" : "assistant");
+    const badge = (role === "assistant" && model) ? `<div class="model-badge">${escapeHtml(model)}</div>` : "";
+    el.innerHTML = badge + formatMsgContent(content || "");
+    chatArea.appendChild(el);
+    scrollChatBottom();
+    return el;
+  }
+
+  function scrollChatBottom() {
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }
+
+  // ==================== 发送消息 ====================
+
+  // [phase8.2] 等待反馈气泡：每秒刷新"已等待 N 秒"，收到响应/失败后 stop() 清除
+  function createWaitingBubble(prefix) {
+    const el = document.createElement("div");
+    el.className = "msg thinking";
+    let seconds = 0;
+    const render = () => {
+      el.innerHTML = `<span class="spinner"></span>${prefix} 已等待 ${seconds} 秒`;
+    };
+    render();
+    chatArea.appendChild(el);
+    scrollChatBottom();
+    const timer = setInterval(() => { seconds += 1; render(); }, 1000);
+    return {
+      stop() {
+        clearInterval(timer);
+        el.remove();
+      },
+    };
+  }
+
+  async function send() {
+    if (!currentCard) return;
+    const content = inputBox.value.trim();
+    if (!content) return;
+
+    // 立即上屏用户气泡
+    appendMessage("user", content);
+    lastSentContent = content;
+    inputBox.value = "";
+    inputBox.style.height = "auto";
+
+    // [hotfix] 自愈基线：当前已上屏消息数（含刚上屏的用户气泡）＝服务端追加用户消息后的条数
+    const baseline = chatArea.querySelectorAll(".msg:not(.thinking)").length;
+    const cardId = currentCard.meta.card_id;
+    let settled = false;
+
+    const waiting = createWaitingBubble("思考中…");
+
+    // [hotfix] 后端完成但连接断了 → 从会话记录恢复回复，杜绝无限转圈
+    async function tryRecover() {
+      if (settled) return false;
+      try {
+        const msgs = await API.getSession(WORK_ID, cardId);
+        if (msgs.length >= baseline + 1 && msgs[msgs.length - 1].role === "assistant") {
+          settled = true;
+          waiting.stop();
+          await renderChat();
+          const note = document.createElement("div");
+          note.className = "sys-tools";
+          note.textContent = "⚠ 响应连接中断，已从会话记录恢复回复（若有新卡片，返回画布后可见）";
+          chatArea.appendChild(note);
+          scrollChatBottom();
+          return true;
+        }
+      } catch (e2) { /* 静默，下轮再试 */ }
+      return false;
+    }
+    const pollTimer = setInterval(tryRecover, 15000);
+
+    sendBtn.disabled = true;
+
+    try {
+      const resp = await API.postMessage(WORK_ID, cardId, content);
+      if (settled) return;   // 已由轮询恢复，丢弃迟到响应
+      settled = true;
+      waiting.stop();
+      appendMessage("assistant", resp.reply, resp.model);
+
+      // created_cards 绿条
+      if (resp.created_cards && resp.created_cards.length > 0) {
+        const card = document.createElement("div");
+        card.className = "sys-newcards";
+        const items = resp.created_cards.map(c =>
+          `<span class="nc-item" data-cid="${escapeHtml(c.card_id)}">${escapeHtml(c.title)}（${escapeHtml(c.card_type)}）</span>`
+        ).join("");
+        card.innerHTML = `<b>✚ 已创建 ${resp.created_cards.length} 张卡片</b>：${items}`;
+        chatArea.appendChild(card);
+        card.querySelectorAll(".nc-item").forEach(it => {
+          it.onclick = () => open(it.dataset.cid);
+        });
+      }
+
+      // tool_events 灰条
+      if (resp.tool_events && resp.tool_events.length > 0) {
+        const tool = document.createElement("div");
+        tool.className = "sys-tools";
+        const items = resp.tool_events.map(t =>
+          `<span class="te-item ${t.ok ? "" : "fail"}">🔧 ${escapeHtml(t.tool)}(${escapeHtml(t.card_id)}) ${t.ok ? "✓" : "✗"}</span>`
+        ).join("");
+        tool.innerHTML = items;
+        chatArea.appendChild(tool);
+      }
+
+      // [phase9-F] 观点元信息灰条（simple 多模型；有 viewpoints_meta 才显示）
+      if (resp.viewpoints_meta && resp.viewpoints_meta.length > 0) {
+        const vp = document.createElement("div");
+        vp.className = "sys-tools";
+        const items = resp.viewpoints_meta.map(v => {
+          const secs = ((v.latency_ms || 0) / 1000).toFixed(1) + "s";
+          const status = v.ok ? `✓ ${secs}` : `✗ ${escapeHtml(v.error || "失败").slice(0, 24)}`;
+          return `<span class="te-item ${v.ok ? "" : "fail"}">${escapeHtml(v.model)} ${status}</span>`;
+        }).join(" ｜ ");
+        vp.innerHTML = `观点：${items}`;
+        chatArea.appendChild(vp);
+      }
+
+      scrollChatBottom();
+    } catch (e) {
+      if (settled) return;
+      // [hotfix] 报错前先探一次会话：后端可能已完成，只是响应没送回来
+      if (await tryRecover()) return;
+      waiting.stop();
+      // 失败：红色系统条 + 重发按钮
+      const err = document.createElement("div");
+      err.className = "sys-error";
+      err.innerHTML = `请求失败：${escapeHtml(e.message || "")} <button class="retry-btn">重发</button>`;
+      chatArea.appendChild(err);
+      err.querySelector(".retry-btn").onclick = () => {
+        err.remove();
+        resend(content);
+      };
+      scrollChatBottom();
+    } finally {
+      clearInterval(pollTimer);
+      sendBtn.disabled = false;
+    }
+  }
+
+  // 重发：不重复追加用户消息，直接重调接口
+  async function resend(content) {
+    const waiting = createWaitingBubble("重发中…");
+    sendBtn.disabled = true;
+    try {
+      const resp = await API.postMessage(WORK_ID, currentCard.meta.card_id, content);
+      waiting.stop();
+      appendMessage("assistant", resp.reply, resp.model);
+      scrollChatBottom();
+    } catch (e) {
+      waiting.stop();
+      const err = document.createElement("div");
+      err.className = "sys-error";
+      err.innerHTML = `重发失败：${escapeHtml(e.message || "")} <button class="retry-btn">再试</button>`;
+      chatArea.appendChild(err);
+      err.querySelector(".retry-btn").onclick = () => { err.remove(); resend(content); };
+      scrollChatBottom();
+    } finally {
+      sendBtn.disabled = false;
+    }
+  }
+
+  sendBtn.onclick = send;
+  inputBox.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      send();
+    }
+  });
+  // 输入框自适应高度
+  inputBox.addEventListener("input", () => {
+    inputBox.style.height = "auto";
+    inputBox.style.height = Math.min(inputBox.scrollHeight, 200) + "px";
+  });
+
+})();

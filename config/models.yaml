@@ -1,0 +1,83 @@
+# 模型配置，密钥走环境变量不硬编码
+models:
+  # 主模型（讯飞星辰）
+  main:
+    provider: openai                    # 讯飞是 OpenAI 兼容协议
+    model: astron-code-latest
+    api_key_env: XFYUN_API_KEY
+    base_url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+    temperature: 0.3
+    context_window: 500000      # 模型输入窗口（token），前端显示上下文总量用
+    max_tokens: 20480           # 输出上限；截断续写机制兜底，正常不触发
+    timeout: 180                        # 讯飞不稳定，超时放宽
+    completion_marker: "已完成"          # 语义完成检测：不含此标记则重试
+    retry:
+      max_attempts: 20                 # 讯飞频繁断联，大量重试
+      backoff_seconds: 3
+
+  # 备选模型（主模型降级用，使用 DeepSeek V4 Pro 避免 OpenAI 地区限制）
+  fallback:
+    provider: deepseek
+    model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    temperature: 0.3
+    context_window: 128000      # 模型输入窗口（token），前端显示上下文总量用
+    max_tokens: 20480           # 输出上限；截断续写机制兜底，正常不触发
+    timeout: 120
+
+  # ========== [phase9-D] 观点模型（simple 多模型审议用，2026-07-29 实测连通） ==========
+  # kimi（moonshot）探测 401 Invalid Authentication，未写入；报错见 phase9 完工报告。
+  viewpoint_deepseek:
+    provider: deepseek
+    model: deepseek-v4-flash        # 2026-07 用户裁定：观点席 pro 换 flash（fallback 仍是 pro，不属三观点席）
+    api_key_env: DEEPSEEK_API_KEY
+    temperature: 0.7
+    max_tokens: 2048
+    timeout: 60
+    extra_body:                     # flash 是推理模型，草稿与正文共用 max_tokens；不关思考则长上下文时草稿吃光额度、正文为空（2026-07 实测）
+      thinking:
+        type: disabled
+    retry:
+      max_attempts: 2
+
+  viewpoint_minimax:
+    provider: openai                    # MiniMax OpenAI 兼容协议
+    model: MiniMax-M3
+    api_key_env: MINIMAX_API_KEY
+    base_url: "https://api.minimaxi.com/v1"
+    temperature: 0.7
+    max_tokens: 2048
+    timeout: 60
+    retry:
+      max_attempts: 2
+
+  # astron 观点席位（2026-07-29 用户裁定：astron 也参与观点生成，再由 astron 统合）
+  # 与 main 同一模型同一密钥，独立条目只为观点档参数（高温、短输出、少重试）
+  viewpoint_astron:
+    provider: openai
+    model: astron-code-latest
+    api_key_env: XFYUN_API_KEY
+    base_url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+    temperature: 0.7
+    max_tokens: 2048
+    timeout: 60
+    retry:
+      max_attempts: 2
+
+# [phase9-D] simple 多模型编排配置：观点并发 + 单模型统合。
+# enabled: false 时完全退回单模型现行为（一键回退开关）。
+simple:
+  enabled: true
+  viewpoints: [viewpoint_deepseek, viewpoint_minimax, viewpoint_astron]   # kimi 探测未通过，裁剪
+  viewpoint_timeout: 60
+  viewpoint_max_tokens: 2048
+
+# 重试分级（模型网关重试分级施工）：按错误类别钳制重试次数 + 总时长熔断。
+# enabled: false 时回退旧一刀切行为（一键回退开关）。
+# 顶层节，不改动上面任何模型条目的 max_attempts（讯飞 20 由分级钳制生效）。
+retry_grading:
+  enabled: true
+  total_budget_seconds: 300
+  class_caps:
+    auth: 1
+    timeout: 2

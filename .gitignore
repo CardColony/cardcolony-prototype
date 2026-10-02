@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+logs/
+.server.pid
+.env
+.venv/
+.workbuddy/
+# 临时/诊断文件不入库（auto commit 用 git add -A，靠这里挡）
+_*.py
+_*.txt
+_*.json
+# 研究语料（第三方作品正文，版权内容不入库；统计产物另存 docs/）
+corpus/
