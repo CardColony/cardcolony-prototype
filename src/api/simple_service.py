@@ -62,8 +62,6 @@ async def _call_viewpoint(
     system_prompt: str,
     user_prompt: str,
     prior_messages: Optional[list[dict[str, Any]]],
-    timeout: int,
-    max_tokens: int,
 ) -> dict[str, Any]:
     """调单个观点模型。永不抛异常，失败记入 meta。
 
@@ -83,8 +81,6 @@ async def _call_viewpoint(
             system_prompt + VIEWPOINT_SUFFIX,
             user_prompt,
             temperature=float(models_cfg[name].get("temperature", 0.7)),
-            max_tokens=max_tokens,
-            timeout=timeout,
             skip_completion_marker=True,
             tools=None,
             prior_messages=prior_messages or None,
@@ -123,14 +119,13 @@ async def call_simple(
         )
         return result, model_used, []
 
-    timeout = int(cfg.get("viewpoint_timeout", 60))
-    max_tokens = int(cfg.get("viewpoint_max_tokens", 2048))
-
     # 观点阶段：并发，单个失败不中断
+    # [拆闸裁定 2026-10-02] 原 viewpoint_timeout / viewpoint_max_tokens 已删除：
+    # 思考型模型的额度被 max_tokens 烧光导致正文为空——闸就是空观点的根因
     raw_metas = await asyncio.gather(
         *[
             _call_viewpoint(gw, n, system_prompt, user_prompt,
-                            prior_messages, timeout, max_tokens)
+                            prior_messages)
             for n in viewpoints
         ],
         return_exceptions=True,
