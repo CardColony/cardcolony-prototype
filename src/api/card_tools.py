@@ -17,7 +17,7 @@ import json
 import logging
 from typing import Any
 
-from ..storage import card_store, manuscript_store, methodology_store, work_store
+from ..storage import card_store, manuscript_store, work_store
 from ..storage.card_store import _subtree_ids
 
 logger = logging.getLogger("api.card_tools")
@@ -90,44 +90,12 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "required": ["keyword"],
             },
         },
-        # [phase9-B] 方法论沉淀与查阅（跨剧本全局库，不做权限判定）
-        {
-            "name": "deposit_methodology",
-            "description": "把跨剧本可复用的推演方法结论沉淀进全局方法论库（同名条目会被更新）。只沉淀手艺级通用结论；本书专属节点/世界观写卡片结论区。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "方法论标题，简短明确，如'长线假设的日常化埋点'"},
-                    "content": {"type": "string", "description": "正文，建议三节：适用场景/做法/注意与反例"},
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "可选标签，如 [\"假设\",\"节奏\"]",
-                    },
-                },
-                "required": ["title", "content"],
-            },
-        },
-        {
-            "name": "list_methodology",
-            "description": "列出全局方法论库全部条目（id/标题/标签/来源/字数）。",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-        {
-            "name": "read_methodology",
-            "description": "按 id 调取方法论条目全文，如 read_methodology(id=\"m_0001\")。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "条目 id，如 m_0001"},
-                },
-                "required": ["id"],
-            },
-        },
+        # [无内容预设改造 2026-10-02] 方法论三工具（deposit/list/read）已删除：
+        # 模型自产内容自动入库并回流注入，是自我繁殖污染链（m_0001/m_0002 事件）。
         # [phase8.6-D] 关系建立工具：source 由服务端固定为当前对话卡
         {
             "name": "link_cards",
-            "description": "在当前卡与目标卡之间建立关系连线。当你发现两张卡存在先后/锚定/兑现/关联时，用本工具建立连线。source 固定为当前对话卡。",
+            "description": "在当前卡与指定目标卡之间建立连线（type：先后/锚定/兑现/关联）。source 固定为当前对话卡。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -309,42 +277,7 @@ async def execute_tool(
                 para_start=arguments.get("para_start"),
                 para_end=arguments.get("para_end"),
             )
-        # [phase9-B] 方法论工具：全局库，不做权限判定；来源由服务端自动补当前剧本/当前卡
-        if tool_name == "deposit_methodology":
-            title = (arguments.get("title") or "").strip()
-            content = (arguments.get("content") or "").strip()
-            if not title:
-                return {"error": "title 不能为空"}
-            if not content:
-                return {"error": "content 不能为空"}
-            entry = methodology_store.save(
-                title, content,
-                tags=arguments.get("tags"),
-                source_work=work_id,
-                source_card=current_id,
-            )
-            if "error" in entry:
-                return entry
-            # 条目 id 回写当前卡 meta.methodology_refs（去重）
-            current = await card_store.read_card(work_id, current_id)
-            refs = list(current["meta"].get("methodology_refs") or [])
-            if entry["id"] not in refs:
-                result = await card_store.update_card(
-                    work_id, current_id,
-                    {"methodology_refs": refs + [entry["id"]]},
-                    f"沉淀方法论：{title}",
-                )
-                if "error" in result:
-                    return result
-            return {"ok": True, "id": entry["id"], "title": entry["title"]}
-        if tool_name == "list_methodology":
-            return {"entries": methodology_store.list_all()}
-        if tool_name == "read_methodology":
-            mid = arguments.get("id", "")
-            entry = methodology_store.read(mid)
-            if entry is None:
-                return {"error": f"方法论不存在: {mid}"}
-            return entry
+        # [无内容预设改造 2026-10-02] deposit/list/read_methodology 处理器随工具一并删除。
         # [phase8.6-D] link_cards：source 固定当前卡（无视模型传的 source_id，防越权）
         if tool_name == "link_cards":
             target_id = arguments.get("target_id", "")

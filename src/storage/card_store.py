@@ -470,11 +470,9 @@ async def derive_ending(work_id: str) -> Optional[str]:
         logger.error("derive_ending: work_card_id 缺失 work=%s", work_id)
         return None
 
-    charter = (
-        "使命：钉死本推演的目标判定——成功是什么样子、用哪几条标准判定。"
-        "方法：目标是全树之锚，任何重大推演变更须回此核对是否仍通向该目标。"
-        "权能：可拆分各条判定标准为目标子卡。"
-    )
+    # [无内容预设改造 2026-10-02] 派生章程清空：目标卡只带结构出生（标题+锚定关系），
+    # 内容性章程（"钉死目标判定…"等）属于预置思考指令，不再随系统写入。
+    charter = ""
     try:
         result = await create_card(
             work_id, "目标", "系统派生",

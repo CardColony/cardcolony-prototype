@@ -40,7 +40,7 @@ ALLOWED_UPDATE_KEYS = {
 }
 # [phase8.3] status 二态已废除：PATCH 带 status 一律忽略（不报错）
 
-MAX_TOOL_ROUNDS = 5
+# [无闸改造 2026-10-02] MAX_TOOL_ROUNDS 已删除：工具循环不设封顶
 
 
 def _err(status: int, message: str) -> JSONResponse:
@@ -357,16 +357,16 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
     viewpoints_meta: list[dict[str, Any]] = []  # [phase9-E] 观点元信息（含内部 text）
 
     try:
-        while rounds <= MAX_TOOL_ROUNDS:
+        # [无闸改造 2026-10-02] 工具循环不设轮次封顶：模型停止调用工具即自然结束
+        while True:
             rounds += 1
-            force_no_tools = rounds > MAX_TOOL_ROUNDS
             if rounds == 1:
                 # [phase9-E] 首轮（用户原始问题）走 simple 编排：观点并发 + 统合
                 result, model_used, viewpoints_meta = await simple_service.call_simple(
                     system_prompt,
                     user_prompt,
                     prior_for_gateway,
-                    tools=None if force_no_tools else tools,
+                    tools=tools,
                 )
             else:
                 # 工具续跳轮不重复咨询观点模型
@@ -374,12 +374,12 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
                     system_prompt,
                     user_prompt,
                     prior_for_gateway,
-                    tools=None if force_no_tools else tools,
+                    tools=tools,
                 )
             tool_calls = result.get("tool_calls") or []
             assistant_content = result.get("content") or ""
 
-            if not tool_calls or force_no_tools:
+            if not tool_calls:
                 final_reply = assistant_content
                 break
 
@@ -421,10 +421,7 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
                     "content": __import__("json").dumps(tool_result, ensure_ascii=False),
                 })
 
-            user_prompt = "请基于以上工具结果继续，直接给出最终回复。"
-        else:
-            # 理论上不会到这（while 内 break），保险
-            final_reply = final_reply or ""
+            user_prompt = "工具结果已返回。"
     except Exception as exc:
         error = str(exc)
         logger.error("模型调用/工具循环失败 card=%s: %s", card_id, exc)
