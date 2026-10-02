@@ -3,14 +3,14 @@ title: "线索：证伪线索与判别指标"
 source: "模型生成"
 card_type: "线索"
 parent: "card_001"
-content_hash: "3027574fe92dddebf5c32c5c6096d7f87dbdd645c902e26b59ccf8363d9c8c74"
+content_hash: "9d610b324690c06e5e6edeb2462e0fb3b599029ca48dd247d21b97c36054a437"
 tags: []
-relations: []
+relations: [{"target": "card_002", "type": "兑现"}]
 session_ref: "sessions/session_008.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-02T13:48:44.243668+08:00"
-updated_at: "2026-10-02T13:48:44.243668+08:00"
+updated_at: "2026-10-02T13:48:44.390770+08:00"
 ---
 
 ## 职责区
@@ -26,3 +26,4 @@ updated_at: "2026-10-02T13:48:44.243668+08:00"
 ## 修改历史
 
 - [2026-10-02T13:48:44.243668+08:00] 卡片创建
+- [2026-10-02T13:48:44.390770+08:00] 建卡协议写入关系
