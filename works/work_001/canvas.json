@@ -65,6 +65,11 @@
       "source": "card_002",
       "target": "card_001",
       "type": "锚定"
+    },
+    {
+      "source": "card_008",
+      "target": "card_002",
+      "type": "兑现"
     }
   ],
   "positions": {}
