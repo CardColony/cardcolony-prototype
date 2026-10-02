@@ -52,6 +52,12 @@ class CardLockedError(Exception):
     code = 423
 
 
+class CardDeleteDeniedError(Exception):
+    """删除被结构性防护拒绝（有子卡/剧本根卡，错误码 400/403 语义）。"""
+
+    code = 400
+
+
 class CardNotFoundError(Exception):
     code = 404
 
@@ -451,6 +457,59 @@ async def update_card(
     # 目标卡改为创建剧本时即派生（见 derive_ending / work_store.create_work）。
 
     return await read_card(work_id, card_id)
+
+
+async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
+    """[用户删卡 2026-10-02] 删除卡片文件＋对应 session 文件，git 落档。
+
+    结构性防护（机械判据，不判内容）：
+    - 剧本不存在 → {"error": ...}
+    - 卡片不存在 → CardNotFoundError
+    - card_id == work_card_id（剧本根卡）→ CardDeleteDeniedError（403 语义）
+    - 有子卡（parent 链上任何卡挂它）→ CardDeleteDeniedError（防孤儿）
+
+    删除顺序：锁内移除 card .md → 锁外移除 session .md → canvas 重建 → git 提交。
+    中途失败：已删文件不恢复（git 可回溯），错误记日志返回。
+    """
+    if work_store.read_work(work_id) is None:
+        return {"error": f"剧本不存在: {work_id}"}
+    if card_id == work_store.work_card_id_of(work_id):
+        raise CardDeleteDeniedError(f"剧本根卡不可删除: {card_id}")
+
+    card_path = _card_path(work_id, card_id)
+    if not card_path.exists():
+        raise CardNotFoundError(f"卡片不存在: {card_id}")
+
+    # 子卡防护：任何卡的 parent 指向 card_id → 拒删
+    cd = _cards_dir(work_id)
+    if cd.exists():
+        for path in cd.glob("card_*.md"):
+            other_id = path.stem
+            if other_id == card_id:
+                continue
+            m = _meta_of(work_id, other_id)
+            if m and m.get("parent") == card_id:
+                raise CardDeleteDeniedError(
+                    f"存在子卡 {other_id}，先删子卡或改挂他卡"
+                )
+
+    lock = _get_lock(card_path)
+    await _acquire(lock)
+    try:
+        card_path.unlink()
+    finally:
+        lock.release()
+
+    session_path = _session_path(work_id, card_id)
+    try:
+        if session_path.exists():
+            session_path.unlink()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("session 文件删除失败（不中断）%s: %s", session_path, exc)
+
+    await canvas_store.update_cache(work_id)
+    await git_auto_commit.commit(f"[auto][{work_id}] delete: {card_id}")
+    return {"ok": True, "deleted": card_id}
 
 
 async def derive_ending(work_id: str) -> Optional[str]:

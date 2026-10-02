@@ -138,6 +138,13 @@
         </select>
         <button class="btn" id="addChildBtn">建</button>
       </div>
+
+      ${m.card_type !== "剧本" ? `
+      <div class="blocktitle" style="color:#d05656;">危险操作</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
+        <button class="btn" id="deleteCardBtn" style="color:#d05656;border-color:#d05656;">删除此卡</button>
+        <span style="font-size:11px;color:var(--dimmer);">连同会话删除；有子卡时系统拒绝；剧本卡无此操作</span>
+      </div>` : ""}
     `;
 
     bindLeftEvents();
@@ -288,6 +295,27 @@
     document.getElementById("childTitle").onkeydown = (e) => {
       if (e.key === "Enter") document.getElementById("addChildBtn").click();
     };
+
+    // [用户删卡 2026-10-02] prompt 输入标题前三字放行；成功后返回画布并重拉
+    const delBtn = document.getElementById("deleteCardBtn");
+    if (delBtn) {
+      delBtn.onclick = async () => {
+        const title = currentCard.meta.title || "";
+        const head = title.slice(0, 3);
+        if (!head) { API.toast("标题为空，无法校验", "error"); return; }
+        const input = window.prompt(
+          `删除此卡不可撤销（连同会话；git 可回溯）。\n请输入标题前三个字放行：「${head}」`
+        );
+        if (input === null) return;
+        if (input.trim() !== head) { API.toast("校验不符，未删除", "error"); return; }
+        const cid = currentCard.meta.card_id;
+        try {
+          await API.deleteCard(WORK_ID, cid);
+          API.toast("已删除：" + title, "success");
+          window.ReloadCanvas();
+        } catch (e) { /* toast 已处理（后端 error 文本透传） */ }
+      };
+    }
   }
 
   // ==================== 讨论区 ====================
