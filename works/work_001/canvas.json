@@ -30,6 +30,13 @@
       "card_type": "行为体",
       "parent": "card_001",
       "created_at": "2026-10-02T13:48:43.184841+08:00"
+    },
+    {
+      "card_id": "card_005",
+      "title": "假设：股票成为新的价值锚定物",
+      "card_type": "假设",
+      "parent": "card_001",
+      "created_at": "2026-10-02T13:48:43.454507+08:00"
     }
   ],
   "relations": [
