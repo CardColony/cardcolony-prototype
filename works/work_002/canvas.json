@@ -16,6 +16,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-02T15:58:25.754406+08:00"
+    },
+    {
+      "card_id": "card_003",
+      "title": "三号线_关键指标",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-02T15:58:25.924818+08:00"
     }
   ],
   "relations": [],

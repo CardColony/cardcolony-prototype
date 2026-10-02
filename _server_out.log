@@ -93,3 +93,35 @@ D:\AI_station\推演agent\.venv\Lib\site-packages\pydantic\main.py:475: UserWarn
   PydanticSerializationUnexpectedValue(Expected 5 fields but got 4: Expected `Message` - serialized value may not be as expected [field_name='choices', input_value=Message(content='工具...')], function_call=None), input_type=Message])
   PydanticSerializationUnexpectedValue(Expected `StreamingChoices` - serialized value may not be as expected [field_name='choices', input_value=Choices(finish_reason='to...)], function_call=None)), input_type=Choices])
   return self.__pydantic_serializer__.to_python(
+[92m15:57:59 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 15:57:59,818 [INFO] 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 15:58:08,079 [INFO] HTTP Request: POST https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-10-02 15:58:08 [info     ] tool_calls_received            count=1 model=main names=['card-proposal']
+2026-10-02 15:58:08 [info     ] model_call_success             latency_ms=8265 model=main tokens=2710
+D:\AI_station\推演agent\.venv\Lib\site-packages\pydantic\main.py:475: UserWarning: Pydantic serializer warnings:
+  PydanticSerializationUnexpectedValue(Expected 5 fields but got 4: Expected `Message` - serialized value may not be as expected [field_name='choices', input_value=Message(content='根卡...')], function_call=None), input_type=Message])
+  PydanticSerializationUnexpectedValue(Expected `StreamingChoices` - serialized value may not be as expected [field_name='choices', input_value=Choices(finish_reason='to...)], function_call=None)), input_type=Choices])
+  return self.__pydantic_serializer__.to_python(
+[92m15:58:08 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 15:58:08,087 [INFO] 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 15:58:12,881 [INFO] HTTP Request: POST https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-10-02 15:58:12 [info     ] tool_calls_received            count=1 model=main names=['card-proposal']
+2026-10-02 15:58:12 [info     ] model_call_success             latency_ms=4797 model=main tokens=2584
+D:\AI_station\推演agent\.venv\Lib\site-packages\pydantic\main.py:475: UserWarning: Pydantic serializer warnings:
+  PydanticSerializationUnexpectedValue(Expected 5 fields but got 4: Expected `Message` - serialized value may not be as expected [field_name='choices', input_value=Message(content='抱歉...')], function_call=None), input_type=Message])
+  PydanticSerializationUnexpectedValue(Expected `StreamingChoices` - serialized value may not be as expected [field_name='choices', input_value=Choices(finish_reason='to...)], function_call=None)), input_type=Choices])
+  return self.__pydantic_serializer__.to_python(
+[92m15:58:12 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 15:58:12,889 [INFO] 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 15:58:25,740 [INFO] HTTP Request: POST https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-10-02 15:58:25 [info     ] model_call_success             latency_ms=12858 model=main tokens=3170
+D:\AI_station\推演agent\.venv\Lib\site-packages\pydantic\main.py:475: UserWarning: Pydantic serializer warnings:
+  PydanticSerializationUnexpectedValue(Expected 5 fields but got 4: Expected `Message` - serialized value may not be as expected [field_name='choices', input_value=Message(content='我上...one, function_call=None), input_type=Message])
+  PydanticSerializationUnexpectedValue(Expected `StreamingChoices` - serialized value may not be as expected [field_name='choices', input_value=Choices(finish_reason='st...ne, function_call=None)), input_type=Choices])
+  return self.__pydantic_serializer__.to_python(
