@@ -74,6 +74,8 @@
     getCard: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}`),
     patchCard: (wid, cid, updates, history_note) =>
       call("PATCH", `/api/works/${wid}/cards/${cid}`, { updates, history_note }),
+    // [用户删卡 2026-10-02] 仅前端；模型工具清单不含此能力
+    deleteCard: (wid, cid) => call("DELETE", `/api/works/${wid}/cards/${cid}`),
     // 会话
     getSession: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/session`),
     postMessage: (wid, cid, content) => call("POST", `/api/works/${wid}/cards/${cid}/messages`, { content }),

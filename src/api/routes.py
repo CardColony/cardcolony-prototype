@@ -24,6 +24,7 @@ from ..storage import (
     session_store, work_store,
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
+from ..storage.card_store import CardDeleteDeniedError
 from ..storage.manuscript_store import ChapterNotFoundError
 from . import card_proposal, card_tools, context_assembler, model_service, progress, prompt_log, prompts, simple_service
 
@@ -145,6 +146,26 @@ async def get_work_card(work_id: str, card_id: str):
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
+
+
+# [用户删卡 2026-10-02] 仅前端调用；模型工具清单不含删卡（模型无权删卡）
+@router.delete("/works/{work_id}/cards/{card_id}")
+async def delete_work_card(work_id: str, card_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    try:
+        result = await card_store.delete_card(work_id, card_id)
+    except CardNotFoundError:
+        return _err(404, f"卡片不存在: {card_id}")
+    except CardLockedError:
+        return _err(423, "卡片被占用，请稍后重试")
+    except CardDeleteDeniedError as exc:
+        # 根卡与带子卡的卡拒绝删除（结构性防护，机械判据）
+        is_root = card_id == work_store.work_card_id_of(work_id)
+        return _err(403 if is_root else 400, str(exc))
+    if "error" in result:
+        return _err(400, result["error"])
+    return result
 
 
 @router.patch("/works/{work_id}/cards/{card_id}")
