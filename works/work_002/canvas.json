@@ -65,6 +65,12 @@
       "source": "card_002",
       "target": "card_001",
       "type": "锚定"
+    },
+    {
+      "source": "card_008",
+      "target": "card_002",
+      "type": "锚定",
+      "note": "本卡产出直接决定目标锚三条判定线是否同向成立"
     }
   ],
   "positions": {}
