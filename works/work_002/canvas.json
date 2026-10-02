@@ -23,6 +23,13 @@
       "card_type": "假设",
       "parent": "card_001",
       "created_at": "2026-10-02T12:30:15.019266+08:00"
+    },
+    {
+      "card_id": "card_004",
+      "title": "旧轴心耗尽：土地财政与房地产的天花板",
+      "card_type": "节点",
+      "parent": "card_001",
+      "created_at": "2026-10-02T12:30:15.229802+08:00"
     }
   ],
   "relations": [
