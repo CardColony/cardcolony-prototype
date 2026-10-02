@@ -9,13 +9,6 @@
       "card_type": "剧本",
       "parent": "",
       "created_at": "2026-10-02T23:33:26.941007+08:00"
-    },
-    {
-      "card_id": "card_002",
-      "title": "父卡",
-      "card_type": "线索",
-      "parent": "card_001",
-      "created_at": "2026-10-02T23:33:27.269563+08:00"
     }
   ],
   "relations": [],
