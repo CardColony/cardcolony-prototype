@@ -1,0 +1,16 @@
+{
+  "project_name": "推演agent",
+  "work_id": "work_003",
+  "created_at": "2026-10-03T07:55:32.983270+08:00",
+  "cards": [
+    {
+      "card_id": "card_001",
+      "title": "_e2e_unlink_临时",
+      "card_type": "剧本",
+      "parent": "",
+      "created_at": "2026-10-03T07:55:32.982775+08:00"
+    }
+  ],
+  "relations": [],
+  "positions": {}
+}
