@@ -1,14 +1,14 @@
 {
   "project_name": "推演agent",
   "work_id": "work_002",
-  "created_at": "2026-10-02T23:59:05.856280+08:00",
+  "created_at": "2026-10-02T23:59:48.778572+08:00",
   "cards": [
     {
       "card_id": "card_001",
       "title": "_e2e_del_验证_临时",
       "card_type": "剧本",
       "parent": "",
-      "created_at": "2026-10-02T23:59:05.855284+08:00"
+      "created_at": "2026-10-02T23:59:48.777068+08:00"
     }
   ],
   "relations": [],
