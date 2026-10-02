@@ -60,7 +60,7 @@ def _searxng(query: str, count: int) -> dict[str, Any] | None:
             results.append({
                 "title": it.get("title", ""),
                 "url": it.get("url", ""),
-                "snippet": it.get("content", "")[:500],
+                "snippet": it.get("content", ""),
                 "source": it.get("url", "").split("/")[2] if "://" in it.get("url", "") else "",
                 "engine": ", ".join(it.get("engines") or []),
                 "date": it.get("publishedDate", ""),
@@ -89,10 +89,7 @@ def _aliyun(query: str) -> dict[str, Any] | None:
             timeout=120,
         )
         if r.status_code != 200:
-            return {"query": query, "fetched_at": _now(),
-                    "channel": "aliyun_enable_search",
-                    "note": "模型联网检索后的改写文本，非原始链接列表",
-                    "text": r.text[:300]}
+            return None  # 备用通道失败就是失败，不把错误体伪装成结果
         ch = (r.json().get("choices") or [{}])
         text = ((ch[0].get("message") or {}).get("content") or "").strip()
         if not text:
