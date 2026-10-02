@@ -16,6 +16,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-03T07:59:35.713094+08:00"
+    },
+    {
+      "card_id": "card_003",
+      "title": "B·子目标卡",
+      "card_type": "线索",
+      "parent": "card_002",
+      "created_at": "2026-10-03T07:59:35.960243+08:00"
     }
   ],
   "relations": [],
