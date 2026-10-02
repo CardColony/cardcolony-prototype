@@ -9,6 +9,13 @@
       "card_type": "剧本",
       "parent": "",
       "created_at": "2026-10-02T17:42:55.584184+08:00"
+    },
+    {
+      "card_id": "card_002",
+      "title": "中央汇金增持ETF公告核查（截至2026-10）",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-02T17:47:42.565325+08:00"
     }
   ],
   "relations": [],
