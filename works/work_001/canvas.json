@@ -23,6 +23,13 @@
       "card_type": "节点",
       "parent": "card_001",
       "created_at": "2026-10-02T13:48:43.057740+08:00"
+    },
+    {
+      "card_id": "card_004",
+      "title": "中央汇金：行为体与动作清单",
+      "card_type": "行为体",
+      "parent": "card_001",
+      "created_at": "2026-10-02T13:48:43.184841+08:00"
     }
   ],
   "relations": [
