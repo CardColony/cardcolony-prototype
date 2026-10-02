@@ -30,15 +30,15 @@ def init_directories() -> None:
     Phase 7：剧本数据在 works/{work_id}/ 下，但保留 methodology/logs 兜底。
     根目录的 cards/sessions 由旧版创建，迁移后由脚本搬入 works/。
     """
-    for name in ("methodology", "logs", "works"):
+    for name in ("logs", "works"):
         (BASE_DIR / name).mkdir(exist_ok=True)
 
 
 def init_methodology() -> None:
-    """b. 初始化 methodology/rules.md。"""
-    rules = BASE_DIR / "methodology" / "rules.md"
-    if not rules.exists():
-        rules.write_text("# 推演方法论\n", encoding="utf-8")
+    """[无内容预设改造 2026-10-02] 方法论库已停用（自我繁殖污染链），
+    不再创建任何文件。函数保留以维持 startup_init 结构兼容。
+    """
+    return
 
 
 def init_canvas() -> None:

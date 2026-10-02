@@ -77,10 +77,6 @@
     // 会话
     getSession: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/session`),
     postMessage: (wid, cid, content) => call("POST", `/api/works/${wid}/cards/${cid}/messages`, { content }),
-    // 方法论库 [phase9-C]
-    listMethodology: () => call("GET", "/api/methodology"),
-    getMethodology: (mid) => call("GET", `/api/methodology/${mid}`),
-    patchMethodology: (mid, updates) => call("PATCH", `/api/methodology/${mid}`, { updates }),
   };
 
   window.API = API;

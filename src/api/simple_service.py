@@ -48,7 +48,7 @@ def build_viewpoint_prompt(user_prompt: str, ok_metas: list[dict[str, Any]]) -> 
     if not ok_metas:
         return user_prompt
     sections = "\n\n".join(
-        f"### 观点·{m['model']}\n{m['text']}" for m in ok_metas
+        f"### 输出·{m['model']}\n{m['text']}" for m in ok_metas
     )
     return f"{user_prompt}\n\n{VIEWPOINT_HEADER}\n{sections}"
 

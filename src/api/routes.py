@@ -7,7 +7,7 @@
 Phase 7：
 - 新增 /api/works 全套路由（多剧本）。
 - messages 主链路：context_assembler 组装 → prompts.build_system_prompt →
-  带工具的工具循环（最多 5 轮）→ parse_proposals → apply_proposals → tool_events。
+  带工具的工具循环（不设轮次封顶）→ parse_proposals → apply_proposals → tool_events。
 - 旧路由 /api/canvas、/api/cards... 保留，内部固定转发 work_001（兼容层）。
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..storage import (
-    canvas_store, card_store, manuscript_store, methodology_store,
+    canvas_store, card_store, manuscript_store,
     session_store, work_store,
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
@@ -82,8 +82,7 @@ class PostMessageRequest(BaseModel):
     content: str = Field(min_length=1)
 
 
-class PatchMethodologyRequest(BaseModel):
-    updates: dict[str, Any] = Field(default_factory=dict)
+# [无内容预设改造 2026-10-02] PatchMethodologyRequest 已删除（方法论库停用）
 
 
 # ============================================================
@@ -215,32 +214,8 @@ async def read_work_manuscript(
         return _err(404, f"章节不存在: {chapter}")
 
 
-# ============================================================
-# [phase9-A] 方法论库（跨剧本全局，与 works 平级）
-# ============================================================
-
-@router.get("/methodology")
-async def list_methodology():
-    return {"entries": methodology_store.list_all()}
-
-
-@router.get("/methodology/{mid}")
-async def get_methodology(mid: str):
-    entry = methodology_store.read(mid)
-    if entry is None:
-        return _err(404, f"方法论不存在: {mid}")
-    return entry
-
-
-@router.patch("/methodology/{mid}")
-async def patch_methodology(mid: str, req: PatchMethodologyRequest):
-    illegal = set(req.updates) - {"title", "content", "tags"}
-    if illegal:
-        return _err(400, f"updates 含不允许的键: {sorted(illegal)}")
-    entry = methodology_store.update(mid, req.updates)
-    if entry is None:
-        return _err(404, f"方法论不存在: {mid}")
-    return entry
+# [无内容预设改造 2026-10-02] 方法论库三端点（GET /methodology 等）已删除：
+# 模型自产内容入库并回流注入是自我繁殖污染链（m_0001/m_0002 事件）。
 
 
 # ============================================================
