@@ -9,6 +9,13 @@
       "card_type": "剧本",
       "parent": "",
       "created_at": "2026-10-02T16:09:00.575641+08:00"
+    },
+    {
+      "card_id": "card_002",
+      "title": "01 三条主轴与史观检验",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-02T16:17:11.553813+08:00"
     }
   ],
   "relations": [],
