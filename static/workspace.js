@@ -389,7 +389,7 @@
         const card = document.createElement("div");
         card.className = "sys-newcards";
         const items = resp.created_cards.map(c =>
-          `<span class="nc-item" data-cid="${escapeHtml(c.card_id)}">${escapeHtml(c.title)}（${escapeHtml(c.card_type)}）</span>`
+          `<span class="nc-item" data-cid="${escapeHtml(c.card_id)}">${escapeHtml(c.title)}</span>`
         ).join("");
         card.innerHTML = `<b>✚ 已创建 ${resp.created_cards.length} 张卡片</b>：${items}`;
         chatArea.appendChild(card);

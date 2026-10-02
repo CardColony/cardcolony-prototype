@@ -1,19 +1,17 @@
 # -*- coding: utf-8 -*-
-"""卡片工具与权限（模块 F）。
+"""卡片工具与权限（白板版 2026-10-02）。
 
-工具 schema（OpenAI function 格式，供 gateway 的 tools 参数）：
-- read_card(card_id)：返回目标卡 meta + 四区 JSON。
-- edit_card(card_id, section, content)：section ∈ {"conclusion","charter"}。
+工具接口只含机械事实：
+- read_card：返回标题、父卡、连线、正文——不暴露内部四区语义
+- edit_card(card_id, content)：覆盖写指定卡正文（内部落存储层正文区）
+- link_cards：连线，模型可用类型限 先后/关联（锚定为系统内部关系，不对模型开放）
 
-权限纯函数（可单测）：
-- can_read(current_id, target_id, cards)
-- can_edit(current_id, target_id, cards)
-
-越权不抛异常，返回 {"error": "越权：..."} 给模型。
+权限纯函数不变：读＝子树∪血统链∪连线∪锚卡全局可读；写＝自己的子树。
+越权不抛异常，返回 {"error": ...} 给模型。
 """
+
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -22,10 +20,9 @@ from ..storage.card_store import _subtree_ids
 
 logger = logging.getLogger("api.card_tools")
 
-SECTION_CN = {"conclusion": "结论区", "charter": "职责区"}
-
-# [phase8.6-D] 关系类型白名单
-REL_TYPES = ("先后", "锚定", "兑现", "关联")
+# [白板版 2026-10-02] 模型可建的连线类型收窄为两个中性关系；
+# "锚定"（系统派生目标卡专用）与"兑现"（写作agent残留语义）不再对模型开放
+MODEL_REL_TYPES = ("先后", "关联")
 
 
 def build_tool_schemas() -> list[dict[str, Any]]:
@@ -33,7 +30,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
     return [
         {
             "name": "read_card",
-            "description": "调取指定卡的全文（meta + 职责区/结论区/否决记录/修改历史）。只能读取你有权访问的卡。",
+            "description": "读取指定卡（标题、父卡、连线、正文）。只能读取你有权访问的卡。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -44,22 +41,16 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         },
         {
             "name": "edit_card",
-            "description": "修改指定下级卡的'结论区'或'职责区'。只能编辑你管辖域内的卡（子树）。",
+            "description": "改写你管辖范围内指定卡的正文（覆盖写）。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "card_id": {"type": "string", "description": "目标卡 id"},
-                    "section": {
-                        "type": "string",
-                        "enum": ["conclusion", "charter"],
-                        "description": "要修改的区：conclusion=结论区，charter=职责区",
-                    },
-                    "content": {"type": "string", "description": "新的整段内容（覆盖写）"},
+                    "content": {"type": "string", "description": "新的正文全文（覆盖写）"},
                 },
-                "required": ["card_id", "section", "content"],
+                "required": ["card_id", "content"],
             },
         },
-        # [phase8.5] 原文读取工具：原文是剧本的客观现状，所有卡对话均可读取，不做权限判定
         {
             "name": "list_manuscript",
             "description": "列出本项目已有的原文资料章节目录（序号/标题/字数/段数）。",
@@ -90,20 +81,16 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "required": ["keyword"],
             },
         },
-        # [无内容预设改造 2026-10-02] 方法论三工具（deposit/list/read）已删除：
-        # 模型自产内容自动入库并回流注入，是自我繁殖污染链（m_0001/m_0002 事件）。
-        # [phase8.6-D] 关系建立工具：source 由服务端固定为当前对话卡
         {
             "name": "link_cards",
-            "description": "在当前卡与指定目标卡之间建立连线（type：先后/锚定/兑现/关联）。source 固定为当前对话卡。",
+            "description": "在当前卡与目标卡之间建立连线。source 固定为当前对话卡。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_id": {"type": "string", "description": "可省略；无论传什么，服务端一律以当前对话卡为 source"},
                     "target_id": {"type": "string", "description": "目标卡 id，如 card_003"},
                     "type": {
                         "type": "string",
-                        "enum": ["先后", "锚定", "兑现", "关联"],
+                        "enum": ["先后", "关联"],
                         "description": "关系类型",
                     },
                     "note": {"type": "string", "description": "可选备注"},
@@ -183,7 +170,7 @@ def can_read(current_id: str, target_id: str, cards: dict[str, dict[str, Any]]) 
         if isinstance(rel, dict) and rel.get("target") == target_id:
             return True
 
-    # 4. [phase8.6-F] 目标锚全局可读：target 锚定剧本卡（全树之锚）→ 任何卡可读
+    # 4. 锚卡全局可读：target 锚定剧本卡（系统派生结构）→ 任何卡可读
     for rel in tgt.get("relations") or []:
         if isinstance(rel, dict) and rel.get("type") == "锚定":
             anchor_tgt = cards.get(rel.get("target", ""))
@@ -240,51 +227,46 @@ async def execute_tool(
             result = await card_store.read_card(work_id, target_id)
             return {
                 "card_id": target_id,
-                "meta": result["meta"],
-                "charter": result["body"]["charter"],
-                "conclusion": result["body"]["conclusion"],
-                "rejections": result["body"]["rejections"],
+                "title": result["meta"].get("title", ""),
+                "parent": result["meta"].get("parent", ""),
+                "relations": result["meta"].get("relations") or [],
+                "body": result["body"].get("conclusion", ""),
             }
         if tool_name == "edit_card":
             target_id = arguments.get("card_id", "")
-            section = arguments.get("section", "")
             content = arguments.get("content", "")
-            if section not in ("conclusion", "charter"):
-                return {"error": f"section 非法: {section}，只允许 conclusion/charter"}
             if not can_edit(current_id, target_id, cards):
                 return {"error": f"越权：无权编辑 {target_id}"}
             current = await card_store.read_card(work_id, current_id)
             cur_title = current["meta"].get("title", "")
-            history_note = f"由「{cur_title}」对话编辑{SECTION_CN[section]}"
+            history_note = f"由「{cur_title}」对话编辑正文"
+            # [白板版] 模型只见"正文"一个概念；内部固定落存储层正文区（conclusion）
             result = await card_store.update_card(
-                work_id, target_id, {section: content}, history_note,
+                work_id, target_id, {"conclusion": content}, history_note,
             )
             if "error" in result:
                 return result
-            return {"card_id": target_id, "ok": True, "section": section}
-        # [phase8.5] 原文工具：不做权限判定（原文是剧本的客观现状，所有卡对话均可读取）
+            return {"card_id": target_id, "ok": True}
         if tool_name == "list_manuscript":
             chapters = manuscript_store.list_chapters(work_id)
             if not chapters:
-                return {"chapters": [], "note": "本剧本尚无原文"}
+                return {"chapters": [], "note": "本项目尚无原文"}
             return {"chapters": chapters}
         if tool_name == "read_manuscript":
             if not manuscript_store.list_chapters(work_id):
-                return {"error": "本剧本尚无原文"}
+                return {"error": "本项目尚无原文"}
             return manuscript_store.read_chapter(
                 work_id,
                 arguments.get("chapter", ""),
                 para_start=arguments.get("para_start"),
                 para_end=arguments.get("para_end"),
             )
-        # [无内容预设改造 2026-10-02] deposit/list/read_methodology 处理器随工具一并删除。
-        # [phase8.6-D] link_cards：source 固定当前卡（无视模型传的 source_id，防越权）
         if tool_name == "link_cards":
             target_id = arguments.get("target_id", "")
             rel_type = arguments.get("type", "")
             note = (arguments.get("note") or "").strip()
-            if rel_type not in REL_TYPES:
-                return {"error": f"关系类型非法: {rel_type}，只允许 先后/锚定/兑现/关联"}
+            if rel_type not in MODEL_REL_TYPES:
+                return {"error": f"关系类型非法: {rel_type}，只允许 先后/关联"}
             if target_id not in cards:
                 return {"error": f"目标卡不存在: {target_id}"}
             if target_id == current_id:
@@ -313,7 +295,7 @@ async def execute_tool(
             return {"ok": True, "source": current_id, "target": target_id, "type": rel_type}
         if tool_name == "search_manuscript":
             if not manuscript_store.list_chapters(work_id):
-                return {"error": "本剧本尚无原文"}
+                return {"error": "本项目尚无原文"}
             hits = manuscript_store.search_manuscript(
                 work_id,
                 arguments.get("keyword", ""),

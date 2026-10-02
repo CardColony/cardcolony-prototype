@@ -22,9 +22,9 @@ from typing import Any, Optional
 from . import model_service
 from .card_proposal import parse_proposals
 
-# [无内容预设改造 2026-10-02] 观点席不再追加任何身份/产出指令：
-# 不用工具已由 tools=None 机械保证，协议块由 clean_viewpoint_text 机械剥离。
-# 统合头中性化：只陈述事实，不含"可采纳可反驳"等处理方式指令。
+# [无内容预设改造 2026-10-02] 统合头中性化：只陈述事实，不含"可采纳可反驳"等处理方式指令。
+# [职责分离裁定 2026-10-02 15:07] 注入段去掉模型名（模型名诱发统合官的裁决者姿态），
+# 观点按序号标注；模型名只留在 meta/log 供审计，不进统合官输入。
 VIEWPOINT_HEADER = "## 其他模型的输出"
 
 # MiniMax M 系回复自带 <think>...</think> 推理块，确定性剥离
@@ -44,11 +44,15 @@ def clean_viewpoint_text(text: str) -> str:
 
 
 def build_viewpoint_prompt(user_prompt: str, ok_metas: list[dict[str, Any]]) -> str:
-    """统合阶段 user_prompt 组装（纯函数，可单测）。ok_metas 空则原样返回。"""
+    """统合阶段 user_prompt 组装（纯函数，可单测）。ok_metas 空则原样返回。
+
+    [职责分离裁定 2026-10-02] 观点按序号标注，不带模型名——
+    模型名只留 meta/log 供审计，不进统合官输入（防裁决者姿态诱导）。
+    """
     if not ok_metas:
         return user_prompt
     sections = "\n\n".join(
-        f"### 输出·{m['model']}\n{m['text']}" for m in ok_metas
+        f"### 输出 {i + 1}\n{m['text']}" for i, m in enumerate(ok_metas)
     )
     return f"{user_prompt}\n\n{VIEWPOINT_HEADER}\n{sections}"
 
@@ -99,11 +103,16 @@ async def _call_viewpoint(
 
 async def call_simple(
     system_prompt: str,
+    vp_system_prompt: str,
     user_prompt: str,
     prior_messages: Optional[list[dict[str, Any]]] = None,
     tools: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
     """simple 编排入口：返回 (gateway结果, 实际模型名, viewpoints_meta)。
+
+    [职责分离裁定 2026-10-02 15:07] 三思考席只做分析：
+    vp_system_prompt 为中性上下文（无使用说明、无工具、无建卡接口）；
+    system_prompt（含使用说明与建卡接口）只给主模型——拆卡是主模型的工作。
 
     enabled: false 或 viewpoints 空时与 call_main 行为完全一致（meta=[]）。
     """
@@ -121,7 +130,7 @@ async def call_simple(
     # 思考型模型的额度被 max_tokens 烧光导致正文为空——闸就是空观点的根因
     raw_metas = await asyncio.gather(
         *[
-            _call_viewpoint(gw, n, system_prompt, user_prompt,
+            _call_viewpoint(gw, n, vp_system_prompt, user_prompt,
                             prior_messages)
             for n in viewpoints
         ],

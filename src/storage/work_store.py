@@ -139,8 +139,9 @@ async def create_work(title: str) -> dict[str, Any]:
     work_data["work_card_id"] = work_card_id
     write_work(work_id, work_data)
 
-    # [phase8.3] 创建剧本即派生目标卡（ending_derived 仅作幂等标志）
-    await card_store.derive_ending(work_id)
+    # [白板裁定 2026-10-02] 不再自动派生"目标"卡——系统不预置任何语义卡；
+    # 卡从两个口子来：用户手建（前端）或模型经 card-proposal 建。
+    # ending_derived 字段保留恒 false（存量兼容，前端 🏁 标志自然熄灭）。
 
     await git_auto_commit.commit(f"[auto][{work_id}] create work: {title}")
     work_data = read_work(work_id) or work_data  # 取回 ending_derived 最新值
