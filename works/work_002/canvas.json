@@ -51,6 +51,13 @@
       "card_type": "节点",
       "parent": "card_001",
       "created_at": "2026-10-02T12:30:15.621437+08:00"
+    },
+    {
+      "card_id": "card_008",
+      "title": "股权财政替代率检验",
+      "card_type": "节点",
+      "parent": "card_002",
+      "created_at": "2026-10-02T12:30:15.782184+08:00"
     }
   ],
   "relations": [
