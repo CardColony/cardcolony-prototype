@@ -11,13 +11,6 @@
       "created_at": "2026-10-03T00:01:01.337011+08:00"
     },
     {
-      "card_id": "card_002",
-      "title": "被删目标卡",
-      "card_type": "线索",
-      "parent": "card_001",
-      "created_at": "2026-10-03T00:01:01.680920+08:00"
-    },
-    {
       "card_id": "card_003",
       "title": "保留卡",
       "card_type": "线索",
