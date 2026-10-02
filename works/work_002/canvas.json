@@ -18,13 +18,6 @@
       "created_at": "2026-10-03T07:59:35.713094+08:00"
     }
   ],
-  "relations": [
-    {
-      "source": "card_002",
-      "target": "card_003",
-      "type": "关联",
-      "note": "悬空测试"
-    }
-  ],
+  "relations": [],
   "positions": {}
 }
