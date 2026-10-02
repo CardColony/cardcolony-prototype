@@ -2,3 +2,52 @@ INFO:     Started server process [20156]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:5700 (Press CTRL+C to quit)
+2026-10-02 17:10:49,217 [INFO] HTTP Request: GET https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json "HTTP/1.1 200 OK"
+[92m17:10:53 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= MiniMax-M3; provider = openai
+2026-10-02 17:10:53,835 [INFO] 
+LiteLLM completion() model= MiniMax-M3; provider = openai
+[92m17:10:53 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= qwen3.8-max; provider = openai
+2026-10-02 17:10:53,836 [INFO] 
+LiteLLM completion() model= qwen3.8-max; provider = openai
+[92m17:10:53 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= glm-5.3; provider = openai
+2026-10-02 17:10:53,836 [INFO] 
+LiteLLM completion() model= glm-5.3; provider = openai
+2026-10-02 17:10:56,951 [INFO] HTTP Request: POST https://api.minimaxi.com/v1/chat/completions "HTTP/1.1 529 Unknown Status Code"
+2026-10-02 17:10:56,952 [INFO] Retrying request to /chat/completions in 0.425724 seconds
+2026-10-02 17:11:45,568 [INFO] HTTP Request: POST https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+D:\AI_station\推演agent\.venv\Lib\site-packages\pydantic\main.py:475: UserWarning: Pydantic serializer warnings:
+  PydanticSerializationUnexpectedValue(Expected 5 fields but got 4: Expected `Message` - serialized value may not be as expected [field_name='choices', input_value=Message(content='收到...one, function_call=None), input_type=Message])
+  PydanticSerializationUnexpectedValue(Expected `StreamingChoices` - serialized value may not be as expected [field_name='choices', input_value=Choices(finish_reason='st...ne, function_call=None)), input_type=Choices])
+  return self.__pydantic_serializer__.to_python(
+2026-10-02 17:13:11,369 [INFO] HTTP Request: POST https://api.minimaxi.com/v1/chat/completions "HTTP/1.1 200 OK"
+D:\AI_station\推演agent\.venv\Lib\site-packages\pydantic\main.py:475: UserWarning: Pydantic serializer warnings:
+  PydanticSerializationUnexpectedValue(Expected 5 fields but got 4: Expected `Message` - serialized value may not be as expected [field_name='choices', input_value=Message(content='先收...one, function_call=None), input_type=Message])
+  PydanticSerializationUnexpectedValue(Expected `StreamingChoices` - serialized value may not be as expected [field_name='choices', input_value=Choices(finish_reason='st...ne, function_call=None)), input_type=Choices])
+  return self.__pydantic_serializer__.to_python(
+2026-10-02 17:16:15,608 [INFO] HTTP Request: POST https://open.bigmodel.cn/api/paas/v4/chat/completions "HTTP/1.1 200 OK"
+D:\AI_station\推演agent\.venv\Lib\site-packages\pydantic\main.py:475: UserWarning: Pydantic serializer warnings:
+  PydanticSerializationUnexpectedValue(Expected 5 fields but got 4: Expected `Message` - serialized value may not be as expected [field_name='choices', input_value=Message(content='两处...one, function_call=None), input_type=Message])
+  PydanticSerializationUnexpectedValue(Expected `StreamingChoices` - serialized value may not be as expected [field_name='choices', input_value=Choices(finish_reason='st...ne, function_call=None)), input_type=Choices])
+  return self.__pydantic_serializer__.to_python(
+[92m17:16:15 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 17:16:15,646 [INFO] 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 17:16:58,332 [INFO] HTTP Request: POST https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+D:\AI_station\推演agent\.venv\Lib\site-packages\pydantic\main.py:475: UserWarning: Pydantic serializer warnings:
+  PydanticSerializationUnexpectedValue(Expected 5 fields but got 4: Expected `Message` - serialized value may not be as expected [field_name='choices', input_value=Message(content='', role=...')], function_call=None), input_type=Message])
+  PydanticSerializationUnexpectedValue(Expected `StreamingChoices` - serialized value may not be as expected [field_name='choices', input_value=Choices(finish_reason='to...)], function_call=None)), input_type=Choices])
+  return self.__pydantic_serializer__.to_python(
+[92m17:16:58 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 17:16:58,376 [INFO] 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 17:18:03,962 [INFO] HTTP Request: POST https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+[92m17:18:06 - LiteLLM:INFO[0m: utils.py:2691 - 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 17:18:06,193 [INFO] 
+LiteLLM completion() model= deepseek-v4.1-flash; provider = openai
+2026-10-02 17:20:18,799 [INFO] HTTP Request: POST https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
