@@ -84,6 +84,12 @@
       "target": "card_006",
       "type": "关联",
       "note": "04 六环 ↔ 05 汇金作为操作系统"
+    },
+    {
+      "source": "card_001",
+      "target": "card_008",
+      "type": "关联",
+      "note": "07 X0 触发测试是全部里程碑的汇聚判据"
     }
   ],
   "positions": {}
