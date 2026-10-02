@@ -35,11 +35,12 @@ logger = logging.getLogger("api.card_proposal")
 _FENCE_OPEN_RE = re.compile(r"```card-proposal\s*\n")
 # fenced 候选闭合：行首三反引号（含前导换行，共 4 字符）
 _FENCE_CLOSE_RE = re.compile(r"\n```")
-# 形态二：尖括号标记（竖线全角/半角、单/双、标记词两侧空白均可）
+# 形态二：尖括号标记（竖线全角/半角、单/双、标记词两侧空白均可；
+# 闭合标记两种泄漏变体都接：竖线在前 <|/card-proposal|> 或斜杠在前 </card-proposal|>）
 _BLOCK_ANGLE_RE = re.compile(
     r"<[|｜]{1,2}\s*card-proposal\s*[|｜]{1,2}>"
     r"(.*?)"
-    r"<[|｜]{1,2}\s*/card-proposal\s*[|｜]{1,2}>",
+    r"(?:<[|｜]{1,2}\s*/card-proposal\s*[|｜]{1,2}>|</card-proposal\s*[|｜]{1,2}>)",
     re.DOTALL,
 )
 
@@ -77,13 +78,56 @@ def _extract_fenced_spans(reply_text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def _repair_control_chars(raw: str) -> str:
+    """严格解析失败时的确定性格式修复：字符串字面量内的裸控制字符转义。
+
+    模型偶发把 content 里的换行写成真实换行（JSON 规范外）。只做机械转义，
+    不改任何内容字符。仅当 json.loads 严格失败时才尝试。
+    """
+    out: list[str] = []
+    in_str = False
+    esc = False
+    for ch in raw:
+        if in_str:
+            if esc:
+                out.append(ch)
+                esc = False
+            elif ch == "\\":
+                out.append(ch)
+                esc = True
+            elif ch == '"':
+                out.append(ch)
+                in_str = False
+            elif ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ch == "\t":
+                out.append("\\t")
+            else:
+                out.append(ch)
+        else:
+            if ch == '"':
+                in_str = True
+            out.append(ch)
+    return "".join(out)
+
+
 def _parse_items(raw: str, proposals: list[dict[str, Any]]) -> None:
     """解析一个块的 JSON，产出 proposals 项。失败整块跳过留 warning。"""
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.warning("card-proposal 块 JSON 解析失败，整块跳过: %s", exc)
-        return
+    except json.JSONDecodeError:
+        repaired = _repair_control_chars(raw)
+        if repaired == raw:
+            logger.warning("card-proposal 块 JSON 解析失败，整块跳过")
+            return
+        try:
+            data = json.loads(repaired)
+            logger.info("card-proposal 块经控制字符修复后解析成功")
+        except json.JSONDecodeError as exc:
+            logger.warning("card-proposal 块 JSON 解析失败（含修复尝试），整块跳过: %s", exc)
+            return
     items = data if isinstance(data, list) else [data]
     for item in items:
         if not isinstance(item, dict):
