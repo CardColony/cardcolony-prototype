@@ -387,8 +387,10 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
                 args = tc.get("arguments", {}) or {}
                 # [phase8.5] manuscript 工具没有 card_id：target_id 记 chapter 或 keyword，都没有则空串
                 # [phase8.6-D] link_cards 记 target_id
+                # [联网能力 2026-10-02] web_search 记 query、fetch_web 记 url——审计可见
                 target_id = (args.get("card_id") or args.get("target_id")
-                             or args.get("chapter") or args.get("keyword") or "")
+                             or args.get("chapter") or args.get("keyword")
+                             or args.get("query") or args.get("url") or "")
                 tool_result = await card_tools.execute_tool(work_id, card_id, name, args, cards_meta)
                 ok = "error" not in tool_result
                 tool_events.append({"tool": name, "card_id": target_id, "ok": ok})

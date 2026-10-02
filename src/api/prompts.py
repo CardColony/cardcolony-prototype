@@ -26,6 +26,8 @@ BASE_PROMPT = """\
 - edit_card(card_id, content)：改写你管辖范围内指定卡的正文（覆盖写）。
 - link_cards(target_id, type, note)：在当前卡与目标卡之间建立连线（type：先后/关联）。
 - list_manuscript() / read_manuscript(chapter) / search_manuscript(keyword)：查阅本项目存档的原始资料。
+- web_search(query)：查询网页搜索服务，返回结果列表（标题、链接、摘要、来源、日期）。
+- fetch_web(url)：获取指定网页的文本内容。
 
 ## 建卡接口
 

@@ -81,6 +81,29 @@ def build_tool_schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "web_search",
+            "description": "查询网页搜索服务，返回结果列表（标题、链接、摘要、来源、日期）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索词"},
+                    "count": {"type": "integer", "description": "返回条数，默认 10"},
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "fetch_web",
+            "description": "获取指定网页的文本内容。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "网页地址"},
+                },
+                "required": ["url"],
+            },
+        },
+        {
             "name": "link_cards",
             "description": "在当前卡与目标卡之间建立连线。source 固定为当前对话卡。",
             "parameters": {
@@ -301,6 +324,17 @@ async def execute_tool(
                 limit=int(arguments.get("limit") or 10),
             )
             return {"hits": hits}
+        # [联网能力 2026-10-02] 只给主模型的中性读工具：结果仅作工具返回进
+        # 当前调用，不写卡、不进常设上下文；三思考席收 tools=None 物理上不可调用
+        if tool_name == "web_search":
+            from . import search_tool
+            return search_tool.web_search(
+                arguments.get("query", ""),
+                count=int(arguments.get("count") or 10),
+            )
+        if tool_name == "fetch_web":
+            from . import search_tool
+            return search_tool.fetch_web(arguments.get("url", ""))
         return {"error": f"未知工具: {tool_name}"}
     except card_store.CardNotFoundError:
         return {"error": f"卡片不存在: {arguments.get('card_id','')}"}
