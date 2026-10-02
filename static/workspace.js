@@ -316,21 +316,45 @@
 
   // ==================== 发送消息 ====================
 
-  // [phase8.2] 等待反馈气泡：每秒刷新"已等待 N 秒"，收到响应/失败后 stop() 清除
-  function createWaitingBubble(prefix) {
+  // [phase8.2] 等待反馈气泡：轮询后端真实进度（三席分析→统合→工具→落卡），收到响应/失败后 stop() 清除
+  // [实时反馈 2026-10-02] 后端暴露 /progress 阶段态；展示层专用，不影响模型输入
+  const STAGE_TEXT = {
+    started: "已提交，进入链路",
+    viewpoints: "三席分析中",
+    synthesize: "统合推理中",
+    tools: "工具循环",
+    cards: "解析建卡",
+    done: "完成",
+    error: "调用失败",
+    idle: "等待开始",
+  };
+  function createWaitingBubble(prefix, cardIdAtSend) {
     const el = document.createElement("div");
     el.className = "msg thinking";
     let seconds = 0;
+    let stageLine = "";
     const render = () => {
-      el.innerHTML = `<span class="spinner"></span>${prefix} 已等待 ${seconds} 秒`;
+      el.innerHTML = `<span class="spinner"></span>${prefix} ${escapeHtml(stageLine || "…")} · 已等待 ${seconds} 秒`;
     };
     render();
     chatArea.appendChild(el);
     scrollChatBottom();
     const timer = setInterval(() => { seconds += 1; render(); }, 1000);
+    const poll = setInterval(async () => {
+      const cid = cardIdAtSend || (currentCard ? currentCard.meta.card_id : "");
+      if (!cid) return;
+      try {
+        const st = await API.getProgress(WORK_ID, cid);
+        if (!st || st.stage === "idle") return;
+        const label = STAGE_TEXT[st.stage] || st.stage;
+        stageLine = st.detail ? `${label}｜${st.detail}` : label;
+        render();
+      } catch (e) { /* 进度轮询失败静默：不影响主等待 */ }
+    }, 2000);
     return {
       stop() {
         clearInterval(timer);
+        clearInterval(poll);
         el.remove();
       },
     };
@@ -352,7 +376,7 @@
     const cardId = currentCard.meta.card_id;
     let settled = false;
 
-    const waiting = createWaitingBubble("思考中…");
+    const waiting = createWaitingBubble("思考中…", cardId);
 
     // [hotfix] 后端完成但连接断了 → 从会话记录恢复回复，杜绝无限转圈
     async function tryRecover() {
@@ -446,7 +470,8 @@
 
   // 重发：不重复追加用户消息，直接重调接口
   async function resend(content) {
-    const waiting = createWaitingBubble("重发中…");
+    const cardId = currentCard ? currentCard.meta.card_id : "";
+    const waiting = createWaitingBubble("重发中…", cardId);
     sendBtn.disabled = true;
     try {
       const resp = await API.postMessage(WORK_ID, currentCard.meta.card_id, content);

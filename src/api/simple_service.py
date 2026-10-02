@@ -63,6 +63,7 @@ async def _call_viewpoint(
     system_prompt: str,
     user_prompt: str,
     prior_messages: Optional[list[dict[str, Any]]],
+    on_done: Optional[Any] = None,
 ) -> dict[str, Any]:
     """调单个观点模型。永不抛异常，失败记入 meta。
 
@@ -94,10 +95,20 @@ async def _call_viewpoint(
         meta["ok"] = True
         meta["chars"] = len(text)
         meta["text"] = text
+        if on_done:
+            try:
+                on_done(meta)
+            except Exception:
+                pass
         return meta
     except Exception as exc:
         meta["latency_ms"] = int((time.monotonic() - t0) * 1000)
         meta["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        if on_done:
+            try:
+                on_done(meta)
+            except Exception:
+                pass
         return meta
 
 
@@ -107,12 +118,15 @@ async def call_simple(
     user_prompt: str,
     prior_messages: Optional[list[dict[str, Any]]] = None,
     tools: Optional[list[dict[str, Any]]] = None,
+    on_progress: Optional[Any] = None,
 ) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
     """simple 编排入口：返回 (gateway结果, 实际模型名, viewpoints_meta)。
 
     [职责分离裁定 2026-10-02 15:07] 三思考席只做分析：
     vp_system_prompt 为中性上下文（无使用说明、无工具、无建卡接口）；
     system_prompt（含使用说明与建卡接口）只给主模型——拆卡是主模型的工作。
+
+    on_progress(stage, detail)：实时反馈钩子（纯展示层，不进模型输入）。
 
     enabled: false 或 viewpoints 空时与 call_main 行为完全一致（meta=[]）。
     """
@@ -125,13 +139,30 @@ async def call_simple(
         )
         return result, model_used, []
 
+    def _report(stage: str, detail: str = "") -> None:
+        if on_progress:
+            try:
+                on_progress(stage, detail)
+            except Exception:
+                pass
+
     # 观点阶段：并发，单个失败不中断
     # [拆闸裁定 2026-10-02] 原 viewpoint_timeout / viewpoint_max_tokens 已删除：
     # 思考型模型的额度被 max_tokens 烧光导致正文为空——闸就是空观点的根因
+    _report("viewpoints", f"0/{len(viewpoints)}")
+
+    done_count = [0]
+
+    def _vp_done(meta: dict[str, Any]) -> None:
+        done_count[0] += 1
+        mark = "✓" if meta.get("ok") else "✗"
+        secs = round((meta.get("latency_ms") or 0) / 1000, 1)
+        _report("viewpoints", f"{done_count[0]}/{len(viewpoints)} · {mark}{meta.get('model','')} {secs}s")
+
     raw_metas = await asyncio.gather(
         *[
             _call_viewpoint(gw, n, vp_system_prompt, user_prompt,
-                            prior_messages)
+                            prior_messages, on_done=_vp_done)
             for n in viewpoints
         ],
         return_exceptions=True,
@@ -149,6 +180,7 @@ async def call_simple(
     final_user_prompt = build_viewpoint_prompt(user_prompt, ok_metas)
 
     # 统合阶段：唯一建卡/工具出口；失败由 gateway 内部 main→fallback 兜底
+    _report("synthesize", "统合推理中")
     result, model_used = await model_service.call_main(
         system_prompt, final_user_prompt, prior_messages, tools=tools
     )
