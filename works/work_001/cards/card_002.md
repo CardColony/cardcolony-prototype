@@ -3,9 +3,9 @@ title: "目标"
 source: "系统派生"
 card_type: "节点"
 parent: "card_001"
-content_hash: "8f8d96539681855b5e83f82e15353397edc1ff2846e049c440cf308ec4097604"
+content_hash: "e11aba4606afc51004f9df95713235e96b822661eb1fc34456dabec4dfd88b50"
 tags: []
-relations: []
+relations: [{"target": "card_001", "type": "锚定"}]
 session_ref: "sessions/session_002.md"
 methodology_refs: []
 pending_sync: false
@@ -22,3 +22,4 @@ updated_at: "2026-10-02T13:42:43.292541+08:00"
 ## 修改历史
 
 - [2026-10-02T13:42:43.292541+08:00] 卡片创建
+- [2026-10-02T13:42:43.508438+08:00] 追加 relation: {'target': 'card_001', 'type': '锚定'}
