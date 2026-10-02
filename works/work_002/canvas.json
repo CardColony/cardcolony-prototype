@@ -37,6 +37,13 @@
       "card_type": "节点",
       "parent": "card_001",
       "created_at": "2026-10-02T12:30:15.368681+08:00"
+    },
+    {
+      "card_id": "card_006",
+      "title": "价值锚定物代际切换：房产到科技股权",
+      "card_type": "节点",
+      "parent": "card_001",
+      "created_at": "2026-10-02T12:30:15.488784+08:00"
     }
   ],
   "relations": [
