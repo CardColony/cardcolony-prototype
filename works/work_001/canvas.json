@@ -16,6 +16,13 @@
       "card_type": "节点",
       "parent": "card_001",
       "created_at": "2026-10-02T13:42:43.292541+08:00"
+    },
+    {
+      "card_id": "card_003",
+      "title": "土地财政：杠杆发动机与失效边界",
+      "card_type": "节点",
+      "parent": "card_001",
+      "created_at": "2026-10-02T13:48:43.057740+08:00"
     }
   ],
   "relations": [
