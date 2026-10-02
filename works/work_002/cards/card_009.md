@@ -3,14 +3,14 @@ title: "证据台账：汇金与国家队持股动作"
 source: "模型生成"
 card_type: "线索"
 parent: "card_001"
-content_hash: "df361400a0a093284c93d555e43b49557b91fcbe0c04c0ad9b8ca981c33d5d5f"
+content_hash: "0b8d78ea9f1462889407a13e1ebec282cba4436a2ab9843160bfa5adf7d0247c"
 tags: []
-relations: []
+relations: [{"target": "card_002", "type": "关联", "note": "证据服务于目标锚判定线2（承接能力制度化）"}]
 session_ref: "sessions/session_009.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-02T12:30:16.172371+08:00"
-updated_at: "2026-10-02T12:30:16.172371+08:00"
+updated_at: "2026-10-02T12:30:16.319730+08:00"
 ---
 
 ## 职责区
@@ -28,3 +28,4 @@ updated_at: "2026-10-02T12:30:16.172371+08:00"
 ## 修改历史
 
 - [2026-10-02T12:30:16.172371+08:00] 卡片创建
+- [2026-10-02T12:30:16.319730+08:00] 建卡协议写入关系
