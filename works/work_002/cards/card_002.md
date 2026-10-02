@@ -3,14 +3,14 @@ title: "A·验证卡"
 source: "用户直接创建"
 card_type: "线索"
 parent: "card_001"
-content_hash: "682c41b6ea8c80812eef58ced11a0766b6a9f30923187b0c87a64903307c00aa"
+content_hash: "3001b3458e37966da1f2b76c8e1aa4fe2ff111675727c53744677e6041fa66e9"
 tags: []
-relations: [{"target": "card_003", "type": "关联", "note": "悬空测试"}]
+relations: []
 session_ref: "sessions/session_002.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-03T07:59:35.713094+08:00"
-updated_at: "2026-10-03T07:59:37.081745+08:00"
+updated_at: "2026-10-03T07:59:37.374853+08:00"
 ---
 
 ## 职责区
@@ -29,3 +29,4 @@ updated_at: "2026-10-03T07:59:37.081745+08:00"
 - [2026-10-03T07:59:36.794664+08:00] 由「A·验证卡」对话解除关系 → card_003
 - [2026-10-03T07:59:36.931631+08:00] 由「A·验证卡」对话解除关系 → card_003
 - [2026-10-03T07:59:37.081745+08:00] 由「A·验证卡」对话建立关系：关联 → card_003
+- [2026-10-03T07:59:37.374853+08:00] 由「A·验证卡」对话解除关系 → card_003
