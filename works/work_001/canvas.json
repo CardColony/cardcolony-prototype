@@ -16,6 +16,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-02T16:17:11.553813+08:00"
+    },
+    {
+      "card_id": "card_003",
+      "title": "02 蓄水池还是抵押品：财富膨胀的货币机制",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-02T16:17:11.707271+08:00"
     }
   ],
   "relations": [],
