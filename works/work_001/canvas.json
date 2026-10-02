@@ -72,13 +72,6 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-02T17:53:49.242801+08:00"
-    },
-    {
-      "card_id": "card_011",
-      "title": "00 目标卡：股权财政成立",
-      "card_type": "线索",
-      "parent": "card_001",
-      "created_at": "2026-10-02T18:38:00.034387+08:00"
     }
   ],
   "relations": [
