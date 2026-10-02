@@ -16,6 +16,13 @@
       "card_type": "节点",
       "parent": "card_001",
       "created_at": "2026-10-02T12:27:54.065639+08:00"
+    },
+    {
+      "card_id": "card_003",
+      "title": "长文叙事骨架：牛市即预设的经济转型",
+      "card_type": "假设",
+      "parent": "card_001",
+      "created_at": "2026-10-02T12:30:15.019266+08:00"
     }
   ],
   "relations": [
