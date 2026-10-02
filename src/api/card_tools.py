@@ -16,7 +16,6 @@ import logging
 from typing import Any
 
 from ..storage import card_store, manuscript_store, work_store
-from ..storage.card_store import _subtree_ids
 
 logger = logging.getLogger("api.card_tools")
 

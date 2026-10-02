@@ -24,7 +24,7 @@ BASE_PROMPT = """\
 
 - read_card(card_id)：读取指定卡（标题、父卡、连线、正文）。只能读取你有权访问的卡。
 - edit_card(card_id, content)：改写你管辖范围内指定卡的正文（覆盖写）。
-- link_cards(target_id, type, note)：在当前卡与目标卡之间建立连线（type：先后/锚定/兑现/关联）。
+- link_cards(target_id, type, note)：在当前卡与目标卡之间建立连线（type：先后/关联）。
 - list_manuscript() / read_manuscript(chapter) / search_manuscript(keyword)：查阅本项目存档的原始资料。
 
 ## 建卡接口
