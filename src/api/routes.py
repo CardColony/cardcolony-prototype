@@ -314,11 +314,11 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
     # c. 追加用户消息
     await session_store.append_message(work_id, card_id, "user", content)
 
-    # d. 上下文组装
-    context_block, card_block = context_assembler.build_context_block(work_id, card_id)
-    card_type = card["meta"].get("card_type", "线索")
-    charter = card["body"].get("charter", "")
-    system_prompt = prompts.build_system_prompt(card_type, charter, context_block, card_block)
+    # d. 上下文组装（白板版 2026-10-02）：中性卡片清单＋当前卡。
+    # 无目标锚/血统链/管辖域/契约/charter/空位提示注入（全量审计定案：结构即引导）。
+    neutral_context = context_assembler.build_neutral_context(work_id, card_id)
+    system_prompt = prompts.build_system_prompt(neutral_context)
+    vp_system_prompt = prompts.build_viewpoint_system_prompt(neutral_context)
 
     # e. 工具循环
     prior_for_gateway = [{"role": m["role"], "content": m["content"]} for m in prior]
@@ -337,8 +337,10 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
             rounds += 1
             if rounds == 1:
                 # [phase9-E] 首轮（用户原始问题）走 simple 编排：观点并发 + 统合
+                # [职责分离裁定] vp_system_prompt 只含中性上下文——三席只做分析
                 result, model_used, viewpoints_meta = await simple_service.call_simple(
                     system_prompt,
+                    vp_system_prompt,
                     user_prompt,
                     prior_for_gateway,
                     tools=tools,
@@ -413,17 +415,20 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
         tool_events=tool_events,
     )
     # [phase9-E] 日志追加 viewpoints 字段（观点全文数组，落盘可查）。
-    # prompt_log.py 属禁改面，走后补写入；失败不中断主流程。
-    if log_path is not None and viewpoints_meta:
+    # [白板证据位 2026-10-02] vp_system_prompt 一并落日志：三思考席实际收到的
+    # system prompt（应仅为中性卡片清单+当前卡，无使用说明/工具/建卡接口）。
+    if log_path is not None:
         try:
             _json = __import__("json")
             payload = _json.loads(log_path.read_text(encoding="utf-8"))
-            payload["viewpoints"] = [
-                {"model": m.get("model"), "ok": m.get("ok"),
-                 "latency_ms": m.get("latency_ms"), "chars": m.get("chars"),
-                 "error": m.get("error"), "text": m.get("text", "")}
-                for m in viewpoints_meta
-            ]
+            if viewpoints_meta:
+                payload["viewpoints"] = [
+                    {"model": m.get("model"), "ok": m.get("ok"),
+                     "latency_ms": m.get("latency_ms"), "chars": m.get("chars"),
+                     "error": m.get("error"), "text": m.get("text", "")}
+                    for m in viewpoints_meta
+                ]
+            payload["vp_system_prompt"] = vp_system_prompt
             log_path.write_text(_json.dumps(payload, ensure_ascii=False, indent=2),
                                 encoding="utf-8")
         except Exception as exc:
