@@ -131,6 +131,22 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "required": ["target_id", "type"],
             },
         },
+        {
+            "name": "unlink_cards",
+            "description": "解除当前卡上指向目标卡的连线（source 固定为当前对话卡）。目标卡已被删除时仍可解除——用于清理指向已删卡的悬空连线。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "目标卡 id"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["先后", "关联"],
+                        "description": "可选，关系类型；缺省解除全部指向该目标的连线",
+                    },
+                },
+                "required": ["target_id"],
+            },
+        },
     ]
 
 
@@ -352,6 +368,40 @@ async def execute_tool(
             if "error" in result:
                 return result
             return {"ok": True, "source": current_id, "target": target_id, "type": rel_type}
+        if tool_name == "unlink_cards":
+            # [解线 2026-10-03] 与 link_cards 对称；走 update_card(relations)，
+            # 与前端 ✕ 删线同一条存储通道。悬空线主用例：目标卡已删时
+            # relations 条目仍留在 source 卡上，此处不检查目标卡存在性。
+            target_id = arguments.get("target_id", "")
+            rel_type = (arguments.get("type") or "").strip()
+            if not target_id:
+                return {"error": "target_id 不能为空"}
+            if rel_type and rel_type not in MODEL_REL_TYPES:
+                return {"error": f"关系类型非法: {rel_type}，只允许 先后/关联"}
+            current = await card_store.read_card(work_id, current_id)
+            existing = current["meta"].get("relations") or []
+
+            def _match(rel: Any) -> bool:
+                if not isinstance(rel, dict):
+                    return False
+                if rel.get("target") != target_id:
+                    return False
+                return (not rel_type) or rel.get("type") == rel_type
+
+            remaining = [r for r in existing if not _match(r)]
+            removed = len(existing) - len(remaining)
+            if removed == 0:
+                detail = f" 的 {rel_type} 关系" if rel_type else ""
+                return {"error": f"关系不存在: 当前卡无指向 {target_id}{detail}"}
+            cur_title = current["meta"].get("title", "")
+            result = await card_store.update_card(
+                work_id, current_id,
+                {"relations": remaining},
+                f"由「{cur_title}」对话解除关系 → {target_id}",
+            )
+            if "error" in result:
+                return result
+            return {"ok": True, "source": current_id, "target": target_id, "removed": removed}
         if tool_name == "search_manuscript":
             if not manuscript_store.list_chapters(work_id):
                 return {"error": "本项目尚无原文"}

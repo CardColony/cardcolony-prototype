@@ -21,11 +21,15 @@ import re
 
 # ---------------------------------------------------------------------------
 # 形态A：DeepSeek 原生标记泄漏
-#   <｜tool_calls｜> / <｜｜tool_calls｜｜> 开头（竖线 1-2 条、全半角）
-#   <｜invoke name="X"｜> <｜parameter name="k"｜>v<｜/parameter｜> ... <｜/invoke｜>
+#   形态A1：带竖线（全角/半角 1-2 条）
+#     <｜tool_calls｜> / <｜｜tool_calls｜｜>
+#     <｜invoke name="X"｜> <｜parameter name="k"｜>v<｜/parameter｜>
+#   形态A2：纯 ASCII 无竖线（2026-10-03 07:42 实录第四次泄漏）
+#     <tool_calls> <invoke name="X"> <parameter name="k">v</parameter>
+#   → 竖线统一按 0-2 条匹配（{0,2}），两种形态一套正则接住
 #   闭合变体：竖线顺序在前或斜杠在前都接住（泄漏形态不可穷举，宽匹配）
 # ---------------------------------------------------------------------------
-_PIPE = r"[|｜]{1,2}"
+_PIPE = r"[|｜]{0,2}"
 _A_BLOCK_OPEN = re.compile(
     rf"<{_PIPE}\s*tool_calls\s*{_PIPE}?>", re.IGNORECASE)
 _A_INVOKE = re.compile(
