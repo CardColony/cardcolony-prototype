@@ -58,6 +58,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-02T16:17:12.545021+08:00"
+    },
+    {
+      "card_id": "card_009",
+      "title": "09 里程碑进度表（生态口径）",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-02T17:53:49.064232+08:00"
     }
   ],
   "relations": [
