@@ -26,7 +26,7 @@ from ..storage import (
 from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import card_proposal, card_tools, context_assembler, model_service, progress, prompt_log, prompts, simple_service
+from . import card_proposal, card_tools, context_assembler, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue
 
 logger = logging.getLogger("api.routes")
 
@@ -390,8 +390,36 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
             tool_calls = result.get("tool_calls") or []
             assistant_content = result.get("content") or ""
 
+            # [等待黑洞修复 2026-10-02] 标准字段为空时，抢救正文中
+            # 文本形态的工具调用（DeepSeek 原生标记泄漏，三次同族发作定案）。
+            # 纯机械模式匹配：解析出的调用并入标准执行链（执行＋结果回注），
+            # 模型收到真实反馈；疑似标记解析不出调用时，把「未识别未执行」
+            # 这个机械事实回注下一轮——关闭等待黑洞。
+            text_rescue_note = ""
+            if not tool_calls and assistant_content:
+                rescue_calls, unresolved, stripped = \
+                    text_tool_rescue.extract_text_tool_calls(assistant_content)
+                if rescue_calls:
+                    tool_calls = rescue_calls
+                    assistant_content = stripped or assistant_content
+                    logger.info(
+                        "text_tool_calls_rescued",
+                        count=len(rescue_calls),
+                        names=[c["name"] for c in rescue_calls],
+                    )
+                elif unresolved:
+                    text_rescue_note = text_tool_rescue.feedback_note()
+
             if not tool_calls:
                 final_reply = assistant_content
+                if text_rescue_note:
+                    # 反馈兜底：疑似调用未被识别这个事实必须回到模型上下文，
+                    # 否则模型永远在等一个不会来的结果（等待黑洞）。
+                    prior_for_gateway.append({
+                        "role": "assistant", "content": final_reply,
+                    })
+                    user_prompt = text_rescue_note
+                    continue
                 break
 
             # [phase8.2] 第一次进入工具轮时，把用户原文固化进 prior，
