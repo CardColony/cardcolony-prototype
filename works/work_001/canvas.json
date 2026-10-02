@@ -51,6 +51,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-02T13:48:44.016773+08:00"
+    },
+    {
+      "card_id": "card_008",
+      "title": "线索：证伪线索与判别指标",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-02T13:48:44.243668+08:00"
     }
   ],
   "relations": [
