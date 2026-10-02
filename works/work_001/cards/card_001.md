@@ -3,14 +3,14 @@ title: "股权财政"
 source: "用户直接创建"
 card_type: "剧本"
 parent: ""
-content_hash: "409c1da64550bbe6534b6760f6db19ff1e472ee5609ed4dd72c1d8a6daa4dfc8"
+content_hash: "dddc586de371b8d7693756de64fa2ce41e867ae1aab0050d37e0dbe5074b6cf2"
 tags: []
-relations: [{"target": "card_005", "type": "先后", "note": "03 两本账 → 04 新逻辑六环"}, {"target": "card_006", "type": "关联", "note": "04 六环 ↔ 05 汇金作为操作系统"}, {"target": "card_008", "type": "关联", "note": "07 X0 触发测试是全部里程碑的汇聚判据"}]
+relations: [{"target": "card_006", "type": "关联", "note": "04 六环 ↔ 05 汇金作为操作系统"}, {"target": "card_008", "type": "关联", "note": "07 X0 触发测试是全部里程碑的汇聚判据"}]
 session_ref: "sessions/session_001.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-02T16:09:00.575641+08:00"
-updated_at: "2026-10-03T07:34:46.321536+08:00"
+updated_at: "2026-10-03T07:34:48.784063+08:00"
 ---
 
 ## 职责区
@@ -73,3 +73,4 @@ updated_at: "2026-10-03T07:34:46.321536+08:00"
 - [2026-10-02T17:21:43.433143+08:00] 由「股权财政」对话建立关系：关联 → card_008
 - [2026-10-03T07:34:44.126847+08:00] 用户删除关系：先后 → card_003
 - [2026-10-03T07:34:46.321536+08:00] 用户删除关系：先后 → card_004
+- [2026-10-03T07:34:48.784063+08:00] 用户删除关系：先后 → card_005
