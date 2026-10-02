@@ -3,14 +3,14 @@ title: "A·验证卡"
 source: "用户直接创建"
 card_type: "线索"
 parent: "card_001"
-content_hash: "b82179ea1eb3bed8c358fc1d93bcc9be95b5e5b00cb7a9877e924b24e1905966"
+content_hash: "e7f38975ea1cea1df9d2a94669f2b413e8c299c7c0e41cf4ffc10b11578b83ce"
 tags: []
-relations: [{"target": "card_003", "type": "先后"}, {"target": "card_003", "type": "关联"}]
+relations: [{"target": "card_003", "type": "关联"}]
 session_ref: "sessions/session_002.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-03T07:59:35.713094+08:00"
-updated_at: "2026-10-03T07:59:36.574446+08:00"
+updated_at: "2026-10-03T07:59:36.794664+08:00"
 ---
 
 ## 职责区
@@ -26,3 +26,4 @@ updated_at: "2026-10-03T07:59:36.574446+08:00"
 - [2026-10-03T07:59:36.253042+08:00] 由「A·验证卡」对话解除关系 → card_003
 - [2026-10-03T07:59:36.394998+08:00] 由「A·验证卡」对话建立关系：先后 → card_003
 - [2026-10-03T07:59:36.574446+08:00] 由「A·验证卡」对话建立关系：关联 → card_003
+- [2026-10-03T07:59:36.794664+08:00] 由「A·验证卡」对话解除关系 → card_003
