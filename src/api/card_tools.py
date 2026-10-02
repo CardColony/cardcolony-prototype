@@ -51,6 +51,17 @@ def build_tool_schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "delete_card",
+            "description": "删除你管辖范围内指定编号的卡片及其对话。剧本根卡与有子卡的卡不可删除。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string", "description": "目标卡 id"},
+                },
+                "required": ["card_id"],
+            },
+        },
+        {
             "name": "list_manuscript",
             "description": "列出本项目已有的原文资料章节目录（序号/标题/字数/段数）。",
             "parameters": {"type": "object", "properties": {}, "required": []},
@@ -244,6 +255,9 @@ async def execute_tool(
     try:
         if tool_name == "read_card":
             target_id = arguments.get("card_id", "")
+            # [语义修正 2026-10-02] 先判存在再判权限：已删除的卡不再误报"越权"
+            if target_id not in cards:
+                return {"error": f"卡片不存在: {target_id}"}
             if not can_read(current_id, target_id, cards):
                 return {"error": f"越权：无权读取 {target_id}"}
             result = await card_store.read_card(work_id, target_id)
@@ -257,6 +271,9 @@ async def execute_tool(
         if tool_name == "edit_card":
             target_id = arguments.get("card_id", "")
             content = arguments.get("content", "")
+            # [语义修正 2026-10-02] 先判存在再判权限
+            if target_id not in cards:
+                return {"error": f"卡片不存在: {target_id}"}
             if not can_edit(current_id, target_id, cards):
                 return {"error": f"越权：无权编辑 {target_id}"}
             current = await card_store.read_card(work_id, current_id)
@@ -269,6 +286,26 @@ async def execute_tool(
             if "error" in result:
                 return result
             return {"card_id": target_id, "ok": True}
+        if tool_name == "delete_card":
+            # [模型删卡 2026-10-02] 用户在系统内授权（"你现在能删卡了，再试试"）。
+            # 权限＝写权限（管辖域内）；结构性护栏由存储层 delete_card 机械执行
+            # （剧本根卡拒删、有子卡拒删），本层不另设判断。
+            target_id = arguments.get("card_id", "")
+            if target_id not in cards:
+                return {"error": f"卡片不存在: {target_id}"}
+            if not can_edit(current_id, target_id, cards):
+                return {"error": f"越权：无权删除 {target_id}"}
+            if target_id == work_store.work_card_id_of(work_id):
+                return {"error": f"剧本根卡不可删除: {target_id}"}
+            try:
+                result = await card_store.delete_card(work_id, target_id)
+            except card_store.CardDeleteDeniedError as exc:
+                return {"error": str(exc)}
+            if "error" in result:
+                return result
+            # cards 元数据缓存同步，防止同轮后续工具仍看到已删卡
+            cards.pop(target_id, None)
+            return result
         if tool_name == "list_manuscript":
             chapters = manuscript_store.list_chapters(work_id)
             if not chapters:
@@ -290,7 +327,7 @@ async def execute_tool(
             if rel_type not in MODEL_REL_TYPES:
                 return {"error": f"关系类型非法: {rel_type}，只允许 先后/关联"}
             if target_id not in cards:
-                return {"error": f"目标卡不存在: {target_id}"}
+                return {"error": f"卡片不存在: {target_id}"}
             if target_id == current_id:
                 return {"error": "不能与自身建立关系"}
             if not can_read(current_id, target_id, cards):
