@@ -18,6 +18,12 @@
       "created_at": "2026-10-02T12:27:54.065639+08:00"
     }
   ],
-  "relations": [],
+  "relations": [
+    {
+      "source": "card_002",
+      "target": "card_001",
+      "type": "锚定"
+    }
+  ],
   "positions": {}
 }
