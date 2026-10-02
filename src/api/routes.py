@@ -25,7 +25,7 @@ from ..storage import (
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import card_proposal, card_tools, context_assembler, model_service, prompt_log, prompts, simple_service
+from . import card_proposal, card_tools, context_assembler, model_service, progress, prompt_log, prompts, simple_service
 
 logger = logging.getLogger("api.routes")
 
@@ -189,6 +189,16 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     return await _run_message(work_id, card_id, req.content)
 
 
+# [实时反馈 2026-10-02] 调用进度查询：纯展示层，前端轮询用。
+# 只读内存态，不进任何模型输入，不拦截任何调用——不是闸。
+@router.get("/works/{work_id}/cards/{card_id}/progress")
+async def get_work_progress(work_id: str, card_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    st = progress.get_stage(work_id, card_id)
+    return st if st is not None else {"stage": "idle", "detail": "", "ts": 0.0}
+
+
 # [phase8.5] 原文只读端点（给未来前端留口，不加写端点）
 @router.get("/works/{work_id}/manuscript")
 async def list_work_manuscript(work_id: str):
@@ -333,6 +343,7 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
 
     try:
         # [无闸改造 2026-10-02] 工具循环不设轮次封顶：模型停止调用工具即自然结束
+        progress.set_stage(work_id, card_id, "started", "已提交")
         while True:
             rounds += 1
             if rounds == 1:
@@ -344,9 +355,11 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
                     user_prompt,
                     prior_for_gateway,
                     tools=tools,
+                    on_progress=lambda s, d, _w=work_id, _c=card_id: progress.set_stage(_w, _c, s, d),
                 )
             else:
                 # 工具续跳轮不重复咨询观点模型
+                progress.set_stage(work_id, card_id, "tools", f"第 {rounds - 1} 轮工具续跳")
                 result, model_used = await model_service.call_main(
                     system_prompt,
                     user_prompt,
@@ -403,6 +416,7 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
             user_prompt = "工具结果已返回。"
     except Exception as exc:
         error = str(exc)
+        progress.set_stage(work_id, card_id, "error", str(exc)[:120])
         logger.error("模型调用/工具循环失败 card=%s: %s", card_id, exc)
 
     # f. 写 prompt 日志（无论成败）
@@ -440,11 +454,13 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
         return _err(502, f"模型调用失败: {error}")
 
     # g. 解析建卡协议 + 自动建卡
+    progress.set_stage(work_id, card_id, "cards", "解析建卡提案")
     clean_text, proposals = card_proposal.parse_proposals(final_reply or "")
     created_cards = await card_proposal.apply_proposals(work_id, card_id, proposals)
 
     # h. 追加 assistant 消息（存 clean_text，剥离协议块）
     await session_store.append_message(work_id, card_id, "assistant", clean_text, model=model_used)
+    progress.set_stage(work_id, card_id, "done", "完成")
 
     return {
         "reply": clean_text,

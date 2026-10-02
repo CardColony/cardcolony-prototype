@@ -77,6 +77,8 @@
     // 会话
     getSession: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/session`),
     postMessage: (wid, cid, content) => call("POST", `/api/works/${wid}/cards/${cid}/messages`, { content }),
+    // [实时反馈 2026-10-02] 调用进度查询（纯展示层）
+    getProgress: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/progress`),
   };
 
   window.API = API;
