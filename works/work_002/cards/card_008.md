@@ -3,14 +3,14 @@ title: "股权财政替代率检验"
 source: "模型生成"
 card_type: "节点"
 parent: "card_002"
-content_hash: "d61db52d886fbc2e72d1b86cc8b28ad4bc8c4d5a1bc59af08ee306c9db755f23"
+content_hash: "07017589474cf66f5cf2d629e6a29895c3059e5020e729ede23bf92616fd5392"
 tags: []
-relations: []
+relations: [{"target": "card_002", "type": "锚定", "note": "本卡产出直接决定目标锚三条判定线是否同向成立"}]
 session_ref: "sessions/session_008.md"
 methodology_refs: []
 pending_sync: false
 created_at: "2026-10-02T12:30:15.782184+08:00"
-updated_at: "2026-10-02T12:30:15.782184+08:00"
+updated_at: "2026-10-02T12:30:15.938493+08:00"
 ---
 
 ## 职责区
@@ -29,3 +29,4 @@ updated_at: "2026-10-02T12:30:15.782184+08:00"
 ## 修改历史
 
 - [2026-10-02T12:30:15.782184+08:00] 卡片创建
+- [2026-10-02T12:30:15.938493+08:00] 建卡协议写入关系
