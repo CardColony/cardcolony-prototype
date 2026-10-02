@@ -30,6 +30,13 @@
       "card_type": "节点",
       "parent": "card_001",
       "created_at": "2026-10-02T12:30:15.229802+08:00"
+    },
+    {
+      "card_id": "card_005",
+      "title": "实体换轴：从代工费到科技税",
+      "card_type": "节点",
+      "parent": "card_001",
+      "created_at": "2026-10-02T12:30:15.368681+08:00"
     }
   ],
   "relations": [
