@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import canvas_store, git_auto_commit, work_store
+from . import canvas_store, data_snapshot, git_auto_commit, work_store
 from .hash_utils import (
     apply_hash,
     calc_card_hash,
@@ -313,7 +313,9 @@ async def create_card(
             lock.release()
 
         await canvas_store.update_cache(work_id)
-        await git_auto_commit.commit(f"[auto][{work_id}] create: {card_id}")
+        # [数据与代码分家 2026-10-03] 不再 git 提交运行数据（分支操作曾整体回退 works/），
+        # 改由独立快照目录留痕（与代码仓库物理分离）。
+        await data_snapshot.snapshot(f"[snapshot][{work_id}] create: {card_id}")
         return await read_card(work_id, card_id)
     except CardLockedError:
         raise
@@ -342,13 +344,14 @@ async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
         stored = meta.get("content_hash", "")
         computed = calc_card_hash(raw)
         if computed != stored:
-            await git_auto_commit.commit(f"[auto][{work_id}] external_modification_raw: {card_id}")
+            # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
+            await data_snapshot.snapshot(f"[snapshot][{work_id}] external_modification_raw: {card_id}")
             now = _now_iso()
             raw = _append_history_line(raw, f"- [{now}] [外部修改]")
             raw = replace_fm_field(raw, "updated_at", f"updated_at: {_q(now)}\n")
             raw = apply_hash(raw)
             card_path.write_text(raw, encoding="utf-8")
-            await git_auto_commit.commit(f"[auto][{work_id}] external_modification_logged: {card_id}")
+            await data_snapshot.snapshot(f"[snapshot][{work_id}] external_modification_logged: {card_id}")
             meta, _ = parse_front_matter(raw)
             if not meta.get("card_type"):
                 meta["card_type"] = "线索"
@@ -451,7 +454,8 @@ async def update_card(
         lock.release()
 
     await canvas_store.update_cache(work_id)
-    await git_auto_commit.commit(f"[auto][{work_id}] update: {card_id}")
+    # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
+    await data_snapshot.snapshot(f"[snapshot][{work_id}] update: {card_id}")
 
     # [phase8.3] "剧本卡切确定→派生目标卡"触发已废除；
     # 目标卡改为创建剧本时即派生（见 derive_ending / work_store.create_work）。
@@ -508,7 +512,8 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
         logger.warning("session 文件删除失败（不中断）%s: %s", session_path, exc)
 
     await canvas_store.update_cache(work_id)
-    await git_auto_commit.commit(f"[auto][{work_id}] delete: {card_id}")
+    # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
+    await data_snapshot.snapshot(f"[snapshot][{work_id}] delete: {card_id}")
     return {"ok": True, "deleted": card_id}
 
 
@@ -549,7 +554,8 @@ async def derive_ending(work_id: str) -> Optional[str]:
         await canvas_store.update_cache(work_id)  # relations 变更同步进画布缓存
         # ending_derived 置 true（幂等标志）
         work_store.update_work(work_id, {"ending_derived": True})
-        await git_auto_commit.commit(f"[auto][{work_id}] derive ending: {ending_id}")
+        # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
+        await data_snapshot.snapshot(f"[snapshot][{work_id}] derive ending: {ending_id}")
         return ending_id
     except Exception as exc:  # noqa: BLE001
         logger.error("目标卡派生异常 work=%s: %s", work_id, exc)

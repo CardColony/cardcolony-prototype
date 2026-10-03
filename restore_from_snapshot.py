@@ -1,0 +1,118 @@
+# -*- coding: utf-8 -*-
+"""从数据快照恢复（works/ 退出 git 追踪后的唯一回退通道）。
+
+用法：
+  python restore_from_snapshot.py --list                    # 列出全部快照批次
+  python restore_from_snapshot.py --list --work work_001     # 列某 work 的批次
+  python restore_from_snapshot.py --work work_001 --stamp 20261003_153122_628962
+                                                             # 恢复整个批次（先备份当前状态）
+  python restore_from_snapshot.py --work work_001 --stamp <批次> --file works/work_001/cards/card_007.md
+                                                             # 只恢复单个文件
+
+安全设计：
+  - 恢复前先把「当前 works/」整体备份到 D:\\AI_station\\推演agent_backups\\pre_restore_<时间戳>\\
+  - 恢复是逐文件 copy2，不做删除（即只补不删；若需删文件请手动）
+  - 全程不碰 git（正是为了摆脱 git 分支操作的连带伤害）
+"""
+from __future__ import annotations
+
+import argparse
+import shutil
+import sys
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+SNAPSHOT_ROOT = BASE_DIR.parent / "推演agent_data_snapshots"
+BACKUP_ROOT = BASE_DIR.parent / "推演agent_backups"
+_CST = timezone(timedelta(hours=8))
+
+
+def _stamp() -> str:
+    return datetime.now(_CST).strftime("%Y%m%d_%H%M%S")
+
+
+def list_batches(work: str | None = None) -> list[tuple[str, str, int]]:
+    out = []
+    if not SNAPSHOT_ROOT.exists():
+        return out
+    dirs = [SNAPSHOT_ROOT / work] if work else [p for p in SNAPSHOT_ROOT.iterdir() if p.is_dir()]
+    for wd in dirs:
+        if not wd.exists():
+            continue
+        for b in sorted(wd.iterdir()):
+            if b.is_dir():
+                out.append((wd.name, b.name, sum(1 for _ in b.rglob("*") if _.is_file())))
+    return out
+
+
+def backup_current() -> Path:
+    dst = BACKUP_ROOT / f"pre_restore_{_stamp()}"
+    dst.mkdir(parents=True, exist_ok=True)
+    w = BASE_DIR / "works"
+    if w.exists():
+        shutil.copytree(w, dst / "works", dirs_exist_ok=True)
+    return dst
+
+
+def restore_batch(work: str, stamp: str) -> dict:
+    src = SNAPSHOT_ROOT / work / stamp
+    if not src.exists():
+        return {"ok": False, "error": f"快照批次不存在: {src}"}
+    bk = backup_current()
+    n, skipped = 0, 0
+    for p in src.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(src)          # 形如 works/work_001/cards/card_007.md
+        dst = BASE_DIR / rel
+        if dst.exists():
+            skipped += 1
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, dst)
+        n += 1
+    return {"ok": True, "files": n, "overwritten": skipped, "backup": str(bk), "from": str(src)}
+
+
+def restore_file(work: str, stamp: str, rel: str) -> dict:
+    src = SNAPSHOT_ROOT / work / stamp / rel
+    if not src.exists():
+        return {"ok": False, "error": f"快照内不存在该文件: {src}"}
+    dst = BASE_DIR / rel
+    if dst.exists():
+        bk = backup_current()
+    else:
+        bk = None
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    return {"ok": True, "to": str(dst), "size": dst.stat().st_size,
+            "backup": str(bk) if bk else "（原文件不存在，无需备份）"}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--work")
+    ap.add_argument("--stamp")
+    ap.add_argument("--file")
+    a = ap.parse_args()
+
+    if a.list or not a.stamp:
+        print(f"快照根: {SNAPSHOT_ROOT}")
+        rows = list_batches(a.work)
+        if not rows:
+            print("  （无批次）")
+        for w, s, n in rows:
+            print(f"  {w:<14}{s:<28}{n} 文件")
+        return
+
+    if a.file:
+        r = restore_file(a.work, a.stamp, a.file)
+    else:
+        r = restore_batch(a.work, a.stamp)
+    print(r)
+
+
+if __name__ == "__main__":
+    main()
