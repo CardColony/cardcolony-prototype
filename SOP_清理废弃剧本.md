@@ -82,3 +82,13 @@
 **立规时间**：2026-10-03 12:45
 **立规人**：诸葛
 **缘起事件**：work_002「项目管理agent」误删（已从 git 完整恢复，提交 3ea3b82）
+
+
+---
+
+## 【2026-10-03 加 · 与清理作业并列的禁令】
+
+**禁止在承载运行数据的目录上做任何 git 分支操作**（checkout/switch/merge/rebase/reset/stash）。
+起因：2026-10-03 15:01 在正式环境执行 `git checkout dev`，works/ 被整体回退，用户数据受损。
+执行前必须过：`python checkout_guard.py --cmd "<命令>"`。
+版本管理的操作对象只是代码；数据留痕走独立快照（推演agent_data_snapshots）。

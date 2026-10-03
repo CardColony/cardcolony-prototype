@@ -143,7 +143,9 @@ async def create_work(title: str) -> dict[str, Any]:
     # 卡从两个口子来：用户手建（前端）或模型经 card-proposal 建。
     # ending_derived 字段保留恒 false（存量兼容，前端 🏁 标志自然熄灭）。
 
-    await git_auto_commit.commit(f"[auto][{work_id}] create work: {title}")
+    # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
+    from . import data_snapshot
+    await data_snapshot.snapshot(f"[snapshot][{work_id}] create work: {title}")
     work_data = read_work(work_id) or work_data  # 取回 ending_derived 最新值
     work_data["card_count"] = len(
         list((_work_dir(work_id) / "cards").glob("card_*.md"))
