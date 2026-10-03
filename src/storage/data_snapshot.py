@@ -13,9 +13,11 @@ git 的任何分支操作都碰不到它。
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import shutil
-import time
+import time  # noqa: F401  (历史遗留，勿删)
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -23,8 +25,11 @@ logger = logging.getLogger("storage.snapshot")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-# 快照根目录：与代码仓库物理分离（跨出 推演agent 目录）
-SNAPSHOT_ROOT = BASE_DIR.parent / "推演agent_data_snapshots"
+# 快照根目录：与代码仓库物理分离（跨出实例目录），并按实例名派生——
+# 任何在别的目录跑这套代码的实例（如推演agent_test），快照必须落自己的根，
+# 不得写进正式实例的快照库（2026-10-03 实测发现硬编码名导致跨实例污染）。
+# 对正式实例派生结果与原硬编码逐字相同（推演agent → 推演agent_data_snapshots）。
+SNAPSHOT_ROOT = BASE_DIR.parent / f"{BASE_DIR.name}_data_snapshots"
 
 # 受保护的数据目录（相对 BASE_DIR）
 PROTECTED_DIRS = ("works",)
@@ -32,6 +37,9 @@ PROTECTED_DIRS = ("works",)
 # 保留策略
 KEEP_BATCHES = 200          # 每个 work 保留最近批次数
 KEEP_DAILY_DAYS = 30        # 日备保留天数
+
+# 内容指纹去重：记录各 work 上次快照时的指纹，内容未变则跳过（避免重复拍同一状态）
+_FINGERPRINT_FILE = BASE_DIR / ".snapshot_fingerprints.json"
 
 _CST = timezone(timedelta(hours=8))
 
@@ -89,12 +97,47 @@ def _prune_batches(work_id: str) -> int:
     return removed
 
 
-def snapshot_sync(reason: str = "") -> dict:
-    """同步执行一次全量快照（受保护目录下的全部文件）。
+def _fingerprint(paths: list[Path]) -> str:
+    """算一组文件的「内容指纹」：路径 + 大小 + 修改时间。
 
-    返回 {"ok": bool, "work_id": str, "files": int, "dir": str, "daily": bool}
+    用途：判断这个 work 自上次快照以来内容有没有变——没变就不必再拍一张。
     """
-    result = {"ok": False, "work_id": "-", "files": 0, "dir": "", "daily": False, "reason": reason}
+    h = hashlib.sha256()
+    for p in sorted(paths, key=lambda x: str(x)):
+        try:
+            st = p.stat()
+            h.update(f"{p.relative_to(BASE_DIR)}|{st.st_size}|{int(st.st_mtime)}\n".encode("utf-8"))
+        except OSError:
+            continue
+    return h.hexdigest()
+
+
+def _load_fingerprints() -> dict:
+    try:
+        if _FINGERPRINT_FILE.exists():
+            return json.loads(_FINGERPRINT_FILE.read_text("utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_fingerprints(fp: dict) -> None:
+    try:
+        _FINGERPRINT_FILE.write_text(json.dumps(fp, ensure_ascii=False, indent=2), "utf-8")
+    except Exception as exc:
+        logger.warning("指纹文件写入失败: %s", exc)
+
+
+def snapshot_sync(reason: str = "", work_id: str | None = None) -> dict:
+    """同步执行一次快照。
+
+    work_id 给定时：只拍这一个 work（动哪拍哪）；不给定时：拍全部（供总备份/首次使用）。
+    内容指纹与上次相同则跳过——避免同一状态被反复拍成几十张。
+
+    返回 {"ok", "work_id", "files", "dir", "daily", "skipped", "reason"}
+    """
+    result = {"ok": False, "work_id": "-", "files": 0, "dir": "", "daily": False,
+              "skipped": False, "reason": reason}
     try:
         files = _iter_protected_files()
         if not files:
@@ -109,9 +152,24 @@ def snapshot_sync(reason: str = "") -> dict:
             wid = parts[1] if len(parts) > 1 else "_root"
             groups.setdefault(wid, []).append(p)
 
+        # 只拍指定 work（动哪拍哪）；未指定则拍全部
+        if work_id:
+            if work_id not in groups:
+                result["ok"] = True
+                result["skipped"] = True
+                return result
+            groups = {work_id: groups[work_id]}
+
+        fps = _load_fingerprints()
         stamp = _now_stamp()
         total = 0
+        changed = False
         for wid, paths in groups.items():
+            fp = _fingerprint(paths)
+            if fps.get(wid) == fp:
+                logger.info("快照跳过（内容未变）: %s 原因=%s", wid, reason)
+                continue
+            changed = True
             bdir = _batch_dir(wid, stamp)
             for p in paths:
                 rel = p.relative_to(BASE_DIR)
@@ -128,35 +186,42 @@ def snapshot_sync(reason: str = "") -> dict:
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(p, dst)
                 result["daily"] = True
+            fps[wid] = fp
             _prune_batches(wid)
 
+        _save_fingerprints(fps)
         result.update({"ok": True, "work_id": ",".join(groups.keys()),
-                       "files": total, "dir": str(SNAPSHOT_ROOT / stamp)})
-        logger.info("快照完成: %s 文件=%s 原因=%s", result["work_id"], total, reason)
+                       "files": total, "dir": str(SNAPSHOT_ROOT / stamp),
+                       "skipped": not changed})
+        if changed:
+            logger.info("快照完成: %s 文件=%s 原因=%s", result["work_id"], total, reason)
+        else:
+            logger.info("快照全部跳过（内容均未变）: %s", result["work_id"])
     except Exception as exc:
         logger.warning("快照异常: %s (%s)", reason, exc)
     return result
 
 
-async def snapshot(reason: str = "") -> bool:
+async def snapshot(reason: str = "", work_id: str | None = None) -> bool:
     """异步包装（与 git_auto_commit.commit 同签名风格）。
 
-    兼容 commit(message) 的调用方式：把 message 当作 reason 记录。
+    work_id：只拍这一个剧本（动哪拍哪）。不给定时拍全部。
     """
     try:
-        r = await asyncio.to_thread(snapshot_sync, reason)
+        r = await asyncio.to_thread(snapshot_sync, reason, work_id)
         return bool(r.get("ok"))
     except Exception as exc:
         logger.warning("快照任务异常: %s (%s)", reason, exc)
         return False
 
 
-async def commit(message: str) -> bool:
+async def commit(message: str, work_id: str | None = None) -> bool:
     """兼容旧调用名（card_store/work_store 里调的是 commit）。
 
     语义已从「git 提交」改为「数据快照」——名字保留是为了少改调用点。
+    work_id 透传：调用方知道动的是哪个剧本时，只拍那一个。
     """
-    return await snapshot(message)
+    return await snapshot(message, work_id)
 
 
 def restore_from_snapshot(work_id: str, stamp: str, rel_path: str, target: Path | None = None) -> dict:
