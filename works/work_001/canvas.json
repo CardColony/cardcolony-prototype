@@ -37,6 +37,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-03T11:23:47.572531+08:00"
+    },
+    {
+      "card_id": "card_006",
+      "title": "条件·规模：人民币走强、国际货币地位提升",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-03T11:23:47.799072+08:00"
     }
   ],
   "relations": [],
