@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
-from ..storage import card_store, manuscript_store, work_store
+from ..storage import card_store, manuscript_store, shadow_store, work_store
+from ..storage.hash_utils import parse_front_matter
 from . import file_tools
 
 logger = logging.getLogger("api.card_tools")
@@ -60,6 +62,28 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "card_id": {"type": "string", "description": "目标卡 id"},
                 },
                 "required": ["card_id"],
+            },
+        },
+        {
+            "name": "update_shadow",
+            "description": "覆盖写你自己（当前卡）的影子卡——过程性记录，正文三节：进度、产物清单、迭代历史。无 card_id 参数，只能写当前卡自己的影子。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "影子正文全文（覆盖写，含 进度/产物清单/迭代历史 三节）"},
+                },
+                "required": ["content"],
+            },
+        },
+        {
+            "name": "read_shadow",
+            "description": "读取指定卡的影子卡全文（过程性记录）。card_id 缺省＝当前卡自己的影子；上级卡可借此查看任一子卡的影子（子卡影子的更新由此到达上级）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string", "description": "正卡 id，如 card_002；缺省＝当前卡"},
+                },
+                "required": [],
             },
         },
         {
@@ -165,6 +189,17 @@ def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:
             continue
         m["card_id"] = cid
         cards[cid] = m
+    # [影子卡 2026-10-03] 影子 meta 并入同一字典（R-09 读侧：影子挂在正卡之下，
+    # can_read 四判据经 parent 链自动作用在影子上）；键＝shadow_{正卡id}
+    sd = shadow_store._shadows_dir(work_id)
+    if sd.exists():
+        for path in sd.glob("*.md"):
+            m = shadow_store._meta_of(work_id, path.stem)
+            if m is None:
+                continue
+            sid = m.get("card_id") or shadow_store.shadow_id_of(path.stem)
+            m["card_id"] = sid
+            cards[sid] = m
     return cards
 
 
@@ -291,6 +326,10 @@ async def execute_tool(
             # [语义修正 2026-10-02] 先判存在再判权限
             if target_id not in cards:
                 return {"error": f"卡片不存在: {target_id}"}
+            # [影子卡 2026-10-03] 影子进字典后 can_edit 会放行正卡的上级（子树判据），
+            # 此守卫封死该后门：影子只能由对应正卡经 update_shadow 修改（R-06/R-09 写侧）
+            if cards[target_id].get("card_type") == "shadow":
+                return {"error": "影子卡只能由对应正卡经 update_shadow 修改"}
             if not can_edit(current_id, target_id, cards):
                 return {"error": f"越权：无权编辑 {target_id}"}
             current = await card_store.read_card(work_id, current_id)
@@ -323,6 +362,30 @@ async def execute_tool(
             # cards 元数据缓存同步，防止同轮后续工具仍看到已删卡
             cards.pop(target_id, None)
             return result
+        if tool_name == "update_shadow":
+            # [影子卡 2026-10-03] schema 无 card_id——写入目标恒为当前卡自己的影子
+            # （R-09 写侧：不是可绕过的校验规则，是工具签名本身写不出别的目标）
+            content = arguments.get("content", "")
+            return await shadow_store.update_shadow(work_id, current_id, content)
+        if tool_name == "read_shadow":
+            # [影子卡 2026-10-03] 读侧跟随现有 can_read（R-09 读侧：不另设判据）；
+            # 上级卡经此查子卡影子——推送（裁定 1）的到达机制
+            target_id = arguments.get("card_id", "") or current_id
+            if target_id.startswith("shadow_"):
+                target_id = target_id[len("shadow_"):]
+            if target_id not in cards:
+                return {"error": f"卡片不存在: {target_id}"}
+            if not can_read(current_id, target_id, cards):
+                return {"error": f"越权：无权读取 {target_id} 的影子"}
+            raw = await shadow_store.read_shadow_raw(work_id, target_id)
+            if raw is None:
+                return {"error": f"影子卡不存在: {target_id}"}
+            meta, _ = parse_front_matter(raw)
+            return {
+                "owner_card_id": target_id,
+                "updated_at": str(meta.get("updated_at", "")),
+                "content": raw,
+            }
         if tool_name == "list_manuscript":
             chapters = manuscript_store.list_chapters(work_id)
             if not chapters:
@@ -425,25 +488,34 @@ async def execute_tool(
             return search_tool.fetch_web(arguments.get("url", ""))
         # [本地文件能力 2026-10-03] 四件文件工具：边界与兜底全在 file_tools 内，
         # 与卡片树权限无耦合（材料全局共享），不进任何常设上下文
+        # [并发修复 2026-10-03] 四件工具是同步 def（文件 IO 阻塞），必须
+        # 卸载到线程池执行——直接调用会冻结 uvicorn 事件循环，期间所有
+        # 请求（progress 轮询/其他剧本的消息/探活）全部排队（实测：全库
+        # search_files 0.906s 期间事件循环 ticker 零打点）。这不是闸，
+        # 是执行位置修正；工具函数本身一行未改。
         if tool_name == "list_files":
-            return file_tools.list_files(
+            return await asyncio.to_thread(
+                file_tools.list_files,
                 arguments.get("path", ""),
                 limit=int(arguments.get("limit") or 200),
             )
         if tool_name == "read_file":
-            return file_tools.read_file(
+            return await asyncio.to_thread(
+                file_tools.read_file,
                 arguments.get("path", ""),
                 para_start=arguments.get("para_start"),
                 para_end=arguments.get("para_end"),
             )
         if tool_name == "search_files":
-            return file_tools.search_files(
+            return await asyncio.to_thread(
+                file_tools.search_files,
                 arguments.get("keyword", ""),
                 arguments.get("path", ""),
                 limit=int(arguments.get("limit") or 50),
             )
         if tool_name == "write_file":
-            return file_tools.write_file(
+            return await asyncio.to_thread(
+                file_tools.write_file,
                 arguments.get("path", ""),
                 arguments.get("content", ""),
             )
