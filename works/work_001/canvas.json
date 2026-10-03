@@ -30,6 +30,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-03T11:15:49.874380+08:00"
+    },
+    {
+      "card_id": "card_005",
+      "title": "条件·时点：美元走弱、资本从美国市场外溢达成",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-03T11:23:47.572531+08:00"
     }
   ],
   "relations": [],
