@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import canvas_store, data_snapshot, git_auto_commit, work_store
+from . import canvas_store, data_snapshot, work_store
 from .hash_utils import (
     apply_hash,
     calc_card_hash,
@@ -316,6 +316,12 @@ async def create_card(
         # [数据与代码分家 2026-10-03] 不再 git 提交运行数据（分支操作曾整体回退 works/），
         # 改由独立快照目录留痕（与代码仓库物理分离）。
         await data_snapshot.snapshot(f"[snapshot][{work_id}] create: {card_id}")
+        # [影子卡 2026-10-03] 建正卡即派生影子（一正一影，R-03）；失败只记日志不阻断建卡
+        from . import shadow_store
+        try:
+            await shadow_store.derive_shadow(work_id, card_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("影子派生失败（不阻断建卡）work=%s card=%s: %s", work_id, card_id, exc)
         return await read_card(work_id, card_id)
     except CardLockedError:
         raise
@@ -510,6 +516,13 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
             session_path.unlink()
     except Exception as exc:  # noqa: BLE001
         logger.warning("session 文件删除失败（不中断）%s: %s", session_path, exc)
+
+    # [影子卡 2026-10-03] 删正卡→影子同删（随正卡生命周期存续，不变量 3）；失败不中断
+    from . import shadow_store
+    try:
+        await shadow_store.remove_shadow(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("影子删除失败（不中断）work=%s card=%s: %s", work_id, card_id, exc)
 
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照

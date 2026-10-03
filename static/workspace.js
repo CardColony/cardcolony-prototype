@@ -393,6 +393,29 @@
     };
   }
 
+  // [刷新恢复实时状态 2026-10-03] 页面加载时重新挂接在途调用的等待气泡。
+  // 问题：等待气泡的 timer/poll/el 全在 createWaitingBubble 的闭包里，刷新即随 JS 上下文销毁；
+  //       后端 progress 状态（模块级内存、key=(work_id,card_id)）与端点都还在，但加载路径从不查它，
+  //       所以刷新后「正在跑」的实时状态消失（历史消息由 restoreFromHash→open→renderChat 恢复）。
+  // 修法：加载时查一次后端 progress——活跃态则复用 createWaitingBubble 挂回气泡与轮询；
+  //       done/error/idle 及任何异常一律静默降级为现有行为，绝不抛错打断页面。
+  // 硬约束：纯前端改动，静态文件热生效，零重启。
+  // 活跃态白名单显式列出——done/error 是终止态，若当活跃处理会让已完成的卡永远转圈。
+  const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards"];
+  async function attachRunningState(cardId) {
+    if (!cardId) return false;
+    try {
+      const st = await API.getProgress(WORK_ID, cardId);
+      if (!st || !ACTIVE_STAGES.includes(st.stage)) return false;
+      // 同一张卡上已有等待气泡时不重复挂（避免 hashchange 等路径重复触发）
+      if (chatArea.querySelector(".msg.thinking")) return false;
+      createWaitingBubble("思考中…（刷新前已启动）", cardId);
+      return true;
+    } catch (e) {
+      return false;   // 查询失败静默：不影响页面其余功能
+    }
+  }
+
   async function send() {
     if (!currentCard) return;
     const content = inputBox.value.trim();
@@ -546,6 +569,9 @@
     if (!hash) return false;
     try {
       await open(hash);
+      // [刷新恢复实时状态 2026-10-03] 历史回读完成后，查一次后端进度：若这张卡有调用在跑，
+      // 把等待气泡与 2 秒轮询挂回去——刷新不再丢失「正在思考」的实时状态。
+      await attachRunningState(hash);
       return true;
     } catch (e) {
       // 卡片不存在（已是旧链接）等情形：open() 内部已 toast，这里回退到根卡，

@@ -25,6 +25,8 @@ BASE_PROMPT = """\
 - read_card(card_id)：读取指定卡（标题、父卡、连线、正文）。只能读取你有权访问的卡。
 - edit_card(card_id, content)：改写你管辖范围内指定卡的正文（覆盖写）。
 - delete_card(card_id)：删除你管辖范围内指定编号的卡片及其对话。剧本根卡与有子卡的卡不可删除。
+- update_shadow(content)：覆盖写当前卡自己的影子卡（过程性记录，正文三节：进度/产物清单/迭代历史）。无 card_id 参数——只能写自己的影子。
+- read_shadow(card_id)：读取指定卡的影子卡全文（card_id 缺省＝当前卡）。上级卡用它查看子卡的影子——子卡影子的更新由此到达上级。
 - link_cards(target_id, type, note)：在当前卡与目标卡之间建立连线（type：先后/关联）。
 - unlink_cards(target_id, type)：解除当前卡上指向目标卡的连线；目标卡已删时也可用（清理悬空线）。type 缺省解除全部指向该目标的连线。
 - list_manuscript() / read_manuscript(chapter) / search_manuscript(keyword)：查阅本项目存档的原始资料。

@@ -110,7 +110,7 @@ async def create_work(title: str) -> dict[str, Any]:
     任何一步失败：保留已创建的目录与文件，返回 {"error": ...}。
     """
     # 局部 import，避免与 card_store 形成顶层循环
-    from . import card_store, git_auto_commit
+    from . import card_store
 
     work_id = f"work_{_next_seq():03d}"
     wd = _work_dir(work_id)
