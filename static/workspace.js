@@ -39,6 +39,11 @@
       currentCard = card;
       await renderLeft();
       await renderChat();
+      // [刷新恢复 2026-10-03] 卡号写进 URL hash：刷新后按 hash 自动重开这张卡。
+      // 用 replaceState 不堆积浏览历史、不触发页面重载；URL 即状态，不引入前端存储。
+      if (location.hash !== "#" + cardId) {
+        history.replaceState(null, "", "#" + cardId);
+      }
       ws.classList.add("active");
       // [phase8.4.1] display:none 期间 scrollHeight=0，renderChat 里的滚底是空操作；
       // 必须在面板激活（可见、完成排版）之后再锁定到最新消息
@@ -531,5 +536,33 @@
     inputBox.style.height = "auto";
     inputBox.style.height = Math.min(inputBox.scrollHeight, 200) + "px";
   });
+
+  // ==================== [刷新恢复 2026-10-03] 加载时按 URL hash 重开上次的卡 ====================
+  // 问题：页面上看的那张卡刷新即丢——回读历史的能力（open→renderChat→GET /session）三层齐备，
+  // 但加载时没有任何代码去调 open()，所以刷新后对话区空白。
+  // 修法：卡号存 URL hash（open() 内写入），加载时读出来重开。不引入 localStorage 等前端存储。
+  async function restoreFromHash() {
+    const hash = (location.hash || "").replace(/^#/, "");
+    if (!hash) return false;
+    try {
+      await open(hash);
+      return true;
+    } catch (e) {
+      // 卡片不存在（已是旧链接）等情形：open() 内部已 toast，这里回退到根卡，
+      // 并把失效的 hash 清掉，避免每次刷新都撞同一个失败。
+      history.replaceState(null, "", location.pathname + location.search);
+      return false;
+    }
+  }
+
+  // 浏览器后退/前进时同步切卡（hash 变化即重开）
+  window.addEventListener("hashchange", () => {
+    const hash = (location.hash || "").replace(/^#/, "");
+    if (hash && (!currentCard || currentCard.meta.card_id !== hash)) {
+      open(hash);
+    }
+  });
+
+  restoreFromHash();
 
 })();
