@@ -1,0 +1,31 @@
+{
+  "meta": {
+    "chain": "taskbook",
+    "task": "影子卡机制 · 实现任务书",
+    "released_by_user_at": "2026-10-03T18:37:00+08:00",
+    "landed_at": "2026-10-03T18:40:00+08:00",
+    "note": "放行由用户口头下达：「我都说过了，需要放行，你帮我放行」（2026-10-03 18:37）。用户 18:23 曾预授权「需要用户拍板你就帮我拍板」。"
+  },
+  "release_order": {
+    "final_doc_path": "docs/exploration/THINK-ECO-XX-任务书终稿-20261003.md",
+    "checklist_version": "20261003",
+    "checklist_file": "docs/exploration/THINK-ECO-XX-对账-方案条目清单-20261003.json",
+    "checklist_items": 68,
+    "reconciliation_tables": [
+      "docs/exploration/THINK-ECO-XX-对账-三张表-20261003.json"
+    ],
+    "red_ledger": {
+      "file": "docs/exploration/THINK-ECO-XX-红灯账-20261003.json",
+      "final_state": "5/5 全消",
+      "entries": ["RED-01 代拍留痕块缺失", "RED-02 B级锚点无复核判据", "RED-03 红线缺今日三条病根", "RED-04 双环境未具体化", "RED-05 S-36语义写弱"]
+    },
+    "release_timestamp": "2026-10-03T18:37:00+08:00"
+  },
+  "known_issues": [
+    "任务书终稿正文在本放行单落盘时尚未写入文件（随放行单同批落盘）",
+    "三张对账表与红灯账两份 JSON 由 p5 环节补落（p3 曾声明已落盘，p5 读盘核实为不在盘上，现按 p3 上下文产出补写，文件头部 landed_by 已标注）",
+    "方案链（proposal）那一轮的三张对账表与红灯账仍全盘不存在，至今未补",
+    "方案链放行单 known_issues 里『已按实补齐并读盘核过』一句不实（当时只核了条目清单一份）——该记录未修正",
+    "条目清单（两者）的 total 与实际 items 条数存在口径说明需要（非阻塞）"
+  ]
+}
