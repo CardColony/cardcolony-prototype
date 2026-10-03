@@ -16,6 +16,13 @@
       "card_type": "线索",
       "parent": "card_001",
       "created_at": "2026-10-03T12:51:52.357750+08:00"
+    },
+    {
+      "card_id": "card_003",
+      "title": "欠账清单（已核实）",
+      "card_type": "线索",
+      "parent": "card_001",
+      "created_at": "2026-10-03T12:51:52.531797+08:00"
     }
   ],
   "relations": [],
