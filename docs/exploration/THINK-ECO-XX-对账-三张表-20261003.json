@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "chain": "taskbook",
+    "landed_by": "p5",
+    "landed_at": "2026-10-03T18:38:00+08:00",
+    "note": "本文件由 p5 环节补落。p3 环节曾在产出中声明『三张表已落盘』，p5 首轮读盘核实为不在盘上（目录仅 4 文件），现按 p3 上下文产出补写落地。",
+    "task": "影子卡机制 · 实现任务书",
+    "source_draft": "草案（p2 阶段）· 终稿见 THINK-ECO-XX-任务书终稿-20261003.md"
+  },
+  "forward_table": {
+    "desc": "正向表：方案条目清单 68 条 → 任务书草稿落点",
+    "total_items": 68,
+    "covered": 68,
+    "empty": 0,
+    "verdict": "68/68 全部有落点，零条为空"
+  },
+  "reverse_table": {
+    "desc": "反向表：任务书草稿每段 → 条目清单依据",
+    "findings": [
+      {
+        "location": "二·现场锚 B 级表的三级分类结构（A级/B级/C级）",
+        "has_anchor_in_checklist": false,
+        "verdict": "本稿的呈现结构，非需求内容。属合理的任务书结构，非无中生有。"
+      }
+    ],
+    "note": "原『派生失败写 warning 日志』经复核依据在场（S-61 逐字相同），已撤销该条 R3 标记"
+  },
+  "contradiction_scan": {
+    "desc": "本稿两两对照",
+    "hits": [
+      {
+        "pair": "红线第3条（card_store.py:488/490 子卡判据一行不动）vs 改件二第10条（delete_card L507-512 后新增删影子一步）",
+        "is_real_contradiction": false,
+        "reason": "两处为不同代码位置：L488/L490 是子卡防护判据行；L507-512 是 session unlink 段。两者相隔 17 行以上，互不影响。",
+        "fix": "已按 p3 修改指令在红线第 3 条补入区分说明"
+      }
+    ]
+  }
+}

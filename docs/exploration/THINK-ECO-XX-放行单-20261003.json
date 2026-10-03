@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "chain": "proposal",
+    "step": "p5",
+    "task": "影子卡机制 · 实现方案",
+    "type": "方案放行单",
+    "released_at": "2026-10-03T17:51:00+08:00",
+    "user_words": "有病，放行"
+  },
+  "release": {
+    "final_doc": "docs/exploration/THINK-ECO-XX-方案终稿-20261003.md",
+    "checklist_version": "20261003",
+    "checklist_file": "docs/exploration/THINK-ECO-XX-对账-上级条目清单-20261003.json",
+    "checklist_note": "items 数组 36 条（total 字段写 34）——数字不一致未查实，如实记录，不在放行单内给口径",
+    "tables": [
+      "docs/exploration/THINK-ECO-XX-对账-三张表-20261003.json",
+      "docs/exploration/THINK-ECO-XX-红灯账-20261003.json"
+    ],
+    "red_ledger_final": "4/4 全消（R1 判据不完整／R2 标题改写／R3 无中生有／R4 矛盾）",
+    "released_at": "2026-10-03T17:51:00+08:00"
+  },
+  "known_issues": [
+    "三张对账表与红灯账 JSON 系 p5 阶段补落（p3 曾记录已落盘但与磁盘不符，已按实补齐并读盘核过）",
+    "条目清单 items 36 条 / total 34 条数字不一致，未查实"
+  ]
+}
