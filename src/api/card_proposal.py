@@ -4,7 +4,7 @@
 模型唯一建卡格式（实际出现过两种形态，都必须接住）：
   形态一（标准）：```card-proposal\n[...]\n```
   形态二（DeepSeek 系泄漏）：<｜｜card-proposal｜｜>\n[...]\n<｜｜/card-proposal｜｜>
-    —— 竖线可能全角(U+FF5C)/半角(U+007C)、单条/双条、标记词两侧可能有空白
+    —— 竖线可能全角(U+FF5C)/半角(U+007C)、单条/双条/零条(10-03 实录纯 ASCII 形态)、标记词两侧可能有空白
 
 parse_proposals(reply_text) -> (clean_text, proposals)
   - 提取所有形态的块；clean_text = 剥离协议块后的正文
@@ -35,12 +35,14 @@ logger = logging.getLogger("api.card_proposal")
 _FENCE_OPEN_RE = re.compile(r"```card-proposal\s*\n")
 # fenced 候选闭合：行首三反引号（含前导换行，共 4 字符）
 _FENCE_CLOSE_RE = re.compile(r"\n```")
-# 形态二：尖括号标记（竖线全角/半角、单/双、标记词两侧空白均可；
+# 形态二：尖括号标记（竖线全角/半角、单/双/零条、标记词两侧空白均可；
+#   竖线是 DeepSeek 特殊 token 的可打印近似，条数与有无均随机——10-03 10:56 实录
+#   纯 ASCII <card-proposal>…</card-proposal> 零竖线（泄漏家族第五形态），故按 0-2 条全覆盖；
 # 闭合标记两种泄漏变体都接：竖线在前 <|/card-proposal|> 或斜杠在前 </card-proposal|>）
 _BLOCK_ANGLE_RE = re.compile(
-    r"<[|｜]{1,2}\s*card-proposal\s*[|｜]{1,2}>"
+    r"<[|｜]{0,2}\s*card-proposal\s*[|｜]{0,2}>"
     r"(.*?)"
-    r"(?:<[|｜]{1,2}\s*/card-proposal\s*[|｜]{1,2}>|</card-proposal\s*[|｜]{1,2}>)",
+    r"(?:<[|｜]{0,2}\s*/card-proposal\s*[|｜]{0,2}>|</card-proposal\s*[|｜]{0,2}>)",
     re.DOTALL,
 )
 
