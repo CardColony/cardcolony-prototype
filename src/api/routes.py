@@ -402,10 +402,13 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
                 if rescue_calls:
                     tool_calls = rescue_calls
                     assistant_content = stripped or assistant_content
+                    # stdlib logging 只吃位置参数（%s 占位）——本文件 logger 是
+                    # logging.getLogger 而非 infra.logging.get_logger（structlog），
+                    # kwargs 写法会 TypeError（2026-10-03 首次点火定案）。
                     logger.info(
-                        "text_tool_calls_rescued",
-                        count=len(rescue_calls),
-                        names=[c["name"] for c in rescue_calls],
+                        "text_tool_calls_rescued count=%s names=%s",
+                        len(rescue_calls),
+                        [c["name"] for c in rescue_calls],
                     )
                 elif unresolved:
                     text_rescue_note = text_tool_rescue.feedback_note()
