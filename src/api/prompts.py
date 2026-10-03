@@ -30,6 +30,10 @@ BASE_PROMPT = """\
 - list_manuscript() / read_manuscript(chapter) / search_manuscript(keyword)：查阅本项目存档的原始资料。
 - web_search(query)：查询网页搜索服务，返回结果列表（标题、链接、摘要、来源、日期）。
 - fetch_web(url)：获取指定网页的文本内容。
+- list_files(path, limit)：列出一个目录下的条目（一层）。范围限 D:\AI_station 下的 trading-workspace 与 推演agent 两个目录。
+- read_file(path, para_start, para_end)：读取一个文本文件的内容，可按行区间分段。二进制与凭证类文件不可读。
+- search_files(keyword, path, limit)：在目录下逐文件检索关键词（不区分大小写），返回命中的文件、行号与该行内容。
+- write_file(path, content)：写入一个文本文件（已存在则覆盖，覆盖前原文件自动备份到 _backups 下）。单次上限 5MB。
 
 ## 建卡接口
 

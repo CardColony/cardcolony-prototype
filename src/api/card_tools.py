@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from ..storage import card_store, manuscript_store, work_store
+from . import file_tools
 
 logger = logging.getLogger("api.card_tools")
 
@@ -147,7 +148,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "required": ["target_id"],
             },
         },
-    ]
+    ] + file_tools.build_file_tool_schemas()
 
 
 def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:
@@ -422,6 +423,30 @@ async def execute_tool(
         if tool_name == "fetch_web":
             from . import search_tool
             return search_tool.fetch_web(arguments.get("url", ""))
+        # [本地文件能力 2026-10-03] 四件文件工具：边界与兜底全在 file_tools 内，
+        # 与卡片树权限无耦合（材料全局共享），不进任何常设上下文
+        if tool_name == "list_files":
+            return file_tools.list_files(
+                arguments.get("path", ""),
+                limit=int(arguments.get("limit") or 200),
+            )
+        if tool_name == "read_file":
+            return file_tools.read_file(
+                arguments.get("path", ""),
+                para_start=arguments.get("para_start"),
+                para_end=arguments.get("para_end"),
+            )
+        if tool_name == "search_files":
+            return file_tools.search_files(
+                arguments.get("keyword", ""),
+                arguments.get("path", ""),
+                limit=int(arguments.get("limit") or 50),
+            )
+        if tool_name == "write_file":
+            return file_tools.write_file(
+                arguments.get("path", ""),
+                arguments.get("content", ""),
+            )
         return {"error": f"未知工具: {tool_name}"}
     except card_store.CardNotFoundError:
         return {"error": f"卡片不存在: {arguments.get('card_id','')}"}
