@@ -125,6 +125,10 @@ def rebuild(work_id: str) -> dict[str, Any]:
                         item["note"] = rel["note"]
                     relations.append(item)
 
+    # [R4-3-5] 重建打点（沿用既有 logger，不参与分支、不设闸）
+    summary_count = sum(1 for c in cards if c.get("conclusion_summary"))
+    logger.info("canvas 重建：%d 卡，含摘要 %d 条", len(cards), summary_count)
+
     result = {
         "project_name": PROJECT_NAME,
         "work_id": work_id,
