@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .hash_utils import parse_front_matter
+from .hash_utils import parse_front_matter, split_body_sections
 
 logger = logging.getLogger("storage.canvas")
 
@@ -46,6 +46,34 @@ def _canvas_path(work_id: str) -> Path:
 
 def _cards_dir(work_id: str) -> Path:
     return WORKS_DIR / work_id / "cards"
+
+
+# [R4] 结论文本摘要上限——与前端 canvas.js 的 getSummary 逐字一致
+# （前端原文：firstLine.length > 120 ? firstLine.slice(0,120) + "…" : firstLine）
+SUMMARY_MAX = 120
+
+
+def _conclusion_summary(body: str) -> str:
+    """取结论区第一行非空文字，超 120 字截断加省略号。
+
+    与前端 getSummary 的算法逐字一致（先按行 split、取第一个非空 trim 行、超长截断）。
+    结论区为空/全空白 → 返回空字符串（不写占位文字）。
+    解析失败不抛出——返回空串，绝不中断 rebuild。
+    """
+    try:
+        sections = split_body_sections(body or "")
+        concl = sections.get("conclusion", "") or ""
+    except Exception:
+        return ""
+    first_line = ""
+    for line in concl.split("\n"):
+        s = line.strip()
+        if s:
+            first_line = s
+            break
+    if len(first_line) > SUMMARY_MAX:
+        return first_line[:SUMMARY_MAX] + "…"
+    return first_line
 
 
 def rebuild(work_id: str) -> dict[str, Any]:
@@ -75,7 +103,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
                 continue
             card_id = path.stem
             try:
-                meta, _ = parse_front_matter(path.read_text(encoding="utf-8"))
+                meta, body = parse_front_matter(path.read_text(encoding="utf-8"))
             except Exception as exc:
                 logger.warning("解析卡片失败，跳过 %s: %s", path.name, exc)
                 continue
@@ -85,6 +113,10 @@ def rebuild(work_id: str) -> dict[str, Any]:
                 "card_type": meta.get("card_type") or "线索",
                 "parent": meta.get("parent", ""),
                 "created_at": meta.get("created_at", ""),
+                # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
+                # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
+                # canvas.json 是可重建缓存（卡片文件才是真身），本字段不写用户真身数据。
+                "conclusion_summary": _conclusion_summary(body),
             })
             for rel in meta.get("relations") or []:
                 if isinstance(rel, dict):
