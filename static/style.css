@@ -288,6 +288,13 @@ a { color: inherit; text-decoration: none; }
   z-index: 3;
 }
 
+/* [T08-3-4] 新卡淡入：展开时新增节点 0.18s 淡入（只动 opacity/transform，时限 ≤300ms；
+   拖拽 .card-node.dragging { transition:none } 原样保留） */
+.card-node.entering { animation: card-in 0.18s ease; }
+@keyframes card-in {
+  from { opacity: 0; transform: scale(0.96); }
+}
+
 /* ============ 三级 LOD ============ */
 /* L0 远景：胶囊（160×36） */
 .card-node.l0 {
@@ -328,6 +335,17 @@ a { color: inherit; text-decoration: none; }
   -webkit-line-clamp: 10;
   overflow: hidden;
 }
+
+/* [T08-用户令 2026-10-04] 第三级卡（相对当前视图根深度≥2）只显示标题。
+   独立类按深度挂载，与缩放驱动的 l0/l1/l2 并行不互斥（三档机制本体一字未动，红线9）。
+   置于三档样式之后以同优先级后者胜出（覆盖 l1/l2 的宽高）。
+   宽度自适应（用户同日追加指令「第三级卡片能不能自适应，长度上」）：
+   max-content 随标题长度伸缩，上限 260（内容宽）——总宽 ≤260+24+4=288 < 列距 340，不越栏。 */
+.card-node.t8-deep { width: max-content; max-width: 260px; min-width: 0; height: auto; min-height: 0; padding: 7px 12px; }
+.card-node.t8-deep .tname { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-node.t8-deep .ttype,
+.card-node.t8-deep .summary,
+.card-node.t8-deep .meta2 { display: none; }
 
 /* ============ Tooltip ============ */
 .card-tooltip {

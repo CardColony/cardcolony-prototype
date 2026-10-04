@@ -22,6 +22,8 @@
     viewRoot: "",         // 当前视图根（默认 = workCardId）
     cardMap: {},          // card_id -> card
     childMap: {},         // parent_id -> [card_id]
+    // [T08-1-1] 已展开卡集合（纯内存态）：默认空集＝全折叠；不写任何持久化载体（红线1/6），刷新即回默认
+    expanded: new Set(),  // Set<card_id>
   };
 
   // 视口变换
@@ -107,7 +109,6 @@
       if (!childMap[p]) childMap[p] = [];
       childMap[p].push(c);
     }
-    const directChildren = childMap[viewRootId] || [];
     const root = cards.find(c => c.card_id === viewRootId);
     // [T07-1-9] 判据源切换：视图根是否剧本根卡，按「该卡 parent 为空」判
     // （依据 card_store._normalize_parent：剧本卡 parent 强制 ""，其余卡兜底回根卡）
@@ -126,17 +127,14 @@
     // 2. viewRoot 固定顶部中央 (0,0)
     result[viewRootId] = { x: 0, y: 0 };
 
-    if (isRootCard) {
-      // ===== 顶层叙事轴布局 =====
-      layoutNarrativeAxis(viewRootId, directChildren, relations, positions, result);
-    } else {
-      // ===== 非顶层网格矩阵 =====
-      layoutGridMatrix(directChildren, result);
-    }
+    // [T08-1-3] 原 isRootCard 双分支（叙事轴/网格矩阵）收敛为折叠树单路径；
+    // [T08-1-5] layoutNarrativeAxis / layoutGridMatrix 停止调用（不删除），见打点三。
+    layoutTree(viewRootId, childMap, positions, state.expanded, result);
     return result;
   }
 
   function layoutNarrativeAxis(viewRootId, children, relations, positions, result) {
+    console.info("[T08-旧] %s 被调用", "layoutNarrativeAxis"); // [T08-1-5] 停用观测：本函数已不被 computeLayout 调用，出现输出即异常
     // [T07-1-8] 分组判据源切换：不再按 card_type 滤卡，改用与 childMap 同源的
     // parent 分组结果（children 即 childMap[viewRootId] 的直接子卡组）。
     // 类型带退场后全部直接子卡并入单带；其余四带保留空数组占位（现状恒空）。
@@ -263,6 +261,7 @@
   }
 
   function layoutGridMatrix(children, result) {
+    console.info("[T08-旧] %s 被调用", "layoutGridMatrix"); // [T08-1-5] 停用观测：本函数已不被 computeLayout 调用，出现输出即异常
     // 按 created_at 序，每行 4 张，间距 x=260 y=130；
     // [hotfix] 首行按实际张数相对根卡(x=0)居中，不再写死 -390 起排
     // （子卡少于 4 张时旧算法整体偏左，且负坐标区落在初始视口外）
@@ -278,6 +277,74 @@
       const row = Math.floor(i / perRow);
       result[c.card_id] = { x: startX + col * dx, y: startY + row * dy };
     });
+  }
+
+  // [T08-1-2] 折叠树排布（替代原 narrativeAxis/gridMatrix 双分支）。
+  // 方向口径（用户 2026-10-04 中途指令「布局用左右视图」，对任务书上下树的推翻，留痕）：
+  // 左右视图——根卡居左，子树向右逐层展开；同父子树纵向一字排开不重叠
+  // （子树纵向跨度 = 其叶子实测高之和 + 间距，父卡在子树跨度内垂直居中）。
+  // 层间距由 measureSizes() 实测高推出（取不到按既有惯例回退 220×86）；列宽恒定
+  // COL_W（容纳根卡 320 宽，任何 LOD 档卡宽 ≤320 < COL_W，横向恒不重叠）；
+  // 实测高的纵向避让仍由 resolveOverlaps 在 DOM 建成后完成。
+  // 只写内存 result，不读不写任何持久化载体（红线1/6）；pinned 卡由 computeLayout
+  // 步骤1写入 result、此处不覆盖（保留规则），其子树以存储坐标为锚继续右排。
+  function layoutTree(viewRootId, childMap, positions, expanded, result) {
+    console.info("[T08] 树形排布：viewRoot=%s，节点数=%d", viewRootId, Object.keys(result).length);
+    const sizes = measureSizes();
+    // 回退行高分档：深度≥2 的卡按 t8-deep 紧凑形态（只显标题）取 36，
+    // 其余按常规卡取 86（既有回退值）——首绘时 DOM 未建、实测不可得，按此估跨距
+    const FALLBACK_H = 86, FALLBACK_H_DEEP = 36;
+    const heightOf = (cid, depth) => (sizes[cid] && sizes[cid].h) || (depth >= 2 ? FALLBACK_H_DEEP : FALLBACK_H);
+    const COL_W = 340;  // 相邻层横向基准（根卡实测宽 320 < COL_W，其余档位卡宽 ≤260）
+    const GAP_Y = 40;   // 同父相邻子树纵向间距
+
+    // 布局树的「子边」：viewRoot 直接子卡恒在；其余卡的子卡仅当该卡 ∈ expanded
+    // （与 T08-1-4 可见集同一规则，保证布局覆盖恰为可见集）
+    const kidsOf = (cid) =>
+      (cid === viewRootId || expanded.has(cid)) ? (childMap[cid] || []) : [];
+
+    // 后序：子树纵向跨度 = max(自身高, Σ子树跨度 + 间距)；seen 防脏数据成环
+    const subtreeH = {};
+    const seen = new Set();
+    (function measure(cid, depth) {
+      if (seen.has(cid)) return heightOf(cid, depth);
+      seen.add(cid);
+      const kids = kidsOf(cid);
+      let sum = 0;
+      for (let i = 0; i < kids.length; i++) {
+        sum += measure(kids[i].card_id, depth + 1) + (i > 0 ? GAP_Y : 0);
+      }
+      subtreeH[cid] = kids.length ? Math.max(heightOf(cid, depth), sum) : heightOf(cid, depth);
+      return subtreeH[cid];
+    })(viewRootId, 0);
+
+    // 前序：子树占 [topY, topY+subtreeH]，卡在子树跨度内垂直居中，x 逐层 +COL_W。
+    // 根卡子树跨度以 y=0（根卡纵位）为中心上下分半。
+    seen.clear();
+    (function place(cid, x, topY, depth) {
+      if (seen.has(cid)) return;
+      seen.add(cid);
+      let anchorY = topY, childX = x + COL_W;
+      if (cid !== viewRootId) {
+        if (positions[cid] && positions[cid].pinned && result[cid]) {
+          // pinned：保留存储坐标不覆盖，子树改以存储坐标为锚继续右排
+          anchorY = result[cid].y - (subtreeH[cid] - heightOf(cid, depth)) / 2;
+          childX = result[cid].x + COL_W;
+        } else {
+          result[cid] = { x: x, y: topY + (subtreeH[cid] - heightOf(cid, depth)) / 2 };
+        }
+      }
+      const kids = kidsOf(cid);
+      if (!kids.length) return;
+      let kidsSum = 0;
+      for (let i = 0; i < kids.length; i++) kidsSum += subtreeH[kids[i].card_id];
+      kidsSum += (kids.length - 1) * GAP_Y;
+      let cursor = anchorY + (subtreeH[cid] - kidsSum) / 2;
+      for (let i = 0; i < kids.length; i++) {
+        place(kids[i].card_id, childX, cursor, depth + 1);
+        cursor += subtreeH[kids[i].card_id] + GAP_Y;
+      }
+    })(viewRootId, 0, -subtreeH[viewRootId] / 2, 0);
   }
 
   // [phase8.6-B] 纵向避让纯函数：按初始 y 分带，带间距不小于 40px
@@ -400,6 +467,8 @@
   }
 
   function renderCanvas() {
+    // [T08-3-4] 记录重绘前已在场的卡：重绘后仅对新增卡做淡入
+    const prevIds = new Set(nodeMap.keys());
     // 清除旧节点（保留 svg）
     for (const [cid, node] of nodeMap) node.remove();
     nodeMap.clear();
@@ -408,9 +477,33 @@
     const layout = computeLayout(state.viewRoot, state.cards, state.relations, state.positions);
     state._baseLayout = layout;
 
-    // 当前视图应显示的卡：viewRoot + 直属子卡（孙卡通过 ▸N 徽章 + 双击下钻可见）
+    // [T08-1-4] 可见集（规则写死，不动点计算）：
+    // ① viewRoot 恒在集合内；② viewRoot 的直接子卡恒在集合内；
+    // ③ 对集合内任意卡 C，若 C ∈ state.expanded，则 C 的全部直接子卡加入集合；
+    // ④ 重复③直至集合不再增长。
+    // （原两层模型「viewRoot + 直属子卡」由本构造替代；展开态只存内存，刷新即回全折叠）
+    // depthOf＝相对视图根深度：根=0，直接子卡=1，更深层=2+（供第三级卡只显标题挂类）
     const visibleIds = new Set([state.viewRoot]);
-    for (const child of (state.childMap[state.viewRoot] || [])) visibleIds.add(child.card_id);
+    const depthOf = {};
+    depthOf[state.viewRoot] = 0;
+    for (const child of (state.childMap[state.viewRoot] || [])) {
+      visibleIds.add(child.card_id);
+      depthOf[child.card_id] = 1;
+    }
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const cid of Array.from(visibleIds)) {
+        if (!state.expanded.has(cid)) continue;
+        for (const child of (state.childMap[cid] || [])) {
+          if (!visibleIds.has(child.card_id)) {
+            visibleIds.add(child.card_id);
+            depthOf[child.card_id] = (depthOf[cid] || 0) + 1;
+            grew = true;
+          }
+        }
+      }
+    }
 
     // 渲染节点（先按初始布局入 DOM）
     for (const cid of visibleIds) {
@@ -418,6 +511,15 @@
       if (!card) continue;
       const pos = layout[cid] || { x: 0, y: 0 };
       const node = createNode(card, pos);
+      if ((depthOf[cid] || 0) >= 2) {
+        // [T08-用户令 2026-10-04] 第三级卡只显示标题（独立类，不动 l0/l1/l2 三档机制）
+        node.classList.add("t8-deep");
+      }
+      if (!prevIds.has(cid)) {
+        // [T08-3-4] 新出现卡淡入（只动 opacity/transform；连线不做补间）
+        node.classList.add("entering");
+        node.addEventListener("animationend", () => node.classList.remove("entering"), { once: true });
+      }
       world.appendChild(node);
       nodeMap.set(cid, node);
     }
@@ -454,8 +556,10 @@
     if (isRoot) node.classList.add("is-root");
 
     const childCount = (state.childMap[card.card_id] || []).length;
+    // [T08-3-1/3-5] 徽章语义＝展开/折叠开关：▸（折叠态）↔ ▾（展开态）；N 恒为该卡子卡数
+    const isExpanded = state.expanded.has(card.card_id);
     const kidBadge = childCount > 0
-      ? `<span class="kid-badge" title="有 ${childCount} 张子卡，点击进入（或双击卡片）">▸ ${childCount}</span>`
+      ? `<span class="kid-badge" title="有 ${childCount} 张子卡，点击展开/折叠">${isExpanded ? "▾" : "▸"} ${childCount}</span>`
       : "";
 
     node.innerHTML = `
@@ -472,13 +576,13 @@
   function bindNodeEvents(node, card) {
     let clickTimer = null;
 
-    // ▸N 徽章单击即下钻（比双击更可发现）
+    // [T08-3-1] ▸/▾ 徽章单击＝展开/折叠该卡子树（原语义为下钻 setViewRoot，已改）
     const badge = node.querySelector(".kid-badge");
     if (badge) {
       badge.addEventListener("click", (e) => {
         e.stopPropagation();
         if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-        setViewRoot(card.card_id);
+        toggleExpand(card.card_id);
       });
     }
 
@@ -552,7 +656,30 @@
   }
 
   function onSingleClick(card) {
+    // [T08-用户令 2026-10-04] 第三级卡（相对视图根深度≥2）默认收起：有子卡时单击
+    // 先就地展开，已展开再单击才进对话（工作区）；无子卡直接进对话。
+    // 一、二级卡单击进对话的行为不变。徽章仍是双向展开/折叠开关（T08-3-1）。
+    if (depthFromViewRoot(card.card_id) >= 2) {
+      const hasKids = (state.childMap[card.card_id] || []).length > 0;
+      if (hasKids && !state.expanded.has(card.card_id)) {
+        toggleExpand(card.card_id);
+        return;
+      }
+    }
     window.Workspace && window.Workspace.open(card.card_id);
+  }
+
+  // [T08-用户令] 相对当前视图根的深度：沿 parent 链上溯到 viewRoot 的步数
+  // （viewRoot=0，直接子卡=1；上溯不到 viewRoot 的孤儿卡无意义，返回步数即可）
+  function depthFromViewRoot(cardId) {
+    let d = 0, cur = cardId;
+    const guard = new Set();
+    while (cur && cur !== state.viewRoot && state.cardMap[cur] && !guard.has(cur)) {
+      guard.add(cur);
+      cur = state.cardMap[cur].parent;
+      d++;
+    }
+    return d;
   }
 
   function onDoubleClick(card) {
@@ -564,6 +691,14 @@
       // 无子卡也允许下钻（用户可能想进入空容器建卡），但等同打开工作区
       window.Workspace && window.Workspace.open(card.card_id);
     }
+  }
+
+  // [T08-3-2] 就地展开/折叠：只翻 state.expanded 成员关系后全量重绘。
+  // 不调 setViewRoot（视图根不变＝「就地」的全部含义）、不调 fitView（视野不跳）。
+  function toggleExpand(cardId) {
+    if (state.expanded.has(cardId)) state.expanded.delete(cardId);
+    else state.expanded.add(cardId);
+    renderCanvas();
   }
 
   function setViewRoot(newRoot) {
@@ -610,16 +745,56 @@
 
   // ==================== 关系线渲染 ====================
   function renderEdges(visibleIds, layout) {
-    // 计算需要的 SVG 尺寸（所有卡的外接框）
-    let minX = 0, minY = 0, maxX = 0, maxY = 0;
+    const sizes = measureSizes();
+
+    // [T08-2-1/2-3] 父子直角折线段先收集（这是一条新增循环，不替换既有 relations 循环）。
+    // 锚点（左右视图口径，用户中途指令推翻任务书上下向，留痕）＝父卡右缘中点 (x+w, y+h/2)
+    // → 子卡左缘中点 (x, y+h/2)，w/h 取 measureSizes() 实测。
+    // 不画跨层线（子卡不可见不补画）；视图根与其自身父卡的线不画（该父卡按可见集规则
+    // 不可能在集合内，此处按任务书再显式守一道）。
+    const rootParentId = (state.cardMap[state.viewRoot] || {}).parent || "";
+    const elbowSegs = [];
+    for (const pid in state.childMap) {
+      for (const childCard of state.childMap[pid]) {
+        const ckid = childCard.card_id;
+        if (pid === rootParentId && ckid === state.viewRoot) continue;
+        if (!visibleIds.has(pid) || !visibleIds.has(ckid)) continue;
+        const p1 = layout[pid], p2 = layout[ckid];
+        if (!p1 || !p2) continue;
+        const s1 = sizes[pid] || { w: 220, h: 86 };
+        const s2 = sizes[ckid] || { w: 220, h: 86 };
+        elbowSegs.push({ x1: p1.x + s1.w, y1: p1.y + s1.h / 2, x2: p2.x, y2: p2.y + s2.h / 2 });
+      }
+    }
+
+    // [T08-2-4] 外接框口径：所有 visibleIds 卡片包围盒 ∪ 所有父子折线产出点，
+    // 向外扩 max(所有可见卡 w, h) × 0.5（max 从 measureSizes() 返回值现算）
+    let minX = 0, minY = 0, maxX = 0, maxY = 0, maxW = 0, maxH = 0, hasBox = false;
+    const growTo = (x, y) => {
+      if (!hasBox) { minX = maxX = x; minY = maxY = y; hasBox = true; return; }
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    };
     for (const cid of visibleIds) {
       const p = layout[cid];
       if (!p) continue;
-      minX = Math.min(minX, p.x - 200);
-      minY = Math.min(minY, p.y - 100);
-      maxX = Math.max(maxX, p.x + 400);
-      maxY = Math.max(maxY, p.y + 200);
+      const s = sizes[cid] || { w: 220, h: 86 };
+      growTo(p.x, p.y);
+      growTo(p.x + s.w, p.y + s.h);
+      if (s.w > maxW) maxW = s.w;
+      if (s.h > maxH) maxH = s.h;
     }
+    for (const seg of elbowSegs) {
+      growTo(seg.x1, seg.y1);
+      growTo(seg.x2, seg.y2);
+      const midX = (seg.x1 + seg.x2) / 2;
+      growTo(midX, seg.y1);
+      growTo(midX, seg.y2);
+    }
+    const pad = Math.max(maxW, maxH) * 0.5;
+    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
     const w = maxX - minX, h = maxY - minY;
     edgesSvg.setAttribute("width", w);
     edgesSvg.setAttribute("height", h);
@@ -627,6 +802,12 @@
     edgesSvg.style.top = minY + "px";
     edgesSvg.setAttribute("viewBox", `${minX} ${minY} ${w} ${h}`);
     edgesSvg.innerHTML = "";
+
+    // [T08-2-1] 父子线绘制（新增；下方 relations 循环原样保留——红线7）
+    for (const seg of elbowSegs) {
+      addElbowPath(seg.x1, seg.y1, seg.x2, seg.y2, "#30363d", "1.5");
+    }
+    console.info(`[T08] 父子线：绘制 ${elbowSegs.length} 条（可见卡 ${visibleIds.size} 张）`);
 
     // 普通关系线（[phase8.6-B] 锚点 = 实测尺寸的卡中心）
     for (const r of state.relations) {
@@ -705,6 +886,20 @@
     line.setAttribute("stroke", color);
     line.setAttribute("stroke-width", sw);
     edgesSvg.appendChild(line);
+  }
+
+  // [T08-2-2] 父子直角折线：先横、再竖、再横（左右视图方向——用户中途指令推翻任务书
+  // 上下向「先下、再横、再下」，留痕；写法范本＝假设悬空红线段）。
+  // 既有 addLine 不删——relations 线仍用（红线7）；两类线调用点不交叉。
+  function addElbowPath(x1, y1, x2, y2, color, sw) {
+    const midX = x1 + (x2 - x1) / 2;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`);
+    path.setAttribute("stroke", color);
+    path.setAttribute("stroke-width", sw);
+    path.setAttribute("fill", "none");
+    path.setAttribute("data-edge", "parent-child"); // [T08] 机械验收标记（V6/V7 计数用，不影响渲染）
+    edgesSvg.appendChild(path);
   }
 
   // ==================== Tooltip 与摘要懒加载 ====================
