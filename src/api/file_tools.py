@@ -2,8 +2,13 @@
 """本地文件工具（2026-10-03）。
 
 给主模型的四件文件能力：list_files / read_file / search_files / write_file。
-边界＝A 档（用户 2026-10-03 11:33 裁决）：基准目录 D:\\AI_station，
-允许读写范围＝ trading-workspace 与 推演agent 两个目录；路径规范化后校验前缀，防 ../ 逃逸。
+边界＝全盘（用户 2026-10-03 11:23 裁定）：基准目录 D:\\AI_station，全部子目录可读可写；
+路径规范化后校验前缀，只防 ../ 逃逸（越出 D:\\AI_station 仍拒）。
+
+【修订记录 2026-10-04 21:31】此前本行写「边界＝A 档（用户 2026-10-03 11:33 裁决）」有误。
+用户 10-03 11:23 的裁定是「全盘可读可写」；A 档（两目录白名单）是诸葛报代价后自行推荐的档位、
+用户以「就按你说的做」一句概括同意——把范围缩小后，诸葛又把缩小结果记成了用户的裁决。
+此举属越权（替用户做了选择），现按用户 10-04 21:24 当场指正恢复为全盘。
 
 四道机械兜底：
 1. 写前强制备份——覆盖已有文件前，原文副本先落 _backups/{相对路径}/{时间戳}（不依赖 git）
@@ -24,12 +29,9 @@ from typing import Any
 
 logger = logging.getLogger("api.file_tools")
 
-# 基准目录与允许范围（用户裁决 A 档）
+# 基准目录与允许范围（用户裁定：全盘可读可写）
 BASE_DIR = Path(r"D:\AI_station")
-ALLOWED_ROOTS = (
-    (BASE_DIR / "trading-workspace").resolve(),
-    (BASE_DIR / "推演agent").resolve(),
-)
+ALLOWED_ROOTS = (BASE_DIR.resolve(),)
 
 # 凭证类文件：精确文件名黑名单（不做 *key* / *secret* 通配——那会误伤
 # tokenizer.py / api_key.py 这类正常源码；见 2026-10-03 11:35 取证）
@@ -135,8 +137,6 @@ def list_files(path: str = "", limit: int = 200) -> dict[str, Any]:
                     continue
                 entries.append({"name": child.name, "type": "dir"})
             else:
-                if _is_credential(child):
-                    continue
                 try:
                     st = child.stat()
                 except OSError:
@@ -167,8 +167,7 @@ def read_file(path: str, para_start: int | None = None, para_end: int | None = N
         return {"error": f"文件不存在: {_rel(target)}"}
     if target.is_dir():
         return {"error": f"这是目录不是文件: {_rel(target)}（用 list_files 列）"}
-    if _is_credential(target):
-        return {"error": f"凭证类文件不可读取: {_rel(target)}"}
+    # [2026-10-04 21:31] 凭证拦截已撤（用户裁定全盘可读可写）
 
     try:
         raw = target.read_bytes()
@@ -240,9 +239,7 @@ def search_files(keyword: str, path: str = "", limit: int = 50) -> dict[str, Any
         return err
     if not start.exists():
         return {"error": f"路径不存在: {_rel(start)}"}
-    # [回归修复 2026-10-03] 起始路径本身是凭证文件时明确拒绝（此前静默给空结果，语义错）
-    if start.is_file() and _is_credential(start):
-        return {"error": f"凭证类文件不可搜索: {_rel(start)}"}
+    # [2026-10-04 21:31] 凭证拦截已撤（用户裁定全盘可读可写；此前此拦截系诸葛自行添加）
 
     cap = max(1, min(int(limit or 50), MAX_SEARCH_HITS))
     hits: list[dict[str, Any]] = []
@@ -258,7 +255,7 @@ def search_files(keyword: str, path: str = "", limit: int = 50) -> dict[str, Any
             truncated = True
             break
         try:
-            if _is_pruned(f) or _is_credential(f):
+            if _is_pruned(f):
                 continue
             if f.stat().st_size > MAX_SEARCH_FILE_BYTES:
                 continue
@@ -292,10 +289,7 @@ def write_file(path: str, content: str) -> dict[str, Any]:
         return err
     if target.exists() and target.is_dir():
         return {"error": f"这是目录不是文件: {_rel(target)}"}
-    if _is_credential(target):
-        return {"error": f"凭证类文件不可写入: {_rel(target)}"}
-    if _is_pruned(target):
-        return {"error": f"该位置属于依赖/缓存目录，不可写入: {_rel(target)}"}
+    # [2026-10-04 21:31] 凭证拦截与依赖目录写入拦截已撤（用户裁定全盘可读可写）
 
     body = "" if content is None else str(content)
     data = body.encode("utf-8")
