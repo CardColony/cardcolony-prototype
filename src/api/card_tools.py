@@ -477,15 +477,25 @@ async def execute_tool(
             return {"hits": hits}
         # [联网能力 2026-10-02] 只给主模型的中性读工具：结果仅作工具返回进
         # 当前调用，不写卡、不进常设上下文；三思考席收 tools=None 物理上不可调用
+        # [并发修复 2026-10-04] 联网两工具是同步 def（requests 网络 IO，SearxNG
+        # 最长 30s、阿里云备用通道最长 120s），必须卸载到线程池执行——直接
+        # 调用会冻结 uvicorn 事件循环，期间所有请求（progress 轮询/其他剧本
+        # 的消息/探活）全部排队，前端 15s 闸（api.js:26-28）一到就弹「请求超时」。
+        # 这与 10-03 16:20 file_tools 修复同族，当时只修了文件工具、漏了这两个。
+        # 这不是闸，是执行位置修正；search_tool.py 函数本身一行未改。
         if tool_name == "web_search":
             from . import search_tool
-            return search_tool.web_search(
+            return await asyncio.to_thread(
+                search_tool.web_search,
                 arguments.get("query", ""),
                 count=int(arguments.get("count") or 10),
             )
         if tool_name == "fetch_web":
             from . import search_tool
-            return search_tool.fetch_web(arguments.get("url", ""))
+            return await asyncio.to_thread(
+                search_tool.fetch_web,
+                arguments.get("url", ""),
+            )
         # [本地文件能力 2026-10-03] 四件文件工具：边界与兜底全在 file_tools 内，
         # 与卡片树权限无耦合（材料全局共享），不进任何常设上下文
         # [并发修复 2026-10-03] 四件工具是同步 def（文件 IO 阻塞），必须
