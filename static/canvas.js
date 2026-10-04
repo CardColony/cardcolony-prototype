@@ -34,6 +34,17 @@
   // card_id -> card DOM 元素
   const nodeMap = new Map();
 
+  // [R1] 当前正在拖拽的节点所对应的「卸载器」（模块级；同一时刻只可能有一次拖拽）。
+  // 拖拽监听器只在拖拽期间存在——原来挂在 bindNodeEvents 函数体里无条件执行，等于每建
+  // 一个节点就挂一对 document 监听器且从不卸载（removeEventListener 全文件零命中），越用越钝。
+  let activeDragDetach = null;
+
+  // [R1] 兜底：窗口失焦（如鼠标在窗口外松开、mouseup 收不到）时，取消当前拖拽并卸监听器。
+  // 模块级注册一次，不随节点增长。
+  window.addEventListener("blur", () => {
+    if (activeDragDetach) activeDragDetach();
+  });
+
   function escapeHtml(s) {
     return String(s || "").replace(/[&<>"']/g, c => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -605,17 +616,21 @@
     let dragState = null;
     node.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      // [R1] 若上一次拖拽的监听器尚未卸掉（异常路径），先卸，避免重复挂载
+      if (activeDragDetach) activeDragDetach();
       // 用 click 事件处理选择；拖拽单独监听 mousedown+move
       dragState = {
         startX: e.clientX, startY: e.clientY,
         nodeLeft: parseFloat(node.style.left), nodeTop: parseFloat(node.style.top),
         moved: false,
       };
+      // [R1] 只在拖拽期间挂 document 监听器（松手即卸，见 detachDragListeners）
+      document.addEventListener("mousemove", onDragMove);
+      document.addEventListener("mouseup", onDragUp);
+      activeDragDetach = detachDragListeners;
+      console.info("[R1] 拖拽监听器 挂载");
       e.stopPropagation(); // 防止触发画布平移
     });
-
-    document.addEventListener("mousemove", onDragMove);
-    document.addEventListener("mouseup", onDragUp);
 
     function onDragMove(e) {
       if (!dragState) return;
@@ -639,6 +654,23 @@
         renderEdges(new Set(nodeMap.keys()), state._layout || {});
       }
       dragState = null;
+      // [R1] 松手即卸——用同一命名函数引用（onDragMove/onDragUp 是函数声明，引用稳定；
+      // 若写成匿名箭头函数则 removeEventListener 卸不掉）
+      detachDragListeners();
+    }
+
+    // [R1] 卸载本节点的拖拽监听器；被 onDragUp 与 window.blur 兜底共用。
+    // 同一时刻只有一个节点在拖拽，模块级 activeDragDetach 指向它。
+    function detachDragListeners() {
+      document.removeEventListener("mousemove", onDragMove);
+      document.removeEventListener("mouseup", onDragUp);
+      if (dragState) {
+        // 兜底路径（窗口失焦）进来时，把拖拽状态一并取消
+        node.classList.remove("dragging");
+        dragState = null;
+      }
+      if (activeDragDetach === detachDragListeners) activeDragDetach = null;
+      console.info("[R1] 拖拽监听器 卸载");
     }
 
     // tooltip（L0/L1 时悬停显示摘要）
@@ -924,6 +956,26 @@
 
   async function getSummary(cardId) {
     if (summaryCache.has(cardId)) return summaryCache.get(cardId);
+
+    // [R4] 快路径：结论摘要随画布数据一次到手（canvas.json 的 cards[].conclusion_summary），
+    // 命中则直接使用、不发 getCard 请求——首屏 N+1 请求归零。
+    // 字段缺失（老缓存未重建 / 后端未升级）→ 回退原路径，向后兼容。
+    // 代价如实记：走快路径时 meta2（更新时间）不在画布数据里，保持原状不填；
+    // L1 档位本就隐藏 meta2，L2 档位下该行的更新时间可能为空——如需它，回退路径仍在。
+    const probe = state.cardMap[cardId];
+    if (probe && typeof probe.conclusion_summary === "string") {
+      const summary = probe.conclusion_summary;
+      summaryCache.set(cardId, summary);
+      const node0 = nodeMap.get(cardId);
+      if (node0) {
+        const sumEl0 = node0.querySelector(".summary");
+        if (sumEl0) sumEl0.textContent = summary;
+        if (summary) scheduleReflow();
+      }
+      console.info("[R4] 摘要取自 canvas 数据（未发请求） " + cardId);
+      return summary;
+    }
+
     try {
       const card = await API.getCard(WORK_ID, cardId);
       const concl = (card.body && card.body.conclusion) || "";

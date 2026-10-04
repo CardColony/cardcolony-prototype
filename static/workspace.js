@@ -321,11 +321,35 @@
   }
 
   // ==================== 讨论区 ====================
+  // [R3] 会话区渲染：首屏/换卡全量构建；同卡重渲染走增量（只 append 尾部差额），
+  // 避免「打开大 session 时把全部历史 DOM 清掉重灌」的卡顿。
+  // 判据（写死）：
+  //   ① 换了卡（cardId 不同）或服务端消息数 < 本地已渲染数（消息被删）→ 全量重建；
+  //   ② 服务端消息数 > 本地已渲染数 → 只 append 尾部差额；
+  //   ③ 相等 → 不碰 DOM（既有元素引用保留，C-4 判据依赖此点）。
+  // send() 的既有增量路径不动。
+  let chatRenderedCard = "";
+  let chatRenderedCount = 0;
+
   async function renderChat() {
-    chatArea.innerHTML = "";
     try {
-      const msgs = await API.getSession(WORK_ID, currentCard.meta.card_id);
-      for (const m of msgs) appendMessage(m.role, m.content, m.model);
+      const cardId = currentCard.meta.card_id;
+      const msgs = await API.getSession(WORK_ID, cardId);
+      const needFull = (chatRenderedCard !== cardId) || (msgs.length < chatRenderedCount);
+      if (needFull) {
+        chatArea.innerHTML = "";
+        chatRenderedCard = cardId;
+        chatRenderedCount = 0;
+      }
+      if (msgs.length > chatRenderedCount) {
+        const delta = msgs.slice(chatRenderedCount);
+        for (const m of delta) appendMessage(m.role, m.content, m.model);
+        console.info("[R3] 增量追加 " + delta.length + " 条（本地 " + chatRenderedCount + " → 服务端 " + msgs.length + "）");
+        chatRenderedCount = msgs.length;
+      } else if (needFull) {
+        // 全量重建但服务端为空：保持空列表状态
+        chatRenderedCount = msgs.length;
+      }
     } catch (e) { /* toast 已处理 */ }
     scrollChatBottom();
   }
