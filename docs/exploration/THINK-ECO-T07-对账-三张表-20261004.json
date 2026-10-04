@@ -1,0 +1,80 @@
+{
+  "meta": {
+    "eco": "THINK-ECO-T07",
+    "chain": "taskbook（任务书链）· p3 专项质疑环节（ECO-33 对账三件）",
+    "subject": "布局主键迁移与类型退役 · 实现任务书 · 对账三张表",
+    "version": "20261004",
+    "basis": "条目清单 THINK-ECO-T07-对账-方案条目清单-20261004.json（127 条，P-01～P-127）",
+    "note": "本件系 09:29 补落（此前仅在上下文，未写盘）。"
+  },
+  "table_1_forward": {
+    "title": "正向表（防丢）—— 条目清单 127 条 → 任务书落点",
+    "policy": "逐条对回：每条清单条目必须在任务书中找到落点；落点为空即为红灯。",
+    "summary": {
+      "total_items": 127,
+      "with_target": 127,
+      "empty": 0,
+      "partial": 0,
+      "note": "p2 草稿原有 2 处部分缺（P-15～P-24 接口表未逐条落／前置六项内容有误），p4 已修正。"
+    },
+    "mapping": [
+      {"range": "P-01～P-06", "section": "头部元信息", "target": "任务书 §一 抬头（任务编号／下达依据／性质／产出）", "status": "有落点"},
+      {"range": "P-07～P-14", "section": "§1 功能背景", "target": "§1.1（两个问题＋三条实测支撑逐条）", "status": "有落点"},
+      {"range": "P-15～P-49", "section": "§2 位置与接口规范", "target": "§二 现场锚 A/B/C 三级＋§2 输入输出接口", "status": "有落点（p4 修正后）"},
+      {"range": "P-50～P-66", "section": "§3 预期效果", "target": "§五 验收 V1–V13", "status": "有落点"},
+      {"range": "P-67～P-75", "section": "§4.0 裁定对照表", "target": "§1.2 七条裁定表", "status": "有落点"},
+      {"range": "P-76～P-86", "section": "§4.1 编号固定化", "target": "§三 阶段一 1-1～1-3＋1-14 打点", "status": "有落点"},
+      {"range": "P-87～P-101", "section": "§4.2 判据归一", "target": "§三 阶段一 1-4～1-13", "status": "有落点"},
+      {"range": "P-102～P-109", "section": "§4.3 类型退役", "target": "§三 阶段二 2-1～2-3", "status": "有落点"},
+      {"range": "P-110～P-112", "section": "§4.4 部署方式", "target": "§三 部署段 D-1／D-2", "status": "有落点"},
+      {"range": "P-113～P-117", "section": "全日志打点", "target": "§三 1-14＋§五 V10／V11", "status": "有落点"},
+      {"range": "P-118～P-123", "section": "施工前置清单", "target": "§三 阶段〇 〇-1～〇-6", "status": "有落点（p4 修正后）"},
+      {"range": "P-124～P-127", "section": "全量基线指纹", "target": "§三 〇-3＋§四 红线 1＋§五 V6", "status": "有落点"}
+    ]
+  },
+  "table_2_reverse": {
+    "title": "反向表（防私塞）—— 任务书每条 → 条目清单依据",
+    "policy": "逐条回查：任务书每一条内容必须在条目清单／方案／裁定中找到依据；依据为空即为红灯（无中生有）。",
+    "empty_count_initial": 6,
+    "entries": [
+      {"item": "§4 红线 11「不得以 fixture 全绿替代真实产物核验」", "basis_in_list": "无", "verdict": "R3 无中生有", "resolution": "标注「本环节新立」＋依据"},
+      {"item": "§4 红线 12「日志只写 %TEMP% 或 _t07_*.log」", "basis_in_list": "无", "verdict": "R3 无中生有", "resolution": "标注「本环节新立」＋依据"},
+      {"item": "§6 回报 5「悬账清单」", "basis_in_list": "无", "verdict": "R3 无中生有", "resolution": "标注「本环节新立」＋依据"},
+      {"item": "§6 回报 7「两处已知错误的处置」", "basis_in_list": "依据为错误事实", "verdict": "R3 无中生有 + 事实错误", "resolution": "改写为「:98 与 :864 两处处置回报」"},
+      {"item": "§3 〇-4「全库 36 张卡」", "basis_in_list": "方案判据②有此要求，但「36」未写", "verdict": "R2 标注缺失", "resolution": "标注来源为实读数出"},
+      {"item": "§2「对不回①／②」两段", "basis_in_list": "无（且与原文相悖）", "verdict": "R3 无中生有", "resolution": "整段删除"},
+      {"item": "canvas.js:864 应为补入项", "basis_in_list": "方案未列、p3 实读发现", "verdict": "R1 丢失（应补未补）", "resolution": "补入 A 级锚／1-10／红线 10／V9"}
+    ],
+    "summary": {
+      "empty_initial": 6,
+      "resolved_in_p4": 6,
+      "note": "4 条标注「本环节新立」并附依据；2 条删除（「对不回」两段）。"
+    }
+  },
+  "table_3_contradiction_scan": {
+    "title": "矛盾扫描（专项两两对）",
+    "policy": "对相互关联的成对项做两两比对，命中矛盾即为红灯。",
+    "pairs": [
+      {"pair": "类型枚举 vs 验收条款", "a": "红线 3（不得删四个名字）", "b": "V5（六值仍在）＋2-2（元组原样保留）", "verdict": "一致"},
+      {"pair": "红线 vs 改件", "a": "原红线 12「Ⅱ-1 不得改动」", "b": "1-8「滤卡段改为按 parent 分组」＋方案 Ⅱ-1「:98 须改」", "verdict": "矛盾（同一草稿内部自相矛盾）", "resolution": "原红线 12 删除，改为红线 10"},
+      {"pair": "前置 vs 任务", "a": "〇-5「确认 Ⅱ-1 无须改」", "b": "1-8「滤卡段改为按 parent 分组」", "verdict": "矛盾", "resolution": "〇-5 改写"},
+      {"pair": "锚 vs 锚", "a": "A 级锚「:98 已是 parent 判据」", "b": "grep 原文「:98 是 card_type === \"剧本\"」", "verdict": "矛盾（后者为真）", "resolution": "改按实读原文"},
+      {"pair": "部署 vs 红线", "a": "D-2「部署那次重启须另行许可」", "b": "红线 8", "verdict": "一致"}
+    ],
+    "hit_count": 3,
+    "resolved": 3,
+    "note": "3 组命中全部源于同一条错误事实（canvas.js:98 的判据形态被草稿写反），p4 逐条消解。"
+  },
+  "overall": {
+    "forward_empty": 0,
+    "reverse_empty_initial": 6,
+    "contradiction_hit": 3,
+    "red_ledger_total": 10,
+    "red_ledger_final": "全消（10/10）",
+    "judgement": "本步退回 p4 修订 → p4 逐条修订 → 回本步重判 → 全消"
+  },
+  "boundary": {
+    "report_only": "p3 环节全程只读（read／grep 回读原文比对），未改任何文件、未碰 works、未重启服务。",
+    "fallback_note": "本文件为 09:29 补落。此前 09:23／09:24 曾声称已落盘，实为不实（机器层索引无对应 write）。"
+  }
+}

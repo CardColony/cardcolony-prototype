@@ -1,0 +1,56 @@
+{
+  "meta": {
+    "eco": "THINK-ECO-T07",
+    "chain": "taskbook（任务书链）",
+    "subject": "布局主键迁移与类型退役 · 实现任务书",
+    "released_at": "2026-10-04T09:27:00+08:00",
+    "release_statement": "用户原话：放行",
+    "release_scope": "本次放行对象＝任务书终稿全文（六节），不含执行；执行（施工）另行开工令。"
+  },
+  "release_items": {
+    "taskbook_final": {
+      "path": "docs\\exploration\\布局主键迁移与类型退役-实现任务书-20261004.md",
+      "sections": ["一·背景与裁定", "二·现场锚（A/B/C 三级）", "三·任务分解（阶段〇6项＋阶段一14项＋阶段二3项＋部署2项）", "四·红线（12条）", "五·验收（V1–V13）", "六·回报要求（7项）"],
+      "status": "in_place"
+    },
+    "item_list": {
+      "path": "docs\\exploration\\THINK-ECO-T07-对账-方案条目清单-20261004.json",
+      "version": "20261004",
+      "total": 127,
+      "id_range": "P-01～P-127",
+      "self_check": "抽查14条回对方案原文 14/14 全过；id 唯一连续；JSON 合法",
+      "status": "in_place"
+    },
+    "reconciliation_tables": {
+      "path": "docs\\exploration\\THINK-ECO-T07-对账-三张表-20261004.json",
+      "forward": "127/127 有落点，全空 0 条",
+      "reverse": "6 处原无依据 → p4 逐条处置（4 条标「本环节新立」附依据；2 条删除）",
+      "contradiction_scan": "命中 3 组 → p4 全消",
+      "status": "in_place"
+    },
+    "red_ledger": {
+      "path": "docs\\exploration\\THINK-ECO-T07-红灯账-20261004.json",
+      "initial": {"R1_lost": 2, "R2_rewritten": 1, "R3_fabricated": 5, "R4_contradiction": 3, "total": 10},
+      "final": "全消（10/10）",
+      "status": "in_place"
+    }
+  },
+  "upstream_products": [
+    {"path": "docs\\exploration\\布局主键迁移与类型退役-实现方案-20261004.md", "note": "方案终稿 257 行（09:17 补落）"},
+    {"path": "docs\\exploration\\布局主键迁移与类型退役-裁定-20261004.md", "note": "七条代拍固化（D-01～D-07）"},
+    {"path": "docs\\exploration\\布局主键迁移与类型退役-方案链输入包-20261004.md", "note": "方案链输入包"},
+    {"path": "docs\\exploration\\布局主键迁移与类型退役-任务书链输入包-20261004.md", "note": "任务书链输入包"},
+    {"path": "docs\\exploration\\布局主键迁移与类型退役-方案-20261003.md", "note": "底稿（地基为 card_009 转述）"}
+  ],
+  "known_issues": [
+    "任务书终稿地基继承自方案；方案地基为 card_009 转述，抽验 14 条（真12/部分真1/未核2/假0），未全验——任务书 §二 B级锚已要求执行前逐处实读复核。",
+    "T07 三张表与红灯账系 09:23 补落（p3 环节曾以「产出」表述而未实际写盘）。",
+    "任务书链过程中落盘声称失信共 5 次（10-03 两次、10-04 方案终稿一次、T07 对账件一次等），全部经补落+回读核验处置；此后凡声称落盘先跑核验。"
+  ],
+  "boundary": {
+    "written_files": ["docs\\exploration\\ 下 T07 系列对账件与任务书终稿与本放行单"],
+    "untouched": ["works/ 用户数据", "sessions/ 对话进度", "服务进程（5700/5701 均未重启）"],
+    "report_only": "本链只出任务书，未执行任何代码改动。"
+  },
+  "next_step": "等待用户开工令：照任务书施工（测试空间 5701 先跑通 V1–V13；生产 5700 只做部署窗口）。施工前置硬条件：建卡入口定位（未定位则阶段二不成立）。部署那次重启须用户另行许可。"
+}
