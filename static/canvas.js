@@ -609,7 +609,7 @@
       clickTimer = setTimeout(() => {
         clickTimer = null;
         onSingleClick(card);
-      }, 250);
+      }, 120);
     });
 
     // 拖拽
