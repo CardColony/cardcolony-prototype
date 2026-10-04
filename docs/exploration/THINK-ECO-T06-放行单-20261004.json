@@ -1,0 +1,74 @@
+{
+  "meta": {
+    "batch": "THINK-ECO-T06",
+    "chain": "proposal",
+    "topic": "布局主键迁移与类型退役 · 实现方案",
+    "date": "20261004",
+    "landed_at": "2026-10-04T00:34:00+08:00"
+  },
+  "final_state": "deliver",
+
+  "release_checklist": {
+    "1_final_draft": {
+      "path": "D:\\AI_station\\推演agent\\docs\\exploration\\布局主键迁移与类型退役-实现方案-20261004.md",
+      "status": "在场",
+      "sections": ["1. 功能背景", "2. 项目位置与接口规范", "3. 预期效果", "4. 方案正文（4.0 裁定对照表 + 4.1 编号固定化 + 4.2 判据归一 + 4.3 类型退役 + 4.4 部署方式 + 全日志打点 + 施工前置清单 + 全量基线指纹）"]
+    },
+    "2_item_list": {
+      "path": "D:\\AI_station\\推演agent\\docs\\exploration\\THINK-ECO-T06-对账-上级条目清单-20261004.json",
+      "version": "20261004",
+      "item_count": 123,
+      "self_check": "全量回对 123/123 命中底稿，id 唯一连续，JSON 合法"
+    },
+    "3_three_tables": {
+      "path": "D:\\AI_station\\推演agent\\docs\\exploration\\THINK-ECO-T06-对账-三张表-20261004.json",
+      "forward": "123/123 有落点，无落点 0 条",
+      "reverse": "终稿新增 20 处 → 17 处有依据 + 3 处标本环节新定",
+      "contradiction": "扫出 4 处，4 处全消"
+    },
+    "4_red_ledger": {
+      "path": "D:\\AI_station\\推演agent\\docs\\exploration\\THINK-ECO-T06-红灯账-20261004.json",
+      "final_state": "全消（5/5）",
+      "entries": [
+        {"seq": 1, "issue": "§4 三处新引入内容无锚支撑", "fixed_at": "§4.1 设计点 Ⅰ-附 / §2 前置实读项 / §4.2 Ⅱ-6"},
+        {"seq": 2, "issue": "未逐条对照唯一裁定依据", "fixed_at": "§4.0 裁定对照表（七条逐条有落点）"},
+        {"seq": 3, "issue": "建卡入口未定位 + 漏继承护栏⑤ + 两处入口悬置", "fixed_at": "§2 前置一 / §1 §2 §4.3 继承条款逐字 / 两处待实读项"},
+        {"seq": 4, "issue": "「须在 p2 阶段定死」把未决推给已过环节", "fixed_at": "§3 判据③ 四类实取样本（不新建卡不改数据）"},
+        {"seq": 5, "issue": "打点终止条件无判据", "fixed_at": "全日志打点「开合与终止条件（定死）」段"}
+      ]
+    }
+  },
+
+  "release": {
+    "released_by": "用户",
+    "released_at": "2026-10-04T00:32:00+08:00",
+    "user_words": "放行",
+    "note": "放行回执于 00:32 到达；先补落三样缺件（终稿/三张表/红灯账），重核四样在场后落本单。"
+  },
+
+  "boundary": {
+    "report_only": true,
+    "touched_works": false,
+    "touched_service": false,
+    "restarted": false,
+    "note": "本链全程只写 docs/exploration/ 目录；未碰 works 数据、未碰服务、未重启。"
+  },
+
+  "downstream": {
+    "next": "任务书链（taskbook）产出可执行施工指令 → 测试空间施工 → 部署窗口（须用户另行许可）",
+    "construction_preconditions": [
+      "建卡入口定位（向调用方提供类型枚举处，含路由与前端表单）",
+      "编号落点确认（文件名/正文/两者）",
+      "_collect_card_meta 键名实读",
+      "works/ 全量基线指纹（部署前取）",
+      "影子卡改造后的现状重读（card_store.py:320-322、521-523；card_tools.py:193-200）",
+      "update_card / delete_card 全文实读"
+    ]
+  },
+
+  "known_issues": [
+    {"seq": 1, "text": "底稿地基是 card_009 转述，本链抽验 14 条（真 12/部分真 1/未核 2/假 0），未全验。", "impact": "底稿未抽到的部分仍是转述，施工前须按现状逐处重读。"},
+    {"seq": 2, "text": "终稿、三张表、红灯账三样系 p5 补落（呈报前未落齐，停下报缺后补）。", "impact": "文件在场，可追溯；但落盘时点晚于其对应环节。"},
+    {"seq": 3, "text": "建卡入口 file:line 未定位（底稿自陈未读的两处入口亦未点名）；编号落点未确认。", "impact": "§4.3 设计点 Ⅳ 与 §3 判据① 在定位前不成立——已写为施工前置硬条件。"}
+  ]
+}

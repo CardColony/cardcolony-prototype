@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "chain": "性能优化线 · 实现方案",
+    "date": "2026-10-04",
+    "author": "诸葛",
+    "ledger_type": "红灯账（四类：丢失 / 改写 / 无中生有 / 矛盾）",
+    "scope": "本轮草稿（议题4 产出）经议题5 九条专项质疑后的红灯清单",
+    "final_state": "18 条：10 条就地修正、8 条标注保留（实现手段非需求）、0 条需动上一级产物"
+  },
+  "red_lights": [
+    {"id": "L1", "class": "丢失", "content": "R4 未写「conclusion 为空或全空白」的卡如何处置", "disposition": "已修——补写：写空字符串；前端 .summary 保持空白、不写占位文字（与现有 getSummary 行为逐字一致）", "status": "closed"},
+    {"id": "L2", "class": "丢失", "content": "R4 未写前端兼容回退", "disposition": "已修——补写：conclusion_summary 缺失（老数据/未重建）时回退现有 API.getCard 路径", "status": "closed"},
+    {"id": "L3", "class": "丢失", "content": "C-3（首屏 /cards/card_ 请求数为 0）未写隐含前置", "disposition": "已修——补写：须先触发一次 canvas 重建（任一卡操作，或测试空间删 canvas.json 触发自动重建），未重建则总量含旧缓存无新字段", "status": "closed"},
+    {"id": "L4", "class": "改写", "content": "C-1 未写 getEventListeners 的工具依赖（该函数仅 Chromium 系 DevTools Console 可用）", "disposition": "已修——限定「Chromium 系浏览器（Chrome/Edge）的 DevTools Console」", "status": "closed"},
+    {"id": "L5", "class": "改写", "content": "4.2(a) 判据「至少一个能改变 state.viewRoot 的入口」表述模糊", "disposition": "已修——写死：依次尝试三条入口（单击徽章 / 双击卡片 / 点击面包屑），记录其中能使 GetCanvasState().viewRoot 变化者，≥1 通过、=0 不通过", "status": "closed"},
+    {"id": "L6", "class": "改写", "content": "4.2(a) 把「下钻改走哪」以「可选①②③」形式推给执行者", "disposition": "已修——改为：该选择由同一轮裁定一并给出；裁定未给出则本路径不得实施", "status": "closed"},
+    {"id": "L7", "class": "改写", "content": "4.6(a) 「要么给出改法，要么给出不改的结论」主语不明，可被读成执行者的选择", "disposition": "已修——改为：若裁定(a)，本方案须在同轮给出明确处置；该处置由裁定给出，执行者不得自行选择", "status": "closed"},
+    {"id": "L8", "class": "无中生有", "content": "B-1 R1 路径(乙)的 window.blur 兜底", "disposition": "标注保留——实现手段，非新增需求", "status": "retained"},
+    {"id": "L9", "class": "无中生有", "content": "B-2 R3 的「服务端长度<本地→回退全量重建」规则", "disposition": "标注保留——实现手段", "status": "retained"},
+    {"id": "L10", "class": "无中生有", "content": "B-3 R4 后端截断算法与前端逐字一致的要求", "disposition": "标注保留——实现手段", "status": "retained"},
+    {"id": "L11", "class": "无中生有", "content": "B-4 R4 前端向后兼容回退", "disposition": "标注保留——实现手段", "status": "retained"},
+    {"id": "L12", "class": "无中生有", "content": "B-5 全日志打点四条", "disposition": "标注保留——实现手段", "status": "retained"},
+    {"id": "L13", "class": "无中生有", "content": "B-6 红线 13 条中非 §七 直接继承的 9 条", "disposition": "标注保留——方案自锁", "status": "retained"},
+    {"id": "L14", "class": "无中生有", "content": "B-7 C-9（平移监听器守门）/ C-10（LOD 守门）判据", "disposition": "标注保留——判据", "status": "retained"},
+    {"id": "L15", "class": "无中生有", "content": "B-8 4.2(a) 的下钻入口守门判据", "disposition": "标注保留——判据（防 T08 叠加致入口消失）", "status": "retained"},
+    {"id": "L16", "class": "矛盾", "content": "三节 B.1 概括 vs R4 涉后端", "disposition": "已澄清（4.0 分行表格单列 R4 为乙类）", "status": "closed"},
+    {"id": "L17", "class": "矛盾", "content": "诸葛 14:43 评审「R1 修法须连带改 dragState 作用域」 vs 草稿 4.1 路径(乙)不需要", "disposition": "已当场改正（该结论只对路径甲成立）", "status": "closed"},
+    {"id": "L18", "class": "矛盾", "content": "需求文档 R3「发一条消息就重建」 vs 实读「只在 open/tryRecover」", "disposition": "已表述修正，4.3 标明为实读发现", "status": "closed"}
+  ],
+  "summary": {
+    "total": 18,
+    "closed": 10,
+    "retained_with_annotation": 8,
+    "requiring_upstream_change": 0,
+    "verdict": "修订后通过"
+  },
+  "pending_from_user": [
+    {"id": "D-R2", "content": "R2 下钻替代入口：(a) 彻底拆双击 / (b) 保留双击降阈值至 ~120ms", "note": "选 (a) 须同时给出「下钻改走哪」，否则与 T08 徽章改动叠加将导致下钻入口全部消失"},
+    {"id": "D-R6", "content": "R6 归属：(a) 归性能留本线 / (b) 归架构并 card_005", "note": "选 (a) 时本方案须给出明确处置（改法或明确不改），该处置由裁定给出"}
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "chain": "性能优化线 · 实现方案",
+    "date": "2026-10-04",
+    "author": "诸葛",
+    "verification_time": "2026-10-04 15:04:37",
+    "upstream": "docs/exploration/性能优化-需求-20261004.md (231 行)",
+    "input_pack": "docs/exploration/性能优化-方案链输入包-20261004.md (24,330 B)",
+    "note": "本链由自我引导六步驱动，未走 think 方案链，故无 p0 对账底册；正向表以输入包材料一/二/三为来源逐条构建"
+  },
+  "forward_table": {
+    "title": "正向表（防丢）",
+    "summary": "47 条，落点为 0 条",
+    "groups": [
+      {"source": "R1", "items": ["证据", "修法甲", "修法乙", "判据", "别误伤"], "count": 5, "landing": "4.1 + C-1/C-2 + 红线7"},
+      {"source": "R2", "items": ["证据", "修法甲", "修法乙", "判据", "待裁"], "count": 5, "landing": "4.2 + C.2 两路径判据"},
+      {"source": "R3", "items": ["证据", "修法", "判据"], "count": 3, "landing": "4.3 + C-4/C-6"},
+      {"source": "R4", "items": ["证据", "修正表述", "修法", "前提", "判据"], "count": 5, "landing": "4.4 + C-3"},
+      {"source": "R5", "items": ["证据", "判据", "咬合警告"], "count": 3, "landing": "4.5 + C-5"},
+      {"source": "R6", "items": ["证据一", "证据二", "待裁"], "count": 3, "landing": "4.6 + C.3 两路径判据"},
+      {"source": "需求文档 §一 内核诉求", "items": ["越用越钝", "卡卡的"], "count": 2, "landing": "A.1"},
+      {"source": "需求文档 §五 待定项", "items": ["R2 下钻替代入口", "R6 归属"], "count": 2, "landing": "B.2 第7/8行 + 4.2/4.6"},
+      {"source": "需求文档 §六 范围外", "items": ["后端接口/数据模型", "影子树/进度层重构", "布局与视觉工程", "卡片样式美化"], "count": 4, "landing": "C.5 表逐条照录"},
+      {"source": "需求文档 §七 红线", "items": ["测试只在测试空间", "正式服除提交外不动", "不动需求人数据", "不碰 relations 机制"], "count": 4, "landing": "红线 1/3/5 + 4.4"},
+      {"source": "需求文档 §八 未实测声明", "items": ["R1 静态阅读结论", "15万字节未复现"], "count": 2, "landing": "A.2 支撑三/四"},
+      {"source": "诸葛评审补充", "items": ["泄漏含整棵 DOM 子树", "dragState 作用域连带（含改正）"], "count": 2, "landing": "A.2 支撑一 / 4.1"},
+      {"source": "与 T08 咬合面", "items": ["咬合一 R2(a)互斥", "咬合二 徽章前提失效", "咬合三 同函数双改", "咬合四 reloadCanvas/expanded", "咬合五 hideWorkspace 警告"], "count": 5, "landing": "4.2/4.5/4.7 + 材料三逐条"},
+      {"source": "输入包硬约束", "items": ["canvas.js 侧禁行号", "施工顺序单列"], "count": 2, "landing": "全篇定位方式 + 4.7"}
+    ],
+    "total": 47,
+    "unlanded": 0
+  },
+  "reverse_table": {
+    "title": "反向表（防私塞）",
+    "summary": "8 处本环节新立，全部标注、不伪装上游",
+    "items": [
+      {"id": "B-1", "content": "R1 路径(乙)的 window.blur 兜底（处理窗口外松手致监听器残留）", "nature": "实现手段", "upstream": "上游未提", "disposition": "保留+标注"},
+      {"id": "B-2", "content": "R3 的「服务端长度 < 本地 → 回退全量重建」规则", "nature": "实现手段", "upstream": "上游只说「仅增量追加新消息」", "disposition": "保留+标注"},
+      {"id": "B-3", "content": "R4 后端截断算法须与前端 getSummary 逐字一致（第一行非空、超120字截断）", "nature": "实现手段", "upstream": "上游只说「一次拿完」", "disposition": "保留+标注"},
+      {"id": "B-4", "content": "R4 前端「conclusion_summary 缺失则回退 API.getCard」的向后兼容", "nature": "实现手段", "upstream": "上游未提", "disposition": "保留+标注"},
+      {"id": "B-5", "content": "全日志打点四条（[R1]/[R3]/[R4] 前端三条 + 后端 rebuild 一条）", "nature": "实现手段", "upstream": "上游未提打点", "disposition": "保留+标注"},
+      {"id": "B-6", "content": "红线 13 条中非 §七 直接继承的 9 条", "nature": "方案自锁", "upstream": "派生自 §七 与铁律一二", "disposition": "保留+标注"},
+      {"id": "B-7", "content": "C-9（平移监听器守门）/ C-10（三档 LOD 守门）判据", "nature": "判据", "upstream": "上游有「别误伤」一句，判据为新立", "disposition": "保留+标注"},
+      {"id": "B-8", "content": "4.2(a) 的「下钻入口守门判据」（防 T08 徽章改动叠加致入口消失）", "nature": "判据", "upstream": "上游未提此风险", "disposition": "保留+标注"}
+    ],
+    "total": 8,
+    "judgement": "全部为实现手段或判据，非新增需求——不构成加戏"
+  },
+  "conflict_scan": {
+    "title": "矛盾扫描（防自相矛盾）",
+    "summary": "4 组命中，全部就地消解",
+    "items": [
+      {"id": "C-1", "conflict": "三节 B.1 概括「R1/R2/R3/R5 全部落 static/」vs R4 涉后端 cv_storage", "disposition": "已澄清：4.0 分行表格把 R4 单列乙类，不矛盾"},
+      {"id": "C-2", "conflict": "诸葛 14:43 评审称「R1 修法须连带改 dragState 作用域」vs 草稿 4.1 路径(乙)不需要", "disposition": "已当场改正（该结论只对路径甲成立）"},
+      {"id": "C-3", "conflict": "需求文档 R3「发一条消息就重建」vs 实读「只在 open/tryRecover 触发」", "disposition": "已表述修正，并在 4.3 标明为实读发现"},
+      {"id": "C-4", "conflict": "4.5「不改 R5」vs 给 R5 判据 C-5", "disposition": "不矛盾（判据是回归守门，不是改动）"}
+    ],
+    "total": 4
+  },
+  "self_check": {
+    "anchors_reverified": "15:04:37 现场重取：workspace.js L176/L317/L324-331/L416 逐字命中；style.css L228/L234/L291/L293/L310/L322 逐字命中；canvas_store.py L82-88 五字段；hash_utils.py L100-112 四区映射",
+    "linecount_discrepancy": "workspace.js 用 Split(\"\\n\").Count 读得 592，read 工具报 591——差额为末尾换行产生的空元素，真实行数 591（与需求文档 §0.3 一致）",
+    "termination_terms_check": "已逐项判定（草稿未落盘，故用逐段通读）；落盘后议题6 补跑机械检索",
+    "browser_side_verification": "未做（无浏览器自动化能力）——C-1/C-2/C-4/C-6/C-10 须由他人执行"
+  }
+}
