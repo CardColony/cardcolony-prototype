@@ -87,7 +87,11 @@ def _q(value: str) -> str:
 
 def _resolve_card_type(card_type: str) -> str:
     """非法值一律降级为"线索"（不报错不丢弃）。"""
-    return card_type if card_type in ALLOWED_CARD_TYPE else "线索"
+    if card_type in ALLOWED_CARD_TYPE:
+        return card_type
+    # [T07 打点] 「存量卡被静默改写」的唯一告警线：降级必须留痕（卡号/原值/结果）
+    logger.warning("类型名降级: 原值=%r → 线索", card_type)
+    return "线索"
 
 
 def _cards_dir(work_id: str) -> Path:
@@ -111,7 +115,17 @@ def _session_path(work_id: str, card_id: str) -> Path:
     return _sessions_dir(work_id) / _session_name(card_id)
 
 
-def _next_seq(work_id: str) -> int:
+def _card_id_seq_path(work_id: str) -> Path:
+    """[T07-1-2] 编号序列载体：works/{work_id}/.card_id_seq.json。
+
+    落点在工作目录内、但不在 cards/ 与 shadows/ 的任何扫描通道内
+    （8 处 glob 全部只扫 cards/）。会进快照——预期行为（属剧本状态）。
+    """
+    return WORKS_DIR / work_id / ".card_id_seq.json"
+
+
+def _scan_max_seq(work_id: str) -> int:
+    """旧推算路径：扫 cards/ 取目录最大号（留作序列种子与对账基准）。"""
     cd = _cards_dir(work_id)
     max_seq = 0
     if cd.exists():
@@ -119,7 +133,56 @@ def _next_seq(work_id: str) -> int:
             m = _CARD_FILE_RE.match(path.name)
             if m:
                 max_seq = max(max_seq, int(m.group(1)))
-    return max_seq + 1
+    return max_seq
+
+
+def _load_card_id_seq(work_id: str) -> dict[str, Any]:
+    """读序列载体；缺失/损坏时以目录最大号为种子初始化（老卡不补号，D-02）。"""
+    p = _card_id_seq_path(work_id)
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("seq"), int):
+                data.setdefault("issued", [])
+                return data
+        except Exception:  # noqa: BLE001
+            pass
+    return {"seq": _scan_max_seq(work_id), "issued": []}
+
+
+def _save_card_id_seq(work_id: str, state: dict[str, Any]) -> None:
+    """序列载体写盘（每次发号成功后立即调用，D-05 新号只发不回溯）。"""
+    p = _card_id_seq_path(work_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _next_seq(work_id: str) -> int:
+    """[T07-1-1] 编号来源改「发放式」：从序列载体尾部取下一个号。
+
+    输出形态保持现有 card_{seq:03d}（格式化在 create_card；D-01「沿用现有形态」，
+    现有形态经实读为三位数——任务书 %06d 表述系转录误差，见执行回报）。
+    """
+    return _load_card_id_seq(work_id)["seq"] + 1
+
+
+# [T07 打点] 判据源切换观测：每处首次调用记新旧对比行；不一致升级 warning
+# （判据源切换唯一的回归观测点）。不设自动收口，由人看零命中日志后裁定。
+_judgment_switch_logged: set[str] = set()
+
+
+def _log_judgment_switch(site: str, card_id: str, old_result: Any, new_result: Any) -> None:
+    if site not in _judgment_switch_logged:
+        _judgment_switch_logged.add(site)
+        logger.info(
+            "判据源切换: site=%s card=%s 旧判据=%s 新判据=%s",
+            site, card_id, old_result, new_result,
+        )
+    if old_result != new_result:
+        logger.warning(
+            "判据源切换不一致: site=%s card=%s 旧判据=%s 新判据=%s",
+            site, card_id, old_result, new_result,
+        )
 
 
 def _normalize_parent(work_id: str, parent: Optional[str], card_type: str) -> str:
@@ -278,39 +341,58 @@ async def create_card(
 
         _cards_dir(work_id).mkdir(parents=True, exist_ok=True)
         _sessions_dir(work_id).mkdir(parents=True, exist_ok=True)
-        seq = _next_seq(work_id)
-        card_id = f"card_{seq:03d}"
-        session_name = _session_name(card_id)
-        now = _now_iso()
-        meta = {
-            "title": title,
-            "source": source,
-            "card_type": resolved_type,
-            "parent": resolved_parent,
-            "tags": [],
-            "relations": [],
-            "session_ref": f"sessions/{session_name}",
-            "methodology_refs": [],
-            "pending_sync": False,
-            "created_at": now,
-            "updated_at": now,
-        }
-        history_lines = [f"- [{now}] 卡片创建"]
-        content = _render_card(meta, charter, conclusion, "", history_lines)
-        content = apply_hash(content)
-
-        card_path = _card_path(work_id, card_id)
-        lock = _get_lock(card_path)
-        await _acquire(lock)
+        # [T07-1-1/1-2] 发放式编号：序列锁内取号→写卡→发号成功立即写盘
+        seq_path = _card_id_seq_path(work_id)
+        seq_lock = _get_lock(seq_path)
+        await _acquire(seq_lock)
         try:
-            card_path.write_text(content, encoding="utf-8")
-            session_path = _sessions_dir(work_id) / session_name
-            if not session_path.exists():
-                session_path.write_text(
-                    f"<!-- session: {card_id}, created: {now} -->\n", encoding="utf-8"
-                )
+            state = _load_card_id_seq(work_id)
+            seq = state["seq"] + 1
+            card_id = f"card_{seq:03d}"
+            scan_max_before = _scan_max_seq(work_id)  # 旧推算路径对账值
+            session_name = _session_name(card_id)
+            now = _now_iso()
+            meta = {
+                "title": title,
+                "source": source,
+                "card_type": resolved_type,
+                "parent": resolved_parent,
+                "tags": [],
+                "relations": [],
+                "session_ref": f"sessions/{session_name}",
+                "methodology_refs": [],
+                "pending_sync": False,
+                "created_at": now,
+                "updated_at": now,
+            }
+            history_lines = [f"- [{now}] 卡片创建"]
+            content = _render_card(meta, charter, conclusion, "", history_lines)
+            content = apply_hash(content)
+
+            card_path = _card_path(work_id, card_id)
+            lock = _get_lock(card_path)
+            await _acquire(lock)
+            try:
+                card_path.write_text(content, encoding="utf-8")
+                session_path = _sessions_dir(work_id) / session_name
+                if not session_path.exists():
+                    session_path.write_text(
+                        f"<!-- session: {card_id}, created: {now} -->\n", encoding="utf-8"
+                    )
+            finally:
+                lock.release()
+
+            # [T07-1-2] 发号成功：立即写盘
+            state["seq"] = seq
+            state["issued"].append(card_id)
+            _save_card_id_seq(work_id, state)
         finally:
-            lock.release()
+            seq_lock.release()
+        # [T07 打点] 编号发放：新旧两路取值各记一次（对账）
+        logger.info(
+            "编号发放: work=%s card=%s 新路径(序列取值)=%d 旧路径(推算值)=%d",
+            work_id, card_id, seq, scan_max_before + 1,
+        )
 
         await canvas_store.update_cache(work_id)
         # [数据与代码分家 2026-10-03] 不再 git 提交运行数据（分支操作曾整体回退 works/），
@@ -327,6 +409,15 @@ async def create_card(
         raise
     except Exception as exc:
         logger.error("create_card 失败（已创建文件保留）: %s", exc)
+        # [T07 打点] 失败时记序列文件状态与目录最大号（对账）
+        try:
+            _st = _load_card_id_seq(work_id)
+            logger.error(
+                "编号序列状态: work=%s seq=%s issued_count=%d 目录最大号=%d",
+                work_id, _st["seq"], len(_st["issued"]), _scan_max_seq(work_id),
+            )
+        except Exception:  # noqa: BLE001
+            pass
         return {"error": str(exc)}
 
 
@@ -403,13 +494,19 @@ async def update_card(
     if not card_path.exists():
         raise CardNotFoundError(f"卡片不存在: {card_id}")
 
-    # 先读现状（不锁，用于防环/剧本卡保护判定）
+    # 先读现状（不锁，用于防环/根卡保护判定）
     current = await read_card(work_id, card_id)
     cur_meta = current["meta"]
     is_work_card = cur_meta.get("card_type") == "剧本"
+    # [T07-1-4] 根卡保护腿①判据源切换：card_type=="剧本" → card_id==work_card_id
+    # （腿②「禁止改成剧本」仍按类型名——它判的是类型迁移，不是根卡身份）
+    is_root_card = card_id == work_store.work_card_id_of(work_id)
+    _log_judgment_switch(
+        "card_store.update_card.root_protect", card_id, is_work_card, is_root_card
+    )
 
-    # 剧本卡保护：card_type / parent 不允许修改
-    if is_work_card and ("card_type" in updates or "parent" in updates):
+    # 根卡保护：card_type / parent 不允许修改
+    if is_root_card and ("card_type" in updates or "parent" in updates):
         return {"error": "剧本卡的 card_type/parent 不允许修改"}
 
     # card_type 降级

@@ -134,12 +134,9 @@
       <div class="blocktitle">＋ 建子卡</div>
       <div class="add-child-row">
         <input type="text" id="childTitle" placeholder="子卡标题">
+        <!-- D-06（T07）：只关新建入口、不删白名单 —— 四个废弃类型名不再提供；ALLOWED_CARD_TYPE 六值元组原样保留 -->
         <select id="childType">
           <option value="线索">线索</option>
-          <option value="世界观">世界观</option>
-          <option value="行为体">行为体</option>
-          <option value="节点">节点</option>
-          <option value="假设">假设</option>
         </select>
         <button class="btn" id="addChildBtn">建</button>
       </div>
