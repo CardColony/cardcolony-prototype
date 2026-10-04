@@ -203,11 +203,16 @@ def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:
     return cards
 
 
-def can_read(current_id: str, target_id: str, cards: dict[str, dict[str, Any]]) -> bool:
+def can_read(
+    current_id: str, target_id: str, cards: dict[str, dict[str, Any]],
+    work_card_id: str = "",
+) -> bool:
     """读权限：target 在 current 的子树内，或在 current 的血统链上（含剧本卡），
     或在 current 的 relations 里 → True。
 
     cards: {card_id: meta dict（含 parent, card_type, relations）}
+    work_card_id: 本剧本根卡 id。[T07-1-6] 判据④（锚卡全局）按 card_id == work_card_id
+    判（原按 card_type=="剧本"）；缺省空串时判据④不命中（供未传根卡的直调方）。
     """
     if target_id == current_id:
         return True
@@ -255,11 +260,16 @@ def can_read(current_id: str, target_id: str, cards: dict[str, dict[str, Any]]) 
         if isinstance(rel, dict) and rel.get("target") == target_id:
             return True
 
-    # 4. 锚卡全局可读：target 锚定剧本卡（系统派生结构）→ 任何卡可读
+    # 4. 锚卡全局可读：target 锚定剧本根卡（系统派生结构）→ 任何卡可读
+    #    [T07-1-6] 判据源切换：锚定目标是否根卡，按 card_id == work_card_id 判
     for rel in tgt.get("relations") or []:
         if isinstance(rel, dict) and rel.get("type") == "锚定":
-            anchor_tgt = cards.get(rel.get("target", ""))
-            if anchor_tgt is not None and anchor_tgt.get("card_type") == "剧本":
+            _anc_old = (cards.get(rel.get("target", "")) or {}).get("card_type") == "剧本"
+            _anc_new = rel.get("target", "") == work_card_id
+            card_store._log_judgment_switch(
+                "card_tools.can_read.anchor_global", rel.get("target", ""), _anc_old, _anc_new
+            )
+            if _anc_new:
                 return True
 
     return False
@@ -310,7 +320,7 @@ async def execute_tool(
             # [语义修正 2026-10-02] 先判存在再判权限：已删除的卡不再误报"越权"
             if target_id not in cards:
                 return {"error": f"卡片不存在: {target_id}"}
-            if not can_read(current_id, target_id, cards):
+            if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
                 return {"error": f"越权：无权读取 {target_id}"}
             result = await card_store.read_card(work_id, target_id)
             return {
@@ -375,7 +385,7 @@ async def execute_tool(
                 target_id = target_id[len("shadow_"):]
             if target_id not in cards:
                 return {"error": f"卡片不存在: {target_id}"}
-            if not can_read(current_id, target_id, cards):
+            if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
                 return {"error": f"越权：无权读取 {target_id} 的影子"}
             raw = await shadow_store.read_shadow_raw(work_id, target_id)
             if raw is None:
@@ -410,7 +420,7 @@ async def execute_tool(
                 return {"error": f"卡片不存在: {target_id}"}
             if target_id == current_id:
                 return {"error": "不能与自身建立关系"}
-            if not can_read(current_id, target_id, cards):
+            if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
                 return {"error": f"越权：无权与 {target_id} 建立关系"}
             current = await card_store.read_card(work_id, current_id)
             existing = current["meta"].get("relations") or []

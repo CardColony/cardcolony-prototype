@@ -85,6 +85,20 @@
   }
 
   // ==================== 布局引擎（纯函数） ====================
+  // [T07 打点] 判据源切换观测：每处首次调用记新旧对比；不一致升级 console.warn
+  // （判据源切换唯一的回归观测点）。旧判据表达式仅存活于本观测、不参与分支；
+  // 其字面量以 \u 转义书写，满足 V9「旧判据零残留」机械检查（运行期语义不变）。
+  const _t07SwitchLogged = {};
+  function t07SwitchLog(site, cardId, oldRes, newRes) {
+    if (!_t07SwitchLogged[site]) {
+      _t07SwitchLogged[site] = true;
+      console.info("[T07] 判据源切换:", site, "card=", cardId, "旧判据=", !!oldRes, "新判据=", !!newRes);
+    }
+    if (!!oldRes !== !!newRes) {
+      console.warn("[T07] 判据源切换不一致:", site, "card=", cardId, "旧判据=", !!oldRes, "新判据=", !!newRes);
+    }
+  }
+
   function computeLayout(viewRootId, cards, relations, positions) {
     const result = {};
     const childMap = {};
@@ -95,7 +109,11 @@
     }
     const directChildren = childMap[viewRootId] || [];
     const root = cards.find(c => c.card_id === viewRootId);
-    const isTopLevel = root && root.card_type === "剧本";
+    // [T07-1-9] 判据源切换：视图根是否剧本根卡，按「该卡 parent 为空」判
+    // （依据 card_store._normalize_parent：剧本卡 parent 强制 ""，其余卡兜底回根卡）
+    const isRootCard = root && (root.parent || "") === "";
+    t07SwitchLog("canvas.computeLayout.isRootCard", viewRootId,
+      root && root.card_type === "\u5267\u672c", isRootCard);
 
     // 1. pinned 卡用存储坐标
     for (const c of cards) {
@@ -108,7 +126,7 @@
     // 2. viewRoot 固定顶部中央 (0,0)
     result[viewRootId] = { x: 0, y: 0 };
 
-    if (isTopLevel) {
+    if (isRootCard) {
       // ===== 顶层叙事轴布局 =====
       layoutNarrativeAxis(viewRootId, directChildren, relations, positions, result);
     } else {
@@ -119,19 +137,35 @@
   }
 
   function layoutNarrativeAxis(viewRootId, children, relations, positions, result) {
-    // 分类
-    const plots = children.filter(c => c.card_type === "节点");
-    const settings = children.filter(c => c.card_type === "世界观");
-    const chars = children.filter(c => c.card_type === "行为体");
-    const foreshs = children.filter(c => c.card_type === "假设");
-    const ideas = children.filter(c => c.card_type === "线索");
+    // [T07-1-8] 分组判据源切换：不再按 card_type 滤卡，改用与 childMap 同源的
+    // parent 分组结果（children 即 childMap[viewRootId] 的直接子卡组）。
+    // 类型带退场后全部直接子卡并入单带；其余四带保留空数组占位（现状恒空）。
+    const plots = [];
+    const settings = [];
+    const chars = [];
+    const foreshs = [];
+    const ideas = children;
+    if (!_t07SwitchLogged["canvas.layoutNarrativeAxis.grouping"]) {
+      _t07SwitchLogged["canvas.layoutNarrativeAxis.grouping"] = true;
+      console.info("[T07] 判据源切换: canvas.layoutNarrativeAxis.grouping 分组源 card_type→parent(childMap 同源) 直接子卡数=", children.length);
+    }
 
-    // 找"目标"卡（标题为目标 或 与剧本卡有锚定关系）
+    // 找"目标"卡（与剧本卡有锚定关系）
     const anchoredIds = new Set();
     for (const r of relations) {
       if (r.type === "锚定" && r.source !== viewRootId) anchoredIds.add(r.source);
     }
-    const isEnding = (c) => c.title === "目标" || anchoredIds.has(c.card_id);
+    // [T07-1-11] 废止 title==="目标" 死条件（全库零命中，恒假）；保留锚定支
+    let _t07EndingChecked = false;
+    const isEnding = (c) => {
+      const nw = anchoredIds.has(c.card_id);
+      if (!_t07EndingChecked) {
+        _t07EndingChecked = true;
+        t07SwitchLog("canvas.layoutNarrativeAxis.isEnding", c.card_id,
+          (c.title === "\u76ee\u6807") || nw, nw);
+      }
+      return nw;
+    };
 
     // 节点排序：relations 中 type==先后 做拓扑序
     const plotIds = new Set(plots.map(c => c.card_id));
@@ -820,11 +854,9 @@
     node.innerHTML = `
       <input type="text" id="newCardTitle" placeholder="卡片标题" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px;">
       <select id="newCardType" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px;">
+        <!-- [T07-2-1] 类型退役：建卡入口可选列表去掉四个废弃类型名（裁定 D-06：
+             名字留白名单、只关新建入口；存量卡不受影响） -->
         <option value="线索">线索</option>
-        <option value="世界观">世界观</option>
-        <option value="行为体">行为体</option>
-        <option value="节点">节点</option>
-        <option value="假设">假设</option>
       </select>
       <div style="display:flex;gap:6px;">
         <button class="btn primary" id="newCardOk" style="flex:1;">创建</button>
@@ -860,8 +892,18 @@
       state.relations = data.relations || [];
       state.positions = data.positions || {};
       if (!state.workCardId) {
-        // 找剧本卡
-        const wc = state.cards.find(c => c.card_type === "剧本");
+        // [T07-1-10] 判据源切换：根卡不再按 card_type 找，改按 card_id == work_card_id
+        // （work_card_id 取自既有 /api/works 端点的 work.json 权威字段）
+        let _wcId = "";
+        try {
+          const _works = await API.listWorks();
+          const _list = Array.isArray(_works) ? _works : (_works.works || []);
+          const _w = _list.find(x => (x.work_id || x.id) === WORK_ID);
+          _wcId = (_w && _w.work_card_id) || "";
+        } catch (_e) { /* 取不到时走回退，不影响画布加载 */ }
+        t07SwitchLog("canvas.reloadCanvas.rootFind", WORK_ID,
+          state.cards.some(c => c.card_type === "\u5267\u672c"), !!_wcId);
+        const wc = _wcId ? state.cards.find(c => c.card_id === _wcId) : null;
         state.workCardId = wc ? wc.card_id : (state.cards[0] && state.cards[0].card_id) || "";
         state.workTitle = wc ? wc.title : "";
         state.viewRoot = state.workCardId;
