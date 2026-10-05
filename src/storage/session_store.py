@@ -16,7 +16,9 @@ model: 模型名          # 仅 assistant 消息有
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -52,20 +54,53 @@ def _unescape(lines: list[str]) -> list[str]:
     return [MARKER if line == ESCAPED_MARKER else line for line in lines]
 
 
+# [T10-2-1] 落盘互斥锁：键＝(work_id, card_id)，不同卡不互堵。
+# 单进程 uvicorn 内 asyncio.Lock 足够；锁生命周期覆盖打开—写—关整段（2-2）。
+_session_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _session_lock(work_id: str, card_id: str) -> asyncio.Lock:
+    key = (work_id, card_id)
+    lock = _session_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_locks[key] = lock
+    return lock
+
+
 async def append_message(work_id: str, card_id: str, role: str, content: str,
-                         model: Optional[str] = None) -> dict[str, Any]:
-    """追加一条消息，返回消息字典。"""
+                         model: Optional[str] = None,
+                         pair_id: Optional[str] = None) -> dict[str, Any]:
+    """追加一条消息，返回消息字典。
+
+    [T10-1-2/1-3] pair_id 为可选参数：传入时在 timestamp 行之后新增一行
+    `pair_id: {标识}`；缺省不写该行——旧调用方不受影响。
+    [T10-2-3/2-4] 加锁等待超过 1 秒记一行 warning（含 work_id/card_id/等待毫秒数）。
+    该阈值只是日志触发条件，不构成任何终止判据：超时仍照常写入、不放弃、不重试。
+    """
     path = _session_path(work_id, card_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     ts = _now_iso()
     header = [MARKER, f"role: {role}", f"timestamp: {ts}"]
+    if pair_id:
+        header.append(f"pair_id: {pair_id}")
     if model is not None:
         header.append(f"model: {model}")
     header.append("---")
     block = "\n".join(header) + "\n" + _escape(content) + "\n"
-    async with aiofiles.open(path, mode="a", encoding="utf-8") as f:
-        await f.write(block)
-    msg = {"role": role, "content": content, "timestamp": ts, "model": model}
+    lock = _session_lock(work_id, card_id)
+    wait_started = time.monotonic()
+    async with lock:
+        waited_ms = (time.monotonic() - wait_started) * 1000
+        if waited_ms > 1000:
+            logger.warning(
+                "会话写入锁等待超过 1 秒 work=%s card=%s 等待=%.0fms（照常写入）",
+                work_id, card_id, waited_ms,
+            )
+        async with aiofiles.open(path, mode="a", encoding="utf-8") as f:
+            await f.write(block)
+    msg = {"role": role, "content": content, "timestamp": ts,
+           "model": model, "pair_id": pair_id or ""}
     return msg
 
 
@@ -104,5 +139,8 @@ async def read_session(work_id: str, card_id: str) -> list[dict[str, Any]]:
             "content": "\n".join(_unescape(content_lines)),
             "timestamp": header.get("timestamp", ""),
             "model": header.get("model"),
+            # [T10-1-5] 读取侧按行前缀识别（上方 header 通用解析已捕获 pair_id: 行）；
+            # 缺该行时置空——旧会话文件原样读出、原内容完整（向后兼容，V7）。
+            "pair_id": header.get("pair_id", ""),
         })
     return messages

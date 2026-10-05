@@ -13,6 +13,7 @@ Phase 7：
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter
@@ -81,6 +82,8 @@ class PatchCardRequest(BaseModel):
 
 class PostMessageRequest(BaseModel):
     content: str = Field(min_length=1)
+    # [T10-3-3] 重发去重：前端重发时携带被重发那条提问的原 pair_id；正常提问缺省 None。
+    pair_id: Optional[str] = None
 
 
 # [无内容预设改造 2026-10-02] PatchMethodologyRequest 已删除（方法论库停用）
@@ -207,7 +210,7 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     """对话主链路（模块 H2）。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    return await _run_message(work_id, card_id, req.content)
+    return await _run_message(work_id, card_id, req.content, req.pair_id)
 
 
 # [实时反馈 2026-10-02] 调用进度查询：纯展示层，前端轮询用。
@@ -317,19 +320,22 @@ async def get_session_compat(card_id: str):
 
 @router.post("/cards/{card_id}/messages")
 async def post_message_compat(card_id: str, req: PostMessageRequest):
-    return await _run_message(DEFAULT_WORK_ID, card_id, req.content)
+    return await _run_message(DEFAULT_WORK_ID, card_id, req.content, req.pair_id)
 
 
 # ============================================================
 # messages 主链路（工具循环 + 建卡协议闭环）
 # ============================================================
 
-async def _run_message(work_id: str, card_id: str, content: str) -> Any:
+async def _run_message(work_id: str, card_id: str, content: str,
+                       client_pair_id: Optional[str] = None) -> Any:
     """完整 messages 链路，新旧路由共用。
 
     顺序：读卡 → 取历史 → 追加用户消息 → context_assembler 组装 →
     prompts.build_system_prompt → 带工具的工具循环 → parse_proposals →
     apply_proposals → 写 prompt 日志 → 追加 assistant 消息 → 返回。
+
+    [T10] client_pair_id：前端重发时携带的被重发提问原 pair_id（正常提问为 None）。
     """
     # a. 确认卡片存在
     try:
@@ -339,11 +345,35 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
 
+    # a0. [T10-1-1] 读取历史之前生成本次请求标识（UUID4 十六进制串），打点含标识与卡号
+    pair_id = uuid.uuid4().hex
+    logger.info("[T10] 生成请求标识 pair_id=%s card=%s", pair_id, card_id)
+
     # b. 先取历史（此时不含本条）
     prior = await session_store.read_session(work_id, card_id)
 
     # c. 追加用户消息
-    await session_store.append_message(work_id, card_id, "user", content)
+    # [T10-3-3] 后端二次判定（最终仲裁，3-5）：请求携带的 pair_id 已存在且其后无回复条
+    # → 复用而不追加。判定口径只有这一条，不含「时间接近」类模糊条件（3-4）；
+    # 前端漏判时后端拦住。
+    # 〔代拍 R-048〕4.3 后端二次判定（改 routes.py:346）——此条由诸葛代拍，用户可事后推翻；
+    # 依据＝用户 18:58 授权 ＋ 17:54 立的边界 ＋ 本改动只加判据、不删任何既有行为。
+    # 此标注须原样保留，不得抹去（红线 10）。
+    reuse_client_pair = False
+    if client_pair_id:
+        for idx in range(len(prior) - 1, -1, -1):
+            if prior[idx].get("pair_id") == client_pair_id:
+                reuse_client_pair = not any(
+                    m.get("role") == "assistant" for m in prior[idx + 1:]
+                )
+                break
+    if reuse_client_pair:
+        pair_id = client_pair_id
+        logger.info("[T10] 重发复用 pair_id=%s card=%s（用户条不重复落盘）", pair_id, card_id)
+    else:
+        await session_store.append_message(work_id, card_id, "user", content,
+                                           pair_id=pair_id)
+        logger.info("[T10] 用户消息落盘 pair_id=%s card=%s", pair_id, card_id)
 
     # d. 上下文组装（白板版 2026-10-02）：中性卡片清单＋当前卡。
     # 无目标锚/血统链/管辖域/契约/charter/空位提示注入（全量审计定案：结构即引导）。
@@ -481,6 +511,7 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
         response=final_reply if error is None else None,
         error=error,
         tool_events=tool_events,
+        pair_id=pair_id,  # [T10-5-3] 日志关联：从调用方接收配对标识
     )
     # [phase9-E] 日志追加 viewpoints 字段（观点全文数组，落盘可查）。
     # [白板证据位 2026-10-02] vp_system_prompt 一并落日志：三思考席实际收到的
@@ -511,7 +542,10 @@ async def _run_message(work_id: str, card_id: str, content: str) -> Any:
     created_cards = await card_proposal.apply_proposals(work_id, card_id, proposals)
 
     # h. 追加 assistant 消息（存 clean_text，剥离协议块）
-    await session_store.append_message(work_id, card_id, "assistant", clean_text, model=model_used)
+    # [T10-1-4] 回复条携带与用户条逐字相同的 pair_id（V1）；打点含标识
+    await session_store.append_message(work_id, card_id, "assistant", clean_text,
+                                       model=model_used, pair_id=pair_id)
+    logger.info("[T10] 回复落盘 pair_id=%s card=%s", pair_id, card_id)
     progress.set_stage(work_id, card_id, "done", "完成")
 
     return {

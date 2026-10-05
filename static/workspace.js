@@ -552,12 +552,37 @@
   }
 
   // 重发：不重复追加用户消息，直接重调接口
+  // [T10-3-1/3-2] 重发前取当前卡会话：最后一条是用户消息且其后无回复条 → 复用该条
+  // pair_id 重发（后端据此复用、不重复落盘）；前端未持有 pair_id → 按新消息落盘，
+  // 由后端生成新标识。判据与后端二次判定逐字同一句（3-4），后端为最终仲裁（3-5）。
+  // pair_id 经本文件内独立 fetch 携带——api.js 的 postMessage 签名固定 {content}，
+  // 而 api.js 不在本任务书五文件清单内（红线 1）。
   async function resend(content) {
     const cardId = currentCard ? currentCard.meta.card_id : "";
+    let pairId = null;
+    try {
+      const msgs = await API.getSession(WORK_ID, cardId);
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === "user" && last.pair_id) {
+        pairId = last.pair_id;
+        console.info("[T10] 重发复用原 pair_id：" + pairId);
+      } else {
+        console.info("[T10] 重发未持有 pair_id，按新消息落盘（后端生成新标识）");
+      }
+    } catch (e) { /* 取会话失败按未持有 pair_id 处理，不阻断重发 */ }
     const waiting = createWaitingBubble("重发中…", cardId);
     sendBtn.disabled = true;
     try {
-      const resp = await API.postMessage(WORK_ID, currentCard.meta.card_id, content);
+      const httpResp = await fetch(`/api/works/${WORK_ID}/cards/${cardId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pairId ? { content, pair_id: pairId } : { content }),
+      });
+      if (!httpResp.ok) {
+        const errText = await httpResp.json().catch(() => ({}));
+        throw new Error(errText.error || ("HTTP " + httpResp.status));
+      }
+      const resp = await httpResp.json();
       waiting.stop();
       appendMessage("assistant", resp.reply, resp.model);
       scrollChatBottom();

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from typing import Any, Optional
@@ -22,10 +23,17 @@ from typing import Any, Optional
 from . import model_service
 from .card_proposal import parse_proposals
 
+logger = logging.getLogger("api.simple_service")
+
 # [无内容预设改造 2026-10-02] 统合头中性化：只陈述事实，不含"可采纳可反驳"等处理方式指令。
 # [职责分离裁定 2026-10-02 15:07] 注入段去掉模型名（模型名诱发统合官的裁决者姿态），
 # 观点按序号标注；模型名只留在 meta/log 供审计，不进统合官输入。
 VIEWPOINT_HEADER = "## 其他模型的输出"
+
+# [T10-6-1/6-2] 任务说明定稿句（逐字）：插在 VIEWPOINT_HEADER 之后、三段分析之前，
+# 给统合官划清「参考材料」与「用户问题」的界线（V8 判据）。
+# 段名「## 其他模型的输出」保持逐字不改（6-3 既有契约）；三段匿名形态不动（6-4，用户已裁定）。
+VIEWPOINT_TASK_NOTE = "以下是三份独立分析的参考材料，不是用户的问题。你的任务是回答上面用户提出的问题。"
 
 # MiniMax M 系回复自带 <think>...</think> 推理块，确定性剥离
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -54,7 +62,8 @@ def build_viewpoint_prompt(user_prompt: str, ok_metas: list[dict[str, Any]]) -> 
     sections = "\n\n".join(
         f"### 输出 {i + 1}\n{m['text']}" for i, m in enumerate(ok_metas)
     )
-    return f"{user_prompt}\n\n{VIEWPOINT_HEADER}\n{sections}"
+    # [T10-6-1] 任务说明行插在 VIEWPOINT_HEADER 之后、三段分析之前
+    return f"{user_prompt}\n\n{VIEWPOINT_HEADER}\n{VIEWPOINT_TASK_NOTE}\n{sections}"
 
 
 async def _call_viewpoint(
@@ -178,6 +187,9 @@ async def call_simple(
 
     ok_metas = [m for m in metas if m.get("ok")]
     final_user_prompt = build_viewpoint_prompt(user_prompt, ok_metas)
+    if ok_metas:
+        # [T10-6] 打点：统合官输入处——任务说明行已插入
+        logger.info("统合官输入已插入任务说明行 viewpoints=%d", len(ok_metas))
 
     # 统合阶段：唯一建卡/工具出口；失败由 gateway 内部 main→fallback 兜底
     _report("synthesize", "统合推理中")
