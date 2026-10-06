@@ -22,12 +22,12 @@ from pydantic import BaseModel, Field
 
 from ..storage import (
     canvas_store, card_store, manuscript_store,
-    session_store, work_store,
+    memory_store, session_store, work_store,
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import card_proposal, card_tools, context_assembler, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue
+from . import card_proposal, card_tools, context_assembler, context_regions, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
 
 logger = logging.getLogger("api.routes")
 
@@ -375,19 +375,45 @@ async def _run_message(work_id: str, card_id: str, content: str,
                                            pair_id=pair_id)
         logger.info("[T10] 用户消息落盘 pair_id=%s card=%s", pair_id, card_id)
 
-    # d. 上下文组装（白板版 2026-10-02）：中性卡片清单＋当前卡。
+    # d. 上下文组装（T11 分区装配线）：0 使用说明（BASE_PROMPT 指针）＋100 卡片清单＋150 当前卡。
+    # 装配只按 order 收区拼接、零内容判断（总表 #2/#3）；vp_system_prompt＝100＋150（职责分离裁定）。
     # 无目标锚/血统链/管辖域/契约/charter/空位提示注入（全量审计定案：结构即引导）。
-    neutral_context = context_assembler.build_neutral_context(work_id, card_id)
+    # [T12-SP-05] 凝练态（水位 mark＋entries）routes 层一次读取、结果传 200/300 区——
+    # context_regions 保持纯函数不做 IO（L17 硬约束）；开关关（RD-08 缺省）＝None＝逐字旧路。
+    # 300 区收窄为未凝段的切片属三期路线裁定后补（L387 本批不动，mark 读取基础件先落）。
+    condense_state = memory_store.load_memory(work_id, card_id) if memory_store.condense_enabled() else None
+    ctx_regions = context_assembler.build_context_regions(work_id, card_id, memory_state=condense_state)
+    neutral_context = context_regions.assemble_regions([r["text"] for r in ctx_regions])
     system_prompt = prompts.build_system_prompt(neutral_context)
     vp_system_prompt = prompts.build_viewpoint_system_prompt(neutral_context)
 
     # e. 工具循环
-    prior_for_gateway = [{"role": m["role"], "content": m["content"]} for m in prior]
+    # [T15-6] 300 区收窄为未凝段（路线甲，CONDENSE_ROUTE_RULINGS 2026-10-05 闸开）：
+    # 开关开→按水位 mark 切片（condense_state 上方一次读取——T12 SP-05 同一读取传
+    # 200/300 区），mark 前已凝段由 200 区记忆代表（原文全量在会话文件，一条不删）；
+    # 开关关（缺省）＝condense_state None→全量投影逐字旧路（V1/V5）。mark 越界防御
+    # 回退全量（与会话追加式存储的半开区间口径一致）。
+    if condense_state is not None:
+        _condense_mark = int(condense_state.get("mark", 0) or 0)
+        _hist = prior[_condense_mark:] if 0 <= _condense_mark <= len(prior) else prior
+    else:
+        _hist = prior
+    prior_for_gateway = [{"role": m["role"], "content": m["content"]} for m in _hist]
+    # [T11-T6] 轮槽（请求局部对象）：包住同一条列表。折叠关时装配逐字同旧
+    # （wire_messages 原样返回本列表）；首轮固化与抢救回注走 append_plain
+    # （非轮、永不折叠——不折红线），assistant＋tool 结果走 begin_round/
+    # append_tool_result（成轮，可折单元）。
+    history_len = len(prior_for_gateway)
+    slot = tool_fold.ToolTurnSlot(prior_for_gateway)
     tools = card_tools.build_tool_schemas()
     tool_events: list[dict[str, Any]] = []
     user_prompt = content
     rounds = 0
     final_reply: Optional[str] = None
+    # [T14-1-1] 带工具轮的分析正文采集（只读）：落盘型工作流的分析写在带工具轮
+    # 的 assistant_content 里，末轮判定只取纯对话轮正文——分析结构性上不了屏。
+    # 采集后与末轮回执拼接交付（分析在前、回执在后），不取代回执。
+    analysis_parts: list[str] = []
     model_used: Optional[str] = None
     error: Optional[str] = None
     viewpoints_meta: list[dict[str, Any]] = []  # [phase9-E] 观点元信息（含内部 text）
@@ -411,10 +437,13 @@ async def _run_message(work_id: str, card_id: str, content: str,
             else:
                 # 工具续跳轮不重复咨询观点模型
                 progress.set_stage(work_id, card_id, "tools", f"第 {rounds - 1} 轮工具续跳")
+                # [T11] 装配时折叠：折叠关原样返回本列表（逐字同旧）；
+                # 折叠开对窗口外旧轮次压成【结论】＋【依据】（不改条数与配对）
+                wire_messages = await slot.wire_messages()
                 result, model_used = await model_service.call_main(
                     system_prompt,
                     user_prompt,
-                    prior_for_gateway,
+                    wire_messages,
                     tools=tools,
                 )
             tool_calls = result.get("tool_calls") or []
@@ -448,7 +477,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                 if text_rescue_note:
                     # 反馈兜底：疑似调用未被识别这个事实必须回到模型上下文，
                     # 否则模型永远在等一个不会来的结果（等待黑洞）。
-                    prior_for_gateway.append({
+                    # [T11] 经轮槽 append_plain 入槽（非轮消息，永不折叠）
+                    slot.append_plain({
                         "role": "assistant", "content": final_reply,
                     })
                     user_prompt = text_rescue_note
@@ -457,11 +487,14 @@ async def _run_message(work_id: str, card_id: str, content: str,
 
             # [phase8.2] 第一次进入工具轮时，把用户原文固化进 prior，
             # 否则后续跳的 user_prompt 被替换后原文会从对话中消失
+            # [T11] 经轮槽 append_plain 入槽（首轮用户原文固化＝不折红线之一）
             if rounds == 1:
-                prior_for_gateway.append({"role": "user", "content": content})
+                slot.append_plain({"role": "user", "content": content})
 
             # 把 assistant 消息（含 tool_calls）+ tool 结果追加进 prior
-            prior_for_gateway.append({
+            # [T11-T6] assistant 经 begin_round 入槽（成轮，可折单元）；
+            # 消息构造与既有逐字一致（折叠关时槽即本列表，零变化）
+            slot.begin_round({
                 "role": "assistant",
                 "content": assistant_content,
                 "tool_calls": [
@@ -473,6 +506,11 @@ async def _run_message(work_id: str, card_id: str, content: str,
                     for i, tc in enumerate(tool_calls)
                 ],
             })
+            # [T14-1-2] 只读采集：带工具轮的 assistant_content（含 L459 抢救处理后
+            # 的正文）同步留一份进交付采集列表。不改 begin_round 入参、不额外入槽
+            # （T11 轮槽消息条数与配对不变量不破坏，RD-09）；不限长不折叠不截断。
+            if assistant_content:
+                analysis_parts.append(assistant_content)
 
             # 收集卡片 meta 用于权限判定
             cards_meta = card_tools._collect_card_meta(work_id)
@@ -489,7 +527,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                 tool_result = await card_tools.execute_tool(work_id, card_id, name, args, cards_meta)
                 ok = "error" not in tool_result
                 tool_events.append({"tool": name, "card_id": target_id, "ok": ok})
-                prior_for_gateway.append({
+                # [T11-T6] tool 结果经 append_tool_result 入槽（归入当前轮）
+                slot.append_tool_result({
                     "role": "tool",
                     "tool_call_id": f"call_{i}",
                     "content": __import__("json").dumps(tool_result, ensure_ascii=False),
@@ -502,16 +541,30 @@ async def _run_message(work_id: str, card_id: str, content: str,
         logger.error("模型调用/工具循环失败 card=%s: %s", card_id, exc)
 
     # f. 写 prompt 日志（无论成败）
+    # [T11-T7] regions＝六区构成（只存指针与指纹）；fold_ops＝每轮折叠
+    # 原字节/折后字节/结果。两键非空才写入（约束 13）；prior_messages 仍落
+    # 原文全量（轮槽不改写原列表，折叠账在 fold_ops 对账）。
+    log_regions = context_regions.build_log_regions(
+        ctx_regions,
+        prior_for_gateway[:history_len],
+        prior_for_gateway[history_len:],
+        content,
+    )
     log_path = prompt_log.write_prompt_log(
         card_id=card_id,
         system_prompt=system_prompt,
-        prior_messages=prior_for_gateway,
-        user_prompt=content,
-        model_used=model_used if error is None else None,
-        response=final_reply if error is None else None,
+         prior_messages=prior_for_gateway,
+         user_prompt=content,
+         model_used=model_used if error is None else None,
+         # [T14-3] response 保末轮供审计（拼接在日志写之后，此时 final_reply 仍是
+         # 末轮正文——prompt_log.response 语义不动，RD-08）；交付全文（分析＋回执）
+         # 可经会话 assistant 条/prompt 日志 prior_messages 复核。
+         response=final_reply if error is None else None,
         error=error,
         tool_events=tool_events,
         pair_id=pair_id,  # [T10-5-3] 日志关联：从调用方接收配对标识
+        regions=log_regions,
+        fold_ops=slot.fold_ops or None,
     )
     # [phase9-E] 日志追加 viewpoints 字段（观点全文数组，落盘可查）。
     # [白板证据位 2026-10-02] vp_system_prompt 一并落日志：三思考席实际收到的
@@ -536,8 +589,42 @@ async def _run_message(work_id: str, card_id: str, content: str,
     if error is not None:
         return _err(502, f"模型调用失败: {error}")
 
+    # [T14-2] 拼接交付全文：分析在前、回执在后、\n\n 分隔（待裁定 1）。落位命门：
+    # 在日志写（response 保末轮，RD-08）之后、parse_proposals 之前——解析/落盘/
+    # 返回三处共用拼接后的 final_reply（任务 4）。V7 三边界：
+    #   有分析有回执＝正常拼接；有分析无回执＝只交付中间轮；
+    #   皆空＝空回复；无分析有回执＝纯对话轮原样（回归不变）。
+    if analysis_parts:
+        if final_reply:
+            branch = "normal"
+            delivered = "\n\n".join(analysis_parts + [final_reply])
+        else:
+            branch = "analysis-only"
+            delivered = "\n\n".join(analysis_parts)
+    elif final_reply:
+        branch = "reply-only"
+        delivered = final_reply
+    else:
+        branch = "empty"
+        delivered = ""
+    logger.info(
+        "[T14] 分析交付拼接 branch=%s 分析段数=%s 拼接后字节=%s 末轮字节=%s",
+        branch, len(analysis_parts),
+        len(delivered.encode("utf-8")),
+        len((final_reply or "").encode("utf-8")),
+    )
+    final_reply = delivered
+
     # g. 解析建卡协议 + 自动建卡
     progress.set_stage(work_id, card_id, "cards", "解析建卡提案")
+    # [T14-4-1/6] 扫描输入＝拼接后全文（含分析正文）——照既有协议头机制运行
+    # （RD-11 不新增筛选不设闸）；观察点日志使「扫描面是否含工具轮正文」可事后审计。
+    logger.info(
+        "[T14] 建卡扫描输入 分析段数=%s 交付分支=%s 扫描总字节=%s",
+        len(analysis_parts),
+        branch,
+        len((final_reply or "").encode("utf-8")),
+    )
     clean_text, proposals = card_proposal.parse_proposals(final_reply or "")
     created_cards = await card_proposal.apply_proposals(work_id, card_id, proposals)
 
@@ -546,6 +633,10 @@ async def _run_message(work_id: str, card_id: str, content: str,
     await session_store.append_message(work_id, card_id, "assistant", clean_text,
                                        model=model_used, pair_id=pair_id)
     logger.info("[T10] 回复落盘 pair_id=%s card=%s", pair_id, card_id)
+    # [T12-SP-04] 回合末凝练触发（condense_fold）：assistant 落盘之后异步触发、
+    # 不阻塞对话（异步是工程手段非闸，RD-04）。开关缺省关（RD-08）＝零动作；
+    # 开时三期管线仍挂起待路线裁定，触发只量测＋留痕（memory_store.condense_turn_end）。
+    memory_store.maybe_schedule_turn_end(work_id, card_id)
     progress.set_stage(work_id, card_id, "done", "完成")
 
     return {
