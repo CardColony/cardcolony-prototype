@@ -232,7 +232,10 @@ a { color: inherit; text-decoration: none; }
   gap: 4px;
 }
 .card-node.dragging { transition: none; cursor: grabbing; box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 10; }
-.card-node .tname { font-weight: 600; font-size: 13px; overflow: hidden; }
+/* [T16 2026-10-06] 徽章可见性修复 A-1：相对定位作徽章包含块＋右侧预留 56px 凹槽，
+   阻止 nowrap+ellipsis 把文本流尾部的 .kid-badge 裁掉（5701 实测 l1 档 scrollWidth 317 > clientWidth 189）。
+   布局不变量：徽章 inline-block 本未撑高行盒，脱离流后 .tname 高度不变 ⇒ 卡尺寸与避让算法不受影响。 */
+.card-node .tname { font-weight: 600; font-size: 13px; overflow: hidden; position: relative; padding-right: 56px; }
 .card-node .ttype { font-size: 11px; opacity: 0.85; }
 .card-node .summary {
   font-size: 11.5px;
@@ -260,6 +263,8 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* 子卡徽章 */
+/* [T16 2026-10-06] 徽章可见性修复 A-2：脱离文本流，绝对定位钉 .tname 右上角凹槽
+   （范式照 .cross-link-badge；margin-left 6px 由 right 定位取代；z-index:2 压标题之上）。 */
 .kid-badge {
   display: inline-block;
   font-size: 10.5px;
@@ -268,8 +273,12 @@ a { color: inherit; text-decoration: none; }
   border-radius: 8px;
   padding: 0 6px;
   cursor: pointer;
-  margin-left: 6px;
+  margin-left: 0;
   background: var(--bg);
+  position: absolute;
+  top: 1px;
+  right: 0;
+  z-index: 2;
 }
 .kid-badge:hover {
   color: var(--fg, #e6edf3);
