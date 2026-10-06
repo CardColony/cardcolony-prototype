@@ -133,6 +133,10 @@ class ModelGateway:
                 # 不关则草稿吃光 max_tokens 导致正文为空）
                 if model_config.get("extra_body"):
                     kwargs["extra_body"] = model_config["extra_body"]
+                # [席位3 opencode-go 端点 2026-10-06] opencode.go 硬要求 x-opencode-session 头
+                # （cordis.patch.yml:28-30 MissingSessionID 拒单）；透传自定义请求头
+                if model_config.get("extra_headers"):
+                    kwargs["extra_headers"] = model_config["extra_headers"]
                 # function calling 工具（OpenAI 标准协议）
                 if tools:
                     kwargs["tools"] = [
@@ -547,6 +551,10 @@ class ModelGateway:
                 # 提供商私有参数透传（与非流式路径同款）
                 if model_config.get("extra_body"):
                     kwargs["extra_body"] = model_config["extra_body"]
+                # [席位3 opencode-go 端点 2026-10-06] opencode.go 硬要求 x-opencode-session 头
+                # （cordis.patch.yml:28-30 MissingSessionID 拒单）；透传自定义请求头
+                if model_config.get("extra_headers"):
+                    kwargs["extra_headers"] = model_config["extra_headers"]
                 start = time.monotonic()
                 response = await litellm.acompletion(**kwargs)
                 parts: list[str] = []
