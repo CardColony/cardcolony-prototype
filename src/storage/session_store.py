@@ -142,5 +142,9 @@ async def read_session(work_id: str, card_id: str) -> list[dict[str, Any]]:
             # [T10-1-5] 读取侧按行前缀识别（上方 header 通用解析已捕获 pair_id: 行）；
             # 缺该行时置空——旧会话文件原样读出、原内容完整（向后兼容，V7）。
             "pair_id": header.get("pair_id", ""),
+            # [T12-1-1] 会话块序号读时现算（解析循环天然可得，0 起）：凝练水位
+            # mark 的锚点。存储格式零改动（header 不落盘 seq 字段）、不新增
+            # 存储字段——仅本内存字典暴露（既有消费方均按键取用，不受增键影响）。
+            "seq": len(messages),
         })
     return messages

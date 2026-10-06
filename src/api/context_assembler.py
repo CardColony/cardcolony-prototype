@@ -21,9 +21,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..storage import work_store
+from ..storage import memory_store, work_store
 from ..storage.card_store import _card_path
 from ..storage.hash_utils import parse_front_matter
+from . import context_regions
 
 logger = logging.getLogger("api.context_assembler")
 
@@ -52,26 +53,71 @@ def _load_cards_index(work_id: str) -> list[dict[str, Any]]:
     return out
 
 
-def build_neutral_context(work_id: str, current_id: str) -> str:
-    """中性上下文（主模型与三思考席共用同一份）：卡片清单 ＋ 当前卡标识。
+def build_context_regions(work_id: str, current_id: str,
+                          memory_state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """分区构建（T11-T2，移植对应总表 #4/#5 适配改；T12 二期 append 200 区）：
+    渲染 100/150 两个 system 区＋凝练记忆区（condense_fold，开关开且本卡有
+    记忆条目时）。
 
-    [拉取裁定 2026-10-02] 不推送任何卡片正文——模型需要时经 read_card 调取。
-    上一轮模型写入的卡片内容不会再自动进入任何后续输入（回流断根）。
+    卡片清单扫描与筛选逻辑（_load_cards_index）一字不动；区渲染纯函数在
+    context_regions（渲染零加工）。0 区（使用说明）只持 BASE_PROMPT 指针，
+    由 prompts.build_system_prompt 在出口逐字引用，不在此渲染。
+
+    [T12-SP-05] memory_state＝routes 层读好的凝练态（水位 mark＋entries）——
+    IO 分离：routes 一次读取、结果传 200/300 区；未传（缺省 None）且开关开时
+    此处兜底加载（本模块本就做卡片扫描 IO；context_regions 保持纯函数）。
+    开关关（RD-08 缺省）或空记忆（entries 空）→ 不出现 200 区——装配与
+    改造前逐字一致（V1/V6）。
     """
     cards = _load_cards_index(work_id)
     wc_id = work_store.work_card_id_of(work_id)
-
-    lines: list[str] = ["## 卡片清单"]
-    for c in cards:
-        if c["card_id"] == wc_id or not c["parent"]:
-            lines.append(f"{c['card_id']} · {c['title']}（根）")
-        else:
-            lines.append(f"{c['card_id']} · {c['title']}（父：{c['parent']}）")
-
     cur = next((c for c in cards if c["card_id"] == current_id), None)
-    if cur is not None:
-        lines.append("")
-        lines.append("## 当前卡")
-        lines.append(f"{cur['card_id']} · {cur['title']}")
 
-    return "\n".join(lines)
+    regions: list[dict[str, Any]] = [{
+        "order": 100,
+        "name": "卡片清单",
+        "channel": "system",
+        "seats": ("main", "viewpoints"),
+        "text": context_regions.render_card_list_region(cards, wc_id),
+        "entries": len(cards),
+    }]
+    t150 = context_regions.render_current_card_region(cur)
+    if t150:  # 没有来源就不出现这个区
+        regions.append({
+            "order": 150,
+            "name": "当前卡",
+            "channel": "system",
+            "seats": ("main", "viewpoints"),
+            "text": t150,
+            "entries": 1,
+        })
+    # [T12-2-1] 凝练记忆区（condense_fold）——order 200，紧随 150。
+    # 空记忆 → 区跳过、零内容输出零报错（assemble_regions 空区跳过兜底）。
+    state = memory_state
+    if state is None and memory_store.condense_enabled():
+        state = memory_store.load_memory(work_id, current_id)
+    if state is not None:
+        entries = state.get("entries") or []
+        t200 = context_regions.render_memory_region(entries)
+        if t200:  # 没有来源就不出现这个区
+            regions.append({
+                "order": 200,
+                "name": "记忆（condense_fold）",
+                "channel": "system",
+                "seats": ("main",),
+                "text": t200,
+                "entries": len(entries),
+            })
+    return regions
+
+
+def build_neutral_context(work_id: str, current_id: str) -> str:
+    """中性上下文（主模型与三思考席共用同一份）：卡片清单 ＋ 当前卡标识。
+
+    [T11-T2] 本函数降为薄包装：分区渲染后按 order join，输出与改造前逐字
+    一致（V1 断言含空 ctx 分支与 rstrip 两条路径）。
+    [拉取裁定 2026-10-02] 不推送任何卡片正文——模型需要时经 read_card 调取。
+    上一轮模型写入的卡片内容不会再自动进入任何后续输入（回流断根）。
+    """
+    regions = build_context_regions(work_id, current_id)
+    return context_regions.assemble_regions([r["text"] for r in regions])

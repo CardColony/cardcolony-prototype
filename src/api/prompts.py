@@ -12,6 +12,10 @@
 
 from __future__ import annotations
 
+# [T12-R3] 基准版本化固化：BASE_PROMPT 文本变更须递增版本号（回归/收货按版本对账，
+# 基准指纹落 _t12_evidence/REPORT.md）。t12-1：T12 增补 read_memory 工具行。
+BASE_PROMPT_VERSION = "t12-1"
+
 BASE_PROMPT = """\
 你在一个卡片系统内工作。以下是系统使用说明。
 
@@ -23,6 +27,7 @@ BASE_PROMPT = """\
 ## 工具
 
 - read_card(card_id)：读取指定卡（标题、父卡、连线、正文）。只能读取你有权访问的卡。
+- read_memory(card_id?, from_seq?, to_seq?)：下探指定卡（缺省当前卡）的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】），可按块序号锚点区间取回。记忆条目不是卡片正文——正文经 read_card 拉取。
 - edit_card(card_id, content)：改写你管辖范围内指定卡的正文（覆盖写）。
 - delete_card(card_id)：删除你管辖范围内指定编号的卡片及其对话。剧本根卡与有子卡的卡不可删除。
 - update_shadow(content)：覆盖写当前卡自己的影子卡（过程性记录）。无 card_id 参数——只能写自己的影子。

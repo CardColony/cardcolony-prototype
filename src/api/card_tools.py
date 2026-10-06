@@ -16,7 +16,7 @@ import asyncio
 import logging
 from typing import Any
 
-from ..storage import card_store, manuscript_store, shadow_store, work_store
+from ..storage import card_store, manuscript_store, memory_store, shadow_store, work_store
 from ..storage.hash_utils import parse_front_matter
 from . import file_tools
 
@@ -25,6 +25,22 @@ logger = logging.getLogger("api.card_tools")
 # [白板版 2026-10-02] 模型可建的连线类型收窄为两个中性关系；
 # "锚定"（系统派生目标卡专用）与"兑现"（写作agent残留语义）不再对模型开放
 MODEL_REL_TYPES = ("先后", "关联")
+
+# [T11-T10] 只读工具白名单（折叠【依据】「可按原参数重取」语义的依据源）。
+# 白名单是「工具的属性」，属性跟工具住一起（方案自拍 #15）；落点＝工具定义处。
+# 名单＝调研纪要 §二 实证枚举（10 只读）；其余 6 件为写工具
+# （edit_card/delete_card/update_shadow/link_cards/unlink_cards/write_file）。
+# [T12-R3] 增补 read_memory（记忆锚点下探，condense_fold 展开通道，只读拉取）。
+READONLY_TOOLS = frozenset({
+    "read_card", "read_shadow", "list_manuscript", "read_manuscript",
+    "search_manuscript", "web_search", "fetch_web",
+    "list_files", "read_file", "search_files",
+    "read_memory",
+})
+
+# [T12-R3] 工具表基准版本化固化：工具集/schema 变更须递增版本号并对账基准指纹。
+# tools-t12-1：T12 增补 read_memory（其余 16 件与 T11 基线逐字一致）。
+TOOL_TABLE_VERSION = "tools-t12-1"
 
 
 def build_tool_schemas() -> list[dict[str, Any]]:
@@ -39,6 +55,22 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "card_id": {"type": "string", "description": "目标卡 id，如 card_002"},
                 },
                 "required": ["card_id"],
+            },
+        },
+        # [T12-R3] 记忆锚点下探（condense_fold 展开通道）：按块序号锚点取回已凝
+        # 记忆条目——锚点不可用则凝练历史不可回查（方案 §七 展开工具）。只读拉取；
+        # 记忆条目不是卡片正文，正文仍经 read_card。
+        {
+            "name": "read_memory",
+            "description": "下探指定卡的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】）。可用块序号区间按锚点取回。记忆条目不是卡片正文——正文请用 read_card。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string", "description": "目标卡 id，如 card_002；缺省＝当前卡"},
+                    "from_seq": {"type": "integer", "description": "起始块序号（含），锚点下界；缺省不设下界"},
+                    "to_seq": {"type": "integer", "description": "结束块序号（含），锚点上界；缺省不设上界"},
+                },
+                "required": [],
             },
         },
         {
@@ -330,6 +362,24 @@ async def execute_tool(
                 "relations": result["meta"].get("relations") or [],
                 "body": result["body"].get("conclusion", ""),
             }
+        # [T12-R3] 记忆锚点下探（condense_fold 展开工具）：权限同 read_card
+        # （读＝子树∪血统链∪连线∪锚卡全局可读）；entries 原样返回，块序号区间
+        # 是机械过滤非加工；越界/空记忆如实返回空（不构造内容）。
+        if tool_name == "read_memory":
+            target_id = arguments.get("card_id") or current_id
+            if target_id not in cards:
+                return {"error": f"卡片不存在: {target_id}"}
+            if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
+                return {"error": f"越权：无权读取 {target_id}"}
+            state = memory_store.load_memory(work_id, target_id)
+            entries = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
+            lo = arguments.get("from_seq")
+            hi = arguments.get("to_seq")
+            if isinstance(lo, int) and not isinstance(lo, bool):
+                entries = [e for e in entries if isinstance(e.get("seq"), int) and e["seq"] >= lo]
+            if isinstance(hi, int) and not isinstance(hi, bool):
+                entries = [e for e in entries if isinstance(e.get("seq"), int) and e["seq"] <= hi]
+            return {"card_id": target_id, "mark": state.get("mark", 0), "entries": entries}
         if tool_name == "edit_card":
             target_id = arguments.get("card_id", "")
             content = arguments.get("content", "")
