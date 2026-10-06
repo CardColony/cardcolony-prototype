@@ -1,0 +1,370 @@
+{
+  "chain": "THINK-ECO-T17",
+  "step": "p0-对账底册",
+  "date": "2026-10-06",
+  "source_scheme": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面重新设计-方案-20261006.md",
+  "source_input": "D:\\AI_station\\推演agent\\docs\\exploration\\THINK-ECO-T17-任务书链输入包-20261006.md",
+  "total": 60,
+  "items": [
+    {
+      "id": "R-001",
+      "seq": 17,
+      "from": "scheme",
+      "text": "## 一、用户原话与逐条落点"
+    },
+    {
+      "id": "R-002",
+      "seq": 19,
+      "from": "scheme",
+      "text": "> 1，默认界面还是画布"
+    },
+    {
+      "id": "R-003",
+      "seq": 20,
+      "from": "scheme",
+      "text": "> 2，进到卡片之后，左侧不要显示你现在这一块乱七八糟的功能区域了，改为显示对话导航"
+    },
+    {
+      "id": "R-004",
+      "seq": 21,
+      "from": "scheme",
+      "text": "> 3，对话导航，按照项目来，样式和通用agent那种类似"
+    },
+    {
+      "id": "R-005",
+      "seq": 22,
+      "from": "scheme",
+      "text": "> 4，项目按照最后活跃来排序"
+    },
+    {
+      "id": "R-006",
+      "seq": 23,
+      "from": "scheme",
+      "text": "> 5，每一个项目下，依次展示一级卡片，二级卡片折叠在一级卡片下，可以展开"
+    },
+    {
+      "id": "R-007",
+      "seq": 24,
+      "from": "scheme",
+      "text": "> 6，每一个项目下，一级卡片按最近活跃排序，二级卡片也按最近活跃排序"
+    },
+    {
+      "id": "R-008",
+      "seq": 25,
+      "from": "scheme",
+      "text": "> （附言：以上只是我的粗略想法，不必当金科玉律，应理解意图、更自主地思考主界面应如何重新设计）"
+    },
+    {
+      "id": "R-009",
+      "seq": 38,
+      "from": "scheme",
+      "text": "**用户附言的处理**：按「理解意图、自主设计」执行，本方案在三处**超出字面**（均标【模型自定】）：①导航层数不封顶；②画布态留 44px 窄条（而非整栏隐藏）；③卡片编辑能力整体移入右栏 Inspector（而非删除）。"
+    },
+    {
+      "id": "R-010",
+      "seq": 46,
+      "from": "scheme",
+      "text": "| 1 | 全库无活跃度字段 | `grep last_active` 全库 0 命中 |"
+    },
+    {
+      "id": "R-011",
+      "seq": 50,
+      "from": "scheme",
+      "text": "| 5 | `/api/works` **按目录名排** | `work_store.py:49` `list_works()`，`:54` `for p in sorted(WORKS_DIR.iterdir())`——字典序，非活跃序 |"
+    },
+    {
+      "id": "R-012",
+      "seq": 56,
+      "from": "scheme",
+      "text": "| 11 | `reloadCanvas` 末尾**无条件**收起工作区 | `canvas.js:1135` `reloadCanvas()` → `:1160` `hideWorkspace()`；`:1164` 定义 |"
+    },
+    {
+      "id": "R-013",
+      "seq": 63,
+      "from": "scheme",
+      "text": "| 18 | `?v=9.3` 四批迭代未动 | `templates/index.html:8`、`work.html:8,52-54`；card_006 §八.4 已记此账 |"
+    },
+    {
+      "id": "R-014",
+      "seq": 84,
+      "from": "scheme",
+      "text": "**结构重排（不是加浮层）**：`.work-page` 由 `column` 改 `row`；新增 `.app-nav`（恒在）与 `.app-main`（`flex:1; column`）；`.app-main` 内新增 `.stage`（`flex:1; position:relative`），`#viewport` 与 `.workspace` 改为 `absolute; inset:0` 互斥显隐。"
+    },
+    {
+      "id": "R-015",
+      "seq": 100,
+      "from": "scheme",
+      "text": "- **一级＝项目根卡（`work.json.work_card_id`）的直接子卡**；根卡自身作为分组头显示，**不**在树里重复列一项。"
+    },
+    {
+      "id": "R-016",
+      "seq": 101,
+      "from": "scheme",
+      "text": "- **层级口径写死：以项目根卡为第 0 层**。⚠ 与画布 `state.viewRoot` 派生的「相对深度」**是两个口径，不得混用**（画布随下钻变，导航恒定）。这是本设计最易出错的一致性陷阱。"
+    },
+    {
+      "id": "R-017",
+      "seq": 102,
+      "from": "scheme",
+      "text": "- **层数不封顶**【模型自定】：用户说「一级／二级」是最浅形态；封在两层的后果是**深卡从导航里进不去**，等于把用户第 3 条的「导航」降级成「目录预览」。默认展开＝**一级 ＋ 当前卡所在路径**，其余折叠。"
+    },
+    {
+      "id": "R-018",
+      "seq": 103,
+      "from": "scheme",
+      "text": "- **排序由服务端给**（§4），前端**按收到顺序原样渲染**，不二次排序——保证与服务端口径一致。"
+    },
+    {
+      "id": "R-019",
+      "seq": 114,
+      "from": "scheme",
+      "text": "**窄条态（44px）**：只显示 `☰` ＋ 当前项目色点；悬停浮层显示完整树【模型自定：保留而非整栏隐藏，理由＝随时换项目，不必退回剧本架】。"
+    },
+    {
+      "id": "R-020",
+      "seq": 116,
+      "from": "scheme",
+      "text": "**不做**：搜索框、过滤器、拖拽排序、「运行中」转圈（后者依赖 `/progress`，而进度是**进程内存态、刷新即失**——card_006 §七.4）。"
+    },
+    {
+      "id": "R-021",
+      "seq": 123,
+      "from": "scheme",
+      "text": "- **分工一句话**：**左区走、中区谈、右区改。**"
+    },
+    {
+      "id": "R-022",
+      "seq": 141,
+      "from": "scheme",
+      "text": "| 层级标识 | **色点**（根＝金 `--c-work`／中间＝蓝 `--c-setting`／叶＝灰 `--c-idea`），**不用**六类型色（与 card_018 §四.1 建议「甲」同向，但不绑定） |"
+    },
+    {
+      "id": "R-023",
+      "seq": 152,
+      "from": "scheme",
+      "text": "**卡级活跃 ＝ `max(该卡会话文件末条消息的 timestamp, 卡前置字段 updated_at)`**"
+    },
+    {
+      "id": "R-024",
+      "seq": 154,
+      "from": "scheme",
+      "text": "- 会话末条 ＝ 聊天活跃（**这条是关键**：光聊天不改卡时，`updated_at` 不动，只用它会把天天聊的卡排到下面，正好排反）。"
+    },
+    {
+      "id": "R-025",
+      "seq": 156,
+      "from": "scheme",
+      "text": "- 项目级 ＝ `max(该项目所有卡的卡级活跃, work.created_at)`。"
+    },
+    {
+      "id": "R-026",
+      "seq": 162,
+      "from": "scheme",
+      "text": "**每次请求从真身现算**（卡前置字段 ＋ 会话末文件尾）。理由：任何缓存都要处理失效——而**聊天不触发卡写入、也不触发画布重建**，缓存必然滞后（§4.4）。"
+    },
+    {
+      "id": "R-027",
+      "seq": 165,
+      "from": "scheme",
+      "text": "- **实现纪律**：取「末条时间戳」**不得复用 `read_session()`**（它全量解析全部消息，`session_store.py:107`）——须从**文件尾部反向扫描**若干 KB 找最后一个 `timestamp:`（或等价 O(tail) 读法）。"
+    },
+    {
+      "id": "R-028",
+      "seq": 170,
+      "from": "scheme",
+      "text": "**一次请求拿全导航树**（避免「先 `/api/works` 再逐项目 `getCanvas`」的 N+1）："
+    },
+    {
+      "id": "R-029",
+      "seq": 185,
+      "from": "scheme",
+      "text": "2. 每个项目的 `cards` 按 `last_active_at` **降序** → 前端按 `parent` 归组后，**同级兄弟天然降序**（因为父卡的活跃度不影响子卡相对顺序，只需保证同一父下的相对次序＝全局降序的相对次序）；"
+    },
+    {
+      "id": "R-030",
+      "seq": 186,
+      "from": "scheme",
+      "text": "3. 无时间者排末位；并列时以 `card_id`／`work_id` 升序**稳定**收尾（保证刷新不跳序）。"
+    },
+    {
+      "id": "R-031",
+      "seq": 190,
+      "from": "scheme",
+      "text": "**另需**：`/api/works`（`work_store.py:49`）改为附 `last_active_at` 并按其降序——它同时供剧本架页使用，两条路径口径必须一致。"
+    },
+    {
+      "id": "R-032",
+      "seq": 194,
+      "from": "scheme",
+      "text": "`canvas.json` 自称「可重建缓存」（`canvas_store.py:1-3`），且 `rebuild` 只在**卡片变更**时被调用——**聊天不触发重建**。若把 `last_active_at` 附进 canvas.json："
+    },
+    {
+      "id": "R-033",
+      "seq": 199,
+      "from": "scheme",
+      "text": "⇒ **结论：活跃度必须是请求时现算的真身派生值，不得入缓存。**"
+    },
+    {
+      "id": "R-034",
+      "seq": 210,
+      "from": "scheme",
+      "text": "| F-2 | `static/style.css:402-410` | `.workspace` 去掉 `position:absolute; inset:0; top:48px; z-index:100`（**全屏覆盖的根因**），改为 `.stage` 内的主视图容器 |"
+    },
+    {
+      "id": "R-035",
+      "seq": 212,
+      "from": "scheme",
+      "text": "| F-4 | `static/workspace.js:57-147` `renderLeft()` | **拆二**：新增 `renderNav()`（读 `/api/nav` 渲树）＋ `renderInspector()`（原左栏 DOM **原样搬**）；`:40`／`:195`／`:251`／`:272` 四处调用点同步改为二者 |"
+    },
+    {
+      "id": "R-036",
+      "seq": 214,
+      "from": "scheme",
+      "text": "| F-6 | `static/canvas.js:1135,1160,1164` | `reloadCanvas()` 末尾**不再无条件** `hideWorkspace()`（风险 R-1）；视图切换改由显隐 `data-view` 驱动 |"
+    },
+    {
+      "id": "R-037",
+      "seq": 216,
+      "from": "scheme",
+      "text": "| F-8 | `templates/index.html:8`、`work.html:8,52-54` | `?v=9.3` → **统一新值**（建议 `10.0`；规则：凡动 static 必同步 bump 两页全部资源） |"
+    },
+    {
+      "id": "R-038",
+      "seq": 223,
+      "from": "scheme",
+      "text": "| B-1 | `src/storage/activity.py`（**新**） | `card_last_active(work_id, card_id, updated_at)`／`work_last_active(work_id)`；供 B-3、B-4 共用，避免口径分叉 |"
+    },
+    {
+      "id": "R-039",
+      "seq": 224,
+      "from": "scheme",
+      "text": "| B-2 | `src/storage/session_store.py`（新增函数） | `last_ts(work_id, card_id) -> str`：**同步**、**尾部反向扫描**取末条 `timestamp:`；文件不存在返回 `\"\"` |"
+    },
+    {
+      "id": "R-040",
+      "seq": 226,
+      "from": "scheme",
+      "text": "| B-4 | `src/api/routes.py:96` 附近（新增端点） | `GET /api/nav` → `{\"projects\": [...]}`，按 §4.3 契约排序 |"
+    },
+    {
+      "id": "R-041",
+      "seq": 234,
+      "from": "scheme",
+      "text": "| T-3 | `推演agent_test/src/storage/*`、`src/api/routes.py` | 与 B-1～B-4 同源同步 |"
+    },
+    {
+      "id": "R-042",
+      "seq": 241,
+      "from": "scheme",
+      "text": "**不动**：画布渲染管线（布局／LOD／拖拽／避让，`canvas.js` 状态机与几何计算）· 六色类型边框（`style.css:15-21`，属 card_018 §四.1，不在范围）· 卡片真身（`card_*.md` 一律不改）· 会话文件（只读）· `/api/works` 之外既有端点的返回结构（`/api/nav` 为**新增**，不改老的）。"
+    },
+    {
+      "id": "R-043",
+      "seq": 247,
+      "from": "scheme",
+      "text": "| **R-1** | `reloadCanvas()` 末尾**无条件** `hideWorkspace()`（`canvas.js:1160`）。改造后若沿旧，则「保存职责区／删关系／建子卡」触发重渲会**把用户踢回画布**，Inspector 未保存编辑静默丢失 | **必改**：区分「刷新画布数据」与「收起对话层」两件事；守 card_007 §五「刷新画布不得静默丢编辑」 |"
+    },
+    {
+      "id": "R-044",
+      "seq": 249,
+      "from": "scheme",
+      "text": "| **R-3** | 并发：`.app-nav` 树与画布 `state.expanded` 是**两套展开态** | 明确**互不同步**（画布展开态是内存态、刷新即失；导航展开态独立）。**不做**互相写入 |"
+    },
+    {
+      "id": "R-045",
+      "seq": 255,
+      "from": "scheme",
+      "text": "**影响面**：进卡路径（画布点卡／nav 点卡／URL hash 直开／刷新恢复 `workspace.js:619`）四条，全部经 `.app-main[data-view]` 统一。"
+    },
+    {
+      "id": "R-046",
+      "seq": 263,
+      "from": "scheme",
+      "text": "| V1 | 直开 `/work/{id}` → 中区**画布占满**，左 **44px** 窄条，右无 Inspector |"
+    },
+    {
+      "id": "R-047",
+      "seq": 264,
+      "from": "scheme",
+      "text": "| V2 | 点卡 → 左 **260px** 树、中区对话、右 Inspector **收起**；左栏 DOM **不再含** `charterEdit`／`conclusionEdit`／`relAddBtn`／`addChildBtn`（可 `grep` `renderNav` 输出） |"
+    },
+    {
+      "id": "R-048",
+      "seq": 268,
+      "from": "scheme",
+      "text": "| V6 | **反证·关键**：对一张**只聊天、不改卡**的卡发一条消息后刷新 → 该卡 `last_active_at` **前进**、排序**上移**（若不动，说明落了 §4.4 的缓存坑，判失败） |"
+    },
+    {
+      "id": "R-049",
+      "seq": 269,
+      "from": "scheme",
+      "text": "| V7 | 层级口径：在画布**下钻**到二级卡后，导航树的层级**不变**（仍是项目根卡为第 0 层） |"
+    },
+    {
+      "id": "R-050",
+      "seq": 272,
+      "from": "scheme",
+      "text": "| V10 | **R-1 专测**：在 Inspector 改职责区**不保存** → 切回画布再切回该卡 → **不因重渲静默丢失**（或至少与改造前行为一致，不得劣化） |"
+    },
+    {
+      "id": "R-051",
+      "seq": 282,
+      "from": "scheme",
+      "text": "- **数据**：**零风险**——不写任何 `card_*.md`／`session_*.md`／`canvas.json`；活跃度为请求时派生值，不入盘（§4.4）。符合 `VERSIONING.md`「禁令二」：版本管理的操作对象只是代码。"
+    },
+    {
+      "id": "R-052",
+      "seq": 308,
+      "from": "scheme",
+      "text": "- 本方案**只出方案**：未改代码、未改数据、未派生实现卡、未做浏览器实测。"
+    },
+    {
+      "id": "R-053",
+      "seq": 309,
+      "from": "scheme",
+      "text": "- 施工须**另立任务书**（铁律零）；测试空间先验（铁律一）；正式空间部署另开窗口（铁律二）。"
+    },
+    {
+      "id": "C-001",
+      "seq": 0,
+      "from": "input",
+      "text": "用户 2026-10-06 **20:12** 当场指令（逐字）：「那就出任务书吧」"
+    },
+    {
+      "id": "C-002",
+      "seq": 0,
+      "from": "input",
+      "text": "**用户 18:38 六条亲令（逐字，方案 §一）**（本线最上游，正式承接）：「接下来重新设计主界面，左侧改成对话导航」"
+    },
+    {
+      "id": "C-003",
+      "seq": 0,
+      "from": "input",
+      "text": "26,560 B / 327 行 / SHA256 `77fad52d47089b826dbf892f1bceeb113c163a5a02179f72eeffbe844dbc6483` / mtime 2026-10-06 18:38:19 / 已由诸葛逐处核验（20 条代码锚点＋数据层断言全坐实、0 处假、0 红灯）"
+    },
+    {
+      "id": "C-004",
+      "seq": 0,
+      "from": "input",
+      "text": "1. **现场锚双列**：正式服与测试空间行号分叉（测试空间 style.css 含 19 行 pinned 违规层致偏移）——须出双列锚点表，执行方按各自环境落，不抄方案单列行号。"
+    },
+    {
+      "id": "C-005",
+      "seq": 0,
+      "from": "input",
+      "text": "4. **同步红线防带 pinned 违规层**：两环境 style.css 不得整份拷贝、按语义锚点分别改写、改后定向 diff 确认两段一致（测试空间 19 行 pinned 违规层为 10-04 欠账、本批不处置）。"
+    },
+    {
+      "id": "C-006",
+      "seq": 0,
+      "from": "input",
+      "text": "- **第一批 · 后端数据层**（B-1~B-4）：activity.py 新模块＋work_store 排序＋session_store 尾扫＋/api/nav 新端点。零可见（老前端不消费）、唯一新数据需求、风险隔离可单独回滚。"
+    },
+    {
+      "id": "C-007",
+      "seq": 0,
+      "from": "input",
+      "text": "10. 同步纪律：两环境 style.css 按语义锚点改写、非整份拷贝（防带测试空间 19 行 pinned 违规层）。"
+    }
+  ]
+}
