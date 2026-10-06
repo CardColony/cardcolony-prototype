@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "chain": "THINK-ECO-T15",
+    "date": "20261005",
+    "step": "p3",
+    "base_draft": "THINK-ECO-T15-任务书骨架草稿-20261005.md",
+    "ledger": "THINK-ECO-T15-对账-方案条目清单-20261005.json（130 条：R-001~R-049 工作件逐字／T-001~T-041 T12任务书逐字／C-001~C-010 裁定落档逐字／I-001~I-030 输入包逐字）",
+    "upper_products": ["凝练机制-移植方案-20261005-工作件.md（方案级）", "THINK-ECO-T12-任务书终稿-20261005.md（挂起原文）", "CONDENSE_ROUTE_RULINGS.md（闸开依据）", "THINK-ECO-T15-任务书链输入包-20261005.md（任务全文）"],
+    "in_chain_evidence": "p1 调研纪要（21:28-21:30，file:line 实测）"
+  },
+  "forward": [
+    {"ids": "R-001~R-049", "group": "工作件全文逐字", "landing": "§一背景（三期定义/挂起原文/闸开）＋§三任务1-6（管线五步：触发/取段/调用/落条/推进/收窄）＋§四红线＋§五验收", "excerpt": "三期·凝练管线（规模最大）：超线触发→模型写四栏→落entries→推进mark→300区收窄为未凝段", "note": "工作件§六四期（归拢折叠）在草稿无落点＝范围排除：输入包任务全文限定『凝练三期（路线甲·管线本体）』，工作件自身标注四期『待三期实况定』——依据 I-段范围界定，非丢失"},
+    {"ids": "T-001~T-041", "group": "T12任务书全文逐字", "landing": "§一背景（阶段一/二完成态＋阶段三挂起原文）＋§四红线 RD-01~10（承接 T12 红线族：测试先行/不设闸/会话格式零改动/基础件行为不变）＋§六回报体例（真实产物/待侦察补读/部署另许可）", "excerpt": "阶段三·凝练管线（三期）——【整段挂起、不得自行择一】，路线裁定后由任务书补充执行", "note": "T12 任务书阶段三挂起段（L48-72）正是本任务书要补的对象——承接而非重复"},
+    {"ids": "C-001~C-010", "group": "CONDENSE_ROUTE_RULINGS.md 全文逐字", "landing": "§一背景第二段：两句裁定原话逐字引用＋乙丙作废＋走路线甲＋闸开", "excerpt": "『不用影子卡，上下文是上下文，影子卡是影子卡，根本不是一回事』『影子卡可以是上下文里的一个部分』", "note": "RD-06（影子卡零触碰）由 C-段裁定直接派生"},
+    {"ids": "I-001~I-030", "group": "T15输入包全文逐字", "landing": "§三任务1-8 一一对应（输入包覆盖清单 1-8）＋『诸葛拍板』三项落位（任务2一次全凝/任务3 prompt骨架/任务4五字段口径，均标可推翻）＋纪律落 RD/回报", "excerpt": "闸开依据＝CONDENSE_ROUTE_RULINGS.md；覆盖清单：触发接通/取段/调用/落条/推进/收窄/失败处理/验收补测", "note": "任务7互斥的依据＝p1纪要风险1（同卡竞态）；任务8打点的依据＝T12任务书体例先例（T-段）——两处依据链如实标注，非空"}
+  ],
+  "reverse": [
+    {"draft": "§一 背景与裁定", "basis": "R-段三期定义＋T-段挂起原文＋C-段裁定逐字＋I-段任务原话", "empty": false},
+    {"draft": "§二 现场锚（12锚）", "basis": "p1 调研纪要实测 file:line（链内产物：memory_store/model_service/routes/context_assembler/context_regions/session_store）——锚点漂移发现（L387→L391）亦出自纪要", "empty": false},
+    {"draft": "§三 任务1 触发接通", "basis": "R-段管线第一步＋I-段覆盖清单1", "empty": false},
+    {"draft": "§三 任务2 取未凝段", "basis": "R-段＋I-段覆盖清单2＋p1纪要（prior[mark:] L172-173 已在）；『一次全凝』＝I-段待定拍板项授权（诸葛拍板·可推翻）", "empty": false},
+    {"draft": "§三 任务3 凝练调用", "basis": "I-段覆盖清单3＋I-段待定拍板项（prompt 具体内容诸葛拍板留痕）；prompt 骨架形态【结论】【依据】＝2026-10-05 00:13 用户裁定口径（折叠形态两件套）", "empty": false},
+    {"draft": "§三 任务4 落entries五字段", "basis": "R-段（五字段结构 seq/conclusion/evidence/occurred_at/fingerprint 方案已定）＋I-段覆盖清单4", "empty": false},
+    {"draft": "§三 任务5 推进mark幂等", "basis": "R-段（失败水位一分不动）＋I-段覆盖清单5/7（失败处理）", "empty": false},
+    {"draft": "§三 任务6 300区收窄", "basis": "R-段＋I-段覆盖清单6＋T-段（L387 本批不动→本期接通）＋p1纪要（实测落点 L391）", "empty": false},
+    {"draft": "§三 任务7 同卡互斥", "basis": "p1纪要风险1（同卡连续触发竞态）——链内调研发现，非无中生有", "empty": false},
+    {"draft": "§三 任务8 全日志打点", "basis": "R-024/T-038/I-013/I-028 四条『留痕』上级条目——任务8＝V5失败哲学『留痕』的实现载体、§五V3『warning留痕一条』机械判定的支撑设施；打点形态走既有logger体例", "empty": false},
+    {"draft": "§四 红线 RD-01~10", "basis": "T-段红线族承接（RD-01/02/03/05/08）＋C-段（RD-06影子零触碰）＋R-段（RD-04失败水位不动）＋p1纪要（RD-08行号漂移已证）＋改动面收敛（RD-10）", "empty": false},
+    {"draft": "§五 验收 V1-V7", "basis": "I-段（V4/V5 本轮补测）＋R-段验收定义＋V1 mock 层依据＝p1纪要（MOCK_LLM=1 离线可跑发现）；V2/V6/V7＝管线新增行为验收（幂等/回归/互斥，全部机械可判）", "empty": false},
+    {"draft": "§六 回报要求 1-5", "basis": "T-段回报体例（真实产物/严禁fixture/git diff/待侦察补读/部署另许可）＋I-段纪律", "empty": false}
+  ],
+  "conflicts": [
+    {"pair": "RD-10（改动面两文件：memory_store＋routes） vs 任务3 调用 model_service.call_main", "verdict": "无矛盾——call_main 是既有函数调用、非修改 model_service.py 文件；MOCK_LLM 开关也是既有机制（model_service L12/L32-33），零文件改动"},
+    {"pair": "RD-02（不设任何闸） vs 任务5（不重试）/任务7（不排队）", "verdict": "无矛盾——『不做』类约束不是闸；闸＝限制模型产出的上限/截断/熔断，任务书全无此类"},
+    {"pair": "任务6（200区由空接转为渲染entries·零改造） vs RD-10（routes改动限一处）", "verdict": "无矛盾——T12 已实现『entries 非空才出现 200 区』（context_assembler L99-110），entries 落盘后 200 区数据驱动出现，context_* 文件零改动；routes 侧只改 L391 切片一处"},
+    {"pair": "V5（开关关→逐字旧路） vs 任务6（开关开→切片收窄）", "verdict": "无矛盾——开关三态语义一致（关=全量+空区跳过，与 T12 V1 断言同构）"},
+    {"pair": "类型枚举 vs 验收条款", "verdict": "不适用——本期零新卡类型、零工具变更（RD-07）"},
+    {"pair": "RD-04（失败水位一分不动） vs 任务5 mark 推进", "verdict": "无矛盾——推进仅在『全部条目落盘成功』后，失败路径明确 mark 前后相等（V3 判据）"}
+  ]
+}
