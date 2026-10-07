@@ -80,3 +80,44 @@ def work_last_active(work_id: str) -> str:
         )
     data = work_store.read_work(work_id) or {}
     return _max_iso(best, data.get("created_at", ""))
+
+
+def compute_card_activity(work_id: str) -> dict[str, dict[str, str]]:
+    """每卡活跃同源一次现算（主界面优化 E1）：own＝卡级活跃，branch＝分支活跃。
+
+    own 与 card_last_active 逐卡同口径（max(会话末条, updated_at)）；branch＝
+    该卡及其全部子孙 own 的 max——与卡级活跃同源遍历合并计算（源方案 E1），
+    避免同一批卡文件与会话尾扫做两遍。孤儿卡（parent 不在树内）自成一支、
+    不向上归并；parent 成环时环防护按自身收口、不无限递归。
+    请求时现算、绝不入盘（RD-06 同口径）。返回 {card_id: {"own":…, "branch":…}}。
+    """
+    metas: dict[str, dict[str, Any]] = {}
+    for m in iter_card_metas(work_id):
+        cid = m.get("card_id", "")
+        if cid:
+            metas[cid] = m
+    own: dict[str, str] = {}
+    children: dict[str, list[str]] = {}
+    for cid, m in metas.items():
+        own[cid] = card_last_active(work_id, cid, m.get("updated_at", ""))
+        parent = m.get("parent", "")
+        if parent in metas:
+            children.setdefault(parent, []).append(cid)
+    branch: dict[str, str] = {}
+
+    def _resolve(cid: str, visiting: set[str]) -> str:
+        if cid in branch:
+            return branch[cid]
+        if cid in visiting:   # 环防护：成环回边按自身活跃收口，不下探
+            return own.get(cid, "")
+        visiting.add(cid)
+        best = own.get(cid, "")
+        for ch in children.get(cid, ()):
+            best = _max_iso(best, _resolve(ch, visiting))
+        visiting.discard(cid)
+        branch[cid] = best
+        return best
+
+    for cid in metas:
+        _resolve(cid, set())
+    return {cid: {"own": own[cid], "branch": branch.get(cid, own[cid])} for cid in metas}

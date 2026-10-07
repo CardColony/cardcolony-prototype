@@ -133,6 +133,9 @@ async def get_nav():
             if p:
                 child_count[p] = child_count.get(p, 0) + 1
         root_id = w.get("work_card_id", "")
+        # [主界面优化 E2] 同源一次现算每卡 own/branch 活跃（activity.compute_card_activity）；
+        # 端点现算增列、不写任何真身文件（RD-02 数据层零写）。
+        act = activity.compute_card_activity(wid)
         cards = []
         for m in metas:
             cid = m.get("card_id", "")
@@ -143,9 +146,9 @@ async def get_nav():
                 "title": m.get("title", ""),
                 "parent": m.get("parent", ""),
                 "child_count": child_count.get(cid, 0),
-                "last_active_at": activity.card_last_active(
-                    wid, cid, m.get("updated_at", "")
-                ),
+                "last_active_at": act.get(cid, {}).get("own", ""),
+                # [主界面优化 E2] 分支活跃（该卡及其全部子孙最近活跃）现算增列
+                "branch_active_at": act.get(cid, {}).get("branch", ""),
             })
         # 两段稳定排序：先并列收尾键 card_id 升序，再按活跃降序（空串排末位）
         cards.sort(key=lambda c: c["card_id"])
