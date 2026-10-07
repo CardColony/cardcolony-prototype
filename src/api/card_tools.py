@@ -6,7 +6,7 @@
 - edit_card(card_id, content)：覆盖写指定卡正文（内部落存储层正文区）
 - link_cards：连线，模型可用类型限 先后/关联（锚定为系统内部关系，不对模型开放）
 
-权限纯函数不变：读＝子树∪血统链∪连线∪锚卡全局可读；写＝自己的子树。
+[卡片权限改造 2026-10-07] 权限纯函数：读＝全盘可读（存在即放行，亲属链/连线/锚卡读限整制去除——小说项目机制）；写＝自己的子树（不随读放开）。
 越权不抛异常，返回 {"error": ...} 给模型。
 """
 
@@ -239,72 +239,22 @@ def can_read(
     current_id: str, target_id: str, cards: dict[str, dict[str, Any]],
     work_card_id: str = "",
 ) -> bool:
-    """读权限：target 在 current 的子树内，或在 current 的血统链上（含剧本卡），
-    或在 current 的 relations 里 → True。
+    """读权限：[卡片权限改造 2026-10-07] 全盘放开——target 存在即放行。
+
+    用户令（2026-10-07 11:26）：任一卡可读全项目任何卡的信息，但不放开写；
+    原按亲属链限读（判据①读自己/②子树/③血统链/④连线/⑤锚卡全局）是小说
+    项目移植的机制，整制退役。仅保留存在性校验（不因放开而丢）：
+    target 不在 cards（不存在/已删）→ False；current 不在 cards
+    （无有效对话卡上下文，维持旧态行为）→ False。
 
     cards: {card_id: meta dict（含 parent, card_type, relations）}
-    work_card_id: 本剧本根卡 id。[T07-1-6] 判据④（锚卡全局）按 card_id == work_card_id
-    判（原按 card_type=="剧本"）；缺省空串时判据④不命中（供未传根卡的直调方）。
+    work_card_id: 形参保留（四个消费点调用签名不动）；判据⑤退役后无判据使用。
     """
-    if target_id == current_id:
-        return True
-    cur = cards.get(current_id)
-    if cur is None:
+    if cards.get(target_id) is None:
         return False
-    tgt = cards.get(target_id)
-    if tgt is None:
+    if cards.get(current_id) is None:
         return False
-
-    # 1. 子树：反向遍历 target 的 parent 链，看能否到达 current
-    visited: set[str] = set()
-    node = tgt.get("parent", "")
-    guard = 0
-    while node and guard < 1000:
-        guard += 1
-        if node in visited:
-            break
-        visited.add(node)
-        if node == current_id:
-            return True
-        nm = cards.get(node)
-        if nm is None:
-            break
-        node = nm.get("parent", "")
-
-    # 2. 血统链：反向遍历 current 的 parent 链，看是否含 target
-    visited2: set[str] = set()
-    node = cur.get("parent", "")
-    guard = 0
-    while node and guard < 1000:
-        guard += 1
-        if node in visited2:
-            break
-        visited2.add(node)
-        if node == target_id:
-            return True
-        nm = cards.get(node)
-        if nm is None:
-            break
-        node = nm.get("parent", "")
-
-    # 3. relations：current 的 relations 里指向 target
-    for rel in cur.get("relations") or []:
-        if isinstance(rel, dict) and rel.get("target") == target_id:
-            return True
-
-    # 4. 锚卡全局可读：target 锚定剧本根卡（系统派生结构）→ 任何卡可读
-    #    [T07-1-6] 判据源切换：锚定目标是否根卡，按 card_id == work_card_id 判
-    for rel in tgt.get("relations") or []:
-        if isinstance(rel, dict) and rel.get("type") == "锚定":
-            _anc_old = (cards.get(rel.get("target", "")) or {}).get("card_type") == "剧本"
-            _anc_new = rel.get("target", "") == work_card_id
-            card_store._log_judgment_switch(
-                "card_tools.can_read.anchor_global", rel.get("target", ""), _anc_old, _anc_new
-            )
-            if _anc_new:
-                return True
-
-    return False
+    return True
 
 
 def can_edit(current_id: str, target_id: str, cards: dict[str, dict[str, Any]]) -> bool:
