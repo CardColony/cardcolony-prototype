@@ -47,16 +47,20 @@ async def call_main(
     user_prompt: str,
     prior_messages: Optional[list[dict[str, Any]]] = None,
     tools: Optional[list[dict[str, Any]]] = None,
+    model_name: str = "main",
 ) -> tuple[dict[str, Any], str]:
-    """以 main 模型发起调用，返回 (gateway结果, 实际使用的模型名)。
+    """以指定席位发起调用，返回 (gateway结果, 实际使用的模型名)。
 
     Phase 7：tools 透传给 gateway.call（OpenAI function calling）。
+    [凝练折叠开启 2026-10-07·任务5] 增 model_name 参数（缺省 "main"，缺省行为
+    逐字不变）；凝练线经 model_name="condenser" 指定独立凝练席（gateway.call
+    直读 config["models"][model_name]，R2 实读支持任意席位名，gateway.py 禁改令不触发）。
     """
     gw = get_gateway()
-    cfg = (gw.config.get("models") or {}).get("main", {})
+    cfg = (gw.config.get("models") or {}).get(model_name, {})
     events: list[dict[str, Any]] = []
     result = await gw.call(
-        "main",
+        model_name,
         system_prompt,
         user_prompt,
         temperature=float(cfg.get("temperature", 0.5)),
@@ -70,7 +74,7 @@ async def call_main(
     if is_mock():
         model_used = "mock"
     else:
-        entry = "main"
+        entry = model_name
         for ev in events:
             if ev.get("phase") == "fallback":
                 entry = ev.get("to_model", "fallback")
