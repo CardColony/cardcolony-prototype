@@ -14,6 +14,10 @@
 
   let currentCard = null;     // 完整 card 数据 {meta, body}
   let lastSentContent = "";   // 用于失败重发（不重复追加用户消息）
+  // [I2 主界面优化] 结论区只读优先：编辑态与草稿挂模块级——renderInspector 重渲
+  // （如加删关系触发）时恢复编辑态，不丢未保存内容
+  let conclEditing = false;
+  let conclDraft = "";
 
   function escapeHtml(s) {
     return String(s || "").replace(/[&<>"']/g, c => ({
@@ -128,10 +132,15 @@
       </div>
 
       <div class="blocktitle">结论区</div>
-      <textarea class="ws-edit" id="conclusionEdit" placeholder="本卡的结论（第一条建议是一句话摘要）">${escapeHtml(b.conclusion || "")}</textarea>
-      <div class="edit-row">
-        <button class="btn" id="saveConclusion">保存结论</button>
+      <div class="conclusion-display${(b.conclusion || "").trim() ? "" : " empty"}" id="conclusionView">${(b.conclusion || "").trim() ? escapeHtml(b.conclusion) : "（暂无结论）"}</div>
+      <div class="edit-row" id="conclViewRow">
+        <button class="btn" id="editConclusion">编辑结论</button>
         <span class="save-status" id="conclusionStatus"></span>
+      </div>
+      <textarea class="ws-edit" id="conclusionEdit" placeholder="本卡的结论（第一条建议是一句话摘要）" style="display:none">${escapeHtml(b.conclusion || "")}</textarea>
+      <div class="edit-row" id="conclEditRow" style="display:none">
+        <button class="btn" id="saveConclusion">保存结论</button>
+        <button class="btn ghost" id="cancelConclusion">取消</button>
       </div>
 
       <div class="blocktitle">否决记录</div>
@@ -168,6 +177,8 @@
     `;
 
     bindInspectorEvents();
+    // [I2] 恢复结论区编辑态（若有草稿）：重渲不丢未保存内容
+    applyConclusionState();
     // [phase8.6-C] 面板已可见时（如保存后重渲染）立即撑高；首次 open 由 active 后统一触发
     autoGrowAll();
   }
@@ -183,6 +194,28 @@
     autoGrowEl(document.getElementById("conclusionEdit"));
   }
 
+  // [I2 主界面优化] 结论区显示/编辑两态切换（只读优先：默认只读、显式进编辑）
+  function applyConclusionState() {
+    const view = document.getElementById("conclusionView");
+    const viewRow = document.getElementById("conclViewRow");
+    const editEl = document.getElementById("conclusionEdit");
+    const editRow = document.getElementById("conclEditRow");
+    if (!view || !editEl || !viewRow || !editRow) return;
+    if (conclEditing) {
+      editEl.value = conclDraft;
+      view.style.display = "none";
+      viewRow.style.display = "none";
+      editEl.style.display = "";
+      editRow.style.display = "";
+      autoGrowEl(editEl);
+    } else {
+      view.style.display = "";
+      viewRow.style.display = "";
+      editEl.style.display = "none";
+      editRow.style.display = "none";
+    }
+  }
+
   // [T17-F5] bindLeftEvents() 拆二之一：bindInspectorEvents()——charter／conclusion 保存、
   // 关系增删、历史折叠、建子卡、删卡全部原样保留；wsBackBtn 处理上移到静态初始化
   // （返回画布＝纯显隐切换，不再走 ReloadCanvas，见 R-1/R-043）。
@@ -192,6 +225,9 @@
       const el = document.getElementById(id);
       if (el) el.addEventListener("input", () => autoGrowEl(el));
     });
+    // [I2] 编辑态草稿实时入账：重渲恢复不丢
+    const conclEditEl = document.getElementById("conclusionEdit");
+    if (conclEditEl) conclEditEl.addEventListener("input", () => { conclDraft = conclEditEl.value; });
 
     // 标题编辑
     const titleEl = document.getElementById("wsTitle");
@@ -235,7 +271,7 @@
       } catch (e) { status.textContent = "失败"; }
     };
 
-    // conclusion 保存
+    // conclusion 保存：[I2 主界面优化] 保存回只读态；再改须显式「编辑结论」
     document.getElementById("saveConclusion").onclick = async () => {
       const v = document.getElementById("conclusionEdit").value;
       const status = document.getElementById("conclusionStatus");
@@ -243,9 +279,33 @@
       try {
         const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { conclusion: v }, "用户编辑结论区");
         currentCard = r;
+        conclEditing = false;
+        conclDraft = "";
+        const view = document.getElementById("conclusionView");
+        const nv = (r.body.conclusion || "").trim();
+        if (view) {
+          view.textContent = nv ? r.body.conclusion : "（暂无结论）";
+          view.classList.toggle("empty", !nv);
+        }
+        applyConclusionState();
         status.textContent = "已保存";
         setTimeout(() => status.textContent = "", 2000);
       } catch (e) { status.textContent = "失败"; }
+    };
+
+    // [I2] 显式进编辑 / 取消弃改
+    const editConclBtn = document.getElementById("editConclusion");
+    if (editConclBtn) editConclBtn.onclick = () => {
+      conclEditing = true;
+      conclDraft = currentCard.body.conclusion || "";
+      applyConclusionState();
+      document.getElementById("conclusionEdit").focus();
+    };
+    const cancelConclBtn = document.getElementById("cancelConclusion");
+    if (cancelConclBtn) cancelConclBtn.onclick = () => {
+      conclEditing = false;
+      conclDraft = "";
+      applyConclusionState();
     };
 
     // 关系项跳转
@@ -405,7 +465,9 @@
       return;
     }
     const curId = currentCard ? currentCard.meta.card_id : "";
-    navTree.innerHTML = projects.map(p => renderProject(p, curId)).join("");
+    // [B3 主界面优化] 不给色点配说明书（图例不引入）；提示行按 B1/B2/B5 新语义
+    navTree.innerHTML = `<div class="nav-hint">▸/▾ 展开 · 点行进对话 · 「打开 →」进项目画布</div>`
+      + projects.map(p => renderProject(p, curId)).join("");
   }
 
   function renderProject(p, curId) {
@@ -433,11 +495,12 @@
       if (orphans.length) rows += renderCardRows(orphans, 0, p, childrenMap, curId);
     }
     return `<div class="nav-pgroup">
-      <div class="nav-phead${isCur ? " current" : ""}" data-wid="${escapeHtml(p.work_id)}" title="${escapeHtml(p.title)}">
-        <span class="nav-twist">${isOpen ? "▾" : "▸"}</span>
+      <div class="nav-phead${isCur ? " current" : ""}" data-wid="${escapeHtml(p.work_id)}" data-root="${escapeHtml(p.work_card_id || "")}" title="${escapeHtml(p.title)}">
+        <span class="nav-twist" data-ptwist="${escapeHtml(p.work_id)}" title="展开/收起">${isOpen ? "▾" : "▸"}</span>
         <span class="dot root"></span>
         <span class="nav-pname">${escapeHtml(p.title)}</span>
         <span class="nav-pcount">${p.card_count}卡</span>
+        <button class="nav-popen" data-act="open" data-wid="${escapeHtml(p.work_id)}" title="打开该项目画布">打开 →</button>
         <span class="nav-ptime">${fmtRel(p.last_active_at)}</span>
         <button class="nav-padd" data-add="${escapeHtml(p.work_id)}" title="＋ 新建卡">＋卡</button>
       </div>
@@ -452,11 +515,15 @@
       const open = navOpenCards.has(c.card_id);
       const isCur = c.card_id === curId;
       const pad = 10 + depth * 14;   // §3.5：每层 +14px
-      html += `<div class="nav-card${isCur ? " current" : ""}" data-cid="${escapeHtml(c.card_id)}" data-wid="${escapeHtml(p.work_id)}" style="padding-left:${pad}px;" title="${escapeHtml(c.title)}">
-        <span class="nav-twist${hasKids ? "" : " none"}"${hasKids ? ` data-twist="${escapeHtml(c.card_id)}"` : ""}>${hasKids ? (open ? "▾" : "▸") : ""}</span>
+      // [B4 主界面优化] 行内时间戳（nav-ctime）退役——活跃/分支活跃走 tooltip 三分列；
+      // [E2 前端消费] branch_active_at 入 tooltip（「分支活跃」标识的到车口）
+      const tip = escapeHtml(c.title)
+        + (c.last_active_at ? `｜本卡活跃 ${fmtRel(c.last_active_at)}` : "｜无对话")
+        + (c.branch_active_at ? `｜分支活跃 ${fmtRel(c.branch_active_at)}` : "");
+      html += `<div class="nav-card${isCur ? " current" : ""}" data-cid="${escapeHtml(c.card_id)}" data-wid="${escapeHtml(p.work_id)}" style="padding-left:${pad}px;" title="${tip}">
+        <span class="nav-twist${hasKids ? "" : " none"}"${hasKids ? ` data-twist="${escapeHtml(c.card_id)}" title="展开/收起"` : ""}>${hasKids ? (open ? "▾" : "▸") : ""}</span>
         <span class="dot ${hasKids ? "mid" : "leaf"}"></span>
         <span class="nav-ctitle">${escapeHtml(c.title)}</span>
-        <span class="nav-ctime">${fmtRel(c.last_active_at)}</span>
         <button class="nav-more" data-more="${escapeHtml(c.card_id)}" data-mwid="${escapeHtml(p.work_id)}" title="建子卡 / 卡详情">⋯</button>
       </div>`;
       if (hasKids && open) {
@@ -518,7 +585,10 @@
     }
   }
 
-  // 导航事件委托：一次绑定，重渲免重挂
+  // 导航事件委托：一次绑定，重渲免重挂。
+  // [B1/B2/B5 主界面优化] 三行为分离：▸/▾（data-twist/data-ptwist，24px 热区）＝只管
+  // 展开收起；行（.nav-phead/.nav-card）＝进该卡对话（组头＝根卡对话，展开态保持）；
+  // 「打开 →」（data-act="open"）＝进项目画布。互不误触。
   navTree.addEventListener("click", (e) => {
     const twist = e.target.closest("[data-twist]");
     if (twist) {
@@ -527,15 +597,27 @@
       renderNavFromCache();
       return;
     }
+    const ptwist = e.target.closest("[data-ptwist]");
+    if (ptwist) {
+      const wid = ptwist.dataset.ptwist;
+      if (navProjectsOpen.has(wid)) navProjectsOpen.delete(wid); else navProjectsOpen.add(wid);
+      renderNavFromCache();
+      return;
+    }
     const more = e.target.closest("[data-more]");
     if (more) { showNavMenu(more.dataset.more, more.dataset.mwid, more); return; }
     const padd = e.target.closest("[data-add]");
     if (padd) { handleProjectAdd(padd.dataset.add); return; }
+    const popen = e.target.closest('[data-act="open"]');
+    if (popen) { window.location.href = "/work/" + popen.dataset.wid; return; }
     const phead = e.target.closest(".nav-phead");
     if (phead) {
-      const wid = phead.dataset.wid;
-      if (navProjectsOpen.has(wid)) navProjectsOpen.delete(wid); else navProjectsOpen.add(wid);
-      renderNavFromCache();
+      // [B1] 组头整行点击＝进入该组根卡对话；展开态保持（折叠中则先展开）
+      if (!navProjectsOpen.has(phead.dataset.wid)) {
+        navProjectsOpen.add(phead.dataset.wid);
+        renderNavFromCache();
+      }
+      gotoCard(phead.dataset.root, phead.dataset.wid, false);
       return;
     }
     const row = e.target.closest(".nav-card");
@@ -588,6 +670,9 @@
     const badge = (role === "assistant" && model) ? `<div class="model-badge">${escapeHtml(model)}</div>` : "";
     el.innerHTML = badge + formatMsgContent(content || "");
     chatArea.appendChild(el);
+    // [C3 主界面优化] 记账与显示一致：send()/恢复路径与 renderChat 同走本函数，
+    // 每次真实上屏同步计数（与 renderChat 的 DOM 实数判据同口径，杜绝增量路径脱节）
+    chatRenderedCount += 1;
     scrollChatBottom();
     return el;
   }
@@ -616,7 +701,7 @@
     let seconds = 0;
     let stageLine = "";
     const render = () => {
-      el.innerHTML = `<span class="spinner"></span>${prefix} ${escapeHtml(stageLine || "…")} · 已等待 ${seconds} 秒`;
+      el.innerHTML = `<span class="spinner"></span>${escapeHtml(prefix)} ${escapeHtml(stageLine || "…")} · 已等待 ${seconds} 秒`;
     };
     render();
     chatArea.appendChild(el);
@@ -826,6 +911,8 @@
 
   sendBtn.onclick = send;
   inputBox.addEventListener("keydown", (e) => {
+    // [C5 主界面优化] IME 守卫：中文输入法组词/选字回车（isComposing 或 keyCode 229）不发送
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       send();
