@@ -1,281 +1,3 @@
-/* ============================================================
-   推演agent - Phase 8 视觉规范
-   GitHub Dark 主题，纯原生 CSS，离线可用
-   ============================================================ */
-
-:root {
-  /* 底色与面板 */
-  --bg: #0d1117;
-  --bg-deep: #010409;
-  --panel: #161b22;
-  --panel-hover: #1c2128;
-  --border: #30363d;
-  --text: #e6edf3;
-  --dim: #8b949e;
-  --dimmer: #484f58;
-
-  /* 类型色（色相） */
-  --c-work: #d4a72c;     /* 剧本·金 */
-  --c-setting: #388bfd;  /* 世界观·蓝 */
-  --c-char: #a371f7;     /* 行为体·紫 */
-  --c-plot: #db6d28;     /* 节点·橙 */
-  --c-foresh: #f85149;   /* 假设·红 */
-  --c-idea: #8b949e;     /* 线索·灰 */
-
-  /* 语义色 */
-  --green: #3fb950;
-  --amber: #d29922;
-  --red: #f85149;
-
-  /* 类型淡背景（15% 透明） */
-  --bg-work: rgba(212,167,44,0.15);
-  --bg-setting: rgba(56,139,253,0.15);
-  --bg-char: rgba(163,113,247,0.15);
-  --bg-plot: rgba(219,109,40,0.15);
-  --bg-foresh: rgba(248,81,73,0.15);
-  --bg-idea: rgba(139,148,158,0.15);
-
-  --font: "Segoe UI", -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --mono: "SFMono-Regular", "Consolas", "Liberation Mono", Menlo, monospace;
-}
-
-* { box-sizing: border-box; margin: 0; padding: 0; }
-
-html, body {
-  height: 100%;
-  background: var(--bg-deep);
-  color: var(--text);
-  font-family: var(--font);
-  font-size: 14px;
-  line-height: 1.6;
-  overflow: hidden;
-}
-
-button { font-family: var(--font); cursor: pointer; }
-input, textarea { font-family: var(--font); }
-a { color: inherit; text-decoration: none; }
-
-/* ============ 通用按钮 ============ */
-.btn {
-  background: #21262d;
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 5px 12px;
-  font-size: 13px;
-  transition: background 0.15s, border-color 0.15s;
-}
-.btn:hover { background: var(--panel-hover); border-color: var(--dim); }
-.btn.primary { background: #238636; border-color: #2ea043; color: #fff; }
-.btn.primary:hover { background: #2ea043; }
-.btn.danger { background: #da3633; border-color: #f85149; color: #fff; }
-.btn.ghost { background: transparent; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-/* ============ 顶栏 ============ */
-.topbar {
-  height: 48px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px;
-  flex-shrink: 0;
-}
-.topbar .brand { font-weight: 600; font-size: 14px; }
-.topbar .crumb { color: var(--dim); font-size: 13px; display: flex; align-items: center; gap: 6px; }
-.topbar .crumb a { color: var(--dim); padding: 2px 6px; border-radius: 4px; }
-.topbar .crumb a:hover { background: var(--panel-hover); color: var(--text); }
-.topbar .crumb .sep { color: var(--dimmer); }
-.topbar .crumb .cur { color: var(--text); padding: 2px 6px; }
-.topbar .spacer { flex: 1; }
-.topbar .zoom-display {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  color: var(--dim);
-  min-width: 64px;
-  text-align: center;
-  font-family: var(--mono);
-}
-
-/* ============ 剧本架页 ============ */
-.shelf-page { height: 100vh; display: flex; flex-direction: column; }
-.shelf-main {
-  flex: 1;
-  overflow: auto;
-  padding: 40px 36px;
-}
-.shelf-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 20px;
-  max-width: 1400px;
-  margin: 0 auto;
-}
-.book {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 160px;
-  cursor: pointer;
-  transition: border-color 0.15s, transform 0.1s;
-}
-.book:hover { border-color: var(--c-setting); transform: translateY(-2px); }
-.book .bname {
-  font-size: 16px;
-  font-weight: 600;
-  margin-bottom: 8px;
-  color: var(--text);
-  line-height: 1.4;
-}
-.book .bmeta { font-size: 12px; color: var(--dim); line-height: 1.8; }
-.book .bstats { margin-top: auto; display: flex; gap: 8px; flex-wrap: wrap; padding-top: 10px; }
-.book .ending-flag { position: absolute; top: 12px; right: 12px; font-size: 16px; }
-.chip {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 2px 10px;
-  color: var(--dim);
-  font-size: 11.5px;
-  background: var(--bg);
-}
-.book.new {
-  border-style: dashed;
-  align-items: center;
-  justify-content: center;
-  color: var(--dim);
-  text-align: center;
-}
-.book.new .plus { font-size: 36px; line-height: 1; margin-bottom: 8px; color: var(--dim); }
-.book.new:hover { border-color: var(--green); color: var(--green); }
-.book.new:hover .plus { color: var(--green); }
-
-.shelf-empty {
-  text-align: center;
-  padding: 80px 20px;
-  color: var(--dim);
-}
-.shelf-empty h2 { font-size: 18px; margin-bottom: 12px; color: var(--text); font-weight: 500; }
-.shelf-empty p { margin-bottom: 24px; }
-
-/* 新建剧本内联输入 */
-.inline-form {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-}
-.inline-form.active { display: flex; }
-.inline-form input {
-  flex: 1;
-  background: var(--bg);
-  border: 1px solid var(--c-green, var(--green));
-  border-radius: 6px;
-  padding: 6px 10px;
-  color: var(--text);
-  font-size: 13px;
-  min-width: 0;
-}
-.book.new.form-mode { cursor: default; }
-.book.new.form-mode .plus,
-.book.new.form-mode > div:first-child:not(.inline-form) { display: none; }
-
-/* ============ 画布页 ============ */
-/* [T17-F1] 三联外壳：.work-page 由 column 改 row——左 .app-nav（恒在）＋ 右 .app-main
-   （topbar + .stage 主视图）。#viewport 与 #workspace 落入 .stage，absolute; inset:0 互斥显隐。 */
-.work-page { height: 100vh; display: flex; flex-direction: row; }
-.app-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.stage {
-  flex: 1;
-  position: relative;
-  overflow: hidden;
-}
-#viewport {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 1px 1px, #1c2128 1px, transparent 0);
-  background-size: 24px 24px;
-  background-color: var(--bg);
-  cursor: grab;
-}
-#viewport.panning { cursor: grabbing; }
-#world {
-  position: absolute;
-  top: 0; left: 0;
-  width: 0; height: 0;
-  transform-origin: 0 0;
-}
-#world svg.edges {
-  position: absolute;
-  overflow: visible;
-  pointer-events: none;
-  z-index: 1;
-}
-
-/* ============ 卡片节点 ============ */
-.card-node {
-  position: absolute;
-  background: var(--panel);
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 13px;
-  z-index: 2;
-  cursor: pointer;
-  user-select: none;
-  transition: left 0.3s ease, top 0.3s ease, width 0.2s, height 0.2s, padding 0.2s;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.card-node.dragging { transition: none; cursor: grabbing; box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 10; }
-/* [T16 2026-10-06] 徽章可见性修复 A-1：相对定位作徽章包含块＋右侧预留 56px 凹槽，
-   阻止 nowrap+ellipsis 把文本流尾部的 .kid-badge 裁掉（5701 实测 l1 档 scrollWidth 317 > clientWidth 189）。
-   布局不变量：徽章 inline-block 本未撑高行盒，脱离流后 .tname 高度不变 ⇒ 卡尺寸与避让算法不受影响。 */
-.card-node .tname { font-weight: 600; font-size: 13px; overflow: hidden; position: relative; padding-right: 56px; }
-.card-node .ttype { font-size: 11px; opacity: 0.85; }
-.card-node .summary {
-  font-size: 11.5px;
-  color: var(--dim);
-  margin-top: 4px;
-  padding-top: 6px;
-  border-top: 1px solid #21262d;
-  line-height: 1.5;
-  overflow: hidden;
-}
-.card-node .meta2 { font-size: 10px; color: var(--dimmer); margin-top: 4px; }
-
-/* 类型边框（色相），一律实线（phase8.3 废除二态） */
-.card-node[data-type="剧本"]   { border: 2px solid var(--c-work);    border-left-width: 6px; background: var(--panel); }
-.card-node[data-type="世界观"]   { border: 2px solid var(--c-setting); border-left-width: 6px; }
-.card-node[data-type="行为体"]   { border: 2px solid var(--c-char);    border-left-width: 6px; }
-.card-node[data-type="节点"]   { border: 2px solid var(--c-plot);    border-left-width: 6px; }
-.card-node[data-type="假设"]   { border: 2px solid var(--c-foresh);  border-left-width: 6px; }
-.card-node[data-type="线索"]   { border: 2px solid var(--c-idea);    border-left-width: 6px; }
-
-.card-node.is-root {
-  min-width: 320px;
-  text-align: center;
-  border-width: 3px;
-}
-
-
 /* 子卡徽章 */
 /* [T16 2026-10-06] 徽章可见性修复 A-2：脱离文本流，绝对定位钉 .tname 右上角凹槽
    （范式照 .cross-link-badge；margin-left 6px 由 right 定位取代；z-index:2 压标题之上）。 */
@@ -493,7 +215,7 @@ a { color: inherit; text-decoration: none; }
   height: 30px;
   padding: 0 10px;
   font-size: 11px;
-  color: var(--dim);
+  color: #a5b1bd;   /* T19：--dim→#a5b1bd 正文可读档 */
   letter-spacing: 1px;
   cursor: pointer;
   white-space: nowrap;
@@ -501,8 +223,8 @@ a { color: inherit; text-decoration: none; }
 .nav-phead:hover { background: var(--panel-hover); }
 .nav-phead.current { color: var(--text); }
 .nav-pname { overflow: hidden; text-overflow: ellipsis; }
-.nav-pcount { color: var(--dimmer); flex: none; }
-.nav-ptime { margin-left: auto; color: var(--dimmer); font-size: 11px; flex: none; }
+.nav-pcount { color: var(--dim); flex: none; }   /* T19：--dimmer→--dim */
+.nav-ptime { margin-left: auto; color: var(--dim); font-size: 11px; flex: none; }   /* T19：--dimmer→--dim */
 .nav-padd {
   display: none;
   flex: none;
@@ -516,6 +238,20 @@ a { color: inherit; text-decoration: none; }
 }
 .nav-phead:hover .nav-padd { display: inline-block; }
 .nav-padd:hover { color: var(--text); }
+/* [T19-A2] 项目行 hover 显示「打开 →」入口：跨项目跳转，与"点击行展开树"并存 */
+.nav-popen {
+  display: none;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: #a5b1bd;
+  font-size: 11px;
+  padding: 0 6px;
+  line-height: 18px;
+}
+.nav-phead:hover .nav-popen { display: inline-block; }
+.nav-popen:hover { color: var(--text); border-color: var(--text); }
 
 /* 卡行：13px/30px（§3.5）；缩进每层 +14px 由行内 padding-left 控制 */
 .nav-card {
@@ -530,6 +266,7 @@ a { color: inherit; text-decoration: none; }
   white-space: nowrap;
 }
 .nav-card:hover { background: var(--panel-hover); }
+.nav-card:hover .nav-ctitle { color: var(--text); text-decoration: underline; }   /* T19-A2：hover 可点视觉 */
 .nav-card.current {
   background: rgba(56,139,253,0.10);
   box-shadow: inset 2px 0 0 #58a6ff;   /* 当前卡：左 2px 强调条＋底色（§3.5） */
@@ -543,11 +280,11 @@ a { color: inherit; text-decoration: none; }
 }
 .nav-twist.none { visibility: hidden; }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.dot.root { background: var(--c-work); }     /* 根＝金 */
-.dot.mid  { background: var(--c-setting); }  /* 中间＝蓝 */
-.dot.leaf { background: var(--c-idea); }     /* 叶＝灰 */
+.dot.root { background: var(--c-work); }     /* 根＝项目·金 */
+.dot.mid  { background: var(--c-setting); }  /* 中间＝有子卡·蓝 */
+.dot.leaf { background: #c9d1d9; }             /* 叶＝中性浅灰（T19：与类型色 --c-idea 解耦，灰色只表"叶子"） */
 .nav-ctitle { overflow: hidden; text-overflow: ellipsis; }
-.nav-ctime { margin-left: auto; color: var(--dimmer); font-size: 11px; flex: none; }
+.nav-ctime { margin-left: auto; color: var(--dim); font-size: 11px; flex: none; }   /* T19：--dimmer→--dim */
 .nav-more {
   display: none;
   flex: none;
@@ -583,7 +320,30 @@ a { color: inherit; text-decoration: none; }
   padding: 24px 14px;
   text-align: center;
   font-size: 12px;
-  color: var(--dim);
+  color: #a5b1bd;
+}
+
+/* [T19-A1] 导航图例：第一眼就懂三色含义 */
+.nav-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: #a5b1bd;
+  white-space: nowrap;
+}
+.nav-legend .lg { display: inline-flex; align-items: center; gap: 4px; }
+.nav-legend .lg .lg-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+/* [T19-A2] 操作说明：▸ 展开子卡 · 点标题进入对话 */
+.nav-hint {
+  padding: 4px 10px 8px;
+  font-size: 10.5px;
+  color: #a5b1bd;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
 
 .ws-right {
@@ -621,6 +381,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--bg-deep);
   transition: width 0.15s ease;
   overflow: hidden;
+  position: relative;   /* T19：✕ 关闭钮绝对定位的父级参考 */
 }
 .inspector.open { width: 352px; }
 .insp-body {
@@ -638,30 +399,48 @@ a { color: inherit; text-decoration: none; }
   flex: 1;
   border: none;
   background: transparent;
-  color: var(--dim);
+  color: #a5b1bd;   /* T19：--dim→#a5b1bd */
   font-size: 12px;
   writing-mode: vertical-lr;
   letter-spacing: 3px;
   padding: 12px 0;
 }
 .insp-tab:hover { color: var(--text); background: var(--panel-hover); }
+/* [T19-B1] 展开态编辑面板右上角 ✕ 关闭钮 */
+.insp-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #a5b1bd;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.insp-close:hover { color: var(--text); background: var(--panel-hover); }
+.inspector:not(.open) .insp-close { display: none; }
 
 .blocktitle {
   font-size: 11px;
-  color: var(--dim);
+  color: #a5b1bd;   /* T19：--dim→#a5b1bd */
   letter-spacing: 1px;
   margin: 14px 0 6px;
   text-transform: uppercase;
 }
 .blocktitle:first-child { margin-top: 0; }
-.blocktitle .note { color: var(--dimmer); font-size: 10.5px; text-transform: none; letter-spacing: 0; }
+.blocktitle .note { color: var(--dim); font-size: 10.5px; text-transform: none; letter-spacing: 0; }   /* T19：--dimmer→--dim */
 
 /* 工作区返回按钮（左栏 header 区） */
 .ws-back {
   display: inline-block;
   background: transparent;
   border: none;
-  color: var(--dim);
+  color: #a5b1bd;   /* T19：--dim→#a5b1bd */
   font-size: 13px;
   padding: 4px 8px 4px 0;
   margin-bottom: 6px;
@@ -732,7 +511,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   min-height: 60px;
   white-space: pre-wrap;
 }
-.conclusion-display.empty { color: var(--dimmer); font-style: italic; }
+.conclusion-display.empty { color: var(--dim); font-style: italic; }   /* T19：--dimmer→--dim */
 .edit-row { display: flex; gap: 8px; margin-top: 6px; align-items: center; }
 .edit-row .save-status { font-size: 11px; color: var(--dim); margin-left: auto; }
 
@@ -755,7 +534,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   margin-left: auto;
   background: none;
   border: none;
-  color: var(--dimmer);
+  color: var(--dim);   /* T19：--dimmer→--dim */
   cursor: pointer;
   font-size: 11px;
   padding: 0 4px;
@@ -784,7 +563,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 }
 .rej-empty { color: var(--dimmer); font-size: 12px; font-style: italic; }
 
-.history-block { font-size: 12px; color: var(--dim); }
+.history-block { font-size: 12px; color: #a5b1bd; }   /* T19：--dim→#a5b1bd */
 .history-toggle {
   cursor: pointer;
   padding: 4px 0;
@@ -864,7 +643,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   display: inline-block;
   font-size: 10.5px;
   border: 1px solid var(--border);
-  color: var(--dim);
+  color: #a5b1bd;   /* T19：--dim→#a5b1bd */
   border-radius: 9px;
   padding: 0 8px;
   line-height: 16px;
@@ -874,7 +653,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   align-self: flex-start;
   background: var(--panel);
   border: 1px dashed var(--border);
-  color: var(--dim);
+  color: #a5b1bd;   /* T19：--dim→#a5b1bd */
   font-style: italic;
 }
 .msg.thinking .spinner {
