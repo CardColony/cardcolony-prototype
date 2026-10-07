@@ -1,0 +1,292 @@
+{
+  "items": [
+    {
+      "id": "S-001",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        1,
+        8
+      ],
+      "text": "# 主界面优化方案 · 导航／对话／档案三面（v4.1 落地）\n\n- 日期：2026-10-07\n- 性质：实现方案（report-only）。出方案卡不落码（铁律零）；施工须另立任务书链。\n- 上游：card_018 §九–§十五 ＋《界面规格v4-原生交互与导航-20261007.md》（**设计唯一权威源**，本方案不重复其论证，只做工程化展开）。\n- 权威级：card_018（正卡）＞ 界面规格 v4.1 ＞ 本方案 ＞ 施工回报。冲突以卡为准。\n- 范围：左栏导航重构／中区对话阅读面重塑／右栏 Inspector 档案化／全局设计系统收口。**画布零触碰**（canvas.js＝他链在航禁区，见 §二.4、§五）。\n- 验收：N1–N12（§八，逐条映射施工项）＋工程回归项 E-1～E-7。"
+    },
+    {
+      "id": "S-002",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        10,
+        16
+      ],
+      "text": "## 一、设计意图摘要（十行，论证见规格件）\n\n1. 原生模型：**每张卡＝一个对话＋一份档案，长在一棵树上；画布是这棵树的空间地图；根卡对话＝项目主对话。**\n2. 五公理：无死角（含根卡）／树即导航／读优先／热度冒泡／反馈即时。\n3. v1（T17）交付了三联外壳但拿「通用 agent 会话列表」当模板套树——学了皮丢了本体；v2 修可读性；v3 从旅程四区（续／谈／看／沉）整体定案；v4 转向原生模型。\n4. 本方案落三件事：**导航会「走」**（根卡入口＋键盘＋冒泡排序）；**对话能「读」**（文档流＋Markdown＋IME 守卫）；**档案可「翻」**（Inspector 只读优先＋关系可点）。\n5. 画布视觉（结构色三档上节点）后置待 canvas 解禁——不在本方案。"
+    },
+    {
+      "id": "S-003",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        18,
+        20
+      ],
+      "text": "## 二、现状锚点（2026-10-07 落盘当日一手复核，不沿用往日行号）\n\n### 2.1 在航批（外部链 [T19] 标记）——今日全部仍在位"
+    },
+    {
+      "id": "S-004",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        22,
+        33
+      ],
+      "text": "`推演agent_test/static/style.css` 复检 20 处标记：:514/522/523/537/565/581/583/622/636/680/698/705/726/732/739/810/833/862/942/952。与规格 v4.1 相抵项逐一复核：\n\n| 相抵项 | 今日锚点 | 规格条款 | 处置 |\n|---|---|---|---|\n| 行内时间 `.nav-ctime` 11px | :583 | §2.2 撤除走 tooltip | B3 纠正 |\n| 色点 `.dot.leaf` | :581 | §2.3 卡片行去点 | B4 纠正 |\n| 图例 `[T19-A1]` | :622 | 规格裁定＝**删冗余信号，非配说明书** | B4 纠正（整段删） |\n| hover 浮层 `.app-nav.rail:hover .nav-tree` | :503 | §2.9 废止，改 ☰ 点击展开 | B10 纠正 |\n| 硬编码 `#a5b1bd` ≥7 处 | :514/698/726/739/862/942/952 | §13.2 清剿令 | D1 收编 |\n| Inspector 提前动工 | :705(✕)/:810(结论只读)/:862(历史) | §4＝本方案 I 项范围 | I2/I5/I7 **收编成果按规格重审** |\n\n在航批可保留成果（今日确认在位）：✕ 关闭钮（:705）、项目行 hover「打开→」（:537/:565，须按 B1 新语义重排事件）、色板提亮意图（D1 吸收）。"
+    },
+    {
+      "id": "S-005",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        35,
+        39
+      ],
+      "text": "### 2.2 规格缺口实证（今日检索 0 命中＝纯新增，无合并冲突面）\n\n- `branch_active`：`src/` 全检索 **0 命中** → B6/E1 后端零实现。\n- `isComposing`：`static/` 全检索 **0 命中** → C5 IME 守卫缺失；现有输入键位仅 Ctrl+Enter（workspace.js keydown :836）。\n- `localStorage`：workspace.js 仅 :851 一处注释且**明言「不引入 localStorage 等前端存储」** → B8 展开态持久化缺失。⚠ 该注释针对「卡号恢复走 hash」，与展开态偏好不矛盾——B8 须同步改写此注释防后人误引。"
+    },
+    {
+      "id": "S-006",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        41,
+        45
+      ],
+      "text": "### 2.3 对话区现状（v3 轮实读＋今日锚点定位）\n\n- `.msg` 82% 宽气泡 13px（v3 轮实读 style.css 讨论区段）；用户气泡底色硬编码 `#1f3a5f`（今日锚 :925）。\n- **无 Markdown 渲染**：pre-wrap 素文本直渲；`renderChat`:564，send() 绕过 renderChat 直接上屏（:569 注释）。\n- `.sys-tools`（:989，v3 读 11.5px）／`.model-badge`（:938，v3 读 10.5px）／thinking＝CJK 斜体虚线长段——均低于自设 12px 下限或形态不当。"
+    },
+    {
+      "id": "S-007",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        47,
+        56
+      ],
+      "text": "### 2.4 文件面快照（今日）\n\n| 文件 | 尺寸 | 说明 |\n|---|---|---|\n| canvas.js | **63166B** | T17 核验时 56153B → 今日 63166B：**T18 仍在写或刚写完**——零触碰纪律再强化，施工前必须重 diff |\n| style.css | 33590B | 含在航批 20 标记 |\n| workspace.js | 40857B | renderNav:371 段／renderChat:564／keydown:836 |\n| api.js / shelf.js | 3128B / 4594B | 本方案零改动（nav 契约只增字段） |\n\n模板版本串：**以施工时现值为基线统一 +1**（历史 9.3→10.0 已手漂两次，本方案不写死猜值）。"
+    },
+    {
+      "id": "S-008",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        58,
+        65
+      ],
+      "text": "## 三、施工顺序建议（依赖序，非批号——编号治理已移出本卡）\n\n1. **前置核查（任一施工链动工前必做）**：①清点 `_t18`/`_t19` 备份目录；②style.css/workspace.js/canvas.js 的 mtime 走势——**若在航批仍在写，等收口令，防两支笔同文件**；③对 canvas.js 终态重 diff（若 T18 改了 workspace.js 调用面如 ReloadCanvas，§五地图须更新）。\n2. **E 后端**（branch_active）——可与前端并行，B6 依赖其字段。\n3. **D 设计系统**——tokens 先行，B/C/I 全引用。\n4. **B 导航**——**纠正项在前**（先拆在航批错件再装新件，防叠加态误判验收）。\n5. **C 对话区**——C2（Markdown 渲染器）自包含可并行；**C5（IME 守卫）独立最小改动，可最先单独上**（最小改动最大收益的底线 bug）。\n6. **I Inspector**——在航批成果收编重审收尾。"
+    },
+    {
+      "id": "S-009",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        69,
+        81
+      ],
+      "text": "编号：D=设计系统／B=导航／C=对话／I=Inspector／E=后端。每项含锚点→目标→要点→验收挂靠。\n\n### D · 设计系统（D1–D5）\n\n| # | 改动 | 锚点→目标 | 要点 |\n|---|---|---|---|\n| D1 | token 收编 | `#a5b1bd` 7+ 处字面值（:514 等）→ `:root` 增 `--text-soft` 一处定义 | 意图（提亮正文）保留、手法纠正；此后新增色必须走 :root |\n| D2 | 字号下限 12px | .nav-ptime 11px(:523)／.nav-ctime 11px(:583)／.blocktitle .note 10.5px(:732)／.model-badge(:938 段)／.sys-tools(:989 段) → 全部 ≥12px | **画布 .card-node ttype 11px／meta2 10px 记 T21 不动本批**（canvas 禁区） |\n| D3 | --dimmer 禁入正文 | 全库 --dimmer 用途逐处审 | 正文/可读元信息改 --dim 或 --text-soft；装饰线保留 --dimmer |\n| D4 | 用户气泡色派生 | #1f3a5f(:925) 硬编码 → :root 派生变量 | 边框 #2c4f7c 同步派生 |\n| D5 | 结构色三档 token | :root 增 --lv-root #d29922/--lv-mid #58a6ff/--lv-leaf #8b949e | 本批供 I1 徽章用；画布 T21 引用同 token（先入表防将来两套色） |\n\n验收挂靠：N3／E-2（对比度抽查）。"
+    },
+    {
+      "id": "S-010",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        87,
+        87
+      ],
+      "text": "| B1 | **组头整行点击＝进根卡对话** | 事件委托 phead 命中分支（v4 轮全读 :371–560）→ gotoCard(work_card_id) | 同项目就地 open；跨项目 location.href 跳页；hover 行尾「↵ 进入主对话」＋title；组头右侧「打开画布」「＋卡」常驻（＋卡 dim、hover 亮，§13.4 可发现性）；**「打开→」与整行点击的事件冲突专项测** | N1/N2 |"
+    },
+    {
+      "id": "S-011",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        88,
+        89
+      ],
+      "text": "| B2 | ▸ 独立 24px 热区 | twist 命中分支保留并扩热区 | 折叠/展开与进对话两动作互不误触（Notion/VSCode 惯例） | N2 |\n| B3 | 撤行内时间 | .nav-ctime(:583) 规则删除＋JS 模板撤除 | tooltip＝本卡活跃／分支活跃／创建于三分列＋空会话标注「无对话」（§14.3-8 降级版）；腾出 ~50px 还给标题 | N3 |"
+    },
+    {
+      "id": "S-012",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        90,
+        91
+      ],
+      "text": "| B4 | 删图例＋删色点 | :622 图例段整删；:581 `.dot.leaf` 删 | 项目头金点保留（当前项目标识）；箭头＝可展开、缩进+guide＝层级，点无独立信息 | N3/N4 |\n| B5 | 缩进与 guide | 14→18px/层；逐层 1px 竖 guide（--border@60%） | 列宽 260→280（.app-nav 展开态） | N4 |"
+    },
+    {
+      "id": "S-013",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        92,
+        92
+      ],
+      "text": "| B6 | branch_active 排序 | **服务端完成**（E2）：/api/nav 组内排序键改 branch_active 降序（稳定 tie-break 不变） | 前端沿用现渲染序无需重排；tooltip 双值展示；ensureCurrentPath 保留 | N5 |"
+    },
+    {
+      "id": "S-014",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        93,
+        94
+      ],
+      "text": "| B7 | 键盘遍历（现状零支持） | 行 role=treeitem＋aria-expanded；容器 role=tree | ↑↓ 遍历可见行（跳过折叠区）／→ 展开／← 折叠／Enter 进对话／Esc 收 Inspector；**仅导航树聚焦时激活**（防误伤输入框与画布快捷） | N6 |\n| B8 | 展开态持久化 | localStorage 键 `navx:${work_id}:${card_id}` | 默认展开＝当前项目一级＋当前卡路径；**改写 :851 注释**（卡号恢复仍走 hash，展开态是本地偏好，两者并存）；键带 navx: 前缀可整族清除 | N12 |"
+    },
+    {
+      "id": "S-015",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        95,
+        96
+      ],
+      "text": "| B9 | 渲染局部化 | 点 ▸ 只 toggle class（禁整树 innerHTML 重建）；数据刷新带版本号，无变化不重渲 | 展开/折叠 max-height 0.2s 过渡；修 T17 观察项（连点＋异步重渲竞争错乱） | N12/E-4 |\n| B10 | rail 浮层退役 | :503 hover 规则删 → ☰ 点击 toggle 展开 280px（width 0.2s） | rail 态保留 ☰＋项目点列＋当前项目指示；现 .pinned 逻辑改 .open | E-5 |"
+    },
+    {
+      "id": "S-016",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        97,
+        98
+      ],
+      "text": "| B11 | 状态强化 | current tint .16＋字重 600＋左 2px；祖先链 4% tint；行高 34；hover --panel | 导航背景 --panel；**前提核对**：与 #chatArea 底色不可辨则回退 bg-deep＋hover-panel 组合（两组二选一，以可辨为准） | N4/E-2 |\n| B12 | 项目名主角化 | .nav-phead(:507) 13px/--text/600；.nav-pcount/.nav-ptime 12px/--dim（:522/:523） | 导航第一主角不再比卡行暗 | E-2 |"
+    },
+    {
+      "id": "S-017",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        104,
+        104
+      ],
+      "text": "| C1 | 双形态消息流 | .msg 助手态改**文档流**：无边框无底色、max-width 72ch、14px/1.75、块首元信息行 12px --dim（模型徽章＋相对时间）；用户态右侧紧凑气泡 13px（底色 D4 派生） | **数据层零动**：renderChat 输入不变，纯渲染改写；send() 上屏路径同步改 | N8 |"
+    },
+    {
+      "id": "S-018",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        105,
+        105
+      ],
+      "text": "| C2 | Markdown 渲染器（助手侧） | 约 200 行零依赖独立函数 | **escape-first**（先转义后解析）＋白名单：标题/粗斜/列表/表格/代码块/行内码/引用/链接；表格包横向滚动容器；代码块等宽＋静默复制钮；**不渲染原始 HTML（硬规则）**；与 I2 结论区共用 | N8/E-3 |"
+    },
+    {
+      "id": "S-019",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        106,
+        107
+      ],
+      "text": "| C3 | 头部路径面包屑 | ws-head 纯标题（:73 注释锚）→ `根卡 › … › 当前卡` 逐段可点＝gotoCard（当前段不可点） | 路径用已缓存的 nav 数据回查 parent 链（nav 未含则降级纯标题）——零新请求 | N9 |\n| C4 | 空对话开场＝档案顶置 | 无会话卡：对话区顶部渲染职责区/结论只读摘要＋输入框聚焦 | open() 已取全数据，零新请求 | N10 |"
+    },
+    {
+      "id": "S-020",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        108,
+        108
+      ],
+      "text": "| C5 | **输入键位＋IME 守卫** | keydown(:836)：Enter＝发送（`e.isComposing===true` 时一律不发送——读标准属性，不用 keyCode 229 推断）＋Shift+Enter 换行＋Ctrl+Enter 兼容＋空输入发送置灰 | 全库 IME 裸奔（今日 0 命中实证）的修复点；可最先单独上 | N7 |"
+    },
+    {
+      "id": "S-021",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        109,
+        112
+      ],
+      "text": "| C6 | 工具行升级 | .sys-tools(:989) 12px 等宽＋▸ 单行折叠（默认折叠点开全文） | 成功绿/失败红保留——工具行是 agent 干活的证据链 | E-1 |\n| C7 | thinking 态 | CJK 斜体虚线长段 → 三行 shimmer 骨架＋「思考中」 | 进行态与历史回读两态都换（历史 thinking 渲染为静态 shimmer） | E-1 |\n| C8 | 日分隔 | 跨天消息间插「10月7日」分隔条 | renderChat 渲染时比对相邻消息 timestamp 跨日即插 | E-1 |\n| C9 | model-badge | (:938) 10.5→12px | — | E-1 |"
+    },
+    {
+      "id": "S-022",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        114,
+        126
+      ],
+      "text": "### I · Inspector 档案化（I1–I7，对规格 §4；在航批成果收编）\n\n| # | 改动 | 要点 |\n|---|---|---|\n| I1 | 头部 | 标题点选即改（textarea 化）＋小字路径面包屑＋层级徽章（D5 三档 token：金根/蓝中/灰叶） |\n| I2 | 结论只读优先 | **收编在航 .conclusion-display(:810)**：只读态用 C2 渲染器渲染 Markdown＋「编辑」切 textarea＋保存回只读；编辑态切换不丢未保存内容（缓存） |\n| I3 | 职责区只读优先 | 同 I2 模式 |\n| I4 | 关系行式化 | 方向图标＋对方卡名**可点跳转**（gotoCard）＋添加行默认折叠（.rel-add-row 统一为折叠抽屉） |\n| I5 | 修改历史折叠 | **收编在航 .history-block(:862)**：默认折叠，点开时间线 12px |\n| I6 | 删卡内联确认 | 红边危险分区＋内联确认条（弃 window.prompt——嵌入运行时自动 dismiss，T17 已实证）；剧本根卡不显（既有约束保留） |\n| I7 | 尺寸与既有件 | 宽 320 不加宽；✕ 关闭钮（在航 [T19-B1] :705）保留；右缘竖条（insp-tab）交互不变 |\n\n验收：N11＋E-6（功能零丢失回归）。"
+    },
+    {
+      "id": "S-023",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        128,
+        134
+      ],
+      "text": "### E · 后端（E1–E3）\n\n| # | 改动 | 要点 |\n|---|---|---|\n| E1 | activity.py 增 branch_active(card) | 树后序遍历一遍 O(n)：branch=max(自身活跃, 各子孙 branch)；**孤儿卡**（parent 不在树内）按自身活跃；**环防护**（visited 集合，成环跳过）；与项目级活跃同源遍历合并计算 |\n| E2 | routes.py /api/nav 增列 | cards[] 增 branch_active（**仍请求时现算，数据层零写**）；组内排序键改 branch_active 降序（tie-break card_id 升序不变）；卡级 last_active_at 照发（tooltip 用）；既有端点零改 |\n| E3 | （可选，低优先可砍）版本串 mtime 注入 | main.py 模板上下文注入静态文件 mtime（约 3 行）——永绝手漂（已漂 9.3→10.0 两次）。砍则本批照旧手工 +1 |"
+    },
+    {
+      "id": "S-024",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        136,
+        147
+      ],
+      "text": "## 五、文件级改动地图\n\n| 文件 | 涉及项 | 关键锚点（今日） | 禁区/不动区 |\n|---|---|---|---|\n| static/style.css | D1–D5／B3–B5/B10–B12／C1/C6/C7/C9／I 全部 | :503/:507/:514…:583/:622/:925/:938/:989 | **canvas 画布段（.card-node 等）不动**；T16 pinned 两条原样在位；**删除仅限本方案点名退役规则**（rail hover:503／图例:622／dot.leaf:581／nav-ctime:583） |\n| static/workspace.js | B1/B2/B6–B9／C1–C5/C8／I 全部 | renderNav 段:371–560／renderChat:564／keydown:836／注释:851 | send 发送流程与 sendChat 链不重构（只改渲染与键位）；restoreFromHash 回读链不动 |\n| templates/work.html | aria 挂点（role=tree 由 JS 渲染时挂）＋?v= | 84 行骨架 | T17 三联骨架不动 |\n| templates/index.html | ?v= 同步 | — | 剧本架不动 |\n| src/storage/activity.py | E1 | 现 82 行 | 既有 card_last_active/work_last_active 不改签名 |\n| src/api/routes.py | E2 | /api/nav | 既有端点零改 |\n| static/canvas.js | **零触碰** | —（63166B，T18 在航，今日快照） | 全文件 |\n| static/api.js / shelf.js | 零改动 | — | nav 契约只增字段，getNav 不变 |"
+    },
+    {
+      "id": "S-025",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        149,
+        156
+      ],
+      "text": "## 六、不变量（铁律）\n\n1. **canvas.js 零触碰**（今日 63166B 且 T18 在航）。\n2. **数据层零写**：branch_active 仅端点现算增列；不写 canvas.json／work.json／会话文件。\n3. **回读链不变**：restoreFromHash→open→renderChat；跨项目整页跳转保留；URL hash 卡号恢复机制不动（B8 的 localStorage 只管展开态，不碰卡号）。\n4. **功能零丢失**：职责/结论/否决/关系/历史/建子卡/删卡全在 Inspector（I1–I6 承接）；T17 V9 全链回归（E-6）。\n5. style.css 删除仅限点名退役规则；其余既有规则（含 T16 pinned、T17 导航正确部分）原样。\n6. 不新增任何全局能力（搜索/命令面板/移动端——§十）。"
+    },
+    {
+      "id": "S-026",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        158,
+        170
+      ],
+      "text": "## 七、风险与对策\n\n| # | 风险 | 对策 |\n|---|---|---|\n| R1 | 在航批可能仍在写（今日 20 标记全在位，mtime 走势未核） | 施工前置核查（§三.1）；仍在写则等收口令，防两支笔同文件 |\n| R2 | Markdown XSS 面 | C2 escape-first＋白名单＋单测（E-3）；不渲染原始 HTML 是硬规则 |\n| R3 | 长会话全量渲染性能 | 施工时以 work_001/card_006（17 条）×10 造样本实测；>300ms 做增量分批 append |\n| R4 | 键盘遍历误伤既有快捷 | B7 仅树内聚焦激活；与输入框/画布快捷冲突专项验证 |\n| R5 | branch_active 每请求 O(n) | 与项目级活跃同源遍历合并一次完成；4 项目量级无虞 |\n| R6 | isComposing 浏览器时序差异 | 读标准属性非 229 推断；N7 真浏览器必测（拼音＋五笔各一） |\n| R7 | localStorage 跨设备不同步 | 展开态＝本地偏好，预期行为，不追 |\n| R8 | T18 若改 workspace.js 调用面 | 施工前对 canvas.js/workspace.js 终态重 diff（§三.1） |\n| R9 | 对比度不达标（--text-soft on 深底 ≈8:1 预估） | E-2 抽查全过 4.5:1 才收；不达标回退 --dim 并记档 |"
+    },
+    {
+      "id": "S-027",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        172,
+        189
+      ],
+      "text": "## 八、验收判据\n\n**N1–N12**（引规格 §6，映射施工项）：\n\n| # | 判据 | 项 |\n|---|---|---|\n| N1 | 组头点击→根卡对话打开 | B1 |\n| N2 | ▸ 24px 热区与组头行点击互不误触＋hover「↵ 进入主对话」可见 | B1/B2 |\n| N3 | 行内时间戳 0 残留；tooltip 含本卡活跃＋分支活跃 | B3/B4/D2 |\n| N4 | guide 线逐层可见；16 子卡展开后归属真人可辨 | B4/B5/B11 |\n| N5 | branch_active：聊深层卡→祖先链浮顶 | B6/E1/E2 |\n| N6 | 纯键盘完成「展开→遍历→进对话→Esc 收 Inspector」 | B7 |\n| N7 | **IME：拼音组词中按 Enter 不发送** | C5 |\n| N8 | 助手长文文档流渲染；表格横滚；代码块可复制 | C1/C2 |\n| N9 | 面包屑每段可点且切对话正确 | C3 |\n| N10 | 空对话卡打开即见档案摘要＋输入框聚焦 | C4 |\n| N11 | 删卡走内联确认；Inspector 读写切换不丢未保存内容 | I6/I2 |\n| N12 | 展开态跨刷新保持；点 ▸ 不整树重建（DOM 节点复用） | B8/B9 |"
+    },
+    {
+      "id": "S-028",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        191,
+        199
+      ],
+      "text": "**工程项**：\n\n- E-1 目验清单：工具行折叠／thinking shimmer（进行＋历史两态）／日分隔／model-badge 12px／组头 hover 信号。\n- E-2 对比度抽查：正文/元信息/高亮态全过 4.5:1（工具计算＋目验）。\n- E-3 Markdown 渲染器单测：标题/列表/表格/代码/引用/链接/转义注入样例各一，**XSS 样例不穿透**。\n- E-4 DOM 复用断言：点 ▸ 前后节点引用不变。\n- E-5 rail 状态机：☰ 点击开/收、展开宽 280、刷新后 rail 态正确。\n- E-6 功能零丢失回归（T17 V9 全链）：职责区保存落字／历史折叠／关系加减／建子卡 toast＋导航即现／删卡内联确认＋自动切回。\n- E-7 T17 回归抽查：V1 画布满区／V8 hash 恢复／V10 未保存回滚不劣化／V11 画布不变量（canvas 未动，抽查即可）。"
+    },
+    {
+      "id": "S-029",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        201,
+        205
+      ],
+      "text": "## 九、回滚\n\n- 文件级：施工前整文件备份（沿 `_tXX_backup` 惯例，含 md5 清单）；回滚＝整文件还原＋版本串回退。\n- 数据零风险：本方案不写任何真身文件。\n- localStorage 键带 `navx:` 前缀，可整族清除。"
+    },
+    {
+      "id": "S-030",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        207,
+        209
+      ],
+      "text": "## 十、明确不做（防蔓延）\n\n搜索/过滤（10-04 未翻案）；Ctrl+K 命令面板（等用户点头）；移动端适配；画布视觉三色/图例/顶栏精简（T21，canvas 解禁后）；运行中状态标识（/progress 内存态刷新即失）；主题切换；跨项目 SPA 化。"
+    },
+    {
+      "id": "S-031",
+      "source_file": "D:\\AI_station\\推演agent\\docs\\exploration\\主界面优化方案-20261007.md",
+      "range": [
+        211,
+        213
+      ],
+      "text": "## 十一、文档关系\n\ncard_018（正卡，冲突以卡为准）→《界面规格 v4.1》（设计权威：是什么）→ **本方案**（工程展开：怎么改）→ 施工任务书 → 施工回报。规格若修订须回填卡 §十五同步维护。"
+    }
+  ],
+  "ITEMS": 31,
+  "TOTAL": 31,
+  "IDS_UNIQUE": true,
+  "RANGE_OVERLAP": false,
+  "TOTAL_LINES": 213,
+  "COVERED_CONTENT_LINES": 158,
+  "ALL_CONTENT_LINES": 165,
+  "MISS_COUNT": 0,
+  "MISS_LIST": []
+}
