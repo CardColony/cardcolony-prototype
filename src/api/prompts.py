@@ -14,7 +14,9 @@ from __future__ import annotations
 
 # [T12-R3] 基准版本化固化：BASE_PROMPT 文本变更须递增版本号（回归/收货按版本对账，
 # 基准指纹落 _t12_evidence/REPORT.md）。t12-1：T12 增补 read_memory 工具行。
-BASE_PROMPT_VERSION = "t12-1"
+# t13-1：[E-探针制 2026-10-07] 三席后置（BASE_PROMPT 文本未动，编排代际递增——
+# 区分改前/改后产出的日志与对账口径）。
+BASE_PROMPT_VERSION = "t13-1"
 
 BASE_PROMPT = """\
 你在一个卡片系统内工作。以下是系统使用说明。

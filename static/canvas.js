@@ -290,13 +290,17 @@
     });
   }
 
+  // [T18-C-005] 避让间距单一来源：layoutTree 子树间距 / separateOverlaps / resolveDrop /
+  // 旧 resolveOverlaps 分带共用此常量（原 layoutTree 域内局部常量上提，消除散落硬编码 40）。
+  const GAP_Y = 40;
+
   // [T08-1-2] 折叠树排布（替代原 narrativeAxis/gridMatrix 双分支）。
   // 方向口径（用户 2026-10-04 中途指令「布局用左右视图」，对任务书上下树的推翻，留痕）：
   // 左右视图——根卡居左，子树向右逐层展开；同父子树纵向一字排开不重叠
   // （子树纵向跨度 = 其叶子实测高之和 + 间距，父卡在子树跨度内垂直居中）。
   // 层间距由 measureSizes() 实测高推出（取不到按既有惯例回退 220×86）；列宽恒定
   // COL_W（容纳根卡 320 宽，任何 LOD 档卡宽 ≤320 < COL_W，横向恒不重叠）；
-  // 实测高的纵向避让仍由 resolveOverlaps 在 DOM 建成后完成。
+  // 实测高的纵横避让由 separateOverlaps 在 DOM 建成后完成（T18-C1/C2）。
   // 只写内存 result，不读不写任何持久化载体（红线1/6）；pinned 卡由 computeLayout
   // 步骤1写入 result、此处不覆盖（保留规则），其子树以存储坐标为锚继续右排。
   function layoutTree(viewRootId, childMap, positions, expanded, result) {
@@ -307,7 +311,7 @@
     const FALLBACK_H = 86, FALLBACK_H_DEEP = 36;
     const heightOf = (cid, depth) => (sizes[cid] && sizes[cid].h) || (depth >= 2 ? FALLBACK_H_DEEP : FALLBACK_H);
     const COL_W = 340;  // 相邻层横向基准（根卡实测宽 320 < COL_W，其余档位卡宽 ≤260）
-    const GAP_Y = 40;   // 同父相邻子树纵向间距
+    // GAP_Y 已上提模块级（[T18-C-005]），本域直接引用
 
     // 布局树的「子边」：viewRoot 直接子卡恒在；其余卡的子卡仅当该卡 ∈ expanded
     // （与 T08-1-4 可见集同一规则，保证布局覆盖恰为可见集）
@@ -377,7 +381,7 @@
     for (const y0 of ys) {
       const ids = bands.get(y0);
       let bandY = y0;
-      if (prevBottom !== null && bandY < prevBottom + 40) bandY = prevBottom + 40;
+      if (prevBottom !== null && bandY < prevBottom + GAP_Y) bandY = prevBottom + GAP_Y;   // [T18-C-005] 原 40 硬编码收口
       let bandBottom = bandY;
       for (const cid of ids) {
         out[cid].y = bandY;
@@ -389,9 +393,72 @@
     return out;
   }
 
+  // [T18-C1] 全向避让纯函数（AABB + MTD 最短轴、纵向优先）——resolveOverlaps 的继任者。
+  // layout: computeLayout 结果 {cid:{x,y}}；sizes: {cid:{w,h}}；pinnedIds: Set；GAP: 间距。
+  // pinned 三档语义（写死）：①pinned 永不被移动；②free–pinned 相交 → 推 free 全量 MTD；
+  // ③free–free 相交 → 两卡各推半量；④double pinned → 不动 + console.warn
+  // （不新增由 C3 resolveDrop 保证；历史遗留交「整理画布」按钮清）。
+  // 诚实口径（RD-07）：分离尽力——16 轮内收敛则零相交，16 轮未收敛 warn 留痕。
+  // 16 轮上限是前端本地有限步 FPS/防卡保护，不是对模型调用/轮次的闸（RD-02 辨析）。
+  // 行高回退 86 对齐 layoutTree.FALLBACK_H；深度≥2 的 36 档在首绘 DOM 未建时本签名不可知，
+  // 86 为偏高保守估计（只多让不少让），实测尺寸回填后经 scheduleReflow→reflow 复用本函数再收敛。
+  function separateOverlaps(layout, sizes, pinnedIds, GAP = GAP_Y) {
+    const pinned = pinnedIds || new Set();
+    const out = {};
+    for (const cid in layout) out[cid] = { x: layout[cid].x, y: layout[cid].y };
+    const ids = Object.keys(out);
+    const wh = (cid) => ({
+      w: (sizes[cid] && sizes[cid].w) || 220,
+      h: (sizes[cid] && sizes[cid].h) || 86,
+    });
+    let moved = true;
+    let rounds = 0;
+    let dpWarned = false;
+    while (moved && rounds < 16) {          // 16 轮 = FPS/防卡保护上限（RD-02 辨析），非闸
+      moved = false;
+      rounds++;
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          const a = ids[i], b = ids[j];
+          const wa = wh(a), wb = wh(b);
+          const dx = (out[b].x + wb.w / 2) - (out[a].x + wa.w / 2);
+          const dy = (out[b].y + wb.h / 2) - (out[a].y + wa.h / 2);
+          const px = (wa.w + wb.w) / 2 + GAP - Math.abs(dx);   // 横向重叠量（含 GAP）
+          if (px <= 0) continue;
+          const py = (wa.h + wb.h) / 2 + GAP - Math.abs(dy);   // 纵向重叠量（含 GAP）
+          if (py <= 0) continue;
+          const aP = pinned.has(a), bP = pinned.has(b);
+          if (aP && bP) {
+            if (!dpWarned) {
+              console.warn("[separateOverlaps] 双 pinned 相交（历史遗留，交「整理画布」清）:", a, b);
+              dpWarned = true;
+            }
+            continue;
+          }
+          // MTD 最短轴、纵向优先：|oy| <= |ox| 推 y（保树形列结构）
+          if (py <= px) {
+            const dir = dy >= 0 ? 1 : -1;   // b 在下则分别向上下推开
+            if (aP)      out[b].y += dir * py;
+            else if (bP) out[a].y -= dir * py;
+            else { out[a].y -= dir * py / 2; out[b].y += dir * py / 2; }
+          } else {
+            const dir = dx >= 0 ? 1 : -1;
+            if (aP)      out[b].x += dir * px;
+            else if (bP) out[a].x -= dir * px;
+            else { out[a].x -= dir * px / 2; out[b].x += dir * px / 2; }
+          }
+          moved = true;
+        }
+      }
+    }
+    if (moved) console.warn("[separateOverlaps] 16 轮内未完全收敛，可能残留个别相交");
+    return out;
+  }
+
   // 暴露纯函数供测试/外部调用
   window.computeLayout = computeLayout;
   window.resolveOverlaps = resolveOverlaps;
+  window.separateOverlaps = separateOverlaps;   // [T18-C2] 供测试，对齐既有暴露模式
 
   // [phase8.6-B] 实测节点尺寸；取不到时回退 220×86
   function measureSizes() {
@@ -424,7 +491,7 @@
     const base = state._baseLayout;
     if (!base) return;
     const sizes = measureSizes();
-    const adjusted = resolveOverlaps(base, sizes, pinnedIdSet());
+    const adjusted = separateOverlaps(base, sizes, pinnedIdSet());   // [T18-C2] 原 resolveOverlaps（失明版降为死代码，观测兼容保留）
     state._layout = adjusted;
     for (const [cid, node] of nodeMap) {
       const p = adjusted[cid];
@@ -538,7 +605,7 @@
     // [phase8.6-B] 先套当前 LOD 档位类再实测尺寸 → 纵向避让 → 回写坐标
     applyLODClasses();
     const sizes = measureSizes();
-    const adjusted = resolveOverlaps(layout, sizes, pinnedIdSet());
+    const adjusted = separateOverlaps(layout, sizes, pinnedIdSet());   // [T18-C2] 首绘/换卡链路同换（新建卡 V1 依赖此点）
     state._layout = adjusted;
     for (const cid of visibleIds) {
       const node = nodeMap.get(cid);
@@ -646,8 +713,15 @@
     function onDragUp(e) {
       if (!dragState) return;
       if (dragState.moved) {
-        const newLeft = parseFloat(node.style.left);
-        const newTop = parseFloat(node.style.top);
+        let newLeft = parseFloat(node.style.left);
+        let newTop = parseFloat(node.style.top);
+        // [T18-C3] 落点仲裁：松手点与其余可见卡相交 → 最小位移到不交位（拖卡让在场卡）；
+        // 无相交 → 原坐标原样（零改动路径）。仲裁坐标交 persistCardPos（pinned:true 语义不变）。
+        const fixed = resolveDrop(card.card_id, newLeft, newTop);
+        newLeft = fixed.x;
+        newTop = fixed.y;
+        node.style.left = newLeft + "px";
+        node.style.top = newTop + "px";
         node.classList.remove("dragging");
         persistCardPos(card.card_id, newLeft, newTop);
         // [phase8.6-B] 用已避让布局重画连线（persistCardPos 已更新 state._layout）
@@ -1054,6 +1128,61 @@
   document.addEventListener("mouseup", () => {
     if (panState) { panState = null; viewport.classList.remove("panning"); }
   });
+
+  // [T18-C3] 拖拽落点仲裁：onDragUp 的 moved 分支在 persistCardPos 之前调用。
+  // 松手矩形与其余可见卡 AABB（含 GAP）检测：无相交 → 原坐标原样返回（零改动路径）；
+  // 有相交 → 候选取位：①y 向最近空档（同列卡按 y 排序、逐卡上下取位后验证不相交）
+  // ②x 向推出（与松手矩形相交的卡往较远侧隔 GAP）——取位移最小者；全不合法则落同列
+  // 最低空档（分离尽力口径，RD-07）。语义写死：正在拖的卡让先在场的卡（P1/P2），
+  // pinned 卡在场即不可撼动——由此保证 double pinned 相交不被新增（V3）。
+  function resolveDrop(cid, x, y) {
+    const GAP = GAP_Y;
+    const sizes = measureSizes();
+    const w = (sizes[cid] && sizes[cid].w) || 220;
+    const h = (sizes[cid] && sizes[cid].h) || 86;
+    const others = [];
+    for (const [oid, node] of nodeMap) {
+      if (oid === cid) continue;
+      others.push({
+        x: parseFloat(node.style.left), y: parseFloat(node.style.top),
+        w: (sizes[oid] && sizes[oid].w) || 220,
+        h: (sizes[oid] && sizes[oid].h) || 86,
+      });
+    }
+    const hit = (rx, ry) => others.some(o =>
+      rx < o.x + o.w + GAP && rx + w + GAP > o.x &&
+      ry < o.y + o.h + GAP && ry + h + GAP > o.y);
+    if (!hit(x, y)) return { x, y };   // 零改动路径
+    const cands = [];
+    // 候选一：同列（x 区间与拖拽卡相交）卡按 y 排序，逐卡上/下缘隔 GAP 取位
+    const col = others
+      .filter(o => x < o.x + o.w + GAP && x + w + GAP > o.x)
+      .sort((a, b) => a.y - b.y);
+    let maxBottom = y;
+    for (const o of col) {
+      cands.push({ x, y: o.y + o.h + GAP });      // 让到它下面
+      cands.push({ x, y: o.y - h - GAP });        // 塞到它上面
+      if (o.y + o.h > maxBottom) maxBottom = o.y + o.h;
+    }
+    // 候选二：x 向推出（与松手矩形相交的卡，往较远侧隔 GAP）
+    for (const o of others) {
+      if (!(x < o.x + o.w + GAP && x + w + GAP > o.x &&
+            y < o.y + o.h + GAP && y + h + GAP > o.y)) continue;
+      cands.push({
+        x: (x + w / 2 < o.x + o.w / 2) ? o.x - w - GAP : o.x + o.w + GAP,
+        y,
+      });
+    }
+    // 兜底：同列最低空档（极端密度下的尽力分离，与 C1 的 16 轮警告同口径）
+    cands.push({ x, y: maxBottom + GAP });
+    let best = null, bestD = Infinity;
+    for (const c of cands) {
+      if (hit(c.x, c.y)) continue;
+      const d = Math.hypot(c.x - x, c.y - y);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return best || { x, y: maxBottom + GAP };
+  }
 
   // ==================== positions 持久化（防抖） ====================
   const pendingPatches = {};
