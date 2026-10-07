@@ -12,12 +12,15 @@ Phase 7：
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import re
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..storage import (
@@ -27,7 +30,7 @@ from ..storage import (
 from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import card_proposal, card_tools, context_assembler, context_regions, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
+from . import card_proposal, card_tools, context_assembler, context_regions, event_stream, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
 
 logger = logging.getLogger("api.routes")
 
@@ -47,6 +50,40 @@ ALLOWED_UPDATE_KEYS = {
 
 def _err(status: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": message})
+
+
+# ============================================================
+# [信息流与快车道 Task1 · 乙线核心] 快车道路由分流
+# 纯函数规则集：确定性动作（删卡/建卡/改卡/查询）四类消息形态 → fastlane
+# （单模型带工具直答，跳三席与统合官——用户裁决 A97）；未命中保守落 chain
+# （全链现状逐字不变）。函数纯、无副作用、可单测（R3 样本「那你倒是删掉一张啊」）。
+# ============================================================
+_FASTLANE_RULES: list[tuple[str, "re.Pattern[str]"]] = [
+    ("删卡", re.compile(r"(删掉|删除|删了)[^。！？\n]{0,8}(卡|一张|这张|那张|它)")),
+    ("建卡", re.compile(r"(建|创建|新建)[^。！？\n]{0,6}卡(片)?")),
+    ("改卡", re.compile(
+        r"((改一下|改改|修改|编辑|更新|替换)[^。！？\n]{0,8}卡(片)?(的|正文|内容|结论)"
+        r"|(内容|正文|结论)[^。！？\n]{0,4}(改一下|改改|改掉|更新|换掉|替换|修改))"
+    )),
+    ("查询", re.compile(
+        r"((查看|看一下|看下|读一下|读取|查一下|查下)[^。！？\n]{0,6}卡(片)?(的)?(内容|正文|信息|结论|详情)?"
+        r"|(查看|看一下|看下|读一下|读取|查一下|查下|打开)[^。！？\n]{0,4}card_\d+)"
+    )),
+]
+
+
+def _route_rule(content: str) -> str:
+    """命中规则名（打点用 matched_rule）；未命中返回「未命中」。"""
+    for name, pat in _FASTLANE_RULES:
+        if pat.search(str(content or "")):
+            return name
+    return "未命中"
+
+
+def route(content: str) -> str:
+    """快车道判定（Task1）：返回 "fastlane" | "chain"。保守不误判：规则全未
+    命中即 chain（开放论证永远走全链）。"""
+    return "fastlane" if _route_rule(content) != "未命中" else "chain"
 
 
 # ============================================================
@@ -263,6 +300,39 @@ async def get_work_session(work_id: str, card_id: str):
     return await session_store.read_session(work_id, card_id)
 
 
+@router.get("/works/{work_id}/cards/{card_id}/stream")
+async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
+    """[信息流 Task3] SSE 过程通道：内存环形事件日志（event_stream）按 seq 重放＋
+    实时跟进；from=0 全量重放（刷新重建，A50）。事件纯展示层，不进 session/prior
+    （A42）；单进程内存态（A44）。心跳＝SSE 注释帧（本体论 ping，不占 journal）。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+
+    async def gen():
+        yield "retry: 3000\n\n"
+        last = frm - 1
+        idle = 0.0
+        while True:
+            batch = [e for e in event_stream.journal_of(work_id, card_id) if e["seq"] > last]
+            if batch:
+                for evt in batch:
+                    yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+                    last = evt["seq"]
+                idle = 0.0
+                continue
+            await asyncio.sleep(0.4)
+            idle += 0.4
+            if idle >= 15.0:
+                yield ": ping\n\n"
+                idle = 0.0
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.post("/works/{work_id}/cards/{card_id}/messages")
 async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest):
     """对话主链路（模块 H2）。"""
@@ -433,6 +503,10 @@ async def _run_message(work_id: str, card_id: str, content: str,
                                            pair_id=pair_id)
         logger.info("[T10] 用户消息落盘 pair_id=%s card=%s", pair_id, card_id)
 
+    # [信息流 Task3] run_start：清该卡 journal 重放（A45）＋过程卡秒现（V1）。
+    # 位置＝落盘之后、装配之前——先清后写，context 埋点才能留在 journal 里。
+    event_stream.emit(work_id, card_id, "run_start", {"pair_id": pair_id, "chars": len(content)})
+
     # d. 上下文组装（T11 分区装配线）：0 使用说明（BASE_PROMPT 指针）＋100 卡片清单＋150 当前卡。
     # 装配只按 order 收区拼接、零内容判断（总表 #2/#3）；vp_system_prompt＝100＋150（职责分离裁定）。
     # 无目标锚/血统链/管辖域/契约/charter/空位提示注入（全量审计定案：结构即引导）。
@@ -444,6 +518,11 @@ async def _run_message(work_id: str, card_id: str, content: str,
     neutral_context = context_regions.assemble_regions([r["text"] for r in ctx_regions])
     system_prompt = prompts.build_system_prompt(neutral_context)
     vp_system_prompt = prompts.build_viewpoint_system_prompt(neutral_context)
+    # [信息流 Task3] 装配段埋点：context 秒现（V1）
+    event_stream.emit(work_id, card_id, "context", {
+        "regions": [str(r.get("region", "")) for r in ctx_regions],
+        "bytes": len(neutral_context.encode("utf-8")),
+    })
 
     # e. 工具循环
     # [T15-6] 300 区收窄为未凝段（路线甲，CONDENSE_ROUTE_RULINGS 2026-10-05 闸开）：
@@ -469,8 +548,15 @@ async def _run_message(work_id: str, card_id: str, content: str,
     tool_full_texts: list[str] = []
     # [E-探针制] 三席一次进场闸（口径①：只进场一次；统合官若续查证不重问三席）
     seats_done = False
+    # [信息流 Task1] 快车道分流：确定性动作（删卡/建卡/改卡/查询）单模型直答；
+    # 未命中保守落全链（chain 现状逐字不变）。打点＝路由判定（A96）。
+    mode = route(content)
+    matched_rule = _route_rule(content)
+    event_stream.emit(work_id, card_id, "fastlane_route", {"mode": mode, "matched_rule": matched_rule})
+    logger.info("[flow] 路由判定 mode=%s matched_rule=%s card=%s", mode, matched_rule, card_id)
     user_prompt = content
     rounds = 0
+    model_calls = 0
     final_reply: Optional[str] = None
     # [T14-1-1] 带工具轮的分析正文采集（只读）：落盘型工作流的分析写在带工具轮
     # 的 assistant_content 里，末轮判定只取纯对话轮正文——分析结构性上不了屏。
@@ -489,6 +575,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                 # [E-探针制 2026-10-07] 首轮＝纯主模型带工具查证（原 call_simple
                 # 观点前置编排退役；三席改在工具循环收尾处进场，见下方 break 分支）。
                 progress.set_stage(work_id, card_id, "started", "主模型查证中")
+                event_stream.emit(work_id, card_id, "round_start", {"round": rounds, "phase": "main"})
+                model_calls += 1
                 result, model_used = await model_service.call_main(
                     system_prompt,
                     user_prompt,
@@ -501,6 +589,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                 # [T11] 装配时折叠：折叠关原样返回本列表（逐字同旧）；
                 # 折叠开对窗口外旧轮次压成【结论】＋【依据】（不改条数与配对）
                 wire_messages = await slot.wire_messages()
+                event_stream.emit(work_id, card_id, "round_start", {"round": rounds, "phase": "tools"})
+                model_calls += 1
                 result, model_used = await model_service.call_main(
                     system_prompt,
                     user_prompt,
@@ -530,6 +620,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
                         len(rescue_calls),
                         [c["name"] for c in rescue_calls],
                     )
+                    event_stream.emit(work_id, card_id, "rescue", {"count": len(rescue_calls)})
                 elif unresolved:
                     text_rescue_note = text_tool_rescue.feedback_note()
 
@@ -544,6 +635,10 @@ async def _run_message(work_id: str, card_id: str, content: str,
                     })
                     user_prompt = text_rescue_note
                     continue
+                # [信息流 Task1] 快车道＝单模型直答（A97）：跳三席与统合官，
+                # 本轮即交付（chain 路径完全不受影响——mode=="chain" 不进此支）。
+                if mode == "fastlane":
+                    break
                 # [E-探针制 2026-10-07] 三席后置进场（口径①：工具查证收尾后、交付前，
                 # 全程恰一次）。判据锚 V1：本段位于工具执行（上方 for 循环与历史工具轮）
                 # 之后——三席输入携带本回合全量工具结果（task 3 口径④全文不截断）。
@@ -553,12 +648,15 @@ async def _run_message(work_id: str, card_id: str, content: str,
                     # [E] 三席已进场过（统合官续查证后的收尾轮）：本轮即交付回执
                     break
                 seats_done = True
+                # [信息流 Task3] 三席进场埋点＋每席起止转发（on_seat 缺省 None 语义不变）
+                event_stream.emit(work_id, card_id, "seats_enter", {"tool_results": len(tool_full_texts)})
                 seats_prior = prior_for_gateway[:history_len]
                 ok_metas, viewpoints_meta = await simple_service.run_viewpoints(
                     vp_system_prompt,
                     simple_service.build_informed_prompt(content, tool_full_texts),
                     seats_prior,
                     on_progress=lambda s, d, _w=work_id, _c=card_id: progress.set_stage(_w, _c, s, d),
+                    on_seat=lambda kind, meta, _w=work_id, _c=card_id: event_stream.emit(_w, _c, kind, meta),
                 )
                 if not ok_metas:
                     # [E-口径②] 全败留痕不阻断：主模型携工具结果独自交付（草稿即回执）
@@ -571,6 +669,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                 logger.info("[E] 三席后置进场 工具结果=%d条 成功席=%d card=%s",
                             len(tool_full_texts), len(ok_metas), card_id)
                 synth_input = simple_service.build_viewpoint_prompt(content, ok_metas)
+                event_stream.emit(work_id, card_id, "round_start", {"round": rounds, "phase": "synthesize"})
+                model_calls += 1
                 result, model_used = await model_service.call_main(
                     system_prompt,
                     synth_input,
@@ -626,9 +726,21 @@ async def _run_message(work_id: str, card_id: str, content: str,
                 target_id = (args.get("card_id") or args.get("target_id")
                              or args.get("chapter") or args.get("keyword")
                              or args.get("query") or args.get("url") or "")
+                # [信息流 Task3] 工具执行前后埋点（V2 即时可见）
+                event_stream.emit(work_id, card_id, "tool_call", {"tool": name, "target": target_id})
                 tool_result = await card_tools.execute_tool(work_id, card_id, name, args, cards_meta)
                 ok = "error" not in tool_result
                 tool_events.append({"tool": name, "card_id": target_id, "ok": ok})
+                # [信息流 Task4] 并表（A101）：快车道的卡操作落 card_op（op/op_result，
+                # 一类卡操作只此一份事件）；chain 保持 tool_result。全日志打点（A96）。
+                if mode == "fastlane" and name in ("create_card", "edit_card", "delete_card", "read_card"):
+                    event_stream.emit(work_id, card_id, "card_op", {
+                        "op": name, "target": target_id, "ok": ok,
+                        "result": tool_result if ok else str(tool_result.get("error", ""))[:200],
+                    })
+                    logger.info("[flow] 卡操作落地 op=%s target=%s ok=%s card=%s", name, target_id, ok, card_id)
+                else:
+                    event_stream.emit(work_id, card_id, "tool_result", {"tool": name, "target": target_id, "ok": ok})
                 # [T11-T6] tool 结果经 append_tool_result 入槽（归入当前轮）
                 slot.append_tool_result({
                     "role": "tool",
@@ -642,10 +754,27 @@ async def _run_message(work_id: str, card_id: str, content: str,
                 )
 
             user_prompt = "工具结果已返回。"
+            # [信息流 Task2/打点 A92/A96] 同请求续跳：占位符只进模型不入用户流；
+            # resume_kind=同请求续跳（新请求重入=0 才是预期）
+            logger.info("[flow] 断点续跳 resume_kind=同请求续跳 no_user_visible=True round=%s card=%s",
+                        rounds, card_id)
     except Exception as exc:
         error = str(exc)
         progress.set_stage(work_id, card_id, "error", str(exc)[:120])
         logger.error("模型调用/工具循环失败 card=%s: %s", card_id, exc)
+        # [信息流 Task2·A93] 确须结束型（上下文超限等）：checkpoint 落 data_snapshot
+        # 定格现状（works 快照批），下条消息从现状续走而非全链重跑。只读对接、零改动面。
+        if rounds > 0:
+            try:
+                from ..storage import data_snapshot
+                snap = data_snapshot.snapshot_sync(
+                    reason=f"checkpoint:{type(exc).__name__}", work_id=work_id)
+                logger.info("[flow] checkpoint 落位 type=%s work=%s batch=%s",
+                            type(exc).__name__, work_id,
+                            (snap or {}).get("dir", "") if isinstance(snap, dict) else str(snap)[:80])
+            except Exception as snap_exc:  # noqa: BLE001 checkpoint 失败不阻断错误返回
+                logger.warning("[flow] checkpoint 落位失败（不阻断）: %s", snap_exc)
+        event_stream.emit(work_id, card_id, "error", {"error": error[:200], "rounds": rounds})
 
     # f. 写 prompt 日志（无论成败）
     # [T11-T7] regions＝六区构成（只存指针与指纹）；fold_ops＝每轮折叠
@@ -721,6 +850,9 @@ async def _run_message(work_id: str, card_id: str, content: str,
         len((final_reply or "").encode("utf-8")),
     )
     final_reply = delivered
+    # [信息流 Task3] 交付拼接埋点（deliver 与 POST 一致性锚，V4）
+    event_stream.emit(work_id, card_id, "deliver",
+                      {"branch": branch, "bytes": len(delivered.encode("utf-8"))})
 
     # g. 解析建卡协议 + 自动建卡
     progress.set_stage(work_id, card_id, "cards", "解析建卡提案")
@@ -734,6 +866,11 @@ async def _run_message(work_id: str, card_id: str, content: str,
     )
     clean_text, proposals = card_proposal.parse_proposals(final_reply or "")
     created_cards = await card_proposal.apply_proposals(work_id, card_id, proposals)
+    # [信息流 Task3] 建卡埋点（✚ 可见）
+    event_stream.emit(work_id, card_id, "proposal", {
+        "count": len(created_cards),
+        "cards": [str(c.get("card_id", "")) for c in created_cards],
+    })
 
     # h. 追加 assistant 消息（存 clean_text，剥离协议块）
     # [T10-1-4] 回复条携带与用户条逐字相同的 pair_id（V1）；打点含标识
@@ -745,6 +882,11 @@ async def _run_message(work_id: str, card_id: str, content: str,
     # 开时三期管线仍挂起待路线裁定，触发只量测＋留痕（memory_store.condense_turn_end）。
     memory_store.maybe_schedule_turn_end(work_id, card_id)
     progress.set_stage(work_id, card_id, "done", "完成")
+    # [信息流 Task3/打点 A96] done 事件＋快车道调用数打点（lane/calls，快车道应为单模型）
+    event_stream.emit(work_id, card_id, "done", {"rounds": rounds, "model_calls": model_calls})
+    if mode == "fastlane":
+        logger.info("[flow] 快车道调用 lane=fastlane calls=%s rounds=%s card=%s",
+                    model_calls, rounds, card_id)
 
     return {
         "reply": clean_text,

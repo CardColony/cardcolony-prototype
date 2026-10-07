@@ -743,7 +743,14 @@
       if (!st || !ACTIVE_STAGES.includes(st.stage)) return false;
       // 同一张卡上已有等待气泡时不重复挂（避免 hashchange 等路径重复触发）
       if (chatArea.querySelector(".msg.thinking")) return false;
-      createWaitingBubble("思考中…（刷新前已启动）", cardId);
+      // [信息流 Task5] 刷新重放：过程卡 from=0 重建（V5；SSE 连不上回退等待气泡）
+      if (window.EventFlow) {
+        window.EventFlow.start(WORK_ID, cardId, () => {
+          createWaitingBubble("思考中…（刷新前已启动）", cardId);
+        });
+      } else {
+        createWaitingBubble("思考中…（刷新前已启动）", cardId);
+      }
       return true;
     } catch (e) {
       return false;   // 查询失败静默：不影响页面其余功能
@@ -766,7 +773,15 @@
     const cardId = currentCard.meta.card_id;
     let settled = false;
 
-    const waiting = createWaitingBubble("思考中…", cardId);
+    // [信息流 Task5] SSE 过程卡先行（from=0）；连不上回退等待气泡（V6 降级保底）
+    let waiting = null;
+    if (window.EventFlow) {
+      window.EventFlow.start(WORK_ID, cardId, () => {
+        waiting = createWaitingBubble("思考中…", cardId);
+      });
+    } else {
+      waiting = createWaitingBubble("思考中…", cardId);
+    }
 
     // [hotfix] 后端完成但连接断了 → 从会话记录恢复回复，杜绝无限转圈
     async function tryRecover() {
@@ -775,7 +790,8 @@
         const msgs = await API.getSession(WORK_ID, cardId);
         if (msgs.length >= baseline + 1 && msgs[msgs.length - 1].role === "assistant") {
           settled = true;
-          waiting.stop();
+          if (waiting) waiting.stop();
+          if (window.EventFlow) setTimeout(() => window.EventFlow.stop(), 2500);
           await renderChat();
           const note = document.createElement("div");
           note.className = "sys-tools";
@@ -795,7 +811,8 @@
       const resp = await API.postMessage(WORK_ID, cardId, content);
       if (settled) return;   // 已由轮询恢复，丢弃迟到响应
       settled = true;
-      waiting.stop();
+      if (waiting) waiting.stop();
+      if (window.EventFlow) setTimeout(() => window.EventFlow.stop(), 2500);   // 让 done 帧送达后收流
       appendMessage("assistant", resp.reply, resp.model);
 
       // created_cards 绿条
@@ -844,7 +861,7 @@
       if (settled) return;
       // [hotfix] 报错前先探一次会话：后端可能已完成，只是响应没送回来
       if (await tryRecover()) return;
-      waiting.stop();
+      if (waiting) waiting.stop();
       // 失败：红色系统条 + 重发按钮
       const err = document.createElement("div");
       err.className = "sys-error";
@@ -880,7 +897,15 @@
         console.info("[T10] 重发未持有 pair_id，按新消息落盘（后端生成新标识）");
       }
     } catch (e) { /* 取会话失败按未持有 pair_id 处理，不阻断重发 */ }
-    const waiting = createWaitingBubble("重发中…", cardId);
+    // [信息流 Task5] 重发同样走过程卡（SSE 先行、失败回退）
+    let waiting = null;
+    if (window.EventFlow) {
+      window.EventFlow.start(WORK_ID, cardId, () => {
+        waiting = createWaitingBubble("重发中…", cardId);
+      });
+    } else {
+      waiting = createWaitingBubble("重发中…", cardId);
+    }
     sendBtn.disabled = true;
     try {
       const httpResp = await fetch(`/api/works/${WORK_ID}/cards/${cardId}/messages`, {
@@ -893,11 +918,12 @@
         throw new Error(errText.error || ("HTTP " + httpResp.status));
       }
       const resp = await httpResp.json();
-      waiting.stop();
+      if (waiting) waiting.stop();
+      if (window.EventFlow) setTimeout(() => window.EventFlow.stop(), 2500);
       appendMessage("assistant", resp.reply, resp.model);
       scrollChatBottom();
     } catch (e) {
-      waiting.stop();
+      if (waiting) waiting.stop();
       const err = document.createElement("div");
       err.className = "sys-error";
       err.innerHTML = `重发失败：${escapeHtml(e.message || "")} <button class="retry-btn">再试</button>`;

@@ -102,6 +102,7 @@ async def run_viewpoints(
     user_prompt: str,
     prior_messages: Optional[list[dict[str, Any]]] = None,
     on_progress: Optional[Any] = None,
+    on_seat: Optional[Any] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """三席观点并发（可独立调用，不与 call_simple 绑定）。返回 (ok_metas, 全量 metas)。
 
@@ -110,6 +111,8 @@ async def run_viewpoints(
     三席不出现 tools 入参）、skip_completion_marker、失败记 meta 不中断。
     [E-口径②] 全败留痕（warning）不阻断，由调用方决定独自交付。
     enabled: false 或 viewpoints 空 → ([], [])（零调用）。
+    [信息流 Task3 2026-10-07] 增可选参 on_seat(kind, meta)（缺省 None 零行为
+    变化）：每席起止转发事件流（seat_start/seat_end），只读不判定、异常静默。
     """
     gw = model_service.get_gateway()
     cfg = gw.config.get("simple") or {}
@@ -138,7 +141,7 @@ async def run_viewpoints(
     raw_metas = await asyncio.gather(
         *[
             _call_viewpoint(gw, n, vp_system_prompt, user_prompt,
-                            prior_messages, on_done=_vp_done)
+                            prior_messages, on_done=_vp_done, on_seat=on_seat)
             for n in viewpoints
         ],
         return_exceptions=True,
@@ -165,11 +168,14 @@ async def _call_viewpoint(
     user_prompt: str,
     prior_messages: Optional[list[dict[str, Any]]],
     on_done: Optional[Any] = None,
+    on_seat: Optional[Any] = None,
 ) -> dict[str, Any]:
     """调单个观点模型。永不抛异常，失败记入 meta。
 
     meta: {model, ok, latency_ms, chars, error?, text?}——text 仅供
     统合与日志用，routes 返回响应前须剔除。
+    [信息流 Task3 2026-10-07] on_seat(kind, meta) 每席起止转发（缺省 None
+    零行为变化；异常静默）。
     """
     models_cfg = gw.config.get("models") or {}
     label = (models_cfg.get(name) or {}).get("model", name)
@@ -177,6 +183,11 @@ async def _call_viewpoint(
     if name not in models_cfg:
         meta["error"] = f"models.yaml 无此模型条目: {name}"
         return meta
+    if on_seat:
+        try:
+            on_seat("seat_start", {"model": label})
+        except Exception:
+            pass
     t0 = time.monotonic()
     try:
         result = await gw.call(
@@ -201,6 +212,12 @@ async def _call_viewpoint(
                 on_done(meta)
             except Exception:
                 pass
+        if on_seat:
+            try:
+                on_seat("seat_end", {"model": label, "ok": True,
+                                     "latency_ms": meta["latency_ms"], "chars": meta["chars"]})
+            except Exception:
+                pass
         return meta
     except Exception as exc:
         meta["latency_ms"] = int((time.monotonic() - t0) * 1000)
@@ -208,6 +225,13 @@ async def _call_viewpoint(
         if on_done:
             try:
                 on_done(meta)
+            except Exception:
+                pass
+        if on_seat:
+            try:
+                on_seat("seat_end", {"model": label, "ok": False,
+                                     "latency_ms": meta["latency_ms"],
+                                     "error": meta.get("error", "")[:160]})
             except Exception:
                 pass
         return meta
