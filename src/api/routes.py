@@ -414,6 +414,10 @@ async def _run_message(work_id: str, card_id: str, content: str,
     # 的 assistant_content 里，末轮判定只取纯对话轮正文——分析结构性上不了屏。
     # 采集后与末轮回执拼接交付（分析在前、回执在后），不取代回执。
     analysis_parts: list[str] = []
+    # [E-探针制] 工具结果全文累积（口径④）：供三席后置注入，不折叠不截断
+    tool_full_texts: list[str] = []
+    # [E-探针制] 三席一次进场闸（口径①：只进场一次；统合官若续查证不重问三席）
+    seats_done = False
     model_used: Optional[str] = None
     error: Optional[str] = None
     viewpoints_meta: list[dict[str, Any]] = []  # [phase9-E] 观点元信息（含内部 text）
@@ -424,15 +428,14 @@ async def _run_message(work_id: str, card_id: str, content: str,
         while True:
             rounds += 1
             if rounds == 1:
-                # [phase9-E] 首轮（用户原始问题）走 simple 编排：观点并发 + 统合
-                # [职责分离裁定] vp_system_prompt 只含中性上下文——三席只做分析
-                result, model_used, viewpoints_meta = await simple_service.call_simple(
+                # [E-探针制 2026-10-07] 首轮＝纯主模型带工具查证（原 call_simple
+                # 观点前置编排退役；三席改在工具循环收尾处进场，见下方 break 分支）。
+                progress.set_stage(work_id, card_id, "started", "主模型查证中")
+                result, model_used = await model_service.call_main(
                     system_prompt,
-                    vp_system_prompt,
                     user_prompt,
                     prior_for_gateway,
                     tools=tools,
-                    on_progress=lambda s, d, _w=work_id, _c=card_id: progress.set_stage(_w, _c, s, d),
                 )
             else:
                 # 工具续跳轮不重复咨询观点模型
@@ -483,7 +486,48 @@ async def _run_message(work_id: str, card_id: str, content: str,
                     })
                     user_prompt = text_rescue_note
                     continue
-                break
+                # [E-探针制 2026-10-07] 三席后置进场（口径①：工具查证收尾后、交付前，
+                # 全程恰一次）。判据锚 V1：本段位于工具执行（上方 for 循环与历史工具轮）
+                # 之后——三席输入携带本回合全量工具结果（task 3 口径④全文不截断）。
+                # 上下文回流铁则：观点只进统合官 user_prompt，不入槽/不入 session；
+                # 三席 prior 取纯对话历史切片（不含本轮工具机制消息，且只读不回写）。
+                if seats_done:
+                    # [E] 三席已进场过（统合官续查证后的收尾轮）：本轮即交付回执
+                    break
+                seats_done = True
+                seats_prior = prior_for_gateway[:history_len]
+                ok_metas, viewpoints_meta = await simple_service.run_viewpoints(
+                    vp_system_prompt,
+                    simple_service.build_informed_prompt(content, tool_full_texts),
+                    seats_prior,
+                    on_progress=lambda s, d, _w=work_id, _c=card_id: progress.set_stage(_w, _c, s, d),
+                )
+                if not ok_metas:
+                    # [E-口径②] 全败留痕不阻断：主模型携工具结果独自交付（草稿即回执）
+                    if viewpoints_meta:
+                        logger.warning("[E] 三席观点全败（%d 席尝试），主模型独自交付 card=%s",
+                                       len(viewpoints_meta), card_id)
+                    break
+                # 统合官最终统合交付（合同不动 RD-03：同 call_main、带 tools）
+                progress.set_stage(work_id, card_id, "synthesize", "三席观点统合中")
+                logger.info("[E] 三席后置进场 工具结果=%d条 成功席=%d card=%s",
+                            len(tool_full_texts), len(ok_metas), card_id)
+                synth_input = simple_service.build_viewpoint_prompt(content, ok_metas)
+                result, model_used = await model_service.call_main(
+                    system_prompt,
+                    synth_input,
+                    prior_for_gateway,
+                    tools=tools,
+                )
+                tool_calls = result.get("tool_calls") or []
+                assistant_content = result.get("content") or ""
+                if not tool_calls:
+                    final_reply = assistant_content
+                    break
+                # 统合官仍需查证：清空草稿、借道下方工具执行段续跑（无闸 RD-01——
+                # 不设任何轮次上限）；seats_done 保证三席不再有第二次。
+                # 末轮草稿由统合稿取代（统合稿=交付回执）。
+                final_reply = None
 
             # [phase8.2] 第一次进入工具轮时，把用户原文固化进 prior，
             # 否则后续跳的 user_prompt 被替换后原文会从对话中消失
@@ -533,6 +577,11 @@ async def _run_message(work_id: str, card_id: str, content: str,
                     "tool_call_id": f"call_{i}",
                     "content": __import__("json").dumps(tool_result, ensure_ascii=False),
                 })
+                # [E-探针制] 全文累积（口径④）：三席后置注入用，不折叠不截断
+                tool_full_texts.append(
+                    f"{name}(target={target_id}) → "
+                    + __import__("json").dumps(tool_result, ensure_ascii=False)
+                )
 
             user_prompt = "工具结果已返回。"
     except Exception as exc:

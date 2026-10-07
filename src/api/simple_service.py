@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 """[phase9-E] simple 多模型编排器：观点并发 + 单模型统合。
 
+[E-探针制 2026-10-07] 三席后置：三席不再在首轮进门处空手出观点，改由 routes
+在工具循环收尾处调 run_viewpoints 进场（踩着工具事实出观点），统合官
+call_main 统合交付。call_simple（观点前置的旧编排）保留为观测兼容/回滚路径。
+
 设计依据（用户设计哲学）：模型只生成假设，确定性代码负责验证与裁决；
 多模型出观点=群体审议，统合模型是唯一建卡/工具出口。
 
-- 观点阶段：并发调 models.yaml simple.viewpoints 各模型，tools=None、
+- 观点阶段（run_viewpoints）：并发调 models.yaml simple.viewpoints 各模型，tools=None、
   跳过完成标记；单个失败记 meta 不中断；观点文本用 card_proposal
   剥离函数剥净协议块，另剥 <think> 推理块（MiniMax M 系实测全系带）。
+- 注入（build_informed_prompt）：工具结果全文进三席输入（口径④不折叠不截断）。
 - 统合阶段：user_prompt 追加参考观点段，走现有 call_main（带 tools）。
-- enabled: false 或 viewpoints 空 → 直接 call_main（现行为，一行不多跑）。
-- 观点全失败 → 统合独走原 user_prompt（等价现行为）。
+- enabled: false 或 viewpoints 空 → 三席零调用（run_viewpoints 返回 ([], [])）。
+- 观点全失败 → 留痕（warning），主模型携工具结果独自交付（口径②）。
 - 上下文回流铁则：观点全文不进 session、不进 prior_messages（由 routes 保证）。
 """
 from __future__ import annotations
@@ -64,6 +69,93 @@ def build_viewpoint_prompt(user_prompt: str, ok_metas: list[dict[str, Any]]) -> 
     )
     # [T10-6-1] 任务说明行插在 VIEWPOINT_HEADER 之后、三段分析之前
     return f"{user_prompt}\n\n{VIEWPOINT_HEADER}\n{VIEWPOINT_TASK_NOTE}\n{sections}"
+
+
+# ============================================================
+# [E-探针制 2026-10-07] 三席后置（三席在工具查证收尾后进场）
+# ============================================================
+
+INFORMED_HEADER = "## 本轮工具查证结果"
+INFORMED_TASK_NOTE = (
+    "以下是主模型在本轮对话中刚通过工具查得的事实材料（全文未截断）。"
+    "先读这些事实，再回答上面用户提出的问题。"
+)
+
+
+def build_informed_prompt(user_prompt: str, tool_results: list[str]) -> str:
+    """三席后置的用户输入组装（纯函数，可单测）。
+
+    [E-口径④] 工具结果全文注入、不折叠不截断（对齐 10-05「【结论】＋【依据】
+    不设长度限制」裁定）。tool_results 每条＝一次工具调用的人类可读全文记录；
+    空表（零工具轮）→ 原样返回 user_prompt。
+    """
+    if not tool_results:
+        return user_prompt
+    sections = "\n\n".join(
+        f"### 工具结果 {i + 1}\n{t}" for i, t in enumerate(tool_results)
+    )
+    return f"{user_prompt}\n\n{INFORMED_HEADER}\n{INFORMED_TASK_NOTE}\n{sections}"
+
+
+async def run_viewpoints(
+    vp_system_prompt: str,
+    user_prompt: str,
+    prior_messages: Optional[list[dict[str, Any]]] = None,
+    on_progress: Optional[Any] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """三席观点并发（可独立调用，不与 call_simple 绑定）。返回 (ok_metas, 全量 metas)。
+
+    [E-探针制] 自 call_simple 拆出，供 routes 在工具循环收尾处调用——
+    三席踩着工具事实出观点。单席语义不变：tools=None（10-02 零工具裁定，
+    三席不出现 tools 入参）、skip_completion_marker、失败记 meta 不中断。
+    [E-口径②] 全败留痕（warning）不阻断，由调用方决定独自交付。
+    enabled: false 或 viewpoints 空 → ([], [])（零调用）。
+    """
+    gw = model_service.get_gateway()
+    cfg = gw.config.get("simple") or {}
+    viewpoints = list(cfg.get("viewpoints") or [])
+    if not cfg.get("enabled") or not viewpoints:
+        return [], []
+
+    def _report(stage: str, detail: str = "") -> None:
+        if on_progress:
+            try:
+                on_progress(stage, detail)
+            except Exception:
+                pass
+
+    # [拆闸裁定 2026-10-02] 无 viewpoint_timeout / max_tokens：闸就是空观点的根因
+    _report("viewpoints", f"0/{len(viewpoints)}")
+
+    done_count = [0]
+
+    def _vp_done(meta: dict[str, Any]) -> None:
+        done_count[0] += 1
+        mark = "✓" if meta.get("ok") else "✗"
+        secs = round((meta.get("latency_ms") or 0) / 1000, 1)
+        _report("viewpoints", f"{done_count[0]}/{len(viewpoints)} · {mark}{meta.get('model','')} {secs}s")
+
+    raw_metas = await asyncio.gather(
+        *[
+            _call_viewpoint(gw, n, vp_system_prompt, user_prompt,
+                            prior_messages, on_done=_vp_done)
+            for n in viewpoints
+        ],
+        return_exceptions=True,
+    )
+    metas: list[dict[str, Any]] = []
+    for name, m in zip(viewpoints, raw_metas):
+        if isinstance(m, BaseException):
+            # _call_viewpoint 自吞异常，此处为 gather 双保险
+            metas.append({"model": name, "ok": False, "latency_ms": 0,
+                          "chars": 0, "error": f"{type(m).__name__}: {m}"})
+        else:
+            metas.append(m)
+
+    ok_metas = [m for m in metas if m.get("ok")]
+    if viewpoints and not ok_metas:
+        logger.warning("[E] 三席观点全败（%d 席尝试，留痕不阻断）", len(metas))
+    return ok_metas, metas
 
 
 async def _call_viewpoint(
@@ -131,13 +223,9 @@ async def call_simple(
 ) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
     """simple 编排入口：返回 (gateway结果, 实际模型名, viewpoints_meta)。
 
-    [职责分离裁定 2026-10-02 15:07] 三思考席只做分析：
-    vp_system_prompt 为中性上下文（无使用说明、无工具、无建卡接口）；
-    system_prompt（含使用说明与建卡接口）只给主模型——拆卡是主模型的工作。
-
-    on_progress(stage, detail)：实时反馈钩子（纯展示层，不进模型输入）。
-
-    enabled: false 或 viewpoints 空时与 call_main 行为完全一致（meta=[]）。
+    [E-探针制 2026-10-07] 本入口已退役：routes 首轮改为纯主模型带工具
+    （三席后置到工具循环收尾处经 run_viewpoints 进场）。本函数保留为
+    观测兼容/回滚路径，现无调用方——三席"空手先出观点"的旧编排只在此处。
     """
     gw = model_service.get_gateway()
     cfg = gw.config.get("simple") or {}
@@ -155,37 +243,11 @@ async def call_simple(
             except Exception:
                 pass
 
-    # 观点阶段：并发，单个失败不中断
-    # [拆闸裁定 2026-10-02] 原 viewpoint_timeout / viewpoint_max_tokens 已删除：
-    # 思考型模型的额度被 max_tokens 烧光导致正文为空——闸就是空观点的根因
-    _report("viewpoints", f"0/{len(viewpoints)}")
-
-    done_count = [0]
-
-    def _vp_done(meta: dict[str, Any]) -> None:
-        done_count[0] += 1
-        mark = "✓" if meta.get("ok") else "✗"
-        secs = round((meta.get("latency_ms") or 0) / 1000, 1)
-        _report("viewpoints", f"{done_count[0]}/{len(viewpoints)} · {mark}{meta.get('model','')} {secs}s")
-
-    raw_metas = await asyncio.gather(
-        *[
-            _call_viewpoint(gw, n, vp_system_prompt, user_prompt,
-                            prior_messages, on_done=_vp_done)
-            for n in viewpoints
-        ],
-        return_exceptions=True,
+    # 观点阶段：并发，单个失败不中断（[E] 已拆为 run_viewpoints，此处复用）
+    ok_metas, metas = await run_viewpoints(
+        vp_system_prompt, user_prompt, prior_messages, on_progress=on_progress
     )
-    metas: list[dict[str, Any]] = []
-    for name, m in zip(viewpoints, raw_metas):
-        if isinstance(m, BaseException):
-            # _call_viewpoint 自吞异常，此处为 gather 双保险
-            metas.append({"model": name, "ok": False, "latency_ms": 0,
-                          "chars": 0, "error": f"{type(m).__name__}: {m}"})
-        else:
-            metas.append(m)
 
-    ok_metas = [m for m in metas if m.get("ok")]
     final_user_prompt = build_viewpoint_prompt(user_prompt, ok_metas)
     if ok_metas:
         # [T10-6] 打点：统合官输入处——任务说明行已插入
