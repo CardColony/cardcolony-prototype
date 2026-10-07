@@ -66,6 +66,8 @@
     // 剧本架
     listWorks: () => call("GET", "/api/works"),
     createWork: (title) => call("POST", "/api/works", { title }),
+    // [T17-F7] 跨项目导航树（一次拿全，服务端排序）
+    getNav: () => call("GET", "/api/nav"),
     // 画布
     getCanvas: (wid) => call("GET", `/api/works/${wid}/canvas`),
     patchPositions: (wid, positions) => call("PATCH", `/api/works/${wid}/canvas/positions`, { positions }),

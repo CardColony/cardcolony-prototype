@@ -76,8 +76,20 @@
       node.classList.remove("l0", "l1", "l2");
       node.classList.add(level);
     }
-    // L0 时隐藏关系线
-    edgesSvg.style.opacity = (zoom < 0.5) ? "0" : "1";
+    // [诸葛 2026-10-04 21:52] L0 档线的显隐规则重构（设计由诸葛定，用户 21:46 授权界面自决）。
+    // 原行为：zoom<0.5 时整个 edgesSvg 层 opacity=0——父子线与关系线一起消失。
+    // 该行移植自写作agent（[phase8.6-*] 分段标记为证），当时画布是「整图铺开」，
+    // 远景必然密集，藏线合理。推演agent 是折叠树，屏幕上只有展开部分——
+    // 缩小恰恰是想看结构，把唯一表达结构的父子线关掉是反的。
+    // 现规则：父子线（骨架）任何档都留，L0 档降级为细淡；关系线（弱关联）L0 档收起。
+    // L0 档线消失没有技术代价：SVG 元素仍在 DOM，整层 opacity=0 省不了渲染
+    // （元素未移除、渲染器照样处理），真正的 L0 性能动作在卡片侧（胶囊化、藏摘要）。
+    edgesSvg.style.opacity = "1";
+    const isL0 = (level === "l0");
+    const pcGroup = edgesSvg.querySelector('[data-edge-group="parent-child"]');
+    const relGroup = edgesSvg.querySelector('[data-edge-group="relations"]');
+    if (pcGroup) pcGroup.style.opacity = isL0 ? "0.55" : "1";
+    if (relGroup) relGroup.style.display = isL0 ? "none" : "";
     return level;
   }
 
@@ -368,10 +380,14 @@
     const pinned = pinnedIds || new Set();
     const out = {};
     for (const cid in layout) out[cid] = { x: layout[cid].x, y: layout[cid].y };
-    // 按初始 y 值分带（pinned 卡不参与分带、不被移动）
+    // [诸葛 2026-10-04 21:52] pinned 卡改为「位置不动、但参与避让计算」。
+    // 原行为：pinned 卡直接 continue——不进分带，于是别的卡算避让时当它不存在，
+    // 同 y 的卡会直接压上去（card_007 §十二④ bug A，从未实施）。
+    // 现行为：pinned 卡 x/y 一律不覆盖（拖到哪就在哪），但它们的 y 进入分带序列，
+    // 其它卡见到它们自动让开（有 y 重叠才抬起，不跟它抢占）。这样钉住仍有效
+    // （位置我说了算），但不再出现视觉重叠（别的卡给我让路）。
     const bands = new Map();
     for (const cid in layout) {
-      if (pinned.has(cid)) continue;
       const y = layout[cid].y;
       if (!bands.has(y)) bands.set(y, []);
       bands.get(y).push(cid);
@@ -384,6 +400,12 @@
       if (prevBottom !== null && bandY < prevBottom + GAP_Y) bandY = prevBottom + GAP_Y;   // [T18-C-005] 原 40 硬编码收口
       let bandBottom = bandY;
       for (const cid of ids) {
+        if (pinned.has(cid)) {
+          // 钉住的卡不改坐标，但把它的底边计入，供后续带避让
+          const h = (sizes[cid] && sizes[cid].h) || 86;
+          bandBottom = Math.max(bandBottom, out[cid].y + h);
+          continue;
+        }
         out[cid].y = bandY;
         const h = (sizes[cid] && sizes[cid].h) || 86;
         bandBottom = Math.max(bandBottom, bandY + h);
@@ -491,7 +513,7 @@
     const base = state._baseLayout;
     if (!base) return;
     const sizes = measureSizes();
-    const adjusted = separateOverlaps(base, sizes, pinnedIdSet());   // [T18-C2] 原 resolveOverlaps（失明版降为死代码，观测兼容保留）
+    const adjusted = separateOverlaps(base, sizes, pinnedIdSet());   // [T18-C2] 原 resolveOverlaps（半修版降为死代码，观测兼容保留）
     state._layout = adjusted;
     for (const [cid, node] of nodeMap) {
       const p = adjusted[cid];
@@ -632,6 +654,13 @@
     node.style.left = pos.x + "px";
     node.style.top = pos.y + "px";
     if (isRoot) node.classList.add("is-root");
+    // [诸葛 2026-10-04 21:52] pinned 视觉标识。
+    // 原缺口：拖一下卡就 pinned=true（永久不参与自动避让），但 style.css 里
+    // 搜 "pinned" 零命中——画布上看不出来，用户不知道自己什么时候把卡钉死了。
+    // 现给钉住的卡挂类，样式在 style.css（右上角小图钉 ＋ 边框色区分）。
+    if (state.positions[card.card_id] && state.positions[card.card_id].pinned) {
+      node.classList.add("is-pinned");
+    }
 
     const childCount = (state.childMap[card.card_id] || []).length;
     // [T08-3-1/3-5] 徽章语义＝展开/折叠开关：▸（折叠态）↔ ▾（展开态）；N 恒为该卡子卡数
@@ -810,6 +839,10 @@
   function setViewRoot(newRoot) {
     state.viewRoot = newRoot;
     summaryCache.clear();
+    // [诸葛 2026-10-04 21:52] 下钻换根时清掉旧展开态。
+    // 原缺口：只清 summaryCache，expanded 跟着带去新视图——钻进去后可能有若干卡
+    // 莫名已展开（T08 新增 expanded 机制时漏了这一处，属新机制铺开的边角遗漏）。
+    state.expanded.clear();
     hideWorkspace();
     renderCanvas();
     fitView();
@@ -869,7 +902,16 @@
         if (!p1 || !p2) continue;
         const s1 = sizes[pid] || { w: 220, h: 86 };
         const s2 = sizes[ckid] || { w: 220, h: 86 };
-        elbowSegs.push({ x1: p1.x + s1.w, y1: p1.y + s1.h / 2, x2: p2.x, y2: p2.y + s2.h / 2 });
+        // [诸葛 2026-10-04 21:52] 锚点按相对位置自动选边（原写死"父右缘→子左缘"）。
+        // 原写死的问题：子卡被拖到父卡左侧时，线必须从父卡右缘出发再折回左边，
+        // 竖段必穿过父卡本体（card_007 §14.4 记为"T08 未处理的组合"）。
+        // 现按两卡中心横向相对位置选边：子卡中心在父卡中心右侧走右缘→左缘，反之反过来。
+        // 折线路径算法（addElbowPath）不动——midX 本就在两点之间取中，改锚点即可。
+        const pcx = p1.x + s1.w / 2, ccx = p2.x + s2.w / 2;
+        const childOnRight = ccx >= pcx;
+        elbowSegs.push(childOnRight
+          ? { x1: p1.x + s1.w, y1: p1.y + s1.h / 2, x2: p2.x, y2: p2.y + s2.h / 2 }        // 父右缘 → 子左缘
+          : { x1: p1.x, y1: p1.y + s1.h / 2, x2: p2.x + s2.w, y2: p2.y + s2.h / 2 });     // 父左缘 → 子右缘
       }
     }
 
@@ -909,11 +951,37 @@
     edgesSvg.setAttribute("viewBox", `${minX} ${minY} ${w} ${h}`);
     edgesSvg.innerHTML = "";
 
-    // [T08-2-1] 父子线绘制（新增；下方 relations 循环原样保留——红线7）
+    // [诸葛 2026-10-04 21:52] 两类线分组重构（设计由诸葛定，用户 21:46 授权界面自决）。
+    // 原状：父子线与关系线同色 #30363d、同宽 1.5，只有形状不同（折线 vs 直线），
+    // 视觉上分不出"层级挂靠"与"弱关联"。现按语义分色分形：
+    //   父子线（层级骨架）＝ 蓝 #58a6ff 实线 ＋ 两端圆点（父端实心、子端空心）
+    //   关系线（弱关联）  ＝ 灰 #8b949e 虚线
+    //   假设悬空红线不动（红色虚线＋空心圆是既有语义）
+    // 分组 <g data-edge-group> 供 applyLODClasses 分级控制（L0 档只收关系线）。
+
+    // ── 父子线组 ──
+    const pcG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    pcG.setAttribute("data-edge-group", "parent-child");
+    edgesSvg.appendChild(pcG);
     for (const seg of elbowSegs) {
-      addElbowPath(seg.x1, seg.y1, seg.x2, seg.y2, "#30363d", "1.5");
+      addElbowPath(seg.x1, seg.y1, seg.x2, seg.y2, "#58a6ff", "1.5", pcG);
+      // 父端实心圆点 / 子端空心圆点：表达"谁是父、谁是子"（比箭头轻，且直角拐角处箭头难算切线）
+      const dotF = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dotF.setAttribute("cx", seg.x1); dotF.setAttribute("cy", seg.y1);
+      dotF.setAttribute("r", "3"); dotF.setAttribute("fill", "#58a6ff");
+      pcG.appendChild(dotF);
+      const dotC = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dotC.setAttribute("cx", seg.x2); dotC.setAttribute("cy", seg.y2);
+      dotC.setAttribute("r", "3"); dotC.setAttribute("fill", "none");
+      dotC.setAttribute("stroke", "#58a6ff"); dotC.setAttribute("stroke-width", "1.5");
+      pcG.appendChild(dotC);
     }
     console.info(`[T08] 父子线：绘制 ${elbowSegs.length} 条（可见卡 ${visibleIds.size} 张）`);
+
+    // ── 关系线组 ──
+    const relG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    relG.setAttribute("data-edge-group", "relations");
+    edgesSvg.appendChild(relG);
 
     // 普通关系线（[phase8.6-B] 锚点 = 实测尺寸的卡中心）
     for (const r of state.relations) {
@@ -922,10 +990,11 @@
       if (!p1 || !p2) continue;
       const isForeshFulfill = r.source && state.cardMap[r.source] &&
         state.cardMap[r.source].card_type === "假设" && (r.type || "").includes("兑现");
-      const color = isForeshFulfill ? "#f85149" : "#30363d";
+      const color = isForeshFulfill ? "#f85149" : "#8b949e";
       const sw = isForeshFulfill ? "2" : "1.5";
+      const dash = isForeshFulfill ? "" : "5 4";   // 假设兑现保持实线（语义强），其余弱关联用虚线
       const s1 = nodeSize(r.source), s2 = nodeSize(r.target);
-      addLine(p1.x + s1.w / 2, p1.y + s1.h / 2, p2.x + s2.w / 2, p2.y + s2.h / 2, color, sw);
+      addLine(p1.x + s1.w / 2, p1.y + s1.h / 2, p2.x + s2.w / 2, p2.y + s2.h / 2, color, sw, dash, relG);
     }
 
     // 假设悬空红线（无兑现边）
@@ -985,19 +1054,22 @@
     }
   }
 
-  function addLine(x1, y1, x2, y2, color, sw) {
+  function addLine(x1, y1, x2, y2, color, sw, dash, parent) {
     const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
     line.setAttribute("x1", x1); line.setAttribute("y1", y1);
     line.setAttribute("x2", x2); line.setAttribute("y2", y2);
     line.setAttribute("stroke", color);
     line.setAttribute("stroke-width", sw);
-    edgesSvg.appendChild(line);
+    if (dash) line.setAttribute("stroke-dasharray", dash);   // [诸葛 21:52] 弱关联用虚线
+    (parent || edgesSvg).appendChild(line);
   }
 
   // [T08-2-2] 父子直角折线：先横、再竖、再横（左右视图方向——用户中途指令推翻任务书
   // 上下向「先下、再横、再下」，留痕；写法范本＝假设悬空红线段）。
   // 既有 addLine 不删——relations 线仍用（红线7）；两类线调用点不交叉。
-  function addElbowPath(x1, y1, x2, y2, color, sw) {
+  // [诸葛 2026-10-04 21:52] 增 parent 参数：父子线挂进 data-edge-group="parent-child" 组，
+  // 供 applyLODClasses 分级控制；折线算法本体不动，data-edge 机械验收标记保留。
+  function addElbowPath(x1, y1, x2, y2, color, sw, parent) {
     const midX = x1 + (x2 - x1) / 2;
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`);
@@ -1005,7 +1077,7 @@
     path.setAttribute("stroke-width", sw);
     path.setAttribute("fill", "none");
     path.setAttribute("data-edge", "parent-child"); // [T08] 机械验收标记（V6/V7 计数用，不影响渲染）
-    edgesSvg.appendChild(path);
+    (parent || edgesSvg).appendChild(path);
   }
 
   // ==================== Tooltip 与摘要懒加载 ====================
@@ -1250,6 +1322,7 @@
         const r = await API.createCard(WORK_ID, { title, source: "用户直接创建", card_type: ctype, parent: state.viewRoot });
         node.remove();
         await reloadCanvas();
+        if (window.RenderNav) window.RenderNav();   // [T17] 新卡同步进导航树
       } catch (e) { /* toast 已处理 */ }
     };
     node.querySelector("#newCardOk").onclick = submit;
@@ -1286,7 +1359,10 @@
       }
       rebuildCardMap();
       renderCanvas();
-      hideWorkspace();
+      // [T17-F6/R-1] 不再无条件 hideWorkspace()：「刷新画布数据」与「收起对话层」是两件事。
+      // 视图切换改由 .app-main[data-view] 显隐驱动（workspace.js setAppView）；「← 画布」
+      // 按钮为纯显隐（R-043）；建卡/删卡/对话生卡等数据变更已在各自源头调 ReloadCanvas 刷新。
+      // hideWorkspace() 函数保留（setViewRoot 下钻路径仍在用，现为无害空操作）。
     } catch (e) { /* toast 已处理 */ }
   }
 

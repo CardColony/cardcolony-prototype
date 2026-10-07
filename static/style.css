@@ -190,10 +190,23 @@ a { color: inherit; text-decoration: none; }
 .book.new.form-mode > div:first-child:not(.inline-form) { display: none; }
 
 /* ============ 画布页 ============ */
-.work-page { height: 100vh; display: flex; flex-direction: column; }
-#viewport {
+/* [T17-F1] 三联外壳：.work-page 由 column 改 row——左 .app-nav（恒在）＋ 右 .app-main
+   （topbar + .stage 主视图）。#viewport 与 #workspace 落入 .stage，absolute; inset:0 互斥显隐。 */
+.work-page { height: 100vh; display: flex; flex-direction: row; }
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.stage {
   flex: 1;
   position: relative;
+  overflow: hidden;
+}
+#viewport {
+  position: absolute;
+  inset: 0;
   overflow: hidden;
   background:
     radial-gradient(circle at 1px 1px, #1c2128 1px, transparent 0);
@@ -261,6 +274,7 @@ a { color: inherit; text-decoration: none; }
   text-align: center;
   border-width: 3px;
 }
+
 
 /* 子卡徽章 */
 /* [T16 2026-10-06] 徽章可见性修复 A-2：脱离文本流，绝对定位钉 .tname 右上角凹槽
@@ -396,31 +410,241 @@ a { color: inherit; text-decoration: none; }
   pointer-events: none;
 }
 
-/* ============ 工作区 ============ */
+/* ============ [T17-F2/F3] 工作区三态外壳 ============ */
+/* 病灶修复：旧 .workspace 是全屏覆盖层（position:absolute; inset:0; top:48px; z-index:100，
+   进卡即盖掉画布）。现降为 .stage 内与画布互斥的主视图容器：data-view 驱动显隐。
+   显隐用 visibility 而非 display:none——隐藏的画布保持可测量（renderCanvas 的
+   measureSizes/fitView 依赖 clientWidth），对话区 scrollHeight 也恒有效。 */
 .workspace {
   position: absolute;
   inset: 0;
-  top: 48px;
   background: var(--bg-deep);
-  z-index: 100;
-  display: none;
+  display: flex;
+  visibility: hidden;
 }
-.workspace.active { display: flex; }
-.ws-left {
-  width: 35%;
+.app-main[data-view="chat"] #workspace { visibility: visible; }
+.app-main[data-view="chat"] #viewport { visibility: hidden; }
+
+/* ---- 左栏对话导航（44px 窄条 ⇄ 260px 全树，两态由 .rail 类驱动）---- */
+.app-nav {
+  position: relative;
+  width: 260px;
+  flex: none;
+  background: var(--bg-deep);
   border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.app-nav.rail { width: 44px; }
+.nav-rail { display: none; }
+.app-nav.rail .nav-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding-top: 14px;
+  flex: none;
+}
+.nav-rail-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 14px;
+}
+.nav-rail-btn:hover { color: var(--text); background: var(--panel-hover); }
+.nav-rail-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--c-work);   /* 当前项目＝根＝金（§3.5 层级色点） */
+}
+.nav-tree {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 0 24px;
+}
+/* 窄条态：树整体藏起，悬停（或 ☰ 钉住）时以浮层现身 */
+.app-nav.rail .nav-tree {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 44px;
+  width: 260px;
+  max-height: 100%;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 200;
+}
+.app-nav.rail:hover .nav-tree,
+.app-nav.rail.pinned .nav-tree { display: block; }
+
+/* 分组头（项目行）：11px / var(--dim) / letter-spacing 1px，同 .blocktitle 口径（§3.5） */
+.nav-phead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 1px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nav-phead:hover { background: var(--panel-hover); }
+.nav-phead.current { color: var(--text); }
+.nav-pname { overflow: hidden; text-overflow: ellipsis; }
+.nav-pcount { color: var(--dimmer); flex: none; }
+.nav-ptime { margin-left: auto; color: var(--dimmer); font-size: 11px; flex: none; }
+.nav-padd {
+  display: none;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 11px;
+  padding: 0 6px;
+  line-height: 18px;
+}
+.nav-phead:hover .nav-padd { display: inline-block; }
+.nav-padd:hover { color: var(--text); }
+
+/* 卡行：13px/30px（§3.5）；缩进每层 +14px 由行内 padding-left 控制 */
+.nav-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  line-height: 30px;
+  padding-right: 10px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nav-card:hover { background: var(--panel-hover); }
+.nav-card.current {
+  background: rgba(56,139,253,0.10);
+  box-shadow: inset 2px 0 0 #58a6ff;   /* 当前卡：左 2px 强调条＋底色（§3.5） */
+}
+.nav-twist {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 11px;
+}
+.nav-twist.none { visibility: hidden; }
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.dot.root { background: var(--c-work); }     /* 根＝金 */
+.dot.mid  { background: var(--c-setting); }  /* 中间＝蓝 */
+.dot.leaf { background: var(--c-idea); }     /* 叶＝灰 */
+.nav-ctitle { overflow: hidden; text-overflow: ellipsis; }
+.nav-ctime { margin-left: auto; color: var(--dimmer); font-size: 11px; flex: none; }
+.nav-more {
+  display: none;
+  flex: none;
+  width: 18px;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+.nav-card:hover .nav-more { display: inline-block; }
+.nav-more:hover { color: var(--text); }
+.nav-menu {
+  position: fixed;
+  z-index: 300;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  padding: 4px;
+  min-width: 120px;
+}
+.nav-menu-item {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nav-menu-item:hover { background: var(--panel-hover); }
+.nav-empty {
+  padding: 24px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.ws-right {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---- 对话区头部：← 画布（纯显隐）＋ ⓘ 卡详情 ---- */
+.ws-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.ws-head-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 右栏 Inspector：卡片编辑能力搬迁至此（原 .ws-left 职责），默认收起 32px ---- */
+.inspector {
+  flex: none;
+  width: 32px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: row;
+  background: var(--bg-deep);
+  transition: width 0.15s ease;
+  overflow: hidden;
+}
+.inspector.open { width: 352px; }
+.insp-body {
+  width: 320px;
+  flex: none;
   padding: 18px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.ws-right {
-  width: 65%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+.inspector:not(.open) .insp-body { display: none; }
+.insp-tab {
+  width: 32px;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  writing-mode: vertical-lr;
+  letter-spacing: 3px;
+  padding: 12px 0;
 }
+.insp-tab:hover { color: var(--text); background: var(--panel-hover); }
 
 .blocktitle {
   font-size: 11px;
