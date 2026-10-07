@@ -43,6 +43,18 @@ models:
       max_attempts: 3
       backoff_seconds: 2
 
+  # [凝练折叠开启 2026-10-07·任务5] 独立凝练席（用户定 glm-5.3-flash，智谱 coding plan）
+  condenser:
+    provider: openai                    # 智谱 coding plan 为 OpenAI 兼容协议
+    model: glm-5.3-flash
+    api_key_env: ZHIPU_CODING_API_KEY
+    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+    temperature: 0.3
+    context_window: 1000000     # 用户口径：glm-5.3 系 1M 窗（前端显示上下文总量用）
+    retry:
+      max_attempts: 3
+      backoff_seconds: 2
+
   # ========== 思考席（simple 多模型审议，三席并发） ==========
   viewpoint_minimax:
     provider: openai                    # MiniMax OpenAI 兼容协议

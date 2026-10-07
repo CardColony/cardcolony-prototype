@@ -46,6 +46,14 @@ logger = logging.getLogger("storage.memory")
 # 触发线 K 首版估值（SP-01：行为参数先落一版看真实分布；待实测标定）
 DEFAULT_TRIGGER_K_BYTES = 300_000
 
+# [凝练折叠开启 2026-10-07] 源侧机制搬回（PORTING-GUIDE 流程 B/C 逐字对账）：
+# 单批窗口预算（用户令：一次凝练 30 万 token ×2.1 B/token ≈ 630,000 字节）、
+# 单 job 批上限（源侧 condenseMaxBatchesPerJob 形态，缺省 20）、折叠触发周期
+# （源侧 fold-l1 FOLD_EVERY_BATCHES=5，游标式 batch_count − last_fold_check ≥ 5）。
+DEFAULT_WINDOW_BUDGET_BYTES = 630_000
+DEFAULT_MAX_BATCHES = 20
+FOLD_EVERY_BATCHES = 5
+
 # [T15-任务 3] 凝练 prompt 骨架（诸葛定，用户可事后推翻）：纯文本产出、
 # 不涉工具解析（call_main tools=None——统合官文本泄漏路径不触发）。
 CONDENSE_SYSTEM_PROMPT = (
@@ -88,6 +96,34 @@ def trigger_k_bytes() -> int:
         except ValueError:
             logger.warning("[condense_fold] CONDENSE_TRIGGER_K 非法（%r），用首版估值", raw)
     return DEFAULT_TRIGGER_K_BYTES
+
+
+def window_budget_bytes() -> int:
+    """单批窗口预算（字节）[凝练折叠开启·任务2，源侧 windowTokenBudget 形态]：
+    CONDENSE_WINDOW_BUDGET_BYTES 覆盖优先，缺省 63 万（用户令 30 万 token ×2.1）。"""
+    raw = os.environ.get("CONDENSE_WINDOW_BUDGET_BYTES", "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            logger.warning("[condense_fold] CONDENSE_WINDOW_BUDGET_BYTES 非法（%r），用缺省值", raw)
+    return DEFAULT_WINDOW_BUDGET_BYTES
+
+
+def condense_max_batches() -> int:
+    """单 job 批上限 [任务3，源侧 condenseMaxBatchesPerJob 形态]：
+    CONDENSE_MAX_BATCHES 覆盖优先，缺省 20（循环至窗口清空或达上限，源侧原义）。"""
+    raw = os.environ.get("CONDENSE_MAX_BATCHES", "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            logger.warning("[condense_fold] CONDENSE_MAX_BATCHES 非法（%r），用缺省值", raw)
+    return DEFAULT_MAX_BATCHES
 
 
 def load_memory(work_id: str, card_id: str) -> dict[str, Any]:
@@ -177,6 +213,38 @@ _background_tasks: set[asyncio.Task] = set()
 _condensing_cards: set[tuple[str, str]] = set()
 
 
+# [凝练折叠开启 2026-10-07·任务1] 统一计量尺（源侧同口径铁律）：触发求和与切片
+# 累计共用同一函数——逐条 len(正文 utf-8) + 1（+1＝join('\n') 分隔符记账，照抄
+# 源侧 truncateWindow 逐条累加公式）；token 折算只发生在配置层（×2.1），不引入
+# 任何独立 tokenizer。
+def _msg_meter_bytes(m: dict[str, Any]) -> int:
+    return len(str(m.get("content", "") or "").encode("utf-8")) + 1
+
+
+def _meter_sum(msgs: list[dict[str, Any]]) -> int:
+    """统一计量尺求和（触发判定专用读数，与切片累计同尺、tolerance=0）。"""
+    return sum(_msg_meter_bytes(m) for m in msgs)
+
+
+def _truncate_window(pending: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
+    """单批窗口切片 [任务2，源侧 truncateWindow 原样搬回]：按统一计量尺逐条累加，
+    取「最接近且不超预算」的切片（宁少不超，用户 14:56 口径）；累计越线即停
+    （继续只会更远，源侧同款剪枝）。单条即超预算的病态窗口保底取 1 条并留痕
+    （防该卡窗口永久卡死；源侧取最近点会越线，任务书判据为不超——按任务书执行、
+    差异如实声明）。"""
+    used = 0
+    best = 0
+    for i, m in enumerate(pending):
+        used += _msg_meter_bytes(m)
+        if used > budget:
+            break
+        best = i + 1
+    if best == 0 and pending:
+        logger.warning("[condense_fold] 单条即超窗口预算 budget=%d——保底取 1 条防卡死", budget)
+        return pending[:1]
+    return pending[:best]
+
+
 def _build_condense_user_prompt(pending: list[dict[str, Any]]) -> str:
     """凝练 user prompt（任务 2/3）：未凝段全文，每块前缀 `[块{seq}]`。"""
     parts: list[str] = []
@@ -237,26 +305,26 @@ async def _condense_call(user_prompt: str) -> str:
     测试经 monkeypatch 本接缝注入脚本化产出——MockGateway 罐头内容无
     【结论】/【依据】形态且 gateway.py 禁改（model_service 头注），RD-10
     两文件改动面不容第三件。
+    [凝练折叠开启·任务5] 改走独立凝练席 model_name="condenser"（glm-5.3-flash）。
     """
     from ..api import model_service  # 延迟导入：storage 装载期不依赖 api（唯一调用点）
 
     result, _model = await model_service.call_main(
-        CONDENSE_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None)
+        CONDENSE_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
+        model_name="condenser")
     return str((result or {}).get("content") or "")
 
 
-async def _run_condense_pipeline(work_id: str, card_id: str,
-                                 pending: list[dict[str, Any]], mark: int) -> None:
-    """凝练管线本体（T15 任务 2→5，路线甲）：取段→模型写→解析→落 entries→推进 mark。
+async def _condense_one_batch(work_id: str, card_id: str,
+                              window: list[dict[str, Any]], mark: int) -> bool:
+    """单批凝练（原管线本体逐段保留，[任务3] 批化拆出）：取段→模型写→解析→
+    幂等判定→落 entries→推进 mark。返回该批是否成功（幂等补推/幂等跳过均算
+    成功——窗口已凝过，游标应越过）。
 
     失败（调用异常/空产出/解析失败）＝水位一分不动、warning 留痕一条、
-    不阻断不重试不设闸（V5 哲学/RD-04）。entries＋mark 单文件原子落盘
-    （save_memory 一次写），无中间态。
+    不阻断不重试不设闸（V5 哲学/RD-04）。entries＋mark 单文件原子落盘。
     """
-    if not pending:
-        logger.info("[condense_fold] 未凝段为空——跳过 work=%s card=%s", work_id, card_id)
-        return
-    user_prompt = _build_condense_user_prompt(pending)
+    user_prompt = _build_condense_user_prompt(window)
     input_bytes = len(user_prompt.encode("utf-8"))
     fingerprint = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
     # 任务 3：模型写【结论】＋【依据】
@@ -265,34 +333,218 @@ async def _run_condense_pipeline(work_id: str, card_id: str,
     except Exception as exc:  # noqa: BLE001
         logger.warning("[condense_fold] 凝练失败——水位一分不动 work=%s card=%s 阶段=模型调用 原因=%s",
                        work_id, card_id, exc)
-        return
+        return False
     # 任务 3：产出解析（失败/空产出→不凝）
-    fresh = _parse_condense_output(text, default_seq=int(pending[0].get("seq", mark) or mark))
+    fresh = _parse_condense_output(text, default_seq=int(window[0].get("seq", mark) or mark))
     if not fresh:
         logger.warning("[condense_fold] 凝练失败——水位一分不动 work=%s card=%s 阶段=产出解析 原因=空产出或无【结论】条目",
                        work_id, card_id)
-        return
-    target_mark = int(pending[-1].get("seq", 0) or 0) + 1
+        return False
+    target_mark = int(window[-1].get("seq", 0) or 0) + 1
     state = load_memory(work_id, card_id)
     existing = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
     # 任务 5 幂等：同窗口（同 fingerprint）已凝 → 条目零新增，mark 幂等到位
     if any(e.get("fingerprint") == fingerprint for e in existing):
         if int(state.get("mark", 0) or 0) < target_mark:
             await save_memory(work_id, card_id,
-                              {"card_id": card_id, "mark": target_mark, "entries": existing})
+                              {"card_id": card_id, "mark": target_mark,
+                               "entries": existing,
+                               "batch_count": state.get("batch_count", 0),
+                               "last_fold_check": state.get("last_fold_check", 0),
+                               "folded": state.get("folded", [])})
             logger.info("[condense_fold] 幂等补推 mark work=%s card=%s mark→%d 条目零新增 fingerprint=%s",
                         work_id, card_id, target_mark, fingerprint)
         else:
             logger.info("[condense_fold] 幂等跳过（同指纹已凝、mark 已到位）work=%s card=%s mark=%d 条目数=%d fingerprint=%s",
                         work_id, card_id, int(state.get("mark", 0) or 0), len(existing), fingerprint)
-        return
+        return True
     # 任务 4：五字段落 entries（seq/conclusion/evidence/occurred_at/fingerprint）
     occurred_at = datetime.now().astimezone().isoformat()
     final_entries = [dict(e, occurred_at=occurred_at, fingerprint=fingerprint) for e in fresh]
     await save_memory(work_id, card_id,
-                      {"card_id": card_id, "mark": target_mark, "entries": existing + final_entries})
+                      {"card_id": card_id, "mark": target_mark, "entries": existing + final_entries,
+                       "batch_count": state.get("batch_count", 0),
+                       "last_fold_check": state.get("last_fold_check", 0),
+                       "folded": state.get("folded", [])})
     logger.info("[condense_fold] 凝练完成 work=%s card=%s 输入块数=%d 输入字节=%d 产出条数=%d mark %d→%d fingerprint=%s",
-                work_id, card_id, len(pending), input_bytes, len(final_entries), mark, target_mark, fingerprint)
+                work_id, card_id, len(window), input_bytes, len(final_entries), mark, target_mark, fingerprint)
+    return True
+
+
+async def _run_condense_pipeline(work_id: str, card_id: str,
+                                 pending: list[dict[str, Any]], mark: int) -> None:
+    """凝练管线本体 [凝练折叠开启 2026-10-07·任务2/3 批循环版]：每批＝源侧 S0 窗口
+    组装（_truncate_window 宁少不超）→凝练→落 entries→推进 mark；循环直至窗口
+    清空或达批上限（源侧 condenseMaxBatchesPerJob）。单批失败零阻断：水位一分
+    不动、留痕、不重试不排队，剩余未凝段留 mark 之后由后续回合继续取（L252-253
+    /L327-329 哲学不变）。成功批计入 batch_count（源侧 batchStarts.length 同位），
+    满 FOLD_EVERY_BATCHES 游标差即挂归拢线（任务 6）。
+    """
+    if not pending:
+        logger.info("[condense_fold] 未凝段为空——跳过 work=%s card=%s", work_id, card_id)
+        return
+    budget = window_budget_bytes()
+    max_batches = condense_max_batches()
+    idx = 0
+    batches = 0
+    while batches < max_batches:
+        window = _truncate_window(pending[idx:], budget)
+        if not window:
+            break   # 窗口清空
+        ok = await _condense_one_batch(work_id, card_id, window, mark)
+        if not ok:
+            break   # 单批失败零阻断：留痕已打，剩余未凝段留 mark 之后（不重试不排队）
+        idx += len(window)
+        batches += 1
+    if batches == 0:
+        return
+    state = load_memory(work_id, card_id)
+    state["batch_count"] = int(state.get("batch_count", 0) or 0) + batches
+    await save_memory(work_id, card_id, state)
+    logger.info("[condense_fold] 本轮批循环收口 work=%s card=%s 批数=%d 累计批=%d 未凝余=%d块",
+                work_id, card_id, batches, int(state["batch_count"]), len(pending) - idx)
+    try:
+        await _maybe_fold(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 归拢线零阻断（失败游标不动，下轮重试）
+        logger.warning("[condense_fold] 归拢线异常（不阻断、游标不动、下轮重试）work=%s card=%s: %s",
+                       work_id, card_id, exc)
+
+
+# ── [凝练折叠开启 2026-10-07·任务6] fold-l1 归拢线（源侧 fold-l1.ts runFoldJob 三阶段
+#    照抄适配）──
+# ①判断＝模型一次、无果零落库（judge-empty 合法终态，守「不能为了凝练而凝练」）；
+# ②机械校验＝被归拢成员须为未折叠的已凝条（源侧 validateConvergeBatch 入口 A 平铺适配）；
+# ③提交＝mark 不动、旧成员降层保留（源侧「挂 upper」平铺适配为 state.folded 指纹账：
+#   被归拢成员物理保留在 entries、消费侧按账过滤＝不再作为顶层散条；entry 五字段契约不变）。
+# 触发游标（源侧流程 C）：batch_count − last_fold_check ≥ FOLD_EVERY_BATCHES；
+# 三态语义：committed/judge-empty → 推游标；abort（调用异常）→ 游标不动（失败不消费触发线）。
+FOLD_SYSTEM_PROMPT = (
+    "你是记忆归拢器。给定一批已凝练的记忆条目（每条带条号与五字段形态），只做一件事："
+    "判断哪些条目是同一件事且已收尾完成，把它们归拢成一条更大的条目。输出严格 JSON："
+    '{"merges":[{"covers":[条号,条号],"conclusion":"【结论】一句话陈述这组条目共同确立的事实或判断",'
+    '"evidence":"【依据】指向所依据的具体对话块号"}]}。covers 至少两条；'
+    '无该归拢的输出 {"merges":[]}；不得新增内容、不得改写未选中条目、不得输出 JSON 以外的文字。'
+)
+
+_FOLD_JSON_RE = re.compile(r"\{.*\}", re.S)
+
+
+def _parse_fold_output(text: str) -> list[dict[str, Any]]:
+    """归拢产出解析（源侧 parseJsonLoose 同位）：提取首个 JSON 对象取 merges 数组。
+    解析失败/空 merges → []（调用方按 judge-empty 终态推游标——源侧三态语义）。"""
+    match = _FOLD_JSON_RE.search(str(text or ""))
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(0))
+    except ValueError:
+        return []
+    merges = data.get("merges") if isinstance(data, dict) else None
+    if not isinstance(merges, list):
+        return []
+    return [m for m in merges if isinstance(m, dict)]
+
+
+async def _fold_call(user_prompt: str) -> str:
+    """归拢模型调用（与凝练同走 condenser 席位）。"""
+    from ..api import model_service
+
+    result, _model = await model_service.call_main(
+        FOLD_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
+        model_name="condenser")
+    return str((result or {}).get("content") or "")
+
+
+def _foldable_tops(state: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
+    """可归拢顶层条（源侧 foldableTop 平铺适配）：fingerprint 不在 folded 账的条目。
+    返回 [(entries 下标, 条目)]。"""
+    folded = set(state.get("folded") or [])
+    return [(i, e) for i, e in enumerate(state.get("entries") or [])
+            if isinstance(e, dict) and str(e.get("fingerprint") or "") not in folded]
+
+
+async def _maybe_fold(work_id: str, card_id: str) -> None:
+    """fold 触发与执行（游标式，源侧流程 C 三阶段照抄）。"""
+    state = load_memory(work_id, card_id)
+    count = int(state.get("batch_count", 0) or 0)
+    last = int(state.get("last_fold_check", 0) or 0)
+    if count - last < FOLD_EVERY_BATCHES:
+        return
+    tops = _foldable_tops(state)
+    if len(tops) < 2:
+        state["last_fold_check"] = count
+        await save_memory(work_id, card_id, state)
+        logger.info("[condense_fold] 归拢判断空转（fold-l1.judge-empty tops<2，零模型）work=%s card=%s 批数=%d",
+                    work_id, card_id, count)
+        return
+    # ①判断（必调模型一次）：可归拢顶层条全文（五字段形态＋原始条号）
+    entries = state.get("entries") or []
+    lines = []
+    for i, e in tops:
+        lines.append(f"条{i + 1}｜seq={e.get('seq', '?')}｜【结论】{e.get('conclusion', '')}｜【依据】{e.get('evidence', '')}")
+    user_prompt = "\n".join(lines)
+    try:
+        text = await _fold_call(user_prompt)
+    except Exception as exc:  # noqa: BLE001 abort：游标不动（失败不消费触发线）
+        logger.warning("[condense_fold] 归拢失败——游标不动（abort，账保留下轮重试）work=%s card=%s 阶段=模型调用 原因=%s",
+                       work_id, card_id, exc)
+        return
+    merges = _parse_fold_output(text)
+    if not merges:
+        state["last_fold_check"] = count
+        await save_memory(work_id, card_id, state)
+        logger.info("[condense_fold] 归拢判断无果（fold-l1.judge-empty 解析失败或 merges=0，零落库推游标）work=%s card=%s 批数=%d",
+                    work_id, card_id, count)
+        return
+    # ②机械校验：covers ≥2 条、下标合法、全部未折叠、结论非空（入口 A 平铺适配）
+    folded = set(state.get("folded") or [])
+    accepted: list[tuple[list[int], dict[str, Any]]] = []
+    for m in merges:
+        covers = m.get("covers")
+        if not isinstance(covers, list):
+            continue
+        covers = [c for c in covers if isinstance(c, int) and 1 <= c <= len(entries)]
+        if len(set(covers)) < 2:
+            continue
+        if any(str(entries[c - 1].get("fingerprint") or "") in folded for c in covers):
+            continue
+        if not str(m.get("conclusion") or "").strip():
+            continue
+        accepted.append((sorted(set(covers)), m))
+    if not accepted:
+        state["last_fold_check"] = count
+        await save_memory(work_id, card_id, state)
+        logger.info("[condense_fold] 归拢校验全拒（fold-l1.judge-empty accepted=0，零落库推游标）work=%s card=%s 批数=%d",
+                    work_id, card_id, count)
+        return
+    # ③提交：mark 不动；归拢大条入列（五字段，seq=成员最小块号）；成员指纹入 folded 账
+    occurred_at = datetime.now().astimezone().isoformat()
+    new_entries: list[dict[str, Any]] = []
+    new_folded = set(folded)
+    for covers, m in accepted:
+        members = [entries[c - 1] for c in covers]
+        seqs = sorted({int(e.get("seq", 0) or 0) for e in members})
+        fp = hashlib.sha256(
+            ("fold|" + "|".join(sorted(str(e.get("fingerprint") or "") for e in members))).encode("utf-8")
+        ).hexdigest()[:16]
+        evidence = str(m.get("evidence") or "").strip()
+        if not evidence:
+            evidence = "【依据】归拢自 " + "、".join(f"块{s}" for s in seqs)
+        new_entries.append({
+            "seq": min(seqs),
+            "conclusion": str(m.get("conclusion")).strip(),
+            "evidence": evidence,
+            "occurred_at": occurred_at,
+            "fingerprint": fp,
+        })
+        new_folded.update(str(e.get("fingerprint") or "") for e in members)
+    state["entries"] = list(entries) + new_entries
+    state["folded"] = sorted(new_folded)
+    state["last_fold_check"] = count
+    await save_memory(work_id, card_id, state)
+    logger.info("[condense_fold] 归拢完成（fold-l1.committed）work=%s card=%s merges=%d covers=%d mark不动=%d 批数=%d",
+                work_id, card_id, len(accepted), sum(len(c) for c, _ in accepted),
+                int(state.get("mark", 0) or 0), count)
 
 
 async def condense_turn_end(work_id: str, card_id: str) -> None:
@@ -309,7 +561,8 @@ async def condense_turn_end(work_id: str, card_id: str) -> None:
         mark = int(state.get("mark", 0) or 0)
         prior = await session_store.read_session(work_id, card_id)
         pending = prior[mark:] if 0 <= mark <= len(prior) else prior
-        size = sum(len(str(m.get("content", "")).encode("utf-8")) for m in pending)
+        # [凝练折叠开启·任务1/4] 统一计量尺：逐条 +1（join 分隔符记账），与切片累计同尺
+        size = _meter_sum(pending)
         k = trigger_k_bytes()
         if size < k:
             return  # 未到线：安静观察（K 首版估值下常态；标定期看 debug）
