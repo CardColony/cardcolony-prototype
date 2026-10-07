@@ -405,12 +405,7 @@
       return;
     }
     const curId = currentCard ? currentCard.meta.card_id : "";
-    navTree.innerHTML = `<div class="nav-legend">
-      <span class="lg"><span class="lg-dot" style="background:#d4a72c"></span>项目</span>
-      <span class="lg"><span class="lg-dot" style="background:#388bfd"></span>有子卡</span>
-      <span class="lg"><span class="lg-dot" style="background:#c9d1d9"></span>叶子</span>
-    </div>
-    <div class="nav-hint">▸ 展开子卡 · 点标题进入对话 · 项目行 hover「打开 →」进入项目</div>` + projects.map(p => renderProject(p, curId)).join("");
+    navTree.innerHTML = projects.map(p => renderProject(p, curId)).join("");
   }
 
   function renderProject(p, curId) {
@@ -443,7 +438,6 @@
         <span class="dot root"></span>
         <span class="nav-pname">${escapeHtml(p.title)}</span>
         <span class="nav-pcount">${p.card_count}卡</span>
-        <button class="nav-popen" data-act="open" data-wid="${escapeHtml(p.work_id)}" title="打开该项目">打开 →</button>
         <span class="nav-ptime">${fmtRel(p.last_active_at)}</span>
         <button class="nav-padd" data-add="${escapeHtml(p.work_id)}" title="＋ 新建卡">＋卡</button>
       </div>
@@ -537,8 +531,6 @@
     if (more) { showNavMenu(more.dataset.more, more.dataset.mwid, more); return; }
     const padd = e.target.closest("[data-add]");
     if (padd) { handleProjectAdd(padd.dataset.add); return; }
-    const popen = e.target.closest('[data-act="open"]');
-    if (popen) { window.location.href = "/work/" + popen.dataset.wid; return; }
     const phead = e.target.closest(".nav-phead");
     if (phead) {
       const wid = phead.dataset.wid;
@@ -882,8 +874,6 @@
   const toggleInspector = () => inspector.classList.toggle("open");
   document.getElementById("inspToggleBtn").onclick = toggleInspector;
   document.getElementById("inspTab").onclick = toggleInspector;
-  const inspClose = document.getElementById("inspClose");
-  if (inspClose) inspClose.onclick = toggleInspector;
   // 窄条 ☰：钉住（或收起）悬停浮层全树
   const navRailBtn = document.getElementById("navRailBtn");
   if (navRailBtn) {

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>推演agent · 剧本画布</title>
-<link rel="stylesheet" href="/static/style.css?v=10.1">
+<link rel="stylesheet" href="/static/style.css?v=10.0">
 </head>
 <body>
 <div class="work-page">
@@ -63,11 +63,10 @@
         </div>
         <!-- [T17-F3] 右栏 Inspector：卡片编辑能力整体搬迁至此，默认收起 -->
         <div class="inspector" id="inspector">
-          <button class="insp-close" id="inspClose" data-close title="收起右侧卡详情">✕</button>
           <div class="insp-body" id="inspBody">
             <!-- workspace.js renderInspector 动态填充 -->
           </div>
-          <button class="insp-tab" id="inspTab" title="展开/收起右侧卡详情">ⓘ 卡详情 · 职责/结论/关系/历史</button>
+          <button class="insp-tab" id="inspTab" title="卡详情">ⓘ 卡详情</button>
         </div>
       </div>
     </div>
@@ -77,8 +76,8 @@
 <script>
   window.__WORK_ID__ = "{{WORK_ID}}";
 </script>
-<script src="/static/api.js?v=10.1"></script>
-<script src="/static/canvas.js?v=10.1"></script>
-<script src="/static/workspace.js?v=10.1"></script>
+<script src="/static/api.js?v=10.0"></script>
+<script src="/static/canvas.js?v=10.0"></script>
+<script src="/static/workspace.js?v=10.0"></script>
 </body>
 </html>
