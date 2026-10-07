@@ -47,7 +47,15 @@ def _next_seq() -> int:
 
 
 def list_works() -> list[dict[str, Any]]:
-    """扫描 works/work_*/work.json，每项附 card_count（cards 目录 .md 文件数）。"""
+    """扫描 works/work_*/work.json，每项附 card_count 与 last_active_at，
+    并按 last_active_at 降序排（并列按 work_id 升序稳定收尾，刷新不跳序）。
+
+    [T17-B3] 活跃度经 activity.work_last_active 请求时现算、不入盘；
+    本函数同时供剧本架页与 /api/nav——两条路径口径一致（R-031）。
+    """
+    # 局部 import：activity 顶层要读 work.json（read_work），避免顶层循环
+    from . import activity
+
     works: list[dict[str, Any]] = []
     if not WORKS_DIR.exists():
         return works
@@ -67,7 +75,11 @@ def list_works() -> list[dict[str, Any]]:
             len([f for f in cards_dir.glob("card_*.md")]) if cards_dir.exists() else 0
         )
         data["card_count"] = card_count
+        data["last_active_at"] = activity.work_last_active(p.name)
         works.append(data)
+    # 两段稳定排序：先并列收尾键 work_id 升序，再按活跃降序（空串最旧、排末位）
+    works.sort(key=lambda w: str(w.get("work_id", "")))
+    works.sort(key=lambda w: w.get("last_active_at") or "", reverse=True)
     return works
 
 

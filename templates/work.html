@@ -4,42 +4,69 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>推演agent · 剧本画布</title>
-<link rel="stylesheet" href="/static/style.css?v=9.3">
+<link rel="stylesheet" href="/static/style.css?v=10.0">
 </head>
 <body>
 <div class="work-page">
-  <!-- 顶栏：面包屑 + zoom + 操作按钮 -->
-  <div class="topbar">
-    <a href="/" class="btn ghost">← 剧本架</a>
-    <div id="crumb" class="crumb"></div>
-    <span class="spacer"></span>
-    <span id="zoomDisplay" class="zoom-display">100%</span>
-    <button id="reorganizeBtn" class="btn" title="重算所有卡片位置（清除 pinned）">整理画布</button>
-    <button id="newCardBtn" class="btn primary">＋ 新建卡</button>
-  </div>
-
-  <!-- 画布视口 -->
-  <div id="viewport">
-    <div id="world">
-      <svg class="edges" id="edgesSvg"></svg>
-      <!-- 卡片节点由 canvas.js 动态注入 -->
+  <!-- [T17-F1] 左栏对话导航：恒在；画布态 44px 窄条（悬停浮层全树），对话态 260px -->
+  <nav class="app-nav rail" id="appNav">
+    <div class="nav-rail">
+      <button class="nav-rail-btn" id="navRailBtn" title="对话导航（点击钉住浮层）">☰</button>
+      <div class="nav-rail-dot" title="当前项目"></div>
     </div>
-    <div id="cardTooltip" class="card-tooltip"></div>
-  </div>
-
-  <!-- 卡片工作区（默认隐藏，单击卡片时显示） -->
-  <div id="workspace" class="workspace">
-    <div class="ws-left" id="wsLeft">
-      <!-- workspace.js 动态填充 -->
+    <div class="nav-tree" id="navTree">
+      <!-- workspace.js renderNav 动态填充 -->
     </div>
-    <div class="ws-right">
-      <div class="chat" id="chatArea"></div>
-      <div class="inputbar">
-        <textarea id="inputBox" class="inputbox" placeholder="和这张卡讨论…（Ctrl+Enter 发送）" rows="2"></textarea>
-        <div class="inputmeta">
-          <span class="hint">Ctrl+Enter 发送</span>
-          <span class="spacer"></span>
-          <button id="sendBtn" class="btn primary">发送</button>
+  </nav>
+
+  <!-- [T17-F1] 中区主视图：topbar + stage（画布/对话二选一，data-view 驱动显隐） -->
+  <div class="app-main" id="appMain" data-view="canvas">
+    <!-- 顶栏：面包屑 + zoom + 操作按钮 -->
+    <div class="topbar">
+      <a href="/" class="btn ghost">← 剧本架</a>
+      <div id="crumb" class="crumb"></div>
+      <span class="spacer"></span>
+      <span id="zoomDisplay" class="zoom-display">100%</span>
+      <button id="reorganizeBtn" class="btn" title="重算所有卡片位置（清除 pinned）">整理画布</button>
+      <button id="newCardBtn" class="btn primary">＋ 新建卡</button>
+    </div>
+
+    <div class="stage">
+      <!-- 画布视口 -->
+      <div id="viewport">
+        <div id="world">
+          <svg class="edges" id="edgesSvg"></svg>
+          <!-- 卡片节点由 canvas.js 动态注入 -->
+        </div>
+        <div id="cardTooltip" class="card-tooltip"></div>
+      </div>
+
+      <!-- 卡片对话区（data-view=chat 时显示；绝对定位与画布互斥） -->
+      <div id="workspace" class="workspace">
+        <div class="ws-right">
+          <!-- [T17-F3] 对话区头部：返回画布（纯显隐，不重拉数据）＋ 卡详情开关 -->
+          <div class="ws-head">
+            <button class="ws-back" id="wsBackBtn" title="返回画布（纯显隐切换，不丢编辑）">← 画布</button>
+            <span class="ws-head-title" id="wsHeadTitle"></span>
+            <span class="spacer"></span>
+            <button class="btn ghost" id="inspToggleBtn" title="展开/收起右侧卡详情">ⓘ 卡详情</button>
+          </div>
+          <div class="chat" id="chatArea"></div>
+          <div class="inputbar">
+            <textarea id="inputBox" class="inputbox" placeholder="和这张卡讨论…（Ctrl+Enter 发送）" rows="2"></textarea>
+            <div class="inputmeta">
+              <span class="hint">Ctrl+Enter 发送</span>
+              <span class="spacer"></span>
+              <button id="sendBtn" class="btn primary">发送</button>
+            </div>
+          </div>
+        </div>
+        <!-- [T17-F3] 右栏 Inspector：卡片编辑能力整体搬迁至此，默认收起 -->
+        <div class="inspector" id="inspector">
+          <div class="insp-body" id="inspBody">
+            <!-- workspace.js renderInspector 动态填充 -->
+          </div>
+          <button class="insp-tab" id="inspTab" title="卡详情">ⓘ 卡详情</button>
         </div>
       </div>
     </div>
@@ -49,8 +76,8 @@
 <script>
   window.__WORK_ID__ = "{{WORK_ID}}";
 </script>
-<script src="/static/api.js?v=9.3"></script>
-<script src="/static/canvas.js?v=9.3"></script>
-<script src="/static/workspace.js?v=9.3"></script>
+<script src="/static/api.js?v=10.0"></script>
+<script src="/static/canvas.js?v=10.0"></script>
+<script src="/static/workspace.js?v=10.0"></script>
 </body>
 </html>

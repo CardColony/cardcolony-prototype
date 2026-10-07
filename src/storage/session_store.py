@@ -148,3 +148,73 @@ async def read_session(work_id: str, card_id: str) -> list[dict[str, Any]]:
             "seq": len(messages),
         })
     return messages
+
+
+# ============================================================
+# [T17-B2] 会话末条时间戳（导航活跃度专用）
+# ============================================================
+
+def _last_ts_from_chunk(chunk: str) -> tuple[bool, str]:
+    """取 chunk 内最后一个完整会话块 header 里的 timestamp 行。
+
+    块头定位走行锚定 "\\n---MSG---\\n"（含文件头恰为 MARKER 的特例）：
+    正文里被转义的 "\\---MSG---" 与行内含连字符的普通文本都不会误命中。
+    返回 (是否找到块头, timestamp 或 "")——找到块头即视为终局：
+    窗口延伸到文件尾，比它更晚的块头必然也在窗口内。
+    """
+    idx = chunk.rfind("\n" + MARKER + "\n")
+    if idx >= 0:
+        body_start = idx + 1 + len(MARKER) + 1
+    elif chunk.startswith(MARKER + "\n"):
+        body_start = len(MARKER) + 1
+    else:
+        return False, ""
+    for line in chunk[body_start:].split("\n"):
+        if line == "---":
+            break
+        if line.startswith("timestamp: "):
+            return True, line[len("timestamp: "):].strip()
+    return True, ""
+
+
+def last_ts(work_id: str, card_id: str) -> str:
+    """取该卡会话文件末条消息的 timestamp（同步、尾部反向扫描）。
+
+    [T17-B2] 供导航活跃度现算用，禁止改走 read_session() 全量解析
+    （R-2：86KB×N 条会话全量解析会拖垮导航）。从文件尾按窗口反向扫描
+    （起点 64KB，找不到块头则 ×4 扩窗直至全文件），取最后一个
+    "---MSG---" 块 header 的 "timestamp: " 行。文件不存在/读失败返回 ""。
+    """
+    path = _session_path(work_id, card_id)
+    if not path.exists():
+        return ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            window = 65536
+            while True:
+                read_len = min(size, window)
+                f.seek(size - read_len)
+                chunk = f.read(read_len).decode("utf-8", errors="replace")
+                # 行尾归一化：存量会话有整文件 CRLF 的（文本模式 read_session
+                # 靠通用换行翻译无感），二进制扫描必须先归一，行锚才咬得住
+                chunk = chunk.replace("\r\n", "\n")
+                # 行对齐：窗口不从文件头起时，丢弃首个不完整行
+                if read_len < size:
+                    nl = chunk.find("\n")
+                    if nl < 0:
+                        if window >= size:
+                            return ""
+                        window *= 4
+                        continue
+                    chunk = chunk[nl + 1:]
+                found, ts = _last_ts_from_chunk(chunk)
+                if found:
+                    return ts
+                if window >= size:
+                    return ""
+                window *= 4
+    except OSError as exc:
+        logger.warning("last_ts 尾部扫描失败 work=%s card=%s: %s", work_id, card_id, exc)
+        return ""

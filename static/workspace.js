@@ -1,10 +1,13 @@
-/* workspace.js - 卡片工作区（左35%资料 + 右65%讨论区） */
+/* workspace.js - [T17-F4/F5] 卡片工作区：左栏对话导航 + 中区讨论区 + 右栏 Inspector
+   （原「左35%资料 + 右65%讨论区」结构退役；编辑能力整体迁入右栏 Inspector） */
 (function () {
   "use strict";
 
   const WORK_ID = window.__WORK_ID__;
   const ws = document.getElementById("workspace");
-  const wsLeft = document.getElementById("wsLeft");
+  const inspBody = document.getElementById("inspBody");
+  const inspector = document.getElementById("inspector");
+  const navTree = document.getElementById("navTree");
   const chatArea = document.getElementById("chatArea");
   const inputBox = document.getElementById("inputBox");
   const sendBtn = document.getElementById("sendBtn");
@@ -33,20 +36,32 @@
     return html;
   }
 
+  // [T17-F6] 三态视图切换：data-view 驱动 #viewport/#workspace 显隐 + nav 宽窄
+  function setAppView(view) {
+    const main = document.getElementById("appMain");
+    const nav = document.getElementById("appNav");
+    if (main) main.dataset.view = view;
+    if (nav) nav.classList.toggle("rail", view === "canvas");
+  }
+  window.SetAppView = setAppView;
+
   async function open(cardId) {
     try {
       const card = await API.getCard(WORK_ID, cardId);
       currentCard = card;
-      await renderLeft();
+      await renderInspector();
       await renderChat();
       // [刷新恢复 2026-10-03] 卡号写进 URL hash：刷新后按 hash 自动重开这张卡。
       // 用 replaceState 不堆积浏览历史、不触发页面重载；URL 即状态，不引入前端存储。
       if (location.hash !== "#" + cardId) {
         history.replaceState(null, "", "#" + cardId);
       }
-      ws.classList.add("active");
-      // [phase8.4.1] display:none 期间 scrollHeight=0，renderChat 里的滚底是空操作；
-      // 必须在面板激活（可见、完成排版）之后再锁定到最新消息
+      // [T17] 视图切换：进入对话态（nav 260px、workspace 可见）；.active 旧机制退役
+      setAppView("chat");
+      document.getElementById("wsHeadTitle").textContent = card.meta.title || "";
+      // 导航树重渲以应用当前卡高亮与祖先路径展开
+      await renderNav();
+      // [phase8.4.1] 面板可见后再锁定滚底（visibility 方案下排版恒有效，此处保底）
       scrollChatBottom();
       // [phase8.6-C] 同理：textarea auto-grow 必须在面板可见后执行
       autoGrowAll();
@@ -54,7 +69,10 @@
   }
   window.Workspace = { open };
 
-  async function renderLeft() {
+  // [T17-F4] renderLeft() 拆二之一：renderInspector()——原左栏 DOM 原样迁入右栏
+  // inspBody（仅去掉 wsBackBtn：返回按钮上移到对话区头部，见 work.html .ws-head）。
+  // 职责区/结论区/否决/关系/历史/建子卡/删卡 逻辑一字未动（R-021）。
+  async function renderInspector() {
     const m = currentCard.meta;
     const b = currentCard.body;
 
@@ -78,9 +96,10 @@
       <div class="rel-add-row">
         <select id="relTargetSel"><option value="">＋ 添加关系：选目标卡</option>${targetOptions}</select>
         <select id="relTypeSel">
+          <!-- [诸葛 2026-10-04 21:54] 与后端对齐：后端 MODEL_REL_TYPES 已收窄为「先后／关联」
+               （T07 关闭了类型退役入口）。原下拉仍列「锚定／兑现」——用户能手动加模型被禁的关系。
+               删这两项。 -->
           <option value="先后">先后</option>
-          <option value="锚定">锚定</option>
-          <option value="兑现">兑现</option>
           <option value="关联">关联</option>
         </select>
         <button class="btn" id="relAddBtn">确定</button>
@@ -94,8 +113,7 @@
     const history = b.history || [];
     const historyCount = history.length;
 
-    wsLeft.innerHTML = `
-      <button class="ws-back" id="wsBackBtn" title="返回画布（重拉画布数据）">← 返回画布</button>
+    inspBody.innerHTML = `
       <div class="ws-title" id="wsTitle">${escapeHtml(m.title)}</div>
       <div style="margin:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span class="type-badge" data-type="${escapeHtml(m.card_type)}">${escapeHtml(m.card_type)}卡</span>
@@ -149,7 +167,7 @@
       </div>` : ""}
     `;
 
-    bindLeftEvents();
+    bindInspectorEvents();
     // [phase8.6-C] 面板已可见时（如保存后重渲染）立即撑高；首次 open 由 active 后统一触发
     autoGrowAll();
   }
@@ -165,15 +183,15 @@
     autoGrowEl(document.getElementById("conclusionEdit"));
   }
 
-  function bindLeftEvents() {
+  // [T17-F5] bindLeftEvents() 拆二之一：bindInspectorEvents()——charter／conclusion 保存、
+  // 关系增删、历史折叠、建子卡、删卡全部原样保留；wsBackBtn 处理上移到静态初始化
+  // （返回画布＝纯显隐切换，不再走 ReloadCanvas，见 R-1/R-043）。
+  function bindInspectorEvents() {
     // [phase8.6-C] 输入时实时撑高
     ["charterEdit", "conclusionEdit"].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener("input", () => autoGrowEl(el));
     });
-
-    // 返回画布（必须用 ReloadCanvas：对话中可能生了新卡，需要重拉画布数据）
-    document.getElementById("wsBackBtn").onclick = () => window.ReloadCanvas();
 
     // 标题编辑
     const titleEl = document.getElementById("wsTitle");
@@ -192,7 +210,9 @@
         try {
           const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { title: v }, "用户修改标题");
           currentCard = r;
-          await renderLeft();
+          await renderInspector();
+          await renderNav();
+          document.getElementById("wsHeadTitle").textContent = currentCard.meta.title || "";
         } catch (e) { /* toast 已处理 */ }
       };
       input.onblur = save;
@@ -229,7 +249,7 @@
     };
 
     // 关系项跳转
-    wsLeft.querySelectorAll(".rel-item").forEach(item => {
+    inspBody.querySelectorAll(".rel-item").forEach(item => {
       item.onclick = () => {
         const target = item.dataset.target;
         if (target) open(target);
@@ -237,7 +257,7 @@
     });
 
     // [phase8.6-E] 删除关系：PATCH 删除该条后的完整数组，成功后就地重渲染
-    wsLeft.querySelectorAll(".rel-del").forEach(btn => {
+    inspBody.querySelectorAll(".rel-del").forEach(btn => {
       btn.onclick = async (e) => {
         e.stopPropagation();
         const idx = parseInt(btn.dataset.idx, 10);
@@ -248,7 +268,7 @@
           const r = await API.patchCard(WORK_ID, currentCard.meta.card_id,
             { relations: rels }, `用户删除关系：${removed.type || ""} → ${removed.target || ""}`);
           currentCard = r;
-          await renderLeft();
+          await renderInspector();
         } catch (e2) { /* toast 已处理 */ }
       };
     });
@@ -269,7 +289,7 @@
           const r = await API.patchCard(WORK_ID, currentCard.meta.card_id,
             { relations: rels }, `用户添加关系：${type} → ${target}`);
           currentCard = r;
-          await renderLeft();
+          await renderInspector();
         } catch (e2) { /* toast 已处理 */ }
       };
     }
@@ -292,6 +312,9 @@
         });
         document.getElementById("childTitle").value = "";
         API.toast("已建子卡：" + title, "success");
+        // [T17] 建卡即时刷新画布数据与导航树（视图不动；画布隐藏态仍可安全重渲）
+        if (window.ReloadCanvas) window.ReloadCanvas();
+        await renderNav();
       } catch (e) { /* toast 已处理 */ }
     };
     document.getElementById("childTitle").onkeydown = (e) => {
@@ -314,11 +337,210 @@
         try {
           await API.deleteCard(WORK_ID, cid);
           API.toast("已删除：" + title, "success");
-          window.ReloadCanvas();
+          if (window.ReloadCanvas) window.ReloadCanvas();
+          setAppView("canvas");
+          await renderNav();
         } catch (e) { /* toast 已处理（后端 error 文本透传） */ }
       };
     }
   }
+
+  // ==================== [T17-F4] 左栏对话导航（读 /api/nav，服务端排序原样渲染） ====================
+  // 层级口径（R-016/R-044，写死）：项目根卡＝第 0 层恒定；与画布 state.viewRoot 的
+  // 相对深度是两套口径，互不同步、不做互相写入。展开态为本模块私有（R-3）。
+  let navData = null;               // /api/nav 响应缓存（60s 重算相对时间时复用）
+  let navProjectsOpen = new Set();  // 展开中的项目 work_id 集
+  let navOpenCards = new Set();     // 展开中的卡节点集（默认空＝只展一级）
+  let navPathAppliedFor = "";       // 当前卡祖先路径只自动展开一次（用户手动折叠不被顶回）
+
+  function fmtRel(iso) {
+    // 相对时间：刚刚／N 分钟前／N 小时前／N 天前／YYYY-MM-DD（方案 §3.5）
+    if (!iso) return "";
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return "";
+    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (s < 60) return "刚刚";
+    if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+    if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+    if (s < 7 * 86400) return Math.floor(s / 86400) + " 天前";
+    const d = new Date(iso);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
+         + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  async function renderNav() {
+    try {
+      navData = await API.getNav();
+    } catch (e) {
+      return;   // toast 已由 api.js 处理；导航失败不影响画布与对话
+    }
+    renderNavFromCache();
+  }
+  window.RenderNav = renderNav;   // canvas.js 建卡后同步刷新导航用
+
+  function ensureCurrentPath() {
+    // 当前卡所在路径自动展开＋其项目自动展开（每次换卡应用一次，不与用户手折对抗）
+    const curId = currentCard ? currentCard.meta.card_id : "";
+    if (!curId || navPathAppliedFor === curId || !navData) return;
+    const proj = (navData.projects || []).find(p => (p.cards || []).some(c => c.card_id === curId));
+    if (proj) {
+      navProjectsOpen.add(proj.work_id);
+      const byId = new Map((proj.cards || []).map(c => [c.card_id, c]));
+      let cur = byId.get(curId);
+      while (cur && cur.parent && byId.has(cur.parent)) {
+        navOpenCards.add(cur.parent);
+        cur = byId.get(cur.parent);
+      }
+    }
+    navPathAppliedFor = curId;
+  }
+
+  function renderNavFromCache() {
+    if (!navData) return;
+    ensureCurrentPath();
+    const projects = navData.projects || [];
+    if (!projects.length) {
+      navTree.innerHTML = `<div class="nav-empty">还没有项目<br>
+        <a href="/" class="btn primary" style="margin-top:10px;display:inline-block;">＋ 新建项目</a></div>`;
+      return;
+    }
+    const curId = currentCard ? currentCard.meta.card_id : "";
+    navTree.innerHTML = projects.map(p => renderProject(p, curId)).join("");
+  }
+
+  function renderProject(p, curId) {
+    const cards = p.cards || [];
+    const byId = new Map(cards.map(c => [c.card_id, c]));
+    const childrenMap = new Map();   // parent_card_id → 子卡数组（保持服务端降序）
+    const orphans = [];              // parent 指向已删卡 → 根层末尾（契约，不丢弃）
+    for (const c of cards) {
+      const parent = c.parent || "";
+      if (!parent || parent === p.work_card_id) {
+        if (!childrenMap.has("")) childrenMap.set("", []);
+        childrenMap.get("").push(c);
+      } else if (byId.has(parent)) {
+        if (!childrenMap.has(parent)) childrenMap.set(parent, []);
+        childrenMap.get(parent).push(c);
+      } else {
+        orphans.push(c);
+      }
+    }
+    const isOpen = navProjectsOpen.has(p.work_id);
+    const isCur = p.work_id === WORK_ID;
+    let rows = "";
+    if (isOpen) {
+      rows = renderCardRows(childrenMap.get("") || [], 0, p, childrenMap, curId);
+      if (orphans.length) rows += renderCardRows(orphans, 0, p, childrenMap, curId);
+    }
+    return `<div class="nav-pgroup">
+      <div class="nav-phead${isCur ? " current" : ""}" data-wid="${escapeHtml(p.work_id)}" title="${escapeHtml(p.title)}">
+        <span class="nav-twist">${isOpen ? "▾" : "▸"}</span>
+        <span class="dot root"></span>
+        <span class="nav-pname">${escapeHtml(p.title)}</span>
+        <span class="nav-pcount">${p.card_count}卡</span>
+        <span class="nav-ptime">${fmtRel(p.last_active_at)}</span>
+        <button class="nav-padd" data-add="${escapeHtml(p.work_id)}" title="＋ 新建卡">＋卡</button>
+      </div>
+      ${rows}
+    </div>`;
+  }
+
+  function renderCardRows(nodes, depth, p, childrenMap, curId) {
+    let html = "";
+    for (const c of nodes) {
+      const hasKids = (c.child_count || 0) > 0;
+      const open = navOpenCards.has(c.card_id);
+      const isCur = c.card_id === curId;
+      const pad = 10 + depth * 14;   // §3.5：每层 +14px
+      html += `<div class="nav-card${isCur ? " current" : ""}" data-cid="${escapeHtml(c.card_id)}" data-wid="${escapeHtml(p.work_id)}" style="padding-left:${pad}px;" title="${escapeHtml(c.title)}">
+        <span class="nav-twist${hasKids ? "" : " none"}"${hasKids ? ` data-twist="${escapeHtml(c.card_id)}"` : ""}>${hasKids ? (open ? "▾" : "▸") : ""}</span>
+        <span class="dot ${hasKids ? "mid" : "leaf"}"></span>
+        <span class="nav-ctitle">${escapeHtml(c.title)}</span>
+        <span class="nav-ctime">${fmtRel(c.last_active_at)}</span>
+        <button class="nav-more" data-more="${escapeHtml(c.card_id)}" data-mwid="${escapeHtml(p.work_id)}" title="建子卡 / 卡详情">⋯</button>
+      </div>`;
+      if (hasKids && open) {
+        html += renderCardRows(childrenMap.get(c.card_id) || [], depth + 1, p, childrenMap, curId);
+      }
+    }
+    return html;
+  }
+
+  function gotoCard(cid, wid, focusChild) {
+    if (!cid) return;
+    if (wid && wid !== WORK_ID) {
+      // 跨项目：整页跳转，目标 work 页走既有 restoreFromHash 链恢复（V8）
+      window.location.href = "/work/" + wid + "#" + cid;
+      return;
+    }
+    open(cid).then(() => {
+      if (focusChild) {
+        inspector.classList.add("open");
+        const el = document.getElementById("childTitle");
+        if (el) el.focus();
+      }
+    });
+  }
+
+  let navMenuEl = null;
+  function closeNavMenu() {
+    if (navMenuEl) { navMenuEl.remove(); navMenuEl = null; }
+  }
+  function showNavMenu(cid, wid, anchor) {
+    closeNavMenu();
+    navMenuEl = document.createElement("div");
+    navMenuEl.className = "nav-menu";
+    navMenuEl.innerHTML = (wid !== WORK_ID)
+      ? `<div class="nav-menu-item" data-act="detail">ⓘ 打开此卡</div>`
+      : `<div class="nav-menu-item" data-act="child">＋ 建子卡</div>
+         <div class="nav-menu-item" data-act="detail">ⓘ 卡详情</div>`;
+    document.body.appendChild(navMenuEl);
+    const r = anchor.getBoundingClientRect();
+    navMenuEl.style.left = Math.max(8, Math.min(r.left, window.innerWidth - navMenuEl.offsetWidth - 8)) + "px";
+    navMenuEl.style.top = Math.min(r.bottom + 4, window.innerHeight - navMenuEl.offsetHeight - 8) + "px";
+    navMenuEl.querySelectorAll(".nav-menu-item").forEach(item => {
+      item.onclick = (e) => {
+        e.stopPropagation();
+        const act = item.dataset.act;
+        closeNavMenu();
+        gotoCard(cid, wid, act === "child");
+      };
+    });
+    setTimeout(() => document.addEventListener("click", closeNavMenu, { once: true }), 0);
+  }
+
+  function handleProjectAdd(wid) {
+    if (wid === WORK_ID) {
+      const btn = document.getElementById("newCardBtn");   // 顶栏既有建卡对话框
+      if (btn) btn.click();
+    } else {
+      window.location.href = "/work/" + wid;               // 跨项目：去该项目画布再建
+    }
+  }
+
+  // 导航事件委托：一次绑定，重渲免重挂
+  navTree.addEventListener("click", (e) => {
+    const twist = e.target.closest("[data-twist]");
+    if (twist) {
+      const cid = twist.dataset.twist;
+      if (navOpenCards.has(cid)) navOpenCards.delete(cid); else navOpenCards.add(cid);
+      renderNavFromCache();
+      return;
+    }
+    const more = e.target.closest("[data-more]");
+    if (more) { showNavMenu(more.dataset.more, more.dataset.mwid, more); return; }
+    const padd = e.target.closest("[data-add]");
+    if (padd) { handleProjectAdd(padd.dataset.add); return; }
+    const phead = e.target.closest(".nav-phead");
+    if (phead) {
+      const wid = phead.dataset.wid;
+      if (navProjectsOpen.has(wid)) navProjectsOpen.delete(wid); else navProjectsOpen.add(wid);
+      renderNavFromCache();
+      return;
+    }
+    const row = e.target.closest(".nav-card");
+    if (row) gotoCard(row.dataset.cid, row.dataset.wid, false);
+  });
 
   // ==================== 讨论区 ====================
   // [R3] 会话区渲染：首屏/换卡全量构建；同卡重渲染走增量（只 append 尾部差额），
@@ -503,6 +725,9 @@
         card.querySelectorAll(".nc-item").forEach(it => {
           it.onclick = () => open(it.dataset.cid);
         });
+        // [T17] 对话中生的卡即时进画布与导航（不等「← 画布」）
+        if (window.ReloadCanvas) window.ReloadCanvas();
+        renderNav();
       }
 
       // tool_events 灰条
@@ -640,6 +865,27 @@
       open(hash);
     }
   });
+
+  // ==================== [T17] 静态绑定与初始化 ====================
+  // 返回画布：纯显隐切换（R-1/R-043 铁则：不得走 reloadCanvas——「刷新画布数据」与
+  // 「收起对话层」是两件事；建卡/删卡等数据变更已在变更源头 ReloadCanvas 刷新）
+  document.getElementById("wsBackBtn").onclick = () => setAppView("canvas");
+  // Inspector 开关：对话区头部按钮与右缘竖条同款
+  const toggleInspector = () => inspector.classList.toggle("open");
+  document.getElementById("inspToggleBtn").onclick = toggleInspector;
+  document.getElementById("inspTab").onclick = toggleInspector;
+  // 窄条 ☰：钉住（或收起）悬停浮层全树
+  const navRailBtn = document.getElementById("navRailBtn");
+  if (navRailBtn) {
+    navRailBtn.onclick = () => {
+      const nav = document.getElementById("appNav");
+      if (nav) nav.classList.toggle("pinned");
+    };
+  }
+  // 相对时间 60s 重算（条款 7：会话内，不落盘）
+  setInterval(() => { renderNav(); }, 60000);
+  // 初始导航渲染（画布态窄条悬停浮层也有树）
+  renderNav();
 
   restoreFromHash();
 

@@ -17,6 +17,22 @@
     }[c]));
   }
 
+  function fmtRel(iso) {
+    // [T17-F9] 最近活跃相对时间：与 workspace.js 同口径
+    // （刚刚／N 分钟前／N 小时前／N 天前／YYYY-MM-DD）
+    if (!iso) return "";
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return "";
+    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (s < 60) return "刚刚";
+    if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+    if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+    if (s < 7 * 86400) return Math.floor(s / 86400) + " 天前";
+    const d = new Date(iso);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
+         + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
   function renderBooks(works) {
     grid.innerHTML = "";
 
@@ -37,7 +53,7 @@
       const ending = w.ending_derived ? `<span class="ending-flag">🏁</span>` : "";
       el.innerHTML = ending + `
         <div class="bname">${escapeHtml(w.title)}</div>
-        <div class="bmeta">创建于 ${fmtDate(w.created_at)}</div>
+        <div class="bmeta">创建于 ${fmtDate(w.created_at)}${w.last_active_at ? ` · 最近活跃 ${fmtRel(w.last_active_at)}` : ""}</div>
         <div class="bstats">
           <span class="chip">卡片 ${w.card_count}</span>
         </div>

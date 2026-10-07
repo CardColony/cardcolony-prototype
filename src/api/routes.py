@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..storage import (
-    canvas_store, card_store, manuscript_store,
+    activity, canvas_store, card_store, manuscript_store,
     memory_store, session_store, work_store,
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
@@ -104,6 +104,61 @@ async def create_work(req: CreateWorkRequest):
     if "error" in result:
         return _err(400, result["error"])
     return JSONResponse(status_code=201, content=result)
+
+
+# ============================================================
+# [T17-B4] 跨项目导航树（一次请求拿全，避免 N+1）
+# ============================================================
+
+@router.get("/nav")
+async def get_nav():
+    """返回 {"projects": [...]}，供工作区左栏对话导航渲染。
+
+    排序契约（方案 §4.3，服务端负责、前端不重排）：
+    - projects 按 last_active_at 降序（list_works 已排好）；
+    - 每项目 cards 按 last_active_at 降序，无时间者排末位，
+      并列以 card_id 升序稳定收尾（刷新不跳序）；
+    - 卡清单从卡文件真身现读（activity.iter_card_metas），活跃度请求时现算、
+      不入盘（RD-06）；根卡作为分组头不重复列树（方案 §3.2）；
+    - 孤儿卡（parent 指向已删卡）不丢弃：parent 原样返回，前端挂该项目根层末尾。
+    既有端点返回结构零改动；/api/works 仅按 B-3 附 last_active_at 并改排序。
+    """
+    projects = []
+    for w in work_store.list_works():
+        wid = w.get("work_id", "")
+        metas = list(activity.iter_card_metas(wid))
+        child_count: dict[str, int] = {}
+        for m in metas:
+            p = m.get("parent", "")
+            if p:
+                child_count[p] = child_count.get(p, 0) + 1
+        root_id = w.get("work_card_id", "")
+        cards = []
+        for m in metas:
+            cid = m.get("card_id", "")
+            if cid and cid == root_id:
+                continue
+            cards.append({
+                "card_id": cid,
+                "title": m.get("title", ""),
+                "parent": m.get("parent", ""),
+                "child_count": child_count.get(cid, 0),
+                "last_active_at": activity.card_last_active(
+                    wid, cid, m.get("updated_at", "")
+                ),
+            })
+        # 两段稳定排序：先并列收尾键 card_id 升序，再按活跃降序（空串排末位）
+        cards.sort(key=lambda c: c["card_id"])
+        cards.sort(key=lambda c: c["last_active_at"] or "", reverse=True)
+        projects.append({
+            "work_id": wid,
+            "title": w.get("title", ""),
+            "work_card_id": root_id,
+            "last_active_at": w.get("last_active_at", ""),
+            "card_count": w.get("card_count", 0),
+            "cards": cards,
+        })
+    return {"projects": projects}
 
 
 @router.get("/works/{work_id}/canvas")
@@ -407,6 +462,10 @@ async def _run_message(work_id: str, card_id: str, content: str,
     slot = tool_fold.ToolTurnSlot(prior_for_gateway)
     tools = card_tools.build_tool_schemas()
     tool_events: list[dict[str, Any]] = []
+    # [E-探针制] 工具结果全文累积（口径④）：供三席后置注入，不折叠不截断
+    tool_full_texts: list[str] = []
+    # [E-探针制] 三席一次进场闸（口径①：只进场一次；统合官若续查证不重问三席）
+    seats_done = False
     user_prompt = content
     rounds = 0
     final_reply: Optional[str] = None
@@ -414,10 +473,6 @@ async def _run_message(work_id: str, card_id: str, content: str,
     # 的 assistant_content 里，末轮判定只取纯对话轮正文——分析结构性上不了屏。
     # 采集后与末轮回执拼接交付（分析在前、回执在后），不取代回执。
     analysis_parts: list[str] = []
-    # [E-探针制] 工具结果全文累积（口径④）：供三席后置注入，不折叠不截断
-    tool_full_texts: list[str] = []
-    # [E-探针制] 三席一次进场闸（口径①：只进场一次；统合官若续查证不重问三席）
-    seats_done = False
     model_used: Optional[str] = None
     error: Optional[str] = None
     viewpoints_meta: list[dict[str, Any]] = []  # [phase9-E] 观点元信息（含内部 text）
