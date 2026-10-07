@@ -1,0 +1,114 @@
+{
+  "baseline": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+  "total": 18,
+  "entries": [
+    {
+      "id": "P-001",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "9-13",
+      "text": "用户 2026-10-07 11:26 原话，三句：\n\n1. 「这个项目，卡片可以全盘查看所有卡片的信息，但不能编辑」\n2. 「卡片不能读同级卡片和上级卡片信息，是小说项目才需要的机制」\n3. 「写方案吧」"
+    },
+    {
+      "id": "P-002",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "15-15",
+      "text": "任务＝为「卡片权限机制改造」产出合规方案，改的是模型对卡片的读/写权限机制。"
+    },
+    {
+      "id": "P-003",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "19-27",
+      "text": "### 读权限 `can_read`（src/api/card_tools.py L238-307）\n\n| # | 判据 | 规则 | 落点 |\n|---|---|---|---|\n| ① | 读自己 | target==current → 恒真 | L249-250 |\n| ② | 子树（后代） | 反向遍历 target 的 parent 链能到 current → 可读 | L258-272 |\n| ③ | 血统链（上级） | 反向遍历 current 的 parent 链含 target → 可读 | L274-288 |\n| ④ | 连线 | current 的 relations 指向 target → 可读 | L290-293 |\n| ⑤ | 锚卡全局 | target 锚定剧本根卡 → 任何卡可读 | L295-305 |"
+    },
+    {
+      "id": "P-004",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "29-29",
+      "text": "读侧现状：模型在某卡里能读自己所有后代、所有上级、自己连线指向的卡、锚定根卡的卡；**同级不可读**（除非有连线），其他分支不可读。"
+    },
+    {
+      "id": "P-005",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "31-37",
+      "text": "### 写权限 `can_edit`（src/api/card_tools.py L310-335）\n\n| 规则 | 落点 |\n|---|---|\n| target==current 或 target 在 current 子树内 → 可写 | L315-335 |\n| 注释声明「血统链上级不可写、契约卡不可写」 | L313 |\n| 契约卡判据未在本函数显式断言（仅注释提及），已标待核对 | — |"
+    },
+    {
+      "id": "P-006",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "39-39",
+      "text": "写侧现状：只能编辑**自己和自己的后代**；上级不可写、同级不可写。"
+    },
+    {
+      "id": "P-007",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "41-52",
+      "text": "### 工具层每工具判据（src/api/card_tools.py L338-499）\n\n| 工具 | 判据 | 落点 |\n|---|---|---|\n| read_card | 存在→can_read | L350-356 |\n| read_memory | 存在→can_read | L368-373 |\n| edit_card | 存在→shadow守卫→can_edit | L383-394 |\n| delete_card | 存在→can_edit→根卡拒删 | L405-424 |\n| update_shadow | 恒写自己的影子（签名无 card_id） | L425-429 |\n| read_shadow | 存在→can_read（读侧跟随） | L430-448 |\n| link_cards | 存在→can_read（建连线须可读目标） | L463-474 |\n| list/read_manuscript | 无权限判断（与卡片树权限无耦合） | L449-462 |"
+    },
+    {
+      "id": "P-008",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "54-58",
+      "text": "### 上下文组包（src/api/context_assembler.py L34-111）\n\n- 卡片清单区（order 100）：**全项目所有卡** id·title·parent（不含正文，L76-83）\n- 当前卡区（order 150）：当前卡 id·title（L84-93）\n- 正文一律不推送、经 read_card 拉取（拉取裁定，L15/L119-120）"
+    },
+    {
+      "id": "P-009",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "60-60",
+      "text": "**关键现状**：模型\"看得到\"全项目所有卡的存在（清单级，id·title·父卡），但**读正文受 can_read 限制**。"
+    },
+    {
+      "id": "P-010",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "62-64",
+      "text": "### 影子卡（src/storage/shadow_store.py L1-10/L143-155）\n\n- 读侧跟随 can_read（不另设判据），写侧只有自己的正卡能写。"
+    },
+    {
+      "id": "P-011",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "68-73",
+      "text": "用户说「卡片不能读同级卡片**和上级卡片**信息」：\n\n| 你说 | 代码现况 | 出处 |\n|---|---|---|\n| 同级不能读 | 吻合——同级读不到（除非连线直连） | can_read 判据②③都不含同级，仅④连线 L290-293 |\n| 上级不能读 | **不吻合**——上级实际可读（血统链判据③） | can_read L274-288 |"
+    },
+    {
+      "id": "P-012",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "75-77",
+      "text": "两种可能（不代选，见待拍 X4）：\n- A. 用户在某具体场景观察到\"读不了上级\"，是别的入口拦的（非 can_read 链）；\n- B. 用户指出的不是 bug，而是\"按亲属关系限制读\"这套机制本身就是小说项目遗留、推演项目不该有。"
+    },
+    {
+      "id": "P-013",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "81-82",
+      "text": "- **读侧**：任一卡可读全项目任何卡的信息——read_card 放开到全盘，不再受 can_read 亲属链限制。对应原话①「全盘查看所有卡片的信息」。\n- **写侧**：保持受限、绝不随读放开。受限形状待拍 X1。依据原话①「但不能编辑」。"
+    },
+    {
+      "id": "P-014",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "86-89",
+      "text": "**X1 · 「不能编辑」的确切边界（最大项，决定写侧形态）**\n- X1-a 只能编辑当前卡（自身），一律不能动别的卡——最严\n- X1-b 保留现行「自己+自己子树」（上级/同级/旁支都不能）——与现状一致，只放开读，改动最小\n- X1-c 完全不能编辑（模型只读，一切编辑由用户在界面做）——最彻底但推演卡内容谁来更新要重定"
+    },
+    {
+      "id": "P-015",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "91-93",
+      "text": "**X2 · 跟随判据的工具是否一并放开**\n- X2-a 一并放开（read_memory/read_shadow 同 read_card 全放开，最一致）\n- X2-b 只放开 read_card（正文），read_memory/read_shadow 仍按原判据"
+    },
+    {
+      "id": "P-016",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "95-97",
+      "text": "**X3 · \"编辑\"是否涵盖建/删/连线**\n- X3-a 只收编辑正文的边（edit_card），建/删/连线按现状\n- X3-b \"编辑\"涵盖一切写动作（改/删/建/连线）统一收严"
+    },
+    {
+      "id": "P-017",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "99-101",
+      "text": "**X4 · 与\"上级其实已可读\"出入的判断（决定方案方向）**\n- X4-a 按 B 理解：目标就是去掉全部亲属链读取限制（读全放开），现行上级可读不用管、同级放开后也可读——方向一致直接改\n- X4-b 按 A 理解：修一个具体\"读不到上级\"的场景 → 方案是定位该场景、不是改权限机制"
+    },
+    {
+      "id": "P-018",
+      "source": "D:\\AI_station\\推演agent\\docs\\exploration\\卡片权限机制改造-方案链输入包-20261007.md",
+      "lines": "105-111",
+      "text": "- report-only：本方案链不落任何代码改动，停在方案环\n- 行号现场实读，不抄历史文档、不凭记忆\n- 不设任何闸（不引入轮次/额度/墙钟类限制）\n- 不改其他线（E 线三席后置、T17 主界面、T18 画布防重叠、T11/T12/T14/T15 均不在范围内）\n- 权限属\"改变推演行为的数据架构\"——按 10-04 用户裁定，凡设计层口径必须先逐条对齐、不得自拍\n- 交付形态：产品/架构层语言，不提交现细节与函数名\n- 禁止自我免责式风险提示；禁止把未拍板的口径写成既定条款"
+    }
+  ]
+}
