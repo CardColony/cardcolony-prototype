@@ -1,0 +1,46 @@
+{
+  "chain": "taskbook",
+  "subject": "整合任务书",
+  "date": "20261007",
+  "round": "p3",
+  "baseline": "THINK-ECO-整合任务书-对账-方案条目清单-20261007.json（69条，SHA16 6a3cc0804feb8f8b）",
+  "verifier": "自判收敛（用户20:43令不走子代理；第一层表生成+三路grep逐字核实坐实，非独立实例复核，如实标注）",
+  "forward_table": [
+    {"id": "CB-学术系-快车道效果1", "baseline": "确定性动作走快车道且真实落地（单模型1次无三席、操作真实落地）", "draft_location": "§五验收 V-T1-2", "落点": "有"},
+    {"id": "CB-学术系-全链不劣化", "baseline": "开放论证仍走全链不劣化：viewpoints数组1次、seats_done闸生效、统合唯一回复（终稿§3效果2/清单A82）", "draft_location": "草稿五验收十条内无任何一条对应", "落点": "空【R-01红灯】"},
+    {"id": "CB-学术系-断点不新开请求", "baseline": "断点不再开新请求、同请求走到底、checkpoint续", "draft_location": "§五验收 V-T2-1/V-T2-2", "落点": "有"},
+    {"id": "CB-学术系-事件全程可见", "baseline": "SSE端点通、事件不进模型输入、17类schema、前端回放、占位符归零", "draft_location": "§五验收 V-T3-1/V-T3-2/V-T4-1/V-T5-1/V-T5-2", "落点": "有"},
+    {"id": "CB-红线-POST/T10/T14", "baseline": "红线A41 POST/T10/T14零改动", "draft_location": "§四约束红线1", "落点": "有"},
+    {"id": "CB-红线-事件不进模型输入", "baseline": "红线A42 事件不进session/prior/模型输入", "draft_location": "§四约束红线2", "落点": "有"},
+    {"id": "CB-红线-快车道去三席", "baseline": "红线A43 快车道去三席统合、不开写侧旁路", "draft_location": "§四约束红线3", "落点": "有"},
+    {"id": "CB-红线-单进程限制继承", "baseline": "红线A44 单进程限制继承（终稿§4-E明文）", "draft_location": "草稿四约束十条内无", "落点": "空【R-02红灯】"},
+    {"id": "CB-红线-同卡并发journal清零", "baseline": "红线A45 同卡并发journal清零重放（终稿§4-E明文）", "draft_location": "草稿四约束十条内无", "落点": "空【R-02红灯】"},
+    {"id": "CB-红线-gateway禁改", "baseline": "gateway.py禁改（R-03消化为硬红线）", "draft_location": "§四约束红线5", "落点": "有"},
+    {"id": "CB-红线-不改works", "baseline": "不改works数据、_backups/data_snapshot只读对接", "draft_location": "§四约束红线6", "落点": "有"},
+    {"id": "CB-红线-不设闸", "baseline": "不设闸（拆闸裁定）", "draft_location": "§四约束红线7", "落点": "有"},
+    {"id": "CB-红线-分期边界", "baseline": "本批仅Phase1、Phase2/3默认不做另立任务书", "draft_location": "§四约束红线8", "落点": "有"},
+    {"id": "CB-红线-同批部署", "baseline": "同批部署铁则", "draft_location": "§四约束红线9", "落点": "有"},
+    {"id": "CB-红线-restart_safe", "baseline": "部署走restart_safe正式服目录内调用", "draft_location": "§四约束红线10", "落点": "有"},
+    {"id": "CB-任务-快车道路由分流", "baseline": "Task1 route(content)+L472前插+fastlane单模型带工具+card_store真实落地", "draft_location": "§三 Task 1", "落点": "有"},
+    {"id": "CB-任务-断点同请求走到底", "baseline": "Task2 L486走到底+checkpoint落data_snapshot", "draft_location": "§三 Task 2", "落点": "有"},
+    {"id": "CB-任务-事件流后端", "baseline": "Task3 event_stream.py+埋点18处+on_seat可选参+SSE", "draft_location": "§三 Task 3", "落点": "有"},
+    {"id": "CB-任务-事件并表+打点", "baseline": "Task4 fastlane_route/card_op并入17类+全日志打点", "draft_location": "§三 Task 4", "落点": "有"},
+    {"id": "CB-任务-前端展示", "baseline": "Task5 stream.js+send/resend开SSE+attachRunningState重放", "draft_location": "§三 Task 5", "落点": "有"},
+    {"id": "CB-任务-同批部署端到端", "baseline": "Task6 测试空间端到端+同批同步正式服+重启三验+git显式列名", "draft_location": "§三 Task 6", "落点": "有"}
+  ],
+  "reverse_table": [
+    {"draft_item": "§三 Task1-6（六任务）", "baseline_ref": "方案条目清单：任务分解类条目", "依据": "有"},
+    {"draft_item": "§五验收 V-T1-1~V-END（十条）", "baseline_ref": "预期效果/A46-A53验收V1-V8/同批部署", "依据": "有（V-T1-3全链不劣化缺失入R-01）"},
+    {"draft_item": "§四约束红线1-10", "baseline_ref": "红线A41/A42/A43/A104/A80/A96/分期/同批/restart_safe", "依据": "有（A44/A45缺失入R-02）"},
+    {"draft_item": "§一背景与裁决（T-1/T-2/T-3）", "baseline_ref": "三条用户裁决", "依据": "有"},
+    {"draft_item": "§二现场锚（后端routes/simple_service/model_service/card_store+前端）", "baseline_ref": "p1调研实读file:line", "依据": "有"},
+    {"draft_item": "§六回报要求（四条）", "baseline_ref": "回报纪律（逐任务diff/逐条验收/红线复测/未实读如实标）", "依据": "有"}
+  ],
+  "contradiction_scan": [
+    {"pair": "类型枚举 vs 验收条款", "result": "未命中矛盾——17类事件schema（§三Task4）与验收V-T4-1一致；快车道事件并入由Task4承载，无两处互对不上"},
+    {"pair": "红线 vs 改件", "result": "未命中矛盾——红线A41（POST零改动）与改件（routes.py埋点约18处）为同一文件不同落点（打点非改契约），p1已实读确认；gateway禁改与事件流走独立SSE通道无交"},
+    {"pair": "快车道落地 vs 确定性函数", "result": "未命中矛盾——快车道单模型带工具（§三Task1）与card_store四函数真实落地一致，未开写侧旁路"},
+    {"pair": "断点走到底 vs 占位符可见性", "result": "未命中矛盾——断点同请求走到底（Task2）与占位符可见性挂起归信息流线一致，Task2只改回合是否提前断、不处理可见性"}
+  ],
+  "conclusion": "正向表两行落点=空（R-01全链不劣化验收缺失、R-02红线A44/A45缺失）→红灯成立，退回p4修订；反向表无私塞；矛盾扫描零命中"
+}

@@ -1,0 +1,18 @@
+{
+  "链": "proposal",
+  "对象": "确定性动作快车道与真循环·p2 骨架草稿·p3 复核",
+  "账规": "只追加/历史不可改/消灯两路(改稿经独立实例复核 或 用户明示接受)/生产者无消灯动作",
+  "红灯条目": [
+    {
+      "编号": "R4-001",
+      "类目": "R4矛盾",
+      "状态": "红灯",
+      "文档位置": "草稿段4·设计点A",
+      "证据原文逐字引用": "『跳过 routes.py:471 seats_done 之后的三席/统合入场(simple_service.py 的 run_viewpoints)、跳过 tools 装配，单次 model_service.py:45 call_main 直答返回』",
+      "对立方证据": "『prompt_card_028_20261007174515.json: delete_card(card_029)→{ok:true}』『prompt_card_002_20261007183045.json: delete_card(card_030)』『18:36建卡: 统合官输出card-proposal协议块→apply_proposals落盘』",
+      "矛盾描述": "快车道若『跳过tools装配、单次call_main直答』，则删/建卡的真实落地(依赖delete_card工具调用、card-proposal协议块)无法执行——快车道只回一句话、卡不动，功能不落地。",
+      "处置建议": "退回p2修稿：设计点A改为『route()命中后直接调用card_store确定性函数执行卡操作，动作落地后单次确认回复；快车道不经过三席/统合/模型工具循环』",
+      "判判定callId": "(待独立实例判定)"
+    }
+  ]
+}

@@ -1,0 +1,218 @@
+{
+  "ITEMS": [
+    {
+      "id": "CB-001",
+      "节": "0",
+      "行号": 10,
+      "原文": "本方案承诺：不引入任何闸门、字数/体积限制、墙钟（时间阈值）判据。"
+    },
+    {
+      "id": "CB-002",
+      "节": "0",
+      "行号": 12,
+      "原文": "无 max_tokens、无 timeout、无轮次封顶、无时间阈值判据。"
+    },
+    {
+      "id": "CB-003",
+      "节": "0",
+      "行号": 13,
+      "原文": "E5 不设时间判据（改「首帧 content_chunk 到达即渲染」——非时间制可观测判据，见 §3-E5）。"
+    },
+    {
+      "id": "CB-004",
+      "节": "0",
+      "行号": 14,
+      "原文": "`reasoning_effort: low` 是供应商模式参数（改模型是否深度思考的输出模式），非资源闸——不限制输出长度/时间/轮次。对齐 10-02「模式选择不是资源闸」先例（models.yaml 拆闸台账），不违反禁闸令。"
+    },
+    {
+      "id": "CB-005",
+      "节": "0",
+      "行号": 15,
+      "原文": "必须清除的既有三处丢字闸（属本方案任务，不能让用户要看的字丢失）："
+    },
+    {
+      "id": "CB-006",
+      "节": "0",
+      "行号": 16,
+      "原文": "`event_stream.py` `_truncate`/`emit_token` 单帧 8KB 截断（`_preview: text[:MAX//2]` 丢后半）→ 删除截断，逐字流帧天然小帧、SSE 无单帧硬限制；"
+    },
+    {
+      "id": "CB-007",
+      "节": "0",
+      "行号": 17,
+      "原文": "`event_stream.py` `MAX_TOKEN_EVENTS=5000` 环形弹出（`journal.pop(0)` 丢前字）→ 删除弹出，逐字流 journal 由 run_start/round_start 每轮清空（L148/L155）、单轮 chunk 天然有界，以完整保留优先；"
+    },
+    {
+      "id": "CB-008",
+      "节": "0",
+      "行号": 18,
+      "原文": "`event_stream.py` `subscribe_tokens` 订阅队列满 `put_nowait` 静默丢帧 → 降级为「不静默丢」：队列满丢弃最旧中间帧、保最新 seq 游标、打警告；前端 from=0 重放的无截断 journal 可完整补齐。"
+    },
+    {
+      "id": "CB-009",
+      "节": "0",
+      "行号": 19,
+      "原文": "凝练线 `DEFAULT_MAX_BATCHES=20` 非本线引入，本任务书不触碰凝练线该闸（红线注明）。"
+    },
+    {
+      "id": "CB-010",
+      "节": "1",
+      "行号": 23,
+      "原文": "用户 2026-10-07 原话（逐字）：「像 deepseek harness 那样，每一步调用每一个中间环节，都对我可见，像这些成熟的 agent 一样，流式展示在对话里」——需求基准是「在对话消息流里流式可见每一步」。"
+    },
+    {
+      "id": "CB-011",
+      "节": "1",
+      "行号": 25,
+      "原文": "现状被降级：源文档 L25 把「流式展示在对话里」解释成「过程以可折叠时间线（过程卡）嵌入对话区」——旁挂过程卡形态被方案/任务书三环放行沿用（责任已认）。"
+    },
+    {
+      "id": "CB-012",
+      "节": "1",
+      "行号": 27,
+      "原文": "用户 2026-10-08 11:36 当场否决：「我他妈不要过程卡！！！我他妈的需求都他妈摆在那了」——需求回到原话：中间过程要在「对话里」可见，不是旁挂卡。"
+    },
+    {
+      "id": "CB-013",
+      "节": "1",
+      "行号": 29,
+      "原文": "不做留下什么：信息反馈看不见的现状依旧；即便部署过程卡版本，交付的也是用户已明确否决的形态；「逐条信息发到对话框」诉求落空。"
+    },
+    {
+      "id": "CB-014",
+      "节": "2",
+      "行号": 35,
+      "原文": "逐字增量（输入一）：生产方 `src/api/model_service.py:94 emit_token` → 落 `src/api/routes.py` L336 `/tokens` 独立 SSE 通道；格式＝SSE data 帧含 `reasoning_chunk`/`content_chunk` 两类、seq 单调、轮界清空标记；消费方＝前端。"
+    },
+    {
+      "id": "CB-015",
+      "节": "2",
+      "行号": 36,
+      "原文": "事件流（输入二）：生产方 `src/api/routes.py` 各 `event_stream.emit` 埋点（L560 run_start／L574 context／L630-644 round_start／L782 tool_call／L795 tool_result／L906 deliver／L938 done）→ 既有 `/stream` SSE 通道；格式＝事件 type + meta；消费方＝前端。"
+    },
+    {
+      "id": "CB-016",
+      "节": "2",
+      "行号": 37,
+      "原文": "两路输入契约均不动 `api.js`/POST 响应契约；事件与逐字流仅入内存 journal（event_stream.py）、不进 session/prior/模型输入（既有红线）。"
+    },
+    {
+      "id": "CB-017",
+      "节": "2",
+      "行号": 41,
+      "原文": "渲染目标＝`static/workspace.js` L11 `chatArea` 内的 `.msg` 消息列表；格式＝渲染成一条正在生成的助手消息（`.msg.assistant.live` 气泡，复用 `style.css` L874-884 助手气泡样式 + L906-919 `.msg.thinking` 进行中语义、以 live 态区分）；消费方＝用户浏览器。"
+    },
+    {
+      "id": "CB-018",
+      "节": "2",
+      "行号": 43,
+      "原文": "输出契约不动：POST 请求响应契约、`.msg` 消息 schema、最终回复渲染路径（`workspace.js` L638 `renderChat`／L668-681 `appendMessage`）不改。"
+    },
+    {
+      "id": "CB-019",
+      "节": "3",
+      "行号": 49,
+      "原文": "| E1 | 逐字流在对话消息列表长成一条正在生成的助手消息 | 真请求时 `chatArea` 内出现 `.msg.assistant.live` 元素、文本随 `/tokens` content_chunk 逐字递增；DOM 中无 `flow-card`/`flow-live` 独立元素 |"
+    },
+    {
+      "id": "CB-020",
+      "节": "3",
+      "行号": 50,
+      "原文": "| E2 | 中间环节在同一条消息内默认逐行可见 | 发调工具消息，`tool_call`/`tool_result`/三席/交付/建卡等中间环节行在该条消息内默认展开逐行可见（每步一行）；折叠仅是用户可选操作、非默认隐藏 |"
+    },
+    {
+      "id": "CB-021",
+      "节": "3",
+      "行号": 51,
+      "原文": "| E3 | 旁挂过程卡形态废弃 | grep：`ensureCard`/`flow-card`/`flow-live` 不再创建/应用；`style.css` L1137-1224 `.flow*` 族移除，DOM 中无 `.flow-card`/`.flow-live` 元素 |"
+    },
+    {
+      "id": "CB-022",
+      "节": "3",
+      "行号": 52,
+      "原文": "| E4 | 最终回复与生成中消息衔接不割裂 | POST 结束 renderChat 后最终回复承接该消息内容（replay 对比逐字一致），无两条割裂助手气泡 |"
+    },
+    {
+      "id": "CB-023",
+      "节": "3",
+      "行号": 53,
+      "原文": "| E5 | 逐字流可见性（非时间判据） | 真请求上屏：前端收首个 content_chunk 帧即渲染进当前对话消息，与整轮完成无先后依赖；判据＝「SSE 帧到达即上屏、无等待整轮结束的屏障」。取消时间阈值判据（原「≤2s」为墙钟，且曾致 V-T3-1 误判：kimi-k3 模型 prefill 自然耗时 6.7~10s 才吐首字，前端在那之前本就无可渲染，以秒数裁判由模型生成延迟决定的现象属错判） |"
+    },
+    {
+      "id": "CB-024",
+      "节": "3",
+      "行号": 54,
+      "原文": "| E6 | 事件与模型输入隔离不破坏 | 事件/逐字仅内存 journal；session 无中间态写入；POST/T10/T14 回归通过 |"
+    },
+    {
+      "id": "CB-025",
+      "节": "4",
+      "行号": 58,
+      "原文": "设计点 A · 渲染目标迁移：`static/stream.js` 弃用 `ensureCard`/`ensureLive`/`appendLive`/`render`（旁挂卡四函数）；改为在 `workspace.js` 的 `chatArea`（L11）消息列表内新建一条 `.msg.assistant.live` 气泡（复用 L667-678 `appendMessage` 创建路径，加 live 态类名＝正在生成中，语义沿用 `.msg.thinking` 进行中）。正常任务一律由 `.msg.assistant.live` 承载，`createWaitingBubble`（`.msg.thinking`）仅作 SSE 连不上时的降级兜底，两态互斥不并存。"
+    },
+    {
+      "id": "CB-026",
+      "节": "4",
+      "行号": 60,
+      "原文": "设计点 B · 双路增量渲染器 + 事件→消息流呈现映射：`stream.js` 新增渲染逻辑接管两路 SSE——"
+    },
+    {
+      "id": "CB-027",
+      "节": "4",
+      "行号": 61,
+      "原文": "`/tokens`（连 `routes.py` L336，连接锚＝`stream.js` L223）的 `content_chunk` 逐字 append 进该 `.msg.assistant.live` 气泡文本节点；`reasoning_chunk` 作为气泡内可折叠区（有则弱化显示、无则不留痕）。"
+    },
+    {
+      "id": "CB-028",
+      "节": "4",
+      "行号": 62,
+      "原文": "`/stream`（连接锚＝`stream.js` L204）全部事件按映射表渲染进同一气泡内、默认逐行展开：run_start/round_start→消息头行（🚀/🧠）；context/fastlane_route→消息内信息行（📐/⚡）；tool_call/tool_result→消息内工具行（🔧/✓✗）；seats_enter/seat_start/seat_end→消息内三席行（💬）；deliver/proposal/card_op→消息内交付/建卡行（📦/✚/✎/🗑）；rescue/error/done→消息内错误/完成行（🩹/✗/✓）；reasoning/content chunk→消息文本流（🟡/📄）。默认展开、逐行可见——折叠仅是用户可选减负、不默认隐藏。"
+    },
+    {
+      "id": "CB-029",
+      "节": "4",
+      "行号": 64,
+      "原文": "设计点 C · 过程卡族废弃：`stream.js` 删除 `ensureCard`/`ensureLive`/`appendLive`/`render`；`style.css` 删除 `.flow-card/.flow-live*` 样式族（L1137-1224）。"
+    },
+    {
+      "id": "CB-030",
+      "节": "4",
+      "行号": 66,
+      "原文": "设计点 D · 边界与衔接 + 既有丢字闸清除："
+    },
+    {
+      "id": "CB-031",
+      "节": "4",
+      "行号": 67,
+      "原文": "后端两路发射端全复用不动（`routes.py` L336-370 `/tokens`、L560-938 事件埋点；`model_service.py` L94 `emit_token`、L58-102 `stream_call`；`gateway.py` L563 双增量解包已实现——只加增量出口，不改 call 路径/finish 检测/续写判定）。"
+    },
+    {
+      "id": "CB-032",
+      "节": "4",
+      "行号": 68,
+      "原文": "渲染基数规则写死：`.msg.assistant.live` 类名＝生成中态；不计入 `workspace.js` L781 `baseline` 与 L647-648 `localCount`（两处判据均改为 `.msg:not(.thinking):not(.live)`）——生成中消息不触发 renderChat 全量重建、不截断最终回复渲染。"
+    },
+    {
+      "id": "CB-033",
+      "节": "4",
+      "行号": 69,
+      "原文": "attachRunningState 守卫（`workspace.js` L754）改为同时排除 `.msg.thinking` 与 `.msg.assistant.live`——已有生成中/等待气泡则不重复挂。"
+    },
+    {
+      "id": "CB-034",
+      "节": "4",
+      "行号": 70,
+      "原文": "清除既有三处丢字闸（§0，event_stream.py）：删除单帧 8KB 截断、删除 `MAX_TOKEN_EVENTS=5000` 环形弹出、订阅队列满降级不静默丢。"
+    },
+    {
+      "id": "CB-035",
+      "节": "4",
+      "行号": 74,
+      "原文": "服务端复用既有（event_stream 既有 emit 日志、emit_token 发射日志、两端点 access 日志，只读确认不改）；前端渲染日志（新增三档）：`[flow-render] msg created(live)`／`[flow-render] chunk appended(type, len, seq)`／`[flow-render] step line(type, ok)`；落浏览器 console.info，仅展示层日志、不参与判定、不设闸、不进 session/prior/模型输入。"
+    }
+  ],
+  "TOTAL": 35,
+  "IDS_UNIQUE": true,
+  "MISS": [],
+  "MISS_COUNT": 0
+}

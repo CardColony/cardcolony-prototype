@@ -1,0 +1,56 @@
+{
+  "chain": "proposal",
+  "topic": "对话流渲染-重做",
+  "date": "2026-10-08",
+  "rule": "账只追加、历史不可改；消灯仅两条路——改稿经独立实例复核(回 p3 增量重判确认)/用户明示接受(留原话转黄)；生产者无任何消灯动作",
+  "entries": [
+    {
+      "id": "R1",
+      "类目": "丢失",
+      "文档位置": "p2 草稿 §4 设计点B 仅列 tool_call/tool_result",
+      "证据原文": "草稿设计点B：『/stream 事件流的 tool_call/tool_result 等作为同一气泡内的可折叠工具区块』——仅覆盖工具类；实读 stream.js render L132-176 与 routes.py 埋点确认事件类别含 run_start/context/fastlane_route/round_start/seats_enter/seat_start/seat_end/deliver/proposal/card_op/error/rescue 共 17 类 + reasoning/content 2 类，草稿未给出『每一类事件→消息流呈现』完整映射",
+      "状态": "open",
+      "处置": "退回 p2 补「事件→消息流呈现映射表」：run_start/round_start→消息头；tool_call/tool_result→消息内工具行；seats_enter/seat_start/seat_end→消息内三席行；deliver→消息内交付行；proposal/card_op→消息内建卡行；error/rescue→消息内错误行；reasoning/content_chunk→消息文本流。默认展开、可折叠减负"
+    },
+    {
+      "id": "R2",
+      "类目": "改写",
+      "文档位置": "p2 草稿 §4 设计点B『作为同一气泡内的可折叠工具区块』",
+      "证据原文": "用户原话(源文档 L19)：『每一步调用每一个中间环节，都对我可见』；草稿『同气泡内可折叠区块』=默认折叠=默认不可见，语义写弱于『都对我可见』",
+      "状态": "open",
+      "处置": "退回 p2 改：中间环节在消息流内默认展开为逐行可见(每步一行)，折叠仅是用户可选减负，不默认折叠隐藏"
+    },
+    {
+      "id": "R4",
+      "类目": "矛盾",
+      "文档位置": "p2 草稿 §4 设计点D vs 关联窗口(workspace.js)",
+      "证据原文": "RAFT 实读：renderChat L642-651 localCount=querySelectorAll('.msg:not(.thinking)')——若生成中消息带 .msg 会被计入，服务端 session 无此条→localCount>msgs.length→needFull=true 清空 chatArea 全量重建→打字中的生成中消息被连根清掉；attachRunningState L754 守卫 if(chatArea.querySelector('.msg.thinking')) return false——生成中消息用 .msg.assistant 非 .msg.thinking，守卫查不到→刷新会重复挂；createWaitingBubble L700 用 .msg.thinking 与生成中消息 .msg.assistant.live 类名域未统一，两条进行中 UI 并存歧义",
+      "状态": "open",
+      "处置": "退回 p2 修正三处：①baseline/localCount 判据排除 live 态(.msg:not(.thinking):not(.live))，生成中消息不触发全量重建；②attachRunningState 守卫同时排除 .msg.thinking 与 .msg.assistant.live；③统一进行中 UI：正常任务由 .msg.assistant.live 承载，createWaitingBubble(.msg.thinking) 仅作 SSE 连不上降级兜底，两态互斥不并存"
+    },
+    {
+      "id": "R6",
+      "类目": "不完备",
+      "文档位置": "p2 草稿 §4 设计点D『baseline 需随之兼容』与 E5『首正文字【待查】』",
+      "证据原文": "设计点D 原文『workspace.js L781 baseline 计数需随之兼容』——未写死生成中消息算不算 baseline、类名是什么、renderChat 增量会否重复追加；E5 原文『≤1s 判据此前未达标归因模型 prefill，是否纳入本功能验收边界待定』——留待任务书自由发挥",
+      "状态": "open",
+      "处置": "退回 p2 钉死：①生成中消息类名 .msg.assistant.live，不计入 querySelectorAll('.msg:not(.thinking)') 的 localCount/baseline，renderChat 增量判据与最终回复渲染不受影响；②E5 决策为明确验收判据『首帧 content_chunk 到达渲染 ≤2s(放宽自 1s，因 prefill 受上下文装配制约)』并附手段(/tokens 心跳兜底、前端首帧即渲染提示)"
+    },
+    {
+      "id": "R8",
+      "类目": "不可复核",
+      "文档位置": "p2 草稿 §3 预期效果 E5",
+      "证据原文": "E5 原文『首正文字可见…【待查】』——无判据即无法验收；按 R6 修正后 E5(≤2s+手段) 方可复核：真请求测首帧 content_chunk 渲染耗时数值对 ≤2s 判据",
+      "状态": "open",
+      "处置": "随 R6 修正闭合：E5 落为可复核判据(≤2s)后，本灯消；现值 open 待 p2 修稿"
+    },
+    {
+      "id": "R3",
+      "类目": "无中生有(拟新增)",
+      "文档位置": "p2 修稿将新增(预期)",
+      "证据原文": "本稿预期新增『事件→消息流呈现映射表』与『默认展开』——前者有 C-019/C-022 依据(非空)，后者有 C-004『每一步都对我可见』依据(非空)。标注：本次红灯账无 R3(无无中生有)，新增项均有 p0 依据。此项作为说明登记，非红灯",
+      "状态": "reference"
+    }
+  ],
+  "summary": "红灯 5 条：R1 丢失/R2 改写/R4 矛盾/R6 不完备/R8 不可复核，全部有实读原文证据。无 R3(无中生有)。按用户 20:43 令未调 workflow 独立实例，判定为第一层自判；红灯改稿后回 p3 增量重判确认(只重判红灯行)。判定：退回 p2 修稿。"
+}

@@ -333,6 +333,45 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
     )
 
 
+@router.get("/works/{work_id}/cards/{card_id}/tokens")
+async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
+    """[信息流重出 Task4] SSE 逐字流通道（**独立**于 /stream 的过程卡流）。
+
+    与既有 17 类事件隔离申报（红线4）：独立 journal、独立 seq 计数器、不占主 seq、
+    不被过程卡的 300 条环形挤出。from=0 全量重放——刷新后逐字流仍能完整重建
+    （V-T4-1）。帧形态与 /stream 同构：{"seq","ts","type","data"}，
+    type ∈ {reasoning_chunk, content_chunk}。
+
+    纯展示层：不进 session/prior/模型输入（红线3/A42），不落盘、单进程内存态（A44）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+
+    async def gen():
+        yield "retry: 3000\n\n"
+        last = frm - 1
+        idle = 0.0
+        while True:
+            batch = [e for e in event_stream.token_journal_of(work_id, card_id) if e["seq"] > last]
+            if batch:
+                for evt in batch:
+                    yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+                    last = evt["seq"]
+                idle = 0.0
+                continue
+            await asyncio.sleep(0.25)
+            idle += 0.25
+            if idle >= 10.0:
+                yield ": ping\n\n"
+                idle = 0.0
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.post("/works/{work_id}/cards/{card_id}/messages")
 async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest):
     """对话主链路（模块 H2）。"""
@@ -465,6 +504,19 @@ async def _run_message(work_id: str, card_id: str, content: str,
 
     [T10] client_pair_id：前端重发时携带的被重发提问原 pair_id（正常提问为 None）。
     """
+    # [信息流重出 Task4] 标记本请求的逐字流归属卡。model_service.call_main 经
+    # contextvar 取到它，才把增量落到 /tokens 独立流；函数退出时还原，
+    # 避免污染同进程后续请求（凝练/归拢等无卡调用自然无逐字流）。
+    _stream_ctx_token = event_stream.set_stream_context(work_id, card_id)
+    try:
+        return await _run_message_inner(work_id, card_id, content, client_pair_id)
+    finally:
+        event_stream.reset_stream_context(_stream_ctx_token)
+
+
+async def _run_message_inner(work_id: str, card_id: str, content: str,
+                             client_pair_id: Optional[str] = None) -> Any:
+    """_run_message 的实际链路体（外层只负责逐字流 contextvar 的设/还原）。"""
     # a. 确认卡片存在
     try:
         card = await card_store.read_card(work_id, card_id)
