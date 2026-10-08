@@ -36,8 +36,9 @@ async def test_v1_full_open_read_nonkin(work):
 
     # 工具层：真实走 execute_tool → card_store
     r = await card_tools.execute_tool(wid, a, "read_card", {"card_id": b}, cards)
-    assert "error" not in r
-    assert r["card_id"] == b and r["title"] == "乙"
+    # [T-0010 §1] 信封：成功载荷在 data 内
+    assert r["ok"] is True and r["error"] is None
+    assert r["data"]["card_id"] == b and r["data"]["title"] == "乙"
 
 
 async def test_v2_write_still_restricted(work):
@@ -53,11 +54,13 @@ async def test_v2_write_still_restricted(work):
     before = (await card_store.read_card(wid, b))["body"]["status_block"]
     r = await card_tools.execute_tool(
         wid, a, "edit_card", {"card_id": b, "content": "越权写入"}, cards)
-    assert "越权" in r["error"]
+    assert r["ok"] is False
+    assert r["error"]["code"] == "denied" and "越权" in r["error"]["message"]
     assert (await card_store.read_card(wid, b))["body"]["status_block"] == before
 
     r = await card_tools.execute_tool(wid, a, "delete_card", {"card_id": b}, cards)
-    assert "越权" in r["error"]
+    assert r["ok"] is False
+    assert r["error"]["code"] == "denied" and "越权" in r["error"]["message"]
     assert card_store._card_path(wid, b).exists()   # 未删
 
 
@@ -70,10 +73,11 @@ async def test_v3_guards_intact(work):
 
     # 剧本根卡不可删（工具层显式拦截）
     r = await card_tools.execute_tool(wid, root, "delete_card", {"card_id": root}, cards)
-    assert "不可删除" in r["error"]
-    # 有子卡的卡不可删（存储层结构护栏）
+    assert r["ok"] is False
+    assert r["error"]["code"] == "denied" and "不可删除" in r["error"]["message"]
+    # 有子卡的卡不可删（存储层结构护栏；经工具层回传＝internal 直传信封）
     r = await card_tools.execute_tool(wid, a, "delete_card", {"card_id": a}, cards)
-    assert "error" in r
+    assert r["ok"] is False
     assert card_store._card_path(wid, a).exists()
 
     # update_shadow 签名级独占：schema 无 card_id；恶意注入 card_id 也写不出别的目标
@@ -103,8 +107,8 @@ async def test_v4_shadow_and_memory_read_open(work):
 
     # 旁支读影子：放行
     r = await card_tools.execute_tool(wid, b, "read_shadow", {"card_id": a}, cards)
-    assert "error" not in r
-    assert r["owner_card_id"] == a and "甲的影子正文" in r["content"]
+    assert r["ok"] is True
+    assert r["data"]["owner_card_id"] == a and "甲的影子正文" in r["data"]["content"]
 
     # 旁支读记忆：放行
     await memory_store.save_memory(wid, a, {
@@ -114,6 +118,6 @@ async def test_v4_shadow_and_memory_read_open(work):
                      "occurred_at": "2026-10-07T12:00:00+08:00",
                      "fingerprint": "sha256:ff"}]})
     r = await card_tools.execute_tool(wid, b, "read_memory", {"card_id": a}, cards)
-    assert "error" not in r
-    assert r["card_id"] == a
-    assert r["entries"][0]["conclusion"] == "【结论】甲结论"
+    assert r["ok"] is True
+    assert r["data"]["card_id"] == a
+    assert r["data"]["entries"][0]["conclusion"] == "【结论】甲结论"

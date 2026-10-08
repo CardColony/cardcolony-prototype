@@ -27,6 +27,7 @@ TOOL_REGISTRY 派生，不再手工维护：build_tool_schemas（工具面）、
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -49,6 +50,55 @@ MODEL_REL_TYPES = ("先后", "关联")
 # 更新（三块语法＋条目语法＋三条写入规则）；工具件数不变。
 # [B-09 2026-10-08] 注册表落地**不改工具面** ⇒ 版本号保持 tools-tc-2 不递增。
 TOOL_TABLE_VERSION = "tools-tc-2"
+
+
+# ============================================================
+# [T-0010 §1] 工具结果信封
+#
+# 契约：结果一律带信封，成败读 ok 字段，错误可分类。
+#   成功 {"ok": True,  "error": None,                        "data": {...原返回dict}}
+#   失败 {"ok": False, "error": {"code": <码>, "message": 文案}, "data": None}
+# **错误文案一字不改**，只补 code——code 是给模型分类决策用的新维度。
+# ============================================================
+
+TOOL_ERROR_CODES: tuple[str, ...] = (
+    "denied",      # 权限/越权拒绝（含结构性护栏：根卡不可删、影子卡不可直改）
+    "not_found",   # 目标不存在（卡/影子/work/章节/关系/工具名）
+    "locked",      # 423 锁超时
+    "validation",  # 参数缺失/类型错/取值非法/内容不合闸
+    "internal",    # 其余一切（含 storage 直传错误与未捕获异常）
+)
+
+
+def err(code: str, message: str) -> dict[str, Any]:
+    """失败信封。``message`` 为回灌模型的原文案。"""
+    return {"ok": False, "error": {"code": code, "message": message}, "data": None}
+
+
+def ok_(data: dict[str, Any]) -> dict[str, Any]:
+    """成功信封：既有成功返回 dict（含 card_id/title 等键）**原样**进 data。"""
+    return {"ok": True, "error": None, "data": data}
+
+
+def _is_envelope(x: Any) -> bool:
+    """是否是信封（三个键齐全）。handler 自建的 {'ok': True, ...} 不算信封。"""
+    return (isinstance(x, dict) and "ok" in x and "error" in x and "data" in x)
+
+
+def render_tool_result(result: dict[str, Any]) -> str:
+    """回灌模型的文本投影——**单一来源**。
+
+    message_runner 的两个调用点（slot 入槽 / tool_full_texts 累积）都必须走它，
+    禁止各自拼装：两处曾各自 ``json.dumps(tool_result)``，信封化后错误形态会被
+    误当数据喂给模型。
+    """
+    if result.get("ok") is True:
+        return json.dumps(result.get("data"), ensure_ascii=False)
+    e = result.get("error")
+    if isinstance(e, str):          # 未信封化的直传（旧路径兜底）
+        return e
+    e = e or {}
+    return f"[tool_error code={e.get('code')}] {e.get('message')}"
 
 
 # ============================================================
@@ -89,9 +139,9 @@ async def _h_read_card(work_id: str, current_id: str,
     target_id = arguments.get("card_id", "")
     # [语义修正 2026-10-02] 先判存在再判权限：已删除的卡不再误报"越权"
     if target_id not in cards:
-        return {"error": f"卡片不存在: {target_id}"}
+        return err("not_found", f"卡片不存在: {target_id}")
     if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
-        return {"error": f"越权：无权读取 {target_id}"}
+        return err("denied", f"越权：无权读取 {target_id}")
     result = await card_store.read_card(work_id, target_id)
     return {
         "card_id": target_id,
@@ -110,9 +160,9 @@ async def _h_read_memory(work_id: str, current_id: str,
     # 是机械过滤非加工；越界/空记忆如实返回空（不构造内容）。
     target_id = arguments.get("card_id") or current_id
     if target_id not in cards:
-        return {"error": f"卡片不存在: {target_id}"}
+        return err("not_found", f"卡片不存在: {target_id}")
     if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
-        return {"error": f"越权：无权读取 {target_id}"}
+        return err("denied", f"越权：无权读取 {target_id}")
     state = memory_store.load_memory(work_id, target_id)
     entries = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
     lo = arguments.get("from_seq")
@@ -134,19 +184,20 @@ async def _h_create_card(work_id: str, current_id: str,
     # 结构性护栏（剧本根卡/带子卡者不可删）不在此——建卡不涉删。
     title = str(arguments.get("title", "") or "").strip()
     if not title:
-        return {"error": "title 不能为空"}
+        return err("validation", "title 不能为空")
     # parent 缺省＝当前卡自身；显式给空串也按缺省处理（模型常传空串）
     target_parent = str(arguments.get("parent", "") or "").strip() or current_id
     # 存在性先判：已删/不存在的 parent 不误报越权（与 read_card 同序）
     if target_parent not in cards:
-        return {"error": f"父卡不存在: {target_parent}"}
+        return err("not_found", f"父卡不存在: {target_parent}")
     if not can_edit(current_id, target_parent, cards):
-        return {
-            "error": (
+        return err(
+            "denied",
+            (
                 f"越权：只能建自己的子卡片，{target_parent} 不在你的子树内"
                 f"（当前卡 {current_id}）"
-            )
-        }
+            ),
+        )
     result = await card_store.create_card(
         work_id, title, "模型生成",
         parent=target_parent,
@@ -175,13 +226,13 @@ async def _h_edit_card(work_id: str, current_id: str,
     content = arguments.get("content", "")
     # [语义修正 2026-10-02] 先判存在再判权限
     if target_id not in cards:
-        return {"error": f"卡片不存在: {target_id}"}
+        return err("not_found", f"卡片不存在: {target_id}")
     # [影子卡 2026-10-03] 影子进字典后 can_edit 会放行正卡的上级（子树判据），
     # 此守卫封死该后门：影子只能由对应正卡经 update_shadow 修改（R-06/R-09 写侧）
     if cards[target_id].get("card_type") == "shadow":
-        return {"error": "影子卡只能由对应正卡经 update_shadow 修改"}
+        return err("denied", "影子卡只能由对应正卡经 update_shadow 修改")
     if not can_edit(current_id, target_id, cards):
-        return {"error": f"越权：无权编辑 {target_id}"}
+        return err("denied", f"越权：无权编辑 {target_id}")
     current = await card_store.read_card(work_id, current_id)
     cur_title = current["meta"].get("title", "")
     history_note = f"由「{cur_title}」对话编辑正文"
@@ -198,7 +249,7 @@ async def _h_edit_card(work_id: str, current_id: str,
         logger.info(
             "写入闸拒绝: card=%s rule=%s", target_id, verdict["rule"],
         )
-        return {"error": verdict["message"]}
+        return err("validation", verdict["message"])
     # [S3-6] 落点改造：正文级覆盖写——不再硬编码塞单个键。
     # 整篇正文过拆分器后由 update_card 归一落盘，三块各归各位。
     #
@@ -236,15 +287,16 @@ async def _h_delete_card(work_id: str, current_id: str,
     # （剧本根卡拒删、有子卡拒删），本层不另设判断。
     target_id = arguments.get("card_id", "")
     if target_id not in cards:
-        return {"error": f"卡片不存在: {target_id}"}
+        return err("not_found", f"卡片不存在: {target_id}")
     if not can_edit(current_id, target_id, cards):
-        return {"error": f"越权：无权删除 {target_id}"}
+        return err("denied", f"越权：无权删除 {target_id}")
     if target_id == work_store.work_card_id_of(work_id):
-        return {"error": f"剧本根卡不可删除: {target_id}"}
+        return err("denied", f"剧本根卡不可删除: {target_id}")
     try:
         result = await card_store.delete_card(work_id, target_id)
     except card_store.CardDeleteDeniedError as exc:
-        return {"error": str(exc)}
+        # 结构性护栏（根卡/带子卡）＝拒绝，不是内部故障
+        return err("denied", str(exc))
     if "error" in result:
         return result
     # cards 元数据缓存同步，防止同轮后续工具仍看到已删卡
@@ -270,12 +322,12 @@ async def _h_read_shadow(work_id: str, current_id: str,
     if target_id.startswith("shadow_"):
         target_id = target_id[len("shadow_"):]
     if target_id not in cards:
-        return {"error": f"卡片不存在: {target_id}"}
+        return err("not_found", f"卡片不存在: {target_id}")
     if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
-        return {"error": f"越权：无权读取 {target_id} 的影子"}
+        return err("denied", f"越权：无权读取 {target_id} 的影子")
     raw = await shadow_store.read_shadow_raw(work_id, target_id)
     if raw is None:
-        return {"error": f"影子卡不存在: {target_id}"}
+        return err("not_found", f"影子卡不存在: {target_id}")
     meta, _ = parse_front_matter(raw)
     return {
         "owner_card_id": target_id,
@@ -297,7 +349,7 @@ async def _h_read_manuscript(work_id: str, current_id: str,
                              arguments: dict[str, Any],
                              cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     if not manuscript_store.list_chapters(work_id):
-        return {"error": "本项目尚无原文"}
+        return err("not_found", "本项目尚无原文")
     return manuscript_store.read_chapter(
         work_id,
         arguments.get("chapter", ""),
@@ -313,13 +365,13 @@ async def _h_link_cards(work_id: str, current_id: str,
     rel_type = arguments.get("type", "")
     note = (arguments.get("note") or "").strip()
     if rel_type not in MODEL_REL_TYPES:
-        return {"error": f"关系类型非法: {rel_type}，只允许 先后/关联"}
+        return err("validation", f"关系类型非法: {rel_type}，只允许 先后/关联")
     if target_id not in cards:
-        return {"error": f"卡片不存在: {target_id}"}
+        return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
-        return {"error": "不能与自身建立关系"}
+        return err("validation", "不能与自身建立关系")
     if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
-        return {"error": f"越权：无权与 {target_id} 建立关系"}
+        return err("denied", f"越权：无权与 {target_id} 建立关系")
     current = await card_store.read_card(work_id, current_id)
     existing = current["meta"].get("relations") or []
     for rel in existing:
@@ -351,9 +403,9 @@ async def _h_unlink_cards(work_id: str, current_id: str,
     target_id = arguments.get("target_id", "")
     rel_type = (arguments.get("type") or "").strip()
     if not target_id:
-        return {"error": "target_id 不能为空"}
+        return err("validation", "target_id 不能为空")
     if rel_type and rel_type not in MODEL_REL_TYPES:
-        return {"error": f"关系类型非法: {rel_type}，只允许 先后/关联"}
+        return err("validation", f"关系类型非法: {rel_type}，只允许 先后/关联")
     current = await card_store.read_card(work_id, current_id)
     existing = current["meta"].get("relations") or []
 
@@ -368,7 +420,7 @@ async def _h_unlink_cards(work_id: str, current_id: str,
     removed = len(existing) - len(remaining)
     if removed == 0:
         detail = f" 的 {rel_type} 关系" if rel_type else ""
-        return {"error": f"关系不存在: 当前卡无指向 {target_id}{detail}"}
+        return err("not_found", f"关系不存在: 当前卡无指向 {target_id}{detail}")
     cur_title = current["meta"].get("title", "")
     result = await card_store.update_card(
         work_id, current_id,
@@ -384,7 +436,7 @@ async def _h_search_manuscript(work_id: str, current_id: str,
                                arguments: dict[str, Any],
                                cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     if not manuscript_store.list_chapters(work_id):
-        return {"error": "本项目尚无原文"}
+        return err("not_found", "本项目尚无原文")
     hits = manuscript_store.search_manuscript(
         work_id,
         arguments.get("keyword", ""),
@@ -990,25 +1042,34 @@ async def execute_tool(
     arguments: dict[str, Any],
     cards: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    """执行单个工具调用，返回结果 dict（成功返回数据，越权/失败返回 {"error":...}）。
+    """执行单个工具调用，返回**信封**（成功 {"ok":True,...,"data":{...}}，失败
+    {"ok":False,...,"error":{"code","message"}}）。
 
-    不抛异常（吞掉异常转 error，便于继续工具循环）。
+    不抛异常（吞掉异常转 internal 错误信封，便于继续工具循环）。
 
-    [B-09 2026-10-08] 由约 300 行 if 链改为查表调用：handler =
-    TOOL_REGISTRY.get(tool_name)，命中即调；未命中仍返回
-    {"error": f"未知工具: {tool_name}"}。三层兜底（CardNotFoundError／
-    ChapterNotFoundError／Exception→error）与错误文案逐字不动，仍包住
-    全部分支（含 handler 内部抛出的异常）。
+    [B-09 2026-10-08] 由约 300 行 if 链改为查表调用：handler = TOOL_REGISTRY.get(tool_name)，
+    命中即调；未命中仍返回未知工具错误信封。三层兜底（CardNotFoundError／
+    ChapterNotFoundError／Exception→internal）与错误文案逐字不动。
+
+    [T-0010 §1.4] 出口统一信封：handler 已信封化的原样返回；未信封化的一律包一层——
+      - 带 "error" 键的（storage 直传，如 update_card/delete_card 的失败 dict）→ internal
+      - 其余（成功 dict）→ ok_(原 dict)，**键集合与文案原样进 data**
     """
     try:
         def_ = TOOL_REGISTRY.get(tool_name)
         if def_ is None:
-            return {"error": f"未知工具: {tool_name}"}
-        return await def_.handler(work_id, current_id, arguments, cards)
+            return err("not_found", f"未知工具: {tool_name}")
+        result = await def_.handler(work_id, current_id, arguments, cards)
+        if _is_envelope(result):
+            return result
+        if isinstance(result, dict) and "error" in result:
+            # storage 直传的错误：文案逐字保留，码取 internal（工具层无从细分）
+            return err("internal", str(result.get("error")))
+        return ok_(result)
     except card_store.CardNotFoundError:
-        return {"error": f"卡片不存在: {arguments.get('card_id','')}"}
+        return err("not_found", f"卡片不存在: {arguments.get('card_id','')}")
     except manuscript_store.ChapterNotFoundError:
-        return {"error": f"章节不存在: {arguments.get('chapter','')}"}
+        return err("not_found", f"章节不存在: {arguments.get('chapter','')}")
     except Exception as exc:  # noqa: BLE001
         logger.error("execute_tool 异常 tool=%s args=%s: %s", tool_name, arguments, exc)
-        return {"error": str(exc)}
+        return err("internal", str(exc))

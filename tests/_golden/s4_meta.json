@@ -1,0 +1,23 @@
+{
+  "tag": "s4",
+  "title": "工具错误轮（edit_card 打不存在的卡 → [tool_error code=not_found]）",
+  "request_content": "改一下那张卡的正文",
+  "http_status": 200,
+  "model_calls": 2,
+  "main_calls": 2,
+  "vp_calls": 0,
+  "event_types": [
+    "run_start",
+    "context",
+    "fastlane_route",
+    "round_start",
+    "tool_call",
+    "card_op",
+    "round_start",
+    "deliver",
+    "proposal",
+    "done"
+  ],
+  "event_count": 10,
+  "token_event_count": 3
+}

@@ -46,11 +46,16 @@ def test_tool_table_version_bumped():
 def test_base_prompt_declares_tool_and_drops_text_protocol():
     """新 prompt 教工具通道、旧 card-proposal 段已删（避免两套教法并存）。"""
     from src.api import prompts
-    # [卡片信息结构改造 S1-6 · 2026-10-08] 推进到 tc-2：edit_card 说明改写为三块语法。
-    assert prompts.BASE_PROMPT_VERSION == "tc-2"
+    # [T-0010 §3.4 · 2026-10-08] 推进到 t14-1：新增「工具错误码」小节（信封错误码进 prompt）。
+    # [卡片信息结构改造 S1-6 · 2026-10-08] 此前推进到 tc-2：edit_card 说明改写为三块语法。
+    assert prompts.BASE_PROMPT_VERSION == "t14-1"
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT
     assert "建卡接口" not in prompts.BASE_PROMPT
+    # [T-0010 §3.3] 错误码小节随协议进 prompt（五码齐全）
+    assert "## 工具错误码" in prompts.BASE_PROMPT
+    for _code in card_tools.TOOL_ERROR_CODES:
+        assert f"{_code}：" in prompts.BASE_PROMPT, _code
 
 
 # ---------------------------------------------------------------- 权限面
@@ -67,8 +72,9 @@ async def test_create_card_defaults_parent_to_current(work, sandbox):
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
         wid, cur, "create_card", {"title": "子议题", "content": "正文"}, cards)
-    assert out.get("ok") is True
-    assert out["parent"] == cur
+    # [T-0010 §1] 成功载荷在 data 内
+    assert out["ok"] is True
+    assert out["data"]["parent"] == cur
 
 
 async def test_create_card_accepts_own_descendant(work, sandbox):
@@ -79,8 +85,8 @@ async def test_create_card_accepts_own_descendant(work, sandbox):
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
         wid, child, "create_card", {"title": "孙卡"}, cards)
-    assert out.get("ok") is True
-    assert out["parent"] == child
+    assert out["ok"] is True
+    assert out["data"]["parent"] == child
 
 
 async def test_create_card_denies_out_of_subtree(work, sandbox):
@@ -93,8 +99,10 @@ async def test_create_card_denies_out_of_subtree(work, sandbox):
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
         wid, me, "create_card", {"title": "越权卡", "parent": other}, cards)
-    assert "error" in out
-    assert "只能建自己的子卡片" in out["error"]
+    # [T-0010 §1] 权限拒绝 → denied，文案逐字不动
+    assert out["ok"] is False
+    assert out["error"]["code"] == "denied"
+    assert "只能建自己的子卡片" in out["error"]["message"]
     after = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
     assert after == before, "越权必须零落盘"
 
@@ -108,7 +116,7 @@ async def test_create_card_rejects_sibling_parent(work, sandbox):
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
         wid, a, "create_card", {"title": "越权", "parent": b}, cards)
-    assert "error" in out
+    assert out["ok"] is False and out["error"]["code"] == "denied"
 
 
 async def test_create_card_nonexistent_parent_not_oversight_error(work, sandbox):
@@ -118,7 +126,10 @@ async def test_create_card_nonexistent_parent_not_oversight_error(work, sandbox)
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
         wid, cur, "create_card", {"title": "X", "parent": "card_999"}, cards)
-    assert out.get("error", "").startswith("父卡不存在")
+    # [T-0010 §1] 不存在 → not_found（不是 denied）
+    assert out["ok"] is False
+    assert out["error"]["code"] == "not_found"
+    assert out["error"]["message"].startswith("父卡不存在")
 
 
 async def test_create_card_empty_title_rejected(work, sandbox):
@@ -127,7 +138,8 @@ async def test_create_card_empty_title_rejected(work, sandbox):
     cur = work["work_card_id"]
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(wid, cur, "create_card", {"title": "   "}, cards)
-    assert "error" in out
+    # [T-0010 §1] 参数缺失/为空 → validation
+    assert out["ok"] is False and out["error"]["code"] == "validation"
 
 
 # ---------------------------------------------------------------- 回执面
@@ -138,11 +150,13 @@ async def test_create_card_receipt_has_real_card_id(work, sandbox):
     cur = work["work_card_id"]
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(wid, cur, "create_card", {"title": "回执卡"}, cards)
-    assert out["card_id"].startswith("card_")
+    assert out["ok"] is True
+    new_id = out["data"]["card_id"]
+    assert new_id.startswith("card_")
     # 回执卡号必须是磁盘真身（不靠猜、不靠预判）
-    assert (sandbox.works / wid / "cards" / f"{out['card_id']}.md").exists()
+    assert (sandbox.works / wid / "cards" / f"{new_id}.md").exists()
     # 正卡即派生影子卡（一正一影，R-03）
-    assert (sandbox.works / wid / "shadows" / f"{out['card_id']}.md").exists()
+    assert (sandbox.works / wid / "shadows" / f"{new_id}.md").exists()
 
 
 async def test_create_card_syncs_meta_cache(work, sandbox):
@@ -151,7 +165,7 @@ async def test_create_card_syncs_meta_cache(work, sandbox):
     cur = work["work_card_id"]
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(wid, cur, "create_card", {"title": "新卡"}, cards)
-    assert out["card_id"] in cards, "新卡须进入同轮 cards 字典"
+    assert out["data"]["card_id"] in cards, "新卡须进入同轮 cards 字典"
 
 
 # ------------------------------------------------- 文本通道同口径 + 跨通道去重
