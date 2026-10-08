@@ -1124,7 +1124,9 @@
 
     try {
       const card = await API.getCard(WORK_ID, cardId);
-      const concl = (card.body && card.body.conclusion) || "";
+      // [卡片信息结构改造 G-6/S2-12] 回退路径取新键 status_block；
+      // 快路径字段名 conclusion_summary 不变（canvas.json 契约，勿动）。
+      const concl = (card.body && card.body.status_block) || "";
       const firstLine = concl.split("\n").map(s => s.trim()).find(s => s) || "";
       const summary = firstLine.length > 120 ? firstLine.slice(0, 120) + "…" : firstLine;
       summaryCache.set(cardId, summary);

@@ -54,15 +54,17 @@ SUMMARY_MAX = 120
 
 
 def _conclusion_summary(body: str) -> str:
-    """取结论区第一行非空文字，超 120 字截断加省略号。
+    """取现状块（status_block）第一行非空文字，超 120 字截断加省略号。
 
     与前端 getSummary 的算法逐字一致（先按行 split、取第一个非空 trim 行、超长截断）。
-    结论区为空/全空白 → 返回空字符串（不写占位文字）。
+    现状块为空/全空白 → 返回空字符串（不写占位文字）。
     解析失败不抛出——返回空串，绝不中断 rebuild。
+    [卡片信息结构改造 S2-11/G-7] 取数键随拆分器归一改 status_block；
+    canvas.json 字段名 conclusion_summary **不变**（S2-11，前端快路径依赖它）。
     """
     try:
         sections = split_body_sections(body or "")
-        concl = sections.get("conclusion", "") or ""
+        concl = sections.get("status_block", "") or ""
     except Exception:
         return ""
     first_line = ""

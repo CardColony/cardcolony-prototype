@@ -333,14 +333,14 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     tools = card_tools.build_tool_schemas()
     names = [t["name"] for t in tools]
     assert names.count("read_memory") == 1
-    # [T-0004 §3.1 同步] tc-1 ＝ 建卡工具化（2026-10-08）增补 create_card 有意推进；
-    # 同步纪律：版本号推进必须同步本用例，否则每次推进都会留一条假红。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-1"
+    # [卡片信息结构改造 S3-8 · 2026-10-08] tc-2 ＝ edit_card 说明改写为三块语法＋条目语法、
+    # schema 描述随闸语义更新；同步纪律：版本号推进必须同步本用例。
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-2"
     # 建卡工具化后 read_memory 仍在案（未被取代，只是同表多一件）
     assert names.count("create_card") == 1
     # 语义随推进不变：read_memory 仍是只读件
     assert "read_memory" in card_tools.READONLY_TOOLS
-    assert prompts.BASE_PROMPT_VERSION == "tc-1"
+    assert prompts.BASE_PROMPT_VERSION == "tc-2"
     # BASE_PROMPT 工具行在案（read_memory 行逐字未动；建卡工具化只增 create_card 行、
     # 删文本协议段——read_memory 语义不受影响）
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT

@@ -115,11 +115,16 @@ def update_work(work_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any
     return data
 
 
-async def create_work(title: str) -> dict[str, Any]:
+async def create_work(title: str, project_class: str = "rd_project") -> dict[str, Any]:
     """分配 work_{NNN}，建目录、写 work.json，然后创建剧本卡（card_type=剧本）。
 
     剧本卡 id 写回 work.json.work_card_id；ending_derived=false。
     任何一步失败：保留已创建的目录与文件，返回 {"error": ...}。
+
+    [卡片分类基座 T1/T7] project_class：L0 项目分类，**仅写在根卡上**
+    （任务书 §4.3「根卡必须有 project_class；非根卡不得设」）。
+    缺省 "rd_project"（研发项目）——新树默认研发项目，词表即
+    {sub_project, tool}。研究项目树后续立项时由调用方显式传值。
     """
     # 局部 import，避免与 card_store 形成顶层循环
     from . import card_store
@@ -140,9 +145,11 @@ async def create_work(title: str) -> dict[str, Any]:
     write_work(work_id, work_data)
 
     # 创建剧本卡：parent="" 强制（card_store 内部对 card_type=剧本 会无视 parent 入参）
+    # [卡片分类基座 T1] 同步标 project_class（L0 项目分类仅挂根卡）
     result = await card_store.create_card(
         work_id, title, "用户直接创建",
         card_type="剧本", parent="", charter="", conclusion="",
+        project_class=project_class,
     )
     if "error" in result:
         logger.error("create_work: 剧本卡创建失败 work=%s: %s", work_id, result["error"])

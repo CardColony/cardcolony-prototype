@@ -96,28 +96,111 @@ def replace_fm_field(content: str, key: str, value_line: str) -> str:
 
 _HEADING_RE = re.compile(r"^## ", re.MULTILINE)
 
+# [卡片信息结构改造 S2-1] 新区名→新键映射。与旧表并存，按正文实际区头自适应。
+#   ## 使命 → mission｜## 现状 → status_block｜## 定论 → rulings｜## 修改历史 → history_text
+NEW_SECTION_MAPPING = {
+    "## 使命": "mission",
+    "## 现状": "status_block",
+    "## 定论": "rulings",
+    "## 修改历史": "history_text",
+}
+
+# 旧区名→键（S2-2 规范键归一：旧区头命中时内容归入新键，读侧一律走新键）
+OLD_SECTION_MAPPING = {
+    "## 职责区": "charter",
+    "## 结论区": "conclusion",
+    "## 否决记录区": "rejections",
+    "## 修改历史": "history_text",
+}
+
+# 旧键→新键（S2-2 规范键归一）。history_text 是两表共有键，不在归一名录内。
+OLD_KEY_TO_NEW = {
+    "charter": "mission",
+    "conclusion": "status_block",
+    "rejections": "rulings",
+}
+
+# 规范新键（读侧返回序；history_text 由调用方转 history 列表）
+NEW_KEYS = ("mission", "status_block", "rulings", "history_text")
+
+# 判形态时忽略的共有区头（它不区分新旧）
+_COMMON_HEADING = "## 修改历史"
+
+
+def _detect_form(body: str) -> str:
+    """形态判定（S2-3）：按正文实际出现的区头。
+
+    "old"＝只出现旧区名（或无区头——现存无区头卡全是旧形态产物）
+    "new"＝只出现新区名｜"mixed"＝两套都出现。
+    """
+    has_old = any(h in body for h in OLD_SECTION_MAPPING if h != _COMMON_HEADING)
+    has_new = any(h in body for h in NEW_SECTION_MAPPING if h != _COMMON_HEADING)
+    if has_old and has_new:
+        return "mixed"
+    return "new" if has_new else "old"
+
+
+def effective_form(form: str, body: str) -> str:
+    """把形态判定收敛成渲染/拆分用的唯一形态 ∈ {"old","new"}。
+
+    混用形态（mixed）取**外层优先**——正文里第一个判别性区头所属的那一套。
+    这条是保形的关键（RD-09）：存量旧卡的正文里可能含新区头**字面行**
+    （如 card_027 把「## 使命/## 现状/## 定论」写在结论区里讨论本设计），
+    若按单一区头表拆，这些字面行会被拽进新区块、重渲染时内容位移＝存量卡损坏。
+    外层优先 ⇒ 旧卡内的字面行只是普通内容行，原样留在原区块。
+    """
+    if form != "mixed":
+        return "new" if form == "new" else "old"
+    for line in body.splitlines():
+        s = line.strip()
+        if not s.startswith("## ") or s == _COMMON_HEADING:
+            continue
+        if s in NEW_SECTION_MAPPING:
+            return "new"
+        if s in OLD_SECTION_MAPPING:
+            return "old"
+    return "old"
+
+
+def _section_table(form: str) -> dict[str, str]:
+    """按形态取区头→规范新键表。旧区名在此归一（旧键不出现在返回值里）。"""
+    if form == "new":
+        return dict(NEW_SECTION_MAPPING)
+    # old / mixed-outer-old：只用旧区头表，新区头字面行视作内容行
+    table = {"## 修改历史": "history_text"}
+    for h, oldk in OLD_SECTION_MAPPING.items():
+        if h == _COMMON_HEADING:
+            continue
+        table[h] = OLD_KEY_TO_NEW[oldk]
+    return table
+
 
 def split_body_sections(body: str) -> dict[str, str]:
-    """把正文按四区拆分：## 职责区 / ## 结论区 / ## 否决记录区 / ## 修改历史。
+    """把正文按区头拆分，返回规范新键 + _form 形态标记（S2-1~S2-4）。
 
-    旧卡无 ## 职责区 时 charter 为空字符串（不报错）。
+    新区名：## 使命 / ## 现状 / ## 定论 / ## 修改历史
+    旧区名：## 职责区 / ## 结论区 / ## 否决记录区 / ## 修改历史（旧卡保形，见 RD-09）
+    两套并存、自适应：旧卡读出 mission/status_block/rulings，新卡同样；
+    混用卡按外层形态归位（effective_form），不报错、不位移内容。
+    某区不存在时对应键为空字符串。
+
+    返回第三键 "_form"（"old"/"new"/"mixed"）——**不落盘、不进 read_card 的 body**，
+    仅供 _render_card 决定输出哪套区头（G-3/G-7）。渲染前须经 effective_form
+    收敛为 old/new，mixed 直接传渲染器会被拒（防混用形态落盘）。
     """
-    sections = {"charter": "", "conclusion": "", "rejections": "", "history_text": ""}
-    mapping = {
-        "## 职责区": "charter",
-        "## 结论区": "conclusion",
-        "## 否决记录区": "rejections",
-        "## 修改历史": "history_text",
-    }
+    form = _detect_form(body)
+    table = _section_table(effective_form(form, body))
+    sections: dict[str, str] = {k: "" for k in NEW_KEYS}
     current: Optional[str] = None
-    buf: dict[str, list[str]] = {v: [] for v in mapping.values()}
+    buf: dict[str, list[str]] = {v: [] for v in NEW_KEYS}
     for line in body.splitlines():
         stripped = line.strip()
-        if stripped in mapping:
-            current = mapping[stripped]
+        if stripped in table:
+            current = table[stripped]
             continue
         if current:
             buf[current].append(line)
     for k, v in buf.items():
         sections[k] = "\n".join(v).strip("\n")
+    sections["_form"] = form
     return sections

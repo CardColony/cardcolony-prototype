@@ -50,11 +50,11 @@ async def test_v2_write_still_restricted(work):
     assert not card_tools.can_edit(a, b, cards)   # 旁支不可写（写侧未随读放开）
     assert card_tools.can_edit(a, a, cards)       # 自己可写
 
-    before = (await card_store.read_card(wid, b))["body"]["conclusion"]
+    before = (await card_store.read_card(wid, b))["body"]["status_block"]
     r = await card_tools.execute_tool(
         wid, a, "edit_card", {"card_id": b, "content": "越权写入"}, cards)
     assert "越权" in r["error"]
-    assert (await card_store.read_card(wid, b))["body"]["conclusion"] == before
+    assert (await card_store.read_card(wid, b))["body"]["status_block"] == before
 
     r = await card_tools.execute_tool(wid, a, "delete_card", {"card_id": b}, cards)
     assert "越权" in r["error"]

@@ -94,5 +94,5 @@ async def test_v7_live_model_read_open_and_write_denied(work):
     assert args2.get("card_id") == b, f"模型改写目标漂移: {args2}"
     out2 = await card_tools.execute_tool(wid, a, "edit_card", args2, cards)
     assert "越权" in out2.get("error", ""), f"越权 edit 未被拒: {out2}"
-    final = (await card_store.read_card(wid, b))["body"]["conclusion"]
+    final = (await card_store.read_card(wid, b))["body"]["status_block"]
     assert "越权测试" not in final   # 确实没落盘

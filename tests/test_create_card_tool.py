@@ -36,14 +36,18 @@ def test_create_card_is_write_tool_not_readonly():
 
 
 def test_tool_table_version_bumped():
-    """工具集变更须版本化（B-15/ T12-R3 同款纪律）。"""
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-1"
+    """工具集变更须版本化（B-15/ T12-R3 同款纪律）。
+
+    [卡片信息结构改造 S3-8 · 2026-10-08] 推进到 tc-2：edit_card schema 随闸语义更新。
+    """
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-2"
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():
     """新 prompt 教工具通道、旧 card-proposal 段已删（避免两套教法并存）。"""
     from src.api import prompts
-    assert prompts.BASE_PROMPT_VERSION == "tc-1"
+    # [卡片信息结构改造 S1-6 · 2026-10-08] 推进到 tc-2：edit_card 说明改写为三块语法。
+    assert prompts.BASE_PROMPT_VERSION == "tc-2"
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT
     assert "建卡接口" not in prompts.BASE_PROMPT

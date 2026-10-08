@@ -43,6 +43,8 @@ async def main() -> int:
     check("建剧本根卡→影子自动派生", sp.exists(), str(sp))
 
     # 2. create_card 子卡 → 影子派生
+    # [G-9] 键名随归一改新键（conclusion 参数名属 create_card 签名，未改；
+    # 纯文本无区头 → 落 status_block，语义与改造前逐字一致）
     r = await card_store.create_card(wid, "子卡甲", "模型生成", parent=root_id, conclusion="内容")
     cid = r["meta"]["card_id"]
     check("建子卡→影子自动派生", shadow_store.shadow_path(wid, cid).exists())
@@ -122,7 +124,7 @@ async def main() -> int:
 
     # 11. 编辑正卡正文不影响影子（方案 4.2 行 2：不加代码，影子存活）
     shadow_before = shadow_store.shadow_path(wid, cid2).read_bytes()
-    await card_store.update_card(wid, cid2, {"conclusion": "正文更新"}, "预检编辑")
+    await card_store.update_card(wid, cid2, {"status_block": "正文更新"}, "预检编辑")  # [G-9]
     check("编辑正卡→影子一字节不动", shadow_store.shadow_path(wid, cid2).read_bytes() == shadow_before)
 
     check("handler 旗标", handler_ok)

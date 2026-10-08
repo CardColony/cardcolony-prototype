@@ -52,8 +52,17 @@ async def main() -> None:
     # 经存储层正规通道写回（带修改历史落痕），而非直接覆盖文件
     sys.path.insert(0, BASE)
     from src.storage import card_store, git_auto_commit
+    from src.storage.hash_utils import split_body_sections
+    # [卡片信息结构改造 G-9] 恢复的是整篇正文（含区头），不能整篇塞进单键——
+    # 那样会把区头当正文内容写进现状块。按拆分器拆成三块各归各位；
+    # 修改历史不取（它是机械尾，由 update_card 自己追加本次恢复记录）。
+    sec = split_body_sections(content)
     await card_store.update_card(
-        work_id, card_id, {"conclusion": content},
+        work_id, card_id, {
+            "mission": sec["mission"],
+            "status_block": sec["status_block"],
+            "rulings": sec["rulings"],
+        },
         f"restore_card 恢复到 {ref}",
     )
     await git_auto_commit.commit(f"[restore][{work_id}] {card_id} -> {ref}")

@@ -91,7 +91,7 @@ async def test_tool_errors_are_data_not_exceptions(work):
                                       {"card_id": root, "content": "越权改根"}, cards)
     assert "越权" in r["error"]
     # 越权必须真的没落盘
-    root_body = (await card_store.read_card(wid, root))["body"]["conclusion"]
+    root_body = (await card_store.read_card(wid, root))["body"]["status_block"]
     assert "越权改根" not in root_body
 
     # [卡片权限改造 2026-10-07] 旁支读影子放行（原越权断言随读限退役；
@@ -107,7 +107,7 @@ async def test_edit_own_subtree_and_shadow_backdoor(work):
     r = await card_tools.execute_tool(wid, a, "edit_card",
                                       {"card_id": b, "content": "乙的新正文"}, cards)
     assert r.get("ok") is True
-    assert (await card_store.read_card(wid, b))["body"]["conclusion"] == "乙的新正文"
+    assert (await card_store.read_card(wid, b))["body"]["status_block"] == "乙的新正文"
 
     # 影子进同一 meta 字典，但只能由对应正卡经 update_shadow 写
     sid = shadow_store.shadow_id_of(b)

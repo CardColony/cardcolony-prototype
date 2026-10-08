@@ -21,8 +21,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..storage import memory_store, work_store
-from ..storage.card_store import _card_path
+from ..storage import card_store, memory_store, work_store
 from ..storage.hash_utils import parse_front_matter
 from . import context_regions
 
@@ -34,7 +33,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 def _load_cards_index(work_id: str) -> list[dict[str, Any]]:
     """扫描 cards 目录，返回 [{card_id, title, parent}]（按文件名排序）。"""
     out: list[dict[str, Any]] = []
-    cd = _card_path(work_id, "card_000").parent
+    cd = card_store.cards_dir(work_id)
     if not cd.exists():
         return out
     for path in sorted(cd.glob("card_*.md")):
