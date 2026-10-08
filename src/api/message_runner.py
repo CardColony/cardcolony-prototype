@@ -114,6 +114,12 @@ class RunState:
     # 交付后的建卡结果
     created_cards: list[dict[str, Any]] = field(default_factory=list)
     denied_cards: list[dict[str, str]] = field(default_factory=list)
+    # [T-0010 §3.1] 文本协议块通道成功建卡计数（rescue 兼容层的真实用量观测）。
+    # create_cards 段（段⑥）在 write_logs（段④）之后，故计数经 state 传递，
+    # 落盘时由 create_cards 就地追加该键——不动「日志写一次」的不变量。
+    text_channel_create_count: int = 0
+    # 本次 prompt 日志落盘路径（段④ 写、段⑥ 追加键时用）
+    prompt_log_path: Optional[str] = None
     clean_text: str = ""
     # 中止缝预留（B-14 软预算）：stop_requested 由外部控制面置位，
     # 本模块**不置位、不消费**——check_control 为空实现。
@@ -293,6 +299,10 @@ async def step(state: RunState) -> StepOutcome:
     if state.rounds == 1:
         state.slot.append_plain({"role": "user", "content": state.content})
 
+    # [T-0010 §2] run 级 tool_call_id：pair_id 前 8 位；无 pair_id 退 work_id 前 4 位。
+    # 与「轮次＋序号」合成 ⇒ 同一份 messages 内全局唯一（B-07 配对协议），
+    # 且 assistant 侧与 tool 侧取同一个值，配对不变量不动。
+    _run_tag = (state.pair_id[:8] or state.work_id[:4])
     # 把 assistant 消息（含 tool_calls）+ tool 结果追加进 prior
     # [T11-T6] assistant 经 begin_round 入槽（成轮，可折单元）；
     # 消息构造与既有逐字一致（折叠关时槽即本列表，零变化）
@@ -301,7 +311,7 @@ async def step(state: RunState) -> StepOutcome:
         "content": assistant_content,
         "tool_calls": [
             {
-                "id": f"call_{i}",
+                "id": f"call_{_run_tag}_{state.rounds}_{i}",
                 "type": "function",
                 "function": {"name": tc["name"],
                              "arguments": json.dumps(tc["arguments"], ensure_ascii=False)},
@@ -335,14 +345,17 @@ async def step(state: RunState) -> StepOutcome:
                           {"tool": name, "target": target_id})
         tool_result = await card_tools.execute_tool(
             state.work_id, state.card_id, name, args, cards_meta)
-        ok = "error" not in tool_result
+        # [T-0010 §1.5] 成败读信封 ok 字段（改前是「结果里没有 error 键即算成功」）
+        ok = tool_result.get("ok") is True
+        _data = tool_result.get("data") or {}
         _ev: dict[str, Any] = {"tool": name, "card_id": target_id, "ok": ok}
         # [建卡工具化 2026-10-08] create_card 成功时把真身卡号/卡名/父带进
         # tool_events——交付段据此收拢工具通道建卡结果
+        # [T-0010 §1] 成功载荷整体在 data 内，取值改走 data
         if name == "create_card" and ok:
-            _ev["card_id"] = tool_result.get("card_id", "")
-            _ev["title"] = tool_result.get("title", "")
-            _ev["parent"] = tool_result.get("parent", "")
+            _ev["card_id"] = _data.get("card_id", "")
+            _ev["title"] = _data.get("title", "")
+            _ev["parent"] = _data.get("parent", "")
         state.tool_events.append(_ev)
         # [信息流 Task4] 并表（A101）：快车道的卡操作落 card_op；
         # chain 保持 tool_result。全日志打点（A96）。
@@ -351,7 +364,7 @@ async def step(state: RunState) -> StepOutcome:
         ):
             event_stream.emit(state.work_id, state.card_id, "card_op", {
                 "op": name, "target": target_id, "ok": ok,
-                "result": tool_result if ok else str(tool_result.get("error", ""))[:200],
+                "result": _data if ok else card_tools.render_tool_result(tool_result)[:200],
             })
             logger.info("[flow] 卡操作落地 op=%s target=%s ok=%s card=%s",
                         name, target_id, ok, state.card_id)
@@ -359,14 +372,17 @@ async def step(state: RunState) -> StepOutcome:
             event_stream.emit(state.work_id, state.card_id, "tool_result",
                               {"tool": name, "target": target_id, "ok": ok})
         # [T11-T6] tool 结果经 append_tool_result 入槽（归入当前轮）
+        # [T-0010 §1.6] 回灌文本走单一投影函数（不各自 json.dumps）——
+        # 否则失败信封的 {"code","message"} 会被当数据喂进模型上下文
         state.slot.append_tool_result({
             "role": "tool",
-            "tool_call_id": f"call_{i}",
-            "content": json.dumps(tool_result, ensure_ascii=False),
+            "tool_call_id": f"call_{_run_tag}_{state.rounds}_{i}",
+            "content": card_tools.render_tool_result(tool_result),
         })
         # [E-探针制] 全文累积（口径④）：三席后置注入用，不折叠不截断
+        # [T-0010 §1.6] 同一投影函数，两个调用点禁止各自拼装
         state.tool_full_texts.append(
-            f"{name}(target={target_id}) → " + json.dumps(tool_result, ensure_ascii=False)
+            f"{name}(target={target_id}) → " + card_tools.render_tool_result(tool_result)
         )
 
     state.user_prompt = "工具结果已返回。"
@@ -462,6 +478,9 @@ def write_logs(state: RunState) -> None:
         regions=log_regions,
         fold_ops=state.slot.fold_ops or None,
     )
+    # [T-0010 §3.1] 记住路径：段⑥ 文本通道计数完成后就地追加该键
+    # （与 viewpoints 追加同一手法，不新增第二次写盘）
+    state.prompt_log_path = str(log_path) if log_path is not None else None
     # [phase9-E] 日志追加 viewpoints 字段（观点全文数组，落盘可查）。
     # [白板证据位 2026-10-02] vp_system_prompt 一并落日志。
     # [phase9-E] 日志追加 viewpoints 字段（观点全文数组，落盘可查）。
@@ -557,6 +576,22 @@ async def create_cards(state: RunState, final_reply: str) -> None:
     )
     for c in text_created:
         state.created_cards.append({**c, "channel": "text"})
+    # [T-0010 §3.1] 文本通道成功建卡计数 → prompt 日志追加键（为 0 则不写，
+    # 与 regions/fold_ops 同一「空则不同构」纪律）。rescue 兼容层退场后，
+    # 该键自然恒不出现——这正是「通道收敛」的可观测收口。
+    state.text_channel_create_count = len(text_created)
+    if state.text_channel_create_count and state.prompt_log_path:
+        try:
+            from pathlib import Path as _Path
+            _p = _Path(state.prompt_log_path)
+            _payload = json.loads(_p.read_text(encoding="utf-8"))
+            _payload["text_channel_create_count"] = state.text_channel_create_count
+            _p.write_text(json.dumps(_payload, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+            logger.info("[T-0010] 文本通道建卡计数入日志 count=%s file=%s",
+                        state.text_channel_create_count, _p.name)
+        except Exception as exc:  # noqa: BLE001 观测键失败不阻断建卡
+            logger.warning("prompt 日志 text_channel_create_count 追加失败（不中断）: %s", exc)
     if state.denied_cards:
         # 越权/去重的项如实回给模型上下文——不静默丢卡
         _d = "；".join(f"{d['title']}（{d['reason']}）"

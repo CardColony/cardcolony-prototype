@@ -82,15 +82,20 @@ async def test_tool_errors_are_data_not_exceptions(work):
 
     # [卡片权限改造 2026-10-07] 读侧全盘放开：旁支 read_card 放行（原越权断言退役）
     r = await card_tools.execute_tool(wid, b, "read_card", {"card_id": c}, cards)
-    assert "error" not in r and r["card_id"] == c
+    # [T-0010 §1] 信封：成功读 data，失败读 error.code/message
+    assert r["ok"] is True and r["data"]["card_id"] == c
 
     # 先判存在再判权限：已删/不存在的卡报「不存在」，不误报越权
     r = await card_tools.execute_tool(wid, b, "read_card", {"card_id": "card_999"}, cards)
-    assert "不存在" in r["error"]
+    assert r["ok"] is False
+    assert r["error"]["code"] == "not_found"
+    assert "不存在" in r["error"]["message"]
 
     r = await card_tools.execute_tool(wid, b, "edit_card",
                                       {"card_id": root, "content": "越权改根"}, cards)
-    assert "越权" in r["error"]
+    assert r["ok"] is False
+    assert r["error"]["code"] == "denied"
+    assert "越权" in r["error"]["message"]
     # 越权必须真的没落盘
     root_body = (await card_store.read_card(wid, root))["body"]["status_block"]
     assert "越权改根" not in root_body
@@ -118,7 +123,10 @@ async def test_edit_own_subtree_and_shadow_backdoor(work):
 
     r = await card_tools.execute_tool(wid, a, "edit_card",
                                       {"card_id": sid, "content": "黑入影子"}, cards)
-    assert "error" in r and "update_shadow" in r["error"]
+    # [T-0010 §1] 影子直改＝结构性拒绝 → denied（文案逐字不动）
+    assert r["ok"] is False
+    assert r["error"]["code"] == "denied"
+    assert "update_shadow" in r["error"]["message"]
 
 
 async def test_update_shadow_is_silent_for_canvas(work):
@@ -144,10 +152,10 @@ async def test_update_shadow_is_silent_for_canvas(work):
     # 读侧跟随 can_read：[卡片权限改造 2026-10-07] 全盘放开——旁支读影子放行
     # （原越权断言随读限机制退役；影子写侧独占不变）
     r = await card_tools.execute_tool(wid, c, "read_shadow", {"card_id": a}, cards)
-    assert r["owner_card_id"] == a and "## 进度" in r["content"]
+    assert r["data"]["owner_card_id"] == a and "## 进度" in r["data"]["content"]
     # 上级可读下级影子（推送到达机制）
     r = await card_tools.execute_tool(wid, root, "read_shadow", {"card_id": a}, cards)
-    assert r["owner_card_id"] == a and "## 进度" in r["content"]
+    assert r["data"]["owner_card_id"] == a and "## 进度" in r["data"]["content"]
 
 
 # ---------------------------------------------------------------- 删除护栏
@@ -167,7 +175,9 @@ async def test_delete_guards_and_cascade(work):
         await card_store.delete_card(wid, a)
     # 工具层：越权删在权限层就被拦
     r = await card_tools.execute_tool(wid, c, "delete_card", {"card_id": a}, cards)
-    assert "越权" in r["error"]
+    assert r["ok"] is False
+    assert r["error"]["code"] == "denied"
+    assert "越权" in r["error"]["message"]
 
     # 叶子可删：卡文件 ＋ session ＋ 影子 三件同去
     seq = b.split("_", 1)[1]
@@ -176,7 +186,7 @@ async def test_delete_guards_and_cascade(work):
     assert session_file.exists() and shadow_file.exists()
 
     r = await card_tools.execute_tool(wid, a, "delete_card", {"card_id": b}, cards)
-    assert r.get("ok") is True and r["deleted"] == b
+    assert r["ok"] is True and r["data"]["deleted"] == b
     assert not card_store._card_path(wid, b).exists()
     assert not shadow_file.exists()
     assert not session_file.exists()

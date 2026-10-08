@@ -138,10 +138,37 @@ SCENARIOS: dict[str, dict[str, Any]] = {
             "tool_script": [{"name": "read_card", "arguments": {"card_id": "card_001"}}],
         },
     },
+    # [T-0010 §四.2] 新增 S4：工具错误轮。信封化的文本变更点在此钉死——
+    # edit_card 打不存在的卡 → 回灌模型的是 [tool_error code=not_found] <说明>，
+    # 而不是旧形态的裸 JSON。capture_tool_projection 仅此剧本开启，
+    # S1/S2/S3 产物逐字节不受影响。
+    "s4": {
+        "title": "工具错误轮（edit_card 打不存在的卡 → [tool_error code=not_found]）",
+        "content": "改一下那张卡的正文",
+        "gateway": {
+            "main_texts": ["正在改写目标卡…", "目标卡不存在，已如实回报。"],
+            "tool_script": [{"name": "edit_card",
+                             "arguments": {"card_id": "card_999", "content": "新正文"}}],
+        },
+        "capture_tool_projection": True,
+    },
 }
 
 
 # ---------------------------------------------------------------- 归一
+
+# [T-0010 §四.3] 协议变更钉：本轮金样本是有意重钉（旧金样本在协议变更下失效）。
+# 与之相对，S1/S2/S3 三剧本产物**逐字节未变**（实测 12 件 sha256 全部 SAME）——
+# 即信封化只改动了错误路径的文本形态与 id 形态，未扰动既有成功路径。
+T0010_NOTE = (
+    "T-0010 协议变更钉：信封投影文本 + id 形态 + BASE_PROMPT t14-1。"
+    "（1）信封：工具结果统一 {ok,error,data}，回灌模型的投影文本由 "
+    "card_tools.render_tool_result 单一来源产出——失败为 "
+    "[tool_error code=<码>] <说明>，成功为 data 的 JSON；"
+    "（2）id 形态：tool_call_id 由 call_{i} 改为 call_{run_tag}_{rounds}_{i}；"
+    "（3）BASE_PROMPT_VERSION t13-1/tc-2 → t14-1（新增工具错误码小节）。"
+    "新增 S4 剧本钉失败投影文本；S1/S2/S3 产物逐字节未变。"
+)
 
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2})?")
 _STAMP_RE = re.compile(r"_\d{8}\d{6}(?:_\d+)?")
@@ -341,6 +368,24 @@ async def run_one(tag: str, sc: dict[str, Any], run_idx: int) -> dict[str, Any]:
          "pair_id": "<PAIR_ID>" if m.get("pair_id") else None}
         for m in session
     ]
+    # [T-0010 §四.2] S4 专属：把**回灌模型的工具结果投影文本**钉进 golden。
+    # 投影文本（即 render_tool_result 的产出）是信封化的文本变更点，
+    # 旧金样本结构里不落它，必须显式采集才钉得住。仅剧本开启时采集，
+    # S1/S2/S3 的 side 产物因此逐字节不变。
+    if sc.get("capture_tool_projection"):
+        _logs = sandbox.get("logs")
+        side["tool_projection"] = []
+        if _logs is not None and Path(_logs).exists():
+            for _p in sorted(Path(_logs).glob("prompt_*.json")):
+                _pl = json.loads(_p.read_text(encoding="utf-8"))
+                for _m in _pl.get("prior_messages") or []:
+                    if _m.get("role") == "tool":
+                        _tc = str(_m.get("tool_call_id") or "")
+                        side["tool_projection"].append({
+                            # id 形态只留 run_tag 段（轮次/序号另在两轮一致里校验）
+                            "tool_call_id_shape": _tc,
+                            "content": _m.get("content"),
+                        })
     side_json = json.dumps(normalize(side), ensure_ascii=False, indent=2, sort_keys=True)
 
     meta = {
@@ -424,7 +469,9 @@ async def main() -> int:
               f"events={r['meta']['event_count']} calls={r['meta']['model_calls']}", flush=True)
 
     (outdir / "_t0009_golden_manifest.json").write_text(
-        json.dumps({"normalize_note": NORMALIZE_NOTE, "items": manifest},
+        json.dumps({"normalize_note": NORMALIZE_NOTE,
+                    "t0010_note": T0010_NOTE,
+                    "items": manifest},
                    ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\n=== 阶段一闸门 ===")

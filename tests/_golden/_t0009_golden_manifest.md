@@ -4,6 +4,26 @@
 > 拆分前抓取时间：2026-10-08 16:37–16:38（拆分前 routes.py 999 行）
 > 拆分后回放时间：2026-10-08 16:52–16:53（拆分后 routes.py 619 行 ＋ message_runner.py）
 
+## T-0010 协议变更钉（2026-10-08 20:12 重抓）
+
+**T-0010 协议变更钉：信封投影文本 + id 形态 + BASE_PROMPT t14-1。**
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 工具结果 | 成功＝裸 dict；失败＝`{"error": "文案"}` | 统一信封 `{ok, error, data}`，失败 `error={code,message}` |
+| 回灌模型文本 | 两处各自 `json.dumps(tool_result)` | `card_tools.render_tool_result` **单一来源**：成功＝data 的 JSON；失败＝`[tool_error code=<码>] <说明>` |
+| `tool_call_id` | `call_{i}` | `call_{run_tag}_{rounds}_{i}`（run_tag＝pair_id 前 8 位） |
+| `BASE_PROMPT_VERSION` | `tc-2` | `t14-1`（新增「工具错误码」小节） |
+| `TOOL_TABLE_VERSION` | `tools-tc-2` | **不动**（工具面零变化） |
+
+**新增 S4 剧本**（工具错误轮）：`edit_card` 打不存在的卡 →
+`side_effects.tool_projection[0].content` 钉死
+`"[tool_error code=not_found] 卡片不存在: card_999"`，
+同处钉死 id 形态 `call_<run_tag>_1_0`。
+
+**S1/S2/S3 三剧本 12 件产物逐字节未变**（重抓前后 sha256 全部 SAME）——
+信封化只改动了错误路径的文本形态与 id 形态，未扰动既有成功路径。
+
 ## 归一说明（为什么能逐字节比对）
 
 原始响应含多处**天然逐次不同**的量，直接 diff 必然失败（与编排无关）。归一表：

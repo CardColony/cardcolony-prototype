@@ -1,0 +1,13 @@
+[001] run_start {"chars": 9, "pair_id": "<PAIR_ID>"}
+[002] context {"bytes": 98, "regions": ["", ""]}
+[003] fastlane_route {"matched_rule": "改卡", "mode": "fastlane"}
+[004] round_start {"phase": "main", "round": 1}
+[005] tool_call {"target": "card_999", "tool": "edit_card"}
+[006] card_op {"ok": false, "op": "edit_card", "result": "[tool_error code=not_found] 卡片不存在: card_999", "target": "card_999"}
+[007] round_start {"phase": "tools", "round": 2}
+[008] deliver {"branch": "normal", "bytes": 65}
+[009] proposal {"cards": [], "count": 0}
+[010] done {"model_calls": 2, "rounds": 2}
+[TOK001]  round_start {"_boundary": true}
+[TOK002]  content_chunk {"text": "目标卡不存在，已"}
+[TOK003]  content_chunk {"text": "如实回报。"}

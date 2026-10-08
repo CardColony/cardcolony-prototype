@@ -1,0 +1,13 @@
+{
+  "created_cards": [],
+  "model": "golden-main",
+  "reply": "正在改写目标卡…\n\n目标卡不存在，已如实回报。\n",
+  "tool_events": [
+    {
+      "card_id": "card_999",
+      "ok": false,
+      "tool": "edit_card"
+    }
+  ],
+  "viewpoints_meta": []
+}
