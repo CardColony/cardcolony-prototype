@@ -23,23 +23,15 @@ models:
   # 统合官（simple 链路总结席，兼深度工具链主模型）
   main:
     provider: openai                    # Nous Research 为 OpenAI 兼容协议
-    model: moonshotai/kimi-k3
+    model: anthropic/claude-haiku-5.5
     api_key_env: NOUS_API_KEY
     base_url: "https://inference-api.nousresearch.com/v1"
     temperature: 0.3
-    context_window: 1048576     # kimi-k3 端点实测 context_length（勿改回）
-    # [信息流重出 Task2 · 2026-10-08] kimi-k3 思考档降级。
-    # 写法非照抄他席先例，而是**探针实测选定**（同文件 MiniMax/thinking、qwen/enable_thinking
-    # 是各家私有开关，对 Nous/kimi-k3 不适用）。实测 max_tokens=400 同一提示：
-    #   基线（不传 extra_body） → reasoning_tokens=40, completion_tokens=51
-    #   reasoning: {effort: low}      → reasoning_tokens=4（与下一行完全同效）
-    #   reasoning_effort: low  ← 采用 → reasoning_tokens=4, completion_tokens=15
-    #   reasoning: {enabled: false}  → reasoning_tokens=0（备用档，仍慢再切）
-    # 取 reasoning_effort（OpenAI 标准顶层参数、litellm 原生认识、实测与嵌套写法同效）。
-    # 目的：kimi-k3 默认 effort=max 会把 max_tokens 烧在思考上导致正文为空且单次
-    # latency 达 279500ms（实测），降档后思考预算大幅压缩。
-    extra_body:
-      reasoning_effort: low
+    context_window: 1000000     # haiku-5.5 端点 /v1/models 实测 context_length（2026-10-08 21:12）
+    # [2026-10-08 21:08 用户令换主模型] kimi-k3 → anthropic/claude-haiku-5.5（同接口 Nous）
+    # 烟测实证（21:12）：haiku-5.5 reasoning=None、reasoning_tokens=0，不产生思考文本——
+    # kimi 的 extra_body: reasoning_effort: low（思考档降级）对它无意义（无思考可降），故不再设置。
+    # 烟测响应：content='烟测成功'，usage prompt 21/completion 7，干净正文。
     retry:
       max_attempts: 5
       backoff_seconds: 2
