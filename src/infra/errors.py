@@ -27,16 +27,3 @@ class AppError(Exception):
 
 class ModelError(AppError):
     """模型调用相关错误。"""
-
-
-# 降级策略表：每个工序失败时的处理方式
-FALLBACK_STRATEGY: dict[str, dict[str, str | bool]] = {
-    "purifier": {"on_fail": "fallback_model", "critical": True},
-    "decomposer": {"on_fail": "skip", "critical": False},
-    "gap_checker": {"on_fail": "skip", "critical": False},
-    "generator": {"on_fail": "skip", "critical": False},  # 单个生成模型挂了跳过
-    "synthesizer": {"on_fail": "fallback_model", "critical": True},
-    "clarifier": {"on_fail": "skip", "critical": False},  # 澄清失败直接进生成
-    "reviewer": {"on_fail": "skip", "critical": False},
-    "condenser": {"on_fail": "skip", "critical": False},
-}

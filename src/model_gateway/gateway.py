@@ -64,8 +64,7 @@ class ModelGateway:
         发起 tool_calls（如 write_file），由调用方（orchestrator）执行。
 
         截断处理：当 tool_call.arguments 因 max_tokens 被截断导致 JSON 解析失败时，
-        返回 truncated_tool_call（含原始被截断的 arguments 字符串），
-        由 ContinuationHandler 续写拼成完整内容。
+        返回 truncated_tool_call（含原始被截断的 arguments 字符串）。
         """
         model_config = self.config["models"][model_name]
         provider = model_config["provider"]
@@ -201,7 +200,7 @@ class ModelGateway:
                             })
                         except Exception:  # noqa: BLE001
                             # JSON 解析失败 → 大概率是 max_tokens 截断
-                            # 保留原始数据供 ContinuationHandler 抢救
+                            # 保留原始数据（function name + 被截断的 arguments 字符串）供续写
                             fn_name = ""
                             raw_args = ""
                             try:
@@ -272,8 +271,7 @@ class ModelGateway:
                 )
                 _emit("success")
                 # N1：纯文本 reply 被 max_tokens 截断（无 tool_call）时，
-                # 透传部分 reply，由下游 ContinuationHandler.resume_reply 续写抢救，
-                # 确保"输出不可丢"（不依赖 write_file 工具调用）。
+                # 透传部分 reply，确保"输出不可丢"（不依赖 write_file 工具调用）。
                 #
                 # 触发条件（满足其一即视为被截断）：
                 # 1. 模型自报 finish_reason=="length"（标准信号，但讯飞等国产模型不可靠）
@@ -428,7 +426,7 @@ class ModelGateway:
 
         litellm 在解析截断的 tool_call.function.arguments 时抛 APIError，
         异常消息里包含完整的 response_object（含被截断的原始 arguments 字符串）。
-        我们从异常字符串里提取 path 和部分 content，供 ContinuationHandler 续写。
+        我们从异常字符串里提取 path 和部分 content。
 
         触发的异常特征（litellm 内部）：
         - _handle_invalid_parallel_tool_calls 调用 json.loads(tool_call.function.arguments)
@@ -509,13 +507,21 @@ class ModelGateway:
         timeout: Optional[int] = None,
         on_status: Any = None,
         tools: list[dict[str, Any]] | None = None,
+        on_reasoning: Any = None,
+        prior_messages: list[dict[str, Any]] | None = None,
     ):
         """stage_FE4：流式调用（async generator）。
 
-        逐个 yield ``{"chunk": text}``，最后 yield 一个完整结果 dict
-        （与 ``call`` 返回结构一致：含 content / tool_calls / truncated_reply 等）。
-        完成标记检测与续写仍基于完整聚合文本（由 orchestrator 在收到最终结果后处理），
-        保证【已完成】标记 + ContinuationHandler 链路不被破坏。
+        逐个 yield ``{"chunk_type": "reasoning"|"content", "chunk": text, "text": text}``，
+        最后 yield 一个完整结果 dict（与 ``call`` 返回结构一致：含 content / tool_calls /
+        truncated_reply 等）。完成标记检测与续写仍基于完整聚合文本（由 orchestrator 在
+        收到最终结果后处理），保证【已完成】标记检测。
+
+        [信息流重出 Task1] 双增量解包：思考增量（``delta.reasoning`` /
+        ``delta.reasoning_content``）与正文增量（``delta.content``）分别 yield，
+        旧消费方只认 ``chunk`` 键——该键始终保留，故零感知。
+        **思考增量不计入 ``parts``**：聚合 content / tokens / finish 判定语义与改前逐字一致。
+        ``on_reasoning`` 与 ``on_status`` 并行、可选、缺省 None 时零行为变化。
         """
         model_config = self.config["models"][model_name]
         provider = model_config["provider"]
@@ -532,16 +538,26 @@ class ModelGateway:
                 else:
                     if on_status: on_status({"phase": "retry", "model": model_name, "attempt": attempt + 1, "max_attempts": max_attempts, "reason": "stream_error"})
                 litellm = __import__("litellm")
+                # [信息流重出 Task4] 与 call 同款消息序：历史在当前提问之前
+                # （与 call.py:111-116 保持一致，否则对话场景答非所问）
+                messages = [{"role": "system", "content": system_prompt}]
+                if prior_messages:
+                    messages.extend(prior_messages)
+                messages.append({"role": "user", "content": user_prompt})
                 kwargs = {
                     "model": f"{provider}/{model}",
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    "messages": messages,
                     "temperature": temperature,
                     "api_key": api_key,
                     "stream": True,
                 }
+                # [信息流重出 Task4] 工具透传：原 stream_call 收了 tools 形参却从不下发，
+                # 导致切过去等于静默阉掉 function calling（工具循环整个失效）。此处补齐，
+                # 写法与 call 路径同款（call.py:141-144）。
+                if tools:
+                    kwargs["tools"] = [
+                        {"type": "function", "function": t} for t in tools
+                    ]
                 if max_tokens is not None:
                     kwargs["max_tokens"] = max_tokens
                 if timeout is not None:
@@ -558,25 +574,100 @@ class ModelGateway:
                 start = time.monotonic()
                 response = await litellm.acompletion(**kwargs)
                 parts: list[str] = []
+                # [信息流重出 Task4] 流式工具调用累积：OpenAI 协议下 tool_calls 按
+                # index 分片到达（arguments 是**片段**，须按序拼接），首片带 id/name。
+                tool_acc: dict[int, dict[str, Any]] = {}
+                finish_reason = ""
                 async for chunk in response:
+                    # [信息流重出 Task1] 双增量解包：思考与正文分走两个出口。
+                    # 思考字段名各提供商不一（reasoning / reasoning_content），两路都取。
+                    delta_obj = None
                     try:
-                        delta = chunk.choices[0].delta.content or ""
+                        delta_obj = chunk.choices[0].delta
                     except Exception:  # noqa: BLE001
-                        delta = ""
-                    if delta:
-                        parts.append(delta)
-                        yield {"chunk": delta}
+                        delta_obj = None
+                    try:
+                        finish_reason = getattr(chunk.choices[0], "finish_reason", "") or finish_reason
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        content_delta = (delta_obj.content or "") if delta_obj is not None else ""
+                    except Exception:  # noqa: BLE001
+                        content_delta = ""
+                    reasoning_delta = ""
+                    if delta_obj is not None:
+                        reasoning_delta = (
+                            getattr(delta_obj, "reasoning", None)
+                            or getattr(delta_obj, "reasoning_content", None)
+                            or ""
+                        )
+                        if not isinstance(reasoning_delta, str):
+                            reasoning_delta = ""   # 非字符串（如 dict）不误当正文
+                    # 思考先于正文到达，故先 yield；单增量（只 reasoning 或只 content）不报错
+                    if reasoning_delta:
+                        if on_reasoning:
+                            try:
+                                on_reasoning(reasoning_delta)
+                            except Exception:  # noqa: BLE001 回调异常不拖垮流
+                                pass
+                        yield {"chunk_type": "reasoning", "chunk": reasoning_delta, "text": reasoning_delta}
+                    if content_delta:
+                        parts.append(content_delta)
+                        yield {"chunk_type": "content", "chunk": content_delta, "text": content_delta}
+                    # [Task4] 工具调用分片累积（不进逐字流：那是给人看的字）
+                    raw_tcs = getattr(delta_obj, "tool_calls", None) if delta_obj is not None else None
+                    if raw_tcs:
+                        try:
+                            for tc in raw_tcs:
+                                idx = getattr(tc, "index", None)
+                                if idx is None:
+                                    idx = 0
+                                slot = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                                tid = getattr(tc, "id", None)
+                                if tid:
+                                    slot["id"] = tid
+                                fn = getattr(tc, "function", None)
+                                if fn is not None:
+                                    nm = getattr(fn, "name", None)
+                                    if nm:
+                                        slot["name"] = nm
+                                    ag = getattr(fn, "arguments", None)
+                                    if ag:
+                                        slot["arguments"] += ag
+                        except Exception:  # noqa: BLE001 工具分片坏不致命
+                            pass
                 content = "".join(parts)
                 latency = int((time.monotonic() - start) * 1000)
                 tokens = len(content) // 4
                 self.stats.record(model_name, tokens, latency, True)
                 if on_status: on_status({"phase": "success", "model": model_name, "attempt": attempt + 1, "max_attempts": max_attempts})
+                # [Task4] 工具调用汇总：按 index 还原；arguments 解析失败则交
+                # truncated_tool_call（与 call 同契约，否则切到流式后工具参数半截就废）
+                import json as _json
+                tool_calls: list[dict[str, Any]] = []
+                truncated_tool_call = None
+                for idx in sorted(tool_acc):
+                    slot = tool_acc[idx]
+                    if not slot["name"]:
+                        continue
+                    raw_args = slot["arguments"]
+                    try:
+                        parsed = _json.loads(raw_args) if raw_args else {}
+                        if not isinstance(parsed, dict):
+                            raise ValueError("arguments 不是对象")
+                        tool_calls.append({"name": slot["name"], "arguments": parsed})
+                    except Exception:  # noqa: BLE001
+                        truncated_tool_call = {
+                            "name": slot["name"],
+                            "raw_arguments": raw_args,
+                            "finish_reason": finish_reason or "length",
+                        }
                 yield {
                     "content": content,
-                    "tool_calls": [],
-                    "truncated_tool_call": None,
+                    "tool_calls": tool_calls,
+                    "truncated_tool_call": truncated_tool_call,
                     "truncated_reply": None,
-                    "finish_reason": "stop",
+                    "finish_reason": finish_reason or "stop",
                     "tokens_used": tokens,
                     "latency_ms": latency,
                 }
@@ -588,7 +679,7 @@ class ModelGateway:
                     fb = self.config["models"].get("fallback")
                     if fb and model_name != "fallback":
                         if on_status: on_status({"phase": "fallback", "from_model": model_name, "to_model": "fallback"})
-                        async for ev in self.stream_call("fallback", system_prompt, user_prompt, temperature, max_tokens, timeout, on_status, tools):
+                        async for ev in self.stream_call("fallback", system_prompt, user_prompt, temperature, max_tokens, timeout, on_status, tools, on_reasoning, prior_messages):
                             yield ev
                         return
                     raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {e}")
@@ -647,17 +738,7 @@ class MockGateway:
                         on_chunk(seg)
                     except Exception:  # noqa: BLE001
                         pass
-        # 当传入了 tools 且 system_prompt 是 synthesizer 时，模拟一次 tool_call
         tool_calls = []
-        if tools and "客观统合者" in (system_prompt or ""):
-            import json as _json
-            tool_calls.append({
-                "name": "write_file",
-                "arguments": {
-                    "path": "docs/test-document.md",
-                    "content": "# 测试文档\n\n这是通过 function calling 落盘的内容。",
-                },
-            })
         tokens = max(1, len(content) // 4)
         self.stats.record(model_name, tokens, 1, True)
         return {
@@ -670,8 +751,13 @@ class MockGateway:
         }
 
     async def stream_call(self, model_name, system_prompt, user_prompt, temperature=0.5,
-                           max_tokens=None, timeout=None, on_status=None, tools=None):
-        """stage_FE4：mock 流式调用（async generator）。"""
+                           max_tokens=None, timeout=None, on_status=None, tools=None,
+                           on_reasoning=None, prior_messages=None):
+        """stage_FE4：mock 流式调用（async generator）。
+
+        [信息流重出 Task1/Task4] 签名与真实网关对齐（含 on_reasoning / prior_messages），
+        增量同样带 chunk_type，兼容旧 {"chunk": seg} 键。
+        """
         if on_status:
             try:
                 on_status({"phase": "start", "model": model_name, "attempt": 1, "max_attempts": 1})
@@ -682,10 +768,11 @@ class MockGateway:
         import re as _re
         for seg in _re.findall(r".{1,8}", content):
             if seg:
-                yield {"chunk": seg}
+                yield {"chunk_type": "content", "chunk": seg, "text": seg}
+        tool_calls = []
         yield {
             "content": content,
-            "tool_calls": [],
+            "tool_calls": tool_calls,
             "truncated_tool_call": None,
             "truncated_reply": None,
             "finish_reason": "stop",
@@ -695,42 +782,6 @@ class MockGateway:
 
     def _fake_content(self, model_name: str, system_prompt: str, user_prompt: str) -> str:
         sp = system_prompt or ""
-        if "信息提纯" in sp:
-            return (
-                "## Round 提纯\n\n### 事实\n"
-                f"- {user_prompt[-200:]}\n\n### 待收敛\n- 待进一步讨论\n"
-            )
-        if "需求拆解师" in sp:
-            return (
-                "### 核心诉求\n测试诉求：梳理本轮输入的真实问题。\n\n"
-                "### 隐含前提\n- 默认假设A\n- 已知约束B\n\n"
-                "### 边界约束\n- 范围：核心议题\n- 不讨论：无关发散\n- 存疑：口径\n\n"
-                "### 回应要点（按优先级）\n1. 要点A\n2. 要点B\n\n"
-                "### 疑问点（如有）\n- 疑问1：范围是指什么？选项：A 全局 / B 局部\n"
-            )
-        if "查漏校验者" in sp:
-            return (
-                "### 补充遗漏\n- 无\n\n### 补充疑问\n- 该问没问的视角？\n\n"
-                "### 盲区提示\n- 暂无盲区\n\n### 评估结论\n- 基本完整\n"
-            )
-        if "澄清问题整理者" in sp:
-            return (
-                "1. 你指的是哪个范围？\n   - 选项A：全局\n   - 选项B：局部\n"
-                "2. 时间窗口是？\n   - 选项A：本周\n   - 选项B：本月\n"
-            )
-        if "回复生成者" in sp:
-            return "这是并行生成模型基于事实层给出的完整回复。"
-        if "客观统合者" in sp:
-            # synthesizer 现在用 function calling，正文是干净回复
-            return "已为你整合回复，主要涵盖要点 A 和 B。【已完成】"
-        if "记忆凝练官" in sp:
-            return (
-                "# 主题记忆\n\n## 核心结论\n- 结论一\n\n## 达成共识\n- 共识一\n"
-                "## 关键分歧\n- 分歧一\n\n## 排除方案\n- 方案X（已推翻）\n"
-                "## 核心约束\n- 约束一\n\n## 明确待办\n- 待办一\n"
-            )
-        if "质量审查官" in sp:
-            return "### 高严重问题\n- 无\n\n### 中严重问题\n- 无\n\n### 总体评估\n- 通过，无需修订\n"
         return f"[mock:{model_name}] {user_prompt[:120]}"
 
 

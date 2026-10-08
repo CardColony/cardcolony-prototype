@@ -1,23 +1,33 @@
 # -*- coding: utf-8 -*-
 """事件流过程通道（信息流与快车道整合 · Task 3/4，甲线核心）。
 
-纯展示层：内存环形事件日志（每 (work_id, card_id) 一份、seq 单调、默认 300 条、
-单条 data 8KB 截断并标记）＋ SSE 订阅 fanout。铁则：
+纯展示层：内存事件日志（每 (work_id, card_id) 一份、seq 单调）＋ SSE 订阅 fanout。
+铁则：
 - 事件不进 session/prior/模型输入（A42）——本模块不写任何 works 文件；
 - 单进程限制继承（A44）：不落盘、不另起进程；
 - 同卡并发 journal 清零重放（A45）：run_start 清空该卡日志（新请求以 run_start 开场）；
 - 与打点分离（A22/A24/A96）：审计打点走 logging（本模块 emit 内同步打一行结构化
-  日志），事件走内存环形，两通道不混。
+  日志），事件走内存日志，两通道不混。
 
-事件本体论 17 类（接口①并表，A101）：15 原（run_start/context/round_start/
+[对话流渲染 T4 · 无闸] 本模块三处「丢字闸」已清除（用户要看的字一个都不能丢）：
+  ① 单帧 8KB 截断（原丢后半）→ 删；逐字流帧天然小帧、SSE 无单帧硬限制；
+  ② 逐字流 5000 条环形弹出（原丢前字）→ 删；单轮 chunk 由 run_start/round_start
+     每轮清空，天然有界，以完整保留优先；
+  ③ 订阅队列满 ``put_nowait`` 静默丢 → 改「丢最旧中间帧、保最新 seq 游标、打警告」。
+  主通道 300 条环形弹出同属「丢步骤闸」，一并随 T3（过程卡族退役）退场。
+  丢帧造成的 **seq 空洞为设计使然、正常态**：前端 from=0 重放的完整 journal 可补齐
+  未丢失部分，后端**不补任何补丁帧**。
+
+事件本体论 19 类（接口①并表，A101）：15 原（run_start/context/round_start/
 round_end/rescue/tool_call/tool_result/seats_enter/seat_start/seat_end/deliver/
-proposal/done/error/ping）＋ 乙线并入 fastlane_route/card_op。
+proposal/done/error/ping）＋ 乙线并入 fastlane_route/card_op ＋ 逐字流 2 类。
 Schema 统一 {"seq":n,"ts":...,"type":"...","data":{...}}。ping 为 SSE 保层
 心跳帧（不占 journal，由 SSE 生成器定期发送）。
 """
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import time
@@ -25,16 +35,44 @@ from typing import Any, AsyncIterator
 
 logger = logging.getLogger("api.event_stream")
 
-# 事件本体论（17 类；V-T4-1 判据锚——本体论文件含 17 类）
+# [信息流重出 Task4] 当前逐字流归属的卡。用 contextvars 而非改 7 处 call_main 调用点：
+# 模型调用链上没有 work_id/card_id，逐层穿参会污染 condenser/折叠等无卡上下文的调用方。
+# 未设置时（凝练席、归拢等后台调用）逐字流自然关闭——不硬塞。
+_stream_ctx: contextvars.ContextVar[Any] = contextvars.ContextVar("flow_stream_ctx", default=None)
+
+
+def set_stream_context(work_id: str, card_id: str):
+    """标记「本协程链路的逐字流属于这张卡」，返回 token 供还原。"""
+    return _stream_ctx.set((work_id, card_id))
+
+
+def reset_stream_context(token: Any) -> None:
+    try:
+        _stream_ctx.reset(token)
+    except Exception:  # noqa: BLE001 跨上下文还原失败时退化为清空
+        _stream_ctx.set(None)
+
+
+def current_stream_context():
+    return _stream_ctx.get()
+
+# [信息流重出 Task4] 逐字流事件：新增 2 类 → 事件本体论 17 → 19。
+# 独立成对：走**独立 SSE 流 + 独立 journal + 独立 seq 计数器**（红线4
+# 「与既有 17 类隔离、不混合排 seq」）。
+TOKEN_EVENT_TYPES: tuple[str, ...] = ("reasoning_chunk", "content_chunk")
+
+# 事件本体论（19 类 = 17 原 + 2 逐字流；V-T4-2 判据锚）
 EVENT_TYPES: tuple[str, ...] = (
     "run_start", "context", "round_start", "round_end", "rescue",
     "tool_call", "tool_result", "seats_enter", "seat_start", "seat_end",
     "deliver", "proposal", "done", "error", "ping",
     "fastlane_route", "card_op",
-)
+) + TOKEN_EVENT_TYPES
 
-MAX_EVENTS = 300
-MAX_DATA_BYTES = 8 * 1024
+# [对话流渲染 T4] 以下两个上限常量已删——都是「丢字/丢步骤闸」：
+#   单帧 8KB 数据上限：截断丢后半；
+#   主通道 300 条条数上限：环形弹出丢最前面的步骤。
+#   两个 journal 都由 run_start 每轮清空（见 emit），单次请求天然有界，无需条数上限。
 
 # 兼容映射：emit 兼调 progress.set_stage（旧 /progress 端点与旧前端零感知兼容 A67）
 _PROGRESS_STAGE = {
@@ -55,47 +93,123 @@ _subscribers: dict[tuple[str, str], set[asyncio.Queue]] = {}
 # seq 游标跨请求安全（新请求事件不会被当作已读吞掉）
 _seq_counters: dict[tuple[str, str], int] = {}
 
+# [信息流重出 Task4] 逐字流的**独立**存储：与 _journals/_seq_counters 完全分开，
+# 两套 seq 各自单调，互不占用、互不挤出（红线4）。
+_token_journals: dict[tuple[str, str], list[dict[str, Any]]] = {}
+_token_subscribers: dict[tuple[str, str], set[asyncio.Queue]] = {}
+_token_seq_counters: dict[tuple[str, str], int] = {}
+
 
 def _key(work_id: str, card_id: str) -> tuple[str, str]:
     return (work_id, card_id)
 
 
-def _truncate(data: dict[str, Any]) -> dict[str, Any]:
-    """单条 data 8KB 截断并标记（A31）。"""
+def _jsonable(data: dict[str, Any]) -> dict[str, Any]:
+    """只兜住「不可 JSON 序列化」的载荷，防 SSE 生成器 ``json.dumps`` 抛错中断整条流。
+
+    [对话流渲染 T4] 原 8KB 截断分支已删除——它是丢字闸。
+    此处仅保留**非尺寸**的序列化兜底（不限制长度/体积/时间，不是闸）。
+    """
     try:
-        raw = json.dumps(data, ensure_ascii=False)
+        json.dumps(data, ensure_ascii=False)
     except (TypeError, ValueError):
         return {"_note": "unserializable"}
-    if len(raw.encode("utf-8")) <= MAX_DATA_BYTES:
-        return data
-    return {"_truncated": True, "_preview": raw[:MAX_DATA_BYTES // 2]}
+    return data
+
+
+def _seq_of(item: Any) -> Any:
+    return item.get("seq") if isinstance(item, dict) else None
+
+
+def _fanout(subs: Any, evt: dict[str, Any], work_id: str, card_id: str, channel: str) -> None:
+    """SSE 订阅 fanout：队列满**不静默丢**（[对话流渲染 T4]）。
+
+    原写法 ``q.put_nowait(evt)`` 在 QueueFull 时被 except 静默吞掉——用户要看的
+    字/步骤就这样悄悄没了、且无任何痕迹。现改为：队列满则弹出其中最旧一帧腾位，
+    再把**最新**帧放入，并每次打 warning 留痕。
+
+    - 保「最新」＝保最新 seq 游标可继续推进；
+    - 丢「最旧中间帧」＝只损失已排队但未送达的旧帧，这些帧仍在 journal 里，
+      前端 from=0 重放可补齐；
+    - 后端**不补任何补丁帧**（seq 空洞为正常态，接口契约不变）。
+    """
+    for q in list(subs):
+        try:
+            q.put_nowait(evt)
+        except asyncio.QueueFull:
+            dropped = None
+            try:
+                dropped = q.get_nowait()          # 丢最旧中间帧，腾位
+            except Exception:  # noqa: BLE001 取空队列竞态：忽略
+                dropped = None
+            try:
+                q.put_nowait(evt)                 # 保最新帧
+            except Exception:  # noqa: BLE001
+                pass
+            logger.warning(
+                "[flow] %s 订阅队列满：丢最旧中间帧(seq=%s) 保最新(seq=%s) work=%s card=%s",
+                channel, _seq_of(dropped), evt.get("seq"), work_id, card_id,
+            )
+        except Exception:  # noqa: BLE001 单订阅者失效不拖累其他
+            pass
+
+
+def _emit_token_boundary(key: tuple[str, str], ev_type: str) -> None:
+    """在**逐字流 journal** 里放一枚轮界标记帧（type 复用 run_start/round_start）。
+
+    为什么必须显式标记：逐字流 journal 清了但 seq 计数器只增不减，所以**实时**推送时
+    各轮 seq 是连续的（1,2,3…112），前端靠「seq 跳号」判界在实时下永远不触发。
+    标记帧用本体论里已有的 type，不新增第 20 类（红线4：19 类）。
+    """
+    try:
+        work_id, card_id = key
+        journal = _token_journals.setdefault(key, [])
+        _token_seq_counters[key] = _token_seq_counters.get(key, 0) + 1
+        evt = {
+            "seq": _token_seq_counters[key],
+            "ts": time.time(),
+            "type": ev_type,          # run_start / round_start（边界标记）
+            "data": {"_boundary": True},
+        }
+        journal.append(evt)
+        _fanout(_token_subscribers.get(key, ()), evt, work_id, card_id, "逐字流")
+    except Exception:  # noqa: BLE001 展示层零阻断
+        pass
 
 
 def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-    """落一条事件：seq 单调、环形 300、fanout 订阅者、兼调 progress 兼容映射。
+    """落一条事件：seq 单调、fanout 订阅者、兼调 progress 兼容映射。
 
     零阻塞零抛出（展示层绝不影响主流程）；run_start 清空该卡 journal（A45）。
+    [对话流渲染 T4] 已无「环形 300 弹出」——单次请求的事件以完整保留优先
+    （run_start 每轮清空，天然有界）。
     """
     try:
         key = _key(work_id, card_id)
         if ev_type == "run_start":
             _journals[key] = []
+            # [信息流重出 Task4] 新一轮开场，逐字流同步清空——否则 from=0 重放会把
+            # 上一轮的正文/思考一并补出来（V-T4-1「刷新不丢过程」不能变成「刷新串轮」）。
+            # seq 计数器照例不清：长连监听者游标跨请求仍安全（与主 journal 同逻辑）。
+            _token_journals[key] = []
+            _emit_token_boundary(key, ev_type)
+        elif ev_type == "round_start":
+            # 工具循环里一轮＝一次模型调用。逐字流若跨轮累积，前端 📄 块会把
+            # 第 1 轮 + 第 2 轮 + 合成轮的正文首尾相连糊成一坨（实测 259 字 vs 最终
+            # 回复 135 字即此症）。故**每轮开场清一次**：逐字块只显示「当前正在生成的
+            # 那一轮」，收尾时块内文本即最终回复，与刷新重放逐字一致。
+            _token_journals[key] = []
+            _emit_token_boundary(key, ev_type)
         journal = _journals.setdefault(key, [])
         _seq_counters[key] = _seq_counters.get(key, 0) + 1
         evt = {
             "seq": _seq_counters[key],
             "ts": time.time(),
             "type": ev_type,
-            "data": _truncate(data or {}),
+            "data": _jsonable(data or {}),
         }
         journal.append(evt)
-        while len(journal) > MAX_EVENTS:
-            journal.pop(0)
-        for q in list(_subscribers.get(key, ())):
-            try:
-                q.put_nowait(evt)
-            except Exception:  # noqa: BLE001 单订阅者满/失效不拖累其他
-                pass
+        _fanout(_subscribers.get(key, ()), evt, work_id, card_id, "主通道")
         # 兼容映射（旧 /progress 零感知）
         stage = _PROGRESS_STAGE.get(ev_type)
         if stage:
@@ -115,7 +229,7 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
 
 
 def journal_of(work_id: str, card_id: str) -> list[dict[str, Any]]:
-    """当前环形日志快照（from=0 重放源）。"""
+    """当前日志快照（from=0 重放源）。"""
     return list(_journals.get(_key(work_id, card_id), ()))
 
 
@@ -147,3 +261,94 @@ async def subscribe(work_id: str, card_id: str, from_seq: int = 0) -> AsyncItera
 
 def subscriber_count(work_id: str, card_id: str) -> int:
     return len(_subscribers.get(_key(work_id, card_id), ()))
+
+
+# ============================================================================
+# [信息流重出 Task4] 逐字流独立通道
+#
+# 与既有 17 类事件**完全隔离**（红线4）：
+#   - 独立 journal（_token_journals）、独立 seq 计数器（_token_seq_counters）
+#   - 不进 _journals，不占主 seq
+#   - 不调 progress.set_stage：逐字流不是流程阶段，汇报给 /progress 会污染其语义
+#   - 不写 works 文件、不进 session/prior/模型输入（红线3，A42）
+# 展示层铁则同主通道：零阻塞、零抛出。
+# [对话流渲染 T4] 逐字流 journal 不再有 5000 条环形弹出——单轮 chunk 由
+# run_start/round_start 每轮清空（见 emit），天然有界，以完整保留优先。
+# ============================================================================
+
+def emit_token(work_id: str, card_id: str, ev_type: str, text: str) -> dict[str, Any]:
+    """落一条逐字流增量（reasoning_chunk / content_chunk）。
+
+    与 ``emit`` 的区别只在「另开一套 journal 与 seq」，对主通道零干扰。
+    [对话流渲染 T4] 单帧超长**不再截断**——原 8KB 截断会把一帧的字砍掉后半，
+    属丢字闸。逐字流帧天然是小帧、SSE 无单帧硬限制，完整保留。
+    """
+    if ev_type not in TOKEN_EVENT_TYPES:
+        return {}
+    try:
+        text = text or ""
+        if not text:
+            return {}
+        key = _key(work_id, card_id)
+        journal = _token_journals.setdefault(key, [])
+        _token_seq_counters[key] = _token_seq_counters.get(key, 0) + 1
+        evt = {
+            "seq": _token_seq_counters[key],
+            "ts": time.time(),
+            "type": ev_type,
+            "data": {"text": text},
+        }
+        journal.append(evt)
+        # [对话流渲染 T4] 已删 5000 条环形弹出（原 pop(0) 丢前字）
+        # 逐字流每帧给 /progress 打一次心跳：仍在吐字的超长请求持续被判为
+        # 「仍在推进」，刷新后仍能补出「进行中」（V-T4-1）。
+        # 只刷 ts、不改 stage —— 逐字流不是流程阶段，汇报 stage 会污染其语义。
+        try:
+            from . import progress as _progress
+            _progress.heartbeat(work_id, card_id)
+        except Exception:  # noqa: BLE001
+            pass
+        _fanout(_token_subscribers.get(key, ()), evt, work_id, card_id, "逐字流")
+        return evt
+    except Exception as exc:  # noqa: BLE001 展示层零阻断
+        logger.warning("[flow] emit_token 失败（不阻断主流程）type=%s card=%s: %s",
+                       ev_type, card_id, exc)
+        return {}
+
+
+def token_journal_of(work_id: str, card_id: str, kind: str | None = None) -> list[dict[str, Any]]:
+    """逐字流存量（from=0 重放源）。``kind`` 可选过滤：content_chunk / reasoning_chunk。"""
+    items = list(_token_journals.get(_key(work_id, card_id), ()))
+    if kind:
+        items = [e for e in items if e["type"] == kind]
+    return items
+
+
+async def subscribe_tokens(work_id: str, card_id: str, from_seq: int = 0) -> AsyncIterator[dict[str, Any]]:
+    """逐字流 SSE 订阅：先重放存量（seq>=from_seq），再实时跟进。断连自动清理。
+
+    队列满由 ``_fanout`` 处理为「丢最旧中间帧、保最新 seq、打警告」（不静默丢）。
+    """
+    key = _key(work_id, card_id)
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    _token_subscribers.setdefault(key, set()).add(queue)
+    try:
+        for evt in token_journal_of(work_id, card_id):
+            if evt["seq"] >= from_seq:
+                yield evt
+        last = from_seq - 1
+        while True:
+            evt = await queue.get()
+            if evt["seq"] <= last:
+                continue
+            last = evt["seq"]
+            yield evt
+    finally:
+        try:
+            _token_subscribers.get(key, set()).discard(queue)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def token_subscriber_count(work_id: str, card_id: str) -> int:
+    return len(_token_subscribers.get(_key(work_id, card_id), ()))

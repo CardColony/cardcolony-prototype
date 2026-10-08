@@ -1,0 +1,107 @@
+{
+  "meta": {
+    "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+    "generated": "2026-10-07T15:18",
+    "method": "程序化逐字取回（按行号），json 库自动转义"
+  },
+  "items": [
+    {
+      "id": "C-001",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 1,
+      "line_end": 1,
+      "text": "# 凝练＋折叠开启线 · 方案链输入包（2026-10-07）"
+    },
+    {
+      "id": "C-002",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 3,
+      "line_end": 3,
+      "text": "> 本文件是凝练/折叠开启线的方案链唯一对账基线。内容全部为已定事实的组装（用户逐字原话、定案参数、源侧机制铁证、漏搬点清单），零发明上游。report-only。"
+    },
+    {
+      "id": "C-003",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 5,
+      "line_end": 11,
+      "text": "## 一、任务与用户当场裁定（逐字）\n\n**2026-10-07 14:47 用户当场拍定四参数**：\n1. 凝练触发线 **80 万 tokens**\n2. 一次凝练 **30 万 tokens**\n3. 凝练模型 **glm-5.3-flash**\n4. **折叠**也一样，**五批触发**"
+    },
+    {
+      "id": "C-004",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 13,
+      "line_end": 13,
+      "text": "**2026-10-07 15:11 用户关键更正（逐字）**：dsh 的上下文里「已经根本没有第一件这种窗口了」——**推演侧 T11 的 KEEP_WINDOW 窗口折叠不是 dsh 现有机制**；用户要的「折叠五批」＝源侧凝练分批语义（fold-l1「每成功凝练满 5 批触发归拢」，`FOLD_EVERY_BATCHES=5`）。"
+    },
+    {
+      "id": "C-005",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 15,
+      "line_end": 15,
+      "text": "**2026-10-07 14:56 更正 a**：「一次凝练多少量」源机制本来就有（`windowTokenBudget` 每批预算＋`truncateWindow` 切片宁少不超、`condenseMaxBatchesPerJob` 批上限、触发判定与窗口装载同口径铁律）——**移植漏搬**，须原样搬回、不得自创。"
+    },
+    {
+      "id": "C-006",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 17,
+      "line_end": 17,
+      "text": "**2026-10-07 14:56 更正 b**：智谱是包月 coding plan，**不存在余额耗尽**——本方案不得再就密钥池/额度/余额提任何建议或担忧。"
+    },
+    {
+      "id": "C-007",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 19,
+      "line_end": 19,
+      "text": "**2026-10-07 15:14 用户纪律**：不得拿已丢弃的机制、已明确否定的事情反复请示（例：A/B 两套折叠的二选一、「智谱额度」担忧、「折叠指哪套」再问）——已丢弃/已否定的，直接依用户已给口径推进，不再回头问。"
+    },
+    {
+      "id": "C-008",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 21,
+      "line_end": 28,
+      "text": "## 二、四参数定案表（再无待拍项）\n\n| # | 参数 | 定案 | 落点 | 需改码 |\n|---|---|---|---|---|\n| ① | 凝练触发线 **80 万 tokens** | `CONDENSE_TRIGGER_K=1680000`（按代码自注 2.1 B/token 折算，**可推翻**） | memory_store `trigger_k_bytes()`/`condense_turn_end` 现读 env 通道（L80-90/L311-315） | 纯配置 |\n| ② | 一次凝练 **30 万** | **搬回源侧 `windowTokenBudget` 切片逻辑**、宁少不超，值 30 万 token≈63 万字节 | 现 `pending=prior[mark:]` 全取处改切片（memory_store L311） | **改码**（漏搬补全） |\n| ③ | 凝练模型 **glm-5.3-flash** | 新增凝练模型位（智谱 coding plan，**端点 GET /models 200 实测存在**） | 现有 `_condense_call` 走 `call_main`＝统合官（L243-244）→ 改指独立凝练席位 | **改码** |\n| ④ | 折叠 **五批** | **搬回源侧 fold-l1 归拢线**、`FOLD_EVERY_BATCHES=5`（每成功凝练满 5 批触发归拢）；**不是** T11 的 KEEP_WINDOW 窗口折叠（15:11 更正已否定） | 推演侧 memory_store 无 fold 函数（整条漏搬）→ 搬回 | **改码**（整条搬回） |"
+    },
+    {
+      "id": "C-009",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 30,
+      "line_end": 32,
+      "text": "## 三、源侧机制铁证（dsh-memory PORTING-GUIDE，已实读逐字）\n\n文件：`D:\\AI_station\\ZhuGe\\dsh-memory\\docs\\PORTING-GUIDE-上下文与凝练机制移植对接.md`"
+    },
+    {
+      "id": "C-010",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 34,
+      "line_end": 40,
+      "text": "| 机制 | 源侧既有实现（逐字） | 出处 |\n|---|---|---|\n| 每批窗口预算 | `windowTokenBudget`＝每批窗口预算，S0 窗口组装 `truncateWindow(budget=8万token, 宁少不超)` | L280-283/L370 |\n| 触发线 | `contextTriggerTokens: 140000`＝14 万 token（攒够才跑一批） | L371 |\n| 单 job 批上限 | `condenseMaxBatchesPerJob: 20`＝批循环直至窗口清空/上限 | L280/L372 |\n| 同口径铁律 | 触发判定与窗口装载同口径（都只算正式正文）；历史教训「两侧口径分叉曾致一批凝 8 万却离触发线只剩 1.8 万的怪账」 | L296 |\n| 归拢折叠 | `fold-l1` `runFoldJob`：每成功凝练满 5 批（`FOLD_EVERY_BATCHES=5`）触发一次，同一件事散落多条 L1 归拢成一条更大 L1、旧成员降层保留 | L43/L302 |"
+    },
+    {
+      "id": "C-011",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 42,
+      "line_end": 50,
+      "text": "## 四、漏搬点清单（源有 → 推演侧现状，全挂两侧 file:line）\n\n| # | 源侧机制 | 推演侧现状 | 判定 |\n|---|---|---|---|\n| 1 | 每批窗口预算切片 `truncateWindow(budget)` | `pending=prior[mark:]` 一次全取无切片（memory_store L311） | **漏搬** |\n| 2 | 单 job 批上限 `condenseMaxBatchesPerJob` | 无此概念 | **漏搬** |\n| 3 | 同口径铁律（触发判定与装载同口径） | 触发按字节、装载无切片——口径必分叉 | **漏搬** |\n| 4 | fold-l1 归拢整条线（`FOLD_EVERY_BATCHES=5`） | memory_store 无 fold 函数；`tool_fold.py` 是另一套 T11 上下文折叠（15:11 已否定其为本线对象） | **整条漏搬** |\n| 5 | 独立凝练模型位 | `_condense_call` 走 `call_main`＝统合官（L243） | **漏搬/简化** |"
+    },
+    {
+      "id": "C-012",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 52,
+      "line_end": 56,
+      "text": "## 五、三条红线（随方案落，非口头）\n\n1. **RD-移植纪律**：凡涉及从 dsh-memory/源项目移植或对齐的机制，动手（设计/施工）前必须回源头读原机制实现（源文件、挂 file:line 逐字），**禁止凭目标侧现状判断「有没有」**——目标侧缺 ≠ 源头没有；判断「缺/漏」的唯一依据是源侧原文与目标侧逐项对账。\n2. **RD-智谱口径**：智谱为包月 coding plan，**不存在余额/额度耗尽**；涉及智谱席位不再提任何「密钥池/额度/余额/吃薄」类建议或担忧。glm-5.3-flash 在 coding plan 覆盖内，可直接启用。\n3. **RD-已断言不回头问**：已丢弃的机制（如 T11 KEEP_WINDOW 窗口折叠为本线对象）、已明确否定的事（如智谱额度担忧、折叠指 A/B 二选一）**不再回头问、不再做选择题**，直接依用户已给口径推进。"
+    },
+    {
+      "id": "C-013",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 58,
+      "line_end": 65,
+      "text": "## 六、核心问题（方案环须钉死）\n\n1. 每批窗口预算切片逻辑搬到推演侧的具体落点与 mark 推进语义（搬回源侧「批次 COMMIT 后推进 mark 游标、剩余下一批再取」）；\n2. 批上限与该线「失败零阻断」的取舍；\n3. 同口径铁律的计量口径定义（触发与切片用同一把尺）；\n4. 归拢线搬回后的触发点与时序（每成功凝练满 5 批，挂在哪）；\n5. 独立凝练模型位的配置形态（models.yaml 新席位＋`_condense_call` 改指）；\n6. 存量完整性校验（新增在场/存量函数一个不少/结构配平/与备份全量 diff/字节数锚，fail-closed）写进施工与部署面。"
+    },
+    {
+      "id": "C-014",
+      "src": "D:\\AI_station\\推演agent\\docs\\exploration\\凝练折叠开启-方案链输入包-20261007.md",
+      "line_start": 67,
+      "line_end": 69,
+      "text": "## 七、边界纪律\n\nreport-only（本链不执行不动码不重启不动 works 不动 git）；铁律零（方案→任务书→施工→上线）；两环境同步纪律（同源整件同步、分叉手术式，部署落盘后独立重跑存量校验）；行号现场实读不抄文档；落盘必当场回读核验；不编造证据；交付架构级语言。"
+    }
+  ]
+}

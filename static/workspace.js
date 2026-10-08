@@ -55,6 +55,13 @@
       currentCard = card;
       await renderInspector();
       await renderChat();
+      // [对话流渲染] 把这张卡**上一条调用**的中间环节痕迹补回对话流（刷新/换卡都生效）。
+      // 事件只活在服务端内存 journal（不落盘、不进 session/prior/模型输入）：
+      //   同进程且该卡此后没再发过请求 ⇒ 重放得出；进程重启或又发过消息 ⇒ 自然没有了。
+      // 只重放环节行、不重放正文（正文已由 renderChat 从会话渲染，免得出现重复气泡）。
+      if (window.EventFlow && window.EventFlow.replayTrace) {
+        window.EventFlow.replayTrace(WORK_ID, cardId);
+      }
       // [刷新恢复 2026-10-03] 卡号写进 URL hash：刷新后按 hash 自动重开这张卡。
       // 用 replaceState 不堆积浏览历史、不触发页面重载；URL 即状态，不引入前端存储。
       if (location.hash !== "#" + cardId) {
@@ -639,13 +646,13 @@
     try {
       const cardId = currentCard.meta.card_id;
       const msgs = await API.getSession(WORK_ID, cardId);
-      // [R3 修正·执行方2] 本地已渲染条数以 DOM 实数为准（.msg:not(.thinking)，与 send()
+      // [R3 修正·执行方2] 本地已渲染条数以 DOM 实数为准（.msg:not(.thinking):not(.live)，与 send()
       // 的 baseline 同口径）。send() 绕过 renderChat 直接上屏用户/助手气泡——纯变量
       // 记账与 DOM 脱节，重开同卡时会把已上屏的消息再追加一遍（重复气泡）。
       // 判据不变：换卡或服务端变短（消息被删）→ 全量重建；
       // 服务端变长 → 只 append 尾部差额；相等 → 不碰 DOM（既有元素引用保留）。
       const localCount = (chatRenderedCard === cardId)
-        ? chatArea.querySelectorAll(".msg:not(.thinking)").length
+        ? chatArea.querySelectorAll(".msg:not(.thinking):not(.live)").length
         : 0;
       const needFull = (chatRenderedCard !== cardId) || (msgs.length < localCount);
       if (needFull) {
@@ -665,9 +672,23 @@
   }
 
   function appendMessage(role, content, model) {
+    const badge = (role === "assistant" && model) ? `<div class="model-badge">${escapeHtml(model)}</div>` : "";
+    // [对话流渲染] 权威助手消息上屏时**就地接管**那条正在生成的正文条目
+    // （`.msg.assistant.live`）——.live 不计入基数（见 localCount/baseline），
+    // 接管后它就成为该条助手消息本体；过程行 `.step-row` 各自独立留在对话流里，不动。
+    // 就地接管 ⇒ 全程只有一条助手消息，不会出现两条割裂的气泡。
+    if (role !== "user") {
+      const live = chatArea.querySelector(".msg.assistant.live");
+      if (live) {
+        live.className = "msg assistant";
+        live.innerHTML = badge + formatMsgContent(content || "");
+        chatRenderedCount += 1;
+        scrollChatBottom();
+        return live;
+      }
+    }
     const el = document.createElement("div");
     el.className = "msg " + (role === "user" ? "user" : "assistant");
-    const badge = (role === "assistant" && model) ? `<div class="model-badge">${escapeHtml(model)}</div>` : "";
     el.innerHTML = badge + formatMsgContent(content || "");
     chatArea.appendChild(el);
     // [C3 主界面优化] 记账与显示一致：send()/恢复路径与 renderChat 同走本函数，
@@ -696,6 +717,9 @@
     idle: "等待开始",
   };
   function createWaitingBubble(prefix, cardIdAtSend) {
+    // [对话流渲染 T1] 两态互斥：等待气泡（.msg.thinking）只在事件流连不上时兜底，
+    // 与生成中气泡（.msg.assistant.live）不并存——建等待气泡前先撤生成中气泡。
+    chatArea.querySelectorAll(".msg.assistant.live").forEach(b => b.remove());
     const el = document.createElement("div");
     el.className = "msg thinking";
     let seconds = 0;
@@ -735,14 +759,23 @@
   //       done/error/idle 及任何异常一律静默降级为现有行为，绝不抛错打断页面。
   // 硬约束：纯前端改动，静态文件热生效，零重启。
   // 活跃态白名单显式列出——done/error 是终止态，若当活跃处理会让已完成的卡永远转圈。
-  const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards"];
+  // [信息流重出 Task4] 活跃判定加固：超长请求不再被误判 stale。
+// 此前只有阶段白名单——阶段不变的超长请求与「进程早已死掉但阶段没清」长得一模一样，
+// 刷新后二者都可能被判成「还在跑」。后端现给出显式 active 位（progress.set_stage 写点声明），
+// 有 active 就信它；无该字段（老响应）才退回阶段白名单，保证兼容。
+// "streaming"：逐字流每帧心跳写入的阶段——正在吐字即仍在推进。
+const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", "streaming"];
   async function attachRunningState(cardId) {
     if (!cardId) return false;
     try {
       const st = await API.getProgress(WORK_ID, cardId);
-      if (!st || !ACTIVE_STAGES.includes(st.stage)) return false;
+      if (!st) return false;
+      const alive = (typeof st.active === "boolean")
+        ? st.active
+        : ACTIVE_STAGES.includes(st.stage);
+      if (!alive) return false;
       // 同一张卡上已有等待气泡时不重复挂（避免 hashchange 等路径重复触发）
-      if (chatArea.querySelector(".msg.thinking")) return false;
+      if (chatArea.querySelector(".msg.thinking, .msg.assistant.live")) return false;
       // [信息流 Task5] 刷新重放：过程卡 from=0 重建（V5；SSE 连不上回退等待气泡）
       if (window.EventFlow) {
         window.EventFlow.start(WORK_ID, cardId, () => {
@@ -768,8 +801,9 @@
     inputBox.value = "";
     inputBox.style.height = "auto";
 
-    // [hotfix] 自愈基线：当前已上屏消息数（含刚上屏的用户气泡）＝服务端追加用户消息后的条数
-    const baseline = chatArea.querySelectorAll(".msg:not(.thinking)").length;
+    // [hotfix] 自愈基线：当前已上屏消息数（含刚上屏的用户气泡）＝服务端追加用户消息后的条数。
+    // [对话流渲染 T5] 排除 .thinking 与 .assistant.live——生成中/等待气泡不计入基数。
+    const baseline = chatArea.querySelectorAll(".msg:not(.thinking):not(.live)").length;
     const cardId = currentCard.meta.card_id;
     let settled = false;
 

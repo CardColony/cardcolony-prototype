@@ -53,24 +53,53 @@ async def call_main(
 
     Phase 7：tools 透传给 gateway.call（OpenAI function calling）。
     [凝练折叠开启 2026-10-07·任务5] 增 model_name 参数（缺省 "main"，缺省行为
-    逐字不变）；凝练线经 model_name="condenser" 指定独立凝练席（gateway.call
-    直读 config["models"][model_name]，R2 实读支持任意席位名，gateway.py 禁改令不触发）。
+    逐字不变）；凝练线经 model_name="condenser" 指定独立凝练席。
+
+    [信息流重出 Task4 · 2026-10-08] 主路径改走 ``gw.stream_call``（用户裁定：切
+    stream_call）。改前 stream_call 是死代码——生产只经 ``call``，逐字流无处可出。
+    三点保语义不变：
+      1. 聚合 content / tool_calls / finish_reason 全部取自流末尾的终帧，
+         与 call 同契约（含 truncated_tool_call 续写口）；
+      2. 思考增量**不进** content（只作逐字流事件），故正文判定与续写不受污染；
+      3. fallback 仍由 gateway 内部 main→fallback 处理（on_status 事件流不变）。
+    逐字流经 event_stream.emit_token 落到**独立** SSE（/tokens），
+    归属卡经 contextvar 传入；无卡上下文时（condenser/归拢）自动不落逐字流。
     """
     gw = get_gateway()
     cfg = (gw.config.get("models") or {}).get(model_name, {})
     events: list[dict[str, Any]] = []
-    result = await gw.call(
+
+    # 逐字流归属（无卡上下文则为 None → 不落逐字流）
+    try:
+        from . import event_stream as _es
+        ctx = _es.current_stream_context()
+    except Exception:  # noqa: BLE001
+        ctx = None
+
+    result: dict[str, Any] = {}
+    async for ev in gw.stream_call(
         model_name,
         system_prompt,
         user_prompt,
         temperature=float(cfg.get("temperature", 0.5)),
         max_tokens=cfg.get("max_tokens"),
         timeout=cfg.get("timeout"),
-        skip_completion_marker=True,
+        on_status=events.append,
         tools=tools,
         prior_messages=prior_messages or None,
-        on_status=events.append,
-    )
+    ):
+        if "chunk_type" in ev:
+            # 逐字流增量：进独立通道，不进 content
+            if ctx:
+                _es.emit_token(ctx[0], ctx[1],
+                               "reasoning_chunk" if ev["chunk_type"] == "reasoning"
+                               else "content_chunk",
+                               ev.get("text") or "")
+        elif "content" in ev:
+            result = ev
+    if not result:
+        result = {"content": "", "tool_calls": [], "truncated_tool_call": None,
+                  "finish_reason": "stop", "tokens_used": 0, "latency_ms": 0}
     if is_mock():
         model_used = "mock"
     else:
