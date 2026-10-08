@@ -1,0 +1,13 @@
+[001] run_start {"chars": 6, "pair_id": "<PAIR_ID>"}
+[002] context {"bytes": 98, "regions": ["", ""]}
+[003] fastlane_route {"matched_rule": "查询", "mode": "fastlane"}
+[004] round_start {"phase": "main", "round": 1}
+[005] tool_call {"target": "card_001", "tool": "read_card"}
+[006] card_op {"ok": true, "op": "read_card", "result": {"body": "（当前状况快照：做到哪、什么状态、卡在哪；只写已核实；事实条目带锚点自指；覆盖写·单一最新；块尾至多一行衔接索引）", "card_id": "card_001", "parent": "", "relations": [], "title": "金样本剧本s2"}, "target": "card_001"}
+[007] round_start {"phase": "tools", "round": 2}
+[008] deliver {"branch": "normal", "bytes": 59}
+[009] proposal {"cards": [], "count": 0}
+[010] done {"model_calls": 2, "rounds": 2}
+[TOK001]  round_start {"_boundary": true}
+[TOK002]  content_chunk {"text": "查证完成，根卡结"}
+[TOK003]  content_chunk {"text": "构如上。"}

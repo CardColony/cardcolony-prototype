@@ -1,0 +1,28 @@
+{
+  "card_count": 1,
+  "cards": [
+    {
+      "card_id": "card_001",
+      "path": "works/work_001/cards/card_001.md",
+      "sha256_normalized": "<CONTENT_HASH>"
+    }
+  ],
+  "session": [
+    {
+      "path": "works/work_001/sessions/session_001.md",
+      "sha256_normalized": "<CONTENT_HASH>"
+    }
+  ],
+  "session_messages": [
+    {
+      "len": 6,
+      "pair_id": "<PAIR_ID>",
+      "role": "user"
+    },
+    {
+      "len": 14,
+      "pair_id": "<PAIR_ID>",
+      "role": "assistant"
+    }
+  ]
+}

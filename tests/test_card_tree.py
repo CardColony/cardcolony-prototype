@@ -30,8 +30,9 @@ async def test_work_root_card_shape(work):
     assert root == "card_001"
 
     data = await card_store.read_card(wid, root)
-    assert data["meta"]["card_type"] == "剧本"
-    assert data["meta"]["parent"] == ""          # 剧本卡无视 parent 入参
+    # [底座收口 T6 同步] 根卡类型「剧本」→ project（legacy 退役，2026-10-08）
+    assert data["meta"]["card_type"] == "project"
+    assert data["meta"]["parent"] == ""          # project 根卡无视 parent 入参
     assert data["meta"]["card_id"] == root
 
     # 一正一影：建卡即派生

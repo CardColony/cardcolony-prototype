@@ -14,12 +14,14 @@
     "notes": [
       "影子卡 card_type=shadow 走独立通道，不进入本体系（任务书 §三.2）。",
       "legacy_types[].write_blocked ＝该 legacy 值是否在**写路径**拦截。",
-      "  · 「剧本」「线索」暂为 false —— 存量 3 根卡 + 67 子卡全属这两类，迁移未完成前",
-      "    拦截会让系统无法建任何卡（create_card 默认 card_type='线索'）。",
+      "  · 「剧本」暂 false —— 三张根卡仍是「剧本」，底座收口迁移（剧本→project）",
+      "    完成后置 true（[卡片类型底座收口与建卡入口适配] 任务书 T4）。",
+      "  · 「线索」已 true（2026-10-08 研究树迁移批次）——存量 35+32 张已全部",
+      "    归位 topic/sub_project。",
       "  · 其余四个小说遗留值存量无实例，write_blocked=true 立即拦截。",
-      "  · T7 存量迁移完成后，「线索」应改 true（届时全部卡已归 sub_project）。",
       "  · 本字段是**渐进迁移的进度开关**，与 deprecated（是否过时）正交。",
-      "研究项目（research_project）子卡词表本期不定义，后续立项时在 l1_vocabularies 下加scope 即可，不改 schema。"
+      "研究项目（research_project）子卡词表已立项（2026-10-08）：唯一类型 topic（课题卡）。",
+      "根卡类型 project 已立项（2026-10-08 底座收口）：独立 root scope，取代「剧本」。"
     ]
   },
 
@@ -33,8 +35,8 @@
     {
       "code": "research_project",
       "label": "研究项目",
-      "description": "以调研/推演/产出结论为目标。子卡词表本期不定义（后续立项）。",
-      "l1_vocabulary_ref": null
+      "description": "以调研/推演/产出结论为目标。子卡统一为「课题卡」（用户 2026-10-08 裁定；调研/文献/实验等差异用标签扛，与研发树同口径）。",
+      "l1_vocabulary_ref": "research_project"
     }
   ],
 
@@ -61,14 +63,42 @@
           "allowed_transitions": ["active", "completed"]
         }
       ]
+    },
+    "research_project": {
+      "scope": "research_project",
+      "types": [
+        {
+          "code": "topic",
+          "label": "课题卡",
+          "description": "研究项目下的一个课题（研究树子卡统一叫课题卡——用户 2026-10-08 裁定）。可有子卡（研究树存在父子层级）；调研/文献/实验等差异用标签扛，不再细分类型。",
+          "can_have_children": true,
+          "requires_owner": false,
+          "default_template": "topic",
+          "allowed_transitions": ["active", "completed"]
+        }
+      ]
+    },
+    "root": {
+      "scope": "root",
+      "types": [
+        {
+          "code": "project",
+          "label": "项目根卡",
+          "description": "一个独立推演项目的总架构卡（取代 legacy「剧本」成为唯一根卡类型——底座收口 2026-10-08）。只允许 create_work 流程产生；树词表（rd/research）均不含它 ⇒ 子卡写 project 被闸2 自然拦截。根卡身份由 project_class 承载，project 只是类型名。",
+          "can_have_children": true,
+          "requires_owner": false,
+          "default_template": "project",
+          "allowed_transitions": ["active", "completed"]
+        }
+      ]
     }
   },
 
   "legacy_types": [
-    { "code": "剧本", "deprecated": true, "write_blocked": false, "used_by": "root_card",
-      "migration_hint": "根卡保留原值（另有 project_class 承载项目分类语义）；非根卡若为「剧本」须人工确认后归类。存量3 张根卡全部属此类，不阻断。" },
-    { "code": "线索", "deprecated": true, "write_blocked": false, "used_by": "bulk_migrate_to:sub_project",
-      "migration_hint": "真实语义为「没选」；存量 67 张卡批量归 sub_project。**迁移完成前 write_blocked=false（渐进兼容）**——若置 true，全系统因默认 card_type='线索' 而无法建任何子卡。T7 迁移完成后应改为 true。" },
+    { "code": "剧本", "deprecated": true, "write_blocked": true, "used_by": "migrated: 3 根卡→project（底座收口 2026-10-08）",
+      "migration_hint": "原兼任根卡类型；底座收口后根卡统一为 project（root scope），三张根卡已迁移，写路径退役。" },
+    { "code": "线索", "deprecated": true, "write_blocked": true, "used_by": "migrated: work_002→sub_project(T7), work_001/work_003→topic(研究树批次 2026-10-08)",
+      "migration_hint": "真实语义为「没选」；存量已全部归位——work_002 32 张→sub_project（T7）、work_001 22 张与 work_003 13 张→topic（研究树批次）。**迁移完成后 write_blocked=true（[研究项目词表与迁移] 任务书 T3）**：写路径显式报错，读路径宽容。注意 create_card 默认 card_type='线索'，收紧后建卡必须显式传词表类型。" },
     { "code": "世界观", "deprecated": true, "write_blocked": true, "used_by": null,
       "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" },
     { "code": "行为体", "deprecated": true, "write_blocked": true, "used_by": null,

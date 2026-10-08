@@ -1,0 +1,17 @@
+[001] run_start {"chars": 19, "pair_id": "<PAIR_ID>"}
+[002] context {"bytes": 98, "regions": ["", ""]}
+[003] fastlane_route {"matched_rule": "未命中", "mode": "chain"}
+[004] round_start {"phase": "main", "round": 1}
+[005] tool_call {"target": "card_001", "tool": "read_card"}
+[006] tool_result {"ok": true, "target": "card_001", "tool": "read_card"}
+[007] round_start {"phase": "tools", "round": 2}
+[008] seats_enter {"tool_results": 1}
+[009] seat_start {"model": "golden-vp"}
+[010] seat_end {"chars": 17, "latency_ms": 1, "model": "golden-vp", "ok": true}
+[011] round_start {"phase": "synthesize", "round": 2}
+[012] deliver {"branch": "normal", "bytes": 80}
+[013] proposal {"cards": [], "count": 0}
+[014] done {"model_calls": 3, "rounds": 2}
+[TOK001]  round_start {"_boundary": true}
+[TOK002]  content_chunk {"text": "综合三席意见，收"}
+[TOK003]  content_chunk {"text": "敛为一条定论。"}

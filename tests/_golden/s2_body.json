@@ -1,0 +1,13 @@
+{
+  "created_cards": [],
+  "model": "golden-main",
+  "reply": "正在查证根卡…\n\n查证完成，根卡结构如上。\n",
+  "tool_events": [
+    {
+      "card_id": "card_001",
+      "ok": true,
+      "tool": "read_card"
+    }
+  ],
+  "viewpoints_meta": []
+}

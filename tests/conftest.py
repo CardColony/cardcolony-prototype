@@ -54,6 +54,21 @@ def sandbox(tmp_path, monkeypatch):
     for mod in (card_store, work_store, canvas_store, session_store, manuscript_store):
         monkeypatch.setattr(mod, "WORKS_DIR", works)
 
+    # [研究项目词表与迁移 T4 · 2026-10-08] 类型注册表同样属于"真实环境"，
+    # 沙箱内指向 tmp_path 下不存在的文件 ⇒ load_type_registry() 返回 {} ⇒
+    # 按 card_store 既有设计"无注册表降级放行"（不阻断写路径）。
+    # 依据：load_type_registry docstring 明说"路径由模块级常量派生，测试可
+    # monkeypatch 改写（与 WORKS_DIR 同一套隔离手法）"——基座 T2 预告了手法
+    # 但未落地；「线索」write_blocked 收紧后测试加载生产真实注册表会大面积
+    # 误红（32 条用默认 card_type='线索' 建卡），故补齐本隔离点。
+    # 代价（如实记）：注册表闸逻辑在 pytest 内从此零覆盖（原本也是零——
+    # tests/ 无任何基座用例）；闸的真实验证在沙箱外以自检脚本执行（见
+    # 执行回报 §T3），基座测试建设属后续任务。
+    monkeypatch.setattr(
+        card_store, "TYPE_REGISTRY_PATH",
+        base / "config" / "card_type_registry.json",
+    )
+
     # 快照根：BASE_DIR 用于 _iter_protected_files 与相对路径计算
     monkeypatch.setattr(data_snapshot, "BASE_DIR", base)
     monkeypatch.setattr(data_snapshot, "SNAPSHOT_ROOT", tmp_path / "snapshots")

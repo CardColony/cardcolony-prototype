@@ -110,7 +110,10 @@ class PatchPositionsRequest(BaseModel):
 class CreateCardRequest(BaseModel):
     title: str = Field(min_length=1)
     source: str
-    card_type: str = "线索"
+    # [底座收口 T5.b] 缺省"线索"→""：空值由 create_card 按树词表映射
+    # （rd→sub_project / research→topic）；「线索」已退役，旧缺省会让
+    # 前端 UI 建卡全被闸1 拒。
+    card_type: str = ""
     parent: Optional[str] = None
     charter: str = ""
     conclusion: str = ""

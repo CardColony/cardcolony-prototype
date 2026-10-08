@@ -1,0 +1,10 @@
+[001] run_start {"chars": 6, "pair_id": "<PAIR_ID>"}
+[002] context {"bytes": 98, "regions": ["", ""]}
+[003] fastlane_route {"matched_rule": "查询", "mode": "fastlane"}
+[004] round_start {"phase": "main", "round": 1}
+[005] deliver {"branch": "reply-only", "bytes": 39}
+[006] proposal {"cards": [], "count": 0}
+[007] done {"model_calls": 1, "rounds": 1}
+[TOK001]  round_start {"_boundary": true}
+[TOK002]  content_chunk {"text": "根卡现状已核对，"}
+[TOK003]  content_chunk {"text": "无需改动。"}

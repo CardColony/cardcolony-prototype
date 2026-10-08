@@ -1,0 +1,20 @@
+{
+  "tag": "s1",
+  "title": "纯文本一轮交付（快车道·无工具·跳三席）",
+  "request_content": "查看一下卡片",
+  "http_status": 200,
+  "model_calls": 1,
+  "main_calls": 1,
+  "vp_calls": 0,
+  "event_types": [
+    "run_start",
+    "context",
+    "fastlane_route",
+    "round_start",
+    "deliver",
+    "proposal",
+    "done"
+  ],
+  "event_count": 7,
+  "token_event_count": 3
+}
