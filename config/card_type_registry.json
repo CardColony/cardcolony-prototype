@@ -1,0 +1,114 @@
+{
+  "_meta": {
+    "version": "card-type-registry-v1",
+    "created_at": "2026-10-08",
+    "taskbook": "docs/卡片分类基座_任务书v1.md · T2",
+    "purpose": "卡片分类基座 · 类型注册表（L0 项目分类 / L1 子卡词表）",
+    "layer_model": "L0 project_class（仅根卡，决定本树 L1 词表作用域）→ L1 card_type（子卡类型，取所属树的 L1 词表）",
+    "carrier": "独立 JSON 配置文件，不进 DB（任务书 §四裁断 3）",
+    "field_owner": {
+      "project_class": "仅根卡可写；非根卡不得设（任务书 §4.3 闸 1）",
+      "card_type": "所有非根卡；值域由本树 project_class 决定（闸 2）",
+      "owner_card_id": "仅工具卡必填；指向调用它的子项目卡（闸 3）"
+    },
+    "notes": [
+      "影子卡 card_type=shadow 走独立通道，不进入本体系（任务书 §三.2）。",
+      "legacy_types[].write_blocked ＝该 legacy 值是否在**写路径**拦截。",
+      "  · 「剧本」「线索」暂为 false —— 存量 3 根卡 + 67 子卡全属这两类，迁移未完成前",
+      "    拦截会让系统无法建任何卡（create_card 默认 card_type='线索'）。",
+      "  · 其余四个小说遗留值存量无实例，write_blocked=true 立即拦截。",
+      "  · T7 存量迁移完成后，「线索」应改 true（届时全部卡已归 sub_project）。",
+      "  · 本字段是**渐进迁移的进度开关**，与 deprecated（是否过时）正交。",
+      "研究项目（research_project）子卡词表本期不定义，后续立项时在 l1_vocabularies 下加scope 即可，不改 schema。"
+    ]
+  },
+
+  "project_classes": [
+    {
+      "code": "rd_project",
+      "label": "研发项目",
+      "description": "以构建/迭代软件系统为目标的工程。子卡可分「子项目卡」（工作单元）与「工具卡」（被调用的专项执行体）。",
+      "l1_vocabulary_ref": "rd_project"
+    },
+    {
+      "code": "research_project",
+      "label": "研究项目",
+      "description": "以调研/推演/产出结论为目标。子卡词表本期不定义（后续立项）。",
+      "l1_vocabulary_ref": null
+    }
+  ],
+
+  "l1_vocabularies": {
+    "rd_project": {
+      "scope": "rd_project",
+      "types": [
+        {
+          "code": "sub_project",
+          "label": "子项目卡",
+          "description": "研发项目下一个相对独立的工作单元。可有子卡、可调用工具卡、是产物与过程的挂载主体。",
+          "can_have_children": true,
+          "requires_owner": false,
+          "default_template": "sub_project",
+          "allowed_transitions": ["active", "completed"]
+        },
+        {
+          "code": "tool",
+          "label": "工具卡",
+          "description": "被某个子项目卡调用、执行专项任务（产出文档、调研等）的卡。产物与过程永久挂载在 owner 上；完成后置 completed 不删；不可有子卡。",
+          "can_have_children": false,
+          "requires_owner": true,
+          "default_template": "tool",
+          "allowed_transitions": ["active", "completed"]
+        }
+      ]
+    }
+  },
+
+  "legacy_types": [
+    { "code": "剧本", "deprecated": true, "write_blocked": false, "used_by": "root_card",
+      "migration_hint": "根卡保留原值（另有 project_class 承载项目分类语义）；非根卡若为「剧本」须人工确认后归类。存量3 张根卡全部属此类，不阻断。" },
+    { "code": "线索", "deprecated": true, "write_blocked": false, "used_by": "bulk_migrate_to:sub_project",
+      "migration_hint": "真实语义为「没选」；存量 67 张卡批量归 sub_project。**迁移完成前 write_blocked=false（渐进兼容）**——若置 true，全系统因默认 card_type='线索' 而无法建任何子卡。T7 迁移完成后应改为 true。" },
+    { "code": "世界观", "deprecated": true, "write_blocked": true, "used_by": null,
+      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" },
+    { "code": "行为体", "deprecated": true, "write_blocked": true, "used_by": null,
+      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" },
+    { "code": "节点", "deprecated": true, "write_blocked": true, "used_by": null,
+      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" },
+    { "code": "假设", "deprecated": true, "write_blocked": true, "used_by": null,
+      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" }
+  ],
+
+  "state_machine": {
+    "_doc": "工具卡/子卡通用状态机（任务书 T4）。写入经闸 4 校验。",
+    "initial": "active",
+    "terminal": ["completed"],
+    "transitions": {
+      "active": ["completed"],
+      "completed": []
+    }
+  },
+
+  "write_gates": {
+    "_doc": "三闸定义（任务书 §4.3）。落点＝card_store._write_gate（T-0007 补丁已立门位）。顺序固定：闸1 非法值 → 闸 2 词表归属 → 闸 3 工具卡 owner → 闸 4 状态迁移。",
+    "gate_1_illegal_value": {
+      "desc": "card_type / project_class 不在注册表 → 显式报错，不写库。废除原静默降级为「线索」的闸。",
+      "rejects_legacy_on_write": true
+    },
+    "gate_2_vocabulary_scope": {
+      "desc": "子卡 card_type 必须属于其根卡 project_class 所指 L1 词表。"
+    },
+    "gate_3_owner_required": {
+      "desc": "card_type == \"tool\" 时 owner_card_id 非空，且 owner 必须落在本树内且其 card_type 为 sub_project。"
+    },
+    "gate_4_state_transition": {
+      "desc": "状态迁移必须在 allowed_transitions 内；completed 为终态，不可再编辑正文。"
+    },
+    "read_path_policy": "宽容：legacy 值原样可读，不报错（任务书 §四裁断 5）。",
+    "structural_rules": [
+      "根卡必须有 project_class；非根卡不得设 project_class。",
+      "工具卡不可有子卡（can_have_children=false）——防工具内再长树导致产物归属链断裂。",
+      "project_class 只挂根卡；子卡不重复标注，由所属树继承。"
+    ]
+  }
+}

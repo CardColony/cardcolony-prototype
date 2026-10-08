@@ -116,10 +116,12 @@
         <button class="btn" id="relAddBtn">确定</button>
       </div>`;
 
-    const rejections = (b.rejections || "").trim();
-    const rejHtml = rejections
-      ? rejections.split("\n").filter(s => s.trim()).map(line => `<div class="rej-item">${escapeHtml(line)}</div>`).join("")
-      : `<div class="rej-empty">（暂无否决）</div>`;
+    // [卡片信息结构改造 S2-10] 键名随拆分器归一：rejections→rulings、charter→mission、
+    // conclusion→status_block。存量卡不分叉——读侧已归一，新旧卡在此同一路径渲染。
+    const rulings = (b.rulings || "").trim();
+    const rulHtml = rulings
+      ? rulings.split("\n").filter(s => s.trim()).map(line => `<div class="rej-item">${escapeHtml(line)}</div>`).join("")
+      : `<div class="rej-empty">（暂无定论）</div>`;
 
     const history = b.history || [];
     const historyCount = history.length;
@@ -131,27 +133,27 @@
         <span style="font-size:11px;color:var(--dimmer);margin-left:auto;">${escapeHtml(m.card_id)} · ${escapeHtml(m.source)}</span>
       </div>
 
-      <div class="blocktitle">职责区 · charter <span class="note">由上级卡对话创建 · 可编辑</span></div>
-      <textarea class="ws-edit" id="charterEdit" placeholder="使命 / 方法 / 权能">${escapeHtml(b.charter || "")}</textarea>
+      <div class="blocktitle">使命 · mission <span class="note">由上级卡对话创建 · 可编辑</span></div>
+      <textarea class="ws-edit" id="charterEdit" placeholder="本卡作用/目标、授权来源">${escapeHtml(b.mission || "")}</textarea>
       <div class="edit-row">
-        <button class="btn" id="saveCharter">保存职责区</button>
+        <button class="btn" id="saveCharter">保存使命</button>
         <span class="save-status" id="charterStatus"></span>
       </div>
 
-      <div class="blocktitle">结论区</div>
-      <div class="conclusion-display${(b.conclusion || "").trim() ? "" : " empty"}" id="conclusionView">${(b.conclusion || "").trim() ? escapeHtml(b.conclusion) : "（暂无结论）"}</div>
+      <div class="blocktitle">现状 · status_block</div>
+      <div class="conclusion-display${(b.status_block || "").trim() ? "" : " empty"}" id="conclusionView">${(b.status_block || "").trim() ? escapeHtml(b.status_block) : "（暂无现状）"}</div>
       <div class="edit-row" id="conclViewRow">
-        <button class="btn" id="editConclusion">编辑结论</button>
+        <button class="btn" id="editConclusion">编辑现状</button>
         <span class="save-status" id="conclusionStatus"></span>
       </div>
-      <textarea class="ws-edit" id="conclusionEdit" placeholder="本卡的结论（第一条建议是一句话摘要）" style="display:none">${escapeHtml(b.conclusion || "")}</textarea>
+      <textarea class="ws-edit" id="conclusionEdit" placeholder="当前状况快照（做到哪、什么状态、卡在哪）" style="display:none">${escapeHtml(b.status_block || "")}</textarea>
       <div class="edit-row" id="conclEditRow" style="display:none">
-        <button class="btn" id="saveConclusion">保存结论</button>
+        <button class="btn" id="saveConclusion">保存现状</button>
         <button class="btn ghost" id="cancelConclusion">取消</button>
       </div>
 
-      <div class="blocktitle">否决记录</div>
-      ${rejHtml}
+      <div class="blocktitle">定论 · rulings</div>
+      ${rulHtml}
 
       <div class="blocktitle">关系</div>
       ${relationsHtml}
@@ -265,33 +267,33 @@
       };
     };
 
-    // charter 保存
+    // mission 保存（S2-10：patch 新键 mission；旧键 charter 仍被服务端白名单放行）
     document.getElementById("saveCharter").onclick = async () => {
       const v = document.getElementById("charterEdit").value;
       const status = document.getElementById("charterStatus");
       status.textContent = "保存中…";
       try {
-        const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { charter: v }, "用户编辑职责区");
+        const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { mission: v }, "用户编辑使命区");
         currentCard = r;
         status.textContent = "已保存";
         setTimeout(() => status.textContent = "", 2000);
       } catch (e) { status.textContent = "失败"; }
     };
 
-    // conclusion 保存：[I2 主界面优化] 保存回只读态；再改须显式「编辑结论」
+    // status_block 保存：[I2 主界面优化] 保存回只读态；再改须显式「编辑现状」
     document.getElementById("saveConclusion").onclick = async () => {
       const v = document.getElementById("conclusionEdit").value;
       const status = document.getElementById("conclusionStatus");
       status.textContent = "保存中…";
       try {
-        const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { conclusion: v }, "用户编辑结论区");
+        const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { status_block: v }, "用户编辑现状区");
         currentCard = r;
         conclEditing = false;
         conclDraft = "";
         const view = document.getElementById("conclusionView");
-        const nv = (r.body.conclusion || "").trim();
+        const nv = (r.body.status_block || "").trim();
         if (view) {
-          view.textContent = nv ? r.body.conclusion : "（暂无结论）";
+          view.textContent = nv ? r.body.status_block : "（暂无现状）";
           view.classList.toggle("empty", !nv);
         }
         applyConclusionState();
@@ -304,7 +306,7 @@
     const editConclBtn = document.getElementById("editConclusion");
     if (editConclBtn) editConclBtn.onclick = () => {
       conclEditing = true;
-      conclDraft = currentCard.body.conclusion || "";
+      conclDraft = currentCard.body.status_block || "";
       applyConclusionState();
       document.getElementById("conclusionEdit").focus();
     };

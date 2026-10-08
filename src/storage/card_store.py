@@ -18,8 +18,10 @@ from typing import Any, Optional
 
 from . import canvas_store, data_snapshot, work_store
 from .hash_utils import (
+    OLD_KEY_TO_NEW,
     apply_hash,
     calc_card_hash,
+    effective_form,
     parse_front_matter,
     replace_fm_field,
     split_body_sections,
@@ -30,12 +32,19 @@ logger = logging.getLogger("storage.card")
 BASE_DIR = Path(__file__).resolve().parents[2]
 WORKS_DIR = BASE_DIR / "works"
 
+# [卡片分类基座 T2] 类型注册表路径（模块级常量 ⇒ 测试可monkeypatch 隔离，
+# 与 WORKS_DIR 同一套手法，见 tests/conftest.py）
+TYPE_REGISTRY_PATH = BASE_DIR / "config" / "card_type_registry.json"
+
 # 旧路径常量保留，供 monkeypatch 兼容旧测试时使用（不直接用）
 CARDS_DIR = BASE_DIR / "cards"
 SESSIONS_DIR = BASE_DIR / "sessions"
 
 # [phase8.3] status 二态已废除：新卡不写 status，读侧容忍存量卡的 status 字段
 ALLOWED_SOURCE = ("讨论", "用户直接创建", "模型生成", "系统派生")
+# [卡片分类基座 T6] 旧六值词表已退役（legacy_types，写路径由闸 1 拦截）。
+# **保留常量供读路径宽容与迁移期判定使用**，不再作为「允许写入」的白名单——
+# 写路径合法值以 config/card_type_registry.json 为唯一事实源。
 ALLOWED_CARD_TYPE = ("剧本", "世界观", "行为体", "节点", "假设", "线索")
 
 _CARD_FILE_RE = re.compile(r"^card_(\d{3,})\.md$")
@@ -62,6 +71,15 @@ class CardNotFoundError(Exception):
     code = 404
 
 
+class CardTypeValueError(Exception):
+    """card_type 取值非法（卡片分类基座 T6·废除静默降级）。
+
+    与既有写函数的错误契约对齐：抛在**解析层**，由 create_card /
+    update_card 的 try 捕获后转成 {"error": ...} 返回，不外泄给调用方。
+    """
+    code = 400
+
+
 def _get_lock(path: Path) -> asyncio.Lock:
     key = str(path)
     if key not in _locks:
@@ -86,12 +104,47 @@ def _q(value: str) -> str:
 
 
 def _resolve_card_type(card_type: str) -> str:
-    """非法值一律降级为"线索"（不报错不丢弃）。"""
-    if card_type in ALLOWED_CARD_TYPE:
+    """card_type 取值校验。
+
+    [卡片分类基座 T6] **废除静默降级**（原行为：非法值一律 logger.warning 后
+    静默变「线索」，让调用方以为写入成功）。现行为：
+      - 注册表**已加载**时：只放行新词表 L1 值；legacy 值与非词表值**显式报错**
+        （抛 CardTypeValueError，由调用点捕获转 {"error": ...}）。
+      - 注册表**缺失/坏 JSON**时：回落旧白名单放行（保持 T-0007 补丁态，
+        避免注册表不可用时阻断写路径）。
+
+    [T07 打点] 保留一条 warning 留痕线：非法值走异常而非静默，但日志仍记原值。
+    """
+    if not card_type:
         return card_type
-    # [T07 打点] 「存量卡被静默改写」的唯一告警线：降级必须留痕（卡号/原值/结果）
-    logger.warning("类型名降级: 原值=%r → 线索", card_type)
-    return "线索"
+    registry = load_type_registry()
+    if not registry:
+        # 注册表不可用 ⇒ 回落旧白名单（不阻断写路径）
+        if card_type in ALLOWED_CARD_TYPE:
+            return card_type
+        logger.warning("类型名非法（无注册表，按旧白名单放行）: %r", card_type)
+        return "线索"
+    l1_codes = _l1_all_codes(registry)
+    if card_type in l1_codes:
+        return card_type
+    legacy_codes = _registry_codes(registry, "legacy_types")
+    # [T6 渐进口径] 只拦 write_blocked=true 的 legacy 值（详见 _write_gate 闸 1）。
+    # 存量的「剧本」「线索」在迁移完成前仍放行，否则系统建不出卡。
+    blocked = {str(x.get("code", "")) for x in (registry.get("legacy_types") or [])
+               if isinstance(x, dict) and x.get("write_blocked")}
+    if card_type in blocked:
+        logger.warning("类型名已退役（写路径拦截）: %r", card_type)
+        raise CardTypeValueError(
+            f"非法 card_type: {card_type}（已退役；已定义词表：{_current_l1_codes(registry)}）"
+        )
+    if card_type in legacy_codes:
+        # 未标 write_blocked 的 legacy 值：放行并留痕（迁移期常态，不算错误）
+        logger.info("legacy card_type 放行（迁移未完成）: %r", card_type)
+        return card_type
+    logger.warning("类型名非法（注册表拒绝）: %r", card_type)
+    raise CardTypeValueError(
+        f"非法 card_type: {card_type}（已定义词表：{_current_l1_codes(registry)}）"
+    )
 
 
 def _cards_dir(work_id: str) -> Path:
@@ -202,12 +255,44 @@ def _normalize_parent(work_id: str, parent: Optional[str], card_type: str) -> st
     return parent
 
 
-def _render_card(meta: dict[str, Any], charter: str, conclusion: str,
-                 rejections: str, history_lines: list[str]) -> str:
+# [卡片信息结构改造 S1-1] 新建卡默认三块骨架（模块级常量，逐字模板）。
+# 注入方式见 create_card：整篇正文形态过 split_body_sections 取三块，
+# 再以 form="new" 交 _render_card——**不由 create_card 的 charter 参数默认值承载**
+# （S1-3：参数签名不变；_render_card 自输区头，参数里带区头会落出重复区头）。
+NEW_CARD_SKELETON = """## 使命
+（本卡作用/目标、授权来源；≤5行；立项定稿，改动需用户确认）
+## 现状
+（当前状况快照：做到哪、什么状态、卡在哪；只写已核实；事实条目带锚点自指；覆盖写·单一最新；块尾至多一行衔接索引）
+## 定论
+（对本卡相关事项的决定；只追加，仅经收口仪式写入）
+D01【裁定】……（日期·依据）
+D02【决定】……（日期·依据）
+D03【收敛】……（日期·死过什么）
+→ 被D05取代（因……）"""
+
+# 区头随形态走（G-1/G-3）。旧形态存量卡保形：区头逐字不变（RD-09）。
+_SECTION_HEADINGS = {
+    "old": ("## 职责区", "## 结论区", "## 否决记录区"),
+    "new": ("## 使命", "## 现状", "## 定论"),
+}
+HISTORY_HEADING = "## 修改历史"
+
+
+def _render_card(meta: dict[str, Any], mission: str, status_block: str,
+                 rulings: str, history_lines: list[str],
+                 form: str = "old") -> str:
     """按固定字段顺序渲染卡片全文（content_hash 由 apply_hash 回填）。
 
-    四区顺序：## 职责区 → ## 结论区 → ## 否决记录区 → ## 修改历史。
+    [卡片信息结构改造 G-3] 加 form 参数：三块区头随形态走——
+    form="new" → ## 使命 / ## 现状 / ## 定论；form="old" → 旧三区头（存量卡保形）。
+    三调用点（create_card / update_card / _append_relation）必须全传 form，
+    漏传即回落 "old"——新卡会被写回旧区头（V15 判据）。
+    修改历史恒为机械尾，两形态同名，不在 form 内。
     """
+    if form not in _SECTION_HEADINGS:
+        # mixed 未收敛时不得落盘（拆分器侧已收敛；此处兜底防漏）
+        raise ValueError(f"_render_card: form 非法 {form!r}（须为 old/new）")
+    h_mission, h_status, h_rulings = _SECTION_HEADINGS[form]
     fm = [
         "---",
         f"title: {_q(meta['title'])}",
@@ -218,24 +303,45 @@ def _render_card(meta: dict[str, Any], charter: str, conclusion: str,
         f"tags: {json.dumps(meta.get('tags', []), ensure_ascii=False)}",
         f"relations: {json.dumps(meta.get('relations', []), ensure_ascii=False)}",
         f"session_ref: {_q(meta['session_ref'])}",
-        f"methodology_refs: {json.dumps(meta.get('methodology_refs', []), ensure_ascii=False)}",
-        f"pending_sync: {json.dumps(bool(meta.get('pending_sync', False)))}",
+        # [卡片分类基座 T1] 新分类字段：非空才渲染 FM 行（空串＝不写，存量兼容）。
+        # 位置在 session_ref 之后、created_at 之前——读路径 _meta_of 按key 取，
+        # 顺序只影响人读；不参与 content_hash 之外的任何判据。
+        *([f"project_class: {_q(meta['project_class'])}"]
+          if meta.get("project_class") else []),
+        *([f"owner_card_id: {_q(meta['owner_card_id'])}"]
+          if meta.get("owner_card_id") else []),
+        *([f"state: {_q(meta['state'])}"] if meta.get("state") else []),
+        # [S4-1/S4-2] methodology_refs / pending_sync 的 FM 行同步删除。
+        # 只删 meta 初始化而留着这两行，meta.get 的默认值会把它们原样写回，
+        # 等于没删。存量卡的这两行在其下次写入时自然消失（字段死，无读取方）。
         f"created_at: {_q(meta['created_at'])}",
         f"updated_at: {_q(meta['updated_at'])}",
         "---",
     ]
-    parts = ["\n".join(fm), "", "## 职责区", ""]
-    if charter.strip():
-        parts += [charter.strip("\n"), ""]
-    parts += ["## 结论区", ""]
-    if conclusion.strip():
-        parts += [conclusion.strip("\n"), ""]
-    parts += ["## 否决记录区", ""]
-    if rejections.strip():
-        parts += [rejections.strip("\n"), ""]
-    parts += ["## 修改历史", ""]
+    parts = ["\n".join(fm), "", h_mission, ""]
+    if mission.strip():
+        parts += [mission.strip("\n"), ""]
+    parts += [h_status, ""]
+    if status_block.strip():
+        parts += [status_block.strip("\n"), ""]
+    parts += [h_rulings, ""]
+    if rulings.strip():
+        parts += [rulings.strip("\n"), ""]
+    parts += [HISTORY_HEADING, ""]
     parts += history_lines
     return "\n".join(parts) + "\n"
+
+
+def _normalize_update_keys(updates: dict[str, Any]) -> dict[str, Any]:
+    """updates 键归一（S2-7）：旧正文键→新正文键，其余键原样透传。
+
+    两套键并存于同一份 dict，落盘只经 _render_card 一处 ⇒ 不产生第二套真值。
+    新旧同键同时出现时以新键为准（旧键被覆盖）——新键是当前口径。
+    """
+    out: dict[str, Any] = {}
+    for k, v in updates.items():
+        out[OLD_KEY_TO_NEW.get(k, k)] = v
+    return out
 
 
 def _parse_history_lines(history_text: str) -> list[str]:
@@ -243,16 +349,20 @@ def _parse_history_lines(history_text: str) -> list[str]:
 
 
 def _append_history_line(content: str, line: str) -> str:
-    """在 '## 修改历史' 小节末尾追加一行；小节不存在则在文件末尾补建。"""
+    """在 '## 修改历史' 小节末尾追加一行；小节不存在则在文件末尾补建。
+
+    [卡片信息结构改造 G-1] 区名改取 HISTORY_HEADING 常量（两形态同名，
+    改动集中一处；原为 docstring 与判定各写一份字面量）。
+    """
     lines = content.splitlines(keepends=True)
     heading_idx = None
     for i, l in enumerate(lines):
-        if l.strip() == "## 修改历史":
+        if l.strip() == HISTORY_HEADING:
             heading_idx = i
             break
     if heading_idx is None:
         suffix = "" if content.endswith("\n") else "\n"
-        return content + f"{suffix}\n## 修改历史\n\n{line}\n"
+        return content + f"{suffix}\n{HISTORY_HEADING}\n\n{line}\n"
     end = len(lines)
     for j in range(heading_idx + 1, len(lines)):
         if lines[j].startswith("## "):
@@ -284,6 +394,230 @@ def _meta_of(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
         return meta
     except Exception:
         return None
+
+
+def load_type_registry() -> dict[str, Any]:
+    """加载类型注册表（卡片分类基座 T2）。
+
+    独立 JSON 配置文件（config/card_type_registry.json），不进 DB——
+    改词表不改 schema（任务书 §四裁断 3）。
+
+    [沙箱纪律] 路径由模块级常量 TYPE_REGISTRY_PATH 派生，测试可monkeypatch
+    改写（与 WORKS_DIR 同一套隔离手法，见 tests/conftest.py）。
+    加载失败（文件缺失/坏 JSON）→ 返回空 dict 并留痕，调用方按「无注册表」
+    降级放行——**注册表是校验源，不是可用性依赖**，不得因它阻断写路径。
+    """
+    import json as _json
+    try:
+        raw = TYPE_REGISTRY_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("[card_type_registry] 注册表读取失败（按无注册表放行）: %s", exc)
+        return {}
+    try:
+        data = _json.loads(raw)
+    except ValueError as exc:
+        logger.warning("[card_type_registry] 注册表解析失败（按无注册表放行）: %s", exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("[card_type_registry] 注册表结构异常（按无注册表放行）")
+        return {}
+    return data
+
+
+def _registry_codes(registry: dict[str, Any], section: str) -> set[str]:
+    """从注册表取某节的 code 集合（项目分类或 legacy）。"""
+    return {str(x.get("code", "")) for x in (registry.get(section) or []) if isinstance(x, dict)}
+
+
+def _l1_type_spec(registry: dict[str, Any], project_class: str,
+                  card_type: str) -> Optional[dict[str, Any]]:
+    """取 L1 类型规格（按 project_class 词表 + card_type 定位）。"""
+    vocab = (registry.get("l1_vocabularies") or {}).get(project_class) or {}
+    for t in (vocab.get("types") or []):
+        if isinstance(t, dict) and str(t.get("code", "")) == card_type:
+            return t
+    return None
+
+
+def _l1_all_codes(registry: dict[str, Any]) -> set[str]:
+    """注册表内所有已定义 L1 词表 code 的并集。"""
+    out: set[str] = set()
+    for vocab in (registry.get("l1_vocabularies") or {}).values():
+        if not isinstance(vocab, dict):
+            continue
+        for t in (vocab.get("types") or []):
+            if isinstance(t, dict):
+                out.add(str(t.get("code", "")))
+    return out
+
+
+def _current_l1_codes(registry: dict[str, Any]) -> str:
+    """已定义 L1 词表的可读摘要（错误提示用，机械拼接）。"""
+    out: set[str] = set()
+    for scope, vocab in (registry.get("l1_vocabularies") or {}).items():
+        if not isinstance(vocab, dict):
+            continue
+        for t in (vocab.get("types") or []):
+            if isinstance(t, dict):
+                out.add(f"{scope}:{t.get('code', '')}")
+    return "、".join(sorted(out)) or "（无）"
+
+
+def _root_project_class(work_id: str) -> str:
+    """读本树根卡的 project_class（读路径宽容：缺省视为空串＝未分类）。"""
+    wid = work_store.work_card_id_of(work_id)
+    m = _meta_of(work_id, wid) or {}
+    return str(m.get("project_class", "") or "")
+
+
+def _write_gate(work_id: str, action: str, card_id: str,
+                payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """写路径统一校验挂点（唯一门上的闸位）＝卡片分类基座 T3 三闸 + 状态机。
+
+    [T-0007 补丁 · 写路径唯一门] 立此挂点（恒放行）；
+    [卡片分类基座 T3] 在此挂三道闸 + 闸 4 状态机，注册表为
+    config/card_type_registry.json。
+
+    闸序（固定，短路）：
+      闸1 非法值   —— card_type/project_class 必须在注册表内，legacy 写路径拒
+      闸 2 词表归属 —— 子卡 card_type 须属本树 project_class 的 L1 词表
+      闸 3 工具卡 owner —— card_type=="tool" 时 owner_card_id 非空且 owner 合法
+      闸 4 状态机  —— 迁移须在 allowed_transitions 内
+
+    契约：
+      1. 只校验、不落盘、不改 payload（调用方持有写入权）；
+      2. 拦截一律走 {"error": ...} 形态，与既有写函数的失败返回同构；
+      3. **不得抛异常**——三个写函数的错误契约是返回 dict 而非 raise。
+
+    [降级] 注册表缺失/坏JSON → 放行（不阻断写路径）；legacy 值在此读路径仍
+    可经**存量文件**读取，但**经本闸写入即拒**（T6 口径）。
+    """
+    registry = load_type_registry()
+    # 无注册表 → 不做任何校验（保持 T-0007 补丁时的 no-op 语义）
+    if not registry:
+        return None
+
+    payload = payload or {}
+    pc_codes = _registry_codes(registry, "project_classes")
+    legacy_codes = _registry_codes(registry, "legacy_types")
+    project_class = str(payload.get("project_class", "") or "")
+    card_type = str(payload.get("card_type", "") or "")
+    # [根卡判定·双判据] ①已落盘且等于 work_card_id；②card_type=="剧本"（创建期
+    # 固有语义——create_work 建根卡时卡号尚未发出，work_card_id 在盘上查不到，
+    # 只靠判据①会把合法的根卡创建误判为越权）。任一成立即视为根卡。
+    is_root = (card_id == work_store.work_card_id_of(work_id)) or (card_type == "剧本")
+
+    # ---------- 闸 1：非法值显式报错（废除静默降级） ----------
+    if project_class and project_class not in pc_codes:
+        return {"error": f"非法 project_class: {project_class}"
+                         f"（只允许 {sorted(pc_codes)}）"}
+    if card_type and card_type in legacy_codes:
+        # [T6 渐进口径] 只拦「write_blocked=true」的 legacy 值。
+        # 「剧本」「线索」暂 false——存量 3 根卡 + 67 子卡全属这两类，
+        # 迁移未完成前拦截会让系统建不出任何卡（create_card 默认 card_type='线索'）。
+        # T7 迁移完成后由注册表把「线索」改 true，无需改代码。
+        blocked = {str(x.get("code", "")) for x in (registry.get("legacy_types") or [])
+                   if isinstance(x, dict) and x.get("write_blocked")}
+        if card_type in blocked:
+            return {"error": f"card_type「{card_type}」已退役（legacy·写路径拦截），"
+                             f"写入须用新词表值：{_current_l1_codes(registry)}"}
+    if card_type and not _l1_all_codes(registry):
+        # 注册表有结构但无任何 L1 词表（如只有 research_project 未立项）
+        return {"error": f"card_type「{card_type}」不在任何已定义词表内"}
+
+    # ---------- 闸 2：类型/项目分类一致性 ----------
+    # [根卡豁免] 根卡的 card_type 是历史值（剧本），不进 L1 词表校验——
+    # 根卡身份由 project_class 承载，词表只约束子卡。
+    # [迁移期豁免] 未标 write_blocked 的 legacy 值（当前：「线索」）**不进闸 2**：
+    # 闸 1 已放行它，此处再拒即自相矛盾，且会让存量默认 card_type 建不出卡。
+    # 迁移期语义＝「旧卡可继续被写，新卡须用新词表」，由迁移脚本负责改存量。
+    legacy_unblocked = {str(x.get("code", "")) for x in (registry.get("legacy_types") or [])
+                        if isinstance(x, dict) and not x.get("write_blocked")}
+    if card_type and not is_root and card_type not in legacy_unblocked:
+        tree_pc = project_class or _root_project_class(work_id)
+        if not tree_pc:
+            return {"error": "本树根卡未标 project_class，无法校验 card_type"
+                             "（须先给根卡标 project_class）"}
+        spec = _l1_type_spec(registry, tree_pc, card_type)
+        if spec is None:
+            allowed = sorted(
+                str(t.get("code", "")) for t in
+                ((registry.get("l1_vocabularies") or {}).get(tree_pc) or {}).get("types") or []
+                if isinstance(t, dict)
+            )
+            return {"error": f"card_type「{card_type}」不属于 project_class"
+                             f"「{tree_pc}」的词表（只允许 {allowed}）"}
+    # project_class 只许根卡写
+    if project_class and not is_root:
+        return {"error": "project_class 只允许写在剧本根卡上"}
+
+    # ---------- 闸 3：工具卡 owner 必填且合法 ----------
+    if card_type == "tool":
+        owner = str(payload.get("owner_card_id", "") or "")
+        if not owner:
+            return {"error": "工具卡必须带 owner_card_id"
+                             f"（指向调用它的子项目卡）"}
+        if not _card_path(work_id, owner).exists():
+            return {"error": f"owner_card_id 指向的卡不存在: {owner}"}
+        owner_meta = _meta_of(work_id, owner) or {}
+        owner_type = str(owner_meta.get("card_type", "") or "")
+        if owner_type in legacy_codes or owner_type == "剧本":
+            return {"error": f"owner「{owner}」的 card_type「{owner_type}」是"
+                             f" legacy 值，须先归类为 sub_project 才能作工具卡 owner"}
+    # ---------- 工具卡不可有子卡 ----------
+    if card_type == "tool":
+        cd = _cards_dir(work_id)
+        if cd.exists():
+            for p in cd.glob("card_*.md"):
+                if p.stem == card_id:
+                    continue
+                m2 = _meta_of(work_id, p.stem)
+                if m2 and m2.get("parent") == card_id:
+                    return {"error": f"工具卡不可有子卡（{p.stem} 挂在它下面）"}
+
+    # ---------- 闸 4：状态机迁移 ----------
+    desired = str(payload.get("state", "") or "")
+    if desired:
+        sm = registry.get("state_machine") or {}
+        cur_meta = _meta_of(work_id, card_id) or {}
+        cur = str(cur_meta.get("state", "") or sm.get("initial", "active"))
+        allowed = ((sm.get("transitions") or {}).get(cur)) or []
+        if desired != cur and desired not in allowed:
+            return {"error": f"非法状态迁移 {cur} → {desired}"
+                             f"（只允许 {allowed} 或保持 {cur}）"}
+
+    return None
+
+
+def cards_dir(work_id: str) -> Path:
+    """cards 目录路径（公开接口，供跨层调用方取目录）。"""
+    return _cards_dir(work_id)
+
+
+def card_exists(work_id: str, card_id: str) -> bool:
+    """卡片存在性检查（公开接口，供跨层调用方判存在）。"""
+    return _card_path(work_id, card_id).exists()
+
+
+def iter_card_metas(work_id: str) -> dict[str, dict[str, Any]]:
+    """轻量收集 work 下所有正卡的 meta（公开接口，供跨层调用方批量读）。
+
+    返回 {card_id: meta}；meta 含 parent/card_type/relations 等 front matter 字段，
+    并补回 card_id 键（文件名即 id，meta 文件内不重复存）。
+    卡片不存在或读取失败返回空 dict。
+    """
+    cards: dict[str, dict[str, Any]] = {}
+    cd = _cards_dir(work_id)
+    if not cd.exists():
+        return cards
+    for path in cd.glob("card_*.md"):
+        cid = path.stem
+        m = _meta_of(work_id, cid)
+        if m is None:
+            continue
+        m["card_id"] = cid
+        cards[cid] = m
+    return cards
 
 
 def _subtree_ids(work_id: str, root_id: str) -> set[str]:
@@ -325,8 +659,23 @@ async def create_card(
     parent: Optional[str] = None,
     charter: str = "",
     conclusion: str = "",
+    project_class: str = "",
+    owner_card_id: str = "",
 ) -> dict[str, Any]:
     """创建卡片 + 对应会话文件，更新 canvas 缓存，git 提交。
+
+    [卡片信息结构改造 S1-2] 骨架注入四步：
+      ①入参（charter＋conclusion 拼成的候选正文）先过区头检测；
+      ②含任一区头 → 原样作正文；不含 → 以 NEW_CARD_SKELETON 常量为正文；
+      ③过 split_body_sections 取三块；
+      ④以 form="new" 交 _render_card。
+    [S1-3] charter/conclusion 参数默认值保持 ""，签名不变——骨架不由参数承载。
+    [S4-1/S4-2] meta 不再写 methodology_refs / pending_sync（死字段清理）。
+
+    [卡片分类基座 T1] 新增两个**可选**参数（默认空串＝行为与改造前逐字一致）：
+      - project_class：仅根卡可写；决定本树 L1 词表作用域
+      - owner_card_id：仅工具卡必填；指向调用它的子项目卡
+    空串 ＝不落盘该字段（存量兼容），非空才写入 front matter。
 
     任何一步失败：保留已创建的文件，记日志返回错误。
     """
@@ -338,7 +687,6 @@ async def create_card(
     try:
         resolved_type = _resolve_card_type(card_type)
         resolved_parent = _normalize_parent(work_id, parent, resolved_type)
-
         _cards_dir(work_id).mkdir(parents=True, exist_ok=True)
         _sessions_dir(work_id).mkdir(parents=True, exist_ok=True)
         # [T07-1-1/1-2] 发放式编号：序列锁内取号→写卡→发号成功立即写盘
@@ -360,13 +708,33 @@ async def create_card(
                 "tags": [],
                 "relations": [],
                 "session_ref": f"sessions/{session_name}",
-                "methodology_refs": [],
-                "pending_sync": False,
+                # [卡片分类基座 T1] 新分类字段：非空才落盘（空串＝不写，存量兼容）
+                **({"project_class": project_class} if project_class else {}),
+                **({"owner_card_id": owner_card_id} if owner_card_id else {}),
+                # [S4-1/S4-2] methodology_refs / pending_sync 已删（死字段，
+                # R8 全库复核无业务读取方）。_render_card 的 FM 行同步删除——
+                # 只删 meta 初始化而留着 FM 行，字段仍会被 meta.get 默认值写回，
+                # 等于没删。存量卡下次写入时这两行自然消失（字段死，无读取方）。
                 "created_at": now,
                 "updated_at": now,
             }
             history_lines = [f"- [{now}] 卡片创建"]
-            content = _render_card(meta, charter, conclusion, "", history_lines)
+            # [T-0007 补丁] 写路径唯一门·create 闸位（no-op 放行）。
+            # 插在写盘前、参数校验后；payload 传待写 meta（后续 T3 校验 card_type 用）。
+            gate = _write_gate(work_id, "create", card_id, dict(meta))
+            if gate is not None:
+                return gate
+            # [S1-2②] 区头检测：入参拼正文，含任一区头则原样用，否则用骨架常量
+            candidate = "\n\n".join(p for p in (charter, conclusion) if p and p.strip())
+            has_heading = any(
+                ln.strip().startswith("## ") for ln in candidate.splitlines()
+            )
+            body_seed = candidate if has_heading else NEW_CARD_SKELETON
+            sections = split_body_sections(body_seed)
+            content = _render_card(
+                meta, sections["mission"], sections["status_block"],
+                sections["rulings"], history_lines, form="new",
+            )
             content = apply_hash(content)
 
             card_path = _card_path(work_id, card_id)
@@ -461,12 +829,14 @@ async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
     sections = split_body_sections(body)
     meta["card_id"] = card_id  # 补回 card_id（文件名即 id，meta 文件内不重复存）
     meta.pop("status", None)  # [phase8.3] 二态废除：存量卡的 status 读侧容忍但不外露
+    # [卡片信息结构改造 S2-5] body 键名 → 新四键。_form 是拆分器第三键，
+    # **不进 body**（S2-3）——它是渲染决策用的中间量，不对外暴露。
     return {
         "meta": meta,
         "body": {
-            "charter": sections["charter"],
-            "conclusion": sections["conclusion"],
-            "rejections": sections["rejections"],
+            "mission": sections["mission"],
+            "status_block": sections["status_block"],
+            "rulings": sections["rulings"],
             "history": _parse_history_lines(sections["history_text"]),
         },
         "raw": raw,
@@ -482,13 +852,20 @@ async def update_card(
     """通用写入：应用修改→追加修改历史→刷新 updated_at/content_hash→写回→git 提交。
 
     updates 支持键（含 Phase 7 扩展）：
-      title/tags/relations/session_ref/pending_sync/card_type/parent
-      charter/conclusion/rejections（正文区）
+      title/tags/relations/session_ref/card_type/parent
+      mission/status_block/rulings（正文三块·新键）
+      charter/conclusion/rejections（正文三块·旧键，保留兼容，归一到新键后落同一处）
+
+    [卡片信息结构改造 S2-7] 新旧两套键在函数内归一，落同一处存储——
+    **不产生双写路径**（旧键不再有独立分支，只在归一表里查一次）。
+    [S2-4] 写侧保留旧键路径：旧卡用旧键 PATCH 照旧可用，落盘区头随原形态不变。
 
     [phase8.3] status 二态已废除：updates 中若带 status 一律忽略（不报错）。
     """
     updates = updates or {}
     updates.pop("status", None)
+    # [S2-7] 旧键→新键归一（只此一处；下游一律只见新键）
+    updates = _normalize_update_keys(updates)
 
     card_path = _card_path(work_id, card_id)
     if not card_path.exists():
@@ -511,7 +888,12 @@ async def update_card(
 
     # card_type 降级
     if "card_type" in updates:
-        new_type = _resolve_card_type(updates["card_type"])
+        # [卡片分类基座 T6] 静默降级已废除：非法值转 {"error": ...} 返回，
+        # 不再悄悄写「线索」。update_card 本体无 try 包裹，故在此就地转译。
+        try:
+            new_type = _resolve_card_type(updates["card_type"])
+        except CardTypeValueError as exc:
+            return {"error": str(exc)}
         # 不允许把任意卡改成剧本（剧本只能由 create_work 流程产生）
         if new_type == "剧本" and not is_work_card:
             new_type = "线索"
@@ -530,27 +912,40 @@ async def update_card(
             new_parent = work_store.work_card_id_of(work_id)
             updates["parent"] = new_parent
 
+    # [T-0007 补丁] 写路径唯一门·update 闸位（no-op 放行）。
+    # 插在写盘前、全部参数校验（含根卡保护/card_type 降级/parent 防环）之后——
+    # 此时 updates 已是归一后的最终形态，与各校验分支的退出路径互不干扰。
+    gate = _write_gate(work_id, "update", card_id, dict(updates))
+    if gate is not None:
+        return gate
+
     lock = _get_lock(card_path)
     await _acquire(lock)
     try:
         raw = card_path.read_text(encoding="utf-8")
         meta, body = parse_front_matter(raw)
         sections = split_body_sections(body)
+        # [G-3] form 取自被写卡的现状形态（保形：旧卡写后区头仍逐字不变，RD-09）
+        form = effective_form(sections["_form"], body)
 
         for key in ("title", "tags", "relations", "session_ref",
-                    "pending_sync", "card_type", "parent", "methodology_refs"):
+                    "card_type", "parent",
+                    # [卡片分类基座 T1] 新分类字段进入落盘循环
+                    "project_class", "owner_card_id", "state"):
             if key in updates:
                 meta[key] = updates[key]
-        charter = updates.get("charter", sections["charter"])
-        conclusion = updates.get("conclusion", sections["conclusion"])
-        rejections = updates.get("rejections", sections["rejections"])
+        mission = updates.get("mission", sections["mission"])
+        status_block = updates.get("status_block", sections["status_block"])
+        rulings = updates.get("rulings", sections["rulings"])
 
         now = _now_iso()
         meta["updated_at"] = now
         history_lines = _parse_history_lines(sections["history_text"])
         history_lines.append(f"- [{now}] {history_note}")
 
-        content = _render_card(meta, charter, conclusion, rejections, history_lines)
+        content = _render_card(
+            meta, mission, status_block, rulings, history_lines, form=form,
+        )
         content = apply_hash(content)
         card_path.write_text(content, encoding="utf-8")
     finally:
@@ -599,6 +994,12 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
                 raise CardDeleteDeniedError(
                     f"存在子卡 {other_id}，先删子卡或改挂他卡"
                 )
+
+    # [T-0007 补丁] 写路径唯一门·delete 闸位（no-op 放行）。
+    # 插在所有结构性防护之后、实际 unlink 之前——保证闸位放行后才动文件。
+    gate = _write_gate(work_id, "delete", card_id, {})
+    if gate is not None:
+        return gate
 
     lock = _get_lock(card_path)
     await _acquire(lock)
@@ -688,9 +1089,11 @@ async def _append_relation(work_id: str, card_id: str, rel: dict[str, Any]) -> N
             history_lines = _parse_history_lines(sections["history_text"])
             now = _now_iso()
             history_lines.append(f"- [{now}] 追加 relation: {rel}")
+            # [G-2/G-3] 第三调用点：取键已随拆分器归一，form 取自现状形态
             content = _render_card(
-                meta, sections["charter"], sections["conclusion"],
-                sections["rejections"], history_lines,
+                meta, sections["mission"], sections["status_block"],
+                sections["rulings"], history_lines,
+                form=effective_form(sections["_form"], body),
             )
             content = apply_hash(content)
             card_path.write_text(content, encoding="utf-8")

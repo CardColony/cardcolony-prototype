@@ -95,6 +95,27 @@ def _meta_of(work_id: str, owner_card_id: str) -> Optional[dict[str, Any]]:
         return None
 
 
+def iter_shadow_metas(work_id: str) -> dict[str, dict[str, Any]]:
+    """轻量收集 work 下所有影子的 meta（公开接口，供跨层调用方批量读）。
+
+    返回 {shadow_id: meta}；shadow_id＝shadow_{正卡id}（进 _collect_card_meta 字典的键）。
+    meta 含 card_type/parent/shadow_of 等 front matter 字段，并补回 card_id 键。
+    影子目录不存在或读取失败返回空 dict。
+    """
+    shadows: dict[str, dict[str, Any]] = {}
+    sd = _shadows_dir(work_id)
+    if not sd.exists():
+        return shadows
+    for path in sd.glob("*.md"):
+        m = _meta_of(work_id, path.stem)
+        if m is None:
+            continue
+        sid = m.get("card_id") or shadow_id_of(path.stem)
+        m["card_id"] = sid
+        shadows[sid] = m
+    return shadows
+
+
 async def read_shadow_raw(work_id: str, owner_card_id: str) -> Optional[str]:
     """读影子文件全文（纯读：不校哈希、不写回——影子无 [外部修改] 追加逻辑）。
 
@@ -129,7 +150,7 @@ async def derive_shadow(work_id: str, owner_card_id: str) -> dict[str, Any]:
     正卡不存在 → {"error": ...}；成功 → {"ok": True, ...}。
     失败向上抛异常，由调用方决定是否阻断（create_card 钩点捕获后不阻断）。
     """
-    if not card_store._card_path(work_id, owner_card_id).exists():
+    if not card_store.card_exists(work_id, owner_card_id):
         return {"error": f"正卡不存在: {owner_card_id}"}
     p = shadow_path(work_id, owner_card_id)
     if p.exists():
