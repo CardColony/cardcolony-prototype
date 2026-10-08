@@ -45,7 +45,9 @@ ALLOWED_SOURCE = ("讨论", "用户直接创建", "模型生成", "系统派生"
 # [卡片分类基座 T6] 旧六值词表已退役（legacy_types，写路径由闸 1 拦截）。
 # **保留常量供读路径宽容与迁移期判定使用**，不再作为「允许写入」的白名单——
 # 写路径合法值以 config/card_type_registry.json 为唯一事实源。
-ALLOWED_CARD_TYPE = ("剧本", "世界观", "行为体", "节点", "假设", "线索")
+# [底座收口 T2.f] 加 "project"：无注册表环境（conftest 沙箱）里 create_work
+# 建根卡传 project，白名单不含它会被降级成"线索"。
+ALLOWED_CARD_TYPE = ("project", "剧本", "世界观", "行为体", "节点", "假设", "线索")
 
 _CARD_FILE_RE = re.compile(r"^card_(\d{3,})\.md$")
 
@@ -240,10 +242,11 @@ def _log_judgment_switch(site: str, card_id: str, old_result: Any, new_result: A
 
 def _normalize_parent(work_id: str, parent: Optional[str], card_type: str) -> str:
     """parent 规则：
-    - 剧本卡无视 parent 入参，强制为 ""
+    - project 根卡无视 parent 入参，强制为 ""（[底座收口 T2.b] 原判「剧本」
+      随类型退役换为 project；防御纵深——闸2 已拦子卡写 project）
     - parent=None 或父卡不存在 → 回退 work_card_id
     """
-    if card_type == "剧本":
+    if card_type == "project":
         return ""
     wid = work_store.work_card_id_of(work_id)
     if parent is None or parent == "":
@@ -470,6 +473,27 @@ def _root_project_class(work_id: str) -> str:
     return str(m.get("project_class", "") or "")
 
 
+def _default_child_type(work_id: str) -> str:
+    """[底座收口 T5.a] 按本树 project_class 取该树 L1 词表的子卡缺省类型。
+
+    规则：取词表里**第一个 requires_owner=false 的类型**（sub_project/topic
+    都是挂载主体；tool 是被调用的执行体，绝不作缺省）。
+    映射不出（无注册表 / 树未标 pc / 词表全 requires_owner）→ 返回 ""，
+    由调用方回落旧缺省"线索"（conftest 沙箱行为不变）。
+    """
+    registry = load_type_registry()
+    if not registry:
+        return ""
+    tree_pc = _root_project_class(work_id)
+    if not tree_pc:
+        return ""
+    vocab = (registry.get("l1_vocabularies") or {}).get(tree_pc) or {}
+    for t in (vocab.get("types") or []):
+        if isinstance(t, dict) and not t.get("requires_owner"):
+            return str(t.get("code", "")) or ""
+    return ""
+
+
 def _write_gate(work_id: str, action: str, card_id: str,
                 payload: dict[str, Any]) -> Optional[dict[str, Any]]:
     """写路径统一校验挂点（唯一门上的闸位）＝卡片分类基座 T3 三闸 + 状态机。
@@ -502,10 +526,14 @@ def _write_gate(work_id: str, action: str, card_id: str,
     legacy_codes = _registry_codes(registry, "legacy_types")
     project_class = str(payload.get("project_class", "") or "")
     card_type = str(payload.get("card_type", "") or "")
-    # [根卡判定·双判据] ①已落盘且等于 work_card_id；②card_type=="剧本"（创建期
-    # 固有语义——create_work 建根卡时卡号尚未发出，work_card_id 在盘上查不到，
-    # 只靠判据①会把合法的根卡创建误判为越权）。任一成立即视为根卡。
-    is_root = (card_id == work_store.work_card_id_of(work_id)) or (card_type == "剧本")
+    # [根卡判定·判据①③] ①已落盘且等于 work_card_id；③**根卡创建期**——payload
+    # 带 project_class 且该 work 尚无根卡（create_work 先写 work.json 占位空串、
+    # 建卡后才回填，创建那一刻判据①必为 False）。
+    # [底座收口 T2.a] 判据②（card_type=="剧本"）已删——类型不再兼任根卡判据
+    # （基座任务书 T5 划界声明落地；P1 硬前提由判据③承接，删兜底前先验通）。
+    is_root = (card_id == work_store.work_card_id_of(work_id)) or (
+        bool(project_class) and not work_store.work_card_id_of(work_id)
+    )
 
     # ---------- 闸 1：非法值显式报错（废除静默降级） ----------
     if project_class and project_class not in pc_codes:
@@ -561,9 +589,11 @@ def _write_gate(work_id: str, action: str, card_id: str,
             return {"error": f"owner_card_id 指向的卡不存在: {owner}"}
         owner_meta = _meta_of(work_id, owner) or {}
         owner_type = str(owner_meta.get("card_type", "") or "")
-        if owner_type in legacy_codes or owner_type == "剧本":
-            return {"error": f"owner「{owner}」的 card_type「{owner_type}」是"
-                             f" legacy 值，须先归类为 sub_project 才能作工具卡 owner"}
+        # [底座收口 T2.d] 正向判据取代负向（legacy∪剧本）：legacy 全退役后
+        # 负向判据恒 False＝闸3 失效。原意即「owner 必须是子项目卡」。
+        if owner_type != "sub_project":
+            return {"error": f"owner「{owner}」的 card_type「{owner_type}」"
+                             f"不是 sub_project，不能作工具卡 owner"}
     # ---------- 工具卡不可有子卡 ----------
     if card_type == "tool":
         cd = _cards_dir(work_id)
@@ -655,14 +685,21 @@ async def create_card(
     work_id: str,
     title: str,
     source: str,
-    card_type: str = "线索",
+    card_type: str = "",
     parent: Optional[str] = None,
     charter: str = "",
     conclusion: str = "",
     project_class: str = "",
     owner_card_id: str = "",
 ) -> dict[str, Any]:
-    """创建卡片 + 对应会话文件，更新 canvas 缓存，git 提交。
+    """创建卡片 + 对应会话文件，更新 canvas 缓存。
+
+    [底座收口 T5.a · 建卡入口适配] card_type 缺省从"线索"改为 ""：
+    空值时按本树根卡 project_class 映射该树 L1 词表的唯一/首个子卡类型
+    （rd_project→sub_project、research_project→topic）——「线索」退役后
+    三个建卡入口（模型工具/前端 UI/文本通道）都不必各自知道词表。
+    无注册表（降级态）⇒ 回落旧缺省"线索"，行为与改造前一致（conftest 沙箱）。
+    根卡创建不受本映射影响——create_work 显式传 card_type="project"。
 
     [卡片信息结构改造 S1-2] 骨架注入四步：
       ①入参（charter＋conclusion 拼成的候选正文）先过区头检测；
@@ -685,6 +722,9 @@ async def create_card(
     if source not in ALLOWED_SOURCE:
         return {"error": f"source 非法: {source}，只允许 {ALLOWED_SOURCE}"}
     try:
+        # [底座收口 T5.a] 空类型按树映射；映射不出（无注册表）回落旧缺省
+        if not card_type:
+            card_type = _default_child_type(work_id)
         resolved_type = _resolve_card_type(card_type)
         resolved_parent = _normalize_parent(work_id, parent, resolved_type)
         _cards_dir(work_id).mkdir(parents=True, exist_ok=True)
@@ -874,34 +914,36 @@ async def update_card(
     # 先读现状（不锁，用于防环/根卡保护判定）
     current = await read_card(work_id, card_id)
     cur_meta = current["meta"]
-    is_work_card = cur_meta.get("card_type") == "剧本"
-    # [T07-1-4] 根卡保护腿①判据源切换：card_type=="剧本" → card_id==work_card_id
-    # （腿②「禁止改成剧本」仍按类型名——它判的是类型迁移，不是根卡身份）
+    cur_type = str(cur_meta.get("card_type", "") or "")
+    # [T07-1-4 + 底座收口 T2.c] 根卡保护判据统一为 card_id==work_card_id
+    # （原 is_work_card 双轨「剧本」判据随类型退役删除）。
     is_root_card = card_id == work_store.work_card_id_of(work_id)
     _log_judgment_switch(
-        "card_store.update_card.root_protect", card_id, is_work_card, is_root_card
+        "card_store.update_card.root_protect", card_id, cur_type == "project", is_root_card
     )
 
-    # 根卡保护：card_type / parent 不允许修改
+    # 根卡保护：card_type / parent 不允许修改。
+    # [底座收口 T2.c/T3] 唯一放宽＝迁移对「剧本→project」（一次性、单向）：
+    # 三张存量根卡迁移走唯一写门必须过这里；迁移完成后盘上再无「剧本」根卡，
+    # 该分支自然成死路（无需回收）。
     if is_root_card and ("card_type" in updates or "parent" in updates):
-        return {"error": "剧本卡的 card_type/parent 不允许修改"}
+        migration_pair = (
+            "card_type" in updates
+            and cur_type == "剧本"
+            and str(updates.get("card_type", "") or "") == "project"
+        )
+        if not migration_pair:
+            return {"error": "项目根卡的 card_type/parent 不允许修改"}
 
-    # card_type 降级
+    # card_type 解析（静默降级已废除：非法值转 {"error": ...} 返回）
     if "card_type" in updates:
-        # [卡片分类基座 T6] 静默降级已废除：非法值转 {"error": ...} 返回，
-        # 不再悄悄写「线索」。update_card 本体无 try 包裹，故在此就地转译。
         try:
-            new_type = _resolve_card_type(updates["card_type"])
+            updates["card_type"] = _resolve_card_type(updates["card_type"])
         except CardTypeValueError as exc:
             return {"error": str(exc)}
-        # 不允许把任意卡改成剧本（剧本只能由 create_work 流程产生）
-        if new_type == "剧本" and not is_work_card:
-            new_type = "线索"
-            logger.warning("update_card: 禁止把非剧本卡改成剧本，降级线索 card=%s", card_id)
-        updates["card_type"] = new_type
 
     # parent 变更防环
-    if "parent" in updates and not is_work_card:
+    if "parent" in updates and not is_root_card:
         new_parent = updates["parent"]
         if new_parent == card_id:
             return {"error": "parent 不能指向自身或后代"}

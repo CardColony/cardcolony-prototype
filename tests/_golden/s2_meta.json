@@ -1,0 +1,23 @@
+{
+  "tag": "s2",
+  "title": "工具循环（快车道＋read_card，含埋点与续跳）",
+  "request_content": "查看一下卡片",
+  "http_status": 200,
+  "model_calls": 2,
+  "main_calls": 2,
+  "vp_calls": 0,
+  "event_types": [
+    "run_start",
+    "context",
+    "fastlane_route",
+    "round_start",
+    "tool_call",
+    "card_op",
+    "round_start",
+    "deliver",
+    "proposal",
+    "done"
+  ],
+  "event_count": 10,
+  "token_event_count": 3
+}

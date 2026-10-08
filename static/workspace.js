@@ -170,14 +170,13 @@
       <div class="blocktitle">＋ 建子卡</div>
       <div class="add-child-row">
         <input type="text" id="childTitle" placeholder="子卡标题">
-        <!-- D-06（T07）：只关新建入口、不删白名单 —— 四个废弃类型名不再提供；ALLOWED_CARD_TYPE 六值元组原样保留 -->
-        <select id="childType">
-          <option value="线索">线索</option>
-        </select>
+        <!-- [底座收口 T5.c] 类型选择移除：card_type 传空串，由后端按本树
+             project_class 映射（rd→sub_project / research→topic）——「线索」
+             已退役，前端不再硬编码类型菜单（D-06 的下拉就此退役）。 -->
         <button class="btn" id="addChildBtn">建</button>
       </div>
 
-      ${m.card_type !== "剧本" ? `
+      ${m.card_type !== "project" ? `
       <div class="blocktitle" style="color:#d05656;">危险操作</div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:24px;flex-wrap:wrap;">
         <button class="btn" id="deleteCardBtn" style="color:#d05656;border-color:#d05656;">删除此卡</button>
@@ -373,11 +372,11 @@
     document.getElementById("addChildBtn").onclick = async () => {
       const title = document.getElementById("childTitle").value.trim();
       if (!title) { API.toast("请输入子卡标题", "error"); return; }
-      const ctype = document.getElementById("childType").value;
+      // [底座收口 T5.c] card_type 传空串 → 后端按树映射
       try {
         await API.createCard(WORK_ID, {
           title, source: "用户直接创建",
-          card_type: ctype, parent: currentCard.meta.card_id,
+          card_type: "", parent: currentCard.meta.card_id,
         });
         document.getElementById("childTitle").value = "";
         API.toast("已建子卡：" + title, "success");

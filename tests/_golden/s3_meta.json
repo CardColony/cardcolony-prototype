@@ -1,0 +1,27 @@
+{
+  "tag": "s3",
+  "title": "三席后置＋统合交付（chain 路径·含 viewpoints 与 T14 拼接）",
+  "request_content": "帮我分析一下根卡当前的定论是否需要收敛",
+  "http_status": 200,
+  "model_calls": 4,
+  "main_calls": 3,
+  "vp_calls": 1,
+  "event_types": [
+    "run_start",
+    "context",
+    "fastlane_route",
+    "round_start",
+    "tool_call",
+    "tool_result",
+    "round_start",
+    "seats_enter",
+    "seat_start",
+    "seat_end",
+    "round_start",
+    "deliver",
+    "proposal",
+    "done"
+  ],
+  "event_count": 14,
+  "token_event_count": 3
+}

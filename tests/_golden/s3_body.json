@@ -1,0 +1,20 @@
+{
+  "created_cards": [],
+  "model": "golden-main",
+  "reply": "已读完根卡与工具结果。\n\n综合三席意见，收敛为一条定论。\n",
+  "tool_events": [
+    {
+      "card_id": "card_001",
+      "ok": true,
+      "tool": "read_card"
+    }
+  ],
+  "viewpoints_meta": [
+    {
+      "chars": 17,
+      "latency_ms": 1,
+      "model": "golden-vp",
+      "ok": true
+    }
+  ]
+}

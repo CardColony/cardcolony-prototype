@@ -144,15 +144,17 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
     }
     write_work(work_id, work_data)
 
-    # 创建剧本卡：parent="" 强制（card_store 内部对 card_type=剧本 会无视 parent 入参）
+    # 创建根卡：parent="" 强制（card_store 内部对 card_type=project 无视 parent 入参）
     # [卡片分类基座 T1] 同步标 project_class（L0 项目分类仅挂根卡）
+    # [底座收口 T2.e] 根卡类型「剧本」→ project（legacy 退役；创建期根卡识别
+    # 由 _write_gate 判据③承接：payload 带 project_class 且 work 尚无根卡）
     result = await card_store.create_card(
         work_id, title, "用户直接创建",
-        card_type="剧本", parent="", charter="", conclusion="",
+        card_type="project", parent="", charter="", conclusion="",
         project_class=project_class,
     )
     if "error" in result:
-        logger.error("create_work: 剧本卡创建失败 work=%s: %s", work_id, result["error"])
+        logger.error("create_work: 项目根卡创建失败 work=%s: %s", work_id, result["error"])
         return result
     work_card_id = result["meta"]["card_id"]
     work_data["work_card_id"] = work_card_id

@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
-"""T7 存量迁移 · 映射预览（只读，不写任何卡）
+"""存量类型迁移 · 映射预览（只读）与执行（--apply，唯一写门）
 
 用法：
+    # 预览（只读，默认）
     MOCK_LLM=1 .venv/Scripts/python.exe -m scripts.migrate_card_types --preview
+    # 执行（先快照 → 唯一写门逐卡迁移 → 后快照 → 复核）
+    MOCK_LLM=1 .venv/Scripts/python.exe -m scripts.migrate_card_types --apply --tag research-migrate
 
 **默认是预览模式**：只读生产 works/，输出逐卡映射方案 + 冲突项，不写盘。
 确认无误后加 `--apply` 才真正执行（执行前强制再取一次快照）。
 
-为什么先预览：任务书 §五风险表明写「存量「线索」卡语义混杂，批量归
-sub_project 可能误伤 → 先出映射预览报告，人工抽检后再执行」。
-本脚本照此办。
+历史批次：
+  T7（rd 树）：work_002 的 67 张存量「线索」→ sub_project（已执行完毕）。
+  研究树迁移（[研究项目词表与迁移] 任务书 T2）：work_001/work_003 的
+  「线索」→ topic（用户 2026-10-08 裁定「研究项目的子卡统一叫课题卡」）。
+两批共用本脚本；映射关系固化为 LEGACY_MIGRATION_BY_WORK 常量（可改）。
 """
 from __future__ import annotations
 
@@ -23,11 +28,37 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from src.storage.card_store import (  # noqa: E402
-    _meta_of, _card_path, load_type_registry,
+    _meta_of, _card_path, load_type_registry, _l1_all_codes,
 )
 from src.storage import work_store  # noqa: E402
 
 WORKS_DIR = BASE_DIR / "works"
+
+
+# ================================================================
+# 项目分类裁定（用户 2026-10-08 16:09 口头定案）
+#   work_001 股权财政      → research_project
+#   work_002 项目管理agent  → rd_project（研发，词表已定义）
+#   work_003 记忆机制论文  → research_project
+# ================================================================
+PROJECT_CLASS_BY_WORK: dict[str, str] = {
+    "work_001": "research_project",
+    "work_002": "rd_project",
+    "work_003": "research_project",
+}
+
+# ================================================================
+# 「线索」迁移目标映射（固化为可改常量，与 PROJECT_CLASS_BY_WORK 同模式）。
+#   rd_project        → sub_project（T7 批次，已执行；保留条目保证幂等重跑安全）
+#   research_project  → topic（研究树批次，[研究项目词表与迁移] 任务书 T2——
+#     用户 2026-10-08 裁定：「研究项目的子卡统一叫课题卡」）
+# 未列出的 work → 线索子卡不动（⚠ 人工确认）。
+# ================================================================
+LEGACY_MIGRATION_BY_WORK: dict[str, str] = {
+    "work_001": "topic",
+    "work_002": "sub_project",
+    "work_003": "topic",
+}
 
 
 def collect() -> list[dict]:
@@ -40,13 +71,12 @@ def collect() -> list[dict]:
             continue
         wc_id = work_store.work_card_id_of(wid)
         wc_meta = _meta_of(wid, wc_id) or {}
-        # [T7 安全] 根卡 project_class 按用户 2026-10-08 16:09 裁定逐树给定，
-        # **不自动推断**。研究树（research_project）的 L1 词表本期未定义
-        # （任务书 §1.2 不在范围），故其子卡本批**一律暂缓**，不归类。
         cur_pc = str(wc_meta.get("project_class", "") or "")
         target_pc = PROJECT_CLASS_BY_WORK.get(wid, "")
         pc_needs_confirm = (not target_pc)
-        subtree_deferred = (target_pc != "rd_project")
+        # [研究树批次] 暂缓条件＝本树 project_class 未定（防御面）。
+        # research_project 词表已立项（topic），不再按「非 rd」一律暂缓。
+        subtree_deferred = (not target_pc)
         for p in sorted((wd / "cards").glob("card_*.md")):
             m = _meta_of(wid, p.stem) or {}
             cur_type = str(m.get("card_type", "") or "")
@@ -58,7 +88,10 @@ def collect() -> list[dict]:
                 "cur_type": cur_type,
                 "cur_project_class": cur_pc,
                 "pc_needs_confirm": pc_needs_confirm and is_root,
-                "subtree_deferred": (not is_root) and subtree_deferred,
+                # [研究树批次] research 树词表已立项（topic），子卡不再一律暂缓：
+                # 「线索」按 LEGACY_MIGRATION_BY_WORK 归 topic；暂缓仅剩
+                # 「pc 未定」的树（防御面保留，当前三棵树 pc 全部已标）。
+                "subtree_deferred": (not is_root) and (not target_pc),
                 "owner_card_id": str(m.get("owner_card_id", "") or ""),
                 "parent": str(m.get("parent", "") or ""),
             }
@@ -68,14 +101,24 @@ def collect() -> list[dict]:
                 row["rule"] = (f"根卡：类型保留，project_class → {target_pc}"
                                if target_pc else "根卡：项目分类未定，本批不改")
             elif subtree_deferred:
-                row["to_type"] = cur_type              # 研究树子卡暂缓
+                row["to_type"] = cur_type              # pc 未定的树：防御性暂缓
                 row["to_project_class"] = ""
-                row["rule"] = ("⏸ 研究项目子卡暂缓（research_project 词表"
-                               "本期未定义，任务书 §1.2）")
+                row["rule"] = ("⏸ 项目分类未定，子卡暂缓")
             elif cur_type == "线索":
-                row["to_type"] = "sub_project"
+                mapped = LEGACY_MIGRATION_BY_WORK.get(wid, "")
+                if mapped:
+                    row["to_type"] = mapped
+                    row["to_project_class"] = ""
+                    row["rule"] = f"线索（语义即「没选」）→ {mapped}（按 LEGACY_MIGRATION_BY_WORK）"
+                else:
+                    row["to_type"] = cur_type
+                    row["rule"] = f"⚠ {wid} 未在 LEGACY_MIGRATION_BY_WORK 中，需人工确认"
+            elif cur_type in _l1_all_codes(reg):
+                # [T2 扩展修正] 已是合法 L1 词表值（如 work_002 的 32 张
+                # sub_project）→ 无需迁移、无需人工确认（旧版误标 ⚠）。
+                row["to_type"] = cur_type
                 row["to_project_class"] = ""
-                row["rule"] = "线索（语义即「没选」）→ sub_project"
+                row["rule"] = "已是词表值，不动"
             else:
                 row["to_type"] = cur_type              # 其他 legacy 值不动，人工确认
                 row["to_project_class"] = ""
@@ -84,26 +127,13 @@ def collect() -> list[dict]:
     return out
 
 
-# ================================================================
-# 项目分类裁定（用户 2026-10-08 16:09 口头定案）
-#   work_001 股权财政      → research_project
-#   work_002 项目管理agent  → rd_project（研发，词表已定义）
-#   work_003 记忆机制论文  → research_project
-#   两棵研究树的**子卡分类暂缓**——research_project 的 L1 词表本期未定义
-#  （任务书 §1.2「不在范围：研究项目词表」），故只标根卡 L0，子卡原样不动。
-# ================================================================
-PROJECT_CLASS_BY_WORK: dict[str, str] = {
-    "work_001": "research_project",
-    "work_002": "rd_project",
-    "work_003": "research_project",
-}
-
-
 def _apply_migration(rows: list[dict]) -> int:
     """真正执行迁移。返回改动卡数。
 
     写路径**只走 card_store.update_card**（唯一写门，会过 _write_gate），
     不直接改文件——保持与运行时同一条路、同一套闸、同一份快照留痕。
+    [研究树批次] 迁移目标不再限定 rd_project：按 LEGACY_MIGRATION_BY_WORK
+    逐树取目标类型（词表未立项的树不在表内 ⇒ 不动，防御面保留）。
     """
     import asyncio
     from src.storage import card_store
@@ -120,15 +150,15 @@ def _apply_migration(rows: list[dict]) -> int:
                     continue
                 upd = {"project_class": r["to_project_class"]}
             else:
-                # 子卡：仅当该树的 project_class 有已定义词表时才归类
-                pc = PROJECT_CLASS_BY_WORK.get(wid, "")
-                if pc != "rd_project":
-                    continue          # 研究树子卡暂缓（词表未定义）
+                # 子卡：仅当本树在 LEGACY_MIGRATION_BY_WORK 有映射时才归类
+                mapped = LEGACY_MIGRATION_BY_WORK.get(wid, "")
+                if not mapped:
+                    continue          # 未立项映射的树：不动
                 if r["to_type"] == r["cur_type"]:
                     continue
                 upd = {"card_type": r["to_type"]}
             res = await card_store.update_card(
-                wid, cid, upd, f"[T7存量迁移] {r['cur_type']} → {upd}")
+                wid, cid, upd, f"[存量类型迁移] {r['cur_type']} → {upd}")
             if isinstance(res, dict) and "error" in res:
                 print(f"  ✗ {wid}/{cid} 失败：{res['error']}")
                 continue
@@ -144,6 +174,8 @@ def main() -> int:
     ap.add_argument("--preview", action="store_true", default=True)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--work", help="只处理指定 work_id")
+    ap.add_argument("--tag", default="migrate",
+                    help="快照 reason 标签（如 research-migrate；快照 reason=[pre-<tag>]）")
     args = ap.parse_args()
 
     rows = collect()
@@ -152,7 +184,7 @@ def main() -> int:
 
     if not args.apply:
         # ============ 预览模式（只读） ============
-        print(f"=== T7 存量迁移 · 映射预览（共 {len(rows)} 张卡）===")
+        print(f"=== 存量类型迁移 · 映射预览（共 {len(rows)} 张卡）===")
         by_work: dict[str, list[dict]] = {}
         for r in rows:
             by_work.setdefault(r["work_id"], []).append(r)
@@ -175,30 +207,33 @@ def main() -> int:
         print(f"  总卡数           : {len(rows)}")
         print(f"  根卡             : {sum(1 for r in rows if r['is_root'])}")
         print(f"  本批将改动       : {len(to_change)}")
-        print(f"⏸ 研究树子卡暂缓 : {len(deferred)}")
+        print(f"⏸ 子卡暂缓       : {len(deferred)}")
         print(f"  ⚠ 类型需人工确认 : {len(warns)}")
         print(f"  ⚠ 根卡 pc 未定   : {len(pc_pending)}")
         if deferred:
             by_w: dict[str, int] = {}
             for r in deferred:
                 by_w[r["work_id"]] = by_w.get(r["work_id"], 0) + 1
-            print("\n=== 研究项目子卡暂缓（research_project 词表本期未定义）===")
+            print("\n=== 子卡暂缓（项目分类未定）===")
             for w, c in sorted(by_w.items()):
                 print(f"  {w}：{c} 张子卡本批不动")
         if warns:
             print("\n=== 需人工确认清单（这些不会被自动改）===")
             for r in warns:
                 print(f"  {r['work_id']}/{r['card_id']}  「{r['title']}」 type={r['cur_type']}")
-        print("\n预览模式：未写任何文件。确认后加 --apply 执行。")
+        print(f"\n预览模式：未写任何文件。确认后加 --apply --tag {args.tag} 执行。")
         return 0
 
     # ============ 执行模式（--apply） ============
     from src.storage import data_snapshot
-    print("=== T7 存量迁移 · 执行 ===")
+    print(f"=== 存量类型迁移 · 执行（tag={args.tag}）===")
     print("第 1 步：迁移前快照…", flush=True)
     for wid in sorted({r["work_id"] for r in rows}):
-        data_snapshot.snapshot_sync(reason="[pre-T7-migrate-card-types]", work_id=wid)
-    print("  快照已落（独立快照目录，不走 git）")
+        r = data_snapshot.snapshot_sync(reason=f"[pre-{args.tag}]", work_id=wid)
+        # [诚实打印] 指纹去重会 skip（状态已被上一批快照捕获）——如实报，
+        # 不把 skipped 说成"已落"。迁移前状态兜底：/tmp 全量备份。
+        print(f"  {wid}: ok={r['ok']} skipped={r['skipped']} files={r['files']}")
+    print("  （快照走独立目录不走 git；skipped=内容已被上一批捕获）")
 
     print("第 2 步：逐卡经唯一写门 update_card 迁移…", flush=True)
     n = _apply_migration(rows)
@@ -206,7 +241,8 @@ def main() -> int:
 
     print("第 3 步：迁移后快照…", flush=True)
     for wid in sorted({r["work_id"] for r in rows}):
-        data_snapshot.snapshot_sync(reason="[post-T7-migrate-card-types]", work_id=wid)
+        r = data_snapshot.snapshot_sync(reason=f"[post-{args.tag}]", work_id=wid)
+        print(f"  {wid}: ok={r['ok']} skipped={r['skipped']} files={r['files']}")
 
     print("第 4 步：复核…")
     from src.storage.card_store import _meta_of as _m
