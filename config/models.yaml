@@ -22,12 +22,12 @@
 models:
   # 统合官（simple 链路总结席，兼深度工具链主模型）
   main:
-    provider: openai                    # 智谱 coding plan 为 OpenAI 兼容协议
-    model: glm-5.3
-    api_key_env: ZHIPU_CODING_API_KEY
-    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+    provider: openai                    # Nous Research 为 OpenAI 兼容协议
+    model: moonshotai/kimi-k3
+    api_key_env: NOUS_API_KEY
+    base_url: "https://inference-api.nousresearch.com/v1"
     temperature: 0.3
-    context_window: 128000      # 模型输入窗口（token），前端显示上下文总量用
+    context_window: 1048576     # kimi-k3 端点实测 context_length（勿改回）
     retry:
       max_attempts: 5
       backoff_seconds: 2
