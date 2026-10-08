@@ -8,6 +8,13 @@
 
 [卡片权限改造 2026-10-07] 权限纯函数：读＝全盘可读（存在即放行，亲属链/连线/锚卡读限整制去除——小说项目机制）；写＝自己的子树（不随读放开）。
 越权不抛异常，返回 {"error": ...} 给模型。
+
+[建卡工具化 2026-10-08] create_card 入标准工具通道（此前只走文本协议块
+card-proposal，见 card_proposal.py）。两条通道并存：工具通道优先、文本通道
+兜底（模型过渡期仍写文本块），跨通道同轮去重防重复建卡。
+**建卡权限口径＝写权限（用户 2026-10-08 14:14 定）**：只能建自己的子卡片
+（parent 落在current 的子树内；parent 缺省＝当前卡自身，即建自己的下一层）。
+与 edit_card/delete_card 同用 can_edit 判据，不新增第二套权限规则。
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ MODEL_REL_TYPES = ("先后", "关联")
 # 名单＝调研纪要 §二 实证枚举（10 只读）；其余 6 件为写工具
 # （edit_card/delete_card/update_shadow/link_cards/unlink_cards/write_file）。
 # [T12-R3] 增补 read_memory（记忆锚点下探，condense_fold 展开通道，只读拉取）。
+# [建卡工具化 2026-10-08] create_card 是写工具（落存储层新卡）——不进白名单。
 READONLY_TOOLS = frozenset({
     "read_card", "read_shadow", "list_manuscript", "read_manuscript",
     "search_manuscript", "web_search", "fetch_web",
@@ -40,7 +48,8 @@ READONLY_TOOLS = frozenset({
 
 # [T12-R3] 工具表基准版本化固化：工具集/schema 变更须递增版本号并对账基准指纹。
 # tools-t12-1：T12 增补 read_memory（其余 16 件与 T11 基线逐字一致）。
-TOOL_TABLE_VERSION = "tools-t12-1"
+# tools-tc-1：[建卡工具化 2026-10-08] 增补 create_card（共 18 件）。
+TOOL_TABLE_VERSION = "tools-tc-1"
 
 
 def build_tool_schemas() -> list[dict[str, Any]]:
@@ -71,6 +80,33 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "to_seq": {"type": "integer", "description": "结束块序号（含），锚点上界；缺省不设上界"},
                 },
                 "required": [],
+            },
+        },
+        # [建卡工具化 2026-10-08] 标准工具通道建卡。权限＝写权限（can_edit）：
+        # 只能建自己的子卡片（用户 2026-10-08 14:14 定）——parent 缺省＝当前卡自身。
+        # source 恒「模型生成」、card_type 恒「线索」（不向模型开放类型枚举，
+        # 避免模型选型；类型是系统内部概念，与文字协议块旧行为逐字一致）。
+        {
+            "name": "create_card",
+            "description": (
+                "在你管辖范围内创建一张新卡片。只能建自己的子卡片："
+                "parent 缺省＝当前卡自身；给 parent 时该卡必须落在你的子树内。"
+                "建卡成功后系统会派生该卡的影子卡（过程记录），不需要你手动建。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "卡名，如「性能优化·监听器泄漏」"},
+                    "parent": {
+                        "type": "string",
+                        "description": "父卡 id，如 card_006；缺省＝挂在当前卡下。必须在你的子树内，越权会被拒。",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "卡的正文（结论正文，缺省空）。",
+                    },
+                },
+                "required": ["title"],
             },
         },
         {
@@ -330,6 +366,46 @@ async def execute_tool(
             if isinstance(hi, int) and not isinstance(hi, bool):
                 entries = [e for e in entries if isinstance(e.get("seq"), int) and e["seq"] <= hi]
             return {"card_id": target_id, "mark": state.get("mark", 0), "entries": entries}
+        if tool_name == "create_card":
+            # [建卡工具化 2026-10-08] 权限＝写权限（can_edit）：只能建自己的子卡片
+            # （用户 2026-10-08 14:14 定）。parent 缺省＝当前卡自身（建自己下一层）；
+            # 给了 parent 则该卡必须落在 current 的子树内——用 can_edit 判，
+            # 与 edit_card/delete_card 同一判据，不新增第二套权限规则。
+            # 结构性护栏（剧本根卡/带子卡者不可删）不在此——建卡不涉删。
+            title = str(arguments.get("title", "") or "").strip()
+            if not title:
+                return {"error": "title 不能为空"}
+            # parent 缺省＝当前卡自身；显式给空串也按缺省处理（模型常传空串）
+            target_parent = str(arguments.get("parent", "") or "").strip() or current_id
+            # 存在性先判：已删/不存在的 parent 不误报越权（与 read_card 同序）
+            if target_parent not in cards:
+                return {"error": f"父卡不存在: {target_parent}"}
+            if not can_edit(current_id, target_parent, cards):
+                return {
+                    "error": (
+                        f"越权：只能建自己的子卡片，{target_parent} 不在你的子树内"
+                        f"（当前卡 {current_id}）"
+                    )
+                }
+            result = await card_store.create_card(
+                work_id, title, "模型生成",
+                parent=target_parent,
+                conclusion=str(arguments.get("content", "") or ""),
+            )
+            if "error" in result:
+                return result
+            # 建卡同步刷新 meta 缓存：同轮后续工具（如 link_cards→新卡）能看到新卡
+            cards[result["meta"]["card_id"]] = {
+                **result["meta"], "card_id": result["meta"]["card_id"],
+            }
+            # 回执给模型：卡号真身在此——模型据此确证建成、不必再猜（建卡工具化的核心收益）
+            return {
+                "ok": True,
+                "card_id": result["meta"]["card_id"],
+                "title": result["meta"]["title"],
+                "parent": result["meta"]["parent"],
+                "shadow": "已派生影子卡（过程记录，你不用管）",
+            }
         if tool_name == "edit_card":
             target_id = arguments.get("card_id", "")
             content = arguments.get("content", "")

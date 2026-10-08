@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 """建卡协议解析（白板版 2026-10-02，双形态跨度制）。
 
-模型唯一建卡格式（实际出现过两种形态，都必须接住）：
+[建卡工具化 2026-10-08] 本模块降级为**兜底通道**：建卡主通道已改为标准工具
+create_card（见 card_tools.py）。本模块仍解析文本协议块（模型过渡期还会写），
+两条通道并存、同轮去重（见 routes）。本模块一行不删——它同时是三席观点清洗
+的剥离器（simple_service.clean_viewpoint_text 依赖它）。
+
+模型旧建卡格式（实际出现过两种形态，都必须接住）：
   形态一（标准）：```card-proposal\n[...]\n```
   形态二（DeepSeek 系泄漏）：<｜｜card-proposal｜｜>\n[...]\n<｜｜/card-proposal｜｜>
     —— 竖线可能全角(U+FF5C)/半角(U+007C)、单条/双条/零条(10-03 实录纯 ASCII 形态)、标记词两侧可能有空白
@@ -14,10 +19,18 @@ parse_proposals(reply_text) -> (clean_text, proposals)
   - 只认 title / parent / content 三个字段；多余字段忽略
   - title 空 → 跳过该项
 
-apply_proposals(work_id, current_card_id, proposals) -> list[created]
+apply_proposals(work_id, current_card_id, proposals, exclude_titles=None) -> (created, denied)
   - 逐项调 create_card(source="模型生成")；content 落存储层正文区
   - parent 缺失/不存在回退 current_card_id
   - 连线不经建卡协议（link_cards 工具单独走）
+  - **[建卡工具化 2026-10-08] 权限＝只能建自己的子卡片**（用户 14:14 定）：
+    文本块里的 parent 同样判子树，越权项不建、记入 denied（机械事实随created
+    一并回给调用方——不静默丢卡）
+  - **exclude_titles**：同轮工具通道已建的卡名集合，标题命中者跳过（跨通道去重，
+    防同一轮既发 create_card 工具又写文本块 → 建两次）
+
+⚠️ **返回值破坏性变更**：旧签名返回 list[created]，新签名返回
+    (created, denied) 二元组。调用方仅routes.py:920 一处（已同步改）。
 """
 
 from __future__ import annotations
@@ -25,7 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Optional
 
 from ..storage import card_store
 
@@ -171,30 +184,62 @@ async def apply_proposals(
     work_id: str,
     current_card_id: str,
     proposals: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    exclude_titles: Optional[set[str]] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """逐项调 create_card(source='模型生成')。parent 缺失/不存在回退 current_card_id。
 
-    返回成功创建的卡列表 [{"card_id","title","parent"}]。
-    单项失败记日志继续下一项。
+    **[建卡工具化 2026-10-08] 两处新增**：
+    ① 权限＝只能建自己的子卡片（用户 14:14 定）。判据复用 card_tools.can_edit
+       ——与 create_card 工具通道、edit_card/delete_card 同一套，不新增第二套规则。
+       越权项不建，记入 denied（title + reason），随返回值可见，不静默丢。
+    ② exclude_titles：同轮工具通道已建卡名，命中者跳过（跨通道去重）。
+
+    返回 (created, denied)：
+      created = [{"card_id","title","parent"}]成功建卡列表
+      denied  = [{"title","reason"}] 因越权或去重未建的项
+    单项失败记日志继续下一项（原语义不变）。
     """
+    from . import card_tools  # 延迟导入：与 card_tools 互为反向引用，顶层并列导入会成环
+
     created: list[dict[str, Any]] = []
+    denied: list[dict[str, str]] = []
+    skip_titles = exclude_titles or set()
+    # 权限判定需要全卡 meta（parent 链）；只取一次，供整批复用
+    cards = card_tools._collect_card_meta(work_id)
     for p in proposals:
+        title = p["title"]
+        # 跨通道去重：工具通道同轮已建同名的，不重复建
+        if title in skip_titles:
+            logger.info("[建卡去重] 工具通道同轮已建同名卡，文本块跳过 title=%r", title)
+            denied.append({"title": title, "reason": "同轮工具通道已建同名卡（去重）"})
+            continue
         parent = p.get("parent") or ""
         if parent == "":
             parent = current_card_id
+        # 存在性先判：已删/不存在的 parent 不误报越权（与 card_tools 同序）
+        if parent not in cards:
+            denied.append({"title": title, "reason": f"父卡不存在: {parent}"})
+            logger.warning("[建卡未建] 父卡不存在 title=%r parent=%r", title, parent)
+            continue
+        # 权限＝写权限：只能建自己的子卡片
+        if not card_tools.can_edit(current_card_id, parent, cards):
+            reason = f"越权：只能建自己的子卡片，{parent} 不在 {current_card_id} 的子树内"
+            denied.append({"title": title, "reason": reason})
+            logger.warning("[建卡未建] %s title=%r parent=%r", reason, title, parent)
+            continue
         try:
             result = await card_store.create_card(
                 work_id,
-                p["title"],
+                title,
                 "模型生成",
                 parent=parent,
-                conclusion=p["content"],
+                conclusion=p.get("content", ""),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.error("apply_proposals 单项失败 title=%s: %s", p["title"], exc)
+            logger.error("apply_proposals 单项失败 title=%s: %s", title, exc)
             continue
         if "error" in result:
-            logger.error("apply_proposals 单项失败 title=%s: %s", p["title"], result["error"])
+            logger.error("apply_proposals 单项失败 title=%s: %s", title, result["error"])
             continue
         meta = result["meta"]
         created.append({
@@ -202,4 +247,4 @@ async def apply_proposals(
             "title": meta["title"],
             "parent": meta["parent"],
         })
-    return created
+    return created, denied

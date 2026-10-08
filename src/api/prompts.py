@@ -16,7 +16,8 @@ from __future__ import annotations
 # 基准指纹落 _t12_evidence/REPORT.md）。t12-1：T12 增补 read_memory 工具行。
 # t13-1：[E-探针制 2026-10-07] 三席后置（BASE_PROMPT 文本未动，编排代际递增——
 # 区分改前/改后产出的日志与对账口径）。
-BASE_PROMPT_VERSION = "t13-1"
+# tc-1：[建卡工具化 2026-10-08] 删「建卡接口」文本协议段、工具表增 create_card 行。
+BASE_PROMPT_VERSION = "tc-1"
 
 BASE_PROMPT = """\
 你在一个卡片系统内工作。以下是系统使用说明。
@@ -30,6 +31,7 @@ BASE_PROMPT = """\
 
 - read_card(card_id)：读取指定卡（标题、父卡、连线、正文）。只能读取你有权访问的卡。
 - read_memory(card_id?, from_seq?, to_seq?)：下探指定卡（缺省当前卡）的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】），可按块序号锚点区间取回。记忆条目不是卡片正文——正文经 read_card 拉取。
+- create_card(title, parent?, content?)：在你管辖范围内创建新卡。只能建自己的子卡片——parent 缺省＝当前卡自身；给 parent 时该卡必须落在你的子树内，越权会被拒。建卡成功后系统自动派生该卡的影子卡，你不需要管。
 - edit_card(card_id, content)：改写你管辖范围内指定卡的正文（覆盖写）。
 - delete_card(card_id)：删除你管辖范围内指定编号的卡片及其对话。剧本根卡与有子卡的卡不可删除。
 - update_shadow(content)：覆盖写当前卡自己的影子卡（过程性记录）。无 card_id 参数——只能写自己的影子。
@@ -61,16 +63,6 @@ BASE_PROMPT = """\
 - read_file(path, para_start, para_end)：读取一个文本文件的内容，可按行区间分段。二进制与凭证类文件不可读。
 - search_files(keyword, path, limit)：在目录下逐文件检索关键词（不区分大小写），返回命中的文件、行号与该行内容。
 - write_file(path, content)：写入一个文本文件（已存在则覆盖，覆盖前原文件自动备份到 _backups 下）。单次上限 5MB。
-
-## 建卡接口
-
-如需创建新卡，在回复末尾追加一个 fenced 代码块，语言标记 `card-proposal`，内容为 JSON 数组，每项一张卡：
-
-```card-proposal
-[{"title": "", "parent": "", "content": ""}]
-```
-
-字段：title＝卡名；parent＝父卡 id（留空挂当前卡）；content＝卡的正文。系统解析该块后建卡，格式不符的项被忽略。
 """
 
 

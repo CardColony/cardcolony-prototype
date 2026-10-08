@@ -723,14 +723,24 @@ async def _run_message(work_id: str, card_id: str, content: str,
                 # [phase8.5] manuscript 工具没有 card_id：target_id 记 chapter 或 keyword，都没有则空串
                 # [phase8.6-D] link_cards 记 target_id
                 # [联网能力 2026-10-02] web_search 记 query、fetch_web 记 url——审计可见
+                # [建卡工具化 2026-10-08] create_card 无 card_id/parent 入参（parent 可选），
+                #   target_id 记 title（回执前唯一可定位的入参）
                 target_id = (args.get("card_id") or args.get("target_id")
                              or args.get("chapter") or args.get("keyword")
-                             or args.get("query") or args.get("url") or "")
+                             or args.get("query") or args.get("url")
+                             or (args.get("title") if name == "create_card" else "") or "")
                 # [信息流 Task3] 工具执行前后埋点（V2 即时可见）
                 event_stream.emit(work_id, card_id, "tool_call", {"tool": name, "target": target_id})
                 tool_result = await card_tools.execute_tool(work_id, card_id, name, args, cards_meta)
                 ok = "error" not in tool_result
-                tool_events.append({"tool": name, "card_id": target_id, "ok": ok})
+                _ev: dict[str, Any] = {"tool": name, "card_id": target_id, "ok": ok}
+                # [建卡工具化 2026-10-08] create_card 成功时把真身卡号/卡名/父带进
+                # tool_events——交付段据此收拢工具通道建卡结果（前端绿条与文本通道同构）
+                if name == "create_card" and ok:
+                    _ev["card_id"] = tool_result.get("card_id", "")
+                    _ev["title"] = tool_result.get("title", "")
+                    _ev["parent"] = tool_result.get("parent", "")
+                tool_events.append(_ev)
                 # [信息流 Task4] 并表（A101）：快车道的卡操作落 card_op（op/op_result，
                 # 一类卡操作只此一份事件）；chain 保持 tool_result。全日志打点（A96）。
                 if mode == "fastlane" and name in ("create_card", "edit_card", "delete_card", "read_card"):
@@ -854,18 +864,50 @@ async def _run_message(work_id: str, card_id: str, content: str,
     event_stream.emit(work_id, card_id, "deliver",
                       {"branch": branch, "bytes": len(delivered.encode("utf-8"))})
 
-    # g. 解析建卡协议 + 自动建卡
-    progress.set_stage(work_id, card_id, "cards", "解析建卡提案")
-    # [T14-4-1/6] 扫描输入＝拼接后全文（含分析正文）——照既有协议头机制运行
+    # g. 建卡 · 工具通道 ＋ 文本通道并存，跨通道去重
+    # [建卡工具化 2026-10-08] 建卡主通道＝标准工具 create_card（卡片带回执进
+    # tool_events，模型能确证建成）；本段只做两件事：
+    #   ① 收拢工具通道已建的卡（tool_events 里 create_card 且ok 的项）
+    #   ② 文本协议块兜底（模型过渡期仍写 card-proposal）——按同轮工具通道
+    #      已建的卡名去重，防同一轮建两次；并施加同一权限口径（只能建自己的子卡片）
+    progress.set_stage(work_id, card_id, "cards", "建卡")
+    created_cards: list[dict[str, Any]] = []
+    for ev in tool_events:
+        if ev.get("tool") == "create_card" and ev.get("ok"):
+            created_cards.append({
+                "card_id": ev.get("card_id", ""),
+                "title": ev.get("title", ""),
+                "parent": ev.get("parent", ""),
+                "channel": "tool",
+            })
+    tool_titles = {c["title"] for c in created_cards if c.get("title")}
+    denied_cards: list[dict[str, str]] = []
+
+    # [T14-4-1/6] 文本通道扫描输入＝拼接后全文（含分析正文）——照既有机制运行
     # （RD-11 不新增筛选不设闸）；观察点日志使「扫描面是否含工具轮正文」可事后审计。
     logger.info(
-        "[T14] 建卡扫描输入 分析段数=%s 交付分支=%s 扫描总字节=%s",
+        "[T14] 文本建卡扫描输入 分析段数=%s 交付分支=%s 扫描总字节=%s 工具通道已建=%d",
         len(analysis_parts),
         branch,
         len((final_reply or "").encode("utf-8")),
+        len(created_cards),
     )
     clean_text, proposals = card_proposal.parse_proposals(final_reply or "")
-    created_cards = await card_proposal.apply_proposals(work_id, card_id, proposals)
+    text_created, denied_cards = await card_proposal.apply_proposals(
+        work_id, card_id, proposals, exclude_titles=tool_titles,
+    )
+    for c in text_created:
+        created_cards.append({**c, "channel": "text"})
+    if denied_cards:
+        # 越权/去重的项如实回给模型上下文——不静默丢卡（模型能读到"没建成+为什么"）
+        _d = "；".join(f"{d['title']}（{d['reason']}）" for d in denied_cards[:5])
+        slot.append_plain({
+            "role": "assistant",
+            "content": f"[系统回执] 本轮有 {len(denied_cards)} 张卡未建成：{_d}。"
+                       f"建卡只能建自己的子卡片（parent 须落在你的子树内，缺省＝当前卡自身）。",
+        })
+        logger.warning("[建卡未建] %d 项被拒 card=%s 明细=%s",
+                       len(denied_cards), card_id, denied_cards)
     # [信息流 Task3] 建卡埋点（✚ 可见）
     event_stream.emit(work_id, card_id, "proposal", {
         "count": len(created_cards),
