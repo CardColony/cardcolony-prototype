@@ -11,8 +11,9 @@
 
 1. **结论区是卡片间唯一接口** —— 卡内推理过程留在各自的独立对话里，只有沉淀后的结论跨卡流动，
    历史结论不淹没过程、被否定的方向不会复活。
-2. **权限由卡片树机械决定** —— 每个对话只能读自身子树／血统链／已建关系，只能写自己子树；
-   模型只能「提议」建卡，由代码做确定性校验后落盘。
+2. **权限由卡片树机械决定** —— 读侧全盘可读（存在即放行），写侧严格限自己子树；
+   **建卡只能建自己的子卡片**（parent 须落在本卡子树内，缺省＝本卡自身）——
+   越权由代码机械拒绝，与 edit/delete 同一判据。
 3. **全量留痕可对账** —— 每次模型调用的输入输出全文落 `logs/`、每次卡片改动入 git、
    每次工具调用记 `tool_events`；「说了做」与「真做了」可三方对账定案。
 4. **机械兜底接住模型缺陷** —— 工具调用被模型以文本形态泄漏（已知五种形态）、日志/解析异常等，
@@ -24,7 +25,7 @@
 |---|---|
 | 卡片树 | 建卡／编辑正文／建线／解线／删卡（用户侧按钮＋模型侧工具，护栏：根卡与有子卡者拒删） |
 | 推演链 | 三思考席（MiniMax-M3 / qwen3.8-max / deepseek-v4-pro）并行分析 → 统合官（deepseek-v4.1-flash）收敛成唯一结论；三席无工具权限 |
-| 工具层（14 件） | 卡片：read_card／edit_card／delete_card／link_cards／unlink_cards／list_manuscript／read_manuscript／search_manuscript；联网：web_search／fetch_web；**本地文件：list_files／read_file／search_files／write_file** |
+| 工具层（18 件） | 卡片：create_card／read_card／read_memory／edit_card／delete_card／read_shadow／update_shadow／link_cards／unlink_cards／list_manuscript／read_manuscript／search_manuscript；联网：web_search／fetch_web；**本地文件：list_files／read_file／search_files／write_file** |
 | 本地文件能力 | 边界＝`D:\AI_station` 下的 `trading-workspace` 与 `推演agent` 两个目录；凭证类文件（`.env`/`*.pem`/`*.key`/`credentials.json`/`id_rsa` 等精确名单）不可读、不可写、不可搜索；四道兜底：写前强制备份原文到 `_backups/`、二进制拒写、单次写入上限 5MB、依赖目录（.venv/site-packages/__pycache__ 等）剪枝 |
 | 文本泄漏抢救 | 模型把工具调用写进正文（DeepSeek 系特殊标记泄漏）时，机械解析并真实执行；解析不出则回注「未识别未执行」告知模型 |
 | 实时反馈 | 发消息后可见：三席分析进度／统合推理／工具循环轮次／建卡，逐阶段上报 |
