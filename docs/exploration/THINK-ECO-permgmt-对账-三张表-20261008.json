@@ -1,0 +1,50 @@
+{
+  "scope": "permgmt proposal p3 对账三张表",
+  "date": "2026-10-08",
+  "category_set": "THINK-ECO-permgmt-对账-上级条目清单-20261008.json (P001-P024, 24/24)",
+  "draft": "THINK-ECO-permgmt-p2-骨架草稿-20261008.md",
+  "forward_table": [
+    {"id": "P001", "prev": "改造范围(新建policy.py)", "draft": "4.1 权限核心新建 src/permissions/policy.py", "status": "命中"},
+    {"id": "P002", "prev": "工具分支权限收口(原称17分支)", "draft": "4.2 7+1处内联改调 check_with_scope()", "status": "命中(8处实读:4x can_read + 4x can_edit含card_proposal L225)"},
+    {"id": "P003", "prev": "工具可见性与执行判据一致性", "draft": "1② + 4.2 build_tool_schemas(card_id) 从 POLICY 派生", "status": "命中"},
+    {"id": "P004", "prev": "file_tools 全盘可读写现状", "draft": "1④ + 4.4 ALLOWED_ROOTS(BASE_DIR)", "status": "命中"},
+    {"id": "P005", "prev": "card_store 不改保留防御纵深", "draft": "4.4 存储层不改", "status": "命中"},
+    {"id": "P006", "prev": "Perm Flag 枚举", "draft": "4.1 Perm 枚举", "status": "命中"},
+    {"id": "P007", "prev": "POLICY 搭配表结构(2.2)", "draft": "4.1 POLICY 常量表", "status": "命中"},
+    {"id": "P008", "prev": "POLICY 表五key(rd_project/research_project/sub_project/tool/topic)", "draft": "4.1 POLICY 忠实五key不改表项不增补", "status": "命中"},
+    {"id": "P009", "prev": "DEFAULT_POLICY=Perm.NONE 默认关门", "draft": "4.1 DEFAULT_POLICY=Perm.NONE", "status": "命中"},
+    {"id": "P010", "prev": "卡片分类注册表联动", "draft": "4.2 build_tool_schemas 按当前卡分类过滤注册表导出", "status": "命中(过滤依据=分类,注册表为导出源)"},
+    {"id": "P011", "prev": "check(card_id, action, card_store) 统一关口", "draft": "4.1 check()", "status": "命中"},
+    {"id": "P012", "prev": "check_with_scope + _is_in_subtree 树范围", "draft": "4.1 check_with_scope() + _is_in_subtree()", "status": "命中"},
+    {"id": "P013", "prev": "schema 从 POLICY 派生可见性(4.1)", "draft": "4.2 build_tool_schemas(card_id) 从 POLICY 派生", "status": "命中"},
+    {"id": "P014", "prev": "工具名 search_cards/list_dir/update_card 等", "draft": "1 落点修正: 真实18件工具名(p1实证), 原方案工具名为编造", "status": "命中(修正落点,忠实效果非错误路径)"},
+    {"id": "P015", "prev": "card_tools 权限收口(4.2)", "draft": "4.2 删 can_read/can_edit + 内联改调 check_with_scope", "status": "命中"},
+    {"id": "P016", "prev": "tools 传递(main/续跳/统合官)", "draft": "4.2 message_runner 装配层补传当前卡id", "status": "命中"},
+    {"id": "P017", "prev": "三个漏检口 unlink/card_proposal/update_shadow", "draft": "4.3 补三漏检口(check UNLINK / check CREATE_CHILD / check SHADOW_WRITE)", "status": "命中(实读修正: card_proposal 已有parent校验,非补缺是收口)"},
+    {"id": "P018", "prev": "FILE_SCOPE 路径锁常量(4.4)", "draft": "4.4 FILE_SCOPE 常量表按 card_type 映射路径前缀", "status": "命中"},
+    {"id": "P019", "prev": "文件工具接入 check_file_access", "draft": "4.4 check_file_access(path, card_type) + write/read/list/search 接入", "status": "命中"},
+    {"id": "P020", "prev": "card_store 不改(存储层)", "draft": "4.4 存储层不改", "status": "命中"},
+    {"id": "P021", "prev": "清理清单 can_read/can_edit/_is_credential 退役", "draft": "4.2 删 can_read/can_edit + 4.4 _is_credential 收敛为 check_file_access 内部凭证排除 + 预期效果#1#2", "status": "命中"},
+    {"id": "P022", "prev": "九施工顺序(原方案 §7)", "draft": "★ 无落点 —— 草稿第4段明确不写执行动作(设计稿纪律)", "status": "红灯 R1-丢失候选"},
+    {"id": "P023", "prev": "六条验收(§8)", "draft": "3 预期效果 1-6 逐字对回", "status": "命中"},
+    {"id": "P024", "prev": "九待办(§9,含等card_041分类定稿填真实搭配值)", "draft": "★ 部分: 以 T2【待用户裁】形式继承搭配值待定, 但'等card_041定稿'未显式落地", "status": "红灯 R2-改写候选"}
+  ],
+  "backward_table": [
+    {"id": "D1", "draft_loc": "1 功能背景", "basis": "P001/P002/P003/P004/P014/P017", "status": "有据"},
+    {"id": "D2", "draft_loc": "2 项目位置与接口规范", "basis": "P011/P012/P015/P016/P019/P021", "status": "有据"},
+    {"id": "D3", "draft_loc": "3 预期效果", "basis": "P023", "status": "有据"},
+    {"id": "D4", "draft_loc": "4.1 权限核心 policy.py", "basis": "P001/P006/P007/P008/P009/P011/P012", "status": "有据"},
+    {"id": "D5", "draft_loc": "4.2 卡片工具收口", "basis": "P002/P003/P010/P013/P015/P016/P021", "status": "有据"},
+    {"id": "D6", "draft_loc": "4.3 补三漏检口", "basis": "P017", "status": "有据"},
+    {"id": "D7", "draft_loc": "4.4 文件路径锁", "basis": "P004/P018/P019", "status": "有据"},
+    {"id": "D8", "draft_loc": "存储层不改", "basis": "P005/P020", "status": "有据"},
+    {"id": "D9", "draft_loc": "4.5 全日志打点", "basis": "P021 可审计意图", "status": "有据(打点为审计留痕,非原方案独立条目,属实现配套)"},
+    {"id": "D10", "draft_loc": "【待用户裁】T1/T2", "basis": "P008(五key未含project)/P024(搭配值待定)", "status": "有据(开放点标注,非无中生有)"}
+  ],
+  "contradiction_scan": [
+    {"pairs": "4.2 '删 can_read/can_edit,子树语义由 _is_in_subtree 承接(R3 待验证严格等价)' vs 3.预期效果#3 '所有卡片操作必经 policy.check()'", "finding": "验收#3成立依赖 R3(_is_in_subtree 与 can_edit 严格等价)成立;R3 未验证即在4.2承诺'语义承接',验收有效性未闭环", "status": "红灯 R4-矛盾/未闭环候选"},
+    {"pairs": "4.1 DEFAULT_POLICY=Perm.NONE vs 真实 project 根卡类型", "finding": "草稿已在 T2 明示平铺直取会致 project 根卡连读拒死,标注待用户裁,非草稿内部矛盾,属开放点转上桌", "status": "开放点(转上桌,非草稿内部红灯)"},
+    {"pairs": "4.3 update_shadow '无分类校验,补的是分类关' vs 4.1 check(SHADOW_WRITE)", "finding": "一致: update_shadow 现为接口天然只写自己(无card_id),本设计加分类关,不冲突", "status": "通过"},
+    {"pairs": "3.验收#1 '#2 (can_read/can_edit/_is_credential 零命中)' vs 4.2 删除+4.4 凭证收敛", "finding": "一致: 删函数+收敛凭证排除使 grep 清零,可复核", "status": "通过"}
+  ]
+}

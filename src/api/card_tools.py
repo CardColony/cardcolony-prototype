@@ -6,15 +6,17 @@
 - edit_card(card_id, content)：覆盖写指定卡正文（内部落存储层正文区）
 - link_cards：连线，模型可用类型限 先后/关联（锚定为系统内部关系，不对模型开放）
 
-[卡片权限改造 2026-10-07] 权限纯函数：读＝全盘可读（存在即放行，亲属链/连线/锚卡读限整制去除——小说项目机制）；写＝自己的子树（不随读放开）。
-越权不抛异常，返回 {"error": ...} 给模型。
+[权限收口 2026-10-09 · THINK-ECO-permgmt] 权限统一走 src/permissions/policy 的
+POLICY 表（按卡片分类发权、默认关门）＋check/check_with_scope 统一关口；
+读/写/建/删/连线/解线/影子各通道全部经关口判定。越权不抛给模型，
+返回 {"error": ...}。原「读＝全盘可读、写＝自己的子树」两道散置判据
+（2026-10-07/10-08 口径）已收口退役，语义归宿见 POLICY 表（交办单定夺 1/2）。
 
 [建卡工具化 2026-10-08] create_card 入标准工具通道（此前只走文本协议块
 card-proposal，见 card_proposal.py）。两条通道并存：工具通道优先、文本通道
 兜底（模型过渡期仍写文本块），跨通道同轮去重防重复建卡。
-**建卡权限口径＝写权限（用户 2026-10-08 14:14 定）**：只能建自己的子卡片
-（parent 落在current 的子树内；parent 缺省＝当前卡自身，即建自己的下一层）。
-与 edit_card/delete_card 同用 can_edit 判据，不新增第二套权限规则。
+**建卡权限口径（代码现状）＝关口 CREATE_CHILD 判定**：只能建自己的子卡片
+（parent 缺省＝当前卡自身，即建自己的下一层；显式 parent 须经关口放行）。
 
 [B-09 工具注册表 2026-10-08] 本文件改为「单点注册表派生」形态：每个工具一处
 注册（schema 字面量 ＋ handler ＋ readonly 标志住在一起）。三处下游全部从
@@ -33,9 +35,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Union
 
+from ..permissions import policy
 from ..storage import card_store, manuscript_store, memory_store, shadow_store, work_store
 from ..storage.hash_utils import parse_front_matter, split_body_sections
-from . import file_tools
+from ..toolcard import driver as toolcard_driver
+from ..toolcard import script_loader as toolcard_script_loader
+from ..toolcard import step_prompt as toolcard_step_prompt
+from . import file_tools, prompt_log
 
 logger = logging.getLogger("api.card_tools")
 
@@ -43,13 +49,24 @@ logger = logging.getLogger("api.card_tools")
 # "锚定"（系统派生目标卡专用）与"兑现"（写作agent残留语义）不再对模型开放
 MODEL_REL_TYPES = ("先后", "关联")
 
+# [T4 权限收口 2026-10-09] 工具组→工具名映射（build_tool_schemas 过滤面）。
+# 任务书 T4 只明说 FILE×4 / WEB×2 两组；SEARCH/TOOLS_CARD 无映射（不自行发挥）。
+_FILE_GROUP_TOOLS = ("list_files", "read_file", "search_files", "write_file")
+_WEB_GROUP_TOOLS = ("web_search", "fetch_web")
+
 # [T12-R3] 工具表基准版本化固化：工具集/schema 变更须递增版本号并对账基准指纹。
 # tools-t12-1：T12 增补 read_memory（其余 16 件与 T11 基线逐字一致）。
 # tools-tc-1：[建卡工具化 2026-10-08] 增补 create_card（共 18 件）。
 # tools-tc-2：[卡片信息结构改造 S3-7/S3-8 · 2026-10-08] edit_card schema 描述随闸语义
 # 更新（三块语法＋条目语法＋三条写入规则）；工具件数不变。
 # [B-09 2026-10-08] 注册表落地**不改工具面** ⇒ 版本号保持 tools-tc-2 不递增。
-TOOL_TABLE_VERSION = "tools-tc-2"
+# tools-tc-3：[工具卡底座 T9/T7 · 2026-10-09] **工具集变更 ⇒ 递增**（承 T12-R3
+# 纪律：工具集/schema 变更须递增版本号并对账基准指纹）。变更两处：
+#   ① 新增第 19 件工具 run_tool_card（T7）；
+#   ② 主卡侧收回 7 件写工具（T9）——工具面**按角色分化**：工具卡 19 件、
+#      主卡 12 件（读＋查＋调用 run_tool_card）。
+# B-09 的「版本不动」只成立于「工具面零变化」；本次工具面确有变化，故递增。
+TOOL_TABLE_VERSION = "tools-tc-3"
 
 
 # ============================================================
@@ -140,7 +157,11 @@ async def _h_read_card(work_id: str, current_id: str,
     # [语义修正 2026-10-02] 先判存在再判权限：已删除的卡不再误报"越权"
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
+    # [权限收口 2026-10-09] 统一关口（读）：拒绝转既有 denied 信封；
+    # 不存在已在上面走 not_found，关口不再见到缺卡
+    try:
+        policy.check_with_scope(current_id, target_id, policy.Perm.READ, cards)
+    except PermissionError:
         return err("denied", f"越权：无权读取 {target_id}")
     result = await card_store.read_card(work_id, target_id)
     return {
@@ -161,7 +182,11 @@ async def _h_read_memory(work_id: str, current_id: str,
     target_id = arguments.get("card_id") or current_id
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
+    # [权限收口 2026-10-09] 统一关口（读）：拒绝转既有 denied 信封；
+    # 不存在已在上面走 not_found，关口不再见到缺卡
+    try:
+        policy.check_with_scope(current_id, target_id, policy.Perm.READ, cards)
+    except PermissionError:
         return err("denied", f"越权：无权读取 {target_id}")
     state = memory_store.load_memory(work_id, target_id)
     entries = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
@@ -177,10 +202,10 @@ async def _h_read_memory(work_id: str, current_id: str,
 async def _h_create_card(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    # [建卡工具化 2026-10-08] 权限＝写权限（can_edit）：只能建自己的子卡片
-    # （用户 2026-10-08 14:14 定）。parent 缺省＝当前卡自身（建自己下一层）；
-    # 给了 parent 则该卡必须落在 current 的子树内——用 can_edit 判，
-    # 与 edit_card/delete_card 同一判据，不新增第二套权限规则。
+    # [建卡工具化 2026-10-08][权限收口 2026-10-09] 权限＝关口 CREATE_CHILD 判定
+    # （代码现状口径：只能建自己的子卡片）。parent 缺省＝当前卡自身（建自己
+    # 下一层）；给了 parent 则经 check_with_scope 判定（注册分类 CREATE_CHILD
+    # ＋ TREE_SCOPE 子树限定），与 edit_card/delete_card 同一关口，无第二套规则。
     # 结构性护栏（剧本根卡/带子卡者不可删）不在此——建卡不涉删。
     title = str(arguments.get("title", "") or "").strip()
     if not title:
@@ -190,7 +215,11 @@ async def _h_create_card(work_id: str, current_id: str,
     # 存在性先判：已删/不存在的 parent 不误报越权（与 read_card 同序）
     if target_parent not in cards:
         return err("not_found", f"父卡不存在: {target_parent}")
-    if not can_edit(current_id, target_parent, cards):
+    # [权限收口 2026-10-09] 关口 CREATE_CHILD：parent 分类须授 CREATE_CHILD；
+    # 含 TREE_SCOPE 的 parent 收紧为只能建自己子树内的卡
+    try:
+        policy.check_with_scope(current_id, target_parent, policy.Perm.CREATE_CHILD, cards)
+    except PermissionError:
         return err(
             "denied",
             (
@@ -227,11 +256,14 @@ async def _h_edit_card(work_id: str, current_id: str,
     # [语义修正 2026-10-02] 先判存在再判权限
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    # [影子卡 2026-10-03] 影子进字典后 can_edit 会放行正卡的上级（子树判据），
+    # [影子卡 2026-10-03] 影子条目进字典后子树判据会放行正卡的上级，
     # 此守卫封死该后门：影子只能由对应正卡经 update_shadow 修改（R-06/R-09 写侧）
     if cards[target_id].get("card_type") == "shadow":
         return err("denied", "影子卡只能由对应正卡经 update_shadow 修改")
-    if not can_edit(current_id, target_id, cards):
+    # [权限收口 2026-10-09] 关口 EDIT：目标分类须授 EDIT；TREE_SCOPE → 子树限定
+    try:
+        policy.check_with_scope(current_id, target_id, policy.Perm.EDIT, cards)
+    except PermissionError:
         return err("denied", f"越权：无权编辑 {target_id}")
     current = await card_store.read_card(work_id, current_id)
     cur_title = current["meta"].get("title", "")
@@ -288,10 +320,15 @@ async def _h_delete_card(work_id: str, current_id: str,
     target_id = arguments.get("card_id", "")
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    if not can_edit(current_id, target_id, cards):
-        return err("denied", f"越权：无权删除 {target_id}")
+    # [权限收口 2026-10-09] 身份护栏前移一行（原在权限判据之后）：根卡拒删的
+    # 拒绝文案逐字不变——POLICY 根行无 DELETE 位，护栏后置会被通用越权文案盖掉
     if target_id == work_store.work_card_id_of(work_id):
         return err("denied", f"剧本根卡不可删除: {target_id}")
+    # [权限收口 2026-10-09] 关口 DELETE：目标分类须授 DELETE；TREE_SCOPE → 子树限定
+    try:
+        policy.check_with_scope(current_id, target_id, policy.Perm.DELETE, cards)
+    except PermissionError:
+        return err("denied", f"越权：无权删除 {target_id}")
     try:
         result = await card_store.delete_card(work_id, target_id)
     except card_store.CardDeleteDeniedError as exc:
@@ -309,6 +346,12 @@ async def _h_update_shadow(work_id: str, current_id: str,
                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     # [影子卡 2026-10-03] schema 无 card_id——写入目标恒为当前卡自己的影子
     # （R-09 写侧：不是可绕过的校验规则，是工具签名本身写不出别的目标）
+    # [T5 补漏检口 2026-10-09] 关口判定：当前卡分类须授 SHADOW_WRITE
+    # （定夺 1 五键全授＝注册分类照写；未注册分类拒）。拒绝转既有 denied 信封。
+    try:
+        policy.check(current_id, policy.Perm.SHADOW_WRITE, cards)
+    except PermissionError:
+        return err("denied", f"越权：无权写影子（当前卡 {current_id}）")
     content = arguments.get("content", "")
     return await shadow_store.update_shadow(work_id, current_id, content)
 
@@ -316,14 +359,16 @@ async def _h_update_shadow(work_id: str, current_id: str,
 async def _h_read_shadow(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    # [影子卡 2026-10-03] 读侧跟随现有 can_read（R-09 读侧：不另设判据）；
+    # [影子卡 2026-10-03] 读侧走统一关口 READ 判定（R-09 读侧：不另设判据）；
     # 上级卡经此查子卡影子——推送（裁定 1）的到达机制
     target_id = arguments.get("card_id", "") or current_id
     if target_id.startswith("shadow_"):
         target_id = target_id[len("shadow_"):]
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
+    try:
+        policy.check_with_scope(current_id, target_id, policy.Perm.READ, cards)
+    except PermissionError:
         return err("denied", f"越权：无权读取 {target_id} 的影子")
     raw = await shadow_store.read_shadow_raw(work_id, target_id)
     if raw is None:
@@ -370,7 +415,11 @@ async def _h_link_cards(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
         return err("validation", "不能与自身建立关系")
-    if not can_read(current_id, target_id, cards, work_store.work_card_id_of(work_id)):
+    # [权限收口 2026-10-09] 关口 LINK：目标分类须授 LINK；含 TREE_SCOPE 的目标
+    # 收紧为只能连自己子树内的卡（交办单「待用户知悉」明示的收紧，可推翻）
+    try:
+        policy.check_with_scope(current_id, target_id, policy.Perm.LINK, cards)
+    except PermissionError:
         return err("denied", f"越权：无权与 {target_id} 建立关系")
     current = await card_store.read_card(work_id, current_id)
     existing = current["meta"].get("relations") or []
@@ -406,6 +455,15 @@ async def _h_unlink_cards(work_id: str, current_id: str,
         return err("validation", "target_id 不能为空")
     if rel_type and rel_type not in MODEL_REL_TYPES:
         return err("validation", f"关系类型非法: {rel_type}，只允许 先后/关联")
+    # [T5 补漏检口 2026-10-09] 关口 UNLINK：目标分类须授 UNLINK；含 TREE_SCOPE
+    # 的目标收紧为只能解自己子树内的线（交办单「待用户知悉」，可推翻）。
+    # 悬空线（目标卡已删，本 handler 既有语义＝清理用途）不在关口判定面内：
+    # 目标不存在则无分类可查，保留直接可解的现状，不误伤清理主用例。
+    if target_id in cards:
+        try:
+            policy.check_with_scope(current_id, target_id, policy.Perm.UNLINK, cards)
+        except PermissionError:
+            return err("denied", f"越权：无权解除与 {target_id} 的连线")
     current = await card_store.read_card(work_id, current_id)
     existing = current["meta"].get("relations") or []
 
@@ -484,6 +542,12 @@ async def _h_fetch_web(work_id: str, current_id: str,
 async def _h_list_files(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    # [T6 路径锁 2026-10-09] 文件路径锁：当前卡分类须授 TOOLS_FILE，路径须过
+    # ALLOWED_ROOTS 边界＋FILE_SCOPE 前缀＋内部凭证排除（file_tools.check_file_access）
+    if not file_tools.check_file_access(
+        arguments.get("path", ""), policy._type_key(cards.get(current_id)),
+    ):
+        return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
     return await asyncio.to_thread(
         file_tools.list_files,
         arguments.get("path", ""),
@@ -494,6 +558,11 @@ async def _h_list_files(work_id: str, current_id: str,
 async def _h_read_file(work_id: str, current_id: str,
                         arguments: dict[str, Any],
                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    # [T6 路径锁 2026-10-09] 同上（统一关口）
+    if not file_tools.check_file_access(
+        arguments.get("path", ""), policy._type_key(cards.get(current_id)),
+    ):
+        return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
     return await asyncio.to_thread(
         file_tools.read_file,
         arguments.get("path", ""),
@@ -505,6 +574,11 @@ async def _h_read_file(work_id: str, current_id: str,
 async def _h_search_files(work_id: str, current_id: str,
                           arguments: dict[str, Any],
                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    # [T6 路径锁 2026-10-09] 同上（统一关口）
+    if not file_tools.check_file_access(
+        arguments.get("path", ""), policy._type_key(cards.get(current_id)),
+    ):
+        return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
     return await asyncio.to_thread(
         file_tools.search_files,
         arguments.get("keyword", ""),
@@ -516,11 +590,110 @@ async def _h_search_files(work_id: str, current_id: str,
 async def _h_write_file(work_id: str, current_id: str,
                         arguments: dict[str, Any],
                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    # [T6 路径锁 2026-10-09] 同上（统一关口）
+    if not file_tools.check_file_access(
+        arguments.get("path", ""), policy._type_key(cards.get(current_id)),
+    ):
+        return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
     return await asyncio.to_thread(
         file_tools.write_file,
         arguments.get("path", ""),
         arguments.get("content", ""),
     )
+
+
+async def _h_run_tool_card(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """第 19 件工具 · 调用一张工具卡（工具卡底座 T7，EC-054~EC-059）。
+
+    代码执行四步，**四步全是 IO**（无一步是判断）：
+
+    ① 按 ``script_name`` 读剧本 —— **读不到＝报错**（解析器的事实，不是
+       「这个剧本名不该用」的判断，EC-059）；
+    ② 建一张**新**卡：``card_type="tool"``、``owner_card_id=当前卡``、
+       ``parent=当前卡``、``title=剧本名+卡号``；
+    ③ 初始化运行时，取剧本的**第一步**；
+    ④ 返回该步的步骤指令文本。
+
+    过闸（EC-057，全部由 ``card_store._write_gate`` 现成执行，本 handler
+    **不另设一套判据**）：
+
+    - **闸 3**（owner 合法，``card_store`` L583-596）——owner 必须落在
+      本树内且其 ``card_type`` 属允许集合；
+    - **闸 4**（状态机，L608-617）；
+    - **工具卡不可有子卡**（L597-606，现成结构规则）。
+
+    ⚠️ **owner 类型边界（EC-057/任务书 T7 必读）**：闸 3 放宽后合法 owner 为
+    ``sub_project`` 与 ``project``。**若主卡是 ``topic`` 类**（研究树现存
+    35 张：work_001 22 张 + work_003 13 张），owner_type 不在放宽范围内
+    ⇒ **闸 3 拒 ⇒ 建卡失败**。此处**如实把闸 3 的原文案回给模型**，
+    **不自行扩大放宽范围、不绕过闸 3、不换个 owner 蒙混**（R-F）。
+    该情形已列入回报的【待用户裁】项。
+
+    **N 次 N 张**（EC-058）：每次调用**新建一张卡**，不覆盖、不删除、
+    不复用上一张。已有卡与连线一律不受影响（R-G）。
+    """
+    script_name = str(arguments.get("script_name", "") or "").strip()
+    instruction = str(arguments.get("instruction", "") or "").strip()
+    if not script_name:
+        return err("validation", "script_name 不能为空")
+
+    # ① 读剧本（找不到＝报错；抛的是解析器事实）
+    try:
+        toolcard_script_loader.load_script(script_name)
+    except toolcard_script_loader.ScriptError as exc:
+        return err("not_found", str(exc))
+
+    if current_id not in cards:
+        return err("not_found", f"卡片不存在: {current_id}")
+
+    # ② 建新卡。instruction 包进「## 现状」块再作正文种子——create_card 的
+    #    区头检测：无区头会回落 NEW_CARD_SKELETON，模型这句话会被丢掉。
+    #    包区头是**机械结构处置**，不替模型改写一个字。
+    seed = f"## 现状\n{instruction}" if instruction else ""
+    created = await card_store.create_card(
+        work_id, script_name, "模型生成",
+        card_type="tool",
+        parent=current_id,
+        conclusion=seed,
+        owner_card_id=current_id,
+    )
+    if "error" in created:
+        # 闸 3 / 闸 4 / 闸 1·2 的拒绝都走这条路径。**原文案透传**，
+        # 不改写、不降级、不重试蒙混（"如实回报 topic owner 被闸3 拒"）。
+        return err("validation", str(created.get("error")))
+    new_id = created["meta"]["card_id"]
+
+    # 卡片编号在 create_card 内部发放（card_store L739），拿不到号之前无法
+    # 把「序号」写进 title；故建卡后按**公开接口**回写一次标题
+    # （不用 _next_seq 之类私有量，保持跨层纪律——与 card_store B-09 同源口径）。
+    try:
+        await card_store.update_card(
+            work_id, new_id, {"title": f"{script_name}·{new_id}"},
+            "工具卡建卡：标题补卡号",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("工具卡标题回写失败 card=%s: %s", new_id, exc)
+
+    # 同轮后续工具能看见这张新卡（与 _h_create_card 同手法）
+    cards[new_id] = {**created["meta"], "card_id": new_id}
+
+    # ③ 初始化运行时（落在剧本第一步）
+    rt = await toolcard_driver.start(work_id, new_id, script_name)
+    if not rt.get("ok"):
+        return err("internal", f"工具卡运行时初始化未成: {rt}")
+
+    # ④ 返回该步的步骤指令（只含事实与提示词原文，零评价——见 step_prompt）
+    return {
+        "card_id": new_id,
+        "title": f"{script_name}·{new_id}",
+        "parent": current_id,
+        "owner_card_id": current_id,
+        "script_name": script_name,
+        "current_step": rt.get("step_id", ""),
+        "instruction": toolcard_step_prompt.build_instruction(work_id, new_id) or "",
+    }
 
 
 # ============================================================
@@ -567,8 +740,8 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_read_memory,
         readonly=True,
     ),
-    # [建卡工具化 2026-10-08] 标准工具通道建卡。权限＝写权限（can_edit）：
-    # 只能建自己的子卡片（用户 2026-10-08 14:14 定）——parent 缺省＝当前卡自身。
+    # [建卡工具化 2026-10-08] 标准工具通道建卡。权限＝关口 CREATE_CHILD 判定
+    # （代码现状口径：只能建自己的子卡片）——parent 缺省＝当前卡自身。
     # source 恒「模型生成」、card_type 恒「线索」（不向模型开放类型枚举，
     # 避免模型选型；类型是系统内部概念，与文字协议块旧行为逐字一致）。
     "create_card": ToolDef(
@@ -784,6 +957,37 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_unlink_cards,
         readonly=False,
     ),
+    # [工具卡底座 T7 · 2026-10-09] 第 19 件工具：调用一张工具卡。
+    # 主卡权限收回后**唯一的新增能力**——「只剩调用工具卡」（EC-004/063/161）。
+    # readonly=False（它确实建卡、落产物），但**不在** WRITE_TOOLS_REVOKED 里：
+    # 它是被保留的那一件，不受角色过滤与执行层拦截。
+    "run_tool_card": ToolDef(
+        schema={
+            "name": "run_tool_card",
+            "description": (
+                "调用一张工具卡：按剧本建一张新工具卡并取回第一步的步骤指令。"
+                "每次调用都新建一张卡，不覆盖已有卡。"
+                "参数：script_name＝剧本名（用错名字会直接报错）；"
+                "instruction 可选，写你这本次想让它做的事（会记进新卡的现状块）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "script_name": {
+                        "type": "string",
+                        "description": "剧本名，如「方案链」。找不到会报错。",
+                    },
+                    "instruction": {
+                        "type": "string",
+                        "description": "可选：本次调用意图，原文记入新卡现状块。",
+                    },
+                },
+                "required": ["script_name"],
+            },
+        },
+        handler=_h_run_tool_card,
+        readonly=False,
+    ),
 }
 
 
@@ -830,13 +1034,170 @@ READONLY_TOOLS = frozenset(
 )
 
 
-def build_tool_schemas() -> list[dict[str, Any]]:
+# ============================================================
+# [工具卡底座 T9] 角色表（用户 2026-10-09 12:54 裁定逐字）
+#
+# 「主卡将没有编辑、写文件的权限，只剩调用工具卡」——
+# 故主卡侧**收回 7 件写工具**，只留「读＋查＋调用」三类：
+#   读：read_card / read_memory / read_shadow / read_manuscript / read_file
+#   查：list_manuscript / search_manuscript / web_search / fetch_web
+#       list_files / search_files
+#   调用：run_tool_card
+# 「只」字读作「**留读＋查＋调用三类**」（EC-074）——主卡要理解上下文必须能读，
+# 故读与查**不收回**（EC-075/EC-173）。
+# ============================================================
+
+WRITE_TOOLS_REVOKED: frozenset[str] = frozenset({
+    "create_card",     # 建卡＝写树
+    "edit_card",       # 改正文
+    "delete_card",     # 删卡
+    "update_shadow",   # 写影子
+    "link_cards",      # 改连线
+    "unlink_cards",    # 改连线
+    "write_file",      # 写文件
+})
+
+_ROLE_TOOL = "tool"
+_ROLE_MAIN = "main"
+
+
+def _role_of(work_id: str, card_id: str,
+             cards: dict[str, dict[str, Any]] | None = None) -> str:
+    """查这张卡的**角色**（"tool" 或 "main"）——**读一个字段而已**。
+
+    这是**权限表查表**，不是内容判定（与 EC-084 同性质）：
+    查表回答「这张卡是什么角色、能调哪些工具」，**不回答**「这次调用该不该做」。
+
+    查不到（卡不存在／读不出来／无 work 上下文）→ 返回 ``_ROLE_MAIN``，
+    即按主卡口径（收回写工具）。⚠️ 这是**权限的保守默认**（拿不准就给少权限），
+    不是对卡片的评价——它不对「这张卡该不该是工具卡」下任何结论。
+
+    ⚠️ **为什么必须带 work_id**：卡片编号是 **work 内自增**的（``card_store``
+    L739 ``card_id = f"card_{seq:03d}"``），六个 work 都有 ``card_001``。
+    只给 card_id 无法唯一定位一张卡——故本函数与 ``build_tool_schemas``
+    的 ``work_id`` 形参是**必需项而非可选装饰**（任务书 T10 EC-129 的
+    ``build_tool_schemas(current_id)`` 单参写法在多 work 现场无法解析角色，
+    此处为必要偏离，已在回报中列明）。
+    """
+    if not card_id:
+        return _ROLE_MAIN
+    if cards is None:
+        # 只有 cards 缺省时才需要 work_id 去现取；cards 已给定时
+        # work_id 不再是必需项（否则构造 meta 的直调场景会被误判为主卡）。
+        if not work_id:
+            return _ROLE_MAIN
+        try:
+            cards = _collect_card_meta(work_id)
+        except Exception:  # noqa: BLE001
+            return _ROLE_MAIN
+    return _ROLE_TOOL if cards.get(card_id, {}).get("card_type") == "tool" else _ROLE_MAIN
+
+
+def _filter_by_role(
+    tools: list[dict[str, Any]], card_id: str, work_id: str = "",
+    cards: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """**第一级过滤 · 角色过滤**——**接替未启用，当前为恒等（原样返回）**。
+
+    [用户 2026-10-09 17:38 逐字指令]
+      「现在先不要把写工具给干掉啊，等工具卡完善后，再接替啊」
+
+    ⁉️ 本函数**曾经**在主卡侧收回 7 件写工具（``WRITE_TOOLS_REVOKED``）。
+    那是我**方案层的缺陷**——把「主卡终将收回写工具」这个**最终态**，
+    在工具卡还没完善的阶段就落地了，顺序错了。用户当场指正：
+
+        正确顺序 ＝ **工具卡先完善 → 之后才接替**（不是现在就接替）。
+
+    故本函数现已**回滚为恒等**：主卡工具面＝全量（含 7 件写工具，与
+    「主卡将没有编辑、写文件的权限，只剩调用工具卡」的**最终态**不同）。
+    接替的**时机**未到，接替的**形态**与**清单**（``WRITE_TOOLS_REVOKED``）
+    留在此处备用——**接替是后续迭代，须用户另行发令，不得自行启用**。
+
+    工具卡（``card_type == "tool"``）本就原样穿过（EC-131），回滚后两者一致。
+
+    **这是权限表查表，不是内容判定**（EC-084）：它读 ``card_type`` 字段——
+    查表回答「这张卡能调哪些工具」，**不回答**「这次调用该不该做」，
+    更**不产出**任何关于产物或内容好坏的结论（R-A）。
+    """
+    return tools
+
+
+def _filter_by_category(
+    tools: list[dict[str, Any]], card_id: str, work_id: str = "",
+    cards: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """**第二级过滤 · 分类过滤**（权限线 T4，2026-10-09）。
+
+    按当前卡**分类**读 POLICY 表（``policy._type_key``：先 ``project_class``、
+    没有才 ``card_type``），未授 ``TOOLS_FILE`` 不下发文件四件、
+    未授 ``TOOLS_WEB`` 不下发联网两件。SEARCH/TOOLS_CARD 位本批无接线点
+    （任务书未列其工具映射，不自行发挥）。
+
+    ``card_id`` 空 或 ``cards`` 缺省 ⇒ **不过滤**（旧签名兼容；打点 card_id=null）。
+
+    T7 打点：每次派生记一条（card_id／分类／下发工具名／被过滤清单）。
+
+    本函数与 ``_filter_by_role`` **各自独立、互不触碰**（两线 R-D）——
+    只做权限表查表，不产出任何内容判定（R-A）。
+    """
+    if not card_id or cards is None:
+        prompt_log.append_perm_log({
+            "fn": "build_tool_schemas",
+            "card_id": None,
+            "type_key": None,
+            "granted_tools": [t["name"] for t in tools],
+            "filtered_file": [],
+            "filtered_web": [],
+        })
+        return tools
+    type_key = policy._type_key(cards.get(card_id))
+    granted = policy.grants_for(type_key)
+
+    def _has(bit: "policy.Perm") -> bool:
+        return (granted & bit) == bit
+
+    filtered_file = [] if _has(policy.Perm.TOOLS_FILE) else list(_FILE_GROUP_TOOLS)
+    filtered_web = [] if _has(policy.Perm.TOOLS_WEB) else list(_WEB_GROUP_TOOLS)
+    hidden = set(filtered_file) | set(filtered_web)
+    visible = [t for t in tools if t.get("name") not in hidden]
+    prompt_log.append_perm_log({
+        "fn": "build_tool_schemas",
+        "card_id": card_id,
+        "type_key": type_key,
+        "granted_tools": [t["name"] for t in visible],
+        "filtered_file": filtered_file,
+        "filtered_web": filtered_web,
+    })
+    return visible
+
+
+def build_tool_schemas(
+    card_id: str = "",
+    work_id: str = "",
+    cards: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """OpenAI function calling 工具列表（直接传给 gateway.call(tools=...)）。
 
     [B-09 2026-10-08] 改为遍历注册表派生（改前是 14 段字面量 list ＋
     file_tools 追加）。顺序＝注册表插入序＝改前字面量顺序，逐字不变。
+
+    [工具卡底座 T10 · EC-120] 加两级过滤，**各拥一个独立 helper**
+    （两线 R-D：共用函数但各改各的内层，不得各改一套）：
+
+        一级 ``_filter_by_role``     ← 角色过滤（工具卡底座 T9）
+        二级 ``_filter_by_category`` ← 分类过滤（权限线 T4）
+
+    [T4 权限收口 2026-10-09] ``cards`` ＝ 分类查表所需卡面 meta（上游装配层补传）。
+
+    三类形参全缺省 ⇒ **不过滤**，返回与改造前**逐字一致**的全量工具面
+    （所有不带卡上下文的既有调用方零影响；打点 card_id=null）。
     """
-    return [_schema_of(def_) for def_ in TOOL_REGISTRY.values()]
+    tools = [_schema_of(def_) for def_ in TOOL_REGISTRY.values()]
+    # ---- 一级：角色过滤（工具卡底座 T9）----
+    tools = _filter_by_role(tools, card_id, work_id, cards)
+    # ---- 二级：分类过滤（权限线 T4）----
+    tools = _filter_by_category(tools, card_id, work_id, cards)
+    return tools
 
 
 def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:
@@ -845,61 +1206,11 @@ def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:
     [T-0007写路径收口] 改走card_store/shadow_store 的公开接口
     （iter_card_metas / iter_shadow_metas），不再跨层摸 _cards_dir/_meta_of/
     _shadows_dir。影子 meta 并入同一字典（R-09 读侧：影子挂在正卡之下，
-    can_read 判据经 parent 链自动作用在影子上）；键＝shadow_{正卡id}。
+    统一关口经 parent 链自动作用在影子上）；键＝shadow_{正卡id}。
     """
     cards = card_store.iter_card_metas(work_id)
     cards.update(shadow_store.iter_shadow_metas(work_id))
     return cards
-
-
-def can_read(
-    current_id: str, target_id: str, cards: dict[str, dict[str, Any]],
-    work_card_id: str = "",
-) -> bool:
-    """读权限：[卡片权限改造 2026-10-07] 全盘放开——target 存在即放行。
-
-    用户令（2026-10-07 11:26）：任一卡可读全项目任何卡的信息，但不放开写；
-    原按亲属链限读（判据①读自己/②子树/③血统链/④连线/⑤锚卡全局）是小说
-    项目移植的机制，整制退役。仅保留存在性校验（不因放开而丢）：
-    target 不在 cards（不存在/已删）→ False；current 不在 cards
-    （无有效对话卡上下文，维持旧态行为）→ False。
-
-    cards: {card_id: meta dict（含 parent, card_type, relations）}
-    work_card_id: 形参保留（四个消费点调用签名不动）；判据⑤退役后无判据使用。
-    """
-    if cards.get(target_id) is None:
-        return False
-    if cards.get(current_id) is None:
-        return False
-    return True
-
-
-def can_edit(current_id: str, target_id: str, cards: dict[str, dict[str, Any]]) -> bool:
-    """写权限：target 在 current 的子树内（含 current 自身）→ True。
-
-    血统链上级不可写、契约卡不可写。
-    """
-    if target_id == current_id:
-        return True
-    # 反向遍历 target 的 parent 链，能否到达 current
-    tgt = cards.get(target_id)
-    if tgt is None:
-        return False
-    visited: set[str] = set()
-    node = tgt.get("parent", "")
-    guard = 0
-    while node and guard < 1000:
-        guard += 1
-        if node in visited:
-            break
-        visited.add(node)
-        if node == current_id:
-            return True
-        nm = cards.get(node)
-        if nm is None:
-            break
-        node = nm.get("parent", "")
-    return False
 
 
 # ============================================================
@@ -1059,6 +1370,14 @@ async def execute_tool(
         def_ = TOOL_REGISTRY.get(tool_name)
         if def_ is None:
             return err("not_found", f"未知工具: {tool_name}")
+        # [工具卡底座 T9 · 执行层角色拦 —— **已回滚，接替未启用**]
+        # [用户 2026-10-09 17:38 逐字]「现在先不要把写工具给干掉啊，
+        #   等工具卡完善后，再接替啊」
+        # 此处原按同一份 WRITE_TOOLS_REVOKED 拦主卡的写工具调用。同
+        # `_filter_by_role` 一并回滚——**接替的时机未到**，此刻主卡工具面
+        # 为全量。接替启用时，工具面清单（第一道）与本处执行层拦（第二道）
+        # 必须同批启用，不得只启一道（否则要么看得见调不动、要么绕过清单硬发）。
+        # 权限表查表、非内容判定（R-A）这一性质不变，留待接替时复用。
         result = await def_.handler(work_id, current_id, arguments, cards)
         if _is_envelope(result):
             return result

@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-"""[卡片权限改造 2026-10-07] 读侧全盘放开的新政策断言（任务书 V1-V4）。
+"""[卡片权限改造 2026-10-07 → 权限收口 2026-10-09] 读侧全盘放开的政策断言。
 
-改策：can_read 存在即放行——任一卡可读全项目任何卡；写侧不随读放开
-（can_edit「自己＋子树」一字不动）；护栏（根卡拒删/有子卡拒删/影子写
-签名级独占）原样。
+收口后（THINK-ECO-permgmt 交办单定夺 1/2）：读＝全注册分类授 READ（存在即
+放行的现行口径保留）；写＝EDIT/DELETE＋TREE_SCOPE 子树限定（现行口径保留）；
+护栏（根卡拒删/有子卡拒删/影子写签名级独占）原样。原直调旧纯函数的断言
+（L33-52）改写为统一关口等价断言；execute_tool 断言随 T-0010 信封口径
+（成败读 ok 字段、错误读 error.message）。
 
-改前对照组（旧判据拒绝同场景）见 _cardperm_20261007/verify_control.py
-——施工留痕目录，不入测试套件；本文件只钉新政策。
+改前对照组见 _cardperm_20261007/verify_control.py（施工留痕，不入套件）。
 """
 from __future__ import annotations
 
 import pytest
 
 from src.api import card_tools
+from src.permissions import policy
 from src.storage import card_store, memory_store, shadow_store
 
 
@@ -22,60 +24,60 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
     return r["meta"]["card_id"]
 
 
-async def test_v1_full_open_read_nonkin(work):
-    """V1 读放开：非亲属/非连线/非锚定的旁支卡可读（改前旧判据必拒的场景）。"""
+async def test_v1_full_open_read_nonkin(typed_registry, work):
+    """V1 读放开：非亲属/非连线/非锚定的旁支卡可读（注册分类全授 READ）。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk_child(wid, "甲", root)
-    b = await _mk_child(wid, "乙", root)   # 与甲互为旁支：无子树/血统/连线/锚定关系
+    b = await _mk_child(wid, "乙", root)   # 与甲互为旁支
     cards = card_tools._collect_card_meta(wid)
 
-    # 纯函数层：存在即放行；不存在是唯一拒因
-    assert card_tools.can_read(a, b, cards)
-    assert card_tools.can_read(b, a, cards)
-    assert not card_tools.can_read(a, "card_999", cards)
+    # 关口层：注册分类全授 READ → 不抛即放行；缺卡在关口抛
+    # （工具层有存在性先判，走 not_found，关口见不到缺卡）
+    policy.check_with_scope(a, b, policy.Perm.READ, cards)
+    policy.check_with_scope(b, a, policy.Perm.READ, cards)
+    with pytest.raises(PermissionError):
+        policy.check_with_scope(a, "card_999", policy.Perm.READ, cards)
 
-    # 工具层：真实走 execute_tool → card_store
+    # 工具层：真实走 execute_tool → card_store（T-0010 信封：载荷在 data）
     r = await card_tools.execute_tool(wid, a, "read_card", {"card_id": b}, cards)
-    # [T-0010 §1] 信封：成功载荷在 data 内
     assert r["ok"] is True and r["error"] is None
     assert r["data"]["card_id"] == b and r["data"]["title"] == "乙"
 
 
-async def test_v2_write_still_restricted(work):
+async def test_v2_write_still_restricted(typed_registry, work):
     """V2 写仍受限：越权 edit/delete 明确拒绝且不落盘。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk_child(wid, "甲", root)
     b = await _mk_child(wid, "乙", root)
     cards = card_tools._collect_card_meta(wid)
 
-    assert not card_tools.can_edit(a, b, cards)   # 旁支不可写（写侧未随读放开）
-    assert card_tools.can_edit(a, a, cards)       # 自己可写
+    # 关口层：旁支不可写（TREE_SCOPE 子树限定），自己可写
+    with pytest.raises(PermissionError):
+        policy.check_with_scope(a, b, policy.Perm.EDIT, cards)
+    policy.check_with_scope(a, a, policy.Perm.EDIT, cards)
 
-    before = (await card_store.read_card(wid, b))["body"]["status_block"]
+    before = (await card_store.read_card(wid, b))["body"]
     r = await card_tools.execute_tool(
         wid, a, "edit_card", {"card_id": b, "content": "越权写入"}, cards)
-    assert r["ok"] is False
-    assert r["error"]["code"] == "denied" and "越权" in r["error"]["message"]
-    assert (await card_store.read_card(wid, b))["body"]["status_block"] == before
+    assert "越权" in r["error"]["message"]
+    assert (await card_store.read_card(wid, b))["body"] == before
 
     r = await card_tools.execute_tool(wid, a, "delete_card", {"card_id": b}, cards)
-    assert r["ok"] is False
-    assert r["error"]["code"] == "denied" and "越权" in r["error"]["message"]
+    assert "越权" in r["error"]["message"]
     assert card_store._card_path(wid, b).exists()   # 未删
 
 
-async def test_v3_guards_intact(work):
+async def test_v3_guards_intact(typed_registry, work):
     """V3 护栏不破：根卡拒删/有子卡拒删/影子写签名级独占（读放开后行为不变）。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk_child(wid, "甲", root)
     b = await _mk_child(wid, "乙", a)
     cards = card_tools._collect_card_meta(wid)
 
-    # 剧本根卡不可删（工具层显式拦截）
+    # 根卡不可删（工具层身份护栏；收口后前移一行，拒绝文案逐字不变）
     r = await card_tools.execute_tool(wid, root, "delete_card", {"card_id": root}, cards)
-    assert r["ok"] is False
-    assert r["error"]["code"] == "denied" and "不可删除" in r["error"]["message"]
-    # 有子卡的卡不可删（存储层结构护栏；经工具层回传＝internal 直传信封）
+    assert "不可删除" in r["error"]["message"]
+    # 有子卡的卡不可删（存储层结构护栏；关口 DELETE 对自卡放行后由存储层拒）
     r = await card_tools.execute_tool(wid, a, "delete_card", {"card_id": a}, cards)
     assert r["ok"] is False
     assert card_store._card_path(wid, a).exists()
@@ -94,8 +96,8 @@ async def test_v3_guards_intact(work):
     assert shadow_store.shadow_path(wid, b).read_bytes() == raw_b_before
 
 
-async def test_v4_shadow_and_memory_read_open(work):
-    """V4 影子/记忆读随 can_read 一并放开；影子写独占不破（见 V3）。"""
+async def test_v4_shadow_and_memory_read_open(typed_registry, work):
+    """V4 影子/记忆读随读放开一并放行；影子写对注册分类放行（定夺 1 偏离位）。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk_child(wid, "甲", root)
     b = await _mk_child(wid, "乙", root)
