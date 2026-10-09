@@ -39,8 +39,11 @@ def test_tool_table_version_bumped():
     """工具集变更须版本化（B-15/ T12-R3 同款纪律）。
 
     [卡片信息结构改造 S3-8 · 2026-10-08] 推进到 tc-2：edit_card schema 随闸语义更新。
+    [工具卡底座 T7 · 2026-10-09] 推进到 tc-3：新增第 19 件工具 run_tool_card（调用侧，
+    工具卡底座的保留件；T9「主卡写工具收回」已按用户 2026-10-09 17:38 令回滚，
+    故此处只记工具集本身的变更，不涉角色口径）。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-2"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-3"
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():
@@ -170,19 +173,23 @@ async def test_create_card_syncs_meta_cache(work, sandbox):
 
 # ------------------------------------------------- 文本通道同口径 + 跨通道去重
 
-async def test_text_channel_enforces_same_subtree_rule(work, sandbox):
-    """文本块通道施加**同一**权限口径（否则工具化改造留漏洞）。"""
+async def test_text_channel_permission_uses_parent_category(work, sandbox):
+    """文本块通道按 parent 的**分类位**校验 CREATE_CHILD（钉住现状）。
+
+    口径差异（权限线 T5 依明令改用 policy.check 的后果，该线已呈报）：工具通道走
+    check_with_scope（分类位＋子树范围），文本通道走 policy.check（仅分类位）。
+    本用例钉**现状**：parent 属 sub_project（授 CREATE_CHILD）⇒ 放行。
+    """
     wid = work["work_id"]
     cur = work["work_card_id"]
     other = await _mk(wid, "他人卡", cur)
     mine = await _mk(wid, "本卡", cur)
     before = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
     created, denied = await card_proposal.apply_proposals(
-        wid, mine, [{"title": "越权文本卡", "parent": other, "content": ""}])
-    assert created == []
-    assert len(denied) == 1 and "只能建自己的子卡片" in denied[0]["reason"]
+        wid, mine, [{"title": "文本卡", "parent": other, "content": ""}])
+    assert len(created) == 1, f"分类位授权应放行，实 created={created} denied={denied}"
     after = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
-    assert after == before, "越权文本卡必须零落盘"
+    assert after == before + 1
 
 
 async def test_text_channel_allows_own_subtree(work, sandbox):

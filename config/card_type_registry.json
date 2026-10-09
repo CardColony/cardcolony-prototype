@@ -129,7 +129,7 @@
       "desc": "子卡 card_type 必须属于其根卡 project_class 所指 L1 词表。"
     },
     "gate_3_owner_required": {
-      "desc": "card_type == \"tool\" 时 owner_card_id 非空，且 owner 必须落在本树内且其 card_type 为 sub_project。"
+      "desc": "card_type == \"tool\" 时 owner_card_id 非空，且 owner 必须落在本树内且其 card_type 属于 {sub_project, project}（用户 2026-10-09 11:54 裁定逐字「子项目卡或根卡」；原口径只允许 sub_project，同批放宽）。范围严格止于此二者——topic 等其他类型仍被拒，是否开放属未裁项。判据落点：card_store._write_gate 闸 3，集合常量 TOOL_CARD_OWNER_TYPES。"
     },
     "gate_4_state_transition": {
       "desc": "状态迁移必须在 allowed_transitions 内；completed 为终态，不可再编辑正文。"

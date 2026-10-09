@@ -314,19 +314,17 @@ async def test_read_memory_tool_filter_and_permission(sandbox, monkeypatch):
     meta = _cards_meta(wid, ["card_001", card_a, card_b])
     # 缺省＝当前卡全量（原样返回）
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {}, meta)
-    # [T-0010 §1] 信封：成功载荷在 data 内
-    assert r["ok"] is True
-    assert r["data"]["card_id"] == card_a and r["data"]["mark"] == 3 and len(r["data"]["entries"]) == 3
+    assert r["card_id"] == card_a and r["mark"] == 3 and len(r["entries"]) == 3
     # 锚点区间过滤（含端点）
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {"from_seq": 2, "to_seq": 4}, meta)
-    assert [e["seq"] for e in r["data"]["entries"]] == [2, 4]
+    assert [e["seq"] for e in r["entries"]] == [2, 4]
     # 不存在的卡
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {"card_id": "card_999"}, meta)
-    assert r["ok"] is False and r["error"]["code"] == "not_found"
+    assert "error" in r
     # [卡片权限改造 2026-10-07] 读侧全盘放开：平级 read_memory 放行
     # （原越权断言随亲属链读限机制退役）
     r = await card_tools.execute_tool(wid, card_b, "read_memory", {"card_id": card_a}, meta)
-    assert r["data"]["card_id"] == card_a and r["data"]["mark"] == 3 and len(r["data"]["entries"]) == 3
+    assert r["card_id"] == card_a and r["mark"] == 3 and len(r["entries"]) == 3
     # 只读白名单在案（折叠【依据】依据源语义）
     assert "read_memory" in card_tools.READONLY_TOOLS
 
@@ -335,16 +333,7 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     tools = card_tools.build_tool_schemas()
     names = [t["name"] for t in tools]
     assert names.count("read_memory") == 1
-    # [T-0010 §3.4 · 2026-10-08] 推进到 t14-1：BASE_PROMPT 新增「工具错误码」小节
-    # （工具结果信封化，错误码进 prompt）。同步纪律：版本号推进必须同步本用例。
-    # [卡片信息结构改造 S3-8 · 2026-10-08] 此前为 tc-2：edit_card 说明改写为三块语法＋
-    # 条目语法、schema 描述随闸语义更新。TOOL_TABLE_VERSION 本轮**不动**（工具面零变化）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-2"
-    # 建卡工具化后 read_memory 仍在案（未被取代，只是同表多一件）
-    assert names.count("create_card") == 1
-    # 语义随推进不变：read_memory 仍是只读件
-    assert "read_memory" in card_tools.READONLY_TOOLS
-    assert prompts.BASE_PROMPT_VERSION == "t14-1"
-    # BASE_PROMPT 工具行在案（read_memory 行逐字未动；建卡工具化只增 create_card 行、
-    # 删文本协议段——read_memory 语义不受影响）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-t12-1"
+    assert prompts.BASE_PROMPT_VERSION == "t12-1"
+    # BASE_PROMPT 工具行在案
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT

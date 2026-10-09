@@ -63,78 +63,33 @@ def test_read_file_line_ranges(sandbox):
 # ---------------------------------------------------------------- 凭证类
 
 def test_credentials_neither_readable_nor_writable(sandbox):
-    """[T-0004 §3.1 同步] 函数名是 10-04 前旧行为的**历史锚点**，行为已反转：
-
-    用户 2026-10-04 21:31 裁定「全盘可读可写」后，凭证拦截已撤
-    （file_tools.py:170/242/292 三处注释在案；此前拦截系诸葛自行添加）。
-    故开发态**凭证类文件可读可写**，read_file/write_file 不返回 error 键。
-
-    产品态分层指针：产品态 .env/密钥类**永不可读**，系第2批 B-14 前置
-    （RELEASE_BLOCKERS 裁决1）；**开发态 10-04 裁定不变**。本用例钉的是
-    **开发态现状**——产品态分层落地后需再分层（届时应拆成
-    「开发态可读可写 / 产品态拒读」两条独立用例）。
-    """
     base = sandbox.base
     (base / "trading-workspace" / ".env").write_text("NEEDLE_IN_ENV", encoding="utf-8")
     (base / "trading-workspace" / "server.pem").write_text("k", encoding="utf-8")
 
-    # 读：不拦截，直接返回正文（无 error 键）
-    r = file_tools.read_file("trading-workspace/.env")
-    assert "error" not in r and r["content"] == "NEEDLE_IN_ENV"
-    r = file_tools.read_file("trading-workspace/server.pem")
-    assert "error" not in r and r["content"] == "k"
-
-    # 列目录：凭证文件在开发态可见（list_files 只剪枝目录，不隐藏文件）
-    names = [e["name"] for e in file_tools.list_files("trading-workspace")["entries"]]
-    assert ".env" in names and "server.pem" in names
-
-    # 检索：凭证文件参与检索，内容可命中
-    hits = file_tools.search_files("NEEDLE_IN_ENV", "trading-workspace")["hits"]
-    assert hits == [{
-        "file": str(Path("trading-workspace") / ".env"),
-        "line": 1,
-        "text": "NEEDLE_IN_ENV",
-    }]
-    # 以凭证文件为检索起点：不拦截，正常返回结构
-    r = file_tools.search_files("x", "trading-workspace/.env")
-    assert "error" not in r and r["hits"] == []
-
-    # 写：不拦截；覆盖已存在文件照常备份
     for name in (".env", "server.pem"):
-        w = file_tools.write_file(f"trading-workspace/{name}", "y")
-        assert "error" not in w and w["ok"] is True and w["status"] == "overwritten"
-    assert (base / "trading-workspace" / ".env").read_text(encoding="utf-8") == "y"
+        assert "凭证" in file_tools.read_file(f"trading-workspace/{name}")["error"]
+        assert "凭证" in file_tools.write_file(f"trading-workspace/{name}", "y")["error"]
+
+    names = [e["name"] for e in file_tools.list_files("trading-workspace")["entries"]]
+    assert ".env" not in names and "server.pem" not in names
+
+    assert file_tools.search_files("NEEDLE_IN_ENV", "trading-workspace")["hits"] == []
+    assert "凭证" in file_tools.search_files("x", "trading-workspace/.env")["error"]
 
 
 # ---------------------------------------------------------------- 依赖目录
 
 def test_prune_dirs_are_invisible_and_unwritable(sandbox):
-    """[T-0004 §3.1 同步] 函数名是 10-04 前旧行为的**历史锚点**，行为已半反转：
-
-    「依赖/缓存目录**写入拦截**」随用户 2026-10-04 21:31 裁定撤除
-    （file_tools.py:292 注释在案）；「列出/检索时**剪枝**」保留
-    （避免 7.8GB 依赖目录淹没结果，file_tools.py:136/223 在案）。
-    故现状＝ invisible（列表不进入、检索不命中）＋ **writable**（可写）。
-
-    产品态分层指针：产品态边界＝数据根之内（RELEASE_BLOCKERS 裁决1）；
-    **开发态 10-04 裁定不变**——本用例钉开发态现状，产品态分层落地后需再分层。
-    """
     base = sandbox.base
     venv = base / "trading-workspace" / ".venv"
     venv.mkdir()
     (venv / "lib.py").write_text("PRUNE_NEEDLE", encoding="utf-8")
 
-    # invisible（保留的机械兜底）：列表不进入、检索剪枝
     names = [e["name"] for e in file_tools.list_files("trading-workspace")["entries"]]
     assert ".venv" not in names
     assert file_tools.search_files("PRUNE_NEEDLE", "trading-workspace")["hits"] == []
-
-    # writable（10-04 裁定后）：路径明确给出时读/写不再拦截
-    r = file_tools.read_file("trading-workspace/.venv/lib.py")
-    assert "error" not in r and r["content"] == "PRUNE_NEEDLE"
-    w = file_tools.write_file("trading-workspace/.venv/x.py", "y")
-    assert "error" not in w and w["ok"] is True and w["status"] == "created"
-    assert (venv / "x.py").read_text(encoding="utf-8") == "y"
+    assert "依赖/缓存目录" in file_tools.write_file("trading-workspace/.venv/x.py", "y")["error"]
 
 
 # ---------------------------------------------------------------- 二进制与体量

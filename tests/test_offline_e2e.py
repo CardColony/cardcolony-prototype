@@ -16,7 +16,6 @@ card_012 工作项 5。两条纪律：
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 import httpx
@@ -74,26 +73,6 @@ class FakeGateway:
             "tokens_used": 1,
             "latency_ms": 1,
         }
-
-    async def stream_call(self, model_name, system_prompt, user_prompt, temperature=0.5,
-                           max_tokens=None, timeout=None, on_status=None, tools=None,
-                           on_reasoning=None, prior_messages=None):
-        """[信息流重出 Task4] 主路径已切 stream_call，替身须同款签名与产出。
-
-        单一事实源仍是 ``call``（工具脚本只发一次等语义都在那边），这里只包装成
-        async generator：逐段吐 chunk_type 增量 + 末帧终态。这样测的仍是真实
-        调用面，而不是给替身另写一套行为导致替身与真网关漂移。
-        """
-        result = await self.call(
-            model_name, system_prompt, user_prompt,
-            temperature=temperature, max_tokens=max_tokens, timeout=timeout,
-            skip_completion_marker=True, tools=tools, on_status=on_status,
-            prior_messages=prior_messages,
-        )
-        for seg in re.findall(r".{1,8}", result.get("content") or ""):
-            if seg:
-                yield {"chunk_type": "content", "chunk": seg, "text": seg}
-        yield result
 
     def _content(self, model_name: str) -> str:
         if model_name == "vp1":
@@ -202,15 +181,13 @@ async def test_tool_loop_closes_with_tool_result(client, sandbox):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["tool_events"] == [{"tool": "read_card", "card_id": "card_001", "ok": True}]
-    # [T-0005 §3.1 同步] T14 拼接交付＝分析在前、回执在后、\n\n 分隔（routes.py:885-888，
-    # 「待裁定 1」已裁定：保留拼接形态，代码不动）。替身网关对工具轮与末轮返回同一常量，
-    # 故拼接后呈现为「同文重复」——这是夹取巧合，非代码 bug。真实模型下两段文本不同。
+    # [T-0002 §6-6→T14 更新] reply 尾部换行属现行为。带工具轮正文按 T14 新语义
+    # 进交付（分析在前、回执在后）——FakeGateway 罐头两轮同文，故 reply 为同文两段；
+    # 真实场景分析与回执不同文（同文重复＝罐头形态，观察项在 T14 报告）。
     assert body["reply"] == "先读一下这张卡。\n\n先读一下这张卡。\n"
 
     main_calls = [c for c in fake.calls if c["model"] == "main"]
-    # [T-0005 §3.1 同步] E-探针制三席后置（2026-10-07）加了第三个 main 轮（统合轮），
-    # routes.py 有 3 处 call_main（632/646/726），model_calls 实为 3。
-    assert len(main_calls) == 3
+    assert len(main_calls) == 2                     # 首轮统合 ＋ 一轮工具续跳
     assert main_calls[0]["prior_len"] == 0          # 首轮 prior 不含本轮
     assert main_calls[1]["prior_len"] == 3          # 用户原文 ＋ assistant ＋ tool 结果
     assert main_calls[1]["user_prompt"] == "工具结果已返回。"

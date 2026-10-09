@@ -49,6 +49,13 @@ ALLOWED_SOURCE = ("讨论", "用户直接创建", "模型生成", "系统派生"
 # 建根卡传 project，白名单不含它会被降级成"线索"。
 ALLOWED_CARD_TYPE = ("project", "剧本", "世界观", "行为体", "节点", "假设", "线索")
 
+# [工具卡底座 T11 · EC-183] 工具卡 owner 的合法类型集合（用户 2026-10-09
+# 11:54 裁定逐字「子项目卡或根卡」）。**集合严格止于此二者**——放宽范围
+# 不得自行扩大至 topic 等其他类型（R-F）；未裁前 topic 仍被拒。
+# 与 config/card_type_registry.json 的 gate_3_owner_required.desc 同批改
+# （两处口径必须一致，只改一处＝代码与注册表两套事实，R-F）。
+TOOL_CARD_OWNER_TYPES: tuple[str, ...] = ("sub_project", "project")
+
 _CARD_FILE_RE = re.compile(r"^card_(\d{3,})\.md$")
 
 # 每个文件路径一把 asyncio.Lock（模块级 dict 缓存）
@@ -314,6 +321,21 @@ def _render_card(meta: dict[str, Any], mission: str, status_block: str,
         *([f"owner_card_id: {_q(meta['owner_card_id'])}"]
           if meta.get("owner_card_id") else []),
         *([f"state: {_q(meta['state'])}"] if meta.get("state") else []),
+        # [工具卡底座 T3 · EC-037] 工具卡状态三字段（＋终态声明）。
+        # 位置在 state 之后、created_at 之前；读路径 _meta_of 按 key 取。
+        # **字段名纪律（EC-038）**：此处只可能出现「位置」与「模型自报的声明」，
+        # **绝不出现 step_status/done/通过/失败 之类评价字样**——那是对内容的
+        # 判定，只归模型（任务书 §四 R-A）。因此三字段的命名不可改。
+        # 条件渲染：空串＝不写（存量兼容，与 project_class/owner_card_id 同手法）；
+        # round 例外用 `is not None` 判，因为 round=0 是合法值不是「没写过」。
+        *([f"toolcard_script: {_q(meta['toolcard_script'])}"]
+          if meta.get("toolcard_script") else []),
+        *([f"toolcard_step: {_q(meta['toolcard_step'])}"]
+          if meta.get("toolcard_step") else []),
+        *([f"toolcard_round: {int(meta['toolcard_round'])}"]
+          if meta.get("toolcard_round") is not None else []),
+        *([f"toolcard_final: {_q(meta['toolcard_final'])}"]
+          if meta.get("toolcard_final") else []),
         # [S4-1/S4-2] methodology_refs / pending_sync 的 FM 行同步删除。
         # 只删 meta 初始化而留着这两行，meta.get 的默认值会把它们原样写回，
         # 等于没删。存量卡的这两行在其下次写入时自然消失（字段死，无读取方）。
@@ -590,10 +612,15 @@ def _write_gate(work_id: str, action: str, card_id: str,
         owner_meta = _meta_of(work_id, owner) or {}
         owner_type = str(owner_meta.get("card_type", "") or "")
         # [底座收口 T2.d] 正向判据取代负向（legacy∪剧本）：legacy 全退役后
-        # 负向判据恒 False＝闸3 失效。原意即「owner 必须是子项目卡」。
-        if owner_type != "sub_project":
+        # 负向判据恒 False＝闸3 失效。
+        # [工具卡底座 T11 · EC-183 · 用户 2026-10-09 11:54 裁定逐字「子项目卡或根卡」]
+        # 放宽为 {sub_project, project}。**范围严格止于此二者**：
+        # 放宽范围**不得自行扩大**至 topic 等其他类型（R-F / EC-183）——
+        # topic 是否可作 owner 属未裁项，见任务书【待用户裁】，未裁前按拒处理。
+        if owner_type not in TOOL_CARD_OWNER_TYPES:
             return {"error": f"owner「{owner}」的 card_type「{owner_type}」"
-                             f"不是 sub_project，不能作工具卡 owner"}
+                             f"不在允许集合 {sorted(TOOL_CARD_OWNER_TYPES)} 内，"
+                             f"不能作工具卡 owner"}
     # ---------- 工具卡不可有子卡 ----------
     if card_type == "tool":
         cd = _cards_dir(work_id)
@@ -973,7 +1000,13 @@ async def update_card(
         for key in ("title", "tags", "relations", "session_ref",
                     "card_type", "parent",
                     # [卡片分类基座 T1] 新分类字段进入落盘循环
-                    "project_class", "owner_card_id", "state"):
+                    "project_class", "owner_card_id", "state",
+                    # [工具卡底座 T3 · EC-037] 工具卡状态三字段＋终态声明。
+                    # 进循环＝能被 update_card 写。**不进循环的键会被静默丢弃**
+                    # （本函数只把列表内的键搬进 meta，随后 _render_card 按固定
+                    # 清单重渲 front matter）——所以「加字段」必须这两处同改。
+                    "toolcard_script", "toolcard_step", "toolcard_round",
+                    "toolcard_final"):
             if key in updates:
                 meta[key] = updates[key]
         mission = updates.get("mission", sections["mission"])

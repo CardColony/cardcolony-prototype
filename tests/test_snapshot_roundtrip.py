@@ -65,8 +65,7 @@ async def test_snapshot_restore_roundtrip(work):
     assert card_path.read_bytes() == src.read_bytes()
 
     data = await card_store.read_card(wid, root)
-    # [G-10 卡片信息结构改造] 键名归一后此断言须改新键（方案终稿未列，本环新发现）
-    assert data["body"]["status_block"] == "第一版正文"
+    assert data["body"]["conclusion"] == "第一版正文"
     # 恢复回来的文件哈希自洽 → 不得被判定为「外部修改」
     assert not any("外部修改" in line for line in data["body"]["history"])
 

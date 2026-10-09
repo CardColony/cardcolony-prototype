@@ -23,6 +23,7 @@ from typing import Any
 
 from ..storage import card_store, memory_store, work_store
 from ..storage.hash_utils import parse_front_matter
+from ..toolcard import step_prompt as toolcard_step_prompt
 from . import context_regions
 
 logger = logging.getLogger("api.context_assembler")
@@ -90,6 +91,13 @@ def build_context_regions(work_id: str, current_id: str,
             "text": t150,
             "entries": 1,
         })
+    # [工具卡底座 T6 · EC-048] 160 区：当前卡的工具卡步骤指令。
+    # 只在该卡**确有工具卡运行时**时出现（没有来源就不出现这个区，同 150/200 纪律）。
+    # 区内容只含事实与提示词原文（剧本名/当前步/本步要求/上一步落盘的文件路径），
+    # **不含**任何评价、结论、剩余步数或通过与否（见 step_prompt 的可说/不可说表）。
+    t160 = toolcard_step_prompt.build_region(work_id, current_id)
+    if t160:
+        regions.append(t160)
     # [T12-2-1] 凝练记忆区（condense_fold）——order 200，紧随 150。
     # 空记忆 → 区跳过、零内容输出零报错（assemble_regions 空区跳过兜底）。
     state = memory_state

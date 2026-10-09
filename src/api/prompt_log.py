@@ -72,3 +72,29 @@ def write_prompt_log(
     except Exception as exc:
         logger.warning("prompt 日志写入失败（不中断）: %s", exc)
         return None
+
+
+# ------------------------------------------------------------
+# [THINK-ECO-permgmt T7 · 2026-10-09] 权限判定打点
+#
+# 落 logs/prompt_perm_audit.jsonl：一行一判定、机械字段、追加写；
+# **无闸**——无轮转/无长度上限/无采样（R-C：打点是留痕非闸）。
+# 落盘失败只告警，绝不阻断权限判定本身。
+# ------------------------------------------------------------
+
+PERM_LOG_FILENAME = "prompt_perm_audit.jsonl"
+
+
+def append_perm_log(record: dict[str, Any]) -> None:
+    """权限判定留痕（任务书 T7/交办单）：check、check_with_scope、
+    build_tool_schemas、check_file_access 每次判定各记一条机械字段记录。
+
+    LOGS_DIR 在调用时读取（与 write_prompt_log 同一沙箱手法，测试重定向生效）。
+    """
+    entry = {"ts": datetime.now().isoformat(timespec="milliseconds"), **record}
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOGS_DIR / PERM_LOG_FILENAME, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except OSError as exc:
+        logger.warning("[perm_log] 权限打点落盘失败（不中断）: %s", exc)

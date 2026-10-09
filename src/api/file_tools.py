@@ -29,6 +29,10 @@ from typing import Any
 
 logger = logging.getLogger("api.file_tools")
 
+# [THINK-ECO-permgmt T6 · 2026-10-09] 文件路径锁依赖：统一权限表（POLICY 位判定）
+from ..permissions import policy
+from . import prompt_log
+
 # 基准目录与允许范围（用户裁定：全盘可读可写）
 BASE_DIR = Path(r"D:\AI_station")
 ALLOWED_ROOTS = (BASE_DIR.resolve(),)
@@ -65,8 +69,27 @@ BACKUP_DIR = BASE_DIR / "推演agent" / "_backups"
 
 # ---------------------------------------------------------------- 路径与校验
 
-def _is_credential(path: Path) -> bool:
-    """凭证类文件判据（精确名 + 后缀 + 前缀）。"""
+# [THINK-ECO-permgmt T6 · 2026-10-09] 分类路径锁：查表键（policy._type_key 口径）
+# → 可访问路径前缀（相对 BASE_DIR，正斜杠比较；"" 哨兵＝不另设前缀限制）。
+# 值现状＝全放行哨兵——10-03/10-04 用户裁定「全盘可读可写」的保持现状档
+# （与交办单定夺 1 对 SHADOW_WRITE 的「保持现状」同款原则）；真实前缀属部署
+# 配置、待用户给值（原方案 §4.4 自注「等定稿后填入真实值，现在先用占位」）。
+# tool 行不可达（该分类无 TOOLS_FILE 位），随表补齐只为键位完整。
+FILE_SCOPE: dict[str, list[str]] = {
+    "rd_project": [""],
+    "research_project": [""],
+    "sub_project": [""],
+    "topic": [""],
+    "tool": [""],
+}
+
+
+def _credential_excluded(path: Path) -> bool:
+    """凭证类文件判据（精确名 + 后缀 + 前缀）。
+
+    [T6 收敛 2026-10-09] 原独立凭证函数收敛为 check_file_access 内部排除层
+    （任务书 PM-16：grep 清零），判据逐字保留。
+    """
     n = path.name.lower()
     if n in CREDENTIAL_NAMES:
         return True
@@ -76,6 +99,57 @@ def _is_credential(path: Path) -> bool:
         if n.startswith(p) and n.endswith(".env"):
             return True
     return False
+
+
+def _prefix_hit(target: Path, prefix: str) -> bool:
+    """FILE_SCOPE 前缀判定："" 哨兵匹配一切；其余按 BASE_DIR 相对路径比较。"""
+    if prefix == "":
+        return True
+    try:
+        rel = target.relative_to(BASE_DIR)
+    except ValueError:
+        return False
+    return str(rel).replace("\\", "/").startswith(prefix)
+
+
+def check_file_access(path: str, card_type: str) -> bool:
+    """[T6 路径锁 2026-10-09] 文件路径锁：机械三层判定，返回 bool。
+
+    ① 分类授权：card_type（查表键口径）须授 TOOLS_FILE（POLICY 派生）；
+    ② 全盘边界：与 _resolve 同判据（resolve 后须落 ALLOWED_ROOTS 之下）；
+    ③ 内部凭证排除＋FILE_SCOPE 前缀（FILE_SCOPE 值现状＝全放行哨兵，
+       见上方表注）。
+    空路径非权限问题（下游既有「path 不能为空」校验负责），放行交下游。
+    T7 打点在唯一出口，两态同记（不做二次判定、无任何闸）。
+    """
+    has_file = (policy.grants_for(card_type) & policy.Perm.TOOLS_FILE) == policy.Perm.TOOLS_FILE
+    raw = str(path or "").strip()
+
+    def _log(granted: bool, prefix_hit: object) -> None:
+        prompt_log.append_perm_log({
+            "fn": "check_file_access",
+            "path": path,
+            "card_type": card_type,
+            "prefix_hit": prefix_hit,
+            "granted": granted,
+        })
+
+    if not has_file:
+        _log(False, None)
+        return False
+    if not raw:
+        _log(True, None)
+        return True
+    target, err_ = _resolve(raw)
+    if err_ is not None:
+        _log(False, None)
+        return False
+    if _credential_excluded(target):
+        _log(False, "credential")
+        return False
+    hit = any(_prefix_hit(target, p) for p in FILE_SCOPE.get(card_type, []))
+    _log(hit, "" if hit else None)
+    return hit
 
 
 def _resolve(raw: str) -> tuple[Path | None, dict[str, Any] | None]:

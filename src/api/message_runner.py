@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from ..storage import card_store, memory_store, session_store, work_store
+from ..toolcard import driver as toolcard_driver
 from . import (
     card_proposal,
     card_tools,
@@ -139,12 +140,21 @@ class StepOutcome:
 # ============================================================
 
 def check_control(state: RunState) -> None:
-    """step 边界的控制钩子（**空实现**）。
+    """step 边界的控制钩子。
 
-    [T-0009 §2.3] 留中止缝：函数存在、签名定死、函数体空，为执行环与
-    B-14 软预算预留挂点。**当前不做 job 系统、不上队列、不实现任何真实
-    中止逻辑**——调用点在 step 入口/出口各一处（见 `step`），行为恒为 no-op。
+    [T-0009 §2.3] 留中止缝：函数存在、签名定死，为执行环与 B-14 软预算预留挂点。
+    **中止逻辑本身仍不实现**（§2.3 明令）——函数体对中止而言保持空实现。
+
+    [工具卡底座 T2 · EC-032] 在此挂上**工具卡步骤推进**的驱动位：
+    每个 step 边界（入口 L219／出口 L392）问一次 driver「这张卡的工具卡现在
+    停在第几步」。该调用**同步、纯内存、零 IO、零判断**——只读一个指针，
+    推进与收口都由 driver 自己的 API 承担，边界钩子不替它做决定。
+    查不到运行时则返回 None（没有来源就不产生任何东西）。
     """
+    step_id = toolcard_driver.on_step_boundary(state)
+    if step_id:
+        logger.debug("step 边界 toolcard step=%s card=%s",
+                     step_id, getattr(state, "card_id", ""))
     return None
 
 
@@ -198,7 +208,13 @@ def build_context(state: RunState) -> None:
     # （非轮、永不折叠——不折红线），assistant＋tool 结果走 begin_round/
     # append_tool_result（成轮，可折单元）。
     state.slot = tool_fold.ToolTurnSlot(state.prior_for_gateway)
-    state.tools = card_tools.build_tool_schemas()
+    # [工具卡底座 T10 · EC-129] 传入卡上下文；[T4 权限收口] 同时传 cards。
+    # 三类形参缺省时（无卡上下文）不过滤，既有直调行为逐字不变。
+    state.tools = card_tools.build_tool_schemas(
+        card_id=state.card_id,
+        work_id=state.work_id,
+        cards=card_tools._collect_card_meta(state.work_id),
+    )
     # history_len 此刻一次算定（此后本列表会被轮槽就地 append 增长）
     state.history_len = len(state.prior_for_gateway)
 

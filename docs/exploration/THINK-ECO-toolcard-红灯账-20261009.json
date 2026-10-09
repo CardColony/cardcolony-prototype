@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "chain": "taskbook",
+    "step": "p3",
+    "title": "工具卡底座 · 任务书 · 红灯账（初版）",
+    "draft": "docs/exploration/工具卡底座-任务书-草稿-20261009.md",
+    "upstream": "docs/exploration/工具卡底座-方案-定稿-20261009.md",
+    "upstream_sha256": "2CC986E6656C10D4EE8BA03E8167AF4CFCB12071BD02DB684F813192802E4165",
+    "ledger": "docs/exploration/THINK-ECO-toolcard-对账-方案条目清单-20261009.json",
+    "tables": "docs/exploration/THINK-ECO-toolcard-对账-三张表-任务书-20261009.json",
+    "created_at": "2026-10-09 13:57",
+    "account_rule": "账只追加、历史不可改；消灯只有两条路——改稿经独立实例复核（回本步增量重判确认）／用户明示接受（留原话转黄）；生产者无任何消灯动作",
+    "audit_layer_note": "第二层独立实例判定未执行——用户 2026-10-08 12:07 与 20:43 两次明令「不要走子代理」，22:32 违规调用 workflow 已被当场怒斥并认账。本账的红灯判定为【生产者自判、非独立实例复核】，不冒充独立检验。"
+  },
+  "reds": [
+    {
+      "id": "RED-01",
+      "类目": "R4 矛盾",
+      "位置": "草稿 T7「过闸」条 vs 草稿 T11「闸3 放宽」条",
+      "证据原文逐字": {
+        "T7": "过闸：闸3（owner 合法——放宽后 `sub_project` 或 `project` 均可）／闸4（状态机）／「工具卡不可有子卡」（`card_store.py` L597-606 现成）",
+        "T11": "代码：`card_store.py` **L594** `if owner_type != \"sub_project\":` → 放宽为允许 `sub_project` 或 `project`",
+        "现场实读": "card_store.py L594 逐字 `if owner_type != \"sub_project\":` → L595-596 逐字 `return {\"error\": f\"owner「{owner}」的 card_type「{owner_type}」不是 sub_project，不能作工具卡 owner\"}`"
+      },
+      "矛盾机理": "T7 建工具卡时 owner＝当前卡（主卡）。主卡的 card_type 按方案第六节可为 sub_project / topic / project 三类（`card_type_registry.json` 双层拓扑实测：project 4 张、sub_project 33 张、topic 35 张）。T11 只把闸3 放宽到 `sub_project` 或 `project` —— **若发起调用的主卡是 topic 类（现存 35 张，占多数），owner_type=\"topic\" 不在放宽范围内 → 闸3 拒绝 → T7 建卡失败**。两处对同一件事的边界不一致。",
+      "状态": "open",
+      "修改指令": "在 T11 内补一句：「**放宽范围须覆盖工具卡的合法 owner 全集**——除 `sub_project`／`project` 外，`topic` 类卡若需作 owner，由执行方在回报中报明并列为【待用户裁】；未裁前 `run_tool_card` 遇 topic owner 报错并如实回报。」同时在 T7 的「过闸」条后补：「若 owner 为 topic 类且未被放宽覆盖，建卡失败须如实回报，**不得自行扩大放宽范围**。」"
+    },
+    {
+      "id": "RED-02",
+      "类目": "R4 矛盾",
+      "位置": "草稿 T2「数据形态」条 vs 草稿 T3「数据形态」条",
+      "证据原文逐字": {
+        "T2": "数据形态：运行时 `CardRuntime{card_id, script_name, step_id, round, artifacts}`，内存 Map、**键＝card_id**——EC-033",
+        "T3": "数据形态：卡面三字段 `toolcard_script`（哪条剧本）／`toolcard_step`（当前步指针）／`toolcard_round`（第几次）；影子卡 `## 进度` 节作展示用第二载体——EC-037",
+        "上游方案": "件 3 · 状态持久化：**接的接口**：`_write_gate`（`card_store.py` L497 定义、L960 update 调用）",
+        "现场实读": "message_runner.py L87-131 RunState 为请求局部对象；L125 逐字「本模块不置位、不消费」"
+      },
+      "矛盾机理": "T2 的运行时是**内存 Map**（进程内、请求结束后不可靠存活），T3 的状态是**卡面字段**（跨请求持久）。两处之间缺一个明确动作：**当内存无运行时（新请求/进程重启）但卡面字段有值时，从卡面重建运行时**。草稿的 T2 四函数里 `start` 只写「幂等」，未写明「先查卡面再决定新建还是恢复」；两处各自成立、接起来有断层——**没有这个动作，跨请求续跑就不成立，而「跨请求续跑」正是本线要解决的原始问题**（方案第三节件 3 立此件的理由：`RunState` 是请求局部对象、请求结束即销毁）。",
+      "状态": "open",
+      "修改指令": "在 T3 内补一条：「**恢复语义**：`driver.current(card_id)` 在内存无运行时但卡面 `toolcard_step` 有值时，**从卡面字段重建运行时**（读 `toolcard_script`／`toolcard_step`／`toolcard_round`）；重建是读盘动作，不是判定。`start()` 亦须先查卡面再决定是新建还是恢复。」"
+    }
+  ],
+  "summary": {
+    "open": 2,
+    "closed": 0,
+    "yellow": 0,
+    "类目分布": {"R1 丢失": 0, "R2 改写": 0, "R3 无中生有": 0, "R4 矛盾": 2}
+  },
+  "流转判定": {
+    "结论": "2 条红灯均为 R4 矛盾、可案头修订（改动落在任务书本级，不需动上一级已确认方案）→ 按流转规则退回 p4 修订消化，修完回 p3 做增量重判（只重判红灯行，绿灯行沿用）",
+    "上桌": false,
+    "理由": "R3（无中生有）为 0——反向表 17 段全部有据、无据 0 段，无需上桌；R1（丢失）为 0——正向表 empty 0 条"
+  }
+}
