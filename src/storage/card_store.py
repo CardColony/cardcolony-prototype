@@ -336,6 +336,11 @@ def _render_card(meta: dict[str, Any], mission: str, status_block: str,
           if meta.get("toolcard_round") is not None else []),
         *([f"toolcard_final: {_q(meta['toolcard_final'])}"]
           if meta.get("toolcard_final") else []),
+        # [迭代二 S1] 思维链板终态声明（board.finalize_board 写入、孤儿扫描判定键）。
+        # 同法 toolcard_final：进 update_card 键清单＋此处条件渲染行——两处缺一
+        # 该键即被静默丢弃（本函数只搬清单内键，渲染按固定清单）。
+        *([f"thinkchain_final: {_q(meta['thinkchain_final'])}"]
+          if meta.get("thinkchain_final") else []),
         # [S4-1/S4-2] methodology_refs / pending_sync 的 FM 行同步删除。
         # 只删 meta 初始化而留着这两行，meta.get 的默认值会把它们原样写回，
         # 等于没删。存量卡的这两行在其下次写入时自然消失（字段死，无读取方）。
@@ -1006,7 +1011,10 @@ async def update_card(
                     # （本函数只把列表内的键搬进 meta，随后 _render_card 按固定
                     # 清单重渲 front matter）——所以「加字段」必须这两处同改。
                     "toolcard_script", "toolcard_step", "toolcard_round",
-                    "toolcard_final"):
+                    "toolcard_final",
+                    # [迭代二 S1] 思维链板终态声明（thinkchain/board.finalize_board
+                    # 写入；不进本清单即被静默丢弃——与渲染行两处同改）。
+                    "thinkchain_final"):
             if key in updates:
                 meta[key] = updates[key]
         mission = updates.get("mission", sections["mission"])

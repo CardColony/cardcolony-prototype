@@ -9,8 +9,25 @@ logs/
 _*.py
 _*.txt
 _*.json
+_*.log
+_*.out
+_*.tmp
+_*.png
+_*.xml
+# 运行/诊断产物目录（2026-10-10 补：此前未挡，致 100 项临时件堆在未跟踪清单里）
+_backups/
+_web/
+_vrun/
+推演agent_backups/
+.pytest_cache/
 # 研究语料（第三方作品正文，版权内容不入库；统计产物另存 docs/）
 corpus/
 # 运行数据（卡片/对话/画布）——2026-10-03 事故后剥离：数据留痕走独立快照目录
 # 推演agent_data_snapshots（在代码仓库之外），不进 git。任何分支操作都不得再改写它们。
 works/
+# 根目录工作件与临时备份目录（2026-10-10 补；前导 / 锚定根目录，
+# 不影响 tests/_golden/、tests/_fixtures/ 等已跟踪目录内的文件）
+/_*.md
+/_*.diff
+/_t*/
+/_backup_*/

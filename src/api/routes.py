@@ -25,12 +25,12 @@ from pydantic import BaseModel, Field
 
 from ..storage import (
     activity, canvas_store, card_store, manuscript_store,
-    memory_store, session_store, work_store,
+    memory_store, session_facade, session_ops, session_store, work_store,
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import card_proposal, card_tools, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
+from . import card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
 
 logger = logging.getLogger("api.routes")
 
@@ -304,7 +304,8 @@ async def get_work_session(work_id: str, card_id: str):
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
-    return await session_store.read_session(work_id, card_id)
+    # [A6a/T069-T072] 读切换：统一读入门面（V1 委托旧解析，输出五键契约不变）
+    return await session_facade.read(work_id, card_id)
 
 
 @router.get("/works/{work_id}/cards/{card_id}/stream")
@@ -385,6 +386,15 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     return await _run_message(work_id, card_id, req.content, req.pair_id)
+
+
+# [A8/R3-T119-T123] 人停端点：置位控制面（consume-once，接口被消费才算数）；
+# 无在途回合＝幂等 no-op（不报错、不造轮）。
+@router.post("/works/{work_id}/cards/{card_id}/stop")
+async def post_work_stop(work_id: str, card_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    return control.request_stop(work_id, card_id)
 
 
 # [实时反馈 2026-10-02] 调用进度查询：纯展示层，前端轮询用。
@@ -489,7 +499,8 @@ async def get_session_compat(card_id: str):
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
-    return await session_store.read_session(DEFAULT_WORK_ID, card_id)
+    # [A6a/T069-T072] 读切换（兼容层）：统一读入门面
+    return await session_facade.read(DEFAULT_WORK_ID, card_id)
 
 
 @router.post("/cards/{card_id}/messages")
@@ -515,9 +526,25 @@ async def _run_message(work_id: str, card_id: str, content: str,
     # contextvar 取到它，才把增量落到 /tokens 独立流；函数退出时还原，
     # 避免污染同进程后续请求（凝练/归拢等无卡调用自然无逐字流）。
     _stream_ctx_token = event_stream.set_stream_context(work_id, card_id)
+    # [A4/S4-T083-T084] 主线回合登记逻辑互斥体：同卡已有在途（主线回合或凝练
+    # 支线共用一登记处，T086）→ 409 拒绝、不排队（10-08 口径；排队策略归迭代二
+    # T085）。owner=turn:{uuid 前 8 位}；拒绝经 ops 通道留痕。
+    turn_owner = f"turn:{uuid.uuid4().hex[:8]}"
+    if not session_facade.turn_try_acquire(work_id, card_id, turn_owner):
+        holder = session_facade.turn_holder(work_id, card_id)
+        session_ops.ops_log("mutex_reject", work_id, card_id,
+                            {"owner": turn_owner, "holder": holder})
+        logger.warning("[A4] 同卡在途拒绝 409 work=%s card=%s holder=%s",
+                       work_id, card_id, holder)
+        event_stream.reset_stream_context(_stream_ctx_token)
+        return _err(409, f"卡片回合进行中（{holder}），请稍后重试")
     try:
         return await _run_message_inner(work_id, card_id, content, client_pair_id)
     finally:
+        # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
+        # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
+        control.discard_stop(work_id, card_id)
+        session_facade.turn_release(work_id, card_id, turn_owner)
         event_stream.reset_stream_context(_stream_ctx_token)
 
 
@@ -547,7 +574,8 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     logger.info("[T10] 生成请求标识 pair_id=%s card=%s", pair_id, card_id)
 
     # b. 先取历史（此时不含本条）
-    prior = await session_store.read_session(work_id, card_id)
+    # [A6a/T069-T072] 读切换：统一读入门面（五键契约不变，重发去重/装配同尺）
+    prior = await session_facade.read(work_id, card_id)
     state.prior = prior
 
     # c. 追加用户消息
@@ -570,8 +598,10 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
         state.pair_id = pair_id
         logger.info("[T10] 重发复用 pair_id=%s card=%s（用户条不重复落盘）", pair_id, card_id)
     else:
-        await session_store.append_message(work_id, card_id, "user", content,
-                                           pair_id=pair_id)
+        # [A6b/T024] 写切换：门面追加（seq/turn/pair 写时分配；user 块不闭合轮）
+        await session_facade.append(work_id, card_id,
+                                    {"role": "user", "content": content,
+                                     "pair_id": pair_id})
         logger.info("[T10] 用户消息落盘 pair_id=%s card=%s", pair_id, card_id)
 
     # [信息流 Task3] run_start：清该卡 journal 重放（A45）＋过程卡秒现（V1）。

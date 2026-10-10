@@ -1,0 +1,4 @@
+{
+  "_comment": "会话底座配置（迭代一·4.7-R5 / 4.6，T099/T110/T145）。persist_process：过程线持久化开关——通道建好、默认 off（P-D）；拨 on 只改此配置、格式不再改。",
+  "persist_process": false
+}

@@ -20,16 +20,16 @@ def _mk_msg(seq: int, text: str) -> dict:
 # ---------------------------------------------------------------- V1 触发线/预算/批上限
 
 def test_v1_env_overrides(sandbox, monkeypatch):
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1680000")
-    assert memory_store.trigger_k_bytes() == 1_680_000
-    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_BYTES", "630000")
-    assert memory_store.window_budget_bytes() == 630_000
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "800000")   # [2026-10-10] 口径改 token
+    assert memory_store.trigger_k_tokens() == 800_000
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "300000")
+    assert memory_store.window_budget_tokens() == 300_000
     monkeypatch.setenv("CONDENSE_MAX_BATCHES", "20")
     assert memory_store.condense_max_batches() == 20
     # 缺省链路（不设 env）→ 代码缺省值
-    monkeypatch.delenv("CONDENSE_WINDOW_BUDGET_BYTES", raising=False)
+    monkeypatch.delenv("CONDENSE_WINDOW_BUDGET_TOKENS", raising=False)
     monkeypatch.delenv("CONDENSE_MAX_BATCHES", raising=False)
-    assert memory_store.window_budget_bytes() == memory_store.DEFAULT_WINDOW_BUDGET_BYTES
+    assert memory_store.window_budget_tokens() == memory_store.DEFAULT_WINDOW_BUDGET_TOKENS
     assert memory_store.condense_max_batches() == memory_store.DEFAULT_MAX_BATCHES
 
 
@@ -37,9 +37,10 @@ def test_v1_env_overrides(sandbox, monkeypatch):
 
 def test_v2_truncate_window_ning_shao_bu_chao(sandbox):
     budget = 100
-    # 每条 meter = len(utf8)+1；6 字中文 = 18B + 1 = 19B/条 → 5 条 95 ≤ 100，第 6 条 114 > 100
+    # [2026-10-10 口径改 token] 每条 meter = cl100k token 数 + 1（join 分隔符）
+    # 实测「六六六六六六」= 12 token → 每条 13；7 条 91 ≤ 100，第 8 条 104 > 100
     pending = [_mk_msg(i, "六六六六六六") for i in range(10)]
-    assert memory_store._msg_meter_bytes(pending[0]) == 19
+    assert memory_store._msg_meter_tokens(pending[0]) == 13
     window = memory_store._truncate_window(pending, budget)
     assert 1 <= len(window) < len(pending)
     assert memory_store._meter_sum(window) <= budget                 # 宁少不超
@@ -154,8 +155,9 @@ def test_v5_same_meter_for_trigger_and_slice(sandbox):
 
 async def test_batch_loop_multi_batch_and_fail_stop(sandbox, work, monkeypatch):
     wid, cid = work["work_id"], work["work_card_id"]
-    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_BYTES", "120")
-    # 每条 19B meter；窗口 120 → 每批 6 条；30 条 = 5 批
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "85")
+    # [2026-10-10 口径改 token] 每条 meter = 12 token + 1 = 13；窗口 85 → 每批 6 条
+    # （6×13=78 ≤ 85，7×13=91 > 85）；30 条 = 5 批
     pending = [_mk_msg(i, "六六六六六六") for i in range(30)]
     outputs = iter([f"【结论】批{n}【依据】块{n}" for n in range(10)])
 

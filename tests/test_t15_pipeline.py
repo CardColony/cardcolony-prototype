@@ -46,7 +46,7 @@ async def _append_conversation(wid: str, cid: str, turns: int, filler: str = "�
 async def test_v1_mock_full_chain(sandbox, monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger="storage.memory")
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 3)
 
@@ -85,7 +85,7 @@ async def test_v1_mock_full_chain(sandbox, monkeypatch, caplog):
 
     # 打点对账（任务 8）：触发＋完成两条在案，完成条含输入块数/产出条数/mark 前后
     msgs = [r.getMessage() for r in caplog.records if "condense_fold" in r.getMessage()]
-    assert any("已到线" in m and "未凝字节=" in m for m in msgs)
+    assert any("已到线" in m and "未凝token=" in m for m in msgs)
     done = [m for m in msgs if "凝练完成" in m]
     assert len(done) == 1 and "输入块数=6" in done[0] and "产出条数=3" in done[0] \
         and "mark 0→6" in done[0]
@@ -124,7 +124,7 @@ async def _run_once(wid, cid, monkeypatch, scripted):
 async def test_v2_idempotent_same_window(sandbox, monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger="storage.memory")
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
 
@@ -150,7 +150,7 @@ async def test_v2_idempotent_repair_mark(sandbox, monkeypatch, caplog):
     新增＋mark 幂等补推（V2「无重复条目、mark 不重复推进」的管线内判定面）。"""
     caplog.set_level(logging.INFO, logger="storage.memory")
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
     prior = await session_store.read_session(wid, cid)
@@ -187,7 +187,7 @@ async def test_v2_idempotent_repair_mark(sandbox, monkeypatch, caplog):
 async def test_v3_parse_failure_watermark_untouched(sandbox, monkeypatch, caplog, bad_return, stage):
     caplog.set_level(logging.WARNING, logger="storage.memory")
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
 
@@ -217,7 +217,7 @@ async def test_v3_parse_failure_watermark_untouched(sandbox, monkeypatch, caplog
 async def test_v3_call_exception_watermark_untouched(sandbox, monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger="storage.memory")
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
 
@@ -241,7 +241,7 @@ async def test_v3_call_exception_watermark_untouched(sandbox, monkeypatch, caplo
 async def _e2e_capture(wid: str, cid: str, monkeypatch, reply: str = "收束回复。"):
     captured: list[dict] = []
 
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None):
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):  # [迭代三 S5 同步] model_name kwargs 吸收
         captured.append({
             "system": system_prompt,
             "prior": [dict(m) for m in (prior_messages or [])],
@@ -295,7 +295,7 @@ async def test_v5_slice_on_and_off(sandbox, monkeypatch):
 async def test_v7_mutex_second_trigger_skips(sandbox, monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger="storage.memory")
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
 

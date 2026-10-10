@@ -19,9 +19,15 @@ memory 不与该卡会话追加交错）。写走 tmp→os.replace 原子替换�
 其余关（与 TOOL_FOLD_ENABLED 同款字面约定）。关＝装配逐字旧路（V6）。
 
 触发线 K（SP-01/RD-07）：「何时凝」非「限制模型」，不是资源闸（RD-04）。
-首版估值 300,000 B 未凝历史正文（≈dsh 14 万 token 触发逻辑按 2.1 B/token
-折算的字节代理），标「待实测标定」；环境变量 CONDENSE_TRIGGER_K 覆盖
-（标定通道，非闸）。
+[2026-10-10 计量口径改 token] 用户 10-07 原话口径＝「触发 80 万 token」；
+首版实现用自造的 2.1 B/token 系数把它折成字节 1,680,000（该系数无任何出处，
+实测中文 B/token 为 cl100k 2.93／o200k 4.30／源侧估算口径 3.0），且该线
+自上线起从未触发过。现按用户 10-10 令改为本地真 token 计数——tiktoken
+cl100k_base 真编码，触发线＝800,000 token，不再做任何字节折算。
+环境变量 CONDENSE_TRIGGER_TOKENS 覆盖；旧键 CONDENSE_TRIGGER_K（字节口径）
+已废弃：检测到只告警、绝不读其值（防旧值 1680000 被当 168 万 token 静默读入）。
+做不到的部分如实写明：本地任何计数都得不到 haiku-5.5 的真实分词数（该模型走
+Nous 聚合端点，真实 BPE 未知），cl100k 给的是确定性近似，不是该模型的准确值。
 
 命名（方案 §七 双折叠命名）：T11 工具轮折叠＝tool_fold（边界锁死
 tool_fold.py:22-23，本模块零触碰）；凝练归拢＝condense_fold（落 memory、
@@ -39,18 +45,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import session_store
+import tiktoken
+
+from . import session_facade, session_store
 
 logger = logging.getLogger("storage.memory")
 
-# 触发线 K 首版估值（SP-01：行为参数先落一版看真实分布；待实测标定）
-DEFAULT_TRIGGER_K_BYTES = 300_000
+# [2026-10-10 计量口径改 token] 触发线＝800,000 token——用户 10-07 原话口径就是
+# 「触发 80 万 token」；旧实现按自造系数 2.1 B/token 折成字节 1,680,000（该系数
+# 无任何出处，实测中文 B/token 为 cl100k 2.93／o200k 4.30／源侧估算口径 3.0），
+# 且该线自 10-07 上线起从未触发过。现改为本地 tiktoken cl100k_base 真编码计数。
+DEFAULT_TRIGGER_TOKENS = 800_000
 
-# [凝练折叠开启 2026-10-07] 源侧机制搬回（PORTING-GUIDE 流程 B/C 逐字对账）：
-# 单批窗口预算（用户令：一次凝练 30 万 token ×2.1 B/token ≈ 630,000 字节）、
+# [凝练折叠开启 2026-10-07 / 2026-10-10 改 token 口径] 源侧机制搬回：
+# 单批窗口预算＝300,000 token（用户令：一次凝练 30 万 token；旧实现折成 630,000
+# 字节系同一自造系数的产物）。★与触发线必须同尺——两者共用 _msg_meter_tokens，
+# 只改一个会造成「触发按 80 万 token、一次只切 30 万字节」的口径分裂。
 # 单 job 批上限（源侧 condenseMaxBatchesPerJob 形态，缺省 20）、折叠触发周期
 # （源侧 fold-l1 FOLD_EVERY_BATCHES=5，游标式 batch_count − last_fold_check ≥ 5）。
-DEFAULT_WINDOW_BUDGET_BYTES = 630_000
+DEFAULT_WINDOW_BUDGET_TOKENS = 300_000
 DEFAULT_MAX_BATCHES = 20
 FOLD_EVERY_BATCHES = 5
 
@@ -85,31 +98,63 @@ def condense_enabled() -> bool:
     return os.environ.get("CONDENSE_ENABLED", "").strip().lower() in ("1", "true")
 
 
-def trigger_k_bytes() -> int:
-    """触发线 K（字节）：CONDENSE_TRIGGER_K 覆盖优先（标定通道），缺省首版估值。"""
-    raw = os.environ.get("CONDENSE_TRIGGER_K", "").strip()
+# [2026-10-10] 旧字节口径键的废弃告警（进程内只告警一次；只告警、绝不读值）
+_DEPRECATED_KEY_WARNED: set[str] = set()
+
+
+def _warn_deprecated_once(key: str, new_key: str) -> None:
+    """旧键已废弃：存在则告警一次，**绝不读它的值**。
+
+    [2026-10-10] 防「静默错读」：若沿用旧键名而 .env 残留 CONDENSE_TRIGGER_K=1680000，
+    代码会把 168 万当 token 读入（比 800,000 高一倍多，永不触发且不报任何错）。
+    做法照抄源侧 condense.ts:2361 逐字「已 deprecated……该键不再参与任何判定」。
+    """
+    if key in _DEPRECATED_KEY_WARNED:
+        return
+    if not os.environ.get(key, "").strip():
+        return
+    _DEPRECATED_KEY_WARNED.add(key)
+    logger.warning(
+        "[condense_fold] CONFIG-WARN: %r 已 deprecated（计量口径由字节改 token）"
+        "——该键不再参与任何判定；请改用 %r。", key, new_key)
+
+
+def trigger_k_tokens() -> int:
+    """触发线（token）：CONDENSE_TRIGGER_TOKENS 覆盖优先；旧键 CONDENSE_TRIGGER_K 已废弃。
+
+    [2026-10-10 计量口径改 token] 用户 10-07 原话「触发 80 万 token」；旧实现按自造
+    系数 2.1 折成字节 1,680,000（无出处、且从未触发）。现直接以 _meter_sum 的
+    cl100k_base token 数与 800,000 比较，不做任何字节折算。
+    """
+    _warn_deprecated_once("CONDENSE_TRIGGER_K", "CONDENSE_TRIGGER_TOKENS")
+    raw = os.environ.get("CONDENSE_TRIGGER_TOKENS", "").strip()
     if raw:
         try:
             v = int(raw)
             if v > 0:
                 return v
         except ValueError:
-            logger.warning("[condense_fold] CONDENSE_TRIGGER_K 非法（%r），用首版估值", raw)
-    return DEFAULT_TRIGGER_K_BYTES
+            logger.warning("[condense_fold] CONDENSE_TRIGGER_TOKENS 非法（%r），用缺省值", raw)
+    return DEFAULT_TRIGGER_TOKENS
 
 
-def window_budget_bytes() -> int:
-    """单批窗口预算（字节）[凝练折叠开启·任务2，源侧 windowTokenBudget 形态]：
-    CONDENSE_WINDOW_BUDGET_BYTES 覆盖优先，缺省 63 万（用户令 30 万 token ×2.1）。"""
-    raw = os.environ.get("CONDENSE_WINDOW_BUDGET_BYTES", "").strip()
+def window_budget_tokens() -> int:
+    """单批窗口预算（token）[源侧 windowTokenBudget 形态]：CONDENSE_WINDOW_BUDGET_TOKENS
+    覆盖优先，缺省 300,000；旧键 CONDENSE_WINDOW_BUDGET_BYTES 已废弃。
+
+    ★与触发线同尺：两者共用 _msg_meter_tokens，必须一起改（只改一个会造成
+    「触发按 80 万 token、一次只切 30 万字节」的口径分裂）。
+    """
+    _warn_deprecated_once("CONDENSE_WINDOW_BUDGET_BYTES", "CONDENSE_WINDOW_BUDGET_TOKENS")
+    raw = os.environ.get("CONDENSE_WINDOW_BUDGET_TOKENS", "").strip()
     if raw:
         try:
             v = int(raw)
             if v > 0:
                 return v
         except ValueError:
-            logger.warning("[condense_fold] CONDENSE_WINDOW_BUDGET_BYTES 非法（%r），用缺省值", raw)
-    return DEFAULT_WINDOW_BUDGET_BYTES
+            logger.warning("[condense_fold] CONDENSE_WINDOW_BUDGET_TOKENS 非法（%r），用缺省值", raw)
+    return DEFAULT_WINDOW_BUDGET_TOKENS
 
 
 def condense_max_batches() -> int:
@@ -210,32 +255,51 @@ _background_tasks: set[asyncio.Task] = set()
 
 # [T15-任务 7] 同卡互斥标记（竞态防线）：在凝的卡二次触发→跳过留痕，不排队不设闸。
 # 单事件循环内「查＋占」之间无 await，asyncio 语义下原子。
-_condensing_cards: set[tuple[str, str]] = set()
+# [A4/T086] 原 _condensing_cards 集合已并入 session_facade._active_turns 逻辑
+# 互斥体（同一登记处：主线回合与凝练支线互斥）——凝练走 facade.turn_try_acquire
+# (owner="condense")，主线回合持有期间凝练跳过留痕，凝练持有期间主线回合 409。
 
 
-# [凝练折叠开启 2026-10-07·任务1] 统一计量尺（源侧同口径铁律）：触发求和与切片
-# 累计共用同一函数——逐条 len(正文 utf-8) + 1（+1＝join('\n') 分隔符记账，照抄
-# 源侧 truncateWindow 逐条累加公式）；token 折算只发生在配置层（×2.1），不引入
-# 任何独立 tokenizer。
-def _msg_meter_bytes(m: dict[str, Any]) -> int:
-    return len(str(m.get("content", "") or "").encode("utf-8")) + 1
+# [2026-10-10·计量口径改 token] 统一计量尺：触发求和与切片累计共用同一函数。
+# 本函数返回 **token 数**（tiktoken cl100k_base 真编码），不是字节数：
+#   · 旧实现为 len(utf-8) + 1 的字节计量 + 配置层 ×2.1 折算——该系数是自造的
+#     （先定 300000 字节再倒推「≈14 万 token」配出来的），实测中文 B/token 为
+#     cl100k 2.93／o200k 4.30／p50k·r50k 1.47／源侧估算口径 3.0，2.1 对不上任何一个；
+#   · 现按用户 10-10 令直接数 token，不再做任何字节折算。
+# 选 cl100k_base 的理由：① 真 BPE 编码器（源侧 estimateTokens 自注「不追求与
+#   具体 tokenizer 逐字对齐」）；② 与 litellm.token_counter 对 anthropic 模型的
+#   兜底口径一致（实测 litellm 对 haiku-5.5 与 tiktoken cl100k 同值），避免系统内
+#   出现两套 token 数；③ 比 o200k 多算约 22%，同内容更早触发。
+# 做不到的部分（如实记，勿包装）：本地任何计数都得不到 haiku-5.5 的真实分词数
+#   （该模型走 Nous 聚合端点，真实 BPE 未知）；cl100k 是确定性近似，不是准确值。
+_ENC = tiktoken.get_encoding("cl100k_base")
+
+# 逐条 +1 的分隔符记账：源侧 truncateWindow 逐条累加公式为
+# `used += estimateTokens(serializeEvent(window[i])) + 1`，+1 即 join('\n') 分隔符。
+# 此处保留该 +1（token 口径下仍记 1 个分隔符 token，与源侧同构）。
+_MSG_SEP_TOKENS = 1
+
+
+def _msg_meter_tokens(m: dict[str, Any]) -> int:
+    """单条消息的 token 计数（统一计量尺本体）。"""
+    return len(_ENC.encode(str(m.get("content", "") or ""))) + _MSG_SEP_TOKENS
 
 
 def _meter_sum(msgs: list[dict[str, Any]]) -> int:
     """统一计量尺求和（触发判定专用读数，与切片累计同尺、tolerance=0）。"""
-    return sum(_msg_meter_bytes(m) for m in msgs)
+    return sum(_msg_meter_tokens(m) for m in msgs)
 
 
 def _truncate_window(pending: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
-    """单批窗口切片 [任务2，源侧 truncateWindow 原样搬回]：按统一计量尺逐条累加，
-    取「最接近且不超预算」的切片（宁少不超，用户 14:56 口径）；累计越线即停
-    （继续只会更远，源侧同款剪枝）。单条即超预算的病态窗口保底取 1 条并留痕
+    """单批窗口切片 [任务2，源侧 truncateWindow 原样搬回]：按统一计量尺（token）
+    逐条累加，取「最接近且不超预算」的切片（宁少不超，用户 14:56 口径）；累计越线
+    即停（继续只会更远，源侧同款剪枝）。单条即超预算的病态窗口保底取 1 条并留痕
     （防该卡窗口永久卡死；源侧取最近点会越线，任务书判据为不超——按任务书执行、
     差异如实声明）。"""
     used = 0
     best = 0
     for i, m in enumerate(pending):
-        used += _msg_meter_bytes(m)
+        used += _msg_meter_tokens(m)
         if used > budget:
             break
         best = i + 1
@@ -383,7 +447,7 @@ async def _run_condense_pipeline(work_id: str, card_id: str,
     if not pending:
         logger.info("[condense_fold] 未凝段为空——跳过 work=%s card=%s", work_id, card_id)
         return
-    budget = window_budget_bytes()
+    budget = window_budget_tokens()
     max_batches = condense_max_batches()
     idx = 0
     batches = 0
@@ -559,24 +623,27 @@ async def condense_turn_end(work_id: str, card_id: str) -> None:
         await ensure_watermark(work_id, card_id)
         state = load_memory(work_id, card_id)
         mark = int(state.get("mark", 0) or 0)
-        prior = await session_store.read_session(work_id, card_id)
+        # [A6a/T069-T072] 读切换：统一读入门面（块形态含 content，计量/切片同尺）
+        prior = await session_facade.read(work_id, card_id)
         pending = prior[mark:] if 0 <= mark <= len(prior) else prior
-        # [凝练折叠开启·任务1/4] 统一计量尺：逐条 +1（join 分隔符记账），与切片累计同尺
+        # [2026-10-10 计量口径改 token] 统一计量尺：tiktoken cl100k_base 真编码，
+        # 与切片累计同尺。旧版为字节计量 + 配置层 ×2.1 折算（系数自造、无出处）。
         size = _meter_sum(pending)
-        k = trigger_k_bytes()
+        k = trigger_k_tokens()
         if size < k:
             return  # 未到线：安静观察（K 首版估值下常态；标定期看 debug）
-        if (work_id, card_id) in _condensing_cards:
-            logger.info("[condense_fold] 触发跳过（同卡凝练进行中）work=%s card=%s 未凝字节=%d K=%d 原因=互斥",
-                        work_id, card_id, size, k)
+        # [A4/T086] 同卡互斥并入 facade._active_turns（同一登记处）：凝练持有
+        # 期间主线回合 409、主线回合持有期间凝练跳过留痕——一个登记处两头生效。
+        if not session_facade.turn_try_acquire(work_id, card_id, "condense"):
+            logger.info("[condense_fold] 触发跳过（同卡在途互斥 holder=%s）work=%s card=%s 未凝token=%d K=%d",
+                        session_facade.turn_holder(work_id, card_id), work_id, card_id, size, k)
             return
-        logger.info("[condense_fold] 触发线 K 已到线，启动凝练 work=%s card=%s 未凝字节=%d K=%d mark=%d 未凝块数=%d",
+        logger.info("[condense_fold] 触发线 K 已到线，启动凝练 work=%s card=%s 未凝token=%d K=%d mark=%d 未凝块数=%d",
                     work_id, card_id, size, k, mark, len(pending))
-        _condensing_cards.add((work_id, card_id))
         try:
             await _run_condense_pipeline(work_id, card_id, pending, mark)
         finally:
-            _condensing_cards.discard((work_id, card_id))
+            session_facade.turn_release(work_id, card_id, "condense")
     except Exception as exc:  # noqa: BLE001 触发面零阻断（V5 哲学）
         logger.warning("[condense_fold] 回合末触发失败（不阻断、留痕、水位不动）work=%s card=%s: %s",
                        work_id, card_id, exc)

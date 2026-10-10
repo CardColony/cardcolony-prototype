@@ -23,6 +23,21 @@ round_end/rescue/tool_call/tool_result/seats_enter/seat_start/seat_end/deliver/
 proposal/done/error/ping）＋ 乙线并入 fastlane_route/card_op ＋ 逐字流 2 类。
 Schema 统一 {"seq":n,"ts":...,"type":"...","data":{...}}。ping 为 SSE 保层
 心跳帧（不占 journal，由 SSE 生成器定期发送）。
+
+[迭代一·A5/T092-T099] 分段标记制（run_start 清零制退役）：
+- journal 不再清零——新回合开新段、旧段保留（「上一轮过程被下一轮开始抹掉」
+  从机制上消失）；轮界分段信号沿用 19 类内轮界类（run_start/round_start，
+  T095「沿用」路径，本体论仍 19 类）；
+- boundary 假帧（data._boundary）退役（T094）——前端 static/stream.js 只按
+  type 判界（run_start/round_start → clearText/clearRows），分段标记帧与旧
+  边界帧对前端呈现等价，前端消费面零改动（T096/X7）；
+- seq 单一取号（T097）：主通道与逐字流共用 _seq_counters（单一分配者），
+  两路帧仅携带——客户端凭 seq 交织（T093），seq 空洞仍为正常态（R-01）；
+- 每帧携带 (pair_id, seq, turn) 三锚（T093），锚由 run_start/round_start
+  就地登记、统一附带；
+- R5 过程线持久化通道（T099/T110/T145）：persist_process 配置位默认 off
+  （config/session_base.json），on 时主 journal 帧逐帧落
+  works/{work}/process/{card}.jsonl，格式不随开关变化。
 """
 from __future__ import annotations
 
@@ -31,6 +46,7 @@ import contextvars
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 logger = logging.getLogger("api.event_stream")
@@ -93,11 +109,68 @@ _subscribers: dict[tuple[str, str], set[asyncio.Queue]] = {}
 # seq 游标跨请求安全（新请求事件不会被当作已读吞掉）
 _seq_counters: dict[tuple[str, str], int] = {}
 
-# [信息流重出 Task4] 逐字流的**独立**存储：与 _journals/_seq_counters 完全分开，
-# 两套 seq 各自单调，互不占用、互不挤出（红线4）。
+
+# ------------------------------------------------------------
+# [迭代一·A5/T092-T099] 分段标记制基础设施
+# ------------------------------------------------------------
+# 回合锚登记：(work, card) → {"pair_id", "turn"}——由 run_start/round_start
+# 就地更新，emit/emit_token 统一给帧附带 (pair_id, seq, turn) 三锚（T093）。
+_anchors: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _next_seq(key: tuple[str, str]) -> int:
+    """seq 单一取号（T097）：主通道与逐字流共用，单一分配者，帧仅携带。"""
+    _seq_counters[key] = _seq_counters.get(key, 0) + 1
+    return _seq_counters[key]
+
+
+def _attach_anchors(key: tuple[str, str], evt: dict[str, Any]) -> dict[str, Any]:
+    a = _anchors.get(key)
+    if a:
+        evt["pair_id"] = a.get("pair_id", "")
+        evt["turn"] = a.get("turn", "")
+    return evt
+
+
+def _load_persist_config() -> bool:
+    """R5 配置位（T099/T110）：config/session_base.json 的 persist_process，默认 off。"""
+    try:
+        cfg = Path(__file__).resolve().parents[2] / "config" / "session_base.json"
+        with open(cfg, encoding="utf-8") as f:
+            return bool(json.load(f).get("persist_process", False))
+    except Exception:  # noqa: BLE001 配置缺失/损坏＝off（P-D 缺省，不阻断）
+        return False
+
+
+_PERSIST_PROCESS = _load_persist_config()
+
+
+def set_persist_process(on: bool) -> None:
+    """拨 persist_process 开关（运维/测试用；只改行为不改格式，T145）。"""
+    global _PERSIST_PROCESS
+    _PERSIST_PROCESS = bool(on)
+
+
+def _persist_frame(work_id: str, card_id: str, evt: dict[str, Any]) -> None:
+    """R5 过程线持久化写入通道（T099）：on 时主 journal 帧逐帧落
+    works/{work}/process/{card}.jsonl（追加式）。off＝零动作。"""
+    if not _PERSIST_PROCESS:
+        return
+    try:
+        from ..storage import session_store
+        p = session_store.WORKS_DIR / work_id / "process" / f"{card_id}.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(evt, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 展示层零阻断
+        pass
+
+# [信息流重出 Task4] 逐字流 journal 独立存储。
+# [迭代一·A5/T093/T097] seq 单一取号：逐字流与主通道共用 _seq_counters（单一
+# 分配者），两路帧仅携带——客户端凭 seq 交织。独立的是 journal 与订阅者，
+# 不再是计数器（原「独立 seq 计数器」红线随分段制退役，设计输入 4.6②）。
 _token_journals: dict[tuple[str, str], list[dict[str, Any]]] = {}
 _token_subscribers: dict[tuple[str, str], set[asyncio.Queue]] = {}
-_token_seq_counters: dict[tuple[str, str], int] = {}
 
 
 def _key(work_id: str, card_id: str) -> tuple[str, str]:
@@ -154,24 +227,23 @@ def _fanout(subs: Any, evt: dict[str, Any], work_id: str, card_id: str, channel:
             pass
 
 
-def _emit_token_boundary(key: tuple[str, str], ev_type: str) -> None:
-    """在**逐字流 journal** 里放一枚轮界标记帧（type 复用 run_start/round_start）。
+def _emit_token_segment(work_id: str, card_id: str, ev_type: str,
+                        extra: dict[str, Any]) -> None:
+    """[迭代一·A5] 轮界分段标记帧入逐字流 journal（T094/T095）。
 
-    为什么必须显式标记：逐字流 journal 清了但 seq 计数器只增不减，所以**实时**推送时
-    各轮 seq 是连续的（1,2,3…112），前端靠「seq 跳号」判界在实时下永远不触发。
-    标记帧用本体论里已有的 type，不新增第 20 类（红线4：19 类）。
+    沿用既有轮界类 type——前端 stream.js 按 type 判界（clearText），与旧
+    边界帧呈现等价、消费面零改动；`data._boundary` 假帧位退役（T094），
+    改携带 segment 语义与三锚。帧仍占统一 seq（单一取号，T097）。
     """
     try:
-        work_id, card_id = key
-        journal = _token_journals.setdefault(key, [])
-        _token_seq_counters[key] = _token_seq_counters.get(key, 0) + 1
-        evt = {
-            "seq": _token_seq_counters[key],
+        key = _key(work_id, card_id)
+        evt = _attach_anchors(key, {
+            "seq": _next_seq(key),
             "ts": time.time(),
-            "type": ev_type,          # run_start / round_start（边界标记）
-            "data": {"_boundary": True},
-        }
-        journal.append(evt)
+            "type": ev_type,
+            "data": _jsonable(dict(extra)),
+        })
+        _token_journals.setdefault(key, []).append(evt)
         _fanout(_token_subscribers.get(key, ()), evt, work_id, card_id, "逐字流")
     except Exception:  # noqa: BLE001 展示层零阻断
         pass
@@ -180,35 +252,36 @@ def _emit_token_boundary(key: tuple[str, str], ev_type: str) -> None:
 def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     """落一条事件：seq 单调、fanout 订阅者、兼调 progress 兼容映射。
 
-    零阻塞零抛出（展示层绝不影响主流程）；run_start 清空该卡 journal（A45）。
-    [对话流渲染 T4] 已无「环形 300 弹出」——单次请求的事件以完整保留优先
-    （run_start 每轮清空，天然有界）。
+    零阻塞零抛出（展示层绝不影响主流程）。
+    [迭代一·A5/T092] run_start 清空 journal 制退役——旧段保留，分段标记承载
+    轮界（run_start/round_start 沿用，T095）；帧附 (pair_id, seq, turn) 三锚
+    （T093）；persist_process 开时主 journal 帧落盘（T099，默认 off）。
     """
     try:
         key = _key(work_id, card_id)
+        d = data or {}
         if ev_type == "run_start":
-            _journals[key] = []
-            # [信息流重出 Task4] 新一轮开场，逐字流同步清空——否则 from=0 重放会把
-            # 上一轮的正文/思考一并补出来（V-T4-1「刷新不丢过程」不能变成「刷新串轮」）。
-            # seq 计数器照例不清：长连监听者游标跨请求仍安全（与主 journal 同逻辑）。
-            _token_journals[key] = []
-            _emit_token_boundary(key, ev_type)
+            # [A5/T092] 清零退役：旧段保留；登记回合锚（pair_id）＋逐字流开新段
+            _anchors[key] = {"pair_id": d.get("pair_id", ""), "turn": 0}
+            _emit_token_segment(work_id, card_id, ev_type, {"segment": "run"})
         elif ev_type == "round_start":
-            # 工具循环里一轮＝一次模型调用。逐字流若跨轮累积，前端 📄 块会把
-            # 第 1 轮 + 第 2 轮 + 合成轮的正文首尾相连糊成一坨（实测 259 字 vs 最终
-            # 回复 135 字即此症）。故**每轮开场清一次**：逐字块只显示「当前正在生成的
-            # 那一轮」，收尾时块内文本即最终回复，与刷新重放逐字一致。
-            _token_journals[key] = []
-            _emit_token_boundary(key, ev_type)
+            # [A5/T092] round_start 不再清逐字流——分段标记帧承载轮界（T094/T095）
+            try:
+                _anchors.setdefault(key, {"pair_id": "", "turn": 0})["turn"] = \
+                    int(d.get("round", 0) or 0)
+            except Exception:  # noqa: BLE001 展示层零阻断
+                pass
+            _emit_token_segment(work_id, card_id, ev_type,
+                                {"segment": "round", "round": d.get("round", "")})
         journal = _journals.setdefault(key, [])
-        _seq_counters[key] = _seq_counters.get(key, 0) + 1
-        evt = {
-            "seq": _seq_counters[key],
+        evt = _attach_anchors(key, {
+            "seq": _next_seq(key),
             "ts": time.time(),
             "type": ev_type,
             "data": _jsonable(data or {}),
-        }
+        })
         journal.append(evt)
+        _persist_frame(work_id, card_id, evt)
         _fanout(_subscribers.get(key, ()), evt, work_id, card_id, "主通道")
         # 兼容映射（旧 /progress 零感知）
         stage = _PROGRESS_STAGE.get(ev_type)
@@ -291,13 +364,13 @@ def emit_token(work_id: str, card_id: str, ev_type: str, text: str) -> dict[str,
             return {}
         key = _key(work_id, card_id)
         journal = _token_journals.setdefault(key, [])
-        _token_seq_counters[key] = _token_seq_counters.get(key, 0) + 1
-        evt = {
-            "seq": _token_seq_counters[key],
+        # [迭代一·A5/T097] seq 单一取号：与主通道共用计数器，帧仅携带
+        evt = _attach_anchors(key, {
+            "seq": _next_seq(key),
             "ts": time.time(),
             "type": ev_type,
             "data": {"text": text},
-        }
+        })
         journal.append(evt)
         # [对话流渲染 T4] 已删 5000 条环形弹出（原 pop(0) 丢前字）
         # 逐字流每帧给 /progress 打一次心跳：仍在吐字的超长请求持续被判为
