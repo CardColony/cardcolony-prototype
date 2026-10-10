@@ -41,6 +41,7 @@ from ..storage.hash_utils import parse_front_matter, split_body_sections
 from ..toolcard import driver as toolcard_driver
 from ..toolcard import script_loader as toolcard_script_loader
 from ..toolcard import step_prompt as toolcard_step_prompt
+from ..thinkchain import plan_tools as thinkchain_plan_tools
 from . import file_tools, prompt_log
 
 logger = logging.getLogger("api.card_tools")
@@ -1018,6 +1019,15 @@ def _register_file_tools() -> None:
 
 
 _register_file_tools()
+
+# [迭代二 S2] 思维链七工具单点接入（任务书 S2 步骤 5，照本文件 :707 注册法）：
+# create_plan / plan_reorder / plan_insert / plan_remove / plan_modify /
+# step_complete / escalate_to_plan——实现与 schema 住 src/thinkchain/plan_tools.py，
+# 此处只做注册表装配；三处下游（build_tool_schemas / execute_tool /
+# READONLY_TOOLS）自动派生，工具清单数量 +7（验收可机械核对）。
+# 位置硬约束：必须在 _register_file_tools() 之后、READONLY_TOOLS 派生之前
+# （七件全为写工具 readonly=False，晚于派生会漏出只读白名单口径）。
+thinkchain_plan_tools.register_into(TOOL_REGISTRY, ToolDef)
 
 
 # [T11-T10] 只读工具白名单（折叠【依据】「可按原参数重取」语义的依据源）。

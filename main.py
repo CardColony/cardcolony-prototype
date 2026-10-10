@@ -86,6 +86,15 @@ def startup_init() -> None:
     init_canvas()
     init_git()
     write_pid()
+    # [迭代二 S1/R2-③] 孤儿板三查（任务书 S1 步骤 6「进程启动扫 plans/ 全目录」
+    # ——终态删/卡无删/卡活留，零时间戳；fail-open：扫描异常不阻断启动）。
+    try:
+        from src.thinkchain.board import sweep_all_orphans
+        _sweep = sweep_all_orphans()
+        if _sweep.get("removed_total"):
+            print(f"[startup] 孤儿板清理 {_sweep['removed_total']} 块", flush=True)
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[startup] 孤儿板扫描失败（不阻断启动）: {_exc}", flush=True)
 
 
 app = FastAPI(title="推演agent画布 v1")

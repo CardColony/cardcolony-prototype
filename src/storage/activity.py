@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .hash_utils import parse_front_matter
-from . import session_store, work_store
+from . import session_facade, session_store, work_store
 
 logger = logging.getLogger("storage.activity")
 
@@ -65,9 +65,10 @@ def iter_card_metas(work_id: str) -> Iterator[dict[str, Any]]:
 def card_last_active(work_id: str, card_id: str, updated_at: str = "") -> str:
     """卡级活跃 = max(会话末条 timestamp, 卡 updated_at)；均无返回 ""。
 
-    会话末条经 session_store.last_ts() 尾部反向扫描取得（禁全量解析，R-2）。
+    会话末条经门面 scan_tail 尾部反向扫描取得（[A6a/T073] 统一读入口切换；
+    V1 路径委托 session_store.last_ts 语义不变，R-2 禁令随统一入口作废）。
     """
-    ts = session_store.last_ts(work_id, card_id)
+    ts = session_facade.scan_tail(work_id, card_id)["ts"]
     return _max_iso(ts, updated_at or "")
 
 

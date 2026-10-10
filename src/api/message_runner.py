@@ -12,9 +12,9 @@
 - `step(state) -> StepOutcome`：一次状态推进＝一个显式状态点。outcome 四值：
   `continue`（继续轮）、`seats`（本轮触发三席后置）、`deliver`（可交付）、
   `error`（出错，走错误返回）。
-- `check_control(state) -> None`：**中止缝（空实现）**。step 边界调用点已就位，
-  函数体为空——为执行环与 B-14 软预算预留挂点。**不做 job 系统、不上队列、
-  不实现任何真实中止逻辑**（§2.3 明令）。
+- `check_control(state) -> verdict`：**中止缝**。step 边界调用点。
+  [A8/R3-T106-T124] 接入控制三态消费（人工停止 consume-once；工具卡驱动
+  串行共存、§5-10 共存禁令）。仍不做 job 系统、不上队列。
 
 **编排不变量（拆分必须逐字保持，动了就是行为漂移）**：
 1. 轮次上限：**无**（`[无闸改造 2026-10-02]` 循环不设封顶，模型停即收）。
@@ -35,11 +35,15 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from ..storage import card_store, memory_store, session_store, work_store
+from ..storage import card_store, memory_store, session_facade, session_ops, session_store, work_store
+from ..thinkchain import board as thinkchain_board
+from ..thinkchain import triage as thinkchain_triage
+from ..thinkchain.model_pick import pick_model as _pick_model
 from ..toolcard import driver as toolcard_driver
 from . import (
     card_proposal,
     card_tools,
+    control,
     context_assembler,
     context_regions,
     event_stream,
@@ -122,9 +126,12 @@ class RunState:
     # 本次 prompt 日志落盘路径（段④ 写、段⑥ 追加键时用）
     prompt_log_path: Optional[str] = None
     clean_text: str = ""
-    # 中止缝预留（B-14 软预算）：stop_requested 由外部控制面置位，
-    # 本模块**不置位、不消费**——check_control 为空实现。
+    # 中止缝预留（B-14 软预算）：stop_requested 由外部控制面置位。
+    # [A8/R3] 消费位已接入 check_control（控制三态串行消费，共存禁令 §5-10）。
     stop_requested: bool = False
+    # [A8/R3-T124] 回合结束原因（落盘 end 字段）：""＝正常（门面缺省 model_done）；
+    # human_stop＝人工停止；policy_stop＝「判不了交人」轮末闭合。
+    end_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -139,22 +146,33 @@ class StepOutcome:
 # 中止缝（空实现——签名定死，函数体空）
 # ============================================================
 
-def check_control(state: RunState) -> None:
-    """step 边界的控制钩子。
+def check_control(state: RunState) -> Optional[str]:
+    """step 边界的控制钩子。返回 verdict：control.STOP | control.DEFER_HUMAN | None。
 
-    [T-0009 §2.3] 留中止缝：函数存在、签名定死，为执行环与 B-14 软预算预留挂点。
-    **中止逻辑本身仍不实现**（§2.3 明令）——函数体对中止而言保持空实现。
+    [T-0009 §2.3] 中止缝挂点。〔A8/R3-T106-T124〕中止逻辑本批接入：
+    串行两问——① 工具卡驱动（既有，只读指针，零判断）；② 控制面 stop 置位
+    （consume-once）。**共存禁令（§5-10）**：不以 on_step_boundary 返回值为停的
+    依据——「看到了进度」≠「按进度判停」；停的依据只能是 control.check 的
+    verdict（迭代一唯一真实来源＝人的手动停）。
 
-    [工具卡底座 T2 · EC-032] 在此挂上**工具卡步骤推进**的驱动位：
-    每个 step 边界（入口 L219／出口 L392）问一次 driver「这张卡的工具卡现在
-    停在第几步」。该调用**同步、纯内存、零 IO、零判断**——只读一个指针，
-    推进与收口都由 driver 自己的 API 承担，边界钩子不替它做决定。
-    查不到运行时则返回 None（没有来源就不产生任何东西）。
+    STOP → state.end_reason="human_stop"（消费打点）；DEFER_HUMAN →
+    end_reason="policy_stop"（迭代一注册表恒空不会返回，路由保留、接口非空置）。
     """
     step_id = toolcard_driver.on_step_boundary(state)
     if step_id:
         logger.debug("step 边界 toolcard step=%s card=%s",
                      step_id, getattr(state, "card_id", ""))
+    verdict = control.check(state.work_id, state.card_id)
+    if verdict == control.STOP:
+        state.end_reason = "human_stop"
+        session_ops.ops_log("human_stop", state.work_id, state.card_id,
+                            {"action": "consumed", "rounds": state.rounds})
+        logger.warning("[A8] 人工停止命中 work=%s card=%s rounds=%s",
+                       state.work_id, state.card_id, state.rounds)
+        return verdict
+    if verdict == control.DEFER_HUMAN:
+        state.end_reason = "policy_stop"
+        return verdict
     return None
 
 
@@ -202,6 +220,14 @@ def build_context(state: RunState) -> None:
         _hist = state.prior
     state.prior_for_gateway = [
         {"role": m["role"], "content": m["content"]} for m in _hist
+        # [迭代二 S4·呈报项] 环节留痕块（behavior 非空：triage/plan/step/final/
+        # revision 等，本迭代经 facade.append 落档的 actor=tool 形态）**不进
+        # 对话投影**——①落盘 role 恒由 actor 映射（session_facade.py:511），
+        # actor="tool" → role="tool" 的孤立工具消息进 OpenAI 兼容端点会被拒
+        # （tool role 必须配 tool_call_id）；②环节块是留痕通道，模型上下文
+        # 由装配区（100/150/165/200）承载，不靠对话回流。旧块无 behavior 键
+        # → get 默认 "" → 零过滤，迭代一投影逐字不变（金样本对话安全）。
+        if not m.get("behavior")
     ]
     # [T11-T6] 轮槽（请求局部对象）：包住同一条列表。折叠关时装配逐字同旧
     # （wire_messages 原样返回本列表）；首轮固化与抢救回注走 append_plain
@@ -223,6 +249,32 @@ def build_context(state: RunState) -> None:
 # 段③：工具循环 —— 单步推进
 # ============================================================
 
+def _pick_step_model(state: RunState) -> str:
+    """[迭代三 S5] 当前步类型→模型席位路由。
+
+    有活板 → snapshot_sync 读当前步 type 查表（存量空串/越界 → default）；
+    无活板（直答）→ default。查得席位不在 models.yaml 的 models 键集 →
+    显式报错（simple_service.py:183-185 先例形态，错误信息含席位名）——
+    消费侧热读席位清单可行（gw.config 内存常驻），无需启动校验降级。
+    每圈实取席位打日志（S5 验收「日志可查每步实取席位」）。
+    """
+    snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
+    role = "default"
+    if snap is not None:
+        steps = snap.get("steps") or []
+        cur = snap.get("current", 0)
+        if 0 <= cur < len(steps):
+            role = steps[cur].get("type") or "default"
+    seat = _pick_model(role)
+    models_cfg = model_service.get_gateway().config.get("models") or {}
+    if seat not in models_cfg:
+        raise RuntimeError(
+            f"models.yaml 无此模型条目: {seat}（model_pick 类型 {role!r} 配置指向了不存在的席位）")
+    logger.info("[迭代三 S5] 类型路由 role=%s -> seat=%s work=%s card=%s",
+                role, seat, state.work_id, state.card_id)
+    return seat
+
+
 async def step(state: RunState) -> StepOutcome:
     """一次状态推进＝工具循环的一个显式状态点。
 
@@ -232,7 +284,24 @@ async def step(state: RunState) -> StepOutcome:
       deliver  —— final_reply 已定，可交付
       error    —— 本轮出错（error 字段已填，走错误返回）
     """
-    check_control(state)          # 中止缝：入口挂点（空实现）
+    verdict = check_control(state)   # 中止缝：入口挂点（[A8/R3] 控制三态）
+    if verdict == control.STOP:
+        # 人工停止：回合就地闭合（不落半截轮——assistant 块 end=human_stop）
+        state.final_reply = state.final_reply if state.final_reply is not None else ""
+        return StepOutcome("deliver", "human_stop")
+    if verdict == control.DEFER_HUMAN:
+        return StepOutcome("deliver", "policy_stop")
+
+    # [迭代二 S4] 自判分流（方案 §4.1 施工位）——step 入口判 rounds==0＝
+    # 「step 循环外、首轮 step 之前」语义的等价落点（每回合恰一次；routes
+    # 零动刀）。板在内存＝已拆解过→triage_if_needed 内部跳过（零模型调用）；
+    # direct→工具面只留逃生口 escalate_to_plan（物理可调，同 :507 收窄精神）；
+    # plan→保持 build_context 装的全量工具面。
+    if state.rounds == 0:
+        _tri = await thinkchain_triage.triage_if_needed(
+            state.work_id, state.card_id, state.content)
+        if _tri["verdict"] == "direct":
+            state.tools = thinkchain_triage.direct_tool_schemas()
 
     state.rounds += 1
     if state.rounds == 1:
@@ -242,9 +311,11 @@ async def step(state: RunState) -> StepOutcome:
         event_stream.emit(state.work_id, state.card_id, "round_start",
                           {"round": state.rounds, "phase": "main"})
         state.model_calls += 1
+        # [迭代三 S5] 首轮接线：按当前步 type 查表取席位（无活板回落 default）
         result, state.model_used = await model_service.call_main(
             state.system_prompt, state.user_prompt, state.prior_for_gateway,
             tools=state.tools,
+            model_name=_pick_step_model(state),
         )
     else:
         # 工具续跳轮不重复咨询观点模型
@@ -256,8 +327,11 @@ async def step(state: RunState) -> StepOutcome:
         event_stream.emit(state.work_id, state.card_id, "round_start",
                           {"round": state.rounds, "phase": "tools"})
         state.model_calls += 1
+        # [迭代三 S5] 续跳轮接线：同首轮（步中途 type 不变的板是常态；
+        # 改板插步后以 current 步 type 为准）
         result, state.model_used = await model_service.call_main(
             state.system_prompt, state.user_prompt, wire_messages, tools=state.tools,
+            model_name=_pick_step_model(state),
         )
     tool_calls = result.get("tool_calls") or []
     assistant_content = result.get("content") or ""
@@ -285,6 +359,21 @@ async def step(state: RunState) -> StepOutcome:
                               {"count": len(rescue_calls)})
         elif unresolved:
             text_rescue_note = text_tool_rescue.feedback_note()
+
+    # [迭代二 S4] 催化挂点一（主循环路径）：本卡有活板且本步未推进、本轮
+    # **空手**（两条件缺一不可——判据＝tool_calls 事实，防嘴上伪造；带工具
+    # 轮照常执行）→ 催促交作业续跳，不设上限。两道天然刹车：每圈入口
+    # check_control（人停即刹）＋用户新消息＝新回合。空手正文不入槽（同
+    # :316 抢救先例——催促文自带本步要求原文，信息自足）。
+    if not tool_calls and thinkchain_board.has_live_board(state.work_id, state.card_id):
+        _step_prompt = await thinkchain_board.current_step_prompt(
+            state.work_id, state.card_id)
+        if _step_prompt is not None:
+            state.user_prompt = (
+                f"{_step_prompt}\n（本步要求如上。干完立刻调 step_complete；"
+                "未调之前这一步不算完成。）"
+            )
+            return StepOutcome("continue", "await_step_tool")
 
     if not tool_calls:
         state.final_reply = assistant_content
@@ -373,6 +462,16 @@ async def step(state: RunState) -> StepOutcome:
             _ev["title"] = _data.get("title", "")
             _ev["parent"] = _data.get("parent", "")
         state.tool_events.append(_ev)
+        # [迭代二 S4·呈报项] escalate 逃生口消费：任务书 S2 步骤 4「当轮
+        # StepOutcome("deliver","escalate")＋档案补块＋下轮进拆解流——绝不
+        # 静默换路」。工具返回 escalate 标记 → 当轮以 deliver 收束（正文=
+        # 模型本次发言，用户看得见换路动作）；「下轮进拆解流」＝新回合
+        # triage 自然重判（板不在→发起自判），零额外状态。
+        # S4 §三未列此接缝位，按可施工最小位置落（工具执行循环内），呈报。
+        if name == "escalate_to_plan" and ok and (_data.get("escalate") is True):
+            state.final_reply = assistant_content or ""
+            state.user_prompt = "工具结果已返回。"
+            return StepOutcome("deliver", "escalate")
         # [信息流 Task4] 并表（A101）：快车道的卡操作落 card_op；
         # chain 保持 tool_result。全日志打点（A96）。
         if state.mode == "fastlane" and name in (
@@ -405,7 +504,12 @@ async def step(state: RunState) -> StepOutcome:
     # [信息流 Task2/打点 A92/A96] 同请求续跳：占位符只进模型不入用户流
     logger.info("[flow] 断点续跳 resume_kind=同请求续跳 no_user_visible=True round=%s card=%s",
                 state.rounds, state.card_id)
-    check_control(state)      # 中止缝：出口挂点（空实现）
+    verdict = check_control(state)   # 中止缝：出口挂点（[A8/R3] 控制三态）
+    if verdict == control.STOP:
+        state.final_reply = state.final_reply if state.final_reply is not None else ""
+        return StepOutcome("deliver", "human_stop")
+    if verdict == control.DEFER_HUMAN:
+        return StepOutcome("deliver", "policy_stop")
     return StepOutcome("continue", "tools_executed")
 
 
@@ -453,6 +557,18 @@ async def run_seats(state: RunState) -> StepOutcome:
     )
     tool_calls = result.get("tool_calls") or []
     assistant_content = result.get("content") or ""
+    # [迭代二 S4] 催化挂点二（统合官收口路径）：同挂点一——只挂 :310 则
+    # 统合官路径空手收口、催促漏网（任务书 §二锚表原文）。判据同＝空手
+    # （tool_calls 事实）＋活板＋步未推进；空手正文不入槽。
+    if not tool_calls and thinkchain_board.has_live_board(state.work_id, state.card_id):
+        _step_prompt = await thinkchain_board.current_step_prompt(
+            state.work_id, state.card_id)
+        if _step_prompt is not None:
+            state.user_prompt = (
+                f"{_step_prompt}\n（本步要求如上。干完立刻调 step_complete；"
+                "未调之前这一步不算完成。）"
+            )
+            return StepOutcome("continue", "await_step_tool")
     if not tool_calls:
         state.final_reply = assistant_content
         return StepOutcome("deliver", "synthesize")
@@ -632,11 +748,16 @@ async def create_cards(state: RunState, final_reply: str) -> None:
 
 async def finish(state: RunState) -> dict[str, Any]:
     """追加 assistant 消息＋回合末凝练触发＋done 埋点，返回响应体。"""
-    # [T10-1-4] 回复条携带与用户条逐字相同的 pair_id（V1）；打点含标识
-    await session_store.append_message(state.work_id, state.card_id, "assistant",
-                                       state.clean_text, model=state.model_used,
-                                       pair_id=state.pair_id)
-    logger.info("[T10] 回复落盘 pair_id=%s card=%s", state.pair_id, state.card_id)
+    # [T10-1-4] 回复条携带与用户条逐字相同的 pair_id。
+    # [A6b/T024] 写切换：门面追加（V1 文件现场升格；end 显式传入——正常回合
+    # 缺省 model_done，human_stop/policy_stop 由控制面消费段写定）。
+    await session_facade.append(state.work_id, state.card_id, {
+        "role": "assistant", "content": state.clean_text,
+        "model": state.model_used, "pair_id": state.pair_id,
+        "end": state.end_reason or "model_done",
+    })
+    logger.info("[T10] 回复落盘 pair_id=%s card=%s end=%s",
+                state.pair_id, state.card_id, state.end_reason or "model_done")
     # [T12-SP-04] 回合末凝练触发（condense_fold）：assistant 落盘之后异步触发、
     # 不阻塞对话（异步是工程手段非闸，RD-04）。开关缺省关（RD-08）＝零动作；
     # 开时三期管线仍挂起待路线裁定，触发只量测＋留痕（memory_store.condense_turn_end）。

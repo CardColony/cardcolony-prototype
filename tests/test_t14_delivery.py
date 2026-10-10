@@ -12,7 +12,7 @@ import json
 import pytest
 
 from src.api import routes
-from src.storage import card_store, session_store, work_store
+from src.storage import card_store, session_facade, session_store, work_store
 
 
 @pytest.fixture
@@ -28,13 +28,32 @@ def _tc(name, args):
     return {"name": name, "arguments": args}
 
 
+@pytest.fixture(autouse=True)
+def _fix_triage_call(monkeypatch):
+    """[迭代二 S4 配套] triage 在每回合 step 入口独立调主模型——不钉死会
+    消耗本文件 fake 脚本的调用计数（轮次错位、协议块落空）。统一钉死
+    triage 判定＝plan（零消耗桩；triage 块落档但不碰 fake 脚本）。"""
+    from src.thinkchain import triage as triage_mod
+
+    async def fixed(system, user):
+        return '{"verdict": "plan", "reason": "t14 固定拆解"}'
+
+    monkeypatch.setattr(triage_mod, "_call_model", fixed)
+
+
+def _dialog(blocks):
+    """[迭代二 S4 配套] 环节留痕块（behavior 非空：triage 等）不进对话断言
+    口径——与 message_runner prior 投影过滤同一裁定的测试侧。"""
+    return [m for m in blocks if not m.get("behavior")]
+
+
 ANALYSIS_1 = "【第一轮分析】读完 card_002 正文后，我认为该段论证依赖一个隐含前提：需求已冻结。"
 ANALYSIS_2 = "【第二轮分析】结合子卡甲的产物清单，上述前提在实际推进中并未成立，需回到范围裁定。"
 REPLY_FINAL = "已完成两轮调研，结论见上文两段分析。以上为回执。"
 
 
 def _fake_three_rounds(calls_box):
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None):
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):  # [迭代三 S5 同步] model_name kwargs 吸收
         calls_box["n"] += 1
         n = (calls_box["n"] - 1) % 3 + 1  # 循环脚本化：重发请求重走三段（V3 需要）
         if n == 1:      # simple 统合轮：正文＝分析一，发起读卡
@@ -76,7 +95,7 @@ async def test_v2_reply_equals_session_message(work, sandbox, monkeypatch):
     calls = {"n": 0}
     monkeypatch.setattr(routes.model_service, "call_main", _fake_three_rounds(calls))
     result = await routes._run_message(work, "card_001", "端到端一致性问题")
-    sess = await session_store.read_session(work, "card_001")
+    sess = _dialog(await session_facade.read(work, "card_001"))
     assistant_msgs = [m for m in sess if m["role"] == "assistant"]
     # 一次请求恰一条 assistant（V3 配对不变量的落盘面）
     assert len(assistant_msgs) == 1
@@ -95,7 +114,7 @@ async def test_v3_pairing_and_resend(work, sandbox, monkeypatch):
     calls = {"n": 0}
     monkeypatch.setattr(routes.model_service, "call_main", _fake_three_rounds(calls))
     r1 = await routes._run_message(work, "card_001", "配对验证提问")
-    sess1 = await session_store.read_session(work, "card_001")
+    sess1 = _dialog(await session_facade.read(work, "card_001"))
     pair_ids = [m["pair_id"] for m in sess1]
     assert pair_ids[0] and pair_ids[0] == pair_ids[1]  # 1 问 1 答、pair 一致
     n_after_first = len(sess1)
@@ -104,7 +123,7 @@ async def test_v3_pairing_and_resend(work, sandbox, monkeypatch):
     # 重发同文（T10 重发判定走 pair 复用或新 pair——回复同样含分析正文）
     r2 = await routes._run_message(work, "card_001", "配对验证提问")
     assert ANALYSIS_1 in r2["reply"] and REPLY_FINAL in r2["reply"]
-    sess2 = await session_store.read_session(work, "card_001")
+    sess2 = _dialog(await session_facade.read(work, "card_001"))
     raw2 = session_store._session_path(work, "card_001").read_bytes()
     # 无重复落盘：第二次请求仍恰新增一对（2 条），且首轮字节前缀原样未动
     # （append-only 硬证：比对文件字节，绕开 read_session「末条多保留一个
@@ -121,7 +140,7 @@ async def test_v3_pairing_and_resend(work, sandbox, monkeypatch):
 async def test_v4_pure_dialogue_unchanged(work, sandbox, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "1")
 
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None):
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):  # [迭代三 S5 同步] model_name kwargs 吸收
         return ({"content": "纯对话轮回复，未调用任何工具。", "tool_calls": []}, "fake")
 
     monkeypatch.setattr(routes.model_service, "call_main", fake_call_main)
@@ -145,7 +164,7 @@ async def test_v5_proposal_in_analysis_parsed(work, sandbox, monkeypatch):
         "[{\"title\": \"范围裁定卡\", \"parent\": \"card_001\", \"content\": \"裁定范围与边界\"}]\n"
         "```\n以上建议建卡。")
 
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None):
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):  # [迭代三 S5 同步] model_name kwargs 吸收
         calls["n"] += 1
         if calls["n"] == 1:
             return ({"content": analysis_with_block,
@@ -160,7 +179,7 @@ async def test_v5_proposal_in_analysis_parsed(work, sandbox, monkeypatch):
     # 剥离后落盘不含协议块本体，但分析正文保留
     assert "card-proposal" not in result["reply"]
     assert "【分析】范围须拆卡推进。" in result["reply"]
-    sess = await session_store.read_session(work, "card_001")
+    sess = _dialog(await session_facade.read(work, "card_001"))
     assert "card-proposal" not in sess[-1]["content"]
     assert "【分析】范围须拆卡推进。" in sess[-1]["content"]
 
@@ -182,7 +201,7 @@ async def test_v5_no_false_proposal_from_plain_analysis(work, sandbox, monkeypat
 async def test_v6_analysis_only_when_final_empty(work, sandbox, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "1")
 
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None):
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):  # [迭代三 S5 同步] model_name kwargs 吸收
         calls["n"] += 1
         if calls["n"] == 1:
             return ({"content": ANALYSIS_1,
@@ -193,21 +212,21 @@ async def test_v6_analysis_only_when_final_empty(work, sandbox, monkeypatch):
     monkeypatch.setattr(routes.model_service, "call_main", fake_call_main)
     result = await routes._run_message(work, "card_001", "末轮为空的场景")
     assert result["reply"] == ANALYSIS_1 + "\n"  # 只交付中间轮分析正文（尾换行预存）
-    sess = await session_store.read_session(work, "card_001")
+    sess = _dialog(await session_facade.read(work, "card_001"))
     assert sess[-1]["content"].strip() == ANALYSIS_1
 
 
 async def test_v6_all_empty_no_crash_no_extra_message(work, sandbox, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "1")
 
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None):
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):  # [迭代三 S5 同步] model_name kwargs 吸收
         return ({"content": "", "tool_calls": []}, "fake")
 
     monkeypatch.setattr(routes.model_service, "call_main", fake_call_main)
-    before = len(await session_store.read_session(work, "card_001"))
+    before = len(_dialog(await session_facade.read(work, "card_001")))
     result = await routes._run_message(work, "card_001", "全空场景")
     assert result["reply"].strip() == ""  # 空回复不报错（parse 预存补尾换行）
-    sess = await session_store.read_session(work, "card_001")
+    sess = _dialog(await session_facade.read(work, "card_001"))
     assert len(sess) == before + 2  # 恰一对（问+空答），不多落
 
 
@@ -221,7 +240,7 @@ async def test_v6_failure_path_no_delivery_and_response_none(work, sandbox, monk
     result = await routes._run_message(work, "card_001", "失败场景")
     # _err 返回 JSONResponse（502）——拼接段不执行、无 assistant 落盘
     assert getattr(result, "status_code", None) == 502
-    sess = await session_store.read_session(work, "card_001")
+    sess = _dialog(await session_facade.read(work, "card_001"))
     # 失败路径无 assistant 落盘（analysis_parts 不写任何长期存储）
     assert all(m["role"] != "assistant" for m in sess)
 

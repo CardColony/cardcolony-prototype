@@ -23,6 +23,7 @@ from typing import Any
 
 from ..storage import card_store, memory_store, work_store
 from ..storage.hash_utils import parse_front_matter
+from ..thinkchain import step_region as thinkchain_step_region
 from ..toolcard import step_prompt as toolcard_step_prompt
 from . import context_regions
 
@@ -98,6 +99,14 @@ def build_context_regions(work_id: str, current_id: str,
     t160 = toolcard_step_prompt.build_region(work_id, current_id)
     if t160:
         regions.append(t160)
+    else:
+        # [迭代二 S4] 165 区：思维链活板事实三行（当前计划名/当前第几步/本步
+        # 要求原文）。**与 t160 互斥**——卡有工具卡运行时（t160 在）则本区
+        # 不注入（工具卡先到先得，任务书 S4 步骤 3）；无活板/恢复失败→区不
+        # 出现（同 150/200「没有来源就不出现」纪律）。
+        t165 = thinkchain_step_region.build_region(work_id, current_id)
+        if t165:
+            regions.append(t165)
     # [T12-2-1] 凝练记忆区（condense_fold）——order 200，紧随 150。
     # 空记忆 → 区跳过、零内容输出零报错（assemble_regions 空区跳过兜底）。
     state = memory_state

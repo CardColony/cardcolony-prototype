@@ -70,12 +70,15 @@ async def test_message_roundtrip_session_count(sandbox, work, monkeypatch):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url="http://t") as client:
         r0 = await client.get(f"/api/works/{wid}/cards/{cid}/session")
-        base = len(r0.json()) if isinstance(r0.json(), list) else 0
+        # [迭代二 S4 配套] 对话块口径（环节留痕块 behavior 非空不计）
+        def _dialog(blks):
+            return [m for m in blks if not m.get("behavior")]
+        base = len(_dialog(r0.json())) if isinstance(r0.json(), list) else 0
         r = await client.post(f"/api/works/{wid}/cards/{cid}/messages",
                               json={"content": "验收消息"})
         assert r.status_code == 200, r.text
         r1 = await client.get(f"/api/works/{wid}/cards/{cid}/session")
-        msgs = r1.json()
+        msgs = _dialog(r1.json())
         assert isinstance(msgs, list)
         assert len(msgs) == base + 2                       # 恰好多一条用户＋一条助手
         assert msgs[-2]["role"] == "user" and msgs[-1]["role"] == "assistant"

@@ -3,10 +3,11 @@
 
 判据（机械可判定）：
 1. 事件本体论 = 19 类 = 17 原 + 2 逐字流，且新增两类确在 EVENT_TYPES 内；
-2. **seq 不混合**：主通道与逐字流各自独立计数、互不占用；
+2. **seq 单一取号**（[A5/T097]）：主通道与逐字流共用同一分配者，全量 seq 无重号；
 3. 隔离：主事件写不进逐字流 journal，逐字流也写不进主 journal；
 4. 逐字流不被过程卡的 300 条环形挤出（长回复不冲掉过程卡，反之亦然）；
-5. run_start 清逐字流 journal（刷新不串轮），但 seq 计数器不清（游标跨请求安全）；
+5. [A5/T092/T094] journal 清零制退役——run_start/round_start 不再清逐字流，
+   改落 ``data.segment`` 分段标记帧（旧段保留，前端按 type 判界呈现等价）；
 6. 逐字流不污染 /progress 的 stage 语义（只心跳 ts），且终止态不被心跳复活；
 7. 零真实 key、零网络、零 works 触碰；不 import main。
 """
@@ -24,7 +25,7 @@ def _reset():
     es._seq_counters.clear()
     es._token_journals.clear()
     es._token_subscribers.clear()
-    es._token_seq_counters.clear()
+    es._anchors.clear()          # [A5/T093] 回合锚登记表
     progress._store.clear()
 
 
@@ -34,9 +35,10 @@ def _texts(kind: str = "content_chunk") -> str:
                    for e in es.token_journal_of(W, C) if e["type"] == kind)
 
 
-def _boundary_count() -> int:
+def _marker_count() -> int:
+    """[A5/T094] 分段标记帧计数（data.segment；``_boundary`` 假帧已退役）。"""
     return sum(1 for e in es.token_journal_of(W, C)
-               if (e.get("data") or {}).get("_boundary"))
+               if (e.get("data") or {}).get("segment"))
 
 
 # ---------- 1：19 类 ----------
@@ -51,7 +53,13 @@ def test_event_ontology_is_19_types():
 
 # ---------- 2/3：seq 不混合 + 双向隔离 ----------
 
-def test_sequences_are_independent():
+def test_sequences_share_single_allocator():
+    """[A5/T097] seq 单一取号：主通道与逐字流共用同一分配者，帧仅携带。
+
+    旧红线「两路独立计数、互不占用」随分段制退役（设计输入 4.6②）；新判据：
+    两路 journal 全量 seq 并集无重号、从 1 连续铺满——同一分配空间。
+    客户端凭 seq 交织两路（T093）。
+    """
     _reset()
     es.emit(W, C, "run_start", {})
     es.emit(W, C, "tool_call", {"tool": "read_card"})
@@ -61,10 +69,11 @@ def test_sequences_are_independent():
 
     main_seqs = [e["seq"] for e in es.journal_of(W, C)]
     token_seqs = [e["seq"] for e in es.token_journal_of(W, C)]
-    assert main_seqs == [1, 2], main_seqs
-    # 逐字流：1=轮界标记帧 + 3 条增量，seq 独立从 1 起
-    assert len(token_seqs) == 4, token_seqs
-    assert token_seqs == [1, 2, 3, 4], token_seqs
+    # 主 2 帧（run_start＋tool_call）、逐字流 4 帧（run 段标记＋3 增量）
+    assert len(main_seqs) == 2 and len(token_seqs) == 4
+    all_seqs = sorted(main_seqs + token_seqs)
+    assert len(all_seqs) == len(set(all_seqs)), "共用分配者不得重号"
+    assert all_seqs == list(range(1, 7)), all_seqs  # 1..6 连续铺满＝单一分配空间
     assert len(es.journal_of(W, C)) == 2                # 逐字流没混进主 journal
     assert _texts() == "正文"
     assert _texts("reasoning_chunk") == "思"
@@ -98,18 +107,29 @@ def test_process_card_not_evicted_by_token_stream():
 
 # ---------- 5：run_start 清逐字流、seq 计数器不清 ----------
 
-def test_run_start_clears_tokens_but_keeps_seq_monotonic():
+def test_run_start_opens_segment_and_keeps_old_tokens():
+    """[A5/T092] run_start 清零制退役：逐字流旧段保留，改落分段标记帧。
+
+    旧判据「新一轮不该带出上一轮正文」是清零制语义，判据反转——后端
+    journal 全量保留（前端按 type 判界清屏，呈现等价、消费面零改动 T096）。
+    帧附 (pair_id, seq, turn) 三锚（T093）。
+    """
     _reset()
-    es.emit(W, C, "run_start", {})
+    es.emit(W, C, "run_start", {"pair_id": "p1"})
     es.emit_token(W, C, "content_chunk", "上一轮")
     assert _texts() == "上一轮"
 
-    es.emit(W, C, "run_start", {})                      # 新一轮
-    assert _texts() == "", "新一轮不该带出上一轮正文"
+    es.emit(W, C, "run_start", {"pair_id": "p2"})       # 新回合
+    assert _texts() == "上一轮", "清零已退役：旧段必须保留（T092）"
+    # 新回合在逐字流落一枚 run 段标记帧（type 沿用，data.segment 语义 T094/T095）
+    segs = [e for e in es.token_journal_of(W, C)
+            if (e.get("data") or {}).get("segment")]
+    assert [s["data"]["segment"] for s in segs] == ["run", "run"]
+    assert segs[-1]["pair_id"] == "p2", "标记帧携带回合锚（T093）"
 
     nxt = es.emit_token(W, C, "content_chunk", "新一轮")
-    # seq 计数器跨请求不清，且轮界帧也占号：边界1 + 内容2 + 边界3 + 内容4
-    assert nxt["seq"] == 4, nxt["seq"]
+    assert nxt["seq"] > segs[-1]["seq"], "seq 单一取号继续递增（T097）"
+    assert nxt["pair_id"] == "p2", "增量帧锚随 run_start 就地更新（T093）"
 
 
 # ---------- 6：不污染 progress stage 语义 ----------
@@ -225,9 +245,13 @@ def test_unknown_token_type_is_rejected():
 
 # ---------- 轮次边界（工具循环多轮） ----------
 
-def test_round_start_resets_tokens_so_live_block_shows_only_current_round():
-    """一轮＝一次模型调用。跨轮累积会把各轮正文首尾相连糊成一坨
-    （实测 259 字 vs 最终回复 135 字即此症），故每轮开场清一次。"""
+def test_round_start_emits_segment_marker_and_keeps_journal():
+    """[A5/T092/T094/T095] round_start 不再清逐字流——分段标记帧承载轮界。
+
+    旧判据「新轮清空＋一枚轮界标记帧」随清零制退役；新判据：旧段保留、
+    每次轮界落一枚 ``data.segment`` 标记帧（type 沿用 run_start/round_start，
+    前端按 type 判界、呈现等价、消费面零改动 T096）。
+    """
     _reset()
     es.emit(W, C, "run_start", {})
     es.emit(W, C, "round_start", {"round": 1, "phase": "main"})
@@ -235,11 +259,19 @@ def test_round_start_resets_tokens_so_live_block_shows_only_current_round():
     es.emit_token(W, C, "content_chunk", "……")
 
     es.emit(W, C, "round_start", {"round": 2, "phase": "synthesize"})
-    assert _texts() == "", "新轮开场应清空逐字流（否则前端正文块串轮）"
-    assert _boundary_count() == 1, "新轮开场须留一枚轮界标记帧供前端判界"
+    # T092 清零退役：旧段保留
+    assert _texts() == "第1轮说……"
+    # T094/T095：分段标记帧——run 段 1 枚 + round 段 2 枚
+    assert _marker_count() == 3, _marker_count()
+    markers = [e for e in es.token_journal_of(W, C)
+               if (e.get("data") or {}).get("segment")]
+    assert all(m["type"] in ("run_start", "round_start") for m in markers)
+    assert markers[-1]["data"]["segment"] == "round"
+    assert markers[-1]["data"]["round"] == 2
+    assert markers[-1]["turn"] == 2, "轮锚随 round_start 就地更新（T093）"
 
     es.emit_token(W, C, "content_chunk", "最终回复")
-    assert _texts() == "最终回复", "收尾时块内文本应等于最终回复"
+    assert _texts() == "第1轮说……最终回复", "journal 全量保留（屏由前端按 type 清）"
 
 
 def test_boundary_marker_reuses_existing_ontology_type():

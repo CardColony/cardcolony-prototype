@@ -255,7 +255,7 @@ async def test_turn_end_trigger_lazy_watermark_and_trace(sandbox, monkeypatch, c
     # 未到线：无「到线」留痕
     assert not any("已到线" in r.message for r in caplog.records)
     # [T15] 到线即启动凝练管线（路线甲闸开）：接缝脚本化产出→条目落盘→mark 推进
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
 
     async def fake_condense_call(user_prompt: str) -> str:
         return "【结论】短历史确立了一条用户消息。\n【依据】块0"
@@ -287,12 +287,31 @@ async def test_maybe_schedule_off_noop_on_async(sandbox, monkeypatch):
 
 
 async def test_trigger_k_env_override_and_default(sandbox, monkeypatch):
-    monkeypatch.delenv("CONDENSE_TRIGGER_K", raising=False)
-    assert memory_store.trigger_k_bytes() == memory_store.DEFAULT_TRIGGER_K_BYTES
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "12345")
-    assert memory_store.trigger_k_bytes() == 12345
-    monkeypatch.setenv("CONDENSE_TRIGGER_K", "abc")
-    assert memory_store.trigger_k_bytes() == memory_store.DEFAULT_TRIGGER_K_BYTES
+    # [2026-10-10 计量口径改 token] 键名与函数随口径变更
+    monkeypatch.delenv("CONDENSE_TRIGGER_TOKENS", raising=False)
+    assert memory_store.trigger_k_tokens() == memory_store.DEFAULT_TRIGGER_TOKENS
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "12345")
+    assert memory_store.trigger_k_tokens() == 12345
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "abc")
+    assert memory_store.trigger_k_tokens() == memory_store.DEFAULT_TRIGGER_TOKENS
+
+
+async def test_deprecated_byte_keys_never_read(sandbox, monkeypatch):
+    """[2026-10-10] 旧字节口径键已废弃：存在也只告警、**绝不参与判定**。
+
+    防「静默错读」：若沿用旧键名，.env 残留 CONDENSE_TRIGGER_K=1680000 会被当成
+    168 万 token 读入（比 800,000 高一倍多，永不触发且不报错）。此测钉死该防护。
+    """
+    monkeypatch.delenv("CONDENSE_TRIGGER_TOKENS", raising=False)
+    monkeypatch.delenv("CONDENSE_WINDOW_BUDGET_TOKENS", raising=False)
+    # 只留旧键：返回值必须仍是代码缺省，绝不受旧值影响
+    monkeypatch.setenv("CONDENSE_TRIGGER_K", "1680000")
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_BYTES", "630000")
+    assert memory_store.trigger_k_tokens() == memory_store.DEFAULT_TRIGGER_TOKENS
+    assert memory_store.window_budget_tokens() == memory_store.DEFAULT_WINDOW_BUDGET_TOKENS
+    # 新键优先：新旧同存时以新键为准
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "800000")
+    assert memory_store.trigger_k_tokens() == 800_000
 
 
 # ---------------------------------------------------------------------------
