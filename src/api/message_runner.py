@@ -317,8 +317,9 @@ async def step(state: RunState) -> StepOutcome:
             _tri_note = (
                 "系统判定：本消息需要拆解（理由：" +
                 str(_tri.get("reason") or "—") +
-                "）。请使用 create_plan 工具建立步骤计划并逐步执行；"
-                "干完每步立刻调 step_complete，全部完成后系统会自动收口。"
+                "）。必须使用 create_plan 工具把任务拆解成步骤计划并上板；"
+                "上板后按注入的当前步骤要求逐步执行，干完每步立刻调 "
+                "step_complete 交作业，全部完成后系统会自动收口。"
             )
             state.slot.append_plain({
                 "role": "assistant", "content": _tri_note,
