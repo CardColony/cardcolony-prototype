@@ -39,7 +39,8 @@ from typing import Any, Callable, Optional
 from ..storage import card_store, memory_store, session_facade, session_ops, session_store, work_store
 from ..thinkchain import board as thinkchain_board
 from ..thinkchain import triage as thinkchain_triage
-from ..thinkchain.model_pick import pick_model as _pick_model
+from ..thinkchain.model_pick import pick_model as _pick_model  # noqa: F401（既有路由位，五期禁直接调）
+from ..thinkchain import model_pick
 from ..toolcard import driver as toolcard_driver
 from . import (
     card_msg,
@@ -554,8 +555,11 @@ async def run_seats(state: RunState) -> StepOutcome:
     event_stream.emit(state.work_id, state.card_id, "round_start",
                       {"round": state.rounds, "phase": "synthesize"})
     state.model_calls += 1
+    # [迭代五 S2·E10] 统合官席位可配：model_pick.resolve_model("synthesize")，
+    # 不配回落 main（缺省行为逐字不变）。
     result, state.model_used = await model_service.call_main(
         state.system_prompt, synth_input, state.prior_for_gateway, tools=state.tools,
+        model_name=model_pick.resolve_model("synthesize"),
     )
     tool_calls = result.get("tool_calls") or []
     assistant_content = result.get("content") or ""
@@ -833,6 +837,99 @@ def _log_trigger_task_done(task: "asyncio.Task") -> None:
                      getattr(task, "_card_msg_target", "?"), exc)
 
 
+# ---------------------------------------------------------------------------
+# [迭代五 S4] 流程自动回发（E5/E6/E7，本迭代唯一改运行行为件）。
+# B 的卡间调起回合**成功结束**后（判据＝_run_message 返回 dict，即 finish
+# 响应体；routes 成功路径返 dict、错误路径返带 status_code 的响应对象——
+# 「非 409」不是成功判据），流程代码按注册表自动回发应答——模型全程不碰
+# 发信工具（2026-10-11 12:34 基础设施裁定：模型只产内容，应答发送由流程
+# 调薄壳接口 send_card_message 完成）。
+# 被停（human_stop/policy_stop）/出错（error）/被顶（竞态）回合不回发；
+# 回合期间新到的信不在调起前快照内，不回发、留给下个收口（防答非所问的
+# 自动转发）。
+# ---------------------------------------------------------------------------
+async def _auto_reply_pending_letters(work_id: str, card_id: str,
+                                      snapshot_ids: frozenset) -> None:
+    """按注册表把 B 的最终回答回发给快照内的待回应卡间信。
+
+    取块（步骤③）：读档案取**最后一块**，双条件（actor==assistant 且
+    end==model_done——END_VALUES 枚举）——防 finish 落块后本函数醒来前
+    新块插入顶掉最后一块的毫秒竞态；**绝不遍历找更早的 model_done 块**
+    （否则人停回合命中上一轮旧块、转发旧话）。
+    尾批全回（步骤④）：取该 assistant 块之前的 card: 块（从尾向前扫到
+    上一条 assistant 为止——human 隔断不停；与「全部 card: 块＋id∈快照
+    过滤」行为等价：快照集恰为调起前尾批），逐块判 id∈快照 且
+    reply_expected_of(type)——不是只按最后一条 pending 判（否则尾批
+    [ask, notify] 让 ask 静默死、撞「不许沉默」）。
+    回发（步骤⑤）：reply_type 空串/正文空 → 打点不发、不猜类型；经薄壳
+    send_card_message 落信（六道门槛一条不减）；全程不抛出。
+    """
+    try:
+        blocks = await session_facade.read(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[S4] 回发读档失败 wid=%s card=%s: %s", work_id, card_id, exc)
+        return
+    if not blocks:
+        session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
+                            {"reason": "block_overtaken"})
+        return
+    last = blocks[-1]
+    if str(last.get("actor") or "") != "assistant":
+        # 最后一块非 assistant（竞态被顶掉）——本回合内容不被自动转发
+        session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
+                            {"reason": "block_overtaken"})
+        return
+    if str(last.get("end") or "") != "model_done":
+        # human_stop/policy_stop/error ＝被停/出错回合，内容不被自动转发
+        session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
+                            {"reason": "end_not_model_done"})
+        return
+    content = str(last.get("content") or "")
+    letters: list[dict] = []
+    for blk in reversed(blocks[:-1]):
+        actor = str(blk.get("actor") or "")
+        if actor == "assistant":
+            break
+        if actor.startswith("card:"):
+            letters.append(blk)
+    for blk in letters:
+        hdr = card_msg.parse_header(str(blk.get("content") or ""))
+        if not hdr or not hdr.get("id"):
+            continue
+        if hdr["id"] not in snapshot_ids:
+            continue  # 回合期间新到信——不回发、留给下个收口
+        if not card_msg.reply_expected_of(hdr.get("type", "")):
+            continue  # notify（收下即可）/answer（无需再答）——不回
+        reply_type = card_msg.reply_type_of(hdr.get("type", ""))
+        if not reply_type:
+            session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
+                                {"reason": "reply_type_missing", "msg_id": hdr["id"]})
+            continue
+        if not content.strip():
+            session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
+                                {"reason": "no_content", "msg_id": hdr["id"]})
+            continue
+        try:
+            result = await card_tools.send_card_message(
+                work_id, card_id, target_id=str(hdr["from"]),
+                msg_type=reply_type, content=content, reply_to=hdr["id"])
+        except Exception as exc:  # noqa: BLE001 薄壳异常按 send_failed 处置
+            logger.error("[S4] 回发异常 wid=%s card=%s msg=%s: %s",
+                         work_id, card_id, hdr["id"], exc)
+            session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
+                                {"reason": "send_failed", "msg_id": hdr["id"],
+                                 "error": str(exc)[:120]})
+            continue
+        if isinstance(result, dict) and result.get("error"):
+            session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
+                                {"reason": "send_failed", "msg_id": hdr["id"],
+                                 "error": str(result.get("error"))[:120]})
+            continue
+        session_ops.ops_log("card_msg_answer_sent", work_id, card_id,
+                            {"msg_id": str((result or {}).get("msg_id", "")),
+                             "target": str(hdr["from"]), "reply_to": hdr["id"]})
+
+
 async def schedule_card_message_triggers(state: RunState) -> None:
     """A 的回合收口时对本回合记下的全部 pending target 异步起 B 的回合。
 
@@ -872,7 +969,24 @@ async def schedule_card_message_triggers(state: RunState) -> None:
                              "msg_ids": list(msg_ids)})
         # [用户 2026-10-11 11:44] 激励文带发件卡名称＋类型中文名；类型名
         # 从注册表现读（display_of 未命中回退类型码），全程零类型分支——
-        # 新增类型不改代码。解析/读卡失败回落默认文、不阻断调起。
+        # 新增类型不改代码。[迭代五 S3·方案 4.2.4] 模板升级：随消息提供该
+        # 类型的应对说明（注册表 note——S1 起含应对半句，即「按说明应对」
+        # 的数据源）；解析/读卡/entry 异常回落默认文、不阻断调起。
+        # [迭代五 S4·步骤①] 调起前尾批 id 集快照：档案末尾向前扫到第一条
+        # assistant 为止的全部 card: 块（含 pending 自身、越 human 块）——
+        # 回合结束后 find_pending 必返 None（finish 落 assistant 块先于
+        # _run_message 返回），不可事后取。快照＝回发边界：只回发 id∈快照
+        # 的卡块，回合期间新到信不回发、留给下个收口。快照在激励文 try 外
+        # 初始化（空集）——防解析失败路径 NameError。
+        snapshot_ids: set[str] = set()
+        for blk in reversed(blocks):
+            _actor = str(blk.get("actor") or "")
+            if _actor == "assistant":
+                break
+            if _actor.startswith("card:"):
+                _hdr = card_msg.parse_header(str(blk.get("content") or ""))
+                if _hdr and _hdr.get("id"):
+                    snapshot_ids.add(str(_hdr["id"]))
         prompt = _CARD_MSG_PROMPT
         try:
             hdr = card_msg.parse_header(str(pending.get("content") or ""))
@@ -881,10 +995,12 @@ async def schedule_card_message_triggers(state: RunState) -> None:
                     work_id, hdr["from"])).get("meta") or {}
                 title = str(card_meta.get("title") or hdr["from"])
                 disp = card_msg.display_of(hdr.get("type", ""))
+                entry = card_msg.entry_of(hdr.get("type", "")) or {}
+                note = str(entry.get("note") or "")
                 prompt = (
                     f"上一轮之后，卡 {hdr['from']}（《{title}》）给你发来一条消息"
-                    f"（类型：{disp}，见上文以 card: 开头的条目）。"
-                    "请阅读这些消息并处理。"
+                    f"（类型：{disp}）。{note} "
+                    "见上文以 card: 开头的条目，请阅读这些消息并处理。"
                 )
         except Exception as exc:  # noqa: BLE001 激励文失败不阻断调起
             logger.warning("[K3] 构造卡间激励文失败、回落默认文: %s", exc)
@@ -893,20 +1009,38 @@ async def schedule_card_message_triggers(state: RunState) -> None:
             _routes._run_message(work_id, target_id, prompt,
                                  None, append_user=False))
         task._card_msg_target = target_id  # type: ignore[attr-defined]
+        task._card_msg_snapshot_ids = frozenset(snapshot_ids)  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)
 
         # 忙时观察位：create_task 已起，若收件方在途，_run_message 内部
         # turn_try_acquire 失败返回 409 —— 由包裹协程转译为 ops card_msg_pending。
+        # [迭代五 S4·步骤②] 触发判据扩展：成功回合的返回值是 dict（finish
+        # 响应体，无 status_code 属性——既有机制事实，:907 现状 getattr 对
+        # dict 恒 None，恰是它只判 409 能工作的原因）→ 执行回发；具 status_code
+        # 的响应对象：409 保持既有打点；502/404/423 → 不回发＋failed 留痕；
+        # 其余形态打日志不回发。「非 409」不是成功判据。
         async def _watch_pending(t: "asyncio.Task", _wid: str = work_id,
-                                 _tid: str = target_id) -> None:
+                                 _tid: str = target_id,
+                                 _snap: frozenset = frozenset(snapshot_ids)) -> None:
             try:
                 resp = await t
             except Exception as exc:  # noqa: BLE001 已由 done_callback 记日志
                 logger.error("[K3] 调起任务异常（watch）target=%s: %s", _tid, exc)
                 return
+            if isinstance(resp, dict):
+                try:
+                    await _auto_reply_pending_letters(_wid, _tid, _snap)
+                except Exception as exc:  # noqa: BLE001 回发通道绝不抛出
+                    logger.error("[S4] 自动回发通道异常 target=%s: %s", _tid, exc)
+                return
             status = getattr(resp, "status_code", None)
             if status == 409:
                 session_ops.ops_log("card_msg_pending", _wid, _tid,
                                     {"reason": "receiver_busy_409"})
+            elif status in (502, 404, 423):
+                session_ops.ops_log("card_msg_answer_failed", _wid, _tid,
+                                    {"reason": "non_success_status"})
+            else:
+                logger.warning("[K3] 调起回合返回形态未知 target=%s: %r", _tid, resp)
 
         asyncio.create_task(_watch_pending(task, work_id, target_id))

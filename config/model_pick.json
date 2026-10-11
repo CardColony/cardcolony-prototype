@@ -1,5 +1,10 @@
 {
   "default": "main",
   "execute": "main",
-  "think": "main"
+  "think": "main",
+  "viewpoint_minimax": "",
+  "viewpoint_qwen": "",
+  "viewpoint_deepseek": "",
+  "synthesize": "",
+  "triage": ""
 }

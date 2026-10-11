@@ -51,7 +51,9 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     from src.api import prompts
     # [T-0010 §3.4 · 2026-10-08] 推进到 t14-1：新增「工具错误码」小节（信封错误码进 prompt）。
     # [卡片信息结构改造 S1-6 · 2026-10-08] 此前推进到 tc-2：edit_card 说明改写为三块语法。
-    assert prompts.BASE_PROMPT_VERSION == "t14-1"
+    # [迭代五 S3 镜像更新] 推进到 t15-1：新增「卡间消息处理」节（应对规则进 prompt）。
+    assert prompts.BASE_PROMPT_VERSION == "t15-1"
+    assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT
     assert "建卡接口" not in prompts.BASE_PROMPT

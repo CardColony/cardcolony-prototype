@@ -67,6 +67,39 @@ def display_of(code: str) -> str:
     return code
 
 
+# ---------------------------------------------------------------------------
+# [迭代五 S1] 应对规则读取函数（零行为变化·先行件）。
+# 注册表是应对规则的唯一事实源：when_to_use（何时用/收件方应对说明的数据源）、
+# reply_expected（收下后是否须作答并自动回发）、reply_type（回发用的类型码）。
+# 四个函数全部**现读注册表**（同 load_registry 热加载语义）、fail-open 到缺省值、
+# 绝不抛出——消费方（提示层 S3 / 回发流程 S4）据此零类型字面量。
+# ---------------------------------------------------------------------------
+def entry_of(code: str) -> dict | None:
+    """类型码 → 注册表 entry 原样 dict；未命中/形态非对象返回 `None`。"""
+    entry = load_registry().get(code)
+    return entry if isinstance(entry, dict) else None
+
+
+def when_to_use_of(code: str) -> str:
+    """类型码 → when_to_use 文案；缺省（未命中/缺键/非字符串）返回 `""`。"""
+    entry = entry_of(code)
+    value = (entry or {}).get("when_to_use")
+    return str(value) if value else ""
+
+
+def reply_expected_of(code: str) -> bool:
+    """类型码 → 是否须作答并回发；缺省（未命中/缺键）返回 `False`。"""
+    entry = entry_of(code)
+    return bool((entry or {}).get("reply_expected", False))
+
+
+def reply_type_of(code: str) -> str:
+    """类型码 → 回发用的类型码；缺省（未命中/缺键/空串）返回 `""`＝不回发。"""
+    entry = entry_of(code)
+    value = (entry or {}).get("reply_type")
+    return str(value) if value else ""
+
+
 def build_header(msg_id: str, type_code: str, from_card: str, reply_to: str = "") -> str:
     """拼结构化头行（`reply_to` 空串时落 `reply_to=`，与 `parse_header` 互逆）。"""
     return f"[[card-msg id={msg_id} type={type_code} from={from_card} reply_to={reply_to}]]"
