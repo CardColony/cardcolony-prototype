@@ -101,12 +101,14 @@ models:
     retry:
       max_attempts: 2
 
-  # 席位三 glm-5.3（智谱开放平台，OpenAI 兼容）——2026-10-11 用户令换回（16d5149 原形态）
+  # 席位三 glm-5.3（智谱 coding plan，OpenAI 兼容）——2026-10-11 用户令换回；
+  # 2026-10-11 22:44 端点订正：paas/v4（开放平台）→ coding/paas/v4（coding plan，
+  # 与 condenser 同款——429「余额不足」根因是 coding plan key 打错到开放平台端点）
   viewpoint_zhipu:
     provider: openai
     model: glm-5.3
     api_key_env: ZHIPU_CODING_API_KEY
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
     temperature: 0.7
     retry:
       max_attempts: 2
