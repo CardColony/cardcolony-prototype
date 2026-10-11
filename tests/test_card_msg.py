@@ -196,27 +196,28 @@ async def _make_tree(wid):
 
 
 async def test_t1_tool_registered():
-    assert "send_card_message" in card_tools.TOOL_REGISTRY
-    assert card_tools.TOOL_REGISTRY["send_card_message"].readonly is False
+    # [12:34 定性] 发信不是通用工具：已从模型工具面摘出，保留为流程专用内部接口
+    assert "send_card_message" not in card_tools.TOOL_REGISTRY
+    # 薄壳内部接口存在且可调（流程代码的唯一发信入口）
+    assert callable(getattr(card_tools, "send_card_message", None))
 
 
 def test_t2_schema_enum_reads_registry():
-    schema = card_tools._schema_of(card_tools.TOOL_REGISTRY["send_card_message"])
-    assert schema["parameters"]["properties"]["msg_type"]["enum"] == list(card_msg.type_codes())
-    assert schema["parameters"]["properties"]["msg_type"]["enum"] == ["msg_ask", "msg_answer", "msg_notify"]
-    # 「不得滥发」逐字在描述里（线二·B 卡应对挂点判据）
-    assert "不得滥发" in schema["description"]
+    # [12:34 定性] 模型侧 schema 已随注册条目摘除；「加类型零代码」语义保留在函数体校验层
+    assert "send_card_message" not in card_tools.TOOL_REGISTRY
+    # 类型可拓展（11:44）：注册表仍三型，函数体校验层每次现读（type_codes）
+    assert list(card_msg.type_codes()) == ["msg_ask", "msg_answer", "msg_notify"]
 
 
 def test_t3_add_type_zero_code(monkeypatch, tmp_path):
-    """临时副本注册表加 msg_test → 重取 schema → enum 含它 → 复原。"""
+    """临时副本注册表加 msg_test → 函数体校验层认识它（type_codes 现读）→ 复原。"""
     ext = tmp_path / "ext_registry.json"
     base = json.loads(REGISTRY.read_text(encoding="utf-8"))
     base["types"]["msg_test"] = {"display": "测试", "note": ""}
     ext.write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(card_msg, "REGISTRY_PATH", ext)
-    schema = card_tools._schema_of(card_tools.TOOL_REGISTRY["send_card_message"])
-    assert "msg_test" in schema["parameters"]["properties"]["msg_type"]["enum"]
+    # 加类型零代码的语义保留在函数体校验层：新增类型直接可发
+    assert "msg_test" in card_msg.type_codes()
     # 仓库最终态仍三型（monkeypatch 只动内存指针，不落盘）
     assert set(json.loads(REGISTRY.read_text(encoding="utf-8"))["types"].keys()) == {
         "msg_ask", "msg_answer", "msg_notify"}
@@ -441,7 +442,7 @@ def test_append_user_default_true_regression():
 
 
 async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
-    """真跑 A→B：A 回合发信 → 收口 schedule → B 被调起；激励文不落 B 档案。"""
+    """真跑 A→B：[12:34] 流程侧调内部接口发信 → 收口 schedule → B 被调起；激励文不落 B 档案。"""
     from src.storage import work_store
     wid = (await work_store.create_work("K3真跑剧本"))["work_id"]
     cards = await _make_tree(wid)
@@ -449,29 +450,28 @@ async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
 
     a_reply = "已向孙卡A1发出询问。"
     b_reply = "收到询问：第二节数字为 42，已复核。"
-    fired = {"a": False}
 
     async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
         # B 回合判定＝激励文 user_prompt（K3 唯一改写 user_prompt 的路径，锚点可靠；
-        # 不可用 prior 内容判——工具续跳轮的折叠 prior 不保证含头行原文）
+        # 动态激励文仍以「请阅读这些消息并处理」收尾——模板末句保留）
         if "请阅读这些消息并处理" in str(user_prompt):
             return ({"content": b_reply, "tool_calls": []}, "fake")
-        # A 回合：首轮（有工具面）发一次信即收口——无闸循环不设轮次上限，
-        # fake 若无限配合工具调用就是无限循环（调试实证）
-        if tools and not fired["a"]:
-            fired["a"] = True
-            return ({"content": "需要向子卡询问",
-                     "tool_calls": [{"name": "send_card_message",
-                                     "arguments": {"target_card_id": "card_003",
-                                                   "msg_type": "msg_ask",
-                                                   "content": "第二节数字是多少？"}}]}, "fake")
+        # A 回合：模型不再调发信工具（12:34 已摘出工具面）；只产内容
         return ({"content": a_reply, "tool_calls": []}, "fake")
 
     monkeypatch.setattr(model_service, "call_main", fake_call_main)
     monkeypatch.setenv("MOCK_LLM", "1")
 
-    result = await routes._run_message(wid, "card_002", "请向孙卡A1核对数字")
-    # A 收口即已 schedule（create_task）；让出事件循环等 B 的回合跑完
+    # A 回合：模型只产内容（不碰发信工具——它已不在模型可见清单里）
+    await routes._run_message(wid, "card_002", "请向孙卡A1核对数字")
+    # 流程代码调用内部接口发信（基础设施唯一入口；模型不可见、参数由流程语义决定）
+    r = await card_tools.send_card_message(
+        wid, "card_002", target_id="card_003", msg_type="msg_ask",
+        content="第二节数字是多少？")
+    assert "msg_id" in r
+    # A 再跑一个回合：收口 schedule 发现 TRIGGERS 有信 → 异步调起 B
+    await routes._run_message(wid, "card_002", "继续")
+    # 让出事件循环等 B 的回合跑完
     for _ in range(60):
         await asyncio.sleep(0.05)
         blocks_b = await session_facade.read(wid, "card_003")

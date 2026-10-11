@@ -1034,15 +1034,12 @@ thinkchain_plan_tools.register_into(TOOL_REGISTRY, ToolDef)
 
 
 # ============================================================
-# [迭代四 K2] 卡间发信工具 send_card_message（卡间册 §4.3）。
-# 注册位置硬约束（同上）：必须在 READONLY_TOOLS 派生之前——本工具
-# readonly=False，晚于派生会漏出只读白名单口径。
-# schema 用 callable 形态：msg_type.enum 每次现读注册表 ⇒ 「加类型＝加条目
-# 零代码」（_schema_of 已支持 callable，:144-146 先例）。
-# 五项结构性校验（全走结构性拒绝、不判内容）＋ 子树权限（复用 READ 的
-# check_with_scope 树作用域）＋ 落信（facade.append，actor 显式 card: 前缀）
-# ＋ ops 留痕 ＋ TRIGGERS 记调起意图（调起归 K3，此处只记不调）。
-# 「默认不拦」是刻意的（卡间册 §4.6①）：handler 内无人工审批分支。
+# [迭代四 K2 沿革 → 2026-10-11 摘除] 卡间发信原为模型工具 send_card_message
+# （卡间册 §4.3 注册形态），经用户 2026-10-11 12:34 裁定改为**流程专用
+# 基础设施接口**——工具注册条目已删除（模型工具面不再下发），函数体
+# _h_send_card_message 保留为内部实现，流程入口＝下方薄壳 send_card_message。
+# 六道门槛（存在/非己/类型在册/reply_to 一致/正文非空/权限）一条不减；
+# 「默认不拦」保持（handler 内无人工审批分支）。
 # ============================================================
 async def _h_send_card_message(work_id: str, current_id: str,
                                arguments: dict[str, Any],
@@ -1078,8 +1075,13 @@ async def _h_send_card_message(work_id: str, current_id: str,
         policy.check_with_scope(current_id, target_id, policy.Perm.READ, cards)
     except PermissionError:
         return err("denied", f"越权：无权向 {target_id} 发送消息")
-    if not policy._is_in_subtree(current_id, target_id, cards):
-        return err("denied", f"越权：{target_id} 不在你的子树内")
+    # [用户 10-09 20:24 要点]「方案书卡有不确定的信息，直接发回主卡」——
+    # 子卡须能发回父卡/祖先链。判定由「收件卡必须在发件卡子树内」放宽为
+    # 「两卡同一棵任务树内」（双向各查一次）：父子/祖先链可互发；兄弟、
+    # 跨树仍挡死（双向均不命中）。发信不改树结构，不引入环。
+    if not (policy._is_in_subtree(current_id, target_id, cards)
+            or policy._is_in_subtree(target_id, current_id, cards)):
+        return err("denied", f"越权：{target_id} 与你不在一棵任务树内")
     # 落信 + 留痕 + 记触发意图（错误在前面全走 err 信封不落档——发信成功才落信）
     msg_id = card_msg.make_msg_id(current_id)
     body = card_msg.build_header(msg_id, mt, current_id, reply_to) + "\n" + content
@@ -1101,31 +1103,38 @@ async def _h_send_card_message(work_id: str, current_id: str,
     return {"msg_id": msg_id, "target_card_id": target_id, "type": mt}
 
 
-TOOL_REGISTRY["send_card_message"] = ToolDef(
-    schema=lambda: {
-        "name": "send_card_message",
-        "description": ("向另一张卡发送一条消息——对方会被唤起处理它。三种类型："
-                        "询问（需要对方的信息或判断才能继续，等对方回话）／"
-                        "应答（回应对方的询问，必须填 reply_to）／"
-                        "通知（告知一件事、不需要对方回话）。只能发给你子树内的卡。"
-                        "消息不得滥发：只在确有需要对方处理的事时才发。"),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "target_card_id": {"type": "string",
-                                   "description": "收件卡 id，必须在你的子树内"},
-                "msg_type": {"type": "string", "description": "消息类型",
-                             "enum": list(card_msg.type_codes())},
-                "content": {"type": "string", "description": "消息正文"},
-                "reply_to": {"type": "string",
-                             "description": "被回应的消息 id，type=msg_answer 时必填"},
-            },
-            "required": ["target_card_id", "msg_type", "content"],
-        },
-    },
-    handler=_h_send_card_message,
-    readonly=False,
-)
+# ============================================================
+# [用户 2026-10-11 12:34 逐字]「发信不是随意调起的工具，是只有特定
+# 流程才能使用的接口，这是一个基础设施，不是一共通用工具」——发信
+# 已从 TOOL_REGISTRY 摘除（模型工具面不再下发），保留为**流程代码
+# 专用**的内部接口。真实发信行为全部落在 _h_send_card_message（六道
+# 门槛＋落信＋留痕＋触发意图＋通知帧一条不减）；「加类型＝加条目零
+# 代码」由函数体校验（type_codes 现读）与注册表保持。
+# 结构保证：模型侧无路（不在任何工具清单）；流程侧唯一入口＝本接口。
+# 使用见《卡间发信接口-基础设施使用文档-20261011.md》。
+# ============================================================
+async def send_card_message(
+    work_id: str,
+    from_id: str,
+    *,
+    target_id: str,
+    msg_type: str,
+    content: str,
+    reply_to: str = "",
+) -> dict[str, Any]:
+    """卡间发信 · 流程专用基础设施接口（模型不可见）。
+
+    参数由流程语义决定（不吃模型风格参数包）；本函数只做参数翻译并
+    取卡表，随后把真实行为委托给 _h_send_card_message（门槛一条不减）。
+    """
+    cards = card_store.iter_card_metas(work_id)
+    arguments = {
+        "target_card_id": target_id,
+        "msg_type": msg_type,
+        "content": content,
+        "reply_to": reply_to,
+    }
+    return await _h_send_card_message(work_id, from_id, arguments, cards)
 
 
 # [T11-T10] 只读工具白名单（折叠【依据】「可按原参数重取」语义的依据源）。

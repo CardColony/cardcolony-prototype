@@ -814,7 +814,9 @@ def handle_error(state: RunState, exc: Exception) -> None:
 # ============================================================
 # [迭代四 K3] 卡间来信调起（卡间册 §4.4.2/§4.4.3）。
 # ============================================================
-# 激励文（卡间册 §4.4.4 逐字）：只走当轮 user_prompt，绝不落收件方档案。
+# 激励文（卡间册 §4.4.4 沿革）：只走当轮 user_prompt，绝不落收件方档案。
+# [2026-10-11 11:44] 动态构造：带发件卡名称＋类型中文名（注册表现读、
+# 零类型分支、新增类型不改代码）；解析/读卡失败回落本默认文、不阻断调起。
 _CARD_MSG_PROMPT = (
     "上一轮之后，你收到了来自其他卡的消息（见上文以 card: 开头的条目）。"
     "请阅读这些消息并处理。"
@@ -868,8 +870,27 @@ async def schedule_card_message_triggers(state: RunState) -> None:
                              (card_msg.parse_header(str(pending.get("content") or ""))
                               or {}).get("id", ""),
                              "msg_ids": list(msg_ids)})
+        # [用户 2026-10-11 11:44] 激励文带发件卡名称＋类型中文名；类型名
+        # 从注册表现读（display_of 未命中回退类型码），全程零类型分支——
+        # 新增类型不改代码。解析/读卡失败回落默认文、不阻断调起。
+        prompt = _CARD_MSG_PROMPT
+        try:
+            hdr = card_msg.parse_header(str(pending.get("content") or ""))
+            if hdr and hdr.get("from"):
+                card_meta = (await card_store.read_card(
+                    work_id, hdr["from"])).get("meta") or {}
+                title = str(card_meta.get("title") or hdr["from"])
+                disp = card_msg.display_of(hdr.get("type", ""))
+                prompt = (
+                    f"上一轮之后，卡 {hdr['from']}（《{title}》）给你发来一条消息"
+                    f"（类型：{disp}，见上文以 card: 开头的条目）。"
+                    "请阅读这些消息并处理。"
+                )
+        except Exception as exc:  # noqa: BLE001 激励文失败不阻断调起
+            logger.warning("[K3] 构造卡间激励文失败、回落默认文: %s", exc)
+            prompt = _CARD_MSG_PROMPT
         task = asyncio.create_task(
-            _routes._run_message(work_id, target_id, _CARD_MSG_PROMPT,
+            _routes._run_message(work_id, target_id, prompt,
                                  None, append_user=False))
         task._card_msg_target = target_id  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)
