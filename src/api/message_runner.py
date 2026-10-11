@@ -305,6 +305,22 @@ async def step(state: RunState) -> StepOutcome:
             state.work_id, state.card_id, state.content)
         if _tri["verdict"] == "direct":
             state.tools = thinkchain_triage.direct_tool_schemas()
+        else:
+            # [新流程接管 2026-10-11] plan 分支：判定+引导注入模型视野
+            # （slot 非轮消息、永不折叠、首轮即进 prior_for_gateway），
+            # 并 emit triage_verdict 供前端显示——判 plan 不再只是死信。
+            _tri_note = (
+                "系统判定：本消息需要拆解（理由：" +
+                str(_tri.get("reason") or "—") +
+                "）。请使用 create_plan 工具建立步骤计划并逐步执行；"
+                "干完每步立刻调 step_complete，全部完成后系统会自动收口。"
+            )
+            state.slot.append_plain({
+                "role": "assistant", "content": _tri_note,
+            })
+            event_stream.emit(state.work_id, state.card_id, "triage_verdict",
+                              {"verdict": _tri["verdict"],
+                               "reason": str(_tri.get("reason") or "")})
 
     state.rounds += 1
     if state.rounds == 1:
@@ -465,6 +481,21 @@ async def step(state: RunState) -> StepOutcome:
             _ev["title"] = _data.get("title", "")
             _ev["parent"] = _data.get("parent", "")
         state.tool_events.append(_ev)
+        # [新流程接管 2026-10-11] 板子事件 emit（对话流可见拆解上板/步进/收口）：
+        # create_plan 成功→plan_created；step_complete 成功→step_advanced
+        # （all_done=True 时前端渲染收口行）。
+        if ok and name == "create_plan":
+            event_stream.emit(state.work_id, state.card_id, "plan_created", {
+                "name": _data.get("plan_name") or "",
+                "total": _data.get("total") or 0,
+                "prompt": _data.get("prompt") or "",
+            })
+        elif ok and name == "step_complete":
+            event_stream.emit(state.work_id, state.card_id, "step_advanced", {
+                "advanced": bool(_data.get("advanced")),
+                "all_done": bool(_data.get("all_steps_done")),
+                "prompt": _data.get("prompt") or "",
+            })
         # [迭代二 S4·呈报项] escalate 逃生口消费：任务书 S2 步骤 4「当轮
         # StepOutcome("deliver","escalate")＋档案补块＋下轮进拆解流——绝不
         # 静默换路」。工具返回 escalate 标记 → 当轮以 deliver 收束（正文=

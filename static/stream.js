@@ -230,7 +230,18 @@ let current = null;   // {wid,cid,es,esT,rows[],textEl,textBody,reasoning,reason
       case "fastlane_route":
         addRow(st, evt.type, d.mode === "fastlane"
           ? `⚡ 快车道 <span class="step-dim">命中：${esc(d.matched_rule)}</span>`
-          : `🧩 全链模式 <span class="step-dim">未命中规则</span>`, fmtData(d));
+          : `🧭 未命中快车道 → 自判判定中`, fmtData(d));
+        break;
+      case "triage_verdict":
+        addRow(st, evt.type, `🧭 自判：${d.verdict === "direct" ? "直答" : "拆解"} <span class="step-dim">${esc(d.reason || "")}</span>`, fmtData(d));
+        break;
+      case "plan_created":
+        addRow(st, evt.type, `📋 拆解上板：${esc(d.name || "计划")}（${d.total || 0} 步）`, fmtData(d));
+        break;
+      case "step_advanced":
+        addRow(st, evt.type, d.all_done
+          ? `🏁 全部步骤完成，计划收口`
+          : `✅ 步完成 → 下一步<span class="step-dim">${esc((d.prompt || "").slice(0, 60))}</span>`, fmtData(d));
         break;
       case "round_start":
         addRow(st, evt.type, `🧠 第 ${esc(d.round)} 轮 <span class="step-dim">${esc(d.phase || "")}</span>`);

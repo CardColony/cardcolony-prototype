@@ -5,7 +5,7 @@
  * 提升保证：本文件顶层不调用任何 canvas 导出。 */
 import { API } from "./esm/api.js?v=11";
 import { escapeHtml } from "./esm/util.js?v=11";
-import { EventFlow } from "./stream.js?v=11";
+import { EventFlow } from "./stream.js?v=12";
 import { reloadCanvas } from "./canvas.js?v=11";
 import { store } from "./esm/store.js?v=11";
 import { notify, postStop } from "./esm/api.js?v=11";
