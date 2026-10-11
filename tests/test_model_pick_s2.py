@@ -112,7 +112,11 @@ def test_resolve_model_gateway_failure_falls_back(monkeypatch, tmp_path):
 
 
 def test_model_pick_json_five_seats_present():
-    """E9/E10 静态断言：五键在位、三席位名与 models.yaml:103 逐字一致、值全空串。"""
+    """E9/E10 静态断言：席位键在位、席位名与 models.yaml simple.viewpoints 逐字一致。
+
+    [10-11 三席配置态镜像更新] 用户令三席换回 minimax/qwen3.8/glm5.3——
+    席位键填条目名（非空）使三席各走对应模型；synthesize/triage 仍空串（未配置）。
+    """
     import yaml
     data = json.loads(PICK_DEFAULT.read_text(encoding="utf-8"))
     yaml_models = yaml.safe_load((REPO / "config" / "models.yaml")
@@ -120,6 +124,11 @@ def test_model_pick_json_five_seats_present():
     seats = list(yaml_models["simple"]["viewpoints"])
     for key in (*seats, "synthesize", "triage"):
         assert key in data, key
+    # [10-11 配置态] 三席位键非空（=条目名，resolve_model 放行走对应模型）
+    for key in seats:
+        assert data[key], key
+    # synthesize/triage 未配置（空串=回落 main）
+    for key in ("synthesize", "triage"):
         assert data[key] == "", key
     # execute/think 两键不动（用户 13:32：只有执行/思考可被编排）
     assert data["execute"] == "main" and data["think"] == "main"

@@ -57,10 +57,11 @@ def _err(status: int, message: str) -> JSONResponse:
 
 
 # ============================================================
-# [信息流与快车道 Task1 · 乙线核心] 快车道路由分流
-# 纯函数规则集：确定性动作（删卡/建卡/改卡/查询）四类消息形态 → fastlane
-# （单模型带工具直答，跳三席与统合官——用户裁决 A97）；未命中保守落 chain
-# （全链现状逐字不变）。函数纯、无副作用、可单测（R3 样本「那你倒是删掉一张啊」）。
+# [2026-10-11 两套机制拆除] 确定性动作识别（原「信息流与快车道 Task1」）。
+# 删卡/建卡/改卡/查询四类确定性消息形态 → 机械预检命中（A97 用户裁定：
+# 单模型带工具直答、跳三席与统合官）。本函数集已不在路由层调用——由
+# thinkchain.triage 的 triage_if_needed 作为判定链前置分支调用（判断只有
+# 一级，机械识别不是独立机制）。函数纯、无副作用、可单测。
 # ============================================================
 _FASTLANE_RULES: list[tuple[str, "re.Pattern[str]"]] = [
     ("删卡", re.compile(r"(删掉|删除|删了)[^。！？\n]{0,8}(卡|一张|这张|那张|它)")),
@@ -85,8 +86,9 @@ def _route_rule(content: str) -> str:
 
 
 def route(content: str) -> str:
-    """快车道判定（Task1）：返回 "fastlane" | "chain"。保守不误判：规则全未
-    命中即 chain（开放论证永远走全链）。"""
+    """[已退役 2026-10-11] 原快车道判定（Task1）：返回 "fastlane" | "chain"。
+    生产不再调用（确定性动作识别已并入 triage 判定链）；仅兼容测试/历史引用。
+    语义保留：规则全未命中即 chain（开放论证走模型判定）。"""
     return "fastlane" if _route_rule(content) != "未命中" else "chain"
 
 
@@ -679,14 +681,9 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 段②③前半：上下文组装＋工具列＋轮槽
     message_runner.build_context(state)
 
-    # [信息流 Task1] 快车道分流：确定性动作（删卡/建卡/改卡/查询）单模型直答；
-    # 未命中保守落全链（chain 现状逐字不变）。打点＝路由判定（A96）。
-    state.mode = route(content)
-    state.matched_rule = _route_rule(content)
-    event_stream.emit(work_id, card_id, "fastlane_route",
-                      {"mode": state.mode, "matched_rule": state.matched_rule})
-    logger.info("[flow] 路由判定 mode=%s matched_rule=%s card=%s",
-                state.mode, state.matched_rule, card_id)
+    # [2026-10-11 两套机制拆除] 原快车道分流（state.mode/route()/fastlane_route
+    # 事件）已整体退役——确定性动作识别并入 thinkchain.triage 判定链前置分支，
+    # 由 step() 首轮统一处理（见 message_runner.step 与 triage.triage_if_needed）。
     state.user_prompt = content
 
     # 段③ 工具循环：**单步推进**（每轮一个显式状态点）

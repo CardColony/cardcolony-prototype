@@ -227,13 +227,10 @@ let current = null;   // {wid,cid,es,esT,rows[],textEl,textBody,reasoning,reason
         addRow(st, evt.type, "🚀 开始处理");
         break;
       case "context": addRow(st, evt.type, `📐 装配上下文 <span class="step-dim">${esc(d.bytes || 0)}B · ${(d.regions || []).length} 区</span>`); break;
-      case "fastlane_route":
-        addRow(st, evt.type, d.mode === "fastlane"
-          ? `⚡ 快车道 <span class="step-dim">命中：${esc(d.matched_rule)}</span>`
-          : `🧭 未命中快车道 → 自判判定中`, fmtData(d));
-        break;
       case "triage_verdict":
-        addRow(st, evt.type, `🧭 自判：${d.verdict === "direct" ? "直答" : "拆解"} <span class="step-dim">${esc(d.reason || "")}</span>`, fmtData(d));
+        // [2026-10-11 两套机制拆除] 唯一判断行：机械预检命中（确定性动作）显
+        // rule；模型判定显 verdict。旧「快车道/全链」渲染已整体退役。
+        addRow(st, evt.type, `🧭 自判：${d.rule ? `确定性动作（${esc(d.rule)}）` : (d.verdict === "direct" ? "直答" : "拆解")} <span class="step-dim">${esc(d.reason || "")}</span>`, fmtData(d));
         break;
       case "plan_created":
         addRow(st, evt.type, `📋 拆解上板：${esc(d.name || "计划")}（${d.total || 0} 步）`, fmtData(d));

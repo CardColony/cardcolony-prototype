@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""事件流过程通道（信息流与快车道整合 · Task 3/4，甲线核心）。
+"""事件流过程通道（确定性动作直答与全链事件 · 甲线核心）。
+（2026-10-11：快车道/全链分流机制退役，本模块随 triage 判定链统一发事件。）
 
 纯展示层：内存事件日志（每 (work_id, card_id) 一份、seq 单调）＋ SSE 订阅 fanout。
 铁则：
@@ -20,7 +21,9 @@
 
 事件本体论 19 类（接口①并表，A101）：15 原（run_start/context/round_start/
 round_end/rescue/tool_call/tool_result/seats_enter/seat_start/seat_end/deliver/
-proposal/done/error/ping）＋ 乙线并入 fastlane_route/card_op ＋ 逐字流 2 类。
+proposal/done/error/ping）＋ card_op（确定性动作直答事件）＋ 逐字流 2 类。
+（2026-10-11：快车道/全链分流机制退役——fastlane_route 事件随之移除，
+ 确定性动作识别并入 triage 判定链，用户路径上只有一套判断。）
 Schema 统一 {"seq":n,"ts":...,"type":"...","data":{...}}。ping 为 SSE 保层
 心跳帧（不占 journal，由 SSE 生成器定期发送）。
 
@@ -82,7 +85,8 @@ EVENT_TYPES: tuple[str, ...] = (
     "run_start", "context", "round_start", "round_end", "rescue",
     "tool_call", "tool_result", "seats_enter", "seat_start", "seat_end",
     "deliver", "proposal", "done", "error", "ping",
-    "fastlane_route", "card_op",
+    "card_op",
+    "triage_verdict", "plan_created", "step_advanced",
 ) + TOKEN_EVENT_TYPES
 
 # [对话流渲染 T4] 以下两个上限常量已删——都是「丢字/丢步骤闸」：

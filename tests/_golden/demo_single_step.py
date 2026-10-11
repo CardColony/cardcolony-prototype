@@ -78,7 +78,7 @@ async def main() -> int:
         state = mr.RunState(work_id="work_001", card_id="card_001",
                             content="查看一下卡片", pair_id="0" * 32)
         state.user_prompt = state.content
-        state.mode = "fastlane"
+        state.auto_direct = True
         # 手工装配最小可跑 state（真实装配在 build_context 内，涉 IO 不在此演示）
         state.prior = []
         state.prior_for_gateway = []
