@@ -19,16 +19,11 @@
    SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底；两态互斥）。
    事件纯展示层：只读渲染，不写存储、不影响 POST。
    日志（仅展示层、不参与判定、不设闸）：[flow-render] row / chunk / msg。 */
-(function () {
-  "use strict";
+/* 迭代四 F2③：IIFE → ES module（module 作用域＝原闭包隔离）；esc 收编 esm/util.js。 */
+import { API } from "./esm/api.js?v=11";
+import { escapeHtml as esc } from "./esm/util.js?v=11";
 
-  let current = null;   // {wid,cid,es,esT,rows[],textEl,textBody,reasoning,reasoningText,fallbackUsed,lastSeq,lastTokenSeq}
-
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    }[c]));
-  }
+let current = null;   // {wid,cid,es,esT,rows[],textEl,textBody,reasoning,reasoningText,fallbackUsed,lastSeq,lastTokenSeq}
 
   function fmtData(data) {
     try { return JSON.stringify(data, null, 1); } catch (e) { return String(data); }
@@ -241,9 +236,22 @@
         addRow(st, evt.type, `🧠 第 ${esc(d.round)} 轮 <span class="step-dim">${esc(d.phase || "")}</span>`);
         break;
       case "rescue": addRow(st, evt.type, `🩹 文本抢救 ${esc(d.count)} 条`, fmtData(d)); break;
-      case "tool_call": addRow(st, evt.type, `🔧 ${esc(d.tool)} <span class="step-dim">${esc(d.target)}</span>`, fmtData(d)); break;
-      case "tool_result":
-        addRow(st, evt.type, `${d.ok ? "✓" : "✗"} ${esc(d.tool)} <span class="step-dim">${esc(d.target)}</span>`, fmtData(d), d.ok ? "ok" : "fail");
+      case "tool_call":
+        st._toolT0 = performance.now();   // [F3③] 前端计时起点（不加后端字段）
+        st._toolName = d.tool;
+        addRow(st, evt.type, `🔧 ${esc(d.tool)} <span class="step-dim">${esc(d.target)}</span>`, fmtData(d));
+        break;
+      case "tool_result": {
+        // [F3③] 工具条补「工具名 · 耗时 · 结果」——耗时前端计时（1.2s 形态）
+        let dur = "";
+        if (st._toolT0) {
+          const ms = performance.now() - st._toolT0;
+          dur = ` <span class="step-dim">${(ms / 1000).toFixed(1)}s</span>`;
+          st._toolT0 = 0;
+        }
+        addRow(st, evt.type, `${d.ok ? "✓" : "✗"} ${esc(d.tool)}${dur} <span class="step-dim">${esc(d.target)}</span>`, fmtData(d), d.ok ? "ok" : "fail");
+        break;
+      }
         break;
       case "card_op": {
         const icon = { create_card: "✚", edit_card: "✎", delete_card: "🗑", read_card: "📖" }[d.op] || "🗂";
@@ -359,5 +367,4 @@
     } catch (e) { /* noop */ }
   }
 
-  window.EventFlow = { start, stop, replayTrace };
-})();
+export const EventFlow = { start, stop, replayTrace };

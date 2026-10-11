@@ -30,7 +30,7 @@ from ..storage import (
 from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
+from . import card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
 
 logger = logging.getLogger("api.routes")
 
@@ -206,6 +206,63 @@ async def get_nav():
             "cards": cards,
         })
     return {"projects": projects}
+
+
+@router.get("/works/{work_id}/card-messages")
+async def list_card_messages(work_id: str, limit: int = 200):
+    """[迭代四 K4] 卡间消息通知端点（B4「不得静默」的数据面；纯读、零新增存储）。
+
+    聚合全部卡的档案里 `actor` 以 `card:` 开头的块（卡间信），逐条解析正文
+    首行结构化头（card_msg.parse_header），按 ts 倒序、limit 截断。
+    - `type_display` 由**后端**从注册表取（前端零硬编码；未知类型返回 code 本身）；
+    - `format_ok=false` 的块仍在 items 里（不静默丢弃，前端归「格式异常」分组）；
+    - `unread_by_card`：每卡用 find_pending 判 pending（二值，有待处理计 1）；
+    - `card_msg_consumed` 打点落点（任务书 K4⑤「落点须在回报中说明」）：**端点侧**——
+      扫描中发现某卡「有卡间块且已非 pending」（即收件方档案里该信之后已有
+      assistant 回应）＝「信已被处理」的事实时机；以 msg_id 进程内去重
+      （card_msg.mark_consumed）防每次拉取重复留痕，重启清零仅致重打一次
+      （ops 是 append-only 诊断流，可接受；不为此新增任何持久存储）。
+    - 性能如实声明：session_facade.read 的 from_seq 是**后置过滤**语义（io 层
+      总是读整档），「只读尾部」在现 read 实现下省不了 io——性能观察项，
+      与任务书风险表第 4 条同观察面；优化路径（卡级头记最后卡间块 seq）属另一版。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    cards = card_store.iter_card_metas(work_id)
+    items: list[dict[str, Any]] = []
+    unread_by_card: dict[str, int] = {}
+    for cid, meta in cards.items():
+        blocks = await session_facade.read(work_id, cid)
+        card_blocks = [b for b in blocks if str(b.get("actor") or "").startswith("card:")]
+        if card_msg.find_pending(blocks) is not None:
+            unread_by_card[cid] = 1
+        elif card_blocks:
+            last = card_blocks[-1]
+            hdr = card_msg.parse_header(str(last.get("content") or ""))
+            msg_id = (hdr or {}).get("id") or f"unparsed-{cid}-{last.get('seq', '')}"
+            if card_msg.mark_consumed(msg_id):
+                session_ops.ops_log("card_msg_consumed", work_id, cid, {"msg_id": msg_id})
+        for b in card_blocks:
+            content = str(b.get("content") or "")
+            hdr = card_msg.parse_header(content)
+            fmt_ok = hdr is not None
+            sender = str(b.get("from") or "") or (hdr or {}).get("from", "")
+            items.append({
+                "id": (hdr or {}).get("id") or f"unparsed-{cid}-{b.get('seq', '')}",
+                "ts": b.get("ts") or "",
+                "seq": b.get("seq"),
+                "from_card": sender,
+                "from_title": (cards.get(sender) or {}).get("title", ""),
+                "to_card": cid,
+                "msg_type": (hdr or {}).get("type", ""),
+                "type_display": card_msg.display_of((hdr or {}).get("type", "")) if fmt_ok else "",
+                "summary": card_msg.strip_header(content)[:80],
+                "format_ok": fmt_ok,
+            })
+    items.sort(key=lambda x: str(x["ts"]), reverse=True)
+    if limit >= 0:
+        items = items[:limit]
+    return {"items": items, "unread_by_card": unread_by_card}
 
 
 @router.get("/works/{work_id}/canvas")
@@ -513,7 +570,8 @@ async def post_message_compat(card_id: str, req: PostMessageRequest):
 # ============================================================
 
 async def _run_message(work_id: str, card_id: str, content: str,
-                       client_pair_id: Optional[str] = None) -> Any:
+                       client_pair_id: Optional[str] = None,
+                       append_user: bool = True) -> Any:
     """完整 messages 链路，新旧路由共用。
 
     顺序：读卡 → 取历史 → 追加用户消息 → context_assembler 组装 →
@@ -521,6 +579,9 @@ async def _run_message(work_id: str, card_id: str, content: str,
     apply_proposals → 写 prompt 日志 → 追加 assistant 消息 → 返回。
 
     [T10] client_pair_id：前端重发时携带的被重发提问原 pair_id（正常提问为 None）。
+    [迭代四 K3] append_user：卡间调起复用主链时传 False——激励文只走当轮
+    user_prompt，绝不落收件方档案（「假人声混进档案」禁区）。默认 True ⇒
+    全部既有调用方（三参形态）行为逐字不变。
     """
     # [信息流重出 Task4] 标记本请求的逐字流归属卡。model_service.call_main 经
     # contextvar 取到它，才把增量落到 /tokens 独立流；函数退出时还原，
@@ -539,7 +600,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
         event_stream.reset_stream_context(_stream_ctx_token)
         return _err(409, f"卡片回合进行中（{holder}），请稍后重试")
     try:
-        return await _run_message_inner(work_id, card_id, content, client_pair_id)
+        return await _run_message_inner(work_id, card_id, content, client_pair_id,
+                                        append_user=append_user)
     finally:
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
@@ -549,7 +611,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
 
 
 async def _run_message_inner(work_id: str, card_id: str, content: str,
-                             client_pair_id: Optional[str] = None) -> Any:
+                             client_pair_id: Optional[str] = None,
+                             append_user: bool = True) -> Any:
     """_run_message 的实际链路体（外层只负责逐字流 contextvar 的设/还原）。
 
     [T-0009 拆分] 本函数**只做三件事**：① 装配（读卡/pair 去重/上下文）
@@ -599,10 +662,14 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
         logger.info("[T10] 重发复用 pair_id=%s card=%s（用户条不重复落盘）", pair_id, card_id)
     else:
         # [A6b/T024] 写切换：门面追加（seq/turn/pair 写时分配；user 块不闭合轮）
-        await session_facade.append(work_id, card_id,
-                                    {"role": "user", "content": content,
-                                     "pair_id": pair_id})
-        logger.info("[T10] 用户消息落盘 pair_id=%s card=%s", pair_id, card_id)
+        # [迭代四 K3] append_user=False（卡间调起）时不落 user 块——激励文绝不
+        # 进收件方档案（卡间册 §4.4.4「本方案唯一改既有函数签名处」；默认 True
+        # ⇒ 既有调用方行为逐字不变）。重发分支（上方 pair 复用）本就不落盘。
+        if append_user:
+            await session_facade.append(work_id, card_id,
+                                        {"role": "user", "content": content,
+                                         "pair_id": pair_id})
+            logger.info("[T10] 用户消息落盘 pair_id=%s card=%s", pair_id, card_id)
 
     # [信息流 Task3] run_start：清该卡 journal 重放（A45）＋过程卡秒现（V1）。
     # 位置＝落盘之后、装配之前——先清后写，context 埋点才能留在 journal 里。
@@ -647,6 +714,11 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
 
     # 段⑥ 建卡 · 工具通道 ＋ 文本通道并存，跨通道去重
     await message_runner.create_cards(state, delivered)
+
+    # [迭代四 K3] 卡间来信调起（A11 两行之间，卡间册 §4.4.3）：A 的回合收口时
+    # 对本回合记下的全部 pending target 异步起 B 的回合（非阻塞；激励文走
+    # append_user=False 不落档；B 忙 409 → 信已在档案、下轮收口补齐）。
+    await message_runner.schedule_card_message_triggers(state)
 
     # 段⑧ assistant 落盘＋回合末凝练触发＋done 埋点＋返回
     return await message_runner.finish(state)

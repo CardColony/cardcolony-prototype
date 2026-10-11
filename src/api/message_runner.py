@@ -30,6 +30,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ from ..thinkchain import triage as thinkchain_triage
 from ..thinkchain.model_pick import pick_model as _pick_model
 from ..toolcard import driver as toolcard_driver
 from . import (
+    card_msg,
     card_proposal,
     card_tools,
     control,
@@ -808,3 +810,82 @@ def handle_error(state: RunState, exc: Exception) -> None:
             logger.warning("[flow] checkpoint 落位失败（不阻断）: %s", snap_exc)
     event_stream.emit(state.work_id, state.card_id, "error",
                       {"error": state.error[:200], "rounds": state.rounds})
+
+# ============================================================
+# [迭代四 K3] 卡间来信调起（卡间册 §4.4.2/§4.4.3）。
+# ============================================================
+# 激励文（卡间册 §4.4.4 逐字）：只走当轮 user_prompt，绝不落收件方档案。
+_CARD_MSG_PROMPT = (
+    "上一轮之后，你收到了来自其他卡的消息（见上文以 card: 开头的条目）。"
+    "请阅读这些消息并处理。"
+)
+
+
+def _log_trigger_task_done(task: "asyncio.Task") -> None:
+    """调起任务异常回调：任务异常不得静默吞（卡间册 §4.4.3 P5）。"""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("[K3] 卡间调起任务异常 target=%s: %s",
+                     getattr(task, "_card_msg_target", "?"), exc)
+
+
+async def schedule_card_message_triggers(state: RunState) -> None:
+    """A 的回合收口时对本回合记下的全部 pending target 异步起 B 的回合。
+
+    - 遍历 `card_msg.TRIGGERS`（K2 落信时记下的调起意图），读完即清（不累积）；
+    - 逐 target 用 `card_msg.find_pending` 判 pending（零新增存储，从档案推导）；
+    - 有 pending → `asyncio.create_task` 起收件方回合（激励文 append_user=False），
+      **非阻塞**——不 await 任务完成，异常经 done_callback 记日志；
+    - 快速通道 vs 持久保证两层分工（写死）：create_task 可能因进程退出而丢；
+      档案里的信是持久保证——丢任务不丢信，下次任一回合收口时重新判 pending
+      补齐（本函数被每个回合收口调用，天然承担补齐）。
+    - B 忙（turn_try_acquire 409 不排队）→ ops `card_msg_pending` 留痕，信不丢。
+    """
+    if not card_msg.TRIGGERS:
+        return
+    triggers = dict(card_msg.TRIGGERS)
+    card_msg.TRIGGERS.clear()
+    # 延迟 import：routes 在模块加载期 import 本模块，运行时反向引用是既有
+    # 分层下的标准解法（_run_message 只在任务执行期才被解引用）。
+    from . import routes as _routes
+
+    for (work_id, target_id), msg_ids in triggers.items():
+        try:
+            blocks = await session_facade.read(work_id, target_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[K3] 读收件方档案失败 wid=%s target=%s: %s",
+                         work_id, target_id, exc)
+            continue
+        pending = card_msg.find_pending(blocks)
+        if pending is None:
+            # 信已被先前某次收口调起并处理完（档案已有 assistant 块）——
+            # consumed 的事实打点归 K4 端点侧，此处不再重复调起。
+            continue
+        session_ops.ops_log("card_msg_deliver", work_id, target_id,
+                            {"msg_id": str(pending.get("content", ""))[:1] and
+                             (card_msg.parse_header(str(pending.get("content") or ""))
+                              or {}).get("id", ""),
+                             "msg_ids": list(msg_ids)})
+        task = asyncio.create_task(
+            _routes._run_message(work_id, target_id, _CARD_MSG_PROMPT,
+                                 None, append_user=False))
+        task._card_msg_target = target_id  # type: ignore[attr-defined]
+        task.add_done_callback(_log_trigger_task_done)
+
+        # 忙时观察位：create_task 已起，若收件方在途，_run_message 内部
+        # turn_try_acquire 失败返回 409 —— 由包裹协程转译为 ops card_msg_pending。
+        async def _watch_pending(t: "asyncio.Task", _wid: str = work_id,
+                                 _tid: str = target_id) -> None:
+            try:
+                resp = await t
+            except Exception as exc:  # noqa: BLE001 已由 done_callback 记日志
+                logger.error("[K3] 调起任务异常（watch）target=%s: %s", _tid, exc)
+                return
+            status = getattr(resp, "status_code", None)
+            if status == 409:
+                session_ops.ops_log("card_msg_pending", _wid, _tid,
+                                    {"reason": "receiver_busy_409"})
+
+        asyncio.create_task(_watch_pending(task, work_id, target_id))

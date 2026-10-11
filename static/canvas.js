@@ -1,8 +1,14 @@
-/* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽 */
-(function () {
-  "use strict";
+/* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
+ * 迭代四 F2③：IIFE → ES module（module 作用域＝原闭包隔离）；escapeHtml 收编 esm/util.js；
+ * API 经 esm/api.js 静态 import；跨文件（Workspace/RenderNav）由 main.js 装配序保证。 */
+import { API } from "./esm/api.js?v=11";
+import { escapeHtml } from "./esm/util.js?v=11";
+import { store } from "./esm/store.js?v=11";
+import { Workspace, RenderNav } from "./workspace.js?v=11";
+import { notify } from "./esm/api.js?v=11";
 
-  const WORK_ID = window.__WORK_ID__;
+let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
+const WORK_ID = window.__WORK_ID__;
   const viewport = document.getElementById("viewport");
   const world = document.getElementById("world");
   const edgesSvg = document.getElementById("edgesSvg");
@@ -44,12 +50,6 @@
   window.addEventListener("blur", () => {
     if (activeDragDetach) activeDragDetach();
   });
-
-  function escapeHtml(s) {
-    return String(s || "").replace(/[&<>"']/g, c => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    }[c]));
-  }
 
   function escapeXml(s) {
     return String(s || "").replace(/[<>&"']/g, c => ({
@@ -110,6 +110,8 @@
   }
 
   // ==================== 布局引擎（纯函数） ====================
+  // [迭代四 F2③] 原 window 挂载（computeLayout/resolveOverlaps/separateOverlaps，
+  // 「供测试」）改模块导出；node 侧验证通道＝static/canvas_layout.js（E2 双栖加载器）。
   // [T07 打点] 判据源切换观测：每处首次调用记新旧对比；不一致升级 console.warn
   // （判据源切换唯一的回归观测点）。旧判据表达式仅存活于本观测、不参与分支；
   // 其字面量以 \u 转义书写，满足 V9「旧判据零残留」机械检查（运行期语义不变）。
@@ -124,7 +126,11 @@
     }
   }
 
-  function computeLayout(viewRootId, cards, relations, positions) {
+  // [card_045 E1] 布局计算纯化：展开态（expanded）与尺寸表（sizes）一律参数传入，
+  // 不再读全局 state、不再内部调 DOM 测量（measureSizes）——布局函数由此可在
+  // 浏览器之外被验证（node --test）。**其余逻辑一字不动**（验收＝与冻结基线
+  // 副本对同一输入逐键相同，见 _card_045_report.md）。
+  function computeLayout(viewRootId, cards, relations, positions, expanded, sizes) {
     const result = {};
     const childMap = {};
     for (const c of cards) {
@@ -139,10 +145,15 @@
     t07SwitchLog("canvas.computeLayout.isRootCard", viewRootId,
       root && root.card_type === "\u5267\u672c", isRootCard);
 
-    // 1. pinned 卡用存储坐标
+    // 1. pinned 卡用存储坐标。
+    // [card_045 E7 · L5 任何一张卡、任何时刻都必须能被找到] 非法坐标兜底：
+    // x/y 非有限数（NaN／Infinity／缺字段）的「钉住」记录不按钉住处理——该卡
+    // 落**自动布局位置**。不许跳过、不许消失：跳过等于那张卡从画布上消失，
+    // 而丢卡是最坏的失败形态（人不会知道少了一张）。
     for (const c of cards) {
       const pos = positions[c.card_id];
-      if (pos && pos.pinned) {
+      if (pos && pos.pinned
+          && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
         result[c.card_id] = { x: pos.x, y: pos.y };
       }
     }
@@ -152,7 +163,7 @@
 
     // [T08-1-3] 原 isRootCard 双分支（叙事轴/网格矩阵）收敛为折叠树单路径；
     // [T08-1-5] layoutNarrativeAxis / layoutGridMatrix 停止调用（不删除），见打点三。
-    layoutTree(viewRootId, childMap, positions, state.expanded, result);
+    layoutTree(viewRootId, childMap, positions, expanded, result, sizes);
     return result;
   }
 
@@ -315,12 +326,14 @@
   // 实测高的纵横避让由 separateOverlaps 在 DOM 建成后完成（T18-C1/C2）。
   // 只写内存 result，不读不写任何持久化载体（红线1/6）；pinned 卡由 computeLayout
   // 步骤1写入 result、此处不覆盖（保留规则），其子树以存储坐标为锚继续右排。
-  function layoutTree(viewRootId, childMap, positions, expanded, result) {
+  function layoutTree(viewRootId, childMap, positions, expanded, result, sizes) {
     console.info("[T08] 树形排布：viewRoot=%s，节点数=%d", viewRootId, Object.keys(result).length);
-    const sizes = measureSizes();
+    // [card_045 E1] 尺寸表改参数传入（原此处调 measureSizes() 内部测 DOM）；
+    // 取不到的卡沿用回退行高——与原行为一致。
     // 回退行高分档：深度≥2 的卡按 t8-deep 紧凑形态（只显标题）取 36，
     // 其余按常规卡取 86（既有回退值）——首绘时 DOM 未建、实测不可得，按此估跨距
     const FALLBACK_H = 86, FALLBACK_H_DEEP = 36;
+    sizes = sizes || {};
     const heightOf = (cid, depth) => (sizes[cid] && sizes[cid].h) || (depth >= 2 ? FALLBACK_H_DEEP : FALLBACK_H);
     const COL_W = 340;  // 相邻层横向基准（根卡实测宽 320 < COL_W，其余档位卡宽 ≤260）
     // GAP_Y 已上提模块级（[T18-C-005]），本域直接引用
@@ -477,10 +490,6 @@
     return out;
   }
 
-  // 暴露纯函数供测试/外部调用
-  window.computeLayout = computeLayout;
-  window.resolveOverlaps = resolveOverlaps;
-  window.separateOverlaps = separateOverlaps;   // [T18-C2] 供测试，对齐既有暴露模式
 
   // [phase8.6-B] 实测节点尺寸；取不到时回退 220×86
   function measureSizes() {
@@ -508,20 +517,53 @@
     return s;
   }
 
+  // [迭代四 F2⑥] 视图态持久化：localStorage["projView:{work_id}"]（原纯内存态
+  // expanded ＋ pan/zoom）。写入＝wheel/pan 结束与展开收起后防抖（照 positions
+  // 持久化防抖先例）；读取＝画布初始化（reloadCanvas 内、renderCanvas 之前）。
+  function saveViewState() {
+    try {
+      localStorage.setItem(`projView:${WORK_ID}`, JSON.stringify({
+        panX, panY, zoom, expanded: [...state.expanded],
+      }));
+    } catch (e) { /* 存储不可用零阻断 */ }
+  }
+  let viewSaveTimer = null;
+  function scheduleSaveView() {
+    if (viewSaveTimer) clearTimeout(viewSaveTimer);
+    viewSaveTimer = setTimeout(saveViewState, 300);
+  }
+  function restoreViewState() {
+    try {
+      const raw = localStorage.getItem(`projView:${WORK_ID}`);
+      if (!raw) return;
+      const v = JSON.parse(raw);
+      if (Number.isFinite(v.panX)) panX = v.panX;
+      if (Number.isFinite(v.panY)) panY = v.panY;
+      if (Number.isFinite(v.zoom)) zoom = Math.max(0.25, Math.min(2.0, v.zoom));
+      if (Array.isArray(v.expanded)) {
+        state.expanded = new Set(v.expanded.filter(id => state.cardMap[id]));
+      }
+    } catch (e) { /* 恢复失败零阻断 */ }
+  }
+
   // [phase8.6-B] 重跑：实测尺寸 → 避让 → 回写节点坐标 → 重画连线
+  // [card_045 E3] 快路径与全量重绘走**同一计算链**（实测尺寸 → computeLayout 纯函数
+  // 现算基准 → separateOverlaps 避让 → 一次性应用），唯一区别＝不重建节点（节点已在，
+  // 只更新位置）。不再读任何快照——拖动落定的存储坐标即刻参与下一次重算（病灶 1：
+  // 「防抖重算用旧基准快照覆盖用户刚放下的位置」在此拆除）。
   function reflowLayout() {
-    const base = state._baseLayout;
-    if (!base) return;
+    if (!nodeMap.size) return;
     const sizes = measureSizes();
-    const adjusted = separateOverlaps(base, sizes, pinnedIdSet());   // [T18-C2] 原 resolveOverlaps（半修版降为死代码，观测兼容保留）
-    state._layout = adjusted;
+    const layout = computeLayout(state.viewRoot, state.cards, state.relations,
+                                 state.positions, state.expanded, sizes);
+    const adjusted = separateOverlaps(layout, sizes, pinnedIdSet());
     for (const [cid, node] of nodeMap) {
       const p = adjusted[cid];
       if (!p) continue;
       node.style.left = p.x + "px";
       node.style.top = p.y + "px";
     }
-    renderEdges(new Set(nodeMap.keys()), adjusted);
+    renderEdges(new Set(nodeMap.keys()), adjusted, sizes);
   }
 
   // ==================== 渲染 ====================
@@ -573,10 +615,6 @@
     for (const [cid, node] of nodeMap) node.remove();
     nodeMap.clear();
 
-    // 计算布局
-    const layout = computeLayout(state.viewRoot, state.cards, state.relations, state.positions);
-    state._baseLayout = layout;
-
     // [T08-1-4] 可见集（规则写死，不动点计算）：
     // ① viewRoot 恒在集合内；② viewRoot 的直接子卡恒在集合内；
     // ③ 对集合内任意卡 C，若 C ∈ state.expanded，则 C 的全部直接子卡加入集合；
@@ -605,12 +643,17 @@
       }
     }
 
-    // 渲染节点（先按初始布局入 DOM）
+    // [card_045 E3] 两阶段渲染（阶段一）：按占位坐标建全部节点，整层**隐藏但占位**。
+    // ✱ 纪律性约束（写死）：必须用「隐藏但占位」的方式（visibility——元素仍在布局流、
+    // 尺寸可读），不许用「不占位」的方式（display:none——元素不参与布局、量不到尺寸）。
+    // 这是沿用既有约定（static/style.css「隐藏的画布保持可测量」条），不是本任务新立的规矩。
+    // 改错的具体后果：不会报错、不会异常——只会让测量拿到 0 或拿不到，然后整个
+    // 两阶段静默退化成「全用估算值」，而表面上一切正常。
+    world.style.visibility = "hidden";
     for (const cid of visibleIds) {
       const card = state.cardMap[cid];
       if (!card) continue;
-      const pos = layout[cid] || { x: 0, y: 0 };
-      const node = createNode(card, pos);
+      const node = createNode(card, { x: 0, y: 0 });   // 占位坐标（阶段二一次性应用最终位）
       if ((depthOf[cid] || 0) >= 2) {
         // [T08-用户令 2026-10-04] 第三级卡只显示标题（独立类，不动 l0/l1/l2 三档机制）
         node.classList.add("t8-deep");
@@ -624,11 +667,15 @@
       nodeMap.set(cid, node);
     }
 
-    // [phase8.6-B] 先套当前 LOD 档位类再实测尺寸 → 纵向避让 → 回写坐标
+    // [card_045 E3] 两阶段渲染（阶段二）：一次性全量实测 → 纯函数算基准 → 避让 →
+    // 一次性全部应用 → 取消隐藏。一轮渲染内尺寸测量恰为 1 次（改前 3 次：
+    // layoutTree 内部测量＋此处＋renderEdges 各一次——E1 已参数化第一处、
+    // renderEdges 改吃本处尺寸表）。
     applyLODClasses();
     const sizes = measureSizes();
-    const adjusted = separateOverlaps(layout, sizes, pinnedIdSet());   // [T18-C2] 首绘/换卡链路同换（新建卡 V1 依赖此点）
-    state._layout = adjusted;
+    const layout = computeLayout(state.viewRoot, state.cards, state.relations,
+                                 state.positions, state.expanded, sizes);
+    const adjusted = separateOverlaps(layout, sizes, pinnedIdSet());
     for (const cid of visibleIds) {
       const node = nodeMap.get(cid);
       const p = adjusted[cid];
@@ -637,8 +684,9 @@
         node.style.top = p.y + "px";
       }
     }
+    world.style.visibility = "";
 
-    renderEdges(visibleIds, adjusted);
+    renderEdges(visibleIds, adjusted, sizes);
     renderBreadcrumb();
     applyTransform();
     // [phase8.4] 渲染完成即懒加载可见卡摘要（首次进入/下钻/Reload 后均填充）
@@ -654,6 +702,12 @@
     node.style.left = pos.x + "px";
     node.style.top = pos.y + "px";
     if (isRoot) node.classList.add("is-root");
+    // [迭代四 F4④] 卡间消息角标（左外角 -6px 终值）：未读数取 K4 端点
+    // unread_by_card、SSE card_message 帧增量更新（refreshUnread）。
+    const unread = (state._unreadByCard || {})[card.card_id] || 0;
+    const msgBadge = unread > 0
+      ? `<span class="msg-badge">${unread > 99 ? "99+" : unread}</span>`
+      : "";
     // [诸葛 2026-10-04 21:52] pinned 视觉标识。
     // 原缺口：拖一下卡就 pinned=true（永久不参与自动避让），但 style.css 里
     // 搜 "pinned" 零命中——画布上看不出来，用户不知道自己什么时候把卡钉死了。
@@ -670,6 +724,7 @@
       : "";
 
     node.innerHTML = `
+      ${msgBadge}
       <div class="tname">${escapeHtml(card.title)}${kidBadge}</div>
       <div class="ttype">${escapeHtml(card.card_type)}</div>
       <div class="summary"></div>
@@ -744,17 +799,18 @@
       if (dragState.moved) {
         let newLeft = parseFloat(node.style.left);
         let newTop = parseFloat(node.style.top);
-        // [T18-C3] 落点仲裁：松手点与其余可见卡相交 → 最小位移到不交位（拖卡让在场卡）；
-        // 无相交 → 原坐标原样（零改动路径）。仲裁坐标交 persistCardPos（pinned:true 语义不变）。
-        const fixed = resolveDrop(card.card_id, newLeft, newTop);
-        newLeft = fixed.x;
-        newTop = fixed.y;
-        node.style.left = newLeft + "px";
-        node.style.top = newTop + "px";
+        // [card_045 E5] 存／显分离＋钉住语义（L1「人的位置只由人给」／L4「动作只有一个
+        // 权威解释」）：存盘只写**用户松手的原始坐标**；T18-C3 的落点仲裁（resolveDrop）
+        // 在此退役出调用链——「拖卡让在场卡」会把系统推算冒充用户意图（病灶 2），
+        // 且与「用户放哪就是哪，系统不自作主张」直接冲突。行为取舍（任务书已声明）：
+        // 用户把卡拖到另一张钉住的卡上时，会真的重叠。resolveDrop 函数本体保留
+        // （T18 交付件，留作将来显式恢复显示仲裁的候选，不再被本路径调用）。
         node.classList.remove("dragging");
         persistCardPos(card.card_id, newLeft, newTop);
-        // [phase8.6-B] 用已避让布局重画连线（persistCardPos 已更新 state._layout）
-        renderEdges(new Set(nodeMap.keys()), state._layout || {});
+        // [card_045 E4] 拖动落定后立刻走统一重算的「不重建节点」分支（reflowLayout）：
+        // 显示坐标与连线吃同一份现算结果——不再有快照可读，也不需要。
+        // 拖动卡即刻 pinned（E5 语义），重算不会移动它——它停在用户松手的位置。
+        reflowLayout();
       }
       dragState = null;
       // [R1] 松手即卸——用同一命名函数引用（onDragMove/onDragUp 是函数声明，引用稳定；
@@ -801,7 +857,7 @@
         return;
       }
     }
-    window.Workspace && window.Workspace.open(card.card_id);
+    Workspace.open(card.card_id);
   }
 
   // [T08-用户令] 相对当前视图根的深度：沿 parent 链上溯到 viewRoot 的步数
@@ -824,7 +880,7 @@
       setViewRoot(card.card_id);
     } else {
       // 无子卡也允许下钻（用户可能想进入空容器建卡），但等同打开工作区
-      window.Workspace && window.Workspace.open(card.card_id);
+      Workspace.open(card.card_id);
     }
   }
 
@@ -833,10 +889,13 @@
   function toggleExpand(cardId) {
     if (state.expanded.has(cardId)) state.expanded.delete(cardId);
     else state.expanded.add(cardId);
+    scheduleSaveView();   // [F2⑥] 展开态持久化
     renderCanvas();
   }
 
   function setViewRoot(newRoot) {
+    // [card_045 E7 · L8 位置跨视图共享] 坐标记录是 work 级的：下钻/返回只改
+    // 视图根（可见集），任何卡的位置不因视图切换而改变——下钻再返回，位置不变。
     state.viewRoot = newRoot;
     summaryCache.clear();
     // [诸葛 2026-10-04 21:52] 下钻换根时清掉旧展开态。
@@ -847,7 +906,6 @@
     renderCanvas();
     fitView();
   }
-  window.SetViewRoot = setViewRoot;
 
   // [hotfix] 切层后把当前层所有卡片居中到视野（负坐标区不再甩出屏幕外）
   function fitView() {
@@ -883,8 +941,10 @@
   }
 
   // ==================== 关系线渲染 ====================
-  function renderEdges(visibleIds, layout) {
-    const sizes = measureSizes();
+  // [card_045 E3] sizes 参数化：一轮渲染内只测一次（renderCanvas/reflowLayout 传入）；
+  // 省缺时回退现测（外部零散调用兼容）。
+  function renderEdges(visibleIds, layout, sizesArg) {
+    const sizes = sizesArg || measureSizes();
 
     // [T08-2-1/2-3] 父子直角折线段先收集（这是一条新增循环，不替换既有 relations 循环）。
     // 锚点（左右视图口径，用户中途指令推翻任务书上下向，留痕）＝父卡右缘中点 (x+w, y+h/2)
@@ -1047,7 +1107,7 @@
           e.stopPropagation();
           // 找到第一个跨视图目标，打开其工作区
           const crossRel = state.relations.find(r => r.source === cid && !visibleIds.has(r.target));
-          if (crossRel) window.Workspace.open(crossRel.target);
+          if (crossRel) Workspace.open(crossRel.target);
         };
         node.appendChild(badge);
       }
@@ -1183,6 +1243,7 @@
     zoom = newZoom;
     applyTransform();
     lazyLoadVisibleSummaries();
+    scheduleSaveView();   // [F2⑥] pan/zoom 结束防抖持久化
   }, { passive: false });
 
   // 平移
@@ -1200,7 +1261,7 @@
     world.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   });
   document.addEventListener("mouseup", () => {
-    if (panState) { panState = null; viewport.classList.remove("panning"); }
+    if (panState) { panState = null; viewport.classList.remove("panning"); scheduleSaveView(); }   // [F2⑥]
   });
 
   // [T18-C3] 拖拽落点仲裁：onDragUp 的 moved 分支在 persistCardPos 之前调用。
@@ -1262,10 +1323,13 @@
   const pendingPatches = {};
   let patchTimer = null;
   function persistCardPos(cid, x, y) {
-    // 本地立即更新
+    // [card_045 E5] 只写**用户松手的原始坐标**（L1：人的位置只由人给）；
+    // 避让算出的位置只用于显示，绝不写坐标记录。
+    // [card_045 E7 · L6 位置不承担状态表达] 将来若想「把做完的卡挪到一边」表达
+    // 进度——不许：位置只表达人在空间里的摆放意志，进度/状态走卡片自身字段。
+    // [card_045 E7 · L7 钉住的坐标是绝对锚点] 布局算法换代（换树/换网格/换排布）
+    // 只影响派生位置，钉住卡的存储坐标原样保留、人的相对空间关系不因换代被重排。
     state.positions[cid] = { x, y, pinned: true };
-    state._layout = state._layout || {};
-    state._layout[cid] = { x, y };
     pendingPatches[cid] = { x, y, pinned: true };
     if (patchTimer) clearTimeout(patchTimer);
     patchTimer = setTimeout(flushPatches, 500);
@@ -1276,7 +1340,7 @@
     if (Object.keys(patch).length === 0) return;
     try {
       await API.patchPositions(WORK_ID, patch);
-    } catch (e) { /* toast 已处理 */ }
+    } catch (e) { notify("坐标保存失败", "error"); }   // [F3④] 原静默
   }
 
   // ==================== 整理画布 ====================
@@ -1292,7 +1356,7 @@
     }
     try {
       if (Object.keys(patch).length > 0) await API.patchPositions(WORK_ID, patch);
-    } catch (e) { /* toast 已处理 */ }
+    } catch (e) { notify("整理画布保存失败", "error"); }   // [F3④] 原静默
     renderCanvas();
   };
 
@@ -1324,8 +1388,9 @@
         const r = await API.createCard(WORK_ID, { title, source: "用户直接创建", card_type: ctype, parent: state.viewRoot });
         node.remove();
         await reloadCanvas();
-        if (window.RenderNav) window.RenderNav();   // [T17] 新卡同步进导航树
-      } catch (e) { /* toast 已处理 */ }
+        RenderNav();   // [T17] 新卡同步进导航树
+        notify("卡片已创建", "success");   // [F3④]
+      } catch (e) { notify("建卡失败", "error"); }   // [F3④] 原静默
     };
     node.querySelector("#newCardOk").onclick = submit;
     node.querySelector("#newCardCancel").onclick = () => node.remove();
@@ -1337,10 +1402,14 @@
 
   // ==================== 数据加载 ====================
   async function reloadCanvas() {
+    showCanvasState("loading");   // [F3④]
     try {
       const data = await API.getCanvas(WORK_ID);
       state.cards = data.cards || [];
       state.relations = data.relations || [];
+      // [card_045 E7 · L2 位置独立于卡片语义] 卡片改名、换类型、变状态、换归属
+      // 一律不影响其坐标记录（positions 只按 card_id 键挂靠，不携带任何卡片
+      // 语义字段）；验收＝改一张卡的标题／类型后，坐标记录不变、画布位置不变。
       state.positions = data.positions || {};
       if (!state.workCardId) {
         // [T07-1-10] 判据源切换：根卡不再按 card_type 找，改按 card_id == work_card_id
@@ -1360,21 +1429,88 @@
         state.viewRoot = state.workCardId;
       }
       rebuildCardMap();
+      if (!__VIEW_RESTORED__) { restoreViewState(); __VIEW_RESTORED__ = true; }   // [F2⑥] 仅首次加载恢复（模块内旗标）
+      showCanvasState("clear");
       renderCanvas();
+      if (!state.cards.length) showCanvasState("empty");   // [F3④] 空态
       // [T17-F6/R-1] 不再无条件 hideWorkspace()：「刷新画布数据」与「收起对话层」是两件事。
       // 视图切换改由 .app-main[data-view] 显隐驱动（workspace.js setAppView）；「← 画布」
       // 按钮为纯显隐（R-043）；建卡/删卡/对话生卡等数据变更已在各自源头调 ReloadCanvas 刷新。
       // hideWorkspace() 函数保留（setViewRoot 下钻路径仍在用，现为无害空操作）。
-    } catch (e) { /* toast 已处理 */ }
+    } catch (e) {
+      // [迭代四 F3④] 三态容器：加载失败可见（原静默 catch 界面无态——B-18）
+      showCanvasState("error");
+    }
+  }
+
+  // [迭代四 F3④] 画布三态容器：loading／error（失败＋重试）／empty。
+  function showCanvasState(kind) {
+    let box = document.getElementById("canvasStateBox");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "canvasStateBox";
+      box.className = "canvas-state-box";
+      viewport.appendChild(box);
+    }
+    if (kind === "clear") { box.remove(); return; }
+    if (kind === "error") {
+      box.innerHTML = `<div class="cs-error">画布加载失败 <button class="btn" id="csRetry">重试</button></div>`;
+      const b = box.querySelector("#csRetry");
+      if (b) b.onclick = () => { box.innerHTML = `<div class="cs-loading">加载中…</div>`; reloadCanvas(); };
+    } else if (kind === "loading") {
+      box.innerHTML = `<div class="cs-loading">加载中…</div>`;
+    } else if (kind === "empty") {
+      box.innerHTML = `<div class="cs-empty">这张画布还没有卡片——点右上「＋ 新建卡」开始。</div>`;
+    }
   }
 
   function hideWorkspace() {
     const ws = document.getElementById("workspace");
     if (ws) ws.classList.remove("active");
   }
-  window.ReloadCanvas = reloadCanvas;
-  window.GetCanvasState = () => state;
+
+  // [迭代四 F2⑤] 画布状态注册进单一 store（main.js 的 window.GetCanvasState 读此处）
+  store.setState({ canvasState: state });
 
   // 初始加载
   reloadCanvas();
-})();
+
+  // [迭代四 F2③] 模块导出（原 window.SetViewRoot/ReloadCanvas/GetCanvasState 语义）
+  export { setViewRoot, reloadCanvas };
+
+  // [迭代四 F4④] 未读角标数据面：拉 K4 端点 unread_by_card → 更新徽章；
+  // 收件方自己的键上监听 SSE card_message 帧增量（分键 A21）；60s 轮询兜底。
+  async function refreshUnread() {
+    try {
+      const r = await fetch(`/api/works/${WORK_ID}/card-messages?limit=200`);
+      if (!r.ok) return;
+      const d = await r.json();
+      // [F4③④ 口径合成] 端点 unread_by_card 是 pending 推导（档案级）；前端已读
+      // 记 localStorage（projMsgRead，workspace.js 写）——角标＝pending ∧ 前端未读，
+      // 「点开后消失」（U-9）由此成立。
+      let readMap = {};
+      try { readMap = JSON.parse(localStorage.getItem(`projMsgRead:${WORK_ID}`) || "{}"); } catch (e0) { /* 零阻断 */ }
+      const unread = {};
+      for (const it of (d.items || [])) {
+        const key = `${it.to_card}:${it.id}`;
+        if ((d.unread_by_card || {})[it.to_card] && !readMap[key]) unread[it.to_card] = 1;
+      }
+      state._unreadByCard = unread;
+      for (const n of world.querySelectorAll(".card-node")) {
+        const cid = n.dataset.id;
+        const cnt = (state._unreadByCard || {})[cid] || 0;
+        let badge = n.querySelector(".msg-badge");
+        if (cnt > 0) {
+          if (!badge) { badge = document.createElement("span"); badge.className = "msg-badge"; n.appendChild(badge); }
+          badge.textContent = cnt > 99 ? "99+" : cnt;
+        } else if (badge) badge.remove();
+      }
+    } catch (e) { /* 展示层零阻断 */ }
+  }
+  try {
+    const es = new EventSource(`/api/works/${WORK_ID}/cards/${WORK_ID}/stream`);
+    es.addEventListener("card_message", () => refreshUnread());
+    es.onerror = () => { /* SSE 断开静默，轮询兜底 */ };
+  } catch (e) { /* EventSource 不可用零阻断 */ }
+  setInterval(refreshUnread, 60000);
+  refreshUnread();
