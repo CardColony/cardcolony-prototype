@@ -127,12 +127,27 @@ async def triage(work_id: str, card_id: str, user_message: str) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001 落档失败不阻断分流
         logger.warning("triage 块落盘失败 card=%s: %s", card_id, exc)
 
-    return {"verdict": verdict, "reason": reason, "skipped": False}
+    return {"verdict": verdict, "reason": reason, "skipped": False,
+            "auto": False, "rule": ""}
 
 
 async def triage_if_needed(work_id: str, card_id: str, user_message: str) -> dict[str, Any]:
     """S4 接缝入口：板子在内存＝已拆解过→跳过自判（skipped=True，不调模型
-    不落档）；无板→发起自判。"""
+    不落档）；无板→发起自判（先机械预检、再模型判定）。"""
     if board_mod.has_live_board(work_id, card_id):
         return {"verdict": "plan", "reason": "已有活动板，续推不重判", "skipped": True}
+    # [2026-10-11 两套机制拆除] 机械预检：确定性动作（删卡/建卡/改卡/查询）
+    # 直答——原快车道 route() 的 A97 功能保留，但不再独立成「快车道/全链」
+    # 分流，并入本判定链为前置分支（判断只有一级，机械识别是它的分支不是
+    # 独立机制）。延迟导入防循环：routes→message_runner→thinkchain.triage。
+    from ..api.routes import _route_rule
+    rule = _route_rule(user_message)
+    if rule != "未命中":
+        return {
+            "verdict": "direct",
+            "auto": True,
+            "rule": rule,
+            "reason": f"确定性动作：{rule}（机械预检命中，带工具直答）",
+            "skipped": False,
+        }
     return await triage(work_id, card_id, user_message)

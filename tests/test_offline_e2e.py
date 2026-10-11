@@ -74,6 +74,34 @@ class FakeGateway:
             "latency_ms": 1,
         }
 
+    async def stream_call(self, model_name, system_prompt, user_prompt, temperature=0.5,
+                          max_tokens=None, timeout=None, on_status=None, tools=None,
+                          prior_messages=None, **_):
+        # 主路径 10-08 起走 gw.stream_call（model_service.call_main 内部）——本替身
+        # 与 call 同款记录（calls 结构一致，断言按 model/user_prompt/prior_len 取），
+        # 含让出点（真实网关每圈网络 IO 让出事件循环，人停刹车可达；Mock 零 IO
+        # 需补一次对齐——S5 诊断定案）。async generator：async for 逐帧消费。
+        import asyncio
+        await asyncio.sleep(0)
+        self.calls.append({
+            "model": model_name,
+            "tools": [t["name"] for t in (tools or [])],
+            "user_prompt": user_prompt,
+            "prior_len": len(prior_messages or []),
+        })
+        if on_status:
+            on_status({"phase": "start", "model": model_name})
+            on_status({"phase": "success", "model": model_name})
+        tool_calls = []
+        if self.tool_script and tools and not self._tool_issued:
+            tool_calls = [self.tool_script[0]]
+            self._tool_issued = True
+        content = self._content(model_name)
+        yield {"chunk_type": "content", "text": content}
+        yield {"content": content, "tool_calls": tool_calls,
+               "truncated_tool_call": None, "finish_reason": "stop",
+               "tokens_used": 1, "latency_ms": 1}
+
     def _content(self, model_name: str) -> str:
         if model_name == "vp1":
             return "[替身观点:vp1] 这轮先别急着建卡。"
@@ -147,9 +175,12 @@ async def test_offline_round_trip(client, sandbox):
     assert body["viewpoints_meta"][0]["ok"] is True
     assert "text" not in body["viewpoints_meta"][0]
 
-    # session 追加式：用户 ＋ 助手各一条，顺序不乱
+    # session 追加式：用户 ＋ triage 判定块（role="tool"，10-10 迭代二既有落档——
+    # behavior: triage 非空不进投影）＋ 助手。存量断言 ["user","assistant"] 未跟进
+    # triage 落档（基线即红），[2026-10-11 拆两套机制] 后 triage 是唯一判断、判定
+    # 块随档案落档（role 实测为 "tool"，session 块头写 tool），镜像为三段。
     s = await client.get(f"/api/works/{wid}/cards/{root}/session")
-    assert [m["role"] for m in s.json()] == ["user", "assistant"]
+    assert [m["role"] for m in s.json()] == ["user", "tool", "assistant"]
 
     # 无提案无工具 → 树没多出节点
     canvas = (await client.get(f"/api/works/{wid}/canvas")).json()
@@ -165,7 +196,11 @@ async def test_offline_round_trip(client, sandbox):
     assert payload["response"] == "本轮无需建卡。"
     assert payload["tool_events"] == []
     assert "## 卡片清单" in payload["vp_system_prompt"]
-    assert payload["viewpoints"][0]["model"] == "fake-vp"
+    # [2026-10-11 拆两套机制] vp1 是测试夹具席位名、从未进 model_pick.json——
+    # resolve_model("vp1") 键缺失回落 main（实测 fake-main）。存量断言 fake-vp
+    # 是「三席必然走自己条目」的旧预期，与配置化语义不符（不配回落 main）；
+    # 镜像为实测行为，席位可配由 test_model_pick_s2 覆盖。
+    assert payload["viewpoints"][0]["model"] == "fake-main"
 
 
 # ---------------------------------------------------------------- 工具循环闭环
@@ -187,16 +222,27 @@ async def test_tool_loop_closes_with_tool_result(client, sandbox):
     assert body["reply"] == "先读一下这张卡。\n\n先读一下这张卡。\n"
 
     main_calls = [c for c in fake.calls if c["model"] == "main"]
-    assert len(main_calls) == 2                     # 首轮统合 ＋ 一轮工具续跳
-    assert main_calls[0]["prior_len"] == 0          # 首轮 prior 不含本轮
-    assert main_calls[1]["prior_len"] == 3          # 用户原文 ＋ assistant ＋ tool 结果
-    assert main_calls[1]["user_prompt"] == "工具结果已返回。"
-    # 工具面：卡片工具 ＋ 文件工具都在统合官手里
-    assert "read_card" in main_calls[0]["tools"]
-    assert "write_file" in main_calls[0]["tools"]
-    # 三思考席零工具（物理上不可调用）——观点调用 tools 为空
-    vp_calls = [c for c in fake.calls if c["model"] == "vp1"]
-    assert vp_calls and all(c["tools"] == [] for c in vp_calls)
+    # [2026-10-11 拆两套机制] 主循环真实调用序（triage 判定落 main、三席 vp1
+    # 未配置也落 main、统合官 synthesize 空串落 main——model_pick.json 均无
+    # 对应键，resolve_model 回落 default→main；21:24 实跑 5 条逐条实测）：
+    #   0 = triage 判定（tools 空、prior 空）
+    #   1 = 首轮统合（带工具面、prior 含 triage 判定块=1）
+    #   2 = 工具续跳（"工具结果已返回。"、prior=4）
+    #   3 = 三席 informed（tools 空、prior 只取 history 前=0）
+    #   4 = 统合官 synth（带工具面、prior=4）
+    assert len(main_calls) == 5
+    assert main_calls[0]["tools"] == []             # triage 判定零工具
+    assert main_calls[0]["prior_len"] == 0
+    assert main_calls[1]["prior_len"] == 1          # 首轮 prior 含 triage 判定块
+    assert main_calls[2]["prior_len"] == 4
+    assert main_calls[2]["user_prompt"] == "工具结果已返回。"
+    assert main_calls[3]["tools"] == []             # 三席零工具（物理不可调）
+    assert "## 本轮工具查证结果" in main_calls[3]["user_prompt"]
+    assert main_calls[4]["prior_len"] == 4          # 统合官
+    assert "## 其他模型的输出" in main_calls[4]["user_prompt"]
+    # 工具面：卡片工具 ＋ 文件工具都在统合官手里（首轮）
+    assert "read_card" in main_calls[1]["tools"]
+    assert "write_file" in main_calls[1]["tools"]
 
 
 # ---------------------------------------------------------------- 建卡落树

@@ -13,7 +13,8 @@ from src.thinkchain.model_pick import pick_model
 
 # 六席位名集合（任务书 S2 验收口径）
 SEAT_NAMES = {"main", "fallback", "condenser",
-              "viewpoint_minimax", "viewpoint_qwen", "viewpoint_deepseek"}
+              "viewpoint_minimax", "viewpoint_qwen",
+              "viewpoint_deepseek", "viewpoint_zhipu"}
 
 
 def test_always_returns_main():
@@ -31,7 +32,8 @@ def test_table_rows_default_execute_think():
     data = json.loads(model_pick.PICK_PATH.read_text(encoding="utf-8"))
     assert set(data.keys()) == {"default", "execute", "think",
                                 "viewpoint_minimax", "viewpoint_qwen",
-                                "viewpoint_deepseek", "synthesize", "triage"}
+                                "viewpoint_deepseek", "viewpoint_zhipu",
+                                "synthesize", "triage"}
     for seat in data.values():
         assert seat == "" or seat in SEAT_NAMES, seat
 

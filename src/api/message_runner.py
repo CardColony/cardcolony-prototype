@@ -18,13 +18,13 @@
 
 **编排不变量（拆分必须逐字保持，动了就是行为漂移）**：
 1. 轮次上限：**无**（`[无闸改造 2026-10-02]` 循环不设封顶，模型停即收）。
-2. 三席触发条件：`mode != fastlane` 且本轮无 tool_calls 且 `seats_done` 假；
-   进场恰一次（`seats_done` 一次性闸）。
+2. 三席触发条件：未命中确定性动作直答（`auto_direct` 为假）且本轮无
+   tool_calls 且 `seats_done` 假；进场恰一次（`seats_done` 一次性闸）。
 3. 拼接顺序：T14「分析在前、回执在后、`\n\n` 分隔」，落位在日志写之后、
    parse_proposals 之前。
 4. 落盘时机：用户条在装配前；assistant 条在全部交付段之后；
    prompt 日志无论成败都写。
-5. SSE 事件序：`run_start → context → fastlane_route → round_start →
+5. SSE 事件序：`run_start → context → round_start →
    (tool_call → tool_result/card_op)* → seats_enter → seat_* → deliver →
    proposal → done`，逐字见 `tests/_golden/s*_sse.log`。
 """
@@ -114,9 +114,9 @@ class RunState:
     viewpoints_meta: list[dict[str, Any]] = field(default_factory=list)
     # [E-探针制] 三席一次进场闸（口径①：只进场一次；统合官若续查证不重问三席）
     seats_done: bool = False
-    # [信息流 Task1] 快车道分流判定结果（由装配段算好写入）
-    mode: str = "chain"
-    matched_rule: str = "未命中"
+    # [2026-10-11 两套机制拆除] 机械预检命中标记：确定性动作（删卡/建卡/改卡/
+    # 查询）直答、跳三席与统合官（A97 用户裁定）——原快车道 mode 字段退役。
+    auto_direct: bool = False
     # T14 拼接结果（交付段写，供建卡段与返回体读）
     branch: str = ""
     # 交付后的建卡结果
@@ -304,7 +304,12 @@ async def step(state: RunState) -> StepOutcome:
         _tri = await thinkchain_triage.triage_if_needed(
             state.work_id, state.card_id, state.content)
         if _tri["verdict"] == "direct":
-            state.tools = thinkchain_triage.direct_tool_schemas()
+            if _tri.get("auto"):
+                # [2026-10-11 两套机制拆除] 机械预检命中（确定性动作：删卡/建卡/
+                # 改卡/查询）——A97 用户裁定保留：带全量工具直答、跳三席与统合官。
+                state.auto_direct = True
+            else:
+                state.tools = thinkchain_triage.direct_tool_schemas()
         else:
             # [新流程接管 2026-10-11] plan 分支：判定+引导注入模型视野
             # （slot 非轮消息、永不折叠、首轮即进 prior_for_gateway），
@@ -318,9 +323,12 @@ async def step(state: RunState) -> StepOutcome:
             state.slot.append_plain({
                 "role": "assistant", "content": _tri_note,
             })
-            event_stream.emit(state.work_id, state.card_id, "triage_verdict",
-                              {"verdict": _tri["verdict"],
-                               "reason": str(_tri.get("reason") or "")})
+        # [2026-10-11 两套机制拆除] triage_verdict 统一事件：机械预检/模型判定
+        # 都发一行（带 rule 区分），前端只渲染这一行判断——「快车道/全链」退役。
+        event_stream.emit(state.work_id, state.card_id, "triage_verdict",
+                          {"verdict": _tri["verdict"],
+                           "reason": str(_tri.get("reason") or ""),
+                           "rule": _tri.get("rule") or ""})
 
     state.rounds += 1
     if state.rounds == 1:
@@ -405,10 +413,10 @@ async def step(state: RunState) -> StepOutcome:
             })
             state.user_prompt = text_rescue_note
             return StepOutcome("continue", "text_rescue")
-        # [信息流 Task1] 快车道＝单模型直答（A97）：跳三席与统合官，
-        # 本轮即交付（chain 路径完全不受影响——mode=="chain" 不进此支）。
-        if state.mode == "fastlane":
-            return StepOutcome("deliver", "fastlane")
+        # [2026-10-11 两套机制拆除] 确定性动作直答（A97）：机械预检命中、
+        # 带全量工具直答、跳三席与统合官，本轮即交付。
+        if state.auto_direct:
+            return StepOutcome("deliver", "auto_direct")
         # [E-探针制 2026-10-07] 三席后置进场（口径①：工具查证收尾后、交付前，
         # 全程恰一次）。
         if state.seats_done:
@@ -506,9 +514,9 @@ async def step(state: RunState) -> StepOutcome:
             state.final_reply = assistant_content or ""
             state.user_prompt = "工具结果已返回。"
             return StepOutcome("deliver", "escalate")
-        # [信息流 Task4] 并表（A101）：快车道的卡操作落 card_op；
-        # chain 保持 tool_result。全日志打点（A96）。
-        if state.mode == "fastlane" and name in (
+        # [信息流 Task4] 并表（A101）：确定性动作直答的卡操作落 card_op；
+        # 常规链保持 tool_result。全日志打点（A96）。
+        if state.auto_direct and name in (
             "create_card", "edit_card", "delete_card", "read_card",
         ):
             event_stream.emit(state.work_id, state.card_id, "card_op", {
@@ -800,11 +808,11 @@ async def finish(state: RunState) -> dict[str, Any]:
     # 开时三期管线仍挂起待路线裁定，触发只量测＋留痕（memory_store.condense_turn_end）。
     memory_store.maybe_schedule_turn_end(state.work_id, state.card_id)
     progress.set_stage(state.work_id, state.card_id, "done", "完成")
-    # [信息流 Task3/打点 A96] done 事件＋快车道调用数打点
+    # [信息流 Task3/打点 A96] done 事件＋确定性动作直答调用数打点
     event_stream.emit(state.work_id, state.card_id, "done",
                       {"rounds": state.rounds, "model_calls": state.model_calls})
-    if state.mode == "fastlane":
-        logger.info("[flow] 快车道调用 lane=fastlane calls=%s rounds=%s card=%s",
+    if state.auto_direct:
+        logger.info("[flow] 确定性动作直答 calls=%s rounds=%s card=%s",
                     state.model_calls, state.rounds, state.card_id)
     return {
         "reply": state.clean_text,
