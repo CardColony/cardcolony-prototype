@@ -79,13 +79,15 @@ def test_v4_tool_class_card_has_no_file_tools():
     #   分类过滤按 POLICY 表走，与本处计数无关。）
     # [迭代二 S2] 注册表 +7（思维链七工具）——随注册表全量派生，与历次增补
     # 同法；接替未启用前 tool 分类＝全量穿过（EC-131 现状），七件同样可见。
+    # [迭代四 K2] 注册表 +1（send_card_message，卡间发信写工具）——同法，
+    # 全量派生自动可见。
     assert names == {"read_card", "read_memory", "create_card", "edit_card",
                      "delete_card", "update_shadow", "read_shadow",
                      "list_manuscript", "read_manuscript", "search_manuscript",
                      "link_cards", "unlink_cards", "run_tool_card",
                      "create_plan", "plan_reorder", "plan_insert",
                      "plan_remove", "plan_modify", "step_complete",
-                     "escalate_to_plan"}
+                     "escalate_to_plan", "send_card_message"}
 
 
 def test_v4_positive_control_registered_classes_see_all():
@@ -93,14 +95,15 @@ def test_v4_positive_control_registered_classes_see_all():
 
     [工具卡底座 T7 · 2026-10-09] 注册表由 18 件增至 19 件（新增 run_tool_card）。
     [迭代二 S2] 注册表 +7（思维链七工具），19 → 26。
+    [迭代四 K2] 注册表 +1（send_card_message，卡间发信），26 → 27。
     """
     n_all = len(card_tools.build_tool_schemas())
-    assert n_all == 26
+    assert n_all == 27
     for meta in ({"card_type": "sub_project"},
                  {"card_type": "project", "project_class": "rd_project"},
                  {"card_type": "topic"}):
         schemas = card_tools.build_tool_schemas("card_x", cards={"card_x": meta})
-        assert len(schemas) == 26, f"{meta} 应见 26 件，实 {len(schemas)}"
+        assert len(schemas) == 27, f"{meta} 应见 27 件，实 {len(schemas)}"
 
 
 # ---------------------------------------------------------------- V5

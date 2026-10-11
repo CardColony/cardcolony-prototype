@@ -37,7 +37,10 @@ from typing import Any, Callable, Union
 
 from ..permissions import policy
 from ..storage import card_store, manuscript_store, memory_store, shadow_store, work_store
+from ..storage import session_facade, session_ops
 from ..storage.hash_utils import parse_front_matter, split_body_sections
+
+from . import card_msg, event_stream
 from ..toolcard import driver as toolcard_driver
 from ..toolcard import script_loader as toolcard_script_loader
 from ..toolcard import step_prompt as toolcard_step_prompt
@@ -1028,6 +1031,101 @@ _register_file_tools()
 # 位置硬约束：必须在 _register_file_tools() 之后、READONLY_TOOLS 派生之前
 # （七件全为写工具 readonly=False，晚于派生会漏出只读白名单口径）。
 thinkchain_plan_tools.register_into(TOOL_REGISTRY, ToolDef)
+
+
+# ============================================================
+# [迭代四 K2] 卡间发信工具 send_card_message（卡间册 §4.3）。
+# 注册位置硬约束（同上）：必须在 READONLY_TOOLS 派生之前——本工具
+# readonly=False，晚于派生会漏出只读白名单口径。
+# schema 用 callable 形态：msg_type.enum 每次现读注册表 ⇒ 「加类型＝加条目
+# 零代码」（_schema_of 已支持 callable，:144-146 先例）。
+# 五项结构性校验（全走结构性拒绝、不判内容）＋ 子树权限（复用 READ 的
+# check_with_scope 树作用域）＋ 落信（facade.append，actor 显式 card: 前缀）
+# ＋ ops 留痕 ＋ TRIGGERS 记调起意图（调起归 K3，此处只记不调）。
+# 「默认不拦」是刻意的（卡间册 §4.6①）：handler 内无人工审批分支。
+# ============================================================
+async def _h_send_card_message(work_id: str, current_id: str,
+                               arguments: dict[str, Any],
+                               cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    target_id = arguments.get("target_card_id", "")
+    # ① 收件卡存在（照 _h_read_card 先例：先判存在再判权限）
+    if target_id not in cards:
+        return err("not_found", f"卡片不存在: {target_id}")
+    # ② 不得给自己发（放在 ① 之后——自己必存在）
+    if target_id == current_id:
+        return err("invalid", "不能给自己发消息")
+    # ③ 类型合法（错误文案列出合法值，便于模型自我纠正）
+    mt = arguments.get("msg_type", "")
+    if mt not in card_msg.type_codes():
+        return err("invalid", f"未知消息类型: {mt!r}（合法值：{list(card_msg.type_codes())}）")
+    # ④ reply_to 与类型一致：msg_answer 必填；其余不得带
+    reply_to = arguments.get("reply_to", "")
+    if mt == "msg_answer" and not reply_to:
+        return err("invalid", "应答类消息必须填 reply_to")
+    if mt != "msg_answer" and reply_to:
+        return err("invalid", f"{mt} 类消息不得携带 reply_to")
+    # ⑤ 正文非空
+    content = str(arguments.get("content", "")).strip()
+    if not content:
+        return err("invalid", "消息正文不得为空")
+    # 权限＝分类 READ 关口 ＋ 显式子树判定。
+    # [锚点实测修正——卡间册 §4.3 字面与 policy 现状有一处偏差，见回报卡点①]
+    # policy.check_with_scope 的树作用域只对 _TREE_ACTIONS（EDIT/DELETE/LINK/
+    # UNLINK/CREATE_CHILD）生效，READ 不在其中——照册字面只传 READ 会退化为
+    # 纯分类判权、子树限定失效（兄弟卡互发不被挡）。故分类关口照走 READ，
+    # 「收件方必须落在发件方子树内」显式落 _is_in_subtree（向上/跨树发信挡死）。
+    try:
+        policy.check_with_scope(current_id, target_id, policy.Perm.READ, cards)
+    except PermissionError:
+        return err("denied", f"越权：无权向 {target_id} 发送消息")
+    if not policy._is_in_subtree(current_id, target_id, cards):
+        return err("denied", f"越权：{target_id} 不在你的子树内")
+    # 落信 + 留痕 + 记触发意图（错误在前面全走 err 信封不落档——发信成功才落信）
+    msg_id = card_msg.make_msg_id(current_id)
+    body = card_msg.build_header(msg_id, mt, current_id, reply_to) + "\n" + content
+    await session_facade.append(work_id, target_id, {
+        "actor": f"card:{current_id}",   # 显式给 actor → 绕过 role 映射表
+        "from": current_id,
+        "content": body,
+        "behavior": "",                  # 空串 → 进对话投影 + 进模型视野
+        "end": "",                       # 卡块不闭合轮
+    })
+    session_ops.ops_log("card_msg_send", work_id, target_id,
+                        {"msg_id": msg_id, "type": mt, "from": current_id})
+    card_msg.TRIGGERS.setdefault((work_id, target_id), []).append(msg_id)
+    # [迭代四 K4] 通知帧：落信成功后，在**收件方自己的键**上 emit 一帧
+    # （event_stream 按 (work_id, card_id) 分键，不跨键；零阻塞零抛出——
+    # 展示层绝不影响主流程）。前端靠它增量更新角标与未读数（F4 消费）。
+    event_stream.emit(work_id, target_id, "card_message",
+                      {"msg_id": msg_id, "from": current_id, "type": mt})
+    return {"msg_id": msg_id, "target_card_id": target_id, "type": mt}
+
+
+TOOL_REGISTRY["send_card_message"] = ToolDef(
+    schema=lambda: {
+        "name": "send_card_message",
+        "description": ("向另一张卡发送一条消息——对方会被唤起处理它。三种类型："
+                        "询问（需要对方的信息或判断才能继续，等对方回话）／"
+                        "应答（回应对方的询问，必须填 reply_to）／"
+                        "通知（告知一件事、不需要对方回话）。只能发给你子树内的卡。"
+                        "消息不得滥发：只在确有需要对方处理的事时才发。"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_card_id": {"type": "string",
+                                   "description": "收件卡 id，必须在你的子树内"},
+                "msg_type": {"type": "string", "description": "消息类型",
+                             "enum": list(card_msg.type_codes())},
+                "content": {"type": "string", "description": "消息正文"},
+                "reply_to": {"type": "string",
+                             "description": "被回应的消息 id，type=msg_answer 时必填"},
+            },
+            "required": ["target_card_id", "msg_type", "content"],
+        },
+    },
+    handler=_h_send_card_message,
+    readonly=False,
+)
 
 
 # [T11-T10] 只读工具白名单（折叠【依据】「可按原参数重取」语义的依据源）。

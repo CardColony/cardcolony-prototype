@@ -12,7 +12,7 @@
   --border: #30363d;
   --text: #e6edf3;
   --dim: #8b949e;
-  --dimmer: #484f58;
+  --stroke-soft: #484f58;   /* 仅限边框／分隔线，禁用于 color（F1 机制化；原 --dimmer） */
   /* [主界面优化 D1/C6] 深底次级字可读档 token＋用户气泡生态色（原硬编码收编为派生 token） */
   --text-soft: #a5b1bd;
   --c-user: #1f3a5f;
@@ -396,7 +396,7 @@ a { color: inherit; text-decoration: none; }
 .band-label {
   position: absolute;
   z-index: 1;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--dim);   /* [D2 主界面优化] --dimmer 禁入文字色 */
   letter-spacing: 2px;
   pointer-events: none;
@@ -404,13 +404,13 @@ a { color: inherit; text-decoration: none; }
 .edge-label {
   position: absolute;
   z-index: 3;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--dim);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0 7px;
-  line-height: 16px;
+  line-height: 1.6;
   pointer-events: none;
 }
 
@@ -447,7 +447,7 @@ a { color: inherit; text-decoration: none; }
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding-top: 14px;
+  padding-top: 16px;
   flex: none;
 }
 .nav-rail-btn {
@@ -493,9 +493,9 @@ a { color: inherit; text-decoration: none; }
 .nav-phead {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   height: 30px;
-  padding: 0 10px;
+  padding: 0 12px;
   font-size: 12px;
   color: var(--text-soft);   /* [D1 主界面优化] 深底次级字可读档 */
   letter-spacing: 1px;
@@ -515,8 +515,8 @@ a { color: inherit; text-decoration: none; }
   background: var(--panel);
   color: var(--dim);
   font-size: 12px;
-  padding: 0 6px;
-  line-height: 18px;
+  padding: 0 8px;
+  line-height: 1.5;
 }
 .nav-phead:hover .nav-padd { display: inline-block; }
 .nav-padd:hover { color: var(--text); }
@@ -529,8 +529,8 @@ a { color: inherit; text-decoration: none; }
   background: var(--panel);
   color: var(--text-soft);
   font-size: 12px;
-  padding: 0 6px;
-  line-height: 18px;
+  padding: 0 8px;
+  line-height: 1.5;
 }
 .nav-phead:hover .nav-popen { display: inline-block; }
 .nav-popen:hover { color: var(--text); border-color: var(--text); }
@@ -539,10 +539,10 @@ a { color: inherit; text-decoration: none; }
 .nav-card {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   height: 30px;
-  line-height: 30px;
-  padding-right: 10px;
+  line-height: 1.4;
+  padding-right: 12px;
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
@@ -557,7 +557,7 @@ a { color: inherit; text-decoration: none; }
   flex: none;
   width: 24px;            /* [B2 主界面优化] 独立 24px 热区：▸/▾ 只管展开收起，与行点击分离 */
   height: 24px;
-  line-height: 24px;
+  line-height: 1.4;
   text-align: center;
   color: var(--dim);
   font-size: 12px;
@@ -596,7 +596,7 @@ a { color: inherit; text-decoration: none; }
   min-width: 120px;
 }
 .nav-menu-item {
-  padding: 6px 10px;
+  padding: 8px 12px;
   font-size: 12px;
   border-radius: 6px;
   cursor: pointer;
@@ -604,7 +604,7 @@ a { color: inherit; text-decoration: none; }
 }
 .nav-menu-item:hover { background: var(--panel-hover); }
 .nav-empty {
-  padding: 24px 14px;
+  padding: 24px 16px;
   text-align: center;
   font-size: 12px;
   color: var(--text-soft);
@@ -612,7 +612,7 @@ a { color: inherit; text-decoration: none; }
 
 /* [B3 主界面优化·新增] 操作说明（▸ 展开 · 点行进对话 · 「打开 →」进画布） */
 .nav-hint {
-  padding: 4px 10px 8px;
+  padding: 4px 12px 8px;
   font-size: 12px;
   color: var(--text-soft);
   border-bottom: 1px solid var(--border);
@@ -659,11 +659,11 @@ a { color: inherit; text-decoration: none; }
 .insp-body {
   width: 320px;
   flex: none;
-  padding: 18px;
+  padding: 24px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .inspector:not(.open) .insp-body { display: none; }
 .insp-tab {
@@ -770,7 +770,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .edit-row .save-status { font-size: 12px; color: var(--dim); margin-left: auto; }   /* [D3] 12px 下限 */
 
 .rel-item {
-  font-size: 12.5px;
+  font-size: 12px;
   padding: 7px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -851,7 +851,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border-radius: 6px;
   padding: 5px 10px;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .add-child-row select {
   background: var(--bg);
@@ -859,7 +859,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border-radius: 6px;
   padding: 5px 8px;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 /* ============ 讨论区 ============ */
@@ -869,12 +869,12 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
 }
 .msg {
-  max-width: 82%;
+  max-width: min(82%, 720px);
   border-radius: 10px;
-  padding: 10px 14px;
+  padding: 12px 16px;
   font-size: 13px;
   line-height: 1.8;
   word-wrap: break-word;
@@ -886,8 +886,8 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   background: var(--bg-deep);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 8px 10px;
-  margin: 6px 0;
+  padding: 8px 12px;
+  margin: 8px 0;
   font-family: var(--mono);
   font-size: 12px;
   overflow-x: auto;
@@ -900,8 +900,8 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   color: var(--text-soft);   /* [D1/D3 主界面优化] 可读档＋12px 下限 */
   border-radius: 9px;
   padding: 0 8px;
-  line-height: 16px;
-  margin-bottom: 6px;
+  line-height: 1.6;
+  margin-bottom: 8px;
 }
 .msg.thinking {
   align-self: flex-start;
@@ -918,7 +918,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  margin-right: 6px;
+  margin-right: 8px;
   vertical-align: middle;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -931,7 +931,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border: 1px solid #1f6f43;
   border-radius: 8px;
   padding: 8px 12px;
-  max-width: 82%;
+  max-width: min(82%, 720px);
   line-height: 1.8;
 }
 .sys-newcards b { color: var(--green); font-weight: 600; }
@@ -951,10 +951,10 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 6px 10px;
-  max-width: 82%;
+  padding: 8px 12px;
+  max-width: min(82%, 720px);
 }
-.sys-tools .te-item { margin-right: 10px; }
+.sys-tools .te-item { margin-right: 12px; }
 .sys-tools .te-item.fail { color: var(--red); }
 
 .sys-error {
@@ -965,10 +965,10 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border: 1px solid #6e2c2f;
   border-radius: 8px;
   padding: 8px 12px;
-  max-width: 82%;
+  max-width: min(82%, 720px);
 }
 .sys-error .retry-btn {
-  margin-left: 10px;
+  margin-left: 12px;
   background: transparent;
   border: 1px solid var(--red);
   color: var(--red);
@@ -1139,14 +1139,15 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
    逐字正文另有一条 `.msg.assistant.live`（助手消息本体，与用户消息同栏并列）。 */
 .step-row {
   align-self: flex-start;
-  max-width: 82%;
-  font-size: 12px;
+  max-width: min(82%, 720px);
+  margin-top: 0;   /* [F1] 显式零上距（原负边距收紧已退役） */
+  font-size: 13px;
   line-height: 1.6;
   color: var(--text-soft);
   white-space: normal;
   word-break: break-word;
 }
-.step-row + .step-row { margin-top: -9px; }   /* 连续环节收紧行距（首个仍留正常段距） */
+/* [F1] 连续环节负上距收紧已退役（可读性六病灶④；.step-row 主规则显式 margin-top: 0） */
 /* 正式回复过后的「收起/展开过程」开关：行仍是各自独立的条目，只是本组临时隐起来 */
 .step-toggle {
   align-self: flex-start;
@@ -1157,7 +1158,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   padding: 1px 4px;
   border-radius: 4px;
 }
-.step-row + .step-toggle { margin-top: -9px; }
+/* [F1] 收起开关的负上距已退役（六病灶④） */
 .step-toggle:hover { background: var(--panel-hover); color: var(--text-soft); }
 .step-row.ok { color: var(--green); }
 .step-row.fail { color: var(--red); }
@@ -1166,13 +1167,13 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .step-row.has-detail:hover { background: var(--panel-hover); border-radius: 4px; }
 .step-row .step-detail {
   display: none;
-  margin: 4px 0 2px 14px;
-  padding: 6px 8px;
+  margin: 4px 0 2px 16px;
+  padding: 8px 8px;
   background: var(--bg-deep);
   border: 1px solid var(--border);
   border-radius: 6px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 180px;
@@ -1182,8 +1183,8 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
    仅以 dashed 边表示进行中（沿用 .msg.thinking 的进行中语义）。 */
 .msg.assistant.live { border-style: dashed; }
 .msg.assistant.live .live-reasoning {
-  margin-bottom: 6px;
-  padding-bottom: 6px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
   border-bottom: 1px dashed var(--border);
   color: var(--dim);
   font-style: italic;
@@ -1192,5 +1193,60 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   white-space: pre-wrap;
   word-break: break-word;
 }
-.msg.assistant.live .live-reasoning .live-icon { margin-right: 6px; opacity: .8; }
+.msg.assistant.live .live-reasoning .live-icon { margin-right: 8px; opacity: .8; }
 .msg.assistant.live .live-content { white-space: pre-wrap; word-break: break-word; }
+
+
+/* ============ 迭代四 F3/F4 新增类（间距全用 F1 刻度 4/8/12/16/24） ============ */
+/* [F3⑤] 停按钮（顶栏两态可见） */
+.btn.danger { border-color: var(--red); color: var(--red); }
+.btn.danger:hover { background: rgba(248, 81, 73, 0.12); }
+.btn.stop-inline { font-size: 12px; padding: 2px 8px; margin-left: 8px; }
+.heartbeat-tip { display: flex; align-items: center; font-size: 12px; color: var(--yellow, #d29922); }
+
+/* [F3⑦] 切视图过渡：120ms opacity，不动布局 */
+.app-main[data-view] { transition: opacity 0.12s ease; }
+
+/* [F3④] 画布三态容器 */
+.canvas-state-box { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 5; }
+.canvas-state-box .cs-loading, .canvas-state-box .cs-empty, .canvas-state-box .cs-error {
+  pointer-events: auto; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 16px 24px; font-size: 13px; color: var(--text-soft); }
+.canvas-state-box .cs-error { color: var(--red); border-color: var(--red); }
+
+/* [F3①] notify 可点样式 */
+.toast.notify.clickable { cursor: pointer; text-decoration: underline dotted; }
+.toast.notify.warn { border-color: var(--yellow, #d29922); }
+
+/* [F2① 复用 B-24] 保存三态形态补色 */
+.save-status.ok { color: var(--green); }
+.save-status.fail { color: var(--red); }
+.save-status.busy { color: var(--dim); }
+
+/* [F4①] navActions 常驻动作条：rail 竖排／非 rail 横排靠右 */
+#navActions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px; }
+.app-nav.rail #navActions { flex-direction: column; padding: 8px 0; }
+#navNotifyBtn { position: relative; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 14px; padding: 2px 8px; }
+#navNotifyBtn:hover { border-color: var(--text); }
+.nav-notify-count { position: absolute; top: -6px; right: -6px; background: var(--red); color: #fff; border-radius: 8px; font-size: 12px; padding: 0 4px; display: none; }
+.nav-notify-count.on { display: inline-block; }
+
+/* [F4②] 通知面板（浮层） */
+.notify-panel { display: none; position: fixed; top: 52px; left: 12px; width: 420px; max-height: 60vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; z-index: 1200; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+.notify-panel.open { display: block; }
+.np-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text); }
+.np-close { background: transparent; border: 0; color: var(--dim); font-size: 14px; cursor: pointer; }
+.np-list { padding: 4px 0; }
+.np-item { display: block; width: 100%; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--border); padding: 8px 12px; cursor: pointer; color: var(--text-soft); font-size: 12px; line-height: 1.6; }
+.np-item:hover { background: var(--panel-hover); }
+.np-item .np-meta { color: var(--dim); font-size: 11px; }
+.np-item.bad .cmsg-type { color: var(--red); }
+
+/* [F4④] msg-badge：卡间消息未读角标（左外角 -6px 终值） */
+.card-node .msg-badge { position: absolute; left: -6px; top: -6px; background: var(--red); color: #fff; border-radius: 9px; font-size: 10px; padding: 1px 5px; z-index: 3; }
+
+/* [F4⑥] 卡间消息气泡（.msg.card）——完整值照前端册 :273-279 */
+.msg.card { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid #58a6ff; font-size: 13px; line-height: 1.8; padding: 8px 12px; }
+.msg.card .cmsg-meta { color: var(--dim); font-size: 11px; margin-bottom: 4px; }
+.msg.card .cmsg-type { color: #58a6ff; font-weight: 600; }
+.msg.card .cmsg-type.bad { color: var(--red); }

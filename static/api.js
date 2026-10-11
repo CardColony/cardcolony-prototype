@@ -1,89 +1,10 @@
-/* api.js - fetch 封装（统一错误弹 toast，messages 不设超时） */
-(function () {
-  "use strict";
-
-  function toast(msg, kind) {
-    const c = document.getElementById("toastContainer");
-    if (!c) { alert(msg); return; }
-    const el = document.createElement("div");
-    el.className = "toast" + (kind ? " " + kind : "");
-    el.textContent = msg;
-    c.appendChild(el);
-    setTimeout(() => el.remove(), 4000);
-  }
-
-  async function request(method, url, body) {
-    const opts = {
-      method,
-      headers: {},
-    };
-    if (body !== undefined) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
-    }
-    // messages 不设超时（模型可能 30~120 秒），其他请求 15 秒
-    if (!url.includes("/messages")) {
-      const ctrl = new AbortController();
-      opts.signal = ctrl.signal;
-      const t = setTimeout(() => ctrl.abort(), 15000);
-      try {
-        const resp = await fetch(url, opts);
-        clearTimeout(t);
-        return resp;
-      } catch (e) {
-        clearTimeout(t);
-        throw e;
-      }
-    }
-    return await fetch(url, opts);
-  }
-
-  async function call(method, url, body) {
-    let resp;
-    try {
-      resp = await request(method, url, body);
-    } catch (e) {
-      if (e.name === "AbortError") {
-        toast("请求超时", "error");
-      } else {
-        toast("网络错误：" + e.message, "error");
-      }
-      throw e;
-    }
-    let data = null;
-    try { data = await resp.json(); } catch (e) { /* 非 JSON */ }
-    if (!resp.ok) {
-      const msg = (data && data.error) ? data.error : ("HTTP " + resp.status);
-      toast(msg, "error");
-      throw new Error(msg);
-    }
-    return data;
-  }
-
-  const API = {
-    toast,
-    call,
-    // 剧本架
-    listWorks: () => call("GET", "/api/works"),
-    createWork: (title) => call("POST", "/api/works", { title }),
-    // [T17-F7] 跨项目导航树（一次拿全，服务端排序）
-    getNav: () => call("GET", "/api/nav"),
-    // 画布
-    getCanvas: (wid) => call("GET", `/api/works/${wid}/canvas`),
-    patchPositions: (wid, positions) => call("PATCH", `/api/works/${wid}/canvas/positions`, { positions }),
-    // 卡片
-    createCard: (wid, body) => call("POST", `/api/works/${wid}/cards`, body),
-    getCard: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}`),
-    patchCard: (wid, cid, updates, history_note) =>
-      call("PATCH", `/api/works/${wid}/cards/${cid}`, { updates, history_note }),
-    // [用户删卡 2026-10-02] 仅前端；模型工具清单不含此能力
-    deleteCard: (wid, cid) => call("DELETE", `/api/works/${wid}/cards/${cid}`),
-    // 会话
-    getSession: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/session`),
-    postMessage: (wid, cid, content) => call("POST", `/api/works/${wid}/cards/${cid}/messages`, { content }),
-    // [实时反馈 2026-10-02] 调用进度查询（纯展示层）
-    getProgress: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/progress`),
-  };
-
-  window.API = API;
+/* api.js —— 薄壳（迭代四 F2①）：唯一实现已迁 static/esm/api.js（ESM）。
+ * 本壳服务 index.html 页（剧本架，普通 script 加载、不转 ESM）：
+ * 动态 import 后挂 window，shelf.js 事件回调内使用（异步就绪，无顶层立即调用）。
+ * work 页（work.html）经 esm/main.js 静态 import，不走本壳。
+ */
+(async function () {
+  const m = await import("/static/esm/api.js?v=11.0");
+  window.API = m.API;
+  window.toast = m.toast;
 })();

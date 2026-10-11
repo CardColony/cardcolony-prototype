@@ -14,6 +14,11 @@
       <button class="nav-rail-btn" id="navRailBtn" title="对话导航（点击钉住浮层）">☰</button>
       <div class="nav-rail-dot" title="当前项目"></div>
     </div>
+    <!-- [迭代四 F4①] 常驻动作条＋通知按钮：不进 .nav-rail（它只在画布态可见，B-6）——
+         放导航树之前，rail 态竖排、非 rail 横排靠右（CSS 两态各一条） -->
+    <div id="navActions">
+      <button id="navNotifyBtn" title="卡间消息通知">🔔<span id="navNotifyCount" class="nav-notify-count"></span></button>
+    </div>
     <div class="nav-tree" id="navTree">
       <!-- workspace.js renderNav 动态填充 -->
     </div>
@@ -29,6 +34,8 @@
       <span id="zoomDisplay" class="zoom-display">100%</span>
       <button id="reorganizeBtn" class="btn" title="重算所有卡片位置（清除 pinned）">整理画布</button>
       <button id="newCardBtn" class="btn primary">＋ 新建卡</button>
+      <!-- [迭代四 F3⑤] 停止按钮：顶栏两态都可见（B-7）；U-7 停止真生效（end=human_stop） -->
+      <button id="stopBtn" class="btn danger" title="停止当前卡的生成（档案落 human_stop）">■ 停止</button>
     </div>
 
     <div class="stage">
@@ -73,12 +80,18 @@
   </div>
 </div>
 <div id="toastContainer" class="toast-container"></div>
+<!-- [迭代四 F4②] 通知面板（浮层）：列表项「时间·发件卡名→收件卡名·类型·摘要」；
+     点击跳收件卡；format_ok:false 归「格式异常」分组 -->
+<div id="notifyPanel" class="notify-panel">
+  <div class="np-head">卡间消息 <button id="npClose" class="np-close">×</button></div>
+  <div id="npList" class="np-list"></div>
+</div>
 <script>
   window.__WORK_ID__ = "{{WORK_ID}}";
 </script>
-<script src="/static/api.js?v=10.0"></script>
-<script src="/static/stream.js?v=10.2"></script>
-<script src="/static/canvas.js?v=10.0"></script>
-<script src="/static/workspace.js?v=10.2"></script>
+<!-- [迭代四 F2④] 四 script → 单 ES module 入口（esm/main.js 按依赖序装配：
+     util → api → store → stream → canvas → workspace）。原 ?v= 戳过渡保留；
+     Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
+<script type="module" src="/static/esm/main.js?v=11.0"></script>
 </body>
 </html>

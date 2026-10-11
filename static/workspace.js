@@ -1,9 +1,17 @@
 /* workspace.js - [T17-F4/F5] 卡片工作区：左栏对话导航 + 中区讨论区 + 右栏 Inspector
    （原「左35%资料 + 右65%讨论区」结构退役；编辑能力整体迁入右栏 Inspector） */
-(function () {
-  "use strict";
+/* 迭代四 F2③：IIFE → ES module；escapeHtml/API/EventFlow/ReloadCanvas 走模块 import。
+ * 循环依赖（canvas.js import 本文件的 Workspace/RenderNav）由 ESM 活绑定＋函数声明
+ * 提升保证：本文件顶层不调用任何 canvas 导出。 */
+import { API } from "./esm/api.js?v=11";
+import { escapeHtml } from "./esm/util.js?v=11";
+import { EventFlow } from "./stream.js?v=11";
+import { reloadCanvas } from "./canvas.js?v=11";
+import { store } from "./esm/store.js?v=11";
+import { notify, postStop } from "./esm/api.js?v=11";
+import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=11";
 
-  const WORK_ID = window.__WORK_ID__;
+const WORK_ID = window.__WORK_ID__;
   const ws = document.getElementById("workspace");
   const inspBody = document.getElementById("inspBody");
   const inspector = document.getElementById("inspector");
@@ -18,12 +26,6 @@
   // （如加删关系触发）时恢复编辑态，不丢未保存内容
   let conclEditing = false;
   let conclDraft = "";
-
-  function escapeHtml(s) {
-    return String(s || "").replace(/[&<>"']/g, c => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    }[c]));
-  }
 
   function formatMsgContent(text) {
     // 换行转 <br>，```代码块``` 转 <pre>
@@ -47,7 +49,7 @@
     if (main) main.dataset.view = view;
     if (nav) nav.classList.toggle("rail", view === "canvas");
   }
-  window.SetAppView = setAppView;
+  /* [F2③] 挂载改导出 */
 
   async function open(cardId) {
     try {
@@ -59,8 +61,8 @@
       // 事件只活在服务端内存 journal（不落盘、不进 session/prior/模型输入）：
       //   同进程且该卡此后没再发过请求 ⇒ 重放得出；进程重启或又发过消息 ⇒ 自然没有了。
       // 只重放环节行、不重放正文（正文已由 renderChat 从会话渲染，免得出现重复气泡）。
-      if (window.EventFlow && window.EventFlow.replayTrace) {
-        window.EventFlow.replayTrace(WORK_ID, cardId);
+      {
+        EventFlow.replayTrace(WORK_ID, cardId);
       }
       // [刷新恢复 2026-10-03] 卡号写进 URL hash：刷新后按 hash 自动重开这张卡。
       // 用 replaceState 不堆积浏览历史、不触发页面重载；URL 即状态，不引入前端存储。
@@ -78,7 +80,7 @@
       autoGrowAll();
     } catch (e) { /* toast 已处理 */ }
   }
-  window.Workspace = { open };
+  export const Workspace = { open };
 
   // [T17-F4] renderLeft() 拆二之一：renderInspector()——原左栏 DOM 原样迁入右栏
   // inspBody（仅去掉 wsBackBtn：返回按钮上移到对话区头部，见 work.html .ws-head）。
@@ -98,7 +100,7 @@
           </div>`).join("");
 
     // [phase8.6-E] 添加关系行：目标卡下拉（画布卡集，排除自身）+ 类型下拉
-    const canvasCards = (window.GetCanvasState ? (window.GetCanvasState().cards || []) : [])
+    const canvasCards = ((store.state.canvasState && store.state.canvasState.cards) || [])
       .filter(c => c.card_id !== m.card_id);
     const targetOptions = canvasCards
       .map(c => `<option value="${escapeHtml(c.card_id)}">${escapeHtml(c.card_id)} · ${escapeHtml(c.title)}</option>`)
@@ -257,7 +259,8 @@
           await renderInspector();
           await renderNav();
           document.getElementById("wsHeadTitle").textContent = currentCard.meta.title || "";
-        } catch (e) { /* toast 已处理 */ }
+          notify("标题已保存", "success");   // [F3②] 标题保存反馈（原无任何反馈）
+        } catch (e) { notify("标题保存失败", "error"); }
       };
       input.onblur = save;
       input.onkeydown = (e) => {
@@ -270,20 +273,19 @@
     document.getElementById("saveCharter").onclick = async () => {
       const v = document.getElementById("charterEdit").value;
       const status = document.getElementById("charterStatus");
-      status.textContent = "保存中…";
+      setSaveStatus(status, "busy", "保存中…");
       try {
         const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { mission: v }, "用户编辑使命区");
         currentCard = r;
-        status.textContent = "已保存";
-        setTimeout(() => status.textContent = "", 2000);
-      } catch (e) { status.textContent = "失败"; }
+        setSaveStatus(status, "ok", "已保存");
+      } catch (e) { setSaveStatus(status, "fail", "保存失败"); }
     };
 
     // status_block 保存：[I2 主界面优化] 保存回只读态；再改须显式「编辑现状」
     document.getElementById("saveConclusion").onclick = async () => {
       const v = document.getElementById("conclusionEdit").value;
       const status = document.getElementById("conclusionStatus");
-      status.textContent = "保存中…";
+      setSaveStatus(status, "busy", "保存中…");
       try {
         const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { status_block: v }, "用户编辑现状区");
         currentCard = r;
@@ -296,9 +298,8 @@
           view.classList.toggle("empty", !nv);
         }
         applyConclusionState();
-        status.textContent = "已保存";
-        setTimeout(() => status.textContent = "", 2000);
-      } catch (e) { status.textContent = "失败"; }
+        setSaveStatus(status, "ok", "已保存");
+      } catch (e) { setSaveStatus(status, "fail", "保存失败"); }
     };
 
     // [I2] 显式进编辑 / 取消弃改
@@ -381,7 +382,7 @@
         document.getElementById("childTitle").value = "";
         API.toast("已建子卡：" + title, "success");
         // [T17] 建卡即时刷新画布数据与导航树（视图不动；画布隐藏态仍可安全重渲）
-        if (window.ReloadCanvas) window.ReloadCanvas();
+        reloadCanvas();
         await renderNav();
       } catch (e) { /* toast 已处理 */ }
     };
@@ -405,7 +406,7 @@
         try {
           await API.deleteCard(WORK_ID, cid);
           API.toast("已删除：" + title, "success");
-          if (window.ReloadCanvas) window.ReloadCanvas();
+          reloadCanvas();
           setAppView("canvas");
           await renderNav();
         } catch (e) { /* toast 已处理（后端 error 文本透传） */ }
@@ -444,7 +445,8 @@
     }
     renderNavFromCache();
   }
-  window.RenderNav = renderNav;   // canvas.js 建卡后同步刷新导航用
+  export const RenderNav = renderNav;   // canvas.js 建卡后同步刷新导航用
+  export { setAppView };   // 原 window.SetAppView
 
   function ensureCurrentPath() {
     // 当前卡所在路径自动展开＋其项目自动展开（每次换卡应用一次，不与用户手折对抗）
@@ -673,11 +675,13 @@
   }
 
   function appendMessage(role, content, model) {
+    // [迭代四 F4⑥] 卡间消息分流：role 以 card: 开头＝其他卡发来的消息——
+    // 必须先于下方 live 接管分支（否则吞掉正在生成的助手气泡）。
+    if (role && String(role).startsWith("card:")) return appendCardMessage(role, content);
     const badge = (role === "assistant" && model) ? `<div class="model-badge">${escapeHtml(model)}</div>` : "";
     // [对话流渲染] 权威助手消息上屏时**就地接管**那条正在生成的正文条目
     // （`.msg.assistant.live`）——.live 不计入基数（见 localCount/baseline），
     // 接管后它就成为该条助手消息本体；过程行 `.step-row` 各自独立留在对话流里，不动。
-    // 就地接管 ⇒ 全程只有一条助手消息，不会出现两条割裂的气泡。
     if (role !== "user") {
       const live = chatArea.querySelector(".msg.assistant.live");
       if (live) {
@@ -699,6 +703,40 @@
     return el;
   }
 
+  // [迭代四 F4⑥] 卡间消息渲染：.msg.card 结构＋头行剥离；解析失败显示
+  // 「消息格式异常」标记＋原文全文照示（不静默丢弃，卡间册 §4.2 解析失败处置①）。
+  function appendCardMessage(role, content) {
+    const hdr = parseCardHeader(content);
+    const div = document.createElement("div");
+    div.className = "msg card";
+    const meta = document.createElement("div");
+    meta.className = "cmsg-meta";
+    const body = document.createElement("div");
+    body.className = "cmsg-body";
+    if (hdr) {
+      meta.innerHTML = `<span class="cmsg-type">${escapeHtml(hdr.type)}</span>` +
+        ` <span class="step-dim">来自 ${escapeHtml(role.slice(5))}</span>` +
+        (hdr.reply_to ? ` <span class="step-dim">回应 ${escapeHtml(hdr.reply_to)}</span>` : "");
+      body.textContent = stripCardHeader(content);
+    } else {
+      meta.innerHTML = `<span class="cmsg-type bad">消息格式异常</span>`;
+      body.textContent = content;   // 原文全文照示
+      try { console.info("[cardmsg] render bad header"); } catch (e) { /* 零阻断 */ }
+    }
+    div.appendChild(meta);
+    div.appendChild(body);
+    chatArea.appendChild(div);
+    scrollChatBottom();
+    return div;
+  }
+
+  // [迭代四 F3②] 保存三态反馈（形态照 B-24 .edit-row .save-status 既有三态）
+  function setSaveStatus(el, state, text) {
+    if (!el) return;
+    el.className = "save-status " + (state || "");
+    el.textContent = text || "";
+    if (state === "ok") setTimeout(() => { el.textContent = ""; el.className = "save-status"; }, 2500);
+  }
   function scrollChatBottom() {
     chatArea.scrollTop = chatArea.scrollHeight;
   }
@@ -717,6 +755,34 @@
     error: "调用失败",
     idle: "等待开始",
   };
+  // [迭代四 F3②] 等待气泡心跳：超 180 秒提示＋亮出停止按钮（提示不是中断——
+  // /messages 保持不设超时，B-10 原样）。U-7 停止真生效（档案 end=human_stop）。
+  function attachHeartbeat(bubble, cardId) {
+    const timer = setTimeout(() => {
+      if (!bubble.isConnected) return;
+      const tip = document.createElement("div");
+      tip.className = "sys-tools heartbeat-tip";
+      tip.textContent = "⏱ 已等待超过 3 分钟——仍在生成。可继续等待或停止。";
+      const stopBtn = document.createElement("button");
+      stopBtn.className = "btn stop-inline";
+      stopBtn.textContent = "停止";
+      stopBtn.onclick = async () => {
+        stopBtn.disabled = true;
+        try {
+          await postStop(WORK_ID, cardId);
+          notify("已发送停止指令", "warn");
+        } catch (e) { notify("停止指令失败", "error"); }
+      };
+      tip.appendChild(stopBtn);
+      chatArea.appendChild(tip);
+      scrollChatBottom();
+    }, 180000);
+    const obs = new MutationObserver(() => {
+      if (!bubble.isConnected) { clearTimeout(timer); obs.disconnect(); }
+    });
+    obs.observe(chatArea, { childList: true, subtree: false });
+  }
+
   function createWaitingBubble(prefix, cardIdAtSend) {
     // [对话流渲染 T1] 两态互斥：等待气泡（.msg.thinking）只在事件流连不上时兜底，
     // 与生成中气泡（.msg.assistant.live）不并存——建等待气泡前先撤生成中气泡。
@@ -730,6 +796,7 @@
     };
     render();
     chatArea.appendChild(el);
+    attachHeartbeat(el, cardIdAtSend);   // [F3②] 心跳＋停止按钮
     scrollChatBottom();
     const timer = setInterval(() => { seconds += 1; render(); }, 1000);
     const poll = setInterval(async () => {
@@ -778,8 +845,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // 同一张卡上已有等待气泡时不重复挂（避免 hashchange 等路径重复触发）
       if (chatArea.querySelector(".msg.thinking, .msg.assistant.live")) return false;
       // [信息流 Task5] 刷新重放：过程卡 from=0 重建（V5；SSE 连不上回退等待气泡）
-      if (window.EventFlow) {
-        window.EventFlow.start(WORK_ID, cardId, () => {
+      // [F2③] 原 `if (window.EventFlow)`——module 化后恒在，守卫保留结构
+      if (EventFlow) {
+        EventFlow.start(WORK_ID, cardId, () => {
           createWaitingBubble("思考中…（刷新前已启动）", cardId);
         });
       } else {
@@ -810,8 +878,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     // [信息流 Task5] SSE 过程卡先行（from=0）；连不上回退等待气泡（V6 降级保底）
     let waiting = null;
-    if (window.EventFlow) {
-      window.EventFlow.start(WORK_ID, cardId, () => {
+    // [F2③] 原 `if (window.EventFlow)`——module 化后恒在，守卫保留结构
+    if (EventFlow) {
+      EventFlow.start(WORK_ID, cardId, () => {
         waiting = createWaitingBubble("思考中…", cardId);
       });
     } else {
@@ -820,13 +889,14 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     // [hotfix] 后端完成但连接断了 → 从会话记录恢复回复，杜绝无限转圈
     async function tryRecover() {
+      try { console.info("[recover] tick"); } catch (e0) { /* 零阻断 */ }
       if (settled) return false;
       try {
         const msgs = await API.getSession(WORK_ID, cardId);
         if (msgs.length >= baseline + 1 && msgs[msgs.length - 1].role === "assistant") {
           settled = true;
           if (waiting) waiting.stop();
-          if (window.EventFlow) setTimeout(() => window.EventFlow.stop(), 2500);
+          setTimeout(() => EventFlow.stop(), 2500);
           await renderChat();
           const note = document.createElement("div");
           note.className = "sys-tools";
@@ -838,7 +908,14 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       } catch (e2) { /* 静默，下轮再试 */ }
       return false;
     }
-    const pollTimer = setInterval(tryRecover, 15000);
+    let pollFails = 0;   // [F3②] 连续失败提示（继续轮询不放弃）
+    const pollTimer = setInterval(async () => {
+      try { await tryRecover(); pollFails = 0; }
+      catch (e) {
+        pollFails++;
+        if (pollFails === 2) notify("进度查询连续失败，仍在重试…", "warn");
+      }
+    }, 15000);
 
     sendBtn.disabled = true;
 
@@ -847,7 +924,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       if (settled) return;   // 已由轮询恢复，丢弃迟到响应
       settled = true;
       if (waiting) waiting.stop();
-      if (window.EventFlow) setTimeout(() => window.EventFlow.stop(), 2500);   // 让 done 帧送达后收流
+      setTimeout(() => EventFlow.stop(), 2500);   // 让 done 帧送达后收流
       appendMessage("assistant", resp.reply, resp.model);
 
       // created_cards 绿条
@@ -863,7 +940,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           it.onclick = () => open(it.dataset.cid);
         });
         // [T17] 对话中生的卡即时进画布与导航（不等「← 画布」）
-        if (window.ReloadCanvas) window.ReloadCanvas();
+        reloadCanvas();
         renderNav();
       }
 
@@ -934,8 +1011,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     } catch (e) { /* 取会话失败按未持有 pair_id 处理，不阻断重发 */ }
     // [信息流 Task5] 重发同样走过程卡（SSE 先行、失败回退）
     let waiting = null;
-    if (window.EventFlow) {
-      window.EventFlow.start(WORK_ID, cardId, () => {
+    // [F2③] 原 `if (window.EventFlow)`——module 化后恒在，守卫保留结构
+    if (EventFlow) {
+      EventFlow.start(WORK_ID, cardId, () => {
         waiting = createWaitingBubble("重发中…", cardId);
       });
     } else {
@@ -954,7 +1032,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       }
       const resp = await httpResp.json();
       if (waiting) waiting.stop();
-      if (window.EventFlow) setTimeout(() => window.EventFlow.stop(), 2500);
+      setTimeout(() => EventFlow.stop(), 2500);
       appendMessage("assistant", resp.reply, resp.model);
       scrollChatBottom();
     } catch (e) {
@@ -1035,6 +1113,101 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 初始导航渲染（画布态窄条悬停浮层也有树）
   renderNav();
 
-  restoreFromHash();
+  // ═══ [迭代四 F3⑤] 停止按钮（顶栏两态可见）：U-7 停止真生效（档案 end=human_stop）═══
+  {
+    const stopBtn = document.getElementById("stopBtn");
+    if (stopBtn) stopBtn.onclick = async () => {
+      const cardId = currentCard ? currentCard.meta.card_id : (window.GetCanvasState && (() => { const s = window.GetCanvasState(); return s && s._lastOpenedCard; })());
+      if (!cardId) { notify("没有正在查看的卡", "warn"); return; }
+      stopBtn.disabled = true;
+      try {
+        await postStop(WORK_ID, cardId);
+        notify("已发送停止指令", "warn");
+      } catch (e) { notify("停止指令失败", "error"); }
+      stopBtn.disabled = false;
+    };
+  }
 
-})();
+  // ═══ [迭代四 F4①②③] 通知按钮＋面板：拉 K4 端点、渲染列表、点击跳卡、已读推进 ═══
+  {
+    const btn = document.getElementById("navNotifyBtn");
+    const panel = document.getElementById("notifyPanel");
+    const list = document.getElementById("npList");
+    const count = document.getElementById("navNotifyCount");
+    const READ_KEY = `projMsgRead:${WORK_ID}`;
+
+    function readMap() {
+      try { return JSON.parse(localStorage.getItem(READ_KEY) || "{}"); } catch (e) { return {}; }
+    }
+    function writeRead(map) {
+      try {
+        const entries = Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 500);   // 上限 500 按 ts 淘汰
+        localStorage.setItem(READ_KEY, JSON.stringify(Object.fromEntries(entries)));
+      } catch (e) { /* 零阻断 */ }
+    }
+
+    async function refreshBadge() {
+      try {
+        const d = await API.getCardMessages(WORK_ID);
+        const unread = d.unread_by_card || {};
+        const n = Object.keys(unread).length;
+        count.textContent = n > 99 ? "99+" : n;
+        count.className = "nav-notify-count" + (n > 0 ? " on" : "");
+      } catch (e) { /* 展示层零阻断 */ }
+    }
+
+    function renderPanel(items) {
+      const read = readMap();
+      const bad = items.filter(i => !i.format_ok);
+      const good = items.filter(i => i.format_ok);
+      const mk = (i, isBad) => {
+        const unreadKey = `${i.to_card}:${i.id}`;
+        const btn = document.createElement("button");
+        btn.className = "np-item" + (isBad ? " bad" : "");
+        const ts = (i.ts || "").slice(0, 16).replace("T", " ");
+        btn.innerHTML = `<div>${escapeHtml(ts)} · ${escapeHtml(i.from_title || i.from_card)} → ${escapeHtml(i.to_card)}` +
+          ` · <span class="cmsg-type${isBad ? " bad" : ""}">${escapeHtml(isBad ? "格式异常" : i.type_display)}</span></div>` +
+          `<div class="np-meta">${escapeHtml((i.summary || "").slice(0, 60))}</div>` +
+          (read[unreadKey] ? "" : `<div class="np-meta">（未读）</div>`);
+        btn.onclick = () => {
+          read[unreadKey] = Date.now();
+          writeRead(read);
+          panel.classList.remove("open");
+          Workspace.open(i.to_card);   // 快捷跳收件卡（B4）
+          setTimeout(async () => {
+            const el = document.querySelector(`[data-seq="${i.seq}"]`);
+            if (el) el.scrollIntoView({ block: "center" });
+          }, 600);
+        };
+        return btn;
+      };
+      list.innerHTML = "";
+      if (!items.length) { list.innerHTML = `<div class="np-item">（暂无卡间消息）</div>`; return; }
+      for (const i of good) list.appendChild(mk(i, false));
+      if (bad.length) {
+        const head = document.createElement("div");
+        head.className = "np-meta";
+        head.style.padding = "8px 12px";
+        head.textContent = `格式异常 ${bad.length} 条`;
+        list.appendChild(head);
+        for (const i of bad) list.appendChild(mk(i, true));
+      }
+    }
+
+    if (btn) btn.onclick = async () => {
+      if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
+      try {
+        const d = await API.getCardMessages(WORK_ID);
+        renderPanel(d.items || []);
+        panel.classList.add("open");
+        refreshBadge();
+      } catch (e) { notify("通知拉取失败", "error"); }
+    };
+    const npClose = document.getElementById("npClose");
+    if (npClose) npClose.onclick = () => panel.classList.remove("open");
+
+    refreshBadge();
+    setInterval(refreshBadge, 60000);
+  }
+
+  restoreFromHash();

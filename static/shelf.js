@@ -116,8 +116,18 @@
   async function load() {
     try {
       const data = await API.listWorks();
-      renderBooks(data.works || []);
-    } catch (e) { /* toast 已处理 */ }
+      const works = data.works || [];
+      const g = document.getElementById("shelfGrid");
+      if (!works.length && g) {
+        g.innerHTML = `<div class="loading-screen">还没有剧本——点右上「＋ 新建剧本」开始。</div>`;   // [F3⑥] 空态
+        return;
+      }
+      renderBooks(works);
+    } catch (e) {
+      // [F3⑥] 失败态＋重试（原静默 catch）
+      const g = document.getElementById("shelfGrid");
+      if (g) g.innerHTML = `<div class="loading-screen">加载失败 <button class="btn" onclick="location.reload()">重试</button></div>`;
+    }
   }
 
   window.NewBookConfirm = confirmCreate;
