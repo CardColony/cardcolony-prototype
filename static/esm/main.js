@@ -7,7 +7,7 @@
 import { store } from "./store.js?v=11";
 import { API } from "./api.js?v=11";
 import "./util.js?v=11";
-import "../stream.js?v=11";
+import "../stream.js?v=12";
 import "../canvas.js?v=11";
 import "../workspace.js?v=11";
 
