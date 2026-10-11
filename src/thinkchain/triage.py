@@ -57,10 +57,14 @@ def direct_tool_schemas() -> list[dict[str, Any]]:
 
 
 async def _call_model(system_prompt: str, user_prompt: str) -> str:
-    """独立轻量模型调用（主模型 main 席）。模块级函数——测试 monkeypatch 位。"""
+    """独立轻量模型调用（模型席位经 model_pick.resolve_model("triage") 可配，
+    不配回落 main——[迭代五 S2·E10]）。模块级函数——测试 monkeypatch 位。"""
     from ..api.model_service import call_main
+    from . import model_pick
 
-    result, _model_used = await call_main(system_prompt, user_prompt)
+    result, _model_used = await call_main(
+        system_prompt, user_prompt,
+        model_name=model_pick.resolve_model("triage"))
     return result.get("content", "") or ""
 
 

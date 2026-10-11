@@ -26,7 +26,10 @@ def test_registry_json_shape():
     assert data["version"] == 1
     assert set(data["types"].keys()) == {"msg_ask", "msg_answer", "msg_notify"}
     for code, entry in data["types"].items():
-        assert set(entry.keys()) == {"display", "note"}, code
+        # [迭代五 S1] 键集由 {display, note} 扩为五键（when_to_use/reply_expected/
+        # reply_type 为应对规则字段，S1 步骤①②③ 加键的镜像断言）。
+        assert set(entry.keys()) == {"display", "note", "when_to_use",
+                                     "reply_expected", "reply_type"}, code
         assert "judge" not in entry
     assert "judge" not in data
 
@@ -40,6 +43,84 @@ def test_type_codes_is_triple():
 def test_display_of_hit_and_miss():
     assert card_msg.display_of("msg_ask") == "询问"
     assert card_msg.display_of("msg_nope") == "msg_nope"
+
+
+# ══════════════ [迭代五 S1] 应对规则读取函数（四新函数） ══════════════
+
+def test_s1_entry_of_hit_and_miss():
+    """三类型 entry 正确值＋未命中 None。"""
+    ask = card_msg.entry_of("msg_ask")
+    assert isinstance(ask, dict)
+    assert ask["when_to_use"] == "你需要对方的信息或判断才能继续时发；发完等对方回话。"
+    assert ask["reply_expected"] is True
+    assert ask["reply_type"] == "msg_answer"
+    assert card_msg.entry_of("msg_answer")["reply_expected"] is False
+    assert card_msg.entry_of("msg_notify")["reply_type"] == ""
+    assert card_msg.entry_of("msg_nope") is None
+
+
+def test_s1_when_to_use_of_three_types_and_default():
+    """三类型 when_to_use 正确值＋缺省路径 ""。"""
+    assert card_msg.when_to_use_of("msg_ask") == \
+        "你需要对方的信息或判断才能继续时发；发完等对方回话。"
+    assert card_msg.when_to_use_of("msg_answer") == \
+        "回应一条收到的询问时发；reply_to 必填、指向原询问。"
+    assert card_msg.when_to_use_of("msg_notify") == \
+        "告知对方一件事、不需要对方回话时发。"
+    assert card_msg.when_to_use_of("msg_nope") == ""
+    assert card_msg.when_to_use_of("") == ""
+
+
+def test_s1_reply_expected_of_bool():
+    """ask=True、answer/notify=False、未命中缺省 False。"""
+    assert card_msg.reply_expected_of("msg_ask") is True
+    assert card_msg.reply_expected_of("msg_answer") is False
+    assert card_msg.reply_expected_of("msg_notify") is False
+    assert card_msg.reply_expected_of("msg_nope") is False
+
+
+def test_s1_reply_type_of_str():
+    """ask→msg_answer、answer/notify→""、未命中缺省 ""。"""
+    assert card_msg.reply_type_of("msg_ask") == "msg_answer"
+    assert card_msg.reply_type_of("msg_answer") == ""
+    assert card_msg.reply_type_of("msg_notify") == ""
+    assert card_msg.reply_type_of("msg_nope") == ""
+
+
+def test_s1_fail_open_bad_registry(monkeypatch, tmp_path):
+    """坏表 fail-open：四新函数在坏表/缺文件/坏 entry 下返缺省值、不抛出。"""
+    # 坏表形态（缺 types）
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"version": 1, "no_types": {}}', encoding="utf-8")
+    monkeypatch.setattr(card_msg, "REGISTRY_PATH", bad)
+    assert card_msg.entry_of("msg_ask") is None
+    assert card_msg.when_to_use_of("msg_ask") == ""
+    assert card_msg.reply_expected_of("msg_ask") is False
+    assert card_msg.reply_type_of("msg_ask") == ""
+    # 缺文件
+    monkeypatch.setattr(card_msg, "REGISTRY_PATH", tmp_path / "missing.json")
+    assert card_msg.entry_of("msg_ask") is None
+    assert card_msg.when_to_use_of("msg_ask") == ""
+    assert card_msg.reply_expected_of("msg_ask") is False
+    assert card_msg.reply_type_of("msg_ask") == ""
+
+
+def test_s1_fail_open_malformed_entry(monkeypatch, tmp_path):
+    """entry 形态坏（值非对象/字段类型怪）→ fail-open 缺省，不抛出。"""
+    ext = tmp_path / "ext.json"
+    ext.write_text(json.dumps({
+        "version": 1,
+        "types": {
+            "msg_broken": "not-a-dict",
+            "msg_odd": {"display": 123, "when_to_use": None,
+                        "reply_expected": "yes", "reply_type": 7},
+        },
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(card_msg, "REGISTRY_PATH", ext)
+    assert card_msg.entry_of("msg_broken") is None
+    assert card_msg.when_to_use_of("msg_odd") == ""      # None → ""
+    assert card_msg.reply_expected_of("msg_odd") is True  # "yes" 真值 → True（bool 收敛）
+    assert card_msg.reply_type_of("msg_odd") == "7"       # 非空 → str(7)
 
 
 def test_make_msg_id_shape():
@@ -551,3 +632,76 @@ async def test_k3_pending_recovery_on_next_close(sandbox, monkeypatch):
             break
     blocks_b = await session_facade.read(wid, "card_003")
     assert any(b.get("actor") == "assistant" for b in blocks_b), "pending 信应在收口时补齐调起"
+
+
+# ══════════════ [迭代五 S3] 激励文随消息提供应对说明 ══════════════
+
+async def test_s3_prompt_carries_display_and_note(sandbox, monkeypatch):
+    """E4：激励文含 display 与 note 关键词（类型说明随消息提供）。"""
+    from src.storage import work_store
+    wid = (await work_store.create_work("S3激励文剧本"))["work_id"]
+    await _make_tree(wid)
+    captured: list[str] = []
+
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
+        if "请阅读这些消息并处理" in str(user_prompt):
+            captured.append(str(user_prompt))
+            return ({"content": "收到，已处理。", "tool_calls": []}, "fake")
+        return ({"content": "A 侧正常回复。", "tool_calls": []}, "fake")
+
+    monkeypatch.setattr(model_service, "call_main", fake_call_main)
+    monkeypatch.setenv("MOCK_LLM", "1")
+    await card_tools.send_card_message(
+        wid, "card_002", target_id="card_003", msg_type="msg_ask",
+        content="S3：现状一句话？")
+    state = message_runner.RunState(work_id=wid, card_id="card_002", content="x")
+    await message_runner.schedule_card_message_triggers(state)
+    for _ in range(60):
+        await asyncio.sleep(0.05)
+        if captured:
+            break
+    assert captured, "B 应被调起且激励文被捕获"
+    p = captured[0]
+    assert "询问" in p, f"display 关键词缺失：{p[:120]}"
+    assert "不许沉默" in p, f"note 应对半句缺失：{p[:200]}"
+    assert "card_002" in p and "（类型：询问）" in p
+
+
+async def test_s3_prompt_fallback_on_read_failure(sandbox, monkeypatch):
+    """E4：读卡失败 → 回落默认文 _CARD_MSG_PROMPT、调起不阻断。"""
+    from src.storage import work_store
+    wid = (await work_store.create_work("S3回落剧本"))["work_id"]
+    await _make_tree(wid)
+    captured: list[str] = []
+
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
+        if "请阅读这些消息并处理" in str(user_prompt):
+            captured.append(str(user_prompt))
+            return ({"content": "回落路径已处理。", "tool_calls": []}, "fake")
+        return ({"content": "ok", "tool_calls": []}, "fake")
+
+    async def boom(*a, **kw):
+        raise RuntimeError("read_card exploded")
+
+    # 只让激励文构造里的读卡（读发件卡 card_002 元数据）失败；
+    # B 回合自身链路（读 card_003）照常——否则 B 回合 502、激励文无从捕获。
+    real_read_card = card_store.read_card
+
+    async def selective(work_id, card_id, *a, **kw):
+        if card_id == "card_002":
+            raise RuntimeError("read_card exploded")
+        return await real_read_card(work_id, card_id, *a, **kw)
+
+    monkeypatch.setattr(model_service, "call_main", fake_call_main)
+    monkeypatch.setattr(card_store, "read_card", selective)
+    monkeypatch.setenv("MOCK_LLM", "1")
+    await card_tools.send_card_message(
+        wid, "card_002", target_id="card_003", msg_type="msg_ask",
+        content="S3回落：内容任意。")
+    state = message_runner.RunState(work_id=wid, card_id="card_002", content="x")
+    await message_runner.schedule_card_message_triggers(state)  # 不抛出＝不阻断
+    for _ in range(60):
+        await asyncio.sleep(0.05)
+        if captured:
+            break
+    assert captured and captured[0] == message_runner._CARD_MSG_PROMPT

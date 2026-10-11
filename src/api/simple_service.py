@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 from . import model_service
 from .card_proposal import parse_proposals
+from ..thinkchain import model_pick
 
 logger = logging.getLogger("api.simple_service")
 
@@ -178,10 +179,16 @@ async def _call_viewpoint(
     零行为变化；异常静默）。
     """
     models_cfg = gw.config.get("models") or {}
-    label = (models_cfg.get(name) or {}).get("model", name)
+    # [迭代五 S2·E9] 席位模型可配：resolve_model(name) 依 model_pick.json 取
+    # 覆盖值（键集校验、非法值回落 main、缺省态返 main）。name 仍是 models.yaml
+    # 的席位名（viewpoint_minimax 等），seat 是实际调用的模型席位——四处随 seat 走。
+    seat = model_pick.resolve_model(name)
+    # [S2 保留] 存在性检查转 seat 双保险（resolve_model 依法只返 main 或合法键，
+    # 此检查照字面不再触发、保留无害）。
+    label = (models_cfg.get(seat) or {}).get("model", seat)
     meta: dict[str, Any] = {"model": label, "ok": False, "latency_ms": 0, "chars": 0}
-    if name not in models_cfg:
-        meta["error"] = f"models.yaml 无此模型条目: {name}"
+    if seat not in models_cfg:
+        meta["error"] = f"models.yaml 无此模型条目: {seat}"
         return meta
     if on_seat:
         try:
@@ -191,10 +198,10 @@ async def _call_viewpoint(
     t0 = time.monotonic()
     try:
         result = await gw.call(
-            name,
+            seat,
             system_prompt,
             user_prompt,
-            temperature=float(models_cfg[name].get("temperature", 0.7)),
+            temperature=float(models_cfg[seat].get("temperature", 0.7)),
             skip_completion_marker=True,
             tools=None,
             prior_messages=prior_messages or None,

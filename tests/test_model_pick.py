@@ -25,11 +25,15 @@ def test_unknown_role_falls_back_to_default_row():
 
 
 def test_table_rows_default_execute_think():
-    """S2 JSON 断言：键集恰 {default,execute,think}，三值均 ∈ 六席位名。"""
+    """S2 JSON 断言：键集恰 {default,execute,think}，三值均 ∈ 六席位名。
+    [迭代五 S2 镜像更新] 键集扩为八键（+五席位键）；席位键钦定默认态值空串，
+    非空值仍须 ∈ 六席位名（空串＝回落 main，resolve_model 语义）。"""
     data = json.loads(model_pick.PICK_PATH.read_text(encoding="utf-8"))
-    assert set(data.keys()) == {"default", "execute", "think"}
+    assert set(data.keys()) == {"default", "execute", "think",
+                                "viewpoint_minimax", "viewpoint_qwen",
+                                "viewpoint_deepseek", "synthesize", "triage"}
     for seat in data.values():
-        assert seat in SEAT_NAMES, seat
+        assert seat == "" or seat in SEAT_NAMES, seat
 
 
 def test_execute_think_resolve_main():
