@@ -121,6 +121,93 @@ async def work_page(work_id: str) -> HTMLResponse:
     return HTMLResponse(content=html.replace("{{WORK_ID}}", work_id))
 
 
+@app.exception_handler(Exception)
+async def _capture_unhandled(request, exc):
+    """[2026-10-12] 未捕获异常留痕：此前 500 只进服务控制台，磁盘零记录，
+    排障只能靠猜（12:36 create_card 后 500 实测：无 prompt 日志、无审计之外
+    任何痕迹）。现机械记录 ts/方法/路径/异常类型/信息/完整 traceback 到
+    logs/server_errors.jsonl；响应体带真因（前端直接显示，不再只显示 HTTP 500）。
+    不改变任何既有行为——只在原本会裸 500 的路径上生效。"""
+    import traceback as _tb
+    from fastapi.responses import JSONResponse as _JSONResponse
+    try:
+        rec = {
+            "ts": datetime.now().astimezone().isoformat(),
+            "method": request.method,
+            "path": str(request.url.path),
+            "exc_type": type(exc).__name__,
+            "exc_msg": str(exc),
+            "traceback": _tb.format_exc(),
+        }
+        p = BASE_DIR / "logs" / "server_errors.jsonl"
+        p.parent.mkdir(exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 留痕失败不阻断错误响应本身
+        pass
+    return _JSONResponse(status_code=500,
+                         content={"error": f"{type(exc).__name__}: {exc}"})
+
+
+class _BaseExceptionCapture:
+    """[2026-10-12] BaseException 捕获中间件。
+
+    为什么单靠 exception_handler 不够：Starlette 的 ServerErrorMiddleware 只抓
+    ``Exception``；``asyncio.CancelledError``（Python 3.8+ 起继承 BaseException）
+    等会整个穿透，uvicorn 底层 ``except BaseException`` 只回一句纯文本
+    "Internal Server Error"——零 traceback、零 prompt 日志，排障只能猜
+    （12:36/13:22 两次 create_card 后 500 实测正是此路径：连 exception_handler
+    都没触发）。本中间件挂在用户中间件位（ServerErrorMiddleware 之内、
+    ExceptionMiddleware 之外），BaseException 一律：留痕 → 响应带真因 → 继续
+    上抛（不吞 cancellation，结构化并发语义不变）。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        response_started = False
+
+        async def _send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        except BaseException as exc:  # noqa: BLE001 含 CancelledError 等
+            import traceback as _tb
+            from fastapi.responses import JSONResponse as _JSONResponse
+            try:
+                rec = {
+                    "ts": datetime.now().astimezone().isoformat(),
+                    "method": scope.get("method", ""),
+                    "path": scope.get("path", ""),
+                    "exc_type": type(exc).__name__,
+                    "exc_msg": str(exc),
+                    "traceback": _tb.format_exc(),
+                    "via": "base_exception_middleware",
+                }
+                p = BASE_DIR / "logs" / "server_errors.jsonl"
+                p.parent.mkdir(exist_ok=True)
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            except Exception:  # noqa: BLE001 留痕失败不阻断错误响应本身
+                pass
+            if not response_started:
+                resp = _JSONResponse(
+                    status_code=500,
+                    content={"error": f"{type(exc).__name__}: {exc}"})
+                await resp(scope, receive, send)
+            raise  # 继续上抛：uvicorn 照旧记它的账，cancellation 语义不被吞
+
+
+app.add_middleware(_BaseExceptionCapture)
+
+
 if __name__ == "__main__":
     import uvicorn
 
