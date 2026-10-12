@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from . import model_config
+
 logger = logging.getLogger("api.prompt_log")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -50,7 +52,7 @@ def write_prompt_log(
         payload = {
             "card_id": card_id,
             "timestamp": now.isoformat(),
-            "model_requested": "main",
+            "model_requested": model_config.default_model(),
             "model_used": model_used,
             "system_prompt": system_prompt,
             "prior_messages": prior_messages,

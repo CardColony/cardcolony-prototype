@@ -118,18 +118,31 @@ def test_v4_positive_control_registered_types_see_all():
     """V4 正控：注册类型见全量——**根卡除外，它没有 delete 开关**。
 
     [工具面补齐 2026-10-12] 原断言三组合都要求 25 件。根卡（project）配置里
-    没有 delete（删不掉），工具面同源后 ``delete_card`` 不再下发 ⇒ 24 件是
-    **正确行为**，不是漏发。断言改为：工作单元型 25 件、根卡 24 件（少 delete）。
+    没有 delete（删不掉），工具面同源后 ``delete_card`` 不再下发 ⇒ 少 1 件是
+    **正确行为**，不是漏发。
+
+    [B-11 2026-10-12] 件数不再写死为魔法数字，改从注册表现取：
+    联网两件（web_search/fetch_web）已插件化，**测试环境不读 .env**（conftest
+    铁律二禁 import main，.env 因此未加载），故无通道配置 ⇒ 两件被剪枝 ⇒
+    本环境是 23 件、生产环境（配了通道）是 25 件。写死数字会在任一环境里
+    变成假红或假绿——这正是「魔法数字＝漂移源」的又一次复现，故改为派生。
+    断言的**意图**（注册类型见全量、根卡少 delete）一字未改。
     """
+    registered = len(card_tools.TOOL_REGISTRY)
     n_all = len(card_tools.build_tool_schemas(
         "card_x", cards={"card_x": _meta("sub_project")}))
-    assert n_all == 25, n_all
-    for pc, ct, expect in (("rd_project", "sub_project", 25),
-                           ("research_project", "topic", 25),
-                           ("rd_project", "project", 24)):
+    assert n_all == registered, (
+        f"工作单元型卡应见注册表全量 {registered} 件，实 {n_all} 件"
+    )
+    for pc, ct in (("rd_project", "sub_project"),
+                   ("research_project", "topic"),
+                   ("rd_project", "project")):
         schemas = card_tools.build_tool_schemas("card_x", cards={"card_x": _meta(ct, pc)})
-        assert len(schemas) == expect, f"{pc}/{ct} 应见 {expect} 件，实 {len(schemas)}"
-        if expect == 24:
+        expected = registered - (1 if ct == "project" else 0)
+        assert len(schemas) == expected, (
+            f"{pc}/{ct} 应见 {expected} 件，实 {len(schemas)} 件"
+        )
+        if ct == "project":
             # 根卡唯一缺的就是删卡
             assert "delete_card" not in {s["name"] for s in schemas}
 

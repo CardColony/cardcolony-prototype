@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """[凝练折叠开启 2026-10-07] 机制层单测（V1-V5，沙箱；V7/V9 实弹另见 livefire）。
 
-V1 触发线 env 生效；V2 单批切片宁少不超；V3 模型位改指 condenser；
+V1 触发线 env 生效；V2 单批切片宁少不超；V3 模型位改指 condense 绑定（glm-flash）；
 V4 归拢游标式触发（失败不推进）；V5 同口径铁律（触发求和与切片累计同尺差 0）。
 """
 from __future__ import annotations
@@ -57,20 +57,20 @@ def test_v2_truncate_window_ning_shao_bu_chao(sandbox):
 
 # ---------------------------------------------------------------- V3 模型位
 
-async def test_v3_condense_call_targets_condenser(sandbox, monkeypatch):
+async def test_v3_condense_call_targets_glm_flash(sandbox, monkeypatch):
     seen: dict = {}
 
     async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None,
-                             model_name="main"):
+                             model_name=None):
         seen["model_name"] = model_name
         return ({"content": "【结论】x【依据】块1"}, "glm-5.3-flash")
 
     from src.api import model_service
     monkeypatch.setattr(model_service, "call_main", fake_call_main)
     await memory_store._condense_call("hello")
-    assert seen["model_name"] == "condenser"
+    assert seen["model_name"] == "glm-flash"
     await memory_store._fold_call("world")
-    assert seen["model_name"] == "condenser"
+    assert seen["model_name"] == "glm-flash"
 
 
 # ---------------------------------------------------------------- V4 归拢游标

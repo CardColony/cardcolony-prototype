@@ -28,11 +28,12 @@
 | 卡片树 | 建卡／编辑正文／建线／解线／删卡（用户侧按钮＋模型侧工具，护栏：根卡与有子卡者拒删） |
 | 思维链 | 入口自判 direct（直答）／plan（拆解上板）；复杂任务拆成多步、逐步推进、改板、收口回写 |
 | 多模型协作 | 三思考席（MiniMax-M3 / qwen3.8-max / glm-5.3）并行分析 → 统合官收敛成唯一结论；三席无工具权限 |
-| 工具层（18 件） | 卡片：create_card／read_card／read_memory／edit_card／delete_card／read_shadow／update_shadow／link_cards／unlink_cards／list_manuscript／read_manuscript／search_manuscript；联网：web_search／fetch_web；**本地文件：list_files／read_file／search_files／write_file** |
-| 思维链工具（7 件） | create_plan／plan_reorder／plan_insert／plan_remove／plan_modify／step_complete／escalate_to_plan |
+| 工具层（25 件·单点注册表） | 卡片 9：create_card／read_card／read_memory／edit_card／delete_card／read_shadow／update_shadow／link_cards／unlink_cards；资料 3：list_manuscript／read_manuscript／search_manuscript；本地文件 4：list_files／read_file／search_files／write_file；联网 2（**条件提供**）：web_search／fetch_web；工具卡 1：run_tool_card |
+| 思维链工具（6 件） | create_plan／plan_reorder／plan_insert／plan_remove／plan_modify／step_complete（`escalate_to_plan` 已退役） |
 | 凝练记忆 | condense_fold：长对话凝练归拢成【结论】/【依据】条目，可按块序号下探取回 |
 | 卡间通信 | 卡与卡之间发消息（类型注册表可扩展），收件方应对由系统自动回发 |
-| 本地文件能力 | 边界＝`D:\AI_station` 下的 `trading-workspace` 与 `推演agent` 两个目录；凭证类文件（`.env`/`*.pem`/`*.key`/`credentials.json`/`id_rsa` 等精确名单）不可读、不可写、不可搜索；四道兜底：写前强制备份原文到 `_backups/`、二进制拒写、单次写入上限 5MB、依赖目录（.venv/site-packages/__pycache__ 等）剪枝 |
+| 本地文件能力 | 边界＝**整个 `D:\AI_station`**（不限某几个子目录——实测子目录之外的路径同样放行）；凭证类文件（`.env` 及其变体／`.netrc`／`.npmrc`／`.pypirc`／`credentials.json`／`id_rsa`／`id_ed25519`／`kubeconfig`／`secrets.yaml` 等 14 项精确名单）**不可读、不可写、不可搜索、也不出现在目录清单里**；四道兜底：写前强制备份原文到 `_backups/`、二进制拒写、单次写入上限 5MB、依赖目录（.venv/site-packages/__pycache__ 等）剪枝 |
+| 联网能力 | **可选插件**：requests 可用 且 至少配了 `SEARXNG_URL` 或 `ALIYUN_TOKEN_PLAN_API_KEY` 才注册 `web_search`/`fetch_web`；没配则整件不提供（出厂不带即不出厂坏）。设 `SEARCH_CHANNEL=searxng\|aliyun` 即钉死通道，钉死后该通道失败会**点名报错、不静默换通道** |
 | 文本泄漏抢救 | 模型把工具调用写进正文（DeepSeek 系特殊标记泄漏）时，机械解析并真实执行；解析不出则回注「未识别未执行」告知模型 |
 | 实时反馈 | 发消息后可见：自判分流／三席分析进度／统合推理／工具循环轮次／建卡，逐阶段上报 |
 

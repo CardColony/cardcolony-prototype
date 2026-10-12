@@ -1,123 +1,128 @@
-# 模型配置，密钥走环境变量不硬编码
-# 2026-10-02 用户裁定席位（全部为端点实测存在的真实 ID）：
-#   思考席：MiniMax-M3 / qwen3.8-max / deepseek-v4-pro（三家并发出观点）
-#   统合官：deepseek-v4.1-flash（阿里云，拿三份观点产出唯一回复，唯一建卡/工具出口）
+# ============================================================
+# 模型配置 · 唯一真源（模型设置 · 第一步收拢）
+# 全项目只经 src/api/model_config.py 读本文件，别处不许直读。
 #
-# 2026-10-02 17:33 智谱余额耗尽（429），glm-5.3 席位与 web_search 双双停摆——
-#   第三席换 deepseek-v4-pro（DeepSeek 官方 key，双端点实测 200，2.7s，答案准确）。
-#   至此三家思考席为三个独立厂商：MiniMax / 阿里云 / DeepSeek 官方。
+# 三层结构：providers（供应商·父）→ models（模型·子）→ bindings（角色绑定）
+# 角色清单见 config/roles.json（模块侧管），本文件只做「角色→模型」关联。
 #
-# 2026-10-11 用户令三席换回「原来三个模型」：viewpoints 列表第三项换回 viewpoint_zhipu
-#   （glm-5.3，ZHIPU_CODING_API_KEY，open.bigmodel.cn/api/paas/v4——16d5149 原形态）；
-#   席位键经 model_pick.json 填条目名（非空）使三席各走 MiniMax-M3/qwen3.8-max/glm-5.3。
-#
-# 2026-10-02 拆闸裁定：不允许设置任意 max_tokens，不允许墙钟类闸。
-#   - 所有 max_tokens / timeout 全部移除（None = 不传，模型按端点自然行为返回）
-#   - retry_grading 关闭（总时长熔断 300 秒是墙钟）
-#   - simple 段 viewpoint_timeout / viewpoint_max_tokens 删除
-#   （原项目带的 2048 限额是空观点根因：思考型模型额度被思考烧光，正文为空）
-#
-# 保留的供应商模式参数（模式选择，不是资源闸）：
-#   - MiniMax thinking:disabled —— 不关则思考无标签混进正文（实测）
-#   - qwen enable_thinking:false —— 思考模式下正文为空（实测），关掉后正文干净
-#   - glm-5.3 不设任何参数 —— 端点声明始终思考无法关闭，任它思考；
-#     若正文为空，网关的 reasoning_content 兜底（原项目自带）会接住思考内容
+# 历史裁定（逐字保留，拆闸铁律）：
+#   2026-10-02 拆闸裁定：不允许设置任意 max_tokens，不允许墙钟类闸。
+#     - 所有 max_tokens / timeout 全部移除（None = 不传，模型按端点自然行为返回）
+#     - retry_grading 关闭（总时长熔断 300 秒是墙钟）
+#     （原项目带的 2048 限额是空观点根因：思考型模型额度被思考烧光，正文为空）
+# ============================================================
+
+providers:
+  nous:
+    protocol: openai
+    base_url: "https://inference-api.nousresearch.com/v1"
+    api_key_env: NOUS_API_KEY
+    note: "Nous Research（OpenAI 兼容协议）"
+  deepseek:
+    protocol: deepseek
+    api_key_env: DEEPSEEK_API_KEY
+    # deepseek 无 base_url，拉模型列表需显式给地址（设置界面「拉取」用）
+    models_url: "https://api.deepseek.com/v1/models"
+    note: "DeepSeek 官方"
+  zhipu:
+    protocol: openai
+    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+    api_key_env: ZHIPU_CODING_API_KEY
+    note: "智谱 coding plan（OpenAI 兼容；glm-flash 与 glm-5.3 共用）"
+  minimax:
+    protocol: openai
+    base_url: "https://api.minimaxi.com/v1"
+    api_key_env: MINIMAX_API_KEY
+    note: "MiniMax（OpenAI 兼容）"
+  aliyun:
+    protocol: openai
+    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: ALIYUN_TOKEN_PLAN_API_KEY
+    note: "阿里云 token-plan（OpenAI 兼容）"
+  opencode:
+    protocol: openai
+    base_url: "https://opencode.ai/zen/go/v1"
+    api_key_env: OPENCODE_API_KEY
+    extra_headers:
+      x-opencode-session: zhuge-3080
+    note: "opencode-go 聚合端点（OpenAI 兼容；需 x-opencode-session 头，MissingSessionID 拒单）"
 
 models:
-  # 统合官（simple 链路总结席，兼深度工具链主模型）
-  main:
-    provider: openai                    # Nous Research 为 OpenAI 兼容协议
+  haiku:
+    provider: nous
     model: anthropic/claude-haiku-5.5
-    api_key_env: NOUS_API_KEY
-    base_url: "https://inference-api.nousresearch.com/v1"
     temperature: 0.3
-    context_window: 1000000     # haiku-5.5 端点 /v1/models 实测 context_length（2026-10-08 21:12）
-    # [2026-10-08 21:08 用户令换主模型] kimi-k3 → anthropic/claude-haiku-5.5（同接口 Nous）
-    # 烟测实证（21:12）：haiku-5.5 reasoning=None、reasoning_tokens=0，不产生思考文本——
-    # kimi 的 extra_body: reasoning_effort: low（思考档降级）对它无意义（无思考可降），故不再设置。
-    # 烟测响应：content='烟测成功'，usage prompt 21/completion 7，干净正文。
+    thinking: auto
+    note: "主模型（execute/think/synthesize/compress/draft 共绑）。thinking=auto：不传思考参数（haiku-5.5 不产生思考文本）"
     retry:
       max_attempts: 5
       backoff_seconds: 2
-
-  # 备选模型（统合官降级用）
-  fallback:
+  deepseek-pro:
     provider: deepseek
     model: deepseek-v4-pro
-    api_key_env: DEEPSEEK_API_KEY
     temperature: 0.3
-    context_window: 128000
+    note: "降级模型（system.fallback_model 指向；调用失败时网关切入）"
     retry:
       max_attempts: 3
       backoff_seconds: 2
-
-  # [凝练折叠开启 2026-10-07·任务5] 独立凝练席（用户定 glm-5.3-flash，智谱 coding plan）
-  condenser:
-    provider: openai                    # 智谱 coding plan 为 OpenAI 兼容协议
+  glm-flash:
+    provider: zhipu
     model: glm-5.3-flash
-    api_key_env: ZHIPU_CODING_API_KEY
-    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
     temperature: 0.3
-    context_window: 1000000     # 用户口径：glm-5.3 系 1M 窗（前端显示上下文总量用）
+    note: "凝练席（condense 角色绑此；glm-5.3-flash 智谱 coding plan）"
     retry:
       max_attempts: 3
       backoff_seconds: 2
-
-  # ========== 思考席（simple 多模型审议，三席并发） ==========
-  viewpoint_minimax:
-    provider: openai                    # MiniMax OpenAI 兼容协议
+  minimax-m3:
+    provider: minimax
     model: MiniMax-M3
-    api_key_env: MINIMAX_API_KEY
-    base_url: "https://api.minimaxi.com/v1"
     temperature: 0.7
-    extra_body:
-      thinking:
-        type: disabled
+    thinking: "on"
+    note: "思考席① MiniMax-M3。thinking=on：翻译为 thinking.type=adaptive（探针实测 2026-10-12：该端点只接受 adaptive|disabled，传 enabled 直接 400）。开思考后思考以 <think>…</think> 标签内联在 content 里、无 reasoning 字段——由 simple_service 的标签切分器取走做 think 流展示、终帧再由 clean_viewpoint_text 剥净。原 note 写「不关则思考无标签混进正文」已被实测推翻：思考是带标签的"
     retry:
       max_attempts: 2
-
-  # 席位二 qwen3.8-max（阿里云 token-plan）
-  viewpoint_qwen:
-    provider: openai
+  qwen-max:
+    provider: aliyun
     model: qwen3.8-max
-    api_key_env: ALIYUN_TOKEN_PLAN_API_KEY
-    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
     temperature: 0.7
-    extra_body:
-      enable_thinking: false
+    thinking: "off"
+    note: "思考席② qwen3.8-max（阿里云 token-plan）。thinking=off：qwen enable_thinking:false —— 思考模式下正文为空（实测）。思考本身走 delta.reasoning_content，由 stream_call 双路解包取回做 think 流；待 ALIYUN key 就位可实测后再考虑开 on（开 on 的风险＝正文空＝观点空）"
     retry:
       max_attempts: 2
-
-  # 席位三 deepseek-v4.1-flash（opencode-go；用户 2026-10-06 12:38 令）
-  #   base_url https://opencode.ai/zen/go/v1（OpenAI 兼容聚合端点）；需 x-opencode-session 头（MissingSessionID 拒单）
-  viewpoint_deepseek:
-    provider: openai
-    model: deepseek-v4.1-flash
-    api_key_env: OPENCODE_API_KEY
-    base_url: "https://opencode.ai/zen/go/v1"
-    extra_headers:
-      x-opencode-session: zhuge-3080
-    temperature: 0.7
-    retry:
-      max_attempts: 2
-
-  # 席位三 glm-5.3（智谱 coding plan，OpenAI 兼容）——2026-10-11 用户令换回；
-  # 2026-10-11 22:44 端点订正：paas/v4（开放平台）→ coding/paas/v4（coding plan，
-  # 与 condenser 同款——429「余额不足」根因是 coding plan key 打错到开放平台端点）
-  viewpoint_zhipu:
-    provider: openai
+  glm-5.3:
+    provider: zhipu
     model: glm-5.3
-    api_key_env: ZHIPU_CODING_API_KEY
-    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
     temperature: 0.7
+    thinking: "auto"
+    note: "思考席③ glm-5.3（端点声明始终思考、无法关闭）。thinking=auto：不设任何参数，任它思考"
+    retry:
+      max_attempts: 2
+  deepseek-flash:
+    provider: opencode
+    model: deepseek-v4.1-flash
+    temperature: 0.7
+    note: "备用思考席 deepseek-v4.1-flash（未启用；opencode-go）"
     retry:
       max_attempts: 2
 
-# simple 多模型编排：三思考席并发 + 统合官总结。
-simple:
-  enabled: true
-  viewpoints: [viewpoint_minimax, viewpoint_qwen, viewpoint_zhipu]
+bindings:
+  # key 全部来自 config/roles.json（角色归模块侧，本段只做「角色→模型」关联）
+  execute: haiku
+  think: haiku
+  synthesize: haiku
+  condense: glm-flash
+  compress: haiku
+  draft: haiku
+  viewpoint: [minimax-m3, qwen-max, glm-5.3]
 
-# 重试分级：关闭 —— 总时长熔断（300 秒）属墙钟类闸，拆闸裁定移除。
+system:
+  # 角色未绑定时的回落模型（承接原 model_pick.json default→main）
+  default_model: haiku
+  # 调用失败时的降级模型（承接原 fallback 席位）
+  fallback_model: deepseek-pro
+
+simple:
+  enabled: true    # 三席审议总开关（viewpoints 已并入 bindings.viewpoint）
+
 retry_grading:
-  enabled: false
+  enabled: false   # 拆闸裁定：总时长熔断（300 秒）属墙钟类闸，关闭

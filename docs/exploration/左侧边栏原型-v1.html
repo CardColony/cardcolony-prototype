@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>左侧边栏 · 原型 v2（交互轮）</title>
+<style>
+  :root{
+    --bg:#eef0f4;          /* 侧栏画布底色（卡片浮在它上面） */
+    --card:#ffffff;        /* 根卡＝一张小卡片的底色 */
+    --card-line:#e6e9ee;   /* 小卡片描边 */
+    --line:#dfe3ea;        /* 树线 */
+    --chev-fg:#6b7280;
+    --row-hover:#f3f5f8;
+    --row-active:#eaf2fe;
+    --bar-active:#2563eb;
+    --text:#2b2f36;
+    --text-warm:#20242a;
+    --text-cold:#a7adb6;
+    --icon-folder:#5b8def;
+    --icon-doc:#8a929e;
+    --run:#12a264;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex;color:var(--text);background:#fff;
+  }
+
+  /* ===== 侧栏 ===== */
+  .sidebar{
+    width:320px;min-width:320px;height:100vh;flex:none;
+    background:var(--bg);border-right:1px solid #e2e5ea;
+    display:flex;flex-direction:column;
+  }
+  .search{padding:12px 10px 8px;flex:none}
+  .search-box{
+    display:flex;align-items:center;gap:7px;
+    background:#fff;border:1px solid #e2e5ea;border-radius:8px;padding:7px 10px;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  .search-box:focus-within{border-color:#b9cdf5;box-shadow:0 0 0 3px rgba(37,99,235,.08)}
+  .search-box svg{width:15px;height:15px;color:#9aa1aa;flex:none}
+  .search-box input{border:none;outline:none;flex:1;font-size:13px;color:var(--text);background:transparent;min-width:0}
+  .search-box input::placeholder{color:#b6bcc4}
+  .list{flex:1;overflow-y:auto;padding:2px 8px 14px}
+  .list::-webkit-scrollbar{width:8px}
+  .list::-webkit-scrollbar-track{background:transparent}
+  .list::-webkit-scrollbar-thumb{background:#d3d8e0;border-radius:4px}
+  .list::-webkit-scrollbar-thumb:hover{background:#c2c8d2}
+
+  /* ===== 根卡＝一张四圆角小卡片（样式轮定稿） ===== */
+  .wrap.card{
+    background:var(--card);
+    border:1px solid var(--card-line);
+    border-radius:10px;
+    margin-top:8px;
+    padding:3px 5px 5px;
+    box-shadow:0 1px 2px rgba(16,24,40,.05);
+  }
+  .wrap.card.first{margin-top:0}
+
+  /* ===== 一行 ===== */
+  .row{
+    display:flex;align-items:center;position:relative;
+    height:30px;border-radius:7px;cursor:pointer;
+    padding-left:var(--pl,0px);
+    user-select:none;
+    --rowbg:var(--card);
+  }
+  .row.project{height:36px}
+  .row:hover{background:var(--row-hover);--rowbg:var(--row-hover)}
+  .row.active{background:var(--row-active);--rowbg:var(--row-active)}
+  .row.active .label{color:#1e52c4;font-weight:600}
+  .row.active::after{
+    content:"";position:absolute;left:2px;top:7px;bottom:7px;
+    width:3px;border-radius:2px;background:var(--bar-active);z-index:3;
+  }
+
+  /* ===== 树线（样式轮定稿，不动） =====
+     · 项目根卡 ↔ 一级子卡之间：不画线、不缩进
+     · 线连在 icon 上，从 icon 下边缘出发往下
+     · 每行只画自己高度内的线段 */
+  .seg{position:absolute;pointer-events:none;background:var(--line)}
+  .seg.v{width:1.5px;top:var(--t,0px);height:var(--h,100%);left:var(--x,0px)}
+  .seg.h{height:1.5px;top:var(--y,0px);left:var(--x,0px);width:var(--w,0px)}
+
+  /* ===== 展开箭头（交互轮：判定区加大） =====
+     判定区 24px 宽、整行高；悬停时显出 20×20 的圆角块，让你看清"点这里=展开/收起"。
+     箭头图案自带一圈描边（描边色＝行底色），线经过处被咬断，箭头与线分得开。 */
+  .chev{
+    width:24px;flex:none;height:100%;display:flex;align-items:center;
+    position:relative;z-index:2;
+  }
+  .chev::before{
+    content:"";position:absolute;left:2px;top:50%;transform:translateY(-50%);
+    width:20px;height:20px;border-radius:5px;background:transparent;
+  }
+  .chev:not(.leaf):hover::before{background:rgba(31,41,55,.08)}
+  .chev svg{width:13px;height:13px;margin-left:6px;position:relative}
+  .chev.leaf{visibility:hidden}
+  .chev.open svg{transform:rotate(90deg)}
+  .chev svg .under{stroke:var(--rowbg);stroke-width:5}
+  .chev svg .top{stroke:var(--chev-fg);stroke-width:1.9}
+
+  /* 图标：线串着图标，图标是线上的节点 */
+  .ico{
+    width:18px;flex:none;height:100%;display:flex;align-items:center;justify-content:center;
+    position:relative;z-index:1;
+  }
+  .ico svg{width:14px;height:14px;background:var(--rowbg);border-radius:3px}
+
+  .label{
+    flex:1;min-width:0;font-size:13px;color:var(--text-warm);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-left:6px;
+  }
+  .row.project .label{font-weight:600;font-size:13.5px}
+  mark{background:#ffe9a8;color:inherit;border-radius:2px}
+
+  /* ===== 行尾槽（tail）：运行中转圈 / 上次对话时间 / 悬停出现的"⋯" =====
+     规矩：⋯ 不是排在时间右边，而是**顶替时间所在的位置**——同一个槽、同一个中心。
+     实现：时间让位时用 opacity:0 保留占位（槽宽不变），⋯ 绝对铺满这个槽并居中，
+     所以它出现的位置＝时间原来的位置，眼睛不用去行尾另找一个新地方。
+     运行中的转圈不让位（它是活的状态），此时 ⋯ 排在转圈右边。 */
+  .tail{position:relative;flex:none;display:flex;align-items:center;margin-left:8px}
+  .run{flex:none;display:flex;align-items:center}
+  .spinner{
+    width:11px;height:11px;border-radius:50%;
+    border:2px solid #d3efe1;border-top-color:var(--run);
+    animation:spin .8s linear infinite;
+  }
+  .time{flex:none;font-size:11px;color:var(--text-cold);white-space:nowrap}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  .more{
+    height:100%;display:flex;align-items:center;justify-content:center;
+    color:#8a929e;opacity:0;border-radius:5px;
+  }
+  /* 有时间：⋯ 铺满整个槽（＝时间的位置），居中落在时间原来的地方 */
+  .tail.has-time .more{position:absolute;inset:0}
+  /* 只有转圈（或什么都没有）：⋯ 排在转圈右边，不覆盖转圈 */
+  .tail.has-run .more{width:20px;margin-left:2px}
+  .row:hover .time,.row.menu-open .time{opacity:0}
+  .row:hover .more,.row.menu-open .more{opacity:1}
+  /* 自检钩子：无头浏览器里没法真悬停，用 .hover 类套同一套规则来验 */
+  .row.hover .time{opacity:0}
+  .row.hover .more{opacity:1}
+  .more:hover{color:#3b424c;background:rgba(31,41,55,.08)}
+  .more svg{width:14px;height:14px}
+
+  .menu{
+    position:fixed;z-index:50;background:#fff;border:1px solid #e2e5ea;border-radius:8px;
+    box-shadow:0 6px 20px rgba(16,24,40,.14);padding:4px;min-width:112px;
+  }
+  .mi{font-size:12.5px;padding:7px 12px;border-radius:5px;cursor:pointer;color:#2b2f36}
+  .mi:hover{background:#f3f5f8}
+  .mi.danger{color:#c2453d}
+  .mi.danger:hover{background:#fdf0ef}
+
+  /* ===== 右侧：打开的卡片＝对话 ===== */
+  .stage{flex:1;height:100vh;overflow:auto;background:#fff}
+  .empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#b6bcc4;gap:12px}
+  .empty svg{width:44px;height:44px}
+  .empty p{font-size:13px}
+  .card-view{padding:26px 30px;max-width:640px}
+  .card-view h2{font-size:19px;color:#20242a;margin-bottom:8px}
+  .tag{display:inline-block;font-size:11px;color:#6b7280;background:#f0f2f5;border-radius:4px;padding:2px 8px;margin-bottom:18px}
+  .msg{max-width:78%;padding:9px 12px;border-radius:10px;font-size:13px;margin-bottom:10px;line-height:1.55;color:#3a4048}
+  .msg.user{background:#eaf2fe;margin-left:auto}
+  .msg.agent{background:#f3f5f8}
+  .note{font-size:12px;color:#a7adb6;margin-top:18px}
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="search">
+    <div class="search-box">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+      <input id="searchInput" type="text" placeholder="搜索">
+    </div>
+  </div>
+  <div class="list" id="list"></div>
+</div>
+
+<div class="stage" id="stage">
+  <div class="empty">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>
+    <p>点左侧卡片的名字，进入它的对话</p>
+  </div>
+</div>
+
+<script>
+/* ============ 图标 ============ */
+const ICONS = {
+  folder:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2H6l1.7 1.5h5.8A1.5 1.5 0 0 1 15 5v7.5A1.5 1.5 0 0 1 13.5 14h-11A1.5 1.5 0 0 1 1 12.5z"/></svg>',
+  doc:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 2.5h7L12.5 5v8A1.5 1.5 0 0 1 11 14.5H3A1.5 1.5 0 0 1 1.5 13v-9A1.5 1.5 0 0 1 3 2.5z"/><path d="M10 2.5V5h2.5"/></svg>',
+  chev:'<svg viewBox="0 0 16 16" fill="none"><path class="under" d="M5.5 3.5 10 8l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/><path class="top" d="M5.5 3.5 10 8l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  dots:'<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>'
+};
+
+/* ============ 几何（样式轮定稿；箭头判定区加大到 24px） ============ */
+const INDENT = 10, CHEV_W = 24, ICO_HALF = 9, ICO_SVG_HALF = 7, ROW_H = 30, PROJ_H = 36;
+function indentOf(d){ return d <= 2 ? 0 : (d - 2) * INDENT; }
+function iconX(d){ return indentOf(d) + CHEV_W + ICO_HALF; }
+function hasKids(n){ return !!(n.children && n.children.length); }
+
+/* ============ 真实数据（取自 works/ 真名；hoursAgo＝距上次对话的小时数） ============ */
+let _id = 0;
+function mk(name, type, hoursAgo, timeAgo, children, running){
+  const n = { id:++_id, name, type, hoursAgo, timeAgo, running:!!running, children:children||null };
+  if(n.children){
+    n.children.sort((a,b)=>a.hoursAgo-b.hoursAgo);   /* 同级：最近活跃的排前 */
+    n.children.forEach(c=>c._parent = n);
+  }
+  return n;
+}
+
+const TREE = [
+  mk('项目管理agent','project',22,'22小时前',[
+    mk('工具','card',0.17,'10分钟前'),
+    mk('上下文记忆系统','card',2,'2小时前',[
+      mk('影子卡机制（需求定义）','card',2,'2小时前'),
+      mk('卡片各自上下文机制','card',24,'1天前',[
+        mk('裁定记录 · 卡片对话上下文注入','card',24,'1天前'),
+      ]),
+      mk('上下文治理','card',72,'3天前'),
+    ]),
+    mk('UI交互','card',4,'4小时前',[
+      mk('布局、信息视觉工程','card',4,'4小时前',[
+        mk('画布','card',4,'4小时前',[
+          mk('画布 · 统一坐标来源','card',4,'4小时前'),
+        ]),
+        mk('主界面设计','card',120,'5天前'),
+        mk('布局主键迁移与类型退役','card',144,'6天前'),
+      ]),
+      mk('性能优化','card',216,'9天前'),
+      mk('交互','card',240,'10天前'),
+    ], true),
+    mk('商业化管理','card',168,'1周前',[
+      mk('步骤一 · 测试网与行为基线','card',168,'1周前'),
+      mk('技术架构复核','card',168,'1周前',[
+        mk('基建二 · _run_message 拆分','card',168,'1周前',[
+          mk('修卡B · B-17 reply 文本重复定性','card',168,'1周前'),
+        ]),
+        mk('基建三 · 工具注册表','card',168,'1周前',[
+          mk('剧本 · 方案链','tool',168,'1周前'),
+        ]),
+      ]),
+    ]),
+    mk('卡片','card',336,'2周前',[
+      mk('信息流','card',336,'2周前'),
+      mk('卡片类型','card',336,'2周前',[
+        mk('工具卡','card',336,'2周前',[
+          mk('方案书卡','card',336,'2周前'),
+        ]),
+      ]),
+    ]),
+    mk('权限管理','card',720,'1个月前'),
+  ]),
+  mk('股权财政','project',24,'1天前'),
+  mk('记忆机制论文','project',72,'3天前'),
+  mk('最小工作流程闭环','project',120,'5天前'),
+  mk('诊断','project',192,'8天前'),
+  mk('议题5生产验证-2311','project',288,'12天前'),
+  mk('验证-拆机制生效-20261011','project',384,'16天前'),
+  mk('测试','project',1440,'2个月前'),
+];
+TREE.sort((a,b)=>a.hoursAgo-b.hoursAgo);
+
+/* ===== 工具卡不进侧栏（你定的）：建树后先剥掉所有 tool 类型节点（连同其子树）。
+   数据里故意留了一个 tool 样本（剧本 · 方案链），用来验证"真的被剥掉了"。 ===== */
+function countTools(ns){ let c=0; ns.forEach(n=>{ if(n.type==='tool') c++; else if(n.children) c+=countTools(n.children); }); return c; }
+function stripTools(ns){
+  for(let i=ns.length-1;i>=0;i--){
+    if(ns[i].type==='tool'){ ns.splice(i,1); continue; }
+    if(ns[i].children) stripTools(ns[i].children);
+  }
+}
+const TOOL_NODES = countTools(TREE);
+stripTools(TREE);
+
+/* ============ 默认展开规则（你定的第 2、3 条） ============
+   · 同级按最近活跃排序（建数据时已排）
+   · 最近活跃（48 小时内）的卡默认露出：它自己、它到根的路径、它自己带子卡时→展开
+   · 冷掉的分支默认收起 */
+const RECENT_H = 48;
+function anyRecent(n){ return n.hoursAgo < RECENT_H || (n.children||[]).some(anyRecent); }
+function initExpand(n, isRoot){
+  if(hasKids(n)){
+    n.expanded = isRoot ? n.hoursAgo < RECENT_H : anyRecent(n);
+    n.children.forEach(c=>initExpand(c,false));
+  }
+}
+TREE.forEach(r=>initExpand(r,true));
+
+/* ============ 状态 ============ */
+let query = '';
+let activeId = null;
+
+function allNodes(){ const a=[]; (function w(ns){ ns.forEach(n=>{ a.push(n); if(n.children) w(n.children); }); })(TREE); return a; }
+function nodeByName(name){ return allNodes().find(n=>n.name===name); }
+function findRow(id){ return listEl.querySelector('.row[data-id="'+id+'"]'); }
+function isOpen(n,q){ return hasKids(n) && (q ? true : n.expanded); }
+function matchSub(n,q){ return n.name.toLowerCase().includes(q) || (n.children||[]).some(c=>matchSub(c,q)); }
+
+/* ============ 渲染 ============ */
+const listEl = document.getElementById('list');
+
+function iconFor(type){
+  if(type === 'project') return ICONS.folder;
+  return ICONS.doc;
+}
+/* 颜色只表达一件事：这是项目、还是卡。冷热不用颜色说（位置和时间已经说了） */
+function iconColor(type){
+  return type === 'project' ? 'var(--icon-folder)' : 'var(--icon-doc)';
+}
+function esc(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function hl(name,q){
+  if(!q) return esc(name);
+  const i = name.toLowerCase().indexOf(q);
+  if(i < 0) return esc(name);
+  return esc(name.slice(0,i)) + '<mark>' + esc(name.slice(i,i+q.length)) + '</mark>' + esc(name.slice(i+q.length));
+}
+
+function render(){
+  const q = query.trim().toLowerCase();
+  listEl.innerHTML = '';
+  TREE.forEach((root,i)=>{
+    if(q && !matchSub(root,q)) return;
+    const wrap = buildNode(root,1,[],false,true,q);
+    wrap.classList.add('card');
+    if(i===0) wrap.classList.add('first');
+    listEl.appendChild(wrap);
+  });
+}
+
+function buildNode(n, depth, guides, isLast, isFirst, q){
+  const wrap = document.createElement('div');
+  wrap.className = 'wrap';
+
+  const row = document.createElement('div');
+  row.className = 'row' + (n.type==='project' ? ' project' : '')
+                + (n.id===activeId ? ' active' : '');
+  row.dataset.name = n.name;
+  row.dataset.depth = depth;
+  row.dataset.id = n.id;
+  row.style.setProperty('--pl', indentOf(depth)+'px');
+  const H = n.type==='project' ? PROJ_H : ROW_H;
+  const centerY = Math.round(H/2);
+  const kids = isOpen(n,q);
+
+  /* 树线（样式轮定稿逻辑，原样保留） */
+  guides.forEach(gx => row.appendChild(seg('v', gx, 0, H, 'thru')));
+  if(depth >= 3){
+    if(isFirst){
+      const from = iconX(depth-1), to = iconX(depth);
+      row.appendChild(seg('h', from, 0, to-from, 'elbow'));
+      row.appendChild(seg('v', to, 0, centerY, 'in'));
+    } else {
+      row.appendChild(seg('v', iconX(depth), 0, centerY, 'in'));
+    }
+  }
+  if(depth >= 2 && (kids || (depth >= 3 && !isLast))){
+    const top = centerY + ICO_SVG_HALF;
+    row.appendChild(seg('v', iconX(depth), top, H-top, 'out'));
+  }
+
+  const chev = document.createElement('div');
+  chev.className = 'chev' + (hasKids(n) ? '' : ' leaf') + (kids ? ' open' : '');
+  chev.innerHTML = ICONS.chev;
+
+  const ico = document.createElement('div');
+  ico.className = 'ico';
+  ico.style.color = iconColor(n.type);
+  ico.innerHTML = iconFor(n.type);
+
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.innerHTML = hl(n.name, q);
+
+  row.appendChild(chev);
+  row.appendChild(ico);
+  row.appendChild(label);
+
+  /* 行尾槽：转圈 / 时间 二选一；⋯ 顶替时间所在位置（见 CSS 注释） */
+  const tail = document.createElement('div');
+  tail.className = 'tail';
+  if(n.running){
+    tail.classList.add('has-run');
+    const run = document.createElement('div');
+    run.className = 'run';
+    run.innerHTML = '<span class="spinner"></span>';
+    tail.appendChild(run);
+  } else if(n.timeAgo){
+    tail.classList.add('has-time');
+    const time = document.createElement('div');
+    time.className = 'time';
+    time.textContent = n.timeAgo;
+    tail.appendChild(time);
+  }
+
+  /* 悬停出现的"⋯"＝卡片操作 */
+  const more = document.createElement('div');
+  more.className = 'more';
+  more.innerHTML = ICONS.dots;
+  tail.appendChild(more);
+  row.appendChild(tail);
+
+  /* 交互规矩：
+     · 点箭头＝只展开/收起（判定区 24px）
+     · 点行上其他任何地方＝打开这张卡（进对话）
+     · 点⋯＝弹操作菜单 */
+  row.addEventListener('click', (e)=>{
+    if(e.target.closest('.more')){ openMenu(n, row); return; }
+    if(e.target.closest('.chev') && hasKids(n)){ toggle(n); return; }
+    openCard(n);
+  });
+
+  wrap.appendChild(row);
+
+  if(kids){
+    const childGuides = (depth >= 3 && !isLast) ? guides.concat(iconX(depth)) : guides;
+    n.children.forEach((c,i)=>
+      wrap.appendChild(buildNode(c, depth+1, childGuides,
+        i===n.children.length-1, i===0, q)));
+  }
+  return wrap;
+}
+
+function seg(kind, x, offset, size, tag){
+  const el = document.createElement('div');
+  el.className = 'seg ' + kind + (tag ? ' ' + tag : '');
+  if(kind === 'v'){
+    el.style.setProperty('--x', x+'px');
+    el.style.setProperty('--t', offset+'px');
+    el.style.setProperty('--h', size+'px');
+  } else {
+    el.style.setProperty('--x', x+'px');
+    el.style.setProperty('--y', offset+'px');
+    el.style.setProperty('--w', size+'px');
+  }
+  return el;
+}
+
+/* ============ 展开/收起：点的那一行原地不动 ============ */
+function toggle(n){
+  const before = findRow(n.id).getBoundingClientRect().top;
+  n.expanded = !n.expanded;
+  render();
+  const after = findRow(n.id);
+  if(after) listEl.scrollTop += after.getBoundingClientRect().top - before;
+}
+
+/* ============ 打开＝进对话＋定位（撑开路径、滚到它、高亮它） ============ */
+function openCard(n){
+  let p = n._parent;
+  while(p){ if(hasKids(p)) p.expanded = true; p = p._parent; }
+  activeId = n.id;
+  render();
+  const el = findRow(n.id);
+  if(el) el.scrollIntoView({block:'nearest'});
+  renderStage(n);
+}
+function renderStage(n){
+  const kind = n.type==='project' ? '项目' : '卡片';
+  document.getElementById('stage').innerHTML = `
+    <div class="card-view">
+      <h2>${esc(n.name)}</h2>
+      <div class="tag">${kind}</div>
+      <div class="msg user">（对话占位）这条是你在这张卡里的发言。</div>
+      <div class="msg agent">（对话占位）这条是这张卡的往来对话。</div>
+      <div class="note">点名字＝进入这张卡的对话。它的路径已自动撑开，侧栏里它正高亮着。</div>
+    </div>`;
+}
+function resetStage(){
+  document.getElementById('stage').innerHTML = `
+    <div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>
+      <p>点左侧卡片的名字，进入它的对话</p>
+    </div>`;
+}
+
+/* ============ ⋯ 操作菜单：新建子卡 / 删除 ============ */
+let menuEl = null;
+function closeMenu(){
+  if(menuEl){ menuEl.remove(); menuEl = null; }
+  listEl.querySelectorAll('.row.menu-open').forEach(r=>r.classList.remove('menu-open'));
+}
+function openMenu(n, row){
+  closeMenu();
+  const btn = row.querySelector('.more');
+  const r = btn.getBoundingClientRect();
+  menuEl = document.createElement('div');
+  menuEl.className = 'menu';
+  menuEl.innerHTML = '<div class="mi" data-act="add">新建子卡</div><div class="mi danger" data-act="del">删除</div>';
+  document.body.appendChild(menuEl);
+  menuEl.style.left = Math.min(r.right - 112, window.innerWidth - 120) + 'px';
+  menuEl.style.top = (r.bottom + 4) + 'px';
+  row.classList.add('menu-open');
+  menuEl.addEventListener('click', (e)=>{
+    const act = e.target.dataset.act;
+    if(act === 'add') addChild(n);
+    else if(act === 'del'){ if(confirm('删除「' + n.name + '」和它的全部子卡？')) removeNode(n); }
+    closeMenu();
+    render();
+  });
+}
+function addChild(n){
+  if(!n.children) n.children = [];
+  const c = mk('新建子卡','card',0,'刚刚',null,false);
+  c._parent = n;
+  n.children.push(c);
+  n.expanded = true;
+}
+function removeNode(n){
+  const p = n._parent;
+  if(p){
+    p.children = p.children.filter(c=>c!==n);
+    if(!p.children.length) p.children = null;
+  } else {
+    TREE.splice(TREE.indexOf(n),1);
+  }
+  if(activeId === n.id){ activeId = null; resetStage(); }
+}
+document.addEventListener('click', (e)=>{
+  if(menuEl && !menuEl.contains(e.target) && !e.target.closest('.more')) closeMenu();
+});
+listEl.addEventListener('scroll', closeMenu);
+
+/* ============ 搜索＝镜片：剪掉不相干的枝、命中路径自动显出、标黄；
+   清空后你摆好的展开收起原样回来（不改状态）；Enter 打开第一条命中；Esc 清空 ============ */
+const searchInput = document.getElementById('searchInput');
+searchInput.addEventListener('input', ()=>{ query = searchInput.value; render(); });
+searchInput.addEventListener('keydown', (e)=>{
+  if(e.key === 'Escape'){ searchInput.value=''; query=''; render(); }
+  if(e.key === 'Enter'){
+    const q = query.trim().toLowerCase();
+    if(!q) return;
+    const hit = allNodes().find(n=>{
+      let cur = n, ok = true;
+      while(cur._parent){ cur = cur._parent; }
+      return n.name.toLowerCase().includes(q) && TREE.indexOf(cur) >= 0;
+    });
+    if(hit) openCard(hit);
+  }
+});
+
+render();
+
+/* ============ 自检（?check=1 时运行，不影响正常查看） ============
+   机器断言，不靠肉眼：
+   A) 样式轮定稿的线不变量（线不压外列图标；根行无线；一级子卡行无拐弯；
+      父卡子列从父icon下缘连到末子icon中心；出线不穿icon上半；进线止于icon中心）
+   B) 最近活跃（<48h）的卡默认全部露出
+   C) 同级按最近活跃排序
+   D) 箭头判定区 ≥24px
+   E) 展开/收起：能收能放，且点的那一行原地不动（≤1px）
+   F) 打开＝定位：打开深藏折叠里的卡→路径撑开、高亮、在视野内
+   G) 搜索镜片：折叠里的命中能显出+标黄；清空后原样收起；不改展开状态
+   H) ⋯菜单：两项；新建子卡真出现；删除真消失
+   I) 运行中与时间互斥
+   J) Enter 打开第一条命中 */
+if(location.search.includes('check')){
+  window.confirm = ()=>true;
+  setTimeout(()=>{
+    const out = [];
+    try{
+    const px = v => Math.round(v*10)/10;
+    const nameOf = el => el.closest('.row').querySelector('.label').textContent;
+
+    /* A) 线不变量 */
+    const vsegs = [...document.querySelectorAll('.seg.v')];
+    const icons = [...document.querySelectorAll('.row .ico svg')];
+    vsegs.forEach(s=>{
+      const sr = s.getBoundingClientRect(), sx = sr.left + sr.width/2;
+      icons.forEach(ic=>{
+        const ir = ic.getBoundingClientRect(), icx = ir.left + ir.width/2;
+        if(Math.abs(icx - sx) <= 1.5) return;
+        if(sr.bottom > ir.top+1 && sr.top < ir.bottom-1 && sx > ir.left-1 && sx < ir.right+1)
+          out.push('ICON-CROSS: 线x='+px(sx)+' 压到图标 of '+nameOf(ic));
+      });
+    });
+    document.querySelectorAll('.row.project').forEach(r=>{
+      if(r.querySelector('.seg')) out.push('ROOT-HAS-LINE: '+r.querySelector('.label').textContent);
+    });
+    document.querySelectorAll('.row').forEach(r=>{
+      if(+r.dataset.depth===2 && r.querySelector('.seg.h'))
+        out.push('L2-HAS-ELBOW: '+r.querySelector('.label').textContent);
+    });
+    document.querySelectorAll('.wrap').forEach(w=>{
+      const row = w.querySelector(':scope > .row');
+      if(!row) return;
+      const chev = row.querySelector(':scope > .chev');
+      if(!chev || chev.classList.contains('leaf') || !chev.classList.contains('open')) return;
+      const depth = +row.dataset.depth;
+      if(depth < 2) return;
+      const pname = row.querySelector('.label').textContent;
+      const rr = row.getBoundingClientRect();
+      const parentCol = rr.left + iconX(depth);
+      const pic = row.querySelector('.ico svg').getBoundingClientRect();
+      const po = [...row.querySelectorAll('.seg.out')].find(s=>{
+        const sr = s.getBoundingClientRect();
+        return Math.abs((sr.left+sr.width/2)-parentCol) <= 1;
+      });
+      if(!po) out.push('NO-OUT: '+pname);
+      else {
+        const pr = po.getBoundingClientRect();
+        if(Math.abs(pr.top - pic.bottom) > 1.5) out.push('OUT-START: '+pname);
+        if(Math.abs(pr.bottom - rr.bottom) > 1.5) out.push('OUT-END: '+pname);
+      }
+      const kids = [...w.children].filter(el=>el.classList && el.classList.contains('wrap'));
+      kids.forEach((kw,i)=>{
+        const cr = kw.querySelector(':scope > .row');
+        const crr = cr.getBoundingClientRect();
+        const cname = cr.querySelector('.label').textContent;
+        const cis = cr.querySelector('.ico svg').getBoundingClientRect();
+        const ccy = cis.top + cis.height/2;
+        const ins = [...cr.querySelectorAll('.seg.in')].find(s=>{
+          const sr = s.getBoundingClientRect();
+          return Math.abs((sr.left+sr.width/2)-(crr.left+iconX(+cr.dataset.depth))) <= 1;
+        });
+        if(!ins) out.push('NO-IN: '+cname);
+        else {
+          const ir2 = ins.getBoundingClientRect();
+          if(Math.abs(ir2.top - crr.top) > 1) out.push('IN-START: '+cname);
+          if(Math.abs(ir2.bottom - ccy) > 1.5) out.push('IN-END: '+cname);
+        }
+        if(i===0){
+          const elb = [...cr.querySelectorAll('.seg.h')].find(s=>{
+            const sr = s.getBoundingClientRect();
+            return Math.abs(sr.left-(crr.left+iconX(depth))) <= 1.5;
+          });
+          if(!elb) out.push('NO-ELBOW: '+cname);
+        }
+        const c = kw.querySelector(':scope > .row > .chev');
+        const hasOpenKids = c && !c.classList.contains('leaf') && c.classList.contains('open');
+        const isLast = i===kids.length-1;
+        const outs = [...cr.querySelectorAll('.seg.v')].filter(s=>{
+          const sr = s.getBoundingClientRect();
+          return Math.abs((sr.left+sr.width/2)-(crr.left+iconX(+cr.dataset.depth))) <= 1 && sr.top > crr.top+1;
+        });
+        if(hasOpenKids || !isLast){
+          if(!outs.length) out.push('NO-OUT: '+cname);
+          else if(Math.abs(outs[0].getBoundingClientRect().bottom - crr.bottom) > 1.5)
+            out.push('OUT-END: '+cname);
+        } else if(outs.length) out.push('EXTRA-OUT: '+cname);
+      });
+    });
+    document.querySelectorAll('.row').forEach(r=>{
+      if(+r.dataset.depth < 2) return;
+      const ic = r.querySelector('.ico svg').getBoundingClientRect();
+      [...r.querySelectorAll('.seg.out')].forEach(s=>{
+        if(s.getBoundingClientRect().top < ic.top-1) out.push('OUT-THRU-ICON: '+r.querySelector('.label').textContent);
+      });
+      [...r.querySelectorAll('.seg.in')].forEach(s=>{
+        if(s.getBoundingClientRect().bottom > ic.bottom+1) out.push('IN-THRU-ICON: '+r.querySelector('.label').textContent);
+      });
+    });
+
+    /* B) 最近活跃默认露出 */
+    allNodes().filter(n=>n.hoursAgo<RECENT_H).forEach(n=>{
+      if(!findRow(n.id)) out.push('RECENT-HIDDEN: '+n.name);
+    });
+
+    /* C) 同级排序 */
+    allNodes().forEach(n=>{
+      const cs = n.children||[];
+      for(let i=1;i<cs.length;i++)
+        if(cs[i-1].hoursAgo > cs[i].hoursAgo) out.push('SORT: '+n.name+' 的子卡没按最近排');
+    });
+
+    /* D) 箭头判定区 */
+    document.querySelectorAll('.chev:not(.leaf)').forEach(c=>{
+      if(c.getBoundingClientRect().width < 24) out.push('CHEV-HIT: '+nameOf(c));
+    });
+
+    /* E) 展开/收起不跳行 */
+    const cm = nodeByName('商业化管理');
+    const row0 = findRow(cm.id), top0 = row0.getBoundingClientRect().top;
+    const cnt0 = document.querySelectorAll('.row').length;
+    row0.querySelector('.chev').click();
+    const cnt1 = document.querySelectorAll('.row').length;
+    const row1 = findRow(cm.id), top1 = row1.getBoundingClientRect().top;
+    if(cnt1 <= cnt0) out.push('TOGGLE-EXPAND: 点了没展开');
+    if(Math.abs(top1-top0) > 1) out.push('TOGGLE-JUMP: 行跳了 '+px(top1-top0)+'px');
+    findRow(cm.id).querySelector('.chev').click();
+    if(document.querySelectorAll('.row').length !== cnt0) out.push('TOGGLE-RESTORE: 收回后行数不对');
+
+    /* G) 搜索镜片（先于 F：F 会撑开路径） */
+    searchInput.value = '方案书'; searchInput.dispatchEvent(new Event('input'));
+    const pc = nodeByName('方案书卡');
+    const pr = findRow(pc.id);
+    if(!pr) out.push('SEARCH-HIDDEN: 折叠里的命中没显出');
+    else if(!pr.querySelector('mark')) out.push('SEARCH-MARK: 命中没标黄');
+    searchInput.value = ''; searchInput.dispatchEvent(new Event('input'));
+    if(findRow(pc.id)) out.push('SEARCH-CLEAR: 清空后还留着');
+    if(nodeByName('卡片').expanded) out.push('LENS-MUTATED: 搜索偷改了展开状态');
+
+    /* F) 打开＝定位 */
+    openCard(pc);
+    const el = findRow(pc.id);
+    if(!el) out.push('LOCATE-MISS');
+    else {
+      if(!el.classList.contains('active')) out.push('LOCATE-ACTIVE');
+      const lr = listEl.getBoundingClientRect(), er = el.getBoundingClientRect();
+      if(er.top < lr.top-1 || er.bottom > lr.bottom+1) out.push('LOCATE-VIEW: 不在视野内');
+    }
+
+    /* H) ⋯菜单：新建子卡 / 删除 */
+    const ui = nodeByName('UI交互');
+    findRow(ui.id).querySelector('.more').click();
+    const menu = document.querySelector('.menu');
+    if(!menu || menu.querySelectorAll('.mi').length !== 2) out.push('MENU-ITEMS');
+    else {
+      menu.querySelector('[data-act="add"]').click();
+      const nn = allNodes().find(n=>n.name==='新建子卡');
+      if(!nn) out.push('ADD-CHILD: 新建子卡没出现');
+      else {
+        if(!findRow(nn.id)) out.push('ADD-CHILD-VISIBLE');
+        findRow(nn.id).querySelector('.more').click();
+        const m2 = document.querySelector('.menu');
+        if(!m2) out.push('MENU-2ND');
+        else m2.querySelector('[data-act="del"]').click();
+        if(findRow(nn.id)) out.push('DEL-CHILD: 删了还在');
+      }
+    }
+
+    /* I) 运行中与时间互斥 */
+    document.querySelectorAll('.row').forEach(r=>{
+      if(r.querySelector('.run') && r.querySelector('.time'))
+        out.push('RUN+TIME-CONFLICT: '+r.querySelector('.label').textContent);
+    });
+
+    /* J) Enter 打开第一条命中 */
+    searchInput.value = '方案书'; searchInput.dispatchEvent(new Event('input'));
+    searchInput.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'}));
+    const act = document.querySelector('.row.active');
+    if(!act || act.querySelector('.label').textContent !== '方案书卡') out.push('ENTER-OPEN');
+    searchInput.value=''; searchInput.dispatchEvent(new Event('input'));
+
+    /* K) 工具卡不进侧栏：数据里确有 tool 样本，建树时被剥掉，树里绝不该有 */
+    if(TOOL_NODES === 0) out.push('TOOL-STRIP: 数据里没有 tool 样本，无法验证剥离');
+    allNodes().forEach(n=>{ if(n.type==='tool') out.push('TOOL-CARD: '+n.name); });
+
+    /* L) 浅灰只剩一处含义：行尾时间。标题不许被涂灰 */
+    document.querySelectorAll('.row .label').forEach(l=>{
+      const c = getComputedStyle(l).color;
+      if(c === 'rgb(167, 173, 182)') out.push('GRAY-TITLE: '+l.textContent);
+    });
+    if(document.querySelector('.row.cold')) out.push('COLD-CLASS: 还有冷灰行');
+
+    /* M) ⋯ 必须落在时间原来的位置上（不是"隐藏时间、⋯ 待在老地方"） */
+    const withTime = [...document.querySelectorAll('.row')]
+      .filter(r=>r.querySelector('.time') && r.querySelector('.more'));
+    if(withTime.length === 0) out.push('HOVER-NO-SAMPLE: 没有带时间的行可验');
+    withTime.forEach(r=>{
+      const t = r.querySelector('.time'), m = r.querySelector('.more');
+      const tRect = t.getBoundingClientRect();          /* 时间原位（悬停前） */
+      r.classList.add('hover');
+      const mRect = m.getBoundingClientRect();
+      if(parseFloat(getComputedStyle(t).opacity) !== 0)
+        out.push('HOVER-TIME-LEFT: 悬停时时间没让位 ('+r.querySelector('.label').textContent+')');
+      if(getComputedStyle(m).opacity !== '1')
+        out.push('HOVER-MORE-HIDDEN: 悬停时⋯没出现');
+      /* 位置断言：⋯ 的中心＝时间原来的中心（容差 3px） */
+      const dx = Math.abs((mRect.left+mRect.right)/2 - (tRect.left+tRect.right)/2);
+      if(dx > 3)
+        out.push('MORE-NOT-AT-TIME: ⋯没落在时间的位置上（偏 '+dx.toFixed(1)+'px：'+r.querySelector('.label').textContent+'）');
+      r.classList.remove('hover');
+      if(parseFloat(getComputedStyle(t).opacity) === 0)
+        out.push('HOVER-STUCK: 移开后时间没回来');
+    });
+    /* 运行中的转圈不许让位 */
+    const running = [...document.querySelectorAll('.row')].filter(r=>r.querySelector('.run'));
+    if(running.length === 0) out.push('RUN-NO-SAMPLE: 没有运行中的行可验');
+    running.forEach(r=>{
+      r.classList.add('hover');
+      if(getComputedStyle(r.querySelector('.run')).display === 'none')
+        out.push('RUN-YIELDED: 运行中转圈被⋯顶掉了 ('+r.querySelector('.label').textContent+')');
+      r.classList.remove('hover');
+    });
+
+    const pre = document.createElement('pre');
+    pre.id = 'checkout';
+    pre.style.cssText = 'position:fixed;left:-9999px';
+    pre.textContent = out.length
+      ? 'CHECK-FAIL ('+out.length+')\n'+out.join('\n')
+      : 'CHECK-PASS: 线不变量全过；最近活跃默认露出；同级按最近排；箭头判定区24px；' +
+        '展开/收起点哪行哪行不动；搜索镜片显出折叠命中且不改状态；打开＝撑开路径+滚到+高亮；' +
+        '⋯菜单新建/删除真实生效；运行中与时间互斥；Enter打开首条命中；' +
+        '无工具卡；标题无冷灰（灰只剩行尾时间一处含义）';
+    document.body.appendChild(pre);
+    }catch(err){
+      const pre2 = document.createElement('pre');
+      pre2.id = 'checkout';
+      pre2.style.cssText = 'position:fixed;left:-9999px';
+      pre2.textContent = 'CHECK-ERROR: ' + (err && err.stack ? err.stack : String(err)) +
+                         '\n（此前已收集 ' + out.length + ' 条）\n' + out.join('\n');
+      document.body.appendChild(pre2);
+    }
+  }, 400);
+}
+</script>
+</body>
+</html>

@@ -280,21 +280,15 @@ async def test_s5_route_log_execute_and_think(work, monkeypatch, caplog):
         {"id": "s1", "prompt": "整理一下", "criteria": "c", "deliverable": "d", "type": "think"},
     ])
     gw = ScriptedGateway(script=[])
+    # [模型设置收拢] 角色→模型绑定并入 config/models.yaml 的 bindings 段：
+    # think 步路由到 viewpoint_qwen（收拢前经 model_pick.json 副本，现经
+    # gateway.config.bindings——「选模型」与「调用」同一份 config）。
     gw.config = {"models": {"main": {"provider": "openai", "model": "fake-main"},
                             "viewpoint_qwen": {"provider": "openai", "model": "fake-qwen"}},
-                 "simple": {"enabled": False, "viewpoints": []}}
+                 "bindings": {"execute": "main", "think": "viewpoint_qwen"},
+                 "system": {"default_model": "main"},
+                 "simple": {"enabled": False}}
     monkeypatch.setattr(model_service, "_gateway", gw)
-
-    # 热切换：model_pick 表 think→viewpoint_qwen（临时副本，monkeypatch 隔离）
-    import json as _json
-    import tempfile
-    from pathlib import Path
-    from src.thinkchain import model_pick as mp
-    hot_copy = Path(tempfile.mkdtemp(prefix="_s5hot_")) / "model_pick.json"
-    hot_copy.write_text(_json.dumps(
-        {"default": "main", "execute": "main", "think": "viewpoint_qwen"}),
-        encoding="utf-8")
-    monkeypatch.setattr(mp, "PICK_PATH", hot_copy)
 
     app = FastAPI()
     app.include_router(routes.router)
@@ -316,17 +310,12 @@ async def test_s5_bad_seat_name_explicit_error(work, monkeypatch):
     await board_mod.create_board(wid, cid, "坏配置计划", [
         {"id": "s1", "prompt": "a", "criteria": "c", "deliverable": "d", "type": "think"}])
     gw = ScriptedGateway(script=[])
+    # [模型设置收拢] 配错名实证：think 步绑定指向不存在的 ghost_seat
+    # （绑定段在 gateway.config.bindings；models 键集只有 main）。
+    gw.config = {**gw.config,
+                 "bindings": {"execute": "main", "think": "ghost_seat"},
+                 "system": {"default_model": "main"}}
     monkeypatch.setattr(model_service, "_gateway", gw)  # models 只有 main
-
-    import json as _json
-    import tempfile
-    from pathlib import Path
-    from src.thinkchain import model_pick as mp
-    hot_copy = Path(tempfile.mkdtemp(prefix="_s5bad_")) / "model_pick.json"
-    hot_copy.write_text(_json.dumps(
-        {"default": "main", "execute": "main", "think": "ghost_seat"}),
-        encoding="utf-8")
-    monkeypatch.setattr(mp, "PICK_PATH", hot_copy)
 
     app = FastAPI()
     app.include_router(routes.router)

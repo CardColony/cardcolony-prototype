@@ -1381,6 +1381,35 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .msg.assistant.live .live-reasoning .live-icon { margin-right: 8px; opacity: .8; }
 .msg.assistant.live .live-content { white-space: pre-wrap; word-break: break-word; }
 
+/* [思考流支持层 2026-10-12] 三席思考块：**独立**弱化行、按模型分桶。
+   既有 .live-reasoning 规则全部作用域在 .msg.assistant.live 内（主模型思考在
+   正文条目里），席位思考是对话流里自己的一条，故另起一套作用域。 */
+.live-reasoning.seat-think {
+  margin: 8px 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  color: var(--dim);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.live-reasoning.seat-think .live-icon { margin-right: 8px; opacity: .8; }
+.live-reasoning.seat-think .live-model {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: .85;
+}
+
 
 /* ============ 迭代四 F3/F4 新增类（间距全用 F1 刻度 4/8/12/16/24） ============ */
 /* [F3⑤] 停按钮（顶栏两态可见） */
@@ -1514,4 +1543,27 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 }
 .draft-modal-foot .spacer { flex: 1; }
 .draft-meta-btn { font-size: 12px; padding: 5px 10px; }
+
+/* ============================================================
+   [模型设置第二步 2026-10-12] 左栏底部常驻入口 #navFooter
+   卡片聊天界面进【设置】→【模型】。只追加，不改上面任何既有规则。
+
+   .nav-tree 是 flex:1，本容器 margin-top:auto → 推到最底；
+   rail 态（44px 窄条，.app-nav.rail）下 .nav-tree/.nav-top 被隐藏，
+   本容器自然落到窄条底部，只留图标、居中。
+
+   间距刻度说明：方案原写 `padding: 8px 10px`，但 test_frontend_readability
+   的 test_spacing_scale_in_three_regions 把 `nav-*` 选择器纳入三区域扫描，
+   10px 属旧刻度值会被判失败——故改为 12px（既守测试又不改语义）。
+   ============================================================ */
+.nav-footer { margin-top: auto; padding: 8px; border-top: 1px solid var(--border); flex: none; }
+.nav-foot-btn { width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel); color: var(--dim); font-size: 13px; cursor: pointer; }
+.nav-foot-btn:hover { color: var(--text); background: var(--panel-hover); }
+/* rail 态（44px 窄条）：只留图标、居中、去掉分隔线上内边距 */
+.app-nav.rail .nav-footer { padding: 8px 0; }
+.app-nav.rail .nav-foot-btn { width: 30px; height: 30px; margin: 0 auto;
+  justify-content: center; padding: 0; font-size: 14px; }
+.app-nav.rail .nav-foot-label { display: none; }
 

@@ -55,7 +55,7 @@ from typing import Any, AsyncIterator
 logger = logging.getLogger("api.event_stream")
 
 # [信息流重出 Task4] 当前逐字流归属的卡。用 contextvars 而非改 7 处 call_main 调用点：
-# 模型调用链上没有 work_id/card_id，逐层穿参会污染 condenser/折叠等无卡上下文的调用方。
+# 模型调用链上没有 work_id/card_id，逐层穿参会污染 凝练/折叠 等无卡上下文的调用方。
 # 未设置时（凝练席、归拢等后台调用）逐字流自然关闭——不硬塞。
 _stream_ctx: contextvars.ContextVar[Any] = contextvars.ContextVar("flow_stream_ctx", default=None)
 
@@ -353,12 +353,17 @@ def subscriber_count(work_id: str, card_id: str) -> int:
 # run_start/round_start 每轮清空（见 emit），天然有界，以完整保留优先。
 # ============================================================================
 
-def emit_token(work_id: str, card_id: str, ev_type: str, text: str) -> dict[str, Any]:
+def emit_token(work_id: str, card_id: str, ev_type: str, text: str,
+               extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """落一条逐字流增量（reasoning_chunk / content_chunk）。
 
     与 ``emit`` 的区别只在「另开一套 journal 与 seq」，对主通道零干扰。
     [对话流渲染 T4] 单帧超长**不再截断**——原 8KB 截断会把一帧的字砍掉后半，
     属丢字闸。逐字流帧天然是小帧、SSE 无单帧硬限制，完整保留。
+
+    [思考流支持层 2026-10-12] ``extra``：随帧附带的展示层字段（缺省 None＝
+    原行为逐字不变）。三席思考增量带 ``model``（席名），前端据此把并发交织的
+    思考按模型分桶；主模型思考不带 model，仍走正文条目内的弱化区。
     """
     if ev_type not in TOKEN_EVENT_TYPES:
         return {}
@@ -368,12 +373,15 @@ def emit_token(work_id: str, card_id: str, ev_type: str, text: str) -> dict[str,
             return {}
         key = _key(work_id, card_id)
         journal = _token_journals.setdefault(key, [])
+        data: dict[str, Any] = {"text": text}
+        if extra:
+            data.update(extra)
         # [迭代一·A5/T097] seq 单一取号：与主通道共用计数器，帧仅携带
         evt = _attach_anchors(key, {
             "seq": _next_seq(key),
             "ts": time.time(),
             "type": ev_type,
-            "data": {"text": text},
+            "data": _jsonable(data),
         })
         journal.append(evt)
         # [对话流渲染 T4] 已删 5000 条环形弹出（原 pop(0) 丢前字）

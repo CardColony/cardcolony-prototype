@@ -10,3 +10,9 @@ structlog>=24.1.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 httpx>=0.27.0
+# [B-11 2026-10-12] requests 为**可选**依赖：仅联网两件工具（web_search / fetch_web）
+# 需要它。原先 search_tool.py 硬 import 但此处未声明，靠 litellm 的传递依赖侥幸可用，
+# 换机/裁剪依赖即 ImportError，且连带 fetch_web 一起废（出厂即坏）。
+# 装不装都行：不装则联网两件不注册（card_tools._prune_unavailable_plugins 剪枝），
+# 其余 23 件工具照常。装了并配好通道（SEARXNG_URL 或 ALIYUN_TOKEN_PLAN_API_KEY）才启用。
+requests>=2.31.0

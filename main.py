@@ -102,8 +102,11 @@ app = FastAPI(title="推演agent画布 v1")
 startup_init()
 
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)
+# [模型设置第二步 2026-10-12] 设置接口（供应商/模型/角色绑定 + 密钥 + 备份还原）
+from src.api.settings_api import router as settings_router  # noqa: E402
 
 app.include_router(api_router)
+app.include_router(settings_router)
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
@@ -119,6 +122,13 @@ async def work_page(work_id: str) -> HTMLResponse:
     """Phase 8：剧本画布页。work_id 注入到 HTML 占位符。"""
     html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
     return HTMLResponse(content=html.replace("{{WORK_ID}}", work_id))
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page() -> HTMLResponse:
+    """[模型设置第二步 2026-10-12] 模型设置页：供应商/模型/角色绑定，保存即热生效。"""
+    html = (BASE_DIR / "templates" / "settings.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=html)
 
 
 @app.exception_handler(Exception)

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>推演agent · 模型设置</title>
+<!-- [模型设置第二步] style.css 必须 ?v=10.4：本步往里追加了 #navFooter 规则，
+     不升版本号浏览器会吃旧缓存、新按钮样式不生效 -->
+<link rel="stylesheet" href="/static/style.css?v=10.4">
+<link rel="stylesheet" href="/static/settings.css?v=1.0">
+</head>
+<body class="set-body">
+<div class="set-page">
+
+  <div class="set-topbar">
+    <a href="/" class="btn ghost" id="setBackBtn">← 返回</a>
+    <span class="set-title">模型设置</span>
+    <span class="spacer"></span>
+    <span class="set-note" id="setMetaLine"></span>
+    <button class="btn ghost" id="setRestoreBtn" title="从备份列表里挑一版还原">⟲ 还原</button>
+    <button class="btn primary" id="setSaveBtn">保存并生效</button>
+  </div>
+
+  <!-- 保存结果：400 → 红条列全部错误（不关页面、不清表单）；200 → 绿条 + 备份名 -->
+  <div class="set-banner" id="setBanner" style="display:none"></div>
+
+  <div class="set-main">
+
+    <section class="set-block">
+      <h2 class="set-h2">① 供应商<span class="set-hint">端点 · 密钥 · 协议</span></h2>
+      <div id="providerList"></div>
+      <button class="btn" id="addProviderBtn">＋ 新增供应商</button>
+    </section>
+
+    <section class="set-block">
+      <h2 class="set-h2">② 模型<span class="set-hint">挂在供应商下</span></h2>
+      <div id="modelList"></div>
+      <button class="btn" id="addModelBtn">＋ 手动新增模型</button>
+    </section>
+
+    <section class="set-block">
+      <h2 class="set-h2">③ 角色绑定<span class="set-hint" id="roleHint"></span></h2>
+      <div class="set-card" id="bindingList"></div>
+    </section>
+
+    <section class="set-block">
+      <details class="set-advanced" id="advancedBox">
+        <summary>④ 高级</summary>
+        <div class="set-grid">
+          <div class="set-field">
+            <label for="advDefaultModel">默认模型（角色未绑定时的回落）</label>
+            <select class="set-select" id="advDefaultModel"></select>
+          </div>
+          <div class="set-field">
+            <label for="advFallbackModel">降级模型（调用失败时切入）</label>
+            <select class="set-select" id="advFallbackModel"></select>
+          </div>
+          <div class="set-field">
+            <label>三席审议总开关</label>
+            <label class="set-switch">
+              <input type="checkbox" id="advSimpleEnabled" />
+              <span>启用 simple（三席审议）</span>
+            </label>
+          </div>
+        </div>
+      </details>
+    </section>
+
+  </div>
+</div>
+
+<!-- 拉取 → 勾选 弹层 -->
+<div class="set-modal" id="fetchModal" style="display:none">
+  <div class="set-modal-box">
+    <div class="set-modal-head">
+      <span id="fetchModalTitle">选择模型</span>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="fetchCloseBtn">关闭</button>
+    </div>
+    <div class="set-modal-tool">
+      <input class="set-input" id="fetchSearch" type="text" placeholder="搜索模型型号…" />
+      <span class="set-note" id="fetchCount"></span>
+    </div>
+    <div class="set-modal-list" id="fetchList"></div>
+    <div class="set-modal-foot">
+      <span class="set-modal-error" id="fetchError"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="fetchCancelBtn">取消</button>
+      <button class="btn primary" id="fetchAddBtn">添加选中</button>
+    </div>
+  </div>
+</div>
+
+<!-- 还原备份弹层 -->
+<div class="set-modal" id="restoreModal" style="display:none">
+  <div class="set-modal-box" style="max-width:520px">
+    <div class="set-modal-head">
+      <span>从备份还原</span>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="restoreCloseBtn">关闭</button>
+    </div>
+    <div class="set-modal-list" id="restoreList"></div>
+    <div class="set-modal-foot">
+      <span class="set-modal-error" id="restoreError"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="restoreCancelBtn">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="toastContainer" class="toast-container"></div>
+<script src="/static/settings.js?v=1.0"></script>
+</body>
+</html>

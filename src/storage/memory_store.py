@@ -369,13 +369,13 @@ async def _condense_call(user_prompt: str) -> str:
     测试经 monkeypatch 本接缝注入脚本化产出——MockGateway 罐头内容无
     【结论】/【依据】形态且 gateway.py 禁改（model_service 头注），RD-10
     两文件改动面不容第三件。
-    [凝练折叠开启·任务5] 改走独立凝练席 model_name="condenser"（glm-5.3-flash）。
+    [凝练折叠开启·任务5] 模型位改走 bindings.condense 绑定（当前 glm-flash，经 model_config.resolve("condense")）。
     """
-    from ..api import model_service  # 延迟导入：storage 装载期不依赖 api（唯一调用点）
+    from ..api import model_config, model_service  # 延迟导入：storage 装载期不依赖 api（唯一调用点）
 
     result, _model = await model_service.call_main(
         CONDENSE_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
-        model_name="condenser")
+        model_name=model_config.resolve("condense") or model_config.default_model())
     return str((result or {}).get("content") or "")
 
 
@@ -510,12 +510,12 @@ def _parse_fold_output(text: str) -> list[dict[str, Any]]:
 
 
 async def _fold_call(user_prompt: str) -> str:
-    """归拢模型调用（与凝练同走 condenser 席位）。"""
-    from ..api import model_service
+    """归拢模型调用（与凝练同走 bindings.condense 绑定）。"""
+    from ..api import model_config, model_service
 
     result, _model = await model_service.call_main(
         FOLD_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
-        model_name="condenser")
+        model_name=model_config.resolve("condense") or model_config.default_model())
     return str((result or {}).get("content") or "")
 
 

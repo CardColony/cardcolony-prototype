@@ -42,12 +42,17 @@ def test_t9_switch_parsing(raw, expect, monkeypatch):
 def test_t10_readonly_whitelist():
     # [T12] 增补 read_memory（记忆锚点下探，condense_fold 展开通道，只读拉取）——
     # T11 原名单一字不动，白名单随工具表 append 最小随改。
-    assert card_tools.READONLY_TOOLS == frozenset({
+    # [B-11 2026-10-12] 联网两件插件化：未配搜索通道时被剪枝，故名单按注册表
+    # 现状求交集，不写死。写死会在「配了通道」与「没配通道」两种环境里
+    # 必有一种变假红——件数不该是魔法数字。
+    expected = {
         "read_card", "read_shadow", "list_manuscript", "read_manuscript",
         "search_manuscript", "web_search", "fetch_web",
         "list_files", "read_file", "search_files",
         "read_memory",
-    })
+    } & set(card_tools.TOOL_REGISTRY)
+
+    assert card_tools.READONLY_TOOLS == frozenset(expected)
     for w in ("edit_card", "delete_card", "update_shadow",
               "link_cards", "unlink_cards", "write_file"):
         assert w not in card_tools.READONLY_TOOLS
