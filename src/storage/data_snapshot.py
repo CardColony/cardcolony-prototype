@@ -69,6 +69,29 @@ def _batch_dir(work_id: str, stamp: str) -> Path:
     return SNAPSHOT_ROOT / work_id / stamp
 
 
+def _safe_rmtree(p: Path) -> bool:
+    """删一个旧批次；失败只记日志返回 False，**绝不外抛**。
+
+    [2026-10-12] 为什么连 BaseException 都要接：服务进程若继承了 WorkBuddy
+    agent 沙箱的删除守卫 env（CODEBUDDY_SAFE_DELETE_* ＋ CODEBUDDY_TOOL_CALL_ID，
+    经启动 shell 传递），shutil.rmtree 会被沙箱 sitecustomize 掉包——先过删除
+    守卫 node 子进程，判负时 fail-closed ``raise SystemExit(1)``。SystemExit 是
+    BaseException：create_card/snapshot 链上所有 ``except Exception`` 都拦不住它，
+    它会一路穿透（asyncio.to_thread 的 future 会把线程里的 SystemExit 原样重抛
+    给等待方）直到 uvicorn 底层，把用户请求打成裸 500——无 prompt 日志、无错误
+    事件、无 traceback（12:36/13:22 两次 create_card 后 500 实测正是此路径）。
+    保留修剪是尽力而为的维护动作：一批删不动（撞闸/权限/占用）就跳过它，
+    绝不许反噬主链路。
+    """
+    try:
+        shutil.rmtree(p, ignore_errors=True)
+        return True
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 SystemExit＝沙箱删除守卫
+        logger.warning("旧批次删除失败（跳过，不阻断）: %s (%s: %s)",
+                       p, type(exc).__name__, exc)
+        return False
+
+
 def _prune_batches(work_id: str) -> int:
     """按保留策略清理旧批次；返回删除批次数。"""
     wd = SNAPSHOT_ROOT / work_id
@@ -80,8 +103,8 @@ def _prune_batches(work_id: str) -> int:
         for p in batches[: len(batches) - KEEP_BATCHES]:
             if p.name.startswith("daily_"):
                 continue
-            shutil.rmtree(p, ignore_errors=True)
-            removed += 1
+            if _safe_rmtree(p):
+                removed += 1
     # 日备超期清理
     cutoff = datetime.now(_CST).date() - timedelta(days=KEEP_DAILY_DAYS)
     for p in batches:
@@ -92,8 +115,8 @@ def _prune_batches(work_id: str) -> int:
         except Exception:
             continue
         if d < cutoff:
-            shutil.rmtree(p, ignore_errors=True)
-            removed += 1
+            if _safe_rmtree(p):
+                removed += 1
     return removed
 
 
@@ -197,8 +220,10 @@ def snapshot_sync(reason: str = "", work_id: str | None = None) -> dict:
             logger.info("快照完成: %s 文件=%s 原因=%s", result["work_id"], total, reason)
         else:
             logger.info("快照全部跳过（内容均未变）: %s", result["work_id"])
-    except Exception as exc:
-        logger.warning("快照异常: %s (%s)", reason, exc)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 SystemExit＝沙箱删除守卫（见 _safe_rmtree）
+        # 快照整体是尽力而为的留痕：任何失败（含 SystemExit 穿透）降级为告警，
+        # 绝不上抛——留痕机制不配拥有杀死用户请求的能力（12:36/13:22 实测教训）。
+        logger.warning("快照异常: %s (%s: %s)", reason, type(exc).__name__, exc)
     return result
 
 
@@ -210,8 +235,8 @@ async def snapshot(reason: str = "", work_id: str | None = None) -> bool:
     try:
         r = await asyncio.to_thread(snapshot_sync, reason, work_id)
         return bool(r.get("ok"))
-    except Exception as exc:
-        logger.warning("快照任务异常: %s (%s)", reason, exc)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 含沙箱删除守卫的 SystemExit
+        logger.warning("快照任务异常: %s (%s: %s)", reason, type(exc).__name__, exc)
         return False
 
 
