@@ -1,0 +1,24 @@
+{
+  "施工前快照": "monitor/config-snapshot.before-thinkchain-20261011.*（E盘备份 2026-10-11 23:42 后落）",
+  "施工后对账": [
+    {
+      "file": "config/models.yaml",
+      "施工前sha16": "88520de475ad894c",
+      "施工后sha16": "88520de475ad894c",
+      "一致": true
+    },
+    {
+      "file": "config/model_pick.json",
+      "施工前sha16": "25fada7ef51c7ccd",
+      "施工后sha16": "25fada7ef51c7ccd",
+      "一致": true
+    },
+    {
+      "file": "config/behavior_registry.json",
+      "施工前sha16": "ccd9d0025545d1ff",
+      "施工后sha16": "ccd9d0025545d1ff",
+      "一致": true
+    }
+  ],
+  "结论": "config 三件施工前后逐字节一致（本施工零 config 变更）"
+}

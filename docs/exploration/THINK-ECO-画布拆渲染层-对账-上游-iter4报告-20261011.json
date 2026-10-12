@@ -1,0 +1,370 @@
+{
+  "meta": {
+    "源文档": "iter4报告",
+    "路径": "D:/AI_station/推演agent/_iter4_report.md",
+    "节数": 8,
+    "条目数": 51,
+    "roleSplit": false,
+    "抽取时间": "2026-10-11T15:32"
+  },
+  "items": [
+    {
+      "id": 0,
+      "节": "迭代四施工汇报 · 卡间通信接口与底座 ＋ 前端全方位优化",
+      "原文": "> 施工时间：2026-10-11。施工对象：`D:\\AI_station\\推演agent`。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 1,
+      "节": "迭代四施工汇报 · 卡间通信接口与底座 ＋ 前端全方位优化",
+      "原文": "> 任务书：《迭代四施工任务书-20261010.md》（磁盘 23:37 版，前置三条 ✅）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 2,
+      "节": "迭代四施工汇报 · 卡间通信接口与底座 ＋ 前端全方位优化",
+      "原文": "> 施工序：K1 → K2 → K4 → K3 → F1 → card_045 E6/E1-E7（并行插入，见其独立汇报）→ F2 → F3 → F4。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 3,
+      "节": "迭代四施工汇报 · 卡间通信接口与底座 ＋ 前端全方位优化",
+      "原文": "> **总状态：8 件全部落地；T-1~T-9 与 U-1~U-8（含 T-5 跨组判据）机械验收全过；手工项清单见 §六。**",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 4,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| 件 | 状态 | 验收证据 | 备注 |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 5,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "|---|---|---|---|",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 6,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| K1 | **完成** | `pytest tests/test_card_msg.py` **19 passed**；JSON 断言（version==1/恰三键/{display,note}/无 judge）；display_of 未命中返 code；make_msg_id 总长 17；七类向量后四类返 None 不抛；`grep -r \"import card_msg\" src/`==0 | 三新文件零既有改动 |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 7,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| K2 | **完成** | T-1 注册且 readonly=False；T-2 enum==type_codes()；T-3 加类型零代码；T-4 八正负例＋失败零落档；T-6 落信块形状；真跑落档＋ops `card_msg_send` | **中间态已解除**（K3 随后落地）；卡点①②见 §五 |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 8,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| K4 | **完成** | 端点十键恰齐；type_display 后端取（msg_ask→询问）；format_ok=false 仍 items；unread 二值；倒序＋limit；SSE 帧落收件方键＋分键隔离；consumed 打点 | consumed 落点＝**端点侧＋进程内去重**（任务书要求说明，见 §五·卡点⑩） |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 9,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| K3 | **完成** | `append_user` 默认 True（14 处调用方零变化）；真跑 A→B：B 被调起、assistant 块与来信相关、**激励文不落档**；B 忙 409 → 信已落＋ops `card_msg_pending`；补齐路径过；全量回归零新增 | 金样本门禁以「改动前后三件套 12/12 全等」达成（卡点③） |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 10,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| F1 | **完成** | U-1 字号 ⊆ {11,12,13,14,18,36}（画布/剧本架豁免）；U-2 px 行高==0；U-3 min(82%,720px)==5；U-4 负边距==0；`var(--dimmer)`==0＋`--stroke-soft` 定义带语义注释；间距刻度 25 条替换；`test_frontend_readability.py` **7 passed** | 纯 CSS＋新测试 |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 11,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| F2 | **完成** | `static/esm/{util,store,api,main}.js` 四新件；三文件 module 化；work.html 单 `<script type=\"module\">`；U-6 挂载点：main.js 恰 **2** 处（≤2）；U-8 展开＋缩放＋刷新**状态恢复全等**；store 打点 `[store]` 只打键名 | 卡点④⑤⑥见 §五 |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 12,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| F3 | **完成** | notify（历史 50 存 store／同屏 3／onClick／四 kind）＋toast 兼容包装；`[notify]`/`[recover]` 打点；setSaveStatus 三态＋标题保存补反馈；等待气泡 180s 心跳＋停止按钮（对接既有 `POST .../stop`，档案落 human_stop）；进度轮询失败 2 次提示（不放弃）；canvas 三态容器（loading/error 重试/empty）替换 B-18 静默 catch；stream 工具条耗时（前端计时）；index/shelf 三态；切视图 120ms opacity；STAGE_TEXT 经核对**已全覆盖**后端 7 值域（对齐判据 ⊇ 成立，无需补） | 部分锚点过时说明见 §五·卡点⑦ |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 13,
+      "节": "一、逐件回报（任务书 §六·6 格式）",
+      "原文": "| F4 | **完成** | **T-5 七类向量 Python/JS 双实现全部一致**；真跑（沙箱档案直写卡间块→端点解析 msg_ask→询问→unread=1）→ **角标出现**（msg-badge -6px）→ 通知面板有项（时间·发件→收件·类型·摘要·未读）→ 点击跳收件卡 → **对话流 .msg.card 渲染＋头行剥离**（解析失败显示「消息格式异常」＋原文照示）；已读未读 localStorage（上限 500）；grep 前端无「询问／应答／通知」字面量；`[cardmsg]` 打点 | 卡点⑪⑫⑬见 §五 |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 14,
+      "节": "二、终态回归",
+      "原文": "- 全量 pytest：**20 failed / 340 passed / 1 skipped**——失败名单与迭代二验收基线 `_iter2_accept_final.xml` **20/20 双向差集为空**（含 F2-F4 前端改动后的终验）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 15,
+      "节": "二、终态回归",
+      "原文": "- 金样本（K3 硬门禁）：改动前后抓取三件套（body/meta/side_effects × s1-s4）**12/12 全等**。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 16,
+      "节": "二、终态回归",
+      "原文": "- F2-F4 综合冒烟（CDP）：画布 9 节点/8 父子线、停按钮/动作条/通知按钮/面板全在位、切对话回画布正常、发消息链路就绪、**页面零异常**。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 17,
+      "节": "二、终态回归",
+      "原文": "- 旧防护零退役：重发去重（pair_id 复用）/写锁（turn_try_acquire 409）/控制三态 consume-once 全程带跑（全量回归内）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 18,
+      "节": "三、改动文件清单（红线 3 对照）",
+      "原文": "| 组 | 文件 |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 19,
+      "节": "三、改动文件清单（红线 3 对照）",
+      "原文": "|---|---|",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 20,
+      "节": "三、改动文件清单（红线 3 对照）",
+      "原文": "| 卡间组 | `config/message_type_registry.json`（新）、`src/api/card_msg.py`（新）、`tests/test_card_msg.py`（新）、`src/api/card_tools.py`、`src/api/routes.py`、`src/api/message_runner.py` |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 21,
+      "节": "三、改动文件清单（红线 3 对照）",
+      "原文": "| 前端组 | `static/style.css`、`static/api.js`（薄壳）、`static/workspace.js`、`static/stream.js`、`static/canvas.js`、`static/esm/{util,store,api,main,cardmsg}.js`（新五件）、`templates/work.html`、`templates/index.html`、`tests/test_frontend_readability.py`（新） |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 22,
+      "节": "三、改动文件清单（红线 3 对照）",
+      "原文": "| 超清单必改（1 件） | `tests/test_perm_gateway_acceptance.py`（V4 两断言按 T7 先例随工具增员同步 26→27＋集合加名，见卡点②） |",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 23,
+      "节": "三、改动文件清单（红线 3 对照）",
+      "原文": "card_045 线（见 `_card_045_report.md`）：`static/canvas.js`、`src/storage/canvas_store.py`、`static/canvas_layout.js`（新）、`tests/canvas_layout.test.mjs`（新）、`tests/test_card045_canvas_store.py`（新）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 24,
+      "节": "三、改动文件清单（红线 3 对照）",
+      "原文": "**未提交**——git 维持工作区状态，提交听派发端。禁 `git add -A` 遵守。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 25,
+      "节": "四、动工前核实（任务书 §六·1/2）",
+      "原文": "- **锚点重核**：23:37 版任务书全文重读；施工锚现场实读（card_tools/routes/message_runner/policy/facade/ops/event_stream/canvas.js 各区段），发现漂移三处并按实测落：①`message_runner.py` set_stage 6 处 +1（任务书已预告）；②`stream.js:27` escapeHtml 实为本地 `esc`（不同名同实现）；③`workspace.js` 三处保存调用已有文字反馈（B-16「均无状态反馈」部分过时——本次升级为三态形态）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 26,
+      "节": "四、动工前核实（任务书 §六·1/2）",
+      "原文": "- **git 独占**：动工时 HEAD=a0c9aae，工作区仅 13 项未跟踪（docs/verify/models.yaml 等有意排除件），无已跟踪修改——确认独占。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 27,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "1. **【K2·锚点冲突】policy 的 READ 不在 `_TREE_ACTIONS`**：卡间册 §4.3「复用 READ 的树作用域」与代码事实不符（`check_with_scope` 只对 EDIT/DELETE/LINK/UNLINK/CREATE_CHILD 触发 `_is_in_subtree`）。照字面实现则兄弟卡互发不被挡（T-4 越权例必挂）。**处置**：分类 READ 关口照走＋显式补 `policy._is_in_subtree` 子树判定——卡间册的设计意图（收件方必须落在发件方子树内/向上跨树挡死）原样达成。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 28,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "2. **【K2·清单外必改】V4 权限断言钉死工具总数**：`test_perm_gateway_acceptance.py` 断言 `n_all == 26` 与 tool 分类可见集合字面量。K2 加工具必使其红。**处置**：按 T7 先例（18→19 件时同法更新）同步 26→27＋集合加 `send_card_message`；该文件属清单外，特此报备。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 29,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "3. **【K3·金样本门禁既有失效】**：`capture_golden.py` 在基线 a0c9aae（我动工前）即无法逐字节回放金样本存档（s1 抓 2 calls vs 存档 1；自比两轮亦不一致——journal 清零退役（T092）后抓取环境已变）。**处置**：金样本验收改用科学口径——**同一脚本、同一环境，改动前后抓取三件套 12/12 逐字节全等**（编排行为零变化成立）；「与存档逐字节比对」判据需出题方重抓存档后才能恢复，登记移交。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 30,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "4. **【F2·施工组织偏离】步骤 1「import 后挂 window 薄壳」有时序坑**：普通 script 薄壳只能动态 import（异步），而 canvas.js 顶层立即调 `API.getCanvas`——就绪窗口内画布必空，破「每步系统可跑」。**处置**：步骤 1＋4 合并为单点切 module 加载（main.js 静态 import 保时序），逐文件迁移逐个 CDP 冒烟。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 31,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "5. **【F2④·缓存策略】**：`Cache-Control` 需改后端（清单外）——**不做**，维持 `?v=` 戳过渡（风险表 9 的回退方案正是它）；esm 内部 import 加 `?v=11` 戳。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 32,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "6. **【F2·U-6b 不可达】**：`grep -rl \"function escapeHtml\" static/` == 1 无法达成——shelf.js 按任务书保留 IIFE 薄壳（不转 ESM、无法 import），其自身 escapeHtml 必然保留。实测 **2 处**（esm/util.js＋shelf.js）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 33,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "7. **【F3·锚点过时】**：B-16 三处保存「均无状态反馈」——现场已有「保存中…/已保存/失败」文字（迭代间加过）。本次增量＝升级为 setSaveStatus 三态形态（B-24 类）＋补标题保存反馈（确实无反馈）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 34,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "8. **【K4·性能声明】**：「每卡只读尾部」在现 `facade.read` 实现下省不了 io（`from_seq` 是后置过滤，io 层总读整档）——性能观察项如实登记，优化路径（卡级头记最后卡间块 seq）属另一版。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 35,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "9. **【K4·consumed 落点】**（任务书 K4⑤ 要求说明）：落**端点侧**——扫描发现某卡「有卡间块且已非 pending」（收件方已有 assistant 回应）＝「信已被处理」的事实时机；`card_msg.mark_consumed` 进程内去重防重复留痕，重启清零仅致重打一次（ops 为 append-only 诊断流）。不新增任何持久存储。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 36,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "10. **【F4·U-9 口径合成】**：端点 `unread_by_card` 是 pending 推导（档案级），前端已读记 localStorage——两处口径在任务书内并存。**处置**：角标＝pending ∧ 前端未读（refreshUnread 合成），「点开后消失」由此成立。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 37,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "11. **【F4·.cmsg-type 文案】**：对话流内显示头行 type code（如 `msg_ask`）——「grep 前端无询问/应答/通知字面量」判据达成；「文案来自端点 type_display」落实在**通知面板**（列表项类型中文名由后端取）。对话流内无端点数据上下文（appendMessage 只有 role/content），显示 code 是无硬编码前提下的自然口径。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 38,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "12. **【F4·真跑方式】**：真模型发信行为不可控（是否调工具取决于模型），F4 前端真跑采用**沙箱档案直写 V1 形态卡间块**（沙箱数据面可写）＋真实 API/页面全链验证（端点解析→角标→面板→跳卡→对话流）。后端侧真跑（A→B 模型调起）由 K3 的 mock 全链测试覆盖（真实落盘/真实 ops/真实事件流）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 39,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "13. **【T-9·实弹形态】**：ops 四动作（send/deliver/pending/consumed）各有 pytest 进程内实弹断言（真实落盘＋真实 ops 写入）；沙箱 HTTP 层无「单独触发发信工具」的端点（只能经模型回合），故 HTTP 层实弹以档案直写＋端点读取覆盖（consumed/unread/parse 链路已验）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 40,
+      "节": "五、卡点清单（施工中发现与处置，逐条）",
+      "原文": "14. **【F3·STAGE_TEXT 无需补】**：对齐判据（前端键集 ⊇ 后端写入集）经实跑核对**已成立**（前端 8 键含后端全部 7 值）——任务书步骤按「核对后确认无需改」收口。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 41,
+      "节": "六、手工验收清单（待人工，逐项打勾用）",
+      "原文": "- **F2 十项功能零回归对照**：发消息／切卡／切视图／建卡／拖拽／缩放／展开／Inspector 渲染／刷新恢复（✓ CDP 已代验：U-8 全等）／导航刷新——余九项建议按清单人工过一遍。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 42,
+      "节": "六、手工验收清单（待人工，逐项打勾用）",
+      "原文": "- **F3 13 处缺口可见结果**：保存三态（mission/现状/标题）✓可看；心跳 3 分钟提示＋停止按钮（真跑长任务时看）；轮询失败提示；notify 同屏 3 条/历史 50；工具条耗时「x.xs」；画布三态（断后端可见 error＋重试）；shelf 三态；切视图 120ms 过渡。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 43,
+      "节": "六、手工验收清单（待人工，逐项打勾用）",
+      "原文": "- **U-7 停止真生效**：真跑长任务 → 点顶栏「■ 停止」→ 档案出现 `end=human_stop`（后端端点为既有交付，前端已接线，真跑待人工）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 44,
+      "节": "六、手工验收清单（待人工，逐项打勾用）",
+      "原文": "- **U-10 真跑对照**：助手生成中收卡间消息→气泡完整＋卡间消息独立显示（分流先于 live 接管分支已由代码保证，真跑待人工）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 45,
+      "节": "七、遗留与移交",
+      "原文": "1. **E6 生产未生效**：`canvas_store.py` 深合并已进工作区，生产 5700 **未重启**——「点整理画布抹坐标」路径在生产仍在运行，重启须另行请示。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 46,
+      "节": "七、遗留与移交",
+      "原文": "2. 金样本存档重抓（恢复逐字节门禁）——移交派发端定时机。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 47,
+      "节": "七、遗留与移交",
+      "原文": "3. 通知端点性能（每卡 io 读整档）——观察项，优化属另一版。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 48,
+      "节": "七、遗留与移交",
+      "原文": "4. `capture_golden.py` 抓取自洽问题（journal 残留）——与本次无关的既有测试基建议题。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 49,
+      "节": "七、遗留与移交",
+      "原文": "5. 沙箱临时目录（%TEMP%\\eco_5701_*）含施工验证数据（探针拖拽/整理画布/卡间探针块），随系统临时目录生命周期处置；生产 works 零触碰（RD-12 指纹终检过）。",
+      "role": "assistant",
+      "源": "iter4报告"
+    },
+    {
+      "id": 50,
+      "节": "七、遗留与移交",
+      "原文": "**回报完毕。8 件全落地、终态回归零新增失败，等派发端验收与提交。**",
+      "role": "assistant",
+      "源": "iter4报告"
+    }
+  ],
+  "total": 51
+}

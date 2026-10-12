@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """[phase9-E] simple 多模型编排器：观点并发 + 单模型统合。
 
-[E-探针制 2026-10-07] 三席后置：三席不再在首轮进门处空手出观点，改由 routes
-在工具循环收尾处调 run_viewpoints 进场（踩着工具事实出观点），统合官
-call_main 统合交付。call_simple（观点前置的旧编排）保留为观测兼容/回滚路径。
+[思维链真实落地 2026-10-11] 本件收敛为**提交轮三席统合**的席位层（C3/C6）：
+三席（run_viewpoints）与统合官由 message_runner.run_seats 在 board 收口后
+调用——三席输入＝全部步 result＋判据满足情况＋工具结果全文，质询「成果真
+满足判据了吗、解决用户问题了吗」；统合官 call_main 统合交付。旧观点前置
+编排（call_simple）与旧后置注入件（build_informed_prompt）随三席旁路机制
+整体退役。
 
 设计依据（用户设计哲学）：模型只生成假设，确定性代码负责验证与裁决；
 多模型出观点=群体审议，统合模型是唯一建卡/工具出口。
@@ -11,11 +14,13 @@ call_main 统合交付。call_simple（观点前置的旧编排）保留为观�
 - 观点阶段（run_viewpoints）：并发调 models.yaml simple.viewpoints 各模型，tools=None、
   跳过完成标记；单个失败记 meta 不中断；观点文本用 card_proposal
   剥离函数剥净协议块，另剥 <think> 推理块（MiniMax M 系实测全系带）。
-- 注入（build_informed_prompt）：工具结果全文进三席输入（口径④不折叠不截断）。
-- 统合阶段：user_prompt 追加参考观点段，走现有 call_main（带 tools）。
+- 注入（build_review_prompt）：步成果（result＋criteria＋criteria_met）
+  与工具结果全文进三席输入（不折叠不截断）。
+- 统合阶段：user_prompt 追加参考观点段（build_viewpoint_prompt），走
+  call_main（带 tools）。
 - enabled: false 或 viewpoints 空 → 三席零调用（run_viewpoints 返回 ([], [])）。
-- 观点全失败 → 留痕（warning），主模型携工具结果独自交付（口径②）。
-- 上下文回流铁则：观点全文不进 session、不进 prior_messages（由 routes 保证）。
+- 观点全失败 → 留痕（warning），主模型携步成果独自交付（口径②）。
+- 上下文回流铁则：观点全文不进 session、不进 prior_messages（由 runner 保证）。
 """
 from __future__ import annotations
 
@@ -73,29 +78,47 @@ def build_viewpoint_prompt(user_prompt: str, ok_metas: list[dict[str, Any]]) -> 
 
 
 # ============================================================
-# [E-探针制 2026-10-07] 三席后置（三席在工具查证收尾后进场）
+# [思维链真实落地 2026-10-11] 提交轮三席质询输入（C3/C6）
 # ============================================================
 
-INFORMED_HEADER = "## 本轮工具查证结果"
-INFORMED_TASK_NOTE = (
-    "以下是主模型在本轮对话中刚通过工具查得的事实材料（全文未截断）。"
-    "先读这些事实，再回答上面用户提出的问题。"
+REVIEW_HEADER = "## 本轮计划执行材料"
+REVIEW_TASK_NOTE = (
+    "上面的任务已按计划逐步执行完毕。请独立质询三问：\n"
+    "1. 每一步的成果真满足该步的完成判据了吗？（对照 criteria 逐条核）\n"
+    "2. 全部成果合起来，真解决了用户的问题吗？\n"
+    "3. 有没有谎报完成——声称已落盘/已完成，但材料不支持？\n"
+    "对每问给出结论：通过／不通过＋一句理由。先读下面的执行材料再判断。"
 )
 
 
-def build_informed_prompt(user_prompt: str, tool_results: list[str]) -> str:
-    """三席后置的用户输入组装（纯函数，可单测）。
+def build_review_prompt(user_prompt: str,
+                        steps_record: list[dict[str, Any]],
+                        criteria_mets: list[str],
+                        tool_results: list[str]) -> str:
+    """提交轮三席质询输入组装（纯函数，可单测）。
 
-    [E-口径④] 工具结果全文注入、不折叠不截断（对齐 10-05「【结论】＋【依据】
-    不设长度限制」裁定）。tool_results 每条＝一次工具调用的人类可读全文记录；
-    空表（零工具轮）→ 原样返回 user_prompt。
+    [C6] 输入＝用户原问题＋全部步的 result 与判据满足情况（steps_record
+    每步含 prompt/criteria/deliverable/status/result；criteria_mets＝模型
+    每次 step_complete 的 criteria_met 自述，按调用序与步对齐）＋本轮工具
+    结果全文（不折叠不截断）。空表 → 原样返回 user_prompt。
     """
-    if not tool_results:
+    if not steps_record and not tool_results:
         return user_prompt
-    sections = "\n\n".join(
-        f"### 工具结果 {i + 1}\n{t}" for i, t in enumerate(tool_results)
-    )
-    return f"{user_prompt}\n\n{INFORMED_HEADER}\n{INFORMED_TASK_NOTE}\n{sections}"
+    sections: list[str] = []
+    for i, s in enumerate(steps_record):
+        if not isinstance(s, dict):
+            continue
+        met = criteria_mets[i] if i < len(criteria_mets) else "（无自述）"
+        sections.append(
+            f"### 步 {s.get('id', i + 1)} [{s.get('status', '')}]\n"
+            f"要求: {s.get('prompt', '')}\n"
+            f"完成判据: {s.get('criteria', '')}\n"
+            f"产出物声明: {s.get('deliverable', '')}\n"
+            f"成果(result): {(s.get('result') or '').strip() or '（无）'}\n"
+            f"模型自述判据满足: {met}")
+    if tool_results:
+        sections.append("### 本轮工具查证结果\n" + "\n\n".join(tool_results))
+    return f"{user_prompt}\n\n{REVIEW_HEADER}\n{REVIEW_TASK_NOTE}\n" + "\n\n".join(sections)
 
 
 async def run_viewpoints(
@@ -242,51 +265,3 @@ async def _call_viewpoint(
             except Exception:
                 pass
         return meta
-
-
-async def call_simple(
-    system_prompt: str,
-    vp_system_prompt: str,
-    user_prompt: str,
-    prior_messages: Optional[list[dict[str, Any]]] = None,
-    tools: Optional[list[dict[str, Any]]] = None,
-    on_progress: Optional[Any] = None,
-) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
-    """simple 编排入口：返回 (gateway结果, 实际模型名, viewpoints_meta)。
-
-    [E-探针制 2026-10-07] 本入口已退役：routes 首轮改为纯主模型带工具
-    （三席后置到工具循环收尾处经 run_viewpoints 进场）。本函数保留为
-    观测兼容/回滚路径，现无调用方——三席"空手先出观点"的旧编排只在此处。
-    """
-    gw = model_service.get_gateway()
-    cfg = gw.config.get("simple") or {}
-    viewpoints = list(cfg.get("viewpoints") or [])
-    if not cfg.get("enabled") or not viewpoints:
-        result, model_used = await model_service.call_main(
-            system_prompt, user_prompt, prior_messages, tools=tools
-        )
-        return result, model_used, []
-
-    def _report(stage: str, detail: str = "") -> None:
-        if on_progress:
-            try:
-                on_progress(stage, detail)
-            except Exception:
-                pass
-
-    # 观点阶段：并发，单个失败不中断（[E] 已拆为 run_viewpoints，此处复用）
-    ok_metas, metas = await run_viewpoints(
-        vp_system_prompt, user_prompt, prior_messages, on_progress=on_progress
-    )
-
-    final_user_prompt = build_viewpoint_prompt(user_prompt, ok_metas)
-    if ok_metas:
-        # [T10-6] 打点：统合官输入处——任务说明行已插入
-        logger.info("统合官输入已插入任务说明行 viewpoints=%d", len(ok_metas))
-
-    # 统合阶段：唯一建卡/工具出口；失败由 gateway 内部 main→fallback 兜底
-    _report("synthesize", "统合推理中")
-    result, model_used = await model_service.call_main(
-        system_prompt, final_user_prompt, prior_messages, tools=tools
-    )
-    return result, model_used, metas

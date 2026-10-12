@@ -31,3 +31,15 @@ works/
 /_*.diff
 /_t*/
 /_backup_*/
+
+# git worktree 目录（.worktrees/permbase 是真实 worktree——git worktree list 可见；
+# 当普通文件提交会把整棵子树复制进仓库）
+.worktrees/
+# 数据快照运行态指纹（data_snapshot 运行时生成，非配置）
+.snapshot_fingerprints.json
+# 启动日志 .err 伴生文件（.log/.out 已挡，.err 漏网）
+_*.err
+# Windows 重定向事故产物（> nul 误写成的 105B 垃圾；nul 为保留设备名，入库会伤 Windows 检出）
+/nul
+# 重启前代码备份目录（git 已有全量历史，备份不留库）
+/重启前代码备份_*/

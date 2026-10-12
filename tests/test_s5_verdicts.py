@@ -21,8 +21,7 @@ from fastapi import FastAPI
 from src.api import model_service, routes
 from src.storage import session_facade
 from src.thinkchain import board as board_mod
-from src.thinkchain import triage as triage_mod
-from tests.test_s4_seams import FAKE_CONFIG, ScriptedGateway
+from tests.test_s4_seams import FAKE_CONFIG, ScriptedGateway, _steps_def
 
 
 @pytest.fixture(autouse=True)
@@ -44,17 +43,21 @@ async def _post(client, wid, cid, content: str) -> dict:
     return r.json()
 
 
-# ------------------------------------------------- 判据 4：逃生口真调
+# ------------------------------------------------- 判据 4（重写）：直答中自主上板
 
-async def test_escape_hatch_real_call(work, monkeypatch):
+async def test_direct_discovers_plan_needed_creates_board(work, monkeypatch):
+    """[思维链真实落地] 新机制：判断归模型，无逃生口——模型首轮自主调
+    create_plan 上板（工具面全量），不经过任何独立判定轮。"""
     wid, cid = work["work_id"], work["work_card_id"]
-
-    async def fake_triage(system, user):
-        return '{"verdict": "direct", "reason": "初判直答"}'
-
-    monkeypatch.setattr(triage_mod, "_call_model", fake_triage)
     gw = ScriptedGateway(script=[
-        [{"name": "escalate_to_plan", "arguments": {"reason": "实际需要多步工具"}}],
+        [{"name": "create_plan", "arguments": {
+            "name": "升级计划",
+            "steps": [{"id": "s1", "prompt": "实际需要多步工具",
+                       "criteria": "步骤判据", "deliverable": "步骤产出",
+                       "type": "execute"}]}}],
+        [{"name": "step_complete", "arguments": {"result": "做完了",
+                                                 "criteria_met": "判据满足"}}],
+        [],
     ])
     monkeypatch.setattr(model_service, "_gateway", gw)
 
@@ -65,14 +68,14 @@ async def test_escape_hatch_real_call(work, monkeypatch):
     ) as client:
         body = await _post(client, wid, cid, "帮我看看这个")
 
-    # direct 席工具面只留逃生口，且模型真调了它
-    assert gw.calls[0]["tools"] == ["escalate_to_plan"]
-    evts = [e for e in body.get("tool_events", []) if e.get("tool") == "escalate_to_plan"]
+    # 首轮全量工具面（判断+行动合一）
+    assert "create_plan" in gw.calls[0]["tools"]
+    evts = [e for e in body.get("tool_events", []) if e.get("tool") == "create_plan"]
     assert evts and evts[-1].get("ok") is True
-    # 档案补块在盘（绝不静默换路的留痕面）
+    # 档案补块在盘（plan 块）
     blocks = await session_facade.read(wid, cid)
-    esc = [b for b in blocks if b.get("behavior") == "escalate"]
-    assert esc and "实际需要多步工具" in esc[-1]["content"]
+    pb = [b for b in blocks if b.get("behavior") == "plan"]
+    assert pb and "升级计划" in pb[-1]["content"]
 
 
 # ------------------------------------------------- 判据 9：防伪造
@@ -80,8 +83,7 @@ async def test_escape_hatch_real_call(work, monkeypatch):
 async def test_forgery_claim_still_nagged(work, monkeypatch):
     wid, cid = work["work_id"], work["work_card_id"]
     assert (await board_mod.create_board(
-        wid, cid, "防伪计划",
-        [{"id": "s1", "prompt": "本步要求原文Q", "type": "execute"}]))["ok"]
+        wid, cid, "防伪计划", _steps_def("本步要求原文Q")))["ok"]
     # 圈1 正文嘴上声称已交作业，但 tool_calls 为空（事实=没调）→ 依然被催
     gw = ScriptedGateway(script=[])  # 永远空手
     monkeypatch.setattr(model_service, "_gateway", gw)
@@ -101,7 +103,7 @@ async def test_forgery_claim_still_nagged(work, monkeypatch):
         assert len(gw.calls) >= 3, "催化未发生"
         # 每一圈催促文都带本步要求原文——嘴上伪造不改变推进判据
         for c in gw.calls[1:4]:
-            assert "本步要求原文Q" in c["user_prompt"]
+            assert "本步要求：本步要求原文Q" in c["user_prompt"]
             assert "step_complete" in c["user_prompt"]
         r = await client.post(f"/api/works/{wid}/cards/{cid}/stop")
         assert r.status_code == 200
@@ -115,7 +117,7 @@ async def test_forgery_claim_still_nagged(work, monkeypatch):
 async def test_human_stop_brakes_nag_loop(work, monkeypatch):
     wid, cid = work["work_id"], work["work_card_id"]
     assert (await board_mod.create_board(
-        wid, cid, "刹车计划", [{"id": "s1", "prompt": "长任务步", "type": "execute"}]))["ok"]
+        wid, cid, "刹车计划", _steps_def("长任务步")))["ok"]
     gw = ScriptedGateway(script=[])  # 永远空手 → 无限催
     monkeypatch.setattr(model_service, "_gateway", gw)
 

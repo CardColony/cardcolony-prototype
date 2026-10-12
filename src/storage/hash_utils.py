@@ -98,10 +98,13 @@ _HEADING_RE = re.compile(r"^## ", re.MULTILINE)
 
 # [卡片信息结构改造 S2-1] 新区名→新键映射。与旧表并存，按正文实际区头自适应。
 #   ## 使命 → mission｜## 现状 → status_block｜## 定论 → rulings｜## 修改历史 → history_text
+# [卡片编辑机制改造 2026-10-12] 增 ## 需求文档 → requirements（研发卡第三块）。
+# OLD_SECTION_MAPPING / OLD_KEY_TO_NEW 零改动——「需求文档」是新区头，不参与旧键归一。
 NEW_SECTION_MAPPING = {
     "## 使命": "mission",
     "## 现状": "status_block",
     "## 定论": "rulings",
+    "## 需求文档": "requirements",
     "## 修改历史": "history_text",
 }
 
@@ -121,7 +124,9 @@ OLD_KEY_TO_NEW = {
 }
 
 # 规范新键（读侧返回序；history_text 由调用方转 history 列表）
-NEW_KEYS = ("mission", "status_block", "rulings", "history_text")
+# [卡片编辑机制改造 2026-10-12] 增 requirements（研发卡第三块；读侧按
+# project_class 判据决定返回 requirements 还是 rulings，见 routes 层）。
+NEW_KEYS = ("mission", "status_block", "rulings", "requirements", "history_text")
 
 # 判形态时忽略的共有区头（它不区分新旧）
 _COMMON_HEADING = "## 修改历史"

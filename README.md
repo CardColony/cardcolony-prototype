@@ -1,15 +1,17 @@
 # 推演agent
 
-一个**卡片式多模型推演系统**：以卡片为最小工作单元，用多个独立模型做分析、一个统合模型收敛成结论，
-所有结论、证据链、调用记录全部落盘可回溯。用于把一件复杂的事（如「股权财政」走向剧本）沿因果链
-一层层推透、留痕、可翻案。
+一个**处理复杂项目的通用型 agent**。把一件复杂的事拆成一张张卡片，沿卡片树一层层推进，
+多模型协作收敛成结论，每一步都留痕、可对账、可翻案。
+
+> 项目名沿用「推演agent」，但定位已从早期的「单一剧本推演」泛化为「通用复杂项目处理」——
+> 处理什么项目取决于你搭什么卡片树、给什么任务，系统本身不绑定任何领域。
 
 ## 它解决什么
 
 复杂项目的失败通常不在单轮能力，而在过程中**丢掉的结论、复活的错误、被吞掉的判断**。
 本系统用四条机制防这些：
 
-1. **结论区是卡片间唯一接口** —— 卡内推理过程留在各自的独立对话里，只有沉淀后的结论跨卡流动，
+1. **结论是卡片间唯一接口** —— 卡内推理过程留在各自的独立对话里，只有沉淀后的结论跨卡流动，
    历史结论不淹没过程、被否定的方向不会复活。
 2. **权限由卡片树机械决定** —— 读侧全盘可读（存在即放行），写侧严格限自己子树；
    **建卡只能建自己的子卡片**（parent 须落在本卡子树内，缺省＝本卡自身）——
@@ -24,11 +26,15 @@
 | 层 | 内容 |
 |---|---|
 | 卡片树 | 建卡／编辑正文／建线／解线／删卡（用户侧按钮＋模型侧工具，护栏：根卡与有子卡者拒删） |
-| 推演链 | 三思考席（MiniMax-M3 / qwen3.8-max / deepseek-v4-pro）并行分析 → 统合官（deepseek-v4.1-flash）收敛成唯一结论；三席无工具权限 |
+| 思维链 | 入口自判 direct（直答）／plan（拆解上板）；复杂任务拆成多步、逐步推进、改板、收口回写 |
+| 多模型协作 | 三思考席（MiniMax-M3 / qwen3.8-max / glm-5.3）并行分析 → 统合官收敛成唯一结论；三席无工具权限 |
 | 工具层（18 件） | 卡片：create_card／read_card／read_memory／edit_card／delete_card／read_shadow／update_shadow／link_cards／unlink_cards／list_manuscript／read_manuscript／search_manuscript；联网：web_search／fetch_web；**本地文件：list_files／read_file／search_files／write_file** |
+| 思维链工具（7 件） | create_plan／plan_reorder／plan_insert／plan_remove／plan_modify／step_complete／escalate_to_plan |
+| 凝练记忆 | condense_fold：长对话凝练归拢成【结论】/【依据】条目，可按块序号下探取回 |
+| 卡间通信 | 卡与卡之间发消息（类型注册表可扩展），收件方应对由系统自动回发 |
 | 本地文件能力 | 边界＝`D:\AI_station` 下的 `trading-workspace` 与 `推演agent` 两个目录；凭证类文件（`.env`/`*.pem`/`*.key`/`credentials.json`/`id_rsa` 等精确名单）不可读、不可写、不可搜索；四道兜底：写前强制备份原文到 `_backups/`、二进制拒写、单次写入上限 5MB、依赖目录（.venv/site-packages/__pycache__ 等）剪枝 |
 | 文本泄漏抢救 | 模型把工具调用写进正文（DeepSeek 系特殊标记泄漏）时，机械解析并真实执行；解析不出则回注「未识别未执行」告知模型 |
-| 实时反馈 | 发消息后可见：三席分析进度／统合推理／工具循环轮次／建卡，逐阶段上报 |
+| 实时反馈 | 发消息后可见：自判分流／三席分析进度／统合推理／工具循环轮次／建卡，逐阶段上报 |
 
 ## 起停
 
@@ -71,22 +77,27 @@ python restore_card.py     :: 把某张卡恢复到 git 任一历史版本
 
 ```
 main.py                 服务入口（FastAPI，端口 5700）
-src/api/                路由、提示词、工具层、上下文组装、解析器、进度上报
-  ├ routes.py           全部 HTTP 端点（prefix=/api）
-  ├ card_tools.py       卡片工具 schema 与执行分发
+src/api/                路由、提示词、工具层、上下文装配、解析器、进度上报
+  ├ routes.py           全部 HTTP 端点（prefix=/api）+ 消息六段链
+  ├ message_runner.py   单步编排内核（RunState，step 循环 + 控制中止缝）
+  ├ card_tools.py       标准工具注册表（18 件）schema 与执行分发
   ├ file_tools.py       本地文件工具（四件＋边界＋四道兜底）
+  ├ context_regions.py  上下文六区装配（使用说明/卡片清单/当前卡/记忆/对话/工具轮）
   ├ text_tool_rescue.py 文本形态工具调用抢救器
-  ├ card_proposal.py    建卡提案解析（多形态）
-  ├ context_assembler.py 卡片上下文组装（卡片清单＋当前卡）
+  ├ card_proposal.py    建卡提案解析（文本通道兜底）
+  ├ prompts.py          系统使用说明（BASE_PROMPT，版本化）
   └ simple_service.py   三席分析＋统合
-src/model_gateway/      模型网关（多端点、重试、日志）
-src/storage/            卡片/剧本/会话/画布存储、git 自动提交
+src/thinkchain/         思维链（入口自判 triage + 计划板 board + 七工具）
+src/toolcard/           工具卡底座（代码只做执行/存储/渲染，判断归模型）
+src/model_gateway/      模型网关（litellm 封装、多端点、重试、日志）
+src/storage/            卡片/会话/记忆/画布存储、快照、git 自动提交
+src/permissions/        统一权限关口
 config/models.yaml      模型席位配置（改模型只改这里）
 ```
 
 ## 边界与已知限制
 
-- **它慢**：一轮真实推演 1–8 分钟（三席并行＋统合＋工具循环），适合「把事想透」，不适合「快点干完」。
-- **推演质量＝模型的分析质量**：卡片、权限、留痕只保证错误不扩散、可回溯，不保证推理本身正确。
+- **它慢**：一轮复杂任务 1–8 分钟（三席并行＋统合＋工具循环），适合「把事想透」，不适合「快点干完」。
+- **输出质量＝模型的分析质量**：卡片、权限、留痕只保证错误不扩散、可回溯，不保证推理本身正确。
 - **文件能力不设删除**：模型没有删文件工具（删除不可逆）；不需要的文件由人或系统外清理。
 - **模型自述不是状态依据**：任何「已完成 X」的声称，以 `logs/`、磁盘、git 三方对账为准。

@@ -1,0 +1,95 @@
+{
+  "chain": "proposal-logic-selfcheck",
+  "eco": "sidebar-S1",
+  "generated_at": "2026-10-11 15:33",
+  "audit_layer": "producer-self-check（方案书链复核逻辑：总工八问＋对账三张表＋补核后合成，仅追加不删改历史）",
+  "summary": {
+    "total": 10,
+    "closed": 9,
+    "known_difference": 1,
+    "open_pending_user": 0,
+    "needs_scheme_edit": 0
+  },
+  "ledger": [
+    {
+      "id": "RED-S1-01",
+      "origin": "八问②·SA-20 待核",
+      "description": "「create_card meta 无 state 初始化」断言是否成立",
+      "verdict": "已消除（断言成立）",
+      "evidence": "card_store.py L775-792 现场实读：meta 字典仅 title/source/card_type/parent/tags/relations/session_ref/project_class(条件)/owner_card_id(条件)/created_at/updated_at——无 state 键；方案书 R-04 落点①（create 加默认值）成立",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-02",
+      "origin": "八问⑤·「唯一消费方」待核",
+      "description": "『/api/nav 唯一消费方＝workspace.js L417-536＋esm/api.js L100』断言是否成立",
+      "verdict": "已消除（断言成立）",
+      "evidence": "grep 全仓 /api/nav|/nav|get_nav 共 16 匹配：真消费方仅 workspace.js L417/L420（左栏导航）＋esm/api.js L100（getNav）＋tests/test_uiopt_e2e.py L40/L43；其余为注释/临时脚本/HTML 标签；方案书 SA-27 成立",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-03",
+      "origin": "八问⑤·「404 既有一致」待核",
+      "description": "『children 端点 404 语义与既有端点对齐』主张是否有实据",
+      "verdict": "已消除（有实据）",
+      "evidence": "grep 404|HTTPException|status_code=404：既有端点（card 路由组）已有 HTTPException 404 模式；方案书 SA-50/SA-63 对齐主张成立",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-04",
+      "origin": "八问⑤·content_hash 顺序待核",
+      "description": "『新卡首次创建含 state 行、content_hash 自然含入』断言是否成立",
+      "verdict": "已消除（断言成立）",
+      "evidence": "card_store.py L806-810：_render_card 渲染 front matter（含 state 条件行）之后才 apply_hash——顺序为渲染→hash，state 行在 hash 前，自然含入；方案书 SA-46 成立",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-05",
+      "origin": "八问②·SA-21 补核",
+      "description": "『update 键循环 L1008 已含 state、L1012 注释「加字段必须两处同改」』是否与盘上一致",
+      "verdict": "已消除（断言成立）",
+      "evidence": "card_store.py L1005-1017 现场实读：L1008 键列表含 \"state\"；L1010-1012 注释逐字「所以『加字段』必须这两处同改」；方案书 SA-21 成立",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-06",
+      "origin": "八问②·SA-30 补核",
+      "description": "『data_snapshot.py L109 有 mtime 指纹（不对前端暴露）』是否与盘上一致",
+      "verdict": "已消除（断言成立）",
+      "evidence": "data_snapshot.py L100-112 现场实读：_fingerprint 用 路径+大小+mtime 三元组（L109 为 mtime 指纹行）；R-06 需新建轻量端点结论成立",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-07",
+      "origin": "三张表·矛盾扫描 C-01",
+      "description": "字段集口径：上游 v3 路线图 L38「规定 7+1 项」vs 方案书「8 项（6 现有＋work_id＋state）」",
+      "verdict": "已处置（方案书为准确版本）",
+      "evidence": "现场实读 routes.py L188-196＝6 项现有字段，＋work_id＋state＝8 项；7+1 亦等于 8，但上游未列明多出的是哪 1 项、表述欠精确；处置：不改上游历史文件（历史留档），以方案书 8 项列明为准",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-08",
+      "origin": "三张表·矛盾扫描 C-02",
+      "description": "改动面口径：上游「110~120 行」vs 方案书「~87 行」",
+      "verdict": "已处置（方案书为实读后收缩，修订有据）",
+      "evidence": "R-04 实读收缩（存储层 L323/L1008 已通两处、闸4 L640-649 放行 create active）、R-01 一行、R-02/R-03 零改动——~87 行由实据推出；方案书 L134-140 已标注为修订；沿用方案书",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-09",
+      "origin": "三张表·矛盾扫描 C-03",
+      "description": "行号区间口径：上游「L141-199 一带」vs 方案书「L157-208」",
+      "verdict": "已处置（精确化且零漂移）",
+      "evidence": "现场实读 routes.py：@router.get(\"/nav\") L157、return L208，方案书 L157-208 与盘上逐字吻合；上游「一带」为规划期粗略定位；以方案书为准",
+      "status": "closed"
+    },
+    {
+      "id": "RED-S1-10",
+      "origin": "三张表·反向表 UP-04/05/06",
+      "description": "上游「施工时长/固定开销/合计」三条（工期类）在方案书中无落点",
+      "verdict": "层差异（非缺陷，如实上桌）",
+      "evidence": "方案书＝report-only 功能设计文档（含现状/设计/验收/风险/边界），工期属路线图 v3 的规划层；沿用路线图 v3 总账（13.3–28.5h / 2–4 天），不重复写入方案书——非漏项",
+      "status": "known_difference"
+    }
+  ]
+}

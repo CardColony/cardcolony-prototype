@@ -23,9 +23,10 @@ apply_proposals(work_id, current_card_id, proposals, exclude_titles=None) -> (cr
   - 逐项调 create_card(source="模型生成")；content 落存储层正文区
   - parent 缺失/不存在回退 current_card_id
   - 连线不经建卡协议（link_cards 工具单独走）
-  - **[建卡工具化 2026-10-08][权限收口 2026-10-09] 权限（代码现状口径）＝
-    只能建自己的子卡片**：文本块里的 parent 同走统一关口（CREATE_CHILD），
-    越权项不建、记入 denied（机械事实随created 一并回给调用方——不静默丢卡）
+  - **[建卡工具化 2026-10-08][权限收口 2026-10-09 → 权限底座重做 2026-10-12]
+    权限（代码现状口径）＝只能建自己的子卡片**：文本块里的 parent 同走统一
+    关口 create_child（与 create_card 工具通道**同一口径**），越权项不建、
+    记入 denied（机械事实随 created 一并回给调用方——不静默丢卡）
   - **exclude_titles**：同轮工具通道已建的卡名集合，标题命中者跳过（跨通道去重，
     防同一轮既发 create_card 工具又写文本块 → 建两次）
 
@@ -189,10 +190,12 @@ async def apply_proposals(
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """逐项调 create_card(source='模型生成')。parent 缺失/不存在回退 current_card_id。
 
-    **[建卡工具化 2026-10-08][权限收口 2026-10-09] 两处新增**：
-    ① 权限（代码现状口径）＝只能建自己的子卡片。判据统一走 policy.check
-       （parent 分类须授 CREATE_CHILD）——与 create_card 工具通道同一关口，
-       不新增第二套规则。越权项不建，记入 denied（title + reason），
+    **[建卡工具化 2026-10-08][权限收口 2026-10-09][权限底座重做 2026-10-12]
+    两处新增**：
+    ① 权限（代码现状口径）＝只能建自己的子卡片。判据走 policy.check
+       ——parent 的固化 perms 须授 create_child ＋ actor 在 parent 子树上游，
+       与 create_card 工具通道**逐字同一口径**（同一函数、同一参数顺序，
+       不设第二套规则）。越权项不建，记入 denied（title + reason），
        随返回值可见，不静默丢。
     ② exclude_titles：同轮工具通道已建卡名，命中者跳过（跨通道去重）。
 
@@ -223,11 +226,12 @@ async def apply_proposals(
             denied.append({"title": title, "reason": f"父卡不存在: {parent}"})
             logger.warning("[建卡未建] 父卡不存在 title=%r parent=%r", title, parent)
             continue
-        # 权限＝关口 CREATE_CHILD 判定（任务书 T3/交办单：统一 check）。
-        # 拒绝文案沿用原文（本批只机械替换判据本体）；文案中「子树」表述与
-        # 新判据（分类位）存在文面张力，已在回报中呈报待用户定文案。
+        # 权限＝关口 CREATE_CHILD 判定。**与 create_card 工具通道同一口径**
+        # （[权限底座重做 2026-10-12] 一致性要求）：policy.check(actor, target,
+        # switch, cards)——parent 的固化 perms 须授 create_child，且 actor 须在
+        # parent 的子树上游。拒绝文案沿用原文。
         try:
-            policy.check(parent, policy.Perm.CREATE_CHILD, cards)
+            policy.check(current_card_id, parent, policy.SWITCH_CREATE_CHILD, cards)
         except PermissionError:
             reason = f"越权：只能建自己的子卡片，{parent} 不在 {current_card_id} 的子树内"
             denied.append({"title": title, "reason": reason})

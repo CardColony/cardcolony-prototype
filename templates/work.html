@@ -19,6 +19,14 @@
     <div id="navActions">
       <button id="navNotifyBtn" title="卡间消息通知">🔔<span id="navNotifyCount" class="nav-notify-count"></span></button>
     </div>
+    <!-- [S3/T1/T2/T3] 只加容器不动结构（R-E）：工具行（搜索框 R-24＋收起全部 R-28＋定位 R-26）
+         与面包屑槽（R-27/R-18，恒定占位防吸顶跳动）。#navTree 本体与装配原样。 -->
+    <div id="navTop" class="nav-top">
+      <input id="navSearchInput" class="nav-search-input" type="text" placeholder="搜索卡片…" />
+      <button id="navCollapseAll" class="nav-tool-btn" title="收起全部项目与分支（保留当前卡祖先链）">收起全部</button>
+      <button id="navLocate" class="nav-tool-btn" title="收起非路径分支，定位到当前卡">定位</button>
+    </div>
+    <div id="navCrumbBox" class="nav-crumb-box" style="display:none"><div id="navCrumb" class="nav-crumb"></div></div>
     <div class="nav-tree" id="navTree">
       <!-- workspace.js renderNav 动态填充 -->
     </div>
@@ -64,6 +72,11 @@
             <div class="inputmeta">
               <span class="hint">Ctrl+Enter 发送</span>
               <span class="spacer"></span>
+              <!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草/确认两按钮（ghost 级，弱于 sendBtn）。
+                   文案按块集判据：研发卡「需求确定」、其他卡「定论确认」——由 workspace.js 按
+                   body 键集（requirements/rulings）动态切换；「更新现状」恒定。 -->
+              <button id="draftBtn" class="btn primary draft-meta-btn" title="起草本卡第三块内容（需求文档/定论），用户确认后写入">需求确定</button>
+              <button id="statusDraftBtn" class="btn draft-meta-btn" title="起草现状块更新，用户确认后写入">更新现状</button>
               <button id="sendBtn" class="btn primary">发送</button>
             </div>
           </div>
@@ -85,6 +98,32 @@
 <div id="notifyPanel" class="notify-panel">
   <div class="np-head">卡间消息 <button id="npClose" class="np-close">×</button></div>
   <div id="npList" class="np-list"></div>
+</div>
+<!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗（modal）：遮罩＋面板＋标题栏＋
+     草稿区（只读）＋反馈框（默认收起）＋底栏三键（关闭/反馈/确认）。
+     三态：加载中（起草中…）→ 草稿态 → （确认 commit / 反馈重起草 / 关闭丢弃）。
+     z-index：toast 9999 > modal 1300 > notifyPanel 1200。 -->
+<div id="draftModal" class="draft-modal">
+  <div class="draft-modal-overlay" id="draftOverlay"></div>
+  <div class="draft-modal-panel" role="dialog" aria-modal="true">
+    <div class="draft-modal-head">
+      <span id="draftModalTitle">需求文档起草</span>
+      <button class="draft-modal-close" id="draftModalX" title="关闭（丢弃草稿）">×</button>
+    </div>
+    <div class="draft-modal-body" id="draftModalBody">
+      <div class="draft-area" id="draftArea">起草中…</div>
+      <div class="draft-feedback-box" id="draftFeedbackBox">
+        <textarea id="draftFeedbackInput" class="draft-feedback-input" placeholder="哪里要改？输入反馈后点「反馈」重新起草…" rows="3"></textarea>
+      </div>
+      <div class="draft-modal-error" id="draftModalError" style="display:none"></div>
+    </div>
+    <div class="draft-modal-foot">
+      <button class="btn ghost" id="draftCloseBtn">关闭</button>
+      <span class="spacer"></span>
+      <button class="btn" id="draftFeedbackBtn">反馈</button>
+      <button class="btn primary" id="draftConfirmBtn">确认</button>
+    </div>
+  </div>
 </div>
 <script>
   window.__WORK_ID__ = "{{WORK_ID}}";

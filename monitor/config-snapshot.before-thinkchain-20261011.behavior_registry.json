@@ -1,0 +1,16 @@
+{
+  "_comment": "R1 行为类型注册表（迭代一空壳→迭代三 S1 填充，任务书 §三 S1）。字段三样：display（显示名）／judge（完成判据，**恒空串**——判据内容一件不写，那是【续】的地盘，X4/X3 线）／note（语义说明）。判据位空 ⇒ control.check 仍恒 CONTINUE（迭代三不变）。本文件填充时同步义务：tests/test_slots_control.py::test_behavior_registry_is_empty_shell 的断言已随本填充改为 version==2＋恰 2 键＋judge 空串（不许删测试，它守的是判据位空线）；src/api/control.py 模块注释已同步。version 1→2（结构变更：空壳→两语义条目）。",
+  "version": 2,
+  "types": {
+    "execute": {
+      "display": "执行",
+      "judge": "",
+      "note": "需要调用工具来执行的步骤：调研、查阅、搜索等执行行为"
+    },
+    "think": {
+      "display": "思考",
+      "judge": "",
+      "note": "不需要执行、偏向思考整理的步骤；不是不给工具调用权限——可调工具，只是不以调工具为目的"
+    }
+  }
+}

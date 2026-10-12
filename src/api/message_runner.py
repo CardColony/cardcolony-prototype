@@ -18,15 +18,16 @@
 
 **编排不变量（拆分必须逐字保持，动了就是行为漂移）**：
 1. 轮次上限：**无**（`[无闸改造 2026-10-02]` 循环不设封顶，模型停即收）。
-2. 三席触发条件：未命中确定性动作直答（`auto_direct` 为假）且本轮无
-   tool_calls 且 `seats_done` 假；进场恰一次（`seats_done` 一次性闸）。
+2. 三席触发条件：[思维链真实落地 2026-10-11] 仅提交轮——board 全部步骤
+   done（收口）后、交付前，固定触发三席统合（C6：判据核对只在提交轮，
+   非每步都三席）；直答回合零三席。
 3. 拼接顺序：T14「分析在前、回执在后、`\n\n` 分隔」，落位在日志写之后、
    parse_proposals 之前。
 4. 落盘时机：用户条在装配前；assistant 条在全部交付段之后；
    prompt 日志无论成败都写。
 5. SSE 事件序：`run_start → context → round_start →
-   (tool_call → tool_result/card_op)* → seats_enter → seat_* → deliver →
-   proposal → done`，逐字见 `tests/_golden/s*_sse.log`。
+   (tool_call → tool_result)* → (收口后) seats_enter → seat_* → deliver →
+   proposal → done`。
 """
 from __future__ import annotations
 
@@ -38,7 +39,6 @@ from typing import Any, Callable, Optional
 
 from ..storage import card_store, memory_store, session_facade, session_ops, session_store, work_store
 from ..thinkchain import board as thinkchain_board
-from ..thinkchain import triage as thinkchain_triage
 from ..thinkchain.model_pick import pick_model as _pick_model  # noqa: F401（既有路由位，五期禁直接调）
 from ..thinkchain import model_pick
 from ..toolcard import driver as toolcard_driver
@@ -114,9 +114,16 @@ class RunState:
     viewpoints_meta: list[dict[str, Any]] = field(default_factory=list)
     # [E-探针制] 三席一次进场闸（口径①：只进场一次；统合官若续查证不重问三席）
     seats_done: bool = False
-    # [2026-10-11 两套机制拆除] 机械预检命中标记：确定性动作（删卡/建卡/改卡/
-    # 查询）直答、跳三席与统合官（A97 用户裁定）——原快车道 mode 字段退役。
-    auto_direct: bool = False
+    # [思维链真实落地 2026-10-11] 提交轮三席统合（C6）状态桶：
+    # chain_completed＝本回合内 step_complete 报告 all_steps_done（链收口）；
+    # chain_steps_record＝末次 step_complete 执行前的板快照 steps（含各步
+    # criteria/deliverable/result——收口清理后板已不在，快照是提交轮唯一材料）；
+    # chain_criteria_mets＝模型每次 step_complete 交来的 criteria_met 自述
+    # （按调用序累积，与板步对齐）。
+    chain_completed: bool = False
+    chain_plan_name: str = ""
+    chain_steps_record: list[dict[str, Any]] = field(default_factory=list)
+    chain_criteria_mets: list[str] = field(default_factory=list)
     # T14 拼接结果（交付段写，供建卡段与返回体读）
     branch: str = ""
     # 交付后的建卡结果
@@ -252,6 +259,10 @@ def build_context(state: RunState) -> None:
 # 段③：工具循环 —— 单步推进
 # ============================================================
 
+# [思维链真实落地 2026-10-11] 步执行提示词模板（任务书附录 C 全文）单点
+# 定义在 board.py（STEP_BRIEF_TEMPLATE/step_brief）：本件（催化挂点）、
+# plan_tools（步引导）、step_region（165 区）三处消费，禁各自复制防漂移。
+
 def _pick_step_model(state: RunState) -> str:
     """[迭代三 S5] 当前步类型→模型席位路由。
 
@@ -295,41 +306,10 @@ async def step(state: RunState) -> StepOutcome:
     if verdict == control.DEFER_HUMAN:
         return StepOutcome("deliver", "policy_stop")
 
-    # [迭代二 S4] 自判分流（方案 §4.1 施工位）——step 入口判 rounds==0＝
-    # 「step 循环外、首轮 step 之前」语义的等价落点（每回合恰一次；routes
-    # 零动刀）。板在内存＝已拆解过→triage_if_needed 内部跳过（零模型调用）；
-    # direct→工具面只留逃生口 escalate_to_plan（物理可调，同 :507 收窄精神）；
-    # plan→保持 build_context 装的全量工具面。
-    if state.rounds == 0:
-        _tri = await thinkchain_triage.triage_if_needed(
-            state.work_id, state.card_id, state.content)
-        if _tri["verdict"] == "direct":
-            if _tri.get("auto"):
-                # [2026-10-11 两套机制拆除] 机械预检命中（确定性动作：删卡/建卡/
-                # 改卡/查询）——A97 用户裁定保留：带全量工具直答、跳三席与统合官。
-                state.auto_direct = True
-            else:
-                state.tools = thinkchain_triage.direct_tool_schemas()
-        else:
-            # [新流程接管 2026-10-11] plan 分支：判定+引导注入模型视野
-            # （slot 非轮消息、永不折叠、首轮即进 prior_for_gateway），
-            # 并 emit triage_verdict 供前端显示——判 plan 不再只是死信。
-            _tri_note = (
-                "系统判定：本消息需要拆解（理由：" +
-                str(_tri.get("reason") or "—") +
-                "）。必须使用 create_plan 工具把任务拆解成步骤计划并上板；"
-                "上板后按注入的当前步骤要求逐步执行，干完每步立刻调 "
-                "step_complete 交作业，全部完成后系统会自动收口。"
-            )
-            state.slot.append_plain({
-                "role": "assistant", "content": _tri_note,
-            })
-        # [2026-10-11 两套机制拆除] triage_verdict 统一事件：机械预检/模型判定
-        # 都发一行（带 rule 区分），前端只渲染这一行判断——「快车道/全链」退役。
-        event_stream.emit(state.work_id, state.card_id, "triage_verdict",
-                          {"verdict": _tri["verdict"],
-                           "reason": str(_tri.get("reason") or ""),
-                           "rule": _tri.get("rule") or ""})
+    # [思维链真实落地 2026-10-11] 判断归模型（C1）：判断协议已随 BASE_PROMPT
+    # 进 system 区，模型首轮带全量工具（含 create_plan）读完协议自主判断——
+    # 直答（空手正文即答复）或调 create_plan 拆解上板。代码层零判定、零
+    # 机械预检、无独立判定调用（旧 JSON 判定轮已退役）。
 
     state.rounds += 1
     if state.rounds == 1:
@@ -390,15 +370,20 @@ async def step(state: RunState) -> StepOutcome:
 
     # [迭代二 S4] 催化挂点一（主循环路径）：本卡有活板且本步未推进、本轮
     # **空手**（两条件缺一不可——判据＝tool_calls 事实，防嘴上伪造；带工具
-    # 轮照常执行）→ 催促交作业续跳，不设上限。两道天然刹车：每圈入口
-    # check_control（人停即刹）＋用户新消息＝新回合。空手正文不入槽（同
-    # :316 抢救先例——催促文自带本步要求原文，信息自足）。
+    # 轮照常执行）→ 按附录 C 步执行提示词催促交作业续跳，不设上限。两道
+    # 天然刹车：每圈入口 check_control（人停即刹）＋用户新消息＝新回合。
+    # 空手正文不入槽（同 :316 抢救先例——催促文自带本步要求原文，信息自足）。
     if not tool_calls and thinkchain_board.has_live_board(state.work_id, state.card_id):
-        _step_prompt = await thinkchain_board.current_step_prompt(
-            state.work_id, state.card_id)
-        if _step_prompt is not None:
+        _snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
+        _step = None
+        if _snap:
+            _steps = _snap.get("steps") or []
+            _cur = _snap.get("current", 0)
+            if 0 <= _cur < len(_steps):
+                _step = _steps[_cur]
+        if _step is not None:
             state.user_prompt = (
-                f"{_step_prompt}\n（本步要求如上。干完立刻调 step_complete；"
+                f"{thinkchain_board.step_brief(_step)}\n（干完立刻调 step_complete；"
                 "未调之前这一步不算完成。）"
             )
             return StepOutcome("continue", "await_step_tool")
@@ -414,16 +399,12 @@ async def step(state: RunState) -> StepOutcome:
             })
             state.user_prompt = text_rescue_note
             return StepOutcome("continue", "text_rescue")
-        # [2026-10-11 两套机制拆除] 确定性动作直答（A97）：机械预检命中、
-        # 带全量工具直答、跳三席与统合官，本轮即交付。
-        if state.auto_direct:
-            return StepOutcome("deliver", "auto_direct")
-        # [E-探针制 2026-10-07] 三席后置进场（口径①：工具查证收尾后、交付前，
-        # 全程恰一次）。
-        if state.seats_done:
-            # [E] 三席已进场过（统合官续查证后的收尾轮）：本轮即交付回执
-            return StepOutcome("deliver", "seats_done")
-        return StepOutcome("seats", "seats_enter")
+        # [思维链真实落地 2026-10-11] 提交轮三席统合（C6）：board 全部步骤
+        # done（收口）后、交付前，固定触发三席质询＋统合交付。空手轮旁路
+        # （旧「无工具即三席」）退役——直答回合零三席。
+        if state.chain_completed and not state.seats_done:
+            return StepOutcome("seats", "finalize_review")
+        return StepOutcome("deliver", "chain_done" if state.chain_completed else "direct")
 
     # —— 有工具调用：本轮执行工具，续跳 ——
     # [phase8.2] 第一次进入工具轮时，把用户原文固化进 prior，
@@ -476,6 +457,15 @@ async def step(state: RunState) -> StepOutcome:
         # [信息流 Task3] 工具执行前后埋点（V2 即时可见）
         event_stream.emit(state.work_id, state.card_id, "tool_call",
                           {"tool": name, "target": target_id})
+        # [提交轮材料（C6）] step_complete 执行**前**抓板快照——末步执行会
+        # 同步触发收口（finalize 清理板），执行后取板已不可得。每次 step_complete
+        # 前刷新快照，末步前抓到的即全量成果（含全部已推进步的 result）。
+        if name == "step_complete":
+            snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
+            if snap and snap.get("steps"):
+                state.chain_steps_record = [
+                    s for s in snap["steps"] if isinstance(s, dict)]
+                state.chain_plan_name = str(snap.get("name") or "")
         tool_result = await card_tools.execute_tool(
             state.work_id, state.card_id, name, args, cards_meta)
         # [T-0010 §1.5] 成败读信封 ok 字段（改前是「结果里没有 error 键即算成功」）
@@ -490,7 +480,7 @@ async def step(state: RunState) -> StepOutcome:
             _ev["title"] = _data.get("title", "")
             _ev["parent"] = _data.get("parent", "")
         state.tool_events.append(_ev)
-        # [新流程接管 2026-10-11] 板子事件 emit（对话流可见拆解上板/步进/收口）：
+        # [思维链真实落地 2026-10-11] 板子事件 emit（对话流可见拆解上板/步进/收口）：
         # create_plan 成功→plan_created；step_complete 成功→step_advanced
         # （all_done=True 时前端渲染收口行）。
         if ok and name == "create_plan":
@@ -505,30 +495,17 @@ async def step(state: RunState) -> StepOutcome:
                 "all_done": bool(_data.get("all_steps_done")),
                 "prompt": _data.get("prompt") or "",
             })
-        # [迭代二 S4·呈报项] escalate 逃生口消费：任务书 S2 步骤 4「当轮
-        # StepOutcome("deliver","escalate")＋档案补块＋下轮进拆解流——绝不
-        # 静默换路」。工具返回 escalate 标记 → 当轮以 deliver 收束（正文=
-        # 模型本次发言，用户看得见换路动作）；「下轮进拆解流」＝新回合
-        # triage 自然重判（板不在→发起自判），零额外状态。
-        # S4 §三未列此接缝位，按可施工最小位置落（工具执行循环内），呈报。
-        if name == "escalate_to_plan" and ok and (_data.get("escalate") is True):
-            state.final_reply = assistant_content or ""
-            state.user_prompt = "工具结果已返回。"
-            return StepOutcome("deliver", "escalate")
-        # [信息流 Task4] 并表（A101）：确定性动作直答的卡操作落 card_op；
-        # 常规链保持 tool_result。全日志打点（A96）。
-        if state.auto_direct and name in (
-            "create_card", "edit_card", "delete_card", "read_card",
-        ):
-            event_stream.emit(state.work_id, state.card_id, "card_op", {
-                "op": name, "target": target_id, "ok": ok,
-                "result": _data if ok else card_tools.render_tool_result(tool_result)[:200],
-            })
-            logger.info("[flow] 卡操作落地 op=%s target=%s ok=%s card=%s",
-                        name, target_id, ok, state.card_id)
-        else:
-            event_stream.emit(state.work_id, state.card_id, "tool_result",
-                              {"tool": name, "target": target_id, "ok": ok})
+            # [提交轮材料（C6）] criteria_met 自述按调用序累积（与板步对齐）；
+            # all_steps_done＝链收口事实（提交轮触发依据）。
+            _cm = args.get("criteria_met")
+            if isinstance(_cm, str) and _cm.strip():
+                state.chain_criteria_mets.append(_cm.strip())
+            if _data.get("all_steps_done"):
+                state.chain_completed = True
+        # [信息流 Task4] 工具结果事件（A96 全日志打点）。card_op 并表随
+        # 机械预检退役——全部工具统一 tool_result 一条通道。
+        event_stream.emit(state.work_id, state.card_id, "tool_result",
+                          {"tool": name, "target": target_id, "ok": ok})
         # [T11-T6] tool 结果经 append_tool_result 入槽（归入当前轮）
         # [T-0010 §1.6] 回灌文本走单一投影函数（不各自 json.dumps）——
         # 否则失败信封的 {"code","message"} 会被当数据喂进模型上下文
@@ -557,24 +534,36 @@ async def step(state: RunState) -> StepOutcome:
 
 
 # ============================================================
-# 段③b：三席后置＋统合（E-探针制口径①）
+# 段③b：提交轮三席统合（C3/C6，思维链真实落地 2026-10-11）
 # ============================================================
 
 async def run_seats(state: RunState) -> StepOutcome:
-    """三席进场 → 统合官统合 → 交付。
+    """提交轮：三席质询 → 统合官统合 → 交付。
 
-    [E-探针制] 进场时机＝工具查证收尾后、交付前，全程恰一次。
+    [思维链真实落地 2026-10-11] 触发时机唯一＝board 全部步骤 done（收口）
+    后、交付前（C6：完成判据核对只在最终提交轮，非每步都三席；直答回合
+    零三席——旧空手轮旁路退役）。三席输入＝全部步的 result ＋判据满足
+    情况（chain_steps_record/chain_criteria_mets）＋本轮工具结果全文，
+    质询「成果真满足判据了吗、解决用户问题了吗」；统合官收敛成最终交付。
+
     上下文回流铁则：观点只进统合官 user_prompt，不入槽/不入 session；
-    三席prior 取纯对话历史切片（不含本轮工具机制消息，且只读不回写）。
+    三席 prior 取纯对话历史切片（不含本轮工具机制消息，且只读不回写）。
     """
     state.seats_done = True
     # [信息流 Task3] 三席进场埋点＋每席起止转发（on_seat 缺省 None 语义不变）
     event_stream.emit(state.work_id, state.card_id, "seats_enter",
-                      {"tool_results": len(state.tool_full_texts)})
+                      {"tool_results": len(state.tool_full_texts),
+                       "steps": len(state.chain_steps_record)})
     seats_prior = state.prior_for_gateway[:state.history_len]
+    review_input = simple_service.build_review_prompt(
+        state.content,
+        state.chain_steps_record,
+        state.chain_criteria_mets,
+        state.tool_full_texts,
+    )
     ok_metas, state.viewpoints_meta = await simple_service.run_viewpoints(
         state.vp_system_prompt,
-        simple_service.build_informed_prompt(state.content, state.tool_full_texts),
+        review_input,
         seats_prior,
         on_progress=lambda s, d, _w=state.work_id, _c=state.card_id:
             progress.set_stage(_w, _c, s, d),
@@ -582,15 +571,16 @@ async def run_seats(state: RunState) -> StepOutcome:
             event_stream.emit(_w, _c, kind, meta),
     )
     if not ok_metas:
-        # [E-口径②] 全败留痕不阻断：主模型携工具结果独自交付（草稿即回执）
+        # [E-口径②] 全败留痕不阻断：主模型携步成果独自交付（草稿即回执）
         if state.viewpoints_meta:
-            logger.warning("[E] 三席观点全败（%d 席尝试），主模型独自交付 card=%s",
+            logger.warning("[提交轮] 三席观点全败（%d 席尝试），主模型独自交付 card=%s",
                            len(state.viewpoints_meta), state.card_id)
         return StepOutcome("deliver", "seats_all_failed")
     # 统合官最终统合交付（合同不动 RD-03：同 call_main、带 tools）
     progress.set_stage(state.work_id, state.card_id, "synthesize", "三席观点统合中")
-    logger.info("[E] 三席后置进场 工具结果=%d条 成功席=%d card=%s",
-                len(state.tool_full_texts), len(ok_metas), state.card_id)
+    logger.info("[提交轮] 三席质询进场 步成果=%d条 工具结果=%d条 成功席=%d card=%s",
+                len(state.chain_steps_record), len(state.tool_full_texts),
+                len(ok_metas), state.card_id)
     synth_input = simple_service.build_viewpoint_prompt(state.content, ok_metas)
     event_stream.emit(state.work_id, state.card_id, "round_start",
                       {"round": state.rounds, "phase": "synthesize"})
@@ -603,18 +593,6 @@ async def run_seats(state: RunState) -> StepOutcome:
     )
     tool_calls = result.get("tool_calls") or []
     assistant_content = result.get("content") or ""
-    # [迭代二 S4] 催化挂点二（统合官收口路径）：同挂点一——只挂 :310 则
-    # 统合官路径空手收口、催促漏网（任务书 §二锚表原文）。判据同＝空手
-    # （tool_calls 事实）＋活板＋步未推进；空手正文不入槽。
-    if not tool_calls and thinkchain_board.has_live_board(state.work_id, state.card_id):
-        _step_prompt = await thinkchain_board.current_step_prompt(
-            state.work_id, state.card_id)
-        if _step_prompt is not None:
-            state.user_prompt = (
-                f"{_step_prompt}\n（本步要求如上。干完立刻调 step_complete；"
-                "未调之前这一步不算完成。）"
-            )
-            return StepOutcome("continue", "await_step_tool")
     if not tool_calls:
         state.final_reply = assistant_content
         return StepOutcome("deliver", "synthesize")
@@ -622,6 +600,42 @@ async def run_seats(state: RunState) -> StepOutcome:
     # seats_done 保证三席不再有第二次。末轮草稿由统合稿取代。
     state.final_reply = None
     return StepOutcome("continue", "synthesize_needs_tools")
+
+
+async def _write_chain_summary(state: RunState) -> None:
+    """提交轮统合完成后，收口结论回写卡面 status_block（一次）。
+
+    内容四样：计划名／终态／统合结论／各步成果与判据满足摘要。fail-open
+    （回写失败留运维日志，不阻断交付——final 块与 thinkchain_final 终态键
+    已在收口时落盘，孤儿扫描兜底不依赖本回写）。
+    """
+    try:
+        lines: list[str] = []
+        for s in state.chain_steps_record:
+            if not isinstance(s, dict):
+                continue
+            lines.append(
+                f"- 步 {s.get('id', '')} [{s.get('status', '')}] "
+                f"{s.get('prompt', '')}\n"
+                f"  判据: {s.get('criteria', '')}\n"
+                f"  成果: {(s.get('result') or '').strip()[:500]}")
+        conclusion = (state.final_reply or "").strip()
+        status_text = (
+            f"【思维链收口】\n"
+            f"计划名: {state.chain_plan_name}\n"
+            f"终态: 已收口（提交轮三席统合）\n"
+            f"结论: {conclusion[:2000] if conclusion else '（统合稿为空）'}\n"
+            f"步成果:\n" + ("\n".join(lines) if lines else "（无步记录）")
+        )
+        result = await card_store.update_card(
+            state.work_id, state.card_id, {"status_block": status_text},
+            "思维链提交轮统合结论回写",
+        )
+        if isinstance(result, dict) and "error" in result:
+            logger.warning("提交轮结论回写被拒 card=%s: %s",
+                           state.card_id, result.get("error"))
+    except Exception as exc:  # noqa: BLE001 回写失败不阻断交付
+        logger.warning("提交轮结论回写异常 card=%s: %s", state.card_id, exc)
 
 
 # ============================================================
@@ -794,6 +808,13 @@ async def create_cards(state: RunState, final_reply: str) -> None:
 
 async def finish(state: RunState) -> dict[str, Any]:
     """追加 assistant 消息＋回合末凝练触发＋done 埋点，返回响应体。"""
+    # [收口结论回写（笔 3）] 统合稿并入提交轮输出：卡面 status_block 回写
+    # （计划名＋终态＋统合结论＋各步成果摘要）。旧 finalize 卡面回写已挪
+    # 至此——统合输出才是收口结论（任务书笔 3 ①）。落位在 finish（回合
+    # 收尾唯一路径）＝统合官是否中途查证都回写（run_seats continue 分支
+    # 曾漏，2026-10-12 真链路实测发现即修）。
+    if state.chain_completed:
+        await _write_chain_summary(state)
     # [T10-1-4] 回复条携带与用户条逐字相同的 pair_id。
     # [A6b/T024] 写切换：门面追加（V1 文件现场升格；end 显式传入——正常回合
     # 缺省 model_done，human_stop/policy_stop 由控制面消费段写定）。
@@ -809,12 +830,9 @@ async def finish(state: RunState) -> dict[str, Any]:
     # 开时三期管线仍挂起待路线裁定，触发只量测＋留痕（memory_store.condense_turn_end）。
     memory_store.maybe_schedule_turn_end(state.work_id, state.card_id)
     progress.set_stage(state.work_id, state.card_id, "done", "完成")
-    # [信息流 Task3/打点 A96] done 事件＋确定性动作直答调用数打点
+    # [信息流 Task3/打点 A96] done 事件
     event_stream.emit(state.work_id, state.card_id, "done",
                       {"rounds": state.rounds, "model_calls": state.model_calls})
-    if state.auto_direct:
-        logger.info("[flow] 确定性动作直答 calls=%s rounds=%s card=%s",
-                    state.model_calls, state.rounds, state.card_id)
     return {
         "reply": state.clean_text,
         "model": state.model_used,

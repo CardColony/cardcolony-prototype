@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
-"""[THINK-ECO-permgmt T8] 权限收口验收（任务书 V4/V5/V6/V8 ＋ 定夺 1/2 机械锁）。
+"""权限底座重做（2026-10-12）验收：统一关口＋工具面过滤＋文件锁＋打点。
 
-- V4：tool 分类卡 build_tool_schemas 不含文件四件（存量 tool 卡＝0，按交办单
-  §五.1 构造 meta 验证，不用生产数据造卡）；正控 sub_project / 根卡仍见全量。
-- V5：无文件权限分类 check_file_access 返回 False；check() 拒绝抛 PermissionError。
-- V6：未注册分类写影子 check(SHADOW_WRITE) 拒绝（定夺 1 五键全授 SHADOW_WRITE，
-  已注册分类不拒 → 拒绝证据按交办单 §五.2 改用未注册分类触发）。
-- V8：三处打点（check/check_with_scope、build_tool_schemas、check_file_access）
-  在 prompt_log（prompt_perm_audit.jsonl）留有判定记录——沙箱 LOGS_DIR 读回实证。
-- 定夺 1 锁：POLICY 五键位集合逐键比对；定夺 2 锁：_type_key 取键优先级。
-- 连线/解线收紧实证（交办单「待用户知悉」项）：TREE_SCOPE 目标只能连/解自己
-  子树内的卡；悬空线保留直接可解。
+锁的内容（用户裁定 1-7 的机械证据）：
+
+- **配置值锁**：config/permissions.json 的两级表值逐项比对（裁定 1/3）。
+- **两级定位**：根卡查 permissions[project_class].project；子卡查
+  permissions[project_class][card_type]；没配到的组合＝空（裁定 5）。
+- **类型不可变**的证据在 tests/test_cardperm_readopen.py（存储层）。
+- V4：tool 类型卡 build_tool_schemas 不含文件四件/联网两件；正控（有卡上下文的
+  注册类型）见全量 25 件；**无卡上下文 ⇒ 空列表**（裁定 5，修掉原先的全放行）。
+- V5：没有 tools_file 开关的卡 → check_file_access False。
+- V6：未配置类型写影子 → 拒；注册类型（sub_project）照写。
+- 连线/解线收紧实证：树类开关叠树作用域，只能连/解自己子树内的卡；悬空线保留
+  直接可解。
+- 版本刷新：scripts/refresh_perms.py 幂等（第二次跑零改动）。
+- V8：四处打点在 prompt_log（prompt_perm_audit.jsonl）留判定记录。
 - R3 等价回归锚：已删子树判据的定格副本 vs policy._is_in_subtree（逐例相等）。
 """
 from __future__ import annotations
@@ -25,112 +29,145 @@ from src.permissions import policy
 from src.storage import card_store, shadow_store
 
 
-# ---------------------------------------------------------------- 定夺锁
+# ---------------------------------------------------------------- 配置值锁
 
-_DINGDUO1: dict[str, set[str]] = {
-    "rd_project": {"READ", "EDIT", "CREATE_CHILD", "LINK", "UNLINK", "TREE_SCOPE",
-                   "SEARCH", "TOOLS_FILE", "TOOLS_WEB", "TOOLS_CARD",
-                   "CARD_PROPOSAL", "SHADOW_WRITE"},
-    "research_project": {"READ", "EDIT", "CREATE_CHILD", "LINK", "UNLINK", "TREE_SCOPE",
-                         "SEARCH", "TOOLS_FILE", "TOOLS_WEB", "TOOLS_CARD",
-                         "CARD_PROPOSAL", "SHADOW_WRITE"},
-    "sub_project": {"READ", "EDIT", "CREATE_CHILD", "DELETE", "LINK", "UNLINK",
-                    "TREE_SCOPE", "SEARCH", "TOOLS_FILE", "TOOLS_WEB", "TOOLS_CARD",
-                    "SHADOW_WRITE"},
-    "topic": {"READ", "EDIT", "CREATE_CHILD", "DELETE", "LINK", "UNLINK",
-              "TREE_SCOPE", "SEARCH", "TOOLS_FILE", "TOOLS_WEB", "TOOLS_CARD",
-              "SHADOW_WRITE"},
-    "tool": {"READ", "EDIT", "DELETE", "SEARCH", "TOOLS_CARD", "SHADOW_WRITE"},
+# 方案《权限底座重做-方案-20261012.md》§二.2（v2 · 2026-10-12 工具面补齐后）：
+#   删死开关 search（无对应工具）、新增 manuscript / invoke_tool / plan。
+_EXPECTED: dict[tuple[str, str], set[str]] = {
+    ("rd_project", "project"): {
+        "read", "edit", "create_child", "link", "unlink",
+        "manuscript", "invoke_tool", "plan",
+        "tools_file", "tools_web", "shadow_write"},
+    ("rd_project", "sub_project"): {
+        "read", "edit", "delete", "create_child", "link", "unlink",
+        "manuscript", "invoke_tool", "plan",
+        "tools_file", "tools_web", "shadow_write"},
+    ("rd_project", "tool"): {
+        "read", "edit", "delete", "plan", "shadow_write"},
+    ("research_project", "project"): {
+        "read", "edit", "create_child", "link", "unlink",
+        "manuscript", "invoke_tool", "plan",
+        "tools_file", "tools_web", "shadow_write"},
+    ("research_project", "topic"): {
+        "read", "edit", "delete", "create_child", "link", "unlink",
+        "manuscript", "invoke_tool", "plan",
+        "tools_file", "tools_web", "shadow_write"},
 }
 
 
-def test_dingduo1_policy_values_locked():
-    """定夺 1：五键值＝原方案 §2.2 逐字＋各键 SHADOW_WRITE 偏离位（机械锁）。"""
-    assert set(policy.POLICY) == set(_DINGDUO1)
-    for key, expected in _DINGDUO1.items():
-        got = {name for name, bit in policy.Perm._member_map_.items()
-               if bit and policy.POLICY[key] & bit}
-        assert got == expected, f"POLICY[{key}] = {got} ≠ 定夺 1 {expected}"
+def test_config_values_locked():
+    """配置值逐项比对（方案 §二.2）；根卡无 delete、tool 无 create_child/文件/联网。"""
+    for (pc, ct), expected in _EXPECTED.items():
+        got = set(policy.perms_for(pc, ct))
+        assert got == expected, f"permissions[{pc}][{ct}] = {got} ≠ {expected}"
+    # 未配置的两级组合 ⇒ 空（默认关门）
+    assert policy.perms_for("rd_project", "topic") == []
+    assert policy.perms_for("research_project", "sub_project") == []
+    assert policy.perms_for("no_such_class", "project") == []
+    assert policy.perms_for("rd_project", "no_such_type") == []
 
 
-def test_dingduo2_type_key_precedence():
-    """定夺 2：查表键先 project_class（仅根卡）后 card_type；缺省空串。"""
-    assert policy._type_key({"card_type": "project", "project_class": "research_project"}) == "research_project"
-    assert policy._type_key({"card_type": "sub_project"}) == "sub_project"
-    assert policy._type_key({"card_type": "tool"}) == "tool"
-    assert policy._type_key({}) == ""
-    assert policy._type_key(None) == ""
-    # 根卡按 project_class 落行：rd_project 授权含 READ（无定夺 2 则查 "project" 落默认关门）
-    assert policy.grants_for("rd_project") & policy.Perm.READ
+def test_two_level_lookup_and_switch_vocabulary():
+    """两级定位 + 开关词汇表：配置值必须是 SWITCHES 子集；版本号来自配置。"""
+    # 根卡与子卡各查各的行
+    assert "delete" not in policy.perms_for("rd_project", "project")      # 根卡删不掉
+    assert "delete" in policy.perms_for("rd_project", "sub_project")
+    for switch in policy.perms_for("rd_project", "tool"):
+        assert switch in policy.SWITCHES
+    assert "create_child" not in policy.perms_for("rd_project", "tool")   # tool 不长树
+    assert "tools_file" not in policy.perms_for("rd_project", "tool")
+    assert "tools_web" not in policy.perms_for("rd_project", "tool")
+    # 树类开关＝卡片操作五项；read 不在其中 ⇒ 读不受子树限定
+    assert policy.TREE_SWITCHES == {"edit", "delete", "link", "unlink", "create_child"}
+    assert policy.config_version() >= 1
+
+
+def _meta(card_type: str, project_class: str = "rd_project") -> dict:
+    """按配置造一张卡的卡面（perms 从配置算，不手写——手写＝两套事实）。"""
+    return {
+        "card_type": card_type,
+        "perms": policy.perms_for(project_class, card_type),
+        "perms_version": policy.config_version(),
+    }
 
 
 # ---------------------------------------------------------------- V4
 
 def test_v4_tool_class_card_has_no_file_tools():
-    """V4：tool 分类卡构造 meta → 工具面不含 write_file/read_file（交办单 §五.1）。"""
-    cards = {"card_tool_x": {"card_type": "tool", "title": "构造工具卡"}}
+    """V4：tool 类型卡 → 工具面只剩它有权的那几件。
+
+    [工具面补齐 2026-10-12] 原断言把 tool 的工具面钉成 19 件（含
+    create_card / link_cards / manuscript 三件 / run_tool_card），那是
+    **工具面只按 file/web 两组过滤**时的旧行为——卡片开关只在执行层拦，
+    模型看得见调不动。现已同源：tool 无 create_child/link/unlink/manuscript/
+    invoke_tool/tools_file/tools_web ⇒ 那些工具压根不下发。
+    """
+    cards = {"card_tool_x": _meta("tool")}
     schemas = card_tools.build_tool_schemas("card_tool_x", cards=cards)
     names = {s["name"] for s in schemas}
     assert not names & {"write_file", "read_file", "list_files", "search_files"}
-    assert not names & {"web_search", "fetch_web"}  # tool 亦无 TOOLS_WEB
-    # [工具卡底座 T7 · 2026-10-09] 工具集新增第 19 件 run_tool_card（调用侧，保留件，
-    # 不属文件/联网组 ⇒ 分类过滤不收它）。故 tool 分类可见由 12 件变 13 件。
-    # （T9「主卡写工具收回」已按用户 2026-10-09 17:38 令回滚，不影响本断言：
-    #   分类过滤按 POLICY 表走，与本处计数无关。）
-    # [迭代二 S2] 注册表 +7（思维链七工具）——随注册表全量派生，与历次增补
-    # 同法；接替未启用前 tool 分类＝全量穿过（EC-131 现状），七件同样可见。
-    # [迭代四 K2] 注册表 +1（send_card_message，卡间发信写工具）——同法，
-    # 全量派生自动可见。
-    # [12:34 定性] send_card_message 已摘出模型工具面（基础设施，非通用工具）→ 不再出现在任何工具面
-    assert names == {"read_card", "read_memory", "create_card", "edit_card",
+    assert not names & {"web_search", "fetch_web"}
+    # tool 有：read / edit / delete / shadow_write / plan
+    assert names == {"read_card", "read_memory", "edit_card",
                      "delete_card", "update_shadow", "read_shadow",
-                     "list_manuscript", "read_manuscript", "search_manuscript",
-                     "link_cards", "unlink_cards", "run_tool_card",
                      "create_plan", "plan_reorder", "plan_insert",
-                     "plan_remove", "plan_modify", "step_complete",
-                     "escalate_to_plan"}
+                     "plan_remove", "plan_modify", "step_complete"}
 
 
-def test_v4_positive_control_registered_classes_see_all():
-    """V4 正控：注册分类（含按 project_class 取键的根卡）见全量 26 件。
+def test_v4_positive_control_registered_types_see_all():
+    """V4 正控：注册类型见全量——**根卡除外，它没有 delete 开关**。
 
-    [工具卡底座 T7 · 2026-10-09] 注册表由 18 件增至 19 件（新增 run_tool_card）。
-    [迭代二 S2] 注册表 +7（思维链七工具），19 → 26。
-    [迭代四 K2] 注册表 +1（send_card_message，卡间发信），26 → 27。
-    [12:34 定性] send_card_message 摘出模型工具面（基础设施接口，非通用工具），27 → 26。
+    [工具面补齐 2026-10-12] 原断言三组合都要求 25 件。根卡（project）配置里
+    没有 delete（删不掉），工具面同源后 ``delete_card`` 不再下发 ⇒ 24 件是
+    **正确行为**，不是漏发。断言改为：工作单元型 25 件、根卡 24 件（少 delete）。
     """
-    n_all = len(card_tools.build_tool_schemas())
-    assert n_all == 26
-    for meta in ({"card_type": "sub_project"},
-                 {"card_type": "project", "project_class": "rd_project"},
-                 {"card_type": "topic"}):
-        schemas = card_tools.build_tool_schemas("card_x", cards={"card_x": meta})
-        assert len(schemas) == 26, f"{meta} 应见 26 件，实 {len(schemas)}"
+    n_all = len(card_tools.build_tool_schemas(
+        "card_x", cards={"card_x": _meta("sub_project")}))
+    assert n_all == 25, n_all
+    for pc, ct, expect in (("rd_project", "sub_project", 25),
+                           ("research_project", "topic", 25),
+                           ("rd_project", "project", 24)):
+        schemas = card_tools.build_tool_schemas("card_x", cards={"card_x": _meta(ct, pc)})
+        assert len(schemas) == expect, f"{pc}/{ct} 应见 {expect} 件，实 {len(schemas)}"
+        if expect == 24:
+            # 根卡唯一缺的就是删卡
+            assert "delete_card" not in {s["name"] for s in schemas}
+
+
+def test_v4_default_closed_when_no_card_context():
+    """V4 关门分支：认不出卡 ⇒ 空工具面（不再全放行）。"""
+    assert card_tools.build_tool_schemas() == []
+    assert card_tools.build_tool_schemas("card_x", cards={}) == []
+    assert card_tools.build_tool_schemas(
+        "", cards={"card_x": _meta("sub_project")}) == []
 
 
 # ---------------------------------------------------------------- V5
 
-def test_v5_no_file_permission_class_denied():
-    """V5：无文件权限分类 → check_file_access False；check() 抛 PermissionError。"""
-    assert file_tools_check("docs/notes.md", "tool") is False
-    assert file_tools_check("docs/notes.md", "线索") is False
-    cards = {"card_u": {"card_type": "线索"}}
-    with pytest.raises(PermissionError):
-        policy.check("card_u", policy.Perm.READ, cards)
-    # 未注册分类经文件工具通道同样拒绝（真实 handler 包装层）
-    # 凭证排除与全盘边界照常生效（注册分类）
-    assert file_tools_check(".env", "sub_project") is False
-
-
-def file_tools_check(path: str, type_key: str) -> bool:
+def test_v5_no_file_permission_type_denied():
+    """V5：没有 tools_file 开关的卡 → check_file_access False；关口抛 PermissionError。"""
     from src.api import file_tools
-    return file_tools.check_file_access(path, type_key)
+
+    assert file_tools.check_file_access("docs/notes.md", _meta("tool")) is False
+    assert file_tools.check_file_access("docs/notes.md", None) is False      # 认不出卡
+    assert file_tools.check_file_access("docs/notes.md", {"card_type": "tool"}) is False
+    # 未配置类型（空 perms）经文件工具通道同样拒绝
+    assert file_tools.check_file_access("docs/notes.md", _meta("no_such_type")) is False
+    # 有 tools_file 的注册类型：路径须落在 ALLOWED_ROOTS 内（沙箱＝trading-workspace）
+    assert file_tools.check_file_access("trading-workspace/notes.md",
+                                        _meta("sub_project")) is True
+    # 凭证排除照常生效（与开关无关的第二层）
+    assert file_tools.check_file_access(".env", _meta("sub_project")) is False
+    # 关口层：未配置类型连 read 都拒
+    cards = {"card_u": {"card_type": "no_such_type"}}
+    with pytest.raises(PermissionError):
+        policy.check("card_u", "card_u", policy.SWITCH_READ, cards)
 
 
 # ---------------------------------------------------------------- V6
 
-async def test_v6_shadow_write_unregistered_class_denied():
-    """V6：未注册分类写影子 → 关口 SHADOW_WRITE 拒（真实 execute_tool 通道）。"""
+async def test_v6_shadow_write_unconfigured_type_denied():
+    """V6：未配置类型写影子 → 关口 shadow_write 拒（真实 execute_tool 通道）。"""
     cards = {"card_m": {"card_type": "神秘分类"}}
     r = await card_tools.execute_tool(
         "work_999", "card_m", "update_shadow",
@@ -140,8 +177,8 @@ async def test_v6_shadow_write_unregistered_class_denied():
     assert "越权" in r["error"]["message"]
 
 
-async def test_v6_positive_registered_class_shadow_ok(typed_registry, work):
-    """V6 正控：注册分类（sub_project）写自己影子照常（定夺 1 偏离位的本意）。"""
+async def test_v6_positive_registered_type_shadow_ok(typed_registry, work):
+    """V6 正控：注册类型（sub_project）写自己影子照常。"""
     wid, root = work["work_id"], work["work_card_id"]
     r = await card_store.create_card(wid, "甲", "模型生成", parent=root)
     a = r["meta"]["card_id"]
@@ -156,9 +193,10 @@ async def test_v6_positive_registered_class_shadow_ok(typed_registry, work):
 # ---------------------------------------------------------------- 连线/解线收紧
 
 async def test_link_unlink_subtree_tightening(typed_registry, work):
-    """交办单「待用户知悉」实证：TREE_SCOPE 目标只能连/解自己子树内的卡；
-    悬空线（目标已删）保留直接可解；tool 目标不可连。"""
+    """树类开关叠树作用域：只能连/解自己子树内的卡；悬空线保留直接可解；
+    tool 目标不可连。"""
     wid, root = work["work_id"], work["work_card_id"]
+
     async def mk(title, parent):
         r = await card_store.create_card(wid, title, "模型生成", parent=parent)
         assert "error" not in r, r
@@ -171,7 +209,7 @@ async def test_link_unlink_subtree_tightening(typed_registry, work):
     def cards():
         return card_tools._collect_card_meta(wid)
 
-    # 旁支不可连（TREE_SCOPE 目标收紧为子树内）
+    # 旁支不可连（树类开关收紧为子树内）
     r = await card_tools.execute_tool(
         wid, a, "link_cards", {"target_id": b, "type": "关联"}, cards())
     assert r["ok"] is False and "越权" in r["error"]["message"]
@@ -185,20 +223,18 @@ async def test_link_unlink_subtree_tightening(typed_registry, work):
     assert r["ok"] is True
     # tool 目标不可连（构造工具卡 meta 直接走关口层）
     with pytest.raises(PermissionError):
-        policy.check_with_scope(a, "card_tool_y", policy.Perm.LINK,
-                                {"card_tool_y": {"card_type": "tool"}})
+        policy.check(a, "card_tool_y", policy.SWITCH_LINK,
+                     {"card_tool_y": _meta("tool")})
 
     # 解线：子树内可解
     r = await card_tools.execute_tool(
         wid, a, "unlink_cards", {"target_id": c, "type": "关联"}, cards())
     assert r["ok"] is True and r["data"]["removed"] == 1
-    # 旁支不可解（目标在盘且含 TREE_SCOPE）
+    # 旁支不可解
     r = await card_tools.execute_tool(
         wid, a, "unlink_cards", {"target_id": b, "type": "关联"}, cards())
     assert r["ok"] is False and "越权" in r["error"]["message"]
-    # 悬空线：目标已删 → 不在关口判定面 → 直接可解（既有清理语义保留）。
-    # 悬空线只由「删目标」产生（link_cards 对已删目标本就走 not_found）：
-    # a 先连自己的子 d，再删 d，a 卡上遗留的悬空线直接解掉。
+    # 悬空线：目标已删 → 不在关口判定面 → 直接可解（既有清理语义保留）
     r = await card_tools.execute_tool(
         wid, a, "link_cards", {"target_id": d, "type": "关联"}, cards())
     assert r["ok"] is True
@@ -210,29 +246,90 @@ async def test_link_unlink_subtree_tightening(typed_registry, work):
     assert r["ok"] is True and r["data"]["removed"] == 1
 
 
+# ---------------------------------------------------------------- 版本刷新
+
+async def test_refresh_perms_is_idempotent(typed_registry, work):
+    """改配置后按 perms_version 批量刷新；重复跑＝零改动（幂等）。"""
+    from scripts.refresh_perms import refresh_one_work
+
+    wid, root = work["work_id"], work["work_card_id"]
+    await card_store.create_card(wid, "甲", "模型生成", parent=root)
+    version = policy.config_version()
+
+    first = await refresh_one_work(wid, version, apply=True)
+    assert first["total"] >= 2
+    assert first["failed"] == 0
+    assert first["updated"] + first["unchanged"] == first["total"]
+
+    before = {p.name: p.read_bytes() for p in card_store._cards_dir(wid).glob("card_*.md")}
+    second = await refresh_one_work(wid, version, apply=True)
+    assert second["updated"] == 0, "第二次跑应为全跳过"
+    assert second["unchanged"] == second["total"]
+    after = {p.name: p.read_bytes() for p in card_store._cards_dir(wid).glob("card_*.md")}
+    assert before == after, "幂等跑必须零字节改动"
+
+
+async def test_version_bump_refreshes_stale_cards(typed_registry, work,
+                                                  monkeypatch, tmp_path):
+    """验收第 6 项：改配置（version+1、权限值也改）→ 跑刷新 → 旧卡跟到新配置。
+
+    卡先按 v1 建好（perms_version=1），再换成 v2 配置跑刷新——这正是「类型不变、
+    但某个类型配哪些权限会随迭代变」这个前提的机械证据。
+    """
+    from scripts.refresh_perms import refresh_one_work
+
+    wid, root = work["work_id"], work["work_card_id"]
+    a = (await card_store.create_card(wid, "甲", "模型生成", parent=root))["meta"]["card_id"]
+    metas = card_store.iter_card_metas(wid)
+    # [工具面补齐 2026-10-12] 版本号来自配置，不写死 1——配置已演进到 v2，
+    # 写死会把「每次改配置都要同步改测试」变成新的 fossil。
+    cur_v = policy.config_version()
+    assert metas[a]["perms_version"] == cur_v
+    assert "delete" in metas[a][policy.PERM_KEY]
+
+    v2 = {
+        "version": cur_v + 1,
+        "permissions": {
+            "rd_project": {"project": ["read"],
+                           "sub_project": ["read", "delete"]},
+        },
+    }
+    cfg_path = tmp_path / "permissions.json"
+    cfg_path.write_text(json.dumps(v2, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(policy, "PERMISSIONS_PATH", cfg_path)
+    assert policy.config_version() == cur_v + 1
+
+    stats = await refresh_one_work(wid, 2, apply=True)
+    assert stats["failed"] == 0
+    metas = card_store.iter_card_metas(wid)
+    assert metas[root][policy.PERM_KEY] == ["read"]              # 根卡跟到 v2
+    assert metas[a][policy.PERM_KEY] == ["read", "delete"]
+    assert metas[a][policy.PERM_VERSION_KEY] == cur_v + 1
+    assert "delete" not in metas[root][policy.PERM_KEY]
+
+
 # ---------------------------------------------------------------- V8
 
-async def test_v8_prompt_log_records_all_three(typed_registry, work):
-    """V8：三处打点在 prompt_log 留判定记录（沙箱 LOGS_DIR 读回实证）。"""
-    from src.api import prompt_log
+async def test_v8_prompt_log_records_all(typed_registry, work):
+    """V8：四处打点在 prompt_log 留判定记录（沙箱 LOGS_DIR 读回实证）。"""
+    from src.api import file_tools, prompt_log
 
-    # ① check / check_with_scope（放行＋拒绝各一）
-    cards = {"card_v8": {"card_type": "sub_project"}}
-    policy.check_with_scope("card_v8", "card_v8", policy.Perm.EDIT, cards)
+    # ① 关口（放行＋拒绝各一）
+    cards = {"card_v8": _meta("sub_project")}
+    policy.check("card_v8", "card_v8", policy.SWITCH_EDIT, cards)
     cards_deny = {"card_v8d": {"card_type": "神秘分类"}}
     with pytest.raises(PermissionError):
-        policy.check("card_v8d", policy.Perm.READ, cards_deny)
-    # ② build_tool_schemas
+        policy.check("card_v8d", "card_v8d", policy.SWITCH_READ, cards_deny)
+    # ② 工具面过滤
     card_tools.build_tool_schemas("card_v8", cards=cards)
-    # ③ check_file_access
-    from src.api import file_tools
-    file_tools.check_file_access("whatever.txt", "sub_project")
+    # ③ 文件访问锁
+    file_tools.check_file_access("whatever.txt", cards["card_v8"])
 
     log_path = prompt_log.LOGS_DIR / prompt_log.PERM_LOG_FILENAME
     assert log_path.exists(), "打点文件应已落盘"
     recs = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     fns = {r["fn"] for r in recs}
-    assert {"check", "check_with_scope", "build_tool_schemas",
+    assert {"check", "tree_scope", "build_tool_schemas",
             "check_file_access"} <= fns, f"缺打点: {fns}"
     print("\n[V8] prompt_perm_audit.jsonl 判定记录（末 6 条）：")
     for r in recs[-6:]:
@@ -270,7 +367,11 @@ def _legacy_subtree_verdict(current_id, target_id, cards):
 
 
 def test_r3_frozen_anchor_still_equivalent():
-    """R3 回归锚：定格副本与 policy._is_in_subtree 逐例相等（边界＋随机林）。"""
+    """R3 回归锚：定格副本与 policy._is_in_subtree 逐例相等（边界＋随机林）。
+
+    树作用域本次从权限开关里**拆出**成为独立函数，但判据逐字未动——本锚就是
+    「拆出时没改坏」的证据。
+    """
     forests = [
         {"card_001": {"parent": ""}},
         {"card_001": {"parent": ""}, "card_002": {"parent": "card_001"},

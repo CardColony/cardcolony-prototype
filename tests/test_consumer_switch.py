@@ -53,21 +53,21 @@ async def test_post_message_writes_v2_and_session_reads_facade(sandbox, work, cl
 
     # 读切换实证：GET /session 返回门面块（五键＋V2 六字段）
     body_all = (await client.get(f"/api/works/{wid}/cards/{cid}/session")).json()
-    # [迭代二 S4 配套] 环节留痕块（behavior 非空：triage 等）不计对话断言
+    # [迭代二 S4 配套] 环节留痕块（behavior 非空：plan/step/final 等）不计
+    # 对话断言；[思维链真实落地] 直答回合无判定块——对话两段 seq 相邻（0/1）
     body = [m for m in body_all if not m.get("behavior")]
     assert len(body) == 2
     assert body[0]["role"] == "user" and body[0]["content"] == "你好"
     assert body[0]["actor"] == "human" and body[0]["seq"] == 0
     assert body[1]["role"] == "assistant" and body[1]["end"] == "model_done"
     assert body[1]["turn"] == 0 and body[1]["pair"] == "0", "pair=响应发起块 seq"
-    # [迭代二 S4 配套] triage 环节块合法占用中间 seq（此处 seq=1），对话块
-    # seq 门面分配、单调递增（0 < 2）
-    assert [b["seq"] for b in body] == [0, 2], "seq 门面分配、单调"
+    # seq 门面分配、单调递增
+    assert [b["seq"] for b in body] == [0, 1], "seq 门面分配、单调"
 
     # 兼容层同走门面
     body2_all = (await client.get(f"/api/cards/{cid}/session")).json()
     body2 = [m for m in body2_all if not m.get("behavior")]
-    assert [b["seq"] for b in body2] == [0, 2]
+    assert [b["seq"] for b in body2] == [0, 1]
     assert body2[1]["end"] == "model_done"
 
 

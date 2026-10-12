@@ -28,19 +28,6 @@ def _tc(name, args):
     return {"name": name, "arguments": args}
 
 
-@pytest.fixture(autouse=True)
-def _fix_triage_call(monkeypatch):
-    """[迭代二 S4 配套] triage 在每回合 step 入口独立调主模型——不钉死会
-    消耗本文件 fake 脚本的调用计数（轮次错位、协议块落空）。统一钉死
-    triage 判定＝plan（零消耗桩；triage 块落档但不碰 fake 脚本）。"""
-    from src.thinkchain import triage as triage_mod
-
-    async def fixed(system, user):
-        return '{"verdict": "plan", "reason": "t14 固定拆解"}'
-
-    monkeypatch.setattr(triage_mod, "_call_model", fixed)
-
-
 def _dialog(blocks):
     """[迭代二 S4 配套] 环节留痕块（behavior 非空：triage 等）不进对话断言
     口径——与 message_runner prior 投影过滤同一裁定的测试侧。"""

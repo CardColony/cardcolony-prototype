@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""[信息流与快车道 2026-10-07] 机制层测试：route()/快车道分流/事件序/SSE/checkpoint。
+"""[信息流与快车道 2026-10-07] 机制层测试；[思维链真实落地 2026-10-11] 重写：
+route()/快车道分流退役（判断归模型），本件只留事件序/SSE/checkpoint/直答零三席。
 
 夹具沿 test_offline_e2e（FakeGateway 替身 + ASGITransport 真实 HTTP 层，沙箱零外网）。
 """
@@ -16,19 +17,7 @@ from src.api import event_stream, model_service, routes
 from src.storage import card_store
 
 
-# ---------------------------------------------------------------- V-T1-1 route()
-
-def test_vt1_route_rules():
-    assert routes.route("那你倒是删掉一张啊") == "fastlane"          # R3 样本
-    assert routes._route_rule("那你倒是删掉一张啊") == "删卡"
-    assert routes.route("帮我建一张卡") == "fastlane"
-    assert routes.route("把这张卡的内容改一下") == "fastlane"
-    assert routes.route("查一下card_002的正文") == "fastlane"
-    # 保守不误判：开放论证一律 chain
-    assert routes.route("我们应该如何重构整个论证框架") == "chain"
-    assert routes.route("你觉得这个结论成立吗") == "chain"
-    assert routes.route("查一下天气怎么样") == "chain"
-
+# ---------------------------------------------------------------- V-T4 事件本体论
 
 def test_vt4_ontology_21_types():
     assert len(event_stream.EVENT_TYPES) == 21
@@ -113,10 +102,21 @@ def _types_of(wid, cid):
     return [e["type"] for e in event_stream.journal_of(wid, cid)]
 
 
-# ---------------------------------------------------------------- V-T1-2 快车道 e2e
+def _last_round_types(wid, cid):
+    """本回合事件类型段（journal 跨用例追加不清空——T092 退役后旧段保留，
+    从最后一个 run_start 起切片＝本回合）。"""
+    journal = event_stream.journal_of(wid, cid)
+    for i in range(len(journal) - 1, -1, -1):
+        if journal[i]["type"] == "run_start":
+            return [e["type"] for e in journal[i:]]
+    return [e["type"] for e in journal]
 
-async def test_vt1_fastlane_real_landing_and_events(sandbox, work, monkeypatch):
-    monkeypatch.setattr(activity_guard := None, "x", None) if False else None
+
+# ---------------------------------------------------------------- V-T1-2 直答工具链 e2e（旧快车道退役形态）
+
+async def test_vt1_direct_tool_reply_real_landing_and_events(sandbox, work, monkeypatch):
+    """[思维链真实落地] 判断归模型：删卡类消息由模型带全量工具自主处置——
+    单模型、卡真实落地、零三席、无判定事件（triage_verdict/card_op 退役）。"""
     from src.storage import activity  # ★ 沙箱盲区补丁（同 condfold 线教训）
     monkeypatch.setattr(activity, "WORKS_DIR", sandbox.works)
     victim = await _mk_child(work, "待删卡")
@@ -129,32 +129,27 @@ async def test_vt1_fastlane_real_landing_and_events(sandbox, work, monkeypatch):
                               json={"content": "那你倒是删掉一张啊"})
         assert r.status_code == 200, r.text
         body = r.json()
-    # V-T1-2：无三席（viewpoints_meta 空）、卡真实落地（已删）、单模型（calls 全 main）
+    # 直答回合零三席（C6：三席只在提交轮）、卡真实落地（已删）、单模型（calls 全 main）
     assert body["viewpoints_meta"] == []
     assert body["tool_events"] == [{"tool": "delete_card", "card_id": victim, "ok": True}]
     assert not card_store._card_path(work["work_id"], victim).exists()
     assert all(c["model"] == "main" for c in gw.calls)
-    # V8 事件序：run_start→context→triage_verdict→…→card_op→…→done 有序
-    types = _types_of(work["work_id"], work["work_card_id"])
-    assert types[0] == "run_start" and "context" in types and "triage_verdict" in types
+    # V8 事件序（本回合段）：run_start→context→round_start→tool_call→tool_result→…→done 有序
+    types = _last_round_types(work["work_id"], work["work_card_id"])
+    assert types[0] == "run_start" and "context" in types
     assert types[-1] == "done"
     idx = {t: types.index(t) for t in set(types)}
-    assert idx["triage_verdict"] < idx["round_start"] < idx["card_op"] < idx["done"]
-    assert "seats_enter" not in types and "seat_start" not in types   # 确定性动作跳三席
-    # [2026-10-11 两套机制拆除] 唯一判断＝triage_verdict（机械预检命中，rule=删卡）
-    tv = [e for e in event_stream.journal_of(work["work_id"], work["work_card_id"])
-          if e["type"] == "triage_verdict"]
-    assert tv and tv[0]["data"]["verdict"] == "direct" and tv[0]["data"]["rule"] == "删卡"
-    # V-T4-1：card_op 一类卡操作一份事件（delete 一次＝一条）
-    card_ops = [e for e in event_stream.journal_of(work["work_id"], work["work_card_id"])
-                if e["type"] == "card_op"]
-    assert len(card_ops) == 1 and card_ops[0]["data"]["op"] == "delete_card"
-    assert card_ops[0]["data"]["ok"] is True
+    assert idx["round_start"] < idx["tool_call"] < idx["tool_result"] < idx["deliver"] < idx["done"]
+    # 判定轮与并表通道全部退役
+    assert "triage_verdict" not in types and "card_op" not in types
+    assert "seats_enter" not in types and "seat_start" not in types   # 直答零三席
 
 
-# ---------------------------------------------------------------- V-T1-3 全链不劣化
+# ---------------------------------------------------------------- V-T1-3 直答链零三席（C6）
 
-async def test_vt1_chain_untouched_with_seats(sandbox, work, monkeypatch):
+async def test_vt1_direct_reply_no_seats(sandbox, work, monkeypatch):
+    """[思维链真实落地] 直答回合（无板空手）零三席——旧「无工具即三席」
+    空手轮旁路退役，三席只在拆解链收口后的提交轮进场。"""
     from src.storage import activity
     monkeypatch.setattr(activity, "WORKS_DIR", sandbox.works)
     gw = FakeGateway()
@@ -165,18 +160,11 @@ async def test_vt1_chain_untouched_with_seats(sandbox, work, monkeypatch):
                               json={"content": "你怎么看当前这个论证方向？"})
         assert r.status_code == 200, r.text
         body = r.json()
-    # chain：三席恰一次进场、统合唯一回复
-    assert len(body["viewpoints_meta"]) == 1 and body["viewpoints_meta"][0]["ok"] is True
-    types = _types_of(work["work_id"], work["work_card_id"])
-    assert types.count("seats_enter") == 1 and types.count("seat_end") == 1
+    # 直答零三席、单回复（本回合段）
+    assert body["viewpoints_meta"] == []
+    types = _last_round_types(work["work_id"], work["work_card_id"])
+    assert types.count("seats_enter") == 0 and types.count("seat_end") == 0
     assert "deliver" in types and types[-1] == "done"
-    # [2026-10-11 两套机制拆除] 未命中机械预检 → 模型判定（FakeGateway 返回
-    # 非 JSON → 默认 plan 拆解）；判断行只有 triage_verdict。
-    # [T092 退役] journal 跨用例不清空（event_stream.py:92-95/:260-262）——
-    # 同一 work_001/card_001 的旧段保留，本回合判定取最新一条（fl[-1]）。
-    fl = [e for e in event_stream.journal_of(work["work_id"], work["work_card_id"])
-          if e["type"] == "triage_verdict"]
-    assert fl and fl[-1]["data"]["verdict"] == "plan"
 
 
 # ---------------------------------------------------------------- V-T3-1 SSE＋环形
@@ -234,12 +222,10 @@ async def test_vt3_events_not_in_model_input(sandbox, work, monkeypatch):
         r = await client.post(f"/api/works/{wid}/cards/{cid}/messages",
                               json={"content": "随便聊聊这个方向"})
         assert r.status_code == 200
-    # 事件未进 session（session 只多 user+triage 判定块+assistant 三条——triage
-    # 块落档为 10-10 迭代二既有行为、behavior 非空不进投影；存量断言 +2 未跟进，
-    # 基线 line 538 即红）；未进 prior（FakeGateway 记录的 user_prompt 不含
-    # 事件 type 字样）
+    # 事件未进 session（[思维链真实落地] 无判定块：session 只多 user+assistant
+    # 两条）；未进 prior（FakeGateway 记录的 user_prompt 不含事件 type 字样）
     after = await session_store.read_session(wid, cid)
-    assert len(after) == len(before) + 3
+    assert len(after) == len(before) + 2
     blob = json.dumps(gw.calls, ensure_ascii=False)
     for t in event_stream.EVENT_TYPES:
         assert f'"type": "{t}"' not in blob or "run_start" not in blob
