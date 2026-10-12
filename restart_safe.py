@@ -26,6 +26,12 @@ sys.stdout.reconfigure(encoding="utf-8")
 CHECK_ONLY = "--check" in sys.argv
 PORT = 5700
 BASE = f"http://127.0.0.1:{PORT}"
+# [2026-10-12 幽灵态修复] 崩掉的请求（未捕获异常穿透 → handle_error 没跑）会把
+# progress 的 stage 永久停在活跃档，主判据从此永远拒绝重启（实测挡死 20+ 分钟）。
+# 判据加一层时效：活跃态带 ts，超过本秒数无任何活动即视为崩溃残留；残留本身
+# 不再锁死重启，但需旁证（磁盘 25 秒窗口无新写 ＋ 无对外连接）才放行——真在跑
+# 的调用总会留下旁证（工具轮换/日志写/模型端点连接三者至少居其一）。
+STALE_ACTIVE_SECONDS = 1800
 
 
 def get_pid_listeners() -> list[int]:
@@ -47,11 +53,11 @@ def get_outbound(pid: int) -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def progress_active() -> list[str]:
+def progress_active() -> list[tuple[str, float]]:
     """主判据：任一卡片 progress 活跃（非 done/error/空）→ 在跑。
     端点：GET /api/works/{wid}/cards/{cid}/progress（routes.py L215）。
     canvas 端点拿全部卡：GET /api/works/{wid}/canvas（L106）。"""
-    active = []
+    active: list[tuple[str, float]] = []
     try:
         works = json.load(urllib.request.urlopen(f"{BASE}/api/works", timeout=5))
         wl = works.get("works") if isinstance(works, dict) else works
@@ -75,7 +81,11 @@ def progress_active() -> list[str]:
                 # 静态档白名单（routes.py L220 权威：从未对话的卡默认 idle；
                 # 完成态 done / 失败态 error / 空）。白名单外的任何档＝活跃。
                 if stage and stage not in ("done", "error", "idle"):
-                    active.append(f"{wid}/{cid}:{stage}")
+                    try:
+                        _ts = float(pr.get("ts", 0) or 0)
+                    except (TypeError, ValueError):
+                        _ts = 0.0
+                    active.append((f"{wid}/{cid}:{stage}", _ts))
     except Exception:  # noqa: BLE001
         pass
     return active
@@ -107,13 +117,29 @@ def main() -> int:
     except Exception as exc:
         print(f"[2] 健康检查异常（{exc}）——仍按连接判据决定。")
 
-    # [主判据] progress 活跃态——无条件拒绝
+    # [主判据] progress 活跃态——新鲜的无条件拒绝；陈旧的按崩溃残留复核旁证
+    # （[2026-10-12] 见 STALE_ACTIVE_SECONDS：崩掉的请求会留下永久活跃态）
     active = progress_active()
-    if active:
-        print(f"[3] progress 活跃调用：{active}")
+    now = time.time()
+    fresh = [e for e in active if e[1] and now - e[1] < STALE_ACTIVE_SECONDS]
+    stale = [e for e in active if e not in fresh]
+    if fresh:
+        print(f"[3] progress 活跃调用：{[e[0] for e in fresh]}")
         print("    判定：调用进行中——拒绝重启。等它跑完（前端有实时进度）再来。")
         return 1
-    print("[3] progress 全静（done/error/空）")
+    if stale:
+        print(f"[3] progress 残留活跃态（已超 "
+              f"{STALE_ACTIVE_SECONDS // 60} 分钟无活动，判为崩溃请求的残留）："
+              f"{[e[0] for e in stale]}")
+        if disk_activity(25):
+            print("    旁证：25 秒窗口内有 session/logs 新写入——有活动，拒绝重启。")
+            return 1
+        if any(get_outbound(pid) for pid in pids):
+            print("    旁证：服务有到模型端点的连接——有活动，拒绝重启。")
+            return 1
+        print("    旁证：无磁盘新写入、无对外连接——按无调用在跑处理，继续。")
+    else:
+        print("[3] progress 全静（done/error/空）")
 
     # [复核判据] 对外活连接——命中时延迟复核，防 keep-alive 残留假阳性
     for pid in pids:
@@ -123,8 +149,12 @@ def main() -> int:
             time.sleep(8)
             active2 = progress_active()
             disk2 = disk_activity(25)
-            if active2:
-                print(f"    复核：progress 活跃 {active2}——调用进行中，拒绝重启。")
+            now2 = time.time()
+            fresh2 = [e for e in active2
+                      if e[1] and now2 - e[1] < STALE_ACTIVE_SECONDS]
+            if fresh2:
+                print(f"    复核：progress 活跃 {[e[0] for e in fresh2]}"
+                      "——调用进行中，拒绝重启。")
                 return 1
             if disk2:
                 print("    复核：session/logs 25 秒窗口有新写入——调用进行中，拒绝重启。")
