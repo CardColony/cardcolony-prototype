@@ -132,6 +132,19 @@
 
   window.NewBookConfirm = confirmCreate;
   window.NewBookCancel = cancelCreate;
-  load();
+  // [2026-10-12 加载失败修复] 薄壳 api.js 以异步 import 挂 window.API（迭代四
+  // F2①），顶层立即 load() 必然早于 API 就位 → ReferenceError 被 load 自己的
+  // catch 吞成「加载失败」。该时序缺口自迭代四潜伏（薄壳注释假设"shelf.js 无
+  // 顶层立即调用"被违反）；工作页经 esm/main.js 静态 import 无此病，故至今才
+  // 爆发。改为就绪等待：API 上线即启动；同源模块正常毫秒级返回，100×100ms
+  // 内不至即按真故障呈现失败态。
+  (async function boot() {
+    for (let i = 0; i < 100; i++) {
+      if (window.API) { load(); return; }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const g = document.getElementById("shelfGrid");
+    if (g) g.innerHTML = `<div class="loading-screen">加载失败 <button class="btn" onclick="location.reload()">重试</button></div>`;
+  })();
 
 })();
