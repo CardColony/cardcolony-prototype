@@ -7,8 +7,8 @@ export async function request(method, url, body) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
   }
-  // messages 不设超时（模型可能 30~120 秒），其他请求 15 秒
-  if (!url.includes("/messages")) {
+  // messages / draft 不设超时（模型可能 30~120 秒），其他请求 15 秒
+  if (!url.includes("/messages") && !url.includes("/draft")) {
     const ctrl = new AbortController();
     opts.signal = ctrl.signal;
     const t = setTimeout(() => ctrl.abort(), 15000);

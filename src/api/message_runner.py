@@ -39,7 +39,7 @@ from typing import Any, Callable, Optional
 
 from ..storage import card_store, memory_store, session_facade, session_ops, session_store, work_store
 from ..thinkchain import board as thinkchain_board
-from ..thinkchain.model_pick import pick_model as _pick_model  # noqa: F401（既有路由位，五期禁直接调）
+from ..thinkchain.model_pick import pick_model as _pick_model  # 步类型路由消费点（_pick_step_model 调用）
 from ..thinkchain import model_pick
 from ..toolcard import driver as toolcard_driver
 from . import (
@@ -264,13 +264,13 @@ def build_context(state: RunState) -> None:
 # plan_tools（步引导）、step_region（165 区）三处消费，禁各自复制防漂移。
 
 def _pick_step_model(state: RunState) -> str:
-    """[迭代三 S5] 当前步类型→模型席位路由。
+    """[迭代三 S5] 当前步类型→模型路由。
 
     有活板 → snapshot_sync 读当前步 type 查表（存量空串/越界 → default）；
-    无活板（直答）→ default。查得席位不在 models.yaml 的 models 键集 →
-    显式报错（simple_service.py:183-185 先例形态，错误信息含席位名）——
-    消费侧热读席位清单可行（gw.config 内存常驻），无需启动校验降级。
-    每圈实取席位打日志（S5 验收「日志可查每步实取席位」）。
+    无活板（直答）→ default。查得模型不在 models.yaml 的 models 键集 →
+    显式报错（simple_service.py:183-185 先例形态，错误信息含模型名）——
+    消费侧热读模型清单可行（gw.config 内存常驻），无需启动校验降级。
+    每圈实取模型打日志（S5 验收「日志可查每步实取模型」）。
     """
     snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
     role = "default"
@@ -283,7 +283,7 @@ def _pick_step_model(state: RunState) -> str:
     models_cfg = model_service.get_gateway().config.get("models") or {}
     if seat not in models_cfg:
         raise RuntimeError(
-            f"models.yaml 无此模型条目: {seat}（model_pick 类型 {role!r} 配置指向了不存在的席位）")
+            f"models.yaml 无此模型条目: {seat}（步类型 {role!r} 的绑定指向了不存在的模型）")
     logger.info("[迭代三 S5] 类型路由 role=%s -> seat=%s work=%s card=%s",
                 role, seat, state.work_id, state.card_id)
     return seat
@@ -319,7 +319,7 @@ async def step(state: RunState) -> StepOutcome:
         event_stream.emit(state.work_id, state.card_id, "round_start",
                           {"round": state.rounds, "phase": "main"})
         state.model_calls += 1
-        # [迭代三 S5] 首轮接线：按当前步 type 查表取席位（无活板回落 default）
+        # [迭代三 S5] 首轮接线：按当前步 type 查表取模型（无活板回落 default）
         result, state.model_used = await model_service.call_main(
             state.system_prompt, state.user_prompt, state.prior_for_gateway,
             tools=state.tools,
@@ -585,8 +585,8 @@ async def run_seats(state: RunState) -> StepOutcome:
     event_stream.emit(state.work_id, state.card_id, "round_start",
                       {"round": state.rounds, "phase": "synthesize"})
     state.model_calls += 1
-    # [迭代五 S2·E10] 统合官席位可配：model_pick.resolve_model("synthesize")，
-    # 不配回落 main（缺省行为逐字不变）。
+    # [迭代五 S2·E10] 统合官模型可配：model_pick.resolve_model("synthesize")，
+    # 未配置回落默认模型（model_config.default_model()，缺省行为逐字不变）。
     result, state.model_used = await model_service.call_main(
         state.system_prompt, synth_input, state.prior_for_gateway, tools=state.tools,
         model_name=model_pick.resolve_model("synthesize"),

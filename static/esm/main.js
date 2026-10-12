@@ -4,12 +4,12 @@
  * 兼容挂载（U-6 预算内第 2 处）：window.GetCanvasState 供调试/探针读画布状态
  * （store.state.canvasState 由 canvas.js 注册）。
  */
-import { store } from "./store.js?v=11";
-import { API } from "./api.js?v=11";
-import "./util.js?v=11";
-import "../stream.js?v=12";
-import "../canvas.js?v=11";
-import "../workspace.js?v=11";
+import { store } from "./store.js?v=12";
+import { API } from "./api.js?v=12";
+import "./util.js?v=12";
+import "../stream.js?v=13";
+import "../canvas.js?v=12";
+import "./workspace.js?v=13";
 
 window.GetCanvasState = () => store.state.canvasState;
 window.API = API;   // 调试便利（非功能依赖；不计功能挂载——与 api.js 薄壳同属兼容层）

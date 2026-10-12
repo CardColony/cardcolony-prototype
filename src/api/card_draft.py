@@ -20,19 +20,15 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from ..storage import card_store, session_facade, shadow_store, work_store
+from ..storage import card_store, memory_store, session_facade, shadow_store, work_store
 from ..storage.hash_utils import apply_hash, parse_front_matter, split_body_sections
-from . import model_service
+from . import context_assembler, context_regions, model_config, model_service
 from .routes import _apply_block_set
 
 logger = logging.getLogger("api.card_draft")
 
 # 合法 kind：requirements（第三块·需求文档/定论）| status（现状块）。使命不可经此口。
 ALLOWED_KINDS = ("requirements", "status")
-
-# 对话相关段截取上限（条）——draft 上下文用，防超长
-_CONVO_LIMIT = 20
-_CONVO_MSG_MAX = 400  # 每条消息截断字符数
 
 
 def _block_hash(content: str) -> str:
@@ -78,13 +74,31 @@ async def _rename_rulings_to_requirements(work_id: str, card_id: str) -> None:
     card_path.write_text(new_raw, encoding="utf-8")
 
 
+# 占位符标记：卡正文三块模板的字面占位说明（真实内容绝不会出现这些字）。
+# draft/commit 命中占位符＝当空——模型从零起草，不照抄模板示例（D01【裁定】…）。
+_PLACEHOLDER_MARKERS = (
+    "（本卡作用", "（当前状况快照", "（对本卡相关事项",
+    "（日期·依据）", "（日期·死过什么）", "（暂无记录）",
+)
+
+
+def _is_placeholder(text: str) -> bool:
+    """是否占位符（模板示例）或空。命中＝当前块视为未写。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    return any(m in t for m in _PLACEHOLDER_MARKERS)
+
+
 def _get_current_block(result: dict, kind: str) -> str:
-    """从 read_card 结果（已经 _apply_block_set）取当前 kind 对应块内容。"""
+    """从 read_card 结果（已经 _apply_block_set）取当前 kind 对应块内容。
+    占位符当空——draft 从零起草、commit 以空块为比对基准（两侧同口径，hash 一致）。"""
     body = result.get("body") or {}
     if kind == "requirements":
-        # rd 卡：body.requirements；research 卡：body.rulings（第三块语义随树类走）
-        return str(body.get("requirements") or body.get("rulings") or "")
-    return str(body.get("status_block") or "")
+        raw = str(body.get("requirements") or body.get("rulings") or "")
+    else:
+        raw = str(body.get("status_block") or "")
+    return "" if _is_placeholder(raw) else raw
 
 
 def _kind_label(kind: str) -> str:
@@ -95,34 +109,36 @@ def _build_prompts(
     kind: str,
     card: dict,
     current_block: str,
-    convo: str,
+    neutral_context: str,
     prev_draft: Optional[str],
     feedback: Optional[str],
 ) -> tuple[str, str]:
-    """构造 draft 的 system/user prompt（纯文本，无工具）。"""
+    """构造 draft 的 system/user prompt。
+
+    system＝起草指令＋六区中性上下文（卡片清单/当前卡/记忆，复用主对话装配，
+    不截断）；user＝当前块内容＋草稿/反馈。对话历史经 prior_messages 结构化传入，
+    不拼进 user、不设任何截断（零加工，与 message_runner 同口径）。
+    """
     label = _kind_label(kind)
     mission = (card.get("body") or {}).get("mission", "")
-    status = (card.get("body") or {}).get("status_block", "")
     title = (card.get("meta") or {}).get("title", "")
 
     system = (
-        "你是推演工作台的卡片内容起草助手。你的唯一职责：根据提供的上下文，"
-        "起草/修订卡片的「{label}」块内容。你只输出该块的正文文本，不输出解释、"
-        "不输出其他块、不调用任何工具、不修改使命块。\n"
+        "你是推演工作台的卡片内容起草助手。你的唯一职责：根据下方卡片清单、当前卡、"
+        "记忆与对话历史，起草/修订卡片的「{label}」块内容。你只输出该块的正文文本，"
+        "不输出解释、不输出其他块、不调用任何工具、不修改使命块。\n"
         "要求：\n"
-        "1. 输出即为该块完整正文（整块替换语义），保持原有格式风格。\n"
+        "1. 输出即为该块完整正文（整块替换语义）。\n"
         "2. 使命块不可改——只起草 {label} 块本身。\n"
         "3. 若给了上一版草稿与用户反馈，按反馈修订，保持上下文连续。"
     ).format(label=label)
+    if neutral_context and neutral_context.strip():
+        system += "\n" + neutral_context.strip() + "\n"
 
     parts = [f"卡片标题：{title}"]
     if mission.strip():
         parts.append(f"【使命块·只读参考】\n{mission.strip()}")
-    if status.strip() and kind == "requirements":
-        parts.append(f"【现状块·只读参考】\n{status.strip()}")
-    parts.append(f"【当前{label}块内容】\n{current_block or '（空）'}")
-    if convo.strip():
-        parts.append(f"【本卡对话相关段】\n{convo.strip()}")
+    parts.append(f"【当前{label}块内容】\n{current_block or '（空，从零起草）'}")
     if prev_draft is not None and prev_draft.strip():
         parts.append(f"【上一版草稿】\n{prev_draft.strip()}")
     if feedback is not None and feedback.strip():
@@ -130,23 +146,6 @@ def _build_prompts(
     parts.append(f"请起草{label}块完整正文：")
 
     return system, "\n\n".join(parts)
-
-
-def _build_convo_context(blocks: list[dict]) -> str:
-    """从 session 块截取对话相关段（user/assistant 正文，截断限量）。"""
-    lines: list[str] = []
-    for b in blocks[-_CONVO_LIMIT:]:
-        role = str(b.get("role") or "")
-        if role not in ("user", "assistant"):
-            continue
-        content = str(b.get("content") or "").strip()
-        if not content:
-            continue
-        if len(content) > _CONVO_MSG_MAX:
-            content = content[:_CONVO_MSG_MAX] + "…"
-        prefix = "用户" if role == "user" else "助手"
-        lines.append(f"{prefix}：{content}")
-    return "\n".join(lines)
 
 
 async def draft(
@@ -172,19 +171,39 @@ async def draft(
     current_block = _get_current_block(card, kind)
     base_hash = _block_hash(current_block)
 
-    # 本卡对话相关段（session 只读，不进 message_runner）
+    # 六区中性上下文（复用主对话装配：卡片清单＋当前卡＋记忆 condense_fold；零截断）
+    condense_state = (
+        memory_store.load_memory(work_id, card_id)
+        if memory_store.condense_enabled() else None
+    )
+    ctx_regions = context_assembler.build_context_regions(
+        work_id, card_id, memory_state=condense_state,
+    )
+    neutral_context = context_regions.assemble_regions(
+        [r["text"] for r in ctx_regions]
+    )
+
+    # 完整对话历史（不截断；投影 role/content；behavior 块 role=tool 自然被滤）
     try:
-        convo_blocks = await session_facade.read(work_id, card_id)
+        blocks = await session_facade.read(work_id, card_id)
     except Exception:  # noqa: BLE001
-        convo_blocks = []
-    convo = _build_convo_context(convo_blocks)
+        blocks = []
+    prior = [
+        {"role": str(b.get("role") or ""), "content": str(b.get("content") or "")}
+        for b in blocks
+        if str(b.get("role") or "") in ("user", "assistant")
+        and str(b.get("content") or "").strip()
+    ]
 
     system_prompt, user_prompt = _build_prompts(
-        kind, card, current_block, convo, prev_draft, feedback,
+        kind, card, current_block, neutral_context, prev_draft, feedback,
     )
     # 独立路由、独立调用：不传工具（tools 缺省 None）、纯文本；绝不进 message_runner 工具循环
     try:
-        result, _model = await model_service.call_main(system_prompt, user_prompt)
+        result, _model = await model_service.call_main(
+            system_prompt, user_prompt, prior_messages=prior or None,
+            model_name=model_config.resolve("draft") or model_config.default_model(),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("draft 模型调用失败 work=%s card=%s: %s", work_id, card_id, exc)
         return {"error": f"模型调用失败: {exc}"}

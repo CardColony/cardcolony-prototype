@@ -3,7 +3,7 @@
 
 两半职责：
 1. **类型注册表读取层**：`config/message_type_registry.json` 的唯一读取口。
-   每次调用现读（照 `src/thinkchain/model_pick.py` `_load_table()` 热加载先例），
+   每次调用现读（照 `src/roles.py` `_load_table()` 热加载先例），
    「加类型＝加条目、零代码」靠这一点成立。坏表/缺文件 → `logger.warning` ＋
    返回 `{}`（fail-open 到空值域，由调用方拒绝），绝不抛出。
 2. **正文头行纯函数**：卡间消息块正文首行的结构化头

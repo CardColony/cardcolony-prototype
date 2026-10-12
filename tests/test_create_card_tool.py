@@ -66,8 +66,12 @@ def test_tool_table_version_bumped():
     [工具卡底座 T7 · 2026-10-09] 推进到 tc-3：新增第 19 件工具 run_tool_card（调用侧，
     工具卡底座的保留件；T9「主卡写工具收回」已按用户 2026-10-09 17:38 令回滚，
     故此处只记工具集本身的变更，不涉角色口径）。
+    [B-11 插件化 2026-10-12] 推进到 tc-4：联网两件改为**有配置才注册**。工具面
+    从此依环境而异（本机配了通道＝25 件，没配＝23 件），这是 tc-3 以来第一次
+    出现「同一版本号、不同工具面」，故必须递增，否则对账日志无法区分
+    「工具面变了」与「环境没配」。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-3"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-4"
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():
@@ -77,17 +81,35 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     # [卡片信息结构改造 S1-6 · 2026-10-08] 此前推进到 tc-2：edit_card 说明改写为三块语法。
     # [迭代五 S3 镜像更新] 推进到 t15-1：新增「卡间消息处理」节（应对规则进 prompt）。
     # [思维链真实落地 2026-10-11] 推进到 t16-1：判断协议注入 BASE_PROMPT 开头。
-    # [卡片编辑机制改造 2026-10-12] 推进到 t17-1：edit_card/update_shadow 收回，改为
-    #   「起草＋用户确认写入」说明（工具列表不再定义这两项）。
-    assert prompts.BASE_PROMPT_VERSION == "t17-1"
+    # [卡片编辑机制改造 2026-10-12] 推进到 t17-1：声称 edit_card/update_shadow 收回。
+    # [工具模块整理 2026-10-12] 推进到 t18-1：**撤回上述不实声称**（两件实际仍在工具面
+    #   第 4/6 位下发，模型被告知「不能改卡」却一伸手就能改=P-01），改为如实说明
+    #   「直改与起草两条写入路径并存」；补 6 件零文档工具；修文件边界；联网两件改条件提供。
+    assert prompts.BASE_PROMPT_VERSION == "t18-1"
     assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT
     assert "建卡接口" not in prompts.BASE_PROMPT
-    # [卡片编辑机制改造 2026-10-12] edit_card/update_shadow 不再是工具定义行
-    assert "- edit_card(" not in prompts.BASE_PROMPT
-    assert "- update_shadow(" not in prompts.BASE_PROMPT
-    assert "起草＋用户确认" in prompts.BASE_PROMPT
+    # [工具模块整理 2026-10-12] **本组断言方向反转**。
+    # 原断言要求「edit_card / update_shadow 的定义行不在说明书里」，依据是 t17-1
+    # 声称两件工具已收回。实测两件**仍在注册表、仍在模型可见清单第 4/6 位**——
+    # 即该断言编码的是一个不实声称：说明书说「收回了」，工具面却照发，
+    # 模型被明确告知不能改卡、一伸手又能改（docs/工具模块现状-20261012.md P-01）。
+    # t18-1 按「文字改真、不动代码」收敛：撤回收回声称，恢复两件的定义行，
+    # 改为如实说明「直改与起草两条写入路径并存」。
+    # 故断言从「不得出现」翻转为「必须出现且不得声称已收回」——
+    # 真正的归口判据在 tests/test_tool_surface_contract.py 组 1/组 4：
+    # 注册表 ⊆ 说明书，且说明书不得出现收回类措辞。
+    for _kept in ("- edit_card(", "- update_shadow("):
+        assert _kept in prompts.BASE_PROMPT, (
+            f"{_kept} 仍在注册表里（工具面没收紧），说明书就不该删掉它的文档"
+        )
+    for _lie in ("已收回", "不再出现在你的工具清单"):
+        assert _lie not in prompts.BASE_PROMPT, (
+            f"说明书出现收回类措辞「{_lie}」，但工具面并未收紧——在骗模型"
+        )
+    # 起草通道的说明仍在（机制未撤，只是不再声称它是唯一写入路径）
+    assert "起草" in prompts.BASE_PROMPT
     # [T-0010 §3.3] 错误码小节随协议进 prompt（五码齐全）
     assert "## 工具错误码" in prompts.BASE_PROMPT
     for _code in card_tools.TOOL_ERROR_CODES:

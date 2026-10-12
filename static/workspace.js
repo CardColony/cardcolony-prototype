@@ -3,23 +3,23 @@
 /* 迭代四 F2③：IIFE → ES module；escapeHtml/API/EventFlow/ReloadCanvas 走模块 import。
  * 循环依赖（canvas.js import 本文件的 Workspace/RenderNav）由 ESM 活绑定＋函数声明
  * 提升保证：本文件顶层不调用任何 canvas 导出。 */
-import { API } from "./esm/api.js?v=11";
-import { escapeHtml } from "./esm/util.js?v=11";
-import { EventFlow } from "./stream.js?v=12";
-import { reloadCanvas } from "./canvas.js?v=11";
-import { store } from "./esm/store.js?v=11";
-import { notify, postStop } from "./esm/api.js?v=11";
-import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=11";
+import { API } from "./esm/api.js?v=12";
+import { escapeHtml } from "./esm/util.js?v=12";
+import { EventFlow } from "./stream.js?v=13";
+import { reloadCanvas } from "./canvas.js?v=12";
+import { store } from "./esm/store.js?v=12";
+import { notify, postStop } from "./esm/api.js?v=12";
+import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=12";
 // [S2] 导航渲染体系：状态三层容器 + 行模型 + 渲染换底 + 虚拟滚动 + 异步加载
 import {
   createNavStateStore, storageGet, storageSet,
-} from "./esm/state_layers.js?v=11";
-import { createNavAsync } from "./esm/nav_async.js?v=11";
-import { createNavRenderer } from "./esm/nav_render.js?v=11";
+} from "./esm/state_layers.js?v=12";
+import { createNavAsync } from "./esm/nav_async.js?v=12";
+import { createNavRenderer } from "./esm/nav_render.js?v=12";
 // [S3] 交互与呈现族：找通道（R-24/25）、面包屑+吸顶+祖先链（R-27/18/26/28）、快照存在性（R-21）
-import { createNavFind } from "./esm/nav_find.js?v=11";
-import { createNavBreadcrumb, ancestorCards } from "./esm/nav_breadcrumb.js?v=11";
-import { cardInSnapshot } from "./esm/nav_badge.js?v=11";
+import { createNavFind } from "./esm/nav_find.js?v=12";
+import { createNavBreadcrumb, ancestorCards } from "./esm/nav_breadcrumb.js?v=12";
+import { cardInSnapshot } from "./esm/nav_badge.js?v=12";
 
 const WORK_ID = window.__WORK_ID__;
   const ws = document.getElementById("workspace");

@@ -60,7 +60,10 @@ class ScriptedGateway:
                 "main": {"provider": "openai", "model": "golden-main", "temperature": 0.3},
                 "vp1": {"provider": "openai", "model": "golden-vp", "temperature": 0.7},
             },
-            "simple": {"enabled": True, "viewpoints": ["vp1"]},
+            "bindings": {"execute": "main", "think": "main", "synthesize": "main",
+                         "compress": "main", "draft": "main", "viewpoint": ["vp1"]},
+            "system": {"default_model": "main"},
+            "simple": {"enabled": True},
         }
         # main 按调用序取文本；用尽后重复最后一条（保证不限轮次也能收敛）
         self.main_texts = list(main_texts or ["金样本回执。"])

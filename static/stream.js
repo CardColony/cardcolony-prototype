@@ -48,7 +48,7 @@ let current = null;   // {wid,cid,es,esT,rows[],textEl,textBody,reasoning,reason
     current = {
       wid, cid, es: null, esT: null,
       rows: [], textEl: null, textBody: null,
-      reasoning: null, reasoningText: null, fallbackUsed: false,
+      reasoning: null, reasoningText: null, seatThink: {}, fallbackUsed: false,
       lastSeq: 0, lastTokenSeq: 0,
     };
     return current;
@@ -62,6 +62,7 @@ let current = null;   // {wid,cid,es,esT,rows[],textEl,textBody,reasoning,reason
     releaseText(st);
     st.fallbackUsed = false;
     st.toggle = null;
+    st.seatThink = {};
   }
 
   /** 正式回复过后（收到 done/error）：给本组过程行加一个「收起/展开」开关。
@@ -162,9 +163,20 @@ let current = null;   // {wid,cid,es,esT,rows[],textEl,textBody,reasoning,reason
     return st;
   }
 
-  function appendChunk(st, kind, text, seq) {
+  function appendChunk(st, kind, text, seq, model) {
     if (!text) return;
     if (kind === "reasoning") {
+      // [思考流支持层 2026-10-12] 带 model 的是**三席**思考（并发交织）→ 按席
+      // 分桶的独立弱化行；不带 model 的是主模型思考 → 仍落正文条目内的弱化区。
+      if (model) {
+        const seatText = ensureSeatReasoning(st, model);
+        if (seatText) {
+          seatText.textContent += text;
+          logInfo("[flow-render] seat-chunk(" + model + ", " + text.length + ")");
+          scrollBottom();
+          return;
+        }
+      }
       ensureReasoning(st).reasoningText.textContent += text;
     } else {
       textEntry(st);
@@ -203,15 +215,39 @@ let current = null;   // {wid,cid,es,esT,rows[],textEl,textBody,reasoning,reason
     if (ca && st.textEl.parentNode === ca && ca.lastChild !== st.textEl) ca.appendChild(st.textEl);
   }
 
+  /** 三席思考块：**按模型分桶**的独立弱化行。
+      三席是 asyncio.gather 并发的，思考增量必然交织——不分桶就是一团乱麻。
+      刻意**不进**助手正文条目：三席观点既不是思考也不是助手回复正文，混进去
+      会把审议过程当成正式回复的一部分显示。行入 st.rows：随本组一起收起/清理。 */
+  function ensureSeatReasoning(st, model) {
+    const ca = chatEl();
+    if (!ca) return null;
+    if (!st.seatThink) st.seatThink = {};
+    if (st.seatThink[model]) return st.seatThink[model];
+    const r = document.createElement("div");
+    r.className = "live-reasoning seat-think";
+    r.innerHTML = '<span class="live-icon">🧠</span><span class="live-model"></span><span class="live-text"></span>';
+    r.querySelector(".live-model").textContent = model;
+    ca.appendChild(r);
+    st.rows.push(r);
+    st.seatThink[model] = r.querySelector(".live-text");
+    // 正文条目恒压队尾（次序铁律）：思考行落下时把正文推回最下
+    if (st.textEl && st.textBody && st.textBody.textContent) ca.appendChild(st.textEl);
+    scrollBottom();
+    return st.seatThink[model];
+  }
+
   function onTokenFrame(st, evt) {
     if (evt && typeof evt.seq === "number" && evt.seq > st.lastTokenSeq) st.lastTokenSeq = evt.seq;
     const type = (evt && evt.type) || "";
-    const text = (evt && evt.data && evt.data.text) || "";
+    const data = (evt && evt.data) || {};
+    const text = data.text || "";
+    const model = data.model || "";
     // 轮界标记帧（type 复用 run_start/round_start，data._boundary）。
     // [R-01] seq 空洞为正常态：按到达顺序处理，不因跳号中断/等待。
     if (type === "run_start" || type === "round_start") { clearText(st); return; }
-    if (type === "content_chunk") appendChunk(st, "content", text, evt && evt.seq);
-    else if (type === "reasoning_chunk") appendChunk(st, "reasoning", text, evt && evt.seq);
+    if (type === "content_chunk") appendChunk(st, "content", text, evt && evt.seq, model);
+    else if (type === "reasoning_chunk") appendChunk(st, "reasoning", text, evt && evt.seq, model);
   }
 
   /* ---------- 事件流 → 每条一条（默认逐条可见） ---------- */

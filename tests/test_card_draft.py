@@ -50,9 +50,16 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
 
 
 # ---------------------------------------------------------------- 判据5：版本号
+# [工具模块整理 2026-10-12] 钉子由 t17-1 推进到 t18-1。
+# t18-1 是「说明追现实」批：撤回 t17-1「edit_card/update_shadow 已收回」的不实
+# 声称（两件实际仍在工具面第 4/6 位下发，见 docs/工具模块现状-20261012.md P-01），
+# 改为如实说明「直改与起草两条写入路径并存」；另补 6 件零文档工具、修文件边界、
+# 联网两件改条件提供。**本文件测的 draft/commit 机制本身未被 t18-1 触及**，
+# 改的只是版本号这个钉子。
 
-def test_base_prompt_version_is_t17_1():
-    assert prompts.BASE_PROMPT_VERSION == "t17-1"
+
+def test_base_prompt_version_is_t18_1():
+    assert prompts.BASE_PROMPT_VERSION == "t18-1"
 
 
 # ---------------------------------------------------------------- 判据1：draft

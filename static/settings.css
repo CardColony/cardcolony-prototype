@@ -1,0 +1,260 @@
+/* settings.css —— 模型设置页专有样式（模型设置 · 第二步）
+ *
+ * 只写 .set-* 前缀类，不碰 style.css 的任何现有规则。
+ * 色板全部取自 style.css 的 :root 变量（--bg-deep/--panel/--panel-hover/
+ * --border/--text/--dim/--red/--green/--c-setting），深色主题自动跟随。
+ *
+ * 层级约定（照 work.html 既有约定）：toast 9999 > modal 1300。
+ */
+
+.set-body { overflow: auto; }
+
+.set-page {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-deep);
+}
+
+/* ---------------- 顶栏 ---------------- */
+
+.set-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.set-title { font-size: 18px; font-weight: 600; }
+.set-topbar .spacer { flex: 1; }
+
+/* ---------------- 顶部提示条（保存结果） ---------------- */
+
+.set-banner {
+  padding: 10px 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  border-bottom: 1px solid var(--border);
+}
+
+.set-banner.ok { background: rgba(63,185,80,0.12); color: var(--green); }
+.set-banner.err { background: rgba(248,81,73,0.12); color: var(--red); }
+.set-banner ul { margin: 6px 0 0 18px; }
+
+/* ---------------- 主体 ---------------- */
+
+.set-main {
+  flex: 1;
+  padding: 20px;
+  max-width: 1080px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.set-block { margin-bottom: 28px; }
+
+.set-h2 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.set-hint { font-size: 12px; color: var(--dim); font-weight: 400; margin-left: 8px; }
+
+/* ---------------- 卡片 ---------------- */
+
+.set-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+}
+
+.set-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px 14px;
+}
+
+.set-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.set-field > label { font-size: 12px; color: var(--dim); }
+.set-field.wide { grid-column: 1 / -1; }
+
+.set-input, .set-select, .set-textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 13px;
+  color: var(--text);
+  font-family: var(--font);
+  width: 100%;
+}
+
+.set-input:focus, .set-select:focus, .set-textarea:focus {
+  outline: none;
+  border-color: var(--c-setting);
+}
+
+.set-input[readonly] { color: var(--dim); background: var(--bg-deep); }
+.set-textarea { resize: vertical; min-height: 40px; line-height: 1.6; }
+
+.set-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.set-note { font-size: 12px; color: var(--dim); }
+
+/* 密钥状态徽标 */
+.set-key-state { font-size: 13px; color: var(--dim); }
+.set-key-state.on { color: var(--green); }
+
+/* ---------------- 角色绑定行 ---------------- */
+
+.set-bind-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.set-bind-row:last-child { border-bottom: none; }
+
+.set-bind-name { font-size: 13px; min-width: 96px; font-weight: 600; }
+.set-bind-note { font-size: 12px; color: var(--dim); flex: 1; min-width: 160px; }
+.set-bind-select { width: auto; min-width: 180px; max-width: 320px; }
+
+.set-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.set-chip button {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+
+.set-chip button:hover { color: var(--red); }
+
+/* ---------------- 高级折叠 ---------------- */
+
+.set-advanced {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.set-advanced > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  list-style: none;
+  user-select: none;
+}
+
+.set-advanced > summary::-webkit-details-marker { display: none; }
+.set-advanced > summary::before { content: "▸ "; color: var(--dim); }
+.set-advanced[open] > summary::before { content: "▾ "; }
+.set-advanced .set-grid { margin-top: 14px; }
+
+.set-switch { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+
+/* ---------------- 拉取勾选 modal ---------------- */
+
+.set-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 4, 9, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1300;
+  padding: 20px;
+}
+
+.set-modal-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 640px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.set-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.set-modal-head .spacer { flex: 1; }
+
+.set-modal-tool {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.set-modal-list { overflow-y: auto; padding: 8px 16px; flex: 1; }
+
+.set-model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.set-model-row:last-child { border-bottom: none; }
+.set-model-row.disabled { color: var(--dim); }
+.set-model-row .set-model-id { flex: 1; word-break: break-all; }
+.set-model-row .set-model-owner { font-size: 12px; color: var(--dim); }
+
+.set-modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.set-modal-foot .spacer { flex: 1; }
+.set-modal-error { color: var(--red); font-size: 13px; }
+.set-empty { font-size: 13px; color: var(--dim); padding: 16px; }

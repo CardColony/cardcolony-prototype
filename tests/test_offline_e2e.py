@@ -30,7 +30,10 @@ FAKE_CONFIG: dict[str, Any] = {
         "main": {"provider": "openai", "model": "fake-main", "temperature": 0.3},
         "vp1": {"provider": "openai", "model": "fake-vp", "temperature": 0.7},
     },
-    "simple": {"enabled": True, "viewpoints": ["vp1"]},
+    "bindings": {"execute": "main", "think": "main", "synthesize": "main",
+                 "compress": "main", "draft": "main", "viewpoint": ["vp1"]},
+    "system": {"default_model": "main"},
+    "simple": {"enabled": True},
 }
 
 
@@ -141,7 +144,7 @@ async def test_mock_llm_round_trip(client, sandbox, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["model"] == "mock"
-    assert body["reply"].startswith("[mock:main]")
+    assert body["reply"].startswith("[mock:haiku]")
 
     # [思维链真实落地] 直答回合零三席（C6：三席只在拆解链收口后的提交轮进场）
     assert body["viewpoints_meta"] == []

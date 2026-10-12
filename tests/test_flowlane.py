@@ -34,7 +34,10 @@ FAKE_CONFIG: dict[str, Any] = {
         "main": {"provider": "openai", "model": "fake-main", "temperature": 0.3},
         "vp1": {"provider": "openai", "model": "fake-vp", "temperature": 0.7},
     },
-    "simple": {"enabled": True, "viewpoints": ["vp1"]},
+    "bindings": {"execute": "main", "think": "main", "synthesize": "main",
+                 "compress": "main", "draft": "main", "viewpoint": ["vp1"]},
+    "system": {"default_model": "main"},
+    "simple": {"enabled": True},
 }
 
 

@@ -33,7 +33,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from . import model_service
+from . import model_config, model_service
 from .card_tools import READONLY_TOOLS
 
 logger = logging.getLogger("api.tool_fold")
@@ -108,7 +108,8 @@ async def _compress_round(assistant_msg: dict[str, Any],
     for m in tool_msgs:
         parts.append(f"返回（tool_call_id={m.get('tool_call_id', '')}）：{m.get('content', '')}")
     gw = model_service.get_gateway()
-    result = await gw.call("main", _COMPRESS_SYSTEM, "\n".join(parts),
+    seat = model_config.resolve("compress") or model_config.default_model()
+    result = await gw.call(seat, _COMPRESS_SYSTEM, "\n".join(parts),
                            skip_completion_marker=True)
     content = (result.get("content") or "").strip()
     if not content:
