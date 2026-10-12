@@ -1,0 +1,123 @@
+# 模型配置，密钥走环境变量不硬编码
+# 2026-10-02 用户裁定席位（全部为端点实测存在的真实 ID）：
+#   思考席：MiniMax-M3 / qwen3.8-max / deepseek-v4-pro（三家并发出观点）
+#   统合官：deepseek-v4.1-flash（阿里云，拿三份观点产出唯一回复，唯一建卡/工具出口）
+#
+# 2026-10-02 17:33 智谱余额耗尽（429），glm-5.3 席位与 web_search 双双停摆——
+#   第三席换 deepseek-v4-pro（DeepSeek 官方 key，双端点实测 200，2.7s，答案准确）。
+#   至此三家思考席为三个独立厂商：MiniMax / 阿里云 / DeepSeek 官方。
+#
+# 2026-10-11 用户令三席换回「原来三个模型」：viewpoints 列表第三项换回 viewpoint_zhipu
+#   （glm-5.3，ZHIPU_CODING_API_KEY，open.bigmodel.cn/api/paas/v4——16d5149 原形态）；
+#   席位键经 model_pick.json 填条目名（非空）使三席各走 MiniMax-M3/qwen3.8-max/glm-5.3。
+#
+# 2026-10-02 拆闸裁定：不允许设置任意 max_tokens，不允许墙钟类闸。
+#   - 所有 max_tokens / timeout 全部移除（None = 不传，模型按端点自然行为返回）
+#   - retry_grading 关闭（总时长熔断 300 秒是墙钟）
+#   - simple 段 viewpoint_timeout / viewpoint_max_tokens 删除
+#   （原项目带的 2048 限额是空观点根因：思考型模型额度被思考烧光，正文为空）
+#
+# 保留的供应商模式参数（模式选择，不是资源闸）：
+#   - MiniMax thinking:disabled —— 不关则思考无标签混进正文（实测）
+#   - qwen enable_thinking:false —— 思考模式下正文为空（实测），关掉后正文干净
+#   - glm-5.3 不设任何参数 —— 端点声明始终思考无法关闭，任它思考；
+#     若正文为空，网关的 reasoning_content 兜底（原项目自带）会接住思考内容
+
+models:
+  # 统合官（simple 链路总结席，兼深度工具链主模型）
+  main:
+    provider: openai                    # Nous Research 为 OpenAI 兼容协议
+    model: anthropic/claude-haiku-5.5
+    api_key_env: NOUS_API_KEY
+    base_url: "https://inference-api.nousresearch.com/v1"
+    temperature: 0.3
+    context_window: 1000000     # haiku-5.5 端点 /v1/models 实测 context_length（2026-10-08 21:12）
+    # [2026-10-08 21:08 用户令换主模型] kimi-k3 → anthropic/claude-haiku-5.5（同接口 Nous）
+    # 烟测实证（21:12）：haiku-5.5 reasoning=None、reasoning_tokens=0，不产生思考文本——
+    # kimi 的 extra_body: reasoning_effort: low（思考档降级）对它无意义（无思考可降），故不再设置。
+    # 烟测响应：content='烟测成功'，usage prompt 21/completion 7，干净正文。
+    retry:
+      max_attempts: 5
+      backoff_seconds: 2
+
+  # 备选模型（统合官降级用）
+  fallback:
+    provider: deepseek
+    model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    temperature: 0.3
+    context_window: 128000
+    retry:
+      max_attempts: 3
+      backoff_seconds: 2
+
+  # [凝练折叠开启 2026-10-07·任务5] 独立凝练席（用户定 glm-5.3-flash，智谱 coding plan）
+  condenser:
+    provider: openai                    # 智谱 coding plan 为 OpenAI 兼容协议
+    model: glm-5.3-flash
+    api_key_env: ZHIPU_CODING_API_KEY
+    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+    temperature: 0.3
+    context_window: 1000000     # 用户口径：glm-5.3 系 1M 窗（前端显示上下文总量用）
+    retry:
+      max_attempts: 3
+      backoff_seconds: 2
+
+  # ========== 思考席（simple 多模型审议，三席并发） ==========
+  viewpoint_minimax:
+    provider: openai                    # MiniMax OpenAI 兼容协议
+    model: MiniMax-M3
+    api_key_env: MINIMAX_API_KEY
+    base_url: "https://api.minimaxi.com/v1"
+    temperature: 0.7
+    extra_body:
+      thinking:
+        type: disabled
+    retry:
+      max_attempts: 2
+
+  # 席位二 qwen3.8-max（阿里云 token-plan）
+  viewpoint_qwen:
+    provider: openai
+    model: qwen3.8-max
+    api_key_env: ALIYUN_TOKEN_PLAN_API_KEY
+    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    temperature: 0.7
+    extra_body:
+      enable_thinking: false
+    retry:
+      max_attempts: 2
+
+  # 席位三 deepseek-v4.1-flash（opencode-go；用户 2026-10-06 12:38 令）
+  #   base_url https://opencode.ai/zen/go/v1（OpenAI 兼容聚合端点）；需 x-opencode-session 头（MissingSessionID 拒单）
+  viewpoint_deepseek:
+    provider: openai
+    model: deepseek-v4.1-flash
+    api_key_env: OPENCODE_API_KEY
+    base_url: "https://opencode.ai/zen/go/v1"
+    extra_headers:
+      x-opencode-session: zhuge-3080
+    temperature: 0.7
+    retry:
+      max_attempts: 2
+
+  # 席位三 glm-5.3（智谱 coding plan，OpenAI 兼容）——2026-10-11 用户令换回；
+  # 2026-10-11 22:44 端点订正：paas/v4（开放平台）→ coding/paas/v4（coding plan，
+  # 与 condenser 同款——429「余额不足」根因是 coding plan key 打错到开放平台端点）
+  viewpoint_zhipu:
+    provider: openai
+    model: glm-5.3
+    api_key_env: ZHIPU_CODING_API_KEY
+    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+    temperature: 0.7
+    retry:
+      max_attempts: 2
+
+# simple 多模型编排：三思考席并发 + 统合官总结。
+simple:
+  enabled: true
+  viewpoints: [viewpoint_minimax, viewpoint_qwen, viewpoint_zhipu]
+
+# 重试分级：关闭 —— 总时长熔断（300 秒）属墙钟类闸，拆闸裁定移除。
+retry_grading:
+  enabled: false

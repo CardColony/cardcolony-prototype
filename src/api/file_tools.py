@@ -69,12 +69,15 @@ BACKUP_DIR = BASE_DIR / "推演agent" / "_backups"
 
 # ---------------------------------------------------------------- 路径与校验
 
-# [THINK-ECO-permgmt T6 · 2026-10-09] 分类路径锁：查表键（policy._type_key 口径）
-# → 可访问路径前缀（相对 BASE_DIR，正斜杠比较；"" 哨兵＝不另设前缀限制）。
+# [THINK-ECO-permgmt T6 · 2026-10-09 → 权限底座重做 2026-10-12] 分类路径锁：
+# card_type → 可访问路径前缀（相对 BASE_DIR，
+# 正斜杠比较；"" 哨兵＝不另设前缀限制）。
 # 值现状＝全放行哨兵——10-03/10-04 用户裁定「全盘可读可写」的保持现状档
 # （与交办单定夺 1 对 SHADOW_WRITE 的「保持现状」同款原则）；真实前缀属部署
-# 配置、待用户给值（原方案 §4.4 自注「等定稿后填入真实值，现在先用占位」）。
-# tool 行不可达（该分类无 TOOLS_FILE 位），随表补齐只为键位完整。
+# 配置、待用户给值（Open Item）。
+# **注意**：本表只是 perms 之后再加的一层路径前缀约束，**不是权限本身**——
+# tools_file 开关已经先挡一道。tool 行不可达（该类型无 tools_file 开关），
+# 随表补齐只为键位完整。
 FILE_SCOPE: dict[str, list[str]] = {
     "rd_project": [""],
     "research_project": [""],
@@ -112,17 +115,21 @@ def _prefix_hit(target: Path, prefix: str) -> bool:
     return str(rel).replace("\\", "/").startswith(prefix)
 
 
-def check_file_access(path: str, card_type: str) -> bool:
-    """[T6 路径锁 2026-10-09] 文件路径锁：机械三层判定，返回 bool。
+def check_file_access(path: str, card_meta: Any = None) -> bool:
+    """[T6 路径锁 2026-10-09 → 重做 2026-10-12] 文件路径锁：机械三层判定。
 
-    ① 分类授权：card_type（查表键口径）须授 TOOLS_FILE（POLICY 派生）；
+    ① 权限：**当前卡 meta 里固化的 perms 须授 tools_file**（policy.has_perm，
+       读卡面不查配置——裁定 4；未配置的类型/未固化的卡 ⇒ 拒，裁定 5）；
     ② 全盘边界：与 _resolve 同判据（resolve 后须落 ALLOWED_ROOTS 之下）；
     ③ 内部凭证排除＋FILE_SCOPE 前缀（FILE_SCOPE 值现状＝全放行哨兵，
-       见上方表注）。
+       见上方表注；真实前缀待用户提供，属 Open Item）。
     空路径非权限问题（下游既有「path 不能为空」校验负责），放行交下游。
     T7 打点在唯一出口，两态同记（不做二次判定、无任何闸）。
+
+    ``card_meta`` 缺省/为 None ⇒ False（认不出卡 ⇒ 默认关门）。
     """
-    has_file = (policy.grants_for(card_type) & policy.Perm.TOOLS_FILE) == policy.Perm.TOOLS_FILE
+    card_type = str((card_meta or {}).get("card_type", "") or "")
+    has_file = policy.has_perm(card_meta, policy.SWITCH_TOOLS_FILE)
     raw = str(path or "").strip()
 
     def _log(granted: bool, prefix_hit: object) -> None:

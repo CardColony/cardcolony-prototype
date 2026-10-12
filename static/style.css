@@ -540,8 +540,8 @@ a { color: inherit; text-decoration: none; }
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 30px;
-  line-height: 1.4;
+  height: 38px;            /* [S2/R-17] 固定行高 38px＝NAV_ROW_HEIGHT（虚拟滚动前缀和依赖此值） */
+  line-height: 38px;
   padding-right: 12px;
   font-size: 13px;
   cursor: pointer;
@@ -570,7 +570,30 @@ a { color: inherit; text-decoration: none; }
 .dot.root { background: var(--c-work); }     /* 根＝金 */
 .dot.mid  { background: var(--c-setting); }  /* 中间＝蓝 */
 .dot.leaf { background: #c9d1d9; }             /* [B3 主界面优化] 叶＝中性浅灰（与类型色 --c-idea 解耦，灰色只表"叶子"） */
-.nav-ctitle { overflow: hidden; text-overflow: ellipsis; }
+.nav-ctitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* [S2/R-32] 单行截断：nowrap＋ellipsis＋悬停全称（title 属性） */
+/* [S2/R-16] 虚拟滚动骨架：行 absolute 定位在 spacer 内（前缀和算 top） */
+.nav-vspacer { position: relative; }
+.nav-vrow { position: absolute; left: 0; right: 0; }
+/* [S2/R-22] 异步加载三态就地：行内转圈 / 行内「加载失败·点此重试」 */
+.nav-state { flex: none; margin-left: 4px; }
+.nav-loading {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--dim);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: navspin 0.8s linear infinite;
+}
+@keyframes navspin { to { transform: rotate(360deg); } }
+.nav-err {
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.nav-err:hover { color: var(--text); }
 /* [B4 主界面优化] .nav-ctime 行内时间戳退役：活跃/分支活跃走 tooltip（腾 ~50px 还给标题） */
 .nav-more {
   display: none;
@@ -618,6 +641,168 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
+
+/* ==================== [S3 交互与呈现族] 找通道/定位/呈现（R-18/20/21/24/26/27/28/31/33/35） ==================== */
+
+/* [S3/R-24] 左栏顶部工具行：搜索框＋「收起全部」＋「定位」（容器在 work.html #navTop） */
+.nav-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 4px;
+  flex: none;
+}
+.nav-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+}
+.nav-search-input:focus { border-color: var(--dim); }
+.nav-search-input::placeholder { color: var(--dim); }
+.nav-tool-btn {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 12px;
+  padding: 4px 8px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.nav-tool-btn:hover { color: var(--text); border-color: var(--text); }
+/* rail 态（44px 窄条/画布悬停浮层）不显示工具行与面包屑槽 */
+.app-nav.rail .nav-top,
+.app-nav.rail .nav-crumb-box { display: none !important; }
+
+/* [S3/R-24] 搜索独立结果层：叠加在 navTree 之上（树 DOM 全程零触碰，V3-F2） */
+.nav-find-layer {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  max-height: 70%;
+  overflow-y: auto;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 210;
+  padding: 4px 0 8px;
+}
+.nav-find-head {
+  padding: 8px 12px 4px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.nav-find-item { padding: 4px 12px; cursor: pointer; }
+.nav-find-item:hover { background: var(--panel-hover); }
+.nav-find-title {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-find-meta {
+  font-size: 11px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-find-empty { padding: 4px 12px 8px; }
+
+/* [S3/R-27/R-18] 面包屑：同一 UI 两态——静止＝文档流槽位（box 恒定占位防跳动）；
+   滚动＝absolute 悬浮可视区顶部（不设第二套 UI） */
+.nav-crumb-box { flex: none; position: relative; }
+.nav-crumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--dim);
+  background: var(--bg-deep);
+  border-bottom: 1px solid var(--border);
+}
+.nav-crumb-seg {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 72px;
+}
+.nav-crumb-seg:hover { color: var(--text); text-decoration: underline; }
+.nav-crumb-seg.proj { color: var(--text-soft); }
+.nav-crumb-sep { flex: none; color: var(--dim); }
+.nav-crumb.sticky {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 205;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+}
+
+/* [S3/R-31] 引导线：第 4 档后缩进封顶转竖线引导（宽度=深度×档距，JS 设 background-size） */
+.nav-card.nav-guide {
+  background-image: repeating-linear-gradient(to right,
+    transparent 0, transparent 3px, var(--border) 3px, var(--border) 4px);
+  background-repeat: no-repeat;
+  background-position: 10px center;
+}
+.nav-card.nav-guide:hover {
+  background-color: var(--panel-hover);
+  background-image: repeating-linear-gradient(to right,
+    transparent 0, transparent 3px, var(--border) 3px, var(--border) 4px);
+}
+.nav-card.nav-guide.current {
+  background-color: rgba(56,139,253,0.10);
+  background-image: repeating-linear-gradient(to right,
+    transparent 0, transparent 3px, var(--border) 3px, var(--border) 4px);
+}
+
+/* [S3/R-33②] 节点行活跃标记（左栏常显徽章仅此 1 种；项目行聚合复用 pcount/ptime 既有两类） */
+.nav-badge-active {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 4px;
+  line-height: 1.5;
+}
+
+/* [S3/R-21] 已删卡灰态：点击瞬间快照判定（缺失→置灰不跳；恢复→自动褪灰） */
+.nav-card.deleted { opacity: 0.55; }
+.nav-card.deleted .nav-ctitle { color: var(--dim); text-decoration: line-through; }
+
+/* [S3/R-35] 空项目态：展开且零卡 → 「空·去新建」（data-add 复用建卡入口，不弹窗） */
+.nav-pempty {
+  flex: none;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  padding: 0 4px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.nav-pempty:hover { color: var(--text); border-color: var(--text); }
 
 .ws-right {
   flex: 1;
@@ -1239,7 +1424,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .np-list { padding: 4px 0; }
 .np-item { display: block; width: 100%; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--border); padding: 8px 12px; cursor: pointer; color: var(--text-soft); font-size: 12px; line-height: 1.6; }
 .np-item:hover { background: var(--panel-hover); }
-.np-item .np-meta { color: var(--dim); font-size: 11px; }
+.np-item .np-meta { color: var(--dim); font-size: 12px; }   /* [2026-10-11 23:36 欠账订正] 非画布区碎档一律 12px（四期任务书「非画布区碎档并到 12px」，原 11px 违规） */
 .np-item.bad .cmsg-type { color: var(--red); }
 
 /* [F4④] msg-badge：卡间消息未读角标（左外角 -6px 终值） */
@@ -1247,6 +1432,86 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 
 /* [F4⑥] 卡间消息气泡（.msg.card）——完整值照前端册 :273-279 */
 .msg.card { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid #58a6ff; font-size: 13px; line-height: 1.8; padding: 8px 12px; }
-.msg.card .cmsg-meta { color: var(--dim); font-size: 11px; margin-bottom: 4px; }
+.msg.card .cmsg-meta { color: var(--dim); font-size: 12px; margin-bottom: 4px; }   /* [2026-10-11 23:36 欠账订正] 非画布区碎档一律 12px（四期任务书「非画布区碎档并到 12px」，原 11px 违规） */
 .msg.card .cmsg-type { color: #58a6ff; font-weight: 600; }
 .msg.card .cmsg-type.bad { color: var(--red); }
+
+/* ============ [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗 ============
+   视觉规格严格照方案 §三.6：令牌全复用（--panel/--bg/--border/--text/--dim/
+   --c-setting/--green/--amber/--red/--font/--mono），零新增变量。
+   圆角：按钮 6px（.btn 基类既有）、面板/输入框/弹窗 8px。阴影 0 8px 24px。
+   层级：toast 9999 > modal 1300 > notifyPanel 1200 > inspector。 */
+.draft-modal { display: none; position: fixed; inset: 0; z-index: 1300; }
+.draft-modal.open { display: flex; align-items: center; justify-content: center; }
+.draft-modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(1, 4, 9, 0.5);
+  z-index: 1300;
+}
+.draft-modal-panel {
+  position: relative; z-index: 1301;
+  width: 560px; max-width: 92vw; max-height: 70vh;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: flex; flex-direction: column;
+}
+.draft-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px; color: var(--text);
+  flex-shrink: 0;
+}
+.draft-modal-close {
+  background: transparent; border: 0; color: var(--dim);
+  font-size: 14px; cursor: pointer; line-height: 1;
+}
+.draft-modal-close:hover { color: var(--text); }
+.draft-modal-body { flex: 1; overflow-y: auto; min-height: 0; }
+.draft-area {
+  flex: 1; overflow-y: auto;
+  margin: 12px 16px; padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px; line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 120px; max-height: 48vh;
+}
+.draft-area.loading { color: var(--dim); }
+.draft-feedback-box { display: none; margin: 0 16px 12px; }
+.draft-feedback-box.open { display: block; }
+.draft-feedback-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text);
+  font-family: var(--font);
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 56px;
+  box-sizing: border-box;
+}
+.draft-feedback-input:focus { outline: none; border-color: var(--c-setting); }
+.draft-modal-error {
+  margin: 0 16px 12px;
+  color: var(--red);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.draft-modal-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.draft-modal-foot .spacer { flex: 1; }
+.draft-meta-btn { font-size: 12px; padding: 5px 10px; }
+

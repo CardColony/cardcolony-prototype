@@ -98,6 +98,9 @@ export const API = {
   listWorks: () => call("GET", "/api/works"),
   createWork: (title) => call("POST", "/api/works", { title }),
   getNav: () => call("GET", "/api/nav"),
+  // [S2/T5] 导航按需子卡与版本探测（S1 后端既有端点；数据形态 2026-10-11 18:44 三通道实测）
+  getNavChildren: (wid, parent) => call("GET", `/api/nav/children?work_id=${wid}&parent=${parent}`),
+  getNavVersion: () => call("GET", "/api/nav/version"),
   getCanvas: (wid) => call("GET", `/api/works/${wid}/canvas`),
   patchPositions: (wid, positions) => call("PATCH", `/api/works/${wid}/canvas/positions`, { positions }),
   createCard: (wid, body) => call("POST", `/api/works/${wid}/cards`, body),
@@ -114,6 +117,9 @@ export const API = {
   getCardMessages: (wid, limit = 200) =>
     call("GET", `/api/works/${wid}/card-messages?limit=${limit}`),
   getMessageTypes: () => call("GET", "/api/message-types"),
+  // [卡片编辑机制改造 2026-10-12 · 块3] 起草/确认写入
+  postDraft: (wid, cid, body) => call("POST", `/api/works/${wid}/cards/${cid}/draft`, body),
+  postCommit: (wid, cid, body) => call("POST", `/api/works/${wid}/cards/${cid}/commit`, body),
 };
 
 // toast 兼容包装（B-11 三处调用零改动；历史进 store.notifyLog）

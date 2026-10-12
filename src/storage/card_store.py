@@ -156,6 +156,24 @@ def _resolve_card_type(card_type: str) -> str:
     )
 
 
+def _perm_fields(project_class: str, card_type: str) -> dict[str, Any]:
+    """[权限底座重做 2026-10-12 · 裁定 4] 建卡期的权限固化字段。
+
+    两级定位 ``project_class``（工牌）＋ ``card_type``（卡类型）→ 查
+    ``config/permissions.json``，算出 ``(perms, perms_version)`` 落进 meta。
+
+    ``perms`` 一旦落盘即成这张卡的权限真身——**运行时只读卡上的 perms，
+    不再查配置**（这正是「每次现查」被废弃的地方）。配置改版靠
+    ``scripts/refresh_perms.py`` 按 perms_version 批量重算。
+
+    延迟 import：避免 src.storage 与 src.api 在模块加载期互拉成环。
+    """
+    from ..permissions import policy
+
+    perms, version = policy.compute_perms(project_class, card_type)
+    return {policy.PERM_KEY: perms, policy.PERM_VERSION_KEY: version}
+
+
 def _cards_dir(work_id: str) -> Path:
     return WORKS_DIR / work_id / "cards"
 
@@ -341,6 +359,14 @@ def _render_card(meta: dict[str, Any], mission: str, status_block: str,
         # 该键即被静默丢弃（本函数只搬清单内键，渲染按固定清单）。
         *([f"thinkchain_final: {_q(meta['thinkchain_final'])}"]
           if meta.get("thinkchain_final") else []),
+        # [权限底座重做 2026-10-12] 固化权限两行（裁定 4）。条件渲染与
+        # toolcard 三字段同一手法：meta 里有才写行，存量老卡不受影响；
+        # perms_version 用 `is not None` 判（0 是合法值＝配置不可用，
+        # 不是「没写过」）。
+        *([f"perms: {json.dumps(list(meta['perms']), ensure_ascii=False)}"]
+          if meta.get("perms") is not None else []),
+        *([f"perms_version: {int(meta['perms_version'])}"]
+          if meta.get("perms_version") is not None else []),
         # [S4-1/S4-2] methodology_refs / pending_sync 的 FM 行同步删除。
         # 只删 meta 初始化而留着这两行，meta.get 的默认值会把它们原样写回，
         # 等于没删。存量卡的这两行在其下次写入时自然消失（字段死，无读取方）。
@@ -783,10 +809,18 @@ async def create_card(
                 # [卡片分类基座 T1] 新分类字段：非空才落盘（空串＝不写，存量兼容）
                 **({"project_class": project_class} if project_class else {}),
                 **({"owner_card_id": owner_card_id} if owner_card_id else {}),
+                # [S1·R-04] 新卡默认 active（与注册表 state_machine.initial 对齐，
+                # card_type_registry.json L112-120；闸4 create 时 desired==cur 放行）
+                "state": "active",
                 # [S4-1/S4-2] methodology_refs / pending_sync 已删（死字段，
                 # R8 全库复核无业务读取方）。_render_card 的 FM 行同步删除——
                 # 只删 meta 初始化而留着 FM 行，字段仍会被 meta.get 默认值写回，
                 # 等于没删。存量卡下次写入时这两行自然消失（字段死，无读取方）。
+                # [权限底座重做 2026-10-12 · 裁定 4] 权限固化：建卡算一次写死
+                # 进卡。project_class 取法＝根卡用入参（此刻卡还没落盘，读不到
+                # 自己），子卡从本树根卡继承（project_class 只挂根卡）。
+                **_perm_fields(project_class or _root_project_class(work_id),
+                               resolved_type),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -928,6 +962,10 @@ async def update_card(
       mission/status_block/rulings（正文三块·新键）
       charter/conclusion/rejections（正文三块·旧键，保留兼容，归一到新键后落同一处）
 
+    [权限底座重做 2026-10-12 · 用户裁定 2] **类型不可变**：updates 里出现
+    card_type / project_class 一律返回 {"error": ...}，卡面零改动。这使得下方
+    根卡保护块里的「剧本→project 迁移特例」不可达（死分支），保留仅为沿革。
+
     [卡片信息结构改造 S2-7] 新旧两套键在函数内归一，落同一处存储——
     **不产生双写路径**（旧键不再有独立分支，只在归一表里查一次）。
     [S2-4] 写侧保留旧键路径：旧卡用旧键 PATCH 照旧可用，落盘区头随原形态不变。
@@ -936,6 +974,11 @@ async def update_card(
     """
     updates = updates or {}
     updates.pop("status", None)
+    # [权限底座重做 2026-10-12 · 裁定 2] **类型不可变**：card_type 与
+    # project_class 建卡时定死，此后一律拒改。前置到根卡保护与 card_type
+    # 解析之前——不区分根卡/子卡、不设迁移特例；拒的时候卡面零改动。
+    if "card_type" in updates or "project_class" in updates:
+        return {"error": "卡片类型不可修改：card_type / project_class 建卡时定死"}
     # [S2-7] 旧键→新键归一（只此一处；下游一律只见新键）
     updates = _normalize_update_keys(updates)
 
@@ -1006,6 +1049,9 @@ async def update_card(
                     "card_type", "parent",
                     # [卡片分类基座 T1] 新分类字段进入落盘循环
                     "project_class", "owner_card_id", "state",
+                    # [权限底座重做 2026-10-12] 固化权限两进入落盘循环（与
+                    # _render_card 的 FM 行同改：只进循环不渲染＝被静默丢弃）
+                    "perms", "perms_version",
                     # [工具卡底座 T3 · EC-037] 工具卡状态三字段＋终态声明。
                     # 进循环＝能被 update_card 写。**不进循环的键会被静默丢弃**
                     # （本函数只把列表内的键搬进 meta，随后 _render_card 按固定

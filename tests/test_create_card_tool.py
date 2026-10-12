@@ -20,14 +20,38 @@ from src.storage import card_store
 
 # ---------------------------------------------------------------- schema 面
 
+def _cards_with_full_perms() -> dict:
+    """构造一张 rd_project/sub_project 卡（该类型十项开关全开）。
+
+    [权限底座重做 2026-10-12] 工具面是按「卡上固化的 perms」下发的：不带卡
+    上下文 ⇒ 默认关门（空列表）。要看完整工具面必须给一张有 perms 的卡。
+    """
+    from src.permissions import policy
+
+    return {
+        "card_x": {
+            "card_id": "card_x",
+            "card_type": "sub_project",
+            "perms": policy.perms_for("rd_project", "sub_project"),
+        }
+    }
+
+
 def test_create_card_in_tool_schemas():
     """工具表含 create_card，且带 title/parent/content 三参数。"""
-    names = [t["name"] for t in card_tools.build_tool_schemas()]
+    cards = _cards_with_full_perms()
+    names = [t["name"] for t in card_tools.build_tool_schemas("card_x", cards=cards)]
     assert names.count("create_card") == 1
-    schema = next(t for t in card_tools.build_tool_schemas()
+    schema = next(t for t in card_tools.build_tool_schemas("card_x", cards=cards)
                   if t["name"] == "create_card")
     assert set(schema["parameters"]["properties"]) == {"title", "parent", "content"}
     assert schema["parameters"]["required"] == ["title"]
+
+
+def test_no_card_context_returns_empty_toolface():
+    """[权限底座重做 2026-10-12] 默认关门：认不出卡 ⇒ 空工具面（不再是全放行）。"""
+    assert card_tools.build_tool_schemas() == []
+    assert card_tools.build_tool_schemas("", cards=None) == []
 
 
 def test_create_card_is_write_tool_not_readonly():
@@ -52,11 +76,18 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     # [T-0010 §3.4 · 2026-10-08] 推进到 t14-1：新增「工具错误码」小节（信封错误码进 prompt）。
     # [卡片信息结构改造 S1-6 · 2026-10-08] 此前推进到 tc-2：edit_card 说明改写为三块语法。
     # [迭代五 S3 镜像更新] 推进到 t15-1：新增「卡间消息处理」节（应对规则进 prompt）。
-    assert prompts.BASE_PROMPT_VERSION == "t15-1"
+    # [思维链真实落地 2026-10-11] 推进到 t16-1：判断协议注入 BASE_PROMPT 开头。
+    # [卡片编辑机制改造 2026-10-12] 推进到 t17-1：edit_card/update_shadow 收回，改为
+    #   「起草＋用户确认写入」说明（工具列表不再定义这两项）。
+    assert prompts.BASE_PROMPT_VERSION == "t17-1"
     assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT
     assert "建卡接口" not in prompts.BASE_PROMPT
+    # [卡片编辑机制改造 2026-10-12] edit_card/update_shadow 不再是工具定义行
+    assert "- edit_card(" not in prompts.BASE_PROMPT
+    assert "- update_shadow(" not in prompts.BASE_PROMPT
+    assert "起草＋用户确认" in prompts.BASE_PROMPT
     # [T-0010 §3.3] 错误码小节随协议进 prompt（五码齐全）
     assert "## 工具错误码" in prompts.BASE_PROMPT
     for _code in card_tools.TOOL_ERROR_CODES:
@@ -175,12 +206,13 @@ async def test_create_card_syncs_meta_cache(work, sandbox):
 
 # ------------------------------------------------- 文本通道同口径 + 跨通道去重
 
-async def test_text_channel_permission_uses_parent_category(work, sandbox):
-    """文本块通道按 parent 的**分类位**校验 CREATE_CHILD（钉住现状）。
+async def test_text_channel_uses_same_rule_as_tool_channel(work, sandbox):
+    """文本块通道与 create_card 工具通道**同一口径**（重做 2026-10-12）。
 
-    口径差异（权限线 T5 依明令改用 policy.check 的后果，该线已呈报）：工具通道走
-    check_with_scope（分类位＋子树范围），文本通道走 policy.check（仅分类位）。
-    本用例钉**现状**：parent 属 sub_project（授 CREATE_CHILD）⇒ 放行。
+    此前两条通道口径不一（工具通道＝分类位＋子树范围，文本通道＝仅分类位），
+    导致「在别人分支下建卡」走文本块能过、走工具被拒——本次按任务书统一为
+    同一函数同一参数顺序（policy.check(actor, parent, create_child, cards)）。
+    本用例钉**统一后的现状**：parent＝兄弟卡 ⇒ 两通道一样被拒、零落盘。
     """
     wid = work["work_id"]
     cur = work["work_card_id"]
@@ -189,9 +221,10 @@ async def test_text_channel_permission_uses_parent_category(work, sandbox):
     before = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
     created, denied = await card_proposal.apply_proposals(
         wid, mine, [{"title": "文本卡", "parent": other, "content": ""}])
-    assert len(created) == 1, f"分类位授权应放行，实 created={created} denied={denied}"
+    assert created == [], f"越权项必须不建，实 created={created}"
+    assert len(denied) == 1 and "越权" in denied[0]["reason"]
     after = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
-    assert after == before + 1
+    assert after == before, "越权必须零落盘"
 
 
 async def test_text_channel_allows_own_subtree(work, sandbox):

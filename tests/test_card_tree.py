@@ -50,30 +50,30 @@ async def test_permission_is_computed_from_tree(typed_registry, work):
     c = await _mk_child(wid, "丙", root)         # card_004（甲的旁支）
     cards = card_tools._collect_card_meta(wid)
 
-    # 读：[权限收口 2026-10-09] 统一关口——注册分类全授 READ，存在即放行
-    # （含旁支；原直调旧纯函数的断言随收口改写为关口等价断言）
-    policy.check_with_scope(a, root, policy.Perm.READ, cards)
-    policy.check_with_scope(a, b, policy.Perm.READ, cards)
-    policy.check_with_scope(b, root, policy.Perm.READ, cards)
-    policy.check_with_scope(root, c, policy.Perm.READ, cards)   # 根可读全部
-    policy.check_with_scope(a, c, policy.Perm.READ, cards)
-    policy.check_with_scope(c, b, policy.Perm.READ, cards)
+    # 读：[权限底座重做 2026-10-12] 注册类型全授 read，存在即放行（含旁支）；
+    # 判据本体已从「policy 位图表」换成「卡上固化的 perms」，行为不变。
+    policy.check(a, root, policy.SWITCH_READ, cards)
+    policy.check(a, b, policy.SWITCH_READ, cards)
+    policy.check(b, root, policy.SWITCH_READ, cards)
+    policy.check(root, c, policy.SWITCH_READ, cards)   # 根可读全部
+    policy.check(a, c, policy.SWITCH_READ, cards)
+    policy.check(c, b, policy.SWITCH_READ, cards)
 
-    # 写：只有自己的子树（TREE_SCOPE 子树限定），血统链上级也不可写
-    policy.check_with_scope(a, a, policy.Perm.EDIT, cards)
-    policy.check_with_scope(a, b, policy.Perm.EDIT, cards)
+    # 写：只有自己的子树（edit 属树类开关，叠树作用域），血统链上级也不可写
+    policy.check(a, a, policy.SWITCH_EDIT, cards)
+    policy.check(a, b, policy.SWITCH_EDIT, cards)
     with pytest.raises(PermissionError):
-        policy.check_with_scope(a, root, policy.Perm.EDIT, cards)
+        policy.check(a, root, policy.SWITCH_EDIT, cards)
     with pytest.raises(PermissionError):
-        policy.check_with_scope(b, a, policy.Perm.EDIT, cards)
+        policy.check(b, a, policy.SWITCH_EDIT, cards)
     with pytest.raises(PermissionError):
-        policy.check_with_scope(a, c, policy.Perm.EDIT, cards)
+        policy.check(a, c, policy.SWITCH_EDIT, cards)
 
     # 不存在的卡一律无权（判存在在工具层走 not_found；关口层抛 PermissionError）
     with pytest.raises(PermissionError):
-        policy.check_with_scope(a, "card_999", policy.Perm.READ, cards)
+        policy.check(a, "card_999", policy.SWITCH_READ, cards)
     with pytest.raises(PermissionError):
-        policy.check_with_scope(a, "card_999", policy.Perm.EDIT, cards)
+        policy.check(a, "card_999", policy.SWITCH_EDIT, cards)
 
 
 # ---------------------------------------------------------------- 工具层语义

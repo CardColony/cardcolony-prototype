@@ -1,0 +1,11 @@
+{
+"version": 1,
+"roles": {
+"judge":      { "display": "判断", "note": "入口判断：这条消息该直答还是拆解上板", "multi": false },
+"execute":    { "display": "执行", "note": "拆解后的执行步：调工具查证拿事实", "multi": false },
+"think":      { "display": "思考", "note": "思考步：整理收敛出判断", "multi": false },
+"viewpoint":  { "display": "观点", "note": "并发出观点/质询", "multi": true },
+"synthesize": { "display": "统合", "note": "收敛观点成最终交付", "multi": false },
+"condense":   { "display": "凝练", "note": "会话超线后凝练记忆", "multi": false }
+}
+}

@@ -60,8 +60,8 @@ def _write_legacy_plan(wid: str, cid: str, steps: list[dict[str, Any]]) -> None:
 async def test_create_plan_with_type_ok(work):
     wid, cid = work["work_id"], work["work_card_id"]
     r = await board_mod.create_board(wid, cid, "契约计划", [
-        {"id": "s1", "prompt": "查资料", "type": "execute"},
-        {"id": "s2", "prompt": "整理结论", "type": "think"},
+        {"id": "s1", "prompt": "查资料", "criteria": "c1", "deliverable": "d1", "type": "execute"},
+        {"id": "s2", "prompt": "整理结论", "criteria": "c2", "deliverable": "d2", "type": "think"},
     ])
     assert r["ok"], r
     snap = r["board"]
@@ -71,8 +71,8 @@ async def test_create_plan_with_type_ok(work):
 async def test_missing_type_rejected_with_step_index(work):
     wid, cid = work["work_id"], work["work_card_id"]
     r = await board_mod.create_board(wid, cid, "n", [
-        {"id": "s1", "prompt": "a", "type": "execute"},
-        {"id": "s2", "prompt": "b"},           # 缺 type
+        {"id": "s1", "prompt": "a", "criteria": "c", "deliverable": "d", "type": "execute"},
+        {"id": "s2", "prompt": "b", "criteria": "c", "deliverable": "d"},           # 缺 type
     ])
     assert r["ok"] is False
     assert "第 2 步" in r["error"], r["error"]   # 错误信息含步序号
@@ -81,7 +81,7 @@ async def test_missing_type_rejected_with_step_index(work):
 async def test_invalid_type_rejected(work):
     wid, cid = work["work_id"], work["work_card_id"]
     r = await board_mod.create_board(wid, cid, "n", [
-        {"id": "s1", "prompt": "a", "type": "think2"},
+        {"id": "s1", "prompt": "a", "criteria": "c", "deliverable": "d", "type": "think2"},
     ])
     assert r["ok"] is False
     assert "第 1 步" in r["error"] and "think2" in r["error"]
@@ -90,10 +90,11 @@ async def test_invalid_type_rejected(work):
 async def test_insert_invalid_type_rejected(work):
     wid, cid = work["work_id"], work["work_card_id"]
     await board_mod.create_board(wid, cid, "n", [
-        {"id": "s1", "prompt": "a", "type": "execute"}])
+        {"id": "s1", "prompt": "a", "criteria": "c", "deliverable": "d", "type": "execute"}])
     b = await board_mod.get_board(wid, cid)
     r = await b.apply_revision("insert", {"after_id": "s1",
-                                          "step": {"id": "s9", "prompt": "x", "type": "ghost"}})
+                                          "step": {"id": "s9", "prompt": "x", "criteria": "c",
+                                                   "deliverable": "d", "type": "ghost"}})
     assert r["ok"] is False and "type" in r["error"]
     # 板面未被污染（拒绝发生在写入前）
     snap = (await board_mod.get_board(wid, cid)).to_snapshot()
@@ -103,10 +104,11 @@ async def test_insert_invalid_type_rejected(work):
 async def test_insert_valid_type_ok(work):
     wid, cid = work["work_id"], work["work_card_id"]
     await board_mod.create_board(wid, cid, "n", [
-        {"id": "s1", "prompt": "a", "type": "execute"}])
+        {"id": "s1", "prompt": "a", "criteria": "c", "deliverable": "d", "type": "execute"}])
     b = await board_mod.get_board(wid, cid)
     r = await b.apply_revision("insert", {"after_id": "s1",
-                                          "step": {"id": "s9", "prompt": "x", "type": "think"}})
+                                          "step": {"id": "s9", "prompt": "x", "criteria": "c9",
+                                                   "deliverable": "d9", "type": "think"}})
     assert r["ok"], r
     snap = r["board"]
     assert snap["steps"][1]["type"] == "think"
@@ -157,16 +159,19 @@ async def test_legacy_empty_type_board_read_ok_no_upgrade(work):
 
 # ------------------------------------------------- schema 契约
 
-def test_create_plan_schema_has_type_enum_required():
+def test_create_plan_schema_has_criteria_deliverable_required():
+    """[思维链真实落地] create_plan schema 契约：四字段必填＋附录 B description。"""
     from src.thinkchain.plan_tools import PLAN_TOOLS
     create_plan = next(t for t in PLAN_TOOLS if t["schema"]["name"] == "create_plan")
     items = create_plan["schema"]["parameters"]["properties"]["steps"]["items"]
     tprop = items["properties"]["type"]
     assert tprop["enum"] == ["execute", "think"], tprop
-    assert "type" in items["required"]
+    for key in ("type", "criteria", "deliverable", "prompt", "id"):
+        assert key in items["required"], key
     desc = create_plan["schema"]["description"]
-    for token in ("execute", "think", "不是不给工具调用权限",
-                  "标错或漏标会被", "查证动手拿事实", "整理收敛"):
+    for token in ("prompt：这一步要做什么", "criteria：完成判据", "deliverable：这一步的产出物",
+                  "type：execute（要调工具执行）/ think（思考整理）",
+                  "可观测的产出物上", "不虚拆也不硬凑"):
         assert token in desc, token
 
 
@@ -175,7 +180,8 @@ def test_plan_insert_schema_has_type_required():
     ins = next(t for t in PLAN_TOOLS if t["schema"]["name"] == "plan_insert")
     step = ins["schema"]["parameters"]["properties"]["step"]
     assert step["properties"]["type"]["enum"] == ["execute", "think"]
-    assert "type" in step["required"]
+    assert "type" in step["required"] and "criteria" in step["required"] \
+        and "deliverable" in step["required"]
 
 
 def test_valid_step_types_constant():
@@ -188,17 +194,21 @@ async def test_new_board_execute_and_think_step_blocks(work):
     """S4：新板 execute 步完成块落 execute_step、think 步落 think_step，
     执行期间零裸 "step"。"""
     from src.api.card_tools import execute_tool
-    from src.storage import session_facade
+    from src.storage import card_store, session_facade
     wid, cid = work["work_id"], work["work_card_id"]
+    # [工具面补齐 2026-10-12] 思维链六件有 plan 开关关口，空卡表会被默认关门拒。
+    cards = card_store.iter_card_metas(wid)
     r = await execute_tool(wid, cid, "create_plan", {
         "name": "扩值计划",
-        "steps": [{"id": "s1", "prompt": "查资料", "type": "execute"},
-                  {"id": "s2", "prompt": "整理结论", "type": "think"}],
-    }, {})
+        "steps": [{"id": "s1", "prompt": "查资料", "criteria": "c1", "deliverable": "d1", "type": "execute"},
+                  {"id": "s2", "prompt": "整理结论", "criteria": "c2", "deliverable": "d2", "type": "think"}],
+    }, cards)
     assert r["ok"], r
-    r1 = await execute_tool(wid, cid, "step_complete", {"result": "查到了"}, {})
+    r1 = await execute_tool(wid, cid, "step_complete",
+                            {"result": "查到了", "criteria_met": "c1 满足"}, cards)
     assert r1["ok"] and r1["data"]["advanced"] is True, r1
-    r2 = await execute_tool(wid, cid, "step_complete", {"result": "结论是Z"}, {})
+    r2 = await execute_tool(wid, cid, "step_complete",
+                            {"result": "结论是Z", "criteria_met": "c2 满足"}, cards)
     assert r2["ok"] and r2["data"]["all_steps_done"] is True, r2
 
     blocks = await session_facade.read(wid, cid)
@@ -213,13 +223,15 @@ async def test_legacy_empty_type_falls_back_to_step(work, caplog):
     import logging
 
     from src.api.card_tools import execute_tool
-    from src.storage import session_facade
+    from src.storage import card_store, session_facade
     wid, cid = work["work_id"], work["work_card_id"]
+    cards = card_store.iter_card_metas(wid)   # plan 关口需要真实卡表
     _write_legacy_plan(wid, cid, [
         {"id": "s1", "prompt": "a", "status": "todo", "type": "", "has_artifact": False},
     ])
     with caplog.at_level(logging.WARNING, logger="thinkchain.plan_tools"):
-        r = await execute_tool(wid, cid, "step_complete", {"result": "存量步成果"}, {})
+        r = await execute_tool(wid, cid, "step_complete",
+                               {"result": "存量步成果", "criteria_met": "存量判据满足"}, cards)
     assert r["ok"] and r["data"]["advanced"] is True, r
     blocks = await session_facade.read(wid, cid)
     behaviors = [b.get("behavior") for b in blocks]
@@ -265,7 +277,7 @@ async def test_s5_route_log_execute_and_think(work, monkeypatch, caplog):
 
     wid, cid = work["work_id"], work["work_card_id"]
     await board_mod.create_board(wid, cid, "路由计划", [
-        {"id": "s1", "prompt": "整理一下", "type": "think"},
+        {"id": "s1", "prompt": "整理一下", "criteria": "c", "deliverable": "d", "type": "think"},
     ])
     gw = ScriptedGateway(script=[])
     gw.config = {"models": {"main": {"provider": "openai", "model": "fake-main"},
@@ -302,7 +314,7 @@ async def test_s5_bad_seat_name_explicit_error(work, monkeypatch):
     """S5 配错名实证：表指向不存在席位 → 运行时显式报错、信息含该名字。"""
     wid, cid = work["work_id"], work["work_card_id"]
     await board_mod.create_board(wid, cid, "坏配置计划", [
-        {"id": "s1", "prompt": "a", "type": "think"}])
+        {"id": "s1", "prompt": "a", "criteria": "c", "deliverable": "d", "type": "think"}])
     gw = ScriptedGateway(script=[])
     monkeypatch.setattr(model_service, "_gateway", gw)  # models 只有 main
 
@@ -329,14 +341,10 @@ async def test_s5_bad_seat_name_explicit_error(work, monkeypatch):
 
 
 async def test_s5_no_board_falls_back_default(work, monkeypatch, caplog):
-    """S5 无活板路径：直答回落 default，行为与改动前一致（200 交付）。"""
+    """S5 无活板路径：直答回落 default（[思维链真实落地] 判断归模型，无判定轮，
+    首轮即全量工具面）。"""
     import logging
 
-    async def fake_triage(system, user):
-        return '{"verdict": "direct", "reason": "寒暄"}'
-
-    from src.thinkchain import triage as triage_mod
-    monkeypatch.setattr(triage_mod, "_call_model", fake_triage)
     gw = ScriptedGateway(script=[[]])
     monkeypatch.setattr(model_service, "_gateway", gw)
 
@@ -353,7 +361,7 @@ async def test_s5_no_board_falls_back_default(work, monkeypatch, caplog):
     assert r.status_code == 200, r.text
     route_logs = [rec.message for rec in caplog.records if "类型路由" in rec.message]
     assert any("role=default" in m and "seat=main" in m for m in route_logs), route_logs
-    assert gw.calls[0]["tools"] == ["escalate_to_plan"]  # 直答行为与改动前一致
+    assert "create_plan" in gw.calls[0]["tools"] and "read_card" in gw.calls[0]["tools"]
 
 
 # ------------------------------------------------- 工具面实测（think 无收窄）
@@ -362,7 +370,7 @@ async def test_think_step_tools_same_as_execute(work, monkeypatch):
     """think 步 tools 数量 == execute 步 tools 数量（全链路催化圈对比）。"""
     wid, cid = work["work_id"], work["work_card_id"]
     await board_mod.create_board(wid, cid, "工具面对比", [
-        {"id": "s1", "prompt": "思考一下", "type": "think"},
+        {"id": "s1", "prompt": "思考一下", "criteria": "c", "deliverable": "d", "type": "think"},
     ])
     gw = ScriptedGateway(script=[])
     monkeypatch.setattr(model_service, "_gateway", gw)
@@ -386,7 +394,7 @@ async def test_think_step_tools_same_as_execute(work, monkeypatch):
     # 对照：execute 步同链路（同卡清板重建，逐一对比）
     board_mod._boards.clear()
     await board_mod.create_board(wid, cid, "工具面对照", [
-        {"id": "s1", "prompt": "查一下", "type": "execute"},
+        {"id": "s1", "prompt": "查一下", "criteria": "c", "deliverable": "d", "type": "execute"},
     ])
     gw2 = ScriptedGateway(script=[])
     monkeypatch.setattr(model_service, "_gateway", gw2)

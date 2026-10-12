@@ -143,10 +143,8 @@ async def test_mock_llm_round_trip(client, sandbox, monkeypatch):
     assert body["model"] == "mock"
     assert body["reply"].startswith("[mock:main]")
 
-    # 三思考席并发出观点（MockGateway 对三席都返回非空内容）
-    assert len(body["viewpoints_meta"]) == 3
-    assert all(m["ok"] for m in body["viewpoints_meta"])
-    assert all("text" not in m for m in body["viewpoints_meta"])
+    # [思维链真实落地] 直答回合零三席（C6：三席只在拆解链收口后的提交轮进场）
+    assert body["viewpoints_meta"] == []
 
 
 # ---------------------------------------------------------------- 一轮干净对话
@@ -170,17 +168,13 @@ async def test_offline_round_trip(client, sandbox):
     assert body["tool_events"] == []
     assert body["created_cards"] == []
 
-    # 三思考席：元信息进响应，观点全文（text）不得回流
-    assert len(body["viewpoints_meta"]) == 1
-    assert body["viewpoints_meta"][0]["ok"] is True
-    assert "text" not in body["viewpoints_meta"][0]
+    # [思维链真实落地] 直答回合零三席（C6）
+    assert body["viewpoints_meta"] == []
 
-    # session 追加式：用户 ＋ triage 判定块（role="tool"，10-10 迭代二既有落档——
-    # behavior: triage 非空不进投影）＋ 助手。存量断言 ["user","assistant"] 未跟进
-    # triage 落档（基线即红），[2026-10-11 拆两套机制] 后 triage 是唯一判断、判定
-    # 块随档案落档（role 实测为 "tool"，session 块头写 tool），镜像为三段。
+    # session 追加式：用户 ＋ 助手两段（[思维链真实落地] 判定块随独立判定轮
+    # 退役——判断归模型，代码零判定，session 无 tool 形态判定块）。
     s = await client.get(f"/api/works/{wid}/cards/{root}/session")
-    assert [m["role"] for m in s.json()] == ["user", "tool", "assistant"]
+    assert [m["role"] for m in s.json()] == ["user", "assistant"]
 
     # 无提案无工具 → 树没多出节点
     canvas = (await client.get(f"/api/works/{wid}/canvas")).json()
@@ -196,11 +190,9 @@ async def test_offline_round_trip(client, sandbox):
     assert payload["response"] == "本轮无需建卡。"
     assert payload["tool_events"] == []
     assert "## 卡片清单" in payload["vp_system_prompt"]
-    # [2026-10-11 拆两套机制] vp1 是测试夹具席位名、从未进 model_pick.json——
-    # resolve_model("vp1") 键缺失回落 main（实测 fake-main）。存量断言 fake-vp
-    # 是「三席必然走自己条目」的旧预期，与配置化语义不符（不配回落 main）；
-    # 镜像为实测行为，席位可配由 test_model_pick_s2 覆盖。
-    assert payload["viewpoints"][0]["model"] == "fake-main"
+    # [思维链真实落地] 直答回合零三席 → prompt 日志 viewpoints 键不出现
+    # （「空则不同构」纪律）；vp_system_prompt 仍落（白板证据位）。
+    assert "viewpoints" not in payload
 
 
 # ---------------------------------------------------------------- 工具循环闭环
@@ -222,27 +214,17 @@ async def test_tool_loop_closes_with_tool_result(client, sandbox):
     assert body["reply"] == "先读一下这张卡。\n\n先读一下这张卡。\n"
 
     main_calls = [c for c in fake.calls if c["model"] == "main"]
-    # [2026-10-11 拆两套机制] 主循环真实调用序（triage 判定落 main、三席 vp1
-    # 未配置也落 main、统合官 synthesize 空串落 main——model_pick.json 均无
-    # 对应键，resolve_model 回落 default→main；21:24 实跑 5 条逐条实测）：
-    #   0 = triage 判定（tools 空、prior 空）
-    #   1 = 首轮统合（带工具面、prior 含 triage 判定块=1）
-    #   2 = 工具续跳（"工具结果已返回。"、prior=4）
-    #   3 = 三席 informed（tools 空、prior 只取 history 前=0）
-    #   4 = 统合官 synth（带工具面、prior=4）
-    assert len(main_calls) == 5
-    assert main_calls[0]["tools"] == []             # triage 判定零工具
+    # [思维链真实落地] 主循环真实调用序（判定轮退役——判断归模型；直答链
+    # 零三席）：模型调 read_card 拿结果后空手交付，全程 2 次主模型调用：
+    #   0 = 首轮（带全量工具面、prior=0、发 read_card）
+    #   1 = 工具续跳（"工具结果已返回。"、prior=3＝user 原文固化+assistant(tool_calls)+tool 结果）
+    assert len(main_calls) == 2
     assert main_calls[0]["prior_len"] == 0
-    assert main_calls[1]["prior_len"] == 1          # 首轮 prior 含 triage 判定块
-    assert main_calls[2]["prior_len"] == 4
-    assert main_calls[2]["user_prompt"] == "工具结果已返回。"
-    assert main_calls[3]["tools"] == []             # 三席零工具（物理不可调）
-    assert "## 本轮工具查证结果" in main_calls[3]["user_prompt"]
-    assert main_calls[4]["prior_len"] == 4          # 统合官
-    assert "## 其他模型的输出" in main_calls[4]["user_prompt"]
-    # 工具面：卡片工具 ＋ 文件工具都在统合官手里（首轮）
-    assert "read_card" in main_calls[1]["tools"]
-    assert "write_file" in main_calls[1]["tools"]
+    assert main_calls[1]["prior_len"] == 3
+    assert main_calls[1]["user_prompt"] == "工具结果已返回。"
+    # 工具面：卡片工具 ＋ 文件工具都在首轮手里（判断+行动合一，全量工具面）
+    assert "read_card" in main_calls[0]["tools"]
+    assert "write_file" in main_calls[0]["tools"]
 
 
 # ---------------------------------------------------------------- 建卡落树

@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "对象": "S2 渲染体系族施工回报核验·基准清单",
+    "回报来源": "用户 2026-10-11 20:18 转来执行体施工回报",
+    "核验纪律": "不采信自述、全部读盘与亲跑复现；行号以本轮实读为准，不抄任务书、不抄方案书",
+    "本清单性质": "只钉基准，不评判、不下结论、不核验",
+    "落盘时间": "2026-10-11 20:22"
+  },
+  "report_claims": {
+    "总述": [
+      "S2 十三条需求全部落地，单测 27/27 绿、静态闸全过、五新模块+三文件改动；未提交、未部署，5700 前端已热生效(8 文件 curl==磁盘指纹全等)",
+      "您中途的「永远不要拿真实项目做测试」已严格执行：此前打开过一次 5700 页面(全程只读、localStorage 零写入、验证后立即关闭)，此后所有 DOM/网络观察改在纯 mock 载体(内存假数据+高位端口+用后即杀)完成，works 零触碰",
+      "观察中揪出并修复了两个真缺陷(细节见下)"
+    ],
+    "改动清单": [
+      "static/esm/state_layers.js 新增：状态三层容器+快照层(R-07/08/09):temp(纯内存)/prefs(nav.prefs.v1,坏 JSON 容错)/select(URL hash 复合键 #wid/cid,旧 cid-only 回落 WORK_ID)/snapshot(+version/by_work/children 段级联丢弃)；依赖全注入(生产传 WORK_ID,测试传 mock);另导出 storageGet/storageSet 包装",
+      "static/esm/row_model.js 新增：行对象零状态工厂(R-10):props(store) 实时投影六字段，Object.freeze 后仍正确",
+      "static/esm/nav_render.js 新增：渲染换底(R-13/14/15/19/23):createElement 行构建、mount/unmount/patch 三原语、无整树重建路径；R-19 交互集守卫只在模块顶部 shouldSkipPatch 一处；默认折叠(当前项目一层+祖先链 system+孤儿契约+数量兜底 100);probeVersion(未变零开销/变了全量拉+by_work 比对只重灌变化 work/失败静默);ensureExpandedSegments 惰性补段",
+      "static/esm/nav_virtual.js 新增：虚拟滚动(R-16/17):行数组前缀和(混合行高 30/38)、可视切片+上下各 1 缓冲、DOM 数与总行数无关；scroll+ResizeObserver 双事件驱动(rail 浮层 CSS hover 显隐只有 RO 能抓);sliceRange 纯函数",
+      "static/esm/nav_async.js 新增：loadChildren 去重(Map pendingLoads)、叶节点零请求、三态、折叠即丢(R-22)",
+      "static/workspace.js 改：L420-634 区：四裸变量删净→navStore/navAsync/navRenderer 装配；fmtRel/renderNavFromCache/renderProject/renderCardRows/ensureCurrentPath 删除(职责移入新模块)；L602-635 事件委托改绑新模块；open()/restoreFromHash/hashchange 接选中层复合键；L1112 setInterval(renderNav) → setInterval(probeVersion);通知已读的裸 localStorage 收口为 storage 包装(行为等价);export const RenderNav 保留(L444)",
+      "static/esm/api.js 改：L100 后加 getNavChildren/getNavVersion 两封装，call/request 本体未动",
+      "static/style.css 改：.nav-card 30px→38px+line-height:38px;.nav-ctitle 补 nowrap(.nav-phead 30px 未动)；新增 .nav-vspacer/.nav-vrow/.nav-loading/.nav-err",
+      "tests/s2/ 新增：state_layers.test.js(15)、virtual.test.js(6)、probe.test.js(6)、obs_nav_dom.js(观察脚本)、mock_server.mjs(mock 载体)、_obs_results_20261011.md(观察记录)"
+    ],
+    "测试结果": [
+      "单测 27/27 绿:node --test tests/s2/三套件 → V-S1~S4(四区接口/持久化容错/hash 复合键/零状态投影)、V-V1(2000 行切片恒定+前缀和+build 去重)、R-19 守卫、V-V6 全链(首帧双拉/未变零开销/变了重拉一次只灌变化 work/探测失败静默)、V-V4 去重与折叠即丢",
+      "静态闸：V-S5 workspace.js localStorage 命中 0、四裸变量命中 0;V-V2 height:38px+NAV_ROW_HEIGHT=38 在场+.nav-phead 仍 30px;V-V3 nowrap+ellipsis 在场",
+      "DOM/网络观察(mock 载体)：V-V5/V-R1/V-R2/V-V4/V-V6 无变化路径全过——折叠卸载只动该子树行；重展恰 1 次 children;top 几何 a@30/a1@68/b@106(前缀和正确)；静置 65s 零全量、零 DOM mutation。详细记录:_obs_results_20261011.md"
+    ],
+    "两处缺陷修复": [
+      "折叠祖先级联丢段后重展，子孙 system 段无人补拉(展开箭头在、子行消失)——已在 nav_render.js 加 ensureExpandedSegments 惰性补拉，仍守「展开才拉」",
+      "mock 指纹截断缺陷(非生产问题)：mock 指纹取前 16 字符恒为 {\"card_id\":\"car,标题变化不进 by_work→probe 恒判无变化。改全长 sha256 后变化路径打通。生产 /api/nav/version 是 64 位全长 sha256,实测无此问题"
+    ],
+    "未验与边界": [
+      "真实页面最终视觉/行为需您打开确认——所有 DOM 结论出自 mock 载体",
+      "悬停跳过(R-19)真机无自然触发路径(hover 置位者属 S3,不夹带)，机制已单测闭合",
+      "数量兜底 100 的交互体验未浏览器验证(逻辑已实现：system 展开超 100 收最早非路径分支+notify,不打断)",
+      "多标签页 localStorage 冲突不处理(S3 族评估)，如实标未闭合",
+      "性能数字=实测基准：切片行为 20±3 行(2000 行序列与 40 行序列同偏移切片数全等，单测坐实)；无渲染耗时基准未做——mock 载体数据量小，2000 行场景只有单测覆盖"
+    ],
+    "两处待裁": [
+      "probe 变化路径后，未变化 work 的项目行被「卸载+重挂」一次(终态正确、无视觉差异、字段零修改，疑 ResizeObserver 补触发)",
+      "旧「60s 重算相对时间」随 probeVersion 替换而淡出(相对时间只在真实数据变更时刷新)——任务书口径如此，如需保留旧重算请示下"
+    ],
+    "生效形态与红线自证": [
+      "生效：8 文件 curl(5700 StaticFiles)==磁盘 sha256 全等，前端热生效；未部署、未重启、未提交(R-A);后端 py 零改动(S1 的 py 在途未提交件原样)",
+      "R-B:works 零触碰——全程仅 GET;观察载体为 mock;works 下两份新 mtime 文件(session_040.md/session_ops.jsonl,19:49)是您在 card_040 的实时对话(turn 30),与本次施工无关",
+      "R-C/R-D/R-E:改动面=声明文件+五新模块+tests/s2/;export const RenderNav 保留(L444,canvas.js L1480 依赖);work.html 未动",
+      "R-F:无 S3/S4/键盘夹带(grep 吸顶/搜索/徽章/排序=0),notify 接口仅兜底 100 用",
+      "R-G:未设任何闸；60s 探测与 15s 超时均为既有行为"
+    ]
+  },
+  "taskbook_criteria": {
+    "验收判据": [
+      "V-S1(R-07)/V-S2(R-08)/V-S3(R-09)/V-S4(R-10)/V-S5(静态闸 localStorage=0 四裸变量=0)",
+      "V-R1(R-13 按需更新)/V-R2(R-14 折叠即卸载)/V-R3(R-15 diff 刷新)/V-R4(R-19 跳过交互节点)",
+      "V-V1(R-16 虚拟滚动 2000 行恒定)/V-V2(R-17 38px+NAV_ROW_HEIGHT+.nav-phead 30px)/V-V3(R-32 nowrap+ellipsis)",
+      "V-V4(R-22 异步加载去重与折叠即丢)/V-V5(R-23 默认折叠)/V-V6(探测替换 60s)",
+      "指纹·前端(curl sha256==磁盘)/指纹·后端(不部署不重启 pyc/进程与施工前一致)"
+    ],
+    "五条未验": [
+      "无浏览器自动化(V-R1~R4、V-V4~V6 最终视觉需用户确认)",
+      "多标签页 localStorage 冲突未闭合(S3 族评估)",
+      "diff 与悬停竞态部分未验(浮层视觉未浏览器验证)",
+      "性能数字=实测基准非估计(mock 2000 行渲染耗时、probe 往返耗时真跑记录)",
+      "数量兜底 100 交互体验未浏览器验证"
+    ],
+    "红线": ["R-A 不部署不重启不提交", "R-B 不碰用户数据(works 零触碰)", "R-C 前端改动只限声明文件", "R-D canvas.js 不动但 export const RenderNav 契约保留(L448)", "R-E work.html 结构不改", "R-F 不夹带 S3/S4/R-30/refreshBadge", "R-G 不设任何闸"]
+  },
+  "disk_truth": {
+    "git_status": [
+      "M src/api/routes.py", "M src/storage/canvas_store.py", "M src/storage/card_store.py", "M static/canvas.js",
+      "M static/esm/api.js", "M static/style.css", "M static/workspace.js",
+      "?? 大量 docs/exploration 产物（含本线 S1/S2 全部文档与 THINK-ECO 系列）"
+    ],
+    "涉及文件实测": [
+      {"file": "static/workspace.js", "mtime": "10-11 19:44:52", "bytes": 52980, "lines": 1126},
+      {"file": "static/esm/api.js", "mtime": "10-11 19:16:08", "bytes": 5000, "lines": 123},
+      {"file": "static/style.css", "mtime": "10-11 19:16:36", "bytes": 40715, "lines": 1275},
+      {"file": "static/esm/state_layers.js", "mtime": "10-11 19:06:24", "bytes": 7278, "lines": 184},
+      {"file": "static/esm/row_model.js", "mtime": "10-11 19:07:29", "bytes": 1869, "lines": 51},
+      {"file": "static/esm/nav_render.js", "mtime": "10-11 19:40:12", "bytes": 16719, "lines": 430},
+      {"file": "static/esm/nav_virtual.js", "mtime": "10-11 19:08:40", "bytes": 4584, "lines": 123},
+      {"file": "static/esm/nav_async.js", "mtime": "10-11 19:07:46", "bytes": 1975, "lines": 53},
+      {"file": "tests/s2/state_layers.test.js", "mtime": "10-11 19:21:19", "bytes": 9932, "lines": 223},
+      {"file": "tests/s2/virtual.test.js", "mtime": "10-11 19:24:17", "bytes": 7644, "lines": 163},
+      {"file": "tests/s2/probe.test.js", "mtime": "10-11 19:26:49", "bytes": 7756, "lines": 186},
+      {"file": "tests/s2/obs_nav_dom.js", "mtime": "10-11 19:27:44", "bytes": 5516, "lines": 93},
+      {"file": "tests/s2/mock_server.mjs", "mtime": "10-11 20:03:24", "bytes": 5121, "lines": 102},
+      {"file": "tests/s2/_obs_results_20261011.md", "mtime": "10-11 20:08:57", "bytes": 3418, "lines": 38}
+    ],
+    "施工窗判定": "五新模块 19:06-19:40、三文件 19:16-19:44、tests/s2 19:21-20:08——与回报施工窗一致；workspace.js 1126 行 vs 任务书锚 1213 行（重写收敛 -87 行，符合『删除 renderNavFromCache/renderCardRows 等』）",
+    "待核行号差异": "回报称 RenderNav 保留在 L444、任务书锚 L448——差异须议题 2 现场核；回报称 canvas.js L1480 依赖 RenderNav——须现场核",
+    "workspace.js 行数变化": "任务书锚(18:44)1213 行 → 现在 1126 行(-87)，与回报『删除旧渲染函数』一致；但行号整体位移，后续所有引用以 20:21 实读为准"
+  }
+}

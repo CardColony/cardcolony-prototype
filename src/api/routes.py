@@ -13,9 +13,10 @@ Phase 7：
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
-import re
+import os
 import uuid
 from typing import Any, Optional
 
@@ -29,6 +30,7 @@ from ..storage import (
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
+from ..storage.hash_utils import parse_front_matter, split_body_sections
 from ..storage.manuscript_store import ChapterNotFoundError
 from . import card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
 
@@ -40,56 +42,56 @@ DEFAULT_WORK_ID = "work_001"  # 兼容层固定转发目标
 
 # [卡片信息结构改造 S2-8] 白名单全集。新键 mission/status_block/rulings 为当前口径；
 # 旧键 charter/conclusion/rejections 保留（存量前端与脚本照旧可用，存储层内归一）。
-# 两个校验点（新版 PATCH :276 ＋ 兼容层 PATCH :463）共用本集合——改一处即两处同步。
+# 两个校验点（新版 PATCH :423 ＋ 兼容层 PATCH :623）共用本集合——改一处即两处同步。
+# [权限底座重做 2026-10-12 · 裁定 2] card_type 已移出白名单：类型建卡时定死、
+# 运行时不可变，API 层就该拒（早于存储层拒），不再让非法键过白名单后才被存储层拦。
+# project_class 从来不在本集合（建卡时随 project 写入），无需处理。
 ALLOWED_UPDATE_KEYS = {
     "title", "tags", "relations", "session_ref",
     "mission", "status_block", "rulings",  # 正文三块·新键
     "conclusion", "rejections", "charter",  # 正文三块·旧键（兼容保留）
-    "card_type", "parent",
+    "parent",
 }
 # [phase8.3] status 二态已废除：PATCH 带 status 一律忽略（不报错）
+
+# [卡片编辑机制改造 2026-10-12 · 块1] 读侧块集判据：rd_project → 需求文档
+# （requirements），其余（research_project 及未分类存量）→ 定论（rulings）。
+# card_store.read_card 返回的 body 恒含 rulings 键；此处按根卡 project_class
+# 过滤——rd 卡不外露 rulings、换 requirements；其他卡不外露 requirements。
+# 存量研发卡的定论块内容在 rd 卡上以 requirements 呈现（第三块语义随树类走），
+# 零数据删除、零迁移；缺失块返回空串不报错。
+def _apply_block_set(result: dict, work_id: str) -> dict:
+    """按本树 project_class 过滤 read_card 返回的 body 块键（读侧，纯展示层）。"""
+    try:
+        pc = card_store._root_project_class(work_id)
+    except Exception:  # noqa: BLE001
+        pc = ""
+    if pc != "rd_project":
+        return result  # 非研发卡：body 原样（rulings 已在；requirements 不外露）
+    body = result.get("body") or {}
+    # 研发卡：requirements 取 ## 需求文档 区；存量卡该区缺失时回落 rulings 区
+    # （第三块语义＝需求文档，区头在盘上可能是旧的 ## 定论——只读保留）。
+    raw = result.get("raw") or ""
+    _, body_text = parse_front_matter(raw)
+    sections = split_body_sections(body_text)
+    req = (sections.get("requirements") or "").strip()
+    if not req:
+        req = (sections.get("rulings") or "").strip()
+    result = dict(result)
+    result["body"] = {
+        "mission": body.get("mission", ""),
+        "status_block": body.get("status_block", ""),
+        "requirements": req,
+        "history": body.get("history", []),
+    }
+    return result
+
 
 # [无闸改造 2026-10-02] MAX_TOOL_ROUNDS 已删除：工具循环不设封顶
 
 
 def _err(status: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": message})
-
-
-# ============================================================
-# [2026-10-11 两套机制拆除] 确定性动作识别（原「信息流与快车道 Task1」）。
-# 删卡/建卡/改卡/查询四类确定性消息形态 → 机械预检命中（A97 用户裁定：
-# 单模型带工具直答、跳三席与统合官）。本函数集已不在路由层调用——由
-# thinkchain.triage 的 triage_if_needed 作为判定链前置分支调用（判断只有
-# 一级，机械识别不是独立机制）。函数纯、无副作用、可单测。
-# ============================================================
-_FASTLANE_RULES: list[tuple[str, "re.Pattern[str]"]] = [
-    ("删卡", re.compile(r"(删掉|删除|删了)[^。！？\n]{0,8}(卡|一张|这张|那张|它)")),
-    ("建卡", re.compile(r"(建|创建|新建)[^。！？\n]{0,6}卡(片)?")),
-    ("改卡", re.compile(
-        r"((改一下|改改|修改|编辑|更新|替换)[^。！？\n]{0,8}卡(片)?(的|正文|内容|结论)"
-        r"|(内容|正文|结论)[^。！？\n]{0,4}(改一下|改改|改掉|更新|换掉|替换|修改))"
-    )),
-    ("查询", re.compile(
-        r"((查看|看一下|看下|读一下|读取|查一下|查下)[^。！？\n]{0,6}卡(片)?(的)?(内容|正文|信息|结论|详情)?"
-        r"|(查看|看一下|看下|读一下|读取|查一下|查下|打开)[^。！？\n]{0,4}card_\d+)"
-    )),
-]
-
-
-def _route_rule(content: str) -> str:
-    """命中规则名（打点用 matched_rule）；未命中返回「未命中」。"""
-    for name, pat in _FASTLANE_RULES:
-        if pat.search(str(content or "")):
-            return name
-    return "未命中"
-
-
-def route(content: str) -> str:
-    """[已退役 2026-10-11] 原快车道判定（Task1）：返回 "fastlane" | "chain"。
-    生产不再调用（确定性动作识别已并入 triage 判定链）；仅兼容测试/历史引用。
-    语义保留：规则全未命中即 chain（开放论证走模型判定）。"""
-    return "fastlane" if _route_rule(content) != "未命中" else "chain"
 
 
 # ============================================================
@@ -132,6 +134,20 @@ class PostMessageRequest(BaseModel):
     pair_id: Optional[str] = None
 
 
+# [卡片编辑机制改造 2026-10-12 · 块2] draft/commit 请求体
+class DraftRequest(BaseModel):
+    kind: str = Field(min_length=1)  # requirements | status（mission 不可经此口）
+    feedback: Optional[str] = None
+    prev_draft: Optional[str] = None
+
+
+class CommitRequest(BaseModel):
+    kind: str = Field(min_length=1)
+    draft: str = ""
+    base_hash: str = Field(min_length=1)
+    feedback_rounds: int = 0
+
+
 # [无内容预设改造 2026-10-02] PatchMethodologyRequest 已删除（方法论库停用）
 
 
@@ -155,6 +171,29 @@ async def create_work(req: CreateWorkRequest):
 # ============================================================
 # [T17-B4] 跨项目导航树（一次请求拿全，避免 N+1）
 # ============================================================
+
+def _card_obj(m: dict, act: dict, child_count: int, wid: str) -> dict:
+    """[S1·R-05] 卡对象构造（/api/nav 与 /api/nav/children 共用，一套防漂移）。
+
+    字段集合定格 8 项（S1·R-02）：card_id/title/parent/child_count/
+    last_active_at/branch_active_at/work_id/state——克制判据＝每个字段都有
+    已设计的消费方（契约文档：docs/exploration/左侧边栏-S1契约-nav接口-20261011.md）。
+    work_id＝归属由提供方声明（S1·R-01，前端禁止自行反查推断）；
+    state＝生命周期（S1·R-04），存量卡无此字段返回空串（前端按无状态容错）。
+    """
+    cid = m.get("card_id", "")
+    return {
+        "card_id": cid,
+        "title": m.get("title", ""),
+        "parent": m.get("parent", ""),
+        "child_count": child_count,
+        "last_active_at": act.get(cid, {}).get("own", ""),
+        # [主界面优化 E2] 分支活跃（该卡及其全部子孙最近活跃）现算增列
+        "branch_active_at": act.get(cid, {}).get("branch", ""),
+        "work_id": wid,
+        "state": m.get("state", ""),
+    }
+
 
 @router.get("/nav")
 async def get_nav():
@@ -187,15 +226,7 @@ async def get_nav():
             cid = m.get("card_id", "")
             if cid and cid == root_id:
                 continue
-            cards.append({
-                "card_id": cid,
-                "title": m.get("title", ""),
-                "parent": m.get("parent", ""),
-                "child_count": child_count.get(cid, 0),
-                "last_active_at": act.get(cid, {}).get("own", ""),
-                # [主界面优化 E2] 分支活跃（该卡及其全部子孙最近活跃）现算增列
-                "branch_active_at": act.get(cid, {}).get("branch", ""),
-            })
+            cards.append(_card_obj(m, act, child_count.get(cid, 0), wid))
         # 两段稳定排序：先并列收尾键 card_id 升序，再按活跃降序（空串排末位）
         cards.sort(key=lambda c: c["card_id"])
         cards.sort(key=lambda c: c["last_active_at"] or "", reverse=True)
@@ -208,6 +239,109 @@ async def get_nav():
             "cards": cards,
         })
     return {"projects": projects}
+
+
+@router.get("/nav/children")
+async def get_nav_children(work_id: str = "", parent: str = ""):
+    """[S1·R-05] 单层直系子卡端点（S2 异步加载：展开才拉，省传输与解析）。
+
+    与 /api/nav 并存（旧前端继续吃全量，S3 前不切换）；cards 复用 _card_obj
+    同一套契约（含 work_id/state）。parent 空串＝第一层，实现为**根卡直系**
+    （根卡是分组头、其 parent 虽为空串但不进树——与 /api/nav 同口径排除
+    根卡本体；显式 parent=根卡 等价同层）。child_count 照算（展开箭头依赖）。
+    work_id 不存在→404、parent 非空且不存在→404（与既有「剧本/卡片不存在」
+    404 语义对齐）。只答一层直系、无越层参数——防退化成全量遍历。
+    孤儿卡（parent 指向已删卡）不出现在 children 任一层，其「挂根层末尾」
+    展示仍由 /api/nav 全量承担（与 nav 孤儿契约一致，前端根层兜底）。
+    """
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    root_id = w.get("work_card_id", "")
+    if parent and not card_store.card_exists(work_id, parent):
+        return _err(404, f"卡片不存在: {parent}")
+    metas = list(activity.iter_card_metas(work_id))
+    child_count: dict[str, int] = {}
+    for m in metas:
+        p = m.get("parent", "")
+        if p:
+            child_count[p] = child_count.get(p, 0) + 1
+    act = activity.compute_card_activity(work_id)
+    eff_parent = parent or root_id
+    cards = [
+        _card_obj(m, act, child_count.get(m.get("card_id", ""), 0), work_id)
+        for m in metas
+        if m.get("parent", "") == eff_parent
+    ]
+    # 与 /api/nav 同款两段稳定排序（card_id 升序收尾→活跃降序，刷新不跳序）
+    cards.sort(key=lambda c: c["card_id"])
+    cards.sort(key=lambda c: c["last_active_at"] or "", reverse=True)
+    return {"work_id": work_id, "parent": parent, "cards": cards}
+
+
+def _work_fingerprint(wid: str) -> str:
+    """[S1·R-06] 单 work 变化指纹：cards/*.md、sessions/*.md、work.json 的
+    「路径+大小+mtime」全列表哈希（只读遍历，不侵入任何写路径）。
+
+    实现层修订两笔（对任务书 T6「mtime 取 max」，如实记录）：
+    ① max→列表哈希：纯 max 探测不到删卡——删掉非最新文件 max 不变，S2
+      侧栏会挂幽灵卡；仿仓内既有 data_snapshot._fingerprint（L100-112）
+      同法升级，增删改全捕捉；响应契约 {"version","by_work"} 不变。
+    ② glob+stat→os.scandir：U2 真实实测直扫 60ms 超 50ms 基准（158 文件
+      逐文件二次 stat 所致）；Windows 下 scandir 的 entry.stat() 直接取
+      目录枚举自带数据、免二次 stat，语义不变。语义等价性由
+      tests/test_s1_nav_contract.py V6 四断言（不变性/改动/删卡/追加）钉死。
+    """
+    base = card_store.WORKS_DIR / wid
+    entries: list[tuple[str, int, int]] = []
+    try:
+        st = (base / "work.json").stat()
+        entries.append(("work.json", st.st_size, int(st.st_mtime)))
+    except OSError:
+        pass
+    for sub in ("cards", "sessions"):
+        try:
+            with os.scandir(base / sub) as it:
+                for e in it:
+                    if e.name.endswith(".md") and e.is_file():
+                        st = e.stat()
+                        entries.append((f"{sub}/{e.name}", st.st_size, int(st.st_mtime)))
+        except OSError:
+            continue                      # work 无此子目录＝空指纹，合法
+    h = hashlib.sha256()
+    for name, size, mtime in sorted(entries):
+        h.update(f"{name}|{size}|{mtime}\n".encode("utf-8"))
+    return h.hexdigest()
+
+
+@router.get("/nav/version")
+async def get_nav_version():
+    """[S1·R-06] 变化指纹端点（S2 的 60s 探测源：没变零开销、变了重拉+diff）。
+
+    by_work＝各 work 指纹（work 级差分：哪个 work 变了只 diff 哪个）；
+    全局 version＝各 work 指纹的复合哈希（确定性、重启可复算——不用内存
+    计数器：重启即丢且须侵入全部写路径）。不做 SSE/WebSocket（本系统
+    文件即数据、无事件源）；不用目录 mtime（改内容不更新目录 mtime）。
+    work 集合＝works/ 下含 work.json 的目录——**不经 work_store.list_works()**：
+    其附带活跃度现算（会话尾扫），U2 实测 56ms 占该端点大头；版本探测
+    只认目录与文件、不需要 work 元数据。7 works/158 文件指纹本体 0.7ms。
+    """
+    by_work: dict[str, str] = {}
+    try:
+        dirs = list(os.scandir(card_store.WORKS_DIR))
+    except OSError:
+        dirs = []
+    for e in dirs:
+        wid = e.name
+        if not wid or not e.is_dir():
+            continue
+        if not (card_store.WORKS_DIR / wid / "work.json").exists():
+            continue
+        by_work[wid] = _work_fingerprint(wid)
+    h = hashlib.sha256()
+    for wid in sorted(by_work):
+        h.update(f"{wid}|{by_work[wid]}\n".encode("utf-8"))
+    return {"version": h.hexdigest(), "by_work": by_work}
 
 
 @router.get("/works/{work_id}/card-messages")
@@ -271,7 +405,11 @@ async def list_card_messages(work_id: str, limit: int = 200):
 async def get_work_canvas(work_id: str):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    return canvas_store.load(work_id)
+    # [画布第二步 D2] 读路径合并：positions 改由 layout.json（用户数据）供给，
+    # canvas.json 只出派生数据——响应结构逐键不变（V5），前端零改动（L5）。
+    data = canvas_store.load(work_id)
+    data["positions"] = canvas_store.load_layout(work_id).get("positions", {})
+    return data
 
 
 @router.patch("/works/{work_id}/canvas/positions")
@@ -305,11 +443,13 @@ async def get_work_card(work_id: str, card_id: str):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     try:
-        return await card_store.read_card(work_id, card_id)
+        result = await card_store.read_card(work_id, card_id)
     except CardNotFoundError:
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
+    # [卡片编辑机制改造 2026-10-12 · 块1] 读侧按块集判据过滤 body 键
+    return _apply_block_set(result, work_id)
 
 
 # [用户删卡 2026-10-02] 仅前端调用；模型工具清单不含删卡（模型无权删卡）
@@ -350,7 +490,7 @@ async def patch_work_card(work_id: str, card_id: str, req: PatchCardRequest):
         return _err(423, "卡片被占用，请稍后重试")
     if "error" in result:
         return _err(400, result["error"])
-    return result
+    return _apply_block_set(result, work_id)
 
 
 @router.get("/works/{work_id}/cards/{card_id}/session")
@@ -365,6 +505,39 @@ async def get_work_session(work_id: str, card_id: str):
         return _err(423, "卡片被占用，请稍后重试")
     # [A6a/T069-T072] 读切换：统一读入门面（V1 委托旧解析，输出五键契约不变）
     return await session_facade.read(work_id, card_id)
+
+
+# [卡片编辑机制改造 2026-10-12 · 块2] 起草/确认写入两路由。
+# draft 独立于 message_runner（无工具纯文本调用，不进工具循环）；
+# commit 是写入唯一入口（hash 比对 → update_card 整块替换 → 影子记迭代历史）。
+@router.post("/works/{work_id}/cards/{card_id}/draft")
+async def post_work_draft(work_id: str, card_id: str, req: DraftRequest):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    from . import card_draft
+    result = await card_draft.draft(
+        work_id, card_id, req.kind,
+        feedback=req.feedback, prev_draft=req.prev_draft,
+    )
+    if "error" in result:
+        return _err(400, result["error"])
+    return result
+
+
+@router.post("/works/{work_id}/cards/{card_id}/commit")
+async def post_work_commit(work_id: str, card_id: str, req: CommitRequest):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    from . import card_draft
+    result = await card_draft.commit(
+        work_id, card_id, req.kind, req.draft, req.base_hash,
+        feedback_rounds=req.feedback_rounds,
+    )
+    if "error" in result:
+        # hash 冲突走 409 语义（前端弹窗提示重新起草）；其余 400
+        status = 409 if result.get("code") == "hash_mismatch" else 400
+        return _err(status, result["error"])
+    return result
 
 
 @router.get("/works/{work_id}/cards/{card_id}/stream")
@@ -501,7 +674,10 @@ async def read_work_manuscript(
 
 @router.get("/canvas")
 async def get_canvas_compat():
-    return canvas_store.load(DEFAULT_WORK_ID)
+    # [画布第二步 D2] 兼容端点随主端点一并合并 positions（RD-06：不许留死角——
+    # load() 返回里不再有 positions，不改这里会静默丢键）。
+    return {**canvas_store.load(DEFAULT_WORK_ID),
+            "positions": canvas_store.load_layout(DEFAULT_WORK_ID).get("positions", {})}
 
 
 @router.post("/cards")
@@ -524,11 +700,12 @@ async def create_card_compat(req: CreateCardRequest):
 @router.get("/cards/{card_id}")
 async def get_card_compat(card_id: str):
     try:
-        return await card_store.read_card(DEFAULT_WORK_ID, card_id)
+        result = await card_store.read_card(DEFAULT_WORK_ID, card_id)
     except CardNotFoundError:
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
+    return _apply_block_set(result, DEFAULT_WORK_ID)
 
 
 @router.patch("/cards/{card_id}")
@@ -547,7 +724,7 @@ async def patch_card_compat(card_id: str, req: PatchCardRequest):
         return _err(423, "卡片被占用，请稍后重试")
     if "error" in result:
         return _err(400, result["error"])
-    return result
+    return _apply_block_set(result, DEFAULT_WORK_ID)
 
 
 @router.get("/cards/{card_id}/session")
@@ -681,9 +858,9 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 段②③前半：上下文组装＋工具列＋轮槽
     message_runner.build_context(state)
 
-    # [2026-10-11 两套机制拆除] 原快车道分流（state.mode/route()/fastlane_route
-    # 事件）已整体退役——确定性动作识别并入 thinkchain.triage 判定链前置分支，
-    # 由 step() 首轮统一处理（见 message_runner.step 与 triage.triage_if_needed）。
+    # [思维链真实落地 2026-10-11] 判断归模型（C1）：判断协议随 BASE_PROMPT
+    # 进 system 区（prompts.py），模型首轮带全量工具自主判断——直答（空手
+    # 正文即答复）或调 create_plan 拆解上板。代码层零判定、零机械预检。
     state.user_prompt = content
 
     # 段③ 工具循环：**单步推进**（每轮一个显式状态点）

@@ -10,6 +10,16 @@ import { reloadCanvas } from "./canvas.js?v=11";
 import { store } from "./esm/store.js?v=11";
 import { notify, postStop } from "./esm/api.js?v=11";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=11";
+// [S2] 导航渲染体系：状态三层容器 + 行模型 + 渲染换底 + 虚拟滚动 + 异步加载
+import {
+  createNavStateStore, storageGet, storageSet,
+} from "./esm/state_layers.js?v=11";
+import { createNavAsync } from "./esm/nav_async.js?v=11";
+import { createNavRenderer } from "./esm/nav_render.js?v=11";
+// [S3] 交互与呈现族：找通道（R-24/25）、面包屑+吸顶+祖先链（R-27/18/26/28）、快照存在性（R-21）
+import { createNavFind } from "./esm/nav_find.js?v=11";
+import { createNavBreadcrumb, ancestorCards } from "./esm/nav_breadcrumb.js?v=11";
+import { cardInSnapshot } from "./esm/nav_badge.js?v=11";
 
 const WORK_ID = window.__WORK_ID__;
   const ws = document.getElementById("workspace");
@@ -66,9 +76,12 @@ const WORK_ID = window.__WORK_ID__;
       }
       // [刷新恢复 2026-10-03] 卡号写进 URL hash：刷新后按 hash 自动重开这张卡。
       // 用 replaceState 不堆积浏览历史、不触发页面重载；URL 即状态，不引入前端存储。
-      if (location.hash !== "#" + cardId) {
-        history.replaceState(null, "", "#" + cardId);
+      // [S2/R-09] 选中入 URL 走选中层复合键（#WORK_ID/cardId）。
+      if (location.hash !== navStore.select.serialize(WORK_ID, cardId)) {
+        navStore.select.set(WORK_ID, cardId);
       }
+      // [S3/R-25/V3-F5] 成功跳转（getCard 已取回）才记最近访问；失败/灰态不进此路径
+      navFind.recordRecent(WORK_ID, cardId, card.meta.title);
       // [T17] 视图切换：进入对话态（nav 260px、workspace 可见）；.active 旧机制退役
       setAppView("chat");
       document.getElementById("wsHeadTitle").textContent = card.meta.title || "";
@@ -120,10 +133,15 @@ const WORK_ID = window.__WORK_ID__;
 
     // [卡片信息结构改造 S2-10] 键名随拆分器归一：rejections→rulings、charter→mission、
     // conclusion→status_block。存量卡不分叉——读侧已归一，新旧卡在此同一路径渲染。
-    const rulings = (b.rulings || "").trim();
-    const rulHtml = rulings
-      ? rulings.split("\n").filter(s => s.trim()).map(line => `<div class="rej-item">${escapeHtml(line)}</div>`).join("")
-      : `<div class="rej-empty">（暂无定论）</div>`;
+    // [卡片编辑机制改造 2026-10-12 · 块3] 第三块按块集判据渲染：body 含 requirements
+    // 键（rd_project 树）→ 需求文档；含 rulings 键（其他树）→ 定论。两者互斥（读侧过滤）。
+    const thirdKey = ("requirements" in b) ? "requirements" : "rulings";
+    const thirdLabel = thirdKey === "requirements" ? "需求文档 · requirements" : "定论 · rulings";
+    const thirdEmpty = thirdKey === "requirements" ? "（暂无需求文档）" : "（暂无定论）";
+    const thirdContent = (b[thirdKey] || "").trim();
+    const thirdHtml = thirdContent
+      ? thirdContent.split("\n").filter(s => s.trim()).map(line => `<div class="rej-item">${escapeHtml(line)}</div>`).join("")
+      : `<div class="rej-empty">${thirdEmpty}</div>`;
 
     const history = b.history || [];
     const historyCount = history.length;
@@ -154,8 +172,8 @@ const WORK_ID = window.__WORK_ID__;
         <button class="btn ghost" id="cancelConclusion">取消</button>
       </div>
 
-      <div class="blocktitle">定论 · rulings</div>
-      ${rulHtml}
+      <div class="blocktitle">${thirdLabel}</div>
+      ${thirdHtml}
 
       <div class="blocktitle">关系</div>
       ${relationsHtml}
@@ -416,132 +434,82 @@ const WORK_ID = window.__WORK_ID__;
 
   // ==================== [T17-F4] 左栏对话导航（读 /api/nav，服务端排序原样渲染） ====================
   // 层级口径（R-016/R-044，写死）：项目根卡＝第 0 层恒定；与画布 state.viewRoot 的
-  // 相对深度是两套口径，互不同步、不做互相写入。展开态为本模块私有（R-3）。
-  let navData = null;               // /api/nav 响应缓存（60s 重算相对时间时复用）
-  let navProjectsOpen = new Set();  // 展开中的项目 work_id 集
-  let navOpenCards = new Set();     // 展开中的卡节点集（默认空＝只展一级）
-  let navPathAppliedFor = "";       // 当前卡祖先路径只自动展开一次（用户手动折叠不被顶回）
+  // 相对深度是两套口径，互不同步、不做互相写入。
+  // [S2] 原四个导航裸状态变量退役：
+  // 状态收进三层容器（temp/prefs/select/snapshot，state_layers.js），渲染走
+  // nav_render.js（mount/unmount/patch 三原语 + 虚拟滚动），展开态持久化进偏好层。
+  const navStore = createNavStateStore({ workId: WORK_ID });
+  const navAsync = createNavAsync(navStore, API);
+  const navRenderer = createNavRenderer({
+    tree: navTree,
+    store: navStore,
+    api: API,
+    workId: WORK_ID,
+    async: navAsync,
+    getCardId: () => (currentCard ? currentCard.meta.card_id : ""),
+  });
 
-  function fmtRel(iso) {
-    // 相对时间：刚刚／N 分钟前／N 小时前／N 天前／YYYY-MM-DD（方案 §3.5）
-    if (!iso) return "";
-    const t = new Date(iso).getTime();
-    if (isNaN(t)) return "";
-    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
-    if (s < 60) return "刚刚";
-    if (s < 3600) return Math.floor(s / 60) + " 分钟前";
-    if (s < 86400) return Math.floor(s / 3600) + " 小时前";
-    if (s < 7 * 86400) return Math.floor(s / 86400) + " 天前";
-    const d = new Date(iso);
-    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
-         + "-" + String(d.getDate()).padStart(2, "0");
-  }
+  // [S3/T2] 找通道：搜索独立层（结果层叠加在 appNav 上，navTree 本体零触碰）
+  const navFind = createNavFind({
+    host: document.getElementById("appNav"),
+    input: document.getElementById("navSearchInput"),
+    store: navStore,
+    workId: WORK_ID,
+    onJump: (wid, cid) => gotoCard(cid, wid, false),   // 复用 R-20 叶子跳转路径
+  });
+  // [S3/T3] 定位族：面包屑+吸顶（同一 UI 两态）；vl.headerH 是 S2 预留的在流头部高度消费口
+  const navBreadcrumb = createNavBreadcrumb({
+    box: document.getElementById("navCrumbBox"),
+    el: document.getElementById("navCrumb"),
+    store: navStore,
+    workId: WORK_ID,
+    getTree: () => navTree,
+    onJump: (wid, cid) => gotoCard(cid, wid, false),
+    vl: navRenderer.vl,
+  });
 
   async function renderNav() {
-    try {
-      navData = await API.getNav();
-    } catch (e) {
-      return;   // toast 已由 api.js 处理；导航失败不影响画布与对话
+    await navRenderer.refresh();
+    // [S3/R-29] 展开态还原：S2 refresh 只灌当前 work 的段——其余「prefs 记着开着」的
+    // 项目与分支 reload/切回后段缺失（▾ 却无行）。从全量快照零网络补灌后再重切。
+    if (restoreOpenSegments()) navRenderer.render();
+    // [S3/R-27] 换卡/数据刷新后面包屑随当前选中重算（浅树自隐，深树重渲段文本）
+    navBreadcrumb.render();
+  }
+
+  // [S3/R-29] 开着的项目根段＋已展开分支段，凡缺失一律从快照灌（孤儿契约与
+  // nav_render.snapshotRootsWithOrphans 同口径；零网络，全量 cards 已在快照里）。
+  function restoreOpenSegments() {
+    const snap = navStore.snapshot;
+    let dirty = false;
+    for (const p of (snap.get().projects || [])) {
+      const wid = p.work_id;
+      if (!navStore.prefs.getProjectOpen(wid)) continue;
+      if (!snap.getChildren(wid, "")) {
+        const all = p.cards || [];
+        const ids = new Set(all.map(c => c.card_id));
+        const root = p.work_card_id || "";
+        snap.setChildren(wid, "", all.filter(c => {
+          const pa = c.parent || "";
+          return pa === "" || pa === root || (pa && !ids.has(pa));
+        }));
+        dirty = true;
+      }
+      for (const e of navStore.prefs.listExpanded(wid)) {
+        if (!snap.getChildren(wid, e.cid)) {
+          snap.setChildren(wid, e.cid, snap.cardsOf(wid, e.cid));
+          dirty = true;
+        }
+      }
     }
-    renderNavFromCache();
+    return dirty;
   }
   export const RenderNav = renderNav;   // canvas.js 建卡后同步刷新导航用
   export { setAppView };   // 原 window.SetAppView
 
-  function ensureCurrentPath() {
-    // 当前卡所在路径自动展开＋其项目自动展开（每次换卡应用一次，不与用户手折对抗）
-    const curId = currentCard ? currentCard.meta.card_id : "";
-    if (!curId || navPathAppliedFor === curId || !navData) return;
-    const proj = (navData.projects || []).find(p => (p.cards || []).some(c => c.card_id === curId));
-    if (proj) {
-      navProjectsOpen.add(proj.work_id);
-      const byId = new Map((proj.cards || []).map(c => [c.card_id, c]));
-      let cur = byId.get(curId);
-      while (cur && cur.parent && byId.has(cur.parent)) {
-        navOpenCards.add(cur.parent);
-        cur = byId.get(cur.parent);
-      }
-    }
-    navPathAppliedFor = curId;
-  }
-
-  function renderNavFromCache() {
-    if (!navData) return;
-    ensureCurrentPath();
-    const projects = navData.projects || [];
-    if (!projects.length) {
-      navTree.innerHTML = `<div class="nav-empty">还没有项目<br>
-        <a href="/" class="btn primary" style="margin-top:10px;display:inline-block;">＋ 新建项目</a></div>`;
-      return;
-    }
-    const curId = currentCard ? currentCard.meta.card_id : "";
-    // [B3 主界面优化] 不给色点配说明书（图例不引入）；提示行按 B1/B2/B5 新语义
-    navTree.innerHTML = `<div class="nav-hint">▸/▾ 展开 · 点行进对话 · 「打开 →」进项目画布</div>`
-      + projects.map(p => renderProject(p, curId)).join("");
-  }
-
-  function renderProject(p, curId) {
-    const cards = p.cards || [];
-    const byId = new Map(cards.map(c => [c.card_id, c]));
-    const childrenMap = new Map();   // parent_card_id → 子卡数组（保持服务端降序）
-    const orphans = [];              // parent 指向已删卡 → 根层末尾（契约，不丢弃）
-    for (const c of cards) {
-      const parent = c.parent || "";
-      if (!parent || parent === p.work_card_id) {
-        if (!childrenMap.has("")) childrenMap.set("", []);
-        childrenMap.get("").push(c);
-      } else if (byId.has(parent)) {
-        if (!childrenMap.has(parent)) childrenMap.set(parent, []);
-        childrenMap.get(parent).push(c);
-      } else {
-        orphans.push(c);
-      }
-    }
-    const isOpen = navProjectsOpen.has(p.work_id);
-    const isCur = p.work_id === WORK_ID;
-    let rows = "";
-    if (isOpen) {
-      rows = renderCardRows(childrenMap.get("") || [], 0, p, childrenMap, curId);
-      if (orphans.length) rows += renderCardRows(orphans, 0, p, childrenMap, curId);
-    }
-    return `<div class="nav-pgroup">
-      <div class="nav-phead${isCur ? " current" : ""}" data-wid="${escapeHtml(p.work_id)}" data-root="${escapeHtml(p.work_card_id || "")}" title="${escapeHtml(p.title)}">
-        <span class="nav-twist" data-ptwist="${escapeHtml(p.work_id)}" title="展开/收起">${isOpen ? "▾" : "▸"}</span>
-        <span class="dot root"></span>
-        <span class="nav-pname">${escapeHtml(p.title)}</span>
-        <span class="nav-pcount">${p.card_count}卡</span>
-        <button class="nav-popen" data-act="open" data-wid="${escapeHtml(p.work_id)}" title="打开该项目画布">打开 →</button>
-        <span class="nav-ptime">${fmtRel(p.last_active_at)}</span>
-        <button class="nav-padd" data-add="${escapeHtml(p.work_id)}" title="＋ 新建卡">＋卡</button>
-      </div>
-      ${rows}
-    </div>`;
-  }
-
-  function renderCardRows(nodes, depth, p, childrenMap, curId) {
-    let html = "";
-    for (const c of nodes) {
-      const hasKids = (c.child_count || 0) > 0;
-      const open = navOpenCards.has(c.card_id);
-      const isCur = c.card_id === curId;
-      const pad = 10 + depth * 14;   // §3.5：每层 +14px
-      // [B4 主界面优化] 行内时间戳（nav-ctime）退役——活跃/分支活跃走 tooltip 三分列；
-      // [E2 前端消费] branch_active_at 入 tooltip（「分支活跃」标识的到车口）
-      const tip = escapeHtml(c.title)
-        + (c.last_active_at ? `｜本卡活跃 ${fmtRel(c.last_active_at)}` : "｜无对话")
-        + (c.branch_active_at ? `｜分支活跃 ${fmtRel(c.branch_active_at)}` : "");
-      html += `<div class="nav-card${isCur ? " current" : ""}" data-cid="${escapeHtml(c.card_id)}" data-wid="${escapeHtml(p.work_id)}" style="padding-left:${pad}px;" title="${tip}">
-        <span class="nav-twist${hasKids ? "" : " none"}"${hasKids ? ` data-twist="${escapeHtml(c.card_id)}" title="展开/收起"` : ""}>${hasKids ? (open ? "▾" : "▸") : ""}</span>
-        <span class="dot ${hasKids ? "mid" : "leaf"}"></span>
-        <span class="nav-ctitle">${escapeHtml(c.title)}</span>
-        <button class="nav-more" data-more="${escapeHtml(c.card_id)}" data-mwid="${escapeHtml(p.work_id)}" title="建子卡 / 卡详情">⋯</button>
-      </div>`;
-      if (hasKids && open) {
-        html += renderCardRows(childrenMap.get(c.card_id) || [], depth + 1, p, childrenMap, curId);
-      }
-    }
-    return html;
-  }
+  // [S2] ensureCurrentPath（祖先路径自动展开）职责移入 nav_render.js applyDefaultFold
+  // （source="system" 记入偏好层）；renderNavFromCache / renderProject / renderCardRows
+  // 的 innerHTML 整树拼装退役——渲染走 nav_render.js 行级 mount/unmount/patch。
 
   function gotoCard(cid, wid, focusChild) {
     if (!cid) return;
@@ -595,23 +563,143 @@ const WORK_ID = window.__WORK_ID__;
     }
   }
 
-  // 导航事件委托：一次绑定，重渲免重挂。
-  // [B1/B2/B5 主界面优化] 三行为分离：▸/▾（data-twist/data-ptwist，24px 热区）＝只管
-  // 展开收起；行（.nav-phead/.nav-card）＝进该卡对话（组头＝根卡对话，展开态保持）；
-  // 「打开 →」（data-act="open"）＝进项目画布。互不误触。
+  // ==================== [S3/T1] 交互层（R-20/21/28/29） ====================
+
+  // [S3/R-28] 收起非路径分支的批量内核：非 keepOpenWid 的项目行全收；已展开分支凡不在
+  // pathIds 一律折叠。逐条走 prefs 常规 API（S3 只批量调用，不改 API 面）——路径条目的
+  // source 标记原样保留（S4「手动展开绝不收」判据数据不破坏）。
+  function collapseNonPathProjects(keepOpenWid, pathIds) {
+    for (const p of (navStore.snapshot.get().projects || [])) {
+      const wid = p.work_id;
+      if (wid !== keepOpenWid) navStore.prefs.setProjectOpen(wid, false);
+      for (const e of navStore.prefs.listExpanded(wid)) {
+        if (pathIds.has(e.cid)) continue;
+        navStore.prefs.setExpanded(wid, e.cid, null);        // 折叠（与手动折叠同一条常规路径）
+        navAsync.fold({ wid, card: { card_id: e.cid } });    // 折叠即丢（R-14 既有语义）
+      }
+    }
+  }
+
+  // [S3/R-28] 一键收起全部：只保留当前卡祖先链（v4 硬禁第一项：当前卡祖先链绝不收）。
+  // 折叠记忆自动存（prefs 天然持久化）。
+  function collapseAllKeepPath() {
+    const sel = navStore.select.get();
+    const curWid = (sel && sel.wid) || WORK_ID;
+    const curCid = (sel && sel.cid) || (currentCard ? currentCard.meta.card_id : "");
+    const pathIds = new Set(ancestorCards(navStore.snapshot, curWid, curCid).map(c => c.card_id));
+    if (curCid && !navStore.prefs.getProjectOpen(curWid)) {
+      navStore.prefs.setProjectOpen(curWid, true);   // 当前卡所在项目行必须保持展开
+    }
+    collapseNonPathProjects(curCid ? curWid : null, pathIds);
+    navFind.close();
+    navRenderer.render();
+    navBreadcrumb.render();
+  }
+
+  // [S3/R-26] 定位到当前卡：收起非路径分支＋祖先链强制展开（段数据从快照灌，零网络）＋
+  // 滚到当前卡可视区（scrollTop = headerH + 行前缀和 top − 吸顶盖高）。
+  function locateCurrentCard() {
+    const sel = navStore.select.get();
+    const wid = (sel && sel.wid) || WORK_ID;
+    const cid = (sel && sel.cid) || (currentCard ? currentCard.meta.card_id : "");
+    if (!cid) return;
+    const snap = navStore.snapshot;
+    const chain = ancestorCards(snap, wid, cid);
+    if (!chain.length) return;
+    const pathIds = new Set(chain.map(c => c.card_id));
+    if (!navStore.prefs.getProjectOpen(wid)) navStore.prefs.setProjectOpen(wid, true);
+    for (const a of chain) {
+      // manual（用户手动展开）不动——applyDefaultFold 同判据；无条目或 system → 系统展开
+      if (navStore.prefs.getExpanded(wid, a.card_id) !== "manual") {
+        navStore.prefs.setExpanded(wid, a.card_id, "system");
+      }
+      snap.setChildren(wid, a.card_id, snap.cardsOf(wid, a.card_id));   // 祖先段（零网络）
+    }
+    if (!snap.getChildren(wid, "")) {
+      // 根层段缺失才灌（孤儿契约与 nav_render.snapshotRootsWithOrphans 同口径）
+      const p = snap.project(wid);
+      const all = (p && p.cards) || [];
+      const ids = new Set(all.map(c => c.card_id));
+      const root = (p && p.work_card_id) || "";
+      snap.setChildren(wid, "", all.filter(c => {
+        const pa = c.parent || "";
+        return pa === "" || pa === root || (pa && !ids.has(pa));
+      }));
+    }
+    collapseNonPathProjects(wid, pathIds);
+    navFind.close();
+    navRenderer.render();
+    navBreadcrumb.render();
+    // 滚动定位：行前缀和 top（expandRows 导出）＋在流头部高度（vl.headerH，S2 预留口）−吸顶盖高
+    const rows = navRenderer.expandRows();
+    const idx = rows.findIndex(r => r.kind === "card" && r.wid === wid && r.card.card_id === cid);
+    if (idx >= 0) {
+      let off = 0;
+      for (let i = 0; i < idx; i++) off += rows[i].rowHeight();
+      const header = navBreadcrumb.headerHeight();
+      const cover = navBreadcrumb.stickyCoverPx();
+      navTree.scrollTop = Math.max(0, header + off - cover);
+      navRenderer.render();   // 显式 reslice（容器 scroll 被动监听亦触发，双保险）
+    }
+  }
+
+  // [S3/R-21] 灰态兜底：点击的卡不在快照（多标签删除/快照缝隙）→ 置灰不跳；
+  // 该卡恰为当前选中 → 清选中（hash 摘除，restoreFromHash 清失效 hash 同款）＋面包屑回父卡。
+  function handleMissingCard(rowEl, wid, cid) {
+    rowEl.classList.add("deleted");
+    const sel = navStore.select.get();
+    if (sel && sel.wid === wid && sel.cid === cid) {
+      history.replaceState(null, "", location.pathname + location.search);
+      const parentCid = (currentCard && currentCard.meta.card_id === cid)
+        ? (currentCard.meta.parent || "") : "";
+      if (parentCid) {
+        navBreadcrumb.render({ overrideWid: wid, overrideCid: parentCid, bypassDepth: true });
+      } else {
+        navBreadcrumb.render();
+      }
+    }
+  }
+
+  // [S3/R-20②③] 卡行点击判型：先查后动（R-21）→ 有子卡＝展开/折叠（URL 不变）；
+  // 叶子＝跳转（open() → select.set 复合键 ＋页面切卡）。
+  function handleCardRowClick(rowEl) {
+    const cid = rowEl.dataset.cid;
+    const wid = rowEl.dataset.wid || WORK_ID;
+    // [S3/R-21/V3-A4] 先查后动：snapshot.project(wid) 在场且快照含该卡（cardInSnapshot，
+    // nav_badge.js 纯函数，内部走 snapshot.project + cards 全量比对）才动作
+    if (!cardInSnapshot(navStore.snapshot, wid, cid)) {
+      handleMissingCard(rowEl, wid, cid);
+      return;
+    }
+    rowEl.classList.remove("deleted");   // 快照已恢复的自愈（灰态权威投影在 patchCardContent）
+    const rowObj = rowEl.__navRow;
+    const hasKids = rowObj
+      ? ((rowObj.card.child_count || 0) > 0)
+      : (parseInt(rowEl.dataset.childCount || "0", 10) > 0);
+    if (hasKids) {
+      if (rowObj) navRenderer.toggleCard(rowObj);
+      return;
+    }
+    gotoCard(cid, wid, false);
+  }
+
+  // 导航事件委托：一次绑定，免重挂。[S2] 读写走三层容器，展开/折叠/拉取走新模块。
+  // [S3/R-20] 单击语义按行类型分叉（v3 L50-53；旧 B1「组头整行＝进组根卡对话」退役）：
+  //   ▸/▾（data-twist/data-ptwist，24px 热区）＝只管展开收起（S2 热区不动）；
+  //   项目行（.nav-phead）单击＝展开/折叠，URL 不变；
+  //   有子卡卡行单击＝展开/折叠，URL 不变；
+  //   叶子卡单击＝跳转（复合键写 URL＋页面切卡）；已删卡＝灰态不跳（R-21）；
+  //   「打开 →」（data-act="open"）＝进项目画布（不动）。互不误触。
   navTree.addEventListener("click", (e) => {
     const twist = e.target.closest("[data-twist]");
     if (twist) {
-      const cid = twist.dataset.twist;
-      if (navOpenCards.has(cid)) navOpenCards.delete(cid); else navOpenCards.add(cid);
-      renderNavFromCache();
+      const rowEl = twist.closest(".nav-card");
+      if (rowEl && rowEl.__navRow) navRenderer.toggleCard(rowEl.__navRow);
       return;
     }
     const ptwist = e.target.closest("[data-ptwist]");
     if (ptwist) {
-      const wid = ptwist.dataset.ptwist;
-      if (navProjectsOpen.has(wid)) navProjectsOpen.delete(wid); else navProjectsOpen.add(wid);
-      renderNavFromCache();
+      navRenderer.toggleProject(ptwist.dataset.ptwist);
       return;
     }
     const more = e.target.closest("[data-more]");
@@ -622,17 +710,24 @@ const WORK_ID = window.__WORK_ID__;
     if (popen) { window.location.href = "/work/" + popen.dataset.wid; return; }
     const phead = e.target.closest(".nav-phead");
     if (phead) {
-      // [B1] 组头整行点击＝进入该组根卡对话；展开态保持（折叠中则先展开）
-      if (!navProjectsOpen.has(phead.dataset.wid)) {
-        navProjectsOpen.add(phead.dataset.wid);
-        renderNavFromCache();
-      }
-      gotoCard(phead.dataset.root, phead.dataset.wid, false);
+      // [S3/R-20①] 项目行单击＝展开/折叠（URL 不变）
+      navRenderer.toggleProject(phead.dataset.wid);
       return;
     }
     const row = e.target.closest(".nav-card");
-    if (row) gotoCard(row.dataset.cid, row.dataset.wid, false);
+    if (row) handleCardRowClick(row);
   });
+
+  // [S3/R-18] 树滚动 → 面包屑吸顶联动（同一 DOM 两态；scrollTop>2 挂 .sticky）
+  navTree.addEventListener("scroll", () => { navBreadcrumb.onTreeScroll(); }, { passive: true });
+
+  // [S3/R-28/R-26] 左栏顶部两钮（work.html #navTop 容器内）
+  {
+    const collapseBtn = document.getElementById("navCollapseAll");
+    if (collapseBtn) collapseBtn.onclick = collapseAllKeepPath;
+    const locateBtn = document.getElementById("navLocate");
+    if (locateBtn) locateBtn.onclick = locateCurrentCard;
+  }
 
   // ==================== 讨论区 ====================
   // [R3] 会话区渲染：首屏/换卡全量构建；同卡重渲染走增量（只 append 尾部差额），
@@ -1066,15 +1161,20 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // ==================== [刷新恢复 2026-10-03] 加载时按 URL hash 重开上次的卡 ====================
   // 问题：页面上看的那张卡刷新即丢——回读历史的能力（open→renderChat→GET /session）三层齐备，
   // 但加载时没有任何代码去调 open()，所以刷新后对话区空白。
-  // 修法：卡号存 URL hash（open() 内写入），加载时读出来重开。不引入 localStorage 等前端存储。
+  // 修法：卡号存 URL hash（open() 内写入），加载时读出来重开。不引入浏览器本地持久存储等前端存储。
   async function restoreFromHash() {
-    const hash = (location.hash || "").replace(/^#/, "");
-    if (!hash) return false;
+    // [S2/R-09] 选中层复合键解析：#wid/cid ＝ 指向该 work 的卡；旧 #cid ＝ 回落当前页 WORK_ID
+    const sel = navStore.select.get();
+    if (!sel) return false;
+    if (sel.wid !== WORK_ID) {
+      window.location.href = "/work/" + sel.wid + "#" + sel.cid;
+      return true;
+    }
     try {
-      await open(hash);
+      await open(sel.cid);
       // [刷新恢复实时状态 2026-10-03] 历史回读完成后，查一次后端进度：若这张卡有调用在跑，
       // 把等待气泡与 2 秒轮询挂回去——刷新不再丢失「正在思考」的实时状态。
-      await attachRunningState(hash);
+      await attachRunningState(sel.cid);
       return true;
     } catch (e) {
       // 卡片不存在（已是旧链接）等情形：open() 内部已 toast，这里回退到根卡，
@@ -1086,11 +1186,179 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
   // 浏览器后退/前进时同步切卡（hash 变化即重开）
   window.addEventListener("hashchange", () => {
-    const hash = (location.hash || "").replace(/^#/, "");
-    if (hash && (!currentCard || currentCard.meta.card_id !== hash)) {
-      open(hash);
+    const sel = navStore.select.get();
+    if (!sel) return;
+    if (sel.wid !== WORK_ID) {
+      window.location.href = "/work/" + sel.wid + "#" + sel.cid;
+      return;
+    }
+    if (!currentCard || currentCard.meta.card_id !== sel.cid) {
+      open(sel.cid);
     }
   });
+
+  // ==================== [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗状态机 ====================
+  // 点按钮 → draft(kind) → 草稿态（只读展示，暂存 base_hash）→ 三选一：
+  //   〔确认〕→ commit(draft, base_hash)：成功 toast+关弹窗+刷新；hash 冲突红字回草稿态
+  //   〔反馈〕→ 展开反馈框 → 重新 draft(kind, feedback, prev_draft)
+  //   〔关闭〕→ 直接关，不发任何请求（草稿丢弃、卡 hash 不变）
+  // 关键约束：关闭与反馈都不落卡；只有确认走 commit；draft 期间弹窗「加载中」灰字。
+  {
+    const modal = document.getElementById("draftModal");
+    const overlay = document.getElementById("draftOverlay");
+    const titleEl = document.getElementById("draftModalTitle");
+    const draftArea = document.getElementById("draftArea");
+    const feedbackBox = document.getElementById("draftFeedbackBox");
+    const feedbackInput = document.getElementById("draftFeedbackInput");
+    const errorEl = document.getElementById("draftModalError");
+    const confirmBtn = document.getElementById("draftConfirmBtn");
+    const feedbackBtn = document.getElementById("draftFeedbackBtn");
+    const closeBtn = document.getElementById("draftCloseBtn");
+    const modalX = document.getElementById("draftModalX");
+    const draftBtn = document.getElementById("draftBtn");
+    const statusDraftBtn = document.getElementById("statusDraftBtn");
+
+    // 弹窗会话态（内存，不落盘）
+    let dm = null;  // { kind, baseHash, draft, feedbackRounds, busy }
+
+    function isRdCard() {
+      return currentCard && currentCard.body && ("requirements" in currentCard.body);
+    }
+
+    // 按钮文案随块集判据切换（研发卡「需求确定」/ 其他卡「定论确认」）
+    function updateDraftButtons() {
+      if (!draftBtn) return;
+      draftBtn.textContent = isRdCard() ? "需求确定" : "定论确认";
+    }
+
+    function setModalError(msg) {
+      if (!errorEl) return;
+      if (msg) { errorEl.textContent = msg; errorEl.style.display = "block"; }
+      else { errorEl.textContent = ""; errorEl.style.display = "none"; }
+    }
+
+    function openDraft(kind) {
+      if (!currentCard) { notify("请先打开一张卡", "warn"); return; }
+      dm = { kind, baseHash: "", draft: "", feedbackRounds: 0, busy: false };
+      titleEl.textContent = kind === "requirements"
+        ? (isRdCard() ? "需求文档起草" : "定论起草")
+        : "现状更新起草";
+      draftArea.textContent = "起草中…";
+      draftArea.classList.add("loading");
+      feedbackBox.classList.remove("open");
+      feedbackInput.value = "";
+      setModalError("");
+      confirmBtn.disabled = true;
+      feedbackBtn.disabled = true;
+      modal.classList.add("open");
+      _requestDraft(kind, null, null);
+    }
+
+    async function _requestDraft(kind, feedback, prevDraft) {
+      dm.busy = true;
+      confirmBtn.disabled = true;
+      feedbackBtn.disabled = true;
+      draftArea.textContent = "起草中…";
+      draftArea.classList.add("loading");
+      setModalError("");
+      try {
+        const body = { kind };
+        if (feedback) body.feedback = feedback;
+        if (prevDraft != null) body.prev_draft = prevDraft;
+        const r = await API.postDraft(WORK_ID, currentCard.meta.card_id, body);
+        dm.draft = r.draft || "";
+        dm.baseHash = r.base_hash || "";
+        draftArea.textContent = dm.draft || "（空草稿）";
+        draftArea.classList.remove("loading");
+        confirmBtn.disabled = false;
+        feedbackBtn.disabled = false;
+      } catch (e) {
+        // toast 已由 api.js 处理；弹窗内补错误态
+        draftArea.textContent = "起草失败";
+        draftArea.classList.remove("loading");
+        setModalError("起草失败，请重试");
+        confirmBtn.disabled = true;
+        feedbackBtn.disabled = true;
+      } finally {
+        dm.busy = false;
+      }
+    }
+
+    async function submitCommit() {
+      if (!dm || dm.busy) return;
+      dm.busy = true;
+      confirmBtn.disabled = true;
+      feedbackBtn.disabled = true;
+      try {
+        const r = await API.postCommit(WORK_ID, currentCard.meta.card_id, {
+          kind: dm.kind,
+          draft: dm.draft,
+          base_hash: dm.baseHash,
+          feedback_rounds: dm.feedbackRounds,
+        });
+        API.toast("已写入", "success");
+        closeDraft();
+        // 刷新 inspector（读侧过滤后的新 body）
+        const fresh = await API.getCard(WORK_ID, currentCard.meta.card_id);
+        currentCard = fresh;
+        await renderInspector();
+      } catch (e) {
+        // hash 冲突等：弹窗内红字提示，回到草稿态（不关弹窗）
+        const msg = (e && e.message) ? e.message : "写入失败";
+        if (String(msg).indexOf("内容已被改") >= 0 || String(msg).indexOf("重新起草") >= 0) {
+          setModalError("内容已被改，请重新起草");
+        } else {
+          setModalError(msg);
+        }
+        confirmBtn.disabled = false;
+        feedbackBtn.disabled = false;
+      } finally {
+        dm.busy = false;
+      }
+    }
+
+    async function submitFeedback() {
+      if (!dm || dm.busy) return;
+      const fb = (feedbackInput.value || "").trim();
+      if (!fb) {
+        feedbackBox.classList.add("open");
+        feedbackInput.focus();
+        return;
+      }
+      dm.feedbackRounds += 1;
+      feedbackBox.classList.remove("open");
+      feedbackInput.value = "";
+      await _requestDraft(dm.kind, fb, dm.draft);
+    }
+
+    function closeDraft() {
+      dm = null;
+      modal.classList.remove("open");
+      draftArea.textContent = "";
+      feedbackBox.classList.remove("open");
+      feedbackInput.value = "";
+      setModalError("");
+    }
+
+    // 事件绑定
+    if (draftBtn) draftBtn.onclick = () => openDraft("requirements");
+    if (statusDraftBtn) statusDraftBtn.onclick = () => openDraft("status");
+    if (confirmBtn) confirmBtn.onclick = submitCommit;
+    if (feedbackBtn) feedbackBtn.onclick = submitFeedback;
+    if (closeBtn) closeBtn.onclick = closeDraft;
+    if (modalX) modalX.onclick = closeDraft;
+    if (overlay) overlay.onclick = closeDraft;  // 点遮罩＝关闭（无请求）
+
+    // 按钮文案跟随开卡/重渲更新（renderInspector 后调用）
+    const _origRenderInspector = renderInspector;
+    renderInspector = async function () {
+      await _origRenderInspector();
+      updateDraftButtons();
+    };
+
+    // 初始化一次（无卡时保持缺省文案）
+    updateDraftButtons();
+  }
 
   // ==================== [T17] 静态绑定与初始化 ====================
   // 返回画布：纯显隐切换（R-1/R-043 铁则：不得走 reloadCanvas——「刷新画布数据」与
@@ -1108,8 +1376,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       if (nav) nav.classList.toggle("pinned");
     };
   }
-  // 相对时间 60s 重算（条款 7：会话内，不落盘）
-  setInterval(() => { renderNav(); }, 60000);
+  // [S2/M3] 版本探测 60s 周期：version 未变零开销（连 diff 都不跑）；变了才全量重拉
+  // 并只 diff 变化 work 子树。相对时间重算随真实数据变更触发（旧「60s 整树重渲」退役）。
+  setInterval(() => { navRenderer.probeVersion(); }, 60000);
   // 初始导航渲染（画布态窄条悬停浮层也有树）
   renderNav();
 
@@ -1136,13 +1405,14 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const count = document.getElementById("navNotifyCount");
     const READ_KEY = `projMsgRead:${WORK_ID}`;
 
+    // [S2/V-S5] 裸本地存储访问收口：经 state_layers 的 storage 包装（行为等价）
     function readMap() {
-      try { return JSON.parse(localStorage.getItem(READ_KEY) || "{}"); } catch (e) { return {}; }
+      try { return JSON.parse(storageGet(null, READ_KEY, "{}") || "{}"); } catch (e) { return {}; }
     }
     function writeRead(map) {
       try {
         const entries = Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 500);   // 上限 500 按 ts 淘汰
-        localStorage.setItem(READ_KEY, JSON.stringify(Object.fromEntries(entries)));
+        storageSet(null, READ_KEY, JSON.stringify(Object.fromEntries(entries)));
       } catch (e) { /* 零阻断 */ }
     }
 
