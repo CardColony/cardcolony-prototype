@@ -9,7 +9,7 @@ import { API } from "./api.js?v=12";
 import "./util.js?v=12";
 import "../stream.js?v=13";
 import "../canvas.js?v=12";
-import "./workspace.js?v=13";
+import "../workspace.js?v=13";
 
 window.GetCanvasState = () => store.state.canvasState;
 window.API = API;   // 调试便利（非功能依赖；不计功能挂载——与 api.js 薄壳同属兼容层）
