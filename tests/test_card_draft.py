@@ -17,7 +17,6 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api import card_draft, prompts, routes
 from src.storage import card_store, shadow_store, work_store
-from src.storage.hash_utils import parse_front_matter
 
 app_state = {}
 
@@ -50,16 +49,14 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
 
 
 # ---------------------------------------------------------------- 判据5：版本号
-# [工具模块整理 2026-10-12] 钉子由 t17-1 推进到 t18-1。
-# t18-1 是「说明追现实」批：撤回 t17-1「edit_card/update_shadow 已收回」的不实
-# 声称（两件实际仍在工具面第 4/6 位下发，见 docs/工具模块现状-20261012.md P-01），
-# 改为如实说明「直改与起草两条写入路径并存」；另补 6 件零文档工具、修文件边界、
-# 联网两件改条件提供。**本文件测的 draft/commit 机制本身未被 t18-1 触及**，
-# 改的只是版本号这个钉子。
 
-
-def test_base_prompt_version_is_t18_1():
-    assert prompts.BASE_PROMPT_VERSION == "t18-1"
+# [销红 2026-10-12] 裁定1：钉 dev 现态 src/api/prompts.py:38。
+# [判断协议改注入 2026-10-14] t17-1 → t18-1：判断协议从 BASE_PROMPT 摘出（改注入），
+# 使用说明正文其余部分不变——文本变了，版本号随升（回归基准对账）。
+# [卡片区域语义 v3 2026-10-14] t18-1 → t19-1：read_shadow 工具行去掉「上级卡查看子卡
+# 影子」，改为「只读本卡自己的影子」。
+def test_base_prompt_version_is_t19_1():
+    assert prompts.BASE_PROMPT_VERSION == "t19-1"
 
 
 # ---------------------------------------------------------------- 判据1：draft
@@ -211,8 +208,14 @@ async def test_commit_research_project_writes_rulings(sandbox, monkeypatch):
     assert "D01【裁定】研究结论" in raw["body"]["rulings"]
 
 
-async def test_commit_rd_writes_requirements_section_heading(sandbox, monkeypatch):
-    """[设计偏差修正] rd_project 卡 commit 后盘上区头为「## 需求文档」（非「## 定论」）。"""
+async def test_commit_rd_writes_requirements_block(sandbox, monkeypatch):
+    """[卡片存储迁移 SQLite] rd_project 卡 commit 后：第三块内容落库，读侧以
+    requirements 外露。
+
+    原判据「盘上区头为 ## 需求文档」随 md 退役——库内第三块是**一列**
+    （cards.rulings），「叫什么名」由读侧按本树 project_class 决定
+    （routes._apply_block_set），不再有盘上区头可改。
+    """
     os.environ["MOCK_LLM"] = "1"
     monkeypatch.setattr(card_draft.model_service, "_gateway", None)
     wdata = await _mk_rd_work()
@@ -224,12 +227,10 @@ async def test_commit_rd_writes_requirements_section_heading(sandbox, monkeypatc
     r = await card_draft.commit(wid, cid, "requirements", "D01【裁定】研发需求", d["base_hash"])
     assert r.get("ok") is True, r
 
-    # 盘上正文区头应为 ## 需求文档（不是 ## 定论）
-    card_path = card_store._card_path(wid, cid)
-    raw = card_path.read_text(encoding="utf-8")
-    _, body = parse_front_matter(raw)
-    assert "## 需求文档" in body, f"盘上应有 ## 需求文档 区头，实际 body:\n{body}"
-    assert "## 定论" not in body, f"盘上不应有 ## 定论 区头，实际 body:\n{body}"
+    card = await card_store.read_card(wid, cid)
+    assert "D01【裁定】研发需求" in card["body"]["rulings"]
+    filtered = routes._apply_block_set(card, wid)
+    assert "D01【裁定】研发需求" in filtered["body"]["requirements"]
 
 
 async def test_commit_rd_read_side_shows_requirements(sandbox, monkeypatch):

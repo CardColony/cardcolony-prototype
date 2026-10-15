@@ -154,6 +154,32 @@ def make_msg_id(from_card: str) -> str:
     return f"{from_card}-{uuid4().hex[:8]}"
 
 
+# ---------------------------------------------------------------------------
+# [卡间消息·头 2026-10-14] 模型视野里的固定头（用户 23:25 分工：只让我管"头"）。
+#
+# 分工：正文分段（任务本身／是哪张卡的任务／要你干嘛…）由**功能线**承载；
+# 本模块只负责头——① **role 合法**（actor→role 映射见 `session_facade`，
+# `card:*` → `user`）；② 机器头行换成下面这个固定标记。
+# 头**不承担归属**：不提发件卡、不提类型、不加处理指示（用户 23:09/23:25）。
+# ---------------------------------------------------------------------------
+
+CONTEXT_HEAD = "〔卡间消息〕"
+
+
+def render_for_context(content: str) -> str:
+    """投影用（纯函数）：首行机器头 → 固定头标记；无头行时原样返回。
+
+    只改**模型视野**，**不改块本身**——`find_pending` 仍读原始头行（块是真相源，
+    头行里的 id/type/from 是待处理推导与回信的锚）。
+    """
+    if not isinstance(content, str) or not content:
+        return content if isinstance(content, str) else ""
+    if parse_header(content) is None:
+        return content
+    body = strip_header(content)
+    return f"{CONTEXT_HEAD}\n{body}" if body else CONTEXT_HEAD
+
+
 def find_pending(blocks: list[dict]) -> dict | None:
     """待处理推导：返回**最后一条** `actor` 以 `card:` 开头的块之后**没有 assistant 块**
     时的那条卡间块；否则 `None`（从尾向前扫，先见 assistant 即非 pending）。

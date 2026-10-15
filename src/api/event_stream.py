@@ -24,6 +24,9 @@ round_end/rescue/tool_call/tool_result/seats_enter/seat_start/seat_end/deliver/
 proposal/done/error/ping）＋ card_op（确定性动作直答事件）＋ 逐字流 2 类。
 （2026-10-11：快车道/全链分流机制退役——fastlane_route 事件随之移除，
  确定性动作识别并入 triage 判定链，用户路径上只有一套判断。）
+[模型过程数据 2026-10-12] 判断/拆解/步进/步开始四类过程数据补全：主通道
++judgment＋step_start（本体论 19 → 21 原 + 2 逐字流 = 23），plan_created/
+step_advanced/tool_call/tool_result/seat_end 只补字段不换通道。
 Schema 统一 {"seq":n,"ts":...,"type":"...","data":{...}}。ping 为 SSE 保层
 心跳帧（不占 journal，由 SSE 生成器定期发送）。
 
@@ -80,13 +83,31 @@ def current_stream_context():
 # 「与既有 17 类隔离、不混合排 seq」）。
 TOKEN_EVENT_TYPES: tuple[str, ...] = ("reasoning_chunk", "content_chunk")
 
-# 事件本体论（19 类 = 17 原 + 2 逐字流；V-T4-2 判据锚）
+# 事件本体论（原 19 类 = 17 原 + 2 逐字流；V-T4-2 判据锚）。
+# [模型过程数据 2026-10-12] 主通道 +2 类 → 21 原 + 2 逐字流 = 23：
+#   judgment  —— 首轮机械推断（tool_calls 含 create_plan → plan，否则 direct）；
+#   step_start —— 每步开始（当前板步首次被观测时发一次）。
+# 只补类型与字段，/stream、/tokens 两条通道与传输协议不动。
 EVENT_TYPES: tuple[str, ...] = (
     "run_start", "context", "round_start", "round_end", "rescue",
     "tool_call", "tool_result", "seats_enter", "seat_start", "seat_end",
     "deliver", "proposal", "done", "error", "ping",
     "card_op",
     "triage_verdict", "plan_created", "step_advanced",
+    "judgment", "step_start",
+    # [当前轮注入消息事件 2026-10-14] 两类注入消息（本体论 23 → 25）：
+    #   context_preamble  —— 固定总领（思维链固定执行纪律；工具卡本任务不发）；
+    #   context_injection —— 动态步骤注入（工具卡步骤 / 思维链当前步）。
+    # 语义与顺序见 docs/当前轮注入消息事件-施工方案-20261014.md。
+    "context_preamble", "context_injection",
+    # [判断协议改注入 2026-10-14] 判断协议注入（本体论 25 → 26）：从 BASE_PROMPT
+    # 摘出，改在「本回合首次调用、且本卡无活板」时注入一条（第一人称自述）。单列
+    # 一类——语义是「入口判断协议」，不同于 context_preamble（工作规范）。
+    "judgment_protocol",
+    # [三席身份注入 2026-10-14] 三席身份注入（本体论 26 → 27）：提交轮三席进场时
+    # 一条，role=assistant 自述、抬头〔三席身份〕。单列一类——语义是「三席身份」，
+    # 既非固定总领也非判断协议（复用会让前端误标「上下文注入·固定总领」）。
+    "context_seat_identity",
 ) + TOKEN_EVENT_TYPES
 
 # [对话流渲染 T4] 以下两个上限常量已删——都是「丢字/丢步骤闸」：
@@ -179,6 +200,32 @@ _token_subscribers: dict[tuple[str, str], set[asyncio.Queue]] = {}
 
 def _key(work_id: str, card_id: str) -> tuple[str, str]:
     return (work_id, card_id)
+
+
+# ------------------------------------------------------------
+# [消息底座能力对齐 2026-10-13 · 件2] 事件落盘通道（裁定 C1/C2/C7）
+# ------------------------------------------------------------
+# 内存 journal 是**实时 SSE 源**（进程内、重启即失）；works/{work}/events/
+# {card}.jsonl 是**可回溯的时序真相**（append-only、重启续号）。两路并存：
+# 一路管「现在正在发生什么」，一路管「过去发生了什么」——不互相替代。
+# 落盘字段：run_id＝回合锚 pair_id，round＝轮锚 turn，model 仅 reasoning 带。
+# 零阻断：落盘失败只记 warning，不影响 SSE 与主流程（展示层同族纪律）。
+def _persist_log(work_id: str, card_id: str, ev_type: str,
+                 data: Any, model: str = "") -> None:
+    try:
+        from ..storage import event_log
+        anchor = _anchors.get(_key(work_id, card_id)) or {}
+        payload = data if isinstance(data, dict) else {"value": data}
+        event_log.append_bg(work_id, card_id, {
+            "run_id": str(anchor.get("pair_id") or ""),
+            "round": int(anchor.get("turn") or 0),
+            "type": ev_type,
+            "data": payload,
+            "model": model or "",
+        })
+    except Exception as exc:  # noqa: BLE001 展示层零阻断
+        logger.warning("[flow] 事件落盘失败（不阻断）type=%s card=%s: %s",
+                       ev_type, card_id, exc)
 
 
 def _jsonable(data: dict[str, Any]) -> dict[str, Any]:
@@ -286,6 +333,8 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
         })
         journal.append(evt)
         _persist_frame(work_id, card_id, evt)
+        # [消息底座能力对齐 · 件2] 过程事件同步落 events jsonl（裁定 C1）
+        _persist_log(work_id, card_id, ev_type, evt["data"])
         _fanout(_subscribers.get(key, ()), evt, work_id, card_id, "主通道")
         # 兼容映射（旧 /progress 零感知）
         stage = _PROGRESS_STAGE.get(ev_type)
@@ -340,6 +389,22 @@ def subscriber_count(work_id: str, card_id: str) -> int:
     return len(_subscribers.get(_key(work_id, card_id), ()))
 
 
+def journal_last_seq(work_id: str, card_id: str) -> int:
+    """主 journal 当前末帧 seq（无帧＝0）。
+
+    [消息底座能力对齐 · 件4] 恢复统一走 /timeline（C4）：SSE from=0 不再整卡
+    重放，起流游标直接落在末帧——只推「连上之后新发生的事」。
+    """
+    j = _journals.get(_key(work_id, card_id)) or []
+    return int(j[-1]["seq"]) if j else 0
+
+
+def token_journal_last_seq(work_id: str, card_id: str) -> int:
+    """逐字流 journal 当前末帧 seq（无帧＝0）。同 journal_last_seq 语义。"""
+    j = _token_journals.get(_key(work_id, card_id)) or []
+    return int(j[-1]["seq"]) if j else 0
+
+
 # ============================================================================
 # [信息流重出 Task4] 逐字流独立通道
 #
@@ -384,6 +449,12 @@ def emit_token(work_id: str, card_id: str, ev_type: str, text: str,
             "data": _jsonable(data),
         })
         journal.append(evt)
+        # [消息底座能力对齐 · 件2] 思考增量落盘 type=reasoning（裁定 C2）：
+        # 三席带 model（extra.model＝席位模型名，前端据此分桶），主模型空串。
+        # 正文增量（content_chunk）**不落盘**——最终 assistant_text 一条落盘（裁定 C7）。
+        if ev_type == "reasoning_chunk":
+            _persist_log(work_id, card_id, "reasoning", {"text": text},
+                         model=str(data.get("model") or ""))
         # [对话流渲染 T4] 已删 5000 条环形弹出（原 pop(0) 丢前字）
         # 逐字流每帧给 /progress 打一次心跳：仍在吐字的超长请求持续被判为
         # 「仍在推进」，刷新后仍能补出「进行中」（V-T4-1）。

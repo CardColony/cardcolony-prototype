@@ -1,16 +1,104 @@
 {
-  "施工前快照": "monitor/config-snapshot.before-thinkchain-20261011.*（E盘备份 2026-10-11 23:42 后落）",
-  "施工后对账": [
+  "任务": "消息底座能力对齐（件1-6）",
+  "快照时刻": "2026-10-13",
+  "施工前备份": "E:\\AI_station-backup\\推演agent-msgbase-20261013T233005",
+  "施工后对账·改动件": [
+    {
+      "file": "src/storage/event_log.py",
+      "施工前sha16": null,
+      "施工后sha16": "6d95998a9a215513",
+      "状态": "新增"
+    },
+    {
+      "file": "src/storage/session_facade.py",
+      "施工前sha16": "e07e7f74bd0b4694",
+      "施工后sha16": "86fc0f8064911594",
+      "状态": "变更"
+    },
+    {
+      "file": "src/api/event_stream.py",
+      "施工前sha16": "6cd171e89f60068a",
+      "施工后sha16": "68bedc08f3408fba",
+      "状态": "变更"
+    },
+    {
+      "file": "src/api/message_runner.py",
+      "施工前sha16": "2ec1efa752aa8950",
+      "施工后sha16": "064713beb353f333",
+      "状态": "变更"
+    },
+    {
+      "file": "src/api/routes.py",
+      "施工前sha16": "fdaed8c904647555",
+      "施工后sha16": "f461386a421def79",
+      "状态": "变更"
+    },
+    {
+      "file": "src/api/card_tools.py",
+      "施工前sha16": "9a165cd4415e5b08",
+      "施工后sha16": "05c1d6a61fabc846",
+      "状态": "变更"
+    },
+    {
+      "file": "scripts/migrate_sessions_to_events.py",
+      "施工前sha16": null,
+      "施工后sha16": "bf1c1e2efb59f5e6",
+      "状态": "新增"
+    },
+    {
+      "file": "tests/conftest.py",
+      "施工前sha16": "f66878737b5fd994",
+      "施工后sha16": "7732c71b38762f31",
+      "状态": "变更"
+    },
+    {
+      "file": "tests/test_flowlane.py",
+      "施工前sha16": "2a5b51c4e2090468",
+      "施工后sha16": "aadfff55c560c171",
+      "状态": "变更"
+    },
+    {
+      "file": "tests/test_msg_base_events.py",
+      "施工前sha16": null,
+      "施工后sha16": "9ead63e4199968fd",
+      "状态": "新增"
+    }
+  ],
+  "施工后对账·config（应零变更）": [
     {
       "file": "config/models.yaml",
-      "施工前sha16": "88520de475ad894c",
-      "施工后sha16": "88520de475ad894c",
+      "施工前sha16": "d37f2eaf91e8e796",
+      "施工后sha16": "d37f2eaf91e8e796",
       "一致": true
     },
     {
-      "file": "config/model_pick.json",
-      "施工前sha16": "25fada7ef51c7ccd",
-      "施工后sha16": "25fada7ef51c7ccd",
+      "file": "config/session_base.json",
+      "施工前sha16": "67d4b50d097edf54",
+      "施工后sha16": "67d4b50d097edf54",
+      "一致": true
+    },
+    {
+      "file": "config/message_type_registry.json",
+      "施工前sha16": "d9e630b57d33f70f",
+      "施工后sha16": "d9e630b57d33f70f",
+      "一致": true
+    },
+    {
+      "file": "config/card_type_registry.json",
+      "施工前sha16": "cc495e7f3148a46f",
+      "施工后sha16": "cc495e7f3148a46f",
+      "一致": true
+    },
+    {
+      "file": "config/permissions.json",
+      "施工前sha16": "a20e350f4e65d6a3",
+      "施工后sha16": "a20e350f4e65d6a3",
+      "一致": true
+    },
+    {
+      "file": "config/roles.json",
+      "施工前sha16": "65ef929814f1dd33",
+      "施工后sha16": "65ef929814f1dd33",
       "一致": true
     },
     {
@@ -20,5 +108,17 @@
       "一致": true
     }
   ],
-  "结论": "config 三件施工前后逐字节一致（本施工零 config 变更）"
+  "结论": "config 七件施工前后逐字节一致（本施工零 config 变更）；改动件 10 件（新增 3：event_log.py / migrate_sessions_to_events.py / test_msg_base_events.py）",
+  "收尾对账（2026-10-14）": {
+    "范围": "件A 前端接 /timeline（刷新恢复过程区）＋ 件B 存量 sessions 实迁",
+    "前端改动件": [
+      { "file": "static/stream.js", "sha16": "dd607d50c1ccfc74", "说明": "replayTrace 改接 timeline；start() 起流游标改「无游标→0」" },
+      { "file": "static/workspace.js", "sha16": "0a42f5959203f82a", "说明": "open() 内 replayTrace 改 await" },
+      { "file": "static/esm/api.js", "sha16": "9e09638200022b8f", "说明": "新增 getTimeline" }
+    ],
+    "版本号": "?v=21 → ?v=22（static 10 文件 + templates/work.html）",
+    "config 零变更": true,
+    "存量实迁": { "cards": 46, "records": 1880, "skipped": 0, "manifest": "_backups/events_migration_20261014T085756/manifest.json" },
+    "全量pytest": "9 failed / 520 passed / 1 skipped（失败集＝基线那 9 条，零新增）"
+  }
 }

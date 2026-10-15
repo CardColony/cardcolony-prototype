@@ -223,19 +223,19 @@ async def test_s2_create_with_session_rollback_on_session_fail(work, monkeypatch
     with pytest.raises(RuntimeError):
         await session_facade.create_with_session(work["work_id"], "回滚卡", "用户直接创建")
     from src.storage import card_store as cs
-    # cards/ 下无半事务产物；damaged/ 移动留档
-    leftovers = [p for p in (session_store.WORKS_DIR / work["work_id"] / "cards").glob("*.md")
-                 if "回滚" in p.read_text(encoding="utf-8")]
-    assert leftovers == []
+    # [卡片存储迁移 SQLite] 卡在库内：回滚后库内不得留半事务卡（damaged/ 有留档）
+    assert not cs.card_exists(work["work_id"], "card_002")
     damaged = list((session_store.WORKS_DIR / work["work_id"] / "damaged").glob("*"))
-    assert len(damaged) == 2  # 卡文件＋会话占位文件，均留档
+    assert len(damaged) == 2  # 卡留档 ＋ 会话占位文件，均留档
 
 
 async def test_s2_create_with_session_card_fail_no_orphan(work, monkeypatch):
     """S2 验收 3b：卡片创建失败→无孤儿会话文件。"""
+    from src.storage import card_db
+
     def _boom(*a, **kw):
-        raise RuntimeError("注入：卡片渲染失败")
-    monkeypatch.setattr(card_store, "_render_card", _boom)
+        raise RuntimeError("注入：卡片写库失败")
+    monkeypatch.setattr(card_db, "insert_card", _boom)
     sdir = session_store.WORKS_DIR / work["work_id"] / "sessions"
     before = {p.name for p in sdir.glob("*")}
     r = await session_facade.create_with_session(work["work_id"], "败卡", "用户直接创建")

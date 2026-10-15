@@ -1,28 +1,42 @@
-/* settings.js —— 模型设置页（模型设置 · 第二步）
+/* settings.js —— 模型设置页（改版 v8 · 一张大卡片内左右分栏）
  *
- * 沿用 shelf.js 的 IIFE 风格（无框架）。页面结构四块：顶栏 / 供应商 / 模型 / 角色绑定，
- * 角色行**由 GET 返回的 roles 动态渲染**（不写死——角色归模块侧，加角色＝加一条 JSON）。
+ * 排版（照 zcode model-provider 界面骨架）：
+ *   一张大卡片 —— 左：供应商列表（导航项，点选高亮，蓝色左指示条）；
+ *   右：选中供应商的模型详细设置（头行 logo+名称+协议pill+密钥状态+「⋯」菜单 +
+ *       连接字段 + 模型列表）。
+ *   添加供应商 = 模板选择器（网格卡片），选模板预填端点/密钥变量，或自定义空。
  *
- * 三条约定：
- *   - 编辑期只改内存 DATA，不调后端；点「保存」才 PUT（保存即热生效）。
- *     拉取列表例外：走接口拿远端型号，但只往内存加卡片，未保存前可继续改。
+ * 约定：
+ *   - 编辑期只改内存 DATA，点「保存」才 PUT（保存即热生效）。
  *   - 密钥永不回显：只显示「已配置 ····xxxx」，改密走 PUT /keys/{name}。
- *   - 400 → 顶部红条列**全部**错误，页面不关、表单不清。
+ *   - 400 → 顶部红条列全部错误，页面不关、表单不清。
+ *   - CURRENT 记录当前选中供应商；删除后自动选中下一个。
  */
 (function () {
   "use strict";
 
   const $ = (id) => document.getElementById(id);
 
-  // 页面上唯一的数据源；与后端 models.yaml 的六段一一对应
   let DATA = {
     providers: {}, models: {}, bindings: {},
     system: {}, simple: {}, retry_grading: {},
     roles: {}, key_status: {},
   };
   let META = {};
-  let FETCH_CTX = null;   // 当前「拉取→勾选」上下文
+  let FETCH_CTX = null;
   let RESTORE_LIST = [];
+  let EDITING = new Set();        // 展开编辑的模型 key
+  let CURRENT = null;             // 当前选中供应商
+
+  // 内置供应商模板（对应 config/models.yaml 的 6 家 + 自定义空）
+  const TEMPLATES = [
+    { id: "nous",     name: "Nous",        sub: "claude-haiku-5.5 / deepseek-v4-pro", color: "#5c6bc0", protocol: "openai",   base_url: "https://inference-api.nousresearch.com/v1", api_key_env: "NOUS_API_KEY", models_url: "" },
+    { id: "deepseek", name: "DeepSeek",    sub: "官方 deepseek 系列",                  color: "#4d6bfe", protocol: "deepseek", base_url: "", api_key_env: "DEEPSEEK_API_KEY", models_url: "https://api.deepseek.com/models" },
+    { id: "zhipu",    name: "智谱 GLM",     sub: "glm-5.3 / glm-5.3-flash",           color: "#3859ff", protocol: "openai",   base_url: "https://open.bigmodel.cn/api/coding/paas/v4", api_key_env: "ZHIPU_CODING_API_KEY", models_url: "" },
+    { id: "minimax",  name: "MiniMax",     sub: "MiniMax-M3",                          color: "#151515", protocol: "openai",   base_url: "https://api.minimaxi.com/v1", api_key_env: "MINIMAX_API_KEY", models_url: "" },
+    { id: "aliyun",   name: "阿里云",       sub: "qwen3.8-max",                         color: "#ff6a00", protocol: "openai",   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", api_key_env: "ALIYUN_TOKEN_PLAN_API_KEY", models_url: "" },
+    { id: "opencode", name: "OpenCode",    sub: "deepseek-v4.1-flash",                 color: "#22d3ee", protocol: "openai",   base_url: "https://opencode.ai/zen/go/v1", api_key_env: "OPENCODE_API_KEY", models_url: "" },
+  ];
 
   // ------------------------------------------------------------ 工具
 
@@ -55,6 +69,13 @@
     b.innerHTML = "";
   }
 
+  function setSaveStatus(msg, isErr) {
+    const el = $("setSaveStatus");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = isErr ? "#f85149" : "#3fb950";
+  }
+
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({
       headers: { "Content-Type": "application/json" },
@@ -64,8 +85,6 @@
     return { status: res.status, ok: res.ok, data: data };
   }
 
-  // 型号 → 键名：anthropic/claude-haiku-5.5 → anthropic-claude-haiku-55
-  // 规则：小写 → 去掉点 → 分隔符（/ _ : 空格）转 '-' → 合并连续 '-' → 去首尾 '-'
   function sanitizeKey(modelId) {
     let s = String(modelId || "").toLowerCase().replace(/\./g, "");
     s = s.replace(/[\s/:_]+/g, "-");
@@ -74,7 +93,6 @@
     return s || "model";
   }
 
-  // 冲突自动加后缀 -2 / -3
   function uniqueKey(base, exceptKey) {
     if (!DATA.models[base] || exceptKey === base) return base;
     let i = 2;
@@ -82,14 +100,57 @@
     return base + "-" + i;
   }
 
-  function modelOptions(selected) {
-    const names = Object.keys(DATA.models);
-    let html = '<option value="">（未绑定）</option>';
-    for (const n of names) {
-      const sel = n === selected ? " selected" : "";
-      html += `<option value="${escapeHtml(n)}"${sel}>${escapeHtml(n)}</option>`;
+  function modelOptions(selected, exclude, omitEmpty) {
+    const providers = Object.keys(DATA.providers);
+    let html = omitEmpty ? "" : '<option value="">（未绑定）</option>';
+    for (const pid of providers) {
+      const mns = Object.keys(DATA.models).filter(
+        (n) => DATA.models[n].provider === pid && (!exclude || exclude.indexOf(n) < 0)
+      );
+      if (!mns.length) continue;
+      html += `<optgroup label="${escapeHtml(pid)}">`;
+      for (const n of mns) {
+        const m = DATA.models[n] || {};
+        const sel = n === selected ? " selected" : "";
+        // 选项显示真实型号；key 只作 value（内部存储），不显示、不叠加
+        html += `<option value="${escapeHtml(n)}"${sel}>${escapeHtml(m.model || n)}</option>`;
+      }
+      html += "</optgroup>";
+    }
+    // 兜底：孤儿模型（provider 指向已不存在的供应商）也要能选到，不能丢
+    const orphan = Object.keys(DATA.models).filter(
+      (n) => providers.indexOf(DATA.models[n].provider) < 0 && (!exclude || exclude.indexOf(n) < 0)
+    );
+    if (orphan.length) {
+      html += `<optgroup label="（未归类）">`;
+      for (const n of orphan) {
+        const m = DATA.models[n] || {};
+        const sel = n === selected ? " selected" : "";
+        html += `<option value="${escapeHtml(n)}"${sel}>${escapeHtml(m.model || n)}</option>`;
+      }
+      html += "</optgroup>";
     }
     return html;
+  }
+
+  function keyStatusChip(env) {
+    const st = env ? DATA.key_status[env] : null;
+    if (!st || !st.configured) {
+      return '<span class="set-key-state"><span class="set-status-dot"></span>未配置</span>';
+    }
+    return `<span class="set-key-state"><span class="set-status-dot on"></span>已配置 ····${escapeHtml(st.tail || "")}</span>`;
+  }
+
+  function modelsOf(provider) {
+    return Object.keys(DATA.models).filter((mn) => {
+      const m = DATA.models[mn];
+      return m && m.provider === provider;
+    });
+  }
+
+  function logoColor(name) {
+    const t = TEMPLATES.find((x) => x.id === name || x.name.toLowerCase() === String(name).toLowerCase());
+    return t ? t.color : "#3a3f47";
   }
 
   // ------------------------------------------------------------ 读
@@ -109,146 +170,243 @@
     DATA.roles = r.data.roles || {};
     DATA.key_status = r.data.key_status || {};
     META = r.data.meta || {};
-    $("setMetaLine").textContent = META.path ? "真源：" + META.path : "";
+    setSaveStatus("配置已加载", false);
+    // 保持当前选中；失效则回退到第一个
+    if (!CURRENT || !DATA.providers[CURRENT]) {
+      const names = Object.keys(DATA.providers);
+      CURRENT = names.length ? names[0] : null;
+    }
     renderAll();
   }
 
   function renderAll() {
-    renderProviders();
-    renderModels();
+    renderNav();
+    renderDetail();
     renderBindings();
     renderAdvanced();
   }
 
-  // ------------------------------------------------------------ ① 供应商
+  // ------------------------------------------------------------ 左：供应商导航列表
 
-  function keyStatusChip(name) {
-    const st = DATA.key_status[name];
-    if (!st || !st.configured) {
-      return '<span class="set-key-state">未配置</span>';
-    }
-    return `<span class="set-key-state on">已配置 ····${escapeHtml(st.tail || "")}</span>`;
-  }
-
-  function renderProviders() {
-    const box = $("providerList");
+  function renderNav() {
+    const box = $("providerNav");
     const names = Object.keys(DATA.providers);
+    $("providerCount").textContent = String(names.length);
     if (!names.length) {
-      box.innerHTML = '<div class="set-empty">还没有供应商，点下面「＋ 新增供应商」。</div>';
+      box.innerHTML = '<div class="set-empty">还没有供应商。<br>点左上角「＋」添加。</div>';
       return;
     }
     box.innerHTML = names.map((name) => {
       const p = DATA.providers[name] || {};
+      const models = modelsOf(name);
+      const ok = p.api_key_env && DATA.key_status[p.api_key_env] && DATA.key_status[p.api_key_env].configured;
+      const active = name === CURRENT ? " active" : "";
       return `
-      <div class="set-card" data-provider="${escapeHtml(name)}">
-        <div class="set-grid">
-          <div class="set-field">
-            <label>名称</label>
-            <input class="set-input" data-f="name" value="${escapeHtml(name)}" />
-          </div>
-          <div class="set-field">
-            <label>协议 protocol</label>
-            <input class="set-input" data-f="protocol" value="${escapeHtml(p.protocol || "")}" placeholder="openai" />
-          </div>
-          <div class="set-field">
-            <label>端点 base_url</label>
-            <input class="set-input" data-f="base_url" value="${escapeHtml(p.base_url || "")}" placeholder="https://…/v1" />
-          </div>
-          <div class="set-field">
-            <label>密钥变量 api_key_env</label>
-            <input class="set-input" data-f="api_key_env" value="${escapeHtml(p.api_key_env || "")}" placeholder="XXX_API_KEY" />
-          </div>
-          <div class="set-field">
-            <label>拉列表地址 models_url<span class="set-hint">（可选，缺省 端点/models）</span></label>
-            <input class="set-input" data-f="models_url" value="${escapeHtml(p.models_url || "")}" />
-          </div>
-          <div class="set-field">
-            <label>密钥状态</label>
-            <div style="display:flex;align-items:center;gap:8px;">
-              ${keyStatusChip(p.api_key_env || "")}
-              <button class="btn ghost" data-act="key">改密钥</button>
-            </div>
-          </div>
-          <div class="set-field wide">
-            <label>说明 note</label>
-            <input class="set-input" data-f="note" value="${escapeHtml(p.note || "")}" />
-          </div>
-        </div>
-        <div class="set-actions">
-          <button class="btn" data-act="fetch">拉取模型列表</button>
-          <button class="btn ghost" data-act="test">测试连接</button>
-          <button class="btn ghost" data-act="key">改密钥</button>
-          <span class="spacer" style="flex:1"></span>
-          <button class="btn danger" data-act="del">删除</button>
-        </div>
-      </div>`;
+      <button class="set-nav-item${active}" data-provider="${escapeHtml(name)}">
+        <span class="set-nav-logo" style="background:${logoColor(name)}">${escapeHtml((name || "?").slice(0, 2))}</span>
+        <span class="set-nav-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        <span class="set-nav-dot${ok ? " on" : ""}" title="${ok ? "密钥已配置" : "密钥未配置"}"></span>
+        <span class="set-nav-count">${models.length}</span>
+      </button>`;
     }).join("");
   }
 
-  // ------------------------------------------------------------ ② 模型
+  // ------------------------------------------------------------ 右：选中供应商的模型详细设置
 
-  function renderModels() {
-    const box = $("modelList");
-    const names = Object.keys(DATA.models);
-    if (!names.length) {
-      box.innerHTML = '<div class="set-empty">还没有模型。可以「拉取模型列表」勾选，或手动新增。</div>';
+  function renderDetail() {
+    const box = $("providerDetail");
+    if (!CURRENT || !DATA.providers[CURRENT]) {
+      box.innerHTML = '<div class="set-empty">选择左侧一个供应商，或点左上角「＋」添加。</div>';
       return;
     }
-    const provOpts = Object.keys(DATA.providers)
-      .map((p) => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
-    box.innerHTML = names.map((name) => {
-      const m = DATA.models[name] || {};
-      const t = m.thinking;
-      return `
-      <div class="set-card" data-model="${escapeHtml(name)}">
-        <div class="set-grid">
-          <div class="set-field">
-            <label>键名</label>
-            <input class="set-input" data-f="key" value="${escapeHtml(name)}" readonly />
-          </div>
-          <div class="set-field">
-            <label>显示名 label<span class="set-hint">（可选）</span></label>
-            <input class="set-input" data-f="label" value="${escapeHtml(m.label || "")}" />
-          </div>
-          <div class="set-field">
-            <label>供应商</label>
-            <select class="set-select" data-f="provider">
-              ${provOpts.replace(`value="${escapeHtml(m.provider || "")}"`,
-                                 `value="${escapeHtml(m.provider || "")}" selected`)}
-            </select>
-          </div>
-          <div class="set-field">
-            <label>型号 model</label>
-            <input class="set-input" data-f="model" value="${escapeHtml(m.model || "")}" placeholder="anthropic/claude-haiku-5.5" />
-          </div>
-          <div class="set-field">
-            <label>温度 temperature</label>
-            <input class="set-input" data-f="temperature" type="number" step="0.1" min="0" max="2"
-                   value="${escapeHtml(m.temperature == null ? 0.7 : m.temperature)}" />
-          </div>
-          <div class="set-field">
-            <label>思考 thinking</label>
-            <select class="set-select" data-f="thinking">
-              <option value="auto"${t === "auto" || t == null ? " selected" : ""}>auto（不传参数）</option>
-              <option value="on"${t === "on" ? " selected" : ""}>on（开思考）</option>
-              <option value="off"${t === "off" ? " selected" : ""}>off（关思考）</option>
-            </select>
-          </div>
-          <div class="set-field wide">
-            <label>说明 note</label>
-            <input class="set-input" data-f="note" value="${escapeHtml(m.note || "")}" />
-          </div>
+    const name = CURRENT;
+    const p = DATA.providers[name] || {};
+    const models = modelsOf(name);
+    const dot = p.api_key_env && DATA.key_status[p.api_key_env] && DATA.key_status[p.api_key_env].configured ? " on" : "";
+    box.innerHTML = `
+    <div class="set-detail-head">
+      <span class="set-provider-logo" style="background:${logoColor(name)}">${escapeHtml((name || "?").slice(0, 2))}</span>
+      <span class="set-detail-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+      <span class="set-pill">${escapeHtml(p.protocol || "openai")}</span>
+      <span class="set-key-state"><span class="set-status-dot${dot}"></span>${dot ? "已配置 ····" + escapeHtml((DATA.key_status[p.api_key_env] || {}).tail || "") : "未配置"}</span>
+      <span class="spacer" style="flex:1"></span>
+      <div class="set-menu-wrap">
+        <button class="set-menu-btn" data-act="menu" title="更多">⋯</button>
+        <div class="set-menu">
+          <button data-act="test">⚡ 测试连接</button>
+          <button data-act="fetch">⇣ 拉取模型列表</button>
+          <button data-act="key">🔑 修改密钥</button>
+          <div class="set-menu-sep"></div>
+          <button class="danger" data-act="del">✕ 删除供应商</button>
         </div>
-        <div class="set-actions">
-          <button class="btn ghost" data-act="test">测试</button>
-          <span class="spacer" style="flex:1"></span>
-          <button class="btn danger" data-act="del">删除</button>
+      </div>
+    </div>
+    <div class="set-detail-body">
+      <div class="set-grid">
+        <div class="set-field">
+          <label>名称 name</label>
+          <input class="set-input" data-f="name" value="${escapeHtml(name)}" />
         </div>
-      </div>`;
-    }).join("");
+        <div class="set-field">
+          <label>协议 protocol</label>
+          <input class="set-input" data-f="protocol" value="${escapeHtml(p.protocol || "")}" placeholder="openai" />
+        </div>
+        <div class="set-field">
+          <label>密钥变量 api_key_env</label>
+          <input class="set-input" data-f="api_key_env" value="${escapeHtml(p.api_key_env || "")}" placeholder="XXX_API_KEY" />
+        </div>
+        <div class="set-field">
+          <label>拉列表地址 models_url<span class="set-hint">（可选，缺省 端点/models）</span></label>
+          <input class="set-input" data-f="models_url" value="${escapeHtml(p.models_url || "")}" />
+        </div>
+        <div class="set-field wide">
+          <label>端点 base_url</label>
+          <input class="set-input" data-f="base_url" value="${escapeHtml(p.base_url || "")}" placeholder="https://…/v1" />
+        </div>
+        <div class="set-field wide">
+          <label>说明 note</label>
+          <input class="set-input" data-f="note" value="${escapeHtml(p.note || "")}" />
+        </div>
+      </div>
+
+      <div class="set-models-head">
+        <span class="set-models-title">模型</span>
+        <span class="set-count">${models.length}</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn ghost" data-act="add-model">＋ 添加模型</button>
+      </div>
+      <div class="set-models-box">
+        ${models.length ? models.map(modelRow).join("") : '<div class="set-empty">该供应商下还没有模型。点「＋ 添加模型」或「⋯ → 拉取模型列表」。</div>'}
+      </div>
+    </div>`;
   }
 
-  // ------------------------------------------------------------ ③ 角色绑定
+  // [思考强度·从模型端获取 2026-10-13] 思考下拉选项按该模型录入时从端点拉回的
+  // 能力声明渲染：端点给了档位（reasoning_efforts）→ 渲染档位；没给（端点不返回
+  // 能力信息，如 MiniMax）→ 回落通用 auto/on/off。auto = 不传、跟随端点默认。
+  function thinkingOptions(m) {
+    const t = m.thinking == null ? "auto" : String(m.thinking);
+    const efforts = Array.isArray(m.reasoning_efforts) && m.reasoning_efforts.length
+      ? m.reasoning_efforts : null;
+    if (!efforts) {
+      return `
+        <option value="auto"${t === "auto" ? " selected" : ""}>auto</option>
+        <option value="on"${t === "on" ? " selected" : ""}>on</option>
+        <option value="off"${t === "off" ? " selected" : ""}>off</option>`;
+    }
+    const mandatory = !!m.reasoning_mandatory;
+    const def = m.default_effort ? escapeHtml(m.default_effort) : "";
+    let html = `<option value="auto"${t === "auto" ? " selected" : ""}>auto（端点默认${def ? " " + def : ""}）</option>`;
+    if (!mandatory) {
+      html += `<option value="off"${t === "off" ? " selected" : ""}>off（关闭思考）</option>`;
+    }
+    for (const e of efforts) {
+      html += `<option value="${escapeHtml(e)}"${t === e ? " selected" : ""}>${escapeHtml(e)}</option>`;
+    }
+    // 当前值不在端点声明里（异常/旧配置）→ 补一个占位项，避免选中态丢失
+    if (t !== "auto" && t !== "off" && efforts.indexOf(t) < 0) {
+      html += `<option value="${escapeHtml(t)}" selected>${escapeHtml(t)}（端点未声明）</option>`;
+    }
+    return html;
+  }
+
+  function modelRow(mn) {
+    const m = DATA.models[mn] || {};
+    const t = m.thinking;
+    return `
+    <div class="set-model-row${EDITING.has(mn) ? " editing" : ""}" data-model="${escapeHtml(mn)}">
+      <span class="set-model-bullet"></span>
+      <span class="set-model-id" title="${escapeHtml(mn)}">${escapeHtml(m.model || mn)}</span>
+      <span class="set-model-param">
+        思考
+        <select class="set-select" data-f="thinking">
+          ${thinkingOptions(m)}
+        </select>
+      </span>
+      <span class="set-model-param">
+        温度
+        <input class="set-input" data-f="temperature" type="number" step="0.1" min="0" max="2"
+               value="${escapeHtml(m.temperature == null ? 0.7 : m.temperature)}" />
+      </span>
+      <span class="set-model-acts">
+        <button class="set-icon-btn" data-act="edit" title="编辑详情">✎</button>
+        <button class="set-icon-btn" data-act="test-model" title="测试">⚡</button>
+        <button class="set-icon-btn danger" data-act="del-model" title="删除">✕</button>
+      </span>
+    </div>
+    <div class="set-model-edit">
+      <div class="set-grid">
+        <div class="set-field">
+          <label>键名（只读）</label>
+          <input class="set-input" value="${escapeHtml(mn)}" readonly />
+        </div>
+        <div class="set-field">
+          <label>型号 model</label>
+          <input class="set-input" data-f="model" value="${escapeHtml(m.model || "")}" placeholder="anthropic/claude-haiku-5.5" />
+        </div>
+        <div class="set-field">
+          <label>供应商（只读，挂在父供应商下）</label>
+          <input class="set-input" value="${escapeHtml(m.provider || "")}" readonly />
+        </div>
+        <div class="set-field wide">
+          <label>说明 note</label>
+          <input class="set-input" data-f="note" value="${escapeHtml(m.note || "")}" />
+        </div>
+      </div>
+      <div class="set-actions" style="margin-top:10px;display:flex;justify-content:flex-end">
+        <button class="btn ghost" data-act="done">完成</button>
+      </div>
+    </div>`;
+  }
+
+  // ------------------------------------------------------------ 模板选择器（添加供应商）
+
+  function openTemplatePicker() {
+    $("templateList").innerHTML = [
+      ...TEMPLATES.map((t) => `
+        <button class="set-template-card" data-tpl="${escapeHtml(t.id)}">
+          <span class="set-template-logo" style="background:${t.color}">${escapeHtml(t.name.slice(0, 2))}</span>
+          <span class="set-template-meta">
+            ${escapeHtml(t.name)}
+            <span class="set-template-sub">${escapeHtml(t.sub)}</span>
+          </span>
+          <span class="set-template-arrow">›</span>
+        </button>`),
+      `<button class="set-template-card" data-tpl="custom">
+        <span class="set-template-logo" style="background:#3a3f47">＋</span>
+        <span class="set-template-meta">
+          自定义供应商
+          <span class="set-template-sub">自己填名称 / 端点 / 密钥变量</span>
+        </span>
+        <span class="set-template-arrow">›</span>
+      </button>`,
+    ].join("");
+    $("templateModal").style.display = "flex";
+  }
+
+  function createFromTemplate(tplId) {
+    let base;
+    if (tplId === "custom") {
+      base = "custom";
+      while (DATA.providers[base]) { base = "custom-" + Math.floor(Math.random() * 1000); }
+      DATA.providers[base] = { protocol: "openai", base_url: "", api_key_env: "", models_url: "", note: "自定义供应商" };
+    } else {
+      const t = TEMPLATES.find((x) => x.id === tplId);
+      if (!t) return;
+      base = t.id;
+      if (DATA.providers[base]) { toast("供应商 " + base + " 已存在", true); return; }
+      DATA.providers[base] = {
+        protocol: t.protocol, base_url: t.base_url, api_key_env: t.api_key_env,
+        models_url: t.models_url, note: "模板 " + t.name,
+      };
+    }
+    $("templateModal").style.display = "none";
+    CURRENT = base;
+    renderAll();
+    toast("已添加供应商 " + base + "（未保存，点右上角保存生效）");
+  }
+
+  // ------------------------------------------------------------ 角色绑定
 
   function renderBindings() {
     const box = $("bindingList");
@@ -267,20 +425,23 @@
       const cur = DATA.bindings[rid];
       if (r.multi) {
         const list = Array.isArray(cur) ? cur : (cur ? [cur] : []);
-        const chips = list.map((mn) =>
-          `<span class="set-chip">${escapeHtml(mn)}<button data-rm="${escapeHtml(mn)}" title="移除">×</button></span>`
-        ).join("");
-        const addOpts = Object.keys(DATA.models)
-          .filter((n) => list.indexOf(n) < 0)
-          .map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+        const chips = list.map((mn) => {
+          const m = DATA.models[mn] || {};
+          const p = m.provider || "";
+          const tip = m.model && m.model !== mn ? `${mn}（${p} · ${m.model}）` : mn;
+          return `<span class="set-chip" title="${escapeHtml(tip)}">${escapeHtml(m.model || mn)}<button data-rm="${escapeHtml(mn)}" title="移除">×</button></span>`;
+        }).join("");
+        const addOpts = modelOptions("", list, true);
         return `
         <div class="set-bind-row" data-role="${escapeHtml(rid)}">
           <span class="set-bind-name">${escapeHtml(r.display || rid)}</span>
           <span class="set-bind-note">${escapeHtml(r.note || "")}</span>
-          ${chips || '<span class="set-note">（未绑定）</span>'}
-          <select class="set-select set-bind-select" data-add-bind>
-            <option value="">＋ 添加…</option>${addOpts}
-          </select>
+          <span style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+            ${chips || '<span class="set-note">（未绑定）</span>'}
+            <select class="set-select set-bind-select" data-add-bind>
+              <option value="">＋ 添加…</option>${addOpts}
+            </select>
+          </span>
         </div>`;
       }
       return `
@@ -294,7 +455,7 @@
     }).join("");
   }
 
-  // ------------------------------------------------------------ ④ 高级
+  // ------------------------------------------------------------ 高级
 
   function renderAdvanced() {
     $("advDefaultModel").innerHTML = modelOptions(DATA.system.default_model || "");
@@ -330,8 +491,9 @@
       });
       if (r.status === 200 && r.data && r.data.ok) {
         const n = (r.data.models || []).length;
+        setSaveStatus("已保存并生效（" + n + " 个模型）", false);
         toast("已保存并生效");
-        await load();          // 重读：拿到热重载后的真实状态
+        await load();
         let html = `已保存并生效（${n} 个模型）· 备份：${escapeHtml(r.data.backup || "无")}`;
         const warns = r.data.warnings || [];
         if (warns.length) {
@@ -344,10 +506,12 @@
         banner("err",
           `保存被拒（${r.status}），文件未改动：` +
           `<ul>${list.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>`);
+        setSaveStatus("保存被拒，文件未改动", true);
         toast("保存被拒", true);
       }
     } catch (e) {
       banner("err", "保存请求失败：" + escapeHtml(String(e)));
+      setSaveStatus("保存请求失败", true);
     } finally {
       btn.disabled = false;
       btn.textContent = "保存并生效";
@@ -373,7 +537,6 @@
   function renderFetchList() {
     if (!FETCH_CTX) return;
     const kw = ($("fetchSearch").value || "").trim().toLowerCase();
-    // 已存在于 models 的型号 → 置灰标「已添加」，不可重复勾
     const existing = new Set(Object.values(DATA.models).map((m) => m && m.model));
     const rows = FETCH_CTX.items.filter((it) => !kw || it.id.toLowerCase().indexOf(kw) >= 0);
     $("fetchCount").textContent = `共 ${FETCH_CTX.items.length} 个，显示 ${rows.length} 个`;
@@ -381,11 +544,11 @@
       const has = existing.has(it.id);
       const checked = FETCH_CTX.selected[it.id] ? " checked" : "";
       return `
-      <label class="set-model-row${has ? " disabled" : ""}">
-        <input type="checkbox" data-mid="${escapeHtml(it.id)}"${checked}${has ? " disabled" : ""} />
+      <label class="set-model-row${has ? " has" : ""}">
+        <input type="checkbox" data-mid="${escapeHtml(it.id)}"${checked} />
         <span class="set-model-id">${escapeHtml(it.id)}</span>
-        <span class="set-model-owner">${escapeHtml(it.owned_by || "")}</span>
-        ${has ? '<span class="set-model-owner">已添加</span>' : ""}
+        <span class="set-model-sub">${escapeHtml(it.owned_by || "")}</span>
+        ${has ? '<span class="set-model-sub">已添加（勾选可刷新能力）</span>' : ""}
       </label>`;
     }).join("") : '<div class="set-empty">没有匹配的型号。</div>';
   }
@@ -418,22 +581,43 @@
       return;
     }
     const prov = FETCH_CTX.provider;
+    let added = 0, refreshed = 0;
     for (const id of picked) {
+      // [思考强度·从模型端获取 2026-10-13] 录入时把端点返回的能力声明一起存进
+      // 模型配置——界面思考下拉按它渲染；端点没给（MiniMax 等）就不带，回落通用开关。
+      // [已配置模型·能力刷新 2026-10-13] 已存在（按 model 字段匹配）的模型勾选 =
+      // 用端点最新返回覆盖刷新它的能力字段，不再需要删掉重加。
+      const it = (FETCH_CTX.items || []).find((x) => x.id === id) || {};
+      const cap = {};
+      if (Array.isArray(it.reasoning_efforts) && it.reasoning_efforts.length) {
+        cap.reasoning_efforts = it.reasoning_efforts;
+        if (it.default_effort) cap.default_effort = it.default_effort;
+        if (it.reasoning_mandatory != null) cap.reasoning_mandatory = !!it.reasoning_mandatory;
+      }
+      const exKey = Object.keys(DATA.models).find(
+        (k) => DATA.models[k] && DATA.models[k].model === id);
+      if (exKey) {
+        if (Object.keys(cap).length) Object.assign(DATA.models[exKey], cap);
+        refreshed++;
+        continue;
+      }
       const base = sanitizeKey(id);
       const key = uniqueKey(base);
-      DATA.models[key] = {
+      const mdef = {
         provider: prov,
         model: id,
         temperature: 0.7,
         thinking: "auto",
         note: "",
+        ...cap,
       };
+      DATA.models[key] = mdef;
+      added++;
     }
     closeFetchModal();
-    renderModels();
+    renderDetail();
     renderBindings();
-    renderAdvanced();
-    toast(`已加入 ${picked.length} 个模型（未保存，点右上角保存生效）`);
+    toast(`已加入 ${added} 个、刷新 ${refreshed} 个模型能力（未保存，点保存生效）`);
   }
 
   // ------------------------------------------------------------ 测试 / 密钥
@@ -473,10 +657,11 @@
     });
     if (r.status === 200 && r.data && r.data.ok) {
       DATA.key_status[env] = { configured: true, tail: r.data.tail };
-      renderProviders();
+      renderNav();
+      renderDetail();
       toast("密钥已保存并立即生效（不需重启）");
     } else {
-      toast("密钥保存失败：" + ((r.data && r.data.error) || r.status), true);
+      toast("密钥保存失败：" + ((r.data && (r.data.error) || r.status)), true);
     }
   }
 
@@ -490,7 +675,7 @@
       <label class="set-model-row">
         <input type="radio" name="rb" value="${escapeHtml(b.name)}" />
         <span class="set-model-id">${escapeHtml(b.name)}</span>
-        <span class="set-model-owner">${escapeHtml((b.size / 1024).toFixed(1))} KB · ${escapeHtml(b.mtime || "")}</span>
+        <span class="set-model-sub">${escapeHtml((b.size / 1024).toFixed(1))} KB · ${escapeHtml(b.mtime || "")}</span>
       </label>`).join("") : '<div class="set-empty">还没有备份。保存一次就会自动生成。</div>';
     $("restoreModal").style.display = "flex";
   }
@@ -512,6 +697,64 @@
     }
   }
 
+  // ------------------------------------------------------------ 工具：供应商/模型增删
+
+  // [引用清理 2026-10-14] 删除模型后，清理所有指向它的引用：
+  // bindings（角色绑定）与 system.default_model / fallback_model。
+  //
+  // 铁律（用户 2026-10-14 明确要求）：
+  //   模型删了 → 引用【置空】。绝不自动改指到别的模型。
+  //   （曾误做「改指剩余第一个」，会把全部角色批量改成同一个模型——用户配置被改坏，
+  //    2026-10-14 事故根因。用户原话："模型如果删了，那就变成空的就行，我他妈自己会改"）
+  function fixRefsAfterDelete(removed) {
+    const rm = removed || [];
+    if (!rm.length) return;
+    // 调用方必须先 delete DATA.models[mn] 再调本函数（生产两处调用点均满足）
+    // ① bindings：数组过滤掉已删模型（删空即删除该键）；单值指向已删模型 → 删除该键
+    Object.keys(DATA.bindings).forEach((rid) => {
+      const b = DATA.bindings[rid];
+      if (Array.isArray(b)) {
+        const left = b.filter((x) => !rm.includes(x));
+        if (left.length) DATA.bindings[rid] = left;
+        else delete DATA.bindings[rid];
+      } else if (rm.includes(b)) {
+        delete DATA.bindings[rid];
+      }
+    });
+    // ② system：指向已删模型的直接清空（不改指别的模型）
+    ["default_model", "fallback_model"].forEach((f) => {
+      if (DATA.system && rm.includes(DATA.system[f])) {
+        DATA.system[f] = "";
+      }
+    });
+  }
+
+  function deleteProvider(name) {
+    const used = modelsOf(name);
+    if (used.length &&
+        !window.confirm(`有 ${used.length} 个模型挂在它下面（${used.join("、")}），仍要删除？`)) {
+      return false;
+    }
+    used.forEach((mn) => { delete DATA.models[mn]; EDITING.delete(mn); });
+    delete DATA.providers[name];
+    fixRefsAfterDelete(used);
+    if (CURRENT === name) {
+      const names = Object.keys(DATA.providers);
+      CURRENT = names.length ? names[0] : null;
+    }
+    return true;
+  }
+
+  function toggleEdit(modelKey) {
+    if (EDITING.has(modelKey)) EDITING.delete(modelKey);
+    else EDITING.add(modelKey);
+    renderDetail();
+  }
+
+  function closeMenu() {
+    document.querySelectorAll(".set-menu.open").forEach((m) => m.classList.remove("open"));
+  }
+
   // ------------------------------------------------------------ 事件绑定
 
   function bind() {
@@ -522,48 +765,129 @@
       if (history.length > 1) history.back(); else location.href = "/";
     });
 
-    $("addProviderBtn").addEventListener("click", () => {
-      let name = "new-provider", i = 1;
-      while (DATA.providers[name]) { i++; name = "new-provider-" + i; }
-      DATA.providers[name] = {
-        protocol: "openai", base_url: "", api_key_env: "", note: "",
-      };
-      renderProviders();
-      const cards = document.querySelectorAll("#providerList .set-card");
-      const last = cards[cards.length - 1];
-      if (last) { last.scrollIntoView({ behavior: "smooth", block: "center" }); }
+    // 添加供应商 → 模板选择器
+    $("addProviderBtn").addEventListener("click", openTemplatePicker);
+    $("templateCloseBtn").addEventListener("click", () => { $("templateModal").style.display = "none"; });
+    $("templateList").addEventListener("click", (e) => {
+      const card = e.target.closest(".set-template-card");
+      if (card) createFromTemplate(card.dataset.tpl);
     });
 
-    $("addModelBtn").addEventListener("click", () => {
-      const firstProv = Object.keys(DATA.providers)[0];
-      if (!firstProv) { toast("先加一个供应商", true); return; }
-      let key = "new-model", i = 1;
-      while (DATA.models[key]) { i++; key = "new-model-" + i; }
-      DATA.models[key] = {
-        provider: firstProv, model: "", temperature: 0.7, thinking: "auto", note: "",
-      };
-      renderModels();
+    // 左导航：点选供应商
+    $("providerNav").addEventListener("click", (e) => {
+      const item = e.target.closest(".set-nav-item");
+      if (!item) return;
+      const name = item.dataset.provider;
+      if (!name || name === CURRENT) return;
+      CURRENT = name;
+      renderNav();
+      renderDetail();
     });
 
-    // —— 供应商卡：编辑 + 按钮 ——
-    $("providerList").addEventListener("input", (e) => {
-      const card = e.target.closest(".set-card");
-      const field = e.target.dataset.f;
-      if (!card || !field || field === "name") return;
-      const name = card.dataset.provider;
-      if (!DATA.providers[name]) return;
-      if (field === "protocol" || field === "api_key_env") {
-        DATA.providers[name][field] = e.target.value.trim();
-      } else {
-        DATA.providers[name][field] = e.target.value;
+    // 右详情：菜单 + 模型操作 + 字段编辑（事件委托）
+    const detail = $("providerDetail");
+    detail.addEventListener("click", async (e) => {
+      const prov = CURRENT;
+
+      // 「⋯」菜单开合
+      const menuBtn = e.target.closest("[data-act='menu']");
+      if (menuBtn) {
+        const wrap = menuBtn.closest(".set-menu-wrap");
+        const menu = wrap ? wrap.querySelector(".set-menu") : null;
+        const open = menu ? menu.classList.toggle("open") : false;
+        if (open) {
+          document.querySelectorAll(".set-menu.open").forEach((m) => { if (m !== menu) m.classList.remove("open"); });
+        }
+        return;
+      }
+
+      // 菜单项
+      const menuItem = e.target.closest(".set-menu button");
+      if (menuItem && prov) {
+        const act = menuItem.dataset.act;
+        closeMenu();
+        if (act === "test") { await testProvider(prov); return; }
+        if (act === "fetch") { await doFetch(prov); return; }
+        if (act === "key") { await changeKey(prov); return; }
+        if (act === "del") {
+          if (deleteProvider(prov)) {
+            renderNav();
+            renderDetail();
+            renderBindings();
+            toast("已删除（未保存，点保存才落盘）");
+          }
+          return;
+        }
+        return;
+      }
+
+      // 按钮（模型区 + 添加模型）
+      const btn = e.target.closest("button[data-act]");
+      if (btn) {
+        const act = btn.dataset.act;
+        if (act === "add-model" && prov) {
+          let key = "new-model", i = 1;
+          while (DATA.models[key]) { i++; key = "new-model-" + i; }
+          DATA.models[key] = {
+            provider: prov, model: "", temperature: 0.7, thinking: "auto", note: "",
+          };
+          EDITING.add(key);
+          renderDetail();
+          const row = document.querySelector(`.set-model-row[data-model="${CSS.escape(key)}"]`);
+          if (row) row.scrollIntoView({ block: "center" });
+          toast("已加空模型，填型号后保存生效");
+          return;
+        }
+        const modelRow = e.target.closest(".set-model-row");
+        if (!modelRow) return;
+        if (act === "edit" || act === "done") { toggleEdit(modelRow.dataset.model); return; }
+        if (act === "test-model") { await testModel(modelRow.dataset.model); return; }
+        if (act === "del-model") {
+          const mk = modelRow.dataset.model;
+          delete DATA.models[mk];
+          EDITING.delete(mk);
+          fixRefsAfterDelete([mk]);
+          renderDetail();
+          renderBindings();
+          renderAdvanced();
+          toast("已删除（未保存，点保存才落盘）");
+          return;
+        }
       }
     });
 
-    // 改名：连带把模型里的引用改掉（否则改完名全部模型指向空供应商）
-    $("providerList").addEventListener("change", (e) => {
-      if (e.target.dataset.f !== "name") return;
-      const card = e.target.closest(".set-card");
-      const old = card.dataset.provider;
+    // 字段编辑（input）
+    detail.addEventListener("input", (e) => {
+      const field = e.target.dataset.f;
+      if (!field) return;
+      const modelRow = e.target.closest(".set-model-row");
+      if (modelRow) {
+        const mn = modelRow.dataset.model;
+        const m = DATA.models[mn];
+        if (!m) return;
+        if (field === "temperature") m.temperature = parseFloat(e.target.value);
+        else m[field] = e.target.value;
+        return;
+      }
+      if (!CURRENT || !DATA.providers[CURRENT]) return;
+      if (field === "name") return; // 改名走 change
+      DATA.providers[CURRENT][field] = e.target.value;
+    });
+
+    // 模型思考/温度 change + 供应商改名
+    detail.addEventListener("change", (e) => {
+      const field = e.target.dataset.f;
+      const modelRow = e.target.closest(".set-model-row");
+      if (modelRow && field) {
+        const mn = modelRow.dataset.model;
+        const m = DATA.models[mn];
+        if (!m) return;
+        if (field === "temperature") m.temperature = parseFloat(e.target.value);
+        else m[field] = e.target.value;
+        return;
+      }
+      if (field !== "name" || !CURRENT) return;
+      const old = CURRENT;
       const next = e.target.value.trim();
       if (!next || next === old) { e.target.value = old; return; }
       if (DATA.providers[next]) {
@@ -574,79 +898,18 @@
       const val = DATA.providers[old];
       delete DATA.providers[old];
       DATA.providers[next] = val;
+      CURRENT = next;
       Object.keys(DATA.models).forEach((mn) => {
         if (DATA.models[mn] && DATA.models[mn].provider === old) {
           DATA.models[mn].provider = next;
         }
       });
-      renderProviders();
-      renderModels();
+      renderNav();
+      renderDetail();
       toast("已改名为 " + next + "，引用同步更新");
     });
 
-    $("providerList").addEventListener("click", async (e) => {
-      const btn = e.target.closest("button[data-act]");
-      if (!btn) return;
-      const card = btn.closest(".set-card");
-      const name = card.dataset.provider;
-      const act = btn.dataset.act;
-      if (act === "fetch") await doFetch(name);
-      else if (act === "test") await testProvider(name);
-      else if (act === "key") await changeKey(name);
-      else if (act === "del") {
-        const used = Object.keys(DATA.models)
-          .filter((mn) => DATA.models[mn] && DATA.models[mn].provider === name);
-        if (used.length &&
-            !window.confirm(`有 ${used.length} 个模型挂在它下面（${used.join("、")}），仍要删除？`)) {
-          return;
-        }
-        used.forEach((mn) => delete DATA.models[mn]);
-        delete DATA.providers[name];
-        renderAll();
-        toast("已删除（未保存，点保存才落盘）");
-      }
-    });
-
-    // —— 模型卡：编辑 + 按钮 ——
-    $("modelList").addEventListener("input", (e) => {
-      const card = e.target.closest(".set-card");
-      const field = e.target.dataset.f;
-      if (!card || !field || field === "key") return;
-      const name = card.dataset.model;
-      const m = DATA.models[name];
-      if (!m) return;
-      if (field === "temperature") m.temperature = parseFloat(e.target.value);
-      else m[field] = e.target.value;
-    });
-
-    $("modelList").addEventListener("change", (e) => {
-      const field = e.target.dataset.f;
-      if (field !== "provider" && field !== "thinking") return;
-      const card = e.target.closest(".set-card");
-      const m = DATA.models[card.dataset.model];
-      if (m) m[field] = e.target.value;
-    });
-
-    $("modelList").addEventListener("click", async (e) => {
-      const btn = e.target.closest("button[data-act]");
-      if (!btn) return;
-      const card = btn.closest(".set-card");
-      const name = card.dataset.model;
-      if (btn.dataset.act === "test") await testModel(name);
-      else if (btn.dataset.act === "del") {
-        // 从绑定里摘掉，免得留下悬空引用
-        Object.keys(DATA.bindings).forEach((rid) => {
-          const b = DATA.bindings[rid];
-          if (Array.isArray(b)) DATA.bindings[rid] = b.filter((x) => x !== name);
-          else if (b === name) delete DATA.bindings[rid];
-        });
-        delete DATA.models[name];
-        renderAll();
-        toast("已删除（未保存，点保存才落盘）");
-      }
-    });
-
-    // —— 角色绑定 ——
+    // 角色绑定
     $("bindingList").addEventListener("change", (e) => {
       const row = e.target.closest(".set-bind-row");
       if (!row) return;
@@ -679,7 +942,7 @@
       renderBindings();
     });
 
-    // —— 拉取弹层 ——
+    // 拉取弹层
     $("fetchSearch").addEventListener("input", renderFetchList);
     $("fetchList").addEventListener("change", (e) => {
       const mid = e.target.dataset.mid;
@@ -690,12 +953,16 @@
     $("fetchCloseBtn").addEventListener("click", closeFetchModal);
     $("fetchCancelBtn").addEventListener("click", closeFetchModal);
 
-    // —— 还原弹层 ——
+    // 还原弹层
     $("restoreCloseBtn").addEventListener("click", () => { $("restoreModal").style.display = "none"; });
     $("restoreCancelBtn").addEventListener("click", () => { $("restoreModal").style.display = "none"; });
     $("restoreList").addEventListener("dblclick", () => doRestore());
 
-    // 弹层点遮罩关闭
+    // 点其它地方关「⋯」菜单 + 关弹层
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".set-menu-wrap")) closeMenu();
+    });
+
     document.querySelectorAll(".set-modal").forEach((m) => {
       m.addEventListener("click", (e) => { if (e.target === m) m.style.display = "none"; });
     });
@@ -703,8 +970,8 @@
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         document.querySelectorAll(".set-modal").forEach((m) => { m.style.display = "none"; });
+        closeMenu();
       }
-      // Ctrl+S 保存
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         save();

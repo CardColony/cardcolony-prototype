@@ -21,7 +21,7 @@ import pytest
 
 from src.api import card_tools
 from src.permissions import policy
-from src.storage import card_store, memory_store, shadow_store
+from src.storage import card_db, card_store, memory_store, shadow_store
 
 
 async def _mk_child(wid: str, title: str, parent: str) -> str:
@@ -70,7 +70,7 @@ async def test_v2_write_still_restricted(typed_registry, work):
 
     r = await card_tools.execute_tool(wid, a, "delete_card", {"card_id": b}, cards)
     assert "越权" in r["error"]["message"]
-    assert card_store._card_path(wid, b).exists()   # 未删
+    assert card_store.card_exists(wid, b)   # 未删
 
 
 async def test_v3_guards_intact(typed_registry, work):
@@ -86,20 +86,20 @@ async def test_v3_guards_intact(typed_registry, work):
     # 有子卡的卡不可删（存储层结构护栏；关口 DELETE 对自卡放行后由存储层拒）
     r = await card_tools.execute_tool(wid, a, "delete_card", {"card_id": a}, cards)
     assert r["ok"] is False
-    assert card_store._card_path(wid, a).exists()
+    assert card_store.card_exists(wid, a)
 
     # update_shadow 签名级独占：schema 无 card_id；恶意注入 card_id 也写不出别的目标
     schema = next(t for t in card_tools.build_tool_schemas(root, cards=cards)
                   if t["name"] == "update_shadow")
     assert "card_id" not in schema["parameters"]["properties"]
-    raw_b_before = shadow_store.shadow_path(wid, b).read_bytes()
+    raw_b_before = await shadow_store.read_shadow_raw(wid, b)
     body = "## 进度\n- 标记XYZ\n\n## 产物清单\n- 无\n\n## 迭代历史\n- v1\n"
     r = await card_tools.execute_tool(
         wid, a, "update_shadow", {"card_id": b, "content": body}, cards)
     assert r.get("ok") is True
-    raw_a = shadow_store.shadow_path(wid, a).read_text(encoding="utf-8")
+    raw_a = await shadow_store.read_shadow_raw(wid, a)
     assert f"shadow_of: \"{a}\"" in raw_a and "标记XYZ" in raw_a
-    assert shadow_store.shadow_path(wid, b).read_bytes() == raw_b_before
+    assert await shadow_store.read_shadow_raw(wid, b) == raw_b_before
 
 
 async def test_v4_shadow_and_memory_read_open(typed_registry, work):
@@ -152,8 +152,9 @@ async def test_perms_are_frozen_on_card_surface(typed_registry, work):
         assert metas[cid]["card_type"] == ct, cid
         assert metas[cid][policy.PERM_KEY] == policy.perms_for(pc, ct), cid
         assert metas[cid][policy.PERM_VERSION_KEY] == version, cid
-        fm = card_store._card_path(wid, cid).read_text(encoding="utf-8").split("---")[1]
-        assert "perms:" in fm and "perms_version:" in fm, cid
+        # [卡片存储迁移 SQLite] 固化字段在库行/读侧 meta 里（不再有 md front matter）
+        assert metas[cid].get(policy.PERM_KEY) is not None, cid
+        assert metas[cid].get(policy.PERM_VERSION_KEY) is not None, cid
 
 
 async def test_card_type_is_immutable(work):
@@ -161,15 +162,16 @@ async def test_card_type_is_immutable(work):
     且**卡面零改动**。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk_child(wid, "甲", root)
-    path = card_store._card_path(wid, a)
-    before = path.read_bytes()
+    before = await card_store.read_card(wid, a)
+    rev_before = card_db.read_rev(wid)
 
     for updates in ({"card_type": "tool"},
                     {"project_class": "research_project"}):
         res = await card_store.update_card(wid, a, updates, "试改类型")
         assert "error" in res, updates
         assert "不可修改" in res["error"], updates
-    assert path.read_bytes() == before, "拒改类型必须零改动"
+    assert await card_store.read_card(wid, a) == before, "拒改类型必须零改动"
+    assert card_db.read_rev(wid) == rev_before, "拒改类型不得动库版本号"
 
 
 async def test_unconfigured_type_is_denied_everything(work):
@@ -281,7 +283,9 @@ def test_tool_card_toolface_matches_its_perms():
     """
     tool_perms = policy.perms_for("rd_project", "tool")
     card = {"card_id": "card_t", "card_type": "tool", "perms": tool_perms}
+    # [卡片底座第一步 2026-10-14] tool 类型 v3 起配了 read_linked ⇒ read_linked 可见
     assert _visible(card) == {"read_card", "read_memory", "read_shadow",
+                              "read_linked",
                               "edit_card", "delete_card", "update_shadow",
                               "create_plan", "plan_reorder", "plan_insert",
                               "plan_remove", "plan_modify", "step_complete"}

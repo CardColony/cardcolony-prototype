@@ -71,6 +71,7 @@ import copy
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -113,6 +114,50 @@ def step_brief(step: dict[str, Any]) -> str:
     """按附录 C 模板拼某一步的执行提示词（纯函数；缺字段容错——如实标注，
     不编造）。"""
     return STEP_BRIEF_TEMPLATE.format(
+        prompt=step.get("prompt", ""),
+        criteria=step.get("criteria") or "（本步未定判据——以本步要求达成与否为准）",
+        deliverable=step.get("deliverable") or "（本步未定产出物——以 result 记录成果）",
+    )
+
+
+# [当前轮注入消息事件 2026-10-14] 把附录 C 模板拆成「固定总领」与「动态行模板」
+# 两半——**单点来源仍是 STEP_BRIEF_TEMPLATE**，不新增第二份文本：
+#   * 含占位变量（{prompt}/{criteria}/{deliverable}）的行 = 随步变化的动态行；
+#   * 其余行 = 不随步骤数据变化的固定执行纪律（进 context_preamble）。
+# 拆分是纯机械的行过滤，不做任何语义判断。
+_BRIEF_PLACEHOLDERS = ("{prompt}", "{criteria}", "{deliverable}")
+
+# 拆分结果缓存（模块常量不变 ⇒ 一次算定）
+_BRIEF_PARTS_CACHE: dict[str, tuple[str, str]] = {}
+
+
+def _brief_parts() -> tuple[str, str]:
+    """(固定部分, 动态行模板)；结果只依赖模块常量，缓存一次。"""
+    cached = _BRIEF_PARTS_CACHE.get("v")
+    if cached is not None:
+        return cached
+    fixed_lines: list[str] = []
+    dynamic_lines: list[str] = []
+    for ln in STEP_BRIEF_TEMPLATE.split("\n"):
+        if any(p in ln for p in _BRIEF_PLACEHOLDERS):
+            dynamic_lines.append(ln)
+        else:
+            fixed_lines.append(ln)
+    fixed = "\n".join(fixed_lines).strip("\n")
+    fixed = re.sub(r"\n{3,}", "\n\n", fixed)   # 抽走动态行留下的连续空行归一
+    parts = (fixed, "\n".join(dynamic_lines))
+    _BRIEF_PARTS_CACHE["v"] = parts
+    return parts
+
+
+def step_brief_fixed() -> str:
+    """附录 C 模板的固定部分（不含任何占位变量）——context_preamble 正文来源。"""
+    return _brief_parts()[0]
+
+
+def step_brief_dynamic(step: dict[str, Any]) -> str:
+    """附录 C 模板的动态行（本步要求／完成判据／产出物），按步字段填充。"""
+    return _brief_parts()[1].format(
         prompt=step.get("prompt", ""),
         criteria=step.get("criteria") or "（本步未定判据——以本步要求达成与否为准）",
         deliverable=step.get("deliverable") or "（本步未定产出物——以 result 记录成果）",
@@ -682,21 +727,26 @@ def sweep_orphans(work_id: str) -> dict[str, Any]:
     pdir = _plans_dir(work_id)
     if not pdir.exists():
         return {"removed": [], "kept": []}
+    from ..storage import card_db  # 局部 import：避免包初始化期循环
+
     removed: list[str] = []
     kept: list[str] = []
     for f in sorted(pdir.glob("plan_*.json")):
         card_id = f.stem[len("plan_"):]
-        card_file = _work_root(work_id) / "cards" / f"{card_id}.md"
-        if not card_file.exists():
-            _unlink_quiet(f)   # 查二：卡无
-            removed.append(card_id)
-            continue
         try:
-            meta, _ = parse_front_matter(card_file.read_text(encoding="utf-8"))
+            def _fn(conn: Any) -> Optional[dict[str, Any]]:
+                row = card_db.get_card_row(conn, card_id)
+                return None if row is None else dict(row)
+
+            row = card_db.read_sync(work_id, _fn, None)
         except Exception:  # noqa: BLE001 读不动→宁可留（fail-open，不误删）
             kept.append(card_id)
             continue
-        if isinstance(meta, dict) and FM_THINKCHAIN_FINAL in meta:
+        if row is None:
+            _unlink_quiet(f)   # 查二：卡无
+            removed.append(card_id)
+            continue
+        if row.get(FM_THINKCHAIN_FINAL) is not None:
             _unlink_quiet(f)   # 查一：终态
             removed.append(card_id)
         else:

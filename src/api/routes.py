@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..storage import (
-    activity, canvas_store, card_store, manuscript_store,
+    activity, canvas_store, card_db, card_store, event_log, manuscript_store,
     memory_store, session_facade, session_ops, session_store, work_store,
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
@@ -69,14 +69,10 @@ def _apply_block_set(result: dict, work_id: str) -> dict:
     if pc != "rd_project":
         return result  # 非研发卡：body 原样（rulings 已在；requirements 不外露）
     body = result.get("body") or {}
-    # 研发卡：requirements 取 ## 需求文档 区；存量卡该区缺失时回落 rulings 区
-    # （第三块语义＝需求文档，区头在盘上可能是旧的 ## 定论——只读保留）。
-    raw = result.get("raw") or ""
-    _, body_text = parse_front_matter(raw)
-    sections = split_body_sections(body_text)
-    req = (sections.get("requirements") or "").strip()
-    if not req:
-        req = (sections.get("rulings") or "").strip()
+    # [卡片存储迁移 SQLite 2026-10-14] 第三块在库内是**一列**（body["rulings"]）——
+    # 研发树的语义名是「需求文档」，读侧外露为 requirements；存储键/列名仍是
+    # rulings（「叫什么名」由本树 project_class 决定，盘上不再有区头可判）。
+    req = (body.get("rulings") or "").strip()
     result = dict(result)
     result["body"] = {
         "mission": body.get("mission", ""),
@@ -175,11 +171,14 @@ async def create_work(req: CreateWorkRequest):
 def _card_obj(m: dict, act: dict, child_count: int, wid: str) -> dict:
     """[S1·R-05] 卡对象构造（/api/nav 与 /api/nav/children 共用，一套防漂移）。
 
-    字段集合定格 8 项（S1·R-02）：card_id/title/parent/child_count/
-    last_active_at/branch_active_at/work_id/state——克制判据＝每个字段都有
-    已设计的消费方（契约文档：docs/exploration/左侧边栏-S1契约-nav接口-20261011.md）。
+    字段集合定格 9 项（S1·R-02 原 8 项 + [左栏接线 步1] card_type）：
+    card_id/title/parent/child_count/last_active_at/branch_active_at/
+    work_id/state/card_type——克制判据＝每个字段都有已设计的消费方
+    （契约文档：docs/exploration/左侧边栏-S1契约-nav接口-20261011.md）。
     work_id＝归属由提供方声明（S1·R-01，前端禁止自行反查推断）；
-    state＝生命周期（S1·R-04），存量卡无此字段返回空串（前端按无状态容错）。
+    state＝生命周期（S1·R-04），存量卡无此字段返回空串（前端按无状态容错）；
+    card_type＝卡片类型（左栏定稿「工具卡不进侧栏」的消费方——此前接口不送类型，
+    前端无从过滤；存量卡无此字段同样返回空串，前端按未知类型容错）。
     """
     cid = m.get("card_id", "")
     return {
@@ -192,6 +191,7 @@ def _card_obj(m: dict, act: dict, child_count: int, wid: str) -> dict:
         "branch_active_at": act.get(cid, {}).get("branch", ""),
         "work_id": wid,
         "state": m.get("state", ""),
+        "card_type": m.get("card_type", ""),
     }
 
 
@@ -279,18 +279,34 @@ async def get_nav_children(work_id: str = "", parent: str = ""):
     return {"work_id": work_id, "parent": parent, "cards": cards}
 
 
-def _work_fingerprint(wid: str) -> str:
-    """[S1·R-06] 单 work 变化指纹：cards/*.md、sessions/*.md、work.json 的
-    「路径+大小+mtime」全列表哈希（只读遍历，不侵入任何写路径）。
+@router.get("/nav/running")
+async def get_nav_running():
+    """[左栏接线 步1] 「谁在跑」总览：当前处于活跃调用中的卡清单。
+
+    左栏定稿要在行尾亮「运行中」转圈（所有 agent 通态——模型每轮可能走很久）。
+    此前只有单点问法 /cards/{cid}/progress，一屏几十张卡不可能逐张轮询，故增此口。
+    判据＝progress 写点声明的 active 位（终止态 done/error/idle 不复活），
+    前端不再靠阶段白名单反推。纯读内存 _store，零写盘、不拦截（RD-02 同口径）。
+    进程重启后为空＝当前无运行中，如实反映。
+    """
+    return {"running": progress.iter_active()}
+
+
+async def _work_fingerprint(wid: str) -> str:
+    """[S1·R-06] 单 work 变化指纹：work.json、sessions/*.md 的「路径+大小+mtime」
+    全列表哈希，**＋库内 cards.rev**（只读遍历，不侵入任何写路径）。
+
+    [卡片存储迁移 SQLite 2026-10-14] 卡片侧改读库内 ``meta.rev``（每次写 +1）——
+    理由（方案 §7.1.1）：SQLite 默认 WAL 把写入落在 ``cards.db-wal``，主库文件
+    ``cards.db`` 的 mtime 可能不变，靠文件 stat 算指纹会**漏报**「卡片变了」，
+    前端就不刷新。rev 不依赖文件系统语义。
 
     实现层修订两笔（对任务书 T6「mtime 取 max」，如实记录）：
     ① max→列表哈希：纯 max 探测不到删卡——删掉非最新文件 max 不变，S2
-      侧栏会挂幽灵卡；仿仓内既有 data_snapshot._fingerprint（L100-112）
-      同法升级，增删改全捕捉；响应契约 {"version","by_work"} 不变。
-    ② glob+stat→os.scandir：U2 真实实测直扫 60ms 超 50ms 基准（158 文件
-      逐文件二次 stat 所致）；Windows 下 scandir 的 entry.stat() 直接取
-      目录枚举自带数据、免二次 stat，语义不变。语义等价性由
-      tests/test_s1_nav_contract.py V6 四断言（不变性/改动/删卡/追加）钉死。
+      侧栏会挂幽灵卡；仿仓内既有 data_snapshot._fingerprint 同法升级，
+      增删改全捕捉；响应契约 {"version","by_work"} 不变。
+    ② glob+stat→os.scandir：Windows 下 scandir 的 entry.stat() 直接取
+      目录枚举自带数据、免二次 stat，语义不变。
     """
     base = card_store.WORKS_DIR / wid
     entries: list[tuple[str, int, int]] = []
@@ -299,18 +315,19 @@ def _work_fingerprint(wid: str) -> str:
         entries.append(("work.json", st.st_size, int(st.st_mtime)))
     except OSError:
         pass
-    for sub in ("cards", "sessions"):
-        try:
-            with os.scandir(base / sub) as it:
-                for e in it:
-                    if e.name.endswith(".md") and e.is_file():
-                        st = e.stat()
-                        entries.append((f"{sub}/{e.name}", st.st_size, int(st.st_mtime)))
-        except OSError:
-            continue                      # work 无此子目录＝空指纹，合法
+    try:
+        with os.scandir(base / "sessions") as it:
+            for e in it:
+                if e.name.endswith(".md") and e.is_file():
+                    st = e.stat()
+                    entries.append((f"sessions/{e.name}", st.st_size, int(st.st_mtime)))
+    except OSError:
+        pass                      # work 无 sessions 子目录＝空指纹，合法
+    rev = await card_db.read_rev_async(wid)
     h = hashlib.sha256()
     for name, size, mtime in sorted(entries):
         h.update(f"{name}|{size}|{mtime}\n".encode("utf-8"))
+    h.update(f"cards.rev|{rev}\n".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -337,7 +354,7 @@ async def get_nav_version():
             continue
         if not (card_store.WORKS_DIR / wid / "work.json").exists():
             continue
-        by_work[wid] = _work_fingerprint(wid)
+        by_work[wid] = await _work_fingerprint(wid)
     h = hashlib.sha256()
     for wid in sorted(by_work):
         h.update(f"{wid}|{by_work[wid]}\n".encode("utf-8"))
@@ -540,17 +557,61 @@ async def post_work_commit(work_id: str, card_id: str, req: CommitRequest):
     return result
 
 
+@router.get("/works/{work_id}/cards/{card_id}/timeline")
+async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
+    """[消息底座能力对齐 · 件4] 恢复唯一入口（C3/C4）：合并时序表。
+
+    items＝消息块（user_message/assistant_text/msg_*）＋过程事件（tool_call/
+    tool_result/judgment/step_*/seat_*/…）＋思考（reasoning），按 seq 升序、
+    每条自带 ``type``，前端按 type 直接渲染。被 revoke 覆盖的段已剔除（软删）。
+
+    恢复统一走本口：内存 journal 是进程内的（重启即失），events jsonl 才是
+    可回溯的时序真相（C4 二合一——过程与思考合流，不再分 /stream 与 /tokens
+    两路重放）。实时增量仍走两条 SSE（见下方端点）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    try:
+        await card_store.read_card(work_id, card_id)
+    except CardNotFoundError:
+        return _err(404, f"卡片不存在: {card_id}")
+    except CardLockedError:
+        return _err(423, "卡片被占用，请稍后重试")
+    items = event_log.timeline(work_id, card_id, from_seq=frm)
+    return {
+        "work_id": work_id,
+        "card_id": card_id,
+        "items": items,
+        "last_seq": items[-1]["seq"] if items else 0,
+    }
+
+
+# [消息底座能力对齐 · 件4] 任务书字面的卡级入口（无 work 路径段）：work_id 由
+# 查询参数给定，缺省转发 work_001（与既有 /api/cards/{id}/… 兼容层同口径）。
+@router.get("/card/{card_id}/timeline")
+async def get_card_timeline_compat(card_id: str, work_id: str = DEFAULT_WORK_ID,
+                                   frm: int = Query(0, alias="from")):
+    # frm 显式传：直接调路由函数时 Query(...) 默认值是 Query 对象而非 0
+    return await get_card_timeline(work_id, card_id, frm)
+
+
 @router.get("/works/{work_id}/cards/{card_id}/stream")
 async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
-    """[信息流 Task3] SSE 过程通道：内存环形事件日志（event_stream）按 seq 重放＋
-    实时跟进；from=0 全量重放（刷新重建，A50）。事件纯展示层，不进 session/prior
-    （A42）；单进程内存态（A44）。心跳＝SSE 注释帧（本体论 ping，不占 journal）。"""
+    """[信息流 Task3] SSE 过程通道：内存事件日志（event_stream）按 seq 跟进。
+
+    [消息底座能力对齐 · 件4] **from=0 整卡重放退役**（C4）：起流游标落在当前
+    末帧——只推「连上之后新发生的事」。整卡恢复统一走 ``GET .../timeline``
+    （events jsonl，跨重启可回溯）；内存 journal 不再充当恢复源（进程内、
+    重启即失）。``from>0`` 的断点续传语义不动（同一连接按 seq 游标跟进）。
+    事件纯展示层，不进 session/prior（A42）；单进程内存态（A44）。
+    """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
 
     async def gen():
         yield "retry: 3000\n\n"
-        last = frm - 1
+        # from=0 → 游标落在末帧（零重放）；from>0 → 断点续传（逐字不变）
+        last = frm - 1 if frm > 0 else event_stream.journal_last_seq(work_id, card_id)
         idle = 0.0
         while True:
             batch = [e for e in event_stream.journal_of(work_id, card_id) if e["seq"] > last]
@@ -577,19 +638,23 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
 async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
     """[信息流重出 Task4] SSE 逐字流通道（**独立**于 /stream 的过程卡流）。
 
-    与既有 17 类事件隔离申报（红线4）：独立 journal、独立 seq 计数器、不占主 seq、
-    不被过程卡的 300 条环形挤出。from=0 全量重放——刷新后逐字流仍能完整重建
-    （V-T4-1）。帧形态与 /stream 同构：{"seq","ts","type","data"}，
-    type ∈ {reasoning_chunk, content_chunk}。
+    与既有 17 类事件隔离申报（红线4）：独立 journal、不占主 seq。帧形态与
+    /stream 同构：{"seq","ts","type","data"}，type ∈ {reasoning_chunk,
+    content_chunk}。
 
-    纯展示层：不进 session/prior/模型输入（红线3/A42），不落盘、单进程内存态（A44）。
+    [消息底座能力对齐 · 件4] **from=0 整卡重放退役**（C4，同 /stream）：
+    思考的整卡恢复统一走 ``GET .../timeline``（reasoning 已落 events jsonl，
+    裁定 C2）。``from>0`` 断点续传不动。
+
+    纯展示层：不进 session/prior/模型输入（红线3/A42）；**思考增量落盘**
+    （events jsonl，C2）——不落盘的只有正文增量 content_chunk（C7）。
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
 
     async def gen():
         yield "retry: 3000\n\n"
-        last = frm - 1
+        last = frm - 1 if frm > 0 else event_stream.token_journal_last_seq(work_id, card_id)
         idle = 0.0
         while True:
             batch = [e for e in event_stream.token_journal_of(work_id, card_id) if e["seq"] > last]
@@ -618,6 +683,125 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     return await _run_message(work_id, card_id, req.content, req.pair_id)
+
+
+# ============================================================
+# [消息底座能力对齐 · 件5] 消息编辑 / 重发（C6）
+# ============================================================
+
+class EditMessageRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
+def _find_message_record(work_id: str, card_id: str, seq: int,
+                         want_type: str) -> Optional[dict[str, Any]]:
+    """按事件 seq 取一条指定类型的记录（找不到＝None）。
+
+    seq 是**事件流**的 seq（timeline 渲染面用的就是它），不是会话块 seq——
+    用户点的是屏幕上的那一条，屏幕渲染的是 timeline。
+    """
+    for rec in event_log.read(work_id, card_id):
+        if int(rec.get("seq") or -1) == int(seq) and rec.get("type") == want_type:
+            return rec
+    return None
+
+
+def _is_revoked(work_id: str, card_id: str, seq: int) -> bool:
+    """该 seq 是否已被某条 revoke 覆盖（软删判定）。
+
+    判据：存在 revoke{from_seq:F} 记录，其自身 seq 大于本条（＝作废在它之后
+    发生）且 F ≤ 本条 seq。
+    """
+    for rec in event_log.read(work_id, card_id):
+        if rec.get("type") != "revoke":
+            continue
+        try:
+            f = int((rec.get("data") or {}).get("from_seq"))
+            r_seq = int(rec.get("seq"))
+        except (TypeError, ValueError):
+            continue
+        if r_seq > seq and f <= seq:
+            return True
+    return False
+
+
+def _has_valid_reply(work_id: str, card_id: str, pair_id: str) -> Optional[bool]:
+    """该提问（run_id）在事件流里是否已有**未作废**的回复。
+
+    返回 None＝事件流无判据（无事件文件/找不到该提问记录，典型＝存量卡未
+    迁移）→ 调用方回落既有「会话块」口径（判定语义逐字不变）。
+    """
+    try:
+        items = event_log.timeline(work_id, card_id)
+    except Exception:  # noqa: BLE001 事件流不可读＝无判据，回落既有口径
+        return None
+    idx = None
+    for i, rec in enumerate(items):
+        if rec.get("type") == "user_message" and str(rec.get("run_id") or "") == pair_id:
+            idx = i
+            break
+    if idx is None:
+        return None
+    for rec in items[idx + 1:]:
+        if rec.get("type") == "assistant_text" and str(rec.get("run_id") or "") == pair_id:
+            return True
+    return False
+
+
+@router.post("/works/{work_id}/cards/{card_id}/messages/{seq}/edit")
+async def edit_work_message(work_id: str, card_id: str, seq: int, req: EditMessageRequest):
+    """编辑历史提问：revoke 该条及其后全部 → 以**新 run_id** 重生成（C6）。
+
+    - 定位用事件流 seq（屏幕渲染的就是 timeline 的 seq）；
+    - revoke 是**软删**：追加一条 revoke 记录标记 from_seq 起作废，不物理删字节；
+    - 新回合走全新 pair_id ⇒ 会话文件追加一条新提问块（编辑后的正文）＋新回复；
+    - 会话 .md 是 append-only 真相源，旧块仍在盘上（本任务不引入会话级软删，
+      属下一步；timeline 渲染面已不显示被 revoke 的段）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    rec = _find_message_record(work_id, card_id, seq, "user_message")
+    if rec is None:
+        return _err(404, f"事件流中无此提问记录: seq={seq}")
+    if _is_revoked(work_id, card_id, seq):
+        return _err(404, f"该提问已被作废（seq={seq}），请对最新一条提问操作")
+    await event_log.revoke(work_id, card_id, seq)
+    session_ops.ops_log("message_edit", work_id, card_id,
+                        {"seq": seq, "run_id": str(rec.get("run_id") or "")})
+    logger.info("[件5] 编辑重生成 work=%s card=%s seq=%s（旧 run_id=%s 已作废）",
+                work_id, card_id, seq, rec.get("run_id") or "")
+    return await _run_message(work_id, card_id, req.content, None)
+
+
+@router.post("/works/{work_id}/cards/{card_id}/messages/{seq}/resend")
+async def resend_work_message(work_id: str, card_id: str, seq: int):
+    """重发历史提问：作废旧回复 → **复用原 pair_id** 重生成（C6）。
+
+    复用 pair_id 是去重机制（既有「后端二次判定」）：判定口径扩展为「该提问
+    在事件流里是否已有未作废的回复」——旧回复已被本口 revoke ⇒ 判为无回复
+    ⇒ 不重复追加提问块，只重新产出回复。事件流无判据（存量未迁移卡）时
+    回落既有会话块口径，行为逐字不变。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    rec = _find_message_record(work_id, card_id, seq, "user_message")
+    if rec is None:
+        return _err(404, f"事件流中无此提问记录: seq={seq}")
+    if _is_revoked(work_id, card_id, seq):
+        return _err(404, f"该提问已被作废（seq={seq}），请对最新一条提问操作")
+    run_id = str(rec.get("run_id") or "")
+    content = str((rec.get("data") or {}).get("content") or "")
+    if not content.strip():
+        return _err(400, "该提问记录正文为空，无法重发")
+    # 只作废回复（提问保留）：找同 run_id 的第一条 assistant_text
+    for later in event_log.read(work_id, card_id, from_seq=int(rec["seq"]) + 1):
+        if later.get("type") == "assistant_text" and str(later.get("run_id") or "") == run_id:
+            await event_log.revoke(work_id, card_id, int(later["seq"]))
+            break
+    session_ops.ops_log("message_resend", work_id, card_id, {"seq": seq, "run_id": run_id})
+    logger.info("[件5] 重发重生成 work=%s card=%s seq=%s（复用 run_id=%s）",
+                work_id, card_id, seq, run_id)
+    return await _run_message(work_id, card_id, content, run_id or None)
 
 
 # [A8/R3-T119-T123] 人停端点：置位控制面（consume-once，接口被消费才算数）；
@@ -829,12 +1013,19 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 此标注须原样保留，不得抹去（红线 10）。
     reuse_client_pair = False
     if client_pair_id:
-        for idx in range(len(prior) - 1, -1, -1):
-            if prior[idx].get("pair_id") == client_pair_id:
-                reuse_client_pair = not any(
-                    m.get("role") == "assistant" for m in prior[idx + 1:]
-                )
-                break
+        # [消息底座能力对齐 · 件5] 事件流有判据时**以事件流为准**：被 revoke 的
+        # 旧回复不算回复 ⇒ 重发可复用原 pair_id 而不重复追加提问块。事件流无
+        # 判据（存量卡未迁移／无事件文件）→ 回落既有会话块口径，逐字不变。
+        ev_verdict = _has_valid_reply(work_id, card_id, client_pair_id)
+        if ev_verdict is None:
+            for idx in range(len(prior) - 1, -1, -1):
+                if prior[idx].get("pair_id") == client_pair_id:
+                    reuse_client_pair = not any(
+                        m.get("role") == "assistant" for m in prior[idx + 1:]
+                    )
+                    break
+        else:
+            reuse_client_pair = not ev_verdict
     if reuse_client_pair:
         pair_id = client_pair_id
         state.pair_id = pair_id

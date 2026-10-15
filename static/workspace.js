@@ -3,23 +3,24 @@
 /* 迭代四 F2③：IIFE → ES module；escapeHtml/API/EventFlow/ReloadCanvas 走模块 import。
  * 循环依赖（canvas.js import 本文件的 Workspace/RenderNav）由 ESM 活绑定＋函数声明
  * 提升保证：本文件顶层不调用任何 canvas 导出。 */
-import { API } from "./esm/api.js?v=12";
-import { escapeHtml } from "./esm/util.js?v=12";
-import { EventFlow } from "./stream.js?v=13";
-import { reloadCanvas } from "./canvas.js?v=12";
-import { store } from "./esm/store.js?v=12";
-import { notify, postStop } from "./esm/api.js?v=12";
-import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=12";
+import { API } from "./esm/api.js?v=27";
+import { escapeHtml } from "./esm/util.js?v=27";
+import { EventFlow } from "./stream.js?v=27";
+import { renderMarkdown } from "./esm/md.js?v=27";
+import { reloadCanvas } from "./canvas.js?v=27";
+import { store } from "./esm/store.js?v=27";
+import { notify, postStop } from "./esm/api.js?v=27";
+import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=27";
 // [S2] 导航渲染体系：状态三层容器 + 行模型 + 渲染换底 + 虚拟滚动 + 异步加载
 import {
   createNavStateStore, storageGet, storageSet,
-} from "./esm/state_layers.js?v=12";
-import { createNavAsync } from "./esm/nav_async.js?v=12";
-import { createNavRenderer } from "./esm/nav_render.js?v=12";
+} from "./esm/state_layers.js?v=27";
+import { createNavAsync } from "./esm/nav_async.js?v=27";
+import { createNavRenderer } from "./esm/nav_render.js?v=27";
 // [S3] 交互与呈现族：找通道（R-24/25）、面包屑+吸顶+祖先链（R-27/18/26/28）、快照存在性（R-21）
-import { createNavFind } from "./esm/nav_find.js?v=12";
-import { createNavBreadcrumb, ancestorCards } from "./esm/nav_breadcrumb.js?v=12";
-import { cardInSnapshot } from "./esm/nav_badge.js?v=12";
+import { createNavFind } from "./esm/nav_find.js?v=27";
+import { createNavBreadcrumb, ancestorCards } from "./esm/nav_breadcrumb.js?v=27";
+import { cardInSnapshot } from "./esm/nav_badge.js?v=27";
 
 const WORK_ID = window.__WORK_ID__;
   const ws = document.getElementById("workspace");
@@ -28,7 +29,19 @@ const WORK_ID = window.__WORK_ID__;
   const navTree = document.getElementById("navTree");
   const chatArea = document.getElementById("chatArea");
   const inputBox = document.getElementById("inputBox");
-  const sendBtn = document.getElementById("sendBtn");
+  // [顶栏整合 2026-10-13] #sendBtn（文字「发送」）与 #stopBtn（顶栏「■ 停止」）合并为
+  // #runBtn 一个两态图标按钮（用户 2026-10-13 17:17 ③）。永远不禁用——运行中它要能点（＝停止）。
+  const runBtn = document.getElementById("runBtn");
+  let isRunning = false;   // 一轮在跑（防 Enter 二次发起；停止走运行按钮）
+
+  // 运行按钮两态。running=true ⇒ 停止图标（点击＝停本轮）；false ⇒ 发送图标（点击＝发送）。
+  function setRunState(running) {
+    if (!runBtn) return;
+    runBtn.dataset.state = running ? "running" : "idle";
+    runBtn.className = "run " + (running ? "running" : "idle");
+    runBtn.setAttribute("aria-label", running ? "停止" : "发送");
+    runBtn.setAttribute("title", running ? "停止本轮生成" : "发送");
+  }
 
   let currentCard = null;     // 完整 card 数据 {meta, body}
   let lastSentContent = "";   // 用于失败重发（不重复追加用户消息）
@@ -59,20 +72,79 @@ const WORK_ID = window.__WORK_ID__;
     if (main) main.dataset.view = view;
     if (nav) nav.classList.toggle("rail", view === "canvas");
   }
+
+  // [顶栏整合 2026-10-13] 聊天态面包屑（吃 navStore.snapshot；替代已删的 #wsHeadTitle）。
+  // 段序：首段＝项目名＝根卡（点它＝回画布，用户 17:17 ②「让【根卡】可点击…点击这个就是回画布」）
+  //      → 中间段＝祖先卡（点它＝切到该卡对话）→ 末段＝当前卡（不可点）。
+  // 根卡不再单列一段：实读 nav_breadcrumb.js:52 首段 cid 与 :53 根卡 cid 同为 work_card_id，
+  // 且全 work 项目名与根卡名 10/10 同名——同时显示两遍是同一件东西。
+  function renderChatCrumb(cardId) {
+    const el = document.getElementById("chatCrumb");
+    if (!el) return;
+    el.innerHTML = "";
+    const snap = navStore.snapshot;
+    const p = (snap && snap.project) ? snap.project(WORK_ID) : null;
+    const chain = (cardId && snap) ? ancestorCards(snap, WORK_ID, cardId) : [];
+    if (!p || !chain.length) return;
+    const mkSep = () => {
+      const s = document.createElement("span");
+      s.className = "csep";
+      s.textContent = "›";
+      return s;
+    };
+    const rootCid = p.work_card_id || (chain[0] && chain[0].card_id) || "";
+    // 首段＝项目名（＝根卡）：点它回画布
+    const root = document.createElement("button");
+    root.className = "cseg root";
+    root.textContent = (p.title || "").trim() || rootCid;
+    root.title = "返回画布（项目名即根卡）";
+    root.onclick = () => setAppView("canvas");
+    el.appendChild(root);
+    for (const c of chain) {
+      if (c.card_id === rootCid) continue;   // 根卡＝首段，不重复
+      el.appendChild(mkSep());
+      if (c.card_id === cardId) {
+        const cur = document.createElement("span");
+        cur.className = "cseg cur";
+        cur.setAttribute("aria-current", "page");
+        cur.textContent = (c.title || "").trim() || c.card_id;
+        el.appendChild(cur);
+      } else {
+        const b = document.createElement("button");
+        b.className = "cseg mid";
+        b.textContent = (c.title || "").trim() || c.card_id;
+        b.title = "切到该卡对话";
+        b.onclick = () => open(c.card_id);
+        el.appendChild(b);
+      }
+    }
+  }
   /* [F2③] 挂载改导出 */
 
+  /* [切卡竞态 2026-10-14 · 用户令 ④] 底层修法：按「最终选择」收敛，不做临时补丁。
+     问题根因：open() 全程无守卫，快速点两张卡＝两个 open 并发（各含 getCard →
+     renderInspector → renderChat 三次 await），谁后跑完谁赢——A 的迟到回复会写进
+     已经清空、正在显示 B 的容器（用户判「上一张卡片的信息推进这张卡片里」）。
+     修法：单调序号 _openSeq。每次 await 之后比对「我还是最后一次选择吗」，
+     不是就立刻停手（一行 DOM 都不写）。这样 A 的异步链在自己这一层就断了，
+     根本走不到写 DOM 那一步——不需要给每个写点打补丁。 */
+  let _openSeq = 0;
+
   async function open(cardId) {
+    const mySeq = ++_openSeq;
+    const stale = () => mySeq !== _openSeq;
     try {
       const card = await API.getCard(WORK_ID, cardId);
+      if (stale()) return;
       currentCard = card;
       await renderInspector();
+      if (stale()) return;
       await renderChat();
-      // [对话流渲染] 把这张卡**上一条调用**的中间环节痕迹补回对话流（刷新/换卡都生效）。
-      // 事件只活在服务端内存 journal（不落盘、不进 session/prior/模型输入）：
-      //   同进程且该卡此后没再发过请求 ⇒ 重放得出；进程重启或又发过消息 ⇒ 自然没有了。
-      // 只重放环节行、不重放正文（正文已由 renderChat 从会话渲染，免得出现重复气泡）。
+      if (stale()) return;
+      // [对话流渲染] 把这张卡的过程痕迹补回对话流（按落盘时序表逐条归位）。
       {
-        EventFlow.replayTrace(WORK_ID, cardId);
+        await EventFlow.replayTrace(WORK_ID, cardId);
+        if (stale()) return;
       }
       // [刷新恢复 2026-10-03] 卡号写进 URL hash：刷新后按 hash 自动重开这张卡。
       // 用 replaceState 不堆积浏览历史、不触发页面重载；URL 即状态，不引入前端存储。
@@ -84,9 +156,13 @@ const WORK_ID = window.__WORK_ID__;
       navFind.recordRecent(WORK_ID, cardId, card.meta.title);
       // [T17] 视图切换：进入对话态（nav 260px、workspace 可见）；.active 旧机制退役
       setAppView("chat");
-      document.getElementById("wsHeadTitle").textContent = card.meta.title || "";
+      if (stale()) return;
       // 导航树重渲以应用当前卡高亮与祖先路径展开
       await renderNav();
+      if (stale()) return;
+      // [顶栏整合 2026-10-13] 卡标题改由顶栏聊天态面包屑承载（原 #wsHeadTitle 随 .ws-head 整条删除）。
+      // 放在 await renderNav() 之后——面包屑吃 navStore.snapshot，快照到位才有祖先链。
+      renderChatCrumb(cardId);
       // [phase8.4.1] 面板可见后再锁定滚底（visibility 方案下排版恒有效，此处保底）
       scrollChatBottom();
       // [phase8.6-C] 同理：textarea auto-grow 必须在面板可见后执行
@@ -276,7 +352,7 @@ const WORK_ID = window.__WORK_ID__;
           currentCard = r;
           await renderInspector();
           await renderNav();
-          document.getElementById("wsHeadTitle").textContent = currentCard.meta.title || "";
+          renderChatCrumb(currentCard.meta.card_id);   // [顶栏整合] 标题改由顶栏面包屑承载
           notify("标题已保存", "success");   // [F3②] 标题保存反馈（原无任何反馈）
         } catch (e) { notify("标题保存失败", "error"); }
       };
@@ -449,13 +525,17 @@ const WORK_ID = window.__WORK_ID__;
     getCardId: () => (currentCard ? currentCard.meta.card_id : ""),
   });
 
-  // [S3/T2] 找通道：搜索独立层（结果层叠加在 appNav 上，navTree 本体零触碰）
+  // [定稿 2026-10-12] 找通道：搜索＝镜片——输入即把树重投影成「命中＋其到根的路径」，
+  // 命中标黄；清空即原样还原（query 只活在 temp 内存，从不写 prefs，所以无需回滚）。
   const navFind = createNavFind({
-    host: document.getElementById("appNav"),
     input: document.getElementById("navSearchInput"),
     store: navStore,
     workId: WORK_ID,
     onJump: (wid, cid) => gotoCard(cid, wid, false),   // 复用 R-20 叶子跳转路径
+    onQuery: (q) => {
+      navStore.temp.setQuery(q);
+      navRenderer.render();
+    },
   });
   // [S3/T3] 定位族：面包屑+吸顶（同一 UI 两态）；vl.headerH 是 S2 预留的在流头部高度消费口
   const navBreadcrumb = createNavBreadcrumb({
@@ -531,14 +611,29 @@ const WORK_ID = window.__WORK_ID__;
   function closeNavMenu() {
     if (navMenuEl) { navMenuEl.remove(); navMenuEl = null; }
   }
+  // [定稿 2026-10-12] ⋯ 菜单＝卡片/项目行的次级操作入口。
+  // [用户 2026-10-15 ①]「新建子卡」已从本菜单取出，改为行尾常驻的 ＋ 入口（悬停可见）——
+  // 菜单里不再重复同一个动作。菜单只留：打开（次级入口）＋ 删除。
+  // 删除的置灰判据不是新规矩，是把后端已有的结构性防护搬到眼前——card_store 本就
+  // ① 拒绝删带子卡的卡（防孤儿）② 拒绝删项目根卡（card_id == work_card_id，403 语义），
+  // 旧前端要点了才吃一个错误，这里提前置灰。
   function showNavMenu(cid, wid, anchor) {
     closeNavMenu();
+    const isProject = !!anchor.closest(".nav-phead");   // 项目行（根卡）与卡行走同一口
+    const p = navStore.snapshot.project(wid);
+    const card = p && (p.cards || []).find(c => c.card_id === cid);
+    const kids = card ? (card.child_count || 0) : 0;
+    const delDisabled = isProject || kids > 0;
+    // [用户 2026-10-15 ②] 根卡行的「打开 →」「＋卡」两钮已撤（改为与子卡相同的悬停 ⋯＋），
+    // 该行 ⋯ 菜单**不加新条目**——用户要的是"取消这两个操作"，不是换个地方再放一个。
+    // 项目行删除恒置灰：card_store 拒删根卡（card_id == work_card_id，403 语义），
+    // 提前置灰＝把后端既有防护搬到眼前，不是新规矩。画布入口仍在顶栏面包屑首段（根卡名）。
+    const items = [];
+    if (!isProject && wid !== WORK_ID) items.push(`<div class="nav-menu-item" data-act="detail">打开此卡</div>`);
+    items.push(`<div class="nav-menu-item danger${delDisabled ? " disabled" : ""}" data-act="del">删除</div>`);
     navMenuEl = document.createElement("div");
     navMenuEl.className = "nav-menu";
-    navMenuEl.innerHTML = (wid !== WORK_ID)
-      ? `<div class="nav-menu-item" data-act="detail">ⓘ 打开此卡</div>`
-      : `<div class="nav-menu-item" data-act="child">＋ 建子卡</div>
-         <div class="nav-menu-item" data-act="detail">ⓘ 卡详情</div>`;
+    navMenuEl.innerHTML = items.join("");
     document.body.appendChild(navMenuEl);
     const r = anchor.getBoundingClientRect();
     navMenuEl.style.left = Math.max(8, Math.min(r.left, window.innerWidth - navMenuEl.offsetWidth - 8)) + "px";
@@ -546,12 +641,29 @@ const WORK_ID = window.__WORK_ID__;
     navMenuEl.querySelectorAll(".nav-menu-item").forEach(item => {
       item.onclick = (e) => {
         e.stopPropagation();
+        if (item.classList.contains("disabled")) return;   // 带子卡的卡：删除不可点
         const act = item.dataset.act;
         closeNavMenu();
+        if (act === "del") { doDeleteCard(wid, cid, card); return; }
         gotoCard(cid, wid, act === "child");
       };
     });
     setTimeout(() => document.addEventListener("click", closeNavMenu, { once: true }), 0);
+  }
+
+  // [定稿] 删卡：确认 → DELETE 端点 → 重拉导航（快照/版本探测同一条既有链，零新机制）
+  async function doDeleteCard(wid, cid, card) {
+    const title = (card && card.title) || cid;
+    if (!window.confirm(`删除「${title}」？`)) return;
+    try {
+      await API.deleteCard(wid, cid);
+    } catch (e) {
+      return;   // toast 已由 api.js 处理
+    }
+    if (currentCard && currentCard.meta.card_id === cid) {
+      history.replaceState(null, "", location.pathname + location.search);   // 删的是当前卡：摘 hash
+    }
+    await renderNav();
   }
 
   function handleProjectAdd(wid) {
@@ -660,8 +772,9 @@ const WORK_ID = window.__WORK_ID__;
     }
   }
 
-  // [S3/R-20②③] 卡行点击判型：先查后动（R-21）→ 有子卡＝展开/折叠（URL 不变）；
-  // 叶子＝跳转（open() → select.set 复合键 ＋页面切卡）。
+  // [定稿 2026-10-12] 卡行点击＝打开这张卡本身——**永远**，与有没有子卡无关。
+  // 旧语义（有子卡＝展开/折叠、只有叶子才跳转）是「有子卡的卡永远点不进去」的根因，已退役：
+  // 「展开/收起」只归箭头（data-twist，见下方委托），两个动作两个地方，行为不随数据变。
   function handleCardRowClick(rowEl) {
     const cid = rowEl.dataset.cid;
     const wid = rowEl.dataset.wid || WORK_ID;
@@ -672,14 +785,8 @@ const WORK_ID = window.__WORK_ID__;
       return;
     }
     rowEl.classList.remove("deleted");   // 快照已恢复的自愈（灰态权威投影在 patchCardContent）
-    const rowObj = rowEl.__navRow;
-    const hasKids = rowObj
-      ? ((rowObj.card.child_count || 0) > 0)
-      : (parseInt(rowEl.dataset.childCount || "0", 10) > 0);
-    if (hasKids) {
-      if (rowObj) navRenderer.toggleCard(rowObj);
-      return;
-    }
+    // [定稿] 从搜索态点开一张卡 → 顺手退出镜片，回到你平时看的那棵树（新卡的路径会自动撑开）
+    if (navStore.temp.getQuery && navStore.temp.getQuery()) navFind.close();
     gotoCard(cid, wid, false);
   }
 
@@ -690,6 +797,15 @@ const WORK_ID = window.__WORK_ID__;
   //   有子卡卡行单击＝展开/折叠，URL 不变；
   //   叶子卡单击＝跳转（复合键写 URL＋页面切卡）；已删卡＝灰态不跳（R-21）；
   //   「打开 →」（data-act="open"）＝进项目画布（不动）。互不误触。
+  // 导航事件委托：一次绑定，免重挂。[S2] 读写走三层容器，展开/折叠/拉取走新模块。
+  // [用户 2026-10-15 ①②] 语义统一后的完整口径（项目行与卡行同构）：
+  //   ▸/▾（data-twist / data-ptwist，24px 热区）＝**唯一**负责展开/收起；
+  //   卡行名字单击＝进这张卡的对话（与有没有子卡无关，R-21 灰态卡除外）；
+  //   项目行名字单击＝进该项目**根卡**的对话（用户 ② 原话「也包含点击根卡就进它的对话」）；
+  //   ＋（data-newchild）＝给这张卡/根卡新建子卡；无根卡项目的 ＋（data-add）＝在本项目下新建卡；
+  //   ⋯（data-more）＝次级操作菜单（删除；跨项目的卡另有「打开此卡」）。
+  // 旧口径退役：「打开 →」（进画布）与「＋卡」两枚文字按钮已从 DOM 撤除（data-act="open" 分支随之删除，
+  //   不留死接线）；项目行单击＝展开/折叠退位给 ▸ 箭头。
   navTree.addEventListener("click", (e) => {
     const twist = e.target.closest("[data-twist]");
     if (twist) {
@@ -704,14 +820,21 @@ const WORK_ID = window.__WORK_ID__;
     }
     const more = e.target.closest("[data-more]");
     if (more) { showNavMenu(more.dataset.more, more.dataset.mwid, more); return; }
+    // ＋ 新建子卡（用户 ①：从 ⋯ 菜单取出，单列入口）。复用既有链：gotoCard(focusChild=true)
+    // ＝切到该卡对话 + 展开右栏详情 + 光标落进子卡标题框（原菜单「新建子卡」同一动作，未新造机制）。
+    const pnew = e.target.closest("[data-newchild]");
+    if (pnew) { gotoCard(pnew.dataset.newchild, pnew.dataset.nwid, true); return; }
     const padd = e.target.closest("[data-add]");
     if (padd) { handleProjectAdd(padd.dataset.add); return; }
-    const popen = e.target.closest('[data-act="open"]');
-    if (popen) { window.location.href = "/work/" + popen.dataset.wid; return; }
     const phead = e.target.closest(".nav-phead");
     if (phead) {
-      // [S3/R-20①] 项目行单击＝展开/折叠（URL 不变）
-      navRenderer.toggleProject(phead.dataset.wid);
+      // [用户 2026-10-15 ②] 项目行名字单击＝进根卡对话（与子卡同构）。
+      // 无根卡的项目（work_card_id 为空，实测 work_004/005/007）没有"它的对话"可进，
+      // 回退＝展开/折叠（原行为），保证这一行点了始终有反应。
+      const rootCid = phead.dataset.root || "";
+      if (!rootCid) { navRenderer.toggleProject(phead.dataset.wid); return; }
+      if (currentCard && currentCard.meta.card_id === rootCid) return;   // 已在根卡：不重复打开
+      gotoCard(rootCid, phead.dataset.wid, false);
       return;
     }
     const row = e.target.closest(".nav-card");
@@ -721,13 +844,10 @@ const WORK_ID = window.__WORK_ID__;
   // [S3/R-18] 树滚动 → 面包屑吸顶联动（同一 DOM 两态；scrollTop>2 挂 .sticky）
   navTree.addEventListener("scroll", () => { navBreadcrumb.onTreeScroll(); }, { passive: true });
 
-  // [S3/R-28/R-26] 左栏顶部两钮（work.html #navTop 容器内）
-  {
-    const collapseBtn = document.getElementById("navCollapseAll");
-    if (collapseBtn) collapseBtn.onclick = collapseAllKeepPath;
-    const locateBtn = document.getElementById("navLocate");
-    if (locateBtn) locateBtn.onclick = locateCurrentCard;
-  }
+  // [对齐样稿 2026-10-12] 搜索区只留搜索框后，「收起全部」「定位」两钮的接线一并移除。
+  // 两个函数本体保留（collapseAllKeepPath / locateCurrentCard，见上方定义）——它们是
+  // 「一键收起」「滚到当前卡」的唯一实现，删掉即丢能力；此处只摘 UI 入口，去留待定。
+  // 已知连带：tests/s3/obs_nav_s3.js 是人肉观察脚本（非单测），其中两处 .click() 会取不到元素。
 
   // ==================== 讨论区 ====================
   // [R3] 会话区渲染：首屏/换卡全量构建；同卡重渲染走增量（只 append 尾部差额），
@@ -761,7 +881,7 @@ const WORK_ID = window.__WORK_ID__;
       const baseCount = needFull ? 0 : localCount;
       if (msgs.length > baseCount) {
         const delta = msgs.slice(baseCount);
-        for (const m of delta) appendMessage(m.role, m.content, m.model);
+        for (const m of delta) appendMessage(m.role, m.content, m.model, m.behavior, m.end);
         console.info("[R3] 增量追加 " + delta.length + " 条（本地 " + baseCount + " → 服务端 " + msgs.length + "）");
         chatRenderedCount = msgs.length;
       }
@@ -769,11 +889,36 @@ const WORK_ID = window.__WORK_ID__;
     scrollChatBottom();
   }
 
-  function appendMessage(role, content, model) {
+  // [对话区会话流样式 2026-10-12] 统一内容列：chatArea 卡片内所有消息/过程行
+  // 都进同一条 .msgs 列（max-width min(70%, 48em)——用户 19:08/19:32 裁定），
+  // user 气泡靠右、assistant 文档流靠左，同一右界：我的发言永不超出模型消息的边界
+  // （用户 21:39 裁定）。过程行仍是各自独立的 .step-row，不归拢、不包裹。
+  function ensureMsgs() {
+    let m = chatArea.querySelector(":scope > .msgs");
+    if (!m) {
+      m = document.createElement("div");
+      m.className = "msgs";
+      chatArea.appendChild(m);
+    }
+    return m;
+  }
+
+  /** [对话流全消息类型 2026-10-13] 助手消息元信息行（Ⅲ 对话块）：
+      model 徽标 ＋ behavior 环节块徽标（Ⅳ，session 块 behavior 字段）＋ end 结束原因
+      （Ⅲ，END_VALUES：model_done / policy_stop / human_stop / error）。字段空则不渲染。 */
+  function assistantMeta(model, behavior, end) {
+    const parts = [];
+    if (model) parts.push(`<span class="model-badge">${escapeHtml(model)}</span>`);
+    if (behavior) parts.push(`<span class="beh" data-beh="${escapeHtml(behavior)}">${escapeHtml(behavior)}</span>`);
+    if (end) parts.push(`<span class="end${end === "error" ? " end-error" : ""}" data-end="${escapeHtml(end)}">end:${escapeHtml(end)}</span>`);
+    return parts.length ? `<div class="meta">${parts.join("")}</div>` : "";
+  }
+
+  function appendMessage(role, content, model, behavior, end) {
     // [迭代四 F4⑥] 卡间消息分流：role 以 card: 开头＝其他卡发来的消息——
     // 必须先于下方 live 接管分支（否则吞掉正在生成的助手气泡）。
     if (role && String(role).startsWith("card:")) return appendCardMessage(role, content);
-    const badge = (role === "assistant" && model) ? `<div class="model-badge">${escapeHtml(model)}</div>` : "";
+    const badge = (role === "assistant") ? assistantMeta(model, behavior, end) : "";
     // [对话流渲染] 权威助手消息上屏时**就地接管**那条正在生成的正文条目
     // （`.msg.assistant.live`）——.live 不计入基数（见 localCount/baseline），
     // 接管后它就成为该条助手消息本体；过程行 `.step-row` 各自独立留在对话流里，不动。
@@ -781,7 +926,18 @@ const WORK_ID = window.__WORK_ID__;
       const live = chatArea.querySelector(".msg.assistant.live");
       if (live) {
         live.className = "msg assistant";
-        live.innerHTML = badge + formatMsgContent(content || "");
+        // [think 可见 2026-10-14 · 用户令 ⑥] 不再整块 innerHTML 替换——那会把思考块
+        // 一起擦掉（「think 过程根本看不到、一落定就没了」的直接根因）。
+        // 只换正文容器，思考块留在原位（元信息行插到最前）。
+        const md = live.querySelector(".md");
+        if (md) {
+          md.innerHTML = renderMarkdown(content || "");
+          md.classList.remove("live-content");
+        } else {
+          live.insertAdjacentHTML("beforeend",
+            '<div class="md">' + renderMarkdown(content || "") + "</div>");
+        }
+        if (badge) live.insertAdjacentHTML("afterbegin", badge);
         chatRenderedCount += 1;
         scrollChatBottom();
         return live;
@@ -789,8 +945,10 @@ const WORK_ID = window.__WORK_ID__;
     }
     const el = document.createElement("div");
     el.className = "msg " + (role === "user" ? "user" : "assistant");
-    el.innerHTML = badge + formatMsgContent(content || "");
-    chatArea.appendChild(el);
+    el.innerHTML = badge + (role === "user"
+      ? formatMsgContent(content || "")
+      : '<div class="md">' + renderMarkdown(content || "") + "</div>");
+    ensureMsgs().appendChild(el);
     // [C3 主界面优化] 记账与显示一致：send()/恢复路径与 renderChat 同走本函数，
     // 每次真实上屏同步计数（与 renderChat 的 DOM 实数判据同口径，杜绝增量路径脱节）
     chatRenderedCount += 1;
@@ -798,29 +956,54 @@ const WORK_ID = window.__WORK_ID__;
     return el;
   }
 
-  // [迭代四 F4⑥] 卡间消息渲染：.msg.card 结构＋头行剥离；解析失败显示
+  // [迭代四 F4⑥] 卡间消息渲染（Ⅰ 类 ×3）：.cmsg 结构＋头行剥离；解析失败显示
   // 「消息格式异常」标记＋原文全文照示（不静默丢弃，卡间册 §4.2 解析失败处置①）。
+  // [对话流全消息类型 2026-10-13] 形态改 .cmsg（灰阶竖条＋类型标签＋方向行）。
+  // **元素保留 .msg 类**：消息计数选择器 .msg:not(.thinking):not(.live) 依赖它，
+  // 改类名会让 renderChat 增量判据错位、重复上屏（style.css .cmsg 段有覆盖说明）。
+  // 显示名与「须回应」镜像自 config/message_type_registry.json（后端 display_of 的同表；
+  // 本路径无注册表端点，故前端持一份最小镜像，未知类型回落显示 code 本身＝fail-open）。
+  const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知" };
+  const CARD_MSG_CLS = { msg_ask: "ask", msg_answer: "answer", msg_notify: "notify" };
+  const CARD_MSG_MUST = { msg_ask: true };
+
   function appendCardMessage(role, content) {
     const hdr = parseCardHeader(content);
+    const from = String(role).slice(5);
+    const to = (currentCard && currentCard.meta && currentCard.meta.card_id) || "本卡";
     const div = document.createElement("div");
-    div.className = "msg card";
-    const meta = document.createElement("div");
-    meta.className = "cmsg-meta";
+    div.className = "msg cmsg" + (hdr ? (CARD_MSG_CLS[hdr.type] ? " " + CARD_MSG_CLS[hdr.type] : "") : " bad");
+    if (hdr) div.dataset.cm = hdr.type;
+    const bar = document.createElement("div");
+    bar.className = "bar";
     const body = document.createElement("div");
-    body.className = "cmsg-body";
+    body.className = "body";
+    const head = document.createElement("div");
+    head.className = "head";
+    const txt = document.createElement("div");
+    txt.className = "txt";
     if (hdr) {
-      meta.innerHTML = `<span class="cmsg-type">${escapeHtml(hdr.type)}</span>` +
-        ` <span class="step-dim">来自 ${escapeHtml(role.slice(5))}</span>` +
-        (hdr.reply_to ? ` <span class="step-dim">回应 ${escapeHtml(hdr.reply_to)}</span>` : "");
-      body.textContent = stripCardHeader(content);
+      const disp = CARD_MSG_DISPLAY[hdr.type] || hdr.type;
+      head.innerHTML = `<span class="tag">${escapeHtml(hdr.type)} · ${escapeHtml(disp)}</span>` +
+        (CARD_MSG_MUST[hdr.type] ? `<span class="must">须回应</span>` : "") +
+        `<span class="dir">${escapeHtml(from)} → ${escapeHtml(to)}</span>`;
+      txt.textContent = stripCardHeader(content);
     } else {
-      meta.innerHTML = `<span class="cmsg-type bad">消息格式异常</span>`;
-      body.textContent = content;   // 原文全文照示
+      head.innerHTML = `<span class="tag">消息格式异常</span><span class="dir">${escapeHtml(from)} → ${escapeHtml(to)}</span>`;
+      txt.textContent = content;   // 原文全文照示
       try { console.info("[cardmsg] render bad header"); } catch (e) { /* 零阻断 */ }
     }
-    div.appendChild(meta);
+    body.appendChild(head);
+    body.appendChild(txt);
+    if (hdr && hdr.reply_to) {
+      const rt = document.createElement("div");
+      rt.className = "replyto";
+      rt.textContent = "回应 " + hdr.reply_to;
+      body.appendChild(rt);
+    }
+    div.appendChild(bar);
     div.appendChild(body);
-    chatArea.appendChild(div);
+    ensureMsgs().appendChild(div);
     scrollChatBottom();
     return div;
   }
@@ -869,7 +1052,7 @@ const WORK_ID = window.__WORK_ID__;
         } catch (e) { notify("停止指令失败", "error"); }
       };
       tip.appendChild(stopBtn);
-      chatArea.appendChild(tip);
+      ensureMsgs().appendChild(tip);
       scrollChatBottom();
     }, 180000);
     const obs = new MutationObserver(() => {
@@ -890,7 +1073,7 @@ const WORK_ID = window.__WORK_ID__;
       el.innerHTML = `<span class="spinner"></span>${escapeHtml(prefix)} ${escapeHtml(stageLine || "…")} · 已等待 ${seconds} 秒`;
     };
     render();
-    chatArea.appendChild(el);
+    ensureMsgs().appendChild(el);
     attachHeartbeat(el, cardIdAtSend);   // [F3②] 心跳＋停止按钮
     scrollChatBottom();
     const timer = setInterval(() => { seconds += 1; render(); }, 1000);
@@ -937,6 +1120,12 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         ? st.active
         : ACTIVE_STAGES.includes(st.stage);
       if (!alive) return false;
+      // [刷新后能暂停 2026-10-14 · 用户令 ②] 关键补丁：刷新型恢复了流、却没恢复**运行态**，
+      // 于是卡还在跑、按钮却是「发送」，点下去发新消息而不是停——用户没法暂停。
+      // 查到后端 active=true ⇒ 前端运行态同步置位：按钮转停止态、输入框锁住。
+      isRunning = true;
+      setRunState(true);
+      if (inputBox) inputBox.disabled = true;
       // 同一张卡上已有等待气泡时不重复挂（避免 hashchange 等路径重复触发）
       if (chatArea.querySelector(".msg.thinking, .msg.assistant.live")) return false;
       // [信息流 Task5] 刷新重放：过程卡 from=0 重建（V5；SSE 连不上回退等待气泡）
@@ -956,6 +1145,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
   async function send() {
     if (!currentCard) return;
+    if (isRunning) return;   // [顶栏整合] 一轮在跑时不重入（运行中点按钮＝停止，见 doStop）
     const content = inputBox.value.trim();
     if (!content) return;
 
@@ -996,7 +1186,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           const note = document.createElement("div");
           note.className = "sys-tools";
           note.textContent = "⚠ 响应连接中断，已从会话记录恢复回复（若有新卡片，返回画布后可见）";
-          chatArea.appendChild(note);
+          ensureMsgs().appendChild(note);
           scrollChatBottom();
           return true;
         }
@@ -1012,7 +1202,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       }
     }, 15000);
 
-    sendBtn.disabled = true;
+    isRunning = true;
+    setRunState(true);   // [顶栏整合] 运行按钮转停止态
 
     try {
       const resp = await API.postMessage(WORK_ID, cardId, content);
@@ -1029,8 +1220,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         const items = resp.created_cards.map(c =>
           `<span class="nc-item" data-cid="${escapeHtml(c.card_id)}">${escapeHtml(c.title)}</span>`
         ).join("");
-        card.innerHTML = `<b>✚ 已创建 ${resp.created_cards.length} 张卡片</b>：${items}`;
-        chatArea.appendChild(card);
+        card.innerHTML = `<b>已创建 ${resp.created_cards.length} 张卡片</b>：${items}`;
+        ensureMsgs().appendChild(card);
         card.querySelectorAll(".nc-item").forEach(it => {
           it.onclick = () => open(it.dataset.cid);
         });
@@ -1044,10 +1235,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         const tool = document.createElement("div");
         tool.className = "sys-tools";
         const items = resp.tool_events.map(t =>
-          `<span class="te-item ${t.ok ? "" : "fail"}">🔧 ${escapeHtml(t.tool)}(${escapeHtml(t.card_id)}) ${t.ok ? "✓" : "✗"}</span>`
+          `<span class="te-item ${t.ok ? "" : "fail"}">${escapeHtml(t.tool)}(${escapeHtml(t.card_id)}) ${t.ok ? "✓" : "✗"}</span>`
         ).join("");
         tool.innerHTML = items;
-        chatArea.appendChild(tool);
+        ensureMsgs().appendChild(tool);
       }
 
       // [phase9-F] 观点元信息灰条（simple 多模型；有 viewpoints_meta 才显示）
@@ -1060,7 +1251,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           return `<span class="te-item ${v.ok ? "" : "fail"}">${escapeHtml(v.model)} ${status}</span>`;
         }).join(" ｜ ");
         vp.innerHTML = `观点：${items}`;
-        chatArea.appendChild(vp);
+        ensureMsgs().appendChild(vp);
       }
 
       scrollChatBottom();
@@ -1073,7 +1264,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       const err = document.createElement("div");
       err.className = "sys-error";
       err.innerHTML = `请求失败：${escapeHtml(e.message || "")} <button class="retry-btn">重发</button>`;
-      chatArea.appendChild(err);
+      ensureMsgs().appendChild(err);
       err.querySelector(".retry-btn").onclick = () => {
         err.remove();
         resend(content);
@@ -1081,7 +1272,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       scrollChatBottom();
     } finally {
       clearInterval(pollTimer);
-      sendBtn.disabled = false;
+      isRunning = false;
+      setRunState(false);   // [顶栏整合] 运行按钮回发送态
+      if (inputBox) inputBox.disabled = false;   // [②] 运行态解除时同步解锁输入框
     }
   }
 
@@ -1092,6 +1285,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // pair_id 经本文件内独立 fetch 携带——api.js 的 postMessage 签名固定 {content}，
   // 而 api.js 不在本任务书五文件清单内（红线 1）。
   async function resend(content) {
+    if (isRunning) return;   // [顶栏整合] 同 send 的重入守卫
     const cardId = currentCard ? currentCard.meta.card_id : "";
     let pairId = null;
     try {
@@ -1114,7 +1308,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     } else {
       waiting = createWaitingBubble("重发中…", cardId);
     }
-    sendBtn.disabled = true;
+    isRunning = true;
+    setRunState(true);
     try {
       const httpResp = await fetch(`/api/works/${WORK_ID}/cards/${cardId}/messages`, {
         method: "POST",
@@ -1135,19 +1330,33 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       const err = document.createElement("div");
       err.className = "sys-error";
       err.innerHTML = `重发失败：${escapeHtml(e.message || "")} <button class="retry-btn">再试</button>`;
-      chatArea.appendChild(err);
+      ensureMsgs().appendChild(err);
       err.querySelector(".retry-btn").onclick = () => { err.remove(); resend(content); };
       scrollChatBottom();
     } finally {
-      sendBtn.disabled = false;
+      isRunning = false;
+      setRunState(false);
     }
   }
 
-  sendBtn.onclick = send;
+  // [顶栏整合 2026-10-13] 运行按钮两态（用户 17:17 ③：「把发送按钮，处理成【发送前】、
+  // 【运行中】（运行中就是停止按钮）」）。同一元素同一位置，点一次的含义由当前态决定。
+  async function doStop() {
+    const cardId = currentCard ? currentCard.meta.card_id
+      : (window.GetCanvasState && (() => { const s = window.GetCanvasState(); return s && s._lastOpenedCard; })());
+    if (!cardId) { notify("没有正在查看的卡", "warn"); return; }
+    try {
+      await postStop(WORK_ID, cardId);
+      notify("已发送停止指令", "warn");
+    } catch (e) { notify("停止指令失败", "error"); }
+  }
+
+  if (runBtn) runBtn.onclick = () => { if (isRunning) doStop(); else send(); };
   inputBox.addEventListener("keydown", (e) => {
     // [C5 主界面优化] IME 守卫：中文输入法组词/选字回车（isComposing 或 keyCode 229）不发送
     if (e.isComposing || e.keyCode === 229) return;
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    // [2026-10-13 用户令] 快捷键 Ctrl+Enter → Enter（Shift+Enter 保留换行）。
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
     }
@@ -1361,12 +1570,12 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   }
 
   // ==================== [T17] 静态绑定与初始化 ====================
-  // 返回画布：纯显隐切换（R-1/R-043 铁则：不得走 reloadCanvas——「刷新画布数据」与
-  // 「收起对话层」是两件事；建卡/删卡等数据变更已在变更源头 ReloadCanvas 刷新）
-  document.getElementById("wsBackBtn").onclick = () => setAppView("canvas");
-  // Inspector 开关：对话区头部按钮与右缘竖条同款
+  // [顶栏整合 2026-10-13] 返回画布的入口由两处收敛为两处新归属：
+  //   ① 面包屑首段（#chatCrumb 项目名，＝根卡）——renderChatCrumb 内绑 setAppView("canvas")
+  //   ② 无独立「← 画布」按钮（用户 17:17 ②「不需要画布按钮…点击这个就是回画布」）
+  // 原 #wsBackBtn/#inspToggleBtn 随 .ws-head 整条删除（用户 17:17 ④ 去「ⓘ 卡详情」顶部按钮），
+  // 卡详情开关只留右缘竖条 #inspTab。
   const toggleInspector = () => inspector.classList.toggle("open");
-  document.getElementById("inspToggleBtn").onclick = toggleInspector;
   document.getElementById("inspTab").onclick = toggleInspector;
   // 窄条 ☰：钉住（或收起）悬停浮层全树
   const navRailBtn = document.getElementById("navRailBtn");
@@ -1379,23 +1588,15 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // [S2/M3] 版本探测 60s 周期：version 未变零开销（连 diff 都不跑）；变了才全量重拉
   // 并只 diff 变化 work 子树。相对时间重算随真实数据变更触发（旧「60s 整树重渲」退役）。
   setInterval(() => { navRenderer.probeVersion(); }, 60000);
+  // [左栏接线 步2] 运行中总览 10s 周期：/api/nav/running 纯内存读、开销极小；
+  // 一轮长活的起止比卡片数据变更快得多，故不与 60s 版本探测同频。
+  // 集合无变化时 probeRunning 内部短路不重渲——状态变化不动用户视野。
+  setInterval(() => { navRenderer.probeRunning(); }, 10000);
   // 初始导航渲染（画布态窄条悬停浮层也有树）
-  renderNav();
+  renderNav().then(() => navRenderer.probeRunning());   // 快照就绪后再标「谁在跑」，避免空态闪烁
 
-  // ═══ [迭代四 F3⑤] 停止按钮（顶栏两态可见）：U-7 停止真生效（档案 end=human_stop）═══
-  {
-    const stopBtn = document.getElementById("stopBtn");
-    if (stopBtn) stopBtn.onclick = async () => {
-      const cardId = currentCard ? currentCard.meta.card_id : (window.GetCanvasState && (() => { const s = window.GetCanvasState(); return s && s._lastOpenedCard; })());
-      if (!cardId) { notify("没有正在查看的卡", "warn"); return; }
-      stopBtn.disabled = true;
-      try {
-        await postStop(WORK_ID, cardId);
-        notify("已发送停止指令", "warn");
-      } catch (e) { notify("停止指令失败", "error"); }
-      stopBtn.disabled = false;
-    };
-  }
+  // ═══ [顶栏整合 2026-10-13] 原顶栏 #stopBtn（「■ 停止」）已并入输入条 #runBtn 两态（doStop 定义见上）═══
+  // 用户 17:17 ③：「把发送按钮，处理成【发送前】、【运行中】（运行中就是停止按钮）」——停止不再是独立按钮。
 
   // ═══ [迭代四 F4①②③] 通知按钮＋面板：拉 K4 端点、渲染列表、点击跳卡、已读推进 ═══
   {

@@ -1,0 +1,345 @@
+# -*- coding: utf-8 -*-
+"""卡级事件日志（消息底座能力对齐 · 件 1，2026-10-13）。
+
+**为什么有这个模块**：此前过程事件只在内存 journal 里活一轮（event_stream），
+刷新即失、重启即失；会话文件（sessions/*.md）只存消息块，过程、思考、工具
+事实一条都不落。本模块给每张卡一条 **append-only jsonl 事件流**，把消息、
+过程、思考三路并到同一条时序线上，使「这一轮到底发生了什么」可回溯、可重放、
+可软删。
+
+落盘位置：``works/{work_id}/events/{card_id}.jsonl``（一行一条 JSON）。
+
+记录形态（七键定死，缺键补空值、不增不减）：
+
+    {"seq":42,"card_id":"card_001","run_id":"<pair_id>","round":3,
+     "type":"tool_call","data":{...},"model":""}
+
+- ``seq``：单卡文件内单调，**从文件尾 +1 续**——进程重启不归零、不重复
+  （判据 2）；新文件从 1 起。
+- ``run_id``＝现有 pair_id（一次请求一个）；``round``＝对话轮次（现有 turn，
+  ≠ 工具循环 rounds）。
+- ``model``：仅 reasoning 三席带（主模型思考不带＝空串），其余类型空串
+  （裁定 C2）。席位归属信息本身在 ``data`` 里，字段不重复承载。
+- ``data``：**结构化对象**，不是文本 blob（裁定 C5）。
+
+铁则：
+- **fail-open**：坏行/缺文件/解析失败只记 warning、返回空或跳过，绝不因
+  事件日志拖垮主流程（与 event_stream「展示层零阻断」同族）。
+- **只追加**：revoke 也是追加一条标记记录（软删），**不物理删任何字节**
+  （card_store.py:4 铁律的精神延伸）。
+- **路径动态取**：一切路径经 ``session_store.WORKS_DIR`` 现取（模块级常量
+  快照会绕过 conftest 沙箱重定向——activity.py 的盲区教训）。
+- 锁与原子写先例：同卡 ``asyncio.Lock``（session_store._session_lock 家族同款）
+  ＋ 追加 write→flush→fsync（session_facade.append 追加路径同款）。
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import threading
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from . import session_store
+
+logger = logging.getLogger("storage.event_log")
+
+# 七键定死——落盘记录的键集恒定（新增语义走 data 内部，不动骨架）
+RECORD_KEYS = ("seq", "card_id", "run_id", "round", "type", "data", "model")
+
+# 控制类记录：不进 timeline 渲染面（不是给用户看的内容，是时序控制位）
+CONTROL_TYPES = frozenset({"revoke"})
+
+_TAIL_WINDOW = 8192          # 尾部反扫初始窗口
+_TAIL_WINDOW_MAX = 1 << 20   # 上限 1MB（单卡事件文件的体量上限内）
+_TAIL_TRY_LINES = 5          # 尾部最多试解析的行数（坏行容错）
+
+
+# ---------------------------------------------------------------- 路径
+def events_dir(work_id: str) -> Path:
+    """卡事件目录（动态取 WORKS_DIR —— 沙箱 monkeypatch 必须对本模块生效）。"""
+    return session_store.WORKS_DIR / work_id / "events"
+
+
+def event_path(work_id: str, card_id: str) -> Path:
+    return events_dir(work_id) / f"{card_id}.jsonl"
+
+
+# ---------------------------------------------------------------- 锁
+# 异步锁（同卡串行，session_store._session_lock 同款键控 asyncio.Lock）
+_async_locks: dict[tuple[str, str], asyncio.Lock] = {}
+# 字节写互斥：同步兜底路径（无事件循环）与异步路径共用一把 threading 锁——
+# 两条路都可能写同一个文件，seq 取号与追加必须在同一临界区内完成。
+_write_lock = threading.RLock()
+
+
+# seq 进程内游标：(work, card) → 已用掉的最大 seq。首次写卡时从文件尾播种一次
+# （跨重启不归零、不重复＝判据 2），其后单进程内自增——每次写都反扫文件尾实测
+# 8.2ms/条，高频思考增量会被它拖垮（A44 单进程前提成立，游标与文件一致）。
+# 文件被外部截断/删除时游标会偏大（seq 跳号不重复），语义仍安全。
+_seq_cursor: dict[tuple[str, str], int] = {}
+
+
+def _async_lock(work_id: str, card_id: str) -> asyncio.Lock:
+    key = (work_id, card_id)
+    lock = _async_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _async_locks[key] = lock
+    return lock
+
+
+# ---------------------------------------------------------------- 尾部 seq
+def _tail_seq(path: Path) -> int:
+    """读文件尾最后一条可解析记录的 seq（fail-open：读不出＝0）。
+
+    反向窗口扫描＋最多试 ``_TAIL_TRY_LINES`` 行——坏行（撕裂写/人工编辑）不
+    致整卡 seq 归零重复；全窗口试不出才退回 0 并留 warning。
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    if size <= 0:
+        return 0
+    window = min(_TAIL_WINDOW, size)
+    with open(path, "rb") as f:
+        while True:
+            f.seek(size - window)
+            chunk = f.read(window).decode("utf-8", errors="replace")
+            if window < size:
+                nl = chunk.find("\n")
+                chunk = chunk[nl + 1:] if nl >= 0 else ""
+            lines = [ln for ln in chunk.split("\n") if ln.strip()]
+            tried = 0
+            for ln in reversed(lines):
+                tried += 1
+                if tried > _TAIL_TRY_LINES:
+                    break
+                try:
+                    rec = json.loads(ln)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(rec, dict):
+                    s = rec.get("seq")
+                    if isinstance(s, bool):
+                        continue
+                    if isinstance(s, int):
+                        return s
+                    if isinstance(s, str) and s.isdigit():
+                        return int(s)
+            if window >= size or window >= _TAIL_WINDOW_MAX:
+                break
+            window = min(window * 4, size, _TAIL_WINDOW_MAX)
+    logger.warning("[event_log] 尾部 seq 不可解析（按 0 续，可能重复）file=%s", path.name)
+    return 0
+
+
+def last_seq(work_id: str, card_id: str) -> int:
+    """该卡当前最大 seq（文件缺失＝0）。恢复通道跳过重放用。"""
+    return _tail_seq(event_path(work_id, card_id))
+
+
+# ---------------------------------------------------------------- 记录归一化
+def _normalize(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    """补齐七键骨架，data 非 dict 时原样装箱（绝不静默丢载荷）。"""
+    data = record.get("data")
+    if data is None:
+        data = {}
+    out = {
+        "seq": record.get("seq"),
+        "card_id": record.get("card_id") or card_id,
+        "run_id": record.get("run_id") or "",
+        "round": record.get("round") if isinstance(record.get("round"), int) else 0,
+        "type": record.get("type") or "",
+        "data": data,
+        "model": record.get("model") or "",
+    }
+    if not isinstance(out["data"], dict):
+        out["data"] = {"value": out["data"]}
+    return out
+
+
+def _serialize(rec: dict[str, Any]) -> str:
+    try:
+        return json.dumps(rec, ensure_ascii=False)
+    except (TypeError, ValueError):
+        # data 内含不可序列化对象：降级为占位，行本身仍落盘（丢内容不丢时序位）
+        fallback = {**rec, "data": {"_note": "unserializable"}}
+        return json.dumps(fallback, ensure_ascii=False)
+
+
+def _append_locked(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    """真正的一次追加（调用方已持锁）：取号 → 写行 → fsync。"""
+    path = event_path(work_id, card_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("[event_log] 事件目录创建失败 work=%s card=%s: %s", work_id, card_id, exc)
+        return {}
+    rec = _normalize(work_id, card_id, record)
+    if not isinstance(rec["seq"], int):
+        key = (work_id, card_id)
+        cur = _seq_cursor.get(key)
+        if cur is None:
+            cur = _tail_seq(path)            # 首次播种：跨重启从文件尾续
+        rec["seq"] = cur + 1
+        _seq_cursor[key] = rec["seq"]
+    try:
+        # flush 到 OS、不做 fsync：事件流是**高频观测通道**（思考增量逐帧落盘），
+        # 实测 fsync 约 10ms/条（320 帧 3.7s），会把主链路拖慢；进程内崩溃零丢失
+        # （已 flush 进 OS 缓冲），仅机器级断电可能丢最后一行——坏行由 read
+        # 侧跳过（fail-open）。真相源仍是会话文件与卡面（那里照旧 fsync）。
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(_serialize(rec) + "\n")
+            f.flush()
+    except OSError as exc:
+        logger.warning("[event_log] 追加失败（不阻断）work=%s card=%s: %s", work_id, card_id, exc)
+        return {}
+    return rec
+
+
+# ---------------------------------------------------------------- 写
+async def append(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    """追加一条记录，返回落盘后的完整记录（seq 已定）。
+
+    同卡 asyncio.Lock 内完成「读文件尾 seq+1 → 追加一行」——两步不可分，
+    分开就会在同卡并发下取到同一个 seq。
+    """
+    try:
+        async with _async_lock(work_id, card_id):
+            with _write_lock:
+                return _append_locked(work_id, card_id, record)
+    except Exception as exc:  # noqa: BLE001 事件日志零阻断
+        logger.warning("[event_log] append 失败（不阻断）card=%s: %s", card_id, exc)
+        return {}
+
+
+def append_sync(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    """同步追加（无事件循环的调用点使用；与异步路径共用字节写互斥）。"""
+    try:
+        with _write_lock:
+            return _append_locked(work_id, card_id, record)
+    except Exception as exc:  # noqa: BLE001 事件日志零阻断
+        logger.warning("[event_log] append_sync 失败（不阻断）card=%s: %s", card_id, exc)
+        return {}
+
+
+# 同步调用点（event_stream.emit 是同步函数）排下的在途任务：
+# ① 保持强引用防 GC 中途回收；② 供 drain() 等待落盘（测试/关停确定性）。
+_pending: set[asyncio.Task] = set()
+
+
+def append_bg(work_id: str, card_id: str, record: dict[str, Any]) -> None:
+    """同步调用点的落盘入口：有事件循环→排任务；无→当前线程同步写。
+
+    event_stream.emit/emit_token 是同步函数（展示层零阻塞契约），而本模块
+    的写是协程（asyncio.Lock）。两条路都写同一个文件、seq 由文件尾现算，
+    故无论走哪条路时序与取号都一致。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        append_sync(work_id, card_id, record)
+        return
+
+    async def _run() -> None:
+        await append(work_id, card_id, record)
+
+    task = loop.create_task(_run())
+    _pending.add(task)
+    task.add_done_callback(_pending.discard)
+
+
+async def drain() -> int:
+    """等待全部在途落盘任务完成，返回等待的任务数（测试确定性用）。"""
+    if not _pending:
+        return 0
+    tasks = list(_pending)
+    for t in tasks:
+        try:
+            await t
+        except Exception as exc:  # noqa: BLE001 落盘任务异常不外溢
+            logger.warning("[event_log] 在途落盘任务异常: %s", exc)
+    return len(tasks)
+
+
+# ---------------------------------------------------------------- 读
+def _iter_lines(path: Path) -> Iterable[str]:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.strip():
+                    yield line
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("[event_log] 事件文件读取失败 file=%s: %s", path.name, exc)
+        return
+
+
+def read(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, Any]]:
+    """读 ``seq >= from_seq`` 的记录（含 revoke 控制记录；文件序＝seq 升序）。"""
+    path = event_path(work_id, card_id)
+    out: list[dict[str, Any]] = []
+    for line in _iter_lines(path):
+        try:
+            rec = json.loads(line)
+        except (ValueError, TypeError):
+            logger.warning("[event_log] 坏行跳过 file=%s", path.name)
+            continue
+        if not isinstance(rec, dict):
+            continue
+        s = rec.get("seq")
+        s = int(s) if isinstance(s, int) and not isinstance(s, bool) else (
+            int(s) if isinstance(s, str) and s.isdigit() else None)
+        if s is None or s < from_seq:
+            continue
+        rec["seq"] = s
+        out.append(rec)
+    out.sort(key=lambda r: r["seq"])
+    return out
+
+
+def timeline(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, Any]]:
+    """合并时序表：按 seq 升序，**跳过被 revoke 覆盖的段**（软删语义）。
+
+    - revoke 记录自身不进渲染面（它是控制位，不是给用户看的内容）；
+    - 遇到 revoke{from_seq:N} → 已收进结果的 seq>=N 全部撤下（含被编辑掉的
+      旧提问与其后一切），其后的新 run 正常进入；
+    - 存量文件（无 revoke）＝原样全量，零行为变化。
+    """
+    items: list[dict[str, Any]] = []
+    # 全量读后再按 from_seq 截：**revoke 必须在截断之前处理**——若直接
+    # from_seq 读，越过 revoke 记录就会把已作废的段复活（软删失效）。
+    for rec in read(work_id, card_id):
+        if str(rec.get("type") or "") in CONTROL_TYPES:
+            data = rec.get("data") or {}
+            f = data.get("from_seq")
+            try:
+                f = int(f)
+            except (TypeError, ValueError):
+                continue
+            items = [x for x in items if int(x.get("seq") or 0) < f]
+            continue
+        if int(rec.get("seq") or 0) >= from_seq:
+            items.append(rec)
+    return items
+
+
+# ---------------------------------------------------------------- 软删
+async def revoke(work_id: str, card_id: str, from_seq: int) -> dict[str, Any]:
+    """标记 ``from_seq`` 起全部记录作废（追加一条 revoke 记录，不物理删）。"""
+    return await append(work_id, card_id, {
+        "type": "revoke", "data": {"from_seq": int(from_seq)},
+    })
+
+
+def revoke_sync(work_id: str, card_id: str, from_seq: int) -> dict[str, Any]:
+    return append_sync(work_id, card_id, {
+        "type": "revoke", "data": {"from_seq": int(from_seq)},
+    })

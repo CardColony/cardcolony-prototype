@@ -33,25 +33,28 @@ from src.storage import card_store, shadow_store
 
 # 方案《权限底座重做-方案-20261012.md》§二.2（v2 · 2026-10-12 工具面补齐后）：
 #   删死开关 search（无对应工具）、新增 manuscript / invoke_tool / plan。
+#   [卡片底座第一步 2026-10-14 · v3] 新增 read_linked（沿通信线读）与
+#   send_card_message（沿关系发消息）——给**所有已授 read 的类型**一并配两码。
+_LINKED = {"read_linked", "send_card_message"}
 _EXPECTED: dict[tuple[str, str], set[str]] = {
     ("rd_project", "project"): {
         "read", "edit", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_file", "tools_web", "shadow_write"},
+        "tools_file", "tools_web", "shadow_write"} | _LINKED,
     ("rd_project", "sub_project"): {
         "read", "edit", "delete", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_file", "tools_web", "shadow_write"},
+        "tools_file", "tools_web", "shadow_write"} | _LINKED,
     ("rd_project", "tool"): {
-        "read", "edit", "delete", "plan", "shadow_write"},
+        "read", "edit", "delete", "plan", "shadow_write"} | _LINKED,
     ("research_project", "project"): {
         "read", "edit", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_file", "tools_web", "shadow_write"},
+        "tools_file", "tools_web", "shadow_write"} | _LINKED,
     ("research_project", "topic"): {
         "read", "edit", "delete", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_file", "tools_web", "shadow_write"},
+        "tools_file", "tools_web", "shadow_write"} | _LINKED,
 }
 
 
@@ -107,9 +110,11 @@ def test_v4_tool_class_card_has_no_file_tools():
     names = {s["name"] for s in schemas}
     assert not names & {"write_file", "read_file", "list_files", "search_files"}
     assert not names & {"web_search", "fetch_web"}
-    # tool 有：read / edit / delete / shadow_write / plan
+    # tool 有：read / edit / delete / shadow_write / plan / read_linked
+    # [卡片底座第一步 2026-10-14] tool 类型 v3 起配了 read_linked ⇒ read_linked 可见
     assert names == {"read_card", "read_memory", "edit_card",
                      "delete_card", "update_shadow", "read_shadow",
+                     "read_linked",
                      "create_plan", "plan_reorder", "plan_insert",
                      "plan_remove", "plan_modify", "step_complete"}
 
@@ -199,8 +204,8 @@ async def test_v6_positive_registered_type_shadow_ok(typed_registry, work):
     body = "## 进度\n- 定夺1影子\n\n## 产物清单\n- 无\n\n## 迭代历史\n- v1\n"
     r = await card_tools.execute_tool(wid, a, "update_shadow", {"content": body}, cards)
     assert r.get("ok") is True
-    raw = shadow_store.shadow_path(wid, a).read_text(encoding="utf-8")
-    assert "定夺1影子" in raw
+    raw = await shadow_store.read_shadow_raw(wid, a)
+    assert raw is not None and "定夺1影子" in raw
 
 
 # ---------------------------------------------------------------- 连线/解线收紧
@@ -274,12 +279,14 @@ async def test_refresh_perms_is_idempotent(typed_registry, work):
     assert first["failed"] == 0
     assert first["updated"] + first["unchanged"] == first["total"]
 
-    before = {p.name: p.read_bytes() for p in card_store._cards_dir(wid).glob("card_*.md")}
+    before = {cid: await card_store.read_card(wid, cid)
+              for cid in card_store.iter_card_metas(wid)}
     second = await refresh_one_work(wid, version, apply=True)
     assert second["updated"] == 0, "第二次跑应为全跳过"
     assert second["unchanged"] == second["total"]
-    after = {p.name: p.read_bytes() for p in card_store._cards_dir(wid).glob("card_*.md")}
-    assert before == after, "幂等跑必须零字节改动"
+    after = {cid: await card_store.read_card(wid, cid)
+             for cid in card_store.iter_card_metas(wid)}
+    assert before == after, "幂等跑必须零改动"
 
 
 async def test_version_bump_refreshes_stale_cards(typed_registry, work,

@@ -11,8 +11,12 @@
  */
 
 export const NAV_PREFS_KEY = "nav.prefs.v1";
-export const NAV_ROW_HEIGHT = 38;      // [S2/R-17] 卡行固定行高（与 style.css .nav-card 同源）
-export const NAV_PHEAD_HEIGHT = 30;    // 项目行行高（与 style.css .nav-phead 同源，现状不动）
+// [左栏接线 步2] 行高契约唯一真相＝nav.css（样式已从 style.css 拆出）：
+//   卡行 30 ＝ .nav-card height（对齐样稿 .row）
+//   项目行 44 ＝ .nav-phead height（上间距 8 ＋ 内容 36，对齐样稿 .row.project 36＋8）
+//   虚拟滚动前缀和必须与 CSS 同源，不一致＝行错位。
+export const NAV_ROW_HEIGHT = 30;
+export const NAV_PHEAD_HEIGHT = 44;
 
 function defaultPrefs() {
   return { expanded: {}, projects: [], autoOrganize: true };
@@ -33,10 +37,44 @@ export function createNavStateStore(deps = {}) {
     loading: new Map(),   // cid → bool
     error: new Map(),     // cid → msg|null
     loaded: new Map(),    // cid → bool
+    running: new Set(),   // [左栏接线 步2] 运行中的卡（/api/nav/running 灌入，行尾转圈）
+    query: "",            // [定稿] 搜索＝镜片：当前查询串（纯内存，绝不落盘、绝不改 prefs）
   };
   const temp = {
     hover(cid) { tempMap.hoverCid = cid || null; },
     getHover() { return tempMap.hoverCid; },
+    // [左栏接线 步2] 「谁在跑」集合：判据在后端写点的 active 位，前端不反推阶段
+    // [修·运行中假阳性 2026-10-13] 键＝`wid:cid` 复合键。为什么必须带 wid：
+    //   card_id 在**跨项目**上不唯一（实测 card_002 横跨 8 个项目、全仓 186 张卡
+    //   只有 43 个编号），只按 cid 判会把所有同名卡一起点亮——症状＝「根本不在
+    //   运行中的卡片一直显示运行中」。复合键与 row_model.key() 同口径，防漂移。
+    running(wid, cid, on) {
+      on ? tempMap.running.add(wid + ":" + cid) : tempMap.running.delete(wid + ":" + cid);
+    },
+    isRunning(wid, cid) { return tempMap.running.has(wid + ":" + cid); },
+    // 返回「集合是否真的变了」：调用方据此决定要不要重渲。
+    // 为什么：总览是周期探测（10s），若每次都重渲，用户正 hover/展开时会被无谓 patch
+    // 打断——违反「状态自己变，但绝不动你的视野」。无变化＝零动作。
+    setRunningSet(list) {
+      // 契约：/api/nav/running → {"running":[{work_id,card_id,stage,detail}]}（后端实测形态）。
+      // 缺 work_id 或 card_id 的条目一律丢弃——**宁可漏标，不可误标**：
+      // 少了 spinner 只是少个提示；多亮了 spinner 是「骗你说它在跑」，比不亮更坏。
+      const next = new Set();
+      for (const r of list || []) {
+        if (!r || typeof r !== "object") continue;
+        const w = r.work_id || "";
+        const c = r.card_id || "";
+        if (w && c) next.add(w + ":" + c);
+      }
+      const same = next.size === tempMap.running.size
+        && [...next].every(k => tempMap.running.has(k));
+      tempMap.running = next;
+      return !same;
+    },
+    // [定稿] 搜索＝镜片：query 只活在内存。为什么放 temp 而不是 prefs——镜片是「换一种看法」，
+    // 不是「改动你摆好的样子」：清空即回到原状，靠的就是它从没写进任何持久层。
+    setQuery(q) { tempMap.query = String(q || ""); },
+    getQuery() { return tempMap.query; },
     loading(cid, on) { on ? tempMap.loading.set(cid, true) : tempMap.loading.delete(cid); },
     isLoading(cid) { return tempMap.loading.get(cid) === true; },
     error(cid, msg) { msg ? tempMap.error.set(cid, msg) : tempMap.error.delete(cid); },

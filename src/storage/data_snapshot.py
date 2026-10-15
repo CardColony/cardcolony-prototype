@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import shutil
+import sqlite3
 import time  # noqa: F401  (历史遗留，勿删)
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -67,6 +68,40 @@ def _iter_protected_files() -> list[Path]:
 
 def _batch_dir(work_id: str, stamp: str) -> Path:
     return SNAPSHOT_ROOT / work_id / stamp
+
+
+def _vacuum_into(src_db: Path, dst: Path) -> None:
+    """SQLite 一致副本：``VACUUM INTO``。
+
+    [卡片存储迁移 SQLite 2026-10-14] WAL 模式下**不能直接复制** ``cards.db``
+    ——拿到的是不含最新提交的快照（最新写入还在 ``-wal`` 里，方案 §7.1.2a）。
+    ``VACUUM INTO`` 从库里读出一致的完整副本（目标文件须不存在）。
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+    con = sqlite3.connect(str(src_db))
+    try:
+        con.execute("VACUUM INTO ?", (str(dst),))
+    finally:
+        con.close()
+
+
+def _copy_protected_file(p: Path, dst: Path) -> None:
+    """把一个受保护文件复制进快照批次。
+
+    - ``*.db``（卡片库）→ ``VACUUM INTO`` 产出一致副本；
+    - ``*.db-wal`` / ``*.db-shm``（瞬态旁挂）→ 跳过（内容已由 VACUUM INTO 纳入；
+      但它们仍参与 ``_fingerprint``，这样 WAL 下的写入也能被探测到）；
+    - 其余文件照旧 ``copy2``。
+    """
+    if p.suffix == ".db":
+        _vacuum_into(p, dst)
+        return
+    if p.name.endswith(".db-wal") or p.name.endswith(".db-shm"):
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(p, dst)
 
 
 def _safe_rmtree(p: Path) -> bool:
@@ -197,8 +232,7 @@ def snapshot_sync(reason: str = "", work_id: str | None = None) -> dict:
             for p in paths:
                 rel = p.relative_to(BASE_DIR)
                 dst = bdir / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, dst)
+                _copy_protected_file(p, dst)
                 total += 1
             # 每日首份另存日备（只拷一次，避免膨胀）
             daily = SNAPSHOT_ROOT / wid / f"daily_{_day_stamp()}"
@@ -206,8 +240,7 @@ def snapshot_sync(reason: str = "", work_id: str | None = None) -> dict:
                 for p in paths:
                     rel = p.relative_to(BASE_DIR)
                     dst = daily / rel
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(p, dst)
+                    _copy_protected_file(p, dst)
                 result["daily"] = True
             fps[wid] = fp
             _prune_batches(wid)
@@ -250,13 +283,33 @@ async def commit(message: str, work_id: str | None = None) -> bool:
 
 
 def restore_from_snapshot(work_id: str, stamp: str, rel_path: str, target: Path | None = None) -> dict:
-    """从指定批次恢复单个文件（工具函数，供人工/脚本使用）。"""
+    """从指定批次恢复单个文件（工具函数，供人工/脚本使用）。
+
+    [卡片存储迁移 SQLite] 恢复 ``*.db`` 时一并清掉旁挂 ``-wal``/``-shm``
+    ——副本内容已含当时提交，留着旧 WAL 会与新库文件错配。
+    """
     src = SNAPSHOT_ROOT / work_id / stamp / rel_path
     if not src.exists():
         return {"ok": False, "error": f"快照不存在: {src}"}
     dst = target or (BASE_DIR / rel_path)
+    # [卡片存储迁移 SQLite] 库文件被外部替换前，先关掉 card_db 的长活连接
+    # （否则它仍握着旧的 -wal/-shm，恢复不生效）。
+    if dst.suffix == ".db":
+        try:
+            from . import card_db
+            card_db.close_work(work_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("恢复前关闭库连接失败（不阻断）%s: %s", work_id, exc)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
+    if dst.suffix == ".db":
+        for suffix in ("-wal", "-shm"):
+            side = dst.with_name(dst.name + suffix)
+            try:
+                if side.exists():
+                    side.unlink()
+            except OSError as exc:  # noqa: BLE001
+                logger.warning("恢复后清理旁挂文件失败（不阻断）%s: %s", side, exc)
     return {"ok": True, "from": str(src), "to": str(dst), "size": dst.stat().st_size}
 
 

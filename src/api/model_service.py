@@ -53,6 +53,8 @@ async def call_main(
     prior_messages: Optional[list[dict[str, Any]]] = None,
     tools: Optional[list[dict[str, Any]]] = None,
     model_name: Optional[str] = None,
+    turn_tail: Optional[list[dict[str, Any]]] = None,
+    turn_once: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[dict[str, Any], str]:
     """以指定模型名发起调用，返回 (gateway结果, 实际使用的模型名)。
 
@@ -83,6 +85,12 @@ async def call_main(
         ctx = None
 
     result: dict[str, Any] = {}
+    # [DeepSeek 思考回传 2026-10-15] 攒本轮思考增量：DeepSeek 思考模型要求
+    # 多轮调用时把上一轮的 reasoning_content 原样回传（不回传 → 400
+    # "The `reasoning_content` in the thinking mode must be passed back"）。
+    # 思考只在调用链内部传递（作 assistant 条的协议字段），不进对话内容、
+    # 不进前端渲染——前端展示仍走 emit_token 通道，两路互不影响。
+    _reasoning_parts: list[str] = []
     async for ev in gw.stream_call(
         model_name,
         system_prompt,
@@ -93,9 +101,18 @@ async def call_main(
         on_status=events.append,
         tools=tools,
         prior_messages=prior_messages or None,
+        # [当前轮注入消息事件 2026-10-14] 本轮注入消息（context_preamble/
+        # context_injection 的投影）——追加在用户消息之后。默认 None ⇒ 既有
+        # 全部调用方（三席/凝练/起草/卡间调起）消息构造逐字不变。
+        turn_tail=turn_tail or None,
+        # [判断协议改注入 2026-10-14] 「仅本次」下发消息（判断协议投影）——
+        # 追加在用户消息之后，**不进轮槽、不固化**；默认 None ⇒ 逐字同旧。
+        turn_once=turn_once or None,
     ):
         if "chunk_type" in ev:
             # 逐字流增量：进独立通道，不进 content
+            if ev["chunk_type"] == "reasoning":
+                _reasoning_parts.append(ev.get("text") or "")   # 攒起来供回传
             if ctx:
                 _es.emit_token(ctx[0], ctx[1],
                                "reasoning_chunk" if ev["chunk_type"] == "reasoning"
@@ -106,6 +123,10 @@ async def call_main(
     if not result:
         result = {"content": "", "tool_calls": [], "truncated_tool_call": None,
                   "finish_reason": "stop", "tokens_used": 0, "latency_ms": 0}
+    # [DeepSeek 思考回传 2026-10-15] 本轮思考随 result 返回（调用方决定是否回传）。
+    # 字段名用协议名 reasoning_content；无思考时为空串（与旧行为逐字兼容——
+    # 旧 result 无此键，新增键不改变既有读取）。
+    result["reasoning_content"] = "".join(_reasoning_parts)
     if is_mock():
         model_used = "mock"
     else:

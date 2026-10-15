@@ -62,10 +62,15 @@ def _legacy_build_viewpoint_system_prompt(context_block: str) -> str:
 def test_region_table_six_regions_no_current_turn_region():
     # [T12] 凝练记忆区（order 200，condense_fold）按任务书 REL-01 append——
     # T11 六区条目一字不动，仅区表追加 200；本断言随 append 最小随改。
+    # [卡片职责区 2026-10-14] 区表 append order 90（卡片职责，类型级）——
+    # 本断言随迭代更新：区集合现为 90/100/150/200/300/900/999。
+    # [卡片区域说明 2026-10-14] 区表 append order 155（卡片区域说明，紧随 150）——
+    # 本断言随迭代更新：区集合现为 90/100/150/155/200/300/900/999。
     orders = [r["order"] for r in context_regions.REGION_TABLE]
     names = {r["name"] for r in context_regions.REGION_TABLE}
-    assert orders == [0, 100, 150, 200, 300, 900, 999]
-    assert names == {"使用说明", "卡片清单", "当前卡", "记忆（condense_fold）", "对话历史", "本轮工具轮", "用户消息"}
+    assert orders == [0, 90, 100, 150, 155, 200, 300, 900, 999]
+    assert names == {"使用说明", "卡片职责", "卡片清单", "当前卡", "卡片区域说明",
+                     "记忆（condense_fold）", "对话历史", "本轮工具轮", "用户消息"}
     # 用户 2026-10-04 23:26 明令：不引入「当前轮」概念
     assert "当前轮" not in names
     assert not any("当前轮" in r["name"] or "当前轮" in r["source"]
@@ -95,15 +100,24 @@ async def _make_work_with_cards():
 
 async def test_v1_byte_equal_multi_card_tree(sandbox):
     wid, child_id, grandchild_id = await _make_work_with_cards()
+    # [卡片职责区 2026-10-14] 迭代新增 order 90（类型级职责）——新区在旧装配之前
+    # 多一区；冻结副本（清单＋当前卡）仍是其后的逐字基准。
+    duty = context_regions.render_card_duty_region(card_store.load_type_registry())
     for current in ("card_001", child_id, grandchild_id):
         old = _legacy_build_neutral_context(wid, current)
+        # [卡片区域说明 2026-10-14] 迭代新增 order 155（紧随 150 当前卡）——
+        # 冻结副本（清单＋当前卡）仍是其后的逐字基准。
+        guide = context_regions.render_card_region_guide(
+            str((card_store._meta_of(wid, current) or {}).get("card_type") or ""),
+            card_store._root_project_class(wid))
+        expect = context_regions.assemble_regions([duty, old, guide])
         new = context_assembler.build_neutral_context(wid, current)
-        assert old == new
-        assert old.encode("utf-8") == new.encode("utf-8")
-        # 全 system prompt 两路也逐字相等
-        assert (_legacy_build_system_prompt(old).encode("utf-8")
+        assert new == expect
+        assert new.encode("utf-8") == expect.encode("utf-8")
+        # 全 system prompt 两路也逐字相等（vp＝中性上下文，含新区）
+        assert (_legacy_build_system_prompt(expect).encode("utf-8")
                 == prompts.build_system_prompt(new).encode("utf-8"))
-        assert (_legacy_build_viewpoint_system_prompt(old).encode("utf-8")
+        assert (_legacy_build_viewpoint_system_prompt(expect).encode("utf-8")
                 == prompts.build_viewpoint_system_prompt(new).encode("utf-8"))
 
 
@@ -111,12 +125,14 @@ async def test_v1_byte_equal_current_card_missing(sandbox):
     wdata = await work_store.create_work("V1缺当前卡剧本")
     wid = wdata["work_id"]
     old = _legacy_build_neutral_context(wid, "card_999")
+    duty = context_regions.render_card_duty_region(card_store.load_type_registry())
+    expect = context_regions.assemble_regions([duty, old])
     new = context_assembler.build_neutral_context(wid, "card_999")
-    assert old == new
-    assert old.encode("utf-8") == new.encode("utf-8")
-    # 没有来源就不出现这个区：150 区缺席
+    assert new == expect
+    assert new.encode("utf-8") == expect.encode("utf-8")
+    # 没有来源就不出现这个区：150 区缺席（90/100 在）
     regions = context_assembler.build_context_regions(wid, "card_999")
-    assert [r["order"] for r in regions] == [100]
+    assert [r["order"] for r in regions] == [90, 100]
 
 
 async def test_v1_empty_and_rstrip_paths_of_build_system_prompt():
@@ -145,7 +161,7 @@ async def test_v1_context_regions_join_equals_neutral_context(sandbox):
     regions = context_assembler.build_context_regions(wid, "card_001")
     joined = context_regions.assemble_regions([r["text"] for r in regions])
     assert joined == context_assembler.build_neutral_context(wid, "card_001")
-    assert [r["order"] for r in regions] == [100, 150]
+    assert [r["order"] for r in regions] == [90, 100, 150, 155]
     # regions 条目只带指针性元数据，不带正文复制字段以外的意外大字段
     for r in regions:
         assert set(r) == {"order", "name", "channel", "seats", "text", "entries"}
@@ -166,8 +182,10 @@ async def test_region_log_entries_shape(sandbox):
             "fingerprint": "sha256:" + hashlib.sha256(raw).hexdigest()[:16],
             "entries": r["entries"],
         })
-    assert entries[0]["name"] == "卡片清单" and entries[0]["entries"] >= 1
-    assert entries[1]["name"] == "当前卡" and entries[1]["entries"] == 1
+    # [卡片职责区 2026-10-14] 区集合更新：90 卡片职责 在最前
+    assert entries[0]["name"] == "卡片职责" and entries[0]["entries"] >= 1
+    assert entries[1]["name"] == "卡片清单" and entries[1]["entries"] >= 1
+    assert entries[2]["name"] == "当前卡" and entries[2]["entries"] == 1
     assert all(set(e) == {"order", "name", "channel", "seats", "bytes",
                           "fingerprint", "entries"} for e in entries)
     # 纯序列化自检（防止手滑改动形状）

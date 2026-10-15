@@ -16,6 +16,20 @@ _*.png
 _*.xml
 _*.html
 _*.js
+_*.mjs
+_*.err
+# 验证/截图/临时测试产物目录（2026-10-15 补）
+_verify/
+_shots/
+_pytest_tmp/
+# 其他工具的状态目录（非本仓库资产）
+.workbuddy-ai/
+# 零字节事故文件（重定向笔误产物）
+/=
+# docs 内的施工期备份目录（同 _backups 纪律，不入库）
+docs/exploration/_backup_*/
+# 原子写入瞬态目录（编辑器/脚本写文件的 tmpdir，扫描期竞态会炸 git add）
+*.tmpdir/
 # 运行/诊断产物目录（2026-10-10 补：此前未挡，致 100 项临时件堆在未跟踪清单里）
 _backups/
 _web/
@@ -26,6 +40,8 @@ _vrun/
 corpus/
 # 运行数据（卡片/对话/画布）——2026-10-03 事故后剥离：数据留痕走独立快照目录
 # 推演agent_data_snapshots（在代码仓库之外），不进 git。任何分支操作都不得再改写它们。
+# [2026-10-14 卡片存储迁移] 卡片与影子已进 SQLite：works/<work_id>/cards.db
+# （含 WAL 旁挂 cards.db-wal / cards.db-shm）——同属运行数据，本行 works/ 一并挡住。
 works/
 # 根目录工作件与临时备份目录（2026-10-10 补；前导 / 锚定根目录，
 # 不影响 tests/_golden/、tests/_fixtures/ 等已跟踪目录内的文件）

@@ -19,7 +19,8 @@ from pathlib import Path
 import pytest
 
 from src.api import card_msg, card_tools, message_runner, model_service
-from src.storage import card_store, session_facade, session_ops, work_store
+from src.storage import card_db, card_store, session_facade, session_ops, work_store
+from conftest import prime_card_session
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -31,6 +32,9 @@ async def _make_pair(wid: str) -> tuple[str, str]:
                                  card_type="sub_project", parent="card_001")
     await card_store.create_card(wid, "B卡", "用户直接创建",
                                  card_type="sub_project", parent="card_002")
+    # 按生产形态铺会话（建卡即铺；测试直建卡不带）——见 conftest.prime_card_session
+    for _cid in ("card_002", "card_003"):
+        prime_card_session(wid, _cid)
     return "card_002", "card_003"
 
 
@@ -73,24 +77,40 @@ async def test_s4_ask_auto_reply_end_to_end(sandbox, monkeypatch):
     ok = await _wait_for(lambda: "card_msg_answer_sent" in _ops_text())
     assert ok, "B 成功回合后应自动回发（ops card_msg_answer_sent）"
 
-    blocks_a = await session_facade.read(wid, a_id)
-    replies = [b for b in blocks_a if str(b.get("actor") or "") == f"card:{b_id}"]
-    assert replies, f"A 档案应出现 actor=card:{b_id} 应答块，实 {[b.get('actor') for b in blocks_a]}"
-    hdr = card_msg.parse_header(str(replies[-1].get("content") or ""))
+    # [卡片底座第一步 2026-10-14] 应答也落**收件箱**（不再写对话块）
+    pending_a = await card_db.list_pending(wid, a_id)
+    assert pending_a, "A 收件箱应出现应答"
+    hdr = card_msg.parse_header(str(pending_a[-1].get("content") or ""))
     assert hdr and hdr["type"] == "msg_answer" and hdr["reply_to"] == ask_msg_id, hdr
-    assert "B 的回答" in card_msg.strip_header(str(replies[-1].get("content") or ""))
+    assert "B 的回答" in card_msg.strip_header(str(pending_a[-1].get("content") or ""))
+    # A 的对话块不因来信/应答而增长
+    assert not any(str(b.get("actor") or "").startswith("card:")
+                   for b in await session_facade.read(wid, a_id))
 
 
 # ══════════════ E5 子场景：被停/出错/被顶回合不回发 ══════════════
 
 async def _prep_letter(wid: str, a_id: str, b_id: str, msg_type: str = "msg_ask") -> str:
-    """直落一封信到 B 档案（不经薄壳——避免 TRIGGERS 副作用），返回 msg_id。"""
+    """直落一封信到 B 的**待处理收件箱**（不经薄壳——避免 TRIGGERS 副作用），
+    返回 msg_id。
+
+    [卡片底座第一步 2026-10-14] 来信数据源已从「对话块」改为「收件箱」——
+    本 helper 随之改落收件箱（调起读收件箱）。
+    """
     msg_id = card_msg.make_msg_id(a_id)
-    await session_facade.append(wid, b_id, {
-        "actor": f"card:{a_id}", "from": a_id,
-        "content": card_msg.build_header(msg_id, msg_type, a_id) + "\n信件正文",
-        "behavior": "", "end": ""})
+    await card_db.append_inbox(
+        wid, msg_id=msg_id, target_card_id=b_id, from_card=a_id, type=msg_type,
+        content=card_msg.build_header(msg_id, msg_type, a_id) + "\n信件正文")
     return msg_id
+
+
+def _letter(msg_id: str, from_card: str = "card_002",
+            msg_type: str = "msg_ask", body: str = "信件正文") -> dict:
+    """构造一条收件箱记录形态的来信（``_auto_reply_pending_letters`` 的入参）。"""
+    return {
+        "msg_id": msg_id, "from_card": from_card, "type": msg_type,
+        "content": card_msg.build_header(msg_id, msg_type, from_card) + "\n" + body,
+    }
 
 
 async def test_s4_human_stop_no_reply(sandbox, monkeypatch):
@@ -102,7 +122,7 @@ async def test_s4_human_stop_no_reply(sandbox, monkeypatch):
     await session_facade.append(wid, b_id, {
         "role": "assistant", "content": "写到一半被停",
         "model": "x", "end": "human_stop"})
-    await message_runner._auto_reply_pending_letters(wid, b_id, frozenset({"m-1"}))
+    await message_runner._auto_reply_pending_letters(wid, b_id, [_letter("m-1")])
     assert "card_msg_answer_failed" in _ops_text()
     assert "end_not_model_done" in _ops_text()
     blocks_a = await session_facade.read(wid, a_id)
@@ -116,7 +136,7 @@ async def test_s4_error_turn_no_reply(sandbox, monkeypatch):
     await _prep_letter(wid, a_id, b_id)
     await session_facade.append(wid, b_id, {
         "role": "assistant", "content": "崩了", "model": "x", "end": "error"})
-    await message_runner._auto_reply_pending_letters(wid, b_id, frozenset({"m-1"}))
+    await message_runner._auto_reply_pending_letters(wid, b_id, [_letter("m-1")])
     assert "end_not_model_done" in _ops_text()
 
 
@@ -132,7 +152,7 @@ async def test_s4_block_overtaken_no_reply(sandbox):
         "actor": f"card:{a_id}", "from": a_id,
         "content": card_msg.build_header("m-new", "msg_ask", a_id) + "\n回合中新信",
         "behavior": "", "end": ""})
-    await message_runner._auto_reply_pending_letters(wid, b_id, frozenset({"m-old"}))
+    await message_runner._auto_reply_pending_letters(wid, b_id, [_letter("m-old")])
     assert "block_overtaken" in _ops_text()
 
 
@@ -233,24 +253,20 @@ async def test_s7_fake_type_zero_code(sandbox, monkeypatch, tmp_path):
 # ══════════════ 快照边界与防御分支 ══════════════
 
 async def test_s4_snapshot_boundary_new_letter_not_replied(sandbox, monkeypatch):
-    """回合期间新到信（id 不在快照）→ 不回发、留给下个收口。"""
+    """回合期间新到信（不在调起前快照内）→ 不回发、留给下个收口。
+
+    [卡片底座第一步 2026-10-14] 快照＝调起前取的**收件箱 pending 记录**；
+    本用例把信落进收件箱但不放进快照（模拟「回合期间才到」）→ 不回发。
+    """
     wid = (await work_store.create_work("S4快照边界剧本"))["work_id"]
     a_id, b_id = await _make_pair(wid)
-    await _prep_letter(wid, a_id, b_id, msg_type="msg_ask")  # id=m?（快照内旧信）
-    # 快照为空集（模拟旧信已在本快照外……不——本用例直接验：assistant 成功块
-    # 存在、信 id 不在快照内 → 不回发）
+    await _prep_letter(wid, a_id, b_id, msg_type="msg_ask")   # 信在 B 收件箱
     await session_facade.append(wid, b_id, {
         "role": "assistant", "content": "最终回答", "model": "x", "end": "model_done"})
-    blocks = await session_facade.read(wid, b_id)
-    stale_hdr = None
-    for blk in blocks:
-        if str(blk.get("actor") or "").startswith("card:"):
-            stale_hdr = card_msg.parse_header(str(blk.get("content") or ""))
-    assert stale_hdr
-    await message_runner._auto_reply_pending_letters(wid, b_id, frozenset({"other-id"}))
+    # 快照为空（信不在调起前快照内）→ 不回发
+    await message_runner._auto_reply_pending_letters(wid, b_id, [])
     assert "card_msg_answer_sent" not in _ops_text()
-    blocks_a = await session_facade.read(wid, a_id)
-    assert not any(str(b.get("actor") or "").startswith("card:") for b in blocks_a)
+    assert (await card_db.list_pending(wid, a_id)) == []
 
 
 async def test_s4_reply_type_missing_guard(sandbox, monkeypatch, tmp_path):
@@ -273,5 +289,5 @@ async def test_s4_reply_type_missing_guard(sandbox, monkeypatch, tmp_path):
     await session_facade.append(wid, b_id, {
         "role": "assistant", "content": "最终回答", "model": "x", "end": "model_done"})
     await message_runner._auto_reply_pending_letters(
-        wid, b_id, frozenset({msg_id}))
+        wid, b_id, [_letter(msg_id, msg_type="msg_broken")])
     assert "reply_type_missing" in _ops_text()

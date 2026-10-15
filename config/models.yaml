@@ -15,114 +15,147 @@
 providers:
   nous:
     protocol: openai
-    base_url: "https://inference-api.nousresearch.com/v1"
+    base_url: https://inference-api.nousresearch.com/v1
     api_key_env: NOUS_API_KEY
-    note: "Nous Research（OpenAI 兼容协议）"
+    note: Nous Research（OpenAI 兼容协议）
   deepseek:
     protocol: deepseek
     api_key_env: DEEPSEEK_API_KEY
-    # deepseek 无 base_url，拉模型列表需显式给地址（设置界面「拉取」用）
-    models_url: "https://api.deepseek.com/v1/models"
-    note: "DeepSeek 官方"
+    models_url: https://api.deepseek.com/v1/models
+    note: DeepSeek 官方
   zhipu:
     protocol: openai
-    base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+    base_url: https://open.bigmodel.cn/api/coding/paas/v4
     api_key_env: ZHIPU_CODING_API_KEY
-    note: "智谱 coding plan（OpenAI 兼容；glm-flash 与 glm-5.3 共用）"
+    note: 智谱 coding plan（OpenAI 兼容；glm-flash 与 glm-5.3 共用）
   minimax:
     protocol: openai
-    base_url: "https://api.minimaxi.com/v1"
+    base_url: https://api.minimaxi.com/v1
     api_key_env: MINIMAX_API_KEY
-    note: "MiniMax（OpenAI 兼容）"
+    note: MiniMax（OpenAI 兼容）
   aliyun:
     protocol: openai
-    base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    base_url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
     api_key_env: ALIYUN_TOKEN_PLAN_API_KEY
-    note: "阿里云 token-plan（OpenAI 兼容）"
+    note: 阿里云 token-plan（OpenAI 兼容）
   opencode:
     protocol: openai
-    base_url: "https://opencode.ai/zen/go/v1"
+    base_url: https://opencode.ai/zen/go/v1
     api_key_env: OPENCODE_API_KEY
     extra_headers:
       x-opencode-session: zhuge-3080
-    note: "opencode-go 聚合端点（OpenAI 兼容；需 x-opencode-session 头，MissingSessionID 拒单）"
-
+    note: opencode-go 聚合端点（OpenAI 兼容；需 x-opencode-session 头，MissingSessionID 拒单）
 models:
-  haiku:
-    provider: nous
-    model: anthropic/claude-haiku-5.5
-    temperature: 0.3
-    thinking: auto
-    note: "主模型（execute/think/synthesize/compress/draft 共绑）。thinking=auto：不传思考参数（haiku-5.5 不产生思考文本）"
-    retry:
-      max_attempts: 5
-      backoff_seconds: 2
   deepseek-pro:
     provider: deepseek
     model: deepseek-v4-pro
     temperature: 0.3
-    note: "降级模型（system.fallback_model 指向；调用失败时网关切入）"
+    note: 降级模型（system.fallback_model 指向；调用失败时网关切入）
     retry:
       max_attempts: 3
       backoff_seconds: 2
-  glm-flash:
-    provider: zhipu
-    model: glm-5.3-flash
-    temperature: 0.3
-    note: "凝练席（condense 角色绑此；glm-5.3-flash 智谱 coding plan）"
-    retry:
-      max_attempts: 3
-      backoff_seconds: 2
-  minimax-m3:
-    provider: minimax
-    model: MiniMax-M3
-    temperature: 0.7
-    thinking: "on"
-    note: "思考席① MiniMax-M3。thinking=on：翻译为 thinking.type=adaptive（探针实测 2026-10-12：该端点只接受 adaptive|disabled，传 enabled 直接 400）。开思考后思考以 <think>…</think> 标签内联在 content 里、无 reasoning 字段——由 simple_service 的标签切分器取走做 think 流展示、终帧再由 clean_viewpoint_text 剥净。原 note 写「不关则思考无标签混进正文」已被实测推翻：思考是带标签的"
-    retry:
-      max_attempts: 2
+    reasoning_efforts:
+    - low
+    - high
+    - max
+    default_effort: high
   qwen-max:
     provider: aliyun
     model: qwen3.8-max
     temperature: 0.7
-    thinking: "off"
-    note: "思考席② qwen3.8-max（阿里云 token-plan）。thinking=off：qwen enable_thinking:false —— 思考模式下正文为空（实测）。思考本身走 delta.reasoning_content，由 stream_call 双路解包取回做 think 流；待 ALIYUN key 就位可实测后再考虑开 on（开 on 的风险＝正文空＝观点空）"
+    thinking: 'on'
+    note: 思考席② qwen3.8-max（阿里云 token-plan）。thinking=off：qwen enable_thinking:false
+      —— 思考模式下正文为空（实测）。思考本身走 delta.reasoning_content，由 stream_call 双路解包取回做 think 流；待
+      ALIYUN key 就位可实测后再考虑开 on（开 on 的风险＝正文空＝观点空）
     retry:
       max_attempts: 2
-  glm-5.3:
+  anthropic-claude-haiku-55:
+    provider: nous
+    model: anthropic/claude-haiku-5.5
+    temperature: 0.7
+    thinking: max
+    note: ''
+    reasoning_efforts:
+    - max
+    - xhigh
+    - high
+    - medium
+    - low
+    default_effort: medium
+    reasoning_mandatory: false
+  glm-53:
     provider: zhipu
     model: glm-5.3
     temperature: 0.7
-    thinking: "auto"
-    note: "思考席③ glm-5.3（端点声明始终思考、无法关闭）。thinking=auto：不设任何参数，任它思考"
-    retry:
-      max_attempts: 2
-  deepseek-flash:
+    thinking: 'on'
+    note: ''
+  glm-53-flash:
+    provider: zhipu
+    model: glm-5.3-flash
+    temperature: 0.7
+    thinking: 'on'
+    note: ''
+  glm-53-flashx:
+    provider: zhipu
+    model: glm-5.3-flashx
+    temperature: 0.7
+    thinking: 'on'
+    note: ''
+  minimax-m31-flash-preview:
+    provider: minimax
+    model: MiniMax-M3.1-Flash-Preview
+    temperature: 0.7
+    thinking: 'on'
+    note: ''
+  deepseek-v41-flash:
     provider: opencode
     model: deepseek-v4.1-flash
     temperature: 0.7
-    note: "备用思考席 deepseek-v4.1-flash（未启用；opencode-go）"
-    retry:
-      max_attempts: 2
-
+    thinking: 'on'
+    note: ''
+    reasoning_efforts:
+    - low
+    - high
+    - max
+    default_effort: high
+  deepseek-v4-flash:
+    provider: opencode
+    model: deepseek-v4-flash
+    temperature: 0.7
+    thinking: 'on'
+    note: ''
+    reasoning_efforts:
+    - low
+    - high
+    - max
+    default_effort: high
+  longcat-25-preview-free:
+    provider: opencode
+    model: longcat-2.5-preview-free
+    temperature: 0.7
+    thinking: 'on'
+    note: ''
+  step-5-preview-free:
+    provider: opencode
+    model: step-5-preview-free
+    temperature: 0.7
+    thinking: 'on'
+    note: ''
 bindings:
-  # key 全部来自 config/roles.json（角色归模块侧，本段只做「角色→模型」关联）
-  execute: haiku
-  think: haiku
-  synthesize: haiku
-  condense: glm-flash
-  compress: haiku
-  draft: haiku
-  viewpoint: [minimax-m3, qwen-max, glm-5.3]
-
+  execute: deepseek-v41-flash
+  think: anthropic-claude-haiku-55
+  synthesize: anthropic-claude-haiku-55
+  condense: glm-53-flash
+  compress: glm-53-flash
+  draft: glm-53
+  viewpoint:
+  - qwen-max
+  - glm-53
+  - minimax-m31-flash-preview
 system:
-  # 角色未绑定时的回落模型（承接原 model_pick.json default→main）
-  default_model: haiku
-  # 调用失败时的降级模型（承接原 fallback 席位）
+  default_model: deepseek-pro
   fallback_model: deepseek-pro
-
 simple:
-  enabled: true    # 三席审议总开关（viewpoints 已并入 bindings.viewpoint）
-
+  enabled: true
 retry_grading:
-  enabled: false   # 拆闸裁定：总时长熔断（300 秒）属墙钟类闸，关闭
+  enabled: false

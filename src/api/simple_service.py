@@ -229,12 +229,42 @@ def build_review_prompt(user_prompt: str,
     return f"{user_prompt}\n\n{REVIEW_HEADER}\n{REVIEW_TASK_NOTE}\n" + "\n\n".join(sections)
 
 
+# ============================================================
+# [三席身份注入 2026-10-14] 三席身份提示词 —— 走注入（role=assistant 自述）
+# ============================================================
+
+# 抬头：与既有注入同一形态（〔工作规范〕/〔当前流程〕/〔判断协议〕）。
+SEAT_IDENTITY_MARK = "〔三席身份〕"
+
+# 身份文案（第一人称自述）：三席共享同一段、不含席号。
+# 三席 system（共享卡片上下文）与 user 位质询文（REVIEW_TASK_NOTE 三问）都不动，
+# 身份只经这条注入下发。
+SEAT_IDENTITY_NOTE = (
+    "我是本轮的三位观点审议席之一。三席各自独立并行，我看不到另外两席的输出。\n"
+    "\n"
+    "我的任务：基于共享的卡片上下文与执行材料，给出我自己的意见。\n"
+    "- 我独立判断，不附和；\n"
+    "- 我有依据地说，指出依据在哪；\n"
+    "- 我的结论明确（通过／不通过、同意／不同意）。"
+)
+
+
+def build_seat_identity_message() -> dict[str, Any]:
+    """三席身份注入消息（role=assistant，第一人称自述）。
+
+    经 ``gw.stream_call`` 的 ``turn_tail`` 下发——追加在质询文（user 位）之后，
+    与主模型注入同构；不进 system、不进 session/prior。
+    """
+    return {"role": "assistant", "content": f"{SEAT_IDENTITY_MARK}\n{SEAT_IDENTITY_NOTE}"}
+
+
 async def run_viewpoints(
     vp_system_prompt: str,
     user_prompt: str,
     prior_messages: Optional[list[dict[str, Any]]] = None,
     on_progress: Optional[Any] = None,
     on_seat: Optional[Any] = None,
+    turn_tail: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """三席观点并发（可独立调用，不与 call_simple 绑定）。返回 (ok_metas, 全量 metas)。
 
@@ -245,6 +275,8 @@ async def run_viewpoints(
     enabled: false 或 viewpoint 绑定为空 → ([], [])（零调用）。
     [信息流 Task3 2026-10-07] 增可选参 on_seat(kind, meta)（缺省 None 零行为
     变化）：每席起止转发事件流（seat_start/seat_end），只读不判定、异常静默。
+    [三席身份注入 2026-10-14] 增可选参 turn_tail（缺省 None 零行为变化）：三席
+    身份注入消息，逐席透传至 gw.stream_call（追加在质询文之后）。
     """
     gw = model_service.get_gateway()
     cfg = gw.config.get("simple") or {}
@@ -274,7 +306,8 @@ async def run_viewpoints(
     raw_metas = await asyncio.gather(
         *[
             _call_viewpoint(gw, n, vp_system_prompt, user_prompt,
-                            prior_messages, on_done=_vp_done, on_seat=on_seat)
+                            prior_messages, on_done=_vp_done, on_seat=on_seat,
+                            turn_tail=turn_tail)
             for n in viewpoints
         ],
         return_exceptions=True,
@@ -319,6 +352,7 @@ async def _call_viewpoint(
     prior_messages: Optional[list[dict[str, Any]]],
     on_done: Optional[Any] = None,
     on_seat: Optional[Any] = None,
+    turn_tail: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """调单个观点模型。永不抛异常，失败记入 meta。
 
@@ -326,6 +360,10 @@ async def _call_viewpoint(
     统合与日志用，routes 返回响应前须剔除。
     [信息流 Task3 2026-10-07] on_seat(kind, meta) 每席起止转发（缺省 None
     零行为变化；异常静默）。
+    [模型过程数据 2026-10-12] 成功席的 seat_end 事件**带 text 正文全文**
+    （与 meta["text"]/prompt 日志 viewpoints[].text 同一份），供前端渲染三席
+    观点；HTTP 响应里的 viewpoints_meta 仍按既有口径剔除 text
+    （message_runner 交付返回体处，零改动）。
 
     [思考流支持层 2026-10-12 · 拆雷②] 改走 ``gw.stream_call``（**不传
     max_tokens**——拆闸铁律，测试请求也是请求）：
@@ -361,6 +399,7 @@ async def _call_viewpoint(
             temperature=float(models_cfg[seat].get("temperature", 0.7)),
             tools=None,
             prior_messages=prior_messages or None,
+            turn_tail=turn_tail or None,   # [三席身份注入 2026-10-14] 缺省 None ⇒ 逐字同旧
         ):
             if "chunk_type" in ev:
                 text = ev.get("text") or ""
@@ -399,7 +438,12 @@ async def _call_viewpoint(
         if on_seat:
             try:
                 on_seat("seat_end", {"model": label, "ok": True,
-                                     "latency_ms": meta["latency_ms"], "chars": meta["chars"]})
+                                     "latency_ms": meta["latency_ms"],
+                                     "chars": meta["chars"],
+                                     # [模型过程数据 2026-10-12] 观点正文全文随
+                                     # 事件带出（此前刻意剔除，现补回）：与 prompt
+                                     # 日志 viewpoints[].text 同一份清洗后正文。
+                                     "text": text})
             except Exception:
                 pass
         return meta

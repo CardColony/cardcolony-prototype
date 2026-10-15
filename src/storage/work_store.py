@@ -46,6 +46,16 @@ def _next_seq() -> int:
     return max_seq + 1
 
 
+def _card_count(work_id: str) -> int:
+    """库内正卡数（[卡片存储迁移 SQLite] 原为数 cards/*.md）。"""
+    from . import card_db
+
+    def _fn(conn: Any) -> int:
+        return int(conn.execute("SELECT COUNT(*) AS n FROM cards").fetchone()["n"])
+
+    return int(card_db.read_sync(work_id, _fn, 0) or 0)
+
+
 def list_works() -> list[dict[str, Any]]:
     """扫描 works/work_*/work.json，每项附 card_count 与 last_active_at，
     并按 last_active_at 降序排（并列按 work_id 升序稳定收尾，刷新不跳序）。
@@ -70,11 +80,7 @@ def list_works() -> list[dict[str, Any]]:
         except Exception as exc:
             logger.warning("解析 work.json 失败，跳过 %s: %s", jf, exc)
             continue
-        cards_dir = p / "cards"
-        card_count = (
-            len([f for f in cards_dir.glob("card_*.md")]) if cards_dir.exists() else 0
-        )
-        data["card_count"] = card_count
+        data["card_count"] = _card_count(p.name)
         data["last_active_at"] = activity.work_last_active(p.name)
         works.append(data)
     # 两段稳定排序：先并列收尾键 work_id 升序，再按活跃降序（空串最旧、排末位）
@@ -131,7 +137,8 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
 
     work_id = f"work_{_next_seq():03d}"
     wd = _work_dir(work_id)
-    (wd / "cards").mkdir(parents=True, exist_ok=True)
+    # [卡片存储迁移 SQLite] 不再建 cards/ 目录：卡片进库（works/{work_id}/cards.db），
+    # 库由第一次写（根卡）时建立。会话仍为文件。
     (wd / "sessions").mkdir(parents=True, exist_ok=True)
 
     now = _now_iso()
@@ -168,9 +175,7 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
     from . import data_snapshot
     await data_snapshot.snapshot(f"[snapshot][{work_id}] create work: {title}")
     work_data = read_work(work_id) or work_data  # 取回 ending_derived 最新值
-    work_data["card_count"] = len(
-        list((_work_dir(work_id) / "cards").glob("card_*.md"))
-    )
+    work_data["card_count"] = _card_count(work_id)
     return work_data
 
 

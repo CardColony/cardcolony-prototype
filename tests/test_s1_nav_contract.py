@@ -11,8 +11,12 @@ from __future__ import annotations
 import httpx
 from fastapi import FastAPI
 
+# [左栏接线 步1] 字段定格 8→9：增 card_type（消费方＝左栏「工具卡不进侧栏」过滤）。
+# 追实依据＝接线方案 步1（docs/exploration/左侧边栏-接线方案-20261012.md）；
+# 契约文档追实排在步 5（清尾），此处先追测试防红。
 FIELD_SET = {"card_id", "title", "parent", "child_count",
-             "last_active_at", "branch_active_at", "work_id", "state"}
+             "last_active_at", "branch_active_at", "work_id", "state",
+             "card_type"}
 
 
 def _client():
@@ -37,8 +41,21 @@ def _cid_by_title(wid: str, title: str) -> str:
     raise AssertionError(f"找不到卡: {title}")
 
 
+async def _set_col(wid: str, cid: str, col: str, value) -> None:
+    """直改库列（[卡片存储迁移 SQLite] 原为改 md front matter）。
+
+    用于模拟存量卡缺字段：把该列写成 NULL。
+    """
+    from src.storage import card_db
+
+    def _fn(conn):
+        card_db.update_card_row(conn, cid, {col: value}, {})
+
+    await card_db.run_write(wid, _fn)
+
+
 async def test_v1_v2_v4_contract_new_card(sandbox, work, monkeypatch):
-    """V1 work_id 归属正确｜V2 字段恰好 8 项｜V4 新建卡 state=active＋落盘＋201。"""
+    """V1 work_id 归属正确｜V2 字段恰好 9 项｜V4 新建卡 state=active＋落盘＋201。"""
     from src.storage import activity, card_store
     monkeypatch.setattr(activity, "WORKS_DIR", sandbox.works)
     wid, root = work["work_id"], work["work_card_id"]
@@ -56,15 +73,16 @@ async def test_v1_v2_v4_contract_new_card(sandbox, work, monkeypatch):
                      if p["work_id"] == wid)["cards"]
         assert len(cards) == 2
         for c in cards:
-            assert set(c.keys()) == FIELD_SET, c        # V2 恰好 8 项无多余无短缺
+            assert set(c.keys()) == FIELD_SET, c        # V2 恰好 9 项无多余无短缺
             assert c["work_id"] == wid                  # V1 归属==所在项目
             assert c["state"] == "active"               # V4-① 新建＝active
-    # V4-② 落盘：新建卡 front matter 含 state 行（_q() 引号约定，同 parent: ""）
-    import re
-    md = [p for p in card_store.cards_dir(wid).glob("card_*.md") if p.stem != root]
-    assert len(md) == 2
-    for p in md:
-        assert re.search(r'^state: "?active"?$', p.read_text(encoding="utf-8"), re.M), p
+    # V4-② 落库：新建卡 state 列非空、读侧 meta 可见（[卡片存储迁移 SQLite] 原断言 md 行）
+    from src.storage import card_store
+    metas = card_store.iter_card_metas(wid)
+    new_ids = [cid for cid in metas if cid != root]
+    assert len(new_ids) == 2
+    for cid in new_ids:
+        assert metas[cid]["state"] == "active", cid
 
 
 async def test_v4_legacy_card_empty_state(sandbox, work, monkeypatch):
@@ -73,19 +91,16 @@ async def test_v4_legacy_card_empty_state(sandbox, work, monkeypatch):
     monkeypatch.setattr(activity, "WORKS_DIR", sandbox.works)
     wid, root = work["work_id"], work["work_card_id"]
     await _mkcard(wid, "将被削成存量的卡", root)
-    md = next(p for p in card_store.cards_dir(wid).glob("card_*.md")
-              if p.stem != root)
-    # 模拟存量：front matter 削掉 state 行（沙箱内改写，不涉真实数据）
-    lines = [ln for ln in md.read_text(encoding="utf-8").splitlines()
-             if not ln.startswith("state:")]
-    md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cid = _cid_by_title(wid, "将被削成存量的卡")
+    # 模拟存量：库内 state 列置 NULL（沙箱内改写，不涉真实数据）
+    await _set_col(wid, cid, "state", None)
     async with _client() as client:
         r = await client.get("/api/nav")
         assert r.status_code == 200
         c = next(p for p in r.json()["projects"]
                  if p["work_id"] == wid)["cards"][0]
         assert c["state"] == ""                         # 存量＝空串
-        assert c["card_id"] == md.stem
+        assert c["card_id"] == cid
         assert c["title"] == "将被削成存量的卡"          # 其余字段完整不崩
 
 
@@ -161,17 +176,85 @@ async def test_v6_version_endpoint(sandbox, work, monkeypatch):
         if k != wid:
             assert v3["by_work"][k] == v                   # 其他 work 不动
     # 删卡敏感性：任务书 T6「mtime 取 max」的盲区——实现层修订（列表哈希）的补强断言
-    from src.storage.card_store import cards_dir
-    probe = next(p for p in cards_dir(wid).glob("card_*.md") if p.stem != root)
+    from src.storage import card_store
+    probe = next(cid for cid in card_store.iter_card_metas(wid) if cid != root)
     v4 = await get_nav_version()
-    probe.unlink()
+    await card_store.delete_card(wid, probe)
     v5 = await get_nav_version()
     assert v5["by_work"][wid] != v4["by_work"][wid]        # 删卡必须被捕捉
-    # 内容修改敏感性（append → size 变）
+    # 内容修改敏感性（改卡 → 库 rev 变）
     await _mkcard(wid, "追加探针卡", root)
     v6 = await get_nav_version()
-    target = next(p for p in cards_dir(wid).glob("card_*.md")
-                  if p.stem == _cid_by_title(wid, "追加探针卡"))
-    target.write_text(target.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    await card_store.update_card(
+        wid, _cid_by_title(wid, "追加探针卡"), {"status_block": "内容变了"}, "改内容")
     v7 = await get_nav_version()
     assert v7["by_work"][wid] != v6["by_work"][wid]
+
+
+# ============================================================
+# [左栏接线 步1] 增列 card_type ＋ /api/nav/running 总览
+# ============================================================
+
+async def test_step1_card_type_field(sandbox, work, monkeypatch):
+    """card_type：新建卡有值｜存量（削掉该行）返回空串不崩｜两端口同套。"""
+    from src.storage import activity, card_store
+    monkeypatch.setattr(activity, "WORKS_DIR", sandbox.works)
+    wid, root = work["work_id"], work["work_card_id"]
+    await _mkcard(wid, "类型探针卡", root)
+    async with _client() as client:
+        r = await client.get("/api/nav")
+        c = next(p for p in r.json()["projects"]
+                 if p["work_id"] == wid)["cards"][0]
+        assert c["card_type"] == "sub_project", c      # 新建卡类型有值
+
+        r = await client.get("/api/nav/children",
+                             params={"work_id": wid, "parent": root})
+        assert r.json()["cards"][0]["card_type"] == "sub_project"   # 两端点同契约
+
+    # 模拟存量：库内 card_type 列置 NULL → 空串、其余字段完整、不崩（零迁移）
+    await _set_col(wid, _cid_by_title(wid, "类型探针卡"), "card_type", None)
+    async with _client() as client:
+        r = await client.get("/api/nav")
+        c = next(p for p in r.json()["projects"]
+                 if p["work_id"] == wid)["cards"][0]
+        assert c["card_type"] == ""                    # 存量＝空串
+        assert c["card_id"] == _cid_by_title(wid, "类型探针卡")   # 其余字段完整不崩
+        assert c["title"] == "类型探针卡"
+
+
+async def test_step1_running_overview(sandbox, work, monkeypatch):
+    """/api/nav/running：结构｜活跃态列到｜终止态不列｜纯读零写盘。"""
+    from src.api import progress
+    from src.storage import activity
+    monkeypatch.setattr(activity, "WORKS_DIR", sandbox.works)
+    wid, root = work["work_id"], work["work_card_id"]
+
+    progress._store.clear()                            # 隔离用例间内存态
+    async with _client() as client:
+        r = await client.get("/api/nav/running")
+        assert r.status_code == 200
+        assert set(r.json().keys()) == {"running"}     # ① 结构
+        assert r.json()["running"] == []               # ② 空态如实为空
+
+        # ③ 活跃态列到（写点声明 active=True 的阶段）
+        progress.set_stage(wid, root, "synthesize", "三席观点统合中")
+        r = await client.get("/api/nav/running")
+        got = r.json()["running"]
+        assert len(got) == 1 and got[0]["card_id"] == root and got[0]["work_id"] == wid
+        assert got[0]["stage"] == "synthesize"
+
+        # ④ 终止态不列（done/error/idle 不复活——防「早就跑完了」被误标运行中）
+        progress.set_stage(wid, root, "done", "完成")
+        assert (await client.get("/api/nav/running")).json()["running"] == []
+
+        # ⑤ 心跳不复活终止态（与 set_stage 同口径防漂移）
+        progress.heartbeat(wid, root)
+        assert (await client.get("/api/nav/running")).json()["running"] == []
+
+        # ⑥ 多卡并发列举
+        progress.set_stage(wid, "card_777", "tools", "查证中")
+        progress.set_stage(wid, "card_888", "streaming")
+        ids = {x["card_id"] for x in (await client.get("/api/nav/running")).json()["running"]}
+        assert ids == {"card_777", "card_888"}
+
+    progress._store.clear()

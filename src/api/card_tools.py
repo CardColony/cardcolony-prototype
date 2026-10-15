@@ -37,8 +37,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Union
 
 from ..permissions import policy
-from ..storage import card_store, manuscript_store, memory_store, shadow_store, work_store
-from ..storage import session_facade, session_ops
+from ..storage import card_db, card_store, manuscript_store, memory_store, shadow_store, work_store
+from ..storage import event_log, session_facade, session_ops
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 
 from . import card_msg, event_stream
@@ -94,6 +94,8 @@ TOOL_SWITCH: dict[str, str] = {
     "read_card": policy.SWITCH_READ,
     "read_memory": policy.SWITCH_READ,
     "read_shadow": policy.SWITCH_READ,
+    # [卡片底座第一步 2026-10-14] 沿通信线读——独立开关（沿连线读比直接读更敏感）
+    "read_linked": policy.SWITCH_READ_LINKED,
     "edit_card": policy.SWITCH_EDIT,
     "delete_card": policy.SWITCH_DELETE,
     "create_card": policy.SWITCH_CREATE_CHILD,
@@ -131,7 +133,9 @@ TOOL_SWITCH: dict[str, str] = {
 #   ② 主卡侧收回 7 件写工具（T9）——工具面**按角色分化**：工具卡 19 件、
 #      主卡 12 件（读＋查＋调用 run_tool_card）。
 # B-09 的「版本不动」只成立于「工具面零变化」；本次工具面确有变化，故递增。
-TOOL_TABLE_VERSION = "tools-tc-3"
+# tools-tc-4：[卡片底座第一步 2026-10-14] 新增第 20 件工具 read_linked（沿通信线
+#   读对方卡的正文／影子／对话）。工具集变更 ⇒ 递增（承 T12-R3 纪律）。
+TOOL_TABLE_VERSION = "tools-tc-4"
 
 
 # ============================================================
@@ -218,6 +222,18 @@ def _schema_of(def_: ToolDef) -> dict[str, Any]:
 async def _h_read_card(work_id: str, current_id: str,
                        arguments: dict[str, Any],
                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """读另一张卡。**跨卡可见性开口**（卡片区域语义 2026-10-14 · v3）。
+
+    此前只回 ``body``＝现状块一项，使命／第三块跨卡读不到（方案 §二.3 缺口）。
+    现在一次给全三个正文块：**使命 / 现状 / 第三块**（v3：三块全是对外，
+    「职责与边界」已按用户 17:56 令整体取消——边界靠权限卡，不靠文字描述）。
+
+    - 第三块的**对外名由本树 project_class 决定**（rd_project → requirements；
+      其余 → rulings），与 routes._apply_block_set 同一判据、同一口径。
+    - **修改历史不给**（裁定 3：机械留痕，非事实源，读了是污染；v3 起它移进影子）。
+    - 权限口径、返回信封、错误码**一律不变**：仍走 policy.SWITCH_READ 关口，
+      越权仍回既有 denied 信封。
+    """
     target_id = arguments.get("card_id", "")
     # [语义修正 2026-10-02] 先判存在再判权限：已删除的卡不再误报"越权"
     if target_id not in cards:
@@ -229,12 +245,22 @@ async def _h_read_card(work_id: str, current_id: str,
     except PermissionError:
         return err("denied", f"越权：无权读取 {target_id}")
     result = await card_store.read_card(work_id, target_id)
+    body = result["body"] or {}
+    # 第三块在库内恒为 rulings 一列；对外叫什么名由本树 project_class 决定。
+    try:
+        pc = card_store._root_project_class(work_id)
+    except Exception:  # noqa: BLE001  读路径宽容：缺省按非研发树
+        pc = ""
+    third_key = "requirements" if pc == "rd_project" else "rulings"
     return {
         "card_id": target_id,
         "title": result["meta"].get("title", ""),
         "parent": result["meta"].get("parent", ""),
         "relations": result["meta"].get("relations") or [],
-        "body": result["body"].get("status_block", ""),
+        "body": body.get("status_block", ""),
+        "使命": body.get("mission", ""),
+        "现状": body.get("status_block", ""),
+        third_key: body.get("rulings", ""),
     }
 
 
@@ -313,6 +339,22 @@ async def _h_create_card(work_id: str, current_id: str,
     }
 
 
+def _card_body_text(card: dict[str, Any]) -> str:
+    """read_card 结果 → 「正文全文」（三块带标准新形态区头）。
+
+    [卡片存储迁移 SQLite 2026-10-14] 库内正文三块**各占独立列**、不再有整篇
+    文本（read_card 的 ``raw`` 已退役）。``_check_block_rules`` 要的是可拆块
+    的正文，这里由库列按标准区头重组——重组后 ``split_body_sections`` 拆回
+    同样三块。取什么查什么：不引入第二份真值。
+    """
+    b = card.get("body") or {}
+    return (
+        f"## 使命\n{b.get('mission', '')}\n"
+        f"## 现状\n{b.get('status_block', '')}\n"
+        f"## 定论\n{b.get('rulings', '')}\n"
+    )
+
+
 async def _h_edit_card(work_id: str, current_id: str,
                         arguments: dict[str, Any],
                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -334,12 +376,10 @@ async def _h_edit_card(work_id: str, current_id: str,
     current = await card_store.read_card(work_id, current_id)
     cur_title = current["meta"].get("title", "")
     history_note = f"由「{cur_title}」对话编辑正文"
-    # [卡片信息结构改造 S3-2] 取数路径：读 target 的 raw（不是 current——
-    # current 只为取 cur_title），拆出旧正文；不新增存储层接口、
-    # 不改 read_card 签名。read_card 已在上面为权限/存在性读过一遍，
-    # 这里再读一次取 raw 是同一路径同一签名，无新增面。
-    old_raw = (await card_store.read_card(work_id, target_id))["raw"]
-    _, old_body = parse_front_matter(old_raw)
+    # [卡片存储迁移 SQLite 2026-10-14] 取数路径：读 target 的正文三块（库列），
+    # 由 _card_body_text 重组为可拆块的正文——``read_card`` 的 ``raw`` 已退役
+    # （它原是 md 整篇文本）。current 只为取 cur_title，两处都走同一 read_card。
+    old_body = _card_body_text(await card_store.read_card(work_id, target_id))
     # [S3-1] 写入闸：放行才继续；拒绝即返回，不落盘
     verdict = _check_block_rules(old_body, content)
     if not verdict["ok"]:
@@ -428,7 +468,7 @@ async def _h_read_shadow(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     # [影子卡 2026-10-03] 读侧走统一关口 READ 判定（R-09 读侧：不另设判据）；
-    # 上级卡经此查子卡影子——推送（裁定 1）的到达机制
+    # [卡片区域语义 v3] 影子＝本卡私有，只读本卡自己的影子。
     target_id = arguments.get("card_id", "") or current_id
     if target_id.startswith("shadow_"):
         target_id = target_id[len("shadow_"):]
@@ -447,6 +487,100 @@ async def _h_read_shadow(work_id: str, current_id: str,
         "updated_at": str(meta.get("updated_at", "")),
         "content": raw,
     }
+
+
+# ============================================================
+# [卡片底座第一步 · 沿关系的数据访问与通信 2026-10-14]
+#
+# 底座补上「沿关系」这一个机制的两个方向：读（read_via）与写（卡间通信）。
+# 本段＝读方向的**纯机制**：只做「沿边寻址 ＋ 读」，不含任何资格判断
+# （权限判断在 handler 层，与现状 read_card 分层一致——底座给能力，资格归权限管）。
+# ============================================================
+
+#: read_via 的 part 取值（**开放取值**——只定机制不定形态；新增取值＝在此登记
+#: 一句映射，不重做读工具）。
+READ_VIA_PARTS: tuple[str, ...] = ("正文", "影子", "对话")
+
+
+async def read_via(work_id: str, source_id: str, target_id: str,
+                   part: str) -> dict[str, Any]:
+    """沿**通信线**读对方卡的数据（纯机制）。
+
+    ① **沿边寻址**：``source_id`` 的 ``relations`` 里必须存在一条指向
+       ``target_id`` 的边；不存在 → ``{"ok": False, "reason": "no_link", ...}``
+       （文案含「无通信线」）。只沿 relations（通信线），**不碰 parent**。
+    ② **part → 现成读工具**（复用不重做，只加「沿边寻址」这一步）：
+       - ``正文`` → ``card_store.read_card``（三块：使命／现状／定论）
+       - ``影子`` → ``shadow_store.read_shadow_raw``
+       - ``对话`` → ``event_log.timeline``
+    ③ 本函数**不做任何权限判断**——资格归权限管（调用方 handler 走
+       ``policy.SWITCH_READ_LINKED`` 关口）。
+
+    返回 ``{"ok": True, "part", "card_id", "value"}`` 或
+    ``{"ok": False, "reason", "message"}``（不抛异常）。
+    """
+    try:
+        source = await card_store.read_card(work_id, source_id)
+    except Exception as exc:  # noqa: BLE001 读源卡失败＝无路可寻，如实返回
+        return {"ok": False, "reason": "source_unreadable",
+                "message": f"读源卡失败: {exc}"}
+    relations = (source.get("meta") or {}).get("relations") or []
+    linked = any(
+        isinstance(r, dict) and str(r.get("target") or "") == target_id
+        for r in relations
+    )
+    if not linked:
+        return {"ok": False, "reason": "no_link",
+                "message": f"无通信线：{source_id} 与 {target_id} 之间没有连线"}
+
+    if part == "正文":
+        result = await card_store.read_card(work_id, target_id)
+        meta = result.get("meta") or {}
+        body = result.get("body") or {}
+        return {"ok": True, "part": part, "card_id": target_id, "value": {
+            "title": meta.get("title", ""),
+            "mission": body.get("mission", ""),
+            "status_block": body.get("status_block", ""),
+            "rulings": body.get("rulings", ""),
+        }}
+    if part == "影子":
+        raw = await shadow_store.read_shadow_raw(work_id, target_id)
+        if raw is None:
+            return {"ok": False, "reason": "not_found",
+                    "message": f"影子卡不存在: {target_id}"}
+        return {"ok": True, "part": part, "card_id": target_id, "value": raw}
+    if part == "对话":
+        return {"ok": True, "part": part, "card_id": target_id,
+                "value": event_log.timeline(work_id, target_id)}
+    return {"ok": False, "reason": "unknown_part",
+            "message": f"未知 part: {part!r}（合法值：{list(READ_VIA_PARTS)}）"}
+
+
+async def _h_read_linked(work_id: str, current_id: str,
+                         arguments: dict[str, Any],
+                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """沿通信线读对方卡（模型工具 read_linked 的执行体）。
+
+    权限＝关口 ``policy.SWITCH_READ_LINKED``（与 read 分开授权——沿连线读比
+    直接读更敏感）。源＝当前卡（工具签名里没有 source，写不出别的源）。
+    越权回既有 denied 信封；无连线／目标不存在回 not_found（文案含「无通信线」）。
+    """
+    target_id = str(arguments.get("target_id", "") or "")
+    part = str(arguments.get("part", "") or "")
+    if not target_id:
+        return err("validation", "target_id 不能为空")
+    if target_id not in cards:
+        return err("not_found", f"卡片不存在: {target_id}")
+    try:
+        policy.check(current_id, target_id, policy.SWITCH_READ_LINKED, cards)
+    except PermissionError:
+        return err("denied", f"越权：无权沿通信线读取 {target_id}")
+    result = await read_via(work_id, current_id, target_id, part)
+    if not result.get("ok"):
+        code = "not_found" if result.get("reason") in ("no_link", "not_found") \
+            else "validation"
+        return err(code, str(result.get("message") or "读取失败"))
+    return {"card_id": target_id, "part": part, "value": result["value"]}
 
 
 async def _h_list_manuscript(work_id: str, current_id: str,
@@ -791,7 +925,12 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "read_card": ToolDef(
         schema={
             "name": "read_card",
-            "description": "读取指定卡（标题、父卡、连线、正文）。只能读取你有权访问的卡。",
+            "description": (
+                "读取指定卡（标题、父卡、连线、正文各块）。返回含使命／现状／"
+                "第三块（第三块名按本树类型为 requirements 或 rulings），"
+                "以及正文（=现状）。只能读取你有权访问的卡。"
+            ),
+
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -899,11 +1038,22 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "update_shadow": ToolDef(
         schema={
             "name": "update_shadow",
-            "description": "覆盖写你自己（当前卡）的影子卡——过程性记录。无 card_id 参数，只能写当前卡自己的影子。影子卡正文有且只有三节，每节内容边界（不得越界、不得改节名、不得加节）：【进度】只放本卡推进的时间线记录（什么时间、做到哪一步、当前什么状态），不写结论/分析/无关杂事；【产物清单】只放本卡推进中产生的文件/代码/文档的路径与用途指针（一行一个：路径＋一句话说明它是什么），只写指针不搬运内容正文；【迭代历史】只放改动指针（改了什么、为什么改），细节回既有通道查、不在此复述。三条禁止：①不许把正卡的结论正文写进影子卡（正卡写结论、影子卡写过程，不得混）；②不许写与本卡推进无关的内容；③不许把影子卡当备忘录堆杂事。",
+            "description": (
+                "覆盖写你自己（当前卡）的影子卡——过程性记录。无 card_id 参数，只能写当前卡"
+                "自己的影子。影子卡正文有且只有四节，每节内容边界（不得越界、不得改节名、"
+                "不得加节）：【进度】只放本卡推进的时间线记录（什么时间、做到哪一步、当前"
+                "什么状态），不写结论/分析/无关杂事；【待协作事项】只放需要其他卡/模块提供的"
+                "输入、待办、阻塞、协作关系，不放产物位置（那是产物清单）、不放改动记录"
+                "（那是迭代历史）；【产物清单】只放本卡推进中产生的文件/代码/文档的路径与用途"
+                "指针（一行一个：路径＋一句话说明它是什么），只写指针不搬运内容正文；"
+                "【迭代历史】只放改动指针（改了什么、为什么改），细节回既有通道查、不在此"
+                "复述。三条禁止：①不许把正卡的结论正文写进影子卡（正卡写结论、影子卡写过程，"
+                "不得混）；②不许写与本卡推进无关的内容；③不许把影子卡当备忘录堆杂事。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "description": "影子正文全文（覆盖写）。必须含且仅含三节，节名固定：## 进度 / ## 产物清单 / ## 迭代历史。每节只放该节边界内的内容（进度＝时间线；产物清单＝路径与用途指针；迭代历史＝改动指针），不得写入正卡结论正文、不得写无关内容、不得堆杂事。"},
+                    "content": {"type": "string", "description": "影子正文全文（覆盖写）。必须含且仅含四节，节名固定：## 进度 / ## 待协作事项 / ## 产物清单 / ## 迭代历史。每节只放该节边界内的内容（进度＝时间线；待协作事项＝需他卡/模块提供的输入、待办、阻塞、协作关系；产物清单＝路径与用途指针；迭代历史＝改动指针），不得写入正卡结论正文、不得写无关内容、不得堆杂事。"},
                 },
                 "required": ["content"],
             },
@@ -914,7 +1064,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "read_shadow": ToolDef(
         schema={
             "name": "read_shadow",
-            "description": "读取指定卡的影子卡全文（过程性记录）。card_id 缺省＝当前卡自己的影子；上级卡可借此查看任一子卡的影子（子卡影子的更新由此到达上级）。",
+            "description": "读取指定卡的影子卡全文（过程性记录）。card_id 缺省＝当前卡自己的影子；只读本卡自己的影子。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1071,6 +1221,34 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_run_tool_card,
         readonly=False,
     ),
+    # [卡片底座第一步 2026-10-14] 第 20 件工具：沿通信线读对方卡。
+    # 追加在既有 19 件之后 ⇒ 前 19 件的工具面顺序逐字不变。
+    # readonly=True（纯读）；开关 read_linked（独立于 read）。
+    "read_linked": ToolDef(
+        schema={
+            "name": "read_linked",
+            "description": (
+                "沿通信线读取与你**已有连线关系**的卡（正文／影子／对话）。"
+                "只能读你与它之间已建立连线的卡；没有连线则报「无通信线」。"
+                "part 取：正文（使命／现状／定论三块）／影子（过程记录）／"
+                "对话（该卡的事件时序）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "对方卡 id，如 card_003"},
+                    "part": {
+                        "type": "string",
+                        "enum": ["正文", "影子", "对话"],
+                        "description": "读哪部分：正文／影子／对话",
+                    },
+                },
+                "required": ["target_id", "part"],
+            },
+        },
+        handler=_h_read_linked,
+        readonly=True,
+    ),
 }
 
 
@@ -1163,18 +1341,29 @@ async def _h_send_card_message(work_id: str, current_id: str,
             or policy._is_in_subtree(target_id, current_id, cards)):
         return err("denied", f"越权：{target_id} 与你不在一棵任务树内")
     # 落信 + 留痕 + 记触发意图（错误在前面全走 err 信封不落档——发信成功才落信）
+    #
+    # [卡片底座第一步 2026-10-14] **落点改**：从「塞对话块（session_facade.append）」
+    # 改为「进待处理收件箱（card_db.append_inbox, status=pending）」。通信的本质是
+    # 「消息进入 B 模型的处理流程」，不是「存哪」；待处理从此是**显式状态**，
+    # 不再靠 find_pending 从对话顺序推导（脆弱约定）。对话块只放 B 自己的话。
+    # 六道门槛、权限关口、通知帧一条不减；事件流留痕照旧（见下 emit_message_event）。
     msg_id = card_msg.make_msg_id(current_id)
     body = card_msg.build_header(msg_id, mt, current_id, reply_to) + "\n" + content
-    await session_facade.append(work_id, target_id, {
-        "actor": f"card:{current_id}",   # 显式给 actor → 绕过 role 映射表
-        "from": current_id,
-        "content": body,
-        "behavior": "",                  # 空串 → 进对话投影 + 进模型视野
-        "end": "",                       # 卡块不闭合轮
-    })
+    await card_db.append_inbox(
+        work_id, msg_id=msg_id, target_card_id=target_id,
+        from_card=current_id, type=mt, content=body, reply_to=reply_to,
+    )
     session_ops.ops_log("card_msg_send", work_id, target_id,
                         {"msg_id": msg_id, "type": mt, "from": current_id})
     card_msg.TRIGGERS.setdefault((work_id, target_id), []).append(msg_id)
+    # [消息底座能力对齐 · 件2] 事件流留痕照旧：消息仍记 msg_* 事件（账本不变），
+    # 落点＝**收件方自己的键**（与改造前 _emit_block_event 同一落点、同一形状）。
+    # 类型码本身已是 msg_*（注册表现读的事实形态），缺前缀时补——两种写法都归一。
+    await session_facade.emit_message_event(
+        work_id, target_id,
+        mt if str(mt).startswith("msg_") else f"msg_{mt}",
+        body,
+    )
     # [迭代四 K4] 通知帧：落信成功后，在**收件方自己的键**上 emit 一帧
     # （event_stream 按 (work_id, card_id) 分键，不跨键；零阻塞零抛出——
     # 展示层绝不影响主流程）。前端靠它增量更新角标与未读数（F4 消费）。

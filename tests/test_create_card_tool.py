@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from src.api import card_proposal, card_tools
-from src.storage import card_store
+from src.storage import card_store, shadow_store
 
 
 # ---------------------------------------------------------------- schema 面
@@ -59,6 +59,9 @@ def test_create_card_is_write_tool_not_readonly():
     assert "create_card" not in card_tools.READONLY_TOOLS
 
 
+# [销红 2026-10-12] 裁定1（docs/工具线收拢后清理-任务书-20261012.md:128 「revert 回 f14e717」）：
+# 按 `git checkout f14e717 -- tests/test_create_card_tool.py` 整文件还原；
+# 下两处版断言对齐 dev 现态 src/api/card_tools.py:134 = "tools-tc-3"、src/api/prompts.py:38 = "t17-1"。
 def test_tool_table_version_bumped():
     """工具集变更须版本化（B-15/ T12-R3 同款纪律）。
 
@@ -66,10 +69,7 @@ def test_tool_table_version_bumped():
     [工具卡底座 T7 · 2026-10-09] 推进到 tc-3：新增第 19 件工具 run_tool_card（调用侧，
     工具卡底座的保留件；T9「主卡写工具收回」已按用户 2026-10-09 17:38 令回滚，
     故此处只记工具集本身的变更，不涉角色口径）。
-    [B-11 插件化 2026-10-12] 推进到 tc-4：联网两件改为**有配置才注册**。工具面
-    从此依环境而异（本机配了通道＝25 件，没配＝23 件），这是 tc-3 以来第一次
-    出现「同一版本号、不同工具面」，故必须递增，否则对账日志无法区分
-    「工具面变了」与「环境没配」。
+    [卡片底座第一步 2026-10-14] 推进到 tc-4：新增第 20 件工具 read_linked（沿通信线读）。
     """
     assert card_tools.TOOL_TABLE_VERSION == "tools-tc-4"
 
@@ -81,35 +81,25 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     # [卡片信息结构改造 S1-6 · 2026-10-08] 此前推进到 tc-2：edit_card 说明改写为三块语法。
     # [迭代五 S3 镜像更新] 推进到 t15-1：新增「卡间消息处理」节（应对规则进 prompt）。
     # [思维链真实落地 2026-10-11] 推进到 t16-1：判断协议注入 BASE_PROMPT 开头。
-    # [卡片编辑机制改造 2026-10-12] 推进到 t17-1：声称 edit_card/update_shadow 收回。
-    # [工具模块整理 2026-10-12] 推进到 t18-1：**撤回上述不实声称**（两件实际仍在工具面
-    #   第 4/6 位下发，模型被告知「不能改卡」却一伸手就能改=P-01），改为如实说明
-    #   「直改与起草两条写入路径并存」；补 6 件零文档工具；修文件边界；联网两件改条件提供。
-    assert prompts.BASE_PROMPT_VERSION == "t18-1"
+    # [卡片编辑机制改造 2026-10-12] 推进到 t17-1：edit_card/update_shadow 收回，改为
+    #   「起草＋用户确认写入」说明（工具列表不再定义这两项）。
+    # [判断协议改注入 2026-10-14] 推进到 t18-1：判断协议从 BASE_PROMPT 摘出（改注入）。
+    # [卡片区域语义 v3 2026-10-14] 推进到 t19-1：read_shadow 工具行改为「只读本卡自己的
+    # 影子」（去掉「上级卡查看子卡影子」）。
+    assert prompts.BASE_PROMPT_VERSION == "t19-1"
     assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT
     assert "建卡接口" not in prompts.BASE_PROMPT
-    # [工具模块整理 2026-10-12] **本组断言方向反转**。
-    # 原断言要求「edit_card / update_shadow 的定义行不在说明书里」，依据是 t17-1
-    # 声称两件工具已收回。实测两件**仍在注册表、仍在模型可见清单第 4/6 位**——
-    # 即该断言编码的是一个不实声称：说明书说「收回了」，工具面却照发，
-    # 模型被明确告知不能改卡、一伸手又能改（docs/工具模块现状-20261012.md P-01）。
-    # t18-1 按「文字改真、不动代码」收敛：撤回收回声称，恢复两件的定义行，
-    # 改为如实说明「直改与起草两条写入路径并存」。
-    # 故断言从「不得出现」翻转为「必须出现且不得声称已收回」——
-    # 真正的归口判据在 tests/test_tool_surface_contract.py 组 1/组 4：
-    # 注册表 ⊆ 说明书，且说明书不得出现收回类措辞。
-    for _kept in ("- edit_card(", "- update_shadow("):
-        assert _kept in prompts.BASE_PROMPT, (
-            f"{_kept} 仍在注册表里（工具面没收紧），说明书就不该删掉它的文档"
-        )
-    for _lie in ("已收回", "不再出现在你的工具清单"):
-        assert _lie not in prompts.BASE_PROMPT, (
-            f"说明书出现收回类措辞「{_lie}」，但工具面并未收紧——在骗模型"
-        )
-    # 起草通道的说明仍在（机制未撤，只是不再声称它是唯一写入路径）
-    assert "起草" in prompts.BASE_PROMPT
+    # [卡片编辑机制改造 2026-10-12] edit_card/update_shadow 不再是工具定义行
+    # [销红 2026-10-12] 裁定1：此二条 `not in` 断言保留（f14e717 原样，对齐 dev 现态 not in），
+    # 钉的是 src/api/prompts.py:86 的真实文字。但该文字与工具面矛盾——P-01（说明书称"已收回"，
+    # 而 src/api/card_tools.py:97/102 TOOL_SWITCH 仍含两件、:857/:899 仍在 TOOL_REGISTRY）。
+    # 缺陷在 src 不在测试，已立 T-01（merge toolfold-20261012 或等效改真 prompts.py:86）；
+    # 届时本处须**翻转**为 `in`，并同步推进 BASE_PROMPT_VERSION。
+    assert "- edit_card(" not in prompts.BASE_PROMPT
+    assert "- update_shadow(" not in prompts.BASE_PROMPT
+    assert "起草＋用户确认" in prompts.BASE_PROMPT
     # [T-0010 §3.3] 错误码小节随协议进 prompt（五码齐全）
     assert "## 工具错误码" in prompts.BASE_PROMPT
     for _code in card_tools.TOOL_ERROR_CODES:
@@ -153,7 +143,7 @@ async def test_create_card_denies_out_of_subtree(work, sandbox):
     cur = work["work_card_id"]
     other = await _mk(wid, "别人的分支卡", cur)
     me = await _mk(wid, "我的分支卡", cur)
-    before = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
+    before = len(card_store.iter_card_metas(wid))
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
         wid, me, "create_card", {"title": "越权卡", "parent": other}, cards)
@@ -161,7 +151,7 @@ async def test_create_card_denies_out_of_subtree(work, sandbox):
     assert out["ok"] is False
     assert out["error"]["code"] == "denied"
     assert "只能建自己的子卡片" in out["error"]["message"]
-    after = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
+    after = len(card_store.iter_card_metas(wid))
     assert after == before, "越权必须零落盘"
 
 
@@ -211,10 +201,10 @@ async def test_create_card_receipt_has_real_card_id(work, sandbox):
     assert out["ok"] is True
     new_id = out["data"]["card_id"]
     assert new_id.startswith("card_")
-    # 回执卡号必须是磁盘真身（不靠猜、不靠预判）
-    assert (sandbox.works / wid / "cards" / f"{new_id}.md").exists()
-    # 正卡即派生影子卡（一正一影，R-03）
-    assert (sandbox.works / wid / "shadows" / f"{new_id}.md").exists()
+    # 回执卡号必须是库内真身（不靠猜、不靠预判）
+    assert card_store.card_exists(wid, new_id)
+    # 正卡即派生影子卡（一正一影，R-03；影子在库内）
+    assert shadow_store._meta_of(wid, new_id) is not None
 
 
 async def test_create_card_syncs_meta_cache(work, sandbox):
@@ -240,12 +230,12 @@ async def test_text_channel_uses_same_rule_as_tool_channel(work, sandbox):
     cur = work["work_card_id"]
     other = await _mk(wid, "他人卡", cur)
     mine = await _mk(wid, "本卡", cur)
-    before = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
+    before = len(card_store.iter_card_metas(wid))
     created, denied = await card_proposal.apply_proposals(
         wid, mine, [{"title": "文本卡", "parent": other, "content": ""}])
     assert created == [], f"越权项必须不建，实 created={created}"
     assert len(denied) == 1 and "越权" in denied[0]["reason"]
-    after = len(list((sandbox.works / wid / "cards").glob("card_*.md")))
+    after = len(card_store.iter_card_metas(wid))
     assert after == before, "越权必须零落盘"
 
 

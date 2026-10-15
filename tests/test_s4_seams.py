@@ -7,7 +7,8 @@
 - 首轮工具面：全量（含 create_plan——判断+行动合一，代码零判定）；
 - 催化：空手两轮被催（催促文＝附录 C 步执行提示词），第三轮补调推进；
 - 提交轮三席统合（C6）：收口后三席进场质询、统合交付、卡面结论回写；
-- t165 互斥实测：挂工具卡的卡不出现 t165 块；
+- 160/165 消息事件化（2026-10-14）：有活板发注入事件、退出 system 区、
+  无来源不发、工具卡优先互斥；
 - 无板卡对照差异=0 由 scripts/s4_compare_snapshot.py 承担（已跑，报告在案）。
 零真实 works 触碰；不 import main。
 """
@@ -134,17 +135,21 @@ async def _post(client, wid, cid, content: str) -> dict:
     return r.json()
 
 
-# ------------------------------------------------- 判断协议注入（C1：判断归模型）
+# ------------------------------------------- 判断协议（C1：判断归模型）改注入
 
-def test_judgment_protocol_in_base_prompt():
-    """附录 A 关键句在 BASE_PROMPT 开头（system 区协议注入）。"""
-    head = BASE_PROMPT[:2000]
-    assert "入口判断器" in head
-    assert "直接回答" in head and "拆解上板" in head
-    assert "调 create_plan 拆解上板" in head
-    assert "拿不准就拆" in head
-    # 协议在使用说明之前（注入位＝BASE_PROMPT 开头）
-    assert BASE_PROMPT.index("入口判断器") < BASE_PROMPT.index("系统使用说明")
+def test_judgment_protocol_moved_out_of_base_prompt():
+    """[判断协议改注入 2026-10-14] 判断协议**不再**常驻 BASE_PROMPT（system 区）——
+    只换承载通道、文本一字不改：BASE_PROMPT 只留使用说明正文，协议常量仍在
+    （改由轮首注入，见 current_turn / message_runner）。"""
+    assert "入口判断器" not in BASE_PROMPT
+    assert "拆解上板" not in BASE_PROMPT
+    assert "拿不准就拆" not in BASE_PROMPT
+    # BASE_PROMPT 开头＝使用说明正文（V1：前 200 字应直接是"你在一个卡片系统内工作…"）
+    assert BASE_PROMPT.startswith("你在一个卡片系统内工作。")
+    from src.api import prompts
+    # 协议文本一字未丢（同一份常量，只换通道）
+    assert "你是推演工作台的入口判断器。" in prompts.JUDGMENT_PROTOCOL
+    assert "拿不准就拆" in prompts.JUDGMENT_PROTOCOL
 
 
 async def test_first_round_full_tools_and_no_judgment_call(work, monkeypatch):
@@ -274,8 +279,14 @@ async def test_submit_round_seats_after_chain_done(work, monkeypatch):
     assert not board_mod.plan_path(wid, cid).exists()
     blocks = await session_facade.read(wid, cid)
     assert any(b.get("behavior") == "final" for b in blocks)
-    from src.storage import session_store
-    card_text = (session_store.WORKS_DIR / wid / "cards" / f"{cid}.md").read_text(encoding="utf-8")
+    from src.storage import card_store
+    # [卡片存储迁移 SQLite] 原为读卡片 md 全文；库内三块分列，合并为同一判据面。
+    _card = await card_store.read_card(wid, cid)
+    _b = _card["body"]
+    card_text = "\n".join([
+        _b.get("mission", ""), _b.get("status_block", ""), _b.get("rulings", ""),
+        *(_b.get("history") or []),
+    ])
     assert "【思维链收口】" in card_text
     assert "已收口（提交轮三席统合）" in card_text
     assert "两步计划" in card_text          # 计划名
@@ -285,28 +296,46 @@ async def test_submit_round_seats_after_chain_done(work, monkeypatch):
     assert types.count("seats_enter") == 1
 
 
-# ------------------------------------------------- t165 注入＋互斥（新板快照：判据＋成果）
+# --------------------------- 160/165 消息事件化（2026-10-14：注入事件＋互斥）
 
-async def test_t165_region_injected_with_live_board(work):
+async def test_injection_events_with_live_board(work):
+    """有活板 → 发固定总领＋动态步骤两个注入事件；160/165 不再进 system 区。"""
+    from src.api import current_turn
     wid, cid = work["work_id"], work["work_card_id"]
     await board_mod.create_board(wid, cid, "注入计划",
                                  [{"id": "s1", "prompt": "第一件事", "criteria": "第一判据",
                                    "deliverable": "第一产出", "type": "execute"},
                                   {"id": "s2", "prompt": "第二件事", "criteria": "第二判据",
                                    "deliverable": "第二产出", "type": "think"}])
+    # 160/165 已退出 system 区
     regions = context_assembler.build_context_regions(wid, cid)
-    t165 = [r for r in regions if r.get("order") == 165]
-    assert len(t165) == 1
-    text = t165[0]["text"]
-    assert "注入计划" in text          # 计划名
-    assert "1/2" in text               # 当前第几步
-    assert "本步要求：第一件事" in text   # 本步要求原文（附录 C 模板）
-    assert "完成判据：第一判据" in text   # 当前步判据
-    assert "产出物：第一产出" in text     # 产出物声明
+    assert not [r for r in regions if r.get("order") in (160, 165)]
+
+    events = current_turn.build_injection_events(wid, cid)
+    assert [e["type"] for e in events] == ["context_preamble", "context_injection"]
+    pre = events[0]["data"]
+    assert pre["source_kind"] == "thinkchain"
+    assert pre["source_ref"] == "board.STEP_BRIEF_TEMPLATE"   # 固定纪律唯一来源
+    inj = events[1]["data"]
+    assert inj["plan_name"] == "注入计划"
+    assert (inj["index"], inj["total"]) == (1, 2)
+    assert inj["current_step"]["prompt"] == "第一件事"
+    assert inj["current_step"]["criteria"] == "第一判据"
+    assert inj["current_step"]["deliverable"] == "第一产出"
+    # 模型可见投影：动态字段原文进 injection；固定纪律只进 preamble（两者可辨）
+    inj_txt = current_turn.project_message("context_injection", inj)["content"]
+    assert "1/2" in inj_txt
+    assert "本步要求：第一件事" in inj_txt
+    assert "完成判据：第一判据" in inj_txt
+    assert "产出物：第一产出" in inj_txt
+    assert "执行纪律" not in inj_txt
+    pre_txt = current_turn.project_message("context_preamble", pre)["content"]
+    assert "执行纪律" in pre_txt and "本步要求" not in pre_txt
 
 
-async def test_t165_carries_done_step_results(work):
-    """跨回合不丢步成果：已推进步的 result 进 165 区。"""
+async def test_injection_carries_done_step_results(work):
+    """跨回合不丢步成果：已推进步的 result 进动态注入事件。"""
+    from src.api import current_turn
     wid, cid = work["work_id"], work["work_card_id"]
     await board_mod.create_board(wid, cid, "成果计划",
                                  [{"id": "s1", "prompt": "查资料", "criteria": "资料判据",
@@ -315,31 +344,37 @@ async def test_t165_carries_done_step_results(work):
                                    "deliverable": "结论产出", "type": "think"}])
     b = await board_mod.get_board(wid, cid)
     await b.mark_done_and_advance("资料已查：X 成立")
-    regions = context_assembler.build_context_regions(wid, cid)
-    t165 = [r for r in regions if r.get("order") == 165]
-    text = t165[0]["text"]
-    assert "已完成步成果" in text
+    events = current_turn.build_injection_events(wid, cid)
+    inj = events[-1]["data"]
+    assert inj["completed_steps"][0]["result"] == "资料已查：X 成立"
+    text = current_turn.project_message("context_injection", inj)["content"]
+    assert "我已经完成：" in text
     assert "资料已查：X 成立" in text
     assert "本步要求：写结论" in text
 
 
-async def test_t165_absent_without_board(work):
+async def test_injection_absent_without_source(work):
+    """无活板/无运行时 → 不发任何注入事件（没有来源就不发）。"""
+    from src.api import current_turn
     wid, cid = work["work_id"], work["work_card_id"]
-    regions = context_assembler.build_context_regions(wid, cid)
-    assert not [r for r in regions if r.get("order") == 165]
+    assert current_turn.build_injection_events(wid, cid) == []
 
 
-async def test_t165_mutual_exclusion_with_t160(work, monkeypatch):
-    """互斥实测：工具卡运行时（t160 在）→ t165 不注入（工具卡先到先得）。"""
+async def test_injection_mutual_exclusion_toolcard_wins(work, monkeypatch):
+    """互斥实测：工具卡运行时在 → 只发工具卡注入（思维链让位）。"""
+    from src.api import current_turn
     wid, cid = work["work_id"], work["work_card_id"]
     await board_mod.create_board(wid, cid, "n", _steps_def("a"))
 
     from src.toolcard import step_prompt as toolcard_step_prompt
     monkeypatch.setattr(
-        toolcard_step_prompt, "build_region",
-        lambda w, c: {"order": 160, "name": "工具卡", "channel": "system",
-                      "seats": ("main",), "text": "假 t160 区", "entries": 1})
+        toolcard_step_prompt, "build_injection_data",
+        lambda w, c: {"source_kind": "toolcard",
+                      "source_ref": {"script_name": "方案链", "step_id": "p1"},
+                      "step_id": "p1",
+                      "content": {"prompt": "本步原文", "artifacts": []}})
 
-    regions = context_assembler.build_context_regions(wid, cid)
-    assert [r for r in regions if r.get("order") == 160]      # t160 在
-    assert not [r for r in regions if r.get("order") == 165]  # t165 让位
+    events = current_turn.build_injection_events(wid, cid)
+    assert len(events) == 1                       # 工具卡在 → 思维链不让出 preamble
+    assert events[0]["type"] == "context_injection"
+    assert events[0]["data"]["source_kind"] == "toolcard"

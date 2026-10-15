@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""[信息流重出 Task4] 逐字流与既有 17 类的隔离性回归（V-T4-2）。
+"""[信息流重出 Task4] 逐字流与既有 21 类的隔离性回归（V-T4-2）。
 
 判据（机械可判定）：
-1. 事件本体论 = 19 类 = 17 原 + 2 逐字流，且新增两类确在 EVENT_TYPES 内；
+1. 事件本体论 = 27 类 = 25 原 + 2 逐字流，且新增两类确在 EVENT_TYPES 内；
 2. **seq 单一取号**（[A5/T097]）：主通道与逐字流共用同一分配者，全量 seq 无重号；
 3. 隔离：主事件写不进逐字流 journal，逐字流也写不进主 journal；
 4. 逐字流不被过程卡的 300 条环形挤出（长回复不冲掉过程卡，反之亦然）；
@@ -41,14 +41,24 @@ def _marker_count() -> int:
                if (e.get("data") or {}).get("segment"))
 
 
-# ---------- 1：19 类 ----------
+# ---------- 1：25 类 ----------
 
-def test_event_ontology_is_19_types():
-    assert len(es.EVENT_TYPES) == 19, len(es.EVENT_TYPES)
+def test_event_ontology_is_23_types():
+    # [销红 2026-10-12] F.1 事件本体论扩容裁定（双重依据）：
+    # ① 代码注释 src/api/event_stream.py:86-90 逐字：「[模型过程数据 2026-10-12] 主通道 +2 类
+    #    → 21 原 + 2 逐字流 = 23：judgment / step_start」，且 :91-98 字面量确为 21+2；
+    # ② docs/思考流支持层-执行报告-20261012.md:83（该报告写"实际 21"是 +2 之前的值，现为 23）。
+    # [当前轮注入消息事件 2026-10-14] 主通道再 +2 类（context_preamble /
+    # context_injection）→ 23 原 + 2 逐字流 = 25。
+    # [判断协议改注入 2026-10-14] 主通道再 +1 类（judgment_protocol）
+    # → 24 原 + 2 逐字流 = 26。
+    # [三席身份注入 2026-10-14] 主通道再 +1 类（context_seat_identity）
+    # → 25 原 + 2 逐字流 = 27。
+    assert len(es.EVENT_TYPES) == 27, len(es.EVENT_TYPES)
     assert len(es.TOKEN_EVENT_TYPES) == 2
     assert set(es.TOKEN_EVENT_TYPES) <= set(es.EVENT_TYPES)
     legacy = [t for t in es.EVENT_TYPES if t not in es.TOKEN_EVENT_TYPES]
-    assert len(legacy) == 17, len(legacy)
+    assert len(legacy) == 25, len(legacy)
 
 
 # ---------- 2/3：seq 不混合 + 双向隔离 ----------
@@ -275,14 +285,15 @@ def test_round_start_emits_segment_marker_and_keeps_journal():
 
 
 def test_boundary_marker_reuses_existing_ontology_type():
-    """轮界帧复用已有 type，不新增第 20 类（红线4：19 类）。"""
+    """轮界帧复用已有 type，不新增本体论外的类（红线4：类型只增在 EVENT_TYPES）。"""
     _reset()
     es.emit(W, C, "run_start", {})
     es.emit(W, C, "round_start", {"round": 1})
     types = {e["type"] for e in es.token_journal_of(W, C)}
     assert types <= set(es.EVENT_TYPES)
     assert "round_start" in types
-    assert len(es.EVENT_TYPES) == 19, "本体论仍须为 19 类"
+    # [当前轮注入消息事件 2026-10-14] 本体论已长到 25 类（+2 注入事件）
+    assert len(es.EVENT_TYPES) == 27, "本体论仍须为 27 类"
 
 
 def test_seq_counter_never_resets_across_rounds():

@@ -1,17 +1,30 @@
 # -*- coding: utf-8 -*-
 """T6 · 步骤指令组装（EC-048 / EC-049 / EC-050 / EC-051 / EC-052 / EC-053）。
 
-挂点：``context_assembler.build_context_regions``（L55）与
-``message_runner.build_context``（L162）——在 150 区（当前卡）之后插一个
-160 区，只在**该卡确实有工具卡运行时**时出现；没有就不出现（没有来源就不
-出现这个区，与 150/200 区同纪律）。
+[当前轮注入消息事件 2026-10-14] **160 区退役**：本模块不再产 system 区，
+改为产 ``context_injection`` 事件的结构化数据（``build_injection_data``）与
+模型可见投影（``render_injection``）；事件本体与落盘由 ``api/current_turn.py``
+统一组装。只在**该卡确实有工具卡运行时**时有数据；没有就返回 None。
 
-注入文本形态（EC-049 逐字）::
+**两路分家**（[当前轮注入改assistant自述 2026-10-14 · v2.1 §0.1]）：
+- ``render_injection``：供**注入投影**用，第一人称自述；
+- ``render_instruction`` / ``build_instruction``：供 **run_tool_card 工具结果**的
+  ``instruction`` 字段用，**第三人称标签原样**（与改造前逐字一致）——
+  工具结果不是注入投影，**不得**改成第一人称；``build_instruction`` **不得**
+  复用 ``render_injection``（防再次连坐）。
+
+注入文本形态（``render_injection`` · 自述）::
+
+    我正在按「{name}」推进，当前在 {step_id}。
+    本步要求：{提示词全文}
+    我已落盘的文件：{代码自己落盘时的文件名}
+
+工具结果文本形态（``render_instruction`` · 第三人称原样）::
 
     【当前剧本】{name}
     【当前步】{step_id}
     【本步要求】{提示词全文}
-    【上一步产物】{代码自己落盘时的文件路径}
+    【上一步产物】{代码自己落盘时的文件名}
 
 **可说与不可说（这是本模块存在的全部理由）**
 
@@ -40,8 +53,6 @@ from . import artifact_store, driver, script_loader
 
 logger = logging.getLogger("toolcard.step_prompt")
 
-REGION_ORDER = 160
-REGION_NAME = "工具卡步骤指令"
 SECTION_PROGRESS = "## 进度"
 
 
@@ -57,11 +68,12 @@ def _previous_artifact_files(card_id: str, current_step_id: str) -> list[str]:
     ]
 
 
-def build_instruction(work_id: str, card_id: str) -> Optional[str]:
-    """拼当前步指令文本；该卡无工具卡运行时 → None（**没有来源就不出现**）。
+def build_injection_data(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
+    """``context_injection``（工具卡）事件 data；无运行时 → None（没有来源不发）。
 
-    只拼事实与原文：剧本名、当前步指针、提示词全文、代码自己落过的文件名。
-    **不产出任何评价、结论、进度百分比、剩余步数。**
+    字段全部原样取自运行态来源：剧本名／当前步（driver runtime）、本步提示词
+    **原文**（剧本 JSON 的 prompt_ref → 提示词文件）、代码自己登记过的产物
+    **文件名**（artifact manifest）。**不产出任何评价、结论、剩余步数。**
     """
     rt = driver._runtimes.get(card_id)
     if rt is None:
@@ -78,16 +90,70 @@ def build_instruction(work_id: str, card_id: str) -> Optional[str]:
         logger.warning("步骤指令取提示词失败 card=%s: %s", card_id, exc)
 
     prev = _previous_artifact_files(card_id, rt.step_id)
+    return {
+        "source_kind": "toolcard",
+        "source_ref": {"script_name": rt.script_name, "step_id": rt.step_id},
+        "step_id": rt.step_id,
+        "content": {"prompt": prompt_text, "artifacts": prev},
+    }
+
+
+def render_injection(data: dict[str, Any]) -> str:
+    """工具卡注入 data → 模型可见文本（第一人称自述「当前流程」）。
+
+    [当前轮注入改assistant自述 2026-10-14] 字段与来源**不变**（driver runtime／
+    剧本 JSON／prompt 原文／artifact manifest），只改人称与标签：旧
+    ``【当前剧本】/【当前步】/【本步要求】/【上一步产物】`` 是第三视角标签，
+    改为自述（``我已落盘的文件：``）。``artifacts`` 为空时整行跳过（行为不变）。
+    """
+    ref = data.get("source_ref") or {}
+    content = data.get("content") or {}
+    prompt_text = content.get("prompt") or ""
     parts = [
-        f"【当前剧本】{rt.script_name}",
-        f"【当前步】{rt.step_id}",
-        f"【本步要求】{prompt_text}" if prompt_text else "【本步要求】（本步未配提示词文件）",
+        f"我正在按「{ref.get('script_name', '')}」推进，当前在 {data.get('step_id', '')}。",
+        f"本步要求：{prompt_text}" if prompt_text else "本步要求：（本步未配提示词文件）",
     ]
-    if prev:
+    artifacts = content.get("artifacts") or []
+    if artifacts:
         # EC-050 允许的形态：只报「我落盘的文件是 X」——代码自己做过的事。
         # 不查它在不在、空不满、好不好（EC-051）。
-        parts.append("【上一步产物】" + "、".join(prev))
+        parts.append("我已落盘的文件：" + "、".join(artifacts))
     return "\n".join(parts)
+
+
+def render_instruction(data: dict[str, Any]) -> str:
+    """工具卡注入 data → **工具结果** instruction 文本（第三人称标签，与改造前逐字一致）。
+
+    [当前轮注入改assistant自述 2026-10-14 · v2.1 §0.1] 与 ``render_injection``
+    分家：本函数供 ``run_tool_card`` 工具结果的 ``instruction`` 字段用，**保持
+    第三人称原样**（``【当前剧本】/【当前步】/【本步要求】/【上一步产物】``），
+    不得改成第一人称。字段与来源同 ``render_injection``（不变）。
+    """
+    ref = data.get("source_ref") or {}
+    content = data.get("content") or {}
+    prompt_text = content.get("prompt") or ""
+    parts = [
+        f"【当前剧本】{ref.get('script_name', '')}",
+        f"【当前步】{data.get('step_id', '')}",
+        f"【本步要求】{prompt_text}" if prompt_text else "【本步要求】（本步未配提示词文件）",
+    ]
+    artifacts = content.get("artifacts") or []
+    if artifacts:
+        # EC-050 允许的形态：只报「代码落盘的文件是 X」——代码自己做过的事。
+        parts.append("【上一步产物】" + "、".join(artifacts))
+    return "\n".join(parts)
+
+
+def build_instruction(work_id: str, card_id: str) -> Optional[str]:
+    """拼当前步指令文本（**工具结果用·第三人称原样**）；无运行时 → None。
+
+    [当前轮注入改assistant自述 2026-10-14 · v2.1 §0.1] **不得**复用
+    ``render_injection``（注入投影·第一人称）——两路分家，防工具结果被连坐
+    成第一人称。``build_injection_data`` → ``render_instruction``，输出与改造前
+    逐字一致（run_tool_card 工具结果的 ``instruction`` 字段走这里）。
+    """
+    data = build_injection_data(work_id, card_id)
+    return render_instruction(data) if data is not None else None
 
 
 def build_progress_note(card_id: str) -> str:
@@ -101,19 +167,5 @@ def build_progress_note(card_id: str) -> str:
     return f"- 剧本 {rt.script_name}｜当前步 {rt.step_id}｜第 {rt.round} 次"
 
 
-def build_region(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
-    """给 ``context_assembler.build_context_regions`` 用的 160 区。
-
-    无运行时 → None（调用方跳过该区）。有则返回一条 region dict。
-    """
-    text = build_instruction(work_id, card_id)
-    if not text:
-        return None
-    return {
-        "order": REGION_ORDER,
-        "name": REGION_NAME,
-        "channel": "system",
-        "seats": ("main",),
-        "text": text,
-        "entries": 1,
-    }
+# [当前轮注入消息事件 2026-10-14] 原 ``build_region``（160 system 区）已退役：
+# 160 不再进 system_prompt，改由 ``build_injection_data`` → context_injection 事件。

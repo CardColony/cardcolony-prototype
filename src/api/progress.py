@@ -45,3 +45,25 @@ def heartbeat(work_id: str, card_id: str, stage: str = "streaming") -> None:
 
 def get_stage(work_id: str, card_id: str) -> Optional[Dict[str, Any]]:
     return _store.get((work_id, card_id))
+
+
+def iter_active() -> list:
+    """[左栏接线 步1] 列举当前处于活跃调用中的卡（「谁在跑」总览）。
+
+    此前只有 get_stage 单点问法（/cards/{cid}/progress），前端要标出「哪些卡在跑」
+    只能逐张问——左栏一屏几十张卡不可能逐张轮询，故增此只读列举口。
+    判据复用写点声明的 active 位（set_stage/heartbeat 维护，终止态不复活），
+    前端不再靠阶段白名单反推（与 [信息流重出 Task4] 同一防漂移口径）。
+    纯读 _store，不写不改、不拦截不限制——与本模块「纯展示层」定位一致。
+    进程重启后 _store 清空＝无运行中，如实反映（不伪造历史）。
+    """
+    out = []
+    for (work_id, card_id), rec in _store.items():
+        if rec.get("active"):
+            out.append({
+                "work_id": work_id,
+                "card_id": card_id,
+                "stage": rec.get("stage", ""),
+                "detail": rec.get("detail", ""),
+            })
+    return out

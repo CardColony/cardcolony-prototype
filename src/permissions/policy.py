@@ -69,6 +69,14 @@ SWITCH_MANUSCRIPT = "manuscript"        # 能查阅本项目存档的原始资�
 SWITCH_INVOKE_TOOL = "invoke_tool"      # 能调用工具卡（run_tool_card）
 SWITCH_PLAN = "plan"                    # 能建计划、改计划、推进步骤（思维链六件）
 
+# [卡片底座第一步 · 沿关系的数据访问与通信 2026-10-14] 两个新开关——「沿关系」
+# 这一个机制的两个方向：读（沿通信线读对方卡的正文/影子/对话）与写（沿关系发消息）。
+# 与既有 read 分开授权：沿连线读**比直接读更敏感**（能读到有连线关系的对方卡数据），
+# 故独立一码；发消息独立一码（沿关系发）。两码与 read 无包含关系，各判各的。
+# 纪律同 [裁定 6]：加开关＝代码加常量＋配置里用起来；配置里未配到的组合＝空列表＝全拒。
+SWITCH_READ_LINKED = "read_linked"          # 沿通信线读对方卡（read_via）
+SWITCH_SEND_MESSAGE = "send_card_message"   # 沿关系向对方卡发消息
+
 # [工具面补齐 2026-10-12] 删掉了原 SWITCH_SEARCH="search"：
 #   全系统**没有独立的 search 工具**——搜索能力由 web_search/fetch_web 承担，
 #   它们归 SWITCH_TOOLS_WEB。那是个没有任何工具消费的**死开关**，留在配置里
@@ -89,6 +97,8 @@ SWITCHES: frozenset[str] = frozenset({
     SWITCH_MANUSCRIPT,
     SWITCH_INVOKE_TOOL,
     SWITCH_PLAN,
+    SWITCH_READ_LINKED,
+    SWITCH_SEND_MESSAGE,
 })
 
 #: 树类开关：类型分权通过后追加「操作者是否在目标上游」限定（方案 §4）

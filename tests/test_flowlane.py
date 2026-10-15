@@ -6,6 +6,7 @@ route()/快车道分流退役（判断归模型），本件只留事件序/SSE/c
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -19,9 +20,16 @@ from src.storage import card_store
 
 # ---------------------------------------------------------------- V-T4 事件本体论
 
-def test_vt4_ontology_21_types():
-    assert len(event_stream.EVENT_TYPES) == 21
+def test_vt4_ontology_23_types():
+    # [模型过程数据 2026-10-12] 主通道 19 → 21：+judgment（首轮机械推断）、
+    # +step_start（每步开始）；只补类型与字段，通道与协议不动。
+    # [当前轮注入消息事件 2026-10-14] 再 +2：context_preamble / context_injection
+    # → 23 原 + 2 逐字流 = 25。
+    # [判断协议改注入 2026-10-14] 再 +1：judgment_protocol → 24 原 + 2 逐字流 = 26。
+    # [三席身份注入 2026-10-14] 再 +1：context_seat_identity → 25 原 + 2 逐字流 = 27。
+    assert len(event_stream.EVENT_TYPES) == 27
     for t in ("triage_verdict", "plan_created", "step_advanced",
+              "judgment", "step_start",
               "card_op", "run_start", "deliver", "ping"):
         assert t in event_stream.EVENT_TYPES
     assert "fastlane_route" not in event_stream.EVENT_TYPES
@@ -135,7 +143,7 @@ async def test_vt1_direct_tool_reply_real_landing_and_events(sandbox, work, monk
     # 直答回合零三席（C6：三席只在提交轮）、卡真实落地（已删）、单模型（calls 全 main）
     assert body["viewpoints_meta"] == []
     assert body["tool_events"] == [{"tool": "delete_card", "card_id": victim, "ok": True}]
-    assert not card_store._card_path(work["work_id"], victim).exists()
+    assert not card_store.card_exists(work["work_id"], victim)
     assert all(c["model"] == "main" for c in gw.calls)
     # V8 事件序（本回合段）：run_start→context→round_start→tool_call→tool_result→…→done 有序
     types = _last_round_types(work["work_id"], work["work_card_id"])
@@ -191,24 +199,39 @@ async def test_vt3_sse_endpoint_and_ring(sandbox, work, monkeypatch):
     tail = event_stream.journal_of(wid, cid)[-2:]
     assert [e["type"] for e in tail] == ["run_start", "done"]
     assert len(event_stream.journal_of(wid, cid)) == n_before + 2
-    # SSE from=0 重放：直驱端点协程的 body_iterator（读两帧即收）。
+    # [消息底座能力对齐 · 件4] from=0 整卡重放**退役**：恢复统一走
+    # /timeline（events jsonl），SSE 只推「连上之后新发生的事」。
+    # 直驱端点协程的 body_iterator（读两帧即收）。
     # （ASGITransport 收满全响应体才返回——无限 SSE 不能走它；HTTP 200/content-type
     #   腿由 5701 实测补证）
     from src.api.routes import stream_card_events
 
+    def _seq_of(chunk) -> int:
+        text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+        for line in text.splitlines():
+            if line.startswith("data: "):
+                return json.loads(line[6:])["seq"]
+        return -1
+
     resp = await stream_card_events(wid, cid, frm=0)
+    before = event_stream.journal_last_seq(wid, cid)
+    it = resp.body_iterator
+    retry = await it.__anext__()
+    assert b"retry" in (retry if isinstance(retry, bytes) else retry.encode())
+    # 先让生成器进入循环体（游标定在当前末帧＝零重放），再发新帧
+    task = asyncio.create_task(it.__anext__())
+    await asyncio.sleep(0)
+    event_stream.emit(wid, cid, "context", {"tail": 0})
+    event_stream.emit(wid, cid, "context", {"tail": 1})
     got = []
     try:
-        async for chunk in resp.body_iterator:
-            text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            for line in text.splitlines():
-                if line.startswith("data: "):
-                    got.append(json.loads(line[6:])["seq"])
-            if len(got) >= 2:
-                break
+        got.append(_seq_of(await asyncio.wait_for(task, 5.0)))
+        got.append(_seq_of(await asyncio.wait_for(it.__anext__(), 5.0)))
     finally:
         await resp.body_iterator.aclose()
     assert got == sorted(got) and len(got) == 2
+    # 存量 320 帧一条都没被重放：收到的两帧就是订阅后新发的（紧接订阅时末帧）
+    assert got == [before + 1, before + 2]
 
 
 # ---------------------------------------------------------------- V-T3-2 事件不进模型输入

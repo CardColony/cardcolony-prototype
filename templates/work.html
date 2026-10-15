@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -7,11 +7,21 @@
 <!-- [思考流支持层 2026-10-12] style.css 升 ?v=10.5：本步追加了
      .live-reasoning.seat-think（三席 think 流按模型分桶的弱化行）规则，
      不升版本号浏览器会吃旧缓存、席位思考行不出样式 -->
-<link rel="stylesheet" href="/static/style.css?v=10.5">
+<!-- [左栏接线 步2] style.css 的 ?v= 已升（左栏 nav 段整段迁往 nav.css，内容变了）。
+     不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
+     打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
+     注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
+<link rel="stylesheet" href="/static/style.css?v=20.0">
+<!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
+     为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
+     撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
+     版本号：nav.css 改动必须升这里的 ?v=，否则浏览器吃旧缓存、新样式不生效。 -->
+<link rel="stylesheet" href="/static/nav.css?v=7">
 </head>
 <body>
 <div class="work-page">
-  <!-- [T17-F1] 左栏对话导航：恒在；画布态 44px 窄条（悬停浮层全树），对话态 260px -->
+  <!-- [T17-F1] 左栏对话导航：恒在；画布态 44px 窄条（悬停浮层全树），对话态 360px
+       （注释追实 2026-10-13：宽度 260→320→360，见 static/nav.css .app-nav） -->
   <nav class="app-nav rail" id="appNav">
     <div class="nav-rail">
       <button class="nav-rail-btn" id="navRailBtn" title="对话导航（点击钉住浮层）">☰</button>
@@ -22,12 +32,13 @@
     <div id="navActions">
       <button id="navNotifyBtn" title="卡间消息通知">🔔<span id="navNotifyCount" class="nav-notify-count"></span></button>
     </div>
-    <!-- [S3/T1/T2/T3] 只加容器不动结构（R-E）：工具行（搜索框 R-24＋收起全部 R-28＋定位 R-26）
-         与面包屑槽（R-27/R-18，恒定占位防吸顶跳动）。#navTree 本体与装配原样。 -->
+    <!-- [对齐样稿 2026-10-12] 搜索区只留搜索框本身——用户定稿：「搜索栏只需要搜索栏，
+         不需要别的」。「收起全部」「定位」两钮已移除（DOM＋样式＋接线三处同删，不留死件）。 -->
     <div id="navTop" class="nav-top">
-      <input id="navSearchInput" class="nav-search-input" type="text" placeholder="搜索卡片…" />
-      <button id="navCollapseAll" class="nav-tool-btn" title="收起全部项目与分支（保留当前卡祖先链）">收起全部</button>
-      <button id="navLocate" class="nav-tool-btn" title="收起非路径分支，定位到当前卡">定位</button>
+      <div class="nav-search-box">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+        <input id="navSearchInput" type="text" placeholder="搜索" />
+      </div>
     </div>
     <div id="navCrumbBox" class="nav-crumb-box" style="display:none"><div id="navCrumb" class="nav-crumb"></div></div>
     <div class="nav-tree" id="navTree">
@@ -44,19 +55,34 @@
 
   <!-- [T17-F1] 中区主视图：topbar + stage（画布/对话二选一，data-view 驱动显隐） -->
   <div class="app-main" id="appMain" data-view="canvas">
-    <!-- 顶栏：面包屑 + zoom + 操作按钮 -->
+    <!-- [顶栏整合 2026-10-13] 两条栏（.topbar 48px ＋ .ws-head ~35px）合并为一条 44px：
+         剧本架图标 ｜ 面包屑 ｜（画布态）设置·zoom·整理画布·新建卡。
+         用户 2026-10-13 17:17 四条裁定：① 剧本架改图标（去箭头去文字）
+         ② 去「← 画布」——面包屑首段＝项目名＝根卡，点它即回画布；不再同时显示项目名与根卡
+         （实读 nav_breadcrumb.js:52 首段 cid 与 :53 根卡 cid 同为 work_card_id；全 work 项目名
+         与根卡名 10/10 同名）③ 发送/停止合并为输入条一个两态图标按钮 ④ 去「ⓘ 卡详情」。
+         画布专属三件（zoomDisplay/reorganizeBtn/newCardBtn）**不删元素**——canvas.js:33-35 顶层
+         即取用、:1436/:1453 直接挂 onclick，删了会 TypeError 让整个画布脚本死掉；改由
+         .canvas-only 按 data-view 显隐（画布态显示、聊天态隐藏）。
+         topSettingsBtn 已删（无 JS 引用，grep 仅本文件命中；左栏 navFooter 已有同一跳转）。 -->
     <div class="topbar">
-      <a href="/" class="btn ghost">← 剧本架</a>
-      <div id="crumb" class="crumb"></div>
+      <a href="/" class="ico-btn" id="shelfBtn" title="剧本架" aria-label="剧本架">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+          <rect x="2.4" y="2.4" width="4.8" height="4.8" rx="1.2"/>
+          <rect x="8.8" y="2.4" width="4.8" height="4.8" rx="1.2"/>
+          <rect x="2.4" y="8.8" width="4.8" height="4.8" rx="1.2"/>
+          <rect x="8.8" y="8.8" width="4.8" height="4.8" rx="1.2"/>
+        </svg>
+      </a>
+      <span class="bsep"></span>
+      <!-- 画布态面包屑（canvas.js renderBreadcrumb 填，吃投影；画布态才显） -->
+      <div id="crumb" class="crumb canvas-only"></div>
+      <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
+      <div id="chatCrumb" class="crumb"></div>
       <span class="spacer"></span>
-      <!-- [模型设置第二步] 画布右上角入口 -->
-      <button id="topSettingsBtn" class="btn ghost" title="模型设置"
-              onclick="location.href='/settings'">⚙ 设置</button>
-      <span id="zoomDisplay" class="zoom-display">100%</span>
-      <button id="reorganizeBtn" class="btn" title="重算所有卡片位置（清除 pinned）">整理画布</button>
-      <button id="newCardBtn" class="btn primary">＋ 新建卡</button>
-      <!-- [迭代四 F3⑤] 停止按钮：顶栏两态都可见（B-7）；U-7 停止真生效（end=human_stop） -->
-      <button id="stopBtn" class="btn danger" title="停止当前卡的生成（档案落 human_stop）">■ 停止</button>
+      <span id="zoomDisplay" class="zoom-display canvas-only">100%</span>
+      <button id="reorganizeBtn" class="btn canvas-only" title="重算所有卡片位置（清除 pinned）">整理画布</button>
+      <button id="newCardBtn" class="btn primary canvas-only">＋ 新建卡</button>
     </div>
 
     <div class="stage">
@@ -72,25 +98,36 @@
       <!-- 卡片对话区（data-view=chat 时显示；绝对定位与画布互斥） -->
       <div id="workspace" class="workspace">
         <div class="ws-right">
-          <!-- [T17-F3] 对话区头部：返回画布（纯显隐，不重拉数据）＋ 卡详情开关 -->
-          <div class="ws-head">
-            <button class="ws-back" id="wsBackBtn" title="返回画布（纯显隐切换，不丢编辑）">← 画布</button>
-            <span class="ws-head-title" id="wsHeadTitle"></span>
-            <span class="spacer"></span>
-            <button class="btn ghost" id="inspToggleBtn" title="展开/收起右侧卡详情">ⓘ 卡详情</button>
-          </div>
+          <!-- [顶栏整合 2026-10-13] .ws-head 整条已删：卡标题并入顶栏聊天态面包屑
+               （#chatCrumb 末段＝当前卡），「← 画布」职责并入面包屑首段点击
+               （用户 17:17 ②「不需要画布按钮，你让【根卡】可点击就行，点击这个就是回画布」），
+               「ⓘ 卡详情」顶部按钮删除、只留右缘 .insp-tab（用户 17:17 ④）。
+               对应 workspace.js 三处引用同步处理：wsHeadTitle→renderChatCrumb、
+               wsBackBtn/inspToggleBtn→清空守卫。 -->
           <div class="chat" id="chatArea"></div>
           <div class="inputbar">
-            <textarea id="inputBox" class="inputbox" placeholder="和这张卡讨论…（Ctrl+Enter 发送）" rows="2"></textarea>
+            <textarea id="inputBox" class="inputbox" placeholder="和这张卡讨论…" rows="2"></textarea>
             <div class="inputmeta">
-              <span class="hint">Ctrl+Enter 发送</span>
+              <!-- [2026-10-13 用户令] 快捷键文字提示删除（「不需要文字告诉我enter是发送，
+                   什么软件会有这种傻逼提示？」）：原 placeholder 括号提示与 .hint 行同删。
+                   .spacer 保留——它负责把右侧按钮族推出（见 style.css .inputmeta .spacer）。 -->
               <span class="spacer"></span>
-              <!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草/确认两按钮（ghost 级，弱于 sendBtn）。
+              <!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草/确认两按钮（ghost 级，弱于发送键）。
                    文案按块集判据：研发卡「需求确定」、其他卡「定论确认」——由 workspace.js 按
                    body 键集（requirements/rulings）动态切换；「更新现状」恒定。 -->
               <button id="draftBtn" class="btn primary draft-meta-btn" title="起草本卡第三块内容（需求文档/定论），用户确认后写入">需求确定</button>
               <button id="statusDraftBtn" class="btn draft-meta-btn" title="起草现状块更新，用户确认后写入">更新现状</button>
-              <button id="sendBtn" class="btn primary">发送</button>
+              <!-- [顶栏整合 2026-10-13] 发送/停止合并为一个两态图标按钮（用户 17:17 ③）：
+                   静止＝发送图标（.run.idle）、运行中＝停止图标（.run.running），同一位置同一元素，
+                   由 workspace.js setRunState() 切换。原「■ 停止」顶栏按钮与文字「发送」按钮同删。 -->
+              <button id="runBtn" class="run idle" data-state="idle" aria-label="发送" title="发送">
+                <svg class="ic-send" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M8 13.2V3.2"/><path d="M3.9 7.3 8 3.2l4.1 4.1"/>
+                </svg>
+                <svg class="ic-stop" viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1.8" fill="currentColor"/>
+                </svg>
+              </button>
             </div>
           </div>
         </div>
@@ -146,6 +183,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=13.1"></script>
+<script type="module" src="/static/esm/main.js?v=27.0"></script>
 </body>
 </html>

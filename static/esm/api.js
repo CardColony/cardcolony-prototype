@@ -1,4 +1,4 @@
-/* esm/api.js —— fetch 封装（统一错误弹 toast，messages 不设超时）。迭代四 F2 唯一实现。
+﻿/* esm/api.js —— fetch 封装（统一错误弹 toast，messages 不设超时）。迭代四 F2 唯一实现。
  * 原 static/api.js 的 IIFE 本体收编于此；api.js 退为薄壳（index 页动态 import 兼容）。
  */
 export async function request(method, url, body) {
@@ -51,7 +51,7 @@ export async function call(method, url, body) {
  * kind ∈ {info,success,warn,error}。打点 [notify]。
  * toast 保留为兼容包装（B-11 三处调用零改动；index 页薄壳同样拿到）。
  */
-import { store } from "./store.js";
+import { store } from "./store.js?v=27";
 
 const NOTIFY_MAX_HISTORY = 50;
 const NOTIFY_MAX_ONSCREEN = 3;
@@ -101,6 +101,19 @@ export const API = {
   // [S2/T5] 导航按需子卡与版本探测（S1 后端既有端点；数据形态 2026-10-11 18:44 三通道实测）
   getNavChildren: (wid, parent) => call("GET", `/api/nav/children?work_id=${wid}&parent=${parent}`),
   getNavVersion: () => call("GET", "/api/nav/version"),
+  // [左栏接线 步1 后端已落] 「谁在跑」总览：行尾运行中转圈的数据源（判据在后端 active 位）
+  // 静默实现，不走 call()：本口是周期探测（10s），而 call() 在非 2xx 时无条件弹 toast——
+  // 若服务尚未装载本口（旧版返回 404），就会每 10 秒弹一个错。失败一律返回 null，
+  // 由调用方按「本轮拿不到运行中信息」处理（行尾不亮转圈，不打扰用户）。
+  getNavRunning: async () => {
+    try {
+      const resp = await request("GET", "/api/nav/running");
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch (e) {
+      return null;
+    }
+  },
   getCanvas: (wid) => call("GET", `/api/works/${wid}/canvas`),
   patchPositions: (wid, positions) => call("PATCH", `/api/works/${wid}/canvas/positions`, { positions }),
   createCard: (wid, body) => call("POST", `/api/works/${wid}/cards`, body),
@@ -109,6 +122,10 @@ export const API = {
     call("PATCH", `/api/works/${wid}/cards/${cid}`, { updates, history_note }),
   deleteCard: (wid, cid) => call("DELETE", `/api/works/${wid}/cards/${cid}`),
   getSession: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/session`),
+  // [消息底座收尾 2026-10-14] 恢复唯一入口：合并时序表（消息块＋过程事件＋思考），
+  // 按 seq 升序、每条自带 type。刷新/换卡重建过程区走它（件4 退役 from=0 整卡重放后，
+  // 这是唯一可回溯的时序真相源）。
+  getTimeline: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/timeline`),
   postMessage: (wid, cid, content) => call("POST", `/api/works/${wid}/cards/${cid}/messages`, { content }),
   getProgress: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/progress`),
   // [迭代四 F3①] 停止按钮（U-7）

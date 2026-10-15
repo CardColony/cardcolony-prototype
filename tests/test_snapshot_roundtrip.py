@@ -30,6 +30,10 @@ async def test_snapshot_batches_are_per_work(work):
 
 
 async def test_snapshot_restore_roundtrip(work):
+    """[卡片存储迁移 SQLite] 快照装的是库文件 ``cards.db``（VACUUM INTO 一致副本），
+    不再是卡片 md。往返后库内容逐字还原。"""
+    import sqlite3
+
     wid, root = work["work_id"], work["work_card_id"]
 
     await card_store.update_card(wid, root, {"conclusion": "第一版正文"}, "写入第一版")
@@ -41,13 +45,19 @@ async def test_snapshot_restore_roundtrip(work):
 
     stamp = Path(r["dir"]).name
     batch = data_snapshot.SNAPSHOT_ROOT / wid / stamp
-    rel = f"works/{wid}/cards/{root}.md"
+    rel = f"works/{wid}/cards.db"
     src = batch / rel
-    card_path = card_store._card_path(wid, root)
+    assert src.exists(), f"批次内缺库副本: {src}"
 
-    assert src.exists(), f"批次内缺该卡: {src}"
-    assert src.read_bytes() == card_path.read_bytes()
-    assert "第一版正文" in src.read_text(encoding="utf-8")
+    # 副本必须是**可用** SQLite 库（WAL 下直接 copy 会拿到不含最新提交的副本）
+    con = sqlite3.connect(str(src))
+    try:
+        row = con.execute(
+            "SELECT status_block FROM cards WHERE card_id = ?", (root,)
+        ).fetchone()
+    finally:
+        con.close()
+    assert row is not None and "第一版正文" in (row[0] or "")
 
     # 快照只装运行数据（PROTECTED_DIRS = works/），代码不进快照
     tops = {
@@ -56,18 +66,16 @@ async def test_snapshot_restore_roundtrip(work):
     }
     assert tops == {"works"}, tops
 
-    # 改动之后，恢复必须逐字节回到快照态
+    # 改动之后，恢复必须回到快照态（库内容逐字还原）
     await card_store.update_card(wid, root, {"conclusion": "第二版正文"}, "写入第二版")
-    assert card_path.read_bytes() != src.read_bytes()
+    assert (await card_store.read_card(wid, root))["body"]["status_block"] == "第二版正文"
 
     res = data_snapshot.restore_from_snapshot(wid, stamp, rel)
     assert res["ok"] is True
-    assert card_path.read_bytes() == src.read_bytes()
-
     data = await card_store.read_card(wid, root)
-    assert data["body"]["conclusion"] == "第一版正文"
-    # 恢复回来的文件哈希自洽 → 不得被判定为「外部修改」
-    assert not any("外部修改" in line for line in data["body"]["history"])
+    # [销红 2026-10-12] C.4（S2-5 卡面新四键裁定）：body 读取侧须用 status_block
+    # （写入侧 update_card 仍兼容旧键 conclusion 并归一到新键）。
+    assert data["body"]["status_block"] == "第一版正文"
 
 
 async def test_restore_missing_file_reports_error(work):

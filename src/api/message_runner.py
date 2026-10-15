@@ -37,7 +37,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from ..storage import card_store, memory_store, session_facade, session_ops, session_store, work_store
+from ..storage import card_db, card_store, memory_store, session_facade, session_ops, session_store, work_store
 from ..thinkchain import board as thinkchain_board
 from ..thinkchain.model_pick import pick_model as _pick_model  # 步类型路由消费点（_pick_step_model 调用）
 from ..thinkchain import model_pick
@@ -49,6 +49,7 @@ from . import (
     control,
     context_assembler,
     context_regions,
+    current_turn,
     event_stream,
     model_service,
     progress,
@@ -109,6 +110,10 @@ class RunState:
     # 采集后与末轮回执拼接交付（分析在前、回执在后），不取代回执。
     analysis_parts: list[str] = field(default_factory=list)
     model_used: Optional[str] = None
+    # [DeepSeek 思考回传 2026-10-15] 本轮模型调用产出的思考（reasoning_content）。
+    # 只做调用链内部传递：拿到 result 后立刻写入、存 assistant 条时立刻取用并清空。
+    # **不进对话内容、不进前端渲染**（展示走 emit_token 独立通道）。
+    turn_reasoning: str = ""
     error: Optional[str] = None
     # [phase9-E] 观点元信息（含内部text）
     viewpoints_meta: list[dict[str, Any]] = field(default_factory=list)
@@ -142,6 +147,23 @@ class RunState:
     # [A8/R3-T124] 回合结束原因（落盘 end 字段）：""＝正常（门面缺省 model_done）；
     # human_stop＝人工停止；policy_stop＝「判不了交人」轮末闭合。
     end_reason: str = ""
+    # [模型过程数据 2026-10-12] step_start 幂等键（"{板内位置}:{步 id}"）——
+    # 当前步在本回合首次被观测时发一次 step_start，其后同步不重发（只做数据）。
+    step_started_key: str = ""
+    # [当前轮注入消息事件 2026-10-14] 当前轮注入（context_preamble/
+    # context_injection）状态：
+    #   turn_tail      —— round1 暂存的注入消息（随用户消息之后下发）；
+    #   turn_tail_engaged —— 是否已把 turn_tail 固化进轮槽（幂等闸）；
+    #   preamble_emitted —— 固定总领本 run 只发一次；
+    #   injection_keys —— 已发动态注入的幂等键集合（同 run 同键不重发）。
+    turn_tail: list[dict[str, Any]] = field(default_factory=list)
+    turn_tail_engaged: bool = False
+    preamble_emitted: bool = False
+    injection_keys: set[str] = field(default_factory=set)
+    # [判断协议改注入 2026-10-14] 判断协议注入（仅轮首、且本卡无活板时一条）：
+    #   judgment_tail —— 暂存待随 round1 下发的判断协议消息（**独立于 turn_tail**，
+    #   绝不固化进轮槽——这是「后续轮清掉」的全部机制依据，任务书 §2.3）。
+    judgment_tail: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -192,7 +214,6 @@ def check_control(state: RunState) -> Optional[str]:
 
 # d. 上下文组装（T11 分区装配线）：0 使用说明（BASE_PROMPT 指针）＋100 卡片清单＋150 当前卡。
 # 装配只按 order 收区拼接、零内容判断（总表 #2/#3）；vp_system_prompt＝100＋150（职责分离裁定）。
-# 无目标锚/血统链/管辖域/契约/charter/空位提示注入（全量审计定案：结构即引导）。
 # [T12-SP-05] 凝练态（水位 mark＋entries）routes 层一次读取、结果传 200/300 区——
 # context_regions 保持纯函数不做 IO（L17 硬约束）；开关关（RD-08 缺省）＝None＝逐字旧路。
 # 300 区收窄为未凝段的切片属三期路线裁定后补（L387 本批不动，mark 读取基础件先落）。
@@ -229,7 +250,22 @@ def build_context(state: RunState) -> None:
     else:
         _hist = state.prior
     state.prior_for_gateway = [
-        {"role": m["role"], "content": m["content"]} for m in _hist
+        {
+            "role": m["role"],
+            # [卡间消息·头 2026-10-14] 卡间块的机器头行（`[[card-msg id=… type=…
+            # from=…]]`）**不进模型视野**——换成固定头〔卡间消息〕。只改投影，
+            # **不改块本身**（find_pending 仍读原始头行）。"是谁发的"由正文承载。
+            "content": (card_msg.render_for_context(m["content"])
+                        if str(m.get("actor") or "").startswith("card:")
+                        else m["content"]),
+            # [DeepSeek 思考回传 2026-10-15] assistant 历史条带 reasoning_content
+            # （仅当该条存过思考时）——DeepSeek 思考模型多轮调用强制要求回传，
+            # 不回传即 400。其他家不要求：此键只在源头（存条时）按模型家族判定，
+            # 未存则此处不产出该键 ⇒ 非 DeepSeek 系逐字同旧。
+            **({"reasoning_content": m["reasoning_content"]}
+               if m.get("reasoning_content") else {}),
+        }
+        for m in _hist
         # [迭代二 S4·呈报项] 环节留痕块（behavior 非空：triage/plan/step/final/
         # revision 等，本迭代经 facade.append 落档的 actor=tool 形态）**不进
         # 对话投影**——①落盘 role 恒由 actor 映射（session_facade.py:511），
@@ -289,6 +325,140 @@ def _pick_step_model(state: RunState) -> str:
     return seat
 
 
+# ============================================================
+# [模型过程数据 2026-10-12] 过程事件数据源（只读板、只发事件，零判定）
+# ============================================================
+
+def _sync_step_start(state: RunState) -> str:
+    """当前板步观测点：每步首次被观测时发 ``step_start``，返回该步 id。
+
+    - 无板（直答查证）／快照不可读／current 越界 → 返回空串**不发事件**
+      （前端拿空串不归步骤，工具调用平铺在判断块下）；
+    - 幂等键＝``{板内位置}:{步 id}``——同一步在本回合内只发一次，改板换位/
+      换 id 才再发；
+    - ``index`` 是 1 起的展示位置号（①②③），``total`` 是步总数；板内
+      0 起的 ``current`` 下标不外泄。
+
+    调用点两处：①每个 tool_call 之前（保证 step_start 先于该步的工具行、
+    且 call/result 取同一个 step_id）；②create_plan 成功之后（板刚上架＝
+    第 1 步开始，紧随 plan_created）。
+    """
+    snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
+    if not snap:
+        return ""
+    steps = snap.get("steps") or []
+    cur = snap.get("current", 0)
+    if not (isinstance(cur, int) and 0 <= cur < len(steps)):
+        return ""
+    step = steps[cur]
+    if not isinstance(step, dict):
+        return ""
+    step_id = str(step.get("id") or "")
+    key = f"{cur}:{step_id}"
+    if state.step_started_key != key:
+        state.step_started_key = key
+        event_stream.emit(state.work_id, state.card_id, "step_start", {
+            "step_id": step_id,
+            "index": cur + 1,
+            "total": len(steps),
+            "prompt": step.get("prompt") or "",
+            "criteria": step.get("criteria") or "",
+            "deliverable": step.get("deliverable") or "",
+        })
+    return step_id
+
+
+# ============================================================
+# [判断协议改注入 2026-10-14] 判断协议注入同步（BASE_PROMPT → 轮首消息事件）
+# ============================================================
+
+def _sync_judgment(state: RunState) -> None:
+    """判断协议注入点：**仅本回合首次调用（``rounds == 1``）且本卡无活板时**发一条。
+
+    用户口径（2026-10-14 12:08）：「只要有板子在，就不需要注入判断」——判断早已
+    做完（已上板在跑），再注入会让模型重新判一次、跟板打架。故有活板 → 不注入。
+
+    承载通道＝``judgment_tail``（**独立于 turn_tail**）：只随 round1 下发、绝不
+    固化进轮槽，故 round≥2 的 wire_messages 与轮槽里都看不到它（任务书 §2.3）。
+    整段零阻断。
+    """
+    if state.rounds != 1:
+        return
+    try:
+        if thinkchain_board.has_live_board(state.work_id, state.card_id):
+            return   # 有活板 → 不注入判断（用户 2026-10-14 口径）
+    except Exception as exc:  # noqa: BLE001 注入零阻断；查板异常＝保守不注入
+        logger.warning("[判断协议] 查板失败（保守不注入）card=%s: %s", state.card_id, exc)
+        return
+    try:
+        ev = current_turn.build_judgment_event()
+        event_stream.emit(state.work_id, state.card_id, ev["type"], ev["data"])
+        state.judgment_tail.append(current_turn.project_judgment_message())
+    except Exception as exc:  # noqa: BLE001 注入零阻断
+        logger.warning("[判断协议] 注入失败（不阻断）card=%s: %s", state.card_id, exc)
+
+
+# ============================================================
+# [当前轮注入消息事件 2026-10-14] 当前轮注入同步（160/165 → 消息事件）
+# ============================================================
+
+def _sync_injection(state: RunState) -> None:
+    """注入事件同步点：**每个模型调用之前调一次**（见 step() 首部）。
+
+    - 选源（工具卡优先，同改造前 160/165 互斥）由 current_turn 定；
+    - 固定总领每 run 只发一次（``preamble_emitted`` 闸）；
+    - 动态步骤按幂等键去重（同 run 同键不重发；步骤身份或内容变化才发新）；
+    - 落地：``rounds<=1`` → 暂存 ``turn_tail``（首轮随用户消息之后下发）；
+      ``rounds>=2`` → 直接 ``append_plain`` 进轮槽（位置＝上一步推进事件之后、
+      下一步首个动作之前）。
+    无来源 → 不发任何事件（没有来源就不发注入事件）。整段零阻断。
+    """
+    try:
+        events = current_turn.build_injection_events(state.work_id, state.card_id)
+    except Exception as exc:  # noqa: BLE001 注入零阻断
+        logger.warning("[注入] 构建失败（不阻断）card=%s: %s", state.card_id, exc)
+        return
+    new_msgs: list[dict[str, Any]] = []
+    for ev in events:
+        ev_type = ev.get("type") or ""
+        data = ev.get("data") or {}
+        if ev_type == current_turn.TYPE_PREAMBLE:
+            if state.preamble_emitted:
+                continue
+            state.preamble_emitted = True
+        else:
+            key = current_turn.injection_key(ev_type, data)
+            if key in state.injection_keys:
+                continue
+            state.injection_keys.add(key)
+        event_stream.emit(state.work_id, state.card_id, ev_type, data)
+        new_msgs.append(current_turn.project_message(ev_type, data))
+    if not new_msgs:
+        return
+    if state.rounds <= 1:
+        state.turn_tail.extend(new_msgs)
+    elif state.slot is not None:
+        for m in new_msgs:
+            state.slot.append_plain(m)
+
+
+def _engage_slot(state: RunState) -> None:
+    """把 round1 暂存的注入消息一次性固化进轮槽（幂等）。
+
+    round1 的注入经 ``turn_tail`` 随用户消息之后下发；一旦本回合进入后续轮
+    （轮槽被使用），必须把它们落进轮槽——否则 rounds>=2 的 ``wire_messages``
+    会丢掉它们。**只固化注入消息**（``turn_tail`` 不含 user 原文，user 仍走
+    既有 ``user_prompt``/``append_plain`` 路径，本函数不改它）。
+    """
+    if state.turn_tail_engaged:
+        return
+    state.turn_tail_engaged = True
+    if state.slot is None:
+        return
+    for m in state.turn_tail:
+        state.slot.append_plain(m)
+
+
 async def step(state: RunState) -> StepOutcome:
     """一次状态推进＝工具循环的一个显式状态点。
 
@@ -312,6 +482,14 @@ async def step(state: RunState) -> StepOutcome:
     # 机械预检、无独立判定调用（旧 JSON 判定轮已退役）。
 
     state.rounds += 1
+    # [判断协议改注入 2026-10-14] 判断协议注入（仅轮首、且本卡无活板）——先于
+    # 注入事件，使事件序＝user_message → judgment_protocol →（有板时）preamble/
+    # injection → round_start。两者互斥（有板无判断、无板无注入来源），不会同现。
+    _sync_judgment(state)
+    # [当前轮注入消息事件 2026-10-14] 模型调用前同步注入事件（160/165 消息化）：
+    # 有来源才发；round1 暂存 turn_tail，后续轮直接进轮槽。放在 round_start 之前，
+    # 使事件序＝user_message → preamble → injection → round_start/judgment/…
+    _sync_injection(state)
     if state.rounds == 1:
         # [E-探针制 2026-10-07] 首轮＝纯主模型带工具查证（原 call_simple
         # 观点前置编排退役；三席改在工具循环收尾处进场）。
@@ -324,7 +502,14 @@ async def step(state: RunState) -> StepOutcome:
             state.system_prompt, state.user_prompt, state.prior_for_gateway,
             tools=state.tools,
             model_name=_pick_step_model(state),
+            # 本轮注入消息随用户消息之后下发（无注入时为空 ⇒ 逐字同旧）
+            turn_tail=state.turn_tail,
+            # [判断协议改注入 2026-10-14] 判断协议＝**仅本次**下发（不进轮槽、
+            # 不固化）：只在轮首且无活板时有值，round≥2 恒空。
+            turn_once=state.judgment_tail,
         )
+        # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
+        state.turn_reasoning = result.get("reasoning_content") or ""
     else:
         # 工具续跳轮不重复咨询观点模型
         progress.set_stage(state.work_id, state.card_id, "tools",
@@ -341,6 +526,8 @@ async def step(state: RunState) -> StepOutcome:
             state.system_prompt, state.user_prompt, wire_messages, tools=state.tools,
             model_name=_pick_step_model(state),
         )
+    # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
+    state.turn_reasoning = result.get("reasoning_content") or ""
     tool_calls = result.get("tool_calls") or []
     assistant_content = result.get("content") or ""
 
@@ -368,6 +555,15 @@ async def step(state: RunState) -> StepOutcome:
         elif unresolved:
             text_rescue_note = text_tool_rescue.feedback_note()
 
+    # [模型过程数据 2026-10-12] 判断事件（新增）：**首轮机械推断**——tool_calls
+    # 含 create_plan → plan，否则 direct。只读 tool_calls 事实（含抢救并入的
+    # 调用），不解析模型文本、不加独立判定调用；首轮之后不再重发。
+    if state.rounds == 1:
+        event_stream.emit(state.work_id, state.card_id, "judgment", {
+            "verdict": "plan" if any(tc.get("name") == "create_plan"
+                                     for tc in tool_calls) else "direct",
+        })
+
     # [迭代二 S4] 催化挂点一（主循环路径）：本卡有活板且本步未推进、本轮
     # **空手**（两条件缺一不可——判据＝tool_calls 事实，防嘴上伪造；带工具
     # 轮照常执行）→ 按附录 C 步执行提示词催促交作业续跳，不设上限。两道
@@ -386,6 +582,7 @@ async def step(state: RunState) -> StepOutcome:
                 f"{thinkchain_board.step_brief(_step)}\n（干完立刻调 step_complete；"
                 "未调之前这一步不算完成。）"
             )
+            _engage_slot(state)   # 注入消息随轮槽带入后续轮
             return StepOutcome("continue", "await_step_tool")
 
     if not tool_calls:
@@ -393,6 +590,7 @@ async def step(state: RunState) -> StepOutcome:
         if text_rescue_note:
             # 反馈兜底：疑似调用未被识别这个事实必须回到模型上下文，
             # 否则模型永远在等一个不会来的结果（等待黑洞）。
+            _engage_slot(state)   # 注入消息随轮槽带入后续轮（先于本轮 assistant 回注）
             # [T11] 经轮槽 append_plain 入槽（非轮消息，永不折叠）
             state.slot.append_plain({
                 "role": "assistant", "content": state.final_reply,
@@ -412,6 +610,8 @@ async def step(state: RunState) -> StepOutcome:
     # [T11] 经轮槽 append_plain 入槽（首轮用户原文固化＝不折红线之一）
     if state.rounds == 1:
         state.slot.append_plain({"role": "user", "content": state.content})
+    # [当前轮注入消息事件 2026-10-14] 首轮注入消息随之固化进轮槽（幂等）
+    _engage_slot(state)
 
     # [T-0010 §2] run 级 tool_call_id：pair_id 前 8 位；无 pair_id 退 work_id 前 4 位。
     # 与「轮次＋序号」合成 ⇒ 同一份 messages 内全局唯一（B-07 配对协议），
@@ -420,7 +620,7 @@ async def step(state: RunState) -> StepOutcome:
     # 把 assistant 消息（含 tool_calls）+ tool 结果追加进 prior
     # [T11-T6] assistant 经 begin_round 入槽（成轮，可折单元）；
     # 消息构造与既有逐字一致（折叠关时槽即本列表，零变化）
-    state.slot.begin_round({
+    _asst_msg: dict[str, Any] = {
         "role": "assistant",
         "content": assistant_content,
         "tool_calls": [
@@ -432,7 +632,13 @@ async def step(state: RunState) -> StepOutcome:
             }
             for i, tc in enumerate(tool_calls)
         ],
-    })
+    }
+    # [DeepSeek 思考回传 2026-10-15] DeepSeek 系模型开思考时，多轮调用必须把
+    # 本轮的 reasoning_content 原样回传（否则 400 "must be passed back"）。
+    # 仅对 deepseek 系补——其他家不要求，多带字段可能被拒。
+    if state.turn_reasoning and "deepseek" in (state.model_used or "").lower():
+        _asst_msg["reasoning_content"] = state.turn_reasoning
+    state.slot.begin_round(_asst_msg)
     # [T14-1-2] 只读采集：带工具轮的 assistant_content（含 L459 抢救处理后
     # 的正文）同步留一份进交付采集列表。不改 begin_round 入参、不额外入槽
     # （T11 轮槽消息条数与配对不变量不破坏，RD-09）；不限长不折叠不截断。
@@ -455,17 +661,32 @@ async def step(state: RunState) -> StepOutcome:
                      or args.get("query") or args.get("url")
                      or (args.get("title") if name == "create_card" else "") or "")
         # [信息流 Task3] 工具执行前后埋点（V2 即时可见）
+        # [模型过程数据 2026-10-12] step_id：执行前读当前板步（首次观测即发
+        # step_start），call/result 共用同一个值——同一次调用的归属不许劈叉；
+        # 无板（直答查证）→ 空串。
+        _step_id = _sync_step_start(state)
+        # [消息底座能力对齐 · 件3] 结构化落盘：入参原样（arguments 是 dict，
+        # 不是拼好的字符串）——事件日志存的是事实，不是给模型看的投影。
         event_stream.emit(state.work_id, state.card_id, "tool_call",
-                          {"tool": name, "target": target_id})
+                          {"tool": name, "target": target_id, "step_id": _step_id,
+                           "arguments": args})
         # [提交轮材料（C6）] step_complete 执行**前**抓板快照——末步执行会
         # 同步触发收口（finalize 清理板），执行后取板已不可得。每次 step_complete
         # 前刷新快照，末步前抓到的即全量成果（含全部已推进步的 result）。
+        _done_step_id = ""
         if name == "step_complete":
             snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
             if snap and snap.get("steps"):
                 state.chain_steps_record = [
                     s for s in snap["steps"] if isinstance(s, dict)]
                 state.chain_plan_name = str(snap.get("name") or "")
+                # [模型过程数据] 被收作业的就是执行前的当前步（指针未动）——
+                # step_id 从这份快照取，与 criteria_met/result 同属一步。
+                _pre_steps = snap.get("steps") or []
+                _pre_cur = snap.get("current", 0)
+                if (isinstance(_pre_cur, int) and 0 <= _pre_cur < len(_pre_steps)
+                        and isinstance(_pre_steps[_pre_cur], dict)):
+                    _done_step_id = str(_pre_steps[_pre_cur].get("id") or "")
         tool_result = await card_tools.execute_tool(
             state.work_id, state.card_id, name, args, cards_meta)
         # [T-0010 §1.5] 成败读信封 ok 字段（改前是「结果里没有 error 键即算成功」）
@@ -483,17 +704,39 @@ async def step(state: RunState) -> StepOutcome:
         # [思维链真实落地 2026-10-11] 板子事件 emit（对话流可见拆解上板/步进/收口）：
         # create_plan 成功→plan_created；step_complete 成功→step_advanced
         # （all_done=True 时前端渲染收口行）。
+        # [模型过程数据 2026-10-12] plan_created 补完整 steps 数组（建板成功后
+        # 板上已是全字段步定义，emit 时就地取，不解析模型文本）。
         if ok and name == "create_plan":
+            _bsnap = thinkchain_board.snapshot_sync(state.work_id, state.card_id) or {}
+            _bsteps = _bsnap.get("steps") or []
             event_stream.emit(state.work_id, state.card_id, "plan_created", {
                 "name": _data.get("plan_name") or "",
                 "total": _data.get("total") or 0,
                 "prompt": _data.get("prompt") or "",
+                "steps": [
+                    {"id": s.get("id", ""), "prompt": s.get("prompt", ""),
+                     "criteria": s.get("criteria", ""),
+                     "deliverable": s.get("deliverable", ""),
+                     "type": s.get("type", "")}
+                    for s in _bsteps if isinstance(s, dict)
+                ],
             })
+            # 板刚上架＝第 1 步开始：紧随 plan_created 发 step_start（幂等键防重）
+            _sync_step_start(state)
         elif ok and name == "step_complete":
+            # [模型过程数据 2026-10-12] step_advanced 补步归属与成果：
+            # step_id＝执行前快照的当前步；criteria_met/result＝step_complete
+            # 入参（result 即落板的本步 result，同一份值）；next_prompt/
+            # next_criteria＝工具返回的下一步要求与判据（末步收口时为空串）。
             event_stream.emit(state.work_id, state.card_id, "step_advanced", {
                 "advanced": bool(_data.get("advanced")),
                 "all_done": bool(_data.get("all_steps_done")),
                 "prompt": _data.get("prompt") or "",
+                "step_id": _done_step_id,
+                "criteria_met": str(args.get("criteria_met") or ""),
+                "result": str(args.get("result") or ""),
+                "next_prompt": _data.get("prompt") or "",
+                "next_criteria": _data.get("criteria") or "",
             })
             # [提交轮材料（C6）] criteria_met 自述按调用序累积（与板步对齐）；
             # all_steps_done＝链收口事实（提交轮触发依据）。
@@ -504,8 +747,15 @@ async def step(state: RunState) -> StepOutcome:
                 state.chain_completed = True
         # [信息流 Task4] 工具结果事件（A96 全日志打点）。card_op 并表随
         # 机械预检退役——全部工具统一 tool_result 一条通道。
+        # [模型过程数据 2026-10-12] step_id 与本次 tool_call 同源（_step_id）。
+        # [消息底座能力对齐 · 件3] result 落**结构化信封**（data/error 原样），
+        # 不再把 render_tool_result 的文本投影当 data 落盘——落盘结构化、
+        # 回灌字符串，两路各自独立（回灌侧仍走单一投影函数 render_tool_result）。
+        _struct_result = ({"ok": True, "data": _data} if ok
+                          else {"ok": False, "error": tool_result.get("error")})
         event_stream.emit(state.work_id, state.card_id, "tool_result",
-                          {"tool": name, "target": target_id, "ok": ok})
+                          {"tool": name, "target": target_id, "ok": ok,
+                           "step_id": _step_id, "result": _struct_result})
         # [T11-T6] tool 结果经 append_tool_result 入槽（归入当前轮）
         # [T-0010 §1.6] 回灌文本走单一投影函数（不各自 json.dumps）——
         # 否则失败信封的 {"code","message"} 会被当数据喂进模型上下文
@@ -548,12 +798,23 @@ async def run_seats(state: RunState) -> StepOutcome:
 
     上下文回流铁则：观点只进统合官 user_prompt，不入槽/不入 session；
     三席 prior 取纯对话历史切片（不含本轮工具机制消息，且只读不回写）。
+
+    [三席身份注入 2026-10-14] 三席身份提示词走注入（role=assistant 自述、抬头
+    〔三席身份〕），经 turn_tail 随三席调用下发——三席 system 与 user 位质询文
+    都不动；注入不进 session/prior。
     """
     state.seats_done = True
     # [信息流 Task3] 三席进场埋点＋每席起止转发（on_seat 缺省 None 语义不变）
     event_stream.emit(state.work_id, state.card_id, "seats_enter",
                       {"tool_results": len(state.tool_full_texts),
                        "steps": len(state.chain_steps_record)})
+    # [三席身份注入 2026-10-14] 三席身份提示词——走注入（role=assistant 自述），
+    # 随三席调用经 turn_tail 下发；三席 system（共享上下文）与 user 位质询文都不动。
+    # 单列事件一类（不复用 context_preamble——语义与前端标签都不同）。
+    seat_identity = simple_service.build_seat_identity_message()
+    event_stream.emit(state.work_id, state.card_id, "context_seat_identity",
+                      {"source_kind": "viewpoint",
+                       "content": simple_service.SEAT_IDENTITY_NOTE})
     seats_prior = state.prior_for_gateway[:state.history_len]
     review_input = simple_service.build_review_prompt(
         state.content,
@@ -569,6 +830,7 @@ async def run_seats(state: RunState) -> StepOutcome:
             progress.set_stage(_w, _c, s, d),
         on_seat=lambda kind, meta, _w=state.work_id, _c=state.card_id:
             event_stream.emit(_w, _c, kind, meta),
+        turn_tail=[seat_identity],
     )
     if not ok_metas:
         # [E-口径②] 全败留痕不阻断：主模型携步成果独自交付（草稿即回执）
@@ -825,6 +1087,16 @@ async def finish(state: RunState) -> dict[str, Any]:
     })
     logger.info("[T10] 回复落盘 pair_id=%s card=%s end=%s",
                 state.pair_id, state.card_id, state.end_reason or "model_done")
+    # [手动停止板清理 2026-10-14] 中止态（human_stop/policy_stop）清理残留板：
+    # 手动停止/判不了交人后，计划板不该残留——否则下次发消息 has_live_board=True
+    # 会复活已停止的旧计划。error 不清理（checkpoint 保留，供下次恢复续跑）。
+    if state.end_reason in ("human_stop", "policy_stop"):
+        try:
+            _b = await thinkchain_board.get_board(state.work_id, state.card_id)
+            if _b is not None:
+                await _b.cleanup_board()
+        except Exception as _exc:  # noqa: BLE001 板清理失败不阻断落盘
+            logger.warning("中止态板清理失败 card=%s: %s", state.card_id, _exc)
     # [T12-SP-04] 回合末凝练触发（condense_fold）：assistant 落盘之后异步触发、
     # 不阻塞对话（异步是工程手段非闸，RD-04）。开关缺省关（RD-08）＝零动作；
     # 开时三期管线仍挂起待路线裁定，触发只量测＋留痕（memory_store.condense_turn_end）。
@@ -879,10 +1151,55 @@ def handle_error(state: RunState, exc: Exception) -> None:
 # 激励文（卡间册 §4.4.4 沿革）：只走当轮 user_prompt，绝不落收件方档案。
 # [2026-10-11 11:44] 动态构造：带发件卡名称＋类型中文名（注册表现读、
 # 零类型分支、新增类型不改代码）；解析/读卡失败回落本默认文、不阻断调起。
+#
+# [卡片底座第一步 2026-10-14] 消息**不再写进收件方对话块**（改落待处理收件箱），
+# 故正文不再能靠「上文以 card: 开头的条目」被模型看到——**正文必须随激励文进
+# 模型视野**（V4：模型在上下文明确看到待处理消息）。激励文＝底座提供的
+# 「待处理消息」这个可组合素材（其最终形态待裁，见任务书 §七.3，本处只保证
+# 素材送达）。本常量＝构造失败时的兜底前缀（仍会拼上消息正文）。
 _CARD_MSG_PROMPT = (
-    "上一轮之后，你收到了来自其他卡的消息（见上文以 card: 开头的条目）。"
+    "上一轮之后，你收到了来自其他卡的消息。"
     "请阅读这些消息并处理。"
 )
+
+
+def _strip_msg_header(content: str) -> str:
+    """剥掉卡间消息正文首行的结构化头行（机械位，不是内容）。"""
+    return card_msg.strip_header(str(content or ""))
+
+
+def _fallback_card_msg_prompt(pending: list[dict[str, Any]]) -> str:
+    """兜底激励文：默认前缀 ＋ 各待处理消息正文（正文必达——V4）。"""
+    bodies = [_strip_msg_header(it.get("content", "")) for it in pending]
+    return _CARD_MSG_PROMPT + "\n消息内容：\n" + "\n".join(b for b in bodies if b)
+
+
+async def _build_card_msg_prompt(work_id: str,
+                                 pending: list[dict[str, Any]]) -> str:
+    """按待处理消息构造激励文（带发件卡名＋类型中文名＋应对说明＋**消息正文**）。
+
+    类型名/应对说明从注册表现读（display_of/entry_of，零类型分支、新增类型不改
+    代码）。发件卡名读不到时回落卡号本身（不阻断）。整段任一处失败由调用方
+    回落 ``_fallback_card_msg_prompt``（正文仍达）。
+    """
+    lines: list[str] = []
+    for it in pending:
+        raw = str(it.get("content") or "")
+        hdr = card_msg.parse_header(raw) or {}
+        from_card = str(it.get("from_card") or hdr.get("from") or "")
+        mt = str(it.get("type") or hdr.get("type") or "")
+        disp = card_msg.display_of(mt)
+        note = str((card_msg.entry_of(mt) or {}).get("note") or "")
+        body = _strip_msg_header(raw)
+        card_meta = (await card_store.read_card(work_id, from_card)).get("meta") or {}
+        title = str(card_meta.get("title") or from_card)
+        lines.append(
+            f"卡 {from_card}（《{title}》）给你发来一条消息（类型：{disp}）。{note}\n"
+            f"消息内容：\n{body}"
+        )
+    return ("上一轮之后，你收到了来自其他卡的消息。\n"
+            + "\n".join(lines)
+            + "\n请阅读这些消息并处理。")
 
 
 def _log_trigger_task_done(task: "asyncio.Task") -> None:
@@ -893,6 +1210,24 @@ def _log_trigger_task_done(task: "asyncio.Task") -> None:
     if exc is not None:
         logger.error("[K3] 卡间调起任务异常 target=%s: %s",
                      getattr(task, "_card_msg_target", "?"), exc)
+
+
+# 调起任务**强引用**（防 GC 中途回收）。
+#
+# 事件循环对 Task 只持**弱引用**：`asyncio.create_task(...)` 的返回值若无人
+# 引用，协程在挂起期间可能被垃圾回收 ⇒ 该任务永不完成（B 的回合静默消失、
+# 表现为间歇性「B 未被调起」）。实测：本机跑本文件 5 次出现 1 次该现象
+# （2026-10-14 卡片底座第一步施工期间复现）。故把两个任务（B 的回合＋观察位）
+# 钉在模块级集合里，完成即移除。
+_TRIGGER_TASKS: set["asyncio.Task"] = set()
+
+
+def _spawn_tracked(coro) -> "asyncio.Task":
+    """create_task ＋ 强引用登记（完成即自动移除）。"""
+    t = asyncio.create_task(coro)
+    _TRIGGER_TASKS.add(t)
+    t.add_done_callback(_TRIGGER_TASKS.discard)
+    return t
 
 
 # ---------------------------------------------------------------------------
@@ -907,16 +1242,15 @@ def _log_trigger_task_done(task: "asyncio.Task") -> None:
 # 自动转发）。
 # ---------------------------------------------------------------------------
 async def _auto_reply_pending_letters(work_id: str, card_id: str,
-                                      snapshot_ids: frozenset) -> None:
-    """按注册表把 B 的最终回答回发给快照内的待回应卡间信。
+                                      pending: list[dict[str, Any]]) -> None:
+    """按注册表把 B 的最终回答回发给本轮**待处理收件箱快照**内的待回应信。
 
     取块（步骤③）：读档案取**最后一块**，双条件（actor==assistant 且
     end==model_done——END_VALUES 枚举）——防 finish 落块后本函数醒来前
     新块插入顶掉最后一块的毫秒竞态；**绝不遍历找更早的 model_done 块**
     （否则人停回合命中上一轮旧块、转发旧话）。
-    尾批全回（步骤④）：取该 assistant 块之前的 card: 块（从尾向前扫到
-    上一条 assistant 为止——human 隔断不停；与「全部 card: 块＋id∈快照
-    过滤」行为等价：快照集恰为调起前尾批），逐块判 id∈快照 且
+    [卡片底座第一步 2026-10-14] **来信数据源改**：不再从对话块扫 card: 块，
+    改用调起时取的**待处理收件箱记录快照**（``pending``）。逐条判
     reply_expected_of(type)——不是只按最后一条 pending 判（否则尾批
     [ask, notify] 让 ask 静默死、撞「不许沉默」）。
     回发（步骤⑤）：reply_type 空串/正文空 → 打点不发、不猜类型；经薄壳
@@ -943,60 +1277,56 @@ async def _auto_reply_pending_letters(work_id: str, card_id: str,
                             {"reason": "end_not_model_done"})
         return
     content = str(last.get("content") or "")
-    letters: list[dict] = []
-    for blk in reversed(blocks[:-1]):
-        actor = str(blk.get("actor") or "")
-        if actor == "assistant":
-            break
-        if actor.startswith("card:"):
-            letters.append(blk)
-    for blk in letters:
-        hdr = card_msg.parse_header(str(blk.get("content") or ""))
-        if not hdr or not hdr.get("id"):
+    for it in pending:
+        raw = str(it.get("content") or "")
+        hdr = card_msg.parse_header(raw) or {}
+        msg_id = str(it.get("msg_id") or hdr.get("id") or "")
+        if not msg_id:
             continue
-        if hdr["id"] not in snapshot_ids:
-            continue  # 回合期间新到信——不回发、留给下个收口
-        if not card_msg.reply_expected_of(hdr.get("type", "")):
+        mt = str(it.get("type") or hdr.get("type") or "")
+        from_card = str(it.get("from_card") or hdr.get("from") or "")
+        if not card_msg.reply_expected_of(mt):
             continue  # notify（收下即可）/answer（无需再答）——不回
-        reply_type = card_msg.reply_type_of(hdr.get("type", ""))
+        reply_type = card_msg.reply_type_of(mt)
         if not reply_type:
             session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
-                                {"reason": "reply_type_missing", "msg_id": hdr["id"]})
+                                {"reason": "reply_type_missing", "msg_id": msg_id})
             continue
         if not content.strip():
             session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
-                                {"reason": "no_content", "msg_id": hdr["id"]})
+                                {"reason": "no_content", "msg_id": msg_id})
             continue
         try:
             result = await card_tools.send_card_message(
-                work_id, card_id, target_id=str(hdr["from"]),
-                msg_type=reply_type, content=content, reply_to=hdr["id"])
+                work_id, card_id, target_id=from_card,
+                msg_type=reply_type, content=content, reply_to=msg_id)
         except Exception as exc:  # noqa: BLE001 薄壳异常按 send_failed 处置
             logger.error("[S4] 回发异常 wid=%s card=%s msg=%s: %s",
-                         work_id, card_id, hdr["id"], exc)
+                         work_id, card_id, msg_id, exc)
             session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
-                                {"reason": "send_failed", "msg_id": hdr["id"],
+                                {"reason": "send_failed", "msg_id": msg_id,
                                  "error": str(exc)[:120]})
             continue
         if isinstance(result, dict) and result.get("error"):
             session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
-                                {"reason": "send_failed", "msg_id": hdr["id"],
+                                {"reason": "send_failed", "msg_id": msg_id,
                                  "error": str(result.get("error"))[:120]})
             continue
         session_ops.ops_log("card_msg_answer_sent", work_id, card_id,
                             {"msg_id": str((result or {}).get("msg_id", "")),
-                             "target": str(hdr["from"]), "reply_to": hdr["id"]})
+                             "target": from_card, "reply_to": msg_id})
 
 
 async def schedule_card_message_triggers(state: RunState) -> None:
     """A 的回合收口时对本回合记下的全部 pending target 异步起 B 的回合。
 
     - 遍历 `card_msg.TRIGGERS`（K2 落信时记下的调起意图），读完即清（不累积）；
-    - 逐 target 用 `card_msg.find_pending` 判 pending（零新增存储，从档案推导）；
+    - [卡片底座第一步 2026-10-14] **待处理判定改读收件箱**：`card_db.list_pending`
+      （显式队列状态），不再用 `card_msg.find_pending` 从对话块顺序推导（脆弱约定）；
     - 有 pending → `asyncio.create_task` 起收件方回合（激励文 append_user=False），
       **非阻塞**——不 await 任务完成，异常经 done_callback 记日志；
     - 快速通道 vs 持久保证两层分工（写死）：create_task 可能因进程退出而丢；
-      档案里的信是持久保证——丢任务不丢信，下次任一回合收口时重新判 pending
+      **收件箱里的信是持久保证**——丢任务不丢信，下次任一回合收口时重新判 pending
       补齐（本函数被每个回合收口调用，天然承担补齐）。
     - B 忙（turn_try_acquire 409 不排队）→ ops `card_msg_pending` 留痕，信不丢。
     """
@@ -1010,84 +1340,57 @@ async def schedule_card_message_triggers(state: RunState) -> None:
 
     for (work_id, target_id), msg_ids in triggers.items():
         try:
-            blocks = await session_facade.read(work_id, target_id)
+            pending = await card_db.list_pending(work_id, target_id)
         except Exception as exc:  # noqa: BLE001
-            logger.error("[K3] 读收件方档案失败 wid=%s target=%s: %s",
+            logger.error("[K3] 读收件箱失败 wid=%s target=%s: %s",
                          work_id, target_id, exc)
             continue
-        pending = card_msg.find_pending(blocks)
-        if pending is None:
-            # 信已被先前某次收口调起并处理完（档案已有 assistant 块）——
-            # consumed 的事实打点归 K4 端点侧，此处不再重复调起。
+        if not pending:
+            # 信已被先前某次收口调起并处理完（收件箱里已无 pending）——不再重复调起。
             continue
         session_ops.ops_log("card_msg_deliver", work_id, target_id,
-                            {"msg_id": str(pending.get("content", ""))[:1] and
-                             (card_msg.parse_header(str(pending.get("content") or ""))
-                              or {}).get("id", ""),
+                            {"msg_id": str(pending[-1].get("msg_id") or ""),
                              "msg_ids": list(msg_ids)})
-        # [用户 2026-10-11 11:44] 激励文带发件卡名称＋类型中文名；类型名
-        # 从注册表现读（display_of 未命中回退类型码），全程零类型分支——
-        # 新增类型不改代码。[迭代五 S3·方案 4.2.4] 模板升级：随消息提供该
-        # 类型的应对说明（注册表 note——S1 起含应对半句，即「按说明应对」
-        # 的数据源）；解析/读卡/entry 异常回落默认文、不阻断调起。
-        # [迭代五 S4·步骤①] 调起前尾批 id 集快照：档案末尾向前扫到第一条
-        # assistant 为止的全部 card: 块（含 pending 自身、越 human 块）——
-        # 回合结束后 find_pending 必返 None（finish 落 assistant 块先于
-        # _run_message 返回），不可事后取。快照＝回发边界：只回发 id∈快照
-        # 的卡块，回合期间新到信不回发、留给下个收口。快照在激励文 try 外
-        # 初始化（空集）——防解析失败路径 NameError。
-        snapshot_ids: set[str] = set()
-        for blk in reversed(blocks):
-            _actor = str(blk.get("actor") or "")
-            if _actor == "assistant":
-                break
-            if _actor.startswith("card:"):
-                _hdr = card_msg.parse_header(str(blk.get("content") or ""))
-                if _hdr and _hdr.get("id"):
-                    snapshot_ids.add(str(_hdr["id"]))
-        prompt = _CARD_MSG_PROMPT
+        # 激励文＝底座提供的「待处理消息」素材（带发件卡名＋类型中文名＋应对
+        # 说明＋**消息正文**）。构造失败回落默认文、不阻断调起。
         try:
-            hdr = card_msg.parse_header(str(pending.get("content") or ""))
-            if hdr and hdr.get("from"):
-                card_meta = (await card_store.read_card(
-                    work_id, hdr["from"])).get("meta") or {}
-                title = str(card_meta.get("title") or hdr["from"])
-                disp = card_msg.display_of(hdr.get("type", ""))
-                entry = card_msg.entry_of(hdr.get("type", "")) or {}
-                note = str(entry.get("note") or "")
-                prompt = (
-                    f"上一轮之后，卡 {hdr['from']}（《{title}》）给你发来一条消息"
-                    f"（类型：{disp}）。{note} "
-                    "见上文以 card: 开头的条目，请阅读这些消息并处理。"
-                )
+            prompt = await _build_card_msg_prompt(work_id, pending)
         except Exception as exc:  # noqa: BLE001 激励文失败不阻断调起
             logger.warning("[K3] 构造卡间激励文失败、回落默认文: %s", exc)
-            prompt = _CARD_MSG_PROMPT
-        task = asyncio.create_task(
+            prompt = _fallback_card_msg_prompt(pending)
+        task = _spawn_tracked(
             _routes._run_message(work_id, target_id, prompt,
                                  None, append_user=False))
         task._card_msg_target = target_id  # type: ignore[attr-defined]
-        task._card_msg_snapshot_ids = frozenset(snapshot_ids)  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)
 
         # 忙时观察位：create_task 已起，若收件方在途，_run_message 内部
         # turn_try_acquire 失败返回 409 —— 由包裹协程转译为 ops card_msg_pending。
-        # [迭代五 S4·步骤②] 触发判据扩展：成功回合的返回值是 dict（finish
-        # 响应体，无 status_code 属性——既有机制事实，:907 现状 getattr 对
-        # dict 恒 None，恰是它只判 409 能工作的原因）→ 执行回发；具 status_code
-        # 的响应对象：409 保持既有打点；502/404/423 → 不回发＋failed 留痕；
-        # 其余形态打日志不回发。「非 409」不是成功判据。
+        # [迭代五 S4·步骤②] 触发判据：成功回合的返回值是 dict（finish 响应体，
+        # 无 status_code 属性）→ 置 consumed ＋ 执行回发；具 status_code 的响应
+        # 对象：409 保持既有打点；502/404/423 → 不回发＋failed 留痕；其余形态
+        # 打日志不回发。「非 409」不是成功判据。
         async def _watch_pending(t: "asyncio.Task", _wid: str = work_id,
                                  _tid: str = target_id,
-                                 _snap: frozenset = frozenset(snapshot_ids)) -> None:
+                                 _pending: list = list(pending)) -> None:
             try:
                 resp = await t
             except Exception as exc:  # noqa: BLE001 已由 done_callback 记日志
                 logger.error("[K3] 调起任务异常（watch）target=%s: %s", _tid, exc)
                 return
             if isinstance(resp, dict):
+                # [卡片底座第一步 2026-10-14] 回合收口＝本轮消息已处理：把快照内
+                # 的 msg_id 移出待处理（status→consumed，**不删行**——留痕可回溯）。
                 try:
-                    await _auto_reply_pending_letters(_wid, _tid, _snap)
+                    for _it in _pending:
+                        _mid = str(_it.get("msg_id") or "")
+                        if _mid:
+                            await card_db.mark_consumed(_wid, _mid)
+                except Exception as exc:  # noqa: BLE001 状态置位失败不阻断回发
+                    logger.error("[K3] 收件箱置 consumed 失败 target=%s: %s",
+                                 _tid, exc)
+                try:
+                    await _auto_reply_pending_letters(_wid, _tid, _pending)
                 except Exception as exc:  # noqa: BLE001 回发通道绝不抛出
                     logger.error("[S4] 自动回发通道异常 target=%s: %s", _tid, exc)
                 return
@@ -1101,4 +1404,4 @@ async def schedule_card_message_triggers(state: RunState) -> None:
             else:
                 logger.warning("[K3] 调起回合返回形态未知 target=%s: %r", _tid, resp)
 
-        asyncio.create_task(_watch_pending(task, work_id, target_id))
+        _spawn_tracked(_watch_pending(task, work_id, target_id))

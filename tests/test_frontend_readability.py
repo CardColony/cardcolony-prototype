@@ -72,10 +72,21 @@ def test_u2_no_px_line_height():
 
 
 def test_u3_line_width_capped():
-    """U-3：`max-width: 82%` 归零、`min(82%, 720px)` 恰 5 处。"""
+    """U-3：720px 固定气泡机制归零、统一内容列带门槛（min(88%, 62em)）。
+
+    [对话区会话流样式 2026-10-12] .msg/.step-row/.sys-* 全部退役 min(82%, 720px)，
+    改由 .msgs 统一内容列约束——U-3 立法意图（行宽必有上界）由 em 上界继承，
+    测试断言同步为新机制。
+    [2026-10-12 23:18 用户裁定] 底卡压缩时文字区少缩、先裁两侧留白 →
+    .msgs 百分比 70%→82%，断言同步。
+    [对话流全消息类型 2026-10-13 用户 00:07] 「模型消息整体的宽度，再宽一点，
+    现在太局促了」→ 上界 48em→62em、百分比 82%→88%，断言同步。
+    """
     t = CSS.read_text(encoding="utf-8")
     assert t.count("max-width: 82%") == 0
-    assert t.count("min(82%, 720px)") == 5
+    assert t.count("min(82%, 720px)") == 0
+    assert t.count("min(82%, 48em)") == 0
+    assert t.count("min(88%, 62em)") >= 1
 
 
 def test_u4_no_negative_margin_tighten():

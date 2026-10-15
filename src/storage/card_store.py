@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
-"""卡片存储。卡片文件 = YAML Front Matter + Markdown 正文（四区）。
+"""卡片存储。卡片 ＝ SQLite 库里一行（正文三块各占独立列），不再是 md 文件。
 
-全局铁律：任何代码路径都不允许删除 cards\\ 或 sessions\\ 下的文件。
+[卡片存储迁移 SQLite 2026-10-14] 库是卡片与影子的**唯一真相**：库形态、表结构、
+并发模型见 ``src/storage/card_db.py``。本模块只写 SQL 与业务规则，不碰路径常量。
 
-Phase 7：卡片归属于 work，路径 = works/{work_id}/cards/card_NNN.md。
-序号（NNN）在每个 work 内独立自增。
+全局铁律（改写后）：删卡只走 :func:`delete_card` 一个口；``sessions/`` 下的文件
+仍受原铁律保护（任何代码路径都不允许删除）。``cards/`` 目录已不存在。
+
+Phase 7 沿革：卡片归属于 work；序号（NNN）在每个 work 内独立自增——现由库内
+``meta`` 表的 ``seq`` 承载，发号与建卡同事务。
 """
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import canvas_store, data_snapshot, work_store
+from . import card_db, canvas_store, data_snapshot, work_store
 from .hash_utils import (
     OLD_KEY_TO_NEW,
     apply_hash,
@@ -238,12 +242,16 @@ def _save_card_id_seq(work_id: str, state: dict[str, Any]) -> None:
 
 
 def _next_seq(work_id: str) -> int:
-    """[T07-1-1] 编号来源改「发放式」：从序列载体尾部取下一个号。
+    """[T07-1-1] 编号来源改「发放式」：库内 meta.seq 的下一个号。
 
-    输出形态保持现有 card_{seq:03d}（格式化在 create_card；D-01「沿用现有形态」，
-    现有形态经实读为三位数——任务书 %06d 表述系转录误差，见执行回报）。
+    [卡片存储迁移 SQLite] 序列载体从 ``.card_id_seq.json`` 换成库内 ``meta`` 表
+    （库自包含：备份一个文件即完整；发号与建卡同事务，见 create_card）。
+    输出形态保持现有 card_{seq:03d}（格式化在 create_card）。
     """
-    return _load_card_id_seq(work_id)["seq"] + 1
+    def _fn(conn: Any) -> int:
+        return card_db.next_seq(conn)
+
+    return int(card_db.read_sync(work_id, _fn, 0) or 0)
 
 
 # [T07 打点] 判据源切换观测：每处首次调用记新旧对比行；不一致升级 warning
@@ -277,7 +285,7 @@ def _normalize_parent(work_id: str, parent: Optional[str], card_type: str) -> st
     if parent is None or parent == "":
         return wid
     # 卡不存在回退 work_card_id
-    if not _card_path(work_id, parent).exists():
+    if not card_exists(work_id, parent):
         logger.warning("parent 指向不存在的卡 %s，回退 work_card_id", parent)
         return wid
     return parent
@@ -436,19 +444,36 @@ def _append_history_line(content: str, line: str) -> str:
 # 子树遍历（供防环、权限、目录使用）
 # ============================================================
 
+def _meta_from_row(work_id: str, row: Any) -> dict[str, Any]:
+    """库行 → meta（补旧读侧的两处兜底：空 card_type→"线索"、缺 parent→根卡）。
+
+    [卡片存储迁移 SQLite] 与旧 ``parse_front_matter`` 读侧同口径，只是来源换成列。
+    """
+    meta = card_db.row_to_meta(row)
+    if not meta.get("card_type"):
+        meta["card_type"] = "线索"  # 旧卡兜底
+    if meta.get("parent") is None:
+        meta["parent"] = work_store.work_card_id_of(work_id)
+    return meta
+
+
 def _meta_of(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
-    """轻量读 meta（不校验哈希、不锁），卡片不存在返回 None。"""
-    p = _card_path(work_id, card_id)
-    if not p.exists():
-        return None
+    """轻量读 meta（不锁、不校验），卡片不存在返回 None。
+
+    **同步**（供 _write_gate / _subtree_ids / toolcard 等同步调用方）：单条索引
+    SELECT，与改造前的同步文件读同量级；异步写路径不经过它。
+    """
+    def _fn(conn: Any) -> Optional[dict[str, Any]]:
+        row = card_db.get_card_row(conn, card_id)
+        if row is None:
+            return None
+        return _meta_from_row(work_id, row)
+
     try:
-        meta, _ = parse_front_matter(p.read_text(encoding="utf-8"))
-        if not meta.get("card_type"):
-            meta["card_type"] = "线索"  # 旧卡兜底
-        if "parent" not in meta:
-            meta["parent"] = work_store.work_card_id_of(work_id)
-        return meta
-    except Exception:
+        return card_db.read_sync(work_id, _fn, None)
+    except card_db.CardsNotMigratedError:
+        raise
+    except Exception:  # noqa: BLE001 与旧行为一致：读不动＝没有
         return None
 
 
@@ -638,7 +663,7 @@ def _write_gate(work_id: str, action: str, card_id: str,
         if not owner:
             return {"error": "工具卡必须带 owner_card_id"
                              f"（指向调用它的子项目卡）"}
-        if not _card_path(work_id, owner).exists():
+        if not card_exists(work_id, owner):
             return {"error": f"owner_card_id 指向的卡不存在: {owner}"}
         owner_meta = _meta_of(work_id, owner) or {}
         owner_type = str(owner_meta.get("card_type", "") or "")
@@ -654,14 +679,11 @@ def _write_gate(work_id: str, action: str, card_id: str,
                              f"不能作工具卡 owner"}
     # ---------- 工具卡不可有子卡 ----------
     if card_type == "tool":
-        cd = _cards_dir(work_id)
-        if cd.exists():
-            for p in cd.glob("card_*.md"):
-                if p.stem == card_id:
-                    continue
-                m2 = _meta_of(work_id, p.stem)
-                if m2 and m2.get("parent") == card_id:
-                    return {"error": f"工具卡不可有子卡（{p.stem} 挂在它下面）"}
+        for other_id, other in iter_card_metas(work_id).items():
+            if other_id == card_id:
+                continue
+            if other.get("parent") == card_id:
+                return {"error": f"工具卡不可有子卡（{other_id} 挂在它下面）"}
 
     # ---------- 闸 4：状态机迁移 ----------
     desired = str(payload.get("state", "") or "")
@@ -684,32 +706,47 @@ def cards_dir(work_id: str) -> Path:
 
 def card_exists(work_id: str, card_id: str) -> bool:
     """卡片存在性检查（公开接口，供跨层调用方判存在）。"""
-    return _card_path(work_id, card_id).exists()
+    def _fn(conn: Any) -> bool:
+        return card_db.get_card_row(conn, card_id) is not None
+
+    return bool(card_db.read_sync(work_id, _fn, False))
 
 
 def iter_card_metas(work_id: str) -> dict[str, dict[str, Any]]:
     """轻量收集 work 下所有正卡的 meta（公开接口，供跨层调用方批量读）。
 
-    返回 {card_id: meta}；meta 含 parent/card_type/relations 等 front matter 字段，
-    并补回 card_id 键（文件名即 id，meta 文件内不重复存）。
+    返回 {card_id: meta}；meta 含 parent/card_type/relations 等字段，
+    并补回 card_id 键（id 即主键，meta 内不重复存）。
     卡片不存在或读取失败返回空 dict。
+
+    **同步**（公开契约不改）：单条 SELECT 全表，与改造前的同步目录扫描同量级。
     """
-    cards: dict[str, dict[str, Any]] = {}
-    cd = _cards_dir(work_id)
-    if not cd.exists():
-        return cards
-    for path in cd.glob("card_*.md"):
-        cid = path.stem
-        m = _meta_of(work_id, cid)
-        if m is None:
-            continue
-        m["card_id"] = cid
-        cards[cid] = m
-    return cards
+    def _fn(conn: Any) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for row in conn.execute("SELECT * FROM cards ORDER BY card_id"):
+            cid = row["card_id"]
+            m = _meta_from_row(work_id, row)
+            m["card_id"] = cid
+            out[cid] = m
+        return out
+
+    return card_db.read_sync(work_id, _fn, {}) or {}
 
 
 def _subtree_ids(work_id: str, root_id: str) -> set[str]:
-    """root_id 整棵子树（含 root 自身）。"""
+    """root_id 整棵子树（含 root 自身）。
+
+    [卡片存储迁移 SQLite] 一次拉 parent 映射再在内存里走（等价移植；原为
+    「每层 glob 全目录」的 O(N²)）。
+    """
+    def _fn(conn: Any) -> dict[str, Any]:
+        return {r["card_id"]: r["parent"]
+                for r in conn.execute("SELECT card_id, parent FROM cards")}
+
+    parents: dict[str, Any] = card_db.read_sync(work_id, _fn, {}) or {}
+    children: dict[str, list[str]] = {}
+    for cid, p in parents.items():
+        children.setdefault(p, []).append(cid)
     result: set[str] = set()
     stack = [root_id]
     while stack:
@@ -717,16 +754,7 @@ def _subtree_ids(work_id: str, root_id: str) -> set[str]:
         if cid in result:
             continue
         result.add(cid)
-        # 找 parent == cid 的所有卡
-        cd = _cards_dir(work_id)
-        if cd.exists():
-            for path in cd.glob("card_*.md"):
-                child_id = path.stem
-                if child_id in result:
-                    continue
-                m = _meta_of(work_id, child_id)
-                if m and m.get("parent") == cid:
-                    stack.append(child_id)
+        stack.extend(children.get(cid, ()))
     return result
 
 
@@ -770,9 +798,13 @@ async def create_card(
     [卡片分类基座 T1] 新增两个**可选**参数（默认空串＝行为与改造前逐字一致）：
       - project_class：仅根卡可写；决定本树 L1 词表作用域
       - owner_card_id：仅工具卡必填；指向调用它的子项目卡
-    空串 ＝不落盘该字段（存量兼容），非空才写入 front matter。
+    空串 ＝不落库该字段（存量兼容），非空才写入。
 
-    任何一步失败：保留已创建的文件，记日志返回错误。
+    [卡片存储迁移 SQLite] 卡片进库：正文三块各占独立列；发号（meta.seq）与建卡
+    同一事务（避免并发重号）；不再建 ``cards/`` 目录、不再写卡片 md。
+    会话文件仍写 ``sessions/session_NNN.md``（会话不进库，方案 §三决策 2）。
+
+    任何一步失败：保留已写下的库行/会话文件，记日志返回错误。
     """
     # work 必须存在
     if work_store.read_work(work_id) is None:
@@ -785,20 +817,27 @@ async def create_card(
             card_type = _default_child_type(work_id)
         resolved_type = _resolve_card_type(card_type)
         resolved_parent = _normalize_parent(work_id, parent, resolved_type)
-        _cards_dir(work_id).mkdir(parents=True, exist_ok=True)
         _sessions_dir(work_id).mkdir(parents=True, exist_ok=True)
-        # [T07-1-1/1-2] 发放式编号：序列锁内取号→写卡→发号成功立即写盘
-        seq_path = _card_id_seq_path(work_id)
-        seq_lock = _get_lock(seq_path)
-        await _acquire(seq_lock)
-        try:
-            state = _load_card_id_seq(work_id)
-            seq = state["seq"] + 1
+        now = _now_iso()
+        # [S1-2②] 区头检测：入参拼正文，含任一区头则原样用，否则用骨架常量
+        candidate = "\n\n".join(p for p in (charter, conclusion) if p and p.strip())
+        has_heading = any(ln.strip().startswith("## ") for ln in candidate.splitlines())
+        body_seed = candidate if has_heading else NEW_CARD_SKELETON
+        sections = split_body_sections(body_seed)
+        body = {
+            "mission": sections.get("mission", ""),
+            "status_block": sections.get("status_block", ""),
+            "rulings": sections.get("rulings", ""),
+        }
+        history_line = f"- [{now}] 卡片创建"
+
+        def _fn(conn: Any) -> tuple[str, Any, str, int]:
+            # [卡片存储迁移 SQLite] 发号与建卡同事务：seq 取号 → 建卡 → 写回 seq，
+            # 全部在一次 BEGIN IMMEDIATE 内（方案 §三决策 4）。
+            seq = card_db.next_seq(conn)
             card_id = f"card_{seq:03d}"
-            scan_max_before = _scan_max_seq(work_id)  # 旧推算路径对账值
             session_name = _session_name(card_id)
-            now = _now_iso()
-            meta = {
+            meta: dict[str, Any] = {
                 "title": title,
                 "source": source,
                 "card_type": resolved_type,
@@ -806,71 +845,50 @@ async def create_card(
                 "tags": [],
                 "relations": [],
                 "session_ref": f"sessions/{session_name}",
-                # [卡片分类基座 T1] 新分类字段：非空才落盘（空串＝不写，存量兼容）
+                # [卡片分类基座 T1] 新分类字段：非空才落库（空串＝不写，存量兼容）
                 **({"project_class": project_class} if project_class else {}),
                 **({"owner_card_id": owner_card_id} if owner_card_id else {}),
-                # [S1·R-04] 新卡默认 active（与注册表 state_machine.initial 对齐，
-                # card_type_registry.json L112-120；闸4 create 时 desired==cur 放行）
+                # [S1·R-04] 新卡默认 active（与注册表 state_machine.initial 对齐）
                 "state": "active",
-                # [S4-1/S4-2] methodology_refs / pending_sync 已删（死字段，
-                # R8 全库复核无业务读取方）。_render_card 的 FM 行同步删除——
-                # 只删 meta 初始化而留着 FM 行，字段仍会被 meta.get 默认值写回，
-                # 等于没删。存量卡下次写入时这两行自然消失（字段死，无读取方）。
-                # [权限底座重做 2026-10-12 · 裁定 4] 权限固化：建卡算一次写死
-                # 进卡。project_class 取法＝根卡用入参（此刻卡还没落盘，读不到
-                # 自己），子卡从本树根卡继承（project_class 只挂根卡）。
+                # [权限底座重做 2026-10-12 · 裁定 4] 权限固化：建卡算一次写死进卡。
+                # project_class 取法＝根卡用入参（此刻卡还没落盘，读不到自己），
+                # 子卡从本树根卡继承（project_class 只挂根卡）。
                 **_perm_fields(project_class or _root_project_class(work_id),
                                resolved_type),
                 "created_at": now,
                 "updated_at": now,
             }
-            history_lines = [f"- [{now}] 卡片创建"]
-            # [T-0007 补丁] 写路径唯一门·create 闸位（no-op 放行）。
-            # 插在写盘前、参数校验后；payload 传待写 meta（后续 T3 校验 card_type 用）。
+            # [T-0007 补丁] 写路径唯一门·create 闸位。插在建卡前、参数校验后。
             gate = _write_gate(work_id, "create", card_id, dict(meta))
             if gate is not None:
-                return gate
-            # [S1-2②] 区头检测：入参拼正文，含任一区头则原样用，否则用骨架常量
-            candidate = "\n\n".join(p for p in (charter, conclusion) if p and p.strip())
-            has_heading = any(
-                ln.strip().startswith("## ") for ln in candidate.splitlines()
+                return ("gate", gate, card_id, seq)
+            card_db.insert_card(
+                conn, {"card_id": card_id, "work_id": work_id, **meta}, body
             )
-            body_seed = candidate if has_heading else NEW_CARD_SKELETON
-            sections = split_body_sections(body_seed)
-            content = _render_card(
-                meta, sections["mission"], sections["status_block"],
-                sections["rulings"], history_lines, form="new",
-            )
-            content = apply_hash(content)
+            card_db.append_history(conn, card_id, history_line, now)
+            card_db.set_meta_value(conn, "seq", str(seq))
+            _append_issued(conn, card_id)
+            card_db.bump_rev(conn)
+            return ("ok", card_id, card_id, seq)
 
-            card_path = _card_path(work_id, card_id)
-            lock = _get_lock(card_path)
-            await _acquire(lock)
-            try:
-                card_path.write_text(content, encoding="utf-8")
-                session_path = _sessions_dir(work_id) / session_name
-                if not session_path.exists():
-                    session_path.write_text(
-                        f"<!-- session: {card_id}, created: {now} -->\n", encoding="utf-8"
-                    )
-            finally:
-                lock.release()
+        outcome, payload, card_id, seq = await card_db.run_write(work_id, _fn)
+        if outcome == "gate":
+            return payload
 
-            # [T07-1-2] 发号成功：立即写盘
-            state["seq"] = seq
-            state["issued"].append(card_id)
-            _save_card_id_seq(work_id, state)
-        finally:
-            seq_lock.release()
-        # [T07 打点] 编号发放：新旧两路取值各记一次（对账）
-        logger.info(
-            "编号发放: work=%s card=%s 新路径(序列取值)=%d 旧路径(推算值)=%d",
-            work_id, card_id, seq, scan_max_before + 1,
-        )
+        # 会话文件仍为文件（会话不进库）；锁内不需要——路径唯一由 card_id 保证
+        session_path = _sessions_dir(work_id) / _session_name(card_id)
+        try:
+            if not session_path.exists():
+                session_path.write_text(
+                    f"<!-- session: {card_id}, created: {now} -->\n", encoding="utf-8"
+                )
+        except OSError as exc:  # noqa: BLE001 会话文件写失败不阻断建卡
+            logger.warning("会话文件创建失败（不阻断建卡）%s: %s", session_path, exc)
+
+        logger.info("编号发放: work=%s card=%s seq=%d", work_id, card_id, seq)
 
         await canvas_store.update_cache(work_id)
-        # [数据与代码分家 2026-10-03] 不再 git 提交运行数据（分支操作曾整体回退 works/），
-        # 改由独立快照目录留痕（与代码仓库物理分离）。
+        # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
         await data_snapshot.snapshot(f"[snapshot][{work_id}] create: {card_id}")
         # [影子卡 2026-10-03] 建正卡即派生影子（一正一影，R-03）；失败只记日志不阻断建卡
         from . import shadow_store
@@ -882,71 +900,52 @@ async def create_card(
     except CardLockedError:
         raise
     except Exception as exc:
-        logger.error("create_card 失败（已创建文件保留）: %s", exc)
-        # [T07 打点] 失败时记序列文件状态与目录最大号（对账）
-        try:
-            _st = _load_card_id_seq(work_id)
-            logger.error(
-                "编号序列状态: work=%s seq=%s issued_count=%d 目录最大号=%d",
-                work_id, _st["seq"], len(_st["issued"]), _scan_max_seq(work_id),
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        logger.error("create_card 失败（已写下的库行保留）: %s", exc)
         return {"error": str(exc)}
 
 
-async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
-    """读卡并校验哈希；检测到外部修改则按规格两步 git 提交并回写。"""
-    card_path = _card_path(work_id, card_id)
-    if not card_path.exists():
-        raise CardNotFoundError(f"卡片不存在: {card_id}")
-
-    lock = _get_lock(card_path)
-    await _acquire(lock)
+def _append_issued(conn: Any, card_id: str) -> None:
+    """把新号记进 meta.issued（审计用，与旧 .card_id_seq.json 的 issued 同义）。"""
+    raw = card_db.get_meta_value(conn, "issued", "[]")
     try:
-        raw = card_path.read_text(encoding="utf-8")
-        meta, _ = parse_front_matter(raw)
-        # 双保险兜底（迁移已物理写入，这里防御旧格式文件）
-        if not meta.get("card_type"):
-            meta["card_type"] = "线索"
-        if "parent" not in meta:
-            meta["parent"] = work_store.work_card_id_of(work_id)
+        issued = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+    except (TypeError, ValueError):
+        issued = []
+    if not isinstance(issued, list):
+        issued = []
+    issued.append(card_id)
+    card_db.set_meta_value(conn, "issued", json.dumps(issued, ensure_ascii=False))
 
-        stored = meta.get("content_hash", "")
-        computed = calc_card_hash(raw)
-        if computed != stored:
-            # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
-            await data_snapshot.snapshot(f"[snapshot][{work_id}] external_modification_raw: {card_id}")
-            now = _now_iso()
-            raw = _append_history_line(raw, f"- [{now}] [外部修改]")
-            raw = replace_fm_field(raw, "updated_at", f"updated_at: {_q(now)}\n")
-            raw = apply_hash(raw)
-            card_path.write_text(raw, encoding="utf-8")
-            await data_snapshot.snapshot(f"[snapshot][{work_id}] external_modification_logged: {card_id}")
-            meta, _ = parse_front_matter(raw)
-            if not meta.get("card_type"):
-                meta["card_type"] = "线索"
-            if "parent" not in meta:
-                meta["parent"] = work_store.work_card_id_of(work_id)
-    finally:
-        lock.release()
 
-    _, body = parse_front_matter(raw)
-    sections = split_body_sections(body)
-    meta["card_id"] = card_id  # 补回 card_id（文件名即 id，meta 文件内不重复存）
-    meta.pop("status", None)  # [phase8.3] 二态废除：存量卡的 status 读侧容忍但不外露
-    # [卡片信息结构改造 S2-5] body 键名 → 新四键。_form 是拆分器第三键，
-    # **不进 body**（S2-3）——它是渲染决策用的中间量，不对外暴露。
-    return {
-        "meta": meta,
-        "body": {
-            "mission": sections["mission"],
-            "status_block": sections["status_block"],
-            "rulings": sections["rulings"],
-            "history": _parse_history_lines(sections["history_text"]),
-        },
-        "raw": raw,
-    }
+async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
+    """读卡（库查）。
+
+    [卡片存储迁移 SQLite] 返回契约保留 ``{meta, body:{mission,
+    status_block,rulings,history}}``（history 为行列表）；**``raw`` 退役**——它原是「md 整篇
+    文本」，与「区域独立、不留 md」相悖（方案 §三决策 1）。
+    哈希校验与「外部修改」回写一并退役（不留 md，不让手改后失去对象）。
+    """
+    def _fn(conn: Any) -> Optional[dict[str, Any]]:
+        row = card_db.get_card_row(conn, card_id)
+        if row is None:
+            return None
+        meta = _meta_from_row(work_id, row)
+        meta["card_id"] = card_id  # 补回 card_id（id 即主键，meta 内不重复存）
+        meta.pop("status", None)   # [phase8.3] 二态废除：存量 status 读侧不外露
+        return {
+            "meta": meta,
+            "body": {
+                "mission": row["mission"] or "",
+                "status_block": row["status_block"] or "",
+                "rulings": row["rulings"] or "",
+                "history": card_db.get_history(conn, card_id),
+            },
+        }
+
+    result = await card_db.run_read(work_id, _fn, None)
+    if result is None:
+        raise CardNotFoundError(f"卡片不存在: {card_id}")
+    return result
 
 
 async def update_card(
@@ -959,8 +958,8 @@ async def update_card(
 
     updates 支持键（含 Phase 7 扩展）：
       title/tags/relations/session_ref/card_type/parent
-      mission/status_block/rulings（正文三块·新键）
-      charter/conclusion/rejections（正文三块·旧键，保留兼容，归一到新键后落同一处）
+      mission/status_block/rulings（正文块·新键）
+      charter/conclusion/rejections（正文块·旧键，保留兼容，归一到新键后落同一处）
 
     [权限底座重做 2026-10-12 · 用户裁定 2] **类型不可变**：updates 里出现
     card_type / project_class 一律返回 {"error": ...}，卡面零改动。这使得下方
@@ -982,11 +981,10 @@ async def update_card(
     # [S2-7] 旧键→新键归一（只此一处；下游一律只见新键）
     updates = _normalize_update_keys(updates)
 
-    card_path = _card_path(work_id, card_id)
-    if not card_path.exists():
+    if not card_exists(work_id, card_id):
         raise CardNotFoundError(f"卡片不存在: {card_id}")
 
-    # 先读现状（不锁，用于防环/根卡保护判定）
+    # 先读现状（用于防环/根卡保护判定）
     current = await read_card(work_id, card_id)
     cur_meta = current["meta"]
     cur_type = str(cur_meta.get("card_type", "") or "")
@@ -1025,7 +1023,7 @@ async def update_card(
         if new_parent and new_parent != "" and _is_descendant(work_id, new_parent, card_id):
             return {"error": "parent 不能指向自身或后代"}
         # parent 卡必须存在，否则回退 work_card_id
-        if new_parent and new_parent != "" and not _card_path(work_id, new_parent).exists():
+        if new_parent and new_parent != "" and not card_exists(work_id, new_parent):
             new_parent = work_store.work_card_id_of(work_id)
             updates["parent"] = new_parent
 
@@ -1036,49 +1034,37 @@ async def update_card(
     if gate is not None:
         return gate
 
-    lock = _get_lock(card_path)
-    await _acquire(lock)
-    try:
-        raw = card_path.read_text(encoding="utf-8")
-        meta, body = parse_front_matter(raw)
-        sections = split_body_sections(body)
-        # [G-3] form 取自被写卡的现状形态（保形：旧卡写后区头仍逐字不变，RD-09）
-        form = effective_form(sections["_form"], body)
+    # [卡片存储迁移 SQLite] 写库：meta 字段 UPDATE ＋ 正文三块 UPDATE ＋ 追加
+    # card_history ＋ rev+1，全部一次事务。落盘键清单与旧 _render_card 的
+    # 「只搬清单内键」同口径——不进清单的键仍被静默丢弃。
+    _UPDATABLE_META_KEYS = (
+        "title", "tags", "relations", "session_ref",
+        "card_type", "parent",
+        "project_class", "owner_card_id", "state",
+        "perms", "perms_version",
+        "toolcard_script", "toolcard_step", "toolcard_round", "toolcard_final",
+        "thinkchain_final",
+    )
 
-        for key in ("title", "tags", "relations", "session_ref",
-                    "card_type", "parent",
-                    # [卡片分类基座 T1] 新分类字段进入落盘循环
-                    "project_class", "owner_card_id", "state",
-                    # [权限底座重做 2026-10-12] 固化权限两进入落盘循环（与
-                    # _render_card 的 FM 行同改：只进循环不渲染＝被静默丢弃）
-                    "perms", "perms_version",
-                    # [工具卡底座 T3 · EC-037] 工具卡状态三字段＋终态声明。
-                    # 进循环＝能被 update_card 写。**不进循环的键会被静默丢弃**
-                    # （本函数只把列表内的键搬进 meta，随后 _render_card 按固定
-                    # 清单重渲 front matter）——所以「加字段」必须这两处同改。
-                    "toolcard_script", "toolcard_step", "toolcard_round",
-                    "toolcard_final",
-                    # [迭代二 S1] 思维链板终态声明（thinkchain/board.finalize_board
-                    # 写入；不进本清单即被静默丢弃——与渲染行两处同改）。
-                    "thinkchain_final"):
-            if key in updates:
-                meta[key] = updates[key]
-        mission = updates.get("mission", sections["mission"])
-        status_block = updates.get("status_block", sections["status_block"])
-        rulings = updates.get("rulings", sections["rulings"])
-
+    def _fn(conn: Any) -> Optional[str]:
+        row = card_db.get_card_row(conn, card_id)
+        if row is None:
+            return None
         now = _now_iso()
-        meta["updated_at"] = now
-        history_lines = _parse_history_lines(sections["history_text"])
-        history_lines.append(f"- [{now}] {history_note}")
+        meta_patch = {k: updates[k] for k in _UPDATABLE_META_KEYS if k in updates}
+        meta_patch["updated_at"] = now
+        body_patch = {
+            "mission": updates.get("mission", row["mission"] or ""),
+            "status_block": updates.get("status_block", row["status_block"] or ""),
+            "rulings": updates.get("rulings", row["rulings"] or ""),
+        }
+        card_db.update_card_row(conn, card_id, meta_patch, body_patch)
+        card_db.append_history(conn, card_id, f"- [{now}] {history_note}", now)
+        card_db.bump_rev(conn)
+        return now
 
-        content = _render_card(
-            meta, mission, status_block, rulings, history_lines, form=form,
-        )
-        content = apply_hash(content)
-        card_path.write_text(content, encoding="utf-8")
-    finally:
-        lock.release()
+    if await card_db.run_write(work_id, _fn) is None:
+        raise CardNotFoundError(f"卡片不存在: {card_id}")
 
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
@@ -1091,7 +1077,7 @@ async def update_card(
 
 
 async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
-    """[用户删卡 2026-10-02] 删除卡片文件＋对应 session 文件，git 落档。
+    """[用户删卡 2026-10-02] 删除卡片（库行 ＋ 修改历史）＋对应 session 文件。
 
     结构性防护（机械判据，不判内容）：
     - 剧本不存在 → {"error": ...}
@@ -1099,43 +1085,40 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     - card_id == work_card_id（剧本根卡）→ CardDeleteDeniedError（403 语义）
     - 有子卡（parent 链上任何卡挂它）→ CardDeleteDeniedError（防孤儿）
 
-    删除顺序：锁内移除 card .md → 锁外移除 session .md → canvas 重建 → git 提交。
-    中途失败：已删文件不恢复（git 可回溯），错误记日志返回。
+    [卡片存储迁移 SQLite] 删除顺序：库内 DELETE（卡行＋历史＋影子）→ 会话文件
+    → canvas 重建 → 快照。**删卡只走本函数一个口**（改写后的铁律）。
     """
     if work_store.read_work(work_id) is None:
         return {"error": f"剧本不存在: {work_id}"}
     if card_id == work_store.work_card_id_of(work_id):
         raise CardDeleteDeniedError(f"剧本根卡不可删除: {card_id}")
 
-    card_path = _card_path(work_id, card_id)
-    if not card_path.exists():
+    if not card_exists(work_id, card_id):
         raise CardNotFoundError(f"卡片不存在: {card_id}")
 
     # 子卡防护：任何卡的 parent 指向 card_id → 拒删
-    cd = _cards_dir(work_id)
-    if cd.exists():
-        for path in cd.glob("card_*.md"):
-            other_id = path.stem
-            if other_id == card_id:
-                continue
-            m = _meta_of(work_id, other_id)
-            if m and m.get("parent") == card_id:
-                raise CardDeleteDeniedError(
-                    f"存在子卡 {other_id}，先删子卡或改挂他卡"
-                )
+    for other_id, m in iter_card_metas(work_id).items():
+        if other_id == card_id:
+            continue
+        if m.get("parent") == card_id:
+            raise CardDeleteDeniedError(
+                f"存在子卡 {other_id}，先删子卡或改挂他卡"
+            )
 
     # [T-0007 补丁] 写路径唯一门·delete 闸位（no-op 放行）。
-    # 插在所有结构性防护之后、实际 unlink 之前——保证闸位放行后才动文件。
+    # 插在所有结构性防护之后、实际删除之前——保证闸位放行后才动数据。
     gate = _write_gate(work_id, "delete", card_id, {})
     if gate is not None:
         return gate
 
-    lock = _get_lock(card_path)
-    await _acquire(lock)
-    try:
-        card_path.unlink()
-    finally:
-        lock.release()
+    def _fn(conn: Any) -> int:
+        n = card_db.delete_card_row(conn, card_id)
+        if n:
+            card_db.bump_rev(conn)
+        return n
+
+    if not await card_db.run_write(work_id, _fn):
+        raise CardNotFoundError(f"卡片不存在: {card_id}")
 
     session_path = _session_path(work_id, card_id)
     try:
@@ -1203,28 +1186,19 @@ async def derive_ending(work_id: str) -> Optional[str]:
 
 
 async def _append_relation(work_id: str, card_id: str, rel: dict[str, Any]) -> None:
-    """向指定卡的 relations 追加一条 relation（不重复），刷新哈希后写回。"""
-    card_path = _card_path(work_id, card_id)
-    lock = _get_lock(card_path)
-    await _acquire(lock)
-    try:
-        raw = card_path.read_text(encoding="utf-8")
-        meta, body = parse_front_matter(raw)
-        sections = split_body_sections(body)
-        rels = list(meta.get("relations") or [])
-        if not any(r.get("target") == rel.get("target") and r.get("type") == rel.get("type") for r in rels):
-            rels.append(rel)
-            meta["relations"] = rels
-            history_lines = _parse_history_lines(sections["history_text"])
-            now = _now_iso()
-            history_lines.append(f"- [{now}] 追加 relation: {rel}")
-            # [G-2/G-3] 第三调用点：取键已随拆分器归一，form 取自现状形态
-            content = _render_card(
-                meta, sections["mission"], sections["status_block"],
-                sections["rulings"], history_lines,
-                form=effective_form(sections["_form"], body),
-            )
-            content = apply_hash(content)
-            card_path.write_text(content, encoding="utf-8")
-    finally:
-        lock.release()
+    """向指定卡的 relations 追加一条 relation（不重复）。"""
+    def _fn(conn: Any) -> None:
+        row = card_db.get_card_row(conn, card_id)
+        if row is None:
+            return
+        rels = list(card_db.row_to_meta(row).get("relations") or [])
+        if any(r.get("target") == rel.get("target")
+               and r.get("type") == rel.get("type") for r in rels):
+            return
+        rels.append(rel)
+        now = _now_iso()
+        card_db.update_card_row(conn, card_id, {"relations": rels, "updated_at": now}, {})
+        card_db.append_history(conn, card_id, f"- [{now}] 追加 relation: {rel}", now)
+        card_db.bump_rev(conn)
+
+    await card_db.run_write(work_id, _fn)

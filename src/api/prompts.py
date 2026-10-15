@@ -35,7 +35,13 @@ from __future__ import annotations
 # t17-1：[卡片编辑机制改造 2026-10-12] 写权限收回：删 edit_card / update_shadow
 # 使用说明——卡片内容不再由模型直接改写；模型只负责起草（draft 接口、无工具），
 # 写入必须经用户按钮确认（commit 接口）。使命块永远不经起草/确认通道。
-BASE_PROMPT_VERSION = "t17-1"
+# t18-1：[判断协议改注入 2026-10-14] 判断协议从 BASE_PROMPT 摘出——不再常驻
+# system；改为「本回合首次模型调用、且本卡无活板」时注入一条（judgment_protocol
+# 事件，第一人称自述）。判断协议文本一字不改，只换承载通道。
+# [卡片区域语义 2026-10-14 · v3] t18-1 → t19-1：read_shadow 工具行删去「跨卡读取
+# 下级影子」的旧说明——影子＝本卡私有，只读本卡自己的影子
+# （用户 17:48／17:56 令）。工具文本变了，版本号随升（回归基准对账）。
+BASE_PROMPT_VERSION = "t19-1"
 
 # [思维链真实落地 2026-10-11] 判断协议（任务书附录 A 全文，一字不改）。
 # 注入 system 区开头；实测 A/B 有效 7/10→10/10。
@@ -56,7 +62,20 @@ JUDGMENT_PROTOCOL = """\
 
 拿不准就拆——拆错了只是多花一轮，硬答会把事做砸。"""
 
-BASE_PROMPT = JUDGMENT_PROTOCOL + "\n\n" + """\
+# [判断协议改注入 2026-10-14] 判断协议的**注入投影**（第一人称自述）：由原文经
+# 三处人称替换派生（你是→我是 / 先判断→我先判断 / 先问自己→我先问自己），
+# 保证「除三处人称外一字不改」——四种判据（①②③④）、直答/拆解条件、收尾句全同。
+# 抬头〔判断协议〕由 api/current_turn 的 JUDGMENT_MARK 承担，不在此。
+JUDGMENT_PROTOCOL_SELF_NARRATIVE = (
+    JUDGMENT_PROTOCOL
+    .replace("你是推演工作台的入口判断器。", "我是推演工作台的入口判断器。")
+    .replace("，先判断该", "，我先判断该")
+    .replace("先问自己：", "我先问自己：")
+)
+
+# [判断协议改注入 2026-10-14] BASE_PROMPT 只保留**使用说明正文**——判断协议已摘出，
+# 改由「本回合首次模型调用、且本卡无活板」时经消息通道注入（见 api/current_turn）。
+BASE_PROMPT = """\
 你在一个卡片系统内工作。以下是系统使用说明。
 
 ## 系统结构
@@ -70,7 +89,7 @@ BASE_PROMPT = JUDGMENT_PROTOCOL + "\n\n" + """\
 - read_memory(card_id?, from_seq?, to_seq?)：下探指定卡（缺省当前卡）的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】），可按块序号锚点区间取回。记忆条目不是卡片正文——正文经 read_card 拉取。
 - create_card(title, parent?, content?)：在你管辖范围内创建新卡。只能建自己的子卡片——parent 缺省＝当前卡自身；给 parent 时该卡必须落在你的子树内，越权会被拒。建卡成功后系统自动派生该卡的影子卡，你不需要管。
 - delete_card(card_id)：删除你管辖范围内指定编号的卡片及其对话。剧本根卡与有子卡的卡不可删除。
-- read_shadow(card_id)：读取指定卡的影子卡全文（card_id 缺省＝当前卡）。上级卡用它查看子卡的影子——子卡影子的更新由此到达上级。
+- read_shadow(card_id)：读取指定卡的影子卡全文（card_id 缺省＝当前卡）。只读本卡自己的影子。
 - link_cards(target_id, type, note)：在当前卡与目标卡之间建立连线（type：先后/关联）。
 - unlink_cards(target_id, type)：解除当前卡上指向目标卡的连线；目标卡已删时也可用（清理悬空线）。type 缺省解除全部指向该目标的连线。
 - list_manuscript() / read_manuscript(chapter) / search_manuscript(keyword)：查阅本项目存档的原始资料。

@@ -1,4 +1,4 @@
-/* esm/nav_find.js —— [S3/T2] 找通道：搜索独立层（R-24）＋最近访问（R-25）。
+﻿/* esm/nav_find.js —— [S3/T2] 找通道：搜索独立层（R-24）＋最近访问（R-25）。
  *
  * R-24 搜索：query 存模块内存（temp 语义：刷新即丢，不动 S2 temp API 面）→
  *   filterCards 纯内存过滤 snapshot.projects[].cards[]（title 包含、大小写不敏感）→
@@ -9,8 +9,7 @@
  * R-25 最近访问：storageGet/storageSet 键 nav.recent.v1；{wid,cid,title,ts} 上限 10 条、
  *   同卡去重更新 ts、倒序；UI＝查找面板「最近」区，点击直达。
  */
-import { escapeHtml } from "./util.js";
-import { storageGet, storageSet } from "./state_layers.js";
+import { storageGet, storageSet } from "./state_layers.js?v=27";
 
 export const NAV_RECENT_KEY = "nav.recent.v1";
 export const NAV_RECENT_MAX = 10;
@@ -75,103 +74,54 @@ export function createRecent(storage) {
   };
 }
 
-function relTime(ts) {
-  const s = Math.max(0, Math.floor((Date.now() - (ts || 0)) / 1000));
-  if (s < 60) return "刚刚";
-  if (s < 3600) return Math.floor(s / 60) + " 分钟前";
-  if (s < 86400) return Math.floor(s / 3600) + " 小时前";
-  return Math.floor(s / 86400) + " 天前";
-}
-
-/* 面板装配：搜索框（work.html #navTop 内）＋独立结果层（host 内叠加层）。
- * onJump(wid,cid) 由 workspace.js 给（叶子跳转路径）；recent 可注入（测试/mock）。 */
+/* 面板装配（[定稿 2026-10-12] 搜索＝镜片）：
+ * 输入框的每一次输入 → onQuery(q)：由渲染层重投影成「剪枝树」（命中＋其到根的路径），
+ *   命中标黄、清空即原样还原（镜片从不改任何状态，靠的是 query 只活在 temp 内存）。
+ * Esc＝清空并还原；Enter＝打开第一条命中（复用 onJump 的既有跳转路径）。
+ * 为什么不再用独立结果层：那样你得学一套和平时完全不同的样子；剪枝树让你用同一双眼睛。
+ * recent（最近访问）保留为纯记录口（recordRecent），不再是搜索框的默认面板。 */
 export function createNavFind(deps) {
   const input = deps.input;
-  const host = deps.host;
   const store = deps.store;
   const onJump = deps.onJump || (() => {});
+  const onQuery = deps.onQuery || (() => {});
   const recent = deps.recent || createRecent(null);
-  const RESULT_CAP = 50;
 
-  // 独立结果层：navTree 的兄弟叠加层（V3-F2 树 mutation 计 0 的前提）
-  const layer = document.createElement("div");
-  layer.className = "nav-find-layer";
-  layer.style.display = "none";
-  host.appendChild(layer);
-
-  function renderPanel() {
+  function hits() {
     const q = input ? input.value : "";
-    const projects = (store.snapshot.get().projects) || [];
-    layer.innerHTML = "";
-    if (String(q).trim()) {
-      const hits = filterCards(q, projects);
-      const head = document.createElement("div");
-      head.className = "nav-find-head";
-      head.textContent = hits.length ? "结果 " + hits.length : "无匹配卡片";
-      layer.appendChild(head);
-      for (const h of hits.slice(0, RESULT_CAP)) {
-        const row = document.createElement("div");
-        row.className = "nav-find-item";
-        row.innerHTML =
-          `<div class="nav-find-title">${escapeHtml(h.title)}</div>` +
-          `<div class="nav-find-meta">${escapeHtml(h.project)}` +
-          (h.path ? ` · ${escapeHtml(h.path)}` : "") + `</div>`;
-        row.onclick = () => { close(); onJump(h.wid, h.cid); };
-        layer.appendChild(row);
-      }
-    } else {
-      const head = document.createElement("div");
-      head.className = "nav-find-head";
-      head.textContent = "最近访问";
-      layer.appendChild(head);
-      const list = recent.list();
-      if (!list.length) {
-        const empty = document.createElement("div");
-        empty.className = "nav-find-meta nav-find-empty";
-        empty.textContent = "（暂无最近访问）";
-        layer.appendChild(empty);
-      }
-      for (const r of list) {
-        const row = document.createElement("div");
-        row.className = "nav-find-item";
-        row.innerHTML =
-          `<div class="nav-find-title">${escapeHtml(r.title || r.cid)}</div>` +
-          `<div class="nav-find-meta">${escapeHtml(r.wid)} · ${relTime(r.ts)}</div>`;
-        row.onclick = () => { close(); onJump(r.wid, r.cid); };
-        layer.appendChild(row);
-      }
-    }
-    layer.style.display = "";
-    // 贴搜索行下缘（host=.app-nav 为 position:relative 外壳）
-    const navTop = document.getElementById("navTop");
-    if (navTop) layer.style.top = (navTop.offsetTop + navTop.offsetHeight + 4) + "px";
+    return filterCards(q, (store.snapshot.get().projects) || []);
   }
-
-  function close() {
-    layer.style.display = "none";
-    layer.innerHTML = "";
-  }
-  function isOpen() { return layer.style.display !== "none"; }
 
   if (input) {
-    input.addEventListener("input", () => { renderPanel(); });
-    input.addEventListener("focus", () => { renderPanel(); });
+    input.addEventListener("input", () => { onQuery(input.value); });
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { close(); input.blur(); }
-    });
-    // 点击层外（含树上/页面上）收起结果层
-    document.addEventListener("mousedown", (e) => {
-      if (!isOpen()) return;
-      if (layer.contains(e.target) || e.target === input) return;
-      close();
+      if (e.key === "Escape") {
+        input.value = "";
+        onQuery("");
+        input.blur();
+        return;
+      }
+      if (e.key === "Enter") {
+        const list = hits();
+        if (!list.length) return;
+        const h = list[0];
+        input.value = "";
+        onQuery("");
+        input.blur();
+        onJump(h.wid, h.cid);
+      }
     });
   }
 
   return {
-    openPanel: renderPanel,
-    close,
-    isOpen,
-    layer,
+    hits,
+    // 兼容既有调用点（collapseAllKeepPath / locateCurrentCard 里的 navFind.close()）：
+    // 镜片没有独立层可关，改为「清空查询并还原树」。
+    close() {
+      if (input && input.value) input.value = "";
+      onQuery("");
+    },
+    isOpen() { return !!(input && input.value); },
     filterCards,
     recordRecent: (wid, cid, title) => recent.record(wid, cid, title),
   };
