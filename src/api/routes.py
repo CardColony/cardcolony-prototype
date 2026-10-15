@@ -365,43 +365,77 @@ async def get_nav_version():
 async def list_card_messages(work_id: str, limit: int = 200):
     """[迭代四 K4] 卡间消息通知端点（B4「不得静默」的数据面；纯读、零新增存储）。
 
-    聚合全部卡的档案里 `actor` 以 `card:` 开头的块（卡间信），逐条解析正文
-    首行结构化头（card_msg.parse_header），按 ts 倒序、limit 截断。
-    - `type_display` 由**后端**从注册表取（前端零硬编码；未知类型返回 code 本身）；
-    - `format_ok=false` 的块仍在 items 里（不静默丢弃，前端归「格式异常」分组）；
-    - `unread_by_card`：每卡用 find_pending 判 pending（二值，有待处理计 1）；
-    - `card_msg_consumed` 打点落点（任务书 K4⑤「落点须在回报中说明」）：**端点侧**——
-      扫描中发现某卡「有卡间块且已非 pending」（即收件方档案里该信之后已有
-      assistant 回应）＝「信已被处理」的事实时机；以 msg_id 进程内去重
-      （card_msg.mark_consumed）防每次拉取重复留痕，重启清零仅致重打一次
-      （ops 是 append-only 诊断流，可接受；不为此新增任何持久存储）。
-    - 性能如实声明：session_facade.read 的 from_seq 是**后置过滤**语义（io 层
-      总是读整档），「只读尾部」在现 read 实现下省不了 io——性能观察项，
-      与任务书风险表第 4 条同观察面；优化路径（卡级头记最后卡间块 seq）属另一版。
+    **数据源＝inbox 收件箱**（[卡片端点改读收件箱 2026-10-15]）：卡间信已改落
+    收件箱（card_db.append_inbox），本端点随之改读同一张表——待处理从此是**显式
+    状态**（status），不再靠 find_pending 从对话块顺序推导。
+
+    响应结构**逐键不变**（前端零改动的硬依据）：`items` ＋ `unread_by_card`。
+    - `items` ＝ **inbox 全量（含 consumed）∪ 旧档案扫描的 `card:` 块**，按 `ts`
+      倒序、`msg_id` 去重。两源并存是**过渡形态**：旧机制的信没进 inbox，不并
+      进去那 953 条历史就在通知面板里消失（V3）。同一 msg_id 不会双源出现
+      （旧机制的落对话块、新机制的落收件箱），去重只是防御。
+    - `format_ok`：inbox 行都是结构化写入的 ⇒ 恒 `true`；只有旧档案块可能头行
+      解析失败（前端据此归「格式异常」分组，恒真不影响分组正确性）。
+    - `summary` ＝ 剥掉首行机器头行后的正文前 80 字（两源同语义，前端展示不变）。
+    - `type_display` 仍由**后端**从注册表取（前端零硬编码；未知类型返回 code）。
+    - `unread_by_card`：**只**看 inbox 的 `status=pending`，每卡二值计 1，无 pending
+      的卡不出现在字典里。旧机制那套 find_pending 推导在此退役。
+    - `card_msg_consumed` 打点**已移除**（同批）：该打点的语义是「端点侧发现信已
+      被处理」，而 inbox 下 consumed 事实由 `card_db.mark_consumed` 在回合收口时
+      落库（message_runner），端点不必再推断。本端点仍**纯读**——本次是删写、
+      不是加写。（`card_msg.mark_consumed` 函数本体保留，退役归化石清理批次。）
+    - 性能口径如实：inbox 侧是单表索引查询（idx_inbox_work / idx_inbox_target），
+      比旧的逐卡整档扫描省得多；但按上面第一条，**旧扫描仍在跑**（历史源），
+      故总耗时暂未净改善——两源并存到化石清理批次退役旧源为止（不在本任务）。
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     cards = card_store.iter_card_metas(work_id)
     items: list[dict[str, Any]] = []
     unread_by_card: dict[str, int] = {}
-    for cid, meta in cards.items():
+    seen: set[str] = set()
+
+    # ── 源一：收件箱（新机制，含 consumed）────────────────────────────
+    for row in await card_db.list_inbox(work_id):
+        msg_id = str(row.get("msg_id") or "")
+        sender = str(row.get("from_card") or "")
+        target = str(row.get("target_card_id") or "")
+        msg_type = str(row.get("type") or "")
+        # 正文＝剥掉首行机器头行（与旧档案源同语义：summary 不含 [[card-msg …]]）
+        summary = card_msg.strip_header(str(row.get("content") or ""))[:80]
+        items.append({
+            "id": msg_id,
+            "ts": row.get("created_at") or "",
+            "seq": row.get("seq"),
+            "from_card": sender,
+            "from_title": (cards.get(sender) or {}).get("title", ""),
+            "to_card": target,
+            "msg_type": msg_type,
+            "type_display": card_msg.display_of(msg_type),
+            "summary": summary,
+            # inbox 行全部经 _h_send_card_message 结构化写入 ⇒ 无解析失败形态
+            "format_ok": True,
+        })
+        if msg_id:
+            seen.add(msg_id)
+        if row.get("status") == card_db.INBOX_PENDING and target:
+            unread_by_card[target] = 1
+
+    # ── 源二：会话档案里的 card: 块（旧机制，仅存量）──────────────────
+    for cid in cards:
         blocks = await session_facade.read(work_id, cid)
-        card_blocks = [b for b in blocks if str(b.get("actor") or "").startswith("card:")]
-        if card_msg.find_pending(blocks) is not None:
-            unread_by_card[cid] = 1
-        elif card_blocks:
-            last = card_blocks[-1]
-            hdr = card_msg.parse_header(str(last.get("content") or ""))
-            msg_id = (hdr or {}).get("id") or f"unparsed-{cid}-{last.get('seq', '')}"
-            if card_msg.mark_consumed(msg_id):
-                session_ops.ops_log("card_msg_consumed", work_id, cid, {"msg_id": msg_id})
-        for b in card_blocks:
+        for b in blocks:
+            if not str(b.get("actor") or "").startswith("card:"):
+                continue
             content = str(b.get("content") or "")
             hdr = card_msg.parse_header(content)
             fmt_ok = hdr is not None
             sender = str(b.get("from") or "") or (hdr or {}).get("from", "")
+            msg_id = (hdr or {}).get("id") or f"unparsed-{cid}-{b.get('seq', '')}"
+            if msg_id in seen:
+                continue
             items.append({
-                "id": (hdr or {}).get("id") or f"unparsed-{cid}-{b.get('seq', '')}",
+                "id": msg_id,
                 "ts": b.get("ts") or "",
                 "seq": b.get("seq"),
                 "from_card": sender,
@@ -412,6 +446,7 @@ async def list_card_messages(work_id: str, limit: int = 200):
                 "summary": card_msg.strip_header(content)[:80],
                 "format_ok": fmt_ok,
             })
+
     items.sort(key=lambda x: str(x["ts"]), reverse=True)
     if limit >= 0:
         items = items[:limit]
