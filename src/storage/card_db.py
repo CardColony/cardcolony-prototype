@@ -689,6 +689,10 @@ def bump_rev(conn: sqlite3.Connection) -> int:
 #
 # 三个原语：投递（append_inbox）／列待处理（list_pending）／移出（mark_consumed）。
 # 全部**纯新增**——不接线时零影响；行只增不删（consumed 是状态位，不是删除）。
+#
+# [卡片端点改读收件箱 2026-10-15] 补第四个只读原语 `list_inbox`（列**全量**含
+# consumed，可按 work 或按收件卡）：通知端点的历史面靠它——消费掉的消息不该
+# 从面板消失，但也不该再计入未读（status 自行区分，见 routes.list_card_messages）。
 # ---------------------------------------------------------------------------
 
 def _inbox_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -731,6 +735,28 @@ def select_pending(conn: sqlite3.Connection, work_id: str,
     return [_inbox_row_to_dict(r) for r in rows]
 
 
+def select_inbox(conn: sqlite3.Connection, work_id: str,
+                 target_card_id: Optional[str] = None) -> list[dict[str, Any]]:
+    """列该 work 的**全部**消息行（**含 consumed**），按投递序升序。
+
+    与 `select_pending` 的分工：后者只列待处理（进模型视野的那一批），前者
+    列历史全量（通知面板「看历史」的数据面）。`target_card_id=None` 时不限收件卡
+    ——通知端点按 work 聚合未读角标就靠这一次查询（省得逐卡 N 次）。
+
+    [卡片端点改读收件箱 2026-10-15] 纯新增原语；既有三原语一字未动。
+    """
+    if target_card_id:
+        rows = conn.execute(
+            "SELECT * FROM inbox WHERE work_id = ? AND target_card_id = ? ORDER BY seq",
+            (work_id, target_card_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM inbox WHERE work_id = ? ORDER BY seq", (work_id,)
+        ).fetchall()
+    return [_inbox_row_to_dict(r) for r in rows]
+
+
 def set_consumed(conn: sqlite3.Connection, msg_id: str,
                  consumed_at: str = "") -> int:
     """把一条消息移出待处理（status→consumed，**不删行**）。返回受影响行数。"""
@@ -757,6 +783,18 @@ async def list_pending(work_id: str, target_card_id: str) -> list[dict[str, Any]
     """列某收件卡的待处理消息（库不存在／无记录 → 空列表）。"""
     out = await run_read(
         work_id, lambda conn: select_pending(conn, work_id, target_card_id), [],
+    )
+    return out or []
+
+
+async def list_inbox(work_id: str, target_card_id: Optional[str] = None) -> list[dict[str, Any]]:
+    """列该 work 的全部消息行（**含 consumed**；库不存在／无记录 → 空列表）。
+
+    [卡片端点改读收件箱 2026-10-15] 通知端点的数据源原语：看历史用全量
+    （consumed 不删行，故历史天然在），算未读按 `status == INBOX_PENDING` 过滤。
+    """
+    out = await run_read(
+        work_id, lambda conn: select_inbox(conn, work_id, target_card_id), [],
     )
     return out or []
 
