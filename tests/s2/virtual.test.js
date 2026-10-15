@@ -53,20 +53,28 @@ function fakeContainer(clientHeight = 760) {
 /* ---------- V-V1（R-16）：前缀和切片 ---------- */
 
 test("V-V1a mock 2000 行：可视区切片行数恒定（与 2000 无关）", () => {
-  const N = 2000, H = NAV_ROW_HEIGHT, VIEW = 760;   // 760/38＝20 行可视（＋首尾部分可见行）
+  // [对齐样稿 2026-10-12] 视口高必须取行高整数倍——旧值 760 恰是 38×20（整除），
+  // 所以「切片数恒定」成立；行高改 30 后 760÷30 除不尽，行数随对齐在 26/27 浮动，
+  // 该断言就会假红。此处按行高取整，保住原判据（中部切片恒定）的本意。
+  const N = 2000, H = NAV_ROW_HEIGHT;
+  const VIS = Math.ceil(760 / H);
+  const VIEW = VIS * H;                             // ＝行高整数倍（26×30＝780）
   const heights = new Array(N).fill(H);
   const offsets = heights.map(((_acc) => (h) => { const o = _acc.v; _acc.v += h; return o; })({ v: 0 }));
   // 首尾有裁剪（数据用尽/视口顶部），中部三点切片数必须严格相等（恒定铁证）
-  const mid = [1000, 30000, 70000].map(top => {
+  // [对齐样稿 2026-10-12] 探测点必须落在**整行边界**（行索引 × 行高），否则切片数会随
+  // 对齐在 N/N+1 间浮动——那是切片算法的物理正确，不是缺陷。旧值 1000/30000/70000 在
+  // 行高 38 时恰好都落在非边界（r>0），所以侥幸恒定；行高改 30 后必须显式对齐。
+  const mid = [300, 1000, 1700].map(i => i * H).map(top => {
     const { start, end } = sliceRange(offsets, heights, top, VIEW, 1);
     return end - start + 1;
   });
   assert.ok(new Set(mid).size === 1, "中部切片恒定: " + mid.join(","));
-  assert.ok(mid[0] >= 20 && mid[0] <= Math.ceil(VIEW / H) + 3, "切片=可视行+缓冲: " + mid[0]);
+  assert.ok(mid[0] >= VIS && mid[0] <= VIS + 3, "切片=可视行+缓冲: " + mid[0]);
   // 首点：从 0 切，覆盖顶行
   const head = sliceRange(offsets, heights, 0, VIEW, 1);
   assert.equal(head.start, 0);
-  assert.ok(head.end >= Math.ceil(VIEW / H) - 1, "首屏覆盖 20 行: end=" + head.end);
+  assert.ok(head.end >= VIS - 1, "首屏覆盖可视行: end=" + head.end);
   // 末点：视口贴底，覆盖末行（切片可小于可视行数——数据用尽是物理正确）
   const tail = sliceRange(offsets, heights, N * H - VIEW, VIEW, 1);
   assert.equal(tail.end, N - 1, "末行必须在切片内");
@@ -78,10 +86,11 @@ test("V-V1a mock 2000 行：可视区切片行数恒定（与 2000 无关）", (
   assert.equal(sMid.end - sMid.start, lMid.end - lMid.start, "切片行数与总行数无关");
 });
 
-test("V-V1b 滚动到中部：前缀和切片索引正确（含混合行高 30/38）", () => {
-  // 20 项目行(30px) + 1980 卡行(38px) 交替段：前 100 行＝项目/卡交替
+test("V-V1b 滚动到中部：前缀和切片索引正确（含混合行高 44/30）", () => {
+  // 20 项目行(44px) + 1980 卡行(30px) 交替段：前 100 行＝项目/卡交替
+  // [对齐样稿 2026-10-12] 项目行 38→44（上间距 8 ＋ 内容 36）、卡行 38→30。
   const N = 2000;
-  const heights = Array.from({ length: N }, (_, i) => (i % 2 === 0 ? 30 : 38));
+  const heights = Array.from({ length: N }, (_, i) => (i % 2 === 0 ? 44 : 30));
   const offsets = [];
   let acc = 0;
   for (const h of heights) { offsets.push(acc); acc += h; }
@@ -108,6 +117,7 @@ test("V-V1c createVirtualList：DOM 行数恒定（滚动只换内容不涨数�
       key() { return "c:" + i; },
     }));
     const container = fakeContainer(760);
+    const VIS = Math.ceil(760 / NAV_ROW_HEIGHT);   // 可视行数由行高推出（不写死）
     const built = new Map();   // key → build 次数
     const vl = createVirtualList(container, () => rows, NAV_ROW_HEIGHT, {
       renderer: {
@@ -117,19 +127,19 @@ test("V-V1c createVirtualList：DOM 行数恒定（滚动只换内容不涨数�
     });
     const after1 = vl.reslice();
     const n1 = vl.mountedCount();
-    assert.ok(n1 >= 20 && n1 <= 23, "首切可视+缓冲：实际 " + n1);
+    assert.ok(n1 >= VIS && n1 <= VIS + 3, "首切可视+缓冲：实际 " + n1);
     assert.equal(after1.total, N * NAV_ROW_HEIGHT);
     // 滚动到中部：卸载旧行、挂载新行，DOM 总数恒定
     container.scrollTop = 40000;
     const n2 = vl.mountedCount();
-    assert.ok(n2 >= 20 && n2 <= 23, "滚动后仍恒定：实际 " + n2);
-    // build 去重：可视区重复 reslice 不重建已有行
-    container.scrollTop = 40038;
+    assert.ok(n2 >= VIS && n2 <= VIS + 3, "滚动后仍恒定：实际 " + n2);
+    // build 去重：可视区重复 reslice 不重建已有行（步长＝一个行高，滚 2 行）
+    container.scrollTop = 40000 + NAV_ROW_HEIGHT;
     const buildCountBefore = [...built.values()].reduce((a, b) => a + b, 0);
-    container.scrollTop = 40076;
+    container.scrollTop = 40000 + NAV_ROW_HEIGHT * 2;
     const buildCountAfter = [...built.values()].reduce((a, b) => a + b, 0);
     assert.ok(buildCountAfter - buildCountBefore <= 2, "滚动 2 行只新建 ≤2 行");
-    assert.ok(vl.mountedCount() <= 23);
+    assert.ok(vl.mountedCount() <= VIS + 3);
   } finally {
     delete globalThis.document;
   }

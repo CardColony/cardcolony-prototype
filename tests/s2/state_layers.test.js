@@ -53,7 +53,7 @@ test("V-S1a 四区接口齐全（任务书 T1 方法集逐项在场）", () => {
   for (const fn of ["set", "get", "setVersion", "project", "cardsOf", "setChildren", "getChildren", "dropChildren"]) {
     assert.equal(typeof store.snapshot[fn], "function", "snapshot." + fn);
   }
-  assert.equal(NAV_ROW_HEIGHT, 38);
+  assert.equal(NAV_ROW_HEIGHT, 30);   // [对齐样稿 2026-10-12] 卡行 38→30（＝nav.css .nav-card）
 });
 
 test("V-S1b 临时层 set 不落 localStorage（纯内存）", () => {
@@ -210,6 +210,46 @@ test("snapshot：setChildren/getChildren/dropChildren 级联丢弃", () => {
   assert.equal(store.snapshot.getChildren("work_001", "a"), null);
   assert.equal(store.snapshot.getChildren("work_001", "b"), null);
   assert.equal(store.snapshot.getChildren("work_001", "c"), null);
+});
+
+/* ---------- [修·运行中假阳性 2026-10-13] 运行中判据必须带 wid ----------
+ * 事故：card_id 跨项目不唯一（实测 card_002 横跨 8 个项目；全仓 186 张卡只有 43 个
+ * 编号）。旧实现只按 cid 存集合 → work_002 的 card_002 一跑，所有同名卡一起亮，
+ * 症状＝「根本不在运行中的卡片一直显示运行中」。以下三条钉死这个口径。
+ */
+
+test("运行中：键含 wid，同 cid 跨项目互不串扰（假阳性回归）", () => {
+  const { store } = makeStore();
+  // 后端总览只报 work_002 的 card_002 在跑
+  store.temp.setRunningSet([{ work_id: "work_002", card_id: "card_002" }]);
+  assert.equal(store.temp.isRunning("work_002", "card_002"), true, "在跑的卡必须亮");
+  // 同名卡在别的项目：绝不亮——这就是用户看到的那个假阳性
+  assert.equal(store.temp.isRunning("work_001", "card_002"), false, "同名卡不得串扰");
+  assert.equal(store.temp.isRunning("work_008", "card_002"), false, "同名卡不得串扰");
+  // 同项目别的卡：不亮
+  assert.equal(store.temp.isRunning("work_002", "card_003"), false, "异卡不得亮");
+});
+
+test("运行中：setRunningSet 短路判据（无变化 false／有变化 true）", () => {
+  const { store } = makeStore();
+  assert.equal(store.temp.setRunningSet([{ work_id: "w", card_id: "c1" }]), true, "首次＝有变化");
+  assert.equal(store.temp.setRunningSet([{ work_id: "w", card_id: "c1" }]), false, "同集合＝短路");
+  assert.equal(
+    store.temp.setRunningSet([{ work_id: "w", card_id: "c1" }, { work_id: "w2", card_id: "c1" }]),
+    true, "新增＝有变化",
+  );
+});
+
+test("运行中：空列表清空（跑完即灭）＋缺字段条目丢弃（宁可漏标不可误标）", () => {
+  const { store } = makeStore();
+  store.temp.setRunningSet([{ work_id: "w", card_id: "c" }]);
+  assert.equal(store.temp.isRunning("w", "c"), true);
+  store.temp.setRunningSet([]);
+  assert.equal(store.temp.isRunning("w", "c"), false, "跑完必须灭");
+  // 缺 work_id / card_id 的一律不收（旧形态裸 cid 也无法归属到某项目，宁可漏标）
+  assert.equal(store.temp.setRunningSet([{ card_id: "c9" }]), false, "缺 wid 不收（集合未变）");
+  assert.equal(store.temp.setRunningSet(["c9"]), false, "裸字符串不收（集合未变）");
+  assert.equal(store.temp.isRunning("", "c9"), false);
 });
 
 /* ---------- V-S5 配套：storage 包装行为等价 ---------- */

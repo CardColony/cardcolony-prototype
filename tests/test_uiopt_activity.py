@@ -2,13 +2,20 @@
 """[主界面优化 E1] compute_card_activity 单测：own/branch 同源、孤儿支、环防护。"""
 from __future__ import annotations
 
-from src.storage import activity, card_store, work_store
+from src.storage import activity, card_db, card_store, work_store
 
 
 async def _mk(work, title, parent):
     r = await card_store.create_card(work["work_id"], title, "用户直接创建", parent=parent)
     assert "error" not in r, r
     return r["meta"]["card_id"]
+
+
+async def _set_parent(wid: str, cid: str, parent: str) -> None:
+    """直改库内 parent 列（绕过 update_card 的防环闸）——模拟「孤儿/成环」脏状态。"""
+    def _fn(conn):
+        card_db.update_card_row(conn, cid, {"parent": parent}, {})
+    await card_db.run_write(wid, _fn)
 
 
 async def test_branch_activity_own_branch_orphan_cycle(sandbox, work, monkeypatch):
@@ -36,17 +43,12 @@ async def test_branch_activity_own_branch_orphan_cycle(sandbox, work, monkeypatc
 
     # 孤儿卡（parent 指向已删卡）自成一支：branch=own，不向上归并、不抛错
     o = await _mk(work, "孤", root)
-    card_store._card_path(wid, o).write_text(
-        card_store._card_path(wid, o).read_text(encoding="utf-8").replace(
-            f'parent: "{root}"', 'parent: "card_999"'), encoding="utf-8")
+    await _set_parent(wid, o, "card_999")
     m2 = activity.compute_card_activity(wid)
     assert m2[o]["branch"] == m2[o]["own"]
 
-    # 环防护：手工把甲↔乙 parent 互指（front-matter 直改），不无限递归、可解
-    pa = card_store._card_path(wid, a)
-    pb = card_store._card_path(wid, b)
-    pa.write_text(pa.read_text(encoding="utf-8").replace(f'parent: "{root}"', f'parent: "{b}"'),
-                  encoding="utf-8")
+    # 环防护：手工把甲↔乙 parent 互指（直改库列），不无限递归、可解
+    await _set_parent(wid, a, b)
     m3 = activity.compute_card_activity(wid)
     assert m3[a]["branch"] >= m3[a]["own"]
     assert m3[b]["branch"] >= m3[b]["own"]

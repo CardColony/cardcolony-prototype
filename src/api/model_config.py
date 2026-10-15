@@ -55,11 +55,16 @@ DEFAULT_MODEL = "haiku"
 # [模型设置第二步 2026-10-12] 非 gateway 字段：设置界面用的字段，编译进 gateway 前一律弹出。
 # _compile() 把供应商**全部字段**继承展开到模型条目，任何 UI 字段都会随之泄漏进
 # gateway.config（gateway 不认，多余键虽无害，但配置面污染、验收⑦要过）。
-#   thinking —— 已翻译进 extra_body（方言），字段本身 gateway 不认
+#   thinking —— 已翻译进 extra_body / reasoning_effort（方言），字段本身 gateway 不认
 #   note     —— 界面说明文字（原行内注释迁入，用户可编辑）
 #   label    —— 界面显示名（缺省用模型键名）
 #   models_url —— 拉模型列表地址（供应商级；deepseek 无 base_url 需显式给）
-_NON_GATEWAY_KEYS = {"thinking", "note", "label", "models_url"}
+#   reasoning_efforts / default_effort / reasoning_mandatory —— [2026-10-13] 模型录入时
+#       从模型端拉回的思考档位声明（端点给的 UI 元数据），编译进 gateway 前弹出。
+_NON_GATEWAY_KEYS = {
+    "thinking", "note", "label", "models_url",
+    "reasoning_efforts", "default_effort", "reasoning_mandatory",
+}
 
 # 文件头注释块的边界：第一个顶层键（行首非空白、非 # 的 key:）之前的一切。
 # models.yaml 头部 1-13 行是「历史裁定（逐字保留，拆闸铁律）」——用户的永久禁令载体，
@@ -110,7 +115,11 @@ def _compile(raw: dict[str, Any]) -> dict[str, Any]:
         if "protocol" in entry:
             entry["provider"] = entry.pop("protocol")
 
-        # 4. thinking 方言翻译
+        # 4. thinking 方言翻译。thinking 取值分三类：
+        #    - auto        —— 不传思考参数（端点自然行为）
+        #    - on / off    —— 开关语义
+        #    - 具体档位     —— [2026-10-13] 模型录入时从模型端获取的思考强度
+        #                      （如 Nous 的 low/medium/high/max），翻译成端点参数。
         thinking = mdef.get("thinking", "auto")
         # YAML 会把裸 off/on 解析成布尔 False/True，规范化为字符串再判方言
         if thinking is True:
@@ -120,20 +129,26 @@ def _compile(raw: dict[str, Any]) -> dict[str, Any]:
         elif not isinstance(thinking, str):
             thinking = "auto"
         dialect = _THINKING_DIALECT.get(mname)
-        if dialect == "minimax" and thinking == "off":
-            entry.setdefault("extra_body", {})
-            entry["extra_body"]["thinking"] = {"type": "disabled"}
-        elif dialect == "minimax" and thinking == "on":
+        if dialect == "minimax":
             # [探针实测 2026-10-12] MiniMax 的 thinking.type **只接受
             # adaptive / disabled**，传 enabled 直接 400（invalid thinking.type:
             # "enabled" (allowed: adaptive, disabled)）。故「开思考」＝adaptive，
-            # 此前 on 落空到「不传任何参数」＝adaptive 行为，语义碰巧对但属蒙对。
+            # 档位值也一律映射 adaptive（该端点没有分档能力）。
             entry.setdefault("extra_body", {})
-            entry["extra_body"]["thinking"] = {"type": "adaptive"}
-        elif dialect == "qwen" and thinking in ("off", "on"):
+            entry["extra_body"]["thinking"] = {
+                "type": "disabled" if thinking == "off" else "adaptive",
+            }
+        elif dialect == "qwen":
             entry.setdefault("extra_body", {})
-            entry["extra_body"]["enable_thinking"] = (thinking == "on")
-        # 其它（auto / 无方言）→ 不传思考参数
+            entry["extra_body"]["enable_thinking"] = (thinking != "off")
+            # qwen 档位（若端点提供）→ thinking_budget（未实测，暂不注入；见 note）
+        elif thinking not in ("auto", "on", "off"):
+            # 无方言（Nous/智谱/DeepSeek 等）：thinking 是具体档位 → 注入
+            # reasoning_effort（OpenAI 兼容层通用思考强度参数；Nous 实测
+            # supported_parameters 含 "reasoning_effort"）。端点不认则失败由
+            # 网关/调用层暴露，界面录入时只存端点声明过的档位，天然安全。
+            entry["reasoning_effort"] = thinking
+        # 其它（auto / on / off / 无方言）→ 不传思考参数
 
         # 5. 弹出非 gateway 字段（thinking 已翻译进 extra_body，字段本身 gateway 不认；
         #    note/label/models_url 是设置界面字段，继承或覆盖进来的都一并弹出——验收⑦）

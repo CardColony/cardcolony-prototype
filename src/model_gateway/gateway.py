@@ -55,6 +55,8 @@ class ModelGateway:
         stream: bool = False,
         on_chunk: Any = None,
         prior_messages: list[dict[str, Any]] | None = None,
+        turn_tail: list[dict[str, Any]] | None = None,
+        turn_once: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """调用模型，返回 {content, tool_calls, truncated_tool_call, finish_reason, ...}。
 
@@ -113,6 +115,14 @@ class ModelGateway:
                 if prior_messages:
                     messages.extend(prior_messages)
                 messages.append({"role": "user", "content": user_prompt})
+                # [判断协议改注入 2026-10-14] 「仅本次」消息（判断协议投影）——
+                # 追加在用户消息之后、**不进轮槽**；默认 None ⇒ 与改造前逐字一致。
+                if turn_once:
+                    messages.extend(turn_once)
+                # [当前轮注入消息事件 2026-10-14] 本轮尾部消息（注入事件投影）——
+                # 追加在**用户消息之后**、不替代它。默认 None ⇒ 与改造前逐字一致。
+                if turn_tail:
+                    messages.extend(turn_tail)
                 kwargs = {
                     "model": f"{provider}/{model}",
                     "messages": messages,
@@ -397,6 +407,8 @@ class ModelGateway:
                         skip_completion_marker=skip_completion_marker,
                         tools=tools,
                         prior_messages=prior_messages,
+                        turn_tail=turn_tail,
+                        turn_once=turn_once,
                     )
                 self.stats.record(model_name, 0, 0, False)
                 raise ModelError(
@@ -509,6 +521,8 @@ class ModelGateway:
         tools: list[dict[str, Any]] | None = None,
         on_reasoning: Any = None,
         prior_messages: list[dict[str, Any]] | None = None,
+        turn_tail: list[dict[str, Any]] | None = None,
+        turn_once: list[dict[str, Any]] | None = None,
     ):
         """stage_FE4：流式调用（async generator）。
 
@@ -544,6 +558,14 @@ class ModelGateway:
                 if prior_messages:
                     messages.extend(prior_messages)
                 messages.append({"role": "user", "content": user_prompt})
+                # [判断协议改注入 2026-10-14] 「仅本次」消息（判断协议投影）——
+                # 追加在用户消息之后、**不进轮槽**；默认 None ⇒ 逐字同旧。
+                if turn_once:
+                    messages.extend(turn_once)
+                # [当前轮注入消息事件 2026-10-14] 本轮尾部消息（注入事件投影），
+                # 追加在用户消息之后。默认 None ⇒ 与改造前逐字一致。
+                if turn_tail:
+                    messages.extend(turn_tail)
                 kwargs = {
                     "model": f"{provider}/{model}",
                     "messages": messages,
@@ -679,7 +701,7 @@ class ModelGateway:
                     fb = self.config["models"].get("fallback")
                     if fb and model_name != "fallback":
                         if on_status: on_status({"phase": "fallback", "from_model": model_name, "to_model": "fallback"})
-                        async for ev in self.stream_call("fallback", system_prompt, user_prompt, temperature, max_tokens, timeout, on_status, tools, on_reasoning, prior_messages):
+                        async for ev in self.stream_call("fallback", system_prompt, user_prompt, temperature, max_tokens, timeout, on_status, tools, on_reasoning, prior_messages, turn_tail, turn_once=turn_once):
                             yield ev
                         return
                     raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {e}")
@@ -720,6 +742,8 @@ class MockGateway:
         stream: bool = False,
         on_chunk: Any = None,
         prior_messages: list[dict[str, Any]] | None = None,
+        turn_tail: list[dict[str, Any]] | None = None,
+        turn_once: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if on_status:
             try:
@@ -752,7 +776,8 @@ class MockGateway:
 
     async def stream_call(self, model_name, system_prompt, user_prompt, temperature=0.5,
                            max_tokens=None, timeout=None, on_status=None, tools=None,
-                           on_reasoning=None, prior_messages=None):
+                           on_reasoning=None, prior_messages=None, turn_tail=None,
+                           turn_once=None):
         """stage_FE4：mock 流式调用（async generator）。
 
         [信息流重出 Task1/Task4] 签名与真实网关对齐（含 on_reasoning / prior_messages），

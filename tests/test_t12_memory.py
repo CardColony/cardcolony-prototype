@@ -19,7 +19,7 @@ import pytest
 
 from src.api import context_assembler, context_regions, card_tools, prompts
 from src.api.prompts import BASE_PROMPT
-from src.storage import memory_store, session_store, work_store, card_store
+from src.storage import memory_store, session_store, work_store, card_db, card_store
 
 # ---------------------------------------------------------------------------
 # 旧实现冻结副本（V1 比对基准；逐字拷自 T12 改造前 build_context_regions/
@@ -139,29 +139,36 @@ async def test_v6_switch_default_off_and_toggle(sandbox, monkeypatch):
     # 缺省（无环境变量）＝关：有 entries 也不出现 200 区（RD-08/V6）
     monkeypatch.delenv("CONDENSE_ENABLED", raising=False)
     assert memory_store.condense_enabled() is False
-    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [100, 150]
+    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [90, 100, 150, 155]
     # 开闸生效
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
-    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [100, 150, 200]
+    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [90, 100, 150, 155, 200]
     # 字面 "true" 亦开；其余值关
     monkeypatch.setenv("CONDENSE_ENABLED", "true")
     assert memory_store.condense_enabled() is True
     monkeypatch.setenv("CONDENSE_ENABLED", "0")
     assert memory_store.condense_enabled() is False
     # 关闸即回旧路（V6 后半）
-    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [100, 150]
+    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [90, 100, 150, 155]
 
 
 async def test_v1_byte_equal_with_switch_on_and_empty_memory(sandbox, monkeypatch):
-    """V1：开关开＋空记忆 → system/中性上下文与改造前逐字相等（字节级）。"""
+    """V1：开关开＋空记忆 → 除新增 90 区外，与改造前逐字相等（字节级）。"""
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
     wid, cid, _other = await _make_work_with_cards()
     await session_store.append_message(wid, cid, "user", "历史一条")
     await memory_store.ensure_watermark(wid, cid)  # 空水位文件在盘
     legacy_text = _legacy_regions_text(wid, cid)
+    # [卡片职责区 2026-10-14] 迭代新增 order 90（类型级职责）；冻结副本仍是其后的基准
+    # [卡片区域说明 2026-10-14] 迭代新增 order 155（紧随 150 当前卡）
+    duty = context_regions.render_card_duty_region(card_store.load_type_registry())
+    guide = context_regions.render_card_region_guide(
+        str((card_store._meta_of(wid, cid) or {}).get("card_type") or ""),
+        card_store._root_project_class(wid))
+    expect = context_regions.assemble_regions([duty, legacy_text, guide])
     new_ctx = context_assembler.build_neutral_context(wid, cid)
-    assert new_ctx.encode("utf-8") == legacy_text.encode("utf-8")
-    assert prompts.build_system_prompt(new_ctx).encode("utf-8") == _legacy_build_system_prompt(legacy_text).encode("utf-8")
+    assert new_ctx.encode("utf-8") == expect.encode("utf-8")
+    assert prompts.build_system_prompt(new_ctx).encode("utf-8") == _legacy_build_system_prompt(expect).encode("utf-8")
 
 
 async def test_v1_switch_off_byte_equal_even_with_entries(sandbox, monkeypatch):
@@ -169,8 +176,15 @@ async def test_v1_switch_off_byte_equal_even_with_entries(sandbox, monkeypatch):
     wid, cid, _other = await _make_work_with_cards()
     await memory_store.save_memory(wid, cid, {"card_id": cid, "mark": 0,
                                               "entries": [_entry(0, "【结论】关闸下不出现")]})
+    # [卡片职责区 2026-10-14] 迭代新增 order 90；冻结副本仍是其后的基准
+    # [卡片区域说明 2026-10-14] 迭代新增 order 155（紧随 150 当前卡）
+    duty = context_regions.render_card_duty_region(card_store.load_type_registry())
+    guide = context_regions.render_card_region_guide(
+        str((card_store._meta_of(wid, cid) or {}).get("card_type") or ""),
+        card_store._root_project_class(wid))
+    expect = context_regions.assemble_regions([duty, _legacy_regions_text(wid, cid), guide])
     new_ctx = context_assembler.build_neutral_context(wid, cid)
-    assert new_ctx.encode("utf-8") == _legacy_regions_text(wid, cid).encode("utf-8")
+    assert new_ctx.encode("utf-8") == expect.encode("utf-8")
 
 
 async def test_200_region_shape_and_seats(sandbox, monkeypatch):
@@ -229,13 +243,15 @@ async def test_v3_session_and_card_bytes_untouched(sandbox):
     wid, cid, _other = await _make_work_with_cards()
     await session_store.append_message(wid, cid, "user", "原文一条")
     sess_path = session_store._session_path(wid, cid)
-    card_path = card_store._card_path(wid, cid)
     sess_before = sess_path.read_bytes()
-    card_before = card_path.read_bytes()
+    # [卡片存储迁移 SQLite] 卡片在库内：以「整卡内容 ＋ 库版本号」作为未触碰判据
+    card_before = await card_store.read_card(wid, cid)
+    rev_before = card_db.read_rev(wid)
     await memory_store.save_memory(wid, cid, {"card_id": cid, "mark": 5, "entries": [_entry(1, "【结论】v3")]})
     await memory_store.ensure_watermark(wid, cid)
     assert sess_path.read_bytes() == sess_before
-    assert card_path.read_bytes() == card_before
+    assert await card_store.read_card(wid, cid) == card_before
+    assert card_db.read_rev(wid) == rev_before
 
 
 # ---------------------------------------------------------------------------
@@ -320,8 +336,14 @@ async def test_deprecated_byte_keys_never_read(sandbox, monkeypatch):
 
 
 def _cards_meta(wid: str, ids: list[str]) -> dict:
+    # [销红 2026-10-12] E.1 追加修正（任务书未载的新发现，实测得出）：权限底座重做
+    # 2026-10-12 后，policy.has_perm 读**卡上固化的 perms 列表**（policy.py:178-195，
+    # 「卡上没有 perms（从未固化过）」即默认关门，不看 card_type、不回落配置）。
+    # 原 fixture 无 perms 键 ⇒ 首个 read_memory 即被 denied 信封挡住（data=None），
+    # 此前的 KeyError: 'card_id' 是失败信封的表象，非成功信封的字段路径问题。
+    # 故此处按现行模型给卡面 meta 补固化 perms（read 开关）。
     return {cid: {"card_id": cid, "parent": "" if cid == "card_001" else "card_001",
-                  "card_type": "normal"} for cid in ids}
+                  "card_type": "normal", "perms": ["read"]} for cid in ids}
 
 
 async def test_read_memory_tool_filter_and_permission(sandbox, monkeypatch):
@@ -331,28 +353,41 @@ async def test_read_memory_tool_filter_and_permission(sandbox, monkeypatch):
         "card_id": card_a, "mark": 3,
         "entries": [_entry(0, "【结论】零号"), _entry(2, "【结论】贰号"), _entry(4, "【结论】肆号")]})
     meta = _cards_meta(wid, ["card_001", card_a, card_b])
+    # [销红 2026-10-12] E.1（信封结构裁定）：_h_read_memory:264 返回
+    # {"card_id","mark","entries"}，缺 error/data 键 ⇒ 不满足 _is_envelope
+    # (card_tools.py:165-167) ⇒ execute_tool:1601 再包一层 ok_() ⇒ 字段在 r["data"] 下。
     # 缺省＝当前卡全量（原样返回）
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {}, meta)
-    assert r["card_id"] == card_a and r["mark"] == 3 and len(r["entries"]) == 3
+    assert (r["data"]["card_id"] == card_a and r["data"]["mark"] == 3
+            and len(r["data"]["entries"]) == 3)
     # 锚点区间过滤（含端点）
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {"from_seq": 2, "to_seq": 4}, meta)
-    assert [e["seq"] for e in r["entries"]] == [2, 4]
+    assert [e["seq"] for e in r["data"]["entries"]] == [2, 4]
     # 不存在的卡
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {"card_id": "card_999"}, meta)
-    assert "error" in r
+    assert r["ok"] is False
     # [卡片权限改造 2026-10-07] 读侧全盘放开：平级 read_memory 放行
     # （原越权断言随亲属链读限机制退役）
     r = await card_tools.execute_tool(wid, card_b, "read_memory", {"card_id": card_a}, meta)
-    assert r["card_id"] == card_a and r["mark"] == 3 and len(r["entries"]) == 3
+    assert (r["data"]["card_id"] == card_a and r["data"]["mark"] == 3
+            and len(r["data"]["entries"]) == 3)
     # 只读白名单在案（折叠【依据】依据源语义）
     assert "read_memory" in card_tools.READONLY_TOOLS
 
 
 async def test_tool_table_has_read_memory_and_version(sandbox):
-    tools = card_tools.build_tool_schemas()
-    names = [t["name"] for t in tools]
-    assert names.count("read_memory") == 1
-    assert card_tools.TOOL_TABLE_VERSION == "tools-t12-1"
-    assert prompts.BASE_PROMPT_VERSION == "t12-1"
+    # [销红 2026-10-12] E.2 工具面过滤裁定：build_tool_schemas() 无卡上下文 ⇒ 默认关门
+    # （card_tools.py:1405-1407 实读：「无卡上下文 ⇒ 默认关门：二级过滤返回空工具列表」）。
+    # 本测试意图是「注册表里有 read_memory 且版本号对」，与权限过滤无关，
+    # 故改为直查 TOOL_REGISTRY（任务书 §四 E.2 改法 (a)：诸葛建议最小改动）。
+    assert "read_memory" in card_tools.TOOL_REGISTRY
+    # [销红 2026-10-12] 裁定3（僵尸版本值对齐 dev 现态）：原断言 tools-t12-1 / t12-1 是
+    # T12 时代旧值，其后 tools-tc-1→tc-3（card_tools.py:122-134）、t14-1→t17-1（prompts.py
+    # 沿革注释）共 7 次推进一次未跟；git show bbe0e00 --name-only 无本文件 ⇒ 纯漏更新，非工具线擅动。
+    # [卡片底座第一步 2026-10-14] tc-3 → tc-4（新增第 20 件工具 read_linked）。
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-4"
+    # [判断协议改注入 2026-10-14] t17-1 → t18-1（判断协议摘出 BASE_PROMPT）。
+    # [卡片区域语义 v3 2026-10-14] t18-1 → t19-1（read_shadow 只读本卡自己的影子）。
+    assert prompts.BASE_PROMPT_VERSION == "t19-1"
     # BASE_PROMPT 工具行在案
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT

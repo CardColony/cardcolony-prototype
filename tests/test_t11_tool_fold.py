@@ -13,7 +13,7 @@ import pytest
 
 from src.api import card_tools, prompt_log, routes, tool_fold
 from src.api.tool_fold import KEEP_WINDOW, ToolTurnSlot, fold_enabled
-from src.storage import session_store
+from src.storage import session_facade, session_store
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +50,8 @@ def test_t10_readonly_whitelist():
         "search_manuscript", "web_search", "fetch_web",
         "list_files", "read_file", "search_files",
         "read_memory",
+        # [卡片底座第一步 2026-10-14] 新增只读工具 read_linked（沿通信线读）
+        "read_linked",
     } & set(card_tools.TOOL_REGISTRY)
 
     assert card_tools.READONLY_TOOLS == frozenset(expected)
@@ -277,7 +279,14 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     def _tc(name, args):
         return {"name": name, "arguments": args}
 
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None):
+    # [销红 2026-10-12] G.1 替身签名裁定：生产链路 message_runner 现会传 model_name=
+    # （model_service.py:50-56 call_main 签名含 model_name: Optional[str] = None，
+    # [参数收口 2026-10-07]新增）。替身缺该形参 ⇒ TypeError ⇒ _run_message 走错误返回
+    # 路径返回 JSONResponse ⇒ :304 的 `"error" not in result` 撞上不可迭代。
+    # 照 call_main 的签名顺序与默认值补形参；:304 断言不动（替身修好后自然成立）。
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None,
+                             tools=None, model_name=None, turn_tail=None,
+                             turn_once=None):
         calls["n"] += 1
         captured_wires.append([dict(m) for m in (prior_messages or [])])
         n = calls["n"]
@@ -306,7 +315,13 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     assert calls["n"] == 5
 
     # 会话文件：只有 user＋assistant 两条，折叠替身不进会话（约束 9）
-    sess = await session_store.read_session(wid, "card_001")
+    # [销红 2026-10-12] G.1 级联修正（修替身签名后本行才执行到，任务书未载的新发现）：
+    # a0c9aae（会话底座重构）起落盘为 V2 块格式（session_facade.append:510-516 写 role 键），
+    # 而 session_store.read_session 是 V1-only 旧读口（:138 只解析 V1 的 `role:` 头），
+    # 读 V2 文件得空 role ⇒ ['','']。改用生产统一读口 session_facade.read
+    # （session_facade.py:335「统一入口：V1 委托旧读，V2 走 V2 解析」，V2 块含 role 键）。
+    # 断言本体（两条、user→assistant、折叠不进会话）不动。
+    sess = await session_facade.read(wid, "card_001")
     assert [m["role"] for m in sess] == ["user", "assistant"]
     assert "【结论】" not in sess[1]["content"]
     assert sess[0]["content"] == "端到端折叠场景提问"
@@ -332,11 +347,26 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     logs = sorted(glob.glob(str(sandbox.logs / "prompt_card_001_*.json")))
     assert logs
     payload = json.loads(open(logs[-1], encoding="utf-8").read())
-    assert [r["order"] for r in payload["regions"]] == [0, 100, 150, 300, 900, 999]
-    assert len(payload["regions"]) == 6
+    # [卡片区域说明 2026-10-14] 区集合随迭代：90（卡片职责）/155（卡片区域说明）已入表。
+    # 本断言只钉"regions 落了哪些区"，与下方 T-02 阻塞无关。
+    assert [r["order"] for r in payload["regions"]] == [0, 90, 100, 150, 155, 300, 900, 999]
+    assert len(payload["regions"]) == 8
     ops = payload["fold_ops"]
     assert [o["round"] for o in ops] == [1, 2]
     assert [o["tools"] for o in ops] == [["read_file"], ["update_shadow"]]
+    # [销红 2026-10-12 · 未销 · 阻塞回报] 本条按 §六.4「不得改断言迁就」保持原样，未动。
+    # 修完替身签名（G.1）后本行暴露**未在册的 src 缺陷（待办 T-02）**：
+    # 轮 1 的 read_file 实际被拒——工具结果是 62 字节的
+    # `[tool_error code=denied] 越权：无权读 trading-workspace/big_e2e.txt`，
+    # 故 original_bytes=346 < folded_bytes=770（折叠 346 字节错误串反而变大）。
+    # 根因（已实证，非推断）：src/api/file_tools.py:81-87 FILE_SCOPE 的键位是
+    # 底座收口前的旧表（rd_project/research_project/sub_project/topic/tool），
+    # **没有 project**；而根卡 card_type=project（card_store/work_store 现态）。
+    # check_file_access:157 `FILE_SCOPE.get(card_type, [])` 对 project 取空列表
+    # ⇒ 前缀判定恒 False ⇒ 即便 config/permissions.json:22 给 project 授了
+    # tools_file，根卡的 list/read/search/write 四件文件工具在生产上也全被拒。
+    # 生产实证：work_001/card_001 perms 含 tools_file，check_file_access 仍 False。
+    # 修法在 src（给 FILE_SCOPE 补 "project" 行或改键位模型），不在测试。
     assert all(o["ok"] and o["folded_bytes"] < o["original_bytes"] for o in ops)
     # 原文全量在场：影子 8 万字在 prior 的 assistant 入参里；大文件返回原文在 prior
     prior_dump = json.dumps(payload["prior_messages"], ensure_ascii=False)

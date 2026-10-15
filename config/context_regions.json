@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "version": "context-regions-v1",
+    "created_at": "2026-10-15",
+    "taskbook": "docs/上下文底座化-方案-20261015.md",
+    "purpose": "上下文区控制面 · 区的启停与顺序（底座 2026-10-15）",
+    "carrier": "独立 JSON 配置文件，不进 DB（与 card_type_registry.json / permissions.json 同纪律）",
+    "semantics": {
+      "enabled": "false ＝ 该区不出现；未列/未配 ＝ 用注册表默认（true）",
+      "order": "覆盖注册表默认 order；未配 ＝ 用注册表默认",
+      "fail_open": "读不到/坏 JSON → 全用注册表默认，绝不因它阻断装配（配置是控制源，不是可用性依赖）"
+    },
+    "scope": "本版只实现**全局**启停/调序；按卡、按卡类型的覆盖**预留不实现**（等【规则卡】那条线）。",
+    "keys": "key 与 src/api/context_regions.py 的 REGION_TABLE[].key 对应；只列 owner==\"assembler\" 的区——instruction(prompt) / history·tool_turn·user_message(runner) 不在此装配，配了也不生效。"
+  },
+  "regions": {
+    "card_duty": { "enabled": true, "order": 90 },
+    "card_list": { "enabled": true, "order": 100 },
+    "current_card": { "enabled": true, "order": 150 },
+    "region_guide": { "enabled": true, "order": 155 },
+    "memory": { "enabled": true, "order": 200 }
+  }
+}

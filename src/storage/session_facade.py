@@ -66,12 +66,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 import aiofiles
 
-from . import card_store, revision_store, session_ops, session_store
+from . import card_store, event_log, revision_store, session_ops, session_store
 
 logger = logging.getLogger("storage.session_facade")
 
@@ -132,14 +133,40 @@ def _projection_path(work_id: str) -> Path:
 
 # ---------------------------------------------------------------- 原子写（T079 机制，先例 memory_store.py:179-182）
 def _atomic_write_text(path: Path, text: str) -> None:
-    """覆盖路径：tmp 写＋flush＋fsync→os.replace（T079；fsync 自 S3/T078 起）。"""
+    """覆盖路径：tmp 写＋flush＋fsync→os.replace（T079；fsync 自 S3/T078 起）。
+
+    ★ [卡片底座第一步 2026-10-14 修] 两处 Windows 加固（语义零变化）：
+
+    1. ``os.replace`` **必须在 ``with`` 之外**——原写法把 rename 放在
+       ``with open(tmp)`` 块内，源文件句柄尚未关闭时 MoveFileEx 会失败。
+    2. rename **失败即短重试**。读路径（``read``）**不拿锁**，读句柄可能正压在
+       目的文件上；Windows 的 MoveFileEx 遇到目的文件被占用的句柄会回
+       ``WinError 5/32``（POSIX 允许 rename 覆盖被读的文件，Windows 不允许）。
+       实测：沙箱内同一用例连跑 6 次挂 3 次（rename 一次，而测试每 50ms 读一次
+       会话文件）。重试 4 次、退避 20/40/60/80ms 即稳（同目录 rename，不跨卷）。
+
+    这不是新问题，是既有隐患；本步的卡间调起链路让「收件方**首次**落块」走到
+    这条 tmp→replace 路径（改前该路径由发信块先走过），从而把它暴露出来。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    last_exc: Optional[OSError] = None
+    for attempt in range(5):
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError as exc:
+            last_exc = exc
+            # 只对 Windows 的「文件被占用」两码重试；其余（如跨卷）立即上抛
+            if getattr(exc, "winerror", None) not in (5, 32) or attempt == 4:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+    if last_exc is not None:  # pragma: no cover - 循环内必 return 或 raise
+        raise last_exc
 
 
 # ---------------------------------------------------------------- 格式判别与解析（S1）
@@ -250,7 +277,14 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
         missing.append("turn")
 
     content = "\n".join(_unescape_v2(content_lines))
-    role = {"human": "user", "assistant": "assistant"}.get(actor, actor or "unknown")
+    # [卡间消息·头 2026-10-14] actor 以 `card:` 开头（卡间来信）→ role 映射为
+    # **`user`**。原实现走 `.get(actor, actor)` 兜底 ⇒ 投影出字面 `card:card_002`，
+    # **不是合法角色**（端点只认 system/user/assistant/tool）⇒ 一进请求即 400。
+    # 卡间信是"外部输入"，语义上就是 user；"是谁发的"由正文承载，不由 role/头。
+    if actor and str(actor).startswith("card:"):
+        role = "user"
+    else:
+        role = {"human": "user", "assistant": "assistant"}.get(actor, actor or "unknown")
     pair_raw = kv.get("pair", "")
     legacy_pair_id = kv.get("pair_id", "")  # V1 uuid 经前向兼容通道保留（见模块头 S6b 衔接桥）
     pair_id_out = legacy_pair_id if legacy_pair_id != "" else (str(pair_raw) if pair_raw != "" else "")
@@ -455,6 +489,63 @@ def _last_human_in_turn(blocks: list[dict[str, Any]], current_turn: int) -> Opti
     return None
 
 
+def _block_event_type(actor: str, hint: str) -> str:
+    """消息块 → 事件 type（裁定 C1）。
+
+    - human→user_message／assistant→assistant_text（消息类，唯一映射）；
+    - ``card:`` 卡间信→msg_ask/msg_answer/msg_notify，**type 由发信方显式
+      给定**（落信处知道消息类型），缺省按 notify 兜底——代码不猜语义；
+    - 其余（actor=tool 的环节留痕块）→ 空串＝不落事件：过程侧已有
+      plan_created/step_advanced 等事件，重复落一条只是双份噪音。
+    """
+    if actor == ACTOR_HUMAN:
+        return "user_message"
+    if actor == ACTOR_ASSISTANT:
+        return "assistant_text"
+    if actor.startswith("card:"):
+        return hint or "msg_notify"
+    return ""
+
+
+async def emit_message_event(work_id: str, card_id: str, ev_type: str,
+                             content: str, run_id: str = "",
+                             round_: int = 0) -> None:
+    """消息类事件落 events jsonl（**单一落点**）。
+
+    [卡片底座第一步 2026-10-14] 卡间信不再写会话块（改落待处理收件箱），但其
+    **事件流留痕照旧**——故把这条写路径抽成公开函数：会话块路径（``append`` →
+    ``_emit_block_event``）与卡间发信路径（``card_tools._h_send_card_message``）
+    共用它，避免两处各写一套形状。data 是结构化对象（``{"content": ...}``），
+    不是文本 blob。零阻断（事件日志失败不影响调用方主流程）。
+    """
+    if not ev_type:
+        return
+    try:
+        await event_log.append(work_id, card_id, {
+            "run_id": str(run_id or ""),
+            "round": int(round_ or 0),
+            "type": ev_type,
+            "data": {"content": content},
+        })
+    except Exception as exc:  # noqa: BLE001 事件日志零阻断
+        logger.warning("[facade] 消息事件落盘失败（不阻断）card=%s type=%s: %s",
+                       card_id, ev_type, exc)
+
+
+async def _emit_block_event(work_id: str, card_id: str,
+                            blk: dict[str, Any], hint: str) -> None:
+    """[消息底座能力对齐 · 件2] 消息块同步落 events jsonl（裁定 C1/C5）。
+
+    落盘位置＝append 成功后、ops 打点之前：会话文件与事件流同一次写路径内
+    完成，不新增第二次落盘点。形状由 ``emit_message_event`` 承载（单一来源）。
+    """
+    ev_type = _block_event_type(str(blk.get("actor") or ""), hint)
+    await emit_message_event(
+        work_id, card_id, ev_type, blk.get("content", ""),
+        run_id=str(blk.get("pair_id") or ""), round_=int(blk.get("turn") or 0),
+    )
+
+
 async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str, Any]:
     """追加一块，返回落盘后的完整块（T024）。
 
@@ -478,6 +569,9 @@ async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str,
     pair_id_legacy = block.get("pair_id", "")  # V1 uuid（S6b 衔接桥：经前向兼容通道落盘）
     from_ = block.get("from", "")
     behavior = block.get("behavior", "")
+    # [消息底座能力对齐 · 件2] 卡间信的 msg_* 类型由调用方显式给定（瞬态提示，
+    # 不进 V2 块头白名单、不落会话文件）；其余块忽略。
+    event_type_hint = str(block.get("event_type") or "")
 
     path = _session_path(work_id, card_id)
     lock = session_store._session_lock(work_id, card_id)
@@ -547,6 +641,8 @@ async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str,
                                            {"card": card_id, "blocks": len(conv)})
             logger.info("[facade] 现场升格 V1→V2 work=%s card=%s blocks=%d（含新块）",
                         work_id, card_id, len(conv) + 1)
+    # [消息底座能力对齐 · 件2] 消息块同步落 events jsonl（会话落盘后同路径完成）
+    await _emit_block_event(work_id, card_id, new_blk, event_type_hint)
     # [T152] append 点位：work/card/seq/turn/actor/结果
     session_ops.ops_log("append", work_id, card_id,
                         {"seq": new_blk["seq"], "turn": new_blk["turn"],
@@ -624,13 +720,20 @@ def scan_tail(work_id: str, card_id: str) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- 投影（T026/T074-T076）
 def rebuild(work_id: str) -> dict[str, Any]:
-    """从真相（各卡会话文件）全量重建投影并落盘（T075）。"""
-    cards_dir = session_store.WORKS_DIR / work_id / "cards"
+    """从真相（各卡会话文件）全量重建投影并落盘（T075）。
+
+    [卡片存储迁移 SQLite 2026-10-14] 卡清单数据源从 ``cards/*.md`` 改为库内
+    ``cards`` 表（会话本身仍是文件——真相没变，只是「有哪些卡」改查库）。
+    """
+    from . import card_db
+
+    def _fn(conn: Any) -> list[str]:
+        return [r["card_id"] for r in conn.execute("SELECT card_id FROM cards ORDER BY card_id")]
+
     items: list[dict[str, Any]] = []
-    if cards_dir.exists():
-        for p in sorted(cards_dir.glob("card_*.md")):
-            st = scan_tail(work_id, p.stem)
-            items.append({"card": p.stem, "ts": st["ts"], "seq": st["seq"]})
+    for cid in card_db.read_sync(work_id, _fn, []) or []:
+        st = scan_tail(work_id, cid)
+        items.append({"card": cid, "ts": st["ts"], "seq": st["seq"]})
     proj = {"derived": True, "generated_at": session_store._now_iso(), "items": items}
     _atomic_write_text(_projection_path(work_id),
                        json.dumps(proj, ensure_ascii=False, indent=2) + "\n")
@@ -659,18 +762,36 @@ def project(work_id: str, filter: Optional[dict[str, Any]] = None) -> dict[str, 
 
 
 # ---------------------------------------------------------------- 建卡铺会话事务（T027/B-27）
-def _rollback_create(work_id: str, card_id: str, session_path: Path) -> None:
+async def _rollback_create(work_id: str, card_id: str, session_path: Path) -> None:
     """事务回滚：刚建的卡与会话**移入 damaged/ 留档**（移动留档，不删除任何
-    字节——card_store.py:4 铁律「不允许删除 cards\\ 或 sessions\\ 下文件」的
-    精神延伸；cards/ 与 sessions/ 下不留半事务产物）。"""
+    字节——card_store.py 铁律「不允许删除 cards\\ 或 sessions\\ 下文件」的
+    精神延伸；不留半事务产物）。
+
+    [卡片存储迁移 SQLite 2026-10-14] 卡片进库后不再是 md 文件：
+    留档改为**导出卡内容为 JSON** 存进 damaged/（字节不丢），随后删除库行
+    （卡＋影子），等价于旧「把卡文件 rename 进 damaged/」。会话仍为文件，照旧 rename。
+    """
+    from . import card_db
+
     d = _damaged_dir(work_id)
     try:
         d.mkdir(parents=True, exist_ok=True)
-        card_path = card_store._card_path(work_id, card_id)
         stamp = session_store._now_iso().replace(":", "").replace("-", "")
-        if card_path.exists():
-            card_path.rename(d / f"{card_id}.md.orphan_{stamp}")
-            logger.warning("[facade] 事务回滚：卡移入 damaged/ work=%s card=%s", work_id, card_id)
+        try:
+            card = await card_store.read_card(work_id, card_id)
+            (d / f"{card_id}.json.orphan_{stamp}").write_text(
+                json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+            def _fn(conn: Any) -> None:
+                card_db.delete_card_row(conn, card_id)
+                card_db.delete_shadow_row(conn, card_id)
+                card_db.bump_rev(conn)
+
+            await card_db.run_write(work_id, _fn)
+            logger.warning("[facade] 事务回滚：卡留档并撤库行 work=%s card=%s", work_id, card_id)
+        except Exception as exc:  # noqa: BLE001 卡侧回滚失败不掩盖原始异常
+            logger.error("[facade] 事务回滚：卡撤库失败 work=%s card=%s: %s", work_id, card_id, exc)
         if session_path.exists():
             session_path.rename(d / f"{session_path.name}.orphan_{stamp}")
             logger.warning("[facade] 事务回滚：会话移入 damaged/ work=%s card=%s", work_id, card_id)
@@ -707,7 +828,7 @@ async def create_with_session(work_id: str, title: str, source: str, *,
                 f"create_with_session: 新建卡会话文件已含会话块（异常状态）work={work_id} card={card_id}")
         _atomic_write_text(spath, _render_v2_header(_default_header(card_id, identity)))
     except Exception:
-        _rollback_create(work_id, card_id, spath)
+        await _rollback_create(work_id, card_id, spath)
         raise
     return result
 

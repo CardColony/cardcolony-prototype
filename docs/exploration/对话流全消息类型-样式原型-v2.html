@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>对话流全消息类型 · 样式原型 v2（真实载荷）</title>
+<style>
+:root{
+  --bg:#eef0f4;            /* 画布浅灰（边栏定稿） */
+  --card:#ffffff;          /* 白卡 */
+  --border:#e2e5ea;        /* 1px 细描边 */
+  --border-soft:#edf0f4;
+  --txt:#1f2329;           /* 主文本 */
+  --dim:#8a919c;           /* 次要信息灰 */
+  --dim-2:#b3b9c2;
+  --accent:#2563eb;        /* 蓝（边栏 active） */
+  --accent-soft:#eaf2fe;   /* 浅蓝（用户气泡） */
+  --ok:#16a34a;            /* 成功绿 */
+  --err:#dc2626;           /* 错误红 */
+  --warn:#d97706;          /* 琥珀（须回应/风险） */
+  --seat:#7c3aed;          /* 三席紫 */
+  --radius:10px;
+  --fs:13px;
+  --mono:"Cascadia Code","SF Mono",Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font-size:var(--fs);font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;line-height:1.6}
+/* 顶部说明条 */
+.topnote{padding:10px 22px;color:var(--dim);font-size:12px;line-height:1.95;border-bottom:1px solid var(--border);background:#f7f8fa}
+.topnote b{color:var(--txt)}
+.topnote .chip{display:inline-block;margin:0 2px;padding:0 7px;border:1px solid var(--border);border-radius:99px;background:#fff;font-size:11px;color:var(--dim)}
+.topnote .hot{color:var(--accent);font-weight:600}
+.topnote .gap{color:var(--warn);font-weight:600}
+/* 布局：左索引 + 右对话流 */
+.layout{display:flex;gap:18px;padding:18px 22px;align-items:flex-start}
+.index{width:210px;flex:none;position:sticky;top:18px}
+.index .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px}
+.index h4{font-size:12px;color:var(--dim);font-weight:600;margin:10px 0 6px}
+.index h4:first-child{margin-top:0}
+.index .item{display:flex;justify-content:space-between;gap:6px;padding:3px 6px;border-radius:6px;font-size:12px;color:#555c66}
+.index .item .n{color:var(--dim-2);font-family:var(--mono);font-size:11px}
+.index .item.void{color:#c3c9d2}
+.index .note{margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:11px;color:var(--dim-2);line-height:1.7}
+/* ============ 对话流整卡 ============ */
+.stage{flex:1;min-width:0}
+.chat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 1px 3px rgba(15,23,42,.04);padding:clamp(16px,3vw,32px);max-height:calc(100vh - 120px);overflow-y:auto}
+.chathead{display:flex;align-items:center;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid var(--border-soft);margin-bottom:6px;color:var(--dim);font-size:12px}
+.chathead .title b{color:var(--txt)}
+.chathead .w{font-family:var(--mono);font-size:11px;color:var(--dim-2)}
+/* ★ 统一列：v1 48em(624px) → v2 62em(806px) */
+.msgs{max-width:min(88%,62em);margin:0 auto;display:flex;flex-direction:column;gap:2px}
+/* 分区小节（原型内展示用，非对话流元素） */
+.sec{margin:26px 0 8px;padding-top:14px;border-top:1px dashed var(--border);color:var(--dim);font-size:11.5px;letter-spacing:.04em}
+.sec:first-child{margin-top:10px;border-top:none;padding-top:0}
+.sec b{color:#555c66}
+/* ---------- 用户消息：右侧气泡（收在统一列内） ---------- */
+.msg.user{align-self:flex-end;max-width:72%;background:var(--accent-soft);border:1px solid #d6e4fb;border-radius:10px;padding:8px 13px;margin:8px 0 6px;font-size:13px;line-height:1.6;white-space:pre-wrap}
+/* ---------- 助手消息：文档流（无边框无底色）★ 行距 v1 1.75 → v2 1.85 ---------- */
+.msg.assistant{align-self:flex-start;width:100%;margin:4px 0;font-size:14px;line-height:1.85;white-space:normal;color:#24292f}
+.msg.assistant .meta{font-size:11.5px;color:var(--dim);margin-bottom:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.beh{display:inline-block;font-family:var(--mono);font-size:10px;padding:0 6px;border-radius:4px;border:1px solid var(--border);color:#6b7280;background:#f7f8fa;line-height:1.7}
+.beh.plan{color:var(--accent);background:var(--accent-soft);border-color:#d6e4fb}
+.beh.step,.beh.execute_step{color:var(--ok);background:#f0fdf4;border-color:#bbf7d0}
+.beh.think_step{color:var(--seat);background:#f5f3ff;border-color:#e9d5ff}
+.beh.revision{color:var(--warn);background:#fffbeb;border-color:#fde68a}
+.beh.final{color:#0891b2;background:#ecfeff;border-color:#a5f3fc}
+.msg.assistant .meta .end{font-family:var(--mono);font-size:10px;padding:0 6px;border-radius:4px}
+.end-model_done{color:var(--ok);background:#f0fdf4;border:1px solid #bbf7d0}
+.end-policy_stop{color:var(--warn);background:#fffbeb;border:1px solid #fde68a}
+.end-human_stop{color:#555c66;background:#f7f8fa;border:1px solid var(--border)}
+.end-error{color:var(--err);background:#fef2f2;border:1px solid #fecaca}
+/* ---------- Markdown 渲染 ---------- */
+.md h1,.md h2,.md h3,.md h4{line-height:1.45;margin:16px 0 7px}
+.md h1{font-size:18px}.md h2{font-size:18px}.md h3{font-size:14px}
+.md h4,.md h5,.md h6{font-size:14px}
+.md p{margin:8px 0}
+.md strong{font-weight:700}
+.md ul,.md ol{margin:8px 0;padding-left:22px}
+.md li{margin:3px 0}
+.md code{font-family:var(--mono);font-size:12px;background:#f1f3f5;border:1px solid var(--border-soft);border-radius:4px;padding:0 4px}
+.md pre{background:#f6f8fa;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:10px 0;overflow-x:auto}
+.md pre code{background:none;border:none;padding:0;font-size:12px;line-height:1.7}
+.md table{border-collapse:collapse;margin:10px 0;font-size:12.5px}
+.md th,.md td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+.md th{background:#f6f8fa;font-weight:600}
+.md blockquote{border-left:3px solid var(--border);padding:4px 12px;color:var(--dim);margin:10px 0;background:#fafbfc}
+.md hr{border:none;border-top:1px solid var(--border);margin:14px 0}
+.md a{color:var(--accent);text-decoration:none}
+/* ---------- 卡间消息（Ⅰ ×3） ---------- */
+.cmsg{display:flex;align-items:stretch;margin:6px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fcfcfd}
+.cmsg .bar{width:3px;flex:none}
+.cmsg.ask .bar{background:var(--warn)}
+.cmsg.answer .bar{background:var(--accent)}
+.cmsg.notify .bar{background:var(--dim-2)}
+.cmsg .body{flex:1;padding:9px 12px;min-width:0}
+.cmsg .head{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dim);margin-bottom:5px;flex-wrap:wrap}
+.cmsg .tag{font-family:var(--mono);font-size:10px;padding:1px 7px;border-radius:99px;font-weight:600}
+.cmsg.ask .tag{background:#fffbeb;color:var(--warn);border:1px solid #fde68a}
+.cmsg.answer .tag{background:var(--accent-soft);color:var(--accent);border:1px solid #d6e4fb}
+.cmsg.notify .tag{background:#f3f4f6;color:#6b7280;border:1px solid var(--border)}
+.cmsg .must{font-size:10px;color:var(--warn);border:1px solid #fde68a;background:#fffbeb;border-radius:99px;padding:0 6px}
+.cmsg .dir{font-family:var(--mono);font-size:11px}
+.cmsg .txt{font-size:13px;color:#33373d;line-height:1.75}
+.cmsg .replyto{font-size:11px;color:var(--dim);margin-top:4px}
+/* ---------- 过程事件行（Ⅱ） ---------- */
+.step-row{display:flex;align-items:baseline;gap:8px;padding:2.5px 0;font-size:12px;color:var(--dim);line-height:1.6}
+.step-row .ic{flex:none;font-size:12px}
+.step-row .ev{flex:none;font-family:var(--mono);font-size:10px;padding:0 6px;border-radius:4px;border:1px solid var(--border);background:#f7f8fa;color:#6b7280;line-height:1.6}
+.step-row .txt{flex:1;min-width:0}
+.step-row .txt b{color:#33373d;font-weight:600}
+.step-row .sub{flex:none;font-family:var(--mono);font-size:10.5px;color:var(--dim-2)}
+/* ★ 真实字段展示（v2 新增）：等宽小字，字段名浅、字段值深 */
+.step-row .f{font-family:var(--mono);font-size:10.5px;color:#9aa1ab}
+.step-row .f .k{color:#c8ced6}
+.step-row.ok .ev{color:var(--ok);background:#f0fdf4;border-color:#bbf7d0}
+.step-row.ok .ic{color:var(--ok)}
+.step-row.err .ev{color:var(--err);background:#fef2f2;border-color:#fecaca}
+.step-row.err .ic{color:var(--err)}
+.step-row.tool .ev{color:var(--accent);background:var(--accent-soft);border-color:#d6e4fb}
+.step-row.seat .ev{color:var(--seat);background:#f5f3ff;border-color:#e9d5ff}
+.step-row.flow .ev{color:#0891b2;background:#ecfeff;border-color:#a5f3fc}
+.step-row.dim .ev{color:var(--dim);background:#f7f8fa;border-color:var(--border)}
+/* ★ 无发送方（v2 新增）：虚线徽标 + 降透明 */
+.step-row.void{opacity:.55}
+.step-row.void .ev{color:#b3b9c2;background:#fafbfc;border:1px dashed var(--border)}
+.step-row.void .txt{color:#b3b9c2}
+/* 逐字流（2 种） */
+.step-row.reasoning .ic{color:#7c3aed}
+.step-row.reasoning .txt{font-style:italic;color:#8b5cf6}
+.step-row.content .txt{color:#33373d}
+.step-row.content .caret{display:inline-block;width:2px;height:13px;background:var(--accent);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+/* ★ 层级缩进（v2 新增）：仅 padding，不加容器元素 */
+.step-row.lv2{padding-left:20px}
+.step-row.lv3{padding-left:40px}
+/* ★ 计划步骤清单（plan_created.steps[] 展开，v2 新增） */
+.psteps{margin:3px 0 6px 20px;border-left:1px solid var(--border);padding-left:11px}
+.pstep{display:flex;gap:7px;align-items:baseline;font-size:11.5px;color:#555c66;padding:2px 0;line-height:1.6}
+.pstep .f{font-family:var(--mono);font-size:10px;color:#b3b9c2;margin-left:auto;flex:none}
+/* ★ 三席观点正文（seat_end.text 展开，v2 新增） */
+.seatview{margin:3px 0 8px 20px;border-left:2px solid #e9d5ff;background:#faf8ff;border-radius:0 6px 6px 0;padding:7px 11px;font-size:12px;line-height:1.75;color:#444b54;white-space:pre-wrap}
+.seatview .who{font-family:var(--mono);font-size:10px;color:var(--seat);display:block;margin-bottom:3px}
+/* 工具块（Ⅲ actor=tool） */
+.toolblock{margin:4px 0 6px;border:1px solid var(--border);border-left:3px solid #94a3b8;border-radius:8px;background:#fafbfc;padding:8px 12px;font-family:var(--mono);font-size:12px;color:#444b54}
+.toolblock .t{color:var(--accent);font-weight:600}
+.toolblock .args{color:var(--dim);font-size:11px;margin-top:3px;white-space:pre-wrap;word-break:break-all}
+.toolblock .res{margin-top:5px;color:#33373d;white-space:pre-wrap;font-size:11.5px;border-top:1px dashed var(--border-soft);padding-top:5px}
+/* 步骤徽标（Ⅴ execute/think） */
+.bt{display:inline-flex;align-items:center;gap:3px;font-size:10px;padding:0 7px;border-radius:99px;font-weight:600;line-height:1.7}
+.bt.execute{background:var(--accent-soft);color:var(--accent);border:1px solid #d6e4fb}
+.bt.think{background:#f5f3ff;color:var(--seat);border:1px solid #e9d5ff}
+/* ★ 清单外真实事件（card_message，v2 新增） */
+.realnote{margin:6px 0;border:1px solid #fde68a;background:#fffdf5;border-radius:8px;padding:8px 12px;font-size:11.5px;color:#8a6d3b;line-height:1.75}
+.realnote .tag{font-family:var(--mono);font-size:10px;color:var(--warn);font-weight:600}
+.demo-note{font-size:11px;color:var(--dim-2);margin-top:12px;border:1px dashed var(--border);border-radius:8px;padding:7px 11px;background:#fafbfc;line-height:1.75}
+/* 滚动条（重绘版：透明轨道 + 灰滑块） */
+.chat::-webkit-scrollbar{width:10px}
+.chat::-webkit-scrollbar-track{background:transparent}
+.chat::-webkit-scrollbar-thumb{background:rgba(138,145,156,.35);border-radius:6px}
+.chat::-webkit-scrollbar-thumb:hover{background:rgba(138,145,156,.55)}
+.chat::-webkit-scrollbar-button{display:none}
+.chat{scrollbar-width:thin;scrollbar-color:rgba(138,145,156,.35) transparent}
+</style>
+</head>
+<body>
+
+<div class="topnote">
+  <b>对话流全消息类型 · 样式原型 v2</b>（真实载荷版）—— 相对 v1 三处调整：
+  <span class="chip">统一列 48em(624px) → 62em(806px)</span>
+  <span class="chip">助手行距 1.75 → 1.85</span>
+  <span class="chip">按真实字段渲染</span>
+  <br>
+  载荷来源：<span class="hot">逐个 emit 调用点实读</span>（message_runner.py / simple_service.py / routes.py / card_tools.py）—— 非清单推断。
+  三个 <span class="gap">无发送方</span>事件已单独标出。
+</div>
+
+<div class="layout">
+  <!-- 左索引 -->
+  <div class="index">
+    <div class="card">
+      <h4>Ⅰ 卡间消息</h4>
+      <div class="item"><span>询问（须回应）</span><span class="n">msg_ask</span></div>
+      <div class="item"><span>应答</span><span class="n">msg_answer</span></div>
+      <div class="item"><span>通知</span><span class="n">msg_notify</span></div>
+      <h4>Ⅱ 过程事件</h4>
+      <div class="item"><span>主通道</span><span class="n">21</span></div>
+      <div class="item"><span>逐字流</span><span class="n">2</span></div>
+      <div class="item void"><span>└ 无发送方</span><span class="n">3</span></div>
+      <h4>Ⅲ 对话块 actor</h4>
+      <div class="item"><span>human / assistant</span><span class="n">2</span></div>
+      <div class="item"><span>tool / card:xxx</span><span class="n">2</span></div>
+      <h4>Ⅳ 环节块 behavior</h4>
+      <div class="item"><span>plan/step/execute_step</span><span class="n">3</span></div>
+      <div class="item"><span>think_step/revision/final</span><span class="n">3</span></div>
+      <h4>Ⅴ 行为类型</h4>
+      <div class="item"><span>执行 / 思考</span><span class="n">2</span></div>
+      <h4>结束原因</h4>
+      <div class="item"><span>END_VALUES</span><span class="n">4</span></div>
+      <div class="note">v2 新增：真实字段展示、层级缩进、计划步骤清单、三席观点正文、无发送方标记、清单外事件 card_message。</div>
+    </div>
+  </div>
+
+  <!-- 对话流整卡 -->
+  <div class="stage">
+    <div class="chat">
+      <div class="chathead"><div class="title"><b>对话流样式演示</b> · 真实类型 × 真实字段</div><div class="w">统一列 min(88%, 62em)</div></div>
+      <div class="msgs">
+
+        <!-- ============ 回合 1：完整正常流 ============ -->
+        <div class="sec"><b>回合 1 · 完整一答</b>（Ⅲ actor=human → Ⅱ 过程事件全链 → Ⅲ actor=assistant）</div>
+
+        <!-- 用户消息（Ⅲ · actor=human） -->
+        <div class="msg user" data-actor="human">
+          <div>把系统里会展示的消息类型全部列出来，做成对话流样式，先出 HTML 给我看。</div>
+        </div>
+
+        <div class="step-row" data-ev="run_start" data-f="pair_id,chars">
+          <span class="ic">🚀</span><span class="ev">run_start</span>
+          <span class="txt">一轮开始<span class="f"> · <span class="k">pair_id</span>=card_018 · <span class="k">chars</span>=2410</span></span>
+          <span class="sub">第 1 轮对话</span>
+        </div>
+
+        <div class="step-row" data-ev="context" data-f="regions,bytes">
+          <span class="ic">📐</span><span class="ev">context</span>
+          <span class="txt">装配上下文<span class="f"> · <span class="k">regions</span>=[卡正文, 会话历史, 记忆, 工具面, 权限] · <span class="k">bytes</span>=49152</span></span>
+          <span class="sub">5 区 · 48KB</span>
+        </div>
+
+        <div class="step-row" data-ev="judgment" data-f="verdict">
+          <span class="ic">⚖️</span><span class="ev">judgment</span>
+          <span class="txt">判断：<b>direct</b>（直接作答）<span class="f"> · <span class="k">verdict</span>=direct</span></span>
+        </div>
+
+        <div class="sec" style="margin:14px 0 6px;padding-top:10px"><b>① 拆解路径</b>（verdict=plan 时才有）</div>
+
+        <div class="step-row" data-ev="plan_created" data-f="name,total,prompt,steps[]">
+          <span class="ic">🗺️</span><span class="ev">plan_created</span>
+          <span class="txt">计划上板：<b>「调研会话流渲染现状」</b><span class="f"> · <span class="k">total</span>=4 · <span class="k">prompt</span>=把渲染链现状查清并给改造面</span></span>
+          <span class="sub">4 步</span>
+        </div>
+        <!-- steps[] 展开（每步 id/prompt/criteria/deliverable/type） -->
+        <div class="psteps">
+          <div class="pstep"><span class="bt execute">🔧 执行</span><span>1 · 读 workspace.js 渲染链</span><span class="f">id=1 criteria=调用点已定位</span></div>
+          <div class="pstep"><span class="bt execute">🔧 执行</span><span>2 · 读 style.css 宽度与气泡规则</span><span class="f">id=2 criteria=规则行号在案</span></div>
+          <div class="pstep"><span class="bt think">🧠 思考</span><span>3 · 设计改造面与不变量</span><span class="f">id=3 criteria=改造面成文</span></div>
+          <div class="pstep"><span class="bt think">🧠 思考</span><span>4 · 出原型并自检</span><span class="f">id=4 criteria=原型可打开</span></div>
+        </div>
+
+        <div class="step-row lv2" data-ev="step_start" data-f="step_id,index,total,prompt,criteria,deliverable">
+          <span class="ic">▶️</span><span class="ev">step_start</span>
+          <span class="txt">步 1/4 <span class="bt execute">🔧 执行</span> · 读 workspace.js 渲染链<span class="f"> · <span class="k">step_id</span>=1 · <span class="k">criteria</span>=调用点已定位 · <span class="k">deliverable</span>=调用点清单</span></span>
+        </div>
+
+        <div class="step-row lv3" data-ev="round_start" data-f="round,phase">
+          <span class="ic">🔄</span><span class="ev">round_start</span>
+          <span class="txt">第 1 轮开始<span class="f"> · <span class="k">round</span>=1 · <span class="k">phase</span>=main</span></span>
+        </div>
+
+        <div class="step-row tool lv3" data-ev="tool_call" data-f="tool,target,step_id">
+          <span class="ic">🔧</span><span class="ev">tool_call</span>
+          <span class="txt"><b>read_card</b><span class="f"> · <span class="k">target</span>=card_018 · <span class="k">step_id</span>=1</span></span>
+          <span class="sub">#1</span>
+        </div>
+        <div class="step-row tool ok lv3" data-ev="tool_result" data-f="tool,target,ok,step_id">
+          <span class="ic">📎</span><span class="ev">tool_result</span>
+          <span class="txt"><b>read_card</b> 返回 224 行<span class="f"> · <span class="k">ok</span>=true · <span class="k">step_id</span>=1</span></span>
+          <span class="sub">#1</span>
+        </div>
+
+        <div class="step-row ok lv2" data-ev="step_advanced" data-f="advanced,all_done,step_id,criteria_met,result,next_prompt">
+          <span class="ic">✅</span><span class="ev">step_advanced</span>
+          <span class="txt">步 1 完成 · 判据满足<span class="f"> · <span class="k">criteria_met</span>=true · <span class="k">all_done</span>=false · <span class="k">result</span>=调用点 2 处（:784/:792） · <span class="k">next_prompt</span>=读 style.css 宽度规则</span></span>
+          <span class="sub">→ 步 2</span>
+        </div>
+
+        <div class="step-row lv2" data-ev="step_start" data-f="step_id,index,total,prompt,criteria,deliverable">
+          <span class="ic">▶️</span><span class="ev">step_start</span>
+          <span class="txt">步 2/4 <span class="bt execute">🔧 执行</span> · 读 style.css 宽度与气泡规则<span class="f"> · <span class="k">step_id</span>=2 · <span class="k">criteria</span>=规则行号在案</span></span>
+        </div>
+
+        <div class="step-row lv3" data-ev="round_start" data-f="round,phase">
+          <span class="ic">🔄</span><span class="ev">round_start</span>
+          <span class="txt">第 2 轮开始<span class="f"> · <span class="k">round</span>=2 · <span class="k">phase</span>=tools</span></span>
+        </div>
+        <div class="step-row tool lv3" data-ev="tool_call" data-f="tool,target,step_id">
+          <span class="ic">🔧</span><span class="ev">tool_call</span>
+          <span class="txt"><b>read_file</b><span class="f"> · <span class="k">target</span>=style.css:1059-1097 · <span class="k">step_id</span>=2</span></span>
+          <span class="sub">#2</span>
+        </div>
+        <div class="step-row tool ok lv3" data-ev="tool_result" data-f="tool,target,ok,step_id">
+          <span class="ic">📎</span><span class="ev">tool_result</span>
+          <span class="txt"><b>read_file</b> 返回 39 行<span class="f"> · <span class="k">ok</span>=true · <span class="k">step_id</span>=2</span></span>
+          <span class="sub">#2</span>
+        </div>
+        <div class="step-row ok lv2" data-ev="step_advanced" data-f="advanced,all_done,step_id,criteria_met,result">
+          <span class="ic">✅</span><span class="ev">step_advanced</span>
+          <span class="txt">步 2 完成 · 判据满足<span class="f"> · <span class="k">criteria_met</span>=true · <span class="k">result</span>=.msg max-width 在 :1060</span></span>
+          <span class="sub">→ 步 3</span>
+        </div>
+
+        <div class="step-row lv2" data-ev="step_start" data-f="step_id,index,total,prompt,criteria,deliverable">
+          <span class="ic">▶️</span><span class="ev">step_start</span>
+          <span class="txt">步 3/4 <span class="bt think">🧠 思考</span> · 设计改造面与不变量<span class="f"> · <span class="k">step_id</span>=3 · <span class="k">criteria</span>=改造面成文</span></span>
+        </div>
+
+        <div class="sec" style="margin:14px 0 6px;padding-top:10px"><b>② 三席路径</b>（seats_enter → seat_start → seat_end，seat_end 带观点正文）</div>
+
+        <div class="step-row lv3 seat" data-ev="seats_enter" data-f="tool_results,steps">
+          <span class="ic">💬</span><span class="ev">seats_enter</span>
+          <span class="txt">三席进场<span class="f"> · <span class="k">tool_results</span>=2 条 · <span class="k">steps</span>=4</span></span>
+          <span class="sub">并行质询</span>
+        </div>
+
+        <div class="step-row lv3 seat" data-ev="seat_start" data-f="model">
+          <span class="ic">🧠</span><span class="ev">seat_start</span>
+          <span class="txt"><b>MiniMax-M3</b><span class="f"> · <span class="k">model</span>=MiniMax-M3</span></span>
+          <span class="sub">席 1</span>
+        </div>
+        <div class="step-row lv3 seat" data-ev="seat_start" data-f="model">
+          <span class="ic">🧠</span><span class="ev">seat_start</span>
+          <span class="txt"><b>qwen3.8-max</b><span class="f"> · <span class="k">model</span>=qwen3.8-max</span></span>
+          <span class="sub">席 2</span>
+        </div>
+        <div class="step-row lv3 seat" data-ev="seat_start" data-f="model">
+          <span class="ic">🧠</span><span class="ev">seat_start</span>
+          <span class="txt"><b>glm-5.3</b><span class="f"> · <span class="k">model</span>=glm-5.3</span></span>
+          <span class="sub">席 3</span>
+        </div>
+
+        <!-- 逐字流：reasoning_chunk（三席额外带 model） -->
+        <div class="step-row lv3 reasoning" data-ev="reasoning_chunk" data-f="text,model">
+          <span class="ic">🤔</span><span class="ev">reasoning_chunk</span>
+          <span class="txt">正在权衡前端先行与数据层先行的兼容面…<span class="f"> · <span class="k">model</span>=MiniMax-M3</span></span>
+        </div>
+
+        <!-- seat_end：带 text 观点正文（三席观点唯一来源） -->
+        <div class="step-row lv3 seat ok" data-ev="seat_end" data-f="model,ok,latency_ms,chars,text">
+          <span class="ic">📝</span><span class="ev">seat_end</span>
+          <span class="txt"><b>MiniMax-M3</b> 给出观点<span class="f"> · <span class="k">ok</span>=true · <span class="k">latency_ms</span>=8200 · <span class="k">chars</span>=1240</span></span>
+          <span class="sub">席 1</span>
+        </div>
+        <div class="seatview"><span class="who">text（观点正文全文）</span>主张前端三件套直接落地：渲染器独立成模块、调用点两处按 role 分流、宽度改跟随窗口。数据层不动，风险最小。</div>
+
+        <div class="step-row lv3 seat ok" data-ev="seat_end" data-f="model,ok,latency_ms,chars,text">
+          <span class="ic">📝</span><span class="ev">seat_end</span>
+          <span class="txt"><b>qwen3.8-max</b> 给出观点<span class="f"> · <span class="k">ok</span>=true · <span class="k">latency_ms</span>=9100 · <span class="k">chars</span>=1080</span></span>
+          <span class="sub">席 2</span>
+        </div>
+        <div class="seatview"><span class="who">text（观点正文全文）</span>建议数据层先行：先把消息模型统一，再谈样式。否则前端只是给旧结构套新皮。</div>
+
+        <div class="step-row lv3 seat ok" data-ev="seat_end" data-f="model,ok,latency_ms,chars,text">
+          <span class="ic">📝</span><span class="ev">seat_end</span>
+          <span class="txt"><b>glm-5.3</b> 给出观点<span class="f"> · <span class="k">ok</span>=true · <span class="k">latency_ms</span>=7400 · <span class="k">chars</span>=960</span></span>
+          <span class="sub">席 3</span>
+        </div>
+        <div class="seatview"><span class="who">text（观点正文全文）</span>折中：前端先行、接口留位。宽度与渲染是用户当下可见的痛点，先解决；数据层登记为后续项。</div>
+
+        <div class="sec" style="margin:14px 0 6px;padding-top:10px"><b>③ 收口</b></div>
+
+        <div class="step-row lv3" data-ev="round_start" data-f="round,phase">
+          <span class="ic">🔄</span><span class="ev">round_start</span>
+          <span class="txt">第 3 轮开始<span class="f"> · <span class="k">round</span>=3 · <span class="k">phase</span>=synthesize</span></span>
+        </div>
+
+        <div class="step-row lv3 flow" data-ev="content_chunk" data-f="text">
+          <span class="ic">✍️</span><span class="ev">content_chunk</span>
+          <span class="txt">统合稿逐字流出：采用折中方案，前端先行…<span class="caret"></span><span class="f"> · <span class="k">text</span>=增量</span></span>
+        </div>
+
+        <div class="step-row ok" data-ev="deliver" data-f="branch,bytes">
+          <span class="ic">📦</span><span class="ev">deliver</span>
+          <span class="txt">交付拼接<span class="f"> · <span class="k">branch</span>=main · <span class="k">bytes</span>=2458</span></span>
+          <span class="sub">2.4KB</span>
+        </div>
+
+        <div class="step-row ok" data-ev="done" data-f="rounds,model_calls">
+          <span class="ic">🏁</span><span class="ev">done</span>
+          <span class="txt">完成<span class="f"> · <span class="k">rounds</span>=3 · <span class="k">model_calls</span>=7</span></span>
+          <span class="sub">3 轮 · 7 调用</span>
+        </div>
+
+        <!-- 助手正文：文档流 + behavior 徽标 + end 标记 -->
+        <div class="msg assistant" data-actor="assistant" data-beh="final" data-end="model_done">
+          <div class="meta"><span>assistant · card_018</span><span class="beh final" data-beh="final">final</span><span class="end end-model_done">end:model_done</span></div>
+          <div class="md">
+            <p>采用<strong>折中方案</strong>（前端先行、数据层接口留位）。要点：</p>
+            <ul>
+              <li><strong>渲染器</strong>：零依赖 <code>md.js</code>，escape-first 防注入</li>
+              <li><strong>统一列</strong>：<code>min(88%, 62em)</code>，压缩先裁留白</li>
+              <li><strong>行距</strong>：1.85，正文更好读</li>
+            </ul>
+            <table>
+              <tr><th>项</th><th>方案</th><th>状态</th></tr>
+              <tr><td>渲染</td><td>md.js</td><td>✅</td></tr>
+              <tr><td>宽度</td><td>62em</td><td>✅</td></tr>
+            </table>
+            <blockquote>过程痕迹非持久——本次不涉及数据层。</blockquote>
+          </div>
+        </div>
+
+        <!-- ============ 回合 2：异常与特殊 ============ -->
+        <div class="sec"><b>回合 2 · 异常与特殊</b>（error / rescue / proposal / 卡间消息 / 工具块）</div>
+
+        <div class="step-row" data-ev="run_start" data-f="pair_id,chars">
+          <span class="ic">🚀</span><span class="ev">run_start</span>
+          <span class="txt">一轮开始<span class="f"> · <span class="k">pair_id</span>=card_015 · <span class="k">chars</span>=1830</span></span>
+        </div>
+
+        <div class="step-row err" data-ev="error" data-f="error,rounds">
+          <span class="ic">⛔</span><span class="ev">error</span>
+          <span class="txt">模型响应解析失败<span class="f"> · <span class="k">error</span>=JSONDecodeError · <span class="k">rounds</span>=1</span></span>
+          <span class="sub">重试 1/3</span>
+        </div>
+
+        <div class="step-row" data-ev="rescue" data-f="count">
+          <span class="ic">🛟</span><span class="ev">rescue</span>
+          <span class="txt">文本抢救：截取可用片段续跑<span class="f"> · <span class="k">count</span>=128</span></span>
+          <span class="sub">128 字符</span>
+        </div>
+
+        <div class="step-row ok" data-ev="proposal" data-f="count,cards[]">
+          <span class="ic">✚</span><span class="ev">proposal</span>
+          <span class="txt">建卡 <b>card_019</b><span class="f"> · <span class="k">count</span>=1 · <span class="k">cards</span>=[card_019]</span></span>
+          <span class="sub">1 卡</span>
+        </div>
+
+        <!-- 卡间消息 ×3（Ⅰ 类） -->
+        <div class="cmsg ask" data-cm="msg_ask" data-actor="card:card_015">
+          <div class="bar"></div>
+          <div class="body">
+            <div class="head">
+              <span class="tag">msg_ask · 询问</span><span class="must">须回应</span>
+              <span class="dir">card_015 → card_018</span>
+            </div>
+            <div class="txt">会话流改造是否包含过程事件样式？请给出范围判断。</div>
+            <div class="replyto">自动回 msg_answer · 沉默则本条挂起</div>
+          </div>
+        </div>
+
+        <div class="cmsg answer" data-cm="msg_answer" data-actor="card:card_018">
+          <div class="bar"></div>
+          <div class="body">
+            <div class="head">
+              <span class="tag">msg_answer · 应答</span>
+              <span class="dir">card_018 → card_015</span>
+            </div>
+            <div class="txt">包含。全部事件按真实载荷样式化，先出 HTML 原型。</div>
+            <div class="replyto">reply_to: msg_ask（原询问）</div>
+          </div>
+        </div>
+
+        <div class="cmsg notify" data-cm="msg_notify" data-actor="card:card_018">
+          <div class="bar"></div>
+          <div class="body">
+            <div class="head">
+              <span class="tag">msg_notify · 通知</span>
+              <span class="dir">card_018 → card_015</span>
+            </div>
+            <div class="txt">原型已落盘 docs/exploration/，无需回应。</div>
+          </div>
+        </div>
+
+        <!-- 工具块（Ⅲ actor=tool） -->
+        <div class="sec"><b>工具块</b>（Ⅲ 对话块 · actor=tool）</div>
+        <div class="toolblock" data-actor="tool">
+          <span class="t">read_card</span>&nbsp; card_018<br>
+          <div class="args">{"work_id":"work_002","card_id":"card_018"}</div>
+          <div class="res">返回 224 行 · 块数 23 · expand:[§13.3]</div>
+        </div>
+
+        <!-- ============ 无发送方专区 ============ -->
+        <div class="sec"><b>无发送方 ×3</b>（常量表有名字，全 src <b>零 emit 调用点</b>——原型保留样式供查，实际不会出现）</div>
+
+        <div class="step-row void" data-ev="round_end" data-f="（无发送方）" data-void="round_end">
+          <span class="ic">🔚</span><span class="ev">round_end</span>
+          <span class="txt">轮结束<span class="f"> · 全 src 零 emit 调用点（仅常量表登记）</span></span>
+          <span class="sub">不会出现</span>
+        </div>
+
+        <div class="step-row void" data-ev="card_op" data-f="（无发送方）" data-void="card_op">
+          <span class="ic">🗂</span><span class="ev">card_op</span>
+          <span class="txt">卡操作<span class="f"> · message_runner.py:594 注：「card_op 并表随机械预检退役——全部工具统一 tool_result 一条通道」</span></span>
+          <span class="sub">不会出现</span>
+        </div>
+
+        <div class="step-row void" data-ev="triage_verdict" data-f="（无发送方）" data-void="triage_verdict">
+          <span class="ic">🚫</span><span class="ev">triage_verdict</span>
+          <span class="txt">旧判断事件<span class="f"> · 已退役，无发送方</span></span>
+          <span class="sub">不会出现</span>
+        </div>
+
+        <!-- ============ 清单外真实事件 ============ -->
+        <div class="sec"><b>清单外真实事件 ×1</b>（代码真在发，但不在 EVENT_TYPES，前端 switch 无 case）</div>
+
+        <div class="realnote">
+          <span class="tag">card_message</span> · 发送方 <code>card_tools.py:1181</code>，载荷 <code>msg_id / from / type</code>。
+          <b>不在 EVENT_TYPES 常量表里</b>（emit 不做类型校验），且 <code>stream.js</code> 的 switch 无此 case —— <b>前端收到即丢弃</b>。样式按 Ⅰ 类卡间消息复用即可。
+        </div>
+        <div class="step-row" data-ev="card_message" data-f="msg_id,from,type">
+          <span class="ic">✉️</span><span class="ev">card_message</span>
+          <span class="txt">卡间消息事件<span class="f"> · <span class="k">msg_id</span>=m_0031 · <span class="k">from</span>=card_015 · <span class="k">type</span>=msg_ask</span></span>
+          <span class="sub">现被丢弃</span>
+        </div>
+
+        <!-- 逐字流 2 种（清单） -->
+        <div class="sec"><b>逐字流 ×2</b>（TOKEN_EVENT_TYPES，载荷 {text}；三席额外带 {model}）</div>
+        <div class="step-row reasoning" data-ev="reasoning_chunk" data-f="text,model">
+          <span class="ic">🤔</span><span class="ev">reasoning_chunk</span>
+          <span class="txt">思考增量（斜体紫）<span class="f"> · <span class="k">text</span>=… · <span class="k">model</span>=MiniMax-M3</span></span>
+        </div>
+        <div class="step-row content" data-ev="content_chunk" data-f="text">
+          <span class="ic">✍️</span><span class="ev">content_chunk</span>
+          <span class="txt">正文增量（统合稿逐字流出）<span class="caret"></span><span class="f"> · <span class="k">text</span>=…</span></span>
+        </div>
+
+        <!-- ping -->
+        <div class="sec"><b>心跳 ×1</b>（非 data 帧，前端 EventSource 收不到）</div>
+        <div class="step-row dim" data-ev="ping" data-f="（SSE 注释行）">
+          <span class="ic">💓</span><span class="ev">ping</span>
+          <span class="txt">心跳<span class="f"> · routes.py:583 <span class="k">yield</span>=": ping\n\n" —— SSE 注释行，<b>onmessage 收不到</b></span></span>
+          <span class="sub">保活</span>
+        </div>
+
+        <!-- 结束原因样式表 -->
+        <div class="sec"><b>结束原因 END_VALUES ×4</b>（Ⅲ 对话块 · end 标记）</div>
+        <div class="msg assistant" data-end="model_done" style="padding:6px 0 2px">
+          <div class="meta"><span>assistant · 正常收尾</span><span class="end end-model_done">end:model_done</span></div>
+        </div>
+        <div class="msg assistant" data-end="policy_stop" style="padding:6px 0 2px">
+          <div class="meta"><span>assistant · 策略中止</span><span class="end end-policy_stop">end:policy_stop</span></div>
+        </div>
+        <div class="msg assistant" data-end="human_stop" style="padding:6px 0 2px">
+          <div class="meta"><span>assistant · 用户打断</span><span class="end end-human_stop">end:human_stop</span></div>
+        </div>
+        <div class="msg assistant" data-end="error" style="padding:6px 0 2px">
+          <div class="meta"><span>assistant · 异常结束</span><span class="end end-error">end:error</span></div>
+        </div>
+
+        <!-- 环节块 behavior 全表 -->
+        <div class="sec"><b>环节块 behavior ×6</b>（Ⅳ · 留痕徽标）</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;padding:2px 0 6px">
+          <span class="beh plan" data-beh="plan">plan · 拆解上板</span>
+          <span class="beh step" data-beh="step">step · 步完成</span>
+          <span class="beh execute_step" data-beh="execute_step">execute_step · 执行步</span>
+          <span class="beh think_step" data-beh="think_step">think_step · 思考步</span>
+          <span class="beh revision" data-beh="revision">revision · 改板</span>
+          <span class="beh final" data-beh="final">final · 收口</span>
+        </div>
+
+        <!-- 行为类型 -->
+        <div class="sec"><b>行为类型 ×2</b>（Ⅴ · 步骤类型，贴在计划与步骤行内）</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;padding:2px 0 6px">
+          <span class="bt execute">🔧 执行</span>
+          <span class="bt think">🧠 思考</span>
+        </div>
+
+        <div class="demo-note">演示样本：<b>类型与字段全部来自真实代码</b>（逐个 emit 调用点实读：message_runner.py / simple_service.py / routes.py / card_tools.py），数值为拟真示例。实际渲染由 stream.js / workspace.js 按此样式落地。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<pre id="checkout" hidden></pre>
+<script>
+/* ===== 自检（?check=1）同步执行 ===== */
+(function(){
+  if (new URLSearchParams(location.search).get("check") !== "1") return;
+  const out = [];
+  const evs = [...document.querySelectorAll("[data-ev]")].map(e => e.dataset.ev);
+  const wantEv = ["run_start","context","judgment","plan_created","step_start","step_advanced",
+    "round_start","round_end","tool_call","tool_result","seats_enter","seat_start","seat_end",
+    "deliver","proposal","done","error","rescue","card_op","ping","triage_verdict",
+    "reasoning_chunk","content_chunk"];
+  const missEv = wantEv.filter(w => !evs.includes(w));
+  out.push("EVENTS-23:" + (missEv.length === 0 ? "PASS" : "MISS " + missEv.join(",")));
+
+  const voids = [...document.querySelectorAll("[data-void]")].map(e => e.dataset.void);
+  out.push("VOID-3:" + (["round_end","card_op","triage_verdict"].every(w => voids.includes(w)) ? "PASS" : "FAIL"));
+
+  out.push("CARDMESSAGE:" + (document.querySelector('[data-ev="card_message"]') ? "PASS" : "FAIL"));
+
+  const cms = [...document.querySelectorAll("[data-cm]")].map(e => e.dataset.cm);
+  out.push("CARDMSG-3:" + (["msg_ask","msg_answer","msg_notify"].every(w => cms.includes(w)) ? "PASS" : "FAIL"));
+
+  const actors = [...document.querySelectorAll("[data-actor]")].map(e => e.dataset.actor);
+  out.push("ACTOR-4:" + (["human","assistant","tool"].every(w => actors.includes(w)) && actors.some(a => a.startsWith("card:")) ? "PASS" : "FAIL"));
+
+  out.push("BEH-6:" + (["plan","step","execute_step","think_step","revision","final"].every(w => document.querySelector('[data-beh="' + w + '"]')) ? "PASS" : "FAIL"));
+
+  const ends = [...document.querySelectorAll("[data-end]")].map(e => e.dataset.end);
+  out.push("END-4:" + (["model_done","policy_stop","human_stop","error"].every(w => ends.includes(w)) ? "PASS" : "FAIL"));
+
+  out.push("BT-2:" + (document.querySelector(".bt.execute") && document.querySelector(".bt.think") ? "PASS" : "FAIL"));
+
+  // 字段全覆盖：每个事件行必须标出真实字段
+  const noF = [...document.querySelectorAll("[data-ev]")].filter(e => !e.dataset.f).map(e => e.dataset.ev);
+  out.push("FIELDS-ALL:" + (noF.length === 0 ? "PASS" : "MISS " + noF.join(",")));
+
+  // CSS 规则核对（按样式表文本，不依赖窗口宽度）
+  let cssText = "";
+  try { cssText = [...document.styleSheets[0].cssRules].map(r => r.cssText).join("\n"); } catch (e) { cssText = ""; }
+  out.push("WIDTH-62EM:" + (cssText.includes("62em") ? "PASS" : "FAIL"));
+  out.push("LH-185:" + (cssText.includes("1.85") ? "PASS" : "FAIL"));
+
+  // 布局实测
+  const col = document.querySelector(".msgs"), ub = document.querySelector(".msg.user");
+  out.push("USER-IN-COL:" + (ub && col && ub.getBoundingClientRect().right <= col.getBoundingClientRect().right + 1 ? "PASS" : "FAIL"));
+  const a = document.querySelector(".msg.assistant");
+  out.push("ASSISTANT-FLOW:" + (getComputedStyle(a).backgroundColor === "rgba(0, 0, 0, 0)" ? "PASS" : "FAIL"));
+  out.push("COL-WIDTH:" + Math.round(col.getBoundingClientRect().width) + "px");
+  out.push("LH-PX:" + getComputedStyle(a).lineHeight);
+
+  const pre = document.getElementById("checkout");
+  pre.textContent = "CHECK-" + (out.some(s => s.includes("FAIL") || s.includes("MISS")) ? "FAIL" : "PASS") + "\n" + out.join("\n");
+})();
+</script>
+</body>
+</html>

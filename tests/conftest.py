@@ -38,7 +38,7 @@ def sandbox(tmp_path, monkeypatch):
     """把全部运行时根搬进 tmp_path，逐个用例一份干净沙箱。"""
     from src.api import file_tools, model_service, prompt_log
     from src.storage import (
-        canvas_store, card_store, data_snapshot,
+        canvas_store, card_db, card_store, data_snapshot,
         manuscript_store, session_store, work_store,
     )
 
@@ -53,6 +53,12 @@ def sandbox(tmp_path, monkeypatch):
     # 运行数据根：storage 五件套（shadow_store 经 card_store.WORKS_DIR 跟随）
     for mod in (card_store, work_store, canvas_store, session_store, manuscript_store):
         monkeypatch.setattr(mod, "WORKS_DIR", works)
+
+    # [卡片存储迁移 SQLite] card_db **不设模块级路径常量**——库路径调用时从
+    # card_store.WORKS_DIR 派生，故上面一行 patch 已自动覆盖它（新模块沙箱跟随）。
+    # 这里显式清掉它的连接/锁缓存：用例之间 work_id 相同（work_001）但库在不同
+    # tmp 目录，缓存按库绝对路径索引，跨用例残留会连到上一个沙箱的库。
+    card_db.reset_caches()
 
     # 快照根：BASE_DIR 用于 _iter_protected_files 与相对路径计算
     monkeypatch.setattr(data_snapshot, "BASE_DIR", base)
@@ -77,7 +83,46 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.delenv("MOCK_LLM", raising=False)
     monkeypatch.setattr(model_service, "_gateway", None)
 
+    # [消息底座能力对齐 2026-10-13] 卡级事件流的进程内 seq 游标：每个用例一份
+    # 沙箱文件树 ⇒ 游标必须随之清零（否则用例 B 会接着用例 A 的号往下取，
+    # 而它面对的已是一个全新的空文件）。
+    from src.storage import event_log
+    monkeypatch.setattr(event_log, "_seq_cursor", {})
+    event_log._pending.clear()
+
     yield SimpleNamespace(base=base, works=works, logs=logs, tmp=tmp_path)
+
+    # [卡片存储迁移 SQLite] 用例一结束就关掉 card_db 的长活连接——否则打开的
+    # cards.db / -wal / -shm 句柄会让 pytest 的 tmp 目录清理在 Windows 上卡死
+    # （实测：测试跑完到 100% 却挂十几分钟不退出）。
+    card_db.reset_caches()
+
+
+def prime_card_session(work_id: str, card_id: str) -> None:
+    """把卡片的会话文件**就地升成 V2 空会话**（只写 V2 头、零会话块）。
+
+    [卡片底座第一步 2026-10-14] 为什么需要：``card_store.create_card`` 会给每张卡
+    铺一个 **V1 占位**会话文件（``<!-- session: card_NNN, created: ... -->``，
+    card_store.py:879-886），于是**首次落块**要走 ``session_facade.append`` 的
+    「V1→V2 现场升格」分支——那条分支用 ``tmp→os.replace``。
+
+    而 Windows 下 ``os.replace`` 与**并发读句柄**互斥（POSIX 允许 rename 覆盖被读
+    的文件，Windows 不允许）：用例的「每 50ms 读一次会话」轮询会与收件方首次落块
+    的 replace 撞车，实测偶发 ``WinError 5 拒绝访问``（重试也压不住——读句柄在
+    加载下持续占着）。那是**既有隐患**（与本批改造无关），用例按「会话已升 V2」
+    铺好即绕开——**不改产品行为**，只让用例不踩那条路。
+
+    安全闸：已有会话块（``---MSG---``）或已是 V2 的文件**一律不动**。
+    """
+    from src.storage import session_facade, session_store
+
+    p = session_facade._session_path(work_id, card_id)
+    text = p.read_text(encoding="utf-8") if p.exists() else ""
+    if session_facade._detect_format(text) == 2 or session_store.MARKER in text:
+        return
+    session_facade._atomic_write_text(
+        p, session_facade._render_v2_header(
+            session_facade._default_header(card_id)))
 
 
 @pytest.fixture

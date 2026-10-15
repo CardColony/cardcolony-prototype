@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from src.storage import session_facade, session_store  # noqa: F401
+from src.storage import card_store, session_facade, session_store  # noqa: F401
 from src.thinkchain import board as board_mod
 from src.thinkchain import finalize as finalize_mod
 
@@ -52,10 +52,8 @@ async def test_finalize_three_step_sequence(work):
     note = await finalize_mod.run_finalize(wid, cid, "报告已完成并交付")
     assert "收口完成" in note
 
-    card_file = session_store.WORKS_DIR / wid / "cards" / f"{cid}.md"
-    card_text = card_file.read_text(encoding="utf-8")
-    # ② 卡面终态键（孤儿扫描判定源）
-    assert "thinkchain_final" in card_text
+    # ② 卡面终态键（孤儿扫描判定源；[卡片存储迁移 SQLite] 在库列 thinkchain_final）
+    assert "thinkchain_final" in (card_store._meta_of(wid, cid) or {})
 
     # ① final 块落档（收口终态＋计划名＋各步成果×判据）
     blocks = await session_facade.read(wid, cid)
@@ -111,8 +109,7 @@ async def test_step_complete_last_step_triggers_finalize_end_to_end(work):
     assert r2["ok"] and r2["data"]["all_steps_done"] is True
     assert "收口完成" in r2["data"]["message"]
     # 收口三件全部在盘：终态键＋final 块＋板清理
-    card_text = (session_store.WORKS_DIR / wid / "cards" / f"{cid}.md").read_text(encoding="utf-8")
-    assert "thinkchain_final" in card_text
+    assert "thinkchain_final" in (card_store._meta_of(wid, cid) or {})
     assert not board_mod.plan_path(wid, cid).exists()
     blocks = await session_facade.read(wid, cid)
     assert [b for b in blocks if b.get("behavior") == "final"]

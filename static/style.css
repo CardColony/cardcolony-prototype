@@ -106,6 +106,42 @@ a { color: inherit; text-decoration: none; }
   font-family: var(--mono);
 }
 
+/* ============ [顶栏整合 2026-10-13] 聊天页单栏（原 .topbar 48px ＋ .ws-head ~35px 两条叠加）============
+   用户 2026-10-13 17:17 四条裁定：①剧本架改图标 ②去「← 画布」（面包屑首段＝项目名＝根卡，
+   点它即回画布；不再同时显示项目名与根卡）③发送/停止合并为输入条一个两态图标按钮
+   ④去「ⓘ 卡详情」顶部按钮。省下约 52px 高度全给对话区。
+   作用域：.work-page .topbar —— 剧本架页（.shelf-page > .topbar）高度不受影响。 */
+.work-page .topbar { height: 44px; gap: 8px; padding: 0 14px; }
+
+/* 画布专属件（zoomDisplay/reorganizeBtn/newCardBtn）：聊天态隐藏、画布态显示。
+   用 display 而非删元素——canvas.js:33-35 顶层即取用、:1436/:1453 直接挂 onclick，
+   删元素会 TypeError 让整个画布脚本死掉。 */
+.app-main[data-view="chat"] .topbar .canvas-only { display: none; }
+.app-main[data-view="canvas"] #chatCrumb { display: none; }
+
+/* 图标按钮（剧本架）：无文字、无箭头，一枚 16×16 内联 SVG */
+.ico-btn {
+  width: 28px; height: 28px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  color: var(--text-soft); padding: 0;
+}
+.ico-btn svg { width: 16px; height: 16px; display: block; }
+.ico-btn:hover { background: var(--panel-hover); color: var(--text); }
+.bsep { width: 1px; height: 18px; background: var(--border); flex: none; }
+
+/* 聊天态面包屑：首段＝项目名＝根卡（可点回画布）｜中间段＝祖先卡（可点切卡）｜末段＝当前卡（不可点） */
+.topbar .crumb .cseg {
+  background: transparent; border: none; font-family: inherit; font-size: 13px;
+  color: var(--dim); padding: 3px 7px; border-radius: 4px; white-space: nowrap;
+  max-width: 230px; overflow: hidden; text-overflow: ellipsis;
+}
+.topbar .crumb .cseg.root { color: var(--text); font-weight: 600; }
+.topbar .crumb .cseg.mid:hover,
+.topbar .crumb .cseg.root:hover { background: var(--panel-hover); color: var(--text); }
+.topbar .crumb .cseg.cur { color: var(--text); font-weight: 600; }
+.topbar .crumb .csep { color: var(--stroke-soft); font-size: 12px; flex: none; }
+
 /* ============ 剧本架页 ============ */
 .shelf-page { height: 100vh; display: flex; flex-direction: column; }
 .shelf-main {
@@ -429,380 +465,9 @@ a { color: inherit; text-decoration: none; }
 .app-main[data-view="chat"] #workspace { visibility: visible; }
 .app-main[data-view="chat"] #viewport { visibility: hidden; }
 
-/* ---- 左栏对话导航（44px 窄条 ⇄ 260px 全树，两态由 .rail 类驱动）---- */
-.app-nav {
-  position: relative;
-  width: 260px;
-  flex: none;
-  background: var(--bg-deep);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.app-nav.rail { width: 44px; }
-.nav-rail { display: none; }
-.app-nav.rail .nav-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding-top: 16px;
-  flex: none;
-}
-.nav-rail-btn {
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--dim);
-  font-size: 14px;
-}
-.nav-rail-btn:hover { color: var(--text); background: var(--panel-hover); }
-.nav-rail-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--c-work);   /* 当前项目＝根＝金（§3.5 层级色点） */
-}
-.nav-tree {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 8px 0 24px;
-}
-/* 窄条态：树整体藏起，悬停（或 ☰ 钉住）时以浮层现身 */
-.app-nav.rail .nav-tree {
-  display: none;
-  position: absolute;
-  top: 0;
-  left: 44px;
-  width: 260px;
-  max-height: 100%;
-  background: var(--bg-deep);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  z-index: 200;
-}
-.app-nav.rail:hover .nav-tree,
-.app-nav.rail.pinned .nav-tree { display: block; }
-
-/* 分组头（项目行）：12px / var(--text-soft) / letter-spacing 1px（§3.5 同 .blocktitle 口径） */
-.nav-phead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 12px;
-  font-size: 12px;
-  color: var(--text-soft);   /* [D1 主界面优化] 深底次级字可读档 */
-  letter-spacing: 1px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.nav-phead:hover { background: var(--panel-hover); }
-.nav-phead.current { color: var(--text); }
-.nav-pname { overflow: hidden; text-overflow: ellipsis; }
-.nav-pcount { color: var(--dim); flex: none; }   /* [D2] --dimmer 禁入文字色 */
-.nav-ptime { margin-left: auto; color: var(--dim); font-size: 12px; flex: none; }   /* [D2/D3] 可读档＋12px 下限 */
-.nav-padd {
-  display: none;
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--dim);
-  font-size: 12px;
-  padding: 0 8px;
-  line-height: 1.5;
-}
-.nav-phead:hover .nav-padd { display: inline-block; }
-.nav-padd:hover { color: var(--text); }
-/* [B5 主界面优化·新增] 项目行 hover 显示「打开 →」入口：进项目画布，与「点行进对话」并存 */
-.nav-popen {
-  display: none;
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text-soft);
-  font-size: 12px;
-  padding: 0 8px;
-  line-height: 1.5;
-}
-.nav-phead:hover .nav-popen { display: inline-block; }
-.nav-popen:hover { color: var(--text); border-color: var(--text); }
-
-/* 卡行：13px/30px（§3.5）；缩进每层 +14px 由行内 padding-left 控制 */
-.nav-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;            /* [S2/R-17] 固定行高 38px＝NAV_ROW_HEIGHT（虚拟滚动前缀和依赖此值） */
-  line-height: 38px;
-  padding-right: 12px;
-  font-size: 13px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.nav-card:hover { background: var(--panel-hover); }
-.nav-card:hover .nav-ctitle { color: var(--text); text-decoration: underline; }   /* [B10 主界面优化·新增] hover 可点视觉 */
-.nav-card.current {
-  background: rgba(56,139,253,0.10);
-  box-shadow: inset 2px 0 0 #58a6ff;   /* 当前卡：左 2px 强调条＋底色（§3.5） */
-}
-.nav-twist {
-  flex: none;
-  width: 24px;            /* [B2 主界面优化] 独立 24px 热区：▸/▾ 只管展开收起，与行点击分离 */
-  height: 24px;
-  line-height: 1.4;
-  text-align: center;
-  color: var(--dim);
-  font-size: 12px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.nav-twist.none { visibility: hidden; }
-.nav-twist:hover { color: var(--text); background: var(--panel-hover); }
-.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.dot.root { background: var(--c-work); }     /* 根＝金 */
-.dot.mid  { background: var(--c-setting); }  /* 中间＝蓝 */
-.dot.leaf { background: #c9d1d9; }             /* [B3 主界面优化] 叶＝中性浅灰（与类型色 --c-idea 解耦，灰色只表"叶子"） */
-.nav-ctitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* [S2/R-32] 单行截断：nowrap＋ellipsis＋悬停全称（title 属性） */
-/* [S2/R-16] 虚拟滚动骨架：行 absolute 定位在 spacer 内（前缀和算 top） */
-.nav-vspacer { position: relative; }
-.nav-vrow { position: absolute; left: 0; right: 0; }
-/* [S2/R-22] 异步加载三态就地：行内转圈 / 行内「加载失败·点此重试」 */
-.nav-state { flex: none; margin-left: 4px; }
-.nav-loading {
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--dim);
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: navspin 0.8s linear infinite;
-}
-@keyframes navspin { to { transform: rotate(360deg); } }
-.nav-err {
-  border: none;
-  background: transparent;
-  color: var(--dim);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0;
-}
-.nav-err:hover { color: var(--text); }
-/* [B4 主界面优化] .nav-ctime 行内时间戳退役：活跃/分支活跃走 tooltip（腾 ~50px 还给标题） */
-.nav-more {
-  display: none;
-  flex: none;
-  width: 18px;
-  border: none;
-  background: transparent;
-  color: var(--dim);
-  font-size: 13px;
-  line-height: 1;
-  padding: 0;
-}
-.nav-card:hover .nav-more { display: inline-block; }
-.nav-more:hover { color: var(--text); }
-.nav-menu {
-  position: fixed;
-  z-index: 300;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  padding: 4px;
-  min-width: 120px;
-}
-.nav-menu-item {
-  padding: 8px 12px;
-  font-size: 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.nav-menu-item:hover { background: var(--panel-hover); }
-.nav-empty {
-  padding: 24px 16px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-soft);
-}
-
-/* [B3 主界面优化·新增] 操作说明（▸ 展开 · 点行进对话 · 「打开 →」进画布） */
-.nav-hint {
-  padding: 4px 12px 8px;
-  font-size: 12px;
-  color: var(--text-soft);
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-/* ==================== [S3 交互与呈现族] 找通道/定位/呈现（R-18/20/21/24/26/27/28/31/33/35） ==================== */
-
-/* [S3/R-24] 左栏顶部工具行：搜索框＋「收起全部」＋「定位」（容器在 work.html #navTop） */
-.nav-top {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 8px 4px;
-  flex: none;
-}
-.nav-search-input {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-  font-size: 12px;
-  padding: 4px 8px;
-  outline: none;
-}
-.nav-search-input:focus { border-color: var(--dim); }
-.nav-search-input::placeholder { color: var(--dim); }
-.nav-tool-btn {
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--dim);
-  font-size: 12px;
-  padding: 4px 8px;
-  line-height: 1.5;
-  cursor: pointer;
-}
-.nav-tool-btn:hover { color: var(--text); border-color: var(--text); }
-/* rail 态（44px 窄条/画布悬停浮层）不显示工具行与面包屑槽 */
-.app-nav.rail .nav-top,
-.app-nav.rail .nav-crumb-box { display: none !important; }
-
-/* [S3/R-24] 搜索独立结果层：叠加在 navTree 之上（树 DOM 全程零触碰，V3-F2） */
-.nav-find-layer {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  max-height: 70%;
-  overflow-y: auto;
-  background: var(--bg-deep);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  z-index: 210;
-  padding: 4px 0 8px;
-}
-.nav-find-head {
-  padding: 8px 12px 4px;
-  font-size: 12px;
-  color: var(--text-soft);
-}
-.nav-find-item { padding: 4px 12px; cursor: pointer; }
-.nav-find-item:hover { background: var(--panel-hover); }
-.nav-find-title {
-  font-size: 13px;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.nav-find-meta {
-  font-size: 11px;
-  color: var(--dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.nav-find-empty { padding: 4px 12px 8px; }
-
-/* [S3/R-27/R-18] 面包屑：同一 UI 两态——静止＝文档流槽位（box 恒定占位防跳动）；
-   滚动＝absolute 悬浮可视区顶部（不设第二套 UI） */
-.nav-crumb-box { flex: none; position: relative; }
-.nav-crumb {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 12px;
-  overflow: hidden;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--dim);
-  background: var(--bg-deep);
-  border-bottom: 1px solid var(--border);
-}
-.nav-crumb-seg {
-  border: none;
-  background: transparent;
-  padding: 0;
-  font-size: 12px;
-  color: var(--dim);
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 72px;
-}
-.nav-crumb-seg:hover { color: var(--text); text-decoration: underline; }
-.nav-crumb-seg.proj { color: var(--text-soft); }
-.nav-crumb-sep { flex: none; color: var(--dim); }
-.nav-crumb.sticky {
-  position: absolute;
-  left: 0;
-  right: 0;
-  z-index: 205;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.35);
-}
-
-/* [S3/R-31] 引导线：第 4 档后缩进封顶转竖线引导（宽度=深度×档距，JS 设 background-size） */
-.nav-card.nav-guide {
-  background-image: repeating-linear-gradient(to right,
-    transparent 0, transparent 3px, var(--border) 3px, var(--border) 4px);
-  background-repeat: no-repeat;
-  background-position: 10px center;
-}
-.nav-card.nav-guide:hover {
-  background-color: var(--panel-hover);
-  background-image: repeating-linear-gradient(to right,
-    transparent 0, transparent 3px, var(--border) 3px, var(--border) 4px);
-}
-.nav-card.nav-guide.current {
-  background-color: rgba(56,139,253,0.10);
-  background-image: repeating-linear-gradient(to right,
-    transparent 0, transparent 3px, var(--border) 3px, var(--border) 4px);
-}
-
-/* [S3/R-33②] 节点行活跃标记（左栏常显徽章仅此 1 种；项目行聚合复用 pcount/ptime 既有两类） */
-.nav-badge-active {
-  flex: none;
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-soft);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0 4px;
-  line-height: 1.5;
-}
-
-/* [S3/R-21] 已删卡灰态：点击瞬间快照判定（缺失→置灰不跳；恢复→自动褪灰） */
-.nav-card.deleted { opacity: 0.55; }
-.nav-card.deleted .nav-ctitle { color: var(--dim); text-decoration: line-through; }
-
-/* [S3/R-35] 空项目态：展开且零卡 → 「空·去新建」（data-add 复用建卡入口，不弹窗） */
-.nav-pempty {
-  flex: none;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dim);
-  font-size: 11px;
-  padding: 0 4px;
-  line-height: 1.5;
-  cursor: pointer;
-}
-.nav-pempty:hover { color: var(--text); border-color: var(--text); }
+/* ---- 左侧边栏样式已整段迁至 static/nav.css（[左栏接线 步2]，左栏样式的唯一真相）----
+   本文件不得再出现任何左栏选择器规则：两处并存会互相打架——旧的项目行 hover
+   背景色会盖掉新卡片式的间距渐变（卡片之间就没间距了）。 ---- */
 
 .ws-right {
   flex: 1;
@@ -812,22 +477,10 @@ a { color: inherit; text-decoration: none; }
   overflow: hidden;
 }
 
-/* ---- 对话区头部：← 画布（纯显隐）＋ ⓘ 卡详情 ---- */
-.ws-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  flex: none;
-}
-.ws-head-title {
-  font-size: 13px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* ---- [顶栏整合 2026-10-13] .ws-head / .ws-back 已退役（DOM＋样式＋接线三处同删，不留死件）：
+   顶部第二条栏整条删除——卡标题并入顶栏聊天态面包屑（#chatCrumb 末段），
+   「← 画布」职责并入面包屑首段点击（用户 17:17 ②），「ⓘ 卡详情」顶部按钮删除（用户 17:17 ④，
+   只留右缘 .insp-tab）。原规则见 docs/exploration/_backup_topbar_20261013/style.css.bak:445-459/:507-518。 ---- */
 
 /* ---- 右栏 Inspector：卡片编辑能力搬迁至此（原 .ws-left 职责），默认收起 32px ---- */
 .inspector {
@@ -874,19 +527,8 @@ a { color: inherit; text-decoration: none; }
 .blocktitle:first-child { margin-top: 0; }
 .blocktitle .note { color: var(--dim); font-size: 12px; text-transform: none; letter-spacing: 0; }   /* [D2/D3] */
 
-/* 工作区返回按钮（左栏 header 区） */
-.ws-back {
-  display: inline-block;
-  background: transparent;
-  border: none;
-  color: var(--text-soft);   /* [D1 主界面优化] 可读档 */
-  font-size: 13px;
-  padding: 4px 8px 4px 0;
-  margin-bottom: 6px;
-  cursor: pointer;
-  border-radius: 6px;
-}
-.ws-back:hover { color: var(--text); }
+/* ---- [顶栏整合 2026-10-13] .ws-back 已退役（元素随 .ws-head 整条删除，全仓零引用）：
+   原「工作区返回按钮」样式见 docs/exploration/_backup_topbar_20261013/style.css.bak:507-518。 ---- */
 
 .ws-title {
   font-size: 18px;
@@ -1048,16 +690,45 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 }
 
 /* ============ 讨论区 ============ */
+/* [对话区会话流样式 2026-10-12] 整个对话流＝一张大卡片（用户 21:32 裁定）：
+   白卡/深卡＝当前主题 --panel，圆角＋细描边；卡片内全部消息直接排开。 */
 .chat {
   flex: 1;
-  padding: 18px 22px;
+  width: 100%;
+  /* [对话流全消息类型 2026-10-13] 卡片不再设像素宽上限（原型 v4 无此上限）：
+     宽屏下卡片随窗口铺满，文字列由 .msgs 的 min(88%, 62em) 居中约束——
+     与原型形态一致（全宽面板 ＋ 居中内容列）。原 max-width:1100px 已退役。 */
+  margin: 16px auto;
+  padding: 24px 32px 40px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+/* [对话区会话流样式 2026-10-12 · 用户 23:12 裁定] 压缩时先裁两侧留白、文字区少缩：
+   窗口收窄 → .chat 左右 padding/margin 逐档收窄，把宽度让给内容列（.msgs）。 */
+@media (max-width: 1400px) {
+  .chat { padding-left: 24px; padding-right: 24px; }
+}
+@media (max-width: 1280px) {
+  .chat { margin-left: 8px; margin-right: 8px; padding-left: 16px; padding-right: 16px; }
+}
+/* [对话区会话流样式 2026-10-12] 统一内容列：卡片内所有消息共用一条列。
+   宽度 min(70%, 48em)——用户 19:08「按照70%自适应」＋19:32「需要一个门槛值」；
+   48em＝W3C clreq 横排最大行长 48 字（14px 下 672px 内容宽）。 */
+.msgs {
+  width: 100%;
+  max-width: min(88%, 62em);   /* [对话流全消息类型 2026-10-13] 用户 00:07「整体宽度再宽一点，现在太局促了」→ 62em（14px 下 868px）；88% 保窄窗跟随 */
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
 }
 .msg {
-  max-width: min(82%, 720px);
+  max-width: 100%;
+  margin: 2px 0;
   border-radius: 10px;
   padding: 12px 16px;
   font-size: 13px;
@@ -1065,8 +736,20 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   word-wrap: break-word;
   white-space: pre-wrap;
 }
-.msg.user { align-self: flex-end; background: var(--c-user); border: 1px solid var(--c-user-border); }   /* [C6/D4 主界面优化] 硬编码色收编生态 token */
-.msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); }
+.msg.user { align-self: flex-end; background: var(--c-user); border: 1px solid var(--c-user-border); padding: 8px 12px; margin: 8px 0 4px; }   /* [C6/D4 主界面优化] 硬编码色收编生态 token */
+/* [对话区会话流样式 2026-10-12] 助手＝文档流：无边框无底色（规格 13.3 双形态；
+   用户 20:06「没有任意agent是包在气泡里的」）；14px/1.75 按规格；解除 pre-wrap
+   （Markdown 渲染出的标签间换行在 pre-wrap 下会变可见空行）。 */
+.msg.assistant {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  line-height: 1.85;   /* [对话流全消息类型 2026-10-13] 用户 00:07「行间距再多一点点」1.75→1.85 */
+  padding: 4px 0 16px;
+  margin: 4px 0;
+  white-space: normal;
+}
 .msg pre {
   background: var(--bg-deep);
   border: 1px solid var(--border);
@@ -1090,8 +773,8 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 }
 .msg.thinking {
   align-self: flex-start;
-  background: var(--panel);
-  border: 1px dashed var(--border);
+  background: transparent;
+  border: none;
   color: var(--text-soft);   /* [D1 主界面优化] 可读档 */
   font-style: italic;
 }
@@ -1116,7 +799,6 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border: 1px solid #1f6f43;
   border-radius: 8px;
   padding: 8px 12px;
-  max-width: min(82%, 720px);
   line-height: 1.8;
 }
 .sys-newcards b { color: var(--green); font-weight: 600; }
@@ -1137,7 +819,6 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 12px;
-  max-width: min(82%, 720px);
 }
 .sys-tools .te-item { margin-right: 12px; }
 .sys-tools .te-item.fail { color: var(--red); }
@@ -1150,7 +831,6 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border: 1px solid #6e2c2f;
   border-radius: 8px;
   padding: 8px 12px;
-  max-width: min(82%, 720px);
 }
 .sys-error .retry-btn {
   margin-left: 12px;
@@ -1192,7 +872,31 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   color: var(--dim);
   align-items: center;
 }
-.inputmeta .hint { color: var(--dim); }   /* [D2 主界面优化] --dimmer 禁入文字色 */
+/* [2026-10-13 用户令] .inputmeta .spacer 补上 flex:1——按钮族本应靠右，
+   但这条规则此前漏定义（全仓 .spacer{flex:1} 只在 .topbar/.metho-row/.metho-actions/
+   .draft-modal-foot 四处有），导致 spacer 成 0 宽空 span、三个按钮全挤在左边。
+   用户 2026-10-13 19:56：「发送按钮靠右好吗？什么软件按钮都靠左的？」 */
+.inputmeta .spacer { flex: 1; }
+
+/* ---- [顶栏整合 2026-10-13] 运行按钮：同一元素两态，纯图标无文字 ----
+   静止（.run.idle）＝发送｜运行中（.run.running）＝停止。
+   用户 2026-10-13 17:17 ③：「把发送按钮，处理成【发送前】、【运行中】（运行中就是停止按钮），
+   然后别他妈再用文字了，用图标」。原「■ 停止」（#stopBtn，顶栏）与文字「发送」（#sendBtn）
+   同删，合并到此一处。运行中**不禁用**——禁用就没法点停止。 */
+.run {
+  width: 30px; height: 30px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px; border: 1px solid transparent; padding: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.run svg { width: 16px; height: 16px; display: block; }
+.run .ic-stop { display: none; }
+.run.idle { background: #238636; border-color: #2ea043; color: #fff; }
+.run.idle:hover { background: #2ea043; }
+.run.running { background: transparent; border-color: var(--border); color: var(--red); }
+.run.running:hover { background: rgba(248, 81, 73, 0.12); border-color: var(--red); }
+.run.running .ic-send { display: none; }
+.run.running .ic-stop { display: block; }
 
 /* ============ Toast ============ */
 .toast-container {
@@ -1324,8 +1028,11 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
    逐字正文另有一条 `.msg.assistant.live`（助手消息本体，与用户消息同栏并列）。 */
 .step-row {
   align-self: flex-start;
-  max-width: min(82%, 720px);
   margin-top: 0;   /* [F1] 显式零上距（原负边距收紧已退役） */
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
   font-size: 13px;
   line-height: 1.6;
   color: var(--text-soft);
@@ -1333,6 +1040,54 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   word-break: break-word;
 }
 /* [F1] 连续环节负上距收紧已退役（可读性六病灶④；.step-row 主规则显式 margin-top: 0） */
+/* [对话流全消息类型 2026-10-13] 事件名徽标：全灰阶（用户 00:07「不要五颜六色，简单一点」） */
+/* [左对齐 2026-10-14 · 用户令 ①] 事件名定宽——原宽度随事件名长短浮动（run_start 137px、
+   step_start 213px），导致每行说明文字起点参差。定宽后所有行的「说明」同一列起。 */
+.step-row .ev {
+  flex: none;
+  width: 128px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-soft);
+  line-height: 1.6;
+}
+.step-row .txt { flex: 1; min-width: 0; }
+.step-row .txt b { color: var(--text); font-weight: 600; }
+/* 行尾状态槽：语义标记（✓/✗）只落这里，不做行首装饰（用户 08:39 裁定） */
+.step-row .sub { flex: none; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+/* 字段名值（真实载荷，逐个 emit 调用点实读） */
+.step-row .f { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.step-row .f .k { color: var(--dim); }
+.mk { font-family: var(--mono); font-size: 11px; font-weight: 700; line-height: 1; margin-right: 4px; }
+.mk.ok { color: var(--text-soft); }
+.mk.no { color: var(--red); }
+/* [左对齐 2026-10-14 · 用户令 ①] 缩进档退役——工具行曾比正文右移 40px（步骤 20+工具 20），
+   用户判「工具调用信息不左对齐」。层级不再靠缩进表达（靠事件名自身的层级语义）。
+   类名保留（JS 仍在用），padding 归零。 */
+.step-row.lv2, .step-row.lv3 { padding-left: 0; }
+/* 唯一保留的分色：错误红 */
+.step-row.fail { color: var(--red); }
+.step-row.err .ev { color: var(--red); border-color: var(--red); }
+/* 无发送方：虚线徽标 + 降透明（round_end / card_op / triage_verdict 全 src 零 emit） */
+.step-row.void { opacity: .55; }
+.step-row.void .ev { border-style: dashed; }
+/* 逐字流正文增量（光标） */
+.step-row.content .caret { display: inline-block; width: 2px; height: 13px; background: var(--dim); vertical-align: -2px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+/* 计划步骤清单（plan_created 的 steps[] 真实载荷展开） */
+.psteps { margin: 4px 0 8px 20px; border-left: 1px solid var(--border); padding-left: 12px; }
+.pstep { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--text-soft); padding: 2px 0; line-height: 1.6; }
+.pstep .f { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-left: auto; flex: none; }
+/* 步骤类型徽标（Ⅴ 行为类型：execute / think） */
+.bt { display: inline-flex; align-items: center; font-size: 12px; padding: 0 8px; border-radius: 99px; font-weight: 600; line-height: 1.7; background: var(--bg); color: var(--text-soft); border: 1px solid var(--border); }
 /* 正式回复过后的「收起/展开过程」开关：行仍是各自独立的条目，只是本组临时隐起来 */
 .step-toggle {
   align-self: flex-start;
@@ -1345,13 +1100,12 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 }
 /* [F1] 收起开关的负上距已退役（六病灶④） */
 .step-toggle:hover { background: var(--panel-hover); color: var(--text-soft); }
-.step-row.ok { color: var(--green); }
-.step-row.fail { color: var(--red); }
 .step-row .step-dim { color: var(--dim); }
-.step-row.has-detail { cursor: pointer; }
+.step-row.has-detail { cursor: pointer; flex-wrap: wrap; }
 .step-row.has-detail:hover { background: var(--panel-hover); border-radius: 4px; }
 .step-row .step-detail {
   display: none;
+  flex: 1 0 100%;
   margin: 4px 0 2px 16px;
   padding: 8px 8px;
   background: var(--bg-deep);
@@ -1364,10 +1118,63 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   max-height: 180px;
   overflow-y: auto;
 }
-/* 逐字正文＝「正在生成的助手消息」本体：复用 .msg/.msg.assistant 气泡，
-   仅以 dashed 边表示进行中（沿用 .msg.thinking 的进行中语义）。 */
-.msg.assistant.live { border-style: dashed; }
-.msg.assistant.live .live-reasoning {
+/* 逐字正文＝「正在生成的助手消息」本体：复用 .msg/.msg.assistant 文档流，
+   进行中不再用 dashed 边（助手已无边框）。 */
+/* [消息底座收尾 2026-10-14 · 件1] 选择器由 `.msg.assistant.live` 放宽为 `.msg.assistant`
+   ——刷新重放时主模型思考被挂进**正式回复气泡**内的同一弱化区，两处共用一套样式。 */
+/* ============ [think 可见 2026-10-14 · 用户令 ⑥] 可折叠思考块 ============
+   通用 agent 形态：头行「呼吸点 ＋ 思考中 ＋ 走秒 ＋ 折叠箭头」，正文灰色斜体流式。
+   思考结束→头行转「已思考 Ns」，正文保留（不擦）。用户判「think 的过程根本看不到、
+   思考过程全黑」——原实现是正文条目内的一行隐形小字，且接管时被整块替换。 */
+.msg.assistant .think {
+  margin: 0 0 12px;
+  border-left: 2px solid var(--border);
+  padding: 4px 0 4px 12px;
+}
+.msg.assistant .think-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--dim);
+  cursor: pointer;
+  user-select: none;
+}
+.msg.assistant .think-head:hover { color: var(--text-soft); }
+.msg.assistant .think-caret { margin-left: auto; }
+.msg.assistant .think-body {
+  margin-top: 8px;
+  color: var(--dim);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.msg.assistant .think.collapsed .think-body { display: none; }
+/* 呼吸点：调用中/思考中的通用「活动」指示（用户令 ⑤ 要的显示效果） */
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+  animation: breathe 1.2s ease-in-out infinite;
+  vertical-align: middle;
+}
+@keyframes breathe {
+  0%, 100% { opacity: .25; transform: scale(.8); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+/* 调用中行：整行呼吸（结果到达即停） */
+.step-row.running { color: var(--text-soft); }
+.step-row.running .sub { color: var(--text-soft); }
+.mk.run { color: var(--text-soft); }
+/* 兼容：旧重放路径若仍产出 live-reasoning，按同族样式收 */
+.msg.assistant .live-reasoning {
   margin-bottom: 8px;
   padding-bottom: 8px;
   border-bottom: 1px dashed var(--border);
@@ -1378,37 +1185,103 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   white-space: pre-wrap;
   word-break: break-word;
 }
-.msg.assistant.live .live-reasoning .live-icon { margin-right: 8px; opacity: .8; }
-.msg.assistant.live .live-content { white-space: pre-wrap; word-break: break-word; }
 
-/* [思考流支持层 2026-10-12] 三席思考块：**独立**弱化行、按模型分桶。
-   既有 .live-reasoning 规则全部作用域在 .msg.assistant.live 内（主模型思考在
-   正文条目里），席位思考是对话流里自己的一条，故另起一套作用域。 */
-.live-reasoning.seat-think {
-  margin: 8px 0;
-  padding: 6px 10px;
-  border-left: 2px solid var(--border);
-  color: var(--dim);
-  font-style: italic;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 180px;
-  overflow-y: auto;
+/* ============ [对话流全消息类型 2026-10-13] 三席并排卡片 ============
+   真实依据：三席 asyncio.gather 并发（simple_service.py:276），思考增量必然交织 ⇒ 按席分桶。
+   时序：seats_enter 一行 → seat_start 建卡（卡头＝模型名＋状态）→ reasoning_chunk(带 model)
+   流入卡内滚动区 → seat_end 输出正文入**同一滚动区**＋状态转「已返回」（不再单独成行）。
+   用户裁定：00:16「三席并排三张卡片，固定大小，带 think 过程和输出过程」；
+   00:16「think 和正文不是固定两个区域，而是滚动往上」；00:17「不需要单独一条表示观点已发出」。 */
+/* [左对齐 2026-10-14 · 用户令 ①] 席卡组不再右移 40px——与正文同一左缘 */
+.seats { display: flex; gap: 8px; margin: 8px 0; padding-left: 0; }
+.seat-card {
+  flex: 1 1 0; min-width: 0; height: 300px;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); overflow: hidden;
 }
-.live-reasoning.seat-think .live-icon { margin-right: 8px; opacity: .8; }
-.live-reasoning.seat-think .live-model {
-  display: inline-block;
-  margin-right: 8px;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  font-style: normal;
+.seat-card .sc-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  background: var(--panel-hover); font-size: 12px;
+}
+.seat-card .sc-head .m {
+  font-family: var(--mono); font-weight: 600; color: var(--text-soft); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.seat-card .sc-head .st {
+  flex: none; font-size: 12px; font-family: var(--mono);
+  border: 1px solid var(--border); border-radius: 99px;
+  padding: 0 8px; background: var(--panel); color: var(--dim);
+}
+.seat-card .sc-head .st.fail { color: var(--red); border-color: var(--red); }
+/* 单一滚动区：think 与正文同流（不是固定两个区域），容器滚到底 ⇒ 视觉上「滚动往上」 */
+.seat-card .sc-body {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px;
+  font-size: 12px; line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word; color: var(--text-soft);
+}
+.seat-card .sc-body .tk { color: var(--dim); font-style: italic; }
+.seat-card .sc-body .ot { color: var(--text); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.seat-card .sc-foot {
+  flex: none; padding: 4px 12px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--dim); font-family: var(--mono);
+  display: flex; justify-content: space-between;
+}
+
+/* ============ [对话区会话流样式 2026-10-12] Markdown 渲染元素 ============
+   助手文档流（.md）内部：标题/表格/代码块/引用/列表/分隔线/链接。
+   深色主题适配（token 化）；字号守 U-1（⊆ {11,12,13,14,18,36}px）；间距守刻度。 */
+.md h1, .md h2 { font-size: 18px; font-weight: 600; margin: 16px 0 8px; line-height: 1.4; }
+.md h3, .md h4, .md h5, .md h6 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; }
+.md p { margin: 8px 0; }
+.md strong { font-weight: 600; }
+.md em { font-style: italic; }
+.md ul, .md ol { padding-left: 1.5em; margin: 8px 0; }
+.md li { margin: 4px 0; }
+.md a { color: var(--c-setting); text-decoration: underline; }
+.md code {
   font-family: var(--mono);
-  font-size: 11px;
-  opacity: .85;
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
 }
+.md pre {
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.md pre code { background: transparent; border: none; padding: 0; font-size: 12px; line-height: 1.6; }
+.md table { border-collapse: collapse; margin: 8px 0; font-size: 12px; width: 100%; }
+.md th, .md td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+.md th { background: var(--bg); font-weight: 600; }
+.md blockquote {
+  border-left: 3px solid var(--c-setting);
+  margin: 8px 0;
+  padding: 8px 16px;
+  color: var(--text-soft);
+}
+.md blockquote p { margin: 4px 0; }
+.md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+/* 删除线 / 高亮 */
+.md del { color: var(--text-soft); text-decoration: line-through; }
+.md mark { background: rgba(250, 204, 21, .28); color: inherit; padding: 0 2px; border-radius: 3px; }
+/* 任务列表（- [ ] / - [x]）：方块 + 完成后弱化 */
+.md li.task { list-style: none; margin-left: -1.2em; display: flex; gap: 6px; align-items: flex-start; }
+.md li.task .cb { flex: none; font-size: 13px; line-height: 1.6; color: var(--dim); }
+.md li.task.done .cb { color: var(--green); }
+.md li.task.done { color: var(--dim); }
+/* 语义标记（✓ ✅ ✗ ❌ ⚠ ☐ ☑）：字符不变，只着色 */
+.md .sm { font-style: normal; }
+.md .sm.ok { color: var(--green); }
+.md .sm.no { color: var(--red); }
+.md .sm.warn, .md .sm.ask { color: var(--amber); }
+.md .sm.box, .md .sm.box.on { color: var(--dim); }
 
 
 /* ============ 迭代四 F3/F4 新增类（间距全用 F1 刻度 4/8/12/16/24） ============ */
@@ -1437,14 +1310,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .save-status.fail { color: var(--red); }
 .save-status.busy { color: var(--dim); }
 
-/* [F4①] navActions 常驻动作条：rail 竖排／非 rail 横排靠右 */
-#navActions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px; }
-.app-nav.rail #navActions { flex-direction: column; padding: 8px 0; }
-#navNotifyBtn { position: relative; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 14px; padding: 2px 8px; }
-#navNotifyBtn:hover { border-color: var(--text); }
-.nav-notify-count { position: absolute; top: -6px; right: -6px; background: var(--red); color: #fff; border-radius: 8px; font-size: 12px; padding: 0 4px; display: none; }
-.nav-notify-count.on { display: inline-block; }
-
+/* [F4①] #navActions / #navNotifyBtn / .nav-notify-count 已迁至 static/nav.css ---- */
 /* [F4②] 通知面板（浮层） */
 .notify-panel { display: none; position: fixed; top: 52px; left: 12px; width: 420px; max-height: 60vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; z-index: 1200; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
 .notify-panel.open { display: block; }
@@ -1459,11 +1325,40 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 /* [F4④] msg-badge：卡间消息未读角标（左外角 -6px 终值） */
 .card-node .msg-badge { position: absolute; left: -6px; top: -6px; background: var(--red); color: #fff; border-radius: 9px; font-size: 10px; padding: 1px 5px; z-index: 3; }
 
-/* [F4⑥] 卡间消息气泡（.msg.card）——完整值照前端册 :273-279 */
-.msg.card { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid #58a6ff; font-size: 13px; line-height: 1.8; padding: 8px 12px; }
-.msg.card .cmsg-meta { color: var(--dim); font-size: 12px; margin-bottom: 4px; }   /* [2026-10-11 23:36 欠账订正] 非画布区碎档一律 12px（四期任务书「非画布区碎档并到 12px」，原 11px 违规） */
-.msg.card .cmsg-type { color: #58a6ff; font-weight: 600; }
-.msg.card .cmsg-type.bad { color: var(--red); }
+/* ============ [对话流全消息类型 2026-10-13] 卡间消息（Ⅰ 类 ×3） ============
+   类型码 msg_ask / msg_answer / msg_notify（config/message_type_registry.json）；
+   头行 [[card-msg id=… type=… from=… reply_to=…]] 由 esm/cardmsg.js 解析（与 card_msg.py 同向量）。
+   全灰阶竖条（用户 00:07「不要五颜六色」）。 */
+.cmsg {
+  display: flex; align-items: stretch; margin: 8px 0;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg);
+  /* 元素同时带 .msg 类（消息计数选择器 .msg:not(.thinking):not(.live) 依赖它，
+     改类名会让 renderChat 增量判据错位、重复上屏）——故在此显式覆盖 .msg 基类的
+     气泡形态：padding / pre-wrap / 圆角 / 字号行高。 */
+  padding: 0; white-space: normal; font-size: 13px; line-height: 1.8;
+}
+.cmsg .bar { width: 3px; flex: none; background: var(--dim); }
+.cmsg.ask .bar { background: var(--text-soft); }
+.cmsg .body { flex: 1; padding: 8px 12px; min-width: 0; }
+.cmsg .head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); margin-bottom: 4px; flex-wrap: wrap; }
+.cmsg .tag { font-family: var(--mono); font-size: 12px; padding: 0 8px; border-radius: 99px; font-weight: 600; background: var(--panel-hover); color: var(--text-soft); border: 1px solid var(--border); }
+.cmsg .must { font-size: 12px; color: var(--text-soft); border: 1px solid var(--border); background: var(--bg); border-radius: 99px; padding: 0 8px; }
+.cmsg .dir { font-family: var(--mono); font-size: 12px; }
+.cmsg .txt { font-size: 13px; color: var(--text); line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
+.cmsg .replyto { font-size: 12px; color: var(--dim); margin-top: 4px; }
+.cmsg.bad .tag { color: var(--red); border-color: var(--red); }
+/* 通知面板复用 .cmsg-type（非对话区） */
+.cmsg-type { color: var(--c-setting); font-weight: 600; }
+/* 工具块（Ⅲ 对话块 actor=tool） */
+.toolblock { margin: 4px 0 8px; border: 1px solid var(--border); border-left: 3px solid var(--dim); border-radius: 8px; background: var(--bg); padding: 8px 12px; font-family: var(--mono); font-size: 12px; color: var(--text-soft); }
+.toolblock .t { color: var(--text); font-weight: 600; }
+.toolblock .args { color: var(--dim); font-size: 12px; margin-top: 4px; white-space: pre-wrap; word-break: break-all; }
+.toolblock .res { margin-top: 4px; color: var(--text); white-space: pre-wrap; font-size: 12px; border-top: 1px dashed var(--border); padding-top: 4px; }
+/* 环节块 behavior ×6（Ⅳ 留痕徽标）＋ 结束原因 END_VALUES ×4（Ⅲ 对话块 end） */
+.beh { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 0 8px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-soft); background: var(--bg); line-height: 1.7; }
+.msg.assistant .meta { font-size: 12px; color: var(--dim); margin-bottom: 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.msg.assistant .meta .end { font-family: var(--mono); font-size: 12px; padding: 0 8px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-soft); background: var(--bg); }
+.end-error { color: var(--red); border-color: var(--red); }
 
 /* ============ [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗 ============
    视觉规格严格照方案 §三.6：令牌全复用（--panel/--bg/--border/--text/--dim/
@@ -1544,26 +1439,22 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .draft-modal-foot .spacer { flex: 1; }
 .draft-meta-btn { font-size: 12px; padding: 5px 10px; }
 
-/* ============================================================
-   [模型设置第二步 2026-10-12] 左栏底部常驻入口 #navFooter
-   卡片聊天界面进【设置】→【模型】。只追加，不改上面任何既有规则。
+/* [模型设置第二步 2026-10-12] 左栏底部 #navFooter 样式已迁至 static/nav.css ---- */
 
-   .nav-tree 是 flex:1，本容器 margin-top:auto → 推到最底；
-   rail 态（44px 窄条，.app-nav.rail）下 .nav-tree/.nav-top 被隐藏，
-   本容器自然落到窄条底部，只留图标、居中。
-
-   间距刻度说明：方案原写 `padding: 8px 10px`，但 test_frontend_readability
-   的 test_spacing_scale_in_three_regions 把 `nav-*` 选择器纳入三区域扫描，
-   10px 属旧刻度值会被判失败——故改为 12px（既守测试又不改语义）。
-   ============================================================ */
-.nav-footer { margin-top: auto; padding: 8px; border-top: 1px solid var(--border); flex: none; }
-.nav-foot-btn { width: 100%; display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
-  background: var(--panel); color: var(--dim); font-size: 13px; cursor: pointer; }
-.nav-foot-btn:hover { color: var(--text); background: var(--panel-hover); }
-/* rail 态（44px 窄条）：只留图标、居中、去掉分隔线上内边距 */
-.app-nav.rail .nav-footer { padding: 8px 0; }
-.app-nav.rail .nav-foot-btn { width: 30px; height: 30px; margin: 0 auto;
-  justify-content: center; padding: 0; font-size: 14px; }
-.app-nav.rail .nav-foot-label { display: none; }
+/* ============ [对话区会话流样式 2026-10-12] 滚动条重绘：去默认样式 ============
+   用户裁定（23:21）「去掉所有默认样式的上下导航条，重绘这个导航条，透明底，灰色」。
+   系统默认滚动条（浅底＋上下箭头按钮）在深色主题下突兀——全站统一重绘：
+   轨道透明、滑块灰色圆角、无上下箭头按钮（去默认按钮）。Firefox 走标准属性。 */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(139, 148, 158, 0.35);   /* --dim 灰 */
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(139, 148, 158, 0.55); background-clip: content-box; }
+*::-webkit-scrollbar-button { display: none; }   /* 去掉默认上下箭头按钮 */
+* { scrollbar-width: thin; scrollbar-color: rgba(139, 148, 158, 0.45) transparent; }  /* Firefox */
 

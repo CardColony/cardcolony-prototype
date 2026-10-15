@@ -254,8 +254,8 @@ async def test_card_proposal_creates_children(client, sandbox):
     assert {c["card_id"]: c["title"] for c in canvas["cards"]} == {
         "card_001": "建卡剧本", "card_002": "子卡甲", "card_003": "子卡乙",
     }
-    # 一正一影：新建卡自动派生影子
-    assert shadow_store.shadow_path(wid, "card_002").exists()
+    # 一正一影：新建卡自动派生影子（[卡片存储迁移 SQLite] 影子在库内）
+    assert shadow_store._meta_of(wid, "card_002") is not None
 
 
 # ---------------------------------------------------------------- 错误路径

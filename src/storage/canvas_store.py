@@ -15,14 +15,15 @@ canvas.json 顶层新增 positions 字段（卡片在画布上的坐标 + pinned
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .hash_utils import parse_front_matter, split_body_sections
+from . import card_db
 
 logger = logging.getLogger("storage.canvas")
 
@@ -56,8 +57,6 @@ CANVAS_PATH = BASE_DIR / "canvas.json"  # 旧路径（兼容）
 
 PROJECT_NAME = "推演agent"
 
-_CARD_FILE_RE = re.compile(r"^card_(\d{3,})\.md$")
-
 
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
@@ -67,31 +66,23 @@ def _canvas_path(work_id: str) -> Path:
     return WORKS_DIR / work_id / "canvas.json"
 
 
-def _cards_dir(work_id: str) -> Path:
-    return WORKS_DIR / work_id / "cards"
-
-
 # [R4] 结论文本摘要上限——与前端 canvas.js 的 getSummary 逐字一致
 # （前端原文：firstLine.length > 120 ? firstLine.slice(0,120) + "…" : firstLine）
 SUMMARY_MAX = 120
 
 
-def _conclusion_summary(body: str) -> str:
-    """取现状块（status_block）第一行非空文字，超 120 字截断加省略号。
+def _conclusion_summary(status_block: str) -> str:
+    """取现状块（status_block 列）第一行非空文字，超 120 字截断加省略号。
 
     与前端 getSummary 的算法逐字一致（先按行 split、取第一个非空 trim 行、超长截断）。
     现状块为空/全空白 → 返回空字符串（不写占位文字）。
-    解析失败不抛出——返回空串，绝不中断 rebuild。
-    [卡片信息结构改造 S2-11/G-7] 取数键随拆分器归一改 status_block；
-    canvas.json 字段名 conclusion_summary **不变**（S2-11，前端快路径依赖它）。
+    [卡片信息结构改造 S2-11/G-7] canvas.json 字段名 conclusion_summary **不变**
+    （前端快路径依赖它）。
+    [卡片存储迁移 SQLite] 入参从「正文全文」改为「现状块列内容」——库内已是独立列，
+    不再需要拆块。
     """
-    try:
-        sections = split_body_sections(body or "")
-        concl = sections.get("status_block", "") or ""
-    except Exception:
-        return ""
     first_line = ""
-    for line in concl.split("\n"):
+    for line in (status_block or "").split("\n"):
         s = line.strip()
         if s:
             first_line = s
@@ -108,6 +99,8 @@ def rebuild(work_id: str) -> dict[str, Any]:
     可随时删除、自动重建、用户无感），rebuild 不再抢救/写入 positions；
     用户坐标的唯一真相来源是 layout.json（load_layout/save_layout）。
     保留旧 canvas.json 的 created_at（既有行为，不动）。
+    [卡片存储迁移 SQLite] 数据源从**卡片 md 目录**改为库内 ``cards`` 表
+    （canvas.json 本身仍为文件——画布线，不在迁移范围）。
     """
     canvas_path = _canvas_path(work_id)
     created_at = _now_iso()
@@ -119,36 +112,38 @@ def rebuild(work_id: str) -> dict[str, Any]:
     except Exception:
         pass
 
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        return [dict(r) for r in conn.execute(
+            "SELECT card_id, title, card_type, parent, created_at,"
+            " relations, status_block FROM cards ORDER BY card_id"
+        )]
+
+    rows = card_db.read_sync(work_id, _fn, []) or []
     cards: list[dict[str, Any]] = []
     relations: list[dict[str, Any]] = []
-    cd = _cards_dir(work_id)
-    if cd.exists():
-        for path in sorted(cd.glob("card_*.md")):
-            if not _CARD_FILE_RE.match(path.name):
-                continue
-            card_id = path.stem
-            try:
-                meta, body = parse_front_matter(path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                logger.warning("解析卡片失败，跳过 %s: %s", path.name, exc)
-                continue
-            cards.append({
-                "card_id": card_id,
-                "title": meta.get("title", ""),
-                "card_type": meta.get("card_type") or "线索",
-                "parent": meta.get("parent", ""),
-                "created_at": meta.get("created_at", ""),
-                # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
-                # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
-                # canvas.json 是可重建缓存（卡片文件才是真身），本字段不写用户真身数据。
-                "conclusion_summary": _conclusion_summary(body),
-            })
-            for rel in meta.get("relations") or []:
-                if isinstance(rel, dict):
-                    item = {"source": card_id, "target": rel.get("target", ""), "type": rel.get("type", "")}
-                    if rel.get("note"):
-                        item["note"] = rel["note"]
-                    relations.append(item)
+    for row in rows:
+        card_id = row["card_id"]
+        cards.append({
+            "card_id": card_id,
+            "title": row["title"] or "",
+            "card_type": row["card_type"] or "线索",
+            "parent": row["parent"] or "",
+            "created_at": row["created_at"] or "",
+            # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
+            # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
+            "conclusion_summary": _conclusion_summary(row["status_block"] or ""),
+        })
+        try:
+            rels = json.loads(row["relations"] or "[]")
+        except (TypeError, ValueError):
+            rels = []
+        for rel in (rels or []):
+            if isinstance(rel, dict):
+                item = {"source": card_id, "target": rel.get("target", ""),
+                        "type": rel.get("type", "")}
+                if rel.get("note"):
+                    item["note"] = rel["note"]
+                relations.append(item)
 
     # [R4-3-5] 重建打点（沿用既有 logger，不参与分支、不设闸）
     summary_count = sum(1 for c in cards if c.get("conclusion_summary"))
@@ -172,8 +167,8 @@ def rebuild(work_id: str) -> dict[str, Any]:
 
 
 async def update_cache(work_id: str) -> dict[str, Any]:
-    """v1 用全量重建代替增量维护。"""
-    return rebuild(work_id)
+    """v1 用全量重建代替增量维护（线程内跑，避免库读阻塞事件循环）。"""
+    return await asyncio.to_thread(rebuild, work_id)
 
 
 def load(work_id: str) -> dict[str, Any]:

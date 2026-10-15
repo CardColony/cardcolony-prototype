@@ -239,14 +239,21 @@ async def ensure_watermark(work_id: str, card_id: str) -> bool:
 
 
 async def ensure_work_watermarks(work_id: str) -> list[str]:
-    """为 work 下每张有会话的卡落空水位（任务 1-2 批量面）。返回新建 card_id 列表。"""
+    """为 work 下每张有会话的卡落空水位（任务 1-2 批量面）。返回新建 card_id 列表。
+
+    [卡片存储迁移 SQLite 2026-10-14] 卡清单数据源从 ``cards/*.md`` 改为库内
+    ``cards`` 表（是否「有会话」仍由会话文件判——会话不进库）。
+    """
+    from . import card_db
+
     created: list[str] = []
-    cards_dir = session_store.WORKS_DIR / work_id / "cards"
-    if not cards_dir.exists():
-        return created
-    for path in sorted(cards_dir.glob("card_*.md")):
-        if await ensure_watermark(work_id, path.stem):
-            created.append(path.stem)
+
+    def _fn(conn):
+        return [r["card_id"] for r in conn.execute("SELECT card_id FROM cards ORDER BY card_id")]
+
+    for cid in card_db.read_sync(work_id, _fn, []) or []:
+        if await ensure_watermark(work_id, cid):
+            created.append(cid)
     return created
 
 

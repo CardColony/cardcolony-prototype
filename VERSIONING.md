@@ -18,7 +18,10 @@ git 切分支的语义是「把工作区全部受追踪文件改写成目标分�
 
 ### 禁令二：版本管理的操作对象只是代码
 - **进版本**：src/ · templates/ · static/ · config/ · 文档 · 脚本（除临时脚本）· SOP · 台账
-- **不进版本**：works/（卡片/对话/画布/work.json）· logs/ · _backups/ · 运行态文件 · .env
+- **不进版本**：works/（**卡片库 `cards.db`**、对话、画布、work.json）· logs/ · _backups/ · 运行态文件 · .env
+- [2026-10-14 卡片存储迁移] 卡片与影子已从 md 迁入 `works/<work_id>/cards.db`（SQLite，WAL）。
+  它**仍属运行数据**：整个 `works/` 已被 `.gitignore` 挡住（含 `cards.db` 与其 `-wal`/`-shm` 旁挂文件），
+  口径不变——**任何分支操作都不得改写它**（见禁令一）。
 - 数据留痕改由**独立快照机制**承担：`D:\AI_station\推演agent_data_snapshots\`（与代码仓库物理分离，git 碰不到）
 - 回退通道：`python restore_from_snapshot.py --list` / `--work X --stamp Y`（恢复前强制备份当前状态）
 

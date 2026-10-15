@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -27,8 +26,6 @@ logger = logging.getLogger("storage.activity")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 WORKS_DIR = BASE_DIR / "works"
-
-_CARD_FILE_RE = re.compile(r"^card_(\d{3,})\.md$")
 
 
 def _max_iso(a: str, b: str) -> str:
@@ -41,24 +38,23 @@ def _max_iso(a: str, b: str) -> str:
 
 
 def iter_card_metas(work_id: str) -> Iterator[dict[str, Any]]:
-    """逐张解析 works/{work_id}/cards/card_*.md 的前置 meta（附 card_id）。
+    """逐张取库内正卡的 meta（附 card_id）。
 
-    卡文件是真身（canvas.json 只是可重建缓存且不含 updated_at），
-    /api/nav 每次请求都从这里现读；解析失败跳过并记 warning
-    （与 canvas_store.rebuild 同口径，绝不中断导航）。
+    [卡片存储迁移 SQLite] 数据源从**卡片 md 目录**改为库内 ``cards`` 表
+    （一次 SELECT，比逐文件解析更快）。**库才是真身**（canvas.json 只是
+    可重建缓存且不含 updated_at），/api/nav 每次请求都从这里现读。
     """
-    cd = WORKS_DIR / work_id / "cards"
-    if not cd.exists():
-        return
-    for path in sorted(cd.glob("card_*.md")):
-        if not _CARD_FILE_RE.match(path.name):
-            continue
-        try:
-            meta, _body = parse_front_matter(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("activity: 解析卡片失败，跳过 %s: %s", path.name, exc)
-            continue
-        meta["card_id"] = path.stem
+    from . import card_db
+
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for row in conn.execute("SELECT * FROM cards ORDER BY card_id"):
+            meta = card_db.row_to_meta(row)
+            meta["card_id"] = row["card_id"]
+            out.append(meta)
+        return out
+
+    for meta in card_db.read_sync(work_id, _fn, []) or []:
         yield meta
 
 

@@ -1,22 +1,44 @@
-/* esm/nav_render.js —— [S2] 导航渲染换底：行 DOM createElement 构建 + mount/unmount/patch
- * 三原语 + diff 刷新（R-13/14/15/19）+ 默认折叠策略（R-23）+ 版本探测（R-22 配套）。
+/* esm/nav_render.js —— [左栏接线 步2] 行结构按定稿重写（样式定稿 v1+v2 全量落地）。
  *
- * 结构上无「重建整棵树」路径：行序列由快照+三层状态实时投影（expandRows），
- * 虚拟列表只对可视切片做 mount/unmount/patch；快照与 DOM 分离（R-15）。
+ * 行骨架（卡行）：segs 线段层 ＋ 箭头(nav-chev, data-twist) ＋ 图标(nav-ico) ＋
+ *                 标题(nav-ctitle) ＋ 行尾槽(nav-tail：时间/运行中转圈 二选一 ＋ ⋯)。
+ * 定稿口径：
+ * · 点名字＝打开这张卡（箭头只负责展开/收起——点击语义在步3 切换，本步保持既有委托）；
+ * · 树线连在图标列上，每行只画自己高度内的线段（nav_geo.js 纯函数给坐标）；
+ * · 项目根卡↔一级子卡不画线不缩进；再深每层微微推进（indentOf）；
+ * · 每项目＝一张四圆角卡片（.nav-last 类画卡片底边，nav.css 实现）；
+ * · 工具卡不进侧栏（card_type==="tool" 连同子树在投影层剥掉——快照层不过滤，
+ *   cardInSnapshot 等消费方语义不变）；
+ * · 灰只有一处含义（行尾时间＝次要信息）：标题/图标永不涂灰，「活跃」文字徽章退役
+ *   （排序与时间已表达冷热；nodeActive 纯函数保留给步3 默认展开消费）；
+ * · 行尾槽：运行中（/api/nav/running 灌入 temp.running）→ 转圈，时间让位；
+ *   悬停 ⋯ 落在时间原位（CSS 同槽实现）。
+ *
+ * 保留不动的骨架：mount/unmount/patch 三原语、expandRows 投影、版本探测、
+ * 默认折叠（当前卡路径）、SYSTEM_BUDGET 兜底、事件委托契约
+ * （data-twist/data-ptwist/data-more/data-add/data-act="open"、.nav-card/.nav-phead、
+ *   __navRow、dataset.cid/wid）——workspace.js 委托一行不改。
  *
  * [R-19 规则（唯一一处）] patchRowEl 开头检查 temp 交互集——hover 中 / loading 中的行
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
-import { escapeHtml } from "./util.js";
-import { notify } from "./api.js";
-import { createRowModel } from "./row_model.js";
-import { createVirtualList } from "./nav_virtual.js";
-import { NAV_ROW_HEIGHT } from "./state_layers.js";
-// [S3/T4] 呈现族纯函数与常量（R-31 引导线／R-33 徽章聚合／R-35 空态／R-21 快照存在性）
-import {
-  projectAggregate, nodeActive, isProjectEmpty, cardInSnapshot,
-  NAV_GUIDE_DEPTH, NAV_GUIDE_SPACING, NAV_GUIDE_STEP,
-} from "./nav_badge.js";
+import { escapeHtml } from "./util.js?v=27";
+import { notify } from "./api.js?v=27";
+import { createRowModel } from "./row_model.js?v=27";
+import { createVirtualList } from "./nav_virtual.js?v=27";
+import { NAV_ROW_HEIGHT } from "./state_layers.js?v=27";
+// [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
+import { projectAggregate, isProjectEmpty, cardInSnapshot } from "./nav_badge.js?v=27";
+// [左栏接线 步2] 行几何纯函数（微推进／图标列／树线段）
+import { indentOf, rowSegs, childGuides } from "./nav_geo.js?v=27";
+
+/* ---------- 图标（定稿：图标只表达"项目/卡"一件事；线经过处由 svg 底色咬断） ---------- */
+const SVG_CHEV = '<svg viewBox="0 0 16 16" fill="none"><path class="under" d="M5.5 3.5 10 8l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/><path class="top" d="M5.5 3.5 10 8l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const SVG_FOLDER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2H6l1.7 1.5h5.8A1.5 1.5 0 0 1 15 5v7.5A1.5 1.5 0 0 1 13.5 14h-11A1.5 1.5 0 0 1 1 12.5z"/></svg>';
+const SVG_DOC = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 2.5h7L12.5 5v8A1.5 1.5 0 0 1 11 14.5H3A1.5 1.5 0 0 1 1.5 13v-9A1.5 1.5 0 0 1 3 2.5z"/><path d="M10 2.5V5h2.5"/></svg>';
+const SVG_DOTS = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>';
+// [用户 2026-10-15 ①] 新建子卡从 ⋯ 菜单取出，单列一个 ＋ 入口（悬停时 ⋯ 左移一位、＋ 落原位）
+const SVG_PLUS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.6v8.8"/><path d="M3.6 8h8.8"/></svg>';
 
 function fmtRel(iso) {
   // 相对时间：刚刚／N 分钟前／N 小时前／N 天前／YYYY-MM-DD（与旧 workspace.js 逐字等价）
@@ -34,14 +56,30 @@ function fmtRel(iso) {
 }
 
 function cardTip(c) {
-  // [B4/E2 既有口径] 行内时间戳退役，活跃/分支活跃走 tooltip 三分列
+  // [B4/E2 既有口径] 活跃/分支活跃走 tooltip 三分列（行内不堆文字，定稿第 2 条）
   return escapeHtml(c.title)
     + (c.last_active_at ? `｜本卡活跃 ${fmtRel(c.last_active_at)}` : "｜无对话")
     + (c.branch_active_at ? `｜分支活跃 ${fmtRel(c.branch_active_at)}` : "");
 }
 
+/* [定稿] 搜索命中标黄：转义后只把命中的那一段包进 <mark>（大小写不敏感匹配）。
+ * 先转义再包标签——顺序反了就是 XSS 口子（标题是用户数据）。 */
+function highlight(title, q) {
+  const s = String(title || "");
+  const needle = String(q || "").trim().toLowerCase();
+  const i = needle ? s.toLowerCase().indexOf(needle) : -1;
+  if (i < 0) return escapeHtml(s);
+  return escapeHtml(s.slice(0, i))
+    + "<mark>" + escapeHtml(s.slice(i, i + needle.length)) + "</mark>"
+    + escapeHtml(s.slice(i + needle.length));
+}
+
+/* [定稿 18:33] 工具卡不进左侧边栏：投影层剥掉（连同子树——子树因父行不出而不出）。
+ * 快照层不过滤：cardInSnapshot（已删灰态）/cardsOf（零网络灌段）语义保持不变。 */
+function isToolCard(c) { return c && c.card_type === "tool"; }
+
 /* [R-19 规则唯一处] diff 应用前的交互集保护：悬停中（temp.hover）/加载中（temp.loading）
- * 的行本次不 patch。规则只在shouldSkipPatch 一处定义，patchRowEl 开头调用，不散落调用点。 */
+ * 的行本次不 patch。规则只在 shouldSkipPatch 一处定义，patchRowEl 开头调用，不散落调用点。 */
 export function shouldSkipPatch(store, row) {
   if (!row || row.kind === "project") return false;
   const cid = row.card.card_id;
@@ -70,6 +108,44 @@ export function createNavRenderer(deps) {
     return buildCardEl(row);
   }
 
+  /* [用户 2026-10-15 ①] 行尾槽＝时间/转圈（状态）＋ ⋯、＋（悬停操作）。
+   * 悬停时 ⋯ 左移一个身位、＋ 落在 ⋯ 原来的位置（＝行尾/时间原位）——CSS 用绝对定位
+   * 把两枚图标压在状态区上方（right:20px / right:0），所以悬停不改变行宽、不挤标题。
+   * plusKind："child"＝在卡下建子卡（data-newchild）；"card"＝在项目下新建卡（data-add，
+   * 复用既有委托分支 handleProjectAdd）。两种只差一个 data 属性，视觉完全一致。 */
+  function makeTail(opts = {}) {
+    const tail = document.createElement("div");
+    tail.className = "nav-tail";
+    const time = document.createElement("span");
+    time.className = "nav-time";
+    tail.appendChild(time);
+    if (opts.plus) {
+      const more = document.createElement("button");
+      more.className = "nav-more";
+      more.dataset.more = opts.cid || "";
+      more.dataset.mwid = opts.wid || "";
+      more.title = "更多";
+      more.innerHTML = SVG_DOTS;
+      tail.appendChild(more);
+      tail.__more = more;
+      const plus = document.createElement("button");
+      plus.className = "nav-plus";
+      if (opts.plus === "card") {
+        plus.dataset.add = opts.wid || "";
+        plus.title = "新建卡";
+      } else {
+        plus.dataset.newchild = opts.cid || "";
+        plus.dataset.nwid = opts.wid || "";
+        plus.title = "新建子卡";
+      }
+      plus.innerHTML = SVG_PLUS;
+      tail.appendChild(plus);
+      tail.__plus = plus;
+    }
+    tail.__time = time;
+    return tail;
+  }
+
   function buildProjectEl(row) {
     const p = row.card;
     const el = document.createElement("div");
@@ -77,36 +153,32 @@ export function createNavRenderer(deps) {
     el.dataset.wid = p.work_id;
     el.dataset.root = p.work_card_id || "";
     el.title = p.title || "";
-    const twist = document.createElement("span");
-    twist.className = "nav-twist";
-    twist.dataset.ptwist = p.work_id;
-    twist.title = "展开/收起";
-    el.appendChild(twist);
-    const dot = document.createElement("span");
-    dot.className = "dot root";
-    el.appendChild(dot);
+    const chev = document.createElement("span");
+    chev.className = "nav-chev";
+    chev.dataset.ptwist = p.work_id;
+    chev.title = "展开/收起";
+    chev.innerHTML = SVG_CHEV;
+    el.__chev = chev;
+    el.appendChild(chev);
+    const ico = document.createElement("span");
+    ico.className = "nav-ico proj";
+    ico.innerHTML = SVG_FOLDER;
+    el.appendChild(ico);
     const name = document.createElement("span");
     name.className = "nav-pname";
+    el.__name = name;
     el.appendChild(name);
-    const count = document.createElement("span");
-    count.className = "nav-pcount";
-    el.appendChild(count);
-    const open = document.createElement("button");
-    open.className = "nav-popen";
-    open.dataset.act = "open";
-    open.dataset.wid = p.work_id;
-    open.title = "打开该项目画布";
-    open.textContent = "打开 →";
-    el.appendChild(open);
-    const time = document.createElement("span");
-    time.className = "nav-ptime";
-    el.appendChild(time);
-    const add = document.createElement("button");
-    add.className = "nav-padd";
-    add.dataset.add = p.work_id;
-    add.title = "＋ 新建卡";
-    add.textContent = "＋卡";
-    el.appendChild(add);
+    // [用户 2026-10-15 ②] 根卡行与子卡行完全同构：「打开 →」「＋卡」两个文字按钮已撤，
+    // 悬停出同一套 ⋯＋ 图标；点名字＝进它的对话（委托层处理，与子卡同一语义）。
+    // ＋ ＝在它下面新建子卡（与子卡的 ＋ 语义一致——用户要的就是"和其他子卡一样的操作"）。
+    // 无根卡的项目（实测 work_004/005/007 的 work_card_id 为空）没有"它的对话"可进，
+    // 也没有可挂的父卡——＋ 退回复用既有的 handleProjectAdd（data-add）分支。
+    const rootCid = p.work_card_id || "";
+    const tail = makeTail(rootCid
+      ? { plus: "child", cid: rootCid, wid: p.work_id }
+      : { plus: "card", wid: p.work_id });
+    el.__tail = tail;
+    el.appendChild(tail);
     patchProjectContent(el, row);
     return el;
   }
@@ -117,40 +189,62 @@ export function createNavRenderer(deps) {
     el.className = "nav-card";
     el.dataset.cid = c.card_id;
     el.dataset.wid = row.wid;
-    // [S3/R-31] 缩进只到第 4 档：depth ≤ 3 普通缩进（+14px/档）；depth ≥ 4 缩进封顶，
-    // 转引导线——repeating-linear-gradient 竖线背景（宽度=深度×档距，封顶在左沟宽度内）
-    if (row.depth >= NAV_GUIDE_DEPTH) {
-      el.classList.add("nav-guide");
-      el.style.backgroundSize =
-        Math.min(row.depth * NAV_GUIDE_SPACING, NAV_GUIDE_DEPTH * NAV_GUIDE_STEP) + "px 100%";
-      el.style.paddingLeft = (10 + NAV_GUIDE_DEPTH * NAV_GUIDE_STEP) + "px";
-    } else {
-      el.style.paddingLeft = (10 + row.depth * NAV_GUIDE_STEP) + "px";   // §3.5：每层 +14px
-    }
-    const twist = document.createElement("span");
-    twist.className = "nav-twist";
+    el.dataset.depth = String(row.depth);
+    // [定稿] 微推进：字基本还是齐的；segs 是 absolute inset:0，不受 padding 影响，
+    // 其坐标由 nav_geo 给出（iconX 已含 indent），线与图标列严格对齐
+    el.style.paddingLeft = indentOf(row.depth) + "px";
+    const segs = document.createElement("div");
+    segs.className = "nav-segs";
+    el.__segs = segs;
+    el.appendChild(segs);
+    const chev = document.createElement("span");
+    chev.className = "nav-chev";
     if ((c.child_count || 0) > 0) {
-      twist.dataset.twist = c.card_id;
-      twist.title = "展开/收起";
-    } else {
-      twist.classList.add("none");   // 叶形（含空子卡节点，V-V4）
+      chev.dataset.twist = c.card_id;
+      chev.title = "展开/收起";
     }
-    el.appendChild(twist);
-    const dot = document.createElement("span");
-    dot.className = "dot " + ((c.child_count || 0) > 0 ? "mid" : "leaf");
-    el.appendChild(dot);
+    chev.innerHTML = SVG_CHEV;
+    el.__chev = chev;
+    el.appendChild(chev);
+    const ico = document.createElement("span");
+    ico.className = "nav-ico doc";
+    ico.innerHTML = SVG_DOC;
+    el.appendChild(ico);
     const title = document.createElement("span");
     title.className = "nav-ctitle";
+    el.__title = title;
     el.appendChild(title);
-    const more = document.createElement("button");
-    more.className = "nav-more";
-    more.dataset.more = c.card_id;
-    more.dataset.mwid = row.wid;
-    more.title = "建子卡 / 卡详情";
-    more.textContent = "⋯";
-    el.appendChild(more);
+    const tail = makeTail({ plus: "child", cid: c.card_id, wid: row.wid });
+    el.__tail = tail;
+    el.appendChild(tail);
     patchCardContent(el, row);
     return el;
+  }
+
+  /* ---------- 树线段（每行只画自己高度内的线段；patch 时整层重建，行其余不动） ---------- */
+
+  function hasVisibleKids(row) {
+    const kids = store.snapshot.getChildren(row.wid, row.card.card_id);
+    if (!kids) return false;
+    return kids.some(k => !isToolCard(k));
+  }
+
+  function renderSegs(container, segs) {
+    while (container.children.length) container.children[0].remove();
+    for (const s of segs) {
+      const d = document.createElement("div");
+      d.className = "nav-seg " + (s.k === "v" ? "nav-seg-v" : "nav-seg-h");
+      if (s.k === "v") {
+        d.style.left = s.x + "px";
+        d.style.top = s.t + "px";
+        d.style.height = s.h + "px";
+      } else {
+        d.style.left = s.x + "px";
+        d.style.top = s.y + "px";
+        d.style.width = s.w + "px";
+      }
+      container.appendChild(d);
+    }
   }
 
   /* ---------- patch（R-15：只改变化字段；R-19 guard 在最前） ---------- */
@@ -162,19 +256,21 @@ export function createNavRenderer(deps) {
     else patchCardContent(el, row);
     const pr = row.props(store);
     el.classList.toggle("current", !!pr.selected);
+    el.classList.toggle("nav-last", !!row.lastInProject);   // 四圆角卡片底边（定稿第 6 条）
     return true;
   }
 
   function patchProjectContent(el, row) {
     const p = row.card;
     const pr = row.props(store);
-    el.querySelector(".nav-twist").textContent = pr.expanded ? "▾" : "▸";
-    el.querySelector(".nav-pname").textContent = p.title || "";
-    // [S3/R-33①] 项目行徽章＝子树聚合（最新活跃机械 max＋总卡数）；快照 cards 空则回落项目字段
+    el.__chev.classList.toggle("open", pr.expanded);
+    // [定稿] 搜索镜片：项目名命中即标黄（未命中只是定位路径，不着色）
+    el.__name.innerHTML = row.matched
+      ? highlight(p.title || "", store.temp.getQuery ? store.temp.getQuery() : "")
+      : escapeHtml(p.title || "");
+    // [S3/R-33①] 项目行时间＝子树聚合（最新活跃机械 max）；快照 cards 空则回落项目字段
     const agg = projectAggregate(p);
-    el.querySelector(".nav-pcount").textContent =
-      ((p.cards || []).length ? agg.count : (p.card_count || 0)) + "卡";
-    el.querySelector(".nav-ptime").textContent = fmtRel(agg.latest || p.last_active_at);
+    el.__tail.__time.textContent = fmtRel(agg.latest || p.last_active_at);
     el.title = p.title || "";
     // [S3/R-35] 空项目态：展开且零卡 → 行内「空·去新建」（data-add 复用既有事件委托→建卡入口）
     const emptyBadge = el.querySelector(".nav-pempty");
@@ -194,36 +290,58 @@ export function createNavRenderer(deps) {
   function patchCardContent(el, row) {
     const c = row.card;
     const pr = row.props(store);
-    const hasKids = (c.child_count || 0) > 0;
-    const twist = el.querySelector(".nav-twist");
-    twist.classList.toggle("none", !hasKids);
-    if (hasKids) twist.textContent = pr.expanded ? "▾" : "▸";
-    else twist.textContent = "";
-    el.querySelector(".nav-ctitle").textContent = c.title || "";
+    // [定稿] 搜索态下「有没有子」看的是**剪枝后**还有没有可显示的命中子行（row.searchKids），
+    // 不是真实 child_count——否则会出现「箭头说能展开、点开却是空的」这种骗人的行。
+    // 镜片期间一律不出箭头：投影已把命中与路径全摊开，没有可收放的东西。
+    const hasKids = row.searching ? false : ((c.child_count || 0) > 0);
+    // 树线（定稿：连在图标列上，每行自己一小段）
+    renderSegs(el.__segs, rowSegs({
+      depth: row.depth, guides: row.guides, first: row.first, last: row.last,
+      openKids: pr.expanded && (row.searching ? row.searchKids : hasVisibleKids(row)),
+      H: row.rowHeight(),
+    }));
+    // 箭头：有子卡才可点（leaf 隐藏）；开合状态转 90°
+    el.__chev.classList.toggle("leaf", !hasKids);
+    el.__chev.classList.toggle("open", pr.expanded);
+    // [定稿] 镜片期间摘掉 data-twist（事件委托认不到它＝点不动），退出搜索由本函数重挂
+    if (row.searching) delete el.__chev.dataset.twist;
+    else if (hasKids) el.__chev.dataset.twist = c.card_id;
+    // [定稿] 搜索镜片：命中的那一行标黄；只是路径的行不着色（它负责定位，不负责提示命中）
+    el.__title.innerHTML = row.matched
+      ? highlight(c.title || "", store.temp.getQuery ? store.temp.getQuery() : "")
+      : escapeHtml(c.title || "");
     el.title = cardTip(c);
     // [S3/R-21] 已删灰态权威投影：行在快照缺失（多标签删除/快照缝隙兜底）→ .deleted；
     // 快照恢复则自动褪灰（与 S2 零状态投影同哲学：类名随快照实时重导）
     el.classList.toggle("deleted", !cardInSnapshot(store.snapshot, row.wid, c.card_id));
-    // [S3/R-33②] 节点行活跃标记：branch_active_at 距今<48h（机械判定，纯函数在 nav_badge.js）
-    const act = el.querySelector(".nav-badge-active");
-    if (nodeActive(c)) {
-      if (!act) {
-        const s = document.createElement("span");
-        s.className = "nav-badge-active";
-        s.title = "分支 48 小时内活跃";
-        s.textContent = "活跃";
-        el.insertBefore(s, el.querySelector(".nav-more"));
-      }
-    } else if (act) {
-      act.remove();
+    // [定稿] 行尾槽：运行中→转圈（时间让位）；否则→时间。⋯ 恒在（CSS 落时间原位）
+    // [修·运行中假阳性 2026-10-13] 判据用 (wid, cid) 复合键——card_id 跨项目不唯一
+    const running = store.temp.isRunning(row.wid, c.card_id);
+    el.__tail.classList.toggle("has-run", running);
+    el.__tail.classList.toggle("has-time", !running && !!c.last_active_at);
+    el.__tail.__time.textContent = running ? "" : fmtRel(c.last_active_at);
+    // [步2 收尾·补缺] 运行中＝行尾转圈。此前只挂了 has-run 类、**元素从未创建**——
+    // nav.css 的 .nav-run/.nav-spinner 写在给不存在的元素上，运行中的卡毫无提示。
+    // 插在 time 之前：运行时 time 空（让位）、转圈占其位、⋯ 在右（CSS has-run 分支）。
+    let run = el.__tail.__run;
+    if (running && !run) {
+      run = document.createElement("span");
+      run.className = "nav-run";
+      run.innerHTML = '<span class="nav-spinner"></span>';
+      el.__tail.insertBefore(run, el.__tail.__time);
+      el.__tail.__run = run;
+    } else if (!running && run) {
+      run.remove();
+      el.__tail.__run = null;
     }
     // [R-22] 三态就地：加载中＝行内转圈；失败＝行内「加载失败·点此重试」
-    const tail = el.querySelector(".nav-state");
-    if (tail) tail.remove();
+    const state = el.__tail.__state;
+    if (state) { state.remove(); el.__tail.__state = null; }
     if (pr.loading) {
       const s = document.createElement("span");
       s.className = "nav-state nav-loading";
-      el.appendChild(s);
+      el.__tail.__state = s;
+      el.__tail.appendChild(s);
     } else if (pr.error) {
       const b = document.createElement("button");
       b.className = "nav-state nav-err";
@@ -233,35 +351,100 @@ export function createNavRenderer(deps) {
         store.temp.error(c.card_id, null);
         async.loadChildren(row).then(() => render());
       };
-      el.appendChild(b);
+      el.__tail.__state = b;
+      el.__tail.appendChild(b);
     }
   }
 
-  /* ---------- 行序列投影（快照+三层 → 行对象数组） ---------- */
+  /* ---------- 行序列投影（快照+三层 → 行对象数组；含几何上下文） ---------- */
+
+  /* [定稿] 搜索＝镜片：剪掉不相干的枝，只留「命中的卡 ＋ 它到根的路径」。
+   * 为什么不平铺成结果列表：那样你就得学一套和平时完全不同的样子；剪枝树让你用同一双
+   * 眼睛看所有时候。
+   * 为什么一个字都不写进 prefs：镜片是「换一种看法」，不是「改动你摆好的样子」——
+   * 清空查询即原样还原，靠的就是它从没写过任何状态（query 只活在 temp 内存）。
+   * 命中路径行不标黄，只作定位；命中的那一行标黄。 */
+  function searchRows(q) {
+    const rows = [];
+    const projects = (store.snapshot.get().projects) || [];
+    for (const p of projects) {
+      const wid = p.work_id;
+      const all = (p.cards || []).filter(c => !isToolCard(c));
+      const byId = new Map(all.map(c => [c.card_id, c]));
+      const root = p.work_card_id || "";
+      const projHit = (p.title || "").toLowerCase().includes(q);
+      const hits = all.filter(c => (c.title || "").toLowerCase().includes(q));
+      if (!projHit && !hits.length) continue;
+      rows.push(createRowModel(p, store, {
+        kind: "project", depth: 0, wid, searching: true, matched: projHit,
+      }));
+      if (!hits.length) continue;              // 只有项目名命中：显出项目行即可，不摊它的卡
+      // 命中集 ＋ 各自到根的路径（want: cid → 是否命中）
+      const want = new Map();
+      for (const c of hits) {
+        want.set(c.card_id, true);
+        let cur = c;
+        let guard = 0;
+        while (cur && cur.parent && byId.has(cur.parent) && guard++ < 64) {
+          cur = byId.get(cur.parent);
+          if (!want.has(cur.card_id)) want.set(cur.card_id, false);
+        }
+      }
+      const childrenOf = (pcid) => all.filter(c => {
+        const pa = c.parent || "";
+        return pcid === "" ? (pa === "" || pa === root) : pa === pcid;
+      });
+      const walk = (pcid, depth, guides) => {
+        const kids = childrenOf(pcid).filter(c => want.has(c.card_id));
+        kids.forEach((c, i) => {
+          const first = i === 0;
+          const last = i === kids.length - 1;
+          const grand = childrenOf(c.card_id).filter(k => want.has(k.card_id));
+          rows.push(createRowModel(c, store, {
+            depth, wid, guides, first, last, searching: true,
+            matched: want.get(c.card_id) === true, searchKids: grand.length > 0,
+          }));
+          walk(c.card_id, depth + 1, childGuides({ depth, last, guides }));
+        });
+      };
+      const start = rows.length;
+      walk("", 0, []);
+      if (rows.length > start) rows[rows.length - 1].lastInProject = true;
+    }
+    return rows;
+  }
 
   function expandRows() {
+    const q = (store.temp.getQuery ? store.temp.getQuery() : "").trim().toLowerCase();
+    if (q) return searchRows(q);
     const rows = [];
     const projects = (store.snapshot.get().projects) || [];
     for (const p of projects) {
       rows.push(createRowModel(p, store, { kind: "project", depth: 0, wid: p.work_id }));
       if (!store.prefs.getProjectOpen(p.work_id)) continue;
-      pushSegment(rows, p.work_id, "", 0, new Set());
+      const start = rows.length;
+      pushSegment(rows, p.work_id, "", 0, new Set(), []);
+      if (rows.length > start) rows[rows.length - 1].lastInProject = true;
     }
+    // 每个项目的最后一行挂 .nav-last（卡片底边＋下圆角）——上面逐项目标记
     return rows;
   }
 
-  function pushSegment(rows, wid, parentCid, depth, visited) {
+  function pushSegment(rows, wid, parentCid, depth, visited, guides) {
     const cards = store.snapshot.getChildren(wid, parentCid);
     if (!cards) return;   // 段未加载：父行由 props 投影出 loading 态
-    for (const c of cards) {
-      if (visited.has(c.card_id)) continue;   // 数据环防护
+    const visible = cards.filter(c => !isToolCard(c));   // [定稿] 工具卡不进侧栏
+    visible.forEach((c, i) => {
+      if (visited.has(c.card_id)) return;   // 数据环防护
       visited.add(c.card_id);
-      const row = createRowModel(c, store, { depth, wid });
+      const first = i === 0;
+      const last = i === visible.length - 1;
+      const row = createRowModel(c, store, { depth, wid, guides, first, last });
       rows.push(row);
       if (store.prefs.getExpanded(wid, c.card_id)) {
-        pushSegment(rows, wid, c.card_id, depth + 1, visited);
+        pushSegment(rows, wid, c.card_id, depth + 1, visited, childGuides({ depth, last, guides }));
       }
-    }
+    });
   }
 
   /* ---------- 快照灌段（系统展开/探测重灌共用，零网络） ---------- */
@@ -299,6 +482,39 @@ export function createNavRenderer(deps) {
     return path;
   }
 
+  /* ---------- [定稿] 最近活跃分支默认露出（用户 15:48 第 2、3 条） ----------
+   * 判据：卡的分支活跃（branch_active_at）距今 < 48h —— 机械阈值，后端已送该字段，不新增字段。
+   * 作用域：**只在「已打开的项目」内**（含当前项目，它上面被自动打开）。
+   *   为什么不自动打开所有「有活跃」的项目：实测 13 个项目里 11 个的项目级活跃都在 48h 内
+   *   （同一批时间戳，见 P0 数据污染），全开会把侧栏摊成一锅粥——默认展开的本意是
+   *   「让你一眼看到正在干的」，不是「把一切都摊开」。冷项目仍由你自己点开。
+   * 不覆盖 manual：用户亲手展开的，系统永不收回（同 applyDefaultFold 的既有判据）。
+   */
+  const RECENT_MS = 48 * 3600 * 1000;
+
+  function isRecentBranch(c) {
+    const t = c && c.branch_active_at ? Date.parse(c.branch_active_at) : NaN;
+    return !isNaN(t) && (Date.now() - t) < RECENT_MS;
+  }
+
+  function expandRecentInProject(wid) {
+    const visited = new Set();
+    const walk = (parentCid) => {
+      const kids = store.snapshot.cardsOf(wid, parentCid).filter(c => !isToolCard(c));
+      for (const c of kids) {
+        if (visited.has(c.card_id)) continue;   // 数据环防护
+        visited.add(c.card_id);
+        if (!isRecentBranch(c)) continue;
+        if (store.prefs.getExpanded(wid, c.card_id) !== "manual") {
+          store.prefs.setExpanded(wid, c.card_id, "system");
+        }
+        ensureSegmentFromSnapshot(wid, c.card_id);
+        walk(c.card_id);
+      }
+    };
+    walk("");
+  }
+
   function applyDefaultFold() {
     const cid = getCardId();
     if (!cid || appliedFor === cid || !store.snapshot.get().projects.length) return;
@@ -312,7 +528,18 @@ export function createNavRenderer(deps) {
       if (cur !== "manual") store.prefs.setExpanded(wid, a.card_id, "system");
       ensureSegmentFromSnapshot(wid, a.card_id);
     }
-    enforceBudget(wid, new Set(path.map(a => a.card_id)));
+    // [定稿] 已打开的每个项目，各自展开其最近活跃分支
+    for (const p of (store.snapshot.get().projects || [])) {
+      const w = p.work_id;
+      if (!store.prefs.getProjectOpen(w)) continue;
+      if (!store.snapshot.getChildren(w, "")) snapshotRootsWithOrphans(w);
+      expandRecentInProject(w);
+    }
+    for (const p of (store.snapshot.get().projects || [])) {
+      if (store.prefs.getProjectOpen(p.work_id)) {
+        enforceBudget(p.work_id, p.work_id === wid ? new Set(path.map(a => a.card_id)) : new Set());
+      }
+    }
     appliedFor = cid;
   }
 
@@ -368,6 +595,16 @@ export function createNavRenderer(deps) {
     }
     applyDefaultFold();
     render();
+  }
+
+  /* ---------- [左栏接线 步2] 运行中总览灌入（/api/nav/running → temp.running → 行尾转圈） ---------- */
+
+  async function probeRunning() {
+    if (!api.getNavRunning) return;
+    let r;
+    try { r = await api.getNavRunning(); } catch (e) { return; }   // 失败静默（下轮再来）
+    const changed = store.temp.setRunningSet((r && r.running) || []);
+    if (changed) render();   // 无变化不重渲（不打断交互）
   }
 
   /* ---------- 渲染入口 ---------- */
@@ -432,6 +669,9 @@ export function createNavRenderer(deps) {
   }
 
   function toggleProject(wid) {
+    // [定稿] 镜片期间不写状态：搜索是「换一种看法」，不是「改动你摆好的样子」。
+    // 投影里一切都已摊开，没有可收放的东西——此时点箭头不改 prefs，退出搜索即原样。
+    if (store.temp.getQuery && store.temp.getQuery()) return;
     const open = store.prefs.getProjectOpen(wid);
     store.prefs.setProjectOpen(wid, !open);
     if (!open) {
@@ -444,6 +684,8 @@ export function createNavRenderer(deps) {
   }
 
   function toggleCard(row) {
+    // [定稿] 镜片期间不写状态（同 toggleProject）
+    if (store.temp.getQuery && store.temp.getQuery()) return;
     const cid = row.card.card_id;
     const wid = row.wid;
     const open = store.prefs.getExpanded(wid, cid);
@@ -458,17 +700,13 @@ export function createNavRenderer(deps) {
     }
   }
 
-  // 虚拟列表（header＝提示行，序列外固定头，与旧行为等价地随滚动滚走）
-  const hintEl = document.createElement("div");
-  hintEl.className = "nav-hint";
-  hintEl.textContent = "▸/▾ 或点行展开/折叠 · 叶子点行进对话 · 「打开 →」进项目画布";   // [S3/R-20] 语义随点击分叉更新
+  // 虚拟列表：[定稿] 顶部文字提示行退役（好的交互不需要文字说明），header 不再挂
   const vl = createVirtualList(tree, expandRows, NAV_ROW_HEIGHT, {
-    header: hintEl,
     renderer: { build: buildRowEl, patch: patchRowEl },
   });
 
   return {
-    refresh, render, probeVersion, toggleProject, toggleCard,
+    refresh, render, probeVersion, probeRunning, toggleProject, toggleCard,
     expandRows, applyDefaultFold, enforceBudget,
     reslice: () => render(),
     vl,

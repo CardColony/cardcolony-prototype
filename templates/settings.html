@@ -4,68 +4,106 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>推演agent · 模型设置</title>
-<!-- [模型设置第二步] style.css 必须 ?v=10.4：本步往里追加了 #navFooter 规则，
-     不升版本号浏览器会吃旧缓存、新按钮样式不生效 -->
-<link rel="stylesheet" href="/static/style.css?v=10.4">
-<link rel="stylesheet" href="/static/settings.css?v=1.0">
+<!-- [模型设置·改版v8] 照 zcode model-provider 界面骨架：
+     一张大卡片内左右分栏——
+     左：供应商列表（导航项，点选高亮）；
+     右：选中供应商的模型详细设置（连接字段 + 模型列表）。
+     添加供应商 = 模板选择器；操作收进「⋯」菜单。-->
+<link rel="stylesheet" href="/static/style.css?v=10.5">
+<link rel="stylesheet" href="/static/settings.css?v=10.8">
 </head>
 <body class="set-body">
 <div class="set-page">
 
   <div class="set-topbar">
     <a href="/" class="btn ghost" id="setBackBtn">← 返回</a>
-    <span class="set-title">模型设置</span>
-    <span class="spacer"></span>
-    <span class="set-note" id="setMetaLine"></span>
-    <button class="btn ghost" id="setRestoreBtn" title="从备份列表里挑一版还原">⟲ 还原</button>
-    <button class="btn primary" id="setSaveBtn">保存并生效</button>
   </div>
 
-  <!-- 保存结果：400 → 红条列全部错误（不关页面、不清表单）；200 → 绿条 + 备份名 -->
   <div class="set-banner" id="setBanner" style="display:none"></div>
 
-  <div class="set-main">
+  <div class="set-layout">
+    <!-- 左侧设置分区导航：现在只有【模型】，后续记忆/通用等设置项都加在这里 -->
+    <aside class="set-sidenav">
+      <div class="set-sidenav-title">设置</div>
+      <nav class="set-sidenav-list">
+        <a class="set-sidenav-item active" href="javascript:void(0)" title="模型设置（当前分区）">模型</a>
+      </nav>
+    </aside>
 
-    <section class="set-block">
-      <h2 class="set-h2">① 供应商<span class="set-hint">端点 · 密钥 · 协议</span></h2>
-      <div id="providerList"></div>
-      <button class="btn" id="addProviderBtn">＋ 新增供应商</button>
-    </section>
-
-    <section class="set-block">
-      <h2 class="set-h2">② 模型<span class="set-hint">挂在供应商下</span></h2>
-      <div id="modelList"></div>
-      <button class="btn" id="addModelBtn">＋ 手动新增模型</button>
-    </section>
-
-    <section class="set-block">
-      <h2 class="set-h2">③ 角色绑定<span class="set-hint" id="roleHint"></span></h2>
-      <div class="set-card" id="bindingList"></div>
-    </section>
-
-    <section class="set-block">
-      <details class="set-advanced" id="advancedBox">
-        <summary>④ 高级</summary>
-        <div class="set-grid">
-          <div class="set-field">
-            <label for="advDefaultModel">默认模型（角色未绑定时的回落）</label>
-            <select class="set-select" id="advDefaultModel"></select>
+    <!-- 右侧：模型设置内容 -->
+    <div class="set-content">
+      <!-- 一张大卡片：左 = 供应商列表；右 = 选中供应商的模型详细设置 -->
+      <div class="set-provider-panel" id="providerPanel">
+        <div class="set-provider-side">
+          <div class="set-side-head">
+            <span class="set-side-title">供应商</span>
+            <span class="set-count" id="providerCount">0</span>
+            <span class="spacer" style="flex:1"></span>
+            <button class="set-add-btn" id="addProviderBtn" title="添加供应商">＋</button>
           </div>
-          <div class="set-field">
-            <label for="advFallbackModel">降级模型（调用失败时切入）</label>
-            <select class="set-select" id="advFallbackModel"></select>
-          </div>
-          <div class="set-field">
-            <label>三席审议总开关</label>
-            <label class="set-switch">
-              <input type="checkbox" id="advSimpleEnabled" />
-              <span>启用 simple（三席审议）</span>
-            </label>
-          </div>
+          <div class="set-side-list" id="providerNav"></div>
         </div>
-      </details>
-    </section>
+        <div class="set-provider-main" id="providerDetail"></div>
+      </div>
 
+      <!-- 角色绑定（全局） -->
+      <section class="set-block">
+        <div class="set-h2-row">
+          <h2 class="set-h2">角色绑定</h2>
+          <span class="set-hint" id="roleHint"></span>
+        </div>
+        <div class="set-card" id="bindingList"></div>
+      </section>
+
+      <!-- 高级（全局） -->
+      <section class="set-block">
+        <details class="set-advanced" id="advancedBox">
+          <summary>高级</summary>
+          <div class="set-grid">
+            <div class="set-field">
+              <label for="advDefaultModel">默认模型（角色未绑定时的回落）</label>
+              <select class="set-select" id="advDefaultModel"></select>
+            </div>
+            <div class="set-field">
+              <label for="advFallbackModel">降级模型（调用失败时切入）</label>
+              <select class="set-select" id="advFallbackModel"></select>
+            </div>
+            <div class="set-field">
+              <label>三席审议总开关</label>
+              <label class="set-switch">
+                <input type="checkbox" id="advSimpleEnabled" />
+                <span>启用 simple（三席审议）</span>
+              </label>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- 操作栏：属于【模型】分区，不是整个页面。
+           保存/还原只作用于模型配置（models.yaml）。
+           未来左侧加权限、通用等分区时，每个分区自带自己的操作区，
+           互不共用 —— 这是分区化的正确模式。-->
+      <div class="set-actionbar">
+        <span class="set-save-status" id="setSaveStatus"></span>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="setRestoreBtn" title="从备份列表里挑一版还原">还原</button>
+        <button class="btn primary" id="setSaveBtn">保存并生效</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 模板选择弹层（添加供应商） -->
+<div class="set-modal" id="templateModal" style="display:none">
+  <div class="set-modal-box">
+    <div class="set-modal-head">
+      <span class="set-modal-title">添加供应商</span>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="templateCloseBtn">关闭</button>
+    </div>
+    <div class="set-modal-tip">选一个模板（端点/密钥变量已预填），或自定义空供应商</div>
+    <div class="set-template-grid" id="templateList"></div>
   </div>
 </div>
 
@@ -109,6 +147,6 @@
 </div>
 
 <div id="toastContainer" class="toast-container"></div>
-<script src="/static/settings.js?v=1.0"></script>
+<script src="/static/settings.js?v=10.8"></script>
 </body>
 </html>

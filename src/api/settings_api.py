@@ -76,6 +76,24 @@ _PROTOCOL_DEFAULT_BASE = {
     "deepseek": "https://api.deepseek.com/v1",
 }
 
+# [2026-10-13 协议知识层] 思考强度档位：端点列表返回能力字段就用端点的（nous 的
+# reasoning.supported_efforts、deepseek 官方的 effort.supported_levels）；端点列表**不返回**
+# （opencode 聚合端点只给 id/owned_by）时，按模型家族已知协议补——这是家族知识，不是
+# 探针测出来的。实测：opencode 的 deepseek-v4-flash 接受 reasoning_effort（low/high 真实
+# 生效），DeepSeek 系协议自带思考强度档位。新 deepseek 系模型进来自动带档位，零请求零探针。
+_KNOWN_REASONING: tuple[tuple[str, list[str]], ...] = (
+    ("deepseek", ["low", "high", "max"]),
+)
+
+
+def _known_efforts(model_id: str) -> list[str]:
+    """按模型 id 家族查已知思考档位；不认识返回空（界面回落开关）。"""
+    mid = (model_id or "").lower()
+    for family, levels in _KNOWN_REASONING:
+        if family in mid:
+            return list(levels)
+    return []
+
 TOP_SECTIONS = ("providers", "models", "bindings", "system", "simple", "retry_grading")
 
 
@@ -112,13 +130,34 @@ def _meta() -> dict[str, Any]:
 
 @router.get("/models")
 async def get_models() -> JSONResponse:
-    """读全量设置。roles 现读角色表；key_status 只给「已配置 + 末 4 位」。"""
+    """读全量设置。roles 现读角色表；key_status 只给「已配置 + 末 4 位」。
+
+    [2026-10-13 协议知识层] 已配置模型若配置里没有思考档位声明（端点列表不给，
+    如 opencode 聚合端点只给 id/owned_by），按模型家族协议知识补——deepseek 系
+    自动带 low/high/max（家族自带 reasoning_effort，实测接受且低档真实生效）。
+    """
     raw = _load_raw()
     key_status = env_store.list_key_status(env_store.ENV_PATH, _key_names(raw))
+    models = raw.get("models") or {}
+    enriched: dict[str, Any] = {}
+    for mname, mdef in models.items():
+        if not isinstance(mdef, dict):
+            enriched[mname] = mdef
+            continue
+        entry = dict(mdef)
+        if not entry.get("reasoning_efforts"):
+            model_id = str(entry.get("model") or mname)
+            known = _known_efforts(model_id)
+            if known:
+                entry["reasoning_efforts"] = known
+                if not entry.get("default_effort"):
+                    # deepseek 官方端点实测 default_level=high（effort.supported_levels 同源）
+                    entry["default_effort"] = "high"
+        enriched[mname] = entry
     return JSONResponse({
         "ok": True,
         "providers": raw.get("providers") or {},
-        "models": raw.get("models") or {},
+        "models": enriched,
         "bindings": raw.get("bindings") or {},
         "system": raw.get("system") or {},
         "simple": raw.get("simple") or {},
@@ -407,10 +446,32 @@ async def fetch_models(request: Request) -> JSONResponse:
     if isinstance(items, list):
         for it in items:
             if isinstance(it, dict) and (it.get("id") or it.get("name")):
-                models.append({
+                entry: dict[str, Any] = {
                     "id": str(it.get("id") or it.get("name")),
                     "owned_by": it.get("owned_by") or it.get("type") or "",
-                })
+                }
+                # [模型录入时从模型端获取能力 2026-10-13，修订] 取思考档位，三个来源依次：
+                # ① 端点返回 reasoning.supported_efforts（nous 每家都带）；
+                # ② 端点返回 effort.supported_levels（deepseek 官方用这个字段名）；
+                # ③ 端点列表没给 → 按模型家族协议知识补（deepseek 系自带 low/high/max）。
+                # 前两端点给什么界面就有什么；第三层是家族知识不是探针——opencode 的
+                # deepseek-v4-flash 列表只给 id，但 DeepSeek 系协议自带 reasoning_effort。
+                reasoning = it.get("reasoning") if isinstance(it.get("reasoning"), dict) else {}
+                efforts = reasoning.get("supported_efforts") or []
+                effort = it.get("effort") if isinstance(it.get("effort"), dict) else {}
+                if not efforts:
+                    efforts = effort.get("supported_levels") or []
+                if not efforts:
+                    efforts = _known_efforts(entry["id"])
+                if isinstance(efforts, list) and efforts:
+                    entry["reasoning_efforts"] = [str(x) for x in efforts]
+                    if reasoning.get("default_effort"):
+                        entry["default_effort"] = str(reasoning["default_effort"])
+                    elif effort.get("default_level"):
+                        entry["default_effort"] = str(effort["default_level"])
+                    if reasoning.get("mandatory") is not None:
+                        entry["reasoning_mandatory"] = bool(reasoning["mandatory"])
+                models.append(entry)
     return JSONResponse({"ok": True, "count": len(models), "models": models})
 
 

@@ -15,6 +15,10 @@
   R1  works/ 是否仍被 git 追踪 → 被追踪则拒绝（这是事故的直接靶子）
   R2  工作区是否有未提交的运行数据变更 → 有则拒绝（分支操作会覆盖它们）
   R3  当前目录是否是承载运行数据的正式环境（存在 works/ 且存在 .git）
+
+[2026-10-14 卡片存储迁移] 卡片与影子已从 md 迁入 `works/<work_id>/cards.db`（SQLite）。
+判据本身**不变**——cards.db 仍落在 `works/` 之内，R1/R2 按 `works/` 整目录判定即覆盖它
+（含 `-wal`/`-shm` 旁挂文件）；`works/` 已被 `.gitignore` 挡住，故 R1/R2 照常通过。
 """
 from __future__ import annotations
 

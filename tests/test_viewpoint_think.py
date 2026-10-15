@@ -141,7 +141,10 @@ class _FakeStreamGateway:
 
     async def stream_call(self, model_name, system_prompt, user_prompt, temperature=0.5,
                           max_tokens=None, timeout=None, on_status=None, tools=None,
-                          on_reasoning=None, prior_messages=None):
+                          on_reasoning=None, prior_messages=None,
+                          turn_tail=None, turn_once=None):
+        # [三席身份注入 2026-10-14] 与真实网关签名对齐：补 turn_tail/turn_once
+        # （三席调用经 turn_tail 下发身份注入；本替身只关心流回放，不消费它）。
         self.kwargs = {"model": model_name, "temperature": temperature,
                        "max_tokens": max_tokens, "timeout": timeout, "tools": tools}
         for ev in self._script:

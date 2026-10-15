@@ -104,7 +104,8 @@ async def test_v1_switch_off_no_slice_no_region(sandbox, monkeypatch):
         "entries": [{"seq": 0, "conclusion": "【结论】关闸不得出现", "evidence": "【依据】块0",
                      "occurred_at": "t", "fingerprint": "fp"}]})
     regions = context_assembler.build_context_regions(wid, cid)
-    assert [r["order"] for r in regions] == [100, 150]
+    # [卡片职责区 2026-10-14] 迭代新增 order 90（卡片职责）
+    assert [r["order"] for r in regions] == [90, 100, 150, 155]
     assert all("关闸不得出现" not in r["text"] for r in regions)
 
 

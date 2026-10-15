@@ -67,7 +67,7 @@ class FakeGateway:
 
     async def stream_call(self, model_name, system_prompt, user_prompt, temperature=0.5,
                           max_tokens=None, timeout=None, on_status=None, tools=None,
-                          on_reasoning=None, prior_messages=None):
+                          on_reasoning=None, prior_messages=None, **_):
         result = await self.call(
             model_name, system_prompt, user_prompt, temperature=temperature,
             max_tokens=max_tokens, timeout=timeout, skip_completion_marker=True,

@@ -27,7 +27,9 @@ from .routes import _apply_block_set
 
 logger = logging.getLogger("api.card_draft")
 
-# 合法 kind：requirements（第三块·需求文档/定论）| status（现状块）。使命不可经此口。
+# 合法 kind：requirements（第三块·需求文档/定论）| status（现状块）。
+# 使命不可经此口——它不在本元组内，经此口一律被 draft/commit 开头那道
+# ``kind not in ALLOWED_KINDS`` 拒掉（模型无写通道，只有用户能在界面改）。
 ALLOWED_KINDS = ("requirements", "status")
 
 
@@ -49,29 +51,14 @@ async def _is_rd_project(work_id: str) -> bool:
 
 
 async def _rename_rulings_to_requirements(work_id: str, card_id: str) -> None:
-    """[卡片编辑机制改造 2026-10-12] 盘上区头修正：rd_project 卡的第三块区头
-    由「## 定论」改为「## 需求文档」。card_store 零触碰，故在 commit 写盘后
-    直接改文件（只改区头行，不碰内容；重新 apply_hash 保证 hash 一致）。"""
-    card_path = card_store._card_path(work_id, card_id)
-    if not card_path.exists():
-        return
-    raw = card_path.read_text(encoding="utf-8")
-    meta, body = parse_front_matter(raw)
-    # 只改第三块区头行（## 定论 → ## 需求文档），不动内容
-    lines = body.splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if line.strip() == "## 定论":
-            lines[i] = line.replace("## 定论", "## 需求文档")
-            break
-    new_body = "".join(lines)
-    # 重建全文：front matter + 新正文，重新 apply_hash
-    fm_end = raw.find("\n---\n", 4)  # 跳过开头 --- 找下一个 ---
-    if fm_end == -1:
-        return
-    fm_part = raw[: fm_end + 5]  # 含第二个 --- 及其换行
-    new_raw = fm_part + new_body
-    new_raw = apply_hash(new_raw)
-    card_path.write_text(new_raw, encoding="utf-8")
+    """[已停用 · 卡片存储迁移 SQLite 2026-10-14] 原为「盘上区头修正」：
+    rd_project 卡的第三块区头由「## 定论」改为「## 需求文档」。
+
+    库化后第三块是**一列**（``cards.rulings``），「叫什么名」由读侧按本树
+    ``project_class`` 决定（``routes._apply_block_set``），盘上不再有区头可改
+    ——本函数随之停用。**清理步删除**（见任务书 §七 第三步）。
+    """
+    return None
 
 
 # 占位符标记：卡正文三块模板的字面占位说明（真实内容绝不会出现这些字）。
@@ -260,16 +247,10 @@ async def commit(
     if "error" in result:
         return result
 
-    # [卡片编辑机制改造 2026-10-12] rd_project 卡的第三块区头改名：
-    # update_card 写盘恒用「## 定论」（_render_card 硬编码），此处改盘为
-    # 「## 需求文档」——写侧真正产生该区头，NEW_SECTION_MAPPING 映射不再死代码。
-    if kind == "requirements" and await _is_rd_project(work_id):
-        try:
-            await _rename_rulings_to_requirements(work_id, card_id)
-        except Exception as exc:  # noqa: BLE001
-            # 区头改名失败不阻断 commit 主链（内容已落盘，区头是次要修正）
-            logger.warning("区头改名失败（不阻断）work=%s card=%s: %s",
-                           work_id, card_id, exc)
+    # [卡片存储迁移 SQLite 2026-10-14] rd_project 卡的第三块区头改名补丁**停用**：
+    # 库内第三块是一列，「叫什么名」由读侧按本树 project_class 决定
+    # （routes._apply_block_set），不再需要改盘。原 _rename_rulings_to_requirements
+    # 保留为停用占位，清理步删除。
 
     # 影子 ## 迭代历史 记一行（系统自动、不让模型写；复用 append_to_section）
     shadow_line = (
