@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>画布卡片重设计 · 根卡 + 消息快照卡 · v1 原型</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --border:#30363d;
+    --fg:#e6edf3; --dim:#8b949e; --dimmer:#6e7681;
+    --accent:#58a6ff; --accent-dim:#1f3a5f;
+    --root-accent:#d29922;            /* 根卡强调色（琥珀） */
+    --msg-accent:#3fb950;            /* 消息快照强调色（绿） */
+    --shadow:0 2px 10px rgba(0,0,0,.45);
+    --radius:10px;
+    --font:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--font);min-height:100vh;}
+
+  .canvas{position:relative;width:100%;min-height:100vh;padding:80px 40px 120px;
+          background-image:radial-gradient(circle at 1px 1px, #21262d 1px, transparent 0);
+          background-size:22px 22px;}
+
+  /* ═══════════ 根卡 ═══════════ */
+  .rcard.root{
+    position:relative;width:360px;background:var(--panel);
+    border:1px solid var(--border);border-left:4px solid var(--root-accent);
+    border-radius:var(--radius);box-shadow:var(--shadow);
+    padding:14px 14px 12px;display:flex;flex-direction:column;gap:10px;
+  }
+  /* ① 项目名行 —— ③ 右侧子卡计数区 */
+  .rhead{display:flex;align-items:stretch;gap:10px;}
+
+  .rtitle{
+    flex:1;font-size:17px;font-weight:700;line-height:1.25;color:var(--fg);
+    display:flex;align-items:center;
+  }
+  .rtitle::after{                       /* 少量留白避免与计数区贴死 */
+    content:"";min-width:4px;
+  }
+
+  /* ④ 卡片最右侧：子卡计数区。整块独立区域，点击展开/收起，两态。 */
+  .rcount{
+    flex:0 0 auto;width:52px;border:1px solid var(--border);border-radius:8px;
+    background:var(--panel2);display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:1px;cursor:pointer;user-select:none;
+    transition:border-color .15s,background .15s;
+  }
+  .rcount:hover{border-color:var(--accent);}
+  .rcount .arrow{font-size:13px;line-height:1;color:var(--dim);transition:color .15s;}
+  .rcount .num  {font-size:16px;font-weight:700;line-height:1;color:var(--fg);}
+  /* 展开态：计数区点亮 */
+  .rcard.root.expanded .rcount{border-color:var(--accent);background:var(--accent-dim);}
+  .rcard.root.expanded .rcount .arrow{color:var(--accent);}
+
+  /* ③ 当前状况 —— 三行，与现状一致 */
+  .rstatus{
+    border-top:1px solid #21262d;padding-top:9px;
+    display:flex;flex-direction:column;gap:3px;
+  }
+  .rstatus-cap{font-size:11px;color:var(--dim);letter-spacing:.5px;margin-bottom:2px;}
+  .rstatus-line{
+    font-size:12px;color:var(--fg);line-height:1.45;
+    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;
+  }
+  .rstatus-line .tag{color:var(--accent);margin-right:4px;}
+
+  /* 子卡区（展开/收起由计数区控制） */
+  .rchildren{display:none;flex-direction:column;gap:8px;border-top:1px solid #21262d;padding-top:10px;}
+  .rcard.root.expanded .rchildren{display:flex;}
+
+  /* ═══════════ 普通子卡 ═══════════ */
+  .rcard.child{
+    width:100%;background:var(--panel);border:1px solid var(--border);
+    border-left:3px solid var(--c, #3fb950);border-radius:8px;padding:9px 11px;
+    display:flex;align-items:center;gap:8px;cursor:pointer;transition:background .12s;
+  }
+  .rcard.child:hover{background:var(--panel2);}
+  .child-title{flex:1;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .child-badge{  /* 子卡自己的展开小徽章（若有孙卡） */
+    flex:0 0 auto;font-size:11px;color:var(--dim);border:1px solid var(--border);
+    border-radius:8px;padding:0 7px;background:var(--bg);line-height:16px;cursor:pointer;
+  }
+  .child-sum{
+    width:100%;font-size:11px;color:var(--dim);margin-top:-2px;
+    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;
+  }
+
+  /* 子卡包一行标题一行摘要 */
+  .kid{display:flex;flex-direction:column;gap:3px;}
+
+  /* ═══════════ ⑤ 消息快照卡（吸附根卡下缘，纯样式意义上的子卡）═══════════ */
+  .rsnap{
+    position:relative;width:360px;margin:0 0 0 4px;      /* 与根卡同宽缩进一点 */
+    margin-top:-4px;                                    /* 贴合根卡下缘 */
+    background:var(--panel);border:1px solid var(--border);border-top:none;
+    border-left:4px solid var(--msg-accent);
+    border-radius:0 0 var(--radius) var(--radius);
+    box-shadow:var(--shadow);overflow:hidden;z-index:1;
+  }
+  .rsnap-main{                                  /* 整条是按钮：点它弹快捷回复窗 */
+    display:block;width:100%;background:transparent;border:none;color:inherit;
+    text-align:left;padding:9px 12px 6px;cursor:pointer;
+  }
+  .rsnap-main:hover{background:var(--panel2);}
+  .snap-msg{
+    font-size:12px;color:var(--fg);line-height:1.4;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .snap-sender{font-size:10.5px;color:var(--dim);margin-bottom:2px;display:flex;gap:6px;align-items:center;}
+  .snap-sender .who{color:var(--msg-accent);font-weight:600;}
+  .snap-hint{font-size:10px;color:var(--dimmer);}
+
+  .rsnap-input{                                  /* 快捷输入框，可直接发消息 */
+    display:flex;align-items:center;gap:6px;border-top:1px solid #21262d;padding:6px 8px 7px;
+  }
+  .rsnap-input input{
+    flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;
+    color:var(--fg);font-size:12px;padding:5px 9px;outline:none;font-family:inherit;
+  }
+  .rsnap-input input:focus{border-color:var(--accent);}
+  .rsnap-input input::placeholder{color:var(--dimmer);}
+  .rsnap-input button{
+    flex:0 0 auto;background:var(--accent-dim);border:1px solid var(--accent);color:var(--accent);
+    border-radius:6px;font-size:13px;padding:4px 9px;cursor:pointer;line-height:1.2;
+  }
+  .rsnap-input button:hover{background:var(--accent);color:#fff;}
+
+  /* ═══════════ 快捷回复窗（更小更轻量）═══════════ */
+  .qpop{
+    display:none;position:fixed;width:330px;background:var(--panel);
+    border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.55);
+    z-index:50;overflow:hidden;backdrop-filter:blur(2px);
+  }
+  .qpop.show{display:flex;flex-direction:column;}
+  .qpop-head{
+    background:var(--panel2);padding:9px 12px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:8px;
+  }
+  .qpop-head .name{font-size:13px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .qpop-head .x{cursor:pointer;color:var(--dim);font-size:15px;line-height:1;padding:2px 5px;border-radius:4px;}
+  .qpop-head .x:hover{color:var(--fg);background:var(--bg);}
+  .qpop-scroll{
+    padding:8px 10px;display:flex;flex-direction:column;gap:6px;max-height:170px;overflow:auto;
+  }
+  .qmsg{font-size:12px;line-height:1.45;border-radius:8px;padding:5px 9px;max-width:100%;}
+  .qmsg.in {background:var(--accent-dim);color:var(--fg);align-self:flex-start;border:1px solid #22456b;}
+  .qmsg.out{background:#213221;color:var(--fg);align-self:flex-end;border:1px solid #2e4832;}
+  .qmsg .mwho{font-size:10px;color:var(--dim);display:block;margin-bottom:1px;}
+  .qpop-foot{border-top:1px solid #21262d;padding:7px 9px;display:flex;gap:6px;align-items:center;}
+  .qpop-foot textarea{
+    flex:1;background:var(--bg);border:1px solid var(--border);border-radius:7px;color:var(--fg);
+    font-size:12px;padding:6px 9px;resize:none;height:34px;outline:none;font-family:inherit;
+  }
+  .qpop-foot textarea:focus{border-color:var(--accent);}
+  .qpop-foot button{
+    flex:0 0 auto;background:var(--accent);border:none;color:#04263f;border-radius:7px;
+    font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer;height:34px;
+  }
+  .qpop-foot button:hover{background:#79c0ff;}
+
+  /* 说明角标 */
+  .legend{position:absolute;bottom:14px;left:16px;font-size:11px;color:var(--dimmer);line-height:1.8;}
+  .legend b{color:var(--fg);font-weight:600;}
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  <!-- ═══════════ 根卡 ═══════════ -->
+  <div class="rcard root" id="rootCard">
+    <div class="rhead">
+      <!-- ① 项目名（不显示 "project" 标签） -->
+      <div class="rtitle">银河远征计划</div>
+      <!-- ④ 最右侧子卡计数区：整块点击，▸/▾ 两态 -->
+      <div class="rcount" id="rcount" title="展开/收起子卡">
+        <span class="arrow" id="rcountArrow">▸</span>
+        <span class="num"  id="rcountNum">3</span>
+      </div>
+    </div>
+
+    <!-- ③ 当前状况：三行，与现状一致 -->
+    <div class="rstatus">
+      <div class="rstatus-cap">当前状况</div>
+      <div class="rstatus-line"><span class="tag">›</span>引擎燃料方案已冻结 v2，待总工验收</div>
+      <div class="rstatus-line"><span class="tag">›</span>推进器 A 线 3/5 子项完成，2 项卡在测试</div>
+      <div class="rstatus-line"><span class="tag">›</span>明日上午 10:00 评审，需先补齐轨道计算</div>
+    </div>
+
+    <!-- 子卡区（由计数区切换显隐） -->
+    <div class="rchildren" id="rchildren">
+      <div class="kid">
+        <div class="rcard child" style="--c:#58a6ff">
+          <div class="child-title">导航系统校准</div>
+          <span class="child-badge">▾ 2</span>
+        </div>
+        <div class="child-sum">星历基准已对齐北斗，漂移率约 0.02″/h，满足容差。</div>
+      </div>
+      <div class="kid">
+        <div class="rcard child" style="--c:#bc8cff">
+          <div class="child-title">推进器 A 线测试</div>
+          <span class="child-badge">▸ 0</span>
+        </div>
+        <div class="child-sum">第三轮点火 7.3s 稳定，比冲达 92%，两处泄漏待补。</div>
+      </div>
+      <div class="kid">
+        <div class="rcard child" style="--c:#3fb950">
+          <div class="child-title">评审材料整理</div>
+          <span class="child-badge">▸ 1</span>
+        </div>
+        <div class="child-sum">汇总本周进度，导出一页纸决策清单供总工过目。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ ⑤ 消息快照卡：吸附根卡下缘（纯样式子卡）═══════════ -->
+  <div class="rsnap">
+    <button class="rsnap-main" id="snapMain">
+      <div class="snap-sender"><span class="who">导航系统校准</span><span class="snap-hint">· 最新消息</span></div>
+      <div class="snap-msg">星历已校准完毕，漂移率 0.02″/h，随时可跑轨道推演。需要我拉齐今天的评审数据吗？</div>
+      <div class="snap-hint" style="margin-top:3px">▾ 点击查看消息 / 快捷回复</div>
+    </button>
+    <div class="rsnap-input">
+      <input id="snapText" placeholder="发消息… 回车发送">
+      <button id="snapSend">➤</button>
+    </div>
+  </div>
+
+  <!-- ═══════════ 快捷回复窗（更小更轻量）═══════════ -->
+  <div class="qpop" id="qpop">
+    <div class="qpop-head">
+      <div class="name">导航系统校准 · 对话</div>
+      <span class="x" id="qpopX">✕</span>
+    </div>
+    <div class="qpop-scroll" id="qpopScroll">
+      <div class="qmsg in"><span class="mwho">导航系统校准</span>星历已校准完毕，漂移率 0.02″/h，随时可跑轨道推演。需要我拉齐今天的评审数据吗？</div>
+      <div class="qmsg out"><span class="mwho">你</span>先跑一版轨道推演给我看。</div>
+      <div class="qmsg in"><span class="mwho">导航系统校准</span>好，已起推演任务，预计 40s 出结果。</div>
+    </div>
+    <div class="qpop-foot">
+      <textarea id="qpopText" placeholder="回复这条对话…"></textarea>
+      <button id="qpopSend">发送</button>
+    </div>
+  </div>
+
+  <div class="legend">
+    <b>点击根卡右侧计数区</b>：展开/收起子卡（两态）<br>
+    <b>点击绿色快照条 / 在输入框发消息</b>：弹出轻量快捷回复窗
+  </div>
+</div>
+
+<script>
+  const root = document.getElementById('rootCard');
+  const rcount = document.getElementById('rcount');
+  const rarrow = document.getElementById('rcountArrow');
+  const rchildren = document.getElementById('rchildren');
+
+  /* ④ 计数区点击：展开/收起两态 */
+  rcount.addEventListener('click', () => {
+    const open = root.classList.toggle('expanded');
+    rarrow.textContent = open ? '▾' : '▸';
+  });
+
+  /* ═════ 快捷回复窗 ═════ */
+  const qpop = document.getElementById('qpop');
+  const qpopScroll = document.getElementById('qpopScroll');
+  const qpopText = document.getElementById('qpopText');
+  const snapText = document.getElementById('snapText');
+
+  let qpopLeft = 0, qpopTop = 0;
+
+  function openQpop(anchor){
+    const r = anchor.getBoundingClientRect();
+    qpopLeft = Math.min(r.left, window.innerWidth - 350);
+    qpopTop = r.bottom + 8;
+    if (qpopTop + 260 > window.innerHeight) qpopTop = r.top - 270;
+    qpop.style.left = qpopLeft + 'px';
+    qpop.style.top = qpopTop + 'px';
+    qpop.classList.add('show');
+    qpopText.focus();
+  }
+  function closeQpop(){ qpop.classList.remove('show'); }
+
+  document.getElementById('snapMain').addEventListener('click', () => openQpop(document.querySelector('.rsnap')));
+  document.getElementById('qpopX').addEventListener('click', closeQpop);
+  qpop.addEventListener('click', e => e.stopPropagation());
+  document.addEventListener('click', e => {
+    if (!qpop.classList.contains('show')) return;
+    if (!qpop.contains(e.target) && !e.target.closest('.rsnap')) closeQpop();
+  });
+
+  function send(){
+    const v = qpopText.value.trim();
+    if (!v) return;
+    const m = document.createElement('div');
+    m.className = 'qmsg out';
+    m.innerHTML = '<span class="mwho">你</span>' + v.replace(/</g,'&lt;');
+    qpopScroll.appendChild(m);
+    qpopScroll.scrollTop = qpopScroll.scrollHeight;
+    qpopText.value = '';
+  }
+  document.getElementById('qpopSend').addEventListener('click', send);
+  qpopText.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+
+  /* 快照卡输入框——回车也发，并把最新一条回填到快照 */
+  function snapSend(){
+    const v = snapText.value.trim();
+    if (!v) return;
+    const snapMsg = document.querySelector('.snap-msg');
+    snapMsg.textContent = v;
+    snapText.value = '';
+    openQpop(document.querySelector('.rsnap'));
+  }
+  document.getElementById('snapSend').addEventListener('click', snapSend);
+  snapText.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); snapSend(); } });
+</script>
+</body>
+</html>

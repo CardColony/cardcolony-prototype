@@ -289,9 +289,11 @@ def test_tool_card_toolface_matches_its_perms():
                               "edit_card", "delete_card", "update_shadow",
                               "create_plan", "plan_reorder", "plan_insert",
                               "plan_remove", "plan_modify", "step_complete"}
-    # 原来那个没有任何工具消费的死开关，已从词汇表删除
-    assert "search" not in policy.SWITCHES
-    assert not hasattr(policy, "SWITCH_SEARCH")
+    # [编程卡 2026-10-15 · C2 裁定] search 回归词表＝**预留机关**（coder 行占位码；
+    # 仍无独立 search 工具、搜索由 web_search/fetch_web 承担，暂无消费方——
+    # 配了不等于能用）。断言意图由「已删」随裁定翻新为「在册为预留」。
+    assert "search" in policy.SWITCHES
+    assert hasattr(policy, "SWITCH_SEARCH")
 
 
 async def test_manuscript_and_invoke_tool_have_exec_gate():

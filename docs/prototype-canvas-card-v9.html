@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>根卡 + 吸附消息卡 · v9</title>
+<style>
+  :root {
+    /* 取自真实项目令牌 style.css */
+    --bg: #10131a;
+    --scene: #141823;
+    --panel: #1d212c;
+    --panel-2: #181c26;
+    --border: #2a3040;
+    --border-softer: #242a38;
+    --fg: #e8ebf2;
+    --dim: #8b93a5;
+    --faint: #5b6372;
+    --c-work: #d4a35a;        /* 根卡主色·琥珀 */
+    --c-work-dim: #2a2216;   /* 同族弱档底 */
+    --c-work-line: #b58a44;   /* 同族深档线条 */
+    --r: 10px;
+    --bar: 6px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 80px 40px;
+    gap: 64px;
+  }
+
+  /* ============ 画布场景 ============ */
+  .scene {
+    background: var(--scene);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 64px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px; /* 关键：根卡与消息卡之间的缝 */
+    position: relative;
+  }
+  .scene-label {
+    position: absolute;
+    top: 14px; left: 18px;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  /* ============ 根卡 ============ */
+  .root-card {
+    width: 240px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: var(--bar) solid var(--c-work);
+    border-radius: var(--r);
+    display: flex;
+    flex-direction: row;
+    position: relative;
+  }
+  .root-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 18px 16px 20px;
+    text-align: left;
+  }
+  .root-name {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    line-height: 1.25;
+    color: var(--fg);
+    /* 名字自己说话，不加任何标签与类型 */
+  }
+  .root-status-label {
+    margin-top: 16px;
+    font-size: 10px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .root-status {
+    margin-top: 7px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .root-status .row {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .root-status .row::before {
+    content: "› ";
+    color: var(--c-work);
+  }
+
+  /* —— 右缘竖轨：子卡数 = 树的入口 —— */
+  .child-rail {
+    width: 30px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--border-softer);
+    border-top-right-radius: var(--r);
+    border-bottom-right-radius: var(--r);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    cursor: pointer;
+    background: transparent;
+    transition: background .18s;
+    user-select: none;
+  }
+  .child-rail .tri { font-size: 11px; color: var(--dim); line-height: 1; }
+  .child-rail .n   { font-size: 15px; font-weight: 600; color: var(--fg); line-height: 1; }
+  .child-rail:hover { background: var(--panel-2); }
+  .child-rail.open  { background: var(--c-work-dim); }
+  .child-rail.open .tri, .child-rail.open .n { color: var(--c-work); }
+
+  /* ============ 吸附消息卡（独立完整卡） ============ */
+  .msg-card {
+    width: 240px;
+    background: var(--c-work-dim);
+    border: 1px solid var(--border);
+    border-left: var(--bar) solid var(--c-work-line);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .msg-snap {
+    padding: 12px 14px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #cfd4df;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: background .15s;
+  }
+  .msg-snap .tx {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .msg-snap .chev { font-size: 11px; color: var(--c-work); flex-shrink: 0; }
+  .msg-snap:hover { background: rgba(212,163,90,.08); }
+
+  .msg-input {
+    border-top: 1px solid var(--border-softer);
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .msg-input input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--fg);
+    font-size: 12px;
+    font-family: inherit;
+    /* placeholder 空——框里不写任何说明提示 */
+  }
+  .msg-input .send {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    border: 1px solid var(--c-work-line);
+    color: var(--c-work);
+    background: transparent;
+    font-size: 10px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background .15s, color .15s;
+  }
+  .msg-input .send:hover { background: var(--c-work); color: #171310; }
+
+  /* ============ 快捷回复浮层 ============ */
+  .quick {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    width: 280px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: var(--bar) solid var(--c-work);
+    border-radius: var(--r);
+    box-shadow: 0 16px 44px rgba(0,0,0,.55);
+    z-index: 99;
+    display: none;
+    overflow: hidden;
+  }
+  .quick.show { display: block; }
+  .quick-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-softer);
+  }
+  .quick-head .t { font-size: 11px; letter-spacing: .1em; color: var(--dim); }
+  .quick-head .x {
+    border: none; background: transparent;
+    color: var(--faint); font-size: 14px;
+    width: 20px; height: 20px; cursor: pointer;
+    border-radius: 4px;
+  }
+  .quick-head .x:hover { color: var(--fg); background: var(--panel-2); }
+  .quick-body {
+    max-height: 140px;
+    overflow-y: auto;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .quick-body .b {
+    font-size: 12px; line-height: 1.5;
+    color: var(--fg);
+    background: var(--panel-2);
+    border-radius: 8px;
+    padding: 7px 10px;
+    width: fit-content;
+    max-width: 88%;
+  }
+  .quick-body .b.me {
+    align-self: flex-end;
+    background: var(--c-work-dim);
+    color: #e6dcc7;
+  }
+  .quick-in {
+    border-top: 1px solid var(--border-softer);
+    padding: 8px 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .quick-in input {
+    flex: 1; background: transparent; border: none; outline: none;
+    color: var(--fg); font-size: 12px; font-family: inherit;
+  }
+  .quick-in .send {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid var(--c-work-line); color: var(--c-work);
+    background: transparent; font-size: 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .quick-in .send:hover { background: var(--c-work); color: #171310; }
+
+  /* ============ 普通子卡 对照 ============ */
+  .leaf-card {
+    width: 220px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: var(--bar) solid var(--border);
+    border-radius: var(--r);
+    padding: 14px 14px 16px;
+  }
+  .leaf-name { font-size: 13px; font-weight: 600; color: var(--fg); }
+  .leaf-desc { margin-top: 8px; font-size: 12px; color: var(--dim); line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .leaf-meta { margin-top: 10px; display: flex; align-items: center; gap: 10px; }
+  .leaf-meta .upd { font-size: 10px; color: var(--faint); }
+</style>
+</head>
+<body>
+
+  <!-- ===== 根卡 + 吸附消息卡 ===== -->
+  <div class="scene">
+    <div class="scene-label">画布</div>
+
+    <!-- 根卡 -->
+    <div class="root-card">
+      <div class="root-body">
+        <div class="root-name">银河远征计划</div>
+        <div class="root-status-label">当前状况</div>
+        <div class="root-status">
+          <div class="row">1/3 课题已收口</div>
+          <div class="row">勘探队回报暂缓待定</div>
+          <div class="row">待你拍板下一步</div>
+        </div>
+      </div>
+      <!-- 右缘竖轨：树的入口 -->
+      <div class="child-rail" id="rail" onclick="toggleRail()">
+        <span class="tri" id="tri">▸</span>
+        <span class="n">3</span>
+      </div>
+    </div>
+
+    <!-- 吸附消息卡：独立完整卡，与根卡之间留缝 -->
+    <div class="msg-card">
+      <div class="msg-snap" onclick="openQuick()">
+        <span class="tx">试着把勘探报告归档到已收口课题下</span>
+        <span class="chev">↗</span>
+      </div>
+      <div class="msg-input">
+        <input type="text">
+        <button class="send" title="">➤</button>
+      </div>
+    </div>
+
+    <!-- 快捷回复浮层 -->
+    <div class="quick" id="quick">
+      <div class="quick-head">
+        <span class="t">快 速 回 复</span>
+        <button class="x" onclick="closeQuick()">×</button>
+      </div>
+      <div class="quick-body">
+        <div class="b">试着把勘探报告归档到已收口课题下</div>
+        <div class="b me">好，我来处理</div>
+      </div>
+      <div class="quick-in">
+        <input type="text">
+        <button class="send" onclick="void 0">➤</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 普通子卡 对照 ===== -->
+  <div class="scene">
+    <div class="scene-label">普通子卡对照</div>
+    <div class="leaf-card">
+      <div class="leaf-name">课题 · 勘探</div>
+      <div class="leaf-desc">对目标星域做初步勘探，确认资源带分布与航路可行性。当前完成首轮观测，报告待整理。</div>
+      <div class="leaf-meta">
+        <span class="upd">更新 10-14</span>
+        <span class="upd">▸ 2</span>
+      </div>
+    </div>
+  </div>
+
+<script>
+  var open = false;
+  function toggleRail(){
+    open = !open;
+    var rail = document.getElementById('rail');
+    var tri  = document.getElementById('tri');
+    rail.classList.toggle('open', open);
+    tri.textContent = open ? '▾' : '▸';
+  }
+  function openQuick(){ document.getElementById('quick').classList.add('show'); }
+  function closeQuick(){ document.getElementById('quick').classList.remove('show'); }
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeQuick(); });
+</script>
+</body>
+</html>

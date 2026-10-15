@@ -87,6 +87,7 @@ class RunState:
     vp_system_prompt: str = ""
     ctx_regions: list[dict[str, Any]] = field(default_factory=list)
     neutral_context: str = ""
+    context_ctx: Optional[context_regions.RegionCtx] = None
 
     # —— 工具循环 ——
     prior: list[dict[str, Any]] = field(default_factory=list)
@@ -212,83 +213,71 @@ def check_control(state: RunState) -> Optional[str]:
 # 段②：上下文组装（＋凝练切片）
 # ============================================================
 
-# d. 上下文组装（T11 分区装配线）：0 使用说明（BASE_PROMPT 指针）＋100 卡片清单＋150 当前卡。
-# 装配只按 order 收区拼接、零内容判断（总表 #2/#3）；vp_system_prompt＝100＋150（职责分离裁定）。
-# [T12-SP-05] 凝练态（水位 mark＋entries）routes 层一次读取、结果传 200/300 区——
-# context_regions 保持纯函数不做 IO（L17 硬约束）；开关关（RD-08 缺省）＝None＝逐字旧路。
-# 300 区收窄为未凝段的切片属三期路线裁定后补（L387 本批不动，mark 读取基础件先落）。
-# [信息流 Task3] 装配段埋点：context 秒现（V1）
+# d. 上下文装配：注册表一次接管 system／history 与模型请求初始帧；动态 user/注入仍由
+# 编排逻辑产出原始数据，再交 context base 按注册通道编入请求。
 def build_context(state: RunState) -> None:
-    """装配 system_prompt / vp_system_prompt / 工具列 / 轮槽。"""
-    # [T12-SP-05] 凝练态读取
+    """统一 context base 构建 system、对话历史投影、工具列与轮槽。"""
     state.condense_state = (
         memory_store.load_memory(state.work_id, state.card_id)
         if memory_store.condense_enabled() else None
     )
-    state.ctx_regions = context_assembler.build_context_regions(
-        state.work_id, state.card_id, memory_state=state.condense_state,
+    bundle = context_assembler.build_context_bundle(
+        state.work_id, state.card_id,
+        memory_state=state.condense_state,
+        history_source=state.prior,
     )
-    state.neutral_context = context_regions.assemble_regions(
-        [r["text"] for r in state.ctx_regions]
-    )
-    state.system_prompt = prompts.build_system_prompt(state.neutral_context)
-    state.vp_system_prompt = prompts.build_viewpoint_system_prompt(state.neutral_context)
+    state.context_ctx = bundle["context"]
+    state.ctx_regions = bundle["regions"]
+    state.neutral_context = bundle["main"]["neutral_context"]
+    state.system_prompt = bundle["main"]["system_prompt"]
+    state.vp_system_prompt = bundle["viewpoints"]["system_prompt"]
+    state.prior_for_gateway = bundle["main"]["prior_messages"]
     event_stream.emit(state.work_id, state.card_id, "context", {
         "regions": [str(r.get("region", "")) for r in state.ctx_regions],
         "bytes": len(state.neutral_context.encode("utf-8")),
     })
-
-    # [T15-6] 300 区收窄为未凝段（路线甲，CONDENSE_ROUTE_RULINGS 2026-10-05 闸开）：
-    # 开关开→按水位 mark 切片（condense_state 上方一次读取——T12 SP-05 同一读取传
-    # 200/300 区），mark 前已凝段由 200 区记忆代表（原文全量在会话文件，一条不删）；
-    # 开关关（缺省）＝condense_state None→全量投影逐字旧路（V1/V5）。mark 越界防御
-    # 回退全量（与会话追加式存储的半开区间口径一致）。
-    if state.condense_state is not None:
-        _condense_mark = int(state.condense_state.get("mark", 0) or 0)
-        _hist = state.prior[_condense_mark:] \
-            if 0 <= _condense_mark <= len(state.prior) else state.prior
-    else:
-        _hist = state.prior
-    state.prior_for_gateway = [
-        {
-            "role": m["role"],
-            # [卡间消息·头 2026-10-14] 卡间块的机器头行（`[[card-msg id=… type=…
-            # from=…]]`）**不进模型视野**——换成固定头〔卡间消息〕。只改投影，
-            # **不改块本身**（find_pending 仍读原始头行）。"是谁发的"由正文承载。
-            "content": (card_msg.render_for_context(m["content"])
-                        if str(m.get("actor") or "").startswith("card:")
-                        else m["content"]),
-            # [DeepSeek 思考回传 2026-10-15] assistant 历史条带 reasoning_content
-            # （仅当该条存过思考时）——DeepSeek 思考模型多轮调用强制要求回传，
-            # 不回传即 400。其他家不要求：此键只在源头（存条时）按模型家族判定，
-            # 未存则此处不产出该键 ⇒ 非 DeepSeek 系逐字同旧。
-            **({"reasoning_content": m["reasoning_content"]}
-               if m.get("reasoning_content") else {}),
-        }
-        for m in _hist
-        # [迭代二 S4·呈报项] 环节留痕块（behavior 非空：triage/plan/step/final/
-        # revision 等，本迭代经 facade.append 落档的 actor=tool 形态）**不进
-        # 对话投影**——①落盘 role 恒由 actor 映射（session_facade.py:511），
-        # actor="tool" → role="tool" 的孤立工具消息进 OpenAI 兼容端点会被拒
-        # （tool role 必须配 tool_call_id）；②环节块是留痕通道，模型上下文
-        # 由装配区（100/150/165/200）承载，不靠对话回流。旧块无 behavior 键
-        # → get 默认 "" → 零过滤，迭代一投影逐字不变（金样本对话安全）。
-        if not m.get("behavior")
-    ]
-    # [T11-T6] 轮槽（请求局部对象）：包住同一条列表。折叠关时装配逐字同旧
-    # （wire_messages 原样返回本列表）；首轮固化与抢救回注走 append_plain
-    # （非轮、永不折叠——不折红线），assistant＋tool 结果走 begin_round/
-    # append_tool_result（成轮，可折单元）。
     state.slot = tool_fold.ToolTurnSlot(state.prior_for_gateway)
-    # [工具卡底座 T10 · EC-129] 传入卡上下文；[T4 权限收口] 同时传 cards。
-    # 三类形参缺省时（无卡上下文）不过滤，既有直调行为逐字不变。
     state.tools = card_tools.build_tool_schemas(
         card_id=state.card_id,
         work_id=state.work_id,
         cards=card_tools._collect_card_meta(state.work_id),
     )
-    # history_len 此刻一次算定（此后本列表会被轮槽就地 append 增长）
+    # history_len 是注册表统一投影出来的历史条数快照；轮槽之后会就地追加。
     state.history_len = len(state.prior_for_gateway)
+
+
+def compose_model_request(
+    state: RunState,
+    *,
+    profile: str,
+    prior_messages: Optional[list[dict[str, Any]]] = None,
+    prior_key: str = "history",
+    user_content: Optional[str] = None,
+    turn_once: Optional[list[dict[str, Any]]] = None,
+    turn_tail: Optional[list[dict[str, Any]]] = None,
+    seat_identity: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """所有主对话/三席请求都经 context registry 组合，不在调用点手拼通道。"""
+    if state.context_ctx is None:
+        # 兼容白盒直调（生产链路 build_context 一定先设 context_ctx）。
+        return {
+            "system_prompt": state.system_prompt if profile == "main" else state.vp_system_prompt,
+            "user_prompt": user_content if user_content is not None else state.user_prompt,
+            "prior_messages": prior_messages or [],
+            "turn_once": turn_once or [],
+            "turn_tail": turn_tail or [],
+        }
+    request = context_regions.compose_model_context(
+        state.context_ctx,
+        profile=profile,
+        prior_messages=prior_messages,
+        prior_key=prior_key,
+        user_content=user_content if user_content is not None else state.user_prompt,
+        turn_once=turn_once,
+        turn_tail=turn_tail,
+        seat_identity=seat_identity,
+    )
+    return request
 
 
 # ============================================================
@@ -498,15 +487,17 @@ async def step(state: RunState) -> StepOutcome:
                           {"round": state.rounds, "phase": "main"})
         state.model_calls += 1
         # [迭代三 S5] 首轮接线：按当前步 type 查表取模型（无活板回落 default）
+        request = compose_model_request(
+            state, profile="main", prior_messages=state.prior_for_gateway,
+            prior_key="history", user_content=state.user_prompt,
+            turn_tail=state.turn_tail, turn_once=state.judgment_tail,
+        )
         result, state.model_used = await model_service.call_main(
-            state.system_prompt, state.user_prompt, state.prior_for_gateway,
+            request["system_prompt"], request["user_prompt"], request["prior_messages"],
             tools=state.tools,
             model_name=_pick_step_model(state),
-            # 本轮注入消息随用户消息之后下发（无注入时为空 ⇒ 逐字同旧）
-            turn_tail=state.turn_tail,
-            # [判断协议改注入 2026-10-14] 判断协议＝**仅本次**下发（不进轮槽、
-            # 不固化）：只在轮首且无活板时有值，round≥2 恒空。
-            turn_once=state.judgment_tail,
+            turn_tail=request["turn_tail"],
+            turn_once=request["turn_once"],
         )
         # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
         state.turn_reasoning = result.get("reasoning_content") or ""
@@ -522,9 +513,16 @@ async def step(state: RunState) -> StepOutcome:
         state.model_calls += 1
         # [迭代三 S5] 续跳轮接线：同首轮（步中途 type 不变的板是常态；
         # 改板插步后以 current 步 type 为准）
+        request = compose_model_request(
+            state, profile="main", prior_messages=wire_messages,
+            prior_key="tool_turn", user_content=state.user_prompt,
+        )
         result, state.model_used = await model_service.call_main(
-            state.system_prompt, state.user_prompt, wire_messages, tools=state.tools,
+            request["system_prompt"], request["user_prompt"], request["prior_messages"],
+            tools=state.tools,
             model_name=_pick_step_model(state),
+            turn_tail=request["turn_tail"],
+            turn_once=request["turn_once"],
         )
     # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
     state.turn_reasoning = result.get("reasoning_content") or ""
@@ -822,15 +820,20 @@ async def run_seats(state: RunState) -> StepOutcome:
         state.chain_criteria_mets,
         state.tool_full_texts,
     )
+    seat_request = compose_model_request(
+        state, profile="viewpoint", prior_messages=seats_prior,
+        prior_key="history", user_content=review_input,
+        seat_identity=[seat_identity],
+    )
     ok_metas, state.viewpoints_meta = await simple_service.run_viewpoints(
-        state.vp_system_prompt,
-        review_input,
-        seats_prior,
+        seat_request["system_prompt"],
+        seat_request["user_prompt"],
+        seat_request["prior_messages"],
         on_progress=lambda s, d, _w=state.work_id, _c=state.card_id:
             progress.set_stage(_w, _c, s, d),
         on_seat=lambda kind, meta, _w=state.work_id, _c=state.card_id:
             event_stream.emit(_w, _c, kind, meta),
-        turn_tail=[seat_identity],
+        turn_tail=seat_request["turn_tail"],
     )
     if not ok_metas:
         # [E-口径②] 全败留痕不阻断：主模型携步成果独自交付（草稿即回执）
@@ -847,11 +850,18 @@ async def run_seats(state: RunState) -> StepOutcome:
     event_stream.emit(state.work_id, state.card_id, "round_start",
                       {"round": state.rounds, "phase": "synthesize"})
     state.model_calls += 1
+    synth_request = compose_model_request(
+        state, profile="main", prior_messages=state.prior_for_gateway,
+        prior_key="tool_turn", user_content=synth_input,
+    )
     # [迭代五 S2·E10] 统合官模型可配：model_pick.resolve_model("synthesize")，
     # 未配置回落默认模型（model_config.default_model()，缺省行为逐字不变）。
     result, state.model_used = await model_service.call_main(
-        state.system_prompt, synth_input, state.prior_for_gateway, tools=state.tools,
+        synth_request["system_prompt"], synth_request["user_prompt"],
+        synth_request["prior_messages"], tools=state.tools,
         model_name=model_pick.resolve_model("synthesize"),
+        turn_tail=synth_request["turn_tail"],
+        turn_once=synth_request["turn_once"],
     )
     tool_calls = result.get("tool_calls") or []
     assistant_content = result.get("content") or ""
@@ -1339,6 +1349,16 @@ async def schedule_card_message_triggers(state: RunState) -> None:
     from . import routes as _routes
 
     for (work_id, target_id), msg_ids in triggers.items():
+        # [编程卡 2026-10-15 · §六块3 静默判定②] 完工编程卡不被 K3 调起：
+        # 只读 card_type/state 两字段的机械判定（红线 2），continue 且**不打
+        # ops**；信留在收件箱 pending 作验收留档（下次收口重新判，仍跳过）。
+        try:
+            _tmeta = card_store._meta_of(work_id, target_id) or {}
+        except Exception:  # noqa: BLE001 读不出 meta ⇒ 不在此处置，走既有链
+            _tmeta = {}
+        if str(_tmeta.get("card_type") or "") == "coder" \
+                and str(_tmeta.get("state") or "") == "completed":
+            continue
         try:
             pending = await card_db.list_pending(work_id, target_id)
         except Exception as exc:  # noqa: BLE001

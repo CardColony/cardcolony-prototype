@@ -1,6 +1,6 @@
 {
-  "_comment": "卡间消息类型注册表（迭代四建表，迭代五 S1 扩应对字段）。字段四样：display（显示名）／note（语义说明）／when_to_use（何时用——收件方应对说明的数据源）／reply_expected（bool，收下后是否须作答并自动回发）／reply_type（str，回发时用的类型码，空串=不回发）。无 judge 位——消息类型没有『完成判据』。三个类型把互动方向穷尽：要回应的（ask）／给回应的（answer）／不要回应的（notify）。加类型＝加条目零代码；新条目缺 when_to_use/reply_expected/reply_type 时按缺省值消费（card_msg.when_to_use_of 等函数 fail-open）。",
-  "version": 1,
+  "_comment": "卡间消息类型注册表（迭代四建表，迭代五 S1 扩应对字段，迭代六·编程卡 v2 加 coder_done）。字段四样：display（显示名）／note（语义说明）／when_to_use（何时用——收件方应对说明的数据源）／reply_expected（bool，收下后是否须作答并自动回发）／reply_type（str，回发时用的类型码，空串=不回发）。无 judge 位——消息类型没有『完成判据』。四个类型把互动方向穷尽：要回应的（ask）／给回应的（answer）／不要回应的（notify）／完工回报（coder_done，系统通道发、要主卡验收作答）。加类型＝加条目零代码；新条目缺 when_to_use/reply_expected/reply_type 时按缺省值消费（card_msg.when_to_use_of 等函数 fail-open）。",
+  "version": 2,
   "types": {
     "msg_ask": {
       "display": "询问",
@@ -22,6 +22,13 @@
       "when_to_use": "告知对方一件事、不需要对方回话时发。",
       "reply_expected": false,
       "reply_type": ""
+    },
+    "coder_done": {
+      "display": "完工回报",
+      "note": "编程卡报告任务完成。收到后应验收：读它的完工报告与产物（read_card / read_shadow / read_file），对照任务与需求判断是否达标，结论写进本卡；不达标则新建编程卡返工。",
+      "when_to_use": "编程卡 report_done 收口时由系统自动发给 owner 主卡（非模型发信）；主卡收到即被调起跑验收轮，回发 msg_answer 留档即可。",
+      "reply_expected": true,
+      "reply_type": "msg_answer"
     }
   }
 }

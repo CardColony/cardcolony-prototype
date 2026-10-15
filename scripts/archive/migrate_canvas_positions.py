@@ -1,5 +1,24 @@
 # -*- coding: utf-8 -*-
-"""canvas.json → layout.json 用户坐标一次性迁移脚本（画布第二步 D4）。
+"""【已废弃 · 2026-10-15 · 勿再执行】canvas.json → layout.json 用户坐标迁移脚本。
+
+**已废弃（2026-10-15）**：位置数据已并入 cards 表（``pos_x``/``pos_y``/
+``pinned`` 三列，见 ``src/storage/card_db.py`` 的 ``POSITION_COLUMNS``），
+``layout.json`` 这条存放点已整体退役——**本脚本使命终结**。
+
+它当年要搬的两端现在都不存在了：
+- 源端 ``canvas.json.positions``：已清空，且 load/rebuild 路径不再写它；
+- 目标端 ``layout.json``：不再被任何代码路径创建（``load_layout``/
+  ``save_layout`` 两个函数已删）。
+
+**执行它只会造出一个没人读、没人认领的孤儿文件**——恰好是本次重构要消灭的
+那类"第二个真相来源"。故：留档备查，不删历史（要查当时为什么这么设计），
+但**不要再运行**。真要改位置数据，去 cards 表；
+加列/补列走 ``scripts/migrate_cards_add_position_columns.py``。
+
+（以下为当时的原始实现，逐字保留，仅供追溯。）
+
+────────────────────────────────────────────────────────────────────────
+canvas.json → layout.json 用户坐标一次性迁移脚本（画布第二步 D4）。
 
 职责：把**指定 works 树**（必须是副本或部署窗口内已停写的生产树）下各
 ``work_*/canvas.json`` 的 ``positions``（用户钉住坐标，唯一需要迁移的用户数据）

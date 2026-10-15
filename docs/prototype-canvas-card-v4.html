@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>画布卡片原型 v4 —— 根卡 + 独立消息卡</title>
+<style>
+  :root {
+    --bg: #121420;
+    --panel: #1a1d2e;
+    --panel-2: #20233a;
+    --border: #2b2f4a;
+    --border-soft: #242840;
+    --fg: #e6e8f2;
+    --dim: #9aa0b8;
+    --faint: #6a6f8a;
+    --c-work: #f0a03a;      /* 根卡 · 琥珀 */
+    --c-message: #4aa8c0;   /* 消息卡 · 冷青 */
+    --radius: 8px;
+    --bar: 6px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    padding: 48px 32px;
+    display: flex;
+    gap: 32px;
+    align-items: flex-start;
+  }
+
+  /* ═══════════ 根卡 ═══════════ */
+  .root-card {
+    width: 420px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: var(--bar) solid var(--c-work);
+    border-radius: var(--radius);
+    padding: 16px 12px 16px 16px;
+    position: relative;
+    display: flex;
+  }
+
+  /* 主体区（标题 + 状况） */
+  .root-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .root-body h1 {
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--fg);
+    margin-bottom: 10px;
+    letter-spacing: 0.2px;
+  }
+
+  .status-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 6px;
+  }
+
+  .status-lines {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--dim);
+  }
+  .status-lines .ln { display: block; }
+  .status-lines .ln::before {
+    content: "› ";
+    color: var(--c-work);
+    font-weight: 700;
+  }
+  .status-lines.clamp3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* 右缘 · 子卡计数区（独立竖轨，贯通卡高） */
+  .count-rail {
+    width: 48px;
+    margin-left: 12px;
+    border-left: 1px solid var(--border-soft);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    transition: background .15s;
+  }
+  .count-rail:hover { background: rgba(240,160,58,.06); }
+  .count-rail.open { background: rgba(240,160,58,.12); }
+  .count-rail .arrow {
+    font-size: 14px;
+    color: var(--c-work);
+    line-height: 1;
+    transition: transform .18s;
+  }
+  .count-rail.open .arrow { transform: rotate(180deg); }
+  .count-rail .num {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--fg);
+  }
+  .count-rail .lbl {
+    font-size: 9px;
+    letter-spacing: .5px;
+    color: var(--faint);
+  }
+
+  /* ═══════════ 独立消息卡（吸附在根卡正下方） ═══════════ */
+  .msg-card {
+    width: 420px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: var(--bar) solid var(--c-message);
+    border-radius: var(--radius);
+    margin-top: -1px;          /* 断开间隙，让两张独立卡在视觉上像吸附 */
+  }
+
+  /* 快照行 */
+  .snapshot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-soft);
+    transition: background .15s;
+  }
+  .snapshot:hover { background: rgba(74,168,192,.06); }
+  .snapshot .who {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--c-message);
+    max-width: 110px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .snapshot .text {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--dim);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .snapshot .open-ic {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--faint);
+  }
+
+  /* 内联快捷输入 */
+  .quick-input {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+  .quick-input input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    color: var(--fg);
+    font-size: 12px;
+    padding: 7px 10px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .quick-input input::placeholder { color: var(--faint); }
+  .quick-input input:focus { border-color: var(--c-message); }
+  .quick-input button {
+    flex-shrink: 0;
+    background: var(--c-message);
+    color: #0c1418;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 7px 14px;
+    cursor: pointer;
+  }
+  .quick-input button:hover { filter: brightness(1.1); }
+
+  /* ═══════════ 轻量快捷回复窗（画布浮层） ═══════════ */
+  .reply-pop {
+    position: fixed;
+    top: 200px;
+    right: 120px;
+    width: 340px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: var(--bar) solid var(--c-message);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .reply-pop.show { display: flex; }
+  .reply-pop .rp-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .reply-pop .rp-head .x { cursor: pointer; color: var(--faint); font-size: 14px; line-height:1; }
+  .reply-pop .rp-head .x:hover { color: var(--fg); }
+  .reply-pop .rp-msgs {
+    flex: 1;
+    padding: 12px 14px;
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .reply-pop .msg {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--dim);
+  }
+  .reply-pop .msg .w { color: var(--c-message); font-weight:600; margin-right:6px; }
+  .reply-pop .rp-input {
+    display: flex;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .reply-pop .rp-input input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    color: var(--fg);
+    font-size: 12px;
+    padding: 7px 10px;
+    outline: none;
+  }
+  .reply-pop .rp-input input:focus { border-color: var(--c-message); }
+  .reply-pop .rp-input button {
+    background: var(--c-message);
+    color: #0c1418;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+
+  /* ═══════════ 普通子卡（对比） ═══════════ */
+  .child-card {
+    width: 420px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    position: relative;
+    display: flex;
+    gap: 12px;
+  }
+  .child-card .c-body { flex:1; min-width:0; }
+  .child-card .c-name { font-size: 14px; font-weight: 600; color: var(--fg); margin-bottom:6px; }
+  .child-card .c-sum {
+    font-size: 12px;
+    color: var(--dim);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .child-card .c-badge {
+    flex-shrink: 0;
+    align-self: flex-start;
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    font-size: 11px;
+    color: var(--dim);
+    padding: 2px 8px;
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+
+  <!-- 左：根卡 + 吸附的独立消息卡 -->
+  <div style="display:flex;flex-direction:column;gap:0;">
+    <!-- 根卡 -->
+    <div class="root-card">
+      <div class="root-body">
+        <h1>银河远征计划</h1>
+        <div class="status-label">当前状况</div>
+        <div class="status-lines clamp3">
+          <span class="ln">已完成星图测绘，确认 12 条可航行走廊</span>
+          <span class="ln">三支先遣队在 µ-7 号走廊同步推进，进展正常</span>
+          <span class="ln">物资舱补给率 87%，下一次补给窗口待定</span>
+        </div>
+      </div>
+      <div class="count-rail" id="rail" onclick="toggleRail()">
+        <span class="arrow" id="railArrow">▸</span>
+        <span class="num" id="railNum">3</span>
+        <span class="lbl">子卡</span>
+      </div>
+    </div>
+
+    <!-- 独立消息卡，吸附在根卡正下方（自带完整卡片样式） -->
+    <div class="msg-card">
+      <div class="snapshot" onclick="togglePop()">
+        <span class="who">勘探队 · 队长</span>
+        <span class="text">µ-7 走廊东段发现未知信号源，建议变更航线优先级</span>
+        <span class="open-ic">↗</span>
+      </div>
+      <div class="quick-input">
+        <input type="text" id="qin" placeholder="在画布上直接发消息…">
+        <button onclick="sendQuick()">发送</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右：普通子卡（对比） -->
+  <div class="child-card">
+    <div class="c-body">
+      <div class="c-name">µ-7 走廊勘探</div>
+      <div class="c-sum">东段信号源需人工复核，已派第二小组前往七号补给点，预计 2 小时后返回回执，届时更新走廊风险等级。</div>
+    </div>
+    <span class="c-badge">2 孙卡</span>
+  </div>
+
+  <!-- 轻量快捷回复窗 -->
+  <div class="reply-pop" id="pop">
+    <div class="rp-head">
+      <span>勘探队 · 队长 · 消息</span>
+      <span class="x" onclick="togglePop()">✕</span>
+    </div>
+    <div class="rp-msgs">
+      <div class="msg"><span class="w">队长</span>µ-7 走廊东段发现未知信号源，建议变更航线优先级，我倾向先复核再动。</div>
+      <div class="msg"><span class="w">导航员</span>已收到，信号源坐标已二次定位，误差缩小到 30 米。</div>
+    </div>
+    <div class="rp-input">
+      <input type="text" id="rpin" placeholder="回复…">
+      <button onclick="sendReply()">发送</button>
+    </div>
+  </div>
+
+<script>
+  function toggleRail(){
+    const rail=document.getElementById('rail');
+    const arrow=document.getElementById('railArrow');
+    const open=rail.classList.toggle('open');
+    arrow.textContent = open ? '▾' : '▸';
+  }
+  function togglePop(){
+    document.getElementById('pop').classList.toggle('show');
+  }
+  function sendQuick(){
+    const v=document.getElementById('qin').value.trim();
+    if(v){ alert('发送到画布：'+v); document.getElementById('qin').value=''; }
+  }
+  function sendReply(){
+    const v=document.getElementById('rpin').value.trim();
+    if(v){ alert('回复：'+v); document.getElementById('rpin').value=''; }
+  }
+</script>
+</body>
+</html>

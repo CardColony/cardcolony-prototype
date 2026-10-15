@@ -41,7 +41,9 @@ from __future__ import annotations
 # [卡片区域语义 2026-10-14 · v3] t18-1 → t19-1：read_shadow 工具行删去「跨卡读取
 # 下级影子」的旧说明——影子＝本卡私有，只读本卡自己的影子
 # （用户 17:48／17:56 令）。工具文本变了，版本号随升（回归基准对账）。
-BASE_PROMPT_VERSION = "t19-1"
+# t19-1 → t20-1：[编程卡 2026-10-15] 工具节增两行（create_coder_card /
+# report_done）＋新增「## 编程卡」使用说明节（派生、首跑、完工即静默）。
+BASE_PROMPT_VERSION = "t20-1"
 
 # [思维链真实落地 2026-10-11] 判断协议（任务书附录 A 全文，一字不改）。
 # 注入 system 区开头；实测 A/B 有效 7/10→10/10。
@@ -88,6 +90,7 @@ BASE_PROMPT = """\
 - read_card(card_id)：读取指定卡（标题、父卡、连线、正文）。只能读取你有权访问的卡。
 - read_memory(card_id?, from_seq?, to_seq?)：下探指定卡（缺省当前卡）的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】），可按块序号锚点区间取回。记忆条目不是卡片正文——正文经 read_card 拉取。
 - create_card(title, parent?, content?)：在你管辖范围内创建新卡。只能建自己的子卡片——parent 缺省＝当前卡自身；给 parent 时该卡必须落在你的子树内，越权会被拒。建卡成功后系统自动派生该卡的影子卡，你不需要管。
+- create_coder_card(title, task)：把一件开发任务交给新建的编程卡执行——建一张编程卡（task 原样落进它的使命块）并立即自动开跑。只能建自己的子卡片。
 - delete_card(card_id)：删除你管辖范围内指定编号的卡片及其对话。剧本根卡与有子卡的卡不可删除。
 - read_shadow(card_id)：读取指定卡的影子卡全文（card_id 缺省＝当前卡）。只读本卡自己的影子。
 - link_cards(target_id, type, note)：在当前卡与目标卡之间建立连线（type：先后/关联）。
@@ -99,6 +102,7 @@ BASE_PROMPT = """\
 - read_file(path, para_start, para_end)：读取一个文本文件的内容，可按行区间分段。二进制与凭证类文件不可读。
 - search_files(keyword, path, limit)：在目录下逐文件检索关键词（不区分大小写），返回命中的文件、行号与该行内容。
 - write_file(path, content)：写入一个文本文件（已存在则覆盖，覆盖前原文件自动备份到 _backups 下）。单次上限 5MB。
+- report_done(summary)：任务做完时调用，调完即完工、本卡静默（编程卡专用）。完工回执由系统自动发给主卡并调起验收；完工后本卡不再被激活、不可删除、永久留档。
 
 ## 卡片内容写入（起草＋用户确认）
 
@@ -108,6 +112,14 @@ BASE_PROMPT = """\
 - **用户负责确认写入**：起草结果由用户在界面上审阅，点「确认」按钮后系统才写入卡面（整块替换）。用户也可点「反馈」让你按意见重新起草，或点「关闭」丢弃草稿。
 - **使命块**永远不经起草/确认通道，只能由用户在界面上改（立项定稿）。
 - 影子卡的「## 迭代历史」由系统在确认写入时自动记一行，你不需要也不能写影子。
+
+## 编程卡
+
+- 编程卡（card_type=coder）＝承接主卡开发任务的执行体：一张卡一件任务，任务正文落它的使命块。
+- 在编程卡上：有 edit_card 与读写文件的能力，专心把任务做完；不长树（不能建子卡）、不能删卡、不能发信。
+- 任务做完时调 report_done(summary)：系统随即把本卡置为完工、影子追加完工行，并由**系统**自动向主卡发完工回执、调起主卡验收——你不需要也不能发信。
+- 完工之后本卡静默：不再被激活、不可删除、永久留档；新任务由主卡新建编程卡承接。
+- 在主卡上：用 create_coder_card(title, task) 派生编程卡，建卡即自动开跑。
 
 ## 工具错误码
 
@@ -124,11 +136,14 @@ BASE_PROMPT = """\
 """
 
 
-def build_system_prompt(context_block: str) -> str:
-    """主模型（统合官）system prompt：使用说明 ＋ 中性上下文。"""
+def build_system_prompt(context_block: str, base_prompt: str | None = None) -> str:
+    """兼容出口：默认使用 BASE_PROMPT；统一上下文底座可传注册表渲染出的 instruction。"""
+    instruction = BASE_PROMPT if base_prompt is None else base_prompt
     if context_block and context_block.strip():
-        return BASE_PROMPT + "\n" + context_block.rstrip() + "\n"
-    return BASE_PROMPT
+        if instruction:
+            return instruction + "\n" + context_block.rstrip() + "\n"
+        return context_block.rstrip() + "\n"
+    return instruction
 
 
 def build_viewpoint_system_prompt(context_block: str) -> str:

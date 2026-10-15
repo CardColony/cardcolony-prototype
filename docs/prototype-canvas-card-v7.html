@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>根卡 · 设计验证 v7</title>
+<style>
+  :root{
+    /* 与推演agent static/style.css 同源令牌 */
+    --bg:#0f1115;
+    --panel:#161a21;
+    --panel-2:#1b2028;
+    --border:#262c36;
+    --border-2:#313947;
+    --fg:#e8ecf2;
+    --fg-dim:#8b94a3;
+    --fg-faint:#5c6675;
+    --c-work:#d9a441;          /* 根卡主色 · 琥珀 */
+    --c-work-dim:#5a4420;      /* 同族深档 · 消息卡  */
+    --c-work-glow:rgba(217,164,65,.14);
+    --radius:8px;
+    --bar:6px;                 /* 左边条宽 */
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{
+    background:var(--bg);
+    color:var(--fg);
+    font-family:"Segoe UI",-apple-system,"Microsoft YaHei",sans-serif;
+    min-height:100vh;
+    display:flex;align-items:flex-start;justify-content:center;
+    padding:60px 40px;gap:48px;
+  }
+  .stage-label{
+    position:fixed;top:14px;left:20px;font-size:11px;letter-spacing:.12em;
+    color:var(--fg-faint);text-transform:uppercase;
+  }
+
+  /* ============ 根卡 + 消息卡（吸附整体） ============ */
+  .root-stack{ width:236px; }
+
+  /* ---- 根卡 · 树的门面 ---- */
+  .root-card{
+    position:relative;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:16px 20px 18px 18px;   /* 右侧让给门轨 */
+    box-shadow:0 1px 0 rgba(0,0,0,.4);
+  }
+  /* 左边条 · 身份色 */
+  .root-card::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:var(--bar);
+    background:var(--c-work);border-radius:var(--radius) 0 0 var(--radius);
+  }
+  /* 项目名 · 顶格大字 */
+  .root-name{
+    font-size:18px;font-weight:700;line-height:1.25;
+    color:var(--fg);letter-spacing:.01em;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  /* 三行状态 · 安静的脉搏 */
+  .root-status{
+    margin-top:10px;
+    font-size:12px;line-height:1.6;color:var(--fg-dim);
+  }
+  .status-row{ display:flex;gap:7px; }
+  .status-row .s{ color:var(--c-work);opacity:.55;flex:none; }
+  .status-row span.t{ overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+  .status-more{
+    margin-top:3px;font-size:11px;color:var(--fg-faint);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+
+  /* ---- 门轨 · 树的出入口（右缘一整条） ---- */
+  .tree-gate{
+    position:absolute;top:0;right:0;bottom:0;width:34px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+    background:transparent;border:none;border-left:1px solid var(--border);
+    border-radius:0 var(--radius) var(--radius) 0;
+    cursor:pointer;color:var(--fg-dim);
+    transition:background .15s,color .15s;
+  }
+  .tree-gate .ga{ font-size:13px;line-height:1; }
+  .tree-gate .gc{ font-size:13px;font-weight:600;line-height:1; }
+  .tree-gate:hover{ background:rgba(255,255,255,.03);color:var(--fg); }
+  /* 展开态：点亮 */
+  .root-card.expanded .tree-gate{
+    background:var(--c-work-glow);color:var(--c-work);
+  }
+
+  /* ---- 消息卡 · 独立的门廊信箱 ---- */
+  .message-card{
+    margin-top:10px;                 /* 缝 */
+    background:var(--panel-2);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:10px 12px 10px 14px;
+    position:relative;
+  }
+  .message-card::before{             /* 同族深琥珀左边条 */
+    content:"";position:absolute;left:0;top:0;bottom:0;width:var(--bar);
+    background:var(--c-work-dim);border-radius:var(--radius) 0 0 var(--radius);
+  }
+  /* 快照 · 只有内容本身 */
+  .msnap{
+    width:100%;display:block;text-align:left;
+    background:transparent;border:none;padding:2px 0 8px;
+    cursor:pointer;
+  }
+  .msnap .txt{
+    font-size:12.5px;line-height:1.5;color:var(--fg);
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  }
+  .msnap:hover .txt{ color:#fff; }
+  /* 快捷输入 · 无占位符 */
+  .minput{ display:flex;align-items:center;gap:6px;border-top:1px solid var(--border);padding-top:8px; }
+  .minput input{
+    flex:1;background:transparent;border:none;outline:none;
+    color:var(--fg);font-size:12.5px;line-height:1.4;
+  }
+  .minput input::placeholder{ color:transparent; }
+  .send{
+    flex:none;width:22px;height:22px;border-radius:5px;
+    background:var(--border);border:none;color:var(--fg);cursor:pointer;
+    font-size:12px;line-height:1;display:flex;align-items:center;justify-content:center;
+    transition:background .15s;
+  }
+  .send:hover{ background:var(--border-2); }
+
+  /* ---- 快捷回复窗 · 轻量便签 ---- */
+  .quick-reply{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+    width:300px;max-height:340px;display:flex;flex-direction:column;
+    background:var(--panel-2);border:1px solid var(--border-2);
+    border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.55);
+    overflow:hidden;z-index:50;
+  }
+  .qr-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:10px 12px;border-bottom:1px solid var(--border);
+  }
+  .qr-head .t{ font-size:12px;color:var(--fg-dim);letter-spacing:.04em; }
+  .qr-close{
+    background:transparent;border:none;color:var(--fg-dim);font-size:16px;line-height:1;
+    cursor:pointer;padding:0 2px;border-radius:4px;
+  }
+  .qr-close:hover{ color:var(--fg);background:rgba(255,255,255,.05); }
+  .qr-body{
+    flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px;
+  }
+  .qr-msg{ font-size:12px;line-height:1.55;color:var(--fg); }
+  .qr-msg.mine{ color:var(--fg-dim); }
+  .qr-input{
+    display:flex;align-items:center;gap:6px;
+    padding:8px 12px;border-top:1px solid var(--border);
+  }
+  .qr-input input{ flex:1;background:transparent;border:none;outline:none;color:var(--fg);font-size:12.5px; }
+  .qr-input input::placeholder{ color:transparent; }
+
+  /* ============ 普通子卡 · 对比 ============ */
+  .sub-wrap{ display:flex;flex-direction:column;gap:10px;padding-top:6px; }
+  .sub-wrap .hint{ font-size:11px;color:var(--fg-faint);letter-spacing:.08em; }
+  .sub-card{
+    width:236px;position:relative;
+    background:var(--panel);border:1px solid var(--border);
+    border-radius:var(--radius);padding:12px 14px;
+  }
+  .sub-card::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:var(--bar);
+    background:var(--border-2);border-radius:var(--radius) 0 0 var(--radius);
+  }
+  .sub-name{ font-size:13px;font-weight:600;color:var(--fg); }
+  .sub-sum{ margin-top:5px;font-size:11.5px;line-height:1.5;color:var(--fg-dim);
+            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
+  .sub-count{ position:absolute;top:10px;right:10px;font-size:10.5px;color:var(--fg-faint); }
+</style>
+</head>
+<body>
+
+<div class="stage-label">根卡 · 设计验证 v7</div>
+
+<!-- ============ 根卡 + 消息卡（吸附） ============ -->
+<div class="root-stack" id="stack">
+  <section class="root-card" id="rootCard">
+    <h1 class="root-name">银河远征计划</h1>
+    <div class="root-status">
+      <div class="status-row"><span class="s">·</span><span class="t">主干拆分已完成</span></div>
+      <div class="status-row"><span class="s">·</span><span class="t">三个课题在推进</span></div>
+      <div class="status-row"><span class="s">·</span><span class="t">一个课题被否定待重开</span></div>
+      <div class="status-more">……</div>
+    </div>
+    <button class="tree-gate" id="gate" title="">
+      <span class="ga" id="gateArrow">▸</span>
+      <span class="gc" id="gateCount">3</span>
+    </button>
+  </section>
+
+  <section class="message-card">
+    <button class="msnap" id="snap">
+      <span class="txt" id="snapTxt">这个方向走不通，建议砍掉第三课题，把火力集中到第一课题的收敛上。</span>
+    </button>
+    <div class="minput">
+      <input id="mInput" autocomplete="off">
+      <button class="send" id="mSend">➤</button>
+    </div>
+  </section>
+</div>
+
+<!-- ============ 快捷回复窗 ============ -->
+<div class="quick-reply" id="qr" hidden>
+  <header class="qr-head"><span class="t">回复 · 银河远征计划</span><button class="qr-close" id="qrClose">×</button></header>
+  <div class="qr-body" id="qrBody">
+    <div class="qr-msg">第一课题的接口契约定稿了，可以直接写入卡。</div>
+    <div class="qr-msg">第三课题数据源不稳，先挂起，不占主线。</div>
+    <div class="qr-msg mine">收到，我调整一下路径。</div>
+    <div class="qr-msg">这个方向走不通，建议砍掉第三课题，把火力集中到第一课题的收敛上。</div>
+  </div>
+  <div class="qr-input">
+    <input id="qrInput" autocomplete="off">
+    <button class="send" id="qrSend">➤</button>
+  </div>
+</div>
+
+<!-- ============ 子卡对比 ============ -->
+<div class="sub-wrap">
+  <div class="hint">众卡对照</div>
+  <section class="sub-card">
+    <div class="sub-name">课题一 · 接口契约</div>
+    <div class="sub-sum">定稿了，可以直接写入卡。剩下两处边界待仲裁。</div>
+    <span class="sub-count">↳ 2</span>
+  </section>
+  <section class="sub-card">
+    <div class="sub-name">课题三 · 数据源稳定</div>
+    <div class="sub-sum">先挂起，不占主线。</div>
+    <span class="sub-count">↳ 0</span>
+  </section>
+</div>
+
+<script>
+  const rootCard=document.getElementById('rootCard');
+  const gate=document.getElementById('gate');
+  const ga=document.getElementById('gateArrow');
+  const gc=document.getElementById('gateCount');
+  const expanded=new Set();
+  gate.addEventListener('click',()=>{
+    if(expanded.has('root')){
+      expanded.delete('root'); rootCard.classList.remove('expanded');
+      ga.textContent='▸'; gc.textContent='3';
+    }else{
+      expanded.add('root'); rootCard.classList.add('expanded');
+      ga.textContent='▾'; gc.textContent='3';
+    }
+  });
+
+  const snap=document.getElementById('snap');
+  const qr=document.getElementById('qr');
+  const qrClose=document.getElementById('qrClose');
+  snap.addEventListener('click',()=>{ qr.hidden=!qr.hidden; });
+  qrClose.addEventListener('click',()=>{ qr.hidden=true; });
+  document.addEventListener('click',(e)=>{
+    if(!qr.hidden && !qr.contains(e.target) && !snap.contains(e.target)) qr.hidden=true;
+  });
+
+  function send(from,to,get){
+    const v=get.value.trim(); if(!v) return;
+    if(from==='snap'){ document.getElementById('snapTxt').textContent=v; get.value=''; }
+  }
+  document.getElementById('mSend').addEventListener('click',()=>send('snap',null,document.getElementById('mInput')));
+  document.getElementById('mInput').addEventListener('keydown',e=>{ if(e.key==='Enter')send('snap',null,document.getElementById('mInput')); });
+  document.getElementById('qrSend').addEventListener('click',()=>{
+    const i=document.getElementById('qrInput'),v=i.value.trim(); if(!v)return;
+    const m=document.createElement('div'); m.className='qr-msg mine'; m.textContent=v;
+    document.getElementById('qrBody').appendChild(m); i.value='';
+  });
+  document.getElementById('qrInput').addEventListener('keydown',e=>{ if(e.key==='Enter')document.getElementById('qrSend').click(); });
+
+  /* ---- 布局探针（仅 #probe 触发，量渲染真值） ---- */
+  if(location.hash==='#probe'){
+    const d=document.createElement('pre');d.id='probeOut';
+    d.style.cssText='position:fixed;left:0;top:0;z-index:9999;color:#4f4;background:#000;font:11px/1.4 monospace;white-space:pre;max-height:100vh;overflow:auto;max-width:100vw;';
+    const m=(sel,prop)=>{const el=document.querySelector(sel);if(!el)return sel+': MISSING';const r=el.getBoundingClientRect();const cs=getComputedStyle(el);return `${sel} | pos=${r.x.toFixed(0)},${r.y.toFixed(0)} size=${r.width.toFixed(0)}x${r.height.toFixed(0)}`+(prop?` | ${prop}=${cs.getPropertyValue(prop).trim()}`:'')+` | fs=${cs.fontSize}`;};
+    const rows=[
+      '== 尺寸与定位 ==',
+      m('.root-card','borderRadius'),
+      m('.root-name','color'),
+      m('.root-status'),
+      m('.tree-gate','backgroundColor'),
+      m('.message-card','borderRadius'),
+      m('.msnap .txt','color'),
+      m('.minput input','caretColor'),
+      m('.sub-card','borderRadius'),
+      '== 溢出检查 ==',
+      'name sw/cw='+document.querySelector('.root-name').scrollWidth+'/'+document.querySelector('.root-name').clientWidth,
+      '== 门轨宽度 ==','gate='+document.querySelector('.tree-gate').getBoundingClientRect().width.toFixed(0),
+      '== 缝(消息卡top-根卡bottom) ==',
+      'gap='+(document.querySelector('.message-card').getBoundingClientRect().top-document.querySelector('.root-card').getBoundingClientRect().bottom).toFixed(1),
+      '== 颜色族 ==',
+      'root-bar='+getComputedStyle(document.querySelector('.root-card'),'::before').backgroundColor,
+      'msg-bar='+getComputedStyle(document.querySelector('.message-card'),'::before').backgroundColor,
+      '== 简述 ==',
+      'body-bg='+getComputedStyle(document.body).backgroundColor,
+    ];
+    d.textContent=rows.join('\n');document.body.appendChild(d);
+  }
+</script>
+</body>
+</html>

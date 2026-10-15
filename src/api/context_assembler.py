@@ -67,7 +67,8 @@ def load_control() -> dict[str, Any]:
 
 
 def build_ctx(work_id: str, current_id: str,
-              memory_state: dict[str, Any] | None = None) -> context_regions.RegionCtx:
+              memory_state: dict[str, Any] | None = None,
+              history_source: list[dict[str, Any]] | None = None) -> context_regions.RegionCtx:
     """取数一次（**装配链上唯一的 IO 处**）：卡片索引／当前卡／树类／类型注册表／凝练态。
 
     渲染器（`context_regions`）保持纯函数——它们只读这个 ctx，不自己取数。
@@ -92,49 +93,41 @@ def build_ctx(work_id: str, current_id: str,
         type_registry=card_store.load_type_registry(),
         memory_state=state,
         memory_entries=(state or {}).get("entries") or [],
+        controls=load_control(),
+        history_source=history_source or [],
+        history_mark=int((state or {}).get("mark", 0) or 0),
     )
 
 
 def build_context_regions(work_id: str, current_id: str,
-                          memory_state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """分区构建（**底座 2026-10-15：遍历注册表——装配器不再认识任何具体区**）。
+                          memory_state: dict[str, Any] | None = None,
+                          *, ctx: context_regions.RegionCtx | None = None) -> list[dict[str, Any]]:
+    """兼容入口：返回本卡 system 上下文区（不含使用说明）。
 
-    三条规则（与既有总表 #2/#3 一致）：
-    1. 只渲染 ``owner == "assembler"`` 的区（prompt / runner 归属的区由各自模块装配）；
-    2. 按 ``order`` 升序；**控制面配置可覆盖 order 与启停**；
-    3. **渲染零加工**：调 ``render(ctx)``，**空串 ＝「没有来源就不出现这个区」**。
-
-    加 / 删 / 调序一个区＝改 ``context_regions.REGION_TABLE`` 或控制面配置，本函数一字不动。
-
-    [T12-SP-05] memory_state＝routes 层读好的凝练态（水位 mark＋entries）——IO 分离。
-    开关关（RD-08 缺省）或空记忆（entries 空）→ 不出现 200 区。
+    实际渲染经统一 context registry；保留既有返回契约，供 draft/日志/测试消费。
     """
-    ctx = build_ctx(work_id, current_id, memory_state)
-    control = load_control()
-    out: list[dict[str, Any]] = []
-    for spec in context_regions.REGION_TABLE:
-        if spec.get("owner") != "assembler":
-            continue
-        ctl = control.get(spec["key"]) if isinstance(control, dict) else None
-        if isinstance(ctl, dict) and ctl.get("enabled") is False:
-            continue
-        order = spec["order"]
-        if isinstance(ctl, dict) and isinstance(ctl.get("order"), int):
-            order = ctl["order"]
-        text = spec["render"](ctx)
-        if not text:  # 没有来源就不出现这个区
-            continue
-        cnt = spec.get("count", 1)
-        out.append({
-            "order": order,
-            "name": spec["name"],
-            "channel": spec["channel"],
-            "seats": spec["seats"],
-            "text": text,
-            "entries": cnt(ctx, text) if callable(cnt) else cnt,
-        })
-    out.sort(key=lambda r: r["order"])  # 控制面可能改 order ⇒ 收完再排
-    return out
+    ctx = ctx or build_ctx(work_id, current_id, memory_state)
+    rows = context_regions.render_registered_regions(
+        ctx, profile="main", deliveries={"system"}, source_owner="assembler")
+    return [{
+        "order": r["order"], "name": r["name"], "channel": r["channel"],
+        "seats": r["seats"], "text": r["payload"], "entries": r["entries"],
+    } for r in rows]
+
+
+def build_context_bundle(work_id: str, current_id: str,
+                         memory_state: dict[str, Any] | None = None,
+                         history_source: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """一次建好主模型/三席上下文帧；system、history 均由同一注册表渲染。"""
+    ctx = build_ctx(work_id, current_id, memory_state, history_source)
+    main = context_regions.compose_model_context(ctx, profile="main")
+    viewpoints = context_regions.compose_model_context(ctx, profile="viewpoint")
+    return {
+        "context": ctx,
+        "main": main,
+        "viewpoints": viewpoints,
+        "regions": main["system_regions"],
+    }
 
 
 def build_neutral_context(work_id: str, current_id: str) -> str:

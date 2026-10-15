@@ -509,7 +509,8 @@ def _block_event_type(actor: str, hint: str) -> str:
 
 async def emit_message_event(work_id: str, card_id: str, ev_type: str,
                              content: str, run_id: str = "",
-                             round_: int = 0) -> None:
+                             round_: int = 0,
+                             model: str = "", end: str = "") -> None:
     """消息类事件落 events jsonl（**单一落点**）。
 
     [卡片底座第一步 2026-10-14] 卡间信不再写会话块（改落待处理收件箱），但其
@@ -517,15 +518,23 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
     ``_emit_block_event``）与卡间发信路径（``card_tools._h_send_card_message``）
     共用它，避免两处各写一套形状。data 是结构化对象（``{"content": ...}``），
     不是文本 blob。零阻断（事件日志失败不影响调用方主流程）。
+    [会话渲染单源化·偏差③补 2026-10-15] data 增 model/end（assistant_text 的
+    元信息徽标数据源——/session 渲染通道退役后 timeline 是唯一数据源，不带
+    这两字段则徽标无源可渲染）。user_message/card 事件两字段空串不落键。
     """
     if not ev_type:
         return
     try:
+        data: dict[str, Any] = {"content": content}
+        if model:
+            data["model"] = str(model)
+        if end:
+            data["end"] = str(end)
         await event_log.append(work_id, card_id, {
             "run_id": str(run_id or ""),
             "round": int(round_ or 0),
             "type": ev_type,
-            "data": {"content": content},
+            "data": data,
         })
     except Exception as exc:  # noqa: BLE001 事件日志零阻断
         logger.warning("[facade] 消息事件落盘失败（不阻断）card=%s type=%s: %s",
@@ -543,6 +552,7 @@ async def _emit_block_event(work_id: str, card_id: str,
     await emit_message_event(
         work_id, card_id, ev_type, blk.get("content", ""),
         run_id=str(blk.get("pair_id") or ""), round_=int(blk.get("turn") or 0),
+        model=str(blk.get("model") or ""), end=str(blk.get("end") or ""),
     )
 
 

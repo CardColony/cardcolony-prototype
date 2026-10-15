@@ -1,10 +1,10 @@
-﻿/* esm/cardmsg.js —— 卡间消息头行解析（迭代四 F4⑤）。
+/* esm/cardmsg.js —— 卡间消息头行解析（迭代四 F4⑤）。
  * 与 Python 侧 src/api/card_msg.py **共享同一套测试向量**（任务书 T-5 跨组判据：
  * 两套实现解析同一字符串必须同结果——语法见《迭代四方案-卡间通信接口与底座》§4.2）。
  * 打点 [cardmsg]：渲染／解析失败。
  * 头行：[[card-msg id=<msg_id> type=<type_code> from=<from_card> reply_to=<msg_id|空>]]
  */
-import { escapeHtml } from "./util.js?v=27";
+import { escapeHtml } from "./util.js?v=30";
 
 const HEADER_RE = /^\s*\[\[card-msg\s+(.+?)\]\]\s*$/;
 const KEY_RE = /^[a-z_]+$/;

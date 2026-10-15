@@ -457,10 +457,12 @@ async def list_card_messages(work_id: str, limit: int = 200):
 async def get_work_canvas(work_id: str):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    # [画布第二步 D2] 读路径合并：positions 改由 layout.json（用户数据）供给，
-    # canvas.json 只出派生数据——响应结构逐键不变（V5），前端零改动（L5）。
+    # [画布第二步 D2] 读路径合并：positions 由用户坐标存储供给，canvas.json
+    # 只出派生数据——响应结构逐键不变（V5），前端零改动（L5）。
+    # [画布重构 2026-10-15] 用户坐标的真相来源从 layout.json 换成 cards 表的
+    # 坐标列，**本行的键名、类型、嵌套形状一字未动**。
     data = canvas_store.load(work_id)
-    data["positions"] = canvas_store.load_layout(work_id).get("positions", {})
+    data["positions"] = await canvas_store.load_positions(work_id)
     return data
 
 
@@ -468,7 +470,12 @@ async def get_work_canvas(work_id: str):
 async def patch_work_positions(work_id: str, req: PatchPositionsRequest):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    return canvas_store.merge_positions(work_id, req.positions)
+    # 响应信封逐字段不变（不变量 L5：前端零改动是本次换存储的硬边界）。
+    # ★ 信封在**端点层**成形而不是存储层：存储层只回"合并后的全量坐标"，
+    # "version" 这个历史包袱由 API 层扛着——存储层不该知道有个 layout 文档
+    # 版本号可言（layout.json 已退役）。
+    return {"version": 1,
+            "positions": await canvas_store.merge_positions(work_id, req.positions)}
 
 
 @router.post("/works/{work_id}/cards")
@@ -717,6 +724,17 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     """对话主链路（模块 H2）。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
+    # [编程卡 2026-10-15 · §六块3 静默判定①] 完工编程卡不再被激活：
+    # 只读 card_type/state 两字段的**机械判定**（任务书红线 2），在 pair_id
+    # 进入回合前拦下。读卡失败（卡不存在等）不在此处置，仍走 _run_message
+    # 既有口径（静默判定只多不少地拦，不改既有错误语义）。
+    try:
+        _meta = (await card_store.read_card(work_id, card_id)).get("meta") or {}
+    except Exception:  # noqa: BLE001
+        _meta = {}
+    if str(_meta.get("card_type") or "") == "coder" \
+            and str(_meta.get("state") or "") == "completed":
+        return _err(400, "编程卡已完工，不再激活；新任务请新建编程卡")
     return await _run_message(work_id, card_id, req.content, req.pair_id)
 
 
@@ -895,8 +913,9 @@ async def read_work_manuscript(
 async def get_canvas_compat():
     # [画布第二步 D2] 兼容端点随主端点一并合并 positions（RD-06：不许留死角——
     # load() 返回里不再有 positions，不改这里会静默丢键）。
+    # [画布重构 2026-10-15] 同主端点改走 cards 表坐标列，响应结构不变。
     return {**canvas_store.load(DEFAULT_WORK_ID),
-            "positions": canvas_store.load_layout(DEFAULT_WORK_ID).get("positions", {})}
+            "positions": await canvas_store.load_positions(DEFAULT_WORK_ID)}
 
 
 @router.post("/cards")

@@ -90,7 +90,36 @@ async def call_main(
     # "The `reasoning_content` in the thinking mode must be passed back"）。
     # 思考只在调用链内部传递（作 assistant 条的协议字段），不进对话内容、
     # 不进前端渲染——前端展示仍走 emit_token 通道，两路互不影响。
+    # [DeepSeek 思考回传 2026-10-15] 注入消息兼容：DeepSeek 系思考模型要求对话内
+    # 每条 assistant 消息都必须带 reasoning_content（空串即可），否则 400
+    # "The `reasoning_content` in the thinking mode must be passed back to the API"。
+    # 判断协议/上下文注入的投影 role 是 assistant 且原本无此键——实测生产请求形状
+    # （孤儿 user×3 + 尾部判断协议 assistant 无 rc + tools + 流式）→ 400，
+    # 给该 assistant 补空串 rc 后 → 200（T3b 实测）。仅 DeepSeek 系模型补——
+    # 其他家多带字段可能被拒，逐字同旧。gateway 一行不碰（在调用层预处理）。
+    if "deepseek" in model_name.lower():
+        def _ds_norm(msgs):
+            if not msgs:
+                return msgs
+            out = []
+            for m in msgs:
+                if m.get("role") == "assistant" and "reasoning_content" not in m:
+                    m = dict(m)
+                    m["reasoning_content"] = ""
+                out.append(m)
+            return out
+        turn_tail = _ds_norm(turn_tail)
+        turn_once = _ds_norm(turn_once)
+
     _reasoning_parts: list[str] = []
+    # [直接停止 2026-10-15] 生成循环内查人停置位：命中即 break 断流，
+    # 停止接收增量、不再等模型吐完（软断直停，正常收口不留半截轮）。
+    # [直接停止·不丢字 2026-10-15 裁定] 断流**不等于丢字**：已收到的正文增量
+    # 要照常交付（既有口径「不丢已产出的字」，test_slots_control 钉着）。
+    # 故此处累计 content 增量，断流时用它合成终帧——与「立刻停」同时成立。
+    _content_parts: list[str] = []
+    _stopped = False
+    from . import control as _ctl
     async for ev in gw.stream_call(
         model_name,
         system_prompt,
@@ -113,6 +142,8 @@ async def call_main(
             # 逐字流增量：进独立通道，不进 content
             if ev["chunk_type"] == "reasoning":
                 _reasoning_parts.append(ev.get("text") or "")   # 攒起来供回传
+            else:
+                _content_parts.append(ev.get("text") or "")     # 断流时合成终帧用
             if ctx:
                 _es.emit_token(ctx[0], ctx[1],
                                "reasoning_chunk" if ev["chunk_type"] == "reasoning"
@@ -120,6 +151,16 @@ async def call_main(
                                ev.get("text") or "")
         elif "content" in ev:
             result = ev
+        # [直接停止 2026-10-15] 停位检查放在**本帧处理之后**：这一帧已经收到、
+        # 已经累计/已发流，就照收；从**下一帧**起不再接收 ⇒ 既立刻停、又不丢已产出的字。
+        if ctx and _ctl.pending_stop(ctx[0], ctx[1]):
+            _stopped = True
+            break
+    if not result and _stopped:
+        # 人停断流：把已产出的正文照常交付（工具轮未走完 ⇒ 不产生 tool_calls）。
+        result = {"content": "".join(_content_parts), "tool_calls": [],
+                  "truncated_tool_call": None, "finish_reason": "stop",
+                  "tokens_used": 0, "latency_ms": 0}
     if not result:
         result = {"content": "", "tool_calls": [], "truncated_tool_call": None,
                   "finish_reason": "stop", "tokens_used": 0, "latency_ms": 0}

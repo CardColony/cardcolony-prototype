@@ -91,7 +91,8 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
-    html = (BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    # [首页两态 2026-10-15] 与 main.py 同步：根地址渲染 home.html（原 index.html 已随旧列表页退役删除）。
+    html = (BASE_DIR / "templates" / "home.html").read_text(encoding="utf-8")
     return HTMLResponse(content=html)
 
 

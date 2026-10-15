@@ -6,8 +6,11 @@ V1：装配线改造后组装结果与旧实现**字节级相等**——空 ctx 
 （原 build_neutral_context 在改造时降为薄包装，冻结副本逐字拷自
 context_assembler.py 改造前 :55-77，含 prompts.build_system_prompt 改造前 :70-79）。
 
-真 work/card 的字节级比对由独立脚本 _t11_evidence/v1_assert.py 对真实
-works/ 只读执行（回归网铁律一：pytest 不得触碰真实数据目录）。
+真 work/card 的字节级比对**不在 pytest 内**（回归网铁律一：pytest 不得触碰真实数据
+目录）：由一次性只读脚本对真实 `works/` 执行，比对口径与实测数字记录在
+`docs/上下文底座化-任务书-20261015.md` §五 V1。〔2026-10-15 注〕原
+`_t11_evidence/v1_assert.py` 已不在工作区，且该目录被 `.gitignore` 的 `/t*/`、`_*`
+规则永久排除，不再作为证据入口——需要复跑时按上述只读方式现写现跑。
 """
 from __future__ import annotations
 
@@ -60,26 +63,25 @@ def _legacy_build_viewpoint_system_prompt(context_block: str) -> str:
 
 
 def test_region_table_six_regions_no_current_turn_region():
-    # [T12] 凝练记忆区（order 200，condense_fold）按任务书 REL-01 append——
-    # T11 六区条目一字不动，仅区表追加 200；本断言随 append 最小随改。
-    # [卡片职责区 2026-10-14] 区表 append order 90（卡片职责，类型级）——
-    # 本断言随迭代更新：区集合现为 90/100/150/200/300/900/999。
-    # [卡片区域说明 2026-10-14] 区表 append order 155（卡片区域说明，紧随 150）——
-    # 本断言随迭代更新：区集合现为 90/100/150/155/200/300/900/999。
+    # [上下文底座全量接管 2026-10-15] registry 现含所有运行通道与动态注入区。
     orders = [r["order"] for r in context_regions.REGION_TABLE]
     names = {r["name"] for r in context_regions.REGION_TABLE}
-    assert orders == [0, 90, 100, 150, 155, 200, 300, 900, 999]
+    assert orders == [0, 90, 100, 150, 155, 200, 300, 900, 999, 1000, 1010, 1020]
     assert names == {"使用说明", "卡片职责", "卡片清单", "当前卡", "卡片区域说明",
-                     "记忆（condense_fold）", "对话历史", "本轮工具轮", "用户消息"}
-    # 用户 2026-10-04 23:26 明令：不引入「当前轮」概念
+                     "记忆（condense_fold）", "对话历史", "本轮工具轮", "用户消息",
+                     "判断协议注入", "工作规范与流程注入", "三席身份注入"}
+    # 不再把动态上下文泛称为独立「当前轮」内容区。
     assert "当前轮" not in names
     assert not any("当前轮" in r["name"] or "当前轮" in r["source"]
                    for r in context_regions.REGION_TABLE)
-    # join 规则的通道归属
-    by_order = {r["order"]: r for r in context_regions.REGION_TABLE}
-    assert by_order[0]["channel"] == "system" and by_order[0]["seats"] == ("main",)
-    assert by_order[900]["channel"] == "messages" and by_order[900]["seats"] == ("main",)
-    assert by_order[999]["channel"] == "user"
+    # delivery 区别模型请求的不同槽位。
+    by_key = {r["key"]: r for r in context_regions.REGION_TABLE}
+    assert by_key["instruction"]["delivery"] == "system"
+    assert by_key["history"]["delivery"] == "prior"
+    assert by_key["user_message"]["delivery"] == "user"
+    assert by_key["judgment_protocol"]["delivery"] == "once"
+    assert by_key["context_tail"]["delivery"] == "tail"
+    assert by_key["seat_identity"]["delivery"] == "tail"
 
 
 # ---------------------------------------------------------------------------

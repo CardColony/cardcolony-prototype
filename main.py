@@ -113,7 +113,15 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
-    html = (BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    """[首页两态 2026-10-15] 根地址＝首页（旧项目列表页已整体取消，见 home.html）。
+
+    后端只负责渲染空态首页骨架，**跳转判定全在前端**（static/esm/home.js）：
+    「上次停留的卡」记在 localStorage 的 nav.recent.v1 里，服务端读不到，
+    放在后端判会把用户永远钉在首页、违反方案定稿 v2 的第 3 条目标。
+    前端三态：有最近记录→跳上次对话页／无记录但有项目→跳最近活跃 work 对话页／
+    全空→停在空态首页。判定所需的 /api/works 端点本就已存在，前端直接调用。
+    """
+    html = (BASE_DIR / "templates" / "home.html").read_text(encoding="utf-8")
     return HTMLResponse(content=html)
 
 

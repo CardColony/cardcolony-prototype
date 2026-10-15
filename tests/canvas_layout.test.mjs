@@ -15,7 +15,8 @@ const { loadLayoutFunctions, SRC_PATH } = require(
   join(dirname(fileURLToPath(import.meta.url)), "..", "static", "canvas_layout.js"));
 const { readFileSync } = await import("node:fs");
 
-const { computeLayout, separateOverlaps, computeVisibleSet, computeProjection, GAP_Y } =
+const { computeLayout, separateOverlaps, computeVisibleSet, computeProjection, GAP_Y,
+        computeSubtreeVisible, collectDescendants, planSubtreeUpdate, computeSubtreeLayout } =
   loadLayoutFunctions(readFileSync(SRC_PATH, "utf-8"));
 
 // ── 合成但非平凡的固定输入：三层树 + 钉住卡 + 相异尺寸 + 展开态 ──
@@ -197,3 +198,155 @@ test("加载器：投影纯函数经同一剪段通道可得（返回列表 5→
   assert.equal(typeof computeVisibleSet, "function");
   assert.equal(typeof computeProjection, "function");
 });
+
+// ════════ 画布重构 2026-10-15 · 阶段 2 · 增量渲染的三条判据 ════════
+// 覆盖任务书 2.4：增量 DOM（节点引用不变）／子树局部布局／pinned 保护。
+//
+// 树形（b 是 pinned 卡、a2 折叠）：
+//        root
+//     ┌────┴────┐
+//     a(pinned b) a2      → 实际：root ─ a ─ a1 ─ a11
+//                      └─ b(pinned) ─ b1
+function makeIncInput() {
+  const cards = [
+    { card_id: "root", parent: "", card_type: "剧本", title: "根", created_at: "2026-01-01" },
+    { card_id: "a", parent: "root", card_type: "线索", title: "A", created_at: "2026-01-02" },
+    { card_id: "b", parent: "root", card_type: "线索", title: "B", created_at: "2026-01-03" },
+    { card_id: "a1", parent: "a", card_type: "线索", title: "A1", created_at: "2026-01-04" },
+    { card_id: "a2", parent: "a", card_type: "线索", title: "A2", created_at: "2026-01-05" },
+    { card_id: "a11", parent: "a1", card_type: "线索", title: "A11", created_at: "2026-01-06" },
+    { card_id: "b1", parent: "b", card_type: "线索", title: "B1", created_at: "2026-01-07" },
+  ];
+  const positions = { b: { x: 900.5, y: 120.25, pinned: true } };
+  const sizes = {
+    root: { w: 320, h: 86 }, a: { w: 260, h: 95 }, b: { w: 260, h: 86 },
+    a1: { w: 220, h: 36 }, a2: { w: 220, h: 86 }, a11: { w: 220, h: 36 },
+    b1: { w: 220, h: 86 },
+  };
+  const cardMap = {}, childMap = {};
+  for (const c of cards) {
+    cardMap[c.card_id] = c;
+    (childMap[c.parent || ""] = childMap[c.parent || ""] || []).push(c);
+  }
+  return { cards, relations: [], positions, sizes, cardMap, childMap };
+}
+
+test("增量·可见集：视图根子卡恒在，收起普通卡其子卡必须消失", () => {
+  const { childMap } = makeIncInput();
+  // 展开 a：其子卡 a1/a2 入列；a2 未展开故其子卡不入列；b 不在本单元内
+  const open = computeSubtreeVisible("a", childMap, new Set(["root", "a"]), 1, false);
+  assert.deepEqual([...open.ids].sort(), ["a1", "a2"]);
+  assert.equal(open.depthOf.a1, 2, "depth 相对 viewRoot，不是相对 anchor");
+  assert.equal(open.depthOf.a2, 2);
+  // ★ 收起 a：子卡必须全部退出可见集（这条判据写错过一次——把「视图根子卡恒在」
+  //   无差别套到普通卡上，结果收起反而多出一堆该消失的卡）
+  const shut = computeSubtreeVisible("a", childMap, new Set(["root"]), 1, false);
+  assert.equal(shut.ids.size, 0, "收起卡 a 后其子卡必须消失");
+  // 单元根＝视图根时，子卡不因 expanded 缺失而消失（全树路径既有规则）
+  const asRoot = computeSubtreeVisible("root", childMap, new Set([]), 0, true);
+  assert.deepEqual([...asRoot.ids].sort(), ["a", "b"], "视图根的子卡恒可见");
+  // 孙孙：a1 展开后 a11 入列
+  const deep = computeSubtreeVisible("a", childMap, new Set(["a", "a1"]), 1, false);
+  assert.deepEqual([...deep.ids].sort(), ["a1", "a11", "a2"]);
+  assert.equal(deep.depthOf.a11, 3);
+});
+
+test("增量·计划：展开 A 只建 A 的子孙，A 的兄弟/祖先/无关卡一个都不进任何动作清单", () => {
+  const { childMap } = makeIncInput();
+  const before = new Set(["root", "a", "b"]);          // 展开前在场：root + 两个子卡
+  const plan = planSubtreeUpdate("a", childMap, new Set(["root", "a"]), before, 1, false);
+
+  assert.deepEqual([...plan.create].sort(), ["a1", "a2"], "只建 A 的可见子孙");
+  assert.deepEqual(plan.remove, [], "展开不拆任何节点");
+  assert.deepEqual([...plan.place].sort(), ["a1", "a2"], "位置只允许写 A 的可见子孙（锚点自己不动）");
+  // ★ 验收标准①的落点：keep 里的卡既不被 remove()、也不被写 style.left/top
+  assert.deepEqual([...plan.keep].sort(), ["a", "b", "root"]);
+  for (const cid of plan.keep) {
+    assert.ok(!plan.create.includes(cid), `${cid} 不得被重建`);
+    assert.ok(!plan.remove.includes(cid), `${cid} 不得被拆除`);
+    assert.ok(!plan.place.includes(cid), `${cid} 的坐标不得被改写`);
+  }
+  // 计划是纯判据：同输入两次一致
+  assert.deepEqual(plan, planSubtreeUpdate("a", childMap, new Set(["root", "a"]), before, 1, false));
+});
+
+test("增量·计划：收起 A 只拆 A 的子孙，其余节点引用保住", () => {
+  const { childMap } = makeIncInput();
+  const field = new Set(["root", "a", "b", "a1", "a2", "a11"]);   // 展开态下都已建好
+  const plan = planSubtreeUpdate("a", childMap, new Set(["root"]), field, 1, false);
+
+  assert.deepEqual(plan.create, []);
+  assert.deepEqual([...plan.place], [], "收起不该改写任何坐标");
+  assert.deepEqual([...plan.remove].sort(), ["a1", "a11", "a2"],
+    "只拆 A 的子孙（含更深层 a11）");
+  assert.deepEqual([...plan.keep].sort(), ["a", "b", "root"]);
+});
+
+test("增量·布局：只重排 A 单元内部，A 自身不动，无关卡不流出布局结果", () => {
+  const { cards, relations, positions, sizes } = makeIncInput();
+  const expanded = new Set(["root", "a"]);
+  // 全量布局取 A 的当前屏幕位当锚（真实渲染里就是从 DOM 的 style.left/top 读的）
+  const full = computeLayout("root", cards, relations, positions, expanded, sizes);
+  const anchor = { id: "a", x: full.a.x, y: full.a.y, depth: 1, isViewRoot: false };
+  const unit = computeSubtreeLayout("root", cards, relations, positions, expanded, sizes, anchor);
+
+  // ① A 自身坐标原样（不动＝不动，不是"算出来碰巧一样"）
+  assert.deepEqual(unit.a, { x: full.a.x, y: full.a.y });
+  // ② 结果只含 A 单元的键——别处的卡一根草都不许带出来（带出来＝调用方会误写）
+  assert.deepEqual(Object.keys(unit).sort(), ["a", "a1", "a2"]);
+  for (const cid of ["root", "b"]) assert.ok(!(cid in unit), `${cid} 不该出现在单元结果里`);
+  // ③ 可见子孙都被排进 A 的右侧子树区，坐标有限
+  for (const cid of ["a1", "a2"]) {
+    assert.ok(Number.isFinite(unit[cid].x) && Number.isFinite(unit[cid].y), `${cid} 坐标必须有限`);
+    assert.ok(unit[cid].x > anchor.x, `${cid} 排在 A 的下一列（子树单元内右排）`);
+  }
+  // ④ 无关卡的布局键一个都没被这个函数改写（入参不可变）
+  assert.deepEqual(full.b, { x: 900.5, y: 120.25 }, "pinned 卡在全量布局里本就用存储坐标");
+});
+
+test("增量·布局：收起 A 时单元结果里不得残留已不可见的子孙（否则它们会当障碍误挤别人）", () => {
+  const { cards, relations, positions, sizes } = makeIncInput();
+  const full = computeLayout("root", cards, relations, positions, new Set(["root"]), sizes);
+  const anchor = { id: "a", x: full.a.x, y: full.a.y, depth: 1, isViewRoot: false };
+  // a 已收起：单元内不该再有任何子卡的坐标
+  const unit = computeSubtreeLayout("root", cards, relations, positions,
+                                    new Set(["root"]), sizes, anchor);
+  assert.deepEqual(Object.keys(unit), ["a"], "收起后单元只剩锚点自己");
+});
+
+test("增量·pinned 保护：局部避让下 pinned 卡与固定障碍坐标绝对不变", () => {
+  const { cards, relations, positions, sizes } = makeIncInput();
+  const expanded = new Set(["root", "a"]);
+  const full = computeLayout("root", cards, relations, positions, expanded, sizes);
+  const anchor = { id: "a", x: full.a.x, y: full.a.y, depth: 1, isViewRoot: false };
+  const unit = computeSubtreeLayout("root", cards, relations, positions, expanded, sizes, anchor);
+
+  // 模拟 renderSubtree：全量基底 + 本单元覆盖，只有本单元可动
+  const base = Object.assign({}, full, unit);
+  const movable = new Set(["a1", "a2"]);
+  const out = separateOverlaps(base, sizes, new Set(["b"]), GAP_Y, movable);
+
+  // ★ 验收标准④：pinned 卡、以及任何不在 movable 里的卡，一个坐标都不许变
+  assert.deepEqual(out.b, { x: 900.5, y: 120.25 }, "pinned 卡在展开/收起时位置绝对不变");
+  assert.deepEqual(out.root, base.root, "视图根（固定障碍）不动");
+  assert.deepEqual(out.a, { x: anchor.x, y: anchor.y }, "锚点自身不动");
+
+  // ★ 局部避让的真义：新增的卡撞上 pinned 卡时，是**它绕行**，不是 pinned 让位。
+  //   构造一次真碰撞——把本单元的卡拉到 b 的位置上（真实场景：用户在别处摆好的
+  //   pinned 卡正好在新展开的子树要落的地方）。
+  const collide = Object.assign({}, base, {
+    a1: { x: 900, y: 130 }, a2: { x: 905, y: 135 },
+  });
+  const out2 = separateOverlaps(collide, sizes, new Set(["b"]), GAP_Y, movable);
+  assert.deepEqual(out2.b, { x: 900.5, y: 120.25 }, "碰撞时 pinned 卡仍然绝对不动");
+  assert.deepEqual(out2.root, collide.root, "碰撞时其余固定障碍同样不动");
+  const gapOk = ["a1", "a2"].some(cid =>
+    Math.abs(out2[cid].x - 900) > 0.01 || Math.abs(out2[cid].y - 130) > 0.01);
+  assert.ok(gapOk, "新增卡必须为 pinned 卡绕行（局部避让不是全员钉死）");
+
+  // ★ 缺省 movable=null ⇒ 旧行为不变（全量重排路径仍全员可动，pinned 仍不动）
+  const global = separateOverlaps(collide, sizes, new Set(["b"]));
+  assert.deepEqual(global.b, { x: 900.5, y: 120.25 }, "缺省 movable 时 pinned 依旧不动");
+});
+
+

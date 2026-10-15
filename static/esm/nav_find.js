@@ -1,4 +1,4 @@
-﻿/* esm/nav_find.js —— [S3/T2] 找通道：搜索独立层（R-24）＋最近访问（R-25）。
+/* esm/nav_find.js —— [S3/T2] 找通道：搜索独立层（R-24）＋最近访问（R-25）。
  *
  * R-24 搜索：query 存模块内存（temp 语义：刷新即丢，不动 S2 temp API 面）→
  *   filterCards 纯内存过滤 snapshot.projects[].cards[]（title 包含、大小写不敏感）→
@@ -9,7 +9,7 @@
  * R-25 最近访问：storageGet/storageSet 键 nav.recent.v1；{wid,cid,title,ts} 上限 10 条、
  *   同卡去重更新 ts、倒序；UI＝查找面板「最近」区，点击直达。
  */
-import { storageGet, storageSet } from "./state_layers.js?v=27";
+import { storageGet, storageSet } from "./state_layers.js?v=30";
 
 export const NAV_RECENT_KEY = "nav.recent.v1";
 export const NAV_RECENT_MAX = 10;

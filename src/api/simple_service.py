@@ -392,6 +392,10 @@ async def _call_viewpoint(
         result: dict[str, Any] = {}
         splitter = ThinkStreamSplitter()
         saw_think = False
+        # [直接停止 2026-10-15] 三席生成循环同查人停置位（软断直停）
+        from . import control as _stmt_ctl
+        from . import event_stream as _stmt_es
+        _stmt_ctx = _stmt_es.current_stream_context()
         async for ev in gw.stream_call(
             seat,
             system_prompt,
@@ -401,6 +405,8 @@ async def _call_viewpoint(
             prior_messages=prior_messages or None,
             turn_tail=turn_tail or None,   # [三席身份注入 2026-10-14] 缺省 None ⇒ 逐字同旧
         ):
+            if _stmt_ctx and _stmt_ctl.pending_stop(_stmt_ctx[0], _stmt_ctx[1]):
+                break
             if "chunk_type" in ev:
                 text = ev.get("text") or ""
                 if not text:

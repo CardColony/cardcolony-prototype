@@ -34,6 +34,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Union
 
 from ..permissions import policy
@@ -97,8 +98,19 @@ TOOL_SWITCH: dict[str, str] = {
     # [卡片底座第一步 2026-10-14] 沿通信线读——独立开关（沿连线读比直接读更敏感）
     "read_linked": policy.SWITCH_READ_LINKED,
     "edit_card": policy.SWITCH_EDIT,
+    # [编程卡 2026-10-15 · §六块2 · **v1.1 修订**] report_done 挂 tools_file——
+    # 原挂 SWITCH_EDIT 系派发方笔误：tool 卡有 edit 无 tools_file，挂 edit 会让
+    # readopen:287 与 :252 在「零翻新」下数学上不可能同时成立。挂 tools_file 后：
+    # tool 卡第二段即滤（:287 绿）、sub_project 绕第三段闸可见恰为全量（:252 绿）、
+    # coder 有 tools_file 正常可见（判据1 绿）。判定权在第三段闸＋执行层
+    # card_type 校验双保险，开关只决定「有没有资格进闸」。
+    "report_done": policy.SWITCH_TOOLS_FILE,
     "delete_card": policy.SWITCH_DELETE,
     "create_card": policy.SWITCH_CREATE_CHILD,
+    # [编程卡 2026-10-15 · §六块2] create_coder_card 挂既有 create_child（建
+    # coder 子卡走同一建卡关口）：无 create_child 的类型（tool/coder）压根看不见
+    # 它，有 create_child 的（project/sub_project）按下发面规则可见。
+    "create_coder_card": policy.SWITCH_CREATE_CHILD,
     "link_cards": policy.SWITCH_LINK,
     "unlink_cards": policy.SWITCH_UNLINK,
     "update_shadow": policy.SWITCH_SHADOW_WRITE,
@@ -135,7 +147,12 @@ TOOL_SWITCH: dict[str, str] = {
 # B-09 的「版本不动」只成立于「工具面零变化」；本次工具面确有变化，故递增。
 # tools-tc-4：[卡片底座第一步 2026-10-14] 新增第 20 件工具 read_linked（沿通信线
 #   读对方卡的正文／影子／对话）。工具集变更 ⇒ 递增（承 T12-R3 纪律）。
-TOOL_TABLE_VERSION = "tools-tc-4"
+# tools-tc-5：[编程卡 2026-10-15] **工具集变更 ⇒ 递增**：新增第 17 件 report_done
+#   （编程卡完工回报）与第 18 件 create_coder_card（主卡派生编程卡并首跑）；
+#   build_tool_schemas 增第三段 card_type 闸（CODER_ONLY_TOOLS，report_done 只对
+#   coder 下发）。TOOL_REGISTRY 字面量条目数 由 16 → 18（验收 grep 口径见任务书
+#   §六块2 判据 5）。
+TOOL_TABLE_VERSION = "tools-tc-5"
 
 
 # ============================================================
@@ -335,6 +352,208 @@ async def _h_create_card(work_id: str, current_id: str,
         "card_id": result["meta"]["card_id"],
         "title": result["meta"]["title"],
         "parent": result["meta"]["parent"],
+        "shadow": "已派生影子卡（过程记录，你不用管）",
+    }
+
+
+# ============================================================
+# [编程卡 2026-10-15 · §六块2] 编程卡两件工具的 handler
+#
+# report_done（第 17 件·完工收口）与 create_coder_card（第 18 件·派生即调起）。
+# report_done 照单执行：不验产物、不判真假、不查轮数；只做机械动作——判态、
+# 落 state/coder_final、影子留痕、系统发回执（模型无发信工具，coder perms 不含）。
+# ============================================================
+
+def _count_write_file_calls(work_id: str, card_id: str) -> int:
+    """机械统计本卡 tool_call 事件里 write_file 的调用次数（影子完工行用）。
+
+    数据源＝works/{work}/events/{card}.jsonl（event_stream.emit 的落盘真相，
+    本文件只读不改）。落盘是后台任务，调用方先 await event_log.drain() 等在途
+    写完成再读；任何读取失败一律按 0 计（留痕不因统计失败而中断）。
+    """
+    try:
+        from ..storage import event_log
+        recs = event_log.read(work_id, card_id)
+    except Exception:  # noqa: BLE001
+        return 0
+    n = 0
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("type") or "") != "tool_call":
+            continue
+        data = rec.get("data") or {}
+        if isinstance(data, dict) and str(data.get("tool") or "") == "write_file":
+            n += 1
+    return n
+
+
+async def _h_report_done(work_id: str, current_id: str,
+                         arguments: dict[str, Any],
+                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """[编程卡 2026-10-15] 完工回报（系统收口件，模型只报不判）。
+
+    四步机械动作（§六块2）：
+      ① 判态：当前卡 card_type=="coder" 且 state=="active"，否则 denied；
+      ② 落盘：state=completed（闸4：active→completed 在册）＋ front matter
+         ``coder_final`` 原样收下 summary；
+      ③ 影子 ``## 迭代历史`` 追加完工行（时间＋summary＋write_file 调用数，
+         机械统计、不判好坏）；
+      ④ 系统发信：经流程专用薄壳 send_card_message（六道门槛一条不减；头部
+         由 build_header 生成，content 只给 summary）向 owner＝parent 卡发
+         coder_done —— 落信即记 TRIGGERS，编程卡回合收口时 K3 调起主卡验收
+         （现有链，零改）。
+
+    权限：不设新开关——工具面由 build_tool_schemas 第三段 CODER_ONLY_TOOLS
+    收敛到 coder；执行层本函数再校验 card_type（双保险）。
+    """
+    # ① 判态（先用本轮 cards 字面快照，再读库内实况——state 是库内事实）
+    card = (cards or {}).get(current_id) or {}
+    if str(card.get("card_type", "") or "") != "coder":
+        return err("denied", "report_done 仅限编程卡调用")
+    current = await card_store.read_card(work_id, current_id)
+    meta = current["meta"]
+    state = str(meta.get("state", "") or "")
+    if state != "active":
+        return err("denied", f"编程卡当前状态为 {state or '未知'}，不可完工")
+    summary = str(arguments.get("summary", "") or "").strip()
+    if not summary:
+        return err("validation", "summary 不能为空")
+    owner = str(meta.get("parent", "") or "") or work_store.work_card_id_of(work_id)
+
+    # ② 落盘 state=completed ＋ coder_final。
+    #    coder_final：「照 toolcard_final 手法」＝ front matter 键写库行——但
+    #    card_store._UPDATABLE_META_KEYS / card_db._CARD_COLUMNS 属**禁改文件**
+    #    （任务书 §四：card_store/card_db 只消费不改），故在本文件内经
+    #    card_db.run_write 幂等补列（新库/存量库两路通吃）＋ UPDATE 落值。
+    def _persist_coder_final(conn: Any) -> None:
+        cols = conn.execute("PRAGMA table_info(cards)").fetchall()
+        if not any(str(c["name"]) == "coder_final" for c in cols):
+            conn.execute("ALTER TABLE cards ADD COLUMN coder_final TEXT")
+        conn.execute(
+            "UPDATE cards SET coder_final = ? WHERE card_id = ?",
+            (summary, current_id),
+        )
+
+    try:
+        await card_db.run_write(work_id, _persist_coder_final)
+    except Exception as exc:  # noqa: BLE001 完工留痕失败要让模型看见
+        logger.error("report_done coder_final 落盘失败 card=%s: %s", current_id, exc)
+        return err("internal", f"coder_final 落盘失败: {exc}")
+    upd = await card_store.update_card(
+        work_id, current_id, {"state": "completed"},
+        f"编程卡完工收口（report_done）：{summary[:80]}",
+    )
+    if isinstance(upd, dict) and upd.get("error"):
+        return err("internal", str(upd["error"]))
+    # 同轮后续工具能看到新状态（与 _h_create_card 同手法的缓存同步）
+    cards[current_id] = {**upd.get("meta", {}), "card_id": current_id}
+
+    # ③ 影子完工行（时间＋summary＋write_file 调用数；机械统计）
+    try:
+        from ..storage import event_log as _event_log
+        await _event_log.drain()
+    except Exception:  # noqa: BLE001
+        pass
+    n_write = _count_write_file_calls(work_id, current_id)
+    now = datetime.now().isoformat(timespec="seconds")
+    await shadow_store.append_to_section(
+        work_id, current_id, "## 迭代历史",
+        [f"- [{now}] 完工：{summary}（write_file 调用 {n_write} 次）"],
+    )
+
+    # ④ 系统发信（回执由系统发，模型全程不碰发信工具）
+    sent = await send_card_message(
+        work_id, current_id, target_id=owner,
+        msg_type="coder_done", content=summary,
+    )
+    if isinstance(sent, dict) and sent.get("error"):
+        # 落信失败：卡已完工、影子已留痕——错误如实回给模型（不回滚终态）
+        logger.error("report_done 回执发信失败 card=%s owner=%s: %s",
+                     current_id, owner, sent)
+        return err("internal", f"完工回执发送失败: {sent.get('error')}")
+    return {
+        "ok": True,
+        "card_id": current_id,
+        "state": "completed",
+        "coder_final": summary,
+        "write_file_calls": n_write,
+        "receipt_msg_id": str(sent.get("msg_id") or ""),
+        "owner": owner,
+        "note": "已完工：本卡静默，回执已由系统发给主卡",
+    }
+
+
+async def _h_create_coder_card(work_id: str, current_id: str,
+                               arguments: dict[str, Any],
+                               cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """[编程卡 2026-10-15] 派生编程卡并**建卡即首跑**（派生即调起）。
+
+    §六块2：
+      ① 建卡关口＝CREATE_CHILD（照 _h_create_card 同口径，parent＝当前卡自身）；
+      ② card_store.create_card(card_type="coder", parent=当前卡,
+         charter=带 ``## 使命`` 区头的 task) ⇒ 任务落使命块；
+      ③ asyncio.create_task(_routes._run_message(…, append_user=False))
+         用 message_runner._spawn_tracked 包（强引用防 GC，照 K3 手法）。
+         注意：create_task 在工具 handler 内、回合未收口——K3 补齐不会覆盖
+         它（新卡无 pending 信、TRIGGERS 无它），此直调是首跑唯一路径；
+      ④ 返回 ok ＋ card_id ＋ title ＋ started。
+    """
+    title = str(arguments.get("title", "") or "").strip()
+    if not title:
+        return err("validation", "title 不能为空")
+    task = str(arguments.get("task", "") or "").strip()
+    if not task:
+        return err("validation", "task 不能为空")
+    if current_id not in cards:
+        return err("not_found", f"卡片不存在: {current_id}")
+    # ① 建卡关口（与 _h_create_card 完全同口径：parent＝当前卡自身）
+    try:
+        policy.check(current_id, current_id, policy.SWITCH_CREATE_CHILD, cards)
+    except PermissionError:
+        return err(
+            "denied",
+            f"越权：只能建自己的子卡片，{current_id} 不在你的子树内"
+            f"（当前卡 {current_id}）",
+        )
+    # ② 建 coder 卡：charter 带 ## 使命 区头 ⇒ 区头检测后原样入正文，任务落使命块
+    result = await card_store.create_card(
+        work_id, title, "模型生成",
+        card_type="coder", parent=current_id,
+        charter=f"## 使命\n{task}",
+    )
+    if "error" in result:
+        return result
+    new_id = result["meta"]["card_id"]
+    cards[new_id] = {**result["meta"], "card_id": new_id}
+    # ③ 建卡即首跑（唯一路径，见 docstring）
+    started = False
+    try:
+        from . import message_runner as _message_runner
+        from . import routes as _routes
+        owner_title = str(
+            (await card_store.read_card(work_id, current_id))["meta"].get("title")
+            or current_id
+        )
+        prompt = (
+            f"卡 {current_id}（《{owner_title}》）给你发来开发任务。\n"
+            f"任务内容：\n{task}"
+        )
+        first_run = _message_runner._spawn_tracked(
+            _routes._run_message(work_id, new_id, prompt, None, append_user=False)
+        )
+        first_run._card_msg_target = new_id  # type: ignore[attr-defined]
+        started = True
+    except Exception as exc:  # noqa: BLE001 首跑拉起失败不吞——如实回报 started=False
+        logger.error("create_coder_card 首跑拉起失败 card=%s: %s", new_id, exc)
+        started = False
+    return {
+        "ok": True,
+        "card_id": new_id,
+        "title": title,
+        "parent": current_id,
+        "card_type": "coder",
+        "started": started,
         "shadow": "已派生影子卡（过程记录，你不用管）",
     }
 
@@ -1249,6 +1468,54 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_read_linked,
         readonly=True,
     ),
+    # [编程卡 2026-10-15 · §六块2] 第 17 件工具：完工回报。追加在既有 16 件字面量
+    # 之后 ⇒ 前 16 件的工具面顺序逐字不变。下发面：TOOL_SWITCH 挂 edit ＋
+    # build_tool_schemas 第三段 CODER_ONLY_TOOLS（只对 coder 卡下发）；执行层
+    # handler 再校验 card_type=="coder" 且 state=="active"（双保险）。
+    "report_done": ToolDef(
+        schema={
+            "name": "report_done",
+            "description": (
+                "任务做完时调用，调完即完工、本卡静默（编程卡专用）。"
+                "完工回执由系统自动发给主卡并调起验收，你不需要也不能发信；"
+                "完工后本卡不再被激活、不可删除、永久留档。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "完工小结：做了什么、产物在哪（事实陈述，不自评好坏）",
+                    },
+                },
+                "required": ["summary"],
+            },
+        },
+        handler=_h_report_done,
+        readonly=False,
+    ),
+    # [编程卡 2026-10-15 · §六块2] 第 18 件工具：派生编程卡并建卡即首跑（派生
+    # 即调起）。挂 create_child（无该开关的类型压根看不见）；执行层关口与
+    # create_card 同口径（只能建自己的子卡片）。
+    "create_coder_card": ToolDef(
+        schema={
+            "name": "create_coder_card",
+            "description": (
+                "把一件开发任务交给新建的编程卡执行：建一张编程卡（任务原样落进"
+                "它的使命块）并立即自动开跑。一次派一张；只能建自己的子卡片。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "编程卡卡名，如「修复监听器泄漏」"},
+                    "task": {"type": "string", "description": "开发任务正文（原样落进新卡的使命块）"},
+                },
+                "required": ["title", "task"],
+            },
+        },
+        handler=_h_create_coder_card,
+        readonly=False,
+    ),
 }
 
 
@@ -1573,6 +1840,53 @@ def _filter_by_category(
     return visible
 
 
+# ============================================================
+# [编程卡 2026-10-15 · C3] 第三段过滤 · card_type 闸
+#
+# coder 专属工具只对 card_type=="coder" 的当前卡下发，其余类型一律不出现。
+# 与现两段（_filter_by_role 恒等 / _filter_by_category 按卡上 perms）互不触碰
+# ——三段各管一线、只查表不判内容（同两线 R-D 纪律）：前两段按「卡有什么权限」
+# 下发，本段按「卡是什么类型」收敛。
+# ============================================================
+CODER_ONLY_TOOLS: frozenset[str] = frozenset({"report_done"})
+
+
+def _filter_by_card_type(
+    tools: list[dict[str, Any]], card_id: str, work_id: str = "",
+    cards: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """**第三段过滤 · 类型闸**（编程卡 2026-10-15 · C3）。
+
+    ``CODER_ONLY_TOOLS`` 内的工具只对 ``card_type=="coder"`` 的当前卡下发；
+    其余工具原样穿过。认不出卡（card_id 空 / cards 缺省 / 卡不在表里）⇒ 原样
+    返回——第二段已默认关门返回空列表，此处不重复拦（也绝不放宽）。
+    """
+    card = (cards or {}).get(card_id)
+    if not card_id or cards is None or card is None:
+        return tools
+    is_coder = str(card.get("card_type", "") or "") == "coder"
+    if is_coder:
+        return tools
+    keep: list[dict[str, Any]] = []
+    dropped: dict[str, str] = {}
+    for t in tools:
+        name = str(t.get("name", ""))
+        if name in CODER_ONLY_TOOLS:
+            dropped[name] = f"card_type:{card.get('card_type', '')}"
+            continue
+        keep.append(t)
+    if dropped:
+        prompt_log.append_perm_log({
+            "fn": "build_tool_schemas",
+            "card_id": card_id,
+            "card_type": card.get("card_type", ""),
+            "granted_tools": [t.get("name") for t in keep],
+            "filtered_tools": dropped,
+            "reason": "coder_only_card_type_gate",
+        })
+    return keep
+
+
 def build_tool_schemas(
     card_id: str = "",
     work_id: str = "",
@@ -1588,6 +1902,8 @@ def build_tool_schemas(
 
         一级 ``_filter_by_role``     ← 角色过滤（工具卡底座 T9）
         二级 ``_filter_by_category`` ← 分类过滤（权限线 T4）
+        三级 ``_filter_by_card_type``← 类型闸（编程卡 2026-10-15 · C3：
+                                        CODER_ONLY_TOOLS 只对 coder 卡下发）
 
     [T4 权限收口 2026-10-09] ``cards`` ＝ 分类查表所需卡面 meta（上游装配层补传）。
 
@@ -1600,6 +1916,8 @@ def build_tool_schemas(
     tools = _filter_by_role(tools, card_id, work_id, cards)
     # ---- 二级：分类过滤（权限线 T4）----
     tools = _filter_by_category(tools, card_id, work_id, cards)
+    # ---- 三级：card_type 闸（编程卡 2026-10-15 · C3）----
+    tools = _filter_by_card_type(tools, card_id, work_id, cards)
     return tools
 
 

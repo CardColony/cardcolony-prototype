@@ -96,21 +96,17 @@ def _build_prompts(
     kind: str,
     card: dict,
     current_block: str,
-    neutral_context: str,
+    context_ctx: context_regions.RegionCtx,
+    prior: list[dict[str, Any]],
     prev_draft: Optional[str],
     feedback: Optional[str],
-) -> tuple[str, str]:
-    """构造 draft 的 system/user prompt。
-
-    system＝起草指令＋六区中性上下文（卡片清单/当前卡/记忆，复用主对话装配，
-    不截断）；user＝当前块内容＋草稿/反馈。对话历史经 prior_messages 结构化传入，
-    不拼进 user、不设任何截断（零加工，与 message_runner 同口径）。
-    """
+) -> dict[str, Any]:
+    """构造起草调用帧：区块上下文、对话历史、user 草稿材料均由统一底座组合。"""
     label = _kind_label(kind)
     mission = (card.get("body") or {}).get("mission", "")
     title = (card.get("meta") or {}).get("title", "")
 
-    system = (
+    system_prefix = (
         "你是推演工作台的卡片内容起草助手。你的唯一职责：根据下方卡片清单、当前卡、"
         "记忆与对话历史，起草/修订卡片的「{label}」块内容。你只输出该块的正文文本，"
         "不输出解释、不输出其他块、不调用任何工具、不修改使命块。\n"
@@ -119,8 +115,6 @@ def _build_prompts(
         "2. 使命块不可改——只起草 {label} 块本身。\n"
         "3. 若给了上一版草稿与用户反馈，按反馈修订，保持上下文连续。"
     ).format(label=label)
-    if neutral_context and neutral_context.strip():
-        system += "\n" + neutral_context.strip() + "\n"
 
     parts = [f"卡片标题：{title}"]
     if mission.strip():
@@ -132,7 +126,11 @@ def _build_prompts(
         parts.append(f"【用户反馈·按此修订】\n{feedback.strip()}")
     parts.append(f"请起草{label}块完整正文：")
 
-    return system, "\n\n".join(parts)
+    return context_regions.compose_model_context(
+        context_ctx, profile="draft", prior_messages=prior,
+        prior_key="history", user_content="\n\n".join(parts),
+        system_prefix=system_prefix,
+    )
 
 
 async def draft(
@@ -163,32 +161,26 @@ async def draft(
         memory_store.load_memory(work_id, card_id)
         if memory_store.condense_enabled() else None
     )
-    ctx_regions = context_assembler.build_context_regions(
-        work_id, card_id, memory_state=condense_state,
-    )
-    neutral_context = context_regions.assemble_regions(
-        [r["text"] for r in ctx_regions]
-    )
-
-    # 完整对话历史（不截断；投影 role/content；behavior 块 role=tool 自然被滤）
+    # 完整对话历史（不截断；投影由 context base 统一处理，卡片原始块不改）。
     try:
         blocks = await session_facade.read(work_id, card_id)
     except Exception:  # noqa: BLE001
         blocks = []
-    prior = [
-        {"role": str(b.get("role") or ""), "content": str(b.get("content") or "")}
-        for b in blocks
-        if str(b.get("role") or "") in ("user", "assistant")
-        and str(b.get("content") or "").strip()
-    ]
+    prior = context_regions.project_history_messages(
+        blocks, allowed_roles={"user", "assistant"})
 
-    system_prompt, user_prompt = _build_prompts(
-        kind, card, current_block, neutral_context, prev_draft, feedback,
+    # 区块上下文从统一注册表取；起草助手的任务说明作为 system_prefix 注入同一帧。
+    context_ctx = context_assembler.build_ctx(
+        work_id, card_id, memory_state=condense_state)
+    request = _build_prompts(
+        kind, card, current_block, context_ctx, prior, prev_draft, feedback,
     )
-    # 独立路由、独立调用：不传工具（tools 缺省 None）、纯文本；绝不进 message_runner 工具循环
+    # 独立路由、独立调用：不传工具（tools 缺省 None）、纯文本；绝不进 message_runner 工具循环。
+    # system/user/prior 已由统一 context base 编排。
     try:
         result, _model = await model_service.call_main(
-            system_prompt, user_prompt, prior_messages=prior or None,
+            request["system_prompt"], request["user_prompt"],
+            prior_messages=request["prior_messages"] or None,
             model_name=model_config.resolve("draft") or model_config.default_model(),
         )
     except Exception as exc:  # noqa: BLE001

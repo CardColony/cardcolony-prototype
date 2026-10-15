@@ -169,7 +169,9 @@ async def test_facade_append_persists_message_blocks(sandbox, work):
     assert [r["type"] for r in recs] == ["user_message", "assistant_text"]
     assert recs[0]["data"] == {"content": "你好"}
     assert recs[0]["run_id"] == "p-user"
-    assert recs[1]["data"] == {"content": "在的"}
+    # [单源化偏差③补 2026-10-15] assistant_text 的 data 增 model/end（元信息
+    # 徽标数据源，/session 渲染通道退役后 timeline 是唯一来源）——断言镜像更新。
+    assert recs[1]["data"] == {"content": "在的", "end": "model_done"}
 
 
 # ============================================================

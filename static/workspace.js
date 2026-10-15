@@ -3,24 +3,24 @@
 /* 迭代四 F2③：IIFE → ES module；escapeHtml/API/EventFlow/ReloadCanvas 走模块 import。
  * 循环依赖（canvas.js import 本文件的 Workspace/RenderNav）由 ESM 活绑定＋函数声明
  * 提升保证：本文件顶层不调用任何 canvas 导出。 */
-import { API } from "./esm/api.js?v=27";
-import { escapeHtml } from "./esm/util.js?v=27";
-import { EventFlow } from "./stream.js?v=27";
-import { renderMarkdown } from "./esm/md.js?v=27";
-import { reloadCanvas } from "./canvas.js?v=27";
-import { store } from "./esm/store.js?v=27";
-import { notify, postStop } from "./esm/api.js?v=27";
-import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=27";
+import { API } from "./esm/api.js?v=30";
+import { escapeHtml } from "./esm/util.js?v=30";
+import { EventFlow } from "./stream.js?v=31";
+import { renderMarkdown } from "./esm/md.js?v=30";
+import { reloadCanvas } from "./canvas.js?v=30";
+import { store } from "./esm/store.js?v=30";
+import { notify, postStop } from "./esm/api.js?v=30";
+import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2] 导航渲染体系：状态三层容器 + 行模型 + 渲染换底 + 虚拟滚动 + 异步加载
 import {
   createNavStateStore, storageGet, storageSet,
-} from "./esm/state_layers.js?v=27";
-import { createNavAsync } from "./esm/nav_async.js?v=27";
-import { createNavRenderer } from "./esm/nav_render.js?v=27";
+} from "./esm/state_layers.js?v=30";
+import { createNavAsync } from "./esm/nav_async.js?v=30";
+import { createNavRenderer } from "./esm/nav_render.js?v=30";
 // [S3] 交互与呈现族：找通道（R-24/25）、面包屑+吸顶+祖先链（R-27/18/26/28）、快照存在性（R-21）
-import { createNavFind } from "./esm/nav_find.js?v=27";
-import { createNavBreadcrumb, ancestorCards } from "./esm/nav_breadcrumb.js?v=27";
-import { cardInSnapshot } from "./esm/nav_badge.js?v=27";
+import { createNavFind } from "./esm/nav_find.js?v=30";
+import { createNavBreadcrumb, ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
+import { cardInSnapshot } from "./esm/nav_badge.js?v=30";
 
 const WORK_ID = window.__WORK_ID__;
   const ws = document.getElementById("workspace");
@@ -123,7 +123,7 @@ const WORK_ID = window.__WORK_ID__;
 
   /* [切卡竞态 2026-10-14 · 用户令 ④] 底层修法：按「最终选择」收敛，不做临时补丁。
      问题根因：open() 全程无守卫，快速点两张卡＝两个 open 并发（各含 getCard →
-     renderInspector → renderChat 三次 await），谁后跑完谁赢——A 的迟到回复会写进
+     renderInspector → 事件流恢复等 await），谁后跑完谁赢——A 的迟到回复会写进
      已经清空、正在显示 B 的容器（用户判「上一张卡片的信息推进这张卡片里」）。
      修法：单调序号 _openSeq。每次 await 之后比对「我还是最后一次选择吗」，
      不是就立刻停手（一行 DOM 都不写）。这样 A 的异步链在自己这一层就断了，
@@ -139,9 +139,9 @@ const WORK_ID = window.__WORK_ID__;
       currentCard = card;
       await renderInspector();
       if (stale()) return;
-      await renderChat();
-      if (stale()) return;
-      // [对话流渲染] 把这张卡的过程痕迹补回对话流（按落盘时序表逐条归位）。
+      // [会话渲染单源化 2026-10-15 · C1] 刷新/换卡恢复走**唯一一条路**：
+      // GET /timeline → 装配器 → 节点快照 → 渲染。原「先 renderChat 读 /session
+      // 上屏消息、再 replayTrace 补过程行」两通道已合并成这一次调用。
       {
         await EventFlow.replayTrace(WORK_ID, cardId);
         if (stale()) return;
@@ -833,7 +833,11 @@ const WORK_ID = window.__WORK_ID__;
       // 回退＝展开/折叠（原行为），保证这一行点了始终有反应。
       const rootCid = phead.dataset.root || "";
       if (!rootCid) { navRenderer.toggleProject(phead.dataset.wid); return; }
-      if (currentCard && currentCard.meta.card_id === rootCid) return;   // 已在根卡：不重复打开
+      // 只在「对话态且已打开根卡」时不重复打开——画布态时 currentCard 留着旧值，
+      // 若按「当前卡==根卡」判会变成死点击（点了没反应），必须同时看视图态。
+      const main = document.getElementById("appMain");
+      const inChat = main && main.dataset.view === "chat";
+      if (inChat && currentCard && currentCard.meta.card_id === rootCid) return;
       gotoCard(rootCid, phead.dataset.wid, false);
       return;
     }
@@ -850,43 +854,45 @@ const WORK_ID = window.__WORK_ID__;
   // 已知连带：tests/s3/obs_nav_s3.js 是人肉观察脚本（非单测），其中两处 .click() 会取不到元素。
 
   // ==================== 讨论区 ====================
-  // [R3] 会话区渲染：首屏/换卡全量构建；同卡重渲染走增量（只 append 尾部差额），
-  // 避免「打开大 session 时把全部历史 DOM 清掉重灌」的卡顿。
-  // 判据（写死）：
-  //   ① 换了卡（cardId 不同）或服务端消息数 < 本地已渲染数（消息被删）→ 全量重建；
-  //   ② 服务端消息数 > 本地已渲染数 → 只 append 尾部差额；
-  //   ③ 相等 → 不碰 DOM（既有元素引用保留，C-4 判据依赖此点）。
-  // send() 的既有增量路径不动。
-  let chatRenderedCard = "";
-  let chatRenderedCount = 0;
+  /* [会话渲染单源化 2026-10-15 · C1] /session 消息渲染通道**退役**：
+     本文件不再调 API.getSession 取消息来渲染气泡。消息与过程行同属一条
+     timeline，由 stream.js 的装配器按轮分组出快照、决定位置；本文件只提供
+     「内容长什么样」的三个节点渲染器（注入 EventFlow，返回元素、不自行定位）。
 
-  async function renderChat() {
-    try {
-      const cardId = currentCard.meta.card_id;
-      const msgs = await API.getSession(WORK_ID, cardId);
-      // [R3 修正·执行方2] 本地已渲染条数以 DOM 实数为准（.msg:not(.thinking):not(.live)，与 send()
-      // 的 baseline 同口径）。send() 绕过 renderChat 直接上屏用户/助手气泡——纯变量
-      // 记账与 DOM 脱节，重开同卡时会把已上屏的消息再追加一遍（重复气泡）。
-      // 判据不变：换卡或服务端变短（消息被删）→ 全量重建；
-      // 服务端变长 → 只 append 尾部差额；相等 → 不碰 DOM（既有元素引用保留）。
-      const localCount = (chatRenderedCard === cardId)
-        ? chatArea.querySelectorAll(".msg:not(.thinking):not(.live)").length
-        : 0;
-      const needFull = (chatRenderedCard !== cardId) || (msgs.length < localCount);
-      if (needFull) {
-        chatArea.innerHTML = "";
-        chatRenderedCard = cardId;
-        chatRenderedCount = 0;
-      }
-      const baseCount = needFull ? 0 : localCount;
-      if (msgs.length > baseCount) {
-        const delta = msgs.slice(baseCount);
-        for (const m of delta) appendMessage(m.role, m.content, m.model, m.behavior, m.end);
-        console.info("[R3] 增量追加 " + delta.length + " 条（本地 " + baseCount + " → 服务端 " + msgs.length + "）");
-        chatRenderedCount = msgs.length;
-      }
-    } catch (e) { /* toast 已处理 */ }
-    scrollChatBottom();
+     ★ 一处 C1 的必然后果（如实呈报，不自行补救）：timeline 的消息记录
+       data 只有 {content}（session_facade.emit_message_event 唯一落点），
+       **不带 model/behavior/end**。原 /session 通道提供的助手元信息行
+       （model 徽标／behavior 环节块／end 结束原因）因此没有数据源，随本通道
+       一并退役。三字段为空时 assistantMeta 不渲染（不报错、不留空壳）。
+       要恢复只能动后端落盘形状（C3 本任务禁改），见施工回报偏差③。 */
+
+  /** 注入 stream.js：user / assistant / cardmsg 三类消息节点的元素构造。 */
+  function registerMessageRenderers() {
+    EventFlow.setMessageRenderers({
+      user: renderUserNode,
+      assistant: renderAssistantNode,
+      cardmsg: renderCardMsgNode,
+    });
+  }
+
+  function renderUserNode(node) {
+    const d = node.data || {};
+    const el = document.createElement("div");
+    el.className = "msg user";
+    el.dataset.seq = node.seq;
+    el.innerHTML = formatMsgContent(d.content == null ? "" : String(d.content));
+    return el;
+  }
+
+  function renderAssistantNode(node) {
+    const d = node.data || {};
+    const el = document.createElement("div");
+    el.className = "msg assistant";
+    el.dataset.seq = node.seq;
+    const badge = assistantMeta(d.model, d.behavior, d.end);
+    el.innerHTML = badge +
+      '<div class="md">' + renderMarkdown(d.content == null ? "" : String(d.content)) + "</div>";
+    return el;
   }
 
   // [对话区会话流样式 2026-10-12] 统一内容列：chatArea 卡片内所有消息/过程行
@@ -904,8 +910,9 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   /** [对话流全消息类型 2026-10-13] 助手消息元信息行（Ⅲ 对话块）：
-      model 徽标 ＋ behavior 环节块徽标（Ⅳ，session 块 behavior 字段）＋ end 结束原因
-      （Ⅲ，END_VALUES：model_done / policy_stop / human_stop / error）。字段空则不渲染。 */
+      model 徽标 ＋ behavior 环节块徽标（Ⅳ）＋ end 结束原因（Ⅲ，END_VALUES：
+      model_done / policy_stop / human_stop / error）。字段空则不渲染
+      （timeline 通道下三字段恒空，见上方 C1 后果说明）。 */
   function assistantMeta(model, behavior, end) {
     const parts = [];
     if (model) parts.push(`<span class="model-badge">${escapeHtml(model)}</span>`);
@@ -914,62 +921,22 @@ const WORK_ID = window.__WORK_ID__;
     return parts.length ? `<div class="meta">${parts.join("")}</div>` : "";
   }
 
-  function appendMessage(role, content, model, behavior, end) {
-    // [迭代四 F4⑥] 卡间消息分流：role 以 card: 开头＝其他卡发来的消息——
-    // 必须先于下方 live 接管分支（否则吞掉正在生成的助手气泡）。
-    if (role && String(role).startsWith("card:")) return appendCardMessage(role, content);
-    const badge = (role === "assistant") ? assistantMeta(model, behavior, end) : "";
-    // [对话流渲染] 权威助手消息上屏时**就地接管**那条正在生成的正文条目
-    // （`.msg.assistant.live`）——.live 不计入基数（见 localCount/baseline），
-    // 接管后它就成为该条助手消息本体；过程行 `.step-row` 各自独立留在对话流里，不动。
-    if (role !== "user") {
-      const live = chatArea.querySelector(".msg.assistant.live");
-      if (live) {
-        live.className = "msg assistant";
-        // [think 可见 2026-10-14 · 用户令 ⑥] 不再整块 innerHTML 替换——那会把思考块
-        // 一起擦掉（「think 过程根本看不到、一落定就没了」的直接根因）。
-        // 只换正文容器，思考块留在原位（元信息行插到最前）。
-        const md = live.querySelector(".md");
-        if (md) {
-          md.innerHTML = renderMarkdown(content || "");
-          md.classList.remove("live-content");
-        } else {
-          live.insertAdjacentHTML("beforeend",
-            '<div class="md">' + renderMarkdown(content || "") + "</div>");
-        }
-        if (badge) live.insertAdjacentHTML("afterbegin", badge);
-        chatRenderedCount += 1;
-        scrollChatBottom();
-        return live;
-      }
-    }
-    const el = document.createElement("div");
-    el.className = "msg " + (role === "user" ? "user" : "assistant");
-    el.innerHTML = badge + (role === "user"
-      ? formatMsgContent(content || "")
-      : '<div class="md">' + renderMarkdown(content || "") + "</div>");
-    ensureMsgs().appendChild(el);
-    // [C3 主界面优化] 记账与显示一致：send()/恢复路径与 renderChat 同走本函数，
-    // 每次真实上屏同步计数（与 renderChat 的 DOM 实数判据同口径，杜绝增量路径脱节）
-    chatRenderedCount += 1;
-    scrollChatBottom();
-    return el;
-  }
-
   // [迭代四 F4⑥] 卡间消息渲染（Ⅰ 类 ×3）：.cmsg 结构＋头行剥离；解析失败显示
   // 「消息格式异常」标记＋原文全文照示（不静默丢弃，卡间册 §4.2 解析失败处置①）。
   // [对话流全消息类型 2026-10-13] 形态改 .cmsg（灰阶竖条＋类型标签＋方向行）。
-  // **元素保留 .msg 类**：消息计数选择器 .msg:not(.thinking):not(.live) 依赖它，
-  // 改类名会让 renderChat 增量判据错位、重复上屏（style.css .cmsg 段有覆盖说明）。
   // 显示名与「须回应」镜像自 config/message_type_registry.json（后端 display_of 的同表；
   // 本路径无注册表端点，故前端持一份最小镜像，未知类型回落显示 code 本身＝fail-open）。
   const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知" };
   const CARD_MSG_CLS = { msg_ask: "ask", msg_answer: "answer", msg_notify: "notify" };
   const CARD_MSG_MUST = { msg_ask: true };
 
-  function appendCardMessage(role, content) {
+  /** 卡间消息节点（注入 stream.js）：返回元素，**不自行 append**——
+      位置由快照决定（C2）。role 形如 "card:card_007"（前 5 字符是来源前缀）。 */
+  function renderCardMsgNode(node) {
+    const d = node.data || {};
+    const content = d.content == null ? "" : String(d.content);
     const hdr = parseCardHeader(content);
-    const from = String(role).slice(5);
+    const from = node.from || (node.data && node.data.from) || "";
     const to = (currentCard && currentCard.meta && currentCard.meta.card_id) || "本卡";
     const div = document.createElement("div");
     div.className = "msg cmsg" + (hdr ? (CARD_MSG_CLS[hdr.type] ? " " + CARD_MSG_CLS[hdr.type] : "") : " bad");
@@ -1003,8 +970,6 @@ const WORK_ID = window.__WORK_ID__;
     }
     div.appendChild(bar);
     div.appendChild(body);
-    ensureMsgs().appendChild(div);
-    scrollChatBottom();
     return div;
   }
 
@@ -1100,7 +1065,7 @@ const WORK_ID = window.__WORK_ID__;
   // [刷新恢复实时状态 2026-10-03] 页面加载时重新挂接在途调用的等待气泡。
   // 问题：等待气泡的 timer/poll/el 全在 createWaitingBubble 的闭包里，刷新即随 JS 上下文销毁；
   //       后端 progress 状态（模块级内存、key=(work_id,card_id)）与端点都还在，但加载路径从不查它，
-  //       所以刷新后「正在跑」的实时状态消失（历史消息由 restoreFromHash→open→renderChat 恢复）。
+  //       所以刷新后「正在跑」的实时状态消失（历史消息由 restoreFromHash→open→事件流恢复）。
   // 修法：加载时查一次后端 progress——活跃态则复用 createWaitingBubble 挂回气泡与轮询；
   //       done/error/idle 及任何异常一律静默降级为现有行为，绝不抛错打断页面。
   // 硬约束：纯前端改动，静态文件热生效，零重启。
@@ -1149,15 +1114,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const content = inputBox.value.trim();
     if (!content) return;
 
-    // 立即上屏用户气泡
-    appendMessage("user", content);
     lastSentContent = content;
     inputBox.value = "";
     inputBox.style.height = "auto";
 
-    // [hotfix] 自愈基线：当前已上屏消息数（含刚上屏的用户气泡）＝服务端追加用户消息后的条数。
-    // [对话流渲染 T5] 排除 .thinking 与 .assistant.live——生成中/等待气泡不计入基数。
-    const baseline = chatArea.querySelectorAll(".msg:not(.thinking):not(.live)").length;
     const cardId = currentCard.meta.card_id;
     let settled = false;
 
@@ -1168,24 +1128,28 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       EventFlow.start(WORK_ID, cardId, () => {
         waiting = createWaitingBubble("思考中…", cardId);
       });
+      // [C1 单源] 用户气泡**不从 POST 参数直接上屏**：POST 要跑到本轮结束才返回，
+      // 故不等它，另起一条轻量回流去 timeline 把刚落盘的 user_message 取回
+      // （取到即止；取不到也有下面的等待气泡兜底，结算时 resync 必补齐）。
+      EventFlow.pullUserBubble(WORK_ID, cardId).catch(() => {});
     } else {
       waiting = createWaitingBubble("思考中…", cardId);
     }
 
-    // [hotfix] 后端完成但连接断了 → 从会话记录恢复回复，杜绝无限转圈
+    // [hotfix] 后端完成但连接断了 → 从 timeline 恢复，杜绝无限转圈。
+    // 判据同样只看唯一数据源（不再读 /session）：最后一组出现 assistant_text 即已结算。
     async function tryRecover() {
       try { console.info("[recover] tick"); } catch (e0) { /* 零阻断 */ }
       if (settled) return false;
       try {
-        const msgs = await API.getSession(WORK_ID, cardId);
-        if (msgs.length >= baseline + 1 && msgs[msgs.length - 1].role === "assistant") {
+        const r = await EventFlow.resync(WORK_ID, cardId);
+        if (r && r.ok && r.done) {
           settled = true;
           if (waiting) waiting.stop();
           setTimeout(() => EventFlow.stop(), 2500);
-          await renderChat();
           const note = document.createElement("div");
           note.className = "sys-tools";
-          note.textContent = "⚠ 响应连接中断，已从会话记录恢复回复（若有新卡片，返回画布后可见）";
+          note.textContent = "⚠ 响应连接中断，已从事件流恢复回复（若有新卡片，返回画布后可见）";
           ensureMsgs().appendChild(note);
           scrollChatBottom();
           return true;
@@ -1211,7 +1175,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       settled = true;
       if (waiting) waiting.stop();
       setTimeout(() => EventFlow.stop(), 2500);   // 让 done 帧送达后收流
-      appendMessage("assistant", resp.reply, resp.model);
+      // [C1 单源] 回复正文不再由 POST 响应直接上屏：此刻事件已全部落盘，
+      // 走与刷新**同一条**渲染路（拉 timeline → 装配器 → 快照 → 渲染）。
+      await EventFlow.resync(WORK_ID, cardId);
 
       // created_cards 绿条
       if (resp.created_cards && resp.created_cards.length > 0) {
@@ -1289,15 +1255,23 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const cardId = currentCard ? currentCard.meta.card_id : "";
     let pairId = null;
     try {
-      const msgs = await API.getSession(WORK_ID, cardId);
-      const last = msgs[msgs.length - 1];
-      if (last && last.role === "user" && last.pair_id) {
-        pairId = last.pair_id;
+      // [C1 单源] pair_id 也从 timeline 取：落盘记录的 run_id **就是** pair_id
+      // （session_facade.emit_message_event 的 run_id＝blk.pair_id），同一个字段，
+      // 不必再读 /session。取最近一条 user_message 的 run_id 即上一轮回合对。
+      const tl = await API.getTimeline(WORK_ID, cardId);
+      const items = (tl && tl.items) || [];
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (items[i] && items[i].type === "user_message" && String(items[i].run_id || "")) {
+          pairId = String(items[i].run_id);
+          break;
+        }
+      }
+      if (pairId) {
         console.info("[T10] 重发复用原 pair_id：" + pairId);
       } else {
         console.info("[T10] 重发未持有 pair_id，按新消息落盘（后端生成新标识）");
       }
-    } catch (e) { /* 取会话失败按未持有 pair_id 处理，不阻断重发 */ }
+    } catch (e) { /* 取事件流失败按未持有 pair_id 处理，不阻断重发 */ }
     // [信息流 Task5] 重发同样走过程卡（SSE 先行、失败回退）
     let waiting = null;
     // [F2③] 原 `if (window.EventFlow)`——module 化后恒在，守卫保留结构
@@ -1320,10 +1294,11 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         const errText = await httpResp.json().catch(() => ({}));
         throw new Error(errText.error || ("HTTP " + httpResp.status));
       }
-      const resp = await httpResp.json();
+      await httpResp.json();
       if (waiting) waiting.stop();
       setTimeout(() => EventFlow.stop(), 2500);
-      appendMessage("assistant", resp.reply, resp.model);
+      // [C1 单源] 同 send()：回复正文走 timeline 回流，不从响应体直接上屏。
+      await EventFlow.resync(WORK_ID, cardId);
       scrollChatBottom();
     } catch (e) {
       if (waiting) waiting.stop();
@@ -1368,7 +1343,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   });
 
   // ==================== [刷新恢复 2026-10-03] 加载时按 URL hash 重开上次的卡 ====================
-  // 问题：页面上看的那张卡刷新即丢——回读历史的能力（open→renderChat→GET /session）三层齐备，
+  // 问题：页面上看的那张卡刷新即丢——回读历史的能力（open→GET /timeline→快照渲染）三层齐备，
   // 但加载时没有任何代码去调 open()，所以刷新后对话区空白。
   // 修法：卡号存 URL hash（open() 内写入），加载时读出来重开。不引入浏览器本地持久存储等前端存储。
   async function restoreFromHash() {
@@ -1405,6 +1380,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       open(sel.cid);
     }
   });
+
+  // [会话渲染单源化 2026-10-15] 消息类节点的渲染器在此一次性注入 stream.js：
+  // 内容格式化归本文件，放置归装配器快照（C2）。
+  registerMessageRenderers();
 
   // ==================== [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗状态机 ====================
   // 点按钮 → draft(kind) → 草稿态（只读展示，暂存 base_hash）→ 三选一：
