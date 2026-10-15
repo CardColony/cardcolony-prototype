@@ -101,7 +101,10 @@ CREATE TABLE IF NOT EXISTS cards (
     updated_at       TEXT,
     mission          TEXT,
     status_block     TEXT,
-    rulings          TEXT
+    rulings          TEXT,
+    pos_x            REAL,
+    pos_y            REAL,
+    pinned           INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent);
 CREATE INDEX IF NOT EXISTS idx_cards_type   ON cards(card_type);
@@ -249,6 +252,30 @@ def _guard_migration(work_id: str, db: Path) -> None:
         )
 
 
+# [画布重构 2026-10-15] cards 表的位置三列。
+#
+# 卡片位置不再另开 ``layout.json`` 存放——位置是**卡片自身属性**（任务书约束 4），
+# 与 title/parent 同级，就住在 cards 表里。「唯一真相来源」由文件变列（见
+# ``canvas_store`` 的不变量区）。
+#
+# 为什么**既进 ``_SCHEMA`` 又进 ``_COLUMN_UPGRADES``**：``_SCHEMA`` 只对**新建库**
+# 跑一次，13 个存量库得靠 ``_COLUMN_UPGRADES`` 的缺列即 ALTER 升级——两条路都留，
+# 意味着「新库天生有列」「老库第一次被打开时补列」，任何时刻都不会读到缺列的表。
+# 显式迁移脚本 ``scripts/migrate_cards_add_position_columns.py`` 引用的是**同一份**
+# 本定义（唯一真相，避免脚本与运行时两处各写一遍 DDL 而悄悄漂移）。
+#
+# 取值纪律：
+# - ``pos_x`` / ``pos_y``：REAL，**不带 DEFAULT**（未摆过＝NULL＝"没写过"，
+#   自动排每次现算、不落盘——任务书约束 4）。只钉不摆的卡允许「有 pinned、坐标 NULL」。
+# - ``pinned``：INTEGER 0/1，**带 DEFAULT 0**（存量卡迁移后 pinned=0，符合任务书
+#   完成标准；开关列的 NULL 与 0 同义，取 DEFAULT 只是让读侧少一层 COALESCE）。
+POSITION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("pos_x", "pos_x REAL"),
+    ("pos_y", "pos_y REAL"),
+    ("pinned", "pinned INTEGER DEFAULT 0"),
+)
+
+
 # 幂等补列清单：(表名, 列名, ADD COLUMN 片段)
 #
 # [卡片区域语义 2026-10-14 · 裁定 1 甲] SQLite 第二步迁移已于当日跑完，13 个
@@ -260,11 +287,14 @@ def _guard_migration(work_id: str, db: Path) -> None:
 # 1. **不带 DEFAULT** —— 红 2「旧卡零内容改动：新列为空即空，不填默认值」。
 #    SQLite 的 ADD COLUMN 不带 DEFAULT 时，既有行该列一律为 NULL，读侧
 #    ``row[...] or ""`` 归一成空串，与「新卡该块为空」同形。
+#    ★ **例外：``POSITION_COLUMNS`` 里的 ``pinned``** —— 它是开关列不是内容列，
+#    「没写过」与「没钉住」本就是同一件事，故按任务书带 ``DEFAULT 0``（见该常量）。
 # 2. **不碰既有行** —— ADD COLUMN 只改表结构，不读写任何一行。
 # 3. **幂等** —— 已有该列即跳过；反复跑不出错，可安全地每次建连接都调。
 _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     ("shadows", "coordination", "coordination TEXT"),
-)
+) + tuple(("cards", col, ddl) for col, ddl in POSITION_COLUMNS)
+
 
 # 幂等删列清单：(表名, 列名)
 #

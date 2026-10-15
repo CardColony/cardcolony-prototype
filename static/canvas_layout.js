@@ -38,7 +38,10 @@ function loadLayoutFunctions(source) {
     // 注：measureSizes 不再注入——它现在位于本段之内（[phase8.6-B] 实测节点尺寸）。
     // 若将来它被移出本段，这里会当场报错（标识符未定义），不会静默。
     ${segment}
-    return { computeLayout, layoutTree, resolveOverlaps, separateOverlaps, computeVisibleSet, computeProjection, GAP_Y };
+    return { computeLayout, layoutTree, resolveOverlaps, separateOverlaps, computeVisibleSet, computeProjection, GAP_Y,
+             // [画布重构 2026-10-15 · 阶段 2] 增量渲染的纯决策层——与上面同一段源码、
+             // 同一个 factory，不另开模块（另开就等于有了第二份实现，早晚漂移）。
+             computeSubtreeVisible, collectDescendants, planSubtreeUpdate, computeSubtreeLayout };
   `);
   return factory();
 }

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -11,12 +11,12 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=20.0">
+<link rel="stylesheet" href="/static/style.css?v=20.1">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
      版本号：nav.css 改动必须升这里的 ?v=，否则浏览器吃旧缓存、新样式不生效。 -->
-<link rel="stylesheet" href="/static/nav.css?v=7">
+<link rel="stylesheet" href="/static/nav.css?v=10">
 </head>
 <body>
 <div class="work-page">
@@ -56,25 +56,19 @@
   <!-- [T17-F1] 中区主视图：topbar + stage（画布/对话二选一，data-view 驱动显隐） -->
   <div class="app-main" id="appMain" data-view="canvas">
     <!-- [顶栏整合 2026-10-13] 两条栏（.topbar 48px ＋ .ws-head ~35px）合并为一条 44px：
-         剧本架图标 ｜ 面包屑 ｜（画布态）设置·zoom·整理画布·新建卡。
-         用户 2026-10-13 17:17 四条裁定：① 剧本架改图标（去箭头去文字）
-         ② 去「← 画布」——面包屑首段＝项目名＝根卡，点它即回画布；不再同时显示项目名与根卡
+         面包屑 ｜（画布态）设置·zoom·整理画布·新建卡。
+         用户 2026-10-13 17:17 四条裁定：① 去「回首页」图标 ② 去「← 画布」——面包屑首段＝项目名＝根卡，
+         点它即回画布；不再同时显示项目名与根卡
          （实读 nav_breadcrumb.js:52 首段 cid 与 :53 根卡 cid 同为 work_card_id；全 work 项目名
          与根卡名 10/10 同名）③ 发送/停止合并为输入条一个两态图标按钮 ④ 去「ⓘ 卡详情」。
+         [首页两态 2026-10-15] 原「回首页」图标随旧项目列表页概念整体取消一并删除，
+         其后的 .bsep 分隔条随之删除（无左邻可分隔，留着是一道无来由的竖线）。
+         回首页的通道＝浏览器地址栏 /，与首页自身的「有历史直接跳上次页」判定同源。
          画布专属三件（zoomDisplay/reorganizeBtn/newCardBtn）**不删元素**——canvas.js:33-35 顶层
          即取用、:1436/:1453 直接挂 onclick，删了会 TypeError 让整个画布脚本死掉；改由
          .canvas-only 按 data-view 显隐（画布态显示、聊天态隐藏）。
          topSettingsBtn 已删（无 JS 引用，grep 仅本文件命中；左栏 navFooter 已有同一跳转）。 -->
     <div class="topbar">
-      <a href="/" class="ico-btn" id="shelfBtn" title="剧本架" aria-label="剧本架">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
-          <rect x="2.4" y="2.4" width="4.8" height="4.8" rx="1.2"/>
-          <rect x="8.8" y="2.4" width="4.8" height="4.8" rx="1.2"/>
-          <rect x="2.4" y="8.8" width="4.8" height="4.8" rx="1.2"/>
-          <rect x="8.8" y="8.8" width="4.8" height="4.8" rx="1.2"/>
-        </svg>
-      </a>
-      <span class="bsep"></span>
       <!-- 画布态面包屑（canvas.js renderBreadcrumb 填，吃投影；画布态才显） -->
       <div id="crumb" class="crumb canvas-only"></div>
       <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
@@ -183,6 +177,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=27.0"></script>
+<script type="module" src="/static/esm/main.js?v=30.0"></script>
 </body>
 </html>

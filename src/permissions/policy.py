@@ -77,11 +77,18 @@ SWITCH_PLAN = "plan"                    # 能建计划、改计划、推进步�
 SWITCH_READ_LINKED = "read_linked"          # 沿通信线读对方卡（read_via）
 SWITCH_SEND_MESSAGE = "send_card_message"   # 沿关系向对方卡发消息
 
-# [工具面补齐 2026-10-12] 删掉了原 SWITCH_SEARCH="search"：
-#   全系统**没有独立的 search 工具**——搜索能力由 web_search/fetch_web 承担，
-#   它们归 SWITCH_TOOLS_WEB。那是个没有任何工具消费的**死开关**，留在配置里
-#   只会让人误以为「配了 search 就能用搜索」。删除后配置里的 search 值会被
-#   perms_for 当未知开关丢弃并留 warning（存量卡刷新后自动消掉）。
+# [编程卡 2026-10-15 · C2 裁定] search 与 list_memory 回归为**预留机关**：
+#   · SWITCH_SEARCH="search"——全系统仍**没有独立的 search 工具**，搜索能力由
+#     web_search/fetch_web 承担（归 SWITCH_TOOLS_WEB）；在册只为给 coder 行与
+#     后续拆分留位，**当前无任何工具消费**（配了不等于能用）。
+#   · SWITCH_LIST_MEMORY="list_memory"——记忆开关预留位，待后续把 read_memory
+#     从 SWITCH_READ 拆出时启用；**read_memory 仍挂 SWITCH_READ、不改挂**
+#     （改挂＝未授权的 read 侧收窄，已随本裁定否决）。
+#   沿革：2026-10-12 工具面补齐曾删死开关 search（当时同样无消费方）；
+#   2026-10-15 随编程卡行（rd_project/coder 含 search/list_memory 两预留码）
+#   按用户裁定恢复为预留机关。_filter_by_category 不因 search 新增过滤组。
+SWITCH_SEARCH = "search"              # 预留：无独立工具，暂无消费方
+SWITCH_LIST_MEMORY = "list_memory"    # 预留：暂无消费方，read_memory 仍挂 SWITCH_READ
 
 #: 全部合法开关（配置里的值必须是它的子集，否则该开关无效）
 SWITCHES: frozenset[str] = frozenset({
@@ -99,6 +106,8 @@ SWITCHES: frozenset[str] = frozenset({
     SWITCH_PLAN,
     SWITCH_READ_LINKED,
     SWITCH_SEND_MESSAGE,
+    SWITCH_SEARCH,
+    SWITCH_LIST_MEMORY,
 })
 
 #: 树类开关：类型分权通过后追加「操作者是否在目标上游」限定（方案 §4）

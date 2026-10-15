@@ -61,6 +61,15 @@
           "requires_owner": true,
           "default_template": "tool",
           "allowed_transitions": ["active", "completed"]
+        },
+        {
+          "code": "coder",
+          "label": "编程卡",
+          "description": "承接上级卡开发任务的执行体。一次一个任务；自报完工即终态；终态后静默、不可删、永久留档。",
+          "can_have_children": false,
+          "requires_owner": false,
+          "default_template": "coder",
+          "allowed_transitions": ["active", "completed"]
         }
       ]
     },

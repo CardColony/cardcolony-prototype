@@ -107,10 +107,11 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* ============ [顶栏整合 2026-10-13] 聊天页单栏（原 .topbar 48px ＋ .ws-head ~35px 两条叠加）============
-   用户 2026-10-13 17:17 四条裁定：①剧本架改图标 ②去「← 画布」（面包屑首段＝项目名＝根卡，
-   点它即回画布；不再同时显示项目名与根卡）③发送/停止合并为输入条一个两态图标按钮
+   用户 2026-10-13 17:17 四条裁定：①顶部图标位去留（该图标 2026-10-15 随旧列表页概念整体取消，
+   本段对应规则同批删除）②去「← 画布」（面包屑首段＝项目名＝根卡，点它即回画布；
+   不再同时显示项目名与根卡）③发送/停止合并为输入条一个两态图标按钮
    ④去「ⓘ 卡详情」顶部按钮。省下约 52px 高度全给对话区。
-   作用域：.work-page .topbar —— 剧本架页（.shelf-page > .topbar）高度不受影响。 */
+   作用域：.work-page .topbar。 */
 .work-page .topbar { height: 44px; gap: 8px; padding: 0 14px; }
 
 /* 画布专属件（zoomDisplay/reorganizeBtn/newCardBtn）：聊天态隐藏、画布态显示。
@@ -119,16 +120,6 @@ a { color: inherit; text-decoration: none; }
 .app-main[data-view="chat"] .topbar .canvas-only { display: none; }
 .app-main[data-view="canvas"] #chatCrumb { display: none; }
 
-/* 图标按钮（剧本架）：无文字、无箭头，一枚 16×16 内联 SVG */
-.ico-btn {
-  width: 28px; height: 28px; flex: none;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; border: 1px solid transparent; border-radius: 6px;
-  color: var(--text-soft); padding: 0;
-}
-.ico-btn svg { width: 16px; height: 16px; display: block; }
-.ico-btn:hover { background: var(--panel-hover); color: var(--text); }
-.bsep { width: 1px; height: 18px; background: var(--border); flex: none; }
 
 /* 聊天态面包屑：首段＝项目名＝根卡（可点回画布）｜中间段＝祖先卡（可点切卡）｜末段＝当前卡（不可点） */
 .topbar .crumb .cseg {
@@ -141,93 +132,6 @@ a { color: inherit; text-decoration: none; }
 .topbar .crumb .cseg.root:hover { background: var(--panel-hover); color: var(--text); }
 .topbar .crumb .cseg.cur { color: var(--text); font-weight: 600; }
 .topbar .crumb .csep { color: var(--stroke-soft); font-size: 12px; flex: none; }
-
-/* ============ 剧本架页 ============ */
-.shelf-page { height: 100vh; display: flex; flex-direction: column; }
-.shelf-main {
-  flex: 1;
-  overflow: auto;
-  padding: 40px 36px;
-}
-.shelf-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 20px;
-  max-width: 1400px;
-  margin: 0 auto;
-}
-.book {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 160px;
-  cursor: pointer;
-  transition: border-color 0.15s, transform 0.1s;
-}
-.book:hover { border-color: var(--c-setting); transform: translateY(-2px); }
-.book .bname {
-  font-size: 16px;
-  font-weight: 600;
-  margin-bottom: 8px;
-  color: var(--text);
-  line-height: 1.4;
-}
-.book .bmeta { font-size: 12px; color: var(--dim); line-height: 1.8; }
-.book .bstats { margin-top: auto; display: flex; gap: 8px; flex-wrap: wrap; padding-top: 10px; }
-.book .ending-flag { position: absolute; top: 12px; right: 12px; font-size: 16px; }
-.chip {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 2px 10px;
-  color: var(--dim);
-  font-size: 12px;
-  background: var(--bg);
-}
-.book.new {
-  border-style: dashed;
-  align-items: center;
-  justify-content: center;
-  color: var(--dim);
-  text-align: center;
-}
-.book.new .plus { font-size: 36px; line-height: 1; margin-bottom: 8px; color: var(--dim); }
-.book.new:hover { border-color: var(--green); color: var(--green); }
-.book.new:hover .plus { color: var(--green); }
-
-.shelf-empty {
-  text-align: center;
-  padding: 80px 20px;
-  color: var(--dim);
-}
-.shelf-empty h2 { font-size: 18px; margin-bottom: 12px; color: var(--text); font-weight: 500; }
-.shelf-empty p { margin-bottom: 24px; }
-
-/* 新建剧本内联输入 */
-.inline-form {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-}
-.inline-form.active { display: flex; }
-.inline-form input {
-  flex: 1;
-  background: var(--bg);
-  border: 1px solid var(--c-green, var(--green));
-  border-radius: 6px;
-  padding: 6px 10px;
-  color: var(--text);
-  font-size: 13px;
-  min-width: 0;
-}
-.book.new.form-mode { cursor: default; }
-.book.new.form-mode .plus,
-.book.new.form-mode > div:first-child:not(.inline-form) { display: none; }
 
 /* ============ 画布页 ============ */
 /* [T17-F1] 三联外壳：.work-page 由 column 改 row——左 .app-nav（恒在）＋ 右 .app-main
@@ -726,6 +630,24 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   display: flex;
   flex-direction: column;
 }
+/* [会话渲染单源化 2026-10-15] 轮组容器：快照按轮分组渲染，每轮一个容器。
+   **必须继承 .msgs 的 flex 列上下文**——组内 .msg.user 的 align-self:flex-end
+   （靠右）与其它行的 flex-start（靠左）都依赖父级是 flex 列；容器若退化成
+   普通块级，用户气泡会齐左排（视觉回归）。容器自身不加外边距：轮次间距
+   仍由组内 .msg/.step-row 自己的 margin 给出，与改前逐条平铺的观感一致。 */
+.msgs-round {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+/* live 逐字正文槽：恒在全部轮组之后（过程行与 live 正文恒压队尾）。 */
+.live-slot {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
 .msg {
   max-width: 100%;
   margin: 2px 0;
@@ -873,8 +795,8 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   align-items: center;
 }
 /* [2026-10-13 用户令] .inputmeta .spacer 补上 flex:1——按钮族本应靠右，
-   但这条规则此前漏定义（全仓 .spacer{flex:1} 只在 .topbar/.metho-row/.metho-actions/
-   .draft-modal-foot 四处有），导致 spacer 成 0 宽空 span、三个按钮全挤在左边。
+   但这条规则此前漏定义（全仓 .spacer{flex:1} 只在 .topbar/.draft-modal-foot
+   两处有），导致 spacer 成 0 宽空 span、三个按钮全挤在左边。
    用户 2026-10-13 19:56：「发送按钮靠右好吗？什么软件按钮都靠左的？」 */
 .inputmeta .spacer { flex: 1; }
 
@@ -936,92 +858,6 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   z-index: 50;
 }
 
-/* ============ [phase9-C] 剧本架页方法论库 ============ */
-.metho-section {
-  max-width: 1100px;
-  margin: 32px auto 48px;
-  padding: 0 24px;
-}
-.metho-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 12px;
-}
-.metho-title .metho-sub {
-  font-size: 12px;
-  color: var(--dim);
-  font-weight: 400;
-  margin-left: 10px;
-}
-.metho-list {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-  overflow: hidden;
-}
-.metho-list .loading-screen,
-.metho-detail .loading-screen {
-  position: static;
-  background: transparent;
-  padding: 12px;
-}
-.metho-empty {
-  padding: 18px 16px;
-  color: var(--dim);
-  font-size: 13px;
-}
-.metho-item { border-bottom: 1px solid var(--border); }
-.metho-item:last-child { border-bottom: none; }
-.metho-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.metho-row:hover { background: var(--panel-hover); }
-.metho-row .metho-name { color: var(--text); font-weight: 500; }
-.metho-tag {
-  font-size: 12px;
-  color: var(--dim);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1px 8px;
-  white-space: nowrap;
-}
-.metho-row .spacer { flex: 1; }
-.metho-src { color: var(--dim); font-size: 12px; }
-.metho-time { color: var(--dim); font-size: 12px; }   /* [D2 主界面优化] --dimmer 禁入文字色 */
-.metho-detail {
-  padding: 12px 16px 14px;
-  border-top: 1px dashed var(--border);
-  background: var(--bg);
-}
-.metho-edit {
-  width: 100%;
-  box-sizing: border-box;
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 12px;
-  font-size: 13px;
-  line-height: 1.7;
-  font-family: inherit;
-  resize: vertical;
-  min-height: 120px;
-  max-height: 400px;
-}
-.metho-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-}
-.metho-actions .spacer { flex: 1; }
-.metho-meta { color: var(--dim); font-size: 12px; }   /* [D2 主界面优化] --dimmer 禁入文字色 */
 /* ============ [对话流渲染] 对话流内的中间环节条目（无容器） ============
    用户裁定：把全部过程装进**一个**容器＝还是独立区域。故每条环节**自己**就是
    消息列表里的一条（.step-row），不包裹、不归拢、默认逐条可见；
@@ -1333,7 +1169,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   display: flex; align-items: stretch; margin: 8px 0;
   border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg);
   /* 元素同时带 .msg 类（消息计数选择器 .msg:not(.thinking):not(.live) 依赖它，
-     改类名会让 renderChat 增量判据错位、重复上屏）——故在此显式覆盖 .msg 基类的
+     改类名会让消息计数选择器失配）——故在此显式覆盖 .msg 基类的
      气泡形态：padding / pre-wrap / 圆角 / 字号行高。 */
   padding: 0; white-space: normal; font-size: 13px; line-height: 1.8;
 }

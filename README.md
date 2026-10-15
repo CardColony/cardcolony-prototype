@@ -60,14 +60,17 @@ python restart_safe.py           :: 判定通过后重启
 |---|---|
 | `works/<work_id>/cards.db` | **卡片与影子本体**（SQLite：卡面字段 ＋ 正文三块 ＋ 修改历史 ＋ 影子三节）——**库是唯一真相** |
 | `works/<work_id>/sessions/*.md` | 每张卡背后独立对话的完整记录 |
-| `works/<work_id>/canvas.json` | 画布布局与连线 |
+| `works/<work_id>/canvas.json` | 画布的**派生缓存**（卡面摘要与连线，可随时重建）；坐标不在这里，在 cards 表 |
 | `logs/prompt_*.json` | **每次模型调用的输入输出全文**（system_prompt／user_prompt／response／tool_events／error） |
 | `_backups/<原路径>/<时间戳>/` | 文件工具覆盖写之前的原文备份（不依赖 git 的兜底） |
 | `methodology/` | 方法论文档 |
 
 > [2026-10-14 卡片存储迁移] 卡片与影子**已进 SQLite**（`works/<work_id>/cards.db`），
 > 不再有 `works/<work_id>/cards/*.md` 与 `works/<work_id>/shadows/*.md`——
-> 各区域在库内**各占独立列**，取什么查什么。`sessions/`、`canvas.json`、`layout.json` 仍为文件。
+> 各区域在库内**各占独立列**，取什么查什么。`sessions/`、`canvas.json` 仍为文件。
+>
+> [2026-10-15 画布重构] 卡片在画布上的坐标（`pos_x`/`pos_y`/`pinned`）也已并入
+> cards 表——**位置是卡片自身属性**；`layout.json` 已整体退役，不再有任何存放点。
 
 ## 版本线
 

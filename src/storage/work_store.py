@@ -61,7 +61,7 @@ def list_works() -> list[dict[str, Any]]:
     并按 last_active_at 降序排（并列按 work_id 升序稳定收尾，刷新不跳序）。
 
     [T17-B3] 活跃度经 activity.work_last_active 请求时现算、不入盘；
-    本函数同时供剧本架页与 /api/nav——两条路径口径一致（R-031）。
+    本函数同时供首页入口与 /api/nav——两条路径口径一致（R-031）。
     """
     # 局部 import：activity 顶层要读 work.json（read_work），避免顶层循环
     from . import activity

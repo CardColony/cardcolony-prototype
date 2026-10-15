@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>推演agent</title>
+<!-- [首页两态 2026-10-15] 本页＝旧项目列表页的继任者（该页概念与页面已整体取消）。
+     样式复用工作页的两份真相，不新增第三份：style.css 提供外壳/按钮/画布视口，
+     nav.css 提供左栏（.app-nav/.nav-top/.nav-tree/.nav-footer），
+     home.css 只放首页自有的少量规则（.home-*，不碰 .nav-*——那是 nav.css 的唯一真相）。
+     两个 ?v= 与 work.html 保持同源同步——任一份改动都必须两处一起升，否则浏览器吃旧缓存。 -->
+<link rel="stylesheet" href="/static/style.css?v=20.0">
+<link rel="stylesheet" href="/static/nav.css?v=10">
+<link rel="stylesheet" href="/static/home.css?v=1.0">
+</head>
+<body>
+<!-- [首页两态 2026-10-15] 三态入口（方案定稿 v2）：
+     1. localStorage nav.recent.v1 有 → 跳上次停留的对话页（hash 用复合键 #wid/cid）
+     2. 无最近记录但 /api/works 有项 → 跳最近活跃 work 的对话页
+     3. 全空 → 停在本页空态（左栏展开空列表 +【＋新项目】、画布中央【创建】）
+     判定必须在浏览器侧做：nav.recent.v1 存在 localStorage，后端读不到。
+     故后端 GET / 只渲染本页（见 main.py），跳转逻辑全在 static/esm/home.js。 -->
+<div class="work-page" id="homePage">
+  <!-- 左栏：展开态（不带 .rail 类＝360px 全树，非 44px 窄条）。
+       结构与 work.html 的 .app-nav 同构，只是没有通知按钮与面包屑槽——
+       空态下没有树、没有当前卡，那两件在首页无意义，不留死件。 -->
+  <nav class="app-nav" id="homeNav">
+    <!-- 【＋新项目】：搜索框**上方**（用户定稿 2026-10-15）。与画布中央【创建】同一条
+         新建链路（home.js 的 createProject），两处入口行为一致。 -->
+    <div id="homeNewProject" class="home-new-project">
+      <button id="homeNewBtn" class="btn primary" title="新建项目">＋ 新项目</button>
+    </div>
+    <div class="nav-top">
+      <div class="nav-search-box">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+        <input id="homeSearchInput" type="text" placeholder="搜索" />
+      </div>
+    </div>
+    <div class="nav-tree" id="homeNavTree">
+      <!-- 空态提示：无可搜索内容时给一句人话，而不是留一片空白。
+           初始 display:none——判定未落定前先藏着，避免"其实要跳走"的那些访问
+           闪一下空态再跳转；home.js 判定为空态时才点亮。 -->
+      <div class="nav-empty" id="homeNavEmpty" style="display:none">还没有项目。点上方【＋新项目】或右侧【创建】开始。</div>
+    </div>
+    <!-- 底部常驻入口：与 work.html 左栏同一位置、同一跳转（模型设置） -->
+    <div class="nav-footer">
+      <button class="nav-foot-btn" title="模型设置"
+              onclick="location.href='/settings'">⚙<span class="nav-foot-label">设置</span></button>
+    </div>
+  </nav>
+
+  <!-- 右侧＝画布视口（与 work.html 的 .stage/#viewport 同构）。空态下中央一个【创建】。 -->
+  <div class="app-main">
+    <div class="stage">
+      <div id="viewport" class="home-viewport">
+        <!-- 同上：判定未落定前藏住创建盒，避免跳转前闪一下空态 -->
+        <div class="home-create-box" style="display:none">
+          <button id="homeCreateBtn" class="btn primary home-create-btn">创建</button>
+          <div class="home-create-hint">一个新项目＝一个独立的推演世界，自带画布、卡片树与对话。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toastContainer" class="toast-container"></div>
+<!-- [首页两态 2026-10-15] ES module 入口（与工作页同一形态，不走 IIFE 薄壳）。
+     直接静态 import esm/api.js —— 薄壳时代那个「顶层先跑、API 后到」的时序缺口
+     （见 git 7d09280 修复记录）在静态 import 下本就不存在，不必再写等待轮询。 -->
+<script type="module" src="/static/esm/home.js?v=1.0"></script>
+</body>
+</html>

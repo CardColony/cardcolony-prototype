@@ -22,15 +22,15 @@
  * [R-19 规则（唯一一处）] patchRowEl 开头检查 temp 交互集——hover 中 / loading 中的行
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
-import { escapeHtml } from "./util.js?v=27";
-import { notify } from "./api.js?v=27";
-import { createRowModel } from "./row_model.js?v=27";
-import { createVirtualList } from "./nav_virtual.js?v=27";
-import { NAV_ROW_HEIGHT } from "./state_layers.js?v=27";
+import { escapeHtml } from "./util.js?v=30";
+import { notify } from "./api.js?v=30";
+import { createRowModel } from "./row_model.js?v=30";
+import { createVirtualList } from "./nav_virtual.js?v=30";
+import { NAV_ROW_HEIGHT } from "./state_layers.js?v=30";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
-import { projectAggregate, isProjectEmpty, cardInSnapshot } from "./nav_badge.js?v=27";
+import { projectAggregate, isProjectEmpty, cardInSnapshot } from "./nav_badge.js?v=30";
 // [左栏接线 步2] 行几何纯函数（微推进／图标列／树线段）
-import { indentOf, rowSegs, childGuides } from "./nav_geo.js?v=27";
+import { indentOf, rowSegs, childGuides } from "./nav_geo.js?v=30";
 
 /* ---------- 图标（定稿：图标只表达"项目/卡"一件事；线经过处由 svg 底色咬断） ---------- */
 const SVG_CHEV = '<svg viewBox="0 0 16 16" fill="none"><path class="under" d="M5.5 3.5 10 8l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/><path class="top" d="M5.5 3.5 10 8l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';

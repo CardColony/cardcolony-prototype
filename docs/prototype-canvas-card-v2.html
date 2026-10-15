@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>画布卡片重设计 · 原型 v2（根卡 + 子卡）</title>
+<style>
+  /* ===== 用项目的真实设计令牌（与 static/style.css :root 同源） ===== */
+  :root {
+    --bg: #0d1117;
+    --bg-deep: #010409;
+    --panel: #161b22;
+    --panel-hover: #1c2129;
+    --border: #30363d;
+    --fg: #e6edf3;
+    --text-soft: #c9d1d9;
+    --dim: #8b949e;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    /* 类型色（左条） */
+    --c-work: #d4a72c;     /* 剧本/根 */
+    --c-setting: #388bfd;  /* 世界观 */
+    --c-char: #a371f7;     /* 行为体 */
+    --c-plot: #db6d28;     /* 节点 */
+    --c-foresh: #f85149;   /* 假设 */
+    --c-idea: #8b949e;     /* 线索 */
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg-deep);
+    color: var(--fg);
+    font-family: var(--font);
+    padding: 60px;
+  }
+
+  /* 画布请忽略以下标签，仅原型说明用 */
+  .proto-tag {
+    position: fixed; top: 16px; left: 16px; z-index: 500;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 16px; font-size: 12px; color: var(--dim);
+  }
+  .hint {
+    margin: 24px 0 8px; color: var(--dim); font-size: 12px; letter-spacing: .5px;
+  }
+
+  /* ================= 根卡 ================= */
+  /* 以现有 .card-node 为底：panel 底、圆角8、实线边框、左条6、字号13 */
+  .card-node {
+    position: relative;
+    background: var(--panel);
+    border-radius: 8px;
+    font-size: 13px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    display: flex;
+  }
+
+  /* 根卡：居中、更宽、粗边框 —— 覆盖现有 .card-node.is-root */
+  .card-node.is-root {
+    min-width: 340px;
+    border: 2px solid var(--c-work);
+    border-left-width: 6px;
+  }
+  /* 根卡内部横向排：内容(grow) + 右侧计数区(固定宽) */
+  .root-inner {
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+  }
+  .root-body {
+    flex: 1;
+    padding: 16px 20px;
+    text-align: center;
+  }
+  /* ① 项目名：比现 tname(13px bold) 大一号，居中，下留呼吸 */
+  .root-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 10px;
+  }
+  /* ③ 当前状况三行：小标题 + 3行截断（沿用现 .summary 的 line-clamp 思路，但给根卡配小标题行） */
+  .status-head {
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .root-status {
+    font-size: 12px;
+    color: var(--dim);
+    line-height: 1.6;
+    text-align: left;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+    max-width: 300px;
+    margin: 0 auto;
+  }
+  /* ② 类型标签：根卡不显示 project/类型 —— 已无 .ttype */
+
+  /* ④ 最右侧子卡计数区：独立竖向区域，整块可点，▸/▾ 两态 */
+  .kid-area {
+    flex: none;
+    width: 56px;
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 0 8px 8px 0;   /* 卡右边圆角归它 */
+    transition: background .15s ease;
+  }
+  .kid-area:hover { background: var(--panel-hover); }
+  .kid-area .dir { font-size: 13px; color: var(--dim); line-height: 1; }
+  .kid-area .n   { font-size: 16px; font-weight: 700; color: var(--c-work); line-height: 1; }
+  .kid-area.is-open { background: rgba(212,167,44,0.10); }
+  .kid-area.is-open .dir,
+  .kid-area.is-open .n { color: var(--c-work); }
+
+  /* ================= 吸附消息快照卡（⑤，纯样式意义上的子卡） ================= */
+  /* 吸附：去上边框、共享圆角、负 margin 顶上 —— 视觉上是根卡"长出"的一块 */
+  .snap-card {
+    position: relative;
+    margin-top: -2px;
+    background: var(--panel);
+    border: 2px solid var(--border);
+    border-top: none;
+    border-left: 4px solid var(--c-char);
+    border-radius: 0 0 8px 8px;
+    width: 100%;
+    overflow: hidden;
+  }
+  .snap-snapshot {
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    transition: background .15s ease;
+  }
+  .snap-snapshot:hover { background: var(--panel-hover); }
+  .snap-who {
+    flex: none;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--c-char);
+    /* 模拟前端发消息的 from 方，如 "行为体 / 指挥官" —— 占位 */
+  }
+  .snap-text {
+    flex: 1;
+    font-size: 12px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .snap-arrow { flex: none; font-size: 11px; color: var(--dim); }
+
+  /* 快捷输入框：吸附卡下缘，可直接在画布发消息 */
+  .snap-input-row {
+    border-top: 1px solid var(--border);
+    padding: 8px 10px;
+    display: flex;
+    gap: 8px;
+    background: var(--bg);
+  }
+  .snap-input-row input {
+    flex: 1;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font-size: 12px;
+    font-family: var(--font);
+    padding: 6px 10px;
+    outline: none;
+  }
+  .snap-input-row input:focus { border-color: var(--c-work); }
+  .snap-input-row button {
+    flex: none;
+    background: var(--c-work);
+    color: #0d1117;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 14px;
+    cursor: pointer;
+    font-family: var(--font);
+  }
+  .snap-input-row button:hover { filter: brightness(1.1); }
+
+  /* ================= 快捷回复窗（⑤，点击快照弹出 · 轻量浮层） ================= */
+  .quick-panel {
+    display: none;
+    position: fixed;
+    z-index: 900;
+    width: 340px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--c-char);
+    border-radius: 8px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    overflow: hidden;
+  }
+  .quick-panel.open { display: block; }
+  .quick-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .quick-head .t { font-size: 13px; font-weight: 600; color: var(--fg); }
+  .quick-head .x {
+    cursor: pointer; color: var(--dim); font-size: 16px; line-height: 1; padding: 2px;
+  }
+  .quick-head .x:hover { color: var(--fg); }
+
+  /* 轻量消息流：只滚几行，紧凑 */
+  .quick-stream {
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-deep);
+  }
+  .qmsg {
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 8px 10px;
+    border-radius: 8px;
+    max-width: 88%;
+  }
+  .qmsg.from-them {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text-soft);
+    align-self: flex-start;
+  }
+  .qmsg.from-me {
+    background: rgba(212,167,44,0.15);
+    border: 1px solid rgba(212,167,44,0.3);
+    color: var(--c-work);
+    align-self: flex-end;
+  }
+  /* 快捷回复窗的输入区：更小更轻 */
+  .quick-input {
+    border-top: 1px solid var(--border);
+    padding: 8px 10px;
+    display: flex;
+    gap: 8px;
+    background: var(--bg);
+  }
+  .quick-input input {
+    flex: 1;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font-size: 12px;
+    font-family: var(--font);
+    padding: 6px 10px;
+    outline: none;
+  }
+  .quick-input input:focus { border-color: var(--c-char); }
+  .quick-input button {
+    flex: none;
+    background: var(--c-char);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 14px;
+    cursor: pointer;
+    font-family: var(--font);
+  }
+
+  /* ================= 普通子卡（对比参照） ================= */
+  /* 现有 .card-node.l1 规格：220 宽、圆角8、summary clamp 3 */
+  .card-node.sub {
+    margin-top: 40px;
+    width: 220px;
+    border: 2px solid var(--c-setting);
+    border-left-width: 6px;
+    background: var(--panel);
+    flex-direction: column;
+    padding: 10px 12px;
+    gap: 4px;
+  }
+  .sub .tname { font-weight: 600; font-size: 13px; overflow: hidden; position: relative; padding-right: 56px; }
+  .sub .ttype { font-size: 11px; opacity: 0.85; color: var(--dim); }
+  .sub .summary {
+    font-size: 11.5px; color: var(--dim); margin-top: 4px; padding-top: 6px;
+    border-top: 1px solid #21262d; line-height: 1.5;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+  }
+  /* 子卡现有徽章（右上角绝对定位）——保留现状对照 */
+  .kid-badge {
+    display: inline-block; font-size: 10.5px; color: var(--dim);
+    border: 1px solid var(--border); border-radius: 8px; padding: 0 6px;
+    cursor: pointer; background: var(--bg);
+    position: absolute; top: 1px; right: 0; z-index: 2;
+  }
+</style>
+</head>
+<body>
+
+<div class="proto-tag">画布卡片重设计 · 原型 v2<br>根卡 ＋ 吸附消息快照 ＋ 快捷回复窗 ｜ <span style="opacity:.7">纯静态，可点</span></div>
+
+<div class="hint">— 根卡（点击右侧 ▸/▾ 切换展开收起；点击下方消息快照弹快捷回复窗）—</div>
+
+<!-- ===== 根卡整件（根卡主体 + 吸附消息快照卡） ===== -->
+<div class="card-node is-root" style="width:340px">
+  <div class="root-inner">
+    <div class="root-body">
+      <!-- ① 项目名，② 无类型标签 -->
+      <div class="root-title">银河远征计划</div>
+      <!-- ③ 当前状况三行 -->
+      <div class="status-head">当前状况</div>
+      <div class="root-status" id="rootStatus">
+        › 舰队已抵达半人马座 α，正在建立前进基地；能源系统稳定，补给预计 72 小时后到达；三支勘探队已派出两支，第三支因风暴推迟待命。航道周边未发现异常信号，与地球通信保持实时中继。
+      </div>
+    </div>
+    <!-- ④ 最右侧子卡计数区 -->
+    <div class="kid-area" id="kidArea" onclick="toggleRoot(event)">
+      <span class="dir" id="kidDir">▸</span>
+      <span class="n" id="kidN">3</span>
+    </div>
+  </div>
+
+  <!-- ⑤ 吸附消息快照卡（纯样式意义的子卡） -->
+  <div class="snap-card">
+    <div class="snap-snapshot" onclick="openQuick(event)">
+      <span class="snap-who">🏴 勘探队 · 队长</span>
+      <span class="snap-text">收到基地坐标，第三支勘探队预计一小时后出发，已装载矿物探测仪与中继信标…</span>
+      <span class="snap-arrow">↗</span>
+    </div>
+    <div class="snap-input-row">
+      <input type="text" id="rootQuickInput" placeholder="直接发送到根卡…" onkeydown="if(event.key==='Enter')sendRoot()">
+      <button onclick="sendRoot()">发送</button>
+    </div>
+  </div>
+</div>
+
+<!-- 快捷回复窗（点击快照弹出） -->
+<div class="quick-panel" id="quickPanel">
+  <div class="quick-head">
+    <span class="t">回复 · 勘探队</span>
+    <span class="x" onclick="closeQuick()">✕</span>
+  </div>
+  <div class="quick-stream" id="quickStream">
+    <div class="qmsg from-them">收到基地坐标，第三支勘探队预计一小时后出发。</div>
+    <div class="qmsg from-me">好，保持通信。带好风暴预案。</div>
+    <div class="qmsg from-them">收到。中继信标已就位，预计 2 小时后回报勘察初步数据。</div>
+  </div>
+  <div class="quick-input">
+    <input type="text" id="quickText" placeholder="轻量回复…" onkeydown="if(event.key==='Enter')sendQuick()">
+    <button onclick="sendQuick()">回复</button>
+  </div>
+</div>
+
+<div class="hint">— 普通子卡（现状参照：现有徽章形态，仍是右上角小标）—</div>
+<div class="card-node sub">
+  <div class="tname">前沿基地规划<span class="kid-badge">▸ 5</span></div>
+  <div class="ttype">世界观</div>
+  <div class="summary">选址已确定在 α-2 高原东侧台地，回避了低洼积水带；太阳能矩阵按日峰值 4.8h 设计，储能用液流电池，一期可带 18 人负载。基地环形布局，中央气闸对接勘探队返回舱…</div>
+</div>
+
+<script>
+  // —— 原型交互（纯前端演示，不做真实存储）——
+  var rootOpen = false;
+  function toggleRoot(e) {
+    e.stopPropagation();
+    rootOpen = !rootOpen;
+    var area = document.getElementById('kidArea');
+    document.getElementById('kidDir').textContent = rootOpen ? '▾' : '▸';
+    document.getElementById('kidN').textContent = rootOpen ? '3' : '3';
+    area.classList.toggle('is-open', rootOpen);
+    // 演示：展开时把"当前状况"放开到3行内、收缩时保持3行（仅交互示意）
+  }
+  function openQuick(e) {
+    e.stopPropagation();
+    var p = document.getElementById('quickPanel');
+    p.classList.add('open');
+    // 定位在快照附近（原型简化：固定右下）
+    p.style.left = (window.innerWidth - 360) + 'px';
+    p.style.top = '80px';
+  }
+  function closeQuick() {
+    document.getElementById('quickPanel').classList.remove('open');
+  }
+  function sendRoot() {
+    var i = document.getElementById('rootQuickInput');
+    if (!i.value.trim()) return;
+    // 原型不真正发送，仅把快照行更新为这条消息
+    document.querySelector('.snap-text').textContent = i.value;
+    i.value = '';
+  }
+  function sendQuick() {
+    var i = document.getElementById('quickText');
+    if (!i.value.trim()) return;
+    var s = document.getElementById('quickStream');
+    var m = document.createElement('div');
+    m.className = 'qmsg from-me';
+    m.textContent = i.value;
+    s.appendChild(m);
+    s.scrollTop = s.scrollHeight;
+    i.value = '';
+  }
+  // 点击面板外关闭
+  document.addEventListener('click', function(e){
+    if (!document.getElementById('quickPanel').contains(e.target)) closeQuick();
+  });
+</script>
+</body>
+</html>

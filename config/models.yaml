@@ -47,7 +47,7 @@ providers:
     note: opencode-go 聚合端点（OpenAI 兼容；需 x-opencode-session 头，MissingSessionID 拒单）
 models:
   deepseek-pro:
-    provider: deepseek
+    provider: opencode
     model: deepseek-v4-pro
     temperature: 0.3
     note: 降级模型（system.fallback_model 指向；调用失败时网关切入）

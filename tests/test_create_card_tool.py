@@ -70,8 +70,10 @@ def test_tool_table_version_bumped():
     工具卡底座的保留件；T9「主卡写工具收回」已按用户 2026-10-09 17:38 令回滚，
     故此处只记工具集本身的变更，不涉角色口径）。
     [卡片底座第一步 2026-10-14] 推进到 tc-4：新增第 20 件工具 read_linked（沿通信线读）。
+    [编程卡 2026-10-15] 推进到 tc-5：新增 report_done / create_coder_card 两件，
+    build_tool_schemas 增第三段 card_type 闸。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-4"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-5"
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():
@@ -86,7 +88,9 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     # [判断协议改注入 2026-10-14] 推进到 t18-1：判断协议从 BASE_PROMPT 摘出（改注入）。
     # [卡片区域语义 v3 2026-10-14] 推进到 t19-1：read_shadow 工具行改为「只读本卡自己的
     # 影子」（去掉「上级卡查看子卡影子」）。
-    assert prompts.BASE_PROMPT_VERSION == "t19-1"
+    # [编程卡 2026-10-15] 推进到 t20-1：增 create_coder_card / report_done 两工具行＋
+    # 「## 编程卡」节。
+    assert prompts.BASE_PROMPT_VERSION == "t20-1"
     assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT

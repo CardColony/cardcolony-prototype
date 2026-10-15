@@ -1,4 +1,4 @@
-﻿/* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
+/* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
  * 迭代四 F2③：IIFE → ES module（module 作用域＝原闭包隔离）；escapeHtml 收编 esm/util.js；
  * API 经 esm/api.js 静态 import；跨文件（Workspace/RenderNav）由 main.js 装配序保证。
  *
@@ -17,11 +17,11 @@
  *   V10 重绘入口唯一——改 state 后必经 renderAll（全量）/reflowAll（不重建）/
  *      applyViewState（视图变换），不存在改 state 后自行重绘或漏重绘的路径。
  */
-import { API } from "./esm/api.js?v=27";
-import { escapeHtml } from "./esm/util.js?v=27";
-import { store } from "./esm/store.js?v=27";
-import { Workspace, RenderNav } from "./workspace.js?v=27";
-import { notify } from "./esm/api.js?v=27";
+import { API } from "./esm/api.js?v=30";
+import { escapeHtml } from "./esm/util.js?v=30";
+import { store } from "./esm/store.js?v=30";
+import { Workspace, RenderNav } from "./workspace.js?v=30";
+import { notify } from "./esm/api.js?v=30";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
 const WORK_ID = window.__WORK_ID__;
@@ -360,7 +360,14 @@ const WORK_ID = window.__WORK_ID__;
   // 实测高的纵横避让由 separateOverlaps 在 DOM 建成后完成（T18-C1/C2）。
   // 只写内存 result，不读不写任何落盘载体（红线1/6）；pinned 卡由 computeLayout
   // 步骤1写入 result、此处不覆盖（保留规则），其子树以存储坐标为锚继续右排。
-  function layoutTree(viewRootId, childMap, positions, expanded, result, sizes) {
+  // [画布重构 2026-10-15 · 2.2] anchor 模式：以指定卡为「单元根」只排它自己那棵
+  // 小子树，anchor 自身位置不动（调用方已把坐标写进 result，此处只读不覆盖）。
+  // 缺省 anchor = null → 递归根仍是 viewRootId，**全树路径逐字不变**
+  // （验收标准⑤：初始加载的表现与现状一致，由既有 node 用例兜住）。
+  // anchor = {id, x, y, depth, isViewRoot}：depth 供 heightOf 的深卡回退档（≥2 档 36）用；
+  // isViewRoot 标明「这个单元根就是当前视图根」——视图根的子卡恒可见（T08-1-4 既有规则），
+  // 而**普通卡收起时子卡必须消失**，两者不可混为一谈。
+  function layoutTree(viewRootId, childMap, positions, expanded, result, sizes, anchor) {
     console.info("[T08] 树形排布：viewRoot=%s，节点数=%d", viewRootId, Object.keys(result).length);
     // [card_045 E1] 尺寸表改参数传入（原此处调 measureSizes() 内部测 DOM）；
     // 取不到的卡沿用回退行高——与原行为一致。
@@ -372,10 +379,17 @@ const WORK_ID = window.__WORK_ID__;
     const COL_W = 340;  // 相邻层横向基准（根卡实测宽 320 < COL_W，其余档位卡宽 ≤260）
     // GAP_Y 已上提模块级（[T18-C-005]），本域直接引用
 
-    // 布局树的「子边」：viewRoot 直接子卡恒在；其余卡的子卡仅当该卡 ∈ expanded
+    // ★ anchor 模式：递归根换成 anchor 自己；布局「布局树的子边」规则不变
+    const rootId = anchor ? anchor.id : viewRootId;
+    const rootDepth = anchor ? (anchor.depth || 0) : 0;
+    // 单元根是否「子卡恒在」：全树模式下单元根就是视图根 → 恒在；
+    // anchor 模式下只有 anchor.isViewRoot 为真才恒在，收起普通卡时子卡照常消失。
+    const rootAlwaysOpen = anchor ? !!anchor.isViewRoot : true;
+
+    // 布局树的「子边」：恒开的单元根直接子卡恒在；其余卡的子卡仅当该卡 ∈ expanded
     // （与 T08-1-4 可见集同一规则，保证布局覆盖恰为可见集）
     const kidsOf = (cid) =>
-      (cid === viewRootId || expanded.has(cid)) ? (childMap[cid] || []) : [];
+      ((cid === rootId && rootAlwaysOpen) || expanded.has(cid)) ? (childMap[cid] || []) : [];
 
     // 后序：子树纵向跨度 = max(自身高, Σ子树跨度 + 间距)；seen 防脏数据成环
     const subtreeH = {};
@@ -390,16 +404,21 @@ const WORK_ID = window.__WORK_ID__;
       }
       subtreeH[cid] = kids.length ? Math.max(heightOf(cid, depth), sum) : heightOf(cid, depth);
       return subtreeH[cid];
-    })(viewRootId, 0);
+    })(rootId, rootDepth);
 
     // 前序：子树占 [topY, topY+subtreeH]，卡在子树跨度内垂直居中，x 逐层 +COL_W。
-    // 根卡子树跨度以 y=0（根卡纵位）为中心上下分半。
+    // 全树模式下根卡子树跨度以 y=0（根卡纵位）为中心上下分半；
+    // anchor 模式下以 anchor 的实际纵位为中心分半（anchor 自身位置不动，
+    // 子卡在它自己的子树区域里排——这正是「展开一张卡只重排它单元内部」）。
     seen.clear();
+    const topY0 = anchor
+      ? anchor.y - (subtreeH[rootId] - heightOf(rootId, rootDepth)) / 2
+      : -subtreeH[rootId] / 2;
     (function place(cid, x, topY, depth) {
       if (seen.has(cid)) return;
       seen.add(cid);
       let anchorY = topY, childX = x + COL_W;
-      if (cid !== viewRootId) {
+      if (cid !== rootId) {
         if (positions[cid] && positions[cid].pinned && result[cid]) {
           // pinned：保留存储坐标不覆盖，子树改以存储坐标为锚继续右排
           anchorY = result[cid].y - (subtreeH[cid] - heightOf(cid, depth)) / 2;
@@ -418,7 +437,7 @@ const WORK_ID = window.__WORK_ID__;
         place(kids[i].card_id, childX, cursor, depth + 1);
         cursor += subtreeH[kids[i].card_id] + GAP_Y;
       }
-    })(viewRootId, 0, -subtreeH[viewRootId] / 2, 0);
+    })(rootId, anchor ? anchor.x : 0, topY0, rootDepth);
   }
 
   // [phase8.6-B] 纵向避让纯函数：按初始 y 分带，带间距不小于 40px
@@ -464,18 +483,24 @@ const WORK_ID = window.__WORK_ID__;
 
   // [T18-C1] 全向避让纯函数（AABB + MTD 最短轴、纵向优先）——resolveOverlaps 的继任者。
   // layout: computeLayout 结果 {cid:{x,y}}；sizes: {cid:{w,h}}；pinnedIds: Set；GAP: 间距。
+  // ★ movable（[画布重构 2026-10-15 · 2.3]）：可动白名单。传入 Set 时**只有**集合内的
+  //   卡允许被推开，集合外的卡一律当「固定障碍」参与相交计算但永不被移动——这就是
+  //   「避让局部化」：展开一张卡时，别处已排好的卡（含 pinned）连 y 都不会被重算掉。
+  //   缺省 null ＝ 全员可动＝**旧行为逐字不变**（拖拽落定后的全量重排走这条）。
   // pinned 三档语义（写死）：①pinned 永不被移动；②free–pinned 相交 → 推 free 全量 MTD；
   // ③free–free 相交 → 两卡各推半量；④double pinned → 不动 + console.warn
   // （不新增由 C3 resolveDrop 保证；历史遗留交「整理画布」按钮清）。
-  // 诚实口径（RD-07）：分离尽力——16 轮内收敛则零相交，16 轮未收敛 warn 留痕。
+  // honest 口径（RD-07）：分离尽力——16 轮内收敛则零相交，16 轮未收敛 warn 留痕。
   // 16 轮上限是前端本地有限步 FPS/防卡保护，不是对模型调用/轮次的闸（RD-02 辨析）。
   // 行高回退 86 对齐 layoutTree.FALLBACK_H；深度≥2 的 36 档在首绘 DOM 未建时本签名不可知，
   // 86 为偏高保守估计（只多让不少让），实测尺寸回填后经 scheduleReflow→reflow 复用本函数再收敛。
-  function separateOverlaps(layout, sizes, pinnedIds, GAP = GAP_Y) {
+  function separateOverlaps(layout, sizes, pinnedIds, GAP = GAP_Y, movable = null) {
     const pinned = pinnedIds || new Set();
     const out = {};
     for (const cid in layout) out[cid] = { x: layout[cid].x, y: layout[cid].y };
     const ids = Object.keys(out);
+    // 可动判据：movable 为 null 时全员可动（旧行为）；否则白名单之外一律固定
+    const canMove = movable ? (cid) => movable.has(cid) : () => true;
     const wh = (cid) => ({
       w: (sizes[cid] && sizes[cid].w) || 220,
       h: (sizes[cid] && sizes[cid].h) || 86,
@@ -483,6 +508,7 @@ const WORK_ID = window.__WORK_ID__;
     let moved = true;
     let rounds = 0;
     let dpWarned = false;
+    let frozenPairWarned = false;
     while (moved && rounds < 16) {          // 16 轮 = FPS/防卡保护上限（RD-02 辨析），非闸
       moved = false;
       rounds++;
@@ -496,11 +522,21 @@ const WORK_ID = window.__WORK_ID__;
           if (px <= 0) continue;
           const py = (wa.h + wb.h) / 2 + GAP - Math.abs(dy);   // 纵向重叠量（含 GAP）
           if (py <= 0) continue;
-          const aP = pinned.has(a), bP = pinned.has(b);
+          // aP/bP ＝「本次不许移动」：pinned 恒真，movable 白名单外的亦为真。
+          // （movable 为 null 时 canMove 恒真 ⇒ 与旧判据逐字等价）
+          const aP = pinned.has(a) || !canMove(a);
+          const bP = pinned.has(b) || !canMove(b);
           if (aP && bP) {
-            if (!dpWarned) {
-              console.warn("[separateOverlaps] 双 pinned 相交（历史遗留，交「整理画布」清）:", a, b);
-              dpWarned = true;
+            // 两张都不许动：只有「双 pinned」才是需要留痕的异常；
+            // 「固定障碍 × 局部新增」是局部避让的**正常**结果（绕不开就重叠，如实留痕一次）
+            if (pinned.has(a) && pinned.has(b)) {
+              if (!dpWarned) {
+                console.warn("[separateOverlaps] 双 pinned 相交（历史遗留，交「整理画布」清）:", a, b);
+                dpWarned = true;
+              }
+            } else if (!frozenPairWarned) {
+              console.warn("[separateOverlaps] 局部避让遇双固定障碍（重叠，如实留痕）:", a, b);
+              frozenPairWarned = true;
             }
             continue;
           }
@@ -524,6 +560,125 @@ const WORK_ID = window.__WORK_ID__;
     return out;
   }
 
+
+  // ══════════════ [画布重构 2026-10-15 · 阶段 2] 增量渲染的纯决策层 ══════════════
+  // 上面那些函数回答「整张画布长什么样」；这一组回答另一个问题：
+  // 「展开/收起这一张卡，**该动哪些**」。
+  //
+  // 为什么要拆成纯函数：增量渲染的风险不在算法，在**越界**——手一滑把不相干的卡
+  // 也重建了/挪了，这种越界在浏览器的小画布上未必看得出来。所以把「谁该被创建、
+  // 谁该被移除、谁的位置允许被改写」三件事各写成一个可单独断言的纯函数：判据一旦
+  // 越界，node 用例当场红。DOM 那一侧（renderSubtree）只照计划执行，不做判断。
+
+  // anchor 的全部子孙（不看展开态——展开只负责「隐藏」，子孙集合本身由 parent 关系定）。
+  // seen 防脏数据成环：parent 指来指去的卡不许把遍历带进死循环（与 layoutTree 同纪律）。
+  function collectDescendants(anchorId, childMap) {
+    const out = new Set();
+    const seen = new Set([anchorId]);
+    const stack = [anchorId];
+    while (stack.length) {
+      const cid = stack.pop();
+      for (const child of (childMap[cid] || [])) {
+        const kid = child.card_id;
+        if (seen.has(kid)) continue;
+        seen.add(kid);
+        out.add(kid);
+        stack.push(kid);
+      }
+    }
+    return out;
+  }
+
+  // 子树内当前**可见**的卡。展开规则与 layoutTree 的「子边」判据逐字一致：
+  //   · 单元根**是视图根**时，子卡恒可见（T08-1-4 既有规则）；
+  //   · 其余情形（含普通卡收起）一律看 expanded.has(该卡)。
+  // ★ 这两者的区别不是细节：**收起一张普通卡时它的子卡必须消失**。曾把「视图根
+  //   子卡恒在」无差别套到任意锚点上，结果收起卡 A 反而把 A 的子卡留着——判据写错
+  //   的代价是画面上多出一堆该消失的卡。
+  // depth 以 anchorDepth 为基准——depthOf 用于 t8-deep 档判定，必须相对 viewRoot，
+  // 不能相对 anchor（否则每层都把自己当 0）。
+  function computeSubtreeVisible(anchorId, childMap, expanded, anchorDepth, anchorIsViewRoot) {
+    const ids = new Set();
+    const depthOf = {};
+    const base = anchorDepth || 0;
+    // forceOpen：锚点这一层是否无条件展开（＝视图根，或锚点此刻确实在 expanded 里）。
+    // 更深的卡一律只看 expanded.has(该卡)。
+    const walk = (cid, depth, forceOpen) => {
+      if (!forceOpen && !expanded.has(cid)) return;
+      for (const child of (childMap[cid] || [])) {
+        const kid = child.card_id;
+        if (ids.has(kid) || kid === anchorId) continue;
+        ids.add(kid);
+        depthOf[kid] = depth + 1;
+        walk(kid, depth + 1, false);
+      }
+    };
+    walk(anchorId, base, !!anchorIsViewRoot || expanded.has(anchorId));
+    return { ids, depthOf };
+  }
+
+  // 增量计划：给定 anchor 与当前在场节点集合，算出「该建谁、该拆谁、位置该由谁改写」。
+  // - create：在场集合之外、但子树可见集之内 → 建新节点（淡入）
+  // - remove：在场集合之内、但子树可见集之外 → 拆节点（收起）
+  // - place ：位置允许被改写的卡 ＝ 子树可见集（**不含 anchor 自己**——它不动）
+  // - keep  ：其余在场节点。它们不在 create/remove/place 任一清单里，
+  //           故 renderSubtree 对它们既不 remove() 也不写 style.left/top——DOM 引用原样。
+  function planSubtreeUpdate(anchorId, childMap, expanded, nodeIds, anchorDepth, anchorIsViewRoot) {
+    const inField = nodeIds instanceof Set ? nodeIds : new Set(nodeIds);
+    const subtree = computeSubtreeVisible(anchorId, childMap, expanded,
+                                          anchorDepth, anchorIsViewRoot);
+    const descendants = collectDescendants(anchorId, childMap);
+    const create = [];
+    const remove = [];
+    for (const cid of subtree.ids) {
+      if (!inField.has(cid)) create.push(cid);
+    }
+    for (const cid of inField) {
+      // 只拆「本 anchor 的子孙里已不可见的」——别处不可见的卡不在本次管辖内
+      if (descendants.has(cid) && !subtree.ids.has(cid)) remove.push(cid);
+    }
+    const keep = [];
+    for (const cid of inField) {
+      if (subtree.ids.has(cid) || descendants.has(cid)) continue;
+      keep.push(cid);
+    }
+    return { anchorId, create, remove, keep, place: [...subtree.ids], depthOf: subtree.depthOf };
+  }
+
+  // 子树单元布局：只算 anchor 单元内部的坐标，anchor 自身坐标由调用方给（不动）。
+  // 种子与 computeLayout 步骤1 同源（pinned 卡用存储坐标，含非法坐标兜底）；差别
+  // 只在 layoutTree 走 anchor 模式——递归根是 anchor 自己，不是 viewRoot。
+  // 返回值只含 anchor 单元内的键（含 anchor 自己，供调用方合并）。
+  function computeSubtreeLayout(viewRootId, cards, relations, positions, expanded,
+                                sizes, anchor) {
+    const result = {};
+    const childMap = {};
+    for (const c of cards) {
+      const p = c.parent || "";
+      if (!childMap[p]) childMap[p] = [];
+      childMap[p].push(c);
+    }
+    // 1. pinned 卡用存储坐标（与 computeLayout 步骤1 同一判据）
+    for (const c of cards) {
+      const pos = positions[c.card_id];
+      if (pos && pos.pinned && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+        result[c.card_id] = { x: pos.x, y: pos.y };
+      }
+    }
+    // 2. anchor 落当前屏幕位（不动的那颗）
+    result[anchor.id] = { x: anchor.x, y: anchor.y };
+    // 3. 只排 anchor 单元
+    layoutTree(viewRootId, childMap, positions, expanded, result, sizes, anchor);
+    // 4. 出参收敛到本单元：别处那些「顺手带出来的 pinned 种子」不许流出去，
+    //    否则调用方一合并就等于把不相干的卡又写了一遍（越界即事故）
+    const keep = collectDescendants(anchor.id, childMap);
+    keep.add(anchor.id);
+    const unit = {};
+    for (const cid in result) {
+      if (keep.has(cid)) unit[cid] = result[cid];
+    }
+    return unit;
+  }
 
   // [phase8.6-B] 实测节点尺寸；取不到时回退 220×86
   function measureSizes() {
@@ -761,6 +916,13 @@ const WORK_ID = window.__WORK_ID__;
     });
   }
 
+  // [画布重构 2026-10-15 · 2.1] 最近一次投影的缓存。
+  // 为什么需要：增量渲染只重算 anchor 单元，但连线（edgesSVG）要的是**全画布**的
+  // 布局。缓存上一轮的 layout/visibleIds，把本单元结果合并进去再重算连线几何——
+  // 于是「别处的卡」既不用重排，也不用从零重建连线，端点坐标仍然是对的。
+  // 只在全量渲染与全量重算两处写入（renderCanvas / reflowAll），增量路径只补丁。
+  let lastProjection = null;
+
   // [画布第三步 T2] 改吃投影＋视图模型：可见集来自 computeVisibleSet（T08-1-4 规则
   // 逐字搬出、单一来源——V3），计算链收进 computeProjection；pin＝投影输入
   // {viewRoot,cards,relations,positions,expanded,cardMap,childMap}，由动作层入口
@@ -804,6 +966,7 @@ const WORK_ID = window.__WORK_ID__;
     // renderEdges 改吃本处尺寸表）。
     applyLODClasses(vm.zoom);
     const projection = computeProjection({ ...pin, sizes: measureSizes() });
+    lastProjection = projection;   // [画布重构 2.1] 供 renderSubtree 打补丁（连线的全画布基底）
     for (const cid of visibleIds) {
       const node = nodeMap.get(cid);
       const p = projection.layout[cid];
@@ -819,6 +982,129 @@ const WORK_ID = window.__WORK_ID__;
     applyTransform();
     // [phase8.4] 渲染完成即懒加载可见卡摘要（首次进入/下钻/Reload 后均填充）
     lazyLoadVisibleSummaries(vm.cardsById);
+  }
+
+  // ══════ [画布重构 2026-10-15 · 2.1] 增量渲染入口：展开/收起一张卡只动它的子树 ══════
+  //
+  // 与 renderAll（全量重建）的分工：
+  //   renderAll     —— 首次加载／下钻换根／任何兜底路径：删光全部节点重建。
+  //   renderSubtree —— 展开·收起：只建·拆该卡单元内的节点；**其余节点的 DOM 引用原样、
+  //                   style.left/top 一个字节都不改**（验收标准①②）。
+  //
+  // 判据全部来自纯函数（node 侧有对应用例）：planSubtreeUpdate 决定「动谁」，
+  // computeSubtreeLayout + separateOverlaps(movable) 决定「放哪」。本函数只执行。
+  // 这是刻意的分工——增量渲染最贵的失败模式是**越界**（手一滑把不相干的卡也重建/
+  // 挪了），而越界只可能发生在「谁被动了」这个判断上，所以判断必须能被单独断言。
+  function renderSubtree(cardId) {
+    const vm = collectViewModel();
+    const pin = collectProjectionInput();
+    const anchorNode = nodeMap.get(cardId);
+    // 兜底三条：还没画过／锚点不在场／没有投影基底 → 退回全量，不猜
+    if (!nodeMap.size || !anchorNode || !lastProjection) { renderAll(); return; }
+    const anchorPos = {
+      x: parseFloat(anchorNode.style.left),
+      y: parseFloat(anchorNode.style.top),
+    };
+    if (!Number.isFinite(anchorPos.x) || !Number.isFinite(anchorPos.y)) {
+      renderAll();
+      return;
+    }
+
+    const anchorDepth = depthFromViewRoot(cardId);
+    const anchorIsViewRoot = cardId === pin.viewRoot;
+    const plan = planSubtreeUpdate(cardId, pin.childMap, pin.expanded, nodeMap.keys(),
+                                   anchorDepth, anchorIsViewRoot);
+
+    // ① 拆：收起的子孙节点离场（只拆 plan.remove 里的，别处的节点引用一律不动）
+    for (const cid of plan.remove) {
+      const node = nodeMap.get(cid);
+      if (!node) continue;
+      node.remove();
+      nodeMap.delete(cid);
+    }
+
+    // ② 建：新建节点。沿用 renderCanvas 的两阶段纪律——**隐藏但占位**（visibility 而非
+    //    display:none），否则量不到尺寸、整轮静默退化成「全用估算值」而表面一切正常
+    //    （既有约定，理由见 renderCanvas 同处注释）。只在真要建节点时才隐藏整层。
+    //    恢复条件看「本轮是否隐藏过」而不是「建成了几个」——后者为 0 却不恢复，
+    //    画布会永久停在 visibility:hidden（整屏空白，且不报任何错）。
+    let hidWorld = false;
+    if (plan.create.length) {
+      world.style.visibility = "hidden";
+      hidWorld = true;
+      const lodLevel = currentLODLevel(vm.zoom);
+      for (const cid of plan.create) {
+        const card = vm.cardsById[cid];
+        if (!card) continue;
+        const node = createNode(card, anchorPos, vm);   // 占位坐标，⑤ 之后一次性改写
+        if ((plan.depthOf[cid] || 0) >= 2) node.classList.add("t8-deep");
+        node.classList.add(lodLevel);        // zoom 未变 ⇒ 档位与全量渲染同一判据
+        node.classList.add("entering");      // 新出现卡淡入（与 renderCanvas 同款）
+        node.addEventListener("animationend",
+          () => node.classList.remove("entering"), { once: true });
+        world.appendChild(node);
+        nodeMap.set(cid, node);
+      }
+    }
+
+    // ③ 锚点自己的徽标翻面（▸↔▾）——就地改这一处文本，不重建锚点节点
+    updateExpandBadge(anchorNode, (pin.childMap[cardId] || []).length,
+                      pin.expanded.has(cardId));
+
+    // ④ 排：只排 anchor 单元，anchor 自身不动；避让只允许本单元的卡拉动，
+    //    别处（含 pinned）一律当固定障碍（局部避让，2.3）
+    //    ★ 本单元**没有需要落位的卡**时（收起、或切换一张叶子卡）整段避让跳过：
+    //      此时 movable 是空集 ⇒ 全员固定，避让既推不动谁、又会刷一串
+    //      「双固定障碍」警告，纯噪音还白跑一趟 O(n²)。布局基底只做「拆掉离场节点」。
+    let layout;
+    // sizes 供 ⑥ 的连线几何用：位移通道下现测一次（V6 一轮一测）；
+    // 非位移通道（收起/叶子卡）不重测——节点一个没建，尺寸表原样沿用上一轮。
+    let sizes = lastProjection.sizes;
+    if (plan.place.length) {
+      sizes = measureSizes();
+      const unit = computeSubtreeLayout(pin.viewRoot, pin.cards, pin.relations,
+                                        pin.positions, pin.expanded, sizes,
+                                        { id: cardId, x: anchorPos.x, y: anchorPos.y,
+                                          depth: anchorDepth, isViewRoot: anchorIsViewRoot });
+      const base = Object.assign({}, lastProjection.layout, unit);
+      for (const cid of plan.remove) delete base[cid];    // 拆掉的节点不许留在布局基底里
+      layout = separateOverlaps(base, sizes, pinnedIdsOf(pin.positions),
+                                GAP_Y, new Set(plan.place));
+
+      // ⑤ 落位：**只写 plan.place 里的节点**（＝anchor 的可见子孙）。锚点与无关卡的
+      //    style.left/top 一次都不碰——这是验收标准①②的落点。
+      for (const cid of plan.place) {
+        const node = nodeMap.get(cid);
+        const p = layout[cid];
+        if (node && p) {
+          node.style.left = p.x + "px";
+          node.style.top = p.y + "px";
+        }
+      }
+    } else {
+      layout = Object.assign({}, lastProjection.layout);
+      for (const cid of plan.remove) delete layout[cid];  // 收起：只是把离场节点摘出基底
+    }
+    if (hidWorld) world.style.visibility = "";
+
+    // ⑥ 连线：连线要全画布几何，故把本单元结果并回投影缓存再重算几何；
+    //    「别处的卡」坐标原样带入，端点仍然正确（不重排 ≠ 不连线）
+    const visibleIds = new Set(lastProjection.visibleIds);
+    for (const cid of plan.remove) visibleIds.delete(cid);
+    for (const cid of plan.create) visibleIds.add(cid);
+    const edges = computeEdgeGeometry(visibleIds, layout, sizes,
+                                      pin.childMap, pin.cardMap, pin.viewRoot);
+    lastProjection = { ...lastProjection, visibleIds, layout, sizes, edges };
+    renderEdges(lastProjection, vm);
+    lazyLoadVisibleSummaries(vm.cardsById);
+  }
+
+  // 展开徽标就地翻面（不动节点本体）。与 createNode 的徽标构造逐字同款，
+  // 两处口径必须一致——所以单独收成一个函数，改文案只改一处。
+  function updateExpandBadge(node, childCount, isExpanded) {
+    const badge = node.querySelector(".kid-badge");
+    if (!badge) return;
+    badge.textContent = `${isExpanded ? "▾" : "▸"} ${childCount}`;
   }
 
   // [画布第三步 T2] 改吃视图模型 vm（动作层装配）：viewRoot/positions/childMap/
@@ -1017,11 +1303,14 @@ const WORK_ID = window.__WORK_ID__;
 
   // [T08-3-2] 就地展开/折叠：只翻 state.expanded 成员关系后全量重绘。
   // 不调 setViewRoot（视图根不变＝「就地」的全部含义）、不调 fitView（视野不跳）。
+  // [画布重构 2026-10-15 · 2.1] renderAll → renderSubtree：只重建该卡单元内的节点。
+  // 这条是「用户摆好的卡任何操作下不动」的兑现点——旧路径每次展开都全量重排，
+  // 用户的钉住坐标只是"不参与避让"，却仍会被别人的排布挤到别处去。
   function toggleExpand(cardId) {
     if (state.view.expanded.has(cardId)) state.view.expanded.delete(cardId);
     else state.view.expanded.add(cardId);
     scheduleSaveView();   // [F2⑥] 展开态持久化
-    renderAll();          // [画布第三步 T4] 改 state → 统一重绘入口
+    renderSubtree(cardId);   // [画布第三步 T4 → 画布重构 2.1] 增量入口
   }
 
   function setViewRoot(newRoot) {
@@ -1599,6 +1888,7 @@ const WORK_ID = window.__WORK_ID__;
   function reflowAll() {
     if (!nodeMap.size) return;
     const projection = computeProjection({ ...collectProjectionInput(), sizes: measureSizes() });
+    lastProjection = projection;   // [画布重构 2.1] 与 renderCanvas 同源，全量重算后刷新缓存
     reflowLayout(projection, collectViewModel());
   }
 

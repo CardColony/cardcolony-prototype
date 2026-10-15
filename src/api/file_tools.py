@@ -78,11 +78,23 @@ BACKUP_DIR = BASE_DIR / "推演agent" / "_backups"
 # **注意**：本表只是 perms 之后再加的一层路径前缀约束，**不是权限本身**——
 # tools_file 开关已经先挡一道。tool 行不可达（该类型无 tools_file 开关），
 # 随表补齐只为键位完整。
+# [FILE_SCOPE 键位修复 2026-10-15] **键必须是 card_type（card_store._collect_card_meta
+# 与 policy.has_perm 传进来的那个值），不是 project_class 工牌码**。原表误抄权限
+# 表的五键（rd_project/research_project/sub_project/topic/tool），其中两个工牌码永
+# 不可能作为 card_type 查到（＝死键），而根卡真实 card_type=`project` 根本不在表内
+# → `FILE_SCOPE.get("project", [])` 返空列表 → `any([])` 恒 False → **11 张 project
+# 根卡的 tools_file 开关明明已授却被第三段拒死**（实证：work_009/card_001 调
+# list_files 报「越权：无权访问 D:\AI_station\推演agent」）。全仓无任何裁定写过
+# 根卡不可访问文件——纯漏抄。该错 10-08 在另一张 POLICY 表上已被预判上报
+# （THINK-ECO-permgmt-p1 调研纪要 T2「project 根卡不在表内、落默认全拒」），
+# 本表未复核故漏至今。
+# 键集由 tests/test_file_scope_keys.py 钉死 ＝ card_type_registry 的 card_type 全集，
+# 以后新增卡类型不会再撞这个坑。
 FILE_SCOPE: dict[str, list[str]] = {
-    "rd_project": [""],
-    "research_project": [""],
+    "project": [""],      # 项目根卡（root scope）——10-15 补回，此前漏抄致根卡全被拒
     "sub_project": [""],
     "topic": [""],
+    "coder": [""],        # 编程卡——10-15 补（同因漏抄）
     "tool": [""],
 }
 

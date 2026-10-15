@@ -429,4 +429,5 @@ def test_no_parent_reads_child_shadow_in_tool_schema():
 
 
 def test_base_prompt_version_bumped():
-    assert prompts.BASE_PROMPT_VERSION == "t19-1"
+    # [编程卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## 编程卡」节）。
+    assert prompts.BASE_PROMPT_VERSION == "t20-1"

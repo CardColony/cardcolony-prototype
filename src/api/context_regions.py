@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
+from . import prompts
 from .prompts import BASE_PROMPT
 
 
@@ -44,6 +45,15 @@ class RegionCtx:
     type_registry: dict[str, Any] = field(default_factory=dict)
     memory_state: Optional[dict[str, Any]] = None
     memory_entries: list[dict[str, Any]] = field(default_factory=list)
+    controls: dict[str, Any] = field(default_factory=dict)
+    history_source: list[dict[str, Any]] = field(default_factory=list)
+    history_mark: int = 0
+    request_prior: Optional[list[dict[str, Any]]] = None
+    request_prior_key: str = "history"
+    request_user: Optional[str] = None
+    request_once: list[dict[str, Any]] = field(default_factory=list)
+    request_tail: list[dict[str, Any]] = field(default_factory=list)
+    request_seat_identity: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _count_duty_lines(ctx: RegionCtx, text: str) -> int:
@@ -54,14 +64,18 @@ def _count_duty_lines(ctx: RegionCtx, text: str) -> int:
 # 区注册表（底座 · 2026-10-15）：**区的唯一声明处**。
 #
 # 每项＝一个可组合的区组件：
-#   key     稳定标识（供控制面 config/context_regions.json 与日志引用）
-#   order   装配顺序
-#   owner   谁装配它——"assembler"（本装配器）/"prompt"（prompts 出口）/"runner"
-#           （message_runner）；**build_context_regions 只渲染 owner=="assembler" 的区**
-#   render  渲染器：纯函数 RegionCtx → 文本；**空串＝「没有来源就不出现这个区」**
-#   count   entries（int 或 callable(ctx, text) → int），供 prompt 日志 regions
+#   key          稳定标识（供控制面 config/context_regions.json 与日志引用）
+#   order        装配顺序
+#   name/channel 展示名与语义通道
+#   owner        **唯一运行 owner＝context base**（本次全量接管）；旧代码模块仅是 source_owner
+#   delivery     请求槽位：system/prior/user/once/tail
+#   profiles     消费者：main/viewpoint/draft
+#   source_owner 原先的代码路径（审计/迁移信息，不再拥有装配权）
+#   render       纯函数 RegionCtx → payload；空值＝「没有来源就不出现这个区」
+#   count        entries（供 prompt 日志）
 #
-# 加 / 删 / 调序一个区＝改这张表（或控制面配置），**装配器一字不动**。
+# 所有活动上下文区统一由 compose_model_context 遍历并编入模型请求；
+# prompts/message_runner/simple_service/card_draft 不再各自拼装上下文区。
 # ---------------------------------------------------------------------------
 REGION_TABLE: list[dict[str, Any]] = [
     {
@@ -70,7 +84,10 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "使用说明",
         "channel": "system",
         "seats": ("main",),
-        "owner": "prompt",  # 由 prompts.build_system_prompt 出口引用
+        "owner": "context",
+        "source_owner": "prompt",
+        "delivery": "system",
+        "profiles": ("main",),
         "source": "prompts.BASE_PROMPT 常量（逐字引用，不复制——区只持指针）",
         "render": lambda ctx: BASE_PROMPT,
         "count": 1,
@@ -83,7 +100,10 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "卡片职责",
         "channel": "system",
         "seats": ("main",),
-        "owner": "assembler",
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
         "source": "card_store.load_type_registry（l1_vocabularies.*.types[] 的 label/code/description）",
         "render": lambda ctx: render_card_duty_region(ctx.type_registry),
         "count": _count_duty_lines,
@@ -94,7 +114,10 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "卡片清单",
         "channel": "system",
         "seats": ("main", "viewpoints"),
-        "owner": "assembler",
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
         "source": "context_assembler._load_cards_index（查库，每卡一行 id·标题·父卡）",
         "render": lambda ctx: render_card_list_region(ctx.cards, ctx.work_card_id),
         "count": lambda ctx, text: len(ctx.cards),
@@ -105,7 +128,10 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "当前卡",
         "channel": "system",
         "seats": ("main", "viewpoints"),
-        "owner": "assembler",
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
         "source": "现状（cards 索引按 current_id 匹配；空行＋当前卡一行）",
         "render": lambda ctx: render_current_card_region(ctx.cur),
         "count": 1,
@@ -122,7 +148,10 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "卡片区域说明",
         "channel": "system",
         "seats": ("main",),
-        "owner": "assembler",
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
         "source": "context_regions.render_card_region_guide（静态文案，按树×卡种择套）",
         "render": lambda ctx: render_card_region_guide(
             str((ctx.cur_meta or {}).get("card_type") or ""), ctx.project_class),
@@ -136,7 +165,10 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "记忆（condense_fold）",
         "channel": "system",
         "seats": ("main",),  # 仅 main：viewpoint join 规则「清单＋当前卡」逐字不动（方案 §五职责分离）
-        "owner": "assembler",
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
         "source": "memory_store.load_memory（works/{work_id}/memory/{card_id}.json 凝练归拢 entries；调用方完成 IO 后传入渲染）",
         "render": lambda ctx: render_memory_region(ctx.memory_entries),
         "count": lambda ctx, text: len(ctx.memory_entries),
@@ -147,9 +179,12 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "对话历史",
         "channel": "messages",
         "seats": ("main", "viewpoints"),
-        "owner": "runner",  # 由 message_runner 装配
-        "source": "session_store.read_session → role/content 两键投影（现状）",
-        "render": lambda ctx: "",
+        "owner": "context",
+        "source_owner": "runner",
+        "delivery": "prior",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "session_facade.read → 统一投影后对话历史",
+        "render": lambda ctx: _render_prior_for(ctx, "history"),
         "count": 0,
     },
     {
@@ -158,9 +193,12 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "本轮工具轮",
         "channel": "messages",
         "seats": ("main",),
-        "owner": "runner",
-        "source": "本轮工具循环（tool_fold.ToolTurnSlot 轮槽；折叠与否见 tool_fold）",
-        "render": lambda ctx: "",
+        "owner": "context",
+        "source_owner": "runner",
+        "delivery": "prior",
+        "profiles": ("main",),
+        "source": "ToolTurnSlot.wire_messages → 统一投影为本轮对话续接",
+        "render": lambda ctx: _render_prior_for(ctx, "tool_turn"),
         "count": 0,
     },
     {
@@ -169,12 +207,213 @@ REGION_TABLE: list[dict[str, Any]] = [
         "name": "用户消息",
         "channel": "user",
         "seats": ("main", "viewpoints"),
-        "owner": "runner",
-        "source": "现状（用户原文；仅为「排最后」位置规则，非独立区内容）",
-        "render": lambda ctx: "",
+        "owner": "context",
+        "source_owner": "runner",
+        "delivery": "user",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "当前调用的 user 内容（包括用户发言、续跳指令或质询输入）",
+        "render": lambda ctx: ctx.request_user if ctx.request_user is not None else "",
         "count": 0,
     },
+    {
+        "key": "judgment_protocol",
+        "order": 1000,
+        "name": "判断协议注入",
+        "channel": "messages",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "current_turn/message_runner",
+        "delivery": "once",
+        "profiles": ("main",),
+        "source": "本轮一次性注入；不进入轮槽",
+        "render": lambda ctx: ctx.request_once,
+        "count": lambda ctx, payload: len(payload),
+    },
+    {
+        "key": "context_tail",
+        "order": 1010,
+        "name": "工作规范与流程注入",
+        "channel": "messages",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "current_turn/message_runner",
+        "delivery": "tail",
+        "profiles": ("main",),
+        "source": "工作规范/流程注入；轮首后固化进轮槽",
+        "render": lambda ctx: ctx.request_tail,
+        "count": lambda ctx, payload: len(payload),
+    },
+    {
+        "key": "seat_identity",
+        "order": 1020,
+        "name": "三席身份注入",
+        "channel": "messages",
+        "seats": ("viewpoints",),
+        "owner": "context",
+        "source_owner": "simple_service/message_runner",
+        "delivery": "tail",
+        "profiles": ("viewpoint",),
+        "source": "三席调用的身份提示消息",
+        "render": lambda ctx: ctx.request_seat_identity,
+        "count": lambda ctx, payload: len(payload),
+    },
 ]
+
+
+def project_history_messages(
+    blocks: list[dict[str, Any]], mark: int | None = None,
+    allowed_roles: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """历史区的统一投影：按凝练水位切片、滤过程块、转 card-msg 头，保留思考回传。
+
+    这是纯函数；卡片会话文件不改。mark 越界时回退全量，与旧投影口径一致。
+    """
+    source = blocks or []
+    if mark is not None:
+        source = source[mark:] if 0 <= mark <= len(source) else source
+    out: list[dict[str, Any]] = []
+    from . import card_msg
+    for m in source:
+        if m.get("behavior"):
+            continue
+        role = str(m.get("role") or "")
+        if allowed_roles is not None and role not in allowed_roles:
+            continue
+        item = {
+            "role": role,
+            "content": (card_msg.render_for_context(m["content"])
+                        if str(m.get("actor") or "").startswith("card:")
+                        else m["content"]),
+        }
+        if m.get("reasoning_content"):
+            item["reasoning_content"] = m["reasoning_content"]
+        out.append(item)
+    return out
+
+
+def _render_prior_for(ctx: RegionCtx, key: str) -> list[dict[str, Any]]:
+    """prior 槽的两个区共用一个 payload：**谁匹配谁出，另一个让位**。
+
+    `ToolTurnSlot.wire_messages()` 返回的是**整条 prior**（历史＋本轮工具轮），
+    故 prior_key="tool_turn" 时 history 必须返回空——否则历史会被发两遍。
+    """
+    if ctx.request_prior is not None:
+        return ctx.request_prior if ctx.request_prior_key == key else []
+    if key == "history":
+        return project_history_messages(ctx.history_source, ctx.history_mark)
+    return []
+
+
+def _is_enabled(ctx: RegionCtx, spec: dict[str, Any]) -> bool:
+    ctl = (ctx.controls or {}).get(spec["key"])
+    return not (isinstance(ctl, dict) and ctl.get("enabled") is False)
+
+
+def render_registered_regions(
+    ctx: RegionCtx,
+    *,
+    profile: str,
+    deliveries: set[str],
+    source_owner: str | None = None,
+) -> list[dict[str, Any]]:
+    """Context base 唯一执行入口：按注册表/控制面渲染任意通道的区。
+
+    owner 已统一为 context；source_owner 仅是查询过滤参数（如日志兼容视图），
+    不代表运行时交接给旧模块。
+    """
+    out: list[dict[str, Any]] = []
+    for spec in sorted(REGION_TABLE, key=lambda s: s["order"]):
+        if profile not in spec.get("profiles", ()):
+            continue
+        if spec.get("delivery") not in deliveries or not _is_enabled(ctx, spec):
+            continue
+        if source_owner is not None and spec.get("source_owner") != source_owner:
+            continue
+        ctl = (ctx.controls or {}).get(spec["key"])
+        order = spec["order"]
+        if isinstance(ctl, dict) and isinstance(ctl.get("order"), int):
+            order = ctl["order"]
+        payload = spec["render"](ctx)
+        # user prompt 允许空文本（它仍是一个消息位）；其他空 payload 表示无来源。
+        if not payload and spec.get("delivery") != "user":
+            continue
+        count_fn = spec.get("count", 0)
+        entries = count_fn(ctx, payload) if callable(count_fn) else count_fn
+        out.append({
+            "key": spec["key"], "order": order, "name": spec["name"],
+            "channel": spec["channel"], "seats": spec["seats"],
+            "delivery": spec["delivery"], "source_owner": spec.get("source_owner", "context"),
+            "payload": payload, "entries": entries,
+        })
+    out.sort(key=lambda r: r["order"])
+    return out
+
+
+def compose_model_context(
+    ctx: RegionCtx,
+    *,
+    profile: str,
+    prior_messages: Optional[list[dict[str, Any]]] = None,
+    prior_key: str = "history",
+    user_content: Optional[str] = None,
+    turn_once: Optional[list[dict[str, Any]]] = None,
+    turn_tail: Optional[list[dict[str, Any]]] = None,
+    seat_identity: Optional[list[dict[str, Any]]] = None,
+    system_override: Optional[str] = None,
+    system_prefix: Optional[str] = None,
+) -> dict[str, Any]:
+    """一次性把注册表区组合成模型调用契约（system/prior/user/once/tail）。
+
+    主模型、三席、起草调用共享此路由；具体调用方只提供动态数据，不自己拼装区。
+    顺序仍按 gateway 契约：system → prior → user → turn_once → turn_tail。
+    """
+    request_ctx = replace(
+        ctx,
+        request_prior=prior_messages,
+        request_prior_key=prior_key,
+        request_user=user_content,
+        request_once=turn_once or [],
+        request_tail=turn_tail or [],
+        request_seat_identity=seat_identity or [],
+    )
+    rendered = render_registered_regions(
+        request_ctx, profile=profile,
+        deliveries={"system", "prior", "user", "once", "tail"})
+    system_regions = [r for r in rendered if r["delivery"] == "system"]
+    instruction = next((r["payload"] for r in system_regions if r["key"] == "instruction"), "")
+    content_regions = [r for r in system_regions if r["key"] != "instruction"]
+    neutral = assemble_regions([r["payload"] for r in content_regions])
+    if system_override is not None:
+        system_prompt = system_override
+    elif profile == "main":
+        system_prompt = prompts.build_system_prompt(neutral, base_prompt=instruction)
+    elif profile == "viewpoint":
+        system_prompt = prompts.build_viewpoint_system_prompt(neutral)
+    elif profile == "draft":
+        system_prompt = ((system_prefix or "") + ("\n" if system_prefix and neutral else "")
+                         + neutral)
+    else:
+        raise ValueError(f"unknown context profile: {profile}")
+
+    prior = [m for r in rendered if r["delivery"] == "prior" for m in r["payload"]]
+    user_items = [r["payload"] for r in rendered if r["delivery"] == "user"]
+    user_prompt = user_items[0] if user_items else ""
+    once = [m for r in rendered if r["delivery"] == "once" for m in r["payload"]]
+    tail = [m for r in rendered if r["delivery"] == "tail" for m in r["payload"]]
+    assembler_regions = [
+        {"order": r["order"], "name": r["name"], "channel": r["channel"],
+         "seats": r["seats"], "text": r["payload"], "entries": r["entries"]}
+        for r in content_regions if r["source_owner"] == "assembler"
+    ]
+    return {
+        "system_prompt": system_prompt,
+        "neutral_context": neutral,
+        "system_regions": assembler_regions,
+        "prior_messages": prior,
+        "user_prompt": user_prompt,
+        "turn_once": once,
+        "turn_tail": tail,
+    }
 
 
 def render_card_duty_region(registry: dict[str, Any]) -> str:
@@ -332,6 +571,18 @@ def assemble_regions(region_texts: list[str]) -> str:
     return "\n\n".join(t for t in region_texts if t)
 
 
+def _spec_by_key(key: str) -> Optional[dict[str, Any]]:
+    """按 key 反查注册项——**注册表是区的唯一声明处**（底座 2026-10-15）。
+
+    线性扫当前 ``REGION_TABLE``、**不缓存派生索引**：注册表被整体替换（如测试
+    monkeypatch、或运行时换表）后仍读到新表，不留第二份会过期的声明。
+    """
+    for s in REGION_TABLE:
+        if s.get("key") == key:
+            return s
+    return None
+
+
 def build_log_regions(
     system_regions: list[dict[str, Any]],
     history_messages: list[dict[str, Any]],
@@ -340,31 +591,55 @@ def build_log_regions(
 ) -> list[dict[str, Any]]:
     """T7：prompt 日志 regions 键的条目构建（只存指针与指纹，不复制正文）。
 
-    每区一条：order/名称/通道/席位/字节数/指纹/条目数。六区口径：
-    0＝BASE_PROMPT 指针（计字节与指纹便于对账）；100/150＝system 分区渲染件；
-    300＝对话历史投影；900＝本轮工具轮（本轮循环内 append 的全部消息——
-    含首轮固化与抢救回注，与 300 合计恰好划分整条 messages）；999＝用户原文。
+    每区一条：order/名称/通道/席位/字节数/指纹/条目数。八区口径：
+    instruction＝BASE_PROMPT 指针（计字节与指纹便于对账）；card_list/current_card
+    等＝system 分区渲染件；history＝对话历史投影；tool_turn＝本轮工具轮（本轮
+    循环内 append 的全部消息——含首轮固化与抢救回注，与 history 合计恰好划分整条
+    messages）；user_message＝用户原文。
+
+    [底座 2026-10-15] **order／名称／通道／席位一律从 ``REGION_TABLE`` 取**，本
+    函数不再另行硬编码：非 assembler 区按 key 反查（instruction/history/tool_turn/
+    user_message），system 区由装配器从注册表带出后透传（其 order 是控制面覆盖后的
+    **生效值**，非默认值）。改注册表即改日志，杜绝「上下文改了、日志还按旧口径记」
+    这类静默不一致——日志是审计凭据，它必须跟着区的唯一声明走。
+
+    注册项缺失（表被改坏）时**降级保审计**：``name`` 标 ``[未注册:key]``、order
+    取 -1（不与任何真实 order 相撞），字节与指纹照算——绝不因声明缺失丢掉整条记录。
     """
-    def _entry(order: int, name: str, channel: str, seats, blob: str,
-               entries: int) -> dict[str, Any]:
+    def _entry_from_spec(key: str, blob: str, entries: int) -> dict[str, Any]:
+        spec = _spec_by_key(key)
         raw = blob.encode("utf-8")
         return {
-            "order": order, "name": name, "channel": channel,
-            "seats": list(seats), "bytes": len(raw),
+            "order": spec["order"] if spec else -1,
+            "name": spec["name"] if spec else f"[未注册:{key}]",
+            "channel": spec["channel"] if spec else "",
+            "seats": list(spec["seats"]) if spec else [],
+            "bytes": len(raw),
             "fingerprint": "sha256:" + hashlib.sha256(raw).hexdigest()[:16],
             "entries": entries,
         }
 
-    out = [_entry(0, "使用说明", "system", ("main",), BASE_PROMPT, 1)]
-    for r in system_regions:
-        out.append(_entry(r["order"], r["name"], r["channel"], r["seats"],
-                          r["text"], r["entries"]))
-    out.append(_entry(300, "对话历史", "messages", ("main", "viewpoints"),
-                      json.dumps(history_messages, ensure_ascii=False),
-                      len(history_messages)))
-    out.append(_entry(900, "本轮工具轮", "messages", ("main",),
-                      json.dumps(turn_messages, ensure_ascii=False),
-                      len(turn_messages)))
-    out.append(_entry(999, "用户消息", "user", ("main", "viewpoints"),
-                      user_content, 1))
+    def _entry_passed(r: dict[str, Any]) -> dict[str, Any]:
+        """system 区：元数据由装配器按注册表带出，直接透传。"""
+        raw = r["text"].encode("utf-8")
+        return {
+            "order": r["order"], "name": r["name"], "channel": r["channel"],
+            "seats": list(r["seats"]), "bytes": len(raw),
+            "fingerprint": "sha256:" + hashlib.sha256(raw).hexdigest()[:16],
+            "entries": r["entries"],
+        }
+
+    out = [_entry_from_spec("instruction", BASE_PROMPT, 1)]
+    out.extend(_entry_passed(r) for r in system_regions)
+    out.append(_entry_from_spec(
+        "history", json.dumps(history_messages, ensure_ascii=False),
+        len(history_messages)))
+    out.append(_entry_from_spec(
+        "tool_turn", json.dumps(turn_messages, ensure_ascii=False),
+        len(turn_messages)))
+    out.append(_entry_from_spec("user_message", user_content, 1))
+    # 非 assembler 区的 order 现在来自注册表 ⇒ 改注册表可能打乱上面的位置序，
+    # 按 order 升序收口（sort 稳定：同 order 时保持 0 → system → history →
+    # tool_turn → user 的位置序＝改前口径）。
+    out.sort(key=lambda e: e["order"])
     return out

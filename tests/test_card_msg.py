@@ -23,8 +23,10 @@ REGISTRY = REPO / "config" / "message_type_registry.json"
 
 def test_registry_json_shape():
     data = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    assert data["version"] == 1
-    assert set(data["types"].keys()) == {"msg_ask", "msg_answer", "msg_notify"}
+    # [编程卡 2026-10-15 · C1 指纹随版本推进] v1 → v2（新增 coder_done 完工回报）
+    assert data["version"] == 2
+    assert set(data["types"].keys()) == {"msg_ask", "msg_answer", "msg_notify",
+                                         "coder_done"}
     for code, entry in data["types"].items():
         # [迭代五 S1] 键集由 {display, note} 扩为五键（when_to_use/reply_expected/
         # reply_type 为应对规则字段，S1 步骤①②③ 加键的镜像断言）。
@@ -37,7 +39,9 @@ def test_registry_json_shape():
 # ══════════════ 函数断言 ══════════════
 
 def test_type_codes_is_triple():
-    assert card_msg.type_codes() == ("msg_ask", "msg_answer", "msg_notify")
+    # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done），断言语义不变
+    assert card_msg.type_codes() == ("msg_ask", "msg_answer", "msg_notify",
+                                     "coder_done")
 
 
 def test_display_of_hit_and_miss():
@@ -292,8 +296,10 @@ async def test_t1_tool_registered():
 def test_t2_schema_enum_reads_registry():
     # [12:34 定性] 模型侧 schema 已随注册条目摘除；「加类型零代码」语义保留在函数体校验层
     assert "send_card_message" not in card_tools.TOOL_REGISTRY
-    # 类型可拓展（11:44）：注册表仍三型，函数体校验层每次现读（type_codes）
-    assert list(card_msg.type_codes()) == ["msg_ask", "msg_answer", "msg_notify"]
+    # 类型可拓展（11:44）：注册表现读、函数体校验层每次现读（type_codes）
+    # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done）
+    assert list(card_msg.type_codes()) == ["msg_ask", "msg_answer", "msg_notify",
+                                           "coder_done"]
 
 
 def test_t3_add_type_zero_code(monkeypatch, tmp_path):
@@ -305,9 +311,10 @@ def test_t3_add_type_zero_code(monkeypatch, tmp_path):
     monkeypatch.setattr(card_msg, "REGISTRY_PATH", ext)
     # 加类型零代码的语义保留在函数体校验层：新增类型直接可发
     assert "msg_test" in card_msg.type_codes()
-    # 仓库最终态仍三型（monkeypatch 只动内存指针，不落盘）
+    # 仓库最终态类型集（monkeypatch 只动内存指针，不落盘）
+    # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done），断言语义不变
     assert set(json.loads(REGISTRY.read_text(encoding="utf-8"))["types"].keys()) == {
-        "msg_ask", "msg_answer", "msg_notify"}
+        "msg_ask", "msg_answer", "msg_notify", "coder_done"}
 
 
 async def test_t4_eight_positive_negative_cases(sandbox):

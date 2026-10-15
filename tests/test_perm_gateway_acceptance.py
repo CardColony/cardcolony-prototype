@@ -132,18 +132,27 @@ def test_v4_positive_control_registered_types_see_all():
     本环境是 23 件、生产环境（配了通道）是 25 件。写死数字会在任一环境里
     变成假红或假绿——这正是「魔法数字＝漂移源」的又一次复现，故改为派生。
     断言的**意图**（注册类型见全量、根卡少 delete）一字未改。
+
+    [编程卡 C3 2026-10-15] **全量口径随类型闸改派生**：``report_done`` 挂进
+    ``CODER_ONLY_TOOLS`` 后只对 coder 下发——注册类型（非 coder）的「全量」
+    ＝ ``TOOL_SWITCH − CODER_ONLY_TOOLS``（判据6 字面口径），根卡再减 delete。
+    意图不变：注册类型见它该见的全量、根卡少 delete。
     """
-    registered = len(card_tools.TOOL_REGISTRY)
+    coder_only = set(card_tools.CODER_ONLY_TOOLS)
+    # [v1.1 · 判据6 字面口径] 基线集合＝TOOL_SWITCH − CODER_ONLY_TOOLS
+    expected_all = len(set(card_tools.TOOL_SWITCH) - coder_only)
     n_all = len(card_tools.build_tool_schemas(
         "card_x", cards={"card_x": _meta("sub_project")}))
-    assert n_all == registered, (
-        f"工作单元型卡应见注册表全量 {registered} 件，实 {n_all} 件"
+    assert n_all == expected_all, (
+        f"工作单元型卡应见 {expected_all} 件"
+        f"（TOOL_SWITCH {len(card_tools.TOOL_SWITCH)} 件减 "
+        f"CODER_ONLY_TOOLS {sorted(coder_only)}），实 {n_all} 件"
     )
     for pc, ct in (("rd_project", "sub_project"),
                    ("research_project", "topic"),
                    ("rd_project", "project")):
         schemas = card_tools.build_tool_schemas("card_x", cards={"card_x": _meta(ct, pc)})
-        expected = registered - (1 if ct == "project" else 0)
+        expected = expected_all - (1 if ct == "project" else 0)
         assert len(schemas) == expected, (
             f"{pc}/{ct} 应见 {expected} 件，实 {len(schemas)} 件"
         )

@@ -147,9 +147,11 @@ async def test_midflight_stop_closes_turn_human_stop(sandbox, work, client):
     resp = await asyncio.wait_for(task, 10)
 
     assert resp.status_code == 200, resp.text
-    # 人停回合：出口消费 → end=human_stop；带工具轮已产出的分析段照常交付
-    # （T14「有分析无回执＝只交付中间轮」——不丢已产出的字；回执位无模型正文）
-    assert resp.json()["reply"] == "罐头正文\n", resp.json()
+    # 人停回合：出口消费 → end=human_stop。
+    # [直接停止 2026-10-15 裁定] 人停＝**立刻断流**（不再等模型吐完）＋**已产出的字
+    # 照常交付**（本测试钉的原意「不丢已产出的字」保留）。断流点在本帧处理之后，
+    # 故交付的是**已收到的增量**「罐头」——终帧「罐头正文」属未收到部分，不交付。
+    assert resp.json()["reply"] == "罐头\n", resp.json()
     blocks = await session_facade.read(wid, cid)
     assert blocks[-1]["end"] == "human_stop", "回合以 human_stop 闭合（T124）"
     assert blocks[-1]["actor"] == "assistant"
@@ -172,7 +174,9 @@ async def test_no_tool_round_discards_stale_stop_and_next_turn_clean(sandbox, wo
     resp = await asyncio.wait_for(task, 10)
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["reply"] == "罐头正文\n", "无步边界可消费 → 本回合正常交付"
+    # [直接停止 2026-10-15 裁定] 无步边界可消费 → 本回合正常交付；
+    # 交付内容＝断流前**已收到的增量**（「不丢已产出的字」口径不变）。
+    assert resp.json()["reply"] == "罐头\n", "无步边界可消费 → 本回合正常交付"
     blocks = await session_facade.read(wid, cid)
     assert blocks[-1]["end"] == "model_done", "正常闭合（stop 未在步边界命中）"
     assert control.pending_stop(wid, cid) is False, "收口清扫：残留置位已作废"

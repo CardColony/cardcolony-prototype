@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>画布卡片 · 终版原型</title>
+<style>
+  :root{
+    /* 项目真实令牌族：深色工作台 + 琥珀主色 + 同族深档（一主一次，不两家人） */
+    --bg:#15171c;
+    --panel:#1e2127;
+    --panel-2:#23262e;          /* 消息卡：同族的浅一档 */
+    --border:#2b2f38;
+    --border-2:#333846;
+    --fg:#dfe3ea;
+    --dim:#9aa1ad;
+    --faint:#6b7280;
+    --c-work:#e8a33d;           /* 根卡主色（琥珀） */
+    --c-work-dim:#b57e24;       /* 同族深档：消息卡/次卡 */
+    --c-work-bg:rgba(232,163,61,.07);
+    --radius:8px;
+    --rail:6px;                 /* 左边条宽，同现样式 */
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:linear-gradient(180deg,#121419 0%,#0e1013 100%);
+    min-height:100vh;
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--fg);
+    display:flex;gap:64px;align-items:flex-start;justify-content:center;
+    padding:72px 24px;
+    letter-spacing:.01em;
+  }
+  /* ---- 独立原型：根卡 ---- */
+  .card-root{
+    width:242px;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-left:var(--rail) solid var(--c-work);
+    border-radius:var(--radius);
+    box-shadow:0 2px 6px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.25);
+    display:flex;
+    position:relative;
+    overflow:hidden;
+  }
+  .card-root .main{
+    flex:1;
+    padding:16px 14px 14px 14px;
+    display:flex;flex-direction:column;gap:12px;
+  }
+  .card-root .name{
+    font-size:16px;
+    font-weight:650;
+    line-height:1.35;
+    color:var(--fg);
+    /* 项目名只亮名字本身——无任何类型标签 */
+  }
+  .card-root .rule{
+    height:1px;
+    background:linear-gradient(90deg,transparent,var(--border) 20%,var(--border) 80%,transparent);
+  }
+  .card-root .status{
+    display:flex;flex-direction:column;gap:5px;
+  }
+  .card-root .status .line{
+    font-size:12px;
+    line-height:1.5;
+    color:var(--dim);
+    text-align:justify;
+    display:-webkit-box;
+    -webkit-line-clamp:1;
+    -webkit-box-orient:vertical;
+    overflow:hidden;
+  }
+  /* 三行状况：和现在一样，安静地躺着，不抢主 */
+  .card-root .status .line::before{
+    content:"";
+    display:inline-block;
+    width:4px;height:4px;border-radius:1px;
+    background:var(--c-work-dim);
+    margin-right:7px;
+    vertical-align:2px;
+    opacity:.6;
+  }
+  /* ---- 右缘：子树开关（树出入口，不是徽章） ---- */
+  .card-root .axis{
+    width:34px;
+    flex:none;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+    border-left:1px solid var(--border);
+    background:rgba(255,255,255,.012);
+    cursor:pointer;
+    transition:background .15s ease;
+    user-select:none;
+  }
+  .card-root .axis:hover{background:var(--c-work-bg)}
+  .card-root .axis .tick{
+    color:var(--dim);
+    font-size:11px;
+    line-height:1;
+    transform:scale(1,.9);          /* 让」，变形为细窄的树符号 */
+    transition:color .15s ease, transform .2s ease;
+  }
+  .card-root .axis .n{
+    font-size:15px;font-weight:650;
+    color:var(--faint);
+    line-height:1;
+    transition:color .15s ease;
+  }
+  .card-root .axis.open .tick{transform:rotate(180deg) scale(1,.9)}   /* ▾ 展开态：旋转 */
+  .card-root .axis.open .n{color:var(--c-work)}
+  .card-root .axis.open{background:var(--c-work-bg)}
+  /* ---- 吸附在下面的消息卡：独立完整卡，留缝 ---- */
+  .card-msg{
+    width:242px;
+    background:var(--panel-2);
+    border:1px solid var(--border);
+    border-left:var(--rail) solid var(--c-work-dim);
+    border-radius:var(--radius);
+    box-shadow:0 1px 3px rgba(0,0,0,.3);
+    margin-top:12px;                 /* 留一道缝 */
+    display:flex;flex-direction:column;
+  }
+  .card-msg .snap{
+    padding:11px 13px 7px 13px;
+    font-size:12.5px;
+    line-height:1.5;
+    color:var(--fg);
+    /* 只显示消息内容本身——没有"谁发的" */
+    display:-webkit-box;
+    -webkit-line-clamp:2;
+    -webkit-box-orient:vertical;
+    overflow:hidden;
+    cursor:pointer;
+    transition:background .15s ease;
+  }
+  .card-msg .snap:hover{background:rgba(232,163,61,.05);border-radius:6px}
+  .card-msg .quick{
+    display:flex;align-items:center;gap:6px;
+    padding:4px 10px 10px 12px;
+  }
+  .card-msg .quick input{
+    flex:1;
+    background:transparent;
+    border:none;
+    outline:none;
+    color:var(--fg);
+    font-size:12.5px;
+    line-height:1.4;
+    padding:5px 0;
+    /* 无占位文字——框里一个字都不写 */
+  }
+  .card-msg .quick input::placeholder{color:var(--faint)}
+  .card-msg .quick .send{
+    width:26px;height:26px;
+    flex:none;
+    border-radius:6px;
+    background:var(--c-work-bg);
+    border:1px solid var(--border-2);
+    color:var(--c-work);
+    font-size:13px;
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;
+    transition:background .15s ease,border-color .15s ease;
+  }
+  .card-msg .quick .send:hover{background:var(--c-work);color:#15171c;border-color:var(--c-work)}
+  /* 消息行下缘细线，把它与输入框分开 */
+  .card-msg .sep{height:1px;background:var(--border-2);margin:2px 10px 0 12px;opacity:.5}
+  /* ---- 快捷回复窗（轻量浮层：便签，不抢画布主位） ---- */
+  .reply{
+    position:fixed;
+    left:380px;top:180px;
+    width:266px;
+    background:var(--panel-2);
+    border:1px solid var(--border-2);
+    border-radius:10px;
+    box-shadow:0 12px 32px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+    display:flex;flex-direction:column;
+    overflow:hidden;
+    z-index:50;
+  }
+  .reply .rh{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:9px 11px 8px 13px;
+    border-bottom:1px solid var(--border);
+  }
+  .reply .rh .t{font-size:11px;letter-spacing:.12em;color:var(--faint);font-weight:600}
+  .reply .rh .x{
+    width:20px;height:20px;border-radius:5px;
+    display:flex;align-items:center;justify-content:center;
+    color:var(--dim);font-size:13px;cursor:pointer;
+  }
+  .reply .rh .x:hover{background:rgba(255,255,255,.06);color:var(--fg)}
+  .reply .flow{
+    padding:10px 13px;
+    display:flex;flex-direction:column;gap:8px;
+    max-height:120px;overflow-y:auto;
+  }
+  .reply .msg{
+    font-size:12px;line-height:1.5;color:var(--fg);
+  }
+  .reply .msg.mine{
+    text-align:right;
+    color:var(--dim);
+    margin-top:2px;
+  }
+  .reply .ri{
+    display:flex;align-items:center;gap:6px;
+    padding:8px 10px 10px 12px;
+    border-top:1px solid var(--border);
+  }
+  .reply .ri input{
+    flex:1;background:transparent;border:none;outline:none;
+    color:var(--fg);font-size:12.5px;line-height:1.4;padding:4px 0;
+  }
+  .reply .ri .send{
+    width:24px;height:24px;flex:none;border-radius:5px;
+    background:var(--c-work-bg);border:1px solid var(--border-2);
+    color:var(--c-work);font-size:12px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;
+  }
+  .reply .ri .send:hover{background:var(--c-work);color:#15171c;border-color:var(--c-work)}
+  /* ---- 对比：普通子卡（同族更矮，现状的徽章形态） ---- */
+  .card-sub{
+    width:180px;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-left:var(--rail) solid var(--border-2);
+    border-radius:var(--radius);
+    padding:11px 12px;
+    display:flex;flex-direction:column;gap:8px;
+    position:relative;
+    box-shadow:0 1px 3px rgba(0,0,0,.3);
+  }
+  .card-sub .tn{font-size:12.5px;font-weight:600;color:var(--fg);line-height:1.4}
+  .card-sub .ts{font-size:11px;line-height:1.55;color:var(--dim);
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .card-sub .badge{
+    position:absolute;top:8px;right:8px;
+    font-size:10px;color:var(--faint);
+    display:flex;align-items:center;gap:2px;
+  }
+  .badge{opacity:.85}
+  /* 分组标题 */
+  .grp{font-size:11px;letter-spacing:.16em;color:var(--faint);margin-bottom:14px;text-align:center}
+  .col{display:flex;flex-direction:column;align-items:center}
+</style>
+</head>
+<body>
+
+  <!-- 左：根卡 + 吸附的消息卡 -->
+  <div class="col">
+    <div class="grp">根 卡</div>
+    <div class="card-root" id="root" style="flex-direction:row">
+      <div class="main">
+        <div class="name">银河远征计划</div>
+        <div class="rule"></div>
+        <div class="status">
+          <div class="line">已完成坐标校准，三支勘探队就位</div>
+          <div class="line">采样回收进度 62%，未发现异常</div>
+          <div class="line">等待方向修正指令，预算余量充足</div>
+        </div>
+      </div>
+      <div class="axis" id="axis" title="展开 / 收起子卡">
+        <span class="tick">▸</span>
+        <span class="n" id="nSub">3</span>
+      </div>
+    </div>
+
+    <div class="card-msg">
+      <div class="snap" id="snap" title="快捷回复">
+        勘探队C已抵达目标区，正在执行第3轮采样，预计两小时内完成全部回收。
+      </div>
+      <div class="sep"></div>
+      <div class="quick">
+        <input id="qin" autocomplete="off"/>
+        <div class="send" id="sendQ">➤</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右：普通子卡对比 -->
+  <div class="col">
+    <div class="grp">普通子卡（对比）</div>
+    <div class="card-sub">
+      <span class="badge">▸ 6</span>
+      <div class="tn">采样回收</div>
+      <div class="ts">三支勘探队已完成坐标校准，等待方向指令</div>
+    </div>
+  </div>
+
+  <!-- 快捷回复窗（默认隐藏，点快照弹出） -->
+  <div class="reply" id="reply" style="display:none">
+    <div class="rh">
+      <span class="t">回 复</span>
+      <span class="x" id="closeReply">×</span>
+    </div>
+    <div class="flow">
+      <div class="msg">勘探队C已抵达目标区，执行第3轮采样。</div>
+      <div class="msg mine">收到，继续。注意边界风速。</div>
+      <div class="msg">风速17m/s，仍在安全阈值内。</div>
+    </div>
+    <div class="ri">
+      <input id="rin" autocomplete="off"/>
+      <div class="send" id="sendR">➤</div>
+    </div>
+  </div>
+
+<script>
+  const axis=document.getElementById('axis'),nSub=document.getElementById('nSub');
+  axis.addEventListener('click',()=>{
+    axis.classList.toggle('open');
+    nSub.textContent=axis.classList.contains('open')?'3':'3';
+  });
+  const snap=document.getElementById('snap'),reply=document.getElementById('reply');
+  snap.addEventListener('click',e=>{
+    e.stopPropagation();
+    reply.style.display='flex';
+  });
+  document.getElementById('closeReply').addEventListener('click',()=>reply.style.display='none');
+  window.addEventListener('click',e=>{
+    if(reply.style.display==='flex' && !reply.contains(e.target) && e.target!==snap) reply.style.display='none';
+  });
+</script>
+</body>
+</html>

@@ -3,8 +3,10 @@
 
 六病灶：字号碎档／px 行高／行宽无上界／负边距／--dimmer 机制化／间距刻度。
 豁免口径（任务书 F1①⑥）：画布区（.card-node 及其注入徽章 .kid-badge /
-.cross-link-badge）与剧本架区（.book/.shelf/.metho）字号与间距零改动——
-断言按选择器归属豁免，不按行号（行号会漂）。
+.cross-link-badge）字号与间距零改动——断言按选择器归属豁免，不按行号（行号会漂）。
+
+[首页两态 2026-10-15] 原项目列表页的豁免选择器（.book/.metho-* 等）随该页整体退役
+一并删除：对应 CSS 段已从 style.css 摘净，豁免若留着就是永不生效的死规则。
 """
 from __future__ import annotations
 
@@ -15,7 +17,6 @@ CSS = Path(__file__).resolve().parents[1] / "static" / "style.css"
 
 ALLOWED_FONT_PX = {"11", "12", "13", "14", "18", "36"}
 CANVAS_SEL = re.compile(r"\.(card-node|kid-badge|cross-link-badge|tname|msg-badge)\b")
-SHELF_SEL = re.compile(r"\.(book|shelf-[a-z-]*|metho-[a-z-]*)\b")
 
 
 def _rules():
@@ -56,12 +57,12 @@ def test_u1_font_sizes_within_allowed_set():
     """U-1：非豁免区字号唯一值 ⊆ {11,12,13,14,18,36}px。"""
     bad = []
     for sel, body, ln in _rules():
-        if CANVAS_SEL.search(sel) or SHELF_SEL.search(sel):
+        if CANVAS_SEL.search(sel):
             continue
         for m in re.finditer(r"font-size:\s*([0-9.]+)px", body):
             if m.group(1) not in ALLOWED_FONT_PX:
                 bad.append(f"L{ln} {sel.strip()[:50]} font-size: {m.group(1)}px")
-    assert not bad, "越集字号（非画布/非剧本架）: " + "; ".join(bad)
+    assert not bad, "越集字号（非画布）: " + "; ".join(bad)
 
 
 def test_u2_no_px_line_height():
@@ -122,7 +123,7 @@ def test_spacing_scale_in_three_regions():
     for sel, body, ln in _rules():
         if not re.search(r"\.(msg|step-row|sys-[a-z]+|insp-[a-z-]+|nav-[a-z-]+)\b", sel):
             continue
-        if CANVAS_SEL.search(sel) or SHELF_SEL.search(sel):
+        if CANVAS_SEL.search(sel):
             continue
         for m in re.finditer(
                 r"(?:padding|margin|gap)(?:-[a-z]+)?:\s*([^;]+);", body):

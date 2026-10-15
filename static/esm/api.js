@@ -1,5 +1,6 @@
-﻿/* esm/api.js —— fetch 封装（统一错误弹 toast，messages 不设超时）。迭代四 F2 唯一实现。
- * 原 static/api.js 的 IIFE 本体收编于此；api.js 退为薄壳（index 页动态 import 兼容）。
+/* esm/api.js —— fetch 封装（统一错误弹 toast，messages 不设超时）。迭代四 F2 唯一实现。
+ * 原 static/api.js 的 IIFE 本体收编于此；[首页两态 2026-10-15] 该薄壳随旧列表页
+ * 整体退役一并删除，本文件自此是 fetch 封装的唯一一份实现。
  */
 export async function request(method, url, body) {
   const opts = { method, headers: {} };
@@ -49,9 +50,9 @@ export async function call(method, url, body) {
 /* [迭代四 F3①] notify：升级提示机制（替代 4 秒即逝的 toast 语义面）。
  * 历史 50 条存 store.notifyLog；同屏上限 3（超出挤掉最旧）；onClick 可点；
  * kind ∈ {info,success,warn,error}。打点 [notify]。
- * toast 保留为兼容包装（B-11 三处调用零改动；index 页薄壳同样拿到）。
+ * toast 保留为兼容包装（B-11 三处调用零改动）。
  */
-import { store } from "./store.js?v=27";
+import { store } from "./store.js?v=30";
 
 const NOTIFY_MAX_HISTORY = 50;
 const NOTIFY_MAX_ONSCREEN = 3;

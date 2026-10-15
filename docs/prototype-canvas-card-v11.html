@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>根卡原型</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --panel-dim:#13181f; --border:#30363d; --hair:#21262d;
+  --text:#e6edf3; --soft:#a5b1bd; --dim:#8b949e;
+  --amber:#d4a72c; --amber-dim:rgba(212,167,44,.4);
+  --c-char:#a371f7; --c-plot:#db6d28; --c-setting:#388bfd;
+  --font:"Segoe UI",-apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);padding:32px;overflow:auto}
+button{font-family:var(--font);cursor:pointer}
+
+.stage{min-height:420px;padding:8px}
+.unit{width:320px}
+
+/* ── 根卡 ── */
+.root{display:flex;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:8px}
+.rbody{flex:1;min-width:0;padding:18px 16px 20px 20px}
+.rname{font-size:20px;font-weight:650;line-height:1.4;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rstatus{margin-top:16px;display:flex;flex-direction:column;gap:9px}
+.rstatus div{font-size:13.5px;color:var(--soft);line-height:1.5;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.rrail{width:48px;flex:0 0 48px;border-left:1px solid var(--hair);border-radius:0 8px 8px 0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  cursor:pointer;user-select:none}
+.rrail .n{font-size:15px;color:var(--soft);font-variant-numeric:tabular-nums}
+.rrail .a{font-size:12px;color:var(--dim)}
+.rrail.on{background:rgba(212,167,44,.1)}
+.rrail.on .n,.rrail.on .a{color:var(--amber)}
+
+/* ── 消息卡 ── */
+.msgcard{margin-top:6px;background:var(--panel-dim);border:1px solid var(--border);
+  border-left:3px solid var(--amber-dim);border-radius:8px}
+.snap{padding:14px 20px;font-size:13.5px;color:var(--soft);line-height:1.65;cursor:pointer;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;border-radius:8px 8px 0 0}
+.snap:hover{color:var(--text)}
+.inrow{display:flex;align-items:center;gap:10px;padding:12px 14px 12px 20px;border-top:1px solid var(--hair)}
+.qin{flex:1;min-width:0;background:transparent;border:none;outline:none;
+  border-bottom:1px solid #3a424c;color:var(--text);font-size:13.5px;padding:4px 2px 6px}
+.qin:focus{border-bottom-color:var(--amber)}
+.send{width:32px;height:32px;flex:0 0 32px;border-radius:6px;background:transparent;
+  border:1px solid var(--border);color:var(--dim);font-size:14px;line-height:1}
+.send:hover{color:var(--amber);border-color:var(--amber-dim)}
+
+/* ── 子卡 ── */
+.kids{margin-top:16px;display:flex;flex-direction:column;gap:14px}
+.kidwrap{width:300px;display:flex;flex-direction:column}
+.kid{background:var(--panel-dim);border:1px solid var(--border);border-radius:8px;padding:13px 16px}
+.kid.t-char{border-left:3px solid var(--c-char)}
+.kid.t-plot{border-left:3px solid var(--c-plot)}
+.kid.t-setting{border-left:3px solid var(--c-setting)}
+.ktitle{display:flex;align-items:center;gap:8px}
+.kname{flex:1;min-width:0;font-size:14px;font-weight:600;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kcnt{flex:0 0 auto;font-size:11px;color:var(--dim);line-height:1}
+.ksum{margin-top:6px;font-size:12.5px;color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ── 遮罩：多弹窗共享 ── */
+.rp-back{position:fixed;inset:0;background:rgba(4,8,14,.58);z-index:39}
+
+/* ── 回复窗：正方 640×640，屏幕中央，多窗按打开顺序级联 ── */
+.rpop{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:640px;height:640px;max-width:92vw;max-height:88vh;
+  display:flex;flex-direction:column;background:var(--panel);
+  border:1px solid var(--border);border-radius:12px}
+.rp-head{display:flex;align-items:center;gap:12px;padding:16px 16px 12px 24px}
+.rp-name{flex:1;min-width:0;font-size:17px;font-weight:650;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rp-x{width:40px;height:40px;flex:0 0 40px;border:none;background:transparent;color:var(--dim);
+  font-size:20px;line-height:1;border-radius:8px}
+.rp-x:hover{color:var(--text);background:var(--hair)}
+.rp-flow{flex:1;min-height:0;overflow-y:auto;padding:2px 24px 14px;
+  display:flex;flex-direction:column;gap:10px}
+.m{font-size:14px;line-height:1.6;padding:9px 13px;border-radius:8px;max-width:80%}
+.m.md{align-self:flex-start;background:var(--hair);color:var(--soft)}
+.m.us{align-self:flex-end;background:#1f3a5f;border:1px solid #2c4f7c;color:var(--text)}
+.rpop .inrow{padding:14px 18px 18px 24px;gap:12px}
+
+#probe-out{display:none}
+</style>
+</head>
+<body>
+
+<section class="stage">
+  <div class="unit" id="unit">
+    <div class="root" id="rootCard">
+      <div class="rbody">
+        <div class="rname" id="pName">赤潮登陆推演</div>
+        <div class="rstatus" id="pStatus">
+          <div>第12轮 · 补给线切断后第3天</div>
+          <div>3行为体待决策 · 2节点悬置</div>
+          <div>停在：是否空投物资</div>
+        </div>
+      </div>
+      <div class="rrail" id="rail" role="button" tabindex="0">
+        <span class="n">3</span><span class="a" id="arw">▸</span>
+      </div>
+    </div>
+    <div class="msgcard" id="rootMsg" data-card="赤潮登陆推演">
+      <div class="snap">北部集群燃料仅够维持4天，第二梯队可佯攻吸引火力但胜率不足三成。是否立即执行空投方案？</div>
+      <div class="inrow">
+        <input class="qin" type="text" placeholder="">
+        <button class="send">➤</button>
+      </div>
+    </div>
+    <div class="kids" id="kids" hidden>
+      <div class="kidwrap">
+        <div class="kid t-char"><div class="ktitle"><span class="kname">北部集群</span><span class="kcnt">2 子卡</span></div><div class="ksum">燃料4天 · 3个单位待命</div></div>
+        <div class="msgcard" data-card="北部集群">
+          <div class="snap">佯攻6小时耗0.4天燃料，两个连足够。已锁定待命状态，随时可执行。</div>
+          <div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>
+        </div>
+      </div>
+      <div class="kidwrap">
+        <div class="kid t-plot"><div class="ktitle"><span class="kname">空投方案</span><span class="kcnt">1 子卡</span></div><div class="ksum">18小时决策窗 · 胜率三成</div></div>
+        <div class="msgcard" data-card="空投方案">
+          <div class="snap">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。</div>
+          <div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>
+        </div>
+      </div>
+      <div class="kidwrap">
+        <div class="kid t-setting"><div class="ktitle"><span class="kname">补给线地理</span></div><div class="ksum">河谷桥点 · 季风窗口期</div></div>
+        <div class="msgcard" data-card="补给线地理">
+          <div class="snap">季风窗口72小时后关闭，降雨量将超涉渡阈值。</div>
+          <div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="rp-back" id="rpBack" hidden></div>
+<div id="pops"></div>
+
+<pre id="probe-out"></pre>
+
+<script>
+(function(){
+  var $=function(s,r){return (r||document).querySelector(s)};
+  var rail=$('#rail'),kids=$('#kids'),arw=$('#arw');
+  var back=$('#rpBack'),pops=$('#pops');
+
+  /* 各卡预置对话 */
+  var SEED={
+    '赤潮登陆推演':[
+      ['md','第10轮局势：北部集群燃料储备降至4天临界线，敌方两个师压至河岸线。'],
+      ['us','第二梯队现在佯攻还来得及吗？'],
+      ['md','来得及，但必须在18小时内决定，否则燃料缺口不可逆。'],
+      ['us','空投与佯攻同时做呢？'],
+      ['md','可以并行。佯攻吸引火力窗口约6小时，空投需4小时，时间上咬合。'],
+      ['us','敌方会有什么反应？'],
+      ['md','预判敌方将收缩东线兵力驰援河岸，东线出现12小时空虚。'],
+      ['us','那东线可以插一刀？'],
+      ['md','可行，但意味着三线同时开动，补给压力翻倍。'],
+      ['us','先记着，第13轮再定。'],
+      ['md','已挂起。第13轮将自动汇总三线补给账。']
+    ],
+    '北部集群':[
+      ['md','燃料4天，3个单位待命。'],
+      ['us','佯攻需要多少兵力？'],
+      ['md','两个连足够，胜率三成但目的在吸引不在攻克。'],
+      ['us','燃料消耗预测？'],
+      ['md','佯攻6小时耗0.4天燃料，可承受。'],
+      ['us','行，保持待命。'],
+      ['md','已锁定待命状态，随时可执行。']
+    ],
+    '空投方案':[
+      ['md','决策窗18小时，胜率三成。'],
+      ['us','有没有替代方案？'],
+      ['md','两个：东线穿插（胜率两成五，可牵制）或固守待援（无风险，失先手）。'],
+      ['us','固守失先手的代价？'],
+      ['md','敌方完成河岸合围，第14轮我方全线转入被动。'],
+      ['us','空投的最坏结局？'],
+      ['md','运输机损失40%，物资到位60%，仍优于固守。']
+    ],
+    '补给线地理':[
+      ['md','河谷桥点是唯一重装备通道。'],
+      ['us','炸桥的后果？'],
+      ['md','敌我双方重装备同时锁死，轻步兵可涉渡。'],
+      ['us','季风窗口什么时候关？'],
+      ['md','72小时后降雨量超涉渡阈值。'],
+      ['us','记入变量。'],
+      ['md','已挂"季风窗口72h"变量。']
+    ]
+  };
+
+  /* 展开收起 */
+  rail.addEventListener('click',function(){
+    rail.classList.toggle('on');
+    arw.textContent=rail.classList.contains('on')?'▾':'▸';
+    kids.hidden=!kids.hidden;
+  });
+
+  /* ── 多弹窗：动态创建，按打开顺序级联 + z 序 ── */
+  var opens=[];   // {card, el} 按打开顺序
+  function openPop(card){
+    var ex=null;
+    for(var i=0;i<opens.length;i++) if(opens[i].card===card){ex=opens[i];break}
+    if(ex){$('.qin',ex.el).focus();return}
+    var el=document.createElement('div');
+    el.className='rpop';
+    el.innerHTML=
+      '<div class="rp-head"><div class="rp-name"></div><button class="rp-x">×</button></div>'+
+      '<div class="rp-flow"></div>'+
+      '<div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>';
+    $('.rp-name',el).textContent=card;
+    var flow=$('.rp-flow',el);
+    (SEED[card]||[]).forEach(function(m){
+      var d=document.createElement('div');d.className='m '+m[0];d.textContent=m[1];flow.appendChild(d);
+    });
+    flow.scrollTop=1e6;
+    var idx=opens.length;                 /* 第几个打开的：0 居中，之后逐个右下错开 */
+    el.style.zIndex=40+idx;
+    el.style.setProperty('--ox',(idx*40)+'px');
+    el.style.setProperty('--oy',(idx*40)+'px');
+    el.style.transform='translate(-50%,-50%) translate(var(--ox),var(--oy))';
+    pops.appendChild(el);
+    opens.push({card:card,el:el});
+    back.hidden=false;
+    wireCard(card);
+    $('.qin',el).focus();
+    $('.rp-x',el).addEventListener('click',function(){closeEl(el)});
+  }
+  function closeEl(el){
+    for(var i=0;i<opens.length;i++) if(opens[i].el===el){opens.splice(i,1);break}
+    el.remove();
+    if(!opens.length)back.hidden=true;
+  }
+  function closeTop(){
+    if(!opens.length)return;
+    var o=opens.pop();o.el.remove();
+    if(!opens.length)back.hidden=true;
+  }
+  back.addEventListener('click',function(){if(event.target===back)closeTop()});
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'&&opens.length)closeTop();
+  });
+
+  /* 卡面 → 弹窗 */
+  function snapOf(card){
+    var els=document.querySelectorAll('.msgcard');
+    for(var i=0;i<els.length;i++) if(els[i].getAttribute('data-card')===card) return $('.snap',els[i]);
+    return null;
+  }
+  function popOf(card){
+    for(var i=0;i<opens.length;i++) if(opens[i].card===card) return opens[i].el;
+    return null;
+  }
+  function send(card,text){
+    if(!text)return;
+    var p=popOf(card);
+    if(p){
+      var d=document.createElement('div');d.className='m us';d.textContent=text;
+      var f=$('.rp-flow',p);f.appendChild(d);f.scrollTop=1e6;
+    }
+    var s=snapOf(card);if(s)s.textContent=text;
+  }
+  function wireCard(card){
+    var p=popOf(card);if(!p)return;
+    var inp=$('.qin',p),btn=$('.send',p);
+    inp.addEventListener('keydown',function(e){
+      if(e.key==='Enter'){send(card,inp.value);inp.value=''}
+    });
+    btn.addEventListener('click',function(){send(card,inp.value);inp.value=''});
+  }
+  window.__push=send;window.__open=openPop;window.__closeTop=closeTop;
+
+  /* 消息卡绑定：点快照开窗；卡面输入直接发 */
+  var cards=document.querySelectorAll('.msgcard');
+  for(var c=0;c<cards.length;c++)(function(mc){
+    var card=mc.getAttribute('data-card');
+    $('.snap',mc).addEventListener('click',function(){openPop(card)});
+    var inp=$('.qin',mc),btn=$('.send',mc);
+    inp.addEventListener('keydown',function(e){
+      if(e.key==='Enter'){send(card,inp.value);inp.value=''}
+    });
+    btn.addEventListener('click',function(){send(card,inp.value);inp.value=''});
+  })(cards[c]);
+
+  /* ── 探针自测 ── */
+  var out=[];
+  function chk(n,c,i){out.push((c?'PASS ':'FAIL ')+n+(i!=null?' ['+i+']':''))}
+  try{
+    var r=$('#rootCard'),m=$('#rootMsg');
+    chk('根卡宽=320',r.offsetWidth===320,r.offsetWidth);
+    chk('消息卡同宽=320',m.offsetWidth===320,m.offsetWidth);
+    chk('缝=6',Math.round(m.getBoundingClientRect().top-r.getBoundingClientRect().bottom)===6,
+        Math.round(m.getBoundingClientRect().top-r.getBoundingClientRect().bottom));
+    chk('根卡扁平',getComputedStyle(r).boxShadow==='none');
+    chk('名字≥20px',parseFloat(getComputedStyle($('#pName')).fontSize)>=20);
+    chk('名字-状况间距≥14',parseFloat(getComputedStyle($('#pStatus')).marginTop)>=14);
+    chk('轨命中区≥32',rail.clientWidth>=32&&rail.clientHeight>=32);
+    var bgOff=getComputedStyle(rail).backgroundColor;
+    rail.classList.add('on');var bgOn=getComputedStyle(rail).backgroundColor;rail.classList.remove('on');
+    chk('轨两态可辨',bgOff!==bgOn);
+    rail.click();chk('点轨展开子卡',kids.hidden===false);
+    rail.click();chk('再点收起',kids.hidden===true);
+    var ph=[];document.querySelectorAll('.qin').forEach(function(i){if(i.getAttribute('placeholder')!=='')ph.push('x')});
+    chk('输入框全部零占位',ph.length===0,ph.length);
+    var bad=[];document.querySelectorAll('.send').forEach(function(b){if(/[\u4e00-\u9fff]/.test(b.textContent))bad.push(b.textContent)});
+    chk('按钮纯符号',bad.length===0);
+
+    /* 弹窗 A：根卡 */
+    openPop('赤潮登陆推演');
+    var A=opens[0].el;
+    var ar=A.getBoundingClientRect();
+    chk('弹窗宽=640',ar.width===640,ar.width);
+    chk('弹窗正方(|w-h|≤8)',Math.abs(ar.width-ar.height)<=8,Math.round(ar.width)+'x'+Math.round(ar.height));
+    var cx=(ar.left+ar.right)/2,cy=(ar.top+ar.bottom)/2;
+    chk('首窗正中(水平±8)',Math.abs(cx-window.innerWidth/2)<=8,Math.round(cx)+'/'+Math.round(window.innerWidth/2));
+    chk('首窗正中(垂直)',Math.abs(cy-window.innerHeight/2)<=1,Math.round(cy)+'/'+Math.round(window.innerHeight/2));
+    var flow=$('.rp-flow',A);
+    chk('上下文可滚动',flow.scrollHeight>flow.clientHeight,flow.scrollHeight+'>'+flow.clientHeight);
+    chk('A标题=卡名',$('.rp-name',A).textContent==='赤潮登陆推演',$('.rp-name',A).textContent);
+    var xbtn=$('.rp-x',A);
+    chk('关闭钮≥40',xbtn.offsetWidth>=40&&xbtn.offsetHeight>=40,xbtn.offsetWidth+'x'+xbtn.offsetHeight);
+
+    /* 弹窗 B：子卡 */
+    openPop('北部集群');
+    var B=opens[1].el;
+    chk('B的z序>A(B后开在上)',parseInt(B.style.zIndex)>parseInt(A.style.zIndex),
+        B.style.zIndex+'>'+A.style.zIndex);
+    chk('B错开40px(右下)',B.style.getPropertyValue('--ox')==='40px'&&B.style.getPropertyValue('--oy')==='40px',
+        B.style.getPropertyValue('--ox')+','+B.style.getPropertyValue('--oy'));
+    chk('B标题=卡名',$('.rp-name',B).textContent==='北部集群',$('.rp-name',B).textContent);
+    chk('A仍在场',document.body.contains(A)===true);
+
+    /* B 内发消息 → snap 同步 */
+    send('北部集群','测试消息甲');
+    var bs=snapOf('北部集群');
+    chk('发消息→快照同步',bs.textContent==='测试消息甲',bs.textContent);
+    chk('发消息→弹窗流追加',$('.rp-flow',B).lastChild.textContent==='测试消息甲');
+
+    /* 重复点同一卡不开新窗 */
+    openPop('北部集群');
+    chk('重复开不重复建窗',opens.length===2,opens.length);
+
+    /* 关闭：closeTop 关后开的 B，A 留守 */
+    closeTop();
+    chk('关顶→B闭A在',document.body.contains(B)===false&&document.body.contains(A)===true);
+    chk('遮罩仍亮(A还在)',back.hidden===false);
+    closeTop();
+    chk('全关→遮罩隐藏',back.hidden===true&&pops.children.length===0);
+  }catch(e){out.push('FAIL probe-exception ['+e.message+']')}
+  document.getElementById('probe-out').textContent=out.join('\n');
+})();
+</script>
+</body>
+</html>
