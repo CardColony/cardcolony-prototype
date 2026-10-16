@@ -30,6 +30,7 @@ TOOL_REGISTRY 派生，不再手工维护：build_tool_schemas（工具面）、
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -42,7 +43,7 @@ from ..storage import card_db, card_store, manuscript_store, memory_store, shado
 from ..storage import event_log, session_facade, session_ops
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 
-from . import card_msg, event_stream
+from . import card_msg, context_regions, event_stream
 from ..toolcard import driver as toolcard_driver
 from ..toolcard import script_loader as toolcard_script_loader
 from ..toolcard import step_prompt as toolcard_step_prompt
@@ -91,12 +92,18 @@ _WEB_GROUP_TOOLS = ("web_search", "fetch_web")
 #                                             TOOL_REGISTRY，同样会被本过滤扫到）
 #   web_search / fetch_web                 → tools_web
 #   list_files/read_file/search_files/write_file → tools_file
+#   draft_rule_edit                        → read（规则卡 2026-10-15·块3：起草是
+#                                             读性质，零新开关；第四段根卡闸另收）
 TOOL_SWITCH: dict[str, str] = {
     "read_card": policy.SWITCH_READ,
     "read_memory": policy.SWITCH_READ,
     "read_shadow": policy.SWITCH_READ,
     # [卡片底座第一步 2026-10-14] 沿通信线读——独立开关（沿连线读比直接读更敏感）
     "read_linked": policy.SWITCH_READ_LINKED,
+    # [规则卡 2026-10-15 · 块3] draft_rule_edit 挂 read（起草是读性质，零新开关；
+    # 只起草不落盘，落盘走用户审批 /rule/commit）。可见性再由 build_tool_schemas
+    # 第四段 ROOT_ONLY_TOOLS 收敛到剧本根卡，执行层 handler 再校验一次（双保险）。
+    "draft_rule_edit": policy.SWITCH_READ,
     "edit_card": policy.SWITCH_EDIT,
     # [编程卡 2026-10-15 · §六块2 · **v1.1 修订**] report_done 挂 tools_file——
     # 原挂 SWITCH_EDIT 系派发方笔误：tool 卡有 edit 无 tools_file，挂 edit 会让
@@ -152,7 +159,11 @@ TOOL_SWITCH: dict[str, str] = {
 #   build_tool_schemas 增第三段 card_type 闸（CODER_ONLY_TOOLS，report_done 只对
 #   coder 下发）。TOOL_REGISTRY 字面量条目数 由 16 → 18（验收 grep 口径见任务书
 #   §六块2 判据 5）。
-TOOL_TABLE_VERSION = "tools-tc-5"
+# tools-tc-6：[规则卡 2026-10-15 · 块3] **工具集变更 ⇒ 递增**：新增第 19 件
+#   draft_rule_edit（根卡起草规则区修改，只起草不落盘）；build_tool_schemas 增
+#   第四段根卡闸（ROOT_ONLY_TOOLS，只对剧本根卡下发）。TOOL_REGISTRY 字面量
+#   条目数 由 18 → 19（验收 grep 口径见任务书 §六块3 硬判据 1）。
+TOOL_TABLE_VERSION = "tools-tc-6"
 
 
 # ============================================================
@@ -555,6 +566,54 @@ async def _h_create_coder_card(work_id: str, current_id: str,
         "card_type": "coder",
         "started": started,
         "shadow": "已派生影子卡（过程记录，你不用管）",
+    }
+
+
+async def _h_draft_rule_edit(work_id: str, current_id: str,
+                             arguments: dict[str, Any],
+                             cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """[规则卡 2026-10-15 · 块3] 根卡起草规则区修改——**只起草不落盘**。
+
+    机械四步：
+      ① 根卡闸：current_id 必须是剧本根卡（work_card_id_of），否则 denied；
+      ② 区名校验：合法区名＝注册表全词表 codes（rule_section_names，恰六区）；
+      ③ 读规则卡对应区当前内容（查首张 rule 卡的 mission 列，纯读零写；
+         无规则卡 → not_found）；
+      ④ 返回 ``{draft, base_hash, section, old, rule_card_id}``——draft 即提议
+         新内容、old 即盘上现文、base_hash＝sha256(old)（供 /rule/commit 乐观
+         比对）。**全程零写入**：落盘只能由用户在弹窗点「同意」后走
+         ``POST /works/{w}/rule/commit``。
+
+    权限：TOOL_SWITCH 挂 SWITCH_READ；工具面由第四段 ROOT_ONLY_TOOLS 收敛到
+    根卡——本函数开头的闸是执行层双保险（同 report_done 手法）。
+    """
+    if current_id != work_store.work_card_id_of(work_id):
+        return err("denied", "draft_rule_edit 仅限剧本根卡调用")
+    section = str(arguments.get("section", "") or "")
+    names = context_regions.rule_section_names(card_store.load_type_registry())
+    if section not in names:
+        return err("validation", f"非法区名: {section}（只允许 {names}）")
+    draft = str(arguments.get("content", "") or "")
+
+    def _fn(conn: Any) -> dict[str, Any] | None:
+        row = conn.execute(
+            "SELECT card_id, mission FROM cards WHERE card_type = 'rule' "
+            "ORDER BY card_id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return {"card_id": row["card_id"], "mission": row["mission"] or ""}
+
+    row = card_db.read_sync(work_id, _fn, None)
+    if row is None:
+        return err("not_found", "规则卡不存在（本 work 尚未创建 rule 卡）")
+    old = context_regions.split_rule_sections(row["mission"]).get(section, "")
+    return {
+        "draft": draft,
+        "base_hash": hashlib.sha256(old.encode("utf-8")).hexdigest(),
+        "section": section,
+        "old": old,
+        "rule_card_id": row["card_id"],
     }
 
 
@@ -1516,6 +1575,38 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_create_coder_card,
         readonly=False,
     ),
+    # [规则卡 2026-10-15 · 块3] 第 19 件工具：根卡起草规则区修改（只起草不落盘）。
+    # 追加在既有 18 件字面量之后 ⇒ 前 18 件工具面顺序逐字不变。下发面：TOOL_SWITCH
+    # 挂 read ＋ build_tool_schemas 第四段 ROOT_ONLY_TOOLS（只对剧本根卡下发）；
+    # 执行层 handler 再校验 current_id==work_card_id_of（双保险，同 report_done 手法）。
+    # readonly=True：全程零写入（落盘走用户审批 /rule/commit，不经过本工具），
+    # 折叠【依据】按「可按原参数重取」口径成立。
+    "draft_rule_edit": ToolDef(
+        schema={
+            "name": "draft_rule_edit",
+            "description": (
+                "起草规则卡某一分区的修改提议（仅剧本根卡可用；只起草、不落盘）。"
+                "返回提议内容与盘上现文、指纹——你不能直接改规则，本工具只出草案；"
+                "调用后修改将弹窗交用户审批，用户点「同意」才写入规则卡生效。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "section": {
+                        "type": "string",
+                        "description": "规则卡分区名（六区之一：project/sub_project/tool/coder/rule/topic，对应各卡类型的注入区）",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "该分区的提议新内容（整区替换草案）",
+                    },
+                },
+                "required": ["section", "content"],
+            },
+        },
+        handler=_h_draft_rule_edit,
+        readonly=True,
+    ),
 }
 
 
@@ -1887,6 +1978,54 @@ def _filter_by_card_type(
     return keep
 
 
+# ============================================================
+# [规则卡 2026-10-15 · 块3] 第四段过滤 · 根卡闸
+#
+# draft_rule_edit 只对剧本根卡（card_id == work_card_id_of(work_id)）下发，
+# 其余卡一律不见——与第三段同纪律：只查 id 不判内容，各段各管一线。
+# **认不出 work ⇒ 收敛**（work_id 空／work 不存在 ⇒ root-only 工具一律收走，
+# fail-closed，绝不放宽）：生产链路 message_runner 恒定传 work_id，缺 work
+# 的只有合成卡面的测试直调——宁可少发、不可错发。
+# ============================================================
+ROOT_ONLY_TOOLS: frozenset[str] = frozenset({"draft_rule_edit"})
+
+
+def _filter_root_only(
+    tools: list[dict[str, Any]], card_id: str, work_id: str = "",
+    cards: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """**第四段过滤 · 根卡闸**（规则卡 2026-10-15 · 块3）。
+
+    ``ROOT_ONLY_TOOLS`` 内的工具只对剧本根卡下发；其余原样穿过。认不出
+    work（work_id 空／查不到根卡）⇒ root-only 工具全部收走（fail-closed）。
+    执行层 handler 另有 current_id 校验（双保险，同 report_done 手法）。
+    """
+    if not any(str(t.get("name", "")) in ROOT_ONLY_TOOLS for t in tools):
+        return tools
+    root_id = work_store.work_card_id_of(work_id) if work_id else ""
+    card = (cards or {}).get(card_id) or {}
+    if root_id and card_id == root_id:
+        return tools
+    keep: list[dict[str, Any]] = []
+    dropped: dict[str, str] = {}
+    for t in tools:
+        name = str(t.get("name", ""))
+        if name in ROOT_ONLY_TOOLS:
+            dropped[name] = "root_only" if root_id else "no_work_context"
+            continue
+        keep.append(t)
+    if dropped:
+        prompt_log.append_perm_log({
+            "fn": "build_tool_schemas",
+            "card_id": card_id,
+            "card_type": card.get("card_type", ""),
+            "granted_tools": [t.get("name") for t in keep],
+            "filtered_tools": dropped,
+            "reason": "root_only_gate",
+        })
+    return keep
+
+
 def build_tool_schemas(
     card_id: str = "",
     work_id: str = "",
@@ -1904,6 +2043,8 @@ def build_tool_schemas(
         二级 ``_filter_by_category`` ← 分类过滤（权限线 T4）
         三级 ``_filter_by_card_type``← 类型闸（编程卡 2026-10-15 · C3：
                                         CODER_ONLY_TOOLS 只对 coder 卡下发）
+        四级 ``_filter_root_only``   ← 根卡闸（规则卡 2026-10-15 · 块3：
+                                        ROOT_ONLY_TOOLS 只对剧本根卡下发）
 
     [T4 权限收口 2026-10-09] ``cards`` ＝ 分类查表所需卡面 meta（上游装配层补传）。
 
@@ -1918,6 +2059,8 @@ def build_tool_schemas(
     tools = _filter_by_category(tools, card_id, work_id, cards)
     # ---- 三级：card_type 闸（编程卡 2026-10-15 · C3）----
     tools = _filter_by_card_type(tools, card_id, work_id, cards)
+    # ---- 四级：根卡闸（规则卡 2026-10-15 · 块3）----
+    tools = _filter_root_only(tools, card_id, work_id, cards)
     return tools
 
 

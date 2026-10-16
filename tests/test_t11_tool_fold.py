@@ -52,6 +52,9 @@ def test_t10_readonly_whitelist():
         "read_memory",
         # [卡片底座第一步 2026-10-14] 新增只读工具 read_linked（沿通信线读）
         "read_linked",
+        # [规则卡 2026-10-15 · 块3] 新增 draft_rule_edit（根卡起草规则区修改，
+        # 全程零写入——落盘走用户审批 /rule/commit，不经过本工具）
+        "draft_rule_edit",
     } & set(card_tools.TOOL_REGISTRY)
 
     assert card_tools.READONLY_TOOLS == frozenset(expected)

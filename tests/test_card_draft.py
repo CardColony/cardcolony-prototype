@@ -57,8 +57,10 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
 # 影子」，改为「只读本卡自己的影子」。
 # [编程卡 2026-10-15] t19-1 → t20-1：工具节增 create_coder_card / report_done 两行，
 # 新增「## 编程卡」使用说明节。
+# [规则卡 2026-10-15] t20-1 → t21-1：新增「## 规则卡」使用说明节（根卡
+# draft_rule_edit 起草＋用户审批落盘）。
 def test_base_prompt_version_is_t20_1():
-    assert prompts.BASE_PROMPT_VERSION == "t20-1"
+    assert prompts.BASE_PROMPT_VERSION == "t21-1"
 
 
 # ---------------------------------------------------------------- 判据1：draft

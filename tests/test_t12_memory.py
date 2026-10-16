@@ -386,10 +386,12 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     # 沿革注释）共 7 次推进一次未跟；git show bbe0e00 --name-only 无本文件 ⇒ 纯漏更新，非工具线擅动。
     # [卡片底座第一步 2026-10-14] tc-3 → tc-4（新增第 20 件工具 read_linked）。
     # [编程卡 2026-10-15] tc-4 → tc-5（新增 report_done / create_coder_card 两件）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-5"
+    # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-6"
     # [判断协议改注入 2026-10-14] t17-1 → t18-1（判断协议摘出 BASE_PROMPT）。
     # [卡片区域语义 v3 2026-10-14] t18-1 → t19-1（read_shadow 只读本卡自己的影子）。
     # [编程卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## 编程卡」节）。
-    assert prompts.BASE_PROMPT_VERSION == "t20-1"
+    # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
+    assert prompts.BASE_PROMPT_VERSION == "t21-1"
     # BASE_PROMPT 工具行在案
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT

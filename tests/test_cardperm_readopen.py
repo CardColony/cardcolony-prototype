@@ -284,8 +284,12 @@ def test_tool_card_toolface_matches_its_perms():
     tool_perms = policy.perms_for("rd_project", "tool")
     card = {"card_id": "card_t", "card_type": "tool", "perms": tool_perms}
     # [卡片底座第一步 2026-10-14] tool 类型 v3 起配了 read_linked ⇒ read_linked 可见
+    # [规则卡 2026-10-15 · 块3 · 随版本推进翻新] draft_rule_edit 挂 read ⇒ 在本测试
+    # 的「分类层」镜头（_visible 只跑第二段 _filter_by_category）里可见——它属 read
+    # 家族；真实下发面还要过第四段根卡闸（ROOT_ONLY_TOOLS），tool 卡拿不到：
+    # 见 test_rule_card.py::test_draft_rule_edit_toolface_root_only。
     assert _visible(card) == {"read_card", "read_memory", "read_shadow",
-                              "read_linked",
+                              "read_linked", "draft_rule_edit",
                               "edit_card", "delete_card", "update_shadow",
                               "create_plan", "plan_reorder", "plan_insert",
                               "plan_remove", "plan_modify", "step_complete"}

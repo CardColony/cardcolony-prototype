@@ -1152,6 +1152,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           note.textContent = "⚠ 响应连接中断，已从事件流恢复回复（若有新卡片，返回画布后可见）";
           ensureMsgs().appendChild(note);
           scrollChatBottom();
+          if (window.__maybeOpenRuleEditModal) window.__maybeOpenRuleEditModal(cardId);
           return true;
         }
       } catch (e2) { /* 静默，下轮再试 */ }
@@ -1178,6 +1179,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // [C1 单源] 回复正文不再由 POST 响应直接上屏：此刻事件已全部落盘，
       // 走与刷新**同一条**渲染路（拉 timeline → 装配器 → 快照 → 渲染）。
       await EventFlow.resync(WORK_ID, cardId);
+      if (window.__maybeOpenRuleEditModal) window.__maybeOpenRuleEditModal(cardId);
 
       // created_cards 绿条
       if (resp.created_cards && resp.created_cards.length > 0) {
@@ -1299,6 +1301,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       setTimeout(() => EventFlow.stop(), 2500);
       // [C1 单源] 同 send()：回复正文走 timeline 回流，不从响应体直接上屏。
       await EventFlow.resync(WORK_ID, cardId);
+      if (window.__maybeOpenRuleEditModal) window.__maybeOpenRuleEditModal(cardId);
       scrollChatBottom();
     } catch (e) {
       if (waiting) waiting.stop();
@@ -1658,6 +1661,211 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     refreshBadge();
     setInterval(refreshBadge, 60000);
+  }
+
+  // ═══ [规则卡 2026-10-15] 规则面板（右栏）＋ 根卡提议审批弹窗 ═══
+  // 规则卡：每 work 一张（parent=根卡，card_type="rule"）；正文按 ## {区名} 分六区
+  // （project/sub_project/tool/coder/topic/rule＝card_type code），存 mission 列。
+  // 直改即存：textarea blur → PATCH /rule/sections/{section}（带 base_hash，不符→409 提示刷新）。
+  // 审批：仅根卡可调 draft_rule_edit 提议（工具自身不落盘）；回合后扫 timeline 的
+  // tool_result（data.tool=="draft_rule_edit"）→ 开弹窗，「同意」→ POST /rule/commit 落盘。
+  {
+    const rulePanel = document.getElementById("rulePanel");
+    const rulePanelBody = document.getElementById("rulePanelBody");
+    const ruleTab = document.getElementById("ruleTab");
+    let ruleData = null;          // GET /rule 响应（含 sections/hashes/inject_type_counts）
+    let ruleCardId = "";          // 规则卡 card_id
+    const ruleSeen = new Set();   // 已弹过审批的 draft_rule_edit 去重（tool_result 的 seq）
+
+    function toggleRulePanel() {
+      rulePanel.classList.toggle("open");
+      if (rulePanel.classList.contains("open")) loadRulePanel();
+    }
+    if (ruleTab) ruleTab.onclick = toggleRulePanel;
+
+    async function loadRulePanel() {
+      if (!rulePanelBody) return;
+      rulePanelBody.innerHTML = `<div class="rule-panel-empty">加载中…</div>`;
+      try {
+        ruleData = await API.call("GET", `/api/works/${WORK_ID}/rule`);
+        ruleCardId = (ruleData && ruleData.card_id) || "";
+        renderRulePanel();
+      } catch (e) {
+        rulePanelBody.innerHTML = `<div class="rule-panel-empty">规则卡读取失败：${escapeHtml(e.message || "")}</div>`;
+      }
+    }
+
+    function renderRulePanel() {
+      if (!rulePanelBody || !ruleData) return;
+      if (!ruleData.exists) {
+        rulePanelBody.innerHTML =
+          `<div class="rule-panel-empty">本剧本还没有规则卡。<br>` +
+          `在画布/导航新建一张「规则卡」（card_type=rule）即可启用。</div>`;
+        return;
+      }
+      rulePanelBody.innerHTML = "";
+      const sections = ruleData.sections || {};
+      const hashes = ruleData.hashes || {};
+      const counts = ruleData.inject_type_counts || {};
+      for (const [name, content] of Object.entries(sections)) {
+        const wrap = document.createElement("div");
+        wrap.className = "rule-sec";
+        const n = counts[name] || 0;
+        wrap.innerHTML =
+          `<div class="rule-sec-head">` +
+          `<span class="rule-sec-name">${escapeHtml(name)}</span>` +
+          `<span class="rule-sec-inject">正被 ${n} 类卡注入</span>` +
+          `</div>` +
+          `<textarea class="rule-sec-textarea" data-sec="${escapeHtml(name)}">${escapeHtml(content || "")}</textarea>` +
+          `<div class="rule-sec-status"></div>`;
+        rulePanelBody.appendChild(wrap);
+      }
+      // blur 即存（无确认框）；status 行显示「已保存」或错误
+      rulePanelBody.querySelectorAll(".rule-sec-textarea").forEach((ta) => {
+        ta.addEventListener("blur", () => saveRuleSection(ta));
+      });
+    }
+
+    async function saveRuleSection(ta) {
+      const sec = ta.dataset.sec;
+      const statusEl = ta.parentElement.querySelector(".rule-sec-status");
+      const content = ta.value;
+      const baseHash = (ruleData && ruleData.hashes && ruleData.hashes[sec]) || "";
+      if (!ruleCardId) { if (statusEl) { statusEl.textContent = "规则卡不存在"; statusEl.classList.add("err"); } return; }
+      if (statusEl) { statusEl.textContent = "保存中…"; statusEl.classList.remove("err"); }
+      try {
+        const r = await API.call("PATCH", `/api/works/${WORK_ID}/rule/sections/${encodeURIComponent(sec)}`,
+          { content, base_hash: baseHash });
+        if (ruleData && ruleData.hashes) ruleData.hashes[sec] = r.new_hash;
+        if (ruleData && ruleData.sections) ruleData.sections[sec] = content;
+        if (statusEl) statusEl.textContent = "已保存";
+      } catch (e) {
+        const msg = String(e.message || "");
+        if (statusEl) {
+          statusEl.textContent = msg.indexOf("hash 不符") >= 0 ? "内容已被改，请刷新重试" : ("保存失败：" + msg);
+          statusEl.classList.add("err");
+        }
+      }
+    }
+
+    // 导航树点规则卡 → 开面板不进对话（gotoCard 前拦截）
+    const _origHandleCardRowClick = handleCardRowClick;
+    handleCardRowClick = function (rowEl) {
+      const cid = rowEl.dataset.cid;
+      const wid = rowEl.dataset.wid || WORK_ID;
+      const snap = navStore.snapshot;
+      const p = snap && snap.project ? snap.project(wid) : null;
+      const card = p && (p.cards || []).find(c => c.card_id === cid);
+      if (card && card.card_type === "rule") {
+        if (!rulePanel.classList.contains("open")) rulePanel.classList.add("open");
+        loadRulePanel();
+        return;   // 不 gotoCard、不进对话
+      }
+      return _origHandleCardRowClick(rowEl);
+    };
+
+    // ─── 根卡提议审批弹窗：扫 timeline 的 draft_rule_edit 成功 tool_result ───
+    // 复用既有 draftModal 的 DOM，走独立 dmRule 状态机（与块3起草弹窗互不干扰）。
+    const dmRuleModal = document.getElementById("draftModal");
+    const dmRuleOverlay = document.getElementById("draftOverlay");
+    const dmRuleTitle = document.getElementById("draftModalTitle");
+    const dmRuleArea = document.getElementById("draftArea");
+    const dmRuleFbBox = document.getElementById("draftFeedbackBox");
+    const dmRuleFbInput = document.getElementById("draftFeedbackInput");
+    const dmRuleErr = document.getElementById("draftModalError");
+    const dmRuleConfirm = document.getElementById("draftConfirmBtn");
+    const dmRuleFeedback = document.getElementById("draftFeedbackBtn");
+    const dmRuleClose = document.getElementById("draftCloseBtn");
+    const dmRuleX = document.getElementById("draftModalX");
+    let dmRule = null;   // { section, old, draft, baseHash, ruleCardId, busy }
+
+    function setRuleModalError(msg) {
+      if (!dmRuleErr) return;
+      if (msg) { dmRuleErr.textContent = msg; dmRuleErr.style.display = "block"; }
+      else { dmRuleErr.textContent = ""; dmRuleErr.style.display = "none"; }
+    }
+
+    function openRuleEditModal(payload) {
+      dmRule = {
+        section: payload.section || "",
+        old: payload.old || "",
+        draft: payload.draft || "",
+        baseHash: payload.base_hash || "",
+        ruleCardId: payload.rule_card_id || ruleCardId,
+        busy: false,
+      };
+      dmRuleTitle.textContent = `规则修改审批 · ${dmRule.section}`;
+      dmRuleArea.innerHTML =
+        `<div class="rule-old-block"><div class="rule-sec-name">当前内容</div><pre>${escapeHtml(dmRule.old)}</pre></div>` +
+        `<div class="rule-new-block"><div class="rule-sec-name">提议修改为</div><pre>${escapeHtml(dmRule.draft)}</pre></div>`;
+      dmRuleArea.classList.remove("loading");
+      dmRuleFbBox.classList.remove("open");
+      dmRuleFbInput.value = "";
+      setRuleModalError("");
+      dmRuleConfirm.disabled = false;
+      dmRuleFeedback.disabled = true;   // 审批无「反馈重起草」，只留 同意/拒绝
+      dmRuleFeedback.style.display = "none";
+      dmRuleModal.classList.add("open");
+    }
+
+    async function submitRuleCommit() {
+      if (!dmRule || dmRule.busy) return;
+      dmRule.busy = true;
+      dmRuleConfirm.disabled = true;
+      try {
+        await API.call("POST", `/api/works/${WORK_ID}/rule/commit`, {
+          section: dmRule.section,
+          content: dmRule.draft,
+          base_hash: dmRule.baseHash,
+        });
+        API.toast("规则已写入", "success");
+        closeRuleModal();
+        if (rulePanel.classList.contains("open")) loadRulePanel();
+      } catch (e) {
+        const msg = String(e.message || "");
+        setRuleModalError(msg.indexOf("hash 不符") >= 0 ? "内容已被改，请重新提议" : ("写入失败：" + msg));
+        dmRuleConfirm.disabled = false;
+      } finally {
+        dmRule.busy = false;
+      }
+    }
+
+    function closeRuleModal() {
+      dmRule = null;
+      dmRuleModal.classList.remove("open");
+      dmRuleArea.textContent = "";
+      dmRuleFbBox.classList.remove("open");
+      setRuleModalError("");
+      dmRuleFeedback.style.display = "";
+    }
+
+    if (dmRuleConfirm) dmRuleConfirm.onclick = () => { if (dmRule) submitRuleCommit(); };
+    if (dmRuleClose) dmRuleClose.onclick = closeRuleModal;
+    if (dmRuleX) dmRuleX.onclick = closeRuleModal;
+    if (dmRuleOverlay) dmRuleOverlay.onclick = closeRuleModal;
+
+    // 回合收口（send/resend/tryRecover 的 resync 之后）扫 timeline 开审批弹窗
+    async function maybeOpenRuleEditModal(cardId) {
+      if (dmRule) return;   // 已有审批弹窗在，不叠开
+      try {
+        const tl = await API.getTimeline(WORK_ID, cardId);
+        const items = (tl && tl.items) || [];
+        for (let i = items.length - 1; i >= 0; i--) {
+          const it = items[i];
+          if (!it || it.type !== "tool_result") continue;
+          const d = it.data || {};
+          if (d.tool !== "draft_rule_edit" || !d.ok) continue;
+          const seq = it.seq || 0;
+          if (ruleSeen.has(seq)) continue;
+          ruleSeen.add(seq);
+          const res = (d.result && d.result.data) || {};
+          if (res.section !== undefined) openRuleEditModal(res);
+          return;   // 每次收口最多开一个
+        }
+      } catch (e) { /* 零阻断 */ }
+    }
+    // 暴露给 send/resend/tryRecover 在 resync 后调用
+    window.__maybeOpenRuleEditModal = maybeOpenRuleEditModal;
   }
 
   restoreFromHash();

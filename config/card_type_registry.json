@@ -70,6 +70,14 @@
           "requires_owner": false,
           "default_template": "coder",
           "allowed_transitions": ["active", "completed"]
+        },
+        {
+          "code": "rule",
+          "label": "规则卡",
+          "description": "全局行为准则卡，按卡类型分区，注入对应卡上下文；模型只读。",
+          "can_have_children": false,
+          "requires_owner": false,
+          "default_template": "rule"
         }
       ]
     },
@@ -84,6 +92,14 @@
           "requires_owner": false,
           "default_template": "topic",
           "allowed_transitions": ["active", "completed"]
+        },
+        {
+          "code": "rule",
+          "label": "规则卡",
+          "description": "全局行为准则卡，按卡类型分区，注入对应卡上下文；模型只读。",
+          "can_have_children": false,
+          "requires_owner": false,
+          "default_template": "rule"
         }
       ]
     },

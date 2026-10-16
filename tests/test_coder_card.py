@@ -2,7 +2,7 @@
 """[编程卡 2026-10-15 · §六块2/块3] 编程卡全部新测试（任务书 §四 白名单件）。
 
 覆盖：
-- 判据5/块1 硬判据：工具集指纹（grep 18 / tools-tc-5 / t20-1）、开关挂接、
+- 判据5/块1 硬判据：工具集指纹（grep 19 / tools-tc-6 / t21-1）、开关挂接、
   coder perms 恰 9、search/list_memory 预留机关在册；
 - 判据1/2：工具面分化（coder 见 report_done 不见 create_card 族；主卡见
   create_coder_card 不见 report_done——第三段 card_type 闸）；
@@ -85,9 +85,12 @@ def _app() -> FastAPI:
 def test_toolset_fingerprints_and_switch_bindings():
     src = (REPO / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
     # [编程卡 判据5] 字面量口径（任务书 §六 grep 口径）
-    assert src.count('": ToolDef(') == 18
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-5"
-    assert prompts.BASE_PROMPT_VERSION == "t20-1"
+    # [规则卡 2026-10-15] 18 → 19（第 19 件 draft_rule_edit，§六块3 硬判据 1）。
+    assert src.count('": ToolDef(') == 19
+    # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-6"
+    # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
+    assert prompts.BASE_PROMPT_VERSION == "t21-1"
     # 挂接（§六块2 · v1.1 修订：report_done 挂 tools_file，不设新开关；
     # 挂 edit 会让 readopen:287/:252 零翻新下无法同时成立——见 card_tools 注释）
     assert card_tools.TOOL_SWITCH["report_done"] == policy.SWITCH_TOOLS_FILE
