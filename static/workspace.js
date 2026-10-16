@@ -7,13 +7,13 @@ import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { EventFlow } from "./stream.js?v=36";
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { reloadCanvas } from "./canvas.js?v=40";
+import { reloadCanvas } from "./canvas.js?v=41";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=35";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=30";
+import { createNavSystem } from "./esm/nav_system.js?v=31";
 import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=30";
 
 const WORK_ID = window.__WORK_ID__;
@@ -92,7 +92,8 @@ const WORK_ID = window.__WORK_ID__;
     root.className = "cseg root";
     root.textContent = (p.title || "").trim() || rootCid;
     root.title = "返回画布（项目名即根卡）";
-    root.onclick = () => setAppView("canvas");
+    // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 整页跳转到画布页 URL。
+    root.onclick = () => location.assign("/work/" + WORK_ID);
     el.appendChild(root);
     for (const c of chain) {
       if (c.card_id === rootCid) continue;   // 根卡＝首段，不重复
@@ -1418,7 +1419,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   document.getElementById("inspTab").onclick = toggleInspector;
   // [画布入口 2026-10-16 用户令] 顶部栏最左 icon → 返回本项目画布（根卡/子卡聊天态常显）
   const canvasEntryBtn = document.getElementById("canvasEntryBtn");
-  if (canvasEntryBtn) canvasEntryBtn.onclick = () => setAppView("canvas");
+  // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 回画布＝整页跳转到画布页 URL。
+  if (canvasEntryBtn) canvasEntryBtn.onclick = () => location.assign("/work/" + WORK_ID);
   // 窄条 ☰：钉住（或收起）悬停浮层全树
   const navRailBtn = document.getElementById("navRailBtn");
   if (navRailBtn) {

@@ -125,13 +125,18 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
-def _render_work(work_id: str, card_id: str = "") -> str:
-    """work 页模板渲染：注入 WORK_ID 与 CARD_ID。
+def _render_work(work_id: str) -> str:
+    """画布页模板渲染（templates/work.html）。
 
-    [阶段2 A2.1 2026-10-17] 对话独立地址 /work/{wid}/card/{cid} 与画布页 /work/{wid}
-    共用同一份 work.html（阶段 3 才拆模板），故两处占位符一并注入；画布页 CARD_ID 为空串。
+    [阶段3 A3.2 2026-10-17] 模板已拆分：画布页只注入 WORK_ID，CARD_ID 恒为空串。
     """
     html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
+    return html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", "")
+
+
+def _render_card(work_id: str, card_id: str) -> str:
+    """对话页模板渲染（templates/card.html，[阶段3 A3.2] 拆出的纯对话页）。"""
+    html = (BASE_DIR / "templates" / "card.html").read_text(encoding="utf-8")
     return html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", card_id)
 
 
@@ -143,8 +148,8 @@ async def work_page(work_id: str) -> HTMLResponse:
 
 @app.get("/work/{work_id}/card/{card_id}", response_class=HTMLResponse)
 async def work_card_page(work_id: str, card_id: str) -> HTMLResponse:
-    """[阶段2 A2.1] 对话独立页：URL 即页面身份（刷新各回各家）。阶段 2 仍渲染 work.html。"""
-    return HTMLResponse(content=_render_work(work_id, card_id))
+    """[阶段2 A2.1 / 阶段3 A3.2] 对话独立页：URL 即页面身份（刷新各回各家）。"""
+    return HTMLResponse(content=_render_card(work_id, card_id))
 
 
 @app.get("/settings", response_class=HTMLResponse)

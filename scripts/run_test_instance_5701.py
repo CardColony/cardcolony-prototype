@@ -96,9 +96,15 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
-def _render_work(work_id: str, card_id: str = "") -> str:
-    """与 main.py 逐行一致（[阶段2 A2.1 2026-10-17] 双注入 WORK_ID / CARD_ID）。"""
+def _render_work(work_id: str) -> str:
+    """与 main.py 逐行一致（[阶段3 A3.2] 画布页只注入 WORK_ID）。"""
     html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
+    return html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", "")
+
+
+def _render_card(work_id: str, card_id: str) -> str:
+    """与 main.py 逐行一致（[阶段3 A3.2] 对话页渲染 card.html）。"""
+    html = (BASE_DIR / "templates" / "card.html").read_text(encoding="utf-8")
     return html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", card_id)
 
 
@@ -109,8 +115,8 @@ async def work_page(work_id: str) -> HTMLResponse:
 
 @app.get("/work/{work_id}/card/{card_id}", response_class=HTMLResponse)
 async def work_card_page(work_id: str, card_id: str) -> HTMLResponse:
-    """[阶段2 A2.1] 对话独立地址（与 main.py 逐行一致）。"""
-    return HTMLResponse(content=_render_work(work_id, card_id))
+    """[阶段2 A2.1 / 阶段3 A3.2] 对话独立地址（与 main.py 逐行一致）。"""
+    return HTMLResponse(content=_render_card(work_id, card_id))
 
 
 @app.get("/__instance__")
