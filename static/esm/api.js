@@ -132,7 +132,10 @@ export const API = {
   // ★ 这里的 N 必须是**落盘 events seq**，绝不是内存 journal seq（两套计数空间）。
   getTimeline: (wid, cid, from) => call("GET",
     `/api/works/${wid}/cards/${cid}/timeline${(typeof from === "number" && from > 0) ? "?from=" + from : ""}`),
-  postMessage: (wid, cid, content) => call("POST", `/api/works/${wid}/cards/${cid}/messages`, { content }),
+  // [更新现状按钮改造 2026-10-16] op 缺省不带到请求体 ⇒ 普通发送与改前逐字等价；
+  // 传 op（如 "update_status"）⇒ 本轮走专用通道（后端认它注入专用任务 + 追加专用工具）。
+  postMessage: (wid, cid, content, op) => call("POST",
+    `/api/works/${wid}/cards/${cid}/messages`, op ? { content, op } : { content }),
   getProgress: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/progress`),
   // [迭代四 F3①] 停止按钮（U-7）
   postStop: (wid, cid) => postStop(wid, cid),

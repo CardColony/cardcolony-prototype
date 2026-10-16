@@ -161,7 +161,9 @@
    拼接高度用 CSS 变量同源：.nav-top 固定高 = 变量值，.nav-tree top = 同变量，
    两处只改一处，杜绝"字体渲染差 1px 盖住/露缝"。55px = padding(12+8) + 搜索框(≈35)。 */
 .app-nav.rail {
-  --nav-rail-search-h: 55px;
+  /* [左栏新建项目 2026-10-16] 搜索区由「一个搜索框」变成「新建项目按钮 ＋ 搜索框」两行：
+     高度 = padding(12+8) + 按钮(≈33) + 行距(8) + 搜索框(≈33) ≈ 94px。 */
+  --nav-rail-search-h: 94px;
 }
 .app-nav.rail .nav-crumb-box { display: none !important; }
 .app-nav.rail .nav-top {
@@ -180,8 +182,11 @@
   border-radius: 8px 8px 0 0;
   box-shadow: 0 -8px 24px rgba(0,0,0,0.5);   /* 面板顶部外露段也带阴影，避免拼接处露馅 */
 }
+/* [左栏新建项目 2026-10-16] .nav-top 现为竖排（新建项目按钮在上、搜索框在下），
+   浮层顶部沿用同一排布；此处必须是 display:flex 而非 block，否则 .nav-top 的
+   flex 列向与 gap 失效、按钮与搜索框会贴在一起。 */
 .app-nav.rail:hover .nav-top,
-.app-nav.rail.pinned .nav-top { display: block; }
+.app-nav.rail.pinned .nav-top { display: flex; }
 
 /* ---- 常驻动作条（通知）与底部设置入口：既有功能，原样搬入 ---- */
 #navActions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px; }
@@ -425,3 +430,16 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
 }
 .nav-err { border: none; background: transparent; color: var(--dim); font-size: 12px; cursor: pointer; padding: 0; }
 .nav-err:hover { color: var(--text); }
+
+/* ---- 左栏【新建项目】按钮：搜索框**上方**、与搜索框**等宽** ----
+   [左栏新建项目 2026-10-16 用户令] **与首页同一份实现**：类名 .home-new-project 两页共用
+   （原定义在 home.css，2026-10-16 迁入此处——左栏样式的唯一真相是 nav.css，且 work.html
+   不加载 home.css；留在原处会让 work 页的同一按钮没有样式）。
+   · 首页：.home-new-project 是 .app-nav 的直接子块 → 自带 padding: 12px 10px 0。
+   · 工作页：同一个类挂在 #navTop 内（搜索框之上），外距由 #navTop 自己的 padding 承担，
+     故只在作为 .app-nav 直接子块时才加 padding。
+   按钮外观走 style.css 的 .btn.primary——与首页 #homeNewBtn 同一个类、同一条 createProject 链路。 */
+.nav-top { display: flex; flex-direction: column; gap: 8px; }
+.home-new-project { flex: none; }
+.app-nav > .home-new-project { padding: 12px 10px 0; }
+.home-new-project .btn { width: 100%; font-size: 13px; padding: 7px 10px; }

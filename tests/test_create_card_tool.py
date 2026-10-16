@@ -76,7 +76,7 @@ def test_tool_table_version_bumped():
     规则区修改），build_tool_schemas 增第四段根卡闸。
     """
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-7"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-8"
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():

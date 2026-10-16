@@ -20,34 +20,37 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);padding:32px
 button{font-family:var(--font);cursor:pointer}
 
 .stage{min-height:420px;padding:8px}
-.unit{width:320px;--cc:var(--c-work)}
+.unit{width:360px;--cc:var(--c-work)}
 
 /* ══════ 根卡：一棵活动树的门面 ══════
    结构：面板底 + 圆角 + 琥珀左条
    卡体自上而下：名字 → 三行状况 → （有则）新消息气泡
    右侧卡片右缘钉一个子卡控件（icon+数字，收起/展开两态）
    整卡一张干净的卡，无碎块。 */
-.root{position:relative;background:var(--panel);border:1px solid var(--border);
+.root{position:relative;display:flex;min-height:292px;background:var(--panel);border:1px solid var(--border);
   border-left:3px solid var(--cc);border-radius:8px}
-.rbody{padding:18px 20px 16px 20px}                      /* 左右对称，不再为 icon 偏置 */
-.rname{font-size:20px;font-weight:650;line-height:1.4;color:var(--text);
+.rbody{flex:1;padding:22px 20px 18px 20px;display:flex;flex-direction:column}
+                                                          /* rcore 只包住内容、不吃余量——icon 锚＝内容真实中线；余量由气泡 auto 上边距吸收，气泡永远贴卡底 */
+.rcore{position:relative}                                /* 正常内容区（名字+状况）＝icon 居中基准；气泡在其外，不参与中线计算 */
+.rname{font-size:21px;font-weight:650;line-height:1.5;color:var(--text);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   padding-right:52px}                                   /* 仅名字这行让位右缘 icon，不波及下方 */
-.rstatus{margin-top:15px;display:flex;flex-direction:column;gap:9px;
+.rstatus{margin-top:20px;display:flex;flex-direction:column;gap:12px;
   padding-right:52px}
 .rstatus div{font-size:13.5px;color:var(--soft);line-height:1.5;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-/* ── 子卡控件：钉在卡片右缘中部（不是名字行内、不是整块大条）
-   收起=三张叠卡 · 展开=三张扇形散开的牌；展开时放大·加粗·变卡色 ── */
-.subctl{position:absolute;right:8px;top:50%;transform:translateY(-50%);
-  display:inline-flex;align-items:center;gap:6px;flex-direction:column;
+/* ── 子卡控件：锚=.rcore（名字+状况），top:50% 即内容区中线——气泡在 rcore 之外，天然不计入
+   收起=三张叠卡 · 展开=三张扇形散开的牌；两态水平同轴 20，icon 与数字并排(左icon·右数字)·垂直居中对齐 ── */
+.subctl{position:absolute;right:-12px;top:50%;transform:translateY(-50%);
+  /* 锚=rcore（内容区）中线；rcore 右缘在卡内 20px，right:-12px 抵偿后＝距卡右缘 8px，视觉位置与旧版一致 */
+  display:inline-flex;align-items:center;gap:6px;
   background:transparent;border:none;padding:6px 4px;border-radius:8px;
   cursor:pointer;user-select:none;color:var(--dim)}
 .subctl .ic{width:30px;height:30px;display:flex;transition:width .15s,height .15s}
 .subctl .ic svg{width:100%;height:100%;display:block}
 .subctl .n{font-size:16px;line-height:1;font-variant-numeric:tabular-nums;transition:font-size .15s}
-.subctl:hover{color:var(--soft);background:var(--hair)}
+.subctl:hover{color:var(--soft)}
 .subctl .ic-open{display:none}
 .subctl.on{color:var(--cc)}
 .subctl.on .ic{width:40px;height:40px}
@@ -55,15 +58,22 @@ button{font-family:var(--font);cursor:pointer}
 .subctl.on .ic-open{display:block}
 .subctl.on .ic-closed{display:none}
 
-/* ── 新消息气泡（卡内底部 · 四周留空不贴边 · 有新消息才出现 · 最多两行 · 末尾"…" · 点击开快捷窗） ── */
-.bubble{margin:24px 10px 14px;padding:10px 12px 11px;border-radius:8px;cursor:pointer;
-  background:#272727;border:1px solid #3c3c3c;
-  font-size:12.5px;color:var(--soft)}
-.btxt{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
-  line-height:1.55;overflow:hidden;word-break:break-word}
-.bubble:hover{color:var(--text);background:#303030}
+/* ── 新消息气泡（消息泡形 · 左下尾巴 · 右上 NEW红壳 · 两行高流式窗·无滚动条 · 流式自动跟随 · 点击开快捷窗） ── */
+.bubble{--bbg:#272727;--bbr:#3c3c3c;position:relative;margin:30px -8px 12px -10px;padding:11px 14px 12px;
+  border-radius:12px 12px 12px 4px;cursor:pointer;
+  background:var(--bbg);border:1px solid var(--bbr);
+  font-size:13px;color:var(--soft)}
+.rbody>.bubble{margin-top:auto}   /* 根卡气泡：auto 上边距吃掉余量 → 贴卡底（子卡气泡不受影响） */
+.bubble::before{content:"";position:absolute;left:14px;bottom:-5.5px;width:10px;height:10px;
+  background:var(--bbg);border-right:1px solid var(--bbr);border-bottom:1px solid var(--bbr);
+  transform:rotate(45deg)}
+.bnew{position:absolute;top:-8px;right:-4px;font-size:9px;font-weight:800;font-style:normal;
+  letter-spacing:1px;line-height:1;padding:3px 7px;border-radius:8px 8px 8px 2px;
+  background:#e5484d;color:#fff;pointer-events:none}
+.btxt{display:block;max-height:42px;overflow:hidden;line-height:1.6;word-break:break-word}
+.bubble:hover{--bbg:#303030;--bbr:#4a4a4a;color:var(--text)}
 .bubble[hidden]{display:none}
-.kid .bubble{margin:18px 10px 8px}
+.kid .bubble{margin:22px -6px 9px -8px}
 .inrow{display:flex;align-items:center;gap:10px;padding:12px 14px 12px 20px;border-top:1px solid var(--hair)}
 .qin{flex:1;min-width:0;background:transparent;border:none;outline:none;
   border-bottom:1px solid #3a3a3a;color:var(--text);font-size:13.5px;padding:4px 2px 6px}
@@ -74,7 +84,7 @@ button{font-family:var(--font);cursor:pointer}
 
 /* ── 子卡 ── */
 .kids{margin-top:18px;display:flex;flex-direction:column;gap:14px}
-.kidwrap{width:300px;display:flex;flex-direction:column}
+.kidwrap{width:330px;display:flex;flex-direction:column}
 .kidwrap.t-char{--cc:var(--c-char)}
 .kidwrap.t-plot{--cc:var(--c-plot)}
 .kidwrap.t-setting{--cc:var(--c-setting)}
@@ -141,33 +151,35 @@ button{font-family:var(--font);cursor:pointer}
 <section class="stage">
   <div class="unit" id="unit">
     <div class="root st-run" id="rootCard" data-card="赤潮登陆推演">
-      <button class="subctl" id="rail" type="button" aria-label="展开/收起子卡">
-        <span class="ic">
-          <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
-            <!-- 收起：三张卡叠成一摞（错位露出，全在框内） -->
-            <g class="ic-closed">
-              <rect x="8"  y="8"  width="22" height="22" rx="2.5"/>
-              <rect x="11" y="12" width="22" height="22" rx="2.5"/>
-              <rect x="14" y="16" width="22" height="22" rx="2.5"/>
-            </g>
-            <!-- 展开：三张牌从底部扇形摊开（旋转角收小，不越框） -->
-            <g class="ic-open">
-              <rect x="13" y="5"  width="14" height="26" rx="2"/>
-              <rect x="5"  y="8"  width="12" height="23" rx="2" transform="rotate(-16 13 31)"/>
-              <rect x="22" y="8"  width="12" height="23" rx="2" transform="rotate(16 27 31)"/>
-            </g>
-          </svg>
-        </span>
-        <span class="n">3</span>
-      </button>
       <div class="rbody">
-        <div class="rname" id="pName">赤潮登陆推演</div>
-        <div class="rstatus" id="pStatus">
-          <div>第12轮 · 补给线切断后第3天</div>
-          <div>3行为体待决策 · 2节点悬置</div>
-          <div>停在：是否空投物资</div>
+        <div class="rcore">
+          <button class="subctl" id="rail" type="button" aria-label="展开/收起子卡">
+            <span class="ic">
+              <svg viewBox="0 0 40 40" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+                <!-- 收起：三张短卡（14×18）实体叠成一摞（y=7/11/15 → 可见中心 20＝盒中心，不偏下；水平中心 20 两态同轴） -->
+                <g class="ic-closed">
+                  <rect x="9"  y="7"  width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                  <rect x="13" y="11" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                  <rect x="17" y="15" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                </g>
+                <!-- 展开：三张同尺寸短卡（13×18）绕支点(20,29)扇形摊开 ±20°（可见中心≈20，与收起态同轴不跳） -->
+                <g class="ic-open">
+                  <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)" transform="rotate(-20 20 29)"/>
+                  <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)" transform="rotate(20 20 29)"/>
+                  <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)"/>
+                </g>
+              </svg>
+            </span>
+            <span class="n">3</span>
+          </button>
+          <div class="rname" id="pName">赤潮登陆推演</div>
+          <div class="rstatus" id="pStatus">
+            <div>第12轮 · 补给线切断后第3天</div>
+            <div>3行为体待决策 · 2节点悬置</div>
+            <div>停在：是否空投物资</div>
+          </div>
         </div>
-        <div class="bubble" data-card="赤潮登陆推演"><span class="btxt">北部集群燃料仅够维持4天，第二梯队可佯攻吸引火力但胜率不足三成。是否立即执行空投方案？</span></div>
+        <div class="bubble" data-card="赤潮登陆推演"><i class="bnew">NEW</i><span class="btxt">北部集群燃料仅够维持4天，第二梯队可佯攻吸引火力但胜率不足三成。是否立即执行空投方案？</span></div>
       </div>
     </div>
     <div class="kids" id="kids" hidden>
@@ -176,7 +188,7 @@ button{font-family:var(--font);cursor:pointer}
       </div>
       <div class="kidwrap t-plot">
         <div class="kid st-run" data-card="空投方案"><div class="ktitle"><span class="kname">空投方案</span><span class="kcnt">1 子卡</span></div><div class="ksum">18小时决策窗 · 胜率三成</div>
-          <div class="bubble" data-card="空投方案"><span class="btxt">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。这是很长的一段文字用来测试气泡两行省略号截断的效果到底稳不稳定。</span></div></div>
+          <div class="bubble" data-card="空投方案"><i class="bnew">NEW</i><span class="btxt">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。这是很长的一段文字用来测试气泡两行滚动与流式跟随的效果到底稳不稳定。</span></div></div>
       </div>
       <div class="kidwrap t-setting st-done">
         <div class="kid"><div class="ktitle"><span class="kname">补给线地理</span></div><div class="ksum">河谷桥点 · 季风窗口期</div></div>
@@ -296,6 +308,7 @@ button{font-family:var(--font);cursor:pointer}
       '<div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>';
     var nm=$('.rp-name',el);
     nm.appendChild(document.createTextNode(card));
+    var eb=bubOf(card);if(eb){var nw=$('.bnew',eb);if(nw)nw.remove()}
     if(STATE[card]==='done')el.classList.add('st-done');
     var flow=$('.rp-flow',el);
     (SEED[card]||[]).forEach(function(m){
@@ -332,10 +345,21 @@ button{font-family:var(--font);cursor:pointer}
     if(e.key==='Escape')closeTop();
   });
 
-  /* 气泡两行封顶：溢出末尾省略号 */
-  function fitBub(b){
+  /* 气泡流式：内容更新自动滚底跟随（探针模式同步落全文，便于断言） */
+  var PROBE=location.hash==='#probe';
+  function streamBub(b,text){
     var t=$('.btxt',b);if(!t)return;
-    b.classList.toggle('over',t.scrollHeight>t.clientHeight);
+    if(PROBE){t.textContent=text;t.scrollTop=t.scrollHeight;return}
+    t.textContent='';var i=0;
+    (function step(){
+      if(i>=text.length){t.scrollTop=t.scrollHeight;return}
+      t.textContent+=text.charAt(i++);t.scrollTop=t.scrollHeight;setTimeout(step,26);
+    })();
+  }
+  function ensureNew(b){
+    if($('.bnew',b))return;
+    var i=document.createElement('i');i.className='bnew';i.textContent='NEW';
+    b.insertBefore(i,b.firstChild);
   }
   function bubOf(card){
     var els=document.querySelectorAll('.bubble');
@@ -360,13 +384,14 @@ button{font-family:var(--font);cursor:pointer}
       var f=$('.rp-flow',p);f.appendChild(d);f.scrollTop=1e6;
     }
     var b=bubOf(card);
-    if(b){$('.btxt',b).textContent=text;fitBub(b);return}
+    if(b){ensureNew(b);streamBub(b,text);return}
     var host=cardOf(card);if(!host)return;
     var body=host.classList.contains('root')?$('.rbody',host):host;
     var nb=document.createElement('div');nb.className='bubble';nb.setAttribute('data-card',card);
-    var sp=document.createElement('span');sp.className='btxt';sp.textContent=text;nb.appendChild(sp);
+    var nw=document.createElement('i');nw.className='bnew';nw.textContent='NEW';nb.appendChild(nw);
+    var sp=document.createElement('span');sp.className='btxt';nb.appendChild(sp);
     nb.addEventListener('click',function(){openPop(card)});
-    body.appendChild(nb);fitBub(nb);
+    body.appendChild(nb);streamBub(nb,text);
   }
   function wireCard(card){
     var p=popOf(card);if(!p)return;
@@ -382,44 +407,58 @@ button{font-family:var(--font);cursor:pointer}
   for(var c=0;c<bubbles.length;c++)(function(bb){
     bb.addEventListener('click',function(){openPop(bb.getAttribute('data-card'))});
   })(bubbles[c]);
-  for(var f=0;f<bubbles.length;f++)fitBub(bubbles[f]);
 
   /* ── 探针自测：仅 #probe 模式运行 ── */
   var out=[];
   function chk(n,c,i){out.push((c?'PASS ':'FAIL ')+n+(i!=null?' ['+i+']':''))}
   if(location.hash!=='#probe'){document.getElementById('probe-out').textContent='';return}
   try{
-    var st=document.createElement('style');st.textContent='.rpop{transition:none!important;animation:none!important}';
+    var st=document.createElement('style');st.textContent='.rpop,.subctl,.subctl *{transition:none!important;animation:none!important}';
     document.head.appendChild(st);
 
     var r=$('#rootCard');
-    chk('根卡宽=320',r.offsetWidth===320,r.offsetWidth);
+    chk('根卡宽=360',r.offsetWidth===360,r.offsetWidth);
     chk('根卡是一张整卡(圆角/边框/左条在)',getComputedStyle(r).borderRadius==='8px'&&getComputedStyle(r).borderLeftWidth==='3px');
     chk('子卡控件在卡片右缘',(function(){
       var c=rail.getBoundingClientRect(),cr=r.getBoundingClientRect();
-      return Math.abs((c.right-cr.right))<=10&&Math.abs((c.top+c.bottom)/2-(cr.top+cr.bottom)/2)<=6;
+      return Math.abs((c.right-cr.right))<=12;
+    })());
+    chk('子卡控件=内容区中线(气泡不计入)',(function(){
+      var c=rail.getBoundingClientRect(),core=$('#rootCard .rcore').getBoundingClientRect();
+      return Math.abs((c.top+c.bottom)/2-(core.top+core.bottom)/2)<=2;
+    })());
+    chk('icon与数字并排垂直对齐(收起态)',(function(){
+      var i=$('.ic',rail).getBoundingClientRect(),n=$('.n',rail).getBoundingClientRect();
+      return i.right<=n.left&&Math.abs((i.top+i.bottom)/2-(n.top+n.bottom)/2)<=1.5;
     })());
     chk('子卡控件不在名字行内',(function(){var n=$('#pName').getBoundingClientRect(),c=rail.getBoundingClientRect();return c.top>=n.bottom-2})());
     var bub=$('.bubble[data-card="赤潮登陆推演"]');
     chk('气泡在卡内',!!bub&&r.contains(bub));
+    chk('气泡贴卡底(余量在上方)',!!bub&&(function(){var bb=bub.getBoundingClientRect(),rr=r.getBoundingClientRect();return Math.abs((rr.bottom-bb.bottom)-31)<=2})(),(function(){if(!bub)return '';var bb=bub.getBoundingClientRect(),rr=r.getBoundingClientRect();return Math.round(rr.bottom-bb.bottom)})());
     var bt=bub?$('.btxt',bub):null,bts=bt?getComputedStyle(bt):null;
-    chk('气泡两行封顶',!!bt&&bt.clientHeight<=Math.ceil(2*1.55*parseFloat(bts.fontSize)),bt?bt.clientHeight:'');
-    chk('气泡四周留空不贴边',!!bub&&(function(){var s=getComputedStyle(bub);return parseFloat(s.marginTop)>=10&&parseFloat(s.marginLeft)>=10&&parseFloat(s.marginRight)>=10})(),bub?getComputedStyle(bub).margin:'');
-    chk('外部留白无负边距',!!bub&&parseFloat(getComputedStyle(bub).marginLeft)>=0&&parseFloat(getComputedStyle(bub).marginTop)>=0);
-    chk('溢出末尾省略号',!!bt&&bt.webkitLineClamp>0,bt?(bt.webkitLineClamp):'');
+    chk('气泡两行窗无滚动条',!!bt&&getComputedStyle(bt).overflowY==='hidden',bt?getComputedStyle(bt).overflowY:'');
+    chk('气泡两侧留白对称且适度',!!bub&&(function(){var bb=bub.getBoundingClientRect(),rr=r.getBoundingClientRect();var gl=bb.left-rr.left,gr=rr.right-bb.right;return Math.abs(gl-gr)<=1&&gl>=6&&gl<=18})(),(function(){if(!bub)return '';var bb=bub.getBoundingClientRect(),rr=r.getBoundingClientRect();return Math.round(bb.left-rr.left)+'/'+Math.round(rr.right-bb.right)})());
+    chk('气泡负边距补边框差(左条3px/右边1px)',!!bub&&(function(){var s=getComputedStyle(bub);return s.marginLeft==='-10px'&&s.marginRight==='-8px'})(),bub?getComputedStyle(bub).marginLeft+'/'+getComputedStyle(bub).marginRight:'');
+    chk('无省略截断(改滚动)',!!bt&&(bt.webkitLineClamp==='none'||!bt.webkitLineClamp),bt?(bt.webkitLineClamp):'');
+    chk('气泡NEW标记在',!!$('.bnew',bub));
+    chk('尾巴在底边左下(伸出底边)',(function(){var s=getComputedStyle(bub,'::before');return s.content!=='none'&&s.content!=='normal'&&parseFloat(s.width)===10&&parseFloat(s.bottom)<0&&parseFloat(s.left)>0})());
     chk('无新消息不显气泡',$('.bubble[data-card="北部集群"]')===null);
     chk('退役卡无气泡',$('.bubble[data-card="补给线地理"]')===null);
     chk('根卡扁平',getComputedStyle(r).boxShadow==='none');
+    chk('根卡加高(≥270)',r.offsetHeight>=270,r.offsetHeight);
     chk('名字≥20px',parseFloat(getComputedStyle($('#pName')).fontSize)>=20);
     chk('名字-状况间距≥14',parseFloat(getComputedStyle($('#pStatus')).marginTop)>=14);
     chk('子卡控件命中区≥32',rail.clientWidth>=32&&rail.clientHeight>=32,rail.clientWidth+'x'+rail.clientHeight);
     chk('子卡控件数字在',($('.n',rail)||{}).textContent!==undefined);
     var icc=$('.ic-closed',rail),ico=$('.ic-open',rail);
+    var rrect=rail.querySelector('rect');
     chk('叠卡/扇形图标对存在',!!icc&&!!ico);
+    chk('icon卡底色=卡面底色',!!rrect&&getComputedStyle(rrect).fill===getComputedStyle(r).backgroundColor,getComputedStyle(rrect).fill+'/'+getComputedStyle(r).backgroundColor);
     chk('收起态=三卡叠放',!!icc&&!!ico&&getComputedStyle(icc).display!=='none'&&getComputedStyle(ico).display==='none');
     var railOff=$('.ic',rail);var offW=parseFloat(getComputedStyle(railOff).width);
     rail.classList.add('on');
     chk('展开态=扇形散开',!!icc&&!!ico&&getComputedStyle(icc).display==='none'&&getComputedStyle(ico).display!=='none');
+    chk('展开态icon与数字仍垂直对齐',(function(){var i=$('.ic',rail).getBoundingClientRect(),n=$('.n',rail).getBoundingClientRect();return Math.abs((i.top+i.bottom)/2-(n.top+n.bottom)/2)<=1.5})());
     chk('展开态颜色=卡色',getComputedStyle(rail).color==='rgb(212, 167, 44)',getComputedStyle(rail).color);
     var onW=parseFloat(getComputedStyle(railOff).width);
     chk('展开态图标放大',onW>=offW+2,Math.round(offW*100)+'→'+Math.round(onW*100));
@@ -446,6 +485,7 @@ button{font-family:var(--font);cursor:pointer}
     chk('关闭钮≥40',xb.offsetWidth>=40&&xb.offsetHeight>=40,xb.offsetWidth+'x'+xb.offsetHeight);
     chk('吸附钮≥40',db.offsetWidth>=40&&db.offsetHeight>=40,db.offsetWidth+'x'+db.offsetHeight);
     chk('中央窗遮罩亮',back.hidden===false);
+    chk('开窗后NEW消失',bub&&$('.bnew',bub)===null);
     var kf=false,animCls=false,trRule='';
     for(var si=0;si<document.styleSheets.length;si++){
       var rs=null;try{rs=document.styleSheets[si].cssRules}catch(_e){}
@@ -467,7 +507,8 @@ button{font-family:var(--font);cursor:pointer}
     chk('吸附在规则卡左侧',ar.right<=rulesRect.left-11,Math.round(ar.right)+'<='+Math.round(rulesRect.left));
     chk('吸附后遮罩灭',back.hidden===true);
     send('赤潮登陆推演','吸右后直发测试');
-    chk('吸右窗可发消息·气泡更新',bubOf('赤潮登陆推演').textContent==='吸右后直发测试');
+    chk('吸右窗可发消息·气泡更新',$('.btxt',bubOf('赤潮登陆推演')).textContent==='吸右后直发测试');
+    chk('新消息NEW回归',!!$('.bnew',bubOf('赤潮登陆推演')));
     rail.click();chk('画布可操作·展开',kids.hidden===false);
     rail.click();chk('画布可操作·收起',kids.hidden===true);
 
@@ -516,12 +557,15 @@ button{font-family:var(--font);cursor:pointer}
     chk('运转子卡绕框流光',!!rkid&&getComputedStyle(rkid,'::after').animationName==='stspin');
     chk('子卡左条类型色',!!rkid&&getComputedStyle(rkid).borderLeftColor==='rgb(163, 113, 247)',rkid?getComputedStyle(rkid).borderLeftColor:'');
     var dw=document.querySelector('.kidwrap.st-done');
-    var fs=dw?getComputedStyle(dw).filter:'missing';
-    chk('退役整组降饱和',/grayscale/.test(fs),fs);
+    var dk=dw?dw.querySelector('.kid'):null;var dbg=dk?getComputedStyle(dk).backgroundColor:'missing';
+    chk('退役实体暗卡(无滤镜)',/rgb\(14, ?14, ?14\)/.test(dbg),dbg);
     var dkb=dw?getComputedStyle(dw.querySelector('.kid'),'::after'):null;
     chk('退役卡无流光',!dkb||dkb.animationName==='none',dkb?dkb.animationName:'');
     send('补给线地理','x不应出现');
     chk('退役发消息无效',bubOf('补给线地理')===null);
+    send('北部集群','流式跟随测试：这段文字足够长，气泡应在两行高的滚动窗内自动滚到底部跟随最新内容而不是截断省略');
+    var sb=bubOf('北部集群'),st=sb?$('.btxt',sb):null;
+    chk('流式自动滚底',!!st&&st.scrollTop+st.clientHeight>=st.scrollHeight-1,st?(''+st.scrollTop+'/'+st.clientHeight+'/'+st.scrollHeight):'');
     openPop('补给线地理');
     var D=findW('补给线地理');
     chk('退役历史可读',!!D&&$('.rp-flow',D.el).children.length>0);

@@ -7,7 +7,7 @@ import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { EventFlow } from "./stream.js?v=36";
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { reloadCanvas } from "./canvas.js?v=36";
+import { reloadCanvas } from "./canvas.js?v=38";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=35";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
@@ -16,7 +16,7 @@ import {
   createNavStateStore, storageGet, storageSet,
 } from "./esm/state_layers.js?v=30";
 import { createNavAsync } from "./esm/nav_async.js?v=30";
-import { createNavRenderer } from "./esm/nav_render.js?v=30";
+import { createNavRenderer } from "./esm/nav_render.js?v=31";
 // [S3] 交互与呈现族：找通道（R-24/25）、面包屑+吸顶+祖先链（R-27/18/26/28）、快照存在性（R-21）
 import { createNavFind } from "./esm/nav_find.js?v=30";
 import { createNavBreadcrumb, ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
@@ -1760,6 +1760,26 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     navRailBtn.onclick = () => {
       const nav = document.getElementById("appNav");
       if (nav) nav.classList.toggle("pinned");
+    };
+  }
+  // [左栏新建项目 2026-10-16 用户令] 搜索框右侧 ＋：新建项目（复用首页既有链路，
+  // 端点 POST /api/works 零改动）。语义照抄 esm/home.js createProject：creating 锁防连点、
+  // 失败 toast 由 api.js 的 call() 弹（此处不重复处理）。
+  const navNewBtn = document.getElementById("navNewProject");
+  if (navNewBtn) {
+    let creatingProject = false;
+    navNewBtn.onclick = async () => {
+      if (creatingProject) return;
+      creatingProject = true;
+      navNewBtn.disabled = true;
+      try {
+        const w = await API.createWork("新项目");
+        location.href = "/work/" + w.work_id + "#";
+      } catch (e) {
+        /* 失败原因已由 api.js 的 call() 弹 toast */
+        creatingProject = false;
+        navNewBtn.disabled = false;
+      }
     };
   }
   // [S2/M3] 版本探测 60s 周期：version 未变零开销（连 diff 都不跑）；变了才全量重拉

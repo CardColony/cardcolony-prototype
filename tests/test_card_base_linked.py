@@ -195,4 +195,4 @@ def test_read_linked_tool_registered_and_readonly():
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel 两件，
     # 依赖关联线；通信线 relations→links 改名）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-7"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-8"

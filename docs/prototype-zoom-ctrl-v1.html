@@ -45,44 +45,51 @@
   .links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 
   /* ===== 卡片：v11 定稿样式 ===== */
-  .unit{position:absolute;width:320px;--cc:var(--c-work)}
-  .kidwrap{position:absolute;width:300px;display:flex;flex-direction:column}
+  .unit{position:absolute;width:360px;--cc:var(--c-work)}
+  .kidwrap{position:absolute;width:330px;display:flex;flex-direction:column}
   .kidwrap.t-char{--cc:var(--c-char)}
   .kidwrap.t-plot{--cc:var(--c-plot)}
   .kidwrap.t-setting{--cc:var(--c-setting)}
 
-  .root{position:relative;display:flex;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--cc);border-radius:8px}
-  .rbody{flex:1;min-width:0;padding:18px 44px 20px 20px}
-  .rname{font-size:20px;font-weight:650;line-height:1.4;color:var(--text);
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .rstatus{margin-top:16px;display:flex;flex-direction:column;gap:9px}
+  .root{position:relative;display:flex;min-height:292px;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--cc);border-radius:8px}
+  .rbody{flex:1;min-width:0;padding:22px 20px 18px 20px;display:flex;flex-direction:column}
+  .rname{font-size:21px;font-weight:650;line-height:1.5;color:var(--text);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:52px}
+  .rstatus{margin-top:20px;display:flex;flex-direction:column;gap:12px;padding-right:52px}
   .rstatus div{font-size:13.5px;color:var(--soft);line-height:1.5;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .rhead{display:flex;align-items:center;gap:8px}
-  /* ── 子卡控件：图标＋数字，钉在卡片右缘（收起=三张叠卡 · 展开=三张扇形散开的牌，放大加粗·卡色） ── */
-  .subctl{position:absolute;right:6px;top:50%;transform:translateY(-50%);
-    display:inline-flex;align-items:center;gap:5px;
-    cursor:pointer;user-select:none;color:var(--dim);padding:4px 5px;border-radius:6px;
+  .rcore{position:relative}   /* 只包内容不吃余量：icon 锚＝内容真实中线；余量由气泡 auto 上边距吸收贴卡底 */
+  /* ── 子卡控件：并排(icon左·数字右)·垂直居中对齐，锚=rcore 内容区中线（气泡不计入） ── */
+  .subctl{position:absolute;right:-12px;top:50%;transform:translateY(-50%);
+    display:inline-flex;align-items:center;gap:6px;
+    cursor:pointer;user-select:none;color:var(--dim);padding:6px 4px;border-radius:8px;
     background:transparent;border:none}
   .subctl .ic{width:30px;height:30px;display:flex;transition:width .15s,height .15s}
   .subctl .ic svg{width:100%;height:100%;display:block}
   .subctl .n{font-size:16px;line-height:1;font-variant-numeric:tabular-nums;transition:font-size .15s}
   .subctl .ic-open{display:none}
-  .subctl:hover{color:var(--soft);background:var(--hair)}
+  .subctl:hover{color:var(--soft)}
   .subctl.on{color:var(--cc)}
   .subctl.on .ic{width:40px;height:40px}
   .subctl.on .n{font-size:21px;font-weight:700}
   .subctl.on .ic-open{display:block}
   .subctl.on .ic-closed{display:none}
 
-  /* ── 新消息气泡（卡内底部 · 四周留空不贴边 · 有新消息才出现 · 最多两行 · 溢出末尾"…" · 点击开快捷窗） ── */
-  .bubble{margin:24px 10px 14px;padding:10px 12px 11px;border-radius:8px;cursor:pointer;
-    background:#272727;border:1px solid #3c3c3c;
-    font-size:12.5px;color:var(--soft)}
-  .btxt{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
-    line-height:1.5;overflow:hidden}
-  .kid .bubble{margin:18px 10px 8px}
-  .bubble:hover{color:var(--text);background:#303030}
+  /* ── 新消息气泡（消息泡形 · 左下尾巴 · 右上 NEW红壳 · 两行高流式窗·无滚动条 · 流式自动跟随） ── */
+  .bubble{--bbg:#272727;--bbr:#3c3c3c;position:relative;margin:30px -8px 12px -10px;padding:11px 14px 12px;
+    border-radius:12px 12px 12px 4px;cursor:pointer;
+    background:var(--bbg);border:1px solid var(--bbr);
+    font-size:13px;color:var(--soft)}
+  .rbody>.bubble{margin-top:auto}   /* 根卡气泡：auto 上边距吃余量 → 贴卡底（子卡气泡不受影响） */
+  .bubble::before{content:"";position:absolute;left:14px;bottom:-5.5px;width:10px;height:10px;
+    background:var(--bbg);border-right:1px solid var(--bbr);border-bottom:1px solid var(--bbr);
+    transform:rotate(45deg)}
+  .bnew{position:absolute;top:-8px;right:-4px;font-size:9px;font-weight:800;font-style:normal;
+    letter-spacing:1px;line-height:1;padding:3px 7px;border-radius:8px 8px 8px 2px;
+    background:#e5484d;color:#fff;pointer-events:none}
+  .btxt{display:block;max-height:42px;overflow:hidden;line-height:1.6;word-break:break-word}
+  .kid .bubble{margin:22px -6px 9px -8px}
+  .bubble:hover{--bbg:#303030;--bbr:#4a4a4a;color:var(--text)}
 
   .kid{background:var(--panel-dim);border:1px solid var(--border);border-left:3px solid var(--cc);border-radius:8px;padding:13px 16px}
   .ktitle{display:flex;align-items:center;gap:8px}
@@ -134,24 +141,32 @@
     <div class="unit" id="rootUnit">
       <div class="root st-run" style="--cc:#d4a72c">
         <div class="rbody">
-          <div class="rhead">
-            <div class="rname">赤潮登陆推演</div>
+          <div class="rcore">
             <button class="subctl on" id="rail" type="button" aria-label="展开/收起子卡">
               <span class="ic">
-                <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
-                  <g class="ic-closed"><rect x="8" y="8" width="22" height="22" rx="2.5"/><rect x="11" y="12" width="22" height="22" rx="2.5"/><rect x="14" y="16" width="22" height="22" rx="2.5"/></g>
-                  <g class="ic-open"><rect x="13" y="5" width="14" height="26" rx="2"/><rect x="5" y="8" width="12" height="23" rx="2" transform="rotate(-16 13 31)"/><rect x="22" y="8" width="12" height="23" rx="2" transform="rotate(16 27 31)"/></g>
+                <svg viewBox="0 0 40 40" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+                  <g class="ic-closed">
+                    <rect x="9" y="7" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                    <rect x="13" y="11" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                    <rect x="17" y="15" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                  </g>
+                  <g class="ic-open">
+                    <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)" transform="rotate(-20 20 29)"/>
+                    <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)" transform="rotate(20 20 29)"/>
+                    <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)"/>
+                  </g>
                 </svg>
               </span>
               <span class="n">3</span>
             </button>
+            <div class="rname">赤潮登陆推演</div>
+            <div class="rstatus">
+              <div>第12轮 · 补给线切断后第3天</div>
+              <div>3行为体待决策 · 2节点悬置</div>
+              <div>停在：是否空投物资</div>
+            </div>
           </div>
-          <div class="rstatus">
-            <div>第12轮 · 补给线切断后第3天</div>
-            <div>3行为体待决策 · 2节点悬置</div>
-            <div>停在：是否空投物资</div>
-          </div>
-          <div class="bubble"><span class="btxt">北部集群燃料仅够维持4天，第二梯队可佯攻吸引火力但胜率不足三成。是否立即执行空投方案？</span></div>
+          <div class="bubble"><i class="bnew">NEW</i><span class="btxt">北部集群燃料仅够维持4天，第二梯队可佯攻吸引火力但胜率不足三成。是否立即执行空投方案？</span></div>
         </div>
       </div>
     </div>
@@ -162,7 +177,7 @@
 
     <div class="kidwrap t-plot">
       <div class="kid st-run"><div class="ktitle"><span class="kname">空投方案</span><span class="kcnt">1 子卡</span></div><div class="ksum">18小时决策窗 · 胜率三成</div>
-        <div class="bubble"><span class="btxt">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。</span></div></div>
+        <div class="bubble"><i class="bnew">NEW</i><span class="btxt">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。</span></div></div>
     </div>
 
     <div class="kidwrap t-setting st-done">
@@ -174,13 +189,13 @@
 
 <script>
 /* ═══ 布局与画线：模拟生产 canvas.js 真实算法 ═══
-   layoutTree（生产 L370）：根居左 x=0；子树向右逐层（列距 COL_W=340）；
+   layoutTree（生产 L370）：根居左 x=0；子树向右逐层（列距 COL_W=390）；
    同父子树纵向一字排开（GAP_Y=40）；父卡在子树跨度内垂直居中。
    addElbowPath（生产 L1508）：先横→再竖→再横 直角折线；
    灰 #8a8a8a · 1.5px 实线；父端实心圆点 r3 · 子端空心圆点 r3。
    新消息气泡在卡内（独立副卡已撤）：卡本体高度即排布高度，
    连线锚点取卡本体几何——生产上线后即按方案 §阶段1 落同款。 */
-const GAP_Y=40, COL_W=340, SVGNS="http://www.w3.org/2000/svg";
+const GAP_Y=40, COL_W=390, SVGNS="http://www.w3.org/2000/svg";
 const rootUnit=document.getElementById("rootUnit");
 const kids=[...document.querySelectorAll(".kidwrap")];
 const bodyOf=u=>u.querySelector(".root")||u.querySelector(".kid");
@@ -212,23 +227,23 @@ function layout(){
   const g=document.createElementNS(SVGNS,"g");
   g.setAttribute("data-edge-group","parent-child");
   linksSvg.appendChild(g);
-  const x1=320, x2=COL_W, midX=(x1+x2)/2;
+  const x1=360, x2=COL_W, midX=(x1+x2)/2;
   kids.forEach((u,i)=>{
     const cy=kidCy[i];
     const p=document.createElementNS(SVGNS,"path");
     p.setAttribute("d",`M ${x1} ${rootCy} L ${midX} ${rootCy} L ${midX} ${cy} L ${x2} ${cy}`);
     p.setAttribute("stroke","#8a8a8a");
-    p.setAttribute("stroke-width","1.5");
+    p.setAttribute("stroke-width","2.2");
     p.setAttribute("fill","none");
     p.setAttribute("data-edge","parent-child");
     g.appendChild(p);
     const dotF=document.createElementNS(SVGNS,"circle"); /* 父端：实心 */
-    dotF.setAttribute("cx",x1);dotF.setAttribute("cy",rootCy);dotF.setAttribute("r","3");
+    dotF.setAttribute("cx",x1);dotF.setAttribute("cy",rootCy);dotF.setAttribute("r","3.4");
     dotF.setAttribute("fill","#8a8a8a");
     g.appendChild(dotF);
     const dotC=document.createElementNS(SVGNS,"circle"); /* 子端：空心 */
-    dotC.setAttribute("cx",x2);dotC.setAttribute("cy",cy);dotC.setAttribute("r","3");
-    dotC.setAttribute("fill","none");dotC.setAttribute("stroke","#8a8a8a");dotC.setAttribute("stroke-width","1.5");
+    dotC.setAttribute("cx",x2);dotC.setAttribute("cy",cy);dotC.setAttribute("r","3.4");
+    dotC.setAttribute("fill","none");dotC.setAttribute("stroke","#8a8a8a");dotC.setAttribute("stroke-width","2.2");
     g.appendChild(dotC);
   });
 }
@@ -301,7 +316,17 @@ stage.addEventListener("pointercancel",endPan);
 
 apply();
 
-/* 气泡两行封顶：溢出末尾"…"（CSS line-clamp，无 JS） */
+/* 气泡流式演示：正文逐字打进两行高窗口（无滚动条，超出即隐），视角自动跟随最新文字（生产＝SSE 流式同款行为） */
+(function(){
+  document.querySelectorAll(".bubble").forEach(b=>{
+    const t=b.querySelector(".btxt");if(!t)return;
+    const full=t.textContent;t.textContent="";let i=0;
+    (function step(){
+      if(i>=full.length)return;
+      t.textContent+=full.charAt(i++);t.scrollTop=t.scrollHeight;setTimeout(step,26);
+    })();
+  });
+})();
 
 /* ══ #probe 诊断（仅 URL 带 #probe 时跑，正常打开零影响）══ */
 if(location.hash.indexOf("probe")>=0){

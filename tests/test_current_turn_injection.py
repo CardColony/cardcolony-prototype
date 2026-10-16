@@ -557,14 +557,17 @@ def test_judgment_self_narrative_only_person_changes():
 
 
 def test_judgment_event_ontology_and_frontend():
-    """V6/V8：EVENT_TYPES 27 类且含 judgment_protocol；stream.js 有该 case。"""
+    """V6/V8：EVENT_TYPES 28 类且含 judgment_protocol；stream.js 有该 case。"""
     from pathlib import Path
     # [三席身份注入 2026-10-14] 本体论 26 → 27（+context_seat_identity）
-    assert len(event_stream.EVENT_TYPES) == 27
+    # [更新现状按钮改造 2026-10-16] 27 → 28（+status_update_task）
+    assert len(event_stream.EVENT_TYPES) == 28
     assert "judgment_protocol" in event_stream.EVENT_TYPES
+    assert "status_update_task" in event_stream.EVENT_TYPES
     js = (Path(__file__).resolve().parents[1] / "static" / "stream.js").read_text(
         encoding="utf-8")
     assert 'case "judgment_protocol"' in js
+    assert 'case "status_update_task"' in js
 
 
 def test_judgment_message_role_mark_and_keys():

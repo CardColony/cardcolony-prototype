@@ -168,10 +168,14 @@ async def test_b1_read_card_meta_has_both_keys(sandbox, work):
 # ════════════════════════════════════════════════════════════════════
 
 def test_b2_tool_table_and_versions():
-    """硬判据1：注册表字面量 21 件；tools-tc-7；t22-1。"""
+    """硬判据1：注册表字面量 22 件；tools-tc-8；t22-1。
+
+    [更新现状按钮改造 2026-10-16] 字面量 21 → 22（新增 propose_status，
+    列 OP_ONLY_TOOLS、不进常规工具面）；TOOL_TABLE_VERSION tools-tc-7 → tools-tc-8。
+    """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    assert src.count('": ToolDef(') == 21
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-7"
+    assert src.count('": ToolDef(') == 22
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-8"
     assert prompts.BASE_PROMPT_VERSION == "t22-1"
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY

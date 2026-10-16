@@ -616,8 +616,12 @@ export function createNavRenderer(deps) {
       if (!emptyEl) {
         emptyEl = document.createElement("div");
         emptyEl.className = "nav-empty";
-        emptyEl.innerHTML = `还没有项目<br>
-          <a href="/" class="btn primary" style="margin-top:10px;display:inline-block;">＋ 新建项目</a>`;
+        /* [左栏新建项目 2026-10-16 用户令] 原此处的「＋ 新建项目」<a href="/"> 已删：
+           它不建项目、只跳首页（已有项目时还会被 home.js 立刻弹回），是死件；
+           左栏常驻的新建项目按钮由 work.html 的 #navNewProject 承担
+           （与首页 #homeNewBtn 同一份 .home-new-project 实现），恒在、且真的建项目。
+           此处只留空态文案。 */
+        emptyEl.innerHTML = `还没有项目`;
       }
       emptyEl.style.display = "";
       if (vl.spacer) vl.spacer.style.display = "none";
