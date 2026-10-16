@@ -280,7 +280,7 @@ def test_frontend_diff_segment_markers_present():
 def test_frontend_version_stamps_bumped():
     """本轮涉改三件（stream/workspace/style）升 36；引用点同号（防双份代码并存）。"""
     assert "../stream.js?v=36" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=42" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=43" in _read("static/esm/main_chat.js")
     assert "./stream.js?v=36" in _read("static/workspace.js")
     assert "/static/style.css?v=36" in _read("templates/work.html")
 

@@ -1,13 +1,13 @@
 /* workspace.js - [T17-F4/F5] 卡片工作区：左栏对话导航 + 中区讨论区 + 右栏 Inspector
    （原「左35%资料 + 右65%讨论区」结构退役；编辑能力整体迁入右栏 Inspector） */
-/* 迭代四 F2③：IIFE → ES module；escapeHtml/API/EventFlow/ReloadCanvas 走模块 import。
- * 循环依赖（canvas.js import 本文件的 Workspace/RenderNav）由 ESM 活绑定＋函数声明
- * 提升保证：本文件顶层不调用任何 canvas 导出。 */
+/* 迭代四 F2③：IIFE → ES module；escapeHtml/API/EventFlow 走模块 import。
+ * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
+ * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
+ * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { EventFlow } from "./stream.js?v=36";
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { reloadCanvas } from "./canvas.js?v=41";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=35";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
@@ -191,7 +191,10 @@ const WORK_ID = window.__WORK_ID__;
           </div>`).join("");
 
     // [phase8.6-E] 添加关系行：目标卡下拉（画布卡集，排除自身）+ 类型下拉
-    const canvasCards = ((store.state.canvasState && store.state.canvasState.cards) || [])
+    // [阶段4 A4.1 2026-10-17] 目标卡数据源改读**导航快照**（state_layers 全树），
+    // 不再吃画布状态（canvasState 只由画布页 canvas.js 写，对话页已无该模块）。
+    const canvasCards = ((navStore.snapshot.get().projects || [])
+      .flatMap(p => p.cards || []))
       .filter(c => c.card_id !== m.card_id);
     const targetOptions = canvasCards
       .map(c => `<option value="${escapeHtml(c.card_id)}">${escapeHtml(c.card_id)} · ${escapeHtml(c.title)}</option>`)
@@ -477,8 +480,7 @@ const WORK_ID = window.__WORK_ID__;
         });
         document.getElementById("childTitle").value = "";
         API.toast("已建子卡：" + title, "success");
-        // [T17] 建卡即时刷新画布数据与导航树（视图不动；画布隐藏态仍可安全重渲）
-        reloadCanvas();
+        // [T17] 建卡即时刷新导航树（[阶段4 A4.1] 画布数据不再由本页刷新：画布页加载即拉新）
         await renderNav();
       } catch (e) { /* toast 已处理 */ }
     };
@@ -502,8 +504,9 @@ const WORK_ID = window.__WORK_ID__;
         try {
           await API.deleteCard(WORK_ID, cid);
           API.toast("已删除：" + title, "success");
-          reloadCanvas();
-          setAppView("canvas");
+          // [阶段4 A4.1] 删的是当前卡 ⇒ 对话页已无内容可留，整页回画布页（原 setAppView("canvas")
+          // 在纯对话页无画布可切）。
+          location.assign("/work/" + WORK_ID);
           await renderNav();
         } catch (e) { /* toast 已处理（后端 error 文本透传） */ }
       };
@@ -891,8 +894,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         card.querySelectorAll(".nc-item").forEach(it => {
           it.onclick = () => open(it.dataset.cid);
         });
-        // [T17] 对话中生的卡即时进画布与导航（不等「← 画布」）
-        reloadCanvas();
+        // [T17] 对话中生的卡即时进导航（[阶段4 A4.1] 画布侧由画布页加载即拉新）
         renderNav();
       }
 
@@ -1020,8 +1022,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // [顶栏整合 2026-10-13] 运行按钮两态（用户 17:17 ③：「把发送按钮，处理成【发送前】、
   // 【运行中】（运行中就是停止按钮）」）。同一元素同一位置，点一次的含义由当前态决定。
   async function doStop() {
+    // [阶段4 A4.1] 回落数据源改读导航选中（不再依赖画布状态 window.GetCanvasState）。
     const cardId = currentCard ? currentCard.meta.card_id
-      : (window.GetCanvasState && (() => { const s = window.GetCanvasState(); return s && s._lastOpenedCard; })());
+      : ((navStore.select.get() || {}).cid || "");
     if (!cardId) { notify("没有正在查看的卡", "warn"); return; }
     try {
       await postStop(WORK_ID, cardId);
