@@ -157,8 +157,8 @@ bindings:
   - glm-53
   - minimax-m31-flash-preview
 system:
-  default_model: deepseek-pro
-  fallback_model: deepseek-pro
+  default_model: minimax-m31-flash-preview
+  fallback_model: longcat-25-preview-free
 simple:
   enabled: true
 retry_grading:
