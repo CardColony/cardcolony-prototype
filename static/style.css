@@ -1462,6 +1462,8 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border-left: 1px solid var(--border);
   overflow: hidden;
 }
+/* [用户 2026-10-16 明令] 规则卡只在【画布态】显示——对话界面不显示、不避让 */
+.app-main[data-view="chat"] .rule-panel { display: none; }
 .rule-panel-body {
   flex: 1;
   padding: 16px;
