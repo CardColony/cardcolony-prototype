@@ -87,17 +87,8 @@
       <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
       <div id="chatCrumb" class="crumb"></div>
       <span class="spacer"></span>
-      <!-- [缩放控件 2026-10-16 用户令] 滚轮缩放废除（canvas.js wheel 监听已删），
-           缩放只走此控件组：−/＋每按一次 ±25%；拖动条 25% 档位吸附（min25/max200/step25）；
-           锚点＝视口中心。zoomDisplay 保留（canvas.js applyTransform 写它），组内显示百分比。 -->
-      <div id="zoomCtrl" class="zoom-ctrl canvas-only">
-        <button id="zoomOutBtn" class="zbtn" type="button" title="缩小 −25%">−</button>
-        <input id="zoomSlider" class="zoom-slider" type="range" min="25" max="200" step="25" value="100" aria-label="缩放比例" />
-        <button id="zoomInBtn" class="zbtn" type="button" title="放大 +25%">＋</button>
-        <span id="zoomDisplay" class="zoom-display">100%</span>
-      </div>
-      <button id="reorganizeBtn" class="btn canvas-only" title="重算所有卡片位置（清除 pinned）">整理画布</button>
-      <button id="newCardBtn" class="btn primary canvas-only">＋ 新建卡</button>
+      <!-- [阶段6 修漏 2026-10-17] 画布专属顶栏三件（zoomCtrl/reorganizeBtn/newCardBtn）
+           不属对话页——阶段3 拆分时误随 TOPBAR_TAIL 带了过来，此处移除（画布页保留）。 -->
     </div>
     <div class="stage">
       <!-- 卡片对话区（data-view=chat 时显示；绝对定位与画布互斥） -->
