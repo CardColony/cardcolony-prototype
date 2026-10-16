@@ -98,9 +98,6 @@ OPTIONAL_IDS = {
     "newCardBtn",   # 对话页无建卡钮：nav_system 守卫后改跳画布页
     "childTitle",   # 对话页 inspector 自建；canvas 页缺席由 nav_system 的 if (el) 守卫
     "workspace",    # 画布页无对话容器：canvas.js hideWorkspace 的 if (ws) 守卫
-    # ↓ 阶段3 过渡项：canvas.js 仍经 workspace.js 被对话页间接加载（阶段4 摘该边后
-    #   这些例外即可删除，检查随即变严格）。canvas.js 顶层绑定已加空守卫、渲染空转。
-    "viewport", "world", "edgesSvg", "cardTooltip", "crumb",
 }
 
 

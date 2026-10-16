@@ -199,7 +199,7 @@ def test_t6_touched_modules_bumped():
       `esm/main.js` 37.0→38.0）。nav.css 内容变 ⇒ 其 ?v= 升 12（本断言不含 nav.css，
       由唯一性用例兜底）；home.css 只删规则 ⇒ 其 ?v= 升 1.1。"""
     vm = _version_map()
-    expect = {"stream.js": "36", "workspace.js": "42", "canvas.js": "41",
+    expect = {"stream.js": "36", "workspace.js": "43", "canvas.js": "41",
               "assembler.js": "34", "style.css": "36", "main.js": "41.0",
               "main_chat.js": "1.0"}
     for name, ver in expect.items():
