@@ -285,10 +285,6 @@ const WORK_ID = window.__WORK_ID__;
     applyConclusionState();
     // [phase8.6-C] 面板已可见时（如保存后重渲染）立即撑高；首次 open 由 active 后统一触发
     autoGrowAll();
-    // [规则卡 2026-10-16] rule 卡：卡详情内直接分区编辑规则（保存即生效）
-    if (m.card_type === "rule" && window.__renderRuleInspector) {
-      await window.__renderRuleInspector();
-    }
   }
 
   // [phase8.6-C] 文本区高度自适应：内容多高就多高，上限由 CSS max-height 兜底
@@ -1691,44 +1687,43 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     setInterval(refreshBadge, 60000);
   }
 
-  // ═══ [规则卡 2026-10-15 · 2026-10-16 归位] 规则卡就是一张普通卡 ═══
-  // （card_type="rule"，parent=根卡，画布上正常渲染节点）；分区编辑在【卡详情
-  // （inspector）】内：正文按 ## {区名} 分六区（project/sub_project/tool/coder/
-  // topic/rule＝card_type code），存 mission 列。直改即存：textarea blur →
-  // PATCH /rule/sections/{section}（带 base_hash，不符→409 提示刷新）。
+  // ═══ [规则卡 2026-10-15 · 2026-10-16 二次归位] 规则卡＝吸附屏幕右侧的常驻卡片 ═══
+  // （用户明令：不是画布节点、不是可展开边栏——就是一张固定吸附右侧、始终完整
+  // 显示的卡）。正文按 ## {区名} 分六区（project/sub_project/tool/coder/topic/
+  // rule＝card_type code），存 mission 列。直改即存：textarea blur → PATCH
+  // /rule/sections/{section}（带 base_hash，不符→409 提示刷新）。
   // 审批：仅根卡可调 draft_rule_edit 提议（工具自身不落盘）；回合后扫 timeline 的
   // tool_result（data.tool=="draft_rule_edit"）→ 开弹窗，「同意」→ POST /rule/commit 落盘。
   {
+    const rulePanel = document.getElementById("rulePanel");
+    const rulePanelBody = document.getElementById("rulePanelBody");
     let ruleData = null;          // GET /rule 响应（含 sections/hashes/inject_type_counts）
     let ruleCardId = "";          // 规则卡 card_id
     const ruleSeen = new Set();   // 已弹过审批的 draft_rule_edit 去重（tool_result 的 seq）
 
-    async function loadRuleData() {
-      ruleData = await API.call("GET", `/api/works/${WORK_ID}/rule`);
-      ruleCardId = (ruleData && ruleData.card_id) || "";
-      return ruleData;
+    async function loadRulePanel() {
+      if (!rulePanelBody) return;
+      rulePanelBody.innerHTML = `<div class="rule-sec-status">加载中…</div>`;
+      try {
+        ruleData = await API.call("GET", `/api/works/${WORK_ID}/rule`);
+        ruleCardId = (ruleData && ruleData.card_id) || "";
+        renderRulePanel();
+      } catch (e) {
+        rulePanelBody.innerHTML = `<div class="rule-sec-status err">规则卡读取失败：${escapeHtml(e.message || "")}</div>`;
+      }
     }
 
-    // [2026-10-16 归位] 供 renderInspector 在 card_type=rule 时调用：
-    // 分区编辑器渲染进卡详情（inspBody），不再是独立右栏。
-    async function renderRuleInspector() {
-      if (!inspBody) return;
-      inspBody.querySelectorAll(".rule-sec").forEach((el) => el.remove());
-      try {
-        await loadRuleData();
-      } catch (e) {
-        inspBody.insertAdjacentHTML("beforeend",
-          `<div class="rule-sec"><div class="rule-sec-status err">规则卡读取失败：${escapeHtml(e.message || "")}</div></div>`);
+    function renderRulePanel() {
+      if (!rulePanelBody || !ruleData) return;
+      if (!ruleData.exists) {
+        rulePanelBody.innerHTML =
+          `<div class="rule-sec-status">本剧本还没有规则卡。<br>` +
+          `新建一张「规则卡」（card_type=rule）即可启用。</div>`;
         return;
       }
-      if (!ruleData || !ruleData.exists) {
-        inspBody.insertAdjacentHTML("beforeend",
-          `<div class="rule-sec"><div class="rule-sec-status">未找到规则卡（card_type=rule）</div></div>`);
-        return;
-      }
+      rulePanelBody.innerHTML = "";
       const sections = ruleData.sections || {};
       const counts = ruleData.inject_type_counts || {};
-      const frag = document.createDocumentFragment();
       for (const [name, content] of Object.entries(sections)) {
         const wrap = document.createElement("div");
         wrap.className = "rule-sec";
@@ -1740,14 +1735,38 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           `</div>` +
           `<textarea class="rule-sec-textarea" data-sec="${escapeHtml(name)}">${escapeHtml(content || "")}</textarea>` +
           `<div class="rule-sec-status"></div>`;
-        frag.appendChild(wrap);
+        rulePanelBody.appendChild(wrap);
       }
-      inspBody.appendChild(frag);
-      inspBody.querySelectorAll(".rule-sec-textarea").forEach((ta) => {
+      // blur 即存（无确认框）；status 行显示「已保存」或错误
+      rulePanelBody.querySelectorAll(".rule-sec-textarea").forEach((ta) => {
         ta.addEventListener("blur", () => saveRuleSection(ta));
       });
     }
-    window.__renderRuleInspector = renderRuleInspector;
+
+    async function saveRuleSection(ta) {
+      const sec = ta.dataset.sec;
+      const statusEl = ta.parentElement.querySelector(".rule-sec-status");
+      const content = ta.value;
+      const baseHash = (ruleData && ruleData.hashes && ruleData.hashes[sec]) || "";
+      if (!ruleCardId) { if (statusEl) { statusEl.textContent = "规则卡不存在"; statusEl.classList.add("err"); } return; }
+      if (statusEl) { statusEl.textContent = "保存中…"; statusEl.classList.remove("err"); }
+      try {
+        const r = await API.call("PATCH", `/api/works/${WORK_ID}/rule/sections/${encodeURIComponent(sec)}`,
+          { content, base_hash: baseHash });
+        if (ruleData && ruleData.hashes) ruleData.hashes[sec] = r.new_hash;
+        if (ruleData && ruleData.sections) ruleData.sections[sec] = content;
+        if (statusEl) statusEl.textContent = "已保存";
+      } catch (e) {
+        const msg = String(e.message || "");
+        if (statusEl) {
+          statusEl.textContent = msg.indexOf("hash 不符") >= 0 ? "内容已被改，请刷新重试" : ("保存失败：" + msg);
+          statusEl.classList.add("err");
+        }
+      }
+    }
+
+    // 常驻卡：页面加载即渲染（不分画布态/聊天态，始终吸附右侧）
+    loadRulePanel();
 
     async function saveRuleSection(ta) {
       const sec = ta.dataset.sec;
@@ -1830,8 +1849,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         });
         API.toast("规则已写入", "success");
         closeRuleModal();
-        // [2026-10-16 归位] 当前若正开着规则卡 → 重渲卡详情（分区内容已变）
-        if (currentCard && currentCard.meta.card_type === "rule") await renderInspector();
+        loadRulePanel();   // [2026-10-16] 吸附卡常驻，落盘后即时重渲分区
       } catch (e) {
         const msg = String(e.message || "");
         setRuleModalError(msg.indexOf("hash 不符") >= 0 ? "内容已被改，请重新提议" : ("写入失败：" + msg));
