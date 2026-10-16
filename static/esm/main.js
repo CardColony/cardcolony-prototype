@@ -8,8 +8,8 @@ import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=35";
 import "./util.js?v=30";
 import "../stream.js?v=36";
-import "../canvas.js?v=38";
-import "../workspace.js?v=39";
+import "../canvas.js?v=39";
+import "../workspace.js?v=40";
 
 window.GetCanvasState = () => store.state.canvasState;
 window.API = API;   // 调试便利（非功能依赖；不计功能挂载——与 api.js 薄壳同属兼容层）
