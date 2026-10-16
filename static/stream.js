@@ -346,6 +346,77 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     }
   }
 
+  /** 把工具结果对象摊成可读内容块（直接展示，不藏进折叠 detail）。
+      result 典型形态（真实数据实读）：
+        {ok:false, error:{code,message}}   → 红色错误块
+        {ok:true, content:"..."}           → 内容段（正文）
+        {ok:true, files:[...]}             → 文件列表
+        其余字段                           → 键值对逐行
+      escape-first：所有文本经 esc()，绝不 innerHTML 塞未转义内容。 */
+  function renderResultContent(d) {
+    const out = [];
+    if (!d || typeof d !== "object") {
+      const p = document.createElement("pre");
+      p.className = "tr-pre";
+      p.textContent = d == null ? "" : String(d);
+      out.push(p);
+      return out;
+    }
+    const err = d.error;
+    if (err) {
+      const e = document.createElement("div");
+      e.className = "tr-err";
+      e.textContent = (err.code ? "[" + err.code + "] " : "") + (err.message || "调用失败");
+      out.push(e);
+    }
+    if (d.content != null && d.content !== "") {
+      const c = document.createElement("div");
+      c.className = "tr-content";
+      c.textContent = String(d.content).length > 4000
+        ? String(d.content).slice(0, 4000) + "…（已截断）"
+        : String(d.content);
+      out.push(c);
+    }
+    if (Array.isArray(d.files) && d.files.length) {
+      const ul = document.createElement("ul");
+      ul.className = "tr-files";
+      for (const f of d.files.slice(0, 200)) {
+        const li = document.createElement("li");
+        li.textContent = String(f);
+        ul.appendChild(li);
+      }
+      out.push(ul);
+    }
+    if (Array.isArray(d.items) && d.items.length) {
+      const ul = document.createElement("ul");
+      ul.className = "tr-files";
+      for (const it of d.items.slice(0, 200)) {
+        const li = document.createElement("li");
+        li.textContent = typeof it === "object" ? fmtData(it) : String(it);
+        ul.appendChild(li);
+      }
+      out.push(ul);
+    }
+    // 其余键值对逐行（不含已提取的）
+    const rest = {};
+    for (const k of Object.keys(d)) {
+      if (k === "ok" || k === "error" || k === "content" || k === "files" || k === "items") continue;
+      if (typeof d[k] === "object") continue;
+      if (d[k] === null || d[k] === "") continue;
+      rest[k] = d[k];
+    }
+    const rks = Object.keys(rest);
+    if (rks.length) {
+      const kv = document.createElement("div");
+      kv.className = "tr-kv";
+      kv.innerHTML = rks.map(k =>
+        "<span class='f'><span class='k'>" + esc(k) + "</span> = <span class='v'>" + esc(String(rest[k])) + "</span></span>"
+      ).join(" ");
+      out.push(kv);
+    }
+    return out;
+  }
+
   /** tool：call 与 result 已在装配器合成一条节点（两态终态呈现）。
       live 命名空间的未闭合节点带 t0（帧到达时刻）——组重画时据此显示已用秒数，
       取代旧实现挂在那行上的 setInterval（行已被整组重画重建，定时器留不住）。 */
@@ -361,16 +432,30 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
         ? (performance.now() - node.t0) / 1000
         : 0;
       return [makeRow(node.type,
-        "<b>" + esc(call.tool || "") + "</b>" + fld("target", call.target) + fld("step_id", call.step_id),
+        "<b>" + esc(call.tool || "") + "</b>" +
+        (call.arguments && typeof call.arguments === "object"
+          ? " · " + esc(clip(Object.keys(call.arguments).map(k => k + "=" + call.arguments[k]).join(" "), 60))
+          : "") +
+        fld("target", call.target) + fld("step_id", call.step_id),
         '<span class="mk run"><i class="dot"></i>调用中' + (el ? " " + el.toFixed(1) + "s" : "") + "</span>",
         fmtData(call), "running")];
     }
-    return [makeRow("tool_result",
-      "<b>" + esc(res.tool || call.tool || "") + "</b> 返回" +
-      fld("ok", res.ok) + fld("step_id", res.step_id) + fld("target", res.target),
-      '<span class="mk ' + (ok ? "ok" : "no") + '">' + (ok ? "✓" : "✗") + "</span>" + dur +
-      (res.step_id ? " #" + esc(res.step_id) : ""),
-      fmtData(res), ok ? "ok" : "fail")];
+    // 已完成：标题行（工具名 + 参数摘要）+ 返回内容直接展开
+    const title =
+      "<b>" + esc(res.tool || call.tool || "") + "</b>" +
+      (call.arguments && typeof call.arguments === "object"
+        ? " · " + esc(clip(Object.keys(call.arguments).map(k => k + "=" + call.arguments[k]).join(" "), 60))
+        : "") +
+      fld("step_id", res.step_id);
+    const row = makeRow("tool_result", title,
+      '<span class="mk ' + (ok ? "ok" : "no") + '">' + (ok ? "✓" : "✗") + "</span>" + dur,
+      fmtData(res), ok ? "ok" : "fail");
+    const body = document.createElement("div");
+    body.className = "tool-body" + (ok ? "" : " err");
+    const parts = renderResultContent(res.result || res);
+    for (const p of parts) body.appendChild(p);
+    row.appendChild(body);
+    return [row];
   }
 
   /** seats：三席进场行（若有）＋ 席卡容器。 */

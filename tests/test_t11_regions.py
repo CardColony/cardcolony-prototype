@@ -64,13 +64,15 @@ def _legacy_build_viewpoint_system_prompt(context_block: str) -> str:
 
 def test_region_table_six_regions_no_current_turn_region():
     # [上下文底座全量接管 2026-10-15] registry 现含所有运行通道与动态注入区。
-    # [规则卡 2026-10-15] 新增 order 85「规则注入」区（instruction 之后、card_duty 之前），
-    # 全表 13 区。
+    # [规则卡 2026-10-15] 新增 order 85「规则注入」区（instruction 之后、card_duty 之前）。
+    # [卡片思维区 2026-10-15] 新增 order 95（类型级思维文本）与 170「直接子卡现状」。
+    # [合并 2026-10-16] 两线相加：全表 15 区。
     orders = [r["order"] for r in context_regions.REGION_TABLE]
     names = {r["name"] for r in context_regions.REGION_TABLE}
-    assert orders == [0, 85, 90, 100, 150, 155, 200, 300, 900, 999, 1000, 1010, 1020]
-    assert names == {"使用说明", "规则注入", "卡片职责", "卡片清单", "当前卡",
-                     "卡片区域说明", "记忆（condense_fold）", "对话历史", "本轮工具轮",
+    assert orders == [0, 85, 90, 95, 100, 150, 155, 170, 200, 300, 900, 999, 1000, 1010, 1020]
+    assert names == {"使用说明", "规则注入", "卡片职责", "卡片思维", "卡片清单", "当前卡",
+                     "卡片区域说明", "直接子卡现状", "记忆（condense_fold）", "对话历史",
+                     "本轮工具轮",
                      "用户消息", "判断协议注入", "工作规范与流程注入", "三席身份注入"}
     # 不再把动态上下文泛称为独立「当前轮」内容区。
     assert "当前轮" not in names

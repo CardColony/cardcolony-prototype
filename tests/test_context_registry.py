@@ -282,3 +282,220 @@ def test_log_regions_degrades_when_spec_missing(monkeypatch):
     assert "[未注册:history]" in names
     lost = next(e for e in log if e["name"] == "[未注册:history]")
     assert lost["order"] == -1 and lost["bytes"] == 2  # json.dumps([]) = "[]"
+
+
+# ---------------------------------------------------------------------------
+# V8：父卡展示子卡现状——**只看直接子级，孙级结构上取不到**
+# ---------------------------------------------------------------------------
+
+
+async def _mk_child(wid: str, title: str, parent: str) -> str:
+    r = await card_store.create_card(wid, title, "模型生成", parent=parent)
+    assert "error" not in r, r
+    return r["meta"]["card_id"]
+
+
+async def test_direct_child_status_shows_direct_children_only(sandbox):
+    wid, root = await _make_work()
+    with_status = await _mk_child(wid, "子卡有现状", root)
+    empty = await _mk_child(wid, "子卡无现状", root)
+    grand = await _mk_child(wid, "孙卡有现状", with_status)
+    await card_store.update_card(wid, with_status, {"status_block": "子卡现状正文"}, "写")
+    await card_store.update_card(wid, grand, {"status_block": "孙卡现状正文"}, "写")
+
+    ctx = context_assembler.build_ctx(wid, root)
+    region = context_regions.render_direct_child_status_region(ctx.direct_child_status)
+    print("REGION:", region)
+    assert "子卡现状正文" in region
+    assert "孙卡现状正文" not in region, "孙级现状不得进入父卡上下文"
+    assert "孙卡有现状" not in region, "孙级标题也不得出现"
+    assert empty not in region, "空现状的子卡不占位"
+    assert region.startswith("## 直接子卡现状")
+
+
+async def test_grandchild_context_shows_its_own_children(sandbox):
+    """孙卡自己当父卡时，看的是它的直接子级（不是把祖卡的规则改掉）。"""
+    wid, root = await _make_work()
+    mid = await _mk_child(wid, "中间卡", root)
+    leaf = await _mk_child(wid, "末级卡", mid)
+    await card_store.update_card(wid, leaf, {"status_block": "末级现状"}, "写")
+    await card_store.update_card(wid, mid, {"status_block": "中间现状"}, "写")
+
+    ctx = context_assembler.build_ctx(wid, mid)
+    region = context_regions.render_direct_child_status_region(ctx.direct_child_status)
+    assert "末级现状" in region
+    assert "中间现状" not in region, "自己的现状不属于「子卡现状」"
+
+
+async def test_direct_child_status_region_absent_when_all_empty(sandbox):
+    wid, root = await _make_work()
+    await _mk_child(wid, "子卡甲", root)
+    await _mk_child(wid, "子卡乙", root)
+    ctx = context_assembler.build_ctx(wid, root)
+    assert context_regions.render_direct_child_status_region(ctx.direct_child_status) == ""
+    orders = [r["order"] for r in context_assembler.build_context_regions(wid, root)]
+    assert 170 not in orders, "全空 ⇒ 整个区不出现"
+
+
+async def test_direct_child_status_region_present_in_context(sandbox):
+    wid, root = await _make_work()
+    child = await _mk_child(wid, "子卡甲", root)
+    await card_store.update_card(wid, child, {"status_block": "子卡现状"}, "写")
+    regs = context_assembler.build_context_regions(wid, root)
+    hit = next((r for r in regs if r["order"] == 170), None)
+    assert hit is not None and "子卡现状" in hit["text"]
+    assert hit["entries"] == 1
+    assert hit["channel"] == "system"
+
+
+async def test_leaf_card_has_no_child_status_region(sandbox):
+    """叶子卡（无子卡）不出现该区——「没有来源就不出现」。"""
+    wid, root = await _make_work()
+    leaf = await _mk_child(wid, "叶子卡", root)
+    orders = [r["order"] for r in context_assembler.build_context_regions(wid, leaf)]
+    assert 170 not in orders
+
+
+# ---------------------------------------------------------------------------
+# V9（卡片思维区 2026-10-15）：按卡类型挂的文本——只出本类、无字不出现、fail-open
+#
+# 依据 `docs/卡片思维区-方案-20261015.md`（v2）：配置＝`config/type_texts.json`
+# （多维度、**不列类型全表**）；区 key=`type_thinking`、order 95；取数一处 IO
+# 落在 `build_ctx`（`load_type_texts`），渲染器保持纯函数。
+# 类型清单唯一来源＝类型注册表——本套用例不含任何"类型全表"。
+# ---------------------------------------------------------------------------
+
+
+def _write_type_texts(tmp_path, data):
+    p = tmp_path / "type_texts.json"
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+async def _make_work_with_child():
+    """根卡（card_001, project_class=rd_project）＋ 一个子项目卡（sub_project）。"""
+    wid, cid = await _make_work()
+    child = await card_store.create_card(wid, "子项目卡", "用户直接创建", parent=cid)
+    assert "error" not in child, child
+    return wid, cid, child["meta"]["card_id"]
+
+
+async def test_v1_type_thinking_region_present_for_current_type(sandbox, monkeypatch, tmp_path):
+    """V1：某类有字 ⇒ 该区出现，且只有本类那段（集成）。"""
+    wid, _root, sub_id = await _make_work_with_child()
+    p = _write_type_texts(
+        tmp_path, {"thinking": {"sub_project": "先想清边界与交付物再动手。"}})
+    monkeypatch.setattr(context_assembler, "_type_texts_path", lambda: p)
+    regs = context_assembler.build_context_regions(wid, sub_id)
+    orders = [r["order"] for r in regs]
+    assert 95 in orders and 90 in orders
+    hit = next(r for r in regs if r["order"] == 95)
+    assert hit["name"] == "卡片思维" and hit["channel"] == "system"
+    assert hit["text"] == "## 卡片思维\n先想清边界与交付物再动手。"
+    assert hit["entries"] == 1  # 有字＝1
+
+
+def test_v2_type_thinking_only_current_type():
+    """V2：别类不串——当前卡是 A 类 ⇒ B 类文本不出现（单测）。"""
+    texts = {"thinking": {"sub_project": "子项目思维", "tool": "工具思维"}}
+    out = context_regions.render_type_thinking_region("sub_project", texts)
+    assert "子项目思维" in out
+    assert "工具思维" not in out
+    rev = context_regions.render_type_thinking_region("tool", texts)
+    assert "工具思维" in rev and "子项目思维" not in rev
+
+
+def test_v3_type_thinking_absent_when_no_text():
+    """V3：本类无字 / 该类型不存在 ⇒ 该区不出现（不报错）（单测）。"""
+    texts = {"thinking": {"sub_project": "有字"}}
+    assert context_regions.render_type_thinking_region("topic", texts) == ""      # 类型不存在
+    assert context_regions.render_type_thinking_region("", texts) == ""           # 无 card_type
+    assert context_regions.render_type_thinking_region("sub_project", {}) == ""   # 无该维度
+    assert context_regions.render_type_thinking_region(
+        "sub_project", {"thinking": {"sub_project": "   "}}) == ""                # 纯空白
+
+
+async def test_v3_type_thinking_region_absent_in_context(sandbox, monkeypatch, tmp_path):
+    """集成：本卡类型没配 ⇒ 整个区不出现（不是空区）。"""
+    wid, _root, sub_id = await _make_work_with_child()
+    p = _write_type_texts(tmp_path, {"thinking": {"tool": "别的类有字"}})
+    monkeypatch.setattr(context_assembler, "_type_texts_path", lambda: p)
+    regs = context_assembler.build_context_regions(wid, sub_id)
+    assert 95 not in [r["order"] for r in regs]
+
+
+async def test_v4_new_registry_type_without_text_is_silent(sandbox, monkeypatch, tmp_path):
+    """V4：注册表加一个类型、type_texts 里没有 ⇒ 装配正常、区不出现（不报错）。"""
+    wid, cid = await _make_work()
+    # 机制侧只动注册表：rd_project 词表加一个新类型
+    reg = json.loads(card_store.TYPE_REGISTRY_PATH.read_text(encoding="utf-8"))
+    reg["l1_vocabularies"]["rd_project"]["types"].append({
+        "code": "probe_kind", "label": "探针卡", "description": "扩展性探针",
+        "can_have_children": False, "requires_owner": False,
+        "default_template": "sub_project", "allowed_transitions": ["active", "completed"],
+    })
+    rp = tmp_path / "reg_extended.json"
+    rp.write_text(json.dumps(reg, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(card_store, "TYPE_REGISTRY_PATH", rp)
+
+    child = await card_store.create_card(
+        wid, "探针卡", "用户直接创建", card_type="probe_kind", parent=cid)
+    assert "error" not in child, child
+    probe_id = child["meta"]["card_id"]
+
+    # type_texts 里没有 probe_kind（只配了别类）⇒ 装配正常、思维区不出现
+    p = _write_type_texts(tmp_path, {"thinking": {"sub_project": "别的类有字"}})
+    monkeypatch.setattr(context_assembler, "_type_texts_path", lambda: p)
+    regs = context_assembler.build_context_regions(wid, probe_id)
+    orders = [r["order"] for r in regs]
+    assert 95 not in orders, "未配置的新类型不得出现思维区"
+    assert 90 in orders, "装配照常（卡片职责仍在）"
+
+
+def test_v5_load_type_texts_fail_open(monkeypatch, tmp_path):
+    """V5：坏配置 / 缺文件 / 结构不对 ⇒ 视为全空、不阻断（fail-open）（单测）。"""
+    for bad in ("{不是JSON", ""):          # 坏 JSON / 空文件
+        p = tmp_path / "bad.json"
+        p.write_text(bad, encoding="utf-8")
+        monkeypatch.setattr(context_assembler, "_type_texts_path", lambda p=p: p)
+        assert context_assembler.load_type_texts() == {}
+    monkeypatch.setattr(context_assembler, "_type_texts_path",
+                        lambda: tmp_path / "nope.json")  # 文件不存在
+    assert context_assembler.load_type_texts() == {}
+    for wrong in ("[1, 2, 3]", '{"thinking": "不是字典"}'):  # 结构不对
+        p = tmp_path / "wrong.json"
+        p.write_text(wrong, encoding="utf-8")
+        monkeypatch.setattr(context_assembler, "_type_texts_path", lambda p=p: p)
+        assert context_assembler.load_type_texts() == {}
+
+
+def test_v5_load_type_texts_keeps_only_nonempty(monkeypatch, tmp_path):
+    """只留非空字符串条目；`_meta` 等下划线键不是维度。"""
+    p = tmp_path / "tt.json"
+    p.write_text(json.dumps({
+        "_meta": {"version": "x"},
+        "thinking": {"sub_project": "有字", "tool": "", "coder": "   ", "topic": "T"},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(context_assembler, "_type_texts_path", lambda: p)
+    got = context_assembler.load_type_texts()
+    assert got == {"thinking": {"sub_project": "有字", "topic": "T"}}
+    assert "_meta" not in got
+
+
+async def test_v7_type_thinking_control_disable_and_reorder(sandbox, monkeypatch, tmp_path):
+    """V7：控制面可停用 / 调序该区（单测）。"""
+    wid, _root, sub_id = await _make_work_with_child()
+    tt = _write_type_texts(tmp_path, {"thinking": {"sub_project": "思维正文"}})
+    monkeypatch.setattr(context_assembler, "_type_texts_path", lambda: tt)
+    assert 95 in [r["order"] for r in context_assembler.build_context_regions(wid, sub_id)]
+
+    cfg = tmp_path / "ctx.json"
+    monkeypatch.setattr(context_assembler, "_control_path", lambda: cfg)
+    cfg.write_text(json.dumps({"regions": {"type_thinking": {"enabled": False}}}),
+                   encoding="utf-8")
+    assert 95 not in [r["order"] for r in context_assembler.build_context_regions(wid, sub_id)]
+    cfg.write_text(json.dumps({"regions": {"type_thinking": {"order": 120}}}),
+                   encoding="utf-8")
+    orders = [r["order"] for r in context_assembler.build_context_regions(wid, sub_id)]
+    assert 120 in orders and 95 not in orders
+    assert orders == sorted(orders)

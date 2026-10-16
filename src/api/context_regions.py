@@ -41,6 +41,10 @@ class RegionCtx:
     work_card_id: str = ""
     cur: Optional[dict[str, Any]] = None
     cur_meta: dict[str, Any] = field(default_factory=dict)
+    direct_child_status: list[dict[str, Any]] = field(default_factory=list)
+    # [卡片思维区 2026-10-15] 按卡类型挂的文本（多维度）：{维度: {类型 code: 文本}}。
+    # 由装配前一处 IO（context_assembler.load_type_texts）取好放入，渲染器只读。
+    type_texts: dict[str, dict[str, str]] = field(default_factory=dict)
     project_class: str = ""
     type_registry: dict[str, Any] = field(default_factory=dict)
     memory_state: Optional[dict[str, Any]] = None
@@ -128,6 +132,26 @@ REGION_TABLE: list[dict[str, Any]] = [
         "count": _count_duty_lines,
     },
     {
+        # [卡片思维区 2026-10-15] order 95：紧随 90 卡片职责之后——
+        # 90 讲「这类卡**干什么**」（类型级职责，来自类型注册表），
+        # 本区讲「这类卡**该怎么想**」（类型级文本，来自 config/type_texts.json
+        # 的 thinking 维度）。**只取当前卡 card_type 的那一段**，不并列别类；
+        # 该类型在该维度没有文本 → 区不出现（「没有来源就不出现这个区」）。
+        "key": "type_thinking",
+        "order": 95,
+        "name": "卡片思维",
+        "channel": "system",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "config/type_texts.json 的 thinking[本卡 card_type]（空/缺 → 区不出现）",
+        "render": lambda ctx: render_type_thinking_region(
+            str((ctx.cur_meta or {}).get("card_type") or ""), ctx.type_texts),
+        "count": 1,
+    },
+    {
         "key": "card_list",
         "order": 100,
         "name": "卡片清单",
@@ -175,6 +199,24 @@ REGION_TABLE: list[dict[str, Any]] = [
         "render": lambda ctx: render_card_region_guide(
             str((ctx.cur_meta or {}).get("card_type") or ""), ctx.project_class),
         "count": 7,  # 正卡三块 ＋ 影子四节
+    },
+    {
+        # [父卡展示子卡现状 2026-10-15] order 170：紧随 155 之后、200 记忆之前——
+        # 「我是谁」→「我的直接子卡现在怎么样」→「我的记忆」。
+        # 来源＝直接子卡的 status_block（**只一层，不含孙级**；SQL 不递归）。
+        "key": "child_status",
+        "order": 170,
+        "name": "直接子卡现状",
+        "channel": "system",
+        "seats": ("main", "viewpoints"),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "当前卡的**直接**子卡 status_block（WHERE parent=?，不递归；空现状不注入）",
+        "render": lambda ctx: render_direct_child_status_region(ctx.direct_child_status),
+        "count": lambda ctx, text: sum(
+            1 for child in ctx.direct_child_status if _child_status_body(child)),
     },
     {
         # [T12 二期] 凝练记忆区（condense_fold）——order 200 空闲位插入（REL-01：
@@ -468,6 +510,23 @@ def render_card_duty_region(registry: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_type_thinking_region(card_type: str, type_texts: dict[str, dict[str, str]]) -> str:
+    """卡片思维区（order 95）：只出**本卡那一类**在 `thinking` 维度的文本。
+
+    - 取 `type_texts["thinking"][card_type]`；**不并列别类的文本**（一类卡只读
+      自己那一段）；
+    - 空串/条目缺失/无 card_type/无该维度 → 空串（「没有来源就不出现这个区」）；
+    - 正文原样呈现，不加工、不截断（渲染零加工）。
+    """
+    dim = type_texts.get("thinking") if isinstance(type_texts, dict) else None
+    if not card_type or not isinstance(dim, dict):
+        return ""
+    text = str(dim.get(card_type) or "")
+    if not text.strip():
+        return ""
+    return "## 卡片思维\n" + text
+
+
 def render_card_list_region(cards: list[dict[str, Any]], work_card_id: str) -> str:
     """100 区渲染：每卡一行（id · 标题 · 父卡）。行文案与改造前逐字一致。"""
     lines: list[str] = ["## 卡片清单"]
@@ -640,6 +699,40 @@ def render_card_region_guide(card_type: str, project_class: str) -> str:
         "",
         "进度——不重要，不必特意维护。",
     ])
+
+
+def _child_status_body(child: dict[str, Any]) -> str:
+    """子卡「现状」正文：空/占位符（新建卡骨架模板）一律当**未写**。
+
+    占位符判据复用 `card_draft._is_placeholder`（单一口径，避免两处各判一套）。
+    延迟 import：`card_draft` 反向依赖本模块，模块级 import 会成环。
+    """
+    from .card_draft import _is_placeholder  # noqa: PLC0415 延迟 import 破环
+    status = str((child or {}).get("status_block") or "")
+    return "" if _is_placeholder(status) else status
+
+
+def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
+    """直接子卡现状区（order 170）：只呈现当前卡**直接**子卡的 status_block。
+
+    - 上游 SQL 只按 `parent=?` 取一层 ⇒ **结构上不可能含孙级**；
+    - 只输出现状正文，不带使命、第三块（需求文档/定论）、修改历史或影子；
+    - 空/纯空白/**占位符**（新建卡骨架）都没有信息 ⇒ 跳过该子卡；全空 ⇒
+      整个区不出现（沿「没有来源就不出现这个区」）；
+    - 子卡顺序由上游按 card_id 固定排序；正文原样呈现，不摘要、不截断
+      （渲染零加工）。
+    """
+    sections: list[str] = []
+    for child in children or []:
+        status = _child_status_body(child)
+        if not status:
+            continue
+        card_id = str(child.get("card_id") or "")
+        title = str(child.get("title") or "")
+        sections.append(f"### {card_id} · {title}\n{status}")
+    if not sections:
+        return ""
+    return "## 直接子卡现状\n" + "\n\n".join(sections)
 
 
 def render_memory_region(entries: list[dict[str, Any]]) -> str:
