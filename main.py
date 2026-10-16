@@ -125,11 +125,26 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
+def _render_work(work_id: str, card_id: str = "") -> str:
+    """work 页模板渲染：注入 WORK_ID 与 CARD_ID。
+
+    [阶段2 A2.1 2026-10-17] 对话独立地址 /work/{wid}/card/{cid} 与画布页 /work/{wid}
+    共用同一份 work.html（阶段 3 才拆模板），故两处占位符一并注入；画布页 CARD_ID 为空串。
+    """
+    html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
+    return html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", card_id)
+
+
 @app.get("/work/{work_id}", response_class=HTMLResponse)
 async def work_page(work_id: str) -> HTMLResponse:
     """Phase 8：剧本画布页。work_id 注入到 HTML 占位符。"""
-    html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
-    return HTMLResponse(content=html.replace("{{WORK_ID}}", work_id))
+    return HTMLResponse(content=_render_work(work_id))
+
+
+@app.get("/work/{work_id}/card/{card_id}", response_class=HTMLResponse)
+async def work_card_page(work_id: str, card_id: str) -> HTMLResponse:
+    """[阶段2 A2.1] 对话独立页：URL 即页面身份（刷新各回各家）。阶段 2 仍渲染 work.html。"""
+    return HTMLResponse(content=_render_work(work_id, card_id))
 
 
 @app.get("/settings", response_class=HTMLResponse)

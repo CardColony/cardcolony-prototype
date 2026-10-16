@@ -1,7 +1,7 @@
 /* esm/home.js —— [首页两态 2026-10-15] 首页入口（旧项目列表页退役后的继任者）。
  *
  * 入口判定（方案定稿 v2，全在前端——后端读不到 localStorage）：
- *   1. localStorage nav.recent.v1 有最近记录 → 跳上次停留的对话页 /work/{wid}#{wid}/{cid}
+ *   1. localStorage nav.recent.v1 有最近记录 → 跳上次停留的对话页 /work/{wid}/card/{cid}
  *   2. 无最近记录但 /api/works 有项目     → 跳最近活跃 work 的对话页
  *   3. 全空                                → 停在空态首页（左栏展开空列表 +【＋新项目】、画布中央【创建】）
  *
@@ -30,7 +30,7 @@ async function createProject() {
   [newBtn, createBtn].forEach(b => { if (b) b.disabled = true; });
   try {
     const w = await API.createWork("新项目");
-    location.href = "/work/" + w.work_id + "#";
+    location.href = "/work/" + w.work_id;
   } catch (e) {
     /* 失败原因已由 api.js 的 call() 弹 toast */
     creating = false;
@@ -71,21 +71,17 @@ function showEmptyState() {
 }
 
 async function boot() {
-  /* 1. 有最近访问 → 上次停留的对话页。hash 用复合键 #wid/cid（state_layers
-     serializeHash 的口径）：工作页 restoreFromHash 按此解析并 open() 那张卡，
-     同时进入 chat 视图。若只写 #cid 会回落到「当前页 WORK_ID」——同页时也能开卡，
-     但跨 work 时会开错，故一律写复合键。 */
+  /* 1. 有最近访问 → 上次停留的对话页（[阶段2 A2.4] 新地址形态 /work/{wid}/card/{cid}）。 */
   const recent = readRecent();
   if (recent) {
-    location.replace("/work/" + recent.wid + "#" + recent.wid + "/" + recent.cid);
+    location.replace("/work/" + recent.wid + "/card/" + recent.cid);
     return;
   }
 
   /* 2. 无最近记录但有项目 → 最近活跃 work 的对话页。
      /api/works 已按 last_active_at 降序（work_store.list_works），首项即最近活跃。
-     注意：无 hash 时工作页停在画布态而非对话态；这里补上根卡 hash，
-     让 restoreFromHash 打开根卡并切到 chat 视图——对齐「落在对话页」的验收口径。
-     根卡 id 从列表项的 work_card_id 取；该字段缺失时退回纯 /work/{wid}（至少进得去）。 */
+     [阶段2 A2.4] 根卡地址走新形态 /work/{wid}/card/{rootCid}；根卡 id 缺失时退回纯
+     /work/{wid}（停在画布页，至少进得去）。 */
   let works = [];
   try {
     const data = await API.listWorks();
@@ -97,7 +93,7 @@ async function boot() {
   if (works.length) {
     const w = works[0];
     const rootCid = w.work_card_id || "";
-    location.replace("/work/" + w.work_id + (rootCid ? "#" + w.work_id + "/" + rootCid : ""));
+    location.replace("/work/" + w.work_id + (rootCid ? "/card/" + rootCid : ""));
     return;
   }
 
