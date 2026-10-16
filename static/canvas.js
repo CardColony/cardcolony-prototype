@@ -946,6 +946,7 @@ const WORK_ID = window.__WORK_ID__;
     for (const cid of visibleIds) {
       const card = vm.cardsById[cid];
       if (!card) continue;
+      if (card.card_type === "rule") continue;   // [规则卡 2026-10-16] 规则卡不上画布——它是吸附屏幕右侧的常驻卡（workspace.js 规则面板即其呈现）
       const node = createNode(card, { x: 0, y: 0 }, vm);   // 占位坐标（阶段二一次性应用最终位）
       if ((depthOf[cid] || 0) >= 2) {
         // [T08-用户令 2026-10-04] 第三级卡只显示标题（独立类，不动 l0/l1/l2 三档机制）

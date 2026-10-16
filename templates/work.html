@@ -82,7 +82,15 @@
       <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
       <div id="chatCrumb" class="crumb"></div>
       <span class="spacer"></span>
-      <span id="zoomDisplay" class="zoom-display canvas-only">100%</span>
+      <!-- [缩放控件 2026-10-16 用户令] 滚轮缩放废除（canvas.js wheel 监听已删），
+           缩放只走此控件组：−/＋每按一次 ±25%；拖动条 25% 档位吸附（min25/max200/step25）；
+           锚点＝视口中心。zoomDisplay 保留（canvas.js applyTransform 写它），组内显示百分比。 -->
+      <div id="zoomCtrl" class="zoom-ctrl canvas-only">
+        <button id="zoomOutBtn" class="zbtn" type="button" title="缩小 −25%">−</button>
+        <input id="zoomSlider" class="zoom-slider" type="range" min="25" max="200" step="25" value="100" aria-label="缩放比例" />
+        <button id="zoomInBtn" class="zbtn" type="button" title="放大 +25%">＋</button>
+        <span id="zoomDisplay" class="zoom-display">100%</span>
+      </div>
       <button id="reorganizeBtn" class="btn canvas-only" title="重算所有卡片位置（清除 pinned）">整理画布</button>
       <button id="newCardBtn" class="btn primary canvas-only">＋ 新建卡</button>
     </div>
@@ -142,9 +150,15 @@
         </div>
       </div>
     </div>
-    <!-- [规则卡 2026-10-16 归位] 规则卡＝普通卡（card_type=rule，画布正常渲染节点）：
-         分区编辑在卡详情（inspector）内；无独立右栏面板（用户 2026-10-16 明令，
-         原 #rulePanel 侧栏已删）。审批弹窗复用下方 draftModal。 -->
+    <!-- [规则卡 2026-10-16 二次归位] 吸附屏幕右侧的常驻卡片（fixed）：不是画布节点
+         （canvas 跳过 rule）、不是可展开边栏、不分画布态/聊天态——始终在场。
+         分区直改即存；仅根卡可提议修改（draft_rule_edit）、弹窗审批落盘。 -->
+    <div class="rule-panel" id="rulePanel">
+      <div class="rule-panel-head">规则卡 · 各类卡行为准则（直改即存）</div>
+      <div class="rule-panel-body" id="rulePanelBody">
+        <!-- workspace.js loadRulePanel 动态填充 -->
+      </div>
+    </div>
   </div>
 </div>
 <div id="toastContainer" class="toast-container"></div>
