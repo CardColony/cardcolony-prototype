@@ -5,9 +5,9 @@
  * 提升保证：本文件顶层不调用任何 canvas 导出。 */
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=35";
+import { EventFlow } from "./stream.js?v=36";
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { reloadCanvas } from "./canvas.js?v=35";
+import { reloadCanvas } from "./canvas.js?v=36";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=35";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
@@ -1111,15 +1111,21 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     }
   }
 
-  async function send() {
+  // [更新现状按钮改造 2026-10-16] `op` 缺省＝普通发送（逐字不变）；传 "update_status"
+  // ⇒「更新现状」专用回合：本轮用户消息＝按钮名（可见、留痕，不另编话术），
+  // 完整指令走后端轮首注入；收口时多扫一次 propose_status 开对比窗。
+  async function send(op) {
+    const statusOp = (op === "update_status");
     if (!currentCard) return;
     if (isRunning) return;   // [顶栏整合] 一轮在跑时不重入（运行中点按钮＝停止，见 doStop）
-    const content = inputBox.value.trim();
+    const content = statusOp ? "更新现状" : inputBox.value.trim();
     if (!content) return;
 
-    lastSentContent = content;
-    inputBox.value = "";
-    inputBox.style.height = "auto";
+    if (!statusOp) {   // 专用回合不占输入框：不清空、不记重发内容（见下方 resend 边界）
+      lastSentContent = content;
+      inputBox.value = "";
+      inputBox.style.height = "auto";
+    }
 
     const cardId = currentCard.meta.card_id;
     let settled = false;
@@ -1173,7 +1179,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           note.textContent = "⚠ 响应连接中断，已从事件流恢复回复（若有新卡片，返回画布后可见）";
           ensureMsgs(cardId).appendChild(note);
           scrollChatBottom();
-          if (window.__maybeOpenRuleEditModal) window.__maybeOpenRuleEditModal(cardId);
+          if (window.__maybeOpenRuleEditModal) await window.__maybeOpenRuleEditModal(cardId);
+          if (statusOp && window.__maybeOpenStatusModal) window.__maybeOpenStatusModal(cardId);
           return true;
         }
       } catch (e2) { /* 静默，下轮再试 */ }
@@ -1192,7 +1199,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     setRunState(true);   // [顶栏整合] 运行按钮转停止态
 
     try {
-      const resp = await API.postMessage(WORK_ID, cardId, content);
+      const resp = await API.postMessage(WORK_ID, cardId, content, op);
       if (settled) return;   // 已由轮询恢复，丢弃迟到响应
       settled = true;
       if (waiting) waiting.stop();
@@ -1200,7 +1207,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // [C1 单源] 回复正文不再由 POST 响应直接上屏：此刻事件已全部落盘，
       // 走与刷新**同一条**渲染路（拉 timeline → 装配器 → 快照 → 渲染）。
       await EventFlow.resync(WORK_ID, cardId);
-      if (window.__maybeOpenRuleEditModal) window.__maybeOpenRuleEditModal(cardId);
+      // [更新现状按钮改造] 先等规则审批窗（同 DOM，防叠开），再按 op 开现状对比窗。
+      if (window.__maybeOpenRuleEditModal) await window.__maybeOpenRuleEditModal(cardId);
+      if (statusOp && window.__maybeOpenStatusModal) window.__maybeOpenStatusModal(cardId);
 
       // created_cards 绿条
       if (resp.created_cards && resp.created_cards.length > 0) {
@@ -1556,7 +1565,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     // 事件绑定
     if (draftBtn) draftBtn.onclick = () => openDraft("requirements");
-    if (statusDraftBtn) statusDraftBtn.onclick = () => openDraft("status");
+    // [更新现状按钮改造 2026-10-16] 「更新现状」不再走 /draft 起草通道，改发起一次
+    // 带 op 的专用回合（主流程模型 + 卡内全部工具 + 专用工具 propose_status）。
+    // op 字符串与后端 card_tools.OP_UPDATE_STATUS 同值（唯一定义处是后端）。
+    if (statusDraftBtn) statusDraftBtn.onclick = () => send("update_status");
     if (confirmBtn) confirmBtn.onclick = submitCommit;
     if (feedbackBtn) feedbackBtn.onclick = submitFeedback;
     if (closeBtn) closeBtn.onclick = closeDraft;
@@ -1572,6 +1584,163 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     // 初始化一次（无卡时保持缺省文案）
     updateDraftButtons();
+  }
+
+  // ==================== [更新现状按钮改造 2026-10-16] 现状对比窗状态机 ====================
+  // 专用通道的收口：op 回合结束后扫本卡 timeline，找 propose_status 的**成功**
+  // tool_result → 开单面板行级 diff（原现状 vs 提议；提议**可改**）：
+  //   〔同意〕→ POST …/commit（复用既有「写入唯一入口」：base_hash 乐观锁 →
+  //            整块替换 status_block → 影子 ## 迭代历史 记一行）
+  //   〔关闭〕→ 关窗、不发任何请求、不落盘（提议留在对话里，可再点按钮重来）
+  // 绑卡：窗口自带 cardId，提交用它 —— 防「期间切卡写到别的卡上」（同规则审批手法）。
+  // DOM：独立 #statusModal（不挤 #draftModal，避免三套状态机争同一批 onclick）。
+  {
+    const modal = document.getElementById("statusModal");
+    const overlay = document.getElementById("statusOverlay");
+    const titleEl = document.getElementById("statusModalTitle");
+    const diffArea = document.getElementById("statusDiffArea");
+    const editArea = document.getElementById("statusEditArea");
+    const errorEl = document.getElementById("statusModalError");
+    const confirmBtn = document.getElementById("statusConfirmBtn");
+    const closeBtn = document.getElementById("statusCloseBtn");
+    const modalX = document.getElementById("statusModalX");
+    const draftModalEl = document.getElementById("draftModal");
+
+    let dmStatus = null;            // { cardId, baseHash, busy }
+    const statusSeen = new Set();   // 已弹过的 propose_status tool_result seq（去重）
+
+    function setErr(msg) {
+      if (!errorEl) return;
+      if (msg) { errorEl.textContent = msg; errorEl.style.display = "block"; }
+      else { errorEl.textContent = ""; errorEl.style.display = "none"; }
+    }
+
+    // ==================== 现状 diff（纯函数；node 侧剪段求值，见 tests/status_diff.test.mjs） ====================
+    // 段内**只放纯函数**（无 DOM、无闭包外引用）——测试从本文件剪出本段在 node 里求值。
+    // 段分隔线是结构性标记：改段时必动，动了 tests/status_diff.test.mjs 会当场报错、不静默。
+    /** 行级 diff（LCS 回溯）：文本量小，O(n·m) 足够。
+        返回 [{k, text}]，k ∈ same/add/del —— 单面板逐行对照的数据源。 */
+    function lineDiff(oldText, newText) {
+      // 空串＝**零行**（不是一行空串）：否则「原现状为空」会多出一条虚假的 `- ` 行。
+      const toLines = (t) => {
+        const s = String(t == null ? "" : t);
+        return s === "" ? [] : s.split("\n");
+      };
+      const a = toLines(oldText);
+      const b = toLines(newText);
+      const n = a.length, m = b.length;
+      const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          dp[i][j] = (a[i] === b[j]) ? dp[i + 1][j + 1] + 1
+                                     : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+      const out = [];
+      let i = 0, j = 0;
+      while (i < n && j < m) {
+        if (a[i] === b[j]) { out.push({ k: "same", text: a[i] }); i++; j++; }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ k: "del", text: a[i] }); i++; }
+        else { out.push({ k: "add", text: b[j] }); j++; }
+      }
+      while (i < n) { out.push({ k: "del", text: a[i] }); i++; }
+      while (j < m) { out.push({ k: "add", text: b[j] }); j++; }
+      return out;
+    }
+    // ==================== 现状 diff 段终 ====================
+
+    function renderDiff(oldText, newText) {
+      const rows = lineDiff(oldText, newText);
+      if (!rows.length) {
+        diffArea.innerHTML = `<div class="sd-line sd-empty">（两侧都为空）</div>`;
+        return;
+      }
+      const head = (!String(oldText || "").trim())
+        ? `<div class="sd-line sd-empty">（原现状为空，以下为新增内容）</div>` : "";
+      const body = rows.map(r => {
+        const mark = r.k === "add" ? "+ " : (r.k === "del" ? "- " : "  ");
+        return `<div class="sd-line sd-${r.k}">${escapeHtml(mark + r.text)}</div>`;
+      }).join("");
+      diffArea.innerHTML = head + body;
+    }
+
+    function openStatusModal(cardId, payload) {
+      dmStatus = { cardId: cardId || "", baseHash: payload.base_hash || "", busy: false };
+      titleEl.textContent = "更新现状 · 原/新对比";
+      renderDiff(payload.old || "", payload.proposed || "");
+      editArea.value = payload.proposed || "";
+      setErr("");
+      confirmBtn.disabled = false;
+      modal.classList.add("open");
+    }
+
+    async function submitStatusCommit() {
+      if (!dmStatus || dmStatus.busy) return;
+      dmStatus.busy = true;
+      confirmBtn.disabled = true;
+      const cid = dmStatus.cardId;
+      try {
+        await API.postCommit(WORK_ID, cid, {
+          kind: "status",
+          draft: editArea.value,          // ← 用户可改后的文本（对比窗可编辑）
+          base_hash: dmStatus.baseHash,
+          feedback_rounds: 0,
+        });
+        API.toast("现状已写入", "success");
+        closeStatusModal();
+        // 右栏现状刷新（只在还停在本卡时刷；期间切卡则不打扰别的卡）
+        if (currentCard && currentCard.meta.card_id === cid) {
+          currentCard = await API.getCard(WORK_ID, cid);
+          await renderInspector();
+        }
+      } catch (e) {
+        const msg = String((e && e.message) || "写入失败");
+        setErr((msg.indexOf("内容已被改") >= 0 || msg.indexOf("重新起草") >= 0)
+          ? "现状已被改，请关窗后重新点「更新现状」"
+          : ("写入失败：" + msg));
+        confirmBtn.disabled = false;
+      } finally {
+        if (dmStatus) dmStatus.busy = false;
+      }
+    }
+
+    function closeStatusModal() {
+      dmStatus = null;
+      modal.classList.remove("open");
+      diffArea.innerHTML = "";
+      editArea.value = "";
+      setErr("");
+    }
+
+    if (confirmBtn) confirmBtn.onclick = () => { if (dmStatus) submitStatusCommit(); };
+    if (closeBtn) closeBtn.onclick = closeStatusModal;
+    if (modalX) modalX.onclick = closeStatusModal;
+    if (overlay) overlay.onclick = closeStatusModal;   // 点遮罩＝关闭（无请求、不落盘）
+
+    /** 回合收口扫 timeline：找 propose_status 的**成功** tool_result → 开对比窗。
+        **只由带 op 的回合**（send / tryRecover 的 statusOp 分支）调用——普通回合不扫，
+        故模型在普通对话里误调该工具也不会弹窗。 */
+    async function maybeOpenStatusModal(cardId) {
+      if (dmStatus || modal.classList.contains("open")) return;         // 本窗已在
+      if (draftModalEl && draftModalEl.classList.contains("open")) return;  // 起草/规则窗在，不叠开
+      try {
+        const tl = await API.getTimeline(WORK_ID, cardId);
+        const items = (tl && tl.items) || [];
+        for (let i = items.length - 1; i >= 0; i--) {
+          const it = items[i];
+          if (!it || it.type !== "tool_result") continue;
+          const d = it.data || {};
+          if (d.tool !== "propose_status" || !d.ok) continue;
+          const seq = it.seq || 0;
+          if (statusSeen.has(seq)) continue;
+          statusSeen.add(seq);
+          const res = (d.result && d.result.data) || {};
+          if (res.proposed !== undefined) openStatusModal(cardId, res);
+          return;   // 每次收口最多开一个
+        }
+      } catch (e) { /* 零阻断 */ }
+    }
+    window.__maybeOpenStatusModal = maybeOpenStatusModal;
   }
 
   // ==================== [T17] 静态绑定与初始化 ====================
@@ -1769,28 +1938,6 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     // 常驻卡：页面加载即渲染（不分画布态/聊天态，始终吸附右侧）
     loadRulePanel();
-
-    async function saveRuleSection(ta) {
-      const sec = ta.dataset.sec;
-      const statusEl = ta.parentElement.querySelector(".rule-sec-status");
-      const content = ta.value;
-      const baseHash = (ruleData && ruleData.hashes && ruleData.hashes[sec]) || "";
-      if (!ruleCardId) { if (statusEl) { statusEl.textContent = "规则卡不存在"; statusEl.classList.add("err"); } return; }
-      if (statusEl) { statusEl.textContent = "保存中…"; statusEl.classList.remove("err"); }
-      try {
-        const r = await API.call("PATCH", `/api/works/${WORK_ID}/rule/sections/${encodeURIComponent(sec)}`,
-          { content, base_hash: baseHash });
-        if (ruleData && ruleData.hashes) ruleData.hashes[sec] = r.new_hash;
-        if (ruleData && ruleData.sections) ruleData.sections[sec] = content;
-        if (statusEl) statusEl.textContent = "已保存";
-      } catch (e) {
-        const msg = String(e.message || "");
-        if (statusEl) {
-          statusEl.textContent = msg.indexOf("hash 不符") >= 0 ? "内容已被改，请刷新重试" : ("保存失败：" + msg);
-          statusEl.classList.add("err");
-        }
-      }
-    }
 
     // [2026-10-16 归位] rule 卡＝普通卡：导航/画布点它走正常 gotoCard（对话+inspector
     // 分区编辑），原「点规则卡开右栏面板」的拦截已随面板形态删除。

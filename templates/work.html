@@ -11,7 +11,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=35">
+<link rel="stylesheet" href="/static/style.css?v=36">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -55,6 +55,7 @@
 
   <!-- [T17-F1] 中区主视图：topbar + stage（画布/对话二选一，data-view 驱动显隐） -->
   <div class="app-main" id="appMain" data-view="canvas">
+    <div class="main-col">
     <!-- [顶栏整合 2026-10-13] 两条栏（.topbar 48px ＋ .ws-head ~35px）合并为一条 44px：
          面包屑 ｜（画布态）设置·zoom·整理画布·新建卡。
          用户 2026-10-13 17:17 四条裁定：① 去「回首页」图标 ② 去「← 画布」——面包屑首段＝项目名＝根卡，
@@ -150,9 +151,10 @@
         </div>
       </div>
     </div>
-    <!-- [规则卡 2026-10-16 二次归位] 吸附屏幕右侧的常驻卡片（fixed）：不是画布节点
-         （canvas 跳过 rule）、不是可展开边栏、不分画布态/聊天态——始终在场。
-         分区直改即存；仅根卡可提议修改（draft_rule_edit）、弹窗审批落盘。 -->
+    </div>
+    <!-- [规则卡 2026-10-16 三改] 布局右列（非浮层）：主内容列真实缩窄避让，
+         任何界面都不被盖。分区直改即存；仅根卡可提议修改（draft_rule_edit）、
+         弹窗审批落盘。 -->
     <div class="rule-panel" id="rulePanel">
       <div class="rule-panel-head">规则卡 · 各类卡行为准则（直改即存）</div>
       <div class="rule-panel-body" id="rulePanelBody">
@@ -194,6 +196,34 @@
     </div>
   </div>
 </div>
+<!-- [更新现状按钮改造 2026-10-16] 「更新现状」专用通道的对比确认窗。
+     ① **独立元素**，不挤 #draftModal——那个 DOM 已被「起草」与「规则审批」两套
+        状态机各绑一次 `onclick =`（后绑者覆盖先绑者，起草弹窗的「确认」实际已被
+        盖掉）。本窗另起元素、复用同一套 .draft-modal* 样式 ⇒ 零争用。
+     ② 版式＝单面板行级 diff（原现状 vs 提议，增删着色）＋**可编辑的提议框**
+        （需求：对比窗里能直接改；同意后按这里的文本落盘）。 -->
+<div id="statusModal" class="draft-modal">
+  <div class="draft-modal-overlay" id="statusOverlay"></div>
+  <div class="draft-modal-panel" role="dialog" aria-modal="true">
+    <div class="draft-modal-head">
+      <span id="statusModalTitle">更新现状 · 原/新对比</span>
+      <button class="draft-modal-close" id="statusModalX" title="关闭（不落盘）">×</button>
+    </div>
+    <div class="draft-modal-body" id="statusModalBody">
+      <div class="status-diff" id="statusDiffArea"></div>
+      <div class="status-edit-wrap">
+        <div class="status-edit-label">可直接改（点「同意」按这里的文本落盘）</div>
+        <textarea id="statusEditArea" class="status-edit-area" rows="8"></textarea>
+      </div>
+      <div class="draft-modal-error" id="statusModalError" style="display:none"></div>
+    </div>
+    <div class="draft-modal-foot">
+      <button class="btn ghost" id="statusCloseBtn">关闭</button>
+      <span class="spacer"></span>
+      <button class="btn primary" id="statusConfirmBtn">同意</button>
+    </div>
+  </div>
+</div>
 <script>
   window.__WORK_ID__ = "{{WORK_ID}}";
 </script>
@@ -202,6 +232,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=35.0"></script>
+<script type="module" src="/static/esm/main.js?v=36.0"></script>
 </body>
 </html>
