@@ -41,6 +41,15 @@ RETRY_BACKOFF_MAX_SECONDS = 30     # 指数退避单次 sleep 上限
 # transform 会丢弃 reasoning_content（假端点实测 attr/model_extra/vars 全空），此类端点
 # 照抄 dsh-llm-deepseek 用原生 httpx + SSE 解析，从原始 delta.reasoning_content 读思考。
 NATIVE_SSE_PROVIDERS = {"opencode"}
+# [provider 漂移修正 2026-10-16] 编译后 provider 被翻译（opencode→openai），追加
+# base_url 特征判定：命中这些 URL 前缀的端点走原生 SSE（litellm 会吞其 reasoning）。
+NATIVE_SSE_URL_PREFIXES = ("https://opencode.ai/",)
+
+
+def _is_native_sse_url(model_config: dict[str, Any]) -> bool:
+    """按 base_url 特征判定原生 SSE 端点（编译路径 provider 已漂移，URL 是唯一稳定特征）。"""
+    base = str(model_config.get("base_url") or "")
+    return any(base.startswith(p) for p in NATIVE_SSE_URL_PREFIXES)
 
 
 class ModelGateway:
@@ -609,7 +618,12 @@ class ModelGateway:
                 # httpx + SSE 解析，从原始 delta.reasoning_content 直接读。产出对象与 litellm
                 # chunk 保持同形（delta.content / reasoning_content / tool_calls / finish_reason），
                 # 使下方累积与 yield 契约一行不变。
-                if provider in NATIVE_SSE_PROVIDERS:
+                # [provider 漂移修正 2026-10-16] 判定不能只看 provider 字段：生产路径的
+                # config 经 model_config._compile 编译，provider 方言已被翻译（opencode →
+                # openai），但 base_url 原样带下——故**追加 base_url 判定**（原生端点特征），
+                # 否则编译路径上本分支永远不命中（实测 10-16：真实消息 reasoning 事件 0
+                # 条即此因）。
+                if provider in NATIVE_SSE_PROVIDERS or _is_native_sse_url(model_config):
                     chunks = self._native_sse_chunks(
                         provider, model, api_key, messages, temperature,
                         max_tokens, timeout, model_config, tools,
@@ -757,6 +771,11 @@ class ModelGateway:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        # [思考流补 2026-10-16] reasoning_effort 透传：编译层注入的档位
+        # （deepseek 系 default_effort）必须进 body，否则端点退化成内联
+        # <think> 形态污染正文（实测 10-16）。
+        if model_config.get("reasoning_effort"):
+            body["reasoning_effort"] = model_config["reasoning_effort"]
         if tools:
             body["tools"] = [{"type": "function", "function": t} for t in tools]
         base_url = (model_config.get("base_url") or "https://opencode.ai/zen/go/v1").rstrip("/")

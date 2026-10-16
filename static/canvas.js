@@ -20,7 +20,7 @@
 import { API } from "./esm/api.js?v=30";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { store } from "./esm/store.js?v=30";
-import { Workspace, RenderNav } from "./workspace.js?v=30";
+import { Workspace, RenderNav } from "./workspace.js?v=33";
 import { notify } from "./esm/api.js?v=30";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
@@ -946,7 +946,6 @@ const WORK_ID = window.__WORK_ID__;
     for (const cid of visibleIds) {
       const card = vm.cardsById[cid];
       if (!card) continue;
-      if (card.card_type === "rule") continue;   // [规则卡 2026-10-15] 不上画布（只在右栏规则面板）
       const node = createNode(card, { x: 0, y: 0 }, vm);   // 占位坐标（阶段二一次性应用最终位）
       if ((depthOf[cid] || 0) >= 2) {
         // [T08-用户令 2026-10-04] 第三级卡只显示标题（独立类，不动 l0/l1/l2 三档机制）

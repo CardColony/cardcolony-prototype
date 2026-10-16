@@ -313,3 +313,121 @@ test("畸形输入不炸：null / 无 type / data 非对象", () => {
   a.rebuild(undefined);                                        // 非数组入参：清空且不炸
   assert.deepEqual(a.snapshot().rounds, []);
 });
+
+/* ── 8. [对话流照抄 dsh 2026-10-16 · T2] 节点 key / rev / 快照引用稳定 ──
+   增量装配的底座：渲染层按 key 复用 DOM、按 rev 判「内容变了没」；
+   结构未变时快照必须返回**同一引用**（sameReferences）。 */
+test("节点 key：跨合体恒等（渲染层据此复用同一 DOM）", () => {
+  reset();
+  const a = createAssembler();
+  const call = a.applyRecord(rec("tool_call", { tool: "T" }, { seq: 5 }));
+  const key = call.key;
+  assert.ok(key, "节点必须带 key");
+  const merged = a.applyRecord(rec("tool_result", { tool: "T", ok: true }, { seq: 6 }));
+  assert.equal(merged, call, "result 合体到同一节点对象");
+  assert.equal(merged.key, key, "合体不改 key（位置与身份都留 call 的）");
+  assert.ok(merged.rev > call.rev - 1, "合体后 rev 递增（内容变了）");
+});
+
+test("节点 rev：内容变则递增；同一节点对象跨多次 apply 恒定", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("user_message", { content: "q" }, { seq: 1 }));
+  const asst = a.applyRecord(rec("assistant_text", { content: "答" }, { seq: 2 }));
+  const r0 = asst.rev;
+  a.applyRecord(rec("reasoning", { text: "想" }, { seq: 3 }));   // 吸收进该 assistant
+  const again = a.snapshot().rounds[0].nodes.find((n) => n.kind === "assistant");
+  assert.equal(again, asst, "吸收不改节点对象");
+  assert.ok(again.rev > r0, "吸收思考后 rev 递增");
+});
+
+test("快照引用稳定：结构未变 → 同一引用；结构变 → 换引用", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("user_message", { content: "q" }, { seq: 1 }));
+  const s1 = a.snapshot();
+  assert.equal(a.snapshot(), s1, "无变化时快照同引用（视图层零重排）");
+  a.applyRecord(rec("assistant_text", { content: "a" }, { seq: 2 }));
+  const s2 = a.snapshot();
+  assert.notEqual(s2, s1, "结构变化后换引用");
+  assert.equal(a.snapshot(), s2, "变化后再次取仍同引用");
+  assert.equal(s2.rounds[0].nodes, a.snapshot().rounds[0].nodes, "节点数组是活引用");
+});
+
+/* ── 9. [T1 乐观上屏] 本地轮认领 + pending 原地升级 ── */
+test("乐观上屏：本地轮自成一组，带 run_id 的真实记录到达即被认领改名", () => {
+  reset();
+  const a = createAssembler();
+  const local = a.applyRecord({ ns: "local", seq: 0, local_key: "u1", type: "user_message",
+                                data: { content: "刚发的" } });
+  assert.equal(local.pending, true, "本地节点带 pending 标记");
+  assert.equal(local.groupKey, "local:u1");
+  assert.equal(a.snapshot().rounds.length, 1);
+  // 真实过程帧到达（本轮第一条带 run_id 的记录）→ 认领
+  const n2 = a.applyRecord(rec("run_start", { pair_id: "R" }, { seq: 9, run_id: "R" }));
+  assert.equal(n2.groupKey, "run:R", "本地组改名入正式轮");
+  const snap = a.snapshot();
+  assert.equal(snap.rounds.length, 1, "认领不新增轮（同一组，只改名）");
+  assert.equal(snap.rounds[0].key, "run:R");
+  assert.equal(snap.rounds[0].nodes.length, 2);
+  assert.equal(snap.rounds[0].nodes[0].kind, "user", "用户节点仍排本轮第一");
+});
+
+test("乐观上屏：真实 user_message 到达 → 原地升级，不出双节点/双气泡", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord({ ns: "local", seq: 0, local_key: "u1", type: "user_message",
+                  data: { content: "  同样内容  " } });
+  a.applyRecord(rec("run_start", { pair_id: "R" }, { seq: 9, run_id: "R" }));
+  const upgraded = a.applyRecord(rec("user_message", { content: "同样内容" }, { seq: 10, run_id: "R" }));
+  const nodes = a.snapshot().rounds[0].nodes;
+  assert.equal(nodes.filter((n) => n.kind === "user").length, 1, "只有一个用户节点");
+  assert.equal(upgraded.pending, false, "pending 标记已清");
+  assert.equal(upgraded.seq, 10, "补上落盘 seq");
+  assert.equal(nodes[0], upgraded, "仍是同一个节点对象（渲染层原地更新，零闪烁）");
+});
+
+test("乐观上屏：内容不同则不误并（各自成节点）", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord({ ns: "local", seq: 0, local_key: "u1", type: "user_message",
+                  data: { content: "本地这句" } });
+  a.applyRecord(rec("run_start", { pair_id: "R" }, { seq: 9, run_id: "R" }));
+  a.applyRecord(rec("user_message", { content: "落盘那句" }, { seq: 10, run_id: "R" }));
+  assert.equal(a.snapshot().rounds[0].nodes.filter((n) => n.kind === "user").length, 2);
+});
+
+test("dropLocal：发送失败回退撤下未被认领的本地轮", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("user_message", { content: "历史" }, { seq: 1, run_id: "A" }));
+  a.applyRecord({ ns: "local", seq: 0, local_key: "u1", type: "user_message",
+                  data: { content: "失败的那条" } });
+  assert.equal(a.snapshot().rounds.length, 2);
+  assert.equal(a.dropLocal(), true);
+  const snap = a.snapshot();
+  assert.equal(snap.rounds.length, 1);
+  assert.equal(snap.rounds[0].key, "run:A", "历史轮不受影响");
+});
+
+test("本地轮已被认领后 dropLocal 不误伤正式轮", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord({ ns: "local", seq: 0, local_key: "u1", type: "user_message",
+                  data: { content: "已发出" } });
+  a.applyRecord(rec("run_start", { pair_id: "R" }, { seq: 9, run_id: "R" }));
+  assert.equal(a.dropLocal(), false, "已无本地轮可撤");
+  assert.equal(a.snapshot().rounds[0].key, "run:R");
+});
+
+test("兜底思考节点不与尾节点撞 key（渲染层按 key 复用 DOM）", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("user_message", { content: "q" }, { seq: 1 }));
+  a.applyRecord(rec("reasoning", { text: "无人认领" }, { seq: 2 }));
+  a.applyRecord(rec("error", { error: "boom" }, { seq: 3 }));
+  const nodes = a.snapshot().rounds[0].nodes;
+  const keys = nodes.map((n) => n.key);
+  assert.equal(new Set(keys).size, keys.length, "组内 key 唯一：" + keys.join(","));
+  assert.ok(nodes.some((n) => n.data && n.data.orphan), "兜底思考仍在");
+});

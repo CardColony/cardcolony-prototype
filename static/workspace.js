@@ -5,9 +5,9 @@
  * 提升保证：本文件顶层不调用任何 canvas 导出。 */
 import { API } from "./esm/api.js?v=30";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=31";
+import { EventFlow } from "./stream.js?v=33";
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { reloadCanvas } from "./canvas.js?v=30";
+import { reloadCanvas } from "./canvas.js?v=33";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=30";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
@@ -285,6 +285,10 @@ const WORK_ID = window.__WORK_ID__;
     applyConclusionState();
     // [phase8.6-C] 面板已可见时（如保存后重渲染）立即撑高；首次 open 由 active 后统一触发
     autoGrowAll();
+    // [规则卡 2026-10-16] rule 卡：卡详情内直接分区编辑规则（保存即生效）
+    if (m.card_type === "rule" && window.__renderRuleInspector) {
+      await window.__renderRuleInspector();
+    }
   }
 
   // [phase8.6-C] 文本区高度自适应：内容多高就多高，上限由 CSS max-height 兜底
@@ -878,7 +882,8 @@ const WORK_ID = window.__WORK_ID__;
   function renderUserNode(node) {
     const d = node.data || {};
     const el = document.createElement("div");
-    el.className = "msg user";
+    // [T1] pending＝乐观上屏的本地节点（真实 user_message 到达即原地升级、类名消失）
+    el.className = "msg user" + (node.pending ? " pending" : "");
     el.dataset.seq = node.seq;
     el.innerHTML = formatMsgContent(d.content == null ? "" : String(d.content));
     return el;
@@ -1125,22 +1130,40 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     let waiting = null;
     // [F2③] 原 `if (window.EventFlow)`——module 化后恒在，守卫保留结构
     if (EventFlow) {
+      // [T1 乐观上屏 2026-10-16] 点发送瞬间先落用户气泡——**不等 POST、不等
+      // timeline 回流**。此前用户气泡走 timeline 回流（POST 要跑到本轮结束才
+      // 返回，过程事件却毫秒级到），于是 run_start/context/judgment_protocol
+      // 抢在用户提问之前出现（P1）。现在本地轮先立，真实记录到达时原地升级。
+      EventFlow.optimisticUser(WORK_ID, cardId, content);
       EventFlow.start(WORK_ID, cardId, () => {
         waiting = createWaitingBubble("思考中…", cardId);
       });
-      // [C1 单源] 用户气泡**不从 POST 参数直接上屏**：POST 要跑到本轮结束才返回，
-      // 故不等它，另起一条轻量回流去 timeline 把刚落盘的 user_message 取回
-      // （取到即止；取不到也有下面的等待气泡兜底，结算时 resync 必补齐）。
+      // [T1 对账] timeline 回流保留：真实 user_message 到达时把 pending 节点
+      // 按内容原地升级（补 seq），不产生双气泡。
       EventFlow.pullUserBubble(WORK_ID, cardId).catch(() => {});
     } else {
+      const ub = document.createElement("div");
+      ub.className = "msg user";
+      ub.innerHTML = formatMsgContent(content);
+      ensureMsgs().appendChild(ub);
       waiting = createWaitingBubble("思考中…", cardId);
     }
 
     // [hotfix] 后端完成但连接断了 → 从 timeline 恢复，杜绝无限转圈。
-    // 判据同样只看唯一数据源（不再读 /session）：最后一组出现 assistant_text 即已结算。
+    // [T2 增量渲染 2026-10-16] 判据收紧：**先看后端是否仍在跑**——仍在跑就
+    // 什么都不做。此前这里每 15s **无条件** resync（清列重建＋settled 冻结实时帧），
+    // 正是「前面几条信息突然全部出现/历史搬位」（P2）与「从头到尾算一遍」（P3）
+    // 的直接来源。现在只有「后端已不在跑（或事件流已断）」才回流结算。
     async function tryRecover() {
-      try { console.info("[recover] tick"); } catch (e0) { /* 零阻断 */ }
       if (settled) return false;
+      try {
+        const p = await API.getProgress(WORK_ID, cardId);
+        const alive = p && ((typeof p.active === "boolean")
+          ? p.active
+          : ACTIVE_STAGES.includes(p.stage));
+        if (alive && !EventFlow.streamDead(WORK_ID, cardId)) return false;   // 在跑：不重建
+      } catch (e0) { return false; }   // 进度查不到＝不擅自重建（交给 POST 返回或断流兜底）
+      try { console.info("[recover] tick"); } catch (e1) { /* 零阻断 */ }
       try {
         const r = await EventFlow.resync(WORK_ID, cardId);
         if (r && r.ok && r.done) {
@@ -1228,6 +1251,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // [hotfix] 报错前先探一次会话：后端可能已完成，只是响应没送回来
       if (await tryRecover()) return;
       if (waiting) waiting.stop();
+      // [T1] 发送失败且未能恢复 ⇒ 撤下未被认领的本地气泡（不留幽灵消息）
+      try { EventFlow.dropOptimisticUser(WORK_ID, cardId); } catch (e0) { /* 零阻断 */ }
       // 失败：红色系统条 + 重发按钮
       const err = document.createElement("div");
       err.className = "sys-error";
@@ -1559,6 +1584,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 卡详情开关只留右缘竖条 #inspTab。
   const toggleInspector = () => inspector.classList.toggle("open");
   document.getElementById("inspTab").onclick = toggleInspector;
+  // [画布入口 2026-10-16 用户令] 顶部栏最左 icon → 返回本项目画布（根卡/子卡聊天态常显）
+  const canvasEntryBtn = document.getElementById("canvasEntryBtn");
+  if (canvasEntryBtn) canvasEntryBtn.onclick = () => setAppView("canvas");
   // 窄条 ☰：钉住（或收起）悬停浮层全树
   const navRailBtn = document.getElementById("navRailBtn");
   if (navRailBtn) {
@@ -1663,50 +1691,44 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     setInterval(refreshBadge, 60000);
   }
 
-  // ═══ [规则卡 2026-10-15] 规则面板（右栏）＋ 根卡提议审批弹窗 ═══
-  // 规则卡：每 work 一张（parent=根卡，card_type="rule"）；正文按 ## {区名} 分六区
-  // （project/sub_project/tool/coder/topic/rule＝card_type code），存 mission 列。
-  // 直改即存：textarea blur → PATCH /rule/sections/{section}（带 base_hash，不符→409 提示刷新）。
+  // ═══ [规则卡 2026-10-15 · 2026-10-16 归位] 规则卡就是一张普通卡 ═══
+  // （card_type="rule"，parent=根卡，画布上正常渲染节点）；分区编辑在【卡详情
+  // （inspector）】内：正文按 ## {区名} 分六区（project/sub_project/tool/coder/
+  // topic/rule＝card_type code），存 mission 列。直改即存：textarea blur →
+  // PATCH /rule/sections/{section}（带 base_hash，不符→409 提示刷新）。
   // 审批：仅根卡可调 draft_rule_edit 提议（工具自身不落盘）；回合后扫 timeline 的
   // tool_result（data.tool=="draft_rule_edit"）→ 开弹窗，「同意」→ POST /rule/commit 落盘。
   {
-    const rulePanel = document.getElementById("rulePanel");
-    const rulePanelBody = document.getElementById("rulePanelBody");
-    const ruleTab = document.getElementById("ruleTab");
     let ruleData = null;          // GET /rule 响应（含 sections/hashes/inject_type_counts）
     let ruleCardId = "";          // 规则卡 card_id
     const ruleSeen = new Set();   // 已弹过审批的 draft_rule_edit 去重（tool_result 的 seq）
 
-    function toggleRulePanel() {
-      rulePanel.classList.toggle("open");
-      if (rulePanel.classList.contains("open")) loadRulePanel();
+    async function loadRuleData() {
+      ruleData = await API.call("GET", `/api/works/${WORK_ID}/rule`);
+      ruleCardId = (ruleData && ruleData.card_id) || "";
+      return ruleData;
     }
-    if (ruleTab) ruleTab.onclick = toggleRulePanel;
 
-    async function loadRulePanel() {
-      if (!rulePanelBody) return;
-      rulePanelBody.innerHTML = `<div class="rule-panel-empty">加载中…</div>`;
+    // [2026-10-16 归位] 供 renderInspector 在 card_type=rule 时调用：
+    // 分区编辑器渲染进卡详情（inspBody），不再是独立右栏。
+    async function renderRuleInspector() {
+      if (!inspBody) return;
+      inspBody.querySelectorAll(".rule-sec").forEach((el) => el.remove());
       try {
-        ruleData = await API.call("GET", `/api/works/${WORK_ID}/rule`);
-        ruleCardId = (ruleData && ruleData.card_id) || "";
-        renderRulePanel();
+        await loadRuleData();
       } catch (e) {
-        rulePanelBody.innerHTML = `<div class="rule-panel-empty">规则卡读取失败：${escapeHtml(e.message || "")}</div>`;
-      }
-    }
-
-    function renderRulePanel() {
-      if (!rulePanelBody || !ruleData) return;
-      if (!ruleData.exists) {
-        rulePanelBody.innerHTML =
-          `<div class="rule-panel-empty">本剧本还没有规则卡。<br>` +
-          `在画布/导航新建一张「规则卡」（card_type=rule）即可启用。</div>`;
+        inspBody.insertAdjacentHTML("beforeend",
+          `<div class="rule-sec"><div class="rule-sec-status err">规则卡读取失败：${escapeHtml(e.message || "")}</div></div>`);
         return;
       }
-      rulePanelBody.innerHTML = "";
+      if (!ruleData || !ruleData.exists) {
+        inspBody.insertAdjacentHTML("beforeend",
+          `<div class="rule-sec"><div class="rule-sec-status">未找到规则卡（card_type=rule）</div></div>`);
+        return;
+      }
       const sections = ruleData.sections || {};
-      const hashes = ruleData.hashes || {};
       const counts = ruleData.inject_type_counts || {};
+      const frag = document.createDocumentFragment();
       for (const [name, content] of Object.entries(sections)) {
         const wrap = document.createElement("div");
         wrap.className = "rule-sec";
@@ -1718,13 +1740,14 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           `</div>` +
           `<textarea class="rule-sec-textarea" data-sec="${escapeHtml(name)}">${escapeHtml(content || "")}</textarea>` +
           `<div class="rule-sec-status"></div>`;
-        rulePanelBody.appendChild(wrap);
+        frag.appendChild(wrap);
       }
-      // blur 即存（无确认框）；status 行显示「已保存」或错误
-      rulePanelBody.querySelectorAll(".rule-sec-textarea").forEach((ta) => {
+      inspBody.appendChild(frag);
+      inspBody.querySelectorAll(".rule-sec-textarea").forEach((ta) => {
         ta.addEventListener("blur", () => saveRuleSection(ta));
       });
     }
+    window.__renderRuleInspector = renderRuleInspector;
 
     async function saveRuleSection(ta) {
       const sec = ta.dataset.sec;
@@ -1748,21 +1771,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       }
     }
 
-    // 导航树点规则卡 → 开面板不进对话（gotoCard 前拦截）
-    const _origHandleCardRowClick = handleCardRowClick;
-    handleCardRowClick = function (rowEl) {
-      const cid = rowEl.dataset.cid;
-      const wid = rowEl.dataset.wid || WORK_ID;
-      const snap = navStore.snapshot;
-      const p = snap && snap.project ? snap.project(wid) : null;
-      const card = p && (p.cards || []).find(c => c.card_id === cid);
-      if (card && card.card_type === "rule") {
-        if (!rulePanel.classList.contains("open")) rulePanel.classList.add("open");
-        loadRulePanel();
-        return;   // 不 gotoCard、不进对话
-      }
-      return _origHandleCardRowClick(rowEl);
-    };
+    // [2026-10-16 归位] rule 卡＝普通卡：导航/画布点它走正常 gotoCard（对话+inspector
+    // 分区编辑），原「点规则卡开右栏面板」的拦截已随面板形态删除。
 
     // ─── 根卡提议审批弹窗：扫 timeline 的 draft_rule_edit 成功 tool_result ───
     // 复用既有 draftModal 的 DOM，走独立 dmRule 状态机（与块3起草弹窗互不干扰）。
@@ -1820,7 +1830,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         });
         API.toast("规则已写入", "success");
         closeRuleModal();
-        if (rulePanel.classList.contains("open")) loadRulePanel();
+        // [2026-10-16 归位] 当前若正开着规则卡 → 重渲卡详情（分区内容已变）
+        if (currentCard && currentCard.meta.card_type === "rule") await renderInspector();
       } catch (e) {
         const msg = String(e.message || "");
         setRuleModalError(msg.indexOf("hash 不符") >= 0 ? "内容已被改，请重新提议" : ("写入失败：" + msg));
