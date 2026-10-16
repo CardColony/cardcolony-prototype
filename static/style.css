@@ -182,6 +182,13 @@ a { color: inherit; text-decoration: none; }
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-direction: row;
+}
+/* [规则卡 2026-10-16 三改] 主内容列：topbar+stage 纵排，真实缩窄给规则右列让位 */
+.main-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
   flex-direction: column;
 }
 .stage {
@@ -1380,6 +1387,49 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .draft-modal-foot .spacer { flex: 1; }
 .draft-meta-btn { font-size: 12px; padding: 5px 10px; }
 
+/* ============ [更新现状按钮改造 2026-10-16] 现状对比窗（#statusModal）============
+   复用 .draft-modal* 骨架（遮罩／面板／头／体／脚／错误行），只补两件：
+   ① 面板加宽（行级 diff 要横向空间）；② 单面板 diff 的行级着色 ＋ 可编辑提议框。
+   令牌全复用（--bg/--border/--text/--dim/--mono/--green/--red/--c-setting），
+   零新增变量；底色 rgba 与既有 --bg-* 淡底同手法（15% 透明）。 */
+#statusModal .draft-modal-panel { width: 760px; }
+.status-diff {
+  margin: 12px 16px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  max-height: 34vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.sd-line { padding: 0 4px; border-radius: 3px; }
+.sd-line.sd-del { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+.sd-line.sd-add { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+.sd-line.sd-same { color: var(--dim); }
+.sd-line.sd-empty { color: var(--dim); font-style: italic; }
+.status-edit-wrap { margin: 0 16px 12px; }
+.status-edit-label { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+.status-edit-area {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 120px;
+  box-sizing: border-box;
+}
+.status-edit-area:focus { outline: none; border-color: var(--c-setting); }
+
 /* [模型设置第二步 2026-10-12] 左栏底部 #navFooter 样式已迁至 static/nav.css ---- */
 
 /* ============ [对话区会话流样式 2026-10-12] 滚动条重绘：去默认样式 ============
@@ -1399,23 +1449,17 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 *::-webkit-scrollbar-button { display: none; }   /* 去掉默认上下箭头按钮 */
 * { scrollbar-width: thin; scrollbar-color: rgba(139, 148, 158, 0.45) transparent; }  /* Firefox */
 
-/* ============ [规则卡 2026-10-16 二次归位] 吸附屏幕右侧的常驻卡片 ============
-   [用户 2026-10-16 明令] 规则卡是一张卡：吸附屏幕右侧、常驻完整显示、可在卡上
-   分区编辑——不是画布节点（canvas 跳过 rule），不是可展开边栏（无窄条两段式），
-   不分画布态/聊天态（始终在场）。卡视觉：圆角+边框+阴影，像一张浮着的卡。 */
+/* ============ [规则卡 2026-10-16 三改] 布局右列（非浮层，零遮挡） ============
+   [用户 2026-10-16 明令] 不许盖任何界面——规则卡是 .app-main 的布局右列
+   （flex:none 340px），主内容列 .main-col 真实缩窄避让。卡视觉保留
+   （边框分隔），无 fixed、无 z-index、无阴影浮起。 */
 .rule-panel {
-  position: fixed;
-  top: 56px;
-  right: 12px;
-  bottom: 16px;
+  flex: none;
   width: 340px;
-  z-index: 600;
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  border-left: 1px solid var(--border);
   overflow: hidden;
 }
 .rule-panel-body {
