@@ -55,6 +55,12 @@ TYPE_INJECTION = "context_injection"
 TYPE_JUDGMENT = "judgment_protocol"
 JUDGMENT_MARK = "〔判断协议〕"
 
+# [更新现状按钮改造 2026-10-16] 「更新现状」专用操作回合的轮首任务注入：单列一类事件
+# 与抬头——语义是「专用操作任务」，既非工作规范（context_preamble）也非入口判断协议
+# （judgment_protocol）；复用任一个都会让前端把标签渲染错（同 context_seat_identity 的理由）。
+TYPE_STATUS_TASK = "status_update_task"
+STATUS_MARK = "〔现状更新〕"
+
 
 def build_judgment_event() -> dict[str, Any]:
     """判断协议注入事件（无来源——协议是常量文本，只在轮首且本卡无活板时发一次）。
@@ -75,6 +81,52 @@ def project_judgment_message() -> dict[str, Any]:
     """
     return {"role": INJECTION_ROLE,
             "content": f"{JUDGMENT_MARK}\n{_prompts.JUDGMENT_PROTOCOL_SELF_NARRATIVE}"}
+
+
+def read_status_block(work_id: str, card_id: str) -> str:
+    """读本卡当前 status_block（空/占位符 → 空串）。**单一取数口**。
+
+    占位符口径复用 `card_draft._is_placeholder`（单一口径，避免两处各判一套；
+    延迟 import 破环——card_draft 反向依赖本模块的调用链）。
+    读不到卡/无该列 → 空串（注入按「从零起草」处理，不报错）。
+    """
+    from .card_draft import _is_placeholder  # noqa: PLC0415 延迟 import 破环
+    from ..storage import card_db  # noqa: PLC0415 延迟 import（只本函数用）
+
+    def _fn(conn: Any) -> Any:
+        row = conn.execute(
+            "SELECT status_block FROM cards WHERE card_id = ?", (card_id,)
+        ).fetchone()
+        return None if row is None else row["status_block"]
+
+    raw = card_db.read_sync(work_id, _fn, None)
+    if raw is None:
+        return ""
+    text = str(raw)
+    return "" if _is_placeholder(text) else text
+
+
+def build_status_task_event(work_id: str, card_id: str) -> dict[str, Any]:
+    """「更新现状」专用注入事件（含当前现状全文）。
+
+    data 结构与既有注入事件同族：``source_kind`` ＋ ``content``（指令全文，
+    供审计/落盘）；模型可见投影（第一人称自述）见 ``project_status_task_message``。
+    当前现状为空/占位符 → 正文里填「（暂无现状，从零起草）」。
+    """
+    status = read_status_block(work_id, card_id)
+    body = _prompts.STATUS_UPDATE_TASK.format(
+        current_status=status if status.strip() else "（暂无现状，从零起草）")
+    return {"type": TYPE_STATUS_TASK,
+            "data": {"source_kind": "status_update_task", "content": body}}
+
+
+def project_status_task_message(data: dict[str, Any]) -> dict[str, Any]:
+    """状态更新事件 → 模型可见消息（role＝INJECTION_ROLE，正文＝第一人称自述）。
+
+    抬头〔现状更新〕＋ 事件 data 里的指令全文（模板本身即第一人称，无需再改人称）。
+    """
+    return {"role": INJECTION_ROLE,
+            "content": f"{STATUS_MARK}\n{str(data.get('content') or '')}"}
 
 
 def build_injection_events(work_id: str, card_id: str) -> list[dict[str, Any]]:

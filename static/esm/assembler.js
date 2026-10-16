@@ -82,6 +82,8 @@ export const REGISTRY = {
 
   context_preamble: { kind: "injection" }, context_injection: { kind: "injection" },
   judgment_protocol: { kind: "injection" }, context_seat_identity: { kind: "injection" },
+  // [更新现状按钮改造 2026-10-16] 「更新现状」专用回合的轮首任务注入（同注入族）。
+  status_update_task: { kind: "injection" },
 
   // reasoning 特例：带 model → seats 席卡；不带 → merge 进同组 assistant 思考区
   reasoning: { kind: "reasoning" },

@@ -240,6 +240,7 @@ test("注册表覆盖任务书全部类型，缺省三类已补（card_message/t
     "seats_enter", "seat_start", "seat_end", "synthesize", "deliver", "proposal",
     "done", "error", "rescue", "card_op", "context", "round_start", "round_end", "run_start",
     "context_preamble", "context_injection", "judgment_protocol", "context_seat_identity",
+    "status_update_task",
     "reasoning", "card_message", "triage_verdict", "ping",
   ]) {
     assert.ok(REGISTRY[t], "注册表缺 " + t);

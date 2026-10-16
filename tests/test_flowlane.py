@@ -27,7 +27,8 @@ def test_vt4_ontology_23_types():
     # → 23 原 + 2 逐字流 = 25。
     # [判断协议改注入 2026-10-14] 再 +1：judgment_protocol → 24 原 + 2 逐字流 = 26。
     # [三席身份注入 2026-10-14] 再 +1：context_seat_identity → 25 原 + 2 逐字流 = 27。
-    assert len(event_stream.EVENT_TYPES) == 27
+    # [更新现状按钮改造 2026-10-16] 再 +1：status_update_task → 26 原 + 2 逐字流 = 28。
+    assert len(event_stream.EVENT_TYPES) == 28
     for t in ("triage_verdict", "plan_created", "step_advanced",
               "judgment", "step_start",
               "card_op", "run_start", "deliver", "ping"):

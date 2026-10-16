@@ -165,6 +165,14 @@ class RunState:
     #   judgment_tail —— 暂存待随 round1 下发的判断协议消息（**独立于 turn_tail**，
     #   绝不固化进轮槽——这是「后续轮清掉」的全部机制依据，任务书 §2.3）。
     judgment_tail: list[dict[str, Any]] = field(default_factory=list)
+    # [更新现状按钮改造 2026-10-16] 「更新现状」专用操作回合：
+    #   op —— POST …/messages 请求体带来的操作标记（""＝普通回合；
+    #         OP_UPDATE_STATUS＝「更新现状」专用回合）。它同时决定两件事：
+    #         ① 轮首注入专用任务（_sync_status_task）；② 工具面临时追加专用工具
+    #         （build_tool_schemas(op=…)）。普通回合两者都不发生，逐字不变。
+    #   status_task_emitted —— 专用注入本 run 只发一次的幂等闸。
+    op: str = ""
+    status_task_emitted: bool = False
 
 
 @dataclass(frozen=True)
@@ -241,6 +249,7 @@ def build_context(state: RunState) -> None:
         card_id=state.card_id,
         work_id=state.work_id,
         cards=card_tools._collect_card_meta(state.work_id),
+        op=state.op,   # [更新现状按钮改造] op 回合才追加专用工具（其余回合逐字不变）
     )
     # history_len 是注册表统一投影出来的历史条数快照；轮槽之后会就地追加。
     state.history_len = len(state.prior_for_gateway)
@@ -373,6 +382,11 @@ def _sync_judgment(state: RunState) -> None:
     """
     if state.rounds != 1:
         return
+    # [更新现状按钮改造 2026-10-16] 「更新现状」专用回合**不注入判断协议**：
+    # 本轮任务已由按钮定死（更新现状），不存在「直接答 or 拆解上板」的入口判断；
+    # 注进去反而可能让模型去 create_plan 拆板，与专用任务打架（专用通道口径）。
+    if state.op == card_tools.OP_UPDATE_STATUS:
+        return
     try:
         if thinkchain_board.has_live_board(state.work_id, state.card_id):
             return   # 有活板 → 不注入判断（用户 2026-10-14 口径）
@@ -385,6 +399,35 @@ def _sync_judgment(state: RunState) -> None:
         state.judgment_tail.append(current_turn.project_judgment_message())
     except Exception as exc:  # noqa: BLE001 注入零阻断
         logger.warning("[判断协议] 注入失败（不阻断）card=%s: %s", state.card_id, exc)
+
+
+# ============================================================
+# [更新现状按钮改造 2026-10-16] 「更新现状」专用回合 · 轮首任务注入
+# ============================================================
+
+def _sync_status_task(state: RunState) -> None:
+    """专用操作注入点：**仅 op=update_status 回合、仅本回合首次调用（rounds==1）** 发一条。
+
+    承载通道＝``turn_tail``（**与判断协议不同**：本注入是**整轮的任务指令**，模型在
+    工具续跳轮仍须看得到「查完要调 propose_status 交差」——故走 turn_tail 随轮槽固化，
+    而不是 judgment_tail 那种「round1 用完即弃」）。round1 随用户消息之后下发，
+    rounds≥2 由 ``_engage_slot`` 固化进轮槽。整段零阻断。
+
+    事件与投影：``current_turn.build_status_task_event``（含当前现状全文）＋
+    ``project_status_task_message``（role=assistant、抬头〔现状更新〕）。
+    """
+    if state.op != card_tools.OP_UPDATE_STATUS:
+        return
+    if state.rounds != 1 or state.status_task_emitted:
+        return
+    state.status_task_emitted = True
+    try:
+        ev = current_turn.build_status_task_event(state.work_id, state.card_id)
+        event_stream.emit(state.work_id, state.card_id, ev["type"], ev["data"])
+        state.turn_tail.append(current_turn.project_status_task_message(ev["data"]))
+    except Exception as exc:  # noqa: BLE001 注入零阻断
+        logger.warning("[现状更新] 注入失败（不阻断）card=%s: %s", state.card_id, exc)
+
 
 
 # ============================================================
@@ -475,6 +518,9 @@ async def step(state: RunState) -> StepOutcome:
     # 注入事件，使事件序＝user_message → judgment_protocol →（有板时）preamble/
     # injection → round_start。两者互斥（有板无判断、无板无注入来源），不会同现。
     _sync_judgment(state)
+    # [更新现状按钮改造 2026-10-16] 「更新现状」专用回合的轮首任务注入（仅 op 回合）。
+    # 放在 _sync_injection 之前 ⇒ turn_tail 里专用任务先于工作规范/流程注入。
+    _sync_status_task(state)
     # [当前轮注入消息事件 2026-10-14] 模型调用前同步注入事件（160/165 消息化）：
     # 有来源才发；round1 暂存 turn_tail，后续轮直接进轮槽。放在 round_start 之前，
     # 使事件序＝user_message → preamble → injection → round_start/judgment/…

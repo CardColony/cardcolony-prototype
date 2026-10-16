@@ -54,11 +54,13 @@ def test_event_ontology_is_23_types():
     # → 24 原 + 2 逐字流 = 26。
     # [三席身份注入 2026-10-14] 主通道再 +1 类（context_seat_identity）
     # → 25 原 + 2 逐字流 = 27。
-    assert len(es.EVENT_TYPES) == 27, len(es.EVENT_TYPES)
+    # [更新现状按钮改造 2026-10-16] 主通道再 +1 类（status_update_task）
+    # → 26 原 + 2 逐字流 = 28。
+    assert len(es.EVENT_TYPES) == 28, len(es.EVENT_TYPES)
     assert len(es.TOKEN_EVENT_TYPES) == 2
     assert set(es.TOKEN_EVENT_TYPES) <= set(es.EVENT_TYPES)
     legacy = [t for t in es.EVENT_TYPES if t not in es.TOKEN_EVENT_TYPES]
-    assert len(legacy) == 25, len(legacy)
+    assert len(legacy) == 26, len(legacy)
 
 
 # ---------- 2/3：seq 不混合 + 双向隔离 ----------
@@ -293,7 +295,8 @@ def test_boundary_marker_reuses_existing_ontology_type():
     assert types <= set(es.EVENT_TYPES)
     assert "round_start" in types
     # [当前轮注入消息事件 2026-10-14] 本体论已长到 25 类（+2 注入事件）
-    assert len(es.EVENT_TYPES) == 27, "本体论仍须为 27 类"
+    # [更新现状按钮改造 2026-10-16] 再 +1（status_update_task）→ 28 类
+    assert len(es.EVENT_TYPES) == 28, "本体论仍须为 28 类"
 
 
 def test_seq_counter_never_resets_across_rounds():

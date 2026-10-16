@@ -185,14 +185,21 @@ def test_t6_every_module_has_exactly_one_version():
 
 
 def test_t6_touched_modules_bumped():
-    """版本基线（2026-10-16《对话流画板架构》T7 统一升戳后）：**共享前端升 35**
-    （stream/workspace/canvas/style 全 35，入口 main.js 35.0）；
-    assembler 未改动、维持 33。纪律不变：改哪个模块哪个升号、全链每模块唯一 URL。
+    """版本基线：**共享前端 36**（stream/workspace/canvas/style 本轮涉改 ⇒ 35→36，
+    入口 main.js 36.0）；assembler 本轮新增一类事件映射 ⇒ 33→34。
+    纪律不变：改哪个模块哪个升号、全链每模块唯一 URL。
 
-    ★ T7 备注：`stream.js` 由 33→35、`style.css` 由 34→35、`esm/api.js` 由 30→35
-      （本轮涉改模块）；`workspace.js`/`canvas.js`/`main.js` 已由并发线先升 35。"""
+    ★ 历史：T7（2026-10-16《对话流画板架构》）统一升到 35；
+      [更新现状按钮改造 2026-10-16] 涉改 stream.js / workspace.js / style.css，
+      并因 import 链联动 canvas.js（它 import workspace.js）⇒ 四件升 36；
+      `esm/main.js`（引用它们的 import 变了）随升 36.0；
+      `esm/assembler.js`（新增 status_update_task 映射）33→34。
+      [左栏新建项目 2026-10-16] 涉改 workspace.js（左栏按钮接线）、esm/nav_render.js（删空态死链）
+      ⇒ nav_render.js 30→31、workspace.js 37→39（并因 import 链联动 canvas.js 36→38、
+      `esm/main.js` 37.0→38.0）。nav.css 内容变 ⇒ 其 ?v= 升 12（本断言不含 nav.css，
+      由唯一性用例兜底）；home.css 只删规则 ⇒ 其 ?v= 升 1.1。"""
     vm = _version_map()
-    expect = {"stream.js": "35", "workspace.js": "35", "canvas.js": "35",
-              "assembler.js": "33", "style.css": "35", "main.js": "35.0"}
+    expect = {"stream.js": "36", "workspace.js": "39", "canvas.js": "38",
+              "assembler.js": "34", "style.css": "36", "main.js": "38.0"}
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"

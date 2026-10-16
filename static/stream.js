@@ -42,7 +42,7 @@ import { API } from "./esm/api.js?v=35";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { createAssembler, groupKeyOf } from "./esm/assembler.js?v=33";
+import { createAssembler, groupKeyOf } from "./esm/assembler.js?v=34";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
    键 `${wid}/${cid}`；字段即原 `current` 单例的原样搬运（asm/groups/fold/liveSlot/
@@ -386,6 +386,10 @@ const BOARD_CFG = Object.assign(
           esc(d.source_kind || ""), fmtData(d), "lv3")];
       case "context_seat_identity":
         return [makeRow(node.type, "三席身份注入" + fld("source_kind", d.source_kind),
+          esc(d.source_kind || ""), fmtData(d), "lv3")];
+      // [更新现状按钮改造 2026-10-16] 「更新现状」专用回合的轮首任务注入。
+      case "status_update_task":
+        return [makeRow(node.type, "现状更新（轮首注入）" + fld("source_kind", d.source_kind),
           esc(d.source_kind || ""), fmtData(d), "lv3")];
       default:
         return renderSys(node);

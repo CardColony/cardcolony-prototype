@@ -109,6 +109,11 @@ EVENT_TYPES: tuple[str, ...] = (
     # 一条，role=assistant 自述、抬头〔三席身份〕。单列一类——语义是「三席身份」，
     # 既非固定总领也非判断协议（复用会让前端误标「上下文注入·固定总领」）。
     "context_seat_identity",
+    # [更新现状按钮改造 2026-10-16] 「更新现状」专用操作回合的轮首任务注入（本体论 27 → 28）：
+    # 点按钮＝一次带 op 的专用回合，轮首注入一条任务指令＋当前现状全文，role=assistant
+    # 自述、抬头〔现状更新〕。单列一类——语义是「专用操作任务」，复用 judgment_protocol
+    # 或 context_preamble 都会让前端把标签渲染错。
+    "status_update_task",
 ) + TOKEN_EVENT_TYPES
 
 # [对话流渲染 T4] 以下两个上限常量已删——都是「丢字/丢步骤闸」：

@@ -288,8 +288,11 @@ def test_tool_card_toolface_matches_its_perms():
     # 的「分类层」镜头（_visible 只跑第二段 _filter_by_category）里可见——它属 read
     # 家族；真实下发面还要过第四段根卡闸（ROOT_ONLY_TOOLS），tool 卡拿不到：
     # 见 test_rule_card.py::test_draft_rule_edit_toolface_root_only。
+    # [更新现状按钮改造 2026-10-16] propose_status 同理挂 read ⇒ 分类层镜头里可见；
+    # 但真实下发面它**根本不进四段过滤**（列 OP_ONLY_TOOLS，只在 op 回合追加），
+    # tool 卡永远拿不到：见 tests/test_status_update.py::test_propose_status_not_in_normal_toolface。
     assert _visible(card) == {"read_card", "read_memory", "read_shadow",
-                              "read_linked", "draft_rule_edit",
+                              "read_linked", "draft_rule_edit", "propose_status",
                               "edit_card", "delete_card", "update_shadow",
                               "create_plan", "plan_reorder", "plan_insert",
                               "plan_remove", "plan_modify", "step_complete"}

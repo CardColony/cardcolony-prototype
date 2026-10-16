@@ -55,6 +55,9 @@ def test_t10_readonly_whitelist():
         # [规则卡 2026-10-15 · 块3] 新增 draft_rule_edit（根卡起草规则区修改，
         # 全程零写入——落盘走用户审批 /rule/commit，不经过本工具）
         "draft_rule_edit",
+        # [更新现状按钮改造 2026-10-16] 新增 propose_status（「更新现状」专用回合里
+        # 只提议、不落盘地交出「新现状」；落盘走用户确认后的 /commit，不经过本工具）
+        "propose_status",
     } & set(card_tools.TOOL_REGISTRY)
 
     assert card_tools.READONLY_TOOLS == frozenset(expected)

@@ -12,18 +12,9 @@
    主题：沿用 style.css :root 的深色 token，不引入新色值。
    ============================================================ */
 
-/* ---- 左栏【＋新项目】：搜索框**上方**（用户 2026-10-15 定稿位置） ----
-   与 .nav-top 同为 flex:none 的头部块，padding 与搜索区对齐（12px 10px 8px），
-   下留 8px 与搜索框分开。按钮占满栏宽——它是首页最主要的左栏动作。 */
-.home-new-project {
-  flex: none;
-  padding: 12px 10px 0;
-}
-.home-new-project .btn {
-  width: 100%;
-  font-size: 13px;
-  padding: 7px 10px;
-}
+/* ---- 左栏【＋新项目】：规则已迁往 nav.css（左栏样式的唯一真相） ----
+   为什么迁：工作页左栏也要挂**同一个**按钮，而 work.html 不加载本文件；
+   留在本文件会让 work 页的同一按钮没有样式。两页现共用 nav.css 的 .home-new-project。 */
 
 /* ---- 空列表提示：复用 nav.css 的 .nav-empty（12px/居中），此处只做内距微调 ---- */
 #homeNavEmpty { padding: 24px 16px; line-height: 1.8; }

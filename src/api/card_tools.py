@@ -61,6 +61,20 @@ MODEL_REL_TYPES = ("先后", "关联")
 # 与通信线的 type 是两个字段上的概念，重名不影响（任务书 §二.12）。
 MODEL_DEP_KINDS = ("依赖", "关联")
 
+# [更新现状按钮改造 2026-10-16] 「更新现状」专用操作回合的操作标记
+# （POST …/messages 请求体的 op 字段）。它不是权限开关，是**本轮操作类型**：
+#   message_runner 认它 → 轮首注入专用任务（current_turn.build_status_task_event）；
+#   build_tool_schemas 认它 → 把 OP_ONLY_TOOLS 临时放进本轮工具面。
+OP_UPDATE_STATUS = "update_status"
+
+# [更新现状按钮改造 2026-10-16] **非卡片内挂**的专用工具集。
+# 与 CODER_ONLY_TOOLS（按卡类型收敛）/ ROOT_ONLY_TOOLS（按卡 id 收敛）不同——那两类
+# 仍是「卡片内挂、按条件收窄」；本类**压根不进常规工具面**（不进四段过滤），只在
+# 对应 op 回合由 build_tool_schemas 在过滤之后追加。用户 2026-10-16 口径：
+# 「这个工具不是卡片内挂的，我不点按钮，模型是无法看到这个工具并调用这个工具的」。
+# 同时为「未来在特定模式下开放给模型」留口——加一种 op 即多一组专用工具。
+OP_ONLY_TOOLS: frozenset[str] = frozenset({"propose_status"})
+
 # [权限底座重做 2026-10-12] 工具组→工具名映射（build_tool_schemas 过滤面）。
 # 由卡上的 tools_file / tools_web 两个开关决定下发哪几组：缺哪个开关就不下发
 # 哪组。SEARCH 开关本次仍无接线点（无对应工具组），保留不发。
@@ -131,6 +145,12 @@ TOOL_SWITCH: dict[str, str] = {
     # 工具面按现有四级过滤机制自动生效。
     "link_rel": policy.SWITCH_LINK,
     "unlink_rel": policy.SWITCH_UNLINK,
+    # [更新现状按钮改造 2026-10-16] propose_status 挂 SWITCH_READ——**只为满足
+    # 「注册表每件工具都要有开关映射」的完备性不变量**（tests/test_cardperm_readopen.py
+    # ::test_tool_switch_covers_every_registered_tool），语义上「只提议不落盘」也是读性质
+    # （同 draft_rule_edit 的口径）。**实际下发不走这个开关**：本工具在 OP_ONLY_TOOLS 里，
+    # 被 build_tool_schemas 从常规工具面摘除，只在 op=update_status 回合追加（见该函数）。
+    "propose_status": policy.SWITCH_READ,
     "update_shadow": policy.SWITCH_SHADOW_WRITE,
     "list_manuscript": policy.SWITCH_MANUSCRIPT,
     "read_manuscript": policy.SWITCH_MANUSCRIPT,
@@ -178,7 +198,13 @@ TOOL_SWITCH: dict[str, str] = {
 #   link_rel / unlink_rel（第三种线「依赖关联线」的建/解线，写卡上 relations
 #   字段，不参与通信；权限复用 link/unlink 开关）。TOOL_REGISTRY 字面量条目数
 #   由 19 → 21（验收 grep 口径：注册表内「双引号工具名 + 冒号 + ToolDef(」的行数 == 21）。
-TOOL_TABLE_VERSION = "tools-tc-7"
+# tools-tc-8：[更新现状按钮改造 2026-10-16] **工具集变更 ⇒ 递增**：新增第 22 件
+#   propose_status（「更新现状」专用回合里只提议、不落盘地交出「新现状」正文）。
+#   **它不进常规工具面**（列 OP_ONLY_TOOLS），由 build_tool_schemas 在四段过滤之后、
+#   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
+#   「注册表工具集/schema 变更」（T12-R3 纪律）。
+#   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
+TOOL_TABLE_VERSION = "tools-tc-8"
 
 
 # ============================================================
@@ -633,6 +659,36 @@ async def _h_draft_rule_edit(work_id: str, current_id: str,
         "section": section,
         "old": old,
         "rule_card_id": row["card_id"],
+    }
+
+
+async def _h_propose_status(work_id: str, current_id: str,
+                            arguments: dict[str, Any],
+                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """[更新现状按钮改造 2026-10-16] 提议本卡「现状」新正文——**只提议、不落盘**。
+
+    机械三步：
+      ① 取本卡当前 status_block（空/占位符当空；口径与 card_draft 同源——
+         `current_turn.read_status_block` 单一取数口，不另判一套）；
+      ② base_hash＝sha256(old)（与 `card_draft._block_hash` 同算法，供 /commit 乐观比对）；
+      ③ 返回 ``{proposed, old, base_hash}``——proposed 即提议新正文、old 即盘上现文。
+    **全程零写入**：落盘只能由用户在对比窗点「同意」后走
+    ``POST /works/{w}/cards/{c}/commit``（复用 card_draft.commit 的整块替换）。
+
+    可见性：本工具列 ``OP_ONLY_TOOLS``——**不进常规卡片工具面**，只在
+    op=update_status 的专用回合由 ``build_tool_schemas`` 追加（用户 2026-10-16 口径：
+    「不点按钮，模型无法看到并调用它」）。执行层不另设权限关口——它零写入，
+    且「谁能调」已由工具面唯一决定。
+    """
+    content = str(arguments.get("content") or "")
+    if not content.strip():
+        return err("validation", "content 不能为空：请把「新现状」正文交给本工具")
+    from .current_turn import read_status_block  # noqa: PLC0415 延迟 import 破环
+    old = read_status_block(work_id, current_id)
+    return {
+        "proposed": content,
+        "old": old,
+        "base_hash": hashlib.sha256(old.encode("utf-8")).hexdigest(),
     }
 
 
@@ -1797,6 +1853,33 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_unlink_rel,
         readonly=False,
     ),
+    # [更新现状按钮改造 2026-10-16] 第 22 件工具：propose_status（只提议、不落盘）。
+    # 追加在既有 21 件字面量之后 ⇒ 前 21 件顺序逐字不变。**不进常规工具面**
+    # （列 OP_ONLY_TOOLS，build_tool_schemas 在四段过滤之后、仅 op 回合追加）；
+    # TOOL_SWITCH 挂 read 只为满足「注册表每件工具都要有开关映射」的完备性不变量。
+    # readonly=True：全程零写入（落盘走用户确认后的 /commit，不经过本工具）。
+    "propose_status": ToolDef(
+        schema={
+            "name": "propose_status",
+            "description": (
+                "提议本卡「现状」的新正文（只提议、不落盘）。返回提议内容与盘上现文、"
+                "指纹——你不能直接改现状，本工具只出草案；调用后系统会弹对比窗交用户"
+                "确认，用户点「同意」才写入本卡现状生效。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "新的现状正文（整块替换草案；只写已确定的结论）",
+                    },
+                },
+                "required": ["content"],
+            },
+        },
+        handler=_h_propose_status,
+        readonly=True,
+    ),
 }
 
 
@@ -2220,6 +2303,7 @@ def build_tool_schemas(
     card_id: str = "",
     work_id: str = "",
     cards: dict[str, dict[str, Any]] | None = None,
+    op: str = "",
 ) -> list[dict[str, Any]]:
     """OpenAI function calling 工具列表（直接传给 gateway.call(tools=...)）。
 
@@ -2241,8 +2325,14 @@ def build_tool_schemas(
     [权限底座重做 2026-10-12] **无卡上下文 ⇒ 默认关门**：认不出当前卡是谁时，
     二级过滤返回空工具列表（不再逐字返回全量工具面）。带上卡上下文（生产链路
     message_runner 恒定传 ``card_id/work_id/cards``）⇒ 按该卡固化的 perms 下发。
+
+    [更新现状按钮改造 2026-10-16] ``op`` ＝ 本轮操作类型（POST …/messages 的 op）。
+    ``OP_ONLY_TOOLS``（propose_status）**不进上面四段**——它们在**四段过滤之后**
+    追加，且只在对应 op 回合（见下）。故常规卡片工具面逐字不变；专用工具不随
+    卡 perms 下发，符合「不是卡片内挂的」口径。
     """
-    tools = [_schema_of(def_) for def_ in TOOL_REGISTRY.values()]
+    tools = [_schema_of(def_) for name, def_ in TOOL_REGISTRY.items()
+             if name not in OP_ONLY_TOOLS]
     # ---- 一级：角色过滤（工具卡底座 T9）----
     tools = _filter_by_role(tools, card_id, work_id, cards)
     # ---- 二级：分类过滤（权限线 T4）----
@@ -2251,7 +2341,12 @@ def build_tool_schemas(
     tools = _filter_by_card_type(tools, card_id, work_id, cards)
     # ---- 四级：根卡闸（规则卡 2026-10-15 · 块3）----
     tools = _filter_root_only(tools, card_id, work_id, cards)
+    # ---- 末段：专用工具追加（非卡片内挂；只在 op 回合）----
+    # 追加在四段之后 ⇒ 不经任何按卡过滤（不随 perms 收敛），可见性唯一由 op 决定。
+    if op == OP_UPDATE_STATUS:
+        tools.append(_schema_of(TOOL_REGISTRY["propose_status"]))
     return tools
+
 
 
 def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:

@@ -130,6 +130,10 @@ class PostMessageRequest(BaseModel):
     content: str = Field(min_length=1)
     # [T10-3-3] 重发去重：前端重发时携带被重发那条提问的原 pair_id；正常提问缺省 None。
     pair_id: Optional[str] = None
+    # [更新现状按钮改造 2026-10-16] 本轮操作标记（专用通道的入口标记）。
+    # 缺省 None/"" ⇒ 普通回合，行为逐字不变；"update_status" ⇒ 「更新现状」专用回合
+    # （轮首注入专用任务 + 工具面临时追加 propose_status）。
+    op: Optional[str] = None
 
 
 # [卡片编辑机制改造 2026-10-12 · 块2] draft/commit 请求体
@@ -923,7 +927,8 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     if str(_meta.get("card_type") or "") == "coder" \
             and str(_meta.get("state") or "") == "completed":
         return _err(400, "编程卡已完工，不再激活；新任务请新建编程卡")
-    return await _run_message(work_id, card_id, req.content, req.pair_id)
+    return await _run_message(work_id, card_id, req.content, req.pair_id,
+                              op=req.op or "")
 
 
 # ============================================================
@@ -1176,7 +1181,8 @@ async def post_message_compat(card_id: str, req: PostMessageRequest):
 
 async def _run_message(work_id: str, card_id: str, content: str,
                        client_pair_id: Optional[str] = None,
-                       append_user: bool = True) -> Any:
+                       append_user: bool = True,
+                       op: str = "") -> Any:
     """完整 messages 链路，新旧路由共用。
 
     顺序：读卡 → 取历史 → 追加用户消息 → context_assembler 组装 →
@@ -1206,7 +1212,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
         return _err(409, f"卡片回合进行中（{holder}），请稍后重试")
     try:
         return await _run_message_inner(work_id, card_id, content, client_pair_id,
-                                        append_user=append_user)
+                                        append_user=append_user, op=op)
     finally:
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
@@ -1217,7 +1223,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
 
 async def _run_message_inner(work_id: str, card_id: str, content: str,
                              client_pair_id: Optional[str] = None,
-                             append_user: bool = True) -> Any:
+                             append_user: bool = True,
+                             op: str = "") -> Any:
     """_run_message 的实际链路体（外层只负责逐字流 contextvar 的设/还原）。
 
     [T-0009 拆分] 本函数**只做三件事**：① 装配（读卡/pair 去重/上下文）
@@ -1227,6 +1234,9 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     """
     # 段① 读卡 ＋ pair_id 去重追加（详见旧 L524-564，逻辑逐字迁移）
     state = message_runner.RunState(work_id=work_id, card_id=card_id, content=content)
+    # [更新现状按钮改造 2026-10-16] 本轮操作标记：op 回合触发专用注入与专用工具，
+    # 缺省空串 ⇒ 普通回合逐字不变。
+    state.op = op
 
     # a. 确认卡片存在
     try:
