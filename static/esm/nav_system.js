@@ -110,7 +110,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       return;
     }
     open(cid).then(() => {
-      if (focusChild) {
+      if (focusChild && inspector) {
         inspector.classList.add("open");
         const el = document.getElementById("childTitle");
         if (el) el.focus();
@@ -179,8 +179,9 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
 
   function handleProjectAdd(wid) {
     if (wid === WORK_ID) {
-      const btn = document.getElementById("newCardBtn");   // 顶栏既有建卡对话框
+      const btn = document.getElementById("newCardBtn");   // 画布页顶栏建卡对话框
       if (btn) btn.click();
+      else location.assign("/work/" + WORK_ID);            // [阶段3] 对话页无建卡钮：回画布页建
     } else {
       window.location.href = "/work/" + wid;               // 跨项目：去该项目画布再建
     }

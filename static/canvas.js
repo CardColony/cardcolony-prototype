@@ -22,11 +22,14 @@
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=30";
+import { RenderNav } from "./esm/nav_system.js?v=31";
 import { notify } from "./esm/api.js?v=35";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
 const WORK_ID = window.__WORK_ID__;
+/* [阶段3 A3.2 2026-10-17] 双页拆分后 canvas.js 仍会经 workspace.js 的 reloadCanvas
+ * import 被**对话页**间接加载（阶段4 才摘这条边）。对话页没有画布 DOM ⇒ 本模块
+ * 顶层事件绑定一律空守卫、渲染函数遇空 viewport 自然空转，整体降级为惰性。 */
   const viewport = document.getElementById("viewport");
   const world = document.getElementById("world");
   const edgesSvg = document.getElementById("edgesSvg");
@@ -1606,7 +1609,7 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   // ==================== 视口交互（缩放/平移） ====================
-  viewport.addEventListener("wheel", (e) => {
+  viewport?.addEventListener("wheel", (e) => {
     e.preventDefault();
     const rect = viewport.getBoundingClientRect();
     const mx = e.clientX - rect.left;
@@ -1629,7 +1632,7 @@ const WORK_ID = window.__WORK_ID__;
 
   // 平移
   let panState = null;
-  viewport.addEventListener("mousedown", (e) => {
+  viewport?.addEventListener("mousedown", (e) => {
     if (e.target !== viewport && e.target !== world) return;
     if (e.button !== 0) return;
     panState = { startX: e.clientX, startY: e.clientY, panX: state.view.panX, panY: state.view.panY };
@@ -1725,7 +1728,7 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   // ==================== 整理画布 ====================
-  reorganizeBtn.onclick = async () => {
+  if (reorganizeBtn) reorganizeBtn.onclick = async () => {
     // 把当前视图所有卡 pinned 置 false
     const visibleIds = getVisibleIds();
     const patch = {};
@@ -1742,7 +1745,7 @@ const WORK_ID = window.__WORK_ID__;
   };
 
   // ==================== 新建卡 ====================
-  newCardBtn.onclick = () => {
+  if (newCardBtn) newCardBtn.onclick = () => {
     // 内联输入
     const node = document.createElement("div");
     node.style.cssText = "position:fixed;top:60px;right:20px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;z-index:1000;display:flex;flex-direction:column;gap:8px;min-width:240px;";
@@ -1826,6 +1829,7 @@ const WORK_ID = window.__WORK_ID__;
 
   // [迭代四 F3④] 画布三态容器：loading／error（失败＋重试）／empty。
   function showCanvasState(kind) {
+    if (!viewport) return;   // [阶段3 A3.2] 非画布页：无画布态容器可挂，整体空转
     let box = document.getElementById("canvasStateBox");
     if (!box) {
       box = document.createElement("div");

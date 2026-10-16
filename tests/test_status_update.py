@@ -258,8 +258,9 @@ def test_frontend_status_modal_scans_propose_status_and_binds_card():
 
 
 def test_frontend_modal_dom_and_diff_styles_exist():
-    """独立 #statusModal 元素（不挤 #draftModal）＋ 行级 diff 样式＋可编辑提议框。"""
-    html = _read("templates/work.html")
+    """独立 #statusModal 元素（不挤 #draftModal）＋ 行级 diff 样式＋可编辑提议框。
+    [阶段3 A3.2 2026-10-17] 模板已拆分：对话弹窗归 templates/card.html。"""
+    html = _read("templates/card.html")
     for el in ("statusModal", "statusDiffArea", "statusEditArea",
                "statusConfirmBtn", "statusCloseBtn"):
         assert f'id="{el}"' in html, el
@@ -278,8 +279,8 @@ def test_frontend_diff_segment_markers_present():
 
 def test_frontend_version_stamps_bumped():
     """本轮涉改三件（stream/workspace/style）升 36；引用点同号（防双份代码并存）。"""
-    assert "../stream.js?v=36" in _read("static/esm/main.js")
-    assert "../workspace.js?v=41" in _read("static/esm/main.js")
+    assert "../stream.js?v=36" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=42" in _read("static/esm/main_chat.js")
     assert "./stream.js?v=36" in _read("static/workspace.js")
     assert "/static/style.css?v=36" in _read("templates/work.html")
 

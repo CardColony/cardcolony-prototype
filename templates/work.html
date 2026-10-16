@@ -76,18 +76,10 @@
          .canvas-only 按 data-view 显隐（画布态显示、聊天态隐藏）。
          topSettingsBtn 已删（无 JS 引用，grep 仅本文件命中；左栏 navFooter 已有同一跳转）。 -->
     <div class="topbar">
-      <!-- [画布入口 2026-10-16 用户令] 顶部栏最左：返回本项目画布的 icon 入口。
-           根卡/子卡聊天态常显（data-view=chat）；画布态隐藏（已在画布，点了无意义）。 -->
-      <button id="canvasEntryBtn" class="canvas-entry" title="返回项目画布" aria-label="返回项目画布">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/>
-          <path d="M1.5 6h13M6 1.5v13"/>
-        </svg>
-      </button>
+    <!-- [阶段3 A3.2 2026-10-17] 纯画布页：本页不含 canvasEntryBtn（画布页无「返回画布」）、
+         不含 #chatCrumb / #workspace / 对话弹窗——那些归 card.html。 -->
       <!-- 画布态面包屑（canvas.js renderBreadcrumb 填，吃投影；画布态才显） -->
       <div id="crumb" class="crumb canvas-only"></div>
-      <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
-      <div id="chatCrumb" class="crumb"></div>
       <span class="spacer"></span>
       <!-- [缩放控件 2026-10-16 用户令] 滚轮缩放废除（canvas.js wheel 监听已删），
            缩放只走此控件组：−/＋每按一次 ±25%；拖动条 25% 档位吸附（min25/max200/step25）；
@@ -101,7 +93,6 @@
       <button id="reorganizeBtn" class="btn canvas-only" title="重算所有卡片位置（清除 pinned）">整理画布</button>
       <button id="newCardBtn" class="btn primary canvas-only">＋ 新建卡</button>
     </div>
-
     <div class="stage">
       <!-- 画布视口 -->
       <div id="viewport">
@@ -110,51 +101,6 @@
           <!-- 卡片节点由 canvas.js 动态注入 -->
         </div>
         <div id="cardTooltip" class="card-tooltip"></div>
-      </div>
-
-      <!-- 卡片对话区（data-view=chat 时显示；绝对定位与画布互斥） -->
-      <div id="workspace" class="workspace">
-        <div class="ws-right">
-          <!-- [顶栏整合 2026-10-13] .ws-head 整条已删：卡标题并入顶栏聊天态面包屑
-               （#chatCrumb 末段＝当前卡），「← 画布」职责并入面包屑首段点击
-               （用户 17:17 ②「不需要画布按钮，你让【根卡】可点击就行，点击这个就是回画布」），
-               「ⓘ 卡详情」顶部按钮删除、只留右缘 .insp-tab（用户 17:17 ④）。
-               对应 workspace.js 三处引用同步处理：wsHeadTitle→renderChatCrumb、
-               wsBackBtn/inspToggleBtn→清空守卫。 -->
-          <div class="chat" id="chatArea"></div>
-          <div class="inputbar">
-            <textarea id="inputBox" class="inputbox" placeholder="和这张卡讨论…" rows="2"></textarea>
-            <div class="inputmeta">
-              <!-- [2026-10-13 用户令] 快捷键文字提示删除（「不需要文字告诉我enter是发送，
-                   什么软件会有这种傻逼提示？」）：原 placeholder 括号提示与 .hint 行同删。
-                   .spacer 保留——它负责把右侧按钮族推出（见 style.css .inputmeta .spacer）。 -->
-              <span class="spacer"></span>
-              <!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草/确认两按钮（ghost 级，弱于发送键）。
-                   文案按块集判据：研发卡「需求确定」、其他卡「定论确认」——由 workspace.js 按
-                   body 键集（requirements/rulings）动态切换；「更新现状」恒定。 -->
-              <button id="draftBtn" class="btn primary draft-meta-btn" title="起草本卡第三块内容（需求文档/定论），用户确认后写入">需求确定</button>
-              <button id="statusDraftBtn" class="btn draft-meta-btn" title="起草现状块更新，用户确认后写入">更新现状</button>
-              <!-- [顶栏整合 2026-10-13] 发送/停止合并为一个两态图标按钮（用户 17:17 ③）：
-                   静止＝发送图标（.run.idle）、运行中＝停止图标（.run.running），同一位置同一元素，
-                   由 workspace.js setRunState() 切换。原「■ 停止」顶栏按钮与文字「发送」按钮同删。 -->
-              <button id="runBtn" class="run idle" data-state="idle" aria-label="发送" title="发送">
-                <svg class="ic-send" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M8 13.2V3.2"/><path d="M3.9 7.3 8 3.2l4.1 4.1"/>
-                </svg>
-                <svg class="ic-stop" viewBox="0 0 16 16" aria-hidden="true">
-                  <rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1.8" fill="currentColor"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        <!-- [T17-F3] 右栏 Inspector：卡片编辑能力整体搬迁至此，默认收起 -->
-        <div class="inspector" id="inspector">
-          <div class="insp-body" id="inspBody">
-            <!-- workspace.js renderInspector 动态填充 -->
-          </div>
-          <button class="insp-tab" id="inspTab" title="展开/收起右侧卡详情">ⓘ 卡详情 · 职责/结论/关系/历史</button>
-        </div>
       </div>
     </div>
     </div>
@@ -176,71 +122,17 @@
   <div class="np-head">卡间消息 <button id="npClose" class="np-close">×</button></div>
   <div id="npList" class="np-list"></div>
 </div>
-<!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗（modal）：遮罩＋面板＋标题栏＋
-     草稿区（只读）＋反馈框（默认收起）＋底栏三键（关闭/反馈/确认）。
-     三态：加载中（起草中…）→ 草稿态 → （确认 commit / 反馈重起草 / 关闭丢弃）。
-     z-index：toast 9999 > modal 1300 > notifyPanel 1200。 -->
-<div id="draftModal" class="draft-modal">
-  <div class="draft-modal-overlay" id="draftOverlay"></div>
-  <div class="draft-modal-panel" role="dialog" aria-modal="true">
-    <div class="draft-modal-head">
-      <span id="draftModalTitle">需求文档起草</span>
-      <button class="draft-modal-close" id="draftModalX" title="关闭（丢弃草稿）">×</button>
-    </div>
-    <div class="draft-modal-body" id="draftModalBody">
-      <div class="draft-area" id="draftArea">起草中…</div>
-      <div class="draft-feedback-box" id="draftFeedbackBox">
-        <textarea id="draftFeedbackInput" class="draft-feedback-input" placeholder="哪里要改？输入反馈后点「反馈」重新起草…" rows="3"></textarea>
-      </div>
-      <div class="draft-modal-error" id="draftModalError" style="display:none"></div>
-    </div>
-    <div class="draft-modal-foot">
-      <button class="btn ghost" id="draftCloseBtn">关闭</button>
-      <span class="spacer"></span>
-      <button class="btn" id="draftFeedbackBtn">反馈</button>
-      <button class="btn primary" id="draftConfirmBtn">确认</button>
-    </div>
-  </div>
-</div>
-<!-- [更新现状按钮改造 2026-10-16] 「更新现状」专用通道的对比确认窗。
-     ① **独立元素**，不挤 #draftModal——那个 DOM 已被「起草」与「规则审批」两套
-        状态机各绑一次 `onclick =`（后绑者覆盖先绑者，起草弹窗的「确认」实际已被
-        盖掉）。本窗另起元素、复用同一套 .draft-modal* 样式 ⇒ 零争用。
-     ② 版式＝单面板行级 diff（原现状 vs 提议，增删着色）＋**可编辑的提议框**
-        （需求：对比窗里能直接改；同意后按这里的文本落盘）。 -->
-<div id="statusModal" class="draft-modal">
-  <div class="draft-modal-overlay" id="statusOverlay"></div>
-  <div class="draft-modal-panel" role="dialog" aria-modal="true">
-    <div class="draft-modal-head">
-      <span id="statusModalTitle">更新现状 · 原/新对比</span>
-      <button class="draft-modal-close" id="statusModalX" title="关闭（不落盘）">×</button>
-    </div>
-    <div class="draft-modal-body" id="statusModalBody">
-      <div class="status-diff" id="statusDiffArea"></div>
-      <div class="status-edit-wrap">
-        <div class="status-edit-label">可直接改（点「同意」按这里的文本落盘）</div>
-        <textarea id="statusEditArea" class="status-edit-area" rows="8"></textarea>
-      </div>
-      <div class="draft-modal-error" id="statusModalError" style="display:none"></div>
-    </div>
-    <div class="draft-modal-foot">
-      <button class="btn ghost" id="statusCloseBtn">关闭</button>
-      <span class="spacer"></span>
-      <button class="btn primary" id="statusConfirmBtn">同意</button>
-    </div>
-  </div>
-</div>
 <script>
   window.__WORK_ID__ = "{{WORK_ID}}";
   /* [阶段2 A2.1 2026-10-17] 对话独立地址 /work/{wid}/card/{cid} 注入卡号：
      有值＝对话页（boot 直接开这张卡）；空串＝画布页。 */
-  window.__CARD_ID__ = "{{CARD_ID}}";
+  window.__CARD_ID__ = "";   /* 画布页无卡号 */
 </script>
 <!-- [迭代四 F2④] 四 script → 单 ES module 入口（esm/main.js 按依赖序装配：
      util → api → store → stream → canvas → workspace）。原 ?v= 戳过渡保留；
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=40.0"></script>
+<script type="module" src="/static/esm/main.js?v=41.0"></script>
 </body>
 </html>
