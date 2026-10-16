@@ -1,193 +1,43 @@
 {
-  "任务": "会话渲染单源化（件1-3）",
-  "快照时刻": "2026-10-15",
-  "施工前备份": "E:\\AI_station-backup\\推演agent_会话渲染单源化_20261015T1900_备份",
-  "施工后对账·改动件": [
-    {
-      "file": "static/stream.js",
-      "施工前sha16": "212a1b8864b25033",
-      "施工后sha16": "b7c2962fcfc8aa25",
-      "状态": "变更"
+  "generated_at": "2026-10-16T13:02:43",
+  "git_head": "042c0bbc49d6e2e1c0f96d243b1ff5171e2eb8e2",
+  "note": "《OpenAI 兼容直连适配器》任务书 §八：config 零改动对账（红线 5：models.yaml 不改）",
+  "config_files": {
+    "config/behavior_registry.json": {
+      "sha256": "ccd9d0025545d1ff0bf7502837d35851ea4f99deb3745a98a29a81a32523c484",
+      "bytes": 1096
     },
-    {
-      "file": "static/workspace.js",
-      "施工前sha16": "bb78eae6991c66f7",
-      "施工后sha16": "2df821bb7f153ee7",
-      "状态": "变更"
+    "config/card_type_registry.json": {
+      "sha256": "87ebf57b4fef494eb239b96c5fd382b0cbdbc0dc627460e6e2999f8ab9681b0a",
+      "bytes": 9385
     },
-    {
-      "file": "static/style.css",
-      "施工前sha16": "a86fd9524cfb58a5",
-      "施工后sha16": "8ae7b3c2bc91db71",
-      "状态": "变更"
+    "config/context_regions.json": {
+      "sha256": "f0a21618add9dda7c95fbdf35846ec24d788c59931a2d8b6dced2719a5efc974",
+      "bytes": 1659
     },
-    {
-      "file": "templates/work.html",
-      "施工前sha16": "7cf6dbb59dddb89e",
-      "施工后sha16": "ae6153585334fecc",
-      "状态": "变更"
+    "config/message_type_registry.json": {
+      "sha256": "e1888e3837a0b350eb774062540389a1973312dbb44bc603fe3e34f02d493380",
+      "bytes": 2589
     },
-    {
-      "file": "static/canvas.js",
-      "施工前sha16": "67beda2c80030b56",
-      "施工后sha16": "af39749cd26e47ba",
-      "状态": "变更"
+    "config/models.yaml": {
+      "sha256": "1392b99b94d2b8098294b99f00974309256b911904d89d218f780137d30576e4",
+      "bytes": 5134
     },
-    {
-      "file": "static/esm/api.js",
-      "施工前sha16": "9365ed19baf12f32",
-      "施工后sha16": "98c4f2a2c3f69c1b",
-      "状态": "变更"
+    "config/permissions.json": {
+      "sha256": "8df011b80d5cfc697883a40b68ba3fd505cd59e7206e267fabd1c2fb23eebc4c",
+      "bytes": 4346
     },
-    {
-      "file": "static/esm/cardmsg.js",
-      "施工前sha16": "df526aa2bc974d40",
-      "施工后sha16": "49ab12948f023a50",
-      "状态": "变更"
+    "config/roles.json": {
+      "sha256": "65ef929814f1dd3326419b10f907a233f508be65de671d66538e966012a590a8",
+      "bytes": 785
     },
-    {
-      "file": "static/esm/main.js",
-      "施工前sha16": "171a9031533e4118",
-      "施工后sha16": "5a1334d0ae11695f",
-      "状态": "变更"
+    "config/session_base.json": {
+      "sha256": "67d4b50d097edf54f058281a1ce7b63e03a9e2500fed618e2c30fdc8ce4178c3",
+      "bytes": 244
     },
-    {
-      "file": "static/esm/home.js",
-      "施工前sha16": "398b1b1925cebf20",
-      "施工后sha16": "90e63a054cf1b1c5",
-      "状态": "变更"
-    },
-    {
-      "file": "static/esm/nav_find.js",
-      "施工前sha16": "7633e28f0aaecd16",
-      "施工后sha16": "33c7af84185cd0d9",
-      "状态": "变更"
-    },
-    {
-      "file": "static/esm/nav_render.js",
-      "施工前sha16": "3a3cb0e26987f78c",
-      "施工后sha16": "bca1e9e53bac1379",
-      "状态": "变更"
-    },
-    {
-      "file": "static/esm/nav_virtual.js",
-      "施工前sha16": "f847a951857a12d7",
-      "施工后sha16": "b1a7c2e4b088dfff",
-      "状态": "变更"
-    },
-    {
-      "file": "static/esm/row_model.js",
-      "施工前sha16": "0d5f22327f3e081f",
-      "施工后sha16": "27334058c0975f71",
-      "状态": "变更"
+    "config/type_texts.json": {
+      "sha256": "f1ea6946a44c2c47da706376bdf909b27a0c85472af9f36d5ad7b43f95b60831",
+      "bytes": 1017
     }
-  ],
-  "施工后对账·新增件": [
-    {
-      "file": "static/esm/assembler.js",
-      "施工前sha16": "a23201aa961a74a0",
-      "施工后sha16": "c7d8eae6e4a3cee2",
-      "状态": "新增"
-    },
-    {
-      "file": "tests/assembler.test.mjs",
-      "施工前sha16": null,
-      "施工后sha16": "a8375688ff142952",
-      "状态": "新增"
-    },
-    {
-      "file": "_evidence_singlesource_20261015.mjs",
-      "施工前sha16": null,
-      "施工后sha16": "62c8810c66808517",
-      "状态": "新增"
-    },
-    {
-      "file": "_evidence_round_audit_20261015.py",
-      "施工前sha16": null,
-      "施工后sha16": "54f6a736d88458cd",
-      "状态": "新增"
-    }
-  ],
-  "施工后对账·config（应零变更）": [
-    {
-      "file": "config/behavior_registry.json",
-      "施工前sha16": "ccd9d0025545d1ff",
-      "施工后sha16": "ccd9d0025545d1ff",
-      "一致": true
-    },
-    {
-      "file": "config/card_type_registry.json",
-      "施工前sha16": "b2e6d8921f8cfca5",
-      "施工后sha16": "b2e6d8921f8cfca5",
-      "一致": true
-    },
-    {
-      "file": "config/context_regions.json",
-      "施工前sha16": "c73edf35f208d735",
-      "施工后sha16": "c73edf35f208d735",
-      "一致": true
-    },
-    {
-      "file": "config/message_type_registry.json",
-      "施工前sha16": "e1888e3837a0b350",
-      "施工后sha16": "e1888e3837a0b350",
-      "一致": true
-    },
-    {
-      "file": "config/models.yaml",
-      "施工前sha16": "5c523621b37fed56",
-      "施工后sha16": "5c523621b37fed56",
-      "一致": true
-    },
-    {
-      "file": "config/permissions.json",
-      "施工前sha16": "7ebe297dd9f79c80",
-      "施工后sha16": "7ebe297dd9f79c80",
-      "一致": true
-    },
-    {
-      "file": "config/roles.json",
-      "施工前sha16": "65ef929814f1dd33",
-      "施工后sha16": "65ef929814f1dd33",
-      "一致": true
-    },
-    {
-      "file": "config/session_base.json",
-      "施工前sha16": "67d4b50d097edf54",
-      "施工后sha16": "67d4b50d097edf54",
-      "一致": true
-    }
-  ],
-  "结论": "config 八件逐字节一致（本施工零 config 变更）；后端 src/ 下 .py 源文件改动数 0（C3/红线1），diff 仅 67 个 pytest 运行生成的 .pyc；works/ logs/ _backups/ 对备份零差异（红线2）。",
-  "分组键修正": {
-    "任务书写法": "snapshot() 按 round 分组",
-    "实测结论": "顶层 round 不是对话轮次（run_start 置 0、每 round_start 递模型轮次；assistant_text 另走独立落点）",
-    "采用": "run_id（pair_id）优先，缺失回落 round（迁移老卡）",
-    "证据": "48 张卡全量核对：round 非单调 4 张、round 全 0 共 5 张、无 run_id 5 张；按 round 分组「一组多问」13 组 → 按装配器分组键 5 组（余 5 组为源数据自身重复记录）",
-    "核对脚本": "_evidence_round_audit_20261015.py"
-  },
-  "取证": {
-    "jsdom真链路": "_evidence_singlesource_20261015.mjs → PASS 25 / FAIL 0（判据1-6 逐条）",
-    "装配器单测": "node --test tests/assembler.test.mjs → 19 tests / 19 pass / 0 fail",
-    "前端机械守卫": "tests/test_msg_baseclose_frontend.py → 8 passed（已按 C4 新契约重写）",
-    "红线6删净": "grep -c '_insertAnchor|_countUpToUser|nextAssistant|attachReplayReasoning|MSG\\[t\\]' static/stream.js → 0",
-    "node --check": "13 个改动 JS 全过",
-    "全量pytest": "11 failed / 654 passed / 1 skipped；失败差集核对：把这 10 条拿到开工前备份树（含改前 static/ 与 src/ 原文）单跑，逐条同样失败 ⇒ 与本次改动零关系，差集 0。余 1 条 tests/test_coder_card.py 无基线——该文件创建于 18:53:39，属本会话期间的并行作业。"
-  },
-  "零LLM调用": true,
-  "git提交数": 0,
-  "git HEAD": "de36f1c（与开工前一致）",
-  "并行改动提示": {
-    "说明": "本会话期间有另一路作业同时在改本仓库，且动过 src/",
-    "文件": [
-      "src/api/prompts.py(18:21)",
-      "src/api/card_tools.py(18:28)",
-      "src/api/routes.py(18:39)",
-      "src/api/message_runner.py(18:39)",
-      "tests/test_coder_card.py(18:53:39 新建)",
-      "tests/test_card_base_linked.py 等 6 个测试(18:34-18:36)",
-      "docs/编程卡-任务书-20261015.md(19:04)"
-    ],
-    "对本次结论的影响": "本次施工未改任何 src/ 文件（改动清单见施工回报 §七）；但后端失败归属复盘时须把并行作业一并计入。"
   }
 }

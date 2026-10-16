@@ -59,6 +59,12 @@ class RegionCtx:
     request_tail: list[dict[str, Any]] = field(default_factory=list)
     request_seat_identity: list[dict[str, Any]] = field(default_factory=list)
     rule_sections: dict[str, str] = field(default_factory=dict)
+    # [依赖关联线 2026-10-16] 双向依赖关联线取数结果（装配前算好，渲染器只读）：
+    #   dep_relations_out ＝ 正向（当前卡自己的 relations 条目）
+    #   dep_relations_in  ＝ 反向（全库扫 target == 当前卡的条目，带 source）
+    # 反向扫**零额外 IO**：在已加载的全库卡索引上算（见 context_assembler）。
+    dep_relations_out: list[dict[str, Any]] = field(default_factory=list)
+    dep_relations_in: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _count_duty_lines(ctx: RegionCtx, text: str) -> int:
@@ -233,6 +239,30 @@ REGION_TABLE: list[dict[str, Any]] = [
         "source": "memory_store.load_memory（works/{work_id}/memory/{card_id}.json 凝练归拢 entries；调用方完成 IO 后传入渲染）",
         "render": lambda ctx: render_memory_region(ctx.memory_entries),
         "count": lambda ctx, text: len(ctx.memory_entries),
+    },
+    {
+        # [依赖关联线 2026-10-16] order 250：200 记忆之后、300 对话历史之前
+        # （用户裁定 6「位置不能太靠上」）。渲染当前卡的**双向**依赖关联线：
+        # 正向（我依赖/关联谁）＋反向（谁依赖/关联我）；无线 → 空串（沿用
+        # 「没有来源就不出现这个区」）。
+        # ★ seats 取 main only，且 **profiles 也只取 main**——本项目真正的消费者
+        #   闸门是 profiles（seats 不参与过滤，实测「记忆区」标 seats=main 但
+        #   profiles 三席，照样进 viewpoint）。要真做到「三席零变化」，必须
+        #   profiles=("main",)。（见施工回报：任务书字面写三席，与硬判据4 冲突，
+        #   本处按硬判据4 取 main-only。）
+        "key": "relations",
+        "order": 250,
+        "name": "依赖关联",
+        "channel": "system",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main",),
+        "source": "当前卡的依赖关联线（relations）：正向＝本卡自己的条目；反向＝全库卡索引扫 target==本卡（零额外 IO）",
+        "render": lambda ctx: render_dep_relations_region(
+            ctx.dep_relations_out, ctx.dep_relations_in),
+        "count": lambda ctx, text: len(ctx.dep_relations_out) + len(ctx.dep_relations_in),
     },
     {
         "key": "history",
@@ -759,6 +789,47 @@ def render_memory_region(entries: list[dict[str, Any]]) -> str:
         if evidence:
             lines.append(evidence + (f"（{fingerprint}）" if fingerprint else ""))
     return "\n".join(lines)
+
+
+def _rel_suffix(kind: str, detail: str) -> str:
+    """依赖关联条目的括号内文案：``{kind}·{detail}``（缺项则不写）。"""
+    return "·".join(p for p in (kind, detail) if p)
+
+
+def render_dep_relations_region(
+    out_entries: list[dict[str, Any]],
+    in_entries: list[dict[str, Any]],
+) -> str:
+    """250 区渲染（依赖关联）：当前卡的**双向**依赖关联线。
+
+    - 正向：本卡自己的 ``relations`` → 「我依赖/关联：{target}（{kind}·{detail}）」；
+    - 反向：全库扫出的 ``target == 本卡`` 条目 → 「依赖/关联我的：{source}（…）」；
+    - 两向都无 → 空串（「没有来源就不出现这个区」）；
+    - 条目原样呈现（kind/detail 不加工、不截断；渲染零加工）。
+
+    纯函数：不做 IO（模块头硬约束）。双向取数由 ``context_assembler.build_ctx``
+    在已加载的全库卡索引上算好（零额外 IO）后传入。
+    """
+    lines: list[str] = []
+    for r in out_entries or []:
+        if not isinstance(r, dict):
+            continue
+        target = str(r.get("target") or "")
+        if not target:
+            continue
+        lines.append(
+            f"- 我依赖/关联：{target}（{_rel_suffix(str(r.get('kind') or ''), str(r.get('detail') or ''))}）")
+    for r in in_entries or []:
+        if not isinstance(r, dict):
+            continue
+        source = str(r.get("source") or "")
+        if not source:
+            continue
+        lines.append(
+            f"- 依赖/关联我的：{source}（{_rel_suffix(str(r.get('kind') or ''), str(r.get('detail') or ''))}）")
+    if not lines:
+        return ""
+    return "## 依赖关联\n" + "\n".join(lines)
 
 
 def assemble_regions(region_texts: list[str]) -> str:

@@ -1,6 +1,27 @@
-"""统一模型调用入口，封装重试、超时、降级、Token 统计。
+# -*- coding: utf-8 -*-
+"""统一模型调用入口（**兼容壳**）—— 模型层底座整体抄写 · 期 3。
 
-离线可跑：设置环境变量 MOCK_LLM=1 时使用 MockGateway（不调用真实 LLM）。
+背景（用户 2026-10-16 裁定「冲突 A 选甲」）：
+    任务书 §三 期 3 要求 `ModelGateway` 删除，但红线 C3（调用方零改动）与判据
+    「失败差集为空」要求它必须存活：
+      - `src/api/settings_api.py`（非白名单）import `build_gateway`；
+      - `simple_service.py:281,399`（红线「一行不动」）用 `gw.config` / `gw.stream_call`；
+      - `tool_fold.py:112`（红线「一行不动」）用 `gw.call`；
+      - 4 个既有测试（非白名单）import `ModelGateway`。
+    ⇒ 用户裁定：**`gateway.py` 保留为薄模块，`ModelGateway` 名保留为新写的兼容壳，
+    旧单体实现删除，内部委托新 runtime。**
+
+本壳职责：
+    - 保留 `.config`（编译后平铺 config，逐字不变）与 `call` / `stream_call` 的**签名与契约**；
+    - 内部把请求组装成 `GenerateOptions`，走 `LlmRuntime.stream` + `BlockAssembler`；
+    - 保留旧有的重试分级、降级（fallback）、on_status 事件、完成标记检测、截断抢救。
+
+适配器路由（[2026-10-16 单适配器改造] 五家归一）：
+    五家（opencode/deepseek、aliyun/qwen、zhipu/glm、minimax、nous/haiku）wire 协议同构，
+    全部由 **`OpenAICompatAdapter` 一个适配器**承接；各厂差异（思考参数形态）进
+    `llm_openai_compat/dialects.py` 方言表。注册键 = **models.yaml 的 providers 键（vendor）**，
+    `GenerateOptions.provider` 即 vendor；`GenerateOptions.model` 是 wire 模型名。
+    （旧 litellm 薄壳与按传输方式分的 llm_deepseek 包**均已退役删除**。）
 """
 
 from __future__ import annotations
@@ -10,55 +31,257 @@ import json
 import os
 import re
 import time
-from types import SimpleNamespace
-from typing import Any, Optional
-
-import httpx
+from typing import Any, AsyncIterator, Optional
 
 from ..infra.errors import ErrorCode, ModelError
 from ..infra.logging import get_logger
-from .stats import GatewayStats
+from .llm.assembler import BlockAssembler
+from .llm.errors import LlmError
+from .llm.runtime import LlmAdapter, LlmRuntime, RuntimeStats
+from .llm.types import (
+    ErrorReason,
+    GenerateOptions,
+    ReasoningBlock,
+    TextBlock,
+    ToolCallBlock,
+    ToolSchema,
+)
+from .llm_openai_compat.adapter import (
+    CompatAdapterOptions,
+    CompatConnectionOptions,
+    OpenAICompatAdapter,
+)
+from .llm_openai_compat.serialize import RequestDefaults
 
 logger = get_logger(__name__)
 
-
-# 重试分级：按错误类别限定最大尝试次数（与 model 配置取 min 钳制）。
-# 依据：永久性错误重试无意义；临时性错误有限重试；超时每次都烧满
-# timeout 秒，必须最快放弃。凡代码能判的不交给模型判。
+# 重试分级：按错误类别限定最大尝试次数（与 model 配置取 min 钳制）。语义承自旧单体。
 RETRY_CLASS_CAPS = {
-    "auth": 1,          # 永久性：403/401 零重试，首败直切 fallback
-    "timeout": 2,       # 每次失败已烧满 timeout 秒（讯飞 180s），最多 2 次
-    "503": 5,           # 临时过载：有限重试
+    "auth": 1,
+    "timeout": 2,
+    "503": 5,
     "rate_limit": 5,
     "connection": 3,
-    "error": 3,         # 未知杂类：保守限 3
+    "error": 3,
 }
-INCOMPLETE_MARKER_CAP = 3      # 完成标记缺失（P-3）：最多 3 次全额调用
-RETRY_TOTAL_BUDGET_SECONDS = 300   # 单次 call 重试总时长熔断（含调用耗时）
-RETRY_BACKOFF_MAX_SECONDS = 30     # 指数退避单次 sleep 上限
+INCOMPLETE_MARKER_CAP = 3
+RETRY_TOTAL_BUDGET_SECONDS = 300
+RETRY_BACKOFF_MAX_SECONDS = 30
 
-# [思考流 2026-10-15] 走原生 SSE 读取的 openai 兼容适配端点：litellm 对自定义 openai
-# transform 会丢弃 reasoning_content（假端点实测 attr/model_extra/vars 全空），此类端点
-# 照抄 dsh-llm-deepseek 用原生 httpx + SSE 解析，从原始 delta.reasoning_content 读思考。
-NATIVE_SSE_PROVIDERS = {"opencode"}
-# [provider 漂移修正 2026-10-16] 编译后 provider 被翻译（opencode→openai），追加
-# base_url 特征判定：命中这些 URL 前缀的端点走原生 SSE（litellm 会吞其 reasoning）。
-NATIVE_SSE_URL_PREFIXES = ("https://opencode.ai/",)
+#: 走原生 SSE 的 opencode 兼容端点 URL 前缀（承自旧补丁 NATIVE_SSE_URL_PREFIXES）。
+_OPENCODE_URL_PREFIXES = ("https://opencode.ai/",)
+_DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+
+_COMPLETION_MARKER = "已完成"
 
 
-def _is_native_sse_url(model_config: dict[str, Any]) -> bool:
-    """按 base_url 特征判定原生 SSE 端点（编译路径 provider 已漂移，URL 是唯一稳定特征）。"""
-    base = str(model_config.get("base_url") or "")
-    return any(base.startswith(p) for p in NATIVE_SSE_URL_PREFIXES)
+def _vendor_of(model_config: dict[str, Any]) -> str:
+    """取模型所属供应商（models.yaml providers 键；编译层登记为 ``vendor``）。
+
+    手搓 config（无 vendor 字段）回落到 ``provider``（协议名）——保持旧测试装置可用。
+    """
+    return str(model_config.get("vendor") or model_config.get("provider") or "")
+
+
+def _is_deepseek_like(model_name: str, model_config: dict[str, Any]) -> bool:
+    """是否 DeepSeek 系（决定要不要补空 reasoning_content）。"""
+    vendor = _vendor_of(model_config)
+    return (
+        "deepseek" in model_name.lower()
+        or "deepseek" in str(model_config.get("model") or "").lower()
+        or vendor in ("opencode", "deepseek")
+        or str(model_config.get("base_url") or "").startswith(_OPENCODE_URL_PREFIXES)
+    )
+
+
+def _needs_ds_norm(model_name: str, model_config: dict[str, Any]) -> bool:
+    """是否要给注入的 assistant 消息补空 reasoning_content（DeepSeek 系）。"""
+    return _is_deepseek_like(model_name, model_config)
+
+
+def _ds_norm(msgs: Optional[list[dict[str, Any]]]) -> Optional[list[dict[str, Any]]]:
+    """[DeepSeek 思考回传 2026-10-15] 给无 reasoning_content 的 assistant 消息补空串。
+
+    语义原样承自旧单体（生产实测：不补 → 400 "reasoning_content ... must be passed back"）。
+    """
+    if not msgs:
+        return msgs
+    out = []
+    for m in msgs:
+        if m.get("role") == "assistant" and "reasoning_content" not in m:
+            m = dict(m)
+            m["reasoning_content"] = ""
+        out.append(m)
+    return out
 
 
 class ModelGateway:
-    """统一模型调用入口，封装重试、超时、降级、Token统计。"""
+    """统一模型调用入口（兼容壳）。对外契约与旧单体逐字一致。"""
 
-    def __init__(self, config: dict[str, Any], stats: Optional[GatewayStats] = None):
+    def __init__(self, config: dict[str, Any], stats: Optional[RuntimeStats] = None) -> None:
         self.config = config
-        self.stats = stats or GatewayStats()
+        self.stats = stats if stats is not None else RuntimeStats()
+        self._models: dict[str, dict[str, Any]] = {
+            k: v for k, v in (config.get("models") or {}).items() if isinstance(v, dict)
+        }
+        self._by_vendor: dict[str, list[str]] = {}
+        for name, mc in self._models.items():
+            self._by_vendor.setdefault(_vendor_of(mc), []).append(name)
+        self._runtime = self._build_runtime(config)
 
+    # ------------------------------------------------------------------
+    # runtime / 适配器装配
+    # ------------------------------------------------------------------
+    def _build_runtime(self, config: dict[str, Any]) -> LlmRuntime:
+        runtime = LlmRuntime(stats=self.stats)
+        if os.environ.get("MOCK_LLM") == "1":
+            # MockAdapter 注册在 **vendor 路由键**上（与真实适配器同一路由面）；
+            # 罐头内容里的模型名取**配置键**（与旧 MockGateway 逐字一致）。
+            key_by_wire = {str(mc.get("model") or k): k for k, mc in self._models.items()}
+            runtime.register_adapter(list(self._by_vendor.keys()), MockAdapter(key_by_wire))
+            return runtime
+        # 五家共用一个适配器实例（各厂差异进 facts/dialects），注册键 = vendor。
+        runtime.register_adapter(
+            list(self._by_vendor.keys()),
+            OpenAICompatAdapter(CompatAdapterOptions(options=self._facts_for)),
+        )
+        return runtime
+
+    def _facts_for(self, provider: str, model: str) -> CompatConnectionOptions:
+        """``(vendor, wire_model) -> 连接事实``。facts 全部来自编译 config。"""
+        mc = self._lookup(provider, model)
+        vendor = provider or _vendor_of(mc)
+        thinking = mc.get("thinking")
+        default_effort = mc.get("default_effort")
+        return CompatConnectionOptions(
+            base_url=str(mc.get("base_url") or _DEFAULT_DEEPSEEK_BASE_URL),
+            api_key=os.environ.get(str(mc.get("api_key_env") or ""), ""),
+            vendor=vendor,
+            defaults=RequestDefaults(
+                vendor=vendor,
+                thinking=thinking if isinstance(thinking, str) or thinking is None else str(thinking),
+                default_effort=default_effort if isinstance(default_effort, str) else None,
+            ),
+            max_tokens=None,  # 拆闸铁律：不注入默认 max_tokens
+            extra_headers=mc.get("extra_headers") if isinstance(mc.get("extra_headers"), dict) else None,
+        )
+
+    def _lookup(self, provider: str, model: str) -> dict[str, Any]:
+        keys = self._by_vendor.get(provider) or []
+        for key in keys:
+            if str(self._models[key].get("model") or key) == model:
+                return self._models[key]
+        if keys:
+            return self._models[keys[0]]
+        return {}
+
+    # ------------------------------------------------------------------
+    # 请求组装
+    # ------------------------------------------------------------------
+    def _build_options(
+        self,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        max_tokens: Optional[int],
+        tools: Optional[list[dict[str, Any]]],
+        prior_messages: Optional[list[dict[str, Any]]],
+        turn_tail: Optional[list[dict[str, Any]]],
+        turn_once: Optional[list[dict[str, Any]]],
+        *,
+        stream: bool,
+    ) -> GenerateOptions:
+        mc = self.config["models"][model_name]
+        messages: list[dict[str, Any]] = []
+        if prior_messages:
+            messages.extend(prior_messages)
+        messages.append({"role": "user", "content": user_prompt})
+        if turn_once:
+            messages.extend(turn_once)
+        if turn_tail:
+            messages.extend(turn_tail)
+        schemas = None
+        if tools:
+            schemas = tuple(
+                ToolSchema(
+                    name=str(t.get("name", "")),
+                    description=str(t.get("description", "")),
+                    parameters=t.get("parameters") or {},
+                )
+                for t in tools
+            )
+        return GenerateOptions(
+            provider=_vendor_of(mc),
+            model=str(mc.get("model") or model_name),
+            messages=tuple(messages),
+            system=system_prompt,
+            tools=schemas,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=stream,
+        )
+
+    def _retry_params(self, model_name: str) -> tuple[int, int]:
+        mc = self.config["models"][model_name]
+        rc = mc.get("retry", {"max_attempts": 3, "backoff_seconds": 2})
+        return int(rc.get("max_attempts", 3)), int(rc.get("backoff_seconds", 2))
+
+    def _retry_grading(self) -> tuple[bool, int, dict[str, int]]:
+        cfg = self.config.get("retry_grading", {}) or {}
+        enabled = bool(cfg.get("enabled", True))
+        budget = int(cfg.get("total_budget_seconds", RETRY_TOTAL_BUDGET_SECONDS))
+        caps = dict(RETRY_CLASS_CAPS)
+        for k, v in (cfg.get("class_caps") or {}).items():
+            try:
+                caps[k] = int(v)
+            except (TypeError, ValueError):
+                pass
+        return enabled, budget, caps
+
+    # ------------------------------------------------------------------
+    # 结果装配
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _result_from(assembler: BlockAssembler, model_name: str, started: float) -> dict[str, Any]:
+        blocks = assembler.blocks()
+        content = "".join(b.text for b in blocks if isinstance(b, TextBlock))
+        tool_calls: list[dict[str, Any]] = []
+        truncated_tool_call: Optional[dict[str, Any]] = None
+        finish_reason = _legacy_finish(assembler.finish)
+        for b in blocks:
+            if not isinstance(b, ToolCallBlock):
+                continue
+            if not b.name:
+                continue
+            raw_args = b.arguments
+            try:
+                parsed = json.loads(raw_args) if raw_args else {}
+                if not isinstance(parsed, dict):
+                    raise ValueError("arguments 不是对象")
+                tool_calls.append({"name": b.name, "arguments": parsed})
+            except Exception:  # noqa: BLE001 JSON 截断 → 交续写器
+                truncated_tool_call = {
+                    "name": b.name,
+                    "raw_arguments": raw_args,
+                    "finish_reason": finish_reason or "length",
+                }
+        usage = assembler.usage
+        tokens = (usage.input_tokens + usage.output_tokens) if usage is not None else len(content) // 4
+        latency = int((time.monotonic() - started) * 1000)
+        return {
+            "content": content,
+            "tool_calls": tool_calls,
+            "truncated_tool_call": truncated_tool_call,
+            "truncated_reply": None,
+            "finish_reason": finish_reason or "stop",
+            "tokens_used": tokens,
+            "latency_ms": latency,
+        }
+
+    # ------------------------------------------------------------------
+    # 非流式调用（旧契约）
+    # ------------------------------------------------------------------
     async def call(
         self,
         model_name: str,
@@ -76,457 +299,165 @@ class ModelGateway:
         turn_tail: list[dict[str, Any]] | None = None,
         turn_once: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """调用模型，返回 {content, tool_calls, truncated_tool_call, finish_reason, ...}。
+        mc = self.config["models"][model_name]
+        if _needs_ds_norm(model_name, mc):
+            turn_tail = _ds_norm(turn_tail)
+            turn_once = _ds_norm(turn_once)
+        max_attempts, backoff = self._retry_params(model_name)
+        rg_enabled, rg_budget, rg_caps = self._retry_grading()
+        loop_start = time.monotonic()
 
-        ``skip_completion_marker``: True 时跳过完成标记检测（适用于 JSON 输出场景）。
-
-        ``tools``: OpenAI function calling 工具列表。传入时模型可在回复中
-        发起 tool_calls（如 write_file），由调用方（orchestrator）执行。
-
-        截断处理：当 tool_call.arguments 因 max_tokens 被截断导致 JSON 解析失败时，
-        返回 truncated_tool_call（含原始被截断的 arguments 字符串）。
-        """
-        model_config = self.config["models"][model_name]
-        provider = model_config["provider"]
-        model = model_config["model"]
-        api_key = self._get_api_key(model_config.get("api_key_env"))
-
-        retry_config = model_config.get("retry", {"max_attempts": 3, "backoff_seconds": 2})
-        max_attempts = int(retry_config.get("max_attempts", 3))
-        backoff = int(retry_config.get("backoff_seconds", 2))
-
-        # 重试分级配置（模型网关重试分级施工）：读一次存局部，避免每轮重复解析
-        retry_grading_cfg = self.config.get("retry_grading", {}) or {}
-        rg_enabled = bool(retry_grading_cfg.get("enabled", True))
-        rg_total_budget = int(retry_grading_cfg.get("total_budget_seconds", RETRY_TOTAL_BUDGET_SECONDS))
-        rg_class_caps = dict(RETRY_CLASS_CAPS)
-        for _k, _v in (retry_grading_cfg.get("class_caps") or {}).items():
-            try:
-                rg_class_caps[_k] = int(_v)
-            except (TypeError, ValueError):
-                pass
-
-        def _emit(phase, **kw):
+        def _emit(phase: str, attempt: int, **kw: Any) -> None:
             if not on_status:
                 return
-            ev = {"phase": phase, "model": model_name, "attempt": attempt + 1,
-                  "max_attempts": max_attempts}
+            ev = {"phase": phase, "model": model_name, "attempt": attempt + 1, "max_attempts": max_attempts}
             ev.update(kw)
             try:
                 on_status(ev)
             except Exception:  # noqa: BLE001
                 pass
 
-        loop_start = time.monotonic()
         for attempt in range(max_attempts):
+            _emit("start" if attempt == 0 else "retry", attempt,
+                  **({} if attempt == 0 else {"reason": "unknown"}))
+            started = time.monotonic()
             try:
-                if attempt == 0:
-                    _emit("start")
-                else:
-                    _emit("retry", reason="unknown")
-                start = time.monotonic()
-                # 延迟导入，避免离线（无 litellm/无 key）环境下导入失败
-                litellm = __import__("litellm")
-                # [推演agent有意偏离ZhuGe原版] 历史消息置于当前提问之前；
-                # 原版将prior_messages追加在后（服务于工具续写场景），对话场景会答非所问
-                messages = [{"role": "system", "content": system_prompt}]
-                if prior_messages:
-                    messages.extend(prior_messages)
-                messages.append({"role": "user", "content": user_prompt})
-                # [判断协议改注入 2026-10-14] 「仅本次」消息（判断协议投影）——
-                # 追加在用户消息之后、**不进轮槽**；默认 None ⇒ 与改造前逐字一致。
-                if turn_once:
-                    messages.extend(turn_once)
-                # [当前轮注入消息事件 2026-10-14] 本轮尾部消息（注入事件投影）——
-                # 追加在**用户消息之后**、不替代它。默认 None ⇒ 与改造前逐字一致。
-                if turn_tail:
-                    messages.extend(turn_tail)
-                kwargs = {
-                    "model": f"{provider}/{model}",
-                    "messages": messages,
-                    "temperature": temperature,
-                    "api_key": api_key,
-                }
-                # [拆闸裁定 2026-10-02] max_tokens/timeout 仅在显式设置时传入；
-                # None = 不设，模型按端点自然行为返回（禁止任何输出限制与墙钟）
-                if max_tokens is not None:
-                    kwargs["max_tokens"] = max_tokens
-                if timeout is not None:
-                    kwargs["timeout"] = timeout
-                # 支持自定义 base_url（如讯飞星辰等 OpenAI 兼容提供商）
-                if model_config.get("base_url"):
-                    kwargs["api_base"] = model_config["base_url"]
-                # 提供商私有参数透传（如 DeepSeek flash 关思考 thinking:disabled，
-                # 不关则草稿吃光 max_tokens 导致正文为空）
-                if model_config.get("extra_body"):
-                    kwargs["extra_body"] = model_config["extra_body"]
-                # [席位3 opencode-go 端点 2026-10-06] opencode.go 硬要求 x-opencode-session 头
-                # （cordis.patch.yml:28-30 MissingSessionID 拒单）；透传自定义请求头
-                if model_config.get("extra_headers"):
-                    kwargs["extra_headers"] = model_config["extra_headers"]
-                # function calling 工具（OpenAI 标准协议）
-                if tools:
-                    kwargs["tools"] = [
-                        {"type": "function", "function": t} for t in tools
-                    ]
-
-                # stage_FE4：流式模式——逐 chunk 转发并累加为完整 content
-                if stream and on_chunk:
-                    kwargs["stream"] = True
-                    full_parts: list[str] = []
-                    response = await litellm.acompletion(**kwargs)
-                    async for chunk in response:
-                        try:
-                            delta = chunk.choices[0].delta.content or ""
-                        except Exception:  # noqa: BLE001
-                            delta = ""
-                        if delta:
-                            full_parts.append(delta)
+                options = self._build_options(
+                    model_name, system_prompt, user_prompt, temperature, max_tokens,
+                    tools, prior_messages, turn_tail, turn_once, stream=False,
+                )
+                assembler = BlockAssembler()
+                emitted: list[str] = []
+                async for chunk in self._runtime.stream(options):
+                    if chunk.type == "text-delta":
+                        emitted.append(chunk.text)
+                        if stream and on_chunk:
                             try:
-                                on_chunk(delta)
+                                on_chunk(chunk.text)
                             except Exception:  # noqa: BLE001
                                 pass
-                    content = "".join(full_parts)
-                    latency = int((time.monotonic() - start) * 1000)
-                    message = chunk.choices[0].message if "chunk" in dir() else None
-                    # 兜底：防止 None 导致下游 Worker 崩溃
-                    content = content or ""
-                else:
-                    response = await litellm.acompletion(**kwargs)
-                    latency = int((time.monotonic() - start) * 1000)
-                    message = response.choices[0].message
-                    content = message.content
-                    # DeepSeek V4 Pro 等推理模型返回 reasoning_content 而非 content
-                    if not content:
-                        reasoning = getattr(message, "reasoning_content", None)
-                        if reasoning:
-                            content = reasoning
-                            logger.info("model_reasoning_fallback", model=model_name)
-                    # 兜底：防止 None 导致下游 Worker 崩溃
-                    content = content or ""
+                    assembler.push(chunk)
+                failure = _failure_of(assembler)
+                if failure is not None:
+                    salvaged = _salvage_truncated(failure.message)
+                    if salvaged is not None:
+                        self.stats.record(model_name, 0, 0, True)
+                        return {
+                            "content": "", "tool_calls": [], "truncated_tool_call": salvaged,
+                            "truncated_reply": None,
+                            "finish_reason": salvaged.get("finish_reason", "length"),
+                            "tokens_used": 0, "latency_ms": 0,
+                        }
+                    raise ModelCallFailure(failure.message, _classify(failure))
 
-                # 解析 tool_calls（function calling）
-                tool_calls = []
-                # 截断的 tool_call：当 arguments JSON 被 max_tokens 砍断导致解析失败时，
-                # 保留原始数据（function name + 被截断的 arguments 字符串）供续写器抢救
-                truncated_tool_call = None
-                finish_reason = ""
-                try:
-                    finish_reason = response.choices[0].finish_reason or ""
-                except Exception:  # noqa: BLE001
-                    pass
-                raw_tool_calls = getattr(message, "tool_calls", None)
-                if raw_tool_calls:
-                    import json as _json
-                    for tc in raw_tool_calls:
-                        try:
-                            fn = tc.function
-                            args = _json.loads(fn.arguments) if fn.arguments else {}
-                            tool_calls.append({
-                                "name": fn.name,
-                                "arguments": args,
-                            })
-                        except Exception:  # noqa: BLE001
-                            # JSON 解析失败 → 大概率是 max_tokens 截断
-                            # 保留原始数据（function name + 被截断的 arguments 字符串）供续写
-                            fn_name = ""
-                            raw_args = ""
-                            try:
-                                fn_name = tc.function.name or ""
-                                raw_args = tc.function.arguments or ""
-                            except Exception:  # noqa: BLE001
-                                pass
-                            truncated_tool_call = {
-                                "name": fn_name,
-                                "raw_arguments": raw_args,
-                                "finish_reason": finish_reason,
-                            }
-                            logger.warning(
-                                "tool_call_truncated",
-                                model=model_name,
-                                finish_reason=finish_reason,
-                                raw_args_len=len(raw_args),
-                            )
-                if tool_calls:
-                    logger.info(
-                        "tool_calls_received",
-                        model=model_name,
-                        count=len(tool_calls),
-                        names=[tc["name"] for tc in tool_calls],
+                result = self._result_from(assembler, model_name, started)
+                content = result["content"]
+                # DeepSeek 等推理模型返回 reasoning_content 而非 content 的兜底
+                if not content:
+                    reasoning = "".join(
+                        b.text for b in assembler.blocks() if isinstance(b, ReasoningBlock)
                     )
+                    if reasoning:
+                        content = reasoning
+                        result["content"] = content
+                        logger.info("model_reasoning_fallback", model=model_name)
 
-                tokens = response.usage.total_tokens if response.usage else 0
-
-                # 完成标记检测（讯飞等不稳定模型：响应拿到了但不一定完整）
-                # 关联文档读取需求 v2.0：tool_calls 响应（finish_reason=tool_calls）不以正文
-                # 【已完成】标记结尾，属正常完成，跳过标记检测；否则每次读文件都会误判
-                # "不完整"而白烧 2~3 次重试（实测复现：tool_calls_received→incomplete→retry 循环）。
-                completion_marker = model_config.get("completion_marker")
-                if (
-                    completion_marker
-                    and not skip_completion_marker
-                    and not tool_calls  # 关联文档读取需求 v2.0：tool_call 响应跳过【已完成】检测
-                    and completion_marker not in (content or "")
-                ):
-                    logger.warning(
-                        "model_incomplete_response",
-                        model=model_name,
-                        attempt=attempt + 1,
-                        marker=completion_marker,
-                        content_len=len(content or ""),
-                    )
-                    _emit("incomplete", reason="completion_marker_missing",
-                          marker=completion_marker)
-                    _incomplete_cap = max_attempts if not rg_enabled else min(
-                        max_attempts, INCOMPLETE_MARKER_CAP
-                    )
-                    if attempt + 1 < _incomplete_cap:
+                marker = mc.get("completion_marker")
+                if (marker and not skip_completion_marker and not result["tool_calls"]
+                        and marker not in content):
+                    _emit("incomplete", attempt, reason="completion_marker_missing", marker=marker)
+                    cap = max_attempts if not rg_enabled else min(max_attempts, INCOMPLETE_MARKER_CAP)
+                    if attempt + 1 < cap:
                         await asyncio.sleep(backoff)
                         continue
-                    # 耗尽重试次数仍然不完整，记录并返回（不丢数据，由下游决定）
-                    logger.error(
-                        "model_incomplete_exhausted",
-                        model=model_name,
-                        attempts=max_attempts,
-                    )
 
-                self.stats.record(model_name, tokens, latency, True)
-                logger.info(
-                    "model_call_success",
-                    model=model_name,
-                    tokens=tokens,
-                    latency_ms=latency,
-                )
-                _emit("success")
-                # N1：纯文本 reply 被 max_tokens 截断（无 tool_call）时，
-                # 透传部分 reply，确保"输出不可丢"（不依赖 write_file 工具调用）。
-                #
-                # 触发条件（满足其一即视为被截断）：
-                # 1. 模型自报 finish_reason=="length"（标准信号，但讯飞等国产模型不可靠）
-                # 2. 启发式：reply 长度 ≥ max_tokens 的 95% 且无【已完成】标记
-                #    （行为驱动判断，不依赖模型自报；覆盖讯飞 finish_reason 异常的情况）
-                truncated_reply: Optional[str] = None
-                completion_marker = "已完成"
-                has_marker = (
-                    content is not None
-                    and completion_marker in content[-200:]
-                )
-                near_token_limit = False
-                try:
-                    if max_tokens and content:
-                        # 粗估：1 token ≈ 1.5 个中文字符 / 4 个英文字符，取偏保守的 1.8
-                        # reply 字符数接近 max_tokens 的 95% 即认为可能被截断
-                        near_token_limit = len(content) >= max_tokens * 1.8 * 0.95
-                except Exception:  # noqa: BLE001
-                    pass
-                truncated_by_signal = (
-                    finish_reason == "length"
-                    and not tool_calls
-                    and not truncated_tool_call
-                    and content
-                )
-                truncated_by_heuristic = (
-                    not tool_calls
-                    and not truncated_tool_call
-                    and content
-                    and near_token_limit
-                    and not has_marker
-                )
-                if truncated_by_signal or truncated_by_heuristic:
-                    truncated_reply = content
-                    logger.info(
-                        "reply_truncated",
-                        model=model_name,
-                        finish_reason=finish_reason,
-                        content_len=len(content),
-                        trigger="signal" if truncated_by_signal else "heuristic",
-                    )
-                return {
-                    "content": content,
-                    "tool_calls": tool_calls,
-                    "truncated_tool_call": truncated_tool_call,
-                    "truncated_reply": truncated_reply,
-                    "finish_reason": finish_reason,
-                    "tokens_used": tokens,
-                    "latency_ms": latency,
-                }
+                self.stats.record(model_name, result["tokens_used"], result["latency_ms"], True)
+                _emit("success", attempt)
+                result["truncated_reply"] = self._truncated_reply(result, max_tokens)
+                return result
 
-            except Exception as e:  # noqa: BLE001
-                # 检测 litellm 解析截断 tool_call 抛的 APIError
-                # （长文档超 max_tokens，tool_call.arguments JSON 被截断，
-                #  litellm 在 _handle_invalid_parallel_tool_calls 阶段就抛异常，
-                #  我们的解析代码根本拿不到响应对象——只能在 except 里抢救）
-                truncated = self._extract_truncated_from_exception(e)
-                if truncated:
-                    # 不重试——重试也是同样截断（讯飞会稳定复现截断）。
-                    # 直接返回截断数据给 orchestrator 续写
-                    logger.info(
-                        "tool_call_truncated_from_exception",
-                        model=model_name,
-                        finish_reason=truncated.get("finish_reason", ""),
-                        raw_args_len=len(truncated.get("raw_arguments", "")),
+            except ModelCallFailure as exc:
+                reason = exc.reason
+                logger.warning("model_call_retry", model_name=model_name,
+                               attempt=attempt + 1, error=exc.message)
+                _emit("retry", attempt, reason=reason)
+                if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
+                    return await self._fallback_or_raise(
+                        model_name, exc, system_prompt, user_prompt, temperature, max_tokens,
+                        timeout, skip_completion_marker, tools, on_status, prior_messages,
+                        turn_tail, turn_once, _emit,
                     )
-                    self.stats.record(model_name, 0, 0, True)
-                    return {
-                        "content": "",
-                        "tool_calls": [],
-                        "truncated_tool_call": truncated,
-                        "finish_reason": truncated.get("finish_reason", "length"),
-                        "tokens_used": 0,
-                        "latency_ms": 0,
-                    }
-                import traceback
-                reason = self._classify_error(e)
-                logger.warning(
-                    "model_call_retry",
-                    model_name=model_name,
-                    attempt=attempt + 1,
-                    error=str(e),
-                    traceback=traceback.format_exc(),
+                await asyncio.sleep(
+                    min(backoff * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS) if rg_enabled else backoff
                 )
-                _emit("retry", reason=reason)
-
-                # 4.3 重试分级：按错误类别钳制上限 + 总时长熔断
-                elapsed = time.monotonic() - loop_start
-                if rg_enabled:
-                    effective_cap = min(max_attempts, rg_class_caps.get(reason, max_attempts))
-                    should_retry = (
-                        attempt + 1 < effective_cap
-                        and elapsed < rg_total_budget
-                        and reason != "auth"
+            except Exception as exc:  # noqa: BLE001 组装/序列化层异常
+                reason = _classify_message(str(exc))
+                _emit("retry", attempt, reason=reason)
+                if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
+                    return await self._fallback_or_raise(
+                        model_name, ModelCallFailure(str(exc), reason), system_prompt, user_prompt,
+                        temperature, max_tokens, timeout, skip_completion_marker, tools, on_status,
+                        prior_messages, turn_tail, turn_once, _emit,
                     )
-                else:
-                    # 回退旧一刀切行为：满 max_attempts 才放弃
-                    should_retry = attempt + 1 < max_attempts
-
-                if should_retry:
-                    sleep_s = (
-                        min(backoff * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS)
-                        if rg_enabled else backoff
-                    )
-                    await asyncio.sleep(sleep_s)
-                    continue
-
-                # 提前耗尽（分级/熔断）→ 与"自然耗尽"汇入同一 fallback 出口，不复制代码
-                logger.warning(
-                    "retry_grading_giveup",
-                    model=model_name,
-                    reason=reason,
-                    attempt=attempt + 1,
-                    elapsed_seconds=int(elapsed),
+                await asyncio.sleep(
+                    min(backoff * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS) if rg_enabled else backoff
                 )
-                fallback = self.config["models"].get("fallback")
-                if fallback and model_name != "fallback":
-                    logger.warning("model_fallback", original=model_name, fallback="fallback")
-                    _emit("fallback", from_model=model_name, to_model="fallback")
-                    return await self.call(
-                        "fallback", system_prompt, user_prompt, temperature,
-                        max_tokens, timeout,
-                        skip_completion_marker=skip_completion_marker,
-                        tools=tools,
-                        prior_messages=prior_messages,
-                        turn_tail=turn_tail,
-                        turn_once=turn_once,
-                    )
+
+        raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 重试 {max_attempts} 次后仍失败")
+
+    @staticmethod
+    def _truncated_reply(result: dict[str, Any], max_tokens: Optional[int]) -> Optional[str]:
+        content = result.get("content") or ""
+        if not content or result.get("tool_calls") or result.get("truncated_tool_call"):
+            return None
+        has_marker = _COMPLETION_MARKER in content[-200:]
+        near = False
+        try:
+            if max_tokens:
+                near = len(content) >= max_tokens * 1.8 * 0.95
+        except Exception:  # noqa: BLE001
+            pass
+        if result.get("finish_reason") == "length" or (near and not has_marker):
+            return content
+        return None
+
+    @staticmethod
+    def _should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start) -> bool:
+        if not rg_enabled:
+            return attempt + 1 >= max_attempts
+        elapsed = time.monotonic() - loop_start
+        cap = min(max_attempts, rg_caps.get(reason, max_attempts))
+        return not (attempt + 1 < cap and elapsed < rg_budget and reason != "auth")
+
+    async def _fallback_or_raise(self, model_name, exc, system_prompt, user_prompt, temperature,
+                                 max_tokens, timeout, skip_completion_marker, tools, on_status,
+                                 prior_messages, turn_tail, turn_once, _emit):
+        fb_key = "fallback"
+        fallback = (self.config.get("models") or {}).get(fb_key)
+        if fallback and model_name != fb_key:
+            # [fallback 归因修复 2026-10-16] 降级失败时必须**保留双原始错误**，
+            # 否则只报 B 家的错误、把 A 家的失败吞掉（Nous 挂 → 只报 opencode 429）。
+            fb_label = str(fallback.get("model") or fb_key)
+            logger.warning("model_fallback", original=model_name, fallback=fb_key)
+            _emit("fallback", 0, from_model=model_name, to_model=fb_key)
+            try:
+                return await self.call(
+                    fb_key, system_prompt, user_prompt, temperature, max_tokens, timeout,
+                    skip_completion_marker=skip_completion_marker, tools=tools,
+                    prior_messages=prior_messages, turn_tail=turn_tail, turn_once=turn_once,
+                )
+            except ModelError as fb_exc:
                 self.stats.record(model_name, 0, 0, False)
                 raise ModelError(
                     ErrorCode.MODEL_CALL_FAILED,
-                    f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {e}",
-                )
+                    f"原模型 {model_name} 失败({exc.message})，已降级 {fb_label} 亦失败({_error_text(fb_exc)})",
+                ) from fb_exc
+        self.stats.record(model_name, 0, 0, False)
+        raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 重试后仍失败: {exc.message}")
 
-    @staticmethod
-    def _classify_error(e: Exception) -> str:
-        """stage_FE3：把异常归类成简短 reason，便于前端状态条展示。"""
-        msg = str(e).lower()
-        if "503" in msg or "service unavailable" in msg or "overload" in msg:
-            return "503"
-        if "timeout" in msg or "timed out" in msg:
-            return "timeout"
-        if "429" in msg or "rate" in msg:
-            return "rate_limit"
-        if "401" in msg or "403" in msg or "api key" in msg \
-                or "unauthorized" in msg or "forbidden" in msg:
-            return "auth"
-        if "connection" in msg:
-            return "connection"
-        return "error"
-
-    def _extract_truncated_from_exception(self, e: Exception) -> Optional[dict]:
-        """从 litellm 抛的异常里抢救被截断的 tool_call 数据。
-
-        litellm 在解析截断的 tool_call.function.arguments 时抛 APIError，
-        异常消息里包含完整的 response_object（含被截断的原始 arguments 字符串）。
-        我们从异常字符串里提取 path 和部分 content。
-
-        触发的异常特征（litellm 内部）：
-        - _handle_invalid_parallel_tool_calls 调用 json.loads(tool_call.function.arguments)
-        - JSONDecodeError: Unterminated string
-        - 异常消息含 received_args={'response_object': {...'tool_calls':[{'function':{'arguments':'...'}}]...}}
-        """
-        err_str = str(e)
-        # 特征 1：必须是 litellm 解析 tool_call 失败的异常
-        if "_handle_invalid_parallel_tool_calls" not in err_str and "Unterminated string" not in err_str:
-            return None
-        # 特征 2：必须含 response_object（litellm 把原始响应塞进异常消息）
-        if "received_args" not in err_str and "'tool_calls'" not in err_str:
-            return None
-
-        # 从异常消息里提取被截断的 arguments 字符串
-        # 异常消息格式：...'arguments': '{"path":"docs/x.md","content":"# 标题...'...
-        # 用非贪婪匹配拿 arguments 的值（Python repr 格式，内部转义）
-        # 匹配 'arguments': '...' 到下一个字段或行尾
-        match = re.search(
-            r"'arguments':\s*'(.*?)',\s*'(?:id|type|name|index|logprobs)':",
-            err_str,
-            re.DOTALL,
-        )
-        raw_args_repr = ""
-        if match:
-            raw_args_repr = match.group(1)
-        else:
-            # 兜底：匹配 'arguments': ' 之后的内容
-            # repr 格式里，字符串值的结束标志是 ' 后面跟 , 或 }
-            # 被截断时 arguments 是最后一个字段，所以匹配到 '}}]}}]}} 这种闭合序列
-            match2 = re.search(
-                r"'arguments':\s*'(.*?)'(?:\s*}|\s*,)",
-                err_str,
-                re.DOTALL,
-            )
-            if match2:
-                raw_args_repr = match2.group(1)
-            else:
-                # 最后兜底：取 'arguments': ' 之后到第一个 '}} 序列
-                match3 = re.search(r"'arguments':\s*'(.+?)'\}", err_str, re.DOTALL)
-                if match3:
-                    raw_args_repr = match3.group(1)
-
-        if not raw_args_repr:
-            return None
-
-        # 异常消息里的 arguments 是 Python repr 格式（外层多了一层转义），
-        # 需要还原一层：\\\" → \"，\\\\ → \\ 等
-        # 这样得到的是模型原始输出的 JSON 片段（带 JSON 自己的转义）
-        raw_args = raw_args_repr.replace("\\'", "'").replace('\\"', '"')
-
-        # 推断 finish_reason
-        finish_reason = "tool_calls"
-        if "finish_reason" in err_str:
-            fr_match = re.search(r"'finish_reason':\s*'(\w+)'", err_str)
-            if fr_match:
-                finish_reason = fr_match.group(1)
-
-        # 提取 function name
-        name = "write_file"
-        name_match = re.search(r"'name':\s*'(\w+)'", err_str)
-        if name_match:
-            name = name_match.group(1)
-
-        return {
-            "name": name,
-            "raw_arguments": raw_args,
-            "finish_reason": finish_reason,
-        }
-
+    # ------------------------------------------------------------------
+    # 流式调用（旧契约）
+    # ------------------------------------------------------------------
     async def stream_call(
         self,
         model_name: str,
@@ -541,405 +472,216 @@ class ModelGateway:
         prior_messages: list[dict[str, Any]] | None = None,
         turn_tail: list[dict[str, Any]] | None = None,
         turn_once: list[dict[str, Any]] | None = None,
-    ):
-        """stage_FE4：流式调用（async generator）。
+    ) -> AsyncIterator[dict[str, Any]]:
+        mc = self.config["models"][model_name]
+        if _needs_ds_norm(model_name, mc):
+            turn_tail = _ds_norm(turn_tail)
+            turn_once = _ds_norm(turn_once)
+        max_attempts, backoff = self._retry_params(model_name)
 
-        逐个 yield ``{"chunk_type": "reasoning"|"content", "chunk": text, "text": text}``，
-        最后 yield 一个完整结果 dict（与 ``call`` 返回结构一致：含 content / tool_calls /
-        truncated_reply 等）。完成标记检测与续写仍基于完整聚合文本（由 orchestrator 在
-        收到最终结果后处理），保证【已完成】标记检测。
-
-        [信息流重出 Task1] 双增量解包：思考增量（``delta.reasoning`` /
-        ``delta.reasoning_content``）与正文增量（``delta.content``）分别 yield，
-        旧消费方只认 ``chunk`` 键——该键始终保留，故零感知。
-        **思考增量不计入 ``parts``**：聚合 content / tokens / finish 判定语义与改前逐字一致。
-        ``on_reasoning`` 与 ``on_status`` 并行、可选、缺省 None 时零行为变化。
-        """
-        model_config = self.config["models"][model_name]
-        provider = model_config["provider"]
-        model = model_config["model"]
-        api_key = self._get_api_key(model_config.get("api_key_env"))
-        retry_config = model_config.get("retry", {"max_attempts": 3, "backoff_seconds": 2})
-        max_attempts = int(retry_config.get("max_attempts", 3))
-        backoff = int(retry_config.get("backoff_seconds", 2))
+        def _emit(phase: str, attempt: int, **kw: Any) -> None:
+            if not on_status:
+                return
+            ev = {"phase": phase, "model": model_name, "attempt": attempt + 1, "max_attempts": max_attempts}
+            ev.update(kw)
+            try:
+                on_status(ev)
+            except Exception:  # noqa: BLE001
+                pass
 
         for attempt in range(max_attempts):
+            _emit("start" if attempt == 0 else "retry", attempt,
+                  **({} if attempt == 0 else {"reason": "stream_error"}))
+            started = time.monotonic()
+            options = self._build_options(
+                model_name, system_prompt, user_prompt, temperature, max_tokens,
+                tools, prior_messages, turn_tail, turn_once, stream=True,
+            )
+            assembler = BlockAssembler()
             try:
-                if attempt == 0:
-                    if on_status: on_status({"phase": "start", "model": model_name, "attempt": 1, "max_attempts": max_attempts})
-                else:
-                    if on_status: on_status({"phase": "retry", "model": model_name, "attempt": attempt + 1, "max_attempts": max_attempts, "reason": "stream_error"})
-                litellm = __import__("litellm")
-                # [信息流重出 Task4] 与 call 同款消息序：历史在当前提问之前
-                # （与 call.py:111-116 保持一致，否则对话场景答非所问）
-                messages = [{"role": "system", "content": system_prompt}]
-                if prior_messages:
-                    messages.extend(prior_messages)
-                messages.append({"role": "user", "content": user_prompt})
-                # [判断协议改注入 2026-10-14] 「仅本次」消息（判断协议投影）——
-                # 追加在用户消息之后、**不进轮槽**；默认 None ⇒ 逐字同旧。
-                if turn_once:
-                    messages.extend(turn_once)
-                # [当前轮注入消息事件 2026-10-14] 本轮尾部消息（注入事件投影），
-                # 追加在用户消息之后。默认 None ⇒ 与改造前逐字一致。
-                if turn_tail:
-                    messages.extend(turn_tail)
-                kwargs = {
-                    "model": f"{provider}/{model}",
-                    "messages": messages,
-                    "temperature": temperature,
-                    "api_key": api_key,
-                    "stream": True,
-                }
-                # [信息流重出 Task4] 工具透传：原 stream_call 收了 tools 形参却从不下发，
-                # 导致切过去等于静默阉掉 function calling（工具循环整个失效）。此处补齐，
-                # 写法与 call 路径同款（call.py:141-144）。
-                if tools:
-                    kwargs["tools"] = [
-                        {"type": "function", "function": t} for t in tools
-                    ]
-                if max_tokens is not None:
-                    kwargs["max_tokens"] = max_tokens
-                if timeout is not None:
-                    kwargs["timeout"] = timeout
-                if model_config.get("base_url"):
-                    kwargs["api_base"] = model_config["base_url"]
-                # 提供商私有参数透传（与非流式路径同款）
-                if model_config.get("extra_body"):
-                    kwargs["extra_body"] = model_config["extra_body"]
-                # [席位3 opencode-go 端点 2026-10-06] opencode.go 硬要求 x-opencode-session 头
-                # （cordis.patch.yml:28-30 MissingSessionID 拒单）；透传自定义请求头
-                if model_config.get("extra_headers"):
-                    kwargs["extra_headers"] = model_config["extra_headers"]
-                start = time.monotonic()
-                # [思考流 2026-10-15] opencode 等自定义 openai 兼容端点：litellm 走通用
-                # openai transform 会把 reasoning_content 彻底丢弃（假端点实测 attr/model_extra
-                # /vars 全空），导致思考无法 yield。照抄 dsh-llm-deepseek：这类端点用原生
-                # httpx + SSE 解析，从原始 delta.reasoning_content 直接读。产出对象与 litellm
-                # chunk 保持同形（delta.content / reasoning_content / tool_calls / finish_reason），
-                # 使下方累积与 yield 契约一行不变。
-                # [provider 漂移修正 2026-10-16] 判定不能只看 provider 字段：生产路径的
-                # config 经 model_config._compile 编译，provider 方言已被翻译（opencode →
-                # openai），但 base_url 原样带下——故**追加 base_url 判定**（原生端点特征），
-                # 否则编译路径上本分支永远不命中（实测 10-16：真实消息 reasoning 事件 0
-                # 条即此因）。
-                if provider in NATIVE_SSE_PROVIDERS or _is_native_sse_url(model_config):
-                    chunks = self._native_sse_chunks(
-                        provider, model, api_key, messages, temperature,
-                        max_tokens, timeout, model_config, tools,
-                    )
-                else:
-                    chunks = await litellm.acompletion(**kwargs)
-                parts: list[str] = []
-                # [信息流重出 Task4] 流式工具调用累积：OpenAI 协议下 tool_calls 按
-                # index 分片到达（arguments 是**片段**，须按序拼接），首片带 id/name。
-                tool_acc: dict[int, dict[str, Any]] = {}
-                finish_reason = ""
-                async for chunk in chunks:
-                    # [信息流重出 Task1] 双增量解包：思考与正文分走两个出口。
-                    # 思考字段名各提供商不一（reasoning / reasoning_content），两路都取。
-                    delta_obj = None
-                    try:
-                        delta_obj = chunk.choices[0].delta
-                    except Exception:  # noqa: BLE001
-                        delta_obj = None
-                    try:
-                        finish_reason = getattr(chunk.choices[0], "finish_reason", "") or finish_reason
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        content_delta = (delta_obj.content or "") if delta_obj is not None else ""
-                    except Exception:  # noqa: BLE001
-                        content_delta = ""
-                    reasoning_delta = ""
-                    if delta_obj is not None:
-                        reasoning_delta = (
-                            getattr(delta_obj, "reasoning", None)
-                            or getattr(delta_obj, "reasoning_content", None)
-                            or ""
-                        )
-                        if not isinstance(reasoning_delta, str):
-                            reasoning_delta = ""   # 非字符串（如 dict）不误当正文
-                    # 思考先于正文到达，故先 yield；单增量（只 reasoning 或只 content）不报错
-                    if reasoning_delta:
+                async for chunk in self._runtime.stream(options):
+                    if chunk.type == "reasoning-delta":
                         if on_reasoning:
                             try:
-                                on_reasoning(reasoning_delta)
-                            except Exception:  # noqa: BLE001 回调异常不拖垮流
+                                on_reasoning(chunk.text)
+                            except Exception:  # noqa: BLE001
                                 pass
-                        yield {"chunk_type": "reasoning", "chunk": reasoning_delta, "text": reasoning_delta}
-                    if content_delta:
-                        parts.append(content_delta)
-                        yield {"chunk_type": "content", "chunk": content_delta, "text": content_delta}
-                    # [Task4] 工具调用分片累积（不进逐字流：那是给人看的字）
-                    raw_tcs = getattr(delta_obj, "tool_calls", None) if delta_obj is not None else None
-                    if raw_tcs:
-                        try:
-                            for tc in raw_tcs:
-                                idx = getattr(tc, "index", None)
-                                if idx is None:
-                                    idx = 0
-                                slot = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                                tid = getattr(tc, "id", None)
-                                if tid:
-                                    slot["id"] = tid
-                                fn = getattr(tc, "function", None)
-                                if fn is not None:
-                                    nm = getattr(fn, "name", None)
-                                    if nm:
-                                        slot["name"] = nm
-                                    ag = getattr(fn, "arguments", None)
-                                    if ag:
-                                        slot["arguments"] += ag
-                        except Exception:  # noqa: BLE001 工具分片坏不致命
-                            pass
-                content = "".join(parts)
-                latency = int((time.monotonic() - start) * 1000)
-                tokens = len(content) // 4
-                self.stats.record(model_name, tokens, latency, True)
-                if on_status: on_status({"phase": "success", "model": model_name, "attempt": attempt + 1, "max_attempts": max_attempts})
-                # [Task4] 工具调用汇总：按 index 还原；arguments 解析失败则交
-                # truncated_tool_call（与 call 同契约，否则切到流式后工具参数半截就废）
-                import json as _json
-                tool_calls: list[dict[str, Any]] = []
-                truncated_tool_call = None
-                for idx in sorted(tool_acc):
-                    slot = tool_acc[idx]
-                    if not slot["name"]:
-                        continue
-                    raw_args = slot["arguments"]
-                    try:
-                        parsed = _json.loads(raw_args) if raw_args else {}
-                        if not isinstance(parsed, dict):
-                            raise ValueError("arguments 不是对象")
-                        tool_calls.append({"name": slot["name"], "arguments": parsed})
-                    except Exception:  # noqa: BLE001
-                        truncated_tool_call = {
-                            "name": slot["name"],
-                            "raw_arguments": raw_args,
-                            "finish_reason": finish_reason or "length",
-                        }
-                yield {
-                    "content": content,
-                    "tool_calls": tool_calls,
-                    "truncated_tool_call": truncated_tool_call,
-                    "truncated_reply": None,
-                    "finish_reason": finish_reason or "stop",
-                    "tokens_used": tokens,
-                    "latency_ms": latency,
-                }
+                        yield {"chunk_type": "reasoning", "chunk": chunk.text, "text": chunk.text}
+                    elif chunk.type == "text-delta":
+                        yield {"chunk_type": "content", "chunk": chunk.text, "text": chunk.text}
+                    assembler.push(chunk)
+                failure = _failure_of(assembler)
+                if failure is not None:
+                    raise ModelCallFailure(failure.message, _classify(failure))
+                result = self._result_from(assembler, model_name, started)
+                self.stats.record(model_name, result["tokens_used"], result["latency_ms"], True)
+                _emit("success", attempt)
+                yield result
                 return
-            except Exception as e:  # noqa: BLE001
+            except ModelCallFailure as exc:
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(backoff)
-                else:
-                    fb = self.config["models"].get("fallback")
-                    if fb and model_name != "fallback":
-                        if on_status: on_status({"phase": "fallback", "from_model": model_name, "to_model": "fallback"})
-                        async for ev in self.stream_call("fallback", system_prompt, user_prompt, temperature, max_tokens, timeout, on_status, tools, on_reasoning, prior_messages, turn_tail, turn_once=turn_once):
+                    continue
+                fallback = (self.config.get("models") or {}).get("fallback")
+                if fallback and model_name != "fallback":
+                    # [fallback 归因修复 2026-10-16] 同 call 路径：保留双原始错误。
+                    fb_label = str(fallback.get("model") or "fallback")
+                    _emit("fallback", attempt, from_model=model_name, to_model="fallback")
+                    try:
+                        async for ev in self.stream_call(
+                            "fallback", system_prompt, user_prompt, temperature, max_tokens, timeout,
+                            on_status, tools, on_reasoning, prior_messages, turn_tail, turn_once,
+                        ):
                             yield ev
                         return
-                    raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {e}")
-
-    async def _native_sse_chunks(
-        self,
-        provider: str,
-        model: str,
-        api_key: str,
-        messages: list[dict[str, Any]],
-        temperature: float,
-        max_tokens: Optional[int],
-        timeout: Optional[int],
-        model_config: dict[str, Any],
-        tools: list[dict[str, Any]] | None,
-    ):
-        """[思考流 2026-10-15] 原生 httpx + SSE 读取 openai 兼容端点。
-
-        照抄 dsh-llm-deepseek（adapter.ts / translate.ts）：litellm 对自定义 openai
-        端点会丢弃 reasoning_content（假端点实测 attr/model_extra/vars 全空），而
-        原生解析直接从原始 SSE 的 delta.reasoning_content 读，思考 100% 拿得到。
-
-        产出对象与 litellm chunk 同形（chunk.choices[0].delta.content /
-        reasoning_content / tool_calls；chunk.choices[0].finish_reason），使
-        stream_call 的既有累积与 yield 契约一行不变。
-        """
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": True,
-        }
-        if max_tokens is not None:
-            body["max_tokens"] = max_tokens
-        # [思考流补 2026-10-16] reasoning_effort 透传：编译层注入的档位
-        # （deepseek 系 default_effort）必须进 body，否则端点退化成内联
-        # <think> 形态污染正文（实测 10-16）。
-        if model_config.get("reasoning_effort"):
-            body["reasoning_effort"] = model_config["reasoning_effort"]
-        if tools:
-            body["tools"] = [{"type": "function", "function": t} for t in tools]
-        base_url = (model_config.get("base_url") or "https://opencode.ai/zen/go/v1").rstrip("/")
-        url = f"{base_url}/chat/completions"
-        headers: dict[str, str] = {
-            "authorization": f"Bearer {api_key}",
-            "content-type": "application/json",
-            "accept": "text/event-stream",
-        }
-        # 自定义请求头透传（opencode 硬要求 x-opencode-session 头）
-        eh = model_config.get("extra_headers")
-        if isinstance(eh, dict):
-            for k, v in eh.items():
-                headers[str(k)] = str(v)
-
-        async with httpx.AsyncClient(timeout=timeout or 60) as client:
-            async with client.stream("POST", url, json=body, headers=headers) as resp:
-                if resp.status_code != 200:
-                    text = (await resp.aread()).decode("utf-8", "replace")[:500]
-                    raise ModelError(
-                        ErrorCode.MODEL_CALL_FAILED,
-                        f"[NATIVE_SSE] {provider} HTTP {resp.status_code}: {text}",
-                    )
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    payload = line[len("data:"):].strip()
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        raw = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    for choice in raw.get("choices", []):
-                        d = choice.get("delta") or {}
-                        # 工具调用：还原为 SimpleNamespace（tc.index/id/function.name/arguments）
-                        tcs = []
-                        for tc in d.get("tool_calls") or []:
-                            fn = tc.get("function") or {}
-                            tcs.append(SimpleNamespace(
-                                index=tc.get("index", 0),
-                                id=tc.get("id"),
-                                function=SimpleNamespace(
-                                    name=fn.get("name"),
-                                    arguments=fn.get("arguments", ""),
-                                ),
-                            ))
-                        delta_ns = SimpleNamespace(
-                            content=d.get("content"),
-                            reasoning_content=d.get("reasoning_content"),
-                            reasoning=d.get("reasoning"),
-                            tool_calls=tcs if tcs else None,
-                        )
-                        fin = choice.get("finish_reason")
-                        yield SimpleNamespace(
-                            choices=[SimpleNamespace(delta=delta_ns, finish_reason=fin)],
-                        )
-
-    def _get_api_key(self, env_var: Optional[str]) -> str:
-        key = os.environ.get(env_var or "")
-        if not key:
-            raise ModelError(
-                ErrorCode.MISSING_API_KEY,
-                f"环境变量 {env_var} 未设置",
-            )
-        return key
+                    except ModelError as fb_exc:
+                        raise ModelError(
+                            ErrorCode.MODEL_CALL_FAILED,
+                            f"原模型 {model_name} 失败({exc.message})，已降级 {fb_label} 亦失败({_error_text(fb_exc)})",
+                        ) from fb_exc
+                raise ModelError(
+                    ErrorCode.MODEL_CALL_FAILED,
+                    f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc.message}",
+                ) from None
+            except Exception as exc:  # noqa: BLE001
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff)
+                    continue
+                raise ModelError(
+                    ErrorCode.MODEL_CALL_FAILED,
+                    f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc}",
+                ) from exc
 
 
-class MockGateway:
-    """离线 mock 网关：根据 system_prompt 内容返回确定性（echo 式）内容。
+class ModelCallFailure(Exception):
+    """一次调用失败（内部信号，驱动重试/降级）。"""
 
-    使得整条流水线与 pytest 在无 API Key 环境下也能跑通，并支撑 QA。
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.reason = reason
 
-    call 接口与 ModelGateway 完全一致。
-    """
 
-    def __init__(self, config: Optional[dict[str, Any]] = None, stats: Optional[GatewayStats] = None):
-        self.config = config or {}
-        self.stats = stats or GatewayStats()
+class MockAdapter(LlmAdapter):
+    """离线 mock 适配器（旧 ``MockGateway`` 迁移）：产 ``StreamChunk``，罐头内容形态不变。"""
 
-    async def call(
-        self,
-        model_name: str,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float = 0.5,
-        max_tokens: Optional[int] = None,
-        timeout: Optional[int] = None,
-        skip_completion_marker: bool = False,
-        tools: list[dict[str, Any]] | None = None,
-        on_status: Any = None,
-        stream: bool = False,
-        on_chunk: Any = None,
-        prior_messages: list[dict[str, Any]] | None = None,
-        turn_tail: list[dict[str, Any]] | None = None,
-        turn_once: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        if on_status:
-            try:
-                on_status({"phase": "start", "model": model_name, "attempt": 1, "max_attempts": 1})
-                on_status({"phase": "success", "model": model_name, "attempt": 1, "max_attempts": 1})
-            except Exception:  # noqa: BLE001
-                pass
-        content = self._fake_content(model_name, system_prompt, user_prompt)
-        # stage_FE4：mock 也支持流式，逐段回调 on_chunk
-        if stream and on_chunk:
-            import re as _re
-            segs = _re.findall(r".{1,8}", content)
-            for seg in segs:
-                if seg:
-                    try:
-                        on_chunk(seg)
-                    except Exception:  # noqa: BLE001
-                        pass
-        tool_calls = []
-        tokens = max(1, len(content) // 4)
-        self.stats.record(model_name, tokens, 1, True)
-        return {
-            "content": content,
-            "tool_calls": tool_calls,
-            "truncated_tool_call": None,
-            "finish_reason": "stop",
-            "tokens_used": tokens,
-            "latency_ms": 1,
-        }
+    def __init__(self, key_by_wire: Optional[dict[str, str]] = None) -> None:
+        self._key_by_wire = key_by_wire or {}
 
-    async def stream_call(self, model_name, system_prompt, user_prompt, temperature=0.5,
-                           max_tokens=None, timeout=None, on_status=None, tools=None,
-                           on_reasoning=None, prior_messages=None, turn_tail=None,
-                           turn_once=None):
-        """stage_FE4：mock 流式调用（async generator）。
+    def provider_info(self, provider: str) -> dict[str, str]:
+        return {"id": provider, "name": "Mock"}
 
-        [信息流重出 Task1/Task4] 签名与真实网关对齐（含 on_reasoning / prior_messages），
-        增量同样带 chunk_type，兼容旧 {"chunk": seg} 键。
-        """
-        if on_status:
-            try:
-                on_status({"phase": "start", "model": model_name, "attempt": 1, "max_attempts": 1})
-                on_status({"phase": "success", "model": model_name, "attempt": 1, "max_attempts": 1})
-            except Exception:  # noqa: BLE001
-                pass
-        content = self._fake_content(model_name, system_prompt, user_prompt)
-        import re as _re
-        for seg in _re.findall(r".{1,8}", content):
+    async def stream(self, options: GenerateOptions) -> AsyncIterator[Any]:
+        from .llm.types import FinishChunk, StopReason, TextDelta
+
+        user_prompt = ""
+        for m in options.messages:
+            if isinstance(m, dict) and m.get("role") == "user":
+                user_prompt = str(m.get("content") or "")
+        # 旧 MockGateway 用**配置键**作模型名（`f"[mock:{model_name}] ..."`），此处还原。
+        label = self._key_by_wire.get(options.model, options.model)
+        content = f"[mock:{label}] {user_prompt[:120]}"
+        for seg in re.findall(r".{1,8}", content):
             if seg:
-                yield {"chunk_type": "content", "chunk": seg, "text": seg}
-        tool_calls = []
-        yield {
-            "content": content,
-            "tool_calls": tool_calls,
-            "truncated_tool_call": None,
-            "truncated_reply": None,
-            "finish_reason": "stop",
-            "tokens_used": max(1, len(content) // 4),
-            "latency_ms": 1,
-        }
-
-    def _fake_content(self, model_name: str, system_prompt: str, user_prompt: str) -> str:
-        sp = system_prompt or ""
-        return f"[mock:{model_name}] {user_prompt[:120]}"
+                yield TextDelta(index=0, text=seg)
+        yield FinishChunk(reason=StopReason())
 
 
-def build_gateway(config: dict[str, Any]) -> ModelGateway | MockGateway:
-    """根据环境变量 MOCK_LLM 选择真实网关或 Mock 网关。"""
-    if os.environ.get("MOCK_LLM") == "1":
-        return MockGateway(config)
+def _error_text(exc: BaseException) -> str:
+    """取错误的可读文本（``AppError`` 走 ``.msg``，其余 ``str()``）。"""
+    msg = getattr(exc, "msg", None)
+    return str(msg) if msg else str(exc)
+
+
+def _failure_of(assembler: BlockAssembler):
+    reason = assembler.finish
+    if isinstance(reason, ErrorReason):
+        return reason.failure
+    if getattr(reason, "kind", None) == "aborted":
+        return reason.failure
+    return None
+
+
+def _legacy_finish(reason) -> str:
+    kind = getattr(reason, "kind", "stop")
+    if kind == "stop":
+        return "stop"
+    if kind == "tool-calls":
+        return "tool_calls"
+    if kind == "max-tokens":
+        return "length"
+    failure = getattr(reason, "failure", None)
+    if failure is not None and failure.code:
+        return str(failure.code).lower()
+    return "stop"
+
+
+def _classify(failure) -> str:
+    code = str(getattr(failure, "code", "") or "")
+    if code == "AUTH":
+        return "auth"
+    if code == "RATE_LIMIT":
+        return "rate_limit"
+    if code == "TIMEOUT":
+        return "timeout"
+    if code == "SERVER":
+        return "503"
+    if code == "TRANSPORT":
+        return "connection"
+    return _classify_message(str(getattr(failure, "message", "")))
+
+
+def _classify_message(msg: str) -> str:
+    """把错误信息归类成简短 reason（承自旧 `_classify_error`）。"""
+    low = msg.lower()
+    if "503" in low or "service unavailable" in low or "overload" in low:
+        return "503"
+    if "timeout" in low or "timed out" in low:
+        return "timeout"
+    if "429" in low or "rate" in low:
+        return "rate_limit"
+    if "401" in low or "403" in low or "api key" in low or "unauthorized" in low or "forbidden" in low:
+        return "auth"
+    if "connection" in low:
+        return "connection"
+    return "error"
+
+
+def _salvage_truncated(err_str: str) -> Optional[dict[str, Any]]:
+    """从 litellm 解析截断 tool_call 的异常里抢救原始 arguments（承自旧单体）。
+
+    旧单体在 ``except`` 里做；新底座把异常归一成终帧（message=str(exc)），故这里吃字符串。
+    """
+    if "_handle_invalid_parallel_tool_calls" not in err_str and "Unterminated string" not in err_str:
+        return None
+    if "received_args" not in err_str and "'tool_calls'" not in err_str:
+        return None
+    raw_args_repr = ""
+    match = re.search(r"'arguments':\s*'(.*?)',\s*'(?:id|type|name|index|logprobs)':", err_str, re.DOTALL)
+    if match:
+        raw_args_repr = match.group(1)
+    else:
+        match2 = re.search(r"'arguments':\s*'(.*?)'(?:\s*}|\s*,)", err_str, re.DOTALL)
+        if match2:
+            raw_args_repr = match2.group(1)
+        else:
+            match3 = re.search(r"'arguments':\s*'(.+?)'\}", err_str, re.DOTALL)
+            if match3:
+                raw_args_repr = match3.group(1)
+    if not raw_args_repr:
+        return None
+    raw_args = raw_args_repr.replace("\\'", "'").replace('\\"', '"')
+    finish_reason = "tool_calls"
+    fr = re.search(r"'finish_reason':\s*'(\w+)'", err_str)
+    if fr:
+        finish_reason = fr.group(1)
+    name = "write_file"
+    nm = re.search(r"'name':\s*'(\w+)'", err_str)
+    if nm:
+        name = nm.group(1)
+    return {"name": name, "raw_arguments": raw_args, "finish_reason": finish_reason}
+
+
+def build_gateway(config: dict[str, Any]) -> ModelGateway:
+    """构建网关（兼容壳 + 新 runtime）。MOCK_LLM=1 时 runtime 内注册 MockAdapter。"""
     return ModelGateway(config)

@@ -147,7 +147,9 @@ function makeProjInput() {
     const p = c.parent || "";
     (childMap[p] = childMap[p] || []).push(c);
   }
-  return { viewRoot: "root", cards, relations: [], positions, expanded, sizes, cardMap, childMap };
+  // [依赖关联线 2026-10-16] 通信线字段改名 relations → links：canvas.js 的
+  // computeProjection 读 input.links（原 input.relations），此处键名随之改名。
+  return { viewRoot: "root", cards, links: [], positions, expanded, sizes, cardMap, childMap };
 }
 
 test("投影·可见集：不动点规则（三层深度/折叠中间卡/孤儿/成环）", () => {

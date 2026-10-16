@@ -34,6 +34,7 @@ docs/exploration/_backup_*/
 _backups/
 _web/
 _vrun/
+_e2e_static_tmp_*/
 推演agent_backups/
 .pytest_cache/
 # 研究语料（第三方作品正文，版权内容不入库；统计产物另存 docs/）
@@ -64,3 +65,4 @@ _*.err
 
 # docs 内的下划线探测/差异目录（e2e profile 等垃圾，不入库）
 docs/_*/
+docs/*/_*/

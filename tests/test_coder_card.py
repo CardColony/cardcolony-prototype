@@ -86,11 +86,14 @@ def test_toolset_fingerprints_and_switch_bindings():
     src = (REPO / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
     # [编程卡 判据5] 字面量口径（任务书 §六 grep 口径）
     # [规则卡 2026-10-15] 18 → 19（第 19 件 draft_rule_edit，§六块3 硬判据 1）。
-    assert src.count('": ToolDef(') == 19
+    # [依赖关联线 2026-10-16] 19 → 21（第 20/21 件 link_rel / unlink_rel）。
+    assert src.count('": ToolDef(') == 21
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-6"
+    # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-7"
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
-    assert prompts.BASE_PROMPT_VERSION == "t21-1"
+    # [依赖关联线 2026-10-16] t21-1 → t22-1。
+    assert prompts.BASE_PROMPT_VERSION == "t22-1"
     # 挂接（§六块2 · v1.1 修订：report_done 挂 tools_file，不设新开关；
     # 挂 edit 会让 readopen:287/:252 零翻新下无法同时成立——见 card_tools 注释）
     assert card_tools.TOOL_SWITCH["report_done"] == policy.SWITCH_TOOLS_FILE

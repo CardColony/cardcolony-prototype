@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "version": "context-regions-v4",
+    "version": "context-regions-v5",
     "created_at": "2026-10-15",
     "taskbook": "docs/上下文底座化-方案-20261015.md",
     "purpose": "上下文统一接管控制面：上下文区与请求通道的全局启停/排序",
@@ -23,6 +23,7 @@
     "region_guide": { "enabled": true, "order": 155 },
     "child_status": { "enabled": true, "order": 170 },
     "memory": { "enabled": true, "order": 200 },
+    "relations": { "enabled": true, "order": 250 },
     "history": { "enabled": true, "order": 300 },
     "tool_turn": { "enabled": true, "order": 900 },
     "user_message": { "enabled": true, "order": 999 },

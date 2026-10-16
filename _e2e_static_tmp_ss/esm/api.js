@@ -126,7 +126,12 @@ export const API = {
   // [消息底座收尾 2026-10-14] 恢复唯一入口：合并时序表（消息块＋过程事件＋思考），
   // 按 seq 升序、每条自带 type。刷新/换卡重建过程区走它（件4 退役 from=0 整卡重放后，
   // 这是唯一可回溯的时序真相源）。
-  getTimeline: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/timeline`),
+  // [画板四机制 T5 2026-10-16] 开 `from` 口（增量拉取）：**缺省不带到参数 ⇒ 与改前逐字
+  // 等价**（后端 `frm` 默认 0＝全量）；传 N 则只回 seq>=N 的记录（后端语义**含端点**，
+  // routes.py `frm=Query(0, alias="from")` → `event_log.timeline(from_seq=frm)`）。
+  // ★ 这里的 N 必须是**落盘 events seq**，绝不是内存 journal seq（两套计数空间）。
+  getTimeline: (wid, cid, from) => call("GET",
+    `/api/works/${wid}/cards/${cid}/timeline${(typeof from === "number" && from > 0) ? "?from=" + from : ""}`),
   postMessage: (wid, cid, content) => call("POST", `/api/works/${wid}/cards/${cid}/messages`, { content }),
   getProgress: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/progress`),
   // [迭代四 F3①] 停止按钮（U-7）

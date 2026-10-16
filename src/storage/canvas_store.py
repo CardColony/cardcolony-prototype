@@ -10,7 +10,7 @@ Phase 7：每个 work 各有一份 canvas.json，路径 = works/{work_id}/canvas
       "project_name": "...",
       "created_at": "...",
       "cards": [...],
-      "relations": [...]
+      "links": [...]
     }
 
 写入失败只记日志，绝不抛出中断调用方，绝不删除任何文件。
@@ -44,7 +44,7 @@ logger = logging.getLogger("storage.canvas")
 #    works/，cards.db 自动入快照），**不靠 rebuild**（rebuild 救不了它，
 #    也不许假装能救）。反过来说：位置不再有第二个存放点，删掉 layout.json
 #    这条路是被**封死**的，不是"顺手清理"。
-# L4 ★ 已改写：用户字段（坐标）与派生字段（cards/relations/
+# L4 ★ 已改写：用户字段（坐标）与派生字段（cards/links/
 #    conclusion_summary 等）彻底分家——用户在 cards 表的列上，派生数据在
 #    canvas.json 的键上，两者不再共处一个文档，故"不许互相混写"由类型系统
 #    与查询条件各自把关。
@@ -126,14 +126,16 @@ def rebuild(work_id: str) -> dict[str, Any]:
         pass
 
     def _fn(conn: Any) -> list[dict[str, Any]]:
+        # [依赖关联线 2026-10-16] 画布本期只用**通信线**：原 relations 列已改名
+        # links（新线 relations 不进画布——用户裁定「画布展示本次不做」）。
         return [dict(r) for r in conn.execute(
             "SELECT card_id, title, card_type, parent, created_at,"
-            " relations, status_block FROM cards ORDER BY card_id"
+            " links, status_block FROM cards ORDER BY card_id"
         )]
 
     rows = card_db.read_sync(work_id, _fn, []) or []
     cards: list[dict[str, Any]] = []
-    relations: list[dict[str, Any]] = []
+    links: list[dict[str, Any]] = []
     for row in rows:
         card_id = row["card_id"]
         cards.append({
@@ -147,7 +149,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
             "conclusion_summary": _conclusion_summary(row["status_block"] or ""),
         })
         try:
-            rels = json.loads(row["relations"] or "[]")
+            rels = json.loads(row["links"] or "[]")
         except (TypeError, ValueError):
             rels = []
         for rel in (rels or []):
@@ -156,7 +158,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
                         "type": rel.get("type", "")}
                 if rel.get("note"):
                     item["note"] = rel["note"]
-                relations.append(item)
+                links.append(item)
 
     # [R4-3-5] 重建打点（沿用既有 logger，不参与分支、不设闸）
     summary_count = sum(1 for c in cards if c.get("conclusion_summary"))
@@ -167,7 +169,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
         "work_id": work_id,
         "created_at": created_at,
         "cards": cards,
-        "relations": relations,
+        "links": links,
     }
     try:
         canvas_path.parent.mkdir(parents=True, exist_ok=True)

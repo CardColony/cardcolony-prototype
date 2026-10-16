@@ -298,7 +298,8 @@ async def test_inject_without_rule_card_zero_error(sandbox):
 def test_base_prompt_rule_section_t21_1():
     """硬判据1：BASE_PROMPT_VERSION==t21-1，且含「## 规则卡」使用说明节。"""
     from src.api import prompts
-    assert prompts.BASE_PROMPT_VERSION == "t21-1"
+    # [依赖关联线 2026-10-16] t21-1 → t22-1。
+    assert prompts.BASE_PROMPT_VERSION == "t22-1"
     assert "## 规则卡" in prompts.BASE_PROMPT
     assert "draft_rule_edit" in prompts.BASE_PROMPT
     assert "你不能直接改规则" in prompts.BASE_PROMPT

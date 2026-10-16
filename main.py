@@ -127,9 +127,26 @@ async def index() -> HTMLResponse:
 
 @app.get("/work/{work_id}", response_class=HTMLResponse)
 async def work_page(work_id: str) -> HTMLResponse:
-    """Phase 8：剧本画布页。work_id 注入到 HTML 占位符。"""
+    """Phase 8：剧本画布页。work_id 注入到 HTML 占位符。
+
+    [分页 2026-10-16] 画布页独立模板——对话已拆到 /work/{wid}/card/{cid}（card.html）。
+    """
     html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
     return HTMLResponse(content=html.replace("{{WORK_ID}}", work_id))
+
+
+@app.get("/work/{work_id}/card/{card_id}", response_class=HTMLResponse)
+async def card_page(work_id: str, card_id: str) -> HTMLResponse:
+    """[分页 2026-10-16] 卡片对话页（/work/{wid}/card/{cid}）独立页面。
+
+    画布与对话拆成两个独立 URL：画布在 /work/{wid}，对话在本路由。
+    刷新各回各家——画布态刷新不再掉进对话（用户 10-16 令）。
+    URL 即页面身份：卡号来自路径（注入 __CARD_ID__），hash 机制退役。
+    """
+    html = (BASE_DIR / "templates" / "card.html").read_text(encoding="utf-8")
+    return HTMLResponse(
+        content=html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", card_id)
+    )
 
 
 @app.get("/settings", response_class=HTMLResponse)

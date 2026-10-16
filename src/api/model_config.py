@@ -10,11 +10,12 @@
     system     —— 默认模型 / 降级模型
     simple     —— 三席审议总开关
 
-编译层：把三层结构编译成 gateway（src/model_gateway/gateway.py，禁改）认识的
-平铺 config：
-    - provider 继承展开（供应商 protocol → gateway 的 provider 字段）
-    - thinking 方言翻译（off/on → 各家私有参数）
+编译层：把三层结构编译成网关（src/model_gateway/gateway.py）认识的平铺 config：
+    - provider 继承展开（供应商 protocol → 编译条目的 provider 字段）
+    - 登记 vendor（供应商名）——供 llm_openai_compat 适配器判定 thinking 方言
     - fallback 复制（system.fallback_model → config["models"]["fallback"]）
+    - thinking / reasoning_efforts / default_effort **原样带下去**，不翻译不注入
+      （[2026-10-16 裁定 B] 翻译职责归适配器：llm_openai_compat 的 dialects 表管方言）
 
 热加载语义：
     - resolve() / default_model() / model_names()：从 gateway.config **同源读**
@@ -41,36 +42,22 @@ logger = logging.getLogger("api.model_config")
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = BASE_DIR / "config" / "models.yaml"
 
-# 思考方言翻译表：模型名 → 方言（各家私有参数）。
-# thinking=off 时按方言注入「关闭思考」参数；thinking=on 时按方言注入「开启」参数。
-# 无方言（auto / 其它模型 / 未知模型）→ 不传任何思考参数（端点自然行为）。
-_THINKING_DIALECT = {
-    "minimax-m3": "minimax",          # MiniMax：extra_body.thinking.type = disabled
-    "minimax-m31-flash-preview": "minimax",  # [2026-10-15] 更名后模型也认（旧键对不上导致 on 不注入）
-    "qwen-max": "qwen",               # qwen：extra_body.enable_thinking = false/true
-}
-# [2026-10-15] provider 维度方言：同一供应商下思考方言一致，模型更名/新增自动跟随，
-# 避免"模型名不在方言表 → thinking 白写不注入"的假配置。minimax / aliyun(qwen) 两系。
-_PROVIDER_DIALECT = {
-    "minimax": "minimax",
-    "aliyun": "qwen",
-}
+# [模型层底座抄写 2026-10-16 · 用户裁定 B] 编译层**不再翻译 thinking 方言 / 不再注入
+# effort**——「翻译职责归适配器」（原版架构本意：effort / 方言都是适配器一等参数）。
+# 方言表（minimax thinking.type=adaptive / aliyun enable_thinking）已迁进
+# ``src/model_gateway/llm_openai_compat/dialects.py``；各模型的 thinking/default_effort
+# 原样带进编译条目，由该适配器的 RequestDefaults 消费。
+# 原 `_THINKING_DIALECT` / `_PROVIDER_DIALECT` 两张表**已删除**。
 
 # 默认模型（角色未绑定时的回落）。承接原 model_pick.json 的 default→main 语义。
 DEFAULT_MODEL = "haiku"
 
 # [模型设置第二步 2026-10-12] 非 gateway 字段：设置界面用的字段，编译进 gateway 前一律弹出。
-# _compile() 把供应商**全部字段**继承展开到模型条目，任何 UI 字段都会随之泄漏进
-# gateway.config（gateway 不认，多余键虽无害，但配置面污染、验收⑦要过）。
-#   thinking —— 已翻译进 extra_body / reasoning_effort（方言），字段本身 gateway 不认
-#   note     —— 界面说明文字（原行内注释迁入，用户可编辑）
-#   label    —— 界面显示名（缺省用模型键名）
-#   models_url —— 拉模型列表地址（供应商级；deepseek 无 base_url 需显式给）
-#   reasoning_efforts / default_effort / reasoning_mandatory —— [2026-10-13] 模型录入时
-#       从模型端拉回的思考档位声明（端点给的 UI 元数据），编译进 gateway 前弹出。
+# [2026-10-16 收窄] thinking / reasoning_efforts / default_effort **不再弹出**——新底座
+# 的适配器要读它们（thinking 声明 → RequestDefaults / 方言）。仍弹出的只剩纯界面字段。
 _NON_GATEWAY_KEYS = {
-    "thinking", "note", "label", "models_url",
-    "reasoning_efforts", "default_effort", "reasoning_mandatory",
+    "note", "label", "models_url",
+    "reasoning_mandatory",
 }
 
 # 文件头注释块的边界：第一个顶层键（行首非空白、非 # 的 key:）之前的一切。
@@ -122,51 +109,13 @@ def _compile(raw: dict[str, Any]) -> dict[str, Any]:
         if "protocol" in entry:
             entry["provider"] = entry.pop("protocol")
 
-        # 4. thinking 方言翻译。thinking 取值分三类：
-        #    - auto        —— 不传思考参数（端点自然行为）
-        #    - on / off    —— 开关语义
-        #    - 具体档位     —— [2026-10-13] 模型录入时从模型端获取的思考强度
-        #                      （如 Nous 的 low/medium/high/max），翻译成端点参数。
-        thinking = mdef.get("thinking", "auto")
-        # YAML 会把裸 off/on 解析成布尔 False/True，规范化为字符串再判方言
-        if thinking is True:
-            thinking = "on"
-        elif thinking is False:
-            thinking = "off"
-        elif not isinstance(thinking, str):
-            thinking = "auto"
-        # 方言解析：先按模型名，再按供应商（更名/新增模型自动跟随，避免"配置写 on 不注入"）。
-        dialect = _THINKING_DIALECT.get(mname) or _PROVIDER_DIALECT.get(prov_name)
-        # DeepSeek 系判定（OpenAI 兼容层走 reasoning_effort；opencode 聚合端点的 deepseek 系都在此列）
-        is_deepseek = "deepseek" in mname.lower() or "deepseek" in str(entry.get("model", "")).lower()
-        if dialect == "minimax":
-            # [探针实测 2026-10-12] MiniMax 的 thinking.type **只接受
-            # adaptive / disabled**，传 enabled 直接 400（invalid thinking.type:
-            # "enabled" (allowed: adaptive, disabled)）。故「开思考」＝adaptive，
-            # 档位值也一律映射 adaptive（该端点没有分档能力）。
-            entry.setdefault("extra_body", {})
-            entry["extra_body"]["thinking"] = {
-                "type": "disabled" if thinking == "off" else "adaptive",
-            }
-        elif dialect == "qwen":
-            entry.setdefault("extra_body", {})
-            entry["extra_body"]["enable_thinking"] = (thinking != "off")
-            # qwen 档位（若端点提供）→ thinking_budget（未实测，暂不注入；见 note）
-        elif thinking not in ("auto", "on", "off"):
-            # 无方言（Nous/DeepSeek 档位等）：thinking 是具体档位 → 注入
-            # reasoning_effort（OpenAI 兼容层通用思考强度参数；Nous 实测
-            # supported_parameters 含 "reasoning_effort"）。端点不认则失败由
-            # 网关/调用层暴露，界面录入时只存端点声明过的档位，天然安全。
-            entry["reasoning_effort"] = thinking
-        elif thinking == "on" and is_deepseek:
-            # [2026-10-15] 修"配置 on 不注入"：DeepSeek 系无方言，但自带
-            # reasoning_efforts/default_effort 能力声明，on 必须真正开思考——
-            # 注入 default_effort（缺省 high），否则思考流(第3环)永远取不到增量。
-            entry["reasoning_effort"] = str(mdef.get("default_effort") or "high")
-        # 其它（auto / off / 无方言非 deepseek）→ 不传思考参数（端点自然行为）
+        # 4. [模型层底座抄写 2026-10-16 · 用户裁定 B] **不再翻译 thinking 方言、
+        #    不再注入 effort**——翻译职责归适配器（llm_openai_compat/dialects.py）。
+        #    这里只登记供应商名 vendor，供 llm_openai_compat 适配器按供应商判定方言
+        #    （迁自原 _PROVIDER_DIALECT 的判定维度）。
+        entry["vendor"] = prov_name
 
-        # 5. 弹出非 gateway 字段（thinking 已翻译进 extra_body，字段本身 gateway 不认；
-        #    note/label/models_url 是设置界面字段，继承或覆盖进来的都一并弹出——验收⑦）
+        # 5. 弹出纯界面字段（note/label/models_url/reasoning_mandatory）。
         for _k in _NON_GATEWAY_KEYS:
             entry.pop(_k, None)
 

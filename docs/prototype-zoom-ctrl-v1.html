@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>缩放控件原型 v1 · 卡片样式 v11 · 生产同款画线</title>
+<style>
+  :root{
+    --bg:#0c0c0c; --panel:#161616; --panel-dim:#121212; --border:#2e2e2e; --hair:#222222;
+    --text:#f2f2f2; --soft:#b0b0b0; --dim:#8a8a8a;
+    --amber:#f2f2f2; --amber-dim:rgba(242,242,242,.45);
+    /* ── 色表：类型→卡色（真实令牌，与 style.css 同源；新卡从表里选一个；界面其余保持黑白灰） ── */
+    --c-work:#d4a72c;    /* 剧本 · 金（根卡） */
+    --c-char:#a371f7;    /* 行为体 · 紫 */
+    --c-plot:#db6d28;    /* 节点 · 橙 */
+    --c-setting:#388bfd; /* 世界观 · 蓝 */
+    --font:"Segoe UI",-apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);display:flex;flex-direction:column;overflow:hidden}
+  button{font-family:var(--font);cursor:pointer}
+
+  .topbar{flex:none;height:46px;display:flex;align-items:center;gap:12px;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--border)}
+  .tb-title{font-weight:600}
+  .tb-spacer{flex:1}
+
+  /* ===== 缩放控件组 ===== */
+  .zoomctl{display:flex;align-items:center;gap:10px}
+  .zbtn{width:30px;height:30px;border:1px solid var(--border);border-radius:6px;background:var(--panel-dim);color:var(--text);font-size:17px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;user-select:none}
+  .zbtn:hover{border-color:var(--dim)}
+  .zbtn:active{transform:translateY(1px)}
+  .zbtn.off{opacity:.32;cursor:default;transform:none}
+  .ztrack{position:relative;width:180px;height:20px;cursor:pointer;touch-action:none}
+  .ztrack::before{content:"";position:absolute;left:0;right:0;top:calc(50% - 1.5px);height:3px;border-radius:2px;background:var(--border)}
+  .zfill{position:absolute;left:0;top:calc(50% - 1.5px);height:3px;border-radius:2px;background:var(--amber);width:42.8%}
+  .zknob{position:absolute;top:50%;left:42.8%;width:12px;height:12px;border-radius:50%;background:var(--text);transform:translate(-50%,-50%);pointer-events:none}
+  .zpct{min-width:44px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
+
+  /* ===== 画布（可平移/缩放） ===== */
+  .stage{flex:1;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#1a1a1a 1px,transparent 1px) 0 0/26px 26px,var(--bg);cursor:grab;touch-action:none}
+  .stage.grabbing{cursor:grabbing}
+  .stage.grabbing,.stage.grabbing *{user-select:none!important;-webkit-user-select:none!important}
+  .world{position:absolute;inset:0;transform-origin:50% 50%;transform:scale(1)}
+  .links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+
+  /* ===== 卡片：v11 定稿样式 ===== */
+  .unit{position:absolute;width:320px;--cc:var(--c-work)}
+  .kidwrap{position:absolute;width:300px;display:flex;flex-direction:column}
+  .kidwrap.t-char{--cc:var(--c-char)}
+  .kidwrap.t-plot{--cc:var(--c-plot)}
+  .kidwrap.t-setting{--cc:var(--c-setting)}
+
+  .root{position:relative;display:flex;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--cc);border-radius:8px}
+  .rbody{flex:1;min-width:0;padding:18px 44px 20px 20px}
+  .rname{font-size:20px;font-weight:650;line-height:1.4;color:var(--text);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rstatus{margin-top:16px;display:flex;flex-direction:column;gap:9px}
+  .rstatus div{font-size:13.5px;color:var(--soft);line-height:1.5;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rhead{display:flex;align-items:center;gap:8px}
+  /* ── 子卡控件：图标＋数字，钉在卡片右缘（收起=三张叠卡 · 展开=三张扇形散开的牌，放大加粗·卡色） ── */
+  .subctl{position:absolute;right:6px;top:50%;transform:translateY(-50%);
+    display:inline-flex;align-items:center;gap:5px;
+    cursor:pointer;user-select:none;color:var(--dim);padding:4px 5px;border-radius:6px;
+    background:transparent;border:none}
+  .subctl .ic{width:30px;height:30px;display:flex;transition:width .15s,height .15s}
+  .subctl .ic svg{width:100%;height:100%;display:block}
+  .subctl .n{font-size:16px;line-height:1;font-variant-numeric:tabular-nums;transition:font-size .15s}
+  .subctl .ic-open{display:none}
+  .subctl:hover{color:var(--soft);background:var(--hair)}
+  .subctl.on{color:var(--cc)}
+  .subctl.on .ic{width:40px;height:40px}
+  .subctl.on .n{font-size:21px;font-weight:700}
+  .subctl.on .ic-open{display:block}
+  .subctl.on .ic-closed{display:none}
+
+  /* ── 新消息气泡（卡内底部 · 四周留空不贴边 · 有新消息才出现 · 最多两行 · 溢出末尾"…" · 点击开快捷窗） ── */
+  .bubble{margin:24px 10px 14px;padding:10px 12px 11px;border-radius:8px;cursor:pointer;
+    background:#272727;border:1px solid #3c3c3c;
+    font-size:12.5px;color:var(--soft)}
+  .btxt{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+    line-height:1.5;overflow:hidden}
+  .kid .bubble{margin:18px 10px 8px}
+  .bubble:hover{color:var(--text);background:#303030}
+
+  .kid{background:var(--panel-dim);border:1px solid var(--border);border-left:3px solid var(--cc);border-radius:8px;padding:13px 16px}
+  .ktitle{display:flex;align-items:center;gap:8px}
+  .kname{flex:1;min-width:0;font-size:14px;font-weight:600;color:var(--text);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kcnt{flex:0 0 auto;font-size:11px;color:var(--dim);line-height:1}
+  .ksum{margin-top:6px;font-size:12.5px;color:var(--dim);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* ── 卡片状态：运转中（绕框流光·色=卡色）/ 退役（静止封存） ──
+     流光沿整卡边框绕行；类型色只上左条与流光，正卡卡面不上色 */
+  .st-run{position:relative}
+  .st-run::after{content:"";position:absolute;top:-2px;right:-2px;bottom:-2px;left:-4px;border-radius:9px;padding:1.5px;
+    pointer-events:none;
+    background:conic-gradient(from var(--ang),var(--cc,#f2f2f2) 0%,var(--cc,#f2f2f2) 4%,transparent 24%,transparent 100%);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;
+    mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+    mask-composite:exclude;
+    animation:stspin 2.8s linear infinite}
+  @property --ang{syntax:'<angle>';initial-value:0deg;inherits:false}
+  @keyframes stspin{to{--ang:360deg}}
+  .st-done::after{content:none}
+  .st-done .kid{background:#0e0e0e;border-color:#262626;--cc:#565656}
+
+  .stage-note{position:absolute;left:14px;bottom:11px;color:var(--dim);font-size:12px;opacity:.75}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="tb-title">画布 · 缩放控件原型（卡片＝v11 · 画线＝生产同款）</span>
+  <span class="tb-spacer"></span>
+  <div class="zoomctl">
+    <button class="zbtn" id="zMinus" type="button" aria-label="缩小">−</button>
+    <div class="ztrack" id="zTrack">
+      <div class="zfill" id="zFill"></div>
+      <div class="zknob" id="zKnob"></div>
+    </div>
+    <span class="zpct" id="zPct">100%</span>
+    <button class="zbtn" id="zPlus" type="button" aria-label="放大">＋</button>
+  </div>
+</div>
+
+<div class="stage" id="stage">
+  <div class="world" id="world">
+    <svg class="links" id="linksSvg"></svg>
+
+    <div class="unit" id="rootUnit">
+      <div class="root st-run" style="--cc:#d4a72c">
+        <div class="rbody">
+          <div class="rhead">
+            <div class="rname">赤潮登陆推演</div>
+            <button class="subctl on" id="rail" type="button" aria-label="展开/收起子卡">
+              <span class="ic">
+                <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+                  <g class="ic-closed"><rect x="8" y="8" width="22" height="22" rx="2.5"/><rect x="11" y="12" width="22" height="22" rx="2.5"/><rect x="14" y="16" width="22" height="22" rx="2.5"/></g>
+                  <g class="ic-open"><rect x="13" y="5" width="14" height="26" rx="2"/><rect x="5" y="8" width="12" height="23" rx="2" transform="rotate(-16 13 31)"/><rect x="22" y="8" width="12" height="23" rx="2" transform="rotate(16 27 31)"/></g>
+                </svg>
+              </span>
+              <span class="n">3</span>
+            </button>
+          </div>
+          <div class="rstatus">
+            <div>第12轮 · 补给线切断后第3天</div>
+            <div>3行为体待决策 · 2节点悬置</div>
+            <div>停在：是否空投物资</div>
+          </div>
+          <div class="bubble"><span class="btxt">北部集群燃料仅够维持4天，第二梯队可佯攻吸引火力但胜率不足三成。是否立即执行空投方案？</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="kidwrap t-char">
+      <div class="kid st-run"><div class="ktitle"><span class="kname">北部集群</span><span class="kcnt">2 子卡</span></div><div class="ksum">燃料4天 · 3个单位待命</div></div>
+    </div>
+
+    <div class="kidwrap t-plot">
+      <div class="kid st-run"><div class="ktitle"><span class="kname">空投方案</span><span class="kcnt">1 子卡</span></div><div class="ksum">18小时决策窗 · 胜率三成</div>
+        <div class="bubble"><span class="btxt">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。</span></div></div>
+    </div>
+
+    <div class="kidwrap t-setting st-done">
+      <div class="kid"><div class="ktitle"><span class="kname">补给线地理</span></div><div class="ksum">河谷桥点 · 季风窗口期</div></div>
+    </div>
+  </div>
+  <div class="stage-note">滚轮＝上下滚动 · 空白处拖动＝平移 · 缩放只走顶部控件（每按 ±25% · 拖条连续 · 25%–200%） · 布局与连线＝生产同款（根居左 · 子树向右 · 直角折线 · 父端实心点/子端空心点）</div>
+</div>
+
+<script>
+/* ═══ 布局与画线：模拟生产 canvas.js 真实算法 ═══
+   layoutTree（生产 L370）：根居左 x=0；子树向右逐层（列距 COL_W=340）；
+   同父子树纵向一字排开（GAP_Y=40）；父卡在子树跨度内垂直居中。
+   addElbowPath（生产 L1508）：先横→再竖→再横 直角折线；
+   灰 #8a8a8a · 1.5px 实线；父端实心圆点 r3 · 子端空心圆点 r3。
+   新消息气泡在卡内（独立副卡已撤）：卡本体高度即排布高度，
+   连线锚点取卡本体几何——生产上线后即按方案 §阶段1 落同款。 */
+const GAP_Y=40, COL_W=340, SVGNS="http://www.w3.org/2000/svg";
+const rootUnit=document.getElementById("rootUnit");
+const kids=[...document.querySelectorAll(".kidwrap")];
+const bodyOf=u=>u.querySelector(".root")||u.querySelector(".kid");
+const linksSvg=document.getElementById("linksSvg");
+let expanded=true;
+
+function layout(){
+  kids.forEach(u=>u.hidden=false);
+  /* 卡本体高度（气泡在卡内，无独立副卡） */
+  const hs=kids.map(u=>u.offsetHeight);
+  const total=hs.reduce((a,b)=>a+b,0)+(kids.length-1)*GAP_Y;
+  /* 子卡列：x=COL_W，自上而下；子树跨度以 0 为顶 */
+  let y=0; const kidCy=[];
+  kids.forEach((u,i)=>{
+    u.style.left=COL_W+"px";
+    u.style.top=y+"px";
+    const b=bodyOf(u);
+    kidCy.push(y+b.offsetTop+b.offsetHeight/2); /* 连线锚点：子卡本体中心 */
+    y+=hs[i]+GAP_Y;
+  });
+  /* 根卡：在子树跨度内垂直居中（生产 place 规则——锚卡本体中心，非整坨） */
+  const rootB=bodyOf(rootUnit);
+  const rootBodyC=rootB.offsetTop+rootB.offsetHeight/2;
+  rootUnit.style.left="0px";
+  rootUnit.style.top=(total/2-rootBodyC)+"px";
+  const rootCy=total/2;
+  /* 画折线：父右缘中点 → 子左缘中点（先横/再竖/再横） */
+  linksSvg.innerHTML="";
+  const g=document.createElementNS(SVGNS,"g");
+  g.setAttribute("data-edge-group","parent-child");
+  linksSvg.appendChild(g);
+  const x1=320, x2=COL_W, midX=(x1+x2)/2;
+  kids.forEach((u,i)=>{
+    const cy=kidCy[i];
+    const p=document.createElementNS(SVGNS,"path");
+    p.setAttribute("d",`M ${x1} ${rootCy} L ${midX} ${rootCy} L ${midX} ${cy} L ${x2} ${cy}`);
+    p.setAttribute("stroke","#8a8a8a");
+    p.setAttribute("stroke-width","1.5");
+    p.setAttribute("fill","none");
+    p.setAttribute("data-edge","parent-child");
+    g.appendChild(p);
+    const dotF=document.createElementNS(SVGNS,"circle"); /* 父端：实心 */
+    dotF.setAttribute("cx",x1);dotF.setAttribute("cy",rootCy);dotF.setAttribute("r","3");
+    dotF.setAttribute("fill","#8a8a8a");
+    g.appendChild(dotF);
+    const dotC=document.createElementNS(SVGNS,"circle"); /* 子端：空心 */
+    dotC.setAttribute("cx",x2);dotC.setAttribute("cy",cy);dotC.setAttribute("r","3");
+    dotC.setAttribute("fill","none");dotC.setAttribute("stroke","#8a8a8a");dotC.setAttribute("stroke-width","1.5");
+    g.appendChild(dotC);
+  });
+}
+layout();
+
+/* ═══ 右轨：展开/收起子卡（生产 toggleExpand 语义——收起即子卡与连线消失） ═══ */
+document.getElementById("rail").addEventListener("click",function(){
+  expanded=!expanded;
+  this.classList.toggle("on",expanded);
+  kids.forEach(u=>u.hidden=!expanded);
+  linksSvg.style.display=expanded?"":"none";
+});
+
+/* ═══ 缩放控件：−/拖条/＋（每按 ±25% · 25%–200%） ═══ */
+const MIN=25, MAX=200, STEP=25;
+let z=100, panX=0, panY=0;
+const $=id=>document.getElementById(id);
+const pct=$("zPct"), fill=$("zFill"), knob=$("zKnob"), minus=$("zMinus"), plus=$("zPlus"),
+      world=$("world"), track=$("zTrack"), stage=$("stage");
+
+function apply(){
+  z=Math.min(MAX,Math.max(MIN,z));
+  world.style.transform="translate("+panX+"px,"+panY+"px) scale("+(z/100)+")";
+  const t=(z-MIN)/(MAX-MIN)*100;
+  fill.style.width=t+"%";
+  knob.style.left=t+"%";
+  pct.textContent=Math.round(z)+"%";
+  minus.classList.toggle("off",z<=MIN);
+  plus.classList.toggle("off",z>=MAX);
+}
+minus.addEventListener("click",()=>{ z=Math.floor((z-0.001)/STEP)*STEP; apply(); });
+plus .addEventListener("click",()=>{ z=Math.ceil ((z+0.001)/STEP)*STEP; apply(); });
+
+let dragging=false;
+function setFromX(x){
+  const r=track.getBoundingClientRect();
+  const ratio=Math.min(1,Math.max(0,(x-r.left)/r.width));
+  z=MIN+(MAX-MIN)*ratio;
+  apply();
+}
+track.addEventListener("pointerdown",e=>{ dragging=true; track.setPointerCapture(e.pointerId); setFromX(e.clientX); });
+track.addEventListener("pointermove",e=>{ if(dragging) setFromX(e.clientX); });
+track.addEventListener("pointerup",()=>{ dragging=false; });
+track.addEventListener("pointercancel",()=>{ dragging=false; });
+
+/* 滚轮 = 上下滚动画布（缩放只走顶部控件） */
+stage.addEventListener("wheel",e=>{
+  e.preventDefault();
+  panY-=e.deltaY;
+  apply();
+},{passive:false});
+
+/* 按住拖动 = 平移画布（双轴）。卡上控件不触发平移 */
+let panning=false, lastX=0, lastY=0;
+stage.addEventListener("pointerdown",e=>{
+  if(e.target.closest("input,button,.subctl,.bubble")) return;
+  e.preventDefault(); /* 掐断默认"按住选文字" */
+  panning=true; lastX=e.clientX; lastY=e.clientY;
+  stage.classList.add("grabbing"); stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener("pointermove",e=>{
+  if(!panning) return;
+  panX+=e.clientX-lastX; panY+=e.clientY-lastY;
+  lastX=e.clientX; lastY=e.clientY;
+  apply();
+});
+const endPan=()=>{ panning=false; stage.classList.remove("grabbing"); };
+stage.addEventListener("pointerup",endPan);
+stage.addEventListener("pointercancel",endPan);
+
+apply();
+
+/* 气泡两行封顶：溢出末尾"…"（CSS line-clamp，无 JS） */
+
+/* ══ #probe 诊断（仅 URL 带 #probe 时跑，正常打开零影响）══ */
+if(location.hash.indexOf("probe")>=0){
+  window.addEventListener("load",function(){
+    var r=document.getElementById("rail");
+    var out=[];
+    if(!r){ out.push("NO RAIL"); }
+    else{
+      var c=getComputedStyle(r.querySelector(".ic-closed"));
+      var o=getComputedStyle(r.querySelector(".ic-open"));
+      var btn=r.className;
+      out.push("btnClass="+JSON.stringify(btn));
+      out.push("ic-closed.display="+c.display+" width="+c.width+" height="+c.height);
+      out.push("ic-open.display="+o.display+" width="+o.width+" height="+o.height);
+      out.push("btn.computed.display="+getComputedStyle(r).display);
+    }
+    var node=document.createElement("pre");
+    node.id="probeOut";
+    node.style.cssText="position:fixed;left:8px;bottom:8px;z-index:99999;background:#111;color:#0f0;padding:8px;font:12px monospace;white-space:pre-wrap";
+    node.textContent=out.join("\n");
+    document.body.appendChild(node);
+  });
+}
+</script>
+</body>
+</html>

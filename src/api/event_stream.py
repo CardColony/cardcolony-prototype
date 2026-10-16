@@ -51,6 +51,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -113,7 +114,10 @@ EVENT_TYPES: tuple[str, ...] = (
 # [对话流渲染 T4] 以下两个上限常量已删——都是「丢字/丢步骤闸」：
 #   单帧 8KB 数据上限：截断丢后半；
 #   主通道 300 条条数上限：环形弹出丢最前面的步骤。
-#   两个 journal 都由 run_start 每轮清空（见 emit），单次请求天然有界，无需条数上限。
+#   [画板四机制 T6 2026-10-16] 这里原写「两个 journal 都由 run_start 每轮清空、天然有界」
+#   ——**该说法已过时**：T092 已把「run_start 清空整本」退役（旧段保留）。内存有界现由
+#   `_trim_journals` 的**滚动窗**负责（保最近 FLOW_JOURNAL_MAX_RUNS 轮，默认 50）。
+#   二者不矛盾：T092 退役的是「清空整本」，T6 是「有界滚动窗」（见 _trim_journals 注释）。
 
 # 兼容映射：emit 兼调 progress.set_stage（旧 /progress 端点与旧前端零感知兼容 A67）
 _PROGRESS_STAGE = {
@@ -300,6 +304,70 @@ def _emit_token_segment(work_id: str, card_id: str, ev_type: str,
         pass
 
 
+# ------------------------------------------------------------
+# [画板四机制 T6 2026-10-16] 内存 journal 滚动窗（治 P7）
+# ------------------------------------------------------------
+# 病：`_journals` / `_token_journals` 只 append 不减 ⇒ 一张长活卡的内存占用，以及
+#     `/stream` 每 0.4s 一次的 `journal_of` 全量拷贝，都随轮数线性膨胀。
+# 药：每开新轮（run_start）把两个 journal 裁到**最近 N 轮**（默认 50）。
+#
+# ★ 与 T092 裁定的关系（防后人误判二者矛盾）：T092 退役的是「run_start **清空整本**」
+#   ——那会让「上一轮过程被下一轮开始抹掉」；本项是「**有界滚动窗**」——旧段照留，
+#   只把最老的轮整段丢掉。语义不同，二者不冲突，**不是**把 T092 恢复回来。
+#
+# 四条铁律（施工与验收都按这查）：
+#   ① 磁盘零改——events/{card}.jsonl 照落全量。本函数只动内存 list；`emit` 里落盘
+#      （_persist_frame/_persist_log）**先于**裁剪完成。timeline/恢复读磁盘
+#      （event_log.timeline），完全不受影响。
+#   ② seq 计数器不重置——`_next_seq` 用 `_seq_counters`，与 journal 长度无关，
+#      裁头部后新帧 seq 依旧单调。
+#   ③ `journal_last_seq` 语义不变——/stream 起流游标（from=0 落末帧）与断点续传
+#      （from>0 过滤 seq>frm）只看**末帧**，对头部裁剪无感。
+#   ④ 裁剪时机放 run_start（开新轮）而非每次 emit——触发次数＝轮数，成本最低。
+def _journal_max_runs() -> int:
+    """滚动窗上限（**轮**数）。环境变量 `FLOW_JOURNAL_MAX_RUNS`，默认 50。
+
+    惰性读取（先例：`memory_store` 的 CONDENSE_TRIGGER_TOKENS，同样 os.environ 惰性
+    读取——测试可 monkeypatch）。非法值退回 50 并留 warning；0 或负＝不裁（关窗）。
+    """
+    raw = os.environ.get("FLOW_JOURNAL_MAX_RUNS", "").strip()
+    if not raw:
+        return 50
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("[flow] FLOW_JOURNAL_MAX_RUNS 非法（%r），用缺省 50", raw)
+        return 50
+
+
+def _cut_at(book: list[dict[str, Any]] | None, maxr: int, is_boundary) -> None:
+    """把 book 原地裁到「最后一个边界帧起、往回数 maxr 个边界」处（删头）。
+
+    边界落在**轮首**，故窗口不会切碎某一轮；book 为空或边界不足 maxr 时不动。
+    """
+    if not book:
+        return
+    starts = [i for i, e in enumerate(book) if is_boundary(e)]
+    if len(starts) > maxr:
+        # 保**尾部**最近 maxr 轮：从第 (n-maxr) 个轮首起保留，其前的整段删掉。
+        del book[:starts[len(starts) - maxr]]
+
+
+def _trim_journals(key: tuple[str, str]) -> None:
+    """把某卡的两个内存 journal 裁到最近 N 轮（N＝`_journal_max_runs()`）。
+
+    轮界：主 journal 以 `type == "run_start"` 计；逐字流以 `data.segment == "run"`
+    的分段帧计（`_emit_token_segment` 所落）。两个 journal 用**同一 N**，各自按
+    自己的轮界裁，故窗口对齐在轮首。
+    """
+    maxr = _journal_max_runs()
+    if maxr <= 0:
+        return
+    _cut_at(_journals.get(key), maxr, lambda e: e.get("type") == "run_start")
+    _cut_at(_token_journals.get(key), maxr,
+            lambda e: (e.get("data") or {}).get("segment") == "run")
+
+
 def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     """落一条事件：seq 单调、fanout 订阅者、兼调 progress 兼容映射。
 
@@ -335,6 +403,11 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
         _persist_frame(work_id, card_id, evt)
         # [消息底座能力对齐 · 件2] 过程事件同步落 events jsonl（裁定 C1）
         _persist_log(work_id, card_id, ev_type, evt["data"])
+        # [画板四机制 T6] 每开新轮裁一次（**先落盘、后裁剪**：磁盘照落全量，内存有界）。
+        # 放在 run_start 分支之外、两个 append 之后——此刻主 journal 与本轮逐字流
+        # 分段帧都已入册，两个 journal 的轮数一致，窗口对齐在轮首。
+        if ev_type == "run_start":
+            _trim_journals(key)
         _fanout(_subscribers.get(key, ()), evt, work_id, card_id, "主通道")
         # 兼容映射（旧 /progress 零感知）
         stage = _PROGRESS_STAGE.get(ev_type)

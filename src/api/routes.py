@@ -47,7 +47,9 @@ DEFAULT_WORK_ID = "work_001"  # 兼容层固定转发目标
 # 运行时不可变，API 层就该拒（早于存储层拒），不再让非法键过白名单后才被存储层拦。
 # project_class 从来不在本集合（建卡时随 project 写入），无需处理。
 ALLOWED_UPDATE_KEYS = {
-    "title", "tags", "relations", "session_ref",
+    # [依赖关联线 2026-10-16] links＝通信线（原 relations 改名）；relations＝依赖
+    # 关联线（新线）——两键并存，PATCH 两条通道共用本集合。
+    "title", "tags", "links", "relations", "session_ref",
     "mission", "status_block", "rulings",  # 正文三块·新键
     "conclusion", "rejections", "charter",  # 正文三块·旧键（兼容保留）
     "parent",

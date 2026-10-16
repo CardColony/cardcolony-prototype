@@ -1,6 +1,6 @@
 /* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
  * 迭代四 F2③：IIFE → ES module（module 作用域＝原闭包隔离）；escapeHtml 收编 esm/util.js；
- * API 经 esm/api.js 静态 import；跨文件（Workspace/RenderNav）由 main.js 装配序保证。
+ * API 经 esm/api.js 静态 import；打开卡对话/刷新导航走 esm/page_bus.js（画布页入口注入）。
  *
  * [画布第三步 · 拆渲染层边界] 长期不变量（V1–V10，违反任何一条即架构回退）：
  *   V1 渲染不摸状态——渲染区 10 函数（renderCanvas/renderEdges/renderBreadcrumb/createNode/
@@ -17,11 +17,11 @@
  *   V10 重绘入口唯一——改 state 后必经 renderAll（全量）/reflowAll（不重建）/
  *      applyViewState（视图变换），不存在改 state 后自行重绘或漏重绘的路径。
  */
-import { API } from "./esm/api.js?v=30";
+import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { store } from "./esm/store.js?v=30";
-import { Workspace, RenderNav } from "./workspace.js?v=33";
-import { notify } from "./esm/api.js?v=30";
+import { pageBus } from "./esm/page_bus.js?v=30";
+import { notify } from "./esm/api.js?v=35";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
 const WORK_ID = window.__WORK_ID__;
@@ -35,14 +35,14 @@ const WORK_ID = window.__WORK_ID__;
   const newCardBtn = document.getElementById("newCardBtn");
 
   // 画布状态（[画布第三步 T3] 五桶分家：数据／索引／视图／导航／异步——V4 结构断言口径）。
-  // 数据 cards/relations/positions；索引 cardMap/childMap（派生，rebuildCardMap 重建）；
+  // 数据 cards/links/positions；索引 cardMap/childMap（派生，rebuildCardMap 重建）；
   // 视图 expanded/panX/panY/zoom（expanded 自 F2⑥ 起随 projView:{work_id} 持久化——
   // 旧「纯内存态/不持久化」口径作废，见下方 saveViewState/restoreViewState 与 F2⑥ 注释块）；
   // 导航 workCardId/workTitle/viewRoot；异步 _unreadByCard/summaryCache。
   let state = {
     data: {
       cards: [],      // [{card_id,title,card_type,parent,created_at}]
-      relations: [],  // [{source,target,type}]
+      links: [],  // [{source,target,type}]
       positions: {},  // {card_id:{x,y,pinned}}
     },
     index: {
@@ -121,7 +121,7 @@ const WORK_ID = window.__WORK_ID__;
     edgesSvg.style.opacity = "1";
     const isL0 = (level === "l0");
     const pcGroup = edgesSvg.querySelector('[data-edge-group="parent-child"]');
-    const relGroup = edgesSvg.querySelector('[data-edge-group="relations"]');
+    const relGroup = edgesSvg.querySelector('[data-edge-group="links"]');
     if (pcGroup) pcGroup.style.opacity = isL0 ? "0.55" : "1";
     if (relGroup) relGroup.style.display = isL0 ? "none" : "";
     return level;
@@ -164,7 +164,7 @@ const WORK_ID = window.__WORK_ID__;
   // 不再读全局 state、不再内部调 DOM 测量（measureSizes）——布局函数由此可在
   // 浏览器之外被验证（node --test）。**其余逻辑一字不动**（验收＝与冻结基线
   // 副本对同一输入逐键相同，见 _card_045_report.md）。
-  function computeLayout(viewRootId, cards, relations, positions, expanded, sizes) {
+  function computeLayout(viewRootId, cards, links, positions, expanded, sizes) {
     const result = {};
     const childMap = {};
     for (const c of cards) {
@@ -201,7 +201,7 @@ const WORK_ID = window.__WORK_ID__;
     return result;
   }
 
-  function layoutNarrativeAxis(viewRootId, children, relations, positions, result) {
+  function layoutNarrativeAxis(viewRootId, children, links, positions, result) {
     console.info("[T08-旧] %s 被调用", "layoutNarrativeAxis"); // [T08-1-5] 停用观测：本函数已不被 computeLayout 调用，出现输出即异常
     // [T07-1-8] 分组判据源切换：不再按 card_type 滤卡，改用与 childMap 同源的
     // parent 分组结果（children 即 childMap[viewRootId] 的直接子卡组）。
@@ -218,7 +218,7 @@ const WORK_ID = window.__WORK_ID__;
 
     // 找"目标"卡（与剧本卡有锚定关系）
     const anchoredIds = new Set();
-    for (const r of relations) {
+    for (const r of links) {
       if (r.type === "锚定" && r.source !== viewRootId) anchoredIds.add(r.source);
     }
     // [T07-1-11] 废止 title==="目标" 死条件（全库零命中，恒假）；保留锚定支
@@ -233,9 +233,9 @@ const WORK_ID = window.__WORK_ID__;
       return nw;
     };
 
-    // 节点排序：relations 中 type==先后 做拓扑序
+    // 节点排序：links 中 type==先后 做拓扑序
     const plotIds = new Set(plots.map(c => c.card_id));
-    const edges = relations.filter(r => r.type === "先后" && plotIds.has(r.source) && plotIds.has(r.target));
+    const edges = links.filter(r => r.type === "先后" && plotIds.has(r.source) && plotIds.has(r.target));
     const inDeg = {};
     const adj = {};
     for (const p of plots) { inDeg[p.card_id] = 0; adj[p.card_id] = []; }
@@ -278,7 +278,7 @@ const WORK_ID = window.__WORK_ID__;
 
     // 找关系目标 x 的辅助
     function findTargetX(card) {
-      for (const r of relations) {
+      for (const r of links) {
         if (r.source === card.card_id && plotX[r.target] !== undefined) return plotX[r.target];
       }
       return null;
@@ -649,7 +649,7 @@ const WORK_ID = window.__WORK_ID__;
   // 种子与 computeLayout 步骤1 同源（pinned 卡用存储坐标，含非法坐标兜底）；差别
   // 只在 layoutTree 走 anchor 模式——递归根是 anchor 自己，不是 viewRoot。
   // 返回值只含 anchor 单元内的键（含 anchor 自己，供调用方合并）。
-  function computeSubtreeLayout(viewRootId, cards, relations, positions, expanded,
+  function computeSubtreeLayout(viewRootId, cards, links, positions, expanded,
                                 sizes, anchor) {
     const result = {};
     const childMap = {};
@@ -813,11 +813,11 @@ const WORK_ID = window.__WORK_ID__;
   // 纯函数（不读 DOM/state、无随机无 Date；computeLayout 内的 [T07] 判据源切换打点
   // 只写 _t07SwitchLogged 观测标记与 console，不影响返回值）。sizes 由调用方测好传入
   // （一轮一测的测量纪律在渲染入口执行，不在本函数内——V6）。
-  // input: { viewRoot, cards, relations, positions, expanded, cardMap, childMap, sizes }
+  // input: { viewRoot, cards, links, positions, expanded, cardMap, childMap, sizes }
   // 输出:  { visibleIds, depthOf, layout, sizes, edges, breadcrumb }
   function computeProjection(input) {
     const { visibleIds, depthOf } = computeVisibleSet(input.viewRoot, input.childMap, input.expanded);
-    const layout0 = computeLayout(input.viewRoot, input.cards, input.relations,
+    const layout0 = computeLayout(input.viewRoot, input.cards, input.links,
                                   input.positions, input.expanded, input.sizes);
     const layout = separateOverlaps(layout0, input.sizes, pinnedIdsOf(input.positions));
     const edges = computeEdgeGeometry(visibleIds, layout, input.sizes,
@@ -925,7 +925,7 @@ const WORK_ID = window.__WORK_ID__;
 
   // [画布第三步 T2] 改吃投影＋视图模型：可见集来自 computeVisibleSet（T08-1-4 规则
   // 逐字搬出、单一来源——V3），计算链收进 computeProjection；pin＝投影输入
-  // {viewRoot,cards,relations,positions,expanded,cardMap,childMap}，由动作层入口
+  // {viewRoot,cards,links,positions,expanded,cardMap,childMap}，由动作层入口
   // （renderAll）装配，本函数不摸 state（V1）。
   function renderCanvas(pin, vm) {
     // [T08-3-4] 记录重绘前已在场的卡：重绘后仅对新增卡做淡入
@@ -1063,7 +1063,7 @@ const WORK_ID = window.__WORK_ID__;
     let sizes = lastProjection.sizes;
     if (plan.place.length) {
       sizes = measureSizes();
-      const unit = computeSubtreeLayout(pin.viewRoot, pin.cards, pin.relations,
+      const unit = computeSubtreeLayout(pin.viewRoot, pin.cards, pin.links,
                                         pin.positions, pin.expanded, sizes,
                                         { id: cardId, x: anchorPos.x, y: anchorPos.y,
                                           depth: anchorDepth, isViewRoot: anchorIsViewRoot });
@@ -1275,7 +1275,7 @@ const WORK_ID = window.__WORK_ID__;
         return;
       }
     }
-    Workspace.open(card.card_id);
+    pageBus.openCard(WORK_ID, card.card_id);   // [分页 2026-10-16] 画布点卡＝跳转对话页
   }
 
   // [T08-用户令] 相对当前视图根的深度：沿 parent 链上溯到 viewRoot 的步数
@@ -1298,7 +1298,7 @@ const WORK_ID = window.__WORK_ID__;
       setViewRoot(card.card_id);
     } else {
       // 无子卡也允许下钻（用户可能想进入空容器建卡），但等同打开工作区
-      Workspace.open(card.card_id);
+      pageBus.openCard(WORK_ID, card.card_id);   // [分页 2026-10-16] 跳转对话页
     }
   }
 
@@ -1371,7 +1371,7 @@ const WORK_ID = window.__WORK_ID__;
   // 省缺时回退现测（外部零散调用兼容）。
   // [画布第三步 T2] 改吃投影＋视图模型：visibleIds/layout/sizes/父子折线段/外接框
   // 全部来自 projection（几何派生已上收 computeEdgeGeometry，画布第三步 T1），
-  // relations/cardMap 从 vm 取——不直摸 state（V1）。
+  // links/cardMap 从 vm 取——不直摸 state（V1）。
   function renderEdges(projection, vm) {
     const visibleIds = projection.visibleIds;
     const layout = projection.layout;
@@ -1416,11 +1416,11 @@ const WORK_ID = window.__WORK_ID__;
 
     // ── 关系线组 ──
     const relG = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    relG.setAttribute("data-edge-group", "relations");
+    relG.setAttribute("data-edge-group", "links");
     edgesSvg.appendChild(relG);
 
     // 普通关系线（[phase8.6-B] 锚点 = 实测尺寸的卡中心）
-    for (const r of vm.relations) {
+    for (const r of vm.links) {
       if (!visibleIds.has(r.source) || !visibleIds.has(r.target)) continue;
       const p1 = layout[r.source], p2 = layout[r.target];
       if (!p1 || !p2) continue;
@@ -1439,7 +1439,7 @@ const WORK_ID = window.__WORK_ID__;
       if (!card || card.card_type !== "假设") continue;
       const pos = layout[cid];
       if (!pos) continue;
-      const hasFulfill = vm.relations.some(r => r.source === cid && (r.type || "").includes("兑现") && visibleIds.has(r.target));
+      const hasFulfill = vm.links.some(r => r.source === cid && (r.type || "").includes("兑现") && visibleIds.has(r.target));
       if (!hasFulfill) {
         // 从卡右缘向右下画 80px 折线，端点空心圆（[phase8.6-B] 右缘中点实测）
         const sz = nodeSize(cid);
@@ -1474,7 +1474,7 @@ const WORK_ID = window.__WORK_ID__;
       const oldBadge = node.querySelector(".cross-link-badge");
       if (oldBadge) oldBadge.remove();
       // 检查是否有指向视图外目标的关系
-      const hasCrossLink = vm.relations.some(r => r.source === cid && !visibleIds.has(r.target));
+      const hasCrossLink = vm.links.some(r => r.source === cid && !visibleIds.has(r.target));
       if (hasCrossLink) {
         const badge = document.createElement("span");
         badge.className = "cross-link-badge";
@@ -1482,8 +1482,8 @@ const WORK_ID = window.__WORK_ID__;
         badge.onclick = (e) => {
           e.stopPropagation();
           // 找到第一个跨视图目标，打开其工作区
-          const crossRel = vm.relations.find(r => r.source === cid && !visibleIds.has(r.target));
-          if (crossRel) Workspace.open(crossRel.target);
+          const crossRel = vm.links.find(r => r.source === cid && !visibleIds.has(r.target));
+          if (crossRel) pageBus.openCard(WORK_ID, crossRel.target);   // [分页 2026-10-16] 跳转对话页
         };
         node.appendChild(badge);
       }
@@ -1502,7 +1502,7 @@ const WORK_ID = window.__WORK_ID__;
 
   // [T08-2-2] 父子直角折线：先横、再竖、再横（左右视图方向——用户中途指令推翻任务书
   // 上下向「先下、再横、再下」，留痕；写法范本＝假设悬空红线段）。
-  // 既有 addLine 不删——relations 线仍用（红线7）；两类线调用点不交叉。
+  // 既有 addLine 不删——links 线仍用（红线7）；两类线调用点不交叉。
   // [诸葛 2026-10-04 21:52] 增 parent 参数：父子线挂进 data-edge-group="parent-child" 组，
   // 供 applyLODClasses 分级控制；折线算法本体不动，data-edge 机械验收标记保留。
   function addElbowPath(x1, y1, x2, y2, color, sw, parent) {
@@ -1767,7 +1767,7 @@ const WORK_ID = window.__WORK_ID__;
         const r = await API.createCard(WORK_ID, { title, source: "用户直接创建", card_type: ctype, parent: state.nav.viewRoot });
         node.remove();
         await reloadCanvas();
-        RenderNav();   // [T17] 新卡同步进导航树
+        pageBus.renderNav();   // [T17→分页 2026-10-16] 新卡同步进导航树（经总线，画布页入口注入）
         notify("卡片已创建", "success");   // [F3④]
       } catch (e) { notify("建卡失败", "error"); }   // [F3④] 原静默
     };
@@ -1785,7 +1785,7 @@ const WORK_ID = window.__WORK_ID__;
     try {
       const data = await API.getCanvas(WORK_ID);
       state.data.cards = data.cards || [];
-      state.data.relations = data.relations || [];
+      state.data.links = data.links || [];
       // [card_045 E7 · L2 位置独立于卡片语义] 卡片改名、换类型、变状态、换归属
       // 一律不影响其坐标记录（positions 只按 card_id 键挂靠，不携带任何卡片
       // 语义字段）；验收＝改一张卡的标题／类型后，坐标记录不变、画布位置不变。
@@ -1858,7 +1858,7 @@ const WORK_ID = window.__WORK_ID__;
     return {
       viewRoot: state.nav.viewRoot,
       cards: state.data.cards,
-      relations: state.data.relations,
+      links: state.data.links,
       positions: state.data.positions,
       expanded: state.view.expanded,
       cardMap: state.index.cardMap,
@@ -1872,7 +1872,7 @@ const WORK_ID = window.__WORK_ID__;
       viewRoot: state.nav.viewRoot,
       cardsById: state.index.cardMap,
       childMap: state.index.childMap,
-      relations: state.data.relations,
+      links: state.data.links,
       positions: state.data.positions,
       expanded: state.view.expanded,
       zoom: state.view.zoom,
@@ -1916,7 +1916,7 @@ const WORK_ID = window.__WORK_ID__;
     return {
       data: state.data, index: state.index, view: state.view, nav: state.nav, async: state.async,
       get cards() { return state.data.cards; },
-      get relations() { return state.data.relations; },
+      get links() { return state.data.links; },
       get positions() { return state.data.positions; },
       get cardMap() { return state.index.cardMap; },
       get childMap() { return state.index.childMap; },
