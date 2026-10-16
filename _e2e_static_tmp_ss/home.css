@@ -1,0 +1,60 @@
+/* ============================================================
+   首页（两态 · 旧列表页退役后的继任者）专用样式 —— [首页两态 2026-10-15]
+   ============================================================
+   为什么单独成文件：骨架刻意复用工作页的两份既有真相（style.css 的外壳/按钮/画布视口
+   ＋ nav.css 的左栏 .app-nav/.nav-top/.nav-tree/.nav-footer），本文件只补**首页独有**的
+   少量规则（新建按钮位、空态提示、画布中央创建盒）。另起文件而不是塞进 style.css，
+   是为了不与另一条在航的前端施工线抢同一个文件——同一理由，nav.css 当初也是这样拆出来的。
+
+   纪律：本文件不得出现 .nav-* 规则。左栏样式的唯一真相是 nav.css（其文件头已明令）；
+   这里只写 .home-* 自有类，改左栏外观仍去 nav.css。
+
+   主题：沿用 style.css :root 的深色 token，不引入新色值。
+   ============================================================ */
+
+/* ---- 左栏【＋新项目】：搜索框**上方**（用户 2026-10-15 定稿位置） ----
+   与 .nav-top 同为 flex:none 的头部块，padding 与搜索区对齐（12px 10px 8px），
+   下留 8px 与搜索框分开。按钮占满栏宽——它是首页最主要的左栏动作。 */
+.home-new-project {
+  flex: none;
+  padding: 12px 10px 0;
+}
+.home-new-project .btn {
+  width: 100%;
+  font-size: 13px;
+  padding: 7px 10px;
+}
+
+/* ---- 空列表提示：复用 nav.css 的 .nav-empty（12px/居中），此处只做内距微调 ---- */
+#homeNavEmpty { padding: 24px 16px; line-height: 1.8; }
+
+/* ---- 右侧画布视口：与工作页 #viewport 同底色，但不做抓手手势 ----
+   首页没有可拖拽的画布内容，cursor: grab 会误导成"可以拖动这里"。 */
+.home-viewport {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg);
+}
+
+/* ---- 画布中央【创建】：主行动点，字号/内距放大到"入口"量级 ---- */
+.home-create-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+.home-create-btn {
+  font-size: 18px;
+  padding: 14px 44px;
+  border-radius: 10px;
+}
+.home-create-hint {
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--dim);
+  max-width: 30em;
+}

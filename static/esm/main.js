@@ -7,9 +7,9 @@
 import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=30";
 import "./util.js?v=30";
-import "../stream.js?v=32";
-import "../canvas.js?v=30";
-import "../workspace.js?v=30";
+import "../stream.js?v=33";
+import "../canvas.js?v=33";
+import "../workspace.js?v=33";
 
 window.GetCanvasState = () => store.state.canvasState;
 window.API = API;   // 调试便利（非功能依赖；不计功能挂载——与 api.js 薄壳同属兼容层）

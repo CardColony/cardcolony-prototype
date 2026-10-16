@@ -11,7 +11,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=20.2">
+<link rel="stylesheet" href="/static/style.css?v=33">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -69,6 +69,14 @@
          .canvas-only 按 data-view 显隐（画布态显示、聊天态隐藏）。
          topSettingsBtn 已删（无 JS 引用，grep 仅本文件命中；左栏 navFooter 已有同一跳转）。 -->
     <div class="topbar">
+      <!-- [画布入口 2026-10-16 用户令] 顶部栏最左：返回本项目画布的 icon 入口。
+           根卡/子卡聊天态常显（data-view=chat）；画布态隐藏（已在画布，点了无意义）。 -->
+      <button id="canvasEntryBtn" class="canvas-entry" title="返回项目画布" aria-label="返回项目画布">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/>
+          <path d="M1.5 6h13M6 1.5v13"/>
+        </svg>
+      </button>
       <!-- 画布态面包屑（canvas.js renderBreadcrumb 填，吃投影；画布态才显） -->
       <div id="crumb" class="crumb canvas-only"></div>
       <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
@@ -134,17 +142,9 @@
         </div>
       </div>
     </div>
-    <!-- [规则卡 2026-10-15 · 用户 2026-10-16 纠正] 规则面板挂【画布右侧】（.stage 直下、
-         #viewport 之后的 absolute 右栏），不是对话右栏——规则是全局的，不跟当前卡走；
-         画布态显示、聊天态隐藏（照 #viewport/#workspace 的 data-view 显隐机制）。
-         每 work 一张规则卡，六区（区名＝card_type code）分区直改即存；仅根卡可提议
-         修改（draft_rule_edit）、弹窗审批落盘。 -->
-    <div class="rule-panel canvas-rule-panel" id="rulePanel">
-      <div class="rule-panel-body" id="rulePanelBody">
-        <!-- workspace.js renderRulePanel 动态填充 -->
-      </div>
-      <button class="rule-tab" id="ruleTab" title="展开/收起规则卡面板">规则卡</button>
-    </div>
+    <!-- [规则卡 2026-10-16 归位] 规则卡＝普通卡（card_type=rule，画布正常渲染节点）：
+         分区编辑在卡详情（inspector）内；无独立右栏面板（用户 2026-10-16 明令，
+         原 #rulePanel 侧栏已删）。审批弹窗复用下方 draftModal。 -->
   </div>
 </div>
 <div id="toastContainer" class="toast-container"></div>
@@ -188,6 +188,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=30.0"></script>
+<script type="module" src="/static/esm/main.js?v=33.0"></script>
 </body>
 </html>

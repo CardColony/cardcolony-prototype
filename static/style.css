@@ -119,6 +119,17 @@ a { color: inherit; text-decoration: none; }
    删元素会 TypeError 让整个画布脚本死掉。 */
 .app-main[data-view="chat"] .topbar .canvas-only { display: none; }
 .app-main[data-view="canvas"] #chatCrumb { display: none; }
+/* [画布入口 2026-10-16 用户令] 顶部栏最左：返回本项目画布的 icon 按钮。
+   聊天态常显（data-view=chat 默认）；画布态隐藏（已在画布）。 */
+.work-page .topbar .canvas-entry {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; margin: 0;
+  background: transparent; border: none; border-radius: 6px;
+  color: var(--dim); cursor: pointer; flex: none;
+}
+.work-page .topbar .canvas-entry:hover { background: var(--panel-hover); color: var(--text); }
+.work-page .topbar .canvas-entry svg { width: 16px; height: 16px; display: block; }
+.app-main[data-view="canvas"] .topbar .canvas-entry { display: none; }
 
 
 /* 聊天态面包屑：首段＝项目名＝根卡（可点回画布）｜中间段＝祖先卡（可点切卡）｜末段＝当前卡（不可点） */
@@ -658,7 +669,10 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   word-wrap: break-word;
   white-space: pre-wrap;
 }
-.msg.user { align-self: flex-end; background: var(--c-user); border: 1px solid var(--c-user-border); padding: 8px 12px; margin: 8px 0 4px; }   /* [C6/D4 主界面优化] 硬编码色收编生态 token */
+.msg.user { align-self: flex-end; background: var(--c-user); border: 1px solid var(--c-user-border); border-radius: 18px; padding: 8px 16px; margin: 8px 0 4px; font-size: 14px; line-height: 1.6; }   /* [C6/D4 主界面优化] 硬编码色收编生态 token */
+/* [T1 乐观上屏 2026-10-16] 本地节点（尚未被 timeline 记录确认）：略降透明以示「在途」，
+   真实 user_message 到达即原地升级、此类名消失。 */
+.msg.user.pending { opacity: .72; }
 /* [对话区会话流样式 2026-10-12] 助手＝文档流：无边框无底色（规格 13.3 双形态；
    用户 20:06「没有任意agent是包在气泡里的」）；14px/1.75 按规格；解除 pre-wrap
    （Markdown 渲染出的标签间换行在 pre-wrap 下会变可见空行）。 */
@@ -962,10 +976,13 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
    通用 agent 形态：头行「呼吸点 ＋ 思考中 ＋ 走秒 ＋ 折叠箭头」，正文灰色斜体流式。
    思考结束→头行转「已思考 Ns」，正文保留（不擦）。用户判「think 的过程根本看不到、
    思考过程全黑」——原实现是正文条目内的一行隐形小字，且接管时被整块替换。 */
+/* ============ [T3 dsh ReasoningRow 2026-10-16] Think 行 ============
+   折叠单行：图标 ＋ 标题「Think」 ＋ 分隔点 ＋ 摘要 ＋ 计时。
+   摘要＝运行中最新一行（跟着思考走）／完成第一行（一眼知主题），ellipsis 截断。
+   点击展开全文（灰斜体，22px 缩进）。dsh 依据：ui-conversation ReasoningRow。 */
 .msg.assistant .think {
   margin: 0 0 12px;
-  border-left: 2px solid var(--border);
-  padding: 4px 0 4px 12px;
+  padding: 0;
 }
 .msg.assistant .think-head {
   display: flex;
@@ -976,11 +993,21 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   color: var(--dim);
   cursor: pointer;
   user-select: none;
+  min-width: 0;
 }
 .msg.assistant .think-head:hover { color: var(--text-soft); }
-.msg.assistant .think-caret { margin-left: auto; }
+.msg.assistant .think-ico {
+  flex: none; display: inline-block; width: 14px; height: 14px;
+  border-radius: 50%; border: 1px solid var(--stroke-soft);
+}
+.msg.assistant .think.thinking .think-ico { animation: thinkpulse 1.6s ease-in-out infinite; }
+.msg.assistant .think-lab { flex: none; color: var(--text-soft); }
+.msg.assistant .think-sep { flex: none; }
+.msg.assistant .think-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg.assistant .think-time { flex: none; }
 .msg.assistant .think-body {
   margin-top: 8px;
+  padding: 4px 0 4px 22px;
   color: var(--dim);
   font-style: italic;
   font-size: 12px;
@@ -991,6 +1018,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   overflow-y: auto;
 }
 .msg.assistant .think.collapsed .think-body { display: none; }
+@keyframes thinkpulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
 /* 呼吸点：调用中/思考中的通用「活动」指示（用户令 ⑤ 要的显示效果） */
 .dot {
   display: inline-block;
@@ -1020,6 +1048,26 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .tool-body .tr-kv .v { color: var(--text-soft); }
 .tool-body .tr-files { margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--text-soft); }
 .tool-body .tr-files li { margin: 1px 0; }
+/* ============ [T4 dsh ToolRow 2026-10-16] 工具行 ============
+   恒一行：事件名徽标（沿用定宽 128px 的列对齐）＋ 前导状态点 ＋ 工具名 ＋ 参数摘要；
+   状态槽＝运行中／✓ 耗时／✗ 错误。下一行＝结果首段摘要（ellipsis 截断）。
+   完整内容点整行展开（两段式），默认折叠——一串工具调用保持可扫读。
+   dsh 依据：ui-tool ToolRow.tsx / ToolRow.module.css。 */
+.tool-row .tool-ico {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--stroke-soft); margin-right: 8px; vertical-align: middle;
+}
+.tool-row.running .tool-ico { background: var(--dim); animation: toolscan 1.2s ease-in-out infinite; }
+.tool-row.ok .tool-ico { background: var(--green); }
+.tool-row.fail .tool-ico { background: var(--red); }
+.tool-row .targs { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-left: 8px; }
+.tool-row .tool-sum {
+  flex: 1 0 100%; min-width: 0; font-size: 12px; color: var(--dim); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-row .tool-body { flex: 1 0 100%; display: none; }
+.tool-row.open .tool-body { display: block; }
+@keyframes toolscan { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
 /* 兼容：旧重放路径若仍产出 live-reasoning，按同族样式收 */
 .msg.assistant .live-reasoning {
   margin-bottom: 8px;
@@ -1305,49 +1353,11 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 *::-webkit-scrollbar-button { display: none; }   /* 去掉默认上下箭头按钮 */
 * { scrollbar-width: thin; scrollbar-color: rgba(139, 148, 158, 0.45) transparent; }  /* Firefox */
 
-/* ============ [规则卡 2026-10-15] 右栏规则面板 ============
-   [用户 2026-10-16 纠正] 挂【画布右侧】（.stage 直下 absolute 右栏），非对话右栏。
-   结构镜像 .inspector：窄条 .rule-tab（收起态）＋展开 .rule-panel-body。
-   六区分区直改即存（textarea blur/保存按钮触发 PATCH，无确认框）。
-   两态：画布态显示、聊天态隐藏（照 #viewport/#workspace 的 data-view 机制）。 */
-.rule-panel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 5;
-  width: 32px;
-  border-left: 1px solid var(--border);
-  display: flex;
-  flex-direction: row;
-  background: var(--bg-deep);
-  transition: width 0.15s ease;
-  overflow: hidden;
-}
-.rule-panel.open { width: 352px; }
-.app-main[data-view="chat"] .rule-panel { display: none; }
-.rule-panel-body {
-  width: 320px;
-  flex: none;
-  padding: 24px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.rule-panel:not(.open) .rule-panel-body { display: none; }
-.rule-tab {
-  width: 32px;
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--text-soft);
-  font-size: 12px;
-  writing-mode: vertical-lr;
-  letter-spacing: 3px;
-  padding: 12px 0;
-}
-.rule-tab:hover { color: var(--text); background: var(--panel-hover); }
+/* ============ [规则卡 2026-10-15 · 2026-10-16 归位] 分区编辑（卡详情内） ============
+   [用户 2026-10-16 明令] 规则卡＝普通卡（画布正常渲染节点），分区编辑在卡详情
+   （inspector）内——原右侧边栏形态（#rulePanel/.rule-panel/.rule-tab）已删。
+   以下 .rule-sec 系列渲染在 inspBody 内。 */
+.rule-sec { margin-bottom: 14px; }
 .rule-sec-head {
   display: flex;
   justify-content: space-between;
@@ -1384,10 +1394,4 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   min-height: 14px;
 }
 .rule-sec-status.err { color: #e5534b; }
-.rule-panel-empty {
-  font-size: 13px;
-  color: var(--dim);
-  padding: 12px 0;
-}
-.rule-panel-empty .btn { margin-top: 8px; }
 

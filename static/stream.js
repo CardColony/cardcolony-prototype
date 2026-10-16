@@ -1,6 +1,7 @@
 /* stream.js - [会话渲染单源化 2026-10-15] 单一事件流 → 装配器 → 节点快照 → 快照渲染。
+ *            [对话流照抄 dsh 2026-10-16] 渲染层改为**按节点增量装配**（dsh A1/A2）。
  *
- *   用户裁定（任务书《会话渲染单源化》C1–C6）：
+ *   用户裁定（任务书《会话渲染单源化》C1–C6 ＋《对话流照抄 dsh》T1/T2/T3/T4）：
  *     C1 单源单通道：timeline（落盘事件流）是**唯一**渲染数据源；/session 的
  *        消息渲染通道（workspace.renderChat）已退役，本文件不读它。
  *     C2 位置由数据自带：节点位置＝(分组键, 到达序)，渲染**只读快照**。
@@ -9,13 +10,20 @@
  *        现状做位置推算（红线6 的 grep 判据＝0）。
  *     C4 缝合族删净，不是注释掉。
  *     C5 未知事件类型不丢：落 sys 兜底行「未识别事件」。
- *     C6 过程折叠：组容器带收起/展开开关（默认展开，理由见 addGroupToggle）。
+ *     C6 过程折叠：组容器带收起/展开开关（默认展开，理由见 paintToggle）。
+ *     T2 增量装配：每个节点带稳定 key ＋ 内容版本 rev；渲染层维护
+ *        「组键 → 组视图 → 节点键 → 已渲染元素」，只重建 rev 变了的节点，
+ *        既有元素**原地复用**。结构未变时快照返回同一引用，视图层零重排。
+ *        **不存在「收到新东西就整列重建」的路径**——实时帧只 upsert 它自己那一组。
  *
  *   ── 数据流（刷新与实时同一条）──
  *     刷新/换卡：GET /timeline → assembler.rebuild(items) → snapshot() → renderSnapshot
  *     实时：    /stream 帧 → frameToRecord() → assembler.applyRecord() →
- *               **只重画受影响的那一个轮组**（renderGroup）
+ *               **只 upsert 受影响的那一个轮组**（renderAffected → renderGroup）
  *     结算：    POST 返回（此时事件已全部落盘）→ resync() 走回第一条路
+ *     乐观上屏：send() 瞬间 → optimisticUser() → 本地轮（ns="local"）→
+ *               真实 run 记录到达时装配器「认领」该轮（改名 run:<id>），
+ *               真实 user_message 到达时**原地升级**，不产生双气泡。
  *     /tokens 逐字流**不进装配器**（content_chunk 是过程不是记录）：仍实时写
  *               live 正文气泡；assistant_text 落盘后由快照转正式节点。
  *
@@ -34,9 +42,9 @@ import { API } from "./esm/api.js?v=30";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { createAssembler, groupKeyOf } from "./esm/assembler.js?v=30";
+import { createAssembler, groupKeyOf } from "./esm/assembler.js?v=33";
 
-let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,textBody,reasoning,reasoningText,fallbackUsed,lastSeq,lastTokenSeq}
+let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
 
   function fmtData(data) {
     try { return JSON.stringify(data, null, 1); } catch (e) { return String(data); }
@@ -133,21 +141,34 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     return wrap;
   }
 
-  /** 主模型思考块（折叠交互与旧 .think 形态逐字一致）。 */
+  /* ── Think 行（dsh ReasoningRow 规格）──────────────────────────────
+     折叠单行＝图标 ＋ 标题「Think」 ＋ 分隔点 ＋ **摘要** ＋ 计时。
+     摘要：运行中取**最新一行**（跟着思考走），完成取**第一行**（一眼知主题）。
+     点击展开全文（灰斜体，22px 缩进）。
+     dsh 依据：ui-conversation ReasoningRow.tsx / ReasoningRow.module.css。 */
+  function thinkSummary(text, running) {
+    const lines = String(text == null ? "" : text).split("\n").map(s => s.trim()).filter(Boolean);
+    if (!lines.length) return "";
+    return running ? lines[lines.length - 1] : lines[0];
+  }
+
   function makeThink(text, opts) {
     const o = opts || {};
     const r = document.createElement("div");
-    r.className = "think" + (o.done ? " done" : "") + (o.collapsed ? " collapsed" : "");
+    r.className = "think" + (o.done ? " done" : " thinking") + " collapsed";
     r.innerHTML =
-      '<div class="think-head">' + (o.done ? "" : '<i class="dot"></i>') +
-      '<span class="think-lab">' + (o.done ? "已思考" : "思考中") + "</span>" +
-      (o.time ? '<span class="think-time">' + esc(o.time) + "</span>" : "") +
-      '<span class="think-caret">' + (o.collapsed ? "▸" : "▾") + "</span></div>" +
+      '<div class="think-head">' +
+        '<i class="think-ico"></i>' +
+        '<span class="think-lab">Think</span>' +
+        '<span class="think-sep">·</span>' +
+        '<span class="think-sum"></span>' +
+        '<span class="think-time"></span>' +
+      "</div>" +
       '<div class="think-body"></div>';
+    r.querySelector(".think-sum").textContent = thinkSummary(text, !o.done);
     r.querySelector(".think-body").textContent = text || "";
     r.querySelector(".think-head").onclick = () => {
-      const open = r.classList.toggle("collapsed");
-      r.querySelector(".think-caret").textContent = open ? "▸" : "▾";
+      r.classList.toggle("collapsed");
       scrollBottom();
     };
     return r;
@@ -346,7 +367,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     }
   }
 
-  /** 把工具结果对象摊成可读内容块（直接展示，不藏进折叠 detail）。
+  /** 把工具结果对象摊成可读内容块（展开体里逐块渲染）。
       result 典型形态（真实数据实读）：
         {ok:false, error:{code,message}}   → 红色错误块
         {ok:true, content:"..."}           → 内容段（正文）
@@ -417,44 +438,70 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     return out;
   }
 
+  /** 工具参数摘要（dsh ToolRow 的 FILL 截断摘要）。 */
+  function argSummary(args) {
+    if (!args || typeof args !== "object") return "";
+    const parts = Object.keys(args).map(k => k + "=" + args[k]);
+    return clip(parts.join(" "), 80);
+  }
+
+  /** 工具结果一句话摘要（折叠态可见；完整内容点开才看——dsh 两段式）。 */
+  function resultSummary(res, hasResult, ok) {
+    if (!hasResult) return "调用中…";
+    const d = res || {};
+    const err = d.error;
+    if (err) return clip((err.code ? "[" + err.code + "] " : "") + (err.message || "调用失败"), 100);
+    if (d.content != null && d.content !== "") {
+      const first = String(d.content).split("\n").find(s => s.trim()) || "";
+      return clip(first, 100);
+    }
+    if (Array.isArray(d.files) && d.files.length) return d.files.length + " 个文件";
+    if (Array.isArray(d.items) && d.items.length) return d.items.length + " 条";
+    const rk = Object.keys(d).filter(k => k !== "ok" && typeof d[k] !== "object" && d[k] !== "" && d[k] != null);
+    return rk.length ? clip(rk.map(k => k + "=" + d[k]).join(" "), 100) : (ok ? "完成" : "失败");
+  }
+
   /** tool：call 与 result 已在装配器合成一条节点（两态终态呈现）。
-      live 命名空间的未闭合节点带 t0（帧到达时刻）——组重画时据此显示已用秒数，
-      取代旧实现挂在那行上的 setInterval（行已被整组重画重建，定时器留不住）。 */
+      dsh ToolRow 规格（ui-tool ToolRow.tsx / ToolRow.module.css）：
+        恒一行 ＝ 前导槽（工具图标／运行中扫光／错误红点） ＋ 工具名 ＋
+        参数摘要 ＋ 状态（运行中动画／✓ 耗时／✗ 错误）；下一行是结果首段摘要；
+        点整行展开完整内容（IN/OUT 卡，max-height 内滚）。默认折叠。 */
   function renderTool(node) {
     const call = node.call || {};
     const res = node.result || {};
     const hasResult = !!node.result;
     const ok = !!res.ok;
-    const dur = node.duration ? (node.duration / 1000).toFixed(1) + "s" : "";
+    const toolName = res.tool || call.tool || "";
+    const args = argSummary(call.arguments);
+    const row = document.createElement("div");
+    row.className = "step-row tool-row" + (hasResult ? (ok ? " ok" : " fail") : " running");
+    row.dataset.ev = hasResult ? "tool_result" : "tool_call";
+    row.innerHTML =
+      '<span class="ev">' + esc(hasResult ? "tool_result" : "tool_call") + "</span>" +
+      '<span class="txt"><i class="tool-ico"></i><b>' + esc(toolName) + "</b>" +
+        (args ? '<span class="targs">' + esc(args) + "</span>" : "") + "</span>" +
+      '<span class="sub"></span>';
+    const sub = row.querySelector(".sub");
     if (!hasResult) {
-      // 未收到结果（run 中断/结果帧未落盘）：仍出「调用中」行，信息不丢。
-      const el = node.t0
-        ? (performance.now() - node.t0) / 1000
-        : 0;
-      return [makeRow(node.type,
-        "<b>" + esc(call.tool || "") + "</b>" +
-        (call.arguments && typeof call.arguments === "object"
-          ? " · " + esc(clip(Object.keys(call.arguments).map(k => k + "=" + call.arguments[k]).join(" "), 60))
-          : "") +
-        fld("target", call.target) + fld("step_id", call.step_id),
-        '<span class="mk run"><i class="dot"></i>调用中' + (el ? " " + el.toFixed(1) + "s" : "") + "</span>",
-        fmtData(call), "running")];
+      sub.innerHTML = '<span class="mk run">调用中</span>';
+    } else {
+      sub.innerHTML = '<span class="mk ' + (ok ? "ok" : "no") + '">' + (ok ? "✓" : "✗") + "</span>" +
+        (node.duration ? esc((node.duration / 1000).toFixed(1) + "s") : "");
     }
-    // 已完成：标题行（工具名 + 参数摘要）+ 返回内容直接展开
-    const title =
-      "<b>" + esc(res.tool || call.tool || "") + "</b>" +
-      (call.arguments && typeof call.arguments === "object"
-        ? " · " + esc(clip(Object.keys(call.arguments).map(k => k + "=" + call.arguments[k]).join(" "), 60))
-        : "") +
-      fld("step_id", res.step_id);
-    const row = makeRow("tool_result", title,
-      '<span class="mk ' + (ok ? "ok" : "no") + '">' + (ok ? "✓" : "✗") + "</span>" + dur,
-      fmtData(res), ok ? "ok" : "fail");
+    const sum = document.createElement("div");
+    sum.className = "tool-sum";
+    sum.textContent = resultSummary(res, hasResult, ok);
+    row.appendChild(sum);
+    // 完整内容：默认折叠（点整行展开）
     const body = document.createElement("div");
     body.className = "tool-body" + (ok ? "" : " err");
-    const parts = renderResultContent(res.result || res);
-    for (const p of parts) body.appendChild(p);
+    for (const p of renderResultContent(res.result || res)) body.appendChild(p);
     row.appendChild(body);
+    row.classList.add("has-detail");
+    row.onclick = (e) => {
+      if (e.target.closest(".tool-body")) return;
+      row.classList.toggle("open");
+    };
     return [row];
   }
 
@@ -479,7 +526,8 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     return (node) => {
       const d = node.data || {};
       const el = document.createElement("div");
-      el.className = "msg " + (kind === "user" ? "user" : (kind === "cardmsg" ? "cmsg" : "assistant"));
+      el.className = "msg " + (kind === "user" ? "user" : (kind === "cardmsg" ? "cmsg" : "assistant")) +
+        (node.pending ? " pending" : "");
       el.dataset.seq = node.seq;
       const text = d.content == null ? "" : String(d.content);
       if (kind === "assistant") el.innerHTML = '<div class="md">' + renderMarkdown(text) + "</div>";
@@ -506,7 +554,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     // 思考块插在正文之前（位置＝数据的函数：思考属本轮 assistant）
     if (node.reasoning) {
       const md = el.querySelector(".md");
-      const think = makeThink(node.reasoning, { done: true, collapsed: true });
+      const think = makeThink(node.reasoning, { done: true });
       if (md) el.insertBefore(think, md); else el.appendChild(think);
     }
     return el;
@@ -537,108 +585,197 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
   }
 
   /* ==================================================================
-     三、快照渲染：分组 → 三道（提问道 / 过程道 / 回复道）→ 折叠开关
+     三、快照渲染：增量装配（dsh A1/A2）
      —— 位置全部来自节点数据，没有任何一处读 DOM 现状做推算。
+        渲染层维护「组视图」：容器 ＋ 节点键 → 已渲染元素。
+        节点 rev 未变 ⇒ 复用原元素（零 DOM 操作）；变了 ⇒ 原地替换那一个节点；
+        新节点 ⇒ 追加。**既有元素永不因别处变化而被搬动**。
      ================================================================== */
 
-  /** [C6 过程折叠] 组内过程行的收起/展开开关。
-      **默认展开**：沿用既有行为（stream.js 旧 addToggle 注释引 T2 用户裁定
-      「折叠仅是用户可选减负、非默认隐藏」）；任务书括注写「done 后默认
-      收起」，与该裁定相反，取代码里的既有用户裁定为准（见施工回报偏差②）。
+  function groupView(el) {
+    return { el, views: new Map(), toggle: null };
+  }
 
-      折叠态记在 st.fold（按组键），**不随重画丢失**——实时期每来一帧就整组重画，
-      开关若只活在 DOM 里，用户刚收起就被下一帧弹开。 */
-  function addGroupToggle(st, key, n, processEls) {
+  /** 取/建组视图：优先用内存视图；内存丢了就按 data-key **认领屏上容器**；
+      都没有才新建。这样即便渲染状态被重建（stop / 换卡 / 重开同卡），
+      也不会在列里长出重复的轮容器。 */
+  function ensureGroupView(st, box, key) {
+    let gv = st.groups.get(key);
+    if (gv && gv.el && gv.el.parentNode === box) return gv;
+    const el = box.querySelector(':scope > .msgs-round[data-key="' + key + '"]');
+    if (el) {
+      gv = groupView(el);
+      st.groups.set(key, gv);
+      return gv;
+    }
+    const neo = document.createElement("div");
+    neo.className = "msgs-round";
+    neo.dataset.key = key;
+    gv = groupView(neo);
+    st.groups.set(key, gv);
+    const slot = st.liveSlot;
+    if (slot && slot.parentNode === box) box.insertBefore(neo, slot);
+    else box.appendChild(neo);
+    return gv;
+  }
+
+  /** 三道分道（次序铁律：本轮过程行恒在本轮正式回复之前）。 */
+  function lanesOf(group) {
+    const user = [], process = [], reply = [];
+    for (const n of group.nodes) {
+      if (n.kind === "user") user.push(n);
+      else if (n.kind === "assistant" || n.kind === "cardmsg") reply.push(n);
+      else process.push(n);
+    }
+    return { user, process, reply };
+  }
+
+  /* [C6 过程折叠] 组内过程行的收起/展开开关。**默认展开**：沿用既有行为
+     （stream.js 旧 addToggle 注释引 T2 用户裁定「折叠仅是用户可选减负、
+     非默认隐藏」）。折叠态记在 st.fold（按组键），**不随重画丢失**。 */
+  function ensureToggle(gv, st) {
+    if (gv.toggle) return gv.toggle;
     const t = document.createElement("div");
     t.className = "step-toggle";
-    let open = !st.fold.get(key);
-    const paint = () => { t.textContent = (open ? "▴ 收起过程（" : "▾ 展开过程（") + n + " 步）"; };
-    const apply = () => { for (const el of processEls) el.style.display = open ? "" : "none"; paint(); };
-    paint();
-    for (const el of processEls) el.style.display = open ? "" : "none";
     t.onclick = () => {
-      open = !open;
-      st.fold.set(key, !open);
-      apply();
+      const k = t.__key;
+      st.fold.set(k, !st.fold.get(k));
+      paintToggle(t, st, k, t.__els || []);
       scrollBottom();
     };
+    gv.toggle = t;
     return t;
   }
 
-  /** 该轮是否已收口（与装配器判定「思考不再有归属」同口径）：
-      组内已见 done/error，或本组之后又来了新轮。未收口的不给折叠开关——
-      旧实现也只在 done/error 后加开关（见 renderEvent 的 done/error 分支）。 */
-  function groupFinished(st, group, snap) {
-    const terminal = group.nodes.some((n) => n.type === "done" || n.type === "error");
-    if (terminal) return true;
-    const keys = snap.rounds.map((g) => g.key);
-    return keys.indexOf(group.key) < keys.length - 1;
+  function paintToggle(t, st, key, processEls) {
+    t.__key = key;
+    t.__els = processEls;
+    const open = !st.fold.get(key);
+    t.textContent = (open ? "▴ 收起过程（" : "▾ 展开过程（") + processEls.length + " 步）";
+    for (const el of processEls) el.style.display = open ? "" : "none";
   }
 
-  /** 单组渲染：把 group 的节点铺进组容器（清空重画，不改容器本身）。 */
-  function renderGroup(st, container, group, snap) {
-    while (container.firstChild) container.removeChild(container.firstChild);
-    const lanes = { user: [], process: [], reply: [] };
-    for (const node of group.nodes) {
-      const els = renderNode(node);
-      if (!els.length) continue;
-      // 次序铁律：本轮过程行在本轮正式回复之前 —— 提问道 → 过程道 → 回复道
-      if (node.kind === "user") lanes.user.push(...els);
-      else if (node.kind === "assistant" || node.kind === "cardmsg") lanes.reply.push(...els);
-      else lanes.process.push(...els);
+  /** 单组增量渲染：只重建 rev 变了的节点，其余元素原地复用。 */
+  function renderGroup(st, gv, group, snap) {
+    const { user, process, reply } = lanesOf(group);
+
+    // ① 逐节点取/建/更新（只碰内容变了的节点）
+    const collect = (nodes) => {
+      const out = [];
+      for (const node of nodes) {
+        const key = node.key;
+        let v = gv.views.get(key);
+        if (!v) {
+          const els = renderNode(node);
+          v = { els, rev: node.rev || 0 };
+          gv.views.set(key, v);
+        } else if (v.rev !== (node.rev || 0)) {
+          const els = renderNode(node);
+          const anchor = (v.els[0] && v.els[0].parentNode === gv.el) ? v.els[0] : null;
+          for (const el of els) gv.el.insertBefore(el, anchor);
+          for (const el of v.els) if (el.parentNode === gv.el) gv.el.removeChild(el);
+          v.els = els;
+          v.rev = node.rev || 0;
+        }
+        for (const el of v.els) out.push(el);
+      }
+      return out;
+    };
+    const userEls = collect(user);
+    const processEls = collect(process);
+    const replyEls = collect(reply);
+
+    // ② 折叠开关：组已收口且有过程行才有（未收口不给开关——与旧实现同口径）
+    let toggle = null;
+    if (processEls.length && group.finalized) {
+      toggle = ensureToggle(gv, st);
+      paintToggle(toggle, st, group.key, processEls);
+    } else if (gv.toggle) {
+      if (gv.toggle.parentNode) gv.toggle.parentNode.removeChild(gv.toggle);
+      gv.toggle = null;
     }
-    const pushLane = (els) => { for (const el of els) container.appendChild(el); };
-    pushLane(lanes.user);
-    pushLane(lanes.process);
-    if (lanes.process.length && groupFinished(st, group, snap)) {
-      container.appendChild(addGroupToggle(st, group.key, lanes.process.length, lanes.process));
+
+    // ③ 落位：按 desired 序校正（已就位者 insertBefore 为 no-op ⇒ 零搬动）
+    const place = (el, prev) => {
+      if (prev === null) {
+        if (gv.el.firstChild !== el) gv.el.insertBefore(el, gv.el.firstChild);
+      } else if (prev.nextSibling !== el) {
+        gv.el.insertBefore(el, prev.nextSibling);
+      }
+    };
+    let prev = null;
+    for (const el of userEls) { place(el, prev); prev = el; }
+    for (const el of processEls) { place(el, prev); prev = el; }
+    if (toggle) { place(toggle, prev); prev = toggle; }
+    for (const el of replyEls) { place(el, prev); prev = el; }
+
+    // ④ 剪枝：本组已不存在的节点/元素移除（revoke 软删、组改名等）
+    const keep = new Set(userEls.concat(processEls, replyEls));
+    if (toggle) keep.add(toggle);
+    for (const child of Array.from(gv.el.children)) {
+      if (!keep.has(child)) gv.el.removeChild(child);
     }
-    pushLane(lanes.reply);
-    container.dataset.round = group.round == null ? "" : String(group.round);
-    container.dataset.key = group.key || "";
-    return container;
+    const liveKeys = new Set(group.nodes.map((n) => n.key));
+    for (const k of Array.from(gv.views.keys())) {
+      if (!liveKeys.has(k)) gv.views.delete(k);
+    }
+
+    gv.el.dataset.round = group.round == null ? "" : String(group.round);
+    gv.el.dataset.key = group.key || "";
+    return gv.el;
   }
 
-  function makeGroupContainer(st, group, snap) {
-    const el = document.createElement("div");
-    el.className = "msgs-round";
-    return renderGroup(st, el, group, snap);
+  /** 快照里已不存在的组容器移除（本地轮认领改名后旧键即属此类）。 */
+  function pruneGroups(st, snap) {
+    const live = new Set(snap.rounds.map((g) => g.key));
+    for (const [k, gv] of Array.from(st.groups)) {
+      if (live.has(k)) continue;
+      if (gv.el.parentNode) gv.el.parentNode.removeChild(gv.el);
+      st.groups.delete(k);
+    }
   }
 
-  /** 全量渲染（刷新/换卡/结算 resync）：清空整列后按快照逐组铺。 */
+  /** 全量快照：**复用**既有组容器与既有节点元素，只建缺的、只改变的。
+      刷新/换卡/结算都走这里——历史轮组键不变 ⇒ DOM 一个都不动。 */
   function renderSnapshot(st, snapshot) {
     const box = msgsEl();
     if (!box) return;
-    while (box.firstChild) box.removeChild(box.firstChild);
-    st.groups = new Map();
-    st.liveSlot = null;
+    const want = new Set(snapshot.rounds.map((g) => g.key));
+    // 剪枝：列里所有不在本次快照的轮容器移除（含换卡后遗留、状态重建后遗留）
+    for (const el of Array.from(box.querySelectorAll(":scope > .msgs-round"))) {
+      if (!want.has(el.dataset.key || "")) box.removeChild(el);
+    }
+    for (const k of Array.from(st.groups.keys())) if (!want.has(k)) st.groups.delete(k);
     for (const group of snapshot.rounds) {
-      const el = makeGroupContainer(st, group, snapshot);
-      box.appendChild(el);
-      st.groups.set(group.key, el);
+      renderGroup(st, ensureGroupView(st, box, group.key), group, snapshot);
+    }
+    // 组序按快照轮序校正（历史组已就位 ⇒ no-op）
+    let prev = null;
+    for (const group of snapshot.rounds) {
+      const gv = st.groups.get(group.key);
+      const el = gv && gv.el;
+      if (!el) continue;
+      if (prev === null) {
+        if (box.firstChild !== el) box.insertBefore(el, box.firstChild);
+      } else if (prev.nextSibling !== el) {
+        box.insertBefore(el, prev.nextSibling);
+      }
+      prev = el;
     }
     logInfo("[flow-render] snapshot(" + snapshot.rounds.length + " rounds)");
     scrollBottom();
   }
 
-  /** 实时增量：只重画受影响的那一个组（其余组不碰）。 */
+  /** 实时增量：只 upsert 受影响的那一组（其余组不碰）。 */
   function renderAffected(st, key) {
     const box = msgsEl();
     if (!box) return;
     const snap = st.asm.snapshot();
     const group = snap.rounds.find((g) => g.key === key);
     if (!group) return;
-    let el = st.groups.get(key);
-    if (!el) {
-      el = makeGroupContainer(st, group, snap);
-      const slot = st.liveSlot;
-      if (slot && slot.parentNode === box) box.insertBefore(el, slot);
-      else box.appendChild(el);
-      st.groups.set(key, el);
-    } else {
-      renderGroup(st, el, group, snap);
-    }
-    logInfo("[flow-render] group-repaint(" + key + ")");
+    renderGroup(st, ensureGroupView(st, box, key), group, snap);
+    pruneGroups(st, snap);
+    logInfo("[flow-render] group-upsert(" + key + ")");
     scrollBottom();
   }
 
@@ -669,14 +806,14 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
       wid, cid, es: null, esT: null,
       asm: createAssembler(), groups: new Map(), liveSlot: null, liveRunId: "", settled: false,
       fold: new Map(),          // 组键 → 折叠态（true＝已收起）：重画不丢用户的选择
-      textEl: null, textBody: null, reasoning: null, reasoningText: null,
-      fallbackUsed: false, lastSeq: 0, lastTokenSeq: 0,
+      textEl: null, textBody: null, reasoning: null, reasoningText: null, reasoningSum: null,
+      fallbackUsed: false, esDead: false, lastSeq: 0, lastTokenSeq: 0,
       textRaw: "", _mdTimer: null,
     };
     return current;
   }
 
-  /** 实时帧入装配：applyRecord → 只重画受影响组。
+  /** 实时帧入装配：applyRecord → 只 upsert 受影响组。
       装配器**全程同一个实例**（不是每轮换一个）：重建走 rebuild()（清空后重灌），
       增量走 applyRecord()；两者共用一套去重与到达序。
       结算（resync）后置 settled：此后到达的实时帧一律不收——否则重建后的
@@ -687,9 +824,34 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     if (!rec.type) return;
     if (rec.run_id) st.liveRunId = rec.run_id;
     const node = st.asm.applyRecord(rec);
-    if (node && node.kind === "tool" && !node.result && !node.t0) node.t0 = performance.now();
     const key = (node && node.groupKey) || groupKeyOf(rec);
     renderAffected(st, key);
+  }
+
+  /** 乐观上屏（T1）：点发送瞬间把用户气泡落进本地轮，不等 POST/timeline。 */
+  let _localSeq = 0;
+  function optimisticUser(wid, cid, content) {
+    const st = ensureRun(wid, cid);
+    const localKey = "u" + (++_localSeq);
+    const node = st.asm.applyRecord({
+      ns: "local", seq: 0, local_key: localKey, type: "user_message",
+      run_id: "", round: 0, data: { content: String(content == null ? "" : content) }, model: "",
+    });
+    renderAffected(st, (node && node.groupKey) || ("local:" + localKey));
+    return localKey;
+  }
+
+  /** 发送失败回退：撤下未被认领的本地轮（幽灵气泡不留在屏上）。 */
+  function dropOptimisticUser(wid, cid) {
+    const st = ensureRun(wid, cid);
+    if (st.asm.dropLocal()) renderSnapshot(st, st.asm.snapshot());
+  }
+
+  /** 清掉 live 逐字槽（正式节点接管时调用）。 */
+  function clearLiveSlot(st) {
+    releaseText(st);
+    if (st.liveSlot && st.liveSlot.parentNode) st.liveSlot.parentNode.removeChild(st.liveSlot);
+    st.liveSlot = null;
   }
 
   /** 刷新/换卡恢复：GET /timeline → rebuild → renderSnapshot。
@@ -698,7 +860,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
   async function replayTrace(wid, cid) {
     const st = ensureRun(wid, cid);
     stopES();
-    releaseText(st);          // 交出 live 正文引用：它已由快照里的正式节点接管
+    clearLiveSlot(st);        // 交出 live 正文引用：它已由快照里的正式节点接管
     const items = await fetchTimeline(st, wid, cid);
     renderSnapshot(st, st.asm.rebuild(items));
   }
@@ -711,7 +873,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     const st = ensureRun(wid, cid);
     const items = await fetchTimeline(st, wid, cid);
     st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
-    releaseText(st);             // live 气泡随整列重画消失，由正式节点接管
+    clearLiveSlot(st);           // live 气泡随正式节点接管退场
     const snap = st.asm.rebuild(items);
     renderSnapshot(st, snap);
     const last = snap.rounds[snap.rounds.length - 1];
@@ -729,29 +891,24 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     }
   }
 
-  /** 发送后尽早把本轮 user 气泡从 timeline 取回（唯一数据源，不是命令式上屏）。
-      POST 要跑到本轮结束才返回，故不等它：立刻拉一次，没取到就短间隔重试。
-
-      ★ 只补「提问」这一类记录，**不整表重建**——两个理由，都是实测踩出来的：
-        ① 整表 rebuild 会把并行的实时帧（ns="live"）一起抹掉，本轮过程行闪没；
-        ② 同一条过程事件在落盘与 SSE 里各有一份（两套 seq 空间），重建后
-           实时帧再进来就成两条重复行。故此处只 applyRecord 缺失的
-           user_message（它从不走 SSE，不存在重复面），其余一律留给结算 resync。 */
+  /** 乐观上屏的对账（T1）：把 timeline 里已落盘的 user_message 灌进装配器——
+      pending 节点按内容**原地升级**（不新增节点、不出双气泡），其余记录去重跳过。
+      ★ 只补这一类记录，**不整表重建**：整表 rebuild 会抹掉并行的实时帧
+        （ns="live"），本轮过程行会闪没。 */
   async function pullUserBubble(wid, cid) {
     const st = ensureRun(wid, cid);
     for (let i = 0; i < 6; i++) {
       const items = await fetchTimeline(st, wid, cid);
       if (items === null) return false;
+      let confirmed = false;
       for (const rec of items) {
         if (!rec || rec.type !== "user_message") continue;
-        const key = groupKeyOf(rec);
-        const g = st.asm.snapshot().rounds.find((x) => x.key === key);
-        if (g && g.nodes.some((n) => n.kind === "user")) continue;   // 已有，不重复入
-        st.asm.applyRecord(Object.assign({ ns: "disk" }, rec));
+        const node = st.asm.applyRecord(Object.assign({ ns: "disk" }, rec));
+        const key = (node && node.groupKey) || groupKeyOf(rec);
         renderAffected(st, key);
+        if (node && node.kind === "user" && !node.pending) confirmed = true;
       }
-      const last = st.asm.snapshot().rounds.slice(-1)[0];
-      if (last && last.nodes.some((n) => n.kind === "user")) return true;
+      if (confirmed) return true;
       await new Promise((r) => setTimeout(r, 500));
     }
     return false;
@@ -815,48 +972,39 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     }
   }
 
-  /** 主模型 think（reasoning_chunk 不带 model）：live 可折叠思考块。 */
+  /** 主模型 think（reasoning_chunk 不带 model）：live 可折叠 Think 行（dsh 规格）。 */
   function ensureReasoning(st) {
     if (st.reasoning) return st;
     textEntry(st);
     if (!st.textEl) return st;
-    const r = document.createElement("div");
-    r.className = "think thinking";
-    r.innerHTML =
-      '<div class="think-head"><i class="dot"></i>' +
-      '<span class="think-lab">思考中</span>' +
-      '<span class="think-time">0.0s</span>' +
-      '<span class="think-caret">▾</span></div>' +
-      '<div class="think-body"></div>';
+    const r = makeThink("", { done: false });
     st.textEl.insertBefore(r, st.textBody);
     st.reasoning = r;
     st.reasoningText = r.querySelector(".think-body");
+    st.reasoningSum = r.querySelector(".think-sum");
     st._thinkT0 = performance.now();
     const timeEl = r.querySelector(".think-time");
     st._thinkTimer = setInterval(() => {
       if (!st._thinkT0) return;
       timeEl.textContent = ((performance.now() - st._thinkT0) / 1000).toFixed(1) + "s";
     }, 200);
-    r.querySelector(".think-head").onclick = () => {
-      const open = r.classList.toggle("collapsed");
-      r.querySelector(".think-caret").textContent = open ? "▸" : "▾";
-      scrollBottom();
-    };
     return st;
   }
 
-  /** think 收尾：停走秒、头行转「已思考 Ns」。 */
+  /** think 收尾：停走秒、头行转已完成态（摘要由「最新一行」切到「第一行」）。 */
   function finishReasoning(st) {
     if (!st.reasoning) return;
     if (st._thinkTimer) { clearInterval(st._thinkTimer); st._thinkTimer = null; }
     if (st._thinkT0) {
       const s = ((performance.now() - st._thinkT0) / 1000).toFixed(1);
       st._thinkT0 = 0;
-      const lab = st.reasoning.querySelector(".think-lab");
       const t = st.reasoning.querySelector(".think-time");
-      if (lab) lab.textContent = "已思考";
       if (t) t.textContent = s + "s";
       st.reasoning.classList.remove("thinking");
+      st.reasoning.classList.add("done");
+      if (st.reasoningSum) {
+        st.reasoningSum.textContent = thinkSummary(st.reasoningText ? st.reasoningText.textContent : "", false);
+      }
     }
   }
 
@@ -864,7 +1012,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     if (!text) return;
     if (kind === "reasoning") {
       // 带 model 的是三席思考（并发交织）→ 实时落进该轮 seats 节点（装配器内合流）；
-      // 不带 model 的是主模型思考 → 仍落 live 正文条目内的弱化区。
+      // 不带 model 的是主模型思考 → 落 live 正文条目内的 Think 行。
       if (model) {
         applyLiveFrame(st, {
           seq: seq, type: "reasoning", pair_id: st.liveRunId,
@@ -872,7 +1020,10 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
         });
         return;
       }
-      ensureReasoning(st).reasoningText.textContent += text;
+      ensureReasoning(st);
+      if (!st.reasoningText) return;
+      st.reasoningText.textContent += text;
+      if (st.reasoningSum) st.reasoningSum.textContent = thinkSummary(st.reasoningText.textContent, true);
     } else {
       textEntry(st);
       if (!st.textBody) return;
@@ -886,6 +1037,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
 
   function releaseText(st) {
     st.textEl = null; st.textBody = null; st.reasoning = null; st.reasoningText = null;
+    st.reasoningSum = null;
     st.textRaw = "";
     if (st._mdTimer) { clearTimeout(st._mdTimer); st._mdTimer = null; }
     if (st._thinkTimer) { clearInterval(st._thinkTimer); st._thinkTimer = null; }
@@ -901,7 +1053,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     if (st.reasoningText) st.reasoningText.textContent = "";
     if (st.reasoning && !(st.reasoningText && st.reasoningText.textContent)) {
       try { st.reasoning.remove(); } catch (e) { /* noop */ }
-      st.reasoning = null; st.reasoningText = null;
+      st.reasoning = null; st.reasoningText = null; st.reasoningSum = null;
     }
     keepTextLast(st);
   }
@@ -933,13 +1085,21 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     if (current && current.esT) { try { current.esT.close(); } catch (e) { /* noop */ } current.esT = null; }
   }
 
+  /** 收流：只关两路 SSE，**保留渲染状态**（装配器 ＋ 组视图 ＋ DOM 归属）。
+      状态一丢，下一次渲染就会把已在屏上的轮容器当成「新组」重建、长出重复容器
+      （实测踩过）。换卡/换状态由 ensureRun 显式新建处理。 */
   function stop() {
     stopES();
-    current = null;
+  }
+
+  /** 事件流是否已断（供 workspace 的断线自愈判据：健康时**绝不**做整表重建）。 */
+  function streamDead(wid, cid) {
+    if (!current || current.wid !== wid || current.cid !== cid) return true;
+    return !!current.esDead;
   }
 
   /** 开始跟踪新一轮：两路 SSE。
-      过程帧（/stream）→ 装配器 → 受影响轮组重画；
+      过程帧（/stream）→ 装配器 → 受影响轮组 upsert；
       逐字帧（/tokens）→ live 正文气泡（不进装配器）。
       onFail 在事件流连不上时回调一次（降级保底）。 */
   function start(wid, cid, onFail) {
@@ -947,11 +1107,13 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
     stopES();
     st.liveRunId = "";        // 新一轮：轮锚随 run_start 帧到达后才落
     st.settled = false;       // 解冻：上一轮的收口状态不带到这一轮
+    st.esDead = false;
     try {
       // 无游标（lastSeq=0）＝从当前末帧起；有游标＝断点续传。
       const sFrom = st.lastSeq > 0 ? st.lastSeq + 1 : 0;
       const es = new EventSource(`/api/works/${wid}/cards/${cid}/stream?from=${sFrom}`);
       st.es = es;
+      es.onopen = () => { st.esDead = false; };
       es.onmessage = (m) => {
         try {
           const frame = JSON.parse(m.data);
@@ -961,12 +1123,14 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
         } catch (e) { /* 单帧坏不致命 */ }
       };
       es.onerror = () => {
+        st.esDead = true;
         if (!st.fallbackUsed) {
           st.fallbackUsed = true;
           if (typeof onFail === "function") onFail();
         }
       };
     } catch (e) {
+      st.esDead = true;
       if (!st.fallbackUsed && typeof onFail === "function") { st.fallbackUsed = true; onFail(); }
     }
 
@@ -985,4 +1149,5 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,textEl,te
 
 export const EventFlow = {
   start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers,
+  optimisticUser, dropOptimisticUser, streamDead,
 };

@@ -50,6 +50,10 @@ models:
     provider: opencode
     model: deepseek-v4-pro
     temperature: 0.3
+    # [思考流补 2026-10-16] thinking: on——deepseek 天生产思考，但必须显式声明
+    # 才会经 model_config 注入 reasoning_effort=default_effort(high)；缺声明时
+    # 端点退化成内联 <think> 形态（实测 10-16：正文尾部带 </think> 污染）。
+    thinking: 'on'
     note: 降级模型（system.fallback_model 指向；调用失败时网关切入）
     retry:
       max_attempts: 3
