@@ -6,10 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
+from types import SimpleNamespace
 from typing import Any, Optional
+
+import httpx
 
 from ..infra.errors import ErrorCode, ModelError
 from ..infra.logging import get_logger
@@ -32,6 +36,11 @@ RETRY_CLASS_CAPS = {
 INCOMPLETE_MARKER_CAP = 3      # 完成标记缺失（P-3）：最多 3 次全额调用
 RETRY_TOTAL_BUDGET_SECONDS = 300   # 单次 call 重试总时长熔断（含调用耗时）
 RETRY_BACKOFF_MAX_SECONDS = 30     # 指数退避单次 sleep 上限
+
+# [思考流 2026-10-15] 走原生 SSE 读取的 openai 兼容适配端点：litellm 对自定义 openai
+# transform 会丢弃 reasoning_content（假端点实测 attr/model_extra/vars 全空），此类端点
+# 照抄 dsh-llm-deepseek 用原生 httpx + SSE 解析，从原始 delta.reasoning_content 读思考。
+NATIVE_SSE_PROVIDERS = {"opencode"}
 
 
 class ModelGateway:
@@ -594,13 +603,25 @@ class ModelGateway:
                 if model_config.get("extra_headers"):
                     kwargs["extra_headers"] = model_config["extra_headers"]
                 start = time.monotonic()
-                response = await litellm.acompletion(**kwargs)
+                # [思考流 2026-10-15] opencode 等自定义 openai 兼容端点：litellm 走通用
+                # openai transform 会把 reasoning_content 彻底丢弃（假端点实测 attr/model_extra
+                # /vars 全空），导致思考无法 yield。照抄 dsh-llm-deepseek：这类端点用原生
+                # httpx + SSE 解析，从原始 delta.reasoning_content 直接读。产出对象与 litellm
+                # chunk 保持同形（delta.content / reasoning_content / tool_calls / finish_reason），
+                # 使下方累积与 yield 契约一行不变。
+                if provider in NATIVE_SSE_PROVIDERS:
+                    chunks = self._native_sse_chunks(
+                        provider, model, api_key, messages, temperature,
+                        max_tokens, timeout, model_config, tools,
+                    )
+                else:
+                    chunks = await litellm.acompletion(**kwargs)
                 parts: list[str] = []
                 # [信息流重出 Task4] 流式工具调用累积：OpenAI 协议下 tool_calls 按
                 # index 分片到达（arguments 是**片段**，须按序拼接），首片带 id/name。
                 tool_acc: dict[int, dict[str, Any]] = {}
                 finish_reason = ""
-                async for chunk in response:
+                async for chunk in chunks:
                     # [信息流重出 Task1] 双增量解包：思考与正文分走两个出口。
                     # 思考字段名各提供商不一（reasoning / reasoning_content），两路都取。
                     delta_obj = None
@@ -705,6 +726,94 @@ class ModelGateway:
                             yield ev
                         return
                     raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {e}")
+
+    async def _native_sse_chunks(
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+        messages: list[dict[str, Any]],
+        temperature: float,
+        max_tokens: Optional[int],
+        timeout: Optional[int],
+        model_config: dict[str, Any],
+        tools: list[dict[str, Any]] | None,
+    ):
+        """[思考流 2026-10-15] 原生 httpx + SSE 读取 openai 兼容端点。
+
+        照抄 dsh-llm-deepseek（adapter.ts / translate.ts）：litellm 对自定义 openai
+        端点会丢弃 reasoning_content（假端点实测 attr/model_extra/vars 全空），而
+        原生解析直接从原始 SSE 的 delta.reasoning_content 读，思考 100% 拿得到。
+
+        产出对象与 litellm chunk 同形（chunk.choices[0].delta.content /
+        reasoning_content / tool_calls；chunk.choices[0].finish_reason），使
+        stream_call 的既有累积与 yield 契约一行不变。
+        """
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        if tools:
+            body["tools"] = [{"type": "function", "function": t} for t in tools]
+        base_url = (model_config.get("base_url") or "https://opencode.ai/zen/go/v1").rstrip("/")
+        url = f"{base_url}/chat/completions"
+        headers: dict[str, str] = {
+            "authorization": f"Bearer {api_key}",
+            "content-type": "application/json",
+            "accept": "text/event-stream",
+        }
+        # 自定义请求头透传（opencode 硬要求 x-opencode-session 头）
+        eh = model_config.get("extra_headers")
+        if isinstance(eh, dict):
+            for k, v in eh.items():
+                headers[str(k)] = str(v)
+
+        async with httpx.AsyncClient(timeout=timeout or 60) as client:
+            async with client.stream("POST", url, json=body, headers=headers) as resp:
+                if resp.status_code != 200:
+                    text = (await resp.aread()).decode("utf-8", "replace")[:500]
+                    raise ModelError(
+                        ErrorCode.MODEL_CALL_FAILED,
+                        f"[NATIVE_SSE] {provider} HTTP {resp.status_code}: {text}",
+                    )
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[len("data:"):].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        raw = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    for choice in raw.get("choices", []):
+                        d = choice.get("delta") or {}
+                        # 工具调用：还原为 SimpleNamespace（tc.index/id/function.name/arguments）
+                        tcs = []
+                        for tc in d.get("tool_calls") or []:
+                            fn = tc.get("function") or {}
+                            tcs.append(SimpleNamespace(
+                                index=tc.get("index", 0),
+                                id=tc.get("id"),
+                                function=SimpleNamespace(
+                                    name=fn.get("name"),
+                                    arguments=fn.get("arguments", ""),
+                                ),
+                            ))
+                        delta_ns = SimpleNamespace(
+                            content=d.get("content"),
+                            reasoning_content=d.get("reasoning_content"),
+                            reasoning=d.get("reasoning"),
+                            tool_calls=tcs if tcs else None,
+                        )
+                        fin = choice.get("finish_reason")
+                        yield SimpleNamespace(
+                            choices=[SimpleNamespace(delta=delta_ns, finish_reason=fin)],
+                        )
 
     def _get_api_key(self, env_var: Optional[str]) -> str:
         key = os.environ.get(env_var or "")

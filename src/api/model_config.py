@@ -45,8 +45,15 @@ CONFIG_PATH = BASE_DIR / "config" / "models.yaml"
 # thinking=off 时按方言注入「关闭思考」参数；thinking=on 时按方言注入「开启」参数。
 # 无方言（auto / 其它模型 / 未知模型）→ 不传任何思考参数（端点自然行为）。
 _THINKING_DIALECT = {
-    "minimax-m3": "minimax",   # MiniMax：extra_body.thinking.type = disabled
-    "qwen-max": "qwen",        # qwen：extra_body.enable_thinking = false/true
+    "minimax-m3": "minimax",          # MiniMax：extra_body.thinking.type = disabled
+    "minimax-m31-flash-preview": "minimax",  # [2026-10-15] 更名后模型也认（旧键对不上导致 on 不注入）
+    "qwen-max": "qwen",               # qwen：extra_body.enable_thinking = false/true
+}
+# [2026-10-15] provider 维度方言：同一供应商下思考方言一致，模型更名/新增自动跟随，
+# 避免"模型名不在方言表 → thinking 白写不注入"的假配置。minimax / aliyun(qwen) 两系。
+_PROVIDER_DIALECT = {
+    "minimax": "minimax",
+    "aliyun": "qwen",
 }
 
 # 默认模型（角色未绑定时的回落）。承接原 model_pick.json 的 default→main 语义。
@@ -128,7 +135,10 @@ def _compile(raw: dict[str, Any]) -> dict[str, Any]:
             thinking = "off"
         elif not isinstance(thinking, str):
             thinking = "auto"
-        dialect = _THINKING_DIALECT.get(mname)
+        # 方言解析：先按模型名，再按供应商（更名/新增模型自动跟随，避免"配置写 on 不注入"）。
+        dialect = _THINKING_DIALECT.get(mname) or _PROVIDER_DIALECT.get(prov_name)
+        # DeepSeek 系判定（OpenAI 兼容层走 reasoning_effort；opencode 聚合端点的 deepseek 系都在此列）
+        is_deepseek = "deepseek" in mname.lower() or "deepseek" in str(entry.get("model", "")).lower()
         if dialect == "minimax":
             # [探针实测 2026-10-12] MiniMax 的 thinking.type **只接受
             # adaptive / disabled**，传 enabled 直接 400（invalid thinking.type:
@@ -143,12 +153,17 @@ def _compile(raw: dict[str, Any]) -> dict[str, Any]:
             entry["extra_body"]["enable_thinking"] = (thinking != "off")
             # qwen 档位（若端点提供）→ thinking_budget（未实测，暂不注入；见 note）
         elif thinking not in ("auto", "on", "off"):
-            # 无方言（Nous/智谱/DeepSeek 等）：thinking 是具体档位 → 注入
+            # 无方言（Nous/DeepSeek 档位等）：thinking 是具体档位 → 注入
             # reasoning_effort（OpenAI 兼容层通用思考强度参数；Nous 实测
             # supported_parameters 含 "reasoning_effort"）。端点不认则失败由
             # 网关/调用层暴露，界面录入时只存端点声明过的档位，天然安全。
             entry["reasoning_effort"] = thinking
-        # 其它（auto / on / off / 无方言）→ 不传思考参数
+        elif thinking == "on" and is_deepseek:
+            # [2026-10-15] 修"配置 on 不注入"：DeepSeek 系无方言，但自带
+            # reasoning_efforts/default_effort 能力声明，on 必须真正开思考——
+            # 注入 default_effort（缺省 high），否则思考流(第3环)永远取不到增量。
+            entry["reasoning_effort"] = str(mdef.get("default_effort") or "high")
+        # 其它（auto / off / 无方言非 deepseek）→ 不传思考参数（端点自然行为）
 
         # 5. 弹出非 gateway 字段（thinking 已翻译进 extra_body，字段本身 gateway 不认；
         #    note/label/models_url 是设置界面字段，继承或覆盖进来的都一并弹出——验收⑦）

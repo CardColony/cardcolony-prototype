@@ -41,9 +41,71 @@ def _load_cards_index(work_id: str) -> list[dict[str, Any]]:
     return card_db.read_sync(work_id, _fn, []) or []
 
 
+def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, Any]]:
+    """只取当前卡的**直接子卡** id/title/status_block。
+
+    **SQL 不递归**（`WHERE work_id=? AND parent=?`，只一层）⇒ 孙级在结构上取不到
+    ——「父卡只看直接子级」不靠过滤逻辑保证，靠查询本身。
+    只取所需三列：不读子卡的 mission/rulings/history，更不碰影子（减污染）。
+    空 status_block 保留到纯 renderer，由区的「空内容不出现」规则统一过滤。
+    """
+    if not parent_id:
+        return []
+
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        return [
+            {"card_id": r["card_id"], "title": r["title"] or "",
+             "status_block": r["status_block"] or ""}
+            for r in conn.execute(
+                "SELECT card_id, title, status_block FROM cards "
+                "WHERE work_id = ? AND parent = ? ORDER BY card_id",
+                (work_id, parent_id),
+            )
+        ]
+
+    return card_db.read_sync(work_id, _fn, []) or []
+
+
 def _control_path() -> Path:
     """控制面配置位置；调用时派生路径，不缓存模块级路径常量。"""
     return BASE_DIR / "config" / "context_regions.json"
+
+
+def _type_texts_path() -> Path:
+    """「按卡类型挂的文本」（多维度）配置位置；调用时派生，测试可 monkeypatch。"""
+    return BASE_DIR / "config" / "type_texts.json"
+
+
+def load_type_texts() -> dict[str, dict[str, str]]:
+    """读「按卡类型挂的文本」（多维度）。**fail-open**：读不到/坏 JSON/结构不对 → 空表。
+
+    与类型注册表同纪律：**配置是控制源，不是可用性依赖**——绝不因它阻断装配。
+    返回 ``{维度: {类型: 文本}}``；每个维度只保留 value 为非空字符串的条目。
+    下划线前缀键（如 ``_meta``）是文档元数据、不是维度，跳过。
+    类型清单不在本文件、不校验（唯一来源＝类型注册表）。
+    """
+    import json as _json
+    try:
+        raw = _type_texts_path().read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("[type_texts] 配置读取失败（视为全空）: %s", exc)
+        return {}
+    try:
+        data = _json.loads(raw)
+    except ValueError as exc:
+        logger.warning("[type_texts] 配置解析失败（视为全空）: %s", exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for dim, table in data.items():
+        if str(dim).startswith("_") or not isinstance(table, dict):
+            continue
+        clean = {str(k): v for k, v in table.items()
+                 if isinstance(v, str) and v.strip()}
+        if clean:
+            out[str(dim)] = clean
+    return out
 
 
 def load_control() -> dict[str, Any]:
@@ -112,8 +174,10 @@ def build_ctx(work_id: str, current_id: str,
         work_card_id=work_store.work_card_id_of(work_id),
         cur=cur,
         cur_meta=card_store._meta_of(work_id, current_id) or {},
+        direct_child_status=_load_direct_child_status(work_id, current_id),
         project_class=pc,
         type_registry=card_store.load_type_registry(),
+        type_texts=load_type_texts(),
         memory_state=state,
         memory_entries=(state or {}).get("entries") or [],
         controls=load_control(),
