@@ -132,15 +132,18 @@
           </div>
           <button class="insp-tab" id="inspTab" title="展开/收起右侧卡详情">ⓘ 卡详情 · 职责/结论/关系/历史</button>
         </div>
-        <!-- [规则卡 2026-10-15] 右栏规则面板：每 work 一张规则卡，六区（区名＝card_type
-             code）分区直改即存；仅根卡可提议修改（draft_rule_edit）、弹窗审批落盘。 -->
-        <div class="rule-panel" id="rulePanel">
-          <div class="rule-panel-body" id="rulePanelBody">
-            <!-- workspace.js renderRulePanel 动态填充 -->
-          </div>
-          <button class="rule-tab" id="ruleTab" title="展开/收起规则卡面板">规则卡</button>
-        </div>
       </div>
+    </div>
+    <!-- [规则卡 2026-10-15 · 用户 2026-10-16 纠正] 规则面板挂【画布右侧】（.stage 直下、
+         #viewport 之后的 absolute 右栏），不是对话右栏——规则是全局的，不跟当前卡走；
+         画布态显示、聊天态隐藏（照 #viewport/#workspace 的 data-view 显隐机制）。
+         每 work 一张规则卡，六区（区名＝card_type code）分区直改即存；仅根卡可提议
+         修改（draft_rule_edit）、弹窗审批落盘。 -->
+    <div class="rule-panel canvas-rule-panel" id="rulePanel">
+      <div class="rule-panel-body" id="rulePanelBody">
+        <!-- workspace.js renderRulePanel 动态填充 -->
+      </div>
+      <button class="rule-tab" id="ruleTab" title="展开/收起规则卡面板">规则卡</button>
     </div>
   </div>
 </div>
