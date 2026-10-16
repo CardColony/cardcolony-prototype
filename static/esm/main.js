@@ -12,8 +12,8 @@
 import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=35";
 import "./util.js?v=30";
-import "../canvas.js?v=41";
-import { createNavSystem } from "./nav_system.js?v=31";
+import "../canvas.js?v=42";
+import { createNavSystem } from "./nav_system.js?v=32";
 import { loadRulePanel } from "./rule_panel.js?v=30";
 
 const WORK_ID = window.__WORK_ID__;

@@ -13,7 +13,7 @@ import { notify, postStop } from "./esm/api.js?v=35";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=31";
+import { createNavSystem } from "./esm/nav_system.js?v=32";
 import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=30";
 
 const WORK_ID = window.__WORK_ID__;
@@ -59,13 +59,8 @@ const WORK_ID = window.__WORK_ID__;
     return html;
   }
 
-  // [T17-F6] 三态视图切换：data-view 驱动 #viewport/#workspace 显隐 + nav 宽窄
-  function setAppView(view) {
-    const main = document.getElementById("appMain");
-    const nav = document.getElementById("appNav");
-    if (main) main.dataset.view = view;
-    if (nav) nav.classList.toggle("rail", view === "canvas");
-  }
+  // [阶段5 A5.1 2026-10-17] setAppView 机制退役：画布/对话已拆成两个独立页面，
+  // 各自静态布局（模板 body 挂 page-canvas / page-chat），不再需要运行期切视图。
 
   // [顶栏整合 2026-10-13] 聊天态面包屑（吃 navStore.snapshot；替代已删的 #wsHeadTitle）。
   // 段序：首段＝项目名＝根卡（点它＝回画布，用户 17:17 ②「让【根卡】可点击…点击这个就是回画布」）
@@ -156,8 +151,7 @@ const WORK_ID = window.__WORK_ID__;
       history.replaceState(null, "", "/work/" + WORK_ID + "/card/" + cardId);
       // [S3/R-25/V3-F5] 成功跳转（getCard 已取回）才记最近访问；失败/灰态不进此路径
       navFind.recordRecent(WORK_ID, cardId, card.meta.title);
-      // [T17] 视图切换：进入对话态（nav 260px、workspace 可见）；.active 旧机制退役
-      setAppView("chat");
+      // [阶段5 A5.1] 视图切换机制退役：本页恒为对话态，无需 setAppView。
       if (stale()) return;
       // 导航树重渲以应用当前卡高亮与祖先路径展开
       await renderNav();
@@ -525,8 +519,6 @@ const WORK_ID = window.__WORK_ID__;
     inspector,
   });
   const { navStore, navFind, renderNav } = navSystem;
-
-  export { setAppView };   // 原 window.SetAppView
 
   // ==================== 讨论区 ====================
   /* [会话渲染单源化 2026-10-15 · C1] /session 消息渲染通道**退役**：

@@ -11,14 +11,14 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=36">
+<link rel="stylesheet" href="/static/style.css?v=37">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
      版本号：nav.css 改动必须升这里的 ?v=，否则浏览器吃旧缓存、新样式不生效。 -->
 <link rel="stylesheet" href="/static/nav.css?v=12">
 </head>
-<body>
+<body class="page-canvas">
 <div class="work-page">
   <!-- [T17-F1] 左栏对话导航：恒在；画布态 44px 窄条（悬停浮层全树），对话态 360px
        （注释追实 2026-10-13：宽度 260→320→360，见 static/nav.css .app-nav） -->
@@ -60,7 +60,7 @@
   </nav>
 
   <!-- [T17-F1] 中区主视图：topbar + stage（画布/对话二选一，data-view 驱动显隐） -->
-  <div class="app-main" id="appMain" data-view="canvas">
+  <div class="app-main" id="appMain">
     <div class="main-col">
     <!-- [顶栏整合 2026-10-13] 两条栏（.topbar 48px ＋ .ws-head ~35px）合并为一条 44px：
          面包屑 ｜（画布态）设置·zoom·整理画布·新建卡。
@@ -133,6 +133,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=41.0"></script>
+<script type="module" src="/static/esm/main.js?v=42.0"></script>
 </body>
 </html>

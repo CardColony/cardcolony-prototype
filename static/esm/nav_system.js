@@ -347,8 +347,8 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       if (!rootCid) { navRenderer.toggleProject(phead.dataset.wid); return; }
       // 只在「对话态且已打开根卡」时不重复打开——画布态时 cur() 留着旧值，
       // 若按「当前卡==根卡」判会变成死点击（点了没反应），必须同时看视图态。
-      const main = document.getElementById("appMain");
-      const inChat = main && main.dataset.view === "chat";
+      // [阶段5 A5.1] 视图态改判页静态标记（body.page-chat），不再读 data-view。
+      const inChat = document.body.classList.contains("page-chat");
       if (inChat && cur() && cur().meta.card_id === rootCid) return;
       gotoCard(rootCid, phead.dataset.wid, false);
       return;

@@ -144,13 +144,10 @@ a { color: inherit; text-decoration: none; }
    作用域：.work-page .topbar。 */
 .work-page .topbar { height: 44px; gap: 8px; padding: 0 14px; }
 
-/* 画布专属件（zoomDisplay/reorganizeBtn/newCardBtn）：聊天态隐藏、画布态显示。
-   用 display 而非删元素——canvas.js:33-35 顶层即取用、:1436/:1453 直接挂 onclick，
-   删元素会 TypeError 让整个画布脚本死掉。 */
-.app-main[data-view="chat"] .topbar .canvas-only { display: none; }
-.app-main[data-view="canvas"] #chatCrumb { display: none; }
-/* [画布入口 2026-10-16 用户令] 顶部栏最左：返回本项目画布的 icon 按钮。
-   聊天态常显（data-view=chat 默认）；画布态隐藏（已在画布）。 */
+/* [阶段5 A5.1 2026-10-17] 显隐机制退役：两页各自静态布局，原 [data-view] 规则按页归属拆解——
+   ① 对话页已无 .canvas-only 元素、画布页已无 #chatCrumb/.canvas-entry ⇒ 三条规则成死件，删；
+   ② 页内唯一性规则改挂 body.page-*（模板静态类，不再由 JS 切）。 */
+/* [用户 2026-10-16 明令] 规则卡只在【画布态】显示——对话界面不显示、不避让 */
 .work-page .topbar .canvas-entry {
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; padding: 0; margin: 0;
@@ -159,7 +156,6 @@ a { color: inherit; text-decoration: none; }
 }
 .work-page .topbar .canvas-entry:hover { background: var(--panel-hover); color: var(--text); }
 .work-page .topbar .canvas-entry svg { width: 16px; height: 16px; display: block; }
-.app-main[data-view="canvas"] .topbar .canvas-entry { display: none; }
 
 
 /* 聊天态面包屑：首段＝项目名＝根卡（可点回画布）｜中间段＝祖先卡（可点切卡）｜末段＝当前卡（不可点） */
@@ -404,7 +400,8 @@ a { color: inherit; text-decoration: none; }
 
 /* ============ [T17-F2/F3] 工作区三态外壳 ============ */
 /* 病灶修复：旧 .workspace 是全屏覆盖层（position:absolute; inset:0; top:48px; z-index:100，
-   进卡即盖掉画布）。现降为 .stage 内与画布互斥的主视图容器：data-view 驱动显隐。
+   进卡即盖掉画布）。现降为 .stage 内的主视图容器；[阶段5 A5.1] 两页各自静态布局 ⇒
+   对话页（body.page-chat）恒可见，画布页不含该元素，无需再按视图切换。
    显隐用 visibility 而非 display:none——隐藏的画布保持可测量（renderCanvas 的
    measureSizes/fitView 依赖 clientWidth），对话区 scrollHeight 也恒有效。 */
 .workspace {
@@ -414,8 +411,7 @@ a { color: inherit; text-decoration: none; }
   display: flex;
   visibility: hidden;
 }
-.app-main[data-view="chat"] #workspace { visibility: visible; }
-.app-main[data-view="chat"] #viewport { visibility: hidden; }
+body.page-chat .workspace { visibility: visible; }
 
 /* ---- 左侧边栏样式已整段迁至 static/nav.css（[左栏接线 步2]，左栏样式的唯一真相）----
    本文件不得再出现任何左栏选择器规则：两处并存会互相打架——旧的项目行 hover
@@ -1239,8 +1235,8 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .btn.stop-inline { font-size: 12px; padding: 2px 8px; margin-left: 8px; }
 .heartbeat-tip { display: flex; align-items: center; font-size: 12px; color: var(--yellow, #d29922); }
 
-/* [F3⑦] 切视图过渡：120ms opacity，不动布局 */
-.app-main[data-view] { transition: opacity 0.12s ease; }
+/* [F3⑦] 切视图过渡：120ms opacity，不动布局（[阶段5 A5.1] 两页静态布局，过渡保留为无害项） */
+.app-main { transition: opacity 0.12s ease; }
 
 /* [F3④] 画布三态容器 */
 .canvas-state-box { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 5; }
@@ -1462,8 +1458,9 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   border-left: 1px solid var(--border);
   overflow: hidden;
 }
-/* [用户 2026-10-16 明令] 规则卡只在【画布态】显示——对话界面不显示、不避让 */
-.app-main[data-view="chat"] .rule-panel { display: none; }
+/* [用户 2026-10-16 明令] 规则卡只在【画布态】显示——对话界面不显示、不避让。
+   [阶段5 A5.1] 改挂页静态标记 body.page-chat（模板里写死，不再由 JS 切视图）。 */
+body.page-chat .rule-panel { display: none; }
 .rule-panel-body {
   flex: 1;
   padding: 16px;

@@ -22,7 +22,7 @@
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=31";
+import { RenderNav } from "./esm/nav_system.js?v=32";
 import { notify } from "./esm/api.js?v=35";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
