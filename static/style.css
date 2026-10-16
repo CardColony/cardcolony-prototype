@@ -1306,10 +1306,16 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 * { scrollbar-width: thin; scrollbar-color: rgba(139, 148, 158, 0.45) transparent; }  /* Firefox */
 
 /* ============ [规则卡 2026-10-15] 右栏规则面板 ============
+   [用户 2026-10-16 纠正] 挂【画布右侧】（.stage 直下 absolute 右栏），非对话右栏。
    结构镜像 .inspector：窄条 .rule-tab（收起态）＋展开 .rule-panel-body。
-   六区分区直改即存（textarea blur/保存按钮触发 PATCH，无确认框）。 */
+   六区分区直改即存（textarea blur/保存按钮触发 PATCH，无确认框）。
+   两态：画布态显示、聊天态隐藏（照 #viewport/#workspace 的 data-view 机制）。 */
 .rule-panel {
-  flex: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
   width: 32px;
   border-left: 1px solid var(--border);
   display: flex;
@@ -1319,6 +1325,7 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   overflow: hidden;
 }
 .rule-panel.open { width: 352px; }
+.app-main[data-view="chat"] .rule-panel { display: none; }
 .rule-panel-body {
   width: 320px;
   flex: none;
