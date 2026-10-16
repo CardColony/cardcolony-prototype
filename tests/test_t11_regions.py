@@ -64,12 +64,14 @@ def _legacy_build_viewpoint_system_prompt(context_block: str) -> str:
 
 def test_region_table_six_regions_no_current_turn_region():
     # [上下文底座全量接管 2026-10-15] registry 现含所有运行通道与动态注入区。
+    # [规则卡 2026-10-15] 新增 order 85「规则注入」区（instruction 之后、card_duty 之前），
+    # 全表 13 区。
     orders = [r["order"] for r in context_regions.REGION_TABLE]
     names = {r["name"] for r in context_regions.REGION_TABLE}
-    assert orders == [0, 90, 100, 150, 155, 200, 300, 900, 999, 1000, 1010, 1020]
-    assert names == {"使用说明", "卡片职责", "卡片清单", "当前卡", "卡片区域说明",
-                     "记忆（condense_fold）", "对话历史", "本轮工具轮", "用户消息",
-                     "判断协议注入", "工作规范与流程注入", "三席身份注入"}
+    assert orders == [0, 85, 90, 100, 150, 155, 200, 300, 900, 999, 1000, 1010, 1020]
+    assert names == {"使用说明", "规则注入", "卡片职责", "卡片清单", "当前卡",
+                     "卡片区域说明", "记忆（condense_fold）", "对话历史", "本轮工具轮",
+                     "用户消息", "判断协议注入", "工作规范与流程注入", "三席身份注入"}
     # 不再把动态上下文泛称为独立「当前轮」内容区。
     assert "当前轮" not in names
     assert not any("当前轮" in r["name"] or "当前轮" in r["source"]
@@ -77,6 +79,7 @@ def test_region_table_six_regions_no_current_turn_region():
     # delivery 区别模型请求的不同槽位。
     by_key = {r["key"]: r for r in context_regions.REGION_TABLE}
     assert by_key["instruction"]["delivery"] == "system"
+    assert by_key["rule"]["delivery"] == "system"          # [规则卡] order 85 system 区
     assert by_key["history"]["delivery"] == "prior"
     assert by_key["user_message"]["delivery"] == "user"
     assert by_key["judgment_protocol"]["delivery"] == "once"
@@ -163,6 +166,7 @@ async def test_v1_context_regions_join_equals_neutral_context(sandbox):
     regions = context_assembler.build_context_regions(wid, "card_001")
     joined = context_regions.assemble_regions([r["text"] for r in regions])
     assert joined == context_assembler.build_neutral_context(wid, "card_001")
+    # 无规则卡 → order 85 渲染空串，「没有来源就不出现这个区」，join 不含它。
     assert [r["order"] for r in regions] == [90, 100, 150, 155]
     # regions 条目只带指针性元数据，不带正文复制字段以外的意外大字段
     for r in regions:

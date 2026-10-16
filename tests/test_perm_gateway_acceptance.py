@@ -137,16 +137,23 @@ def test_v4_positive_control_registered_types_see_all():
     ``CODER_ONLY_TOOLS`` 后只对 coder 下发——注册类型（非 coder）的「全量」
     ＝ ``TOOL_SWITCH − CODER_ONLY_TOOLS``（判据6 字面口径），根卡再减 delete。
     意图不变：注册类型见它该见的全量、根卡少 delete。
+
+    [规则卡 2026-10-15 · 块3] **全量口径再随根卡闸改派生**：``draft_rule_edit``
+    挂进 ``ROOT_ONLY_TOOLS`` 后只对剧本根卡（card_id==work_card_id_of(work_id)）
+    下发；本测试用合成卡面、不带 work_id ⇒ 第四段 fail-closed 收走 root-only
+    工具（同上理由：件数不写死，按注册表现取）。意图不变。
     """
     coder_only = set(card_tools.CODER_ONLY_TOOLS)
-    # [v1.1 · 判据6 字面口径] 基线集合＝TOOL_SWITCH − CODER_ONLY_TOOLS
-    expected_all = len(set(card_tools.TOOL_SWITCH) - coder_only)
+    root_only = set(card_tools.ROOT_ONLY_TOOLS)
+    # [v1.1 · 判据6 字面口径] 基线集合＝TOOL_SWITCH − CODER_ONLY − ROOT_ONLY
+    expected_all = len(set(card_tools.TOOL_SWITCH) - coder_only - root_only)
     n_all = len(card_tools.build_tool_schemas(
         "card_x", cards={"card_x": _meta("sub_project")}))
     assert n_all == expected_all, (
         f"工作单元型卡应见 {expected_all} 件"
         f"（TOOL_SWITCH {len(card_tools.TOOL_SWITCH)} 件减 "
-        f"CODER_ONLY_TOOLS {sorted(coder_only)}），实 {n_all} 件"
+        f"CODER_ONLY_TOOLS {sorted(coder_only)} 减 "
+        f"ROOT_ONLY_TOOLS {sorted(root_only)}），实 {n_all} 件"
     )
     for pc, ct in (("rd_project", "sub_project"),
                    ("research_project", "topic"),

@@ -1294,3 +1294,82 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 *::-webkit-scrollbar-button { display: none; }   /* 去掉默认上下箭头按钮 */
 * { scrollbar-width: thin; scrollbar-color: rgba(139, 148, 158, 0.45) transparent; }  /* Firefox */
 
+/* ============ [规则卡 2026-10-15] 右栏规则面板 ============
+   结构镜像 .inspector：窄条 .rule-tab（收起态）＋展开 .rule-panel-body。
+   六区分区直改即存（textarea blur/保存按钮触发 PATCH，无确认框）。 */
+.rule-panel {
+  flex: none;
+  width: 32px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: row;
+  background: var(--bg-deep);
+  transition: width 0.15s ease;
+  overflow: hidden;
+}
+.rule-panel.open { width: 352px; }
+.rule-panel-body {
+  width: 320px;
+  flex: none;
+  padding: 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rule-panel:not(.open) .rule-panel-body { display: none; }
+.rule-tab {
+  width: 32px;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12px;
+  writing-mode: vertical-lr;
+  letter-spacing: 3px;
+  padding: 12px 0;
+}
+.rule-tab:hover { color: var(--text); background: var(--panel-hover); }
+.rule-sec-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.rule-sec-name {
+  font-size: 12px;
+  color: var(--text-soft);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.rule-sec-inject {
+  font-size: 11px;
+  color: var(--dim);
+}
+.rule-sec-textarea {
+  width: 100%;
+  min-height: 64px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.rule-sec-textarea:focus { outline: none; border-color: var(--accent, #4a9eff); }
+.rule-sec-status {
+  font-size: 11px;
+  color: var(--dim);
+  min-height: 14px;
+}
+.rule-sec-status.err { color: #e5534b; }
+.rule-panel-empty {
+  font-size: 13px;
+  color: var(--dim);
+  padding: 12px 0;
+}
+.rule-panel-empty .btn { margin-top: 8px; }
+

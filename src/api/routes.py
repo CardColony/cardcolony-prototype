@@ -144,6 +144,18 @@ class CommitRequest(BaseModel):
     feedback_rounds: int = 0
 
 
+# [规则卡 2026-10-15] 规则面板/审批通道请求体
+class PatchRuleSectionRequest(BaseModel):
+    content: str = ""
+    base_hash: str = Field(min_length=0, default="")
+
+
+class RuleCommitRequest(BaseModel):
+    section: str = Field(min_length=1)
+    content: str = ""
+    base_hash: str = Field(min_length=0, default="")
+
+
 # [无内容预设改造 2026-10-02] PatchMethodologyRequest 已删除（方法论库停用）
 
 
@@ -494,6 +506,19 @@ async def create_work_card(work_id: str, req: CreateCardRequest):
         return _err(423, "卡片被占用，请稍后重试")
     if "error" in result:
         return _err(400, result["error"])
+    # [规则卡 2026-10-15] 建卡即播种六区空模板（mission 列；单一写闸 update_card）
+    if req.card_type == "rule":
+        card_id = (result.get("meta") or {}).get("card_id", "")
+        if card_id:
+            try:
+                await card_store.update_card(
+                    work_id, card_id, {"mission": _rule_template_body()},
+                    "规则卡创建：播种六区空模板",
+                )
+            except CardLockedError:
+                pass  # 播种失败不阻断建卡（面板可后补）
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("规则卡模板播种失败（不阻断）work=%s: %s", work_id, exc)
     return JSONResponse(status_code=201, content=result)
 
 
@@ -597,6 +622,167 @@ async def post_work_commit(work_id: str, card_id: str, req: CommitRequest):
         status = 409 if result.get("code") == "hash_mismatch" else 400
         return _err(status, result["error"])
     return result
+
+
+# ============ [规则卡 2026-10-15]规则卡分区读写与审批落盘 ============
+# 规则卡正文整体存 mission 列（单一写闸＝card_store.update_card）；分区＝
+# ## {区名} 行级切分（context_regions.split_rule_sections 纯函数）；hash＝
+# sha256(区内容)（card_draft 同口径）。仅根卡经 draft_rule_edit 提议、
+# 用户弹窗确认后走 /rule/commit 落盘；面板直改走 PATCH，即改即存。
+
+def _find_rule_card(work_id: str) -> Optional[dict[str, Any]]:
+    """查本 work 首张 rule 卡（{card_id, mission}）；无 → None。"""
+    def _fn(conn: Any) -> Optional[dict[str, Any]]:
+        row = conn.execute(
+            "SELECT card_id, mission FROM cards WHERE card_type = 'rule' "
+            "ORDER BY card_id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return {"card_id": row["card_id"], "mission": row["mission"] or ""}
+    return card_db.read_sync(work_id, _fn, None)
+
+
+def _rule_section_names() -> list[str]:
+    """合法分区名＝词表 codes（root 在前、去重、声明序）。"""
+    return context_regions.rule_section_names(card_store.load_type_registry())
+
+
+def _rule_section_hash(content: str) -> str:
+    """区内容指纹：sha256 hex（card_draft._block_hash 同算法）。"""
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+def _replace_rule_section(mission: str, section: str, content: str) -> str:
+    """行级外科手术：只替换 `## {section}` 区内容，其它区字节不变。
+
+    缺区则文尾追加新区（含区头）。mission 原样保留（含区头行）。
+    """
+    lines = (mission or "").split("\n")
+    hdr = f"## {section}"
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == hdr:
+            start = i
+            break
+    new_body_lines = (content or "").split("\n") if content else []
+    if start is None:
+        # 缺区：文尾追加
+        base = "\n".join(lines).rstrip("\n")
+        block = hdr + ("\n" + "\n".join(new_body_lines) if new_body_lines else "")
+        return (base + "\n\n" if base else "") + block
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j].startswith("## "):
+            end = j
+            break
+    rebuilt = lines[: start + 1] + new_body_lines + lines[end:]
+    return "\n".join(rebuilt)
+
+
+def _rule_template_body() -> str:
+    """规则卡初建空模板：六区齐、内容空。"""
+    return "\n\n".join(f"## {n}" for n in _rule_section_names())
+
+
+@router.get("/works/{work_id}/rule")
+async def get_work_rule(work_id: str):
+    """规则面板读口：六区齐全（含空区）、hashes、正被 N 类卡注入。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    names = _rule_section_names()
+    counts = context_regions.rule_inject_counts(card_store.load_type_registry())
+    row = _find_rule_card(work_id)
+    if row is None:
+        return {"exists": False, "card_id": "",
+                "sections": {n: "" for n in names},
+                "hashes": {n: _rule_section_hash("") for n in names},
+                "inject_type_counts": {n: counts.get(n, 0) for n in names}}
+    sections = context_regions.split_rule_sections(row["mission"])
+    sections.pop("", None)  # 区头前游离文不外露
+    out_sections = {n: sections.get(n, "") for n in names}
+    hashes = {n: _rule_section_hash(out_sections[n]) for n in names}
+    return {"exists": True, "card_id": row["card_id"],
+            "sections": out_sections, "hashes": hashes,
+            "inject_type_counts": {n: counts.get(n, 0) for n in names}}
+
+
+@router.patch("/works/{work_id}/rule/sections/{section}")
+async def patch_work_rule_section(work_id: str, section: str,
+                                  req: PatchRuleSectionRequest):
+    """面板直改即存：hash 比对（base_hash 不符→409），经 update_card 写闸。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    names = _rule_section_names()
+    if section not in names:
+        return _err(400, f"非法区名: {section}（只允许 {names}）")
+    row = _find_rule_card(work_id)
+    if row is None:
+        return _err(404, "规则卡不存在（本 work 尚未创建 rule 卡）")
+    sections = context_regions.split_rule_sections(row["mission"])
+    cur = sections.get(section, "")
+    old_hash = _rule_section_hash(cur)
+    if req.base_hash != old_hash:
+        return _err(409, f"hash 不符（当前区 hash={old_hash[:16]}），请刷新后重试")
+    new_mission = _replace_rule_section(row["mission"], section, req.content)
+    try:
+        result = await card_store.update_card(
+            work_id, row["card_id"], {"mission": new_mission},
+            f"用户面板保存规则区 {section}",
+        )
+    except CardLockedError:
+        return _err(423, "卡片被占用，请稍后重试")
+    if "error" in result:
+        return _err(400, result["error"])
+    new_hash = _rule_section_hash(req.content)
+    return {"ok": True, "card_id": row["card_id"], "section": section,
+            "old_hash": old_hash, "new_hash": new_hash}
+
+
+@router.post("/works/{work_id}/rule/commit")
+async def post_work_rule_commit(work_id: str, req: RuleCommitRequest):
+    """根卡提议审批落盘：draft_rule_edit 产物经用户「同意」后写入。
+
+    hash 比对同 PATCH（不符→409）；落盘后影子 ## 迭代历史 记一行
+    （时间+section+旧/新hash+来源=根卡审批）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    names = _rule_section_names()
+    if req.section not in names:
+        return _err(400, f"非法区名: {req.section}（只允许 {names}）")
+    row = _find_rule_card(work_id)
+    if row is None:
+        return _err(404, "规则卡不存在（本 work 尚未创建 rule 卡）")
+    sections = context_regions.split_rule_sections(row["mission"])
+    cur = sections.get(req.section, "")
+    old_hash = _rule_section_hash(cur)
+    if req.base_hash != old_hash:
+        return _err(409, f"hash 不符（当前区 hash={old_hash[:16]}），请重新提议")
+    new_mission = _replace_rule_section(row["mission"], req.section, req.content)
+    try:
+        result = await card_store.update_card(
+            work_id, row["card_id"], {"mission": new_mission},
+            f"根卡提议审批写入规则区 {req.section}",
+        )
+    except CardLockedError:
+        return _err(423, "卡片被占用，请稍后重试")
+    if "error" in result:
+        return _err(400, result["error"])
+    new_hash = _rule_section_hash(req.content)
+    # 影子 ## 迭代历史 记一行（失败不阻断，与 card_draft.commit 同口径）
+    from ..storage import shadow_store
+    from datetime import datetime as _dt
+    try:
+        await shadow_store.append_to_section(
+            work_id, row["card_id"], "## 迭代历史",
+            [f"- [{_dt.now().astimezone().isoformat()}] 规则审批 {req.section} "
+             f"旧hash={old_hash[:16]} 新hash={new_hash[:16]} 来源=根卡审批"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("规则审批影子记失败（不阻断）work=%s: %s", work_id, exc)
+    return {"ok": True, "card_id": row["card_id"], "section": req.section,
+            "old_hash": old_hash, "new_hash": new_hash}
 
 
 @router.get("/works/{work_id}/cards/{card_id}/timeline")

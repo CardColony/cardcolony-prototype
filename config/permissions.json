@@ -13,22 +13,25 @@
       "【v2 · 2026-10-12 工具面补齐】① 删死开关 search——全系统没有独立的 search 工具（搜索由 web_search/fetch_web 承担，归 tools_web），它是没有任何工具消费的空开关；② 新增 manuscript（list/read/search_manuscript 三件）、invoke_tool（run_tool_card）、plan（思维链六件 create_plan/plan_reorder/plan_insert/plan_remove/plan_modify/step_complete）——原先这 10 件工具既没开关也没关口，等于裸奔。",
       "【重要】每个开关同时决定两件事：这件工具对这张卡**看不看得见**（工具面），以及这次调用**允不允许**（执行层关口）。删掉某个开关 ⇒ 模型压根看不见对应工具，不只是调了被拒。",
       "【v3 · 2026-10-14 卡片底座第一步】新增两个开关：read_linked（沿通信线读对方卡——read_via/read_linked 工具）与 send_card_message（沿关系向对方卡发消息）。与 read **分开授权**：沿连线读比直接读更敏感，独立一码。本版给**所有已授 read 的类型**一并配两码（不缩小既有类型面）；未配到的组合照旧＝空列表＝全拒。",
-      "【v4 · 2026-10-15 编程卡】新增 rd_project/coder 行（恰好 9 码：read/edit/tools_file/tools_web/search/plan/shadow_write/read_linked/list_memory）。search 与 list_memory 是**预留机关**（词表在册、暂无消费方：search 无独立工具、搜索能力仍由 web_search/fetch_web 承担；list_memory 待后续拆 memory 开关时启用）——配了不等于能用。刻意不给 create_child（不长树）／delete（留档不可删）／send_card_message（完工回执由系统发，不归模型）／invoke_tool／manuscript。既有行逐字不动。"
+      "【v4 · 2026-10-15 编程卡】新增 rd_project/coder 行（恰好 9 码：read/edit/tools_file/tools_web/search/plan/shadow_write/read_linked/list_memory）。search 与 list_memory 是**预留机关**（词表在册、暂无消费方：search 无独立工具、搜索能力仍由 web_search/fetch_web 承担；list_memory 待后续拆 memory 开关时启用）——配了不等于能用。刻意不给 create_child（不长树）／delete（留档不可删）／send_card_message（完工回执由系统发，不归模型）／invoke_tool／manuscript。既有行逐字不动。",
+      "【v5 · 2026-10-15 规则卡】新增 rd_project/rule 与 research_project/rule 两行（各仅 read 一码——规则卡模型侧只读，shadow_write/edit 等一概不给；唯一模型侧写通道＝根卡 draft_rule_edit 提议+用户审批落盘，不走本表）。既有行逐字不动。"
     ]
   },
 
-  "version": 4,
+  "version": 5,
 
   "permissions": {
     "rd_project": {
       "project":     ["read", "edit", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
       "sub_project": ["read", "edit", "delete", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
       "tool":        ["read", "edit", "delete", "plan", "shadow_write", "read_linked", "send_card_message"],
-      "coder":       ["read", "edit", "tools_file", "tools_web", "search", "plan", "shadow_write", "read_linked", "list_memory"]
+      "coder":       ["read", "edit", "tools_file", "tools_web", "search", "plan", "shadow_write", "read_linked", "list_memory"],
+      "rule":        ["read"]
     },
     "research_project": {
       "project": ["read", "edit", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
-      "topic":   ["read", "edit", "delete", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"]
+      "topic":   ["read", "edit", "delete", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
+      "rule":    ["read"]
     }
   }
 }

@@ -66,6 +66,29 @@ def load_control() -> dict[str, Any]:
     return regs if isinstance(regs, dict) else {}
 
 
+def _load_rule_sections(work_id: str) -> dict[str, str]:
+    """扫本 work 第一张 card_type=rule 的卡，正文（mission 列）按 `## ` 切区。
+
+    一次 IO；多张 rule 卡取首张 + ops 留痕（Open Item 2）。无规则卡／读失败
+    → 空 dict（「没有来源就不出现这个区」，不阻断装配）。
+    """
+    def _fn(conn: Any) -> str:
+        row = conn.execute(
+            "SELECT mission FROM cards WHERE card_type='rule' "
+            "ORDER BY card_id LIMIT 1").fetchone()
+        return (row["mission"] or "") if row else ""
+
+    try:
+        body = card_db.read_sync(work_id, _fn, "") or ""
+    except Exception:  # noqa: BLE001 取不到＝无来源，不阻断装配
+        return {}
+    if not body.strip():
+        return {}
+    sections = context_regions.split_rule_sections(body)
+    sections.pop("", None)  # 区头前游离正文不进注入面（只留存储完整性）
+    return sections
+
+
 def build_ctx(work_id: str, current_id: str,
               memory_state: dict[str, Any] | None = None,
               history_source: list[dict[str, Any]] | None = None) -> context_regions.RegionCtx:
@@ -94,6 +117,7 @@ def build_ctx(work_id: str, current_id: str,
         memory_state=state,
         memory_entries=(state or {}).get("entries") or [],
         controls=load_control(),
+        rule_sections=_load_rule_sections(work_id),
         history_source=history_source or [],
         history_mark=int((state or {}).get("mark", 0) or 0),
     )

@@ -54,6 +54,7 @@ class RegionCtx:
     request_once: list[dict[str, Any]] = field(default_factory=list)
     request_tail: list[dict[str, Any]] = field(default_factory=list)
     request_seat_identity: list[dict[str, Any]] = field(default_factory=list)
+    rule_sections: dict[str, str] = field(default_factory=dict)
 
 
 def _count_duty_lines(ctx: RegionCtx, text: str) -> int:
@@ -91,6 +92,24 @@ REGION_TABLE: list[dict[str, Any]] = [
         "source": "prompts.BASE_PROMPT 常量（逐字引用，不复制——区只持指针）",
         "render": lambda ctx: BASE_PROMPT,
         "count": 1,
+    },
+    {
+        # [规则卡 2026-10-15] order 85：instruction 之后、卡片职责之前（用户裁定 6）。
+        # 来源＝规则卡正文按卡类型切区后的 rule_sections（context_assembler.build_ctx
+        # 一次 IO）；按当前卡 card_type 择区，空/缺→空串（没有来源就不出现这个区）。
+        "key": "rule",
+        "order": 85,
+        "name": "规则注入",
+        "channel": "system",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "规则卡（card_type=rule）正文按 `## {区名}` 切区，取当前卡 card_type 对应区",
+        "render": lambda ctx: render_rule_region(
+            ctx.rule_sections, str((ctx.cur_meta or {}).get("card_type") or "")),
+        "count": lambda ctx, text: 1 if text else 0,
     },
     {
         # [卡片职责区 2026-10-14] order 90：类型级职责（每类卡一行），紧邻 100 之前。
@@ -465,6 +484,93 @@ def render_current_card_region(cur: dict[str, Any] | None) -> str:
     if cur is None:
         return ""
     return "\n".join(["## 当前卡", f"{cur['card_id']} · {cur['title']}"])
+
+
+def split_rule_sections(body: str) -> dict[str, str]:
+    """规则卡正文按 `## ` 区头切区：{区名: 区内容}（区内容不含区头行，末尾 rstrip）。
+
+    纯函数：区头＝以 `## ` 开头的非空行；区头行本身不进内容。区头前若有游离
+    正文（无归属行）归入 key `""`——规则面板与注入均不消费它（只作存储完整性）。
+    同名区头后出现者覆盖先出现者（幂等读，不追加）。
+    """
+    sections: dict[str, str] = {}
+    if not body:
+        return sections
+    current: str | None = None
+    buf: list[str] = []
+    for ln in body.splitlines():
+        if ln.startswith("## "):
+            if current is not None:
+                sections[current] = "\n".join(buf).rstrip()
+            current = ln[3:].strip()
+            buf = []
+        else:
+            if current is None:
+                current = ""
+            buf.append(ln)
+    if current is not None:
+        sections[current] = "\n".join(buf).rstrip()
+    return sections
+
+
+def render_rule_region(rule_sections: dict[str, str], card_type: str) -> str:
+    """85 区渲染：按当前卡 card_type 取规则卡对应区，空/缺→空串。
+
+    带区头 `## 规则`（硬判据：render_rule_region({"sub_project":"准则A"},
+    "sub_project") 含区头）。rule_sections={} 或无对应区 → ""（没有来源就不
+    出现这个区）。
+    """
+    if not rule_sections or not card_type:
+        return ""
+    text = rule_sections.get(card_type)
+    if not text:
+        return ""
+    return "## 规则\n" + text
+
+
+def rule_section_names(registry: dict[str, Any]) -> list[str]:
+    """规则卡合法分区名集合＝注册表全词表 codes（root 在前、去重、声明序）。
+
+    纯函数（不做 IO）：调用方传入类型注册表（``card_store`` 的
+    ``load_type_registry`` 返回值）。
+    例：rd_project＋research_project＋root ⇒ ["project","sub_project","tool",
+    "coder","rule","topic"]（恰六区）。注册表缺失/无词表 → 空列表。
+    """
+    vocabs = registry.get("l1_vocabularies") if isinstance(registry, dict) else None
+    if not isinstance(vocabs, dict) or not vocabs:
+        return []
+    scopes = (["root"] if "root" in vocabs else []) + [k for k in vocabs if k != "root"]
+    out: list[str] = []
+    for scope in scopes:
+        vocab = vocabs.get(scope)
+        if not isinstance(vocab, dict):
+            continue
+        for t in (vocab.get("types") or []):
+            code = str((t or {}).get("code") or "")
+            if code and code not in out:
+                out.append(code)
+    return out
+
+
+def rule_inject_counts(registry: dict[str, Any]) -> dict[str, int]:
+    """每分区「正被 N 类卡注入」的静态口径：注册表内 code 出现次数。
+
+    纯函数。例：rule 出现在 rd/research 两词表 ⇒ 2；sub_project ⇒ 1。
+    """
+    out: dict[str, int] = {}
+    for name in rule_section_names(registry):
+        out[name] = 0
+    vocabs = registry.get("l1_vocabularies") if isinstance(registry, dict) else None
+    if not isinstance(vocabs, dict):
+        return out
+    for vocab in vocabs.values():
+        if not isinstance(vocab, dict):
+            continue
+        for t in (vocab.get("types") or []):
+            code = str((t or {}).get("code") or "")
+            if code in out:
+                out[code] += 1
+    return out
 
 
 # 第三块：本树 project_class → 对外名（与 routes._apply_block_set 同源口径）

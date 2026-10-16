@@ -40,10 +40,18 @@ def _card(card_type: str, perms: list[str]) -> dict:
     return {"card_id": "c", "card_type": card_type, "perms": perms}
 
 
+# [规则卡 2026-10-15 · 随版本推进翻新] rule 卡有意排除在路径锁键集对账之外：
+# 权限底座 v5 给 rule 的 perms 只有 read（用户裁定·红线2「模型永远不能直接写
+# 规则」的同源纪律）——它永无 tools_file 开关，路径锁第三段对它是恒拒死路径
+# （缺键＝拒＝安全方向，零生产影响）；FILE_SCOPE 属 §四 白名单外文件，零触碰。
+_NO_FILE_SCOPE_TYPES = {"rule"}
+
+
 class TestFileScopeKeys:
     def test_keys_equal_card_type_registry(self):
-        """键集 == 注册表 card_type 全集。不等即红灯（这正是本次漏抄的形态）。"""
-        assert set(file_tools.FILE_SCOPE) == _registry_card_types()
+        """键集 == 注册表 card_type 全集（－无文件权限的 rule）。不等即红灯。"""
+        assert set(file_tools.FILE_SCOPE) == (
+            _registry_card_types() - _NO_FILE_SCOPE_TYPES)
 
     def test_no_project_class_keys(self):
         """工牌码不得混入：FILE_SCOPE 查的是 card_type，工牌键永不可达＝死键。
@@ -55,9 +63,9 @@ class TestFileScopeKeys:
         assert not (set(file_tools.FILE_SCOPE) & classes)
 
     def test_every_card_type_reaches_file(self):
-        """每个已注册 card_type 都能通过路径锁第三段（值为全放行哨兵时）。"""
+        """每个已注册 card_type（－rule，见文件头排除说明）都能过路径锁第三段。"""
         path = str(file_tools.BASE_DIR / "推演agent")
-        for ct in sorted(_registry_card_types()):
+        for ct in sorted(_registry_card_types() - _NO_FILE_SCOPE_TYPES):
             card = _card(ct, ["read", "tools_file"])
             assert file_tools.check_file_access(path, card), \
                 f"{ct} 型卡的路径锁被拒（FILE_SCOPE 缺键）"
