@@ -7,7 +7,7 @@ import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { EventFlow } from "./stream.js?v=36";
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { reloadCanvas } from "./canvas.js?v=39";
+import { reloadCanvas } from "./canvas.js?v=40";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=35";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
@@ -150,6 +150,9 @@ const WORK_ID = window.__WORK_ID__;
       if (location.hash !== navStore.select.serialize(WORK_ID, cardId)) {
         navStore.select.set(WORK_ID, cardId);
       }
+      // [阶段2 A2.2 2026-10-17] URL 即页面身份：选中卡同步进**路径**（取代 hash 承载）。
+      // replaceState 不堆历史、不重载；旧 hash 链接由 bootRestore 一次性重定向到本形态。
+      history.replaceState(null, "", "/work/" + WORK_ID + "/card/" + cardId);
       // [S3/R-25/V3-F5] 成功跳转（getCard 已取回）才记最近访问；失败/灰态不进此路径
       navFind.recordRecent(WORK_ID, cardId, card.meta.title);
       // [T17] 视图切换：进入对话态（nav 260px、workspace 可见）；.active 旧机制退役
@@ -1041,28 +1044,26 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     inputBox.style.height = Math.min(inputBox.scrollHeight, 200) + "px";
   });
 
-  // ==================== [刷新恢复 2026-10-03] 加载时按 URL hash 重开上次的卡 ====================
-  // 问题：页面上看的那张卡刷新即丢——回读历史的能力（open→GET /timeline→快照渲染）三层齐备，
-  // 但加载时没有任何代码去调 open()，所以刷新后对话区空白。
-  // 修法：卡号存 URL hash（open() 内写入），加载时读出来重开。不引入浏览器本地持久存储等前端存储。
-  async function restoreFromHash() {
-    // [S2/R-09] 选中层复合键解析：#wid/cid ＝ 指向该 work 的卡；旧 #cid ＝ 回落当前页 WORK_ID
-    const sel = navStore.select.get();
-    if (!sel) return false;
-    if (sel.wid !== WORK_ID) {
-      window.location.href = "/work/" + sel.wid + "#" + sel.cid;
+  // ==================== [阶段2 A2.2 2026-10-17] 加载时按 URL 决定打开哪张卡 ====================
+  // URL 即页面身份：/work/{wid} ＝ 画布页（停在画布态）；/work/{wid}/card/{cid} ＝ 该卡对话页。
+  // 旧 hash 链接（#wid/cid）兼容：一次性重定向到新地址（hash 退役第一步）。
+  async function bootRestore() {
+    const pathCid = (window.__CARD_ID__ || "").trim();
+    const sel = navStore.select.get();   // 解析自旧 hash（无 hash 则 null）
+    if (sel) {
+      // 旧 hash 链接 → 新地址（wid 不同也一并收敛，原跨 work 分支并入此处）
+      location.replace("/work/" + sel.wid + "/card/" + sel.cid);
       return true;
     }
+    if (!pathCid) return false;          // 无卡号：停在画布态（现行为）
     try {
-      await open(sel.cid);
-      // [刷新恢复实时状态 2026-10-03] 历史回读完成后，查一次后端进度：若这张卡有调用在跑，
-      // 把等待气泡与 2 秒轮询挂回去——刷新不再丢失「正在思考」的实时状态。
-      await attachRunningState(sel.cid);
+      await open(pathCid);
+      // [刷新恢复实时状态 2026-10-03] 历史回读完成后查一次后端进度：有调用在跑就挂回等待气泡。
+      await attachRunningState(pathCid);
       return true;
     } catch (e) {
-      // 卡片不存在（已是旧链接）等情形：open() 内部已 toast，这里回退到根卡，
-      // 并把失效的 hash 清掉，避免每次刷新都撞同一个失败。
-      history.replaceState(null, "", location.pathname + location.search);
+      // 卡片不存在（旧链接）等：清掉路径里的卡号、回到画布页，避免每次刷新都撞同一个失败。
+      history.replaceState(null, "", "/work/" + WORK_ID);
       return false;
     }
   }
@@ -1572,4 +1573,4 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     window.__maybeOpenRuleEditModal = maybeOpenRuleEditModal;
   }
 
-  restoreFromHash();
+  bootRestore();

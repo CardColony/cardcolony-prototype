@@ -96,10 +96,21 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
+def _render_work(work_id: str, card_id: str = "") -> str:
+    """与 main.py 逐行一致（[阶段2 A2.1 2026-10-17] 双注入 WORK_ID / CARD_ID）。"""
+    html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
+    return html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", card_id)
+
+
 @app.get("/work/{work_id}", response_class=HTMLResponse)
 async def work_page(work_id: str) -> HTMLResponse:
-    html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
-    return HTMLResponse(content=html.replace("{{WORK_ID}}", work_id))
+    return HTMLResponse(content=_render_work(work_id))
+
+
+@app.get("/work/{work_id}/card/{card_id}", response_class=HTMLResponse)
+async def work_card_page(work_id: str, card_id: str) -> HTMLResponse:
+    """[阶段2 A2.1] 对话独立地址（与 main.py 逐行一致）。"""
+    return HTMLResponse(content=_render_work(work_id, card_id))
 
 
 @app.get("/__instance__")
