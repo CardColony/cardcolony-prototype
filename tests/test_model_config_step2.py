@@ -143,8 +143,11 @@ def test_provider_level_ui_fields_do_not_leak_to_children():
     assert "models_url" not in entry
 
 
-def test_thinking_still_translated_to_extra_body():
-    """thinking 弹出不能误伤方言翻译结果（minimax 分支用 deepseek 供应商仅为取键名）。"""
+def test_thinking_not_translated_at_compile_dialect_locks_behaviour():
+    """[2026-10-16 裁定 B · 双断言] 编译层**不再翻译** thinking 方言（翻译归适配器方言表）；
+    行为由 ``llm_openai_compat.dialects`` 锁住。"""
+    from src.model_gateway.llm_openai_compat.dialects import ThinkingSpec, apply_thinking
+
     cfg = model_config.compile({
         "providers": {"minimax": {"protocol": "openai", "base_url": "https://x.invalid/v1",
                                   "api_key_env": "K"}},
@@ -152,12 +155,21 @@ def test_thinking_still_translated_to_extra_body():
         "system": {},
     })
     entry = cfg["models"]["minimax-m3"]
-    assert entry["extra_body"]["thinking"] == {"type": "disabled"}
-    assert "thinking" not in entry
+    # ① 编译层不翻译：无 extra_body / reasoning_effort；thinking 声明与 vendor 原样带下
+    assert "extra_body" not in entry
+    assert "reasoning_effort" not in entry
+    assert entry["thinking"] == "off"
+    assert entry["vendor"] == "minimax"
+    # ② 适配器层锁行为：minimax 方言产出 adaptive|disabled（官方文档形态）
+    body: dict = {}
+    apply_thinking(body, ThinkingSpec(vendor=entry["vendor"], thinking=entry["thinking"]))
+    assert body["thinking"] == {"type": "disabled"}
 
 
-def test_thinking_off_as_yaml_bool_still_translated():
-    """YAML 裸 off → False：方言翻译必须照旧生效（回归护栏）。"""
+def test_thinking_off_as_yaml_bool_dialect_still_off():
+    """YAML 裸 off → False：编译层原样带下（不翻译），适配器方言仍判为「关」。"""
+    from src.model_gateway.llm_openai_compat.dialects import ThinkingSpec, apply_thinking
+
     cfg = model_config.compile({
         "providers": {"aliyun": {"protocol": "openai", "base_url": "https://x.invalid/v1",
                                  "api_key_env": "K"}},
@@ -165,7 +177,14 @@ def test_thinking_off_as_yaml_bool_still_translated():
         "system": {},
     })
     entry = cfg["models"]["qwen-max"]
-    assert entry["extra_body"]["enable_thinking"] is False
+    # ① 编译层不翻译
+    assert "extra_body" not in entry
+    assert entry["thinking"] is False
+    assert entry["vendor"] == "aliyun"
+    # ② 适配器层：qwen 方言 → enable_thinking False
+    body: dict = {}
+    apply_thinking(body, ThinkingSpec(vendor=entry["vendor"], thinking=entry["thinking"]))
+    assert body["enable_thinking"] is False
 
 
 def test_fallback_copy_survives_pop():

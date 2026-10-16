@@ -31,14 +31,47 @@ def _load_cards_index(work_id: str) -> list[dict[str, Any]]:
     取什么查什么，正文不再有机会被整份读进上下文（方案 §3.1 B）。
     """
     def _fn(conn: Any) -> list[dict[str, Any]]:
-        return [
-            {"card_id": r["card_id"], "title": r["title"] or "",
-             "parent": r["parent"] or ""}
-            for r in conn.execute(
-                "SELECT card_id, title, parent FROM cards ORDER BY card_id")
-        ]
+        import json as _json
+        out: list[dict[str, Any]] = []
+        # [依赖关联线 2026-10-16] 多带一列 relations（依赖关联线）——供
+        # build_ctx 反向扫（谁依赖/关联我）零额外 IO。清单渲染只用前三键，
+        # 多带一列不影响它。
+        for r in conn.execute(
+                "SELECT card_id, title, parent, relations FROM cards ORDER BY card_id"):
+            try:
+                rels = _json.loads(r["relations"] or "[]")
+            except (TypeError, ValueError):
+                rels = []
+            out.append({"card_id": r["card_id"], "title": r["title"] or "",
+                        "parent": r["parent"] or "",
+                        "relations": rels if isinstance(rels, list) else []})
+        return out
 
     return card_db.read_sync(work_id, _fn, []) or []
+
+
+def _dep_relations_for(cards: list[dict[str, Any]], current_id: str,
+                       cur_meta: dict[str, Any]) -> tuple[list[dict[str, Any]],
+                                                          list[dict[str, Any]]]:
+    """在已加载的全库卡索引上算**双向**依赖关联线（零额外 IO）。
+
+    - 正向 ``out``＝当前卡自己的 ``relations``；
+    - 反向 ``in`` ＝全库扫 ``target == current_id`` 的条目，补上发起卡 ``source``。
+
+    纯计算：只读传入的索引与当前卡 meta，不查库（装配链的唯一 IO 在别处）。
+    """
+    raw_out = (cur_meta or {}).get("relations")
+    out_entries = ([r for r in raw_out if isinstance(r, dict)]
+                   if isinstance(raw_out, list) else [])
+    in_entries: list[dict[str, Any]] = []
+    for c in cards or []:
+        cid = c.get("card_id")
+        if cid == current_id:
+            continue
+        for r in (c.get("relations") or []):
+            if isinstance(r, dict) and str(r.get("target") or "") == current_id:
+                in_entries.append({"source": cid, **r})
+    return out_entries, in_entries
 
 
 def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, Any]]:
@@ -167,13 +200,18 @@ def build_ctx(work_id: str, current_id: str,
     state = memory_state
     if state is None and memory_store.condense_enabled():
         state = memory_store.load_memory(work_id, current_id)
+    cur_meta = card_store._meta_of(work_id, current_id) or {}
+    # [依赖关联线 2026-10-16] 双向依赖关联线：在已加载的 cards 索引上算（零额外 IO）。
+    dep_out, dep_in = _dep_relations_for(cards, current_id, cur_meta)
     return context_regions.RegionCtx(
         work_id=work_id,
         card_id=current_id,
         cards=cards,
         work_card_id=work_store.work_card_id_of(work_id),
         cur=cur,
-        cur_meta=card_store._meta_of(work_id, current_id) or {},
+        cur_meta=cur_meta,
+        dep_relations_out=dep_out,
+        dep_relations_in=dep_in,
         direct_child_status=_load_direct_child_status(work_id, current_id),
         project_class=pc,
         type_registry=card_store.load_type_registry(),

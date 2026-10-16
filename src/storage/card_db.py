@@ -57,9 +57,13 @@ class CardsNotMigratedError(Exception):
 # 列定义（与方案 §1.2 表结构一一对应）
 # ---------------------------------------------------------------------------
 
+# [依赖关联线 2026-10-16] 通信线让出 `relations` 这个名字（改叫 `links`），
+# `relations` 归新增的第三种线「依赖关联线」——两列并存：
+#   links     ＝ 通信线（原 relations 字段，read_linked / send_card_message 沿它寻址）
+#   relations ＝ 依赖关联线（新线，模型侧 link_rel/unlink_rel 建，不参与通信）
 _CARD_COLUMNS: tuple[str, ...] = (
     "card_id", "work_id", "title", "source", "card_type", "parent",
-    "project_class", "owner_card_id", "state", "tags", "relations",
+    "project_class", "owner_card_id", "state", "tags", "links", "relations",
     "session_ref", "toolcard_script", "toolcard_step", "toolcard_round",
     "toolcard_final", "thinkchain_final", "perms", "perms_version",
     "created_at", "updated_at", "mission", "status_block", "rulings",
@@ -67,14 +71,14 @@ _CARD_COLUMNS: tuple[str, ...] = (
 
 # 以小 JSON 文本存的列（短列表 / 小字典，不拆表——方案 §1.3.4）
 _JSON_COLUMNS: frozenset[str] = frozenset(
-    {"tags", "relations", "toolcard_final", "thinkchain_final", "perms"}
+    {"tags", "links", "relations", "toolcard_final", "thinkchain_final", "perms"}
 )
 
 # 正文块（不进 meta）
 _BODY_COLUMNS: tuple[str, ...] = ("mission", "status_block", "rulings")
 
 # 列表型 JSON 列的空值（旧渲染恒写 []，读侧恒给 []）
-_JSON_LIST_COLUMNS: frozenset[str] = frozenset({"tags", "relations"})
+_JSON_LIST_COLUMNS: frozenset[str] = frozenset({"tags", "links", "relations"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cards (
@@ -88,6 +92,7 @@ CREATE TABLE IF NOT EXISTS cards (
     owner_card_id    TEXT,
     state            TEXT,
     tags             TEXT,
+    links            TEXT,
     relations        TEXT,
     session_ref      TEXT,
     toolcard_script  TEXT,
@@ -293,7 +298,28 @@ POSITION_COLUMNS: tuple[tuple[str, str], ...] = (
 # 3. **幂等** —— 已有该列即跳过；反复跑不出错，可安全地每次建连接都调。
 _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     ("shadows", "coordination", "coordination TEXT"),
-) + tuple(("cards", col, ddl) for col, ddl in POSITION_COLUMNS)
+) + tuple(("cards", col, ddl) for col, ddl in POSITION_COLUMNS) + (
+    # [依赖关联线 2026-10-16] 老库经 `_COLUMN_RENAMES` 把旧 relations 改名成
+    # links 之后，需补回**新线**的 relations 列；新库走 _SCHEMA 已含则跳过。
+    ("cards", "relations", "relations TEXT"),
+)
+
+
+# 幂等改名清单：(表名, 旧列, 新列)
+#
+# [依赖关联线 2026-10-16] 本项目**第一段** RENAME 逻辑（此前只有 ADD/DROP）。
+# 命名腾挪：通信线让出 `relations` 这个名字给新增的第三种线「依赖关联线」，
+# 自己改叫 `links`。老库需 ``ALTER TABLE cards RENAME COLUMN relations TO links``；
+# 新库走 _SCHEMA 已直接带 links，无需改。
+#
+# 纪律：
+# 1. **幂等**：判据＝「有旧列且无新列」才改；已有新列即跳过，反复跑不出错。
+# 2. **排在 ``_ensure_columns`` 之前**——先改名腾位置，再补新列（否则补列会把
+#    旧 relations 当成「新列已存在」而漏补）。
+# 3. 只改表结构：行数据随列搬迁，零读写（SQLite ``RENAME COLUMN`` 语义）。
+_COLUMN_RENAMES: tuple[tuple[str, str, str], ...] = (
+    ("cards", "relations", "links"),
+)
 
 
 # 幂等删列清单：(表名, 列名)
@@ -314,9 +340,10 @@ _COLUMN_DROPS: tuple[tuple[str, str], ...] = (
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """建表建索引（幂等）＋ 缺列补列（幂等）＋ 多余列删列（幂等）。
+    """建表建索引（幂等）＋ 改名（幂等）＋ 缺列补列（幂等）＋ 多余列删列（幂等）。
 
     建表：已建则只做一次极轻的存在性查询，不重跑 DDL。
+    改名：见 ``_COLUMN_RENAMES``——**必须排在补列之前**（先腾出旧列名，再补新列）。
     补列：见 ``_COLUMN_UPGRADES``——迁移跑在加列之前的那些库靠这一步升级。
     删列：见 ``_COLUMN_DROPS``——已加过又被用户裁掉的列（如 duty）靠这一步退役。
     """
@@ -326,9 +353,28 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if row is None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
+    _rename_columns(conn)
     _ensure_columns(conn)
     _drop_columns(conn)
     _ensure_tables(conn)
+
+
+def _rename_columns(conn: sqlite3.Connection) -> None:
+    """旧列 → 新列改名（幂等）。**表／列不存在则跳过。**
+
+    判据：表里有旧列且**没有**新列 → ``ALTER TABLE ... RENAME COLUMN``；否则跳过
+    （已有新列＝已改过；旧列也无＝空表／新库）。SQLite 3.25+ 支持 RENAME COLUMN
+    （本机 3.45.1）。DDL 自带提交（连接 ``isolation_level=None``），与
+    ``_ensure_columns`` 同批、同序执行。
+    """
+    for table, old, new in _COLUMN_RENAMES:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if not rows:
+            continue  # 表还没建出来 → _SCHEMA 会带上新列名
+        names = {r["name"] for r in rows}
+        if old in names and new not in names:
+            logger.info("库结构改名：%s.%s → %s", table, old, new)
+            conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
 
 
 def _ensure_tables(conn: sqlite3.Connection) -> None:
@@ -491,7 +537,7 @@ def row_to_meta(row: sqlite3.Row) -> dict[str, Any]:
     """cards 行 → meta 字典（契约与旧 front matter 读侧一致）。
 
     旧读侧（``parse_front_matter``）的键集＝「front matter 里写了的键」；
-    这里等价为「列非 NULL 才出键」——NULL 即「没写过」。tags/relations 例外：
+    这里等价为「列非 NULL 才出键」——NULL 即「没写过」。tags/links/relations 例外：
     旧渲染恒写 ``[]``，故 NULL 也给 ``[]``。
     """
     meta: dict[str, Any] = {}

@@ -106,6 +106,36 @@ a { color: inherit; text-decoration: none; }
   font-family: var(--mono);
 }
 
+/* [缩放控件 2026-10-16 用户令] 滚轮缩放废除，顶部控件组：−/＋（每次 ±25%）
+   ＋ 拖动条（25% 档位吸附）＋ 百分比。锚点＝视口中心（canvas.js setZoom）。 */
+.zoom-ctrl { display: flex; align-items: center; gap: 6px; }
+.topbar .zbtn {
+  width: 24px; height: 24px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  font-size: 14px; line-height: 1; cursor: pointer; user-select: none;
+}
+.topbar .zbtn:hover { background: var(--panel-hover); }
+.topbar .zbtn:active { transform: translateY(1px); }
+.topbar .zoom-slider {
+  appearance: none; -webkit-appearance: none;
+  width: 120px; height: 4px; border-radius: 2px;
+  background: var(--bg); border: 1px solid var(--border);
+  outline: none; cursor: pointer;
+  /* 进度填充由 canvas.js syncZoomControls 以 linear-gradient 按值同步 */
+}
+.topbar .zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--text); border: 1px solid var(--border);
+}
+.topbar .zoom-slider::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--text); border: 1px solid var(--border);
+}
+.zoom-ctrl .zoom-display { min-width: 46px; padding: 4px 8px; }
+
 /* ============ [顶栏整合 2026-10-13] 聊天页单栏（原 .topbar 48px ＋ .ws-head ~35px 两条叠加）============
    用户 2026-10-13 17:17 四条裁定：①顶部图标位去留（该图标 2026-10-15 随旧列表页概念整体取消，
    本段对应规则同批删除）②去「← 画布」（面包屑首段＝项目名＝根卡，点它即回画布；
@@ -659,6 +689,22 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
   width: 100%;
   min-width: 0;
 }
+/* [画板四机制 T2 2026-10-16] 分页入口：渲染窗口之上还有轮时，列首出现「加载更早」。
+   .msgs 是 flex 列 ⇒ 与 .step-toggle 同族（小字、可点、hover 变亮）；居中另加胶囊描边，
+   与过程行/消息行在视觉上区分开（它不是内容，是控件）。 */
+.msgs-more {
+  align-self: center;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 12px;
+  margin: 2px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  background: var(--bg);
+}
+.msgs-more:hover { background: var(--panel-hover); color: var(--text-soft); }
 .msg {
   max-width: 100%;
   margin: 2px 0;
@@ -1353,10 +1399,40 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 *::-webkit-scrollbar-button { display: none; }   /* 去掉默认上下箭头按钮 */
 * { scrollbar-width: thin; scrollbar-color: rgba(139, 148, 158, 0.45) transparent; }  /* Firefox */
 
-/* ============ [规则卡 2026-10-15 · 2026-10-16 归位] 分区编辑（卡详情内） ============
-   [用户 2026-10-16 明令] 规则卡＝普通卡（画布正常渲染节点），分区编辑在卡详情
-   （inspector）内——原右侧边栏形态（#rulePanel/.rule-panel/.rule-tab）已删。
-   以下 .rule-sec 系列渲染在 inspBody 内。 */
+/* ============ [规则卡 2026-10-16 二次归位] 吸附屏幕右侧的常驻卡片 ============
+   [用户 2026-10-16 明令] 规则卡是一张卡：吸附屏幕右侧、常驻完整显示、可在卡上
+   分区编辑——不是画布节点（canvas 跳过 rule），不是可展开边栏（无窄条两段式），
+   不分画布态/聊天态（始终在场）。卡视觉：圆角+边框+阴影，像一张浮着的卡。 */
+.rule-panel {
+  position: fixed;
+  top: 56px;
+  right: 12px;
+  bottom: 16px;
+  width: 340px;
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.rule-panel-body {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rule-panel-head {
+  flex: none;
+  padding: 10px 16px 0;
+  font-size: 13px;
+  color: var(--text-soft);
+  letter-spacing: 1px;
+}
 .rule-sec { margin-bottom: 14px; }
 .rule-sec-head {
   display: flex;

@@ -38,13 +38,32 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=30";
+import { API } from "./esm/api.js?v=35";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=30";
 import { createAssembler, groupKeyOf } from "./esm/assembler.js?v=33";
 
-let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
+/* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
+   键 `${wid}/${cid}`；字段即原 `current` 单例的原样搬运（asm/groups/fold/liveSlot/
+   settled/lastSeq…）＋ 画板容器 `board` ＋ 滚动位置 `scrollTop`。
+   只有 activeKey 指向的会话，其画板（.msgs）挂在 #chatArea；其余会话的画板是
+   **游离节点**（不在文档流）——切走的卡后台照写自己那份，结构上不可能写进
+   当前卡（治 P4 串卡）。原单例 `let current` 随之退役（不再有「全局唯一画板」）。 */
+const sessions = new Map();      // key → session
+let activeKey = null;            // 当前在看的会话键（null＝还没激活任何会话）
+
+function skey(wid, cid) { return wid + "/" + cid; }
+
+/* [画板四机制 T2/T3 2026-10-16] 画板可调参数（`window.__FLOW_BOARD__` 可覆盖；生产不设＝默认）。
+   pageSize      —— T2 分页：每页轮数（单位＝**轮**，不是条）。
+   residentMax   —— T3 常驻硬上限：同时留内存的画板数（LRU 超出即丢最旧）。
+   idleReleaseMs —— T3 静默超时：多久没用就释放。
+   sweepMs       —— T3 释放扫描周期。 */
+const BOARD_CFG = Object.assign(
+  { pageSize: 20, residentMax: 8, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000 },
+  (typeof window !== "undefined" && window.__FLOW_BOARD__) || {}
+);
 
   function fmtData(data) {
     try { return JSON.stringify(data, null, 1); } catch (e) { return String(data); }
@@ -77,20 +96,26 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
     return document.getElementById("chatArea");
   }
 
-  /* [对话区会话流样式 2026-10-12] 统一内容列：轮组容器与 live 槽共用一条 .msgs。 */
-  function msgsEl() {
-    const ca = chatEl();
-    if (!ca) return null;
-    let m = ca.querySelector(":scope > .msgs");
-    if (!m) {
-      m = document.createElement("div");
-      m.className = "msgs";
-      ca.appendChild(m);
+  /* [画板四机制 T1 2026-10-16] 统一内容列＝**本会话自己的**画板（.msgs）。
+     原实现查/建「#chatArea 下唯一一份 .msgs」——那正是串卡的根：所有卡共用一块
+     画板。现在容器由会话持有（st.board），谁写谁的那份。 */
+  function boardOf(st) {
+    if (!st) return null;
+    if (!st.board) {
+      const b = document.createElement("div");
+      b.className = "msgs";
+      st.board = b;   // 未激活时是游离节点；由 activate() 决定是否挂进 #chatArea
     }
-    return m;
+    return st.board;
   }
 
-  function scrollBottom() {
+  function msgsEl(st) {
+    return boardOf(st);
+  }
+
+  function scrollBottom(st) {
+    // 游离会话（非当前卡）的后台渲染**不抢视图**：只滚当前在看的画板。
+    if (st && st.board && !st.board.isConnected) return;
     const ca = chatEl();
     if (ca) ca.scrollTop = ca.scrollHeight;
   }
@@ -641,7 +666,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
       const k = t.__key;
       st.fold.set(k, !st.fold.get(k));
       paintToggle(t, st, k, t.__els || []);
-      scrollBottom();
+      scrollBottom(st);
     };
     gv.toggle = t;
     return t;
@@ -735,23 +760,82 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
     }
   }
 
+  /* [画板四机制 T2 2026-10-16] 分页：渲染窗口只决定「最上面渲染到哪」。
+     st.winStart＝窗口**起始轮下标**（含）；窗口下端恒为最后一轮（新轮追加不裁切）。
+     数据源仍是全量 timeline、装配器照吃全量——分页只动渲染窗口，不动数据（不变量 9）。 */
+  function winStartOf(st, total) {
+    let start = (st.winStart == null) ? Math.max(0, total - BOARD_CFG.pageSize) : st.winStart;
+    if (start >= total) start = Math.max(0, total - BOARD_CFG.pageSize);   // 轮数变少（revoke）后收口
+    st.winStart = start;
+    return start;
+  }
+
+  /** 顶部「加载更早」控件：窗口之上还有轮才出现；没有就撤掉
+      （空卡/首屏即全部时列内不残留任何子元素——判据 2.1 的单源代价证据）。 */
+  function syncMore(st, box, hidden) {
+    let el = st.moreEl;
+    if (!hidden) {
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+      st.moreEl = null;
+      return;
+    }
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "msgs-more";
+      el.onclick = () => loadEarlier(st);
+      st.moreEl = el;
+    }
+    el.textContent = "▴ 加载更早（还有 " + hidden + " 轮）";
+    if (el.parentNode !== box) box.insertBefore(el, box.firstChild);
+  }
+
+  /** 往前插一页（并保持当前视口不动——新内容插在上方，眼前那条不跳）。 */
+  function loadEarlier(st) {
+    if (!st || st.winStart == null || st.winStart <= 0) return false;
+    const ca = chatEl();
+    const prevTop = ca ? ca.scrollTop : 0;
+    const prevHeight = ca ? ca.scrollHeight : 0;
+    st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageSize);
+    renderSnapshot(st, st.asm.snapshot(), { keepScrollTop: true, prevTop, prevHeight });
+    return true;
+  }
+
+  /** 滚到顶自动往前插一页（与点击「加载更早」同一动作）。#chatArea 是共享滚动容器，
+      监听器只装一次、作用于**当前会话**。 */
+  function wireScrollLoad() {
+    const ca = chatEl();
+    if (!ca || ca.__flowScrollWired) return;
+    ca.__flowScrollWired = true;
+    ca.addEventListener("scroll", () => {
+      if (ca.scrollTop > 8) return;
+      const st = activeKey ? sessions.get(activeKey) : null;
+      if (st) loadEarlier(st);
+    });
+  }
+
   /** 全量快照：**复用**既有组容器与既有节点元素，只建缺的、只改变的。
-      刷新/换卡/结算都走这里——历史轮组键不变 ⇒ DOM 一个都不动。 */
-  function renderSnapshot(st, snapshot) {
-    const box = msgsEl();
+      刷新/换卡/结算都走这里——历史轮组键不变 ⇒ DOM 一个都不动。
+      [T2] 只渲染窗口（st.winStart 起）；窗口之上的轮不进 DOM。 */
+  function renderSnapshot(st, snapshot, opts) {
+    const box = msgsEl(st);
     if (!box) return;
-    const want = new Set(snapshot.rounds.map((g) => g.key));
-    // 剪枝：列里所有不在本次快照的轮容器移除（含换卡后遗留、状态重建后遗留）
+    const rounds = snapshot.rounds;
+    const start = winStartOf(st, rounds.length);
+    const win = rounds.slice(start);
+    const want = new Set(win.map((g) => g.key));
+    // 剪枝：列里所有不在**本窗口**的轮容器移除（含换卡后遗留、状态重建后遗留、翻页后移出窗口的）
     for (const el of Array.from(box.querySelectorAll(":scope > .msgs-round"))) {
       if (!want.has(el.dataset.key || "")) box.removeChild(el);
     }
     for (const k of Array.from(st.groups.keys())) if (!want.has(k)) st.groups.delete(k);
-    for (const group of snapshot.rounds) {
+    for (const group of win) {
       renderGroup(st, ensureGroupView(st, box, group.key), group, snapshot);
     }
-    // 组序按快照轮序校正（历史组已就位 ⇒ no-op）
-    let prev = null;
-    for (const group of snapshot.rounds) {
+    syncMore(st, box, start);
+    // 组序按快照轮序校正（历史组已就位 ⇒ no-op）。起点锚＝「加载更早」控件（若在）——
+    // 轮组恒排在控件**之后**；无控件时退回「列首」（与改前逐字同）。
+    let prev = st.moreEl || null;
+    for (const group of win) {
       const gv = st.groups.get(group.key);
       const el = gv && gv.el;
       if (!el) continue;
@@ -762,21 +846,29 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
       }
       prev = el;
     }
-    logInfo("[flow-render] snapshot(" + snapshot.rounds.length + " rounds)");
-    scrollBottom();
+    logInfo("[flow-render] snapshot(" + win.length + "/" + rounds.length + " rounds)");
+    const ca = chatEl();
+    if (opts && opts.keepScrollTop && ca) {
+      ca.scrollTop = (opts.prevTop || 0) + Math.max(0, ca.scrollHeight - (opts.prevHeight || 0));
+    } else {
+      scrollBottom(st);
+    }
   }
 
-  /** 实时增量：只 upsert 受影响的那一组（其余组不碰）。 */
+  /** 实时增量：只 upsert 受影响的那一组（其余组不碰）。
+      [T2] 该组若在渲染窗口**之上**（老轮被更新），不进 DOM——窗口只决定最上面渲染到哪。 */
   function renderAffected(st, key) {
-    const box = msgsEl();
+    const box = msgsEl(st);
     if (!box) return;
     const snap = st.asm.snapshot();
-    const group = snap.rounds.find((g) => g.key === key);
-    if (!group) return;
-    renderGroup(st, ensureGroupView(st, box, key), group, snap);
+    const idx = snap.rounds.findIndex((g) => g.key === key);
+    if (idx < 0) return;
+    if (st.winStart == null) winStartOf(st, snap.rounds.length);
+    if (idx < st.winStart) return;
+    renderGroup(st, ensureGroupView(st, box, key), snap.rounds[idx], snap);
     pruneGroups(st, snap);
     logInfo("[flow-render] group-upsert(" + key + ")");
-    scrollBottom();
+    scrollBottom(st);
   }
 
   /* ==================================================================
@@ -799,19 +891,126 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
     };
   }
 
+  /** 取/建「某张卡自己的会话」。**不再 stop() 踢人**：切走的卡保留自己的
+      装配器/组视图/画板/事件流句柄，后台照写自己那份（T1）。 */
   function ensureRun(wid, cid) {
-    if (current && current.wid === wid && current.cid === cid) return current;
-    stop();
-    current = {
-      wid, cid, es: null, esT: null,
+    const key = skey(wid, cid);
+    let st = sessions.get(key);
+    if (st) return st;
+    st = {
+      wid, cid, key,
+      es: null, esT: null,
+      board: null,              // 本会话画板（.msgs）；未激活时游离
+      scrollTop: 0,             // 切走时的滚动位置（切回恢复）
+      lastUsed: Date.now(),     // [T3] 最近使用时刻（LRU/静默超时判据）
+      busy: false,              // [T3] 本轮在跑（start→resync/stop 之间）——在跑卡永不释放
       asm: createAssembler(), groups: new Map(), liveSlot: null, liveRunId: "", settled: false,
       fold: new Map(),          // 组键 → 折叠态（true＝已收起）：重画不丢用户的选择
       textEl: null, textBody: null, reasoning: null, reasoningText: null, reasoningSum: null,
       fallbackUsed: false, esDead: false, lastSeq: 0, lastTokenSeq: 0,
+      /* [T5 2026-10-16] 两套 seq 分家，**严禁互写**：
+         lastSeq   = 内存 journal seq（SSE 续传游标；event_stream._seq_counters，重启归零）
+         diskSeq   = 已见的最大**落盘** events seq（event_log 从文件尾 +1 续号，重启不归零）
+         pullSeq   = pullUserBubble 的增量游标（**落盘空间**；初值播种自 diskSeq） */
+      diskSeq: 0, pullSeq: null,
       textRaw: "", _mdTimer: null,
     };
-    return current;
+    sessions.set(key, st);
+    return st;
   }
+
+  /** 激活某会话：把它的画板挂到 #chatArea，并把上一个会话的画板摘下为游离节点
+      （装配状态、组视图、滚动位置全留——不重建）。**同步执行**：点下去画板立刻翻页。 */
+  function activate(wid, cid) {
+    const key = skey(wid, cid);
+    const st = ensureRun(wid, cid);
+    wireScrollLoad();          // [T2] 滚到顶自动加载更早（只装一次）
+    const ca = chatEl();
+    if (activeKey === key) {
+      // 已是当前会话：确保画板在位（首帧/状态重建后可能尚未挂）
+      if (ca && st.board && st.board.parentNode !== ca) ca.appendChild(st.board);
+      st.lastUsed = Date.now();
+      return st;
+    }
+    if (activeKey) {
+      const prev = sessions.get(activeKey);
+      if (prev && prev.board) {
+        if (ca) prev.scrollTop = ca.scrollTop;                 // 记下滚动位置
+        if (prev.board.parentNode) prev.board.parentNode.removeChild(prev.board);   // 摘下
+      }
+    }
+    const board = boardOf(st);
+    if (ca) {
+      // #chatArea 只承载当前会话的画板：游离画板不进文档流（不变量 1）
+      for (const ch of Array.from(ca.children)) if (ch !== board) ca.removeChild(ch);
+      ca.appendChild(board);
+      void ca.scrollHeight;               // [T3] 先强制布局，再落滚动位置（否则会被重置为 0）
+      ca.scrollTop = st.scrollTop || 0;   // 切回恢复滚动位置
+    }
+    activeKey = key;
+    st.lastUsed = Date.now();
+    return st;
+  }
+
+  /** 取某会话的画板元素（供 workspace 把系统行写进**该卡自己的**容器）。
+      缺 cardId 时回落当前会话画板。 */
+  function board(wid, cid) {
+    if (wid && cid) return boardOf(ensureRun(wid, cid));
+    const st = activeKey ? sessions.get(activeKey) : null;
+    return st ? boardOf(st) : null;
+  }
+
+  /* ==================================================================
+     [画板四机制 T3 2026-10-16] 常驻与释放
+     —— 加载过的画板留内存；切换＝挂上/摘下（activate），**不重建** ⇒ 切回即时、滚动位置还在。
+        释放＝静默超时 ＋ LRU 硬上限。
+        **铁律：当前在看的不释放；有任务在跑的不释放。**
+        释放只丢 DOM ＋ 装配状态；数据在 timeline（不变量 10），切回按 timeline 重建（兜底）。
+     ================================================================== */
+
+  /** 有任务在跑：本轮在飞（busy）或事件流还开着——二者任一即视为在跑。 */
+  function isBusy(st) {
+    return !!st && (!!st.busy || !!st.es || !!st.esT);
+  }
+
+  /** 释放一个会话：只丢 DOM ＋ 装配状态，不丢数据。铁律两道闸都在这里。 */
+  function releaseSession(key) {
+    const st = sessions.get(key);
+    if (!st) return false;
+    if (key === activeKey) return false;   // 当前在看：永不释放
+    if (isBusy(st)) return false;          // 有任务在跑：永不释放
+    stopES(st);
+    releaseText(st);                       // 清节流/走秒计时器，免得吊住已丢的 DOM
+    if (st.board && st.board.parentNode) st.board.parentNode.removeChild(st.board);
+    sessions.delete(key);
+    logInfo("[flow-board] release " + key);
+    return true;
+  }
+
+  /** 释放扫描：① 静默超时 ② 硬上限（LRU，最旧先丢）。返回扫描后的常驻数。 */
+  function sweepSessions() {
+    const now = Date.now();
+    for (const [key, st] of Array.from(sessions)) {
+      if (key === activeKey || isBusy(st)) continue;
+      if (now - (st.lastUsed || 0) >= BOARD_CFG.idleReleaseMs) releaseSession(key);
+    }
+    let over = sessions.size - BOARD_CFG.residentMax;
+    if (over > 0) {
+      const idle = Array.from(sessions.keys())
+        .filter((k) => k !== activeKey && !isBusy(sessions.get(k)))
+        .sort((a, b) => (sessions.get(a).lastUsed || 0) - (sessions.get(b).lastUsed || 0));
+      for (const k of idle) {
+        if (over <= 0) break;
+        if (releaseSession(k)) over--;
+      }
+    }
+    return sessions.size;
+  }
+
+  /* 扫描定时器。Node/jsdom 下 setInterval 返回 Timeout（有 unref）——unref 掉，
+     免得取证脚本被这个「永不清理」的定时器吊住不退出；浏览器返回数字、无 unref，照常跑。 */
+  const _sweepTimer = setInterval(sweepSessions, Math.max(50, BOARD_CFG.sweepMs));
+  if (_sweepTimer && typeof _sweepTimer.unref === "function") _sweepTimer.unref();
 
   /** 实时帧入装配：applyRecord → 只 upsert 受影响组。
       装配器**全程同一个实例**（不是每轮换一个）：重建走 rebuild()（清空后重灌），
@@ -858,8 +1057,10 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
       ★ 断 timeline 即会话区空——单源单通道的代价与证据（判据2）：
       这里**不做任何第二数据源兜底**，也不保留上一轮的 DOM。 */
   async function replayTrace(wid, cid) {
-    const st = ensureRun(wid, cid);
-    stopES();
+    // [T1] 前台「打开/换卡恢复」＝激活该卡画板（open() 已先行同步 activate，此处幂等）。
+    // 后台结算回流走 resync()——**不激活**，结果落该卡自己的（可能游离的）画板（§五.5）。
+    const st = activate(wid, cid);
+    stopES(st);
     clearLiveSlot(st);        // 交出 live 正文引用：它已由快照里的正式节点接管
     const items = await fetchTimeline(st, wid, cid);
     renderSnapshot(st, st.asm.rebuild(items));
@@ -873,6 +1074,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
     const st = ensureRun(wid, cid);
     const items = await fetchTimeline(st, wid, cid);
     st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
+    st.busy = false;             // [T3] 结算＝本轮结束（不再是在跑卡）
     clearLiveSlot(st);           // live 气泡随正式节点接管退场
     const snap = st.asm.rebuild(items);
     renderSnapshot(st, snap);
@@ -882,10 +1084,20 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
     return { ok: items !== null, done, runId: st.liveRunId };
   }
 
-  async function fetchTimeline(st, wid, cid) {
+  /** 拉 timeline。`from` 省略＝全量（刷新/结算）；给值＝只取 seq>=from 的增量（T5）。
+      ★ 无论全量还是增量，都把本次 items 的**末条 seq** 记进 `st.diskSeq`（落盘水位）——
+      这是增量游标唯一的播种源；**绝不与 `st.lastSeq`（内存 journal seq）互写**。 */
+  async function fetchTimeline(st, wid, cid, from) {
     try {
-      const resp = await API.getTimeline(wid, cid);
-      return (resp && resp.items) || [];
+      const resp = await API.getTimeline(wid, cid, from);
+      const items = (resp && resp.items) || [];
+      if (st && items.length) {
+        const last = items[items.length - 1];
+        if (last && typeof last.seq === "number") {
+          st.diskSeq = Math.max(st.diskSeq || 0, last.seq);
+        }
+      }
+      return items;
     } catch (e) {
       return null;     // 拉不到＝没有数据源，如实空屏（不兜底、不静默保留旧 DOM）
     }
@@ -897,9 +1109,23 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
         （ns="live"），本轮过程行会闪没。 */
   async function pullUserBubble(wid, cid) {
     const st = ensureRun(wid, cid);
+    /* [T5 2026-10-16] 增量游标播种：取「会话已见的落盘水位」与既有游标的较大者。
+       ★ 任务书 §六 T5 原写「初值＝`st.lastSeq`」——那是**内存 journal seq**，与 /timeline
+         的落盘 seq 是两个空间（journal 重启归零、落盘从文件尾续号），用它当起点会
+         ①首次（lastSeq 常为 0）仍是整卡全量拉；②同进程第二轮起 lastSeq 可能大于落盘
+         seq ⇒ 拉取返回空、**漏掉要找的那条 user_message**。故改用 `st.diskSeq`。
+         详见 `_画板四机制_T5_施工回报_20261016.md`。 */
+    st.pullSeq = Math.max(st.pullSeq || 0, st.diskSeq || 0);
     for (let i = 0; i < 6; i++) {
-      const items = await fetchTimeline(st, wid, cid);
+      // 每次循环只拉游标**之后**的新记录：首拉通常只有本条 user_message 一两条，
+      // 不再是整卡历史（P6）。6×500ms 循环保留＝SSE 断连时的对账兜底。
+      const items = await fetchTimeline(st, wid, cid, st.pullSeq);
       if (items === null) return false;
+      // 游标推进：取本次 items 末条 seq（后端按 seq 升序返回）
+      if (items.length) {
+        const last = items[items.length - 1];
+        if (last && typeof last.seq === "number" && last.seq > st.pullSeq) st.pullSeq = last.seq;
+      }
       let confirmed = false;
       for (const rec of items) {
         if (!rec || rec.type !== "user_message") continue;
@@ -919,9 +1145,11 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
      ================================================================== */
 
   function liveSlot(st) {
-    const box = msgsEl();
+    const box = msgsEl(st);
     if (!box) return null;
-    if (!st.liveSlot || !st.liveSlot.isConnected) {
+    // 判据用 parentNode 而非 isConnected：游离会话的画板整体不在文档里，
+    // isConnected 恒 false 会导致每次都重建 live 槽（T1）。
+    if (!st.liveSlot || st.liveSlot.parentNode !== box) {
       const slot = document.createElement("div");
       slot.className = "live-slot";
       box.appendChild(slot);
@@ -948,7 +1176,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
     st.textEl = el;
     st.textBody = el.querySelector(".live-content");
     logInfo("[flow-render] msg created(assistant.live)");
-    scrollBottom();
+    scrollBottom(st);
     return st;
   }
 
@@ -960,7 +1188,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
       if (!st.textBody) return;
       st.textBody.innerHTML = renderMarkdown(st.textRaw);
       keepTextLast(st);
-      scrollBottom();
+      scrollBottom(st);
     }, 100);
   }
 
@@ -1032,7 +1260,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
       keepTextLast(st);
     }
     logInfo("[flow-render] chunk(" + kind + ", " + text.length + ", " + (seq == null ? "-" : seq) + ")");
-    scrollBottom();
+    scrollBottom(st);
   }
 
   function releaseText(st) {
@@ -1074,28 +1302,38 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
      六、流启停
      ================================================================== */
 
-  function finish() {
-    finishReasoning(current || {});
-    flushMd(current || {});
-    scrollBottom();
+  function finish(st) {
+    finishReasoning(st || {});
+    flushMd(st || {});
+    scrollBottom(st);
   }
 
-  function stopES() {
-    if (current && current.es) { try { current.es.close(); } catch (e) { /* noop */ } current.es = null; }
-    if (current && current.esT) { try { current.esT.close(); } catch (e) { /* noop */ } current.esT = null; }
+  function stopES(st) {
+    if (!st) return;
+    if (st.es) { try { st.es.close(); } catch (e) { /* noop */ } st.es = null; }
+    if (st.esT) { try { st.esT.close(); } catch (e) { /* noop */ } st.esT = null; }
   }
 
   /** 收流：只关两路 SSE，**保留渲染状态**（装配器 ＋ 组视图 ＋ DOM 归属）。
       状态一丢，下一次渲染就会把已在屏上的轮容器当成「新组」重建、长出重复容器
-      （实测踩过）。换卡/换状态由 ensureRun 显式新建处理。 */
-  function stop() {
-    stopES();
+      （实测踩过）。[T1] 换卡不再经过这里——会话表按 (wid,cid) 各留一份状态，
+      「摘下画板」由 activate() 负责；本函数只管停流。可传 (wid,cid) 精确停某会话；
+      不传＝停当前会话（向后兼容既有调用点）。 */
+  function stop(wid, cid) {
+    if (wid && cid) {
+      const st = sessions.get(skey(wid, cid));
+      if (st) { stopES(st); st.busy = false; }   // [T3] 收流＝本轮不再在跑
+      return;
+    }
+    const st = activeKey ? sessions.get(activeKey) : null;
+    if (st) { stopES(st); st.busy = false; }
   }
 
   /** 事件流是否已断（供 workspace 的断线自愈判据：健康时**绝不**做整表重建）。 */
   function streamDead(wid, cid) {
-    if (!current || current.wid !== wid || current.cid !== cid) return true;
-    return !!current.esDead;
+    const st = sessions.get(skey(wid, cid));
+    if (!st) return true;
+    return !!st.esDead;
   }
 
   /** 开始跟踪新一轮：两路 SSE。
@@ -1104,10 +1342,11 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
       onFail 在事件流连不上时回调一次（降级保底）。 */
   function start(wid, cid, onFail) {
     const st = ensureRun(wid, cid);
-    stopES();
+    stopES(st);
     st.liveRunId = "";        // 新一轮：轮锚随 run_start 帧到达后才落
     st.settled = false;       // 解冻：上一轮的收口状态不带到这一轮
     st.esDead = false;
+    st.busy = true;           // [T3] 本轮在跑 ⇒ 在跑卡永不释放
     try {
       // 无游标（lastSeq=0）＝从当前末帧起；有游标＝断点续传。
       const sFrom = st.lastSeq > 0 ? st.lastSeq + 1 : 0;
@@ -1118,7 +1357,7 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
         try {
           const frame = JSON.parse(m.data);
           if (typeof frame.seq === "number" && frame.seq > st.lastSeq) st.lastSeq = frame.seq;
-          if (frame.type === "done" || frame.type === "error") finish();
+          if (frame.type === "done" || frame.type === "error") finish(st);
           applyLiveFrame(st, frame);
         } catch (e) { /* 单帧坏不致命 */ }
       };
@@ -1150,4 +1389,9 @@ let current = null;   // {wid,cid,es,esT,asm,groups,liveSlot,liveRunId,...}
 export const EventFlow = {
   start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers,
   optimisticUser, dropOptimisticUser, streamDead,
+  // [画板四机制 T1] 会话表对外两口：activate＝把某卡画板挂上 #chatArea（open 用）；
+  // board＝取某卡自己的容器（workspace 把系统行写进该卡那份，不再写全局唯一列）。
+  activate, board,
+  // [画板四机制 T3] 释放扫描 ＋ 常驻键只读探针（供取证/联调；不改任何语义）。
+  sweepSessions, residentKeys: () => Array.from(sessions.keys()),
 };

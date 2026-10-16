@@ -60,7 +60,8 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
 # [规则卡 2026-10-15] t20-1 → t21-1：新增「## 规则卡」使用说明节（根卡
 # draft_rule_edit 起草＋用户审批落盘）。
 def test_base_prompt_version_is_t20_1():
-    assert prompts.BASE_PROMPT_VERSION == "t21-1"
+    # [依赖关联线 2026-10-16] t21-1 → t22-1。
+    assert prompts.BASE_PROMPT_VERSION == "t22-1"
 
 
 # ---------------------------------------------------------------- 判据1：draft

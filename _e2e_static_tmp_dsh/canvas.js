@@ -1,6 +1,6 @@
 /* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
  * 迭代四 F2③：IIFE → ES module（module 作用域＝原闭包隔离）；escapeHtml 收编 esm/util.js；
- * API 经 esm/api.js 静态 import；跨文件（Workspace/RenderNav）由 main.js 装配序保证。
+ * API 经 esm/api.js 静态 import；打开卡对话/刷新导航走 esm/page_bus.js（画布页入口注入）。
  *
  * [画布第三步 · 拆渲染层边界] 长期不变量（V1–V10，违反任何一条即架构回退）：
  *   V1 渲染不摸状态——渲染区 10 函数（renderCanvas/renderEdges/renderBreadcrumb/createNode/
@@ -20,7 +20,7 @@
 import { API } from "./esm/api.js";
 import { escapeHtml } from "./esm/util.js";
 import { store } from "./esm/store.js";
-import { Workspace, RenderNav } from "./workspace.js";
+import { pageBus } from "./esm/page_bus.js";
 import { notify } from "./esm/api.js";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
@@ -946,6 +946,7 @@ const WORK_ID = window.__WORK_ID__;
     for (const cid of visibleIds) {
       const card = vm.cardsById[cid];
       if (!card) continue;
+      if (card.card_type === "rule") continue;   // [规则卡 2026-10-16] 规则卡不上画布——它是吸附屏幕右侧的常驻卡（workspace.js 规则面板即其呈现）
       const node = createNode(card, { x: 0, y: 0 }, vm);   // 占位坐标（阶段二一次性应用最终位）
       if ((depthOf[cid] || 0) >= 2) {
         // [T08-用户令 2026-10-04] 第三级卡只显示标题（独立类，不动 l0/l1/l2 三档机制）
@@ -1274,7 +1275,7 @@ const WORK_ID = window.__WORK_ID__;
         return;
       }
     }
-    Workspace.open(card.card_id);
+    pageBus.openCard(WORK_ID, card.card_id);   // [分页 2026-10-16] 画布点卡＝跳转对话页
   }
 
   // [T08-用户令] 相对当前视图根的深度：沿 parent 链上溯到 viewRoot 的步数
@@ -1297,7 +1298,7 @@ const WORK_ID = window.__WORK_ID__;
       setViewRoot(card.card_id);
     } else {
       // 无子卡也允许下钻（用户可能想进入空容器建卡），但等同打开工作区
-      Workspace.open(card.card_id);
+      pageBus.openCard(WORK_ID, card.card_id);   // [分页 2026-10-16] 跳转对话页
     }
   }
 
@@ -1482,7 +1483,7 @@ const WORK_ID = window.__WORK_ID__;
           e.stopPropagation();
           // 找到第一个跨视图目标，打开其工作区
           const crossRel = vm.relations.find(r => r.source === cid && !visibleIds.has(r.target));
-          if (crossRel) Workspace.open(crossRel.target);
+          if (crossRel) pageBus.openCard(WORK_ID, crossRel.target);   // [分页 2026-10-16] 跳转对话页
         };
         node.appendChild(badge);
       }
@@ -1766,7 +1767,7 @@ const WORK_ID = window.__WORK_ID__;
         const r = await API.createCard(WORK_ID, { title, source: "用户直接创建", card_type: ctype, parent: state.nav.viewRoot });
         node.remove();
         await reloadCanvas();
-        RenderNav();   // [T17] 新卡同步进导航树
+        pageBus.renderNav();   // [T17→分页 2026-10-16] 新卡同步进导航树（经总线，画布页入口注入）
         notify("卡片已创建", "success");   // [F3④]
       } catch (e) { notify("建卡失败", "error"); }   // [F3④] 原静默
     };

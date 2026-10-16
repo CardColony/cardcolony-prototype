@@ -4,7 +4,8 @@
 工具接口只含机械事实：
 - read_card：返回标题、父卡、连线、正文——不暴露内部四区语义
 - edit_card(card_id, content)：覆盖写指定卡正文（内部落存储层正文区）
-- link_cards：连线，模型可用类型限 先后/关联（锚定为系统内部关系，不对模型开放）
+- link_cards：通信线（卡上 links），模型可用类型限 先后/关联（锚定为系统内部关系，不对模型开放）
+- link_rel：依赖关联线（卡上 relations，第三种线），kind 限 依赖/关联；**不参与通信**
 
 [权限收口 2026-10-09 → 权限底座重做 2026-10-12] 权限统一走 src/permissions/policy：
 PERMS 来自**卡上固化的 perms 字段**（两级定位 project_class＋card_type 在
@@ -52,9 +53,13 @@ from . import file_tools, prompt_log
 
 logger = logging.getLogger("api.card_tools")
 
-# [白板版 2026-10-02] 模型可建的连线类型收窄为两个中性关系；
+# [白板版 2026-10-02] 模型可建的**通信线**类型收窄为两个中性关系；
 # "锚定"（系统派生目标卡专用）与"兑现"（写作agent残留语义）不再对模型开放
 MODEL_REL_TYPES = ("先后", "关联")
+
+# [依赖关联线 2026-10-16] 模型可建的**依赖关联线** kind（第三种线 relations）。
+# 与通信线的 type 是两个字段上的概念，重名不影响（任务书 §二.12）。
+MODEL_DEP_KINDS = ("依赖", "关联")
 
 # [权限底座重做 2026-10-12] 工具组→工具名映射（build_tool_schemas 过滤面）。
 # 由卡上的 tools_file / tools_web 两个开关决定下发哪几组：缺哪个开关就不下发
@@ -83,6 +88,7 @@ _WEB_GROUP_TOOLS = ("web_search", "fetch_web")
 #   delete_card                            → delete（L337）
 #   create_card                            → create_child（L227）
 #   link_cards / unlink_cards              → link / unlink（L430/L474）
+#   link_rel / unlink_rel                  → link / unlink（依赖关联线，复用同款开关）
 #   update_shadow                          → shadow_write（L361）
 #   list_manuscript/read_manuscript/search_manuscript → manuscript（新增开关，原无）
 #   run_tool_card                          → invoke_tool（新增开关，原无）
@@ -120,6 +126,11 @@ TOOL_SWITCH: dict[str, str] = {
     "create_coder_card": policy.SWITCH_CREATE_CHILD,
     "link_cards": policy.SWITCH_LINK,
     "unlink_cards": policy.SWITCH_UNLINK,
+    # [依赖关联线 2026-10-16] 第三种线（依赖关联线）的建/解线工具——复用 link/unlink
+    # 开关（不新开）。写的是卡上另一个字段（relations，非 links），权限同款，
+    # 工具面按现有四级过滤机制自动生效。
+    "link_rel": policy.SWITCH_LINK,
+    "unlink_rel": policy.SWITCH_UNLINK,
     "update_shadow": policy.SWITCH_SHADOW_WRITE,
     "list_manuscript": policy.SWITCH_MANUSCRIPT,
     "read_manuscript": policy.SWITCH_MANUSCRIPT,
@@ -163,7 +174,11 @@ TOOL_SWITCH: dict[str, str] = {
 #   draft_rule_edit（根卡起草规则区修改，只起草不落盘）；build_tool_schemas 增
 #   第四段根卡闸（ROOT_ONLY_TOOLS，只对剧本根卡下发）。TOOL_REGISTRY 字面量
 #   条目数 由 18 → 19（验收 grep 口径见任务书 §六块3 硬判据 1）。
-TOOL_TABLE_VERSION = "tools-tc-6"
+# tools-tc-7：[依赖关联线 2026-10-16] **工具集变更 ⇒ 递增**：新增第 20/21 件
+#   link_rel / unlink_rel（第三种线「依赖关联线」的建/解线，写卡上 relations
+#   字段，不参与通信；权限复用 link/unlink 开关）。TOOL_REGISTRY 字面量条目数
+#   由 19 → 21（验收 grep 口径：注册表内「双引号工具名 + 冒号 + ToolDef(」的行数 == 21）。
+TOOL_TABLE_VERSION = "tools-tc-7"
 
 
 # ============================================================
@@ -284,6 +299,10 @@ async def _h_read_card(work_id: str, current_id: str,
         "card_id": target_id,
         "title": result["meta"].get("title", ""),
         "parent": result["meta"].get("parent", ""),
+        # [依赖关联线 2026-10-16] 两线并列返回：
+        #   links     ＝通信线（原 relations 改名，read_linked 沿它寻址）
+        #   relations ＝依赖关联线（新线，不参与通信）
+        "links": result["meta"].get("links") or [],
         "relations": result["meta"].get("relations") or [],
         "body": body.get("status_block", ""),
         "使命": body.get("mission", ""),
@@ -784,9 +803,11 @@ async def read_via(work_id: str, source_id: str, target_id: str,
                    part: str) -> dict[str, Any]:
     """沿**通信线**读对方卡的数据（纯机制）。
 
-    ① **沿边寻址**：``source_id`` 的 ``relations`` 里必须存在一条指向
+    ① **沿边寻址**：``source_id`` 的 ``links``（通信线）里必须存在一条指向
        ``target_id`` 的边；不存在 → ``{"ok": False, "reason": "no_link", ...}``
-       （文案含「无通信线」）。只沿 relations（通信线），**不碰 parent**。
+       （文案含「无通信线」）。只沿 links（通信线），**不碰 parent**，
+       **也绝不沿新线 relations（依赖关联线）**——新线不参与通信
+       （依赖关联线 2026-10-16 裁定 3）。
     ② **part → 现成读工具**（复用不重做，只加「沿边寻址」这一步）：
        - ``正文`` → ``card_store.read_card``（三块：使命／现状／定论）
        - ``影子`` → ``shadow_store.read_shadow_raw``
@@ -802,10 +823,12 @@ async def read_via(work_id: str, source_id: str, target_id: str,
     except Exception as exc:  # noqa: BLE001 读源卡失败＝无路可寻，如实返回
         return {"ok": False, "reason": "source_unreadable",
                 "message": f"读源卡失败: {exc}"}
-    relations = (source.get("meta") or {}).get("relations") or []
+    # [依赖关联线 2026-10-16] 沿边寻址**只认 links（通信线）**——新线 relations
+    # （依赖关联线）不进寻址，故沿依赖线 read_linked 一律报「无通信线」。
+    links = (source.get("meta") or {}).get("links") or []
     linked = any(
         isinstance(r, dict) and str(r.get("target") or "") == target_id
-        for r in relations
+        for r in links
     )
     if not linked:
         return {"ok": False, "reason": "no_link",
@@ -908,7 +931,8 @@ async def _h_link_cards(work_id: str, current_id: str,
     except PermissionError:
         return err("denied", f"越权：无权与 {target_id} 建立关系")
     current = await card_store.read_card(work_id, current_id)
-    existing = current["meta"].get("relations") or []
+    # [依赖关联线 2026-10-16] 通信线读写走 **links**（原 relations 改名）。
+    existing = current["meta"].get("links") or []
     for rel in existing:
         if (isinstance(rel, dict)
                 and rel.get("target") == target_id
@@ -921,7 +945,7 @@ async def _h_link_cards(work_id: str, current_id: str,
     cur_title = current["meta"].get("title", "")
     result = await card_store.update_card(
         work_id, current_id,
-        {"relations": list(existing) + [new_rel]},
+        {"links": list(existing) + [new_rel]},
         f"由「{cur_title}」对话建立关系：{rel_type} → {target_id}",
     )
     if "error" in result:
@@ -932,9 +956,10 @@ async def _h_link_cards(work_id: str, current_id: str,
 async def _h_unlink_cards(work_id: str, current_id: str,
                           arguments: dict[str, Any],
                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    # [解线 2026-10-03] 与 link_cards 对称；走 update_card(relations)，
+    # [解线 2026-10-03] 与 link_cards 对称；走 update_card(links)，
     # 与前端 ✕ 删线同一条存储通道。悬空线主用例：目标卡已删时
-    # relations 条目仍留在 source 卡上，此处不检查目标卡存在性。
+    # links 条目仍留在 source 卡上，此处不检查目标卡存在性。
+    # [依赖关联线 2026-10-16] 通信线读写走 **links**（原 relations 改名）。
     target_id = arguments.get("target_id", "")
     rel_type = (arguments.get("type") or "").strip()
     if not target_id:
@@ -952,7 +977,7 @@ async def _h_unlink_cards(work_id: str, current_id: str,
         except PermissionError:
             return err("denied", f"越权：无权解除与 {target_id} 的连线")
     current = await card_store.read_card(work_id, current_id)
-    existing = current["meta"].get("relations") or []
+    existing = current["meta"].get("links") or []
 
     def _match(rel: Any) -> bool:
         if not isinstance(rel, dict):
@@ -969,8 +994,119 @@ async def _h_unlink_cards(work_id: str, current_id: str,
     cur_title = current["meta"].get("title", "")
     result = await card_store.update_card(
         work_id, current_id,
-        {"relations": remaining},
+        {"links": remaining},
         f"由「{cur_title}」对话解除关系 → {target_id}",
+    )
+    if "error" in result:
+        return result
+    return {"ok": True, "source": current_id, "target": target_id, "removed": removed}
+
+
+# ============================================================
+# [依赖关联线 2026-10-16] 第三种线「依赖关联线」的建线/解线工具
+#
+# 与 link_cards / unlink_cards **对称但不混用**：写的是卡上**另一个字段**——
+#   links     ＝ 通信线（link_cards / unlink_cards 写，read_linked 沿它寻址）
+#   relations ＝ 依赖关联线（本对工具写，**不参与通信**）
+# 权限复用现有 link / unlink 开关（不新开），树类收紧「只能连自己子树内的卡」同款。
+# ============================================================
+
+async def _h_link_rel(work_id: str, current_id: str,
+                      arguments: dict[str, Any],
+                      cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """建一条依赖关联线：在当前卡 ``relations`` 上追加 ``{target, kind, detail}``。
+
+    校验：target 存在、≠自身、kind ∈ ``MODEL_DEP_KINDS``、detail 非空（必填）。
+    权限：关口 ``SWITCH_LINK``（树类收紧：只能连自己子树内的卡）。
+    幂等：同 ``(target, kind)`` 已存在则不重复追加——detail 变化则**更新** detail。
+    """
+    target_id = str(arguments.get("target_id", "") or "")
+    kind = str(arguments.get("kind", "") or "")
+    detail = str(arguments.get("detail", "") or "").strip()
+    if not target_id:
+        return err("validation", "target_id 不能为空")
+    if kind not in MODEL_DEP_KINDS:
+        return err("validation",
+                   f"kind 非法: {kind}，只允许 {'/'.join(MODEL_DEP_KINDS)}")
+    if not detail:
+        return err("validation", "detail 不能为空（写清依赖什么/关联什么）")
+    if target_id not in cards:
+        return err("not_found", f"卡片不存在: {target_id}")
+    if target_id == current_id:
+        return err("validation", "不能与自身建立关系")
+    # 权限复用 LINK 关口（不新开）：目标卡 perms 须授 link；树类收紧同款
+    try:
+        policy.check(current_id, target_id, policy.SWITCH_LINK, cards)
+    except PermissionError:
+        return err("denied", f"越权：无权与 {target_id} 建立依赖关联")
+    current = await card_store.read_card(work_id, current_id)
+    existing = list(current["meta"].get("relations") or [])
+    hit = next((r for r in existing
+                if isinstance(r, dict) and r.get("target") == target_id
+                and r.get("kind") == kind), None)
+    cur_title = current["meta"].get("title", "")
+    if hit is not None:
+        if str(hit.get("detail") or "") == detail:
+            return {"ok": True, "existed": True}   # 幂等：同 (target, kind, detail)
+        hit["detail"] = detail                      # detail 变化 → 就地更新
+        result = await card_store.update_card(
+            work_id, current_id, {"relations": existing},
+            f"由「{cur_title}」对话更新依赖关联：{kind} → {target_id}",
+        )
+        if "error" in result:
+            return result
+        return {"ok": True, "updated": True, "source": current_id,
+                "target": target_id, "kind": kind, "detail": detail}
+    existing.append({"target": target_id, "kind": kind, "detail": detail})
+    result = await card_store.update_card(
+        work_id, current_id, {"relations": existing},
+        f"由「{cur_title}」对话建立依赖关联：{kind} → {target_id}",
+    )
+    if "error" in result:
+        return result
+    return {"ok": True, "source": current_id, "target": target_id, "kind": kind}
+
+
+async def _h_unlink_rel(work_id: str, current_id: str,
+                        arguments: dict[str, Any],
+                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """解除依赖关联线：从当前卡 ``relations`` 移除指向 target 的条目。
+
+    ``kind`` 缺省＝移除**全部**指向该 target 的条目；给了 kind 只移除对应条目。
+    权限：关口 ``SWITCH_UNLINK``（与 unlink_cards 同款：目标卡已删的悬空条目
+    仍可清理——目标不存在则无卡可查，直接放行）。
+    """
+    target_id = str(arguments.get("target_id", "") or "")
+    kind = str(arguments.get("kind", "") or "").strip()
+    if not target_id:
+        return err("validation", "target_id 不能为空")
+    if kind and kind not in MODEL_DEP_KINDS:
+        return err("validation",
+                   f"kind 非法: {kind}，只允许 {'/'.join(MODEL_DEP_KINDS)}")
+    if target_id in cards:
+        try:
+            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards)
+        except PermissionError:
+            return err("denied", f"越权：无权解除与 {target_id} 的依赖关联")
+    current = await card_store.read_card(work_id, current_id)
+    existing = list(current["meta"].get("relations") or [])
+
+    def _match(rel: Any) -> bool:
+        if not isinstance(rel, dict):
+            return False
+        if rel.get("target") != target_id:
+            return False
+        return (not kind) or rel.get("kind") == kind
+
+    remaining = [r for r in existing if not _match(r)]
+    removed = len(existing) - len(remaining)
+    if removed == 0:
+        detail = f" 的 {kind} 依赖关联" if kind else ""
+        return err("not_found", f"依赖关联不存在: 当前卡无指向 {target_id}{detail}")
+    cur_title = current["meta"].get("title", "")
+    result = await card_store.update_card(
+        work_id, current_id, {"relations": remaining},
+        f"由「{cur_title}」对话解除依赖关联 → {target_id}",
     )
     if "error" in result:
         return result
@@ -1607,6 +1743,60 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_draft_rule_edit,
         readonly=True,
     ),
+    # [依赖关联线 2026-10-16] 第 20/21 件工具：第三种线「依赖关联线」的建/解线。
+    # 追加在既有 19 件字面量之后 ⇒ 前 19 件工具面顺序逐字不变。写的是卡上
+    # relations 字段（非 links）——与 link_cards/unlink_cards 对称但不混用；
+    # 权限复用 link/unlink 开关；**不参与通信**（不能沿它 read_linked）。
+    "link_rel": ToolDef(
+        schema={
+            "name": "link_rel",
+            "description": (
+                "在当前卡与目标卡之间建立一条**依赖/关联**关系线（第三种线：记录"
+                "依赖什么、关联什么；**不用于通信**）。source 固定为当前对话卡。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "目标卡 id，如 card_003"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["依赖", "关联"],
+                        "description": "关系种类：依赖／关联",
+                    },
+                    "detail": {
+                        "type": "string",
+                        "description": "写清依赖什么／关联什么（必填，自由文本）",
+                    },
+                },
+                "required": ["target_id", "kind", "detail"],
+            },
+        },
+        handler=_h_link_rel,
+        readonly=False,
+    ),
+    "unlink_rel": ToolDef(
+        schema={
+            "name": "unlink_rel",
+            "description": (
+                "解除当前卡上指向目标卡的依赖/关联关系线（source 固定为当前对话卡）。"
+                "kind 缺省＝解除全部指向该目标的条目；给了 kind 只解对应条目。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "description": "目标卡 id"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["依赖", "关联"],
+                        "description": "可选，关系种类；缺省解除全部指向该目标的条目",
+                    },
+                },
+                "required": ["target_id"],
+            },
+        },
+        handler=_h_unlink_rel,
+        readonly=False,
+    ),
 }
 
 
@@ -2065,7 +2255,7 @@ def build_tool_schemas(
 
 
 def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:
-    """轻量收集 work 下所有卡的 meta（含 parent/card_type/relations）。
+    """轻量收集 work 下所有卡的 meta（含 parent/card_type/links/relations）。
 
     [T-0007写路径收口] 改走card_store/shadow_store 的公开接口
     （iter_card_metas / iter_shadow_metas），不再跨层摸 _cards_dir/_meta_of/

@@ -337,7 +337,8 @@ def _render_card(meta: dict[str, Any], mission: str, status_block: str,
         f"parent: {_q(meta['parent'])}",
         'content_hash: ""',
         f"tags: {json.dumps(meta.get('tags', []), ensure_ascii=False)}",
-        f"relations: {json.dumps(meta.get('relations', []), ensure_ascii=False)}",
+        # [依赖关联线 2026-10-16] 通信线让名：原 relations → links。
+        f"links: {json.dumps(meta.get('links', []), ensure_ascii=False)}",
         f"session_ref: {_q(meta['session_ref'])}",
         # [卡片分类基座 T1] 新分类字段：非空才渲染 FM 行（空串＝不写，存量兼容）。
         # 位置在 session_ref 之后、created_at 之前——读路径 _meta_of 按key 取，
@@ -715,7 +716,7 @@ def card_exists(work_id: str, card_id: str) -> bool:
 def iter_card_metas(work_id: str) -> dict[str, dict[str, Any]]:
     """轻量收集 work 下所有正卡的 meta（公开接口，供跨层调用方批量读）。
 
-    返回 {card_id: meta}；meta 含 parent/card_type/relations 等字段，
+    返回 {card_id: meta}；meta 含 parent/card_type/links/relations 等字段，
     并补回 card_id 键（id 即主键，meta 内不重复存）。
     卡片不存在或读取失败返回空 dict。
 
@@ -843,6 +844,8 @@ async def create_card(
                 "card_type": resolved_type,
                 "parent": resolved_parent,
                 "tags": [],
+                # [依赖关联线 2026-10-16] 两线并存：links＝通信线，relations＝依赖关联线。
+                "links": [],
                 "relations": [],
                 "session_ref": f"sessions/{session_name}",
                 # [卡片分类基座 T1] 新分类字段：非空才落库（空串＝不写，存量兼容）
@@ -957,7 +960,7 @@ async def update_card(
     """通用写入：应用修改→追加修改历史→刷新 updated_at/content_hash→写回→git 提交。
 
     updates 支持键（含 Phase 7 扩展）：
-      title/tags/relations/session_ref/card_type/parent
+      title/tags/links/relations/session_ref/card_type/parent
       mission/status_block/rulings（正文块·新键）
       charter/conclusion/rejections（正文块·旧键，保留兼容，归一到新键后落同一处）
 
@@ -1038,7 +1041,9 @@ async def update_card(
     # card_history ＋ rev+1，全部一次事务。落盘键清单与旧 _render_card 的
     # 「只搬清单内键」同口径——不进清单的键仍被静默丢弃。
     _UPDATABLE_META_KEYS = (
-        "title", "tags", "relations", "session_ref",
+        # [依赖关联线 2026-10-16] links＝通信线（原 relations 改名）；
+        # relations＝依赖关联线（新线，模型侧 link_rel/unlink_rel 写它）。
+        "title", "tags", "links", "relations", "session_ref",
         "card_type", "parent",
         "project_class", "owner_card_id", "state",
         "perms", "perms_version",
@@ -1170,11 +1175,13 @@ async def derive_ending(work_id: str) -> Optional[str]:
             logger.error("目标卡派生失败 work=%s: %s", work_id, result["error"])
             return None
         ending_id = result["meta"]["card_id"]
-        # 目标卡 relations 加一条指向剧本卡的"锚定"
+        # 目标卡 links 加一条指向剧本卡的"锚定"
+        # [依赖关联线 2026-10-16] 系统派生的「锚定」是**通信线**（沿它 read_linked 可读），
+        # 随旧数据留在 links 里，语义不变（不迁到新线——见施工回报 Open Item 2）。
         await _append_relation(work_id, ending_id, {
             "target": work_card_id, "type": "锚定",
         })
-        await canvas_store.update_cache(work_id)  # relations 变更同步进画布缓存
+        await canvas_store.update_cache(work_id)  # links 变更同步进画布缓存
         # ending_derived 置 true（幂等标志）
         work_store.update_work(work_id, {"ending_derived": True})
         # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
@@ -1186,18 +1193,22 @@ async def derive_ending(work_id: str) -> Optional[str]:
 
 
 async def _append_relation(work_id: str, card_id: str, rel: dict[str, Any]) -> None:
-    """向指定卡的 relations 追加一条 relation（不重复）。"""
+    """向指定卡的 **links（通信线）** 追加一条 relation（不重复）。
+
+    [依赖关联线 2026-10-16] 本函数是系统派生「锚定」的写入通道——锚定是通信线
+    （沿它 read_linked 可读对方），故随旧数据写在 links 上，语义一字不变。
+    """
     def _fn(conn: Any) -> None:
         row = card_db.get_card_row(conn, card_id)
         if row is None:
             return
-        rels = list(card_db.row_to_meta(row).get("relations") or [])
+        rels = list(card_db.row_to_meta(row).get("links") or [])
         if any(r.get("target") == rel.get("target")
                and r.get("type") == rel.get("type") for r in rels):
             return
         rels.append(rel)
         now = _now_iso()
-        card_db.update_card_row(conn, card_id, {"relations": rels, "updated_at": now}, {})
+        card_db.update_card_row(conn, card_id, {"links": rels, "updated_at": now}, {})
         card_db.append_history(conn, card_id, f"- [{now}] 追加 relation: {rel}", now)
         card_db.bump_rev(conn)
 

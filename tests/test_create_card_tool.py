@@ -75,7 +75,8 @@ def test_tool_table_version_bumped():
     [规则卡 2026-10-15] 推进到 tc-6：新增 draft_rule_edit（第 19 件，根卡起草
     规则区修改），build_tool_schemas 增第四段根卡闸。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-6"
+    # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-7"
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():
@@ -94,7 +95,9 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     # 「## 编程卡」节。
     # [规则卡 2026-10-15] 推进到 t21-1：增「## 规则卡」使用说明节（根卡
     # draft_rule_edit 起草＋用户审批落盘）。
-    assert prompts.BASE_PROMPT_VERSION == "t21-1"
+    # [依赖关联线 2026-10-16] t21-1 → t22-1（通信线 relations→links；新增
+    # 依赖关联线工具两行）。
+    assert prompts.BASE_PROMPT_VERSION == "t22-1"
     assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT

@@ -85,31 +85,10 @@ async def call_main(
         ctx = None
 
     result: dict[str, Any] = {}
-    # [DeepSeek 思考回传 2026-10-15] 攒本轮思考增量：DeepSeek 思考模型要求
-    # 多轮调用时把上一轮的 reasoning_content 原样回传（不回传 → 400
-    # "The `reasoning_content` in the thinking mode must be passed back"）。
-    # 思考只在调用链内部传递（作 assistant 条的协议字段），不进对话内容、
-    # 不进前端渲染——前端展示仍走 emit_token 通道，两路互不影响。
-    # [DeepSeek 思考回传 2026-10-15] 注入消息兼容：DeepSeek 系思考模型要求对话内
-    # 每条 assistant 消息都必须带 reasoning_content（空串即可），否则 400
-    # "The `reasoning_content` in the thinking mode must be passed back to the API"。
-    # 判断协议/上下文注入的投影 role 是 assistant 且原本无此键——实测生产请求形状
-    # （孤儿 user×3 + 尾部判断协议 assistant 无 rc + tools + 流式）→ 400，
-    # 给该 assistant 补空串 rc 后 → 200（T3b 实测）。仅 DeepSeek 系模型补——
-    # 其他家多带字段可能被拒，逐字同旧。gateway 一行不碰（在调用层预处理）。
-    if "deepseek" in model_name.lower():
-        def _ds_norm(msgs):
-            if not msgs:
-                return msgs
-            out = []
-            for m in msgs:
-                if m.get("role") == "assistant" and "reasoning_content" not in m:
-                    m = dict(m)
-                    m["reasoning_content"] = ""
-                out.append(m)
-            return out
-        turn_tail = _ds_norm(turn_tail)
-        turn_once = _ds_norm(turn_once)
+    # [模型层底座抄写 2026-10-16] DeepSeek 思考回传的「每条 assistant 必带
+    # reasoning_content」规范化**已上移**到网关兼容壳（`gateway._ds_norm`，对
+    # turn_tail/turn_once 生效）——此处的旧 `_ds_norm` 删除，避免两处重复。
+    # 行为逐字不变（网关判定条件同旧：模型名/线名含 deepseek 或路由到 deepseek）。
 
     _reasoning_parts: list[str] = []
     # [直接停止 2026-10-15] 生成循环内查人停置位：命中即 break 断流，

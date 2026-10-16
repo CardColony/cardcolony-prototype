@@ -98,10 +98,13 @@ def test_clean_strips_closed_think_and_proposal_block():
 
 # ---------------------------------------------------------------- 模型配置侧方言（逐家适配）
 
-def test_minimax_thinking_on_translates_to_adaptive():
-    """探针实测：MiniMax `thinking.type` 只接受 adaptive|disabled（enabled 直接 400）。
-    故 thinking=on 必须翻译成 adaptive——此前该分支落空成「不传参数」，属蒙对。"""
+def test_minimax_thinking_on_dialect_adaptive_not_enabled():
+    """[2026-10-16 裁定 B · 双断言] 编译层不翻译；minimax 方言表产出 adaptive。
+
+    官方文档（阿里云百炼 MiniMax-M3）：``thinking.type`` 只有 ``adaptive``（默认，模型自判）
+    与 ``disabled``；**无 ``enabled``**。故 thinking=on → adaptive。"""
     from src.api import model_config
+    from src.model_gateway.llm_openai_compat.dialects import ThinkingSpec, apply_thinking
 
     cfg = model_config.compile({
         "providers": {"minimax": {"protocol": "openai",
@@ -111,13 +114,20 @@ def test_minimax_thinking_on_translates_to_adaptive():
         "system": {},
     })
     entry = cfg["models"]["minimax-m3"]
-    assert entry["extra_body"]["thinking"] == {"type": "adaptive"}
-    assert "thinking" not in entry          # 非 gateway 字段仍弹出
+    # ① 编译层不翻译
+    assert "extra_body" not in entry
+    assert entry["thinking"] == "on"
+    assert entry["vendor"] == "minimax"
+    # ② 适配器层锁行为
+    body: dict = {}
+    apply_thinking(body, ThinkingSpec(vendor=entry["vendor"], thinking=entry["thinking"]))
+    assert body["thinking"] == {"type": "adaptive"}
 
 
-def test_minimax_thinking_off_still_disabled():
-    """off 分支逐字不变（既有 test_model_config_step2 已钉，此处防方言表改飞）。"""
+def test_minimax_thinking_off_dialect_still_disabled():
+    """off 分支：编译层原样带下，方言表产出 disabled。"""
     from src.api import model_config
+    from src.model_gateway.llm_openai_compat.dialects import ThinkingSpec, apply_thinking
 
     cfg = model_config.compile({
         "providers": {"minimax": {"protocol": "openai",
@@ -126,7 +136,11 @@ def test_minimax_thinking_off_still_disabled():
                                   "thinking": "off"}},
         "system": {},
     })
-    assert cfg["models"]["minimax-m3"]["extra_body"]["thinking"] == {"type": "disabled"}
+    entry = cfg["models"]["minimax-m3"]
+    assert "extra_body" not in entry
+    body: dict = {}
+    apply_thinking(body, ThinkingSpec(vendor=entry["vendor"], thinking=entry["thinking"]))
+    assert body["thinking"] == {"type": "disabled"}
 
 
 # ---------------------------------------------------------------- 三席流式转发（拆雷②）

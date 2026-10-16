@@ -46,7 +46,11 @@ from __future__ import annotations
 # t20-1 → t21-1：[规则卡 2026-10-15 · 块3] 新增「## 规则卡」使用说明节（规则卡
 # 是什么、六区按卡类型注入对应卡、模型不可直改规则、根卡 draft_rule_edit 只起草、
 # 用户弹窗审批后才落盘生效）。
-BASE_PROMPT_VERSION = "t21-1"
+# t21-1 → t22-1：[依赖关联线 2026-10-16] 命名腾挪：通信线 relations → links；
+# 新增第三种线「依赖关联线」relations（工具 link_rel/unlink_rel，不参与通信）。
+# 「系统结构」句改为 parent（父子）、links（通信线）与 relations（依赖关联线）；
+# 工具表增两行、link_cards/unlink_cards 字段口径同步为「通信线」。
+BASE_PROMPT_VERSION = "t22-1"
 
 # [思维链真实落地 2026-10-11] 判断协议（任务书附录 A 全文，一字不改）。
 # 注入 system 区开头；实测 A/B 有效 7/10→10/10。
@@ -85,19 +89,22 @@ BASE_PROMPT = """\
 
 ## 系统结构
 
-- 全部内容以卡片组织；卡与卡通过 parent（父子）与 relations（连线）构成树状结构。
+- 全部内容以卡片组织；卡与卡通过 parent（父子）、links（通信线）与 relations（依赖关联线）构成树状结构。
+- links 是通信线：建立后可沿它读取对方卡（read_linked）；relations 是依赖关联线：只记录依赖/关联关系与内容，不参与通信。
 - 本次对话挂接在下方"当前卡"上；系统全部卡片的清单附在下方。
 
 ## 工具
 
-- read_card(card_id)：读取指定卡（标题、父卡、连线、正文）。只能读取你有权访问的卡。
+- read_card(card_id)：读取指定卡（标题、父卡、通信线与依赖关联线、正文）。只能读取你有权访问的卡。
 - read_memory(card_id?, from_seq?, to_seq?)：下探指定卡（缺省当前卡）的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】），可按块序号锚点区间取回。记忆条目不是卡片正文——正文经 read_card 拉取。
 - create_card(title, parent?, content?)：在你管辖范围内创建新卡。只能建自己的子卡片——parent 缺省＝当前卡自身；给 parent 时该卡必须落在你的子树内，越权会被拒。建卡成功后系统自动派生该卡的影子卡，你不需要管。
 - create_coder_card(title, task)：把一件开发任务交给新建的编程卡执行——建一张编程卡（task 原样落进它的使命块）并立即自动开跑。只能建自己的子卡片。
 - delete_card(card_id)：删除你管辖范围内指定编号的卡片及其对话。剧本根卡与有子卡的卡不可删除。
 - read_shadow(card_id)：读取指定卡的影子卡全文（card_id 缺省＝当前卡）。只读本卡自己的影子。
-- link_cards(target_id, type, note)：在当前卡与目标卡之间建立连线（type：先后/关联）。
-- unlink_cards(target_id, type)：解除当前卡上指向目标卡的连线；目标卡已删时也可用（清理悬空线）。type 缺省解除全部指向该目标的连线。
+- link_cards(target_id, type, note)：在当前卡与目标卡之间建立**通信线**（type：先后/关联）。
+- unlink_cards(target_id, type)：解除当前卡上指向目标卡的**通信线**；目标卡已删时也可用（清理悬空线）。type 缺省解除全部指向该目标的连线。
+- link_rel(target_id, kind, detail)：在当前卡与目标卡之间建立一条**依赖/关联关系线**（第三种线；kind：依赖/关联；detail 写清依赖什么/关联什么）。它只记录关系与内容，**不用于通信**。
+- unlink_rel(target_id, kind)：解除当前卡上指向目标卡的依赖/关联关系线；kind 缺省解除全部指向该目标的条目。
 - list_manuscript() / read_manuscript(chapter) / search_manuscript(keyword)：查阅本项目存档的原始资料。
 - web_search(query)：查询网页搜索服务，返回结果列表（标题、链接、摘要、来源、日期）。
 - fetch_web(url)：获取指定网页的文本内容。

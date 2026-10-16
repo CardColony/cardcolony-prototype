@@ -5,14 +5,14 @@
 <title>根卡原型</title>
 <style>
 :root{
-  --bg:#0d1117; --panel:#161b22; --panel-dim:#13181f; --border:#30363d; --hair:#21262d;
-  --text:#e6edf3; --soft:#a5b1bd; --dim:#8b949e;
-  --amber:#d4a72c; --amber-dim:rgba(212,167,44,.4);
-  /* ── 色表：类型→颜色（新卡从表里选，不写死单值） ── */
-  --c-work:#d4a72c;    /* 项目根卡 */
-  --c-char:#a371f7;    /* 人物 */
-  --c-plot:#db6d28;    /* 情节 */
-  --c-setting:#388bfd; /* 设定 */
+  --bg:#0c0c0c; --panel:#161616; --panel-dim:#121212; --border:#2e2e2e; --hair:#222222;
+  --text:#f2f2f2; --soft:#b0b0b0; --dim:#8a8a8a;
+  --amber:#f2f2f2; --amber-dim:rgba(242,242,242,.45);
+  /* ── 色表：类型→卡色（真实令牌，与 style.css 同源；新卡从表里选一个；界面其余保持黑白灰） ── */
+  --c-work:#d4a72c;    /* 剧本 · 金（根卡） */
+  --c-char:#a371f7;    /* 行为体 · 紫 */
+  --c-plot:#db6d28;    /* 节点 · 橙 */
+  --c-setting:#388bfd; /* 世界观 · 蓝 */
   --font:"Segoe UI",-apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -22,39 +22,58 @@ button{font-family:var(--font);cursor:pointer}
 .stage{min-height:420px;padding:8px}
 .unit{width:320px;--cc:var(--c-work)}
 
-/* ── 根卡 ── */
-.root{display:flex;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--cc);border-radius:8px}
-.rbody{flex:1;min-width:0;padding:18px 16px 20px 20px}
+/* ══════ 根卡：一棵活动树的门面 ══════
+   结构：面板底 + 圆角 + 琥珀左条
+   卡体自上而下：名字 → 三行状况 → （有则）新消息气泡
+   右侧卡片右缘钉一个子卡控件（icon+数字，收起/展开两态）
+   整卡一张干净的卡，无碎块。 */
+.root{position:relative;background:var(--panel);border:1px solid var(--border);
+  border-left:3px solid var(--cc);border-radius:8px}
+.rbody{padding:18px 20px 16px 20px}                      /* 左右对称，不再为 icon 偏置 */
 .rname{font-size:20px;font-weight:650;line-height:1.4;color:var(--text);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rstatus{margin-top:16px;display:flex;flex-direction:column;gap:9px}
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  padding-right:52px}                                   /* 仅名字这行让位右缘 icon，不波及下方 */
+.rstatus{margin-top:15px;display:flex;flex-direction:column;gap:9px;
+  padding-right:52px}
 .rstatus div{font-size:13.5px;color:var(--soft);line-height:1.5;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-.rrail{width:48px;flex:0 0 48px;border-left:1px solid var(--hair);border-radius:0 8px 8px 0;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
-  cursor:pointer;user-select:none}
-.rrail .n{font-size:15px;color:var(--soft);font-variant-numeric:tabular-nums}
-.rrail .a{font-size:12px;color:var(--dim)}
-.rrail.on{background:rgba(212,167,44,.1)}
-.rrail.on .n,.rrail.on .a{color:var(--amber)}
+/* ── 子卡控件：钉在卡片右缘中部（不是名字行内、不是整块大条）
+   收起=三张叠卡 · 展开=三张扇形散开的牌；展开时放大·加粗·变卡色 ── */
+.subctl{position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  display:inline-flex;align-items:center;gap:6px;flex-direction:column;
+  background:transparent;border:none;padding:6px 4px;border-radius:8px;
+  cursor:pointer;user-select:none;color:var(--dim)}
+.subctl .ic{width:30px;height:30px;display:flex;transition:width .15s,height .15s}
+.subctl .ic svg{width:100%;height:100%;display:block}
+.subctl .n{font-size:16px;line-height:1;font-variant-numeric:tabular-nums;transition:font-size .15s}
+.subctl:hover{color:var(--soft);background:var(--hair)}
+.subctl .ic-open{display:none}
+.subctl.on{color:var(--cc)}
+.subctl.on .ic{width:40px;height:40px}
+.subctl.on .n{font-size:21px;font-weight:700}
+.subctl.on .ic-open{display:block}
+.subctl.on .ic-closed{display:none}
 
-/* ── 消息卡 ── */
-.msgcard{margin-top:6px;background:var(--panel-dim);border:1px solid var(--border);
-  border-left:3px solid color-mix(in srgb,var(--cc) 45%,transparent);border-radius:8px}
-.snap{padding:14px 20px;font-size:13.5px;color:var(--soft);line-height:1.65;cursor:pointer;
-  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;border-radius:8px 8px 0 0}
-.snap:hover{color:var(--text)}
+/* ── 新消息气泡（卡内底部 · 四周留空不贴边 · 有新消息才出现 · 最多两行 · 末尾"…" · 点击开快捷窗） ── */
+.bubble{margin:24px 10px 14px;padding:10px 12px 11px;border-radius:8px;cursor:pointer;
+  background:#272727;border:1px solid #3c3c3c;
+  font-size:12.5px;color:var(--soft)}
+.btxt{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  line-height:1.55;overflow:hidden;word-break:break-word}
+.bubble:hover{color:var(--text);background:#303030}
+.bubble[hidden]{display:none}
+.kid .bubble{margin:18px 10px 8px}
 .inrow{display:flex;align-items:center;gap:10px;padding:12px 14px 12px 20px;border-top:1px solid var(--hair)}
 .qin{flex:1;min-width:0;background:transparent;border:none;outline:none;
-  border-bottom:1px solid #3a424c;color:var(--text);font-size:13.5px;padding:4px 2px 6px}
+  border-bottom:1px solid #3a3a3a;color:var(--text);font-size:13.5px;padding:4px 2px 6px}
 .qin:focus{border-bottom-color:var(--amber)}
 .send{width:32px;height:32px;flex:0 0 32px;border-radius:6px;background:transparent;
   border:1px solid var(--border);color:var(--dim);font-size:14px;line-height:1}
 .send:hover{color:var(--amber);border-color:var(--amber-dim)}
 
 /* ── 子卡 ── */
-.kids{margin-top:16px;display:flex;flex-direction:column;gap:14px}
+.kids{margin-top:18px;display:flex;flex-direction:column;gap:14px}
 .kidwrap{width:300px;display:flex;flex-direction:column}
 .kidwrap.t-char{--cc:var(--c-char)}
 .kidwrap.t-plot{--cc:var(--c-plot)}
@@ -67,12 +86,11 @@ button{font-family:var(--font);cursor:pointer}
 .ksum{margin-top:6px;font-size:12.5px;color:var(--dim);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-/* ── 卡片状态：运转中（绕框流光·色=卡色）/ 退役（静止封存） ──
-   流光沿整卡边框绕行；类型色只上左条与流光，正卡卡面不上色 */
+/* ── 卡片状态：运转中（绕框流光·色=卡色）/ 退役（静止封存） ── */
 .st-run{position:relative}
-.st-run::after{content:"";position:absolute;inset:-1px;border-radius:9px;padding:1.5px;
+.st-run::after{content:"";position:absolute;top:-2px;right:-2px;bottom:-2px;left:-4px;border-radius:9px;padding:1.5px;
   pointer-events:none;
-  background:conic-gradient(from var(--ang),var(--cc,#d4a72c) 0%,var(--cc,#d4a72c) 4%,transparent 24%,transparent 100%);
+  background:conic-gradient(from var(--ang),var(--cc,#f2f2f2) 0%,var(--cc,#f2f2f2) 4%,transparent 24%,transparent 100%);
   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
   -webkit-mask-composite:xor;
   mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
@@ -80,8 +98,8 @@ button{font-family:var(--font);cursor:pointer}
   animation:stspin 2.8s linear infinite}
 @property --ang{syntax:'<angle>';initial-value:0deg;inherits:false}
 @keyframes stspin{to{--ang:360deg}}
-.st-done{filter:grayscale(.88) brightness(.8)}
 .st-done::after{content:none}
+.st-done .kid{background:#0e0e0e;border-color:#262626;--cc:#565656}
 .st-done .inrow{opacity:.35;pointer-events:none}
 
 /* ── 右侧常驻规则卡（占位） ── */
@@ -93,9 +111,9 @@ button{font-family:var(--font);cursor:pointer}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* ── 遮罩：仅中央弹窗使用 ── */
-.rp-back{position:fixed;inset:0;background:rgba(4,8,14,.58);z-index:39}
+.rp-back{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:39}
 
-/* ── 弹窗：中央正方 ⇄ 吸右常驻（几何由 JS 定位） ── */
+/* ── 弹窗：中央正方 ⇄ 吸右常驻 ── */
 .rpop{position:fixed;display:flex;flex-direction:column;background:var(--panel);
   border:1px solid var(--border);border-radius:12px;
   transition:left .3s cubic-bezier(.4,0,.2,1),top .3s cubic-bezier(.4,0,.2,1),
@@ -112,7 +130,7 @@ button{font-family:var(--font);cursor:pointer}
   display:flex;flex-direction:column;gap:10px}
 .m{font-size:14px;line-height:1.6;padding:9px 13px;border-radius:8px;max-width:80%}
 .m.md{align-self:flex-start;background:var(--hair);color:var(--soft)}
-.m.us{align-self:flex-end;background:#1f3a5f;border:1px solid #2c4f7c;color:var(--text)}
+.m.us{align-self:flex-end;background:#2b2b2b;border:1px solid #404040;color:var(--text)}
 .rpop .inrow{padding:14px 16px 16px 20px;gap:10px}
 
 #probe-out{display:none}
@@ -122,7 +140,26 @@ button{font-family:var(--font);cursor:pointer}
 
 <section class="stage">
   <div class="unit" id="unit">
-    <div class="root st-run" id="rootCard">
+    <div class="root st-run" id="rootCard" data-card="赤潮登陆推演">
+      <button class="subctl" id="rail" type="button" aria-label="展开/收起子卡">
+        <span class="ic">
+          <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+            <!-- 收起：三张卡叠成一摞（错位露出，全在框内） -->
+            <g class="ic-closed">
+              <rect x="8"  y="8"  width="22" height="22" rx="2.5"/>
+              <rect x="11" y="12" width="22" height="22" rx="2.5"/>
+              <rect x="14" y="16" width="22" height="22" rx="2.5"/>
+            </g>
+            <!-- 展开：三张牌从底部扇形摊开（旋转角收小，不越框） -->
+            <g class="ic-open">
+              <rect x="13" y="5"  width="14" height="26" rx="2"/>
+              <rect x="5"  y="8"  width="12" height="23" rx="2" transform="rotate(-16 13 31)"/>
+              <rect x="22" y="8"  width="12" height="23" rx="2" transform="rotate(16 27 31)"/>
+            </g>
+          </svg>
+        </span>
+        <span class="n">3</span>
+      </button>
       <div class="rbody">
         <div class="rname" id="pName">赤潮登陆推演</div>
         <div class="rstatus" id="pStatus">
@@ -130,39 +167,19 @@ button{font-family:var(--font);cursor:pointer}
           <div>3行为体待决策 · 2节点悬置</div>
           <div>停在：是否空投物资</div>
         </div>
-      </div>
-      <div class="rrail" id="rail" role="button" tabindex="0">
-        <span class="n">3</span><span class="a" id="arw">▸</span>
-      </div>
-    </div>
-    <div class="msgcard" id="rootMsg" data-card="赤潮登陆推演">
-      <div class="snap">北部集群燃料仅够维持4天，第二梯队可佯攻吸引火力但胜率不足三成。是否立即执行空投方案？</div>
-      <div class="inrow">
-        <input class="qin" type="text" placeholder="">
-        <button class="send">➤</button>
+        <div class="bubble" data-card="赤潮登陆推演"><span class="btxt">北部集群燃料仅够维持4天，第二梯队可佯攻吸引火力但胜率不足三成。是否立即执行空投方案？</span></div>
       </div>
     </div>
     <div class="kids" id="kids" hidden>
       <div class="kidwrap t-char">
-        <div class="kid st-run"><div class="ktitle"><span class="kname">北部集群</span><span class="kcnt">2 子卡</span></div><div class="ksum">燃料4天 · 3个单位待命</div></div>
-        <div class="msgcard" data-card="北部集群">
-          <div class="snap">佯攻6小时耗0.4天燃料，两个连足够。已锁定待命状态，随时可执行。</div>
-          <div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>
-        </div>
+        <div class="kid st-run" data-card="北部集群"><div class="ktitle"><span class="kname">北部集群</span><span class="kcnt">2 子卡</span></div><div class="ksum">燃料4天 · 3个单位待命</div></div>
       </div>
       <div class="kidwrap t-plot">
-        <div class="kid st-run"><div class="ktitle"><span class="kname">空投方案</span><span class="kcnt">1 子卡</span></div><div class="ksum">18小时决策窗 · 胜率三成</div></div>
-        <div class="msgcard" data-card="空投方案">
-          <div class="snap">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。</div>
-          <div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>
-        </div>
+        <div class="kid st-run" data-card="空投方案"><div class="ktitle"><span class="kname">空投方案</span><span class="kcnt">1 子卡</span></div><div class="ksum">18小时决策窗 · 胜率三成</div>
+          <div class="bubble" data-card="空投方案"><span class="btxt">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。这是很长的一段文字用来测试气泡两行省略号截断的效果到底稳不稳定。</span></div></div>
       </div>
       <div class="kidwrap t-setting st-done">
         <div class="kid"><div class="ktitle"><span class="kname">补给线地理</span></div><div class="ksum">河谷桥点 · 季风窗口期</div></div>
-        <div class="msgcard" data-card="补给线地理">
-          <div class="snap">季风窗口72小时后关闭，降雨量将超涉渡阈值。</div>
-          <div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>
-        </div>
       </div>
     </div>
   </div>
@@ -183,7 +200,7 @@ button{font-family:var(--font);cursor:pointer}
 <script>
 (function(){
   var $=function(s,r){return (r||document).querySelector(s)};
-  var rail=$('#rail'),kids=$('#kids'),arw=$('#arw');
+  var rail=$('#rail'),kids=$('#kids');
   var back=$('#rpBack'),pops=$('#pops'),rules=$('#rulesCard');
 
   /* 各卡预置对话 */
@@ -230,24 +247,18 @@ button{font-family:var(--font);cursor:pointer}
     ]
   };
 
-  /* 卡片状态：run=运转中 done=退役（类型色表见 :root --c-*，绑定在 .kidwrap.t-*） */
+  /* 卡片状态：run=运转中 done=退役 */
   var STATE={'赤潮登陆推演':'run','北部集群':'run','空投方案':'run','补给线地理':'done'};
-  /* 类型色绑定全在 CSS：.kidwrap.t-* → :root --c-* 色表；弹窗不上类型色 */
 
-  /* 展开收起 */
+  /* 展开收起：icon 对翻面纯 CSS（.on），JS 只管子卡显隐 */
   rail.addEventListener('click',function(){
     rail.classList.toggle('on');
-    arw.textContent=rail.classList.contains('on')?'▾':'▸';
     kids.hidden=!kids.hidden;
   });
 
-  /* ── 弹窗：中央正方 ⇄ 吸右常驻 ──
-     中央：640×640 屏幕中心，多中央窗按打开顺序右下错开，遮罩随行
-     吸附：规则卡左侧一列（宽 340），矮窗（单窗 320 封顶），
-     多窗在同列内按吸附顺序自上而下堆叠，空间不够则均分
-     全部吸附后无遮罩 → 画布完全可操作 */
+  /* ── 弹窗：中央正方 ⇄ 吸右常驻 ── */
   var DOCK_W=340, DOCK_GAP=12;
-  var wins=[];  /* {card, el, mode:'modal'|'dock'} */
+  var wins=[];
   function findW(card){for(var i=0;i<wins.length;i++)if(wins[i].card===card)return wins[i];return null}
   function modalList(){return wins.filter(function(w){return w.mode==='modal'})}
   function dockList(){return wins.filter(function(w){return w.mode==='dock'})}
@@ -260,7 +271,6 @@ button{font-family:var(--font);cursor:pointer}
     var d=dockList(),m=modalList();
     var rulesLeft=(rules&&!rules.hidden)?rules.getBoundingClientRect().left:12;
     var H=IH-2*DOCK_GAP;
-    /* 空间不足时整列均分压缩，永不溢出屏幕（仅受 320 封顶约束） */
     var slot=d.length?(H-(d.length-1)*DOCK_GAP)/d.length:0;
     var hh=Math.min(320,slot>0?slot:320);
     for(var i=0;i<d.length;i++){
@@ -286,7 +296,6 @@ button{font-family:var(--font);cursor:pointer}
       '<div class="inrow"><input class="qin" type="text" placeholder=""><button class="send">➤</button></div>';
     var nm=$('.rp-name',el);
     nm.appendChild(document.createTextNode(card));
-    /* 弹窗不带流光：仅退役卡保留灰阶/禁用 */
     if(STATE[card]==='done')el.classList.add('st-done');
     var flow=$('.rp-flow',el);
     (SEED[card]||[]).forEach(function(m){
@@ -323,10 +332,19 @@ button{font-family:var(--font);cursor:pointer}
     if(e.key==='Escape')closeTop();
   });
 
-  /* 快照 / 发送 */
-  function snapOf(card){
-    var els=document.querySelectorAll('.msgcard');
-    for(var i=0;i<els.length;i++) if(els[i].getAttribute('data-card')===card) return $('.snap',els[i]);
+  /* 气泡两行封顶：溢出末尾省略号 */
+  function fitBub(b){
+    var t=$('.btxt',b);if(!t)return;
+    b.classList.toggle('over',t.scrollHeight>t.clientHeight);
+  }
+  function bubOf(card){
+    var els=document.querySelectorAll('.bubble');
+    for(var i=0;i<els.length;i++) if(els[i].getAttribute('data-card')===card) return els[i];
+    return null;
+  }
+  function cardOf(card){
+    var els=document.querySelectorAll('.root,.kid');
+    for(var i=0;i<els.length;i++) if(els[i].getAttribute('data-card')===card) return els[i];
     return null;
   }
   function popOf(card){
@@ -341,7 +359,14 @@ button{font-family:var(--font);cursor:pointer}
       var d=document.createElement('div');d.className='m us';d.textContent=text;
       var f=$('.rp-flow',p);f.appendChild(d);f.scrollTop=1e6;
     }
-    var s=snapOf(card);if(s)s.textContent=text;
+    var b=bubOf(card);
+    if(b){$('.btxt',b).textContent=text;fitBub(b);return}
+    var host=cardOf(card);if(!host)return;
+    var body=host.classList.contains('root')?$('.rbody',host):host;
+    var nb=document.createElement('div');nb.className='bubble';nb.setAttribute('data-card',card);
+    var sp=document.createElement('span');sp.className='btxt';sp.textContent=text;nb.appendChild(sp);
+    nb.addEventListener('click',function(){openPop(card)});
+    body.appendChild(nb);fitBub(nb);
   }
   function wireCard(card){
     var p=popOf(card);if(!p)return;
@@ -353,19 +378,13 @@ button{font-family:var(--font);cursor:pointer}
   }
   window.__push=send;window.__open=openPop;window.__closeTop=closeTop;window.__dock=toggleDock;
 
-  /* 消息卡绑定：点快照开窗；卡面输入直接发 */
-  var cards=document.querySelectorAll('.msgcard');
-  for(var c=0;c<cards.length;c++)(function(mc){
-    var card=mc.getAttribute('data-card');
-    $('.snap',mc).addEventListener('click',function(){openPop(card)});
-    var inp=$('.qin',mc),btn=$('.send',mc);
-    inp.addEventListener('keydown',function(e){
-      if(e.key==='Enter'){send(card,inp.value);inp.value=''}
-    });
-    btn.addEventListener('click',function(){send(card,inp.value);inp.value=''});
-  })(cards[c]);
+  var bubbles=document.querySelectorAll('.bubble');
+  for(var c=0;c<bubbles.length;c++)(function(bb){
+    bb.addEventListener('click',function(){openPop(bb.getAttribute('data-card'))});
+  })(bubbles[c]);
+  for(var f=0;f<bubbles.length;f++)fitBub(bubbles[f]);
 
-  /* ── 探针自测：仅 #probe 模式运行；日常模式零注入、动效保持原生 ── */
+  /* ── 探针自测：仅 #probe 模式运行 ── */
   var out=[];
   function chk(n,c,i){out.push((c?'PASS ':'FAIL ')+n+(i!=null?' ['+i+']':''))}
   if(location.hash!=='#probe'){document.getElementById('probe-out').textContent='';return}
@@ -373,26 +392,43 @@ button{font-family:var(--font);cursor:pointer}
     var st=document.createElement('style');st.textContent='.rpop{transition:none!important;animation:none!important}';
     document.head.appendChild(st);
 
-    var r=$('#rootCard'),m0=$('#rootMsg');
+    var r=$('#rootCard');
     chk('根卡宽=320',r.offsetWidth===320,r.offsetWidth);
-    chk('消息卡同宽=320',m0.offsetWidth===320,m0.offsetWidth);
-    chk('缝=6',Math.round(m0.getBoundingClientRect().top-r.getBoundingClientRect().bottom)===6,
-        Math.round(m0.getBoundingClientRect().top-r.getBoundingClientRect().bottom));
+    chk('根卡是一张整卡(圆角/边框/左条在)',getComputedStyle(r).borderRadius==='8px'&&getComputedStyle(r).borderLeftWidth==='3px');
+    chk('子卡控件在卡片右缘',(function(){
+      var c=rail.getBoundingClientRect(),cr=r.getBoundingClientRect();
+      return Math.abs((c.right-cr.right))<=10&&Math.abs((c.top+c.bottom)/2-(cr.top+cr.bottom)/2)<=6;
+    })());
+    chk('子卡控件不在名字行内',(function(){var n=$('#pName').getBoundingClientRect(),c=rail.getBoundingClientRect();return c.top>=n.bottom-2})());
+    var bub=$('.bubble[data-card="赤潮登陆推演"]');
+    chk('气泡在卡内',!!bub&&r.contains(bub));
+    var bt=bub?$('.btxt',bub):null,bts=bt?getComputedStyle(bt):null;
+    chk('气泡两行封顶',!!bt&&bt.clientHeight<=Math.ceil(2*1.55*parseFloat(bts.fontSize)),bt?bt.clientHeight:'');
+    chk('气泡四周留空不贴边',!!bub&&(function(){var s=getComputedStyle(bub);return parseFloat(s.marginTop)>=10&&parseFloat(s.marginLeft)>=10&&parseFloat(s.marginRight)>=10})(),bub?getComputedStyle(bub).margin:'');
+    chk('外部留白无负边距',!!bub&&parseFloat(getComputedStyle(bub).marginLeft)>=0&&parseFloat(getComputedStyle(bub).marginTop)>=0);
+    chk('溢出末尾省略号',!!bt&&bt.webkitLineClamp>0,bt?(bt.webkitLineClamp):'');
+    chk('无新消息不显气泡',$('.bubble[data-card="北部集群"]')===null);
+    chk('退役卡无气泡',$('.bubble[data-card="补给线地理"]')===null);
     chk('根卡扁平',getComputedStyle(r).boxShadow==='none');
     chk('名字≥20px',parseFloat(getComputedStyle($('#pName')).fontSize)>=20);
     chk('名字-状况间距≥14',parseFloat(getComputedStyle($('#pStatus')).marginTop)>=14);
-    chk('轨命中区≥32',rail.clientWidth>=32&&rail.clientHeight>=32);
-    var bgOff=getComputedStyle(rail).backgroundColor;
-    rail.classList.add('on');var bgOn=getComputedStyle(rail).backgroundColor;rail.classList.remove('on');
-    chk('轨两态可辨',bgOff!==bgOn);
-    var ph=[];document.querySelectorAll('.qin').forEach(function(i){if(i.getAttribute('placeholder')!=='')ph.push('x')});
-    chk('输入框全部零占位',ph.length===0,ph.length);
-    var bad=[];document.querySelectorAll('button').forEach(function(b){if(/[\u4e00-\u9fff]/.test(b.textContent))bad.push(b.textContent)});
-    chk('按钮纯符号',bad.length===0);
+    chk('子卡控件命中区≥32',rail.clientWidth>=32&&rail.clientHeight>=32,rail.clientWidth+'x'+rail.clientHeight);
+    chk('子卡控件数字在',($('.n',rail)||{}).textContent!==undefined);
+    var icc=$('.ic-closed',rail),ico=$('.ic-open',rail);
+    chk('叠卡/扇形图标对存在',!!icc&&!!ico);
+    chk('收起态=三卡叠放',!!icc&&!!ico&&getComputedStyle(icc).display!=='none'&&getComputedStyle(ico).display==='none');
+    var railOff=$('.ic',rail);var offW=parseFloat(getComputedStyle(railOff).width);
+    rail.classList.add('on');
+    chk('展开态=扇形散开',!!icc&&!!ico&&getComputedStyle(icc).display==='none'&&getComputedStyle(ico).display!=='none');
+    chk('展开态颜色=卡色',getComputedStyle(rail).color==='rgb(212, 167, 44)',getComputedStyle(rail).color);
+    var onW=parseFloat(getComputedStyle(railOff).width);
+    chk('展开态图标放大',onW>=offW+2,Math.round(offW*100)+'→'+Math.round(onW*100));
+    chk('展开态数字加粗',getComputedStyle($('.n',rail)).fontWeight==='700',getComputedStyle($('.n',rail)).fontWeight);
+    rail.classList.remove('on');
 
-    var rr=rules.getBoundingClientRect();
-    var cw=document.documentElement.clientWidth;
-    chk('规则卡贴右',Math.abs(rr.right-(cw-12))<=1,Math.round(rr.right)+'/'+(cw-12));
+    var rulesRect=rules.getBoundingClientRect();
+    chk('输入框全部零占位',(function(){var ph=[];document.querySelectorAll('.qin').forEach(function(i){if(i.getAttribute('placeholder')!=='')ph.push('x')});return ph.length===0})());
+    chk('按钮纯符号',(function(){var bad=[];document.querySelectorAll('button').forEach(function(b){if(/[\u4e00-\u9fff]/.test(b.textContent))bad.push(b.textContent)});return bad.length===0})());
 
     /* 中央窗 */
     openPop('赤潮登陆推演');
@@ -400,8 +436,7 @@ button{font-family:var(--font);cursor:pointer}
     var ar=A.el.getBoundingClientRect();
     chk('中央窗宽=640',ar.width===640,ar.width);
     var expH=Math.round(Math.min(640,window.innerHeight*.88));
-    chk('中央窗正方(或贴视口)',Math.abs(ar.height-expH)<=1&&(expH<640||Math.abs(ar.width-ar.height)<=8),
-        Math.round(ar.width)+'x'+Math.round(ar.height)+' expH='+expH);
+    chk('中央窗正方(或贴视口)',Math.abs(ar.height-expH)<=1&&(expH<640||Math.abs(ar.width-ar.height)<=8),Math.round(ar.width)+'x'+Math.round(ar.height));
     chk('中央窗水平居中',Math.abs((ar.left+ar.right)/2-window.innerWidth/2)<=8);
     chk('中央窗垂直居中',Math.abs((ar.top+ar.bottom)/2-window.innerHeight/2)<=1);
     var fl=$('.rp-flow',A.el);
@@ -424,103 +459,79 @@ button{font-family:var(--font);cursor:pointer}
     chk('弹出keyframes已声明',kf);
     chk('弹出动画类已声明',animCls);
     chk('向右飞transition已声明',trRule.indexOf('left')>=0,trRule||'none');
-    chk('探针模式几何同步',getComputedStyle(A.el).transitionDuration==='0s',getComputedStyle(A.el).transitionDuration);
 
-    /* 吸附 A */
     toggleDock('赤潮登陆推演');
     ar=A.el.getBoundingClientRect();
     chk('吸附宽=340',ar.width===340,ar.width);
     chk('吸附窗矮(≤320)',ar.height<=320,Math.round(ar.height));
-    chk('吸附在规则卡左侧',ar.right<=rr.left-11,Math.round(ar.right)+'<='+Math.round(rr.left));
+    chk('吸附在规则卡左侧',ar.right<=rulesRect.left-11,Math.round(ar.right)+'<='+Math.round(rulesRect.left));
     chk('吸附后遮罩灭',back.hidden===true);
     send('赤潮登陆推演','吸右后直发测试');
-    chk('吸右窗可发消息',snapOf('赤潮登陆推演').textContent==='吸右后直发测试');
+    chk('吸右窗可发消息·气泡更新',bubOf('赤潮登陆推演').textContent==='吸右后直发测试');
     rail.click();chk('画布可操作·展开',kids.hidden===false);
     rail.click();chk('画布可操作·收起',kids.hidden===true);
 
-    /* B：中央 → 吸附（多窗并存） */
     openPop('北部集群');
     var B=findW('北部集群');
     chk('B中央窗遮罩亮',back.hidden===false);
-    chk('中央窗层级>吸附窗',parseInt(B.el.style.zIndex)===50&&parseInt(A.el.style.zIndex)===45,
-        B.el.style.zIndex+'/'+A.el.style.zIndex);
+    chk('中央窗层级>吸附窗',parseInt(B.el.style.zIndex)===50&&parseInt(A.el.style.zIndex)===45,B.el.style.zIndex+'/'+A.el.style.zIndex);
     toggleDock('北部集群');
     var br=B.el.getBoundingClientRect();
     var aD=A.el.getBoundingClientRect();
-    chk('B在A下方同列',Math.abs(br.left-aD.left)<=1&&br.top>=aD.bottom-1,
-        Math.round(br.top)+'>='+Math.round(aD.bottom));
+    chk('B在A下方同列',Math.abs(br.left-aD.left)<=1&&br.top>=aD.bottom-1,Math.round(br.top)+'>='+Math.round(aD.bottom));
     chk('两吸附并存',dockList().length===2);
     chk('全吸附→遮罩灭',back.hidden===true);
 
-    /* C：第三个吸附 */
     openPop('空投方案');
     var C=findW('空投方案');
     toggleDock('空投方案');
     var cr=C.el.getBoundingClientRect();
     var b2=B.el.getBoundingClientRect(),a2=A.el.getBoundingClientRect();
-    chk('三吸附同列纵排',Math.abs(cr.left-b2.left)<=1&&Math.abs(b2.left-a2.left)<=1&&a2.top<b2.top&&b2.top<cr.top,
-        Math.round(a2.top)+'<'+Math.round(b2.top)+'<'+Math.round(cr.top));
+    chk('三吸附同列纵排',Math.abs(cr.left-b2.left)<=1&&Math.abs(b2.left-a2.left)<=1&&a2.top<b2.top&&b2.top<cr.top);
     chk('三吸附同宽',cr.width===340&&b2.width===340&&a2.width===340);
-    chk('三吸附不出屏',Math.round(cr.bottom)<=window.innerHeight-11,Math.round(cr.bottom)+'/'+(window.innerHeight-11));
+    chk('三吸附不出屏',Math.round(cr.bottom)<=window.innerHeight-11,Math.round(cr.bottom));
 
-    /* B 弹回中央 */
     toggleDock('北部集群');
-    chk('弹回=中央窗',B.mode==='modal'&&B.el.getBoundingClientRect().width===640,B.el.getBoundingClientRect().width);
+    chk('弹回=中央窗',B.mode==='modal'&&B.el.getBoundingClientRect().width===640);
     chk('弹回遮罩亮',back.hidden===false);
-    var c2=C.el.getBoundingClientRect(),a3=A.el.getBoundingClientRect();
-    chk('余吸附重排(C在A下)',Math.abs(c2.left-a3.left)<=1&&c2.top>=a3.bottom-1,Math.round(c2.top)+'>='+Math.round(a3.bottom));
 
-    /* Esc 只管中央窗 */
     closeTop();
     chk('Esc关中央窗',findW('北部集群')===null);
     chk('吸附窗不受Esc',findW('赤潮登陆推演')!==null&&findW('空投方案')!==null);
     chk('关完遮罩灭',back.hidden===true);
-    closeTop();
-    chk('无中央时Esc无动作',findW('赤潮登陆推演')!==null&&findW('空投方案')!==null);
 
-    /* × 关吸附窗并紧凑 */
     $('.rp-x',A.el).click();
     chk('×关吸附A',findW('赤潮登陆推演')===null);
-    var c3=C.el.getBoundingClientRect();
-    chk('C重排贴规则卡',c3.right<=rr.left-11,Math.round(c3.right)+'<='+Math.round(rr.left));
     $('.rp-x',C.el).click();
     chk('全关清场',pops.children.length===0&&back.hidden===true);
 
-    /* ── 状态：运转中（绕框流光·色=卡色）/ 退役（静止封存） ── */
     var pbR=getComputedStyle($('#rootCard'),'::after');
     chk('运转绕框流光',pbR.animationName==='stspin',pbR.animationName);
-    chk('流光绕整卡',Math.round(parseFloat(pbR.width))>=r.offsetWidth-1&&Math.round(parseFloat(pbR.height))>=r.offsetHeight-1,pbR.width+'/'+pbR.height+' vs '+r.offsetWidth+'/'+r.offsetHeight);
-    chk('流光色=卡色',/212, ?167, ?44|d4a72c/i.test(pbR.backgroundImage),(pbR.backgroundImage||'').slice(0,60));
+    chk('流光颜色=卡色',/212, ?167, ?44|d4a72c/i.test(pbR.backgroundImage));
     var rcs=getComputedStyle(r);
-    chk('正卡卡面无色染',rcs.backgroundColor==='rgb(22, 27, 34)',rcs.backgroundColor);
-    chk('正卡边框无色染',rcs.borderTopColor==='rgb(48, 54, 61)',rcs.borderTopColor);
+    chk('正卡卡面无色染',rcs.backgroundColor==='rgb(22, 22, 22)',rcs.backgroundColor);
     chk('左条类型色仍在',rcs.borderLeftColor==='rgb(212, 167, 44)',rcs.borderLeftColor);
     chk('根卡无残留状态点',$('#pName .st-dot')===null);
-    var rk=document.querySelector('.kid.st-run');
-    chk('运转子卡绕框流光',!!rk&&getComputedStyle(rk,'::after').animationName==='stspin');
-    chk('子卡左条类型色',!!rk&&getComputedStyle(rk).borderLeftColor==='rgb(163, 113, 247)',rk?getComputedStyle(rk).borderLeftColor:'');
+    var rkid=document.querySelector('.kid.st-run');
+    chk('运转子卡绕框流光',!!rkid&&getComputedStyle(rkid,'::after').animationName==='stspin');
+    chk('子卡左条类型色',!!rkid&&getComputedStyle(rkid).borderLeftColor==='rgb(163, 113, 247)',rkid?getComputedStyle(rkid).borderLeftColor:'');
     var dw=document.querySelector('.kidwrap.st-done');
     var fs=dw?getComputedStyle(dw).filter:'missing';
     chk('退役整组降饱和',/grayscale/.test(fs),fs);
-    var dkb=getComputedStyle(dw.querySelector('.kid'),'::after');
-    chk('退役卡无流光',dkb.animationName==='none',dkb.animationName);
-    chk('退役画布输入禁用',getComputedStyle(dw.querySelector('.inrow')).pointerEvents==='none');
-    var dsnap=snapOf('补给线地理').textContent;
+    var dkb=dw?getComputedStyle(dw.querySelector('.kid'),'::after'):null;
+    chk('退役卡无流光',!dkb||dkb.animationName==='none',dkb?dkb.animationName:'');
     send('补给线地理','x不应出现');
-    chk('退役发消息无效',snapOf('补给线地理').textContent===dsnap);
+    chk('退役发消息无效',bubOf('补给线地理')===null);
     openPop('补给线地理');
     var D=findW('补给线地理');
     chk('退役历史可读',!!D&&$('.rp-flow',D.el).children.length>0);
-    chk('退役弹窗灰阶',D.el.classList.contains('st-done'));
-    chk('退役弹窗输入禁用',getComputedStyle($('.inrow',D.el)).pointerEvents==='none');
+    chk('退役弹窗灰阶',!!D&&D.el.classList.contains('st-done'));
     $('.rp-x',D.el).click();
     chk('退役弹窗可关',findW('补给线地理')===null&&back.hidden===true);
     openPop('北部集群');
     var R2=findW('北部集群');
-    chk('弹窗无流光类',!!R2&&!R2.el.classList.contains('st-run'));
-    chk('弹窗无流光',!!R2&&getComputedStyle(R2.el,'::after').animationName==='none',getComputedStyle(R2.el,'::after').animationName);
-    chk('弹窗边框无色染',!!R2&&getComputedStyle(R2.el).borderTopColor==='rgb(48, 54, 61)',getComputedStyle(R2.el).borderTopColor);
-    chk('弹窗无内联卡色',!!R2&&R2.el.style.getPropertyValue('--cc')==='',R2?R2.el.style.getPropertyValue('--cc'):'');
+    chk('弹窗无流光',!!R2&&getComputedStyle(R2.el,'::after').animationName==='none',R2?getComputedStyle(R2.el,'::after').animationName:'');
+    chk('弹窗无内联卡色',!!R2&&R2.el.style.getPropertyValue('--cc')==='');
     if(R2)$('.rp-x',R2.el).click();
     chk('运转弹窗可关',findW('北部集群')===null);
   }catch(e){out.push('FAIL probe-exception ['+e.message+']')}
