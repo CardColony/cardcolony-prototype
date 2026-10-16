@@ -102,19 +102,6 @@ async def work_page(work_id: str) -> HTMLResponse:
     return HTMLResponse(content=html.replace("{{WORK_ID}}", work_id))
 
 
-@app.get("/work/{work_id}/card/{card_id}", response_class=HTMLResponse)
-async def card_page(work_id: str, card_id: str) -> HTMLResponse:
-    """[分页 2026-10-16] 卡片对话页——**与 main.py 逐行一致**（本脚本的契约就是同构）。
-
-    画布与对话拆成两个 URL 后，聊天页在 card.html（载 main_chat.js → stream/workspace）。
-    本路由原先缺失 ⇒ 沙箱只能开画布页、开不了对话页，真机验收无法进行。补齐。
-    """
-    html = (BASE_DIR / "templates" / "card.html").read_text(encoding="utf-8")
-    return HTMLResponse(
-        content=html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", card_id)
-    )
-
-
 @app.get("/__instance__")
 async def instance_marker() -> dict:
     """进程身份探针：确认请求确实落在测试实例上，而不是 5700 生产。"""
