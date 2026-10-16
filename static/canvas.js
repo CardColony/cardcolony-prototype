@@ -1,6 +1,6 @@
 /* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
  * 迭代四 F2③：IIFE → ES module（module 作用域＝原闭包隔离）；escapeHtml 收编 esm/util.js；
- * API 经 esm/api.js 静态 import；打开卡对话/刷新导航走 esm/page_bus.js（画布页入口注入）。
+ * API 经 esm/api.js 静态 import；跨文件（Workspace/RenderNav）由 main.js 装配序保证。
  *
  * [画布第三步 · 拆渲染层边界] 长期不变量（V1–V10，违反任何一条即架构回退）：
  *   V1 渲染不摸状态——渲染区 10 函数（renderCanvas/renderEdges/renderBreadcrumb/createNode/
@@ -20,7 +20,7 @@
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { store } from "./esm/store.js?v=30";
-import { pageBus } from "./esm/page_bus.js?v=30";
+import { Workspace, RenderNav } from "./workspace.js?v=35";
 import { notify } from "./esm/api.js?v=35";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
@@ -1275,7 +1275,7 @@ const WORK_ID = window.__WORK_ID__;
         return;
       }
     }
-    pageBus.openCard(WORK_ID, card.card_id);   // [分页 2026-10-16] 画布点卡＝跳转对话页
+    Workspace.open(card.card_id);
   }
 
   // [T08-用户令] 相对当前视图根的深度：沿 parent 链上溯到 viewRoot 的步数
@@ -1298,7 +1298,7 @@ const WORK_ID = window.__WORK_ID__;
       setViewRoot(card.card_id);
     } else {
       // 无子卡也允许下钻（用户可能想进入空容器建卡），但等同打开工作区
-      pageBus.openCard(WORK_ID, card.card_id);   // [分页 2026-10-16] 跳转对话页
+      Workspace.open(card.card_id);
     }
   }
 
@@ -1483,7 +1483,7 @@ const WORK_ID = window.__WORK_ID__;
           e.stopPropagation();
           // 找到第一个跨视图目标，打开其工作区
           const crossRel = vm.links.find(r => r.source === cid && !visibleIds.has(r.target));
-          if (crossRel) pageBus.openCard(WORK_ID, crossRel.target);   // [分页 2026-10-16] 跳转对话页
+          if (crossRel) Workspace.open(crossRel.target);
         };
         node.appendChild(badge);
       }
@@ -1767,7 +1767,7 @@ const WORK_ID = window.__WORK_ID__;
         const r = await API.createCard(WORK_ID, { title, source: "用户直接创建", card_type: ctype, parent: state.nav.viewRoot });
         node.remove();
         await reloadCanvas();
-        pageBus.renderNav();   // [T17→分页 2026-10-16] 新卡同步进导航树（经总线，画布页入口注入）
+        RenderNav();   // [T17] 新卡同步进导航树
         notify("卡片已创建", "success");   // [F3④]
       } catch (e) { notify("建卡失败", "error"); }   // [F3④] 原静默
     };
