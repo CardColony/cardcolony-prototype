@@ -2079,10 +2079,16 @@ def _register_file_tools() -> None:
         "search_files": (_h_search_files, True),
         "write_file": (_h_write_file, False),
     }
-    schemas = {s["name"]: s for s in file_tools.build_file_tool_schemas()}
+    # 取值时机：**每次派生现调** build_file_tool_schemas()（下面 lambda 内联求值）。
+    # 改前这里在模块加载期先建好 ``schemas`` dict 再让 lambda 回引它——那只做到了
+    # 「延迟调用」，**内容仍被冻结**在 import 那一刻的 BASE_DIR / ALLOWED_ROOTS。
+    # 实测：把 file_tools.BASE_DIR 换成哨兵根后，经 TOOL_REGISTRY 取件仍是
+    # D:\AI_station ⇒ 与本函数 docstring 宣称的「call-time 现取」不符。
+    # 语义无差：工具面顺序、件名、参数、required、readonly 全部逐字不变。
     for name, (handler, readonly) in handlers.items():
         TOOL_REGISTRY[name] = ToolDef(
-            schema=(lambda n=name: schemas[n]),
+            schema=(lambda n=name: {s["name"]: s
+                                   for s in file_tools.build_file_tool_schemas()}[n]),
             handler=handler,
             readonly=readonly,
         )
