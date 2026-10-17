@@ -114,7 +114,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const snap = navStore.snapshot;
     const p = (snap && snap.project) ? snap.project(WORK_ID) : null;
     const chain = (cardId && snap) ? ancestorCards(snap, WORK_ID, cardId) : [];
-    if (!p || !chain.length) return;
+    if (!p || !chain.length) {
+      /* [建项目流程 2026-10-17] 快照未就绪（草稿刚落库、导航刷新还在途）：退回当前卡标题。
+         不留空面包屑——标题此刻一定在手，用户刚改完更不该看到空白。 */
+      const t = (currentCard && currentCard.meta) ? String(currentCard.meta.title || "").trim() : "";
+      if (t) el.innerHTML = `<span class="cseg cur">${escapeHtml(t)}</span>`;
+      return;
+    }
     const mkSep = () => {
       const s = document.createElement("span");
       s.className = "csep";
@@ -221,7 +227,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   // 草稿项目 → POST /api/works；新卡 → POST /cards（项目若也是草稿，先项目后卡）。
   // 带锁：并发触发复用同一 Promise（绝不两次 POST）。失败：调用方 toast、保持现场、可重试。
   let _persistPromise = null;
-  async function ensurePersisted() {
+  /** @param {string} [titleHint] 草稿项目的名字（改名链传用户刚起的名；
+      发送链不传 ⇒ 缺省「新项目」）。项目与根卡共用这一个名字。 */
+  async function ensurePersisted(titleHint) {
     if (_persistPromise) return _persistPromise;                 // 落库中：排队复用
     if (!IS_DRAFT_PROJECT && !DRAFT_CARD) {
       return { wid: WORK_ID, cid: currentCard ? currentCard.meta.card_id : "" };
@@ -229,7 +237,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     _persistPromise = (async () => {
       // ① 项目草稿（缺省标题"新项目"）
       if (IS_DRAFT_PROJECT) {
-        const w = await API.createWork("新项目");
+        const w = await API.createWork(String(titleHint || "").trim() || "新项目");
         WORK_ID = w.work_id;
         window.__WORK_ID__ = w.work_id;                          // nav/rule 惰性读，随取随新
         IS_DRAFT_PROJECT = false;
@@ -502,7 +510,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         if (!v) { API.toast("标题不能为空", "error"); return; }
         if (v === currentCard.meta.title) { input.replaceWith(titleEl); return; }
         try {
-          await ensurePersisted();   // [D3] 改名即数据动作：草稿态先落库（项目/卡），再写真身
+          await ensurePersisted(v);   // [D3] 改名即数据动作：草稿态先落库——**用用户起的名字**建项目，再写真身
           const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { title: v }, "用户修改标题");
           currentCard = r;
           await renderInspector();

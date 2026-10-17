@@ -282,13 +282,13 @@ def test_frontend_version_stamps_bumped():
 
     [对话流照抄 dsh 完全版 v3 2026-10-17] stream 36→37、workspace 45→46、
     style 37→38、main_chat 1.2→1.3（它 import 了 stream/workspace）。
-    [建项目流程 2026-10-17] workspace 46→49、stream 37→38、main_chat 1.3→1.6。
+    [建项目流程 2026-10-17] workspace 46→51、stream 37→38、main_chat 1.3→1.8。
     """
     assert "../stream.js?v=38" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=49" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=51" in _read("static/esm/main_chat.js")
     assert "./stream.js?v=38" in _read("static/workspace.js")
     assert "/static/style.css?v=38" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=1.6" in _read("templates/card.html")
+    assert "/static/esm/main_chat.js?v=1.8" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════
