@@ -142,7 +142,15 @@ def _render_card(work_id: str, card_id: str) -> str:
 
 @app.get("/work/{work_id}", response_class=HTMLResponse)
 async def work_page(work_id: str) -> HTMLResponse:
-    """Phase 8：剧本画布页。work_id 注入到 HTML 占位符。"""
+    """Phase 8：剧本画布页。work_id 注入到 HTML 占位符。
+
+    [建项目流程 2026-10-17] 唯一例外：``work_id == "draft"`` 是**项目草稿对话页**，
+    不是画布页。用户点「＋新建项目」要的是开始对话；落到画布＝一块空地（病根①）。
+    这里直接渲染对话模板并注入双 draft（项目 id 与卡 id 同为 "draft"），
+    前端据此进草稿项目态：零网络、零 POST，首条消息落库后才换成真地址。
+    """
+    if work_id == "draft":
+        return HTMLResponse(content=_render_card("draft", "draft"))
     return HTMLResponse(content=_render_work(work_id))
 
 

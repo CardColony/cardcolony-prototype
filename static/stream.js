@@ -43,7 +43,7 @@ import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=30";
 import { createAssembler } from "./esm/assembler.js?v=35";
-import { createChatView } from "./esm/flow/chat-view.js?v=1";
+import { createChatView } from "./esm/flow/chat-view.js?v=2";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。

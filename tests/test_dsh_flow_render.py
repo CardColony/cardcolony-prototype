@@ -307,15 +307,18 @@ def test_t6_touched_modules_bumped():
       main_chat.js 1.2→1.3（它 import 了 stream/workspace）；
       canvas.js / main.js 本轮**未涉改**（canvas→workspace 的边已在阶段2 拆除）⇒ 不升号。
       flow/* 新建 ⇒ 1。
+    ★ [建项目流程 2026-10-17] workspace 46→48（草稿项目装配；二次因 chat-view 初始态修正
+      连带升 stream 37→38）、canvas 43→44（画布页＋改整页跳转 /work/draft）、
+      main 43.0→44.0、main_chat 1.3→1.5、chat-view 1→2（初始态与无更多一致）。
     """
     vm = _version_map()
     expect = {
-        "stream.js": "37", "workspace.js": "46", "canvas.js": "43",
-        "assembler.js": "35", "style.css": "38", "main.js": "43.0",
-        "main_chat.js": "1.3",
+        "stream.js": "38", "workspace.js": "48", "canvas.js": "44",
+        "assembler.js": "35", "style.css": "38", "main.js": "44.0",
+        "main_chat.js": "1.5",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "1", "queue-dock.js": "1", "queue-store.js": "1",
-        "chat-view.js": "1", "message-item.js": "1",
+        "chat-view.js": "2", "message-item.js": "1",
     }
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"

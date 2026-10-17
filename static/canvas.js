@@ -1832,14 +1832,11 @@ let IS_DRAFT = (WORK_ID === "draft");
   }
 
   function enterDraftProject() {
-    if (IS_DRAFT) return;        // 已在草稿态：幂等
-    IS_DRAFT = true;
-    WORK_ID = "draft";
-    window.__WORK_ID__ = "draft";
-    __VIEW_RESTORED__ = true;    // 草稿不恢复旧视图态（projView:draft 无意义）
-    history.replaceState(null, "", "/work/draft");
-    enterDraftCanvas();
-    try { RenderNav(); } catch (e) { /* 零阻断 */ }
+    // [建项目流程 2026-10-17] 三入口统一：画布页点「＋新项目」＝**整页加载草稿对话页**
+    // /work/draft（main.py 特判渲染对话模板）。原「就地 replaceState + 清空画布」退役：
+    // 用户点新建要的是开始对话，得到的却是一块空地（病根①）。
+    // 函数壳保留到阶段3，与 enterDraftCanvas / persistDraftProject 一并退役。
+    location.assign("/work/draft");
   }
 
   // [D3] 草稿项目落库序列：带锁（落库中并发触发复用同一 Promise，绝不两次 POST）。
