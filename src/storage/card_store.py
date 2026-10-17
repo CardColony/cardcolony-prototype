@@ -178,6 +178,20 @@ def _perm_fields(project_class: str, card_type: str) -> dict[str, Any]:
     return {policy.PERM_KEY: perms, policy.PERM_VERSION_KEY: version}
 
 
+def _auto_perm_fields() -> dict[str, Any]:
+    """[自动模式 2026-10-17 · 回灌 5700 块0.1/0.2] 自动模式卡的权限固化字段。
+
+    与 ``_perm_fields`` 并列（**不改后者签名**）：自动模式不是「按类型分权」的
+    一种，是**绕过**它（迭代方案 §2.6），故走 ``policy.auto_perms()``（全开集 ＋
+    专用 ``perms_version = -1``）。``config/permissions.json`` 一个字不动
+    （红线 3：自动模式是绕过类型分权，不是新增一种分权）。
+    """
+    from ..permissions import policy
+
+    perms, version = policy.auto_perms()
+    return {policy.PERM_KEY: perms, policy.PERM_VERSION_KEY: version}
+
+
 def _cards_dir(work_id: str) -> Path:
     return WORKS_DIR / work_id / "cards"
 
@@ -778,6 +792,7 @@ async def create_card(
     conclusion: str = "",
     project_class: str = "",
     owner_card_id: str = "",
+    goal: str = "",
 ) -> dict[str, Any]:
     """创建卡片 + 对应会话文件，更新 canvas 缓存。
 
@@ -838,6 +853,16 @@ async def create_card(
             seq = card_db.next_seq(conn)
             card_id = f"card_{seq:03d}"
             session_name = _session_name(card_id)
+            # [自动模式 2026-10-17 · 回灌 5700 块0.1/0.2] 子卡**建卡时继承**父卡的
+            # 自动模式（逐代传；父卡退出不影响已建子卡——继承是一次性快照，不回溯）。
+            # 读父卡 auto_mode 走本事务内的同一连接（同事务内一致）。
+            parent_meta: dict[str, Any] = {}
+            if resolved_parent:
+                _prow = card_db.get_card_row(conn, resolved_parent)
+                if _prow is not None:
+                    parent_meta = card_db.row_to_meta(_prow)
+            is_auto = bool(parent_meta.get("auto_mode"))
+            goal_text = str(goal or "").strip()
             meta: dict[str, Any] = {
                 "title": title,
                 "source": source,
@@ -853,11 +878,20 @@ async def create_card(
                 **({"owner_card_id": owner_card_id} if owner_card_id else {}),
                 # [S1·R-04] 新卡默认 active（与注册表 state_machine.initial 对齐）
                 "state": "active",
+                # [自动模式 2026-10-17 · 回灌 5700 块0.1] 四列：开关恒落 0/1、
+                # 轮次恒落 0（同「state 恒落」口径，新卡不留 NULL 歧义）；
+                # goal/goal_state 只在有目标时落（0.2 起继承到 auto 才置 active）。
+                "auto_mode": 1 if is_auto else 0,
+                "goal_rounds": 0,
+                **({"goal": goal_text} if goal_text else {}),
+                **({"goal_state": "active"} if (is_auto and goal_text) else {}),
                 # [权限底座重做 2026-10-12 · 裁定 4] 权限固化：建卡算一次写死进卡。
                 # project_class 取法＝根卡用入参（此刻卡还没落盘，读不到自己），
                 # 子卡从本树根卡继承（project_class 只挂根卡）。
-                **_perm_fields(project_class or _root_project_class(work_id),
-                               resolved_type),
+                # [自动模式 2026-10-17 · 回灌 5700 块0.2] 父卡 auto ⇒ 本卡**全开**
+                # （policy.auto_perms()——绕过类型分权，不是新增一种分权）。
+                **(_auto_perm_fields() if is_auto else _perm_fields(
+                    project_class or _root_project_class(work_id), resolved_type)),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -1030,6 +1064,24 @@ async def update_card(
             new_parent = work_store.work_card_id_of(work_id)
             updates["parent"] = new_parent
 
+    # [自动模式 2026-10-17 · 回灌 5700 块0.2] **开关动作**：auto_mode 变化 ⇒
+    # 权限随之重算。0→1：perms 重算为全开集（policy.auto_perms()，专用
+    # perms_version=-1）；1→0：按该卡 (project_class, card_type) 重算回正常集
+    # （与 compute_perms 一致）。只认「有变化」——同值重复 PATCH 不重写 perms
+    # （幂等，不制造无谓留痕）。U1：开关可随时切换，不是建卡定死。
+    if "auto_mode" in updates:
+        from ..permissions import policy
+        new_auto = 1 if bool(updates.get("auto_mode")) else 0
+        updates["auto_mode"] = new_auto
+        if new_auto != (1 if bool(cur_meta.get("auto_mode")) else 0):
+            if new_auto:
+                perms, ver = policy.auto_perms()
+            else:
+                pc = str(cur_meta.get("project_class") or "") or _root_project_class(work_id)
+                perms, ver = policy.compute_perms(pc, cur_type)
+            updates[policy.PERM_KEY] = perms
+            updates[policy.PERM_VERSION_KEY] = ver
+
     # [T-0007 补丁] 写路径唯一门·update 闸位（no-op 放行）。
     # 插在写盘前、全部参数校验（含根卡保护/card_type 降级/parent 防环）之后——
     # 此时 updates 已是归一后的最终形态，与各校验分支的退出路径互不干扰。
@@ -1049,6 +1101,11 @@ async def update_card(
         "perms", "perms_version",
         "toolcard_script", "toolcard_step", "toolcard_round", "toolcard_final",
         "thinkchain_final",
+        # [自动模式 2026-10-17 · 回灌 5700 块0.1] 四列。auto_mode＝用户侧开关
+        # （PATCH 白名单，块0.5）；goal/goal_state/goal_rounds＝目标读写
+        # （内部写：建卡、update_goal 工具、驱动器计轮、停止置 paused）——
+        # 都在本唯一写门上落盘。
+        "auto_mode", "goal", "goal_state", "goal_rounds",
     )
 
     def _fn(conn: Any) -> Optional[str]:
