@@ -222,7 +222,7 @@ TOOL_SWITCH: dict[str, str] = {
 #   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
 #   「注册表工具集/schema 变更」（T12-R3 纪律）。
 #   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
-TOOL_TABLE_VERSION = "tools-tc-10"
+TOOL_TABLE_VERSION = "tools-tc-11"
 
 
 # ============================================================
@@ -451,6 +451,29 @@ _GOAL_ACTION_TO_STATE = {
     "blocked": "blocked",
 }
 
+#: [6702 移植 2026-10-17] 宽裕度：未传参的纯推断 pause 在「子卡恰好刚完工」
+#: 的采样边界上也可能是一次活锁重挂；对这类 pause 宽裕度地清零（把 1 次清掉）。
+#: 取 1＝只抹平采样边界的一次歧义，不改变「连续 ≥3 次才死锁」的判定实效。
+#: 它**不是闸**：不参与任何轮次/进度/时间/token 判定。
+_AWAIT_RESUME_GIVEUP_SLACK = 1
+
+
+def _as_bool(raw: Any) -> bool:
+    """宽松读布尔（模型可能送 ``true``/``"true"``/``1``/``"是"``）。
+
+    缺省/空/``None`` ⇒ ``False``（**向后兼容的关键**：不传该参数时逐字保持旧行为）。
+    刻意只把**明确真值**当真——宁可漏置位（退回旧推断分支）也不误置位。
+    """
+    if raw is None or raw == "":
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes", "y", "是")
+    return bool(raw)
+
 
 async def _h_update_goal(work_id: str, current_id: str,
                          arguments: dict[str, Any],
@@ -522,11 +545,25 @@ async def _h_update_goal(work_id: str, current_id: str,
     # 无未终止子卡的 pause ⇒ 显式落 0（「不做了」，不是「等子卡」）；其余动作
     # （complete/blocked）**一个字都不改**（既有收口闸逐字不变）。
     # 显式 ``await_children`` 参数与 ``goal_await_wakes`` 计数见后续批次（P5/P6）。
+    # [6702 移植 2026-10-17 · await_children 显式声明] 「是否在等子卡」此前是
+    # **推断**出来的——判据取「声明这一刻」是否有未终止子卡。实测 work_015 证伪：
+    # 模型 reason 写着「等两张子卡跑完再整合」，却可能在子卡**已全部 complete 之后**
+    # 才调 pause ⇒ 采样点落在竞态另一侧 ⇒ 标志位 0 ⇒ 父卡永久挂死。
+    # 根因＝**用瞬时采样代替模型意图**。故新增可选参数 ``await_children``：
+    #   · 显式给了 True ⇒ 直接置 1，**不看** has_active_child（意图由模型声明）
+    #   · 未给（False）⇒ **保留原推断分支**（有未终止子卡仍置 1），旧路径不退化
+    #   · 两条都不放宽到「有子卡就置位」：那会把「子卡完工后再 pause（等人类
+    #     外部条件）」也置位 ⇒ 恢复后再 pause 又置位 ⇒ 无限唤醒-挂起打转
+    # complete/blocked **一个字都不改**（永不在此处置位）。
+    # ★ 计数逻辑（goal_await_wakes）由 P6 在本分支内追加，本批只做标志位。
     fields: dict[str, Any] = {"goal_state": state}
     if action == "pause":
         from . import auto_driver      # 局部 import（同本模块既有延迟引用手法）
-        fields["goal_await_children"] = (
-            1 if auto_driver.has_active_child(work_id, current_id) else 0)
+        if _as_bool(arguments.get("await_children")):
+            fields["goal_await_children"] = 1
+        else:
+            fields["goal_await_children"] = (
+                1 if auto_driver.has_active_child(work_id, current_id) else 0)
     note = f"[自动模式] 模型声明 {action}" + (f"：{reason}" if reason else "")
     res = await card_store.update_card(
         work_id, current_id, fields, note)
@@ -2051,6 +2088,8 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                 "不声明，系统会自动再起一轮。"
                 "action：complete＝目标已完成；pause＝暂停（等外部条件）；"
                 "blocked＝卡住做不下去（必须给 reason）。"
+                "await_children：只在 pause 时有意义——传 true 表示「我这次 pause 是在等子卡跑完」，"
+                "系统据此在子卡全部完工时自动叫醒你；不传则按「单纯暂停」处理，不会被叫醒。"
             ),
             "parameters": {
                 "type": "object",
@@ -2063,6 +2102,13 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                     "reason": {
                         "type": "string",
                         "description": "原因（blocked 必填：说清卡在哪）",
+                    },
+                    "await_children": {
+                        "type": "boolean",
+                        "description": (
+                            "仅 action=pause 时有意义：true＝这次暂停是在等子卡跑完，"
+                            "子卡全部完工时叫醒我。只在「当下确实还有未完工的子卡」时才传 true。"
+                        ),
                     },
                 },
                 "required": ["action"],
