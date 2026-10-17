@@ -312,14 +312,17 @@ def test_t6_touched_modules_bumped():
       main 43.0→45.0、main_chat 1.3→1.5、chat-view 1→2（初始态与无更多一致）；
       阶段3 退役草稿画布路径：canvas 44→45（IS_DRAFT 整件删除）、nav.css 13→14
       （.draft-badge 删除）。
+    ★ [＋按钮删除 2026-10-17] 命令面不存在 ⇒ input-bar 的 `+` 按钮整件删（死件纪律，
+      不取原文 :741 disabled 分支）：input-bar 1→2、workspace 51→52、main_chat 1.8→1.9、
+      style 38→39（.flow-input-add 死样式同删）。
     """
     vm = _version_map()
     expect = {
-        "stream.js": "38", "workspace.js": "51", "canvas.js": "45",
-        "assembler.js": "35", "style.css": "38", "main.js": "45.0",
-        "main_chat.js": "1.8",
+        "stream.js": "38", "workspace.js": "52", "canvas.js": "45",
+        "assembler.js": "35", "style.css": "39", "main.js": "45.0",
+        "main_chat.js": "1.9",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
-        "input-bar.js": "1", "queue-dock.js": "1", "queue-store.js": "1",
+        "input-bar.js": "2", "queue-dock.js": "1", "queue-store.js": "1",
         "chat-view.js": "2", "message-item.js": "1",
     }
     for name, ver in expect.items():
