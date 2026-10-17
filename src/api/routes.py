@@ -119,6 +119,12 @@ class CreateCardRequest(BaseModel):
     parent: Optional[str] = None
     charter: str = ""
     conclusion: str = ""
+    # [自动模式 2026-10-17 · 回灌 5700 G1（019a0f0）] goal＝本卡目标文本。
+    # 存储层 create_card 早有 goal 形参，但本模型未声明该字段 ⇒ Pydantic 静默
+    # 丢弃 ⇒ HTTP 建的 auto 子卡继承到 auto_mode=1 却 goal 为空、永不点火
+    # （只有模型侧 create_card(goal=...) 那条路通——前端/用户建卡断链）。
+    # 缺省空串 ⇒ 行为与改造前逐字一致（非 auto 卡、不带 goal 的建卡零变化）。
+    goal: str = ""
 
 
 class PatchCardRequest(BaseModel):
@@ -507,6 +513,7 @@ async def create_work_card(work_id: str, req: CreateCardRequest):
             work_id, req.title, req.source,
             card_type=req.card_type, parent=req.parent,
             charter=req.charter, conclusion=req.conclusion,
+            goal=req.goal,   # [自动模式 G1] HTTP 建卡透传 goal（缺省空=不变）
         )
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
@@ -1140,6 +1147,7 @@ async def create_card_compat(req: CreateCardRequest):
             DEFAULT_WORK_ID, req.title, req.source,
             card_type=req.card_type, parent=req.parent,
             charter=req.charter, conclusion=req.conclusion,
+            goal=req.goal,   # [自动模式 G1] 兼容层建卡同口径透传 goal
         )
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")

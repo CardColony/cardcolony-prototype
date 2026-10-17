@@ -760,3 +760,95 @@ def test_block5_auto_mark_in_source():
     assert "style.css?v=40" in card_html
     work_html = (REPO / "templates" / "work.html").read_text(encoding="utf-8")
     assert "style.css?v=40" in work_html
+
+
+# ============================================================
+
+
+# ============================================================
+# 阶段 1 · G1 断链修复（019a0f0：HTTP 建卡透传 goal）
+#
+# 背景：存储层 create_card 早有 goal 形参，但 CreateCardRequest 未声明该字段
+# ⇒ Pydantic 静默丢弃 ⇒ HTTP/前端建的 auto 子卡 goal 为空、永不点火（只有
+# 模型侧 create_card(goal=...) 通）。G1 补上 user/前端这条断链。
+# ============================================================
+
+@pytest.fixture
+async def g1_client(sandbox):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    app = FastAPI()
+    app.include_router(routes.router)
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://test") as c:
+        yield c
+
+
+async def test_g1_http_create_card_passes_goal(typed_registry, work, g1_client,
+                                               no_kick):
+    """硬判据1：HTTP 建卡带 goal ⇒ 卡上 goal 字段有值（非 auto 父卡下也落）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    r = await g1_client.post(f"/api/works/{wid}/cards", json={
+        "title": "带目标的新卡", "source": "用户直接创建",
+        "parent": root, "goal": "把这件事做完",
+    })
+    assert r.status_code == 201, r.text
+    cid = r.json()["meta"]["card_id"]
+    m = card_store._meta_of(wid, cid) or {}
+    assert m.get("goal") == "把这件事做完"
+
+
+async def test_g1_http_create_card_without_goal_unchanged(
+        typed_registry, work, g1_client):
+    """硬判据2：不带 goal ⇒ 行为与改造前一致（空串、非 auto 不起跑）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    r = await g1_client.post(f"/api/works/{wid}/cards", json={
+        "title": "无目标的新卡", "source": "用户直接创建", "parent": root,
+    })
+    assert r.status_code == 201, r.text
+    cid = r.json()["meta"]["card_id"]
+    m = card_store._meta_of(wid, cid) or {}
+    assert m.get("auto_mode") == 0
+    assert not str(m.get("goal") or "")
+    assert not str(m.get("goal_state") or "")
+
+
+async def test_g1_auto_parent_child_with_goal_kicks(typed_registry, work,
+                                                    g1_client, monkeypatch):
+    """硬判据3：auto 父卡经 HTTP 建带 goal 的子卡 ⇒ auto_mode=1 ＋ goal 有值
+    ＋ 建卡即起跑（D2 链在 HTTP 入口闭合）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "父卡", root)
+    await card_store.update_card(wid, a, {"auto_mode": 1}, "开自动")
+
+    calls: list[str] = []
+    state = {"declared": False}
+
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None,
+                             tools=None, **_):
+        calls.append(str(user_prompt))
+        if not state["declared"]:
+            state["declared"] = True
+            return ({"content": "", "tool_calls": [{
+                "name": "update_goal", "arguments": {"action": "complete"},
+            }]}, "fake")
+        # complete 之后的那一轮：空手交付——否则工具循环无闸会把 fake 无限
+        # 追问下去（每轮都返同一个工具调用＝死循环打转，块0.3 同款手法）。
+        return ({"content": "已完成。", "tool_calls": []}, "fake")
+
+    monkeypatch.setattr(model_service, "call_main", fake_call_main)
+    monkeypatch.setenv("MOCK_LLM", "1")
+
+    r = await g1_client.post(f"/api/works/{wid}/cards", json={
+        "title": "子卡", "source": "用户直接创建",
+        "parent": a, "goal": "子卡任务",
+    })
+    assert r.status_code == 201, r.text
+    cid = r.json()["meta"]["card_id"]
+    m = card_store._meta_of(wid, cid) or {}
+    assert m.get("auto_mode") == 1, "auto 父卡的子卡应继承 auto"
+    assert m.get("goal") == "子卡任务"
+    assert m.get("goal_state") == "active"
+    await _drain_trigger_tasks()
+    assert calls, "HTTP 建的 auto 子卡未起跑（断链未闭合）"
+    assert any("子卡任务" in x for x in calls), calls
