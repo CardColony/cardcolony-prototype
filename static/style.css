@@ -664,50 +664,10 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 @media (max-width: 1280px) {
   .chat { margin-left: 8px; margin-right: 8px; padding-left: 16px; padding-right: 16px; }
 }
-/* [对话区会话流样式 2026-10-12] 统一内容列：卡片内所有消息共用一条列。
-   宽度 min(70%, 48em)——用户 19:08「按照70%自适应」＋19:32「需要一个门槛值」；
-   48em＝W3C clreq 横排最大行长 48 字（14px 下 672px 内容宽）。 */
-.msgs {
-  width: 100%;
-  max-width: min(88%, 62em);   /* [对话流全消息类型 2026-10-13] 用户 00:07「整体宽度再宽一点，现在太局促了」→ 62em（14px 下 868px）；88% 保窄窗跟随 */
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-}
-/* [会话渲染单源化 2026-10-15] 轮组容器：快照按轮分组渲染，每轮一个容器。
-   **必须继承 .msgs 的 flex 列上下文**——组内 .msg.user 的 align-self:flex-end
-   （靠右）与其它行的 flex-start（靠左）都依赖父级是 flex 列；容器若退化成
-   普通块级，用户气泡会齐左排（视觉回归）。容器自身不加外边距：轮次间距
-   仍由组内 .msg/.step-row 自己的 margin 给出，与改前逐条平铺的观感一致。 */
-.msgs-round {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  min-width: 0;
-}
-/* live 逐字正文槽：恒在全部轮组之后（过程行与 live 正文恒压队尾）。 */
-.live-slot {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  min-width: 0;
-}
-/* [画板四机制 T2 2026-10-16] 分页入口：渲染窗口之上还有轮时，列首出现「加载更早」。
-   .msgs 是 flex 列 ⇒ 与 .step-toggle 同族（小字、可点、hover 变亮）；居中另加胶囊描边，
-   与过程行/消息行在视觉上区分开（它不是内容，是控件）。 */
-.msgs-more {
-  align-self: center;
-  font-size: 12px;
-  color: var(--dim);
-  cursor: pointer;
-  user-select: none;
-  padding: 3px 12px;
-  margin: 2px 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 99px;
-  background: var(--bg);
-}
-.msgs-more:hover { background: var(--panel-hover); color: var(--text-soft); }
+/* [对话流照抄 dsh 完全版 v3 2026-10-17] 原 .msgs 内容列（min(88%,62em)）、
+   .msgs-round 轮组容器、.msgs-more 分页入口三件已**删除**（不是注释掉）：
+   内容列改由 .flow-view-column 的 748px 承担、轮组容器随扁平节点表退役、
+   分页入口改 .flow-view-older。三者的新规则见本文件末尾的 flow 样式段。 */
 .msg {
   max-width: 100%;
   margin: 2px 0;
@@ -1514,3 +1474,449 @@ body.page-chat .rule-panel { display: none; }
 }
 .rule-sec-status.err { color: #e5534b; }
 
+
+/* ============================================================================
+   [对话流照抄 dsh 完全版 v3 2026-10-17] flow/ 移植件的样式段
+   —— 数值全部取 dsh 的 CSS Modules 原值（出处见每段注释），只把主题 token
+      换成本项目同名语义的变量（--panel/--border/--text/--c-user/--c-setting…）。
+   —— 这一段整体放在文件末尾：靠层叠覆盖上方的旧对话流/输入条规则，不改旧规则
+      本身（画布页仍共用本文件，旧选择器对画布页仍有意义）。
+   ============================================================================ */
+
+/* ---- 视图骨架（ChatView.module.css:6-45 / :149-193）--------------------- */
+.chat {
+  /* 滚动口下沉到 .flow-view-scroll：外层卡片只当画框，不再自己滚。 */
+  overflow: hidden;
+  padding: 0;
+  gap: 0;
+}
+.msgs {
+  /* [对话流照抄 dsh v3] 内容列宽改由 .flow-view-column 的 748px 决定
+     （dsh --dsh-chat-content-width: 748px，ConversationRoot.module.css:22），
+     旧的 min(88%, 62em) 上限退役。 */
+  max-width: none;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.flow-view-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.flow-view-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* dsh ChatView.module.css:20 —— 两侧 = 输入卡留白 + 16px */
+  padding: 16px 32px;
+}
+.flow-view-column {
+  /* dsh ChatView.module.css:38-45 —— 748px 居中，16px 节拍 */
+  max-width: 748px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.flow-view-item {
+  min-width: 0;
+}
+.flow-view-item:empty { display: none; }
+
+/* ---- 运行条（ChatView.module.css:69-115）-------------------------------- */
+.flow-turn-status {
+  align-self: flex-start;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: linear-gradient(
+    90deg,
+    var(--c-setting) 0%,
+    var(--c-setting) 40%,
+    var(--text-soft) 50%,
+    var(--c-setting) 60%,
+    var(--c-setting) 100%
+  );
+  background-position: 100% 0;
+  background-size: 250% 100%;
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: flow-turn-status-shimmer 1.8s linear infinite;
+}
+.flow-turn-status-clock {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+  -webkit-text-fill-color: var(--text-soft);
+}
+@keyframes flow-turn-status-shimmer { to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .flow-turn-status { background-position: 0 0; background-size: 100% 100%; animation: none; }
+}
+
+/* ---- 回底钮（ChatView.module.css:149-192）------------------------------- */
+.flow-view-to-bottom-slot {
+  position: sticky;
+  bottom: 16px;
+  z-index: 8;
+  height: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding-right: max(0px, calc((100% - 748px) / 2));
+  pointer-events: none;
+}
+.flow-view-to-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-top: -34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.flow-view-to-bottom:hover { background: var(--panel-hover); }
+
+/* ---- 上翻（ChatView.module.css:129-147）-------------------------------- */
+.flow-view-older { display: flex; justify-content: center; }
+.flow-view-older-btn {
+  border: none;
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-soft);
+  background: var(--panel-hover);
+  cursor: pointer;
+}
+.flow-view-older-btn:disabled { cursor: default; opacity: .6; }
+
+/* ---- 用户气泡（MessageItem.module.css:4-29 原值）------------------------ */
+.flow-user-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.flow-user-row.is-pending { opacity: .72; }
+.flow-user-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+  /* dsh MessageItem.module.css:17 原值 */
+  max-width: min(525px, 82%);
+}
+.flow-user-bubble {
+  max-width: 100%;
+  background: var(--c-user);
+  border: 1px solid var(--c-user-border);
+  border-radius: 22px;
+  padding: 10px 16px;
+  font-size: 16px;
+  line-height: 24px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.flow-user-bubble pre { margin: 8px 0; }
+.flow-user-bubble p { margin: 0; }
+
+/* ---- 排队条（QueueDock.module.css 原值）--------------------------------- */
+.composer-seat {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  --flow-composer-card-max-width: 780px;   /* 748 + 32 */
+  --flow-composer-side-clearance: 16px;
+  --flow-composer-dock-inset: 8px;
+  --flow-composer-stack-gap: 8px;
+  --flow-composer-text-max-height: 336px;  /* 14 行 × 24px */
+}
+.flow-queue-dock {
+  box-sizing: border-box;
+  flex: none;
+  width: calc(100% - var(--flow-composer-side-clearance) - var(--flow-composer-side-clearance)
+    - var(--flow-composer-dock-inset) - var(--flow-composer-dock-inset));
+  max-width: calc(var(--flow-composer-card-max-width)
+    - var(--flow-composer-dock-inset) - var(--flow-composer-dock-inset));
+  margin: 0 auto calc(0px - var(--flow-composer-stack-gap) - 3px);
+  padding: 0 var(--flow-composer-dock-inset);
+}
+.flow-queue-panel {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  padding: 2px 0;
+  border-radius: 12px 12px 0 0;
+  background: var(--panel-hover);
+}
+.flow-queue-panel::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: inherit;
+  content: '';
+  pointer-events: none;
+}
+.flow-queue-header {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.flow-queue-header:disabled { cursor: default; }
+.flow-queue-lead {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--text-soft);
+}
+.flow-queue-count {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 24px;
+}
+.flow-queue-chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-soft);
+}
+.flow-queue-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.flow-queue-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 4px 5px 4px 12px;
+  border-radius: 8px;
+}
+.flow-queue-row + .flow-queue-row { box-shadow: inset 0 1px 0 var(--border); }
+.flow-queue-preview,
+.flow-queue-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+.flow-queue-preview {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: break-word;
+}
+.flow-queue-editor {
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--panel);
+  color: var(--text);
+}
+.flow-queue-editor:focus { border-color: var(--c-setting); }
+.flow-queue-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+.flow-queue-action {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.flow-queue-action:hover:not(:disabled) { background: var(--panel-hover); }
+.flow-queue-action:disabled { cursor: default; opacity: .45; }
+
+/* ---- 输入卡（InputBar.module.css 原值）---------------------------------- */
+.flow-input-root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 var(--flow-composer-side-clearance) 8px;
+}
+.flow-input-notice {
+  width: 100%;
+  max-width: var(--flow-composer-card-max-width);
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--panel-hover);
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 18px;
+}
+.flow-input-notice.is-error {
+  background: rgba(248, 81, 73, .12);
+  color: var(--red);
+}
+.flow-input-card {
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--flow-composer-card-max-width);
+  padding-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--panel);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .14);
+  font-size: 16px;
+  line-height: 24px;
+}
+.flow-input-scroll {
+  max-height: var(--flow-composer-text-max-height);
+  overflow-y: auto;
+}
+.flow-input-grow { position: relative; }
+.flow-input-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: var(--text);
+  pointer-events: none;
+}
+.flow-input-ta {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  overflow: hidden;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--c-setting);
+}
+.flow-input-ta,
+.flow-input-mirror,
+.flow-input-backdrop {
+  box-sizing: border-box;
+  padding: 4px 12px 0 16px;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.flow-input-ta::placeholder { color: var(--text-soft); user-select: none; }
+.flow-input-ta:disabled { color: transparent; cursor: not-allowed; }
+.flow-input-mirror {
+  visibility: hidden;
+  pointer-events: none;
+  min-height: 52px;   /* 2 行地板（figma min-h 52 ≈ 2×24 + 4） */
+}
+.flow-input-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 8px 6px;
+  min-width: 0;
+}
+.flow-input-tools,
+.flow-input-modes,
+.flow-input-trailing {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.flow-input-tools { gap: 16px; }
+.flow-input-modes { gap: 12px; }
+.flow-input-trailing { flex: none; gap: 12px; }
+.flow-input-add {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: var(--panel-hover);
+  color: var(--text);
+  cursor: pointer;
+}
+.flow-input-add:disabled { opacity: .5; cursor: default; }
+.flow-input-primary {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  background: var(--c-setting);
+  color: #fff;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+  transform: translateY(-2px);
+}
+.flow-input-primary:disabled { opacity: .4; cursor: default; }
+.flow-input-leftitems { display: flex; align-items: center; gap: 8px; }
+.flow-input-leftitems .draft-meta-btn { font-size: 12px; padding: 4px 10px; }
+
+/* live 逐字槽：恒在节点座位之后、运行条之前 */
+.flow-view-live-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}

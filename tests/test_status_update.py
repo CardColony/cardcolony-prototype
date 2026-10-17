@@ -278,11 +278,16 @@ def test_frontend_diff_segment_markers_present():
 
 
 def test_frontend_version_stamps_bumped():
-    """本轮涉改三件（stream/workspace/style）升 36；引用点同号（防双份代码并存）。"""
-    assert "../stream.js?v=36" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=45" in _read("static/esm/main_chat.js")
-    assert "./stream.js?v=36" in _read("static/workspace.js")
-    assert "/static/style.css?v=37" in _read("templates/work.html")
+    """涉改模块升号；引用点同号（防双份代码并存）。
+
+    [对话流照抄 dsh 完全版 v3 2026-10-17] stream 36→37、workspace 45→46、
+    style 37→38、main_chat 1.2→1.3（它 import 了 stream/workspace）。
+    """
+    assert "../stream.js?v=37" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=46" in _read("static/esm/main_chat.js")
+    assert "./stream.js?v=37" in _read("static/workspace.js")
+    assert "/static/style.css?v=38" in _read("templates/work.html")
+    assert "/static/esm/main_chat.js?v=1.3" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════

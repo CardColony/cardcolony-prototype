@@ -15,7 +15,12 @@ from pathlib import Path
 
 CSS = Path(__file__).resolve().parents[1] / "static" / "style.css"
 
-ALLOWED_FONT_PX = {"11", "12", "13", "14", "18", "36"}
+# [对话流照抄 dsh 完全版 v3 2026-10-17] 字号集加 16：dsh 的基准节拍是 16px
+# （MessageItem.module.css:26 / InputBar.module.css:73），任务书 §三 明确「U-1 字号集加 16」。
+ALLOWED_FONT_PX = {"11", "12", "13", "14", "16", "18", "36"}
+# dsh 移植段（flow/ 的样式）：px 行高只允许 dsh 原值（24/20/18/36），且只在这一段内允许。
+FLOW_SEL = re.compile(r"\.(flow-|composer-seat)")
+Dsh_LINE_HEIGHT_PX = {"18", "20", "24", "36"}
 CANVAS_SEL = re.compile(r"\.(card-node|kid-badge|cross-link-badge|tname|msg-badge)\b")
 
 
@@ -65,11 +70,23 @@ def test_u1_font_sizes_within_allowed_set():
     assert not bad, "越集字号（非画布）: " + "; ".join(bad)
 
 
-def test_u2_no_px_line_height():
-    """U-2：px 行高归零（全部改倍数）。"""
-    hits = [ln for ln, line in enumerate(CSS.read_text(encoding="utf-8").split("\n"), 1)
-            if re.search(r"line-height:\s*[0-9.]+px", line)]
-    assert not hits, f"残留 px 行高行: {hits}"
+def test_u2_px_line_height_only_in_flow_block():
+    """U-2：px 行高只允许出现在 dsh 移植段，且取值 ⊆ {18,20,24,36}px。
+
+    [对话流照抄 dsh 完全版 v3 2026-10-17] 任务书 §三：「U-2 行高集按 dsh 值」——
+    dsh 的 16/24 节拍是硬数值（MessageItem / InputBar 的 CSS Modules 原值），
+    改成倍数就不再是原值。故口径从「px 行高归零」改为「移植段内只许 dsh 值」；
+    移植段之外仍必须是倍数（原意不放松）。
+    """
+    text = CSS.read_text(encoding="utf-8")
+    bad = []
+    for sel, body, ln in _rules():
+        for m in re.finditer(r"line-height:\s*([0-9.]+)px", body):
+            if not FLOW_SEL.search(sel):
+                bad.append(f"L{ln} {sel.strip()[:44]}（移植段外不许 px 行高）")
+            elif m.group(1) not in Dsh_LINE_HEIGHT_PX:
+                bad.append(f"L{ln} {sel.strip()[:44]} line-height: {m.group(1)}px（非 dsh 值）")
+    assert not bad, "px 行高越界: " + "; ".join(sorted(set(bad))[:10])
 
 
 def test_u3_line_width_capped():
@@ -82,12 +99,18 @@ def test_u3_line_width_capped():
     .msgs 百分比 70%→82%，断言同步。
     [对话流全消息类型 2026-10-13 用户 00:07] 「模型消息整体的宽度，再宽一点，
     现在太局促了」→ 上界 48em→62em、百分比 82%→88%，断言同步。
+
+    [对话流照抄 dsh 完全版 v3 2026-10-17] 行宽上界改由 dsh 的 748px 内容列承担
+    （ChatView.module.css:38-45 / ConversationRoot.module.css:22）；`.msgs` 的
+    min(88%, 62em) 已被 748px 覆盖。断言同步为新机制，**立法意图（行宽必有上界）不变**。
     """
     t = CSS.read_text(encoding="utf-8")
     assert t.count("max-width: 82%") == 0
     assert t.count("min(82%, 720px)") == 0
     assert t.count("min(82%, 48em)") == 0
-    assert t.count("min(88%, 62em)") >= 1
+    assert "max-width: 748px" in t, "内容列必须有 748px 上界（dsh 原值）"
+    m = re.findall(r"\.msgs\s*\{[^}]*\}", t, re.S)
+    assert m and "max-width: none" in m[-1], "旧 min(88%,62em) 必须已被 748px 列取代"
 
 
 def test_u4_no_negative_margin_tighten():

@@ -1,18 +1,24 @@
 # -*- coding: utf-8 -*-
-"""《对话流照抄 dsh》（2026-10-16）前端改动的机械守卫。
+"""《对话流照抄 dsh 完全版 v3》（2026-10-17）前端改动的机械守卫。
 
 前端没有 pytest DOM 载体：DOM 行为归 jsdom 取证脚本
-`_evidence_dsh_flow_20261016.mjs`（T1–T4 ＋ T7 一致性/切卡，21 条全绿）
-与 `_evidence_singlesource_20261015.mjs`（旧六条判据，25 条全绿）；
-装配器纯逻辑归 `tests/assembler.test.mjs`。本文件只做**源码级机械断言**，
-锁住本次重构的关键契约、防回归：
+`_evidence_dsh_flow_v3_20261017.mjs`（输入 / 排队 / 视图 / 装配器 四组 54 条）；
+状态机与装配器纯逻辑归 `tests/flow_machine.test.mjs`（12 条）与
+`tests/assembler.test.mjs`（28 条）。本文件只做**源码级机械断言**，锁住本次重构
+的关键契约、防回归：
 
-- T1 乐观上屏：send() 必须先落本地用户节点，再开事件流；回流对账保留；
-  失败回退要撤本地气泡；
-- T2 增量装配：渲染层按节点 key/rev 复用 DOM；**不存在整列清空重建**；
-  15s 自愈轮询不得无条件 resync（必须先问后端是否仍在跑）；
-- T3/T4：Think 行与工具行按 dsh 规格出元素（摘要/折叠/两段式）；
-- T6 版本戳：全链每模块**唯一 URL**（同模块不得两个 ?v=）。
+- 输入状态机与提交策略必须存在且按 dsh 原文分支（flow/machine.js、submission-policy.js）；
+- 运行中输入**不得被锁**（disabled 判据只有 dsh 的五条）；
+- 忙时 Enter 走 queue（排队），主键两态；
+- 扁平节点表：order + nodes:Map，没有轮分组三道；
+- 24px 跟随 / 回底钮 / 运行条 15s 时钟；
+- 退役清单里的自创物**必须已删除**（不是注释掉）；
+- 版本戳：全链每模块唯一 URL。
+
+★ 历史：本文件在 2026-10-16 锁的是「轮分组 + 组视图增量装配」那套（T1–T6）。
+  2026-10-17 的 v3 任务书 §三 明确退役轮分组，改 dsh 的扁平节点表 ⇒ 本文件
+  同步改写；旧断言（ensureGroupView / gv.views / renderGroup / pruneGroups）
+  **随实现一起退场**，不是放松。
 """
 from __future__ import annotations
 
@@ -24,12 +30,31 @@ STREAM = ROOT / "static" / "stream.js"
 WS = ROOT / "static" / "workspace.js"
 ASSEMBLER = ROOT / "static" / "esm" / "assembler.js"
 STYLE = ROOT / "static" / "style.css"
+CARD_HTML = ROOT / "templates" / "card.html"
+FLOW = ROOT / "static" / "esm" / "flow"
 
 
 def _strip_js_comments(src: str) -> str:
     """去掉 /* */ 与 // 注释：源码级断言不能被注释里的旧词条带偏。"""
     src = re.sub(r"/\*[\s\S]*?\*/", "", src)
     return re.sub(r"(?m)^\s*//.*$", "", src)
+
+
+def _brace_block(src: str, marker: str) -> str:
+    """从 marker 之后第一个 `{` 起做花括号配平（用于非 function 的块，如事件绑定）。"""
+    i = src.index(marker)
+    j = src.index("{", i)
+    depth = 0
+    k = j
+    while k < len(src):
+        if src[k] == "{":
+            depth += 1
+        elif src[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[i:k + 1]
+        k += 1
+    raise AssertionError(f"块未闭合：{marker}")
 
 
 def _fn_body(src: str, header: str) -> str:
@@ -47,118 +72,199 @@ def _fn_body(src: str, header: str) -> str:
     return src[m.start():i]
 
 
-# ---------------------------------------------------------------- T1 乐观上屏
+# ---------------------------------------------------------------- T1 移植件在场
 
-def test_t1_send_optimistic_before_stream():
-    """点发送瞬间先落用户气泡（optimisticUser），再开事件流（start）。"""
-    body = _strip_js_comments(_fn_body(WS.read_text(encoding="utf-8"), "async function send"))
-    i_opt = body.find("EventFlow.optimisticUser")
-    i_start = body.find("EventFlow.start")
-    assert i_opt >= 0, "send() 未调用乐观上屏"
-    assert i_start >= 0, "send() 未开事件流"
-    assert i_opt < i_start, "必须先落用户气泡再开流（否则过程行抢在提问之前）"
-    assert "EventFlow.pullUserBubble" in body, "timeline 回流对账必须保留"
-    assert "EventFlow.dropOptimisticUser" in body, "发送失败必须撤下本地气泡"
-
-
-def test_t1_assembler_local_round_and_pending_upgrade():
-    """装配器：本地轮（ns=local）＋ 认领改名 ＋ 内容相同则原地升级。"""
-    asm = _strip_js_comments(ASSEMBLER.read_text(encoding="utf-8"))
-    assert 'return "local:" +' in asm, "本地记录必须自成一组"
-    assert "adoptLocalGroup" in asm and 'g.key = "run:" + runId' in asm, "本地轮必须能被真实 run 认领"
-    assert re.search(r"n\.pending\b", asm), "本地用户节点必须带 pending 标记"
-    assert re.search(r"pend\.pending = false", asm), "真实记录到达必须原地升级（不出双节点）"
-    assert "dropLocal" in asm, "必须有撤下本地轮的入口"
+def test_t1_flow_modules_exist():
+    """§二 文件级对照表：dsh 的文件边界原样保留在 static/esm/flow/。"""
+    expect = [
+        "machine.js", "submission-policy.js", "composer-submission.js",
+        "input-bar.js", "queue-dock.js", "queue-store.js",
+        "chat-view.js", "message-item.js",
+    ]
+    for name in expect:
+        assert (FLOW / name).exists(), f"缺移植件 flow/{name}"
+    # dsh 的 queue/store.ts 是纯投影；本机无 Host 队列 ⇒ 适配层落地为 queue-store.js
+    assert "createQueueStore" in (FLOW / "queue-store.js").read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------- T2 增量装配
-
-def test_t2_renderer_is_incremental():
-    """渲染层按节点 key/rev 复用元素；没有整列清空重建。"""
-    src = _strip_js_comments(STREAM.read_text(encoding="utf-8"))
-    assert "ensureGroupView" in src, "必须有「按 data-key 认领组容器」的入口"
-    assert "gv.views" in src, "必须有「节点键 → 已渲染元素」的视图表"
-    assert re.search(r"v\.rev !== \(node\.rev \|\| 0\)", src), "必须按 rev 判内容是否变化"
-    assert "pruneGroups" in src, "必须剪枝（组改名/软删后旧容器退场）"
-    # 整列清空重建＝P2/P3 的根：全文件不得再有「清空列」的写法
-    assert "while (box.firstChild)" not in src, "仍在整列清空重建（P2 根因）"
-    assert "while (ca.firstChild)" not in src, "仍在整列清空重建"
-    # 单源不变：快照仍是唯一位置来源
-    for sym in ("renderSnapshot", "renderAffected", "renderGroup"):
-        assert sym in src, f"缺 {sym}"
-
-
-def test_t2_recover_poll_gated_by_progress():
-    """15s 自愈轮询不得无条件 resync——必须先问后端是否仍在跑。"""
-    body = _strip_js_comments(_fn_body(WS.read_text(encoding="utf-8"), "async function tryRecover"))
-    i_prog = body.find("API.getProgress")
-    i_alive = body.find("active")
-    i_resync = body.find("EventFlow.resync")
-    assert i_prog >= 0 and i_alive >= 0, "tryRecover 必须先查后端进度"
-    assert i_resync > i_prog, "resync 必须在「仍在跑就不动」的判据之后"
-    assert "streamDead" in body, "断流也是恢复的合法触发条件之一"
+def test_t1_machine_phases_match_dsh():
+    """状态机相位集＝dsh 原文四相位（plain/claimed/adjudicating/submitting）。"""
+    src = _strip_js_comments((FLOW / "machine.js").read_text(encoding="utf-8"))
+    for phase in ("plain", "claimed", "adjudicating", "submitting"):
+        assert f'"{phase}"' in src, f"相位 {phase} 缺失"
+    # 忙时 Enter 丢弃（原文 :461）
+    body = _fn_body(src, "onEnter")
+    assert 'if (this.phase === "adjudicating" || this.phase === "submitting") return []' in body, \
+        "忙时 Enter 必须丢弃本次（不吞草稿、不报错）"
+    # 任何相位都可编辑：onDraftChanged 不得有相位早退
+    draft_body = _fn_body(src, "onDraftChanged")
+    assert "this.phase" not in draft_body, "onDraftChanged 不得做相位检查（dsh 原文无）"
+    # 发送成功清撤销栈
+    committed = _fn_body(src, "onSendCommitted")
+    assert "this.log = []" in committed, "发送成功必须清撤销栈（已发内容不得复活）"
 
 
-def test_t2_snapshot_reference_stable():
-    """装配器：结构未变时快照返回同一引用（sameReferences 语义）。"""
-    asm = ASSEMBLER.read_text(encoding="utf-8")
-    assert "snapCacheRev" in asm and "structRev" in asm, "快照必须有结构版本缓存"
-    assert re.search(r"if\s*\(snapCache && snapCacheRev === structRev\)\s*return snapCache", asm), \
+def test_t1_submission_policy_resolve_branches():
+    """resolve() 四条分支逐条对应 submission-policy.ts:48-57。"""
+    src = _strip_js_comments((FLOW / "submission-policy.js").read_text(encoding="utf-8"))
+    body = _fn_body(src, "resolve")
+    assert 'if (!running || !steeringAvailable) return "queue"' in body, \
+        "不忙 / 不支持 steer ⇒ queue"
+    assert 'if (gesture === "enter") return preferred' in body, "普通 Enter ⇒ 偏好"
+    assert 'return preferred === "queue" ? "steer" : "queue"' in body, "加速键 ⇒ 反向"
+    assert 'DEFAULT_BUSY_ENTER_BEHAVIOR = "queue"' in \
+        (FLOW / "composer-submission.js").read_text(encoding="utf-8"), "默认偏好＝queue"
+
+
+# ---------------------------------------------------------------- T2 输入条
+
+def test_t2_disabled_excludes_running():
+    """disabled 判据只有 dsh 的五条；**运行中不在其中**。"""
+    src = _strip_js_comments((FLOW / "input-bar.js").read_text(encoding="utf-8"))
+    body = _fn_body(src, "isDisabled")
+    assert "removed" in body and "live" in body and "blocked" in body and "parentOffline" in body, \
+        "disabled 五条判据缺一"
+    assert "running" not in body, "★ disabled 判据不得含运行中（Running input stays free）"
+
+
+def test_t2_primary_toggles_and_enter_queues():
+    """主键两态（发送↔停止）＋ 运行中 Enter 排队 ＋ 防连发 ＋ IME。"""
+    src = _strip_js_comments((FLOW / "input-bar.js").read_text(encoding="utf-8"))
+    prim = _fn_body(src, "refreshPrimary")
+    assert "primaryStops" in prim and "s.running" in prim, "主键必须按 running 出两态"
+    key = _brace_block(src, 'ta.addEventListener("keydown"')
+    assert "if (e.repeat) return" in key, "★ 防连发：按住 Enter 不得机关枪"
+    assert "isComposing" in key and "keyCode === 229" in key, "★ IME 双保险（isComposing / 229）"
+    assert "shiftKey" in key, "Shift+Enter 必须先于 IME 判据（恒为换行）"
+    assert "policy.resolve" in key, "Enter 的投递方式必须走 submission-policy"
+    # 运行中 Enter ⇒ queue：由 resolve(running=true, enter, true) 给出
+    assert "!!snap().running" in key, "Enter 必须把 running 交给策略解析"
+
+
+def test_t2_queue_dock_shape():
+    """排队条：空则隐藏、单条一行、多条折叠计数、可编辑可删。"""
+    src = _strip_js_comments((FLOW / "queue-dock.js").read_text(encoding="utf-8"))
+    assert "queue.length === 0" in src and 'root.style.display = "none"' in src, "空队列必须不渲染"
+    assert "listVisible" in src and "expanded" in src, "多条折叠判据缺一"
+    assert "flow-queue-editor" in src, "编辑态输入框缺"
+    assert 'kind: "remove"' in src and 'kind: "edit"' in src, "队列动作缺一"
+    assert "collapsed = true" in src, "默认收起（QueueDock.tsx:38）"
+
+
+def test_t2_queue_autosend_after_turn():
+    """轮结束自动依序发出：send 的 finally 必须出队。"""
+    body = _fn_body(_strip_js_comments(WS.read_text(encoding="utf-8")), "async function send")
+    assert "drainQueue()" in body, "send 收口必须调 drainQueue（轮结束自动发出）"
+    assert "finally" in body, "出队必须在 finally 里（成功失败都要走）"
+    drain = _fn_body(_strip_js_comments(WS.read_text(encoding="utf-8")), "function drainQueue")
+    assert "dequeue()" in drain and "send()" in drain, "drainQueue 必须出队并重发"
+
+
+def test_t2_selfheal_poll_retired():
+    """15 秒自愈轮询已退役（任务书 §三）。"""
+    src = _strip_js_comments(WS.read_text(encoding="utf-8"))
+    assert "}, 15000)" not in src, "★ 15 秒自愈轮询必须已删除"
+    assert "createWaitingBubble" not in src, "★ 等待气泡必须已删除（不是注释掉）"
+    assert "inputBox.disabled" not in src, "★ 运行中锁输入框必须已删除"
+
+
+# ---------------------------------------------------------------- T3 扁平节点表
+
+def test_t3_assembler_is_flat():
+    """装配器快照＝{order, nodes:Map}；没有轮分组三道。"""
+    raw = ASSEMBLER.read_text(encoding="utf-8")
+    asm = _strip_js_comments(raw)
+    assert "snapCache = { order, nodes: byKey, rev: structRev }" in asm, \
+        "快照形状必须是 {order, nodes, rev}"
+    assert "rounds" not in asm, "★ 轮分组（snap.rounds）必须已删除"
+    assert "groupKeyOf" not in asm, "★ 分组键必须已删除"
+    assert "adoptLocalGroup" not in asm, "★ 组改名认领必须已删除（扁平表用 claimed 标记）"
+    assert "claimed = true" in asm, "认领必须落 claimed 标记"
+    assert "if (snapCache && snapCacheRev === structRev) return snapCache" in asm, \
         "结构未变必须直接返回缓存引用"
 
 
-# ---------------------------------------------------------------- T3 Think 行
-
-def test_t3_think_row_spec():
-    """Think 行＝图标＋「Think」＋摘要＋计时；完成取首行、运行取最新行。"""
+def test_t3_renderer_is_flat_and_incremental():
+    """渲染层：order 落位、按 rev 只换那一行；组视图三件已删。"""
     src = _strip_js_comments(STREAM.read_text(encoding="utf-8"))
-    assert "thinkSummary" in src, "必须有摘要函数"
-    assert re.search(r"running \? lines\[lines\.length - 1\] : lines\[0\]", src), \
-        "摘要口径：运行中取最新一行、完成取第一行"
-    assert 'think-lab">Think' in src, "头行标题必须是 Think（dsh ReasoningRow）"
-    assert "think-ico" in src and "think-sum" in src and "think-time" in src, "头行三件套缺一"
-    assert "collapsed" in src, "Think 行默认折叠"
+    assert "createChatView" in src, "视图骨架必须来自 flow/chat-view"
+    assert "function viewOf" in src, "必须有每会话视图入口"
+    assert "v.render(win, revGetter(snap))" in src, "全序落位必须走 chat-view.render"
+    assert "v.refresh(node.key" in src, "内容变化必须只换那一行"
+    for dead in ("ensureGroupView", "renderGroup", "pruneGroups", "lanesOf",
+                 "paintToggle", "msgs-round"):
+        assert dead not in src, f"★ 退役物 {dead} 仍在 stream.js"
+    # 整列清空重建＝P2/P3 的根：全文件不得再有「清空列」的写法
+    assert "while (box.firstChild)" not in src, "仍在整列清空重建"
+    assert "scrollBottom" not in src, "★ 每帧强制滚底必须已删除（换 24px 跟随）"
+
+
+def test_t3_chat_view_follow_and_status():
+    """24px 跟随 ＋ 回底钮 ＋ 运行条 15s 时钟。"""
+    src = _strip_js_comments((FLOW / "chat-view.js").read_text(encoding="utf-8"))
+    assert "const FOLLOW_THRESHOLD = 24" in src, "★ 跟随阈值必须是 24px"
+    assert "observedTop" in src, "必须有「程序写入台账」（程序滚底不夺权）"
+    assert "flow-view-to-bottom" in src, "回底钮缺"
+    assert "Deep diving..." in src, "运行条文案必须是 Deep diving..."
+    assert "15000" in src, "★ 时钟必须 15 秒后才显"
+    assert "captureAnchor" in src and "anchor" in src, "上翻保位锚点缺"
+
+
+# ---------------------------------------------------------------- T4 视觉原值
+
+def test_t4_visual_values_are_dsh_originals():
+    """748px 列 / 气泡 min(525px,82%) / 22px 圆角 / 16px 节拍 / 输入卡 22px。"""
     css = STYLE.read_text(encoding="utf-8")
-    for sel in (".msg.assistant .think-ico", ".msg.assistant .think-sum",
-                ".msg.assistant .think.collapsed .think-body"):
-        assert sel in css, f"缺样式 {sel}"
-
-
-# ---------------------------------------------------------------- T4 工具行
-
-def test_t4_tool_row_spec():
-    """工具行＝图标＋工具名＋参数摘要＋状态；结果首段摘要常显、全文点开。"""
-    src = _strip_js_comments(STREAM.read_text(encoding="utf-8"))
-    body = _fn_body(src, "function renderTool")
-    assert "tool-row" in body and "tool-ico" in body and "tool-sum" in body, "工具行三件套缺一"
-    assert "argSummary" in src, "必须有参数摘要"
-    assert "resultSummary" in src, "必须有结果首段摘要"
-    assert 'classList.toggle("open")' in body, "点整行必须切换展开态"
-    css = STYLE.read_text(encoding="utf-8")
-    assert ".tool-row .tool-body { flex: 1 0 100%; display: none; }" in css, "完整内容默认折叠"
-    assert ".tool-row.open .tool-body { display: block; }" in css, "展开态可见"
-    assert ".tool-row.running .tool-ico" in css, "运行中态要有动画"
-
-
-# ---------------------------------------------------------------- T5 视觉规格（受可读性网约束）
-
-def test_t5_user_bubble_compact_rounded():
-    """用户气泡：右侧、浅底、圆角、紧凑（dsh MessageItem）。"""
-    css = STYLE.read_text(encoding="utf-8")
-    m = re.search(r"\.msg\.user\s*\{[^}]*\}", css)
-    assert m, "缺 .msg.user"
+    assert "max-width: 748px" in css, "★ 内容列必须是 748px（dsh --dsh-chat-content-width）"
+    assert "min(525px, 82%)" in css, "★ 用户气泡上限必须是 min(525px, 82%)（dsh 原值）"
+    m = re.search(r"\.flow-user-bubble\s*\{[^}]*\}", css)
+    assert m, "缺 .flow-user-bubble"
     blk = m.group(0)
-    assert "align-self: flex-end" in blk, "用户气泡必须靠右"
-    assert re.search(r"border-radius:\s*\d+px", blk), "用户气泡必须圆角"
-    assert "var(--c-user)" in blk, "用户气泡必须有浅底"
+    assert "border-radius: 22px" in blk, "气泡圆角必须是 22px"
+    assert "padding: 10px 16px" in blk, "气泡内距必须是 10px 16px"
+    assert "font-size: 16px" in blk and "line-height: 24px" in blk, "16/24 节拍缺"
+    card = re.search(r"\.flow-input-card\s*\{[^}]*\}", css)
+    assert card and "border-radius: 22px" in card.group(0), "输入卡圆角必须是 22px"
+    assert "--flow-composer-text-max-height: 336px" in css, "草稿盒高度上限必须是 336px（14×24）"
 
 
-def test_t5_dsh_bubble_cap_not_adopted_documented():
-    """dsh 的 min(525px,82%) 气泡宽上限**未采纳**：与「我的发言永不超出模型
-    消息边界」（2026-10-12 用户裁定）冲突，属产品语义、留用户裁。
-    本断言锁住「没被悄悄加进来」，防后人以为漏做。"""
+def test_t4_bubble_cap_now_adopted():
+    """★ 口径变更（2026-10-17）：dsh 的 525px 气泡上限**已采纳**。
+
+    2026-10-16 的旧断言写「未采纳：与『我的发言永不超出模型消息边界』冲突，留用户裁」。
+    2026-10-17 的 v3 任务书 §一.6 与 §五「视觉」明确要求 `min(525px, 82%)` ⇒ 采纳。
+    本断言锁住「已采纳」，防有人按旧口径又改回去。
+    """
     css = STYLE.read_text(encoding="utf-8")
-    assert "525px" not in css, "若采纳了 dsh 气泡宽上限，请同步删掉本断言并在回报中说明"
+    assert "min(525px, 82%)" in css, "v3 任务书要求采纳 dsh 气泡上限；若回退请同步改本断言并说明"
+
+
+def test_t4_input_card_structure():
+    """输入卡＝一个滚动口 + 两层文字（backdrop 出字 / textarea 透明留光标 / mirror 定高）。"""
+    src = (FLOW / "input-bar.js").read_text(encoding="utf-8")
+    for cls in ("flow-input-scroll", "flow-input-grow", "flow-input-backdrop",
+                "flow-input-mirror", "flow-input-ta", "flow-input-card"):
+        assert cls in src, f"输入卡缺 {cls}"
+    css = STYLE.read_text(encoding="utf-8")
+    assert "color: transparent" in css, "textarea 必须透明（出字靠 backdrop）"
+    assert "caret-color" in css, "光标色必须显式给（透明字下没有光标就看不见）"
+
+
+# ---------------------------------------------------------------- T5 接线
+
+def test_t5_workspace_wired_to_flow():
+    """workspace 的输入区已整件交给 flow/，且旧入口不再存在。"""
+    src = _strip_js_comments(WS.read_text(encoding="utf-8"))
+    assert "createInputBar" in src and "createQueueDock" in src, "workspace 未接 flow 输入系统"
+    assert "ComposerSubmissionPolicy" in src, "workspace 未建提交策略"
+    body = _fn_body(src, "function setRunState")
+    assert "inputBar.refresh()" in body and "EventFlow.setRunning" in body, \
+        "setRunState 必须同时刷新输入条与事件流运行条"
+    html = CARD_HTML.read_text(encoding="utf-8")
+    assert 'id="composerSeat"' in html, "card.html 缺输入座位"
+    assert 'id="inputBox"' not in html, "★ #inputBox 必须已退役"
+    assert 'id="runBtn"' not in html, "★ #runBtn 必须已退役（主键由 input-bar 生成）"
+    assert 'id="draftBtn"' in html and 'id="statusDraftBtn"' in html, "项目自有起草键不得丢"
 
 
 # ---------------------------------------------------------------- T6 版本戳唯一
@@ -185,26 +291,31 @@ def test_t6_every_module_has_exactly_one_version():
 
 
 def test_t6_touched_modules_bumped():
-    """版本基线：**共享前端 36**（stream/workspace/canvas/style 本轮涉改 ⇒ 35→36，
-    入口 main.js 36.0）；assembler 本轮新增一类事件映射 ⇒ 33→34。
+    """版本基线（对话流照抄 dsh v3 终态）。
+
     纪律不变：改哪个模块哪个升号、全链每模块唯一 URL。
 
-    ★ 历史：T7（2026-10-16《对话流画板架构》）统一升到 35；
-      [更新现状按钮改造 2026-10-16] 涉改 stream.js / workspace.js / style.css，
-      并因 import 链联动 canvas.js（它 import workspace.js）⇒ 四件升 36；
-      `esm/main.js`（引用它们的 import 变了）随升 36.0；
-      `esm/assembler.js`（新增 status_update_task 映射）33→34。
-      [左栏新建项目 2026-10-16] 涉改 workspace.js（左栏按钮接线）、esm/nav_render.js（删空态死链）
-      ⇒ nav_render.js 30→31、workspace.js 37→39（并因 import 链联动 canvas.js 36→38、
-      `esm/main.js` 37.0→38.0）。nav.css 内容变 ⇒ 其 ?v= 升 12（本断言不含 nav.css，
-      由唯一性用例兜底）；home.css 只删规则 ⇒ 其 ?v= 升 1.1。
-      [惰性新建 2026-10-17] 涉改 workspace.js / canvas.js / rule_panel.js / nav_system.js /
-      home.js ⇒ workspace 44→45、canvas 42→43、rule_panel 30→31、nav_system 32→33、home 1.1→1.2；
-      import 链联动 `esm/main.js` 42.0→43.0、`esm/main_chat.js` 1.1→1.2；
-      nav.css 加 .draft-badge ⇒ 12→13（唯一性用例兜底）。"""
+    ★ 历史（前序）：
+      [对话流画板架构 T7 2026-10-16] 统一升 35；
+      [更新现状按钮改造 2026-10-16] stream/workspace/style/canvas 升 36、main 36.0、assembler 34；
+      [左栏新建项目 2026-10-16] nav_render 31、workspace 39、canvas 38、main 38.0；
+      [惰性新建 2026-10-17] workspace 45、canvas 43、rule_panel 31、nav_system 33、home 1.2、
+        main 43.0、main_chat 1.2、nav.css 13。
+    ★ 本轮（v3）：
+      stream.js 36→37（渲染层换扁平节点表）、workspace.js 45→46（输入系统整件改 flow/）、
+      assembler.js 34→35（扁平 order/nodes）、style.css 37→38（flow 样式段）、
+      main_chat.js 1.2→1.3（它 import 了 stream/workspace）；
+      canvas.js / main.js 本轮**未涉改**（canvas→workspace 的边已在阶段2 拆除）⇒ 不升号。
+      flow/* 新建 ⇒ 1。
+    """
     vm = _version_map()
-    expect = {"stream.js": "36", "workspace.js": "45", "canvas.js": "43",
-              "assembler.js": "34", "style.css": "37", "main.js": "43.0",
-              "main_chat.js": "1.2"}
+    expect = {
+        "stream.js": "37", "workspace.js": "46", "canvas.js": "43",
+        "assembler.js": "35", "style.css": "38", "main.js": "43.0",
+        "main_chat.js": "1.3",
+        "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
+        "input-bar.js": "1", "queue-dock.js": "1", "queue-store.js": "1",
+        "chat-view.js": "1", "message-item.js": "1",
+    }
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"

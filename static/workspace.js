@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=36";
+import { EventFlow } from "./stream.js?v=37";
 import { renderMarkdown } from "./esm/md.js?v=30";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=35";
@@ -15,6 +15,13 @@ import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
 import { createNavSystem } from "./esm/nav_system.js?v=33";
 import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=31";
+/* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
+   machine＝输入状态机、submission-policy＝忙时 Enter 策略、
+   input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
+import { ComposerSubmissionPolicy } from "./esm/flow/submission-policy.js?v=1";
+import { createInputBar } from "./esm/flow/input-bar.js?v=1";
+import { createQueueStore } from "./esm/flow/queue-store.js?v=1";
+import { createQueueDock } from "./esm/flow/queue-dock.js?v=1";
 
 /* [惰性新建 2026-10-17] WORK_ID 由 const 改 let：草稿项目/草稿卡落库成功后就地换真 id
  * （不整页跳转，首条消息"只感知正常发送"），本模块所有闭包引用同一绑定，随取随新。
@@ -32,19 +39,42 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   const inspector = document.getElementById("inspector");
   const navTree = document.getElementById("navTree");
   const chatArea = document.getElementById("chatArea");
-  const inputBox = document.getElementById("inputBox");
-  // [顶栏整合 2026-10-13] #sendBtn（文字「发送」）与 #stopBtn（顶栏「■ 停止」）合并为
-  // #runBtn 一个两态图标按钮（用户 2026-10-13 17:17 ③）。永远不禁用——运行中它要能点（＝停止）。
-  const runBtn = document.getElementById("runBtn");
-  let isRunning = false;   // 一轮在跑（防 Enter 二次发起；停止走运行按钮）
 
-  // 运行按钮两态。running=true ⇒ 停止图标（点击＝停本轮）；false ⇒ 发送图标（点击＝发送）。
+  /* ═══ [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件交给 flow/ ═══
+   * 退役（任务书 §三）：
+   *   · `isRunning` 裸变量        → sessionState.running（输入条/运行条/主键共读一处）
+   *   · `inputBox.disabled` 锁     → 删除。disabled 只按 dsh 的五条判据
+   *                                  （removed/inert/!live/blocked/parentOffline），
+   *                                  **运行中不在其中**（"Running input stays free"）
+   *   · `setRunState` 改按钮类名   → 改由 input-bar 的 refreshPrimary 出两态
+   *   · 15 秒自愈轮询              → 删除（状态机 ＋ SSE 收口；见 send()）
+   *   · 「等待气泡 180 秒」旧兜底   → 删除（运行条 ＋ 停止键取代）
+   */
+  const sessionState = {
+    running: false,
+    removed: false,
+    // live＝「会话面在场」（dsh: input/keyboard/actions 三面齐备）。本机＝有当前卡。
+    // 用 getter 而不是快照字段：currentCard 在 open()/草稿建卡多处被替换，
+    // 每次赋值都去同步一个布尔量是「靠下游记得做对」，用 getter 从根上没有这个问题。
+    get live() { return !!currentCard; },
+    blocked: undefined,
+    parentOffline: false,
+    subagent: null,
+  };
+  let inputBar = null;        // flow/input-bar 实例
+  let queueStore = null;      // flow/queue-store（前端权威队列）
+  let queueDock = null;       // flow/queue-dock 实例
+  let submitPolicy = null;    // flow/submission-policy 实例
+
+  // 运行态唯一入口：一处改，四处生效（会话事实 / 输入条 / 排队条 / 事件流运行条）
   function setRunState(running) {
-    if (!runBtn) return;
-    runBtn.dataset.state = running ? "running" : "idle";
-    runBtn.className = "run " + (running ? "running" : "idle");
-    runBtn.setAttribute("aria-label", running ? "停止" : "发送");
-    runBtn.setAttribute("title", running ? "停止本轮生成" : "发送");
+    sessionState.running = !!running;
+    if (inputBar) inputBar.refresh();
+    if (queueDock) queueDock.refresh();
+    if (currentCard) {
+      const cid = currentCard.meta.card_id;
+      try { EventFlow.setRunning(WORK_ID, cid, !!running); } catch (e) { /* 零阻断 */ }
+    }
   }
 
   let currentCard = null;     // 完整 card 数据 {meta, body}
@@ -142,6 +172,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       const card = await API.getCard(WORK_ID, cardId);
       if (stale()) return;
       currentCard = card;
+      if (inputBar) inputBar.refresh();   // 会话面到场 ⇒ 输入卡解除 inert
       await renderInspector();
       if (stale()) return;
       // [会话渲染单源化 2026-10-15 · C1] 刷新/换卡恢复走**唯一一条路**：
@@ -234,12 +265,12 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     };
     const boardKey = "new-" + (++_draftBoardSeq);
     try { EventFlow.activate(WORK_ID, boardKey); } catch (e) { /* 零阻断 */ }
-    const b = EventFlow.board(WORK_ID, boardKey);
-    if (b) b.innerHTML = "";
+    // [对话流照抄 dsh v3] board() 现在返回视图的**节点列**：不再清 innerHTML
+    //（那会把视图骨架一起抹掉）。新 boardKey ⇒ 新会话 ⇒ 视图天然是空的。
     renderInspector().catch(() => {});
     const crumb = document.getElementById("chatCrumb");
     if (crumb) crumb.innerHTML = `<span class="cseg cur">${escapeHtml(DRAFT_CARD.title)}</span>`;
-    if (inputBox) { inputBox.value = ""; inputBox.style.height = "auto"; inputBox.focus(); }
+    if (inputBar) { inputBar.setDraft(""); inputBar.focus(); }
     scrollChatBottom();
     // ★ 画面已出，立刻后台落库（不 await）：用户零等待；成功则静默把 URL/ids 换成真身。
     ensurePersisted().catch((e) => {
@@ -612,23 +643,15 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
        一并退役。三字段为空时 assistantMeta 不渲染（不报错、不留空壳）。
        要恢复只能动后端落盘形状（C3 本任务禁改），见施工回报偏差③。 */
 
-  /** 注入 stream.js：user / assistant / cardmsg 三类消息节点的元素构造。 */
+  /** 注入 stream.js：用户正文 HTML / assistant / cardmsg 三类内容构造。
+      [对话流照抄 dsh v3] 用户气泡的**外壳**已归 flow/message-item（dsh 几何原值），
+      本文件只提供正文 HTML（md/换行/代码块）。 */
   function registerMessageRenderers() {
     EventFlow.setMessageRenderers({
-      user: renderUserNode,
+      userHtml: (text) => formatMsgContent(String(text == null ? "" : text)),
       assistant: renderAssistantNode,
       cardmsg: renderCardMsgNode,
     });
-  }
-
-  function renderUserNode(node) {
-    const d = node.data || {};
-    const el = document.createElement("div");
-    // [T1] pending＝乐观上屏的本地节点（真实 user_message 到达即原地升级、类名消失）
-    el.className = "msg user" + (node.pending ? " pending" : "");
-    el.dataset.seq = node.seq;
-    el.innerHTML = formatMsgContent(d.content == null ? "" : String(d.content));
-    return el;
   }
 
   function renderAssistantNode(node) {
@@ -731,87 +754,16 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
 
   // ==================== 发送消息 ====================
 
-  // [phase8.2] 等待反馈气泡：轮询后端真实进度（三席分析→统合→工具→落卡），收到响应/失败后 stop() 清除
-  // [实时反馈 2026-10-02] 后端暴露 /progress 阶段态；展示层专用，不影响模型输入
-  const STAGE_TEXT = {
-    started: "已提交，进入链路",
-    viewpoints: "三席分析中",
-    synthesize: "统合推理中",
-    tools: "工具循环",
-    cards: "解析建卡",
-    done: "完成",
-    error: "调用失败",
-    idle: "等待开始",
-  };
-  // [迭代四 F3②] 等待气泡心跳：超 180 秒提示＋亮出停止按钮（提示不是中断——
-  // /messages 保持不设超时，B-10 原样）。U-7 停止真生效（档案 end=human_stop）。
-  function attachHeartbeat(bubble, cardId) {
-    const timer = setTimeout(() => {
-      if (!bubble.isConnected) return;
-      const tip = document.createElement("div");
-      tip.className = "sys-tools heartbeat-tip";
-      tip.textContent = "⏱ 已等待超过 3 分钟——仍在生成。可继续等待或停止。";
-      const stopBtn = document.createElement("button");
-      stopBtn.className = "btn stop-inline";
-      stopBtn.textContent = "停止";
-      stopBtn.onclick = async () => {
-        stopBtn.disabled = true;
-        try {
-          await postStop(WORK_ID, cardId);
-          notify("已发送停止指令", "warn");
-        } catch (e) { notify("停止指令失败", "error"); }
-      };
-      tip.appendChild(stopBtn);
-      ensureMsgs(cardId).appendChild(tip);
-      scrollChatBottom();
-    }, 180000);
-    const obs = new MutationObserver(() => {
-      if (!bubble.isConnected) { clearTimeout(timer); obs.disconnect(); }
-    });
-    obs.observe(chatArea, { childList: true, subtree: false });
-  }
+  /* [对话流照抄 dsh v3 · §三 退役清单] 原「等待气泡」整件已删除：
+     createWaitingBubble（含 180 秒心跳提示、内联停止键、2 秒一次的阶段轮询）
+     与 attachHeartbeat 一并退场——它们被 dsh 的「运行条 + 停止键」取代
+     （ChatView.tsx:107-140 的 TurnStatus ＋ InputBar 的 primaryStops）。
+     ★ 同时删除的还有 STAGE_TEXT 的使用点：它只服务于那个气泡。 */
 
-  function createWaitingBubble(prefix, cardIdAtSend) {
-    // [对话流渲染 T1] 两态互斥：等待气泡（.msg.thinking）只在事件流连不上时兜底，
-    // 与生成中气泡（.msg.assistant.live）不并存——建等待气泡前先撤生成中气泡。
-    chatArea.querySelectorAll(".msg.assistant.live").forEach(b => b.remove());
-    const el = document.createElement("div");
-    el.className = "msg thinking";
-    let seconds = 0;
-    let stageLine = "";
-    const render = () => {
-      el.innerHTML = `<span class="spinner"></span>${escapeHtml(prefix)} ${escapeHtml(stageLine || "…")} · 已等待 ${seconds} 秒`;
-    };
-    render();
-    ensureMsgs(cardIdAtSend).appendChild(el);
-    attachHeartbeat(el, cardIdAtSend);   // [F3②] 心跳＋停止按钮
-    scrollChatBottom();
-    const timer = setInterval(() => { seconds += 1; render(); }, 1000);
-    const poll = setInterval(async () => {
-      const cid = cardIdAtSend || (currentCard ? currentCard.meta.card_id : "");
-      if (!cid) return;
-      try {
-        const st = await API.getProgress(WORK_ID, cid);
-        if (!st || st.stage === "idle") return;
-        const label = STAGE_TEXT[st.stage] || st.stage;
-        stageLine = st.detail ? `${label}｜${st.detail}` : label;
-        render();
-      } catch (e) { /* 进度轮询失败静默：不影响主等待 */ }
-    }, 2000);
-    return {
-      stop() {
-        clearInterval(timer);
-        clearInterval(poll);
-        el.remove();
-      },
-    };
-  }
-
-  // [刷新恢复实时状态 2026-10-03] 页面加载时重新挂接在途调用的等待气泡。
-  // 问题：等待气泡的 timer/poll/el 全在 createWaitingBubble 的闭包里，刷新即随 JS 上下文销毁；
-  //       后端 progress 状态（模块级内存、key=(work_id,card_id)）与端点都还在，但加载路径从不查它，
-  //       所以刷新后「正在跑」的实时状态消失（历史消息由 restoreFromHash→open→事件流恢复）。
-  // 修法：加载时查一次后端 progress——活跃态则复用 createWaitingBubble 挂回气泡与轮询；
+  // [刷新恢复实时状态 2026-10-03] 页面加载时恢复「正在跑」的实时状态。
+  // 问题：刷新即随 JS 上下文销毁实时视图；后端 progress 状态（模块级内存，
+  //       key=(work_id,card_id)）与端点都还在，但加载路径从不查它。
+  // 修法：加载时查一次后端 progress——活跃态 ⇒ 置运行态（主键转停止键）＋接上事件流；
   //       done/error/idle 及任何异常一律静默降级为现有行为，绝不抛错打断页面。
   // 硬约束：纯前端改动，静态文件热生效，零重启。
   // 活跃态白名单显式列出——done/error 是终止态，若当活跃处理会让已完成的卡永远转圈。
@@ -833,20 +785,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // [刷新后能暂停 2026-10-14 · 用户令 ②] 关键补丁：刷新型恢复了流、却没恢复**运行态**，
       // 于是卡还在跑、按钮却是「发送」，点下去发新消息而不是停——用户没法暂停。
       // 查到后端 active=true ⇒ 前端运行态同步置位：按钮转停止态、输入框锁住。
-      isRunning = true;
       setRunState(true);
-      if (inputBox) inputBox.disabled = true;
-      // 同一张卡上已有等待气泡时不重复挂（避免 hashchange 等路径重复触发）
-      if (chatArea.querySelector(".msg.thinking, .msg.assistant.live")) return false;
-      // [信息流 Task5] 刷新重放：过程卡 from=0 重建（V5；SSE 连不上回退等待气泡）
-      // [F2③] 原 `if (window.EventFlow)`——module 化后恒在，守卫保留结构
-      if (EventFlow) {
-        EventFlow.start(WORK_ID, cardId, () => {
-          createWaitingBubble("思考中…（刷新前已启动）", cardId);
-        });
-      } else {
-        createWaitingBubble("思考中…（刷新前已启动）", cardId);
-      }
+      // [对话流照抄 dsh v3] 刷新恢复只做两件事：置运行态（主键变停止键）＋ 接上事件流。
+      // 等待气泡已退役——运行条由 chat-view 出（"Deep diving..."，15s 后显时钟）。
+      if (EventFlow) EventFlow.start(WORK_ID, cardId, null);
       return true;
     } catch (e) {
       return false;   // 查询失败静默：不影响页面其余功能
@@ -859,8 +801,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   async function send(op) {
     const statusOp = (op === "update_status");
     if (!currentCard) return;
-    if (isRunning) return;   // [顶栏整合] 一轮在跑时不重入（运行中点按钮＝停止，见 doStop）
-    const content = statusOp ? "更新现状" : inputBox.value.trim();
+    if (sessionState.running) return;   // 一轮在跑时不重入（运行中主键＝停止，见 doStop）
+    const content = statusOp ? "更新现状" : String(inputBar ? inputBar.getDraft() : "").trim();
     if (!content) return;
 
     // [惰性新建 2026-10-17 · D3] 发送是数据动作：草稿态先落库（项目/卡），再走正常发送。
@@ -874,91 +816,26 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       }
     }
 
-    if (!statusOp) {   // 专用回合不占输入框：不清空、不记重发内容（见下方 resend 边界）
-      lastSentContent = content;
-      inputBox.value = "";
-      inputBox.style.height = "auto";
-    }
-
+    if (!statusOp) lastSentContent = content;
     const cardId = currentCard.meta.card_id;
-    let settled = false;
 
-    // [信息流 Task5] SSE 过程卡先行（from=0）；连不上回退等待气泡（V6 降级保底）
-    let waiting = null;
-    // [F2③] 原 `if (window.EventFlow)`——module 化后恒在，守卫保留结构
-    if (EventFlow) {
-      // [T1 乐观上屏 2026-10-16] 点发送瞬间先落用户气泡——**不等 POST、不等
-      // timeline 回流**。此前用户气泡走 timeline 回流（POST 要跑到本轮结束才
-      // 返回，过程事件却毫秒级到），于是 run_start/context/judgment_protocol
-      // 抢在用户提问之前出现（P1）。现在本地轮先立，真实记录到达时原地升级。
-      EventFlow.optimisticUser(WORK_ID, cardId, content);
-      EventFlow.start(WORK_ID, cardId, () => {
-        waiting = createWaitingBubble("思考中…", cardId);
-      });
-      // [T1 对账] timeline 回流保留：真实 user_message 到达时把 pending 节点
-      // 按内容原地升级（补 seq），不产生双气泡。
-      EventFlow.pullUserBubble(WORK_ID, cardId).catch(() => {});
-    } else {
-      const ub = document.createElement("div");
-      ub.className = "msg user";
-      ub.innerHTML = formatMsgContent(content);
-      ensureMsgs(cardId).appendChild(ub);
-      waiting = createWaitingBubble("思考中…", cardId);
-    }
+    /* [T1 乐观上屏] 点发送瞬间先落用户气泡——不等 POST、不等 timeline 回流。
+       否则 run_start/context/judgment_protocol 会抢在用户提问之前出现（P1）。 */
+    try { EventFlow.optimisticUser(WORK_ID, cardId, content); } catch (e) { /* 零阻断 */ }
+    EventFlow.start(WORK_ID, cardId, null);
+    // timeline 回流对账：真实 user_message 到达时按内容原地升级（补 seq），不出双气泡
+    try { EventFlow.pullUserBubble(WORK_ID, cardId).catch(() => {}); } catch (e) { /* 零阻断 */ }
 
-    // [hotfix] 后端完成但连接断了 → 从 timeline 恢复，杜绝无限转圈。
-    // [T2 增量渲染 2026-10-16] 判据收紧：**先看后端是否仍在跑**——仍在跑就
-    // 什么都不做。此前这里每 15s **无条件** resync（清列重建＋settled 冻结实时帧），
-    // 正是「前面几条信息突然全部出现/历史搬位」（P2）与「从头到尾算一遍」（P3）
-    // 的直接来源。现在只有「后端已不在跑（或事件流已断）」才回流结算。
-    async function tryRecover() {
-      if (settled) return false;
-      try {
-        const p = await API.getProgress(WORK_ID, cardId);
-        const alive = p && ((typeof p.active === "boolean")
-          ? p.active
-          : ACTIVE_STAGES.includes(p.stage));
-        if (alive && !EventFlow.streamDead(WORK_ID, cardId)) return false;   // 在跑：不重建
-      } catch (e0) { return false; }   // 进度查不到＝不擅自重建（交给 POST 返回或断流兜底）
-      try { console.info("[recover] tick"); } catch (e1) { /* 零阻断 */ }
-      try {
-        const r = await EventFlow.resync(WORK_ID, cardId);
-        if (r && r.ok && r.done) {
-          settled = true;
-          if (waiting) waiting.stop();
-          setTimeout(() => EventFlow.stop(WORK_ID, cardId), 2500);
-          const note = document.createElement("div");
-          note.className = "sys-tools";
-          note.textContent = "⚠ 响应连接中断，已从事件流恢复回复（若有新卡片，返回画布后可见）";
-          ensureMsgs(cardId).appendChild(note);
-          scrollChatBottom();
-          if (window.__maybeOpenRuleEditModal) await window.__maybeOpenRuleEditModal(cardId);
-          if (statusOp && window.__maybeOpenStatusModal) window.__maybeOpenStatusModal(cardId);
-          return true;
-        }
-      } catch (e2) { /* 静默，下轮再试 */ }
-      return false;
-    }
-    let pollFails = 0;   // [F3②] 连续失败提示（继续轮询不放弃）
-    const pollTimer = setInterval(async () => {
-      try { await tryRecover(); pollFails = 0; }
-      catch (e) {
-        pollFails++;
-        if (pollFails === 2) notify("进度查询连续失败，仍在重试…", "warn");
-      }
-    }, 15000);
+    /* [发送被接受] 清草稿并清撤销栈（machine.ts:544-553：已发内容不得被撤销复活）。
+       专用回合（更新现状）不占输入框。 */
+    if (!statusOp && inputBar) inputBar.commitSent();
 
-    isRunning = true;
-    setRunState(true);   // [顶栏整合] 运行按钮转停止态
+    setRunState(true);   // 运行条起、主键转停止键、输入条照常可打字
 
     try {
       const resp = await API.postMessage(WORK_ID, cardId, content, op);
-      if (settled) return;   // 已由轮询恢复，丢弃迟到响应
-      settled = true;
-      if (waiting) waiting.stop();
       setTimeout(() => EventFlow.stop(WORK_ID, cardId), 2500);   // 让 done 帧送达后收流
-      // [C1 单源] 回复正文不再由 POST 响应直接上屏：此刻事件已全部落盘，
-      // 走与刷新**同一条**渲染路（拉 timeline → 装配器 → 快照 → 渲染）。
+      // [C1 单源] 回复正文走 timeline 回流（与刷新同一条渲染路）
       await EventFlow.resync(WORK_ID, cardId);
       // [更新现状按钮改造] 先等规则审批窗（同 DOM，防叠开），再按 op 开现状对比窗。
       if (window.__maybeOpenRuleEditModal) await window.__maybeOpenRuleEditModal(cardId);
@@ -976,7 +853,6 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         card.querySelectorAll(".nc-item").forEach(it => {
           it.onclick = () => open(it.dataset.cid);
         });
-        // [T17] 对话中生的卡即时进导航（[阶段4 A4.1] 画布侧由画布页加载即拉新）
         renderNav();
       }
 
@@ -1003,16 +879,16 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         vp.innerHTML = `观点：${items}`;
         ensureMsgs(cardId).appendChild(vp);
       }
-
-      scrollChatBottom();
     } catch (e) {
-      if (settled) return;
-      // [hotfix] 报错前先探一次会话：后端可能已完成，只是响应没送回来
-      if (await tryRecover()) return;
-      if (waiting) waiting.stop();
-      // [T1] 发送失败且未能恢复 ⇒ 撤下未被认领的本地气泡（不留幽灵消息）
+      // [hotfix] 报错前先探一次会话：后端可能已完成，只是响应没送回来。
+      // ★ 这不是「15 秒自愈轮询」（那条已按任务书 §三 删除）——只在**异常路径**探一次。
+      if (await recoverIfDone(cardId)) return;
+      // [发送失败] 草稿保住（不丢字）＋ 红条；未被认领的本地气泡撤下（不留幽灵消息）
+      if (!statusOp && inputBar) {
+        inputBar.setDraft(content);
+        inputBar.failSend("请求失败：" + String((e && e.message) || e));
+      }
       try { EventFlow.dropOptimisticUser(WORK_ID, cardId); } catch (e0) { /* 零阻断 */ }
-      // 失败：红色系统条 + 重发按钮
       const err = document.createElement("div");
       err.className = "sys-error";
       err.innerHTML = `请求失败：${escapeHtml(e.message || "")} <button class="retry-btn">重发</button>`;
@@ -1021,14 +897,49 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         err.remove();
         resend(content);
       };
-      scrollChatBottom();
     } finally {
-      clearInterval(pollTimer);
-      isRunning = false;
-      setRunState(false);   // [顶栏整合] 运行按钮回发送态
-      if (inputBox) inputBox.disabled = false;   // [②] 运行态解除时同步解锁输入框
+      setRunState(false);
+      drainQueue();   // 轮结束：排队消息依序发出
     }
   }
+
+  /** 异常路径的兜底探测：后端可能已完成、只是响应没送回来。
+      在跑（且流没断）⇒ 什么都不做；否则按 timeline 结算一次。
+      返回 true＝已结算（调用方不再报错）。 */
+  async function recoverIfDone(cardId) {
+    try {
+      const p = await API.getProgress(WORK_ID, cardId);
+      const alive = p && ((typeof p.active === "boolean")
+        ? p.active
+        : ACTIVE_STAGES.includes(p.stage));
+      if (alive && !EventFlow.streamDead(WORK_ID, cardId)) return false;
+    } catch (e0) { return false; }
+    try {
+      const r = await EventFlow.resync(WORK_ID, cardId);
+      if (r && r.ok && r.done) {
+        setTimeout(() => EventFlow.stop(WORK_ID, cardId), 2500);
+        const note = document.createElement("div");
+        note.className = "sys-tools";
+        note.textContent = "⚠ 响应连接中断，已从事件流恢复回复（若有新卡片，返回画布后可见）";
+        ensureMsgs(cardId).appendChild(note);
+        if (window.__maybeOpenRuleEditModal) await window.__maybeOpenRuleEditModal(cardId);
+        return true;
+      }
+    } catch (e2) { /* 静默：交给上层的错误条 */ }
+    return false;
+  }
+
+  /* 轮结束自动出队：把队首交回发送链路（QueueDock 的「轮结束自动依序发出」）。
+     一次只发一条——它自己收口时再调一次，天然串行。 */
+  function drainQueue() {
+    if (!queueStore || sessionState.running) return;
+    if (!currentCard) return;
+    const next = queueStore.dequeue();
+    if (!next) return;
+    if (inputBar) inputBar.setDraft(String(next.text || ""));
+    send();
+  }
+
 
   // 重发：不重复追加用户消息，直接重调接口
   // [T10-3-1/3-2] 重发前取当前卡会话：最后一条是用户消息且其后无回复条 → 复用该条
@@ -1037,7 +948,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // pair_id 经本文件内独立 fetch 携带——api.js 的 postMessage 签名固定 {content}，
   // 而 api.js 不在本任务书五文件清单内（红线 1）。
   async function resend(content) {
-    if (isRunning) return;   // [顶栏整合] 同 send 的重入守卫
+    if (sessionState.running) return;   // 同 send 的重入守卫
     const cardId = currentCard ? currentCard.meta.card_id : "";
     let pairId = null;
     try {
@@ -1058,17 +969,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         console.info("[T10] 重发未持有 pair_id，按新消息落盘（后端生成新标识）");
       }
     } catch (e) { /* 取事件流失败按未持有 pair_id 处理，不阻断重发 */ }
-    // [信息流 Task5] 重发同样走过程卡（SSE 先行、失败回退）
-    let waiting = null;
-    // [F2③] 原 `if (window.EventFlow)`——module 化后恒在，守卫保留结构
-    if (EventFlow) {
-      EventFlow.start(WORK_ID, cardId, () => {
-        waiting = createWaitingBubble("重发中…", cardId);
-      });
-    } else {
-      waiting = createWaitingBubble("重发中…", cardId);
-    }
-    isRunning = true;
+    // [对话流照抄 dsh v3] 重发同样走事件流；等待气泡已退役（运行条取代）
+    if (EventFlow) EventFlow.start(WORK_ID, cardId, null);
     setRunState(true);
     try {
       const httpResp = await fetch(`/api/works/${WORK_ID}/cards/${cardId}/messages`, {
@@ -1081,25 +983,22 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         throw new Error(errText.error || ("HTTP " + httpResp.status));
       }
       await httpResp.json();
-      if (waiting) waiting.stop();
       setTimeout(() => EventFlow.stop(WORK_ID, cardId), 2500);
       // [C1 单源] 同 send()：回复正文走 timeline 回流，不从响应体直接上屏。
       await EventFlow.resync(WORK_ID, cardId);
       if (window.__maybeOpenRuleEditModal) window.__maybeOpenRuleEditModal(cardId);
-      scrollChatBottom();
     } catch (e) {
-      if (waiting) waiting.stop();
       const err = document.createElement("div");
       err.className = "sys-error";
       err.innerHTML = `重发失败：${escapeHtml(e.message || "")} <button class="retry-btn">再试</button>`;
       ensureMsgs(cardId).appendChild(err);
       err.querySelector(".retry-btn").onclick = () => { err.remove(); resend(content); };
-      scrollChatBottom();
     } finally {
-      isRunning = false;
       setRunState(false);
+      drainQueue();
     }
   }
+
 
   // [顶栏整合 2026-10-13] 运行按钮两态（用户 17:17 ③：「把发送按钮，处理成【发送前】、
   // 【运行中】（运行中就是停止按钮）」）。同一元素同一位置，点一次的含义由当前态决定。
@@ -1114,21 +1013,60 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     } catch (e) { notify("停止指令失败", "error"); }
   }
 
-  if (runBtn) runBtn.onclick = () => { if (isRunning) doStop(); else send(); };
-  inputBox.addEventListener("keydown", (e) => {
-    // [C5 主界面优化] IME 守卫：中文输入法组词/选字回车（isComposing 或 keyCode 229）不发送
-    if (e.isComposing || e.keyCode === 229) return;
-    // [2026-10-13 用户令] 快捷键 Ctrl+Enter → Enter（Shift+Enter 保留换行）。
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
-  });
-  // 输入框自适应高度
-  inputBox.addEventListener("input", () => {
-    inputBox.style.height = "auto";
-    inputBox.style.height = Math.min(inputBox.scrollHeight, 200) + "px";
-  });
+  /* ═══ [对话流照抄 dsh 完全版 v3] 输入系统装配 ═══
+   * 顺序与 dsh 一致：QueueDock 在输入卡**上方**（QueueDock.module.css:19-25 的
+   * 「tuck 3px under the input card」），输入卡在座位底部。
+   * 提交去向（原文 default-sink 的 shell 侧）：
+   *   · 不忙 ⇒ 直接发（send()）
+   *   · 忙 ⇒ 入队（QueueDock 显示；轮结束由 drainQueue 依序发出）
+   * ★ 本机后端没有「轮内投递窗口」⇒ steer（插话）无法真正注入正在跑的轮：
+   *   per-row steer 实现为「提到队首，轮结束优先发出」，整队 steer 在运行中
+   *   只提示不改状态。这是**适配层**的已知边界，不是对 dsh 语义的改写。 */
+  function initComposer() {
+    const seat = document.getElementById("composerSeat");
+    if (!seat) return;
+    queueStore = createQueueStore();
+    submitPolicy = new ComposerSubmissionPolicy();
+    queueDock = createQueueDock({
+      mount: seat,
+      store: queueStore,
+      isMutable: () => !sessionState.subagent,
+      isRunning: () => sessionState.running,
+      notify: (level, text) => notify(text, level === "error" ? "error" : "info"),
+    });
+    const barMount = document.createElement("div");
+    barMount.className = "composer-bar-mount";
+    seat.appendChild(barMount);
+    inputBar = createInputBar({
+      mount: barMount,
+      policy: submitPolicy,
+      session: () => sessionState,
+      hasQueued: () => !!queueStore && queueStore.queued().length > 0,
+      notify,
+      actions: {
+        submit(draft, mode) {
+          const text = String(draft == null ? "" : draft);
+          if (sessionState.running) {
+            queueStore.enqueue(text);
+            if (inputBar) inputBar.commitSent();
+            if (queueDock) queueDock.refresh();
+            return;
+          }
+          send();
+        },
+        stop() { doStop(); },
+        steerQueue() {
+          if (!sessionState.running) { drainQueue(); return; }
+          notify("本轮进行中，排队消息将在轮结束后依序发出", "info");
+        },
+        notify,
+      },
+    });
+    inputBar.refresh();
+    if (queueDock) queueDock.refresh();
+  }
+
+  initComposer();
 
   // ==================== [阶段2 A2.2 2026-10-17] 加载时按 URL 决定打开哪张卡 ====================
   // URL 即页面身份：/work/{wid} ＝ 画布页（停在画布态）；/work/{wid}/card/{cid} ＝ 该卡对话页。

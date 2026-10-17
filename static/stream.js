@@ -42,10 +42,12 @@ import { API } from "./esm/api.js?v=35";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=30";
-import { createAssembler, groupKeyOf } from "./esm/assembler.js?v=34";
+import { createAssembler } from "./esm/assembler.js?v=35";
+import { createChatView } from "./esm/flow/chat-view.js?v=1";
+import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
-   键 `${wid}/${cid}`；字段即原 `current` 单例的原样搬运（asm/groups/fold/liveSlot/
+   键 `${wid}/${cid}`；字段即原 `current` 单例的原样搬运（asm/view/liveSlot/
    settled/lastSeq…）＋ 画板容器 `board` ＋ 滚动位置 `scrollTop`。
    只有 activeKey 指向的会话，其画板（.msgs）挂在 #chatArea；其余会话的画板是
    **游离节点**（不在文档流）——切走的卡后台照写自己那份，结构上不可能写进
@@ -56,12 +58,12 @@ let activeKey = null;            // 当前在看的会话键（null＝还没激�
 function skey(wid, cid) { return wid + "/" + cid; }
 
 /* [画板四机制 T2/T3 2026-10-16] 画板可调参数（`window.__FLOW_BOARD__` 可覆盖；生产不设＝默认）。
-   pageSize      —— T2 分页：每页轮数（单位＝**轮**，不是条）。
+   pageNodes     —— 分页：每页**节点数**（[对话流照抄 dsh v3] 扁平节点表后单位由「轮」改「节点」）。
    residentMax   —— T3 常驻硬上限：同时留内存的画板数（LRU 超出即丢最旧）。
    idleReleaseMs —— T3 静默超时：多久没用就释放。
    sweepMs       —— T3 释放扫描周期。 */
 const BOARD_CFG = Object.assign(
-  { pageSize: 20, residentMax: 8, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000 },
+  { pageNodes: 120, residentMax: 8, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000 },
   (typeof window !== "undefined" && window.__FLOW_BOARD__) || {}
 );
 
@@ -96,16 +98,12 @@ const BOARD_CFG = Object.assign(
     return document.getElementById("chatArea");
   }
 
-  /* [画板四机制 T1 2026-10-16] 统一内容列＝**本会话自己的**画板（.msgs）。
-     原实现查/建「#chatArea 下唯一一份 .msgs」——那正是串卡的根：所有卡共用一块
-     画板。现在容器由会话持有（st.board），谁写谁的那份。 */
+  /* [画板四机制 T1 2026-10-16] 统一内容列＝**本会话自己的**画板容器。
+     [对话流照抄 dsh v3] 容器里装的是 flow/chat-view 的视图骨架（滚动口/跟随/
+     回底/运行条），本文件只负责「节点键 → 元素」。 */
   function boardOf(st) {
     if (!st) return null;
-    if (!st.board) {
-      const b = document.createElement("div");
-      b.className = "msgs";
-      st.board = b;   // 未激活时是游离节点；由 activate() 决定是否挂进 #chatArea
-    }
+    if (!st.board) viewOf(st);
     return st.board;
   }
 
@@ -113,12 +111,9 @@ const BOARD_CFG = Object.assign(
     return boardOf(st);
   }
 
-  function scrollBottom(st) {
-    // 游离会话（非当前卡）的后台渲染**不抢视图**：只滚当前在看的画板。
-    if (st && st.board && !st.board.isConnected) return;
-    const ca = chatEl();
-    if (ca) ca.scrollTop = ca.scrollHeight;
-  }
+  /* [对话流照抄 dsh v3 · §三 退役清单] 原 scrollBottom(st)（每帧强制滚到底）
+     已删除：滚动跟随改由 flow/chat-view 的 24px 阈值 ＋ 读者滚动台账负责
+     （ChatView.tsx:264-299），程序不再无脑抢滚动位置。 */
 
   /* ==================================================================
      一、纯元素构造器（无状态、不定位、不 append）
@@ -194,7 +189,6 @@ const BOARD_CFG = Object.assign(
     r.querySelector(".think-body").textContent = text || "";
     r.querySelector(".think-head").onclick = () => {
       r.classList.toggle("collapsed");
-      scrollBottom();
     };
     return r;
   }
@@ -572,12 +566,23 @@ const BOARD_CFG = Object.assign(
   };
   let _msgRenderers = FALLBACK_MSG_RENDERERS;
 
-  /** workspace 注入富消息渲染器（md 渲染 / 卡间信头剥离 / 元信息行）。 */
+  /** workspace 注入富消息渲染器（md 渲染 / 卡间信头剥离 / 元信息行）。
+      [对话流照抄 dsh v3] user 口改成 `userHtml(text)`：气泡**外壳**归
+      flow/message-item（dsh MessageItem 的几何原值），正文 HTML 仍由本项目格式化。 */
   function setMessageRenderers(m) {
-    if (m && m.user && m.assistant && m.cardmsg) _msgRenderers = m;
+    if (m && m.userHtml && m.assistant && m.cardmsg) _msgRenderers = m;
   }
 
-  function renderUser(node) { return _msgRenderers.user(node); }
+  /** 用户气泡＝flow/message-item（dsh MessageItem 移植件）。 */
+  const _messageItem = createMessageItem({
+    renderUserHtml: (text) => (_msgRenderers.userHtml ? _msgRenderers.userHtml(text) : esc(text)),
+  });
+
+  function renderUser(node) {
+    const row = _messageItem.renderUser(node);
+    if (node.pending) row.classList.add("is-pending");   // 乐观上屏未认领
+    return row;
+  }
   function renderAssistant(node) {
     const el = _msgRenderers.assistant(node);
     // 思考块插在正文之前（位置＝数据的函数：思考属本轮 assistant）
@@ -614,265 +619,89 @@ const BOARD_CFG = Object.assign(
   }
 
   /* ==================================================================
-     三、快照渲染：增量装配（dsh A1/A2）
-     —— 位置全部来自节点数据，没有任何一处读 DOM 现状做推算。
-        渲染层维护「组视图」：容器 ＋ 节点键 → 已渲染元素。
-        节点 rev 未变 ⇒ 复用原元素（零 DOM 操作）；变了 ⇒ 原地替换那一个节点；
-        新节点 ⇒ 追加。**既有元素永不因别处变化而被搬动**。
+     三、快照渲染：扁平节点表（dsh chat-snapshot-builder 形态）
+     —— 一切可见物＝一个节点座位，order 是唯一位置来源。
+        结构变了（order 引用变了）⇒ 全序落位；只有内容变了 ⇒ 只换那一行。
+        **没有任何一处读 DOM 现状做位置推算**；既有座位永不因别处变化被搬动。
+     [对话流照抄 dsh v3 · §三 退役] 轮分组三道（user→过程→reply）、组视图
+        ensureGroupView / renderGroup / pruneGroups / 组级折叠开关，全部删除。
      ================================================================== */
 
-  function groupView(el) {
-    return { el, views: new Map(), toggle: null };
+  /** 每会话的视图骨架（滚动口 / 24px 跟随 / 回底钮 / 运行条 / 分页）。 */
+  function viewOf(st) {
+    if (st.view) return st.view;
+    const holder = document.createElement("div");
+    holder.className = "msgs";
+    st.board = holder;
+    st.view = createChatView({
+      mount: holder,
+      renderRow: (key) => {
+        const node = st.asm.snapshot().nodes.get(key);
+        return node ? renderNode(node) : [];
+      },
+      onLoadOlder: () => { loadEarlier(st); },
+      runningStart: () => st.turnStart,
+      isRunning: () => !!st.busy,
+      hasMore: () => (st.winStart || 0) > 0,
+      isLoadingOlder: () => false,
+    });
+    st.view.setUserKeyTest((key) => {
+      const node = st.asm.snapshot().nodes.get(key);
+      return !!node && node.kind === "user";
+    });
+    return st.view;
   }
 
-  /** 取/建组视图：优先用内存视图；内存丢了就按 data-key **认领屏上容器**；
-      都没有才新建。这样即便渲染状态被重建（stop / 换卡 / 重开同卡），
-      也不会在列里长出重复的轮容器。 */
-  function ensureGroupView(st, box, key) {
-    let gv = st.groups.get(key);
-    if (gv && gv.el && gv.el.parentNode === box) return gv;
-    const el = box.querySelector(':scope > .msgs-round[data-key="' + key + '"]');
-    if (el) {
-      gv = groupView(el);
-      st.groups.set(key, gv);
-      return gv;
-    }
-    const neo = document.createElement("div");
-    neo.className = "msgs-round";
-    neo.dataset.key = key;
-    gv = groupView(neo);
-    st.groups.set(key, gv);
-    const slot = st.liveSlot;
-    if (slot && slot.parentNode === box) box.insertBefore(neo, slot);
-    else box.appendChild(neo);
-    return gv;
-  }
-
-  /** 三道分道（次序铁律：本轮过程行恒在本轮正式回复之前）。 */
-  function lanesOf(group) {
-    const user = [], process = [], reply = [];
-    for (const n of group.nodes) {
-      if (n.kind === "user") user.push(n);
-      else if (n.kind === "assistant" || n.kind === "cardmsg") reply.push(n);
-      else process.push(n);
-    }
-    return { user, process, reply };
-  }
-
-  /* [C6 过程折叠] 组内过程行的收起/展开开关。**默认展开**：沿用既有行为
-     （stream.js 旧 addToggle 注释引 T2 用户裁定「折叠仅是用户可选减负、
-     非默认隐藏」）。折叠态记在 st.fold（按组键），**不随重画丢失**。 */
-  function ensureToggle(gv, st) {
-    if (gv.toggle) return gv.toggle;
-    const t = document.createElement("div");
-    t.className = "step-toggle";
-    t.onclick = () => {
-      const k = t.__key;
-      st.fold.set(k, !st.fold.get(k));
-      paintToggle(t, st, k, t.__els || []);
-      scrollBottom(st);
-    };
-    gv.toggle = t;
-    return t;
-  }
-
-  function paintToggle(t, st, key, processEls) {
-    t.__key = key;
-    t.__els = processEls;
-    const open = !st.fold.get(key);
-    t.textContent = (open ? "▴ 收起过程（" : "▾ 展开过程（") + processEls.length + " 步）";
-    for (const el of processEls) el.style.display = open ? "" : "none";
-  }
-
-  /** 单组增量渲染：只重建 rev 变了的节点，其余元素原地复用。 */
-  function renderGroup(st, gv, group, snap) {
-    const { user, process, reply } = lanesOf(group);
-
-    // ① 逐节点取/建/更新（只碰内容变了的节点）
-    const collect = (nodes) => {
-      const out = [];
-      for (const node of nodes) {
-        const key = node.key;
-        let v = gv.views.get(key);
-        if (!v) {
-          const els = renderNode(node);
-          v = { els, rev: node.rev || 0 };
-          gv.views.set(key, v);
-        } else if (v.rev !== (node.rev || 0)) {
-          const els = renderNode(node);
-          const anchor = (v.els[0] && v.els[0].parentNode === gv.el) ? v.els[0] : null;
-          for (const el of els) gv.el.insertBefore(el, anchor);
-          for (const el of v.els) if (el.parentNode === gv.el) gv.el.removeChild(el);
-          v.els = els;
-          v.rev = node.rev || 0;
-        }
-        for (const el of v.els) out.push(el);
-      }
-      return out;
-    };
-    const userEls = collect(user);
-    const processEls = collect(process);
-    const replyEls = collect(reply);
-
-    // ② 折叠开关：组已收口且有过程行才有（未收口不给开关——与旧实现同口径）
-    let toggle = null;
-    if (processEls.length && group.finalized) {
-      toggle = ensureToggle(gv, st);
-      paintToggle(toggle, st, group.key, processEls);
-    } else if (gv.toggle) {
-      if (gv.toggle.parentNode) gv.toggle.parentNode.removeChild(gv.toggle);
-      gv.toggle = null;
-    }
-
-    // ③ 落位：按 desired 序校正（已就位者 insertBefore 为 no-op ⇒ 零搬动）
-    const place = (el, prev) => {
-      if (prev === null) {
-        if (gv.el.firstChild !== el) gv.el.insertBefore(el, gv.el.firstChild);
-      } else if (prev.nextSibling !== el) {
-        gv.el.insertBefore(el, prev.nextSibling);
-      }
-    };
-    let prev = null;
-    for (const el of userEls) { place(el, prev); prev = el; }
-    for (const el of processEls) { place(el, prev); prev = el; }
-    if (toggle) { place(toggle, prev); prev = toggle; }
-    for (const el of replyEls) { place(el, prev); prev = el; }
-
-    // ④ 剪枝：本组已不存在的节点/元素移除（revoke 软删、组改名等）
-    const keep = new Set(userEls.concat(processEls, replyEls));
-    if (toggle) keep.add(toggle);
-    for (const child of Array.from(gv.el.children)) {
-      if (!keep.has(child)) gv.el.removeChild(child);
-    }
-    const liveKeys = new Set(group.nodes.map((n) => n.key));
-    for (const k of Array.from(gv.views.keys())) {
-      if (!liveKeys.has(k)) gv.views.delete(k);
-    }
-
-    gv.el.dataset.round = group.round == null ? "" : String(group.round);
-    gv.el.dataset.key = group.key || "";
-    return gv.el;
-  }
-
-  /** 快照里已不存在的组容器移除（本地轮认领改名后旧键即属此类）。 */
-  function pruneGroups(st, snap) {
-    const live = new Set(snap.rounds.map((g) => g.key));
-    for (const [k, gv] of Array.from(st.groups)) {
-      if (live.has(k)) continue;
-      if (gv.el.parentNode) gv.el.parentNode.removeChild(gv.el);
-      st.groups.delete(k);
-    }
-  }
-
-  /* [画板四机制 T2 2026-10-16] 分页：渲染窗口只决定「最上面渲染到哪」。
-     st.winStart＝窗口**起始轮下标**（含）；窗口下端恒为最后一轮（新轮追加不裁切）。
-     数据源仍是全量 timeline、装配器照吃全量——分页只动渲染窗口，不动数据（不变量 9）。 */
+  /** 分页窗口起点（单位＝节点）。窗口下端恒为最后一节点（新节点追加不裁切）。 */
   function winStartOf(st, total) {
-    let start = (st.winStart == null) ? Math.max(0, total - BOARD_CFG.pageSize) : st.winStart;
-    if (start >= total) start = Math.max(0, total - BOARD_CFG.pageSize);   // 轮数变少（revoke）后收口
+    let start = (st.winStart == null) ? Math.max(0, total - BOARD_CFG.pageNodes) : st.winStart;
+    if (start >= total) start = Math.max(0, total - BOARD_CFG.pageNodes);
     st.winStart = start;
     return start;
   }
 
-  /** 顶部「加载更早」控件：窗口之上还有轮才出现；没有就撤掉
-      （空卡/首屏即全部时列内不残留任何子元素——判据 2.1 的单源代价证据）。 */
-  function syncMore(st, box, hidden) {
-    let el = st.moreEl;
-    if (!hidden) {
-      if (el && el.parentNode) el.parentNode.removeChild(el);
-      st.moreEl = null;
-      return;
-    }
-    if (!el) {
-      el = document.createElement("div");
-      el.className = "msgs-more";
-      el.onclick = () => loadEarlier(st);
-      st.moreEl = el;
-    }
-    el.textContent = "▴ 加载更早（还有 " + hidden + " 轮）";
-    if (el.parentNode !== box) box.insertBefore(el, box.firstChild);
-  }
-
-  /** 往前插一页（并保持当前视口不动——新内容插在上方，眼前那条不跳）。 */
+  /** 往前插一页：锚点由 chat-view 在点击时先记好，这里只改窗口并重画。 */
   function loadEarlier(st) {
-    if (!st || st.winStart == null || st.winStart <= 0) return false;
-    const ca = chatEl();
-    const prevTop = ca ? ca.scrollTop : 0;
-    const prevHeight = ca ? ca.scrollHeight : 0;
-    st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageSize);
-    renderSnapshot(st, st.asm.snapshot(), { keepScrollTop: true, prevTop, prevHeight });
+    if (!st || !st.winStart || st.winStart <= 0) return false;
+    st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageNodes);
+    renderSnapshot(st, st.asm.snapshot());
     return true;
   }
 
-  /** 滚到顶自动往前插一页（与点击「加载更早」同一动作）。#chatArea 是共享滚动容器，
-      监听器只装一次、作用于**当前会话**。 */
-  function wireScrollLoad() {
-    const ca = chatEl();
-    if (!ca || ca.__flowScrollWired) return;
-    ca.__flowScrollWired = true;
-    ca.addEventListener("scroll", () => {
-      if (ca.scrollTop > 8) return;
-      const st = activeKey ? sessions.get(activeKey) : null;
-      if (st) loadEarlier(st);
-    });
+  /** 取某节点的内容版本（渲染层据此判「要不要换这一行」）。 */
+  function revGetter(snap) {
+    return (key) => {
+      const n = snap.nodes.get(key);
+      return n ? (n.rev || 0) : null;
+    };
   }
 
-  /** 全量快照：**复用**既有组容器与既有节点元素，只建缺的、只改变的。
-      刷新/换卡/结算都走这里——历史轮组键不变 ⇒ DOM 一个都不动。
-      [T2] 只渲染窗口（st.winStart 起）；窗口之上的轮不进 DOM。 */
-  function renderSnapshot(st, snapshot, opts) {
-    const box = msgsEl(st);
-    if (!box) return;
-    const rounds = snapshot.rounds;
-    const start = winStartOf(st, rounds.length);
-    const win = rounds.slice(start);
-    const want = new Set(win.map((g) => g.key));
-    // 剪枝：列里所有不在**本窗口**的轮容器移除（含换卡后遗留、状态重建后遗留、翻页后移出窗口的）
-    for (const el of Array.from(box.querySelectorAll(":scope > .msgs-round"))) {
-      if (!want.has(el.dataset.key || "")) box.removeChild(el);
-    }
-    for (const k of Array.from(st.groups.keys())) if (!want.has(k)) st.groups.delete(k);
-    for (const group of win) {
-      renderGroup(st, ensureGroupView(st, box, group.key), group, snapshot);
-    }
-    syncMore(st, box, start);
-    // 组序按快照轮序校正（历史组已就位 ⇒ no-op）。起点锚＝「加载更早」控件（若在）——
-    // 轮组恒排在控件**之后**；无控件时退回「列首」（与改前逐字同）。
-    let prev = st.moreEl || null;
-    for (const group of win) {
-      const gv = st.groups.get(group.key);
-      const el = gv && gv.el;
-      if (!el) continue;
-      if (prev === null) {
-        if (box.firstChild !== el) box.insertBefore(el, box.firstChild);
-      } else if (prev.nextSibling !== el) {
-        box.insertBefore(el, prev.nextSibling);
-      }
-      prev = el;
-    }
-    logInfo("[flow-render] snapshot(" + win.length + "/" + rounds.length + " rounds)");
-    const ca = chatEl();
-    if (opts && opts.keepScrollTop && ca) {
-      ca.scrollTop = (opts.prevTop || 0) + Math.max(0, ca.scrollHeight - (opts.prevHeight || 0));
-    } else {
-      scrollBottom(st);
-    }
+  /** 全量快照：复用既有座位与既有元素，只建缺的、只换变了的。 */
+  function renderSnapshot(st, snap) {
+    const v = viewOf(st);
+    const total = snap.order.length;
+    const start = winStartOf(st, total);
+    const win = snap.order.slice(start);
+    v.render(win, revGetter(snap));
+    v.paintOlder();
+    v.paintStatus();
+    st.renderedOrder = snap.order;
+    logInfo("[flow-render] snapshot(" + win.length + "/" + total + " nodes)");
   }
 
-  /** 实时增量：只 upsert 受影响的那一组（其余组不碰）。
-      [T2] 该组若在渲染窗口**之上**（老轮被更新），不进 DOM——窗口只决定最上面渲染到哪。 */
-  function renderAffected(st, key) {
-    const box = msgsEl(st);
-    if (!box) return;
+  /** 实时增量：结构没变（order 引用未变）⇒ 只换受影响那一行。 */
+  function renderAffected(st, node) {
+    if (!st || !st.asm) return;
     const snap = st.asm.snapshot();
-    const idx = snap.rounds.findIndex((g) => g.key === key);
+    if (st.renderedOrder !== snap.order) { renderSnapshot(st, snap); return; }
+    if (!node) return;
+    const idx = snap.order.indexOf(node.key);
     if (idx < 0) return;
-    if (st.winStart == null) winStartOf(st, snap.rounds.length);
-    if (idx < st.winStart) return;
-    renderGroup(st, ensureGroupView(st, box, key), snap.rounds[idx], snap);
-    pruneGroups(st, snap);
-    logInfo("[flow-render] group-upsert(" + key + ")");
-    scrollBottom(st);
+    if (idx < (st.winStart || 0)) return;     // 窗口之上：不进 DOM
+    const v = viewOf(st);
+    v.refresh(node.key, node.rev || 0);
+    v.paintStatus();
+    logInfo("[flow-render] node-update(" + node.key + ")");
   }
 
   /* ==================================================================
@@ -908,8 +737,12 @@ const BOARD_CFG = Object.assign(
       scrollTop: 0,             // 切走时的滚动位置（切回恢复）
       lastUsed: Date.now(),     // [T3] 最近使用时刻（LRU/静默超时判据）
       busy: false,              // [T3] 本轮在跑（start→resync/stop 之间）——在跑卡永不释放
-      asm: createAssembler(), groups: new Map(), liveSlot: null, liveRunId: "", settled: false,
-      fold: new Map(),          // 组键 → 折叠态（true＝已收起）：重画不丢用户的选择
+      asm: createAssembler(), view: null, liveSlot: null, liveRunId: "", settled: false,
+      /* [对话流照抄 dsh v3] 扁平节点表的分页窗口与「上一帧的 order 引用」：
+         winStart      = 窗口起始**节点下标**
+         renderedOrder = 上次落位时的 order 数组引用（引用未变＝结构未变）
+         turnStart     = 本轮开始时刻（运行条 15s 时钟的锚） */
+      winStart: null, renderedOrder: null, turnStart: null,
       textEl: null, textBody: null, reasoning: null, reasoningText: null, reasoningSum: null,
       fallbackUsed: false, esDead: false, lastSeq: 0, lastTokenSeq: 0,
       /* [T5 2026-10-16] 两套 seq 分家，**严禁互写**：
@@ -928,7 +761,6 @@ const BOARD_CFG = Object.assign(
   function activate(wid, cid) {
     const key = skey(wid, cid);
     const st = ensureRun(wid, cid);
-    wireScrollLoad();          // [T2] 滚到顶自动加载更早（只装一次）
     const ca = chatEl();
     if (activeKey === key) {
       // 已是当前会话：确保画板在位（首帧/状态重建后可能尚未挂）
@@ -956,12 +788,14 @@ const BOARD_CFG = Object.assign(
     return st;
   }
 
-  /** 取某会话的画板元素（供 workspace 把系统行写进**该卡自己的**容器）。
-      缺 cardId 时回落当前会话画板。 */
+  /** 取某会话的内容列（供 workspace 把系统行写进**该卡自己的**容器）。
+      [对话流照抄 dsh v3] 返回的是视图的**节点列**（.flow-view-column），
+      系统行因此落在对话流内部、而不是对话流外面。
+      缺 cardId 时回落当前会话。 */
   function board(wid, cid) {
-    if (wid && cid) return boardOf(ensureRun(wid, cid));
+    if (wid && cid) return viewOf(ensureRun(wid, cid)).columnEl;
     const st = activeKey ? sessions.get(activeKey) : null;
-    return st ? boardOf(st) : null;
+    return st ? viewOf(st).columnEl : null;
   }
 
   /* ==================================================================
@@ -1027,11 +861,10 @@ const BOARD_CFG = Object.assign(
     if (!rec.type) return;
     if (rec.run_id) st.liveRunId = rec.run_id;
     const node = st.asm.applyRecord(rec);
-    const key = (node && node.groupKey) || groupKeyOf(rec);
-    renderAffected(st, key);
+    renderAffected(st, node);
   }
 
-  /** 乐观上屏（T1）：点发送瞬间把用户气泡落进本地轮，不等 POST/timeline。 */
+  /** 乐观上屏（T1）：点发送瞬间把用户气泡落进扁平表，不等 POST/timeline。 */
   let _localSeq = 0;
   function optimisticUser(wid, cid, content) {
     const st = ensureRun(wid, cid);
@@ -1040,7 +873,7 @@ const BOARD_CFG = Object.assign(
       ns: "local", seq: 0, local_key: localKey, type: "user_message",
       run_id: "", round: 0, data: { content: String(content == null ? "" : content) }, model: "",
     });
-    renderAffected(st, (node && node.groupKey) || ("local:" + localKey));
+    renderAffected(st, node);
     return localKey;
   }
 
@@ -1078,13 +911,15 @@ const BOARD_CFG = Object.assign(
     const st = ensureRun(wid, cid);
     const items = await fetchTimeline(st, wid, cid);
     st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
-    st.busy = false;             // [T3] 结算＝本轮结束（不再是在跑卡）
     clearLiveSlot(st);           // live 气泡随正式节点接管退场
     const snap = st.asm.rebuild(items);
     renderSnapshot(st, snap);
-    const last = snap.rounds[snap.rounds.length - 1];
-    const done = !!(last && last.nodes.some((n) =>
-      n.kind === "assistant" || n.type === "done" || n.type === "error"));
+    setRunning(wid, cid, false); // 结算＝本轮结束（运行条收、主键回发送态）
+    // 收口判据：本轮已出现 assistant 节点，或已见 done/error
+    const done = snap.order.some((k) => {
+      const n = snap.nodes.get(k);
+      return n && (n.kind === "assistant" || n.type === "done" || n.type === "error");
+    });
     return { ok: items !== null, done, runId: st.liveRunId };
   }
 
@@ -1134,8 +969,7 @@ const BOARD_CFG = Object.assign(
       for (const rec of items) {
         if (!rec || rec.type !== "user_message") continue;
         const node = st.asm.applyRecord(Object.assign({ ns: "disk" }, rec));
-        const key = (node && node.groupKey) || groupKeyOf(rec);
-        renderAffected(st, key);
+        renderAffected(st, node);
         if (node && node.kind === "user" && !node.pending) confirmed = true;
       }
       if (confirmed) return true;
@@ -1148,21 +982,14 @@ const BOARD_CFG = Object.assign(
      五、逐字正文（live 气泡）：/tokens 直写，不进装配器
      ================================================================== */
 
+  /** live 逐字槽：挂在视图列里、**运行条之前**（chat-view 负责把它压在末位）。 */
   function liveSlot(st) {
-    const box = msgsEl(st);
-    if (!box) return null;
-    // 判据用 parentNode 而非 isConnected：游离会话的画板整体不在文档里，
-    // isConnected 恒 false 会导致每次都重建 live 槽（T1）。
-    if (!st.liveSlot || st.liveSlot.parentNode !== box) {
-      const slot = document.createElement("div");
-      slot.className = "live-slot";
-      box.appendChild(slot);
-      st.liveSlot = slot;
-    }
-    return st.liveSlot;
+    const v = viewOf(st);
+    if (!v) return null;
+    return v.ensureLiveSlot();
   }
 
-  /** 正文条目恒压队尾（live 槽恒在轮组之后）。 */
+  /** 正文条目恒压队尾（live 槽恒在节点座位之后）。 */
   function keepTextLast(st) {
     const slot = liveSlot(st);
     if (!slot || !st.textEl) return;
@@ -1180,7 +1007,6 @@ const BOARD_CFG = Object.assign(
     st.textEl = el;
     st.textBody = el.querySelector(".live-content");
     logInfo("[flow-render] msg created(assistant.live)");
-    scrollBottom(st);
     return st;
   }
 
@@ -1192,7 +1018,6 @@ const BOARD_CFG = Object.assign(
       if (!st.textBody) return;
       st.textBody.innerHTML = renderMarkdown(st.textRaw);
       keepTextLast(st);
-      scrollBottom(st);
     }, 100);
   }
 
@@ -1264,7 +1089,6 @@ const BOARD_CFG = Object.assign(
       keepTextLast(st);
     }
     logInfo("[flow-render] chunk(" + kind + ", " + text.length + ", " + (seq == null ? "-" : seq) + ")");
-    scrollBottom(st);
   }
 
   function releaseText(st) {
@@ -1309,7 +1133,6 @@ const BOARD_CFG = Object.assign(
   function finish(st) {
     finishReasoning(st || {});
     flushMd(st || {});
-    scrollBottom(st);
   }
 
   function stopES(st) {
@@ -1318,19 +1141,29 @@ const BOARD_CFG = Object.assign(
     if (st.esT) { try { st.esT.close(); } catch (e) { /* noop */ } st.esT = null; }
   }
 
-  /** 收流：只关两路 SSE，**保留渲染状态**（装配器 ＋ 组视图 ＋ DOM 归属）。
-      状态一丢，下一次渲染就会把已在屏上的轮容器当成「新组」重建、长出重复容器
-      （实测踩过）。[T1] 换卡不再经过这里——会话表按 (wid,cid) 各留一份状态，
+  /** 收流：只关两路 SSE，**保留渲染状态**（装配器 ＋ 节点座位 ＋ DOM 归属）。
+      [T1] 换卡不再经过这里——会话表按 (wid,cid) 各留一份状态，
       「摘下画板」由 activate() 负责；本函数只管停流。可传 (wid,cid) 精确停某会话；
       不传＝停当前会话（向后兼容既有调用点）。 */
   function stop(wid, cid) {
     if (wid && cid) {
       const st = sessions.get(skey(wid, cid));
-      if (st) { stopES(st); st.busy = false; }   // [T3] 收流＝本轮不再在跑
+      if (st) { stopES(st); setRunning(wid, cid, false); }
       return;
     }
     const st = activeKey ? sessions.get(activeKey) : null;
-    if (st) { stopES(st); st.busy = false; }
+    if (st) { stopES(st); setRunning(st.wid, st.cid, false); }
+  }
+
+  /** 运行态：一条入口管「在跑卡不释放」「运行条」「主键两态」三处。 */
+  function setRunning(wid, cid, running) {
+    const st = ensureRun(wid, cid);
+    st.busy = !!running;
+    if (running) st.turnStart = Date.now();
+    const v = viewOf(st);
+    v.setRunning(!!running);
+    v.paintStatus();
+    return st;
   }
 
   /** 事件流是否已断（供 workspace 的断线自愈判据：健康时**绝不**做整表重建）。 */
@@ -1341,7 +1174,7 @@ const BOARD_CFG = Object.assign(
   }
 
   /** 开始跟踪新一轮：两路 SSE。
-      过程帧（/stream）→ 装配器 → 受影响轮组 upsert；
+      过程帧（/stream）→ 装配器 → 受影响节点 upsert；
       逐字帧（/tokens）→ live 正文气泡（不进装配器）。
       onFail 在事件流连不上时回调一次（降级保底）。 */
   function start(wid, cid, onFail) {
@@ -1350,7 +1183,7 @@ const BOARD_CFG = Object.assign(
     st.liveRunId = "";        // 新一轮：轮锚随 run_start 帧到达后才落
     st.settled = false;       // 解冻：上一轮的收口状态不带到这一轮
     st.esDead = false;
-    st.busy = true;           // [T3] 本轮在跑 ⇒ 在跑卡永不释放
+    setRunning(wid, cid, true);   // [T3] 本轮在跑 ⇒ 在跑卡永不释放 ＋ 运行条起
     try {
       // 无游标（lastSeq=0）＝从当前末帧起；有游标＝断点续传。
       const sFrom = st.lastSeq > 0 ? st.lastSeq + 1 : 0;
@@ -1393,6 +1226,8 @@ const BOARD_CFG = Object.assign(
 export const EventFlow = {
   start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers,
   optimisticUser, dropOptimisticUser, streamDead,
+  // [对话流照抄 dsh v3] 运行态唯一入口：在跑卡不释放 ＋ 运行条 ＋ 主键两态
+  setRunning,
   // [画板四机制 T1] 会话表对外两口：activate＝把某卡画板挂上 #chatArea（open 用）；
   // board＝取某卡自己的容器（workspace 把系统行写进该卡那份，不再写全局唯一列）。
   activate, board,
