@@ -1369,6 +1369,26 @@ async def _auto_reply_pending_letters(work_id: str, card_id: str,
         from_card = str(it.get("from_card") or hdr.get("from") or "")
         if not card_msg.reply_expected_of(mt):
             continue  # notify（收下即可）/answer（无需再答）——不回
+        # [自动模式 2026-10-17 · 回灌 5700 G3（2089947）· BUG-AM-002] 模型本轮
+        # 已**自己**答过这封信 ⇒ 流程不再重复自动转发。背景：2026-10-11 裁定下
+        # 模型不能发信，S4 自动回发是唯一出口，不存在重复；G2 把发信交回 auto 卡
+        # （自主通信）后，两条通道会各发一条 ⇒ 同一问收到两答。
+        # 判据＝收件箱里已存在「from_card＝本卡 且 type＝msg_answer 且
+        # reply_to＝该信」的行（inbox 不删行，天然可查）。**只减不加**：模型
+        # 没自己答 ⇒ 行为逐字不变（G3 前的通道原样走）。
+        try:
+            _own_rows = await card_db.list_inbox(work_id)
+        except Exception as exc:  # noqa: BLE001 查不到⇒按原行为回发（不因判据失败而静默）
+            logger.warning("[S4] 查自发应答失败（按原行为回发）wid=%s card=%s: %s",
+                           work_id, card_id, exc)
+            _own_rows = []
+        if any(str(x.get("from_card") or "") == card_id
+               and str(x.get("type") or "") == "msg_answer"
+               and str(x.get("reply_to") or "") == msg_id
+               for x in _own_rows or []):
+            session_ops.ops_log("card_msg_answer_skipped", work_id, card_id,
+                                {"reason": "model_already_answered", "msg_id": msg_id})
+            continue
         reply_type = card_msg.reply_type_of(mt)
         if not reply_type:
             session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
