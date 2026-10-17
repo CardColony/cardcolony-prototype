@@ -136,6 +136,95 @@ def _projection_path(work_id: str) -> Path:
     return session_store.WORKS_DIR / work_id / "_projection" / "session_cards.json"
 
 
+# ------------------------------------------------ Windows 文件锁竞态重试（2026-10-17）
+# [WinErr13 竞态 · 2026-10-17 实测归纳] 重试预算：5 次尝试，指数退避
+# 0.08/0.16/0.32/0.64 秒 ⇒ 单次写最多让出约 1.2 秒。
+_LOCK_RETRY_ATTEMPTS = 5
+_LOCK_RETRY_BASE_SLEEP = 0.08
+_FILE_ATTRIBUTE_READONLY = 0x1
+
+
+def _is_windows_lock_race(exc: OSError, path: Path) -> bool:
+    """判「Windows 文件锁竞态」——只对可恢复的占用放行重试，其余原样上抛。
+
+    Windows 上两类 errno 13（PermissionError）形态不同，必须分开：
+
+    - ``winerror`` 5/32：**双路径**形态（``[WinError 5] 拒绝访问。: 'src' -> 'dst'``），
+      来自 ``os.replace``／MoveFileEx 撞独占句柄——经典共享冲突，交给重试。
+    - ``winerror`` 为 None 的**单路径**形态（``[Errno 13] Permission denied: 'path'``），
+      来自 ``open()``——CRT 把 CreateFile 失败折成 errno 而不带 winerror。**这才是
+      线上真实 502 的形态**：改动前唯独给 ``os.replace`` 配了重试，而 append/写 tmp 的
+      ``open()`` 零重试，撞上即整轮 502。
+
+    但它与「真无权限」（只读属性／ACL 拒绝）**异常形态完全相同**，仅凭异常分不开。
+    故再查一次目标文件的只读属性：带只读位＝真无权限 ⇒ 立即上抛、零重试；
+    不带只读位＝按锁竞态处理（有界重试）。
+    """
+    if os.name != "nt" or not isinstance(exc, PermissionError):
+        return False
+    winerror = getattr(exc, "winerror", None)
+    if winerror in (5, 32):
+        return True
+    if winerror is not None:
+        return False          # 其它 winerror（非本次两类）⇒ 行为不变，不重试
+    try:
+        attrs = os.stat(path).st_file_attributes
+    except (OSError, AttributeError):
+        return False          # 目标已消失等异常形态 ⇒ 不猜、不重试
+    return not bool(attrs & _FILE_ATTRIBUTE_READONLY)
+
+
+def _log_lock_race(exc: OSError, path: Path, attempt: int, what: str,
+                   give_up: bool = False) -> None:
+    """锁竞态对账日志：**每次写操作至多一条**（首次重试一条、重试耗尽再一条）。"""
+    logger.warning(
+        "[facade] Windows 文件锁竞态 %s %s：attempt=%d/%d winerror=%s errno=%s path=%s",
+        "重试耗尽，上抛" if give_up else "退避重试",
+        what, attempt + 1, _LOCK_RETRY_ATTEMPTS,
+        getattr(exc, "winerror", None), getattr(exc, "errno", None), path)
+
+
+def _open_with_lock_retry(path: Path, mode: str, what: str) -> Any:
+    """按 mode 打开文件，遇 Windows 文件锁竞态做有界重试＋指数退避（真让出）。
+
+    **只重试 ``open`` 本身**：失败时一个字节都还没落盘，重试无副作用；
+    写盘／flush／fsync 一律留在调用方原地，其失败行为与改动前逐字相同。
+    非锁竞态异常与重试耗尽 ⇒ 原对象上抛，不静默吞。
+    """
+    for attempt in range(_LOCK_RETRY_ATTEMPTS):
+        try:
+            return open(path, mode, encoding="utf-8")
+        except PermissionError as exc:
+            if attempt == _LOCK_RETRY_ATTEMPTS - 1 or not _is_windows_lock_race(exc, path):
+                if attempt and _is_windows_lock_race(exc, path):
+                    _log_lock_race(exc, path, attempt, what, give_up=True)
+                raise
+            if not attempt:
+                _log_lock_race(exc, path, attempt, what)
+            time.sleep(_LOCK_RETRY_BASE_SLEEP * (2 ** attempt))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _replace_with_lock_retry(src: Path, dst: Path, what: str) -> None:
+    """tmp→目标原子改名，带同一套有界重试＋退避。
+
+    ``MoveFileEx`` 失败是原子的（要么换成功、要么源仍在），故重试不会产生半态；
+    非「文件被占用」两类（如跨卷 EXDEV）照旧立即上抛。
+    """
+    for attempt in range(_LOCK_RETRY_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            if attempt == _LOCK_RETRY_ATTEMPTS - 1 or not _is_windows_lock_race(exc, dst):
+                if attempt and _is_windows_lock_race(exc, dst):
+                    _log_lock_race(exc, dst, attempt, what, give_up=True)
+                raise
+            if not attempt:
+                _log_lock_race(exc, dst, attempt, what)
+            time.sleep(_LOCK_RETRY_BASE_SLEEP * (2 ** attempt))
+
+
 # ---------------------------------------------------------------- 原子写（T079 机制，先例 memory_store.py:179-182）
 def _atomic_write_text(path: Path, text: str) -> None:
     """覆盖路径：tmp 写＋flush＋fsync→os.replace（T079；fsync 自 S3/T078 起）。
@@ -155,23 +244,11 @@ def _atomic_write_text(path: Path, text: str) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
+    with _open_with_lock_retry(tmp, "w", "atomic-write-tmp") as f:
         f.write(text)
         f.flush()
         os.fsync(f.fileno())
-    last_exc: Optional[OSError] = None
-    for attempt in range(5):
-        try:
-            os.replace(tmp, path)
-            return
-        except OSError as exc:
-            last_exc = exc
-            # 只对 Windows 的「文件被占用」两码重试；其余（如跨卷）立即上抛
-            if getattr(exc, "winerror", None) not in (5, 32) or attempt == 4:
-                raise
-            time.sleep(0.02 * (attempt + 1))
-    if last_exc is not None:  # pragma: no cover - 循环内必 return 或 raise
-        raise last_exc
+    _replace_with_lock_retry(tmp, path, "atomic-replace")
 
 
 # ---------------------------------------------------------------- 格式判别与解析（S1）
@@ -674,7 +751,7 @@ def _write_new_blocks_locked(work_id: str, card_id: str, path: Path,
     elif fmt == 2:
         # [S3/T078] 追加路径：锁内 write＋flush＋os.fsync——崩溃时最坏丢尾部、
         # 不产生半块被吞。同步微写（追加体量小、锁内执行）换确定性 fsync。
-        with open(path, "a", encoding="utf-8") as f:
+        with _open_with_lock_retry(path, "a", "session-append") as f:
             f.write(block_text)
             f.flush()
             os.fsync(f.fileno())
