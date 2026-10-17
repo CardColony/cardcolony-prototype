@@ -255,7 +255,19 @@ body.page-chat .topbar .spacer { flex: 1; }
 body.page-chat .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+}
+/* 常用动作（过程开关）与系统动作（主题/详情）分组，中间一道细线——
+   否则三个图标挤成一堆，看不出谁是谁的。 */
+body.page-chat #themeToggleBtn { margin-left: 8px; position: relative; }
+body.page-chat #themeToggleBtn::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--ui-line-2);
 }
 body.page-chat .tb-btn {
   width: 30px;
@@ -2251,3 +2263,15 @@ body.page-chat .nav-phead:active {
 }
 body.page-chat .flow-view-older-btn:active:not(:disabled) { filter: brightness(0.9); }
 body.page-chat .flow-view-to-bottom:active { filter: brightness(0.9); }
+
+/* 底部设置入口：齿轮从 Unicode ⚙ 换成与铃铛/搜索同一套线性 SVG */
+body.page-chat .nav-foot-btn::before {
+  content: "";
+  width: 15px;
+  height: 15px;
+  flex: none;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Zm0 1.4a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8Z'/><path d='M7 1.4h2l.25 1.55.9.52 1.45-.6 1.42 1.42-.6 1.45.52.9L14.9 7v2l-1.55.25-.52.9.6 1.45-1.42 1.42-1.45-.6-.9.52L9 14.6H7l-.25-1.64-.9-.52-1.45.6-1.42-1.42.6-1.45-.52-.9L1.1 9V7l1.64-.25.52-.9-.6-1.45 1.42-1.42 1.45.6.9-.52L7 1.4Z' fill='none' stroke='currentColor' stroke-width='1.3' stroke-linejoin='round'/></svg>") center/contain no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Zm0 1.4a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8Z'/><path d='M7 1.4h2l.25 1.55.9.52 1.45-.6 1.42 1.42-.6 1.45.52.9L14.9 7v2l-1.55.25-.52.9.6 1.45-1.42 1.42-1.45-.6-.9.52L9 14.6H7l-.25-1.64-.9-.52-1.45.6-1.42-1.42.6-1.45-.52-.9L1.1 9V7l1.64-.25.52-.9-.6-1.45 1.42-1.42 1.45.6.9-.52L7 1.4Z' fill='none' stroke='currentColor' stroke-width='1.3' stroke-linejoin='round'/></svg>") center/contain no-repeat;
+}
+body.page-chat .nav-foot-btn .gear-glyph { display: none; }
