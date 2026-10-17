@@ -1092,6 +1092,47 @@ async def post_work_stop(work_id: str, card_id: str):
     return {**res, **auto_res}
 
 
+@router.post("/works/{work_id}/cards/{card_id}/auto/resume")
+async def post_card_auto_resume(work_id: str, card_id: str):
+    """**人工**恢复：把停在 paused / blocked 的自动模式卡重新拉起。
+
+    [6702 移植 2026-10-17] 死锁兜底（``auto_await_resume_giveup``）会把卡停在
+    paused 并只留一条 ops 痕迹——但全仓没有任何路径能把 ``goal_state`` 写回
+    active：``goal_state`` 不在 ``ALLOWED_UPDATE_KEYS``；``ensure_goal_from_message``
+    在 goal 非空时直接返回；切 ``auto_mode`` 只重算 perms。故补本端点作为
+    **人工处置出口**（不动 PATCH 白名单——那会把内部态开成用户可任意写的口子）。
+
+    语义：
+      · 卡不存在 / 读不出            ⇒ 404
+      · 非 auto 卡                   ⇒ 400（信息自带出路）
+      · 无 goal                      ⇒ 400（信息自带出路）
+      · ``goal_state == active``     ⇒ 200 ``{"resumed": False}``（幂等，不重复起轮）
+      · ``goal_state == complete``   ⇒ 400（已完成的目标不能恢复）
+      · ``paused`` / ``blocked``     ⇒ 落三字段 ＋ kick ⇒ 200 ``{"resumed": True}``
+    """
+    from . import auto_driver
+
+    try:
+        meta = card_store._meta_of(work_id, card_id) or {}
+    except Exception as exc:  # noqa: BLE001
+        return _err(404, f"读卡失败：{exc}")
+    if not meta:
+        return _err(404, f"卡片不存在：{card_id}")
+    if not bool(meta.get("auto_mode")):
+        return _err(400, "该卡不是自动模式卡；请先在卡详情里开启自动模式")
+    if not str(meta.get("goal") or "").strip():
+        return _err(400, "该卡还没有目标；给它发一条消息即可设定目标并起跑")
+    state = str(meta.get("goal_state") or "")
+    if state == auto_driver.GOAL_ACTIVE:
+        return {"resumed": False, "reason": "已在推进中"}
+    if state == auto_driver.GOAL_COMPLETE:
+        return _err(400, "该目标已完成，不能恢复；如需新任务请重新设定目标")
+    ok = await auto_driver.resume_card(work_id, card_id)
+    if not ok:
+        return _err(500, "恢复失败（状态写入未成功），请查看服务日志")
+    return {"resumed": True, "goal_state": auto_driver.GOAL_ACTIVE}
+
+
 # [实时反馈 2026-10-02] 调用进度查询：纯展示层，前端轮询用。
 # 只读内存态，不进任何模型输入，不拦截任何调用——不是闸。
 @router.get("/works/{work_id}/cards/{card_id}/progress")
