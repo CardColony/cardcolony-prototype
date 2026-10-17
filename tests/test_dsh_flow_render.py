@@ -322,7 +322,7 @@ def test_t6_touched_modules_bumped():
         "assembler.js": "35", "style.css": "39", "main.js": "46.0",
         "main_chat.js": "2.3",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
-        "input-bar.js": "3", "queue-dock.js": "1", "queue-store.js": "1",
+        "input-bar.js": "4", "queue-dock.js": "1", "queue-store.js": "1",
         "chat-view.js": "3", "message-item.js": "1",
     }
     for name, ver in expect.items():
