@@ -291,3 +291,57 @@ async def test_s4_reply_type_missing_guard(sandbox, monkeypatch, tmp_path):
     await message_runner._auto_reply_pending_letters(
         wid, b_id, [_letter(msg_id, msg_type="msg_broken")])
     assert "reply_type_missing" in _ops_text()
+
+
+# ══════════════ G3 双回发修复（2089947 · BUG-AM-002） ══════════════
+# 背景：G2 把发信交回 auto 卡（自主通信）后，同一问会走两条应答通道——
+# ① 模型自己发 msg_answer（带 reply_to）；② 流程 _auto_reply_pending_letters
+# 自动转发——A 收到两条重复应答。修法：转发前查账本「已答？」，只减不加。
+
+async def test_g3_model_already_answered_no_duplicate_reply(sandbox, monkeypatch):
+    """硬判据1：模型本轮已自己答过这封信 ⇒ 流程不再重复自动转发。"""
+    wid = (await work_store.create_work("G3双回发剧本"))["work_id"]
+    a_id, b_id = await _make_pair(wid)
+    msg_id = await _prep_letter(wid, a_id, b_id)
+    # B 档案最后一块＝正常交付的 assistant 块（满足回发的前置）
+    await session_facade.append(wid, b_id, {
+        "role": "assistant", "content": "我自己答：应该先做甲。",
+        "model": "x", "end": "model_done"})
+    # 模型自己答过（落账本：from=b、type=msg_answer、reply_to=来信）
+    await card_tools.send_card_message(
+        wid, b_id, target_id=a_id, msg_type="msg_answer",
+        content="我自己答：应该先做甲。", reply_to=msg_id)
+    before = await card_db.list_inbox(wid, a_id)
+
+    await message_runner._auto_reply_pending_letters(wid, b_id, [_letter(msg_id)])
+
+    after = await card_db.list_inbox(wid, a_id)
+    b_answers = [r for r in after
+                 if str(r.get("from_card")) == b_id
+                 and str(r.get("type")) == "msg_answer"]
+    assert len(b_answers) == 1, f"应只有模型自己那一条应答，实得 {len(b_answers)}"
+    assert len(after) == len(before), "流程不应再落一条转发"
+    # 硬判据3：跳过打点可观测
+    assert "card_msg_answer_skipped" in _ops_text()
+    assert "model_already_answered" in _ops_text()
+
+
+async def test_g3_model_not_answered_auto_reply_still_works(sandbox, monkeypatch):
+    """硬判据2（只减不加的镜像）：模型没自己答 ⇒ 自动转发原样工作。"""
+    wid = (await work_store.create_work("G3未自答剧本"))["work_id"]
+    a_id, b_id = await _make_pair(wid)
+    msg_id = await _prep_letter(wid, a_id, b_id)
+    await session_facade.append(wid, b_id, {
+        "role": "assistant", "content": "我只会说结论，不会自己发信。",
+        "model": "x", "end": "model_done"})
+
+    await message_runner._auto_reply_pending_letters(wid, b_id, [_letter(msg_id)])
+
+    rows = await card_db.list_inbox(wid, a_id)
+    b_answers = [r for r in rows
+                 if str(r.get("from_card")) == b_id
+                 and str(r.get("type")) == "msg_answer"]
+    assert len(b_answers) == 1, "未自答时流程应照旧自动转发一条"
+    assert str(b_answers[0].get("reply_to") or "") == msg_id
+    assert "card_msg_answer_sent" in _ops_text()
+    assert "card_msg_answer_skipped" not in _ops_text()
