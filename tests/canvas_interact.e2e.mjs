@@ -177,7 +177,7 @@ const menuInfo = await J(`(() => { const m = document.querySelector('.cv-menu');
 check("A8b 右键卡＝菜单出现且项数≥6", !!menuInfo && menuInfo.items >= 6, menuInfo ? menuInfo.items + " 项" : "无菜单");
 await send("Page.captureScreenshot", { format: "png" }).then(async (r) => {
   const fs = await import("node:fs");
-  fs.writeFileSync("../_shots/12_menu.png", Buffer.from(r.result.data, "base64"));
+  fs.writeFileSync("_shots/12_menu.png", Buffer.from(r.result.data, "base64"));
 });
 await key("Escape");
 check("A8c Esc＝关闭菜单", (await ev(`document.querySelectorAll('.cv-menu').length`)) === 0);
@@ -197,6 +197,14 @@ const after2 = await J(`[...document.querySelectorAll('.card-node.is-selected')]
 const movedAll = before2.length >= 2 && before2.every((v, i) => Math.abs(after2[i] - v) > 40);
 check("A8d 多选整组拖动（两张同时位移）", movedAll, `${JSON.stringify(before2)} → ${JSON.stringify(after2)}`);
 
+// A8j 多选操作条（A8d 拖完仍是 2 张选中）
+const barText = await ev(`(() => { const b = document.querySelector('.cv-selbar'); return b ? b.innerText.split(String.fromCharCode(10)).join(' ') : ''; })()`);
+check("A8j 多选＝操作条出现并显示数量", barText.includes("已选"), barText);
+await send("Page.captureScreenshot", { format: "png" }).then(async (r) => {
+  const fs = await import("node:fs");
+  fs.writeFileSync("_shots/24_selbar.png", Buffer.from(r.result.data, "base64"));
+});
+
 // A8e ⌘K 搜索定位
 await key("k", { code: "KeyK", modifiers: MOD.ctrl });
 await sleep(320);
@@ -207,15 +215,17 @@ const hitCount = Number(await ev(`document.querySelectorAll('.cv-palette-item').
 check("A8f 输入即筛（命中≥1）", hitCount >= 1, hitCount + " 条");
 await send("Page.captureScreenshot", { format: "png" }).then(async (r) => {
   const fs = await import("node:fs");
-  fs.writeFileSync("../_shots/17_palette.png", Buffer.from(r.result.data, "base64"));
+  fs.writeFileSync("_shots/17_palette.png", Buffer.from(r.result.data, "base64"));
 });
 await key("Enter");
 await sleep(420);
 const afterPal = await J(`({ sel: document.querySelectorAll('.card-node.is-selected').length, pal: !!document.querySelector('.cv-palette') })`);
 check("A8g Enter＝定位并关闭面板", afterPal.sel === 1 && !afterPal.pal, JSON.stringify(afterPal));
 
-// A8h/A8i 方向键在树中导航
+// A8h/A8i 方向键在树中导航（先适配，保证根卡在视口内可点）
 await key("Escape");
+await key("0", { code: "Digit0", modifiers: MOD.ctrl });
+await sleep(320);
 const rootBox = await J(`(() => { const n=document.querySelector('.card-node'); const r=n.getBoundingClientRect(); return { x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2) }; })()`);
 await click(rootBox.x, rootBox.y);
 const navFrom = await ev(`(() => { const n=document.querySelector('.card-node.is-selected'); return n ? n.dataset.id : ''; })()`);
@@ -234,7 +244,9 @@ await send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", w
 const t3 = await worldTf();
 check("A9 空格+拖＝平移", t2 !== t3, `${t2} → ${t3}`);
 
-// A10 双击进对话（A9 平移过，重新取坐标）
+// A10 双击进对话（A9 平移过：先整幅适配，保证目标卡在视口内再取坐标）
+await key("0", { code: "Digit0", modifiers: MOD.ctrl });
+await sleep(300);
 const before = await ev("location.pathname");
 const b2 = await J(`(() => { const n = document.querySelectorAll('.card-node')[1]; const r = n.getBoundingClientRect(); return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
 await dblclick(b2.x, b2.y);
