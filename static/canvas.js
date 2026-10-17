@@ -1442,6 +1442,7 @@ const WORK_ID = window.__WORK_ID__;
     // 只选中一张时聚焦它的连线；多选或空选恢复全亮
     const ids = [...state.view.selected];
     highlightEdges(ids.length === 1 ? ids[0] : "");
+    renderSelectionBar();
   }
 
   function setSelection(ids, additive = false) {
@@ -1545,6 +1546,54 @@ const WORK_ID = window.__WORK_ID__;
       }
     }
     return { dx: bestDx ? bestDx.d : 0, dy: bestDy ? bestDy.d : 0, vx: bestDx ? bestDx.at : null, vy: bestDy ? bestDy.at : null };
+  }
+
+  // ---- 多选操作条：选中 ≥2 张时底部浮出，显示数量与批量动作 ----
+  //
+  // [画布商业化 2026-10-17] 多选之后没有任何反馈是"半成品感"的主要来源：
+  // 用户框选了一片卡，不知道选中了几张、能做什么。这条操作条把状态和动作
+  // 放在一起（Miro/Figma 的 selection toolbar 同款位置）。
+  let selBar = null;
+  function renderSelectionBar() {
+    const n = state.view.selected.size;
+    if (n < 2) { if (selBar) { selBar.remove(); selBar = null; } return; }
+    if (!selBar) {
+      selBar = document.createElement("div");
+      selBar.className = "cv-selbar";
+      viewport.appendChild(selBar);
+    }
+    selBar.innerHTML = `
+      <span class="cv-selbar-count">已选 <b>${n}</b> 张</span>
+      <span class="cv-selbar-sep"></span>
+      <button class="cv-selbar-btn" data-act="focus">聚焦</button>
+      <button class="cv-selbar-btn" data-act="clear">取消选择</button>
+      <button class="cv-selbar-btn is-danger" data-act="del">删除</button>
+    `;
+    selBar.querySelectorAll(".cv-selbar-btn").forEach((b) => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        const act = b.dataset.act;
+        if (act === "clear") clearSelection();
+        else if (act === "del") deleteSelected();
+        else if (act === "focus") {
+          const first = [...state.view.selected][0];
+          if (first) focusCard(first);
+        }
+      };
+    });
+  }
+
+  // ---- 重命名：画布内直接改名（不跳对话页）----
+  function renameCard(cardId) {
+    const card = state.index.cardMap[cardId] || {};
+    const next = window.prompt("重命名卡片", card.title || "");
+    if (next === null) return;
+    const title = next.trim();
+    if (!title || title === card.title) return;
+    API.patchCard(WORK_ID, cardId, { title }, "画布内重命名")
+      .then(() => reloadCanvas())
+      .then(() => notify("已重命名"))
+      .catch((err) => notify("重命名失败：" + (err && err.message ? err.message : err), "error"));
   }
 
   // 打开这张卡的对话页（唯一的"进入"实现，双击/Enter/右键菜单共用）
@@ -2554,6 +2603,7 @@ const WORK_ID = window.__WORK_ID__;
       hasKids ? { act: "toggle", label: isExpanded ? "收起子卡" : "展开子卡", run: () => toggleExpand(cid) } : null,
       { act: "drill", label: "下钻到此卡（Alt+双击）", run: () => setViewRoot(cid) },
       { sep: true },
+      { act: "rename", label: "重命名", run: () => renameCard(cid) },
       { act: "copy", label: "复制标题", run: () => { try { navigator.clipboard.writeText(card.title || ""); notify("标题已复制"); } catch (err) { /* 剪贴板不可用 */ } } },
       isRoot
         ? null

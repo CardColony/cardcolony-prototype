@@ -804,6 +804,51 @@
   color: var(--cv-text-3);
 }
 
+/* 多选操作条：底部中央，胶囊形（Miro/Figma 的 selection toolbar 位置） */
+.page-canvas .cv-selbar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 38px;
+  padding: 0 8px 0 14px;
+  border-radius: 999px;
+  background: #1c212a;
+  border: 1px solid var(--cv-line-3);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+  z-index: 30;
+  animation: cv-selbar-in 140ms var(--cv-ease);
+}
+@keyframes cv-selbar-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.page-canvas .cv-selbar-count {
+  font-size: 12px;
+  color: var(--cv-text-2);
+  white-space: nowrap;
+}
+.page-canvas .cv-selbar-count b { color: var(--cv-text-1); font-weight: 700; }
+.page-canvas .cv-selbar-sep { width: 1px; height: 16px; background: var(--cv-line-2); margin: 0 4px; }
+.page-canvas .cv-selbar-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cv-text-2);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .cv-selbar-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--cv-text-1); }
+.page-canvas .cv-selbar-btn.is-danger { color: var(--cv-danger); }
+.page-canvas .cv-selbar-btn.is-danger:hover { background: var(--cv-danger-soft); }
+
 /* 框选矩形 */
 .page-canvas .cv-marquee {
   position: absolute;
