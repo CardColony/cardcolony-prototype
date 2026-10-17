@@ -71,6 +71,15 @@ async def refresh_one_work(work_id: str, target_version: int,
     for card_id in sorted(cards):
         stats["total"] += 1
         meta = cards[card_id]
+        # [自动模式 2026-10-17 · 回灌 5700 块0.2 · 红线 4] ★ 跳过 auto_mode=1 的卡——
+        # 自动模式是绕过类型分权（policy.auto_perms() 全开集＋专用 version -1），
+        # 按配置刷新会把全开权限静默冲回类型集。跳过即零改动。
+        if bool(meta.get("auto_mode")):
+            stats.setdefault("auto_skipped", 0)
+            stats["auto_skipped"] += 1
+            logger.info("[refresh] 跳过自动模式卡 %s/%s（auto_mode=1，红线4）",
+                        work_id, card_id)
+            continue
         project_class = str(meta.get("project_class") or "") or root_pc
         card_type = str(meta.get("card_type", "") or "")
         perms, version = policy.compute_perms(project_class, card_type)

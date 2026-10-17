@@ -47,6 +47,10 @@ __all__ = [
     "has_perm",
     "check",
     "_is_in_subtree",
+    # [自动模式 2026-10-17 · 回灌 5700 块0.2]
+    "AUTO_SWITCHES",
+    "AUTO_PERMS_VERSION",
+    "auto_perms",
 ]
 
 logger = logging.getLogger("permissions.policy")
@@ -188,6 +192,50 @@ def perms_for(project_class: str, card_type: str) -> list[str]:
 def compute_perms(project_class: str, card_type: str) -> tuple[list[str], int]:
     """算出这张卡应有的 ``(perms, perms_version)``——**只在建卡/刷新时调用**。"""
     return perms_for(project_class, card_type), config_version()
+
+
+# ============================================================
+# 自动模式（2026-10-17 · 回灌 5700 块0.2）：权限**全开（TC1 裁案 A 的落地解释）
+#
+# 自动模式**不是**「按类型分权」的一种，是**绕过**它（迭代方案 §2.6）：开关打开时
+# 该卡 perms 重算为全开集，子卡建卡时继承。``config/permissions.json`` 的
+# 现有行**一个字不动**（红线 3）。
+#
+# ★ TC1 落地解释（任务书 §0.4 待裁项，建议方案 A「保守黑名单」）：
+#   任务书黑名单三项 card_delete / file_write / rule_edit 与开关词汇表对不上——
+#   词汇表里没有这三个码（实际对应关系：card_delete→delete、file_write→tools_file、
+#   rule_edit→无对应开关）。按「不可逆」意图取：
+#     · delete **排除**——删卡连带对话/影子全毁、无备份，真正不可逆；
+#     · tools_file **不排除**——write_file 覆盖前自动备份到 _backups（半可逆），
+#       且 tools_file 是文件家族总开关，排除会连坐 read_file/search_files（可逆）；
+#     · rule_edit **无需排除**——规则修改走 draft_rule_edit（ROOT_ONLY_TOOLS）
+#       ＋用户弹窗审批，流程上不可直达，本来就到不了「直接改规则」。
+#   ⇒ AUTO_SWITCHES = SWITCHES - {delete}。若日后要连 file 写一并收窄，
+#     改 AUTO_EXCLUDE_SWITCHES 一行即可（可配化的最小形态）。
+#
+# ★ 连带必改点：``scripts/refresh_perms.py`` 必须**跳过 auto_mode=1 的卡**——
+#   否则任何人跑一次刷新，就会把全开权限按配置重写回类型分权集（权限无声消失，
+#   红线 4）。
+# ============================================================
+
+#: 自动模式排除的开关（见上方 TC1 落地解释）。空集＝照搬全开（方案 C）。
+AUTO_EXCLUDE_SWITCHES: frozenset[str] = frozenset({SWITCH_DELETE})
+
+#: 自动模式「全开集」＝全部开关减排除项（U3：模型可操作所有功能）。
+#: 用集合别名而非复制字面量——加开关时本集自动跟随（不留第二份清单）。
+AUTO_SWITCHES: frozenset[str] = SWITCHES - AUTO_EXCLUDE_SWITCHES
+
+#: 自动卡 ``perms_version`` 的**专用值**：与配置版本空间隔离（配置 version 恒 ≥ 0），
+#: 一眼可辨「这张卡不是按类型分的权」。refresh_perms 见它/见 auto_mode 即跳过。
+AUTO_PERMS_VERSION = -1
+
+
+def auto_perms() -> tuple[list[str], int]:
+    """算自动模式卡的 ``(perms, perms_version)``——**全开集 ＋ 专用版本值 -1**。
+
+    排序只为输出稳定（``has_perm`` 读的是集合语义，顺序无关）。
+    """
+    return sorted(AUTO_SWITCHES), AUTO_PERMS_VERSION
 
 
 # ============================================================
