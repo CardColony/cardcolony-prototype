@@ -37,6 +37,20 @@ from . import prompt_log
 BASE_DIR = Path(r"D:\AI_station")
 ALLOWED_ROOTS = (BASE_DIR.resolve(),)
 
+
+def _default_root() -> str:
+    """文件工具缺省根：优先 trading-workspace（生产既有口径），否则用 BASE_DIR。
+
+    为什么要有这个函数（而非直接写死某一个）：``BASE_DIR`` 在沙箱/测试里会被
+    覆盖（``run_instance_6702.py``、conftest 的 monkeypatch）。写死
+    ``BASE_DIR / "trading-workspace"`` 在覆盖后指向不存在的目录（沙箱实测连续
+    4 次报「路径不存在」）；写死 ``BASE_DIR`` 又把生产缺省从 trading-workspace
+    放宽到整个 D:\AI_station。两者各错一半。
+    本函数**在调用时求值**（不是 import 时），故对覆盖后的 BASE_DIR 同样成立。
+    """
+    sub = BASE_DIR / "trading-workspace"
+    return str(sub) if sub.is_dir() else str(BASE_DIR)
+
 # 凭证类文件：精确文件名黑名单（不做 *key* / *secret* 通配——那会误伤
 # tokenizer.py / api_key.py 这类正常源码；见 2026-10-03 11:35 取证）
 CREDENTIAL_NAMES = {
@@ -214,7 +228,7 @@ def _is_pruned(path: Path) -> bool:
 
 def list_files(path: str = "", limit: int = 200) -> dict[str, Any]:
     """列目录（一层）。凭证文件不显示；依赖/缓存目录不进入。"""
-    target, err = _resolve(path or str(BASE_DIR / "trading-workspace"))
+    target, err = _resolve(path or _default_root())
     if err:
         return err
     if not target.exists():
@@ -327,7 +341,7 @@ def search_files(keyword: str, path: str = "", limit: int = 50) -> dict[str, Any
     kw = (keyword or "").strip()
     if not kw:
         return {"error": "keyword 不能为空"}
-    start, err = _resolve(path or str(BASE_DIR / "trading-workspace"))
+    start, err = _resolve(path or _default_root())
     if err:
         return err
     if not start.exists():
@@ -440,7 +454,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "目录路径（相对 D:\\AI_station 或绝对）；缺省列 trading-workspace"},
+                    "path": {"type": "string", "description": f"目录路径（相对 {BASE_DIR} 或绝对）；缺省列 {_default_root()}"},
                     "limit": {"type": "integer", "description": "最多返回条目数，缺省 200"},
                 },
                 "required": [],
@@ -452,7 +466,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "文件路径（相对 D:\\AI_station 或绝对）"},
+                    "path": {"type": "string", "description": f"文件路径（相对 {BASE_DIR} 或绝对）"},
                     "para_start": {"type": "integer", "description": "起始行号（1 起），缺省 1"},
                     "para_end": {"type": "integer", "description": "结束行号，缺省到文件末尾"},
                 },
@@ -466,7 +480,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "keyword": {"type": "string", "description": "检索关键词"},
-                    "path": {"type": "string", "description": "起始目录或文件；缺省搜索 trading-workspace"},
+                    "path": {"type": "string", "description": f"起始目录或文件（相对 {BASE_DIR} 或绝对）；缺省搜索 {_default_root()}"},
                     "limit": {"type": "integer", "description": "最多返回命中条数，缺省 50"},
                 },
                 "required": ["keyword"],
@@ -481,7 +495,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "文件路径（相对 D:\\AI_station 或绝对）"},
+                    "path": {"type": "string", "description": f"文件路径（相对 {BASE_DIR} 或绝对）"},
                     "content": {"type": "string", "description": "写入的完整文本内容"},
                 },
                 "required": ["path", "content"],
