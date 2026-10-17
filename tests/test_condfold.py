@@ -14,7 +14,11 @@ from src.storage import memory_store
 
 
 def _mk_msg(seq: int, text: str) -> dict:
-    return {"seq": seq, "role": "user", "content": text, "timestamp": "2026-10-07T12:00:00"}
+    # [工具结果落会话 2026-10-17] 补 actor：真实会话块（session_facade.read）恒带
+    # actor 字段；_build_condense_user_prompt 现按 actor∈{human,assistant} 过滤，
+    # 缺 actor 的构造块会被误判为「无内容块」。本函数模拟真实块形态。
+    return {"seq": seq, "role": "user", "actor": "human",
+            "content": text, "timestamp": "2026-10-07T12:00:00"}
 
 
 # ---------------------------------------------------------------- V1 触发线/预算/批上限

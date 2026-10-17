@@ -692,6 +692,11 @@ async def step(state: RunState) -> StepOutcome:
     # 收集卡片 meta 用于权限判定
     cards_meta = card_tools._collect_card_meta(state.work_id)
 
+    # [工具结果落会话 2026-10-17] 本工具轮的会话块 B（工具结果）在内存收齐，
+    # 循环后与块 A（assistant+tool_calls）一次性落盘（§0.1 疑问3：原子落盘，
+    # 杜绝"A 已落、B 未落"的中间态——N1 红线：不得出现孤立 tool 块）。
+    _round_tool_blocks: list[dict[str, Any]] = []
+
     for i, tc in enumerate(tool_calls):
         name = tc.get("name", "")
         args = tc.get("arguments", {}) or {}
@@ -803,17 +808,38 @@ async def step(state: RunState) -> StepOutcome:
         # [T11-T6] tool 结果经 append_tool_result 入槽（归入当前轮）
         # [T-0010 §1.6] 回灌文本走单一投影函数（不各自 json.dumps）——
         # 否则失败信封的 {"code","message"} 会被当数据喂进模型上下文
+        _tool_call_id = f"call_{_run_tag}_{state.rounds}_{i}"
+        _rendered_result = card_tools.render_tool_result(tool_result)
         state.slot.append_tool_result({
             "role": "tool",
-            "tool_call_id": f"call_{_run_tag}_{state.rounds}_{i}",
-            "content": card_tools.render_tool_result(tool_result),
+            "tool_call_id": _tool_call_id,
+            "content": _rendered_result,
+        })
+        # [工具结果落会话 2026-10-17] 会话块 B（工具结果）：在内存收齐，
+        # 循环后与块 A 一次性落盘。tool_call_id 与 A 的调用一一配对。
+        _round_tool_blocks.append({
+            "actor": "tool",
+            "tool_call_id": _tool_call_id,
+            "content": _rendered_result,
         })
         # [E-探针制] 全文累积（口径④）：三席后置注入用，不折叠不截断
         # [T-0010 §1.6] 同一投影函数，两个调用点禁止各自拼装
         state.tool_full_texts.append(
-            f"{name}(target={target_id}) → " + card_tools.render_tool_result(tool_result)
+            f"{name}(target={target_id}) → " + _rendered_result
         )
 
+    # [工具结果落会话 2026-10-17] 本工具轮的会话块收齐后**一次性原子落盘**：
+    #   块 A（actor=assistant）：content=""，tool_calls=本轮全部调用（与轮槽同源）；
+    #   块 B×N（actor=tool）：tool_call_id 与 A 的调用一一配对，content=工具结果全文。
+    # 顺序：A 在前、B 紧随。同锁同写 ⇒ 不存在"A 已落、B 未落"的中间态
+    # （N1 红线：role=tool 必须紧跟其配对的 assistant(tool_calls)，否则端点 400）。
+    # turn/pair 由门面按所在回合分配（工具块不闭合轮 ⇒ 与同轮用户/回复同 turn）。
+    if _round_tool_blocks:
+        await session_facade.append_many(state.work_id, state.card_id, [
+            {"actor": "assistant", "content": "",
+             "tool_calls": _asst_msg["tool_calls"]},
+            *_round_tool_blocks,
+        ])
     state.user_prompt = "工具结果已返回。"
     # [信息流 Task2/打点 A92/A96] 同请求续跳：占位符只进模型不入用户流
     logger.info("[flow] 断点续跳 resume_kind=同请求续跳 no_user_visible=True round=%s card=%s",

@@ -327,10 +327,16 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     # 读 V2 文件得空 role ⇒ ['','']。改用生产统一读口 session_facade.read
     # （session_facade.py:335「统一入口：V1 委托旧读，V2 走 V2 解析」，V2 块含 role 键）。
     # 断言本体（两条、user→assistant、折叠不进会话）不动。
-    sess = await session_facade.read(wid, "card_001")
+    sess_all = await session_facade.read(wid, "card_001")
+    # [工具结果落会话 2026-10-17] 会话现含工具调用块（assistant+tool_calls）与工具
+    # 结果块（actor=tool）——本任务的正常落盘。过滤后仍是 user→assistant 两条，
+    # 且折叠替身（【结论】/【依据】）仍不进会话（约束 9 不破）。
+    sess = [m for m in sess_all if m.get("role") != "tool"
+            and not (m.get("role") == "assistant" and m.get("tool_calls"))]
     assert [m["role"] for m in sess] == ["user", "assistant"]
     assert "【结论】" not in sess[1]["content"]
     assert sess[0]["content"] == "端到端折叠场景提问"
+    assert all("【结论】" not in m.get("content", "") for m in sess_all), "折叠替身不进会话"
 
     # round 5 装配线：轮 1、2 已折叠（窗口 K=2 保轮 3、4），条数与配对完整
     wire5 = captured_wires[-1]

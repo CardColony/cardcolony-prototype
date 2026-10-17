@@ -351,6 +351,46 @@ REGION_TABLE: list[dict[str, Any]] = [
 ]
 
 
+def _heal_tool_pairs(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """工具块配对自愈（N1 红线：不得出现孤立 tool 块）。
+
+    [工具结果落会话 2026-10-17] 两处会打断配对：
+    ① 凝练水位 mark 恰好切在「块 A（assistant+tool_calls）」与其「块 B（tool）」
+       之间 ⇒ 投影从 B 起 ⇒ 孤立 tool；
+    ② 调用方 allowed_roles 排除 "tool"（如 card_draft 只收 user/assistant）
+       ⇒ A 的 tool 结果被滤掉 ⇒ A 的 tool_calls 无对应 tool 消息。
+    两者都会让端点 400（role=tool 必须紧跟其配对的 assistant(tool_calls)）。
+
+    自愈规则：
+    - assistant(tool_calls) 的**全部** tool_call_id 都有对应 tool 消息在场
+      → 整组保留；否则**剥离该 assistant 块的 tool_calls**（保留其 content
+      正文；content 为空则整块丢弃——空 assistant 块进请求无意义）；
+    - tool 消息若其 tool_call_id 不在任何「保留的 assistant(tool_calls)」里 → 丢弃。
+    """
+    tool_ids_present = {str(it.get("tool_call_id") or "")
+                        for it in items if it.get("role") == "tool"}
+    out: list[dict[str, Any]] = []
+    kept_call_ids: set[str] = set()
+    for it in items:
+        role = it.get("role")
+        if role == "assistant" and it.get("tool_calls"):
+            ids = [str(tc.get("id") or "") for tc in it["tool_calls"]]
+            if ids and all(i in tool_ids_present for i in ids):
+                kept_call_ids.update(ids)
+                out.append(it)
+            else:
+                # 配对不全：剥离 tool_calls，仅在有正文时保留为普通 assistant 块
+                content = str(it.get("content") or "")
+                if content.strip():
+                    out.append({k: v for k, v in it.items() if k != "tool_calls"})
+        elif role == "tool":
+            if str(it.get("tool_call_id") or "") in kept_call_ids:
+                out.append(it)
+        else:
+            out.append(it)
+    return out
+
+
 def project_history_messages(
     blocks: list[dict[str, Any]], mark: int | None = None,
     allowed_roles: set[str] | None = None,
@@ -358,6 +398,15 @@ def project_history_messages(
     """历史区的统一投影：按凝练水位切片、滤过程块、转 card-msg 头，保留思考回传。
 
     这是纯函数；卡片会话文件不改。mark 越界时回退全量，与旧投影口径一致。
+
+    [工具结果落会话 2026-10-17] 放行工具块（对齐通用 agent 的对话形态）：
+    - actor=assistant 且带 tool_calls → {"role":"assistant","content":…,"tool_calls":[…]}
+    - actor=tool → {"role":"tool","tool_call_id":…,"content":…}
+    其余不变（reasoning_content 保留、卡间块换头）。**工具结果块 behavior=""
+    必须放行（模型要看）；环节留痕块（triage/plan/step/final/revision）behavior
+    非空仍被上面 ``if m.get("behavior")`` 滤掉——这条区分不得改**（见 §2.3）。
+    出口经 ``_heal_tool_pairs`` 配对自愈（mark 切在 A/B 之间或 allowed_roles
+    排除 tool 时，避免出现孤立 tool 块 → 端点 400）。
     """
     source = blocks or []
     if mark is not None:
@@ -366,20 +415,26 @@ def project_history_messages(
     from . import card_msg
     for m in source:
         if m.get("behavior"):
+            # 环节留痕块（behavior 非空）不进投影；工具结果块 behavior="" 放行。
             continue
         role = str(m.get("role") or "")
         if allowed_roles is not None and role not in allowed_roles:
             continue
+        actor = str(m.get("actor") or "")
         item = {
             "role": role,
             "content": (card_msg.render_for_context(m["content"])
-                        if str(m.get("actor") or "").startswith("card:")
+                        if actor.startswith("card:")
                         else m["content"]),
         }
+        if actor == "assistant" and m.get("tool_calls"):
+            item["tool_calls"] = m["tool_calls"]
+        if actor == "tool":
+            item["tool_call_id"] = m.get("tool_call_id") or ""
         if m.get("reasoning_content"):
             item["reasoning_content"] = m["reasoning_content"]
         out.append(item)
-    return out
+    return _heal_tool_pairs(out)
 
 
 def _render_prior_for(ctx: RegionCtx, key: str) -> list[dict[str, Any]]:

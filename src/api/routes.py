@@ -1272,8 +1272,13 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
         if ev_verdict is None:
             for idx in range(len(prior) - 1, -1, -1):
                 if prior[idx].get("pair_id") == client_pair_id:
+                    # [工具结果落会话 2026-10-17] 「已有回复」判据＝**不带 tool_calls
+                    # 的 assistant 块**（真正的回复块）。工具调用块（actor=assistant
+                    # 但带 tool_calls）不是回复——否则一次中断在工具轮的回合会被误判
+                    # 「已回复」而不复用 pair_id，导致用户条重复落盘。
                     reuse_client_pair = not any(
-                        m.get("role") == "assistant" for m in prior[idx + 1:]
+                        m.get("role") == "assistant" and not m.get("tool_calls")
+                        for m in prior[idx + 1:]
                     )
                     break
         else:
