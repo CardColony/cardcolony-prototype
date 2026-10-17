@@ -1304,6 +1304,13 @@ def _log_trigger_task_done(task: "asyncio.Task") -> None:
 _TRIGGER_TASKS: set["asyncio.Task"] = set()
 
 
+# [自动模式 2026-10-17 · 回灌 5700 G4] 未回应信的**重新调起**上限（防打转：
+# 模型持续不答时不能无限烧）。这是**防环兜底**语义（同 auto_driver 的
+# _CARD_TREE_CYCLE_GUARD 口径），**不是轮次/墙钟/token 闸**——红线 1 不受
+# 影响：它只限「同一收件方的连续追问重调起」，与「模型能跑多少轮」无关。
+_RESPAWN_MAX = 3
+
+
 def _spawn_tracked(coro) -> "asyncio.Task":
     """create_task ＋ 强引用登记（完成即自动移除）。"""
     t = asyncio.create_task(coro)
@@ -1505,6 +1512,42 @@ async def schedule_card_message_triggers(state: RunState) -> None:
                     await _auto_reply_pending_letters(_wid, _tid, _pending)
                 except Exception as exc:  # noqa: BLE001 回发通道绝不抛出
                     logger.error("[S4] 自动回发通道异常 target=%s: %s", _tid, exc)
+                # [自动模式 2026-10-17 · 回灌 5700 G4 · 61b83fb 修法②]
+                # **收口闸（兜底层）**：回合已收口但收件箱**仍**有 reply_expected
+                # 的待处理信（＝模型这轮没答；update_goal 的 complete 闸只拦
+                # auto 卡，非 auto 卡没有 update_goal 可拦——这里是两类卡共用
+                # 的兜底）⇒ 重新记调起意图（TRIGGERS），下一次任意回合收口即被
+                # K3 补齐调起。依据：TRIGGERS 是请求级收集、schedule_card_message
+                # _triggers 在每次回合收口都被调（routes._run_message 尾）⇒ 写入
+                # 必然被消费；信在收件箱 pending 是持久保证，create_task 丢失也
+                # 不丢信。防打转：仅对连续追问限次（_RESPAWN_MAX），超限转 ops
+                # 留痕不再自动调起（交人工/发问方 pause 处置）——**限次是防环
+                # 兜底，不是轮次/墙钟/token 闸**（红线 1 不受影响）。
+                try:
+                    still = await card_db.list_pending(_wid, _tid)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("[K3] 收口复查待处理失败 target=%s: %s", _tid, exc)
+                    still = []
+                _still_needs = [it for it in (still or [])
+                                if card_msg.reply_expected_of(str((it or {}).get("type") or ""))]
+                if _still_needs:
+                    _n_before = len([m for k, ms in card_msg.TRIGGERS.items()
+                                     if k[0] == _wid and k[1] == _tid for m in ms])
+                    if _n_before >= _RESPAWN_MAX:
+                        session_ops.ops_log("card_msg_unanswered_giveup", _wid, _tid,
+                                            {"pending": [str((it or {}).get("msg_id") or "")
+                                                         for it in _still_needs]})
+                        logger.warning("[K3] 未回应信连续重调超限，转留痕 target=%s n=%d",
+                                       _tid, _n_before)
+                    else:
+                        card_msg.TRIGGERS.setdefault((_wid, _tid), []).extend(
+                            str((it or {}).get("msg_id") or "") for it in _still_needs)
+                        session_ops.ops_log("card_msg_respawn", _wid, _tid,
+                                            {"msg_ids": [str((it or {}).get("msg_id") or "")
+                                                         for it in _still_needs],
+                                             "attempt": _n_before + 1})
+                        logger.info("[K3] 回合结束仍有待回应信，重新调起 target=%s n=%d",
+                                    _tid, _n_before + 1)
                 return
             status = getattr(resp, "status_code", None)
             if status == 409:

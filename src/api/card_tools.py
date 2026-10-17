@@ -471,11 +471,86 @@ async def _h_update_goal(work_id: str, current_id: str,
     except PermissionError as exc:
         return err("denied", str(exc))
     state = _GOAL_ACTION_TO_STATE[action]
+
+    # [G4 · 61b83fb/b6e339a · BUG-AM-004 修法②] 收口前查收件箱：本卡仍有
+    # reply_expected 的**实质未回应**询问（典型 msg_ask）⇒ 拒 complete——
+    # 「不许带着未回答的询问收工」（注册表口径：收到 msg_ask 不许沉默，沉默
+    # 会让发问方永远等）。pause/blocked 不拦（说清在等什么本身是合法出口）。
+    # complete 是唯一的「宣称全部做完」动作，须闭环放行。
+    # 判据纯机械（_unanswered_asks）：pending 里有 reply_expected 且全账本
+    # 无 answer 指向它。拒绝信息自带出路（验收纪律 4：拒绝必须自带出路，
+    # 否则自主模型会换姿势重试甚至去读源码）。
+    from ..storage import card_db
+
+    async def _unanswered_asks() -> list[dict[str, str]]:
+        """本卡收到的、**实质未回应**的询问（reply_expected 且全账本无 answer 指向它）。
+
+        闸与 blocked 通知共用同一判据（修法甲口径）：answer 一落库即算回应，
+        不依赖收件方后续回合收口 ⇒ 无陈旧窗（曾造出 work_027 双卡死锁）。
+        """
+        try:
+            pend = await card_db.list_pending(work_id, current_id)
+            all_rows = await card_db.list_inbox(work_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[自动模式] 查未回应询问失败 card=%s: %s", current_id, exc)
+            return []
+        answered = set()
+        for r in (all_rows or []):
+            rt = str((r or {}).get("reply_to") or "")
+            if rt:
+                answered.add(rt)
+        return [it for it in (pend or [])
+                if card_msg.reply_expected_of(str((it or {}).get("type") or ""))
+                and str((it or {}).get("msg_id") or "") not in answered]
+
+    if action == "complete":
+        _unanswered = await _unanswered_asks()
+        if _unanswered:
+            _ids = [str((it or {}).get("msg_id") or "") for it in _unanswered]
+            return err("validation",
+                       "收口被拒：你还有未回应的询问（不许沉默——发问方在等你的回答，"
+                       f"收到 msg_ask 不答就收工会把对方晾死）。未回应 msg_id：{_ids}。"
+                       "出路：先用 send_card_message 发 msg_answer（reply_to 填上面的 msg_id，"
+                       "内容＝你的回答），再调 update_goal(complete)。"
+                       "若确实答不了，用 update_goal(blocked, reason=...) 说明卡在哪——"
+                       "blocked 后系统会把你的理由自动通知发问方，不是沉默。")
+
     note = f"[自动模式] 模型声明 {action}" + (f"：{reason}" if reason else "")
     res = await card_store.update_card(
         work_id, current_id, {"goal_state": state}, note)
     if isinstance(res, dict) and res.get("error"):
         return err("internal", str(res["error"]))
+
+    # [G4 · b6e339a 补记④] blocked ⇒ 系统自动把理由**通知发问方**。
+    # work_028 实测：专家卡被闸逼到 blocked（合法出口），但发问方无从得知对方
+    # 弃答——这次靠根卡机灵去读影子才发现，换个模型就会一直 pause 挂死。
+    # 通知走流程专用薄壳 send_card_message（msg_notify：reply_expected=false，
+    # 不会再造义务 ⇒ 无循环）；收件方＝每条未回应询问的发件卡；发不出只留痕
+    # 不阻断 blocked 本身。
+    if action == "blocked":
+        _asks = await _unanswered_asks()
+        _title = str((cards.get(current_id) or {}).get("title") or current_id)
+        for _sender in {str((it or {}).get("from_card") or "") for it in _asks}:
+            if not _sender or _sender == current_id:
+                continue
+            _ids = [str((it or {}).get("msg_id") or "") for it in _asks
+                    if str((it or {}).get("from_card") or "") == _sender]
+            try:
+                _nres = await send_card_message(
+                    work_id, current_id, target_id=_sender, msg_type="msg_notify",
+                    content=(
+                        f"系统通知：《{_title}》（{current_id}）已声明 blocked（做不下去）。"
+                        f"其上报理由：{reason or '（未填）'}。\n"
+                        f"你此前发给它的询问（msg_id：{_ids}）未获回答——它不会自己回信了。\n"
+                        f"请据此调整：可沿通信线读它的对话/影子取细节，或改换手段；"
+                        f"若你要等它，本卡不会自动恢复。"
+                    ))
+                if isinstance(_nres, dict) and _nres.get("error"):
+                    logger.warning("[自动模式] blocked 通知发送失败 card=%s→%s: %s",
+                                   current_id, _sender, _nres.get("error"))
+            except Exception as exc:  # noqa: BLE001 通知失败不阻断 blocked
+                logger.warning("[自动模式] blocked 通知异常 card=%s→%s: %s",
+                               current_id, _sender, exc)
     # 目标终止 ⇒ **释放执行锁**（串行模式下队列前进；并行模式为 no-op）
     from . import serial_gate
     serial_gate.release(work_id, current_id)
