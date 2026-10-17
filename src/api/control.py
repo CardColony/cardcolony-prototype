@@ -77,3 +77,77 @@ def discard_stop(work_id: str, card_id: str) -> None:
 def pending_stop(work_id: str, card_id: str) -> bool:
     """诊断用：当前是否有未消费的停止置位（不改状态）。"""
     return (work_id, card_id) in _stop_requests
+
+
+# ===========================================================================
+# [自动模式 2026-10-17 · 回灌 5700 块0.3 · 方案 §3.7 / 任务书 §块3]
+# 停止扩为**三件**（缺一即失效）
+#
+#   ① 停当前这一轮   —— 现有 ``request_stop``（consume-once 置位，步边界消费）
+#   ② 关自动继续     —— ``goal_state → paused``；否则驱动器立刻又起一轮，等于没停
+#   ③ 级联停自动子卡 —— 否则你按了停，子卡还在后台转
+#   （附带）释放执行锁 —— 否则串行队列后面全部饿死（方案 §8）
+#
+# 三件由 ``routes.post_work_stop`` 一次调齐：``request_stop`` ＋ ``stop_auto``。
+# ===========================================================================
+
+def _auto_subtree(work_id: str, card_id: str) -> list[str]:
+    """本卡子树内**全部 auto 卡**的 card_id（含自身）。走已加载的卡 meta，零逐卡连接。"""
+    from ..storage import card_store
+
+    try:
+        metas = card_store.iter_card_metas(work_id)
+    except Exception:  # noqa: BLE001 读不出 ⇒ 只处理自身
+        metas = {}
+    # 沿 parent 链收集后代（visited 防环）
+    children: dict[str, list[str]] = {}
+    for cid, m in metas.items():
+        children.setdefault(str(m.get("parent") or ""), []).append(cid)
+    out: list[str] = []
+    stack = [card_id]
+    seen: set[str] = set()
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        m = metas.get(cur)
+        if cur == card_id or (m is not None and bool(m.get("auto_mode"))):
+            out.append(cur)
+        stack.extend(children.get(cur, []))
+    return out
+
+
+async def stop_auto(work_id: str, card_id: str) -> dict[str, Any]:
+    """自动模式停止的 ②③ 两件 ＋ 释放执行锁。**幂等**（无 auto 卡 ⇒ 全 no-op）。
+
+    - ② 本卡（若 auto）``goal_state → paused``；
+    - ③ 子树内**自动子卡**一并 ``goal_state → paused``（级联）；
+    - 释放该 work 的执行锁（串行模式下队列不饿死）。
+    """
+    from ..storage import card_store
+    from . import serial_gate
+
+    paused: list[str] = []
+    for cid in _auto_subtree(work_id, card_id):
+        m = card_store._meta_of(work_id, cid) or {}
+        if not bool(m.get("auto_mode")):
+            continue
+        if str(m.get("goal_state") or "") != "active":
+            continue
+        try:
+            await card_store.update_card(
+                work_id, cid, {"goal_state": "paused"},
+                "[自动模式] 停止：关自动继续",
+            )
+            paused.append(cid)
+        except Exception as exc:  # noqa: BLE001 停不动不抛（停止路径必须走完）
+            logger.warning("[control] 关自动继续失败 work=%s card=%s: %s",
+                           work_id, cid, exc)
+    released = serial_gate.release_work(work_id)
+    if paused or released:
+        session_ops.ops_log("auto_stop", work_id, card_id,
+                            {"paused": paused, "lock_released": released})
+    logger.info("[control] 自动模式停止 work=%s card=%s paused=%s released=%s",
+                work_id, card_id, paused, released)
+    return {"paused": paused, "lock_released": released}

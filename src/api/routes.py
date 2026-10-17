@@ -32,7 +32,7 @@ from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, simple_service, text_tool_rescue, tool_fold
+from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, serial_gate, simple_service, text_tool_rescue, tool_fold
 
 logger = logging.getLogger("api.routes")
 
@@ -927,6 +927,15 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     if str(_meta.get("card_type") or "") == "coder" \
             and str(_meta.get("state") or "") == "completed":
         return _err(400, "编程卡已完工，不再激活；新任务请新建编程卡")
+    # [自动模式 2026-10-17 · 回灌 5700 块0.3 · D2] auto 卡收到**首条消息** ⇒
+    # 该消息成为 goal、goal_state=active（起跑条件齐备；本轮跑完后驱动器自动
+    # 续轮）。已有目标 ⇒ 不动（中途引导，目标不变——方案 §3.4）。非 auto 卡
+    # ⇒ no-op（红线 2：非 auto 卡零变化）。
+    try:
+        await auto_driver.ensure_goal_from_message(work_id, card_id, req.content)
+    except Exception as exc:  # noqa: BLE001 目标设定失败不阻断本次消息
+        logger.warning("[auto] 首条消息设定目标失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
     return await _run_message(work_id, card_id, req.content, req.pair_id,
                               op=req.op or "")
 
@@ -1056,7 +1065,18 @@ async def resend_work_message(work_id: str, card_id: str, seq: int):
 async def post_work_stop(work_id: str, card_id: str):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    return control.request_stop(work_id, card_id)
+    # [自动模式 2026-10-17 · 回灌 5700 块0.3] 停止三件：①停当轮（request_stop，
+    # consume-once）②关自动继续＋级联子卡＋释放执行锁（stop_auto）。非 auto 卡
+    # ⇒ stop_auto 全 no-op，停止行为逐字不变（红线 2）。合并返回（前端一次拿到
+    # 全量结果）。
+    res = control.request_stop(work_id, card_id)
+    try:
+        auto_res = await control.stop_auto(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 停止路径绝不抛
+        logger.error("[control] stop_auto 异常 work=%s card=%s: %s",
+                     work_id, card_id, exc)
+        auto_res = {"paused": [], "lock_released": False}
+    return {**res, **auto_res}
 
 
 # [实时反馈 2026-10-02] 调用进度查询：纯展示层，前端轮询用。
@@ -1210,15 +1230,48 @@ async def _run_message(work_id: str, card_id: str, content: str,
                        work_id, card_id, holder)
         event_stream.reset_stream_context(_stream_ctx_token)
         return _err(409, f"卡片回合进行中（{holder}），请稍后重试")
+    # [自动模式 2026-10-17 · 回灌 5700 块0.3 · 方案 §3.8] 起回合前经**执行闸**：
+    # 串行模式下拿不到锁＝**排队等待**（await，不是 409——这是与上面卡互斥体的
+    # 关键差别）；并行模式直接过；同卡已持有（＝本卡目标生命周期内继续跑）⇒
+    # no-op。取在互斥体之后：同卡重入被互斥体挡在前面，闸上不会出现同卡双取。
+    await serial_gate.acquire(work_id, card_id)
+    failed = False
     try:
-        return await _run_message_inner(work_id, card_id, content, client_pair_id,
-                                        append_user=append_user, op=op)
+        result = await _run_message_inner(work_id, card_id, content, client_pair_id,
+                                          append_user=append_user, op=op)
+    except BaseException:
+        # 异常＝回合未正常收口（dsh 口径：异常结果**不自动重试**）⇒ 本卡不再起轮，
+        # 执行锁必须在 finally 里放掉，否则串行队列全部饿死。
+        failed = True
+        raise
     finally:
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
         control.discard_stop(work_id, card_id)
         session_facade.turn_release(work_id, card_id, turn_owner)
         event_stream.reset_stream_context(_stream_ctx_token)
+        if failed:
+            serial_gate.release(work_id, card_id)
+    # ---- [自动模式 2026-10-17 · 回灌 5700 块0.3 · 红线 5] 驱动检查排在
+    # **互斥体释放之后** ----
+    # 结构＝「取结果 → finally 释放 → 后置 → 返回」（编排语义逐字不变：返回同一个
+    # result）。顺序不可调换：互斥体未释放就起下一轮 ⇒ turn_try_acquire 直接 409，
+    # 驱动器空转。
+    # 执行锁：本卡还要继续跑目标 ⇒ **保留**（「一张卡的整个目标生命周期」持有，
+    # 满足 U6/U8「一张子卡跑完再下一张」）；否则释放，让排队者前进。
+    try:
+        keep = auto_driver.will_continue(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 判据异常不得吃掉回合结果
+        logger.warning("[auto] 回合末执行锁判定异常 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        keep = False
+    if not keep:
+        serial_gate.release(work_id, card_id)
+    try:
+        await auto_driver.after_turn(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 驱动器异常不影响本回合返回
+        logger.error("[auto] 驱动检查异常 work=%s card=%s: %s", work_id, card_id, exc)
+    return result
 
 
 async def _run_message_inner(work_id: str, card_id: str, content: str,
