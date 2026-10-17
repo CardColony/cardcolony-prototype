@@ -444,12 +444,3 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
 .app-nav > .home-new-project { padding: 12px 10px 0; }
 .home-new-project .btn { width: 100%; font-size: 13px; padding: 7px 10px; }
 
-/* ---- 草稿「未保存」小标（惰性新建 2026-10-17）----
-   草稿项目 / 草稿卡在落库前挂此标：画布页面包屑（#crumb）、对话页面包屑（#chatCrumb）
-   与右栏标题（.ws-title）。复用现有次要色变量，不引入新色板。 */
-.draft-badge {
-  display: inline-block; margin-left: 6px; padding: 0 6px;
-  font-size: 11px; line-height: 16px; border-radius: 8px;
-  color: var(--dim); background: var(--panel); border: 1px solid var(--border);
-  vertical-align: middle; white-space: nowrap;
-}
