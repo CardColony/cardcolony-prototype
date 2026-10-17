@@ -10,8 +10,9 @@
 
 铁律一：沙箱内跑，不碰真实 works/。
 """
-import pytest
 from __future__ import annotations
+
+import pytest
 
 import json
 
