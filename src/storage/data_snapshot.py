@@ -104,6 +104,78 @@ def _copy_protected_file(p: Path, dst: Path) -> None:
     shutil.copy2(p, dst)
 
 
+# ---------------------------------------- Windows 文件锁竞态（快照侧）
+# 判据与预算**全部复用** session_facade（P1 已落地），不另写第三份。
+# 为何惰性 import：session_facade → card_store → data_snapshot 是同包真环，
+# 模块级 import 会成环；本仓既有惯例同样是函数内 import。
+
+
+def _race_path(exc: OSError, dst: Path) -> Path:
+    """撞锁的是哪个文件——优先用异常自带的 ``filename``。
+
+    实测：``copy2`` 撞**只读侧**的源（读被放行）不失败；真正被拒的是写目标
+    那一步（errno=13, winerror=None）。但源若被 share=0 独占（连读都拒），
+    失败点又回到源上。故不能想当然只查一个：异常指名了哪个就读哪个。
+    """
+    fn = getattr(exc, "filename", None)
+    if isinstance(fn, str) and fn:
+        try:
+            return Path(fn)
+        except (TypeError, ValueError):
+            return dst
+    return dst
+
+
+def _copy_with_lock_retry(p: Path, dst: Path, wid: str) -> str | None:
+    """单个文件进快照批次；撞 Windows 锁竞态做有界重试＋指数退避。
+
+    返回 ``None``＝成功；返回错误串＝该文件失败（**不抛任何异常**）。
+    非锁竞态（真无权限、ENOENT…）**零退避立即判失败**，不得让重试掩盖真错。
+    """
+    from .session_facade import (
+        _LOCK_RETRY_ATTEMPTS, _LOCK_RETRY_BASE_SLEEP,
+        _is_windows_lock_race, _log_lock_race,
+    )
+
+    what = f"快照拷贝 {wid}/{p.name}"
+    for attempt in range(_LOCK_RETRY_ATTEMPTS):
+        try:
+            _copy_protected_file(p, dst)
+            return None
+        except PermissionError as exc:
+            probe = _race_path(exc, dst)
+            race = _is_windows_lock_race(exc, probe)
+            if attempt == _LOCK_RETRY_ATTEMPTS - 1 or not race:
+                if attempt and race:
+                    _log_lock_race(exc, probe, attempt, what, give_up=True)
+                _drop_partial(dst)
+                return f"{type(exc).__name__}: {exc}"
+            if not attempt:
+                _log_lock_race(exc, probe, attempt, what)
+            time.sleep(_LOCK_RETRY_BASE_SLEEP * (2 ** attempt))
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 SystemExit＝沙箱删除守卫
+            # 非锁竞态（ENOENT／只读／IO…）：**零退避**立即判该文件失败。
+            # 必须在这里收口：文件在列目录后、拷贝前消失（实测 cards.db-journal）
+            # 会让一个文件的消失废掉整批——那正是本批要修的「整批作废」。
+            _drop_partial(dst)
+            return f"{type(exc).__name__}: {exc}"
+    return "重试预算耗尽"  # pragma: no cover  (循环内必 return)
+
+
+def _drop_partial(dst: Path) -> None:
+    """失败后清掉可能写了一半的目标文件（尽力而为，绝不外抛）。
+
+    为什么必须清：批次目录每次按时间戳新建，目标此前不存在，删除不碰历史好数据；
+    而留着半截文件比缺文件更坏——恢复时会拿到一个静默损坏的副本。
+    """
+    try:
+        if dst.exists():
+            dst.unlink()
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 尽力而为
+        logger.warning("半截快照文件清理失败（不影响对账）: %s (%s: %s)",
+                       dst, type(exc).__name__, exc)
+
+
 def _safe_rmtree(p: Path) -> bool:
     """删一个旧批次；失败只记日志返回 False，**绝不外抛**。
 
@@ -194,8 +266,10 @@ def snapshot_sync(reason: str = "", work_id: str | None = None) -> dict:
 
     返回 {"ok", "work_id", "files", "dir", "daily", "skipped", "reason"}
     """
+    # failed：本次**哪些文件没进快照**的可对账清单（逐文件失败才非空）。
+    # ok 的口径不变＝「这轮快照流程跑完了」，部分缺失另由 failed 表达。
     result = {"ok": False, "work_id": "-", "files": 0, "dir": "", "daily": False,
-              "skipped": False, "reason": reason}
+              "skipped": False, "reason": reason, "failed": []}
     try:
         files = _iter_protected_files()
         if not files:
@@ -222,6 +296,7 @@ def snapshot_sync(reason: str = "", work_id: str | None = None) -> dict:
         stamp = _now_stamp()
         total = 0
         changed = False
+        all_failed: list[dict] = []
         for wid, paths in groups.items():
             fp = _fingerprint(paths)
             if fps.get(wid) == fp:
@@ -229,26 +304,55 @@ def snapshot_sync(reason: str = "", work_id: str | None = None) -> dict:
                 continue
             changed = True
             bdir = _batch_dir(wid, stamp)
+            # 单文件失败不再中断整批：逐个拷，失败的记账，其余照拷
+            failed: list[dict] = []
             for p in paths:
                 rel = p.relative_to(BASE_DIR)
-                dst = bdir / rel
-                _copy_protected_file(p, dst)
-                total += 1
+                err = _copy_with_lock_retry(p, bdir / rel, wid)
+                if err is None:
+                    total += 1
+                else:
+                    failed.append(
+                        {"work": wid, "file": str(rel), "stage": "batch",
+                         "error": err})
             # 每日首份另存日备（只拷一次，避免膨胀）
             daily = SNAPSHOT_ROOT / wid / f"daily_{_day_stamp()}"
             if not daily.exists():
+                daily_failed = []
                 for p in paths:
                     rel = p.relative_to(BASE_DIR)
-                    dst = daily / rel
-                    _copy_protected_file(p, dst)
-                result["daily"] = True
-            fps[wid] = fp
-            _prune_batches(wid)
+                    err = _copy_with_lock_retry(p, daily / rel, wid)
+                    if err is not None:
+                        daily_failed.append(
+                            {"work": wid, "file": str(rel), "stage": "daily",
+                             "error": err})
+                if daily_failed:
+                    # 日备目录本轮新建（上方 not daily.exists() 闸），缺文件就整份作废：
+                    # 留着会被明日当成「今日已备」而永不补齐。
+                    _safe_rmtree(daily)
+                    failed.extend(daily_failed)
+                else:
+                    result["daily"] = True
+            all_failed.extend(failed)
+            if failed:
+                # [可对账] 这批缺了哪几个文件：日志一条说清，别只留笼统的「快照异常」。
+                # 分子取**去重后的缺失文件数**（同一文件可能在批次与日备两阶段各记一次）。
+                missing = {f["file"] for f in failed}
+                logger.warning(
+                    "快照部分文件失败: %s (%d/%d): %s", wid, len(missing), len(paths),
+                    "; ".join(f"{f['stage']}:{f['file']}({f['error']})"
+                              for f in failed)[:800])
+            else:
+                # 只有**整批完整**才置指纹：缺文件的批次不许被当成完整批次
+                # 而永久跳过（下次照常重试这批）；修剪同理。
+                fps[wid] = fp
+                _prune_batches(wid)
 
         _save_fingerprints(fps)
         result.update({"ok": True, "work_id": ",".join(groups.keys()),
                        "files": total, "dir": str(SNAPSHOT_ROOT / stamp),
-                       "skipped": not changed})
+                       "skipped": not changed,
+                       "failed": all_failed})
         if changed:
             logger.info("快照完成: %s 文件=%s 原因=%s", result["work_id"], total, reason)
         else:
