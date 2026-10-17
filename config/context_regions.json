@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "version": "context-regions-v5",
+    "version": "context-regions-v6",
     "created_at": "2026-10-15",
     "taskbook": "docs/上下文底座化-方案-20261015.md",
     "purpose": "上下文统一接管控制面：上下文区与请求通道的全局启停/排序",
@@ -14,21 +14,73 @@
     "takeover": "所有 registered region 的运行 owner 是 context base；source_owner 仅说明原始数据来源"
   },
   "regions": {
-    "instruction": { "enabled": true, "order": 0 },
-    "rule": { "enabled": true, "order": 85 },
-    "card_duty": { "enabled": true, "order": 90 },
-    "type_thinking": { "enabled": true, "order": 95 },
-    "card_list": { "enabled": true, "order": 100 },
-    "current_card": { "enabled": true, "order": 150 },
-    "region_guide": { "enabled": true, "order": 155 },
-    "child_status": { "enabled": true, "order": 170 },
-    "memory": { "enabled": true, "order": 200 },
-    "relations": { "enabled": true, "order": 250 },
-    "history": { "enabled": true, "order": 300 },
-    "tool_turn": { "enabled": true, "order": 900 },
-    "user_message": { "enabled": true, "order": 999 },
-    "judgment_protocol": { "enabled": true, "order": 1000 },
-    "context_tail": { "enabled": true, "order": 1010 },
-    "seat_identity": { "enabled": true, "order": 1020 }
+    "instruction": {
+      "enabled": true,
+      "order": 0
+    },
+    "rule": {
+      "enabled": true,
+      "order": 85
+    },
+    "card_duty": {
+      "enabled": true,
+      "order": 90
+    },
+    "type_thinking": {
+      "enabled": true,
+      "order": 95
+    },
+    "card_list": {
+      "enabled": true,
+      "order": 100
+    },
+    "current_card": {
+      "enabled": true,
+      "order": 150
+    },
+    "goal": {
+      "enabled": true,
+      "order": 152
+    },
+    "region_guide": {
+      "enabled": true,
+      "order": 155
+    },
+    "child_status": {
+      "enabled": true,
+      "order": 170
+    },
+    "memory": {
+      "enabled": true,
+      "order": 200
+    },
+    "relations": {
+      "enabled": true,
+      "order": 250
+    },
+    "history": {
+      "enabled": true,
+      "order": 300
+    },
+    "tool_turn": {
+      "enabled": true,
+      "order": 900
+    },
+    "user_message": {
+      "enabled": true,
+      "order": 999
+    },
+    "judgment_protocol": {
+      "enabled": true,
+      "order": 1000
+    },
+    "context_tail": {
+      "enabled": true,
+      "order": 1010
+    },
+    "seat_identity": {
+      "enabled": true,
+      "order": 1020
+    }
   }
 }

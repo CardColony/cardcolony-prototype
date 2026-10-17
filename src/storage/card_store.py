@@ -933,6 +933,17 @@ async def create_card(
             await shadow_store.derive_shadow(work_id, card_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("影子派生失败（不阻断建卡）work=%s card=%s: %s", work_id, card_id, exc)
+        # [自动模式 2026-10-17 · 回灌 5700 块0.4 · D2 建卡即起跑] 子卡继承到 auto
+        # 且带目标 ⇒ 点火。放在 create_card 内（而非各调用方）⇒ HTTP 与模型工具
+        # 两条建卡入口**自动覆盖**。延迟 import：storage 不依赖 api（auto_driver
+        # 只 import storage/permissions）。非 auto 卡 ⇒ kick 立即返回 None
+        # （零行为变化，红线 2）。
+        try:
+            from ..api import auto_driver
+            auto_driver.kick(work_id, card_id)
+        except Exception as exc:  # noqa: BLE001 起跑失败不阻断建卡
+            logger.warning("自动模式起跑失败（不阻断建卡）work=%s card=%s: %s",
+                           work_id, card_id, exc)
         return await read_card(work_id, card_id)
     except CardLockedError:
         raise

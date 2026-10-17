@@ -75,6 +75,18 @@ OP_UPDATE_STATUS = "update_status"
 # 同时为「未来在特定模式下开放给模型」留口——加一种 op 即多一组专用工具。
 OP_ONLY_TOOLS: frozenset[str] = frozenset({"propose_status"})
 
+# ============================================================
+# [自动模式 2026-10-17 · 回灌 5700 块0.4] 末段追加 · 自动模式专用工具（非卡片内挂）
+#
+# 与 CODER_ONLY_TOOLS（按卡类型收敛）/ ROOT_ONLY_TOOLS（按卡 id 收敛）/ 
+# OP_ONLY_TOOLS（按 op 收敛）不同——本类**压根不进常规工具面**（不进四段过滤），
+# 只在 ``auto_mode=1`` 的卡上由 build_tool_schemas 在四段之后追加。
+# ⇒ 常规卡片工具面**逐字不变**（红线 2 / 块0.4 硬判据 1）。
+# ============================================================
+#: 块 0.4：update_goal（声明目标态——「停」的唯一权威在模型）。
+#: G2 起扩为三件：＋send_card_message/read_inbox（把卡间通信交回模型）。
+AUTO_ONLY_TOOLS: frozenset[str] = frozenset({"update_goal"})
+
 # [权限底座重做 2026-10-12] 工具组→工具名映射（build_tool_schemas 过滤面）。
 # 由卡上的 tools_file / tools_web 两个开关决定下发哪几组：缺哪个开关就不下发
 # 哪组。SEARCH 开关本次仍无接线点（无对应工具组），保留不发。
@@ -134,6 +146,11 @@ TOOL_SWITCH: dict[str, str] = {
     "report_done": policy.SWITCH_TOOLS_FILE,
     "delete_card": policy.SWITCH_DELETE,
     "create_card": policy.SWITCH_CREATE_CHILD,
+    # [自动模式 2026-10-17 · 回灌 5700 块0.4] update_goal 挂 plan（「建计划/改计划/
+    # 推进步骤」语义最近——【起草】可推翻，Open Item TC-6.4）。★ 它**不进常规
+    # 工具面**：被 AUTO_ONLY_TOOLS 从工具池里排除，只在 auto_mode=1 的卡上于
+    # 四段过滤之后追加（同「非卡片内挂」手法）。
+    "update_goal": policy.SWITCH_PLAN,
     # [编程卡 2026-10-15 · §六块2] create_coder_card 挂既有 create_child（建
     # coder 子卡走同一建卡关口）：无 create_child 的类型（tool/coder）压根看不见
     # 它，有 create_child 的（project/sub_project）按下发面规则可见。
@@ -204,7 +221,7 @@ TOOL_SWITCH: dict[str, str] = {
 #   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
 #   「注册表工具集/schema 变更」（T12-R3 纪律）。
 #   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
-TOOL_TABLE_VERSION = "tools-tc-8"
+TOOL_TABLE_VERSION = "tools-tc-9"
 
 
 # ============================================================
@@ -395,6 +412,10 @@ async def _h_create_card(work_id: str, current_id: str,
         work_id, title, "模型生成",
         parent=target_parent,
         conclusion=str(arguments.get("content", "") or ""),
+        # [自动模式 2026-10-17 · 回灌 5700 块0.4/D2] 派活：把子卡的目标一并给出
+        # （建卡即起跑，子卡继承本卡 auto 后由 auto_driver 点火）。缺省空串 ⇒
+        # 行为与改造前一致。
+        goal=str(arguments.get("goal", "") or ""),
     )
     if "error" in result:
         return result
@@ -410,6 +431,54 @@ async def _h_create_card(work_id: str, current_id: str,
         "parent": result["meta"]["parent"],
         "shadow": "已派生影子卡（过程记录，你不用管）",
     }
+
+
+# ============================================================
+# [自动模式 2026-10-17 · 回灌 5700 块0.4] update_goal（自动模式卡专用）
+#
+# 「停」的**唯一权威在模型**（方案 §2.2）：模型必须显式声明 完成/暂停/卡住，
+# 否则驱动器一直起下一轮。本工具是那个显式声明的出口。
+# 下发＝**非卡片内挂**的专用工具（AUTO_ONLY_TOOLS）：不进四段过滤，只在
+# auto_mode=1 的卡上于四段之后追加 ⇒ 常规卡片工具面逐字不变。
+# 执行层双保险：①卡必须 auto_mode=1 ②policy.check（挂 plan 开关）。
+# ============================================================
+
+#: action → goal_state 的映射（三态；``active`` 不由本工具设置）。
+_GOAL_ACTION_TO_STATE = {
+    "complete": "complete",
+    "pause": "paused",
+    "blocked": "blocked",
+}
+
+
+async def _h_update_goal(work_id: str, current_id: str,
+                         arguments: dict[str, Any],
+                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """声明目标态：complete（完成）/ pause（暂停）/ blocked（卡住）。"""
+    action = str(arguments.get("action", "") or "").strip().lower()
+    reason = str(arguments.get("reason", "") or "").strip()
+    if action not in _GOAL_ACTION_TO_STATE:
+        return err("validation",
+                   f"action 非法: {action or '(空)'}（只允许 complete/pause/blocked）")
+    # ① 卡必须 auto_mode=1（双保险之一）
+    meta = cards.get(current_id) or {}
+    if not bool(meta.get("auto_mode")):
+        return err("denied", "本卡不是自动模式卡，update_goal 不可用")
+    # ② 执行层关口（同 create_card 等：policy.check，挂 plan 开关）
+    try:
+        policy.check(current_id, current_id, policy.SWITCH_PLAN, cards)
+    except PermissionError as exc:
+        return err("denied", str(exc))
+    state = _GOAL_ACTION_TO_STATE[action]
+    note = f"[自动模式] 模型声明 {action}" + (f"：{reason}" if reason else "")
+    res = await card_store.update_card(
+        work_id, current_id, {"goal_state": state}, note)
+    if isinstance(res, dict) and res.get("error"):
+        return err("internal", str(res["error"]))
+    # 目标终止 ⇒ **释放执行锁**（串行模式下队列前进；并行模式为 no-op）
+    from . import serial_gate
+    serial_gate.release(work_id, current_id)
+    return {"ok": True, "action": action, "goal_state": state, "reason": reason}
 
 
 # ============================================================
@@ -1880,6 +1949,40 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_propose_status,
         readonly=True,
     ),
+    # [自动模式 2026-10-17 · 回灌 5700 块0.4] 第 23 件工具：update_goal
+    # （声明目标态——自动模式「停」的唯一权威在模型）。**非卡片内挂**：列
+    # AUTO_ONLY_TOOLS，build_tool_schemas 在四段过滤之后、仅 auto_mode=1 的
+    # 卡追加 ⇒ 常规工具面逐字不变（块0.4 硬判据 1）。
+    # TOOL_SWITCH 挂 plan 只为满足「注册表每件工具都要有开关映射」的完备性
+    # 不变量（执行层双保险见 _h_update_goal）。
+    "update_goal": ToolDef(
+        schema={
+            "name": "update_goal",
+            "description": (
+                "（自动模式专用）声明你的目标推进状态——这是「停」的唯一权威："
+                "不声明，系统会自动再起一轮。"
+                "action：complete＝目标已完成；pause＝暂停（等外部条件）；"
+                "blocked＝卡住做不下去（必须给 reason）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["complete", "pause", "blocked"],
+                        "description": "complete＝完成；pause＝暂停；blocked＝卡住",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "原因（blocked 必填：说清卡在哪）",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+        handler=_h_update_goal,
+        readonly=False,
+    ),
 }
 
 
@@ -2327,12 +2430,19 @@ def build_tool_schemas(
     message_runner 恒定传 ``card_id/work_id/cards``）⇒ 按该卡固化的 perms 下发。
 
     [更新现状按钮改造 2026-10-16] ``op`` ＝ 本轮操作类型（POST …/messages 的 op）。
-    ``OP_ONLY_TOOLS``（propose_status）**不进上面四段**——它们在**四段过滤之后**
+    ``OP_ONLY_TOOLS``（propose_status）**不进上面四段**——它在**四段过滤之后**
     追加，且只在对应 op 回合（见下）。故常规卡片工具面逐字不变；专用工具不随
     卡 perms 下发，符合「不是卡片内挂的」口径。
+
+    [自动模式 2026-10-17 · 回灌 5700 块0.4] ``AUTO_ONLY_TOOLS``（update_goal）
+    与 create_card 的 ``goal`` 参数**只对 auto_mode=1 的卡**下发——它们不进上面
+    四段（从工具池里先排除），故**常规卡片工具面逐字不变**。
+    ★ TC5 裁剪：与 Cardlo 沙箱版不同，这里**不摘计划六件**——生产保留思维链
+    （ND1 红线 11；拆解上板是产品能力，不是脚手架）。auto 卡的屏蔽面只有
+    判断协议区（context_regions.render_judgment_region 的 auto 分支）。
     """
     tools = [_schema_of(def_) for name, def_ in TOOL_REGISTRY.items()
-             if name not in OP_ONLY_TOOLS]
+             if name not in OP_ONLY_TOOLS and name not in AUTO_ONLY_TOOLS]
     # ---- 一级：角色过滤（工具卡底座 T9）----
     tools = _filter_by_role(tools, card_id, work_id, cards)
     # ---- 二级：分类过滤（权限线 T4）----
@@ -2341,11 +2451,63 @@ def build_tool_schemas(
     tools = _filter_by_card_type(tools, card_id, work_id, cards)
     # ---- 四级：根卡闸（规则卡 2026-10-15 · 块3）----
     tools = _filter_root_only(tools, card_id, work_id, cards)
-    # ---- 末段：专用工具追加（非卡片内挂；只在 op 回合）----
-    # 追加在四段之后 ⇒ 不经任何按卡过滤（不随 perms 收敛），可见性唯一由 op 决定。
+    # ---- 末段①：自动模式专用工具面（非卡片内挂；只对 auto_mode=1 的卡）----
+    # 追加在四段之后 ⇒ 不经任何按卡过滤（不随 perms 收敛），可见性唯一由
+    # auto_mode 决定。非 auto 卡 ⇒ 本段不进 ⇒ 输出与基线逐字一致。
+    _card = (cards or {}).get(card_id) or {}
+    if card_id and cards is not None and _card and bool(_card.get("auto_mode")):
+        tools = _apply_auto_toolface(tools)
+    # ---- 末段②：专用工具追加（非卡片内挂；只在 op 回合）----
+    # [合并保留] 与末段①**互相独立**（auto 卡 / op 回合），各判各的。
     if op == OP_UPDATE_STATUS:
         tools.append(_schema_of(TOOL_REGISTRY["propose_status"]))
     return tools
+
+
+def _create_card_schema_with_goal(schema: dict[str, Any]) -> dict[str, Any]:
+    """复制一份 create_card schema 并补上 ``goal`` 属性（**不改注册表原字面量**）。
+
+    ``goal`` 只在自动模式卡上下发（派活用）——常规工具面因此逐字不变。
+    """
+    params = dict(schema.get("parameters") or {})
+    props = dict(params.get("properties") or {})
+    if "goal" in props:
+        return schema
+    props["goal"] = {
+        "type": "string",
+        "description": (
+            "（自动模式）给新建子卡的目标文本——子卡继承自动模式后**建卡即起跑**。"
+            "非自动模式卡不必传。"
+        ),
+    }
+    params["properties"] = props
+    out = dict(schema)
+    out["parameters"] = params
+    return out
+
+
+def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """自动模式工具面（**本任务对工具面唯一的 auto 开口**，TC5 裁剪版）：
+
+    1. 追加自动模式专用工具 ``update_goal``（AUTO_ONLY_TOOLS 全量——G2 起含
+       send_card_message/read_inbox）；
+    2. 给 ``create_card`` 补上 ``goal`` 参数（派活）；
+    3. **不摘计划六件**（TC5：生产保留思维链；与 Cardlo 沙箱版 ND1 口径的
+       差异就在此——那版摘六件是「最原始单模型」实验口径，不进生产）。
+
+    只由 ``build_tool_schemas`` 在「当前卡 auto_mode=1」时调用——**非 auto 卡
+    一切逐字不变**（红线 2 / 块0.4 硬判据 1）。
+    """
+    out: list[dict[str, Any]] = []
+    for t in tools:
+        name = str(t.get("name", ""))
+        if name == "create_card":
+            out.append(_create_card_schema_with_goal(t))
+        else:
+            out.append(t)
+    for auto_name in sorted(AUTO_ONLY_TOOLS):
+        out.append(_schema_of(TOOL_REGISTRY[auto_name]))
+    return out
 
 
 
