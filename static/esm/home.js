@@ -20,22 +20,17 @@ const navEmpty = document.getElementById("homeNavEmpty");
 const searchInput = document.getElementById("homeSearchInput");
 
 /* ---------- 新建（两处入口复用同一条链路） ----------
-   端点 /api/works 零改动：沿用旧列表页既有的 POST → 跳新 work 语义。
-   标题用固定默认名而非弹窗：空态首页的定位是「一键开始」，多一次输入框
-   会挡住主路径；建完进画布后仍可在左栏改名。 */
+   [惰性新建 2026-10-17] 不再 POST /api/works 真落库——改为跳到**草稿项目页**
+   /work/draft（一次页面加载，草稿态由 work.html 前端接管）：点新建即出空画布，
+   零落库；此后任何产生数据的动作（发对话/改名/建卡/规则卡保存/状态变更）
+   才真正 POST 落库，落库前离开/刷新 → 草稿蒸发、磁盘零残留。
+   端点 /api/works 契约零改动，只是调用时机后移（草稿落库序列在画布/对话页内）。 */
 let creating = false;
-async function createProject() {
+function createProject() {
   if (creating) return;
   creating = true;
   [newBtn, createBtn].forEach(b => { if (b) b.disabled = true; });
-  try {
-    const w = await API.createWork("新项目");
-    location.href = "/work/" + w.work_id;
-  } catch (e) {
-    /* 失败原因已由 api.js 的 call() 弹 toast */
-    creating = false;
-    [newBtn, createBtn].forEach(b => { if (b) b.disabled = false; });
-  }
+  location.href = "/work/draft";
 }
 if (newBtn) newBtn.onclick = createProject;
 if (createBtn) createBtn.onclick = createProject;

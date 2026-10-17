@@ -13,10 +13,20 @@ import { notify, postStop } from "./esm/api.js?v=35";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=32";
-import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=30";
+import { createNavSystem } from "./esm/nav_system.js?v=33";
+import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=31";
 
-const WORK_ID = window.__WORK_ID__;
+/* [惰性新建 2026-10-17] WORK_ID 由 const 改 let：草稿项目/草稿卡落库成功后就地换真 id
+ * （不整页跳转，首条消息"只感知正常发送"），本模块所有闭包引用同一绑定，随取随新。
+ * 同步写 window.__WORK_ID__：nav_system / rule_panel 惰性读，落库后不失准。 */
+let WORK_ID = window.__WORK_ID__;
+/* 草稿态：IS_DRAFT_PROJECT＝项目尚未落库（/work/draft 或画布页点＋）。
+ * DRAFT_CARD＝刚建、正在后台落库的卡（**先出画面，数据后到**：绝不阻塞 UI）。
+ * ★ 建卡的判定不变（任务书 D4：提交标题不等待落库）——落库是**后台立刻发起**，不等它返回。 */
+let IS_DRAFT_PROJECT = (WORK_ID === "draft");
+let DRAFT_CARD = null;
+let _draftRootCardId = "";   // 草稿项目落库后拿到的根卡 id
+let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画板状态）
   const ws = document.getElementById("workspace");
   const inspBody = document.getElementById("inspBody");
   const inspector = document.getElementById("inspector");
@@ -121,6 +131,7 @@ const WORK_ID = window.__WORK_ID__;
   let _openSeq = 0;
 
   async function open(cardId) {
+    if (cardId === "draft") return;   // [惰性新建] 草稿卡无真身：不走 getCard（否则 404）
     const mySeq = ++_openSeq;
     const stale = () => mySeq !== _openSeq;
     // [画板四机制 T1/T4 2026-10-16] 点下去**同步翻页**：先把该卡的画板挂上
@@ -166,6 +177,75 @@ const WORK_ID = window.__WORK_ID__;
     } catch (e) { /* toast 已处理 */ }
   }
   export const Workspace = { open };
+
+  // ==================== [惰性新建 2026-10-17] 落库序列 ====================
+  // **先出画面，数据后到**：UI 绝不等待这里的 POST。
+  // 草稿项目 → POST /api/works；新卡 → POST /cards（项目若也是草稿，先项目后卡）。
+  // 带锁：并发触发复用同一 Promise（绝不两次 POST）。失败：调用方 toast、保持现场、可重试。
+  let _persistPromise = null;
+  async function ensurePersisted() {
+    if (_persistPromise) return _persistPromise;                 // 落库中：排队复用
+    if (!IS_DRAFT_PROJECT && !DRAFT_CARD) {
+      return { wid: WORK_ID, cid: currentCard ? currentCard.meta.card_id : "" };
+    }
+    _persistPromise = (async () => {
+      // ① 项目草稿（缺省标题"新项目"）
+      if (IS_DRAFT_PROJECT) {
+        const w = await API.createWork("新项目");
+        WORK_ID = w.work_id;
+        window.__WORK_ID__ = w.work_id;                          // nav/rule 惰性读，随取随新
+        IS_DRAFT_PROJECT = false;
+        _draftRootCardId = w.work_card_id || "";
+        history.replaceState(null, "", "/work/" + WORK_ID);
+        loadRulePanel().catch(() => {});
+      }
+      // ② 新卡
+      let cid = currentCard ? currentCard.meta.card_id : "";
+      if (DRAFT_CARD) {
+        const parent = DRAFT_CARD.parent || _draftRootCardId || "";
+        const r = await API.createCard(WORK_ID, {
+          title: DRAFT_CARD.title, source: "用户直接创建",
+          card_type: DRAFT_CARD.card_type || "", parent,
+        });
+        cid = (r && r.meta && r.meta.card_id) || "";
+        DRAFT_CARD = null;
+        if (currentCard) currentCard.meta.card_id = cid;
+        history.replaceState(null, "", "/work/" + WORK_ID + "/card/" + cid);
+        renderNav().catch(() => {});   // 卡进左栏
+        renderInspector().catch(() => {});   // 右栏把临时 id 换成真 card_id
+      }
+      return { wid: WORK_ID, cid };
+    })();
+    try { return await _persistPromise; } finally { _persistPromise = null; }
+  }
+  // 供 rule_panel.js（跨模块）在草稿态保存规则区前调用：先把项目落库。
+  window.__draftEnsurePersisted = () => ensurePersisted();
+
+  /** 先出画面：立刻渲染这张新卡的对话（标题已在手），落库**后台立刻发起**、不等它返回。 */
+  function enterNewCard({ title, parent, card_type }) {
+    DRAFT_CARD = { title: ((title || "").trim() || "新卡"), parent: parent || "", card_type: card_type || "" };
+    currentCard = {
+      meta: {
+        card_id: "draft", title: DRAFT_CARD.title, card_type: DRAFT_CARD.card_type || "topic",
+        parent: DRAFT_CARD.parent, links: [], source: "用户直接创建", work_id: WORK_ID,
+      },
+      // 形状对齐真卡：mission/status_block/rulings 为字符串，history 为数组
+      body: { mission: "", status_block: "", rulings: "", history: [] },
+    };
+    const boardKey = "new-" + (++_draftBoardSeq);
+    try { EventFlow.activate(WORK_ID, boardKey); } catch (e) { /* 零阻断 */ }
+    const b = EventFlow.board(WORK_ID, boardKey);
+    if (b) b.innerHTML = "";
+    renderInspector().catch(() => {});
+    const crumb = document.getElementById("chatCrumb");
+    if (crumb) crumb.innerHTML = `<span class="cseg cur">${escapeHtml(DRAFT_CARD.title)}</span>`;
+    if (inputBox) { inputBox.value = ""; inputBox.style.height = "auto"; inputBox.focus(); }
+    scrollChatBottom();
+    // ★ 画面已出，立刻后台落库（不 await）：用户零等待；成功则静默把 URL/ids 换成真身。
+    ensurePersisted().catch((e) => {
+      notify("建卡失败：" + String((e && e.message) || e) + "（可重试）", "error");
+    });
+  }
 
   // [T17-F4] renderLeft() 拆二之一：renderInspector()——原左栏 DOM 原样迁入右栏
   // inspBody（仅去掉 wsBackBtn：返回按钮上移到对话区头部，见 work.html .ws-head）。
@@ -347,6 +427,7 @@ const WORK_ID = window.__WORK_ID__;
         if (!v) { API.toast("标题不能为空", "error"); return; }
         if (v === currentCard.meta.title) { input.replaceWith(titleEl); return; }
         try {
+          await ensurePersisted();   // [D3] 改名即数据动作：草稿态先落库（项目/卡），再写真身
           const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { title: v }, "用户修改标题");
           currentCard = r;
           await renderInspector();
@@ -368,6 +449,7 @@ const WORK_ID = window.__WORK_ID__;
       const status = document.getElementById("charterStatus");
       setSaveStatus(status, "busy", "保存中…");
       try {
+        await ensurePersisted();   // [D3] 保存使命即数据动作
         const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { mission: v }, "用户编辑使命区");
         currentCard = r;
         setSaveStatus(status, "ok", "已保存");
@@ -380,6 +462,7 @@ const WORK_ID = window.__WORK_ID__;
       const status = document.getElementById("conclusionStatus");
       setSaveStatus(status, "busy", "保存中…");
       try {
+        await ensurePersisted();   // [D3] 保存现状即数据动作
         const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { status_block: v }, "用户编辑现状区");
         currentCard = r;
         conclEditing = false;
@@ -427,6 +510,7 @@ const WORK_ID = window.__WORK_ID__;
         if (isNaN(idx) || idx < 0 || idx >= rels.length) return;
         const removed = rels.splice(idx, 1)[0];
         try {
+          await ensurePersisted();   // [D3] 改关系即数据动作
           const r = await API.patchCard(WORK_ID, currentCard.meta.card_id,
             { links: rels }, `用户删除关系：${removed.type || ""} → ${removed.target || ""}`);
           currentCard = r;
@@ -448,6 +532,7 @@ const WORK_ID = window.__WORK_ID__;
         }
         rels.push({ target, type });
         try {
+          await ensurePersisted();   // [D3] 加关系即数据动作
           const r = await API.patchCard(WORK_ID, currentCard.meta.card_id,
             { links: rels }, `用户添加关系：${type} → ${target}`);
           currentCard = r;
@@ -463,20 +548,14 @@ const WORK_ID = window.__WORK_ID__;
     };
 
     // 建子卡
-    document.getElementById("addChildBtn").onclick = async () => {
+    // [惰性新建 2026-10-17] **先出画面**：提交标题立刻切到这张新卡的对话（标题已在手），
+    // 落库后台立刻发起、不等它返回——用户零等待。失败则 toast，标题留在卡上可重试。
+    document.getElementById("addChildBtn").onclick = () => {
       const title = document.getElementById("childTitle").value.trim();
       if (!title) { API.toast("请输入子卡标题", "error"); return; }
-      // [底座收口 T5.c] card_type 传空串 → 后端按树映射
-      try {
-        await API.createCard(WORK_ID, {
-          title, source: "用户直接创建",
-          card_type: "", parent: currentCard.meta.card_id,
-        });
-        document.getElementById("childTitle").value = "";
-        API.toast("已建子卡：" + title, "success");
-        // [T17] 建卡即时刷新导航树（[阶段4 A4.1] 画布数据不再由本页刷新：画布页加载即拉新）
-        await renderNav();
-      } catch (e) { /* toast 已处理 */ }
+      document.getElementById("childTitle").value = "";
+      // card_type 传空串 → 后端按树映射（底座收口 T5.c）
+      enterNewCard({ title, parent: currentCard.meta.card_id, card_type: "" });
     };
     document.getElementById("childTitle").onkeydown = (e) => {
       if (e.key === "Enter") document.getElementById("addChildBtn").click();
@@ -784,6 +863,17 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const content = statusOp ? "更新现状" : inputBox.value.trim();
     if (!content) return;
 
+    // [惰性新建 2026-10-17 · D3] 发送是数据动作：草稿态先落库（项目/卡），再走正常发送。
+    // 失败：toast、保持草稿态、输入框**不清空**（现场保留）、可重试。
+    if (IS_DRAFT_PROJECT || DRAFT_CARD) {
+      try {
+        await ensurePersisted();
+      } catch (e) {
+        notify("保存失败，未发送：" + String((e && e.message) || e), "error");
+        return;
+      }
+    }
+
     if (!statusOp) {   // 专用回合不占输入框：不清空、不记重发内容（见下方 resend 边界）
       lastSentContent = content;
       inputBox.value = "";
@@ -1045,6 +1135,18 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 旧 hash 链接（#wid/cid）兼容：一次性重定向到新地址（hash 退役第一步）。
   async function bootRestore() {
     const pathCid = (window.__CARD_ID__ || "").trim();
+    // [惰性新建 2026-10-17] 新卡对话：标题/父卡/类型由上一页经 sessionStorage **一次性携带**
+    // （跳页清空内存；URL 只承担页面身份，不塞临时状态）。读出即删 ⇒ 刷新回到空白（从头再来）。
+    if (pathCid === "draft") {
+      let d = {};
+      try {
+        const raw = sessionStorage.getItem("newCard:" + WORK_ID);
+        sessionStorage.removeItem("newCard:" + WORK_ID);
+        if (raw) d = JSON.parse(raw) || {};
+      } catch (e) { d = {}; }
+      enterNewCard({ title: d.title || "", parent: d.parent || "", card_type: d.card_type || "" });
+      return true;
+    }
     const sel = navStore.select.get();   // 解析自旧 hash（无 hash 则 null）
     if (sel) {
       // 旧 hash 链接 → 新地址（wid 不同也一并收敛，原跨 work 分支并入此处）
@@ -1424,25 +1526,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       if (nav) nav.classList.toggle("pinned");
     };
   }
-  // [左栏新建项目 2026-10-16 用户令] 搜索框右侧 ＋：新建项目（复用首页既有链路，
-  // 端点 POST /api/works 零改动）。语义照抄 esm/home.js createProject：creating 锁防连点、
-  // 失败 toast 由 api.js 的 call() 弹（此处不重复处理）。
+  // [左栏新建项目 2026-10-16 用户令] 搜索框右侧 ＋：新建项目。
+  // [惰性新建 2026-10-17] 不再 POST /api/works 真落库——跳**草稿项目页** /work/draft
+  // （本页是对话页、无画布，故走一次页面加载；画布页的同名钮由 canvas.js 就地 replaceState
+  // 进草稿，零跳转）。点新建即出空画布、零落库；此后任何数据动作才真正创建项目。
   const navNewBtn = document.getElementById("navNewProject");
   if (navNewBtn) {
-    let creatingProject = false;
-    navNewBtn.onclick = async () => {
-      if (creatingProject) return;
-      creatingProject = true;
-      navNewBtn.disabled = true;
-      try {
-        const w = await API.createWork("新项目");
-        location.href = "/work/" + w.work_id + "#";
-      } catch (e) {
-        /* 失败原因已由 api.js 的 call() 弹 toast */
-        creatingProject = false;
-        navNewBtn.disabled = false;
-      }
-    };
+    navNewBtn.onclick = () => { location.assign("/work/draft"); };
   }
   navSystem.startNav();   // [阶段1 A1.2] 导航探测周期与首渲（原 nav 初始化段，已入 nav_system）
 
@@ -1515,6 +1605,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       dmRule.busy = true;
       dmRuleConfirm.disabled = true;
       try {
+        await ensurePersisted();   // [D3] 规则落盘即数据动作（草稿态先建项目）
         await API.call("POST", `/api/works/${WORK_ID}/rule/commit`, {
           section: dmRule.section,
           content: dmRule.draft,
