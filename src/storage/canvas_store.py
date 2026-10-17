@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 import math
 from datetime import datetime
@@ -82,22 +83,61 @@ def _canvas_path(work_id: str) -> Path:
 SUMMARY_MAX = 120
 
 
-def _conclusion_summary(status_block: str) -> str:
-    """取现状块（status_block 列）第一行非空文字，超 120 字截断加省略号。
+#: 新建卡时播种的模板占位文案（现状块里出现这些片段 ⇒ 视为"还没写"）。
+#: 与 card_draft._PLACEHOLDER_MARKERS 同源语义，但本模块不 import api 层
+#: （存储不依赖上层），故各自持有——两处都只做"是否占位"的机械判断。
+_PLACEHOLDER_MARKERS = (
+    "（当前状况快照", "(当前状况快照",
+    "做到哪、什么状态、卡在哪",
+)
 
-    与前端 getSummary 的算法逐字一致（先按行 split、取第一个非空 trim 行、超长截断）。
-    现状块为空/全空白 → 返回空字符串（不写占位文字）。
-    [卡片信息结构改造 S2-11/G-7] canvas.json 字段名 conclusion_summary **不变**
-    （前端快路径依赖它）。
-    [卡片存储迁移 SQLite] 入参从「正文全文」改为「现状块列内容」——库内已是独立列，
-    不再需要拆块。
+
+def _strip_md_prefix(line: str) -> str:
+    """剥掉行首的 Markdown 结构标记：标题井号、引用、列表符、加粗包裹。
+
+    为什么必须剥：真实项目的现状块第一行常常是 `# 子项目` / `- 完成 X`，
+    原样当摘要会让画布上每张卡都写着"# 子项目"——既无信息量又像半成品。
     """
-    first_line = ""
-    for line in (status_block or "").split("\n"):
-        s = line.strip()
-        if s:
-            first_line = s
-            break
+    t = line.strip()
+    t = re.sub(r"^#{1,6}\s*", "", t)          # # 标题
+    t = re.sub(r"^>\s*", "", t)               # > 引用
+    t = re.sub(r"^([-*+]\s+|\d+\.\s+)", "", t)  # - 列表 / 1. 有序
+    t = t.replace("**", "").replace("__", "")  # 加粗标记
+    return t.strip()
+
+
+def _conclusion_summary(status_block: str, title: str = "") -> str:
+    """取现状块（status_block 列）第一行**有信息量的正文**，超 120 字截断。
+
+    [画布商业化 2026-10-17] 三处收紧（原实现取第一个非空行原样返回）：
+      ① 剥 Markdown 前缀（`# 子项目` → `子项目`）——否则画布上一片"# xxx"；
+      ② 只有标题符号、剥完是空的行**跳过**，继续找下一行；
+      ③ 模板占位文案视为"还没写"→ 返回空（卡面不显示摘要，而不是显示占位说明）；
+      ④ **与卡标题相同的行跳过**——真实数据里现状块第一行常是 `# <卡标题>`，
+         剥完井号后与标题逐字相同，卡面就成了"标题下面再写一遍标题"。
+    [卡片信息结构改造 S2-11/G-7] canvas.json 字段名 conclusion_summary **不变**。
+    """
+    t_norm = (title or "").strip()
+    lines = (status_block or "").split("\n")
+    # 两轮扫描：先取**正文行**（不以 # 开头），没有再退回标题行。
+    # 真实现状块常是 `# 卡名` → `## 小节` → 正文，只取第一个非空行会永远拿到标题。
+    for want_heading in (False, True):
+        for line in lines:
+            raw = line.strip()
+            if not raw:
+                continue
+            if any(m in raw for m in _PLACEHOLDER_MARKERS):
+                return ""
+            is_heading = raw.startswith("#")
+            if is_heading != want_heading:
+                continue
+            s = _strip_md_prefix(raw)
+            if not s:
+                continue
+            if t_norm and s == t_norm:
+                continue
+            return (s[:SUMMARY_MAX] + "…") if len(s) > SUMMARY_MAX else s
+    return ""
     if len(first_line) > SUMMARY_MAX:
         return first_line[:SUMMARY_MAX] + "…"
     return first_line
@@ -110,7 +150,7 @@ def _conclusion_summary(status_block: str) -> str:
 #: 存量 work 的旧 canvas.json 里没有这两个键，``load()`` 原样返回 ⇒ 画布上
 #: 「已完成」徽标与更新时间**永远不出现**，且没有任何报错。版本号让
 #: "缓存是旧结构的"这件事变成可判定的事实，命中时自动重建。
-CANVAS_SCHEMA_VERSION = 2
+CANVAS_SCHEMA_VERSION = 5
 
 
 def rebuild(work_id: str) -> dict[str, Any]:
@@ -161,7 +201,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
             "updated_at": row["updated_at"] or "",
             # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
             # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
-            "conclusion_summary": _conclusion_summary(row["status_block"] or ""),
+            "conclusion_summary": _conclusion_summary(row["status_block"] or "", row["title"] or ""),
         })
         try:
             rels = json.loads(row["links"] or "[]")

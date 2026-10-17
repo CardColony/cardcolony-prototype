@@ -397,19 +397,32 @@
 .page-canvas .card-node.l0 .tname { font-size: 12px; -webkit-line-clamp: 2; }
 .page-canvas .card-node.l0.is-root { width: 168px; }
 
-.page-canvas .card-node.l1 { width: 220px; }
+/* ⚠ 必须覆盖 style.css 的 `max-height:170px / 340px`：
+   那是旧卡面（只有标题＋两行摘要）时代的硬截断。现在卡面多了类型行和底栏，
+   内容一旦超过 170px，文字会**溢出卡片边框**压在卡外的画布上（实测截图可见）。
+   高度改由内容决定，行数由 .summary 的 line-clamp 控制。 */
+.page-canvas .card-node.l1 { width: 220px; max-height: none; }
 /* l1 保留底部行（展开/折叠徽章是操作件，任何档都不能消失），只藏更新时间 */
 .page-canvas .card-node.l1 .cv-card-foot .meta2 { display: none; }
 
-.page-canvas .card-node.l2 { width: 260px; padding: var(--cv-s3) var(--cv-s4) var(--cv-s3); }
+.page-canvas .card-node.l2 { width: 260px; max-height: none; padding: var(--cv-s3) var(--cv-s4) var(--cv-s3); }
 .page-canvas .card-node.l2 .summary { -webkit-line-clamp: 4; }
 
-/* 三级以下（t8-deep）：只留标题 */
-.page-canvas .card-node.t8-deep { padding: 8px 10px; }
-.page-canvas .card-node.t8-deep .cv-card-head,
+/* 三级以下（t8-deep）：**小卡片**，不是横条。
+   旧样式把 head/summary/foot 全隐掉、只留一行标题，全展开后整片画布变成
+   "一堆 36px 横条"，既看不出层级也认不出内容——这是"完全不像商业产品"的
+   主因之一。现在保留类型点与两行标题，只省掉摘要和底栏，形成清晰的小一号卡片。 */
+.page-canvas .card-node.t8-deep {
+  width: 186px;
+  padding: 8px 11px 9px;
+  border-radius: var(--cv-r-md);
+}
+.page-canvas .card-node.t8-deep .cv-card-head { margin-bottom: 3px; }
+.page-canvas .card-node.t8-deep .cv-type-name { font-size: 9px; letter-spacing: 0.04em; }
+.page-canvas .card-node.t8-deep .cv-state { font-size: 9px; padding: 0 5px; line-height: 14px; }
 .page-canvas .card-node.t8-deep .summary,
 .page-canvas .card-node.t8-deep .cv-card-foot { display: none; }
-.page-canvas .card-node.t8-deep .tname { font-size: 12px; -webkit-line-clamp: 1; }
+.page-canvas .card-node.t8-deep .tname { font-size: 11.5px; font-weight: 600; -webkit-line-clamp: 2; }
 
 /* ==========================================================================
    四、顶栏 / 缩放控件 / 按钮
