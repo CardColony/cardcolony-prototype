@@ -1907,3 +1907,49 @@ body.page-chat .rule-panel { display: none; }
   gap: 16px;
   min-width: 0;
 }
+
+/* [自动模式 2026-10-17 · 回灌 5700 块0.5] 卡上的自动模式标记 / 开关 / 目标行
+   （自 Cardlo 沙箱已验证件移植）。
+   auto-badge 用 --amber（语义色「需留意」）；非 auto 卡只有按钮＋提示，零视觉突变。 */
+.auto-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 6px;
+}
+.auto-badge {
+  display: inline-block;
+  font-size: 12px;
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: 10px;
+  padding: 2px 10px;
+}
+.auto-meta { font-size: 11px; color: var(--dim); }
+.auto-hint { font-size: 11px; color: var(--dim); }
+.auto-toggle { font-size: 12px; padding: 2px 10px; }
+.auto-toggle:disabled { opacity: .55; cursor: default; }
+/* [回灌 5700 块0.5 · 用户令「放在底边栏」] 输入条里的 自动/手动 切换。
+   手动＝中性；自动＝amber（与 .auto-badge 同语义色，一眼看出这卡是自动的）。 */
+.auto-switch { font-size: 12px; padding: 3px 10px; }
+.auto-switch.on { color: var(--amber); border-color: var(--amber); }
+.auto-switch:disabled { opacity: .55; cursor: default; }
+.auto-goal {
+  font-size: 12px;
+  color: var(--text-soft);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.auto-goal-k {
+  display: inline-block;
+  color: var(--amber);
+  margin-right: 6px;
+  font-weight: 600;
+}

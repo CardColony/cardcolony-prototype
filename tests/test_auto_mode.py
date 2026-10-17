@@ -727,3 +727,36 @@ async def test_block3_driver_runs_after_mutex_release(typed_registry, work, monk
     m = card_store._meta_of(wid, a)
     assert m["goal_state"] == "complete"
     assert m["goal_rounds"] >= 1
+
+
+# ============================================================
+# 块 0.5 · 前端（源码级机械断言；DOM 级验证见验收阶段的 jsdom 一次性脚本）
+#
+# 本仓 pytest 纪律：DOM 走 jsdom 一次性脚本——这里钉的是「开关/标记/样式/
+# 版本戳确实进了源码」，不是渲染结果。
+# ============================================================
+
+def test_block5_auto_toggle_in_source():
+    """auto 开关落在底边栏（card.html #flowInputLeft ⇒ input-bar 收编进 modes）。"""
+    card_html = (REPO / "templates" / "card.html").read_text(encoding="utf-8")
+    assert 'id="autoToggleBtn"' in card_html, "底边栏缺 auto 开关按钮"
+    assert 'id="flowInputLeft"' in card_html, "开关须在 input-bar 收编位里"
+    ws = (REPO / "static" / "workspace.js").read_text(encoding="utf-8")
+    assert "function renderAutoToggle" in ws, "缺开关状态刷新"
+    assert "async function toggleAutoMode" in ws, "缺开关动作（PATCH auto_mode）"
+    assert "auto_mode: next" in ws, "开关须经 PATCH 落 auto_mode"
+    assert 'getElementById("autoToggle")' in ws, "右栏卡详情开关未绑"
+
+
+def test_block5_auto_mark_in_source():
+    """卡详情 auto 标记（徽标＋目标态＋轮次＋目标）＋样式段＋版本戳。"""
+    ws = (REPO / "static" / "workspace.js").read_text(encoding="utf-8")
+    assert "auto-badge" in ws and "auto-goal" in ws, "卡详情缺 auto 标记"
+    assert "function goalStateLabel" in ws, "缺目标态中文标签"
+    css = (REPO / "static" / "style.css").read_text(encoding="utf-8")
+    assert ".auto-badge" in css and ".auto-switch" in css, "style.css 缺 auto 样式"
+    card_html = (REPO / "templates" / "card.html").read_text(encoding="utf-8")
+    assert "main_chat.js?v=2.0" in card_html
+    assert "style.css?v=40" in card_html
+    work_html = (REPO / "templates" / "work.html").read_text(encoding="utf-8")
+    assert "style.css?v=40" in work_html

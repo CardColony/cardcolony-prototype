@@ -49,9 +49,13 @@ async def _mk_work_with_card() -> tuple[str, str]:
 # ════════════════════════════════════════════════════════════════════
 
 def test_version_and_ontology():
-    """硬判据：tools-tc-8；propose_status 进注册表/开关/OP_ONLY_TOOLS/只读；
-    status_update_task 进事件本体论；BASE_PROMPT 未动（t22-1 不升）。"""
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-8"
+    """硬判据：tools-tc-9；propose_status 进注册表/开关/OP_ONLY_TOOLS/只读；
+    status_update_task 进事件本体论；BASE_PROMPT 未动（t22-1 不升）。
+
+    [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
+    auto 卡工具面件数变化）。
+    """
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-9"
     assert "propose_status" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_REGISTRY["propose_status"].readonly is True
     assert "propose_status" in card_tools.TOOL_SWITCH
@@ -285,13 +289,15 @@ def test_frontend_version_stamps_bumped():
     [建项目流程 2026-10-17] workspace 46→51、stream 37→38、main_chat 1.3→1.8。
     [＋按钮删除 2026-10-17] input-bar 1→2、workspace 51→52、main_chat 1.8→1.9、
     style 38→39（命令面不存在，＋按钮整件删——死件不留）。
+    [自动模式回灌 2026-10-17] workspace 52→53（autoToggle 开关＋insp 标记）、
+    main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 样式段）。
     """
     assert "../stream.js?v=38" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=52" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=53" in _read("static/esm/main_chat.js")
     assert "./stream.js?v=38" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=2" in _read("static/workspace.js")
-    assert "/static/style.css?v=39" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=1.9" in _read("templates/card.html")
+    assert "/static/style.css?v=40" in _read("templates/work.html")
+    assert "/static/esm/main_chat.js?v=2.0" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════
