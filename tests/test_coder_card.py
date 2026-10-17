@@ -88,7 +88,7 @@ def test_toolset_fingerprints_and_switch_bindings():
     # [规则卡 2026-10-15] 18 → 19（第 19 件 draft_rule_edit，§六块3 硬判据 1）。
     # [依赖关联线 2026-10-16] 19 → 21（第 20/21 件 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] 21 → 22（第 22 件 propose_status，列 OP_ONLY_TOOLS）。
-    assert src.count('": ToolDef(') == 25  # [自动模式 2026-10-17 · G2] 23→25（+send_card_message/read_inbox）
+    assert src.count('": ToolDef(') == 23  # [自动模式 2026-10-17 · G2 口径修正] 22→23（字面量只 +update_goal；send_card_message/read_inbox 是 TOOL_REGISTRY[...] 动态注册，不进本字面量口径）
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status）。
