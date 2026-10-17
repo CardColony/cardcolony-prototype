@@ -188,7 +188,10 @@ def find_pending(blocks: list[dict]) -> dict | None:
         actor = str(block.get("actor") or "")
         if actor.startswith("card:"):
             return block
-        if actor == "assistant":
+        # [工具结果落会话 2026-10-17] 「已有 assistant 块」判据＝**不带 tool_calls 的
+        # 回复块**；工具调用块（actor=assistant 但带 tool_calls）不是回复——否则一次
+        # 中断在工具轮的收件方会被误判「已回复」而不再自动回发。
+        if actor == "assistant" and not block.get("tool_calls"):
             return None
     return None
 

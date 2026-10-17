@@ -30,8 +30,12 @@ def _tc(name, args):
 
 def _dialog(blocks):
     """[迭代二 S4 配套] 环节留痕块（behavior 非空：triage 等）不进对话断言
-    口径——与 message_runner prior 投影过滤同一裁定的测试侧。"""
-    return [m for m in blocks if not m.get("behavior")]
+    口径——与 message_runner prior 投影过滤同一裁定的测试侧。
+    [工具结果落会话 2026-10-17] 再滤掉工具块（工具调用块 assistant+tool_calls、
+    工具结果块 actor=tool）——它们是新落盘事实，不参与「对话主干」断言。"""
+    return [m for m in blocks if not m.get("behavior")
+            and m.get("role") != "tool"
+            and not (m.get("role") == "assistant" and m.get("tool_calls"))]
 
 
 ANALYSIS_1 = "【第一轮分析】读完 card_002 正文后，我认为该段论证依赖一个隐含前提：需求已冻结。"

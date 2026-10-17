@@ -288,8 +288,26 @@ _MSG_SEP_TOKENS = 1
 
 
 def _msg_meter_tokens(m: dict[str, Any]) -> int:
-    """单条消息的 token 计数（统一计量尺本体）。"""
-    return len(_ENC.encode(str(m.get("content", "") or ""))) + _MSG_SEP_TOKENS
+    """单条消息的 token 计数（统一计量尺本体）。
+
+    [工具结果落会话 2026-10-17] 计量口径＝含工具（用户 10-17 裁定）：
+    - 基础＝content 的 cl100k token 数（照旧）＋ 1 个 join 分隔符 token；
+    - 若该块带 ``tool_calls``，再把每个调用的 ``arguments`` 长度一并计入
+      （write_file 这类工具参数可能很大，不计入会漏算 ⇒ 80 万线算小、
+      凝练触发偏晚，线就不准）。_truncate_window 与 _meter_sum 共用本函数
+      ⇒ 自动跟随，无需另改。
+    """
+    total = len(_ENC.encode(str(m.get("content", "") or ""))) + _MSG_SEP_TOKENS
+    tool_calls = m.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function")
+            args = fn.get("arguments") if isinstance(fn, dict) else ""
+            if args:
+                total += len(_ENC.encode(str(args)))
+    return total
 
 
 def _meter_sum(msgs: list[dict[str, Any]]) -> int:
@@ -317,10 +335,24 @@ def _truncate_window(pending: list[dict[str, Any]], budget: int) -> list[dict[st
 
 
 def _build_condense_user_prompt(pending: list[dict[str, Any]]) -> str:
-    """凝练 user prompt（任务 2/3）：未凝段全文，每块前缀 `[块{seq}]`。"""
+    """凝练 user prompt（任务 2/3）：未凝段全文，每块前缀 `[块{seq}]`。
+
+    [工具结果落会话 2026-10-17] 凝练输入**只收有内容的 human/assistant 块**：
+    - 排除工具块（actor=tool 的工具结果块／环节留痕块）；
+    - 排除 content 为空的块（含带 tool_calls 的 assistant 块 A——空内容块
+      无内容可压，空 ``[块n]`` 会干扰模型）。
+    这与「计量含工具」方向相反，两处都不得写错（用户口径：窗口/计量按含工具算，
+    喂给凝练的内容不含工具——「凝练时把工具结果去掉，只塞 user 和 assistant」）。
+    """
     parts: list[str] = []
     for m in pending:
-        parts.append(f"[块{m.get('seq', '?')}]\n{str(m.get('content', '') or '')}")
+        actor = str(m.get("actor") or "")
+        if actor not in ("human", "assistant"):
+            continue
+        content = str(m.get("content", "") or "")
+        if not content.strip():
+            continue
+        parts.append(f"[块{m.get('seq', '?')}]\n{content}")
     return "\n\n".join(parts)
 
 
@@ -396,6 +428,25 @@ async def _condense_one_batch(work_id: str, card_id: str,
     不阻断不重试不设闸（V5 哲学/RD-04）。entries＋mark 单文件原子落盘。
     """
     user_prompt = _build_condense_user_prompt(window)
+    # [工具结果落会话 2026-10-17] 整窗筛完为空（全是工具块/空块）：无内容可凝，
+    # **不得送空 prompt 给模型**。★ 与任务书字面「mark 不动」的偏离：此处改为
+    # **销账**（推进 mark 越过该窗口）后继续——若 mark 不动，该卡凝练会永久卡死
+    # 在同一窗口（窗口恒为空、mark 恒不动、每轮重取同一窗）。销账语义与用户口径
+    # 「销账时带工具结果一起销」一致（详见施工回报）。
+    if not user_prompt.strip():
+        target_mark = int(window[-1].get("seq", 0) or 0) + 1
+        state = load_memory(work_id, card_id)
+        if int(state.get("mark", 0) or 0) < target_mark:
+            await save_memory(work_id, card_id, {
+                "card_id": card_id, "mark": target_mark,
+                "entries": state.get("entries") or [],
+                "batch_count": state.get("batch_count", 0),
+                "last_fold_check": state.get("last_fold_check", 0),
+                "folded": state.get("folded", [])})
+        logger.info("[condense_fold] 窗口无内容块——销账不凝（不发空 prompt）"
+                    "work=%s card=%s 窗口块数=%d mark %d→%d",
+                    work_id, card_id, len(window), mark, target_mark)
+        return True
     input_bytes = len(user_prompt.encode("utf-8"))
     fingerprint = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
     # 任务 3：模型写【结论】＋【依据】

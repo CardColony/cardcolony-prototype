@@ -18,7 +18,7 @@ import logging
 import pytest
 
 from src.api import context_assembler, routes
-from src.storage import card_store, memory_store, session_store, work_store
+from src.storage import card_store, memory_store, session_facade, session_store, work_store
 
 
 def _entry_text(seq: int, conclusion: str) -> str:
@@ -69,7 +69,10 @@ async def test_v1_mock_full_chain(sandbox, monkeypatch, caplog):
     for e in st["entries"]:
         assert set(e) == {"seq", "conclusion", "evidence", "occurred_at", "fingerprint"}
     # fingerprint 可复算＝凝练输入（块前缀未凝段全文）sha256 前 16
-    prior = await session_store.read_session(wid, cid)
+    # [工具结果落会话 2026-10-17] 改用统一读入门面（带 actor）：_build_condense_user_prompt
+    # 现按 actor∈{human,assistant} 过滤，旧读函数 session_store.read_session 不产出
+    # actor ⇒ 算出的 fp 不再等于内部 fp。
+    prior = await session_facade.read(wid, cid)
     expect_fp = hashlib.sha256(
         memory_store._build_condense_user_prompt(prior).encode("utf-8")).hexdigest()[:16]
     assert all(e["fingerprint"] == expect_fp for e in st["entries"])
@@ -154,7 +157,8 @@ async def test_v2_idempotent_repair_mark(sandbox, monkeypatch, caplog):
     monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
-    prior = await session_store.read_session(wid, cid)
+    # [工具结果落会话 2026-10-17] 同 test_v1：fp 须用与内部同源的读入门面算（带 actor）
+    prior = await session_facade.read(wid, cid)
     fp = hashlib.sha256(
         memory_store._build_condense_user_prompt(prior).encode("utf-8")).hexdigest()[:16]
     # 手工置成「条目已在、mark 落后」形态

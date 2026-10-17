@@ -90,7 +90,12 @@ HEADER_FIELDS = (
     "identity_owner", "identity_purpose", "identity_mode",
     "inbox_ref", "condense_mark",
 )
-BLOCK_FIELDS = ("seq", "actor", "from", "turn", "pair", "model", "behavior", "end", "ts")
+# [工具结果落会话 2026-10-17] 白名单新增 tool_calls／tool_call_id 两字段：
+# 工具调用（actor=assistant，content=""，带 tool_calls 数组）与工具结果
+# （actor=tool，带 tool_call_id）成对落会话，成为对话的一部分（对齐通用 agent）。
+# 存量会话旧块无这两字段 → 解析为零迁移（缺字段＝空）。
+BLOCK_FIELDS = ("seq", "actor", "from", "turn", "pair", "model", "behavior", "end", "ts",
+                "tool_calls", "tool_call_id")
 BLOCK_REQUIRED = ("seq", "actor", "turn")
 END_VALUES = ("model_done", "policy_stop", "human_stop", "error")
 ACTOR_HUMAN = "human"
@@ -286,6 +291,18 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
     else:
         role = {"human": "user", "assistant": "assistant"}.get(actor, actor or "unknown")
     pair_raw = kv.get("pair", "")
+    # [工具结果落会话 2026-10-17] tool_calls（工具调用块，JSON 数组串）与
+    # tool_call_id（工具结果块）读回：缺字段＝空（存量旧块零迁移）。
+    tool_calls_raw = kv.get("tool_calls", "")
+    tool_calls: Optional[list[dict[str, Any]]] = None
+    if tool_calls_raw:
+        try:
+            _parsed_tc = json.loads(tool_calls_raw)
+            if isinstance(_parsed_tc, list):
+                tool_calls = _parsed_tc
+        except (ValueError, TypeError):
+            logger.warning("[facade] tool_calls 字段解析失败（视同无）seq=%s: %r",
+                           kv.get("seq", "?"), tool_calls_raw[:80])
     legacy_pair_id = kv.get("pair_id", "")  # V1 uuid 经前向兼容通道保留（见模块头 S6b 衔接桥）
     pair_id_out = legacy_pair_id if legacy_pair_id != "" else (str(pair_raw) if pair_raw != "" else "")
     blk: dict[str, Any] = {
@@ -304,6 +321,9 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
         "end": kv.get("end", ""),
         "behavior": kv.get("behavior", ""),
         "ts": kv.get("ts", ""),
+        # 工具块两字段（缺＝None/空串；存量旧块零迁移）
+        "tool_calls": tool_calls,
+        "tool_call_id": kv.get("tool_call_id", "") or "",
         "format": "v2",
     }
     damaged = bool(missing) or not header_closed or not closed
@@ -438,6 +458,13 @@ def _render_v2_block(b: dict[str, Any]) -> str:
         lines.append(f"model: {b['model']}")
     if b.get("behavior"):
         lines.append(f"behavior: {b['behavior']}")
+    if b.get("tool_calls"):
+        # [工具结果落会话 2026-10-17] 工具调用块（actor=assistant）：调用数组
+        # JSON 单行（转义规则同 content——json.dumps 默认把换行转义为 \n，保单行）
+        lines.append("tool_calls: " + json.dumps(b["tool_calls"], ensure_ascii=False))
+    if b.get("tool_call_id"):
+        # [工具结果落会话 2026-10-17] 工具结果块（actor=tool）：与上面调用一一配对的 id
+        lines.append(f"tool_call_id: {b['tool_call_id']}")
     if b.get("end"):
         lines.append(f"end: {b['end']}")
     lines.append(f"ts: {b.get('ts') or session_store._now_iso()}")
@@ -489,18 +516,22 @@ def _last_human_in_turn(blocks: list[dict[str, Any]], current_turn: int) -> Opti
     return None
 
 
-def _block_event_type(actor: str, hint: str) -> str:
+def _block_event_type(actor: str, hint: str, tool_calls: Any = None) -> str:
     """消息块 → 事件 type（裁定 C1）。
 
     - human→user_message／assistant→assistant_text（消息类，唯一映射）；
+    - **带 tool_calls 的 assistant 块 → 空串＝不落事件**（[工具结果落会话
+      2026-10-17]：content="" 的消息事件是噪音；过程通道已有 tool_call 事件）；
     - ``card:`` 卡间信→msg_ask/msg_answer/msg_notify，**type 由发信方显式
       给定**（落信处知道消息类型），缺省按 notify 兜底——代码不猜语义；
-    - 其余（actor=tool 的环节留痕块）→ 空串＝不落事件：过程侧已有
-      plan_created/step_advanced 等事件，重复落一条只是双份噪音。
+    - 其余（actor=tool 的工具结果块／环节留痕块）→ 空串＝不落事件：过程侧已有
+      tool_call/tool_result/plan_created 等事件，重复落一条只是双份噪音。
     """
     if actor == ACTOR_HUMAN:
         return "user_message"
     if actor == ACTOR_ASSISTANT:
+        if tool_calls:
+            return ""   # 工具调用块：过程通道已有 tool_call，不发消息事件
         return "assistant_text"
     if actor.startswith("card:"):
         return hint or "msg_notify"
@@ -548,7 +579,7 @@ async def _emit_block_event(work_id: str, card_id: str,
     落盘位置＝append 成功后、ops 打点之前：会话文件与事件流同一次写路径内
     完成，不新增第二次落盘点。形状由 ``emit_message_event`` 承载（单一来源）。
     """
-    ev_type = _block_event_type(str(blk.get("actor") or ""), hint)
+    ev_type = _block_event_type(str(blk.get("actor") or ""), hint, blk.get("tool_calls"))
     await emit_message_event(
         work_id, card_id, ev_type, blk.get("content", ""),
         run_id=str(blk.get("pair_id") or ""), round_=int(blk.get("turn") or 0),
@@ -556,101 +587,131 @@ async def _emit_block_event(work_id: str, card_id: str,
     )
 
 
-async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str, Any]:
-    """追加一块，返回落盘后的完整块（T024）。
+def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict[str, Any]:
+    """按当前已落块序列分配 seq/turn/pair/end，返回待落盘的完整块（纯函数、不落盘）。
 
-    门面内自动分配 seq（写入时分配落盘，T053）、turn、pair、闭合轮界
-    （assistant 缺省 end=model_done，显式传入优先）。块入参：
-    {content, actor|role, model?, end?, from?, behavior?, pair?}。
-    V1 文件先现场升格（4.8：转换→tmp→os.replace→再追加，块数不变）。
-    与旧写路径共用 session_store 字节锁（切换过渡期双写方互斥）。
+    [工具结果落会话 2026-10-17] 从 append 抽出，供 append／append_many 共用：
+    批量落盘时逐块在"虚拟已落序列"上分配，结果与逐次 append 完全一致。
+
+    - seq＝len(existing)（0 起；damaged 占位计入——位次恒等）；
+    - turn＝末块有 end 则 +1，否则同轮（工具块不闭合轮 ⇒ 与同轮回复块同 turn）；
+    - end 自动补：actor=assistant 且**不带 tool_calls** → model_done；
+      带 tool_calls 的 assistant 块不补（结构上不是轮末，T024/T061 语义延伸；
+      若补会把工具块算进下一 turn、工具块与用户不在同一轮）；
+    - pair：human 缺省自身 seq（T057）；其余取本轮最近 human 块 seq。
     """
     actor = block.get("actor")
     if not actor:
         role = block.get("role", "")
         actor = {"user": ACTOR_HUMAN, "assistant": ACTOR_ASSISTANT}.get(role, role or "unknown")
+    tool_calls = block.get("tool_calls") or None
     end = block.get("end") or ""
     if end and end not in END_VALUES:
         raise ValueError(f"非法 end 值: {end!r}（允许：{END_VALUES}）")
-    if not end and actor == ACTOR_ASSISTANT:
-        end = "model_done"  # 闭合轮界（T024/T061）
-    content = block.get("content", "")
-    model = block.get("model")
-    pair_id_legacy = block.get("pair_id", "")  # V1 uuid（S6b 衔接桥：经前向兼容通道落盘）
-    from_ = block.get("from", "")
-    behavior = block.get("behavior", "")
+    if not end and actor == ACTOR_ASSISTANT and not tool_calls:
+        end = "model_done"  # 闭合轮界（T024/T061）——带 tool_calls 的块不补
+    seq = len(existing)  # 0 起；damaged 占位计入（不吞并 → 位次恒等）
+    if existing:
+        last = existing[-1]
+        last_turn = last.get("turn")
+        last_turn = last_turn if isinstance(last_turn, int) else 0
+        turn = last_turn + (1 if last.get("end") else 0)
+    else:
+        turn = 0
+    if actor == ACTOR_HUMAN:
+        pair: Any = str(seq)  # human 块缺省自身（T057）
+    else:
+        init_seq = _last_human_in_turn(existing, turn)
+        pair = block.get("pair") or (str(init_seq) if init_seq is not None else "unknown")
+    now = session_store._now_iso()
+    return {
+        "role": {"human": "user", "assistant": "assistant"}.get(actor, actor),
+        "content": block.get("content", ""),
+        "timestamp": now,
+        "model": block.get("model"),
+        "pair_id": block.get("pair_id", "") or str(pair),  # V1 uuid（S6b 衔接桥）
+        "seq": seq,
+        "actor": actor,
+        "from": block.get("from", ""),
+        "turn": turn,
+        "pair": str(pair),
+        "end": end,
+        "behavior": block.get("behavior", ""),
+        "tool_calls": tool_calls,
+        "tool_call_id": block.get("tool_call_id", "") or "",
+        "ts": now,
+        "format": "v2",
+    }
+
+
+async def _read_existing_locked(work_id: str, card_id: str,
+                                path: Path) -> tuple[str, int, list[dict[str, Any]]]:
+    """锁内读现状：返回 (原文, 格式号, 已落块列表)。V1 委托旧解析并补派生字段。"""
+    if path.exists():
+        async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
+            text = await f.read()
+    else:
+        text = ""
+    fmt = _detect_format(text)
+    if fmt == 2:
+        existing = _parse_v2(text)["blocks"]
+    else:
+        existing = _enrich_v1(await session_store.read_session(work_id, card_id))
+    return text, fmt, existing
+
+
+def _write_new_blocks_locked(work_id: str, card_id: str, path: Path,
+                             text: str, fmt: int,
+                             existing: list[dict[str, Any]],
+                             new_blks: list[dict[str, Any]]) -> None:
+    """锁内落盘新块（首建／追加／现场升格三分支，与旧 append 逐字同逻辑）。
+
+    批量与单块共用：new_blks 是一个工具轮的 A＋N×B 时，写盘一次完成（原子）。
+    """
+    block_text = "".join(_render_v2_block(b) for b in new_blks)
+    if not path.exists():
+        _atomic_write_text(path, _render_v2_header(_default_header(card_id)) + block_text)
+    elif fmt == 2:
+        # [S3/T078] 追加路径：锁内 write＋flush＋os.fsync——崩溃时最坏丢尾部、
+        # 不产生半块被吞。同步微写（追加体量小、锁内执行）换确定性 fsync。
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(block_text)
+            f.flush()
+            os.fsync(f.fileno())
+    else:
+        # 现场升格（T113）：V1→V2 全文重写（tmp→os.replace）→ 再追加
+        header = _default_header(card_id)
+        conv = _convert_v1_blocks(existing)
+        full_text = _render_v2_header(header) + "".join(_render_v2_block(b) for b in conv) + block_text
+        _atomic_write_text(path, full_text)
+        # [T114] 升格留痕：R6 通道首笔真实消费＋全日志打点（T152 升格点位）
+        session_ops.ops_log("upgrade", work_id, card_id,
+                            {"from": "v1", "to": "v2", "blocks": len(conv) + len(new_blks)})
+        revision_store.record_revision(work_id, "session", "v1_to_v2",
+                                       {"card": card_id, "blocks": len(conv)})
+        logger.info("[facade] 现场升格 V1→V2 work=%s card=%s blocks=%d（含新块）",
+                    work_id, card_id, len(conv) + len(new_blks))
+
+
+async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str, Any]:
+    """追加一块，返回落盘后的完整块（T024）。
+
+    门面内自动分配 seq（写入时分配落盘，T053）、turn、pair、闭合轮界
+    （assistant 缺省 end=model_done，显式传入优先；**带 tool_calls 的 assistant
+    块不补 end**——见 _assign_block）。块入参：
+    {content, actor|role, model?, end?, from?, behavior?, pair?, tool_calls?,
+    tool_call_id?}。V1 文件先现场升格（4.8：转换→tmp→os.replace→再追加，
+    块数不变）。与旧写路径共用 session_store 字节锁（切换过渡期双写方互斥）。
+    """
     # [消息底座能力对齐 · 件2] 卡间信的 msg_* 类型由调用方显式给定（瞬态提示，
     # 不进 V2 块头白名单、不落会话文件）；其余块忽略。
     event_type_hint = str(block.get("event_type") or "")
-
     path = _session_path(work_id, card_id)
     lock = session_store._session_lock(work_id, card_id)
     async with lock:
-        if path.exists():
-            async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
-                text = await f.read()
-        else:
-            text = ""
-        fmt = _detect_format(text)
-        if fmt == 2:
-            existing = _parse_v2(text)["blocks"]
-        else:
-            existing = _enrich_v1(await session_store.read_session(work_id, card_id))
-
-        seq = len(existing)  # 0 起；damaged 占位计入（不吞并 → 位次恒等）
-        if existing:
-            last = existing[-1]
-            last_turn = last.get("turn")
-            last_turn = last_turn if isinstance(last_turn, int) else 0
-            turn = last_turn + (1 if last.get("end") else 0)
-        else:
-            turn = 0
-        if actor == ACTOR_HUMAN:
-            pair: Any = str(seq)  # human 块缺省自身（T057）
-        else:
-            init_seq = _last_human_in_turn(existing, turn)
-            pair = block.get("pair") or (str(init_seq) if init_seq is not None else "unknown")
-
-        new_blk: dict[str, Any] = {
-            "role": {"human": "user", "assistant": "assistant"}.get(actor, actor),
-            "content": content,
-            "timestamp": session_store._now_iso(),
-            "model": model,
-            "pair_id": pair_id_legacy or str(pair),
-            "seq": seq,
-            "actor": actor,
-            "from": from_,
-            "turn": turn,
-            "pair": str(pair),
-            "end": end,
-            "behavior": behavior,
-            "ts": session_store._now_iso(),
-            "format": "v2",
-        }
-        block_text = _render_v2_block(new_blk)
-
-        if not path.exists():
-            _atomic_write_text(path, _render_v2_header(_default_header(card_id)) + block_text)
-        elif fmt == 2:
-            # [S3/T078] 追加路径：锁内 write＋flush＋os.fsync——崩溃时最坏丢尾部、
-            # 不产生半块被吞。同步微写（追加体量小、锁内执行）换确定性 fsync。
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(block_text)
-                f.flush()
-                os.fsync(f.fileno())
-        else:
-            # 现场升格（T113）：V1→V2 全文重写（tmp→os.replace）→ 再追加
-            header = _default_header(card_id)
-            conv = _convert_v1_blocks(existing)
-            full_text = _render_v2_header(header) + "".join(_render_v2_block(b) for b in conv) + block_text
-            _atomic_write_text(path, full_text)
-            # [T114] 升格留痕：R6 通道首笔真实消费＋全日志打点（T152 升格点位）
-            session_ops.ops_log("upgrade", work_id, card_id,
-                                {"from": "v1", "to": "v2", "blocks": len(conv) + 1})
-            revision_store.record_revision(work_id, "session", "v1_to_v2",
-                                           {"card": card_id, "blocks": len(conv)})
-            logger.info("[facade] 现场升格 V1→V2 work=%s card=%s blocks=%d（含新块）",
-                        work_id, card_id, len(conv) + 1)
+        text, fmt, existing = await _read_existing_locked(work_id, card_id, path)
+        new_blk = _assign_block(existing, block)
+        _write_new_blocks_locked(work_id, card_id, path, text, fmt, existing, [new_blk])
     # [消息底座能力对齐 · 件2] 消息块同步落 events jsonl（会话落盘后同路径完成）
     await _emit_block_event(work_id, card_id, new_blk, event_type_hint)
     # [T152] append 点位：work/card/seq/turn/actor/结果
@@ -658,6 +719,41 @@ async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str,
                         {"seq": new_blk["seq"], "turn": new_blk["turn"],
                          "actor": new_blk["actor"], "result": "ok"})
     return new_blk
+
+
+async def append_many(work_id: str, card_id: str,
+                      blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """**批量追加（单次锁、单次写、原子）**——一个工具轮的 A＋N×B 一次落盘。
+
+    [工具结果落会话 2026-10-17] N1 红线（不得出现孤立 tool 块）的原子性保证：
+    A（assistant+tool_calls）与全部 B（tool 结果）在同一把锁、同一次写入内完成，
+    读者要么看到全无、要么看到成对齐全，不存在"A 已落、B 未落"的中间态——
+    该中间态会让端点 400（role=tool 必须紧跟其配对的 assistant(tool_calls)）。
+
+    与 append 共用 _assign_block：逐块在"虚拟已落序列"上分配 seq/turn/pair，
+    结果与逐次 append 完全一致。返回落盘后的完整块列表（与入参等长、同序）。
+    """
+    if not blocks:
+        return []
+    path = _session_path(work_id, card_id)
+    lock = session_store._session_lock(work_id, card_id)
+    async with lock:
+        text, fmt, existing = await _read_existing_locked(work_id, card_id, path)
+        working = list(existing)
+        new_blks: list[dict[str, Any]] = []
+        for b in blocks:
+            nb = _assign_block(working, b)
+            working.append(nb)
+            new_blks.append(nb)
+        _write_new_blocks_locked(work_id, card_id, path, text, fmt, existing, new_blks)
+    # 事件流：工具块经 _block_event_type 一律返回空串（不发消息事件）
+    for nb in new_blks:
+        await _emit_block_event(work_id, card_id, nb, "")
+    for nb in new_blks:
+        session_ops.ops_log("append", work_id, card_id,
+                            {"seq": nb["seq"], "turn": nb["turn"],
+                             "actor": nb["actor"], "result": "ok"})
+    return new_blks
 
 
 # ---------------------------------------------------------------- 尾部快路径（T025/T073）
