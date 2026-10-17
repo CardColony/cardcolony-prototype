@@ -113,7 +113,15 @@
   @property --ang{syntax:'<angle>';initial-value:0deg;inherits:false}
   @keyframes stspin{to{--ang:360deg}}
   .st-done::after{content:none}
-  .st-done .kid{background:#0e0e0e;border-color:#262626;--cc:#565656}
+  .st-done .kid{background:#0e0e0e;border-color:#262626;--cc:#565656;position:relative}
+  .st-done .subctl svg rect{fill:#0e0e0e!important}   /* icon 底色随退役卡底 */
+  .kdone{position:absolute;top:-9px;right:-4px;font-size:9px;font-weight:800;font-style:normal;
+    letter-spacing:1px;line-height:1;padding:3px 7px;border-radius:8px 8px 8px 2px;
+    background:#5c5c5c;color:#e8e8e8;pointer-events:none}
+  .subkids{margin-top:12px;margin-left:24px;width:calc(100% - 24px);display:flex;flex-direction:column;gap:12px}
+  [hidden]{display:none!important}              /* display:flex 类不再顶翻 hidden——折叠可靠性由这条保证 */
+  .kid .subctl{right:6px}                       /* 子卡内控件钉在卡内，不越卡缘 */
+  .st-done .kid>.ktitle,.st-done .kid>.ksum{padding-right:48px}  /* 文字让位 icon */
 
   .stage-note{position:absolute;left:14px;bottom:11px;color:var(--dim);font-size:12px;opacity:.75}
 </style>
@@ -142,7 +150,7 @@
       <div class="root st-run" style="--cc:#d4a72c">
         <div class="rbody">
           <div class="rcore">
-            <button class="subctl on" id="rail" type="button" aria-label="展开/收起子卡">
+            <button class="subctl" id="rail" type="button" aria-label="展开/收起子卡">
               <span class="ic">
                 <svg viewBox="0 0 40 40" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
                   <g class="ic-closed">
@@ -181,10 +189,33 @@
     </div>
 
     <div class="kidwrap t-setting st-done">
-      <div class="kid"><div class="ktitle"><span class="kname">补给线地理</span></div><div class="ksum">河谷桥点 · 季风窗口期</div></div>
+      <div class="kid"><i class="kdone">完成</i>
+        <div class="ktitle"><span class="kname">补给线地理</span></div><div class="ksum">河谷桥点 · 季风窗口期</div>
+        <button class="subctl" id="doneRail" type="button" aria-label="展开/收起子卡">
+          <span class="ic">
+            <svg viewBox="0 0 40 40" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+              <g class="ic-closed">
+                <rect x="9"  y="7"  width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                <rect x="13" y="11" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                <rect x="17" y="15" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+              </g>
+              <g class="ic-open">
+                <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)" transform="rotate(-20 20 29)"/>
+                <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)" transform="rotate(20 20 29)"/>
+                <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)"/>
+              </g>
+            </svg>
+          </span>
+          <span class="n">2</span>
+        </button>
+      </div>
+      <div class="subkids" id="doneKids" hidden>
+        <div class="kid"><div class="ktitle"><span class="kname">桥点通行表</span></div><div class="ksum">载重上限40t · 双向单车道</div></div>
+        <div class="kid"><div class="ktitle"><span class="kname">季风窗口</span></div><div class="ksum">72h 后超涉渡阈值</div></div>
+      </div>
     </div>
   </div>
-  <div class="stage-note">滚轮＝上下滚动 · 空白处拖动＝平移 · 缩放只走顶部控件（每按 ±25% · 拖条连续 · 25%–200%） · 布局与连线＝生产同款（根居左 · 子树向右 · 直角折线 · 父端实心点/子端空心点）</div>
+  <div class="stage-note">滚轮＝上下滚动 · 空白处拖动＝平移 · 缩放只走顶部控件（每按 ±25% · 拖条连续 · 25%–200%） · 布局连线＝生产同款（根居左 · 直角折线 · 父端实心/子端空心 · 展开时线自父端生长到子端）</div>
 </div>
 
 <script>
@@ -194,13 +225,16 @@
    addElbowPath（生产 L1508）：先横→再竖→再横 直角折线；
    灰 #8a8a8a · 1.5px 实线；父端实心圆点 r3 · 子端空心圆点 r3。
    新消息气泡在卡内（独立副卡已撤）：卡本体高度即排布高度，
-   连线锚点取卡本体几何——生产上线后即按方案 §阶段1 落同款。 */
+   连线锚点取卡本体几何——生产上线后即按方案 §阶段1 落同款。
+   连线不闪现：初始不画；展开时卡先就位、线自父端 A 生长至子端 B（dashoffset），收起时回缩。 */
 const GAP_Y=40, COL_W=390, SVGNS="http://www.w3.org/2000/svg";
 const rootUnit=document.getElementById("rootUnit");
 const kids=[...document.querySelectorAll(".kidwrap")];
 const bodyOf=u=>u.querySelector(".root")||u.querySelector(".kid");
 const linksSvg=document.getElementById("linksSvg");
-let expanded=true;
+let expanded=false;             /* 初始收起——线只在展开时生长出来，不常驻画布 */
+let anchors=[], rootAnchor=0;   /* 连线锚点：layout 算出，drawEdges 消费 */
+let collapseTimer=null;
 
 function layout(){
   kids.forEach(u=>u.hidden=false);
@@ -222,39 +256,95 @@ function layout(){
   rootUnit.style.left="0px";
   rootUnit.style.top=(total/2-rootBodyC)+"px";
   const rootCy=total/2;
-  /* 画折线：父右缘中点 → 子左缘中点（先横/再竖/再横） */
+  /* 只算锚点，不画线——画线统一走 drawEdges（生长动画，不闪现） */
+  rootAnchor=rootCy;
+  anchors=kidCy.slice();
+}
+layout();
+
+/* ═══ 画线：展开时才画；线自父端 A 生长到子端 B，子端点随线到达浮现 ═══ */
+const GROW_MS=460, STAG=90, SHRINK_MS=300;
+function drawEdges(animate){
   linksSvg.innerHTML="";
   const g=document.createElementNS(SVGNS,"g");
   g.setAttribute("data-edge-group","parent-child");
   linksSvg.appendChild(g);
   const x1=360, x2=COL_W, midX=(x1+x2)/2;
   kids.forEach((u,i)=>{
-    const cy=kidCy[i];
+    const cy=anchors[i];
     const p=document.createElementNS(SVGNS,"path");
-    p.setAttribute("d",`M ${x1} ${rootCy} L ${midX} ${rootCy} L ${midX} ${cy} L ${x2} ${cy}`);
+    p.setAttribute("d",`M ${x1} ${rootAnchor} L ${midX} ${rootAnchor} L ${midX} ${cy} L ${x2} ${cy}`);
     p.setAttribute("stroke","#8a8a8a");
     p.setAttribute("stroke-width","2.2");
     p.setAttribute("fill","none");
     p.setAttribute("data-edge","parent-child");
     g.appendChild(p);
     const dotF=document.createElementNS(SVGNS,"circle"); /* 父端：实心 */
-    dotF.setAttribute("cx",x1);dotF.setAttribute("cy",rootCy);dotF.setAttribute("r","3.4");
+    dotF.setAttribute("cx",x1);dotF.setAttribute("cy",rootAnchor);dotF.setAttribute("r","3.4");
     dotF.setAttribute("fill","#8a8a8a");
     g.appendChild(dotF);
     const dotC=document.createElementNS(SVGNS,"circle"); /* 子端：空心 */
     dotC.setAttribute("cx",x2);dotC.setAttribute("cy",cy);dotC.setAttribute("r","3.4");
     dotC.setAttribute("fill","none");dotC.setAttribute("stroke","#8a8a8a");dotC.setAttribute("stroke-width","2.2");
     g.appendChild(dotC);
+    if(animate){
+      const L=p.getTotalLength();
+      p.style.strokeDasharray=L+"px";
+      p.style.strokeDashoffset=L+"px";
+      p.style.transition="none";
+      p.getBoundingClientRect();                                  /* 起始帧落定 */
+      p.style.transition=`stroke-dashoffset ${GROW_MS}ms cubic-bezier(.3,.1,.28,1) ${i*STAG}ms`;
+      p.style.strokeDashoffset="0px";                             /* A → B 生长 */
+      dotC.style.opacity="0";
+      dotC.style.transition=`opacity 220ms ease ${i*STAG+Math.round(GROW_MS*.72)}ms`;
+      dotC.getBoundingClientRect();
+      dotC.style.opacity="1";                                     /* 线到达时端点浮现 */
+    }
   });
 }
-layout();
 
-/* ═══ 右轨：展开/收起子卡（生产 toggleExpand 语义——收起即子卡与连线消失） ═══ */
+/* 初始收起：同一同步脚本内收掉，首帧即收起态（无已展开的中间帧） */
+kids.forEach(u=>u.hidden=true);
+linksSvg.innerHTML="";
+
+/* ═══ 右轨：展开＝卡先就位→线自父端生长；收起＝线回缩→卡收起 ═══ */
 document.getElementById("rail").addEventListener("click",function(){
+  if(collapseTimer){ clearTimeout(collapseTimer); collapseTimer=null; }
   expanded=!expanded;
   this.classList.toggle("on",expanded);
-  kids.forEach(u=>u.hidden=!expanded);
-  linksSvg.style.display=expanded?"":"none";
+  if(expanded){
+    kids.forEach(u=>u.hidden=false);
+    layout();          /* 卡先就位 */
+    drawEdges(true);   /* 再画线：A→B 生长，不闪现 */
+  }else{
+    const ps=[...linksSvg.querySelectorAll("path")];
+    const ds=[...linksSvg.querySelectorAll("circle")];
+    ps.forEach(p=>{
+      const L=p.getTotalLength();
+      p.style.transition=`stroke-dashoffset ${SHRINK_MS}ms ease-in`;
+      p.style.strokeDashoffset=L+"px";   /* 回缩向父端 */
+    });
+    ds.forEach(d=>{
+      d.style.transition="opacity 140ms ease";
+      d.style.opacity="0";
+    });
+    collapseTimer=setTimeout(()=>{
+      kids.forEach(u=>u.hidden=true);
+      linksSvg.innerHTML="";
+      collapseTimer=null;
+    },SHRINK_MS+40);
+  }
+});
+
+/* ═══ 退役卡：子树默认折叠（封存不铺画布）；控件仍可翻阅（展开孙卡并重排布局） ═══ */
+const doneRail=document.getElementById("doneRail"),doneKids=document.getElementById("doneKids");
+if(doneRail)doneRail.addEventListener("click",function(){
+  doneRail.classList.toggle("on");
+  const opening=doneKids.hidden;
+  doneKids.hidden=!doneKids.hidden;
+  if(!expanded) return;   /* 主树收起态下不动连线 */
+  layout();               /* 高度变了 → 重排锚点 */
+  drawEdges(opening);     /* 展开＝重新生长；收起＝原位重画（不闪现） */
 });
 
 /* ═══ 缩放控件：−/拖条/＋（每按 ±25% · 25%–200%） ═══ */
@@ -333,21 +423,42 @@ if(location.hash.indexOf("probe")>=0){
   window.addEventListener("load",function(){
     var r=document.getElementById("rail");
     var out=[];
+    var node=document.createElement("pre");
+    node.id="probeOut";
+    node.style.cssText="position:fixed;left:8px;bottom:8px;z-index:99999;background:#111;color:#0f0;padding:8px;font:12px monospace;white-space:pre-wrap";
+    var flush=function(){ node.textContent=out.join("\n"); };
     if(!r){ out.push("NO RAIL"); }
     else{
       var c=getComputedStyle(r.querySelector(".ic-closed"));
       var o=getComputedStyle(r.querySelector(".ic-open"));
-      var btn=r.className;
-      out.push("btnClass="+JSON.stringify(btn));
+      out.push("btnClass="+JSON.stringify(r.className));
       out.push("ic-closed.display="+c.display+" width="+c.width+" height="+c.height);
       out.push("ic-open.display="+o.display+" width="+o.width+" height="+o.height);
-      out.push("btn.computed.display="+getComputedStyle(r).display);
+      /* 连线生长断言：初始收起(0线) → 展开(3线·起点未满长) → 长满 → 回缩清空 */
+      var kk=document.querySelectorAll(".kidwrap");
+      out.push("init.kidsHidden="+kk[0].hidden);
+      out.push("init.paths="+document.querySelectorAll("#linksSvg path").length);
+      r.click();
+      var ps=document.querySelectorAll("#linksSvg path");
+      out.push("afterClick.paths="+ps.length);
+      out.push("afterClick.kidsHidden="+kk[0].hidden);
+      if(ps[0]) out.push("p0.dashoffset@0ms="+getComputedStyle(ps[0]).strokeDashoffset);
+      if(ps[0]) out.push("p0.style.target="+ps[0].style.strokeDashoffset+" dasharray="+ps[0].style.strokeDasharray);
+      if(ps[0]) out.push("p0.transition="+JSON.stringify(ps[0].style.transition));
+      document.body.appendChild(node); flush();
+      setTimeout(function(){
+        var ps2=document.querySelectorAll("#linksSvg path");
+        for(var i=0;i<ps2.length;i++) out.push("p"+i+".dashoffset@full="+getComputedStyle(ps2[i]).strokeDashoffset);
+        r.click();   /* 收起 */
+        setTimeout(function(){
+          out.push("afterCollapse.paths="+document.querySelectorAll("#linksSvg path").length);
+          out.push("afterCollapse.kidsHidden="+kk[0].hidden);
+          flush();
+        },SHRINK_MS+150);
+        flush();
+      },GROW_MS+2*STAG+320);
     }
-    var node=document.createElement("pre");
-    node.id="probeOut";
-    node.style.cssText="position:fixed;left:8px;bottom:8px;z-index:99999;background:#111;color:#0f0;padding:8px;font:12px monospace;white-space:pre-wrap";
-    node.textContent=out.join("\n");
-    document.body.appendChild(node);
+    if(!document.body.contains(node)){ document.body.appendChild(node); flush(); }
   });
 }
 </script>

@@ -109,8 +109,19 @@ button{font-family:var(--font);cursor:pointer}
 @property --ang{syntax:'<angle>';initial-value:0deg;inherits:false}
 @keyframes stspin{to{--ang:360deg}}
 .st-done::after{content:none}
-.st-done .kid{background:#0e0e0e;border-color:#262626;--cc:#565656}
+.st-done .kid{background:#0e0e0e;border-color:#262626;--cc:#565656;position:relative}
 .st-done .inrow{opacity:.35;pointer-events:none}
+
+/* ── 完成（定案 10-17）：退役卡 ①右上灰徽「完成」（NEW 同款形态·灰阶示封存）
+   ②子树默认折叠（封存不铺画布）；控件仍可点开翻阅历史子卡 ── */
+.kdone{position:absolute;top:-9px;right:-4px;font-size:9px;font-weight:800;font-style:normal;
+  letter-spacing:1px;line-height:1;padding:3px 7px;border-radius:8px 8px 8px 2px;
+  background:#5c5c5c;color:#e8e8e8;pointer-events:none}
+.st-done .subctl svg rect{fill:#0e0e0e!important}   /* icon 底色随退役卡底 */
+.subkids{margin-top:12px;margin-left:24px;width:calc(100% - 24px);display:flex;flex-direction:column;gap:12px}
+[hidden]{display:none!important}              /* display:flex 类不再顶翻 hidden——折叠可靠性由这条保证 */
+.kid .subctl{right:6px}                       /* 子卡内控件钉在卡内，不越卡缘 */
+.st-done .kid>.ktitle,.st-done .kid>.ksum{padding-right:48px}  /* 文字让位 icon */
 
 /* ── 右侧常驻规则卡（占位） ── */
 .rules{position:fixed;top:12px;right:12px;bottom:12px;width:280px;z-index:30;
@@ -191,7 +202,30 @@ button{font-family:var(--font);cursor:pointer}
           <div class="bubble" data-card="空投方案"><i class="bnew">NEW</i><span class="btxt">最坏结局：运输机损失40%，物资到位60%，仍优于固守待援。这是很长的一段文字用来测试气泡两行滚动与流式跟随的效果到底稳不稳定。</span></div></div>
       </div>
       <div class="kidwrap t-setting st-done">
-        <div class="kid"><div class="ktitle"><span class="kname">补给线地理</span></div><div class="ksum">河谷桥点 · 季风窗口期</div></div>
+        <div class="kid"><i class="kdone">完成</i>
+          <div class="ktitle"><span class="kname">补给线地理</span></div><div class="ksum">河谷桥点 · 季风窗口期</div>
+          <button class="subctl" id="doneRail" type="button" aria-label="展开/收起子卡">
+            <span class="ic">
+              <svg viewBox="0 0 40 40" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+                <g class="ic-closed">
+                  <rect x="9"  y="7"  width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                  <rect x="13" y="11" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                  <rect x="17" y="15" width="14" height="18" rx="2" style="fill:var(--panel)"/>
+                </g>
+                <g class="ic-open">
+                  <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)" transform="rotate(-20 20 29)"/>
+                  <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)" transform="rotate(20 20 29)"/>
+                  <rect x="13.5" y="11" width="13" height="18" rx="2" style="fill:var(--panel)"/>
+                </g>
+              </svg>
+            </span>
+            <span class="n">2</span>
+          </button>
+        </div>
+        <div class="subkids" id="doneKids" hidden>
+          <div class="kid"><div class="ktitle"><span class="kname">桥点通行表</span></div><div class="ksum">载重上限40t · 双向单车道</div></div>
+          <div class="kid"><div class="ktitle"><span class="kname">季风窗口</span></div><div class="ksum">72h 后超涉渡阈值</div></div>
+        </div>
       </div>
     </div>
   </div>
@@ -266,6 +300,12 @@ button{font-family:var(--font);cursor:pointer}
   rail.addEventListener('click',function(){
     rail.classList.toggle('on');
     kids.hidden=!kids.hidden;
+  });
+  /* 退役卡：子树默认折叠（封存不铺画布）；控件仍可翻阅（点开看历史子卡） */
+  var doneRail=$('#doneRail'),doneKids=$('#doneKids');
+  if(doneRail)doneRail.addEventListener('click',function(){
+    doneRail.classList.toggle('on');
+    doneKids.hidden=!doneKids.hidden;
   });
 
   /* ── 弹窗：中央正方 ⇄ 吸右常驻 ── */
@@ -444,6 +484,12 @@ button{font-family:var(--font);cursor:pointer}
     chk('尾巴在底边左下(伸出底边)',(function(){var s=getComputedStyle(bub,'::before');return s.content!=='none'&&s.content!=='normal'&&parseFloat(s.width)===10&&parseFloat(s.bottom)<0&&parseFloat(s.left)>0})());
     chk('无新消息不显气泡',$('.bubble[data-card="北部集群"]')===null);
     chk('退役卡无气泡',$('.bubble[data-card="补给线地理"]')===null);
+    chk('完成徽章在右上·文案=完成',(function(){var b=$('.kdone');if(!b)return false;var kb=b.getBoundingClientRect(),kw=$('.kidwrap.st-done .kid').getBoundingClientRect();return b.textContent==='完成'&&kb.top<kw.top&&kb.right-kw.right<8})());
+    chk('退役卡子树默认折叠',!!doneKids&&doneKids.hidden===true&&!doneRail.classList.contains('on'));
+    doneRail.click();
+    chk('退役卡可翻阅(点控件展开)',doneKids.hidden===false&&doneRail.classList.contains('on'));
+    doneRail.click();
+    chk('退役卡再点收起',doneKids.hidden===true);
     chk('根卡扁平',getComputedStyle(r).boxShadow==='none');
     chk('根卡加高(≥270)',r.offsetHeight>=270,r.offsetHeight);
     chk('名字≥20px',parseFloat(getComputedStyle($('#pName')).fontSize)>=20);
