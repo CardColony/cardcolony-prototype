@@ -49,13 +49,13 @@ async def _mk_work_with_card() -> tuple[str, str]:
 # ════════════════════════════════════════════════════════════════════
 
 def test_version_and_ontology():
-    """硬判据：tools-tc-9；propose_status 进注册表/开关/OP_ONLY_TOOLS/只读；
+    """硬判据：tools-tc-10；propose_status 进注册表/开关/OP_ONLY_TOOLS/只读；
     status_update_task 进事件本体论；BASE_PROMPT 未动（t22-1 不升）。
 
     [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     auto 卡工具面件数变化）。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-9"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-10"  # [G2] tc-9→tc-10（+通信两件进 auto 面）
     assert "propose_status" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_REGISTRY["propose_status"].readonly is True
     assert "propose_status" in card_tools.TOOL_SWITCH
