@@ -41,7 +41,7 @@
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
-import { renderMarkdown } from "./esm/md.js?v=30";
+import { renderMarkdown } from "./esm/md.js?v=31";
 import { createAssembler } from "./esm/assembler.js?v=35";
 import { createChatView } from "./esm/flow/chat-view.js?v=2";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
@@ -316,8 +316,9 @@ const BOARD_CFG = Object.assign(
         return makeRow(t, "文本抢救：截取可用片段续跑" + fld("count", d.count),
           esc(d.count || 0) + " 字符", fmtData(d));
       case "deliver":
+        // 0KB 时不再显示体积（拼接为空是常态，挂个 0KB 只是噪音）
         return makeRow(t, "交付拼接" + fld("branch", d.branch) + fld("bytes", d.bytes),
-          Math.round((d.bytes || 0) / 1024) + "KB");
+          (d.bytes || 0) > 0 ? Math.round((d.bytes || 0) / 1024) + "KB" : null);
       case "proposal":
         if (!(d.count > 0)) return null;
         return makeRow(t, "建卡 " + esc(d.count) + " 张" + fld("cards", (d.cards || []).join("、")),
@@ -363,7 +364,7 @@ const BOARD_CFG = Object.assign(
         return [makeRow(node.type,
           "上下文注入·固定总领" + fld("source_kind", d.source_kind) +
           fld("source_ref", typeof d.source_ref === "string" ? d.source_ref : ""),
-          esc(d.source_kind || ""), fmtData(d), "lv3")];
+          null, fmtData(d), "lv3")];
       case "context_injection": {
         const ref = d.source_ref || {};
         const refTxt = (typeof ref === "string")
@@ -373,18 +374,18 @@ const BOARD_CFG = Object.assign(
           "上下文注入·当前步骤 " + esc(refTxt) +
           fld("source_kind", d.source_kind) + fld("step_id", d.step_id) +
           fld("index", d.index) + fld("total", d.total),
-          esc(d.source_kind || ""), fmtData(d), "lv3")];
+          null, fmtData(d), "lv3")];
       }
       case "judgment_protocol":
         return [makeRow(node.type, "判断协议（轮首注入）" + fld("source_kind", d.source_kind),
-          esc(d.source_kind || ""), fmtData(d), "lv3")];
+          null, fmtData(d), "lv3")];
       case "context_seat_identity":
         return [makeRow(node.type, "三席身份注入" + fld("source_kind", d.source_kind),
-          esc(d.source_kind || ""), fmtData(d), "lv3")];
+          null, fmtData(d), "lv3")];
       // [更新现状按钮改造 2026-10-16] 「更新现状」专用回合的轮首任务注入。
       case "status_update_task":
         return [makeRow(node.type, "现状更新（轮首注入）" + fld("source_kind", d.source_kind),
-          esc(d.source_kind || ""), fmtData(d), "lv3")];
+          null, fmtData(d), "lv3")];
       default:
         return renderSys(node);
     }
@@ -581,7 +582,74 @@ const BOARD_CFG = Object.assign(
   function renderUser(node) {
     const row = _messageItem.renderUser(node);
     if (node.pending) row.classList.add("is-pending");   // 乐观上屏未认领
+
+    /* [对话界面商业化 2026-10-17] 用户消息操作条（hover 浮出）：
+       复制 + 重新发送。重发不直接调 workspace——stream 不持有发送闭包，
+       用一次自定义事件把「用户要求重发这段原文」交给宿主，避免反向依赖。 */
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    const bubble = row.querySelector(".flow-user-bubble");
+
+    const t = document.createElement("span");
+    t.className = "msg-time";
+    const when = fmtClock(node.ts);
+    if (when) { t.textContent = when; t.title = String(node.ts); actions.appendChild(t); }
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "msg-act";
+    copyBtn.title = "复制";
+    copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.2" y="5.2" width="8" height="8" rx="1.6"/><path d="M10.8 3.2H3.6a.8.8 0 0 0-.8.8v7.2"/></svg>';
+    copyBtn.onclick = () => {
+      const text = bubble ? bubble.innerText : "";
+      if (!text) return;
+      const done = () => {
+        copyBtn.classList.add("is-ok");
+        setTimeout(() => copyBtn.classList.remove("is-ok"), 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, () => { /* 静默 */ });
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); done(); } catch (e) { /* 静默 */ }
+        document.body.removeChild(ta);
+      }
+    };
+    actions.appendChild(copyBtn);
+
+    if (!node.pending) {
+      const reBtn = document.createElement("button");
+      reBtn.type = "button";
+      reBtn.className = "msg-act";
+      reBtn.title = "重新发送这条提问";
+      reBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7"/><path d="M13.4 2.6v3.2h-3.2"/></svg>';
+      reBtn.onclick = () => {
+        const text = bubble ? bubble.innerText : "";
+        if (!text) return;
+        try {
+          window.dispatchEvent(new CustomEvent("ui:resend", { detail: { content: text } }));
+        } catch (e) { /* 零阻断 */ }
+      };
+      actions.appendChild(reBtn);
+    }
+
+    row.appendChild(actions);
     return row;
+  }
+
+  /** 时刻文案（用户消息 hover 用）：今天 HH:MM，否则 M/D HH:MM。 */
+  function fmtClock(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return "";
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    const same = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+    return same ? hm : (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
   }
   function renderAssistant(node) {
     const el = _msgRenderers.assistant(node);
@@ -721,6 +789,11 @@ const BOARD_CFG = Object.assign(
       type: (frame && frame.type) || "",
       data: (frame && frame.data) || {},
       model: (frame && frame.model) || "",
+      /* [对话界面商业化 2026-10-17] 帧时间：后端 emit 的 ts 是秒级 float，
+         统一折成 ISO 串——与落盘记录同一形态，刷新前后渲染走同一条路径。 */
+      ts: frame && frame.ts
+        ? (typeof frame.ts === "number" ? new Date(frame.ts * 1000).toISOString() : String(frame.ts))
+        : "",
     };
   }
 
@@ -901,6 +974,7 @@ const BOARD_CFG = Object.assign(
     clearLiveSlot(st);        // 交出 live 正文引用：它已由快照里的正式节点接管
     const items = await fetchTimeline(st, wid, cid);
     renderSnapshot(st, st.asm.rebuild(items));
+    if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
   }
 
   /** 结算后回流：与刷新同一条路（唯一数据源仍是 timeline）。
@@ -914,6 +988,7 @@ const BOARD_CFG = Object.assign(
     clearLiveSlot(st);           // live 气泡随正式节点接管退场
     const snap = st.asm.rebuild(items);
     renderSnapshot(st, snap);
+    if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
     setRunning(wid, cid, false); // 结算＝本轮结束（运行条收、主键回发送态）
     // 收口判据：本轮已出现 assistant 节点，或已见 done/error
     const done = snap.order.some((k) => {
@@ -1233,4 +1308,25 @@ export const EventFlow = {
   activate, board,
   // [画板四机制 T3] 释放扫描 ＋ 常驻键只读探针（供取证/联调；不改任何语义）。
   sweepSessions, residentKeys: () => Array.from(sessions.keys()),
+  /* [对话界面商业化 2026-10-17] 最后一个 assistant 节点的 seq。
+     send() 的异常恢复判据用它做「本轮是否真新增了回复」的前后对比——
+     原判据只看「会话里有没有 assistant 节点」，历史卡恒为真，导致请求失败时
+     被误判成「后端已完成、只是响应没回来」，草稿被吞、错误条不显示。 */
+  assistantSeq(wid, cid) {
+    const st = sessions.get(skey(wid, cid));
+    if (!st) return 0;
+    const snap = st.asm.snapshot();
+    let mx = 0;
+    for (const k of snap.order) {
+      const n = snap.nodes.get(k);
+      if (n && n.kind === "assistant") mx = Math.max(mx, Number(n.seq) || 0);
+    }
+    return mx;
+  },
+  /* [对话界面商业化 2026-10-17] 空态内容注入：宿主按卡类型给标题/说明/建议，
+     视图层只管画（内容与位置分离，同 C2 的既有分工）。 */
+  setEmpty(wid, cid, payload) {
+    const st = sessions.get(skey(wid, cid));
+    if (st && st.view && typeof st.view.setEmpty === "function") st.view.setEmpty(payload);
+  },
 };

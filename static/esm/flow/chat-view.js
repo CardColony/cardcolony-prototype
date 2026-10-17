@@ -74,7 +74,18 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   toBottomBtn.innerHTML = '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5L7 9l3.5-3.5"/></svg>';
   toBottomSlot.appendChild(toBottomBtn);
 
+  /* [对话界面商业化 2026-10-17] 空态与首屏骨架：
+     —— 空态：该卡一条记录都没有时给引导（标题 + 一句说明 + 可点建议），
+        而不是一整块黑。建议点击＝把文本填进输入框（不代发，用户仍可改）。
+     —— 骨架：首次拉 timeline 期间显示 3 行 shimmer，避免「白屏 → 突然出内容」。 */
+  const emptyEl = el("div", "chat-empty");
+  emptyEl.style.display = "none";
+  const skeletonEl = el("div", "chat-skeleton");
+  skeletonEl.innerHTML = '<div class="sk-line w40"></div><div class="sk-line w85"></div><div class="sk-line w70"></div>';
+
   column.appendChild(olderWrap);
+  column.appendChild(emptyEl);
+  column.appendChild(skeletonEl);
   scroll.appendChild(column);
   scroll.appendChild(toBottomSlot);
   root.appendChild(scroll);
@@ -93,12 +104,52 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   let statusTimer = null;
   let statusStart = null;
   let liveSlot = null;
+  let loading = true;           // 首屏骨架：首次 render 落地即收
+
+  /** 空态内容（由宿主按卡类型注入；未注入则用中性默认）。 */
+  function setEmpty(payload) {
+    const p = payload || {};
+    const title = p.title || "还没有对话";
+    const desc = p.desc || "在下面输入框说点什么，这张卡的对话会从这里开始。";
+    const hints = Array.isArray(p.hints) ? p.hints : [];
+    emptyEl.innerHTML =
+      '<div class="ce-mark">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M4 5.5h16v11H9l-5 4V5.5Z"/><path d="M8.5 9.5h7M8.5 13h4.5"/></svg></div>' +
+      "<h3></h3><p></p>";
+    emptyEl.querySelector("h3").textContent = title;
+    emptyEl.querySelector("p").textContent = desc;
+    if (hints.length) {
+      const wrap = el("div", "ce-hints");
+      for (const h of hints) {
+        const b = el("button", "ce-hint");
+        b.type = "button";
+        b.textContent = h.label || h.text || "";
+        b.onclick = () => {
+          try {
+            window.dispatchEvent(new CustomEvent("ui:fill-input", {
+              detail: { text: h.text || h.label || "" },
+            }));
+          } catch (e) { /* 零阻断 */ }
+        };
+        wrap.appendChild(b);
+      }
+      emptyEl.appendChild(wrap);
+    }
+  }
+
+  function paintEmpty() {
+    const isEmpty = order.length === 0;
+    skeletonEl.style.display = loading ? "" : "none";
+    emptyEl.style.display = (!loading && isEmpty) ? "" : "none";
+  }
 
   /* [建项目流程 2026-10-17] 初始态与「已渲染且无更多」保持一致：
      分页键与回底键都按数据条件显隐，不能靠「还没刷过 ⇒ 用 CSS 默认值」。
      此前从未 replayTrace 的会话（草稿）会多出两个点了就 404 的死按钮。 */
   paintOlder();
   paintToBottom();
+  paintEmpty();
 
   /** 逐字正文槽（/tokens 直写区）：恒在运行条之前、全部节点座位之后。 */
   function ensureLiveSlot() {
@@ -217,7 +268,8 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
       els.push(seat.el);
     }
     // 落位：按序校正（已就位者 insertBefore 为 no-op ⇒ 零搬动）
-    let prev = olderWrap;
+    // 起点是骨架块（older → empty → skeleton → 节点…），保证空态/骨架恒在节点之前。
+    let prev = skeletonEl;
     for (const e of els) {
       if (e.parentNode !== column || prev.nextSibling !== e) column.insertBefore(e, prev.nextSibling);
       prev = e;
@@ -225,6 +277,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     // 逐字槽与运行条恒在末位之后（顺序：live 槽 → 运行条）
     if (liveSlot !== null) column.appendChild(liveSlot);
     column.appendChild(statusEl);
+    paintEmpty();
 
     const newFirst = order[0] ?? null;
     const newLast = order.length ? order[order.length - 1] : null;
@@ -322,11 +375,15 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     scrollEl: scroll,
     columnEl: column,
     render,
+    /* 数据落地信号：首屏骨架只在真正拿到数据后收起（render 本身不清 loading，
+       否则「先渲染一帧空数组」会把骨架换成空态，再闪回内容）。 */
+    markLoaded() { loading = false; paintEmpty(); },
     refresh,
     ensureLiveSlot,
     toBottom,
     paintOlder,
     paintStatus,
+    setEmpty,
     /** 运行态变化：重画运行条与「新用户节点」判据。 */
     setRunning(bool) {
       if (bool) statusStart = Date.now();
