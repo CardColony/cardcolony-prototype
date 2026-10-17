@@ -1882,19 +1882,6 @@ body.page-chat .rule-panel { display: none; }
 .flow-input-tools { gap: 16px; }
 .flow-input-modes { gap: 12px; }
 .flow-input-trailing { flex: none; gap: 12px; }
-.flow-input-add {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 999px;
-  background: var(--panel-hover);
-  color: var(--text);
-  cursor: pointer;
-}
-.flow-input-add:disabled { opacity: .5; cursor: default; }
 .flow-input-primary {
   display: grid;
   place-items: center;

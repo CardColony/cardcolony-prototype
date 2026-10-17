@@ -19,7 +19,7 @@ import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=31";
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
 import { ComposerSubmissionPolicy } from "./esm/flow/submission-policy.js?v=1";
-import { createInputBar } from "./esm/flow/input-bar.js?v=1";
+import { createInputBar } from "./esm/flow/input-bar.js?v=2";
 import { createQueueStore } from "./esm/flow/queue-store.js?v=1";
 import { createQueueDock } from "./esm/flow/queue-dock.js?v=1";
 

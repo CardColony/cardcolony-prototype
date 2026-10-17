@@ -23,7 +23,8 @@
  *   · Tooltip 组件 ⇒ 原生 title；IconPlusOutline16 ⇒ 内联 SVG。
  *   · 附件面（图片 rail / 拖放 / 灯箱 / 粘贴图片）本机不存在 ⇒ 整段不接（原文中
  *     addImages 缺省时那些分支本身就是空转）。
- *   · 命令菜单面不存在 ⇒ `+` 按钮按原文 :741 的 disabled 分支渲染（`toggleCommandMenu === undefined`）。
+ *   · 命令菜单面不存在 ⇒ `+` 按钮**整件不渲染**（[2026-10-17 用户裁定] 死件纪律，
+ *     不取原文 :741 的 disabled 分支——那会留一个永远点不动的假按钮）。
  *   · /命令 的 adjudicator 不存在 ⇒ adjudicate 效果一律按「未命中」回
  *     `adjudicated(attempt, undefined)`，机器据此走 default-sink（原文 :496-498）。
  */
@@ -37,7 +38,6 @@ const T = {
   unavailable: "会话不可用",
   parentOffline: "父会话已离线，无法继续发送；仍可停止当前运行",
   steerQueue: "Cmd/Ctrl+Enter 插话发送全部排队消息",
-  commands: "命令",
   stop: "停止生成",
   send: "发送消息",
 };
@@ -96,14 +96,9 @@ export function createInputBar({ mount, actions, policy, session, hasQueued, not
 
   const row = el("div", "flow-input-row");
   const tools = el("div", "flow-input-tools");
-  const addBtn = el("button", "flow-input-add",
-    '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>');
-  addBtn.type = "button";
-  addBtn.setAttribute("aria-label", T.commands);
-  addBtn.title = T.commands;
-  addBtn.disabled = true;   // 命令面不存在 ⇒ 原文 :741 的 disabled 分支
+  // [2026-10-17 用户裁定] 命令菜单面不存在 ⇒ `+` 按钮整件不渲染（死件纪律），
+  // 不取原文 :741 的 disabled 分支——那会留一个永远点不动的假按钮。
   const modes = el("div", "flow-input-modes");
-  tools.appendChild(addBtn);
   tools.appendChild(modes);
 
   const trailing = el("div", "flow-input-trailing");
@@ -360,7 +355,6 @@ export function createInputBar({ mount, actions, policy, session, hasQueued, not
 
   // 按钮按下不抢焦点（原文 :531-534）
   function keepFocus(e) { e.preventDefault(); ta.focus({ preventScroll: true }); }
-  addBtn.addEventListener("mousedown", keepFocus);
   primary.addEventListener("mousedown", keepFocus);
 
   // ---- 对外 ----
