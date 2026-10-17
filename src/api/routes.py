@@ -1276,7 +1276,13 @@ async def _run_message(work_id: str, card_id: str, content: str,
     if not keep:
         serial_gate.release(work_id, card_id)
     try:
-        await auto_driver.after_turn(work_id, card_id)
+        # [阶段2.7 · TC3 空转兜底] 本轮工具调用次数取自 finish 响应体的
+        # tool_events（自动模式的空转判定原料）；非 dict 形态（错误响应）⇒
+        # None＝不判定。
+        _tool_n = None
+        if isinstance(result, dict):
+            _tool_n = len(result.get("tool_events") or [])
+        await auto_driver.after_turn(work_id, card_id, tool_n=_tool_n)
     except Exception as exc:  # noqa: BLE001 驱动器异常不影响本回合返回
         logger.error("[auto] 驱动检查异常 work=%s card=%s: %s", work_id, card_id, exc)
     return result

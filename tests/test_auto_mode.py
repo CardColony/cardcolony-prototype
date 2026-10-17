@@ -62,6 +62,7 @@ def _clean_process_state():
         message_runner._TRIGGER_TASKS.clear()
         card_msg.TRIGGERS.clear()
         event_stream._journals.clear()
+        auto_driver._IDLE_ROUNDS.clear()   # [阶段2.7] 空转计数跨用例不清会串味
 
     _reset()
     yield
@@ -1080,3 +1081,53 @@ def test_g4_respawn_guard_named_as_cycle_guard():
     assert "card_msg_unanswered_giveup" in src
     assert "card_msg_respawn" in src
     assert "不是轮次/墙钟/token 闸" in src, "限次语义必须明写不是闸"
+
+
+# ============================================================
+# 阶段 2.7 · 空转兜底（TC3：止损，不是闸）
+# ============================================================
+
+async def test_p27_idle_stop_pauses_after_threshold(typed_registry, work, no_kick):
+    """连续 _IDLE_PAUSE_THRESHOLD 轮零工具 ⇒ 自动 pause ＋ 不再起轮。
+
+    注意：这不是闸——只处理「光说不做」这一种病态；有工具调用的轮永不计入。
+    """
+    wid, a = await _mk_auto(work, goal="把甲做完")
+    th = auto_driver._IDLE_PAUSE_THRESHOLD
+    for _ in range(th - 1):
+        await auto_driver.after_turn(wid, a, tool_n=0)
+        assert card_store._meta_of(wid, a)["goal_state"] == "active"
+    await auto_driver.after_turn(wid, a, tool_n=0)   # 第 th 轮
+    assert card_store._meta_of(wid, a)["goal_state"] == "paused"
+    # 暂停后驱动器不再起轮
+    assert auto_driver.will_continue(wid, a) is False
+
+
+async def test_p27_tool_call_resets_idle_counter(typed_registry, work, no_kick):
+    """中间任一轮有工具调用 ⇒ 空转计数清零（不误伤正常推进的长任务）。"""
+    wid, a = await _mk_auto(work, goal="把甲做完")
+    th = auto_driver._IDLE_PAUSE_THRESHOLD
+    for _ in range(th - 1):
+        await auto_driver.after_turn(wid, a, tool_n=0)
+    await auto_driver.after_turn(wid, a, tool_n=2)   # 有工具 ⇒ 清零
+    assert card_store._meta_of(wid, a)["goal_state"] == "active"
+    for _ in range(th - 1):
+        await auto_driver.after_turn(wid, a, tool_n=0)
+    assert card_store._meta_of(wid, a)["goal_state"] == "active", "清零后应重新计数"
+
+
+async def test_p27_unknown_tool_n_no_judgement(typed_registry, work, no_kick):
+    """tool_n=None（无信息）⇒ 不判定：与 2.7 前行为逐字一致（向后兼容）。"""
+    wid, a = await _mk_auto(work, goal="把甲做完")
+    for _ in range(auto_driver._IDLE_PAUSE_THRESHOLD + 2):
+        await auto_driver.after_turn(wid, a)   # 不传 tool_n
+    assert card_store._meta_of(wid, a)["goal_state"] == "active"
+    assert card_store._meta_of(wid, a)["goal_rounds"] >= 1, "正常驱动不受影响"
+
+
+def test_p27_rounds_warn_is_not_a_gate():
+    """红线 1：轮次告警线只告警不拦——常量在册且语义明写。"""
+    src = (REPO / "src" / "api" / "auto_driver.py").read_text(encoding="utf-8")
+    assert auto_driver._ROUNDS_WARN == 200
+    assert "只告警不拦" in src
+    assert "不设轮次上限" in src

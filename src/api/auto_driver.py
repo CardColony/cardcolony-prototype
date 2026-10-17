@@ -50,6 +50,53 @@ GOAL_STATES: tuple[str, ...] = (GOAL_ACTIVE, GOAL_PAUSED, GOAL_BLOCKED, GOAL_COM
 #:   ——跑多少轮由模型用 ``update_goal`` 说了算，本值一个字都不参与判定。
 _CARD_TREE_CYCLE_GUARD = 32
 
+# ============================================================
+# [自动模式 2026-10-17 · 回灌 5700 阶段2.7 · TC3] 空转兜底（**止损，不是闸**）
+#
+# 用户愿景是「不设闸、观察模型自然行为」（U4），但「连续 N 轮一个工具都不调、
+# 光说话」是明确的故障态（模型在原地打转/复读），继续烧额度无信息量。
+# 故设一道**止损**：单卡连续 _IDLE_PAUSE_THRESHOLD 轮零工具调用 ⇒ 自动
+# goal_state=paused ＋ 打点，交人工看。它**不是轮次/墙钟/token 闸**——不限制
+# 「能跑多少轮」，只处理「空转」这一种病态（有工具调用的轮永不计入）。
+#
+# goal_rounds 告警线：超 _ROUNDS_WARN 只告警**不拦**（红线 1：不设轮次上限）。
+# ============================================================
+_IDLE_PAUSE_THRESHOLD = 3
+_ROUNDS_WARN = 200
+
+#: 进程内连续空转计数：(work_id, card_id) → 连续零工具轮数。
+_IDLE_ROUNDS: dict[tuple[str, str], int] = {}
+
+
+async def _idle_stop(work_id: str, card_id: str, tool_n: Optional[int]) -> bool:
+    """空转兜底：连续零工具轮达阈值 ⇒ 自动 pause ＋ 打点。返回是否已暂停。
+
+    ``tool_n=None`` ⇒ 无本轮信息（直接调 after_turn 的场景）⇒ 不判定、不清零
+    （避免把「不知道」误算成空转）。
+    """
+    if tool_n is None:
+        return False
+    key = (work_id, card_id)
+    if tool_n > 0:
+        _IDLE_ROUNDS.pop(key, None)
+        return False
+    n = _IDLE_ROUNDS.get(key, 0) + 1
+    _IDLE_ROUNDS[key] = n
+    if n < _IDLE_PAUSE_THRESHOLD:
+        return False
+    _IDLE_ROUNDS.pop(key, None)
+    try:
+        await card_store.update_card(
+            work_id, card_id, {"goal_state": GOAL_PAUSED},
+            f"[自动模式] 空转兜底：连续 {n} 轮无工具调用，已自动暂停",
+        )
+    except Exception as exc:  # noqa: BLE001 兜底失败不阻断（只是没停住）
+        logger.warning("[auto] 空转暂停失败 work=%s card=%s: %s", work_id, card_id, exc)
+        return False
+    logger.warning("[auto] 空转兜底触发 work=%s card=%s 连续 %d 轮零工具",
+                   work_id, card_id, n)
+    return True
+
 
 def _meta(work_id: str, card_id: str) -> dict[str, Any]:
     try:
@@ -129,6 +176,11 @@ async def _bump_rounds(work_id: str, card_id: str) -> int:
         )
     except Exception as exc:  # noqa: BLE001 计轮失败不阻断起轮
         logger.warning("[auto] 计轮失败 work=%s card=%s: %s", work_id, card_id, exc)
+    # [阶段2.7 · TC3] 轮次告警线：超阈值**只告警不拦**（红线 1：不设轮次上限）。
+    # 每 50 轮告警一次防刷屏，便于人工介入看这卡是不是在长跑。
+    if nxt > _ROUNDS_WARN and nxt % 50 == 0:
+        logger.warning("[auto] 轮次告警（不拦）work=%s card=%s goal_rounds=%d 超 %d",
+                       work_id, card_id, nxt, _ROUNDS_WARN)
     return nxt
 
 
@@ -165,7 +217,8 @@ def kick(work_id: str, card_id: str) -> Optional["Any"]:
     return task
 
 
-async def after_turn(work_id: str, card_id: str, *, _hops: int = 0) -> None:
+async def after_turn(work_id: str, card_id: str, *, _hops: int = 0,
+                     tool_n: Optional[int] = None) -> None:
     """回合收口后的驱动检查（**必须由调用方排在互斥体释放之后**）。
 
     能继续 ⇒ ``goal_rounds += 1`` ＋ 起下一轮；不能继续 ⇒ 向上唤醒父卡
@@ -173,10 +226,21 @@ async def after_turn(work_id: str, card_id: str, *, _hops: int = 0) -> None:
 
     ``_hops``：沿 parent 链已上跳层数，**只服务 ``_CARD_TREE_CYCLE_GUARD`` 的
     卡树防环兜底**——不是轮次/进度/时间闸（见该常量）。
+
+    ``tool_n``：**本轮**工具调用次数（来自 finish 响应体的 tool_events 长度）。
+    只服务空转兜底（阶段2.7/TC3）：连续零工具轮达阈值 ⇒ 自动 pause。
+    None ⇒ 无信息不判定（直接调本函数的场景，行为与 2.7 前逐字一致）。
     """
     meta = _meta(work_id, card_id)
     if not is_auto(meta):
         return
+    # [阶段2.7 · TC3] 空转止损：连续零工具轮 ⇒ 暂停（不是闸，见 _idle_stop）
+    try:
+        if await _idle_stop(work_id, card_id, tool_n):
+            return
+    except Exception as exc:  # noqa: BLE001 兜底失败不阻断正常驱动
+        logger.warning("[auto] 空转兜底异常 work=%s card=%s: %s",
+                       work_id, card_id, exc)
     if will_continue(work_id, card_id):
         await _bump_rounds(work_id, card_id)
         kick(work_id, card_id)
