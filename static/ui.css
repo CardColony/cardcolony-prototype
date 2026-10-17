@@ -155,15 +155,17 @@ body.page-chat :focus-visible {
   border-radius: var(--ui-r-xs);
 }
 
-body.page-chat ::-webkit-scrollbar { width: 8px; height: 8px; }
+body.page-chat ::-webkit-scrollbar { width: 6px; height: 6px; }
 body.page-chat ::-webkit-scrollbar-track { background: transparent; }
 body.page-chat ::-webkit-scrollbar-thumb {
-  background: rgba(148, 155, 166, 0.22);
+  background: rgba(148, 155, 166, 0.10);
   border-radius: var(--ui-r-pill);
   border: 2px solid transparent;
   background-clip: content-box;
 }
 body.page-chat ::-webkit-scrollbar-thumb:hover { background: rgba(148, 155, 166, 0.45); background-clip: content-box; }
+body.page-chat .flow-view-scroll:hover::-webkit-scrollbar-thumb { background: rgba(148, 155, 166, 0.28); background-clip: content-box; }
+body.page-chat .flow-view-scroll { scrollbar-width: thin; scrollbar-color: rgba(148,155,166,0.18) transparent; }
 body.page-chat ::-webkit-scrollbar-button { display: none; }
 
 /* 外壳：左栏 + 主列 */
@@ -811,7 +813,7 @@ body.page-chat .md ol {
   padding-left: 22px;
 }
 body.page-chat .md li {
-  margin: 3px 0;
+  margin: 1px 0;
   line-height: 1.72;
   padding-left: 2px;
 }
