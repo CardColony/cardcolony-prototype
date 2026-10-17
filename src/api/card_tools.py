@@ -564,6 +564,34 @@ async def _h_update_goal(work_id: str, current_id: str,
         else:
             fields["goal_await_children"] = (
                 1 if auto_driver.has_active_child(work_id, current_id) else 0)
+        # [等子卡活锁兜底 2026-10-17 · 口径与任务书的偏差（已裁定，非默默偏离）]
+        # 计数列 ``goal_await_wakes`` 的语义＝「**连续空等重挂**次数」，判定与清零：
+        #   · **空等重挂**（声明 ``await_children=true`` 而**此刻并无未终止子卡**——
+        #     等待条件早已兑现却仍把自己挂起，正是实测 work_017 的活锁形态）⇒ **+1**；
+        #   · **真等待**（声明时确有子卡在跑）⇒ **清零**（连击断裂：正常的
+        #     「等→醒→干活→再等」循环每次都是真等待，计数永远攒不起来，永不误伤）；
+        #   · 带宽裕度（``_AWAIT_RESUME_GIVEUP_SLACK``）地清零：见常量处说明——
+        #     纯推断 pause（未传参）在「子卡恰好刚完工」的采样边界上也可能是活锁，
+        #     但把 1 次清零不改变死锁判定的实效（死锁＝连续 ≥3）。
+        #   · 换新目标生命周期 ⇒ 归零（``ensure_goal_from_message``）；
+        #   · **不传参**的纯推断 pause ⇒ 宽裕度地清掉 1 次（实现见下：``max(0, wakes-1)``）。
+        # ★ 为什么计数点在 pause 声明处而不是任务书原拟的 ``_resume_awaiting``：
+        #   见 ``auto_driver._AWAIT_RESUME_DEADLOCK_GIVEUP`` 的口径段（①对齐「第 3 次
+        #   起不再恢复」的实测序列；②恢复时 +1 会卡死合法的第 4 次真等待）。
+        # ★ 本分支**只**动 pause 的 fields；上方 complete 的收口闸（未回应询问拒绝）
+        #   与 blocked 通知路径**一字未动**。
+        try:
+            _wakes = int(auto_driver._await_wakes(
+                auto_driver._meta(work_id, current_id)) or 0)
+        except Exception:  # noqa: BLE001 读不出按 0（兜底计数，绝不阻断 pause 本身）
+            _wakes = 0
+        if _as_bool(arguments.get("await_children")):
+            if auto_driver.has_active_child(work_id, current_id):
+                fields["goal_await_wakes"] = 0        # 真等待 ⇒ 连击断裂
+            else:
+                fields["goal_await_wakes"] = _wakes + 1   # 空等重挂 ⇒ 计数 +1
+        else:
+            fields["goal_await_wakes"] = max(0, _wakes - _AWAIT_RESUME_GIVEUP_SLACK)
     note = f"[自动模式] 模型声明 {action}" + (f"：{reason}" if reason else "")
     res = await card_store.update_card(
         work_id, current_id, fields, note)

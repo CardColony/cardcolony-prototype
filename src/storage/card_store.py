@@ -886,6 +886,8 @@ async def create_card(
                 # [6702 移植] 等子卡意图位：新卡恒落 0（同「state 恒落」口径，
                 # 不留 NULL 歧义）。
                 "goal_await_children": 0,
+                # [6702 移植] 等子卡活锁兜底：唤醒计数器新卡恒落 0。
+                "goal_await_wakes": 0,
                 **({"goal": goal_text} if goal_text else {}),
                 **({"goal_state": "active"} if (is_auto and goal_text) else {}),
                 # [权限底座重做 2026-10-12 · 裁定 4] 权限固化：建卡算一次写死进卡。
@@ -1120,6 +1122,7 @@ async def update_card(
         # （内部写：建卡、update_goal 工具、驱动器计轮、停止置 paused）——
         # 都在本唯一写门上落盘。
         "auto_mode", "goal", "goal_state", "goal_rounds", "goal_await_children",
+        "goal_await_wakes",
     )
 
     def _fn(conn: Any) -> Optional[str]:

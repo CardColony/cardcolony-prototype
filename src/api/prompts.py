@@ -56,7 +56,7 @@ BASE_PROMPT_VERSION = "t22-1"
 # BASE_PROMPT_VERSION 并列、互相独立）。auto-t1＝块0.4 初版；G2 → auto-t2；
 # G4 → auto-t3（见任务书 §十 版本号推进表）。BASE_PROMPT_VERSION **不动**
 # （普通卡文本逐字节不变——红线 10）。
-AUTO_BASE_PROMPT_VERSION = "auto-t5"
+AUTO_BASE_PROMPT_VERSION = "auto-t6"  # [2026-10-17] 修「等子卡」活锁：恢复轮带唤醒事实 ＋ 机械死锁兜底（实测 work_017）
 
 # [思维链真实落地 2026-10-11] 判断协议（任务书附录 A 全文，一字不改）。
 # 注入 system 区开头；实测 A/B 有效 7/10→10/10。
@@ -154,7 +154,7 @@ _SEC_TOOLS_AUTO = '## 工具\n\n- read_card(card_id)：读取指定卡（标题�
 
 _SEC_WRITE_AUTO = '## 卡片内容写入\n\n卡片正文分块（使命/现状/需求文档或定论）。**你可以直接改写卡片正文**——edit_card 与 update_shadow 都在你的工具清单里。\n\n- edit_card(card_id, content)：改写你管辖范围内指定卡的正文（覆盖写）。只能改**你自己子树内**的卡，越权会被拒。\n- 三块各有写法：**使命**是立项定稿的锚点，改它会被拒；**现状**覆盖写、只留最新一份、只写已核实的结论；**定论**只追加，条目语法 D{nn}【来源】内容（日期·依据）。\n- update_shadow(content)：覆盖写**你自己**的影子卡（过程记录），四节固定、不得改名加节。\n- 正卡写结论、影子卡写过程，**不得混**。'
 
-_SEC_AUTO = '## 自动模式\n\n**本卡处于自动模式。** 含义如下：\n\n- **你拥有全部工具与全部权限**——上面工具清单里的每一件你都能调，不受「按卡类型分权」限制。\n- **你每轮结束后，系统会自动再起一轮**，一直推进到目标完成——不需要人来一条条喂。\n- 你的**目标、目标状态、已跑轮次**写在上下文的「自动模式 · 目标」区里；以它为准。\n- **「停」的权威在你**：完成、暂停、卡住，都**必须显式调用 update_goal(action) 声明**（complete / pause / blocked，blocked 要写 reason）。\n- **只把话说完而不调用 update_goal，系统会当成「还没做完」，自动再起一轮。**\n- **pause 的理由是「等子卡跑完」时，传 `await_children=true`**：`update_goal(pause, await_children=true, reason=等子卡跑完再整合)`。系统据此在子卡全部完工时叫醒你；**不传就只按「单纯暂停」处理**，不会被叫醒。但注意：**有在跑的子卡时，你本来就可以直接结束回合**——await_children 只用于「你确实要 pause（如等人类确认），同时也希望子卡完工时把你叫醒」这一种混合情形。\n- 判据：真的做完了＝complete；做不下去＝blocked（写清卡在哪）；在等外部条件＝pause。拿不准就继续做，不要轻易 complete。\n- **大事拆小**：一件事里有好几件子事，就**建子卡**分派——把子任务写进子卡的 goal，它们各自独立跑。\n- **问出去的信必须有回音**（义务，流程强制）：你发出的 msg_ask，对方必须回复——**没收到回复前不要认为任务完成**。发了问就用 read_inbox(direction="outgoing") 查闭环（看 unanswered_sent）；没人答就换手段或 update_goal(pause) 说清在等什么，**绝不能默默接受**。带着未回应的询问调 update_goal(complete) **会被系统直接拒绝**。\n- **收到 ask 必须回应**（义务，流程强制）：你收到别人的 msg_ask，必须在当前回合或下一回合回复——发 msg_answer（带 reply_to）答，或 update_goal(blocked, reason=...) 说明卡在哪（系统会把理由自动通知发问方）。**不能无视**。\n- **你建的子卡也是自动模式**：把任务写进建卡时的 goal，它们会自己跑完并回报你。'
+_SEC_AUTO = '## 自动模式\n\n**本卡处于自动模式。** 含义如下：\n\n- **你拥有全部工具与全部权限**——上面工具清单里的每一件你都能调，不受「按卡类型分权」限制。\n- **你每轮结束后，系统会自动再起一轮**，一直推进到目标完成——不需要人来一条条喂。\n- 你的**目标、目标状态、已跑轮次**写在上下文的「自动模式 · 目标」区里；以它为准。\n- **「停」的权威在你**：完成、暂停、卡住，都**必须显式调用 update_goal(action) 声明**（complete / pause / blocked，blocked 要写 reason）。\n- **只把话说完而不调用 update_goal，系统会当成「还没做完」，自动再起一轮。**\n- **pause 的理由是「等子卡跑完」时，传 `await_children=true`**：`update_goal(pause, await_children=true, reason=等子卡跑完再整合)`。系统据此在子卡全部完工时叫醒你；**不传就只按「单纯暂停」处理**，不会被叫醒。但注意：**有在跑的子卡时，你本来就可以直接结束回合**——await_children 只用于「你确实要 pause（如等人类确认），同时也希望子卡完工时把你叫醒」这一种混合情形。\n- **你被系统唤醒，说明你等的子卡已经全部完工**：此刻请 read_card 读它们的现状、把结果整合进本卡现状，然后继续推进（或 `update_goal(complete)` 收口）——**不要**再用 `await_children=true` 挂起，那只会让你空转（子卡已全完工 ⇒ 再挂起等不到任何新东西，只会被反复唤醒烧额度）。\n- 判据：真的做完了＝complete；做不下去＝blocked（写清卡在哪）；在等外部条件＝pause。拿不准就继续做，不要轻易 complete。\n- **大事拆小**：一件事里有好几件子事，就**建子卡**分派——把子任务写进子卡的 goal，它们各自独立跑。\n- **问出去的信必须有回音**（义务，流程强制）：你发出的 msg_ask，对方必须回复——**没收到回复前不要认为任务完成**。发了问就用 read_inbox(direction="outgoing") 查闭环（看 unanswered_sent）；没人答就换手段或 update_goal(pause) 说清在等什么，**绝不能默默接受**。带着未回应的询问调 update_goal(complete) **会被系统直接拒绝**。\n- **收到 ask 必须回应**（义务，流程强制）：你收到别人的 msg_ask，必须在当前回合或下一回合回复——发 msg_answer（带 reply_to）答，或 update_goal(blocked, reason=...) 说明卡在哪（系统会把理由自动通知发问方）。**不能无视**。\n- **你建的子卡也是自动模式**：把任务写进建卡时的 goal，它们会自己跑完并回报你。'
 
 
 def _join_sections(*sections: str) -> str:

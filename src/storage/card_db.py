@@ -70,6 +70,7 @@ _CARD_COLUMNS: tuple[str, ...] = (
     # [自动模式 2026-10-17 · 回灌 5700 块0.1] 四列进 meta 管线（insert/update/
     # row_to_meta 都走本清单）——不进则写了不落、读了不带，驱动器/工具/权限全挂。
     "auto_mode", "goal", "goal_state", "goal_rounds", "goal_await_children",
+    "goal_await_wakes",
 )
 
 # 以小 JSON 文本存的列（短列表 / 小字典，不拆表——方案 §1.3.4）
@@ -121,7 +122,11 @@ CREATE TABLE IF NOT EXISTS cards (
     --   语义＝「本卡**自己**声明 pause 是在等子卡」，不是「不做了」。
     --   存在理由：``goal_state=paused`` 本身**不可区分**「模型等子卡」与
     --   「用户按停」；没有这一位，机械唤醒就无法判断该不该复活。
-    goal_await_children INTEGER DEFAULT 0
+    goal_await_children INTEGER DEFAULT 0,
+    -- [6702 移植 2026-10-17 · 等子卡活锁兜底] 恢复轮**唤醒事实**计数器：
+    --   每被唤醒（子卡完工触发 wake）一次 +1；用于「空 wake 活锁」机械兜底——
+    --   第 _AWAIT_RESUME_DEADLOCK_GIVEUP 次仍无子卡进度则放弃等子卡自动恢复。
+    goal_await_wakes INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent);
 CREATE INDEX IF NOT EXISTS idx_cards_type   ON cards(card_type);
@@ -325,6 +330,9 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     # [6702 移植 2026-10-17] 等子卡意图位。开关列带 DEFAULT 0（存量行取 0＝
     # 「没等过子卡」），与 auto_mode/pinned 同口径。
     ("cards", "goal_await_children", "goal_await_children INTEGER DEFAULT 0"),
+    # [6702 移植 2026-10-17] 等子卡活锁兜底。唤醒计数器带 DEFAULT 0（存量行取
+    # 0＝「没被唤醒过」），与 goal_rounds 同口径。
+    ("cards", "goal_await_wakes", "goal_await_wakes INTEGER DEFAULT 0"),
 )
 
 
