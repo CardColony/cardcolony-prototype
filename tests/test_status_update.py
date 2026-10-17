@@ -286,12 +286,12 @@ def test_frontend_version_stamps_bumped():
     [＋按钮删除 2026-10-17] input-bar 1→2、workspace 51→52、main_chat 1.8→1.9、
     style 38→39（命令面不存在，＋按钮整件删——死件不留）。
     """
-    assert "../stream.js?v=38" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=52" in _read("static/esm/main_chat.js")
-    assert "./stream.js?v=38" in _read("static/workspace.js")
+    assert "../stream.js?v=39" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=53" in _read("static/esm/main_chat.js")
+    assert "./stream.js?v=39" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=2" in _read("static/workspace.js")
     assert "/static/style.css?v=39" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=1.9" in _read("templates/card.html")
+    assert "/static/esm/main_chat.js?v=2.1" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════

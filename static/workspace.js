@@ -6,8 +6,8 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=38";
-import { renderMarkdown } from "./esm/md.js?v=30";
+import { EventFlow } from "./stream.js?v=39";
+import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=35";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
@@ -136,8 +136,22 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 整页跳转到画布页 URL。
     root.onclick = () => location.assign("/work/" + WORK_ID);
     el.appendChild(root);
-    for (const c of chain) {
-      if (c.card_id === rootCid) continue;   // 根卡＝首段，不重复
+
+    /* [对话界面商业化 2026-10-17] 深层卡的面包屑折叠：
+       5 层以上（工具卡挂在子项目卡下很常见）会把顶栏挤满、把当前卡名挤到看不见。
+       保留「第一层 + 最后两层」，中间折成一个可悬停查看全路径的省略号。 */
+    const mids = chain.filter((c) => c.card_id !== rootCid);
+    let shown = mids;
+    if (mids.length > 3) {
+      const dots = document.createElement("span");
+      dots.className = "cseg more";
+      dots.textContent = "…";
+      dots.title = mids.slice(0, mids.length - 2).map((c) => (c.title || c.card_id).trim()).join(" › ");
+      el.appendChild(mkSep());
+      el.appendChild(dots);
+      shown = mids.slice(-2);
+    }
+    for (const c of shown) {
       el.appendChild(mkSep());
       if (c.card_id === cardId) {
         const cur = document.createElement("span");
@@ -186,6 +200,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       if (stale()) return;
       currentCard = card;
       if (inputBar) inputBar.refresh();   // 会话面到场 ⇒ 输入卡解除 inert
+      applyEmptyState(card);
       await renderInspector();
       if (stale()) return;
       // [会话渲染单源化 2026-10-15 · C1] 刷新/换卡恢复走**唯一一条路**：
@@ -711,10 +726,120 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const el = document.createElement("div");
     el.className = "msg assistant";
     el.dataset.seq = node.seq;
-    const badge = assistantMeta(d.model, d.behavior, d.end);
+    // [对话界面商业化 2026-10-17] 模型名从**节点顶层**取：落盘记录的 model 在顶层
+    // （data 里没有），SSE 帧的 model 已由装配器并入节点。两处取法不同，缺一不可。
+    const badge = assistantMeta(node.model || d.model, d.behavior, d.end, node.ts);
     el.innerHTML = badge +
       '<div class="md">' + renderMarkdown(d.content == null ? "" : String(d.content)) + "</div>";
+
+    /* [对话界面商业化 2026-10-17] 消息级操作条：hover 浮出（CSS 控显隐），
+       动作只做「复制全文」——重新生成只对最后一轮成立（resend 复用最后一条
+       user_message 的 pair_id），放在历史消息上会生成到错误的轮次，故不放。
+       时间来自事件 ts（落盘/实时同源），无 ts 的旧记录不显示时间、不补假值。 */
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "msg-act";
+    copyBtn.dataset.act = "copy";
+    copyBtn.title = "复制这条回复";
+    copyBtn.innerHTML =
+      '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">' +
+      '<rect x="5.2" y="5.2" width="8" height="8" rx="1.6"/><path d="M10.8 3.2H3.6a.8.8 0 0 0-.8.8v7.2"/></svg>';
+    copyBtn.onclick = () => {
+      const body = el.querySelector(".md");
+      const text = body ? body.innerText : "";
+      copyText(text).then(() => {
+        copyBtn.classList.add("is-ok");
+        copyBtn.title = "已复制";
+        setTimeout(() => { copyBtn.classList.remove("is-ok"); copyBtn.title = "复制这条回复"; }, 1500);
+      });
+    };
+    actions.appendChild(copyBtn);
+    el.appendChild(actions);
     return el;
+  }
+
+  /* [对话界面商业化 2026-10-17] 空态内容按卡类型给：
+     同一张空卡，对不同类型说不同的话；建议项是**真实可用的提问**，
+     点一下只填进输入框（不代发）——用户仍可改写，不制造「我替你决定了」的越权感。 */
+  const EMPTY_COPY = {
+    project: {
+      desc: "这是整个项目的总架构卡。说说项目要达成什么、边界在哪——后续拆解都从这里长出来。",
+      hints: ["这个项目要解决什么？", "理一遍边界与不做什么", "把已有结论整理成现状"],
+    },
+    sub_project: {
+      desc: "这是一张工作单元卡。可以直接派活，也可以先对齐它负责的范围与交付物。",
+      hints: ["这张卡负责什么？", "现在卡在哪一步？", "把已有进展整理成现状"],
+    },
+    topic: {
+      desc: "这是一个课题卡。可以先给问题、给材料，或让它先调研再收敛。",
+      hints: ["这个课题要回答什么？", "列出需要查证的方向", "把已有材料整理成结论"],
+    },
+    tool: {
+      desc: "这是一张工具卡，按剧本分步执行。可以直接说明这次要它做什么。",
+      hints: ["这次要处理什么、产出什么？", "按剧本从头走一遍"],
+    },
+    coder: {
+      desc: "这是一张编程卡，承接一个开发任务，自报完工即终态。",
+      hints: ["要改什么、验收标准是什么？", "先读代码再给方案"],
+    },
+    rule: {
+      desc: "这是一张规则卡，正文按卡类型分区注入上下文。模型侧只读，改动走根卡提议＋审批。",
+      hints: ["现在各类型的规则分别写了什么？"],
+    },
+  };
+
+  function applyEmptyState(card) {
+    const meta = (card && card.meta) || {};
+    const type = String(meta.card_type || "");
+    const title = String(meta.title || "").trim();
+    const copy = EMPTY_COPY[type] || {
+      desc: "在下面输入框说点什么，这张卡的对话会从这里开始。",
+      hints: ["先介绍这张卡的情况", "把已有结论整理成现状"],
+    };
+    EventFlow.setEmpty(WORK_ID, String(meta.card_id || ""), {
+      title: title ? title : "还没有对话",
+      desc: copy.desc,
+      hints: copy.hints.map((h) => ({ label: h, text: h })),
+    });
+  }
+
+  /** 剪贴板：优先异步 API，失败回退 execCommand（http/旧浏览器兜底）。 */  function copyText(text) {
+    const fallback = () => new Promise((resolve) => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (e) { /* 静默 */ }
+      document.body.removeChild(ta);
+      resolve();
+    });
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(fallback);
+    }
+    return fallback();
+  }
+
+  /** 时间文案：今天 HH:MM／昨天 HH:MM／M月D日 HH:MM（跨年补年份）。
+      入参为事件 ts（ISO 串或空）。空 ⇒ 返回空串（调用方不渲染，不猜）。 */
+  function fmtMsgTime(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return "";
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    const sameDay = d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    if (sameDay) return hm;
+    const yest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    if (d.getFullYear() === yest.getFullYear() && d.getMonth() === yest.getMonth() &&
+        d.getDate() === yest.getDate()) return "昨天 " + hm;
+    if (d.getFullYear() === now.getFullYear()) return (d.getMonth() + 1) + "月" + d.getDate() + "日 " + hm;
+    return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + hm;
   }
 
   // [对话区会话流样式 2026-10-12] 统一内容列：卡片内所有消息/过程行都进同一条
@@ -733,11 +858,20 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       model 徽标 ＋ behavior 环节块徽标（Ⅳ）＋ end 结束原因（Ⅲ，END_VALUES：
       model_done / policy_stop / human_stop / error）。字段空则不渲染
       （timeline 通道下三字段恒空，见上方 C1 后果说明）。 */
-  function assistantMeta(model, behavior, end) {
+  function assistantMeta(model, behavior, end, ts) {
     const parts = [];
     if (model) parts.push(`<span class="model-badge">${escapeHtml(model)}</span>`);
     if (behavior) parts.push(`<span class="beh" data-beh="${escapeHtml(behavior)}">${escapeHtml(behavior)}</span>`);
-    if (end) parts.push(`<span class="end${end === "error" ? " end-error" : ""}" data-end="${escapeHtml(end)}">end:${escapeHtml(end)}</span>`);
+    /* 结束原因只在「非正常结束」时显示：model_done 是绝大多数回合的默认值，
+       每条都挂一个 end:model_done 等于给正常状态贴标签（纯噪音）。
+       人工停止 / 判不了交人 / 出错，才是有信息量的三种。 */
+    if (end && end !== "model_done") {
+      const zh = end === "error" ? "出错" : end === "human_stop" ? "已停止" : end === "policy_stop" ? "转人工" : String(end);
+      parts.push(`<span class="end${end === "error" ? " end-error" : ""}" data-end="${escapeHtml(end)}">${escapeHtml(zh)}</span>`);
+    }
+    // [对话界面商业化 2026-10-17] 时间放最后、最弱：它是辅助信息，不该抢标题。
+    const t = fmtMsgTime(ts);
+    if (t) parts.push(`<span class="mtime" title="${escapeHtml(String(ts))}">${escapeHtml(t)}</span>`);
     return parts.length ? `<div class="meta">${parts.join("")}</div>` : "";
   }
 
@@ -887,6 +1021,11 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
        专用回合（更新现状）不占输入框。 */
     if (!statusOp && inputBar) inputBar.commitSent();
 
+    // 本轮回复基线：异常恢复判据＝「resync 后是否多出一条 assistant」，不是「有没有 assistant」
+    const asstBefore = (() => {
+      try { return EventFlow.assistantSeq(WORK_ID, cardId); } catch (e) { return 0; }
+    })();
+
     setRunState(true);   // 运行条起、主键转停止键、输入条照常可打字
 
     try {
@@ -939,11 +1078,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     } catch (e) {
       // [hotfix] 报错前先探一次会话：后端可能已完成，只是响应没送回来。
       // ★ 这不是「15 秒自愈轮询」（那条已按任务书 §三 删除）——只在**异常路径**探一次。
-      if (await recoverIfDone(cardId)) return;
+      if (await recoverIfDone(cardId, asstBefore)) return;
       // [发送失败] 草稿保住（不丢字）＋ 红条；未被认领的本地气泡撤下（不留幽灵消息）
       if (!statusOp && inputBar) {
         inputBar.setDraft(content);
-        inputBar.failSend("请求失败：" + String((e && e.message) || e));
+        /* 输入框级提示只说「状态＋草稿还在」，具体原因与重发入口交给消息区的错误条——
+           两处都写一遍原因＝同一个错误报两次，用户只会觉得吵。 */
+        inputBar.failSend("发送失败，内容已保留");
       }
       try { EventFlow.dropOptimisticUser(WORK_ID, cardId); } catch (e0) { /* 零阻断 */ }
       const err = document.createElement("div");
@@ -963,7 +1104,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   /** 异常路径的兜底探测：后端可能已完成、只是响应没送回来。
       在跑（且流没断）⇒ 什么都不做；否则按 timeline 结算一次。
       返回 true＝已结算（调用方不再报错）。 */
-  async function recoverIfDone(cardId) {
+  async function recoverIfDone(cardId, asstBefore) {
     try {
       const p = await API.getProgress(WORK_ID, cardId);
       const alive = p && ((typeof p.active === "boolean")
@@ -973,7 +1114,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     } catch (e0) { return false; }
     try {
       const r = await EventFlow.resync(WORK_ID, cardId);
-      if (r && r.ok && r.done) {
+      // 只有「本轮确实多了一条 assistant」才算后端已完成；否则一律按发送失败处理
+      // （保住草稿、出错误条、撤乐观气泡）——历史卡不会再把失败吞成成功。
+      const grew = (() => {
+        try { return EventFlow.assistantSeq(WORK_ID, cardId) > Number(asstBefore || 0); }
+        catch (e) { return false; }
+      })();
+      if (r && r.ok && r.done && grew) {
         setTimeout(() => EventFlow.stop(WORK_ID, cardId), 2500);
         const note = document.createElement("div");
         note.className = "sys-tools";
@@ -1182,6 +1329,31 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // [会话渲染单源化 2026-10-15] 消息类节点的渲染器在此一次性注入 stream.js：
   // 内容格式化归本文件，放置归装配器快照（C2）。
   registerMessageRenderers();
+
+  /* [对话界面商业化 2026-10-17] 代码块复制：一次 document 级委托（不随消息重建重绑）。
+     md.js 只输出带 data-copy 的按钮，事件处理集中在此处。 */
+  bindCopyButtons(document);
+
+  /* [对话界面商业化 2026-10-17] 用户消息「重新发送」的宿主侧落地：
+     stream.js 不持有发送闭包，只发一条 ui:resend 事件；本文件收到后走既有
+     resend(content) 全流程（pair_id 复用、事件流、错误行、排队 drain 全不变）。
+     运行中忽略——与 resend 自身的重入守卫同口径，避免双发。 */
+  window.addEventListener("ui:resend", (e) => {
+    const content = e && e.detail && e.detail.content;
+    if (!content) return;
+    if (sessionState.running) return;
+    resend(String(content));
+  });
+
+  /* [对话界面商业化 2026-10-17] 空态建议项 → 填入输入框（不代发）。
+     走 input-bar 的 setDraft（同一份 machine 状态），再聚焦——不直接改 DOM 值，
+     否则机器里的 draft 与界面上看到的字会分叉。 */
+  window.addEventListener("ui:fill-input", (e) => {
+    const text = e && e.detail && e.detail.text;
+    if (!text || !inputBar) return;
+    inputBar.setDraft(String(text));
+    inputBar.focus();
+  });
 
   // ==================== [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗状态机 ====================
   // 点按钮 → draft(kind) → 草稿态（只读展示，暂存 base_hash）→ 三选一：
@@ -1514,6 +1686,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 卡详情开关只留右缘竖条 #inspTab。
   const toggleInspector = () => inspector.classList.toggle("open");
   document.getElementById("inspTab").onclick = toggleInspector;
+  // [对话界面商业化 2026-10-17] 顶栏「卡详情」按钮与右缘竖条同一动作：
+  // 一个状态两个入口，不新增第二套开合逻辑（避免两处状态漂移）。
+  const topInsp = document.getElementById("topInspBtn");
+  if (topInsp) topInsp.onclick = toggleInspector;
   // [画布入口 2026-10-16 用户令] 顶部栏最左 icon → 返回本项目画布（根卡/子卡聊天态常显）
   const canvasEntryBtn = document.getElementById("canvasEntryBtn");
   // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 回画布＝整页跳转到画布页 URL。

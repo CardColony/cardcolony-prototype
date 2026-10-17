@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -220,7 +221,7 @@ def _key(work_id: str, card_id: str) -> tuple[str, str]:
 # 落盘字段：run_id＝回合锚 pair_id，round＝轮锚 turn，model 仅 reasoning 带。
 # 零阻断：落盘失败只记 warning，不影响 SSE 与主流程（展示层同族纪律）。
 def _persist_log(work_id: str, card_id: str, ev_type: str,
-                 data: Any, model: str = "") -> None:
+                 data: Any, model: str = "", ts: Any = None) -> None:
     try:
         from ..storage import event_log
         anchor = _anchors.get(_key(work_id, card_id)) or {}
@@ -231,10 +232,30 @@ def _persist_log(work_id: str, card_id: str, ev_type: str,
             "type": ev_type,
             "data": payload,
             "model": model or "",
+            # [对话界面商业化 2026-10-17] 落盘时间取帧的 ts（同一事件内存与磁盘
+            # 同一时刻，刷新前后时间轴一致）。秒级 float → ISO；缺省由
+            # event_log._normalize 补当前时刻。
+            "ts": _iso_ts(ts),
         })
     except Exception as exc:  # noqa: BLE001 展示层零阻断
         logger.warning("[flow] 事件落盘失败（不阻断）type=%s card=%s: %s",
                        ev_type, card_id, exc)
+
+
+def _iso_ts(value: Any) -> str:
+    """秒级时间戳（或 ISO 串）→ ISO 8601 字符串；无法识别则空串（交给下游补）。"""
+    if not value:
+        return ""
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value)).astimezone().isoformat(
+                timespec="milliseconds")
+        s = str(value)
+        # 已是 ISO 就原样（只做一次可解析性校验）
+        datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return s
+    except (ValueError, OSError, OverflowError):
+        return ""
 
 
 def _jsonable(data: dict[str, Any]) -> dict[str, Any]:
@@ -407,7 +428,7 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
         journal.append(evt)
         _persist_frame(work_id, card_id, evt)
         # [消息底座能力对齐 · 件2] 过程事件同步落 events jsonl（裁定 C1）
-        _persist_log(work_id, card_id, ev_type, evt["data"])
+        _persist_log(work_id, card_id, ev_type, evt["data"], ts=evt.get("ts"))
         # [画板四机制 T6] 每开新轮裁一次（**先落盘、后裁剪**：磁盘照落全量，内存有界）。
         # 放在 run_start 分支之外、两个 append 之后——此刻主 journal 与本轮逐字流
         # 分段帧都已入册，两个 journal 的轮数一致，窗口对齐在轮首。
