@@ -333,6 +333,55 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   // [T17-F4] renderLeft() 拆二之一：renderInspector()——原左栏 DOM 原样迁入右栏
   // inspBody（仅去掉 wsBackBtn：返回按钮上移到对话区头部，见 work.html .ws-head）。
   // 职责区/结论区/否决/关系/历史/建子卡/删卡 逻辑一字未动（R-021）。
+  // [自动模式 2026-10-17 · 回灌 5700 块0.5] 目标态中文标签（机器态→人话）。
+  // 与 goal 区（上下文 152 区）的机器态原值分工：那里给模型读、这里给人读。
+  function goalStateLabel(state) {
+    const s = String(state || "").trim();
+    if (s === "active") return "推进中";
+    if (s === "paused") return "已暂停";
+    if (s === "blocked") return "卡住";
+    if (s === "complete") return "已完成";
+    return "未设定";
+  }
+
+  // [自动模式 2026-10-17 · 回灌 5700 块0.5] 底边栏 自动/手动 按钮的状态刷新。
+  // 与右栏卡详情里的 #autoToggle 同源：都读 currentCard.meta.auto_mode。
+  // U1：任何卡（根卡/普卡）都能开、随时可切——开关，不是建卡定死。
+  function renderAutoToggle() {
+    const btn = document.getElementById("autoToggleBtn");
+    if (!btn || !currentCard) return;
+    const isAuto = Number(currentCard.meta.auto_mode || 0) === 1;
+    btn.textContent = isAuto ? "自动模式" : "手动模式";
+    btn.classList.toggle("on", isAuto);
+    btn.title = isAuto
+      ? "本卡处于自动模式（权限全开、自动续跑）——点击切回手动"
+      : "本卡处于手动模式——点击开启自动模式（权限全开、自动续跑）";
+  }
+
+  // 切本卡自动模式：右栏按钮与底边栏按钮**共用这一处逻辑**。
+  // 调 PATCH 落 auto_mode；后端在 auto_mode 变化时把该卡 perms 重算为全开／
+  // 按类型还原（权限随之变，不需要前端另发请求——块0.2 的开关动作）。
+  async function toggleAutoMode(btn) {
+    if (!currentCard) return;
+    const cid = currentCard.meta.card_id;
+    const next = Number(currentCard.meta.auto_mode || 0) === 1 ? 0 : 1;
+    if (btn) btn.disabled = true;
+    try {
+      const r = await API.patchCard(
+        WORK_ID, cid, { auto_mode: next },
+        next ? "用户开启自动模式" : "用户关闭自动模式");
+      currentCard = r;
+      notify(next
+        ? "已开启自动模式：权限全开，模型将自动续跑"
+        : "已关闭自动模式：权限按卡类型还原", "warn");
+      await renderInspector();
+      renderAutoToggle();
+    } catch (e) {
+      notify("切换自动模式失败", "error");
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async function renderInspector() {
     const m = currentCard.meta;
     const b = currentCard.body;
@@ -384,12 +433,29 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const history = b.history || [];
     const historyCount = history.length;
 
+    // [自动模式 2026-10-17 · 回灌 5700 块0.5] 卡详情 auto 行：开 ⇒ 徽标＋目标态＋
+    // 轮次＋目标文本＋关闭钮；关 ⇒ 开启钮＋提示。非 auto 卡的渲染与改前逐字一致
+    // （这块只在 auto_mode=1 时出现）。goalStateLabel 把机器态翻成中文标签。
+    const isAutoCard = Number(m.auto_mode || 0) === 1;
+    const autoRowHtml = isAutoCard
+      ? `<div class="auto-row">
+          <span class="auto-badge">自动模式</span>
+          <span class="auto-meta">${escapeHtml(goalStateLabel(m.goal_state))} · 已跑 ${Number(m.goal_rounds || 0)} 轮</span>
+          <button class="btn ghost auto-toggle" id="autoToggle" title="关闭后：停自动继续、按类型还原权限">关闭自动</button>
+        </div>
+        <div class="auto-goal"><span class="auto-goal-k">目标</span>${escapeHtml((m.goal || "").trim() || "（尚未设定——本卡收到的首条消息即成为目标）")}</div>`
+      : `<div class="auto-row">
+          <button class="btn ghost auto-toggle" id="autoToggle" title="开了就权限全开、自动续跑，直到模型声明完成">开启自动模式</button>
+          <span class="auto-hint">开了就权限全开，模型自己一轮接一轮跑到声明完成</span>
+        </div>`;
+
     inspBody.innerHTML = `
       <div class="ws-title" id="wsTitle">${escapeHtml(m.title)}</div>
       <div style="margin:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span class="type-badge" data-type="${escapeHtml(m.card_type)}">${escapeHtml(m.card_type)}卡</span>
         <span style="font-size:11px;color:var(--dimmer);margin-left:auto;">${escapeHtml(m.card_id)} · ${escapeHtml(m.source)}</span>
       </div>
+      ${autoRowHtml}
 
       <div class="blocktitle">使命 · mission <span class="note">由上级卡对话创建 · 可编辑</span></div>
       <textarea class="ws-edit" id="charterEdit" placeholder="本卡作用/目标、授权来源">${escapeHtml(b.mission || "")}</textarea>
@@ -443,6 +509,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     `;
 
     bindInspectorEvents();
+    // [自动模式 2026-10-17 · 回灌 5700 块0.5] 每次重渲同步底边栏开关状态
+    // （开/关 auto 后 renderInspector 会走到这里——一步到位，不用调用方惦记）。
+    renderAutoToggle();
     // [I2] 恢复结论区编辑态（若有草稿）：重渲不丢未保存内容
     applyConclusionState();
     // [phase8.6-C] 面板已可见时（如保存后重渲染）立即撑高；首次 open 由 active 后统一触发
@@ -486,6 +555,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   // 关系增删、历史折叠、建子卡、删卡全部原样保留；wsBackBtn 处理上移到静态初始化
   // （返回画布＝纯显隐切换，不再走 ReloadCanvas，见 R-1/R-043）。
   function bindInspectorEvents() {
+    // [自动模式 2026-10-17 · 回灌 5700 块0.5] 自动模式开关（U2：任何卡、随时可切）。
+    // 右栏卡详情里的 #autoToggle 与底边栏 #autoToggleBtn 共用 toggleAutoMode。
+    const autoBtn = document.getElementById("autoToggle");
+    if (autoBtn) autoBtn.onclick = () => toggleAutoMode(autoBtn);
+    const autoBtnBottom = document.getElementById("autoToggleBtn");
+    if (autoBtnBottom) autoBtnBottom.onclick = () => toggleAutoMode(autoBtnBottom);
+
     // [phase8.6-C] 输入时实时撑高
     ["charterEdit", "conclusionEdit"].forEach(id => {
       const el = document.getElementById(id);

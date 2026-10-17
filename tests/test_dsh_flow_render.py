@@ -315,12 +315,16 @@ def test_t6_touched_modules_bumped():
     ★ [＋按钮删除 2026-10-17] 命令面不存在 ⇒ input-bar 的 `+` 按钮整件删（死件纪律，
       不取原文 :741 disabled 分支）：input-bar 1→2、workspace 51→52、main_chat 1.8→1.9、
       style 38→39（.flow-input-add 死样式同删）。
+    ★ [自动模式回灌 2026-10-17] autoToggle 开关＋insp 标记：workspace 52→53、
+      main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 段）；
+      input-bar 本轮**未涉改**（按钮在 card.html 的 #flowInputLeft 里，由 input-bar
+      既有收编逻辑带进 modes）⇒ 不升号。
     """
     vm = _version_map()
     expect = {
-        "stream.js": "38", "workspace.js": "52", "canvas.js": "45",
-        "assembler.js": "35", "style.css": "39", "main.js": "45.0",
-        "main_chat.js": "1.9",
+        "stream.js": "38", "workspace.js": "53", "canvas.js": "45",
+        "assembler.js": "35", "style.css": "40", "main.js": "45.0",
+        "main_chat.js": "2.0",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "2", "queue-dock.js": "1", "queue-store.js": "1",
         "chat-view.js": "2", "message-item.js": "1",
