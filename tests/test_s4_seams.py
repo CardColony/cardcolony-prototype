@@ -27,6 +27,17 @@ from src.api.prompts import BASE_PROMPT
 from src.storage import session_facade
 from src.thinkchain import board as board_mod
 
+# ===========================================================================
+# [纯单模型模式 2026-10-17 · 用户令] 本模块用例全为思维链行为（判型/拆解/上板/
+# 步推进/三席统合/步事件）。生产已把思维链拆出链路（thinkchain.ENABLED=False）
+# ⇒ 整模块跳过；开关置 True 即全部自动恢复（判据同并行线逐函数 skipif，此处
+# 收敛为模块级，语义不变）。
+# ===========================================================================
+pytestmark = pytest.mark.skipif(
+    not __import__("src.thinkchain", fromlist=["enabled"]).enabled(),
+    reason="纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路",
+)
+
 FAKE_CONFIG: dict[str, Any] = {
     "models": {
         "main": {"provider": "openai", "model": "fake-main", "temperature": 0.3},
