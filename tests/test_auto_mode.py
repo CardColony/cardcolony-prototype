@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from src.api import (
-    auto_driver, card_tools, context_assembler, control, message_runner,
+    auto_driver, card_msg, card_tools, context_assembler, control, message_runner,
     model_service, prompts, routes, serial_gate,
 )
 from src.permissions import policy
@@ -576,7 +576,7 @@ def test_block4_prompt_version_and_section():
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
     assert prompts.BASE_PROMPT_VERSION == "t22-1"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t2"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t3"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
@@ -981,3 +981,102 @@ async def test_g2_auto_cards_can_talk_end_to_end(typed_registry, work, monkeypat
     assert any("send_card_message" in ns for ns in seen.get(a, [])), \
         f"甲的 auto 工具面未见 send_card_message：{seen.get(a)}"
     assert seen.get(b), "乙未被调起（K3 链对 auto 卡失效）"
+
+
+# ============================================================
+# 阶段 1 · G4 悬空兜底（8eaf33e + aa335ca + 61b83fb + b6e339a）
+#
+# 三条判据的机械面：
+#   · 问出去的信必有回音或明确 blocked（不存在永久悬空）
+#   · 判据用**实质事实**（answer 落库即算回应），不用会陈旧的 status——
+#     否则双卡死锁（移交件已踩过 work_027）
+#   · blocked 自动通知发问方
+# ============================================================
+
+async def test_g4_complete_blocked_by_unanswered_ask(typed_registry, work, no_kick):
+    """硬判据1：带着未回应的 msg_ask 调 update_goal(complete) ⇒ 拒绝＋给出路。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    wid, a = await _mk_auto(work, goal="做完这件事")
+    b = await _mk(wid, "乙", a)   # 乙是 a 的子卡（父子可互发）
+    # 乙向甲发一条 msg_ask（甲收件箱里有未回应询问）
+    r = await card_tools.send_card_message(
+        wid, b, target_id=a, msg_type="msg_ask", content="甲，这个数是多少？")
+    assert "error" not in r, r
+    cards = card_tools._collect_card_meta(wid)
+    res = await card_tools.execute_tool(
+        wid, a, "update_goal", {"action": "complete"}, cards)
+    assert res["ok"] is False and res["error"]["code"] == "validation", res
+    assert "未回应" in res["error"]["message"]
+    assert "msg_answer" in res["error"]["message"], "拒绝必须自带出路（验收纪律4）"
+    # 卡面零改动（被拒时 goal_state 仍是 active）
+    assert card_store._meta_of(wid, a)["goal_state"] == "active"
+
+
+async def test_g4_complete_passes_after_answer(typed_registry, work, no_kick):
+    """硬判据1+3：答了（answer 落库）即可 complete——实质判据，不依赖
+    会陈旧的 pending/consumed 状态（防双卡死锁）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    wid, a = await _mk_auto(work, goal="做完这件事")
+    b = await _mk(wid, "乙", a)
+    r = await card_tools.send_card_message(
+        wid, b, target_id=a, msg_type="msg_ask", content="甲，这个数是多少？")
+    ask_id = r["msg_id"]
+    # 甲回应（msg_answer 带 reply_to）——注意**不做 consumed 置位**：
+    # 判据若依赖 consumed 就会在此刻仍判「未回应」（陈旧窗）；实质判据应放行。
+    r2 = await card_tools.send_card_message(
+        wid, a, target_id=b, msg_type="msg_answer", content="是 42。",
+        reply_to=ask_id)
+    assert "error" not in r2, r2
+    cards = card_tools._collect_card_meta(wid)
+    res = await card_tools.execute_tool(
+        wid, a, "update_goal", {"action": "complete"}, cards)
+    assert res["ok"] is True, res
+    assert card_store._meta_of(wid, a)["goal_state"] == "complete"
+
+
+async def test_g4_blocked_notifies_sender(typed_registry, work, no_kick):
+    """硬判据4：blocked ⇒ 系统自动给未获回答的发问方发 msg_notify（无回信义务）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    wid, a = await _mk_auto(work, goal="做完这件事")
+    b = await _mk(wid, "乙", a)
+    r = await card_tools.send_card_message(
+        wid, b, target_id=a, msg_type="msg_ask", content="甲，这个数是多少？")
+    ask_id = r["msg_id"]
+    cards = card_tools._collect_card_meta(wid)
+    res = await card_tools.execute_tool(
+        wid, a, "update_goal",
+        {"action": "blocked", "reason": "缺上游数据，做不下去"}, cards)
+    assert res["ok"] is True, res
+    assert card_store._meta_of(wid, a)["goal_state"] == "blocked"
+    # 乙的收件箱收到一条 msg_notify（来自甲），且内容带 reason/原 ask msg_id
+    rows = await card_db.list_inbox(wid, b)
+    notes = [x for x in rows
+             if str(x.get("from_card")) == a and str(x.get("type")) == "msg_notify"]
+    assert len(notes) == 1, f"应有一条 blocked 通知，实得 {len(notes)}"
+    assert "blocked" in str(notes[0].get("content"))
+    assert ask_id in str(notes[0].get("content"))
+    assert "缺上游数据" in str(notes[0].get("content"))
+    # msg_notify 无回信义务（reply_expected=false）⇒ 不会造新义务/无循环
+    assert card_msg.reply_expected_of("msg_notify") is False
+
+
+def test_g4_auto_prompt_has_two_obligation_rules():
+    """硬判据（aa335ca）：auto 版含两条义务式规则；普通版零泄漏；auto-t3。"""
+    auto = prompts.AUTO_BASE_PROMPT
+    assert "问出去的信必须有回音" in auto
+    assert "没收到回复前不要认为任务完成" in auto
+    assert "收到 ask 必须回应" in auto
+    assert "不能无视" in auto
+    assert "unanswered_sent" in auto
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t3"
+    assert "问出去的信必须有回音" not in prompts.BASE_PROMPT
+    assert "收到 ask 必须回应" not in prompts.BASE_PROMPT
+
+
+def test_g4_respawn_guard_named_as_cycle_guard():
+    """61b83fb/b6e339a：re-spawn 限次在册且明写「防环兜底，不是闸」（红线 1）。"""
+    src = (REPO / "src" / "api" / "message_runner.py").read_text(encoding="utf-8")
+    assert "_RESPAWN_MAX = 3" in src
+    assert "card_msg_unanswered_giveup" in src
+    assert "card_msg_respawn" in src
+    assert "不是轮次/墙钟/token 闸" in src, "限次语义必须明写不是闸"
