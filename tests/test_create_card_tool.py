@@ -76,7 +76,10 @@ def test_tool_table_version_bumped():
     规则区修改），build_tool_schemas 增第四段根卡闸。
     """
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-8"
+    # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status，op 专用）。
+    # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
+    # auto 卡工具面件数变化；常规面仍不含它——AUTO_ONLY_TOOLS 机制）。
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-9"
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():

@@ -69,11 +69,14 @@ def test_region_table_six_regions_no_current_turn_region():
     # [合并 2026-10-16] 两线相加：全表 15 区。
     # [依赖关联线 2026-10-16] 新增 order 250「依赖关联」区（200 记忆之后、
     # 300 对话历史之前）⇒ 全表 16 区。
+    # [自动模式 2026-10-17 · 回灌 5700 块0.4] 新增 order 152「自动模式·目标」区
+    # （150 当前卡之后、155 区域说明之前；只对 auto 卡有内容）⇒ 全表 17 区。
     orders = [r["order"] for r in context_regions.REGION_TABLE]
     names = {r["name"] for r in context_regions.REGION_TABLE}
-    assert orders == [0, 85, 90, 95, 100, 150, 155, 170, 200, 250, 300,
+    assert orders == [0, 85, 90, 95, 100, 150, 152, 155, 170, 200, 250, 300,
                       900, 999, 1000, 1010, 1020]
     assert names == {"使用说明", "规则注入", "卡片职责", "卡片思维", "卡片清单", "当前卡",
+                     "自动模式·目标",
                      "卡片区域说明", "直接子卡现状", "记忆（condense_fold）", "依赖关联",
                      "对话历史",
                      "本轮工具轮",

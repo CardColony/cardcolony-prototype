@@ -99,8 +99,8 @@ REGION_TABLE: list[dict[str, Any]] = [
         "source_owner": "prompt",
         "delivery": "system",
         "profiles": ("main",),
-        "source": "prompts.BASE_PROMPT 常量（逐字引用，不复制——区只持指针）",
-        "render": lambda ctx: BASE_PROMPT,
+        "source": "prompts.select_base_prompt（BASE_PROMPT / AUTO_BASE_PROMPT 常量，逐字引用不复制——区只持指针）",
+        "render": lambda ctx: prompts.select_base_prompt(ctx.cur_meta),
         "count": 1,
     },
     {
@@ -184,6 +184,25 @@ REGION_TABLE: list[dict[str, Any]] = [
         "source": "现状（cards 索引按 current_id 匹配；空行＋当前卡一行）",
         "render": lambda ctx: render_current_card_region(ctx.cur),
         "count": 1,
+    },
+    {
+        # [自动模式 2026-10-17 · 回灌 5700 块0.4] order 152：紧随 150 当前卡——
+        # 「我是谁」之后立刻讲「我在追什么目标」。**只有 auto_mode=1 的卡有内容**
+        # （渲染器对非 auto 卡返回空串 ⇒ 按「没有来源就不出现这个区」自然不出现）。
+        # 渲染 当前目标 / 目标态 / 轮次计数（模型得知道自己在第几轮、目标是什么）。
+        # 自主推进的**指令**在 AUTO_BASE_PROMPT 的「## 自动模式」节（本节只给事实）。
+        "key": "goal",
+        "order": 152,
+        "name": "自动模式·目标",
+        "channel": "system",
+        "seats": ("main", "viewpoints"),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "当前卡 meta 的 auto_mode/goal/goal_state/goal_rounds（非 auto ⇒ 空串）",
+        "render": lambda ctx: render_goal_region(ctx.cur_meta),
+        "count": lambda ctx, text: 1 if text else 0,
     },
     {
         # [上下文管理 2026-10-14] order 155：卡片区域说明——讲清正卡三块与影子
@@ -317,7 +336,7 @@ REGION_TABLE: list[dict[str, Any]] = [
         "delivery": "once",
         "profiles": ("main",),
         "source": "本轮一次性注入；不进入轮槽",
-        "render": lambda ctx: ctx.request_once,
+        "render": lambda ctx: render_judgment_region(ctx),
         "count": lambda ctx, payload: len(payload),
     },
     {
@@ -628,6 +647,42 @@ def render_current_card_region(cur: dict[str, Any] | None) -> str:
     if cur is None:
         return ""
     return "\n".join(["## 当前卡", f"{cur['card_id']} · {cur['title']}"])
+
+
+def render_judgment_region(ctx: RegionCtx) -> list[dict[str, Any]]:
+    """1000 区渲染：判断协议注入（一次性、不进轮槽）。
+
+    ★ [自动模式 2026-10-17 · 回灌 5700 块0.4 · TC5] **auto 卡不注入判断协议**。
+      TC5 口径：auto 卡已有 goal，再判「直答还是上板」会跟 goal 打架；故只对
+      auto 卡屏蔽判断协议。非 auto 卡**逐字不变**（仍原样返回 ``request_once``）
+      ——ND1 红线 11：全局思维链不进生产拆除名单，屏蔽面只有 auto 卡。
+    """
+    if bool((ctx.cur_meta or {}).get("auto_mode")):
+        return []
+    return ctx.request_once
+
+
+def render_goal_region(meta: dict[str, Any] | None) -> str:
+    """152 区渲染（自动模式 · 目标）：当前目标 / 目标态 / 轮次计数。
+
+    **只给事实、不给指令**——自主推进的指令在 AUTO_BASE_PROMPT 的「## 自动模式」节。
+    非 auto 卡 ⇒ 空串（「没有来源就不出现这个区」）；故本区对非 auto 卡零影响。
+    """
+    m = meta or {}
+    if not bool(m.get("auto_mode")):
+        return ""
+    goal = str(m.get("goal") or "").strip()
+    state = str(m.get("goal_state") or "").strip()
+    try:
+        rounds = int(m.get("goal_rounds") or 0)
+    except (TypeError, ValueError):
+        rounds = 0
+    return "\n".join([
+        "## 自动模式 · 目标",
+        f"- 目标：{goal or '（尚未设定——本卡收到的首条消息即成为目标）'}",
+        f"- 目标状态：{state or '（未设定）'}",
+        f"- 已跑轮次：{rounds}",
+    ])
 
 
 def split_rule_sections(body: str) -> dict[str, str]:

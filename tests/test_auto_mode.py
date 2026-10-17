@@ -419,3 +419,311 @@ def test_block3_no_gate_in_chain():
             and ln.strip())
         hits = [ln for ln in body.splitlines() if pat.search(ln)]
         assert not hits, f"{f.name} 出现闸类关键词: {hits}"
+
+
+# ============================================================
+# 块 0.4 · 目标工具 ＋ 上下文区 ＋ 提示词（TC5 口径：保留计划六件）
+# ============================================================
+
+#: 施工前记录的 t22-1 BASE_PROMPT sha256（红线 10 判据：片段化后拼装结果
+#: 必须逐字节一致）。
+T22_1_BASE_PROMPT_SHA256 = "9657ae2f422c461d21cb9b9fc5e21f527155d4317ba9ef5ae89f2226801afec5"
+
+#: auto 版工具清单必须**逐件在册**（块0.4 硬判据 4）。
+_AUTO_ONLY_TOOL_LINES = (
+    "edit_card(card_id, content)",
+    "update_shadow(content)",
+    "read_linked(target_id, part)",
+    "run_tool_card(script_name",
+    "update_goal(action, reason?)",
+    "create_card(title, parent?, content?, goal?)",
+)
+
+#: TC5：生产**保留**计划六件（与 Cardlo 沙箱版 ND1 口径相反）——auto 卡工具面
+#: 与提示词里都必须有。
+_PLAN_TOOL_LINES = ("create_plan", "plan_reorder", "plan_insert",
+                    "plan_modify", "plan_remove", "step_complete")
+
+
+async def test_block4_normal_toolface_unchanged(typed_registry, work):
+    """硬判据1：非 auto 卡工具面逐字不变（无 update_goal、create_card 仍三参）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "甲", root)
+    cards = card_tools._collect_card_meta(wid)
+    tools = card_tools.build_tool_schemas(card_id=a, work_id=wid, cards=cards)
+    names = [t["name"] for t in tools]
+    assert "update_goal" not in names
+    cc = next(t for t in tools if t["name"] == "create_card")
+    assert set(cc["parameters"]["properties"]) == {"title", "parent", "content"}
+
+
+async def test_block4_auto_toolface_is_normal_plus_update_goal(
+        typed_registry, work, no_kick):
+    """块0.4 硬判据2（TC5 口径）：auto 卡工具面＝常规 **＋ update_goal**。
+
+    ★ 与 Cardlo 沙箱版的差异：那版摘计划六件（ND1「最原始单模型」实验口径）；
+      TC5 裁定生产**保留**计划六件与计划板 ⇒ 这里是纯粹的「＋1 件」。
+    """
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "甲", root)
+    cards = card_tools._collect_card_meta(wid)
+    normal = [t["name"] for t in
+              card_tools.build_tool_schemas(card_id=a, work_id=wid, cards=cards)]
+
+    await card_store.update_card(wid, a, {"auto_mode": 1}, "开自动")
+    cards = card_tools._collect_card_meta(wid)
+    auto_tools = card_tools.build_tool_schemas(card_id=a, work_id=wid, cards=cards)
+    auto_names = [t["name"] for t in auto_tools]
+
+    assert set(auto_names) == (set(normal) - {"delete_card"}) | {"update_goal"}, (
+        f"auto 面应为「常规 - delete_card（TC1 排除不可逆项） + update_goal」："
+        f"多={set(auto_names)-set(normal)-{'update_goal'}} 少={set(normal)-set(auto_names)-{'delete_card'}}")
+    # 计划六件仍在（TC5：生产保留思维链）
+    for p in _PLAN_TOOL_LINES:
+        assert p in auto_names, f"TC5：auto 卡应保留计划六件之一 {p}"
+    assert auto_names[-1] == "update_goal", "update_goal 追加在末尾"
+    cc = next(t for t in auto_tools if t["name"] == "create_card")
+    assert "goal" in cc["parameters"]["properties"], "auto 卡 create_card 应带 goal 参数"
+    # 注册表原字面量未被污染（否则非 auto 卡的工具面也会变）
+    lit = card_tools._schema_of(card_tools.TOOL_REGISTRY["create_card"])
+    assert "goal" not in lit["parameters"]["properties"]
+
+
+async def test_block4_update_goal_complete_sets_state(typed_registry, work, no_kick):
+    """硬判据3：update_goal(complete) ⇒ goal_state=complete，驱动器不再起轮。"""
+    wid, a = await _mk_auto(work, goal="把甲做完")
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(wid, a, "update_goal",
+                                      {"action": "complete"}, cards)
+    assert r["ok"] is True, r
+    assert card_store._meta_of(wid, a)["goal_state"] == "complete"
+    assert auto_driver.will_continue(wid, a) is False
+
+
+async def test_block4_update_goal_denied_on_non_auto(typed_registry, work):
+    """执行层双保险①：非 auto 卡调 update_goal ⇒ denied。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "甲", root)
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(wid, a, "update_goal",
+                                      {"action": "complete"}, cards)
+    assert r["ok"] is False and r["error"]["code"] == "denied", r
+
+
+async def test_block4_update_goal_rejects_bad_action(typed_registry, work, no_kick):
+    wid, a = await _mk_auto(work, goal="把甲做完")
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(wid, a, "update_goal", {"action": "nope"}, cards)
+    assert r["ok"] is False and r["error"]["code"] == "validation", r
+
+
+def test_block4_goal_region_renders_only_for_auto():
+    """硬判据4（渲染层）：非 auto ⇒ 空串（区不出现）。
+
+    区里给的是**机器态原值**（active/paused/blocked/complete）——模型要拿它跟
+    update_goal 的 action 语义对齐；中文标签只在**前端标记行**用。
+    """
+    from src.api import context_regions as cr
+    assert cr.render_goal_region(None) == ""
+    assert cr.render_goal_region({"auto_mode": 0}) == ""
+    txt = cr.render_goal_region({"auto_mode": 1, "goal": "把 X 做完",
+                                 "goal_state": "active", "goal_rounds": 3})
+    assert "把 X 做完" in txt and "active" in txt and "3" in txt
+
+
+async def test_block4_goal_region_present_only_for_auto_card(
+        typed_registry, work, no_kick):
+    """硬判据4（装配层）：goal 区出现在 auto 卡上下文；非 auto 卡不出现。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "甲", root)
+    names0 = [r["name"] for r in context_assembler.build_context_regions(wid, a)]
+    assert "自动模式·目标" not in names0
+    await card_store.update_card(wid, a, {"auto_mode": 1}, "开自动")
+    names1 = [r["name"] for r in context_assembler.build_context_regions(wid, a)]
+    assert "自动模式·目标" in names1
+
+
+def test_block4_judgment_region_blank_for_auto_only():
+    """TC5：判断协议区只对 auto 卡返空；非 auto 卡逐字不变（ND1 红线 11）。
+
+    dev 与 Cardlo 的差异：那版是**全局**返空（沙箱「原生单模型」口径）；本版
+    只屏蔽 auto 卡——auto 卡已有 goal，再判「直答还是上板」会跟 goal 打架。
+    """
+    from src.api import context_regions as cr
+
+    ctx_auto = cr.RegionCtx(cur_meta={"auto_mode": 1}, request_once=[{"x": 1}])
+    assert cr.render_judgment_region(ctx_auto) == []
+    ctx_normal = cr.RegionCtx(cur_meta={"auto_mode": 0}, request_once=[{"x": 1}])
+    assert cr.render_judgment_region(ctx_normal) == [{"x": 1}]
+    ctx_none = cr.RegionCtx(cur_meta=None, request_once=[])
+    assert cr.render_judgment_region(ctx_none) == []
+
+
+def test_block4_prompt_version_and_section():
+    """版本口径：普通版 t22-1 **不动**（文本逐字节不变）；自动版首版 auto-t1。"""
+    assert prompts.BASE_PROMPT_VERSION == "t22-1"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t1"
+    assert "## 自动模式" not in prompts.BASE_PROMPT
+    assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
+
+
+def test_block4_tool_table_and_registry():
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-9"
+    assert "update_goal" in card_tools.TOOL_REGISTRY
+    assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
+    assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
+
+
+# ============================================================
+# 块 0.4 返工判据 · 两套 instruction（任务书 §块0.4 硬判据 5-7）
+# ============================================================
+
+def test_rework_1_base_prompt_byte_identical_to_t22_1():
+    """硬判据（红线 10）：片段化后拼装结果与 t22-1 逐字节一致（sha256）。"""
+    import hashlib
+    base = prompts.BASE_PROMPT
+    assert hashlib.sha256(base.encode("utf-8")).hexdigest() == T22_1_BASE_PROMPT_SHA256, \
+        "BASE_PROMPT 与记录的 t22-1 sha256 不符"
+    assert base == prompts._join_sections(
+        prompts._SEC_HEAD, prompts._SEC_TOOLS, prompts._SEC_WRITE,
+        prompts._SEC_CODER, prompts._SEC_RULE, prompts._SEC_ERR,
+        prompts._SEC_CARDMSG,
+    )
+
+
+def test_rework_2_versions():
+    """BASE_PROMPT_VERSION 不动；AUTO_BASE_PROMPT_VERSION 存在且非空。"""
+    assert prompts.BASE_PROMPT_VERSION == "t22-1"
+    assert isinstance(prompts.AUTO_BASE_PROMPT_VERSION, str)
+    assert prompts.AUTO_BASE_PROMPT_VERSION.strip()
+
+
+async def test_rework_3_instruction_region_selects_by_auto_mode(
+        typed_registry, work, no_kick):
+    """硬判据（V9）：非 auto 卡拿 BASE_PROMPT；auto 卡拿 AUTO_BASE_PROMPT。"""
+    from src.api import context_regions as cr
+
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "甲", root)
+    spec = cr._spec_by_key("instruction")
+    assert spec is not None
+
+    ctx0 = cr.RegionCtx(cur_meta={"auto_mode": 0})
+    assert spec["render"](ctx0) == prompts.BASE_PROMPT
+
+    ctx1 = cr.RegionCtx(cur_meta={"auto_mode": 1})
+    assert spec["render"](ctx1) == prompts.AUTO_BASE_PROMPT
+
+    # 真实装配链（非合成 ctx）：非 auto ⇒ 区文本 == BASE_PROMPT
+    bundle0 = context_assembler.build_context_bundle(wid, a)
+    assert bundle0["main"]["system_prompt"].startswith(prompts.BASE_PROMPT)
+    await card_store.update_card(wid, a, {"auto_mode": 1}, "开自动")
+    bundle1 = context_assembler.build_context_bundle(wid, a)
+    assert bundle1["main"]["system_prompt"].startswith(prompts.AUTO_BASE_PROMPT)
+
+
+def test_rework_4_auto_prompt_has_full_toolset_and_no_false_sentence():
+    """硬判据 4：auto 版含全部全权工具＋计划六件（TC5）；不含「工具已收回」假话。"""
+    auto = prompts.AUTO_BASE_PROMPT
+    for line in _AUTO_ONLY_TOOL_LINES:
+        assert line in auto, f"auto 版工具清单缺：{line}"
+    assert "工具已收回" not in auto, "auto 版仍写着「工具已收回」（对全权卡是假话）"
+    assert "你可以直接改写卡片正文" in auto, "auto 版内容写入节应为全权口径"
+    # TC5：计划六件在 auto 提示词里（与 Cardlo ND1 口径相反）
+    for name in _PLAN_TOOL_LINES:
+        assert name in auto, f"TC5：auto 版提示词应保留计划六件之一 {name}"
+    assert "大事拆小" in auto, "TC5：_SEC_AUTO 须写明计划板/建子卡两种拆法并存"
+
+
+def test_rework_5_normal_prompt_has_no_auto_text():
+    """硬判据 5（红线 10）：非 auto 卡提示词不含自动版任何新增文本。"""
+    base = prompts.BASE_PROMPT
+    assert "## 自动模式" not in base
+    assert "update_goal" not in base
+    assert "你拥有全部工具与全部权限" not in base
+    assert "本卡处于自动模式" not in base
+    # 自动版新增的三段（TOOLS_AUTO / WRITE_AUTO / AUTO）的字句不得泄进普通版
+    for frag in (prompts._SEC_TOOLS_AUTO, prompts._SEC_WRITE_AUTO, prompts._SEC_AUTO):
+        assert frag not in base
+    # 反向：普通版独有的「起草＋用户确认」节在自动版里不存在
+    assert "你负责起草" not in prompts.AUTO_BASE_PROMPT
+    assert "用户负责确认写入" not in prompts.AUTO_BASE_PROMPT
+
+
+def test_rework_6_shared_sections_identical_in_both():
+    """拼装表：HEAD/CODER/RULE/ERR/CARDMSG 两版**共用、逐字不动**。"""
+    base = prompts.BASE_PROMPT
+    auto = prompts.AUTO_BASE_PROMPT
+    for frag in (prompts._SEC_HEAD, prompts._SEC_CODER, prompts._SEC_RULE,
+                 prompts._SEC_ERR, prompts._SEC_CARDMSG):
+        assert frag in base, "共用片段不在普通版里"
+        assert frag in auto, "共用片段不在自动版里"
+    # 两版只差三处：TOOLS→TOOLS_AUTO、WRITE→WRITE_AUTO、尾部 +AUTO
+    assert prompts.AUTO_BASE_PROMPT != prompts.BASE_PROMPT
+    assert prompts._SEC_TOOLS in base and prompts._SEC_TOOLS not in auto
+    assert prompts._SEC_TOOLS_AUTO in auto and prompts._SEC_TOOLS_AUTO not in base
+
+
+# ============================================================
+# 块 0.3 收尾 · 依赖 update_goal 的两条端到端驱动用例
+# （D2 建卡即起跑；红线 5 驱动器在互斥体释放后）
+# ============================================================
+
+async def test_block3_create_child_with_goal_kicks(typed_registry, work, monkeypatch):
+    """D2 建卡即起跑：auto 父卡建带目标的子卡 ⇒ 子卡**自动起跑**并跑到声明完成。"""
+    wid, p = await _mk_auto(work)          # 父卡 auto 但**无目标**（不参与续跑）
+    calls: list[str] = []
+    state = {"n": 0}
+
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None,
+                             tools=None, **_):
+        calls.append(str(user_prompt))
+        state["n"] += 1
+        if state["n"] == 2:
+            return ({"content": "", "tool_calls": [{
+                "name": "update_goal", "arguments": {"action": "complete"},
+            }]}, "fake")
+        return ({"content": "子卡：处理中。", "tool_calls": []}, "fake")
+
+    monkeypatch.setattr(model_service, "call_main", fake_call_main)
+    monkeypatch.setenv("MOCK_LLM", "1")
+
+    c = await _mk(wid, "子卡", p, goal="子目标")
+    await _drain_trigger_tasks()
+
+    assert calls, "子卡未自动起跑（D2 建卡即起跑）"
+    assert any("子目标" in x for x in calls), calls
+    m = card_store._meta_of(wid, c)
+    assert m["goal_state"] == "complete"
+    assert m["goal_rounds"] == 1
+
+
+async def test_block3_driver_runs_after_mutex_release(typed_registry, work, monkeypatch):
+    """硬判据6（红线 5）：驱动检查排在互斥体释放之后 ⇒ 连续两轮不被 409 拒。"""
+    wid, a = await _mk_auto(work, goal="把甲做完")
+    calls: list[str] = []
+    state = {"declared": False}
+
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None,
+                             tools=None, **_):
+        calls.append(str(user_prompt))
+        if len(calls) == 1:
+            return ({"content": "第一轮：先做一半。", "tool_calls": []}, "fake")
+        if not state["declared"]:
+            state["declared"] = True
+            return ({"content": "", "tool_calls": [{
+                "name": "update_goal",
+                "arguments": {"action": "complete", "reason": "做完了"},
+            }]}, "fake")
+        return ({"content": "已完成。", "tool_calls": []}, "fake")
+
+    monkeypatch.setattr(model_service, "call_main", fake_call_main)
+    monkeypatch.setenv("MOCK_LLM", "1")
+
+    await routes._run_message(wid, a, "开始")
+    await _drain_trigger_tasks()
+
+    assert len(calls) >= 2, "第二轮没跑起来（驱动器被互斥体 409 拒？）"
+    m = card_store._meta_of(wid, a)
+    assert m["goal_state"] == "complete"
+    assert m["goal_rounds"] >= 1
