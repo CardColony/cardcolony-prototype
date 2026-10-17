@@ -442,7 +442,7 @@ _AUTO_ONLY_TOOL_LINES = (
     "update_shadow(content)",
     "read_linked(target_id, part)",
     "run_tool_card(script_name",
-    "update_goal(action, reason?)",
+    "update_goal(action, reason?, await_children?)",
     "send_card_message(target_card_id, msg_type, content, reply_to?)",
     "read_inbox(pending_only?, direction?)",
     "create_card(title, parent?, content?, goal?)",
@@ -594,13 +594,13 @@ def test_block4_prompt_version_and_section():
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
     assert prompts.BASE_PROMPT_VERSION == "t22-1"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t4"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t5"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-10"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-11"
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
@@ -1089,7 +1089,7 @@ def test_g4_auto_prompt_has_two_obligation_rules():
     assert "收到 ask 必须回应" in auto
     assert "不能无视" in auto
     assert "unanswered_sent" in auto
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t4"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t5"
     assert "问出去的信必须有回音" not in prompts.BASE_PROMPT
     assert "收到 ask 必须回应" not in prompts.BASE_PROMPT
 
