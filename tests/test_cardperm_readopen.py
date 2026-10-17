@@ -215,8 +215,17 @@ async def test_api_update_whitelist_has_no_card_type():
 
 
 def _visible(card_meta: dict) -> set[str]:
-    """给定一张卡，返回「下发给模型的工具名集合」。"""
-    tools = [{"name": n} for n in card_tools.TOOL_SWITCH]
+    """给定一张卡，返回「下发给模型的工具名集合」。
+
+    [自动模式 2026-10-17 · 回灌 5700 块0.4] 初始池与 build_tool_schemas 的
+    **真实工具池同口径**：排除 OP_ONLY_TOOLS 与 AUTO_ONLY_TOOLS（两类都
+    非卡片内挂、不进四段过滤）——否则分类层镜头会把 update_goal 算进
+    tool 卡可见集，而真实工具面它永远拿不到（只在 auto 卡末段追加）。
+    """
+    pool = [n for n in card_tools.TOOL_SWITCH
+            if n not in card_tools.OP_ONLY_TOOLS
+            and n not in card_tools.AUTO_ONLY_TOOLS]
+    tools = [{"name": n} for n in pool]
     cards = {"card_x": card_meta}
     return {t["name"] for t in
             card_tools._filter_by_category(tools, "card_x", "", cards)}
@@ -249,7 +258,7 @@ def test_no_permission_means_tool_invisible_not_just_denied():
     base = {"card_id": "card_x", "card_type": "sub_project", "perms": full}
 
     # 基线：全权限时每件工具都可见
-    assert _visible(base) == set(card_tools.TOOL_SWITCH), "全权限不该有工具被藏"
+    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS, "全权限不该有工具被藏（两类非卡片内挂件除外）"  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除
 
     # 逐个开关摘掉 → 对应工具必须从可见集合里消失
     for switch, tool_name in (
@@ -363,7 +372,7 @@ async def test_plan_switch_controls_toolface():
     """摘掉 plan 开关 ⇒ 思维链六件从工具面消失（不是只被拒）。"""
     full = policy.perms_for("rd_project", "sub_project")
     base = {"card_id": "card_x", "card_type": "sub_project", "perms": full}
-    assert _visible(base) == set(card_tools.TOOL_SWITCH)
+    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除
 
     card = dict(base, perms=[p for p in full if p != "plan"])
     vis = _visible(card)

@@ -174,8 +174,8 @@ def test_b2_tool_table_and_versions():
     列 OP_ONLY_TOOLS、不进常规工具面）；TOOL_TABLE_VERSION tools-tc-7 → tools-tc-8。
     """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    assert src.count('": ToolDef(') == 22
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-8"
+    assert src.count('": ToolDef(') == 23  # [自动模式 2026-10-17 · 块0.4] 22→23（+update_goal）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-9"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
     assert prompts.BASE_PROMPT_VERSION == "t22-1"
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY
@@ -343,12 +343,17 @@ async def test_b2_read_card_returns_both_keys(sandbox):
 # ════════════════════════════════════════════════════════════════════
 
 def test_b3_region_table_16_regions_with_250():
-    """硬判据1：REGION_TABLE 16 区、orders 含 250。"""
+    """硬判据1：REGION_TABLE 17 区、orders 含 250。
+
+    [自动模式 2026-10-17 · 回灌 5700 块0.4] 16→17 区：新增 order 152「自动模式·目标」
+    （150 当前卡之后、155 区域说明之前；只对 auto 卡有内容）。
+    """
     orders = [r["order"] for r in context_regions.REGION_TABLE]
-    assert len(context_regions.REGION_TABLE) == 16
-    assert orders == [0, 85, 90, 95, 100, 150, 155, 170, 200, 250, 300,
+    assert len(context_regions.REGION_TABLE) == 17
+    assert orders == [0, 85, 90, 95, 100, 150, 152, 155, 170, 200, 250, 300,
                       900, 999, 1000, 1010, 1020]
     by_key = {r["key"]: r for r in context_regions.REGION_TABLE}
+    assert by_key["goal"]["name"] == "自动模式·目标"
     assert by_key["relations"]["name"] == "依赖关联"
     assert by_key["relations"]["seats"] == ("main",)
     # ★ 真正的消费者闸门是 profiles（seats 不参与过滤）——取 main only 才能
@@ -357,10 +362,14 @@ def test_b3_region_table_16_regions_with_250():
 
 
 def test_b3_config_v5_has_relations_region():
-    """硬判据1（续）：区控制 v5 生效；坏 JSON → fail-open 按注册表默认。"""
+    """硬判据1（续）：区控制 v6 生效；坏 JSON → fail-open 按注册表默认。
+
+    [自动模式 2026-10-17 · 回灌 5700 块0.4] v5→v6（加 goal 区条目）。
+    """
     cfg = json.loads((ROOT / "config" / "context_regions.json").read_text(encoding="utf-8"))
-    assert cfg["_meta"]["version"] == "context-regions-v5"
+    assert cfg["_meta"]["version"] == "context-regions-v6"
     assert cfg["regions"]["relations"] == {"enabled": True, "order": 250}
+    assert cfg["regions"]["goal"] == {"enabled": True, "order": 152}
 
 
 def test_b3_render_empty_is_blank():

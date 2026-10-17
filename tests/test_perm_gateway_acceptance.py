@@ -151,7 +151,11 @@ def test_v4_positive_control_registered_types_see_all():
     root_only = set(card_tools.ROOT_ONLY_TOOLS)
     op_only = set(card_tools.OP_ONLY_TOOLS)
     # [v1.1 · 判据6 字面口径] 基线集合＝TOOL_SWITCH − CODER_ONLY − ROOT_ONLY − OP_ONLY
-    expected_all = len(set(card_tools.TOOL_SWITCH) - coder_only - root_only - op_only)
+    # [自动模式 2026-10-17 · 回灌 5700 块0.4] 再减 AUTO_ONLY_TOOLS（update_goal——
+    # 非卡片内挂，只在 auto_mode=1 的卡上追加，不进常规面）。
+    auto_only = set(card_tools.AUTO_ONLY_TOOLS)
+    expected_all = len(set(card_tools.TOOL_SWITCH) - coder_only - root_only
+                       - op_only - auto_only)
     n_all = len(card_tools.build_tool_schemas(
         "card_x", cards={"card_x": _meta("sub_project")}))
     assert n_all == expected_all, (
@@ -159,7 +163,8 @@ def test_v4_positive_control_registered_types_see_all():
         f"（TOOL_SWITCH {len(card_tools.TOOL_SWITCH)} 件减 "
         f"CODER_ONLY_TOOLS {sorted(coder_only)} 减 "
         f"ROOT_ONLY_TOOLS {sorted(root_only)} 减 "
-        f"OP_ONLY_TOOLS {sorted(op_only)}），实 {n_all} 件"
+        f"OP_ONLY_TOOLS {sorted(op_only)} 减 "
+        f"AUTO_ONLY_TOOLS {sorted(auto_only)}），实 {n_all} 件"
     )
     for pc, ct in (("rd_project", "sub_project"),
                    ("research_project", "topic"),
