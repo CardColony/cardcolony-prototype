@@ -67,6 +67,9 @@ _CARD_COLUMNS: tuple[str, ...] = (
     "session_ref", "toolcard_script", "toolcard_step", "toolcard_round",
     "toolcard_final", "thinkchain_final", "perms", "perms_version",
     "created_at", "updated_at", "mission", "status_block", "rulings",
+    # [自动模式 2026-10-17 · 回灌 5700 块0.1] 四列进 meta 管线（insert/update/
+    # row_to_meta 都走本清单）——不进则写了不落、读了不带，驱动器/工具/权限全挂。
+    "auto_mode", "goal", "goal_state", "goal_rounds",
 )
 
 # 以小 JSON 文本存的列（短列表 / 小字典，不拆表——方案 §1.3.4）
@@ -109,7 +112,11 @@ CREATE TABLE IF NOT EXISTS cards (
     rulings          TEXT,
     pos_x            REAL,
     pos_y            REAL,
-    pinned           INTEGER DEFAULT 0
+    pinned           INTEGER DEFAULT 0,
+    auto_mode        INTEGER DEFAULT 0,
+    goal             TEXT,
+    goal_state       TEXT,
+    goal_rounds      INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent);
 CREATE INDEX IF NOT EXISTS idx_cards_type   ON cards(card_type);
@@ -302,6 +309,14 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     # [依赖关联线 2026-10-16] 老库经 `_COLUMN_RENAMES` 把旧 relations 改名成
     # links 之后，需补回**新线**的 relations 列；新库走 _SCHEMA 已含则跳过。
     ("cards", "relations", "relations TEXT"),
+) + (
+    # [自动模式 2026-10-17 · 回灌 5700 块0.1] 四列。开关列/轮次列带 DEFAULT
+    # （照 POSITION_COLUMNS 的 pinned 先例：「没写过」与「没开」/「没跑过」是
+    # 同一件事）；目标文本两列不带 DEFAULT——「没有目标」不是空串是 NULL。
+    ("cards", "auto_mode", "auto_mode INTEGER DEFAULT 0"),
+    ("cards", "goal", "goal TEXT"),
+    ("cards", "goal_state", "goal_state TEXT"),
+    ("cards", "goal_rounds", "goal_rounds INTEGER DEFAULT 0"),
 )
 
 
