@@ -58,6 +58,9 @@ def test_t10_readonly_whitelist():
         # [更新现状按钮改造 2026-10-16] 新增 propose_status（「更新现状」专用回合里
         # 只提议、不落盘地交出「新现状」；落盘走用户确认后的 /commit，不经过本工具）
         "propose_status",
+        # [自动模式 2026-10-17 · 回灌 5700 G2] 新增 read_inbox（auto 卡读自己的
+        # 收件箱，零写入——出向视图的 answered 判定也是纯读账本）
+        "read_inbox",
     } & set(card_tools.TOOL_REGISTRY)
 
     assert card_tools.READONLY_TOOLS == frozenset(expected)

@@ -85,7 +85,8 @@ OP_ONLY_TOOLS: frozenset[str] = frozenset({"propose_status"})
 # ============================================================
 #: 块 0.4：update_goal（声明目标态——「停」的唯一权威在模型）。
 #: G2 起扩为三件：＋send_card_message/read_inbox（把卡间通信交回模型）。
-AUTO_ONLY_TOOLS: frozenset[str] = frozenset({"update_goal"})
+AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
+    {"update_goal", "send_card_message", "read_inbox"})
 
 # [权限底座重做 2026-10-12] 工具组→工具名映射（build_tool_schemas 过滤面）。
 # 由卡上的 tools_file / tools_web 两个开关决定下发哪几组：缺哪个开关就不下发
@@ -221,7 +222,7 @@ TOOL_SWITCH: dict[str, str] = {
 #   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
 #   「注册表工具集/schema 变更」（T12-R3 纪律）。
 #   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
-TOOL_TABLE_VERSION = "tools-tc-9"
+TOOL_TABLE_VERSION = "tools-tc-10"
 
 
 # ============================================================
@@ -2140,6 +2141,164 @@ async def send_card_message(
     return await _h_send_card_message(work_id, from_id, arguments, cards)
 
 
+# ============================================================
+# [自动模式 2026-10-17 · 回灌 5700 G2（041e25d/e4e612d）] 把卡片间通信
+# **交回模型**——模型自主协作跑通（愿景）
+#
+# 2026-10-11 12:34 裁定把 send_card_message 从**常规**模型工具面摘除
+# （"发信不是通用工具，是流程专用基础设施"）。本处**不撤销该裁定**：常规
+# 卡面逐字不变（仍不可见），只在 auto_mode=1 的卡上、经 AUTO_ONLY_TOOLS 的
+# **条件下发**机制追加（同 update_goal 手法，非卡片内挂）。执行体仍是
+# _h_send_card_message（六道门槛一条不减：存在/非己/类型在册/reply_to 一致/
+# 正文非空/权限＋同树判定），落点仍是收件箱（status=pending），调起与自动
+# 回发仍走既有 K3/S4 通道——**不新造第二套通信**。
+#
+# 配套 read_inbox：模型要活用通信，必须先能看见自己收到过什么、哪些待
+# 处理、哪些待回应——否则只能被动等激励文，谈不上"活用"。只读自己的
+# 收件箱（current_id），零写入。
+# ★ 注册位置：必须在 READONLY_TOOLS 派生之前（read_inbox 是只读件，要进
+#   白名单；晚于派生会漏出"可按原参数重取"口径）。
+# ============================================================
+
+async def _h_read_inbox(work_id: str, current_id: str,
+                        arguments: dict[str, Any],
+                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """读本卡收件箱（默认全部：待处理＋已处理；pending_only=true 只看待处理）。"""
+    # 执行层关口（与全系统同构的双保险：工具面已按 auto 条件下发，这里再判一次）
+    try:
+        policy.check(current_id, current_id, policy.SWITCH_READ, cards)
+    except PermissionError as exc:
+        return err("denied", str(exc))
+    # [G4 · 8eaf33e] direction：incoming（缺省，行为逐字不变）／
+    # outgoing（本卡**发出**的信＋是否已被回答）／both。
+    # 动机：发问方若只能读入向，问出去的信石沉大海时无从区分「对方还没答／
+    # 答不了／不打算答」——出向视图让发问方知道自己的信有没有被回答。
+    direction = str(arguments.get("direction") or "incoming").strip().lower()
+    if direction not in ("incoming", "outgoing", "both"):
+        return err("validation",
+                   f"direction 非法: {direction or '(空)'}（只允许 incoming/outgoing/both）")
+    pending_only = bool(arguments.get("pending_only"))
+    try:
+        # 入向（缺省口径与改造前逐字一致）
+        if direction in ("incoming", "both"):
+            items = (await card_db.list_pending(work_id, current_id) if pending_only
+                     else await card_db.list_inbox(work_id, current_id))
+        else:
+            items = []
+        # 出向需要全量账本（判 answered 要找有没有人 reply_to 这条）
+        all_rows = (await card_db.list_inbox(work_id)) if direction in ("outgoing", "both") else []
+    except Exception as exc:  # noqa: BLE001
+        return err("internal", f"收件箱读取失败: {exc}")
+
+    def _row(it: dict[str, Any], *, outgoing: bool = False) -> dict[str, Any]:
+        raw = str((it or {}).get("content") or "")
+        hdr = card_msg.parse_header(raw) or {}
+        mt = str((it or {}).get("type") or hdr.get("type") or "")
+        mid = str((it or {}).get("msg_id") or hdr.get("id") or "")
+        rec = {
+            "msg_id": mid,
+            "from": str((it or {}).get("from_card") or hdr.get("from") or ""),
+            "to": str((it or {}).get("target_card_id") or ""),
+            "type": mt,
+            "type_display": card_msg.display_of(mt) if mt else "",
+            "reply_expected": card_msg.reply_expected_of(mt) if mt else False,
+            "status": str((it or {}).get("status") or ""),
+            "reply_to": str((it or {}).get("reply_to") or hdr.get("reply_to") or ""),
+            "created_at": str((it or {}).get("created_at") or ""),
+            "content": card_msg.strip_header(raw),
+        }
+        if outgoing:
+            # ★ answered＝有没有任何一行 reply_to 指向这条（通常是一条 msg_answer）。
+            # 注意 status 的语义是**收件方是否已处理**，不等于"已回答"——
+            # 实测有卡被调起、把信处理成 consumed 却从未回信。故 answered 独立判定。
+            rec["answered"] = any(
+                str((x or {}).get("reply_to") or
+                    (card_msg.parse_header(str((x or {}).get("content") or "")) or {}).get("reply_to") or "") == mid
+                for x in all_rows or [])
+        return rec
+
+    out: list[dict[str, Any]] = [_row(it) for it in (items or [])]
+    if direction in ("outgoing", "both"):
+        out += [_row(it, outgoing=True) for it in (all_rows or [])
+                if str((it or {}).get("from_card") or "") == current_id]
+    sent_pending = [r for r in out if r.get("answered") is False and r.get("reply_expected")]
+    return {"card_id": current_id, "count": len(out), "messages": out,
+            "direction": direction,
+            # 出向提醒：发了却没人回答的信（发问方据此做知情决策，别默默接受）
+            "unanswered_sent": [r["msg_id"] for r in sent_pending]}
+
+
+TOOL_REGISTRY["send_card_message"] = ToolDef(
+    schema={
+        "name": "send_card_message",
+        "description": (
+            "（自动模式专用）向另一张卡发消息——卡片间通信是你协作的主要手段。\n"
+            "msg_ask＝你需要对方的信息或判断才能继续：对方会被系统自动调起，"
+            "处理完后**自动把答案回发给你**（你会被再次唤醒）。\n"
+            "msg_answer＝回应你收到的一条询问：必须带 reply_to（原询问的 msg_id）。\n"
+            "msg_notify＝告知对方一件事，不需要对方回话。\n"
+            "只能发给同一棵任务树内的卡（父卡／子卡／祖先）；跨树会被拒。"
+            "发完不必空等：你可以先做别的，答案回来时系统会唤醒你。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_card_id": {"type": "string", "description": "收件卡 id"},
+                "msg_type": {
+                    "type": "string",
+                    "enum": ["msg_ask", "msg_answer", "msg_notify"],
+                    "description": "询问／应答／通知",
+                },
+                "content": {"type": "string", "description": "消息正文（非空）"},
+                "reply_to": {
+                    "type": "string",
+                    "description": "仅 msg_answer 必填＝要回应的那条询问的 msg_id",
+                },
+            },
+            "required": ["target_card_id", "msg_type", "content"],
+        },
+    },
+    handler=_h_send_card_message,
+    readonly=False,
+)
+
+TOOL_REGISTRY["read_inbox"] = ToolDef(
+    schema={
+        "name": "read_inbox",
+        "description": (
+            "（自动模式专用）读你自己的消息账本：direction=incoming 你收到的（缺省）；"
+            "direction=outgoing 你**发出**的——含 answered（对方是否已回答）与 "
+            "unanswered_sent（你问了但没人答的清单）。"
+            "发过 msg_ask 后用 outgoing 确认闭环：没人回答时不要默默接受，"
+            "改换手段或 update_goal(pause) 说清在等什么。回应询问前用 incoming 查清 msg_id。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pending_only": {
+                    "type": "boolean",
+                    "description": "true＝只列待处理；缺省＝全部（含已处理）。仅对 incoming 生效",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["incoming", "outgoing", "both"],
+                    "description": (
+                        "incoming＝你收到的（缺省）；outgoing＝**你发出的**信及其状态——"
+                        "含 answered（是否已有人回答）与 unanswered_sent（你问了但没人答的清单）。"
+                        "发过 msg_ask 后用它确认是否闭环；未回答就别把未经核实的数当结论。"
+                    ),
+                },
+            },
+        },
+    },
+    handler=_h_read_inbox,
+    readonly=True,
+)
+
+TOOL_SWITCH["send_card_message"] = policy.SWITCH_SEND_MESSAGE
+TOOL_SWITCH["read_inbox"] = policy.SWITCH_READ
+
+
 # [T11-T10] 只读工具白名单（折叠【依据】「可按原参数重取」语义的依据源）。
 # 白名单是「工具的属性」，属性跟工具住一起（方案自拍 #15）；落点＝工具定义处。
 # [B-09 2026-10-08] 改为**从注册表派生**——改前是手工 frozenset 字面量，
@@ -2489,8 +2648,9 @@ def _create_card_schema_with_goal(schema: dict[str, Any]) -> dict[str, Any]:
 def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """自动模式工具面（**本任务对工具面唯一的 auto 开口**，TC5 裁剪版）：
 
-    1. 追加自动模式专用工具 ``update_goal``（AUTO_ONLY_TOOLS 全量——G2 起含
-       send_card_message/read_inbox）；
+    1. 追加自动模式专用工具（AUTO_ONLY_TOOLS 全量——update_goal ＋
+       send_card_message/read_inbox，**按注册追加序**：update_goal 首位，
+       既有语义保留；不按 sorted 字母序）；
     2. 给 ``create_card`` 补上 ``goal`` 参数（派活）；
     3. **不摘计划六件**（TC5：生产保留思维链；与 Cardlo 沙箱版 ND1 口径的
        差异就在此——那版摘六件是「最原始单模型」实验口径，不进生产）。
@@ -2505,8 +2665,11 @@ def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             out.append(_create_card_schema_with_goal(t))
         else:
             out.append(t)
-    for auto_name in sorted(AUTO_ONLY_TOOLS):
-        out.append(_schema_of(TOOL_REGISTRY[auto_name]))
+    # 追加序固定（块0.4 起 update_goal 首位；G2 起两件通信随后）——集合成员
+    # 增长不改首位语义，测试与审计都认这个序。
+    for auto_name in ("update_goal", "send_card_message", "read_inbox"):
+        if auto_name in AUTO_ONLY_TOOLS:
+            out.append(_schema_of(TOOL_REGISTRY[auto_name]))
     return out
 
 

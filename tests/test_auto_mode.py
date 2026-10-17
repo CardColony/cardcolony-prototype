@@ -436,6 +436,8 @@ _AUTO_ONLY_TOOL_LINES = (
     "read_linked(target_id, part)",
     "run_tool_card(script_name",
     "update_goal(action, reason?)",
+    "send_card_message(target_card_id, msg_type, content, reply_to?)",
+    "read_inbox(pending_only?, direction?)",
     "create_card(title, parent?, content?, goal?)",
 )
 
@@ -475,13 +477,21 @@ async def test_block4_auto_toolface_is_normal_plus_update_goal(
     auto_tools = card_tools.build_tool_schemas(card_id=a, work_id=wid, cards=cards)
     auto_names = [t["name"] for t in auto_tools]
 
-    assert set(auto_names) == (set(normal) - {"delete_card"}) | {"update_goal"}, (
-        f"auto 面应为「常规 - delete_card（TC1 排除不可逆项） + update_goal」："
-        f"多={set(auto_names)-set(normal)-{'update_goal'}} 少={set(normal)-set(auto_names)-{'delete_card'}}")
+    assert set(auto_names) == ((set(normal) - {"delete_card"})
+                               | set(card_tools.AUTO_ONLY_TOOLS)), (
+        f"auto 面应为「常规 - delete_card（TC1） + auto 专用件」："
+        f"多={set(auto_names)-set(normal)-set(card_tools.AUTO_ONLY_TOOLS)} "
+        f"少={set(normal)-set(auto_names)-{'delete_card'}}")
+    # 追加段＝末尾连续 len(AUTO_ONLY_TOOLS) 件，且恰为该集合（不钉字母序）
+    _tail = auto_names[-len(card_tools.AUTO_ONLY_TOOLS):]
+    assert set(_tail) == set(card_tools.AUTO_ONLY_TOOLS), \
+        f"auto 专用件应追加在末尾，实得 {_tail}"
+    assert _tail[0] == "update_goal", "update_goal 仍是追加段首位（既有语义保留）"
+    # G2：自主通信两件在 auto 面（041e25d/e4e612d）
+    assert {"send_card_message", "read_inbox"} <= set(auto_names)
     # 计划六件仍在（TC5：生产保留思维链）
     for p in _PLAN_TOOL_LINES:
         assert p in auto_names, f"TC5：auto 卡应保留计划六件之一 {p}"
-    assert auto_names[-1] == "update_goal", "update_goal 追加在末尾"
     cc = next(t for t in auto_tools if t["name"] == "create_card")
     assert "goal" in cc["parameters"]["properties"], "auto 卡 create_card 应带 goal 参数"
     # 注册表原字面量未被污染（否则非 auto 卡的工具面也会变）
@@ -560,18 +570,29 @@ def test_block4_judgment_region_blank_for_auto_only():
 
 
 def test_block4_prompt_version_and_section():
-    """版本口径：普通版 t22-1 **不动**（文本逐字节不变）；自动版首版 auto-t1。"""
+    """版本口径：普通版 t22-1 **不动**（文本逐字节不变）；自动版随 G 推进。
+
+    [回灌 5700 §十 版本号推进表] auto-t1＝块0.4 初版；auto-t2＝G2（自主通信
+    两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
+    """
     assert prompts.BASE_PROMPT_VERSION == "t22-1"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t1"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t2"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-9"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-10"
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
+    # G2：自主通信两件注册＋映射＋条件下发
+    assert "send_card_message" in card_tools.TOOL_REGISTRY
+    assert "read_inbox" in card_tools.TOOL_REGISTRY
+    assert card_tools.TOOL_SWITCH["send_card_message"] == policy.SWITCH_SEND_MESSAGE
+    assert card_tools.TOOL_SWITCH["read_inbox"] == policy.SWITCH_READ
+    assert card_tools.AUTO_ONLY_TOOLS == {"update_goal", "send_card_message",
+                                          "read_inbox"}
 
 
 # ============================================================
@@ -852,3 +873,111 @@ async def test_g1_auto_parent_child_with_goal_kicks(typed_registry, work,
     await _drain_trigger_tasks()
     assert calls, "HTTP 建的 auto 子卡未起跑（断链未闭合）"
     assert any("子卡任务" in x for x in calls), calls
+
+
+# ============================================================
+# 阶段 1 · G2 交回模型（041e25d + e4e612d：send_card_message/read_inbox 进
+# auto 面——模型自主协作跑通）
+#
+# 不变量：2026-10-11 12:34 裁定（发信不是通用工具）**不撤销**——常规面仍
+# 不下发两件；auto 卡是显式例外（AUTO_ONLY_TOOLS 条件下发）。
+# ============================================================
+
+async def test_g2_normal_toolface_has_no_comm_tools(typed_registry, work):
+    """硬判据1/4：非 auto 卡工具面不含 send_card_message/read_inbox（裁定不破）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "甲", root)
+    cards = card_tools._collect_card_meta(wid)
+    names = [t["name"] for t in
+             card_tools.build_tool_schemas(card_id=a, work_id=wid, cards=cards)]
+    assert "send_card_message" not in names
+    assert "read_inbox" not in names
+
+
+async def test_g2_read_inbox_outgoing_view(typed_registry, work, no_kick):
+    """硬判据3（出向视图，8eaf33e 同源实现）：发问方读 outgoing 看得见
+    answered/unanswered_sent——没人答时不得默默接受。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "甲", root)
+    # 乙建成**甲的子卡**：同树闸（2026-10-09 口径）只放行父子/祖先链互发，
+    # 兄弟挡死——自动模式的协作形态正是父派子、子报父。
+    b = await _mk(wid, "乙", a)
+    # 甲问乙一条 msg_ask（经流程薄壳落信，不走模型工具）
+    r = await card_tools.send_card_message(
+        wid, a, target_id=b, msg_type="msg_ask", content="乙，这事怎么看？")
+    assert "error" not in r, r
+    ask_id = r["msg_id"]
+    # 乙还没答 ⇒ 甲的 outgoing 视图：answered=False ＋ unanswered_sent 含该信
+    cards = card_tools._collect_card_meta(wid)
+    out = await card_tools.execute_tool(
+        wid, a, "read_inbox", {"direction": "outgoing"}, cards)
+    assert out["ok"] is True, out
+    assert out["data"]["unanswered_sent"] == [ask_id], out
+    mine = [m for m in out["data"]["messages"] if m["msg_id"] == ask_id][0]
+    assert mine["answered"] is False
+    # 乙答了（msg_answer 带 reply_to）⇒ answered 翻真、unanswered_sent 清空
+    r2 = await card_tools.send_card_message(
+        wid, b, target_id=a, msg_type="msg_answer",
+        content="我认为应该先做甲。", reply_to=ask_id)
+    assert "error" not in r2, r2
+    out2 = await card_tools.execute_tool(
+        wid, a, "read_inbox", {"direction": "outgoing"}, cards)
+    assert out2["ok"] is True, out2
+    assert out2["data"]["unanswered_sent"] == [], out2
+    mine2 = [m for m in out2["data"]["messages"] if m["msg_id"] == ask_id][0]
+    assert mine2["answered"] is True
+
+
+async def test_g2_auto_cards_can_talk_end_to_end(typed_registry, work, monkeypatch):
+    """硬判据3（主链）：auto 卡模型可调 send_card_message 发消息；收件方可调
+    read_inbox 读——K3 调起/S4 回发现有链对 auto 卡正常工作。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    wid, a = await _mk_auto(work, goal="问乙一件事")   # _mk_auto 返 (wid, card_id)
+    # 乙建成甲的子卡（同树闸放行父子互发——见 test_g2_read_inbox_outgoing_view 注）
+    b = await _mk(wid, "乙", a)
+    await card_store.update_card(wid, b, {"auto_mode": 1}, "开自动")
+
+    seen: dict[str, list] = {"a_tools": [], "b_tools": []}
+
+    async def fake(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
+        # 按 user_prompt 识别是哪张卡（两卡都是 auto 面，工具面无法区分）：
+        # 乙的调起激励文带甲发出的消息正文；甲的起轮带目标/开始语。
+        names = [t["name"] for t in (tools or [])]
+        cid = b if "乙，报告一下现状" in str(user_prompt) else a
+        seen.setdefault(cid, []).append(names)
+        n = len(seen[cid])
+        if cid == a:
+            # 甲：第 1 轮发问；第 2 轮声明完成；此后空手交付（收敛，防无闸循环）
+            if n == 1:
+                return ({"content": "", "tool_calls": [{
+                    "name": "send_card_message",
+                    "arguments": {"target_card_id": b, "msg_type": "msg_ask",
+                                  "content": "乙，报告一下现状"},
+                }]}, "fake")
+            if n == 2:
+                return ({"content": "", "tool_calls": [{
+                    "name": "update_goal", "arguments": {"action": "complete"},
+                }]}, "fake")
+            return ({"content": "甲已完成。", "tool_calls": []}, "fake")
+        # 乙：第 1 轮读收件箱（看见问话）；第 2 轮应答；此后空手交付
+        if n == 1:
+            return ({"content": "", "tool_calls": [{
+                "name": "read_inbox", "arguments": {},
+            }]}, "fake")
+        if n == 2:
+            return ({"content": "", "tool_calls": [{
+                "name": "send_card_message",
+                "arguments": {"target_card_id": a, "msg_type": "msg_answer",
+                              "content": "乙的现状：一切正常。", "reply_to": "ask"},
+            }]}, "fake")
+        return ({"content": "乙已应答。", "tool_calls": []}, "fake")
+
+    monkeypatch.setattr(model_service, "call_main", fake)
+    monkeypatch.setenv("MOCK_LLM", "1")
+
+    await routes._run_message(wid, a, "开始问乙")
+    await _drain_trigger_tasks()
+    # 甲的工具面见过 send_card_message（auto 面下发），乙也被调起过
+    assert any("send_card_message" in ns for ns in seen.get(a, [])), \
+        f"甲的 auto 工具面未见 send_card_message：{seen.get(a)}"
+    assert seen.get(b), "乙未被调起（K3 链对 auto 卡失效）"
