@@ -64,6 +64,12 @@ _CARD_TREE_CYCLE_GUARD = 32
 _IDLE_PAUSE_THRESHOLD = 3
 _ROUNDS_WARN = 200
 
+#: [6702 移植 2026-10-17 · 等子卡恢复] 「向上唤醒」判据的三种裁定（**不是闸**）。
+#: ``wake_verdict`` 的返回值 —— 「本卡此刻该不该被向上唤醒、以哪种身份被唤醒」。
+WAKE_NONE = ""            # 不唤醒（继续沿 parent 链上跳）
+WAKE_ACTIVE = "active"    # 常规：goal_state 已是 active ⇒ 走原 ``will_continue`` 路径
+WAKE_PAUSED = "paused"    # 本卡自己声明「等子卡」而挂起 ⇒ 先恢复 active 再点火
+
 #: 进程内连续空转计数：(work_id, card_id) → 连续零工具轮数。
 _IDLE_ROUNDS: dict[tuple[str, str], int] = {}
 
@@ -131,6 +137,77 @@ def has_active_child(work_id: str, card_id: str) -> bool:
         if str(m.get("goal_state") or "") == GOAL_ACTIVE:
             return True
     return False
+
+
+def _await_children_flag(meta: dict[str, Any]) -> bool:
+    """读 ``goal_await_children`` 标志位（0/1；**机械读列，不猜**）。
+
+    读侧容 ``1`` / ``"1"`` / ``True``：SQLite INTEGER 列经 JSON/前端往返可能成
+    字符串或布尔。全归一成 bool，任一非空非零真值即为「在等子卡」。
+    """
+    raw = (meta or {}).get("goal_await_children")
+    if raw is None or raw == "":
+        return False
+    if isinstance(raw, str):
+        return raw.strip() not in ("", "0", "False", "false", "None")
+    try:
+        return int(raw) != 0
+    except (TypeError, ValueError):
+        return bool(raw)
+
+
+def wake_verdict(work_id: str, card_id: str) -> str:
+    """**向上唤醒专用**判据（纯判定，无副作用）——返回 :data:`WAKE_*` 三值之一。
+
+    【为什么不用 ``will_continue`` 直接判】
+    ``will_continue`` 仍**只认 active**，一个字不改——它被 ``routes._run_message``
+    的回合末执行锁持有判定（``keep = will_continue(...)``）共用，改它会波及串行
+    队列的锁语义。本判据**只**服务 ``after_turn`` 沿 parent 链的「唤醒」这一个动作。
+
+    【缺口背景】父卡 ``update_goal(pause)`` 写「等子卡跑完回报」后恒为 paused；
+    ``will_continue`` 判否 ⇒ ``after_turn`` 既不起它、也不再上跳 ⇒ 父卡**永久挂死**
+    （实测 work_008：五张子卡全 complete，父卡 rounds 恒 0）。恢复看似"发生过"只是
+    因为子卡**主动发了 msg_notify**——**模型行为掩盖了机制缺口**。
+
+    判据＝``auto_mode=1`` ＋ 有 ``goal`` ＋ （``goal_state=="active"``
+    **或**（``paused`` 且 ``goal_await_children==1``）） ＋ **无未终止直接子卡**。
+    """
+    meta = _meta(work_id, card_id)
+    if not is_auto(meta):
+        return WAKE_NONE
+    if not str(meta.get("goal") or "").strip():
+        return WAKE_NONE
+    state = str(meta.get("goal_state") or "")
+    if state == GOAL_ACTIVE:
+        verdict = WAKE_ACTIVE
+    elif state == GOAL_PAUSED and _await_children_flag(meta):
+        verdict = WAKE_PAUSED
+    else:
+        return WAKE_NONE
+    if has_active_child(work_id, card_id):
+        return WAKE_NONE   # ★ 父卡让位（子卡还在跑 ⇒ 轮不到父卡）
+    return verdict
+
+
+async def _resume_awaiting(work_id: str, card_id: str) -> bool:
+    """恢复「等子卡」挂起中的父卡：``goal_state → active`` 且**清**等待标志位。
+
+    **一次 ``update_card``** 落两个字段（不留中间态）。清标志位的意义：它是**一次性
+    意图**——「这次挂起是等子卡」用过即销，不跨目标生命周期留存。
+
+    返回是否恢复成功（失败只留痕不抛——不得吃掉 ``after_turn`` 的整条链）。
+    """
+    try:
+        await card_store.update_card(
+            work_id, card_id,
+            {"goal_state": GOAL_ACTIVE, "goal_await_children": 0},
+            "[自动模式] 子卡完工，恢复等待中的父卡",
+        )
+    except Exception as exc:  # noqa: BLE001 恢复失败 ⇒ 不点火（否则状态自相矛盾）
+        logger.warning("[auto] 等待中父卡恢复失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        return False
+    return True
 
 
 def will_continue(work_id: str, card_id: str) -> bool:
@@ -242,6 +319,17 @@ async def after_turn(work_id: str, card_id: str, *, _hops: int = 0,
         logger.warning("[auto] 空转兜底异常 work=%s card=%s: %s",
                        work_id, card_id, exc)
     if will_continue(work_id, card_id):
+        await _bump_rounds(work_id, card_id)
+        kick(work_id, card_id)
+        return
+    # [6702 移植 2026-10-17 · 等子卡恢复] 本卡能起轮但**不该起**（父卡让位），
+    # 或本卡已终止——先判本卡是否属「等子卡挂起中」：是 ⇒ 恢复 active **再**点火。
+    # ★ 顺序不可反：``kick`` 自己判 ``goal_state != active → 不起``，先 kick 会被
+    #   自己的前置判据挡掉；故必须「先 update_card 改回 active，再 kick」。
+    if wake_verdict(work_id, card_id) == WAKE_PAUSED:
+        if not await _resume_awaiting(work_id, card_id):
+            return
+        meta = _meta(work_id, card_id)     # 重读：计轮与起轮都按恢复后的新 meta 走
         await _bump_rounds(work_id, card_id)
         kick(work_id, card_id)
         return

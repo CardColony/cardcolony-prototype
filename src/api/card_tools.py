@@ -515,9 +515,21 @@ async def _h_update_goal(work_id: str, current_id: str,
                        "若确实答不了，用 update_goal(blocked, reason=...) 说明卡在哪——"
                        "blocked 后系统会把你的理由自动通知发问方，不是沉默。")
 
+    # [6702 移植 2026-10-17 · P4 · 等子卡恢复位] **仅 pause** 且**当时仍有未终止子卡**
+    # ⇒ 置位 ``goal_await_children=1``，把「模型主动 pause 等子卡」与「用户按停」区分开
+    # （两者都只写 goal_state=paused，光看 goal_state 不可区分）。
+    # 判据取「声明这一刻」的子卡状态（与 after_turn 的唤醒判据同源），落库即固定。
+    # 无未终止子卡的 pause ⇒ 显式落 0（「不做了」，不是「等子卡」）；其余动作
+    # （complete/blocked）**一个字都不改**（既有收口闸逐字不变）。
+    # 显式 ``await_children`` 参数与 ``goal_await_wakes`` 计数见后续批次（P5/P6）。
+    fields: dict[str, Any] = {"goal_state": state}
+    if action == "pause":
+        from . import auto_driver      # 局部 import（同本模块既有延迟引用手法）
+        fields["goal_await_children"] = (
+            1 if auto_driver.has_active_child(work_id, current_id) else 0)
     note = f"[自动模式] 模型声明 {action}" + (f"：{reason}" if reason else "")
     res = await card_store.update_card(
-        work_id, current_id, {"goal_state": state}, note)
+        work_id, current_id, fields, note)
     if isinstance(res, dict) and res.get("error"):
         return err("internal", str(res["error"]))
 
