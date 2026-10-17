@@ -38,6 +38,7 @@ const T = {
   unavailable: "会话不可用",
   parentOffline: "父会话已离线，无法继续发送；仍可停止当前运行",
   steerQueue: "Cmd/Ctrl+Enter 插话发送全部排队消息",
+  runningPlaceholder: "运行中 · 回车加入队列",
   stop: "停止生成",
   send: "发送消息",
 };
@@ -216,9 +217,12 @@ export function createInputBar({ mount, actions, policy, session, hasQueued, not
       ? typeof actions.stop !== "function"
       : isEmpty() || disabled || machineBusy();
     // 占位符优先级（原文 :709-718）：不可用 > 整队插话提示 > 默认
+    /* 运行中仍可输入（"Running input stays free"），但输入框必须说清「打进去会进队列」，
+       否则用户以为发出的是一条新消息、结果是排队，行为与预期不符。 */
     ta.placeholder = disabled
       ? (s.parentOffline ? T.parentOffline : T.unavailable)
-      : (canSteerQueue() ? T.steerQueue : T.defaultPlaceholder);
+      : (canSteerQueue() ? T.steerQueue
+        : (s.running ? T.runningPlaceholder : T.defaultPlaceholder));
   }
 
   function onPrimary() {

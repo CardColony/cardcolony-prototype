@@ -38,12 +38,12 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=35";
+import { API } from "./esm/api.js?v=36";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { createAssembler } from "./esm/assembler.js?v=35";
-import { createChatView } from "./esm/flow/chat-view.js?v=2";
+import { createChatView } from "./esm/flow/chat-view.js?v=3";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
@@ -462,11 +462,16 @@ const BOARD_CFG = Object.assign(
     return out;
   }
 
-  /** 工具参数摘要（dsh ToolRow 的 FILL 截断摘要）。 */
+  /** 工具参数摘要（dsh ToolRow 的 FILL 截断摘要）。
+      正文类字段不参与摘要：把 content 摊在工具行里既读不懂、又把真正的
+      关键参数（path / card_id / title）挤没了。 */
+  const ARG_SKIP = new Set(["content", "body", "text", "mission", "status_block", "rulings", "requirements", "prompt"]);
   function argSummary(args) {
     if (!args || typeof args !== "object") return "";
-    const parts = Object.keys(args).map(k => k + "=" + args[k]);
-    return clip(parts.join(" "), 80);
+    const parts = Object.keys(args)
+      .filter((k) => !ARG_SKIP.has(k))
+      .map((k) => k + "=" + args[k]);
+    return clip(parts.join(" "), 76);
   }
 
   /** 工具结果一句话摘要（折叠态可见；完整内容点开才看——dsh 两段式）。 */
@@ -481,7 +486,9 @@ const BOARD_CFG = Object.assign(
     }
     if (Array.isArray(d.files) && d.files.length) return d.files.length + " 个文件";
     if (Array.isArray(d.items) && d.items.length) return d.items.length + " 条";
-    const rk = Object.keys(d).filter(k => k !== "ok" && typeof d[k] !== "object" && d[k] !== "" && d[k] != null);
+    const META_KEYS = new Set(["ok", "tool", "target", "card_id", "tool_call_id", "call_id", "duration", "at", "ts"]);
+    const rk = Object.keys(d).filter(k =>
+      !META_KEYS.has(k) && typeof d[k] !== "object" && d[k] !== "" && d[k] != null);
     return rk.length ? clip(rk.map(k => k + "=" + d[k]).join(" "), 100) : (ok ? "完成" : "失败");
   }
 
@@ -509,13 +516,19 @@ const BOARD_CFG = Object.assign(
     if (!hasResult) {
       sub.innerHTML = '<span class="mk run">调用中</span>';
     } else {
-      sub.innerHTML = '<span class="mk ' + (ok ? "ok" : "no") + '">' + (ok ? "✓" : "✗") + "</span>" +
+      sub.innerHTML = '<span class="mk ' + (ok ? "ok" : "no") + '" title="' + (ok ? "成功" : "失败") + '"></span>' +
         (node.duration ? esc((node.duration / 1000).toFixed(1) + "s") : "");
     }
-    const sum = document.createElement("div");
-    sum.className = "tool-sum";
-    sum.textContent = resultSummary(res, hasResult, ok);
-    row.appendChild(sum);
+    /* 结果摘要：只有**有实质内容**时才占第二行。
+       全是「完成」的工具行（read_card/edit_card 这些）若每个都挂一行「完成」，
+       工具区会变成一片 48px 的空壳卡片——状态点在第一行已经说了。 */
+    const summary = resultSummary(res, hasResult, ok);
+    if (summary !== "完成" && summary !== "失败" && summary !== "调用中…") {
+      const sum = document.createElement("div");
+      sum.className = "tool-sum";
+      sum.textContent = summary;
+      row.appendChild(sum);
+    }
     // 完整内容：默认折叠（点整行展开）
     const body = document.createElement("div");
     body.className = "tool-body" + (ok ? "" : " err");
@@ -579,6 +592,12 @@ const BOARD_CFG = Object.assign(
     renderUserHtml: (text) => (_msgRenderers.userHtml ? _msgRenderers.userHtml(text) : esc(text)),
   });
 
+  function withDate(node, elOrEls) {
+    if (!node || !node.__showDate) return elOrEls;
+    const div = dateDivider(node.ts);
+    return [div].concat(Array.isArray(elOrEls) ? elOrEls : [elOrEls]);
+  }
+
   function renderUser(node) {
     const row = _messageItem.renderUser(node);
     if (node.pending) row.classList.add("is-pending");   // 乐观上屏未认领
@@ -604,8 +623,13 @@ const BOARD_CFG = Object.assign(
       const text = bubble ? bubble.innerText : "";
       if (!text) return;
       const done = () => {
+        const old = copyBtn.innerHTML;
         copyBtn.classList.add("is-ok");
-        setTimeout(() => copyBtn.classList.remove("is-ok"), 1500);
+        copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6.5"/></svg>';
+        setTimeout(() => {
+          copyBtn.classList.remove("is-ok");
+          copyBtn.innerHTML = old;
+        }, 1400);
       };
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(done, () => { /* 静默 */ });
@@ -635,21 +659,21 @@ const BOARD_CFG = Object.assign(
       actions.appendChild(reBtn);
     }
 
-    row.appendChild(actions);
-    return row;
+    /* 挂进气泡容器而不是行容器：行是全宽 flex 列，挂行上只能排在气泡下方，
+       会**永久占掉 24px**（hover 只是把它变透明），于是每条用户消息下面都多一段空。
+       挂进 .flow-user-stack（宽度＝气泡宽度）后可用 right:100% 贴到气泡左侧，零占位。 */
+    const stack = row.querySelector(".flow-user-stack");
+    (stack || row).appendChild(actions);
+    return withDate(node, row);
   }
 
-  /** 时刻文案（用户消息 hover 用）：今天 HH:MM，否则 M/D HH:MM。 */
+  /** 时刻文案（用户消息 hover 用）：只给 HH:MM，日期由分隔线承担。 */
   function fmtClock(ts) {
     if (!ts) return "";
     const d = new Date(ts);
     if (isNaN(d.getTime())) return "";
-    const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
-    const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
-    const same = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() &&
-      d.getDate() === now.getDate();
-    return same ? hm : (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
+    return pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
   function renderAssistant(node) {
     const el = _msgRenderers.assistant(node);
@@ -659,7 +683,7 @@ const BOARD_CFG = Object.assign(
       const think = makeThink(node.reasoning, { done: true });
       if (md) el.insertBefore(think, md); else el.appendChild(think);
     }
-    return el;
+    return withDate(node, el);
   }
   function renderCardMsg(node) { return _msgRenderers.cardmsg(node); }
 
@@ -745,10 +769,53 @@ const BOARD_CFG = Object.assign(
   }
 
   /** 全量快照：复用既有座位与既有元素，只建缺的、只换变了的。 */
+  /* ── 日期分隔 ──────────────────────────────────────────────────────────
+     跨天的会话没有日期锚，用户翻到中间不知道「这是哪天说的」。
+     在装配快照上按节点 ts 标一个 __showDate（同一天只在首个节点显示），
+     渲染层据它前置一条分隔线。标记打在节点上而不是 DOM 上：
+     实时增量只重建单行时，标记仍然在，不会因为重建而丢。 */
+  function dayKey(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return "";
+    return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate();
+  }
+
+  function dayLabel(ts) {
+    const d = new Date(ts);
+    const now = new Date();
+    const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (same(d, now)) return "今天";
+    const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    if (same(d, y)) return "昨天";
+    if (d.getFullYear() === now.getFullYear()) return (d.getMonth() + 1) + "月" + d.getDate() + "日";
+    return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日";
+  }
+
+  function markDates(snap) {
+    let prev = "";
+    for (const k of snap.order) {
+      const n = snap.nodes.get(k);
+      if (!n) continue;
+      const d = dayKey(n.ts);
+      n.__showDate = !!d && d !== prev;
+      if (d) prev = d;
+    }
+  }
+
+  function dateDivider(ts) {
+    const el = document.createElement("div");
+    el.className = "date-divider";
+    el.innerHTML = "<span></span>";
+    el.firstChild.textContent = dayLabel(ts);
+    return el;
+  }
+
   function renderSnapshot(st, snap) {
     const v = viewOf(st);
     const total = snap.order.length;
     const start = winStartOf(st, total);
+    markDates(snap);
     const win = snap.order.slice(start);
     v.render(win, revGetter(snap));
     v.paintOlder();
@@ -832,6 +899,7 @@ const BOARD_CFG = Object.assign(
   /** 激活某会话：把它的画板挂到 #chatArea，并把上一个会话的画板摘下为游离节点
       （装配状态、组视图、滚动位置全留——不重建）。**同步执行**：点下去画板立刻翻页。 */
   function activate(wid, cid) {
+    const prevKey = activeKey;
     const key = skey(wid, cid);
     const st = ensureRun(wid, cid);
     const ca = chatEl();
@@ -858,6 +926,8 @@ const BOARD_CFG = Object.assign(
     }
     activeKey = key;
     st.lastUsed = Date.now();
+    // 换卡（prevKey 非空且不同）：整块淡入，明确「这是另一张卡」
+    if (prevKey && st.view && typeof st.view.playEnter === "function") st.view.playEnter();
     return st;
   }
 
@@ -1306,6 +1376,11 @@ export const EventFlow = {
   // [画板四机制 T1] 会话表对外两口：activate＝把某卡画板挂上 #chatArea（open 用）；
   // board＝取某卡自己的容器（workspace 把系统行写进该卡那份，不再写全局唯一列）。
   activate, board,
+  /* [对话界面商业化 2026-10-17] 停止过渡态：停止指令已发、回合尚未收口。 */
+  setStopping(wid, cid, bool) {
+    const st = sessions.get(skey(wid, cid));
+    if (st && st.view && typeof st.view.setStopping === "function") st.view.setStopping(bool);
+  },
   // [画板四机制 T3] 释放扫描 ＋ 常驻键只读探针（供取证/联调；不改任何语义）。
   sweepSessions, residentKeys: () => Array.from(sessions.keys()),
   /* [对话界面商业化 2026-10-17] 最后一个 assistant 节点的 seq。

@@ -121,3 +121,77 @@ export function initSearchClear() {
     sync();
   });
 }
+
+/* ---------------------------------------------------------------------------
+   全局快捷键与浮层键盘可达性
+   ---------------------------------------------------------------------------
+   · Cmd/Ctrl+K 聚焦左栏搜索（全站最常见的「跳转」手势）
+   · Esc 逐层关闭：弹窗 → 通知面板 → 窄屏抽屉（先关最上面那层，不一把全关）
+   · Tab 在弹窗内循环（不逃到背景），背景元素对键盘不可达
+   --------------------------------------------------------------------------- */
+export function initShortcuts() {
+  document.addEventListener("keydown", (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+
+    // Cmd/Ctrl+K：聚焦搜索
+    if (mod && !e.shiftKey && String(e.key).toLowerCase() === "k") {
+      const input = document.getElementById("navSearchInput");
+      if (input && input.offsetParent !== null) {
+        e.preventDefault();
+        input.focus();
+        input.select();
+        return;
+      }
+    }
+
+    // Esc：逐层关闭
+    if (e.key === "Escape") {
+      const modal = document.querySelector(".draft-modal.open");
+      if (modal) {
+        const x = modal.querySelector(".draft-modal-close");
+        if (x) x.click();
+        else modal.classList.remove("open");
+        return;
+      }
+      const np = document.getElementById("notifyPanel");
+      if (np && getComputedStyle(np).display !== "none") {
+        np.classList.remove("open");
+        np.style.display = "none";
+        return;
+      }
+      if (document.body.classList.contains("nav-open")) {
+        document.body.classList.remove("nav-open");
+        return;
+      }
+    }
+
+    // Enter / 空格：激活左栏行（div 有 tabindex/role=button，但不响应默认键盘）
+    if ((e.key === "Enter" || e.key === " ") && e.target && e.target.classList) {
+      const t = e.target;
+      if (t.classList.contains("nav-card") || t.classList.contains("nav-phead")) {
+        e.preventDefault();
+        t.click();
+        return;
+      }
+    }
+
+    // Tab：弹窗内循环
+    if (e.key === "Tab") {
+      const modal = document.querySelector(".draft-modal.open");
+      if (!modal) return;
+      const list = Array.from(modal.querySelectorAll(
+        'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])'
+      )).filter((el) => el.offsetParent !== null);
+      if (!list.length) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      const inside = modal.contains(document.activeElement);
+      if (e.shiftKey) {
+        if (!inside || document.activeElement === first) { e.preventDefault(); last.focus(); }
+      } else if (!inside || document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  });
+}

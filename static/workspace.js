@@ -4,22 +4,22 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=35";
+import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=39";
+import { EventFlow } from "./stream.js?v=41";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=35";
+import { notify, postStop } from "./esm/api.js?v=36";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=33";
+import { createNavSystem } from "./esm/nav_system.js?v=34";
 import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=31";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
 import { ComposerSubmissionPolicy } from "./esm/flow/submission-policy.js?v=1";
-import { createInputBar } from "./esm/flow/input-bar.js?v=2";
+import { createInputBar } from "./esm/flow/input-bar.js?v=3";
 import { createQueueStore } from "./esm/flow/queue-store.js?v=1";
 import { createQueueDock } from "./esm/flow/queue-dock.js?v=1";
 
@@ -750,9 +750,15 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       const body = el.querySelector(".md");
       const text = body ? body.innerText : "";
       copyText(text).then(() => {
+        const old = copyBtn.innerHTML;
         copyBtn.classList.add("is-ok");
         copyBtn.title = "已复制";
-        setTimeout(() => { copyBtn.classList.remove("is-ok"); copyBtn.title = "复制这条回复"; }, 1500);
+        copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6.5"/></svg>';
+        setTimeout(() => {
+          copyBtn.classList.remove("is-ok");
+          copyBtn.title = "复制这条回复";
+          copyBtn.innerHTML = old;
+        }, 1400);
       });
     };
     actions.appendChild(copyBtn);
@@ -823,23 +829,15 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     return fallback();
   }
 
-  /** 时间文案：今天 HH:MM／昨天 HH:MM／M月D日 HH:MM（跨年补年份）。
-      入参为事件 ts（ISO 串或空）。空 ⇒ 返回空串（调用方不渲染，不猜）。 */
+  /** 时间文案：只给 HH:MM。
+      日期由消息流里的「日期分隔线」统一承担（同一天只在首个节点出现一次），
+      每条消息再带一遍日期就是重复信息——实测一屏里会出现三个「10月4日」。 */
   function fmtMsgTime(ts) {
     if (!ts) return "";
     const d = new Date(ts);
     if (isNaN(d.getTime())) return "";
-    const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
-    const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
-    const sameDay = d.getFullYear() === now.getFullYear() &&
-      d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
-    if (sameDay) return hm;
-    const yest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-    if (d.getFullYear() === yest.getFullYear() && d.getMonth() === yest.getMonth() &&
-        d.getDate() === yest.getDate()) return "昨天 " + hm;
-    if (d.getFullYear() === now.getFullYear()) return (d.getMonth() + 1) + "月" + d.getDate() + "日 " + hm;
-    return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + hm;
+    return pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
 
   // [对话区会话流样式 2026-10-12] 统一内容列：卡片内所有消息/过程行都进同一条
@@ -1212,9 +1210,19 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       : ((navStore.select.get() || {}).cid || "");
     if (!cardId) { notify("没有正在查看的卡", "warn"); return; }
     try {
+      /* 先置过渡态再发请求：中止缝在 step 边界，从「点下」到「真正停住」
+         有一段真实等待，这段必须表达出来（否则用户会重复点、以为坏了）。 */
+      try { EventFlow.setStopping(WORK_ID, cardId, true); } catch (e0) { /* 零阻断 */ }
       await postStop(WORK_ID, cardId);
-      notify("已发送停止指令", "warn");
-    } catch (e) { notify("停止指令失败", "error"); }
+      notify("正在停止…", "info");
+      // 兜底：8 秒仍未收口则撤掉过渡态（避免卡在「正在停止」）
+      setTimeout(() => {
+        try { EventFlow.setStopping(WORK_ID, cardId, false); } catch (e0) { /* 零阻断 */ }
+      }, 8000);
+    } catch (e) {
+      try { EventFlow.setStopping(WORK_ID, cardId, false); } catch (e0) { /* 零阻断 */ }
+      notify("停止指令失败", "error");
+    }
   }
 
   /* ═══ [对话流照抄 dsh 完全版 v3] 输入系统装配 ═══

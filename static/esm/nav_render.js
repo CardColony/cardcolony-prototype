@@ -23,7 +23,7 @@
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=35";
+import { notify } from "./api.js?v=36";
 import { createRowModel } from "./row_model.js?v=30";
 import { createVirtualList } from "./nav_virtual.js?v=30";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=30";
@@ -150,6 +150,8 @@ export function createNavRenderer(deps) {
     const p = row.card;
     const el = document.createElement("div");
     el.className = "nav-phead";
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
     el.dataset.wid = p.work_id;
     el.dataset.root = p.work_card_id || "";
     el.title = p.title || "";
@@ -187,6 +189,8 @@ export function createNavRenderer(deps) {
     const c = row.card;
     const el = document.createElement("div");
     el.className = "nav-card";
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
     el.dataset.cid = c.card_id;
     el.dataset.wid = row.wid;
     el.dataset.depth = String(row.depth);
