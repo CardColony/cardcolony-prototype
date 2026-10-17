@@ -115,7 +115,12 @@ const WORK_ID = window.__WORK_ID__;
   // ==================== 应用变换 ====================
   function applyTransform() {
     world.style.transform = `translate(${state.view.panX}px, ${state.view.panY}px) scale(${state.view.zoom})`;
-    zoomDisplay.textContent = Math.round(state.view.zoom * 100) + "%";
+    const pct = Math.round(state.view.zoom * 100);
+    if (zoomDisplay) zoomDisplay.textContent = pct + "%";
+    // 滑块由视图态单向驱动（用户拖滑块时不回写，避免与输入打架）
+    if (zoomSlider && document.activeElement !== zoomSlider) {
+      zoomSlider.value = String(Math.min(200, Math.max(25, pct)));
+    }
     updateLOD();
     scheduleMinimap();   // [画布商业化] 视口框随变换实时跟随
   }
@@ -1256,34 +1261,35 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   function bindNodeEvents(node, card) {
-    let clickTimer = null;
 
     // [T08-3-1] ▸/▾ 徽章单击＝展开/折叠该卡子树（原语义为下钻 setViewRoot，已改）
     const badge = node.querySelector(".kid-badge");
     if (badge) {
       badge.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        e.preventDefault();
         toggleExpand(card.card_id);
       });
     }
 
+    // [画布商业化 2026-10-17 · 修硬伤] 单击＝选中、双击＝进入。
+    //
+    // ⚠ 这里**不能**用「setTimeout 模拟双击」：上一版用 200ms 窗口，
+    //   而人手正常双击间隔是 250–350ms ⇒ 绝大多数双击被当成两次单击，
+    //   **永远进不去对话页**（实测：间隔 300ms 完全无效，只有 80ms 才生效）。
+    //   改为浏览器原生 dblclick（由系统双击速度判定，通常 500ms），
+    //   单击立即选中（第一击就选中，第二击触发 dblclick）——永远不会"进不去"。
     node.addEventListener("click", (e) => {
       if (node.classList.contains("dragging")) return;
       if (Date.now() < suppressClickUntil) return;
-      const additive = e.shiftKey || e.metaKey || e.ctrlKey;
-      if (clickTimer) {
-        // 双击：进入这张卡（Alt+双击＝画布内下钻，原语义保留在修饰键上）
-        clearTimeout(clickTimer);
-        clickTimer = null;
-        onDoubleClick(card, { drill: e.altKey });
-        return;
-      }
-      // 双击判定窗口 200ms：120ms 太短，手慢的人双击会被当成两次单击
-      clickTimer = setTimeout(() => {
-        clickTimer = null;
-        onSingleClick(card, additive);
-      }, 200);
+      onSingleClick(card, e.shiftKey || e.metaKey || e.ctrlKey);
+    });
+
+    node.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (Date.now() < suppressClickUntil) return;
+      onDoubleClick(card, { drill: e.altKey });
     });
 
     // 拖拽
@@ -1419,8 +1425,8 @@ const WORK_ID = window.__WORK_ID__;
       hideTooltip();
     });
 
-    // L2 进入时懒加载摘要
-    node.addEventListener("dblclick", (e) => e.preventDefault());
+    // （原此处有一个 `dblclick → preventDefault()` 的空监听：它会与上面真正的
+    //  双击进入监听抢事件，已随本次改造删除。）
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1666,6 +1672,40 @@ const WORK_ID = window.__WORK_ID__;
     else state.view.expanded.add(cardId);
     scheduleSaveView();   // [F2⑥] 展开态持久化
     renderSubtree(cardId);   // [画布第三步 T4 → 画布重构 2.1] 增量入口
+    // [画布商业化 2026-10-17] 展开后新卡片很可能落在视口外（实测 39 卡全展开时
+    // 有 9 张在视口外），用户会以为"点了没反应/卡丢了"。只在**确实超出**时
+    // 才整幅适配一次；没超出就保持用户当前视野不动。
+    requestAnimationFrame(() => {
+      // 只关心「这张卡 + 它刚展开的直接子卡」这一簇：视野跟着**正在操作的分支**走，
+      // 而不是把整张图缩到能装下（那会把用户正在看的卡缩没——实测全展开时 fit 到 48%）。
+      const cluster = [cardId, ...(state.index.childMap[cardId] || []).map((c) => c.card_id)];
+      const boxes = cluster.map((id) => nodeMap.get(id)).filter(Boolean);
+      if (!boxes.length) return;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const n of boxes) {
+        const x = parseFloat(n.style.left) || 0;
+        const y = parseFloat(n.style.top) || 0;
+        minX = Math.min(minX, x); minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + (n.offsetWidth || 220));
+        maxY = Math.max(maxY, y + (n.offsetHeight || 120));
+      }
+      const z0 = state.view.zoom;
+      const vx0 = (0 - state.view.panX) / z0, vy0 = (0 - state.view.panY) / z0;
+      const vx1 = (viewport.clientWidth - state.view.panX) / z0;
+      const vy1 = (viewport.clientHeight - state.view.panY) / z0;
+      const over = minX < vx0 - 24 || minY < vy0 - 24 || maxX > vx1 + 24 || maxY > vy1 + 24;
+      if (!over) return;
+      // 优先「只平移」保住当前缩放；这一簇本身比视口还大时才按比例缩到刚好放下。
+      const pad = 48;
+      const availW = Math.max(80, viewport.clientWidth - pad * 2);
+      const availH = Math.max(80, viewport.clientHeight - pad * 2);
+      const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+      const z = Math.max(0.25, Math.min(z0, availW / w, availH / h));
+      const panX = pad + (availW - w * z) / 2 - minX * z;
+      const panY = pad + (availH - h * z) / 2 - minY * z;
+      applyViewState({ panX, panY, zoom: z });
+      scheduleSaveView();
+    });
   }
 
   function setViewRoot(newRoot) {
@@ -1782,7 +1822,13 @@ const WORK_ID = window.__WORK_ID__;
     edgesSvg.appendChild(pcG);
     const pcFrag = document.createDocumentFragment();
     for (const seg of elbowSegs) {
-      pcFrag.appendChild(makeEdgePath(seg.x1, seg.y1, seg.x2, seg.y2, "#5b8cff", "1.8", seg));
+      const path = makeEdgePath(seg.x1, seg.y1, seg.x2, seg.y2, "#5b8cff", "1.8", seg);
+      // [画布商业化 2026-10-17] 按父卡深度递减线宽与不透明度：全展开时 200+ 条边
+      // 同权重会糊成一片（截图实测）。近根的主干保持醒目，深层枝节退为背景。
+      const d = vm.depthOf ? (vm.depthOf[seg.from] || 0) : 0;
+      if (d >= 2) { path.setAttribute("stroke-width", "1.4"); path.setAttribute("opacity", "0.55"); }
+      else if (d >= 1) { path.setAttribute("stroke-width", "1.6"); path.setAttribute("opacity", "0.8"); }
+      pcFrag.appendChild(path);
     }
     pcG.appendChild(pcFrag);
     console.info(`[T08] 父子线：绘制 ${elbowSegs.length} 条（可见卡 ${visibleIds.size} 张）`);
@@ -2033,6 +2079,43 @@ const WORK_ID = window.__WORK_ID__;
         }
       }
     }
+  }
+
+  // ==================== 缩放控件（−/＋/滑块/百分比） ====================
+  //
+  // [画布商业化 2026-10-17 · 修硬伤] 这三个控件在模板里一直都在，但**没有任何
+  // JS 绑定**：style.css 的注释还写着"由 canvas.js syncZoomControls 按值同步"，
+  // 而 canvas.js 里 `zoomInBtn / zoomOutBtn / zoomSlider / syncZoomControls`
+  // 全部零命中（grep 实测）。⇒ 用户点 ＋/− 毫无反应、拖滑块毫无反应。
+  // 这是"交互走不通"的直接来源之一，本次补回：
+  //   −/＋  每按一次 ±25%（用户 2026-10-16 裁定的档位口径）
+  //   滑块  25% 档位吸附，拖动即缩放（锚点＝视口中心）
+  //   百分比 点击 = 回到 100%
+  const zoomInBtn = document.getElementById("zoomInBtn");
+  const zoomOutBtn = document.getElementById("zoomOutBtn");
+  const zoomSlider = document.getElementById("zoomSlider");
+
+  function setZoomTo(z, anchorX, anchorY) {
+    const rect = viewport.getBoundingClientRect();
+    const ax = anchorX === undefined ? rect.left + rect.width / 2 : anchorX;
+    const ay = anchorY === undefined ? rect.top + rect.height / 2 : anchorY;
+    zoomAtPoint(ax, ay, z);
+  }
+
+  if (zoomInBtn) zoomInBtn.onclick = () => setZoomTo(state.view.zoom * 1.25);
+  if (zoomOutBtn) zoomOutBtn.onclick = () => setZoomTo(state.view.zoom / 1.25);
+  if (zoomSlider) {
+    zoomSlider.addEventListener("input", () => {
+      setZoomTo(Number(zoomSlider.value) / 100);
+    });
+    // 松手后把视图态回写给滑块（拖到 37% 会被吸附到最近档，避免显示与状态不一致）
+    zoomSlider.addEventListener("change", () => {
+      zoomSlider.value = String(Math.round(state.view.zoom * 100));
+    });
+  }
+  if (zoomDisplay) {
+    zoomDisplay.title = "点击回到 100%";
+    zoomDisplay.onclick = () => setZoomTo(1);
   }
 
   // ==================== 视口交互（缩放/平移/框选） ====================
