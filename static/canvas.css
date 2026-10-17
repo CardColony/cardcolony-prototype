@@ -555,6 +555,20 @@
   margin: 0 2px;
 }
 
+/* 规则面板可收起：画布是主角，340px 的常驻右栏在小屏上等于砍掉两成画布。
+   收起后宽度归零（内容 display:none，不留空壳），入口在工具栏的 panel 图标。 */
+.page-canvas .rule-panel {
+  transition: width 180ms var(--cv-ease), border-color 180ms var(--cv-ease);
+}
+.page-canvas .rule-panel.is-collapsed {
+  width: 0;
+  border-left-color: transparent;
+}
+.page-canvas .rule-panel.is-collapsed .rule-panel-body,
+.page-canvas .rule-panel.is-collapsed .rule-panel-head {
+  display: none;
+}
+
 /* ==========================================================================
    五、小地图 / 空态 / 提示
    ========================================================================== */
@@ -585,6 +599,26 @@
   border-radius: 3px;
   background: var(--cv-accent-soft);
   pointer-events: none;
+}
+
+/* 加载骨架：首屏 200–900ms 的空窗期不能只给一行"加载中…"——
+   骨架卡让用户先看到"这里会长出卡片"，观感比转圈稳。 */
+.page-canvas .cv-skeleton {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.page-canvas .cv-sk-card {
+  position: absolute;
+  border-radius: var(--cv-r-lg);
+  background: linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.07), rgba(255,255,255,0.03));
+  background-size: 200% 100%;
+  border: 1px solid var(--cv-line-1);
+  animation: cv-sk-shimmer 1.4s linear infinite;
+}
+@keyframes cv-sk-shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -80% 0; }
 }
 
 /* 空态：无任何卡片时（挂在 .canvas-state-box 里，两者都是 inset:0 居中布局） */

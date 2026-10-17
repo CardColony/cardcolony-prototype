@@ -1554,14 +1554,15 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   // 聚焦到选中卡（画布内"飞过去"）：不改变视图根，只把视口对准它。
-  function focusCard(cardId) {
+  function focusCard(cardId, opts) {
     const node = nodeMap.get(cardId);
     if (!node) return;
     const x = parseFloat(node.style.left) || 0;
     const y = parseFloat(node.style.top) || 0;
     const w = node.offsetWidth || 220;
     const h = node.offsetHeight || 120;
-    const z = Math.max(state.view.zoom, 0.9);
+    // 键盘连续导航时不改缩放（否则每按一次方向键视野就跳一下）
+    const z = (opts && opts.keepZoom) ? state.view.zoom : Math.max(state.view.zoom, 0.9);
     const vw = viewport.clientWidth, vh = viewport.clientHeight;
     applyViewState({
       panX: vw / 2 - (x + w / 2) * z,
@@ -2254,6 +2255,30 @@ const WORK_ID = window.__WORK_ID__;
       openCardChat(ids[0]);
       return;
     }
+    // 方向键在卡片树里移动选择：← 上溯父卡、→ 下钻首个子卡、↑↓ 兄弟卡之间移动。
+    // 选中的同时把视口带过去（keepZoom：导航不该改缩放）。
+    if (ids.length === 1 && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+      e.preventDefault();
+      const cur = ids[0];
+      const card = state.index.cardMap[cur] || {};
+      let next = null;
+      if (e.key === "ArrowLeft") next = card.parent || null;
+      else if (e.key === "ArrowRight") {
+        const kids = state.index.childMap[cur] || [];
+        next = kids.length ? kids[0].card_id : null;
+      } else {
+        const sibs = state.index.childMap[card.parent || ""] || [];
+        const i = sibs.findIndex((c) => c.card_id === cur);
+        const j = e.key === "ArrowUp" ? i - 1 : i + 1;
+        if (i >= 0 && sibs[j]) next = sibs[j].card_id;
+      }
+      if (next && state.index.cardMap[next]) {
+        selectOnly(next);
+        focusCard(next, { keepZoom: true });
+      }
+      return;
+    }
+
     if (e.key === "Tab") {
       // Tab 新建：选中一张卡 ⇒ 在它下面建子卡（结构操作的最高频动作）；
       // 未选中 ⇒ 建一张顶层卡。与右键菜单同一实现，不另造路径。
@@ -2428,11 +2453,35 @@ const WORK_ID = window.__WORK_ID__;
 
   if (newCardBtn) newCardBtn.onclick = () => openNewCardDialog(null);
 
-  // [画布商业化 2026-10-17] 工具栏两个新入口（元素在 work.html，id 固定）
+  // [画布商业化 2026-10-17] 工具栏新入口（元素在 work.html，id 固定）
   const fitBtn = document.getElementById("fitBtn");
   const searchBtn = document.getElementById("searchBtn");
+  const ruleToggleBtn = document.getElementById("ruleToggleBtn");
+  const rulePanelEl = document.getElementById("rulePanel");
   if (fitBtn) fitBtn.onclick = () => doFitAll();
   if (searchBtn) searchBtn.onclick = () => openPalette();
+
+  // 规则面板收起/展开：状态记 localStorage（跨刷新保持），切换后画布宽度变了，
+  // 小地图与 fit 都要跟着重算——否则视口框和内容位置会错位。
+  const RULE_COLLAPSE_KEY = "canvas.ruleCollapsed:" + WORK_ID;
+  function applyRuleCollapsed(collapsed) {
+    if (!rulePanelEl) return;
+    rulePanelEl.classList.toggle("is-collapsed", !!collapsed);
+    try { localStorage.setItem(RULE_COLLAPSE_KEY, collapsed ? "1" : "0"); } catch (e) { /* 隐私模式 */ }
+    // 宽度过渡 180ms 结束后再重算，避免量到中间态
+    setTimeout(() => { scheduleMinimap(); }, 200);
+  }
+  if (rulePanelEl) {
+    let collapsed = false;
+    try { collapsed = localStorage.getItem(RULE_COLLAPSE_KEY) === "1"; } catch (e) { /* 忽略 */ }
+    if (collapsed) rulePanelEl.classList.add("is-collapsed");
+  }
+  if (ruleToggleBtn) {
+    ruleToggleBtn.onclick = () => {
+      const next = !(rulePanelEl && rulePanelEl.classList.contains("is-collapsed"));
+      applyRuleCollapsed(next);
+    };
+  }
 
   // ==================== 右键菜单 ====================
   //
@@ -2817,7 +2866,14 @@ const WORK_ID = window.__WORK_ID__;
       const b = box.querySelector("#csRetry");
       if (b) b.onclick = () => { box.innerHTML = `<div class="cs-loading">加载中…</div>`; reloadCanvas(); };
     } else if (kind === "loading") {
-      box.innerHTML = `<div class="cs-loading">加载中…</div>`;
+      // 骨架屏：与真实布局同构的 5 块占位（根卡＋两列子卡），微光扫过。
+      box.innerHTML = `<div class="cv-skeleton">
+        <div class="cv-sk-card" style="left:7%;top:34%;width:300px;height:150px"></div>
+        <div class="cv-sk-card" style="left:33%;top:16%;width:210px;height:136px"></div>
+        <div class="cv-sk-card" style="left:33%;top:56%;width:210px;height:136px"></div>
+        <div class="cv-sk-card" style="left:54%;top:16%;width:210px;height:136px"></div>
+        <div class="cv-sk-card" style="left:54%;top:56%;width:210px;height:136px"></div>
+      </div>`;
     } else if (kind === "empty") {
       // [画布商业化 2026-10-17] 空态从"一句话"升级为"标题＋两条入口"：
       // 空画布是用户第一次见到这个产品的地方，要告诉他下一步做什么。
