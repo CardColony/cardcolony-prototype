@@ -283,7 +283,10 @@ const BOARD_CFG = Object.assign(
       case "step_advanced": {
         const done = d.all_done;
         out.push(makeSubRow(node.type,
-          (done ? "全部步骤完成，计划收口" : "步 " + esc(d.step_id || "") + " 完成") +
+          /* step_id 不编进主文案：它已在本行细节里（fld step_id），主文案再说一遍
+             「步 step_x 完成」＝同一句要在两处出现，且主文案还被更多人看到。 */
+          (done ? "全部步骤完成，计划收口" : "步骤完成") +
+          fld("step_id", d.step_id) +
           fld("criteria_met", d.criteria_met) + fld("all_done", d.all_done) +
           fld("result", d.result) + fld("next_prompt", d.next_prompt),
           '<span class="mk ok">✓</span>' + (done ? "收口" : "→ 下一步"),

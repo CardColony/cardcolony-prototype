@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=41";
+import { EventFlow } from "./stream.js?v=42";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=36";
@@ -1028,9 +1028,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     try {
       const resp = await API.postMessage(WORK_ID, cardId, content, op);
-      setTimeout(() => EventFlow.stop(WORK_ID, cardId), 2500);   // 让 done 帧送达后收流
+      // [对话界面商业化 2026-10-17] 流与整轮同寿：POST 是同步的（等整轮结束），
+      // 2.5s 就收流＝把中间过程全丢在自己手里，只剩事后一次性全量上屏。
+      // 改为 resync 对账之后再收（见下方）。
       // [C1 单源] 回复正文走 timeline 回流（与刷新同一条渲染路）
       await EventFlow.resync(WORK_ID, cardId);
+      // 对账后再收流：resync 置 settled，此后的残帧不入装配。留 1.5s 让 done 帧到齐。
+      setTimeout(() => EventFlow.stop(WORK_ID, cardId), 1500);
       // [更新现状按钮改造] 先等规则审批窗（同 DOM，防叠开），再按 op 开现状对比窗。
       if (window.__maybeOpenRuleEditModal) await window.__maybeOpenRuleEditModal(cardId);
       if (statusOp && window.__maybeOpenStatusModal) window.__maybeOpenStatusModal(cardId);
@@ -1119,7 +1123,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         catch (e) { return false; }
       })();
       if (r && r.ok && r.done && grew) {
-        setTimeout(() => EventFlow.stop(WORK_ID, cardId), 2500);
+        setTimeout(() => EventFlow.stop(WORK_ID, cardId), 1500);
         const note = document.createElement("div");
         note.className = "sys-tools";
         note.textContent = "⚠ 响应连接中断，已从事件流恢复回复（若有新卡片，返回画布后可见）";
@@ -1185,9 +1189,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         throw new Error(errText.error || ("HTTP " + httpResp.status));
       }
       await httpResp.json();
-      setTimeout(() => EventFlow.stop(WORK_ID, cardId), 2500);
-      // [C1 单源] 同 send()：回复正文走 timeline 回流，不从响应体直接上屏。
+      // [对话界面商业化 2026-10-17] 同 send()：流跟整轮同寿（POST 同步返回），
+      // 2.5s 就收流＝中间过程全丢，只剩事后一次性全量上屏。对账之后再收。
       await EventFlow.resync(WORK_ID, cardId);
+      setTimeout(() => EventFlow.stop(WORK_ID, cardId), 1500);
       if (window.__maybeOpenRuleEditModal) window.__maybeOpenRuleEditModal(cardId);
     } catch (e) {
       const err = document.createElement("div");
