@@ -286,16 +286,43 @@ async def _make_tree(wid):
     return card_store.iter_card_metas(wid)
 
 
+def _face(card_id: str, meta: dict) -> list[str]:
+    """按合成卡面取工具面（钉「常规面 vs auto 面」的分叉，不依赖沙箱）。"""
+    return [t["name"] for t in card_tools.build_tool_schemas(
+        card_id, "work_x", {card_id: dict(meta, card_id=card_id)})]
+
+
 async def test_t1_tool_registered():
-    # [12:34 定性] 发信不是通用工具：已从模型工具面摘出，保留为流程专用内部接口
-    assert "send_card_message" not in card_tools.TOOL_REGISTRY
-    # 薄壳内部接口存在且可调（流程代码的唯一发信入口）
+    # [12:34 定性·语义保留] 发信**不是通用工具**：常规模型工具面不含它——
+    # 普通卡（含全权限的 sub_project）依旧无权发信，流程仍是发信主体。
+    # [自动模式 2026-10-17 · 回灌 5700 G2 · 愿景「模型要能用卡片间通信完成
+    #  任务」] 自动模式卡是**显式例外**：作为 AUTO_ONLY_TOOLS 成员，只在
+    #  auto_mode=1 的卡上条件下发（同 update_goal 手法），执行层仍走
+    #  _h_send_card_message 六道门槛。
+    # ⇒ 判据从「不在注册表」改为「不在常规面／只在 auto 面」，钉的是同一条
+    #   不变量：**非自动模式的模型无权发信**；同时新增钉住 auto 面确有此能力。
+    assert "send_card_message" in card_tools.TOOL_REGISTRY      # 注册＝为了条件下发
+    assert "send_card_message" in card_tools.AUTO_ONLY_TOOLS    # 只经 auto 面追加
+    full = list(card_tools.policy.SWITCHES)
+    normal = _face("c_norm", {"card_type": "sub_project", "auto_mode": 0,
+                              "perms": full, "perms_version": 5, "parent": ""})
+    assert "send_card_message" not in normal, "常规卡面必须不含发信（12:34 裁定不破）"
+    assert "read_inbox" not in normal, "常规卡面必须不含 read_inbox"
+    auto = _face("c_auto", {"card_type": "sub_project", "auto_mode": 1,
+                            "perms": full, "perms_version": -1, "parent": ""})
+    assert {"send_card_message", "read_inbox"} <= set(auto), "auto 面须有自主通信能力"
+    # 薄壳内部接口存在且可调（流程代码的发信入口）
     assert callable(getattr(card_tools, "send_card_message", None))
 
 
 def test_t2_schema_enum_reads_registry():
-    # [12:34 定性] 模型侧 schema 已随注册条目摘除；「加类型零代码」语义保留在函数体校验层
-    assert "send_card_message" not in card_tools.TOOL_REGISTRY
+    # [12:34 定性·语义保留] 常规模型面不含发信 schema（见 t1 的常规/auto 分叉断言）；
+    # 「加类型零代码」语义保留在函数体校验层
+    assert "send_card_message" in card_tools.AUTO_ONLY_TOOLS  # 只在 auto 面下发
+    full = list(card_tools.policy.SWITCHES)
+    normal = _face("c_norm2", {"card_type": "sub_project", "auto_mode": 0,
+                               "perms": full, "perms_version": 5, "parent": ""})
+    assert "send_card_message" not in normal
     # 类型可拓展（11:44）：注册表现读、函数体校验层每次现读（type_codes）
     # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done）
     assert list(card_msg.type_codes()) == ["msg_ask", "msg_answer", "msg_notify",

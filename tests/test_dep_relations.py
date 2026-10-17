@@ -174,8 +174,8 @@ def test_b2_tool_table_and_versions():
     列 OP_ONLY_TOOLS、不进常规工具面）；TOOL_TABLE_VERSION tools-tc-7 → tools-tc-8。
     """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    assert src.count('": ToolDef(') == 23  # [自动模式 2026-10-17 · 块0.4] 22→23（+update_goal）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-9"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
+    assert src.count('": ToolDef(') == 25  # [自动模式 2026-10-17 · G2] 23→25（+send_card_message/read_inbox）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-10"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
     assert prompts.BASE_PROMPT_VERSION == "t22-1"
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY
