@@ -129,25 +129,46 @@ async def stop_auto(work_id: str, card_id: str) -> dict[str, Any]:
     from . import serial_gate
 
     paused: list[str] = []
+    cleared_await: list[str] = []
     for cid in _auto_subtree(work_id, card_id):
         m = card_store._meta_of(work_id, cid) or {}
         if not bool(m.get("auto_mode")):
             continue
-        if str(m.get("goal_state") or "") != "active":
-            continue
+        was_active = str(m.get("goal_state") or "") == "active"
+        raw_await = m.get("goal_await_children")
         try:
-            await card_store.update_card(
-                work_id, cid, {"goal_state": "paused"},
-                "[自动模式] 停止：关自动继续",
-            )
-            paused.append(cid)
+            has_await = int(raw_await or 0) != 0
+        except (TypeError, ValueError):
+            has_await = bool(raw_await)
+        if not was_active and not has_await:
+            continue        # 既不用置 paused、也没等待意图 ⇒ 逐字维持原 no-op
+        # [6702 移植 · 红线] 用户按停优先：``goal_await_children`` 是模型自己声明的
+        # 「我在等子卡」意图，用户一按停就作废——之后子卡再完工也绝不唤醒本卡。
+        # ★ 不能只清「被本次置 paused 的卡」：按停时可能已有一张 paused 且标志位=1
+        #   的卡（模型先 pause 等子卡，用户随后按停），沿用原跳过分支它的等待意图
+        #   就永远留着，子卡一完工便复活——那才是真红线破口。
+        fields: dict[str, Any] = {}
+        note = ""
+        if was_active:
+            fields["goal_state"] = "paused"
+            note = "[自动模式] 停止：关自动继续"
+        if has_await:
+            fields["goal_await_children"] = 0
+            note = (note + " ｜ " if note else "") + "取消「等子卡」等待意图（用户按停优先）"
+        try:
+            await card_store.update_card(work_id, cid, fields, note)
+            if was_active:
+                paused.append(cid)
+            if has_await:
+                cleared_await.append(cid)      # 成功后才记（失败不谎报已清）
         except Exception as exc:  # noqa: BLE001 停不动不抛（停止路径必须走完）
             logger.warning("[control] 关自动继续失败 work=%s card=%s: %s",
                            work_id, cid, exc)
     released = serial_gate.release_work(work_id)
-    if paused or released:
+    if paused or cleared_await or released:
         session_ops.ops_log("auto_stop", work_id, card_id,
-                            {"paused": paused, "lock_released": released})
-    logger.info("[control] 自动模式停止 work=%s card=%s paused=%s released=%s",
-                work_id, card_id, paused, released)
+                            {"paused": paused, "lock_released": released,
+                             "cleared_await": cleared_await})
+    logger.info("[control] 自动模式停止 work=%s card=%s paused=%s released=%s cleared_await=%s",
+                work_id, card_id, paused, released, cleared_await)
     return {"paused": paused, "lock_released": released}
