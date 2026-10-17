@@ -103,6 +103,16 @@ def _conclusion_summary(status_block: str) -> str:
     return first_line
 
 
+#: canvas.json 投影结构版本。**加/删/改投影字段必须 +1**。
+#:
+#: 为什么必须有这个版本号：canvas.json 是缓存，``load()`` 命中就直接返回，
+#: 从不比对结构。实测缺口——给投影加了 ``state`` / ``updated_at`` 之后，
+#: 存量 work 的旧 canvas.json 里没有这两个键，``load()`` 原样返回 ⇒ 画布上
+#: 「已完成」徽标与更新时间**永远不出现**，且没有任何报错。版本号让
+#: "缓存是旧结构的"这件事变成可判定的事实，命中时自动重建。
+CANVAS_SCHEMA_VERSION = 2
+
+
 def rebuild(work_id: str) -> dict[str, Any]:
     """全量重建 work 的 canvas.json 并写盘，返回结果字典。
 
@@ -129,7 +139,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
         # [依赖关联线 2026-10-16] 画布本期只用**通信线**：原 relations 列已改名
         # links（新线 relations 不进画布——用户裁定「画布展示本次不做」）。
         return [dict(r) for r in conn.execute(
-            "SELECT card_id, title, card_type, parent, created_at,"
+            "SELECT card_id, title, card_type, parent, created_at, updated_at, state,"
             " links, status_block FROM cards ORDER BY card_id"
         )]
 
@@ -144,6 +154,11 @@ def rebuild(work_id: str) -> dict[str, Any]:
             "card_type": row["card_type"] or "线索",
             "parent": row["parent"] or "",
             "created_at": row["created_at"] or "",
+            # [画布商业化 2026-10-17] 状态与更新时间随画布一次到手：
+            #   状态用于卡片视觉分层（已完成/进行中），更新时间用于卡面底部元信息。
+            #   两者都是纯增量字段——旧前端不读即不受影响。
+            "state": row["state"] or "",
+            "updated_at": row["updated_at"] or "",
             # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
             # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
             "conclusion_summary": _conclusion_summary(row["status_block"] or ""),
@@ -167,6 +182,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
     result = {
         "project_name": PROJECT_NAME,
         "work_id": work_id,
+        "schema_version": CANVAS_SCHEMA_VERSION,
         "created_at": created_at,
         "cards": cards,
         "links": links,
@@ -192,6 +208,12 @@ def load(work_id: str) -> dict[str, Any]:
     try:
         data = json.loads(canvas_path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
+            # 结构版本不符 ⇒ 旧缓存，重建（不是"缺字段就算了"——缺字段会让前端
+            # 静默降级，比报错更难发现）。
+            if int(data.get("schema_version") or 0) != CANVAS_SCHEMA_VERSION:
+                logger.info("canvas.json 结构版本过期（%s≠%s），触发重建 work=%s",
+                            data.get("schema_version"), CANVAS_SCHEMA_VERSION, work_id)
+                return rebuild(work_id)
             return data
         logger.warning("canvas.json 内容非法，触发重建 work=%s", work_id)
     except FileNotFoundError:
