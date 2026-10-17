@@ -22,11 +22,17 @@
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=32";
+import { RenderNav } from "./esm/nav_system.js?v=33";
 import { notify } from "./esm/api.js?v=35";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
-const WORK_ID = window.__WORK_ID__;
+/* [惰性新建 2026-10-17] WORK_ID 由 const 改 let：草稿态（/work/draft）点「＋新项目」
+ * 在本页 replaceState 就地进草稿；草稿落库成功后就地换真 work_id——本模块所有闭包
+ * （reloadCanvas/建卡/点卡/坐标持久化）引用同一绑定，随取随新，无需整页跳转。
+ * 同步写 window.__WORK_ID__：nav_system / rule_panel 按 live 读，落库后不失准。 */
+let WORK_ID = window.__WORK_ID__;
+/* 草稿态判据：URL=/work/draft（模板注入 WORK_ID="draft"）或本页点＋进入草稿。 */
+let IS_DRAFT = (WORK_ID === "draft");
 /* [阶段3 A3.2 2026-10-17] 双页拆分后 canvas.js 仍会经 workspace.js 的 reloadCanvas
  * import 被**对话页**间接加载（阶段4 才摘这条边）。对话页没有画布 DOM ⇒ 本模块
  * 顶层事件绑定一律空守卫、渲染函数遇空 viewport 自然空转，整体降级为惰性。 */
@@ -38,6 +44,9 @@ const WORK_ID = window.__WORK_ID__;
   const zoomDisplay = document.getElementById("zoomDisplay");
   const reorganizeBtn = document.getElementById("reorganizeBtn");
   const newCardBtn = document.getElementById("newCardBtn");
+  // [惰性新建 2026-10-17] 左栏「＋ 新项目」（画布页）。此前该钮 DOM 在场、处理器却
+  // 留在 workspace.js（对话页模块），画布页点它无反应（拆页执行记录 §4.2 已注明）。
+  const navNewProjectBtn = document.getElementById("navNewProject");
 
   // 画布状态（[画布第三步 T3] 五桶分家：数据／索引／视图／导航／异步——V4 结构断言口径）。
   // 数据 cards/links/positions；索引 cardMap/childMap（派生，rebuildCardMap 重建）；
@@ -900,7 +909,10 @@ const WORK_ID = window.__WORK_ID__;
   // [画布第三步 T2] 面包屑链改吃投影（computeBreadcrumb 派生，投影.breadcrumb）——
   // 本函数只渲染＋绑点击，不再上溯 state（V1）
   function renderBreadcrumb(breadcrumb) {
+    if (!crumbEl) return;   // [阶段3] 非画布页无面包屑容器
     const chain = breadcrumb;
+    // [惰性新建 2026-10-17] 草稿项目：无卡链，面包屑改挂「未保存」标。
+    if (IS_DRAFT) { crumbEl.innerHTML = `<span class="cur">新项目 · <span class="draft-badge">未保存</span></span>`; return; }
     const parts = [];
     for (let i = 0; i < chain.length; i++) {
       const c = chain[i];
@@ -1719,6 +1731,7 @@ const WORK_ID = window.__WORK_ID__;
     patchTimer = setTimeout(flushPatches, 500);
   }
   async function flushPatches() {
+    if (IS_DRAFT) { for (const k in pendingPatches) delete pendingPatches[k]; return; }  // [D6] 草稿：无真 work，不落坐标
     const patch = { ...pendingPatches };
     for (const k in pendingPatches) delete pendingPatches[k];
     if (Object.keys(patch).length === 0) return;
@@ -1729,6 +1742,7 @@ const WORK_ID = window.__WORK_ID__;
 
   // ==================== 整理画布 ====================
   if (reorganizeBtn) reorganizeBtn.onclick = async () => {
+    if (IS_DRAFT) { renderAll(); return; }   // [D6] 草稿：无卡可整理、无真 work 可落坐标
     // 把当前视图所有卡 pinned 置 false
     const visibleIds = getVisibleIds();
     const patch = {};
@@ -1744,6 +1758,11 @@ const WORK_ID = window.__WORK_ID__;
     renderAll();          // [画布第三步 T4] 改 state → 统一重绘入口
   };
 
+  // ==================== [惰性新建 2026-10-17] 左栏「＋ 新项目」（画布页） ====================
+  // 就地进草稿项目态：零 POST、零 GET、不整页跳转（顺带治「新建 = POST + 整页跳转
+  // 2.5–3s」）。对话页的同名钮由 workspace.js 接线（那页无画布 ⇒ 走整页加载 /work/draft）。
+  if (navNewProjectBtn) navNewProjectBtn.onclick = () => enterDraftProject();
+
   // ==================== 新建卡 ====================
   if (newCardBtn) newCardBtn.onclick = () => {
     // 内联输入
@@ -1753,8 +1772,11 @@ const WORK_ID = window.__WORK_ID__;
       <input type="text" id="newCardTitle" placeholder="卡片标题" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px;">
       <select id="newCardType" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px;">
         <!-- [T07-2-1] 类型退役：建卡入口可选列表去掉四个废弃类型名（裁定 D-06：
-             名字留白名单、只关新建入口；存量卡不受影响） -->
-        <option value="线索">线索</option>
+             名字留白名单、只关新建入口；存量卡不受影响）。
+             [惰性新建 2026-10-17] 原唯一选项「线索」是 legacy 且 write_blocked=true
+             ⇒ POST /cards 必 400（既有缺陷）。改为空串＝后端按本树 project_class 映射，
+             与卡详情建子卡同一口径（底座收口 T5.c）。 -->
+        <option value="">自动（按树映射）</option>
       </select>
       <div style="display:flex;gap:6px;">
         <button class="btn primary" id="newCardOk" style="flex:1;">创建</button>
@@ -1764,17 +1786,20 @@ const WORK_ID = window.__WORK_ID__;
     document.body.appendChild(node);
     const titleInput = node.querySelector("#newCardTitle");
     titleInput.focus();
-    const submit = async () => {
+    const submit = () => {
       const title = titleInput.value.trim();
       if (!title) { API.toast("请输入标题", "error"); return; }
       const ctype = node.querySelector("#newCardType").value;
+      node.remove();   // ★ 立刻关弹窗——不等任何网络
+      // [惰性新建 2026-10-17 · 治建卡延迟] **先出画面，数据后到**：
+      // 提交标题立刻跳进这张卡的对话画面（零等待、零 POST）；落库由对话页**后台立刻发起**。
+      // 标题/父卡/类型经 sessionStorage 一次性携带（跳页清空内存；URL 只承担页面身份）。
       try {
-        const r = await API.createCard(WORK_ID, { title, source: "用户直接创建", card_type: ctype, parent: state.nav.viewRoot });
-        node.remove();
-        await reloadCanvas();
-        RenderNav();   // [T17] 新卡同步进导航树
-        notify("卡片已创建", "success");   // [F3④]
-      } catch (e) { notify("建卡失败", "error"); }   // [F3④] 原静默
+        sessionStorage.setItem("newCard:" + WORK_ID, JSON.stringify({
+          title, parent: state.nav.viewRoot || "", card_type: ctype,
+        }));
+      } catch (e) { /* 存储不可用：退化为默认标题，不阻断跳转 */ }
+      location.assign("/work/" + WORK_ID + "/card/draft");
     };
     node.querySelector("#newCardOk").onclick = submit;
     node.querySelector("#newCardCancel").onclick = () => node.remove();
@@ -1784,8 +1809,67 @@ const WORK_ID = window.__WORK_ID__;
     };
   };
 
+  // ==================== [惰性新建 2026-10-17] 草稿项目态 ====================
+  // 点「＋新项目」→ 就地进草稿（URL=/work/draft，**零 POST、零 GET**）：清空画布数据、
+  // 渲染空画布、面包屑挂「草稿」标。此后任何数据动作（建卡 / 规则卡保存）先走落库
+  // 序列 persistDraftProject()。刷新 /work/draft → 模块重载 → 重新进草稿空态（草稿蒸发）。
+  function enterDraftCanvas() {
+    state.data.cards = [];
+    state.data.links = [];
+    state.data.positions = {};
+    state.nav.workCardId = "";
+    state.nav.workTitle = "";
+    state.nav.viewRoot = "";
+    state.index.cardMap = {};
+    state.index.childMap = {};
+    nodeMap.clear();
+    summaryCache.clear();
+    // 清掉上一项目遗留的卡节点/连线（renderCanvas 只按 nodeMap 增量，不会删陈旧 DOM）
+    if (world) world.querySelectorAll(".card-node").forEach((n) => n.remove());
+    if (edgesSvg) edgesSvg.innerHTML = "";
+    renderAll();                 // 空数据 → 空画布（不拉库）
+    showCanvasState("empty");    // 复用空态容器（文案见 showCanvasState）
+  }
+
+  function enterDraftProject() {
+    if (IS_DRAFT) return;        // 已在草稿态：幂等
+    IS_DRAFT = true;
+    WORK_ID = "draft";
+    window.__WORK_ID__ = "draft";
+    __VIEW_RESTORED__ = true;    // 草稿不恢复旧视图态（projView:draft 无意义）
+    history.replaceState(null, "", "/work/draft");
+    enterDraftCanvas();
+    try { RenderNav(); } catch (e) { /* 零阻断 */ }
+  }
+
+  // [D3] 草稿项目落库序列：带锁（落库中并发触发复用同一 Promise，绝不两次 POST）。
+  // 失败：Promise 拒绝 → 调用方 toast 报错、保持草稿态、动作不执行、现场保留、可重试。
+  let _draftPersistPromise = null;
+  async function persistDraftProject() {
+    if (!IS_DRAFT) return WORK_ID;                 // 非草稿：真 work_id 原样返回
+    if (_draftPersistPromise) return _draftPersistPromise;   // 落库中：排队复用
+    _draftPersistPromise = (async () => {
+      const w = await API.createWork("新项目");     // 缺省标题（草稿期无项目名编辑入口）
+      const wid = w.work_id;
+      IS_DRAFT = false;
+      WORK_ID = wid;
+      window.__WORK_ID__ = wid;                    // nav/rule live 读，落库后随取随新
+      history.replaceState(null, "", "/work/" + wid);
+      return wid;
+    })();
+    try {
+      return await _draftPersistPromise;
+    } finally {
+      _draftPersistPromise = null;                 // 成功/失败都解锁（失败可重试）
+    }
+  }
+  // 供 rule_panel.js（跨模块）在草稿态保存规则区前调用：先把项目落库。
+  window.__draftEnsurePersisted = () => persistDraftProject();
+
   // ==================== 数据加载 ====================
   async function reloadCanvas() {
+    // [D6 草稿守卫] 草稿态：不查库、零网络——直接出空画布（否则 GET /canvas 打 draft → 404）。
+    if (IS_DRAFT) { enterDraftCanvas(); return; }
     showCanvasState("loading");   // [F3④]
     try {
       const data = await API.getCanvas(WORK_ID);
@@ -1845,7 +1929,9 @@ const WORK_ID = window.__WORK_ID__;
     } else if (kind === "loading") {
       box.innerHTML = `<div class="cs-loading">加载中…</div>`;
     } else if (kind === "empty") {
-      box.innerHTML = `<div class="cs-empty">这张画布还没有卡片——点右上「＋ 新建卡」开始。</div>`;
+      box.innerHTML = IS_DRAFT
+        ? `<div class="cs-empty">新项目（未保存）——点右上「＋ 新建卡」开始；<br>发第一条消息或保存任何数据时才真正创建项目。</div>`
+        : `<div class="cs-empty">这张画布还没有卡片——点右上「＋ 新建卡」开始。</div>`;
     }
   }
 
@@ -1947,6 +2033,7 @@ const WORK_ID = window.__WORK_ID__;
   // [迭代四 F4④] 未读角标数据面：拉 K4 端点 unread_by_card → 更新徽章；
   // 收件方自己的键上监听 SSE card_message 帧增量（分键 A21）；60s 轮询兜底。
   async function refreshUnread() {
+    if (IS_DRAFT) return;   // [D6] 草稿：无真 work，不打 card-messages（否则 404）
     try {
       const r = await fetch(`/api/works/${WORK_ID}/card-messages?limit=200`);
       if (!r.ok) return;
@@ -1973,10 +2060,14 @@ const WORK_ID = window.__WORK_ID__;
       }
     } catch (e) { /* 展示层零阻断 */ }
   }
-  try {
-    const es = new EventSource(`/api/works/${WORK_ID}/cards/${WORK_ID}/stream`);
-    es.addEventListener("card_message", () => refreshUnread());
-    es.onerror = () => { /* SSE 断开静默，轮询兜底 */ };
-  } catch (e) { /* EventSource 不可用零阻断 */ }
-  setInterval(refreshUnread, 60000);
-  refreshUnread();
+  // [惰性新建 2026-10-17 · D6] 草稿态不建 SSE、不轮询未读（无真 work，会打 404）。
+  // 草稿落库后由 reloadCanvas 走真路径；未读角标在整页加载时自然恢复。
+  if (!IS_DRAFT) {
+    try {
+      const es = new EventSource(`/api/works/${WORK_ID}/cards/${WORK_ID}/stream`);
+      es.addEventListener("card_message", () => refreshUnread());
+      es.onerror = () => { /* SSE 断开静默，轮询兜底 */ };
+    } catch (e) { /* EventSource 不可用零阻断 */ }
+    setInterval(refreshUnread, 60000);
+    refreshUnread();
+  }

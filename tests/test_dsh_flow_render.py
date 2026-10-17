@@ -197,10 +197,14 @@ def test_t6_touched_modules_bumped():
       [左栏新建项目 2026-10-16] 涉改 workspace.js（左栏按钮接线）、esm/nav_render.js（删空态死链）
       ⇒ nav_render.js 30→31、workspace.js 37→39（并因 import 链联动 canvas.js 36→38、
       `esm/main.js` 37.0→38.0）。nav.css 内容变 ⇒ 其 ?v= 升 12（本断言不含 nav.css，
-      由唯一性用例兜底）；home.css 只删规则 ⇒ 其 ?v= 升 1.1。"""
+      由唯一性用例兜底）；home.css 只删规则 ⇒ 其 ?v= 升 1.1。
+      [惰性新建 2026-10-17] 涉改 workspace.js / canvas.js / rule_panel.js / nav_system.js /
+      home.js ⇒ workspace 44→45、canvas 42→43、rule_panel 30→31、nav_system 32→33、home 1.1→1.2；
+      import 链联动 `esm/main.js` 42.0→43.0、`esm/main_chat.js` 1.1→1.2；
+      nav.css 加 .draft-badge ⇒ 12→13（唯一性用例兜底）。"""
     vm = _version_map()
-    expect = {"stream.js": "36", "workspace.js": "44", "canvas.js": "42",
-              "assembler.js": "34", "style.css": "37", "main.js": "42.0",
-              "main_chat.js": "1.1"}
+    expect = {"stream.js": "36", "workspace.js": "45", "canvas.js": "43",
+              "assembler.js": "34", "style.css": "37", "main.js": "43.0",
+              "main_chat.js": "1.2"}
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"

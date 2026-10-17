@@ -17,9 +17,14 @@ let _renderNavImpl = () => {};
 export const RenderNav = () => _renderNavImpl();
 
 export function createNavSystem({ workId, navTree, api, getCurrentCard, open, inspector }) {
-  const WORK_ID = workId;              // 别名：搬运段原文用 WORK_ID / API，装配期绑定
   const API = api;
   const cur = () => getCurrentCard();  // 搬运段原文的 currentCard（只读）
+  // [惰性新建 2026-10-17] 当前 work_id 改**惰性读**：草稿落库成功后 window.__WORK_ID__
+  // 就地更新（画布/对话页写），本模块的跳转/建卡/通知口须随取随新——原 const 捕获在
+  // 落库后失准（跳转会退回整页重载、通知口打草稿 id → 404）。INIT_WORK_ID 是创建
+  // 状态容器/渲染器/查找器/面包屑时注入的一次性初值（它们的 workId 为局部查找用）。
+  const WID = () => window.__WORK_ID__;
+  const INIT_WORK_ID = workId;
 
   // ==================== [T17-F4] 左栏对话导航（读 /api/nav，服务端排序原样渲染） ====================
   // 层级口径（R-016/R-044，写死）：项目根卡＝第 0 层恒定；与画布 state.viewRoot 的
@@ -27,13 +32,13 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // [S2] 原四个导航裸状态变量退役：
   // 状态收进三层容器（temp/prefs/select/snapshot，state_layers.js），渲染走
   // nav_render.js（mount/unmount/patch 三原语 + 虚拟滚动），展开态持久化进偏好层。
-  const navStore = createNavStateStore({ workId: WORK_ID });
+  const navStore = createNavStateStore({ workId: INIT_WORK_ID });
   const navAsync = createNavAsync(navStore, API);
   const navRenderer = createNavRenderer({
     tree: navTree,
     store: navStore,
     api: API,
-    workId: WORK_ID,
+    workId: INIT_WORK_ID,
     async: navAsync,
     getCardId: () => (cur() ? cur().meta.card_id : ""),
   });
@@ -43,7 +48,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   const navFind = createNavFind({
     input: document.getElementById("navSearchInput"),
     store: navStore,
-    workId: WORK_ID,
+    workId: INIT_WORK_ID,
     onJump: (wid, cid) => gotoCard(cid, wid, false),   // 复用 R-20 叶子跳转路径
     onQuery: (q) => {
       navStore.temp.setQuery(q);
@@ -55,7 +60,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     box: document.getElementById("navCrumbBox"),
     el: document.getElementById("navCrumb"),
     store: navStore,
-    workId: WORK_ID,
+    workId: INIT_WORK_ID,
     getTree: () => navTree,
     onJump: (wid, cid) => gotoCard(cid, wid, false),
     vl: navRenderer.vl,
@@ -104,7 +109,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
 
   function gotoCard(cid, wid, focusChild) {
     if (!cid) return;
-    if (wid && wid !== WORK_ID) {
+    if (wid && wid !== WID()) {
       // 跨项目：整页跳转，目标 work 页走既有 restoreFromHash 链恢复（V8）
       window.location.href = "/work/" + wid + "#" + cid;
       return;
@@ -140,7 +145,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     // 项目行删除恒置灰：card_store 拒删根卡（card_id == work_card_id，403 语义），
     // 提前置灰＝把后端既有防护搬到眼前，不是新规矩。画布入口仍在顶栏面包屑首段（根卡名）。
     const items = [];
-    if (!isProject && wid !== WORK_ID) items.push(`<div class="nav-menu-item" data-act="detail">打开此卡</div>`);
+    if (!isProject && wid !== WID()) items.push(`<div class="nav-menu-item" data-act="detail">打开此卡</div>`);
     items.push(`<div class="nav-menu-item danger${delDisabled ? " disabled" : ""}" data-act="del">删除</div>`);
     navMenuEl = document.createElement("div");
     navMenuEl.className = "nav-menu";
@@ -178,10 +183,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   }
 
   function handleProjectAdd(wid) {
-    if (wid === WORK_ID) {
+    if (wid === WID()) {
       const btn = document.getElementById("newCardBtn");   // 画布页顶栏建卡对话框
       if (btn) btn.click();
-      else location.assign("/work/" + WORK_ID);            // [阶段3] 对话页无建卡钮：回画布页建
+      else location.assign("/work/" + WID());            // [阶段3] 对话页无建卡钮：回画布页建
     } else {
       window.location.href = "/work/" + wid;               // 跨项目：去该项目画布再建
     }
@@ -208,7 +213,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // 折叠记忆自动存（prefs 天然持久化）。
   function collapseAllKeepPath() {
     const sel = navStore.select.get();
-    const curWid = (sel && sel.wid) || WORK_ID;
+    const curWid = (sel && sel.wid) || WID();
     const curCid = (sel && sel.cid) || (cur() ? cur().meta.card_id : "");
     const pathIds = new Set(ancestorCards(navStore.snapshot, curWid, curCid).map(c => c.card_id));
     if (curCid && !navStore.prefs.getProjectOpen(curWid)) {
@@ -224,7 +229,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // 滚到当前卡可视区（scrollTop = headerH + 行前缀和 top − 吸顶盖高）。
   function locateCurrentCard() {
     const sel = navStore.select.get();
-    const wid = (sel && sel.wid) || WORK_ID;
+    const wid = (sel && sel.wid) || WID();
     const cid = (sel && sel.cid) || (cur() ? cur().meta.card_id : "");
     if (!cid) return;
     const snap = navStore.snapshot;
@@ -289,7 +294,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // 「展开/收起」只归箭头（data-twist，见下方委托），两个动作两个地方，行为不随数据变。
   function handleCardRowClick(rowEl) {
     const cid = rowEl.dataset.cid;
-    const wid = rowEl.dataset.wid || WORK_ID;
+    const wid = rowEl.dataset.wid || WID();
     // [S3/R-21/V3-A4] 先查后动：snapshot.project(wid) 在场且快照含该卡（cardInSnapshot，
     // nav_badge.js 纯函数，内部走 snapshot.project + cards 全量比对）才动作
     if (!cardInSnapshot(navStore.snapshot, wid, cid)) {
@@ -384,22 +389,25 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     const panel = document.getElementById("notifyPanel");
     const list = document.getElementById("npList");
     const count = document.getElementById("navNotifyCount");
-    const READ_KEY = `projMsgRead:${WORK_ID}`;
+    // [惰性新建 2026-10-17] 已读键改惰性函数：草稿落库后 work_id 变，键须随取随新。
+    const readKey = () => `projMsgRead:${WID()}`;
 
     // [S2/V-S5] 裸本地存储访问收口：经 state_layers 的 storage 包装（行为等价）
     function readMap() {
-      try { return JSON.parse(storageGet(null, READ_KEY, "{}") || "{}"); } catch (e) { return {}; }
+      try { return JSON.parse(storageGet(null, readKey(), "{}") || "{}"); } catch (e) { return {}; }
     }
     function writeRead(map) {
       try {
         const entries = Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 500);   // 上限 500 按 ts 淘汰
-        storageSet(null, READ_KEY, JSON.stringify(Object.fromEntries(entries)));
+        storageSet(null, readKey(), JSON.stringify(Object.fromEntries(entries)));
       } catch (e) { /* 零阻断 */ }
     }
 
     async function refreshBadge() {
+      // [D6] 草稿态：无真 work，不打 card-messages（否则 404）；落库后 WID() 变真，自然恢复。
+      if (WID() === "draft") { count.textContent = ""; count.className = "nav-notify-count"; return; }
       try {
-        const d = await API.getCardMessages(WORK_ID);
+        const d = await API.getCardMessages(WID());
         const unread = d.unread_by_card || {};
         const n = Object.keys(unread).length;
         count.textContent = n > 99 ? "99+" : n;
@@ -447,8 +455,9 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
 
     if (btn) btn.onclick = async () => {
       if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
+      if (WID() === "draft") { notify("项目尚未保存，暂无卡间消息", "warn"); return; }   // [D6] 草稿：不打 card-messages
       try {
-        const d = await API.getCardMessages(WORK_ID);
+        const d = await API.getCardMessages(WID());
         renderPanel(d.items || []);
         panel.classList.add("open");
         refreshBadge();
