@@ -9,9 +9,18 @@
  * workspace.js 的消费点自带 `window.GetCanvasState &&` 空守卫。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=35";
+import { API } from "./api.js?v=36";
 import "./util.js?v=30";
-import "../stream.js?v=38";
-import "../workspace.js?v=53";
+import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts } from "./theme.js?v=6";
+import "../stream.js?v=42";
+import "../workspace.js?v=56";
 
 window.API = API;   // 调试便利（非功能依赖；与 api.js 薄壳同属兼容层）
+
+/* [对话界面商业化 2026-10-17] 主题在装配前就位：先于 workspace 的首帧渲染，
+   避免「深色骨架 → 浅色内容」的闪变。 */
+initTheme();
+initProcToggle();
+initNavDrawer();
+initSearchClear();
+initShortcuts();

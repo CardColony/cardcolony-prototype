@@ -23,7 +23,7 @@
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=35";
+import { notify } from "./api.js?v=36";
 import { createRowModel } from "./row_model.js?v=30";
 import { createVirtualList } from "./nav_virtual.js?v=30";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=30";
@@ -150,6 +150,8 @@ export function createNavRenderer(deps) {
     const p = row.card;
     const el = document.createElement("div");
     el.className = "nav-phead";
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
     el.dataset.wid = p.work_id;
     el.dataset.root = p.work_card_id || "";
     el.title = p.title || "";
@@ -187,6 +189,8 @@ export function createNavRenderer(deps) {
     const c = row.card;
     const el = document.createElement("div");
     el.className = "nav-card";
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
     el.dataset.cid = c.card_id;
     el.dataset.wid = row.wid;
     el.dataset.depth = String(row.depth);
@@ -611,7 +615,13 @@ export function createNavRenderer(deps) {
 
   function render() {
     const rows = expandRows();
-    const empty = !((store.snapshot.get().projects || []).length);
+    const noProjects = !((store.snapshot.get().projects || []).length);
+    /* [对话界面商业化 2026-10-17] 搜索剪枝后一行不剩也是「空」：
+       此前只判「有没有项目」，搜不到东西时整片树空白、零反馈——静默失败。
+       两种空分开说：真没项目 vs 当前查询没命中。 */
+    const q = String((document.getElementById("navSearchInput") || {}).value || "").trim();
+    const noMatch = !noProjects && !!q && rows.length === 0;
+    const empty = noProjects || noMatch;
     if (empty) {
       if (!emptyEl) {
         emptyEl = document.createElement("div");
@@ -622,7 +632,9 @@ export function createNavRenderer(deps) {
            （与首页 #homeNewBtn 同一份 .home-new-project 实现），恒在、且真的建项目。
            此处只留空态文案。 */
         emptyEl.innerHTML = `还没有项目`;
+        emptyEl.dataset.kind = "projects";
       }
+      emptyEl.textContent = noMatch ? "没有匹配的卡" : "还没有项目";
       emptyEl.style.display = "";
       if (vl.spacer) vl.spacer.style.display = "none";
       return { count: 0 };

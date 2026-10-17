@@ -19,11 +19,11 @@
  *   V10 重绘入口唯一——改 state 后必经 renderAll（全量）/reflowAll（不重建）/
  *      applyViewState（视图变换），不存在改 state 后自行重绘或漏重绘的路径。
  */
-import { API } from "./esm/api.js?v=35";
+import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=33";
-import { notify } from "./esm/api.js?v=35";
+import { RenderNav } from "./esm/nav_system.js?v=34";
+import { notify } from "./esm/api.js?v=36";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
 /* [建项目流程 2026-10-17] 画布页恒对应一个**已落库**的项目：

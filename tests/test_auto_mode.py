@@ -798,7 +798,7 @@ def test_block5_auto_mark_in_source():
     css = (REPO / "static" / "style.css").read_text(encoding="utf-8")
     assert ".auto-badge" in css and ".auto-switch" in css, "style.css 缺 auto 样式"
     card_html = (REPO / "templates" / "card.html").read_text(encoding="utf-8")
-    assert "main_chat.js?v=2.0" in card_html
+    assert "main_chat.js?v=2.3" in card_html
     assert "style.css?v=40" in card_html
     work_html = (REPO / "templates" / "work.html").read_text(encoding="utf-8")
     assert "style.css?v=40" in work_html

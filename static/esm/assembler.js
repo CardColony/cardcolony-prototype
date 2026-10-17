@@ -261,6 +261,10 @@ export function createAssembler() {
     const base = {
       seq, ns, type, kind, round: toInt(rec.round, 0), run_id: runId,
       data, model: modelOf(rec, data), key: keyOf(ns, seq, kind),
+      /* [对话界面商业化 2026-10-17] 事件时间随节点走：落盘记录带 ts（ISO），
+         实时帧带 ts（秒 float，已由 frameToRecord 归一）。旧记录无 ts ⇒ 空串，
+         渲染层按「有则显示」处理，不做任何猜测性补值。 */
+      ts: String(rec.ts || ""),
     };
 
     if (kind === "user" || kind === "assistant" || kind === "cardmsg") {
@@ -278,6 +282,7 @@ export function createAssembler() {
           n.data = data;
           n.type = type;
           n.run_id = runId || n.run_id;
+          if (rec.ts) n.ts = String(rec.ts);
           n.rev++;
           return n;
         }

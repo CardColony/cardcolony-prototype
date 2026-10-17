@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -144,10 +145,22 @@ def last_seq(work_id: str, card_id: str) -> int:
 
 # ---------------------------------------------------------------- 记录归一化
 def _normalize(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, Any]:
-    """补齐七键骨架，data 非 dict 时原样装箱（绝不静默丢载荷）。"""
+    """补齐骨架字段，data 非 dict 时原样装箱（绝不静默丢载荷）。
+
+    [对话界面商业化 2026-10-17] 新增 ``ts``（ISO 8601 字符串）：
+    时间轴是对话界面的基本事实——没有它就做不了日期分隔、hover 时间、
+    消息排序的二次校验。此前只有 SSE 帧带 ``time.time()``（float，且只活在
+    内存），落盘记录零时间，刷新后时间信息整体丢失。
+
+    兼容口径：旧记录没有该键 ⇒ 读侧照原样返回（不补、不猜、不回填假值）；
+    新记录写入时由本函数补齐。前端按「有则显示、无则留白」渐进增强。
+    """
     data = record.get("data")
     if data is None:
         data = {}
+    ts = record.get("ts")
+    if not ts:
+        ts = datetime.now().astimezone().isoformat(timespec="milliseconds")
     out = {
         "seq": record.get("seq"),
         "card_id": record.get("card_id") or card_id,
@@ -156,6 +169,7 @@ def _normalize(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, 
         "type": record.get("type") or "",
         "data": data,
         "model": record.get("model") or "",
+        "ts": str(ts),
     }
     if not isinstance(out["data"], dict):
         out["data"] = {"value": out["data"]}
