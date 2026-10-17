@@ -53,6 +53,12 @@ ALLOWED_UPDATE_KEYS = {
     "mission", "status_block", "rulings",  # 正文三块·新键
     "conclusion", "rejections", "charter",  # 正文三块·旧键（兼容保留）
     "parent",
+    # [自动模式 2026-10-17 · 阶段2冒烟实测补漏] auto_mode 是**用户开关**（U1：
+    # 任何卡随时可切），前端 toggleAutoMode 经 PATCH {updates:{auto_mode}} 落库。
+    # 本集合漏了它 ⇒ 点击开关被 400「updates 含不允许的键」，开关整体不可用
+    # （移植自 Cardlo 时漏抄，冒烟抓到）。goal/goal_state/goal_rounds **不放**
+    # ——目标由消息/update_goal 设，不给用户直改通道。
+    "auto_mode",
 }
 # [phase8.3] status 二态已废除：PATCH 带 status 一律忽略（不报错）
 

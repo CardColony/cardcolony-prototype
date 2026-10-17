@@ -657,6 +657,10 @@ def render_judgment_region(ctx: RegionCtx) -> list[dict[str, Any]]:
       auto 卡屏蔽判断协议。非 auto 卡**逐字不变**（仍原样返回 ``request_once``）
       ——ND1 红线 11：全局思维链不进生产拆除名单，屏蔽面只有 auto 卡。
     """
+    # [纯单模型 2026-10-17] 关链：判断协议一律不注入
+    from ..thinkchain import enabled as _tc_enabled
+    if not _tc_enabled():
+        return []
     if bool((ctx.cur_meta or {}).get("auto_mode")):
         return []
     return ctx.request_once
