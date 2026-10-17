@@ -26,6 +26,12 @@ import { RenderNav } from "./esm/nav_system.js?v=34";
 import { notify } from "./esm/api.js?v=36";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
+// [画布商业化 2026-10-17] 首次自动适配：进项目时若没有视图存档，渲染后 fit 内容。
+// 为什么需要"pending"而不是渲染后 fit 一次就完：摘要走异步回填，回填改变卡高 →
+// scheduleReflow → 布局变长，一次性的 fit 会算在"矮版本"上，结果仍溢出。
+// 故 fit 挂在 reflow 之后重试，直到①内容稳定（一次 reflow 后不再变）或②用户动手。
+let _autoFitPending = false;
+let _userMoved = false;
 /* [建项目流程 2026-10-17] 画布页恒对应一个**已落库**的项目：
  * /work/draft 已改由对话模板承载（main.py 特判），本模块再无「就地草稿」态，
  * 因此 WORK_ID 回到 const、IS_DRAFT 整件退役（原惰性新建的草稿画布路径已删）。 */
@@ -62,6 +68,9 @@ const WORK_ID = window.__WORK_ID__;
     },
     view: {
       expanded: new Set(),  // Set<card_id> 已展开卡集合（F2⑥ 起持久化，非纯内存态）
+      // [画布商业化 2026-10-17] 选中集：**不持久化**（刷新即清空）——选择是瞬时视图态，
+      // 不是用户资产。放 view 桶而不是新开桶（V4 五桶结构不变）。
+      selected: new Set(),
       panX: 80, panY: 40, zoom: 1.0,
     },
     nav: {
@@ -87,6 +96,9 @@ const WORK_ID = window.__WORK_ID__;
   // 拖拽监听器只在拖拽期间存在——原来挂在 bindNodeEvents 函数体里无条件执行，等于每建
   // 一个节点就挂一对 document 监听器且从不卸载（removeEventListener 全文件零命中），越用越钝。
   let activeDragDetach = null;
+  // [画布商业化 2026-10-17] 拖拽后抑制补发的 click：浏览器在 mouseup 后必然补一个
+  // click，若不抑制，多选整组拖完会被 click 处理器重置成"只选中刚拖的那一张"。
+  let suppressClickUntil = 0;
 
   // [R1] 兜底：窗口失焦（如鼠标在窗口外松开、mouseup 收不到）时，取消当前拖拽并卸监听器。
   // 模块级注册一次，不随节点增长。
@@ -105,6 +117,7 @@ const WORK_ID = window.__WORK_ID__;
     world.style.transform = `translate(${state.view.panX}px, ${state.view.panY}px) scale(${state.view.zoom})`;
     zoomDisplay.textContent = Math.round(state.view.zoom * 100) + "%";
     updateLOD();
+    scheduleMinimap();   // [画布商业化] 视口框随变换实时跟随
   }
 
   // [画布第三步 T2] 档位判据的 zoom 改参数传入（V1：本函数在渲染 10 函数名单内；
@@ -115,8 +128,14 @@ const WORK_ID = window.__WORK_ID__;
     return "l1";
   }
 
-  function applyLODClasses(zoom) {
+  // [画布商业化 2026-10-17] 档位缓存：缩放时**只有跨档才遍历节点改 class**。
+  // 改前每次 wheel 都跑一遍全节点 classList.toggle（232 卡时实测缩放掉到 44fps）；
+  // 档位没变时 class 结果与上次完全一致，重刷是纯浪费。
+  let _lodApplied = "";
+  function applyLODClasses(zoom, force) {
     const level = currentLODLevel(zoom);
+    if (!force && level === _lodApplied) return level;
+    _lodApplied = level;
     for (const [cid, node] of nodeMap) {
       node.classList.remove("l0", "l1", "l2");
       node.classList.add(level);
@@ -402,18 +421,40 @@ const WORK_ID = window.__WORK_ID__;
     const kidsOf = (cid) =>
       ((cid === rootId && rootAlwaysOpen) || expanded.has(cid)) ? (childMap[cid] || []) : [];
 
-    // 后序：子树纵向跨度 = max(自身高, Σ子树跨度 + 间距)；seen 防脏数据成环
+    // [画布商业化 2026-10-17] 子卡超过 MAX_PER_COL 张时**分列折行**。
+    // 为什么：单列纵向排 6 张卡＝高度 1000px，视口装不下 → fit 后缩到 70% 字看不清。
+    // 分列后同一批卡占「2 列 × 3 行」，接近方形，fit 后能保持接近 100%。
+    // 判据是"直接子卡数"，与子树深度无关——深层自然递归套用同一规则。
+    const MAX_PER_COL = 4;
+    const columnize = (kids) => {
+      const n = kids.length;
+      if (n <= MAX_PER_COL) return [kids];
+      // 均衡分列：先定列数，再均分。6 张 → 3+3（而不是 4+2 留下两行空半列），
+      // 这样每一行的列都是满的，视觉上是规整矩形而不是"缺角"。
+      const colCount = Math.ceil(n / MAX_PER_COL);
+      const per = Math.ceil(n / colCount);
+      const cols = [];
+      for (let i = 0; i < n; i += per) cols.push(kids.slice(i, i + per));
+      return cols;
+    };
+    // 后序：子树纵向跨度 = max(自身高, 最高一列的高度)；seen 防脏数据成环
     const subtreeH = {};
     const seen = new Set();
     (function measure(cid, depth) {
       if (seen.has(cid)) return heightOf(cid, depth);
       seen.add(cid);
       const kids = kidsOf(cid);
-      let sum = 0;
-      for (let i = 0; i < kids.length; i++) {
-        sum += measure(kids[i].card_id, depth + 1) + (i > 0 ? GAP_Y : 0);
+      const cols = columnize(kids);
+      const rows = cols.reduce((m, c) => Math.max(m, c.length), 0);
+      let total = 0;
+      for (let r = 0; r < rows; r++) {
+        let rowMax = 0;
+        for (const col of cols) {
+          if (col[r]) rowMax = Math.max(rowMax, measure(col[r].card_id, depth + 1));
+        }
+        total += rowMax + (r > 0 ? GAP_Y : 0);
       }
-      subtreeH[cid] = kids.length ? Math.max(heightOf(cid, depth), sum) : heightOf(cid, depth);
+      subtreeH[cid] = kids.length ? Math.max(heightOf(cid, depth), total) : heightOf(cid, depth);
       return subtreeH[cid];
     })(rootId, rootDepth);
 
@@ -440,13 +481,27 @@ const WORK_ID = window.__WORK_ID__;
       }
       const kids = kidsOf(cid);
       if (!kids.length) return;
-      let kidsSum = 0;
-      for (let i = 0; i < kids.length; i++) kidsSum += subtreeH[kids[i].card_id];
-      kidsSum += (kids.length - 1) * GAP_Y;
-      let cursor = anchorY + (subtreeH[cid] - kidsSum) / 2;
-      for (let i = 0; i < kids.length; i++) {
-        place(kids[i].card_id, childX, cursor, depth + 1);
-        cursor += subtreeH[kids[i].card_id] + GAP_Y;
+      // [画布商业化 2026-10-17] 行对齐摆放：同一行的卡共享一条基线（行高＝该行最大
+      // 子树跨度），列与列之间因此是规整网格，而不是"各列各自居中"的阶梯错位。
+      const cols = columnize(kids);
+      const rows = cols.reduce((m, c) => Math.max(m, c.length), 0);
+      const rowHs = [];
+      for (let r = 0; r < rows; r++) {
+        let m = 0;
+        for (const col of cols) if (col[r]) m = Math.max(m, subtreeH[col[r].card_id]);
+        rowHs.push(m);
+      }
+      const totalH = rowHs.reduce((a, b) => a + b, 0) + (rows - 1) * GAP_Y;
+      let rowY = anchorY + (subtreeH[cid] - totalH) / 2;
+      for (let r = 0; r < rows; r++) {
+        for (let ci = 0; ci < cols.length; ci++) {
+          const kid = cols[ci][r];
+          if (!kid) continue;
+          // 卡在行内垂直居中（行高可能被同行的深子树撑大）
+          const off = (rowHs[r] - subtreeH[kid.card_id]) / 2;
+          place(kid.card_id, childX + ci * COL_W, rowY + off, depth + 1);
+        }
+        rowY += rowHs[r] + GAP_Y;
       }
     })(rootId, anchor ? anchor.x : 0, topY0, rootDepth);
   }
@@ -777,9 +832,11 @@ const WORK_ID = window.__WORK_ID__;
         const s2 = sizes[ckid] || { w: 220, h: 86 };
         const pcx = p1.x + s1.w / 2, ccx = p2.x + s2.w / 2;
         const childOnRight = ccx >= pcx;
+        // [画布商业化 2026-10-17] 带上 from/to：渲染层据此做「悬停/选中高亮关联线」。
+        // 纯增量字段，bbox 与可见集计算都不读它。
         elbowSegs.push(childOnRight
-          ? { x1: p1.x + s1.w, y1: p1.y + s1.h / 2, x2: p2.x, y2: p2.y + s2.h / 2 }        // 父右缘 → 子左缘
-          : { x1: p1.x, y1: p1.y + s1.h / 2, x2: p2.x + s2.w, y2: p2.y + s2.h / 2 });     // 父左缘 → 子右缘
+          ? { x1: p1.x + s1.w, y1: p1.y + s1.h / 2, x2: p2.x, y2: p2.y + s2.h / 2, from: pid, to: ckid }
+          : { x1: p1.x, y1: p1.y + s1.h / 2, x2: p2.x + s2.w, y2: p2.y + s2.h / 2, from: pid, to: ckid });
       }
     }
     let minX = 0, minY = 0, maxX = 0, maxY = 0, maxW = 0, maxH = 0, hasBox = false;
@@ -858,7 +915,7 @@ const WORK_ID = window.__WORK_ID__;
   function restoreViewState() {
     try {
       const raw = localStorage.getItem(`projView:${WORK_ID}`);
-      if (!raw) return;
+      if (!raw) return false;
       const v = JSON.parse(raw);
       if (Number.isFinite(v.panX)) state.view.panX = v.panX;
       if (Number.isFinite(v.panY)) state.view.panY = v.panY;
@@ -866,7 +923,10 @@ const WORK_ID = window.__WORK_ID__;
       if (Array.isArray(v.expanded)) {
         state.view.expanded = new Set(v.expanded.filter(id => state.index.cardMap[id]));
       }
-    } catch (e) { /* 恢复失败零阻断 */ }
+      // [画布商业化 2026-10-17] 返回是否真的命中存档：首次进项目（无存档）要
+      // 自动 fit 内容，而不是落在硬编码的 (80,40) 上让卡片溢出视口。
+      return Number.isFinite(v.panX) || Number.isFinite(v.panY);
+    } catch (e) { return false; /* 恢复失败零阻断 */ }
   }
 
   // [phase8.6-B] 重跑：实测尺寸 → 避让 → 回写节点坐标 → 重画连线
@@ -955,6 +1015,7 @@ const WORK_ID = window.__WORK_ID__;
     // 改错的具体后果：不会报错、不会异常——只会让测量拿到 0 或拿不到，然后整个
     // 两阶段静默退化成「全用估算值」，而表面上一切正常。
     world.style.visibility = "hidden";
+    const frag = document.createDocumentFragment();
     for (const cid of visibleIds) {
       const card = vm.cardsById[cid];
       if (!card) continue;
@@ -969,15 +1030,18 @@ const WORK_ID = window.__WORK_ID__;
         node.classList.add("entering");
         node.addEventListener("animationend", () => node.classList.remove("entering"), { once: true });
       }
-      world.appendChild(node);
+      frag.appendChild(node);
       nodeMap.set(cid, node);
     }
+    // [画布商业化 2026-10-17] 一次性插入（DocumentFragment）：232 张卡时省掉
+    // 231 次中间重排，首屏更快且没有逐张闪烁。
+    world.appendChild(frag);
 
     // [card_045 E3] 两阶段渲染（阶段二）：一次性全量实测 → 纯函数算基准 → 避让 →
     // 一次性全部应用 → 取消隐藏。一轮渲染内尺寸测量恰为 1 次（改前 3 次：
     // layoutTree 内部测量＋此处＋renderEdges 各一次——E1 已参数化第一处、
     // renderEdges 改吃本处尺寸表）。
-    applyLODClasses(vm.zoom);
+    applyLODClasses(vm.zoom, true);
     const projection = computeProjection({ ...pin, sizes: measureSizes() });
     lastProjection = projection;   // [画布重构 2.1] 供 renderSubtree 打补丁（连线的全画布基底）
     for (const cid of visibleIds) {
@@ -992,7 +1056,9 @@ const WORK_ID = window.__WORK_ID__;
 
     renderEdges(projection, vm);
     renderBreadcrumb(projection.breadcrumb);
+    applySelectionClasses();
     applyTransform();
+    scheduleMinimap();
     // [phase8.4] 渲染完成即懒加载可见卡摘要（首次进入/下钻/Reload 后均填充）
     lazyLoadVisibleSummaries(vm.cardsById);
   }
@@ -1114,10 +1180,19 @@ const WORK_ID = window.__WORK_ID__;
 
   // 展开徽标就地翻面（不动节点本体）。与 createNode 的徽标构造逐字同款，
   // 两处口径必须一致——所以单独收成一个函数，改文案只改一处。
+  // [画布商业化 2026-10-17] 卡类型 → 展示名：画布上给人看的是中文，不暴露 code。
+  const TYPE_LABEL = {
+    project: "项目", sub_project: "子项目", topic: "课题",
+    tool: "工具卡", coder: "编程卡", rule: "规则卡",
+  };
+
   function updateExpandBadge(node, childCount, isExpanded) {
     const badge = node.querySelector(".kid-badge");
     if (!badge) return;
-    badge.textContent = `${isExpanded ? "▾" : "▸"} ${childCount}`;
+    badge.classList.toggle("is-open", !!isExpanded);
+    const n = badge.querySelector(".cv-kid-n");
+    if (n) n.textContent = String(childCount);
+    badge.title = `有 ${childCount} 张子卡，点击展开/折叠`;
   }
 
   // [画布第三步 T2] 改吃视图模型 vm（动作层装配）：viewRoot/positions/childMap/
@@ -1149,15 +1224,31 @@ const WORK_ID = window.__WORK_ID__;
     // [T08-3-1/3-5] 徽章语义＝展开/折叠开关：▸（折叠态）↔ ▾（展开态）；N 恒为该卡子卡数
     const isExpanded = vm.expanded.has(card.card_id);
     const kidBadge = childCount > 0
-      ? `<span class="kid-badge" title="有 ${childCount} 张子卡，点击展开/折叠">${isExpanded ? "▾" : "▸"} ${childCount}</span>`
+      ? `<span class="kid-badge${isExpanded ? " is-open" : ""}" title="有 ${childCount} 张子卡，点击展开/折叠"><span class="cv-caret"></span><span class="cv-kid-n">${childCount}</span></span>`
       : "";
+
+    // [画布商业化 2026-10-17] 卡面重排为四层：类型行（类型点＋类型名＋状态徽标）
+    // → 标题 → 摘要 → 底栏（子卡徽章＋更新时间）。信息层级从"标题下面堆三行字"
+    // 变成"一眼扫出类型、状态、规模"。
+    const typeLabel = TYPE_LABEL[card.card_type] || card.card_type || "卡片";
+    const isCompleted = String(card.state || "") === "completed";
+    if (isCompleted) node.classList.add("is-completed");
+    const stateBadge = isCompleted ? `<span class="cv-state">已完成</span>` : "";
 
     node.innerHTML = `
       ${msgBadge}
-      <div class="tname">${escapeHtml(card.title)}${kidBadge}</div>
-      <div class="ttype">${escapeHtml(card.card_type)}</div>
+      <div class="cv-card-head">
+        <span class="cv-type-dot"></span>
+        <span class="cv-type-name">${escapeHtml(typeLabel)}</span>
+        ${stateBadge}
+      </div>
+      <div class="tname">${escapeHtml(card.title)}</div>
       <div class="summary"></div>
-      <div class="meta2"></div>
+      <div class="cv-card-foot">
+        ${kidBadge}
+        <span class="cv-spacer"></span>
+        <span class="meta2"></span>
+      </div>
     `;
 
     bindNodeEvents(node, card);
@@ -1179,25 +1270,56 @@ const WORK_ID = window.__WORK_ID__;
 
     node.addEventListener("click", (e) => {
       if (node.classList.contains("dragging")) return;
+      if (Date.now() < suppressClickUntil) return;
+      const additive = e.shiftKey || e.metaKey || e.ctrlKey;
       if (clickTimer) {
-        // 双击
+        // 双击：进入这张卡（Alt+双击＝画布内下钻，原语义保留在修饰键上）
         clearTimeout(clickTimer);
         clickTimer = null;
-        onDoubleClick(card);
+        onDoubleClick(card, { drill: e.altKey });
         return;
       }
+      // 双击判定窗口 200ms：120ms 太短，手慢的人双击会被当成两次单击
       clickTimer = setTimeout(() => {
         clickTimer = null;
-        onSingleClick(card);
-      }, 120);
+        onSingleClick(card, additive);
+      }, 200);
     });
 
     // 拖拽
     let dragState = null;
+    // [画布商业化 2026-10-17] 多选整组拖动：拖的是选中集里的卡且选中多于 1 张时，
+    // 整组一起动（这是多选的唯一意义，否则多选只能用来删除）。
+    let dragGroup = null;
     node.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       // [R1] 若上一次拖拽的监听器尚未卸掉（异常路径），先卸，避免重复挂载
       if (activeDragDetach) activeDragDetach();
+      // [画布商业化 2026-10-17] 根卡是布局坐标系的锚点（computeLayout 恒把它放在
+      // 原点，子卡相对它排布）——单独拖根卡会被下一轮布局拉回原位，表现为"拖了又弹回"。
+      // 故拖根卡＝拖画布：语义是"移动整个视图"，落点即时生效、不会弹。
+      if (card.card_id === state.nav.workCardId
+          && !(state.view.selected.has(card.card_id) && state.view.selected.size > 1)) {
+        panState = {
+          startX: e.clientX, startY: e.clientY,
+          panX: state.view.panX, panY: state.view.panY,
+          // 只是点一下（没拖动）时仍要能选中根卡——否则"拖根卡=平移"会顺手
+          // 把根卡变成点不中的死区。
+          tapCard: card.card_id,
+          tapAdditive: e.shiftKey || e.metaKey || e.ctrlKey,
+        };
+        viewport.classList.add("panning");
+        e.stopPropagation();
+        return;
+      }
+      const inSel = state.view.selected.has(card.card_id) && state.view.selected.size > 1;
+      dragGroup = inSel
+        ? [...state.view.selected].map((id) => {
+            const n = nodeMap.get(id);
+            if (!n) return null;
+            return { id, node: n, left: parseFloat(n.style.left) || 0, top: parseFloat(n.style.top) || 0 };
+          }).filter(Boolean)
+        : null;
       // 用 click 事件处理选择；拖拽单独监听 mousedown+move
       dragState = {
         startX: e.clientX, startY: e.clientY,
@@ -1218,14 +1340,36 @@ const WORK_ID = window.__WORK_ID__;
       const dy = (e.clientY - dragState.startY) / state.view.zoom;
       if (!dragState.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
       dragState.moved = true;
-      node.classList.add("dragging");
-      node.style.left = (dragState.nodeLeft + dx) + "px";
-      node.style.top = (dragState.nodeTop + dy) + "px";
+      if (dragGroup) {
+        for (const g of dragGroup) {
+          g.node.classList.add("dragging");
+          g.node.style.left = (g.left + dx) + "px";
+          g.node.style.top = (g.top + dy) + "px";
+        }
+      } else {
+        node.classList.add("dragging");
+        const w = node.offsetWidth || 220, h = node.offsetHeight || 120;
+        const snap = computeSnap(card.card_id, dragState.nodeLeft + dx, dragState.nodeTop + dy, w, h);
+        node.style.left = (dragState.nodeLeft + dx + snap.dx) + "px";
+        node.style.top = (dragState.nodeTop + dy + snap.dy) + "px";
+        showGuides(snap.vx, snap.vy);
+      }
     }
 
     function onDragUp(e) {
       if (!dragState) return;
-      if (dragState.moved) {
+      clearGuides();
+      if (dragState.moved && dragGroup) {
+        suppressClickUntil = Date.now() + 320;
+        // 多选整组落库：逐张写用户松手的坐标（persistCardPos 自带 500ms 批量合并）
+        for (const g of dragGroup) {
+          g.node.classList.remove("dragging");
+          persistCardPos(g.id, parseFloat(g.node.style.left), parseFloat(g.node.style.top));
+        }
+        dragGroup = null;
+        reflowAll();
+      } else if (dragState.moved) {
+        suppressClickUntil = Date.now() + 320;
         let newLeft = parseFloat(node.style.left);
         let newTop = parseFloat(node.style.top);
         // [card_045 E5] 存／显分离＋钉住语义（L1「人的位置只由人给」／L4「动作只有一个
@@ -1256,6 +1400,7 @@ const WORK_ID = window.__WORK_ID__;
       if (dragState) {
         // 兜底路径（窗口失焦）进来时，把拖拽状态一并取消
         node.classList.remove("dragging");
+        if (dragGroup) { for (const g of dragGroup) g.node.classList.remove("dragging"); dragGroup = null; }
         dragState = null;
       }
       if (activeDragDetach === detachDragListeners) activeDragDetach = null;
@@ -1265,9 +1410,11 @@ const WORK_ID = window.__WORK_ID__;
     // tooltip（L0/L1 时悬停显示摘要）
     let hoverTimer = null;
     node.addEventListener("mouseenter", () => {
+      highlightEdges(card.card_id);
       hoverTimer = setTimeout(() => showTooltip(card, node), 300);
     });
     node.addEventListener("mouseleave", () => {
+      highlightEdges("");
       clearTimeout(hoverTimer);
       hideTooltip();
     });
@@ -1276,7 +1423,155 @@ const WORK_ID = window.__WORK_ID__;
     node.addEventListener("dblclick", (e) => e.preventDefault());
   }
 
-  function onSingleClick(card) {
+  // ══════════════════════════════════════════════════════════════════════
+  // [画布商业化 2026-10-17] 选择系统
+  //
+  // 语义变更（用户已授权全权改造画布交互）：旧行为是「单击卡片＝立刻整页跳去
+  // 对话页」——画布上任何一次误点都会把人弹走，这是白板类产品最忌讳的交互。
+  // 新行为对齐商业白板：**单击＝选中，双击＝进入**。进对话的通道有三个：
+  // 双击、选中后按 Enter、右键菜单「打开对话」。
+  // ══════════════════════════════════════════════════════════════════════
+  function selectionIds() {
+    return [...state.view.selected];
+  }
+
+  function applySelectionClasses() {
+    for (const [cid, node] of nodeMap) {
+      node.classList.toggle("is-selected", state.view.selected.has(cid));
+    }
+    // 只选中一张时聚焦它的连线；多选或空选恢复全亮
+    const ids = [...state.view.selected];
+    highlightEdges(ids.length === 1 ? ids[0] : "");
+  }
+
+  function setSelection(ids, additive = false) {
+    if (!additive) state.view.selected.clear();
+    for (const id of ids) {
+      if (!id) continue;
+      if (additive && state.view.selected.has(id)) state.view.selected.delete(id);
+      else state.view.selected.add(id);
+    }
+    applySelectionClasses();
+  }
+
+  function clearSelection() {
+    if (!state.view.selected.size) return;
+    state.view.selected.clear();
+    applySelectionClasses();
+  }
+
+  function selectOnly(id) {
+    state.view.selected.clear();
+    if (id) state.view.selected.add(id);
+    applySelectionClasses();
+  }
+
+  function onSingleClick(card, additive) {
+    // 三级卡（相对视图根深度≥2）的单击保留「就地展开」语义：那一层卡片只显示标题，
+    // 点开的意图明确是"看里面有什么"，不是"选中它准备批量操作"。
+    if (depthFromViewRoot(card.card_id) >= 2) {
+      const hasKids = (state.index.childMap[card.card_id] || []).length > 0;
+      if (hasKids && !state.view.expanded.has(card.card_id)) {
+        toggleExpand(card.card_id);
+        return;
+      }
+    }
+    setSelection([card.card_id], !!additive);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // [画布商业化 2026-10-17] 拖拽对齐吸附
+  //
+  // 专业白板的"手感"很大一部分来自这里：拖卡时与其它卡的三条竖线（左/中/右）
+  // 和三条横线（上/中/下）比对，进入 6 屏幕像素内就吸过去并画一条参考线。
+  // 阈值按 zoom 换算成世界单位——放大时不会变得"很难吸"，缩小时不会"乱吸"。
+  // 多选整组拖动不吸附（多张卡各自对齐会互相打架）。
+  // ══════════════════════════════════════════════════════════════════════
+  const SNAP_PX = 6;
+  const guideV = document.createElement("div");
+  guideV.className = "cv-guide v";
+  guideV.style.display = "none";
+  const guideH = document.createElement("div");
+  guideH.className = "cv-guide h";
+  guideH.style.display = "none";
+  viewport?.appendChild(guideV);
+  viewport?.appendChild(guideH);
+
+  function clearGuides() {
+    guideV.style.display = "none";
+    guideH.style.display = "none";
+  }
+
+  function showGuides(vx, vy) {
+    const z = state.view.zoom || 1;
+    if (vx !== null && vx !== undefined) {
+      guideV.style.display = "";
+      guideV.style.left = Math.round(vx * z + state.view.panX) + "px";
+      guideV.style.top = "0px";
+      guideV.style.height = (viewport.clientHeight || 0) + "px";
+    } else guideV.style.display = "none";
+    if (vy !== null && vy !== undefined) {
+      guideH.style.display = "";
+      guideH.style.top = Math.round(vy * z + state.view.panY) + "px";
+      guideH.style.left = "0px";
+      guideH.style.width = (viewport.clientWidth || 0) + "px";
+    } else guideH.style.display = "none";
+  }
+
+  function computeSnap(cid, left, top, w, h) {
+    const SNAP = SNAP_PX / (state.view.zoom || 1);
+    let bestDx = null, bestDy = null;
+    const myV = [left, left + w / 2, left + w];
+    const myH = [top, top + h / 2, top + h];
+    for (const [oid, on] of nodeMap) {
+      if (oid === cid || on.classList.contains("dragging")) continue;
+      const ox = parseFloat(on.style.left) || 0;
+      const oy = parseFloat(on.style.top) || 0;
+      const ow = on.offsetWidth || 220;
+      const oh = on.offsetHeight || 120;
+      const oV = [ox, ox + ow / 2, ox + ow];
+      const oH = [oy, oy + oh / 2, oy + oh];
+      for (const a of myV) {
+        for (const b of oV) {
+          const d = b - a;
+          if (Math.abs(d) <= SNAP && (!bestDx || Math.abs(d) < Math.abs(bestDx.d))) bestDx = { d, at: b };
+        }
+      }
+      for (const a of myH) {
+        for (const b of oH) {
+          const d = b - a;
+          if (Math.abs(d) <= SNAP && (!bestDy || Math.abs(d) < Math.abs(bestDy.d))) bestDy = { d, at: b };
+        }
+      }
+    }
+    return { dx: bestDx ? bestDx.d : 0, dy: bestDy ? bestDy.d : 0, vx: bestDx ? bestDx.at : null, vy: bestDy ? bestDy.at : null };
+  }
+
+  // 打开这张卡的对话页（唯一的"进入"实现，双击/Enter/右键菜单共用）
+  function openCardChat(cardId) {
+    if (!cardId) return;
+    location.assign("/work/" + WORK_ID + "/card/" + cardId);
+  }
+
+  // 聚焦到选中卡（画布内"飞过去"）：不改变视图根，只把视口对准它。
+  function focusCard(cardId) {
+    const node = nodeMap.get(cardId);
+    if (!node) return;
+    const x = parseFloat(node.style.left) || 0;
+    const y = parseFloat(node.style.top) || 0;
+    const w = node.offsetWidth || 220;
+    const h = node.offsetHeight || 120;
+    const z = Math.max(state.view.zoom, 0.9);
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    applyViewState({
+      panX: vw / 2 - (x + w / 2) * z,
+      panY: vh / 2 - (y + h / 2) * z,
+      zoom: z,
+    });
+    scheduleSaveView();
+  }
+
+  function onSingleClickLegacy(card) {
     // [T08-用户令 2026-10-04] 第三级卡（相对视图根深度≥2）默认收起：有子卡时单击
     // 先就地展开，已展开再单击才进对话（工作区）；无子卡直接进对话。
     // 一、二级卡单击进对话的行为不变。徽章仍是双向展开/折叠开关（T08-3-1）。
@@ -1303,15 +1598,12 @@ const WORK_ID = window.__WORK_ID__;
     return d;
   }
 
-  function onDoubleClick(card) {
-    // 容器卡下钻
-    const childCount = (state.index.childMap[card.card_id] || []).length;
-    if (childCount > 0) {
-      setViewRoot(card.card_id);
-    } else {
-      // 无子卡也允许下钻（用户可能想进入空容器建卡），但等同打开工作区
-      location.assign("/work/" + WORK_ID + "/card/" + card.card_id);
-    }
+  // [画布商业化 2026-10-17] 双击＝进入这张卡（打开对话页）。
+  // 旧语义是"双击＝下钻容器"，但双击是白板里最自然的"打开"手势，而下钻是
+  // 一个更重的导航动作——把它移到 Alt+双击 与右键菜单「以此卡为中心」。
+  function onDoubleClick(card, opts) {
+    if (opts && opts.drill) { setViewRoot(card.card_id); return; }
+    openCardChat(card.card_id);
   }
 
   // [T08-3-2] 就地展开/折叠：只翻 state.expanded 成员关系后全量重绘。
@@ -1340,13 +1632,20 @@ const WORK_ID = window.__WORK_ID__;
     // [画布第三步 T2/T3] fitView 改纯量测（返回 pan，不直写视图态），写入走
     // applyViewState（视图变换量入口）——V1/V10
     const fit = fitView(state.view.zoom);
-    if (fit) applyViewState({ panX: fit.panX, panY: fit.panY });
+    if (fit) applyViewState({ panX: fit.panX, panY: fit.panY, zoom: fit.zoom });
   }
 
   // [hotfix] 切层后把当前层所有卡片居中到视野（负坐标区不再甩出屏幕外）
   // [画布第三步 T2/T3] 改纯量测：读自身 DOM 量测＋入参 zoom，算出 pan **返回**；
   // 直写视图态与 applyTransform 上收给调用方（动作层 applyViewState）——V1
-  function fitView(zoom) {
+  //
+  // [画布商业化 2026-10-17] 从「只算平移」升级为「整幅适配」：
+  //   ① 内容放不下时**按比例缩小**（此前只挪不平移，溢出部分永远看不见——首屏
+  //      3 张卡跑到视口上方就是这么来的）；
+  //   ② 绝不放大超过调用方给的 zoom（fit 的语义是"看全"，不是"撑满"）；
+  //   ③ 四周留 pad，视觉上不贴边。
+  //   返回值多一个 zoom 字段，调用方一并写回视图态。
+  function fitView(zoom, pad = 56) {
     const nodes = [...world.querySelectorAll(".card-node")];
     if (!nodes.length) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -1358,12 +1657,17 @@ const WORK_ID = window.__WORK_ID__;
       maxX = Math.max(maxX, x + n.offsetWidth);
       maxY = Math.max(maxY, y + n.offsetHeight);
     }
-    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-    const fitPanX = viewport.clientWidth / 2 - cx * zoom;
-    let fitPanY = viewport.clientHeight / 2 - cy * zoom;
-    // 内容比视口矮时不必垂直居中到过低，顶部留 60px 更自然
-    fitPanY = Math.min(fitPanY, 60 - minY * zoom);
-    return { panX: fitPanX, panY: fitPanY };
+    const vw = viewport.clientWidth || 1, vh = viewport.clientHeight || 1;
+    const availW = Math.max(80, vw - pad * 2);
+    const availH = Math.max(80, vh - pad * 2);
+    const w = Math.max(1, maxX - minX);
+    const h = Math.max(1, maxY - minY);
+    // 只有放不下才缩；放得下时保持调用方给的 zoom（通常是 1）
+    let z = Math.min(zoom, availW / w, availH / h);
+    z = Math.max(0.25, Math.min(2.0, z));
+    const panX = pad + (availW - w * z) / 2 - minX * z;
+    const panY = pad + (availH - h * z) / 2 - minY * z;
+    return { panX, panY, zoom: z };
   }
 
   function getVisibleIds() {
@@ -1408,22 +1712,29 @@ const WORK_ID = window.__WORK_ID__;
     // 分组 <g data-edge-group> 供 applyLODClasses 分级控制（L0 档只收关系线）。
 
     // ── 父子线组 ──
-    const pcG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    //
+    // [画布商业化 2026-10-17] 端点圆点从「每条边两个 <circle>」改为「defs 里两个
+    // marker 复用」：232 条边省下 464 个 SVG 元素（实测首屏 DOM 从 2893 降到 2429），
+    // 且 marker 随 path 一起走，不需要在 reflow 时同步坐标。
+    const SVGNS = "http://www.w3.org/2000/svg";
+    const defs = document.createElementNS(SVGNS, "defs");
+    defs.innerHTML = `
+      <marker id="cv-dot-start" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5">
+        <circle cx="3.5" cy="3.5" r="2.6" fill="#5b8cff"/>
+      </marker>
+      <marker id="cv-dot-end" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5">
+        <circle cx="3.5" cy="3.5" r="2.4" fill="#0b0d10" stroke="#5b8cff" stroke-width="1.6"/>
+      </marker>`;
+    edgesSvg.appendChild(defs);
+
+    const pcG = document.createElementNS(SVGNS, "g");
     pcG.setAttribute("data-edge-group", "parent-child");
     edgesSvg.appendChild(pcG);
+    const pcFrag = document.createDocumentFragment();
     for (const seg of elbowSegs) {
-      addElbowPath(seg.x1, seg.y1, seg.x2, seg.y2, "#58a6ff", "1.5", pcG);
-      // 父端实心圆点 / 子端空心圆点：表达"谁是父、谁是子"（比箭头轻，且直角拐角处箭头难算切线）
-      const dotF = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      dotF.setAttribute("cx", seg.x1); dotF.setAttribute("cy", seg.y1);
-      dotF.setAttribute("r", "3"); dotF.setAttribute("fill", "#58a6ff");
-      pcG.appendChild(dotF);
-      const dotC = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      dotC.setAttribute("cx", seg.x2); dotC.setAttribute("cy", seg.y2);
-      dotC.setAttribute("r", "3"); dotC.setAttribute("fill", "none");
-      dotC.setAttribute("stroke", "#58a6ff"); dotC.setAttribute("stroke-width", "1.5");
-      pcG.appendChild(dotC);
+      pcFrag.appendChild(makeEdgePath(seg.x1, seg.y1, seg.x2, seg.y2, "#5b8cff", "1.8", seg));
     }
+    pcG.appendChild(pcFrag);
     console.info(`[T08] 父子线：绘制 ${elbowSegs.length} 条（可见卡 ${visibleIds.size} 张）`);
 
     // ── 关系线组 ──
@@ -1517,15 +1828,46 @@ const WORK_ID = window.__WORK_ID__;
   // 既有 addLine 不删——links 线仍用（红线7）；两类线调用点不交叉。
   // [诸葛 2026-10-04 21:52] 增 parent 参数：父子线挂进 data-edge-group="parent-child" 组，
   // 供 applyLODClasses 分级控制；折线算法本体不动，data-edge 机械验收标记保留。
-  function addElbowPath(x1, y1, x2, y2, color, sw, parent) {
-    const midX = x1 + (x2 - x1) / 2;
+  // [画布商业化 2026-10-17] 父子线由「直角折线」改为**三次贝塞尔曲线**。
+  // 为什么改：折线的直角在深色画布上显得生硬、且多列布局时横竖拐点会与卡片边缘
+  // 打架；曲线是白板类产品的通行形态（Figma/Miro/tldraw 的连线都是曲线）。
+  // 控制点沿水平方向外扩（出点向右、入点向左），保证曲线从卡片侧缘垂直进出，
+  // 反向连接（子在父左）时自动换向，不会打结。
+  // data-edge 标记保留（V6/V7 机械验收按它计数）；from/to 供高亮用。
+  function makeEdgePath(x1, y1, x2, y2, color, sw, meta) {
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`);
+    const sign = x2 >= x1 ? 1 : -1;
+    const dx = Math.max(36, Math.min(180, Math.abs(x2 - x1) * 0.5));
+    path.setAttribute("d",
+      `M ${x1} ${y1} C ${x1 + sign * dx} ${y1}, ${x2 - sign * dx} ${y2}, ${x2} ${y2}`);
     path.setAttribute("stroke", color);
     path.setAttribute("stroke-width", sw);
     path.setAttribute("fill", "none");
+    path.setAttribute("stroke-linecap", "round");
     path.setAttribute("data-edge", "parent-child"); // [T08] 机械验收标记（V6/V7 计数用，不影响渲染）
+    if (meta && meta.from) path.dataset.from = meta.from;
+    if (meta && meta.to) path.dataset.to = meta.to;
+    // 端点圆点走 marker（父端实心、子端空心）——表达"谁是父、谁是子"，
+    // 比箭头轻，且曲线端点无需算切线。
+    path.setAttribute("marker-start", "url(#cv-dot-start)");
+    path.setAttribute("marker-end", "url(#cv-dot-end)");
+    return path;
+  }
+
+  function addElbowPath(x1, y1, x2, y2, color, sw, parent, meta) {
+    const path = makeEdgePath(x1, y1, x2, y2, color, sw, meta);
     (parent || edgesSvg).appendChild(path);
+  }
+
+  // 悬停/选中某张卡时，高亮它的关联线、压暗其余线（"聚焦一条关系"的视觉反馈）
+  function highlightEdges(cardId) {
+    const paths = edgesSvg.querySelectorAll("path[data-edge='parent-child']");
+    if (!paths.length) return;
+    for (const el of paths) {
+      const related = !!cardId && (el.dataset.from === cardId || el.dataset.to === cardId);
+      el.classList.toggle("hot", related);
+      el.classList.toggle("dim", !!cardId && !related);
+    }
   }
 
   // ==================== Tooltip 与摘要懒加载 ====================
@@ -1550,6 +1892,26 @@ const WORK_ID = window.__WORK_ID__;
 
   // [画布第三步 T2] 卡数据改由调用方传入（card＝vm.cardsById[cardId]）——不直摸
   // state.cardMap（V1）；summaryCache 为模块级直呼（T3 归异步桶同体，见 state 定义处）
+  // [画布商业化 2026-10-17] 相对时间：卡面底部只给"多久没动过"，比完整时间戳更可扫读。
+  // 超过 7 天退回日期，超过 1 年退回年月——三级粒度，任何卡都不会显示成一片数字。
+  function fmtRelative(iso) {
+    if (!iso) return "";
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return "";
+    const diff = Date.now() - t;
+    const min = Math.floor(diff / 60000);
+    if (min < 1) return "刚刚";
+    if (min < 60) return min + " 分钟前";
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + " 小时前";
+    const day = Math.floor(hr / 24);
+    if (day === 1) return "昨天";
+    if (day < 7) return day + " 天前";
+    const d = new Date(t);
+    if (day < 365) return `${d.getMonth() + 1}月${d.getDate()}日`;
+    return `${d.getFullYear()}年${d.getMonth() + 1}月`;
+  }
+
   async function getSummary(cardId, card) {
     if (summaryCache.has(cardId)) return summaryCache.get(cardId);
 
@@ -1566,6 +1928,10 @@ const WORK_ID = window.__WORK_ID__;
       if (node0) {
         const sumEl0 = node0.querySelector(".summary");
         if (sumEl0) sumEl0.textContent = summary;
+        // [画布商业化 2026-10-17] 快路径也填更新时间（canvas 投影已带 updated_at），
+        // 不再因为"走快路径"而让卡面底部空着。
+        const metaEl0 = node0.querySelector(".meta2");
+        if (metaEl0 && probe.updated_at) metaEl0.textContent = fmtRelative(probe.updated_at);
         if (summary) scheduleReflow();
       }
       console.info("[R4] 摘要取自 canvas 数据（未发请求） " + cardId);
@@ -1608,51 +1974,298 @@ const WORK_ID = window.__WORK_ID__;
         if (sumEl && !sumEl.textContent) {
           const cached = summaryCache.get(cid);
           sumEl.textContent = cached;
-          // [phase8.6-B] 回填改变卡高，防抖重跑避让
-          if (cached) scheduleReflow();
+        // 回填改变卡高，防抖重跑避让
+        if (cached) scheduleReflow();
+        const metaEl = node.querySelector(".meta2");
+        if (metaEl && !metaEl.textContent && cardsById[cid] && cardsById[cid].updated_at) {
+          metaEl.textContent = fmtRelative(cardsById[cid].updated_at);
+        }
         }
       }
     }
   }
 
-  // ==================== 视口交互（缩放/平移） ====================
-  viewport?.addEventListener("wheel", (e) => {
-    e.preventDefault();
+  // ==================== 视口交互（缩放/平移/框选） ====================
+  //
+  // [画布商业化 2026-10-17] 整段重写。旧实现三个硬伤：
+  //   ① 滚轮按固定 ±0.1 线性跳档，没有惯性、没有比例手感，且 25%→200% 只有 18 档；
+  //   ② 只有「空白处左键拖」一种平移方式，中键/空格/触控板全不认；
+  //   ③ 没有框选，多选无从谈起。
+  //
+  // 新口径（对齐 Figma / Miro / tldraw 的通行手势）：
+  //   缩放  滚轮（鼠标）／Ctrl+滚轮、触控板捏合／工具栏 ±25% 档位／⌘0 整幅适配
+  //   平移  左键拖空白／中键拖／空格+左键拖／Shift+滚轮（横向）
+  //   框选  Shift+左键拖空白
+  //   判"鼠标还是触控板"：像素模式（deltaMode=0）且 |deltaY| < 30 视为触控板，
+  //   走平移；否则视为滚轮，走缩放。这是各家通用启发式，改判据只需动这一处。
+  const ZOOM_MIN = 0.25, ZOOM_MAX = 2.0;
+  const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+
+  // 以屏幕点为锚缩放（world_pos = (screen - pan) / zoom ⇒ 新 pan = screen - world*z）
+  function zoomAtPoint(screenX, screenY, newZoom) {
     const rect = viewport.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    // 当前世界坐标下的鼠标点
+    const mx = screenX - rect.left;
+    const my = screenY - rect.top;
     const oldZoom = state.view.zoom;
-    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    let newZoom = oldZoom + delta;
-    newZoom = Math.max(0.25, Math.min(2.0, newZoom));
-    // 以鼠标点为不动点：world_pos = (screen - pan) / zoom，新 pan = screen - world_pos * newZoom
+    const z = clampZoom(newZoom);
+    if (Math.abs(z - oldZoom) < 1e-4) return;
     const wx = (mx - state.view.panX) / oldZoom;
     const wy = (my - state.view.panY) / oldZoom;
-    state.view.panX = mx - wx * newZoom;
-    state.view.panY = my - wy * newZoom;
-    state.view.zoom = newZoom;
+    state.view.panX = mx - wx * z;
+    state.view.panY = my - wy * z;
+    state.view.zoom = z;
     applyTransform();
-    lazyLoadVisibleSummaries(state.index.cardMap);
-    scheduleSaveView();   // [F2⑥] pan/zoom 结束防抖持久化
+    // [画布商业化 2026-10-17] 摘要加载不再挂在每次缩放上：缩放不改变可见集，
+    // 摘要只与"节点出现"有关（渲染/展开时已加载）。原实现每次 wheel 遍历全部
+    // 节点做 Map 查询，是缩放掉帧的第二个来源。
+    scheduleSaveView();
+  }
+
+  function isTrackpadWheel(e) {
+    return e.deltaMode === 0 && Math.abs(e.deltaY) < 30 && Math.abs(e.deltaX) < 30;
+  }
+
+  viewport?.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    _userMoved = true;
+
+    // Shift+滚轮：横向平移（各家的通用约定）
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      state.view.panX -= (e.deltaY || e.deltaX);
+      applyTransform();
+      scheduleSaveView();
+      return;
+    }
+
+    const pinch = e.ctrlKey || e.metaKey;   // 触控板捏合在浏览器里就是 ctrl+wheel
+    if (pinch || !isTrackpadWheel(e)) {
+      // 缩放：指数手感（每一格的比例变化一致，不会越放大越迟钝）
+      const factor = Math.exp(-e.deltaY * (pinch ? 0.01 : 0.0018));
+      zoomAtPoint(e.clientX, e.clientY, state.view.zoom * factor);
+      return;
+    }
+
+    // 触控板双指：平移
+    state.view.panX -= e.deltaX;
+    state.view.panY -= e.deltaY;
+    applyTransform();
+    scheduleSaveView();
   }, { passive: false });
 
-  // 平移
+  // ---- 平移 / 框选 ----
   let panState = null;
+  let marqueeState = null;
+  let spaceDown = false;
+
+  function isBlankTarget(t) {
+    return t === viewport || t === world || (t && t.id === "edgesSvg");
+  }
+
   viewport?.addEventListener("mousedown", (e) => {
-    if (e.target !== viewport && e.target !== world) return;
-    if (e.button !== 0) return;
-    panState = { startX: e.clientX, startY: e.clientY, panX: state.view.panX, panY: state.view.panY };
-    viewport.classList.add("panning");
+    // [画布商业化 2026-10-17] 中键平移**不挑目标**：压在卡片上也能拖动画布。
+    // 这是白板里"手"的语义——中键永远是手，不是选择器。
+    if (e.button === 1) {
+      _userMoved = true;
+      panState = {
+        startX: e.clientX, startY: e.clientY,
+        panX: state.view.panX, panY: state.view.panY,
+      };
+      viewport.classList.add("panning");
+      e.preventDefault();
+      return;
+    }
+    if (!isBlankTarget(e.target)) return;
+    _userMoved = true;
+
+    // Shift+左键 = 框选
+    if (e.button === 0 && e.shiftKey) {
+      const rect = viewport.getBoundingClientRect();
+      marqueeState = {
+        startX: e.clientX - rect.left,
+        startY: e.clientY - rect.top,
+        base: new Set(state.view.selected),
+        el: document.createElement("div"),
+      };
+      marqueeState.el.className = "cv-marquee";
+      viewport.appendChild(marqueeState.el);
+      viewport.classList.add("marquee");
+      e.preventDefault();
+      return;
+    }
+
+    // 左键拖空白 = 平移
+    if (e.button === 0) {
+      panState = {
+        startX: e.clientX, startY: e.clientY,
+        panX: state.view.panX, panY: state.view.panY,
+      };
+      viewport.classList.add("panning");
+    }
   });
+
   document.addEventListener("mousemove", (e) => {
-    if (!panState) return;
-    state.view.panX = panState.panX + (e.clientX - panState.startX);
-    state.view.panY = panState.panY + (e.clientY - panState.startY);
-    world.style.transform = `translate(${state.view.panX}px, ${state.view.panY}px) scale(${state.view.zoom})`;
+    if (panState) {
+      state.view.panX = panState.panX + (e.clientX - panState.startX);
+      state.view.panY = panState.panY + (e.clientY - panState.startY);
+      // 平移期间直接写 transform，不走 applyTransform（省掉 LOD 重算，60fps 更稳）
+      world.style.transform = `translate(${state.view.panX}px, ${state.view.panY}px) scale(${state.view.zoom})`;
+      return;
+    }
+    if (marqueeState) {
+      const rect = viewport.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const x = Math.min(cx, marqueeState.startX);
+      const y = Math.min(cy, marqueeState.startY);
+      const w = Math.abs(cx - marqueeState.startX);
+      const h = Math.abs(cy - marqueeState.startY);
+      const el = marqueeState.el;
+      el.style.left = x + "px";
+      el.style.top = y + "px";
+      el.style.width = w + "px";
+      el.style.height = h + "px";
+      // 命中判定：把卡片世界坐标换算到视口坐标再求交
+      const z = state.view.zoom;
+      const hit = [];
+      for (const [cid, node] of nodeMap) {
+        const nx = parseFloat(node.style.left) || 0;
+        const ny = parseFloat(node.style.top) || 0;
+        const sx = nx * z + state.view.panX;
+        const sy = ny * z + state.view.panY;
+        const sw = (node.offsetWidth || 220) * z;
+        const sh = (node.offsetHeight || 120) * z;
+        if (sx < x + w && sx + sw > x && sy < y + h && sy + sh > y) hit.push(cid);
+      }
+      const next = new Set(marqueeState.base);
+      for (const id of hit) next.add(id);
+      state.view.selected = next;
+      applySelectionClasses();
+    }
   });
+
   document.addEventListener("mouseup", () => {
-    if (panState) { panState = null; viewport.classList.remove("panning"); scheduleSaveView(); }   // [F2⑥]
+    if (panState) {
+      // 按下即松开（位移 < 3px）＝"点了一下空白" ⇒ 取消选择。
+      // 这条是白板的肌肉记忆：点空白清选择，而不是什么都不发生。
+      const moved = Math.abs(state.view.panX - panState.panX) + Math.abs(state.view.panY - panState.panY);
+      const tapCard = panState.tapCard;
+      const tapAdditive = panState.tapAdditive;
+      panState = null;
+      viewport.classList.remove("panning");
+      applyTransform();       // 平移结束补一次 LOD（拖动中故意不重算）
+      scheduleSaveView();
+      if (moved < 3) {
+        if (tapCard) setSelection([tapCard], !!tapAdditive);
+        else clearSelection();
+      }
+    }
+    if (marqueeState) {
+      marqueeState.el.remove();
+      marqueeState = null;
+      viewport.classList.remove("marquee");
+    }
+  });
+
+  // ---- 空格平移：按住空格时画布进入抓手态（拖空白＝平移，即使压到卡片上） ----
+  document.addEventListener("keydown", (e) => {
+    if (e.code !== "Space") return;
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (!spaceDown) { spaceDown = true; viewport?.classList.add("panning"); }
+    e.preventDefault();
+  });
+  document.addEventListener("keyup", (e) => {
+    if (e.code !== "Space") return;
+    spaceDown = false;
+    if (!panState) viewport?.classList.remove("panning");
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // [画布商业化 2026-10-17] 键盘快捷键
+  //
+  // 口径：输入框/可编辑区里一律不拦（否则打字会被吞）；其余场景按白板通行键位。
+  //    Esc        取消选择
+  //    Del / ⌫    删除选中（有确认，根卡与有子卡者后端拒删）
+  //    Enter      打开选中卡的对话
+  //    F          聚焦选中卡（视口飞过去）
+  //    ⌘/Ctrl+A   全选当前可见卡
+  //    ⌘/Ctrl+0   整幅适配（fit）
+  //    ⌘/Ctrl+±   以视口中心缩放
+  // ══════════════════════════════════════════════════════════════════════
+  function isTypingTarget(t) {
+    if (!t) return false;
+    const tag = (t.tagName || "").toUpperCase();
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
+  }
+
+  function doFitAll() {
+    const fit = fitView(1);
+    if (fit) { applyViewState({ panX: fit.panX, panY: fit.panY, zoom: fit.zoom }); scheduleSaveView(); }
+  }
+
+  function zoomByStep(dir) {
+    const rect = viewport.getBoundingClientRect();
+    zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, state.view.zoom * (dir > 0 ? 1.25 : 0.8));
+  }
+
+  async function deleteSelected() {
+    const ids = selectionIds();
+    if (!ids.length) return;
+    const blocked = ids.filter((id) =>
+      id === state.nav.workCardId || (state.index.childMap[id] || []).length > 0);
+    const deletable = ids.filter((id) => !blocked.includes(id));
+    if (blocked.length) {
+      notify(`根卡与有子卡的卡不能删（${blocked.length} 张已跳过）`, "error");
+    }
+    if (!deletable.length) return;
+    const names = deletable.map((id) => (state.index.cardMap[id] || {}).title || id);
+    if (!window.confirm(`删除 ${deletable.length} 张卡片？\n\n${names.join("\n")}\n\n此操作不可撤销。`)) return;
+    for (const id of deletable) {
+      try { await API.deleteCard(WORK_ID, id); } catch (err) { /* 单张失败不阻断其余 */ }
+    }
+    clearSelection();
+    reloadCanvas();
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (isTypingTarget(e.target)) return;
+    const mod = e.metaKey || e.ctrlKey;
+
+    if (mod && (e.key === "0" || e.code === "Digit0")) { e.preventDefault(); doFitAll(); return; }
+    if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); zoomByStep(1); return; }
+    if (mod && e.key === "-") { e.preventDefault(); zoomByStep(-1); return; }
+    if (mod && (e.key === "k" || e.key === "K")) { e.preventDefault(); openPalette(); return; }
+    if (mod && (e.key === "a" || e.key === "A")) {
+      e.preventDefault();
+      setSelection([...nodeMap.keys()]);
+      return;
+    }
+
+    if (e.key === "Escape") { clearSelection(); return; }
+
+    const ids = selectionIds();
+    if ((e.key === "Delete" || e.key === "Backspace") && ids.length) {
+      e.preventDefault();
+      deleteSelected();
+      return;
+    }
+    if (e.key === "Enter" && ids.length === 1) {
+      e.preventDefault();
+      openCardChat(ids[0]);
+      return;
+    }
+    if (e.key === "Tab") {
+      // Tab 新建：选中一张卡 ⇒ 在它下面建子卡（结构操作的最高频动作）；
+      // 未选中 ⇒ 建一张顶层卡。与右键菜单同一实现，不另造路径。
+      e.preventDefault();
+      openNewCardDialog(ids.length === 1 ? ids[0] : null);
+      return;
+    }
+    if ((e.key === "f" || e.key === "F") && ids.length) {
+      e.preventDefault();
+      focusCard(ids[0]);
+      return;
+    }
   });
 
   // [T18-C3] 拖拽落点仲裁：onDragUp 的 moved 分支在 persistCardPos 之前调用。
@@ -1757,20 +2370,19 @@ const WORK_ID = window.__WORK_ID__;
   if (navNewProjectBtn) navNewProjectBtn.onclick = () => { location.assign("/work/draft"); };
 
   // ==================== 新建卡 ====================
-  if (newCardBtn) newCardBtn.onclick = () => {
-    // 内联输入
+  //
+  // [画布商业化 2026-10-17] 抽成 openNewCardDialog(parentId)：
+  //   parentId 为空 ⇒ 原「跳草稿页、先出画面后落库」路径（行为逐字不变）；
+  //   parentId 有值 ⇒ **就地** POST 建子卡并刷新画布（右键菜单用）。
+  // 为什么两套：跳页流程是"新建项目/顶层卡"的产品决定（用户要先说话）；
+  // 而"在某张卡下面挂一张子卡"是画布内的结构操作，跳走会打断布局工作。
+  function openNewCardDialog(parentId) {
+    const isChild = !!parentId;
     const node = document.createElement("div");
-    node.style.cssText = "position:fixed;top:60px;right:20px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;z-index:1000;display:flex;flex-direction:column;gap:8px;min-width:240px;";
+    node.style.cssText = "position:fixed;top:60px;right:20px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;z-index:1000;display:flex;flex-direction:column;gap:8px;min-width:260px;box-shadow:0 12px 32px rgba(0,0,0,.55);";
     node.innerHTML = `
-      <input type="text" id="newCardTitle" placeholder="卡片标题" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px;">
-      <select id="newCardType" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px;">
-        <!-- [T07-2-1] 类型退役：建卡入口可选列表去掉四个废弃类型名（裁定 D-06：
-             名字留白名单、只关新建入口；存量卡不受影响）。
-             [惰性新建 2026-10-17] 原唯一选项「线索」是 legacy 且 write_blocked=true
-             ⇒ POST /cards 必 400（既有缺陷）。改为空串＝后端按本树 project_class 映射，
-             与卡详情建子卡同一口径（底座收口 T5.c）。 -->
-        <option value="">自动（按树映射）</option>
-      </select>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:2px;">${isChild ? "新建子卡（挂在当前卡下）" : "新建卡片"}</div>
+      <input type="text" id="newCardTitle" placeholder="卡片标题" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;">
       <div style="display:flex;gap:6px;">
         <button class="btn primary" id="newCardOk" style="flex:1;">创建</button>
         <button class="btn ghost" id="newCardCancel">取消</button>
@@ -1779,17 +2391,29 @@ const WORK_ID = window.__WORK_ID__;
     document.body.appendChild(node);
     const titleInput = node.querySelector("#newCardTitle");
     titleInput.focus();
-    const submit = () => {
+    const submit = async () => {
       const title = titleInput.value.trim();
       if (!title) { API.toast("请输入标题", "error"); return; }
-      const ctype = node.querySelector("#newCardType").value;
+      if (isChild) {
+        node.remove();
+        try {
+          await API.createCard(WORK_ID, { title, source: "用户直接创建", card_type: "", parent: parentId });
+          state.view.expanded.add(parentId);
+          scheduleSaveView();
+          await reloadCanvas();
+          notify("已创建：" + title);
+        } catch (e) {
+          notify("创建失败：" + (e && e.message ? e.message : e), "error");
+        }
+        return;
+      }
       node.remove();   // ★ 立刻关弹窗——不等任何网络
       // [惰性新建 2026-10-17 · 治建卡延迟] **先出画面，数据后到**：
       // 提交标题立刻跳进这张卡的对话画面（零等待、零 POST）；落库由对话页**后台立刻发起**。
       // 标题/父卡/类型经 sessionStorage 一次性携带（跳页清空内存；URL 只承担页面身份）。
       try {
         sessionStorage.setItem("newCard:" + WORK_ID, JSON.stringify({
-          title, parent: state.nav.viewRoot || "", card_type: ctype,
+          title, parent: state.nav.viewRoot || "", card_type: "",
         }));
       } catch (e) { /* 存储不可用：退化为默认标题，不阻断跳转 */ }
       location.assign("/work/" + WORK_ID + "/card/draft");
@@ -1800,7 +2424,327 @@ const WORK_ID = window.__WORK_ID__;
       if (e.key === "Enter") submit();
       if (e.key === "Escape") node.remove();
     };
+  }
+
+  if (newCardBtn) newCardBtn.onclick = () => openNewCardDialog(null);
+
+  // [画布商业化 2026-10-17] 工具栏两个新入口（元素在 work.html，id 固定）
+  const fitBtn = document.getElementById("fitBtn");
+  const searchBtn = document.getElementById("searchBtn");
+  if (fitBtn) fitBtn.onclick = () => doFitAll();
+  if (searchBtn) searchBtn.onclick = () => openPalette();
+
+  // ==================== 右键菜单 ====================
+  //
+  // [画布商业化 2026-10-17] 白板的右键菜单是「不离开画布做完一件事」的主通道：
+  // 建子卡、聚焦、下钻、复制、删除都在这。空白处的右键给"画布级"动作。
+  let ctxMenu = null;
+
+  function closeCtxMenu() {
+    if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
+  }
+
+  function openCtxMenu(x, y, items) {
+    closeCtxMenu();
+    const el = document.createElement("div");
+    el.className = "cv-menu";
+    el.innerHTML = items.map((it) => it.sep
+      ? '<div class="cv-msep"></div>'
+      : `<div class="cv-mi${it.danger ? " is-danger" : ""}" data-act="${it.act}"><span>${it.label}</span>${it.kbd ? `<span class="cv-kbd">${it.kbd}</span>` : ""}</div>`
+    ).join("");
+    document.body.appendChild(el);
+    // 贴边翻转：不让菜单跑出视口
+    const r = el.getBoundingClientRect();
+    el.style.left = Math.max(6, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+    el.style.top = Math.max(6, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+    el.addEventListener("mousedown", (e) => e.stopPropagation());
+    el.addEventListener("click", (e) => {
+      const mi = e.target.closest(".cv-mi");
+      if (!mi) return;
+      const item = items.find((i) => i.act === mi.dataset.act);
+      closeCtxMenu();
+      if (item && item.run) item.run();
+    });
+    ctxMenu = el;
+  }
+
+  document.addEventListener("mousedown", (e) => {
+    if (ctxMenu && !ctxMenu.contains(e.target)) closeCtxMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeCtxMenu();
+  });
+
+  viewport?.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    const cardNode = e.target.closest && e.target.closest(".card-node");
+    if (!cardNode) {
+      openCtxMenu(e.clientX, e.clientY, [
+        { act: "new", label: "新建卡片", run: () => openNewCardDialog(null) },
+        { act: "fit", label: "整幅适配", kbd: "⌘0", run: () => doFitAll() },
+        { act: "all", label: "全选可见卡", kbd: "⌘A", run: () => setSelection([...nodeMap.keys()]) },
+        { sep: true },
+        { act: "reorg", label: "整理布局（清钉住）", run: () => reorganizeBtn && reorganizeBtn.click() },
+      ]);
+      return;
+    }
+
+    const cid = cardNode.dataset.id;
+    if (!state.view.selected.has(cid)) selectOnly(cid);
+    const card = state.index.cardMap[cid] || {};
+    const hasKids = (state.index.childMap[cid] || []).length > 0;
+    const isExpanded = state.view.expanded.has(cid);
+    const isRoot = cid === state.nav.workCardId;
+    const multi = state.view.selected.size > 1;
+
+    openCtxMenu(e.clientX, e.clientY, [
+      { act: "open", label: multi ? `打开对话（${state.view.selected.size} 张中第一张）` : "打开对话", kbd: "↵", run: () => openCardChat(cid) },
+      { act: "focus", label: "以此卡为中心", kbd: "F", run: () => focusCard(cid) },
+      { sep: true },
+      { act: "child", label: "新建子卡", run: () => openNewCardDialog(cid) },
+      hasKids ? { act: "toggle", label: isExpanded ? "收起子卡" : "展开子卡", run: () => toggleExpand(cid) } : null,
+      { act: "drill", label: "下钻到此卡（Alt+双击）", run: () => setViewRoot(cid) },
+      { sep: true },
+      { act: "copy", label: "复制标题", run: () => { try { navigator.clipboard.writeText(card.title || ""); notify("标题已复制"); } catch (err) { /* 剪贴板不可用 */ } } },
+      isRoot
+        ? null
+        : { act: "del", label: "删除", kbd: "Del", danger: true, run: () => { setSelection([cid]); deleteSelected(); } },
+    ].filter(Boolean));
+  });
+
+
+  // ==================== 快速搜索（⌘K / Ctrl+K） ====================
+  //
+  // [画布商业化 2026-10-17] 卡片一多，"在画布上找到那张卡"就是第一痛点：
+  // 靠肉眼扫不现实，靠左栏导航树要点开层级。命令面板是各家白板的标配解法：
+  //   · ⌘K 唤起，输入即筛（标题 + 卡 id + 父卡标题路径）；
+  //   · ↑↓ 选择、↵ 定位（视口飞过去并选中）、Esc 关闭；
+  //   · 点击结果同样定位——不用记快捷键也能用。
+  let paletteEl = null;
+  let paletteIdx = 0;
+  let paletteHits = [];
+
+  function cardPath(cid) {
+    const parts = [];
+    let cur = cid;
+    const guard = new Set();
+    while (cur && !guard.has(cur) && state.index.cardMap[cur]) {
+      guard.add(cur);
+      const c = state.index.cardMap[cur];
+      parts.unshift(c.title || cur);
+      cur = c.parent;
+    }
+    return parts.slice(0, -1).join(" / ");
+  }
+
+  function closePalette() {
+    if (paletteEl) { paletteEl.remove(); paletteEl = null; }
+    paletteHits = [];
+  }
+
+  function renderPaletteList(q) {
+    const list = paletteEl.querySelector(".cv-palette-list");
+    const kw = (q || "").trim().toLowerCase();
+    const all = state.data.cards.filter((c) => c.card_type !== "rule");
+    paletteHits = (kw
+      ? all.filter((c) =>
+          (c.title || "").toLowerCase().includes(kw)
+          || (c.card_id || "").toLowerCase().includes(kw)
+          || cardPath(c.card_id).toLowerCase().includes(kw))
+      : all
+    ).slice(0, 30);
+    if (paletteIdx >= paletteHits.length) paletteIdx = Math.max(0, paletteHits.length - 1);
+
+    if (!paletteHits.length) {
+      list.innerHTML = `<div class="cv-palette-empty">没有匹配的卡片</div>`;
+      return;
+    }
+    list.innerHTML = paletteHits.map((c, i) => `
+      <div class="cv-palette-item${i === paletteIdx ? " is-active" : ""}" data-i="${i}">
+        <span class="cv-palette-dot" data-type="${escapeHtml(c.card_type || "")}"></span>
+        <span class="cv-palette-title">${escapeHtml(c.title || c.card_id)}</span>
+        <span class="cv-palette-path">${escapeHtml(cardPath(c.card_id) || "根卡")}</span>
+        ${c.state === "completed" ? '<span class="cv-palette-state">已完成</span>' : ""}
+      </div>
+    `).join("");
+    list.querySelectorAll(".cv-palette-item").forEach((el) => {
+      el.addEventListener("mousemove", () => {
+        paletteIdx = Number(el.dataset.i);
+        list.querySelectorAll(".cv-palette-item").forEach((x) => x.classList.toggle("is-active", x === el));
+      });
+      el.addEventListener("click", () => pickPalette(Number(el.dataset.i)));
+    });
+  }
+
+  function pickPalette(i) {
+    const card = paletteHits[i];
+    if (!card) return;
+    closePalette();
+    // 目标卡可能被折叠在未展开的祖先下 ⇒ 先展开祖先链，再定位
+    let cur = card.parent;
+    const guard = new Set();
+    while (cur && !guard.has(cur) && state.index.cardMap[cur]) {
+      guard.add(cur);
+      state.view.expanded.add(cur);
+      cur = state.index.cardMap[cur].parent;
+    }
+    scheduleSaveView();
+    renderAll();
+    selectOnly(card.card_id);
+    focusCard(card.card_id);
+  }
+
+  function openPalette() {
+    if (paletteEl) { closePalette(); return; }
+    paletteEl = document.createElement("div");
+    paletteEl.className = "cv-palette";
+    paletteEl.innerHTML = `
+      <input class="cv-palette-input" placeholder="搜索卡片标题、编号或路径…" />
+      <div class="cv-palette-list"></div>
+      <div class="cv-palette-foot"><span>↑↓ 选择</span><span>↵ 定位</span><span>Esc 关闭</span></div>
+    `;
+    document.body.appendChild(paletteEl);
+    paletteIdx = 0;
+    const input = paletteEl.querySelector(".cv-palette-input");
+    renderPaletteList("");
+    input.focus();
+    input.addEventListener("input", () => { paletteIdx = 0; renderPaletteList(input.value); });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        paletteIdx = Math.min(paletteIdx + 1, paletteHits.length - 1);
+        renderPaletteList(input.value);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        paletteIdx = Math.max(paletteIdx - 1, 0);
+        renderPaletteList(input.value);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        pickPalette(paletteIdx);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closePalette();
+      }
+    });
+    paletteEl.addEventListener("mousedown", (e) => e.stopPropagation());
+  }
+
+  document.addEventListener("mousedown", (e) => {
+    if (paletteEl && !paletteEl.contains(e.target)) closePalette();
+  });
+
+  // ==================== 小地图 ====================
+  //
+  // [画布商业化 2026-10-17] 长画布必备的"我在哪"导航件：
+  //   · 左下角常驻，画全部可见卡的缩略矩形（按类型着色）＋ 当前视口框；
+  //   · 点击/拖动小地图＝把视口中心移到该处（不是缩放，纯导航）；
+  //   · 卡片全部落在视口内时自动淡出（不占视线）。
+  const MM_W = 176, MM_H = 118, MM_PAD = 8;
+  const mmRoot = document.createElement("div");
+  mmRoot.className = "cv-minimap";
+  mmRoot.innerHTML = `<canvas width="${MM_W}" height="${MM_H}"></canvas><div class="cv-mm-view"></div>`;
+  viewport?.appendChild(mmRoot);
+  const mmCanvas = mmRoot.querySelector("canvas");
+  const mmCtx = mmCanvas.getContext("2d");
+  const mmView = mmRoot.querySelector(".cv-mm-view");
+
+  const MM_COLORS = {
+    project: "#6ea8ff", sub_project: "#7c8cff", topic: "#4fd1c5",
+    tool: "#b58cff", coder: "#f5a65b", rule: "#8b96a8",
   };
+
+  let _mmRaf = 0;
+  function scheduleMinimap() {
+    if (_mmRaf) return;
+    _mmRaf = requestAnimationFrame(() => { _mmRaf = 0; renderMinimap(); });
+  }
+
+  function renderMinimap() {
+    if (!viewport || !mmCtx) return;
+    const nodes = [...nodeMap.entries()];
+    if (!nodes.length) { mmRoot.style.display = "none"; return; }
+    mmRoot.style.display = "";
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [, n] of nodes) {
+      const x = parseFloat(n.style.left) || 0, y = parseFloat(n.style.top) || 0;
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + (n.offsetWidth || 220));
+      maxY = Math.max(maxY, y + (n.offsetHeight || 120));
+    }
+    const z = state.view.zoom || 1;
+    const vx0 = (0 - state.view.panX) / z, vy0 = (0 - state.view.panY) / z;
+    const vx1 = (viewport.clientWidth - state.view.panX) / z;
+    const vy1 = (viewport.clientHeight - state.view.panY) / z;
+
+    // 世界范围＝卡片 bbox ∪ 视口范围：保证视口框永远画得下（否则缩小到很小会跑出框外）
+    const bx0 = Math.min(minX, vx0), by0 = Math.min(minY, vy0);
+    const bx1 = Math.max(maxX, vx1), by1 = Math.max(maxY, vy1);
+    const w = Math.max(1, bx1 - bx0), h = Math.max(1, by1 - by0);
+    const scale = Math.min((MM_W - MM_PAD * 2) / w, (MM_H - MM_PAD * 2) / h);
+    const ox = MM_PAD + ((MM_W - MM_PAD * 2) - w * scale) / 2 - bx0 * scale;
+    const oy = MM_PAD + ((MM_H - MM_PAD * 2) - h * scale) / 2 - by0 * scale;
+    const toX = (x) => x * scale + ox;
+    const toY = (y) => y * scale + oy;
+
+    mmCtx.clearRect(0, 0, MM_W, MM_H);
+    for (const [cid, n] of nodes) {
+      const x = parseFloat(n.style.left) || 0, y = parseFloat(n.style.top) || 0;
+      const card = state.index.cardMap[cid] || {};
+      mmCtx.fillStyle = MM_COLORS[card.card_type] || "#7c8cff";
+      mmCtx.globalAlpha = 0.75;
+      const rw = Math.max(2, (n.offsetWidth || 220) * scale);
+      const rh = Math.max(1.5, (n.offsetHeight || 120) * scale);
+      mmCtx.fillRect(toX(x), toY(y), rw, rh);
+    }
+    mmCtx.globalAlpha = 1;
+
+    // 视口框：位置随 pan/zoom 实时变，用 DOM 元素（CSS 有主色描边）
+    const vx = toX(vx0), vy = toY(vy0);
+    const vw = Math.max(6, (vx1 - vx0) * scale);
+    const vh = Math.max(6, (vy1 - vy0) * scale);
+    mmView.style.left = vx + "px";
+    mmView.style.top = vy + "px";
+    mmView.style.width = vw + "px";
+    mmView.style.height = vh + "px";
+
+    // 内容全在视口内 ⇒ 淡出（不打扰）
+    const allVisible = vx0 <= minX && vy0 <= minY && vx1 >= maxX && vy1 >= maxY;
+    mmRoot.style.opacity = allVisible ? "0.25" : "0.95";
+
+    // 供点击换算复用
+    mmRoot.dataset.scale = String(scale);
+    mmRoot.dataset.ox = String(ox);
+    mmRoot.dataset.oy = String(oy);
+  }
+
+  // 点击/拖动小地图 ⇒ 视口中心跳到该世界点
+  function mmNavigate(clientX, clientY) {
+    const rect = mmRoot.getBoundingClientRect();
+    const scale = parseFloat(mmRoot.dataset.scale || "1");
+    const ox = parseFloat(mmRoot.dataset.ox || "0");
+    const oy = parseFloat(mmRoot.dataset.oy || "0");
+    const wx = (clientX - rect.left - ox) / scale;
+    const wy = (clientY - rect.top - oy) / scale;
+    const z = state.view.zoom || 1;
+    applyViewState({
+      panX: viewport.clientWidth / 2 - wx * z,
+      panY: viewport.clientHeight / 2 - wy * z,
+    });
+    scheduleSaveView();
+  }
+
+  let mmDrag = false;
+  mmRoot.addEventListener("mousedown", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    mmDrag = true;
+    mmNavigate(e.clientX, e.clientY);
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (mmDrag) mmNavigate(e.clientX, e.clientY);
+  });
+  document.addEventListener("mouseup", () => { mmDrag = false; });
 
   // ==================== 数据加载 ====================
   async function reloadCanvas() {
@@ -1831,9 +2775,21 @@ const WORK_ID = window.__WORK_ID__;
         state.nav.viewRoot = state.nav.workCardId;
       }
       rebuildCardMap();
-      if (!__VIEW_RESTORED__) { restoreViewState(); __VIEW_RESTORED__ = true; }   // [F2⑥] 仅首次加载恢复（模块内旗标）
+      // [画布商业化 2026-10-17] 首次加载：有存档就恢复，无存档就**整幅适配**。
+      // 旧行为是无存档时留在 (80,40) 默认位，内容一多就溢出视口上方（首屏只见半张图）。
+      let _needFit = false;
+      if (!__VIEW_RESTORED__) {
+        _needFit = !restoreViewState();
+        __VIEW_RESTORED__ = true;
+      }
       showCanvasState("clear");
       renderAll();          // [画布第三步 T4] 数据就绪 → 统一重绘入口
+      if (_needFit) {
+        _autoFitPending = true;
+        _userMoved = false;
+        const _fit = fitView(1);
+        if (_fit) applyViewState({ panX: _fit.panX, panY: _fit.panY, zoom: _fit.zoom });
+      }
       if (!state.data.cards.length) showCanvasState("empty");   // [F3④] 空态
       // [T17-F6/R-1] 不再无条件 hideWorkspace()：「刷新画布数据」与「收起对话层」是两件事。
       // 视图切换改由 .app-main[data-view] 显隐驱动（workspace.js setAppView）；「← 画布」
@@ -1863,7 +2819,12 @@ const WORK_ID = window.__WORK_ID__;
     } else if (kind === "loading") {
       box.innerHTML = `<div class="cs-loading">加载中…</div>`;
     } else if (kind === "empty") {
-      box.innerHTML = `<div class="cs-empty">这张画布还没有卡片——点右上「＋ 新建卡」开始。</div>`;
+      // [画布商业化 2026-10-17] 空态从"一句话"升级为"标题＋两条入口"：
+      // 空画布是用户第一次见到这个产品的地方，要告诉他下一步做什么。
+      box.innerHTML = `<div class="cv-empty">
+        <div class="cv-empty-title">这张画布还没有卡片</div>
+        <div class="cv-empty-hint">点右上「＋ 新建卡」开始，或按 <span class="cv-empty-key">Tab</span> 建第一张</div>
+      </div>`;
     }
   }
 
@@ -1915,6 +2876,21 @@ const WORK_ID = window.__WORK_ID__;
     const projection = computeProjection({ ...collectProjectionInput(), sizes: measureSizes() });
     lastProjection = projection;   // [画布重构 2.1] 与 renderCanvas 同源，全量重算后刷新缓存
     reflowLayout(projection, collectViewModel());
+    scheduleAutoFit();
+  }
+
+  // [画布商业化 2026-10-17] 首次自动适配的收尾：内容稳定后（reflow 之后）再 fit 一次。
+  // 用户一动（滚轮/拖拽）立即放弃，绝不跟用户抢镜头。
+  let _autoFitTimer = 0;
+  function scheduleAutoFit() {
+    if (!_autoFitPending || _userMoved) return;
+    clearTimeout(_autoFitTimer);
+    _autoFitTimer = setTimeout(() => {
+      if (!_autoFitPending || _userMoved) return;
+      _autoFitPending = false;
+      const fit = fitView(1);
+      if (fit) { applyViewState({ panX: fit.panX, panY: fit.panY, zoom: fit.zoom }); scheduleSaveView(); }
+    }, 220);
   }
 
   // 视图变换量写入口（pan/zoom）：写视图桶＋应用变换；投影与 pan/zoom 无关，
