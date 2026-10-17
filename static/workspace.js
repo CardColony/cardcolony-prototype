@@ -160,6 +160,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
      根本走不到写 DOM 那一步——不需要给每个写点打补丁。 */
   let _openSeq = 0;
 
+  /** [建项目流程 2026-10-17] 显示板绑定：把某卡的画板挂到 #chatArea。
+      从 open() 抽出——草稿落库后要**先换绑显示板、再走原发送路径**，
+      两处必须是同一份实现，否则「写的板 ≠ 看的板」会再次分裂（病根②）。 */
+  function bindBoard(wid, cid) {
+    try { EventFlow.activate(wid, cid); } catch (e) { /* 零阻断 */ }
+  }
+
   async function open(cardId) {
     if (cardId === "draft") return;   // [惰性新建] 草稿卡无真身：不走 getCard（否则 404）
     const mySeq = ++_openSeq;
@@ -167,7 +174,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // [画板四机制 T1/T4 2026-10-16] 点下去**同步翻页**：先把该卡的画板挂上
     // #chatArea，不等 getCard/inspector/timeline 任一 await——否则旧卡内容滞留，
     // 且快速连点时后到的 await 会把旧卡写进新卡（P4 串卡的界面侧表现）。
-    try { EventFlow.activate(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
+    bindBoard(WORK_ID, cardId);
     try {
       const card = await API.getCard(WORK_ID, cardId);
       if (stale()) return;
@@ -227,7 +234,6 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         window.__WORK_ID__ = w.work_id;                          // nav/rule 惰性读，随取随新
         IS_DRAFT_PROJECT = false;
         _draftRootCardId = w.work_card_id || "";
-        history.replaceState(null, "", "/work/" + WORK_ID);
         loadRulePanel().catch(() => {});
       }
       // ② 新卡
@@ -240,10 +246,27 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         });
         cid = (r && r.meta && r.meta.card_id) || "";
         DRAFT_CARD = null;
-        if (currentCard) currentCard.meta.card_id = cid;
+      } else if (cid === "draft" && _draftRootCardId) {
+        /* [建项目流程 2026-10-17] 项目草稿：根卡是**随项目一起建好**的（work_card_id），
+           不是再 POST 一张。把画面身份从临时键 "draft" 换成真根卡 id——
+           否则 send() 会拿 "draft" 去写板/发消息（写进用户看不见的键）。
+           落库结果从这里返回，调用方据此换绑显示板，不从旧 DOM 状态猜。 */
+        cid = _draftRootCardId;
+      }
+      if (currentCard && cid) currentCard.meta.card_id = cid;
+      /* 地址更新一律 replaceState（静默换址，零整页加载、不堆历史）。
+         有真卡 ⇒ 对话页地址；只有项目 ⇒ 画布页地址（兜底，正常不会走到）。 */
+      if (cid) {
         history.replaceState(null, "", "/work/" + WORK_ID + "/card/" + cid);
-        renderNav().catch(() => {});   // 卡进左栏
-        renderInspector().catch(() => {});   // 右栏把临时 id 换成真 card_id
+        /* ★ [建项目流程 2026-10-17] 显示板就在**身份变更这一刻**换绑，不放发送里：
+           建卡路径的落库常在用户开始打字之前就完成了（页面一进就后台发起），
+           等发送时 DRAFT_CARD 已是 null，三步分支根本不进——板会一直停在 new-N，
+           气泡写进游离板，假界面原样复现。换绑跟着「id 变了」走，不跟「谁触发」走。 */
+        bindBoard(WORK_ID, cid);
+        renderNav().catch(() => {});        // 新项目/新卡进左栏
+        renderInspector().catch(() => {});  // 右栏把临时 id 换成真 card_id
+      } else {
+        history.replaceState(null, "", "/work/" + WORK_ID);
       }
       return { wid: WORK_ID, cid };
     })();
@@ -826,8 +849,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const content = statusOp ? "更新现状" : String(inputBar ? inputBar.getDraft() : "").trim();
     if (!content) return;
 
-    // [惰性新建 2026-10-17 · D3] 发送是数据动作：草稿态先落库（项目/卡），再走正常发送。
-    // 失败：toast、保持草稿态、输入框**不清空**（现场保留）、可重试。
+    /* [建项目流程 2026-10-17] 草稿首条消息：
+         ① 落库（ensurePersisted：建项目/卡；带锁、失败拒绝，不半建）
+         ② 显示板换绑到真键——在 ensurePersisted 内、身份变更那一刻完成
+            （见该函数「★ 显示板就在身份变更这一刻换绑」注释：放这里会漏掉
+            「落库先于发送完成」的建卡时序，板停在 new-N，气泡写进游离板）
+         ③ 下面就是原有发送路径，一字不动
+       失败：toast、保持草稿态、输入框**不清空**（现场保留）、可重试。 */
     if (IS_DRAFT_PROJECT || DRAFT_CARD) {
       try {
         await ensurePersisted();

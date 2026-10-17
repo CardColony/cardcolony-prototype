@@ -46,13 +46,21 @@ def _fn_body(src: str, header: str) -> str:
 
 
 def test_t4_open_activates_before_first_await():
-    """open() 必须在第一个 await 之前**同步** activate —— 点下去画板立刻翻页。"""
-    body = _strip_js_comments(_fn_body(WS.read_text(encoding="utf-8"), "async function open"))
-    i_act = body.find("EventFlow.activate(")
+    """open() 必须在第一个 await 之前**同步**换绑画板 —— 点下去画板立刻翻页。
+
+    [建项目流程 2026-10-17] activate 抽成 bindBoard()（草稿落库后换绑要复用同一份），
+    断言随之改为「open 在第一个 await 前调 bindBoard」，并另行锁死
+    「bindBoard 内部就是 EventFlow.activate」——机制不变，只是换了调用名。
+    """
+    src = _strip_js_comments(WS.read_text(encoding="utf-8"))
+    body = _fn_body(src, "async function open")
+    i_act = body.find("bindBoard(")
     i_await = body.find("await ")
-    assert i_act >= 0, "open() 未调用 EventFlow.activate（画板不会立刻翻页）"
+    assert i_act >= 0, "open() 未调 bindBoard（画板不会立刻翻页）"
     assert i_await >= 0, "open() 里找不到 await（判据失效，请核对实现）"
-    assert i_act < i_await, "activate 必须在第一个 await 之前（否则旧卡内容滞留、快速连点串卡）"
+    assert i_act < i_await, "bindBoard 必须在第一个 await 之前（否则旧卡内容滞留、快速连点串卡）"
+    bb = _fn_body(src, "function bindBoard")
+    assert "EventFlow.activate(" in bb, "bindBoard 未走 EventFlow.activate（换绑失效）"
 
 
 def test_t4_ensure_msgs_is_session_scoped():
