@@ -1,66 +1,35 @@
-/* esm/assembler.js —— 会话渲染装配器（纯状态机 · 零 DOM · 零依赖）
+/* esm/assembler.js —— 会话装配器（扁平节点表 · dsh chat-snapshot-builder 形态）
  *
- *   裁定落点（任务书《会话渲染单源化》C1/C2 ＋《对话流照抄 dsh》T1/T2）：
- *     · C1 单源单通道：timeline（落盘事件流）是唯一渲染数据源；
- *     · C2 位置由数据自带：节点位置＝(分组键, 到达序)，渲染只读快照，
- *       绝不数 DOM、不找锚点、不做归位推算；
- *     · dsh A1/A2（增量装配）：每个节点带**稳定 key** 与**内容版本 rev**，
- *       渲染层据此复用 DOM／原地更新，不整列重算。快照对象在结构未变时
- *       返回**同一引用**（sameReferences 语义）。
+ * [对话流照抄 dsh 完全版 v3 2026-10-17] 本文件从「按轮分组」改成 dsh 的
+ * **扁平节点表**：
+ *     snapshot() = { order: string[], nodes: Map<key, node>, rev }
+ *   order 是可见节点键的**有序数组**（到达序），nodes 是键→节点的活引用表。
+ *   位置＝数组下标，不再有「轮容器」这一层——任务书 §三 退役了轮分组三道。
  *
- *   ── 分组键的实测依据（施工前核验，与任务书字面写法的一处必要偏差）──
- *   任务书 §三件1 写「snapshot 按 round 分组」。核验 48 张卡的 events jsonl
- *   （works 下各 work 的 events 目录，全量逐条读）后确认：
- *   **顶层 round 不是对话轮次**：
- *     · round 由 event_stream 的回合锚 turn 决定，run_start 置 0、每次
- *       round_start 改成模型轮次计数（event_stream.py:316-322）——
- *       同一个 run 内它会 0,1,2,3 递增，**下一个 run 又回 0**；
- *     · assistant_text 走 session_facade.emit_message_event 的独立落点，
- *       round 由调用方另给（实测同卡里出现 round=0 与 round=1 两种取值）；
- *     · 48 张卡里 4 张 round 非单调；work_001/card_003 全卡 round=0（952 条）。
- *   真正的对话轮次锚是 **run_id（= pair_id 回合对）**：一条 user_message 与它
- *   的过程事件、assistant_text 共用同一个 run_id（实测 work_009/card_001：
- *   seq19~36 全为 248f63b4＝一轮）。故分组键：
- *     run_id 非空 → 「run:」+ run_id（生产卡 43/48 张）；
- *     run_id 为空 → 「r0:」+ round（迁移老卡 5 张，其 round 确为轮次序号）；
- *     ns="local"  → 「local:」+ local_key（乐观上屏的临时轮，见下）。
- *   这仍是「位置由数据自带」，且是全量落盘数据里唯一可证的轮次锚；
- *   按字面的 round 分组会把每一轮的 round=0 前缀（user_message/run_start/
- *   context/…）全部并进同一组——正是本任务要消灭的跨轮混排。
- *   偏差与证据见《会话渲染单源化_施工回报_20261015.md》。
+ * 出处：deepseek-harness/packages/client/ui-conversation/src/client/
+ *       conversation-nodes/chat-snapshot-builder.ts
+ *   对齐点：
+ *     · orderedVisible（:135-139）＝ 按 anchorSeq 升序；本机用到达序 ord（见下）。
+ *     · MutableChatNodeStore（:19-52）＝ byKey ＋ valuesCache；本机同形。
+ *     · replace/apply 的**引用稳定**（:394-427）：结构未变 ⇒ order 返回同一数组、
+ *       snapshot 返回同一对象；内容变化只改节点自身的 rev，不动数组。
+ *     · 内容型 upsert 不触发重排（:404-419 structural 判定）；本机以 rev 表达。
  *
- *   ── 两套 seq 空间的隔离 ──
- *   落盘 timeline 的 seq 来自 events 文件尾取号，实时 SSE 的 seq 来自内存
- *   journal 计数器（stream.js 旧注释已点明二者不相等）。两路若混进同一个
- *   去重集合会互相吞帧，故每条记录带 ns（"disk"/"live"/"local"），去重与排序
- *   都按 (ns, seq)／到达序进行，互不串扰。
+ * 与 dsh 的**必要差异**（数据源不同，属任务书 §0 的适配层）：
+ *   · dsh 的节点由 Host 的 ConversationNode 流直接给出；本机要从 timeline 的
+ *     29 类事件**装配**出节点（user/assistant/tool/seats/sys/injection…），
+ *     这段装配逻辑是原 assembler 的既有语义，原样保留（只把容器从组换成扁平表）。
+ *   · 排序键是「到达序」不是 seq 数值：落盘文件是 append-only 时间序、SSE 帧按
+ *     到达序推，故到达序恒等于真实时序；两套 seq 空间（disk/live）不得互比。
  *
- *   ── 排序键是「到达序」不是 seq 数值 ──
- *   装配器只按到达顺序 applyRecord，而到达顺序恒等于真实时序（落盘文件是
- *   append-only 的时间序，SSE 帧按到达序推）。故每个节点记一个内部单调
- *   ord 作排序键：全量重建时它＝文件序，实时时它＝发生序，混流时它＝
- *  先 disk 后 live 的真实先后。
- *
- *   ── 乐观上屏（T1）与「本地轮认领」──
- *   点发送的瞬间，前端以 ns="local" 记一条 user_message，自成一组
- *   （key="local:<local_key>"）。随后该轮的第一条**带 run_id 的真实记录**
- *   （SSE 的 run_start，或 timeline 回流的 user_message）到达时，装配器把
- *   本地组**改名**为 "run:<run_id>"（认领），于是该轮后续过程事件天然落进
- *   同一组，不产生第二个轮容器、不搬任何既有 DOM。
- *   真实 user_message 随后到达时，若组内已有内容相同的 pending 节点，则
- *   **原地升级**（补 seq/data、清 pending），不新增节点、不出双气泡。
- *
- *   导出：
- *     REGISTRY              类型注册表（纯数据：加事件类型＝加一行）
- *     groupKeyOf(rec)       分组键（run_id 优先 → round 回落 → local_key）
- *     createAssembler()     { applyRecord, rebuild, snapshot, dropLocal }
+ * 导出：
+ *   REGISTRY              类型注册表（加事件类型＝加一行）
+ *   createAssembler()     { applyRecord, rebuild, snapshot, dropLocal, keyOfNode }
  */
-
-/* ── ① 类型注册表 ─────────────────────────────────────────────────
-   type → { kind, merge? }
+/* ── ① 类型注册表（与旧版逐字一致：加事件类型＝加一行）─────────────
    kind ∈ user / assistant / cardmsg / tool / chain / seats / sys / injection
-   kind="reasoning" 是特例：带 model → 并进 seats 组；不带 → 并进同组
-   assistant 的思考区。注册表里没有的类型一律兜底 sys（C5：不丢不炸）。 */
+   kind="reasoning" 是特例：带 model → 并进 seats 节点；不带 → 并进最近一条
+   assistant 的思考区。注册表里没有的类型一律兜底 sys（不丢不炸）。 */
 export const REGISTRY = {
   user_message:          { kind: "user" },
   assistant_text:        { kind: "assistant" },
@@ -82,20 +51,12 @@ export const REGISTRY = {
 
   context_preamble: { kind: "injection" }, context_injection: { kind: "injection" },
   judgment_protocol: { kind: "injection" }, context_seat_identity: { kind: "injection" },
-  // [更新现状按钮改造 2026-10-16] 「更新现状」专用回合的轮首任务注入（同注入族）。
   status_update_task: { kind: "injection" },
 
-  // reasoning 特例：带 model → seats 席卡；不带 → merge 进同组 assistant 思考区
   reasoning: { kind: "reasoning" },
 
-  // ↓ 以下三类不在任务书给定的注册表清单里，但**真实落盘数据存在**
-  //   （实测全量 type 统计：card_message 见于 cards 互发、triage_verdict
-  //   见于退役前的旧 journal、ping 是 SSE 保活）。按注册表自带的扩展机制
-  //   「加事件类型＝加一行」补齐，否则它们会掉进 C5 兜底行、显示成
-  //   「未识别事件」，白丢可读的旧渲染分支。
-  card_message: { kind: "sys" },      // 旧 renderEvent 有专属 case（卡间消息）
-  triage_verdict: { kind: "sys" },    // 旧 renderEvent 有专属 case（已退役）
-  ping: { kind: "sys" },              // SSE 保活，renderEvent 原先无 case
+  // 真实落盘数据里存在、但不在任务书清单里的三类（见旧版注释）：
+  card_message: { kind: "sys" }, triage_verdict: { kind: "sys" }, ping: { kind: "sys" },
 };
 
 /** revoke 是控制位记录：不渲染成节点，只驱动软删。 */
@@ -116,94 +77,81 @@ function modelOf(rec, data) {
   return String((rec && rec.model) || (data && data.model) || "");
 }
 
-/** 分组键：run_id 优先（对话轮次），缺失回落 round（迁移老卡轮次序号）；
-    乐观上屏的本地记录（ns="local"）用 local_key 单独成组。 */
-export function groupKeyOf(rec) {
-  if (rec && String(rec.ns || "") === "local") {
-    return "local:" + String((rec && rec.local_key) || "0");
-  }
-  const runId = String((rec && rec.run_id) || "");
-  if (runId) return "run:" + runId;
-  return "r0:" + toInt(rec && rec.round, 0);
+/** 节点稳定键：同一节点跨多次 apply 恒等（渲染层据此复用 DOM）。 */
+function keyOf(ns, seq, kind) {
+  return String(ns) + ":" + toInt(seq, 0) + ":" + String(kind);
 }
 
-/* ── ② 装配器（纯函数式状态机）────────────────────────────────── */
+function sameText(a, b) {
+  return String(a == null ? "" : a).trim() === String(b == null ? "" : b).trim();
+}
+
+/* ── ② 装配器（纯状态机 · 零 DOM · 零依赖）────────────────────────── */
 export function createAssembler() {
-  /** 分组键 → 组。 */
-  const groups = new Map();
-  /** 组对象数组（创建序＝首节点到达序，快照轮序即此序）。 */
-  const groupList = [];
+  /** 扁平节点表：key → node（活引用）。 */
+  let byKey = new Map();
+  /** 有序键数组（到达序）；结构未变时引用稳定。 */
+  let order = [];
   /** "ns|type|id" 去重表：同一条记录二次入装配不重不炸。 */
-  const seen = new Set();
+  let seen = new Set();
   /** 全局到达计数（排序键）。 */
   let ord = 0;
-  /** 结构版本：仅在「增删节点／增删组／改键」时自增——快照据此判引用可复用。 */
+  /** 结构版本：仅在「增删节点」时自增——快照据此判引用可复用。 */
   let structRev = 0;
-  /** 待认领的本地轮（乐观上屏创建的组键）。 */
+  /** 待认领的本地用户节点键（乐观上屏）。 */
   let pendingLocalKey = null;
-  /** 快照缓存（sameReferences：结构没变就返回同一引用）。 */
+  /** 该轮尚无 assistant 时暂存的思考（待吸收）。 */
+  let pendingReasoning = "";
+  let pendingReasoningOrd = 0;
   let snapCache = null;
   let snapCacheRev = -1;
 
-  function newGroup(rec) {
-    const key = groupKeyOf(rec);
-    let g = groups.get(key);
-    if (!g) {
-      // 新轮出现 ⇒ 此前所有轮已收口（不再有 assistant 到达），可落兜底思考。
-      for (const other of groupList) if (other.key !== key) finalizeGroup(other);
-      g = {
-        key,
-        runId: String((rec && rec.run_id) || ""),
-        round: toInt(rec && rec.round, 0),
-        roundMax: toInt(rec && rec.round, 0),
-        nodes: [],
-        bySeq: new Map(),       // 组内 seq → 节点（tool 合体配对用）
-        lastOpenTool: null,     // 组内最近一条未闭合 tool 节点
-        seats: null,            // 组内 seats 节点（懒建）
-        pendingReasoning: "",   // 该轮尚无 assistant 时暂存的思考（待吸收）
-        pendingReasoningOrd: 0,
-        terminal: false,        // 该组已见 done/error（轮界已收口）
-        finalized: false,       // 兜底思考已落（幂等）
-        snap: null,             // 快照包装对象（引用稳定）
-      };
-      groups.set(key, g);
-      groupList.push(g);
-      structRev++;
-    }
-    return g;
-  }
-
-  function pushNode(g, node) {
+  function push(node) {
     node.ord = ++ord;
     node.rev = 1;
-    node.groupKey = g.key;
-    g.nodes.push(node);
-    g.bySeq.set(node.seq, node);
-    const r = toInt(node.round, 0);
-    if (r > g.roundMax) g.roundMax = r;
+    byKey.set(node.key, node);
+    order = order.concat([node.key]);
     structRev++;
     return node;
   }
 
-  /** 节点稳定键：同一节点跨多次 apply 恒等（渲染层据此复用 DOM）。
-      组内 (ns, seq, kind) 唯一——seq 由后端单卡单调取号，tool_result 合体
-      不新增 seq，故不会撞键。 */
-  function keyOf(ns, seq, kind) {
-    return String(ns) + ":" + toInt(seq, 0) + ":" + String(kind);
+  /** 追加后按 ord 校正（兜底思考会插在中间）。 */
+  function resort() {
+    const keys = order.slice().sort((a, b) => (byKey.get(a).ord || 0) - (byKey.get(b).ord || 0));
+    order = keys;
+    structRev++;
   }
 
-  /** 组内 seats 节点：seats_enter 开组；seat_start / 带 model 的 reasoning 懒建。 */
-  function seatsNodeOf(g, rec) {
-    if (!g.seats) {
-      const seq = toInt(rec.seq, 0);
-      g.seats = pushNode(g, {
-        seq, ns: rec.ns, type: rec.type, kind: "seats",
-        round: rec.round, data: rec.data || {}, model: modelOf(rec, rec.data),
-        members: {}, entered: false,
-        key: keyOf(rec.ns || "disk", seq, "seats"),
-      });
+  /** 最近一条 assistant 节点（主模型思考的归属目标）。 */
+  function lastAssistant() {
+    for (let i = order.length - 1; i >= 0; i--) {
+      const n = byKey.get(order[i]);
+      if (n && n.kind === "assistant") return n;
     }
-    return g.seats;
+    return null;
+  }
+
+  /** 同 run 的 seats 节点（三席席卡；懒建）。 */
+  function seatsOf(runId, rec) {
+    if (runId) {
+      for (let i = order.length - 1; i >= 0; i--) {
+        const n = byKey.get(order[i]);
+        if (n && n.kind === "seats" && String(n.run_id || "") === runId) return n;
+      }
+    } else {
+      for (let i = order.length - 1; i >= 0; i--) {
+        const n = byKey.get(order[i]);
+        if (n && n.kind === "seats") return n;
+      }
+    }
+    const seq = toInt(rec.seq, 0);
+    const ns = rec.ns || "disk";
+    return push({
+      seq, ns, type: rec.type, kind: "seats", round: rec.round, run_id: runId,
+      data: rec.data || {}, model: modelOf(rec, rec.data),
+      members: {}, entered: false,
+      key: keyOf(ns, seq, "seats"),
+    });
   }
 
   function memberOf(seats, model) {
@@ -213,103 +161,66 @@ export function createAssembler() {
     return seats.members[key];
   }
 
-  /** 组内最近一条 assistant 节点（思考归属目标；无则挂 pending）。 */
-  function lastAssistantOf(g) {
-    for (let i = g.nodes.length - 1; i >= 0; i--) {
-      if (g.nodes[i].kind === "assistant") return g.nodes[i];
-    }
-    return null;
-  }
-
-  function appendReasoning(g, text) {
+  function appendReasoning(text) {
     if (!text) return;
-    const target = lastAssistantOf(g);
+    const target = lastAssistant();
     if (target) {
       target.reasoning = (target.reasoning || "") + text;
       target.rev++;
     } else {
-      g.pendingReasoning += text;
-      if (!g.pendingReasoningOrd) g.pendingReasoningOrd = ord + 1;
+      pendingReasoning += text;
+      if (!pendingReasoningOrd) pendingReasoningOrd = ord + 1;
     }
   }
 
-  /** 该轮收口：思考若始终无人认领，落一条兜底 sys 节点（不丢文本）。
-      **只在确定不会再有 assistant 时**落：轮已收口（done/error）或本组之后
-      又来了新轮。进行中的 pending 不落，否则实时渲染会先闪一条「无归属
-      思考」，等 assistant_text 到达又被吸收掉（闪一下又消失）。 */
-  function finalizeGroup(g) {
-    if (g.finalized) return;
-    g.finalized = true;
-    structRev++;                 // 收口位变化 ⇒ 快照需重建（折叠开关据此出现）
-    if (g.pendingReasoning && !g.nodes.some((n) => n.kind === "assistant")) {
-      const tail = g.nodes[g.nodes.length - 1];
+  /** 该轮收口：思考若始终无人认领，落一条兜底节点（不丢文本）。 */
+  function flushPendingReasoning() {
+    if (!pendingReasoning) return;
+    if (!lastAssistant()) {
+      const tailKey = order[order.length - 1];
+      const tail = tailKey ? byKey.get(tailKey) : null;
       const seq = tail ? tail.seq : 0;
       const ns = (tail && tail.ns) || "disk";
       const node = {
-        seq, ns, type: "reasoning", kind: "sys", round: g.round,
-        data: { text: g.pendingReasoning, orphan: true }, model: "",
+        seq, ns, type: "reasoning", kind: "sys", round: tail ? tail.round : 0, run_id: "",
+        data: { text: pendingReasoning, orphan: true }, model: "",
         key: String(ns) + ":orphan:" + toInt(seq, 0),
         rev: 1,
-        ord: g.pendingReasoningOrd || ((tail ? tail.ord : 0) + 0.5),
-        groupKey: g.key,
+        ord: pendingReasoningOrd || ((tail ? tail.ord : 0) + 0.5),
       };
-      g.nodes.push(node);
-      g.nodes.sort((a, b) => a.ord - b.ord);
-      structRev++;
+      if (!byKey.has(node.key)) { byKey.set(node.key, node); order = order.concat([node.key]); }
+      resort();
     }
-    g.pendingReasoning = "";
+    pendingReasoning = "";
+    pendingReasoningOrd = 0;
   }
 
-  /** 本地轮认领：把 "local:<k>" 组改名成 "run:<run_id>"。 */
-  function adoptLocalGroup(runId) {
-    const oldKey = pendingLocalKey;
-    pendingLocalKey = null;
-    if (!oldKey) return;
-    const g = groups.get(oldKey);
-    if (!g) return;
-    groups.delete(oldKey);
-    g.key = "run:" + runId;
-    g.runId = runId;
-    for (const n of g.nodes) n.groupKey = g.key;
-    groups.set(g.key, g);
-    structRev++;
-  }
-
-  /** tool_result 的配对目标：tool_call_id 精确优先，其次同组最近未闭合调用行。 */
-  function toolTargetOf(g, d) {
+  /** tool_result 的配对目标：tool_call_id 精确优先，其次最近未闭合调用行。 */
+  function toolTargetOf(d) {
     const id = d && (d.tool_call_id || d.call_id);
     if (id) {
-      for (const n of g.nodes) {
-        if (n.kind === "tool" && n.call && (n.call.tool_call_id || n.call.call_id) === id) return n;
+      for (let i = order.length - 1; i >= 0; i--) {
+        const n = byKey.get(order[i]);
+        if (n && n.kind === "tool" && n.call && (n.call.tool_call_id || n.call.call_id) === id) return n;
       }
     }
-    for (let i = g.nodes.length - 1; i >= 0; i--) {
-      const n = g.nodes[i];
-      if (n.kind === "tool" && !n.closed) return n;
+    for (let i = order.length - 1; i >= 0; i--) {
+      const n = byKey.get(order[i]);
+      if (n && n.kind === "tool" && !n.closed) return n;
     }
     return null;
   }
 
-  /** 软删：revoke{from_seq:F} 撤下**此刻已装配**的 seq>=F 节点。
-      与后端 event_log.timeline 的位置语义逐字一致（只撤 revoke 之前
-      累积的段；revoke 之后的新 run 不受影响）。 */
-  function purgeFrom(g, fromSeq) {
-    const before = g.nodes.length;
-    const wasFinalized = g.finalized;
-    g.nodes = g.nodes.filter((n) => toInt(n.seq, 0) < fromSeq);
-    g.bySeq = new Map(g.nodes.map((n) => [n.seq, n]));
-    g.lastOpenTool = null;
-    g.seats = null;
-    g.terminal = false;
-    g.finalized = false;
-    for (const n of g.nodes) {
-      if (n.kind === "tool" && !n.closed) g.lastOpenTool = n;
-      if (n.kind === "seats") g.seats = n;
-      if (n.type === "done" || n.type === "error") g.terminal = true;
-    }
-    g.pendingReasoning = "";
-    g.pendingReasoningOrd = 0;
-    if (g.nodes.length !== before || wasFinalized) structRev++;
+  /** 软删：revoke{from_seq:F} 撤下此刻已装配的 seq>=F 节点。 */
+  function purgeFrom(fromSeq) {
+    const keepKeys = order.filter((k) => toInt(byKey.get(k).seq, 0) < fromSeq);
+    if (keepKeys.length === order.length) return;
+    const keep = new Set(keepKeys);
+    for (const k of Array.from(byKey.keys())) if (!keep.has(k)) byKey.delete(k);
+    order = keepKeys;
+    pendingReasoning = "";
+    pendingReasoningOrd = 0;
+    structRev++;
   }
 
   function applyRecord(rec) {
@@ -326,88 +237,89 @@ export function createAssembler() {
     if (seen.has(dedupKey)) return null;
     seen.add(dedupKey);
 
-    // data 非 dict 时按后端同语义装箱（event_stream._persist_log：
-    // `payload = data if isinstance(data, dict) else {"value": data}`）——
-    // 绝不静默丢载荷，也绝不因畸形帧炸掉整轮装配。
+    // data 非 dict 时按后端同语义装箱（绝不静默丢载荷）
     let data = rec.data;
     if (data === undefined || data === null) data = {};
     else if (typeof data !== "object") data = { value: data };
 
-    // 本地轮认领：本轮第一条带 run_id 的真实记录到达 ⇒ 本地组改名入正式轮。
+    // 本地轮认领：本轮第一条带 run_id 的真实记录到达 ⇒ 本地节点归入该 run。
     const runId = String(rec.run_id || "");
-    if (!isLocal && runId && pendingLocalKey) adoptLocalGroup(runId);
+    if (!isLocal && runId && pendingLocalKey) {
+      const local = byKey.get(pendingLocalKey);
+      if (local) { local.run_id = runId; local.claimed = true; local.rev++; }
+      pendingLocalKey = null;
+      structRev++;
+    }
 
-    const g = newGroup(rec);
-
-    if (type === CONTROL_TYPE) {            // 控制位：软删，不成节点
+    if (type === CONTROL_TYPE) {
       const f = toInt(data.from_seq, -1);
-      if (f >= 0) purgeFrom(g, f);
+      if (f >= 0) purgeFrom(f);
       return null;
     }
 
     const kind = kindOf(type);
     const base = {
-      seq, ns, type, kind, round: toInt(rec.round, 0), data, model: modelOf(rec, data),
-      key: keyOf(ns, seq, kind),
+      seq, ns, type, kind, round: toInt(rec.round, 0), run_id: runId,
+      data, model: modelOf(rec, data), key: keyOf(ns, seq, kind),
     };
 
     if (kind === "user" || kind === "assistant" || kind === "cardmsg") {
       if (kind === "user") {
-        // 乐观上屏的 pending 节点：真实 user_message 到达 ⇒ 原地升级（不出双气泡）。
-        const pend = g.nodes.find((n) => n.kind === "user" && n.pending);
-        if (pend && sameText(pend.data && pend.data.content, data && data.content)) {
-          pend.pending = false;
-          pend.seq = seq;
-          pend.ns = ns;
-          pend.data = data;
-          pend.type = type;
-          pend.rev++;
-          return pend;
+        // 轮界：上一轮的兜底思考先落位
+        flushPendingReasoning();
+        // 乐观上屏的 pending 节点：真实 user_message 到达 ⇒ 原地升级（不出双气泡）
+        for (let i = order.length - 1; i >= 0; i--) {
+          const n = byKey.get(order[i]);
+          if (!n || n.kind !== "user" || !n.pending) continue;
+          if (!sameText(n.data && n.data.content, data && data.content)) break;
+          n.pending = false;
+          n.seq = seq;
+          n.ns = ns;
+          n.data = data;
+          n.type = type;
+          n.run_id = runId || n.run_id;
+          n.rev++;
+          return n;
         }
       }
-      const n = pushNode(g, base);
+      const node = push(Object.assign({}, base));
       if (kind === "user" && isLocal) {
-        n.pending = true;
-        n.localKey = rec.local_key;
-        pendingLocalKey = g.key;
+        node.pending = true;
+        node.localKey = rec.local_key;
+        pendingLocalKey = node.key;
       }
       if (kind === "assistant") {
-        n.reasoning = "";
-        if (g.pendingReasoning) {           // pending 思考在此归位（吸收）
-          n.reasoning = g.pendingReasoning;
-          n.rev++;
-          g.pendingReasoning = "";
-          g.pendingReasoningOrd = 0;
+        node.reasoning = "";
+        if (pendingReasoning) {           // pending 思考在此归位（吸收）
+          node.reasoning = pendingReasoning;
+          node.rev++;
+          pendingReasoning = "";
+          pendingReasoningOrd = 0;
         }
       }
-      return n;
+      return node;
     }
 
     if (kind === "tool") {
       const merge = REGISTRY[type].merge;
       if (merge === "call") {
-        const n = pushNode(g, Object.assign(base, { call: data, result: null, closed: false }));
-        g.lastOpenTool = n;
-        return n;
+        return push(Object.assign({}, base, { call: data, result: null, closed: false }));
       }
-      // result：合体到配对的 call 节点（保留 call 的 seq＝位置），无配对则独立成节点
-      const target = toolTargetOf(g, data);
+      const target = toolTargetOf(data);
       if (target) {
         target.result = data;
         target.closed = true;
-        target.type = "tool_result";        // 渲染器按两态终态出
+        target.type = "tool_result";
         target.data = data;
         target.rev++;
-        if (target === g.lastOpenTool) g.lastOpenTool = null;
         return target;
       }
-      const n = pushNode(g, Object.assign(base, { call: null, result: data, closed: true }));
-      return n;
+      return push(Object.assign({}, base, { call: null, result: data, closed: true }));
     }
 
     if (kind === "seats") {
       const merge = REGISTRY[type].merge;
-      const node = seatsNodeOf(g, rec);
+      const node = seatsOf(runId, rec);
       if (type === "seats_enter") {
         node.entered = true;
         node.enter = data;
@@ -429,78 +341,57 @@ export function createAssembler() {
     if (kind === "reasoning") {
       const model = modelOf(rec, data);
       const text = String(data.text || "");
-      if (model) {                            // 三席思考 → 席卡
-        const node = seatsNodeOf(g, rec);
+      if (model) {                              // 三席思考 → 席卡
+        const node = seatsOf(runId, rec);
         const m = memberOf(node, model);
         if (m) { m.thinking += text; node.rev++; }
         return node;
       }
-      appendReasoning(g, text);               // 主模型思考 → 同组 assistant
+      appendReasoning(text);                    // 主模型思考 → 最近一条 assistant
       return null;
     }
 
-    const node = pushNode(g, base);          // chain / sys / injection
-    if (type === "done" || type === "error") {
-      g.terminal = true;
-      finalizeGroup(g);                      // 轮界收口 ⇒ 兜底思考落位
-    }
+    const node = push(Object.assign({}, base)); // chain / sys / injection
+    if (type === "done" || type === "error") flushPendingReasoning();
     return node;
   }
 
-  function sameText(a, b) {
-    return String(a == null ? "" : a).trim() === String(b == null ? "" : b).trim();
-  }
-
   function rebuild(items) {
-    groups.clear();
-    groupList.length = 0;
-    seen.clear();
+    byKey = new Map();
+    order = [];
+    seen = new Set();
     ord = 0;
     structRev++;
     pendingLocalKey = null;
+    pendingReasoning = "";
+    pendingReasoningOrd = 0;
     snapCache = null;
     snapCacheRev = -1;
-    if (Array.isArray(items)) {
-      for (const rec of items) applyRecord(rec);
-    }
+    if (Array.isArray(items)) for (const rec of items) applyRecord(rec);
     return snapshot();
   }
 
-  /** 丢弃全部本地轮（乐观上屏的临时气泡）——发送失败时回退用。 */
+  /** 丢弃全部**未被认领**的本地节点（乐观上屏的临时气泡）——发送失败时回退用。
+      已被真实 run 认领的节点属正式轮，绝不误伤。 */
   function dropLocal() {
-    let hit = false;
-    for (let i = groupList.length - 1; i >= 0; i--) {
-      const g = groupList[i];
-      if (g.key.indexOf("local:") !== 0) continue;
-      groups.delete(g.key);
-      groupList.splice(i, 1);
-      hit = true;
-    }
-    if (pendingLocalKey) { pendingLocalKey = null; hit = true; }
-    if (hit) structRev++;
-    return hit;
+    const keepKeys = order.filter((k) => {
+      const n = byKey.get(k);
+      if (String(n.ns || "") !== "local") return true;
+      return n.claimed === true;
+    });
+    if (keepKeys.length === order.length && !pendingLocalKey) return false;
+    const keep = new Set(keepKeys);
+    for (const k of Array.from(byKey.keys())) if (!keep.has(k)) byKey.delete(k);
+    order = keepKeys;
+    pendingLocalKey = null;
+    structRev++;
+    return true;
   }
 
-  /** 快照：结构未变 ⇒ 返回**同一引用**（渲染层据此零重排）。
-      节点对象本身是活引用——内容变化（rev 自增）透过节点可见，无需换数组。 */
+  /** 快照：结构未变 ⇒ 返回**同一引用**（渲染层据此零重排）。 */
   function snapshot() {
     if (snapCache && snapCacheRev === structRev) return snapCache;
-    const rounds = [];
-    for (const g of groupList) {
-      if (!g.nodes.length) continue;
-      if (!g.snap) {
-        g.snap = { key: g.key, round: g.round, roundMax: g.roundMax, runId: g.runId,
-                   finalized: g.finalized, nodes: g.nodes };
-      } else {
-        g.snap.key = g.key;
-        g.snap.round = g.round;
-        g.snap.roundMax = g.roundMax;
-        g.snap.runId = g.runId;
-        g.snap.finalized = g.finalized;
-      }
-      rounds.push(g.snap);
-    }
-    snapCache = { rounds };
+    snapCache = { order, nodes: byKey, rev: structRev };
     snapCacheRev = structRev;
     return snapCache;
   }

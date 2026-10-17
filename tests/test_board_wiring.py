@@ -76,8 +76,13 @@ def test_t4_stop_is_card_scoped():
 
 
 def test_t4_recover_path_is_card_scoped():
-    """15 秒回流（tryRecover）：resync 用卡号；系统提示行写该卡自己的容器。"""
-    body = _strip_js_comments(_fn_body(WS.read_text(encoding="utf-8"), "async function tryRecover"))
+    """异常路径兜底探测（recoverIfDone）：resync 用卡号；系统提示行写该卡自己的容器。
+
+    ★ [对话流照抄 dsh v3 2026-10-17] 原 15 秒自愈轮询（tryRecover 的 setInterval）
+      已按任务书 §三 删除；保留下来的只有**发送异常时探一次**的 recoverIfDone。
+      本用例随之改名并继续锁「卡号作用域」这条不变量（不放松）。
+    """
+    body = _strip_js_comments(_fn_body(WS.read_text(encoding="utf-8"), "async function recoverIfDone"))
     assert re.search(r"EventFlow\.resync\(WORK_ID,\s*cardId\)", body), "resync 未带卡号"
     assert "ensureMsgs(cardId)" in body, "回流提示行未写进该卡自己的容器"
 

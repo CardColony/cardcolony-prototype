@@ -11,7 +11,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=37">
+<link rel="stylesheet" href="/static/style.css?v=38">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -101,29 +101,17 @@
                对应 workspace.js 三处引用同步处理：wsHeadTitle→renderChatCrumb、
                wsBackBtn/inspToggleBtn→清空守卫。 -->
           <div class="chat" id="chatArea"></div>
-          <div class="inputbar">
-            <textarea id="inputBox" class="inputbox" placeholder="和这张卡讨论…" rows="2"></textarea>
-            <div class="inputmeta">
-              <!-- [2026-10-13 用户令] 快捷键文字提示删除（「不需要文字告诉我enter是发送，
-                   什么软件会有这种傻逼提示？」）：原 placeholder 括号提示与 .hint 行同删。
-                   .spacer 保留——它负责把右侧按钮族推出（见 style.css .inputmeta .spacer）。 -->
-              <span class="spacer"></span>
-              <!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草/确认两按钮（ghost 级，弱于发送键）。
-                   文案按块集判据：研发卡「需求确定」、其他卡「定论确认」——由 workspace.js 按
-                   body 键集（requirements/rulings）动态切换；「更新现状」恒定。 -->
+          <!-- [对话流照抄 dsh 完全版 v3 2026-10-17] 输入区整件交给 flow/：
+               composerSeat ＝ 输入座位（dsh ConversationRoot.composerSeat）：
+               排队条（queue-dock）在上、输入卡（input-bar）在下。
+               #inputBox / #runBtn 已退役——输入卡的 textarea 与主键由
+               static/esm/flow/input-bar.js 生成（dsh InputBar.tsx 的 DOM 形状）。 -->
+          <div class="composer-seat" id="composerSeat">
+            <!-- 项目自有的两个起草键（不属 dsh）：initComposer 时由 input-bar 收进
+                 输入卡的 .flow-input-modes（dsh 的 leftItems 位）。 -->
+            <div id="flowInputLeft" class="flow-input-leftitems">
               <button id="draftBtn" class="btn primary draft-meta-btn" title="起草本卡第三块内容（需求文档/定论），用户确认后写入">需求确定</button>
               <button id="statusDraftBtn" class="btn draft-meta-btn" title="起草现状块更新，用户确认后写入">更新现状</button>
-              <!-- [顶栏整合 2026-10-13] 发送/停止合并为一个两态图标按钮（用户 17:17 ③）：
-                   静止＝发送图标（.run.idle）、运行中＝停止图标（.run.running），同一位置同一元素，
-                   由 workspace.js setRunState() 切换。原「■ 停止」顶栏按钮与文字「发送」按钮同删。 -->
-              <button id="runBtn" class="run idle" data-state="idle" aria-label="发送" title="发送">
-                <svg class="ic-send" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M8 13.2V3.2"/><path d="M3.9 7.3 8 3.2l4.1 4.1"/>
-                </svg>
-                <svg class="ic-stop" viewBox="0 0 16 16" aria-hidden="true">
-                  <rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1.8" fill="currentColor"/>
-                </svg>
-              </button>
             </div>
           </div>
         </div>
@@ -220,6 +208,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main_chat.js?v=1.2"></script>
+<script type="module" src="/static/esm/main_chat.js?v=1.3"></script>
 </body>
 </html>

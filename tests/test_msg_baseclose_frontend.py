@@ -62,8 +62,10 @@ def test_no_dom_position_math():
     for pattern in (r"querySelectorAll\(\s*[\"']\.msg", r"querySelectorAll\(\s*[\"']:scope > \.msg[^\"']*\.msg\b",
                     r"querySelector\(\s*[\"']\.msg\.assistant\.live", r"_countUpTo", r"insertAnchor"):
         assert not re.search(pattern, src), f"渲染层仍存在 DOM 定位写法：{pattern}"
-    # 位置只能来自快照：组容器按 data-key/data-round 落位
-    assert "renderSnapshot" in src and "renderAffected" in src and "renderGroup" in src
+    # 位置只能来自快照：扁平节点表按 order 落位（[对话流照抄 dsh v3] 轮组容器已退役）
+    assert "renderSnapshot" in src and "renderAffected" in src, "缺快照/增量两个入口"
+    assert "v.render(win, revGetter(snap))" in src, "全序落位必须读快照 order"
+    assert "renderGroup" not in src, "★ 轮组渲染必须已退役（改扁平节点表）"
 
 
 def test_reasoning_reads_top_level_model():
@@ -75,12 +77,16 @@ def test_reasoning_reads_top_level_model():
     assert "pendingReasoning" in asm, "该轮尚无 assistant 时思考必须挂 pending（不得丢弃）"
 
 
-def test_group_key_prefers_run_id():
-    """轮次锚：run_id 优先，缺失回落 round（迁移老卡形态）。"""
+def test_run_id_is_carried_not_grouped():
+    """[对话流照抄 dsh v3 2026-10-17] 轮次锚：**不再分组**，但 run_id 必须留在节点上。
+
+    旧断言锁的是「分组键 run_id 优先、缺失回落 round」。v3 任务书 §三 把轮分组
+    整层退役（改扁平节点表）⇒ 分组键不存在了；但「顶层 round 不是对话轮次、
+    真实轮锚是 run_id」这条**数据事实**没变，故改为锁「run_id 进节点字段」。
+    """
     asm = ASSEMBLER.read_text(encoding="utf-8")
-    assert re.search(r"run_id[\s\S]{0,80}return\s+\"run:\"\s*\+\s*runId", asm), \
-        "分组键必须优先 run_id（顶层 round 不是对话轮次）"
-    assert '"r0:"' in asm, "run_id 缺失时必须回落 round"
+    assert re.search(r"run_id:\s*runId", asm), "节点必须带 run_id 字段（真实轮锚）"
+    assert "groupKeyOf" not in asm and '"r0:"' not in asm, "★ 轮分组键必须已删除"
 
 
 def test_legacy_content_types_guard():
@@ -118,4 +124,6 @@ def test_reasoning_style_present():
     """思考块样式挂在正式回复气泡下（.msg.assistant .think）。"""
     css = STYLE.read_text(encoding="utf-8")
     assert ".msg.assistant .think" in css, "缺 assistant 气泡内的思考块样式"
-    assert ".msgs-round" in css, "缺轮组容器样式（否则用户气泡会齐左排）"
+    # [对话流照抄 dsh v3] 轮组容器 .msgs-round 已退役；靠右由 .flow-user-row 的
+    # align-items: flex-end 承担（不再依赖「父级是 flex 列」这条隐式不变量）。
+    assert ".flow-user-row" in css and "align-items: flex-end" in css, "用户气泡靠右缺样式"

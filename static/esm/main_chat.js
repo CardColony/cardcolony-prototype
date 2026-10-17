@@ -11,7 +11,7 @@
 import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=35";
 import "./util.js?v=30";
-import "../stream.js?v=36";
-import "../workspace.js?v=45";
+import "../stream.js?v=37";
+import "../workspace.js?v=46";
 
 window.API = API;   // 调试便利（非功能依赖；与 api.js 薄壳同属兼容层）
