@@ -594,7 +594,7 @@ def test_block4_prompt_version_and_section():
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
     assert prompts.BASE_PROMPT_VERSION == "t22-1"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t6"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t7"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
@@ -1089,7 +1089,7 @@ def test_g4_auto_prompt_has_two_obligation_rules():
     assert "收到 ask 必须回应" in auto
     assert "不能无视" in auto
     assert "unanswered_sent" in auto
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t6"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t7"
     assert "问出去的信必须有回音" not in prompts.BASE_PROMPT
     assert "收到 ask 必须回应" not in prompts.BASE_PROMPT
 
@@ -1187,3 +1187,55 @@ async def test_stage2_patch_auto_mode_lands_and_reverts(typed_registry, work,
     m2 = card_store._meta_of(wid, a)
     assert m2["auto_mode"] == 0
     assert set(m2[policy.PERM_KEY]) == normal, "关回后权限集合应还原"
+
+
+def test_auto_prompt_no_unconditional_restart_claim():
+    """[6702 移植 P7] 自动版说明书不得再有无条件的「不声明就再起一轮」断言。
+
+    根因：``will_continue`` 里有 ``has_active_child → return False`` ⇒ 父卡有在跑
+    的子卡时，不声明**不会**再起轮，而是自然停住、子卡完工后被递归唤醒。
+    旧文案无条件说"会再起一轮"，把模型逼去用 pause 表达"我在等"，才引出
+    await_children / 唤醒 / 活锁那一整族机制。
+    """
+    from src.api import prompts
+    sec = prompts._SEC_AUTO
+    assert "- **只把话说完而不调用 update_goal，系统会当成「还没做完」，自动再起一轮。**" not in sec
+    assert "只要没有在跑的子卡" in sec
+    assert "你有正在跑的子卡时，直接结束回合即可" in sec
+
+
+def test_idle_stop_skips_when_children_running(monkeypatch):
+    """[6702 移植 P7] 有在跑的子卡时，零工具轮不得计入空转（让位等待≠空转）。"""
+    import asyncio
+    from src.api import auto_driver
+
+    monkeypatch.setattr(auto_driver, "has_active_child", lambda w, c: True)
+    auto_driver._IDLE_ROUNDS.clear()
+    for _ in range(5):
+        assert asyncio.run(auto_driver._idle_stop("w_test", "card_x", 0)) is False
+    assert auto_driver._IDLE_ROUNDS.get(("w_test", "card_x"), 0) == 0
+    auto_driver._IDLE_ROUNDS.clear()
+
+
+def test_idle_stop_still_counts_without_children(monkeypatch):
+    """[6702 移植 P7] 没有子卡时，空转兜底必须照旧生效（别把兜底改没了）。"""
+    import asyncio
+    from src.api import auto_driver
+
+    monkeypatch.setattr(auto_driver, "has_active_child", lambda w, c: False)
+    monkeypatch.setattr(auto_driver.card_store, "update_card", _async_noop)
+    auto_driver._IDLE_ROUNDS.clear()
+    assert asyncio.run(auto_driver._idle_stop("w_test2", "card_y", 0)) is False
+    assert auto_driver._IDLE_ROUNDS[("w_test2", "card_y")] == 1
+    auto_driver._IDLE_ROUNDS.clear()
+
+
+def test_auto_prompt_version_after_p7():
+    """[6702 移植 P7] 版本号：普通版不动，自动版到 auto-t7。"""
+    from src.api import prompts
+    assert prompts.BASE_PROMPT_VERSION == "t22-1"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t7"
+
+
+async def _async_noop(*a, **kw):
+    return None
