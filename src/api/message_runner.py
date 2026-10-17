@@ -39,6 +39,7 @@ from typing import Any, Callable, Optional
 
 from ..storage import card_db, card_store, memory_store, session_facade, session_ops, session_store, work_store
 from ..thinkchain import board as thinkchain_board
+from ..thinkchain import enabled as thinkchain_enabled  # [纯单模型 2026-10-17]
 from ..thinkchain.model_pick import pick_model as _pick_model  # 步类型路由消费点（_pick_step_model 调用）
 from ..thinkchain import model_pick
 from ..toolcard import driver as toolcard_driver
@@ -306,6 +307,8 @@ def _pick_step_model(state: RunState) -> str:
     消费侧热读模型清单可行（gw.config 内存常驻），无需启动校验降级。
     每圈实取模型打日志（S5 验收「日志可查每步实取模型」）。
     """
+    if not thinkchain_enabled():   # [纯单模型 2026-10-17] 无步类型，直接 default 席
+        return _pick_model("default")
     snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
     role = "default"
     if snap is not None:
@@ -341,6 +344,8 @@ def _sync_step_start(state: RunState) -> str:
     且 call/result 取同一个 step_id）；②create_plan 成功之后（板刚上架＝
     第 1 步开始，紧随 plan_created）。
     """
+    if not thinkchain_enabled():   # [纯单模型 2026-10-17] 关链：无步骤概念
+        return ""
     snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
     if not snap:
         return ""
@@ -380,6 +385,8 @@ def _sync_judgment(state: RunState) -> None:
     固化进轮槽，故 round≥2 的 wire_messages 与轮槽里都看不到它（任务书 §2.3）。
     整段零阻断。
     """
+    if not thinkchain_enabled():   # [纯单模型 2026-10-17] 关链：不判型、不注入判断协议
+        return
     if state.rounds != 1:
         return
     # [更新现状按钮改造 2026-10-16] 「更新现状」专用回合**不注入判断协议**：
@@ -602,7 +609,7 @@ async def step(state: RunState) -> StepOutcome:
     # [模型过程数据 2026-10-12] 判断事件（新增）：**首轮机械推断**——tool_calls
     # 含 create_plan → plan，否则 direct。只读 tool_calls 事实（含抢救并入的
     # 调用），不解析模型文本、不加独立判定调用；首轮之后不再重发。
-    if state.rounds == 1:
+    if state.rounds == 1 and thinkchain_enabled():   # [纯单模型 2026-10-17]
         event_stream.emit(state.work_id, state.card_id, "judgment", {
             "verdict": "plan" if any(tc.get("name") == "create_plan"
                                      for tc in tool_calls) else "direct",
@@ -613,7 +620,8 @@ async def step(state: RunState) -> StepOutcome:
     # 轮照常执行）→ 按附录 C 步执行提示词催促交作业续跳，不设上限。两道
     # 天然刹车：每圈入口 check_control（人停即刹）＋用户新消息＝新回合。
     # 空手正文不入槽（同 :316 抢救先例——催促文自带本步要求原文，信息自足）。
-    if not tool_calls and thinkchain_board.has_live_board(state.work_id, state.card_id):
+    if (thinkchain_enabled() and not tool_calls
+            and thinkchain_board.has_live_board(state.work_id, state.card_id)):
         _snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
         _step = None
         if _snap:
@@ -644,7 +652,8 @@ async def step(state: RunState) -> StepOutcome:
         # [思维链真实落地 2026-10-11] 提交轮三席统合（C6）：board 全部步骤
         # done（收口）后、交付前，固定触发三席质询＋统合交付。空手轮旁路
         # （旧「无工具即三席」）退役——直答回合零三席。
-        if state.chain_completed and not state.seats_done:
+        if (thinkchain_enabled() and state.chain_completed
+                and not state.seats_done):   # [纯单模型 2026-10-17]
             return StepOutcome("seats", "finalize_review")
         return StepOutcome("deliver", "chain_done" if state.chain_completed else "direct")
 

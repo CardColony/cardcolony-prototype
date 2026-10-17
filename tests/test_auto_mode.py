@@ -41,6 +41,12 @@ from src.storage import card_db, card_store
 REPO = Path(__file__).resolve().parents[1]
 
 
+def _thinkchain_enabled() -> bool:
+    """思维链总开关（生产口径可能为 False＝纯单模型）。断言语义须与它解耦。"""
+    from src.thinkchain import enabled as _enabled
+    return bool(_enabled())
+
+
 # ============================================================
 # 夹具
 # ============================================================
@@ -490,9 +496,14 @@ async def test_block4_auto_toolface_is_normal_plus_update_goal(
     assert _tail[0] == "update_goal", "update_goal 仍是追加段首位（既有语义保留）"
     # G2：自主通信两件在 auto 面（041e25d/e4e612d）
     assert {"send_card_message", "read_inbox"} <= set(auto_names)
-    # 计划六件仍在（TC5：生产保留思维链）
+    # ★ [2026-10-17 口径同步] 计划六件与 thinkchain 开关同生共死，不再断言「必须在」：
+    # 上面那条等值断言（auto 面 == normal − delete + AUTO_ONLY）已覆盖真意图
+    # ——**auto 开口不额外摘除常规面里的任何工具**；六件在不在取决于开关，
+    # 两端都自洽（开关开：normal 有六件 ⇒ auto 也有；开关关：都没有）。
+    _tc_on = _thinkchain_enabled()
     for p in _PLAN_TOOL_LINES:
-        assert p in auto_names, f"TC5：auto 卡应保留计划六件之一 {p}"
+        assert (p in auto_names) == (p in normal), (
+            f"auto 面与常规面在 {p} 上应一致（不额外摘除）；开关={'开' if _tc_on else '关'}")
     cc = next(t for t in auto_tools if t["name"] == "create_card")
     assert "goal" in cc["parameters"]["properties"], "auto 卡 create_card 应带 goal 参数"
     # 注册表原字面量未被污染（否则非 auto 卡的工具面也会变）
@@ -562,12 +573,18 @@ def test_block4_judgment_region_blank_for_auto_only():
     """
     from src.api import context_regions as cr
 
+    from src.thinkchain import enabled as _tc_enabled
     ctx_auto = cr.RegionCtx(cur_meta={"auto_mode": 1}, request_once=[{"x": 1}])
-    assert cr.render_judgment_region(ctx_auto) == []
+    assert cr.render_judgment_region(ctx_auto) == []      # auto 卡永屏蔽（本任务）
     ctx_normal = cr.RegionCtx(cur_meta={"auto_mode": 0}, request_once=[{"x": 1}])
-    assert cr.render_judgment_region(ctx_normal) == [{"x": 1}]
     ctx_none = cr.RegionCtx(cur_meta=None, request_once=[])
     assert cr.render_judgment_region(ctx_none) == []
+    if _tc_enabled():
+        # 思维链开着：非 auto 卡逐字不变（原样返回 request_once）
+        assert cr.render_judgment_region(ctx_normal) == [{"x": 1}]
+    else:
+        # [纯单模型口径] 全局关链 ⇒ 一律不注入（与非 auto 卡同为零注入）
+        assert cr.render_judgment_region(ctx_normal) == []
 
 
 def test_block4_prompt_version_and_section():
@@ -577,7 +594,7 @@ def test_block4_prompt_version_and_section():
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
     assert prompts.BASE_PROMPT_VERSION == "t22-1"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t3"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t4"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
@@ -651,10 +668,13 @@ def test_rework_4_auto_prompt_has_full_toolset_and_no_false_sentence():
         assert line in auto, f"auto 版工具清单缺：{line}"
     assert "工具已收回" not in auto, "auto 版仍写着「工具已收回」（对全权卡是假话）"
     assert "你可以直接改写卡片正文" in auto, "auto 版内容写入节应为全权口径"
-    # TC5：计划六件在 auto 提示词里（与 Cardlo ND1 口径相反）
+    # ★ [2026-10-17 口径同步] 计划六件在提示词里的有无**必须与开关一致**：
+    # 开关开 ⇒ 提示词可声称（工具确实下发）；开关关 ⇒ 不得声称（否则是假话）。
+    _tc_on = _thinkchain_enabled()
     for name in _PLAN_TOOL_LINES:
-        assert name in auto, f"TC5：auto 版提示词应保留计划六件之一 {name}"
-    assert "大事拆小" in auto, "TC5：_SEC_AUTO 须写明计划板/建子卡两种拆法并存"
+        assert (name in auto) == _tc_on, (
+            f"提示词与开关不一致：{name} 在提示词里={name in auto}，开关={_tc_on}")
+    assert "大事拆小" in auto, "_SEC_AUTO 须有「大事拆小」条目（两种口径下都在）"
 
 
 def test_rework_5_normal_prompt_has_no_auto_text():
@@ -1069,7 +1089,7 @@ def test_g4_auto_prompt_has_two_obligation_rules():
     assert "收到 ask 必须回应" in auto
     assert "不能无视" in auto
     assert "unanswered_sent" in auto
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t3"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t4"
     assert "问出去的信必须有回音" not in prompts.BASE_PROMPT
     assert "收到 ask 必须回应" not in prompts.BASE_PROMPT
 
@@ -1131,3 +1151,39 @@ def test_p27_rounds_warn_is_not_a_gate():
     assert auto_driver._ROUNDS_WARN == 200
     assert "只告警不拦" in src
     assert "不设轮次上限" in src
+
+
+# ============================================================
+# 阶段 2 冒烟抓到的漏项回归（2026-10-17）
+# ============================================================
+
+async def test_stage2_patch_auto_mode_lands_and_reverts(typed_registry, work,
+                                                         g1_client):
+    """回归：PATCH updates.auto_mode 能落库并重算权限、关回能还原。
+
+    冒烟实测抓到：ALLOWED_UPDATE_KEYS 漏 auto_mode（移植 Cardlo 时漏抄）⇒
+    前端 toggleAutoMode 发 PATCH 会被 400「updates 含不允许的键」——开关整体
+    不可用。本用例钉住：① 开自动 ⇒ auto_mode=1 ＋ perms=AUTO_SWITCHES（15，
+    不含 delete）＋ version=-1；② 关回 ⇒ auto_mode=0 ＋ perms 集合还原。
+    """
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk(wid, "开关卡", root)
+    pc = card_store._root_project_class(wid)
+    base_meta = card_store._meta_of(wid, a)
+    normal = set(base_meta[policy.PERM_KEY])
+
+    r = await g1_client.patch(f"/api/works/{wid}/cards/{a}", json={
+        "updates": {"auto_mode": 1}, "history_note": "[测试] 开自动"})
+    assert r.status_code == 200, r.text
+    m1 = card_store._meta_of(wid, a)
+    assert m1["auto_mode"] == 1
+    assert set(m1[policy.PERM_KEY]) == set(policy.AUTO_SWITCHES)
+    assert m1[policy.PERM_VERSION_KEY] == policy.AUTO_PERMS_VERSION
+    assert "delete" not in set(m1[policy.PERM_KEY]), "TC1：delete 不在全开集"
+
+    r2 = await g1_client.patch(f"/api/works/{wid}/cards/{a}", json={
+        "updates": {"auto_mode": 0}, "history_note": "[测试] 回手动"})
+    assert r2.status_code == 200, r2.text
+    m2 = card_store._meta_of(wid, a)
+    assert m2["auto_mode"] == 0
+    assert set(m2[policy.PERM_KEY]) == normal, "关回后权限集合应还原"

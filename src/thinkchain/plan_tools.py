@@ -461,6 +461,12 @@ def register_into(registry: dict[str, Any], tooldef_cls: type) -> int:
     tooldef_cls＝card_tools.ToolDef（由注册方传入，本件不 import 防成环）。
     返回注册件数（验收：工具清单数量 +6 可机械核对）。
     """
+    # [纯单模型模式 2026-10-17] 总开关关时**不注册**——防线放在被调方，
+    # 即使调用方（card_tools）被并行作业重写，只要还调本函数就拦得住。
+    from . import enabled as _tc_enabled
+    if not _tc_enabled():
+        logger.info("plan_tools 注册跳过：纯单模型模式（thinkchain.ENABLED=False）")
+        return 0
     n = 0
     for item in PLAN_TOOLS:
         registry[item["schema"]["name"]] = tooldef_cls(

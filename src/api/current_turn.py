@@ -139,6 +139,10 @@ def build_injection_events(work_id: str, card_id: str) -> list[dict[str, Any]]:
     if toolcard is not None:
         return [{"type": TYPE_INJECTION, "data": toolcard}]
 
+    # [纯单模型 2026-10-17] 关链：165 区（固定总领＋当前步骤）一律不发
+    from ..thinkchain import enabled as _tc_enabled
+    if not _tc_enabled():
+        return []
     injection = thinkchain_step_region.build_injection_data(work_id, card_id)
     if injection is None:
         return []   # 无活板/无当前步——不发（没有来源就不发注入事件）
