@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=35";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=37";
+import { EventFlow } from "./stream.js?v=38";
 import { renderMarkdown } from "./esm/md.js?v=30";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=35";
@@ -276,6 +276,27 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     ensurePersisted().catch((e) => {
       notify("建卡失败：" + String((e && e.message) || e) + "（可重试）", "error");
     });
+  }
+
+  /** [建项目流程 2026-10-17] 项目草稿页（/work/draft）：落地即这张画面——
+      标题「新项目」、空消息区、输入框已聚焦。**零网络、零 POST**：
+      草稿项目没有库可查（拉了就是 404），也不该在「用户什么都没干」时就在盘上留空壳。
+      第一条数据动作（发消息 / 改名 / 规则保存）才经 ensurePersisted() 真建项目＋根卡。 */
+  function enterDraftProjectPage() {
+    currentCard = {
+      meta: {
+        card_id: "draft", title: "新项目", card_type: "project",
+        parent: "", links: [], source: "用户直接创建", work_id: WORK_ID,
+      },
+      // 形状对齐真卡（同 enterNewCard）：mission/status_block/rulings 字符串、history 数组
+      body: { mission: "", status_block: "", rulings: "", history: [] },
+    };
+    try { EventFlow.activate(WORK_ID, "draft"); } catch (e) { /* 零阻断 */ }
+    renderInspector().catch(() => {});
+    const crumb = document.getElementById("chatCrumb");
+    if (crumb) crumb.innerHTML = `<span class="cseg cur">新项目</span>`;
+    if (inputBar) { inputBar.setDraft(""); inputBar.focus(); }
+    scrollChatBottom();
   }
 
   // [T17-F4] renderLeft() 拆二之一：renderInspector()——原左栏 DOM 原样迁入右栏
@@ -1076,6 +1097,11 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     // [惰性新建 2026-10-17] 新卡对话：标题/父卡/类型由上一页经 sessionStorage **一次性携带**
     // （跳页清空内存；URL 只承担页面身份，不塞临时状态）。读出即删 ⇒ 刷新回到空白（从头再来）。
     if (pathCid === "draft") {
+      // [建项目流程 2026-10-17] 两种草稿共用 card_id="draft"，靠项目身份区分：
+      //   · WORK_ID==="draft"        ⇒ 项目草稿（/work/draft）：新建项目，根卡随项目一起落库；
+      //   · WORK_ID===真 work_id     ⇒ 建卡草稿（/work/{wid}/card/draft）：新卡落库。
+      // 两者都不能走 getCard（draft 无库 ⇒ 404），但画面与后续发送走同一条路。
+      if (IS_DRAFT_PROJECT) { enterDraftProjectPage(); return true; }
       let d = {};
       try {
         const raw = sessionStorage.getItem("newCard:" + WORK_ID);

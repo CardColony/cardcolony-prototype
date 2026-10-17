@@ -110,6 +110,9 @@ def _render_card(work_id: str, card_id: str) -> str:
 
 @app.get("/work/{work_id}", response_class=HTMLResponse)
 async def work_page(work_id: str) -> HTMLResponse:
+    """与 main.py 逐行一致（[建项目流程 2026-10-17] /work/draft 特判渲染对话模板）。"""
+    if work_id == "draft":
+        return HTMLResponse(content=_render_card("draft", "draft"))
     return HTMLResponse(content=_render_work(work_id))
 
 

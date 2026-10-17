@@ -94,6 +94,12 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   let statusStart = null;
   let liveSlot = null;
 
+  /* [建项目流程 2026-10-17] 初始态与「已渲染且无更多」保持一致：
+     分页键与回底键都按数据条件显隐，不能靠「还没刷过 ⇒ 用 CSS 默认值」。
+     此前从未 replayTrace 的会话（草稿）会多出两个点了就 404 的死按钮。 */
+  paintOlder();
+  paintToBottom();
+
   /** 逐字正文槽（/tokens 直写区）：恒在运行条之前、全部节点座位之后。 */
   function ensureLiveSlot() {
     if (liveSlot === null) liveSlot = el("div", "flow-view-live-slot");
