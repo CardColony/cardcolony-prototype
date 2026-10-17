@@ -32,6 +32,21 @@ const navSystem = createNavSystem({
   open: (cid) => { location.assign("/work/" + WORK_ID + "/card/" + cid); },
   inspector: null,
 });
+
+/* [阶段2 A2.2 补齐 2026-10-17] 旧 hash 链接兼容（**画布页侧**）。
+ * 旧书签/旧链接形如 `/work/{wid}#{wid}/{cid}`（或旧形态 `#cid`）。对话页那条路由由
+ * workspace.js 的 bootRestore 处理；**画布页不加载 workspace.js**，所以本入口必须自己
+ * 做一次性重定向——否则从画布路径进来会「停在原地不跳」，旧链接静默失效。
+ * 口径复用 navStore.select.get()（＝ state_layers 的 parseHash，两种形态都认），
+ * 与 bootRestore 同一份解析，不另造第二套。
+ * 放在 startNav() 之前：既然要跳走，就别先把导航/画布渲染一遍。 */
+{
+  const sel = navSystem.navStore.select.get();
+  if (sel && sel.cid) {
+    location.replace("/work/" + sel.wid + "/card/" + sel.cid);
+  }
+}
+
 navSystem.startNav();
 
 // 规则卡＝吸附右侧的常驻面板，画布页同样在场
