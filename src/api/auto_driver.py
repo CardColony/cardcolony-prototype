@@ -166,6 +166,13 @@ async def _idle_stop(work_id: str, card_id: str, tool_n: Optional[int]) -> bool:
     if tool_n > 0:
         _IDLE_ROUNDS.pop(key, None)
         return False
+    # [6702 移植 · P7 新增] 有在跑的子卡 ⇒ 本卡是「让位等待」，不是空转：
+    # **不计入、也不清零**（清零会把之前的空转证据抹掉；计入则会把合法的
+    # 「派完活等回报」误判成原地打转，3 次即自动 pause，从此不再被唤醒）。
+    # 为什么必须加：P7-A 改完后，父卡会合法地"结束回合等子卡"——那几轮通常
+    # 零工具，若不排除，空转兜底会把它误杀。
+    if has_active_child(work_id, card_id):
+        return False
     n = _IDLE_ROUNDS.get(key, 0) + 1
     _IDLE_ROUNDS[key] = n
     if n < _IDLE_PAUSE_THRESHOLD:
