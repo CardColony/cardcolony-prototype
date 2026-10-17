@@ -291,12 +291,13 @@ def test_frontend_version_stamps_bumped():
     style 38→39（命令面不存在，＋按钮整件删——死件不留）。
     [自动模式回灌 2026-10-17] workspace 52→53（autoToggle 开关＋insp 标记）、
     main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 样式段）。
+    [6702 移植 P8] workspace 56→57（autoResume 按钮）、style 40→41（仅升戳）。
     """
     assert "../stream.js?v=42" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=56" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=57" in _read("static/esm/main_chat.js")
     assert "./stream.js?v=42" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=4" in _read("static/workspace.js")
-    assert "/static/style.css?v=40" in _read("templates/work.html")
+    assert "/static/style.css?v=41" in _read("templates/work.html")
     assert "/static/esm/main_chat.js?v=2.3" in _read("templates/card.html")
 
 

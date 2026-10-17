@@ -397,6 +397,26 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     }
   }
 
+  // [6702 移植 P8] 人工恢复自动推进。后端 POST /auto/resume 会落
+  // goal_state=active ＋ 清 goal_await_children / goal_await_wakes，然后 kick。
+  // 与 toggleAutoMode 分开：那个是开关（改权限），这个是「状态复位」（不改权限）。
+  async function resumeAuto(btn) {
+    if (!currentCard) return;
+    const cid = currentCard.meta.card_id;
+    if (btn) btn.disabled = true;
+    try {
+      const r = await API.call(
+        "POST", `/api/works/${WORK_ID}/cards/${cid}/auto/resume`);
+      currentCard = await API.getCard(WORK_ID, cid);
+      notify(r && r.resumed ? "已恢复自动推进" : "该卡已在推进中", "warn");
+      await renderInspector();
+      renderAutoToggle();
+    } catch (e) {
+      notify("恢复失败", "error");
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async function renderInspector() {
     const m = currentCard.meta;
     const b = currentCard.body;
@@ -452,10 +472,15 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // 轮次＋目标文本＋关闭钮；关 ⇒ 开启钮＋提示。非 auto 卡的渲染与改前逐字一致
     // （这块只在 auto_mode=1 时出现）。goalStateLabel 把机器态翻成中文标签。
     const isAutoCard = Number(m.auto_mode || 0) === 1;
+    // [6702 移植 P8] 停在 paused/blocked 的卡给一条人工恢复入口：
+    // 死锁兜底与空转兜底都会把卡停在 paused，而没有这条按钮就只能手改数据库。
+    const canResume = isAutoCard
+      && ["paused", "blocked"].includes(String(m.goal_state || "").trim());
     const autoRowHtml = isAutoCard
       ? `<div class="auto-row">
           <span class="auto-badge">自动模式</span>
           <span class="auto-meta">${escapeHtml(goalStateLabel(m.goal_state))} · 已跑 ${Number(m.goal_rounds || 0)} 轮</span>
+          ${canResume ? `<button class="btn ghost auto-resume" id="autoResume" title="重新拉起：清等待位与活锁计数，立刻续跑">恢复自动推进</button>` : ""}
           <button class="btn ghost auto-toggle" id="autoToggle" title="关闭后：停自动继续、按类型还原权限">关闭自动</button>
         </div>
         <div class="auto-goal"><span class="auto-goal-k">目标</span>${escapeHtml((m.goal || "").trim() || "（尚未设定——本卡收到的首条消息即成为目标）")}</div>`
@@ -574,6 +599,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // 右栏卡详情里的 #autoToggle 与底边栏 #autoToggleBtn 共用 toggleAutoMode。
     const autoBtn = document.getElementById("autoToggle");
     if (autoBtn) autoBtn.onclick = () => toggleAutoMode(autoBtn);
+    // [6702 移植 P8] 人工恢复：清等待位与活锁计数后立刻续跑。
+    const resumeBtn = document.getElementById("autoResume");
+    if (resumeBtn) resumeBtn.onclick = () => resumeAuto(resumeBtn);
     const autoBtnBottom = document.getElementById("autoToggleBtn");
     if (autoBtnBottom) autoBtnBottom.onclick = () => toggleAutoMode(autoBtnBottom);
 

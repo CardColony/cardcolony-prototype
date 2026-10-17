@@ -351,6 +351,40 @@ async def _resume_awaiting(work_id: str, card_id: str) -> bool:
     return True
 
 
+async def resume_card(work_id: str, card_id: str) -> bool:
+    """**人工**恢复：``paused`` / ``blocked`` → ``active``，清等待位与活锁计数。
+
+    与 ``_resume_awaiting`` 的区别：那个是**机制自动**恢复（只清 await 位、只从
+    paused 恢复）；本函数是**人工**恢复——额外把 ``goal_await_wakes`` 归零（给人
+    介入后的卡重新攒满 3 次机会），且允许从 ``blocked`` 恢复。
+
+    为什么必须有它：死锁兜底（``_giveup_await_resume``）会把卡停在 paused，而全仓
+    没有第二条路径能把 ``goal_state`` 写回 active（PATCH 白名单不含它、
+    ``ensure_goal_from_message`` 在 goal 非空时直接返回、切 auto_mode 只重算 perms）。
+    只留 ops 痕迹没有工具，不算出口。
+
+    返回是否恢复成功（失败只留痕不抛）。
+    """
+    meta = _meta(work_id, card_id)
+    if not is_auto(meta):
+        return False
+    if not str(meta.get("goal") or "").strip():
+        return False
+    try:
+        await card_store.update_card(
+            work_id, card_id,
+            {"goal_state": GOAL_ACTIVE, "goal_await_children": 0,
+             "goal_await_wakes": 0},
+            "[自动模式] 人工恢复：重新推进目标",
+        )
+    except Exception as exc:  # noqa: BLE001 恢复失败 ⇒ 不起轮
+        logger.warning("[auto] 人工恢复失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        return False
+    kick(work_id, card_id)
+    return True
+
+
 def will_continue(work_id: str, card_id: str) -> bool:
     """本卡此刻是否应当再起一轮（纯判定，无副作用）。**驱动器与执行锁共用同一判据**。"""
     meta = _meta(work_id, card_id)
