@@ -62,7 +62,9 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   const statusEl = el("div", "flow-turn-status");
   statusEl.setAttribute("role", "status");
   statusEl.setAttribute("aria-live", "polite");
-  statusEl.textContent = "Deep diving...";
+  const statusLabel = el("span", "flow-turn-status-label");
+  statusLabel.textContent = "Deep diving...";
+  statusEl.appendChild(statusLabel);
   const clockEl = el("span", "flow-turn-status-clock");
   clockEl.setAttribute("aria-hidden", "true");
   statusEl.appendChild(clockEl);
@@ -71,10 +73,23 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   toBottomBtn.type = "button";
   toBottomBtn.setAttribute("aria-label", "回到底部");
   toBottomBtn.title = "回到底部";
-  toBottomBtn.innerHTML = '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5L7 9l3.5-3.5"/></svg>';
+  toBottomBtn.innerHTML = '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5L7 9l3.5-3.5"/></svg><span class="flow-view-to-bottom-label"></span>';
   toBottomSlot.appendChild(toBottomBtn);
 
+  /* [对话界面商业化 2026-10-17] 空态与首屏骨架：
+     —— 空态：该卡一条记录都没有时给引导（标题 + 一句说明 + 可点建议），
+        而不是一整块黑。建议点击＝把文本填进输入框（不代发，用户仍可改）。
+     —— 骨架：首次拉 timeline 期间显示 3 行 shimmer，避免「白屏 → 突然出内容」。 */
+  const emptyEl = el("div", "chat-empty");
+  emptyEl.style.display = "none";
+  const skeletonEl = el("div", "chat-skeleton");
+  skeletonEl.innerHTML =
+    '<div class="sk-bubble"></div>' +
+    '<div class="sk-line w85"></div><div class="sk-line w70"></div><div class="sk-line w40"></div>';
+
   column.appendChild(olderWrap);
+  column.appendChild(emptyEl);
+  column.appendChild(skeletonEl);
   scroll.appendChild(column);
   scroll.appendChild(toBottomSlot);
   root.appendChild(scroll);
@@ -93,12 +108,53 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   let statusTimer = null;
   let statusStart = null;
   let liveSlot = null;
+  let hasNew = false;      // 读者上翻期间有新节点到达
+  let loading = true;           // 首屏骨架：首次 render 落地即收
+
+  /** 空态内容（由宿主按卡类型注入；未注入则用中性默认）。 */
+  function setEmpty(payload) {
+    const p = payload || {};
+    const title = p.title || "还没有对话";
+    const desc = p.desc || "在下面输入框说点什么，这张卡的对话会从这里开始。";
+    const hints = Array.isArray(p.hints) ? p.hints : [];
+    emptyEl.innerHTML =
+      '<div class="ce-mark">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M4 5.5h16v11H9l-5 4V5.5Z"/><path d="M8.5 9.5h7M8.5 13h4.5"/></svg></div>' +
+      "<h3></h3><p></p>";
+    emptyEl.querySelector("h3").textContent = title;
+    emptyEl.querySelector("p").textContent = desc;
+    if (hints.length) {
+      const wrap = el("div", "ce-hints");
+      for (const h of hints) {
+        const b = el("button", "ce-hint");
+        b.type = "button";
+        b.textContent = h.label || h.text || "";
+        b.onclick = () => {
+          try {
+            window.dispatchEvent(new CustomEvent("ui:fill-input", {
+              detail: { text: h.text || h.label || "" },
+            }));
+          } catch (e) { /* 零阻断 */ }
+        };
+        wrap.appendChild(b);
+      }
+      emptyEl.appendChild(wrap);
+    }
+  }
+
+  function paintEmpty() {
+    const isEmpty = order.length === 0;
+    skeletonEl.style.display = loading ? "" : "none";
+    emptyEl.style.display = (!loading && isEmpty) ? "" : "none";
+  }
 
   /* [建项目流程 2026-10-17] 初始态与「已渲染且无更多」保持一致：
      分页键与回底键都按数据条件显隐，不能靠「还没刷过 ⇒ 用 CSS 默认值」。
      此前从未 replayTrace 的会话（草稿）会多出两个点了就 404 的死按钮。 */
   paintOlder();
   paintToBottom();
+  paintEmpty();
 
   /** 逐字正文槽（/tokens 直写区）：恒在运行条之前、全部节点座位之后。 */
   function ensureLiveSlot() {
@@ -119,6 +175,9 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
 
   function paintToBottom() {
     toBottomSlot.style.display = atBottom ? "none" : "";
+    toBottomBtn.classList.toggle("has-new", !!hasNew);
+    const lab = toBottomBtn.querySelector(".flow-view-to-bottom-label");
+    if (lab) lab.textContent = hasNew ? "新消息" : "";
   }
 
   /** 读者真实滚动判据：scrollTop 偏离台账（程序写入恒等于台账）。 */
@@ -130,6 +189,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
       : atBottom;
     if (!movedByReader && isAtBottom) { toBottom(); return; }
     atBottom = isAtBottom;
+    if (isAtBottom) hasNew = false;
     paintToBottom();
     if (isAtBottom) anchor = null;
     else if (anchor !== null) {
@@ -168,7 +228,18 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     captureAnchor();
     if (typeof onLoadOlder === "function") onLoadOlder();
   };
-  toBottomBtn.onclick = () => { toBottom(); };
+  toBottomBtn.onclick = () => {
+    /* 用户主动点「回到底部」：平滑滚（有过程感）。
+       程序性跟随仍用瞬时写 scrollTop——平滑会与 ResizeObserver 的钉底互相拉扯。 */
+    anchor = null;
+    const top = scroll.scrollHeight;
+    try { scroll.scrollTo({ top, behavior: "smooth" }); }
+    catch (e) { scroll.scrollTop = top; }
+    observedTop = top;
+    atBottom = true;
+    hasNew = false;
+    paintToBottom();
+  };
 
   /** 渲染一行：rev 未变 ⇒ 复用；变了 ⇒ 原地换元素（不搬位置）。 */
   function ensureSeat(key) {
@@ -217,7 +288,8 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
       els.push(seat.el);
     }
     // 落位：按序校正（已就位者 insertBefore 为 no-op ⇒ 零搬动）
-    let prev = olderWrap;
+    // 起点是骨架块（older → empty → skeleton → 节点…），保证空态/骨架恒在节点之前。
+    let prev = skeletonEl;
     for (const e of els) {
       if (e.parentNode !== column || prev.nextSibling !== e) column.insertBefore(e, prev.nextSibling);
       prev = e;
@@ -225,6 +297,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     // 逐字槽与运行条恒在末位之后（顺序：live 槽 → 运行条）
     if (liveSlot !== null) column.appendChild(liveSlot);
     column.appendChild(statusEl);
+    paintEmpty();
 
     const newFirst = order[0] ?? null;
     const newLast = order.length ? order[order.length - 1] : null;
@@ -256,6 +329,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     followSig = sig;
     // 跟随新内容，但**不因为 atBottom 为真就每次 render 都重钉**
     if (appendedUser || (tipMoved && atBottom)) toBottom();
+    else if (tipMoved && !atBottom) { hasNew = true; paintToBottom(); }
   }
 
   /** 新到的用户节点必须可见（原文 :251-253）。 */
@@ -285,13 +359,18 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   }
 
   // ---- 运行条（15s 后才显时钟）----
+  let stopping = false;
   function paintStatus() {
     const running = !!(isRunning && isRunning());
-    if (!running) {
+    if (!running && !stopping) {
       statusEl.style.display = "none";
       if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
       return;
     }
+    /* 停止指令发出到回合真正收口之间有一段真实等待（中止缝在 step 边界）。
+       这段不表达出来，用户会以为「点了没反应」→ 再点几次 → 以为坏了。 */
+    statusLabel.textContent = stopping ? "正在停止…" : "Deep diving...";
+    statusEl.classList.toggle("is-stopping", stopping);
     statusEl.style.display = "";
     const anchorMs = (typeof runningStart === "function" ? runningStart() : null) ?? statusStart ?? Date.now();
     const tick = () => {
@@ -322,17 +401,34 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     scrollEl: scroll,
     columnEl: column,
     render,
+    /* 数据落地信号：首屏骨架只在真正拿到数据后收起（render 本身不清 loading，
+       否则「先渲染一帧空数组」会把骨架换成空态，再闪回内容）。 */
+    markLoaded() { loading = false; paintEmpty(); },
     refresh,
     ensureLiveSlot,
     toBottom,
     paintOlder,
     paintStatus,
+    setEmpty,
     /** 运行态变化：重画运行条与「新用户节点」判据。 */
     setRunning(bool) {
       if (bool) statusStart = Date.now();
+      stopping = false;
+      paintStatus();
+    },
+    /** 停止指令已发出、回合尚未收口：运行条改「正在停止…」。 */
+    setStopping(bool) {
+      stopping = !!bool;
+      if (stopping) statusStart = statusStart || Date.now();
       paintStatus();
     },
     setUserKeyTest(fn) { userKeyTest = fn; },
+    /** 切卡入场：整块淡入 160ms（硬切会让人分不清「换了卡」还是「内容跳了」）。 */
+    playEnter() {
+      root.classList.remove("view-enter");
+      void root.offsetWidth;   // 强制重排，让动画能重放
+      root.classList.add("view-enter");
+    },
     /** 上翻落地后调用：清锚（加载失败也清，避免下次误用）。 */
     endOlder() { anchor = null; },
     isAtBottom() { return atBottom; },

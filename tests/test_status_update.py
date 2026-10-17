@@ -292,12 +292,12 @@ def test_frontend_version_stamps_bumped():
     [自动模式回灌 2026-10-17] workspace 52→53（autoToggle 开关＋insp 标记）、
     main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 样式段）。
     """
-    assert "../stream.js?v=38" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=53" in _read("static/esm/main_chat.js")
-    assert "./stream.js?v=38" in _read("static/workspace.js")
-    assert "./esm/flow/input-bar.js?v=2" in _read("static/workspace.js")
+    assert "../stream.js?v=42" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=56" in _read("static/esm/main_chat.js")
+    assert "./stream.js?v=42" in _read("static/workspace.js")
+    assert "./esm/flow/input-bar.js?v=4" in _read("static/workspace.js")
     assert "/static/style.css?v=40" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=2.0" in _read("templates/card.html")
+    assert "/static/esm/main_chat.js?v=2.3" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════

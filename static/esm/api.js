@@ -80,7 +80,13 @@ export function notify(msg, kind = "info", opts = {}) {
   }
   c.appendChild(el);
   const ttl = opts.ttl || 8000;   // 可点提示留 8s（替代 4s 即逝）
-  setTimeout(() => el.remove(), ttl);
+  let timer = setTimeout(() => el.remove(), ttl);
+  /* 鼠标在上面时停表：提示是给人读的，读的时候被收掉＝白报。移开后重新计时。 */
+  el.addEventListener("mouseenter", () => { clearTimeout(timer); timer = null; });
+  el.addEventListener("mouseleave", () => {
+    if (timer) return;
+    timer = setTimeout(() => el.remove(), 3000);
+  });
   return item;
 }
 

@@ -322,12 +322,12 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        "stream.js": "38", "workspace.js": "53", "canvas.js": "45",
-        "assembler.js": "35", "style.css": "40", "main.js": "45.0",
-        "main_chat.js": "2.0",
+        "stream.js": "42", "workspace.js": "56", "canvas.js": "46",
+        "assembler.js": "35", "style.css": "40", "main.js": "46.0",
+        "main_chat.js": "2.3",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
-        "input-bar.js": "2", "queue-dock.js": "1", "queue-store.js": "1",
-        "chat-view.js": "2", "message-item.js": "1",
+        "input-bar.js": "4", "queue-dock.js": "1", "queue-store.js": "1",
+        "chat-view.js": "3", "message-item.js": "1",
     }
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"
