@@ -348,7 +348,7 @@ def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str]
 #: 存量 work 的旧 canvas.json 里没有这两个键，``load()`` 原样返回 ⇒ 画布上
 #: 「已完成」徽标与更新时间**永远不出现**，且没有任何报错。版本号让
 #: "缓存是旧结构的"这件事变成可判定的事实，命中时自动重建。
-CANVAS_SCHEMA_VERSION = 12
+CANVAS_SCHEMA_VERSION = 13
 
 
 def rebuild(work_id: str) -> dict[str, Any]:
@@ -388,6 +388,38 @@ def rebuild(work_id: str) -> dict[str, Any]:
         )]
 
     rows = card_db.read_sync(work_id, _fn, []) or []
+
+    # ── 最近活动（活动流的数据源）──
+    #
+    # [画布 2026-10-18] 这个系统最核心的能力是"AI 自己推进任务"，但画布上原本
+    # 完全没有"它刚才做了什么"的表达。库里已有 card_history（card_id/ts/text），
+    # 381 行实测里有两类噪音必须滤掉：
+    #   [权限刷新] perms → v4   150 条（批量刷权限，不是工作）
+    #   [T7存量迁移] 线索 …      32 条（一次性迁移）
+    # 真正有信息量的是"卡片创建""由「X」对话编辑正文"。
+    def _events(conn: Any) -> list[dict[str, Any]]:
+        return [dict(r) for r in conn.execute(
+            # INNER JOIN：卡已删除的历史事件不显示（实测有 6 条指向已删卡，
+            # 卡片名只能回退成 card_079，读起来像乱码）
+            "SELECT h.card_id, h.ts, h.text, c.title "
+            "FROM card_history h JOIN cards c ON c.card_id = h.card_id "
+            "WHERE h.text NOT LIKE '%[权限刷新]%' AND h.text NOT LIKE '%[T7存量迁移]%' "
+            "ORDER BY h.ts DESC LIMIT 40"
+        )]
+
+    raw_events = card_db.read_sync(work_id, _events, []) or []
+    recent_events: list[dict[str, Any]] = []
+    for e in raw_events:
+        txt = str(e.get("text") or "")
+        # 历史行格式固定：`- [2026-10-18T11:27:01.576270+08:00] 卡片创建`
+        m = re.match(r"^\s*-\s*\[[^\]]+\]\s*(.+)$", txt)
+        detail = (m.group(1) if m else txt).strip()
+        recent_events.append({
+            "card_id": e.get("card_id") or "",
+            "title": e.get("title") or e.get("card_id") or "",
+            "ts": e.get("ts") or "",
+            "detail": detail[:80],
+        })
 
     # [画布 2026-10-18 · 逻辑关系] 卡片之间的真实关系不在 relations/links 列里
     # （实测这两列全空），而在**正文**里：用户写卡时会引用邻卡
@@ -458,6 +490,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
         "work_id": work_id,
         "schema_version": CANVAS_SCHEMA_VERSION,
         "created_at": created_at,
+        "recent_events": recent_events,
         "cards": cards,
         "links": links,
     }

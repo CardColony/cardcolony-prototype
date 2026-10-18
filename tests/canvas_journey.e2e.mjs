@@ -147,14 +147,23 @@ const z1 = await ev("(document.getElementById('zoomDisplay')||{}).textContent");
 check("7 缩放＋按钮生效", parseInt(z1) > parseInt(z0), `${z0} → ${z1}`);
 
 // ── 8 小地图点击导航 ──
-const mm = await centerOf(".cv-minimap", 0);
-if (mm) {
-  const panBefore = await ev("(document.getElementById('world')||{style:{}}).style.transform");
-  await click(mm.x - 30, mm.y - 20);
-  await sleep(400);
-  const panAfter = await ev("(document.getElementById('world')||{style:{}}).style.transform");
-  check("8 小地图点击＝移动视口", panBefore !== panAfter, "transform 变化");
-} else check("8 小地图存在", false, "未渲染");
+// 先整幅适配：A4–A7 动过缩放/平移
+await key("0", { code: "Digit0", modifiers: MOD.ctrl });
+await sleep(500);
+// 用 DOM 派发 mousedown：坐标点击在小地图上不稳（canvas 与视口框子元素叠在一起），
+// 而这条测的是"小地图导航逻辑"本身，不是坐标命中（坐标命中由 A3/A6 覆盖）
+const panBefore = await ev("(document.getElementById('world')||{style:{}}).style.transform");
+await ev(`(() => {
+  const c = document.querySelector('.cv-minimap canvas');
+  if (!c) return;
+  const r = c.getBoundingClientRect();
+  c.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true,
+    clientX: Math.round(r.x + r.width * 0.2), clientY: Math.round(r.y + r.height * 0.8) }));
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+})()`);
+await sleep(400);
+const panAfter = await ev("(document.getElementById('world')||{style:{}}).style.transform");
+check("8 小地图点击＝移动视口", panBefore !== panAfter, `${String(panBefore).slice(0,34)} → ${String(panAfter).slice(0,34)}`);
 
 // ── 9 整理布局 ──
 await click(...Object.values(await centerOf("#reorganizeBtn", 0)).slice(0, 2));
