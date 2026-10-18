@@ -51,12 +51,19 @@
 .nav-rail-btn {
   width: 30px;
   height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
   color: var(--dim);
   font-size: 14px;
+  cursor: pointer;
 }
+/* 图标统一走 SVG（原来是 ☰/🔔/⚙ 字符：Windows 上会被渲染成彩色 emoji，
+   和周围线条图标完全不是一套语言） */
+.nav-rail-btn svg { width: 15px; height: 15px; display: block; }
 .nav-rail-btn:hover { color: var(--text); background: var(--panel-hover); }
 .nav-rail-dot {
   width: 10px;
@@ -193,7 +200,20 @@
 .app-nav.rail #navActions { flex-direction: column; padding: 8px 0; }
 /* 通知按钮：外观原在 style.css（#navNotifyBtn 单行形态），搬入时只带了 position——
    直接删旧段会把按钮变成裸件，故此处补全外观，与旧值逐字一致。 */
-#navNotifyBtn { position: relative; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 14px; padding: 2px 8px; }
+#navNotifyBtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 8px;
+}
+#navNotifyBtn svg { width: 15px; height: 15px; display: block; }
 #navNotifyBtn:hover { border-color: var(--text); }
 .nav-notify-count { position: absolute; top: -6px; right: -6px; background: var(--red); color: #fff; border-radius: 8px; font-size: 12px; padding: 0 4px; display: none; }
 .nav-notify-count.on { display: inline-block; }
@@ -202,6 +222,7 @@
   padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--panel); color: var(--dim); font-size: 13px; cursor: pointer; }
 .nav-foot-btn:hover { color: var(--text); background: var(--panel-hover); }
+.nav-foot-btn svg { width: 15px; height: 15px; flex: none; display: block; }
 .app-nav.rail .nav-footer { padding: 8px 0; }
 .app-nav.rail .nav-foot-btn { width: 30px; height: 30px; margin: 0 auto;
   justify-content: center; padding: 0; font-size: 14px; }
