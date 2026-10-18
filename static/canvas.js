@@ -384,7 +384,9 @@ const WORK_ID = window.__WORK_ID__;
 
   // [T18-C-005] 避让间距单一来源：layoutTree 子树间距 / separateOverlaps / resolveDrop /
   // 旧 resolveOverlaps 分带共用此常量（原 layoutTree 域内局部常量上提，消除散落硬编码 40）。
-  const GAP_Y = 32;
+  // [画布 2026-10-18] 32 → 40：卡片改成 min-height 150 之后，同层不同父卡的
+  // 子树在纵向只差 4px 就相交（实测 card_031 × card_007），避让推不动。
+  const GAP_Y = 40;
 
   // [T08-1-2] 折叠树排布（替代原 narrativeAxis/gridMatrix 双分支）。
   // 方向口径（用户 2026-10-04 中途指令「布局用左右视图」，对任务书上下树的推翻，留痕）：
@@ -609,7 +611,7 @@ const WORK_ID = window.__WORK_ID__;
     let rounds = 0;
     let dpWarned = false;
     let frozenPairWarned = false;
-    while (moved && rounds < 16) {          // 16 轮 = FPS/防卡保护上限（RD-02 辨析），非闸
+    while (moved && rounds < 24) {          // 24 轮（卡片变高后 16 轮不够收敛）
       moved = false;
       rounds++;
       for (let i = 0; i < ids.length; i++) {
@@ -656,7 +658,7 @@ const WORK_ID = window.__WORK_ID__;
         }
       }
     }
-    if (moved) console.warn("[separateOverlaps] 16 轮内未完全收敛，可能残留个别相交");
+    if (moved) console.warn("[separateOverlaps] 24 轮内未完全收敛，可能残留个别相交");
     return out;
   }
 
@@ -1415,6 +1417,18 @@ const WORK_ID = window.__WORK_ID__;
     //   discussing → 这段在讨论什么
     //   empty      → 什么都不说（留白比写"未开始"更有信息量）
     // 待裁定最多列 2 条：卡片是"索引"，不是"全文"；剩下的用"还有 N 处"收口。
+    // ── 自动模式活动：这张卡此刻是不是 AI 在自动推进 ──
+    // goal_state 的取值（auto_driver.py）：active / paused / complete / blocked。
+    // 只有 active 算"正在跑"。视觉给三样：顶部呼吸条、标题上方一行"第 N 轮 · 当前步骤"、
+    // 卡片描边泛蓝——这三样都不改变卡片高度以外的信息，且只在跑的时候出现。
+    const running = !!card.auto_mode && String(card.goal_state || "") === "active";
+    if (running) node.dataset.running = "1";
+    const runRound = Number(card.goal_rounds || 0);
+    const runStep = String(card.toolcard_step || "").trim();
+    const runLine = running
+      ? `<div class="cv-runline"><span class="cv-run-dot"></span>第 ${runRound || 1} 轮${runStep ? " · " + escapeHtml(runStep.slice(0, 22)) : ""}</div>`
+      : "";
+
     const pendingItems = Array.isArray(card.pending_items) ? card.pending_items : [];
     let bodyHtml = "";
     if (ws === "pending" && pendingItems.length) {
@@ -1430,7 +1444,9 @@ const WORK_ID = window.__WORK_ID__;
     node.innerHTML = `
       ${msgBadge}
       <button class="cv-open" type="button" title="打开完整对话（双击卡片同样进入）" aria-label="打开完整对话">↗</button>
+      ${running ? '<div class="cv-runbar"></div>' : ""}
       <div class="tname">${escapeHtml(card.title)}</div>
+      ${runLine}
       ${bodyHtml}
       <div class="cv-card-foot">
         ${wsBadge}
@@ -1671,6 +1687,7 @@ const WORK_ID = window.__WORK_ID__;
     highlightEdges(ids.length === 1 ? ids[0] : "");
     renderSelectionBar();
     renderCardDetail();
+    syncCatalogCurrent();
   }
 
   function setSelection(ids, additive = false) {
@@ -1729,18 +1746,49 @@ const WORK_ID = window.__WORK_ID__;
     cardDetailEl.hidden = false;
     cardDetailEl.innerHTML = "";
 
-    // 多选：列出选中的卡（为批量操作做准备）
+    // 多选：列出选中的卡 + 批量操作
+    //
+    // [画布 2026-10-18 · 并行] 多选的意义不是"一次删掉"，而是**一次对多张卡做同一件事**。
+    // 这里给三个真正用得上的：全部展开、全部折叠、批量删除。
     if (ids.length > 1) {
       cardDetailEl.appendChild(el("div", "cd-head", `已选 ${ids.length} 张`));
+
       const list = el("div", "cd-multi");
       for (const id of ids) {
         const c = state.index.cardMap[id] || {};
-        const row = el("div", "cd-multi-row", c.title || id);
+        const row = el("div", "cd-multi-row");
         row.dataset.id = id;
+        const t = el("span", "cd-multi-title", c.title || id);
+        row.appendChild(t);
+        const n = Number(c.pending_count || 0);
+        if (n > 0) {
+          const nb = el("span", "cv-ws", String(n));
+          nb.dataset.ws = "pending";
+          row.appendChild(nb);
+        }
         row.addEventListener("click", () => selectOnly(id));
         list.appendChild(row);
       }
       cardDetailEl.appendChild(list);
+
+      const ops = el("div", "cd-ops");
+      const btnExpand = el("button", "btn", "全部展开");
+      btnExpand.addEventListener("click", () => {
+        for (const id of ids) {
+          const hasKids = (state.index.childMap[id] || []).length > 0;
+          if (hasKids && !state.view.expanded.has(id)) toggleExpand(id);
+        }
+      });
+      const btnCollapse = el("button", "btn", "全部折叠");
+      btnCollapse.addEventListener("click", () => {
+        for (const id of ids) if (state.view.expanded.has(id)) toggleExpand(id);
+      });
+      const btnDel = el("button", "btn", "删除");
+      btnDel.addEventListener("click", () => deleteSelected());
+      ops.appendChild(btnExpand);
+      ops.appendChild(btnCollapse);
+      ops.appendChild(btnDel);
+      cardDetailEl.appendChild(ops);
       return;
     }
 
@@ -3470,6 +3518,84 @@ const WORK_ID = window.__WORK_ID__;
 
   // 统一重绘入口（全量重建）：改 state 后必经此口（V10）
   // ══════════════════════════════════════════════════════════════════════
+  // [画布 2026-10-18 · 并行工作台] 左栏目录
+  //
+  // 画布一屏只装得下 5 张卡，而"并行多线"的前提是**同时看见全部**——
+  // 所以左栏用 22px 一行把 39 张卡全部排下（缩进＝层级），一眼扫完：
+  //   橙点 + 数字 ＝ 这张卡有几处等我裁定
+  //   ←N         ＝ 被多少张卡引用（谁是地基）
+  // 点行 = 选中 + 右栏读卡 + 中栏飞过去（不跳页）。
+  // ══════════════════════════════════════════════════════════════════════
+  const catEl = document.getElementById("cvCatalog");
+  // var 而不是 let：applySelectionClasses 在首屏渲染时就会调 syncCatalogCurrent，
+  // 那时这个声明还没执行到（let 会 TDZ 报错）。
+  var catRowMap = new Map();
+
+  function renderCatalog() {
+    if (!catEl) return;
+    const byParent = state.index.childMap || {};
+    const frag = document.createDocumentFragment();
+    catRowMap = new Map();
+
+    const walk = (pid, depth) => {
+      for (const c of (byParent[pid] || [])) {
+        if (c.card_type === "rule") continue;
+        const row = document.createElement("div");
+        row.className = "cv-cat-row";
+        row.dataset.id = c.card_id;
+        row.dataset.depth = String(Math.min(depth, 4));
+        if (c.work_state) row.dataset.ws = c.work_state;
+        row.style.paddingLeft = (10 + depth * 13) + "px";
+
+        const dot = document.createElement("span");
+        dot.className = "cv-cat-dot";
+        row.appendChild(dot);
+
+        const title = document.createElement("span");
+        title.className = "cv-cat-title";
+        title.textContent = c.title || c.card_id;
+        row.appendChild(title);
+
+        const n = Number(c.pending_count || 0);
+        if (n > 0) {
+          const nb = document.createElement("span");
+          nb.className = "cv-cat-n";
+          nb.textContent = String(n);
+          nb.title = `${n} 处待裁定`;
+          row.appendChild(nb);
+        }
+        const ref = Number(c.ref_count || 0);
+        if (ref > 0) {
+          const rb = document.createElement("span");
+          rb.className = "cv-cat-ref";
+          rb.textContent = "←" + ref;
+          rb.title = `被 ${ref} 张卡引用`;
+          row.appendChild(rb);
+        }
+
+        row.addEventListener("click", () => {
+          selectOnly(c.card_id);
+          focusCard(c.card_id, { keepZoom: true });
+        });
+
+        frag.appendChild(row);
+        catRowMap.set(c.card_id, row);
+        walk(c.card_id, depth + 1);
+      }
+    };
+    walk("", 0);
+    catEl.innerHTML = "";
+    catEl.appendChild(frag);
+    syncCatalogCurrent();
+  }
+
+  function syncCatalogCurrent() {
+    if (!catRowMap.size) return;
+    const cur = [...state.view.selected][0] || "";
+    for (const [id, row] of catRowMap) row.classList.toggle("is-current", id === cur);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
   // [画布 2026-10-18 · 工作台] 项目状态条
   //
   // 打开画布的第一眼必须回答"有多少事在等我"。原来顶栏只有一个项目名，
@@ -3503,6 +3629,7 @@ const WORK_ID = window.__WORK_ID__;
 
   function renderAll() {
     renderProjectStat();
+    renderCatalog();
     renderCanvas(collectProjectionInput(), collectViewModel());
   }
 

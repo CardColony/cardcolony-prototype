@@ -147,7 +147,20 @@ await click(b2box.x, b2box.y, { modifiers: MOD.shift });
 check("A2 Shift+单击＝多选 2 张", (await selCount()) === 2, await selCount());
 
 // A3 点空白取消
-await click(80, 900);
+// 动态找一个真正空白的点：不在任何卡片矩形内，且避开左栏目录/右栏/小地图
+const blank = await J(`(() => {
+  const rects = [...document.querySelectorAll('.card-node')].map(n => n.getBoundingClientRect());
+  const vp = document.getElementById('viewport').getBoundingClientRect();
+  for (let y = vp.bottom - 40; y > vp.top + 60; y -= 20) {
+    for (let x = vp.left + 40; x < vp.right - 360; x += 20) {
+      if (!rects.some(r => x > r.left - 8 && x < r.right + 8 && y > r.top - 8 && y < r.bottom + 8)) {
+        return { x: Math.round(x), y: Math.round(y) };
+      }
+    }
+  }
+  return { x: Math.round(vp.left + 40), y: Math.round(vp.bottom - 40) };
+})()`);
+await click(blank.x, blank.y);
 check("A3 点空白＝清空选择", (await selCount()) === 0, await selCount());
 
 // A4 Ctrl+滚轮缩放（2026-10-18 滚轮默认改纵向滚动，缩放走 Ctrl/⌘+滚轮）
@@ -168,9 +181,11 @@ await drag(cx(a), cy(a), cx(a) + 120, cy(a) + 60, { button: "middle" });
 const t1 = await worldTf();
 check("A5 中键拖＝平移", t0 !== t1, `${t0} → ${t1}`);
 
-// A6 Shift+拖空白＝框选
+// A6 Shift+拖空白＝框选（先整幅适配：A5 中键平移过，视野已变，卡片可能跑出框选范围）
 await key("Escape");
-await drag(200, 120, 1400, 900, { modifiers: MOD.shift });
+await key("0", { code: "Digit0", modifiers: MOD.ctrl });
+await sleep(400);
+await drag(320, 120, 1200, 900, { modifiers: MOD.shift });
 const marqSel = await selCount();
 check("A6 Shift+拖空白＝框选选中多张", marqSel >= 2, marqSel);
 
@@ -207,7 +222,7 @@ await click(p2.x, p2.y, { modifiers: MOD.shift });
 // [画布 2026-10-18] 拖拽＝只调纵向顺序（横向锁定在列上），故断言 top 变化
 const before2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.top))`);
 const left2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
-await drag(p1.x, p1.y, p1.x + 90, p1.y + 60);
+await drag(p1.x, p1.y, p1.x, p1.y + 90);
 const after2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.top))`);
 const leftAfter = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
 const movedAll = before2.length >= 2 && before2.every((v, i) => Math.abs(after2[i] - v) > 30);

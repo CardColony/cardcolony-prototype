@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 const BASE = process.argv[2] || "http://127.0.0.1:5707";
-const WID = process.argv[3] || "real_work_002";
+// [画布 2026-10-18] 会建卡/删卡的测试跑在 work_001（假数据项目），不污染真实项目
+const WID = process.argv[3] || "work_001";
 const CHROME = process.env.CHROME_PATH ||
   path.join(os.homedir(), "AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe");
 const PORT = 9650 + Math.floor(Math.random() * 80);

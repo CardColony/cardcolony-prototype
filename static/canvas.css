@@ -982,12 +982,21 @@
   background: var(--cv-line-2);
 }
 
-/* 卡片最小高度：待裁定卡（2 条）与结论卡（1 段）与空卡（无正文）高度不同，
-   底栏不在一条线上会显得"参差"。给 d1/d2 一个下限，让底栏基本对齐；
-   超出的内容自然撑高（信息优先，不裁）。 */
-.page-canvas .card-node[data-depth="1"] { min-height: 108px; }
-.page-canvas .card-node[data-depth="2"] { min-height: 92px; }
-.page-canvas .card-node[data-depth="0"] { min-height: 128px; }
+/* 卡片高度与底栏对齐
+   ──────────────────────────────────────────────────────────────────────────
+   待裁定卡（2 条）、结论卡（1 段）、空卡（无正文）内容量不同，原来底栏跟着
+   内容浮动，一列卡片看起来参差。两件事一起做：
+     ① 卡片本身改成纵向 flex，底栏 `margin-top:auto` 贴底；
+     ② 给各档一个 min-height 下限。
+   于是同档卡片的底栏落在同一条线上；内容超出的卡自然撑高（信息优先，不裁）。 */
+.page-canvas .card-node {
+  display: flex;
+  flex-direction: column;
+}
+.page-canvas .cv-card-foot { margin-top: auto; }
+.page-canvas .card-node[data-depth="1"] { min-height: 150px; }
+.page-canvas .card-node[data-depth="2"] { min-height: 118px; }
+.page-canvas .card-node[data-depth="0"] { min-height: 148px; }
 
 /* 规模（现状块字数）：不是状态，是"这张卡有多重"——决定要不要现在碰 */
 .page-canvas .cv-size {
@@ -1102,3 +1111,149 @@
    元素自带的 [hidden]{display:none} 会被更具体的类规则盖掉（实测：规则卡的空态
    提示会穿透到卡片详情上面）。 */
 .page-canvas [hidden] { display: none !important; }
+
+/* ==========================================================================
+   左栏目录：39 张卡一屏扫完（画布一屏只装得下 5 张，并行前提是"同时看见"）
+   ========================================================================== */
+.page-canvas .cv-catalog {
+  flex: none;
+  width: 268px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 0 24px;
+  background: var(--cv-surface-1);
+  border-right: 1px solid var(--cv-line-1);
+}
+
+/* 窄屏藏起来：1600 下 44+268+中+340，中栏还有 948；1280 下只剩 628，画布挤没了 */
+@media (max-width: 1440px) {
+  .page-canvas .cv-catalog { display: none; }
+}
+
+.page-canvas .cv-cat-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 10px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  border-left: 2px solid transparent;
+  transition: background var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .cv-cat-row:hover { background: rgba(255, 255, 255, 0.045); }
+.page-canvas .cv-cat-row.is-current {
+  background: var(--cv-accent-soft);
+  border-left-color: var(--cv-accent);
+}
+
+/* 状态点：整栏只有"待裁定"是橙色 */
+.page-canvas .cv-cat-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cv-line-3);
+}
+.page-canvas .cv-cat-row[data-ws="pending"] .cv-cat-dot { background: var(--cv-warn); }
+.page-canvas .cv-cat-row[data-ws="concluded"] .cv-cat-dot { background: var(--cv-ok); }
+.page-canvas .cv-cat-row[data-ws="empty"] .cv-cat-dot { background: transparent; border: 1px solid var(--cv-line-2); }
+
+.page-canvas .cv-cat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  line-height: 1;
+  color: var(--cv-text-2);
+}
+.page-canvas .cv-cat-row[data-depth="0"] .cv-cat-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--cv-text-1);
+}
+.page-canvas .cv-cat-row.is-current .cv-cat-title { color: var(--cv-text-1); }
+
+.page-canvas .cv-cat-n {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  color: #f7c163;
+  font-variant-numeric: tabular-nums;
+}
+.page-canvas .cv-cat-ref {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--cv-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   自动模式：AI 正在这张卡里干活
+   —— 三样线索，只在跑的时候出现：顶部呼吸条 / "第 N 轮 · 当前步骤" / 描边泛蓝
+   ========================================================================== */
+.page-canvas .card-node[data-running="1"] {
+  border-color: rgba(91, 140, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.22), 0 2px 12px rgba(91, 140, 255, 0.14);
+}
+
+.page-canvas .cv-runbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  border-radius: 10px 10px 0 0;
+  background: var(--cv-accent);
+  animation: cv-run-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes cv-run-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.page-canvas .cv-runline {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 5px 0 2px;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: #8fb0ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.page-canvas .cv-run-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cv-accent);
+  animation: cv-run-pulse 1.6s ease-in-out infinite;
+}
+
+/* 多选列表与批量操作 */
+.page-canvas .cd-multi-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.page-canvas .cd-multi-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-canvas .cd-ops {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}

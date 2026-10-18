@@ -348,7 +348,7 @@ def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str]
 #: 存量 work 的旧 canvas.json 里没有这两个键，``load()`` 原样返回 ⇒ 画布上
 #: 「已完成」徽标与更新时间**永远不出现**，且没有任何报错。版本号让
 #: "缓存是旧结构的"这件事变成可判定的事实，命中时自动重建。
-CANVAS_SCHEMA_VERSION = 11
+CANVAS_SCHEMA_VERSION = 12
 
 
 def rebuild(work_id: str) -> dict[str, Any]:
@@ -378,7 +378,13 @@ def rebuild(work_id: str) -> dict[str, Any]:
         # links（新线 relations 不进画布——用户裁定「画布展示本次不做」）。
         return [dict(r) for r in conn.execute(
             "SELECT card_id, title, card_type, parent, created_at, updated_at, state,"
-            " links, status_block FROM cards ORDER BY card_id"
+            " links, status_block,"
+            # [画布 2026-10-18 · 自动模式可视化] 这五列决定"AI 正在怎么用这套系统"：
+            # auto_mode＝是否自动推进；goal_state＝跑/停/成；goal_rounds＝第几轮；
+            # toolcard_step/round＝当前步骤。真实项目里目前全空（自动模式一次没跑过），
+            # 但字段在、机制在，画布必须先有表达，否则这个核心能力永远不可见。
+            " auto_mode, goal_state, goal_rounds, toolcard_step, toolcard_round"
+            " FROM cards ORDER BY card_id"
         )]
 
     rows = card_db.read_sync(work_id, _fn, []) or []
@@ -424,6 +430,12 @@ def rebuild(work_id: str) -> dict[str, Any]:
             # 规模：现状块字数。3000 字和 40000 字的工作量差一个数量级，
             # 它决定"这张卡要不要现在碰"，是用户排优先级的关键输入。
             "content_len": len(row["status_block"] or ""),
+            # ── 自动模式活动（画布上"AI 正在干活"的唯一表达）──
+            "auto_mode": bool(row.get("auto_mode")),
+            "goal_state": row.get("goal_state") or "",
+            "goal_rounds": int(row.get("goal_rounds") or 0),
+            "toolcard_step": row.get("toolcard_step") or "",
+            "toolcard_round": int(row.get("toolcard_round") or 0),
         })
         try:
             rels = json.loads(row["links"] or "[]")
