@@ -20,7 +20,7 @@
 <!-- [画布商业化重做 2026-10-17] 画布页专属视觉体系独立成 canvas.css（只在 .page-canvas
      作用域内生效，不污染对话页）。必须在本行之后引入：同特异性后者胜，用它覆盖 style.css
      里的旧画布段；改动本文件必须升 ?v=。 -->
-<link rel="stylesheet" href="/static/canvas.css?v=6">
+<link rel="stylesheet" href="/static/canvas.css?v=7">
 </head>
 <body class="page-canvas">
 <div class="work-page">
@@ -84,6 +84,9 @@
          不含 #chatCrumb / #workspace / 对话弹窗——那些归 card.html。 -->
       <!-- 画布态面包屑（canvas.js renderBreadcrumb 填，吃投影；画布态才显） -->
       <div id="crumb" class="crumb canvas-only"></div>
+      <!-- [画布 2026-10-18 · 工作台] 项目状态条：打开画布第一眼要回答"有多少事在等我"。
+           数据来自 canvas 投影（每张卡的 work_state / pending_count），canvas.js 填。 -->
+      <div id="projectStat" class="proj-stat canvas-only"></div>
       <span class="spacer"></span>
       <!-- [缩放控件 2026-10-16 用户令] 滚轮缩放废除（canvas.js wheel 监听已删），
            缩放只走此控件组：−/＋每按一次 ±25%；拖动条 25% 档位吸附（min25/max200/step25）；
@@ -127,11 +130,17 @@
     <!-- [规则卡 2026-10-16 三改] 布局右列（非浮层）：主内容列真实缩窄避让，
          任何界面都不被盖。分区直改即存；仅根卡可提议修改（draft_rule_edit）、
          弹窗审批落盘。 -->
+    <!-- [画布 2026-10-18 · 并行工作台] 右侧栏双态：
+         未选中卡 → 规则卡（原行为，逐字不变）；
+         选中卡   → 这张卡的详情（结论 + 待裁定条目 + 打开对话）。
+         为什么不跳页：跳页会让人失去画布上下文，看两张卡的结论要来回跳三次——
+         那等于用画布模拟对话界面，并行优势归零。 -->
     <div class="rule-panel" id="rulePanel">
-      <div class="rule-panel-head">规则卡 · 各类卡行为准则（直改即存）</div>
+      <div class="rule-panel-head" id="rulePanelHead">规则卡 · 各类卡行为准则（直改即存）</div>
       <div class="rule-panel-body" id="rulePanelBody">
         <!-- workspace.js loadRulePanel 动态填充 -->
       </div>
+      <div class="card-detail" id="cardDetail" hidden></div>
     </div>
   </div>
 </div>
@@ -153,6 +162,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=53.0"></script>
+<script type="module" src="/static/esm/main.js?v=54.0"></script>
 </body>
 </html>

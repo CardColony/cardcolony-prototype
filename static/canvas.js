@@ -441,7 +441,10 @@ const WORK_ID = window.__WORK_ID__;
     // 为什么：单列纵向排 6 张卡＝高度 1000px，视口装不下 → fit 后缩到 70% 字看不清。
     // 分列后同一批卡占「2 列 × 3 行」，接近方形，fit 后能保持接近 100%。
     // 判据是"直接子卡数"，与子树深度无关——深层自然递归套用同一规则。
-    const MAX_PER_COL = 4;
+    // [画布 2026-10-18 · 有序] 10 张以内**单列纵向**排：从上到下就是建卡顺序
+    // （＝用户思考的顺序），像读目录一样。原来 4 张就折列，8 张变成 2×4，
+    // 读者要在两列之间来回跳，"第 5 张"跑到第二列顶部——这是"无序摆放"的来源之一。
+    const MAX_PER_COL = 10;
     const columnize = (kids) => {
       const n = kids.length;
       if (n <= MAX_PER_COL) return [kids];
@@ -841,6 +844,35 @@ const WORK_ID = window.__WORK_ID__;
     return chain;
   }
 
+
+  // 子卡分组几何（纯函数）：同一父卡的可见直接子卡 ≥2 张 → 一块 bbox。
+  // 连线与分组框共用本函数，保证"线连到框上"与"框画在哪"永远一致。
+  const GROUP_PAD = 18;
+
+  function computeChildGroups(visibleIds, layout, sizes, childMap) {
+    const out = [];
+    for (const pid in childMap) {
+      if (!visibleIds.has(pid)) continue;
+      const kids = (childMap[pid] || []).filter((c) => visibleIds.has(c.card_id));
+      if (kids.length < 2) continue;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const k of kids) {
+        const p = layout[k.card_id];
+        if (!p) continue;
+        const sz = sizes[k.card_id] || { w: 200, h: 80 };
+        x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+        x1 = Math.max(x1, p.x + sz.w); y1 = Math.max(y1, p.y + sz.h);
+      }
+      if (!Number.isFinite(x0)) continue;
+      out.push({
+        pid, kids,
+        x0: x0 - GROUP_PAD, y0: y0 - GROUP_PAD,
+        x1: x1 + GROUP_PAD, y1: y1 + GROUP_PAD,
+      });
+    }
+    return out;
+  }
+
   // 连线几何纯函数（自 renderEdges 数据段逐字搬出：rootParentId＋父子折线段＋外接框；
   // SVG 落笔仍留 renderEdges——几何数据与 DOM 应用分家）
   function computeEdgeGeometry(visibleIds, layout, sizes, childMap, cardMap, viewRootId) {
@@ -875,6 +907,8 @@ const WORK_ID = window.__WORK_ID__;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(e);
     }
+    // 成组的父卡不再逐子卡连线（8 条线从一点炸开＝蜘蛛网），
+    // 改成一条「父卡 → 组框左缘中点」的线，组内关系由框本身表达。
     const EDGE_PAD = 22;   // 侧缘上下留白，避免线贴着卡片圆角
     for (const list of groups.values()) {
       const { p1, s1 } = list[0];
@@ -892,14 +926,58 @@ const WORK_ID = window.__WORK_ID__;
     }
 
     // ── 第三步：落成线段（含 from/to 供高亮用）──
-    const elbowSegs = raw.map((e) => {
+    //
+    // ★ 成组的父卡只画**一条**「父卡 → 组框」的线。
+    //   原来 8 个子卡＝8 条线从父卡侧缘同一点炸开，画面上是一团蜘蛛网：
+    //   既看不清哪条线去哪，也看不出"这是一组"。组内关系交给分组框表达，
+    //   连线只负责回答"这块框属于哪张卡"——这是树形图（mindmap）的标准做法。
+    const childGroups = computeChildGroups(visibleIds, layout, sizes, childMap);
+    const groupByPid = new Map(childGroups.map((g) => [g.pid, g]));
+    const elbowSegs = [];
+
+    // ── 主干线（替代分组框）──
+    //
+    // [画布 2026-10-18 · 人能读的层级] 分组框只说明"这些是一组"，不说明
+    // "谁是谁的子卡、按什么顺序读"。主干线是目录的写法：
+    //   父卡右缘 → 一条竖干贯穿所有子卡 → 每个子卡一条横线接上去。
+    // 读者沿竖干从上往下走，就是子卡的顺序；竖干的起点是父卡，终点是最后一个子卡。
+    // 全部用直角直线（不是曲线）：曲线在多层嵌套时会互相缠绕，直线永远清楚。
+    for (const g of childGroups) {
+      const p1 = layout[g.pid];
+      if (!p1) continue;
+      const s1 = sizes[g.pid] || { w: 260, h: 110 };
+      const kids = g.kids.filter((k) => layout[k.card_id]);
+      if (!kids.length) continue;
+      const TRUNK_OFFSET = 44;                      // 竖干距父卡右缘
+      const trunkX = p1.x + s1.w + TRUNK_OFFSET;
+      const py = p1.y + s1.h / 2;
+      const kidYs = kids.map((k) => {
+        const p2 = layout[k.card_id];
+        const s2 = sizes[k.card_id] || { h: 100 };
+        return p2.y + s2.h / 2;
+      });
+      const yTop = Math.min(py, ...kidYs);
+      const yBot = Math.max(py, ...kidYs);
+      // ① 父卡 → 竖干（水平）
+      elbowSegs.push({ x1: p1.x + s1.w, y1: py, x2: trunkX, y2: py, from: g.pid, to: "", straight: true });
+      // ② 竖干
+      elbowSegs.push({ x1: trunkX, y1: yTop, x2: trunkX, y2: yBot, from: g.pid, to: "", straight: true, trunk: true });
+      // ③ 竖干 → 每个子卡（水平）
+      for (const k of kids) {
+        const p2 = layout[k.card_id];
+        const s2 = sizes[k.card_id] || { h: 100 };
+        const cy = p2.y + s2.h / 2;
+        elbowSegs.push({ x1: trunkX, y1: cy, x2: p2.x, y2: cy, from: g.pid, to: k.card_id, straight: true });
+      }
+    }
+    for (const e of raw) {
+      if (groupByPid.has(e.pid)) continue;   // 成组的父卡已用一条组线代替
       // [画布商业化 2026-10-17] from/to：渲染层据此做「悬停/选中高亮关联线」。
-      // 纯增量字段，bbox 与可见集计算都不读它。
       const y2 = e.p2.y + e.s2.h / 2;
-      return e.childOnRight
+      elbowSegs.push(e.childOnRight
         ? { x1: e.p1.x + e.s1.w, y1: e.y1, x2: e.p2.x, y2, from: e.pid, to: e.ckid }
-        : { x1: e.p1.x, y1: e.y1, x2: e.p2.x + e.s2.w, y2, from: e.pid, to: e.ckid };
-    });
+        : { x1: e.p1.x, y1: e.y1, x2: e.p2.x + e.s2.w, y2, from: e.pid, to: e.ckid });
+    }
     let minX = 0, minY = 0, maxX = 0, maxY = 0, maxW = 0, maxH = 0, hasBox = false;
     const growTo = (x, y) => {
       if (!hasBox) { minX = maxX = x; minY = maxY = y; hasBox = true; return; }
@@ -1010,7 +1088,6 @@ const WORK_ID = window.__WORK_ID__;
       node.style.top = p.y + "px";
     }
     renderEdges(projection, vm);
-    renderGroups(state.index.childMap, projection, vm);
   }
 
   // ==================== 渲染 ====================
@@ -1113,7 +1190,6 @@ const WORK_ID = window.__WORK_ID__;
     }
     world.style.visibility = "";
 
-    renderGroups(pin.childMap, projection, vm);
     renderEdges(projection, vm);
     renderBreadcrumb(projection.breadcrumb);
     applySelectionClasses();
@@ -1256,6 +1332,12 @@ const WORK_ID = window.__WORK_ID__;
 
   // [画布第三步 T2] 改吃视图模型 vm（动作层装配）：viewRoot/positions/childMap/
   // expanded/_unreadByCard 一律从 vm 取——不直摸 state（V1）
+  // 规模显示：3000 字 → "3.0k"。用户靠它判断"这张卡值不值得现在碰"。
+  function fmtSize(n) {
+    const v = Number(n) || 0;
+    return v >= 1000 ? (v / 1000).toFixed(1) + "k" : String(v);
+  }
+
   function createNode(card, pos, vm, depth) {
     const node = document.createElement("div");
     const isRoot = card.card_id === vm.viewRoot;
@@ -1292,26 +1374,64 @@ const WORK_ID = window.__WORK_ID__;
       ? `<span class="kid-badge${isExpanded ? " is-open" : ""}" title="有 ${childCount} 张子卡，点击展开/折叠"><span class="cv-caret"></span><span class="cv-kid-n">${childCount}</span></span>`
       : "";
 
-    // [画布商业化 2026-10-17] 卡面重排为四层：类型行（类型点＋类型名＋状态徽标）
-    // → 标题 → 摘要 → 底栏（子卡徽章＋更新时间）。信息层级从"标题下面堆三行字"
-    // 变成"一眼扫出类型、状态、规模"。
-    const typeLabel = TYPE_LABEL[card.card_type] || card.card_type || "卡片";
-    const isCompleted = String(card.state || "") === "completed";
-    if (isCompleted) node.classList.add("is-completed");
-    const stateBadge = isCompleted ? `<span class="cv-state">已完成</span>` : "";
+    // ══════════════════════════════════════════════════════════════════
+    // [画布 2026-10-18 · 视觉＝信息呈现] 卡面按**信息优先级**重排，不再有装饰行。
+    //
+    // 上一版卡面第一行是「类型点 + 子项目 + 状态徽标」。但实测这个项目 43 张卡里
+    // 42 张都是 sub_project ⇒ 那一行等于每张卡都写"子项目"，**零信息量却占着最贵的
+    // 第一行**；而真正该被看见的两件事——"这张卡想清楚了什么"和"有几处等我裁定"
+    // ——被压成了一小段"状态：现状实测（2026-10-03）…依据：xxx.html(258行)"。
+    //
+    // 现在的顺序就是用户读卡的顺序：
+    //   ① 标题（这是什么）
+    //   ② 结论 / 摘要（它想清楚了什么）
+    //   ③ 底栏：待裁定 / 已结论（要不要我动手）＋ 子卡数 ＋ 最后动过的时间
+    // 类型不再占一行——它由左侧色条与卡片尺寸承担，读者不需要被告知"这是子项目"。
+    // ══════════════════════════════════════════════════════════════════
+    const ws = String(card.work_state || "");
+    if (ws) node.dataset.ws = ws;   // pending / concluded / discussing / empty
+    const pendingN = Number(card.pending_count || 0);
+    // 根卡是项目本体，不是待办项——不给它挂"未开始/已结论"这类工作状态标签
+    const isRootCard = card.card_id === state.nav.viewRoot;
+    const wsBadge = isRootCard
+      ? (pendingN > 0 ? `<span class="cv-ws" data-ws="pending">${pendingN} 处待裁定</span>` : "")
+      : ws === "pending" && pendingN > 0
+        ? `<span class="cv-ws" data-ws="pending">${pendingN} 处待裁定</span>`
+        : ws === "concluded"
+          ? `<span class="cv-ws" data-ws="concluded">已结论</span>`
+          : ws === "empty"
+            ? `<span class="cv-ws" data-ws="empty">未开始</span>`
+            : "";
+
+    // ── 卡面正文：**一张卡只说一件最该被知道的事** ──
+    //   pending    → 列出在等你的那几条（可直接读，不用点进去）
+    //   concluded  → 结论
+    //   discussing → 这段在讨论什么
+    //   empty      → 什么都不说（留白比写"未开始"更有信息量）
+    // 待裁定最多列 2 条：卡片是"索引"，不是"全文"；剩下的用"还有 N 处"收口。
+    const pendingItems = Array.isArray(card.pending_items) ? card.pending_items : [];
+    let bodyHtml = "";
+    if (ws === "pending" && pendingItems.length) {
+      const shown = pendingItems.slice(0, 2);
+      const rest = pendingN - shown.length;
+      bodyHtml = `<div class="cv-pending">${
+        shown.map((it) => `<div class="cv-pending-item" title="${escapeHtml(it.section || "")}">${escapeHtml(it.text)}</div>`).join("")
+      }${rest > 0 ? `<div class="cv-pending-more">还有 ${rest} 处</div>` : ""}</div>`;
+    } else {
+      bodyHtml = `<div class="summary"></div>`;
+    }
 
     node.innerHTML = `
       ${msgBadge}
-      <div class="cv-card-head">
-        <span class="cv-type-dot"></span>
-        <span class="cv-type-name">${escapeHtml(typeLabel)}</span>
-        ${stateBadge}
-      </div>
+      <button class="cv-open" type="button" title="打开完整对话（双击卡片同样进入）" aria-label="打开完整对话">↗</button>
       <div class="tname">${escapeHtml(card.title)}</div>
-      <div class="summary"></div>
+      ${bodyHtml}
       <div class="cv-card-foot">
-        ${kidBadge}
+        ${wsBadge}
         <span class="cv-spacer"></span>
+        ${Number(card.ref_count || 0) > 0 ? `<span class="cv-ref" title="有 ${card.ref_count} 张卡在正文里引用了这张卡">←${card.ref_count}</span>` : ""}
+        ${Number(card.content_len || 0) > 400 ? `<span class="cv-size" title="现状块 ${card.content_len} 字">${fmtSize(card.content_len)}</span>` : ""}
+        ${kidBadge}
         <span class="meta2"></span>
       </div>
     `;
@@ -1349,7 +1469,7 @@ const WORK_ID = window.__WORK_ID__;
     node.addEventListener("click", (e) => {
       if (node.classList.contains("dragging")) return;
       if (Date.now() < suppressClickUntil) return;
-      if (e.shiftKey || e.metaKey || e.ctrlKey) {   // 修饰键＝多选，不进卡
+      if (e.shiftKey || e.metaKey || e.ctrlKey) {   // 修饰键＝多选（为批量操作）
         e.preventDefault();
         setSelection([card.card_id], true);
         return;
@@ -1359,7 +1479,27 @@ const WORK_ID = window.__WORK_ID__;
         setViewRoot(card.card_id);
         return;
       }
-      openCardChat(card.card_id);                    // 默认：进入
+      // 默认：**选中 + 右栏读卡，不离开画布**。
+      // 跳页会把画布上下文冲掉——看两张卡的结论要来回跳三次，并行优势归零。
+      // 进入完整对话走三个明确入口：卡上的 ↗、双击、Enter。
+      selectOnly(card.card_id);
+    });
+
+    const openBtn = node.querySelector(".cv-open");
+    if (openBtn) {
+      openBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        openCardChat(card.card_id);
+      });
+    }
+
+    // 明确入口：卡右上角的 ↗（常驻，不靠 hover 才发现）
+    node.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (Date.now() < suppressClickUntil) return;
+      openCardChat(card.card_id);
     });
 
     // 拖拽
@@ -1519,6 +1659,7 @@ const WORK_ID = window.__WORK_ID__;
     const ids = [...state.view.selected];
     highlightEdges(ids.length === 1 ? ids[0] : "");
     renderSelectionBar();
+    renderCardDetail();
   }
 
   function setSelection(ids, additive = false) {
@@ -1535,6 +1676,121 @@ const WORK_ID = window.__WORK_ID__;
     if (!state.view.selected.size) return;
     state.view.selected.clear();
     applySelectionClasses();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // [画布 2026-10-18 · 并行工作台] 右栏读卡
+  //
+  // 选中一张卡 → 右栏立刻变成这张卡的详情（结论全文 + 待裁定条目 + 进入按钮），
+  // **画布不消失、视野不动**。这样"看 A 卡结论 → 看 B 卡结论 → 对比"是三次点击，
+  // 而不是三次跳页。这是画布相对对话界面唯一不可替代的地方。
+  //
+  // 未选中 → 右栏恢复规则卡（原行为，逐字不变）。
+  // ══════════════════════════════════════════════════════════════════════
+  // 元素在每次渲染时现取：applySelectionClasses 在首屏渲染时就会调用，
+  // 模块级 const 会撞 TDZ（ReferenceError: Cannot access before initialization）。
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+
+  function renderCardDetail() {
+    const cardDetailEl = document.getElementById("cardDetail");
+    const rulePanelHeadEl = document.getElementById("rulePanelHead");
+    const rulePanelBodyEl = document.getElementById("rulePanelBody");
+    if (!cardDetailEl) return;
+    const ids = [...state.view.selected];
+
+    // 未选中：恢复规则卡
+    if (!ids.length) {
+      cardDetailEl.hidden = true;
+      cardDetailEl.innerHTML = "";
+      if (rulePanelHeadEl) rulePanelHeadEl.hidden = false;
+      if (rulePanelBodyEl) rulePanelBodyEl.hidden = false;
+      return;
+    }
+
+    if (rulePanelHeadEl) rulePanelHeadEl.hidden = true;
+    if (rulePanelBodyEl) rulePanelBodyEl.hidden = true;
+    cardDetailEl.hidden = false;
+    cardDetailEl.innerHTML = "";
+
+    // 多选：列出选中的卡（为批量操作做准备）
+    if (ids.length > 1) {
+      cardDetailEl.appendChild(el("div", "cd-head", `已选 ${ids.length} 张`));
+      const list = el("div", "cd-multi");
+      for (const id of ids) {
+        const c = state.index.cardMap[id] || {};
+        const row = el("div", "cd-multi-row", c.title || id);
+        row.dataset.id = id;
+        row.addEventListener("click", () => selectOnly(id));
+        list.appendChild(row);
+      }
+      cardDetailEl.appendChild(list);
+      return;
+    }
+
+    const cid = ids[0];
+    const c = state.index.cardMap[cid] || {};
+    const ws = String(c.work_state || "");
+    const pendingN = Number(c.pending_count || 0);
+
+    // 头部：标题 + 状态行
+    const head = el("div", "cd-head");
+    head.appendChild(el("div", "cd-title", c.title || cid));
+    const meta = el("div", "cd-meta");
+    if (ws === "pending" && pendingN) {
+      const b = el("span", "cv-ws", `${pendingN} 处待裁定`);
+      b.dataset.ws = "pending";
+      meta.appendChild(b);
+    } else if (ws === "concluded") {
+      const b = el("span", "cv-ws", "已结论");
+      b.dataset.ws = "concluded";
+      meta.appendChild(b);
+    } else if (ws === "empty") {
+      const b = el("span", "cv-ws", "未开始");
+      b.dataset.ws = "empty";
+      meta.appendChild(b);
+    }
+    if (Number(c.ref_count || 0) > 0) meta.appendChild(el("span", "cd-dim", `←${c.ref_count} 引用`));
+    if (Number(c.content_len || 0) > 0) meta.appendChild(el("span", "cd-dim", `${fmtSize(c.content_len)} 字`));
+    if (c.updated_at) meta.appendChild(el("span", "cd-dim", fmtRelative(c.updated_at)));
+    head.appendChild(meta);
+    cardDetailEl.appendChild(head);
+
+    // 结论 / 摘要
+    const concl = String(c.conclusion || c.conclusion_summary || "").trim();
+    if (concl) {
+      cardDetailEl.appendChild(el("div", "cd-section-label", ws === "concluded" ? "结论" : "这段在讨论"));
+      const body = el("div", "cd-body");
+      body.textContent = concl;
+      cardDetailEl.appendChild(body);
+    }
+
+    // 待裁定条目（全部列出，这是用户要处理的东西）
+    const items = Array.isArray(c.pending_items) ? c.pending_items : [];
+    if (items.length) {
+      cardDetailEl.appendChild(el("div", "cd-section-label", `待你裁定 ${pendingN || items.length} 处`));
+      const list = el("div", "cd-pending");
+      for (const it of items) {
+        const row = el("div", "cd-pending-row");
+        if (it.section) row.appendChild(el("div", "cd-pending-sec", it.section));
+        row.appendChild(el("div", "cd-pending-text", it.text));
+        list.appendChild(row);
+      }
+      if (pendingN > items.length) {
+        list.appendChild(el("div", "cd-dim", `另有 ${pendingN - items.length} 处，进入卡片查看`));
+      }
+      cardDetailEl.appendChild(list);
+    }
+
+    // 进入按钮
+    const openBtn = el("button", "btn primary cd-open", "打开完整对话 ↗");
+    openBtn.addEventListener("click", () => openCardChat(cid));
+    cardDetailEl.appendChild(openBtn);
   }
 
   function selectOnly(id) {
@@ -1838,8 +2094,6 @@ const WORK_ID = window.__WORK_ID__;
   // 只框**直接子卡**（不框孙卡），≥2 张才画（1 张不需要分组）；
   // 缩放低于 55% 时整层隐藏（那时框会密到变成噪音）。
   // ══════════════════════════════════════════════════════════════════════════
-  // 18 而不是 12：卡片自带 box-shadow，留白太小框线会正好落进阴影里看不见
-  const GROUP_PAD = 18;
   let groupLayer = null;
   function ensureGroupLayer() {
     if (groupLayer && groupLayer.parentNode === world) return groupLayer;
@@ -1860,23 +2114,9 @@ const WORK_ID = window.__WORK_ID__;
     if (zoom < 0.55) return;
 
     const { visibleIds, layout, sizes } = projection;
-    const boxes = [];
-    for (const pid in childMap) {
-      if (!visibleIds.has(pid)) continue;
-      // 只取可见的直接子卡
-      const kids = (childMap[pid] || []).filter((c) => visibleIds.has(c.card_id));
-      if (kids.length < 2) continue;
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (const k of kids) {
-        const p = layout[k.card_id];
-        if (!p) continue;
-        const sz = sizes[k.card_id] || { w: 200, h: 80 };
-        x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
-        x1 = Math.max(x1, p.x + sz.w); y1 = Math.max(y1, p.y + sz.h);
-      }
-      if (!Number.isFinite(x0)) continue;
-      boxes.push([x0 - GROUP_PAD, y0 - GROUP_PAD, x1 - x0 + GROUP_PAD * 2, y1 - y0 + GROUP_PAD * 2]);
-    }
+    // 与连线共用同一份几何：线的端点就是框的左缘中点
+    const boxes = computeChildGroups(visibleIds, layout, sizes, childMap)
+      .map((g) => [g.x0, g.y0, g.x1 - g.x0, g.y1 - g.y0]);
 
     while (groupEls.length < boxes.length) {
       const el = document.createElement("div");
@@ -2052,10 +2292,15 @@ const WORK_ID = window.__WORK_ID__;
   // data-edge 标记保留（V6/V7 机械验收按它计数）；from/to 供高亮用。
   function makeEdgePath(x1, y1, x2, y2, color, sw, meta) {
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    const sign = x2 >= x1 ? 1 : -1;
-    const dx = Math.max(36, Math.min(180, Math.abs(x2 - x1) * 0.5));
-    path.setAttribute("d",
-      `M ${x1} ${y1} C ${x1 + sign * dx} ${y1}, ${x2 - sign * dx} ${y2}, ${x2} ${y2}`);
+    if (meta && meta.straight) {
+      // 主干线用直角直线：多层嵌套时曲线会互相缠绕，直线永远清楚
+      path.setAttribute("d", `M ${x1} ${y1} L ${x2} ${y2}`);
+    } else {
+      const sign = x2 >= x1 ? 1 : -1;
+      const dx = Math.max(36, Math.min(180, Math.abs(x2 - x1) * 0.5));
+      path.setAttribute("d",
+        `M ${x1} ${y1} C ${x1 + sign * dx} ${y1}, ${x2 - sign * dx} ${y2}, ${x2} ${y2}`);
+    }
     path.setAttribute("stroke", color);
     path.setAttribute("stroke-width", sw);
     path.setAttribute("fill", "none");
@@ -2063,10 +2308,11 @@ const WORK_ID = window.__WORK_ID__;
     path.setAttribute("data-edge", "parent-child"); // [T08] 机械验收标记（V6/V7 计数用，不影响渲染）
     if (meta && meta.from) path.dataset.from = meta.from;
     if (meta && meta.to) path.dataset.to = meta.to;
-    // 端点圆点走 marker（父端实心、子端空心）——表达"谁是父、谁是子"，
-    // 比箭头轻，且曲线端点无需算切线。
-    path.setAttribute("marker-start", "url(#cv-dot-start)");
-    path.setAttribute("marker-end", "url(#cv-dot-end)");
+    // 主干线不画端点圆点（直角线端点密集，圆点会变成一串珠子）
+    if (!(meta && meta.straight)) {
+      path.setAttribute("marker-start", "url(#cv-dot-start)");
+      path.setAttribute("marker-end", "url(#cv-dot-end)");
+    }
     return path;
   }
 
@@ -2137,12 +2383,19 @@ const WORK_ID = window.__WORK_ID__;
     // 代价如实记：走快路径时 meta2（更新时间）不在画布数据里，保持原状不填；
     // L1 档位本就隐藏 meta2，L2 档位下该行的更新时间可能为空——如需它，回退路径仍在。
     const probe = card;
-    if (probe && typeof probe.conclusion_summary === "string") {
-      const summary = probe.conclusion_summary;
+    // [画布 2026-10-18] 优先用后端算好的 conclusion（显式「结论：」优先，否则是
+    // 跳过元信息行/表格行之后的第一段正文）；没有则回退 conclusion_summary。
+    // ⚠ 必须走下面这条**会写 DOM** 的路径——上一版在函数开头直接 return conclusion，
+    // 结果是：摘要永远不写进卡面，卡片只剩标题（自己截图才发现）。
+    const fastText = (probe && typeof probe.conclusion === "string" && probe.conclusion)
+      ? probe.conclusion
+      : (probe && typeof probe.conclusion_summary === "string" ? probe.conclusion_summary : null);
+    if (fastText !== null) {
+      const summary = fastText;
       summaryCache.set(cardId, summary);
       const node0 = nodeMap.get(cardId);
       if (node0) {
-        const sumEl0 = node0.querySelector(".summary");
+        const sumEl0 = node0.querySelector(".summary");   // 待裁定卡没有这个节点，跳过即可
         if (sumEl0) sumEl0.textContent = summary;
         // [画布商业化 2026-10-17] 快路径也填更新时间（canvas 投影已带 updated_at），
         // 不再因为"走快路径"而让卡面底部空着。
@@ -2282,25 +2535,32 @@ const WORK_ID = window.__WORK_ID__;
     e.preventDefault();
     _userMoved = true;
 
-    // Shift+滚轮：横向平移（各家的通用约定）
-    if (e.shiftKey && !e.ctrlKey && !e.metaKey) {
+    // ══════════════════════════════════════════════════════════════════
+    // [画布 2026-10-18 · 阅读姿势] 滚轮＝**纵向滚动**，Ctrl/⌘+滚轮＝缩放。
+    //
+    // 这是"读卡"和"画图"的分野：白板是滚轮缩放（Miro/Figma），文档是滚轮滚动
+    // （任何阅读器）。这个画布上用户做的事是**读结论、读待裁定**，一屏读不完就
+    // 往下滚——所以滚轮必须滚动。缩放是低频动作，交给 Ctrl+滚轮与顶栏控件。
+    // ══════════════════════════════════════════════════════════════════
+    const zoomMod = e.ctrlKey || e.metaKey;   // 触控板捏合在浏览器里就是 ctrl+wheel
+
+    if (zoomMod) {
+      const factor = Math.exp(-e.deltaY * 0.01);
+      zoomAtPoint(e.clientX, e.clientY, state.view.zoom * factor);
+      return;
+    }
+
+    // Shift+滚轮：横向滚动（长文本卡横向查看时用）
+    if (e.shiftKey) {
       state.view.panX -= (e.deltaY || e.deltaX);
       applyTransform();
       scheduleSaveView();
       return;
     }
 
-    const pinch = e.ctrlKey || e.metaKey;   // 触控板捏合在浏览器里就是 ctrl+wheel
-    if (pinch || !isTrackpadWheel(e)) {
-      // 缩放：指数手感（每一格的比例变化一致，不会越放大越迟钝）
-      const factor = Math.exp(-e.deltaY * (pinch ? 0.01 : 0.0018));
-      zoomAtPoint(e.clientX, e.clientY, state.view.zoom * factor);
-      return;
-    }
-
-    // 触控板双指：平移
-    state.view.panX -= e.deltaX;
+    // 默认：纵向滚动
     state.view.panY -= e.deltaY;
+    state.view.panX -= e.deltaX;
     applyTransform();
     scheduleSaveView();
   }, { passive: false });
@@ -3083,11 +3343,37 @@ const WORK_ID = window.__WORK_ID__;
       }
       showCanvasState("clear");
       renderAll();          // [画布第三步 T4] 数据就绪 → 统一重绘入口
+      // [画布 2026-10-18 · 工作台] 首屏**不再把整张图缩到装得下**。
+      // 43 张卡全装进 1600×1000 要缩到 60%，待裁定条目在 60% 下根本读不了——
+      // 那等于"打开了但什么也读不到"。工作台打开就该带你去该干活的地方：
+      //   100% 缩放，视野落在**第一张有待裁定的卡**上；没有待裁定才退回整幅适配。
       if (_needFit) {
-        _autoFitPending = true;
+        _autoFitPending = false;
         _userMoved = false;
-        const _fit = fitView(1);
-        if (_fit) applyViewState({ panX: _fit.panX, panY: _fit.panY, zoom: _fit.zoom });
+        // 首屏锚点＝**根卡**（不是第一张待裁定卡）。
+        // 打开画布先要看见"这是一棵树"：根卡在左、子卡沿主干往下排。
+        // 根卡放在视口左侧 1/3、垂直居中，于是上下各能看见两三张子卡，
+        // 结构一眼成立；要读细节就往下滚（滚轮＝滚动）。
+        const anchorNode = nodeMap.get(state.nav.viewRoot);
+        if (anchorNode) {
+          const x = parseFloat(anchorNode.style.left) || 0;
+          // 纵向**对齐第一张子卡的顶部**（不是根卡居中）：
+          // 根卡居中时上半屏被切掉，第一张子卡看不到——而子卡才是要读的内容。
+          // 根卡若因此跑到视口外，往下滚一点就回来，不影响"这是一棵树"的读法。
+          let topY = Infinity;
+          for (const [, n] of nodeMap) {
+            if (n.dataset.depth === "1") topY = Math.min(topY, parseFloat(n.style.top) || 0);
+          }
+          if (!Number.isFinite(topY)) topY = parseFloat(anchorNode.style.top) || 0;
+          applyViewState({
+            zoom: 1,
+            panX: Math.round(viewport.clientWidth * 0.18) - x,
+            panY: 72 - topY,
+          });
+        } else {
+          const _fit = fitView(1);
+          if (_fit) applyViewState({ panX: _fit.panX, panY: _fit.panY, zoom: _fit.zoom });
+        }
       }
       if (!state.data.cards.length) showCanvasState("empty");   // [F3④] 空态
       // [T17-F6/R-1] 不再无条件 hideWorkspace()：「刷新画布数据」与「收起对话层」是两件事。
@@ -3172,7 +3458,40 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   // 统一重绘入口（全量重建）：改 state 后必经此口（V10）
+  // ══════════════════════════════════════════════════════════════════════
+  // [画布 2026-10-18 · 工作台] 项目状态条
+  //
+  // 打开画布的第一眼必须回答"有多少事在等我"。原来顶栏只有一个项目名，
+  // 43 张卡、74 处待裁定、3 张已结论——这些全要用户自己数。
+  // 数据来自 canvas 投影（每张卡带 work_state / pending_count），一次遍历算完。
+  // ══════════════════════════════════════════════════════════════════════
+  const projectStatEl = document.getElementById("projectStat");
+  function renderProjectStat() {
+    if (!projectStatEl) return;
+    const cards = (state.data.cards || []).filter((c) => c.card_type !== "rule");
+    const total = cards.length;
+    let pendingTotal = 0, pendingCards = 0, concluded = 0, empty = 0;
+    for (const c of cards) {
+      const n = Number(c.pending_count || 0);
+      pendingTotal += n;
+      if (c.work_state === "pending") pendingCards++;
+      else if (c.work_state === "concluded") concluded++;
+      else if (c.work_state === "empty") empty++;
+    }
+    projectStatEl.innerHTML = `
+      <span class="ps-item"><b>${total}</b> 卡</span>
+      <span class="ps-sep"></span>
+      <span class="ps-item${pendingTotal ? " is-warn" : ""}" title="${pendingCards} 张卡上有待你裁定的事项">
+        <b>${pendingTotal}</b> 处待裁定
+      </span>
+      <span class="ps-sep"></span>
+      <span class="ps-item"><b>${concluded}</b> 已结论</span>
+      ${empty ? `<span class="ps-sep"></span><span class="ps-item is-dim"><b>${empty}</b> 未开始</span>` : ""}
+    `;
+  }
+
   function renderAll() {
+    renderProjectStat();
     renderCanvas(collectProjectionInput(), collectViewModel());
   }
 

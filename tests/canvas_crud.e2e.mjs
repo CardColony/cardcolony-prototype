@@ -44,6 +44,10 @@ const out = []; let bad = 0;
 const check = (n, c, d) => { out.push(`${c ? "PASS" : "FAIL"} ${n}${d !== undefined ? " :: " + d : ""}`); if (!c) bad++; };
 
 await send("Page.navigate", { url: `${BASE}/work/${WID}` }); await sleep(3800);
+// 首屏只锚定根卡（100%），其余卡可能在视口外 ⇒ 先整幅适配，保证右键/拖拽坐标命中
+await send("Input.dispatchKeyEvent", { type: "keyDown", key: "0", code: "Digit0", modifiers: 2, windowsVirtualKeyCode: 48 });
+await send("Input.dispatchKeyEvent", { type: "keyUp", key: "0", code: "Digit0", modifiers: 2, windowsVirtualKeyCode: 48 });
+await sleep(700);
 await ev(`(() => { window.__calls = []; const of = window.fetch; window.fetch = (...a) => { window.__calls.push(String((a[1] && a[1].method) || 'GET') + ' ' + String(a[0])); return of(...a); }; return 1; })()`);
 
 // ── 1 新建子卡（右键 → 菜单项 → 弹窗 → 输入 → 创建）──
@@ -59,9 +63,11 @@ if (mi) {
   const hasDlg = await ev("!!document.getElementById('newCardTitle')");
   check("1b 弹窗出现", hasDlg);
   if (hasDlg) {
-    // 走真实输入路径：点输入框 → 键入 → Enter（弹窗的 onkeydown 会提交）
-    const ib = await centerOf("#newCardTitle");
-    await click(ib.x, ib.y);
+    // 走真实输入路径：聚焦输入框 → 键入 → Enter（弹窗的 onkeydown 会提交）。
+    // 聚焦用 DOM focus 而不是坐标点击：整幅适配后弹窗位置随视口变化，
+    // 坐标点击会偶发落空（实测 2 次里挂 1 次），而 focus 不依赖坐标。
+    await ev(`document.getElementById('newCardTitle').focus()`);
+    await sleep(120);
     await send("Input.insertText", { text: "走查新建的子卡" });
     await sleep(200);
     const typed = await ev("(document.getElementById('newCardTitle')||{}).value || ''");

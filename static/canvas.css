@@ -158,24 +158,8 @@
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55), 0 8px 20px -10px rgba(0, 0, 0, 0.7);
 }
 
-/* hover 时右侧浮出「打开」箭头：把「单击进入」这件事做成可见的，而不是靠猜 */
-.page-canvas .card-node::after {
-  content: "";
-  position: absolute;
-  right: 9px;
-  top: 50%;
-  width: 5px;
-  height: 5px;
-  margin-top: -2.5px;
-  border-right: 1.5px solid var(--cv-text-3);
-  border-bottom: 1.5px solid var(--cv-text-3);
-  transform: rotate(-45deg);
-  opacity: 0;
-  transition: opacity var(--cv-fast) var(--cv-ease), right var(--cv-fast) var(--cv-ease);
-  pointer-events: none;
-}
-.page-canvas .card-node:hover::after { opacity: 1; right: 6px; }
-/* 钉住标记复用 ::after 会打架 ⇒ 钉住改画在 head 上（见 .is-pinned .cv-card-head::after） */
+/* （原来 hover 时在卡片右侧画一个箭头暗示"可进入"；现在有常驻的 ↗ 按钮，
+   不再需要这个隐式提示。） */
 
 .page-canvas .card-node.is-selected {
   border-color: var(--cv-accent);
@@ -232,7 +216,6 @@
   -webkit-line-clamp: 3;
 }
 .page-canvas .card-node[data-depth="0"] .summary { -webkit-line-clamp: 2; }
-.page-canvas .card-node[data-depth="0"] .cv-type-name { font-size: 10.5px; }
 
 /* ---- 深度 1：一级卡（.card-node 基础样式即是） ---- */
 .page-canvas .card-node[data-depth="1"] {
@@ -270,16 +253,7 @@
   border-color: rgba(255, 255, 255, 0.06);
   box-shadow: none;
 }
-/* 三级卡只留一个色点 + 标题：类型名与状态徽标在这一层是噪音，
-   去掉之后"深层 = 更轻"的视觉差才立得住。 */
-.page-canvas .card-node[data-depth="3"] .cv-card-head {
-  position: absolute;
-  top: 11px;
-  left: 11px;
-  margin: 0;
-}
-.page-canvas .card-node[data-depth="3"] .cv-type-name,
-.page-canvas .card-node[data-depth="3"] .cv-state { display: none; }
+/* 三级卡只留标题：这一层的读者只关心"有哪些"，不关心细节。 */
 .page-canvas .card-node[data-depth="3"] .tname {
   font-size: 12px;
   font-weight: 550;
@@ -306,51 +280,12 @@
 .page-canvas .card-node.l2 .summary { -webkit-line-clamp: 4; }
 
 /* ---- 卡片内部结构 ---- */
-
-.page-canvas .cv-card-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 7px;
-  position: relative;
-}
-
-.page-canvas .cv-type-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 2px;
-  background: var(--cv-t-sub);
-}
-
-.page-canvas .cv-type-name {
-  font-size: 10px;
-  font-weight: 600;
-  /* 中文没有大小写，uppercase 只对英文生效；字距 0.05em 会让"子项目"三个字
-     散成"子 项 目"。0.02em 是中文标签的舒适值。 */
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--cv-text-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* flex 子项默认 min-width:auto，nowrap 文本不收缩 ⇒ 把容器撑破、状态徽标被推出
-     卡片右缘（实测："已完成"浮在卡片外面）。min-width:0 + flex:1 让它自己截断。 */
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.page-canvas .cv-state {
-  margin-left: auto;
-  flex: none;
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-  color: var(--cv-ok);
-  background: var(--cv-ok-soft);
-}
+/*
+ * [画布 2026-10-18] 原来的「类型行」（色点 + "子项目" + 状态徽标）已整件删除。
+ * 理由：这个项目 43 张卡里 42 张都是 sub_project——那一行等于每张卡都写
+ * "子项目"，零信息量却占着最贵的第一行。类型由卡片尺寸与左侧色条承担。
+ * 空出来的位置给标题和结论。
+ */
 
 .page-canvas .tname {
   font-size: 14px;
@@ -444,31 +379,34 @@
   box-shadow: 0 0 0 3px var(--cv-surface-0);
 }
 
-/* 完成态：标题降为次级色 + 类型点转绿（不整卡灰掉，仍要可读） */
-.page-canvas .card-node.is-completed .tname { color: var(--cv-text-2); }
-.page-canvas .card-node.is-completed .cv-type-dot { background: var(--cv-ok); }
-
-/* 钉住：head 右侧一个 5px 黄点（不占 ::after，那个给打开箭头用） */
-.page-canvas .card-node.is-pinned .cv-card-head::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  top: 50%;
-  width: 5px;
-  height: 5px;
-  margin-top: -2.5px;
-  border-radius: 50%;
-  background: var(--cv-warn);
+/* ══════════════════════════════════════════════════════════════════════
+   工作状态：画布上**只允许一个颜色喊"需要你动手"**
+   ──────────────────────────────────────────────────────────────────────
+   pending  —— 有【待裁定】等你点头（橙，唯一强调色）
+   concluded—— 已有明确「结论：」（绿，克制）
+   discussing—— 在讨论（沉默，不占视觉）
+   empty    —— 还没开始（灰）
+   ══════════════════════════════════════════════════════════════════════ */
+.page-canvas .card-node[data-ws="pending"] {
+  border-left: 2px solid rgba(245, 181, 68, 0.8);
 }
+.page-canvas .card-node[data-ws="concluded"] .tname { color: #d8e4da; }
 
-/* ---- 类型色（按 data-type）---- */
+.page-canvas .cv-ws {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.page-canvas .cv-ws[data-ws="pending"] { color: #f7c163; background: rgba(245, 181, 68, 0.15); }
+.page-canvas .cv-ws[data-ws="concluded"] { color: var(--cv-ok); background: var(--cv-ok-soft); }
+.page-canvas .cv-ws[data-ws="empty"] { color: var(--cv-text-3); background: rgba(255, 255, 255, 0.05); }
 
-.page-canvas .card-node[data-type="project"] .cv-type-dot { background: var(--cv-t-project); }
-.page-canvas .card-node[data-type="sub_project"] .cv-type-dot { background: var(--cv-t-sub); }
-.page-canvas .card-node[data-type="topic"] .cv-type-dot { background: var(--cv-t-topic); }
-.page-canvas .card-node[data-type="tool"] .cv-type-dot { background: var(--cv-t-tool); }
-.page-canvas .card-node[data-type="coder"] .cv-type-dot { background: var(--cv-t-coder); }
-.page-canvas .card-node[data-type="rule"] .cv-type-dot { background: var(--cv-t-rule); }
+/* 钉住：整卡一圈极淡的虚线描边（原来画在已删除的类型行上） */
+.page-canvas .card-node.is-pinned { outline: 1px dashed rgba(245, 181, 68, 0.3); outline-offset: 2px; }
 
 /* ---- 连线状态（悬停/选中某卡时聚焦它的关系）---- */
 .page-canvas #edgesSvg path {
@@ -968,3 +906,199 @@
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.10);
 }
+
+/* 被引用次数：这个项目里"谁被最多卡引用"＝谁是地基。
+   用极轻的字重与灰色，它不是状态，是一条关系线索。 */
+.page-canvas .cv-ref {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cv-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 待裁定条目：卡片上直接列出"在等你的那几件事" ----
+   原来只显示"6 处待裁定"这个数字，用户还是得点进去、在 3000 字里找那 6 处。
+   现在把条目本身摊在卡面上——这是这张卡最该被读到的东西。 */
+.page-canvas .cv-pending {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.page-canvas .cv-pending-item {
+  position: relative;
+  padding-left: 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #d9c7a4;           /* 暖灰：与"待裁定"橙同一族，但比橙弱一档 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.page-canvas .cv-pending-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(245, 181, 68, 0.7);
+}
+
+.page-canvas .cv-pending-more {
+  font-size: 10.5px;
+  color: var(--cv-text-3);
+  padding-left: 10px;
+}
+
+/* ==========================================================================
+   项目状态条（顶栏）：43 卡 · 74 处待裁定 · 3 已结论
+   —— 打开画布第一眼要回答"有多少事在等我"，不是"这个项目叫什么"
+   ========================================================================== */
+.page-canvas .proj-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 14px;
+  font-size: 11.5px;
+  color: var(--cv-text-3);
+  white-space: nowrap;
+}
+.page-canvas .proj-stat .ps-item b {
+  font-weight: 700;
+  color: var(--cv-text-2);
+  font-variant-numeric: tabular-nums;
+}
+.page-canvas .proj-stat .ps-item.is-warn b { color: #f7c163; }
+.page-canvas .proj-stat .ps-item.is-warn { color: #c9a35c; }
+.page-canvas .proj-stat .ps-item.is-dim b { color: var(--cv-text-3); }
+.page-canvas .proj-stat .ps-sep {
+  width: 1px;
+  height: 10px;
+  background: var(--cv-line-2);
+}
+
+/* 卡片最小高度：待裁定卡（2 条）与结论卡（1 段）与空卡（无正文）高度不同，
+   底栏不在一条线上会显得"参差"。给 d1/d2 一个下限，让底栏基本对齐；
+   超出的内容自然撑高（信息优先，不裁）。 */
+.page-canvas .card-node[data-depth="1"] { min-height: 108px; }
+.page-canvas .card-node[data-depth="2"] { min-height: 92px; }
+.page-canvas .card-node[data-depth="0"] { min-height: 128px; }
+
+/* 规模（现状块字数）：不是状态，是"这张卡有多重"——决定要不要现在碰 */
+.page-canvas .cv-size {
+  flex: none;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--cv-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   右栏读卡（选中卡时替代规则卡）
+   ========================================================================== */
+.page-canvas .card-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 22px;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.page-canvas .cd-title {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--cv-text-1);
+}
+
+.page-canvas .cd-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--cv-text-3);
+}
+.page-canvas .cd-dim { font-size: 11px; color: var(--cv-text-3); font-variant-numeric: tabular-nums; }
+
+.page-canvas .cd-section-label {
+  margin-top: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--cv-text-3);
+}
+
+.page-canvas .cd-body {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--cv-text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.page-canvas .cd-pending { display: flex; flex-direction: column; gap: 9px; }
+.page-canvas .cd-pending-row {
+  border-left: 2px solid rgba(245, 181, 68, 0.45);
+  padding-left: 10px;
+}
+.page-canvas .cd-pending-sec {
+  font-size: 10px;
+  color: var(--cv-text-3);
+  margin-bottom: 2px;
+}
+.page-canvas .cd-pending-text {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #d9c7a4;
+  word-break: break-word;
+}
+
+.page-canvas .cd-open { margin-top: auto; align-self: flex-start; }
+
+.page-canvas .cd-multi { display: flex; flex-direction: column; gap: 2px; }
+.page-canvas .cd-multi-row {
+  padding: 7px 9px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--cv-text-2);
+  cursor: pointer;
+}
+.page-canvas .cd-multi-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--cv-text-1); }
+
+/* 卡片右上角的"打开完整对话"按钮：常驻但很轻，hover 才明显 */
+.page-canvas .cv-open {
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cv-text-3);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity var(--cv-fast) var(--cv-ease), background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .card-node:hover .cv-open { opacity: 1; }
+.page-canvas .cv-open:hover { background: rgba(255, 255, 255, 0.09); color: var(--cv-text-1); }
+
+/* 标题给右上角按钮留位 */
+.page-canvas .tname { padding-right: 24px; }
+
+/* hidden 属性必须真的隐藏：.rule-panel-body / .card-detail 都有自己的 display 规则，
+   元素自带的 [hidden]{display:none} 会被更具体的类规则盖掉（实测：规则卡的空态
+   提示会穿透到卡片详情上面）。 */
+.page-canvas [hidden] { display: none !important; }
