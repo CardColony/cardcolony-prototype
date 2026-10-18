@@ -7,8 +7,9 @@ import path from "node:path";
 import fs from "node:fs";
 
 const BASE = process.argv[2] || "http://127.0.0.1:5707";
-// [画布 2026-10-18] 含拖拽（会写 pos）的测试跑在 work_001，不污染真实项目
-const WID = process.argv[3] || "work_001";
+// [画布 2026-10-18] journey 只做**只读**路径，跑真实项目；
+// 拖拽/建卡/删卡这类写操作归 canvas_crud.e2e.mjs（跑 work_001 假数据项目）。
+const WID = process.argv[3] || "real_work_002";
 const CHROME = process.env.CHROME_PATH ||
   path.join(os.homedir(), "AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe");
 const PORT = 9630 + Math.floor(Math.random() * 100);
@@ -161,10 +162,13 @@ await sleep(900);
 check("9 整理布局不报错", errs.length === 0, errs.slice(0, 2).join(" | "));
 
 // ── 10 右键菜单 → 重命名（取消）──
-b = await centerOf(".card-node", 1);
-await move(b.x, b.y);
-await send("Input.dispatchMouseEvent", { type: "mousePressed", x: b.x, y: b.y, button: "right", clickCount: 1 });
-await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: b.x, y: b.y, button: "right", clickCount: 1 });
+// 用 DOM 派发 contextmenu：坐标右键在"目录占左侧 + ⌘0 适配"的组合下会偶发落空
+await ev(`(() => {
+  const n = document.querySelectorAll('.card-node')[1];
+  const r = n.getBoundingClientRect();
+  n.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true,
+    clientX: Math.round(r.x + r.width/2), clientY: Math.round(r.y + r.height/2) }));
+})()`);
 await sleep(400);
 const menuItems = await ev(`document.querySelectorAll('.cv-menu .cv-mi').length`);
 check("10 右键菜单出现", Number(menuItems) >= 6, menuItems + " 项");
@@ -184,19 +188,7 @@ check("11 ⌘K 面板＋中文筛选", palOpen && hits >= 1, `${hits} 条`);
 await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
 await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
 
-// ── 12 拖卡后刷新，顺序（纵向位置）保持；横向锁定在列上 ──
-b = await centerOf(".card-node", 1);
-const top0 = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.top)`);
-const leftBefore = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.left)`);
-await move(b.x, b.y); await down(b.x, b.y);
-for (let i = 1; i <= 8; i++) { await move(b.x, b.y + i * 14); await sleep(16); }
-await up(b.x, b.y + 112);
-await sleep(1200);
-const leftDuring = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.left)`);
-await nav(`${BASE}/work/${WID}`, 3600);
-const top1 = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.top)`);
-check("12a 拖动＝调整纵向顺序（刷新后保持）", Math.abs(top1 - top0) > 40, `top ${top0} → ${top1}`);
-check("12b 拖动时横向锁定在列上", Math.abs(leftDuring - leftBefore) < 2, `left ${leftBefore} → ${leftDuring}`);
+// （拖拽会写 pos，归 canvas_crud.e2e.mjs 在 work_001 上验证，本文件只做只读路径）
 
 // ── 13 全程零 JS 异常 ──
 check("13 零 JS 异常", errs.length === 0, errs.slice(0, 3).join(" | "));

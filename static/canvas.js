@@ -21,6 +21,8 @@
  */
 import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
+// 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
+import { renderMarkdown } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { RenderNav } from "./esm/nav_system.js?v=34";
 import { notify } from "./esm/api.js?v=36";
@@ -1846,10 +1848,39 @@ const WORK_ID = window.__WORK_ID__;
       cardDetailEl.appendChild(list);
     }
 
-    // 进入按钮
-    const openBtn = el("button", "btn primary cd-open", "打开完整对话 ↗");
+    // ── 读全文 ──
+    // 卡片投影只带 120 字摘要，而真实正文 3000–40000 字。右栏 340px 读不了，
+    // 但"不离开画布读完一张卡"是画布相对对话页的核心价值之一——所以给一个
+    // 按需拉全文的入口：点"读全文"才请求 GET card（不在首屏给 39 张卡各拉一遍）。
+    const fullBox = el("div", "cd-full");
+    fullBox.hidden = true;
+    const readBtn = el("button", "btn", "读全文");
+    readBtn.addEventListener("click", async () => {
+      if (!fullBox.hidden) { fullBox.hidden = true; readBtn.textContent = "读全文"; return; }
+      readBtn.textContent = "加载中…";
+      try {
+        const data = await API.getCard(WORK_ID, cid);
+        const body = (data && data.body) || {};
+        const md = String(body.status_block || "");
+        fullBox.innerHTML = md
+          ? `<div class="md">${renderMarkdown(md)}</div>`
+          : `<div class="cd-dim">这张卡还没有正文。</div>`;
+        fullBox.hidden = false;
+        readBtn.textContent = "收起全文";
+      } catch (err) {
+        fullBox.innerHTML = `<div class="cd-dim">读取失败：${escapeHtml(String(err && err.message || err))}</div>`;
+        fullBox.hidden = false;
+        readBtn.textContent = "重试";
+      }
+    });
+
+    const actions = el("div", "cd-actions");
+    actions.appendChild(readBtn);
+    const openBtn = el("button", "btn primary", "打开完整对话 ↗");
     openBtn.addEventListener("click", () => openCardChat(cid));
-    cardDetailEl.appendChild(openBtn);
+    actions.appendChild(openBtn);
+    cardDetailEl.appendChild(actions);
+    cardDetailEl.appendChild(fullBox);
   }
 
   function selectOnly(id) {
@@ -2513,6 +2544,32 @@ const WORK_ID = window.__WORK_ID__;
     }
   }
 
+  // ── 窗口尺寸变化：保持视野中心不变 ──
+  // 不这么做的话，1280 下展开左栏目录（画布从 891 缩到 623）时，卡片会整体
+  // 右移出视野——因为 pan 是按旧宽度算的。
+  // 做法：记下"视口中心对应的世界坐标"，尺寸变了之后反推新的 pan。
+  (function keepViewCenterOnResize() {
+    let lastW = viewport ? viewport.clientWidth : 0;
+    let lastH = viewport ? viewport.clientHeight : 0;
+    let timer = 0;
+    window.addEventListener("resize", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!viewport) return;
+        const w = viewport.clientWidth, h = viewport.clientHeight;
+        if (!w || !h || !lastW || !lastH) { lastW = w; lastH = h; return; }
+        const z = state.view.zoom || 1;
+        const cx = (lastW / 2 - state.view.panX) / z;
+        const cy = (lastH / 2 - state.view.panY) / z;
+        state.view.panX = w / 2 - cx * z;
+        state.view.panY = h / 2 - cy * z;
+        lastW = w; lastH = h;
+        applyTransform();
+        scheduleSaveView();
+      }, 120);
+    });
+  })();
+
   // ==================== 缩放控件（−/＋/滑块/百分比） ====================
   //
   // [画布商业化 2026-10-17 · 修硬伤] 这三个控件在模板里一直都在，但**没有任何
@@ -2813,7 +2870,11 @@ const WORK_ID = window.__WORK_ID__;
       return;
     }
 
-    if (e.key === "Escape") { clearSelection(); return; }
+    if (e.key === "Escape") {
+      triageList = [];            // 退出裁定模式
+      clearSelection();
+      return;
+    }
 
     const ids = selectionIds();
     if ((e.key === "Delete" || e.key === "Backspace") && ids.length) {
@@ -3518,6 +3579,101 @@ const WORK_ID = window.__WORK_ID__;
 
   // 统一重绘入口（全量重建）：改 state 后必经此口（V10）
   // ══════════════════════════════════════════════════════════════════════
+  // [画布 2026-10-18 · 裁定工作流] 逐条过待裁定
+  //
+  // 这是这个产品的**主循环**：模型提议 → 标【待裁定】→ 用户点头 → 结论沉淀。
+  // 实测这个项目积了 100 处待裁定，分布在 14 张卡上。原来只能一张张点进卡、
+  // 在 3000 字里找那几条——那不是工作台，是寻宝。
+  //
+  // 现在：顶栏点"100 处待裁定" → 右栏进入裁定模式，一条一条往下走：
+  //   · 每条显示"哪张卡 / 哪个小节 / 条目全文"
+  //   · 画布同步高亮那张卡（知道它在结构里的位置）
+  //   · 上一处 / 下一处 / 打开卡片
+  // 裁定动作本身仍要在对话页完成（这里只负责"读 + 导航"），但路径从
+  // "找 → 读 → 判断" 缩短成 "读 → 判断"。
+  // ══════════════════════════════════════════════════════════════════════
+  // var：Esc 处理器在文件前面，let 会 TDZ
+  var triageList = [];
+  var triageIdx = 0;
+
+  function buildTriageList() {
+    const out = [];
+    for (const c of (state.data.cards || [])) {
+      if (c.card_type === "rule") continue;
+      for (const it of (c.pending_items || [])) {
+        out.push({ cardId: c.card_id, title: c.title || c.card_id, section: it.section || "", text: it.text || "" });
+      }
+    }
+    return out;
+  }
+
+  function openTriage(startIdx) {
+    triageList = buildTriageList();
+    if (!triageList.length) return;
+    triageIdx = Math.max(0, Math.min(triageList.length - 1, startIdx || 0));
+    showTriageItem();
+  }
+
+  function showTriageItem() {
+    const it = triageList[triageIdx];
+    if (!it) return;
+    // 画布同步：**先展开祖先链再飞过去**。
+    // 否则跳到一张折叠在深处的卡时，画布上根本没有它的节点（nodeMap 里没有），
+    // focusCard 静默失败——右栏在讲这张卡，画布却停在原处，两边对不上。
+    if (!nodeMap.has(it.cardId)) {
+      const guard = new Set();
+      let cur = (state.index.cardMap[it.cardId] || {}).parent;
+      while (cur && !guard.has(cur) && state.index.cardMap[cur]) {
+        guard.add(cur);
+        state.view.expanded.add(cur);
+        cur = state.index.cardMap[cur].parent;
+      }
+      scheduleSaveView();
+      renderAll();
+    }
+    selectOnly(it.cardId);
+    focusCard(it.cardId, { keepZoom: true });
+
+    const cardDetailEl = document.getElementById("cardDetail");
+    const rulePanelHeadEl = document.getElementById("rulePanelHead");
+    const rulePanelBodyEl = document.getElementById("rulePanelBody");
+    if (!cardDetailEl) return;
+    if (rulePanelHeadEl) rulePanelHeadEl.hidden = true;
+    if (rulePanelBodyEl) rulePanelBodyEl.hidden = true;
+    cardDetailEl.hidden = false;
+    cardDetailEl.innerHTML = "";
+
+    const head = el("div", "cd-head");
+    const counter = el("div", "cd-triage-count", `第 ${triageIdx + 1} / ${triageList.length} 处`);
+    head.appendChild(counter);
+    head.appendChild(el("div", "cd-title", it.title));
+    if (it.section) head.appendChild(el("div", "cd-dim", it.section));
+    cardDetailEl.appendChild(head);
+
+    cardDetailEl.appendChild(el("div", "cd-section-label", "等你裁定"));
+    const body = el("div", "cd-triage-text");
+    body.textContent = it.text;
+    cardDetailEl.appendChild(body);
+
+    const nav = el("div", "cd-ops");
+    const prev = el("button", "btn", "← 上一处");
+    prev.disabled = triageIdx === 0;
+    prev.addEventListener("click", () => { if (triageIdx > 0) { triageIdx--; showTriageItem(); } });
+    const next = el("button", "btn primary", "下一处 →");
+    next.disabled = triageIdx >= triageList.length - 1;
+    next.addEventListener("click", () => { if (triageIdx < triageList.length - 1) { triageIdx++; showTriageItem(); } });
+    const openBtn = el("button", "btn", "打开卡片");
+    openBtn.addEventListener("click", () => openCardChat(it.cardId));
+    nav.appendChild(prev);
+    nav.appendChild(next);
+    nav.appendChild(openBtn);
+    cardDetailEl.appendChild(nav);
+
+    const hint = el("div", "cd-dim", "裁定在对话页完成；这里负责读完一处、走到下一处。按 Esc 退出裁定模式。");
+    cardDetailEl.appendChild(hint);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
   // [画布 2026-10-18 · 并行工作台] 左栏目录
   //
   // 画布一屏只装得下 5 张卡，而"并行多线"的前提是**同时看见全部**——
@@ -3527,6 +3683,65 @@ const WORK_ID = window.__WORK_ID__;
   // 点行 = 选中 + 右栏读卡 + 中栏飞过去（不跳页）。
   // ══════════════════════════════════════════════════════════════════════
   const catEl = document.getElementById("cvCatalog");
+
+  // 目录折叠：默认按窗口宽度决定（<1440 折起来给画布让位），用户手动切换后记住选择。
+  // 窄屏默认折叠不等于"没有"——工具栏一个按钮随时拉开。
+  const CAT_KEY = "canvas.catalogCollapsed";
+  function applyCatalogCollapsed(collapsed) {
+    if (!catEl) return;
+    catEl.classList.toggle("is-collapsed", !!collapsed);
+    try { localStorage.setItem(CAT_KEY, collapsed ? "1" : "0"); } catch (e) { /* 隐私模式 */ }
+  }
+  (function initCatalogState() {
+    if (!catEl) return;
+    let saved = null;
+    try { saved = localStorage.getItem(CAT_KEY); } catch (e) { /* 忽略 */ }
+    const collapsed = saved !== null ? saved === "1" : window.innerWidth < 1440;
+    catEl.classList.toggle("is-collapsed", collapsed);
+  })();
+  // ── 右栏宽度可拖 ──
+  // 340px 读不了 3000 字的正文；拖到 560 能读完一张卡。宽度记忆到 localStorage，
+  // 下次进来还是这个宽度。
+  const RESIZE_KEY = "canvas.rulePanelWidth";
+  (function initResizer() {
+    const bar = document.getElementById("cvResizer");
+    const panel = document.getElementById("rulePanel");
+    if (!bar || !panel) return;
+    try {
+      const w = parseInt(localStorage.getItem(RESIZE_KEY) || "", 10);
+      if (Number.isFinite(w) && w >= 280 && w <= 720) panel.style.width = w + "px";
+    } catch (e) { /* 隐私模式 */ }
+    let drag = null;
+    bar.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      drag = { startX: e.clientX, startW: panel.offsetWidth };
+      bar.classList.add("is-dragging");
+      document.body.style.cursor = "col-resize";
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!drag) return;
+      // 上限不能只看"720"：右栏 + 目录(268) + nav(44) 之后，中栏至少要留 520，
+      // 否则画布被挤成一条缝、顶栏也被压得换行（实测拉到 580 就崩）。
+      const catalogW = (document.getElementById("cvCatalog") || { offsetWidth: 0 }).offsetWidth;
+      const maxW = Math.max(280, Math.min(720, window.innerWidth - catalogW - 44 - 520));
+      const next = Math.max(280, Math.min(maxW, drag.startW - (e.clientX - drag.startX)));
+      panel.style.width = next + "px";
+    });
+    document.addEventListener("mouseup", () => {
+      if (!drag) return;
+      drag = null;
+      bar.classList.remove("is-dragging");
+      document.body.style.cursor = "";
+      try { localStorage.setItem(RESIZE_KEY, String(panel.offsetWidth)); } catch (e) { /* 忽略 */ }
+    });
+  })();
+
+  const catToggleBtn = document.getElementById("catToggleBtn");
+  if (catToggleBtn) {
+    catToggleBtn.addEventListener("click", () => {
+      applyCatalogCollapsed(!catEl.classList.contains("is-collapsed"));
+    });
+  }
   // var 而不是 let：applySelectionClasses 在首屏渲染时就会调 syncCatalogCurrent，
   // 那时这个声明还没执行到（let 会 TDZ 报错）。
   var catRowMap = new Map();
@@ -3584,7 +3799,16 @@ const WORK_ID = window.__WORK_ID__;
       }
     };
     walk("", 0);
+
+    // 目录顶部一行统计：顶栏在窄屏放不下状态条时，这里是"全貌"的兜底。
+    const all = (state.data.cards || []).filter((c) => c.card_type !== "rule");
+    let pendTotal = 0;
+    for (const c of all) pendTotal += Number(c.pending_count || 0);
+    const head = document.createElement("div");
+    head.className = "cv-cat-head";
+    head.innerHTML = `<span><b>${all.length}</b> 张卡</span><span class="cv-cat-head-sep"></span><span class="${pendTotal ? "is-warn" : ""}"><b>${pendTotal}</b> 处待裁定</span>`;
     catEl.innerHTML = "";
+    catEl.appendChild(head);
     catEl.appendChild(frag);
     syncCatalogCurrent();
   }
@@ -3615,22 +3839,64 @@ const WORK_ID = window.__WORK_ID__;
       else if (c.work_state === "concluded") concluded++;
       else if (c.work_state === "empty") empty++;
     }
-    projectStatEl.innerHTML = `
-      <span class="ps-item"><b>${total}</b> 卡</span>
-      <span class="ps-sep"></span>
-      <span class="ps-item${pendingTotal ? " is-warn" : ""}" title="${pendingCards} 张卡上有待你裁定的事项">
+    // 窄屏（1280 展开目录时顶栏只剩 ~330px）只留两个数字：卡数、待裁定数。
+    // 其余项在完整版里；砍掉的用 title 兜住，鼠标停一下就能看到。
+    const compact = window.innerWidth < 1400;
+    const triageItem = `<span class="ps-item${pendingTotal ? " is-warn" : ""}" data-act="triage" role="button" tabindex="0"
+            title="${pendingCards} 张卡上有待你裁定的事项 —— 点击逐条过">
         <b>${pendingTotal}</b> 处待裁定
-      </span>
-      <span class="ps-sep"></span>
-      <span class="ps-item"><b>${concluded}</b> 已结论</span>
-      ${empty ? `<span class="ps-sep"></span><span class="ps-item is-dim"><b>${empty}</b> 未开始</span>` : ""}
-    `;
+      </span>`;
+    projectStatEl.innerHTML = compact
+      ? `<span class="ps-item" title="${total} 张卡"><b>${total}</b> 卡</span>
+         <span class="ps-sep"></span>
+         ${triageItem}`
+      : `<span class="ps-item"><b>${total}</b> 卡</span>
+         <span class="ps-sep"></span>
+         ${triageItem}
+         <span class="ps-sep"></span>
+         <span class="ps-item"><b>${concluded}</b> 已结论</span>
+         ${empty ? `<span class="ps-sep"></span><span class="ps-item is-dim"><b>${empty}</b> 未开始</span>` : ""}`;
+    const triageEl = projectStatEl.querySelector('[data-act="triage"]');
+    if (triageEl && pendingTotal) {
+      triageEl.addEventListener("click", () => openTriage(0));
+      triageEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openTriage(0); }
+      });
+    }
+  }
+
+  // [画布 2026-10-18] 从对话页返回时带 ?sel=卡号 —— 回来直接选中那张卡，
+  // 并把它带到视野里。用户不用在画布里重新找"我刚才在哪"。
+  var _pendingSelect = (() => {
+    try {
+      return new URLSearchParams(location.search).get("sel") || "";
+    } catch (e) { return ""; }
+  })();
+
+  function applyPendingSelect() {
+    if (!_pendingSelect) return;
+    const cid = _pendingSelect;
+    _pendingSelect = "";
+    if (!state.index.cardMap[cid]) return;
+    if (!nodeMap.has(cid)) {
+      const guard = new Set();
+      let cur = (state.index.cardMap[cid] || {}).parent;
+      while (cur && !guard.has(cur) && state.index.cardMap[cur]) {
+        guard.add(cur);
+        state.view.expanded.add(cur);
+        cur = state.index.cardMap[cur].parent;
+      }
+      renderAll();
+    }
+    selectOnly(cid);
+    focusCard(cid, { keepZoom: true });
   }
 
   function renderAll() {
     renderProjectStat();
     renderCatalog();
     renderCanvas(collectProjectionInput(), collectViewModel());
+    applyPendingSelect();
   }
 
   // 统一重算入口（不重建节点）：拖动落定／摘要回填／LOD 换档后的避让重算
