@@ -98,6 +98,7 @@ _PLACEHOLDER_MARKERS = (
 _META_LINE_PREFIX = (
     "状态：", "状态:", "依据：", "依据:", "说明：", "说明:",
     "本卡", "本文", "范围：", "范围:", "信源：", "信源:",
+    "立项卡", "建卡于", "父卡：", "父卡:",
 )
 
 
@@ -147,6 +148,23 @@ def _conclusion_summary(status_block: str, title: str = "") -> str:
                 continue
             if s.startswith(_META_LINE_PREFIX):
                 continue   # 元信息行（"状态：现状实测…""依据：xxx"）不是内容
+            # 纯小节标记（"【思维链收口】""【待裁定】"）是结构，不是内容
+            if re.fullmatch(r"【[^】]{1,12}】", s):
+                continue
+            # 自述"无结论"的元信息
+            if "无结论" in s or "未结论" in s:
+                continue
+            # 建卡记录（"2026-10-07 用户令「建一张子卡」…"）是历史，不是这段在讨论什么
+            if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+                continue
+            # 字段行（"计划名: xxx""终态: 已收口""目标: xxx"）——思维链收口的元数据
+            if re.match(r"^(?:计划名|终态|目标|轮次|进度|下一步|耗时|模型|席位)\s*[:：]", s):
+                continue
+            # 空壳（"边界规则：" 后面什么都没有）
+            if s.endswith(("：", ":")):
+                continue
+            # 行尾元信息残留（"…。父卡 card_001。"）
+            s = re.sub(r"[。;；]?\s*父卡\s*card_\d{3}[。.]?$", "", s).strip()
             if raw.startswith("|") or set(s) <= set("-: "):
                 continue   # Markdown 表格行/分隔行（"| 层 | 载体 | 脚本 |"）不是结论
             return (s[:SUMMARY_MAX] + "…") if len(s) > SUMMARY_MAX else s
@@ -172,55 +190,107 @@ _CONCLUSION_RE = re.compile(
 PENDING_ITEM_MAX = 72
 
 
-def _extract_pending_items(status_block: str, limit: int = 6) -> list[dict[str, str]]:
-    """把「待裁定」从**一个数字**变成**一条条能读的具体事项**。
+_HEADING_RE = re.compile(r"^(#{2,6})\s+(.*)$")
 
-    [画布 2026-10-18 · 工作台] 用户在这个系统里唯一必须亲自做的事是"裁定"。
-    实测这个项目有 74 处待裁定，而画布上只显示"6 处待裁定"这个数字——
-    用户还是得逐张点进去、在 3000 字里找那 6 处。这不是工作台，是计数器。
+#: 小节内以这些字符开头的行是**说明**，不是待办项
+_NOTE_PREFIX = ("（", "(", "〔", "【注", "注：", "注:", "说明", ">", "上述", "以上", "本节")
 
-    每条返回 {section, text}：
-      section —— 它所在的小节标题（"三、端点清单"），让用户知道在讨论什么
-      text    —— 那句话本身（去掉【待裁定】标记，截断到 PENDING_ITEM_MAX）
 
-    只取**行首带待裁定标记**或**整行较短**的，长段落里夹着的"待裁定"不取
-    （那是叙述，不是待办项）。
+def _extract_pending_items(status_block: str, limit: int = 99) -> list[dict[str, str]]:
+    """从「待裁定」小节里取出**条目**，返回 [{section, text}]。
+
+    [画布 2026-10-18 · 宁可留空，不猜] 前一版按"行内含待裁定"猜，实测在真实卡上
+    三处全错：把卡的定义句（"承载「工具层」的实读事实与待裁定："）当成待办、
+    把说明句（"凡标【待裁定】者为模型提议"）当成待办、把表格行当成待办。
+    猜错比留空更糟——用户会误信。
+
+    真实数据的结构（39 张卡逐张实读）是用户**自己划的小节**：
+        ## 四、待裁定（须用户拍板，非本卡结论）
+        1. 卡的身份是否改为与位置解耦的稳定 id。
+        2. `card_...` 的...
+        ### 11.6 待裁定（默认即执行，不阻塞）
+        1. 拼接顺序与分隔 → 默认「分析在前、回执在后」。
+
+    所以按"小节"取：小节标题含「待裁定」→ 该节下的列表项/编号项就是待办；
+    节结束于下一个同级或更高级标题。另外补一层：行内含【待裁定】标记的列表项
+    （8 张卡用的是行内标记），但要排除说明句。
     """
+    lines = (status_block or "").split("\n")
     items: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def push(section: str, text: str) -> bool:
+        t = text.strip(" ：:，,。;；-—·")
+        if len(t) < 4:
+            return False
+        # 兜底闸：任何以日期开头的追记/表格行都不算待办（实测它们会从多条路径漏进来）
+        if re.match(r"^\d{4}-\d{2}-\d{2}", t) or t.startswith("|"):
+            return False
+        key = t[:24]
+        if key in seen:
+            return False
+        seen.add(key)
+        items.append({"section": section, "text": t[:PENDING_ITEM_MAX] + ("…" if len(t) > PENDING_ITEM_MAX else "")})
+        return len(items) >= limit
+
+    # ── 第一轮：按「待裁定」小节取 ──
     section = ""
-    for raw in (status_block or "").split("\n"):
-        line = raw.strip()
-        if not line:
+    level = 0
+    inside = False
+    for raw in lines:
+        st = raw.strip()
+        if not st:
             continue
-        if line.startswith("#"):
-            section = _strip_md_prefix(line)
+        m = _HEADING_RE.match(st)
+        if m:
+            h_level = len(m.group(1))
+            h_text = _strip_md_prefix(st)
+            # ⚠ 必须是「以待裁定**为主**」的小节，不是"标题里提到待裁定"。
+            # 实测踩过：`## 六、用户提出：回复与上一句脱节（诊断记录 · 待裁定 · 归属待定）`
+            # 标题里含"待裁定"，把下面整段诊断记录都算成了待办（一张卡报出 99 条）。
+            # 判据：去掉编号后**以「待裁定」开头**（含【待裁定】/〔待裁定〕形式）。
+            h_core = re.sub(r"^[\d一二三四五六七八九十]+(?:[.、．]\d+)*[.、．]?\s*", "", h_text).strip()
+            is_pending_heading = bool(re.match(r"^[【\[]?[〔(]?待裁定", h_core))
+            if is_pending_heading:
+                inside, level, section = True, h_level, h_text
+            elif inside and h_level <= level:
+                inside = False
             continue
-        if not _PENDING_RE.search(line):
+        if not inside:
             continue
-        # 元信息行（"状态：…依据：…"）不是待办项
-        if _strip_md_prefix(line).startswith(_META_LINE_PREFIX):
+        # ⚠ 先剥掉列表符再判类型：`- （新增，见 §七）Q1…` 以 "-" 开头，
+        # 直接 startswith("（") 判不出来，会被当成条目（实测漏进来 10 条）。
+        bare = re.sub(r"^(?:[-*+]\s+|\d+[.、]\s+)", "", st).strip()
+        if bare.startswith(_NOTE_PREFIX):
             continue
-        # 解释标记含义的句子（"凡标【待裁定】者为模型提议"）不是待办项
-        if re.search(r"(?:凡|均|一律|都)\s*标.{0,8}待裁定|待裁定\s*者", line):
+        if bare.startswith("|"):          # Markdown 表格行
             continue
-        text = _strip_md_prefix(line)
-        # 去掉标记本身与常见包裹
-        text = re.sub(r"[【\[]?\s*(?:待裁定|【待定】|待确认)\s*[】\]]?", "", text)
-        text = text.strip(" ：:，,。;；-—·")
-        if len(text) < 4:
+        if re.match(r"^\d{4}-\d{2}-\d{2}", bare):   # 日期开头的追记
             continue
-        # 长行只取**含标记的那一句**；找不到就说明这行的"待裁定"只是顺带提及，跳过
-        if len(text) > PENDING_ITEM_MAX * 2:
-            parts = re.split(r"(?<=[。！？；])", text)
-            hit = next((x for x in parts if _PENDING_RE.search(x)), "")
-            if not hit:
-                continue
-            text = hit.strip(" ：:，,。")
-        if len(text) > PENDING_ITEM_MAX:
-            text = text[:PENDING_ITEM_MAX] + "…"
-        items.append({"section": section, "text": text})
-        if len(items) >= limit:
-            break
+        is_item = bool(re.match(r"^(?:[-*+]\s+|\d+[.、]\s+)", st))
+        text = _strip_md_prefix(st)
+        text = re.sub(r"[【\[]\s*待裁定\s*[】\]]", "", text)
+        if not is_item and len(text) > 90:
+            continue          # 小节里的长叙述不是条目
+        if push(section, text) :
+            return items
+
+    # ── 第二轮：行内【待裁定】标记（排除说明句）──
+    for raw in lines:
+        st = raw.strip()
+        if "【待裁定】" not in st:
+            continue
+        if st.startswith("#"):
+            continue
+        if re.search(r"(?:凡|均|一律|都)\s*标.{0,8}待裁定|待裁定\s*者|标【待裁定】", st):
+            continue
+        if st.startswith("|"):
+            continue
+        text = _strip_md_prefix(st)
+        text = re.sub(r"[【\[]\s*待裁定\s*[】\]]", "", text).strip(" ：:，,。")
+        if push("（行内标记）", text):
+            return items
+
     return items
 
 
@@ -242,14 +312,25 @@ def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str]
     if not sb.strip():
         return "empty", 0, ""
 
-    pending = len(_PENDING_RE.findall(sb))
+    items = _extract_pending_items(sb)
+    pending = len(items)
     # explicit＝正文里**显式写了**「结论：」——只有这种才算"想清楚了"。
     # 摘要（第一行正文）只是"这张卡在讲什么"，不能当成结论，否则每张有字的卡
     # 都会标成"已结论"，状态就失去意义。
+    # 显式「结论：」才算"想清楚了"。但真实数据里有一批空壳：
+    #   "汇总："（只有冒号）、"全部内容为【提议】，无结论"（这是元信息）。
+    # 空壳比留空更糟——用户会以为这张卡有结论。故加两条硬过滤。
     explicit = ""
-    m = _CONCLUSION_RE.search(sb)
-    if m:
-        explicit = m.group(1).strip().replace("**", "").replace("`", "").strip()
+    for m in _CONCLUSION_RE.finditer(sb):
+        cand = m.group(1).strip().replace("**", "").replace("`", "").strip(" ：:，,。")
+        if len(cand) < 8:
+            continue                     # "汇总：" 这类空壳
+        if "无结论" in cand or "未结论" in cand:
+            continue                     # "全部内容为提议，无结论"
+        if cand.startswith(_META_LINE_PREFIX):
+            continue
+        explicit = cand
+        break
     text = explicit or _conclusion_summary(sb, title)
 
     if pending:
@@ -259,14 +340,15 @@ def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str]
     return "discussing", 0, text
 
 
-#: canvas.json 投影结构版本。**加/删/改投影字段必须 +1**。
+#: canvas.json 投影结构版本。**加/删/改投影字段、以及任何改变字段内容的算法，必须 +1**。
+#: 踩过的坑：改了待裁定提取规则但没升版本 ⇒ 读到旧缓存，后端算出 100 条、界面显示 81 条。
 #:
 #: 为什么必须有这个版本号：canvas.json 是缓存，``load()`` 命中就直接返回，
 #: 从不比对结构。实测缺口——给投影加了 ``state`` / ``updated_at`` 之后，
 #: 存量 work 的旧 canvas.json 里没有这两个键，``load()`` 原样返回 ⇒ 画布上
 #: 「已完成」徽标与更新时间**永远不出现**，且没有任何报错。版本号让
 #: "缓存是旧结构的"这件事变成可判定的事实，命中时自动重建。
-CANVAS_SCHEMA_VERSION = 9
+CANVAS_SCHEMA_VERSION = 11
 
 
 def rebuild(work_id: str) -> dict[str, Any]:

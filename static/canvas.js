@@ -492,9 +492,15 @@ const WORK_ID = window.__WORK_ID__;
       let anchorY = topY, childX = x + widthOf(cid, depth) + GAP_X;
       if (cid !== rootId) {
         if (positions[cid] && positions[cid].pinned && result[cid]) {
-          // pinned：保留存储坐标不覆盖，子树改以存储坐标为锚继续右排
+          // [画布 2026-10-18] pinned **只保留纵向位置（顺序），横向一律由层级决定**。
+          //
+          // 拖拽已经改成"横向锁定、只调上下"（见 bindNodeEvents），所以存储里的 pos_x
+          // 只可能是历史自由拖拽留下的脏数据。实测后果：同层 8 张卡的 x 变成
+          // 456 / 623 / 943，横向散开、主干线接不上——这就是用户说的"无序摆放"。
+          // 树形布局里横向＝层级（结构，不可改），纵向＝顺序（用户可调）。
+          result[cid] = { x: x, y: result[cid].y };
           anchorY = result[cid].y - (subtreeH[cid] - heightOf(cid, depth)) / 2;
-          childX = result[cid].x + widthOf(cid, depth) + GAP_X;
+          childX = x + widthOf(cid, depth) + GAP_X;
         } else {
           result[cid] = { x: x, y: topY + (subtreeH[cid] - heightOf(cid, depth)) / 2 };
         }
@@ -1559,16 +1565,21 @@ const WORK_ID = window.__WORK_ID__;
       if (dragGroup) {
         for (const g of dragGroup) {
           g.node.classList.add("dragging");
-          g.node.style.left = (g.left + dx) + "px";
-          g.node.style.top = (g.top + dy) + "px";
+          g.node.style.top = (g.top + dy) + "px";   // 横向锁定（同上）
         }
       } else {
         node.classList.add("dragging");
+        // [画布 2026-10-18 · 拖拽＝调顺序] **横向锁定，只允许纵向移动**。
+        //
+        // 这是树形布局的性质：横向位置＝层级（由 parent 决定，不是用户摆的），
+        // 纵向位置＝同级之间的顺序（用户可以调）。
+        // 原来拖拽是自由的 x/y，实测后果：两张卡被拖过之后，同层 8 张卡的 x
+        // 变成 456 / 623 / 943，横向散开、主干线接不上——用户的原话是"卡片无序摆放"。
+        // 现在横向永远对齐列，拖拽表达的是"这张卡排在这一层的第几位"。
         const w = node.offsetWidth || 220, h = node.offsetHeight || 120;
-        const snap = computeSnap(card.card_id, dragState.nodeLeft + dx, dragState.nodeTop + dy, w, h);
-        node.style.left = (dragState.nodeLeft + dx + snap.dx) + "px";
+        const snap = computeSnap(card.card_id, dragState.nodeLeft, dragState.nodeTop + dy, w, h);
         node.style.top = (dragState.nodeTop + dy + snap.dy) + "px";
-        showGuides(snap.vx, snap.vy);
+        showGuides(null, snap.vy);
       }
     }
 

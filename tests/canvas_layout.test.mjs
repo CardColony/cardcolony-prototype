@@ -44,9 +44,9 @@ test("布局纯函数：同输入两次结果逐键一致（含浮点）", () =>
   const r2 = computeLayout("root", cards, relations, positions, expanded, sizes);
   assert.deepEqual(r1, r2);
   assert.equal(Object.keys(r1).length, 5); // 可见集 = root + a + b + a1 + a2
-  // 钉住卡用存储坐标（浮点原样）
-  assert.equal(r1.b.x, 900.5);
-  assert.equal(r1.b.y, 120.25);
+  // [画布 2026-10-18] 钉住卡：纵向保留存储顺序（浮点原样），横向对齐同层
+  assert.equal(r1.b.x, r1.a.x, "pinned 卡横向对齐同层");
+  assert.equal(r1.b.y, 120.25, "pinned 卡纵向保留存储顺序");
 });
 
 test("布局纯函数：入参未被改动", () => {
@@ -111,8 +111,8 @@ test("L5 兜底：非法坐标的钉住记录落自动布局位置，卡片不�
     assert.ok(r[id], `${id} 必须在布局结果中`);
     assert.ok(Number.isFinite(r[id].x) && Number.isFinite(r[id].y), `${id} 坐标必须有限`);
   }
-  // 合法钉住用存储坐标；非法钉住落自动布局（非存储 NaN 值）
-  assert.equal(r.ok.x, 500.5);
+  // [画布 2026-10-18] 钉住卡横向对齐同层（纵向仍用存储 y）；非法钉住落自动布局
+  assert.equal(r.ok.x, r.bad.x, "同层同列");
   assert.notEqual(r.bad.x, NaN);
 });
 
@@ -185,13 +185,22 @@ test("投影·链路：布局覆盖可见集、pinned 存储坐标、面包屑�
     assert.ok(p.layout[cid], `${cid} 必须有布局位`);
     assert.ok(Number.isFinite(p.layout[cid].x) && Number.isFinite(p.layout[cid].y));
   }
-  assert.equal(p.layout.b.x, 900.5);       // pinned 卡用存储坐标
+  // [画布 2026-10-18] pinned 只保留纵向顺序；横向必须与同层同列
+  assert.equal(p.layout.b.x, p.layout.a.x);   // 同层同列
+  assert.ok(Number.isFinite(p.layout.b.y));   // 纵向位置来自存储（顺序）
   assert.equal(p.sizes, input.sizes);      // 尺寸表透传（测量纪律在渲染入口）
   assert.deepEqual(p.breadcrumb.map(c => c.card_id), ["root"]);
   const p2 = computeProjection({ ...input, viewRoot: "a1" });
   assert.deepEqual(p2.breadcrumb.map(c => c.card_id), ["root", "a", "a1"]);
-  // 父子折线段＝可见父子对（root-a, root-b, a-a1, a-a2, a1-a11＝5；折叠对不画）
-  assert.equal(p.edges.elbowSegs.length, 5);
+  // [画布 2026-10-18] 父子连线不再"一对父子一条线"：成组的父卡（≥2 可见子卡）
+  // 用「父卡→竖干 + 竖干 + 各子卡横线」表达。判据改成"每张非根可见卡都被连到"。
+  const linked = new Set();
+  for (const seg of p.edges.elbowSegs) if (seg.to) linked.add(seg.to);
+  for (const cid of p.visibleIds) {
+    if (cid === input.viewRoot) continue;
+    assert.ok(linked.has(cid), `${cid} 必须有连线`);
+  }
+  assert.ok(p.edges.elbowSegs.length >= 3);
   assert.equal(p.edges.rootParentId, "");
   assert.ok(Number.isFinite(p.edges.bbox.w) && p.edges.bbox.w > 0);
 });
@@ -303,7 +312,9 @@ test("增量·布局：只重排 A 单元内部，A 自身不动，无关卡不�
     assert.ok(unit[cid].x > anchor.x, `${cid} 排在 A 的下一列（子树单元内右排）`);
   }
   // ④ 无关卡的布局键一个都没被这个函数改写（入参不可变）
-  assert.deepEqual(full.b, { x: 900.5, y: 120.25 }, "pinned 卡在全量布局里本就用存储坐标");
+  // [画布 2026-10-18] pinned 只保留纵向顺序（存储 y）；横向必须与同层对齐
+  assert.equal(full.b.x, full.a.x, "pinned 卡横向对齐同层");
+  assert.equal(full.b.y, 120.25, "pinned 卡纵向保留存储顺序");
 });
 
 test("增量·布局：收起 A 时单元结果里不得残留已不可见的子孙（否则它们会当障碍误挤别人）", () => {
@@ -329,7 +340,9 @@ test("增量·pinned 保护：局部避让下 pinned 卡与固定障碍坐标绝
   const out = separateOverlaps(base, sizes, new Set(["b"]), GAP_Y, movable);
 
   // ★ 验收标准④：pinned 卡、以及任何不在 movable 里的卡，一个坐标都不许变
-  assert.deepEqual(out.b, { x: 900.5, y: 120.25 }, "pinned 卡在展开/收起时位置绝对不变");
+  // [画布 2026-10-18] pinned 的**纵向**位置绝对不变；横向恒等于同层列
+  assert.equal(out.b.x, out.a.x, "pinned 卡横向对齐同层");
+  assert.equal(out.b.y, 120.25, "pinned 卡纵向位置在展开/收起时绝对不变");
   assert.deepEqual(out.root, base.root, "视图根（固定障碍）不动");
   assert.deepEqual(out.a, { x: anchor.x, y: anchor.y }, "锚点自身不动");
 
@@ -340,7 +353,8 @@ test("增量·pinned 保护：局部避让下 pinned 卡与固定障碍坐标绝
     a1: { x: 900, y: 130 }, a2: { x: 905, y: 135 },
   });
   const out2 = separateOverlaps(collide, sizes, new Set(["b"]), GAP_Y, movable);
-  assert.deepEqual(out2.b, { x: 900.5, y: 120.25 }, "碰撞时 pinned 卡仍然绝对不动");
+  // [画布 2026-10-18] pinned 横向恒等于同层列；纵向绝对不动
+  assert.deepEqual(out2.b, { x: base.b.x, y: 120.25 }, "碰撞时 pinned 卡仍然绝对不动");
   assert.deepEqual(out2.root, collide.root, "碰撞时其余固定障碍同样不动");
   const gapOk = ["a1", "a2"].some(cid =>
     Math.abs(out2[cid].x - 900) > 0.01 || Math.abs(out2[cid].y - 130) > 0.01);
@@ -348,7 +362,7 @@ test("增量·pinned 保护：局部避让下 pinned 卡与固定障碍坐标绝
 
   // ★ 缺省 movable=null ⇒ 旧行为不变（全量重排路径仍全员可动，pinned 仍不动）
   const global = separateOverlaps(collide, sizes, new Set(["b"]));
-  assert.deepEqual(global.b, { x: 900.5, y: 120.25 }, "缺省 movable 时 pinned 依旧不动");
+  assert.deepEqual(global.b, { x: base.b.x, y: 120.25 }, "缺省 movable 时 pinned 依旧不动");
 });
 
 

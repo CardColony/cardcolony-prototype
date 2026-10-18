@@ -109,16 +109,17 @@ if (delBox) {
 await ev("(() => { const s = document.getElementById('zoomSlider'); s.value = '50'; s.dispatchEvent(new Event('input', { bubbles: true })); })()");
 await sleep(500);
 const zoomNow = await ev("(document.getElementById('zoomDisplay')||{}).textContent");
+// [画布 2026-10-18] 拖拽只调纵向顺序，故在纵向验证"屏幕位移 ÷ zoom = 世界位移"
 const dragBox = await centerOf(".card-node", 2);
-const leftBefore = await J(`parseFloat(document.querySelectorAll('.card-node')[2].style.left)`);
+const topBefore = await J(`parseFloat(document.querySelectorAll('.card-node')[2].style.top)`);
 if (dragBox) {
   await move(dragBox.x, dragBox.y); await down(dragBox.x, dragBox.y);
-  for (let i = 1; i <= 8; i++) { await move(dragBox.x + i * 10, dragBox.y); await sleep(16); }
-  await up(dragBox.x + 80, dragBox.y);
+  for (let i = 1; i <= 8; i++) { await move(dragBox.x, dragBox.y + i * 10); await sleep(16); }
+  await up(dragBox.x, dragBox.y + 80);
   await sleep(900);
 }
-const leftAfter = await J(`parseFloat(document.querySelectorAll('.card-node')[2].style.left)`);
-const delta = leftAfter - leftBefore;
+const topAfter = await J(`parseFloat(document.querySelectorAll('.card-node')[2].style.top)`);
+const delta = topAfter - topBefore;
 check("3 缩放 50% 下拖 80px ≈ 世界位移 160px", Math.abs(delta - 160) < 30, `zoom=${zoomNow} Δworld=${Math.round(delta)}`);
 
 // （展开/折叠回退已由 journey1 第 5/6 项覆盖，此处不重复——重复测同一路径
