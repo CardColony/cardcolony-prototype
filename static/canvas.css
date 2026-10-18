@@ -1127,10 +1127,10 @@
   border-right: 1px solid var(--cv-line-1);
 }
 
-/* 窄屏藏起来：1600 下 44+268+中+340，中栏还有 948；1280 下只剩 628，画布挤没了 */
-@media (max-width: 1440px) {
-  .page-canvas .cv-catalog { display: none; }
-}
+/* 折叠态：窄屏默认折叠（1280 下三栏只剩 628 给画布），但**能力不丢**——
+   工具栏一个按钮就能拉开。原来直接 display:none 等于在窄屏上放弃了
+   "一屏看全部"这个核心能力。 */
+.page-canvas .cv-catalog.is-collapsed { display: none; }
 
 .page-canvas .cv-cat-row {
   display: flex;
@@ -1257,3 +1257,150 @@
   margin-top: 12px;
   flex-wrap: wrap;
 }
+
+/* 右栏拖拽条 */
+.page-canvas .cv-resizer {
+  flex: none;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .cv-resizer:hover,
+.page-canvas .cv-resizer.is-dragging { background: var(--cv-accent-line); }
+
+/* 右栏动作行与全文区 */
+.page-canvas .cd-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.page-canvas .cd-full {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--cv-line-1);
+}
+
+/* 右栏里的 Markdown（复用对话页的 .md 语义，但字号按右栏收一档） */
+.page-canvas .cd-full .md { font-size: 12.5px; line-height: 1.75; color: var(--cv-text-2); }
+.page-canvas .cd-full .md h1,
+.page-canvas .cd-full .md h2,
+.page-canvas .cd-full .md h3 {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--cv-text-1);
+  margin: 14px 0 6px;
+}
+.page-canvas .cd-full .md h1:first-child { margin-top: 0; }
+.page-canvas .cd-full .md p { margin: 6px 0; }
+.page-canvas .cd-full .md ul,
+.page-canvas .cd-full .md ol { margin: 6px 0; padding-left: 18px; }
+.page-canvas .cd-full .md li { margin: 2px 0; }
+.page-canvas .cd-full .md code {
+  font-size: 11.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #c9d4e4;
+}
+.page-canvas .cd-full .md pre {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.page-canvas .cd-full .md pre code { background: none; padding: 0; }
+.page-canvas .cd-full .md blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--cv-line-3);
+  color: var(--cv-text-3);
+}
+.page-canvas .cd-full .md table { border-collapse: collapse; margin: 8px 0; font-size: 11.5px; }
+.page-canvas .cd-full .md th,
+.page-canvas .cd-full .md td { border: 1px solid var(--cv-line-2); padding: 4px 7px; }
+
+/* 顶栏在窄画布下不许换行：项目名与状态条都可以被压缩/截断，工具栏按钮不动。
+   实测：右栏拉到 580 时中栏 708，"项目管理 agent" 被压成两行。 */
+.page-canvas .topbar { flex-wrap: nowrap; }
+.page-canvas .topbar .crumb {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.page-canvas .proj-stat { flex: 0 1 auto; overflow: hidden; }
+@media (max-width: 1560px) {
+  /* 更窄时先砍掉"未开始"这种次要项，保留卡数与待裁定 */
+  .page-canvas .proj-stat .ps-item.is-dim,
+  .page-canvas .proj-stat .ps-item.is-dim + .ps-sep { display: none; }
+}
+
+/* 裁定模式 */
+.page-canvas .cd-triage-count {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #f7c163;
+  font-variant-numeric: tabular-nums;
+}
+.page-canvas .cd-triage-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--cv-text-1);
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(245, 181, 68, 0.07);
+  border-left: 2px solid rgba(245, 181, 68, 0.6);
+  word-break: break-word;
+}
+.page-canvas .proj-stat .ps-item[data-act="triage"] {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin: -2px -6px;
+}
+.page-canvas .proj-stat .ps-item[data-act="triage"]:hover { background: rgba(245, 181, 68, 0.12); }
+
+/* 顶栏：按钮一律不压缩、不换行；只有项目名与状态条可截断。
+   实测 1280 展开目录后，"＋ 新建卡"被压成两行、"100 处待裁定"被切掉半个字。 */
+.page-canvas .topbar > button,
+.page-canvas .topbar > .zoom-ctrl,
+.page-canvas .topbar > .toolbar-sep,
+.page-canvas .topbar > .btn { flex: none; }
+.page-canvas .topbar .btn.primary { white-space: nowrap; }
+.page-canvas .proj-stat { text-overflow: ellipsis; }
+.page-canvas .proj-stat .ps-item { white-space: nowrap; }
+
+/* 项目名至少留 80px，别被压成"项目"两个字 */
+.page-canvas .topbar .crumb { min-width: 80px; }
+
+/* 目录顶部统计行 */
+.page-canvas .cv-cat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--cv-line-1);
+  font-size: 10.5px;
+  color: var(--cv-text-3);
+  white-space: nowrap;
+}
+.page-canvas .cv-cat-head b { font-weight: 700; color: var(--cv-text-2); font-variant-numeric: tabular-nums; }
+.page-canvas .cv-cat-head .is-warn b { color: #f7c163; }
+.page-canvas .cv-cat-head .is-warn { color: #c9a35c; }
+.page-canvas .cv-cat-head-sep { width: 1px; height: 9px; background: var(--cv-line-2); }
+
+/* 窄屏顶栏放不下状态条：收进目录顶部（目录里已有同样信息） */
+@media (max-width: 1400px) {
+  .page-canvas .proj-stat { display: none; }
+}
+
+/* ⚠ 目录行必须 flex:none：.cv-catalog 是 flex column，232 张卡时 232 行会被
+   整体压缩（实测行高从 22px 压到 11px，文字互相重叠）——目录直接不可用。 */
+.page-canvas .cv-cat-row,
+.page-canvas .cv-cat-head { flex: none; }

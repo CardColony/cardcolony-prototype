@@ -1810,7 +1810,12 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // [画布入口 2026-10-16 用户令] 顶部栏最左 icon → 返回本项目画布（根卡/子卡聊天态常显）
   const canvasEntryBtn = document.getElementById("canvasEntryBtn");
   // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 回画布＝整页跳转到画布页 URL。
-  if (canvasEntryBtn) canvasEntryBtn.onclick = () => location.assign("/work/" + WORK_ID);
+  // [画布 2026-10-18] 返回画布时带上当前卡：回去之后画布直接选中它，
+  // 用户不用在一屏 5 张卡里重新找"我刚才在哪"。
+  if (canvasEntryBtn) canvasEntryBtn.onclick = () => {
+    const cid = (window.__CARD_ID__ || "").trim();
+    location.assign("/work/" + WORK_ID + (cid ? "?sel=" + encodeURIComponent(cid) : ""));
+  };
   // 窄条 ☰：钉住（或收起）悬停浮层全树
   const navRailBtn = document.getElementById("navRailBtn");
   if (navRailBtn) {
