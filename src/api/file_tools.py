@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -336,17 +337,34 @@ def _walk_files(start: Path):
                 continue
 
 
-def search_files(keyword: str, path: str = "", limit: int = 50) -> dict[str, Any]:
-    """在材料目录里逐文件文本检索。凭证不命中；依赖/缓存目录剪枝。"""
+def search_files(keyword: str, path: str = "", limit: int = 50,
+                 pattern: str = "") -> dict[str, Any]:
+    """在材料目录里逐文件文本检索。凭证不命中；依赖/缓存目录剪枝。
+
+    [基础工具找回 2026-10-17 · 逐字搬自 toolfold] 新增 ``pattern``（正则，忽略
+    大小写）：非空时按 ``re.search`` 逐行匹配、**优先于 keyword**；否则沿用关键词
+    的子串匹配（不区分大小写）。keyword 与 pattern 至少给一个——两者都空的**参数
+    校验信封（validation 码）**在 handler ``_h_search_files`` 出，此处只兜底直调，
+    消息与改前逐字一致。剪枝 / 凭证排除 / 200 命中 / 2MB 单文件 / 20000 文件
+    上限一律不动。
+    """
     kw = (keyword or "").strip()
-    if not kw:
+    pat = (pattern or "").strip()
+    if not kw and not pat:
         return {"error": "keyword 不能为空"}
-    start, err = _resolve(path or _default_root())
+    start, err = _resolve(path or str(BASE_DIR / "trading-workspace"))
     if err:
         return err
     if not start.exists():
         return {"error": f"路径不存在: {_rel(start)}"}
     # [2026-10-04 21:31] 凭证拦截已撤（用户裁定全盘可读可写；此前此拦截系诸葛自行添加）
+
+    rx = None
+    if pat:
+        try:
+            rx = re.compile(pat, re.IGNORECASE)
+        except re.error as exc:
+            return {"error": f"正则非法: {exc}"}
 
     cap = max(1, min(int(limit or 50), MAX_SEARCH_HITS))
     hits: list[dict[str, Any]] = []
@@ -371,7 +389,7 @@ def search_files(keyword: str, path: str = "", limit: int = 50) -> dict[str, Any
         except (OSError, UnicodeDecodeError):
             continue
         for i, line in enumerate(text.splitlines(), 1):
-            if kw_lower in line.lower():
+            if (rx.search(line) if rx is not None else kw_lower in line.lower()):
                 hits.append({
                     "file": _rel(f),
                     "line": i,
@@ -389,6 +407,8 @@ def search_files(keyword: str, path: str = "", limit: int = 50) -> dict[str, Any
     }
 
 
+
+# [基础工具找回 2026-10-18 · Cardlo 搬运] 备份共用 + 精准编辑
 def write_file(path: str, content: str) -> dict[str, Any]:
     """写文件（新建/覆盖自动区分）。四道兜底在此生效。"""
     target, err = _resolve(path)
@@ -419,16 +439,11 @@ def write_file(path: str, content: str) -> dict[str, Any]:
             old.decode("utf-8")
         except UnicodeDecodeError:
             return {"error": f"目标文件是二进制，拒绝覆盖: {_rel(target)}"}
-        # 写前强制备份（不依赖 git）
-        try:
-            stamp = time.strftime("%Y%m%d_%H%M%S")
-            bdir = BACKUP_DIR / target.parent.relative_to(BASE_DIR) / stamp
-            bdir.mkdir(parents=True, exist_ok=True)
-            bfile = bdir / target.name
-            bfile.write_bytes(old)
-            backup_path = str(bfile)
-        except OSError as exc:
-            return {"error": f"备份失败，已中止写入（不破坏原文件）: {exc}"}
+        # 写前强制备份（不依赖 git）——[基础工具找回 2026-10-17] 抽成 _backup_existing
+        # 与 edit_file 共用（落点算法一处定义），行为逐字不变。
+        backup_path, berr = _backup_existing(target, old)
+        if berr:
+            return berr
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -445,6 +460,92 @@ def write_file(path: str, content: str) -> dict[str, Any]:
     }
 
 
+def _backup_existing(target: Path, old: bytes) -> tuple[str, dict[str, Any] | None]:
+    """覆盖前强制备份（不依赖 git）：``_backups/{相对路径}/{时间戳}/{文件名}``。
+
+    [基础工具找回 2026-10-17 · 逐字搬自 toolfold] 原先这段内联在 write_file 里；
+    edit_file 要**同一落点规则**，故抽成共用函数——落点算法只此一处。调用方把
+    已读到手的原文交给它，避免为备份再读一遍盘。
+
+    返回 ``(备份路径, err 信封)``：err 非 None 即备份失败，**调用方必须中止，
+    不得动目标文件一个字节**。
+    """
+    try:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        bdir = BACKUP_DIR / target.parent.relative_to(BASE_DIR) / stamp
+        bdir.mkdir(parents=True, exist_ok=True)
+        bfile = bdir / target.name
+        bfile.write_bytes(old)
+    except OSError as exc:
+        return "", {"error": f"备份失败，已中止写入（不破坏原文件）: {exc}"}
+    return str(bfile), None
+
+
+def edit_file(path: str, old_string: str, new_string: str) -> dict[str, Any]:
+    """精准编辑：把文件中的 ``old_string`` 换成 ``new_string``（只改那一处）。
+
+    [基础工具找回 2026-10-17 · 逐字搬自 toolfold] 契约逐条：
+
+    1. ``path`` 过 ``_resolve``（与 read_file / write_file 同一道越界边界）；
+    2. 全文 ``read_bytes`` + ``decode("utf-8")``——二进制拒（判据同 read_file）。
+       凭证拦截口径也与 read_file / write_file 逐字同：工具层已按 2026-10-04 用户
+       裁定撤掉，关卡在 ``check_file_access``（handler）；
+    3. 匹配计数 ``text.count(old_string)``：
+         · 0  → ``old_string 未在文件中找到``（not_found 语义）；
+         · >1 → 给出出现次数，请提供更精确上下文（validation 语义）；
+         · 1  → ``text.replace(old_string, new_string, 1)``。
+       前两种情况**一个字节都不写**（不备份、不落盘）；
+    4. 覆盖前强制备份（与 write_file 共用 ``_backup_existing``，落点规则同一处），
+       备份失败即中止；
+    5. 写回。
+    """
+    target, err = _resolve(path)
+    if err:
+        return err
+    if not target.exists():
+        return {"error": f"文件不存在: {_rel(target)}"}
+    if target.is_dir():
+        return {"error": f"这是目录不是文件: {_rel(target)}"}
+
+    old_s = "" if old_string is None else str(old_string)
+    new_s = "" if new_string is None else str(new_string)
+
+    try:
+        raw = target.read_bytes()
+    except OSError as exc:
+        return {"error": f"文件读取失败: {exc}"}
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "error": (
+                f"二进制文件不可编辑: {_rel(target)}（{len(raw)} 字节，非 UTF-8 文本）"
+            )
+        }
+
+    n = text.count(old_s)
+    if n == 0:
+        return {"error": "old_string 未在文件中找到"}
+    if n > 1:
+        return {"error": f"old_string 出现 {n} 次，请提供更精确的上下文以唯一定位"}
+
+    backup_path, berr = _backup_existing(target, raw)
+    if berr:
+        return berr
+
+    try:
+        target.write_bytes(text.replace(old_s, new_s, 1).encode("utf-8"))
+    except OSError as exc:
+        return {"error": f"写入失败: {exc}"}
+
+    return {
+        "ok": True,
+        "path": _rel(target),
+        "replacements": 1,
+        "backup": backup_path,
+    }
+
+
 def build_file_tool_schemas() -> list[dict[str, Any]]:
     """四件文件工具的 OpenAI function calling schema（机械描述，无方向性用语）。"""
     return [
@@ -454,7 +555,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": f"目录路径（相对 {BASE_DIR} 或绝对）；缺省列 {_default_root()}"},
+                    "path": {"type": "string", "description": "目录路径（相对 D:\\AI_station 或绝对）；缺省列 trading-workspace"},
                     "limit": {"type": "integer", "description": "最多返回条目数，缺省 200"},
                 },
                 "required": [],
@@ -466,7 +567,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": f"文件路径（相对 {BASE_DIR} 或绝对）"},
+                    "path": {"type": "string", "description": "文件路径（相对 D:\\AI_station 或绝对）"},
                     "para_start": {"type": "integer", "description": "起始行号（1 起），缺省 1"},
                     "para_end": {"type": "integer", "description": "结束行号，缺省到文件末尾"},
                 },
@@ -480,10 +581,11 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "keyword": {"type": "string", "description": "检索关键词"},
-                    "path": {"type": "string", "description": f"起始目录或文件（相对 {BASE_DIR} 或绝对）；缺省搜索 {_default_root()}"},
+                    "pattern": {"type": "string", "description": "正则表达式；非空时按正则匹配每行（忽略大小写），与 keyword 二选一，pattern 优先"},
+                    "path": {"type": "string", "description": "起始目录或文件；缺省搜索 trading-workspace"},
                     "limit": {"type": "integer", "description": "最多返回命中条数，缺省 50"},
                 },
-                "required": ["keyword"],
+                "required": [],
             },
         },
         {
@@ -495,7 +597,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": f"文件路径（相对 {BASE_DIR} 或绝对）"},
+                    "path": {"type": "string", "description": "文件路径（相对 D:\\AI_station 或绝对）"},
                     "content": {"type": "string", "description": "写入的完整文本内容"},
                 },
                 "required": ["path", "content"],
