@@ -20,7 +20,7 @@
 <!-- [画布商业化重做 2026-10-17] 画布页专属视觉体系独立成 canvas.css（只在 .page-canvas
      作用域内生效，不污染对话页）。必须在本行之后引入：同特异性后者胜，用它覆盖 style.css
      里的旧画布段；改动本文件必须升 ?v=。 -->
-<link rel="stylesheet" href="/static/canvas.css?v=11">
+<link rel="stylesheet" href="/static/canvas.css?v=12">
 </head>
 <body class="page-canvas">
 <div class="work-page">
@@ -65,11 +65,6 @@
 
   <!-- [T17-F1] 中区主视图：topbar + stage（画布/对话二选一，data-view 驱动显隐） -->
   <div class="app-main" id="appMain">
-    <!-- [画布 2026-10-18 · 并行工作台] 左栏目录：39 张卡一屏扫完。
-         为什么必须有：画布一屏只装得下 5 张卡，而"并行"的前提是**同时看见全部**。
-         目录行＝缩进 + 标题 + 状态点 + 待裁定数 + 被引用数；点行＝选中并右栏读卡，
-         中栏视野跟着飞过去——不跳页。窄屏（<1440）自动隐藏，靠 ⌘K 搜索替代。 -->
-    <aside class="cv-catalog" id="cvCatalog" aria-label="卡片目录"></aside>
     <div class="main-col">
     <!-- [顶栏整合 2026-10-13] 两条栏（.topbar 48px ＋ .ws-head ~35px）合并为一条 44px：
          面包屑 ｜（画布态）设置·zoom·整理画布·新建卡。
@@ -106,9 +101,6 @@
            （带 title 与 aria-label），另补「整幅适配」「搜索」两个高频入口。
            三个 id（reorganizeBtn/newCardBtn/zoom*）全部保留——canvas.js 顶层直接取用，
            删或改名会让整个画布脚本 TypeError。 -->
-      <button id="catToggleBtn" class="icon-btn canvas-only" type="button" title="显示/隐藏卡片目录" aria-label="显示或隐藏卡片目录">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4h10M3 8h7M3 12h9"/></svg>
-      </button>
       <button id="fitBtn" class="icon-btn canvas-only" type="button" title="整幅适配（⌘0）" aria-label="整幅适配">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4"/></svg>
       </button>
@@ -143,8 +135,6 @@
          选中卡   → 这张卡的详情（结论 + 待裁定条目 + 打开对话）。
          为什么不跳页：跳页会让人失去画布上下文，看两张卡的结论要来回跳三次——
          那等于用画布模拟对话界面，并行优势归零。 -->
-    <!-- 右栏可拉宽：340px 读 3000 字的正文太窄，拖这条边到 560 就能读完 -->
-    <div class="cv-resizer" id="cvResizer" title="拖动调整右栏宽度" aria-hidden="true"></div>
     <div class="rule-panel" id="rulePanel">
       <div class="rule-panel-head" id="rulePanelHead">规则卡 · 各类卡行为准则（直改即存）</div>
       <div class="rule-panel-body" id="rulePanelBody">
@@ -172,6 +162,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=58.0"></script>
+<script type="module" src="/static/esm/main.js?v=59.0"></script>
 </body>
 </html>

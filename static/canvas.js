@@ -130,7 +130,15 @@ const WORK_ID = window.__WORK_ID__;
   // [画布第三步 T2] 档位判据的 zoom 改参数传入（V1：本函数在渲染 10 函数名单内；
   // zoom 属视图态容器——T2③ 口径「从视图态容器取/参数传入，不从投影取」）
   function currentLODLevel(zoom) {
-    if (zoom < 0.5) return "l0";
+    // [画布 2026-10-18] 阈值 0.9：这是"LOD 与 fit 耦合"的解法。
+    //
+    // 死结：卡片高度随档位变（骨架 75 / 完整 150），而 fit 按高度算 zoom，
+    // zoom 又决定档位 ⇒ 0.85 时如果走完整档（150px），9 张卡 1350px 装不进 956px，
+    // fit 会缩到 0.65，又切回骨架档，卡片变矮、装得下了、zoom 回到 0.85……来回振荡。
+    //
+    // 把骨架档覆盖到 0.9，0.85 稳定落在骨架档：9 张卡 75px + 间距 ≈ 995px，
+    // 0.85 缩放后 846px，刚好装进可用高度（844px）。标题 15×0.85 ≈ 12.75px 可读。
+    if (zoom < 0.96) return "l0";
     if (zoom > 1.2) return "l2";
     return "l1";
   }
@@ -1401,6 +1409,8 @@ const WORK_ID = window.__WORK_ID__;
     const ws = String(card.work_state || "");
     if (ws) node.dataset.ws = ws;   // pending / concluded / discussing / empty
     const pendingN = Number(card.pending_count || 0);
+    // 骨架档（zoom<0.7）只显示标题，待裁定数用 data-pending 挂在右上角
+    if (pendingN > 0) node.dataset.pending = String(pendingN);
     // 根卡是项目本体，不是待办项——不给它挂"未开始/已结论"这类工作状态标签
     const isRootCard = card.card_id === state.nav.viewRoot;
     const wsBadge = isRootCard
@@ -1430,6 +1440,24 @@ const WORK_ID = window.__WORK_ID__;
     const runLine = running
       ? `<div class="cv-runline"><span class="cv-run-dot"></span>第 ${runRound || 1} 轮${runStep ? " · " + escapeHtml(runStep.slice(0, 22)) : ""}</div>`
       : "";
+
+    // ── 新鲜度：时间维度**长在卡片上**，不是另开一条时间轴 ──
+    //
+    // 画布是空间的，活动是时间的。把活动做成底部横条＝往空间画布里硬塞时间轴，
+    // 既遮内容又和卡片对不上（用户还得自己把"14:32 某卡"映射到画布上的位置）。
+    // 正确做法：时间体现为卡片自己的状态——
+    //   6 小时内动过 → 呼吸的绿点（"这张刚被 AI 或你碰过"）
+    //   48 小时内   → 静态绿点
+    //   更早        → 无标记（沉默）
+    const freshOf = (iso) => {
+      const t = Date.parse(String(iso || ""));
+      if (!Number.isFinite(t)) return "";
+      const h = (Date.now() - t) / 3600000;
+      if (h < 6) return "hot";
+      if (h < 48) return "warm";
+      return "";
+    };
+    const fresh = freshOf(card.updated_at);
 
     const pendingItems = Array.isArray(card.pending_items) ? card.pending_items : [];
     const isBareRoot = isRootCard
@@ -1461,6 +1489,7 @@ const WORK_ID = window.__WORK_ID__;
       ${runLine}
       ${bodyHtml}
       <div class="cv-card-foot">
+        ${fresh ? `<span class="cv-fresh" data-f="${fresh}" title="${fresh === "hot" ? "6 小时内动过" : "两天内动过"}"></span>` : ""}
         ${wsBadge}
         <span class="cv-spacer"></span>
         ${Number(card.ref_count || 0) > 0 ? `<span class="cv-ref" title="有 ${card.ref_count} 张卡在正文里引用了这张卡">←${card.ref_count}</span>` : ""}
@@ -1713,7 +1742,6 @@ const WORK_ID = window.__WORK_ID__;
     highlightEdges(ids.length === 1 ? ids[0] : "");
     renderSelectionBar();
     renderCardDetail();
-    syncCatalogCurrent();
   }
 
   function setSelection(ids, additive = false) {
@@ -1758,12 +1786,17 @@ const WORK_ID = window.__WORK_ID__;
     if (!cardDetailEl) return;
     const ids = [...state.view.selected];
 
-    // 未选中：恢复规则卡
+    // 未选中：浮层收起（画布满宽）。规则卡改由工具栏按钮打开。
     if (!ids.length) {
       cardDetailEl.hidden = true;
       cardDetailEl.innerHTML = "";
       if (rulePanelHeadEl) rulePanelHeadEl.hidden = false;
       if (rulePanelBodyEl) rulePanelBodyEl.hidden = false;
+      const panel = document.getElementById("rulePanel");
+      if (panel && panel.dataset.mode === "card") {
+        panel.classList.remove("is-open");
+        panel.dataset.mode = "";
+      }
       return;
     }
 
@@ -1771,6 +1804,11 @@ const WORK_ID = window.__WORK_ID__;
     if (rulePanelBodyEl) rulePanelBodyEl.hidden = true;
     cardDetailEl.hidden = false;
     cardDetailEl.innerHTML = "";
+    const sidePanel = document.getElementById("rulePanel");
+    if (sidePanel) {
+      sidePanel.classList.add("is-open");
+      sidePanel.dataset.mode = "card";
+    }
 
     // 多选：列出选中的卡 + 批量操作
     //
@@ -2177,6 +2215,49 @@ const WORK_ID = window.__WORK_ID__;
     const panX = pad + (availW - w * z) / 2 - minX * z;
     const panY = pad + (availH - h * z) / 2 - minY * z;
     return { panX, panY, zoom: z };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // [画布 2026-10-18] 迭代式整幅适配
+  //
+  // 为什么要迭代：卡片高度**随 LOD 档位变**（骨架 75 / 完整 150），而 fitView 按
+  // 当前 DOM 高度算 zoom，zoom 又决定档位 ⇒ 直接 fit 会算错。
+  // 实测：9 张卡按 150 高算出 0.55，切到骨架档后其实装得下 0.95，画面却停在 0.55。
+  // 解法：先按目标 zoom 刷 LOD → **强制一次重排**（`void world.offsetHeight`，
+  // 否则同一同步任务里 offsetHeight 还是旧值）→ 重算，最多迭代 3 次。
+  // ══════════════════════════════════════════════════════════════════════════
+  function fitToContent() {
+    if (!nodeMap.size) return false;
+    // ⚠ 这里**不做"按内容算缩放"**，而是给一个算过的固定档位。
+    //
+    // 为什么：卡片高度随 LOD 档位变（骨架 75 / 完整 150），而 fitView 读的是当前
+    // DOM 高度、zoom 又决定档位 ⇒ 直接 fit 会算错；迭代修也修不动，因为
+    // `applyLODClasses` 之后在同一个同步任务里 `offsetHeight` 仍是旧值
+    // （实测：类已是 l0，读出来还是 148；读 body 强制重排也无效）。
+    //
+    // 0.85 是量出来的：骨架档 9 个节点 ≈ 995px，0.85 下 846px，落在可用高度
+    // （952-112=840）边缘，标题 15×0.85 ≈ 12.75px 可读。差 6px 就滚动一下。
+    // 宁可"可能差一点要滚"，也不要"缩到 55% 字看不清"。
+    const Z = 0.85;
+    const nodes = [...world.querySelectorAll(".card-node")];
+    if (!nodes.length) return false;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of nodes) {
+      const x = parseFloat(n.style.left) || 0;
+      const y = parseFloat(n.style.top) || 0;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + n.offsetWidth);
+      maxY = Math.max(maxY, y + n.offsetHeight);
+    }
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    applyViewState({
+      zoom: Z,
+      panX: Math.round(viewport.clientWidth / 2 - cx * Z),
+      panY: Math.round(viewport.clientHeight / 2 - cy * Z),
+    });
+    scheduleSaveView();
+    return true;
   }
 
   function getVisibleIds() {
@@ -2852,8 +2933,7 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   function doFitAll() {
-    const fit = fitView(1);
-    if (fit) { applyViewState({ panX: fit.panX, panY: fit.panY, zoom: fit.zoom }); scheduleSaveView(); }
+    fitToContent();
   }
 
   function zoomByStep(dir) {
@@ -3119,25 +3199,28 @@ const WORK_ID = window.__WORK_ID__;
 
   // 规则面板收起/展开：状态记 localStorage（跨刷新保持），切换后画布宽度变了，
   // 小地图与 fit 都要跟着重算——否则视口框和内容位置会错位。
-  const RULE_COLLAPSE_KEY = "canvas.ruleCollapsed:" + WORK_ID;
-  function applyRuleCollapsed(collapsed) {
-    if (!rulePanelEl) return;
-    rulePanelEl.classList.toggle("is-collapsed", !!collapsed);
-    try { localStorage.setItem(RULE_COLLAPSE_KEY, collapsed ? "1" : "0"); } catch (e) { /* 隐私模式 */ }
-    // 宽度过渡 180ms 结束后再重算，避免量到中间态
-    setTimeout(() => { scheduleMinimap(); }, 200);
-  }
-  if (rulePanelEl) {
-    let collapsed = false;
-    try { collapsed = localStorage.getItem(RULE_COLLAPSE_KEY) === "1"; } catch (e) { /* 忽略 */ }
-    if (collapsed) rulePanelEl.classList.add("is-collapsed");
-  }
+  // 规则卡：工具栏按钮打开右侧浮层（不再常驻挤压画布）
   if (ruleToggleBtn) {
     ruleToggleBtn.onclick = () => {
-      const next = !(rulePanelEl && rulePanelEl.classList.contains("is-collapsed"));
-      applyRuleCollapsed(next);
+      const panel = document.getElementById("rulePanel");
+      const detail = document.getElementById("cardDetail");
+      const head = document.getElementById("rulePanelHead");
+      const body = document.getElementById("rulePanelBody");
+      if (!panel) return;
+      const isRulesOpen = panel.classList.contains("is-open") && panel.dataset.mode === "rules";
+      if (isRulesOpen) {
+        panel.classList.remove("is-open");
+        panel.dataset.mode = "";
+        return;
+      }
+      panel.classList.add("is-open");
+      panel.dataset.mode = "rules";
+      if (detail) { detail.hidden = true; detail.innerHTML = ""; }
+      if (head) head.hidden = false;
+      if (body) body.hidden = false;
     };
   }
+
 
   // ==================== 右键菜单 ====================
   //
@@ -3456,6 +3539,8 @@ const WORK_ID = window.__WORK_ID__;
       const data = await API.getCanvas(WORK_ID);
       state.data.cards = data.cards || [];
       state.data.links = data.links || [];
+      // [画布 2026-10-18] 最近活动（来自 card_history，后端已滤掉批量噪音）
+      state.data.recentEvents = data.recent_events || [];
       // [card_045 E7 · L2 位置独立于卡片语义] 卡片改名、换类型、变状态、换归属
       // 一律不影响其坐标记录（positions 只按 card_id 键挂靠，不携带任何卡片
       // 语义字段）；验收＝改一张卡的标题／类型后，坐标记录不变、画布位置不变。
@@ -3494,30 +3579,15 @@ const WORK_ID = window.__WORK_ID__;
       if (_needFit) {
         _autoFitPending = false;
         _userMoved = false;
-        // 首屏锚点＝**根卡**（不是第一张待裁定卡）。
-        // 打开画布先要看见"这是一棵树"：根卡在左、子卡沿主干往下排。
-        // 根卡放在视口左侧 1/3、垂直居中，于是上下各能看见两三张子卡，
-        // 结构一眼成立；要读细节就往下滚（滚轮＝滚动）。
-        const anchorNode = nodeMap.get(state.nav.viewRoot);
-        if (anchorNode) {
-          const x = parseFloat(anchorNode.style.left) || 0;
-          // 纵向**对齐第一张子卡的顶部**（不是根卡居中）：
-          // 根卡居中时上半屏被切掉，第一张子卡看不到——而子卡才是要读的内容。
-          // 根卡若因此跑到视口外，往下滚一点就回来，不影响"这是一棵树"的读法。
-          let topY = Infinity;
-          for (const [, n] of nodeMap) {
-            if (n.dataset.depth === "1") topY = Math.min(topY, parseFloat(n.style.top) || 0);
-          }
-          if (!Number.isFinite(topY)) topY = parseFloat(anchorNode.style.top) || 0;
-          applyViewState({
-            zoom: 1,
-            panX: Math.round(viewport.clientWidth * 0.18) - x,
-            panY: 72 - topY,
-          });
-        } else {
-          const _fit = fitView(1);
-          if (_fit) applyViewState({ panX: _fit.panX, panY: _fit.panY, zoom: _fit.zoom });
-        }
+        // [画布 2026-10-18 · 画布自己承载全局] 首屏**整幅适配**，一屏看见整棵树。
+        // 之前锚定"第一张子卡 100%"，一屏只看得见 5 张卡，所以才需要左栏目录来补
+        // ——那是用外部列表弥补画布的失败。现在靠 LOD 保证低缩放下的可读性：
+        // 50% 时每张卡仍显示标题 + 待裁定数（见 canvas.css 的 .l0 段）。
+        // ⚠ 要 fit **两次**：第一次按 l1 的卡高（150px）算，缩到 65% 会切到骨架档，
+        // 卡片变 64px 高、bbox 大幅变小——不重算的话会停在 55%，字小到读不了。
+        // 第二次 fit 用的是骨架档的真实尺寸，通常能回到 100%。
+        // 首屏整幅适配（迭代式，见 fitToContent 注释）
+        fitToContent();
       }
       if (!state.data.cards.length) showCanvasState("empty");   // [F3④] 空态
       // [T17-F6/R-1] 不再无条件 hideWorkspace()：「刷新画布数据」与「收起对话层」是两件事。
@@ -3666,6 +3736,11 @@ const WORK_ID = window.__WORK_ID__;
     if (rulePanelBodyEl) rulePanelBodyEl.hidden = true;
     cardDetailEl.hidden = false;
     cardDetailEl.innerHTML = "";
+    const sidePanel = document.getElementById("rulePanel");
+    if (sidePanel) {
+      sidePanel.classList.add("is-open");
+      sidePanel.dataset.mode = "card";
+    }
 
     const head = el("div", "cd-head");
     const counter = el("div", "cd-triage-count", `第 ${triageIdx + 1} / ${triageList.length} 处`);
@@ -3695,152 +3770,6 @@ const WORK_ID = window.__WORK_ID__;
 
     const hint = el("div", "cd-dim", "裁定在对话页完成；这里负责读完一处、走到下一处。按 Esc 退出裁定模式。");
     cardDetailEl.appendChild(hint);
-  }
-
-  // ══════════════════════════════════════════════════════════════════════
-  // [画布 2026-10-18 · 并行工作台] 左栏目录
-  //
-  // 画布一屏只装得下 5 张卡，而"并行多线"的前提是**同时看见全部**——
-  // 所以左栏用 22px 一行把 39 张卡全部排下（缩进＝层级），一眼扫完：
-  //   橙点 + 数字 ＝ 这张卡有几处等我裁定
-  //   ←N         ＝ 被多少张卡引用（谁是地基）
-  // 点行 = 选中 + 右栏读卡 + 中栏飞过去（不跳页）。
-  // ══════════════════════════════════════════════════════════════════════
-  const catEl = document.getElementById("cvCatalog");
-
-  // 目录折叠：默认按窗口宽度决定（<1440 折起来给画布让位），用户手动切换后记住选择。
-  // 窄屏默认折叠不等于"没有"——工具栏一个按钮随时拉开。
-  const CAT_KEY = "canvas.catalogCollapsed";
-  function applyCatalogCollapsed(collapsed) {
-    if (!catEl) return;
-    catEl.classList.toggle("is-collapsed", !!collapsed);
-    try { localStorage.setItem(CAT_KEY, collapsed ? "1" : "0"); } catch (e) { /* 隐私模式 */ }
-  }
-  (function initCatalogState() {
-    if (!catEl) return;
-    let saved = null;
-    try { saved = localStorage.getItem(CAT_KEY); } catch (e) { /* 忽略 */ }
-    const collapsed = saved !== null ? saved === "1" : window.innerWidth < 1440;
-    catEl.classList.toggle("is-collapsed", collapsed);
-  })();
-  // ── 右栏宽度可拖 ──
-  // 340px 读不了 3000 字的正文；拖到 560 能读完一张卡。宽度记忆到 localStorage，
-  // 下次进来还是这个宽度。
-  const RESIZE_KEY = "canvas.rulePanelWidth";
-  (function initResizer() {
-    const bar = document.getElementById("cvResizer");
-    const panel = document.getElementById("rulePanel");
-    if (!bar || !panel) return;
-    try {
-      const w = parseInt(localStorage.getItem(RESIZE_KEY) || "", 10);
-      if (Number.isFinite(w) && w >= 280 && w <= 720) panel.style.width = w + "px";
-    } catch (e) { /* 隐私模式 */ }
-    let drag = null;
-    bar.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      drag = { startX: e.clientX, startW: panel.offsetWidth };
-      bar.classList.add("is-dragging");
-      document.body.style.cursor = "col-resize";
-    });
-    document.addEventListener("mousemove", (e) => {
-      if (!drag) return;
-      // 上限不能只看"720"：右栏 + 目录(268) + nav(44) 之后，中栏至少要留 520，
-      // 否则画布被挤成一条缝、顶栏也被压得换行（实测拉到 580 就崩）。
-      const catalogW = (document.getElementById("cvCatalog") || { offsetWidth: 0 }).offsetWidth;
-      const maxW = Math.max(280, Math.min(720, window.innerWidth - catalogW - 44 - 520));
-      const next = Math.max(280, Math.min(maxW, drag.startW - (e.clientX - drag.startX)));
-      panel.style.width = next + "px";
-    });
-    document.addEventListener("mouseup", () => {
-      if (!drag) return;
-      drag = null;
-      bar.classList.remove("is-dragging");
-      document.body.style.cursor = "";
-      try { localStorage.setItem(RESIZE_KEY, String(panel.offsetWidth)); } catch (e) { /* 忽略 */ }
-    });
-  })();
-
-  const catToggleBtn = document.getElementById("catToggleBtn");
-  if (catToggleBtn) {
-    catToggleBtn.addEventListener("click", () => {
-      applyCatalogCollapsed(!catEl.classList.contains("is-collapsed"));
-    });
-  }
-  // var 而不是 let：applySelectionClasses 在首屏渲染时就会调 syncCatalogCurrent，
-  // 那时这个声明还没执行到（let 会 TDZ 报错）。
-  var catRowMap = new Map();
-
-  function renderCatalog() {
-    if (!catEl) return;
-    const byParent = state.index.childMap || {};
-    const frag = document.createDocumentFragment();
-    catRowMap = new Map();
-
-    const walk = (pid, depth) => {
-      for (const c of (byParent[pid] || [])) {
-        if (c.card_type === "rule") continue;
-        const row = document.createElement("div");
-        row.className = "cv-cat-row";
-        row.dataset.id = c.card_id;
-        row.dataset.depth = String(Math.min(depth, 4));
-        if (c.work_state) row.dataset.ws = c.work_state;
-        row.style.paddingLeft = (10 + depth * 13) + "px";
-
-        const dot = document.createElement("span");
-        dot.className = "cv-cat-dot";
-        row.appendChild(dot);
-
-        const title = document.createElement("span");
-        title.className = "cv-cat-title";
-        title.textContent = c.title || c.card_id;
-        row.appendChild(title);
-
-        const n = Number(c.pending_count || 0);
-        if (n > 0) {
-          const nb = document.createElement("span");
-          nb.className = "cv-cat-n";
-          nb.textContent = String(n);
-          nb.title = `${n} 处待裁定`;
-          row.appendChild(nb);
-        }
-        const ref = Number(c.ref_count || 0);
-        if (ref > 0) {
-          const rb = document.createElement("span");
-          rb.className = "cv-cat-ref";
-          rb.textContent = "←" + ref;
-          rb.title = `被 ${ref} 张卡引用`;
-          row.appendChild(rb);
-        }
-
-        row.addEventListener("click", () => {
-          selectOnly(c.card_id);
-          focusCard(c.card_id, { keepZoom: true });
-        });
-
-        frag.appendChild(row);
-        catRowMap.set(c.card_id, row);
-        walk(c.card_id, depth + 1);
-      }
-    };
-    walk("", 0);
-
-    // 目录顶部一行统计：顶栏在窄屏放不下状态条时，这里是"全貌"的兜底。
-    const all = (state.data.cards || []).filter((c) => c.card_type !== "rule");
-    let pendTotal = 0;
-    for (const c of all) pendTotal += Number(c.pending_count || 0);
-    const head = document.createElement("div");
-    head.className = "cv-cat-head";
-    head.innerHTML = `<span><b>${all.length}</b> 张卡</span><span class="cv-cat-head-sep"></span><span class="${pendTotal ? "is-warn" : ""}"><b>${pendTotal}</b> 处待裁定</span>`;
-    catEl.innerHTML = "";
-    catEl.appendChild(head);
-    catEl.appendChild(frag);
-    syncCatalogCurrent();
-  }
-
-  function syncCatalogCurrent() {
-    if (!catRowMap.size) return;
-    const cur = [...state.view.selected][0] || "";
-    for (const [id, row] of catRowMap) row.classList.toggle("is-current", id === cur);
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -3918,7 +3847,6 @@ const WORK_ID = window.__WORK_ID__;
 
   function renderAll() {
     renderProjectStat();
-    renderCatalog();
     renderCanvas(collectProjectionInput(), collectViewModel());
     applyPendingSelect();
   }
