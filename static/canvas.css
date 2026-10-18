@@ -274,10 +274,23 @@
    卡片左侧橙边保留（pending），其余全部隐藏。
    ══════════════════════════════════════════════════════════════════════════ */
 .page-canvas .card-node.l0 .cv-card-head,
-.page-canvas .card-node.l0 .summary,
-.page-canvas .card-node.l0 .cv-pending,
-.page-canvas .card-node.l0 .cv-card-foot { display: none; }
-.page-canvas .card-node.l0 .tname { -webkit-line-clamp: 3; padding-right: 18px; }
+.page-canvas .card-node.l0 .cv-pending { display: none; }
+.page-canvas .card-node.l0 .tname { -webkit-line-clamp: 1; padding-right: 18px; font-size: 13px; }
+/* 骨架档保留一行结论：扫一眼就知道这张卡想清楚了什么。
+   ⚠ 颜色必须用 text-2 而不是 text-3：10.5px + #6c7788 在 90% 下几乎看不见
+   （截图实测：整行像"灰色噪点"，读不出一个字）。 */
+.page-canvas .card-node.l0 .summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--cv-text-2);
+  /* 右下角是展开徽章（▸N），单行结论要给它让位，否则被压住 */
+  padding-right: 34px;
+}
 .page-canvas .card-node.l0[data-pending]::after {
   content: attr(data-pending);
   position: absolute;
@@ -607,8 +620,8 @@
   position: absolute;
   right: 14px;
   bottom: 14px;
-  width: 176px;
-  height: 118px;
+  width: 148px;
+  height: 100px;
   border-radius: var(--cv-r-md);
   background: color-mix(in srgb, var(--cv-surface-1) 90%, transparent);
   border: 1px solid var(--cv-line-2);
@@ -1296,16 +1309,23 @@
    "一堆横条"，认不出是卡片（我在别处注释里警告过同一件事，还是踩了）。
    64px 是下限：55% 下 35px 高，标题能放 2–3 行，仍是一张"有形状的卡"；
    又不至于像 150px 那样空出大半。 */
-.page-canvas .card-node.l0 { min-height: 75px; padding: 13px 15px; }
-.page-canvas .card-node.l0[data-depth="0"] { min-height: 95px; padding: 15px 17px; }
+/* 骨架档：标题 1 行 + 结论 1 行。
+   ──────────────────────────────────────────────────────────────────────────
+   只给标题时卡片是"一行字 + 一片空白"——信息密度太低，扫一眼只知道叫什么，
+   不知道这张卡想清楚了什么。补一行结论（小字、单行截断），信息量翻倍，
+   高度只多 8px。 */
+/* 高度按内容算：padding 18 + 标题 18 + 间隔 3 + 结论 14 ≈ 53，取 56 留 3px 余量。
+   （右下角徽章是 absolute，不占流；结论行已用 padding-right:34px 给它让位。） */
+.page-canvas .card-node.l0 { min-height: 56px; padding: 9px 13px; }
+.page-canvas .card-node.l0[data-depth="0"] { min-height: 70px; padding: 11px 15px; }
 
 /* ⚠ 骨架档必须保留展开徽章：foot 被隐藏后，85% 下卡片无法展开子卡
    （用户必须先 Ctrl+滚轮放大到 96% 才看得见徽章——不可接受）。
    做法：foot 只留徽章，绝对定位到右下角，不占标题的行高。 */
 .page-canvas .card-node.l0 .cv-card-foot {
   position: absolute;
-  right: 9px;
-  bottom: 7px;
+  right: 8px;
+  bottom: 5px;
   display: flex;
   margin: 0;
   padding: 0;
