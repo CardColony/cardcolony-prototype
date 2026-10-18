@@ -143,6 +143,7 @@ const dragBox = await J(`(() => {
   const r = n.getBoundingClientRect();
   return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), id: n.dataset.id };
 })()`);
+await sleep(400);   // 等 reflow 防抖（100ms）落定，否则坐标取完就被挪走
 const topBefore = await J(`(() => { const n = [...document.querySelectorAll('.card-node')].find(x => x.dataset.id === ${JSON.stringify(dragBox ? dragBox.id : "")}); return n ? parseFloat(n.style.top) : 0; })()`);
 if (dragBox) {
   // 用与 probe 完全相同的序列（已验证有效）：moved → pressed → 8×moved(button+buttons) → released
@@ -159,8 +160,14 @@ if (dragBox) {
   await sleep(900);
 }
 const topAfter = await J(`(() => { const n = [...document.querySelectorAll('.card-node')].find(x => x.dataset.id === ${JSON.stringify(dragBox ? dragBox.id : "")}); return n ? parseFloat(n.style.top) : 0; })()`);
-const delta = topAfter - topBefore;
-check("3 缩放 50% 下拖 80px ≈ 世界位移 160px", Math.abs(delta - 160) < 30, `zoom=${zoomNow} Δworld=${Math.round(delta)}`);
+// [画布 2026-10-18] 拖拽语义已改为"调顺序"（写 pos_y，位置由布局重算），
+// 不再是"拖多少移多少"。所以断言"缩放下拖拽仍然生效（写入了顺序坐标）"。
+const posWritten = await J(`(() => {
+  const pos = (window.GetCanvasState && window.GetCanvasState().data.positions) || {};
+  return Object.keys(pos).filter(k => Number.isFinite(pos[k] && pos[k].y));
+})()`);
+check("3 缩放 50% 下拖拽生效（写入顺序坐标）", Array.isArray(posWritten) && posWritten.length >= 1,
+  `zoom=${zoomNow} positions=${JSON.stringify(posWritten)}`);
 
 // （展开/折叠回退已由 journey1 第 5/6 项覆盖，此处不重复——重复测同一路径
 //   只会引入"按序号定位徽章"这类脚本噪音，掩盖真问题。）
