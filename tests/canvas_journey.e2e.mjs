@@ -56,10 +56,15 @@ const shot = async (n) => {
   const r = await send("Page.captureScreenshot", { format: "png" });
   fs.writeFileSync(`_shots/j_${n}.png`, Buffer.from(r.result.data, "base64"));
 };
-const down = async (x, y, cc = 1) => send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: cc });
-const up = async (x, y, cc = 1) => send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: cc });
-const move = async (x, y) => send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-async function click(x, y) { await move(x, y); await down(x, y); await up(x, y); await sleep(260); }
+// modifiers: Alt=1 Ctrl=2 Meta=4 Shift=8（CDP 位掩码）
+const MOD = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
+const down = async (x, y, cc = 1, mod = 0) => send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: cc, modifiers: mod });
+const up = async (x, y, cc = 1, mod = 0) => send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: cc, modifiers: mod });
+const move = async (x, y, mod = 0) => send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers: mod });
+async function click(x, y, opts = {}) {
+  const mod = (opts && opts.modifiers) || 0;
+  await move(x, y, mod); await down(x, y, 1, mod); await up(x, y, 1, mod); await sleep(260);
+}
 // 真人双击：系统派发 clickCount=2 才触发原生 dblclick
 async function dblclick(x, y) {
   await move(x, y); await down(x, y, 1); await up(x, y, 1); await sleep(90);
@@ -85,11 +90,12 @@ await nav(`${BASE}/work/${WID}`, 4000);
 let nodes = Number(await ev("document.querySelectorAll('.card-node').length"));
 check("1 画布渲染卡片", nodes > 0, nodes + " 张");
 
-// ── 2 双击进入对话页（原生 dblclick）──
+// ── 2 单击进入对话页（2026-10-18 用户裁定：单击即进入，不再要求双击）──
 let b = await centerOf(".card-node", 1);
-await dblclick(b.x, b.y);
+await click(b.x, b.y);
+await sleep(900);
 let p1 = await ev("location.pathname");
-check("2 双击进入对话页", String(p1).includes("/card/"), p1);
+check("2 单击进入对话页", String(p1).includes("/card/"), p1);
 
 // ── 3 对话页返回画布 ──
 const backBtn = await centerOf("#canvasEntryBtn", 0);
@@ -97,11 +103,14 @@ if (backBtn) { await click(backBtn.x, backBtn.y); await sleep(1200); }
 let p2 = await ev("location.pathname");
 check("3 对话页→返回画布", p2 === `/work/${WID}`, p2);
 
-// ── 4 单击只选中、不跳页 ──
+// ── 4 Shift+单击＝选中（不跳页）；单击本身是进入，故选中必须走修饰键 ──
 await nav(`${BASE}/work/${WID}`);
 b = await centerOf(".card-node", 1);
-await click(b.x, b.y);
-check("4 单击＝选中不跳页", (await ev("location.pathname")) === `/work/${WID}` && Number(await ev("document.querySelectorAll('.card-node.is-selected').length")) === 1);
+await click(b.x, b.y, { modifiers: MOD.shift });
+await sleep(300);
+check("4 Shift+单击＝选中不跳页",
+  (await ev("location.pathname")) === `/work/${WID}`
+  && Number(await ev("document.querySelectorAll('.card-node.is-selected').length")) === 1);
 
 // ── 5 展开/折叠 ──
 const before = Number(await ev("document.querySelectorAll('.card-node').length"));

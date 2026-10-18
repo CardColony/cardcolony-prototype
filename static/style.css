@@ -123,7 +123,7 @@ a { color: inherit; text-decoration: none; }
   width: 120px; height: 4px; border-radius: 2px;
   background: var(--bg); border: 1px solid var(--border);
   outline: none; cursor: pointer;
-  /* 进度填充由 canvas.js syncZoomControls 以 linear-gradient 按值同步 */
+  /* 滑块轨道纯色；缩放值由 canvas.js 写 value 同步 */
 }
 .topbar .zoom-slider::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
@@ -196,9 +196,7 @@ a { color: inherit; text-decoration: none; }
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 1px 1px, #1c2128 1px, transparent 0);
-  background-size: 24px 24px;
+  /* 点阵由 canvas.css 用 SVG 提供（全仓不用 CSS 渐变）；此处只留底色 */
   background-color: var(--bg);
   cursor: grab;
 }
@@ -1540,21 +1538,10 @@ body.page-chat .rule-panel { display: none; }
   font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
-  background: linear-gradient(
-    90deg,
-    var(--c-setting) 0%,
-    var(--c-setting) 40%,
-    var(--text-soft) 50%,
-    var(--c-setting) 60%,
-    var(--c-setting) 100%
-  );
-  background-position: 100% 0;
-  background-size: 250% 100%;
-  background-clip: text;
-  color: transparent;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: flow-turn-status-shimmer 1.8s linear infinite;
+  /* 纯色文字 + 左侧转圈指示运行中。原先用 background-clip:text 做"流光文字"，
+     那是 2019 年的做法：文字本身变形、可读性下降，且与暗色主题冲突。
+     现在"运行中"由 ::before 的转圈表达（见 ui.css），文字保持纯色可读。 */
+  color: var(--text-soft);
 }
 .flow-turn-status-clock {
   margin-left: 8px;
@@ -1564,9 +1551,8 @@ body.page-chat .rule-panel { display: none; }
   color: var(--text-soft);
   -webkit-text-fill-color: var(--text-soft);
 }
-@keyframes flow-turn-status-shimmer { to { background-position: 0 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .flow-turn-status { background-position: 0 0; background-size: 100% 100%; animation: none; }
+  .flow-turn-status::before { animation: none; }
 }
 
 /* ---- 回底钮（ChatView.module.css:149-192）------------------------------- */

@@ -130,10 +130,10 @@ const worldTf = async () => String(await ev(`(document.getElementById('world')||
 const a = boxes[0], b = boxes[1];
 const cx = (o) => o.x + o.w / 2, cy = (o) => o.y + o.h / 2;
 
-// A1 单击选中
-await click(cx(a), cy(a));
-check("A1 单击卡＝选中 1 张", (await selCount()) === 1, await selCount());
-check("A1b 单击不再跳页", (await ev("location.pathname")) === `/work/${WID}`, await ev("location.pathname"));
+// A1 选中（2026-10-18 用户裁定：单击＝进入，故选中走 Shift+单击）
+await click(cx(a), cy(a), { modifiers: MOD.shift });
+check("A1 Shift+单击卡＝选中 1 张", (await selCount()) === 1, await selCount());
+check("A1b Shift+单击不跳页", (await ev("location.pathname")) === `/work/${WID}`, await ev("location.pathname"));
 
 // A2 Shift 多选
 await click(cx(b), cy(b), { modifiers: MOD.shift });
@@ -189,7 +189,7 @@ const boxes2 = await J(`[...document.querySelectorAll('.card-node')].map(n => {
 })`);
 // 用两张**非根卡**（根卡是布局锚点，拖它＝移动画布，不参与整组拖动）
 const p1 = boxes2[1], p2 = boxes2[2];
-await click(p1.x, p1.y);
+await click(p1.x, p1.y, { modifiers: MOD.shift });
 await click(p2.x, p2.y, { modifiers: MOD.shift });
 const before2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
 await drag(p1.x, p1.y, p1.x + 90, p1.y + 50);
@@ -227,7 +227,7 @@ await key("Escape");
 await key("0", { code: "Digit0", modifiers: MOD.ctrl });
 await sleep(320);
 const rootBox = await J(`(() => { const n=document.querySelector('.card-node'); const r=n.getBoundingClientRect(); return { x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2) }; })()`);
-await click(rootBox.x, rootBox.y);
+await click(rootBox.x, rootBox.y, { modifiers: MOD.shift });
 const navFrom = await ev(`(() => { const n=document.querySelector('.card-node.is-selected'); return n ? n.dataset.id : ''; })()`);
 await key("ArrowRight", { code: "ArrowRight" });
 const navRight = await ev(`(() => { const n=document.querySelector('.card-node.is-selected'); return n ? n.dataset.id : ''; })()`);
@@ -244,14 +244,15 @@ await send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", w
 const t3 = await worldTf();
 check("A9 空格+拖＝平移", t2 !== t3, `${t2} → ${t3}`);
 
-// A10 双击进对话（A9 平移过：先整幅适配，保证目标卡在视口内再取坐标）
+// A10 单击进对话（A9 平移过：先整幅适配，保证目标卡在视口内再取坐标）
 await key("0", { code: "Digit0", modifiers: MOD.ctrl });
 await sleep(300);
 const before = await ev("location.pathname");
 const b2 = await J(`(() => { const n = document.querySelectorAll('.card-node')[1]; const r = n.getBoundingClientRect(); return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
-await dblclick(b2.x, b2.y);
+await click(b2.x, b2.y);
+await sleep(900);
 const after = await ev("location.pathname");
-check("A10 双击＝进入对话页", after.includes("/card/"), `${before} → ${after}`);
+check("A10 单击＝进入对话页", after.includes("/card/"), `${before} → ${after}`);
 
 // A11 全程零 JS 异常
 check("A11 零 JS 异常", bad.length === 0, JSON.stringify(bad.slice(0, 4)));

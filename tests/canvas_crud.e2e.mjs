@@ -44,6 +44,7 @@ const out = []; let bad = 0;
 const check = (n, c, d) => { out.push(`${c ? "PASS" : "FAIL"} ${n}${d !== undefined ? " :: " + d : ""}`); if (!c) bad++; };
 
 await send("Page.navigate", { url: `${BASE}/work/${WID}` }); await sleep(3800);
+await ev(`(() => { window.__calls = []; const of = window.fetch; window.fetch = (...a) => { window.__calls.push(String((a[1] && a[1].method) || 'GET') + ' ' + String(a[0])); return of(...a); }; return 1; })()`);
 
 // ── 1 新建子卡（右键 → 菜单项 → 弹窗 → 输入 → 创建）──
 const n0 = Number(await ev("document.querySelectorAll('.card-node').length"));
@@ -68,6 +69,14 @@ if (mi) {
     await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
     await sleep(2600);
     check("1b2 输入框收到文字", typed === "走查新建的子卡", typed);
+    // 诊断：Enter 之后到底发生了什么（弹窗是否关闭 / fetch 是否发出 / 焦点在哪）
+    const diag = await ev(`JSON.stringify({
+      dlg: !!document.getElementById('newCardTitle'),
+      active: (document.activeElement||{}).id || (document.activeElement||{}).tagName,
+      calls: (window.__calls||[]).slice(-4),
+      path: location.pathname,
+    })`);
+    console.log("   [diag]", diag);
     const n1 = Number(await ev("document.querySelectorAll('.card-node').length"));
     const created = await ev(`!![...document.querySelectorAll('.card-node .tname')].find(e => e.textContent.includes('走查新建的子卡'))`);
     check("1c 新卡出现在画布上", created === true, `${n0} → ${n1}；网络=${JSON.stringify(net.slice(-3))}；errs=${errs.slice(0,2).join("|")}`);

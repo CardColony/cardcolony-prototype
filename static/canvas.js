@@ -391,7 +391,7 @@ const WORK_ID = window.__WORK_ID__;
   // 左右视图——根卡居左，子树向右逐层展开；同父子树纵向一字排开不重叠
   // （子树纵向跨度 = 其叶子实测高之和 + 间距，父卡在子树跨度内垂直居中）。
   // 层间距由 measureSizes() 实测高推出（取不到按既有惯例回退 220×86）；列宽恒定
-  // COL_W（容纳根卡 320 宽，任何 LOD 档卡宽 ≤320 < COL_W，横向恒不重叠）；
+  // 列间距按「父卡实宽 + GAP_X」动态算（卡片宽度随 data-depth 分档）；
   // 实测高的纵横避让由 separateOverlaps 在 DOM 建成后完成（T18-C1/C2）。
   // 只写内存 result，不读不写任何落盘载体（红线1/6）；pinned 卡由 computeLayout
   // 步骤1写入 result、此处不覆盖（保留规则），其子树以存储坐标为锚继续右排。
@@ -406,13 +406,24 @@ const WORK_ID = window.__WORK_ID__;
     console.info("[T08] 树形排布：viewRoot=%s，节点数=%d", viewRootId, Object.keys(result).length);
     // [card_045 E1] 尺寸表改参数传入（原此处调 measureSizes() 内部测 DOM）；
     // 取不到的卡沿用回退行高——与原行为一致。
-    // 回退行高分档：深度≥2 的卡按 t8-deep 紧凑形态（只显标题）取 36，
-    // 其余按常规卡取 86（既有回退值）——首绘时 DOM 未建、实测不可得，按此估跨距
-    const FALLBACK_H = 86, FALLBACK_H_DEEP = 36;
+    // 回退尺寸按**深度**分档（首绘时 DOM 未建、实测不可得，按此估跨距）。
+    // 与 canvas.css 的 data-depth 档位一一对应：d0 340×~150 / d1 264×~120 /
+    // d2 216×~100 / d3 184×~64。回退值偏高保守估计（只多让不少让）。
+    const FALLBACK_W = [360, 280, 224, 184];
+    const FALLBACK_H = [152, 124, 100, 58];
+    const dIdx = (depth) => Math.max(0, Math.min(3, depth || 0));
     sizes = sizes || {};
-    const heightOf = (cid, depth) => (sizes[cid] && sizes[cid].h) || (depth >= 2 ? FALLBACK_H_DEEP : FALLBACK_H);
-    const COL_W = 340;  // 相邻层横向基准（根卡实测宽 320 < COL_W，其余档位卡宽 ≤260）
-    // GAP_Y 已上提模块级（[T18-C-005]），本域直接引用
+    const heightOf = (cid, depth) => (sizes[cid] && sizes[cid].h) || FALLBACK_H[dIdx(depth)];
+    const widthOf = (cid, depth) => (sizes[cid] && sizes[cid].w) || FALLBACK_W[dIdx(depth)];
+    // [画布商业化 2026-10-18 · 层级] 列间距改「父卡实宽 + GAP_X」，不再用固定 340。
+    // 为什么必须改：卡片宽度现在按深度分档（340/264/216/184），固定列宽会让浅层
+    // 卡之间空一大片、深层卡之间挤在一起——层级一改，间距不跟着改就必然错位。
+    // ★ 层间距（GAP_X）必须**明显大于**列间距（COL_GAP）。
+    //   原因：同一父卡的子卡超过 4 张会分成多列，如果列间距和层间距差不多，
+    //   第二列看起来就像"下一层"——这正是"一级卡二级卡混在一起"的视觉根源。
+    //   现在 96 vs 20：跨层是"跳一大格"，同层多列是"并排一组"。
+    const GAP_X = 96;    // 跨层：父卡右缘 → 子卡左缘
+    const COL_GAP = 20;  // 同层多列之间
 
     // ★ anchor 模式：递归根换成 anchor 自己；布局「布局树的子边」规则不变
     const rootId = anchor ? anchor.id : viewRootId;
@@ -463,7 +474,8 @@ const WORK_ID = window.__WORK_ID__;
       return subtreeH[cid];
     })(rootId, rootDepth);
 
-    // 前序：子树占 [topY, topY+subtreeH]，卡在子树跨度内垂直居中，x 逐层 +COL_W。
+    // 前序：子树占 [topY, topY+subtreeH]，卡在子树跨度内垂直居中，
+    // x 逐层右移「父卡实宽 + GAP_X」。
     // 全树模式下根卡子树跨度以 y=0（根卡纵位）为中心上下分半；
     // anchor 模式下以 anchor 的实际纵位为中心分半（anchor 自身位置不动，
     // 子卡在它自己的子树区域里排——这正是「展开一张卡只重排它单元内部」）。
@@ -474,12 +486,12 @@ const WORK_ID = window.__WORK_ID__;
     (function place(cid, x, topY, depth) {
       if (seen.has(cid)) return;
       seen.add(cid);
-      let anchorY = topY, childX = x + COL_W;
+      let anchorY = topY, childX = x + widthOf(cid, depth) + GAP_X;
       if (cid !== rootId) {
         if (positions[cid] && positions[cid].pinned && result[cid]) {
           // pinned：保留存储坐标不覆盖，子树改以存储坐标为锚继续右排
           anchorY = result[cid].y - (subtreeH[cid] - heightOf(cid, depth)) / 2;
-          childX = result[cid].x + COL_W;
+          childX = result[cid].x + widthOf(cid, depth) + GAP_X;
         } else {
           result[cid] = { x: x, y: topY + (subtreeH[cid] - heightOf(cid, depth)) / 2 };
         }
@@ -497,6 +509,14 @@ const WORK_ID = window.__WORK_ID__;
         rowHs.push(m);
       }
       const totalH = rowHs.reduce((a, b) => a + b, 0) + (rows - 1) * GAP_Y;
+      // 每列的 x 起点：前几列的卡宽之和 + **列间距**（同列卡深度相同 ⇒ 宽度相同）。
+      // 注意这里用 COL_GAP 而不是 GAP_X——同层并排，不是换层。
+      const colX = [];
+      let cursorX = childX;
+      for (const col of cols) {
+        colX.push(cursorX);
+        cursorX += widthOf(col[0].card_id, depth + 1) + COL_GAP;
+      }
       let rowY = anchorY + (subtreeH[cid] - totalH) / 2;
       for (let r = 0; r < rows; r++) {
         for (let ci = 0; ci < cols.length; ci++) {
@@ -504,7 +524,7 @@ const WORK_ID = window.__WORK_ID__;
           if (!kid) continue;
           // 卡在行内垂直居中（行高可能被同行的深子树撑大）
           const off = (rowHs[r] - subtreeH[kid.card_id]) / 2;
-          place(kid.card_id, childX + ci * COL_W, rowY + off, depth + 1);
+          place(kid.card_id, colX[ci], rowY + off, depth + 1);
         }
         rowY += rowHs[r] + GAP_Y;
       }
@@ -666,7 +686,7 @@ const WORK_ID = window.__WORK_ID__;
   // ★ 这两者的区别不是细节：**收起一张普通卡时它的子卡必须消失**。曾把「视图根
   //   子卡恒在」无差别套到任意锚点上，结果收起卡 A 反而把 A 的子卡留着——判据写错
   //   的代价是画面上多出一堆该消失的卡。
-  // depth 以 anchorDepth 为基准——depthOf 用于 t8-deep 档判定，必须相对 viewRoot，
+  // depth 以 anchorDepth 为基准——depthOf 用于 data-depth 档判定，必须相对 viewRoot，
   // 不能相对 anchor（否则每层都把自己当 0）。
   function computeSubtreeVisible(anchorId, childMap, expanded, anchorDepth, anchorIsViewRoot) {
     const ids = new Set();
@@ -825,7 +845,9 @@ const WORK_ID = window.__WORK_ID__;
   // SVG 落笔仍留 renderEdges——几何数据与 DOM 应用分家）
   function computeEdgeGeometry(visibleIds, layout, sizes, childMap, cardMap, viewRootId) {
     const rootParentId = (cardMap[viewRootId] || {}).parent || "";
-    const elbowSegs = [];
+
+    // ── 第一步：收集原始边（起点先按父卡中点，稍后统一分布）──
+    const raw = [];
     for (const pid in childMap) {
       for (const childCard of childMap[pid]) {
         const ckid = childCard.card_id;
@@ -836,14 +858,48 @@ const WORK_ID = window.__WORK_ID__;
         const s1 = sizes[pid] || { w: 220, h: 86 };
         const s2 = sizes[ckid] || { w: 220, h: 86 };
         const pcx = p1.x + s1.w / 2, ccx = p2.x + s2.w / 2;
-        const childOnRight = ccx >= pcx;
-        // [画布商业化 2026-10-17] 带上 from/to：渲染层据此做「悬停/选中高亮关联线」。
-        // 纯增量字段，bbox 与可见集计算都不读它。
-        elbowSegs.push(childOnRight
-          ? { x1: p1.x + s1.w, y1: p1.y + s1.h / 2, x2: p2.x, y2: p2.y + s2.h / 2, from: pid, to: ckid }
-          : { x1: p1.x, y1: p1.y + s1.h / 2, x2: p2.x + s2.w, y2: p2.y + s2.h / 2, from: pid, to: ckid });
+        raw.push({ pid, ckid, p1, p2, s1, s2, childOnRight: ccx >= pcx });
       }
     }
+
+    // ── 第二步：同一父卡的出边**在父卡侧缘均匀分布** ──
+    //
+    // [画布商业化 2026-10-18] 之前所有边都从父卡侧缘的**中点**出发，8 个子卡就是
+    // 8 条线从同一个点炸开——画面上是一团"蜘蛛"，既看不清哪条线去哪，也看不出
+    // 父子关系的规模。现在按目标 y 排序后在侧缘 [top+22, bottom-22] 内均匀散开，
+    // 形成清晰的扇出（Figma/Miro 的 tree 连线就是这个形态）。
+    // 单条边仍走中点（不需要散开）。
+    const groups = new Map();
+    for (const e of raw) {
+      const key = e.pid + (e.childOnRight ? "|R" : "|L");
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    }
+    const EDGE_PAD = 22;   // 侧缘上下留白，避免线贴着卡片圆角
+    for (const list of groups.values()) {
+      const { p1, s1 } = list[0];
+      if (list.length === 1) {
+        list[0].y1 = p1.y + s1.h / 2;
+        continue;
+      }
+      list.sort((a, b) => (a.p2.y + a.s2.h / 2) - (b.p2.y + b.s2.h / 2));
+      const pad = Math.min(EDGE_PAD, s1.h * 0.22);
+      const span = Math.max(1, s1.h - pad * 2);
+      const n = list.length;
+      list.forEach((e, i) => {
+        e.y1 = p1.y + pad + (span * i) / (n - 1);
+      });
+    }
+
+    // ── 第三步：落成线段（含 from/to 供高亮用）──
+    const elbowSegs = raw.map((e) => {
+      // [画布商业化 2026-10-17] from/to：渲染层据此做「悬停/选中高亮关联线」。
+      // 纯增量字段，bbox 与可见集计算都不读它。
+      const y2 = e.p2.y + e.s2.h / 2;
+      return e.childOnRight
+        ? { x1: e.p1.x + e.s1.w, y1: e.y1, x2: e.p2.x, y2, from: e.pid, to: e.ckid }
+        : { x1: e.p1.x, y1: e.y1, x2: e.p2.x + e.s2.w, y2, from: e.pid, to: e.ckid };
+    });
     let minX = 0, minY = 0, maxX = 0, maxY = 0, maxW = 0, maxH = 0, hasBox = false;
     const growTo = (x, y) => {
       if (!hasBox) { minX = maxX = x; minY = maxY = y; hasBox = true; return; }
@@ -954,6 +1010,7 @@ const WORK_ID = window.__WORK_ID__;
       node.style.top = p.y + "px";
     }
     renderEdges(projection, vm);
+    renderGroups(state.index.childMap, projection, vm);
   }
 
   // ==================== 渲染 ====================
@@ -1025,11 +1082,8 @@ const WORK_ID = window.__WORK_ID__;
       const card = vm.cardsById[cid];
       if (!card) continue;
       if (card.card_type === "rule") continue;   // [规则卡 2026-10-16] 规则卡不上画布——它是吸附屏幕右侧的常驻卡（workspace.js 规则面板即其呈现）
-      const node = createNode(card, { x: 0, y: 0 }, vm);   // 占位坐标（阶段二一次性应用最终位）
-      if ((depthOf[cid] || 0) >= 2) {
-        // [T08-用户令 2026-10-04] 第三级卡只显示标题（独立类，不动 l0/l1/l2 三档机制）
-        node.classList.add("t8-deep");
-      }
+      // 占位坐标（阶段二一次性应用最终位）；深度决定卡面形态
+      const node = createNode(card, { x: 0, y: 0 }, vm, depthOf[cid] || 0);
       if (!prevIds.has(cid)) {
         // [T08-3-4] 新出现卡淡入（只动 opacity/transform；连线不做补间）
         node.classList.add("entering");
@@ -1059,6 +1113,7 @@ const WORK_ID = window.__WORK_ID__;
     }
     world.style.visibility = "";
 
+    renderGroups(pin.childMap, projection, vm);
     renderEdges(projection, vm);
     renderBreadcrumb(projection.breadcrumb);
     applySelectionClasses();
@@ -1120,8 +1175,7 @@ const WORK_ID = window.__WORK_ID__;
       for (const cid of plan.create) {
         const card = vm.cardsById[cid];
         if (!card) continue;
-        const node = createNode(card, anchorPos, vm);   // 占位坐标，⑤ 之后一次性改写
-        if ((plan.depthOf[cid] || 0) >= 2) node.classList.add("t8-deep");
+        const node = createNode(card, anchorPos, vm, plan.depthOf[cid] || 0);   // 占位坐标，⑤ 之后一次性改写
         node.classList.add(lodLevel);        // zoom 未变 ⇒ 档位与全量渲染同一判据
         node.classList.add("entering");      // 新出现卡淡入（与 renderCanvas 同款）
         node.addEventListener("animationend",
@@ -1202,12 +1256,18 @@ const WORK_ID = window.__WORK_ID__;
 
   // [画布第三步 T2] 改吃视图模型 vm（动作层装配）：viewRoot/positions/childMap/
   // expanded/_unreadByCard 一律从 vm 取——不直摸 state（V1）
-  function createNode(card, pos, vm) {
+  function createNode(card, pos, vm, depth) {
     const node = document.createElement("div");
     const isRoot = card.card_id === vm.viewRoot;
     node.className = "card-node";
     node.dataset.id = card.card_id;
     node.dataset.type = card.card_type;
+    // [画布商业化 2026-10-18 · 层级] 深度写进 DOM，样式按 data-depth 分档。
+    // 深度＝相对当前视图根的层数（0=根卡/一级卡…）。**它是卡片尺寸与视觉权重的
+    // 唯一来源**——之前尺寸只跟缩放档位走，一级卡和二级卡长得一模一样，全展开后
+    // 整片画布是同一尺寸的方块，层级只能靠连线猜。
+    const d = Math.max(0, Math.min(3, depth || 0));
+    node.dataset.depth = String(d);
     node.style.left = pos.x + "px";
     node.style.top = pos.y + "px";
     if (isRoot) node.classList.add("is-root");
@@ -1272,24 +1332,34 @@ const WORK_ID = window.__WORK_ID__;
       });
     }
 
-    // [画布商业化 2026-10-17 · 修硬伤] 单击＝选中、双击＝进入。
+    // ══════════════════════════════════════════════════════════════════
+    // [画布商业化 2026-10-18 · 用户裁定] 单击卡片＝**直接进入**这张卡的对话。
     //
-    // ⚠ 这里**不能**用「setTimeout 模拟双击」：上一版用 200ms 窗口，
-    //   而人手正常双击间隔是 250–350ms ⇒ 绝大多数双击被当成两次单击，
-    //   **永远进不去对话页**（实测：间隔 300ms 完全无效，只有 80ms 才生效）。
-    //   改为浏览器原生 dblclick（由系统双击速度判定，通常 500ms），
-    //   单击立即选中（第一击就选中，第二击触发 dblclick）——永远不会"进不去"。
+    // 这是用户明确要求的语义，也是这个产品的本质：画布是"卡片树的导航视图"，
+    // 点一张卡就是要看它、改它、跟它说话。要求双击才进 = 多一道无意义门槛，
+    // 而且和"拖拽"抢手势。
+    //
+    // 各手势分工（互不冲突）：
+    //   单击              进入对话页（唯一的主操作）
+    //   Shift/Ctrl/⌘+单击 多选（不进入）——多选是"批量整理"，不是主路径
+    //   Alt+单击          画布内下钻（把这张卡变成视图根，不跳页）
+    //   拖拽              移动卡片；拖完不触发进入（suppressClickUntil 兜住）
+    //   右键              菜单（打开/聚焦/建子卡/重命名/删除…）
+    // ══════════════════════════════════════════════════════════════════
     node.addEventListener("click", (e) => {
       if (node.classList.contains("dragging")) return;
       if (Date.now() < suppressClickUntil) return;
-      onSingleClick(card, e.shiftKey || e.metaKey || e.ctrlKey);
-    });
-
-    node.addEventListener("dblclick", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (Date.now() < suppressClickUntil) return;
-      onDoubleClick(card, { drill: e.altKey });
+      if (e.shiftKey || e.metaKey || e.ctrlKey) {   // 修饰键＝多选，不进卡
+        e.preventDefault();
+        setSelection([card.card_id], true);
+        return;
+      }
+      if (e.altKey) {                                // Alt＝画布内下钻
+        e.preventDefault();
+        setViewRoot(card.card_id);
+        return;
+      }
+      openCardChat(card.card_id);                    // 默认：进入
     });
 
     // 拖拽
@@ -1473,19 +1543,6 @@ const WORK_ID = window.__WORK_ID__;
     applySelectionClasses();
   }
 
-  function onSingleClick(card, additive) {
-    // 三级卡（相对视图根深度≥2）的单击保留「就地展开」语义：那一层卡片只显示标题，
-    // 点开的意图明确是"看里面有什么"，不是"选中它准备批量操作"。
-    if (depthFromViewRoot(card.card_id) >= 2) {
-      const hasKids = (state.index.childMap[card.card_id] || []).length > 0;
-      if (hasKids && !state.view.expanded.has(card.card_id)) {
-        toggleExpand(card.card_id);
-        return;
-      }
-    }
-    setSelection([card.card_id], !!additive);
-  }
-
   // ══════════════════════════════════════════════════════════════════════
   // [画布商业化 2026-10-17] 拖拽对齐吸附
   //
@@ -1654,14 +1711,6 @@ const WORK_ID = window.__WORK_ID__;
     return d;
   }
 
-  // [画布商业化 2026-10-17] 双击＝进入这张卡（打开对话页）。
-  // 旧语义是"双击＝下钻容器"，但双击是白板里最自然的"打开"手势，而下钻是
-  // 一个更重的导航动作——把它移到 Alt+双击 与右键菜单「以此卡为中心」。
-  function onDoubleClick(card, opts) {
-    if (opts && opts.drill) { setViewRoot(card.card_id); return; }
-    openCardChat(card.card_id);
-  }
-
   // [T08-3-2] 就地展开/折叠：只翻 state.expanded 成员关系后全量重绘。
   // 不调 setViewRoot（视图根不变＝「就地」的全部含义）、不调 fitView（视野不跳）。
   // [画布重构 2026-10-15 · 2.1] renderAll → renderSubtree：只重建该卡单元内的节点。
@@ -1778,6 +1827,61 @@ const WORK_ID = window.__WORK_ID__;
   // [画布第三步 T2] 改吃投影＋视图模型：visibleIds/layout/sizes/父子折线段/外接框
   // 全部来自 projection（几何派生已上收 computeEdgeGeometry，画布第三步 T1），
   // links/cardMap 从 vm 取——不直摸 state（V1）。
+  // ══════════════════════════════════════════════════════════════════════════
+  // [画布商业化 2026-10-18] 子卡分组底衬
+  //
+  // 问题：同一父卡的子卡超过 4 张会分成多列，第二列在几何上和"下一层"几乎一样，
+  // 光靠间距差（96 vs 20）仍然容易误读。给每组子卡画一块极淡的底衬，等于在
+  // 画布上直接写"这 N 张是同一个父卡的子卡"——这是白板产品表达分组的通行做法
+  // （Miro 的 frame、Figma 的 section），比连线更硬。
+  //
+  // 只框**直接子卡**（不框孙卡），≥2 张才画（1 张不需要分组）；
+  // 缩放低于 55% 时整层隐藏（那时框会密到变成噪音）。
+  // ══════════════════════════════════════════════════════════════════════════
+  const GROUP_PAD = 16;
+  let groupLayer = null;
+  function ensureGroupLayer() {
+    if (groupLayer && groupLayer.parentNode === world) return groupLayer;
+    groupLayer = document.createElement("div");
+    groupLayer.className = "cv-groups";
+    world.insertBefore(groupLayer, world.firstChild);
+    return groupLayer;
+  }
+
+  function renderGroups(childMap, projection, vm) {
+    const layer = ensureGroupLayer();
+    layer.innerHTML = "";
+    const zoom = vm.zoom || 1;
+    layer.style.display = zoom < 0.55 ? "none" : "";
+    if (zoom < 0.55) return;
+
+    const { visibleIds, layout, sizes } = projection;
+    const frag = document.createDocumentFragment();
+    for (const pid in childMap) {
+      if (!visibleIds.has(pid)) continue;
+      // 只取可见的直接子卡
+      const kids = (childMap[pid] || []).filter((c) => visibleIds.has(c.card_id));
+      if (kids.length < 2) continue;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const k of kids) {
+        const p = layout[k.card_id];
+        if (!p) continue;
+        const sz = sizes[k.card_id] || { w: 200, h: 80 };
+        x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+        x1 = Math.max(x1, p.x + sz.w); y1 = Math.max(y1, p.y + sz.h);
+      }
+      if (!Number.isFinite(x0)) continue;
+      const el = document.createElement("div");
+      el.className = "cv-group";
+      el.style.left = (x0 - GROUP_PAD) + "px";
+      el.style.top = (y0 - GROUP_PAD) + "px";
+      el.style.width = (x1 - x0 + GROUP_PAD * 2) + "px";
+      el.style.height = (y1 - y0 + GROUP_PAD * 2) + "px";
+      frag.appendChild(el);
+    }
+    layer.appendChild(frag);
+  }
+
   function renderEdges(projection, vm) {
     const visibleIds = projection.visibleIds;
     const layout = projection.layout;
@@ -1810,10 +1914,10 @@ const WORK_ID = window.__WORK_ID__;
     const defs = document.createElementNS(SVGNS, "defs");
     defs.innerHTML = `
       <marker id="cv-dot-start" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5">
-        <circle cx="3.5" cy="3.5" r="2.6" fill="#5b8cff"/>
+        <circle cx="3.5" cy="3.5" r="2.2" fill="#4a6ea8"/>
       </marker>
       <marker id="cv-dot-end" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5">
-        <circle cx="3.5" cy="3.5" r="2.4" fill="#0b0d10" stroke="#5b8cff" stroke-width="1.6"/>
+        <circle cx="3.5" cy="3.5" r="2" fill="#0b0d10" stroke="#4a6ea8" stroke-width="1.4"/>
       </marker>`;
     edgesSvg.appendChild(defs);
 
@@ -1822,12 +1926,15 @@ const WORK_ID = window.__WORK_ID__;
     edgesSvg.appendChild(pcG);
     const pcFrag = document.createDocumentFragment();
     for (const seg of elbowSegs) {
-      const path = makeEdgePath(seg.x1, seg.y1, seg.x2, seg.y2, "#5b8cff", "1.8", seg);
+      // [画布商业化 2026-10-18] 线权重下调：层级由「尺寸 + 明度 + 分组框」表达，
+      // 连线只是辅助线索。1.8px 亮蓝在多卡画布上会抢走全部注意力（实测像一团电线）。
+      const path = makeEdgePath(seg.x1, seg.y1, seg.x2, seg.y2, "#4a6ea8", "1.2", seg);
       // [画布商业化 2026-10-17] 按父卡深度递减线宽与不透明度：全展开时 200+ 条边
       // 同权重会糊成一片（截图实测）。近根的主干保持醒目，深层枝节退为背景。
       const d = vm.depthOf ? (vm.depthOf[seg.from] || 0) : 0;
-      if (d >= 2) { path.setAttribute("stroke-width", "1.4"); path.setAttribute("opacity", "0.55"); }
-      else if (d >= 1) { path.setAttribute("stroke-width", "1.6"); path.setAttribute("opacity", "0.8"); }
+      if (d >= 2) { path.setAttribute("stroke-width", "1"); path.setAttribute("opacity", "0.4"); }
+      else if (d >= 1) { path.setAttribute("stroke-width", "1.1"); path.setAttribute("opacity", "0.6"); }
+      else { path.setAttribute("opacity", "0.7"); }
       pcFrag.appendChild(path);
     }
     pcG.appendChild(pcFrag);

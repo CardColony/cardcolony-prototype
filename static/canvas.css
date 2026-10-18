@@ -90,17 +90,13 @@
   inset: 0;
   overflow: hidden;
   cursor: default;
-  /* 点阵背景：两层——细点（近）+ 粗点（远），随 --cv-grid 由 JS 调密度 */
+  /* 网格点：单层 1px 点阵（这里是"画点"，不是渐变装饰）。
+     不用双层——双层会让背景产生明暗层次，抢卡片视线。 */
   background-color: var(--cv-surface-0);
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.055) 1px, transparent 0),
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.028) 1px, transparent 0);
-  background-size:
-    var(--cv-grid-a, 24px) var(--cv-grid-a, 24px),
-    var(--cv-grid-b, 96px) var(--cv-grid-b, 96px);
-  background-position:
-    var(--cv-grid-ox, 0px) var(--cv-grid-oy, 0px),
-    var(--cv-grid-ox, 0px) var(--cv-grid-oy, 0px);
+  /* 用 SVG 画 1px 点（不是 CSS 渐变）——画布上零渐变，避免任何"渐变感" */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Ccircle cx='1' cy='1' r='1' fill='%23ffffff' fill-opacity='0.06'/%3E%3C/svg%3E");
+  background-size: var(--cv-grid-a, 24px) var(--cv-grid-a, 24px);
+  background-position: var(--cv-grid-ox, 0px) var(--cv-grid-oy, 0px);
 }
 
 /* 平移中：手型 + 关掉卡片 hover 干扰 */
@@ -135,89 +131,179 @@
 .page-canvas .card-node {
   position: absolute;
   box-sizing: border-box;
-  width: 220px;
-  padding: var(--cv-s3) var(--cv-s3) 10px;
-  border-radius: var(--cv-r-lg);
-  background: linear-gradient(180deg, var(--cv-surface-3), var(--cv-surface-2));
-  border: 1px solid var(--cv-line-2);
-  box-shadow: var(--cv-e1);
+  /* 宽度由**层级**决定（data-depth），不由缩放决定——见下方「深度即层级」。
+     这里给的是 d1 基准值，d0/d2/d3 各自覆盖。 */
+  width: 280px;
+  padding: 13px 15px 11px;
+  border-radius: 10px;
+  /* 纯色，无渐变。卡片是信息载体，不是装饰品：一层底色 + 一道描边 + 一点投影
+     已经足够把「卡片」从画布底上抬起来。渐变会让整片画布显得花、且掩盖层级。 */
+  background: #1c222b;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
   color: var(--cv-text-1);
   font-size: 12px;
   line-height: 1.5;
   cursor: pointer;
   user-select: none;
   transition:
-    transform var(--cv-fast) var(--cv-ease),
-    box-shadow var(--cv-base) var(--cv-ease),
     border-color var(--cv-fast) var(--cv-ease),
+    box-shadow var(--cv-base) var(--cv-ease),
     background var(--cv-fast) var(--cv-ease);
 }
 
+/* hover：只提描边与投影，不做位移（位移会让整片画布在鼠标扫过时"抖"） */
 .page-canvas .card-node:hover {
-  transform: translateY(-1px);
-  border-color: var(--cv-line-3);
-  box-shadow: var(--cv-e2);
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55), 0 8px 20px -10px rgba(0, 0, 0, 0.7);
 }
 
-/* 选中：主色环 + 外发光，不与 hover 冲突 */
+/* hover 时右侧浮出「打开」箭头：把「单击进入」这件事做成可见的，而不是靠猜 */
+.page-canvas .card-node::after {
+  content: "";
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -2.5px;
+  border-right: 1.5px solid var(--cv-text-3);
+  border-bottom: 1.5px solid var(--cv-text-3);
+  transform: rotate(-45deg);
+  opacity: 0;
+  transition: opacity var(--cv-fast) var(--cv-ease), right var(--cv-fast) var(--cv-ease);
+  pointer-events: none;
+}
+.page-canvas .card-node:hover::after { opacity: 1; right: 6px; }
+/* 钉住标记复用 ::after 会打架 ⇒ 钉住改画在 head 上（见 .is-pinned .cv-card-head::after） */
+
 .page-canvas .card-node.is-selected {
   border-color: var(--cv-accent);
-  box-shadow:
-    0 0 0 1px var(--cv-accent),
-    0 0 0 5px var(--cv-accent-soft),
-    var(--cv-e2);
+  box-shadow: 0 0 0 1px var(--cv-accent), 0 2px 10px rgba(0, 0, 0, 0.6);
 }
 
-/* 拖拽：抬起来 */
 .page-canvas .card-node.dragging {
   transition: none;
   cursor: grabbing;
   z-index: 30;
-  border-color: var(--cv-accent-line);
-  box-shadow: var(--cv-e3);
-  transform: scale(1.015);
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7);
 }
 
-/* 根卡：加高、加亮、左侧品牌条 */
-.page-canvas .card-node.is-root {
-  width: 320px;
-  padding: var(--cv-s4) var(--cv-s4) var(--cv-s3);
-  border-radius: var(--cv-r-xl);
-  background:
-    linear-gradient(180deg, rgba(91, 140, 255, 0.10), rgba(91, 140, 255, 0.02) 42%),
-    linear-gradient(180deg, var(--cv-surface-3), var(--cv-surface-2));
-  border-color: rgba(91, 140, 255, 0.28);
-}
+/* ══════════════════════════════════════════════════════════════════════════
+   深度即层级
+   ──────────────────────────────────────────────────────────────────────────
+   之前卡片宽度只跟**缩放档位**（l0/l1/l2）走，跟树深度毫无关系 ⇒ 一级卡和
+   二级卡长得一模一样，全展开后整片画布是同一尺寸的方块，"谁是谁的子卡"只能
+   靠连线猜。这是最根本的层级缺陷。
 
-.page-canvas .card-node.is-root::before {
+   现在：宽度 / 字号 / 表面明度 / 信息量 全部由 data-depth 决定，
+   缩放到多少都不改变层级语义（LOD 只增减信息密度，见第三节）。
+
+     depth 0  根卡      360px  18px 标题  摘要 2 行  底栏全  最亮   主色左条
+     depth 1  一级卡    280px  15px 标题  摘要 3 行  底栏全  次亮
+     depth 2  二级卡    224px  13px 标题  摘要 2 行  底栏精简 更暗
+     depth 3+ 三级卡    184px  12px 标题  无摘要    无底栏  最暗（只留色点）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ---- 深度 0：根卡 ---- */
+.page-canvas .card-node[data-depth="0"] {
+  width: 360px;
+  padding: 17px 19px 14px;
+  border-radius: 14px;
+  background: #232936;
+  border-color: rgba(255, 255, 255, 0.17);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.55), 0 12px 28px -14px rgba(0, 0, 0, 0.8);
+}
+.page-canvas .card-node[data-depth="0"]::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 14px;
-  bottom: 14px;
+  top: 16px;
+  bottom: 16px;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, var(--cv-accent), rgba(91, 140, 255, 0.15));
+  background: var(--cv-accent);
+}
+.page-canvas .card-node[data-depth="0"] .tname {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  -webkit-line-clamp: 3;
+}
+.page-canvas .card-node[data-depth="0"] .summary { -webkit-line-clamp: 2; }
+.page-canvas .card-node[data-depth="0"] .cv-type-name { font-size: 10.5px; }
+
+/* ---- 深度 1：一级卡（.card-node 基础样式即是） ---- */
+.page-canvas .card-node[data-depth="1"] {
+  background: #1c222b;
+  border-color: rgba(255, 255, 255, 0.10);
+}
+.page-canvas .card-node[data-depth="1"] .tname {
+  font-size: 15px;
+  font-weight: 600;
+  -webkit-line-clamp: 3;
 }
 
-/* 完成态：整卡降饱和 + 左侧绿点（不是灰掉，仍可读） */
-.page-canvas .card-node.is-completed { border-color: rgba(53, 211, 154, 0.22); }
-.page-canvas .card-node.is-completed .tname { color: var(--cv-text-2); }
-.page-canvas .card-node.is-completed .cv-type-dot { background: var(--cv-ok); }
+/* ---- 深度 2：二级卡 ---- */
+.page-canvas .card-node[data-depth="2"] {
+  width: 224px;
+  padding: 10px 12px 9px;
+  border-radius: 9px;
+  background: #171c23;
+  border-color: rgba(255, 255, 255, 0.075);
+}
+.page-canvas .card-node[data-depth="2"] .tname {
+  font-size: 13px;
+  font-weight: 600;
+  -webkit-line-clamp: 3;
+}
+.page-canvas .card-node[data-depth="2"] .summary { -webkit-line-clamp: 2; font-size: 11px; }
+.page-canvas .card-node[data-depth="2"] .cv-card-foot { margin-top: 6px; padding-top: 6px; }
 
-/* 钉住：右上角小图钉 */
-.page-canvas .card-node.is-pinned { border-color: rgba(245, 181, 68, 0.28); }
-.page-canvas .card-node.is-pinned::after {
-  content: "";
+/* ---- 深度 3+：三级卡及更深（紧凑，但仍是一张卡） ---- */
+.page-canvas .card-node[data-depth="3"] {
+  width: 184px;
+  padding: 9px 11px 10px;
+  border-radius: 8px;
+  background: #12171d;
+  border-color: rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+}
+/* 三级卡只留一个色点 + 标题：类型名与状态徽标在这一层是噪音，
+   去掉之后"深层 = 更轻"的视觉差才立得住。 */
+.page-canvas .card-node[data-depth="3"] .cv-card-head {
   position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--cv-warn);
-  box-shadow: 0 0 0 3px var(--cv-warn-soft);
+  top: 11px;
+  left: 11px;
+  margin: 0;
 }
+.page-canvas .card-node[data-depth="3"] .cv-type-name,
+.page-canvas .card-node[data-depth="3"] .cv-state { display: none; }
+.page-canvas .card-node[data-depth="3"] .tname {
+  font-size: 12px;
+  font-weight: 550;
+  padding-left: 13px;
+  -webkit-line-clamp: 2;
+}
+.page-canvas .card-node[data-depth="3"] .summary,
+.page-canvas .card-node[data-depth="3"] .cv-card-foot { display: none; }
+
+/* ---- LOD：低缩放只减信息，**不改宽度** ----
+   宽度是层级的表达（见上），不能被缩放改写——否则缩小时一级卡和二级卡又
+   混成同一尺寸，层级在缩放下失效。LOD 只负责"这个缩放级别下还值不值得画摘要"。 */
+/* 低缩放：只留「色点 + 标题两行」。
+   ⚠ 不能把 head 整个隐掉——那样卡片会塌成一行文字，缩到 30% 时整片画布变成
+   "一堆横条"，层级（尺寸差）完全看不出来。保留色点是为了让每张卡仍是一个
+   "有形状的块"，缩小时至少能读出结构。 */
+.page-canvas .card-node.l0 .summary,
+.page-canvas .card-node.l0 .cv-card-foot { display: none; }
+.page-canvas .card-node.l0 .cv-type-name,
+.page-canvas .card-node.l0 .cv-state { display: none; }
+.page-canvas .card-node.l0 .tname { -webkit-line-clamp: 2; }
+.page-canvas .card-node.l0 .cv-card-head { margin-bottom: 5px; }
+
+.page-canvas .card-node.l2 .summary { -webkit-line-clamp: 4; }
 
 /* ---- 卡片内部结构 ---- */
 
@@ -225,22 +311,24 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 7px;
+  position: relative;
 }
 
 .page-canvas .cv-type-dot {
   flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
   background: var(--cv-t-sub);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.04);
 }
 
 .page-canvas .cv-type-name {
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  /* 中文没有大小写，uppercase 只对英文生效；字距 0.05em 会让"子项目"三个字
+     散成"子 项 目"。0.02em 是中文标签的舒适值。 */
+  letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--cv-text-3);
   white-space: nowrap;
@@ -256,55 +344,47 @@
   margin-left: auto;
   flex: none;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: 4px;
   font-size: 10px;
   font-weight: 600;
   line-height: 16px;
   color: var(--cv-ok);
   background: var(--cv-ok-soft);
-  border: 1px solid rgba(53, 211, 154, 0.22);
 }
 
 .page-canvas .tname {
-  font-size: 13.5px;
-  font-weight: 650;
-  line-height: 1.35;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
   letter-spacing: -0.01em;
   color: var(--cv-text-1);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  padding-right: 0;
-}
-
-.page-canvas .card-node.is-root .tname {
-  font-size: 16px;
-  letter-spacing: -0.015em;
-  -webkit-line-clamp: 3;
+  /* 给 hover 的打开箭头留位置 */
+  padding-right: 12px;
 }
 
 .page-canvas .summary {
-  margin-top: 6px;
+  margin-top: 7px;
   font-size: 11.5px;
-  line-height: 1.55;
+  line-height: 1.5;
   color: var(--cv-text-2);
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  /* 底部淡出：长文本不硬切 */
-  -webkit-mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+  /* 不用 mask 渐变淡出——行数由 line-clamp 控制，截断处给省略号即可 */
 }
 
 .page-canvas .cv-card-foot {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
-  padding-top: 7px;
-  border-top: 1px solid var(--cv-line-1);
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 10.5px;
   color: var(--cv-text-3);
   font-variant-numeric: tabular-nums;
@@ -312,15 +392,15 @@
 
 .page-canvas .cv-card-foot .cv-spacer { flex: 1; }
 
-/* 子卡徽章：可点的胶囊，不再用 ▸/▾ 字符 */
+/* 子卡徽章：可点的胶囊 */
 .page-canvas .kid-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 1px 7px 1px 5px;
-  border-radius: 999px;
+  border-radius: 4px;
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--cv-line-1);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   color: var(--cv-text-2);
   font-size: 10.5px;
   font-weight: 600;
@@ -332,7 +412,6 @@
 .page-canvas .kid-badge:hover {
   background: var(--cv-accent-soft);
   color: var(--cv-accent);
-  border-color: var(--cv-accent-line);
 }
 
 .page-canvas .kid-badge .cv-caret {
@@ -355,7 +434,7 @@
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: 9px;
   background: var(--cv-danger);
   color: #fff;
   font-size: 10px;
@@ -363,6 +442,23 @@
   line-height: 18px;
   text-align: center;
   box-shadow: 0 0 0 3px var(--cv-surface-0);
+}
+
+/* 完成态：标题降为次级色 + 类型点转绿（不整卡灰掉，仍要可读） */
+.page-canvas .card-node.is-completed .tname { color: var(--cv-text-2); }
+.page-canvas .card-node.is-completed .cv-type-dot { background: var(--cv-ok); }
+
+/* 钉住：head 右侧一个 5px 黄点（不占 ::after，那个给打开箭头用） */
+.page-canvas .card-node.is-pinned .cv-card-head::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -2.5px;
+  border-radius: 50%;
+  background: var(--cv-warn);
 }
 
 /* ---- 类型色（按 data-type）---- */
@@ -378,51 +474,9 @@
 .page-canvas #edgesSvg path {
   transition: stroke 140ms var(--cv-ease), stroke-width 140ms var(--cv-ease), opacity 140ms var(--cv-ease);
 }
-.page-canvas #edgesSvg path.hot { stroke: #9dbaff; stroke-width: 2.6; }
+.page-canvas #edgesSvg path.hot { stroke: #7ea2e8; stroke-width: 2.2; opacity: 1; }
 .page-canvas #edgesSvg path.dim { opacity: 0.2; }
 .page-canvas #edgesSvg circle { transition: opacity 140ms var(--cv-ease); }
-
-/* ==========================================================================
-   三、LOD（三档）：低缩放只留骨架，高缩放给更多细节
-   ========================================================================== */
-
-.page-canvas .card-node.l0 {
-  width: 148px;
-  padding: 8px 10px;
-  border-radius: var(--cv-r-md);
-}
-.page-canvas .card-node.l0 .cv-card-head,
-.page-canvas .card-node.l0 .summary,
-.page-canvas .card-node.l0 .cv-card-foot { display: none; }
-.page-canvas .card-node.l0 .tname { font-size: 12px; -webkit-line-clamp: 2; }
-.page-canvas .card-node.l0.is-root { width: 168px; }
-
-/* ⚠ 必须覆盖 style.css 的 `max-height:170px / 340px`：
-   那是旧卡面（只有标题＋两行摘要）时代的硬截断。现在卡面多了类型行和底栏，
-   内容一旦超过 170px，文字会**溢出卡片边框**压在卡外的画布上（实测截图可见）。
-   高度改由内容决定，行数由 .summary 的 line-clamp 控制。 */
-.page-canvas .card-node.l1 { width: 220px; max-height: none; }
-/* l1 保留底部行（展开/折叠徽章是操作件，任何档都不能消失），只藏更新时间 */
-.page-canvas .card-node.l1 .cv-card-foot .meta2 { display: none; }
-
-.page-canvas .card-node.l2 { width: 260px; max-height: none; padding: var(--cv-s3) var(--cv-s4) var(--cv-s3); }
-.page-canvas .card-node.l2 .summary { -webkit-line-clamp: 4; }
-
-/* 三级以下（t8-deep）：**小卡片**，不是横条。
-   旧样式把 head/summary/foot 全隐掉、只留一行标题，全展开后整片画布变成
-   "一堆 36px 横条"，既看不出层级也认不出内容——这是"完全不像商业产品"的
-   主因之一。现在保留类型点与两行标题，只省掉摘要和底栏，形成清晰的小一号卡片。 */
-.page-canvas .card-node.t8-deep {
-  width: 186px;
-  padding: 8px 11px 9px;
-  border-radius: var(--cv-r-md);
-}
-.page-canvas .card-node.t8-deep .cv-card-head { margin-bottom: 3px; }
-.page-canvas .card-node.t8-deep .cv-type-name { font-size: 9px; letter-spacing: 0.04em; }
-.page-canvas .card-node.t8-deep .cv-state { font-size: 9px; padding: 0 5px; line-height: 14px; }
-.page-canvas .card-node.t8-deep .summary,
-.page-canvas .card-node.t8-deep .cv-card-foot { display: none; }
-.page-canvas .card-node.t8-deep .tname { font-size: 11.5px; font-weight: 600; -webkit-line-clamp: 2; }
 
 /* ==========================================================================
    四、顶栏 / 缩放控件 / 按钮
@@ -534,12 +588,12 @@
 .page-canvas .btn:active { transform: translateY(1px); }
 
 .page-canvas .btn.primary {
-  background: linear-gradient(180deg, #6a95ff, #4f7ff0);
+  background: #4f7ff0;
   border-color: rgba(255, 255, 255, 0.14);
   color: #fff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
-.page-canvas .btn.primary:hover { background: linear-gradient(180deg, #7aa1ff, #5b88f5); }
+.page-canvas .btn.primary:hover { background: #5b88f5; }
 
 /* 图标按钮（工具栏）：32×32，悬停提亮，按下回弹 */
 .page-canvas .icon-btn {
@@ -624,14 +678,13 @@
 .page-canvas .cv-sk-card {
   position: absolute;
   border-radius: var(--cv-r-lg);
-  background: linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.07), rgba(255,255,255,0.03));
-  background-size: 200% 100%;
-  border: 1px solid var(--cv-line-1);
-  animation: cv-sk-shimmer 1.4s linear infinite;
+  background: #151a21;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  animation: cv-sk-breathe 1.6s ease-in-out infinite;
 }
-@keyframes cv-sk-shimmer {
-  from { background-position: 120% 0; }
-  to { background-position: -80% 0; }
+@keyframes cv-sk-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 /* 空态：无任何卡片时（挂在 .canvas-state-box 里，两者都是 inset:0 居中布局） */
@@ -896,4 +949,22 @@
   .page-canvas .card-node,
   .page-canvas .cv-menu,
   .page-canvas .cv-minimap { transition: none !important; animation: none !important; }
+}
+
+/* ==========================================================================
+   分组底衬：同一父卡的子卡组（≥2 张）画一块极淡的底，直接表达"这是一组"
+   ========================================================================== */
+.page-canvas .cv-groups {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.page-canvas .cv-group {
+  position: absolute;
+  border-radius: 20px;
+  /* 只比画布底亮一点点：它的作用是"划出一块区域"，不是画一个卡片。
+     0.016 实测在暗底上肉眼不可见（截图确认），0.03 + 0.08 边框才"看得见但不抢眼"。 */
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
