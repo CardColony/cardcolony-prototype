@@ -522,9 +522,9 @@ const WORK_ID = window.__WORK_ID__;
         for (let ci = 0; ci < cols.length; ci++) {
           const kid = cols[ci][r];
           if (!kid) continue;
-          // 卡在行内垂直居中（行高可能被同行的深子树撑大）
-          const off = (rowHs[r] - subtreeH[kid.card_id]) / 2;
-          place(kid.card_id, colX[ci], rowY + off, depth + 1);
+          // 行内**顶部对齐**（原来垂直居中）：同一行的卡片顶端成一条线，
+          // 视觉上是一排而不是参差错落的一堆；子树在卡下方自然延伸。
+          place(kid.card_id, colX[ci], rowY, depth + 1);
         }
         rowY += rowHs[r] + GAP_Y;
       }
@@ -1113,7 +1113,6 @@ const WORK_ID = window.__WORK_ID__;
     }
     world.style.visibility = "";
 
-    renderGroups(pin.childMap, projection, vm);
     renderEdges(projection, vm);
     renderBreadcrumb(projection.breadcrumb);
     applySelectionClasses();
@@ -1848,15 +1847,18 @@ const WORK_ID = window.__WORK_ID__;
     return groupLayer;
   }
 
+  // 分组框元素复用池：不每次重建 DOM。
+  // 为什么：layer.innerHTML="" + fragment 重建会让 #world（带 transform/will-change）
+  // 的合成层失效重建，232 卡实测首屏多花 150ms；改成"只写 style"后成本降到可忽略。
+  let groupEls = [];
   function renderGroups(childMap, projection, vm) {
     const layer = ensureGroupLayer();
-    layer.innerHTML = "";
     const zoom = vm.zoom || 1;
     layer.style.display = zoom < 0.55 ? "none" : "";
     if (zoom < 0.55) return;
 
     const { visibleIds, layout, sizes } = projection;
-    const frag = document.createDocumentFragment();
+    const boxes = [];
     for (const pid in childMap) {
       if (!visibleIds.has(pid)) continue;
       // 只取可见的直接子卡
@@ -1871,15 +1873,24 @@ const WORK_ID = window.__WORK_ID__;
         x1 = Math.max(x1, p.x + sz.w); y1 = Math.max(y1, p.y + sz.h);
       }
       if (!Number.isFinite(x0)) continue;
+      boxes.push([x0 - GROUP_PAD, y0 - GROUP_PAD, x1 - x0 + GROUP_PAD * 2, y1 - y0 + GROUP_PAD * 2]);
+    }
+
+    while (groupEls.length < boxes.length) {
       const el = document.createElement("div");
       el.className = "cv-group";
-      el.style.left = (x0 - GROUP_PAD) + "px";
-      el.style.top = (y0 - GROUP_PAD) + "px";
-      el.style.width = (x1 - x0 + GROUP_PAD * 2) + "px";
-      el.style.height = (y1 - y0 + GROUP_PAD * 2) + "px";
-      frag.appendChild(el);
+      layer.appendChild(el);
+      groupEls.push(el);
     }
-    layer.appendChild(frag);
+    while (groupEls.length > boxes.length) groupEls.pop().remove();
+    for (let i = 0; i < boxes.length; i++) {
+      const [x, y, w, h] = boxes[i];
+      const el = groupEls[i];
+      el.style.left = x + "px";
+      el.style.top = y + "px";
+      el.style.width = w + "px";
+      el.style.height = h + "px";
+    }
   }
 
   function renderEdges(projection, vm) {
