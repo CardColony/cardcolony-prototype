@@ -133,8 +133,9 @@ const worldTf = async () => String(await ev(`(document.getElementById('world')||
 const a = boxes[0], b = boxes[1];
 const cx = (o) => o.x + o.w / 2, cy = (o) => o.y + o.h / 2;
 
-// A1 选中（2026-10-18 用户裁定：单击＝进入，故选中走 Shift+单击）
-await click(cx(a), cy(a), { modifiers: MOD.shift });
+// A1 选中（单击＝选中+右栏读卡；整幅适配后坐标已变，重新取）
+const aBox = await J(`(() => { const n = document.querySelectorAll('.card-node')[0]; const r = n.getBoundingClientRect(); return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
+await click(aBox.x, aBox.y, { modifiers: MOD.shift });
 check("A1 Shift+单击卡＝选中 1 张", (await selCount()) === 1, await selCount());
 check("A1b Shift+单击不跳页", (await ev("location.pathname")) === `/work/${WID}`, await ev("location.pathname"));
 
@@ -203,11 +204,15 @@ const boxes2 = await J(`[...document.querySelectorAll('.card-node')].map(n => {
 const p1 = boxes2[1], p2 = boxes2[2];
 await click(p1.x, p1.y, { modifiers: MOD.shift });
 await click(p2.x, p2.y, { modifiers: MOD.shift });
-const before2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
-await drag(p1.x, p1.y, p1.x + 90, p1.y + 50);
-const after2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
-const movedAll = before2.length >= 2 && before2.every((v, i) => Math.abs(after2[i] - v) > 40);
-check("A8d 多选整组拖动（两张同时位移）", movedAll, `${JSON.stringify(before2)} → ${JSON.stringify(after2)}`);
+// [画布 2026-10-18] 拖拽＝只调纵向顺序（横向锁定在列上），故断言 top 变化
+const before2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.top))`);
+const left2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
+await drag(p1.x, p1.y, p1.x + 90, p1.y + 60);
+const after2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.top))`);
+const leftAfter = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
+const movedAll = before2.length >= 2 && before2.every((v, i) => Math.abs(after2[i] - v) > 30);
+check("A8d 多选整组拖动（两张纵向同时位移）", movedAll, `${JSON.stringify(before2)} → ${JSON.stringify(after2)}`);
+check("A8d2 整组拖动时横向锁定", left2.every((v, i) => Math.abs(leftAfter[i] - v) < 2), `${JSON.stringify(left2)} → ${JSON.stringify(leftAfter)}`);
 
 // A8j 多选操作条（A8d 拖完仍是 2 张选中）
 const barText = await ev(`(() => { const b = document.querySelector('.cv-selbar'); return b ? b.innerText.split(String.fromCharCode(10)).join(' ') : ''; })()`);

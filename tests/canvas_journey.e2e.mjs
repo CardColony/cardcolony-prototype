@@ -183,16 +183,19 @@ check("11 ⌘K 面板＋中文筛选", palOpen && hits >= 1, `${hits} 条`);
 await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
 await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
 
-// ── 12 拖卡后刷新，位置保持 ──
+// ── 12 拖卡后刷新，顺序（纵向位置）保持；横向锁定在列上 ──
 b = await centerOf(".card-node", 1);
-const left0 = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.left)`);
+const top0 = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.top)`);
+const leftBefore = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.left)`);
 await move(b.x, b.y); await down(b.x, b.y);
-for (let i = 1; i <= 6; i++) { await move(b.x + i * 20, b.y + i * 10); await sleep(16); }
-await up(b.x + 120, b.y + 60);
+for (let i = 1; i <= 6; i++) { await move(b.x + i * 20, b.y + i * 12); await sleep(16); }
+await up(b.x + 120, b.y + 72);
 await sleep(1200);
+const leftDuring = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.left)`);
 await nav(`${BASE}/work/${WID}`, 3600);
-const left1 = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.left)`);
-check("12 拖动位置刷新后保持", Math.abs(left1 - left0) > 50, `${left0} → ${left1}`);
+const top1 = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.top)`);
+check("12a 拖动＝调整纵向顺序（刷新后保持）", Math.abs(top1 - top0) > 40, `top ${top0} → ${top1}`);
+check("12b 拖动时横向锁定在列上", Math.abs(leftDuring - leftBefore) < 2, `left ${leftBefore} → ${leftDuring}`);
 
 // ── 13 全程零 JS 异常 ──
 check("13 零 JS 异常", errs.length === 0, errs.slice(0, 3).join(" | "));
