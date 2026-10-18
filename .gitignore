@@ -73,3 +73,6 @@ _shots/
 _5707.out.log
 _5707.err.log
 _pytest_canvas.log
+
+# 临时诊断脚本（一次性，不进仓库）
+scripts/_*.cjs
