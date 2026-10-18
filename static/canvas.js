@@ -1432,13 +1432,23 @@ const WORK_ID = window.__WORK_ID__;
       : "";
 
     const pendingItems = Array.isArray(card.pending_items) ? card.pending_items : [];
+    const isBareRoot = isRootCard
+      && !(state.index.childMap[card.card_id] || []).length
+      && !String(card.conclusion || "").trim()
+      // 新建项目的根卡带一段 57 字的模板占位（"当前状况快照…"），所以不能判 ===0；
+      // 200 字以下视为"还没实质内容"。
+      && Number(card.content_len || 0) < 200;
     let bodyHtml = "";
     if (ws === "pending" && pendingItems.length) {
       const shown = pendingItems.slice(0, 2);
       const rest = pendingN - shown.length;
+      // 每条都可点：直接进"裁定模式"的那一条（读一处 → 下一处），不用先选中再翻。
       bodyHtml = `<div class="cv-pending">${
-        shown.map((it) => `<div class="cv-pending-item" title="${escapeHtml(it.section || "")}">${escapeHtml(it.text)}</div>`).join("")
-      }${rest > 0 ? `<div class="cv-pending-more">还有 ${rest} 处</div>` : ""}</div>`;
+        shown.map((it, i) => `<div class="cv-pending-item" data-pi="${i}" title="${escapeHtml(it.section || "")} · 点击逐条过">${escapeHtml(it.text)}</div>`).join("")
+      }${rest > 0 ? `<div class="cv-pending-more" data-pi="0">还有 ${rest} 处 · 逐条过 →</div>` : ""}</div>`;
+    } else if (isBareRoot) {
+      // 空项目的根卡：告诉用户下一步做什么，而不是一张空白卡片
+      bodyHtml = `<div class="cv-empty-hint">这是项目的根卡。<br>点右上「＋ 新建卡」或按 <b>Tab</b> 建第一张子卡。</div>`;
     } else {
       bodyHtml = `<div class="summary"></div>`;
     }
@@ -1508,6 +1518,20 @@ const WORK_ID = window.__WORK_ID__;
       // 进入完整对话走三个明确入口：卡上的 ↗、双击、Enter。
       selectOnly(card.card_id);
     });
+
+    // 待裁定条目点击 → 裁定模式定位到这一条
+    for (const itemEl of node.querySelectorAll("[data-pi]")) {
+      itemEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const list = buildTriageList();
+        const localIdx = Number(itemEl.dataset.pi || 0);
+        // 全局索引 = 这张卡的第一条在扁平列表里的位置 + 卡内索引
+        let base = list.findIndex((x) => x.cardId === card.card_id);
+        if (base < 0) base = 0;
+        openTriage(base + localIdx);
+      });
+    }
 
     const openBtn = node.querySelector(".cv-open");
     if (openBtn) {

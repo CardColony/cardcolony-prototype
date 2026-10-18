@@ -1404,3 +1404,17 @@
    整体压缩（实测行高从 22px 压到 11px，文字互相重叠）——目录直接不可用。 */
 .page-canvas .cv-cat-row,
 .page-canvas .cv-cat-head { flex: none; }
+
+/* 待裁定条目：可点（进裁定模式） */
+.page-canvas .cv-pending-item[data-pi],
+.page-canvas .cv-pending-more[data-pi] { cursor: pointer; }
+.page-canvas .cv-pending-item[data-pi]:hover { color: #f0dcb4; }
+
+/* 空项目根卡引导 */
+.page-canvas .cv-empty-hint {
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--cv-text-3);
+}
+.page-canvas .cv-empty-hint b { color: var(--cv-text-2); font-weight: 600; }
