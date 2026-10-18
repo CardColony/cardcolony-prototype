@@ -446,8 +446,22 @@ const WORK_ID = window.__WORK_ID__;
 
     // 布局树的「子边」：恒开的单元根直接子卡恒在；其余卡的子卡仅当该卡 ∈ expanded
     // （与 T08-1-4 可见集同一规则，保证布局覆盖恰为可见集）
-    const kidsOf = (cid) =>
-      ((cid === rootId && rootAlwaysOpen) || expanded.has(cid)) ? (childMap[cid] || []) : [];
+    // [画布 2026-10-18] 同级子卡按**用户拖拽的 y** 排序（没拖过的按原顺序）。
+    // 拖拽＝调顺序：存储的 y 只作排序依据，绝对位置仍由布局算——这样既不会
+    // "拖了又弹回"，也不会像 pinned 那样累积偏移把布局拉散。
+    const kidsOf = (cid) => {
+      const raw = ((cid === rootId && rootAlwaysOpen) || expanded.has(cid)) ? (childMap[cid] || []) : [];
+      if (raw.length < 2) return raw;
+      return [...raw].sort((a, b) => {
+        const pa = positions[a.card_id], pb = positions[b.card_id];
+        const ya = pa && Number.isFinite(pa.y) ? pa.y : null;
+        const yb = pb && Number.isFinite(pb.y) ? pb.y : null;
+        if (ya !== null && yb !== null) return ya - yb;
+        if (ya !== null) return -1;
+        if (yb !== null) return 1;
+        return 0;
+      });
+    };
 
     // [画布商业化 2026-10-17] 子卡超过 MAX_PER_COL 张时**分列折行**。
     // 为什么：单列纵向排 6 张卡＝高度 1000px，视口装不下 → fit 后缩到 70% 字看不清。
@@ -2265,15 +2279,24 @@ const WORK_ID = window.__WORK_ID__;
     // 0.9 是量出来的：骨架档 9 个节点（根 70 + 8×56 + 8×40 间距）≈ 838px，
     // 0.9 下 754px，落在可用高度 840 内；标题 13×0.9 ≈ 11.7px、结论 11×0.9 ≈ 9.9px。
     const Z = 0.9;
-    const rootNode = nodeMap.get(state.nav.viewRoot);
-    if (!rootNode) return false;
-    const rx = parseFloat(rootNode.style.left) || 0;
-    const ry = parseFloat(rootNode.style.top) || 0;
-    const rh = rootNode.offsetHeight || 70;
+    // 按**当前 DOM 的实际 bbox** 居中（此时已经渲染成骨架档，尺寸是真的）。
+    // 不要用根卡居中：根卡在左、子卡在右，居中根卡会让整体偏左、右侧空一大片。
+    const nodes = [...world.querySelectorAll(".card-node")];
+    if (!nodes.length) return false;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of nodes) {
+      const x = parseFloat(n.style.left) || 0;
+      const y = parseFloat(n.style.top) || 0;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + n.offsetWidth);
+      maxY = Math.max(maxY, y + n.offsetHeight);
+    }
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     applyViewState({
       zoom: Z,
-      panX: Math.round(viewport.clientWidth / 2 - rx * Z),
-      panY: Math.round(viewport.clientHeight / 2 - (ry + rh / 2) * Z),
+      panX: Math.round(viewport.clientWidth / 2 - cx * Z),
+      panY: Math.round(viewport.clientHeight / 2 - cy * Z),
     });
     scheduleSaveView();
     return true;
@@ -3113,8 +3136,16 @@ const WORK_ID = window.__WORK_ID__;
     // 进度——不许：位置只表达人在空间里的摆放意志，进度/状态走卡片自身字段。
     // [card_045 E7 · L7 钉住的坐标是绝对锚点] 布局算法换代（换树/换网格/换排布）
     // 只影响派生位置，钉住卡的存储坐标原样保留、人的相对空间关系不因换代被重排。
-    state.data.positions[cid] = { x, y, pinned: true };
-    pendingPatches[cid] = { x, y, pinned: true };
+    // [画布 2026-10-18 · 修设计错误] 拖拽**不再钉住**（原来 pinned:true）。
+    //
+    // 为什么改：拖一下就永久钉住，多次拖拽后存储坐标累积偏移，布局被拉散
+    // （实测 work_001：根卡和子卡间距拉到 1180px，7 张卡只有 2 张在视口内）。
+    // 现在拖拽表达的是**顺序**：y 作为同级排序依据（见 layoutTree 的 kidsOf），
+    // 位置仍由布局算——用户拖完不弹回，布局也永远整齐。
+    // "钉住"保留给明确的右键菜单动作（锁定不被自动布局移动）。
+    const keepPinned = !!(state.data.positions[cid] && state.data.positions[cid].pinned);
+    state.data.positions[cid] = { x, y, pinned: keepPinned };
+    pendingPatches[cid] = { x, y, pinned: keepPinned };
     if (patchTimer) clearTimeout(patchTimer);
     patchTimer = setTimeout(flushPatches, 500);
   }
