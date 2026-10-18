@@ -7,7 +7,8 @@ import path from "node:path";
 import fs from "node:fs";
 
 const BASE = process.argv[2] || "http://127.0.0.1:5707";
-const WID = process.argv[3] || "real_work_002";
+// [画布 2026-10-18] 含拖拽（会写 pos）的测试跑在 work_001，不污染真实项目
+const WID = process.argv[3] || "work_001";
 const CHROME = process.env.CHROME_PATH ||
   path.join(os.homedir(), "AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe");
 const PORT = 9630 + Math.floor(Math.random() * 100);
@@ -176,7 +177,7 @@ await send("Input.dispatchKeyEvent", { type: "keyDown", key: "k", code: "KeyK", 
 await send("Input.dispatchKeyEvent", { type: "keyUp", key: "k", code: "KeyK", modifiers: 2, windowsVirtualKeyCode: 75 });
 await sleep(350);
 const palOpen = await ev("!!document.querySelector('.cv-palette')");
-await send("Input.insertText", { text: "管理" });
+await send("Input.insertText", { text: "数据" });
 await sleep(300);
 const hits = Number(await ev("document.querySelectorAll('.cv-palette-item').length"));
 check("11 ⌘K 面板＋中文筛选", palOpen && hits >= 1, `${hits} 条`);
@@ -188,8 +189,8 @@ b = await centerOf(".card-node", 1);
 const top0 = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.top)`);
 const leftBefore = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.left)`);
 await move(b.x, b.y); await down(b.x, b.y);
-for (let i = 1; i <= 6; i++) { await move(b.x + i * 20, b.y + i * 12); await sleep(16); }
-await up(b.x + 120, b.y + 72);
+for (let i = 1; i <= 8; i++) { await move(b.x, b.y + i * 14); await sleep(16); }
+await up(b.x, b.y + 112);
 await sleep(1200);
 const leftDuring = await J(`parseFloat(document.querySelectorAll('.card-node')[1].style.left)`);
 await nav(`${BASE}/work/${WID}`, 3600);
