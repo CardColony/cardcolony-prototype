@@ -71,6 +71,12 @@ async function dblclick(x, y) {
   await down(x, y, 2); await up(x, y, 2); await sleep(800);
 }
 async function nav(u, w = 3200) { await send("Page.navigate", { url: u }); await sleep(w); }
+const VK = { Digit0: 48, Escape: 27, Enter: 13, Delete: 46, ArrowLeft: 37, ArrowRight: 39 };
+async function key(k, { code, modifiers = 0 } = {}) {
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, modifiers, windowsVirtualKeyCode: VK[code] });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, modifiers, windowsVirtualKeyCode: VK[code] });
+  await sleep(220);
+}
 const centerOf = async (sel, idx = 0) => J(`(() => {
   const n = document.querySelectorAll(${JSON.stringify(sel)})[${idx}];
   if (!n) return null;
@@ -89,13 +95,21 @@ const check = (name, cond, detail) => {
 await nav(`${BASE}/work/${WID}`, 4000);
 let nodes = Number(await ev("document.querySelectorAll('.card-node').length"));
 check("1 画布渲染卡片", nodes > 0, nodes + " 张");
+// 首屏只锚定根卡（100%），其余卡可能在视口外 ⇒ 先整幅适配，保证后续坐标点击都命中
+await key("0", { code: "Digit0", modifiers: MOD.ctrl });
+await sleep(600);
 
-// ── 2 单击进入对话页（2026-10-18 用户裁定：单击即进入，不再要求双击）──
+// ── 2 进入对话页：走卡片右上角的 ↗（单击现在是"选中 + 右栏读卡"，不跳页）──
 let b = await centerOf(".card-node", 1);
 await click(b.x, b.y);
-await sleep(900);
+await sleep(300);
+const stayedOnCanvas = (await ev("location.pathname")) === `/work/${WID}`;
+const detailShown = await ev("!!document.querySelector('#cardDetail') && !document.querySelector('#cardDetail').hidden");
+check("2a 单击＝选中并右栏读卡（不跳页）", stayedOnCanvas && detailShown, `canvas=${stayedOnCanvas} detail=${detailShown}`);
+await ev(`document.querySelectorAll('.card-node .cv-open')[1].click()`);
+await sleep(1100);
 let p1 = await ev("location.pathname");
-check("2 单击进入对话页", String(p1).includes("/card/"), p1);
+check("2b 点 ↗ ＝进入对话页", String(p1).includes("/card/"), p1);
 
 // ── 3 对话页返回画布 ──
 const backBtn = await centerOf("#canvasEntryBtn", 0);
@@ -103,12 +117,12 @@ if (backBtn) { await click(backBtn.x, backBtn.y); await sleep(1200); }
 let p2 = await ev("location.pathname");
 check("3 对话页→返回画布", p2 === `/work/${WID}`, p2);
 
-// ── 4 Shift+单击＝选中（不跳页）；单击本身是进入，故选中必须走修饰键 ──
+// ── 4 单击＝选中（不跳页）；Shift+单击＝加选 ──
 await nav(`${BASE}/work/${WID}`);
 b = await centerOf(".card-node", 1);
-await click(b.x, b.y, { modifiers: MOD.shift });
+await click(b.x, b.y);
 await sleep(300);
-check("4 Shift+单击＝选中不跳页",
+check("4 单击＝选中且不跳页",
   (await ev("location.pathname")) === `/work/${WID}`
   && Number(await ev("document.querySelectorAll('.card-node.is-selected').length")) === 1);
 

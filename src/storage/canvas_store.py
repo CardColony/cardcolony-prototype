@@ -91,6 +91,15 @@ _PLACEHOLDER_MARKERS = (
     "做到哪、什么状态、卡在哪",
 )
 
+#: **元信息行**：写的是"这张卡的记录格式"，不是内容。
+#: 真实数据里每张卡的现状块第一行都是「状态：现状实测（2026-10-03）…依据：xxx.html(258行)」，
+#: 原样当摘要 → 画布上每张卡都写着"状态：现状实测…"，用户扫一眼什么也读不到。
+#: 这类行一律跳过，继续找有信息量的正文。
+_META_LINE_PREFIX = (
+    "状态：", "状态:", "依据：", "依据:", "说明：", "说明:",
+    "本卡", "本文", "范围：", "范围:", "信源：", "信源:",
+)
+
 
 def _strip_md_prefix(line: str) -> str:
     """剥掉行首的 Markdown 结构标记：标题井号、引用、列表符、加粗包裹。
@@ -136,11 +145,118 @@ def _conclusion_summary(status_block: str, title: str = "") -> str:
                 continue
             if t_norm and s == t_norm:
                 continue
+            if s.startswith(_META_LINE_PREFIX):
+                continue   # 元信息行（"状态：现状实测…""依据：xxx"）不是内容
+            if raw.startswith("|") or set(s) <= set("-: "):
+                continue   # Markdown 表格行/分隔行（"| 层 | 载体 | 脚本 |"）不是结论
             return (s[:SUMMARY_MAX] + "…") if len(s) > SUMMARY_MAX else s
     return ""
     if len(first_line) > SUMMARY_MAX:
         return first_line[:SUMMARY_MAX] + "…"
     return first_line
+
+
+#: 「等用户裁定」的标记。这个项目的工作方式是：模型提议一律标【待裁定】，
+#: 用户点头才算数（见 cards 表 rulings 列与各卡正文）。
+#: ⇒ 画布上**最该突出的是"哪里在等你裁定"**，不是"哪张卡拖得好看"。
+_PENDING_RE = re.compile(r"待裁定|【待定】|待确认")
+
+#: 结论文本：`结论：xxx` / `**结论**：xxx` / `- 结论: xxx` / `裁定：xxx`
+_CONCLUSION_RE = re.compile(
+    r"^[\s>*\-]*(?:\*\*)?(?:结论|裁定)(?:\*\*)?\s*[:：]\s*(.+)$",
+    re.MULTILINE,
+)
+
+
+#: 单条待裁定文本的展示上限（卡片上只有两行位置，超了没意义）
+PENDING_ITEM_MAX = 72
+
+
+def _extract_pending_items(status_block: str, limit: int = 6) -> list[dict[str, str]]:
+    """把「待裁定」从**一个数字**变成**一条条能读的具体事项**。
+
+    [画布 2026-10-18 · 工作台] 用户在这个系统里唯一必须亲自做的事是"裁定"。
+    实测这个项目有 74 处待裁定，而画布上只显示"6 处待裁定"这个数字——
+    用户还是得逐张点进去、在 3000 字里找那 6 处。这不是工作台，是计数器。
+
+    每条返回 {section, text}：
+      section —— 它所在的小节标题（"三、端点清单"），让用户知道在讨论什么
+      text    —— 那句话本身（去掉【待裁定】标记，截断到 PENDING_ITEM_MAX）
+
+    只取**行首带待裁定标记**或**整行较短**的，长段落里夹着的"待裁定"不取
+    （那是叙述，不是待办项）。
+    """
+    items: list[dict[str, str]] = []
+    section = ""
+    for raw in (status_block or "").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            section = _strip_md_prefix(line)
+            continue
+        if not _PENDING_RE.search(line):
+            continue
+        # 元信息行（"状态：…依据：…"）不是待办项
+        if _strip_md_prefix(line).startswith(_META_LINE_PREFIX):
+            continue
+        # 解释标记含义的句子（"凡标【待裁定】者为模型提议"）不是待办项
+        if re.search(r"(?:凡|均|一律|都)\s*标.{0,8}待裁定|待裁定\s*者", line):
+            continue
+        text = _strip_md_prefix(line)
+        # 去掉标记本身与常见包裹
+        text = re.sub(r"[【\[]?\s*(?:待裁定|【待定】|待确认)\s*[】\]]?", "", text)
+        text = text.strip(" ：:，,。;；-—·")
+        if len(text) < 4:
+            continue
+        # 长行只取**含标记的那一句**；找不到就说明这行的"待裁定"只是顺带提及，跳过
+        if len(text) > PENDING_ITEM_MAX * 2:
+            parts = re.split(r"(?<=[。！？；])", text)
+            hit = next((x for x in parts if _PENDING_RE.search(x)), "")
+            if not hit:
+                continue
+            text = hit.strip(" ：:，,。")
+        if len(text) > PENDING_ITEM_MAX:
+            text = text[:PENDING_ITEM_MAX] + "…"
+        items.append({"section": section, "text": text})
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str]:
+    """从卡片内容推断「这张卡现在是什么工作状态」，返回 (state, pending_count, conclusion)。
+
+    [画布 2026-10-18 · 从"白板"改回"工作台"] 卡片上原本显示的是现状块第一行
+    （"状态：现状实测（2026-10-03）…依据：templates/index.html(258行)…"），
+    那是给模型看的记录格式，不是给人看的结论。用户扫一眼画布，看不出
+    哪张卡有判断、哪张卡在等他、哪张卡还没动。
+
+    四态（按"用户要不要行动"排序）：
+      pending    含【待裁定】——**用户必须亲自处理**，画布要醒目
+      concluded  有「结论：」——这张卡想清楚了，可以引用
+      discussing 有内容但没结论——还在讨论
+      empty      现状块为空——还没开始
+    """
+    sb = status_block or ""
+    if not sb.strip():
+        return "empty", 0, ""
+
+    pending = len(_PENDING_RE.findall(sb))
+    # explicit＝正文里**显式写了**「结论：」——只有这种才算"想清楚了"。
+    # 摘要（第一行正文）只是"这张卡在讲什么"，不能当成结论，否则每张有字的卡
+    # 都会标成"已结论"，状态就失去意义。
+    explicit = ""
+    m = _CONCLUSION_RE.search(sb)
+    if m:
+        explicit = m.group(1).strip().replace("**", "").replace("`", "").strip()
+    text = explicit or _conclusion_summary(sb, title)
+
+    if pending:
+        return "pending", pending, text
+    if explicit:
+        return "concluded", 0, text
+    return "discussing", 0, text
 
 
 #: canvas.json 投影结构版本。**加/删/改投影字段必须 +1**。
@@ -150,7 +266,7 @@ def _conclusion_summary(status_block: str, title: str = "") -> str:
 #: 存量 work 的旧 canvas.json 里没有这两个键，``load()`` 原样返回 ⇒ 画布上
 #: 「已完成」徽标与更新时间**永远不出现**，且没有任何报错。版本号让
 #: "缓存是旧结构的"这件事变成可判定的事实，命中时自动重建。
-CANVAS_SCHEMA_VERSION = 5
+CANVAS_SCHEMA_VERSION = 9
 
 
 def rebuild(work_id: str) -> dict[str, Any]:
@@ -184,6 +300,19 @@ def rebuild(work_id: str) -> dict[str, Any]:
         )]
 
     rows = card_db.read_sync(work_id, _fn, []) or []
+
+    # [画布 2026-10-18 · 逻辑关系] 卡片之间的真实关系不在 relations/links 列里
+    # （实测这两列全空），而在**正文**里：用户写卡时会引用邻卡
+    # （"card_002「上下文记忆系统」：上下文由什么组成…"）。全库实测 115 条引用边，
+    # card_002 被 11 张卡引用——它是这个项目的地基。
+    # 这里先算「被引用次数」随投影下发：卡片上标一个 ←11，一眼看出哪几张是核心。
+    # （全部 115 条线同时画出来是一团乱麻，故线只在悬停/选中时显示。）
+    _ref_counter: dict[str, int] = {}
+    for _r in rows:
+        for _m in set(re.findall(r"card_\d{3}", _r["status_block"] or "")):
+            if _m != _r["card_id"]:
+                _ref_counter[_m] = _ref_counter.get(_m, 0) + 1
+
     cards: list[dict[str, Any]] = []
     links: list[dict[str, Any]] = []
     for row in rows:
@@ -202,6 +331,17 @@ def rebuild(work_id: str) -> dict[str, Any]:
             # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
             # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
             "conclusion_summary": _conclusion_summary(row["status_block"] or "", row["title"] or ""),
+            # [画布 2026-10-18 · 工作台] 工作状态三件套：状态 / 待裁定数 / 结论。
+            # 卡片按 work_state 上色与排序，顶栏据此算项目概览。
+            **dict(zip(("work_state", "pending_count", "conclusion"),
+                       _card_work_state(row["status_block"] or "", row["title"] or ""))),
+            # 被引用次数：这个项目里"谁被最多卡引用"＝谁是地基
+            "ref_count": _ref_counter.get(card_id, 0),
+            # 待裁定**条目**（不是数字）：卡片上直接列出"在等你的那几件事"
+            "pending_items": _extract_pending_items(row["status_block"] or ""),
+            # 规模：现状块字数。3000 字和 40000 字的工作量差一个数量级，
+            # 它决定"这张卡要不要现在碰"，是用户排优先级的关键输入。
+            "content_len": len(row["status_block"] or ""),
         })
         try:
             rels = json.loads(row["links"] or "[]")

@@ -123,6 +123,9 @@ const boxes = await J(`[...document.querySelectorAll('.card-node')].map(n => {
   return { id: n.dataset.id, x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
 })`);
 check("E0 画布已渲染卡片", boxes.length >= 3, `${boxes.length} 张`);
+// 首屏只锚定根卡（100%），其余卡可能在视口外 ⇒ 先整幅适配
+await key("0", { code: "Digit0", modifiers: MOD.ctrl });
+await sleep(600);
 const selCount = async () => Number(await ev(`document.querySelectorAll('.card-node.is-selected').length`));
 const zoomText = async () => String(await ev(`(document.getElementById('zoomDisplay')||{}).textContent||''`));
 const worldTf = async () => String(await ev(`(document.getElementById('world')||{style:{}}).style.transform||''`));
@@ -135,19 +138,28 @@ await click(cx(a), cy(a), { modifiers: MOD.shift });
 check("A1 Shift+单击卡＝选中 1 张", (await selCount()) === 1, await selCount());
 check("A1b Shift+单击不跳页", (await ev("location.pathname")) === `/work/${WID}`, await ev("location.pathname"));
 
-// A2 Shift 多选
-await click(cx(b), cy(b), { modifiers: MOD.shift });
+// A2 Shift 多选（先整幅适配：首屏锚在根卡，第二张卡可能不在视口内）
+await key("0", { code: "Digit0", modifiers: MOD.ctrl });
+await sleep(360);
+const b2box = await J(`(() => { const n = document.querySelectorAll('.card-node')[1]; const r = n.getBoundingClientRect(); return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
+await click(b2box.x, b2box.y, { modifiers: MOD.shift });
 check("A2 Shift+单击＝多选 2 张", (await selCount()) === 2, await selCount());
 
 // A3 点空白取消
 await click(80, 900);
 check("A3 点空白＝清空选择", (await selCount()) === 0, await selCount());
 
-// A4 滚轮缩放
+// A4 Ctrl+滚轮缩放（2026-10-18 滚轮默认改纵向滚动，缩放走 Ctrl/⌘+滚轮）
 const z0 = await zoomText();
-await wheel(cx(a), cy(a), -240);
+await wheel(cx(a), cy(a), -240, { modifiers: MOD.ctrl });
 const z1 = await zoomText();
-check("A4 滚轮向上＝放大", parseInt(z1) > parseInt(z0), `${z0} → ${z1}`);
+check("A4 Ctrl+滚轮＝放大", parseInt(z1) > parseInt(z0), `${z0} → ${z1}`);
+
+// A4b 普通滚轮＝纵向滚动（阅读姿势）
+const tf0 = await worldTf();
+await wheel(cx(a), cy(a), -240);
+const tf1 = await worldTf();
+check("A4b 滚轮＝滚动（不缩放）", tf0 !== tf1 && (await zoomText()) === z1, `${tf0.slice(0,28)} → ${tf1.slice(0,28)}`);
 
 // A5 中键平移
 const t0 = await worldTf();
@@ -250,9 +262,13 @@ await sleep(300);
 const before = await ev("location.pathname");
 const b2 = await J(`(() => { const n = document.querySelectorAll('.card-node')[1]; const r = n.getBoundingClientRect(); return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
 await click(b2.x, b2.y);
-await sleep(900);
+await sleep(300);
+const afterClick = await ev("location.pathname");
+check("A10a 单击＝选中不跳页", afterClick === `/work/${WID}`, afterClick);
+await ev(`document.querySelectorAll('.card-node .cv-open')[1].click()`);
+await sleep(1100);
 const after = await ev("location.pathname");
-check("A10 单击＝进入对话页", after.includes("/card/"), `${before} → ${after}`);
+check("A10b 点 ↗ ＝进入对话页", after.includes("/card/"), `${before} → ${after}`);
 
 // A11 全程零 JS 异常
 check("A11 零 JS 异常", bad.length === 0, JSON.stringify(bad.slice(0, 4)));
