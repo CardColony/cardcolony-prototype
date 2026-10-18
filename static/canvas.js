@@ -384,7 +384,7 @@ const WORK_ID = window.__WORK_ID__;
 
   // [T18-C-005] 避让间距单一来源：layoutTree 子树间距 / separateOverlaps / resolveDrop /
   // 旧 resolveOverlaps 分带共用此常量（原 layoutTree 域内局部常量上提，消除散落硬编码 40）。
-  const GAP_Y = 40;
+  const GAP_Y = 32;
 
   // [T08-1-2] 折叠树排布（替代原 narrativeAxis/gridMatrix 双分支）。
   // 方向口径（用户 2026-10-04 中途指令「布局用左右视图」，对任务书上下树的推翻，留痕）：
@@ -1113,6 +1113,7 @@ const WORK_ID = window.__WORK_ID__;
     }
     world.style.visibility = "";
 
+    renderGroups(pin.childMap, projection, vm);
     renderEdges(projection, vm);
     renderBreadcrumb(projection.breadcrumb);
     applySelectionClasses();
@@ -1837,7 +1838,8 @@ const WORK_ID = window.__WORK_ID__;
   // 只框**直接子卡**（不框孙卡），≥2 张才画（1 张不需要分组）；
   // 缩放低于 55% 时整层隐藏（那时框会密到变成噪音）。
   // ══════════════════════════════════════════════════════════════════════════
-  const GROUP_PAD = 16;
+  // 18 而不是 12：卡片自带 box-shadow，留白太小框线会正好落进阴影里看不见
+  const GROUP_PAD = 18;
   let groupLayer = null;
   function ensureGroupLayer() {
     if (groupLayer && groupLayer.parentNode === world) return groupLayer;
@@ -2948,10 +2950,8 @@ const WORK_ID = window.__WORK_ID__;
   const mmCtx = mmCanvas.getContext("2d");
   const mmView = mmRoot.querySelector(".cv-mm-view");
 
-  const MM_COLORS = {
-    project: "#6ea8ff", sub_project: "#7c8cff", topic: "#4fd1c5",
-    tool: "#b58cff", coder: "#f5a65b", rule: "#8b96a8",
-  };
+  // 小地图不是"类型图例"，是"我在哪"：全部中性灰，只有视口内的卡更亮。
+  // 原来按 card_type 上 6 种颜色，缩略图变成一块彩色拼图，反而看不出结构。
 
   let _mmRaf = 0;
   function scheduleMinimap() {
@@ -2990,12 +2990,11 @@ const WORK_ID = window.__WORK_ID__;
     mmCtx.clearRect(0, 0, MM_W, MM_H);
     for (const [cid, n] of nodes) {
       const x = parseFloat(n.style.left) || 0, y = parseFloat(n.style.top) || 0;
-      const card = state.index.cardMap[cid] || {};
-      mmCtx.fillStyle = MM_COLORS[card.card_type] || "#7c8cff";
-      mmCtx.globalAlpha = 0.75;
-      const rw = Math.max(2, (n.offsetWidth || 220) * scale);
-      const rh = Math.max(1.5, (n.offsetHeight || 120) * scale);
-      mmCtx.fillRect(toX(x), toY(y), rw, rh);
+      const w = n.offsetWidth || 220, h = n.offsetHeight || 120;
+      // 视口内的卡亮一档（一眼看出"哪些已经在屏幕上"）
+      const inView = x + w > vx0 && x < vx1 && y + h > vy0 && y < vy1;
+      mmCtx.fillStyle = inView ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.26)";
+      mmCtx.fillRect(toX(x), toY(y), Math.max(2, w * scale), Math.max(1.5, h * scale));
     }
     mmCtx.globalAlpha = 1;
 

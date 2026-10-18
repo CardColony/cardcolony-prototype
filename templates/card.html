@@ -16,7 +16,7 @@
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
      版本号：nav.css 改动必须升这里的 ?v=，否则浏览器吃旧缓存、新样式不生效。 -->
-<link rel="stylesheet" href="/static/nav.css?v=14">
+<link rel="stylesheet" href="/static/nav.css?v=15">
 <!-- [对话界面商业化 2026-10-17] 设计系统与主题层：仅对话页引入。
      作用域全部以 body.page-chat 收口，画布页 work.html 不引本文件、零影响。
      必须排在 style.css / nav.css 之后：靠层叠覆盖旧视觉，不改旧规则本身。 -->
@@ -41,13 +41,13 @@
        （注释追实 2026-10-13：宽度 260→320→360，见 static/nav.css .app-nav） -->
   <nav class="app-nav" id="appNav">
     <div class="nav-rail">
-      <button class="nav-rail-btn" id="navRailBtn" title="对话导航（点击钉住浮层）">☰</button>
+      <button class="nav-rail-btn" id="navRailBtn" title="对话导航（点击钉住浮层）" aria-label="对话导航"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 4.5h10M3 8h10M3 11.5h10"/></svg></button>
       <div class="nav-rail-dot" title="当前项目"></div>
     </div>
     <!-- [迭代四 F4①] 常驻动作条＋通知按钮：不进 .nav-rail（它只在画布态可见，B-6）——
          放导航树之前，rail 态竖排、非 rail 横排靠右（CSS 两态各一条） -->
     <div id="navActions">
-      <button id="navNotifyBtn" title="卡间消息通知">🔔<span id="navNotifyCount" class="nav-notify-count"></span></button>
+      <button id="navNotifyBtn" title="卡间消息通知" aria-label="卡间消息通知"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4.2 6.8a3.8 3.8 0 0 1 7.6 0v2.6l1.2 1.8H3l1.2-1.8V6.8Z"/><path d="M6.6 13.2a1.5 1.5 0 0 0 2.8 0"/></svg><span id="navNotifyCount" class="nav-notify-count"></span></button>
     </div>
     <!-- [对齐样稿 2026-10-12] 搜索区只留搜索框本身——用户定稿：「搜索栏只需要搜索栏，
          不需要别的」。「收起全部」「定位」两钮已移除（DOM＋样式＋接线三处同删，不留死件）。 -->
@@ -73,7 +73,7 @@
          只留图标（样式见 style.css 末尾 .navFooter 段，版本 ?v=10.4）。 -->
     <div id="navFooter" class="nav-footer">
       <button id="navSettingsBtn" class="nav-foot-btn" title="模型设置"
-              onclick="location.href='/settings'"><span class="gear-glyph">⚙</span><span class="nav-foot-label">设置</span></button>
+              onclick="location.href='/settings'"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.5M8 12.7v1.5M1.8 8h1.5M12.7 8h1.5M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"/></svg><span class="nav-foot-label">设置</span></button>
     </div>
   </nav>
 
