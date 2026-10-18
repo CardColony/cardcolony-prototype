@@ -34,7 +34,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Union
@@ -176,6 +181,14 @@ TOOL_SWITCH: dict[str, str] = {
     "run_tool_card": policy.SWITCH_INVOKE_TOOL,
     "web_search": policy.SWITCH_TOOLS_WEB,
     "fetch_web": policy.SWITCH_TOOLS_WEB,
+    # [基础工具找回 2026-10-18 · Cardlo 搬运] 七件全挂 tools_file
+    "bash": policy.SWITCH_TOOLS_FILE,
+    "python": policy.SWITCH_TOOLS_FILE,
+    "glob_files": policy.SWITCH_TOOLS_FILE,
+    "delete_file": policy.SWITCH_TOOLS_FILE,
+    "move_file": policy.SWITCH_TOOLS_FILE,
+    "rename_file": policy.SWITCH_TOOLS_FILE,
+    "edit_file": policy.SWITCH_TOOLS_FILE,
     "list_files": policy.SWITCH_TOOLS_FILE,
     "read_file": policy.SWITCH_TOOLS_FILE,
     "search_files": policy.SWITCH_TOOLS_FILE,
@@ -222,7 +235,7 @@ TOOL_SWITCH: dict[str, str] = {
 #   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
 #   「注册表工具集/schema 变更」（T12-R3 纪律）。
 #   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
-TOOL_TABLE_VERSION = "tools-tc-11"
+TOOL_TABLE_VERSION = "tools-tc-12"
 
 
 # ============================================================
@@ -1478,6 +1491,17 @@ async def _h_read_file(work_id: str, current_id: str,
 async def _h_search_files(work_id: str, current_id: str,
                           arguments: dict[str, Any],
                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    # [基础工具找回 2026-10-18] 参数校验先于权限关口：keyword/pattern 两空＝validation；
+    # pattern 非空优先于 keyword（正则非法也在此拦）。
+    kw = str(arguments.get("keyword") or "")
+    pattern = str(arguments.get("pattern") or "").strip()
+    if not kw.strip() and not pattern:
+        return err("validation", "keyword 与 pattern 至少给一个")
+    if pattern:
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            return err("validation", f"正则非法: {exc}")
     # [T6 路径锁 2026-10-09] 同上（统一关口）
     if not file_tools.check_file_access(
         arguments.get("path", ""), cards.get(current_id),
@@ -1485,9 +1509,10 @@ async def _h_search_files(work_id: str, current_id: str,
         return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
     return await asyncio.to_thread(
         file_tools.search_files,
-        arguments.get("keyword", ""),
+        kw,
         arguments.get("path", ""),
         limit=int(arguments.get("limit") or 50),
+        pattern=pattern,
     )
 
 
@@ -1612,6 +1637,298 @@ async def _h_run_tool_card(work_id: str, current_id: str,
 # file_tools 四件在后（改前是 list + build_file_tool_schemas() 追加）。
 # 字典保序⇒ 工具面顺序逐字不变。
 # ============================================================
+
+
+# [基础工具找回 2026-10-18 · Cardlo 搬运] 精准编辑 + 执行器 + 六件 handler（逐字自 Cardlo；置于 TOOL_REGISTRY 之前——注册表引用这些名字）
+# ============================================================
+
+# 输出截断上限（字节）与缺省超时（秒）。
+_EXEC_MAX_OUTPUT_BYTES = 50 * 1024
+_EXEC_TIMEOUT_SECONDS = 120.0
+# 超时杀进程后**清管**（drain）的硬上限（秒）。Windows 下 shell 模式起的是
+# cmd.exe → 孙进程的树：杀掉 cmd.exe 并不关掉孙进程手里的 stdout 句柄，
+# 无界 drain 会等到孙进程自己退出——契约 ②「服务不挂死」就破了。故 drain
+# 有界：管子关得快就拿到收尾数据，关不快也顶多再花这么多秒（输出反正要丢）。
+_EXEC_DRAIN_TIMEOUT_SECONDS = 2.0
+
+
+def _clip_output(data: bytes) -> tuple[str, bool]:
+    """按**字节**截断到 50KB 再解码（utf-8 replace），返回 (文本, 是否截断)。"""
+    total = len(data)
+    if total <= _EXEC_MAX_OUTPUT_BYTES:
+        return data.decode("utf-8", "replace"), False
+    head = data[:_EXEC_MAX_OUTPUT_BYTES].decode("utf-8", "replace")
+    return f"{head}\n…（输出已截断，共 {total} 字节）", True
+
+
+def _kill_quietly(proc: asyncio.subprocess.Process) -> None:
+    """杀子进程（善后用，失败不盖过原结论）。"""
+    try:
+        proc.kill()
+    except (OSError, RuntimeError):
+        pass
+
+
+def _close_transport_quietly(proc: asyncio.subprocess.Process) -> None:
+    """弃管时关掉子进程传输（等价于 3.13 起的公开 ``Process.close()``）。
+
+    超时清管放弃后传输还开着，会在 GC 时向**已关闭的事件循环**要回调
+    （「unclosed transport」「Event loop is closed」两条告警）。趁循环还活着
+    先关掉，告警与 fd 泄漏一起消失。
+    """
+    transport = getattr(proc, "_transport", None)
+    if transport is None:
+        return
+    try:
+        transport.close()
+    except Exception:  # noqa: BLE001 —— 善后失败不盖过原结论
+        pass
+
+
+async def _h_edit_file(work_id: str, current_id: str,
+                       arguments: dict[str, Any],
+                       cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """[基础工具找回 2026-10-17 · 逐字搬自 toolfold] 精准编辑。与 ``_h_write_file``
+    同构：同一道 ``check_file_access`` 关口、同一个 ``asyncio.to_thread`` 卸载
+    ——文件 IO 不冻事件循环。
+    """
+    if not file_tools.check_file_access(
+        arguments.get("path", ""), cards.get(current_id),
+    ):
+        return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
+    return await asyncio.to_thread(
+        file_tools.edit_file,
+        arguments.get("path", ""),
+        arguments.get("old_string", ""),
+        arguments.get("new_string", ""),
+    )
+
+
+async def _run_subprocess(
+    argv: list[str] | None = None,
+    shell_cmd: str | None = None,
+    cwd: str | None = None,
+    timeout: float = _EXEC_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """异步执行一条命令，返回 ``{exit_code, stdout, stderr, truncated}`` 或 err 信封。
+
+    ``cwd`` 缺省＝项目根（``file_tools.BASE_DIR``）：**调用时现取**而不是写死
+    导入期常量——测试沙箱正是改写这个模块级常量（conftest 铁律一），写死会让
+    测试期命令跑进真实 D:\\AI_station。
+    """
+    run_cwd = str(cwd or file_tools.BASE_DIR)
+    try:
+        if shell_cmd is not None:
+            proc = await asyncio.create_subprocess_shell(
+                shell_cmd,
+                cwd=run_cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *(argv or []),
+                cwd=run_cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+    except Exception as exc:  # noqa: BLE001 —— 起不了子进程＝error 信封（契约 ⑤）
+        return err("internal", f"子进程启动失败: {exc}")
+
+    try:
+        out, e = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        _kill_quietly(proc)
+        try:
+            # 有界清管：见 _EXEC_DRAIN_TIMEOUT_SECONDS（Windows 孙进程持有
+            # 管道句柄时，无界 drain 会把「超时」变成第二次挂死）。
+            await asyncio.wait_for(
+                proc.communicate(), timeout=_EXEC_DRAIN_TIMEOUT_SECONDS)
+        except TimeoutError:
+            # 管子还是不关（孙进程仍攥着句柄）⇒ 弃管松手
+            _close_transport_quietly(proc)
+        except Exception:  # noqa: BLE001 —— 善后失败不改变「已超时」的结论
+            pass
+        return err("locked", f"执行超时（>{timeout:g}s）")
+    except Exception as exc:  # noqa: BLE001
+        _kill_quietly(proc)
+        return err("internal", f"子进程输出读取失败: {exc}")
+
+    stdout, cut_out = _clip_output(out or b"")
+    stderr, cut_err = _clip_output(e or b"")
+    return {
+        "exit_code": int(proc.returncode or 0),
+        "stdout": stdout,
+        "stderr": stderr,
+        "truncated": bool(cut_out or cut_err),
+    }
+
+
+async def _h_bash(work_id: str, current_id: str,
+                  arguments: dict[str, Any],
+                  cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """终端执行：命令失败（非零退出码）不是错误，原样回退出码与输出。"""
+    command = str(arguments.get("command") or "").strip()
+    if not command:
+        return err("validation", "command 不能为空")
+    return await _run_subprocess(shell_cmd=command)
+
+
+async def _h_python(work_id: str, current_id: str,
+                    arguments: dict[str, Any],
+                    cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """代码执行：写系统临时 .py 再跑（不用 ``python -c``，规避 Windows 命令行
+    多行字符串的引号/换行转义坑），finally 必删临时文件。"""
+    code = str(arguments.get("code") or "")
+    if not code.strip():
+        return err("validation", "code 不能为空")
+    tmp_path = ""
+    try:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, encoding="utf-8",
+            ) as fh:
+                fh.write(code)
+                tmp_path = fh.name
+        except OSError as exc:
+            return err("internal", f"临时文件创建失败: {exc}")
+        return await _run_subprocess(argv=[sys.executable, tmp_path])
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError as exc:
+                logger.warning("python 临时文件清理失败 %s: %s", tmp_path, exc)
+
+
+def _glob_files_impl(pattern: str, path: str) -> dict[str, Any]:
+    """glob 实现：只收文件，跳过剪枝目录与凭证文件，上限 200 条。
+
+    起始目录：给了 ``path`` ⇒ 过 ``_resolve``（相对路径落项目根、越界拒，
+    与文件四件同边界）；**缺省＝项目根**（``BASE_DIR`` 本身就是那条边界，
+    无须再校验）。
+    """
+    if path:
+        start, e = file_tools._resolve(path)
+        if e is not None:
+            return err("validation", str(e.get("error", "")))
+    else:
+        start = Path(file_tools.BASE_DIR)
+    matches: list[str] = []
+    truncated = False
+    try:
+        walker = start.rglob(pattern) if "**" in pattern else start.glob(pattern)
+        for p in walker:
+            if len(matches) >= 200:
+                truncated = True
+                break
+            try:
+                if not p.is_file():
+                    continue
+                if file_tools._is_pruned(p) or file_tools._credential_excluded(p):
+                    continue
+            except OSError:
+                continue
+            matches.append(file_tools._rel(p))
+    except (OSError, ValueError) as exc:
+        return err("validation", f"glob 模式无效: {exc}")
+    return {
+        "pattern": pattern,
+        "scope": file_tools._rel(start),
+        "matches": matches,
+        "truncated": truncated,
+    }
+
+
+async def _h_glob_files(work_id: str, current_id: str,
+                        arguments: dict[str, Any],
+                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """按文件名模式找文件。遍历可能很长 ⇒ 卸线程池（同文件四件口径，不冻事件循环）。"""
+    pattern = str(arguments.get("pattern") or "")
+    if not pattern.strip():
+        return err("validation", "pattern 不能为空")
+    return await asyncio.to_thread(
+        _glob_files_impl, pattern.strip(), str(arguments.get("path") or "").strip(),
+    )
+
+
+def _path_or_err(raw: Any, label: str = "path") -> tuple[Path | None, dict[str, Any] | None]:
+    """取参 → 非空校验 → _resolve 边界校验。返回 (路径, None) 或 (None, err 信封)。
+
+    _resolve 的失败原文（空/越界/无法解析）按 **validation** 回——它是「这个
+    path 参数不合法」，不是权限判定（权限在工具面，见裁定 1）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None, err("validation", f"{label} 不能为空")
+    target, e = file_tools._resolve(text)
+    if e is not None:
+        return None, err("validation", str(e.get("error", "")))
+    return target, None
+
+
+async def _h_delete_file(work_id: str, current_id: str,
+                         arguments: dict[str, Any],
+                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """删文件：只删文件（目录拒）；不存在＝not_found。"""
+    target, e = _path_or_err(arguments.get("path"))
+    if e is not None:
+        return e
+    assert target is not None
+    if target.is_dir():
+        return err("validation", "这是目录不是文件")
+    if not target.exists():
+        return err("not_found", f"文件不存在: {file_tools._rel(target)}")
+    try:
+        target.unlink()
+    except OSError as exc:
+        return err("internal", f"删除失败: {exc}")
+    return {"path": file_tools._rel(target), "deleted": True}
+
+
+async def _h_move_file(work_id: str, current_id: str,
+                       arguments: dict[str, Any],
+                       cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """移动文件：src/dst 都过边界校验；src 不存在＝not_found；返回新路径。"""
+    src, e = _path_or_err(arguments.get("src"), "src")
+    if e is not None:
+        return e
+    dst, e = _path_or_err(arguments.get("dst"), "dst")
+    if e is not None:
+        return e
+    assert src is not None and dst is not None
+    if not src.exists():
+        return err("not_found", f"文件不存在: {file_tools._rel(src)}")
+    # dst 已是目录 ⇒ shutil 语义是「移进去」，回执须报**真实落点**而不是入参。
+    final = dst / src.name if dst.is_dir() else dst
+    try:
+        shutil.move(str(src), str(final))
+    except OSError as exc:
+        return err("internal", f"移动失败: {exc}")
+    return {"from": file_tools._rel(src), "path": file_tools._rel(final)}
+
+
+async def _h_rename_file(work_id: str, current_id: str,
+                         arguments: dict[str, Any],
+                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """改名（同目录）：new_name 只能是纯文件名（含路径分隔符＝validation）。"""
+    target, e = _path_or_err(arguments.get("path"))
+    if e is not None:
+        return e
+    assert target is not None
+    new_name = str(arguments.get("new_name") or "").strip()
+    if not new_name:
+        return err("validation", "new_name 不能为空")
+    if "/" in new_name or "\\" in new_name:
+        return err("validation", "new_name 只能是文件名")
+    if not target.exists():
+        return err("not_found", f"文件不存在: {file_tools._rel(target)}")
+    renamed = target.with_name(new_name)
+    try:
+        target.rename(renamed)
+    except OSError as exc:
+        return err("internal", f"改名失败: {exc}")
+    return {"from": file_tools._rel(target), "path": file_tools._rel(renamed)}
 
 TOOL_REGISTRY: dict[str, ToolDef] = {
     "read_card": ToolDef(
@@ -2143,6 +2460,116 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
             },
         },
         handler=_h_update_goal,
+        readonly=False,
+    ),
+    "bash": ToolDef(
+        schema={
+            "name": "bash",
+            "description": "执行一条 shell 命令，返回标准输出、标准错误与退出码。命令失败（非零退出码）不是错误，会原样返回退出码与输出，由你判断成败。执行超时（>120 秒）会返回错误。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "要执行的 shell 命令（可含管道、重定向、&& 等 shell 语法）"}
+                },
+                "required": ["command"]
+            }
+        },
+        handler=_h_bash,
+        readonly=False,
+    ),
+    "python": ToolDef(
+        schema={
+            "name": "python",
+            "description": "执行一段 Python 代码，返回标准输出、标准错误与退出码。代码在项目 venv 解释器下运行（能 import 项目已安装的库）。命令失败（非零退出码）不是错误。执行超时（>120 秒）会返回错误。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "要执行的 Python 代码（多行直接写，会写入临时文件后运行）"}
+                },
+                "required": ["code"]
+            }
+        },
+        handler=_h_python,
+        readonly=False,
+    ),
+    "glob_files": ToolDef(
+        schema={
+            "name": "glob_files",
+            "description": "按文件名模式（glob）查找文件，如 '**/*.py'、'*.md'。返回匹配的文件路径列表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "glob 模式，如 '**/*.py'"},
+                    "path": {"type": "string", "description": "起始目录（相对项目根或绝对），缺省在项目根下找"}
+                },
+                "required": ["pattern"]
+            }
+        },
+        handler=_h_glob_files,
+        readonly=True,
+    ),
+    "delete_file": ToolDef(
+        schema={
+            "name": "delete_file",
+            "description": "删除一个文件（目录不可删，需先清空目录内容）。删除不可撤销，调用前确认目标。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "要删除的文件路径（相对 D:\\AI_station 或绝对）"}
+                },
+                "required": ["path"]
+            }
+        },
+        handler=_h_delete_file,
+        readonly=False,
+    ),
+    "move_file": ToolDef(
+        schema={
+            "name": "move_file",
+            "description": "把文件从一处移动到另一处（同盘为改路径，内容不变）。两端路径都要在允许范围内。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "src": {"type": "string", "description": "源文件路径（相对 D:\\AI_station 或绝对）"},
+                    "dst": {"type": "string", "description": "目标路径（文件路径或目录；落目录则保留原文件名）"}
+                },
+                "required": ["src", "dst"]
+            }
+        },
+        handler=_h_move_file,
+        readonly=False,
+    ),
+    "rename_file": ToolDef(
+        schema={
+            "name": "rename_file",
+            "description": "给文件改名（同目录内，只改文件名不改位置）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "要改名的文件路径（相对 D:\\AI_station 或绝对）"},
+                    "new_name": {"type": "string", "description": "新文件名（纯文件名，不能带路径分隔符）"}
+                },
+                "required": ["path", "new_name"]
+            }
+        },
+        handler=_h_rename_file,
+        readonly=False,
+    ),
+    "edit_file": ToolDef(
+        schema={
+            "name": "edit_file",
+            "description": "精准编辑文件：把文件中的 old_string 替换为 new_string（只改那一处）。old_string 必须在文件中恰好出现一次，否则报错，不会做任何修改。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径（相对 D:\\AI_station 或绝对）"},
+                    "old_string": {"type": "string", "description": "要替换的原文（须与文件内容逐字匹配，含缩进与换行）"},
+                    "new_string": {"type": "string", "description": "替换后的新内容"}
+                },
+                "required": ["path", "old_string", "new_string"]
+            }
+        },
+        handler=_h_edit_file,
         readonly=False,
     ),
 }
