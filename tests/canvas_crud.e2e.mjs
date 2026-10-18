@@ -34,7 +34,11 @@ await send("Page.enable"); await send("Runtime.enable"); await send("Network.ena
 await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
 const ev = async (x) => { const r = await send("Runtime.evaluate", { expression: x, returnByValue: true, awaitPromise: true }); return r.result && r.result.result ? r.result.result.value : undefined; };
 const J = async (x) => JSON.parse(await ev(`JSON.stringify(${x})`) || "null");
-const move = (x, y) => send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+// 拖拽时 mouseMoved 必须同时带 button:"left" 与 buttons:1
+// （只带 buttons 不够：CDP 的 button 默认是 "none"，浏览器仍按"普通移动"处理）
+const move = (x, y, buttons = 0) => send("Input.dispatchMouseEvent", {
+  type: "mouseMoved", x, y, buttons, button: buttons ? "left" : "none",
+});
 const down = (x, y, b = "left", cc = 1) => send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: b, clickCount: cc });
 const up = (x, y, b = "left", cc = 1) => send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: b, clickCount: cc });
 async function click(x, y) { await move(x, y); await down(x, y); await up(x, y); await sleep(280); }
@@ -53,8 +57,17 @@ await ev(`(() => { window.__calls = []; const of = window.fetch; window.fetch = 
 
 // ── 1 新建子卡（右键 → 菜单项 → 弹窗 → 输入 → 创建）──
 const n0 = Number(await ev("document.querySelectorAll('.card-node').length"));
-const c1 = await centerOf(".card-node", 1);
-await rightClick(c1.x, c1.y);
+// 用 DOM 派发 contextmenu：坐标右键在"视野变化 + 浮层"下会偶发落空
+await ev(`(() => {
+  const nav = (window.GetCanvasState && window.GetCanvasState().nav) || {};
+  const rootId = nav.workCardId || '';
+  const n = [...document.querySelectorAll('.card-node')].find(x => x.dataset.id !== rootId);
+  if (!n) return;
+  const r = n.getBoundingClientRect();
+  n.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true,
+    clientX: Math.round(r.x + r.width/2), clientY: Math.round(r.y + r.height/2) }));
+})()`);
+await sleep(450);
 // 点「新建子卡」
 const mi = await J(`(() => { const it = [...document.querySelectorAll('.cv-menu .cv-mi')].find(e => e.textContent.includes('新建子卡')); if (!it) return null; const r = it.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
 check("1a 菜单里有「新建子卡」", !!mi);
@@ -107,19 +120,45 @@ if (delBox) {
 }
 
 // ── 3 缩放到 50% 后拖卡：位移量是否与缩放一致（不放大不缩小）──
+// 顺序很重要：先 ⌘0 让内容居中，**再**缩到 50%（缩放以视口中心为锚，
+// 居中状态下缩一半，卡片仍在视野内）。反过来做会让卡片跑出视口。
+await send("Input.dispatchKeyEvent", { type: "keyDown", key: "0", code: "Digit0", modifiers: 2, windowsVirtualKeyCode: 48 });
+await send("Input.dispatchKeyEvent", { type: "keyUp", key: "0", code: "Digit0", modifiers: 2, windowsVirtualKeyCode: 48 });
+await sleep(500);
 await ev("(() => { const s = document.getElementById('zoomSlider'); s.value = '50'; s.dispatchEvent(new Event('input', { bubbles: true })); })()");
 await sleep(500);
 const zoomNow = await ev("(document.getElementById('zoomDisplay')||{}).textContent");
 // [画布 2026-10-18] 拖拽只调纵向顺序，故在纵向验证"屏幕位移 ÷ zoom = 世界位移"
-const dragBox = await centerOf(".card-node", 2);
-const topBefore = await J(`parseFloat(document.querySelectorAll('.card-node')[2].style.top)`);
+// 用**视口内**的卡（50% 下有些卡在视口外，取第 3 张会落空）
+const dragBox = await J(`(() => {
+  const nav = (window.GetCanvasState && window.GetCanvasState().nav) || {};
+  const rootId = nav.workCardId || '';
+  const n = [...document.querySelectorAll('.card-node')].find(x => {
+    if (x.dataset.id === rootId) return false;
+    const r = x.getBoundingClientRect();
+    // 条件放宽：50% 下卡片很小，位置随 pan 变；只要完整落在视口内且不被顶栏压住即可
+    return r.top > 70 && r.bottom < innerHeight - 60 && r.left > 60 && r.right < innerWidth - 30;
+  });
+  if (!n) return null;
+  const r = n.getBoundingClientRect();
+  return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), id: n.dataset.id };
+})()`);
+const topBefore = await J(`(() => { const n = [...document.querySelectorAll('.card-node')].find(x => x.dataset.id === ${JSON.stringify(dragBox ? dragBox.id : "")}); return n ? parseFloat(n.style.top) : 0; })()`);
 if (dragBox) {
-  await move(dragBox.x, dragBox.y); await down(dragBox.x, dragBox.y);
-  for (let i = 1; i <= 8; i++) { await move(dragBox.x, dragBox.y + i * 10); await sleep(16); }
-  await up(dragBox.x, dragBox.y + 80);
+  // 用与 probe 完全相同的序列（已验证有效）：moved → pressed → 8×moved(button+buttons) → released
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: dragBox.x, y: dragBox.y });
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: dragBox.x, y: dragBox.y, button: "left", clickCount: 1 });
+  for (let i = 1; i <= 8; i++) {
+    await send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: dragBox.x, y: dragBox.y + i * 10, button: "left", buttons: 1,
+    });
+    await sleep(20);
+  }
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: dragBox.x, y: dragBox.y + 80, button: "left", clickCount: 1 });
+  await sleep(900);
   await sleep(900);
 }
-const topAfter = await J(`parseFloat(document.querySelectorAll('.card-node')[2].style.top)`);
+const topAfter = await J(`(() => { const n = [...document.querySelectorAll('.card-node')].find(x => x.dataset.id === ${JSON.stringify(dragBox ? dragBox.id : "")}); return n ? parseFloat(n.style.top) : 0; })()`);
 const delta = topAfter - topBefore;
 check("3 缩放 50% 下拖 80px ≈ 世界位移 160px", Math.abs(delta - 160) < 30, `zoom=${zoomNow} Δworld=${Math.round(delta)}`);
 

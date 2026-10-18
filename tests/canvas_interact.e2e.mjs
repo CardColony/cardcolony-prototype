@@ -64,8 +64,10 @@ const J = async (x) => JSON.parse(await ev(`JSON.stringify(${x})`) || "null");
 
 // ---- 输入原语 ----
 const MOD = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
-async function mouse(type, x, y, { button = "left", clickCount = 1, modifiers = 0 } = {}) {
-  await send("Input.dispatchMouseEvent", { type, x, y, button, clickCount, modifiers });
+async function mouse(type, x, y, { button = "left", clickCount = 1, modifiers = 0, buttons = 0 } = {}) {
+  // ⚠ 拖拽时 mouseMoved 必须带 buttons:1（表示左键按住），否则浏览器认为是
+  // 普通移动，不触发拖拽（实测：不带 buttons 时卡片 top 一点不动）。
+  await send("Input.dispatchMouseEvent", { type, x, y, button, clickCount, modifiers, buttons });
 }
 async function click(x, y, { modifiers = 0 } = {}) {
   await mouse("mouseMoved", x, y, { modifiers });
@@ -89,10 +91,12 @@ async function wheel(x, y, deltaY, { modifiers = 0 } = {}) {
   await sleep(120);
 }
 async function drag(x1, y1, x2, y2, { button = "left", modifiers = 0, steps = 8 } = {}) {
+  const btnBit = button === "left" ? 1 : button === "right" ? 2 : button === "middle" ? 4 : 0;
   await mouse("mouseMoved", x1, y1, { modifiers });
   await mouse("mousePressed", x1, y1, { button, modifiers });
   for (let i = 1; i <= steps; i++) {
-    await mouse("mouseMoved", x1 + ((x2 - x1) * i) / steps, y1 + ((y2 - y1) * i) / steps, { button, modifiers });
+    await mouse("mouseMoved", x1 + ((x2 - x1) * i) / steps, y1 + ((y2 - y1) * i) / steps,
+                { button, modifiers, buttons: btnBit });
     await sleep(12);
   }
   await mouse("mouseReleased", x2, y2, { button, modifiers });
@@ -134,16 +138,19 @@ const a = boxes[0], b = boxes[1];
 const cx = (o) => o.x + o.w / 2, cy = (o) => o.y + o.h / 2;
 
 // A1 选中（单击＝选中+右栏读卡；整幅适配后坐标已变，重新取）
-const aBox = await J(`(() => { const n = document.querySelectorAll('.card-node')[0]; const r = n.getBoundingClientRect(); return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
-await click(aBox.x, aBox.y, { modifiers: MOD.shift });
+// ⚠ CDP 的 modifiers 位掩码只影响 mousedown/mouseup，**不影响浏览器合成的 click
+// 事件的 shiftKey**（实测：带 modifiers:8 点击，处理器的 e.shiftKey 仍为 false）。
+// 所以 Shift+单击用 DOM 派发，直接测处理器的修饰键分支。
+await ev(`document.querySelectorAll('.card-node')[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: true }))`);
+await sleep(300);
 check("A1 Shift+单击卡＝选中 1 张", (await selCount()) === 1, await selCount());
 check("A1b Shift+单击不跳页", (await ev("location.pathname")) === `/work/${WID}`, await ev("location.pathname"));
 
 // A2 Shift 多选（先整幅适配：首屏锚在根卡，第二张卡可能不在视口内）
 await key("0", { code: "Digit0", modifiers: MOD.ctrl });
 await sleep(360);
-const b2box = await J(`(() => { const n = document.querySelectorAll('.card-node')[1]; const r = n.getBoundingClientRect(); return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
-await click(b2box.x, b2box.y, { modifiers: MOD.shift });
+await ev(`document.querySelectorAll('.card-node')[1].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: true }))`);
+await sleep(300);
 check("A2 Shift+单击＝多选 2 张", (await selCount()) === 2, await selCount());
 
 // A3 点空白取消
@@ -185,7 +192,20 @@ check("A5 中键拖＝平移", t0 !== t1, `${t0} → ${t1}`);
 await key("Escape");
 await key("0", { code: "Digit0", modifiers: MOD.ctrl });
 await sleep(400);
-await drag(320, 120, 1200, 900, { modifiers: MOD.shift });
+// 起点用动态空白点（90% 下卡片位置变了，写死坐标可能压在卡上，框选就变成拖卡）
+const startBlank = await J(`(() => {
+  const rects = [...document.querySelectorAll('.card-node')].map(n => n.getBoundingClientRect());
+  const vp = document.getElementById('viewport').getBoundingClientRect();
+  for (let y = vp.top + 40; y < vp.bottom - 40; y += 24) {
+    for (let x = vp.left + 40; x < vp.right - 60; x += 24) {
+      if (!rects.some(r => x > r.left - 10 && x < r.right + 10 && y > r.top - 10 && y < r.bottom + 10)) {
+        return { x: Math.round(x), y: Math.round(y) };
+      }
+    }
+  }
+  return null;
+})()`);
+if (startBlank) await drag(startBlank.x, startBlank.y, 1500, 940, { modifiers: MOD.shift });
 const marqSel = await selCount();
 check("A6 Shift+拖空白＝框选选中多张", marqSel >= 2, marqSel);
 
@@ -217,12 +237,27 @@ const boxes2 = await J(`[...document.querySelectorAll('.card-node')].map(n => {
 })`);
 // 用两张**非根卡**（根卡是布局锚点，拖它＝移动画布，不参与整组拖动）
 const p1 = boxes2[1], p2 = boxes2[2];
-await click(p1.x, p1.y, { modifiers: MOD.shift });
-await click(p2.x, p2.y, { modifiers: MOD.shift });
+// 选**视口内**的两张卡（90% 下部分卡在视口外，拖它们会落空）
+const pair = await J(`(() => {
+  // 排除根卡：拖根卡＝平移画布（它是布局原点），不参与整组拖动
+  const nav = (window.GetCanvasState && window.GetCanvasState().nav) || {};
+  const rootId = nav.workCardId || nav.workRootId || '';
+  const inView = [...document.querySelectorAll('.card-node')].filter(n => {
+    if (n.dataset.id === rootId) return false;
+    const r = n.getBoundingClientRect();
+    return r.top > 60 && r.bottom < innerHeight - 20 && r.left > 0 && r.right < innerWidth;
+  });
+  if (inView.length < 2) return null;
+  inView[0].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+  inView[1].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+  const r = inView[0].getBoundingClientRect();
+  return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+})()`);
+await sleep(300);
 // [画布 2026-10-18] 拖拽＝只调纵向顺序（横向锁定在列上），故断言 top 变化
 const before2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.top))`);
 const left2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
-await drag(p1.x, p1.y, p1.x, p1.y + 90);
+if (pair) await drag(pair.x, pair.y, pair.x, pair.y + 90);
 const after2 = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.top))`);
 const leftAfter = await J(`[...document.querySelectorAll('.card-node.is-selected')].map(n => parseFloat(n.style.left))`);
 const movedAll = before2.length >= 2 && before2.every((v, i) => Math.abs(after2[i] - v) > 30);

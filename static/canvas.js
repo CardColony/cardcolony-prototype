@@ -1754,6 +1754,24 @@ const WORK_ID = window.__WORK_ID__;
     applySelectionClasses();
   }
 
+  // [画布 2026-10-18 · 修真 bug] 右栏浮层打开后，**被选中的卡可能正好在它下面**。
+  // 实测：选中右侧的卡 → 浮层弹出盖住它 → 之后所有点击都落在浮层上（连拖拽都失效，
+  // 因为 mousedown 根本没到卡片）。所以选中后要把视野左移，保证卡在可见区内。
+  function ensureCardVisible(cid) {
+    const node = nodeMap.get(cid);
+    if (!node) return;
+    const panel = document.getElementById("rulePanel");
+    const panelW = (panel && panel.classList.contains("is-open")) ? panel.offsetWidth : 0;
+    if (!panelW) return;
+    const vp = viewport.getBoundingClientRect();
+    const r = node.getBoundingClientRect();
+    const safeRight = vp.right - panelW - 16;
+    if (r.right <= safeRight) return;
+    const dx = Math.round(r.right - safeRight);
+    applyViewState({ panX: state.view.panX - dx });
+    scheduleSaveView();
+  }
+
   function clearSelection() {
     if (!state.view.selected.size) return;
     state.view.selected.clear();
@@ -1815,6 +1833,14 @@ const WORK_ID = window.__WORK_ID__;
     // [画布 2026-10-18 · 并行] 多选的意义不是"一次删掉"，而是**一次对多张卡做同一件事**。
     // 这里给三个真正用得上的：全部展开、全部折叠、批量删除。
     if (ids.length > 1) {
+      // 多选**不打开右栏浮层**：批量操作用底部那条操作条（cv-selbar）。
+      // 浮层一开就盖住画布右侧，而多选的目的正是在画布上批量操作
+      // （实测：多选后浮层遮挡，拖拽的 mousedown 全落在浮层上，整组拖动完全失效）。
+      const p2 = document.getElementById("rulePanel");
+      if (p2 && p2.dataset.mode === "card") {
+        p2.classList.remove("is-open");
+        p2.dataset.mode = "";
+      }
       cardDetailEl.appendChild(el("div", "cd-head", `已选 ${ids.length} 张`));
 
       const list = el("div", "cd-multi");
@@ -1949,6 +1975,8 @@ const WORK_ID = window.__WORK_ID__;
     state.view.selected.clear();
     if (id) state.view.selected.add(id);
     applySelectionClasses();
+    // 浮层在 applySelectionClasses → renderCardDetail 里打开，等它开完再校正视野
+    if (id) setTimeout(() => ensureCardVisible(id), 0);
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -2228,33 +2256,24 @@ const WORK_ID = window.__WORK_ID__;
   // ══════════════════════════════════════════════════════════════════════════
   function fitToContent() {
     if (!nodeMap.size) return false;
-    // ⚠ 这里**不做"按内容算缩放"**，而是给一个算过的固定档位。
+    // [画布 2026-10-18] 整幅适配＝**根卡居中 + 固定 90%**。
     //
-    // 为什么：卡片高度随 LOD 档位变（骨架 75 / 完整 150），而 fitView 读的是当前
-    // DOM 高度、zoom 又决定档位 ⇒ 直接 fit 会算错；迭代修也修不动，因为
-    // `applyLODClasses` 之后在同一个同步任务里 `offsetHeight` 仍是旧值
-    // （实测：类已是 l0，读出来还是 148；读 body 强制重排也无效）。
+    // 不用"按 bbox 居中"：实测 work_001 上算出的 panY 让卡片跑到视口外（y=-64），
+    // 因为 bbox 用的是 l1 尺寸而实际渲染是 l0，两者不一致。
+    // 根卡是布局原点（子卡以它为锚向右上下排），居中它就能看到整棵树。
     //
-    // 0.85 是量出来的：骨架档 9 个节点 ≈ 995px，0.85 下 846px，落在可用高度
-    // （952-112=840）边缘，标题 15×0.85 ≈ 12.75px 可读。差 6px 就滚动一下。
-    // 宁可"可能差一点要滚"，也不要"缩到 55% 字看不清"。
-    const Z = 0.85;
-    const nodes = [...world.querySelectorAll(".card-node")];
-    if (!nodes.length) return false;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const n of nodes) {
-      const x = parseFloat(n.style.left) || 0;
-      const y = parseFloat(n.style.top) || 0;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x + n.offsetWidth);
-      maxY = Math.max(maxY, y + n.offsetHeight);
-    }
-    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    // 0.9 是量出来的：骨架档 9 个节点（根 70 + 8×56 + 8×40 间距）≈ 838px，
+    // 0.9 下 754px，落在可用高度 840 内；标题 13×0.9 ≈ 11.7px、结论 11×0.9 ≈ 9.9px。
+    const Z = 0.9;
+    const rootNode = nodeMap.get(state.nav.viewRoot);
+    if (!rootNode) return false;
+    const rx = parseFloat(rootNode.style.left) || 0;
+    const ry = parseFloat(rootNode.style.top) || 0;
+    const rh = rootNode.offsetHeight || 70;
     applyViewState({
       zoom: Z,
-      panX: Math.round(viewport.clientWidth / 2 - cx * Z),
-      panY: Math.round(viewport.clientHeight / 2 - cy * Z),
+      panX: Math.round(viewport.clientWidth / 2 - rx * Z),
+      panY: Math.round(viewport.clientHeight / 2 - (ry + rh / 2) * Z),
     });
     scheduleSaveView();
     return true;
