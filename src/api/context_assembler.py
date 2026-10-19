@@ -99,6 +99,48 @@ def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, An
     return card_db.read_sync(work_id, _fn, []) or []
 
 
+def _load_current_card_state(work_id: str, card_id: str
+                             ) -> tuple[dict[str, Any], dict[str, str]]:
+    """当前卡正文三块 ＋ 影子四节（**150 区常驻用，一次 IO 拿全**）。
+
+    [常驻当前卡 2026-10-19 · permexp] 用户令：卡片自己的现状与影子常驻上下文，
+    模型不必每轮 read_card / read_shadow。取数与渲染分离（本函数只取数）。
+    取不到（卡不存在/库异常）⇒ 空 dict，渲染器按「空块不出现」自然降级。
+    """
+    def _fn(conn: Any) -> tuple[dict[str, Any], dict[str, str]]:
+        row = conn.execute(
+            "SELECT mission, status_block, rulings FROM cards WHERE card_id = ?",
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            return ({}, {})
+        body = {
+            "mission": row["mission"] or "",
+            "status_block": row["status_block"] or "",
+            "rulings": row["rulings"] or "",
+        }
+        sh = conn.execute(
+            "SELECT progress, coordination, artifacts, iterations FROM shadows "
+            "WHERE owner_card_id = ?",
+            (card_id,),
+        ).fetchone()
+        shadow = (
+            {
+                "progress": sh["progress"] or "",
+                "coordination": sh["coordination"] or "",
+                "artifacts": sh["artifacts"] or "",
+                "iterations": sh["iterations"] or "",
+            }
+            if sh is not None else {}
+        )
+        return (body, shadow)
+
+    try:
+        return card_db.read_sync(work_id, _fn, ({}, {})) or ({}, {})
+    except Exception:  # noqa: BLE001 取不到＝无来源，不阻断装配
+        return ({}, {})
+
+
 def _control_path() -> Path:
     """控制面配置位置；调用时派生路径，不缓存模块级路径常量。"""
     return BASE_DIR / "config" / "context_regions.json"
@@ -201,6 +243,8 @@ def build_ctx(work_id: str, current_id: str,
     if state is None and memory_store.condense_enabled():
         state = memory_store.load_memory(work_id, current_id)
     cur_meta = card_store._meta_of(work_id, current_id) or {}
+    # [常驻当前卡 2026-10-19 · permexp] 当前卡正文＋影子一次读全（150 区常驻）。
+    cur_body, cur_shadow = _load_current_card_state(work_id, current_id)
     # [依赖关联线 2026-10-16] 双向依赖关联线：在已加载的 cards 索引上算（零额外 IO）。
     dep_out, dep_in = _dep_relations_for(cards, current_id, cur_meta)
     return context_regions.RegionCtx(
@@ -210,6 +254,8 @@ def build_ctx(work_id: str, current_id: str,
         work_card_id=work_store.work_card_id_of(work_id),
         cur=cur,
         cur_meta=cur_meta,
+        cur_body=cur_body,
+        cur_shadow=cur_shadow,
         dep_relations_out=dep_out,
         dep_relations_in=dep_in,
         direct_child_status=_load_direct_child_status(work_id, current_id),

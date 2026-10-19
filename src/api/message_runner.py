@@ -40,6 +40,7 @@ from typing import Any, Callable, Optional
 from ..storage import card_db, card_store, memory_store, session_facade, session_ops, session_store, work_store
 from ..thinkchain import board as thinkchain_board
 from ..thinkchain import enabled as thinkchain_enabled  # [纯单模型 2026-10-17]
+from ..thinkchain import seats_enabled as thinkchain_seats_enabled  # [规划驱动 2026-10-19]
 from ..thinkchain.model_pick import pick_model as _pick_model  # 步类型路由消费点（_pick_step_model 调用）
 from ..thinkchain import model_pick
 from ..toolcard import driver as toolcard_driver
@@ -652,8 +653,9 @@ async def step(state: RunState) -> StepOutcome:
         # [思维链真实落地 2026-10-11] 提交轮三席统合（C6）：board 全部步骤
         # done（收口）后、交付前，固定触发三席质询＋统合交付。空手轮旁路
         # （旧「无工具即三席」）退役——直答回合零三席。
-        if (thinkchain_enabled() and state.chain_completed
-                and not state.seats_done):   # [纯单模型 2026-10-17]
+        if (thinkchain_enabled() and thinkchain_seats_enabled()
+                and state.chain_completed
+                and not state.seats_done):   # [规划驱动 2026-10-19] 三席另有开关
             return StepOutcome("seats", "finalize_review")
         return StepOutcome("deliver", "chain_done" if state.chain_completed else "direct")
 
