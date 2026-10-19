@@ -221,11 +221,10 @@ def _validate(cfg: dict[str, Any]) -> tuple[list[str], list[str]]:
             if m not in (models or {}):
                 errors.append(f"绑定 '{role}' 指向的模型 '{m}' 不存在")
 
-    # ④ system.default_model 必须存在于 models（fallback_model 随机制拆除）
-    for field in ("default_model",):
-        name = system.get(field)
-        if name and name not in (models or {}):
-            errors.append(f"system.{field} 指向的模型 '{name}' 不存在")
+    # ④ system.default_model 必须存在于 models（[2026-10-19 裁定] 无降级模型，无 fallback_model）
+    name = system.get("default_model")
+    if name and name not in (models or {}):
+        errors.append(f"system.default_model 指向的模型 '{name}' 不存在")
 
     # ⑤ 绑定 key 必须在角色表里——只警告
     known_roles = set(roles.list_roles() or {})
@@ -301,9 +300,6 @@ async def put_models(request: Request) -> JSONResponse:
     cfg["models"] = cfg.get("models") or {}
     cfg["bindings"] = cfg.get("bindings") or {}
     cfg["system"] = cfg.get("system") or {}
-    # [2026-10-19] 模型 fallback 机制已拆除：死键一律剥掉，防旧标签页/旧客户端
-    # 把 fallback_model 写回 yaml（写回去也没有消费者，但留着就是骗人的字）。
-    cfg["system"].pop("fallback_model", None)
     cfg["simple"] = cfg.get("simple") or {}
     cfg["retry_grading"] = cfg.get("retry_grading") or {}
 
@@ -683,3 +679,237 @@ async def restore_backup(request: Request) -> JSONResponse:
         "backup": saved.name if saved else None,
         "models": list((data.get("models") or {}).keys()),
     })
+
+
+# ================================================================
+# 模型设置 · 按项目/卡片覆盖（per-work / per-card model override）
+# ================================================================
+# 语义（产品裁定 2026-10-19）：
+#   - 模型目录（providers/models）全局唯一；覆盖只决定「角色→模型 / 项目默认模型」。
+#   - 解析优先序：card > work > global(models.yaml)。
+#   - PUT 为**整作用域替换**：发送什么即是什么；要清某字段就从 body 省略它。
+#   - 任何引用的模型必须存在于全局目录（model_config.validate_override 校验）。
+#   - fallback_model 保持全局（降级是韧性设置，不做 per-scope）。
+# 载体：works/{work_id}/model_override.json（见 storage/model_override.py）。
+
+
+def _override_work_or_404(work_id: str) -> Optional[JSONResponse]:
+    """校验 work 存在；不存在返 404 响应，存在返 None。"""
+    from ..storage import work_store
+    try:
+        if work_store.read_work(work_id) is None:
+            return JSONResponse(status_code=404, content={"ok": False, "error": f"项目不存在: {work_id}"})
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"ok": False, "error": "读取项目失败"})
+    return None
+
+
+def _override_card_or_404(work_id: str, card_id: str) -> Optional[JSONResponse]:
+    """校验卡片存在；不存在返 404 响应，存在返 None。"""
+    from ..storage import card_store
+    try:
+        if not card_store.card_exists(work_id, card_id):
+            return JSONResponse(status_code=404,
+                                content={"ok": False, "error": f"卡片不存在: {card_id}"})
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"ok": False, "error": "读取卡片失败"})
+    return None
+
+
+def _override_body(payload: Any) -> Any:
+    """校验覆盖请求体；非法返 400 JSONResponse，合法返 dict。"""
+    if not isinstance(payload, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请求体必须是对象"})
+    return payload
+
+
+@router.get("/model-overrides")
+async def list_model_overrides() -> JSONResponse:
+    """全部项目的覆盖概况（供设置界面选项目建下拉）：有覆盖的项目标记出来。"""
+    from ..storage import work_store, model_override
+    works: list[dict[str, Any]] = []
+    for w in work_store.list_works():
+        wid = str(w.get("work_id") or "")
+        raw = model_override.load(wid)
+        work_has = bool(raw.get("work"))
+        cards = raw.get("cards")
+        card_ids = [cid for cid, ov in (cards or {}).items()
+                    if isinstance(ov, dict) and ov]
+        works.append({
+            "work_id": wid,
+            "title": w.get("title") or wid,
+            "has_work": work_has,
+            "cards": card_ids,
+        })
+    return JSONResponse({"ok": True, "works": works})
+
+
+@router.get("/model-overrides/{work_id}/effective")
+async def get_model_override_effective(work_id: str, card_id: str = "") -> JSONResponse:
+    """当前生效值（解析后）：项目级（card_id 空）或单卡级，供界面显示「实际用谁」。"""
+    missing = _override_work_or_404(work_id)
+    if missing is not None:
+        return missing
+    cid = card_id or None
+    # 解析当前生效的默认模型与各角色绑定
+    default = model_config.default_model(work_id=work_id, card_id=cid)
+    role_eff: dict[str, Any] = {}
+    for rid in roles.list_roles():
+        val = model_config.resolve(rid, work_id=work_id, card_id=cid)
+        if val is not None:
+            role_eff[rid] = val
+    extra = {"card_id": card_id} if cid else {}
+    return JSONResponse({
+        "ok": True, "work_id": work_id, **extra,
+        "default_model": default,
+        "bindings": role_eff,
+    })
+
+
+@router.get("/model-overrides/{work_id}")
+async def get_model_override(work_id: str) -> JSONResponse:
+    """读某项目的覆盖（work 级 + 各卡）。"""
+    missing = _override_work_or_404(work_id)
+    if missing is not None:
+        return missing
+    from ..storage import model_override
+    raw = model_override.load(work_id)
+    return JSONResponse({
+        "ok": True, "work_id": work_id,
+        "work": raw.get("work") or None,
+        "types": raw.get("types") or {},       # 项目自己的按卡类型配置表（新建时从全局模板拷贝）
+        "cards": raw.get("cards") or {},
+    })
+
+
+@router.put("/model-overrides/{work_id}")
+async def put_model_override(work_id: str, request: Request) -> JSONResponse:
+    """写 work 级覆盖（整作用域替换）。缺省/空 body = 清空 work 级覆盖。"""
+    missing = _override_work_or_404(work_id)
+    if missing is not None:
+        return missing
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 JSON 解析/超时
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请求体不是合法 JSON"})
+    payload = _override_body(body)
+    if isinstance(payload, JSONResponse):
+        return payload
+    from ..storage import model_override
+    cleaned = model_override._clean(payload)
+    errors = model_config.validate_override(cleaned)
+    if errors:
+        return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
+    saved = model_override.update_work(work_id, cleaned)
+    return JSONResponse({
+        "ok": True, "work_id": work_id,
+        "work": saved.get("work") or None,
+        "cards": saved.get("cards") or {},
+    })
+
+
+@router.delete("/model-overrides/{work_id}")
+async def delete_model_override(work_id: str) -> JSONResponse:
+    """清空 work 级覆盖（保留卡片级）。"""
+    missing = _override_work_or_404(work_id)
+    if missing is not None:
+        return missing
+    from ..storage import model_override
+    model_override.clear_work(work_id)
+    return JSONResponse({"ok": True, "work_id": work_id, "work": None})
+
+
+@router.put("/model-overrides/{work_id}/card/{card_id}")
+async def put_model_override_card(work_id: str, card_id: str, request: Request) -> JSONResponse:
+    """写单卡覆盖（整作用域替换）。缺省/空 body = 清空该卡覆盖。"""
+    missing = _override_work_or_404(work_id)
+    if missing is not None:
+        return missing
+    missing_card = _override_card_or_404(work_id, card_id)
+    if missing_card is not None:
+        return missing_card
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 JSON 解析/超时
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请求体不是合法 JSON"})
+    payload = _override_body(body)
+    if isinstance(payload, JSONResponse):
+        return payload
+    from ..storage import model_override
+    cleaned = model_override._clean(payload)
+    errors = model_config.validate_override(cleaned)
+    if errors:
+        return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
+    saved = model_override.update_card(work_id, card_id, cleaned)
+    return JSONResponse({
+        "ok": True, "work_id": work_id, "card_id": card_id,
+        "work": saved.get("work") or None,
+        "cards": saved.get("cards") or {},
+    })
+
+
+@router.delete("/model-overrides/{work_id}/card/{card_id}")
+async def delete_model_override_card(work_id: str, card_id: str) -> JSONResponse:
+    """清空单卡覆盖。"""
+    missing = _override_work_or_404(work_id)
+    if missing is not None:
+        return missing
+    missing_card = _override_card_or_404(work_id, card_id)
+    if missing_card is not None:
+        return missing_card
+    from ..storage import model_override
+    model_override.clear_card(work_id, card_id)
+    return JSONResponse({"ok": True, "work_id": work_id, "card_id": card_id, "cards": None})
+
+
+# ================================================================
+# 按卡片类型设置默认模型（全局模板 → 新建项目种子化）
+# ================================================================
+# 语义（2026-10-19 产品裁定）：后台按卡类型配置的模型，是**新建项目时的默认模板**；
+# 每次新建项目会把这份模板整体拷贝成该项目自己的配置表（works/{wid}/model_override.json
+# 的 types）。此后用户在项目内改某卡模型，以卡片覆盖为准，不回写全局。
+
+
+@router.get("/card-type-models")
+async def get_card_type_models() -> JSONResponse:
+    """读全局模板 + 合法卡类型清单 + 当前模型目录（供设置界面）。"""
+    return JSONResponse({
+        "ok": True,
+        "types": model_config.card_type_models(),
+        "card_types": model_config.card_types(),
+        "models": sorted(model_config.model_names()),
+    })
+
+
+@router.put("/card-type-models")
+async def put_card_type_models(request: Request) -> JSONResponse:
+    """保存全局模板：校验每个值都在模型目录；合法则原子写。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请求体不是合法 JSON"})
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请求体必须是对象"})
+    types = body.get("types") if isinstance(body, dict) else None
+    if not isinstance(types, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "缺少 types 对象"})
+
+    models = model_config.model_names()
+    errors: list[str] = []
+    cleaned: dict[str, str] = {}
+    for ct, val in types.items():
+        if not isinstance(val, str) or not val.strip():
+            continue  # 空 = 未配置
+        if val.strip() not in models:
+            errors.append(f"类型 {ct} 引用了不在全局目录的模型: {val.strip()}")
+        else:
+            cleaned[str(ct)] = val.strip()
+    if errors:
+        return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
+
+    try:
+        model_config.save_card_type_models(cleaned)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("按卡类型模板保存失败: %s", exc)
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"保存失败: {exc}"})
+    return JSONResponse({"ok": True, "types": cleaned, "card_types": model_config.card_types()})

@@ -15,6 +15,7 @@
     - 保留 `.config`（编译后平铺 config，逐字不变）与 `call` / `stream_call` 的**签名与契约**；
     - 内部把请求组装成 `GenerateOptions`，走 `LlmRuntime.stream` + `BlockAssembler`；
     - 保留旧有的重试分级、on_status 事件、完成标记检测、截断抢救。
+    - **[模型设置 2026-10-19 产品裁定] 无降级模型**：调用失败重试耗尽后如实上抛，不做 fallback 切换。
 
 适配器路由（[2026-10-16 单适配器改造] 五家归一）：
     五家（opencode/deepseek、aliyun/qwen、zhipu/glm、minimax、nous/haiku）wire 协议同构，
@@ -382,14 +383,9 @@ class ModelGateway:
                                attempt=attempt + 1, error=exc.message)
                 _emit("retry", attempt, reason=reason)
                 if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
-                    # [2026-10-19 用户裁定] 模型 fallback 机制已整体拆除——重试耗尽即
-                    # 响亮失败，不再静默降级到另一个模型（降级会吞掉真实故障、
-                    # 产出来源不明的回复）。失败必须让用户看见。
-                    self.stats.record(model_name, 0, 0, False)
-                    raise ModelError(
-                        ErrorCode.MODEL_CALL_FAILED,
-                        f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {exc.message}",
-                    )
+                    # [模型设置 2026-10-19 产品裁定] 无降级模型：重试耗尽即如实失败。
+                    raise ModelError(ErrorCode.MODEL_CALL_FAILED,
+                                     f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {exc.message}")
                 await asyncio.sleep(
                     min(backoff * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS) if rg_enabled else backoff
                 )
@@ -397,11 +393,9 @@ class ModelGateway:
                 reason = _classify_message(str(exc))
                 _emit("retry", attempt, reason=reason)
                 if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
-                    self.stats.record(model_name, 0, 0, False)
-                    raise ModelError(
-                        ErrorCode.MODEL_CALL_FAILED,
-                        f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {exc}",
-                    )
+                    # [模型设置 2026-10-19 产品裁定] 无降级模型：重试耗尽即如实失败。
+                    raise ModelError(ErrorCode.MODEL_CALL_FAILED,
+                                     f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {exc}")
                 await asyncio.sleep(
                     min(backoff * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS) if rg_enabled else backoff
                 )
@@ -499,6 +493,7 @@ class ModelGateway:
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(backoff)
                     continue
+                # [模型设置 2026-10-19 产品裁定] 无降级模型：流式重试耗尽即如实失败。
                 raise ModelError(
                     ErrorCode.MODEL_CALL_FAILED,
                     f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc.message}",
@@ -514,7 +509,7 @@ class ModelGateway:
 
 
 class ModelCallFailure(Exception):
-    """一次调用失败（内部信号，驱动重试）。"""
+    """一次调用失败（内部信号，驱动重试；[2026-10-19 裁定] 无降级）。"""
 
     def __init__(self, message: str, reason: str) -> None:
         super().__init__(message)

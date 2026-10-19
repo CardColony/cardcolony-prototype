@@ -7,7 +7,7 @@
     providers  —— 供应商父层（端点/密钥/协议，去重只存一次）
     models     —— 模型子层（挂在供应商下，纯模型无角色语义）
     bindings   —— 角色→模型绑定（key 全部来自 config/roles.json，不手写角色）
-    system     —— 默认模型
+    system     —— 默认模型 / 降级模型
     simple     —— 三席审议总开关
 
 编译层：把三层结构编译成网关（src/model_gateway/gateway.py）认识的平铺 config：
@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -40,6 +41,8 @@ logger = logging.getLogger("api.model_config")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = BASE_DIR / "config" / "models.yaml"
+CARD_TYPE_MODELS_PATH = BASE_DIR / "config" / "card_type_models.json"
+CARD_TYPE_REGISTRY_PATH = BASE_DIR / "config" / "card_type_registry.json"
 
 # [模型层底座抄写 2026-10-16 · 用户裁定 B] 编译层**不再翻译 thinking 方言 / 不再注入
 # effort**——「翻译职责归适配器」（原版架构本意：effort / 方言都是适配器一等参数）。
@@ -120,8 +123,6 @@ def _compile(raw: dict[str, Any]) -> dict[str, Any]:
 
         compiled_models[mname] = entry
 
-    # 6.（fallback 编译已于 2026-10-19 随模型 fallback 机制整体拆除）
-
     return {
         "models": compiled_models,
         "simple": raw.get("simple") or {},
@@ -163,9 +164,145 @@ def _gateway_config() -> dict[str, Any]:
         return {}
 
 
-def resolve(role: str) -> Optional[Any]:
-    """角色 → 模型名（从 gateway.config.bindings **同源读**，不校验值是否在键集）。
+# ============================================================
+# [模型设置按项目/卡片覆盖 2026-10-19]
+# 覆盖层：card > work > global(models.yaml)。载体与读写见
+# src/storage/model_override.py；本模块只做「解析优先序」，不碰文件。
+# ============================================================
 
+
+def _scope_overrides(work_id: str, card_id: Optional[str]):
+    """按需取 (work 级覆盖, card 级覆盖)；失败/缺失 ⇒ 两个空 dict（fail-open）。"""
+    try:
+        from ..storage import model_override as _mo  # 延迟 import 避循环
+    except Exception:  # noqa: BLE001
+        return {}, {}
+    try:
+        return _mo.load_scope(work_id, card_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("模型覆盖读取失败 work=%s card=%s", work_id, card_id)
+        return {}, {}
+
+
+def _pick_override_binding(role: str, work_ov: dict, card_ov: dict):
+    """按 card > work 顺序在覆盖 bindings 里找 role；命中即返原始值（str/list），
+    未命中返 None（让位全局）。"""
+    for ov in (card_ov, work_ov):
+        b = ov.get("bindings")
+        if not isinstance(b, dict):
+            continue
+        if role in b:
+            return b[role]
+    return None
+
+
+# ============================================================
+# [按卡片类型设置默认模型 2026-10-19]
+# 全局模板 config/card_type_models.json：type → 模型键。新建项目时整体拷贝进
+# 该项目 model_override.json 的 types 表；之后项目内改卡片模型以卡片为准。
+# 解析链（某张卡实际用什么模型）：
+#   cards[card_id].default_model > work.types[card_type] > 全局模板[card_type] > system.default_model
+# ============================================================
+
+
+def _load_card_type_models() -> dict[str, Any]:
+    """读全局模板；缺/坏 ⇒ {"types": {}}（fail-open）。不抛。"""
+    try:
+        data = json.loads(CARD_TYPE_MODELS_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"types": {}}
+    return data if isinstance(data, dict) else {"types": {}}
+
+
+def card_type_models() -> dict[str, Any]:
+    """全局模板现读（type → 模型键；空串=未配置）。供设置界面与新建项目种子化。"""
+    return _load_card_type_models().get("types") or {}
+
+
+def save_card_type_models(types: dict) -> None:
+    """保存全局模板（原子写）。由 settings 侧先 validate_override 校验再调本函数。"""
+    cleaned = {k: v for k, v in (types or {}).items() if isinstance(v, str) and v.strip()}
+    data = {"_meta": {
+        "version": 1,
+        "purpose": "按卡片类型设置默认模型（全局模板）。新建项目时整体拷贝进该项目的模型配置表。",
+    }, "types": cleaned}
+    CARD_TYPE_MODELS_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def card_types() -> list[str]:
+    """全部合法卡类型（去重、保序）：root 词表 + 各项目类 L1 词表。供设置界面。"""
+    try:
+        reg = json.loads(CARD_TYPE_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    vocab = reg.get("l1_vocabularies") or {}
+    seen: list[str] = []
+    for scope in ("root",):
+        for t in (vocab.get(scope, {}) or {}).get("types", []) or []:
+            c = t.get("code")
+            if c and c not in seen:
+                seen.append(c)
+    for v in vocab.values():
+        for t in (v or {}).get("types", []) or []:
+            c = t.get("code")
+            if c and c not in seen:
+                seen.append(c)
+    return seen
+
+
+def _card_type_of(work_id: str, card_id: str) -> str:
+    """查一张卡的类型；失败 ⇒ ""（回落全局）。fail-open 不抛。"""
+    try:
+        from ..storage import card_store
+        meta = card_store._meta_of(work_id, card_id) or {}
+        ct = meta.get("card_type")
+        return str(ct) if ct else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def default_model(*, work_id: Optional[str] = None,
+                  card_id: Optional[str] = None) -> str:
+    """一张卡/项目实际用的默认模型（角色未绑定/未单独指定时）。
+
+    解析链：card 覆盖 > 项目 types[card_type] > 全局模板[card_type] > system.default_model。
+    项目 types 在新建项目时从全局模板拷贝，之后项目内改卡片以卡片覆盖为准。
+    """
+    system = (_gateway_config().get("system")) or {}
+    gd = str(system.get("default_model")) if system.get("default_model") else DEFAULT_MODEL
+    if not (work_id or card_id):
+        return gd
+
+    # 1) 单卡显式覆盖
+    if card_id:
+        _, card_ov = _scope_overrides(work_id, card_id)
+        v = card_ov.get("default_model")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    # 2) 项目配置表 types[card_type]
+    ct = _card_type_of(work_id, card_id) if card_id else ""
+    if work_id and ct:
+        try:
+            from ..storage import model_override as _mo
+            pt = _mo.load_types(work_id).get(ct)
+            if pt:
+                return pt
+        except Exception:  # noqa: BLE001
+            pass
+        # 3) 全局模板 types[card_type]
+        gt = card_type_models().get(ct)
+        if gt:
+            return gt
+    # 4) 全局默认
+    return gd
+
+
+def resolve(role: str, *, work_id: Optional[str] = None,
+            card_id: Optional[str] = None) -> Optional[Any]:
+    """角色 → 模型名（全局 bindings 同源读；work/card 覆盖优先）。
+
+    解析优先序：card 覆盖 > work 覆盖 > 全局 bindings。
     multi 返 list[str]，单角色返 str；未绑定（缺键/空值）返 None。
     值是否合法由上层校验：pick_model 保留原始值让消费点显式报错，
     resolve_model 用 model_names() 校验并回落——分层校验，避免「配错名静默用默认」。
@@ -173,6 +310,11 @@ def resolve(role: str) -> Optional[Any]:
     同源保证「选模型」与「调用」同一份 config；热生效经
     reload_gateway 重建 gateway（先建后换）后自然更新。
     """
+    if work_id or card_id:
+        work_ov, card_ov = _scope_overrides(work_id, card_id)
+        hit = _pick_override_binding(role, work_ov, card_ov)
+        if hit is not None:
+            return [str(x) for x in hit] if isinstance(hit, list) else str(hit)
     cfg = _gateway_config()
     bindings = cfg.get("bindings") or {}
     hit = bindings.get(role)
@@ -184,12 +326,29 @@ def resolve(role: str) -> Optional[Any]:
     return str(hit)
 
 
-def default_model() -> str:
-    """回落模型名（角色未绑定时）。从 gateway.config.system.default_model 同源读，
-    兜底 DEFAULT_MODEL。随 gateway 重建更新。"""
-    system = (_gateway_config().get("system")) or {}
-    name = system.get("default_model")
-    return str(name) if name else DEFAULT_MODEL
+def validate_override(override: dict) -> list[str]:
+    """校验覆盖里引用的模型是否都在当前全局目录（model_names 键集）。
+
+    供 settings 侧保存前校验用：覆盖只能从全局目录里挑模型，不能发明新模型。
+    返回错误文案列表（空 = 合法）。
+    """
+    models = model_names()
+    errs: list[str] = []
+    if not isinstance(override, dict):
+        return ["覆盖必须是对象"]
+
+    v = override.get("default_model")
+    if isinstance(v, str) and v.strip() and v.strip() not in models:
+        errs.append(f"default_model 引用了不在全局目录的模型: {v.strip()}")
+
+    bindings = override.get("bindings")
+    if isinstance(bindings, dict):
+        for role, val in bindings.items():
+            vals = val if isinstance(val, list) else [val]
+            for item in vals:
+                if isinstance(item, str) and item and item not in models:
+                    errs.append(f"角色 {role} 引用了不在全局目录的模型: {item}")
+    return errs
 
 
 def model_names() -> set[str]:

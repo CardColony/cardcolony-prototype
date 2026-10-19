@@ -152,6 +152,7 @@ def test_put_models_writes_to_disk(env):
     back = yaml.safe_load(env["cfg"].read_text(encoding="utf-8"))
     assert back["models"]["haiku"]["model"] == "anthropic/claude-haiku-5.5"
     assert back["system"]["default_model"] == "haiku"
+    assert "fallback_model" not in back["system"]  # [2026-10-19 裁定] 无降级模型
 
 
 def test_put_models_preserves_header_byte_for_byte(env):
