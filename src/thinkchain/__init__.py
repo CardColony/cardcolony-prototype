@@ -30,6 +30,16 @@ from __future__ import annotations
 #: 思维链总开关。False = 纯单模型模式（当前生产口径）；True = 原思维链全链路。
 ENABLED: bool = False
 
+#: 三席质询开关（提交轮收口后跑三席＋统合）。
+#: [2026-10-19] 与 ENABLED 分开：三席会为每张卡收口多跑 4 次模型调用，
+#: 需要独立开关；默认关＝保持当前生产口径（不改变行为）。
+SEATS_ENABLED: bool = False
+
+
+def seats_enabled() -> bool:
+    """三席是否启用（读模块常量，运行期可被测试 monkeypatch）。"""
+    return ENABLED and SEATS_ENABLED
+
 
 def enabled() -> bool:
     """接线点统一判据（读模块常量，运行期可被测试 monkeypatch）。"""
