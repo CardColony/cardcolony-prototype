@@ -777,6 +777,7 @@ async def get_model_override(work_id: str) -> JSONResponse:
     return JSONResponse({
         "ok": True, "work_id": work_id,
         "work": raw.get("work") or None,
+        "types": raw.get("types") or None,   # 项目自己的按卡类型配置表（新建时从全局模板拷贝）
         "cards": raw.get("cards") or {},
     })
 
@@ -859,3 +860,56 @@ async def delete_model_override_card(work_id: str, card_id: str) -> JSONResponse
     from ..storage import model_override
     model_override.clear_card(work_id, card_id)
     return JSONResponse({"ok": True, "work_id": work_id, "card_id": card_id, "cards": None})
+
+
+# ================================================================
+# 按卡片类型设置默认模型（全局模板 → 新建项目种子化）
+# ================================================================
+# 语义（2026-10-19 产品裁定）：后台按卡类型配置的模型，是**新建项目时的默认模板**；
+# 每次新建项目会把这份模板整体拷贝成该项目自己的配置表（works/{wid}/model_override.json
+# 的 types）。此后用户在项目内改某卡模型，以卡片覆盖为准，不回写全局。
+
+
+@router.get("/card-type-models")
+async def get_card_type_models() -> JSONResponse:
+    """读全局模板 + 合法卡类型清单 + 当前模型目录（供设置界面）。"""
+    return JSONResponse({
+        "ok": True,
+        "types": model_config.card_type_models(),
+        "card_types": model_config.card_types(),
+        "models": sorted(model_config.model_names()),
+    })
+
+
+@router.put("/card-type-models")
+async def put_card_type_models(request: Request) -> JSONResponse:
+    """保存全局模板：校验每个值都在模型目录；合法则原子写。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请求体不是合法 JSON"})
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "请求体必须是对象"})
+    types = body.get("types") if isinstance(body, dict) else None
+    if not isinstance(types, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "缺少 types 对象"})
+
+    models = model_config.model_names()
+    errors: list[str] = []
+    cleaned: dict[str, str] = {}
+    for ct, val in types.items():
+        if not isinstance(val, str) or not val.strip():
+            continue  # 空 = 未配置
+        if val.strip() not in models:
+            errors.append(f"类型 {ct} 引用了不在全局目录的模型: {val.strip()}")
+        else:
+            cleaned[str(ct)] = val.strip()
+    if errors:
+        return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
+
+    try:
+        model_config.save_card_type_models(cleaned)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("按卡类型模板保存失败: %s", exc)
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"保存失败: {exc}"})
+    return JSONResponse({"ok": True, "types": cleaned, "card_types": model_config.card_types()})

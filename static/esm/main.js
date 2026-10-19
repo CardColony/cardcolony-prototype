@@ -15,13 +15,9 @@ import "./util.js?v=30";
 import "../canvas.js?v=46";
 import { createNavSystem } from "./nav_system.js?v=34";
 import { loadRulePanel } from "./rule_panel.js?v=31";
-import { initModelBadge } from "./model_picker.js?v=2";
 
 const WORK_ID = window.__WORK_ID__;
 const navTree = document.getElementById("navTree");
-
-/* [模型设置 2026-10-19 产品裁定] 点哪里用哪里换：画布页顶栏「本项目默认模型」徽标。 */
-initModelBadge({ mountId: "modelBadgeMount", workId: WORK_ID, cardId: "" });
 
 window.GetCanvasState = () => store.state.canvasState;
 window.API = API;   // 调试便利（非功能依赖；与 api.js 薄壳同属兼容层）
