@@ -1954,77 +1954,19 @@ body.page-chat .rule-panel { display: none; }
   font-weight: 600;
 }
 
-/* ---- 模型设置 2026-10-19 产品裁定：点哪里用哪里换（使用现场徽标） ---- */
-.model-badge-mount { position: relative; display: flex; align-items: center; margin-right: 8px; }
-.model-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  padding: 3px 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel);
-  color: var(--text);
+/* ---- 模型设置 v3 2026-10-19：对话区顶部/画布顶栏的单下拉模型选择（无继承开关） ---- */
+.model-badge-mount { display: flex; align-items: center; gap: 8px; }
+.model-badge-mount .mp2-label { font-size: 12px; color: var(--dim); white-space: nowrap; }
+.model-badge-mount .mp2-select {
+  max-width: 240px;
   font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: border-color .12s, background .12s;
-}
-.model-badge:hover { border-color: var(--panel-hover); background: var(--panel-hover); }
-.model-badge .mb-name { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
-.model-badge .mb-src {
-  font-size: 11px;
-  color: var(--dim);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0 6px;
-}
-.model-badge .mb-caret { font-size: 10px; color: var(--dim); }
-.model-badge-err { color: var(--red); }
-
-.model-pop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 200;
-  width: 300px;
-  padding: 12px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, .28);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  text-align: left;
-}
-.model-pop .mp-title { font-size: 13px; font-weight: 600; color: var(--text); }
-.model-pop .mp-opt {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text);
-  cursor: pointer;
-  line-height: 1.4;
-}
-.model-pop .mp-opt input { margin-top: 2px; accent-color: var(--c-setting); }
-.model-pop .mp-select-wrap { display: flex; padding-left: 18px; }
-.model-pop .mp-select {
-  width: 100%;
-  font-size: 13px;
-  padding: 5px 8px;
+  padding: 3px 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
   color: var(--text);
 }
-.model-pop .mp-eff { font-size: 12px; color: var(--dim); }
-.model-pop .mp-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
-.model-pop .mp-actions .btn { font-size: 12px; padding: 4px 12px; }
-
-.model-badge-toast {
+.mp2-toast {
   position: fixed;
   right: 16px;
   bottom: 16px;
