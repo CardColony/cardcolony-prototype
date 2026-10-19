@@ -66,6 +66,8 @@ const MOCK = `
     const u = String(url);
     if (opt && String(opt.method || "").toUpperCase() === "POST" && /\\/cards\\/[^/]+\\/messages$/.test(u)) {
       window.__sent.push({ url: u, body: opt.body });
+      // 挂住不返回：用来验"点发送那一刻画布就有反应"（乐观运行态）
+      if (window.__holdPost) return new Promise(() => {});
       return new Response(JSON.stringify({ ok: true, accepted: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     return orig.apply(this, arguments);
@@ -153,6 +155,39 @@ check("两列都有正文区（空卡显示「还没有正文」）", (cmp?.body
 
 const shotCmp = await send("Page.captureScreenshot", { format: "png" });
 fs.writeFileSync("_shots/b2_compare.png", Buffer.from(shotCmp.result.data, "base64"));
+
+// ── 发送即反馈（乐观运行态）─────────────────────────────────────────────────
+// 关掉对比弹窗，双击第一张卡展开工作单元，输入一句话点发送。
+// mock 的 POST 挂住不返回（模拟模型正在跑），画布必须**立刻**显示"跑"。
+await ev(`(() => { const m = document.querySelector('.cv-modal-mask'); if (m) m.remove(); return 1; })()`);
+await sleep(300);
+const cellCid = await ev(`(() => {
+  const n = [...document.querySelectorAll('.card-node')].filter(x => x.offsetParent)[0];
+  n.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  return n.dataset.id;
+})()`);
+await sleep(1600);
+const cellReady = await ev(`(() => {
+  const n = document.querySelector('.card-node[data-id="${cellCid}"]');
+  return !!(n && n.dataset.open === "1" && n.querySelector(".cv-cell-input"));
+})()`);
+check("双击卡就地展开出输入框", cellReady === true, String(cellReady));
+
+await ev(`(() => {
+  window.__holdPost = true;
+  const n = document.querySelector('.card-node[data-open="1"]');
+  const inp = n.querySelector('.cv-cell-input');
+  inp.value = '继续';
+  n.querySelector('.cv-cell-send').click();
+  return 1;
+})()`);
+await sleep(500);
+const optimistic = await ev(`(() => {
+  const n = document.querySelector('.card-node[data-live="running"]');
+  const line = n ? n.querySelector('.cv-msgline') : null;
+  return { live: !!n, who: line ? line.dataset.who : '', text: line ? line.textContent.trim() : '' };
+})()`);
+check("点发送后画布立刻显示「跑」（不等服务端）", optimistic?.live === true && /已提交/.test(optimistic?.text || ""), JSON.stringify(optimistic));
 
 const pass = results.filter((r) => r.ok).length;
 console.log(`\n=== 并行操作：${pass}/${results.length} 通过 ===`);
