@@ -146,9 +146,11 @@ models:
     thinking: 'on'
     note: ''
 bindings:
-  execute: deepseek-v41-flash
-  think: anthropic-claude-haiku-55
-  synthesize: anthropic-claude-haiku-55
+  # [2026-10-19 permexp] deepseek/claude 的 key 均过期；思维链打开后按步类型选模，
+  # 故 execute/think/synthesize 一并切到 glm-53-flash，否则每步都 MODEL_CALL_FAILED。
+  execute: glm-53-flash
+  think: glm-53-flash
+  synthesize: glm-53-flash
   condense: glm-53-flash
   compress: glm-53-flash
   draft: glm-53
@@ -157,8 +159,12 @@ bindings:
   - glm-53
   - minimax-m31-flash-preview
 system:
-  default_model: minimax-m31-flash-preview
-  fallback_model: longcat-25-preview-free
+  # [2026-10-19 permexp 实验] MiniMax Token Plan 用量到顶、longcat key 过期，
+  # 主/备统一切智谱 coding plan 的 glm-5.3-flash。
+  default_model: glm-53-flash
+  # [2026-10-19 permexp] 关掉降级：空串 ⇒ model_config 不复制 models["fallback"]
+  # ⇒ gateway 失败直接抛错，不再静默换模型（实验要的是「到底谁在跑」可归因）。
+  fallback_model: ""
 simple:
   enabled: true
 retry_grading:
