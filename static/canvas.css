@@ -2513,25 +2513,6 @@
 /* 总览层里卡片没有底色差（块本身是色块），改用描边区分 */
 .page-canvas .card-node.lm[data-fresh="hot"] { border-color: rgba(91, 140, 255, 0.85); }
 
-/* ==========================================================================
-   重量条（卡片底边，2px）
-   ──────────────────────────────────────────────────────────────────────────
-   只在总览层按面积编码重量是不够的——用户平时不在总览层。这条横条在**任何缩放**
-   下都跟着卡片一起缩放，扫一眼就能比出哪几张卡是重头。
-   长度＝该卡体量 / 视图内最大体量，开方压缩（字数长尾，线性会让多数条变成 0）。
-   ========================================================================== */
-.page-canvas .cv-weightbar {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  /* ⚠ 高度必须按缩放反算，跟标题字号同一个手法：写死 2px 的话，默认 53% 下
-     屏幕上只有 1.06px —— 等于没有。这条线是"哪张卡重"的唯一读数，不能看不见。 */
-  height: max(2px, calc(3px / var(--z, 1)));
-  border-bottom-left-radius: inherit;
-  background: rgba(91, 140, 255, 0.45);
-  pointer-events: none;
-}
-.page-canvas .card-node[data-fresh="hot"] .cv-weightbar { background: rgba(122, 168, 255, 0.75); }
 
 /* ==========================================================================
    全局视图（cv-overview）：块 + 名字
@@ -3222,3 +3203,10 @@ body.has-dock #viewport { right: 360px; }
   cursor: pointer;
 }
 .cv-dock-send:hover { background: rgba(91, 140, 255, 0.24); }
+
+.page-canvas .card-node[data-unread="1"] .cv-msgline {
+  color: var(--cv-text-1);
+  box-shadow: inset 2px 0 0 var(--cv-accent);
+  padding-left: 7px;
+}
+.page-canvas .card-node[data-unread="1"] .cv-msgline .cv-msg-who { color: #cfe0ff; }
