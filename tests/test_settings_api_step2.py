@@ -62,7 +62,6 @@ bindings:
 
 system:
   default_model: haiku
-  fallback_model: deepseek-pro
 
 simple:
   enabled: true
@@ -152,7 +151,8 @@ def test_put_models_writes_to_disk(env):
     env["client"].put("/api/settings/models", json=_payload())
     back = yaml.safe_load(env["cfg"].read_text(encoding="utf-8"))
     assert back["models"]["haiku"]["model"] == "anthropic/claude-haiku-5.5"
-    assert back["system"]["fallback_model"] == "deepseek-pro"
+    assert back["system"]["default_model"] == "haiku"
+    assert "fallback_model" not in back["system"]  # [2026-10-19 裁定] 无降级模型
 
 
 def test_put_models_preserves_header_byte_for_byte(env):
@@ -267,12 +267,6 @@ def test_400_default_model_not_found(env):
     _assert_rejected_untouched(env, p, "system.default_model")
 
 
-def test_400_fallback_model_not_found(env):
-    p = _payload()
-    p["system"]["fallback_model"] = "nonexistent"
-    _assert_rejected_untouched(env, p, "system.fallback_model")
-
-
 def test_400_collects_multiple_errors(env):
     p = _payload()
     p["models"]["haiku"]["provider"] = "ghost"
@@ -370,7 +364,7 @@ def test_restore_writes_back_and_reloads(env):
     (env["backups"] / "models_20260101_010101.yaml").write_text(old, encoding="utf-8")
     # 先把当前改坏
     env["client"].put("/api/settings/models", json=_payload(system={
-        "default_model": "haiku", "fallback_model": "haiku"}))
+        "default_model": "haiku"}))
 
     r = env["client"].post("/api/settings/models/restore",
                            json={"name": "models_20260101_010101.yaml"})

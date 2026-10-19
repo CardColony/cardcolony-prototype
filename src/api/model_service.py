@@ -6,9 +6,7 @@ gateway 真实接口（src/model_gateway/gateway.py，禁止修改，按其实�
   （gateway 内部访问 self.config["models"][model_name] 和 config["retry_grading"]）。
 - call() 返回 {content, tool_calls, truncated_tool_call, truncated_reply,
   finish_reason, tokens_used, latency_ms}——不含所用模型名。
-- 降级：call 内部失败后递归调 call("fallback", ...)，唯一外部可观测信号是
-  on_status 回调收到 {"phase": "fallback", "to_model": "fallback"} 事件，
-  因此真实模型名通过收集 on_status 事件推断。
+- **[模型设置 2026-10-19 产品裁定] 无降级模型**：请求指定哪个模型就用哪个，失败如实上抛。
 - MOCK_LLM=1 时 build_gateway 返回 MockGateway（接口一致，离线可跑）。
 
 Phase 7：call_main 增加 tools 参数透传给 gateway.call。
@@ -67,8 +65,7 @@ async def call_main(
     三点保语义不变：
       1. 聚合 content / tool_calls / finish_reason 全部取自流末尾的终帧，
          与 call 同契约（含 truncated_tool_call 续写口）；
-      2. 思考增量**不进** content（只作逐字流事件），故正文判定与续写不受污染；
-      3. fallback 仍由 gateway 内部按 system.fallback_model 处理（on_status 事件流不变）。
+      2. 思考增量**不进** content（只作逐字流事件），故正文判定与续写不受污染（无降级，见 2026-10-19 裁定）。
     逐字流经 event_stream.emit_token 落到**独立** SSE（/tokens），
     归属卡经 contextvar 传入；无卡上下文时（凝练/归拢调用）自动不落逐字流。
     """
@@ -150,9 +147,7 @@ async def call_main(
     if is_mock():
         model_used = "mock"
     else:
+        # [模型设置 2026-10-19 产品裁定] 无降级模型：实际所用即请求所指定。
         entry = model_name
-        for ev in events:
-            if ev.get("phase") == "fallback":
-                entry = ev.get("to_model", "fallback")
         model_used = (gw.config.get("models") or {}).get(entry, {}).get("model", entry)
     return result, model_used

@@ -30,9 +30,9 @@ from src.storage import model_override, work_store  # noqa: E402
 def gw(monkeypatch):
     """确定性网关：models={exec-global,m1,m2,m3,fb}；execute 绑定 exec-global；默认 m1。"""
     cfg = {
-        "models": {"exec-global": {}, "m1": {}, "m2": {}, "m3": {}, "fb": {}},
+        "models": {"exec-global": {}, "m1": {}, "m2": {}, "m3": {}},
         "bindings": {"execute": "exec-global"},
-        "system": {"default_model": "m1", "fallback_model": "fb"},
+        "system": {"default_model": "m1"},
     }
     monkeypatch.setattr(model_service, "_gateway", SimpleNamespace(config=cfg))
     return cfg
