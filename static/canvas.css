@@ -678,40 +678,6 @@
 }
 .page-canvas .rule-panel.is-open { transform: none; }
 
-/* ==========================================================================
-   五、小地图 / 空态 / 提示
-   ========================================================================== */
-
-.page-canvas .cv-minimap {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  width: 148px;
-  height: 100px;
-  border-radius: var(--cv-r-md);
-  background: color-mix(in srgb, var(--cv-surface-1) 90%, transparent);
-  border: 1px solid var(--cv-line-2);
-  box-shadow: var(--cv-e2);
-  backdrop-filter: blur(10px);
-  overflow: hidden;
-  cursor: pointer;
-  opacity: 0.92;
-  transition: opacity var(--cv-fast) var(--cv-ease);
-  z-index: 15;
-}
-.page-canvas .cv-minimap:hover { opacity: 1; }
-.page-canvas .cv-minimap canvas { display: block; width: 100%; height: 100%; }
-
-.page-canvas .cv-minimap .cv-mm-view {
-  position: absolute;
-  border: 1.5px solid var(--cv-accent);
-  border-radius: 3px;
-  background: var(--cv-accent-soft);
-  pointer-events: none;
-}
-
-/* 加载骨架：首屏 200–900ms 的空窗期不能只给一行"加载中…"——
-   骨架卡让用户先看到"这里会长出卡片"，观感比转圈稳。 */
 .page-canvas .cv-skeleton {
   position: absolute;
   inset: 0;
@@ -990,7 +956,6 @@
 @media (prefers-reduced-motion: reduce) {
   .page-canvas .card-node,
   .page-canvas .cv-menu,
-  .page-canvas .cv-minimap { transition: none !important; animation: none !important; }
 }
 
 /* ==========================================================================
@@ -3103,3 +3068,15 @@
 }
 .page-canvas .card-node.l0 > .cv-card-row > .cv-stale,
 .page-canvas .card-node.lm > .cv-card-row > .cv-stale { display: none; }
+
+.page-canvas .cv-msgline[data-who="pending"] { color: #d8b06a; }
+.page-canvas .cv-msgline[data-who="pending"] .cv-msg-who {
+  color: #1a1204; background: var(--cv-warn);
+  border-radius: 3px; padding: 0 4px; font-size: 10px; line-height: 15px;
+}
+.page-canvas .cv-msgline[data-who="dec"] { color: #8fb8ff; }
+.page-canvas .cv-msgline[data-who="dec"] .cv-msg-who {
+  color: #0b1020; background: #6ea8ff;
+  border-radius: 3px; padding: 0 4px; font-size: 10px; line-height: 15px;
+}
+.page-canvas .cv-msgline[data-who="sum"] { color: var(--cv-text-3); }
