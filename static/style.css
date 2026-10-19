@@ -1954,18 +1954,61 @@ body.page-chat .rule-panel { display: none; }
   font-weight: 600;
 }
 
-/* ---- 模型设置 v3 2026-10-19：对话区顶部/画布顶栏的单下拉模型选择（无继承开关） ---- */
-.model-badge-mount { display: flex; align-items: center; gap: 8px; }
-.model-badge-mount .mp2-label { font-size: 12px; color: var(--dim); white-space: nowrap; }
-.model-badge-mount .mp2-select {
-  max-width: 240px;
-  font-size: 12px;
-  padding: 3px 6px;
+/* ---- 模型选择器 v5（照 Claude.ai：输入框里的模型按钮 + 上浮选择面板） ---- */
+.model-badge-mount { display: flex; align-items: center; }
+.model-badge-mount.composer { gap: 4px; margin-right: 4px; }
+.model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 200px;
+  padding: 3px 9px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 999px;
   background: var(--panel);
   color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
 }
+.model-pill:hover { border-color: var(--panel-hover); background: var(--panel-hover); }
+.model-pill .mp-pill-name { overflow: hidden; text-overflow: ellipsis; }
+.model-pill .mp-caret { font-size: 9px; color: var(--dim); }
+
+.model-panel {
+  position: fixed;
+  z-index: 500;
+  width: 300px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .32);
+}
+.model-panel .mp-grp + .mp-grp { margin-top: 2px; border-top: 1px solid var(--border); padding-top: 4px; }
+.model-panel .mp-grp-title { font-size: 11px; color: var(--dim); padding: 4px 8px 2px; letter-spacing: .02em; }
+.model-panel .mp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.model-panel .mp-row:hover { background: var(--panel-hover); }
+.model-panel .mp-row.on { background: var(--panel-hover); color: var(--c-setting); font-weight: 600; }
+.model-panel .mp-check { color: var(--c-setting); font-weight: 700; }
+.model-panel .mp-foot { font-size: 11px; color: var(--dim); padding: 6px 8px 2px; }
+
 .mp2-toast {
   position: fixed;
   right: 16px;
@@ -1979,7 +2022,3 @@ body.page-chat .rule-panel { display: none; }
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
 }
-/* 输入区（composer）里的模型选择：紧凑，对齐 draft/auto 那排小按钮 */
-.model-badge-mount.composer { gap: 4px; margin-right: 4px; }
-.model-badge-mount.composer .mp2-label { font-size: 12px; color: var(--dim); white-space: nowrap; }
-.model-badge-mount.composer .mp2-select { max-width: 172px; padding: 2px 6px; font-size: 12px; }

@@ -15,7 +15,7 @@ import "./util.js?v=30";
 import "../canvas.js?v=46";
 import { createNavSystem } from "./nav_system.js?v=34";
 import { loadRulePanel } from "./rule_panel.js?v=31";
-import { initModelBadge } from "./model_picker.js?v=1";
+import { initModelBadge } from "./model_picker.js?v=2";
 
 const WORK_ID = window.__WORK_ID__;
 const navTree = document.getElementById("navTree");
