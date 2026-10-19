@@ -10,7 +10,7 @@
      右：选中供应商的模型详细设置（连接字段 + 模型列表）。
      添加供应商 = 模板选择器；操作收进「⋯」菜单。-->
 <link rel="stylesheet" href="/static/style.css?v=40">
-<link rel="stylesheet" href="/static/settings.css?v=10.11">
+<link rel="stylesheet" href="/static/settings.css?v=10.12">
 </head>
 <body class="set-body">
 <div class="set-page">
@@ -46,8 +46,8 @@
         <div class="set-provider-main" id="providerDetail"></div>
       </div>
 
-      <!-- 角色绑定（全局） -->
-      <section class="set-block">
+      <!-- 角色绑定（全局）—— [2026-10-19 用户裁定] 隐藏该界面；角色→模型改由「按卡片类型设置默认模型」承载 -->
+      <section class="set-block" style="display:none">
         <div class="set-h2-row">
           <h2 class="set-h2">角色绑定</h2>
           <span class="set-hint" id="roleHint"></span>
@@ -157,6 +157,6 @@
 </div>
 
 <div id="toastContainer" class="toast-container"></div>
-<script src="/static/settings.js?v=10.11"></script>
+<script src="/static/settings.js?v=10.12"></script>
 </body>
 </html>
