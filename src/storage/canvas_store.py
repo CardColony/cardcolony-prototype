@@ -346,6 +346,46 @@ def _last_message(work_id: str, card_id: str) -> dict[str, str] | None:
         return None
 
 
+#: 活动流噪音过滤（实测 381 行历史里两类占 182 条）：
+#:   [权限刷新] perms → v4   批量刷权限，不是工作
+#:   [T7存量迁移] 线索 …      一次性迁移
+#: 真正有信息量的是"卡片创建""由「X」对话编辑正文"。
+_ACTIVITY_NOISE = ("%[权限刷新]%", "%[T7存量迁移]%")
+
+
+def recent_activity(work_id: str, limit: int = 40) -> list[dict[str, str]]:
+    """这个 work 最近发生的**工作事件**（活动流 / 接续提示的唯一数据源）。
+
+    [画布 2026-10-19] 抽成公开函数：投影（canvas.json）与实时脉搏（/pulse）
+    都要它。两处各写一遍正则，就会在"哪天改了过滤规则"时分叉——一处滤掉噪音、
+    另一处把噪音当活动播报，用户看到的是"权限刷新了 150 次"。
+    """
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        return [dict(r) for r in conn.execute(
+            # INNER JOIN：卡已删除的历史事件不显示（实测有 6 条指向已删卡，
+            # 卡片名只能回退成 card_079，读起来像乱码）
+            "SELECT h.card_id, h.ts, h.text, c.title "
+            "FROM card_history h JOIN cards c ON c.card_id = h.card_id "
+            "WHERE h.text NOT LIKE ? AND h.text NOT LIKE ? "
+            "ORDER BY h.ts DESC LIMIT ?",
+            (*_ACTIVITY_NOISE, int(limit)),
+        )]
+
+    out: list[dict[str, str]] = []
+    for e in (card_db.read_sync(work_id, _fn, []) or []):
+        txt = str(e.get("text") or "")
+        # 历史行格式固定：`- [2026-10-18T11:27:01.576270+08:00] 卡片创建`
+        m = re.match(r"^\s*-\s*\[[^\]]+\]\s*(.+)$", txt)
+        detail = (m.group(1) if m else txt).strip()
+        out.append({
+            "card_id": e.get("card_id") or "",
+            "title": e.get("title") or e.get("card_id") or "",
+            "ts": e.get("ts") or "",
+            "detail": detail[:80],
+        })
+    return out
+
+
 def _parse_decisions(status_block: str) -> list[dict[str, str]]:
     """抽出一张卡的定论条目（最多保留最近 20 条）。
 
@@ -461,36 +501,9 @@ def rebuild(work_id: str) -> dict[str, Any]:
     rows = card_db.read_sync(work_id, _fn, []) or []
 
     # ── 最近活动（活动流的数据源）──
-    #
-    # [画布 2026-10-18] 这个系统最核心的能力是"AI 自己推进任务"，但画布上原本
-    # 完全没有"它刚才做了什么"的表达。库里已有 card_history（card_id/ts/text），
-    # 381 行实测里有两类噪音必须滤掉：
-    #   [权限刷新] perms → v4   150 条（批量刷权限，不是工作）
-    #   [T7存量迁移] 线索 …      32 条（一次性迁移）
-    # 真正有信息量的是"卡片创建""由「X」对话编辑正文"。
-    def _events(conn: Any) -> list[dict[str, Any]]:
-        return [dict(r) for r in conn.execute(
-            # INNER JOIN：卡已删除的历史事件不显示（实测有 6 条指向已删卡，
-            # 卡片名只能回退成 card_079，读起来像乱码）
-            "SELECT h.card_id, h.ts, h.text, c.title "
-            "FROM card_history h JOIN cards c ON c.card_id = h.card_id "
-            "WHERE h.text NOT LIKE '%[权限刷新]%' AND h.text NOT LIKE '%[T7存量迁移]%' "
-            "ORDER BY h.ts DESC LIMIT 40"
-        )]
-
-    raw_events = card_db.read_sync(work_id, _events, []) or []
-    recent_events: list[dict[str, Any]] = []
-    for e in raw_events:
-        txt = str(e.get("text") or "")
-        # 历史行格式固定：`- [2026-10-18T11:27:01.576270+08:00] 卡片创建`
-        m = re.match(r"^\s*-\s*\[[^\]]+\]\s*(.+)$", txt)
-        detail = (m.group(1) if m else txt).strip()
-        recent_events.append({
-            "card_id": e.get("card_id") or "",
-            "title": e.get("title") or e.get("card_id") or "",
-            "ts": e.get("ts") or "",
-            "detail": detail[:80],
-        })
+    # [画布 2026-10-19] 实现抽到 recent_activity()：/pulse 实时口与投影共用同一份，
+    # 避免两处过滤规则分叉（详见函数注释）。
+    recent_events = recent_activity(work_id, 40)
 
     # [画布 2026-10-18 · 逻辑关系] 卡片之间的真实关系不在 relations/links 列里
     # （实测这两列全空），而在**正文**里：用户写卡时会引用邻卡

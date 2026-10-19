@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any, Optional
 
@@ -320,6 +321,36 @@ async def get_nav_running():
     进程重启后为空＝当前无运行中，如实反映。
     """
     return {"running": progress.iter_active()}
+
+
+@router.get("/works/{work_id}/pulse")
+async def get_work_pulse(work_id: str, limit: int = 20):
+    """画布「活态」：谁在跑 + 最近发生了什么（一次到手）。
+
+    [画布 2026-10-19 · 实时状况] 为什么必须单开一口：
+      ① 运行态只在 `progress` 的内存里（**不是**卡片字段），投影（canvas.json）
+         是缓存、不能装它——装了就会把"某次运行"冻进缓存，进程重启后还在说"在跑"。
+      ② 一屏几十上百张卡，逐张问 `/cards/{cid}/progress` 在 232 卡时是 232 个请求，
+         而这里 1 个。
+      ③ 活动流要的是"最近发生了什么"，与投影同源（card_history，已滤两类噪音），
+         但投影只在 reloadCanvas 时重建；这里每次现读，能反映刚刚的改动。
+
+    返回：
+      running: [{card_id, stage, detail, ts}]   —— ts 为 epoch 秒（前端算已跑时长）
+      recent:  [{card_id, title, ts, detail}]   —— 最近 limit 条工作事件（时间倒序）
+      ts:      服务端当前 epoch 秒
+    纯读：不写盘、不拦截、不进模型输入。
+    """
+    running = [
+        r for r in progress.iter_active()
+        if str(r.get("work_id") or "") == work_id
+    ]
+    return {
+        "work_id": work_id,
+        "running": running,
+        "recent": canvas_store.recent_activity(work_id, max(1, min(60, int(limit)))),
+        "ts": time.time(),
+    }
 
 
 async def _work_fingerprint(wid: str) -> str:

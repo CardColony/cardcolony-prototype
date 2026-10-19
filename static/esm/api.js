@@ -121,6 +121,18 @@ export const API = {
       return null;
     }
   },
+  // [画布 2026-10-19] 活态：谁在跑 + 最近发生了什么（一次到手）。
+  // 周期探测（3s），静默实现：失败返回 null，不弹 toast——辅助信息拿不到时
+  // 画布照常可用，只是少了"在跑"的呼吸条，不能因此每 3 秒打扰用户一次。
+  getPulse: async (wid, limit = 20) => {
+    try {
+      const resp = await request("GET", `/api/works/${wid}/pulse?limit=${limit}`);
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch (e) {
+      return null;
+    }
+  },
   getCanvas: (wid) => call("GET", `/api/works/${wid}/canvas`),
   patchPositions: (wid, positions) => call("PATCH", `/api/works/${wid}/canvas/positions`, { positions }),
   createCard: (wid, body) => call("POST", `/api/works/${wid}/cards`, body),
