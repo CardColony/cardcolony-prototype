@@ -18,7 +18,7 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   if (!mount || !workId) return;
   const scope = cardId ? "card" : "work";
   const aid = `${scope}-${workId}-${cardId}`;
-  const state = { open: false, settings: null, override: null };
+  const state = { open: false, settings: null, override: null, lastClickInside: false };
 
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}));
@@ -177,6 +177,7 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   }
 
   mount.addEventListener("click", async (e) => {
+    state.lastClickInside = true;   // 本次点击源自挂载区；文档级关闭监听据此放行
     const t = e.target.closest("[data-mb]");
     if (!t) {
       // 点外部关闭
@@ -193,7 +194,12 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   });
 
   document.addEventListener("click", (e) => {
-    if (state.open && !mount.contains(e.target)) { state.open = false; render(); }
+    if (!state.open) return;
+    // 用 flag 而不是 mount.contains(node)：mount 内点击会在冒泡中被 re-render，
+    // 使被点的旧节点被摘除，contains 会误判为「点外部」→ 弹层秒关（真机验收暴露）。
+    if (state.lastClickInside) { state.lastClickInside = false; return; }
+    state.open = false;
+    render();
   });
 
   load();
