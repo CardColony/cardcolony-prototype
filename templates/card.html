@@ -155,12 +155,12 @@
                #inputBox / #runBtn 已退役——输入卡的 textarea 与主键由
                static/esm/flow/input-bar.js 生成（dsh InputBar.tsx 的 DOM 形状）。 -->
           <div class="composer-seat" id="composerSeat">
+            <!-- [模型选择器 v6 2026-10-19] 发送按钮左侧：由 input-bar 收进 .flow-input-row
+                 并插到 trailing（发送）之前。 -->
+            <div id="modelBadgeMount" class="model-badge-mount composer"></div>
             <!-- 项目自有的两个起草键（不属 dsh）：initComposer 时由 input-bar 收进
                  输入卡的 .flow-input-modes（dsh 的 leftItems 位）。 -->
             <div id="flowInputLeft" class="flow-input-leftitems">
-              <!-- [模型设置 v4 2026-10-19 · 照 Claude/ChatGPT/Cursor] 模型选择器放对话输入区（composer）：
-                   input-bar 把 #flowInputLeft 整体收进 .flow-input-modes（底边栏左侧）。 -->
-              <div id="modelBadgeMount" class="model-badge-mount composer"></div>
               <button id="draftBtn" class="btn primary draft-meta-btn" title="起草本卡第三块内容（需求文档/定论），用户确认后写入">需求确定</button>
               <button id="statusDraftBtn" class="btn draft-meta-btn" title="起草现状块更新，用户确认后写入">更新现状</button>
               <!-- [自动模式 2026-10-17 · 回灌 5700 块0.5] 本卡 自动/手动 切换。
