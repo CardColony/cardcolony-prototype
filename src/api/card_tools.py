@@ -91,7 +91,7 @@ OP_ONLY_TOOLS: frozenset[str] = frozenset({"propose_status"})
 #: 块 0.4：update_goal（声明目标态——「停」的唯一权威在模型）。
 #: G2 起扩为三件：＋send_card_message/read_inbox（把卡间通信交回模型）。
 AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
-    {"update_goal", "send_card_message", "read_inbox"})
+    {"update_goal", "send_card_message", "read_inbox", "update_status", "append_ruling"})
 
 # [权限底座重做 2026-10-12] 工具组→工具名映射（build_tool_schemas 过滤面）。
 # 由卡上的 tools_file / tools_web 两个开关决定下发哪几组：缺哪个开关就不下发
@@ -143,6 +143,9 @@ TOOL_SWITCH: dict[str, str] = {
     # 第四段 ROOT_ONLY_TOOLS 收敛到剧本根卡，执行层 handler 再校验一次（双保险）。
     "draft_rule_edit": policy.SWITCH_READ,
     "edit_card": policy.SWITCH_EDIT,
+    # [分块写入 2026-10-19 · permexp] 与 edit_card 同开关：写正文就是写正文。
+    "update_status": policy.SWITCH_EDIT,
+    "append_ruling": policy.SWITCH_EDIT,
     # [编程卡 2026-10-15 · §六块2 · **v1.1 修订**] report_done 挂 tools_file——
     # 原挂 SWITCH_EDIT 系派发方笔误：tool 卡有 edit 无 tools_file，挂 edit 会让
     # readopen:287 与 :252 在「零翻新」下数学上不可能同时成立。挂 tools_file 后：
@@ -319,6 +322,97 @@ def _schema_of(def_: ToolDef) -> dict[str, Any]:
 # 签名统一：_h_<tool>(work_id, current_id, arguments, cards) -> dict
 # ============================================================
 
+def _last_event_line(p: Path) -> str:
+    """只读文件末尾 8KB 取最后一行——事件文件可能十几万行（card_009 实测 11 万行），
+    读全文会把热路径拖死。"""
+    try:
+        with p.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            back = min(size, 8192)
+            f.seek(size - back)
+            data = f.read().decode("utf-8", "replace")
+        lines = [ln for ln in data.splitlines() if ln.strip()]
+        return lines[-1] if lines else ""
+    except OSError:
+        return ""
+
+
+#: 事件类型 → 上级看得懂的活说法（**"最后"而非"正在"**：距今可能很久，
+#: 说"正在推理（60 分钟前）"是自相矛盾）
+_EVENT_LABEL = {
+    "reasoning": "最后在推理",
+    "tool_call": "最后调了工具",
+    "tool_result": "最后收到工具结果",
+    "round_start": "最后开了一轮",
+    "card_message": "最后收到卡间消息",
+    "done": "已收回合",
+    "error": "最后出错",
+}
+
+
+def _card_activity(work_id: str, card_id: str, meta: dict[str, Any]) -> str:
+    """给上级看的一行活性：**运行态 · 最近活动（多久前）· 已跑轮次**。
+
+    [上级可见性 2026-10-19 · permexp] 用户裁定：上级看不见下属在干什么 ⇒ 只能看
+    文件大小 ⇒ 误判"零产出" ⇒ 换人。本函数把活性放进 read_card 的返回里（它本来
+    就会读子卡），不占常驻上下文、也不需要模型多学一个工具。
+
+    ★ 最近活动必须认 **reasoning**：实测 card_009 连续推理 40 分钟没有一次工具调用，
+      只看 tool_call 会判成"没动"。
+    """
+    parts: list[str] = []
+
+    # ① 运行态：内存里的 stage 优先（正在跑），否则看目标态
+    stage = None
+    try:
+        from . import progress
+        stage = (progress.get_stage(work_id, card_id) or {}).get("stage")
+    except Exception:  # noqa: BLE001 读不到＝按目标态判
+        stage = None
+    if stage and str(stage) not in ("", "done"):
+        parts.append("运行中")
+    else:
+        gs = str((meta or {}).get("goal_state") or "")
+        if gs == "complete":
+            parts.append("已收口")
+        elif gs == "blocked":
+            parts.append("卡住了")
+        elif gs == "paused":
+            parts.append("已暂停")
+        elif gs == "active":
+            # active 只表示「目标还没终止」，不代表此刻在跑——说"空闲"会被读成
+            # "它没事干"，说"待推进"才准确（等下一轮/等唤醒）。
+            parts.append("待推进")
+        else:
+            parts.append("空闲")
+
+    # ② 最近活动（类型 + 距今）
+    try:
+        from ..storage import event_log
+        line = _last_event_line(event_log.event_path(work_id, card_id))
+        if line:
+            rec = json.loads(line)
+            label = _EVENT_LABEL.get(str(rec.get("type") or ""), str(rec.get("type") or ""))
+            ago = ""
+            try:
+                ts = datetime.fromisoformat(str(rec.get("ts") or ""))
+                mins = int((datetime.now().astimezone() - ts).total_seconds() // 60)
+                ago = "刚刚" if mins < 1 else f"{mins} 分钟前"
+            except Exception:  # noqa: BLE001 时间戳坏了就不报距今
+                ago = ""
+            parts.append(f"{label}（{ago}）" if ago else label)
+    except Exception:  # noqa: BLE001 活性是增益信息，读不到不阻断 read_card
+        pass
+
+    # ③ 已跑轮次
+    rounds = (meta or {}).get("goal_rounds")
+    if rounds:
+        parts.append(f"已跑 {rounds} 轮")
+
+    return " · ".join(parts)
+
+
 async def _h_read_card(work_id: str, current_id: str,
                        arguments: dict[str, Any],
                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -356,6 +450,9 @@ async def _h_read_card(work_id: str, current_id: str,
         "card_id": target_id,
         "title": result["meta"].get("title", ""),
         "parent": result["meta"].get("parent", ""),
+        # [上级可见性 2026-10-19] 一行活性：运行态 · 最近活动（多久前）· 已跑轮次。
+        # 上级读子卡时自然看到，不必额外查；读自己时也成立（显示"空闲"）。
+        "活性": _card_activity(work_id, target_id, result["meta"]),
         # [依赖关联线 2026-10-16] 两线并列返回：
         #   links     ＝通信线（原 relations 改名，read_linked 沿它寻址）
         #   relations ＝依赖关联线（新线，不参与通信）
@@ -732,7 +829,12 @@ async def _h_report_done(work_id: str, current_id: str,
         logger.error("report_done coder_final 落盘失败 card=%s: %s", current_id, exc)
         return err("internal", f"coder_final 落盘失败: {exc}")
     upd = await card_store.update_card(
-        work_id, current_id, {"state": "completed"},
+        work_id, current_id,
+        # [2026-10-19 实验 permexp] 完工同时把 goal_state 置 complete——否则
+        # coder 卡（建卡时已带 goal、goal_state=active）在完工后仍被
+        # auto_driver.will_continue 判为「该续轮」（该判据不看 state），
+        # 而 post_work_message 对 completed 编程卡直接 400 ⇒ 反复起空轮。
+        {"state": "completed", "goal_state": "complete"},
         f"编程卡完工收口（report_done）：{summary[:80]}",
     )
     if isinstance(upd, dict) and upd.get("error"):
@@ -808,10 +910,14 @@ async def _h_create_coder_card(work_id: str, current_id: str,
             f"（当前卡 {current_id}）",
         )
     # ② 建 coder 卡：charter 带 ## 使命 区头 ⇒ 区头检测后原样入正文，任务落使命块
+    # [2026-10-19 实验 permexp] **补 goal**：原先不传 goal ⇒ 自动模式下 coder 卡
+    # goal 空、goal_state 不落 ⇒ auto_driver.will_continue 恒 False ⇒ 只有下面
+    # ③ 的首跑一次，「一轮做不完就停在那里」。任务原文即目标文本（使命块同源）。
     result = await card_store.create_card(
         work_id, title, "模型生成",
         card_type="coder", parent=current_id,
         charter=f"## 使命\n{task}",
+        goal=task,
     )
     if "error" in result:
         return result
@@ -1003,6 +1109,104 @@ async def _h_edit_card(work_id: str, current_id: str,
     if "error" in result:
         return result
     return {"card_id": target_id, "ok": True}
+
+
+# ============================================================
+# [分块写入 2026-10-19 · permexp] 用户令：工具要便利模型，不要复杂化模型。
+#
+# 病根：edit_card 收「整篇正文」⇒ 模型只想改现状，也要为使命/定论**逐字不变**
+# 负责；而新建卡正文里带着模板占位（D01/D02/D03 + 「→ 被D05取代」），模型重写
+# 时必然带偏 ⇒ 撞「定论块只追加」。实测 MiniMax 连撞 8 次、GLM-5.3 连撞 3 次，
+# 两个模型同一处失败 ⇒ 是接口问题，不是模型问题。
+#
+# 修法：**一个接口一种语义**，让错误不可能发生——
+#   update_status  只替换现状块（输入里没有别的块，也就动不了别的块）
+#   append_ruling  追加一条定论（编号系统给，改不了旧条目）
+# 两者只在自动模式面下发（AUTO_ONLY_TOOLS）；普通卡仍走 draft/commit，逐字不变。
+# ============================================================
+
+def _guard_edit(work_id: str, current_id: str, target_id: str,
+                cards: dict[str, dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """edit 类工具的公共前置：存在 → 非影子 → EDIT 权限。违规返 err 信封。"""
+    if target_id not in cards:
+        return err("not_found", f"卡片不存在: {target_id}")
+    if cards[target_id].get("card_type") == "shadow":
+        return err("denied", "影子卡只能由对应正卡经 update_shadow 修改")
+    try:
+        policy.check(current_id, target_id, policy.SWITCH_EDIT, cards)
+    except PermissionError:
+        return err("denied", f"越权：无权编辑 {target_id}")
+    return None
+
+
+async def _h_update_status(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """只写「现状」块：使命与定论一个字都不碰，调用方也不需要知道它们长什么样。"""
+    target_id = str(arguments.get("card_id") or current_id)
+    content = str(arguments.get("content") or "")
+    if not content.strip():
+        return err("validation", "content 不能为空")
+    blocked = _guard_edit(work_id, current_id, target_id, cards)
+    if blocked is not None:
+        return blocked
+    # 语义纪律仍在：现状块是给下游读的事实，不装决定（决定走 append_ruling）。
+    for line in content.splitlines():
+        if _DECISION_LINE_RE.match(line.strip()):
+            return err(
+                "validation",
+                f"这一行是决定条目，不能放现状块：{line.strip()[:40]}"
+                "——改用 append_ruling 追加到定论；现状块只写能核实的事实。",
+            )
+    current = await card_store.read_card(work_id, current_id)
+    cur_title = (current.get("meta") or {}).get("title", "")
+    upd = await card_store.update_card(
+        work_id, target_id, {"status_block": content},
+        f"由「{cur_title}」更新现状",
+    )
+    if isinstance(upd, dict) and upd.get("error"):
+        return err("internal", str(upd["error"]))
+    return {"card_id": target_id, "updated": "status", "chars": len(content)}
+
+
+def _next_ruling_no(rulings: str) -> int:
+    """下一条定论编号：扫现有 D{nn}【 取最大值 +1（无条目 ⇒ 1）。"""
+    nums = [int(m) for m in re.findall(r"^D(\d{2})【", rulings or "", re.M)]
+    return (max(nums) + 1) if nums else 1
+
+
+async def _h_append_ruling(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """追加一条定论：编号由系统分配，旧条目一个字不改（物理上做不到）。"""
+    target_id = str(arguments.get("card_id") or current_id)
+    text = str(arguments.get("text") or "").strip()
+    if not text:
+        return err("validation", "text 不能为空")
+    blocked = _guard_edit(work_id, current_id, target_id, cards)
+    if blocked is not None:
+        return blocked
+    card = await card_store.read_card(work_id, target_id)
+    if not card or not card.get("body"):
+        return err("not_found", f"卡片不存在: {target_id}")
+    rulings = str(card["body"].get("rulings") or "")
+    # 模板占位不是既有条目：清掉再追加，避免新条目接在「→ 被D05取代」后面。
+    from .card_draft import _is_placeholder  # noqa: PLC0415
+    if _is_placeholder(rulings):
+        rulings = ""
+    no = _next_ruling_no(rulings)
+    today = datetime.now().strftime("%Y-%m-%d")
+    line = f"D{no:02d}【裁定】{text}（{today}）"
+    new_rulings = (rulings.rstrip() + "\n" + line) if rulings.strip() else line
+    current = await card_store.read_card(work_id, current_id)
+    cur_title = (current.get("meta") or {}).get("title", "")
+    upd = await card_store.update_card(
+        work_id, target_id, {"rulings": new_rulings},
+        f"由「{cur_title}」追加定论 D{no:02d}",
+    )
+    if isinstance(upd, dict) and upd.get("error"):
+        return err("internal", str(upd["error"]))
+    return {"card_id": target_id, "appended": line, "no": no}
 
 
 async def _h_delete_card(work_id: str, current_id: str,
@@ -2027,6 +2231,51 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
             },
         },
         handler=_h_edit_card,
+        readonly=False,
+    ),
+    # [分块写入 2026-10-19 · permexp] 一个接口一种语义（自动模式面专用，
+    # 见 _h_update_status 上方长注释）。普通卡不下发（仍走 draft/commit）。
+    "update_status": ToolDef(
+        schema={
+            "name": "update_status",
+            "description": (
+                "更新这张卡的「现状」块——只改现状，使命与定论一个字都不碰。"
+                "现状写**能核实的事实**：已经做成了什么（交付物在哪、能跑的命令、"
+                "跑出什么结果）、对外接口是什么、现在卡在哪。"
+                "不写计划、不写「我打算怎么做」、不写决定（决定用 append_ruling）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string", "description": "目标卡 id（缺省＝当前卡）"},
+                    "content": {"type": "string", "description": "新的现状正文（整块替换）"},
+                },
+                "required": ["content"],
+            },
+        },
+        handler=_h_update_status,
+        readonly=False,
+    ),
+    "append_ruling": ToolDef(
+        schema={
+            "name": "append_ruling",
+            "description": (
+                "往这张卡的「定论」块**追加一条**决定。写的是：定了什么、为什么这么定。"
+                "编号（D{nn}）与日期由系统补，旧条目改不了、也删不掉。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string", "description": "目标卡 id（缺省＝当前卡）"},
+                    "text": {
+                        "type": "string",
+                        "description": "决定内容（一句话说清定了什么；编号与日期系统补）",
+                    },
+                },
+                "required": ["text"],
+            },
+        },
+        handler=_h_append_ruling,
         readonly=False,
     ),
     "delete_card": ToolDef(
@@ -3210,6 +3459,13 @@ def build_tool_schemas(
     _card = (cards or {}).get(card_id) or {}
     if card_id and cards is not None and _card and bool(_card.get("auto_mode")):
         tools = _apply_auto_toolface(tools)
+        # [规划驱动 2026-10-19 · permexp **测试闸**] 无活板 ⇒ 只留「看得见、查得到」，
+        # 不给建结构与写产物。想动手，先 create_plan 把路线写下来。
+        # ★ 必须与思维链开关联动：思维链关着就没有 create_plan 可调，闸一开就是
+        #   死锁（要先规划才能建卡，可规划工具已关）——实测 4 组实验全废在这。
+        from ..thinkchain import enabled as _tc_on
+        if _tc_on() and not _has_active_board(work_id, card_id):
+            tools = _apply_plan_gate(tools)
     # ---- 末段②：专用工具追加（非卡片内挂；只在 op 回合）----
     # [合并保留] 与末段①**互相独立**（auto 卡 / op 回合），各判各的。
     if op == OP_UPDATE_STATUS:
@@ -3239,6 +3495,38 @@ def _create_card_schema_with_goal(schema: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: [规划驱动 2026-10-19 · permexp **测试闸**] 无活板时**不给**的工具：
+#: 建结构（create_card / create_coder_card / delete_card / 连线）与写产物
+#: （write_file / edit_file / move_file / rename_file / delete_file）。
+#: 保留：只读类 ＋ bash/python/glob_files/list_files/search_files（允许"看一眼再规划"）
+#:      ＋ create_plan（唯一出口）＋ update_status/append_ruling/update_shadow（记录）。
+#: ★ 仅实验期使用；落地形态见「第二轮起要求有板」。
+_PLAN_GATE_BLOCKED: frozenset[str] = frozenset({
+    "create_card", "create_coder_card", "delete_card",
+    "link_cards", "unlink_cards", "link_rel", "unlink_rel",
+    "write_file", "edit_file", "move_file", "rename_file", "delete_file",
+    "run_tool_card", "send_card_message",
+})
+
+
+def _has_active_board(work_id: str, card_id: str) -> bool:
+    """当前卡是否有**未收口**的计划板（有板才放行建结构/写产物）。"""
+    try:
+        from ..thinkchain import board as _board  # 延迟 import：thinkchain 反向依赖本模块
+        snap = _board.snapshot_sync(work_id, card_id)
+    except Exception:  # noqa: BLE001 读不到＝无板（fail-closed 到「先规划」）
+        return False
+    if not snap:
+        return False
+    steps = snap.get("steps") or []
+    return any(str(s.get("status") or "") != "done" for s in steps)
+
+
+def _apply_plan_gate(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """无活板时的工具面：摘掉建结构与写产物，只留「看 + 查 + 记录 + 上板」。"""
+    return [t for t in tools if str(t.get("name", "")) not in _PLAN_GATE_BLOCKED]
+
+
 def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """自动模式工具面（**本任务对工具面唯一的 auto 开口**，TC5 裁剪版）：
 
@@ -3255,13 +3543,19 @@ def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for t in tools:
         name = str(t.get("name", ""))
+        # [分块写入 2026-10-19 · permexp] auto 卡摘掉 edit_card：改用
+        # update_status / append_ruling（一个接口一种语义，见其上方长注释）。
+        # 普通卡不受影响（本函数只对 auto_mode=1 调用）。
+        if name == "edit_card":
+            continue
         if name == "create_card":
             out.append(_create_card_schema_with_goal(t))
         else:
             out.append(t)
     # 追加序固定（块0.4 起 update_goal 首位；G2 起两件通信随后）——集合成员
     # 增长不改首位语义，测试与审计都认这个序。
-    for auto_name in ("update_goal", "send_card_message", "read_inbox"):
+    for auto_name in ("update_goal", "send_card_message", "read_inbox",
+                      "update_status", "append_ruling"):
         if auto_name in AUTO_ONLY_TOOLS:
             out.append(_schema_of(TOOL_REGISTRY[auto_name]))
     return out

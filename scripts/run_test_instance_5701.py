@@ -52,13 +52,20 @@ def redirect_roots() -> str | None:
     if os.environ.get("ECO_TEST_SANDBOX") != "1":
         return None
 
-    base = Path(tempfile.mkdtemp(prefix="eco_5701_"))
+    # [2026-10-19] 支持复用已有沙箱根：``ECO_SANDBOX_ROOT=<路径>`` 时直接用它，
+    # 不再 mkdtemp——否则每次重启都换目录，正在跑的实验数据全丢。
+    fixed_root = os.environ.get("ECO_SANDBOX_ROOT", "").strip()
+    if fixed_root:
+        base = Path(fixed_root)
+        base.mkdir(parents=True, exist_ok=True)
+    else:
+        base = Path(tempfile.mkdtemp(prefix="eco_5701_"))
     works = base / "works"
-    works.mkdir(parents=True)
-    (base / "trading-workspace").mkdir()
-    (base / "推演agent").mkdir()
+    works.mkdir(parents=True, exist_ok=True)
+    (base / "trading-workspace").mkdir(exist_ok=True)
+    (base / "推演agent").mkdir(exist_ok=True)
     logs = base / "logs"
-    logs.mkdir()
+    logs.mkdir(exist_ok=True)
 
     from src.api import file_tools, prompt_log
     from src.storage import (

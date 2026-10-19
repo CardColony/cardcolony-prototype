@@ -85,7 +85,9 @@ FM_THINKCHAIN_FINAL = "thinkchain_final"
 
 # [迭代三 S3] 步 type 值域权威＝代码常量。校验只出现在写入口：create_board
 # 与 apply_revision·insert；读路径零校验。
-VALID_STEP_TYPES: list[str] = ["execute", "think"]
+# [规划驱动 2026-10-19 · permexp] 加 delegate：一步可以是「交给一个新节点做」。
+# 原值域只有 execute/think ⇒ 规划只能拆成「我自己要做的动作」，长不出组织。
+VALID_STEP_TYPES: list[str] = ["execute", "think", "delegate"]
 
 # [思维链真实落地 2026-10-11] 步 status 值域五态（笔 2）：pending（待做，
 # 建板起步）／doing（进行中）／done（完成，step_complete 置）／blocked
@@ -97,23 +99,45 @@ VALID_STEP_STATUSES: list[str] = ["pending", "doing", "done", "blocked", "droppe
 # 拼上该步字段——prompt/criteria/deliverable）。单点定义：message_runner
 # （催化挂点）、plan_tools（步引导）、step_region（165 区）三处消费。
 STEP_BRIEF_TEMPLATE = """\
-【步骤执行】你现在执行计划的一步，只做本步的事。
+【推进一步】你在推进计划的一步。这一步可以由你自己做，也可以交给一个新节点做——按这一步的类型来。
 
 本步要求：{prompt}
 完成判据：{criteria}（满足它，这一步才算完成）
 产出物：{deliverable}
 
-执行纪律：
-1. 只做本步的事，不跨步、不加戏。
-2. 需要取证就调工具（read_file/search_files/read_card），不凭想象。
-3. 完成判据不满足，就说"没完成"，不许谎报"已完成"。
-4. 做完立刻调 step_complete：result 写本步成果，criteria_met 写"判据如何满足"。"""
+推进纪律：
+1. 先判断这一步该谁做：一件事需要独立推进、且能独立验收，就建节点派出去；只有你自己才能做的（拆解、整合、判断、收口），才自己做。
+2. 派出去时，把「要什么结果、什么算完成」写进对方的 goal，不写怎么做、不写用什么技术。
+3. 自己做时，需要取证就调工具，不凭想象。
+4. 完成判据不满足，就说"没完成"，不许谎报"已完成"。
+5. 做完立刻调 step_complete：result 写本步成果，criteria_met 写"判据如何满足"。"""
+
+
+DELEGATE_BRIEF_TEMPLATE = """\
+【推进一步 · 派活】这一步交给一个新节点做，不是你自己做。
+
+要它达成什么：{prompt}
+它交付什么算完成：{criteria}
+交给谁：{deliverable}
+
+怎么做：
+1. 建一张子卡（create_card），把上面「要它达成什么 + 它交付什么算完成」写进它的 goal。
+   goal 里**只写要什么结果**——不写怎么做、不写用什么技术、不写放哪个目录，那些是它的决定。
+2. 建完直接结束本回合，**不要自己动手做这件事**。系统会在子卡完工后叫醒你。
+3. 被叫醒后：read_card 读它的现状，核对上面那条判据是否真的满足；
+   满足了就调 step_complete（result 写它交付了什么，criteria_met 写判据如何满足），
+   没满足就把差什么写清楚、让它继续做或重派。"""
 
 
 def step_brief(step: dict[str, Any]) -> str:
-    """按附录 C 模板拼某一步的执行提示词（纯函数；缺字段容错——如实标注，
-    不编造）。"""
-    return STEP_BRIEF_TEMPLATE.format(
+    """按步类型拼提示词（纯函数；缺字段容错——如实标注，不编造）。
+
+    [规划驱动 2026-10-19 · permexp] 按 type 分流：delegate 步走派活模板
+    （建子卡 → 结束回合 → 被唤醒后核对判据），其余走通用推进模板。
+    旧行为（无 type 或 execute/think）逐字不变。
+    """
+    tpl = DELEGATE_BRIEF_TEMPLATE if str(step.get("type") or "") == "delegate" else STEP_BRIEF_TEMPLATE
+    return tpl.format(
         prompt=step.get("prompt", ""),
         criteria=step.get("criteria") or "（本步未定判据——以本步要求达成与否为准）",
         deliverable=step.get("deliverable") or "（本步未定产出物——以 result 记录成果）",
@@ -156,7 +180,17 @@ def step_brief_fixed() -> str:
 
 
 def step_brief_dynamic(step: dict[str, Any]) -> str:
-    """附录 C 模板的动态行（本步要求／完成判据／产出物），按步字段填充。"""
+    """动态部分（本步要求／完成判据／产出物），按步字段填充。
+
+    [规划驱动 2026-10-19 · permexp] delegate 步返回**完整派活模板**：它的执行动作
+    （建子卡 → 结束回合 → 被唤醒后核对判据）与通用推进模板不同，不能只给三行字段。
+    """
+    if str(step.get("type") or "") == "delegate":
+        return DELEGATE_BRIEF_TEMPLATE.format(
+            prompt=step.get("prompt", ""),
+            criteria=step.get("criteria") or "（本步未定判据——以本步要求达成与否为准）",
+            deliverable=step.get("deliverable") or "（本步未定产出物——以 result 记录成果）",
+        )
     return _brief_parts()[1].format(
         prompt=step.get("prompt", ""),
         criteria=step.get("criteria") or "（本步未定判据——以本步要求达成与否为准）",

@@ -254,6 +254,8 @@ async def _h_step_complete(work_id: str, current_id: str,
             behavior = BEHAVIOR_EXECUTE_STEP
         elif stype == "think":
             behavior = BEHAVIOR_THINK_STEP
+        elif stype == "delegate":
+            behavior = "delegate_step"   # [规划驱动 2026-10-19] 派活步
         else:
             behavior = BEHAVIOR_STEP
             logger.warning(
@@ -302,18 +304,27 @@ PLAN_TOOLS: list[dict[str, Any]] = [
     {
         "schema": {
             "name": "create_plan",
-            "description": "把一件做不完的事拆成可执行的步骤计划并上板。\n\n"
+            "description": "把一件做不完的事拆成**推进路线**并上板。\n\n"
+                           "★ 拆之前先答三个问题，答不出不要调本工具：\n"
+                           "1. 这件事要达成什么？——写「什么算做成了」，不写「要做什么」。\n"
+                           "2. 需要几个角色来做？——每个角色要什么、交付什么算完成。\n"
+                           "3. 哪些角色可以独立推进、独立验收？——**每一个这样的角色，"
+                           "都必须是单独一步 delegate**，不是 execute。\n\n"
                            "每步必填四字段：\n"
-                           "- prompt：这一步要做什么（一句话任务要求）\n"
-                           "- criteria：完成判据——这一步\"怎么算做完\"，必须落在可观测的产出物上"
+                           "- prompt：这一步要达成什么（写结果，不写怎么做）\n"
+                           "- criteria：完成判据——必须落在可观测的产出物上"
                            "（文件存在/内容含 X/命令输出 Y），禁止\"完成\"\"做好\"式虚判\n"
-                           "- deliverable：这一步的产出物（落盘路径或明确数据/结论名）\n"
-                           "- type：execute（要调工具执行）/ think（思考整理）\n\n"
+                           "- deliverable：这一步的产出物（落盘路径，或交给对方的明确目标）\n"
+                           "- type：delegate（交给一个新节点做）/ execute（只有你自己能做、需要调工具）/ "
+                           "think（思考整理）\n\n"
                            "拆解要求：\n"
-                           "- 先想清目标：这件事最终要达成什么、什么算成功\n"
+                           "- **默认 delegate**：一件事需要独立推进、且能独立验收，就 delegate；"
+                           "只有拆解、整合、判断、收口才留给自己（execute/think）\n"
+                           "- 一个规划里**全是 execute/think、一个 delegate 都没有**，"
+                           "等于你把所有活都自己扛了——除非这件事小到一个人一步能做完，否则不成立\n"
+                           "- delegate 步的 prompt 写「要什么结果、什么算完成」，"
+                           "不写技术方案、不写目录——那是对方的决定\n"
                            "- 步骤按先后依赖排序，前置步在前\n"
-                           "- 拆完自检一遍：每步的 criteria 可观测吗？deliverable 能落盘吗？"
-                           "有没有依赖环？\n"
                            "- 步骤数按需，不虚拆也不硬凑",
             "parameters": {
                 "type": "object",
