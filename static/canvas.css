@@ -1496,14 +1496,14 @@
   left: 0;
   right: 0;
   top: 0;
-  height: 2px;
+  height: 3px;
   border-radius: 3px 3px 0 0;
   background: var(--cv-accent);
-  animation: cv-run-pulse 1.6s ease-in-out infinite;
+  animation: cv-run-pulse 1.2s ease-in-out infinite;
   pointer-events: none;
 }
 @keyframes cv-run-pulse {
-  0%, 100% { opacity: 0.3; }
+  0%, 100% { opacity: 0.55; }
   50%      { opacity: 1; }
 }
 
@@ -2749,8 +2749,21 @@
      描边呼吸       → 中距离分辨"在跑"而不是"待裁定"
    ========================================================================== */
 .page-canvas .card-node[data-live="running"] {
-  border-color: var(--cv-accent-line);
-  animation: cv-live-breathe 1.9s ease-in-out infinite;
+  border-color: var(--cv-accent);
+  animation: cv-live-breathe 1.6s ease-in-out infinite;
+}
+.page-canvas .card-node[data-live="running"] .tname { color: #cfe0ff; }
+.page-canvas .card-node[data-live="running"]:not(.lm)::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--cv-accent);
+  animation: cv-run-pulse 1.2s ease-in-out infinite;
+  pointer-events: none;
 }
 .page-canvas .card-node[data-live="running"]::before {
   content: "";
@@ -2758,17 +2771,17 @@
   left: 0;
   right: 0;
   top: 0;
-  height: 2px;
+  height: 3px;
   border-radius: 3px 3px 0 0;
   background: var(--cv-accent);
-  animation: cv-run-pulse 1.6s ease-in-out infinite;
+  animation: cv-run-pulse 1.2s ease-in-out infinite;
   pointer-events: none;
 }
 /* 已经由 .cv-runbar 表达运行中的自动卡，不叠第二条 */
 .page-canvas .card-node[data-live="running"]:has(> .cv-runbar)::before { display: none; }
 @keyframes cv-live-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(91, 140, 255, 0); }
-  50%      { box-shadow: 0 0 0 2px rgba(91, 140, 255, 0.16); }
+  0%, 100% { box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.25), 0 0 10px rgba(91, 140, 255, 0.12); }
+  50%      { box-shadow: 0 0 0 2px rgba(91, 140, 255, 0.55), 0 0 22px rgba(91, 140, 255, 0.35); }
 }
 /* 运行中那一行：换成"正在做什么"，蓝色标注"跑" */
 .page-canvas .cv-msgline[data-who="live"] { color: var(--cv-accent); }
