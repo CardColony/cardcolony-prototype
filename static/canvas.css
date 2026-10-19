@@ -3080,3 +3080,33 @@
   border-radius: 3px; padding: 0 4px; font-size: 10px; line-height: 15px;
 }
 .page-canvas .cv-msgline[data-who="sum"] { color: var(--cv-text-3); }
+
+.page-canvas .cv-more-wrap { position: relative; display: flex; align-items: center; }
+.page-canvas .cv-more-menu {
+  display: none;
+  position: absolute;
+  top: 38px;
+  right: 0;
+  min-width: 148px;
+  flex-direction: column;
+  padding: 4px;
+  border-radius: var(--cv-r-md);
+  border: 1px solid var(--cv-line-2);
+  background: var(--cv-surface-2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  z-index: 70;
+}
+.page-canvas .cv-more-wrap.is-open .cv-more-menu { display: flex; }
+.page-canvas .cv-mi-btn {
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--cv-r-sm);
+  background: transparent;
+  color: var(--cv-text-2);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.page-canvas .cv-mi-btn:hover { background: var(--cv-surface-3); color: var(--cv-text-1); }
+.page-canvas .cv-mi-btn.is-on { color: var(--cv-accent); }
