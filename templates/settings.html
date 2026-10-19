@@ -10,7 +10,7 @@
      右：选中供应商的模型详细设置（连接字段 + 模型列表）。
      添加供应商 = 模板选择器；操作收进「⋯」菜单。-->
 <link rel="stylesheet" href="/static/style.css?v=40">
-<link rel="stylesheet" href="/static/settings.css?v=10.10">
+<link rel="stylesheet" href="/static/settings.css?v=10.11">
 </head>
 <body class="set-body">
 <div class="set-page">
@@ -73,6 +73,20 @@
             </div>
           </div>
         </details>
+      </section>
+
+      <!-- 按卡片类型设置默认模型（新建项目的模板） -->
+      <section class="set-block">
+        <div class="set-h2-row">
+          <h2 class="set-h2">按卡片类型设置默认模型</h2>
+          <span class="set-hint" id="ctmHint">每次新建项目，都会把这里的设置整体拷贝成那个项目自己的模型配置表；之后在项目内改某卡模型，以该卡为准，不回写全局。</span>
+        </div>
+        <div class="set-card" id="ctmList"></div>
+        <div class="set-ctm-foot">
+          <span class="set-note" id="ctmStatus"></span>
+          <span class="spacer" style="flex:1"></span>
+          <button class="btn primary" id="ctmSaveBtn">保存模板</button>
+        </div>
       </section>
 
       <!-- 操作栏：属于【模型】分区，不是整个页面。
@@ -143,6 +157,6 @@
 </div>
 
 <div id="toastContainer" class="toast-container"></div>
-<script src="/static/settings.js?v=10.10"></script>
+<script src="/static/settings.js?v=10.11"></script>
 </body>
 </html>

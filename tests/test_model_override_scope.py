@@ -82,32 +82,37 @@ def test_update_clear_roundtrip(ws):
 
 
 def test_precedence_card_than_work_than_global(ws, gw):
+    """卡片覆盖 > 项目 types > 全局模板 > 全局默认；角色绑定仍走 card > work > global。"""
     model_override.update_work("work_100",
                                {"default_model": "m2", "bindings": {"execute": "m2"}})
     model_override.update_card("work_100", "card_002",
                                {"default_model": "m3", "bindings": {"execute": "m3"}})
+    model_override.seed_types("work_100", {"sub_project": "m4"})
 
+    # 无卡 → 全局默认（新模型：默认模型按卡类型解析，项目级无单一默认）
     assert model_config.default_model() == "m1"
-    assert model_config.default_model(work_id="work_100") == "m2"
+    assert model_config.default_model(work_id="work_100") == "m1"
+    # 卡片覆盖（m3）优先于项目表
     assert model_config.default_model(work_id="work_100", card_id="card_002") == "m3"
-    # 未覆盖的卡 → 回落 work 级
-    assert model_config.default_model(work_id="work_100", card_id="card_009") == "m2"
-
+    # 角色绑定：card > work > global
     assert model_config.resolve("execute") == "exec-global"
     assert model_config.resolve("execute", work_id="work_100") == "m2"
     assert model_config.resolve("execute", work_id="work_100", card_id="card_002") == "m3"
 
 
-def test_clear_falls_back_to_global(ws, gw):
-    model_override.update_work("work_100", {"default_model": "m2"})
-    model_override.update_card("work_100", "card_002", {"default_model": "m3"})
+def test_clear_card_falls_back_to_project_types(ws, gw, tmp_path, monkeypatch):
+    """清掉卡片覆盖后回落项目 types[card_type]。"""
+    from src.api import model_config
+    tpl = tmp_path / "card_type_models.json"
+    tpl.write_text('{"types": {"sub_project": "m2"}}', encoding="utf-8")
+    monkeypatch.setattr(model_config, "CARD_TYPE_MODELS_PATH", tpl)
+    monkeypatch.setattr(model_config, "_card_type_of", lambda wid, cid: "sub_project")
 
-    model_override.clear_card("work_100", "card_002")
+    model_override.seed_types("work_100", {"sub_project": "m3"})
+    model_override.update_card("work_100", "card_002", {"default_model": "m2"})
     assert model_config.default_model(work_id="work_100", card_id="card_002") == "m2"
-
-    model_override.clear_work("work_100")
-    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m1"
-    assert model_config.resolve("execute", work_id="work_100", card_id="card_002") == "exec-global"
+    model_override.clear_card("work_100", "card_002")
+    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m3"
 
 
 def test_validate_override_rejects_unknown_models(gw):
@@ -131,6 +136,7 @@ def client(ws, gw, monkeypatch):
 
 
 def test_api_work_roundtrip_and_effective(client):
+    """work 级覆盖可存可读（兼容）；但默认模型按卡类型解析，work 级不再提供单一默认。"""
     r = client.put("/api/settings/model-overrides/work_100",
                    json={"default_model": "m2", "bindings": {"execute": "m2"}})
     assert r.status_code == 200, r.text
@@ -140,8 +146,8 @@ def test_api_work_roundtrip_and_effective(client):
     assert g["work"]["default_model"] == "m2"
 
     eff = client.get("/api/settings/model-overrides/work_100/effective").json()
-    assert eff["default_model"] == "m2"
-    assert eff["bindings"]["execute"] == "m2"
+    assert eff["default_model"] == "m1"          # 无卡时 = 全局默认（不再用 work 默认）
+    assert eff["bindings"]["execute"] == "m2"    # 角色绑定仍读 work 覆盖
 
     assert client.delete("/api/settings/model-overrides/work_100").status_code == 200
     assert client.get("/api/settings/model-overrides/work_100").json()["work"] is None
@@ -202,3 +208,58 @@ def test_pick_step_model_uses_card_override(ws, gw):
     state = message_runner.RunState(work_id="work_100", card_id="card_002", content="x")
     model = message_runner._pick_step_model(state)
     assert model == "m3", f"应取卡片覆盖 m3，实际 {model}"
+
+
+# ---------------------------------------------------------------- 按卡片类型设置默认模型
+
+
+def test_seed_types_copies_template_into_project(ws, tmp_path, monkeypatch):
+    """新建项目种子化：全局模板整体拷进项目 types 表。"""
+    from src.api import model_config
+    tpl = tmp_path / "card_type_models.json"
+    tpl.write_text('{"types": {"project": "m2", "sub_project": "m3"}}', encoding="utf-8")
+    monkeypatch.setattr(model_config, "CARD_TYPE_MODELS_PATH", tpl)
+
+    model_override.seed_types("work_100", model_config.card_type_models())
+    assert model_override.load_types("work_100") == {"project": "m2", "sub_project": "m3"}
+
+
+def test_default_model_resolution_chain(ws, gw, tmp_path, monkeypatch):
+    """解析链：卡片覆盖 > 项目 types[card_type] > 全局模板[card_type] > 全局默认。"""
+    from src.api import model_config
+    tpl = tmp_path / "card_type_models.json"
+    tpl.write_text('{"types": {}}', encoding="utf-8")
+    monkeypatch.setattr(model_config, "CARD_TYPE_MODELS_PATH", tpl)
+    monkeypatch.setattr(model_config, "_card_type_of", lambda wid, cid: "sub_project")
+
+    # 全局默认 m1（gw stub 的 system.default_model）
+    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m1"
+    # 全局模板命中
+    tpl.write_text('{"types": {"sub_project": "m2"}}', encoding="utf-8")
+    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m2"
+    # 项目表命中（覆盖全局模板）
+    model_override.seed_types("work_100", {"sub_project": "m3"})
+    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m3"
+    # 卡片覆盖 > 项目表
+    model_override.update_card("work_100", "card_002", {"default_model": "m2"})
+    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m2"
+
+
+def test_api_card_type_models_roundtrip(client, tmp_path, monkeypatch):
+    """后台按卡类型模板的读/写/校验。"""
+    from src.api import model_config
+    tpl = tmp_path / "card_type_models.json"
+    tpl.write_text('{"types": {}}', encoding="utf-8")
+    monkeypatch.setattr(model_config, "CARD_TYPE_MODELS_PATH", tpl)
+
+    g = client.get("/api/settings/card-type-models").json()
+    assert "project" in g["card_types"]
+    assert "types" in g
+
+    r = client.put("/api/settings/card-type-models", json={"types": {"project": "m2", "tool": "nope"}})
+    assert r.status_code == 400
+    assert "nope" in r.json()["errors"][0]
+
+    r = client.put("/api/settings/card-type-models", json={"types": {"project": "m2"}})
+    assert r.status_code == 200, r.text
+    assert model_config.card_type_models() == {"project": "m2"}

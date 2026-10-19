@@ -725,3 +725,7 @@ label.set-model-row input[type="checkbox"] { accent-color: var(--set-brand); }
   .set-grid { grid-template-columns: 1fr; }
   .set-template-grid { grid-template-columns: 1fr; }
 }
+
+/* 按卡片类型设置默认模型 */
+.set-ctm-foot { display:flex; align-items:center; gap:10px; margin-top:12px; }
+.set-ctm-foot .set-note { font-size:12px; }

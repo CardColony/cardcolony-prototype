@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -40,6 +41,8 @@ logger = logging.getLogger("api.model_config")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = BASE_DIR / "config" / "models.yaml"
+CARD_TYPE_MODELS_PATH = BASE_DIR / "config" / "card_type_models.json"
+CARD_TYPE_REGISTRY_PATH = BASE_DIR / "config" / "card_type_registry.json"
 
 # [模型层底座抄写 2026-10-16 · 用户裁定 B] 编译层**不再翻译 thinking 方言 / 不再注入
 # effort**——「翻译职责归适配器」（原版架构本意：effort / 方言都是适配器一等参数）。
@@ -193,13 +196,106 @@ def _pick_override_binding(role: str, work_ov: dict, card_ov: dict):
     return None
 
 
-def _pick_override_default(work_ov: dict, card_ov: dict, global_default: str) -> str:
-    """按 card > work 顺序在覆盖 default_model 里找；都没设置返全局默认。"""
-    for ov in (card_ov, work_ov):
-        v = ov.get("default_model")
+# ============================================================
+# [按卡片类型设置默认模型 2026-10-19]
+# 全局模板 config/card_type_models.json：type → 模型键。新建项目时整体拷贝进
+# 该项目 model_override.json 的 types 表；之后项目内改卡片模型以卡片为准。
+# 解析链（某张卡实际用什么模型）：
+#   cards[card_id].default_model > work.types[card_type] > 全局模板[card_type] > system.default_model
+# ============================================================
+
+
+def _load_card_type_models() -> dict[str, Any]:
+    """读全局模板；缺/坏 ⇒ {"types": {}}（fail-open）。不抛。"""
+    try:
+        data = json.loads(CARD_TYPE_MODELS_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"types": {}}
+    return data if isinstance(data, dict) else {"types": {}}
+
+
+def card_type_models() -> dict[str, Any]:
+    """全局模板现读（type → 模型键；空串=未配置）。供设置界面与新建项目种子化。"""
+    return _load_card_type_models().get("types") or {}
+
+
+def save_card_type_models(types: dict) -> None:
+    """保存全局模板（原子写）。由 settings 侧先 validate_override 校验再调本函数。"""
+    cleaned = {k: v for k, v in (types or {}).items() if isinstance(v, str) and v.strip()}
+    data = {"_meta": {
+        "version": 1,
+        "purpose": "按卡片类型设置默认模型（全局模板）。新建项目时整体拷贝进该项目的模型配置表。",
+    }, "types": cleaned}
+    CARD_TYPE_MODELS_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def card_types() -> list[str]:
+    """全部合法卡类型（去重、保序）：root 词表 + 各项目类 L1 词表。供设置界面。"""
+    try:
+        reg = json.loads(CARD_TYPE_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    vocab = reg.get("l1_vocabularies") or {}
+    seen: list[str] = []
+    for scope in ("root",):
+        for t in (vocab.get(scope, {}) or {}).get("types", []) or []:
+            c = t.get("code")
+            if c and c not in seen:
+                seen.append(c)
+    for v in vocab.values():
+        for t in (v or {}).get("types", []) or []:
+            c = t.get("code")
+            if c and c not in seen:
+                seen.append(c)
+    return seen
+
+
+def _card_type_of(work_id: str, card_id: str) -> str:
+    """查一张卡的类型；失败 ⇒ ""（回落全局）。fail-open 不抛。"""
+    try:
+        from ..storage import card_store
+        meta = card_store._meta_of(work_id, card_id) or {}
+        ct = meta.get("card_type")
+        return str(ct) if ct else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def default_model(*, work_id: Optional[str] = None,
+                  card_id: Optional[str] = None) -> str:
+    """一张卡/项目实际用的默认模型（角色未绑定/未单独指定时）。
+
+    解析链：card 覆盖 > 项目 types[card_type] > 全局模板[card_type] > system.default_model。
+    项目 types 在新建项目时从全局模板拷贝，之后项目内改卡片以卡片覆盖为准。
+    """
+    system = (_gateway_config().get("system")) or {}
+    gd = str(system.get("default_model")) if system.get("default_model") else DEFAULT_MODEL
+    if not (work_id or card_id):
+        return gd
+
+    # 1) 单卡显式覆盖
+    if card_id:
+        _, card_ov = _scope_overrides(work_id, card_id)
+        v = card_ov.get("default_model")
         if isinstance(v, str) and v.strip():
             return v.strip()
-    return global_default
+    # 2) 项目配置表 types[card_type]
+    ct = _card_type_of(work_id, card_id) if card_id else ""
+    if work_id and ct:
+        try:
+            from ..storage import model_override as _mo
+            pt = _mo.load_types(work_id).get(ct)
+            if pt:
+                return pt
+        except Exception:  # noqa: BLE001
+            pass
+        # 3) 全局模板 types[card_type]
+        gt = card_type_models().get(ct)
+        if gt:
+            return gt
+    # 4) 全局默认
+    return gd
 
 
 def resolve(role: str, *, work_id: Optional[str] = None,
@@ -228,22 +324,6 @@ def resolve(role: str, *, work_id: Optional[str] = None,
     if isinstance(hit, list):
         return [str(x) for x in hit]
     return str(hit)
-
-
-def default_model(*, work_id: Optional[str] = None,
-                  card_id: Optional[str] = None) -> str:
-    """回落模型名（角色未绑定时）。work/card 覆盖优先于 system.default_model。
-
-    从 gateway.config.system.default_model 同源读，兜底 DEFAULT_MODEL。
-    card 覆盖 > work 覆盖 > system.default_model > DEFAULT_MODEL。
-    随 gateway 重建更新。
-    """
-    system = (_gateway_config().get("system")) or {}
-    gd = str(system.get("default_model")) if system.get("default_model") else DEFAULT_MODEL
-    if work_id or card_id:
-        work_ov, card_ov = _scope_overrides(work_id, card_id)
-        return _pick_override_default(work_ov, card_ov, gd)
-    return gd
 
 
 def validate_override(override: dict) -> list[str]:

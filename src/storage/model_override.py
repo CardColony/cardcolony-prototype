@@ -4,15 +4,15 @@
 产品形态：模型的「目录」（providers + models 定义）是全局唯一的，只存在于
 config/models.yaml；但「角色 → 模型」的绑定、以及项目的默认/降级模型，
 允许在**项目（work）级**与**卡片（card）级**覆盖。解析优先级：
-    card > work > global(models.yaml)。
+    card 覆盖 > work.types[card_type]（项目自身表）> 全局模板[card_type] > 全局默认。
 
 载体：每个 work 一个 ``works/{work_id}/model_override.json``，结构：
     {
-      "work":  {"default_model": "...", "bindings": {...}},
-      "cards": {"card_002": {...}, "card_003": {...}}
+      "types": {"project": "...", "sub_project": "...", ...},  // 项目自己的配置表（新建时从全局模板拷贝）
+      "cards": {"card_002": {"default_model": "...", "bindings": {...}}, ...}
     }
-- 键缺省/值为空 ⇒ 让位（继承下层/全局），不写死。
-- 覆盖只负责「给哪个角色用哪个模型 / 项目默认模型」；模型目录全局唯一，没有降级模型。
+- types 缺失/为空 ⇒ 该类型回落全局模板/全局默认。
+- cards[card_id] 是单卡覆盖；键缺省/值为空 ⇒ 让位（继承 types[card_type]）。
 - 该文件属于运行数据（同 cards.db / sessions），随快照备份，不进 git。
 - 坏文件/缺文件 ⇒ fail-open 空结构（解析层回落全局），绝不抛。
 
@@ -40,7 +40,7 @@ def path_for(work_id: str) -> Path:
 
 
 def has_any(work_id: str) -> bool:
-    """该 work 是否有任何覆盖（work 级或任一张卡）。"""
+    """该 work 是否有任何覆盖（types 或任一张卡）。"""
     return bool(load(work_id))
 
 
@@ -57,6 +57,28 @@ def load(work_id: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def load_types(work_id: str) -> dict[str, str]:
+    """取该项目的「按卡类型配置表」（type → 模型键）；缺/坏 ⇒ {}。不抛。"""
+    data = load(work_id)
+    t = data.get("types")
+    if not isinstance(t, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in t.items():
+        if isinstance(v, str) and v.strip():
+            out[str(k)] = v.strip()
+    return out
+
+
+def seed_types(work_id: str, template: dict) -> dict:
+    """新建项目时把全局模板整体拷成该项目的配置表（只写 types，不动 cards）。"""
+    data = load(work_id)
+    data["types"] = _clean_types(template)
+    data.setdefault("cards", {})
+    _atomic_write(data, work_id)
+    return data
+
+
 def load_scope(work_id: str, card_id: Optional[str] = None) -> tuple[dict, dict]:
     """取 (work 级覆盖, card 级覆盖)；无覆盖 ⇒ 空 dict。不抛。"""
     data = load(work_id)
@@ -71,6 +93,17 @@ def load_scope(work_id: str, card_id: Optional[str] = None) -> tuple[dict, dict]
             if isinstance(co, dict):
                 card_ov = co
     return work_ov, card_ov
+
+
+def _clean_types(template: dict) -> dict[str, str]:
+    """标准化配置表：只保留非空字符串值；空/None ⇒ 丢弃（表示未配置、回落）。"""
+    out: dict[str, str] = {}
+    if not isinstance(template, dict):
+        return out
+    for k, v in template.items():
+        if isinstance(v, str) and v.strip():
+            out[str(k)] = v.strip()
+    return out
 
 
 def _clean(override: dict) -> dict:

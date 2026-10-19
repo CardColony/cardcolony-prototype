@@ -167,6 +167,15 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
     work_data["work_card_id"] = work_card_id
     write_work(work_id, work_data)
 
+    # [按卡片类型设置默认模型 2026-10-19] 新建项目即把全局模板整体拷成该项目
+    # 自己的模型配置表（types）。此后项目内改卡片模型以卡片覆盖为准，不回写全局。
+    try:
+        from ..api import model_config
+        from . import model_override
+        model_override.seed_types(work_id, model_config.card_type_models())
+    except Exception as exc:  # noqa: BLE001 种子化失败不阻断建项目（回落全局默认）
+        logger.warning("create_work: 模型配置表种子化失败 work=%s: %s", work_id, exc)
+
     # [白板裁定 2026-10-02] 不再自动派生"目标"卡——系统不预置任何语义卡；
     # 卡从两个口子来：用户手建（前端）或模型经 card-proposal 建。
     # ending_derived 字段保留恒 false（存量兼容，前端 🏁 标志自然熄灭）。
