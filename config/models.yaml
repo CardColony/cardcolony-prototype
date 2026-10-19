@@ -146,9 +146,11 @@ models:
     thinking: 'on'
     note: ''
 bindings:
-  execute: deepseek-v41-flash
-  think: anthropic-claude-haiku-55
-  synthesize: anthropic-claude-haiku-55
+  # [2026-10-19 permexp] deepseek/claude 的 key 均过期；思维链打开后按步类型选模，
+  # 故 execute/think/synthesize 一并切到 glm-53-flash，否则每步都 MODEL_CALL_FAILED。
+  execute: glm-53-flash
+  think: glm-53-flash
+  synthesize: glm-53-flash
   condense: glm-53-flash
   compress: glm-53-flash
   draft: glm-53
@@ -157,8 +159,27 @@ bindings:
   - glm-53
   - minimax-m31-flash-preview
 system:
+  # [合并 2026-10-19] 保留 dev 的默认模型；permexp 实验期的 glm-53-flash
+  # 与 fallback_model 空串不并入（dev 已拆 fallback 机制）。
   default_model: minimax-m31-flash-preview
 simple:
   enabled: true
 retry_grading:
   enabled: false
+
+# ============================================================
+# [并发上限 2026-10-19] 每个模型同时在跑的调用数。
+# 为什么要有：实测 k3 在几分钟内拆出 54 个并发回合，全部打向同一端点，
+# 服务端限流/挂起，整个进程被拖垮。
+# 不探测（各供应商都说"按套餐动态调整"，查不到准数）——用保守默认 + 可按套餐覆盖。
+# 调度器按这张表排队：满了就等，不失败、不丢活。
+# ============================================================
+concurrency:
+  default: 3
+  per_model:
+    kimi-k3: 3
+    glm-53: 3
+    glm-53-flash: 5
+    glm-53-flashx: 5
+    deepseek-v41-flash: 8
+    deepseek-pro: 4

@@ -122,6 +122,9 @@ class ModelGateway:
     def __init__(self, config: dict[str, Any], stats: Optional[RuntimeStats] = None) -> None:
         self.config = config
         self.stats = stats if stats is not None else RuntimeStats()
+        # [并发调度 2026-10-19] 每个模型一把信号量：同时最多 N 个调用在跑，
+        # 其余排队等（不失败、不丢活）。N 见 config.models.yaml 的 concurrency 段。
+        self._sems: dict[str, asyncio.Semaphore] = {}
         self._models: dict[str, dict[str, Any]] = {
             k: v for k, v in (config.get("models") or {}).items() if isinstance(v, dict)
         }
@@ -129,6 +132,24 @@ class ModelGateway:
         for name, mc in self._models.items():
             self._by_vendor.setdefault(_vendor_of(mc), []).append(name)
         self._runtime = self._build_runtime(config)
+
+    def _sem_for(self, model_name: str) -> asyncio.Semaphore:
+        """该模型的并发闸（懒建，进程内单例）。
+
+        上限取 ``concurrency.per_model[model]``，缺省回 ``concurrency.default``（3）。
+        **这是排队不是拒绝**：拿不到就 await，不抛错、不丢活。
+        """
+        sem = self._sems.get(model_name)
+        if sem is None:
+            cfg = self.config.get("concurrency") or {}
+            per = cfg.get("per_model") or {}
+            try:
+                n = int(per.get(model_name) or cfg.get("default") or 3)
+            except (TypeError, ValueError):
+                n = 3
+            sem = asyncio.Semaphore(max(1, n))
+            self._sems[model_name] = sem
+        return sem
 
     # ------------------------------------------------------------------
     # runtime / 适配器装配
@@ -329,7 +350,7 @@ class ModelGateway:
                 )
                 assembler = BlockAssembler()
                 emitted: list[str] = []
-                async for chunk in self._runtime.stream(options):
+                async for chunk in _guarded_stream(self._sem_for(model_name), self._runtime.stream(options)):
                     if chunk.type == "text-delta":
                         emitted.append(chunk.text)
                         if stream and on_chunk:
@@ -470,7 +491,7 @@ class ModelGateway:
             )
             assembler = BlockAssembler()
             try:
-                async for chunk in self._runtime.stream(options):
+                async for chunk in _guarded_stream(self._sem_for(model_name), self._runtime.stream(options)):
                     if chunk.type == "reasoning-delta":
                         if on_reasoning:
                             try:
@@ -515,6 +536,48 @@ class ModelCallFailure(Exception):
         super().__init__(message)
         self.message = message
         self.reason = reason
+
+
+# ============================================================
+# [断流兜底 2026-10-19 · permexp]
+#
+# 背景：实测 4 张卡在**同一毫秒**（16:44:14）停止，最后事件都是 reasoning、
+# 没有 done/error——流既没抛异常也没结束，协程永久挂在 await 上，静默 57 分钟。
+# 上层（auto_driver）只在"回合收口"后才起下一轮 ⇒ 不收口 = 永不再动。
+#
+# ★ 判的是「**多久没有新 chunk**」，不是「总共跑了多久」：
+#   正常推理每秒几十个 chunk（card_009 实测连续推理 40 分钟、11 万条事件），
+#   10 分钟一个字都没有，只可能是连接挂起（用户裁定：至少 10 分钟）。
+#   这与被否掉的"墙钟闸"是两回事。
+# ============================================================
+STREAM_IDLE_TIMEOUT = 600.0
+
+
+async def _stream_with_idle_timeout(agen: Any,
+                                    idle: float = STREAM_IDLE_TIMEOUT):
+    """包一层流：相邻 chunk 间隔超过 ``idle`` 秒 ⇒ 判流挂起（抛 ModelCallFailure）。"""
+    it = agen.__aiter__()
+    while True:
+        try:
+            chunk = await asyncio.wait_for(it.__anext__(), timeout=idle)
+        except asyncio.TimeoutError:
+            raise ModelCallFailure(
+                f"流静默超过 {idle:g}s（连接挂起，一个字都没收到）", "timeout"
+            ) from None
+        except StopAsyncIteration:
+            return
+        yield chunk
+
+
+async def _guarded_stream(sem: asyncio.Semaphore, agen: Any):
+    """并发闸 + 静默兜底：整个流期间占一个额度，流结束才释放。
+
+    [并发调度 2026-10-19] 一个流占一个额度 ⇒ N 个并发上限就是 N 条流同时在跑，
+    其余在 ``async with`` 上排队等（不失败、不丢活）。
+    """
+    async with sem:
+        async for chunk in _stream_with_idle_timeout(agen):
+            yield chunk
 
 
 class MockAdapter(LlmAdapter):

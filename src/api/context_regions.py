@@ -41,6 +41,12 @@ class RegionCtx:
     work_card_id: str = ""
     cur: Optional[dict[str, Any]] = None
     cur_meta: dict[str, Any] = field(default_factory=dict)
+    # [常驻当前卡 2026-10-19 · permexp] 当前卡正文与影子**取数一次、常驻上下文**：
+    # 模型不必每轮 read_card/read_shadow 才知道自己是什么状态（卡片是持久对象，
+    # 打开就该看到自己的全部状态）。cur_body＝{mission,status_block,rulings}；
+    # cur_shadow＝{progress,coordination,artifacts,iterations}。
+    cur_body: dict[str, Any] = field(default_factory=dict)
+    cur_shadow: dict[str, str] = field(default_factory=dict)
     direct_child_status: list[dict[str, Any]] = field(default_factory=list)
     # [卡片思维区 2026-10-15] 按卡类型挂的文本（多维度）：{维度: {类型 code: 文本}}。
     # 由装配前一处 IO（context_assembler.load_type_texts）取好放入，渲染器只读。
@@ -181,8 +187,8 @@ REGION_TABLE: list[dict[str, Any]] = [
         "source_owner": "assembler",
         "delivery": "system",
         "profiles": ("main", "viewpoint", "draft"),
-        "source": "现状（cards 索引按 current_id 匹配；空行＋当前卡一行）",
-        "render": lambda ctx: render_current_card_region(ctx.cur),
+        "source": "当前卡身份 ＋ 正文三块 ＋ 影子三节（常驻；取数在装配层一次完成）",
+        "render": lambda ctx: render_current_card_region(ctx),
         "count": 1,
     },
     {
@@ -642,11 +648,45 @@ def render_card_list_region(cards: list[dict[str, Any]], work_card_id: str) -> s
     return "\n".join(lines)
 
 
-def render_current_card_region(cur: dict[str, Any] | None) -> str:
-    """150 区渲染：当前卡一行。无当前卡 → 空串（没有来源就不出现这个区）。"""
+def render_current_card_region(ctx: "RegionCtx") -> str:
+    """150 区渲染：当前卡身份 ＋ 正文三块 ＋ 影子三节（**常驻**）。
+
+    [常驻当前卡 2026-10-19 · permexp] 用户令：卡片自己的现状与影子必须在上下文里，
+    不能让模型每轮靠 read_card/read_shadow 去拉——卡片是持久对象，打开就该看见自己
+    的全部状态。取数在装配层一次完成（RegionCtx.cur_body / cur_shadow），本函数纯渲染。
+
+    裁剪口径：影子只出**产物清单 / 待协作事项 / 进度**三节；「迭代历史」是系统机械
+    留痕（155 区已告知模型"你不用写"），且随时间无限增长，常驻只会挤占上下文。
+    空块不出现（没有内容就不占篇幅）；整卡无正文时只出身份行。
+    """
+    cur = ctx.cur
     if cur is None:
         return ""
-    return "\n".join(["## 当前卡", f"{cur['card_id']} · {cur['title']}"])
+    # 延迟 import：card_draft 反向依赖本模块，模块级 import 会成环（同 _child_status_body）。
+    from .card_draft import _is_placeholder  # noqa: PLC0415
+
+    third = _THIRD_BLOCK_NAME_BY_TREE.get(ctx.project_class or "", "定论")
+    body = ctx.cur_body or {}
+    lines = ["## 当前卡", f"{cur['card_id']} · {cur['title']}"]
+
+    for name, key in (("使命", "mission"), ("现状", "status_block"), (third, "rulings")):
+        text = str(body.get(key) or "").strip()
+        # 骨架模板（「（本卡作用/目标…）」这类）不是内容：常驻进去会让模型
+        # 把模板当既有事实照抄（实测 system prompt 里整段模板原样出现）。
+        if text and not _is_placeholder(text):
+            lines += ["", f"### {name}", text]
+
+    shadow = ctx.cur_shadow or {}
+    sh_lines: list[str] = []
+    for name, key in (("产物清单", "artifacts"), ("待协作事项", "coordination"),
+                      ("进度", "progress")):
+        text = str(shadow.get(key) or "").strip()
+        if text and not _is_placeholder(text):
+            sh_lines += [f"【{name}】", text, ""]
+    if sh_lines:
+        lines += ["", "### 影子（本卡私有，别的卡读不到）", *sh_lines[:-1]]
+
+    return "\n".join(lines)
 
 
 def render_judgment_region(ctx: RegionCtx) -> list[dict[str, Any]]:
@@ -787,9 +827,11 @@ _THIRD_BLOCK_HOWTO = {
         "            讨论、备选、过程不写这里。"
     ),
     "定论": (
-        "定论——本课题已经作出的决定与收敛。\n"
+        "定论——本课题已经作出的决定与裁定（定了什么、为什么这么定）。\n"
         "      写法：只追加、不删不改；一条一行，写清“决定了什么、依据是什么”；\n"
-        "            某条失效就在原处标一行“→ 被Dxx取代”，不保留原文。"
+        "            某条失效就在原处标一行“→ 被Dxx取代”，不保留原文。\n"
+        "      判据：只能被接受或推翻的（取舍、方案选择、边界划定）写这里；\n"
+        "            能被别人拿去验证的事实不写这里，写现状。"
     ),
 }
 
@@ -820,14 +862,16 @@ def render_card_region_guide(card_type: str, project_class: str) -> str:
         mission,
         "      写法：≤5 行，一句话说清；立项定稿，只有用户能改，你没有写它的通道。",
         "",
-        f"现状——{subject}当前确定的状态与结论。",
+        f"现状——{subject}现在实际是什么样（事实，不是打算）。",
         f"      别的卡读{'根卡' if is_root else '这张卡'}，先读的就是它——"
-        "所以这里写别的卡继续工作要知道的三类东西：",
-        "      · 当前确定状态：现在已经确定了什么、哪些能作为其他卡工作的依据；",
-        f"      · 接口与约定：{subject}对外提供什么，输入输出、调用方式、约束是什么；",
-        f"      · 依赖与影响范围：{subject}依赖哪些模块；它变更时哪些卡或功能会受影响。",
-        "      写法：整块覆盖、只保留最新一份；只写已经确定的结论；",
-        "            不写过程、不写“做到哪”的流水账。",
+        "所以这里只写别人能拿去验证的东西：",
+        "      · 已经做成了什么：交付物在哪、能跑的命令、跑出什么结果；",
+        "      · 对外接口：提供什么，输入输出、调用方式、约束是什么；",
+        f"      · 现在卡在哪：缺什么、在等什么（依赖哪些卡、变更会波及谁）。",
+        "      写法：整块覆盖、只保留最新一份；只写能核实的事实；",
+        "            不写计划、不写「我打算怎么做」、不写过程与流水账。",
+        f"      判据：能被别人拿去验证的，写这里；只是「定了什么、要什么」"
+        f"而无法验证的，写{third}。",
         "",
         _THIRD_BLOCK_HOWTO[third],
         "",

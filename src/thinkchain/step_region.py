@@ -48,12 +48,13 @@ RESULT_DISPLAY_LIMIT = 800
 #   4. 做完立刻调 step_complete：result 写本步成果，criteria_met 写"判据如何满足"。
 #                                                             → 4. 做完立刻调 step_complete，提交本步成果与判据满足情况。
 PREAMBLE_SELF_NARRATIVE = (
-    "我按这套规范推进当前任务：\n"
-    "我的执行纪律：\n"
-    "1. 只做当前步的事，不跨步、不加戏。\n"
-    "2. 需要取证就调工具，不凭想象。\n"
-    "3. 完成判据不满足，就说不满足、不谎报完成。\n"
-    "4. 做完立刻调 step_complete，提交本步成果与判据满足情况。"
+    "我是这条线的负责人，按这套规范推进当前任务：\n"
+    "我的推进纪律：\n"
+    "1. 只推进当前步，不跨步、不加戏。\n"
+    "2. 这一步能交给一个独立节点做，就派出去；只有拆解、整合、判断才自己做。\n"
+    "3. 需要取证就调工具，不凭想象。\n"
+    "4. 完成判据不满足，就说不满足、不谎报完成。\n"
+    "5. 做完立刻调 step_complete，提交本步成果与判据满足情况。"
 )
 
 
@@ -141,7 +142,7 @@ def render_injection(data: dict[str, Any]) -> str:
     board.step_brief_dynamic 单一模板渲染）。
     """
     lines = [
-        f"我正在执行「{data.get('plan_name', '')}」的第 "
+        f"我正在推进「{data.get('plan_name', '')}」的第 "
         f"{data.get('index')}/{data.get('total')} 步。",
     ]
     done_steps = data.get("completed_steps") or []

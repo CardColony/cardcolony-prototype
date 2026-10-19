@@ -895,7 +895,10 @@ async def create_card(
                 # 子卡从本树根卡继承（project_class 只挂根卡）。
                 # [自动模式 2026-10-17 · 回灌 5700 块0.2] 父卡 auto ⇒ 本卡**全开**
                 # （policy.auto_perms()——绕过类型分权，不是新增一种分权）。
-                **(_auto_perm_fields() if is_auto else _perm_fields(
+                # [2026-10-19 实验 permexp] 自动模式不再全开权限：与普通卡同一份
+                # 类型分权（compute_perms）。auto_mode 只保留「自动续轮」语义，
+                # 不再改写 perms——原「绕过类型分权」口径已由本次实验撤除。
+                **(_perm_fields(
                     project_class or _root_project_class(work_id), resolved_type)),
                 "created_at": now,
                 "updated_at": now,
@@ -1090,11 +1093,10 @@ async def update_card(
         new_auto = 1 if bool(updates.get("auto_mode")) else 0
         updates["auto_mode"] = new_auto
         if new_auto != (1 if bool(cur_meta.get("auto_mode")) else 0):
-            if new_auto:
-                perms, ver = policy.auto_perms()
-            else:
-                pc = str(cur_meta.get("project_class") or "") or _root_project_class(work_id)
-                perms, ver = policy.compute_perms(pc, cur_type)
+            # [2026-10-19 实验 permexp] 0/1 一律按类型分权重算——auto_mode 不再
+            # 授予全开权限，只影响轮次驱动器。原 auto_perms() 分支已撤除。
+            pc = str(cur_meta.get("project_class") or "") or _root_project_class(work_id)
+            perms, ver = policy.compute_perms(pc, cur_type)
             updates[policy.PERM_KEY] = perms
             updates[policy.PERM_VERSION_KEY] = ver
 
@@ -1203,7 +1205,11 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     try:
         if session_path.exists():
             session_path.unlink()
-    except Exception as exc:  # noqa: BLE001
+    # [2026-10-19 崩溃修复] 沙箱的 safe-delete 守卫在"一次删超阈值"时抛
+    # SystemExit（BaseException，普通 except Exception 抓不住）⇒ 会一路冒到
+    # 主线程把整个进程杀掉（实测 54 并发时撞了两次）。删除是维护动作，
+    # 失败只记日志，绝不许反噬主链路。
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
         logger.warning("session 文件删除失败（不中断）%s: %s", session_path, exc)
 
     # [影子卡 2026-10-03] 删正卡→影子同删（随正卡生命周期存续，不变量 3）；失败不中断
