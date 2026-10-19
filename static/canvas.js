@@ -156,7 +156,6 @@ const WORK_ID = window.__WORK_ID__;
       zoomSlider.value = String(Math.min(200, Math.max(25, pct)));
     }
     updateLOD();
-    scheduleMinimap();   // [画布商业化] 视口框随变换实时跟随
   }
 
   // [画布第三步 T2] 档位判据的 zoom 改参数传入（V1：本函数在渲染 10 函数名单内；
@@ -1418,8 +1417,6 @@ const WORK_ID = window.__WORK_ID__;
     renderBreadcrumb(projection.breadcrumb);
     applySelectionClasses();
     applyTransform();
-    scheduleMinimap();
-    // [phase8.4] 渲染完成即懒加载可见卡摘要（首次进入/下钻/Reload 后均填充）
     lazyLoadVisibleSummaries(vm.cardsById);
 
     // 恢复"就地展开"的卡：重建节点后重新挂上对话（否则发完消息自己合上）
@@ -1581,10 +1578,26 @@ const WORK_ID = window.__WORK_ID__;
   // 另一个样子"的分叉（少个 data-who、多一层 span），而这种分叉只在跑完那一刻
   // 出现，平时看不见。
   function msgLineHtml(card) {
-    const lm = card && card.last_msg && card.last_msg.text ? card.last_msg : null;
-    if (!lm) return "";
-    const who = lm.actor === "human" ? "你" : lm.actor === "assistant" ? "AI" : (lm.actor || "");
-    return `<div class="cv-msgline" data-who="${lm.actor === "human" ? "you" : "ai"}" title="${escapeHtml(who + "：" + lm.text)}"><span class="cv-msg-who">${escapeHtml(who)}</span>${escapeHtml(lm.text)}</div>`;
+    if (!card) return "";
+    const lm = card.last_msg && card.last_msg.text ? card.last_msg : null;
+    if (lm) {
+      const who = lm.actor === "human" ? "你" : lm.actor === "assistant" ? "AI" : (lm.actor || "");
+      return `<div class="cv-msgline" data-who="${lm.actor === "human" ? "you" : "ai"}" title="${escapeHtml(who + "：" + lm.text)}"><span class="cv-msg-who">${escapeHtml(who)}</span>${escapeHtml(lm.text)}</div>`;
+    }
+    const p = (card.pending_items || [])[0];
+    if (p && p.text) {
+      return `<div class="cv-msgline" data-who="pending" title="${escapeHtml(p.text)}"><span class="cv-msg-who">待</span>${escapeHtml(p.text)}</div>`;
+    }
+    const d = card.last_decision && card.last_decision.text ? card.last_decision : null;
+    if (d) {
+      return `<div class="cv-msgline" data-who="dec" title="${escapeHtml(d.id + "【" + d.kind + "】" + d.text)}"><span class="cv-msg-who">定</span>${escapeHtml(d.text)}</div>`;
+    }
+    const c = String(card.conclusion || "").trim();
+    if (c) {
+      const first = c.split(/[。！？\n]/)[0].slice(0, 90);
+      return `<div class="cv-msgline" data-who="sum" title="${escapeHtml(c.slice(0, 300))}">${escapeHtml(first)}</div>`;
+    }
+    return "";
   }
 
   // [画布第三步 T2] 改吃视图模型 vm（动作层装配）：viewRoot/positions/childMap/
@@ -4807,115 +4820,6 @@ const WORK_ID = window.__WORK_ID__;
     if (paletteEl && !paletteEl.contains(e.target)) closePalette();
   });
 
-  // ==================== 小地图 ====================
-  //
-  // [画布商业化 2026-10-17] 长画布必备的"我在哪"导航件：
-  //   · 左下角常驻，画全部可见卡的缩略矩形（按类型着色）＋ 当前视口框；
-  //   · 点击/拖动小地图＝把视口中心移到该处（不是缩放，纯导航）；
-  //   · 卡片全部落在视口内时自动淡出（不占视线）。
-  const MM_W = 176, MM_H = 118, MM_PAD = 8;
-  const mmRoot = document.createElement("div");
-  mmRoot.className = "cv-minimap";
-  mmRoot.innerHTML = `<canvas width="${MM_W}" height="${MM_H}"></canvas><div class="cv-mm-view"></div>`;
-  viewport?.appendChild(mmRoot);
-  const mmCanvas = mmRoot.querySelector("canvas");
-  const mmCtx = mmCanvas.getContext("2d");
-  const mmView = mmRoot.querySelector(".cv-mm-view");
-
-  // 小地图不是"类型图例"，是"我在哪"：全部中性灰，只有视口内的卡更亮。
-  // 原来按 card_type 上 6 种颜色，缩略图变成一块彩色拼图，反而看不出结构。
-
-  let _mmRaf = 0;
-  function scheduleMinimap() {
-    if (_mmRaf) return;
-    _mmRaf = requestAnimationFrame(() => { _mmRaf = 0; renderMinimap(); });
-  }
-
-  function renderMinimap() {
-    if (!viewport || !mmCtx) return;
-    const nodes = [...nodeMap.entries()];
-    if (!nodes.length) { mmRoot.style.display = "none"; return; }
-    mmRoot.style.display = "";
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [, n] of nodes) {
-      const x = parseFloat(n.style.left) || 0, y = parseFloat(n.style.top) || 0;
-      minX = Math.min(minX, x); minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x + (n.offsetWidth || 220));
-      maxY = Math.max(maxY, y + (n.offsetHeight || 120));
-    }
-    const z = state.view.zoom || 1;
-    const vx0 = (0 - state.view.panX) / z, vy0 = (0 - state.view.panY) / z;
-    const vx1 = (viewport.clientWidth - state.view.panX) / z;
-    const vy1 = (viewport.clientHeight - state.view.panY) / z;
-
-    // 世界范围＝卡片 bbox ∪ 视口范围：保证视口框永远画得下（否则缩小到很小会跑出框外）
-    const bx0 = Math.min(minX, vx0), by0 = Math.min(minY, vy0);
-    const bx1 = Math.max(maxX, vx1), by1 = Math.max(maxY, vy1);
-    const w = Math.max(1, bx1 - bx0), h = Math.max(1, by1 - by0);
-    const scale = Math.min((MM_W - MM_PAD * 2) / w, (MM_H - MM_PAD * 2) / h);
-    const ox = MM_PAD + ((MM_W - MM_PAD * 2) - w * scale) / 2 - bx0 * scale;
-    const oy = MM_PAD + ((MM_H - MM_PAD * 2) - h * scale) / 2 - by0 * scale;
-    const toX = (x) => x * scale + ox;
-    const toY = (y) => y * scale + oy;
-
-    mmCtx.clearRect(0, 0, MM_W, MM_H);
-    for (const [cid, n] of nodes) {
-      const x = parseFloat(n.style.left) || 0, y = parseFloat(n.style.top) || 0;
-      const w = n.offsetWidth || 220, h = n.offsetHeight || 120;
-      // 视口内的卡亮一档（一眼看出"哪些已经在屏幕上"）
-      const inView = x + w > vx0 && x < vx1 && y + h > vy0 && y < vy1;
-      mmCtx.fillStyle = inView ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.26)";
-      mmCtx.fillRect(toX(x), toY(y), Math.max(2, w * scale), Math.max(1.5, h * scale));
-    }
-    mmCtx.globalAlpha = 1;
-
-    // 视口框：位置随 pan/zoom 实时变，用 DOM 元素（CSS 有主色描边）
-    const vx = toX(vx0), vy = toY(vy0);
-    const vw = Math.max(6, (vx1 - vx0) * scale);
-    const vh = Math.max(6, (vy1 - vy0) * scale);
-    mmView.style.left = vx + "px";
-    mmView.style.top = vy + "px";
-    mmView.style.width = vw + "px";
-    mmView.style.height = vh + "px";
-
-    // 内容全在视口内 ⇒ 淡出（不打扰）
-    const allVisible = vx0 <= minX && vy0 <= minY && vx1 >= maxX && vy1 >= maxY;
-    mmRoot.style.opacity = allVisible ? "0.25" : "0.95";
-
-    // 供点击换算复用
-    mmRoot.dataset.scale = String(scale);
-    mmRoot.dataset.ox = String(ox);
-    mmRoot.dataset.oy = String(oy);
-  }
-
-  // 点击/拖动小地图 ⇒ 视口中心跳到该世界点
-  function mmNavigate(clientX, clientY) {
-    const rect = mmRoot.getBoundingClientRect();
-    const scale = parseFloat(mmRoot.dataset.scale || "1");
-    const ox = parseFloat(mmRoot.dataset.ox || "0");
-    const oy = parseFloat(mmRoot.dataset.oy || "0");
-    const wx = (clientX - rect.left - ox) / scale;
-    const wy = (clientY - rect.top - oy) / scale;
-    const z = state.view.zoom || 1;
-    applyViewState({
-      panX: viewport.clientWidth / 2 - wx * z,
-      panY: viewport.clientHeight / 2 - wy * z,
-    });
-    scheduleSaveView();
-  }
-
-  let mmDrag = false;
-  mmRoot.addEventListener("mousedown", (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    mmDrag = true;
-    mmNavigate(e.clientX, e.clientY);
-  });
-  document.addEventListener("mousemove", (e) => {
-    if (mmDrag) mmNavigate(e.clientX, e.clientY);
-  });
-  document.addEventListener("mouseup", () => { mmDrag = false; });
 
   // ==================== 数据加载 ====================
   async function reloadCanvas() {
