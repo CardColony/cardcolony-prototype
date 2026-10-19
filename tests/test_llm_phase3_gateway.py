@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""网关兼容壳 / 单适配器注册 / MOCK_LLM 金样本 / fallback 归因 / 补丁零残留。
+"""网关兼容壳 / 单适配器注册 / MOCK_LLM 金样本 / 补丁零残留。
 
-对应《OpenAI 兼容直连适配器》任务书 §七：判据 1（单适配器）、判据 4（fallback 归因）、
+对应《OpenAI 兼容直连适配器》任务书 §七：判据 1（单适配器）、
 判据 5（litellm/llm_deepseek 零残留）、判据 6（MOCK_LLM 金样本）。
+（原判据 4「fallback 归因」随模型 fallback 机制于 2026-10-19 按用户裁定整体拆除。）
 零真实调用、零网络（失败路径指向 127.0.0.1:1，连接立即被拒）。
 """
 from __future__ import annotations
@@ -107,36 +108,10 @@ def test_build_gateway_keeps_config_surface(monkeypatch):
     assert callable(gw.call) and callable(gw.stream_call)
 
 
-# ---------------- 判据 4：fallback 归因（双原始错误） ----------------
-
-async def test_fallback_preserves_both_errors(monkeypatch):
-    monkeypatch.delenv("MOCK_LLM", raising=False)
-    monkeypatch.setenv("K", "sk-fake")
-    gw = build_gateway({
-        "models": {"main": _dead_model("zhipu", "glm-5.3"), "fallback": _dead_model("opencode", "deepseek-v4-pro")},
-        "retry_grading": {"enabled": False},
-    })
-    with pytest.raises(ModelError) as exc:
-        await gw.call("main", "S", "U")
-    text = str(exc.value)
-    assert "原模型 main 失败(" in text
-    assert "已降级 deepseek-v4-pro 亦失败(" in text
-
-
-async def test_fallback_status_event_still_emitted(monkeypatch):
-    monkeypatch.delenv("MOCK_LLM", raising=False)
-    monkeypatch.setenv("K", "sk-fake")
-    gw = build_gateway({
-        "models": {"main": _dead_model("zhipu", "glm-5.3"), "fallback": _dead_model("opencode", "deepseek-v4-pro")},
-        "retry_grading": {"enabled": False},
-    })
-    seen: list[dict] = []
-    with pytest.raises(ModelError):
-        await gw.call("main", "S", "U", on_status=seen.append)
-    phases = [e["phase"] for e in seen]
-    assert "fallback" in phases
-    fb = next(e for e in seen if e["phase"] == "fallback")
-    assert fb["from_model"] == "main" and fb["to_model"] == "fallback"
+# ---------------- 判据 4（已拆）：fallback 归因随机制拆除于 2026-10-19 ----------------
+# 原两条测试（test_fallback_preserves_both_errors / test_fallback_status_event_still_emitted）
+# 随 _fallback_or_raise 一并删除。重试耗尽即 ModelError 的行为由
+# test_llm_errors / test_llm_retry 覆盖。
 
 
 # ---------------- MOCK_LLM 金样本 ----------------

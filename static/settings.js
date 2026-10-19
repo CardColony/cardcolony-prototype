@@ -459,7 +459,6 @@
 
   function renderAdvanced() {
     $("advDefaultModel").innerHTML = modelOptions(DATA.system.default_model || "");
-    $("advFallbackModel").innerHTML = modelOptions(DATA.system.fallback_model || "");
     $("advSimpleEnabled").checked = !!(DATA.simple && DATA.simple.enabled);
   }
 
@@ -472,7 +471,6 @@
       bindings: DATA.bindings,
       system: {
         default_model: $("advDefaultModel").value,
-        fallback_model: $("advFallbackModel").value,
       },
       simple: { enabled: $("advSimpleEnabled").checked },
       retry_grading: DATA.retry_grading,
@@ -700,7 +698,7 @@
   // ------------------------------------------------------------ 工具：供应商/模型增删
 
   // [引用清理 2026-10-14] 删除模型后，清理所有指向它的引用：
-  // bindings（角色绑定）与 system.default_model / fallback_model。
+  // bindings（角色绑定）与 system.default_model。
   //
   // 铁律（用户 2026-10-14 明确要求）：
   //   模型删了 → 引用【置空】。绝不自动改指到别的模型。
@@ -722,7 +720,7 @@
       }
     });
     // ② system：指向已删模型的直接清空（不改指别的模型）
-    ["default_model", "fallback_model"].forEach((f) => {
+    ["default_model"].forEach((f) => {
       if (DATA.system && rm.includes(DATA.system[f])) {
         DATA.system[f] = "";
       }

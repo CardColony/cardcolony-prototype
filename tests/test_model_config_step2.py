@@ -51,7 +51,7 @@ RAW = {
         },
     },
     "bindings": {"execute": "haiku"},
-    "system": {"default_model": "haiku", "fallback_model": "minimax-m3"},
+    "system": {"default_model": "haiku"},
     "simple": {"enabled": True},
     "retry_grading": {"enabled": False},
 }
@@ -185,15 +185,6 @@ def test_thinking_off_as_yaml_bool_dialect_still_off():
     body: dict = {}
     apply_thinking(body, ThinkingSpec(vendor=entry["vendor"], thinking=entry["thinking"]))
     assert body["enable_thinking"] is False
-
-
-def test_fallback_copy_survives_pop():
-    """fallback 复制发生在弹出之后，条目里不能带 UI 字段。"""
-    cfg = model_config.compile(RAW)
-    fb = cfg["models"].get("fallback")
-    assert fb is not None
-    for leaked in model_config._NON_GATEWAY_KEYS:
-        assert leaked not in fb
 
 
 def test_real_config_file_compiles_clean():

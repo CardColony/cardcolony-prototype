@@ -221,8 +221,8 @@ def _validate(cfg: dict[str, Any]) -> tuple[list[str], list[str]]:
             if m not in (models or {}):
                 errors.append(f"绑定 '{role}' 指向的模型 '{m}' 不存在")
 
-    # ④ system.default_model / fallback_model 必须存在于 models
-    for field in ("default_model", "fallback_model"):
+    # ④ system.default_model 必须存在于 models（fallback_model 随机制拆除）
+    for field in ("default_model",):
         name = system.get(field)
         if name and name not in (models or {}):
             errors.append(f"system.{field} 指向的模型 '{name}' 不存在")
@@ -301,6 +301,9 @@ async def put_models(request: Request) -> JSONResponse:
     cfg["models"] = cfg.get("models") or {}
     cfg["bindings"] = cfg.get("bindings") or {}
     cfg["system"] = cfg.get("system") or {}
+    # [2026-10-19] 模型 fallback 机制已拆除：死键一律剥掉，防旧标签页/旧客户端
+    # 把 fallback_model 写回 yaml（写回去也没有消费者，但留着就是骗人的字）。
+    cfg["system"].pop("fallback_model", None)
     cfg["simple"] = cfg.get("simple") or {}
     cfg["retry_grading"] = cfg.get("retry_grading") or {}
 

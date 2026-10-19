@@ -12,7 +12,7 @@ from src.api import model_service
 from src.thinkchain import model_pick
 
 
-def _stub_gateway(monkeypatch, bindings: dict, models=("main", "fallback"),
+def _stub_gateway(monkeypatch, bindings: dict, models=("main", "backup"),
                   default: str = "main") -> None:
     """stub 全局 gateway 单例，models 键集 / bindings / default 由测试自控。"""
 
@@ -30,8 +30,8 @@ def _stub_gateway(monkeypatch, bindings: dict, models=("main", "fallback"),
 # ══════════════ resolve_model ══════════════
 
 def test_resolve_model_legal(monkeypatch):
-    _stub_gateway(monkeypatch, {"synthesize": "fallback"})
-    assert model_pick.resolve_model("synthesize") == "fallback"
+    _stub_gateway(monkeypatch, {"synthesize": "backup"})
+    assert model_pick.resolve_model("synthesize") == "backup"
 
 
 def test_resolve_model_illegal_falls_back(monkeypatch, caplog):
@@ -54,5 +54,5 @@ def test_resolve_model_empty_falls_back(monkeypatch):
 
 
 def test_resolve_model_multi_takes_first(monkeypatch):
-    _stub_gateway(monkeypatch, {"viewpoint": ["fallback", "main"]})
-    assert model_pick.resolve_model("viewpoint") == "fallback"
+    _stub_gateway(monkeypatch, {"viewpoint": ["backup", "main"]})
+    assert model_pick.resolve_model("viewpoint") == "backup"
