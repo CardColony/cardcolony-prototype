@@ -366,3 +366,101 @@ test("增量·pinned 保护：局部避让下 pinned 卡与固定障碍坐标绝
 });
 
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// [画布 2026-10-19] 布局不变量属性测试
+// ──────────────────────────────────────────────────────────────────────────
+// 为什么加这一组：今天查出两个真实缺陷，当时的测试**全绿**——
+//   ① 列宽只按卡片自身宽度算，没算子树的宽度 ⇒ 兄弟卡右侧长出的子树横向
+//      插进下一列，同一行相撞（232 卡实测 233 对重叠）；
+//   ② 卡片在自己的子树盒里垂直居中 ⇒ 同一排兄弟的 y 差出 138px，行对齐失效。
+// 两个都是"结构不变量被破坏"，用几条属性断言就能抓住。以后改布局，
+// 这几条会先红，而不是等到人肉截图才发现。
+// ══════════════════════════════════════════════════════════════════════════
+
+// 造一棵形状刁钻的树：多列（兄弟 > 10）、多级、叶子密集、宽度不一致
+function makeWideTree({ wide = 24, mid = 6, deep = 4 } = {}) {
+  const cards = [{ card_id: "r", parent: "", title: "根", created_at: "2026-01-01" }];
+  const sizes = { r: { w: 360, h: 76 } };
+  for (let i = 0; i < mid; i++) {
+    const id = "m" + i;
+    cards.push({ card_id: id, parent: "r", title: id, created_at: "2026-01-02" });
+    sizes[id] = { w: 280, h: 76 };
+    for (let j = 0; j < wide; j++) {
+      const cid = id + "_" + j;
+      cards.push({ card_id: cid, parent: id, title: cid, created_at: "2026-01-03" });
+      sizes[cid] = { w: 224, h: 52 };
+      if (j < deep) {
+        for (let k = 0; k < 3; k++) {
+          const gid = cid + "_" + k;
+          cards.push({ card_id: gid, parent: cid, title: gid, created_at: "2026-01-04" });
+          sizes[gid] = { w: 184, h: 52 };
+        }
+      }
+    }
+  }
+  const expanded = new Set(["r", ...cards.filter((c) => c.parent === "r").map((c) => c.card_id)]);
+  for (const c of cards) if ((c.card_id.split("_").length === 2) && c.parent !== "r") expanded.add(c.card_id);
+  return { cards, relations: [], positions: {}, expanded, sizes };
+}
+
+function overlapsOf(layout, sizes) {
+  const ids = Object.keys(layout);
+  const w = (c) => (sizes[c] && sizes[c].w) || 220;
+  const h = (c) => (sizes[c] && sizes[c].h) || 86;
+  const out = [];
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const a = ids[i], b = ids[j];
+      const ox = Math.min(layout[a].x + w(a), layout[b].x + w(b)) - Math.max(layout[a].x, layout[b].x);
+      const oy = Math.min(layout[a].y + h(a), layout[b].y + h(b)) - Math.max(layout[a].y, layout[b].y);
+      if (ox > 0.5 && oy > 0.5) out.push([a, b, Math.round(ox), Math.round(oy)]);
+    }
+  }
+  return out;
+}
+
+for (const shape of [
+  { name: "小树", opts: { wide: 3, mid: 2, deep: 1 } },
+  { name: "宽树(24 子卡×6)", opts: { wide: 24, mid: 6, deep: 4 } },
+  { name: "极宽(40 子卡×4)", opts: { wide: 40, mid: 4, deep: 0 } },
+]) {
+  test(`布局不变量·${shape.name}：任意两张卡都不重叠`, () => {
+    const inp = makeWideTree(shape.opts);
+    const layout = computeLayout("r", inp.cards, inp.relations, inp.positions, inp.expanded, inp.sizes);
+    assert.equal(Object.keys(layout).length, inp.cards.length, "每张卡都必须被布局到，一张都不许丢");
+    const ov = overlapsOf(layout, inp.sizes);
+    assert.deepEqual(ov.slice(0, 5), [], `出现 ${ov.length} 对重叠`);
+  });
+
+  test(`布局不变量·${shape.name}：同父多列的行必须对齐`, () => {
+    const inp = makeWideTree(shape.opts);
+    const layout = computeLayout("r", inp.cards, inp.relations, inp.positions, inp.expanded, inp.sizes);
+    const byPar = {};
+    for (const c of inp.cards) {
+      if (!c.parent) continue;
+      const p = layout[c.card_id];
+      ((byPar[c.parent] = byPar[c.parent] || {})[Math.round(p.x)] ||= []).push(Math.round(p.y));
+    }
+    for (const [par, cols] of Object.entries(byPar)) {
+      const xs = Object.keys(cols);
+      if (xs.length < 2) continue;
+      const lists = xs.map((x) => cols[x].slice().sort((a, b) => a - b));
+      const minLen = Math.min(...lists.map((l) => l.length));
+      for (let i = 0; i < minLen; i++) {
+        const ys = new Set(lists.map((l) => l[i]));
+        assert.equal(ys.size, 1, `父 ${par} 第 ${i} 行各列 y 不一致：${[...ys].join("/")}`);
+      }
+    }
+  });
+
+  test(`布局不变量·${shape.name}：坐标必须是整数（不许有 .5px 抖动）`, () => {
+    const inp = makeWideTree(shape.opts);
+    const layout = computeLayout("r", inp.cards, inp.relations, inp.positions, inp.expanded, inp.sizes);
+    for (const [cid, p] of Object.entries(layout)) {
+      assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), `${cid} 坐标非有限数`);
+      assert.equal(p.x, Math.round(p.x), `${cid} x 带小数：${p.x}`);
+      assert.equal(p.y, Math.round(p.y), `${cid} y 带小数：${p.y}`);
+    }
+  });
+}

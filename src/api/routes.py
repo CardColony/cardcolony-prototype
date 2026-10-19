@@ -556,6 +556,28 @@ async def get_work_card(work_id: str, card_id: str):
 
 
 # [用户删卡 2026-10-02] 仅前端调用；模型工具清单不含删卡（模型无权删卡）
+@router.get("/works/{work_id}/trash")
+async def list_work_trash(work_id: str):
+    """[画布 2026-10-19] 回收站列表：删卡后的长期找回入口（撤销条只活 12 秒）。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    return {"items": await card_store.list_trash(work_id)}
+
+
+@router.post("/works/{work_id}/cards/{card_id}/restore")
+async def restore_work_card(work_id: str, card_id: str):
+    """[画布 2026-10-19] 撤销删除：从回收站按**原 card_id** 恢复。
+
+    与 DELETE 对称的一条口。幂等（已存在返回 already），不因重复点撤销报错。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    result = await card_store.restore_card(work_id, card_id)
+    if "error" in result:
+        return _err(404, result["error"])
+    return result
+
+
 @router.delete("/works/{work_id}/cards/{card_id}")
 async def delete_work_card(work_id: str, card_id: str):
     if work_store.read_work(work_id) is None:

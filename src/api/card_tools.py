@@ -540,6 +540,41 @@ async def _h_update_goal(work_id: str, current_id: str,
                 and str((it or {}).get("msg_id") or "") not in answered]
 
     if action == "complete":
+        # [画布 2026-10-19] **定论闸**：收口前，本卡正文必须至少有一条定论。
+        #
+        # 为什么卡在这里：定论是这张卡对外的**唯一结论形态**——画布上显示的是它，
+        # 别的卡 read_card 读到的也是它。没有定论的卡，在画布上就只剩一个标题，
+        # 用户扫完整棵树也不知道这条线决定了什么（实测 39 张卡只有 1 张写过定论）。
+        # 这和上面那条"未回应询问不许收工"是同一类闸：收口是唯一宣称"做完了"的动作，
+        # 那它必须留下"做完了什么"的凭据。
+        #
+        # 判据纯机械：正文里有没有 `D{nn}【…】`。正文为空（还没写任何内容）不拦——
+        # 那种卡在画布上本来也无内容可显示，拦它只会挡住建卡流程。
+        try:
+            _cur = await card_store.read_card(work_id, current_id)
+            _body = str(((_cur or {}).get("body") or {}).get("status_block") or "")
+            _body += "\n" + str(((_cur or {}).get("body") or {}).get("rulings") or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[自动模式] 读定论失败（放行）card=%s: %s", current_id, exc)
+            _body = ""
+        # 两个必须排除的"假定论/假正文"：
+        #  ① 骨架示例行 `D01【裁定】……（日期·依据）`——模板占位不是决定，
+        #     不排除的话每张新建卡一出生就"有定论"，闸等于不存在。
+        #  ② 正文仍是骨架（现状块还留着"（当前状况快照：…"这段模板说明）——
+        #     那说明这张卡还没写过任何内容，拦它只会挡住建卡流程。
+        #     `create_card` 会把 NEW_CARD_SKELETON 写进正文，所以"空正文"在真实
+        #     流程里几乎不存在，只能按"是否还是模板"来判。
+        _unwritten = "（当前状况快照：" in _body
+        if (_body.strip() and not _unwritten
+                and not re.search(r"^D\d{2}【(裁定|决定|收敛)】\s*(?!…|\.\.\.)", _body, re.M)):
+            return err("validation",
+                       "收口被拒：本卡还没有定论。定论是这张卡对外的唯一结论形态——"
+                       "画布上显示的是它，别的卡读到的也是它；没有它，这条线在画布上"
+                       "就只剩一个标题。"
+                       "出路：用 edit_card 改写正文，在 ## 定论 段追加一条 "
+                       "D{nn}【收敛】本次决定了什么（日期·依据），再调 update_goal(complete)。"
+                       "定论只追加、不覆盖既有条目。")
+
         _unanswered = await _unanswered_asks()
         if _unanswered:
             _ids = [str((it or {}).get("msg_id") or "") for it in _unanswered]

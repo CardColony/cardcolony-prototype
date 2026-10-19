@@ -101,13 +101,17 @@ check("1 画布渲染卡片", nodes > 0, nodes + " 张");
 await key("0", { code: "Digit0", modifiers: MOD.ctrl });
 await sleep(600);
 
-// ── 2 进入对话页：走卡片右上角的 ↗（单击现在是"选中 + 右栏读卡"，不跳页）──
+// ── 2 单击＝选中（不跳页、也不开右栏）；进对话页走卡片右上角的 ↗ ──
+// [画布 2026-10-19] 右栏卡片详情已整件删除：它的内容（标题/状态/结论/待裁定）
+// 与悬停浮层、卡片面高度重复，用户明确否掉。现在单击只选中，对话在并行层里开。
 let b = await centerOf(".card-node", 1);
 await click(b.x, b.y);
 await sleep(300);
 const stayedOnCanvas = (await ev("location.pathname")) === `/work/${WID}`;
-const detailShown = await ev("!!document.querySelector('#cardDetail') && !document.querySelector('#cardDetail').hidden");
-check("2a 单击＝选中并右栏读卡（不跳页）", stayedOnCanvas && detailShown, `canvas=${stayedOnCanvas} detail=${detailShown}`);
+const detailHidden = await ev("!!document.querySelector('#cardDetail') && document.querySelector('#cardDetail').hidden");
+const selected = await ev("document.querySelectorAll('.card-node.is-selected').length");
+check("2a 单击＝选中（不跳页、不开右栏）", stayedOnCanvas && detailHidden && selected > 0,
+      `canvas=${stayedOnCanvas} hidden=${detailHidden} sel=${selected}`);
 await ev(`document.querySelectorAll('.card-node .cv-open')[1].click()`);
 await sleep(1100);
 let p1 = await ev("location.pathname");

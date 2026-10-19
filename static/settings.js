@@ -56,6 +56,109 @@
     setTimeout(() => el.remove(), 3200);
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 应用内弹窗（替代 window.prompt / window.confirm）
+  // ──────────────────────────────────────────────────────────────────────────
+  // [画布 2026-10-19 · 自查] 这个页面上还剩两处浏览器原生弹窗：改密钥用 prompt、
+  // 删供应商用 confirm。它们不可换肤、会冻结主线程、长得像"网页在警告你"——
+  // 而整个产品其余部分都是深色定制界面，只有这里露出浏览器原生 UI。
+  // 改密钥尤其不能这么干：那是一个**密钥输入框**，原生 prompt 里既看不见已配置
+  // 状态、也没法提示"不会进日志"，只有一个空白输入条。
+  //
+  // 为什么不做成和画布共用的模块：canvas.js 是 ES module、这个文件是普通脚本，
+  // 共用要么把它也改成 module（牵动整个文件的全局导出），要么挂 window 全局。
+  // 为一个页面上的两个对话框付这个代价不划算——这里给一份同语言的最小实现，
+  // 样式全部走 style.css 的 token，视觉与画布那边一致。
+  //
+  // 返回：输入模式 → 字符串或 null；确认模式 → true 或 null。
+  // ══════════════════════════════════════════════════════════════════════════
+  const DLG_CSS = `
+  .set-dlg-mask{position:fixed;inset:0;z-index:900;display:flex;align-items:center;
+    justify-content:center;background:rgba(1,4,9,.66);animation:setDlgFade .12s ease}
+  @keyframes setDlgFade{from{opacity:0}to{opacity:1}}
+  .set-dlg{width:420px;max-width:calc(100vw - 48px);max-height:74vh;display:flex;
+    flex-direction:column;padding:18px 18px 14px;background:var(--panel);
+    border:1px solid var(--border);border-radius:12px;
+    box-shadow:0 24px 64px rgba(0,0,0,.72)}
+  .set-dlg-title{font-size:14px;font-weight:650;color:var(--text);margin-bottom:10px}
+  .set-dlg-body{font-size:12.5px;line-height:1.75;color:var(--text-soft);
+    overflow-y:auto;margin-bottom:16px;white-space:pre-wrap;word-break:break-word}
+  .set-dlg-input{width:100%;padding:8px 10px;margin-bottom:16px;border-radius:7px;
+    border:1px solid var(--border);background:var(--bg-deep);color:var(--text);
+    font-size:13px;font-family:inherit;box-sizing:border-box}
+  .set-dlg-input:focus{outline:none;border-color:#388bfd}
+  .set-dlg-ops{display:flex;justify-content:flex-end;gap:8px}
+  .set-dlg-btn{min-width:72px;height:32px;padding:0 14px;border-radius:7px;
+    border:1px solid var(--border);background:transparent;color:var(--text-soft);
+    font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit}
+  .set-dlg-btn:hover{background:var(--panel-hover)}
+  .set-dlg-btn.is-primary{border-color:rgba(56,139,253,.55);
+    background:rgba(56,139,253,.16);color:#79b8ff}
+  .set-dlg-btn.is-danger{border-color:rgba(248,81,73,.55);
+    background:rgba(248,81,73,.14);color:#ff7b72}
+  .set-dlg-btn:focus-visible{outline:2px solid #388bfd;outline-offset:2px}`;
+
+  let _dlgCssInjected = false;
+
+  function dialog({ title, body = "", input = false, value = "", placeholder = "",
+                    okText = "确定", cancelText = "取消", danger = false }) {
+    if (!_dlgCssInjected) {
+      const st = document.createElement("style");
+      st.textContent = DLG_CSS;
+      document.head.appendChild(st);
+      _dlgCssInjected = true;
+    }
+    return new Promise((resolve) => {
+      const mask = document.createElement("div");
+      mask.className = "set-dlg-mask";
+      mask.innerHTML = `
+        <div class="set-dlg" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+          <div class="set-dlg-title">${escapeHtml(title)}</div>
+          ${body ? `<div class="set-dlg-body">${escapeHtml(body)}</div>` : ""}
+          ${input ? `<input class="set-dlg-input" type="text" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(title)}">` : ""}
+          <div class="set-dlg-ops">
+            <button class="set-dlg-btn" type="button" data-role="cancel">${escapeHtml(cancelText)}</button>
+            <button class="set-dlg-btn ${danger ? "is-danger" : "is-primary"}" type="button" data-role="ok">${escapeHtml(okText)}</button>
+          </div>
+        </div>`;
+      document.body.appendChild(mask);
+
+      const inp = mask.querySelector(".set-dlg-input");
+      const okBtn = mask.querySelector('[data-role="ok"]');
+      let done = false;
+      const close = (v) => {
+        if (done) return;
+        done = true;
+        document.removeEventListener("keydown", onKey, true);
+        mask.remove();
+        resolve(v);
+      };
+      const submit = () => close(input ? (inp.value.trim() || null) : true);
+      okBtn.onclick = submit;
+      mask.querySelector('[data-role="cancel"]').onclick = () => close(null);
+      mask.addEventListener("mousedown", (e) => { if (e.target === mask) close(null); });
+
+      // 捕获阶段拦截：弹窗开着时 Esc/Enter/Tab 不许漏到页面快捷键上；
+      // Tab 圈在弹窗内（aria-modal 承诺了模态，就得真的模态）。
+      const onKey = (e) => {
+        if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(null); return; }
+        if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); submit(); return; }
+        if (e.key === "Tab") {
+          const f = [...mask.querySelectorAll("button, input")]
+            .filter((el) => el.offsetParent !== null);
+          if (!f.length) return;
+          e.preventDefault(); e.stopPropagation();
+          const i = f.indexOf(document.activeElement);
+          const n = e.shiftKey ? (i <= 0 ? f.length - 1 : i - 1)
+                               : (i === f.length - 1 || i < 0 ? 0 : i + 1);
+          f[n].focus();
+        }
+      };
+      document.addEventListener("keydown", onKey, true);
+      if (inp) { inp.focus(); inp.select(); } else okBtn.focus();
+    });
+  }
+
   function banner(kind, html) {
     const b = $("setBanner");
     b.className = "set-banner " + kind;
@@ -647,7 +750,13 @@
     const p = DATA.providers[providerName] || {};
     const env = p.api_key_env || "";
     if (!env) { toast("先填 api_key_env 再改密钥", true); return; }
-    const v = window.prompt("输入 " + env + " 的值（明文不会回显、不会进日志）");
+    const v = await dialog({
+      title: `设置 ${env}`,
+      body: "密钥只写入服务端环境，明文不会回显、不会进日志。保存后立即生效，不需要重启。",
+      input: true,
+      placeholder: "粘贴密钥后回车",
+      okText: "保存",
+    });
     if (v === null) return;
     if (!v.trim()) { toast("值不能为空", true); return; }
     const r = await api("/api/settings/keys/" + encodeURIComponent(env), {
@@ -727,11 +836,18 @@
     });
   }
 
-  function deleteProvider(name) {
+  async function deleteProvider(name) {
     const used = modelsOf(name);
-    if (used.length &&
-        !window.confirm(`有 ${used.length} 个模型挂在它下面（${used.join("、")}），仍要删除？`)) {
-      return false;
+    if (used.length) {
+      // 把要连带删掉的模型**列出来**：原生 confirm 里那串名字挤成一行纯文本，
+      // 而这正是"删错了会丢什么"的唯一依据，值得排版。
+      const ok = await dialog({
+        title: `删除供应商「${name}」`,
+        body: `有 ${used.length} 个模型挂在它下面，会一并删除：\n\n${used.map((m) => "· " + m).join("\n")}`,
+        danger: true,
+        okText: "删除",
+      });
+      if (!ok) return false;
     }
     used.forEach((mn) => { delete DATA.models[mn]; EDITING.delete(mn); });
     delete DATA.providers[name];
@@ -808,7 +924,7 @@
         if (act === "fetch") { await doFetch(prov); return; }
         if (act === "key") { await changeKey(prov); return; }
         if (act === "del") {
-          if (deleteProvider(prov)) {
+          if (await deleteProvider(prov)) {
             renderNav();
             renderDetail();
             renderBindings();
