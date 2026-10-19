@@ -11,7 +11,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=41">
+<link rel="stylesheet" href="/static/style.css?v=45">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -155,6 +155,9 @@
                #inputBox / #runBtn 已退役——输入卡的 textarea 与主键由
                static/esm/flow/input-bar.js 生成（dsh InputBar.tsx 的 DOM 形状）。 -->
           <div class="composer-seat" id="composerSeat">
+            <!-- [模型选择器 v6 2026-10-19] 发送按钮左侧：由 input-bar 收进 .flow-input-row
+                 并插到 trailing（发送）之前。 -->
+            <div id="modelBadgeMount" class="model-badge-mount composer"></div>
             <!-- 项目自有的两个起草键（不属 dsh）：initComposer 时由 input-bar 收进
                  输入卡的 .flow-input-modes（dsh 的 leftItems 位）。 -->
             <div id="flowInputLeft" class="flow-input-leftitems">

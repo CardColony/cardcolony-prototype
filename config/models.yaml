@@ -54,6 +54,7 @@ models:
     # 才会经 model_config 注入 reasoning_effort=default_effort(high)；缺声明时
     # 端点退化成内联 <think> 形态（实测 10-16：正文尾部带 </think> 污染）。
     thinking: 'on'
+    note: DeepSeek V4 Pro（按需选用；[2026-10-19 裁定] 已无降级模型概念）
     retry:
       max_attempts: 3
       backoff_seconds: 2

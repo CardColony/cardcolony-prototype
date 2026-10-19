@@ -187,6 +187,12 @@ def test_thinking_off_as_yaml_bool_dialect_still_off():
     assert body["enable_thinking"] is False
 
 
+def test_no_fallback_entry_compiled():
+    """[2026-10-19 产品裁定] 无降级模型：编译产物里不应再有 "fallback" 条目。"""
+    cfg = model_config.compile(RAW)
+    assert "fallback" not in cfg["models"]
+
+
 def test_real_config_file_compiles_clean():
     """对仓库真实 config/models.yaml 跑一遍：任何模型条目都不得带 UI 字段。"""
     real = model_config.BASE_DIR / "config" / "models.yaml"

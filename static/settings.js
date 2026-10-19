@@ -155,6 +155,61 @@
 
   // ------------------------------------------------------------ 读
 
+  // ------------------------------------------------------------ 按卡片类型设置默认模型（新建项目模板）
+
+  const CTM = { cardTypes: [], types: {} };
+
+  async function loadCardTypeModels() {
+    const r = await api("/api/settings/card-type-models");
+    if (!r.ok || !r.data) { return; }
+    CTM.cardTypes = r.data.card_types || [];
+    CTM.types = r.data.types || {};
+    renderCardTypeModels();
+  }
+
+  function ctmModelOptions(selected) {
+    const list = CTM.modelsList || [];
+    let html = '<option value="">（默认 · 未指定）</option>';
+    for (const m of list) {
+      const sel = m === selected ? " selected" : "";
+      html += `<option value="${escapeHtml(m)}"${sel}>${escapeHtml(m)}</option>`;
+    }
+    return html;
+  }
+
+  function renderCardTypeModels() {
+    const box = $("ctmList");
+    const hint = $("ctmHint");
+    if (!box) return;
+    // 模型目录来自全局配置（DATA.models 键）
+    CTM.modelsList = Object.keys(DATA.models || {}).sort();
+    if (hint) hint.textContent = `共 ${CTM.cardTypes.length} 种卡片类型 · 每次新建项目整体拷贝成该项目自己的配置表。`;
+    box.innerHTML = `<div class="set-grid" style="grid-template-columns:1fr 1fr">` +
+      CTM.cardTypes.map((ct) => `
+        <div class="set-field">
+          <label>${escapeHtml(ct)}</label>
+          <select class="set-select" data-ctm="${escapeHtml(ct)}">${ctmModelOptions(CTM.types[ct] || "")}</select>
+        </div>`).join("") +
+      `</div>`;
+  }
+
+  async function saveCardTypeModels() {
+    const types = {};
+    document.querySelectorAll("[data-ctm]").forEach((sel) => {
+      if (sel.value) types[sel.dataset.ctm] = sel.value;
+    });
+    const st = $("ctmStatus");
+    const r = await api("/api/settings/card-type-models", { method: "PUT", body: JSON.stringify({ types }) });
+    if (!r.ok) {
+      const detail = r.data ? (r.data.errors || []).join("；") || r.data.error : "";
+      if (st) { st.textContent = "保存失败：" + (detail || "未知错误"); st.style.color = "#f85149"; }
+      return;
+    }
+    CTM.types = r.data.types || {};
+    if (st) { st.textContent = "模板已保存（新建项目将使用它）"; st.style.color = "#3fb950"; }
+    toast("已保存");
+  }
+
   async function load() {
     const r = await api("/api/settings/models");
     if (!r.ok || !r.data) {
@@ -177,6 +232,7 @@
       CURRENT = names.length ? names[0] : null;
     }
     renderAll();
+    loadCardTypeModels();
   }
 
   function renderAll() {
@@ -698,7 +754,7 @@
   // ------------------------------------------------------------ 工具：供应商/模型增删
 
   // [引用清理 2026-10-14] 删除模型后，清理所有指向它的引用：
-  // bindings（角色绑定）与 system.default_model。
+  // bindings（角色绑定）与 system.default_model（[2026-10-19 裁定] 无降级模型）。
   //
   // 铁律（用户 2026-10-14 明确要求）：
   //   模型删了 → 引用【置空】。绝不自动改指到别的模型。
@@ -719,7 +775,7 @@
         delete DATA.bindings[rid];
       }
     });
-    // ② system：指向已删模型的直接清空（不改指别的模型）
+    // ② system：指向已删模型的直接清空（不改指别的模型）；[2026-10-19 裁定] 无降级模型
     ["default_model"].forEach((f) => {
       if (DATA.system && rm.includes(DATA.system[f])) {
         DATA.system[f] = "";
@@ -953,6 +1009,10 @@
 
     // 还原弹层
     $("restoreCloseBtn").addEventListener("click", () => { $("restoreModal").style.display = "none"; });
+
+    // [按卡片类型设置默认模型] 保存模板
+    const ctmSave = $("ctmSaveBtn");
+    if (ctmSave) ctmSave.addEventListener("click", saveCardTypeModels);
     $("restoreCancelBtn").addEventListener("click", () => { $("restoreModal").style.display = "none"; });
     $("restoreList").addEventListener("dblclick", () => doRestore());
 

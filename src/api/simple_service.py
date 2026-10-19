@@ -265,6 +265,8 @@ async def run_viewpoints(
     on_progress: Optional[Any] = None,
     on_seat: Optional[Any] = None,
     turn_tail: Optional[list[dict[str, Any]]] = None,
+    work_id: Optional[str] = None,
+    card_id: Optional[str] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """三席观点并发（可独立调用，不与 call_simple 绑定）。返回 (ok_metas, 全量 metas)。
 
@@ -277,10 +279,12 @@ async def run_viewpoints(
     变化）：每席起止转发事件流（seat_start/seat_end），只读不判定、异常静默。
     [三席身份注入 2026-10-14] 增可选参 turn_tail（缺省 None 零行为变化）：三席
     身份注入消息，逐席透传至 gw.stream_call（追加在质询文之后）。
+    [模型设置按项目/卡片覆盖 2026-10-19] work_id/card_id 可选：三席选模型走
+    card>work>global 覆盖；不传 = 全局（既有行为逐字不变）。
     """
     gw = model_service.get_gateway()
     cfg = gw.config.get("simple") or {}
-    viewpoint_binding = model_config.resolve("viewpoint")
+    viewpoint_binding = model_config.resolve("viewpoint", work_id=work_id, card_id=card_id)
     viewpoints = list(viewpoint_binding) if isinstance(viewpoint_binding, list) else []
     if not cfg.get("enabled") or not viewpoints:
         return [], []
