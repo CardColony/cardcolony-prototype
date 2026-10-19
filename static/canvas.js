@@ -55,6 +55,54 @@ const WORK_ID = window.__WORK_ID__;
   const newCardBtn = document.getElementById("newCardBtn");
   // [惰性新建 2026-10-17] 左栏「＋ 新项目」（画布页）。此前该钮 DOM 在场、处理器却
   // 留在 workspace.js（对话页模块），画布页点它无反应（拆页执行记录 §4.2 已注明）。
+  function expandAllCards() {
+    let n = 0;
+    for (const [cid, kids] of Object.entries(state.index.childMap)) {
+      if (kids.length && !state.view.expanded.has(cid)) {
+        state.view.expanded.add(cid);
+        n++;
+      }
+    }
+    if (!n) return;
+    scheduleSaveView();
+    renderAll();
+    setTimeout(() => fitToContent(), 320);
+  }
+
+  function collapseAllCards() {
+    if (!state.view.expanded.size) return;
+    state.view.expanded.clear();
+    state.view.openCells.clear();
+    scheduleSaveView();
+    renderAll();
+    setTimeout(() => fitToContent(), 320);
+  }
+
+  const moreWrap = document.getElementById("moreWrap");
+  const moreBtn = document.getElementById("moreBtn");
+  if (moreWrap && moreBtn) {
+    const closeMore = () => {
+      moreWrap.classList.remove("is-open");
+      moreBtn.setAttribute("aria-expanded", "false");
+    };
+    moreBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = moreWrap.classList.toggle("is-open");
+      moreBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    moreWrap.addEventListener("click", (e) => {
+      if (e.target.closest && e.target.closest(".cv-mi-btn")) closeMore();
+    });
+    document.getElementById("expandAllBtn")?.addEventListener("click", expandAllCards);
+    document.getElementById("collapseAllBtn")?.addEventListener("click", collapseAllCards);
+    document.addEventListener("mousedown", (e) => {
+      if (!moreWrap.contains(e.target)) closeMore();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeMore();
+    });
+  }
+
   const navNewProjectBtn = document.getElementById("navNewProject");
 
   // 画布状态（[画布第三步 T3] 五桶分家：数据／索引／视图／导航／异步——V4 结构断言口径）。
