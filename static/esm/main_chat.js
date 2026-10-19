@@ -12,6 +12,7 @@ import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=36";
 import "./util.js?v=30";
 import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts } from "./theme.js?v=6";
+import { initModelBadge } from "./model_picker.js?v=1";
 import "../stream.js?v=42";
 import "../workspace.js?v=57";
 
@@ -24,3 +25,11 @@ initProcToggle();
 initNavDrawer();
 initSearchClear();
 initShortcuts();
+
+/* [模型设置 2026-10-19 产品裁定] 点哪里用哪里换：卡片页顶栏模型徽标。
+   __WORK_ID__ / __CARD_ID__ 由 card.html 注入。 */
+initModelBadge({
+  mountId: "modelBadgeMount",
+  workId: window.__WORK_ID__,
+  cardId: window.__CARD_ID__ || "",
+});

@@ -221,11 +221,10 @@ def _validate(cfg: dict[str, Any]) -> tuple[list[str], list[str]]:
             if m not in (models or {}):
                 errors.append(f"绑定 '{role}' 指向的模型 '{m}' 不存在")
 
-    # ④ system.default_model / fallback_model 必须存在于 models
-    for field in ("default_model", "fallback_model"):
-        name = system.get(field)
-        if name and name not in (models or {}):
-            errors.append(f"system.{field} 指向的模型 '{name}' 不存在")
+    # ④ system.default_model 必须存在于 models（[2026-10-19 裁定] 无降级模型，无 fallback_model）
+    name = system.get("default_model")
+    if name and name not in (models or {}):
+        errors.append(f"system.default_model 指向的模型 '{name}' 不存在")
 
     # ⑤ 绑定 key 必须在角色表里——只警告
     known_roles = set(roles.list_roles() or {})
@@ -760,14 +759,9 @@ async def get_model_override_effective(work_id: str, card_id: str = "") -> JSONR
         if val is not None:
             role_eff[rid] = val
     extra = {"card_id": card_id} if cid else {}
-    try:
-        gcfg = model_service.get_gateway().config or {}
-    except Exception:  # noqa: BLE001
-        gcfg = {}
     return JSONResponse({
         "ok": True, "work_id": work_id, **extra,
         "default_model": default,
-        "fallback_model": (gcfg.get("system") or {}).get("fallback_model"),
         "bindings": role_eff,
     })
 

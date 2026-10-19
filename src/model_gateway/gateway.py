@@ -14,7 +14,8 @@
 本壳职责：
     - 保留 `.config`（编译后平铺 config，逐字不变）与 `call` / `stream_call` 的**签名与契约**；
     - 内部把请求组装成 `GenerateOptions`，走 `LlmRuntime.stream` + `BlockAssembler`；
-    - 保留旧有的重试分级、降级（fallback）、on_status 事件、完成标记检测、截断抢救。
+    - 保留旧有的重试分级、on_status 事件、完成标记检测、截断抢救。
+    - **[模型设置 2026-10-19 产品裁定] 无降级模型**：调用失败重试耗尽后如实上抛，不做 fallback 切换。
 
 适配器路由（[2026-10-16 单适配器改造] 五家归一）：
     五家（opencode/deepseek、aliyun/qwen、zhipu/glm、minimax、nous/haiku）wire 协议同构，
@@ -382,11 +383,9 @@ class ModelGateway:
                                attempt=attempt + 1, error=exc.message)
                 _emit("retry", attempt, reason=reason)
                 if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
-                    return await self._fallback_or_raise(
-                        model_name, exc, system_prompt, user_prompt, temperature, max_tokens,
-                        timeout, skip_completion_marker, tools, on_status, prior_messages,
-                        turn_tail, turn_once, _emit,
-                    )
+                    # [模型设置 2026-10-19 产品裁定] 无降级模型：重试耗尽即如实失败。
+                    raise ModelError(ErrorCode.MODEL_CALL_FAILED,
+                                     f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {exc.message}")
                 await asyncio.sleep(
                     min(backoff * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS) if rg_enabled else backoff
                 )
@@ -394,11 +393,9 @@ class ModelGateway:
                 reason = _classify_message(str(exc))
                 _emit("retry", attempt, reason=reason)
                 if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
-                    return await self._fallback_or_raise(
-                        model_name, ModelCallFailure(str(exc), reason), system_prompt, user_prompt,
-                        temperature, max_tokens, timeout, skip_completion_marker, tools, on_status,
-                        prior_messages, turn_tail, turn_once, _emit,
-                    )
+                    # [模型设置 2026-10-19 产品裁定] 无降级模型：重试耗尽即如实失败。
+                    raise ModelError(ErrorCode.MODEL_CALL_FAILED,
+                                     f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {exc}")
                 await asyncio.sleep(
                     min(backoff * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS) if rg_enabled else backoff
                 )
@@ -428,32 +425,6 @@ class ModelGateway:
         elapsed = time.monotonic() - loop_start
         cap = min(max_attempts, rg_caps.get(reason, max_attempts))
         return not (attempt + 1 < cap and elapsed < rg_budget and reason != "auth")
-
-    async def _fallback_or_raise(self, model_name, exc, system_prompt, user_prompt, temperature,
-                                 max_tokens, timeout, skip_completion_marker, tools, on_status,
-                                 prior_messages, turn_tail, turn_once, _emit):
-        fb_key = "fallback"
-        fallback = (self.config.get("models") or {}).get(fb_key)
-        if fallback and model_name != fb_key:
-            # [fallback 归因修复 2026-10-16] 降级失败时必须**保留双原始错误**，
-            # 否则只报 B 家的错误、把 A 家的失败吞掉（Nous 挂 → 只报 opencode 429）。
-            fb_label = str(fallback.get("model") or fb_key)
-            logger.warning("model_fallback", original=model_name, fallback=fb_key)
-            _emit("fallback", 0, from_model=model_name, to_model=fb_key)
-            try:
-                return await self.call(
-                    fb_key, system_prompt, user_prompt, temperature, max_tokens, timeout,
-                    skip_completion_marker=skip_completion_marker, tools=tools,
-                    prior_messages=prior_messages, turn_tail=turn_tail, turn_once=turn_once,
-                )
-            except ModelError as fb_exc:
-                self.stats.record(model_name, 0, 0, False)
-                raise ModelError(
-                    ErrorCode.MODEL_CALL_FAILED,
-                    f"原模型 {model_name} 失败({exc.message})，已降级 {fb_label} 亦失败({_error_text(fb_exc)})",
-                ) from fb_exc
-        self.stats.record(model_name, 0, 0, False)
-        raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 重试后仍失败: {exc.message}")
 
     # ------------------------------------------------------------------
     # 流式调用（旧契约）
@@ -522,23 +493,7 @@ class ModelGateway:
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(backoff)
                     continue
-                fallback = (self.config.get("models") or {}).get("fallback")
-                if fallback and model_name != "fallback":
-                    # [fallback 归因修复 2026-10-16] 同 call 路径：保留双原始错误。
-                    fb_label = str(fallback.get("model") or "fallback")
-                    _emit("fallback", attempt, from_model=model_name, to_model="fallback")
-                    try:
-                        async for ev in self.stream_call(
-                            "fallback", system_prompt, user_prompt, temperature, max_tokens, timeout,
-                            on_status, tools, on_reasoning, prior_messages, turn_tail, turn_once,
-                        ):
-                            yield ev
-                        return
-                    except ModelError as fb_exc:
-                        raise ModelError(
-                            ErrorCode.MODEL_CALL_FAILED,
-                            f"原模型 {model_name} 失败({exc.message})，已降级 {fb_label} 亦失败({_error_text(fb_exc)})",
-                        ) from fb_exc
+                # [模型设置 2026-10-19 产品裁定] 无降级模型：流式重试耗尽即如实失败。
                 raise ModelError(
                     ErrorCode.MODEL_CALL_FAILED,
                     f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc.message}",
@@ -554,7 +509,7 @@ class ModelGateway:
 
 
 class ModelCallFailure(Exception):
-    """一次调用失败（内部信号，驱动重试/降级）。"""
+    """一次调用失败（内部信号，驱动重试；[2026-10-19 裁定] 无降级）。"""
 
     def __init__(self, message: str, reason: str) -> None:
         super().__init__(message)
@@ -585,12 +540,6 @@ class MockAdapter(LlmAdapter):
             if seg:
                 yield TextDelta(index=0, text=seg)
         yield FinishChunk(reason=StopReason())
-
-
-def _error_text(exc: BaseException) -> str:
-    """取错误的可读文本（``AppError`` 走 ``.msg``，其余 ``str()``）。"""
-    msg = getattr(exc, "msg", None)
-    return str(msg) if msg else str(exc)
 
 
 def _failure_of(assembler: BlockAssembler):

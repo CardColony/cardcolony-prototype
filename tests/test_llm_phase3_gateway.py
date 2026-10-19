@@ -107,36 +107,35 @@ def test_build_gateway_keeps_config_surface(monkeypatch):
     assert callable(gw.call) and callable(gw.stream_call)
 
 
-# ---------------- 判据 4：fallback 归因（双原始错误） ----------------
+# ---------------- 模型设置 2026-10-19 裁定：无降级模型 ----------------
 
-async def test_fallback_preserves_both_errors(monkeypatch):
+async def test_no_fallback_on_failure(monkeypatch):
+    """无降级模型：主模型失败重试耗尽后直接上抛，不做 fallback 切换。"""
     monkeypatch.delenv("MOCK_LLM", raising=False)
     monkeypatch.setenv("K", "sk-fake")
     gw = build_gateway({
-        "models": {"main": _dead_model("zhipu", "glm-5.3"), "fallback": _dead_model("opencode", "deepseek-v4-pro")},
+        "models": {"main": _dead_model("zhipu", "glm-5.3")},
         "retry_grading": {"enabled": False},
     })
     with pytest.raises(ModelError) as exc:
         await gw.call("main", "S", "U")
-    text = str(exc.value)
-    assert "原模型 main 失败(" in text
-    assert "已降级 deepseek-v4-pro 亦失败(" in text
+    assert "重试" in str(exc.value)
+    assert "降级" not in str(exc.value)
 
 
-async def test_fallback_status_event_still_emitted(monkeypatch):
+async def test_no_fallback_phase_event(monkeypatch):
+    """无降级模型：失败事件流里不再出现 fallback 阶段。"""
     monkeypatch.delenv("MOCK_LLM", raising=False)
     monkeypatch.setenv("K", "sk-fake")
     gw = build_gateway({
-        "models": {"main": _dead_model("zhipu", "glm-5.3"), "fallback": _dead_model("opencode", "deepseek-v4-pro")},
+        "models": {"main": _dead_model("zhipu", "glm-5.3")},
         "retry_grading": {"enabled": False},
     })
     seen: list[dict] = []
     with pytest.raises(ModelError):
         await gw.call("main", "S", "U", on_status=seen.append)
     phases = [e["phase"] for e in seen]
-    assert "fallback" in phases
-    fb = next(e for e in seen if e["phase"] == "fallback")
-    assert fb["from_model"] == "main" and fb["to_model"] == "fallback"
+    assert "fallback" not in phases
 
 
 # ---------------- MOCK_LLM 金样本 ----------------

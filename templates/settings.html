@@ -10,7 +10,7 @@
      右：选中供应商的模型详细设置（连接字段 + 模型列表）。
      添加供应商 = 模板选择器；操作收进「⋯」菜单。-->
 <link rel="stylesheet" href="/static/style.css?v=40">
-<link rel="stylesheet" href="/static/settings.css?v=10.9">
+<link rel="stylesheet" href="/static/settings.css?v=10.10">
 </head>
 <body class="set-body">
 <div class="set-page">
@@ -61,12 +61,8 @@
           <summary>高级</summary>
           <div class="set-grid">
             <div class="set-field">
-              <label for="advDefaultModel">默认模型（角色未绑定时的回落）</label>
+              <label for="advDefaultModel">默认模型（角色未绑定 / 未覆盖时的回落）</label>
               <select class="set-select" id="advDefaultModel"></select>
-            </div>
-            <div class="set-field">
-              <label for="advFallbackModel">降级模型（调用失败时切入）</label>
-              <select class="set-select" id="advFallbackModel"></select>
             </div>
             <div class="set-field">
               <label>三席审议总开关</label>
@@ -77,24 +73,6 @@
             </div>
           </div>
         </details>
-      </section>
-
-      <!-- 按项目/卡片覆盖模型（per-scope model override） -->
-      <section class="set-block">
-        <div class="set-h2-row">
-          <h2 class="set-h2">按项目 / 卡片覆盖</h2>
-          <span class="set-hint">给项目或单张卡指定「默认模型 / 角色绑定」；解析顺序：卡片 ＞ 项目 ＞ 全局。</span>
-        </div>
-        <div class="set-card set-overrides" id="overridePanel">
-          <div class="set-field">
-            <label for="ovWorkSelect">选择项目（有覆盖的项目带 ⚙）</label>
-            <select class="set-select" id="ovWorkSelect"><option value="">（加载中…）</option></select>
-          </div>
-          <div class="set-override-editor" id="ovWorkEditor"></div>
-          <div class="set-override-sep"></div>
-          <div class="set-override-editor" id="ovCardList"></div>
-          <div class="set-override-status" id="ovStatus"></div>
-        </div>
       </section>
 
       <!-- 操作栏：属于【模型】分区，不是整个页面。
@@ -165,6 +143,6 @@
 </div>
 
 <div id="toastContainer" class="toast-container"></div>
-<script src="/static/settings.js?v=10.9"></script>
+<script src="/static/settings.js?v=10.10"></script>
 </body>
 </html>

@@ -11,7 +11,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=41">
+<link rel="stylesheet" href="/static/style.css?v=42">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -81,6 +81,8 @@
       <!-- 画布态面包屑（canvas.js renderBreadcrumb 填，吃投影；画布态才显） -->
       <div id="crumb" class="crumb canvas-only"></div>
       <span class="spacer"></span>
+      <!-- [模型设置 2026-10-19 产品裁定] 点哪里用哪里换：本项目默认模型徽标（画布现场） -->
+      <div id="modelBadgeMount" class="model-badge-mount"></div>
       <!-- [缩放控件 2026-10-16 用户令] 滚轮缩放废除（canvas.js wheel 监听已删），
            缩放只走此控件组：−/＋每按一次 ±25%；拖动条 25% 档位吸附（min25/max200/step25）；
            锚点＝视口中心。zoomDisplay 保留（canvas.js applyTransform 写它），组内显示百分比。 -->
