@@ -167,9 +167,52 @@ def _gateway_config() -> dict[str, Any]:
         return {}
 
 
-def resolve(role: str) -> Optional[Any]:
-    """角色 → 模型名（从 gateway.config.bindings **同源读**，不校验值是否在键集）。
+# ============================================================
+# [模型设置按项目/卡片覆盖 2026-10-19]
+# 覆盖层：card > work > global(models.yaml)。载体与读写见
+# src/storage/model_override.py；本模块只做「解析优先序」，不碰文件。
+# ============================================================
 
+
+def _scope_overrides(work_id: str, card_id: Optional[str]):
+    """按需取 (work 级覆盖, card 级覆盖)；失败/缺失 ⇒ 两个空 dict（fail-open）。"""
+    try:
+        from ..storage import model_override as _mo  # 延迟 import 避循环
+    except Exception:  # noqa: BLE001
+        return {}, {}
+    try:
+        return _mo.load_scope(work_id, card_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("模型覆盖读取失败 work=%s card=%s", work_id, card_id)
+        return {}, {}
+
+
+def _pick_override_binding(role: str, work_ov: dict, card_ov: dict):
+    """按 card > work 顺序在覆盖 bindings 里找 role；命中即返原始值（str/list），
+    未命中返 None（让位全局）。"""
+    for ov in (card_ov, work_ov):
+        b = ov.get("bindings")
+        if not isinstance(b, dict):
+            continue
+        if role in b:
+            return b[role]
+    return None
+
+
+def _pick_override_default(work_ov: dict, card_ov: dict, global_default: str) -> str:
+    """按 card > work 顺序在覆盖 default_model 里找；都没设置返全局默认。"""
+    for ov in (card_ov, work_ov):
+        v = ov.get("default_model")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return global_default
+
+
+def resolve(role: str, *, work_id: Optional[str] = None,
+            card_id: Optional[str] = None) -> Optional[Any]:
+    """角色 → 模型名（全局 bindings 同源读；work/card 覆盖优先）。
+
+    解析优先序：card 覆盖 > work 覆盖 > 全局 bindings。
     multi 返 list[str]，单角色返 str；未绑定（缺键/空值）返 None。
     值是否合法由上层校验：pick_model 保留原始值让消费点显式报错，
     resolve_model 用 model_names() 校验并回落——分层校验，避免「配错名静默用默认」。
@@ -177,6 +220,11 @@ def resolve(role: str) -> Optional[Any]:
     同源保证「选模型」与「调用」同一份 config；热生效经
     reload_gateway 重建 gateway（先建后换）后自然更新。
     """
+    if work_id or card_id:
+        work_ov, card_ov = _scope_overrides(work_id, card_id)
+        hit = _pick_override_binding(role, work_ov, card_ov)
+        if hit is not None:
+            return [str(x) for x in hit] if isinstance(hit, list) else str(hit)
     cfg = _gateway_config()
     bindings = cfg.get("bindings") or {}
     hit = bindings.get(role)
@@ -188,12 +236,45 @@ def resolve(role: str) -> Optional[Any]:
     return str(hit)
 
 
-def default_model() -> str:
-    """回落模型名（角色未绑定时）。从 gateway.config.system.default_model 同源读，
-    兜底 DEFAULT_MODEL。随 gateway 重建更新。"""
+def default_model(*, work_id: Optional[str] = None,
+                  card_id: Optional[str] = None) -> str:
+    """回落模型名（角色未绑定时）。work/card 覆盖优先于 system.default_model。
+
+    从 gateway.config.system.default_model 同源读，兜底 DEFAULT_MODEL。
+    card 覆盖 > work 覆盖 > system.default_model > DEFAULT_MODEL。
+    随 gateway 重建更新。
+    """
     system = (_gateway_config().get("system")) or {}
-    name = system.get("default_model")
-    return str(name) if name else DEFAULT_MODEL
+    gd = str(system.get("default_model")) if system.get("default_model") else DEFAULT_MODEL
+    if work_id or card_id:
+        work_ov, card_ov = _scope_overrides(work_id, card_id)
+        return _pick_override_default(work_ov, card_ov, gd)
+    return gd
+
+
+def validate_override(override: dict) -> list[str]:
+    """校验覆盖里引用的模型是否都在当前全局目录（model_names 键集）。
+
+    供 settings 侧保存前校验用：覆盖只能从全局目录里挑模型，不能发明新模型。
+    返回错误文案列表（空 = 合法）。
+    """
+    models = model_names()
+    errs: list[str] = []
+    if not isinstance(override, dict):
+        return ["覆盖必须是对象"]
+
+    v = override.get("default_model")
+    if isinstance(v, str) and v.strip() and v.strip() not in models:
+        errs.append(f"default_model 引用了不在全局目录的模型: {v.strip()}")
+
+    bindings = override.get("bindings")
+    if isinstance(bindings, dict):
+        for role, val in bindings.items():
+            vals = val if isinstance(val, list) else [val]
+            for item in vals:
+                if isinstance(item, str) and item and item not in models:
+                    errs.append(f"角色 {role} 引用了不在全局目录的模型: {item}")
+    return errs
 
 
 def model_names() -> set[str]:

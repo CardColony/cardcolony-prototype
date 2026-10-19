@@ -306,9 +306,12 @@ def _pick_step_model(state: RunState) -> str:
     显式报错（simple_service.py:183-185 先例形态，错误信息含模型名）——
     消费侧热读模型清单可行（gw.config 内存常驻），无需启动校验降级。
     每圈实取模型打日志（S5 验收「日志可查每步实取模型」）。
+
+    [模型设置按项目/卡片覆盖 2026-10-19] 带 work/card 作用域解析——
+    card > work > global（model_pick.pick_model 内完成）。
     """
     if not thinkchain_enabled():   # [纯单模型 2026-10-17] 无步类型，直接 default 席
-        return _pick_model("default")
+        return _pick_model("default", work_id=state.work_id, card_id=state.card_id)
     snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
     role = "default"
     if snap is not None:
@@ -316,7 +319,7 @@ def _pick_step_model(state: RunState) -> str:
         cur = snap.get("current", 0)
         if 0 <= cur < len(steps):
             role = steps[cur].get("type") or "default"
-    seat = _pick_model(role)
+    seat = _pick_model(role, work_id=state.work_id, card_id=state.card_id)
     models_cfg = model_service.get_gateway().config.get("models") or {}
     if seat not in models_cfg:
         raise RuntimeError(
@@ -915,6 +918,9 @@ async def run_seats(state: RunState) -> StepOutcome:
         on_seat=lambda kind, meta, _w=state.work_id, _c=state.card_id:
             event_stream.emit(_w, _c, kind, meta),
         turn_tail=seat_request["turn_tail"],
+        # [模型设置按项目/卡片覆盖 2026-10-19] 三席按当前 work/card 作用域选模型
+        work_id=state.work_id,
+        card_id=state.card_id,
     )
     if not ok_metas:
         # [E-口径②] 全败留痕不阻断：主模型携步成果独自交付（草稿即回执）
@@ -937,10 +943,13 @@ async def run_seats(state: RunState) -> StepOutcome:
     )
     # [迭代五 S2·E10] 统合官模型可配：model_pick.resolve_model("synthesize")，
     # 未配置回落默认模型（model_config.default_model()，缺省行为逐字不变）。
+    # [模型设置按项目/卡片覆盖 2026-10-19] 带 work/card 作用域解析。
     result, state.model_used = await model_service.call_main(
         synth_request["system_prompt"], synth_request["user_prompt"],
         synth_request["prior_messages"], tools=state.tools,
-        model_name=model_pick.resolve_model("synthesize"),
+        model_name=model_pick.resolve_model("synthesize",
+                                            work_id=state.work_id,
+                                            card_id=state.card_id),
         turn_tail=synth_request["turn_tail"],
         turn_once=synth_request["turn_once"],
     )

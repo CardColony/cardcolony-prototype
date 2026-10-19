@@ -725,3 +725,39 @@ label.set-model-row input[type="checkbox"] { accent-color: var(--set-brand); }
   .set-grid { grid-template-columns: 1fr; }
   .set-template-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------- 按项目/卡片覆盖模型（per-scope model override） ---------- */
+.set-overrides { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.set-overrides .set-field > label { font-size: 12px; color: var(--set-text-faint); margin-bottom: 4px; }
+.set-override-editor { display: flex; flex-direction: column; gap: 8px; }
+.set-override-sep { height: 1px; background: var(--set-border); margin: 2px 0; }
+.set-override-status { min-height: 18px; font-size: 12px; color: var(--set-text-faint); }
+.set-scope-head { font-size: 13px; font-weight: 600; color: var(--set-text); display: flex; align-items: baseline; gap: 8px; }
+.set-scope-note { font-size: 11px; font-weight: 400; color: var(--set-text-faint); }
+.set-scope-body { display: flex; flex-direction: column; gap: 6px; }
+.set-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--set-surface-2);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.set-scope-row .set-scope-role { width: 120px; display: inline-flex; align-items: baseline; gap: 6px; }
+.set-scope-row .set-scope-binding { min-width: 220px; flex: 1; }
+.set-scope-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+.set-scope-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: var(--set-surface-2);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.set-scope-card-title { flex: 1; min-width: 120px; font-weight: 500; }
+.set-scope-card-eff { color: var(--set-text-faint); font-size: 11px; }
+.set-scope-card select { min-width: 180px; }

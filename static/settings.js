@@ -177,6 +177,7 @@
       CURRENT = names.length ? names[0] : null;
     }
     renderAll();
+    loadOverrides();
   }
 
   function renderAll() {
@@ -979,6 +980,214 @@
     });
   }
 
+  // ============================================================
+  // [模型设置按项目/卡片覆盖 2026-10-19] 分层模型设置 UI
+  // 机制在 backend：works/{wid}/model_override.json，解析顺序 card>work>global。
+  // ============================================================
+  const OV = { works: [], workId: "", data: null, eff: null };
+
+  function setOverrideStatus(msg, isErr) {
+    const el = $("ovStatus");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.style.color = isErr ? "#f85149" : "#3fb950";
+  }
+
+  function ovInheritOption(label) {
+    return `<option value="">${escapeHtml(label)}</option>`;
+  }
+
+  function ovWorkSelectHtml() {
+    const sel = $("ovWorkSelect");
+    if (!sel) return;
+    sel.innerHTML = '<option value="">（选择项目）</option>' + OV.works.map((w) =>
+      `<option value="${escapeHtml(w.work_id)}">${escapeHtml(w.title)} (${escapeHtml(w.work_id)})${(w.has_work || (w.cards && w.cards.length)) ? " ⚙" : ""}</option>`
+    ).join("");
+    if (OV.workId && OV.works.some((w) => w.work_id === OV.workId)) sel.value = OV.workId;
+    else OV.workId = sel.value || "";
+  }
+
+  async function loadOverrides() {
+    const r = await api("/api/settings/model-overrides");
+    if (!r.ok || !r.data) { setOverrideStatus("读取项目列表失败", true); return; }
+    OV.works = r.data.works || [];
+    ovWorkSelectHtml();
+    if (OV.workId && OV.works.some((w) => w.work_id === OV.workId)) {
+      await selectOverrideWork(OV.workId);
+    } else {
+      OV.workId = "";
+      renderOverridePanel();
+    }
+  }
+
+  async function selectOverrideWork(workId) {
+    OV.workId = workId || "";
+    if (!OV.workId) { OV.data = null; OV.eff = null; renderOverridePanel(); return; }
+    const enc = encodeURIComponent(OV.workId);
+    try {
+      const [d, e] = await Promise.all([
+        api("/api/settings/model-overrides/" + enc),
+        api("/api/settings/model-overrides/" + enc + "/effective"),
+      ]);
+      OV.data = d.ok && d.data ? d.data : null;
+      OV.eff = e.ok && e.data ? e.data : null;
+      setOverrideStatus("");
+    } catch (err) {
+      setOverrideStatus("读取项目覆盖失败", true);
+    }
+    renderOverridePanel();
+  }
+
+  function renderOverridePanel() {
+    const editor = $("ovWorkEditor"), list = $("ovCardList");
+    if (!OV.workId) {
+      editor.innerHTML = '<div class="set-note">先在上方选一个项目，再给它或它的卡片指定模型。</div>';
+      list.innerHTML = "";
+      setOverrideStatus("");
+      return;
+    }
+    renderWorkEditor(editor);
+    renderCardList(list);
+  }
+
+  function inheritedLabel(kind, eff, role) {
+    let v;
+    if (role === "__default__") v = eff && eff.default_model;
+    else v = (eff && eff.bindings) ? eff.bindings[role] : null;
+    if (v === undefined || v === null || v === "") return "未绑定";
+    if (Array.isArray(v)) return String(v.join(" / "));
+    return String(v);
+  }
+
+  function renderWorkEditor(el) {
+    const ov = (OV.data && OV.data.work) || {};
+    const eff = OV.eff || {};
+    const roles = DATA.roles || {};
+    const rows = Object.keys(roles).map((rid) => {
+      const r = roles[rid] || {};
+      if (r.multi) {
+        return `<div class="set-scope-row"><span class="set-scope-role">${escapeHtml(r.display || rid)}<span class="set-scope-note">多席 · 保持全局/项目</span></span><span class="set-note">当前：${escapeHtml(inheritedLabel("b", eff, rid))}</span></div>`;
+      }
+      const cur = (ov.bindings || {})[rid];
+      return `<div class="set-scope-row" data-role="${escapeHtml(rid)}"><span class="set-scope-role">${escapeHtml(r.display || rid)}</span><select class="set-select set-scope-binding" data-bind="${escapeHtml(rid)}">${ovInheritOption("沿用（" + escapeHtml(inheritedLabel("b", eff, rid)) + "）")}${modelOptions(typeof cur === "string" ? cur : "", undefined, true)}</select></div>`;
+    }).join("");
+    el.innerHTML = `<div class="set-scope-head">项目覆盖 <span class="set-scope-note">优先于全局；解析顺序：卡片 ＞ 项目 ＞ 全局</span></div>
+      <div class="set-scope-body">
+        <div class="set-scope-row"><span class="set-scope-role">默认模型</span><select class="set-select set-scope-binding" data-bind="__default__">${ovInheritOption("沿用（当前 " + escapeHtml(inheritedLabel("d", eff, "__default__")) + "）")}${modelOptions(ov.default_model || "", undefined, true)}</select></div>
+        ${rows}
+        <div class="set-scope-actions">
+          <button class="btn ghost" data-act="ov-work-clear">清除项目覆盖</button>
+          <button class="btn primary" data-act="ov-work-save">保存项目覆盖</button>
+        </div>
+      </div>`;
+  }
+
+  async function renderCardList(el) {
+    const ovCards = (OV.data && OV.data.cards) || {};
+    let cards = [];
+    try {
+      const r = await api("/api/nav");
+      const pr = (r.data && (r.data.projects || []).find((p) => p.work_id === OV.workId));
+      cards = (pr && pr.cards) || [];
+    } catch (err) { /* 忽略 */ }
+    if (!cards.length) {
+      el.innerHTML = '<div class="set-scope-head">卡片覆盖 <span class="set-scope-note">该项目还没有子卡</span></div>';
+      return;
+    }
+    el.innerHTML = `<div class="set-scope-head">卡片覆盖 <span class="set-scope-note">给单张卡单独指定默认模型（角色沿用项目/全局）</span></div>` +
+      cards.map((c) => {
+        const cid = c.card_id;
+        const co = (ovCards[cid] && typeof ovCards[cid] === "object") ? ovCards[cid] : {};
+        const mark = co.default_model ? `已指定 ${escapeHtml(co.default_model)}` : "沿用";
+        return `<div class="set-scope-card" data-card="${escapeHtml(cid)}">
+          <span class="set-scope-card-title" title="${escapeHtml(c.title || "")}">${escapeHtml(cid)} · ${escapeHtml(c.title || "")}</span>
+          <span class="set-scope-card-eff">${escapeHtml(mark)}</span>
+          <select class="set-select" data-card-default="${escapeHtml(cid)}">${ovInheritOption("沿用项目/全局")}${modelOptions(co.default_model || "", undefined, true)}</select>
+          <button class="btn ghost" data-act="ov-card-clear" data-card="${escapeHtml(cid)}">清除</button>
+          <button class="btn primary" data-act="ov-card-save" data-card="${escapeHtml(cid)}">保存</button>
+        </div>`;
+      }).join("");
+  }
+
+  function collectWorkOverride() {
+    const out = {};
+    const defSel = document.querySelector('#ovWorkEditor select[data-bind="__default__"]');
+    const defV = defSel ? defSel.value : "";
+    if (defV) out.default_model = defV;
+    const binds = {};
+    document.querySelectorAll('#ovWorkEditor select[data-bind]').forEach((s) => {
+      const role = s.dataset.bind;
+      if (role === "__default__") return;
+      if (s.value) binds[role] = s.value;
+    });
+    if (Object.keys(binds).length) out.bindings = binds;
+    return out;
+  }
+
+  async function saveWorkOverride() {
+    if (!OV.workId) return;
+    const r = await api("/api/settings/model-overrides/" + encodeURIComponent(OV.workId),
+      { method: "PUT", body: JSON.stringify(collectWorkOverride()) });
+    if (!r.ok) {
+      const detail = r.data ? (r.data.error || (r.data.errors || []).join("；")) : "";
+      setOverrideStatus("保存失败：" + (detail || "未知错误"), true);
+      return;
+    }
+    toast("项目覆盖已保存");
+    OV.data = r.data;
+    renderOverridePanel();
+    loadOverrides(); // 刷新左下拉的 ⚙ 标记
+  }
+
+  async function clearWorkOverride() {
+    if (!OV.workId) return;
+    const r = await api("/api/settings/model-overrides/" + encodeURIComponent(OV.workId), { method: "DELETE" });
+    if (!r.ok) { setOverrideStatus("清除失败", true); return; }
+    toast("已清除项目覆盖");
+    await selectOverrideWork(OV.workId);
+    loadOverrides();
+  }
+
+  async function saveCardOverride(cardId) {
+    if (!OV.workId || !cardId) return;
+    const sel = document.querySelector(`select[data-card-default="${CSS.escape(cardId)}"]`);
+    const v = sel ? sel.value : "";
+    const payload = v ? { default_model: v } : {};
+    const r = await api("/api/settings/model-overrides/" + encodeURIComponent(OV.workId) + "/card/" + encodeURIComponent(cardId),
+      { method: "PUT", body: JSON.stringify(payload) });
+    if (!r.ok) { setOverrideStatus("卡片覆盖保存失败", true); return; }
+    toast("卡片覆盖已保存");
+    OV.data = r.data;
+    await renderCardList($("ovCardList"));
+  }
+
+  async function clearCardOverride(cardId) {
+    if (!OV.workId || !cardId) return;
+    const r = await api("/api/settings/model-overrides/" + encodeURIComponent(OV.workId) + "/card/" + encodeURIComponent(cardId), { method: "DELETE" });
+    if (!r.ok) { setOverrideStatus("卡片覆盖清除失败", true); return; }
+    toast("已清除卡片覆盖");
+    OV.data = r.data;
+    await renderCardList($("ovCardList"));
+    loadOverrides();
+  }
+
+  function bindOverrides() {
+    const workSel = $("ovWorkSelect");
+    if (workSel) workSel.addEventListener("change", (e) => selectOverrideWork(e.target.value));
+    const panel = $("overridePanel");
+    if (!panel) return;
+    panel.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (act === "ov-work-save") saveWorkOverride();
+      else if (act === "ov-work-clear") clearWorkOverride();
+      else if (act === "ov-card-save") saveCardOverride(btn.dataset.card);
+      else if (act === "ov-card-clear") clearCardOverride(btn.dataset.card);
+    });
+  }
+
   bind();
+  bindOverrides();
   load();
 })();
