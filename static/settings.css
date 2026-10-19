@@ -29,6 +29,14 @@
   min-height: 100vh;
 }
 
+/* [2026-10-19] style.css 全局 html,body{overflow:hidden} 是给画布/对话固定布局的；
+   设置页是多区块长页，必须覆盖成可滚动，否则内容被裁掉无法上下滚。 */
+html, body {
+  height: auto !important;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+}
+
 .set-page {
   max-width: 1240px;
   margin: 0 auto;
