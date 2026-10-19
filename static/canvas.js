@@ -2862,6 +2862,7 @@ const WORK_ID = window.__WORK_ID__;
         if (!text) return;
         input.value = "";
         input.disabled = true; btn.disabled = true; btn.textContent = "…";
+        markLocalRunning(cardId, "等待执行");
         try {
           await API.postMessage(WORK_ID, cardId, text);
           await loadCell(cardId);
@@ -2871,6 +2872,7 @@ const WORK_ID = window.__WORK_ID__;
           input.value = text;
         } finally {
           input.disabled = false; btn.disabled = false; btn.textContent = "发送";
+          clearLocalRunning(cardId);
           input.focus();
         }
       };
@@ -3705,6 +3707,7 @@ const WORK_ID = window.__WORK_ID__;
       if (!text) return;
       input.value = "";
       input.disabled = true; sendBtn.disabled = true; sendBtn.textContent = "…";
+      markLocalRunning(cid, "等待执行");
       try {
         await API.postMessage(WORK_ID, cid, text);
         await loadConv();
@@ -3714,6 +3717,7 @@ const WORK_ID = window.__WORK_ID__;
         input.value = text;
       } finally {
         input.disabled = false; sendBtn.disabled = false; sendBtn.textContent = "发送";
+        clearLocalRunning(cid);
         input.focus();
       }
     };
@@ -5749,6 +5753,7 @@ const WORK_ID = window.__WORK_ID__;
         if (!text) return;
         input.value = "";
         input.disabled = true; send.disabled = true; send.textContent = "…";
+        markLocalRunning(cid, "等待执行");
         try {
           await API.postMessage(WORK_ID, cid, text);
           // 用户自己发的话**不在 SSE 帧里**，而且此刻 lastSeq 很可能已经被
@@ -5763,6 +5768,7 @@ const WORK_ID = window.__WORK_ID__;
           input.value = text;   // 失败不吞用户输入
         } finally {
           input.disabled = false; send.disabled = false; send.textContent = "发送";
+          clearLocalRunning(cid);
           input.focus();
         }
       };
@@ -5986,6 +5992,26 @@ const WORK_ID = window.__WORK_ID__;
       ? `${stage} · ${detail}` : stage;
   }
 
+  // 乐观运行态：点发送的**那一刻**画布就要有反应。
+  // 服务端 progress 要等模型链路真正开始才写，中间有几百毫秒到几秒的空白；
+  // 这段时间卡片如果毫无变化，用户会以为没发出去、再点一次。
+  // __local 标记让 applyPulse 保留它（真数据一到就覆盖），请求结束再清。
+  function markLocalRunning(cid, detail) {
+    if (!state.async.running) state.async.running = new Map();
+    state.async.running.set(cid, {
+      stage: "started", detail: detail || "等待执行",
+      ts: Date.now() / 1000, __local: true,
+    });
+    applyLiveStates();
+  }
+  function clearLocalRunning(cid) {
+    const cur = state.async.running && state.async.running.get(cid);
+    if (cur && cur.__local) {
+      state.async.running.delete(cid);
+      applyLiveStates();
+    }
+  }
+
   function applyLiveStates() {
     const run = state.async.running || new Map();
     const queued = state.async.queued || new Map();
@@ -6039,8 +6065,15 @@ const WORK_ID = window.__WORK_ID__;
     const d = await API.getPulse(WORK_ID, 30);
     if (!d) return;
     state.async.pulse = d;
+    const prev = state.async.running || new Map();
     const next = new Map();
     for (const r of (d.running || [])) next.set(r.card_id, r);
+    // [画布 2026-10-19 · 手感] 刚发出去、服务端还没写进 progress 的那几秒，
+    // 本地乐观标记要留住——否则用户点完发送，卡片先亮一下、3 秒后又灭，
+    // 看起来像"没发出去"。服务端一旦报出真状态就覆盖它（真数据优先）。
+    for (const [cid, r] of prev) {
+      if (r && r.__local && !next.has(cid)) next.set(cid, r);
+    }
     state.async.running = next;
     applyLiveStates();
     renderActivity(d.recent || []);
