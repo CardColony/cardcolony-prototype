@@ -118,6 +118,13 @@ export function createInputBar({ mount, actions, policy, session, hasQueued, not
   // 项目自有的两个起草键从 card.html 迁进来（不属 dsh，位置对齐 leftItems）
   const leftSlot = document.getElementById("flowInputLeft");
   if (leftSlot) { leftSlot.parentNode.removeChild(leftSlot); modes.appendChild(leftSlot); }
+  // [模型选择器 v6 2026-10-19] 模型选择器放**发送按钮左侧**：从 composer-seat 拿出来，
+  // 塞进 trailing（发送所在容器），primary 之前 → 紧贴发送、在它左边。
+  const modelBadge = document.getElementById("modelBadgeMount");
+  if (modelBadge && modelBadge.parentNode) {
+    modelBadge.parentNode.removeChild(modelBadge);
+    trailing.insertBefore(modelBadge, primary);
+  }
 
   // ---- 状态 ----
   let composing = false;
