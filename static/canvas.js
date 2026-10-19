@@ -102,6 +102,15 @@ const WORK_ID = window.__WORK_ID__;
     async: {
       _unreadByCard: {},  // card_id -> 未读数（K4 端点 ∧ 前端已读合成）
       summaryCache: null, // 与下方 summaryCache 同体（Map），供结构断言/调试面
+      // [画布 2026-10-19 · 实时状况] 内存态「谁在跑」：card_id -> {stage,detail,ts}。
+      // 来自 /pulse 的 3s 轮询（不是投影字段——投影是缓存，装了会把某次运行冻住）。
+      running: null,      // Map
+      pulse: null,        // 最近一次 /pulse 原始响应（活动抽屉用）
+      // [画布 2026-10-19 · 批量指令] 已提交但还没轮到跑的卡：card_id -> 提交时间。
+      // 串行执行模式下同一 work 只有一张卡在跑，其余在服务端排队——但**排队没有
+      // 任何进度记录**（progress 只在真正开跑时写）。不本地记一笔，用户批量下完
+      // 指令后画布上只有 1 张在动，另外 4 张毫无变化，等于"指令丢了"。
+      queued: null,       // Map
     },
   };
 
@@ -199,6 +208,10 @@ const WORK_ID = window.__WORK_ID__;
     // 全局视图模式：块要**带名字**。原来直接复用 lm（不画字），于是整张图是一堆
     // 匿名矩形——"中间那块大的"是什么？不知道。不能指认的全局图没有用。
     if (world) world.classList.toggle("cv-overview", !!state.view.overview);
+    // [画布 2026-10-19] 全局视图里"带名字"只在 zoom ≥ 0.5 时成立。
+    // 33% 下 11px 字实际 3.6px——不是"小字"，是噪点：既读不出，又把块撑高。
+    // 低于这条线就退回纯块（结构靠形状/面积/颜色表达），放大到 50% 再给名字。
+    if (world) world.classList.toggle("cv-ov-names", !!state.view.overview && zoom >= 0.5);
     applyWeightMap(level);
     for (const [cid, node] of nodeMap) {
       node.classList.remove("l0", "l1", "l2", "lm");
@@ -1562,6 +1575,18 @@ const WORK_ID = window.__WORK_ID__;
     badge.title = `有 ${childCount} 张子卡，点击展开/折叠`;
   }
 
+  // 卡面那一行「这张卡刚说了什么」。
+  // [画布 2026-10-19 · 实时状况] 抽成函数：运行中要把这一行**就地换成**
+  // 「正在做什么」，运行结束再换回来。两处各拼一遍 HTML，就会出现"跑完恢复成
+  // 另一个样子"的分叉（少个 data-who、多一层 span），而这种分叉只在跑完那一刻
+  // 出现，平时看不见。
+  function msgLineHtml(card) {
+    const lm = card && card.last_msg && card.last_msg.text ? card.last_msg : null;
+    if (!lm) return "";
+    const who = lm.actor === "human" ? "你" : lm.actor === "assistant" ? "AI" : (lm.actor || "");
+    return `<div class="cv-msgline" data-who="${lm.actor === "human" ? "you" : "ai"}" title="${escapeHtml(who + "：" + lm.text)}"><span class="cv-msg-who">${escapeHtml(who)}</span>${escapeHtml(lm.text)}</div>`;
+  }
+
   // [画布第三步 T2] 改吃视图模型 vm（动作层装配）：viewRoot/positions/childMap/
   // expanded/_unreadByCard 一律从 vm 取——不直摸 state（V1）
   // 规模显示：3000 字 → "3.0k"。用户靠它判断"这张卡值不值得现在碰"。
@@ -1732,6 +1757,16 @@ const WORK_ID = window.__WORK_ID__;
     // [画布 2026-10-19] 卡面不再挂新鲜度绿点（它是第二个"看不懂的小色块"）。
     // "多久前动过 + 动的是什么"挪到浮层元信息里——那里有空间把话讲完整。
 
+    // [画布 2026-10-19 · 随时了解状况] "这张卡是不是已经死了"——只在**超过 3 天**
+    // 没动时出现。每张卡都挂一个相对时间等于全是噪音；而"9 天没动"是真正的信号：
+    // 它可能已经被放弃，或者卡在某个没人知道的依赖上。
+    // l0 及更低档不显示（卡太窄，多一个数字会把标题挤成残句）。
+    const _lastTs = String(card.updated_at || (card.last_msg && card.last_msg.ts) || "");
+    const _staleDays = _lastTs ? (Date.now() - new Date(_lastTs).getTime()) / 86400000 : 0;
+    const staleChip = _staleDays >= 3
+      ? `<span class="cv-stale" title="最后活动：${escapeHtml(fmtRelative(_lastTs))} —— 已经 ${Math.floor(_staleDays)} 天没动过">${Math.floor(_staleDays)}天</span>`
+      : "";
+
     const isBareRoot = isRootCard
       && !(state.index.childMap[card.card_id] || []).length
       && !String(card.conclusion || "").trim()
@@ -1784,11 +1819,7 @@ const WORK_ID = window.__WORK_ID__;
     // 不是定论，而是"这张卡刚刚在说什么"——那是唯一会实时变、且能让人立刻判断
     // "要不要插手"的东西。对话为空才退回定论。
     // ══════════════════════════════════════════════════════════════════════
-    const lm = card.last_msg && card.last_msg.text ? card.last_msg : null;
-    const lmWho = lm ? (lm.actor === "human" ? "你" : lm.actor === "assistant" ? "AI" : (lm.actor || "")) : "";
-    const msgLine = lm
-      ? `<div class="cv-msgline" data-who="${lm.actor === "human" ? "you" : "ai"}" title="${escapeHtml(lmWho + "：" + lm.text)}"><span class="cv-msg-who">${escapeHtml(lmWho)}</span>${escapeHtml(lm.text)}</div>`
-      : "";
+    const msgLine = msgLineHtml(card);
 
     const lastDec = card.last_decision && card.last_decision.text ? card.last_decision : null;
     const decLine = lastDec
@@ -1840,6 +1871,7 @@ const WORK_ID = window.__WORK_ID__;
         ${runChip}
         ${Number(card.decision_count || 0) > 0 ? `<span class="cv-dec" title="已形成 ${card.decision_count} 条定论（D01…）——这条线已经收敛过 ${card.decision_count} 次">定${card.decision_count}</span>` : ""}
         ${Number(card.ref_count || 0) > 0 ? `<span class="cv-ref" title="有 ${card.ref_count} 张卡在正文里引用了这张卡">←${card.ref_count}</span>` : ""}
+        ${staleChip}
         ${kidBadge}
       </div>
       ${msgLine || decLine}
@@ -2418,6 +2450,20 @@ const WORK_ID = window.__WORK_ID__;
   // 用户框选了一片卡，不知道选中了几张、能做什么。这条操作条把状态和动作
   // 放在一起（Miro/Figma 的 selection toolbar 同款位置）。
   let selBar = null;
+  // ══════════════════════════════════════════════════════════════════════════
+  // 多选操作条
+  //
+  // [画布 2026-10-19 · 并行操作] 多选的意义不是"一次删掉"，而是**一次对多张卡
+  // 做同一件事**。改造前这条只有 聚焦 / 取消 / 删除——三个里两个是"退出"，
+  // 真正对多张卡做事的只有删除。而右栏那份「全部展开 / 全部折叠」在多选时
+  // 被刻意收起了（避免遮挡画布），于是那套批量能力**根本点不到**，是死代码。
+  //
+  // 现在这条操作条是画布"并行处理多个任务"的主入口：
+  //   展开/折叠 —— 一次铺开几个领域的子树
+  //   下指令     —— 一句话同时发给 N 张卡（各自在卡内执行）
+  //   对比       —— 两张卡并排读结论（决策场景）
+  //   并行盯     —— 把这几张卡放进并行对话层，同时看进度、随时回
+  // ══════════════════════════════════════════════════════════════════════════
   function renderSelectionBar() {
     const n = state.view.selected.size;
     if (n < 2) { if (selBar) { selBar.remove(); selBar = null; } return; }
@@ -2426,25 +2472,101 @@ const WORK_ID = window.__WORK_ID__;
       selBar.className = "cv-selbar";
       viewport.appendChild(selBar);
     }
+    const ids = [...state.view.selected];
+    const hasExpandable = ids.some((id) => (state.index.childMap[id] || []).length > 0);
     selBar.innerHTML = `
       <span class="cv-selbar-count">已选 <b>${n}</b> 张</span>
       <span class="cv-selbar-sep"></span>
+      ${hasExpandable ? `<button class="cv-selbar-btn" data-act="expand">展开</button>
+      <button class="cv-selbar-btn" data-act="collapse">折叠</button>` : ""}
+      <button class="cv-selbar-btn is-primary" data-act="command">下指令</button>
+      ${n === 2 ? `<button class="cv-selbar-btn" data-act="cmp">对比</button>` : ""}
+      ${n <= 4 ? `<button class="cv-selbar-btn" data-act="watch">并行盯</button>` : ""}
+      <span class="cv-selbar-sep"></span>
       <button class="cv-selbar-btn" data-act="focus">聚焦</button>
-      <button class="cv-selbar-btn" data-act="clear">取消选择</button>
+      <button class="cv-selbar-btn" data-act="clear">取消</button>
       <button class="cv-selbar-btn is-danger" data-act="del">删除</button>
     `;
     selBar.querySelectorAll(".cv-selbar-btn").forEach((b) => {
       b.onclick = (ev) => {
         ev.stopPropagation();
         const act = b.dataset.act;
+        const cur = [...state.view.selected];
         if (act === "clear") clearSelection();
         else if (act === "del") deleteSelected();
-        else if (act === "focus") {
-          const first = [...state.view.selected][0];
-          if (first) focusCard(first);
+        else if (act === "focus") { if (cur[0]) focusCard(cur[0]); }
+        else if (act === "cmp") openCompare(cur);
+        else if (act === "watch") {
+          for (const cid of cur.slice(0, 4)) watchAdd(cid);
+          notify(`已加入并行对话层（${Math.min(cur.length, 4)} 张）`);
+        } else if (act === "expand" || act === "collapse") {
+          let changed = 0;
+          for (const cid of cur) {
+            const hasKids = (state.index.childMap[cid] || []).length > 0;
+            if (!hasKids) continue;
+            const isOpen = state.view.expanded.has(cid);
+            if (act === "expand" && !isOpen) { toggleExpand(cid); changed++; }
+            if (act === "collapse" && isOpen) { toggleExpand(cid); changed++; }
+          }
+          if (!changed) notify(act === "expand" ? "选中的卡都已经展开了" : "选中的卡都已经收起");
+        } else if (act === "command") {
+          batchCommand(cur);
         }
       };
     });
+  }
+
+  // ── 批量下指令 ────────────────────────────────────────────────────────────
+  //
+  // [画布 2026-10-19 · 并行操作] 这是"画布 vs 列表"最硬的一条差异：
+  // 列表里一次只能进一张卡、发一句话、退出来、再进下一张；画布上一次选中 N 张，
+  // 一句话同时下达。执行仍然是串行排队（系统的执行闸），但**下达**这个动作
+  // 是一次性的，人不用重复 N 遍。
+  //
+  // 两个必须处理的细节：
+  //   ① 正在跑的卡跳过——给在途的卡再发会 409，且语义上是"打断"，不是批量该做的事；
+  //   ② 排队没有进度记录（progress 只在真正开跑时写），所以本地记一笔 queued，
+  //      让画布显示「排队中」，否则用户以为指令丢了。
+  async function batchCommand(ids) {
+    const targets = (ids || []).filter((id) => state.index.cardMap[id]);
+    if (!targets.length) return;
+    const running = state.async.running || new Map();
+    const skip = targets.filter((id) => running.has(id));
+    const todo = targets.filter((id) => !running.has(id));
+    if (!todo.length) { notify("选中的卡都在跑，等它们跑完再下指令", "warn"); return; }
+
+    const text = await cvDialog({
+      title: `给 ${todo.length} 张卡同时下指令`,
+      lines: [
+        "每条指令分别发给选中的每一张卡，在各自卡内的对话里执行。",
+        skip.length ? `正在跑的 ${skip.length} 张会自动跳过（不打断在途任务）。` : "",
+        "项目若是串行执行模式，会按顺序排队跑——画布上会标「排队中」。",
+      ].filter(Boolean),
+      input: true,
+      defaultValue: "",
+      okText: "发送",
+    });
+    if (!text || !text.trim()) return;
+    const content = text.trim();
+
+    if (!state.async.queued) state.async.queued = new Map();
+    for (const cid of todo) state.async.queued.set(cid, Date.now());
+    applyLiveStates();
+
+    let failed = 0;
+    for (const cid of todo) {
+      // 不 await：串行闸下这个请求会一直挂到轮到它，await 会把界面锁住几分钟。
+      API.postMessage(WORK_ID, cid, content).catch(() => {
+        failed++;
+        state.async.queued.delete(cid);
+        applyLiveStates();
+      });
+    }
+    notify(`已向 ${todo.length} 张卡下达指令${skip.length ? `（跳过 ${skip.length} 张在跑的）` : ""}`, "success");
+    // 尽快把「排队中」换成「运行中」
+    setTimeout(pollPulse, 900);
+    setTimeout(pollPulse, 3000);
+    if (failed) notify(`${failed} 张发送失败（可能已在途）`, "error");
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -4005,37 +4127,81 @@ const WORK_ID = window.__WORK_ID__;
   // 为什么单独做一键：以前要靠拖缩放条到 42% 以下才进块状档，等于"看全局"这个
   // 动作藏在了一个滑杆里。列表没有这个动作，这是画布独有的。
   // ══════════════════════════════════════════════════════════════════════════
+  // 视口"真正可用"的区域：扣掉被顶栏盖住的那一段。
+  // [画布 2026-10-19] 实测：按 clientHeight 算出的居中点比可见区域低 44px，
+  // 结果是顶部一排卡被顶栏压住、底部一排被裁掉——"一屏装下"名不副实。
+  function _viewAvail() {
+    const vr = viewport.getBoundingClientRect();
+    const tb = document.querySelector(".topbar");
+    const cut = tb ? Math.max(0, tb.getBoundingClientRect().bottom - vr.top) : 0;
+    return { vw: vr.width || 1, vh: Math.max(120, vr.height - cut), topCut: cut };
+  }
+
+  // 全局视图只做一件事：把整棵树装进"真正可见"的矩形里。
+  // 返回实际 zoom（0 表示没算出来）。
+  function _fitOverviewOnce() {
+    if (!state.view.overview || !nodeMap.size) return 0;
+    const { vw, vh, topCut } = _viewAvail();
+    const pad = 26;
+    const availW = Math.max(80, vw - pad * 2);
+    const availH = Math.max(80, vh - pad * 2);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of world.querySelectorAll(".card-node")) {
+      const nx = parseFloat(n.style.left) || 0, ny = parseFloat(n.style.top) || 0;
+      x0 = Math.min(x0, nx); y0 = Math.min(y0, ny);
+      x1 = Math.max(x1, nx + n.offsetWidth); y1 = Math.max(y1, ny + n.offsetHeight);
+    }
+    if (!Number.isFinite(x0)) return 0;
+    const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
+    const z = Math.max(0.12, Math.min(1.0, Math.min(availW / w, availH / h)));
+    applyViewState({
+      zoom: z,
+      panX: Math.round(pad + (availW - w * z) / 2 - x0 * z),
+      panY: Math.round(topCut + pad + (availH - h * z) / 2 - y0 * z),
+    });
+    applyLODClasses(z, true);
+    reflowAll();
+    return z;
+  }
+
+  // 全局视图的图例（常驻到退出）。
+  //
+  // [画布 2026-10-19] 原来靠一句 3 秒就消失的 notify 解释"块大小/亮度是什么意思"——
+  // 用户还没看完就没了，等于没解释。而全局视图里**没有任何文字**，图例是唯一
+  // 能让人读懂"面积/颜色/左条各代表什么"的东西。它必须一直在，直到退出。
+  function showOverviewLegend(on) {
+    let el = document.getElementById("cvOvLegend");
+    if (!on) { if (el) el.remove(); return; }
+    if (el) return;
+    el = document.createElement("div");
+    el.id = "cvOvLegend";
+    el.className = "cv-ovlegend";
+    el.innerHTML = `
+      <div class="cv-ovl-row"><span class="cv-ovl-area"></span>面积＝体量（字数）</div>
+      <div class="cv-ovl-row"><span class="cv-ovl-dot" data-k="warn"></span>有待裁定</div>
+      <div class="cv-ovl-row"><span class="cv-ovl-dot" data-k="live"></span>正在跑</div>
+      <div class="cv-ovl-row"><span class="cv-ovl-bar"></span>左条深浅＝层级</div>`;
+    document.body.appendChild(el);
+  }
+
   function viewOverview() {
     if (!nodeMap.size) return;
     hideTooltip();          // 进全局视图时把浮层收掉：块状档没有可读的字，浮层只会挡视线
     state.view.overview = true;
-    const pad = 32;
-    const availW = Math.max(80, viewport.clientWidth - pad * 2);
-    const availH = Math.max(80, viewport.clientHeight - pad * 2);
-    let z = 0.4;
-    // 两遍：第一遍按当前尺寸算，应用后布局会变（块状档高度不同），再算一次
-    for (let pass = 0; pass < 2; pass++) {
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (const n of world.querySelectorAll(".card-node")) {
-        const nx = parseFloat(n.style.left) || 0, ny = parseFloat(n.style.top) || 0;
-        x0 = Math.min(x0, nx); y0 = Math.min(y0, ny);
-        x1 = Math.max(x1, nx + n.offsetWidth); y1 = Math.max(y1, ny + n.offsetHeight);
-      }
-      if (!Number.isFinite(x0)) break;
-      const fitZ = Math.min(availW / Math.max(1, x1 - x0), availH / Math.max(1, y1 - y0));
-      // 装下多少就放大多少（上限 1.0，别把 9 张卡撑成巨块）
-      z = Math.max(0.12, Math.min(1.0, fitZ));
-      applyViewState({
-        zoom: z,
-        panX: Math.round(viewport.clientWidth / 2 - ((x0 + x1) / 2) * z),
-        panY: Math.round(viewport.clientHeight / 2 - ((y0 + y1) / 2) * z),
-      });
-      applyLODClasses(z, true);
-      reflowAll();
-      void world.offsetHeight;
-    }
+    _userMoved = false;
+    // 立即两遍收敛 + 两次延迟兜底。
+    // 为什么需要延迟：全局视图里块**带名字**（cv-overview），名字换行会改卡高 →
+    // 布局变高 → 第一次算的 zoom 就装不下了。实测 39 卡项目底部一排被裁掉。
+    _fitOverviewOnce();
+    _fitOverviewOnce();
+    const retry = (ms) => setTimeout(() => {
+      if (state.view.overview && !_userMoved) _fitOverviewOnce();
+    }, ms);
+    retry(280);
+    retry(900);
     scheduleSaveView();
-    notify(`全局视图 ${Math.round(z * 100)}%：块大小＝体量，亮的＝24h 内动过 · 滚轮/点击退出`);
+    showOverviewLegend(true);
+    notify("全局视图 · 滚轮或点击任意卡退出");
     return true;
   }
 
@@ -4044,6 +4210,7 @@ const WORK_ID = window.__WORK_ID__;
   function exitOverview() {
     if (!state.view.overview) return;
     state.view.overview = false;
+    showOverviewLegend(false);
     applyLODClasses(state.view.zoom, true);
   }
 
@@ -4955,6 +5122,9 @@ const WORK_ID = window.__WORK_ID__;
   function showTriageItem() {
     const it = triageList[triageIdx];
     if (!it) return;
+    // [画布 2026-10-19 · 裁定闭环] 记住"我正停在哪一处"：点进卡里裁完返回时，
+    // 靠它接着下一处（_resumeTriage）。记 text 而不只记下标——列表会因裁定变短。
+    _saveTriagePos(it);
     // 画布同步：**先展开祖先链再飞过去**。
     // 否则跳到一张折叠在深处的卡时，画布上根本没有它的节点（nodeMap 里没有），
     // focusCard 静默失败——右栏在讲这张卡，画布却停在原处，两边对不上。
@@ -5051,6 +5221,7 @@ const WORK_ID = window.__WORK_ID__;
   // 数据来自 canvas 投影（每张卡带 work_state / pending_count），一次遍历算完。
   // ══════════════════════════════════════════════════════════════════════
   const projectStatEl = document.getElementById("projectStat");
+  let _statKey = "";   // 状态条内容签名（3 秒轮询下避免无谓重建）
   function renderProjectStat() {
     if (!projectStatEl) return;
     const cards = (state.data.cards || []).filter((c) => c.card_type !== "rule");
@@ -5063,6 +5234,16 @@ const WORK_ID = window.__WORK_ID__;
       else if (c.work_state === "concluded") concluded++;
       else if (c.work_state === "empty") empty++;
     }
+    // [画布 2026-10-19 · 实时状况] "N 运行中"：并行处理多任务的入口。
+    // 点它＝把正在跑的卡全部选中并适配到视野里——一眼看到"我这几个任务现在都在哪"。
+    // 这是侧边栏列表给不了的：列表里运行中的卡散落在不同位置，还得一张张找。
+    const runN = (state.async.running || new Map()).size;
+    const runItem = runN
+      ? `<span class="ps-item is-live" data-act="running" role="button" tabindex="0"
+               title="${runN} 张卡正在跑 —— 点击选中它们并适配视野">
+           <span class="ps-live-dot"></span><b>${runN}</b> 运行中
+         </span><span class="ps-sep"></span>`
+      : "";
     // 窄屏（1280 展开目录时顶栏只剩 ~330px）只留两个数字：卡数、待裁定数。
     // 其余项在完整版里；砍掉的用 title 兜住，鼠标停一下就能看到。
     const compact = window.innerWidth < 1400;
@@ -5093,12 +5274,22 @@ const WORK_ID = window.__WORK_ID__;
            自 ${fmtSince(cu.since)} 以来 ${cuBits.join(" · ")}${cu.pendingDelta > 0 ? ` · <b>+${cu.pendingDelta}</b> 待裁定` : ""}
          </span>`
       : "";
+    // [画布 2026-10-19] 3 秒轮询会反复调本函数。内容没变就**不重建**——
+    // 否则顶栏 innerHTML 每 3 秒重排一次，悬停 catchup 浮层会被打断，
+    // 而且无谓地丢焦点。key 里带上所有会影响文案的量。
+    const statKey = [total, pendingTotal, concluded, empty, runN, cuN,
+                     cu ? cu.pendingDelta : 0, compact ? 1 : 0].join("|");
+    if (statKey === _statKey) return;
+    _statKey = statKey;
+
     projectStatEl.innerHTML = compact
       ? `<span class="ps-item" title="${total} 张卡"><b>${total}</b> 卡</span>
          <span class="ps-sep"></span>
+         ${runItem}
          ${triageItem}${cuChip}`
       : `<span class="ps-item"><b>${total}</b> 卡</span>
          <span class="ps-sep"></span>
+         ${runItem}
          ${triageItem}
          <span class="ps-sep"></span>
          <span class="ps-item"><b>${concluded}</b> 已结论</span>
@@ -5132,6 +5323,22 @@ const WORK_ID = window.__WORK_ID__;
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openTriage(0); }
       });
     }
+    // 运行中 → 选中全部在跑的卡并适配视野（并行任务的"点名"）
+    const runEl = projectStatEl.querySelector('[data-act="running"]');
+    if (runEl) {
+      const goRun = () => {
+        const ids = [...(state.async.running || new Map()).keys()]
+          .filter((id) => state.index.cardMap[id]);
+        if (!ids.length) return;
+        revealCards(ids);
+        setSelection(ids);
+        fitToCards(ids);
+      };
+      runEl.addEventListener("click", goRun);
+      runEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goRun(); }
+      });
+    }
   }
 
   // [画布 2026-10-18] 从对话页返回时带 ?sel=卡号 —— 回来直接选中那张卡，
@@ -5159,12 +5366,57 @@ const WORK_ID = window.__WORK_ID__;
     }
     selectOnly(cid);
     focusCard(cid, { keepZoom: true });
+    // [画布 2026-10-19] 从裁定队列点进去的卡，回来接着下一处（见 _resumeTriage）
+    _resumeTriage(cid);
   }
 
   function renderAll() {
     renderProjectStat();
     renderCanvas(collectProjectionInput(), collectViewModel());
     applyPendingSelect();
+  }
+
+  // ── 裁定队列的断点续传 ────────────────────────────────────────────────────
+  //
+  // [画布 2026-10-19 · 裁定闭环] 从队列点进某张卡、裁完再回来 ⇒ **接着下一处**。
+  //
+  // 没有这一步，"逐条过 74 处待裁定"的真实流程是：点开 → 裁定 → 返回 → 点顶栏
+  // 待裁定 → 从头开始 → 手动翻到刚才那一条 → 再点开。每裁一处要重复五步，
+  // 队列等于白做。
+  //
+  // 判据用"那一条还在不在"而不是"下标 +1"：裁掉一条后列表会变短，下标会错位；
+  // 而"刚裁的那句话是否还在队列里"是唯一可靠的事实。
+  const _triageKey = () => `cvTriage:${WORK_ID}`;
+  function _saveTriagePos(it) {
+    if (!it) return;
+    try {
+      sessionStorage.setItem(_triageKey(), JSON.stringify({
+        cid: it.cardId, text: it.text, idx: triageIdx, at: Date.now(),
+      }));
+    } catch (e) { /* 隐私模式无 storage，零阻断 */ }
+  }
+  function _resumeTriage(cid) {
+    let st = null;
+    try { st = JSON.parse(sessionStorage.getItem(_triageKey()) || "null"); } catch (e) { st = null; }
+    if (!st || st.cid !== cid) return;
+    if (Date.now() - Number(st.at || 0) > 30 * 60 * 1000) {
+      try { sessionStorage.removeItem(_triageKey()); } catch (e) { /* 零阻断 */ }
+      return;
+    }
+    try { sessionStorage.removeItem(_triageKey()); } catch (e) { /* 零阻断 */ }
+    const list = buildTriageList();
+    if (!list.length) { notify("待裁定已清空 —— 这个项目没有等你裁定的事了", "success"); return; }
+    const stillThere = list.findIndex((x) => x.cardId === st.cid && x.text === st.text);
+    if (stillThere >= 0) {
+      // 没裁掉（只是去看了一眼）⇒ 停在原处，不假装推进
+      openTriage(stillThere);
+      notify(`这一处还在等你（第 ${stillThere + 1}/${list.length} 处）`, "warn");
+      return;
+    }
+    // 已裁掉 ⇒ 从原来的位置接着走（后面的条目整体前移一位）
+    const next = Math.min(list.length - 1, Math.max(0, Number(st.idx) || 0));
+    openTriage(next);
+    notify(`已裁定，接着看下一处（第 ${next + 1}/${list.length} 处）`, "success");
   }
 
   // 统一重算入口（不重建节点）：拖动落定／摘要回填／LOD 换档后的避让重算
@@ -5699,6 +5951,256 @@ const WORK_ID = window.__WORK_ID__;
 
   // [迭代四 F2③] 模块导出（原 window.SetViewRoot/ReloadCanvas/GetCanvasState 语义）
   export { setViewRoot, reloadCanvas };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 实时活态（pulse）—— 画布区别于列表的第一件事：**谁在跑，一眼看见**
+  //
+  // [画布 2026-10-19 · 用户令] "随时了解状况"。
+  //
+  // 之前画布上的运行态来自卡片的 `goal_state` 字段——那是**持久化的目标状态**，
+  // 只在 reloadCanvas 时读一次。后果：你在卡里发一条消息，模型跑了 3 分钟，
+  // 画布上那张卡从头到尾没有任何变化。用户必须点进去才知道它在跑。
+  //
+  // 而系统本来就有准确的内存态：`progress` 记录每张卡当前的阶段与 detail
+  // （"调用工具 · read_file"），`/api/nav/running` 就是读它。左栏用了，画布没用。
+  //
+  // 这里 3 秒拉一次 `/pulse`（一次请求覆盖全部卡 + 最近活动），并且：
+  //   · 卡面那一行从"最后一条对话"换成"正在做什么"（高度不变，不引起重排抖动）
+  //   · 卡片左侧呼吸竖条 + 描边（动的东西＝还要等的东西）
+  //   · 顶栏出现"N 运行中"，点一下＝选中这些卡并适配视野（并行处理多任务的入口）
+  //   · 页面隐藏时不轮询（后台标签页不烧 CPU）
+  // ══════════════════════════════════════════════════════════════════════════
+  const PULSE_MS = 3000;
+  const _STAGE_CN = {
+    started: "已提交", streaming: "生成中", tools: "调用工具",
+    viewpoints: "三席分析", synthesize: "统合中", cards: "建卡",
+    done: "完成", error: "出错",
+  };
+  let _liveApplied = new Map();   // cid -> 上次写入的文本（文本没变就不碰 DOM）
+
+  function liveText(r) {
+    const stage = _STAGE_CN[r.stage] || r.stage || "运行中";
+    const detail = String(r.detail || "").trim();
+    // detail 与阶段同名时不重复（"调用工具 · 调用工具"）
+    return detail && detail !== r.stage && detail !== stage
+      ? `${stage} · ${detail}` : stage;
+  }
+
+  function applyLiveStates() {
+    const run = state.async.running || new Map();
+    const queued = state.async.queued || new Map();
+    const now = Date.now();
+    let added = false;
+    for (const [cid, node] of nodeMap) {
+      const r = run.get(cid);
+      if (r) queued.delete(cid);            // 真正开跑了，排队标记功成身退
+      // 排队超时兜底：10 分钟还没轮上（被前一张饿死 / 服务端丢了）就不再骗人
+      if (!r && queued.has(cid) && now - queued.get(cid) > 10 * 60 * 1000) queued.delete(cid);
+      const isQueued = !r && queued.has(cid);
+      const liveState = r ? "running" : isQueued ? "queued" : "";
+      if (liveState) node.dataset.live = liveState;
+      else delete node.dataset.live;
+
+      let line = node.querySelector(".cv-msgline");
+      if (liveState) {
+        const want = r ? liveText(r) : "排队中";
+        if (!line) {
+          line = document.createElement("div");
+          line.className = "cv-msgline cv-live-line";
+          const row = node.querySelector(".cv-card-row");
+          if (row && row.nextSibling) node.insertBefore(line, row.nextSibling);
+          else if (row) node.appendChild(line);
+          else node.appendChild(line);
+          added = true;
+        }
+        if (_liveApplied.get(cid) === liveState + "|" + want) continue;
+        // data-who 用 "live"/"queued" 两个语义值（CSS 与验收都按它判），
+        // 不用 "running"——它是节点级 dataset.live 的取值，混用会让样式选择器落空。
+        line.dataset.who = r ? "live" : "queued";
+        line.innerHTML = `<span class="cv-msg-who">${r ? "跑" : "等"}</span>${escapeHtml(want)}`;
+        line.title = r ? `正在运行：${want}` : "已提交，正在排队（串行执行）";
+        _liveApplied.set(cid, liveState + "|" + want);
+      } else if (line && (line.dataset.who === "live" || line.dataset.who === "queued")) {
+        // 跑完/放弃排队：换回投影里的最后一条对话（没有就删掉这一行）
+        const card = state.index.cardMap[cid] || {};
+        const html = msgLineHtml(card);
+        if (html) line.outerHTML = html;
+        else line.remove();
+        _liveApplied.delete(cid);
+        added = true;
+      }
+    }
+    if (added) scheduleReflow();
+    renderProjectStat();
+  }
+
+  async function pollPulse() {
+    if (document.hidden) return;
+    const d = await API.getPulse(WORK_ID, 30);
+    if (!d) return;
+    state.async.pulse = d;
+    const next = new Map();
+    for (const r of (d.running || [])) next.set(r.card_id, r);
+    state.async.running = next;
+    applyLiveStates();
+    renderActivity(d.recent || []);
+  }
+
+  // ── 项目动态抽屉（活动流）─────────────────────────────────────────────────
+  //
+  // 为什么是抽屉不是常驻横条：画布是空间的，常驻时间轴会挤压内容；但"最近发生了什么"
+  // 又必须随时能看。折中＝顶栏一个入口（带未读点），点开是右侧浮层，默认不占空间。
+  // 这不是"再放一个列表"——列表里的每条都**连着卡**，点一条就飞到那张卡；
+  // 而侧边栏的列表只告诉你"有这张卡"，不告诉你"它刚被改了什么"。
+  const actDrawer = document.getElementById("activityDrawer");
+  const actList = document.getElementById("activityList");
+  const actBtn = document.getElementById("activityBtn");
+  let _actSig = "";
+  let _actOpen = false;
+
+  function _actSeenKey() { return `cvActSeen:${WORK_ID}`; }
+  function _actSeen() {
+    try { return localStorage.getItem(_actSeenKey()) || ""; } catch (e) { return ""; }
+  }
+  function _actMarkSeen() {
+    const first = (state.async.pulse?.recent || [])[0];
+    if (!first) return;
+    try { localStorage.setItem(_actSeenKey(), first.ts || ""); } catch (e) { /* 零阻断 */ }
+    _paintActDot(0);
+  }
+  function _paintActDot(n) {
+    if (!actBtn) return;
+    let dot = actBtn.querySelector(".cv-act-dot");
+    if (n > 0) {
+      if (!dot) {
+        dot = document.createElement("span");
+        dot.className = "cv-act-dot";
+        actBtn.appendChild(dot);
+      }
+      dot.textContent = n > 9 ? "9+" : String(n);
+    } else if (dot) dot.remove();
+  }
+
+  function _fmtClock(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+  function _dayLabel(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "更早";
+    const now = new Date();
+    const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (same(d, now)) return "今天";
+    const y = new Date(now); y.setDate(y.getDate() - 1);
+    if (same(d, y)) return "昨天";
+    return `${d.getMonth() + 1}月${d.getDate()}日`;
+  }
+
+  function renderActivity(recent) {
+    if (!actList) return;
+    const run = state.async.running || new Map();
+    const queued = state.async.queued || new Map();
+    const seen = _actSeen();
+    const unseen = recent.filter((e) => e.ts && (!seen || e.ts > seen)).length;
+    _paintActDot(_actOpen ? 0 : unseen);
+
+    // 3 秒一次的轮询不能每次重排列表（会闪、会打断阅读）。
+    // 签名＝首条时间＋条数＋运行中/排队中卡数。
+    const sig = `${recent[0]?.ts || ""}|${recent.length}|${recent.map(e => e.card_id + e.detail).join("|").length}|${run.size}|${queued.size}|${_actOpen ? 1 : 0}`;
+    if (sig === _actSig) return;
+    _actSig = sig;
+
+    const parts = [];
+    // ① 运行中 + 排队中（时间性的第一层：现在正在发生 / 即将发生）
+    const liveN = run.size + queued.size;
+    if (liveN) {
+      parts.push(`<div class="cv-act-sec">正在运行 <b>${liveN}</b></div>`);
+      for (const [cid, r] of run) {
+        const c = state.index.cardMap[cid] || {};
+        parts.push(`<button class="cv-act-row is-live" data-cid="${escapeHtml(cid)}">
+          <span class="cv-act-dot-live"></span>
+          <span class="cv-act-body"><span class="cv-act-title">${escapeHtml(c.title || cid)}</span>
+          <span class="cv-act-detail">${escapeHtml(liveText(r))}</span></span></button>`);
+      }
+      for (const [cid] of queued) {
+        if (run.has(cid)) continue;
+        const c = state.index.cardMap[cid] || {};
+        parts.push(`<button class="cv-act-row is-queued" data-cid="${escapeHtml(cid)}">
+          <span class="cv-act-dot-live is-queued"></span>
+          <span class="cv-act-body"><span class="cv-act-title">${escapeHtml(c.title || cid)}</span>
+          <span class="cv-act-detail">排队中 · 等前一张跑完</span></span></button>`);
+      }
+    }
+    // ② 最近活动（时间倒序，按天分组）
+    //
+    // [画布 2026-10-19 · 信息密度] 原始事件是**逐次编辑**：同一张卡一分钟里改 4 次
+    // 正文，就是 4 条一模一样的"由「X」对话编辑正文"。实测 30 条里 12 条是这种重复，
+    // 时间线变成"一张卡的编辑流水"，反而看不出项目在动什么。
+    // 相邻同卡同类事件合并成一条（×N），保留最新时间。
+    const merged = [];
+    for (const e of recent) {
+      const last = merged[merged.length - 1];
+      if (last && last.card_id === e.card_id && last.detail === e.detail) {
+        last.n = (last.n || 1) + 1;
+        continue;
+      }
+      merged.push({ ...e, n: 1 });
+    }
+    let day = "";
+    for (const e of merged) {
+      const dl = _dayLabel(e.ts);
+      if (dl !== day) {
+        day = dl;
+        parts.push(`<div class="cv-act-sec">${dl}</div>`);
+      }
+      parts.push(`<button class="cv-act-row" data-cid="${escapeHtml(e.card_id)}" title="${escapeHtml(e.ts || "")}">
+        <span class="cv-act-time">${_fmtClock(e.ts)}</span>
+        <span class="cv-act-body"><span class="cv-act-title">${escapeHtml(e.title || e.card_id)}${e.n > 1 ? `<span class="cv-act-n">×${e.n}</span>` : ""}</span>
+        <span class="cv-act-detail">${escapeHtml(e.detail || "")}</span></span></button>`);
+    }
+    actList.innerHTML = parts.join("") || `<div class="cv-act-empty">这个项目还没有活动记录。</div>`;
+
+    actList.querySelectorAll(".cv-act-row").forEach((row) => {
+      row.addEventListener("click", () => {
+        const cid = row.dataset.cid;
+        if (!cid || !state.index.cardMap[cid]) return;
+        revealCards([cid]);
+        selectOnly(cid);
+        focusCard(cid, { keepZoom: true });
+      });
+    });
+  }
+
+  function setActivityOpen(on) {
+    _actOpen = !!on;
+    if (actDrawer) actDrawer.classList.toggle("is-open", _actOpen);
+    if (actBtn) {
+      actBtn.setAttribute("aria-pressed", _actOpen ? "true" : "false");
+      actBtn.classList.toggle("is-on", _actOpen);
+    }
+    if (_actOpen) {
+      _actMarkSeen();
+      _actSig = "";                 // 强制重排（打开态不同）
+      renderActivity(state.async.pulse?.recent || []);
+    } else {
+      _paintActDot(0);
+    }
+  }
+
+  if (actBtn) {
+    actBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setActivityOpen(!_actOpen);
+    });
+  }
+  const actClose = document.getElementById("activityClose");
+  if (actClose) actClose.addEventListener("click", () => setActivityOpen(false));
+
+  // 初始 + 轮询（页面隐藏时不跑）
+  pollPulse();
+  setInterval(pollPulse, PULSE_MS);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) pollPulse(); });
 
   // [迭代四 F4④] 未读角标数据面：拉 K4 端点 unread_by_card → 更新徽章；
   // 收件方自己的键上监听 SSE card_message 帧增量（分键 A21）；60s 轮询兜底。
