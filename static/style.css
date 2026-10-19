@@ -1979,3 +1979,7 @@ body.page-chat .rule-panel { display: none; }
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
 }
+/* 输入区（composer）里的模型选择：紧凑，对齐 draft/auto 那排小按钮 */
+.model-badge-mount.composer { gap: 4px; margin-right: 4px; }
+.model-badge-mount.composer .mp2-label { font-size: 12px; color: var(--dim); white-space: nowrap; }
+.model-badge-mount.composer .mp2-select { max-width: 172px; padding: 2px 6px; font-size: 12px; }
