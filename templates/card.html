@@ -11,7 +11,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=42">
+<link rel="stylesheet" href="/static/style.css?v=43">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -111,8 +111,6 @@
       <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
       <div id="chatCrumb" class="crumb"></div>
       <span class="spacer"></span>
-      <!-- [模型设置 2026-10-19 产品裁定] 点哪里用哪里换：本卡模型徽标（使用现场） -->
-      <div id="modelBadgeMount" class="model-badge-mount"></div>
       <!-- [对话界面商业化 2026-10-17] 顶栏右侧动作区：主题切换（深浅双主题，
            localStorage 记忆）＋ 卡详情抽屉开关（替代原右缘竖排文字标签）。 -->
       <div class="topbar-actions">
@@ -150,6 +148,9 @@
                「ⓘ 卡详情」顶部按钮删除、只留右缘 .insp-tab（用户 17:17 ④）。
                对应 workspace.js 三处引用同步处理：wsHeadTitle→renderChatCrumb、
                wsBackBtn/inspToggleBtn→清空守卫。 -->
+          <!-- [模型设置 v3 2026-10-19] 模型是「这条对话」的属性：放在对话区顶部而非应用顶栏——
+               一个下拉、没有继承开关，默认继承藏在「用默认」选项里。 -->
+          <div id="modelBadgeMount" class="model-badge-mount"></div>
           <div class="chat" id="chatArea"></div>
           <!-- [对话流照抄 dsh 完全版 v3 2026-10-17] 输入区整件交给 flow/：
                composerSeat ＝ 输入座位（dsh ConversationRoot.composerSeat）：
