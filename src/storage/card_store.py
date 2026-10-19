@@ -934,7 +934,7 @@ async def create_card(
 
         await canvas_store.update_cache(work_id)
         # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
-        await data_snapshot.snapshot(f"[snapshot][{work_id}] create: {card_id}")
+        await data_snapshot.schedule(f"[snapshot][{work_id}] create: {card_id}")
         # [影子卡 2026-10-03] 建正卡即派生影子（一正一影，R-03）；失败只记日志不阻断建卡
         from . import shadow_store
         try:
@@ -1149,7 +1149,7 @@ async def update_card(
 
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
-    await data_snapshot.snapshot(f"[snapshot][{work_id}] update: {card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] update: {card_id}")
 
     # [phase8.3] "剧本卡切确定→派生目标卡"触发已废除；
     # 目标卡改为创建剧本时即派生（见 derive_ending / work_store.create_work）。
@@ -1192,7 +1192,29 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     if gate is not None:
         return gate
 
+    # [画布 2026-10-19] 删前留一份完整快照进回收站（撤销用）。
+    # 会话正文是**文件**，必须在下面 unlink 之前读出来——晚一步就没了。
+    session_text = ""
+    try:
+        sp = _session_path(work_id, card_id)
+        if sp.exists():
+            session_text = sp.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("回收站：会话读取失败（仍可撤销卡片本体）%s: %s", card_id, exc)
+
     def _fn(conn: Any) -> int:
+        # 快照与删除在**同一个写事务**里：要么都成功，要么都不发生。
+        # 分开做的话，中间崩溃会留下"卡删了、快照没写"的不可撤销状态。
+        row = card_db.get_card_row(conn, card_id)
+        if row is None:
+            return 0
+        hist = [{"seq": r[0], "ts": r[1], "text": r[2]} for r in conn.execute(
+            "SELECT seq, ts, text FROM card_history WHERE card_id = ? ORDER BY seq", (card_id,))]
+        payload = json.dumps(
+            {"card": {k: row[k] for k in row.keys()}, "history": hist, "session": session_text},
+            ensure_ascii=False,
+        )
+        card_db.trash_card(conn, card_id, work_id, payload, datetime.now().isoformat(timespec="seconds"))
         n = card_db.delete_card_row(conn, card_id)
         if n:
             card_db.bump_rev(conn)
@@ -1221,8 +1243,86 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
 
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
-    await data_snapshot.snapshot(f"[snapshot][{work_id}] delete: {card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] delete: {card_id}")
     return {"ok": True, "deleted": card_id}
+
+
+async def list_trash(work_id: str) -> list[dict[str, Any]]:
+    """列出回收站里的卡（撤销条错过之后的**唯一找回入口**）。
+
+    只回 card_id / 删除时间 / 标题：正文可能几百 KB，列表不该把它拖出来。
+    """
+    out: list[dict[str, Any]] = []
+
+    def _fn(conn: Any) -> int:
+        for row in card_db.list_trash(conn, work_id):
+            payload = json.loads(row["payload"])
+            card = payload.get("card") or {}
+            out.append({
+                "card_id": row["card_id"],
+                "deleted_at": row["deleted_at"],
+                "title": card.get("title") or row["card_id"],
+                "parent": card.get("parent") or "",
+            })
+        return len(out)
+
+    await card_db.run_write(work_id, _fn)
+    return out
+
+
+async def restore_card(work_id: str, card_id: str) -> dict[str, Any]:
+    """从回收站恢复一张卡（撤销删除）。
+
+    [画布 2026-10-19] 恢复必须**保留原 card_id**：卡片正文里到处是
+    "见 card_037"、links 里也存着 id，换一个新 id 恢复等于把这些引用全指向空气。
+    所以走回收站快照，不重新生成 id。
+
+    幂等：卡已存在 → 返回 {"ok": True, "already": True}，不报错（前端重复点撤销
+    不该弹红字）。回收站里没有 → 返回 {"error": ...}。
+    """
+    if work_store.read_work(work_id) is None:
+        return {"error": f"剧本不存在: {work_id}"}
+
+    session_text: list[str] = []
+
+    def _fn(conn: Any) -> int:
+        row = card_db.get_trash(conn, card_id)
+        if row is None:
+            return 0
+        payload = json.loads(row["payload"] if not isinstance(row, tuple) else row[2])
+        card = payload.get("card") or {}
+        session_text.append(payload.get("session") or "")
+        if not card_db.restore_card_row(conn, card, payload.get("history") or []):
+            return -1                      # 已存在
+        card_db.drop_trash(conn, card_id)
+        card_db.bump_rev(conn)
+        return 1
+
+    res = await card_db.run_write(work_id, _fn)
+    if res is None:
+        return {"error": f"卡片不存在: {card_id}"}
+    if res == 0:
+        # 回收站里没有这张卡：要么从没删过，要么已经恢复过了。
+        # 两种情况都不该报错——前端重复点撤销是正常操作，幂等返回即可；
+        # 卡确实存在才算"已恢复"，否则如实说找不到。
+        if card_exists(work_id, card_id):
+            return {"ok": True, "already": True, "card_id": card_id}
+        return {"error": f"回收站里没有这张卡: {card_id}"}
+    if res == -1:
+        return {"ok": True, "already": True, "card_id": card_id}
+
+    # 会话文件写回（正文丢了卡片还能用，但对话记录一起丢才是真损失）
+    if session_text and session_text[0]:
+        try:
+            sp = _session_path(work_id, card_id)
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            sp.write_text(session_text[0], encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("恢复会话文件失败（卡片已恢复）%s: %s", card_id, exc)
+
+    await canvas_store.update_cache(work_id)
+    await data_snapshot.schedule(f"[snapshot][{work_id}] restore: {card_id}")
+    return {"ok": True, "restored": card_id}
 
 
 async def derive_ending(work_id: str) -> Optional[str]:
@@ -1265,7 +1365,7 @@ async def derive_ending(work_id: str) -> Optional[str]:
         # ending_derived 置 true（幂等标志）
         work_store.update_work(work_id, {"ending_derived": True})
         # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
-        await data_snapshot.snapshot(f"[snapshot][{work_id}] derive ending: {ending_id}")
+        await data_snapshot.schedule(f"[snapshot][{work_id}] derive ending: {ending_id}")
         return ending_id
     except Exception as exc:  # noqa: BLE001
         logger.error("目标卡派生异常 work=%s: %s", work_id, exc)

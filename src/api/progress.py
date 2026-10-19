@@ -65,5 +65,9 @@ def iter_active() -> list:
                 "card_id": card_id,
                 "stage": rec.get("stage", ""),
                 "detail": rec.get("detail", ""),
+                # [画布 2026-10-19] 起始/最近心跳时间（epoch 秒）。画布要显示
+                # "已跑 2 分 13 秒"——没有它只能显示一个静态"运行中"，看不出
+                # 是刚起步还是卡死了。纯增量键，旧调用方不读即不受影响。
+                "ts": rec.get("ts", 0),
             })
     return out

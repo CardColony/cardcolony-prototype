@@ -1,0 +1,3212 @@
+/* canvas.css —— 画布页专属视觉体系（2026-10-17 · 商业级重做）
+ *
+ * 为什么独立成文件：
+ *   style.css 是全局共享（对话页也在用），画布重做会持续大改样式。放一起既容易
+ *   撞到对话页，也无法整体回滚。本文件只在 `.page-canvas` 作用域内生效，
+ *   work.html 在 style.css 之后引入（同特异性后者胜），覆盖而不污染。
+ *
+ * 设计语言（暗色，与 IDE 同族）：
+ *   表面  surface-0 画布底 / surface-1 面板 / surface-2 卡片 / surface-3 浮层
+ *   文本  text / text-2 / text-3（三级，对比度递减但均可读）
+ *   语义  accent（品牌蓝）/ ok（完成）/ warn（进行）/ danger（阻塞）
+ *   节奏  4pt 基准：4/8/12/16/24/32
+ *   圆角  r-sm 6 / r-md 8 / r-lg 12 / r-xl 16
+ *   阴影  e1 静止 / e2 悬停 / e3 拖拽与浮层
+ */
+
+.page-canvas {
+  /* ---- 表面 ---- */
+  --cv-surface-0: #0b0d10;
+  --cv-surface-1: #11141a;
+  --cv-surface-2: #171b22;
+  --cv-surface-3: #1d222b;
+  --cv-surface-4: #242a35;
+
+  /* ---- 描边 ---- */
+  --cv-line-1: rgba(255, 255, 255, 0.06);
+  --cv-line-2: rgba(255, 255, 255, 0.10);
+  --cv-line-3: rgba(255, 255, 255, 0.16);
+
+  /* ---- 文本 ---- */
+  --cv-text-1: #e8ecf3;
+  --cv-text-2: #9ba6b6;
+  --cv-text-3: #6c7788;
+
+  /* ---- 语义 ---- */
+  --cv-accent: #5b8cff;
+  --cv-accent-soft: rgba(91, 140, 255, 0.14);
+  --cv-accent-line: rgba(91, 140, 255, 0.55);
+  --cv-ok: #35d39a;
+  --cv-ok-soft: rgba(53, 211, 154, 0.14);
+  --cv-warn: #f5b544;
+  --cv-warn-soft: rgba(245, 181, 68, 0.14);
+  --cv-danger: #f2705f;
+  --cv-danger-soft: rgba(242, 112, 95, 0.14);
+
+  /* ---- 类型色（与 card_type 一一对应）---- */
+  --cv-t-project: #6ea8ff;
+  --cv-t-sub: #7c8cff;
+  --cv-t-topic: #4fd1c5;
+  --cv-t-tool: #b58cff;
+  --cv-t-coder: #f5a65b;
+  --cv-t-rule: #8b96a8;
+
+  /* ---- 形状与节奏 ---- */
+  --cv-r-sm: 6px;
+  --cv-r-md: 8px;
+  --cv-r-lg: 12px;
+  --cv-r-xl: 16px;
+  --cv-s1: 4px;
+  --cv-s2: 8px;
+  --cv-s3: 12px;
+  --cv-s4: 16px;
+  --cv-s5: 24px;
+  --cv-s6: 32px;
+
+  /* ---- 阴影 ---- */
+  --cv-e1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.4);
+  --cv-e2: 0 2px 4px rgba(0, 0, 0, 0.5), 0 10px 24px -8px rgba(0, 0, 0, 0.65);
+  --cv-e3: 0 8px 16px rgba(0, 0, 0, 0.55), 0 24px 48px -12px rgba(0, 0, 0, 0.7);
+
+  /* ---- 动效 ---- */
+  --cv-fast: 120ms;
+  --cv-base: 180ms;
+  --cv-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  background: var(--cv-surface-0);
+}
+
+/* ==========================================================================
+   一、画布视口与背景
+   ========================================================================== */
+
+.page-canvas .stage {
+  position: relative;
+  background: var(--cv-surface-0);
+}
+
+.page-canvas #viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: default;
+  /* 网格点：单层 1px 点阵（这里是"画点"，不是渐变装饰）。
+     不用双层——双层会让背景产生明暗层次，抢卡片视线。 */
+  background-color: var(--cv-surface-0);
+  /* 用 SVG 画 1px 点（不是 CSS 渐变）——画布上零渐变，避免任何"渐变感" */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Ccircle cx='1' cy='1' r='1' fill='%23ffffff' fill-opacity='0.06'/%3E%3C/svg%3E");
+  background-size: var(--cv-grid-a, 24px) var(--cv-grid-a, 24px);
+  background-position: var(--cv-grid-ox, 0px) var(--cv-grid-oy, 0px);
+}
+
+/* 平移中：手型 + 关掉卡片 hover 干扰 */
+.page-canvas #viewport.panning { cursor: grabbing; }
+.page-canvas #viewport.panning .card-node { pointer-events: none; }
+.page-canvas #viewport.panning #world { will-change: transform; }
+
+/* 框选中的十字准星 */
+.page-canvas #viewport.marquee { cursor: crosshair; }
+
+.page-canvas #world {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* ⚠ 不要给 svg 设 width/height（CSS 百分比会覆盖 JS 写入的 width/height 属性）：
+   #world 自身尺寸为 0（子元素全是 absolute，靠定位撑开），`width:100%` 会把
+   SVG 压成 0×0——线在 DOM 里存在、在屏幕上完全不可见。这正是本次修掉的既有缺陷。
+   尺寸与坐标系全部由 renderEdges 写入（width/height 属性 + viewBox + left/top）。 */
+.page-canvas #world svg.edges {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* ==========================================================================
+   二、卡片
+   ========================================================================== */
+
+.page-canvas .card-node {
+  position: absolute;
+  /* 位置过渡：展开/折叠/拖拽落定后，卡片是**滑到**新位置而不是瞬间跳过去。
+     ⚠ 拖拽中必须关掉（.dragging），否则鼠标移动会被 200ms 的过渡拖出"橡皮筋"感。
+     ⚠ 首帧也不能有（.entering 关掉），否则卡片会从 (0,0) 飞过来。 */
+  transition:
+    left 200ms var(--cv-ease),
+    top 200ms var(--cv-ease),
+    border-color var(--cv-fast) var(--cv-ease),
+    box-shadow var(--cv-base) var(--cv-ease),
+    background var(--cv-fast) var(--cv-ease);
+  box-sizing: border-box;
+  /* 宽度由**层级**决定（data-depth），不由缩放决定——见下方「深度即层级」。
+     这里给的是 d1 基准值，d0/d2/d3 各自覆盖。 */
+  width: 280px;
+  padding: 13px 15px 11px;
+  border-radius: 10px;
+  /* 纯色，无渐变。卡片是信息载体，不是装饰品：一层底色 + 一道描边 + 一点投影
+     已经足够把「卡片」从画布底上抬起来。渐变会让整片画布显得花、且掩盖层级。 */
+  background: #1c222b;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  color: var(--cv-text-1);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* hover：只提描边与投影，不做位移（位移会让整片画布在鼠标扫过时"抖"） */
+.page-canvas .card-node:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55), 0 8px 20px -10px rgba(0, 0, 0, 0.7);
+}
+
+/* （原来 hover 时在卡片右侧画一个箭头暗示"可进入"；现在有常驻的 ↗ 按钮，
+   不再需要这个隐式提示。） */
+
+.page-canvas .card-node.is-selected {
+  border-color: var(--cv-accent);
+  box-shadow: 0 0 0 1px var(--cv-accent), 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+.page-canvas .card-node.dragging,
+.page-canvas .card-node.entering {
+  transition: none;   /* 拖拽跟手 / 首帧不飞 */
+  cursor: grabbing;
+  z-index: 30;
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   深度即层级
+   ──────────────────────────────────────────────────────────────────────────
+   之前卡片宽度只跟**缩放档位**（l0/l1/l2）走，跟树深度毫无关系 ⇒ 一级卡和
+   二级卡长得一模一样，全展开后整片画布是同一尺寸的方块，"谁是谁的子卡"只能
+   靠连线猜。这是最根本的层级缺陷。
+
+   现在：宽度 / 字号 / 表面明度 / 信息量 全部由 data-depth 决定，
+   缩放到多少都不改变层级语义（LOD 只增减信息密度，见第三节）。
+
+     depth 0  根卡      360px  18px 标题  摘要 2 行  底栏全  最亮   主色左条
+     depth 1  一级卡    280px  15px 标题  摘要 3 行  底栏全  次亮
+     depth 2  二级卡    224px  13px 标题  摘要 2 行  底栏精简 更暗
+     depth 3+ 三级卡    184px  12px 标题  无摘要    无底栏  最暗（只留色点）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ---- 深度 0：根卡 ---- */
+.page-canvas .card-node[data-depth="0"] {
+  width: 360px;
+  padding: 17px 19px 14px;
+  border-radius: 14px;
+  background: #232936;
+  border-color: rgba(255, 255, 255, 0.17);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.55), 0 12px 28px -14px rgba(0, 0, 0, 0.8);
+}
+.page-canvas .card-node[data-depth="0"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 16px;
+  bottom: 16px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--cv-accent);
+}
+.page-canvas .card-node[data-depth="0"] .tname {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  -webkit-line-clamp: 3;
+}
+.page-canvas .card-node[data-depth="0"] .summary { -webkit-line-clamp: 2; }
+
+/* ---- 深度 1：一级卡（.card-node 基础样式即是） ---- */
+.page-canvas .card-node[data-depth="1"] {
+  background: #1c222b;
+  border-color: rgba(255, 255, 255, 0.10);
+}
+.page-canvas .card-node[data-depth="1"] .tname {
+  font-size: 15px;
+  font-weight: 600;
+  -webkit-line-clamp: 3;
+}
+
+/* ---- 深度 2：二级卡 ---- */
+.page-canvas .card-node[data-depth="2"] {
+  width: 224px;
+  padding: 10px 12px 9px;
+  border-radius: 9px;
+  background: #171c23;
+  border-color: rgba(255, 255, 255, 0.075);
+}
+.page-canvas .card-node[data-depth="2"] .tname {
+  font-size: 13px;
+  font-weight: 600;
+  -webkit-line-clamp: 3;
+}
+.page-canvas .card-node[data-depth="2"] .summary { -webkit-line-clamp: 2; font-size: 11px; }
+/* （深度 2 的底栏间距随两行合一作废） */
+
+/* ---- 深度 3+：三级卡及更深（紧凑，但仍是一张卡） ---- */
+.page-canvas .card-node[data-depth="3"] {
+  width: 184px;
+  padding: 9px 11px 10px;
+  border-radius: 8px;
+  background: #12171d;
+  border-color: rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+}
+/* 三级卡只留标题：这一层的读者只关心"有哪些"，不关心细节。 */
+.page-canvas .card-node[data-depth="3"] .tname {
+  font-size: 12px;
+  font-weight: 550;
+  padding-left: 13px;
+  -webkit-line-clamp: 2;
+}
+.page-canvas .card-node[data-depth="3"] .summary,
+/* 三级卡只留标题：计数与徽章都不画（这一层的读者只关心"有哪些"）。
+   ⚠ 注意不是把整行藏掉——整行里现在装着标题，藏了就没字了。 */
+.page-canvas .card-node[data-depth="3"] .cv-card-row > .cv-ref,
+.page-canvas .card-node[data-depth="3"] .cv-card-row > .kid-badge,
+.page-canvas .card-node[data-depth="3"] .cv-card-row > .cv-runchip { display: none; }
+
+/* ---- LOD：低缩放只减信息，**不改宽度** ----
+   宽度是层级的表达（见上），不能被缩放改写——否则缩小时一级卡和二级卡又
+   混成同一尺寸，层级在缩放下失效。LOD 只负责"这个缩放级别下还值不值得画摘要"。 */
+/* ══════════════════════════════════════════════════════════════════════════
+   骨架档（zoom < 0.7）：只留标题 + 待裁定数
+   ──────────────────────────────────────────────────────────────────────────
+   首屏整幅适配大约 55%，那一档下 11.5px 的待裁定条目只有 6px 高，是视觉噪音。
+   骨架档给两样东西就够扫：**标题**（哪张卡）＋**右上角待裁定数**（要不要动手）。
+   卡片左侧橙边保留（pending），其余全部隐藏。
+   ══════════════════════════════════════════════════════════════════════════ */
+/* [画布 2026-10-19] 这里原来有一条 `.l0 .cv-card-head,` —— 选择器以逗号结尾、
+   后面直接跟注释，于是它把下面那条 flex:none 规则并进了自己的选择器列表；
+   而 `.cv-card-head` 这个类在 JS 里**根本不存在**（死选择器）。已删除。
+   原来这一段还挂着 l0 的待裁定显隐规则，卡面不再渲染 .cv-pending 后一并作废。 */
+/* ⚠ flex 压缩是"文字显示不全"的真凶：卡片是 flex column，默认 flex-shrink:1，
+   高度不够时会把标题从 18px 压到 12px、结论从 16px 压到更小——文字就被裁了。
+   所有内容子项一律 flex:none，卡片高度由内容撑开（min-height 只是下限）。 */
+/* （.cv-title-row 已随"两行合一"并入 .cv-card-row，原规则删除） */
+.page-canvas .card-node > .cv-card-row,
+.page-canvas .card-node > .summary,
+.page-canvas .card-node > .cv-runline { flex: none; }
+
+/* 骨架档不显示结论。
+   ──────────────────────────────────────────────────────────────────────────
+   实测这个项目的结论全长中位 **79 字**、第一句中位 56 字；而骨架档一行只能放
+   约 18 字。也就是说卡面上永远只能露出一个**残句**——它不是"信息"，是"引子"：
+   读者花注意力读完，得到的是"这是个'做不完'的活：要实读多个代码文件 → 逐…"。
+   按"外层只放能独立讲明白的信息"这条判据，残句不如不露：
+   结论全文在悬停浮层里（380px 宽，能讲完），卡面只回答"这是什么 + 有没有活"。 */
+/* 骨架档标题：屏幕字号有下限。
+   ──────────────────────────────────────────────────────────────────────────
+   原来固定 13px，跟着缩放一起缩：39 卡项目的默认适配缩放到 74% 时，标题实际
+   只有 9.6px——比浏览器最小可读字号还小，扫一遍读不出字。
+   改成按缩放**反算**：`max(13px, 11px / zoom)`，即屏幕上永不小于 11px。
+   缩到骨架档下限 0.68 时，世界里是 16.2px、屏幕上仍是 11px。
+   超过 0.85 之后 max() 取 13px，与原来一致，不影响正常缩放。 */
+.page-canvas .card-node.l0 .tname,
+.page-canvas .card-node.l1 .tname {
+  -webkit-line-clamp: 1;
+  padding-right: 18px;
+  font-size: max(13px, calc(11px / var(--z, 1)));
+}
+/* [画布 2026-10-19] 这里原来给骨架档"保留一行结论"。已删除——
+   一行 18 字装不下 79 字的结论，露出的永远是残句（判据见上方 .l0 .summary
+   { display:none } 处）。同一个选择器留两条规则会互相打架，这正是本次
+   卡面"结论没被隐藏"的直接原因。 */
+/* [画布 2026-10-19] 右上角那个"待裁定数字"已删除：状态点已经表达了
+   "这里有活"，数字在画布上不构成任何可执行的信息（详见 .cv-wsdot 注释）。 */
+
+.page-canvas .card-node.l2 .summary { -webkit-line-clamp: 4; }
+
+/* ---- 卡片内部结构 ---- */
+/*
+ * [画布 2026-10-18] 原来的「类型行」（色点 + "子项目" + 状态徽标）已整件删除。
+ * 理由：这个项目 43 张卡里 42 张都是 sub_project——那一行等于每张卡都写
+ * "子项目"，零信息量却占着最贵的第一行。类型由卡片尺寸与左侧色条承担。
+ * 空出来的位置给标题和结论。
+ */
+
+.page-canvas .tname {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  color: var(--cv-text-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* 给 hover 的打开箭头留位置 */
+  padding-right: 12px;
+}
+
+.page-canvas .summary {
+  margin-top: 7px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--cv-text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* 不用 mask 渐变淡出——行数由 line-clamp 控制，截断处给省略号即可 */
+}
+
+/* 底栏＝计数行（引用数 / 子卡数）。状态点已经移到标题行，这里只放"结构量"。
+   没有计数时整行不占高度（见下面 :empty 规则）——一张没有任何计数的叶子卡
+   不该为一行空白付 29px。 */
+/* ==========================================================================
+   卡片＝**一行**：● 标题 ……… ←N ▸N
+   ──────────────────────────────────────────────────────────────────────────
+   [画布 2026-10-19] 原来是"标题一行 + 计数一行"，中间空着 30px——一张只有标题
+   的卡占了 86px 高，而画布存在的理由就是**同时看见尽量多的线**。这个空洞直接
+   吃掉了三分之一的可见行数。
+   合成一行后：卡片 86 → 46px，同样一屏能多看到近一倍的卡片；标题、状态点、引用数、
+   子卡数四样信息一样不少，而且都在同一水平线上，横向扫比上下跳更快。
+   标题超长时会被截断——浮层里补完整标题（titleClipped 判断已就位）。
+   ========================================================================== */
+.page-canvas .cv-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  /* 给右上角的 ↗ 让位：它绝对定位在 right:5、宽 20，卡片只剩 46px 高，
+     不给这一行留右内边距就会正好压在 ▸N 徽章上（悬停时徽章被盖住、点击打架）。 */
+  padding-right: 26px;
+  font-size: 10.5px;
+  color: var(--cv-text-3);
+  font-variant-numeric: tabular-nums;
+}
+/* 标题吃掉所有剩余空间，计数贴右。
+   ⚠ 这里原来还有一个 .cv-spacer（flex:1），与标题的 flex:1 平分剩余宽度 ⇒
+   标题只拿到一半，实测 11 个字的标题被截成 4 个字。一个会自己长大的元素旁边
+   不该再放一个抢空间的元素。 */
+.page-canvas .cv-card-row > .tname { flex: 1 1 auto; min-width: 0; }
+.page-canvas .cv-card-row > .cv-wsdot,
+.page-canvas .cv-card-row > .cv-runchip,
+.page-canvas .cv-card-row > .cv-ref,
+.page-canvas .cv-card-row > .kid-badge,
+.page-canvas .cv-card-row > .cross-link-badge { flex: none; }
+/* （.cv-spacer 已从卡片行移除：它和标题抢宽度） */
+
+/* 子卡徽章：可点的胶囊。
+   ──────────────────────────────────────────────────────────────────────────
+   [画布 2026-10-19 · 用户令] "子卡数字和展开交互区间太小了"。
+   原来是 padding 1px 7px + line-height 16 ⇒ 盒高约 20px、宽约 40px，鼠标要精准
+   点在那个小胶囊上；骨架档更小（9.5px 字号，盒高 18px）。
+   现在给到 **24px 高、最小 48px 宽**的命中区（Apple HIG 的最小可点尺寸是 44px，
+   桌面端 24px 高是可接受的折中），数字也放大到 11.5px。
+   同时 caret 从 4px 加宽到 5px——它是"这里能展开"的唯一图形暗示。 */
+.page-canvas .kid-badge {
+  /* 必须是流内元素：它是底栏里的一个按钮，不是浮标。
+     （旧 style.css 的 `position:absolute; top:1px; right:0` 会盖住这里没声明的
+     position —— 于是徽章飘在卡片右上角、底栏高度算成 0。显式写死。） */
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  /* [画布 2026-10-19 · 用户二次反馈"还是太小"] 24px 在 90% 缩放下只有 21.6px，
+     仍然难瞄。再抬到 **28px 高、56px 宽、12.5px 字号**——缩放 90% 时约 25×50px，
+     和桌面端按钮同一量级。骨架档同样不缩。 */
+  min-width: 56px;
+  min-height: 28px;
+  padding: 3px 12px 3px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--cv-text-2);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+}
+
+.page-canvas .kid-badge:hover {
+  background: var(--cv-accent-soft);
+  color: var(--cv-accent);
+}
+
+.page-canvas .kid-badge .cv-caret {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 6px solid currentColor;
+  border-top: 4.5px solid transparent;
+  border-bottom: 4.5px solid transparent;
+  transition: transform var(--cv-fast) var(--cv-ease);
+}
+
+.page-canvas .kid-badge.is-open .cv-caret { transform: rotate(90deg); }
+
+/* 未读角标 */
+/* 未读角标：收在卡内左上角。
+   原来 `left:-7px; top:-7px` 挂在卡片外沿——和 cross-link-badge 同一个毛病：
+   卡片间距只有 20px，伸出去 7px 就压到邻居，全量验收判"超框"（L-4 R-240 T-5）。
+   而且伸出卡外的元素**归属不明**，看上去像邻卡的。现在贴在卡内左上角，
+   标题用 :has() 自动让位。 */
+.page-canvas .msg-badge {
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--cv-danger);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  z-index: 3;
+}
+.page-canvas .card-node:has(.msg-badge) > .cv-card-row > .tname { padding-left: 22px; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   工作状态：画布上**只允许一个颜色喊"需要你动手"**
+   ──────────────────────────────────────────────────────────────────────
+   pending  —— 有【待裁定】等你点头（橙，唯一强调色）
+   concluded—— 已有明确「结论：」（绿，克制）
+   discussing—— 在讨论（沉默，不占视觉）
+   empty    —— 还没开始（灰）
+   ══════════════════════════════════════════════════════════════════════ */
+.page-canvas .card-node[data-ws="pending"] {
+  border-left: 2px solid rgba(245, 181, 68, 0.8);
+}
+.page-canvas .card-node[data-ws="concluded"] .tname { color: #d8e4da; }
+
+.page-canvas .cv-ws {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.page-canvas .cv-ws[data-ws="pending"] { color: #f7c163; background: rgba(245, 181, 68, 0.15); }
+.page-canvas .cv-ws[data-ws="concluded"] { color: var(--cv-ok); background: var(--cv-ok-soft); }
+.page-canvas .cv-ws[data-ws="empty"] { color: var(--cv-text-3); background: rgba(255, 255, 255, 0.05); }
+
+/* 钉住：整卡一圈极淡的虚线描边（原来画在已删除的类型行上） */
+.page-canvas .card-node.is-pinned { outline: 1px dashed rgba(245, 181, 68, 0.3); outline-offset: 2px; }
+
+/* ---- 连线状态（悬停/选中某卡时聚焦它的关系）---- */
+.page-canvas #edgesSvg path {
+  transition: stroke 140ms var(--cv-ease), stroke-width 140ms var(--cv-ease), opacity 140ms var(--cv-ease);
+}
+.page-canvas #edgesSvg path.hot { stroke: #7ea2e8; stroke-width: 2.2; opacity: 1; }
+.page-canvas #edgesSvg path.dim { opacity: 0.2; }
+.page-canvas #edgesSvg circle { transition: opacity 140ms var(--cv-ease); }
+
+/* ==========================================================================
+   四、顶栏 / 缩放控件 / 按钮
+   ========================================================================== */
+
+.page-canvas .topbar {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: var(--cv-s2);
+  height: 48px;
+  padding: 0 var(--cv-s3) 0 var(--cv-s4);
+  background: color-mix(in srgb, var(--cv-surface-1) 88%, transparent);
+  backdrop-filter: blur(12px) saturate(1.2);
+  border-bottom: 1px solid var(--cv-line-1);
+}
+
+.page-canvas .topbar .crumb {
+  font-size: 12.5px;
+  color: var(--cv-text-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.page-canvas .topbar .crumb .sep { color: var(--cv-text-3); opacity: 0.6; }
+.page-canvas .topbar .crumb .cur { color: var(--cv-text-1); font-weight: 600; }
+
+.page-canvas .zoom-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 0 4px;
+  border-radius: var(--cv-r-md);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--cv-line-1);
+}
+
+.page-canvas .zoom-ctrl .zbtn {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--cv-r-sm);
+  background: transparent;
+  color: var(--cv-text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+}
+
+.page-canvas .zoom-ctrl .zbtn:hover { background: rgba(255, 255, 255, 0.07); color: var(--cv-text-1); }
+.page-canvas .zoom-ctrl .zbtn:active { transform: scale(0.94); }
+
+.page-canvas .zoom-ctrl .zoom-slider {
+  width: 76px;
+  height: 3px;
+  appearance: none;
+  border-radius: 999px;
+  background: var(--cv-line-2);
+  outline: none;
+  cursor: pointer;
+}
+
+.page-canvas .zoom-ctrl .zoom-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--cv-text-1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  transition: transform var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .zoom-ctrl .zoom-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+
+.page-canvas .zoom-ctrl .zoom-display {
+  min-width: 42px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--cv-text-2);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: pointer;
+  border-radius: var(--cv-r-sm);
+}
+.page-canvas .zoom-ctrl .zoom-display:hover { background: rgba(255, 255, 255, 0.06); color: var(--cv-text-1); }
+
+.page-canvas .btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--cv-r-md);
+  border: 1px solid var(--cv-line-2);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--cv-text-1);
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    background var(--cv-fast) var(--cv-ease),
+    border-color var(--cv-fast) var(--cv-ease),
+    transform var(--cv-fast) var(--cv-ease);
+}
+
+.page-canvas .btn:hover { background: rgba(255, 255, 255, 0.07); border-color: var(--cv-line-3); }
+.page-canvas .btn:active { transform: translateY(1px); }
+
+.page-canvas .btn.primary {
+  background: #4f7ff0;
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.page-canvas .btn.primary:hover { background: #5b88f5; }
+
+/* 图标按钮（工具栏）：32×32，悬停提亮，按下回弹 */
+.page-canvas .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* relative：并行对话层的窗口数角标是绝对定位挂在这个按钮上的 */
+  position: relative;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--cv-r-md);
+  background: transparent;
+  color: var(--cv-text-2);
+  cursor: pointer;
+  transition: background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease),
+              border-color var(--cv-fast) var(--cv-ease), transform var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .icon-btn svg { width: 15px; height: 15px; display: block; }
+.page-canvas .icon-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--cv-text-1); border-color: var(--cv-line-1); }
+.page-canvas .icon-btn:active { transform: scale(0.94); }
+
+.page-canvas .toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--cv-line-2);
+  margin: 0 2px;
+}
+
+/* 规则面板可收起：画布是主角，340px 的常驻右栏在小屏上等于砍掉两成画布。
+   收起后宽度归零（内容 display:none，不留空壳），入口在工具栏的 panel 图标。 */
+/* ══════════════════════════════════════════════════════════════════════════
+   右栏＝浮层，不挤压画布
+   ──────────────────────────────────────────────────────────────────────────
+   原来 44(nav) + 340(右栏) 之后画布只剩 1216。画布是主角，右栏必须让位：
+   改成 absolute 浮在画布右侧，选中卡才滑出，未选中时画布满宽。
+   ══════════════════════════════════════════════════════════════════════════ */
+.page-canvas .app-main { position: relative; }
+
+.page-canvas .rule-panel {
+  position: absolute;
+  right: 0;
+  top: 44px;
+  bottom: 0;
+  width: 380px;
+  transform: translateX(100%);
+  transition: transform 180ms var(--cv-ease);
+  z-index: 40;
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
+  background: var(--cv-surface-1);
+  border-left: 1px solid var(--cv-line-2);
+}
+.page-canvas .rule-panel.is-open { transform: none; }
+
+.page-canvas .cv-skeleton {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.page-canvas .cv-sk-card {
+  position: absolute;
+  border-radius: var(--cv-r-lg);
+  background: #151a21;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  animation: cv-sk-breathe 1.6s ease-in-out infinite;
+}
+@keyframes cv-sk-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* 空态：无任何卡片时（挂在 .canvas-state-box 里，两者都是 inset:0 居中布局） */
+.page-canvas .canvas-state-box .cv-empty { position: static; }
+.page-canvas .cv-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cv-s3);
+  color: var(--cv-text-3);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.page-canvas .cv-empty .cv-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--cv-text-2);
+}
+
+.page-canvas .cv-empty .cv-empty-hint { font-size: 12.5px; }
+
+.page-canvas .cv-empty .cv-empty-key {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 6px;
+  margin: 0 2px;
+  border-radius: 5px;
+  border: 1px solid var(--cv-line-2);
+  background: rgba(255, 255, 255, 0.04);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--cv-text-2);
+}
+
+/* 画布内右键菜单 */
+.page-canvas .cv-menu {
+  position: fixed;
+  /* z-index 取极大值：画布内的 #viewport 带 transform/will-change，会形成独立层叠上下文，
+     菜单挂在 body 下若层级不够就会被卡片压住（实测 200 时卡片文字穿透菜单）。 */
+  z-index: 99999;
+  min-width: 212px;
+  padding: 5px;
+  border-radius: var(--cv-r-md);
+  /* 实色不透明：菜单背后是密集卡片，任何透明度都会让文字互相干扰 */
+  background: #1c212a;
+  border: 1px solid var(--cv-line-3);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.7), 0 2px 6px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px;
+  color: var(--cv-text-1);
+  animation: cv-menu-in 90ms var(--cv-ease);
+}
+
+@keyframes cv-menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.page-canvas .cv-menu .cv-mi {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: var(--cv-r-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.page-canvas .cv-menu .cv-mi:hover { background: rgba(255, 255, 255, 0.07); }
+.page-canvas .cv-menu .cv-mi.is-danger { color: var(--cv-danger); }
+.page-canvas .cv-menu .cv-mi.is-danger:hover { background: var(--cv-danger-soft); }
+.page-canvas .cv-menu .cv-mi .cv-kbd {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--cv-text-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.page-canvas .cv-menu .cv-msep { height: 1px; margin: 4px 6px; background: var(--cv-line-1); }
+
+/* ---- 快速搜索面板（⌘K）---- */
+.page-canvas .cv-palette {
+  position: fixed;
+  z-index: 99998;
+  left: 50%;
+  top: 14vh;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 48px));
+  background: #171b22;
+  border: 1px solid var(--cv-line-3);
+  border-radius: var(--cv-r-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72), 0 4px 12px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  animation: cv-palette-in 120ms var(--cv-ease);
+}
+
+@keyframes cv-palette-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(0.985); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+.page-canvas .cv-palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--cv-line-1);
+  background: transparent;
+  color: var(--cv-text-1);
+  font-size: 14px;
+  outline: none;
+}
+.page-canvas .cv-palette-input::placeholder { color: var(--cv-text-3); }
+
+.page-canvas .cv-palette-list {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.page-canvas .cv-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  padding: 0 9px;
+  border-radius: var(--cv-r-sm);
+  cursor: pointer;
+  color: var(--cv-text-2);
+}
+.page-canvas .cv-palette-item.is-active { background: var(--cv-accent-soft); color: var(--cv-text-1); }
+.page-canvas .cv-palette-dot {
+  flex: none;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--cv-t-sub);
+}
+.page-canvas .cv-palette-dot[data-type="project"] { background: var(--cv-t-project); }
+.page-canvas .cv-palette-dot[data-type="topic"] { background: var(--cv-t-topic); }
+.page-canvas .cv-palette-dot[data-type="tool"] { background: var(--cv-t-tool); }
+.page-canvas .cv-palette-dot[data-type="coder"] { background: var(--cv-t-coder); }
+.page-canvas .cv-palette-title {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--cv-text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 46%;
+}
+.page-canvas .cv-palette-path {
+  font-size: 11px;
+  color: var(--cv-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.page-canvas .cv-palette-state {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cv-ok);
+  background: var(--cv-ok-soft);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.page-canvas .cv-palette-empty {
+  padding: 22px;
+  text-align: center;
+  color: var(--cv-text-3);
+  font-size: 12.5px;
+}
+.page-canvas .cv-palette-foot {
+  display: flex;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--cv-line-1);
+  font-size: 10.5px;
+  color: var(--cv-text-3);
+}
+
+/* 多选操作条：底部中央，胶囊形（Miro/Figma 的 selection toolbar 位置） */
+.page-canvas .cv-selbar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 38px;
+  padding: 0 8px 0 14px;
+  border-radius: 999px;
+  background: #1c212a;
+  border: 1px solid var(--cv-line-3);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+  z-index: 30;
+  animation: cv-selbar-in 140ms var(--cv-ease);
+}
+@keyframes cv-selbar-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.page-canvas .cv-selbar-count {
+  font-size: 12px;
+  color: var(--cv-text-2);
+  white-space: nowrap;
+}
+.page-canvas .cv-selbar-count b { color: var(--cv-text-1); font-weight: 700; }
+.page-canvas .cv-selbar-sep { width: 1px; height: 16px; background: var(--cv-line-2); margin: 0 4px; }
+.page-canvas .cv-selbar-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cv-text-2);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .cv-selbar-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--cv-text-1); }
+.page-canvas .cv-selbar-btn.is-danger { color: var(--cv-danger); }
+.page-canvas .cv-selbar-btn.is-danger:hover { background: var(--cv-danger-soft); }
+
+/* 框选矩形 */
+.page-canvas .cv-marquee {
+  position: absolute;
+  z-index: 40;
+  border: 1px solid var(--cv-accent);
+  background: var(--cv-accent-soft);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* 对齐参考线 */
+.page-canvas .cv-guide {
+  position: absolute;
+  z-index: 35;
+  background: #ff5f8f;
+  pointer-events: none;
+  opacity: 0.9;
+}
+.page-canvas .cv-guide.v { width: 1px; }
+.page-canvas .cv-guide.h { height: 1px; }
+
+/* 进入动画 */
+@keyframes cv-card-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+.page-canvas .card-node.entering { animation: cv-card-in 200ms var(--cv-ease); }
+
+/* 减少动效偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .page-canvas .card-node,
+  .page-canvas .cv-menu,
+}
+
+/* ==========================================================================
+   分组底衬：同一父卡的子卡组（≥2 张）画一块极淡的底，直接表达"这是一组"
+   ========================================================================== */
+.page-canvas .cv-groups {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.page-canvas .cv-group {
+  position: absolute;
+  border-radius: 20px;
+  /* 只比画布底亮一点点：它的作用是"划出一块区域"，不是画一个卡片。
+     0.016 实测在暗底上肉眼不可见（截图确认），0.03 + 0.08 边框才"看得见但不抢眼"。 */
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* 被引用次数：这个项目里"谁被最多卡引用"＝谁是地基。
+   用极轻的字重与灰色，它不是状态，是一条关系线索。 */
+.page-canvas .cv-ref {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cv-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* ==========================================================================
+   项目状态条（顶栏）：43 卡 · 74 处待裁定 · 3 已结论
+   —— 打开画布第一眼要回答"有多少事在等我"，不是"这个项目叫什么"
+   ========================================================================== */
+.page-canvas .proj-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 14px;
+  font-size: 11.5px;
+  color: var(--cv-text-3);
+  white-space: nowrap;
+}
+.page-canvas .proj-stat .ps-item b {
+  font-weight: 700;
+  color: var(--cv-text-2);
+  font-variant-numeric: tabular-nums;
+}
+.page-canvas .proj-stat .ps-item.is-warn b { color: #f7c163; }
+.page-canvas .proj-stat .ps-item.is-warn { color: #c9a35c; }
+.page-canvas .proj-stat .ps-item.is-dim b { color: var(--cv-text-3); }
+.page-canvas .proj-stat .ps-sep {
+  width: 1px;
+  height: 10px;
+  background: var(--cv-line-2);
+}
+
+/* 卡片高度与底栏对齐
+   ──────────────────────────────────────────────────────────────────────────
+   待裁定卡（2 条）、结论卡（1 段）、空卡（无正文）内容量不同，原来底栏跟着
+   内容浮动，一列卡片看起来参差。两件事一起做：
+     ① 卡片本身改成纵向 flex，底栏 `margin-top:auto` 贴底；
+     ② 给各档一个 min-height 下限。
+   于是同档卡片的底栏落在同一条线上；内容超出的卡自然撑高（信息优先，不裁）。 */
+.page-canvas .card-node {
+  display: flex;
+  flex-direction: column;
+}
+/* （原 .cv-card-foot 贴底规则已随两行合一删除） */
+/* [画布 2026-10-19 · 索引化] min-height 只为"同档对齐"服务。
+   l1 已经没有正文（正文只在 l2 出现），所以 l1 与 l0 的高度必须一致——
+   否则默认视图适配时"放大一点就跨档变高"，一放大就溢出，等于把空间白白让掉。
+   实测：统一前 bbox 高 856、视口可用 840 ⇒ 只能停在 0.9；统一后可以到 ~1.0，
+   默认字号大 11%，且不会因为跨档而跳动。 */
+.page-canvas .card-node[data-depth="1"] { min-height: 72px; }
+.page-canvas .card-node[data-depth="2"] { min-height: 72px; }
+.page-canvas .card-node[data-depth="0"] { min-height: 84px; }
+
+
+/* ==========================================================================
+   右栏读卡（选中卡时替代规则卡）
+   ========================================================================== */
+.page-canvas .card-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 22px;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.page-canvas .cd-title {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--cv-text-1);
+}
+
+.page-canvas .cd-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--cv-text-3);
+}
+.page-canvas .cd-dim { font-size: 11px; color: var(--cv-text-3); font-variant-numeric: tabular-nums; }
+
+.page-canvas .cd-section-label {
+  margin-top: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--cv-text-3);
+}
+
+.page-canvas .cd-body {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--cv-text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.page-canvas .cd-pending { display: flex; flex-direction: column; gap: 9px; }
+.page-canvas .cd-pending-row {
+  border-left: 2px solid rgba(245, 181, 68, 0.45);
+  padding-left: 10px;
+}
+.page-canvas .cd-pending-sec {
+  font-size: 10px;
+  color: var(--cv-text-3);
+  margin-bottom: 2px;
+}
+.page-canvas .cd-pending-text {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #d9c7a4;
+  word-break: break-word;
+}
+
+.page-canvas .cd-open { margin-top: auto; align-self: flex-start; }
+
+.page-canvas .cd-multi { display: flex; flex-direction: column; gap: 2px; }
+.page-canvas .cd-multi-row {
+  padding: 7px 9px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--cv-text-2);
+  cursor: pointer;
+}
+.page-canvas .cd-multi-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--cv-text-1); }
+
+/* 卡片右上角的"打开完整对话"按钮：常驻但很轻，hover 才明显 */
+.page-canvas .cv-open {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cv-text-3);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity var(--cv-fast) var(--cv-ease), background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .card-node:hover .cv-open { opacity: 1; }
+.page-canvas .cv-open:hover { background: rgba(255, 255, 255, 0.09); color: var(--cv-text-1); }
+
+/* （标题不再单独给 ↗ 留位：那件事现在由 .cv-card-row 的右内边距统一负责，
+   否则两处相加会白吃掉 50px 的标题宽度） */
+
+/* hidden 属性必须真的隐藏：.rule-panel-body / .card-detail 都有自己的 display 规则，
+   元素自带的 [hidden]{display:none} 会被更具体的类规则盖掉（实测：规则卡的空态
+   提示会穿透到卡片详情上面）。 */
+.page-canvas [hidden] { display: none !important; }
+
+/* 右栏拖拽条 */
+.page-canvas .cv-resizer {
+  flex: none;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .cv-resizer:hover,
+.page-canvas .cv-resizer.is-dragging { background: var(--cv-accent-line); }
+
+/* 右栏动作行与全文区 */
+.page-canvas .cd-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.page-canvas .cd-full {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--cv-line-1);
+}
+
+/* 右栏里的 Markdown（复用对话页的 .md 语义，但字号按右栏收一档） */
+.page-canvas .cd-full .md { font-size: 12.5px; line-height: 1.75; color: var(--cv-text-2); }
+.page-canvas .cd-full .md h1,
+.page-canvas .cd-full .md h2,
+.page-canvas .cd-full .md h3 {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--cv-text-1);
+  margin: 14px 0 6px;
+}
+.page-canvas .cd-full .md h1:first-child { margin-top: 0; }
+.page-canvas .cd-full .md p { margin: 6px 0; }
+.page-canvas .cd-full .md ul,
+.page-canvas .cd-full .md ol { margin: 6px 0; padding-left: 18px; }
+.page-canvas .cd-full .md li { margin: 2px 0; }
+.page-canvas .cd-full .md code {
+  font-size: 11.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #c9d4e4;
+}
+.page-canvas .cd-full .md pre {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.page-canvas .cd-full .md pre code { background: none; padding: 0; }
+.page-canvas .cd-full .md blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--cv-line-3);
+  color: var(--cv-text-3);
+}
+.page-canvas .cd-full .md table { border-collapse: collapse; margin: 8px 0; font-size: 11.5px; }
+.page-canvas .cd-full .md th,
+.page-canvas .cd-full .md td { border: 1px solid var(--cv-line-2); padding: 4px 7px; }
+
+/* 顶栏在窄画布下不许换行：项目名与状态条都可以被压缩/截断，工具栏按钮不动。
+   实测：右栏拉到 580 时中栏 708，"项目管理 agent" 被压成两行。 */
+.page-canvas .topbar { flex-wrap: nowrap; }
+.page-canvas .topbar .crumb {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.page-canvas .proj-stat { flex: 0 1 auto; overflow: hidden; }
+@media (max-width: 1560px) {
+  /* 更窄时先砍掉"未开始"这种次要项，保留卡数与待裁定 */
+  .page-canvas .proj-stat .ps-item.is-dim,
+  .page-canvas .proj-stat .ps-item.is-dim + .ps-sep { display: none; }
+}
+
+/* 裁定模式 */
+.page-canvas .cd-triage-count {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #f7c163;
+  font-variant-numeric: tabular-nums;
+}
+.page-canvas .cd-triage-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--cv-text-1);
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(245, 181, 68, 0.07);
+  border-left: 2px solid rgba(245, 181, 68, 0.6);
+  word-break: break-word;
+}
+.page-canvas .proj-stat .ps-item[data-act="triage"] {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin: -2px -6px;
+}
+.page-canvas .proj-stat .ps-item[data-act="triage"]:hover { background: rgba(245, 181, 68, 0.12); }
+
+/* 顶栏：按钮一律不压缩、不换行；只有项目名与状态条可截断。
+   实测 1280 展开目录后，"＋ 新建卡"被压成两行、"100 处待裁定"被切掉半个字。 */
+.page-canvas .topbar > button,
+.page-canvas .topbar > .zoom-ctrl,
+.page-canvas .topbar > .toolbar-sep,
+.page-canvas .topbar > .btn { flex: none; }
+.page-canvas .topbar .btn.primary { white-space: nowrap; }
+.page-canvas .proj-stat { text-overflow: ellipsis; }
+.page-canvas .proj-stat .ps-item { white-space: nowrap; }
+
+/* 项目名至少留 80px，别被压成"项目"两个字 */
+.page-canvas .topbar .crumb { min-width: 80px; }
+
+/* ⚠ 目录行必须 flex:none：.cv-catalog 是 flex column，232 张卡时 232 行会被
+   整体压缩（实测行高从 22px 压到 11px，文字互相重叠）——目录直接不可用。 */
+.page-canvas .cv-cat-row,
+.page-canvas .cv-cat-head { flex: none; }
+
+/* 待裁定条目：可点（进裁定模式） */
+
+/* 空项目根卡引导 */
+.page-canvas .cv-empty-hint {
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--cv-text-3);
+}
+.page-canvas .cv-empty-hint b { color: var(--cv-text-2); font-weight: 600; }
+
+
+
+/* 骨架档的高度：**不能是 0**。
+   试过 min-height:0 —— 卡片只剩一行标题，55% 下高度 16px，整片画布变成
+   "一堆横条"，认不出是卡片（我在别处注释里警告过同一件事，还是踩了）。
+   64px 是下限：55% 下 35px 高，标题能放 2–3 行，仍是一张"有形状的卡"；
+   又不至于像 150px 那样空出大半。 */
+/* 骨架档：标题 1 行 + 结论 1 行。
+   ──────────────────────────────────────────────────────────────────────────
+   只给标题时卡片是"一行字 + 一片空白"——信息密度太低，扫一眼只知道叫什么，
+   不知道这张卡想清楚了什么。补一行结论（小字、单行截断），信息量翻倍，
+   高度只多 8px。 */
+/* 高度按内容算：padding 18 + 标题 18~22 + 间隔 3 + 结论/待裁定 15 + 徽章行 24 ≈ 78~82。
+   徽章放大到 24px 命中区后，这里跟着抬到 82（徽章在流内，正常占一行）。 */
+/* 高度按内容算：padding 18 + 标题 22 + 底栏 28 ≈ 68，取 72。 */
+/* l0 与 l1 **共用同一套几何**（见上方说明）。选择器并列写在一起，
+   而不是各写一条——同一个选择器写两条规则、后一条盖掉前一条，这个坑已经踩过两次。 */
+/* 高度按"一行"算：padding 18 + 行 28 ≈ 46；根卡略高。 */
+.page-canvas .card-node.l0,
+.page-canvas .card-node.l1 { min-height: 46px; padding: 9px 13px; }
+.page-canvas .card-node.l0[data-depth="0"],
+.page-canvas .card-node.l1[data-depth="0"] { min-height: 54px; padding: 11px 15px; }
+
+/* ⚠ 骨架档必须保留展开徽章：foot 被隐藏后，85% 下卡片无法展开子卡
+   （用户必须先 Ctrl+滚轮放大到 96% 才看得见徽章——不可接受）。
+   做法：foot 只留徽章，其余子元素 display:none。
+   ──────────────────────────────────────────────────────────────────────────
+   【2026-10-19 修】这里原来是 `position:absolute; right:8px; bottom:5px`，
+   为的是省掉徽章那 20px 行高。结果实测 foot 的盒尺寸算成 0×0，徽章溢到
+   卡片外 12px（用户看到的"文字超框"）。absolute + 收缩宽度在 flex 上下文里
+   不可靠；为省 20px 换一个结构性风险不值。改回正常流：父容器必然把徽章
+   算进高度，溢出这一类 bug 从结构上就不可能再发生。 */
+/* l0/l1 的行就是 .cv-card-row 本身（两行合一），这里不再需要覆盖 */
+/* 骨架档底栏只留三样：状态点、引用数、子卡徽章。
+   这三样各自承载一个"看一眼就能改变动作"的信息：
+     点＝现在要不要处理 / ←N＝它是地基还是枝节 / ▸N＝要不要展开。 */
+/* l0/l1 行内元素本来就只有：状态点、标题、spacer、运行胶囊、引用数、子卡徽章，
+   没有需要隐藏的项——原来那条白名单已无对象。 */
+/* 骨架档的徽章**不缩小**：这一档恰恰最需要点得中（缩到 70% 时整张卡才 53px 高，
+   徽章再按 9.5px 字号做就只剩 18px 命中区）。保持 24px 高、11px 字号。 */
+.page-canvas .card-node.l0 .cv-card-row .kid-badge,
+.page-canvas .card-node.l1 .cv-card-row .kid-badge { font-size: 12px; line-height: 20px; }
+
+/* ==========================================================================
+   hover 浮层：完整内容（标题 / 结论全文 / 待裁定条目全部）
+   —— 卡片是索引，浮层是全文；截断的文字在这里能读全
+   ========================================================================== */
+.page-canvas .card-tooltip {
+
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  min-width: 320px;
+  max-width: min(560px, 46vw);
+  max-height: 68vh;
+  overflow: hidden;
+  padding: 12px 14px;
+  background: #171b22;
+  border: 1px solid var(--cv-line-3);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
+  /* 可交互：能滚动、能选中文字（原来 pointer-events:none 读长文只能干瞪眼） */
+  pointer-events: auto;
+  font-size: 12px;
+}
+
+.page-canvas .card-tooltip .tt-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--cv-text-1);
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.page-canvas .card-tooltip .tt-sec {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--cv-text-3);
+  margin: 10px 0 4px;
+}
+
+/* 浮层正文：按 markdown 排版，整段可读（不再截 120 字） */
+.page-canvas .card-tooltip .tt-body {
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--cv-text-2);
+  word-break: break-word;
+}
+.page-canvas .card-tooltip .tt-body h1,
+.page-canvas .card-tooltip .tt-body h2,
+.page-canvas .card-tooltip .tt-body h3 {
+  margin: 10px 0 5px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--cv-text-1);
+}
+.page-canvas .card-tooltip .tt-body h1:first-child,
+.page-canvas .card-tooltip .tt-body h2:first-child,
+.page-canvas .card-tooltip .tt-body h3:first-child { margin-top: 0; }
+.page-canvas .card-tooltip .tt-body p { margin: 0 0 7px; }
+.page-canvas .card-tooltip .tt-body ul,
+.page-canvas .card-tooltip .tt-body ol { margin: 0 0 7px; padding-left: 18px; }
+.page-canvas .card-tooltip .tt-body code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+.page-canvas .card-tooltip .tt-body table {
+  border-collapse: collapse;
+  font-size: 11px;
+  margin: 0 0 8px;
+}
+.page-canvas .card-tooltip .tt-body th,
+.page-canvas .card-tooltip .tt-body td {
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  padding: 3px 6px;
+}
+
+/* [画布 2026-10-19] 浮层里的待裁定条目样式（.tt-pending/.tt-pitem/.tt-psec）已删：
+   浮层不再列待裁定（那是"逐条过"的事），这段样式已无元素可挂。 */
+
+.page-canvas .card-tooltip .tt-hint {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--cv-line-1);
+  font-size: 10px;
+  color: var(--cv-text-3);
+}
+
+/* ==========================================================================
+   总览层（lm，zoom < 0.68）：只画结构，不画字
+   ──────────────────────────────────────────────────────────────────────────
+   为什么要这一档：232 张卡全展开时缩放会被钳到 25%，标题实际只有 3.3px ——
+   整片画布是不可读的灰噪点。项目越复杂越看不见，而"复杂多线任务"恰恰是画布
+   存在的理由。低于 0.68 就不再画字，卡片退化成「块」：
+
+     宽度  → 层级（360/280/224/184，缩小时层级仍然分得开）
+     左条  → 深度（颜色随层级变淡）
+     右上点 → 有活等你裁定（琥珀色，屏幕尺寸恒定，任何缩放下都看得见）
+
+   这时画布回答的是"结构长什么样、哪里有活"；要读字就放大或点开右栏。
+   这就是语义缩放：缩小看结构，放大看内容。
+   ========================================================================== */
+.page-canvas .card-node.lm {
+  min-height: 52px;
+  padding: 0;
+  border-radius: 6px;
+  border-left-width: 3px;
+  /* 密集时投影会糊成一片，块不需要投影 */
+  box-shadow: none;
+}
+/* 深度0 的左侧强调条在总览层让位给统一的 border-left */
+.page-canvas .card-node.lm[data-depth="0"]::before { display: none; }
+.page-canvas .card-node.lm[data-depth="0"] { border-left-color: var(--cv-accent); }
+.page-canvas .card-node.lm[data-depth="1"] { border-left-color: rgba(91, 140, 255, 0.72); }
+.page-canvas .card-node.lm[data-depth="2"] { border-left-color: rgba(91, 140, 255, 0.42); }
+.page-canvas .card-node.lm[data-depth="3"] { border-left-color: rgba(91, 140, 255, 0.22); }
+
+/* ⚠ 新增卡面子元素时**必须同步这条隐藏清单**：`.cv-dec-line` 是后加的定论行，
+   漏在这里 ⇒ 总览层的块上会冒出一行 3px 的字（实测截图里就是一个小白块）。 */
+.page-canvas .card-node.lm > .cv-dec-line,
+.page-canvas .card-node.lm > .summary,
+.page-canvas .card-node.lm > .cv-card-row,
+.page-canvas .card-node.lm > .cv-open,
+.page-canvas .card-node.lm > .cv-runline,
+.page-canvas .card-node.lm > .cv-msgline,
+.page-canvas .card-node.lm > .cv-cell,
+.page-canvas .card-node.lm > .cv-empty-hint { display: none; }
+
+/* 待裁定：改成屏幕尺寸恒定的圆点。原来那个 9.5px 的数字缩到 25% 只有 2.4px。 */
+.page-canvas .card-node.lm[data-pending]::after {
+  content: "";
+  position: absolute;
+  top: calc(4px / var(--z, 1));
+  right: calc(4px / var(--z, 1));
+  width: calc(6px / var(--z, 1));
+  height: calc(6px / var(--z, 1));
+  border-radius: 50%;
+  background: var(--cv-warn);
+  box-shadow: 0 0 0 calc(2px / var(--z, 1)) rgba(245, 181, 68, 0.16);
+  pointer-events: none;
+}
+
+/* 总览层：文字全隐藏，运行状态只能靠**边框呼吸**和**左条颜色**表达。
+   四种状态在这里各有一个可分辨的颜色，扫一眼就能分出"还在动 / 跑完了 / 卡住了"。 */
+.page-canvas .card-node.lm[data-runstate="running"] {
+  border-color: rgba(91, 140, 255, 0.75);
+  border-left-color: var(--cv-accent);
+  animation: cv-run-border 1.8s ease-in-out infinite;
+}
+@keyframes cv-run-border {
+  0%, 100% { border-color: rgba(91, 140, 255, 0.28); }
+  50%      { border-color: rgba(91, 140, 255, 0.9); }
+}
+.page-canvas .card-node.lm[data-runstate="done"] { border-left-color: #4fc07f; border-color: rgba(79, 192, 127, 0.5); }
+.page-canvas .card-node.lm[data-runstate="blocked"] { border-left-color: #e2695f; border-color: rgba(226, 105, 95, 0.55); }
+.page-canvas .card-node.lm[data-runstate="paused"] { border-left-color: #7c8798; }
+
+/* ==========================================================================
+   自动模式：这张卡此刻正在被 AI 推进
+   ──────────────────────────────────────────────────────────────────────────
+   ⚠ 原来 JS 里生成了 .cv-runbar / .cv-runline / .cv-run-dot / data-running
+   四样东西，CSS 里**一条样式都没有**——等于自动模式在画布上完全没有视觉表达。
+   这里补齐。三样信号，各管一件事：
+
+     顶部 2px 呼吸条   → 远处一眼找到"哪张卡在动"（232 张卡里也能扫到）
+     .cv-runline 一行  → 近处看清"跑到第几轮、在干什么"
+     描边泛蓝          → 中间距离也能分辨"这张在跑，不是待裁定"
+
+   全部用纯色 + 透明度呼吸，不用渐变（用户明确否掉了渐变）。
+   ========================================================================== */
+.page-canvas .cv-runbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--cv-accent);
+  animation: cv-run-pulse 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes cv-run-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+.page-canvas .card-node[data-runstate="running"] { border-color: rgba(91, 140, 255, 0.5); }
+.page-canvas .card-node[data-runstate="done"]    { border-color: rgba(79, 192, 127, 0.42); }
+.page-canvas .card-node[data-runstate="blocked"] { border-color: rgba(226, 105, 95, 0.5); }
+
+/* 顶部条：running 呼吸（在动），done/blocked/paused 常亮（不动）。
+   "动 / 不动"本身就是信息——还在动＝还得等，不动的＝可以去看结果了。 */
+.page-canvas .card-node[data-runstate="done"] .cv-runbar { background: #4fc07f; opacity: 0.85; animation: none; }
+.page-canvas .card-node[data-runstate="blocked"] .cv-runbar { background: #e2695f; opacity: 0.95; animation: none; }
+.page-canvas .card-node[data-runstate="paused"] .cv-runbar { background: #7c8798; opacity: 0.6; animation: none; }
+
+/* 结束态胶囊：底栏里说明结果。running 不挂它——上面那行动态行已经在说进度了。 */
+.page-canvas .cv-runchip {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 15px;
+}
+.page-canvas .cv-runchip[data-rs="done"] { color: #7fd6a1; background: rgba(79, 192, 127, 0.15); }
+.page-canvas .cv-runchip[data-rs="blocked"] { color: #f08a80; background: rgba(226, 105, 95, 0.16); }
+.page-canvas .cv-runchip[data-rs="paused"] { color: #9aa6b6; background: rgba(124, 135, 152, 0.18); }
+
+.page-canvas .cv-runline {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--cv-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-canvas .cv-run-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cv-accent);
+  animation: cv-run-blink 1.2s ease-in-out infinite;
+}
+@keyframes cv-run-blink {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 1; }
+}
+
+/* 跨视图关系徽章：进底栏后的样式。
+   原来它挂在卡片外沿（top:-8px; right:-8px），在全量验收里被判"超框"
+   （伸出卡外 4px 右、3px 上），而且卡间距只有 20px，伸出去会压到邻卡。
+   现在它是底栏里的一个普通胶囊，和 ←N / ▸N 并排。 */
+.page-canvas .cv-card-row .cross-link-badge {
+  position: static;
+  top: auto;
+  right: auto;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.75;
+  cursor: pointer;
+}
+.page-canvas .cv-card-row .cross-link-badge:hover { opacity: 1; }
+
+/* 浮层元信息行：状态 + 待裁定数 + 引用数 + 字数 + 多久没动。
+   原来是「待你裁定 N 处」+ 条目清单——那是把该在右栏做的事塞进了悬停浮层，
+   一屏 200 张卡时等于用最重的信息堵视线。现在只留一行数字摘要，
+   正文位置全部让给**结论全文**（卡面读不全的那部分）。 */
+.page-canvas .card-tooltip .tt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 9px;
+  font-size: 10.5px;
+  color: var(--cv-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.page-canvas .card-tooltip .tt-meta .tt-dot { opacity: 0.45; }
+.page-canvas .card-tooltip .tt-meta .tt-ws {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--cv-text-2);
+}
+.page-canvas .card-tooltip .tt-meta .tt-ws[data-ws="pending"] { color: #f7c163; background: rgba(245, 181, 68, 0.15); }
+.page-canvas .card-tooltip .tt-meta .tt-ws[data-ws="concluded"] { color: #7fd6a1; background: rgba(80, 200, 130, 0.14); }
+
+/* ==========================================================================
+   第二层：通信线（卡间信）
+   ──────────────────────────────────────────────────────────────────────────
+   通信是**事件**，不是结构。所以这条线有两个特征：
+     · 只在 30 分钟时间窗内出现（renderEdges 里筛），过了就不画
+     · 流动方向可见（dashoffset 循环）——"信息正在往那边走"
+   用虚线段流动而不是渐变/发光：一眼能看出方向，且不引入装饰。
+   ========================================================================== */
+.page-canvas .cv-comm-line {
+  animation: cv-comm-flow 1.1s linear infinite;
+  filter: drop-shadow(0 0 3px rgba(91, 140, 255, 0.45));
+}
+@keyframes cv-comm-flow {
+  from { stroke-dashoffset: 0; }
+  to   { stroke-dashoffset: -26; }   /* 正好一个 dash 周期(7+6)*2，循环无缝 */
+}
+.page-canvas .cv-comm-dot {
+  animation: cv-comm-dot 1.6s ease-in-out infinite;
+}
+@keyframes cv-comm-dot {
+  0%, 100% { opacity: 0.35; r: 3; }
+  50%      { opacity: 1;    r: 5; }
+}
+
+/* 工具栏开关的"已开启"态 */
+.page-canvas .icon-btn.is-on {
+  color: var(--cv-accent);
+  background: rgba(91, 140, 255, 0.14);
+  border-color: rgba(91, 140, 255, 0.45);
+}
+
+/* ==========================================================================
+   并行对话层（浮在画布上层，画布尺寸零变化）
+   ──────────────────────────────────────────────────────────────────────────
+   定位 fixed、右下角起横排、可折叠成一条标题。**不参与画布布局**——
+   这是前两次翻车（左侧导航 / 右侧消息栏挤掉画布）之后定下的硬规矩：
+   拿画布空间换信息的方案一律不做。
+   ========================================================================== */
+.watch-layer {
+  position: fixed;
+  /* 左下角起：右下角是小地图的固定位置，压上去会把"全局缩略"这条唯一的总览
+     线索挡掉。左边只有一条 40px 图标栏，从它右边开始排不会撞任何常驻元素。 */
+  left: 52px;
+  bottom: 46px;          /* 让开底部状态栏 */
+  z-index: 60;
+  display: none;
+  gap: 10px;
+  align-items: flex-end;
+  /* 4 个窗口 × 322 + 间距 = 1370 > 1280，窄屏必然溢出屏幕右侧（窗口跑出可视区
+     等于「开了但看不见」）。宽度封顶后换行，第二排向上叠（wrap-reverse），
+     底边始终贴住状态栏，视觉上还是一面"监视墙"。 */
+  max-width: calc(100vw - 66px);
+  flex-wrap: wrap-reverse;
+  align-content: flex-end;
+  pointer-events: none;  /* 空白处不挡画布点击 */
+}
+.watch-layer.is-open { display: flex; }
+
+.watch-win {
+  pointer-events: auto;
+  /* 窄屏自适应：4 个窗口要能在一排里放下（1280 时每个 296px）。
+     固定 322px 在 1280 下会折成两排、把画布下半屏整个吃掉——
+      那就又变成"拿画布空间换信息"了。封顶 322 是"再宽就不像窗口像面板"。 */
+  width: min(322px, calc((100vw - 96px) / 4));
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  background: #14181f;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.62);
+  overflow: hidden;
+}
+.watch-win.is-collapsed { max-height: 34px; }
+.watch-win.is-collapsed .watch-body,
+.watch-win.is-collapsed .watch-foot { display: none; }
+
+.watch-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 6px 0 10px;
+  flex: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  cursor: default;
+}
+.watch-win.is-collapsed .watch-head { border-bottom: 0; }
+.watch-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  flex: none; background: #6b7686;
+}
+.watch-dot[data-rs="running"] { background: #5b8cff; animation: cv-run-blink 1.2s ease-in-out infinite; }
+.watch-dot[data-rs="done"] { background: #4fc07f; }
+.watch-dot[data-rs="blocked"] { background: #e2695f; }
+.watch-dot[data-rs="paused"] { background: #7c8798; }
+.watch-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #dfe6f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+.watch-rs {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: #9aa6b6;
+  background: rgba(255, 255, 255, 0.07);
+}
+.watch-rs[data-rs="running"] { color: #8fb0ff; background: rgba(91, 140, 255, 0.16); }
+.watch-rs[data-rs="done"] { color: #7fd6a1; background: rgba(79, 192, 127, 0.15); }
+.watch-rs[data-rs="blocked"] { color: #f08a80; background: rgba(226, 105, 95, 0.16); }
+.watch-sp { flex: 1; }
+.watch-btn-min, .watch-btn-x {
+  flex: none;
+  width: 22px; height: 22px;
+  border: 0; border-radius: 5px;
+  background: transparent;
+  color: #8b96a6;
+  font-size: 13px; line-height: 1;
+  cursor: pointer;
+}
+.watch-btn-min:hover, .watch-btn-x:hover { background: rgba(255, 255, 255, 0.08); color: #dfe6f0; }
+
+.watch-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+}
+/* 空态：给"下一步能做什么"，所以是多行的，行高要给够 */
+.watch-empty { font-size: 11px; line-height: 1.75; color: #6b7686; padding: 14px 6px; text-align: center; }
+.watch-line { display: flex; gap: 6px; font-size: 11.5px; line-height: 1.55; }
+.watch-tag {
+  flex: none;
+  width: 34px;
+  font-size: 10px;
+  font-weight: 650;
+  color: #7d8798;
+  text-align: right;
+  padding-top: 1px;
+}
+.watch-line[data-role="you"] .watch-tag { color: #8fb0ff; }
+.watch-line[data-role="ai"] .watch-tag { color: #7fd6a1; }
+.watch-line[data-role="tool"] .watch-tag { color: #c9a86a; }
+.watch-text {
+  color: #b9c3d1;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.watch-line[data-role="you"] .watch-text { color: #d6e2f5; }
+.watch-line[data-role="tool"] .watch-text { color: #9aa6b6; font-variant-numeric: tabular-nums; }
+
+.watch-foot {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 7px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.watch-input {
+  flex: 1;
+  min-height: 28px;
+  max-height: 72px;
+  resize: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0f1319;
+  color: #dfe6f0;
+  font-size: 12px;
+  line-height: 1.4;
+  font-family: inherit;
+}
+.watch-input:focus { outline: none; border-color: rgba(91, 140, 255, 0.6); }
+.watch-send {
+  flex: none;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(91, 140, 255, 0.5);
+  background: rgba(91, 140, 255, 0.16);
+  color: #9dbcff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.watch-send:hover { background: rgba(91, 140, 255, 0.26); }
+.watch-send:disabled { opacity: 0.5; cursor: default; }
+
+/* 工具栏上的窗口数角标 */
+.page-canvas #watchBtn[data-count]::after {
+  content: attr(data-count);
+  position: absolute;
+  top: 1px; right: 1px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  border-radius: 6px;
+  background: var(--cv-accent);
+  color: #0b0d10;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+}
+
+/* 传递光点：自动建卡 / 卡间通信时，沿连线滑过去的那个点。
+   它回答的是"信息从哪来到哪去"——卡片淡入只能说明"多了个东西"，
+   光点从父卡滑到子卡才说明"它是从那里派生的"。 */
+.cv-pulse-dot {
+  filter: drop-shadow(0 0 6px rgba(91, 140, 255, 0.9));
+  pointer-events: none;
+}
+
+/* ==========================================================================
+   键盘焦点：卡片现在可以用 Tab 进入、方向键移动
+   ──────────────────────────────────────────────────────────────────────────
+   必须用 :focus-visible 而不是 :focus——鼠标点击也会让卡片获得焦点，
+   用 :focus 会出现"点一下卡就亮一圈"，视觉噪音。
+   ========================================================================== */
+.page-canvas .card-node:focus { outline: none; }
+.page-canvas .card-node:focus-visible {
+  outline: 2px solid var(--cv-accent);
+  outline-offset: 2px;
+}
+.page-canvas .card-node:focus-visible .tname { color: #fff; }
+
+/* ==========================================================================
+   应用内弹窗（替代 window.prompt / window.confirm）
+   ========================================================================== */
+.cv-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 8, 12, 0.62);
+  animation: cv-modal-fade 0.12s ease;
+}
+@keyframes cv-modal-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.cv-modal {
+  width: 420px;
+  max-width: calc(100vw - 48px);
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 18px 14px;
+  background: #161b22;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72);
+  animation: cv-modal-in 0.14s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes cv-modal-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+.cv-modal-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: #e6edf3;
+  margin-bottom: 10px;
+}
+.cv-modal-body {
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: #9aa6b6;
+  overflow-y: auto;
+  margin-bottom: 16px;
+}
+.cv-modal-body > div:empty { height: 6px; }
+.cv-modal-input {
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 16px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #0f1319;
+  color: #e6edf3;
+  font-size: 13px;
+  font-family: inherit;
+}
+.cv-modal-input:focus { outline: none; border-color: rgba(91, 140, 255, 0.65); }
+.cv-modal-ops {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.cv-modal-btn {
+  min-width: 72px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: transparent;
+  color: #b9c3d1;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cv-modal-btn:hover { background: rgba(255, 255, 255, 0.06); }
+.cv-modal-btn.is-primary {
+  border-color: rgba(91, 140, 255, 0.55);
+  background: rgba(91, 140, 255, 0.18);
+  color: #9dbcff;
+}
+.cv-modal-btn.is-primary:hover { background: rgba(91, 140, 255, 0.28); }
+.cv-modal-btn.is-danger {
+  border-color: rgba(226, 105, 95, 0.55);
+  background: rgba(226, 105, 95, 0.16);
+  color: #f08a80;
+}
+.cv-modal-btn.is-danger:hover { background: rgba(226, 105, 95, 0.26); }
+.cv-modal-btn:focus-visible { outline: 2px solid var(--cv-accent); outline-offset: 2px; }
+
+/* ==========================================================================
+   尊重系统的"减少动态效果"设置
+   ──────────────────────────────────────────────────────────────────────────
+   呼吸条、通信线流动、建卡光点、卡片淡入——这些动画对前庭功能敏感的用户
+   是真实的不适来源（眩晕、恶心）。系统开关一开，全部退化为静态：
+   状态仍然靠**颜色**表达（蓝=在跑、绿=完成、红=受阻），信息一点不丢。
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .page-canvas .cv-runbar,
+  .page-canvas .cv-run-dot,
+  .page-canvas .cv-comm-line,
+  .page-canvas .cv-comm-dot,
+  .page-canvas .cv-fresh[data-f="hot"],
+  .page-canvas .card-node[data-runstate="running"],
+  .page-canvas .card-node.entering,
+  .cv-pulse-dot,
+  .cv-modal,
+  .cv-modal-mask,
+  .watch-dot[data-rs="running"] {
+    animation: none !important;
+  }
+  .page-canvas .card-node { transition: none !important; }
+}
+
+/* 回收站面板（长期找回入口） */
+.cv-modal.is-wide { width: 560px; }
+.cv-trash { display: flex; flex-direction: column; gap: 2px; }
+.cv-trash-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 6px;
+  border-radius: 6px;
+}
+.cv-trash-row:hover { background: rgba(255, 255, 255, 0.04); }
+.cv-trash-main { flex: 1; min-width: 0; }
+.cv-trash-title {
+  font-size: 12.5px;
+  color: #dfe6f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-trash-meta {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: #6b7686;
+  font-variant-numeric: tabular-nums;
+}
+.cv-trash-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  font-weight: 600;
+  color: #9aa6b6;
+}
+.cv-trash-empty {
+  padding: 22px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: #6b7686;
+}
+
+/* 并行窗口的「全文」按钮 */
+.watch-btn-full {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #8b96a6;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.watch-btn-full:hover { background: rgba(255, 255, 255, 0.08); color: #dfe6f0; }
+.watch-btn-full.is-on {
+  color: #9dbcff;
+  background: rgba(91, 140, 255, 0.16);
+  border-color: rgba(91, 140, 255, 0.4);
+}
+/* 全文视图：正文按 markdown 排版，可滚动 */
+.watch-full { font-size: 12px; line-height: 1.7; color: #b9c3d1; }
+.watch-full h1, .watch-full h2, .watch-full h3 {
+  margin: 10px 0 6px; font-size: 13px; color: #dfe6f0;
+}
+.watch-full p { margin: 0 0 8px; }
+.watch-full ul, .watch-full ol { margin: 0 0 8px; padding-left: 18px; }
+.watch-full code {
+  padding: 1px 4px; border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08); font-size: 11px;
+}
+
+/* ==========================================================================
+   状态点（卡面唯一的"状态"表达）
+   ──────────────────────────────────────────────────────────────────────────
+   用户裁定：待裁定只需一个最简单的 icon 告诉"这里有活"，不需要数字、不需要条目。
+   理由（他自己的话）：不论如何都要点进去才能裁定，所以外层露出的部分必须能
+   独立讲明白；一个数字讲不明白任何事。
+
+   所以卡面只剩一个 8px 的点：
+     琥珀 = 有信息等你裁定   绿 = 已结论   蓝 = 讨论中   灰 = 未开始
+   数字留在顶栏（全项目欠多少），条目留在"逐条过"。
+   ========================================================================== */
+.page-canvas .cv-wsdot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b7686;
+}
+.page-canvas .cv-wsdot[data-ws="pending"] {
+  background: #f5b544;
+  box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.22), 0 0 8px rgba(245, 181, 68, 0.4);
+}
+.page-canvas .cv-wsdot[data-ws="concluded"] { background: #4fc07f; }
+.page-canvas .cv-wsdot[data-ws="discussing"] { background: #5b8cff; }
+.page-canvas .cv-wsdot[data-ws="empty"] { background: #4a5261; }
+
+/* 结束态图标（✓ / ✕ / ‖）保持胶囊形状，但只放一个字符 */
+.page-canvas .cv-runchip { min-width: 16px; padding: 0 4px; text-align: center; }
+
+/* 浮层里的"里面有什么"（子卡概览）——卡片面只给 ▸N，这里给名字 */
+.page-canvas .card-tooltip .tt-kids {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+.page-canvas .card-tooltip .tt-kid {
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 11px;
+  color: var(--cv-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-canvas .card-tooltip .tt-kid-more { color: var(--cv-text-3); }
+
+/* ==========================================================================
+   卡面文字的来源标签
+   ──────────────────────────────────────────────────────────────────────────
+   卡片上那段字有两种来源，长得一样，读者认不出来（用户原话："我现在也搞不清楚，
+   你现在显示在卡片上的那段文字是什么信息？"）：
+     结论  ← 卡里真有「结论：」段落（explicit）
+     现状  ← 没有结论，取现状块第一行（fallback），它只说明"这张卡在讲什么"
+   用 ::before 内联标注，不占布局、不改高度。
+   ========================================================================== */
+.page-canvas .card-node[data-ck="explicit"] .summary::before {
+  content: "结论 · ";
+  color: #7fd6a1;
+  font-weight: 600;
+}
+.page-canvas .card-node[data-ck="fallback"] .summary::before {
+  content: "现状 · ";
+  color: var(--cv-text-3);
+  font-weight: 600;
+}
+
+/* 顶栏"自上次以来"增量：可点，但不抢色。
+   规则是"同一时刻只有一个颜色在喊需要动手"（橙=待裁定），
+   所以这里用中性色 + 悬停才给强调，不新增一个喊话的颜色。 */
+.page-canvas .ps-catchup {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 4px;
+  transition: background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+}
+.page-canvas .ps-catchup:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--cv-text-1);
+}
+.page-canvas .ps-catchup b { color: var(--cv-text-1); }
+
+/* ==========================================================================
+   缩放即语义：l2（>120%，放大读）才显示正文
+   ──────────────────────────────────────────────────────────────────────────
+   l0/l1 是"扫"的档位，卡面只有结构；l2 是"读"的档位，卡片已经放大到能读字，
+   这一段就是给它的。原来 l0 也显示一行结论——一行 18 字装 2316 字，是残句；
+   现在残句没了，但放大后必须有真东西可读。
+   ========================================================================== */
+.page-canvas .card-node.l0 .summary,
+.page-canvas .card-node.l1 .summary { display: none; }
+
+.page-canvas .card-node.l2 .summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 8;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--cv-text-2);
+}
+
+/* ==========================================================================
+   裁定队列：进度条 + 上下文
+   ──────────────────────────────────────────────────────────────────────────
+   一屏要回答"我在队列哪里 / 这张卡在讲什么 / 这一处问什么"。
+   原来只有"第 N/M 处"和待裁定原文——缺上下文，于是每处都要先打开卡片读一遍
+   再回来，队列退化成一个个孤立弹窗。
+   ========================================================================== */
+.page-canvas .cd-triage-bar {
+  height: 2px;
+  margin: 6px 0 10px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+.page-canvas .cd-triage-bar-fill {
+  height: 100%;
+  border-radius: 1px;
+  background: rgba(245, 181, 68, 0.75);
+  transition: width 180ms var(--cv-ease);
+}
+/* 上下文：比待裁定条目弱一档，因为它是"背景"而不是"要回答的问题"。
+   最多 6 行——它只是让人判断"这处该不该现在裁"，不是让人在这里读完 2316 字。 */
+.page-canvas .cd-triage-ctx {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--cv-text-3);
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+/* 并行窗口里的"卡间信"块：别人递过来的东西。
+   它不进时间线（不同时钟，混进去就得猜先后），但必须显眼——
+   这是"为什么现在要看这张卡"的原因。 */
+.watch-inbox {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 7px;
+  margin-bottom: 7px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.10);
+}
+.watch-inbox-item {
+  display: flex;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  padding: 5px 7px;
+  border-radius: 5px;
+  background: rgba(91, 140, 255, 0.08);
+  border-left: 2px solid rgba(91, 140, 255, 0.55);
+}
+.watch-inbox-from {
+  flex: none;
+  max-width: 88px;
+  font-weight: 650;
+  color: #8fb0ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.watch-inbox-text { color: #b9c3d1; word-break: break-word; }
+
+/* 并行窗口的"有新内容"标记。
+   三窗并行时最基本的一件事是"哪条线刚动了"——没有它就只能一个个看过去，
+   而重看一遍是这层最贵的动作。默认不占位（display:none），出现时才有宽度。 */
+.watch-new {
+  display: none;
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  color: #0b0d10;
+  background: #5b8cff;
+}
+.watch-win.is-fresh .watch-new { display: inline-block; }
+.watch-win.is-fresh { border-color: rgba(91, 140, 255, 0.55); }
+.watch-win.is-fresh .watch-title { color: #fff; }
+
+/* ==========================================================================
+   并排比较：2–3 栏，等宽、等高、各自滚动
+   ──────────────────────────────────────────────────────────────────────────
+   等宽是关键：两栏宽度不同会让人下意识觉得左边"更重要"，而比较的前提是
+   两边对等。各自滚动而不是整体滚动——两段话长度差很大时，整体滚动会让
+   短的那栏先到底、长的那栏还在半空，眼睛失去参照。
+   ========================================================================== */
+.cv-modal.is-compare { width: 900px; max-width: calc(100vw - 48px); }
+.cmp-hint {
+  margin-left: 10px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #6b7686;
+}
+.cmp-grid {
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+  margin-bottom: 14px;
+}
+.cmp-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+.cmp-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 12px 6px;
+}
+.cmp-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: #e6edf3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmp-ws {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 650;
+  color: #9aa6b6;
+  background: rgba(255, 255, 255, 0.07);
+}
+.cmp-ws[data-ws="pending"] { color: #f7c163; background: rgba(245, 181, 68, 0.15); }
+.cmp-ws[data-ws="concluded"] { color: #7fd6a1; background: rgba(79, 192, 127, 0.14); }
+.cmp-meta {
+  padding: 0 12px 8px;
+  font-size: 10.5px;
+  color: #6b7686;
+  font-variant-numeric: tabular-nums;
+}
+.cmp-body {
+  flex: 1;
+  min-height: 0;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: #b9c3d1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  scrollbar-width: thin;
+}
+.cmp-ops {
+  padding: 8px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 比较栏里的 markdown 正文：字号比面板正文小半档，因为要同时读两栏 */
+.cmp-body .md { font-size: 12px; line-height: 1.72; }
+.cmp-body .md h1, .cmp-body .md h2, .cmp-body .md h3 {
+  margin: 12px 0 6px;
+  font-size: 12.5px;
+  color: #dfe6f0;
+}
+.cmp-body .md h1:first-child, .cmp-body .md h2:first-child, .cmp-body .md h3:first-child { margin-top: 0; }
+.cmp-body .md p { margin: 0 0 8px; }
+.cmp-body .md ul, .cmp-body .md ol { margin: 0 0 8px; padding-left: 18px; }
+.cmp-body .md code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+/* 搜索面板条目上的状态：搜索结果要能回答"这几张里哪张有活等我" */
+.page-canvas .cv-palette-state[data-k="pending"] { color: #f7c163; }
+.page-canvas .cv-palette-state[data-k="done"] { color: var(--cv-ok); }
+
+/* 接续清单：悬停"自上次以来 N 张更新"时展开。
+   只报数量等于把人送回原点——你还是得逐张看过去才知道变了什么。
+   recent_events 每条都带 detail，接续的价值全在这几行细节上。 */
+.cv-catchup-list {
+  position: fixed;
+  z-index: 120;
+  min-width: 300px;
+  max-width: 460px;
+  padding: 8px 6px;
+  background: #171b22;
+  border: 1px solid var(--cv-line-3);
+  border-radius: 9px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.66);
+  font-size: 12px;
+}
+.cv-catchup-list .cu-head {
+  padding: 2px 8px 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--cv-text-3);
+}
+.cv-catchup-list .cu-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cv-catchup-list .cu-row:hover { background: rgba(255, 255, 255, 0.06); }
+.cv-catchup-list .cu-title {
+  flex: none;
+  max-width: 150px;
+  color: var(--cv-text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-catchup-list .cu-detail {
+  flex: 1;
+  min-width: 0;
+  color: var(--cv-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-catchup-list .cu-time {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--cv-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.cv-catchup-list .cu-more {
+  padding: 5px 8px 2px;
+  font-size: 10.5px;
+  color: var(--cv-text-3);
+}
+
+/* ==========================================================================
+   定论条数（卡面）与定论条目（浮层）
+   ──────────────────────────────────────────────────────────────────────────
+   卡片对外的唯一结论形态就是"定论"（系统规范：使命/现状/定论，定论只追加，
+   语法 D01【裁定】…）。它天生短、自包含，是这层唯一值得露的内容。
+   但一条定论 38 字，卡面一行只放得下 18 字——所以卡面只给**条数**：
+   "定9" 是一个完整、可比较的事实（这条线收敛过 9 次 / 一次都没有），
+   而截一半的句子不是。条目正文在浮层里读。
+   ========================================================================== */
+.page-canvas .cv-dec {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 16px;
+  color: #7fd6a1;
+  background: rgba(79, 192, 127, 0.12);
+  font-variant-numeric: tabular-nums;
+}
+
+.page-canvas .card-tooltip .tt-decs {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.page-canvas .card-tooltip .tt-dec {
+  padding-left: 9px;
+  border-left: 2px solid rgba(79, 192, 127, 0.45);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--cv-text-2);
+  word-break: break-word;
+}
+.page-canvas .card-tooltip .tt-dec-id {
+  margin-right: 4px;
+  font-weight: 650;
+  color: #7fd6a1;
+  font-variant-numeric: tabular-nums;
+}
+.page-canvas .card-tooltip .tt-dec-loading { color: var(--cv-text-3); border-left-color: rgba(255,255,255,.12); }
+
+/* 低缩放（<70%）：计数读不出来，把宽度还给标题。
+   ←N / 定N 是纯读数，10.5px 世界字号在 0.55 下只有 5.8px，纯噪音；
+   子卡徽章保留——它是展开入口，不能藏（藏了就必须先放大才能展开子卡）。 */
+.page-canvas .cv-lowzoom .cv-card-row > .cv-ref,
+.page-canvas .cv-lowzoom .cv-card-row > .cv-dec { display: none; }
+/* 同一档位里，右上角 ↗（20px 世界 → 11px 屏幕）已经点不中，纯占位；
+   子卡徽章保留但收成紧凑形态（56px 最小宽在这里等于白吃 30% 卡宽，
+   把标题挤成"上下文化…"）。宽度全还给标题。 */
+.page-canvas .cv-lowzoom .cv-open { display: none; }
+.page-canvas .cv-lowzoom .cv-card-row { padding-right: 0; }
+.page-canvas .cv-lowzoom .cv-card-row > .kid-badge {
+  min-width: 0;
+  min-height: 0;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+/* ==========================================================================
+   卡面唯一的正文：最近一条定论
+   ──────────────────────────────────────────────────────────────────────────
+   定论条目中位 38 字，卡面两行 36 字——**恰好装得下**。这是唯一一种在卡面
+   尺寸下能读完、且能回答"这条线决定了什么"的文本。
+   现状/背景不放：那是给模型续上下文的，不是给人做判断的。
+   ========================================================================== */
+.page-canvas .cv-dec-line {
+  margin-top: 5px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--cv-text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.page-canvas .cv-dec-line .cv-dec-id {
+  margin-right: 5px;
+  font-weight: 650;
+  color: #7fd6a1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 接续清单里的"出了什么事"标签：卡住的排最前，用红色，其余中性。
+   用户点开这一行，最先要知道的是坏消息。 */
+.cv-catchup-list .cu-kind {
+  flex: none;
+  min-width: 34px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 15px;
+  text-align: center;
+  color: var(--cv-text-3);
+  background: rgba(255, 255, 255, 0.06);
+}
+.cv-catchup-list .cu-kind[data-k="blocked"] { color: #f08a80; background: rgba(226, 105, 95, 0.16); }
+.cv-catchup-list .cu-kind[data-k="done"] { color: #7fd6a1; background: rgba(79, 192, 127, 0.14); }
+.cv-catchup-list .cu-kind[data-k="decided"] { color: #7fd6a1; background: rgba(79, 192, 127, 0.10); }
+
+/* 顶栏接续条里出现"卡住"时整体转红——这是唯一需要在三十秒内被看见的坏消息。 */
+.page-canvas .ps-catchup.is-alert { color: #f08a80; }
+.page-canvas .ps-catchup.is-alert b { color: #ffb3ab; }
+
+/* ==========================================================================
+   活跃区域（唯一随时间自己变的视觉维度）
+   ──────────────────────────────────────────────────────────────────────────
+   列表能说"这张卡 3 天没动"，但说不清"这个项目哪块在动、哪块死了"。
+   后者只能靠明度：最近 24h 动过的卡，左侧强调条亮起来、描边带一点蓝。
+   一屏扫过去，亮的那几处＝此刻在推进的地方。
+   只标"热"，不标"冷"——冷的是多数，标了等于全屏变灰。
+   ========================================================================== */
+.page-canvas .card-node[data-fresh="hot"]::before {
+  opacity: 1;
+  box-shadow: 0 0 8px rgba(91, 140, 255, 0.55);
+}
+.page-canvas .card-node[data-fresh="hot"] {
+  /* 底色抬亮才是"看得见"的那一档：原来只改 border-color（0.34 透明度），
+     在深色底上几乎看不出来——我截图确认过，等于没做。 */
+  background: #232c3a;
+  border-color: rgba(91, 140, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.16), 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.page-canvas .card-node[data-fresh="hot"] .tname { color: #fff; }
+/* 总览层里卡片没有底色差（块本身是色块），改用描边区分 */
+.page-canvas .card-node.lm[data-fresh="hot"] { border-color: rgba(91, 140, 255, 0.85); }
+
+
+/* ==========================================================================
+   全局视图（cv-overview）：块 + 名字
+   ──────────────────────────────────────────────────────────────────────────
+   lm 档是"232 张卡缩到 25%、字只有 3px"时的兜底，那里确实不能画字。
+   但全局视图是**装下多少就放大多少**——39 卡的项目落在 57%，块有 50~80px 高，
+   完全放得下一行名字。原来直接复用 lm，得到一张全是匿名矩形的图：
+   你只能看到"中间那块最大"，却不知道它是哪条线。**不能指认的全局图没有用。**
+   ========================================================================== */
+.page-canvas .cv-overview .card-node.lm {
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+}
+/* 全局视图里块"带名字"——但只在 zoom ≥ 0.5 时（见 canvas.js applyLODClasses）：
+   再小，名字就是噪点，还把块撑高、让整棵树装不下。 */
+.page-canvas .cv-overview.cv-ov-names .card-node.lm > .cv-card-row { display: flex; }
+.page-canvas .cv-overview .card-node.lm .tname {
+  font-size: max(11px, calc(9.5px / var(--z, 1)));
+  line-height: 1.25;
+  -webkit-line-clamp: 2;
+  color: var(--cv-text-1);
+  padding-right: 0;
+}
+/* 块里只留名字 + 状态点，其余一律不画（计数在 11px 屏幕上读不出来） */
+.page-canvas .cv-overview .card-node.lm .cv-ref,
+.page-canvas .cv-overview .card-node.lm .cv-dec,
+.page-canvas .cv-overview .card-node.lm .kid-badge,
+.page-canvas .cv-overview .card-node.lm .cv-open,
+.page-canvas .cv-overview .card-node.lm .cv-runchip { display: none; }
+
+/* 构建戳：极小、极暗，只在"怀疑加载了旧版"时用。 */
+.page-canvas .build-stamp {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  line-height: 15px;
+  color: var(--cv-text-3);
+  background: rgba(255, 255, 255, 0.05);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   卡面：这张卡最后一条对话
+   ──────────────────────────────────────────────────────────────────────────
+   卡片自带 session，所以"这张卡刚在说什么"是卡面上唯一会实时变、且能直接
+   支撑"要不要插手"判断的东西。比正文、比定论都优先。
+   ========================================================================== */
+.page-canvas .cv-msgline {
+  margin-top: 5px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--cv-text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.page-canvas .cv-msgline .cv-msg-who {
+  margin-right: 5px;
+  font-weight: 650;
+  color: #8fb0ff;
+}
+.page-canvas .cv-msgline[data-who="ai"] .cv-msg-who { color: #7fd6a1; }
+
+/* ==========================================================================
+   浮层：对话 + 就地回复
+   ──────────────────────────────────────────────────────────────────────────
+   卡片自带 session ⇒ 浮层显示这张卡的最近对话，并允许直接发一条。
+   正文（使命/现状/定论）不在这里——它不会变，看了也做不了什么。
+   ========================================================================== */
+.page-canvas .card-tooltip .tt-conv {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.page-canvas .card-tooltip .tt-line {
+  display: flex;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.page-canvas .card-tooltip .tt-tag {
+  flex: none;
+  width: 30px;
+  text-align: right;
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--cv-text-3);
+  padding-top: 1px;
+}
+.page-canvas .card-tooltip .tt-line[data-role="you"] .tt-tag { color: #8fb0ff; }
+.page-canvas .card-tooltip .tt-line[data-role="ai"] .tt-tag { color: #7fd6a1; }
+.page-canvas .card-tooltip .tt-line[data-role="tool"] .tt-tag { color: #c9a86a; }
+.page-canvas .card-tooltip .tt-text { color: var(--cv-text-2); word-break: break-word; }
+.page-canvas .card-tooltip .tt-line[data-role="you"] .tt-text { color: var(--cv-text-1); }
+.page-canvas .card-tooltip .tt-conv-empty { font-size: 11px; color: var(--cv-text-3); padding: 6px 0; }
+
+.page-canvas .card-tooltip .tt-reply {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.page-canvas .card-tooltip .tt-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #0f1319;
+  color: var(--cv-text-1);
+  font-size: 12px;
+  font-family: inherit;
+}
+.page-canvas .card-tooltip .tt-input:focus { outline: none; border-color: rgba(91, 140, 255, 0.6); }
+.page-canvas .card-tooltip .tt-send {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(91, 140, 255, 0.5);
+  background: rgba(91, 140, 255, 0.16);
+  color: #9dbcff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.page-canvas .card-tooltip .tt-send:disabled { opacity: 0.5; cursor: default; }
+
+/* ==========================================================================
+   卡片就地展开成"工作单元"
+   ──────────────────────────────────────────────────────────────────────────
+   卡片自带 session ⇒ 展开就在卡里显示这张卡的对话 + 输入框。
+   多张同时展开＝一屏多个对话，每个都能直接回。不需要第二个容器。
+   ========================================================================== */
+.page-canvas .cv-cell { display: none; }
+.page-canvas .card-node[data-open="1"] .cv-cell {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+.page-canvas .card-node[data-open="1"] { width: 420px !important; }
+.page-canvas .card-node[data-open="1"] .cv-msgline,
+.page-canvas .card-node[data-open="1"] .cv-dec-line { display: none; }
+
+.page-canvas .cv-cell-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.page-canvas .cv-cell-line { display: flex; gap: 6px; font-size: 11.5px; line-height: 1.55; }
+.page-canvas .cv-cell-tag {
+  flex: none; width: 30px; text-align: right;
+  font-size: 10px; font-weight: 650; color: var(--cv-text-3); padding-top: 1px;
+}
+.page-canvas .cv-cell-line[data-role="you"] .cv-cell-tag { color: #8fb0ff; }
+.page-canvas .cv-cell-line[data-role="ai"] .cv-cell-tag { color: #7fd6a1; }
+.page-canvas .cv-cell-line[data-role="tool"] .cv-cell-tag { color: #c9a86a; }
+.page-canvas .cv-cell-text { color: var(--cv-text-2); word-break: break-word; }
+.page-canvas .cv-cell-line[data-role="you"] .cv-cell-text { color: var(--cv-text-1); }
+.page-canvas .cv-cell-empty { font-size: 11px; color: var(--cv-text-3); padding: 8px 0; }
+
+.page-canvas .cv-cell-foot {
+  display: flex; gap: 6px; margin-top: 8px;
+}
+.page-canvas .cv-cell-input {
+  flex: 1; min-width: 0; height: 30px; padding: 0 9px;
+  border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #0f1319; color: var(--cv-text-1);
+  font-size: 12px; font-family: inherit;
+}
+.page-canvas .cv-cell-input:focus { outline: none; border-color: rgba(91, 140, 255, 0.6); }
+.page-canvas .cv-cell-send {
+  flex: none; height: 30px; padding: 0 13px; border-radius: 6px;
+  border: 1px solid rgba(91, 140, 255, 0.5); background: rgba(91, 140, 255, 0.16);
+  color: #9dbcff; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.page-canvas .cv-cell-send:disabled { opacity: 0.5; cursor: default; }
+
+/* 子卡徽章的悬停提示：只列名字，不铺正文 */
+.page-canvas .card-tooltip .tt-kid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.page-canvas .card-tooltip .tt-kid-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 11.5px;
+  color: var(--cv-text-2);
+}
+.page-canvas .card-tooltip .tt-kid-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-canvas .card-tooltip .tt-kid-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f5b544;
+}
+
+@property --cv-edge {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.page-canvas .card-node[data-live="running"] {
+  border-color: rgba(91, 140, 255, 0.22);
+}
+.page-canvas .card-node[data-live="running"] .tname { color: #cfe0ff; }
+.page-canvas .card-node[data-live="running"]::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--cv-edge),
+    rgba(91, 140, 255, 0) 0deg,
+    rgba(91, 140, 255, 0) 262deg,
+    rgba(91, 140, 255, 0.5) 316deg,
+    #cfe0ff 350deg,
+    rgba(91, 140, 255, 0) 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: cv-edge-flow 2.6s linear infinite;
+  pointer-events: none;
+}
+@keyframes cv-edge-flow {
+  to { --cv-edge: 360deg; }
+}
+/* 运行中那一行：换成"正在做什么"，蓝色标注"跑" */
+.page-canvas .cv-msgline[data-who="live"] { color: var(--cv-accent); }
+.page-canvas .cv-msgline[data-who="live"] .cv-msg-who {
+  color: #0b0d10;
+  background: var(--cv-accent);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 15px;
+}
+
+/* 顶栏"N 运行中" */
+.page-canvas .proj-stat .ps-item.is-live { color: #a9c1ff; }
+.page-canvas .proj-stat .ps-item.is-live b { color: #cfe0ff; }
+.page-canvas .ps-live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--cv-accent);
+  animation: cv-run-blink 1.2s ease-in-out infinite;
+  vertical-align: 1px;
+}
+
+/* ==========================================================================
+   [画布 2026-10-19 · 实时状况] 项目动态抽屉
+   ──────────────────────────────────────────────────────────────────────────
+   浮层，不挤压画布（这是被否过两次的教训：右栏常驻＝拿画布空间换重复信息）。
+   打开才出现，关闭后只留顶栏入口上的未读点。
+   ========================================================================== */
+.page-canvas .cv-drawer {
+  position: fixed;
+  top: 44px;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--cv-surface-1);
+  border-left: 1px solid var(--cv-line-2);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
+  transform: translateX(102%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 180ms var(--cv-ease), opacity 180ms var(--cv-ease);
+}
+.page-canvas .cv-drawer.is-open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.page-canvas .cv-drawer-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--cv-line-1);
+}
+.page-canvas .cv-drawer-title {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--cv-text-1);
+}
+.page-canvas .cv-drawer-close {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--cv-r-sm);
+  background: transparent;
+  color: var(--cv-text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.page-canvas .cv-drawer-close:hover { background: var(--cv-surface-3); color: var(--cv-text-1); }
+.page-canvas .cv-drawer-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 6px 16px;
+  scrollbar-width: thin;
+}
+.page-canvas .cv-act-sec {
+  padding: 12px 8px 5px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--cv-text-3);
+  text-transform: uppercase;
+}
+.page-canvas .cv-act-sec b { color: var(--cv-accent); }
+.page-canvas .cv-act-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--cv-r-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.page-canvas .cv-act-row:hover { background: var(--cv-surface-3); }
+.page-canvas .cv-act-row.is-live { background: var(--cv-accent-soft); }
+.page-canvas .cv-act-time {
+  flex: none;
+  width: 34px;
+  padding-top: 1px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--cv-text-3);
+}
+.page-canvas .cv-act-body { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.page-canvas .cv-act-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cv-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-canvas .cv-act-detail {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--cv-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.page-canvas .cv-act-row.is-live .cv-act-detail { color: #a9c1ff; }
+.page-canvas .cv-act-dot-live {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--cv-accent);
+  animation: cv-run-blink 1.2s ease-in-out infinite;
+}
+.page-canvas .cv-act-empty {
+  padding: 24px 12px;
+  font-size: 12px;
+  color: var(--cv-text-3);
+  text-align: center;
+}
+/* 顶栏入口上的未读点 */
+.page-canvas #activityBtn { position: relative; }
+.page-canvas #activityBtn .cv-act-dot {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--cv-warn);
+  color: #1a1204;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* 排队中（批量指令已提交、还没轮到跑）
+   ──────────────────────────────────────────────────────────────────────────
+   与 running 的区别只在"动/不动"：running 呼吸，queued 静态。
+   排队是"已经被接收、迟早会跑"，不是"没发生"——所以给一条橙色静态条，
+   而不是完全无标记（否则用户会重复下达）。 */
+.page-canvas .card-node[data-live="queued"] { border-color: rgba(245, 181, 68, 0.34); }
+.page-canvas .card-node[data-live="queued"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: var(--cv-warn);
+  opacity: 0.75;
+  pointer-events: none;
+}
+.page-canvas .card-node[data-live="queued"]:has(> .cv-runbar)::before { display: none; }
+.page-canvas .cv-msgline[data-who="queued"] { color: var(--cv-warn); }
+.page-canvas .cv-msgline[data-who="queued"] .cv-msg-who {
+  color: #1a1204;
+  background: var(--cv-warn);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 15px;
+}
+.page-canvas .cv-act-row.is-queued { background: rgba(245, 181, 68, 0.07); }
+.page-canvas .cv-act-dot-live.is-queued { background: var(--cv-warn); animation: none; }
+
+/* 多选操作条：主动作（下指令）要比"退出类"按钮显眼 */
+.page-canvas .cv-selbar-btn.is-primary {
+  color: #dbe6ff;
+  background: var(--cv-accent-soft);
+}
+.page-canvas .cv-selbar-btn.is-primary:hover { background: rgba(91, 140, 255, 0.24); color: #fff; }
+
+/* 全局视图图例（常驻到退出）
+   ──────────────────────────────────────────────────────────────────────────
+   全局视图里没有任何文字，图例是唯一能让人读懂"面积/颜色/亮度"的东西。 */
+.page-canvas .cv-ovlegend {
+  position: fixed;
+  left: 56px;
+  bottom: 14px;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--cv-r-md);
+  border: 1px solid var(--cv-line-2);
+  background: rgba(17, 20, 26, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.page-canvas .cv-ovl-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  color: var(--cv-text-2);
+  white-space: nowrap;
+}
+.page-canvas .cv-ovl-area {
+  width: 14px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--cv-surface-4);
+  border: 1px solid var(--cv-line-3);
+}
+.page-canvas .cv-ovl-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 4px;
+  margin-right: 4px;
+}
+.page-canvas .cv-ovl-dot[data-k="warn"] { background: var(--cv-warn); }
+.page-canvas .cv-ovl-dot[data-k="live"] { background: var(--cv-accent); animation: cv-run-blink 1.2s ease-in-out infinite; }
+.page-canvas .cv-ovl-bar {
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, rgba(91,140,255,0.9), rgba(91,140,255,0.2));
+}
+
+.page-canvas .cv-act-n {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--cv-surface-4);
+  color: var(--cv-text-3);
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+/* "多久没动"（仅 >3 天出现）：一个灰数字，不与待裁定/运行中抢颜色。
+   l0 及更低档不显示——卡太窄，多一个数字会把标题挤成残句。 */
+.page-canvas .cv-stale {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--cv-surface-3);
+  color: var(--cv-text-3);
+  font-size: 10px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.page-canvas .card-node.l0 > .cv-card-row > .cv-stale,
+.page-canvas .card-node.lm > .cv-card-row > .cv-stale { display: none; }
+
+
+.page-canvas .cv-more-wrap { position: relative; display: flex; align-items: center; }
+.page-canvas .cv-more-menu {
+  display: none;
+  position: absolute;
+  top: 38px;
+  right: 0;
+  min-width: 148px;
+  flex-direction: column;
+  padding: 4px;
+  border-radius: var(--cv-r-md);
+  border: 1px solid var(--cv-line-2);
+  background: var(--cv-surface-2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  z-index: 70;
+}
+.page-canvas .cv-more-wrap.is-open .cv-more-menu { display: flex; }
+.page-canvas .cv-mi-btn {
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--cv-r-sm);
+  background: transparent;
+  color: var(--cv-text-2);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.page-canvas .cv-mi-btn:hover { background: var(--cv-surface-3); color: var(--cv-text-1); }
+.page-canvas .cv-mi-btn.is-on { color: var(--cv-accent); }
+
+.page-canvas .card-tooltip .tt-meta { position: relative; padding-right: 26px; }
+.page-canvas .tt-pin {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cv-text-3);
+  cursor: pointer;
+}
+.page-canvas .tt-pin:hover { background: var(--cv-surface-3); color: var(--cv-accent); }
+.page-canvas .tt-pin svg { width: 13px; height: 13px; }
+.page-canvas .card-tooltip .tt-text { white-space: pre-wrap; }
+
+.cv-dock {
+  position: fixed;
+  top: 48px;
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  display: none;
+  flex-direction: column;
+  background: var(--cv-surface-0);
+  border-left: 1px solid var(--cv-line-2);
+  z-index: 50;
+}
+body.has-dock .cv-dock { display: flex; }
+body.has-dock #viewport { right: 360px; }
+
+.cv-dock-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cv-surface-1);
+  border-bottom: 1px solid var(--cv-line-1);
+}
+.cv-dock-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--cv-line-1);
+}
+.cv-dock-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--cv-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cv-dock-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cv-text-3);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.cv-dock-close:hover { background: var(--cv-surface-3); color: var(--cv-text-1); }
+.cv-dock-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 10px;
+  scrollbar-width: thin;
+}
+.cv-dock-body .tt-line { display: flex; gap: 6px; font-size: 11.5px; line-height: 1.55; }
+.cv-dock-body .tt-tag { flex: none; width: 26px; color: var(--cv-text-3); font-size: 10px; }
+.cv-dock-body .tt-line[data-role="you"] .tt-tag { color: #8fb0ff; }
+.cv-dock-body .tt-line[data-role="ai"] .tt-tag { color: #7fd6a1; }
+.cv-dock-body .tt-text { color: var(--cv-text-2); white-space: pre-wrap; word-break: break-word; }
+.cv-dock-body .tt-line[data-role="you"] .tt-text { color: var(--cv-text-1); }
+.cv-dock-body .tt-conv-empty { font-size: 11px; color: var(--cv-text-3); padding: 6px 0; }
+.cv-dock-reply {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--cv-line-1);
+}
+.cv-dock-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--cv-line-2);
+  border-radius: 6px;
+  background: var(--cv-surface-2);
+  color: var(--cv-text-1);
+  font-size: 12px;
+  outline: none;
+}
+.cv-dock-input:focus { border-color: var(--cv-accent-line); }
+.cv-dock-send {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--cv-accent-soft);
+  color: #dbe6ff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cv-dock-send:hover { background: rgba(91, 140, 255, 0.24); }
+
+.page-canvas .card-node[data-unread="1"] .cv-msgline {
+  color: var(--cv-text-1);
+  box-shadow: inset 2px 0 0 var(--cv-accent);
+  padding-left: 7px;
+}
+.page-canvas .card-node[data-unread="1"] .cv-msgline .cv-msg-who { color: #cfe0ff; }

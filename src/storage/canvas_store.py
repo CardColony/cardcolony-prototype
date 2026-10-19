@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 import math
 from datetime import datetime
@@ -82,25 +83,383 @@ def _canvas_path(work_id: str) -> Path:
 SUMMARY_MAX = 120
 
 
-def _conclusion_summary(status_block: str) -> str:
-    """取现状块（status_block 列）第一行非空文字，超 120 字截断加省略号。
+#: 新建卡时播种的模板占位文案（现状块里出现这些片段 ⇒ 视为"还没写"）。
+#: 与 card_draft._PLACEHOLDER_MARKERS 同源语义，但本模块不 import api 层
+#: （存储不依赖上层），故各自持有——两处都只做"是否占位"的机械判断。
+_PLACEHOLDER_MARKERS = (
+    "（当前状况快照", "(当前状况快照",
+    "做到哪、什么状态、卡在哪",
+)
 
-    与前端 getSummary 的算法逐字一致（先按行 split、取第一个非空 trim 行、超长截断）。
-    现状块为空/全空白 → 返回空字符串（不写占位文字）。
-    [卡片信息结构改造 S2-11/G-7] canvas.json 字段名 conclusion_summary **不变**
-    （前端快路径依赖它）。
-    [卡片存储迁移 SQLite] 入参从「正文全文」改为「现状块列内容」——库内已是独立列，
-    不再需要拆块。
+#: **元信息行**：写的是"这张卡的记录格式"，不是内容。
+#: 真实数据里每张卡的现状块第一行都是「状态：现状实测（2026-10-03）…依据：xxx.html(258行)」，
+#: 原样当摘要 → 画布上每张卡都写着"状态：现状实测…"，用户扫一眼什么也读不到。
+#: 这类行一律跳过，继续找有信息量的正文。
+_META_LINE_PREFIX = (
+    "状态：", "状态:", "依据：", "依据:", "说明：", "说明:",
+    "本卡", "本文", "范围：", "范围:", "信源：", "信源:",
+    "立项卡", "建卡于", "父卡：", "父卡:",
+)
+
+
+def _strip_md_prefix(line: str) -> str:
+    """剥掉行首的 Markdown 结构标记：标题井号、引用、列表符、加粗包裹。
+
+    为什么必须剥：真实项目的现状块第一行常常是 `# 子项目` / `- 完成 X`，
+    原样当摘要会让画布上每张卡都写着"# 子项目"——既无信息量又像半成品。
     """
-    first_line = ""
-    for line in (status_block or "").split("\n"):
-        s = line.strip()
-        if s:
-            first_line = s
-            break
+    t = line.strip()
+    t = re.sub(r"^#{1,6}\s*", "", t)          # # 标题
+    t = re.sub(r"^>\s*", "", t)               # > 引用
+    t = re.sub(r"^([-*+]\s+|\d+\.\s+)", "", t)  # - 列表 / 1. 有序
+    t = t.replace("**", "").replace("__", "")  # 加粗标记
+    return t.strip()
+
+
+def _conclusion_summary(status_block: str, title: str = "") -> str:
+    """取现状块（status_block 列）第一行**有信息量的正文**，超 120 字截断。
+
+    [画布商业化 2026-10-17] 三处收紧（原实现取第一个非空行原样返回）：
+      ① 剥 Markdown 前缀（`# 子项目` → `子项目`）——否则画布上一片"# xxx"；
+      ② 只有标题符号、剥完是空的行**跳过**，继续找下一行；
+      ③ 模板占位文案视为"还没写"→ 返回空（卡面不显示摘要，而不是显示占位说明）；
+      ④ **与卡标题相同的行跳过**——真实数据里现状块第一行常是 `# <卡标题>`，
+         剥完井号后与标题逐字相同，卡面就成了"标题下面再写一遍标题"。
+    [卡片信息结构改造 S2-11/G-7] canvas.json 字段名 conclusion_summary **不变**。
+    """
+    t_norm = (title or "").strip()
+    lines = (status_block or "").split("\n")
+    # 两轮扫描：先取**正文行**（不以 # 开头），没有再退回标题行。
+    # 真实现状块常是 `# 卡名` → `## 小节` → 正文，只取第一个非空行会永远拿到标题。
+    for want_heading in (False, True):
+        for line in lines:
+            raw = line.strip()
+            if not raw:
+                continue
+            if any(m in raw for m in _PLACEHOLDER_MARKERS):
+                return ""
+            is_heading = raw.startswith("#")
+            if is_heading != want_heading:
+                continue
+            s = _strip_md_prefix(raw)
+            if not s:
+                continue
+            if t_norm and s == t_norm:
+                continue
+            if s.startswith(_META_LINE_PREFIX):
+                continue   # 元信息行（"状态：现状实测…""依据：xxx"）不是内容
+            # 纯小节标记（"【思维链收口】""【待裁定】"）是结构，不是内容
+            if re.fullmatch(r"【[^】]{1,12}】", s):
+                continue
+            # 自述"无结论"的元信息
+            if "无结论" in s or "未结论" in s:
+                continue
+            # 建卡记录（"2026-10-07 用户令「建一张子卡」…"）是历史，不是这段在讨论什么
+            if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+                continue
+            # 字段行（"计划名: xxx""终态: 已收口""目标: xxx"）——思维链收口的元数据
+            if re.match(r"^(?:计划名|终态|目标|轮次|进度|下一步|耗时|模型|席位)\s*[:：]", s):
+                continue
+            # 空壳（"边界规则：" 后面什么都没有）
+            if s.endswith(("：", ":")):
+                continue
+            # 行尾元信息残留（"…。父卡 card_001。"）
+            s = re.sub(r"[。;；]?\s*父卡\s*card_\d{3}[。.]?$", "", s).strip()
+            if raw.startswith("|") or set(s) <= set("-: "):
+                continue   # Markdown 表格行/分隔行（"| 层 | 载体 | 脚本 |"）不是结论
+            return (s[:SUMMARY_MAX] + "…") if len(s) > SUMMARY_MAX else s
+    return ""
     if len(first_line) > SUMMARY_MAX:
         return first_line[:SUMMARY_MAX] + "…"
     return first_line
+
+
+#: 「等用户裁定」的标记。这个项目的工作方式是：模型提议一律标【待裁定】，
+#: 用户点头才算数（见 cards 表 rulings 列与各卡正文）。
+#: ⇒ 画布上**最该突出的是"哪里在等你裁定"**，不是"哪张卡拖得好看"。
+_PENDING_RE = re.compile(r"待裁定|【待定】|待确认")
+
+#: 结论文本：`结论：xxx` / `**结论**：xxx` / `- 结论: xxx` / `裁定：xxx`
+_CONCLUSION_RE = re.compile(
+    r"^[\s>*\-]*(?:\*\*)?(?:结论|裁定)(?:\*\*)?\s*[:：]\s*(.+)$",
+    re.MULTILINE,
+)
+
+
+#: 单条待裁定文本的展示上限（卡片上只有两行位置，超了没意义）
+PENDING_ITEM_MAX = 72
+
+
+_HEADING_RE = re.compile(r"^(#{2,6})\s+(.*)$")
+
+#: 小节内以这些字符开头的行是**说明**，不是待办项
+_NOTE_PREFIX = ("（", "(", "〔", "【注", "注：", "注:", "说明", ">", "上述", "以上", "本节")
+
+
+def _extract_pending_items(status_block: str, limit: int = 99) -> list[dict[str, str]]:
+    """从「待裁定」小节里取出**条目**，返回 [{section, text}]。
+
+    [画布 2026-10-18 · 宁可留空，不猜] 前一版按"行内含待裁定"猜，实测在真实卡上
+    三处全错：把卡的定义句（"承载「工具层」的实读事实与待裁定："）当成待办、
+    把说明句（"凡标【待裁定】者为模型提议"）当成待办、把表格行当成待办。
+    猜错比留空更糟——用户会误信。
+
+    真实数据的结构（39 张卡逐张实读）是用户**自己划的小节**：
+        ## 四、待裁定（须用户拍板，非本卡结论）
+        1. 卡的身份是否改为与位置解耦的稳定 id。
+        2. `card_...` 的...
+        ### 11.6 待裁定（默认即执行，不阻塞）
+        1. 拼接顺序与分隔 → 默认「分析在前、回执在后」。
+
+    所以按"小节"取：小节标题含「待裁定」→ 该节下的列表项/编号项就是待办；
+    节结束于下一个同级或更高级标题。另外补一层：行内含【待裁定】标记的列表项
+    （8 张卡用的是行内标记），但要排除说明句。
+    """
+    lines = (status_block or "").split("\n")
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def push(section: str, text: str) -> bool:
+        t = text.strip(" ：:，,。;；-—·")
+        if len(t) < 4:
+            return False
+        # 兜底闸：任何以日期开头的追记/表格行都不算待办（实测它们会从多条路径漏进来）
+        if re.match(r"^\d{4}-\d{2}-\d{2}", t) or t.startswith("|"):
+            return False
+        key = t[:24]
+        if key in seen:
+            return False
+        seen.add(key)
+        items.append({"section": section, "text": t[:PENDING_ITEM_MAX] + ("…" if len(t) > PENDING_ITEM_MAX else "")})
+        return len(items) >= limit
+
+    # ── 第一轮：按「待裁定」小节取 ──
+    section = ""
+    level = 0
+    inside = False
+    for raw in lines:
+        st = raw.strip()
+        if not st:
+            continue
+        m = _HEADING_RE.match(st)
+        if m:
+            h_level = len(m.group(1))
+            h_text = _strip_md_prefix(st)
+            # ⚠ 必须是「以待裁定**为主**」的小节，不是"标题里提到待裁定"。
+            # 实测踩过：`## 六、用户提出：回复与上一句脱节（诊断记录 · 待裁定 · 归属待定）`
+            # 标题里含"待裁定"，把下面整段诊断记录都算成了待办（一张卡报出 99 条）。
+            # 判据：去掉编号后**以「待裁定」开头**（含【待裁定】/〔待裁定〕形式）。
+            h_core = re.sub(r"^[\d一二三四五六七八九十]+(?:[.、．]\d+)*[.、．]?\s*", "", h_text).strip()
+            is_pending_heading = bool(re.match(r"^[【\[]?[〔(]?待裁定", h_core))
+            if is_pending_heading:
+                inside, level, section = True, h_level, h_text
+            elif inside and h_level <= level:
+                inside = False
+            continue
+        if not inside:
+            continue
+        # ⚠ 先剥掉列表符再判类型：`- （新增，见 §七）Q1…` 以 "-" 开头，
+        # 直接 startswith("（") 判不出来，会被当成条目（实测漏进来 10 条）。
+        bare = re.sub(r"^(?:[-*+]\s+|\d+[.、]\s+)", "", st).strip()
+        if bare.startswith(_NOTE_PREFIX):
+            continue
+        if bare.startswith("|"):          # Markdown 表格行
+            continue
+        if re.match(r"^\d{4}-\d{2}-\d{2}", bare):   # 日期开头的追记
+            continue
+        is_item = bool(re.match(r"^(?:[-*+]\s+|\d+[.、]\s+)", st))
+        text = _strip_md_prefix(st)
+        text = re.sub(r"[【\[]\s*待裁定\s*[】\]]", "", text)
+        if not is_item and len(text) > 90:
+            continue          # 小节里的长叙述不是条目
+        if push(section, text) :
+            return items
+
+    # ── 第二轮：行内【待裁定】标记（排除说明句）──
+    for raw in lines:
+        st = raw.strip()
+        if "【待裁定】" not in st:
+            continue
+        if st.startswith("#"):
+            continue
+        if re.search(r"(?:凡|均|一律|都)\s*标.{0,8}待裁定|待裁定\s*者|标【待裁定】", st):
+            continue
+        if st.startswith("|"):
+            continue
+        text = _strip_md_prefix(st)
+        text = re.sub(r"[【\[]\s*待裁定\s*[】\]]", "", text).strip(" ：:，,。")
+        if push("（行内标记）", text):
+            return items
+
+    return items
+
+
+#: 定论条目语法（card_store.NEW_CARD_SKELETON 定义）：`D01【裁定】内容（日期·依据）`。
+#: 这是**系统自己规定的结论格式**，不是我从自由文本里猜的：
+#:   使命 = 立项定稿 / 现状 = 覆盖写快照 / 定论 = 只追加的决定
+#: 卡片对外的唯一接口就是这三块，其中"想清楚了什么"全部落在定论里。
+#: ⚠ 骨架里的示例行 `D01【裁定】……（日期·依据）` **不是定论**——它是模板占位。
+#: 用 `(?!…)` 把以省略号开头的行排除掉，否则每张新建卡一出生就算"有 1 条定论"，
+#: 画布上会显示 `定1`、收口闸也会被它骗过去（实测踩过）。
+_DECISION_RE = re.compile(r"^D(\d{2})【(裁定|决定|收敛)】\s*(?!…|\.\.\.)(.+?)\s*$", re.M)
+
+
+def _last_message(work_id: str, card_id: str) -> dict[str, str] | None:
+    """这张卡会话里的**最后一条消息**（谁说的、说了什么、什么时候）。
+
+    [画布 2026-10-19 · 用户令] "把实时最新更新的对话信息状态直接拉到卡片上"。
+    卡片本身就是对话单元（每张卡自带 session），所以卡面最该显示的不是正文，
+    而是**这张卡刚刚在说什么**——那是唯一会实时变、且能让人立刻判断"要不要插手"的东西。
+
+    直接读 session 文件取最后一块，不走 session_facade.read（它是 async，
+    而投影在同步读事务里跑）。v1 老会话跳过（本仓已无存量）。
+    """
+    try:
+        from . import session_facade as _sf
+        path = _sf._session_path(work_id, card_id)
+        if not path.exists():
+            return None
+        text = path.read_text(encoding="utf-8")
+        if _sf._detect_format(text) == 1:
+            return None
+        blocks = _sf._parse_v2(text)["blocks"]
+        if not blocks:
+            return None
+        # 从后往前找**第一条真正的对话消息**：跳过工具帧（内容是参数 JSON，
+        # 卡面上显示出来就是 `tool {"card_id": "card_006", ...}` 这种噪音）
+        # 和空消息。卡面要的是"这张卡刚说了什么"，不是"它刚调了什么工具"。
+        for b in reversed(blocks):
+            actor = str(b.get("actor") or "")
+            content = str(b.get("content") or "").strip()
+            if not content or actor not in ("human", "assistant"):
+                continue
+            if content.startswith("{") and content.rstrip().endswith("}"):
+                continue          # 参数 JSON，不是人话
+            return {
+                "actor": actor,
+                "text": content[:220],
+                "ts": str(b.get("ts") or ""),
+                "seq": str(b.get("seq") if b.get("seq") is not None else ""),
+            }
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+#: 活动流噪音过滤（实测 381 行历史里两类占 182 条）：
+#:   [权限刷新] perms → v4   批量刷权限，不是工作
+#:   [T7存量迁移] 线索 …      一次性迁移
+#: 真正有信息量的是"卡片创建""由「X」对话编辑正文"。
+_ACTIVITY_NOISE = ("%[权限刷新]%", "%[T7存量迁移]%")
+
+
+def recent_activity(work_id: str, limit: int = 40) -> list[dict[str, str]]:
+    """这个 work 最近发生的**工作事件**（活动流 / 接续提示的唯一数据源）。
+
+    [画布 2026-10-19] 抽成公开函数：投影（canvas.json）与实时脉搏（/pulse）
+    都要它。两处各写一遍正则，就会在"哪天改了过滤规则"时分叉——一处滤掉噪音、
+    另一处把噪音当活动播报，用户看到的是"权限刷新了 150 次"。
+    """
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        return [dict(r) for r in conn.execute(
+            # INNER JOIN：卡已删除的历史事件不显示（实测有 6 条指向已删卡，
+            # 卡片名只能回退成 card_079，读起来像乱码）
+            "SELECT h.card_id, h.ts, h.text, c.title "
+            "FROM card_history h JOIN cards c ON c.card_id = h.card_id "
+            "WHERE h.text NOT LIKE ? AND h.text NOT LIKE ? "
+            "ORDER BY h.ts DESC LIMIT ?",
+            (*_ACTIVITY_NOISE, int(limit)),
+        )]
+
+    out: list[dict[str, str]] = []
+    for e in (card_db.read_sync(work_id, _fn, []) or []):
+        txt = str(e.get("text") or "")
+        # 历史行格式固定：`- [2026-10-18T11:27:01.576270+08:00] 卡片创建`
+        m = re.match(r"^\s*-\s*\[[^\]]+\]\s*(.+)$", txt)
+        detail = (m.group(1) if m else txt).strip()
+        out.append({
+            "card_id": e.get("card_id") or "",
+            "title": e.get("title") or e.get("card_id") or "",
+            "ts": e.get("ts") or "",
+            "detail": detail[:80],
+        })
+    return out
+
+
+def _parse_decisions(status_block: str) -> list[dict[str, str]]:
+    """抽出一张卡的定论条目（最多保留最近 20 条）。
+
+    [画布 2026-10-19] 之前画布上那段"结论"是拿正则从**自由文本**里抠 `结论:` 行，
+    39 张卡只抠到 5 张，且抠出来的是现状块开头的一句话——那不是结论。
+    定论不同：它是系统规范里明确规定的、只追加的决定条目，天生短、自包含。
+    """
+    out: list[dict[str, str]] = []
+    for m in _DECISION_RE.finditer(status_block or ""):
+        out.append({"id": f"D{m.group(1)}", "kind": m.group(2), "text": m.group(3).strip()})
+    return out[-20:]
+
+
+def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str, str]:
+    """从卡片内容推断「这张卡现在是什么工作状态」，返回 (state, pending_count, conclusion)。
+
+    [画布 2026-10-18 · 从"白板"改回"工作台"] 卡片上原本显示的是现状块第一行
+    （"状态：现状实测（2026-10-03）…依据：templates/index.html(258行)…"），
+    那是给模型看的记录格式，不是给人看的结论。用户扫一眼画布，看不出
+    哪张卡有判断、哪张卡在等他、哪张卡还没动。
+
+    四态（按"用户要不要行动"排序）：
+      pending    含【待裁定】——**用户必须亲自处理**，画布要醒目
+      concluded  有「结论：」——这张卡想清楚了，可以引用
+      discussing 有内容但没结论——还在讨论
+      empty      现状块为空——还没开始
+    """
+    sb = status_block or ""
+    if not sb.strip():
+        return "empty", 0, ""
+
+    items = _extract_pending_items(sb)
+    pending = len(items)
+    # explicit＝正文里**显式写了**「结论：」——只有这种才算"想清楚了"。
+    # 摘要（第一行正文）只是"这张卡在讲什么"，不能当成结论，否则每张有字的卡
+    # 都会标成"已结论"，状态就失去意义。
+    # 显式「结论：」才算"想清楚了"。但真实数据里有一批空壳：
+    #   "汇总："（只有冒号）、"全部内容为【提议】，无结论"（这是元信息）。
+    # 空壳比留空更糟——用户会以为这张卡有结论。故加两条硬过滤。
+    explicit = ""
+    for m in _CONCLUSION_RE.finditer(sb):
+        cand = m.group(1).strip().replace("**", "").replace("`", "").strip(" ：:，,。")
+        if len(cand) < 8:
+            continue                     # "汇总：" 这类空壳
+        if "无结论" in cand or "未结论" in cand:
+            continue                     # "全部内容为提议，无结论"
+        if cand.startswith(_META_LINE_PREFIX):
+            continue
+        explicit = cand
+        break
+    text = explicit or _conclusion_summary(sb, title)
+    # [画布 2026-10-19] **这段文字有两种来源，必须区分开**：
+    #   explicit → 卡里真有「结论：」段落，这是"想清楚了什么"
+    #   fallback → 没有结论，取现状块第一行正文，这只是"这张卡在讲什么"
+    # 两者原来塞进同一个字段、在卡面上长得一模一样，用户直接问"这段文字是什么信息"。
+    # 现在把来源一起带出去，前端分别标注（结论 / 现状），读者才认得出来。
+    kind = "explicit" if explicit else ("fallback" if text else "")
+
+    if pending:
+        return "pending", pending, text, kind
+    if explicit:
+        return "concluded", 0, text, kind
+    return "discussing", 0, text, kind
+
+
+#: canvas.json 投影结构版本。**加/删/改投影字段、以及任何改变字段内容的算法，必须 +1**。
+#: 踩过的坑：改了待裁定提取规则但没升版本 ⇒ 读到旧缓存，后端算出 100 条、界面显示 81 条。
+#:
+#: 为什么必须有这个版本号：canvas.json 是缓存，``load()`` 命中就直接返回，
+#: 从不比对结构。实测缺口——给投影加了 ``state`` / ``updated_at`` 之后，
+#: 存量 work 的旧 canvas.json 里没有这两个键，``load()`` 原样返回 ⇒ 画布上
+#: 「已完成」徽标与更新时间**永远不出现**，且没有任何报错。版本号让
+#: "缓存是旧结构的"这件事变成可判定的事实，命中时自动重建。
+CANVAS_SCHEMA_VERSION = 17
 
 
 def rebuild(work_id: str) -> dict[str, Any]:
@@ -129,24 +488,82 @@ def rebuild(work_id: str) -> dict[str, Any]:
         # [依赖关联线 2026-10-16] 画布本期只用**通信线**：原 relations 列已改名
         # links（新线 relations 不进画布——用户裁定「画布展示本次不做」）。
         return [dict(r) for r in conn.execute(
-            "SELECT card_id, title, card_type, parent, created_at,"
-            " links, status_block FROM cards ORDER BY card_id"
+            "SELECT card_id, title, card_type, parent, created_at, updated_at, state,"
+            " links, status_block, rulings,"
+            # [画布 2026-10-18 · 自动模式可视化] 这五列决定"AI 正在怎么用这套系统"：
+            # auto_mode＝是否自动推进；goal_state＝跑/停/成；goal_rounds＝第几轮；
+            # toolcard_step/round＝当前步骤。真实项目里目前全空（自动模式一次没跑过），
+            # 但字段在、机制在，画布必须先有表达，否则这个核心能力永远不可见。
+            " auto_mode, goal_state, goal_rounds, toolcard_step, toolcard_round"
+            " FROM cards ORDER BY card_id"
         )]
 
     rows = card_db.read_sync(work_id, _fn, []) or []
+
+    # ── 最近活动（活动流的数据源）──
+    # [画布 2026-10-19] 实现抽到 recent_activity()：/pulse 实时口与投影共用同一份，
+    # 避免两处过滤规则分叉（详见函数注释）。
+    recent_events = recent_activity(work_id, 40)
+
+    # [画布 2026-10-18 · 逻辑关系] 卡片之间的真实关系不在 relations/links 列里
+    # （实测这两列全空），而在**正文**里：用户写卡时会引用邻卡
+    # （"card_002「上下文记忆系统」：上下文由什么组成…"）。全库实测 115 条引用边，
+    # card_002 被 11 张卡引用——它是这个项目的地基。
+    # 这里先算「被引用次数」随投影下发：卡片上标一个 ←11，一眼看出哪几张是核心。
+    # （全部 115 条线同时画出来是一团乱麻，故线只在悬停/选中时显示。）
+    _ref_counter: dict[str, int] = {}
+    for _r in rows:
+        for _m in set(re.findall(r"card_\d{3}", _r["status_block"] or "")):
+            if _m != _r["card_id"]:
+                _ref_counter[_m] = _ref_counter.get(_m, 0) + 1
+
     cards: list[dict[str, Any]] = []
     links: list[dict[str, Any]] = []
     for row in rows:
         card_id = row["card_id"]
+        # 定论条目：一张卡解析一次，下面 count 与 last 共用
+        # 定论可能落在两个字段里：老卡把整篇正文塞进 status_block（含 ## 定论 段），
+        # 新卡走三列模型，定论在独立的 rulings 列。两处都扫，否则换一种写法就看不见。
+        _decisions = _parse_decisions(
+            (row["status_block"] or "") + "\n" + (row["rulings"] or ""))
         cards.append({
             "card_id": card_id,
             "title": row["title"] or "",
             "card_type": row["card_type"] or "线索",
             "parent": row["parent"] or "",
             "created_at": row["created_at"] or "",
+            # [画布商业化 2026-10-17] 状态与更新时间随画布一次到手：
+            #   状态用于卡片视觉分层（已完成/进行中），更新时间用于卡面底部元信息。
+            #   两者都是纯增量字段——旧前端不读即不受影响。
+            "state": row["state"] or "",
+            "updated_at": row["updated_at"] or "",
             # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
             # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
-            "conclusion_summary": _conclusion_summary(row["status_block"] or ""),
+            "conclusion_summary": _conclusion_summary(row["status_block"] or "", row["title"] or ""),
+            # [画布 2026-10-18 · 工作台] 工作状态三件套：状态 / 待裁定数 / 结论。
+            # 卡片按 work_state 上色与排序，顶栏据此算项目概览。
+            **dict(zip(("work_state", "pending_count", "conclusion", "conclusion_kind"),
+                       _card_work_state(row["status_block"] or "", row["title"] or ""))),
+            # [画布 2026-10-19] 定论：系统规范里的"决定"条目。
+            # 卡面只显示**条数**（一个完整、可比较的事实：9 条＝这条线已经收敛，
+            # 0 条＝还在打转），条目正文给浮层——那里有空间把它读完。
+            # 最后一条对话消息：卡面实时显示"这张卡刚在说什么"
+            "last_msg": _last_message(work_id, card_id),
+            "decision_count": len(_decisions),
+            "last_decision": (_decisions[-1] if _decisions else None),
+            # 被引用次数：这个项目里"谁被最多卡引用"＝谁是地基
+            "ref_count": _ref_counter.get(card_id, 0),
+            # 待裁定**条目**（不是数字）：卡片上直接列出"在等你的那几件事"
+            "pending_items": _extract_pending_items(row["status_block"] or ""),
+            # 规模：现状块字数。3000 字和 40000 字的工作量差一个数量级，
+            # 它决定"这张卡要不要现在碰"，是用户排优先级的关键输入。
+            "content_len": len(row["status_block"] or ""),
+            # ── 自动模式活动（画布上"AI 正在干活"的唯一表达）──
+            "auto_mode": bool(row.get("auto_mode")),
+            "goal_state": row.get("goal_state") or "",
+            "goal_rounds": int(row.get("goal_rounds") or 0),
+            "toolcard_step": row.get("toolcard_step") or "",
+            "toolcard_round": int(row.get("toolcard_round") or 0),
         })
         try:
             rels = json.loads(row["links"] or "[]")
@@ -167,7 +584,9 @@ def rebuild(work_id: str) -> dict[str, Any]:
     result = {
         "project_name": PROJECT_NAME,
         "work_id": work_id,
+        "schema_version": CANVAS_SCHEMA_VERSION,
         "created_at": created_at,
+        "recent_events": recent_events,
         "cards": cards,
         "links": links,
     }
@@ -192,6 +611,12 @@ def load(work_id: str) -> dict[str, Any]:
     try:
         data = json.loads(canvas_path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
+            # 结构版本不符 ⇒ 旧缓存，重建（不是"缺字段就算了"——缺字段会让前端
+            # 静默降级，比报错更难发现）。
+            if int(data.get("schema_version") or 0) != CANVAS_SCHEMA_VERSION:
+                logger.info("canvas.json 结构版本过期（%s≠%s），触发重建 work=%s",
+                            data.get("schema_version"), CANVAS_SCHEMA_VERSION, work_id)
+                return rebuild(work_id)
             return data
         logger.warning("canvas.json 内容非法，触发重建 work=%s", work_id)
     except FileNotFoundError:

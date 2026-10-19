@@ -315,6 +315,12 @@ def test_t6_touched_modules_bumped():
     ★ [＋按钮删除 2026-10-17] 命令面不存在 ⇒ input-bar 的 `+` 按钮整件删（死件纪律，
       不取原文 :741 disabled 分支）：input-bar 1→2、workspace 51→52、main_chat 1.8→1.9、
       style 38→39（.flow-input-add 死样式同删）。
+    ★ [画布 2026-10-19 · 实时状况/并行操作] canvas 62→72、main 62.0→72.0：
+      新增 /pulse 轮询、卡面运行态、项目动态抽屉、多选批量下指令与排队态、
+      全局视图图例与适配修正。canvas.css 19→20（同步升）。
+    ★ [画布 2026-10-19 · 实时状况/并行操作] canvas 62→72、main 62.0→72.0：
+      新增 /pulse 轮询、卡面运行态、项目动态抽屉、多选批量下指令与排队态、
+      全局视图图例与适配修正。canvas.css 19→20（同步升）。
     ★ [自动模式回灌 2026-10-17] autoToggle 开关＋insp 标记：workspace 52→53、
       main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 段）；
       input-bar 本轮**未涉改**（按钮在 card.html 的 #flowInputLeft 里，由 input-bar
@@ -322,8 +328,8 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        "stream.js": "42", "workspace.js": "56", "canvas.js": "46",
-        "assembler.js": "35", "style.css": "40", "main.js": "46.0",
+        "stream.js": "42", "workspace.js": "56", "canvas.js": "72",
+        "assembler.js": "35", "style.css": "45", "main.js": "72.0",
         "main_chat.js": "2.3",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "4", "queue-dock.js": "1", "queue-store.js": "1",
