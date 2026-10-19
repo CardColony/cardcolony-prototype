@@ -7,13 +7,12 @@
     providers  —— 供应商父层（端点/密钥/协议，去重只存一次）
     models     —— 模型子层（挂在供应商下，纯模型无角色语义）
     bindings   —— 角色→模型绑定（key 全部来自 config/roles.json，不手写角色）
-    system     —— 默认模型 / 降级模型
+    system     —— 默认模型
     simple     —— 三席审议总开关
 
 编译层：把三层结构编译成网关（src/model_gateway/gateway.py）认识的平铺 config：
     - provider 继承展开（供应商 protocol → 编译条目的 provider 字段）
     - 登记 vendor（供应商名）——供 llm_openai_compat 适配器判定 thinking 方言
-    - fallback 复制（system.fallback_model → config["models"]["fallback"]）
     - thinking / reasoning_efforts / default_effort **原样带下去**，不翻译不注入
       （[2026-10-16 裁定 B] 翻译职责归适配器：llm_openai_compat 的 dialects 表管方言）
 
@@ -121,10 +120,7 @@ def _compile(raw: dict[str, Any]) -> dict[str, Any]:
 
         compiled_models[mname] = entry
 
-    # 6. fallback 复制：system.fallback_model → config["models"]["fallback"]
-    fb_name = system.get("fallback_model")
-    if fb_name and fb_name in compiled_models and "fallback" not in compiled_models:
-        compiled_models["fallback"] = dict(compiled_models[fb_name])
+    # 6.（fallback 编译已于 2026-10-19 随模型 fallback 机制整体拆除）
 
     return {
         "models": compiled_models,
