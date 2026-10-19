@@ -1690,7 +1690,8 @@ const WORK_ID = window.__WORK_ID__;
     // 类型不再占一行——它由左侧色条与卡片尺寸承担，读者不需要被告知"这是子项目"。
     // ══════════════════════════════════════════════════════════════════
     const ws = String(card.work_state || "");
-    if (ws) node.dataset.ws = ws;   // pending / concluded / discussing / empty
+    if (ws) node.dataset.ws = ws;
+    if (isCardUnread(card)) node.dataset.unread = "1";
 
     // ══════════════════════════════════════════════════════════════════════
     // [画布 2026-10-19 · 画布的不可替代性] 列表能回答"有哪些""刚出了什么事"，
@@ -1926,18 +1927,6 @@ const WORK_ID = window.__WORK_ID__;
       ${bodyHtml}
     `;
 
-    // 底边重量条：2px，长度＝该卡体量占全视图最大体量的比例（开方压缩）。
-    // 放在卡片内部底边，任何缩放下都跟着卡片一起缩放，永远看得见。
-    {
-      const _w = Number(card.content_len || 0);
-      const _t = _w > 0 ? Math.min(1, Math.sqrt(_w / Math.max(1, _maxWeight))) : 0;
-      const bar = document.createElement("div");
-      bar.className = "cv-weightbar";
-      bar.style.width = Math.round(_t * 100) + "%";
-      bar.title = `${_w} 字`;
-      node.appendChild(bar);
-    }
-
     bindNodeEvents(node, card);
     return node;
   }
@@ -1984,6 +1973,7 @@ const WORK_ID = window.__WORK_ID__;
     //   拖拽              移动卡片；拖完不触发进入（suppressClickUntil 兜住）
     //   右键              菜单（打开/聚焦/建子卡/重命名/删除…）
     // ══════════════════════════════════════════════════════════════════
+    let clickTimer = 0;
     node.addEventListener("click", (e) => {
       if (node.classList.contains("dragging")) return;
       if (Date.now() < suppressClickUntil) return;
@@ -1997,10 +1987,12 @@ const WORK_ID = window.__WORK_ID__;
         setViewRoot(card.card_id);
         return;
       }
-      // 默认：**选中 + 右栏读卡，不离开画布**。
-      // 跳页会把画布上下文冲掉——看两张卡的结论要来回跳三次，并行优势归零。
-      // 进入完整对话走三个明确入口：卡上的 ↗、双击、Enter。
       selectOnly(card.card_id);
+      clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        markCardRead(card.card_id, (card.last_msg || {}).ts);
+        openCardChat(card.card_id);
+      }, 220);
     });
 
     // 待裁定条目点击 → 裁定模式定位到这一条
@@ -2037,7 +2029,8 @@ const WORK_ID = window.__WORK_ID__;
       e.preventDefault();
       e.stopPropagation();
       if (Date.now() < suppressClickUntil) return;
-      toggleCell(card.card_id);   // 就地展开成工作单元（不再开浮层）
+      clearTimeout(clickTimer);
+      toggleCell(card.card_id);
     });
 
     // 拖拽
@@ -3725,6 +3718,7 @@ const WORK_ID = window.__WORK_ID__;
     `;
     tooltip.dataset.cid = card.card_id;
     tooltip.classList.add("active");
+    markCardRead(card.card_id, (card.last_msg || {}).ts);
 
     const convEl = tooltip.querySelector(".tt-conv");
     const cid = card.card_id;
@@ -6053,6 +6047,27 @@ const WORK_ID = window.__WORK_ID__;
     return detail && detail !== r.stage && detail !== stage
       ? `${stage} · ${detail}` : stage;
   }
+
+  const _readKey = () => `cvRead:${WORK_ID}`;
+  function _readMap() {
+    try { return JSON.parse(localStorage.getItem(_readKey()) || "{}") || {}; } catch (e) { return {}; }
+  }
+  function isCardUnread(card) {
+    const lm = card && card.last_msg;
+    if (!lm || !lm.ts) return false;
+    const seen = _readMap()[card.card_id];
+    return !seen || String(lm.ts) > String(seen);
+  }
+  function markCardRead(cid, ts) {
+    if (!cid) return;
+    const m = _readMap();
+    const stamp = ts || new Date().toISOString();
+    if (!m[cid] || String(stamp) > String(m[cid])) m[cid] = String(stamp);
+    try { localStorage.setItem(_readKey(), JSON.stringify(m)); } catch (e) { }
+    const node = nodeMap.get(cid);
+    if (node) delete node.dataset.unread;
+  }
+
 
   // 乐观运行态：点发送的**那一刻**画布就要有反应。
   // 服务端 progress 要等模型链路真正开始才写，中间有几百毫秒到几秒的空白；
