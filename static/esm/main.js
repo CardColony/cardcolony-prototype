@@ -12,7 +12,7 @@
 import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=36";
 import "./util.js?v=30";
-import "../canvas.js?v=46";
+import "../canvas.js?v=72";
 import { createNavSystem } from "./nav_system.js?v=34";
 import { loadRulePanel } from "./rule_panel.js?v=31";
 

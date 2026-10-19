@@ -199,6 +199,94 @@ INBOX_PENDING = "pending"
 INBOX_CONSUMED = "consumed"
 
 # ===========================================================================
+# 回收站（删卡可撤销）
+# ===========================================================================
+# [画布 2026-10-19] 删卡原来是**硬删**：行、修改历史、会话文件一起消失，界面上
+# 只有一句"此操作不可撤销"。卡片正文动辄几千字，误删一次就是不可挽回的损失。
+#
+# 做法：删除前在**同一个写事务里**把整行 + 全部修改历史 + 会话正文塞进 trash 表，
+# 再删原行。撤销＝按**原 card_id** 插回去——id 必须不变，否则正文里
+# "见 card_037" 这类引用、以及 links 里的 id 全部指向空气。
+#
+# 保留策略：不自动清理（回收站很小，一条几百 KB 量级），需要时手动清。
+_TRASH_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS trash (
+    card_id     TEXT PRIMARY KEY,
+    work_id     TEXT NOT NULL,
+    deleted_at  TEXT NOT NULL,
+    payload     TEXT NOT NULL
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_trash_work ON trash(work_id)",
+)
+
+
+#: 每个 work 的回收站上限。payload 里含完整会话正文（可能几百 KB），
+#: 不封顶就会随删卡次数无限增长——回收站是"手滑保险"，不是归档系统。
+TRASH_KEEP_PER_WORK = 100
+
+
+def trash_card(conn: sqlite3.Connection, card_id: str, work_id: str,
+               payload: str, deleted_at: str) -> None:
+    """把一份删除快照写进回收站（同 card_id 重复删除时覆盖），并裁掉超额的旧记录。"""
+    conn.execute(
+        "INSERT OR REPLACE INTO trash (card_id, work_id, deleted_at, payload) VALUES (?,?,?,?)",
+        (card_id, work_id, deleted_at, payload),
+    )
+    # 只留最近 N 条：按 deleted_at 倒序，第 N 条之后的整批删掉。
+    # 用 SQL 子查询做，避免把 payload 全读进内存再挑。
+    conn.execute(
+        "DELETE FROM trash WHERE work_id = ? AND card_id NOT IN ("
+        "  SELECT card_id FROM trash WHERE work_id = ? ORDER BY deleted_at DESC LIMIT ?"
+        ")",
+        (work_id, work_id, TRASH_KEEP_PER_WORK),
+    )
+
+
+def get_trash(conn: sqlite3.Connection, card_id: str):
+    return conn.execute("SELECT work_id, deleted_at, payload FROM trash WHERE card_id = ?",
+                        (card_id,)).fetchone()
+
+
+def drop_trash(conn: sqlite3.Connection, card_id: str) -> None:
+    conn.execute("DELETE FROM trash WHERE card_id = ?", (card_id,))
+
+
+def list_trash(conn: sqlite3.Connection, work_id: str):
+    return conn.execute(
+        "SELECT card_id, deleted_at, payload FROM trash WHERE work_id = ? ORDER BY deleted_at DESC",
+        (work_id,),
+    ).fetchall()
+
+
+def restore_card_row(conn: sqlite3.Connection, row: dict[str, Any],
+                     history: list[Any]) -> bool:
+    """按快照把一张卡原样插回去（含修改历史）。已存在则返回 False（幂等）。
+
+    列拆分必须走本模块的 _CARD_COLUMNS / _BODY_COLUMNS / _JSON_COLUMNS ——
+    payload 里的 JSON 列**已经是 TEXT**，若当作 list 再 _encode 一次就会变成
+    双重编码的字符串，读侧解析直接炸。这里把正文列交给 body、其余交给 meta，
+    _encode 对 str 原样返回，所以不会二次编码。
+    """
+    if conn.execute("SELECT 1 FROM cards WHERE card_id = ?", (row.get("card_id"),)).fetchone():
+        return False
+    body = {c: row.get(c, "") or "" for c in _BODY_COLUMNS}
+    meta = {k: v for k, v in row.items() if k not in _BODY_COLUMNS}
+    insert_card(conn, meta, body)
+    # 历史按**原始 seq / ts** 写回：修改历史是时间线，重排序号或改写时间戳
+    # 等于伪造历史（读者会以为改动的先后顺序变了）。兼容旧的纯文本形态。
+    for i, h in enumerate(history or []):
+        if isinstance(h, dict):
+            seq, ts, text = h.get("seq", i), h.get("ts") or "", h.get("text") or ""
+        else:
+            seq, ts, text = i, row.get("updated_at") or "", str(h)
+        conn.execute(
+            "INSERT OR REPLACE INTO card_history (card_id, seq, ts, text) VALUES (?,?,?,?)",
+            (row.get("card_id"), seq, ts, text),
+        )
+    return True
+
+
+# ===========================================================================
 # 路径与连接
 # ===========================================================================
 
@@ -417,6 +505,8 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     可安全地每次建连接都调。**不碰任何既有表、不读写任何既有行。**
     """
     for ddl in _INBOX_DDL:
+        conn.execute(ddl)
+    for ddl in _TRASH_DDL:
         conn.execute(ddl)
 
 

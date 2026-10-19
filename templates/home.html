@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>推演agent</title>
 <!-- [首页两态 2026-10-15] 本页＝旧项目列表页的继任者（该页概念与页面已整体取消）。
@@ -10,7 +11,7 @@
      home.css 只放首页自有的少量规则（.home-*，不碰 .nav-*——那是 nav.css 的唯一真相）。
      两个 ?v= 与 work.html 保持同源同步——任一份改动都必须两处一起升，否则浏览器吃旧缓存。 -->
 <link rel="stylesheet" href="/static/style.css?v=40">
-<link rel="stylesheet" href="/static/nav.css?v=14">
+<link rel="stylesheet" href="/static/nav.css?v=15">
 <link rel="stylesheet" href="/static/home.css?v=1.1">
 </head>
 <body>
@@ -45,7 +46,7 @@
     <!-- 底部常驻入口：与 work.html 左栏同一位置、同一跳转（模型设置） -->
     <div class="nav-footer">
       <button class="nav-foot-btn" title="模型设置"
-              onclick="location.href='/settings'">⚙<span class="nav-foot-label">设置</span></button>
+              onclick="location.href='/settings'"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.5M8 12.7v1.5M1.8 8h1.5M12.7 8h1.5M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"/></svg><span class="nav-foot-label">设置</span></button>
     </div>
   </nav>
 

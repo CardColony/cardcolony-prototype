@@ -66,3 +66,13 @@ _*.err
 # docs 内的下划线探测/差异目录（e2e profile 等垃圾，不入库）
 docs/_*/
 docs/*/_*/
+
+# [画布商业化 5707] 本工作树的独立数据根与验收产物
+_data5707/
+_shots/
+_5707.out.log
+_5707.err.log
+_pytest_canvas.log
+
+# 临时诊断脚本（一次性，不进仓库）
+scripts/_*.cjs

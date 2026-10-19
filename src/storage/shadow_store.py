@@ -260,7 +260,7 @@ async def write_shadow_raw(
 
     await card_db.run_write(work_id, _fn)
     logger.info("影子写入 work=%s card=%s (%s)", work_id, owner_card_id, reason)
-    await data_snapshot.snapshot(f"[snapshot][{work_id}] {reason}: {owner_card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] {reason}: {owner_card_id}")
 
 
 async def derive_shadow(work_id: str, owner_card_id: str) -> dict[str, Any]:
@@ -285,7 +285,7 @@ async def derive_shadow(work_id: str, owner_card_id: str) -> dict[str, Any]:
 
     result = await card_db.run_write(work_id, _fn)
     if result.get("created"):
-        await data_snapshot.snapshot(f"[snapshot][{work_id}] shadow create: {owner_card_id}")
+        await data_snapshot.schedule(f"[snapshot][{work_id}] shadow create: {owner_card_id}")
     return result
 
 
@@ -306,7 +306,7 @@ async def update_shadow(work_id: str, owner_card_id: str, body: str) -> dict[str
         card_db.bump_rev(conn)
 
     await card_db.run_write(work_id, _fn)
-    await data_snapshot.snapshot(f"[snapshot][{work_id}] shadow update: {owner_card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] shadow update: {owner_card_id}")
     return {"ok": True, "owner_card_id": owner_card_id, "updated_at": now}
 
 
@@ -361,7 +361,7 @@ async def append_to_section(
         return False
     logger.info("影子分节追加 work=%s card=%s (%s)", work_id, owner_card_id, section)
     try:
-        await data_snapshot.snapshot(
+        await data_snapshot.schedule(
             f"[snapshot][{work_id}] shadow append: {owner_card_id} {section}"
         )
     except Exception as exc:  # noqa: BLE001
@@ -382,5 +382,5 @@ async def remove_shadow(work_id: str, owner_card_id: str) -> bool:
     if not n:
         return False
     logger.info("影子删除 work=%s card=%s", work_id, owner_card_id)
-    await data_snapshot.snapshot(f"[snapshot][{work_id}] shadow delete: {owner_card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] shadow delete: {owner_card_id}")
     return True
