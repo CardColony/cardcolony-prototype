@@ -1326,13 +1326,14 @@
    —— 卡片是索引，浮层是全文；截断的文字在这里能读全
    ========================================================================== */
 .page-canvas .card-tooltip {
-  /* [画布 2026-10-19] 380×460 → 420×62vh：浮层现在是**唯一能读全文的地方**
-     （卡面刻意零内容），尺寸得撑得起"读"，不能只是"瞥一眼"。
-     62vh 而不是固定 460：小窗口下也留得住上下文。 */
-  width: 420px;
-  max-width: 420px;
-  max-height: 62vh;
-  overflow-y: auto;
+
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  min-width: 320px;
+  max-width: min(560px, 46vw);
+  max-height: 68vh;
+  overflow: hidden;
   padding: 12px 14px;
   background: #171b22;
   border: 1px solid var(--cv-line-3);
@@ -2045,7 +2046,7 @@
 }
 .page-canvas .cv-wsdot[data-ws="pending"] {
   background: #f5b544;
-  box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.16);
+  box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.22), 0 0 8px rgba(245, 181, 68, 0.4);
 }
 .page-canvas .cv-wsdot[data-ws="concluded"] { background: #4fc07f; }
 .page-canvas .cv-wsdot[data-ws="discussing"] { background: #5b8cff; }
@@ -2609,7 +2610,8 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 260px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -3069,17 +3071,6 @@
 .page-canvas .card-node.l0 > .cv-card-row > .cv-stale,
 .page-canvas .card-node.lm > .cv-card-row > .cv-stale { display: none; }
 
-.page-canvas .cv-msgline[data-who="pending"] { color: #d8b06a; }
-.page-canvas .cv-msgline[data-who="pending"] .cv-msg-who {
-  color: #1a1204; background: var(--cv-warn);
-  border-radius: 3px; padding: 0 4px; font-size: 10px; line-height: 15px;
-}
-.page-canvas .cv-msgline[data-who="dec"] { color: #8fb8ff; }
-.page-canvas .cv-msgline[data-who="dec"] .cv-msg-who {
-  color: #0b1020; background: #6ea8ff;
-  border-radius: 3px; padding: 0 4px; font-size: 10px; line-height: 15px;
-}
-.page-canvas .cv-msgline[data-who="sum"] { color: var(--cv-text-3); }
 
 .page-canvas .cv-more-wrap { position: relative; display: flex; align-items: center; }
 .page-canvas .cv-more-menu {
@@ -3110,3 +3101,124 @@
 }
 .page-canvas .cv-mi-btn:hover { background: var(--cv-surface-3); color: var(--cv-text-1); }
 .page-canvas .cv-mi-btn.is-on { color: var(--cv-accent); }
+
+.page-canvas .card-tooltip .tt-meta { position: relative; padding-right: 26px; }
+.page-canvas .tt-pin {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cv-text-3);
+  cursor: pointer;
+}
+.page-canvas .tt-pin:hover { background: var(--cv-surface-3); color: var(--cv-accent); }
+.page-canvas .tt-pin svg { width: 13px; height: 13px; }
+.page-canvas .card-tooltip .tt-text { white-space: pre-wrap; }
+
+.cv-dock {
+  position: fixed;
+  top: 48px;
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  display: none;
+  flex-direction: column;
+  background: var(--cv-surface-0);
+  border-left: 1px solid var(--cv-line-2);
+  z-index: 50;
+}
+body.has-dock .cv-dock { display: flex; }
+body.has-dock #viewport { right: 360px; }
+
+.cv-dock-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cv-surface-1);
+  border-bottom: 1px solid var(--cv-line-1);
+}
+.cv-dock-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--cv-line-1);
+}
+.cv-dock-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--cv-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cv-dock-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cv-text-3);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.cv-dock-close:hover { background: var(--cv-surface-3); color: var(--cv-text-1); }
+.cv-dock-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 10px;
+  scrollbar-width: thin;
+}
+.cv-dock-body .tt-line { display: flex; gap: 6px; font-size: 11.5px; line-height: 1.55; }
+.cv-dock-body .tt-tag { flex: none; width: 26px; color: var(--cv-text-3); font-size: 10px; }
+.cv-dock-body .tt-line[data-role="you"] .tt-tag { color: #8fb0ff; }
+.cv-dock-body .tt-line[data-role="ai"] .tt-tag { color: #7fd6a1; }
+.cv-dock-body .tt-text { color: var(--cv-text-2); white-space: pre-wrap; word-break: break-word; }
+.cv-dock-body .tt-line[data-role="you"] .tt-text { color: var(--cv-text-1); }
+.cv-dock-body .tt-conv-empty { font-size: 11px; color: var(--cv-text-3); padding: 6px 0; }
+.cv-dock-reply {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--cv-line-1);
+}
+.cv-dock-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--cv-line-2);
+  border-radius: 6px;
+  background: var(--cv-surface-2);
+  color: var(--cv-text-1);
+  font-size: 12px;
+  outline: none;
+}
+.cv-dock-input:focus { border-color: var(--cv-accent-line); }
+.cv-dock-send {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--cv-accent-soft);
+  color: #dbe6ff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cv-dock-send:hover { background: rgba(91, 140, 255, 0.24); }

@@ -1628,24 +1628,9 @@ const WORK_ID = window.__WORK_ID__;
   function msgLineHtml(card) {
     if (!card) return "";
     const lm = card.last_msg && card.last_msg.text ? card.last_msg : null;
-    if (lm) {
-      const who = lm.actor === "human" ? "你" : lm.actor === "assistant" ? "AI" : (lm.actor || "");
-      return `<div class="cv-msgline" data-who="${lm.actor === "human" ? "you" : "ai"}" title="${escapeHtml(who + "：" + lm.text)}"><span class="cv-msg-who">${escapeHtml(who)}</span>${escapeHtml(lm.text)}</div>`;
-    }
-    const p = (card.pending_items || [])[0];
-    if (p && p.text) {
-      return `<div class="cv-msgline" data-who="pending" title="${escapeHtml(p.text)}"><span class="cv-msg-who">待</span>${escapeHtml(p.text)}</div>`;
-    }
-    const d = card.last_decision && card.last_decision.text ? card.last_decision : null;
-    if (d) {
-      return `<div class="cv-msgline" data-who="dec" title="${escapeHtml(d.id + "【" + d.kind + "】" + d.text)}"><span class="cv-msg-who">定</span>${escapeHtml(d.text)}</div>`;
-    }
-    const c = String(card.conclusion || "").trim();
-    if (c) {
-      const first = c.split(/[。！？\n]/)[0].slice(0, 90);
-      return `<div class="cv-msgline" data-who="sum" title="${escapeHtml(c.slice(0, 300))}">${escapeHtml(first)}</div>`;
-    }
-    return "";
+    if (!lm) return "";
+    const who = lm.actor === "human" ? "你" : lm.actor === "assistant" ? "AI" : (lm.actor || "");
+    return `<div class="cv-msgline" data-who="${lm.actor === "human" ? "you" : "ai"}" title="${escapeHtml(who + "：" + lm.text)}"><span class="cv-msg-who">${escapeHtml(who)}</span>${escapeHtml(lm.text)}</div>`;
   }
 
   // [画布第三步 T2] 改吃视图模型 vm（动作层装配）：viewRoot/positions/childMap/
@@ -3725,9 +3710,13 @@ const WORK_ID = window.__WORK_ID__;
     else if (card.updated_at) metaBits.push(fmtRelative(card.updated_at));
 
     tooltip.innerHTML = `
-      <div class="tt-meta"><span class="tt-ws" data-ws="${ws}">${stateLabel}</span>${
-        metaBits.map((b) => `<span class="tt-dot">·</span><span>${escapeHtml(b)}</span>`).join("")
-      }</div>
+      <div class="tt-meta">
+        <span class="tt-ws" data-ws="${ws}">${stateLabel}</span>
+        ${metaBits.map((b) => `<span class="tt-dot">·</span><span>${escapeHtml(b)}</span>`).join("")}
+        <button class="tt-pin" type="button" title="钉在画布右侧（可同时钉多个）" aria-label="钉在画布右侧">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5l4 4-2 1-3.2 3.2.2 2.3-1.4 1.4-4.5-4.5 1.4-1.4 2.3.2L9.5 6l1-2z"/><path d="M5.5 10.5L2 14"/></svg>
+        </button>
+      </div>
       <div class="tt-conv" data-cid="${card.card_id}"><div class="tt-conv-empty">正在读取…</div></div>
       <div class="tt-reply">
         <input class="tt-input" type="text" placeholder="回复这张卡…（Enter 发送）" aria-label="回复这张卡">
@@ -3736,30 +3725,51 @@ const WORK_ID = window.__WORK_ID__;
     `;
     tooltip.dataset.cid = card.card_id;
     tooltip.classList.add("active");
-    tooltip.style.width = "";
-    const rect = node.getBoundingClientRect();
-    const W = 380;
-    const tx = rect.right + 10;
-    const left = tx + W > window.innerWidth - 12 ? Math.max(12, rect.left - W - 10) : tx;
-    tooltip.style.left = left + "px";
-    tooltip.style.top = Math.max(56, Math.min(rect.top, window.innerHeight - 160)) + "px";
 
     const convEl = tooltip.querySelector(".tt-conv");
     const cid = card.card_id;
     const loadConv = async () => {
       try {
         const d = await API.getTimeline(WORK_ID, cid);
-        const lines = (d.items || []).slice(-8).map(watchLineOf).filter(Boolean);
+        const items = (d.items || []).map(watchLineOf).filter(Boolean);
+        let lastHuman = -1;
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (items[i].role === "you") { lastHuman = i; break; }
+        }
+        const round = (lastHuman >= 0 ? items.slice(lastHuman) : items.slice(-2))
+          .filter((x) => x.role === "you" || x.role === "ai");
         if (!tooltip.classList.contains("active") || tooltip.dataset.cid !== cid) return;
-        convEl.innerHTML = lines.length
-          ? lines.map((l) => `<div class="tt-line" data-role="${l.role}"><span class="tt-tag">${l.label}</span><span class="tt-text">${escapeHtml(l.text.slice(0, 220))}</span></div>`).join("")
+        convEl.innerHTML = round.length
+          ? round.map((l) => `<div class="tt-line" data-role="${l.role}"><span class="tt-tag">${l.label}</span><span class="tt-text">${escapeHtml(l.text)}</span></div>`).join("")
           : `<div class="tt-conv-empty">还没有对话。在下面说第一句。</div>`;
-        convEl.scrollTop = convEl.scrollHeight;
+        convEl.scrollTop = 0;
+        placeTooltip(node);
       } catch (e) {
         if (convEl) convEl.innerHTML = `<div class="tt-conv-empty">读取失败</div>`;
       }
     };
+
+    function placeTooltip(anchor) {
+      const r = anchor.getBoundingClientRect();
+      tooltip.style.left = "-9999px";
+      tooltip.style.top = "0px";
+      const W = tooltip.offsetWidth;
+      const H = tooltip.offsetHeight;
+      const tx = r.right + 10;
+      const left = tx + W > window.innerWidth - 12 ? Math.max(12, r.left - W - 10) : tx;
+      const top = Math.max(56, Math.min(r.top, window.innerHeight - H - 12));
+      tooltip.style.left = left + "px";
+      tooltip.style.top = top + "px";
+    }
+    placeTooltip(node);
     loadConv();
+
+    tooltip.querySelector(".tt-pin").onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      dockAdd(cid);
+      hideTooltip();
+    };
 
     const input = tooltip.querySelector(".tt-input");
     const sendBtn = tooltip.querySelector(".tt-send");
@@ -3786,6 +3796,106 @@ const WORK_ID = window.__WORK_ID__;
     input.onkeydown = (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); doSend(); }
     };
+  }
+
+  const dock = { ids: [] };
+
+  function dockRoot() {
+    let el = document.getElementById("cvDock");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "cvDock";
+      el.className = "cv-dock";
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+
+  function dockSync() {
+    document.body.classList.toggle("has-dock", dock.ids.length > 0);
+    setTimeout(() => { if (nodeMap.size) fitToContent(); }, 260);
+  }
+
+  function dockAdd(cid) {
+    if (!cid || !state.index.cardMap[cid]) return;
+    if (!dock.ids.includes(cid)) dock.ids.push(cid);
+    renderDock();
+    dockSync();
+  }
+
+  function dockRemove(cid) {
+    dock.ids = dock.ids.filter((x) => x !== cid);
+    renderDock();
+    dockSync();
+  }
+
+  async function dockLoad(cid, bodyEl) {
+    try {
+      const d = await API.getTimeline(WORK_ID, cid);
+      const items = (d.items || []).map(watchLineOf).filter(Boolean);
+      let lastHuman = -1;
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (items[i].role === "you") { lastHuman = i; break; }
+      }
+      const round = (lastHuman >= 0 ? items.slice(lastHuman) : items.slice(-2))
+        .filter((x) => x.role === "you" || x.role === "ai");
+      if (!bodyEl.isConnected) return;
+      bodyEl.innerHTML = round.length
+        ? round.map((l) => `<div class="tt-line" data-role="${l.role}"><span class="tt-tag">${l.label}</span><span class="tt-text">${escapeHtml(l.text)}</span></div>`).join("")
+        : `<div class="tt-conv-empty">还没有对话。在下面说第一句。</div>`;
+      bodyEl.scrollTop = bodyEl.scrollHeight;
+    } catch (e) {
+      if (bodyEl.isConnected) bodyEl.innerHTML = `<div class="tt-conv-empty">读取失败</div>`;
+    }
+  }
+
+  function renderDock() {
+    const el = dockRoot();
+    if (!dock.ids.length) { el.innerHTML = ""; return; }
+    el.innerHTML = dock.ids.map((cid) => {
+      const c = state.index.cardMap[cid] || {};
+      return `<div class="cv-dock-panel" data-cid="${escapeHtml(cid)}">
+        <div class="cv-dock-head">
+          <span class="cv-dock-title">${escapeHtml(c.title || cid)}</span>
+          <button class="cv-dock-close" type="button" aria-label="取消钉住">×</button>
+        </div>
+        <div class="cv-dock-body"></div>
+        <div class="cv-dock-reply">
+          <input class="cv-dock-input" type="text" placeholder="回复这张卡…" aria-label="回复这张卡">
+          <button class="cv-dock-send" type="button">发送</button>
+        </div>
+      </div>`;
+    }).join("");
+
+    el.querySelectorAll(".cv-dock-panel").forEach((panel) => {
+      const cid = panel.dataset.cid;
+      const body = panel.querySelector(".cv-dock-body");
+      const input = panel.querySelector(".cv-dock-input");
+      const send = panel.querySelector(".cv-dock-send");
+      panel.querySelector(".cv-dock-close").onclick = () => dockRemove(cid);
+      const doSend = async () => {
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = "";
+        input.disabled = true; send.disabled = true; send.textContent = "…";
+        markLocalRunning(cid, "等待执行");
+        try {
+          await API.postMessage(WORK_ID, cid, text);
+          await dockLoad(cid, body);
+        } catch (e) {
+          notify("发送失败：" + (e && e.message ? e.message : e), "error");
+          input.value = text;
+        } finally {
+          input.disabled = false; send.disabled = false; send.textContent = "发送";
+          clearLocalRunning(cid);
+        }
+      };
+      send.onclick = doSend;
+      input.onkeydown = (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); doSend(); }
+      };
+      dockLoad(cid, body);
+    });
   }
 
   function hideTooltip() {
