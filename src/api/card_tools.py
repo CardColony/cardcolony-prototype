@@ -345,6 +345,7 @@ _EVENT_LABEL = {
     "tool_call": "最后调了工具",
     "tool_result": "最后收到工具结果",
     "round_start": "最后开了一轮",
+    "card_message": "最后收到卡间消息",
     "done": "已收回合",
     "error": "最后出错",
 }
@@ -379,6 +380,10 @@ def _card_activity(work_id: str, card_id: str, meta: dict[str, Any]) -> str:
             parts.append("卡住了")
         elif gs == "paused":
             parts.append("已暂停")
+        elif gs == "active":
+            # active 只表示「目标还没终止」，不代表此刻在跑——说"空闲"会被读成
+            # "它没事干"，说"待推进"才准确（等下一轮/等唤醒）。
+            parts.append("待推进")
         else:
             parts.append("空闲")
 
