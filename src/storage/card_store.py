@@ -1205,7 +1205,11 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     try:
         if session_path.exists():
             session_path.unlink()
-    except Exception as exc:  # noqa: BLE001
+    # [2026-10-19 崩溃修复] 沙箱的 safe-delete 守卫在"一次删超阈值"时抛
+    # SystemExit（BaseException，普通 except Exception 抓不住）⇒ 会一路冒到
+    # 主线程把整个进程杀掉（实测 54 并发时撞了两次）。删除是维护动作，
+    # 失败只记日志，绝不许反噬主链路。
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
         logger.warning("session 文件删除失败（不中断）%s: %s", session_path, exc)
 
     # [影子卡 2026-10-03] 删正卡→影子同删（随正卡生命周期存续，不变量 3）；失败不中断
