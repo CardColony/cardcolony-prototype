@@ -104,11 +104,18 @@ startup_init()
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)
 # [模型设置第二步 2026-10-12] 设置接口（供应商/模型/角色绑定 + 密钥 + 备份还原）
 from src.api.settings_api import router as settings_router  # noqa: E402
+from src.api.asset_cache import install_asset_cache  # noqa: E402
 
 app.include_router(api_router)
 app.include_router(settings_router)
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+# [画布验收 2026-10-19] 静态资源"可缓存但必须回源校验"，详见 src/api/asset_cache.py。
+# 病根：原来全靠模板里手写 `?v=NN` 升号破缓存，忘了升号就改了不生效（白验收），
+# 发版后用户旧缓存还会把新结构撑坏。
+install_asset_cache(app)
 
 
 @app.get("/", response_class=HTMLResponse)

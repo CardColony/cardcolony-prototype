@@ -128,6 +128,9 @@ export const API = {
   patchCard: (wid, cid, updates, history_note) =>
     call("PATCH", `/api/works/${wid}/cards/${cid}`, { updates, history_note }),
   deleteCard: (wid, cid) => call("DELETE", `/api/works/${wid}/cards/${cid}`),
+  // [画布 2026-10-19] 撤销删除：从回收站按原 card_id 恢复（幂等）
+  restoreCard: (wid, cid) => call("POST", `/api/works/${wid}/cards/${cid}/restore`),
+  getTrash: (wid) => call("GET", `/api/works/${wid}/trash`),
   getSession: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/session`),
   // [消息底座收尾 2026-10-14] 恢复唯一入口：合并时序表（消息块＋过程事件＋思考），
   // 按 seq 升序、每条自带 type。刷新/换卡重建过程区走它（件4 退役 from=0 整卡重放后，

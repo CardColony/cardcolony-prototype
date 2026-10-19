@@ -77,12 +77,15 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from src.api.routes import router as api_router  # noqa: E402
 from src.api.settings_api import router as settings_router  # noqa: E402
+from src.api.asset_cache import install_asset_cache  # noqa: E402
 
 app = FastAPI(title="推演agent 5707 画布开发实例")
 
 app.include_router(api_router)
 app.include_router(settings_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# 与 main.py 一致：静态资源回源校验（否则改样式看的是旧文件）。
+install_asset_cache(app)
 
 
 @app.get("/", response_class=HTMLResponse)

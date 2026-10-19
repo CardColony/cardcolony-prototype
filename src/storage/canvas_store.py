@@ -294,7 +294,72 @@ def _extract_pending_items(status_block: str, limit: int = 99) -> list[dict[str,
     return items
 
 
-def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str]:
+#: 定论条目语法（card_store.NEW_CARD_SKELETON 定义）：`D01【裁定】内容（日期·依据）`。
+#: 这是**系统自己规定的结论格式**，不是我从自由文本里猜的：
+#:   使命 = 立项定稿 / 现状 = 覆盖写快照 / 定论 = 只追加的决定
+#: 卡片对外的唯一接口就是这三块，其中"想清楚了什么"全部落在定论里。
+#: ⚠ 骨架里的示例行 `D01【裁定】……（日期·依据）` **不是定论**——它是模板占位。
+#: 用 `(?!…)` 把以省略号开头的行排除掉，否则每张新建卡一出生就算"有 1 条定论"，
+#: 画布上会显示 `定1`、收口闸也会被它骗过去（实测踩过）。
+_DECISION_RE = re.compile(r"^D(\d{2})【(裁定|决定|收敛)】\s*(?!…|\.\.\.)(.+?)\s*$", re.M)
+
+
+def _last_message(work_id: str, card_id: str) -> dict[str, str] | None:
+    """这张卡会话里的**最后一条消息**（谁说的、说了什么、什么时候）。
+
+    [画布 2026-10-19 · 用户令] "把实时最新更新的对话信息状态直接拉到卡片上"。
+    卡片本身就是对话单元（每张卡自带 session），所以卡面最该显示的不是正文，
+    而是**这张卡刚刚在说什么**——那是唯一会实时变、且能让人立刻判断"要不要插手"的东西。
+
+    直接读 session 文件取最后一块，不走 session_facade.read（它是 async，
+    而投影在同步读事务里跑）。v1 老会话跳过（本仓已无存量）。
+    """
+    try:
+        from . import session_facade as _sf
+        path = _sf._session_path(work_id, card_id)
+        if not path.exists():
+            return None
+        text = path.read_text(encoding="utf-8")
+        if _sf._detect_format(text) == 1:
+            return None
+        blocks = _sf._parse_v2(text)["blocks"]
+        if not blocks:
+            return None
+        # 从后往前找**第一条真正的对话消息**：跳过工具帧（内容是参数 JSON，
+        # 卡面上显示出来就是 `tool {"card_id": "card_006", ...}` 这种噪音）
+        # 和空消息。卡面要的是"这张卡刚说了什么"，不是"它刚调了什么工具"。
+        for b in reversed(blocks):
+            actor = str(b.get("actor") or "")
+            content = str(b.get("content") or "").strip()
+            if not content or actor not in ("human", "assistant"):
+                continue
+            if content.startswith("{") and content.rstrip().endswith("}"):
+                continue          # 参数 JSON，不是人话
+            return {
+                "actor": actor,
+                "text": content[:220],
+                "ts": str(b.get("ts") or ""),
+                "seq": str(b.get("seq") if b.get("seq") is not None else ""),
+            }
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _parse_decisions(status_block: str) -> list[dict[str, str]]:
+    """抽出一张卡的定论条目（最多保留最近 20 条）。
+
+    [画布 2026-10-19] 之前画布上那段"结论"是拿正则从**自由文本**里抠 `结论:` 行，
+    39 张卡只抠到 5 张，且抠出来的是现状块开头的一句话——那不是结论。
+    定论不同：它是系统规范里明确规定的、只追加的决定条目，天生短、自包含。
+    """
+    out: list[dict[str, str]] = []
+    for m in _DECISION_RE.finditer(status_block or ""):
+        out.append({"id": f"D{m.group(1)}", "kind": m.group(2), "text": m.group(3).strip()})
+    return out[-20:]
+
+
+def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str, str]:
     """从卡片内容推断「这张卡现在是什么工作状态」，返回 (state, pending_count, conclusion)。
 
     [画布 2026-10-18 · 从"白板"改回"工作台"] 卡片上原本显示的是现状块第一行
@@ -332,12 +397,18 @@ def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str]
         explicit = cand
         break
     text = explicit or _conclusion_summary(sb, title)
+    # [画布 2026-10-19] **这段文字有两种来源，必须区分开**：
+    #   explicit → 卡里真有「结论：」段落，这是"想清楚了什么"
+    #   fallback → 没有结论，取现状块第一行正文，这只是"这张卡在讲什么"
+    # 两者原来塞进同一个字段、在卡面上长得一模一样，用户直接问"这段文字是什么信息"。
+    # 现在把来源一起带出去，前端分别标注（结论 / 现状），读者才认得出来。
+    kind = "explicit" if explicit else ("fallback" if text else "")
 
     if pending:
-        return "pending", pending, text
+        return "pending", pending, text, kind
     if explicit:
-        return "concluded", 0, text
-    return "discussing", 0, text
+        return "concluded", 0, text, kind
+    return "discussing", 0, text, kind
 
 
 #: canvas.json 投影结构版本。**加/删/改投影字段、以及任何改变字段内容的算法，必须 +1**。
@@ -348,7 +419,7 @@ def _card_work_state(status_block: str, title: str = "") -> tuple[str, int, str]
 #: 存量 work 的旧 canvas.json 里没有这两个键，``load()`` 原样返回 ⇒ 画布上
 #: 「已完成」徽标与更新时间**永远不出现**，且没有任何报错。版本号让
 #: "缓存是旧结构的"这件事变成可判定的事实，命中时自动重建。
-CANVAS_SCHEMA_VERSION = 13
+CANVAS_SCHEMA_VERSION = 17
 
 
 def rebuild(work_id: str) -> dict[str, Any]:
@@ -378,7 +449,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
         # links（新线 relations 不进画布——用户裁定「画布展示本次不做」）。
         return [dict(r) for r in conn.execute(
             "SELECT card_id, title, card_type, parent, created_at, updated_at, state,"
-            " links, status_block,"
+            " links, status_block, rulings,"
             # [画布 2026-10-18 · 自动模式可视化] 这五列决定"AI 正在怎么用这套系统"：
             # auto_mode＝是否自动推进；goal_state＝跑/停/成；goal_rounds＝第几轮；
             # toolcard_step/round＝当前步骤。真实项目里目前全空（自动模式一次没跑过），
@@ -437,6 +508,11 @@ def rebuild(work_id: str) -> dict[str, Any]:
     links: list[dict[str, Any]] = []
     for row in rows:
         card_id = row["card_id"]
+        # 定论条目：一张卡解析一次，下面 count 与 last 共用
+        # 定论可能落在两个字段里：老卡把整篇正文塞进 status_block（含 ## 定论 段），
+        # 新卡走三列模型，定论在独立的 rulings 列。两处都扫，否则换一种写法就看不见。
+        _decisions = _parse_decisions(
+            (row["status_block"] or "") + "\n" + (row["rulings"] or ""))
         cards.append({
             "card_id": card_id,
             "title": row["title"] or "",
@@ -453,8 +529,15 @@ def rebuild(work_id: str) -> dict[str, Any]:
             "conclusion_summary": _conclusion_summary(row["status_block"] or "", row["title"] or ""),
             # [画布 2026-10-18 · 工作台] 工作状态三件套：状态 / 待裁定数 / 结论。
             # 卡片按 work_state 上色与排序，顶栏据此算项目概览。
-            **dict(zip(("work_state", "pending_count", "conclusion"),
+            **dict(zip(("work_state", "pending_count", "conclusion", "conclusion_kind"),
                        _card_work_state(row["status_block"] or "", row["title"] or ""))),
+            # [画布 2026-10-19] 定论：系统规范里的"决定"条目。
+            # 卡面只显示**条数**（一个完整、可比较的事实：9 条＝这条线已经收敛，
+            # 0 条＝还在打转），条目正文给浮层——那里有空间把它读完。
+            # 最后一条对话消息：卡面实时显示"这张卡刚在说什么"
+            "last_msg": _last_message(work_id, card_id),
+            "decision_count": len(_decisions),
+            "last_decision": (_decisions[-1] if _decisions else None),
             # 被引用次数：这个项目里"谁被最多卡引用"＝谁是地基
             "ref_count": _ref_counter.get(card_id, 0),
             # 待裁定**条目**（不是数字）：卡片上直接列出"在等你的那几件事"

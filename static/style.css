@@ -265,25 +265,12 @@ a { color: inherit; text-decoration: none; }
 /* 子卡徽章 */
 /* [T16 2026-10-06] 徽章可见性修复 A-2：脱离文本流，绝对定位钉 .tname 右上角凹槽
    （范式照 .cross-link-badge；margin-left 6px 由 right 定位取代；z-index:2 压标题之上）。 */
-.kid-badge {
-  display: inline-block;
-  font-size: 10.5px;
-  color: var(--dim);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0 6px;
-  cursor: pointer;
-  margin-left: 0;
-  background: var(--bg);
-  position: absolute;
-  top: 1px;
-  right: 0;
-  z-index: 2;
-}
-.kid-badge:hover {
-  color: var(--fg, #e6edf3);
-  border-color: var(--fg, #e6edf3);
-}
+/* [画布 2026-10-19] 旧 .kid-badge 规则已删。它是 `position:absolute; top:1px;
+   right:0`——把展开徽章**钉在卡片右上角**，于是：
+     · 徽章不占流 ⇒ 底栏高度算成 0，卡片高度少算一截；
+     · 徽章和右上角的"待裁定数字"、标题右端挤在同一块；
+     · 用户反复说"展开交互区间太小"——它压根不是一个按钮，是一枚浮标。
+   现由 canvas.css 的 `.page-canvas .kid-badge` 全权负责（流内、28px 高）。 */
 .cross-link-badge {
   position: absolute;
   top: -8px;
@@ -304,57 +291,21 @@ a { color: inherit; text-decoration: none; }
   from { opacity: 0; transform: scale(0.96); }
 }
 
-/* ============ 三级 LOD ============ */
-/* L0 远景：胶囊（160×36） */
-.card-node.l0 {
-  width: 160px;
-  height: 36px;
-  padding: 0 12px;
-  border-radius: 18px;
-  border-width: 2px;
-  border-left-width: 2px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: row;
-}
-.card-node.l0 .tname { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-node.l0 .ttype,
-.card-node.l0 .summary,
-.card-node.l0 .meta2 { display: none; }
-
-/* L1 标准（宽 220，高度自适应 86-170）[phase8.6-A] */
-.card-node.l1 { width: 220px; height: auto; min-height: 86px; max-height: 170px; }
-.card-node.l1 .meta2 { display: none; }
-/* [phase8.6-A] L1 摘要最多 3 行截断 */
-.card-node.l1 .summary {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-}
-.card-node.l1 .tname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* L2 大卡（宽 260，高度自适应 120-340）[phase8.6-A] */
-.card-node.l2 { width: 260px; height: auto; min-height: 120px; max-height: 340px; }
-.card-node.l2 .tname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* [phase8.6-A] L2 摘要最多 10 行截断 */
-.card-node.l2 .summary {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 10;
-  overflow: hidden;
-}
-
-/* [T08-用户令 2026-10-04] 第三级卡（相对当前视图根深度≥2）只显示标题。
-   独立类按深度挂载，与缩放驱动的 l0/l1/l2 并行不互斥（三档机制本体一字未动，红线9）。
-   置于三档样式之后以同优先级后者胜出（覆盖 l1/l2 的宽高）。
-   宽度自适应（用户同日追加指令「第三级卡片能不能自适应，长度上」）：
-   max-content 随标题长度伸缩，上限 260（内容宽）——总宽 ≤260+24+4=288 < 列距 340，不越栏。 */
-.card-node.t8-deep { width: max-content; max-width: 260px; min-width: 0; height: auto; min-height: 0; padding: 7px 12px; }
-.card-node.t8-deep .tname { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-node.t8-deep .ttype,
-.card-node.t8-deep .summary,
-.card-node.t8-deep .meta2 { display: none; }
+/* ==========================================================================
+   [画布 2026-10-19] 原「三级 LOD」段（L0 胶囊 160×36 / L1 220 / L2 260）与
+   `.card-node.t8-deep` 已整段删除。
+   ──────────────────────────────────────────────────────────────────────────
+   这些是旧画布的档位样式（远景卡片是个 160×36 的胶囊）。现在的卡片体系由
+   canvas.css 全权负责（深度分档 360/280/224/184 + l0/l1/l2/lm 四档），
+   两边同时作用于 `.card-node.l0` 就打架：
+     · 旧样式 `flex-direction: row; align-items: center` ⇒ 标题被水平居中，
+       而 `.tname` 是 `flex:none` + `white-space:nowrap`，宽度按内容撑开，
+       于是标题向**左右两侧同时溢出卡片**（全量验收实测 L-29 R29，一张卡两边各伸
+       29px）。这就是用户说的"文字超框显示"。
+     · 旧样式 `height: 36px` / `width: 220px` 也在和新档位抢尺寸。
+   删掉而不是加 !important 覆盖：两套档位定义同时存在，任何一处改档位都要
+   记得同时改另一处，迟早再次漂移。
+   ========================================================================== */
 
 /* ============ Tooltip ============ */
 .card-tooltip {

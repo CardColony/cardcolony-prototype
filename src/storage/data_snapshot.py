@@ -18,6 +18,7 @@ import json
 import logging
 import shutil
 import sqlite3
+import threading
 import time  # noqa: F401  (历史遗留，勿删)
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -258,7 +259,21 @@ def _save_fingerprints(fp: dict) -> None:
         logger.warning("指纹文件写入失败: %s", exc)
 
 
+#: 快照串行锁。
+#: [画布 2026-10-19] 快照改成后台调度之后，两次快照可能同时写同一目标目录，
+#: 实测报 `OperationalError: output file already exists`（sqlite backup 撞车）。
+#: 快照在 worker 线程里跑，所以用 threading.Lock（不是 asyncio.Lock）——
+#: 它同时覆盖"后台任务"和"脚本/测试里直接调 snapshot_sync"两种调用。
+_SNAPSHOT_LOCK = threading.Lock()
+
+
 def snapshot_sync(reason: str = "", work_id: str | None = None) -> dict:
+    """同步执行一次快照（串行：同一时刻只有一次快照在写盘）。"""
+    with _SNAPSHOT_LOCK:
+        return _snapshot_sync_impl(reason, work_id)
+
+
+def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
     """同步执行一次快照。
 
     work_id 给定时：只拍这一个 work（动哪拍哪）；不给定时：拍全部（供总备份/首次使用）。
@@ -375,6 +390,50 @@ async def snapshot(reason: str = "", work_id: str | None = None) -> bool:
     except (Exception, SystemExit) as exc:  # noqa: BLE001 含沙箱删除守卫的 SystemExit
         logger.warning("快照任务异常: %s (%s: %s)", reason, type(exc).__name__, exc)
         return False
+
+
+#: 正在跑的合并快照任务（key＝work_id 或 "*"）
+_snap_tasks: dict[str, "asyncio.Task[None]"] = {}
+_snap_dirty: set[str] = set()
+
+
+async def schedule(reason: str = "", work_id: str | None = None) -> None:
+    """后台拍快照：**不阻塞调用方**，同 work 合并。
+
+    [画布 2026-10-19 · 性能] 原来每个写操作都 `await snapshot(...)`——实测
+    单次快照 **430~450ms**（要复制 cards.db 等整批文件），于是建卡 1.1s、
+    删卡 1.6s，而且批次越积越慢（实测连续建卡 1.1s→2.9s）。
+    快照是**尽力而为的留痕**（本模块自己的口径：失败只记日志、绝不上抛），
+    让它阻塞用户操作是拿最贵的资源做最不重要的事。
+
+    现在的语义：
+      · 立刻返回，快照在后台跑；
+      · 同一 work 已有快照在跑 ⇒ 只记一个"脏"标记，跑完再补拍一次
+        （连续 10 次写只会产生 2 次快照，而不是 10 次）；
+      · 无运行中的事件循环（同步脚本/测试）⇒ 退回阻塞式，行为可预期。
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        await snapshot(reason, work_id)
+        return
+
+    key = work_id or "*"
+    if key in _snap_tasks:
+        _snap_dirty.add(key)
+        return
+
+    async def _run() -> None:
+        try:
+            while True:
+                _snap_dirty.discard(key)
+                await snapshot(reason, work_id)
+                if key not in _snap_dirty:
+                    break
+        finally:
+            _snap_tasks.pop(key, None)
+
+    _snap_tasks[key] = asyncio.create_task(_run())
 
 
 async def commit(message: str, work_id: str | None = None) -> bool:

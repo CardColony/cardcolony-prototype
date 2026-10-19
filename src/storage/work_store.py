@@ -173,7 +173,7 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
 
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
     from . import data_snapshot
-    await data_snapshot.snapshot(f"[snapshot][{work_id}] create work: {title}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] create work: {title}")
     work_data = read_work(work_id) or work_data  # 取回 ending_derived 最新值
     work_data["card_count"] = _card_count(work_id)
     return work_data
