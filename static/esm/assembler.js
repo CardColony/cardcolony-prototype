@@ -118,6 +118,36 @@ export function createAssembler() {
     return node;
   }
 
+  /** 取/建**本 run+round 的流式 assistant 节点**（键 `stream:{run}:{round}`）。
+      [5702 · C-1] 正文与思考都走这里：dsh 的 assistant-step 以 step 为节点，
+      「只有思考、没有正文」的 step 也算可见内容（assistant.ts hasVisibleContent）。
+      若只在 content_chunk 建节点，思考-only 的轮会把思考并到下一轮（实测踩到）。 */
+  function streamNode(runId, roundNo, seq, ns, model) {
+    const skey = "stream:" + (runId || "?") + ":" + toInt(roundNo, 0);
+    let node = byKey.get(skey);
+    if (node) {
+      node.rev++;
+      if (!node.model && model) node.model = model;
+      return node;
+    }
+    node = {
+      seq, ns, type: "assistant_text", kind: "assistant",
+      round: toInt(roundNo, 0), run_id: runId,
+      data: { content: "", text: "" },
+      model: model || "",
+      key: skey, rev: 1, ord: ++ord, streaming: true,
+    };
+    if (pendingReasoning) {           // 落盘历史里先到的思考随节点归位（不丢）
+      node.reasoning = pendingReasoning;
+      pendingReasoning = "";
+      pendingReasoningOrd = 0;
+    }
+    byKey.set(skey, node);
+    order = order.concat([skey]);
+    structRev++;
+    return node;
+  }
+
   /** 追加后按 ord 校正（兜底思考会插在中间）。 */
   function resort() {
     const keys = order.slice().sort((a, b) => (byKey.get(a).ord || 0) - (byKey.get(b).ord || 0));
@@ -267,29 +297,7 @@ export function createAssembler() {
     if (type === "content_chunk") {
       const text = String(data.text || "");
       if (!text) return null;
-      const roundNo = toInt(rec.round, 0);
-      const skey = "stream:" + (runId || "?") + ":" + roundNo;
-      let node = byKey.get(skey);
-      if (!node) {
-        node = {
-          seq, ns, type: "assistant_text", kind: "assistant",
-          round: roundNo, run_id: runId,
-          data: { content: "", text: "" },
-          model: modelOf(rec, data),
-          key: skey, rev: 1, ord: ++ord, streaming: true,
-        };
-        if (pendingReasoning) {           // 先到的思考随节点归位（不丢）
-          node.reasoning = pendingReasoning;
-          pendingReasoning = "";
-          pendingReasoningOrd = 0;
-        }
-        byKey.set(skey, node);
-        order = order.concat([skey]);
-        structRev++;
-      } else {
-        node.rev++;
-        if (!node.model) node.model = modelOf(rec, data);
-      }
+      const node = streamNode(runId, toInt(rec.round, 0), seq, ns, modelOf(rec, data));
       node.data.text = String(node.data.text || "") + text;
       return node;
     }
@@ -407,17 +415,18 @@ export function createAssembler() {
         if (m) { m.thinking += text; node.rev++; }
         return node;
       }
-      /* [5702 · C-1] 主模型思考优先落**本 run+round** 的流式节点——
-         不能再用「最近一条 assistant」（那是跨轮串：round2 的思考会贴到 round1）。 */
-      const skey = "stream:" + (runId || "?") + ":" + toInt(rec.round, 0);
-      const sn = byKey.get(skey);
-      if (sn) { sn.reasoning = (sn.reasoning || "") + text; sn.rev++; return sn; }
-      if (ns === "live") {                      // 本轮流式节点还没建：暂存，创建时归位
-        pendingReasoning += text;
-        if (!pendingReasoningOrd) pendingReasoningOrd = ord + 1;
-      } else {
-        appendReasoning(text);                  // 落盘历史：并入最近一条 assistant
+      /* [5702 · C-1] 主模型思考：**每 run+round 一个节点**（思考-only 的轮也建），
+         不能再用「最近一条 assistant」（跨轮串）也不能只靠 pending
+         （否则思考-only 的轮会把思考并到下一轮）。 */
+      if (ns === "live") {
+        const sn = streamNode(runId, toInt(rec.round, 0), seq, ns, modelOf(rec, data));
+        sn.reasoning = (sn.reasoning || "") + text;
+        sn.rev++;
+        return sn;
       }
+      const sn = byKey.get("stream:" + (runId || "?") + ":" + toInt(rec.round, 0));
+      if (sn) { sn.reasoning = (sn.reasoning || "") + text; sn.rev++; return sn; }
+      appendReasoning(text);                    // 落盘历史：并入最近一条 assistant
       return null;
     }
 

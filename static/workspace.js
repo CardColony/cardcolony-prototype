@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=44";
+import { EventFlow } from "./stream.js?v=45";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=36";
@@ -843,7 +843,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       ? String(d.content)
       : String(d.text || "");
     el.innerHTML = badge +
-      '<div class="md">' + renderMarkdown(bodyText) + "</div>";
+      /* [5702 · C-1] 只有思考、没有正文的轮（工具调用前的 think-only step）
+         不渲染空正文块——否则每轮多一个空气泡。dsh 的 step 视图同理。 */
+      (bodyText ? '<div class="md">' + renderMarkdown(bodyText) + "</div>" : "");
 
     /* [对话界面商业化 2026-10-17] 消息级操作条：hover 浮出（CSS 控显隐），
        动作只做「复制全文」——重新生成只对最后一轮成立（resend 复用最后一条
