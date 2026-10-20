@@ -450,14 +450,23 @@
    桌面端 24px 高是可接受的折中），数字也放大到 11.5px。
    同时 caret 从 4px 加宽到 5px——它是"这里能展开"的唯一图形暗示。 */
 .page-canvas .kid-badge {
-  /* [画布 5711] 命中区随缩放补偿：徽章是**流内**元素（见下），直接放大它会
-     改变卡高 ⇒ 改变布局 ⇒ 不能动盒子本身。改用伪元素把命中区外扩一个
-     **恒定屏幕像素**的量（4px / zoom）：视觉尺寸不变，好点区域变大。 */
-  position: static;
-  /* 必须是流内元素：它是底栏里的一个按钮，不是浮标。
-     （旧 style.css 的 `position:absolute; top:1px; right:0` 会盖住这里没声明的
-     position —— 于是徽章飘在卡片右上角、底栏高度算成 0。显式写死。） */
-  position: static;
+  /* [画布 5711 · P0 修] 必须是 **relative**，不是 static。
+   *
+   * 病根（我自己引入的回归，用户 2026-10-20 当面指出"单击有子卡的卡片，操作
+   * 变成展开/折叠子卡"）：为了把徽标的命中区外扩 4 屏幕像素，给它加了
+   * `::after{position:absolute;left:0;right:0;…}`。而徽标当时是 position:static
+   * ⇒ 它的 ::after 的**包含块不是徽标自己**，而是最近的定位祖先 —— **整张卡**
+   * （.card-node 是 position:absolute）⇒ `left:0;right:0` 把伪元素拉成
+   * **横跨整张卡** ⇒ **整张卡的点击全被徽标吃掉**。
+   *
+   * 症状与用户看到的完全一致：
+   *   · 有子卡的卡（带徽标）→ 单击＝展开/折叠子卡，不是进对话；
+   *   · 没有子卡的卡（无徽标）→ 单击正常进对话。
+   * 差异正是"这张卡有没有徽标"。
+   *
+   * 修：徽标改 position:relative ⇒ 伪元素以徽标自身为包含块 ⇒ 外扩只作用在
+   * 徽标那一小块，不再跨卡。 */
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1205,7 +1214,11 @@
 }
 .page-canvas .cd-multi-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--cv-text-1); }
 
-/* 卡片右上角的"打开完整对话"按钮：常驻但很轻，hover 才明显 */
+/* 卡片右侧的"打开完整对话页"按钮（↗）
+   [画布 5711 · 产品] **常驻可见**（原来 opacity .45，hover 才 1）——
+   它是画布上唯一**显式**的"进对话"入口，却最不显眼：用户站在画布上问
+   "我怎么进对话"，看到的是一片没有提示的暗色小箭头。
+   ⇒ 提到 .78（hover 到 1），暗底上仍安静，但不隐形。 */
 .page-canvas .cv-open {
   position: absolute;
   right: 5px;
@@ -1222,15 +1235,76 @@
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: var(--cv-text-3);
+  color: var(--cv-text-2);
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.45;
+  opacity: 0.78;
   transition: opacity var(--cv-fast) var(--cv-ease), background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
 }
 .page-canvas .card-node:hover .cv-open { opacity: 1; }
 .page-canvas .cv-open:hover { background: rgba(255, 255, 255, 0.09); color: var(--cv-text-1); }
+
+/* ==========================================================================
+   [画布 5711 · 产品] 「在此展开对话」入口（💬）——把隐藏手势变成看得见的入口
+   ==========================================================================
+   画布上原本只有两条进对话的路：单击（220ms 后整页跳走）、双击（就地展开）。
+   后者是用户 10-19 反复要的"在画布上同时看几个对话的进程并随时回复"，但它是个
+   **纯隐藏手势** —— 卡面上没有任何东西提示"这里能双击"，用户根本不知道有这条路。
+   ⇒ 现在给它一个**看得见、点得到**的按钮（卡的左下角，hover 显形），
+   双击保留为快捷方式。功能从"隐藏手势"升级为"入口"。
+
+   位置：左下角（与右侧的 ↗ 分居两端，各管一件事，不打架）。
+   ========================================================================== */
+.page-canvas .cv-chat {
+  position: absolute;
+  left: 6px;
+  bottom: 5px;
+  width: calc(22px / var(--z, 1));
+  height: calc(22px / var(--z, 1));
+  padding: 0;
+  border: 1px solid var(--cv-line-2);
+  border-radius: 5px;
+  background: rgba(20, 24, 31, 0.92);
+  color: var(--cv-text-2);
+  font-size: calc(11px / var(--z, 1));
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--cv-fast) var(--cv-ease), background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+  z-index: 3;
+}
+.page-canvas .card-node:hover .cv-chat { opacity: 1; }
+.page-canvas .cv-chat:hover { background: var(--cv-accent-soft); color: var(--cv-accent); border-color: var(--cv-accent-line); }
+/* 卡片已就地展开对话时，💬 不必再出现（对话就在卡里）。 */
+.page-canvas .card-node[data-open="1"] .cv-chat { opacity: 0; pointer-events: none; }
+
+/* ==========================================================================
+   [画布 5711 · 产品] 单击的即时反馈：「正在打开对话…」
+   ==========================================================================
+   单击＝进对话页，但跳转前有 220ms 的双击判据延迟 ⇒ 这 220ms 里界面毫无反应，
+   第一感受是"点了没反应"，过一会儿又突然整页跳走（一个像坏了，一个像失灵）。
+   ⇒ 点下去**立刻**在卡上给出可见反馈，让延迟变成"看得见的等待"。
+   ========================================================================== */
+.page-canvas .cv-opening {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 8px 5px;
+  font-size: calc(10.5px / var(--z, 1));
+  line-height: 1.3;
+  text-align: center;
+  color: var(--cv-accent);
+  background: linear-gradient(to top, rgba(12, 15, 20, 0.97) 60%, rgba(12, 15, 20, 0));
+  border-radius: 0 0 8px 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms var(--cv-ease);
+  z-index: 4;
+}
+.page-canvas .card-node.is-opening .cv-opening { opacity: 1; }
+.page-canvas .card-node.is-opening { border-color: var(--cv-accent-line); }
 
 /* （标题不再单独给 ↗ 留位：那件事现在由 .cv-card-row 的右内边距统一负责，
    否则两处相加会白吃掉 50px 的标题宽度） */

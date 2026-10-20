@@ -1985,7 +1985,9 @@ const WORK_ID = window.__WORK_ID__;
 
     node.innerHTML = `
       ${msgBadge}
-      <button class="cv-open" type="button" title="打开完整对话（双击卡片同样进入）" aria-label="打开完整对话">↗</button>
+      <button class="cv-open" type="button" title="打开完整对话页" aria-label="打开完整对话">↗</button>
+      <button class="cv-chat" type="button" title="在此展开对话（不离开画布）" aria-label="在此展开对话">💬</button>
+      <div class="cv-opening" aria-hidden="true">正在打开对话…</div>
       ${runState ? '<div class="cv-runbar"></div>' : ""}
       <div class="cv-card-row">
         ${wsBadge}
@@ -2025,8 +2027,12 @@ const WORK_ID = window.__WORK_ID__;
 
     // [画布 2026-10-19 · 自查] 键盘操作。全局快捷键只管"已选中的那张卡"，
     // 这里补上"焦点就在这张卡上"时的两个动作：
-    //   Enter  → 进入对话（与双击同义）
+    //   Enter  → 就地展开这张卡的对话（不离开画布）
     //   空格   → 展开/折叠子卡（展开徽章是鼠标热区，键盘用户原先完全够不着）
+    //
+    // [画布 5711 · 产品] 键盘的分工与鼠标**一一对应**，不重复也不打架：
+    //   Enter ≡ 💬（就地展开对话）   空格 ≡ ▸N（展开子卡）
+    //   ⇒ 鼠标单击走的是"打开完整对话页"（另一件事），键盘不再与它重叠。
     node.addEventListener("keydown", (e) => {
       if (e.target !== node) return;           // 卡内按钮/输入各自处理
       if (e.key === "Enter") {
@@ -2052,8 +2058,16 @@ const WORK_ID = window.__WORK_ID__;
     //   Alt+单击          画布内下钻（把这张卡变成视图根，不跳页）
     //   拖拽              移动卡片；拖完不触发进入（suppressClickUntil 兜住）
     //   右键              菜单（打开/聚焦/建子卡/重命名/删除…）
-    // ══════════════════════════════════════════════════════════════════
-    let clickTimer = 0;
+    //
+    // [画布 5711 · 产品] **双击手势已撤除**（原 dblclick → 就地展开对话）。
+    // 撤除理由（用户 2026-10-20 当面指出："单击卡，和折叠展开根本就是冲突的"）：
+    //   单击要跳走，就得留 220ms 的双击判据窗口；而普通人双击间隔是 150–300ms
+    //   ——**超过 220ms 时第一次 click 已经把页面跳走了，双击永远到不了**。
+    //   ⇒ "就地展开对话"这个功能（用户 10-19 反复要的）在真实使用中时灵时不灵，
+    //     而它和单击是**同一个手势的两个互斥结果**。
+    //   ⇒ 现在：单击**立即**跳走（不再有"点了没反应"的那 220ms）；
+    //     就地展开对话**只**走三个明确入口：卡上的 💬 按钮、右键菜单、Enter 键。
+    //   ⇒ 一个语义一个入口，没有任何一个手势有两种结果。
     node.addEventListener("click", (e) => {
       if (node.classList.contains("dragging")) return;
       if (Date.now() < suppressClickUntil) return;
@@ -2068,11 +2082,13 @@ const WORK_ID = window.__WORK_ID__;
         return;
       }
       selectOnly(card.card_id);
-      clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        markCardRead(card.card_id, (card.last_msg || {}).ts);
-        openCardChat(card.card_id);
-      }, 220);
+      // [画布 5711 · 产品] **立即**给出反馈并跳转。
+      // 原来有 220ms 的延迟（留给双击判据），那 220ms 里界面毫无反应 ⇒
+      // "点了没反应，过一会儿突然整页跳走"。双击撤除后，延迟已无存在理由。
+      // 现在：点下去立刻亮出"正在打开对话…"，随即跳走——延迟不再是"沉默的等待"。
+      node.classList.add("is-opening");
+      markCardRead(card.card_id, (card.last_msg || {}).ts);
+      openCardChat(card.card_id);
     });
 
     // 待裁定条目点击 → 裁定模式定位到这一条
@@ -2097,6 +2113,26 @@ const WORK_ID = window.__WORK_ID__;
         openCardChat(card.card_id);
       });
     }
+
+    // [画布 5711 · 产品] 「在此展开对话」按钮（💬）：**不离开画布**地看这张卡的对话
+    // 并直接回复。
+    //
+    // 为什么要有它（产品经理视角，不是代码视角）：
+    //   画布上原本只有两条进对话的路——单击（220ms 后整页跳走）与双击（就地展开）。
+    //   后者是用户 10-19 反复要的"在画布上同时看几个对话的进程并随时回复"，但它是个
+    //   **纯隐藏手势**：卡面上没有任何东西提示"这里可以双击"。而唯一显式的入口 ↗
+    //   又只做"跳整页"这一件事。
+    //   ⇒ 用户站在画布上问"我怎么进对话"，答案是"你得知道双击这个隐藏手势"。
+    //   ⇒ 把"就地展开"变成一个**看得见、点得到**的按钮：功能从"隐藏手势"变成"入口"。
+    //   双击仍然保留（它是快捷方式，不是唯一路径）。
+    const chatBtn = node.querySelector(".cv-chat");
+    if (chatBtn) {
+      chatBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        toggleCell(card.card_id);
+      });
+    }
   }
 
   function bindNodeEvents(node, card) {
@@ -2110,13 +2146,11 @@ const WORK_ID = window.__WORK_ID__;
     // 与需求相反——一跳页，画布上下文全没了，也谈不上"同时看几个"。
     // 所以：双击/Enter → 并行层里开这个卡的窗口（进程 + 回复 + 全文）；
     // 卡上的 ↗ 仍然进完整对话页（需要大屏长文时用）。
-    node.addEventListener("dblclick", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (Date.now() < suppressClickUntil) return;
-      clearTimeout(clickTimer);
-      toggleCell(card.card_id);
-    });
+    // [画布 5711 · 产品] **双击手势已撤除**（原 dblclick → toggleCell 就地展开）。
+    // 理由见 click 处理器的注释：单击与双击是同一手势的两个互斥结果，而双击在真实
+    // 使用中（间隔 150–300ms > 判据窗口 220ms）根本到不了。
+    // "就地展开对话"现在只走三个明确入口：💬 按钮 / 右键菜单 / Enter 键。
+    // 保留这段空实现是为了让"为什么没有双击"在代码里有据可查，而不是无声消失。
 
     // 拖拽
     let dragState = null;
@@ -4990,6 +5024,10 @@ const WORK_ID = window.__WORK_ID__;
 
     openCtxMenu(e.clientX, e.clientY, [
       { act: "open", label: multi ? `打开对话（${state.view.selected.size} 张中第一张）` : "打开对话", kbd: "↵", run: () => openCardChat(cid) },
+      // [画布 5711 · 产品] 「在此展开对话」：不离开画布地看这张卡的对话并直接回复。
+      // 与卡面上的 💬 按钮同一个动作 —— 菜单里也必须有一份，否则"按钮在卡上、
+      // 菜单里没有"会让人以为这是两件事。
+      { act: "expand-chat", label: "在此展开对话（不离开画布）", kbd: "双击", run: () => toggleCell(cid) },
       { act: "focus", label: "以此卡为中心", kbd: "F", run: () => focusCard(cid) },
       { act: "watch", label: "盯这张卡（并行对话层）", run: () => watchAdd(cid) },
       multi ? { act: "cmp", label: `并排比较这 ${state.view.selected.size} 张`, run: () => openCompare([...state.view.selected]) } : null,
@@ -6763,6 +6801,8 @@ const WORK_ID = window.__WORK_ID__;
     // 老节点自带档位类（节点没换，档位不变）⇒ 这里不需要动。
     const wasOpen = old.dataset.open === "1";
     old.innerHTML = fresh.innerHTML;
+    // [画布 5711] 卡面被换掉 ⇒ "正在打开对话…"的瞬时状态一并作废（它属于旧卡面）。
+    old.classList.remove("is-opening");
     // 数据属性同步：fresh 有的搬过去，没有的删掉（否则旧值会赖着不走）。
     for (const k of ["ws", "pending", "ck", "weight", "basew", "fresh",
                      "unread", "runstate", "depth", "type"]) {
