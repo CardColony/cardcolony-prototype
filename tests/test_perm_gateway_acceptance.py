@@ -156,10 +156,13 @@ def test_v4_positive_control_registered_types_see_all():
     # [自动模式 2026-10-17 · 回灌 5700 块0.4] 再减 AUTO_ONLY_TOOLS（update_goal——
     # 非卡片内挂，只在 auto_mode=1 的卡上追加，不进常规面）。
     auto_only = set(card_tools.AUTO_ONLY_TOOLS)
+    # [角色机制 5710] ROLE_ONLY_TOOLS 同属「非卡片内挂」，只在角色卡末段追加，
+    # 不进常规工具面 ⇒ 期望件数也要减掉。
+    role_only = set(card_tools.ROLE_ONLY_TOOLS)
     # [口径解耦 2026-10-17] 只算**注册表在册**的：纯单模型模式下计划六件不注册，
     # TOOL_SWITCH 里若仍有其开关映射（历史遗留），不能算进期望件数。
     expected_all = len((set(card_tools.TOOL_SWITCH) - coder_only - root_only
-                        - op_only - auto_only) & set(card_tools.TOOL_REGISTRY))
+                        - op_only - auto_only - role_only) & set(card_tools.TOOL_REGISTRY))
     n_all = len(card_tools.build_tool_schemas(
         "card_x", cards={"card_x": _meta("sub_project")}))
     assert n_all == expected_all, (

@@ -1,0 +1,345 @@
+{
+  "role": {
+    "role_id": "card_004",
+    "title": "一致性观察员",
+    "card_type": "role",
+    "mission": "你负责审查工作卡A与工作卡B的现状是否自相矛盾。\n关注信号：同一事实（尤其时间/单位/接口口径）在两卡上写法不同。\n处置：发现矛盾时，先给两张卡各发一条 msg_notify 建议；若该矛盾会导致合并返工，再发一条 warn 警报直通用户。\n没有新增矛盾就沉默。每次巡检必须调用 record_verdict 落账。",
+    "watched": [
+      {
+        "card_id": "card_002",
+        "title": "工作卡A",
+        "card_type": "sub_project"
+      },
+      {
+        "card_id": "card_003",
+        "title": "工作卡B",
+        "card_type": "sub_project"
+      }
+    ],
+    "verdicts": [
+      {
+        "id": "31ae5af33c7d",
+        "ts": "2026-10-20T09:50:54.110757+08:00",
+        "decision": "speak",
+        "reason": "card_003 逐行核实证明我上轮 warn 中「108/191/287/329 无对应调用」判据不足（实为 \"created_at\": t 落值行，两卡锚层不同），需发 info 更正 alarm；同时发现真实缺口为 A 缺 183/214/283/324 四行（card_003 自己数成 2 行），及平台带偏移时间戳与数据层 naive 串的口径冲突，两卡各发一条 msg_notify。",
+        "targets": [
+          "card_002",
+          "card_003"
+        ],
+        "sources": [
+          "card_003"
+        ],
+        "auto": false
+      },
+      {
+        "id": "d13ba18c39af",
+        "ts": "2026-10-20T09:47:59.444909+08:00",
+        "decision": "speak",
+        "reason": "card_003 本轮完整扫描（truncated=false）给出的 decompose.py now_iso 调用点为 103/130/146/183/214/231/283/324，与 card_002 现状所写的 103/108/130/146/191/231/287/329 互斥（108/191/287/329 无对应调用），且 card_002 漏列 pipeline.py:33,68,97 与 packer.py:82 两条已核实写入面；属同一事实互斥写法且会造成合并返工，故两卡各发 msg_notify 并向用户发 warn。",
+        "targets": [
+          "card_002",
+          "card_003"
+        ],
+        "sources": [
+          "card_003"
+        ],
+        "auto": false
+      },
+      {
+        "id": "36c5471f15d3",
+        "ts": "2026-10-20T09:44:32.326638+08:00",
+        "decision": "speak",
+        "reason": "card_003 现状仅写「本地时间（东八区）」，未带 card_002 已核实的「naive、字符串不含 +08:00/Z 后缀」这一条接口契约口径；两卡同指 UTC+8 尚不矛盾，故只发补齐建议给 B，不发警报。",
+        "targets": [
+          "card_003"
+        ],
+        "sources": [
+          "card_002"
+        ],
+        "auto": false
+      }
+    ],
+    "alarms": [
+      {
+        "id": "64cca306b326",
+        "ts": "2026-10-20T09:50:54.102251+08:00",
+        "role_id": "card_004",
+        "role_title": "一致性观察员",
+        "severity": "info",
+        "title": "更正前一条 warn：decompose.py 那四个行号并非失实，是锚层不同；但缺口仍存在，且新增一处口径陷阱",
+        "detail": "更正 alarm_id 15d95a1f5c59（上一条 warn）中的一项判断。结论未变，但其中一个依据错了，现予更正。\n\n【更正内容】该 warn 中「A 的 103,108,130,146,191,231,287,329 里 108、191、287、329 四处在完整扫描中不存在对应调用」——此句作废。这四个行号存在，内容为变量 `t` 的落值行（card_003 已逐行打开核实）：\n- 108：「\"created_at\": t,」\n- 191：「\"created_at\": t,」\n- 287：「\"created_at\": t,」\n- 329：「\"created_at\": t,」（同一字典 331 行另有「\"finished_at\": t,」）\n`t` 早在 103/183/283/324 取好。两卡锚的不是同一层：A 锚「now_iso() 调用点 ∪ t 落值行」，B 锚「now_iso() 调用点」，故并集非空、非互斥。这是我在未逐行打开的情况下、仅凭调用点 grep 就判定行号失实，判据不足。\n\n【仍然成立的结论】\n1. 时间口径本身无矛盾，且现已双向落证：naive 本地时间（datetime.now()，19 字符 YYYY-MM-DDTHH:MM:SS，无 +08:00／Z 后缀）。权威定义 infer-system\\infer\\storage.py:39-41（now_iso）、:44-46（now_human）。实测 now_iso=2026-10-20T09:44:28、utcnow=01:44:28、offset=+08:00:00；落盘 34/34 字段匹配无偏移格式。\n2. 缺口仍在，但卡数改为 4 行：按并集口径（A 自己采用的口径），decompose.py 的 t 落值并集应为 12 行 103,108,130,146,183,191,214,231,283,287,324,329；A 现列 8 行，缺 183、214、283、324。其中 183→191、283→287、324→329 为三条成对的任务创建路径，缺赋值调用点会留下无据的落值行。\n3. 上一条 warn 中未受影响的另外两项继续有效：card_002 的接口字段清单仍未列 infer\\pipeline.py:33,68,97（created_at／finished_at）与 infer\\packer.py:82（now_human 上下文包）；card_002 标注的 server.py:100 与 server.py:238 在完整扫描中未命中任何 now_iso 调用，需确认是读取已落盘 JSON 还是接口层写入。\n\n【本轮新增风险（尚待处置）】\n卡片平台自身的时间戳为带偏移格式：card_003 写影子卡返回 2026-10-20T09:50:15.768464+08:00（6 位微秒 + +08:00），与 infer-system 数据层的 19 字符 naive 串是两套不同口径。若 card_002 在合并时把平台时间戳当作本项目 created_at 写入，将直接打破其现状里声明的 naive 契约（8 小时偏差风险）。已要求两卡在现状中显式声明「平台时间戳不入本项目时间契约」。\n\n【跨卡沟通阻塞】\ncard_003 执行 link_cards card_002 返回 denied（兄弟卡不在其子树内），A–B 无法直接通信，两卡口径对齐目前只能经本观察员中转。已在 B 卡请求根卡 card_001 建立 A–B 通信线。我不建卡、不改他人卡片，故只能中转。\n\n【已做处置】\n已分别向 card_002、card_003 发出 msg_notify：更正对 A 的行号删除要求（改为保留并补全至并集 12 行）、指出 B 现况「缺两个调用点」应为缺四行（183、214、283、324）、要求两卡共用同一条并集锚点并注明其口径、同步平台时间戳例外。",
+        "status": "open"
+      },
+      {
+        "id": "15d95a1f5c59",
+        "ts": "2026-10-20T09:47:59.440620+08:00",
+        "role_id": "card_004",
+        "role_title": "一致性观察员",
+        "severity": "warn",
+        "title": "时间口径的证据行号被完整扫描推翻：接口层现状带错锚点，且漏了两条已核实的时间写入面",
+        "detail": "严重度 warn —— 口径结论本身无争议，出问题的是证据与覆盖面，会在两卡合并时造成返工。\n\n【一、口径无矛盾，不必改】\ncard_003 独立实测：now_iso 2026-10-20T09:44:28 / now_human 2026-10-20 09:44 / utcnow 2026-10-20 01:44:28 / offset 8:00:00 / tzname ('中国标准时间','中国夏令时') / len 19。与 card_002 的「naive 本地时间 UTC+8、字符串不含 +08:00／Z 后缀」结论一致；两卡引用的权威实现同为 infer-system\\infer\\storage.py:39-46。\n\n【二、锚点互斥（同一事实两种写法）】\ncard_003 全目录扫描（truncated=false）显示 infer\\decompose.py 内 now_iso 调用点为 103, 130, 146, 183, 214, 231, 283, 324。\ncard_002 现状写的是 103, 108, 130, 146, 191, 231, 287, 329。\n其中 108、191、287、329 四处在这次完整扫描中不存在对应调用，仅 103/130/146/231 重合。card_002 的锚点已陈旧或失实。\n\n【三、覆盖面缺口】\ncard_002 的「对外暴露时间字段」清单未包含：\n- infer\\pipeline.py:33,68,97 —— 同样写 created_at／finished_at，该文件整体未出现在清单里；\n- infer\\packer.py:82 —— 同样拼 now_human 的「当前时间」，与 grow.py:127 同形态，清单只记了 grow.py:127。\n另：card_002 标注的 server.py:100 与 server.py:238 在完整扫描中未命中任何 now_iso 调用，需确认是「从已落盘 JSON 读取」还是「接口层自行写入」——若标注为写入即属误导。\n数据层 infer\\storage.py:158（created_at）、:244（snapshot_at）未出现在接口层现状中。\n\n【四、为何值得 warn】\n接口层现状是对外契约。两张卡即将合并，若照现状合并，契约将带着 4 处无法验证的行号，并漏掉 pipeline／packer 两条已核实的时间写入面——合并后返工，且下游消费方可能据此误判时间字段的生成方。\n\n【已做处置】\n已分别向 card_002、card_003 发 msg_notify：要求修正行号锚点、把本轮实测结果落到 card_003 现状、两卡共用同一张「文件:行号 + 写/读 + 样例值」锚点表；并要求 card_003 清理留在 infer-system\\ 目录的探针脚本 _probe_time_calendar.py。",
+        "status": "open"
+      }
+    ],
+    "pending_sources": [
+      "card_003"
+    ],
+    "open_alarm_count": 2
+  },
+  "alarms": {
+    "alarms": [
+      {
+        "id": "64cca306b326",
+        "ts": "2026-10-20T09:50:54.102251+08:00",
+        "role_id": "card_004",
+        "role_title": "一致性观察员",
+        "severity": "info",
+        "title": "更正前一条 warn：decompose.py 那四个行号并非失实，是锚层不同；但缺口仍存在，且新增一处口径陷阱",
+        "detail": "更正 alarm_id 15d95a1f5c59（上一条 warn）中的一项判断。结论未变，但其中一个依据错了，现予更正。\n\n【更正内容】该 warn 中「A 的 103,108,130,146,191,231,287,329 里 108、191、287、329 四处在完整扫描中不存在对应调用」——此句作废。这四个行号存在，内容为变量 `t` 的落值行（card_003 已逐行打开核实）：\n- 108：「\"created_at\": t,」\n- 191：「\"created_at\": t,」\n- 287：「\"created_at\": t,」\n- 329：「\"created_at\": t,」（同一字典 331 行另有「\"finished_at\": t,」）\n`t` 早在 103/183/283/324 取好。两卡锚的不是同一层：A 锚「now_iso() 调用点 ∪ t 落值行」，B 锚「now_iso() 调用点」，故并集非空、非互斥。这是我在未逐行打开的情况下、仅凭调用点 grep 就判定行号失实，判据不足。\n\n【仍然成立的结论】\n1. 时间口径本身无矛盾，且现已双向落证：naive 本地时间（datetime.now()，19 字符 YYYY-MM-DDTHH:MM:SS，无 +08:00／Z 后缀）。权威定义 infer-system\\infer\\storage.py:39-41（now_iso）、:44-46（now_human）。实测 now_iso=2026-10-20T09:44:28、utcnow=01:44:28、offset=+08:00:00；落盘 34/34 字段匹配无偏移格式。\n2. 缺口仍在，但卡数改为 4 行：按并集口径（A 自己采用的口径），decompose.py 的 t 落值并集应为 12 行 103,108,130,146,183,191,214,231,283,287,324,329；A 现列 8 行，缺 183、214、283、324。其中 183→191、283→287、324→329 为三条成对的任务创建路径，缺赋值调用点会留下无据的落值行。\n3. 上一条 warn 中未受影响的另外两项继续有效：card_002 的接口字段清单仍未列 infer\\pipeline.py:33,68,97（created_at／finished_at）与 infer\\packer.py:82（now_human 上下文包）；card_002 标注的 server.py:100 与 server.py:238 在完整扫描中未命中任何 now_iso 调用，需确认是读取已落盘 JSON 还是接口层写入。\n\n【本轮新增风险（尚待处置）】\n卡片平台自身的时间戳为带偏移格式：card_003 写影子卡返回 2026-10-20T09:50:15.768464+08:00（6 位微秒 + +08:00），与 infer-system 数据层的 19 字符 naive 串是两套不同口径。若 card_002 在合并时把平台时间戳当作本项目 created_at 写入，将直接打破其现状里声明的 naive 契约（8 小时偏差风险）。已要求两卡在现状中显式声明「平台时间戳不入本项目时间契约」。\n\n【跨卡沟通阻塞】\ncard_003 执行 link_cards card_002 返回 denied（兄弟卡不在其子树内），A–B 无法直接通信，两卡口径对齐目前只能经本观察员中转。已在 B 卡请求根卡 card_001 建立 A–B 通信线。我不建卡、不改他人卡片，故只能中转。\n\n【已做处置】\n已分别向 card_002、card_003 发出 msg_notify：更正对 A 的行号删除要求（改为保留并补全至并集 12 行）、指出 B 现况「缺两个调用点」应为缺四行（183、214、283、324）、要求两卡共用同一条并集锚点并注明其口径、同步平台时间戳例外。",
+        "status": "open"
+      },
+      {
+        "id": "15d95a1f5c59",
+        "ts": "2026-10-20T09:47:59.440620+08:00",
+        "role_id": "card_004",
+        "role_title": "一致性观察员",
+        "severity": "warn",
+        "title": "时间口径的证据行号被完整扫描推翻：接口层现状带错锚点，且漏了两条已核实的时间写入面",
+        "detail": "严重度 warn —— 口径结论本身无争议，出问题的是证据与覆盖面，会在两卡合并时造成返工。\n\n【一、口径无矛盾，不必改】\ncard_003 独立实测：now_iso 2026-10-20T09:44:28 / now_human 2026-10-20 09:44 / utcnow 2026-10-20 01:44:28 / offset 8:00:00 / tzname ('中国标准时间','中国夏令时') / len 19。与 card_002 的「naive 本地时间 UTC+8、字符串不含 +08:00／Z 后缀」结论一致；两卡引用的权威实现同为 infer-system\\infer\\storage.py:39-46。\n\n【二、锚点互斥（同一事实两种写法）】\ncard_003 全目录扫描（truncated=false）显示 infer\\decompose.py 内 now_iso 调用点为 103, 130, 146, 183, 214, 231, 283, 324。\ncard_002 现状写的是 103, 108, 130, 146, 191, 231, 287, 329。\n其中 108、191、287、329 四处在这次完整扫描中不存在对应调用，仅 103/130/146/231 重合。card_002 的锚点已陈旧或失实。\n\n【三、覆盖面缺口】\ncard_002 的「对外暴露时间字段」清单未包含：\n- infer\\pipeline.py:33,68,97 —— 同样写 created_at／finished_at，该文件整体未出现在清单里；\n- infer\\packer.py:82 —— 同样拼 now_human 的「当前时间」，与 grow.py:127 同形态，清单只记了 grow.py:127。\n另：card_002 标注的 server.py:100 与 server.py:238 在完整扫描中未命中任何 now_iso 调用，需确认是「从已落盘 JSON 读取」还是「接口层自行写入」——若标注为写入即属误导。\n数据层 infer\\storage.py:158（created_at）、:244（snapshot_at）未出现在接口层现状中。\n\n【四、为何值得 warn】\n接口层现状是对外契约。两张卡即将合并，若照现状合并，契约将带着 4 处无法验证的行号，并漏掉 pipeline／packer 两条已核实的时间写入面——合并后返工，且下游消费方可能据此误判时间字段的生成方。\n\n【已做处置】\n已分别向 card_002、card_003 发 msg_notify：要求修正行号锚点、把本轮实测结果落到 card_003 现状、两卡共用同一张「文件:行号 + 写/读 + 样例值」锚点表；并要求 card_003 清理留在 infer-system\\ 目录的探针脚本 _probe_time_calendar.py。",
+        "status": "open"
+      }
+    ]
+  },
+  "messages": {
+    "items": [
+      {
+        "id": "card_004-8402fa50",
+        "ts": "2026-10-20T09:50:47.895519+08:00",
+        "seq": 5,
+        "from_card": "card_004",
+        "from_title": "一致性观察员",
+        "to_card": "card_003",
+        "msg_type": "msg_notify",
+        "type_display": "通知",
+        "summary": "【一致性观察员 · 你的裁决我采信，但缺口数算错了，是 4 行不是 2 行】\n\n先确认：你把 108/191/287/329 逐行打开、认定是 `\"create",
+        "format_ok": true
+      },
+      {
+        "id": "card_004-ebe4d37e",
+        "ts": "2026-10-20T09:50:47.878021+08:00",
+        "seq": 4,
+        "from_card": "card_004",
+        "from_title": "一致性观察员",
+        "to_card": "card_002",
+        "msg_type": "msg_notify",
+        "type_display": "通知",
+        "summary": "【一致性观察员 · 撤回上一条通知：先别删那四个行号】\n\n**更正：我上一条（card_004-b44cfa1c）让你「复核并修正/不要保留 108、191、2",
+        "format_ok": true
+      },
+      {
+        "id": "card_004-1d0b9428",
+        "ts": "2026-10-20T09:47:59.432969+08:00",
+        "seq": 3,
+        "from_card": "card_004",
+        "from_title": "一致性观察员",
+        "to_card": "card_003",
+        "msg_type": "msg_notify",
+        "type_display": "通知",
+        "summary": "【一致性观察员 · 实测结论已与 A 对齐，但两件事要你落账】\n\n1）现状还是空的。卡上现状至今仍是「接口返回时间字段，口径：本地时间（东八区）。」这一句。你本",
+        "format_ok": true
+      },
+      {
+        "id": "card_004-b44cfa1c",
+        "ts": "2026-10-20T09:47:59.423260+08:00",
+        "seq": 2,
+        "from_card": "card_004",
+        "from_title": "一致性观察员",
+        "to_card": "card_002",
+        "msg_type": "msg_notify",
+        "type_display": "通知",
+        "summary": "【一致性观察员 · 锚点矛盾：card_003 本轮完整扫描与你的现状对不上】\n\n先说结论：**时间口径本身不矛盾，不用改。** 你写「naive 本地时间 U",
+        "format_ok": true
+      },
+      {
+        "id": "card_004-cb50eea0",
+        "ts": "2026-10-20T09:44:27.700954+08:00",
+        "seq": 1,
+        "from_card": "card_004",
+        "from_title": "一致性观察员",
+        "to_card": "card_003",
+        "msg_type": "msg_notify",
+        "type_display": "通知",
+        "summary": "【一致性观察员巡检 · 时间口径补齐建议】\n\n你的现状写：接口返回时间字段，口径＝本地时间（东八区）。方向没错，但缺一条关键接口契约，建议补齐后再对外定稿：\n\n",
+        "format_ok": true
+      }
+    ],
+    "unread_by_card": {
+      "card_002": 1
+    }
+  },
+  "role_card": {
+    "meta": {
+      "card_id": "card_004",
+      "title": "一致性观察员",
+      "source": "系统派生",
+      "card_type": "role",
+      "parent": "",
+      "state": "active",
+      "tags": [],
+      "links": [
+        {
+          "target": "card_002",
+          "type": "关注",
+          "note": "由根卡 card_001建立"
+        },
+        {
+          "target": "card_003",
+          "type": "关注",
+          "note": "由根卡 card_001建立"
+        }
+      ],
+      "relations": [],
+      "session_ref": "sessions/session_004.md",
+      "perms": [
+        "read",
+        "edit",
+        "read_linked",
+        "send_card_message",
+        "shadow_write"
+      ],
+      "perms_version": 6,
+      "created_at": "2026-10-20T09:41:28.809804+08:00",
+      "updated_at": "2026-10-20T09:50:58.720229+08:00",
+      "auto_mode": 0,
+      "goal_rounds": 0,
+      "goal_await_children": 0,
+      "goal_await_wakes": 0
+    },
+    "body": {
+      "mission": "你负责审查工作卡A与工作卡B的现状是否自相矛盾。\n关注信号：同一事实（尤其时间/单位/接口口径）在两卡上写法不同。\n处置：发现矛盾时，先给两张卡各发一条 msg_notify 建议；若该矛盾会导致合并返工，再发一条 warn 警报直通用户。\n没有新增矛盾就沉默。每次巡检必须调用 record_verdict 落账。",
+      "status_block": "巡检 2026-10-20（三轮）：锚点矛盾已由 B 逐行核实并裁决，我上轮 warn 有一条判据不足，本轮发 info 更正（alarm_id 64cca306b326）。\n\n口径核对：两卡完全一致且双向落证。naive 本地时间＝datetime.now()，19 字符 YYYY-MM-DDTHH:MM:SS，无 +08:00／Z。权威定义 storage.py:39-41(now_iso)、:44-46(now_human)、:233(快照文件名前缀)。实测 now_iso 2026-10-20T09:44:28／utcnow 01:44:28／offset +08:00:00／len 19；落盘全量 34/34 字段匹配无偏移格式。B 现状已补全并落盘（非仅会话）。\n\n上轮 warn 的更正：108/191/287/329 四行确实存在，内容为变量 t 的落值行（\"created_at\": t，等价于 \"t = storage.now_iso()\" 的结果落值），t 在 103/183/283/324 取好。是我仅凭调用点 grep、未逐行打开就判「失实」，判据不足，已作废该句并向 A 发撤回通知。\n\n仍成立的缺口：\n- decompose.py 并集口径（调用点 8 + t 落值行 4 ＝ 12 行）下，A 现列 8 行，缺 183、214、283、324；其中 183→191、283→287、324→329 是三条成对任务创建路径。B 自己数成「缺两个（183、214）」，数错了。\n- A 未列 pipeline.py:33,68,97、packer.py:82；server.py:100／:238 未命中任何 now_iso，需确认是读已落盘 JSON 还是接口层写入。\n\n本轮新增风险：卡片平台自身时间戳带偏移（2026-10-20T09:50:15.768464+08:00，6 位微秒＋+08:00），与数据层 19 字符 naive 串是两套口径。若 A 合并时把平台时间当 created_at 写入，直接打破其 naive 契约。已要求两卡显式声明「平台时间戳不入本契约」。\n\n跨卡沟通阻塞：B 执行 link_cards card_002 返回 denied（兄弟卡不在其子树），A–B 无法直连，口径对齐只能经我中转。已在 B 卡向根卡 card_001 请求建线；我不建卡、不改他人卡。\n\n本轮动作：msg_notify card_002（card_004-ebe4d37e，撤回删行号要求、改补至并集 12 行、补两条写入面、复核 server.py 写读属性、平台时间例外）；msg_notify card_003（card_004-8402fa50，采信其裁决但指出缺口应为 4 行）；raise_alarm info 64cca306b326；record_verdict 已落账。\n\n定论新增 D03：锚层差异先对齐锚层再判矛盾；争议行号必须逐行打开原文，禁止仅凭 grep 命中与否判定「不存在」。",
+      "requirements": "D01【裁定】判定「缺口」与「矛盾」的分界：两卡同指一个事实（如均为 UTC+8 本地时间）却有一方缺少可验证约束（如 B 缺「naive／字符串无 +08:00／Z 后缀」）判为口径缺口，发 msg_notify 补齐即可，不升级警报；仅当两卡对同一事实给出互斥写法（如一方称 UTC、另一方称本地）才判为矛盾并 warn 直通用户。（2026-10-20）\nD02【裁定】锚点类不一致按「矛盾」判，与 D01 的口径类区分开：两卡引用的同一实现行号若一方无法被另一方的可复现扫描证实（本次 decompose.py 有 4 个行号对不上），属同一事实互斥写法，不按「缺口」宽容处理，须发 warn；判据是证据可复现性，不要求两卡行号字面完全相同，允许「以实测为准」的分歧，但不允许留无法验证的行号。另定：接口层现状只列自己生成时间的字段，从落盘 JSON 读取的字段须标为「读取」并注明写入端，避免误标生成方。（2026-10-20）\nD03【裁定】争议行号不得仅凭 grep 命中与否判定「不存在」：两卡行号集不同先比对「锚的是哪一层」（调用点／变量落值行／并集），确属同一层仍对不上才判矛盾。上次据此误判 decompose.py 的 108/191/287/329 失实并发了 warn，实为 \"created_at\": t 落值行，已发 info 更正 alarm 64cca306b326 撤回该句。判据收紧：凡判「行号不存在」，必须逐行打开原文并引用该行实际内容，不得以「grep 未命中」代替原文核对。（2026-10-20）",
+      "history": [
+        "- [2026-10-20T09:41:28.809804+08:00] 卡片创建",
+        "- [2026-10-20T09:41:28.852750+08:00] [角色] 根卡 card_001建立订阅：card_004 ↔ card_002",
+        "- [2026-10-20T09:41:28.914022+08:00] [角色] 根卡 card_001建立订阅：card_004 ↔ card_003",
+        "- [2026-10-20T09:44:32.336628+08:00] 由「一致性观察员」更新现状",
+        "- [2026-10-20T09:44:36.087120+08:00] 由「一致性观察员」追加定论 D01",
+        "- [2026-10-20T09:48:11.257897+08:00] 由「一致性观察员」更新现状",
+        "- [2026-10-20T09:48:11.274913+08:00] 由「一致性观察员」追加定论 D02",
+        "- [2026-10-20T09:50:58.706225+08:00] 由「一致性观察员」更新现状",
+        "- [2026-10-20T09:50:58.720229+08:00] 由「一致性观察员」追加定论 D03"
+      ]
+    }
+  },
+  "workA": {
+    "meta": {
+      "card_id": "card_002",
+      "title": "工作卡A",
+      "source": "用户直接创建",
+      "card_type": "sub_project",
+      "parent": "card_001",
+      "state": "active",
+      "tags": [],
+      "links": [
+        {
+          "target": "card_004",
+          "type": "角色",
+          "note": "由根卡 card_001建立"
+        }
+      ],
+      "relations": [],
+      "session_ref": "sessions/session_002.md",
+      "perms": [
+        "read",
+        "edit",
+        "delete",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "tools_file",
+        "tools_web",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "perms_version": 6,
+      "created_at": "2026-10-20T09:41:28.623514+08:00",
+      "updated_at": "2026-10-20T09:52:59.793635+08:00",
+      "auto_mode": 0,
+      "goal_rounds": 0,
+      "goal_await_children": 0,
+      "goal_await_wakes": 0
+    },
+    "body": {
+      "mission": "负责接口层；现状必须写清时间口径。",
+      "status_block": "**时间口径（已复核，2026-10-20 二次核实）**：接口层时间字段一律为 **naive 本地时间（UTC+8 / 中国标准时间），字符串内不含时区偏移或 Z 后缀**。本卡首版记的「UTC」经实测证伪；card_003 独立实测结论与本卡一致，双方无分歧。\n\n**口径依据**\n- 唯一权威实现 `infer-system/infer/storage.py:39-42` `now_iso()` → `_dt.datetime.now().strftime(\"%Y-%m-%dT%H:%M:%S\")`；`:44-47` `now_human()` → `_dt.datetime.now().strftime(\"%Y-%m-%d %H:%M\")`。底层是 `datetime.now()`，不是 `utcnow`。\n- 运行时实测（2026-10-20）：`now_iso()` = `2026-10-20T09:52:06`，长度 19，不含 `+08:00`／`Z`／offset；同一刻 `datetime.utcnow()` = `2026-10-20 01:52:06`，差 8 小时。\n- 宿主时区实测：本地 offset +8.0，`time.tzname=('中国标准时间','中国夏令时')`，`TZ` 未设置。\n- 落盘实测：`calls/call_0001.json` 的 `time` = `2026-10-01T21:08:08`，`cards/c003.json` 的 `created_at` 同值。\n\n**接口侧时间字段锚点表**（每行可按「文件:行号」复核；「写」＝该处生成时间戳，「读」＝该处只从落盘 JSON 透传，不做换算）\n\n| 字段 | 出处 | 动作 | 实测样例 |\n|---|---|---|---|\n| 卡片 `created_at` | `infer/storage.py:158` | 写【B卡归属】 | c003 = `2026-10-01T21:08:08` |\n| 卡片 `created_at` | `infer/seed.py:75,97` | 写（硬编码字面量，非 `now_iso`） | c001/c002 = `2026-10-01T00:00:00` |\n| 卡片 `created_at` | `server.py:100`（`_slim`）、`server.py:121`（整卡透传） | 读 | 同上 |\n| 卡片 `updated_at` | `server.py:336,338` | 写 | c001 = `2026-10-01T20:56:00`；c002 = `null` |\n| 核实项 `updated_at` | `server.py:336` | 写 | `2026-10-01T20:56:00`；seed 初值 `null`（`seed.py:80`） |\n| 调用档案 `time` | `infer/decompose.py:124,138,208,224,297,341`；`infer/pipeline.py:58,85`；`infer/grow.py:193` | 写 | call_0001 = `2026-10-01T21:08:08` |\n| 调用档案 `time` | `server.py:238`（列表）、`server.py:244`（详情） | 读 | 同上 |\n| 任务 `created_at` | `infer/decompose.py:103,183,283,324`（`t = now_iso()`）→ 字段落点 `108,191,287,329`；`infer/pipeline.py:33` → `37` | 写 | task_0001 = `2026-10-01T21:08:08` |\n| 任务 `finished_at` | `infer/decompose.py:130,146,214,231`（独立 `now_iso`）；`infer/pipeline.py:68,97`；复用 `t` 的落点 `decompose.py:293,332` | 写 | task_0001 = `2026-10-01T21:08:08`（与 `created_at` 同刻同值） |\n| 任务 `created_at`/`finished_at` | `server.py:229`（整任务透传） | 读 | 同上 |\n| 证据 `updated_at` | `server.py:280,299` | 写 | `2026-10-01T20:56:00` |\n| 上下文包「当前时间」 | `infer/grow.py:127`、`infer/packer.py:82` | 写（`now_human()`，`YYYY-MM-DD HH:MM`） | `2026-10-20 09:52` |\n| `meta_maintained_by[].at` | `infer/grow.py:222` | 写 | — |\n| 快照 `snapshot_at` | `infer/storage.py:244` | 写【B卡归属】 | `2026-10-01T20:56:00` |\n| 快照文件名戳 | `infer/storage.py:233` | 写（独立代码路径，15 字符紧凑格式，非 `now_iso`） | `20261001T205600` |\n| 前端展示 | `static/calls.html:38,54`；`static/card.html:38,126`；`static/call.html:39`；`static/anchors.html:103,106,165`；`static/index.html:93` | 读（直接渲染，无二次换算） | — |\n\n**写端与读端的边界**：接口层自身只在 `server.py:280,299,336,338` 生成时间戳（证据与锚卡核实更新）；其余时间字段由 `storage.py`／`decompose.py`／`pipeline.py`／`grow.py` 生成后落盘，接口层只做透传。`server.py:100`（`created_at`）与 `server.py:238`（`time`）是**读**，不是生成端。\n\n**覆盖更正（2026-10-20 复核）**：本卡上一版列的 `decompose.py:103,108,130,146,191,231,287,329` 混用了两套编号——`103,130,146,183,214,231,283,324` 是 `now_iso()` 调用点，`108,191,287,293,329,332` 是字段赋值点。旧列表整体作废，以本表为准。\n\n**已知约束与风险（据上述实现成立，非推测）**\n- 函数名 `now_iso` 易误导：其输出并非带偏移的 ISO 8601，只是 19 字符 naive 串，无 `+08:00`／`Z`。\n- 任何跨时区或跨机器消费这些字段的调用方，都会把 UTC+8 的读数当作 UTC 而产生 8 小时偏差；消费方需自行按 UTC+8 解释。\n- 口径随宿主时区变化：本次核实成立的前提是宿主为 UTC+8，换机器需重新确认。\n- 存在两处非 `now_iso` 的时间来源，格式虽同、来源不同：`seed.py:75,97` 是硬编码字面量；`storage.py:233` 的快照文件名戳是 15 字符紧凑格式（`20261001T205600`），与 `now_iso` 格式不可混用。\n- `updated_at` 可为 `null`（seed 初值 `seed.py:80`；c002 实测为 `null`），消费方须处理空值；`created_at` 恒有值。\n- 越界混用（不属本接口层，未纳入上表）：`trading-workspace` 根目录脚本 `check_data_range.py:11,12`、`fetch_history_klines.py:66,74,75,110,111` 用 `utcfromtimestamp`，与接口层 UTC+8 并存，存在 8 小时混用风险。",
+      "requirements": "",
+      "history": [
+        "- [2026-10-20T09:41:28.623514+08:00] 卡片创建",
+        "- [2026-10-20T09:41:28.720023+08:00] 预置现状",
+        "- [2026-10-20T09:41:28.880268+08:00] [角色] 根卡 card_001建立订阅：card_002 ↔ card_004",
+        "- [2026-10-20T09:43:21.181414+08:00] 由「工作卡A」对话编辑正文",
+        "- [2026-10-20T09:52:59.793635+08:00] 由「工作卡A」对话编辑正文"
+      ]
+    }
+  },
+  "workB": {
+    "meta": {
+      "card_id": "card_003",
+      "title": "工作卡B",
+      "source": "用户直接创建",
+      "card_type": "sub_project",
+      "parent": "card_001",
+      "state": "active",
+      "tags": [],
+      "links": [
+        {
+          "target": "card_004",
+          "type": "角色",
+          "note": "由根卡 card_001建立"
+        }
+      ],
+      "relations": [],
+      "session_ref": "sessions/session_003.md",
+      "perms": [
+        "read",
+        "edit",
+        "delete",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "tools_file",
+        "tools_web",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "perms_version": 6,
+      "created_at": "2026-10-20T09:41:28.683146+08:00",
+      "updated_at": "2026-10-20T09:52:31.079782+08:00",
+      "auto_mode": 0,
+      "goal_rounds": 0,
+      "goal_await_children": 0,
+      "goal_await_wakes": 0
+    },
+    "body": {
+      "mission": "负责数据层；与A共用同一份时间字段。",
+      "status_block": "**时间口径**：落盘数据层时间字段一律为 naive 本地时间——取 `datetime.now()`，格式 `YYYY-MM-DDTHH:MM:SS`（19 字符），**不含 `+08:00`、不含 `Z` 后缀**，并非带偏移的 ISO 8601。代码未钉死任何时区，实际值等于宿主本地时区；本机实测为 +08:00（中国标准时间），故当前落盘值即 UTC+8。\n\n**唯一权威来源**（全库仅此三处定义，其余调用点均由其派生）：\n- `infer-system/infer/storage.py:39-41` `now_iso()` → `%Y-%m-%dT%H:%M:%S`\n- `infer-system/infer/storage.py:44-46` `now_human()` → `%Y-%m-%d %H:%M`（上下文包展示用，不落盘为字段）\n- `infer-system/infer/storage.py:233` 历史快照文件名前缀 `%Y%m%dT%H%M%S`\n\n**全目录调用点**（扫描口径：`trading-workspace\\infer-system` 全目录 `now_iso`／`now_human`；decompose.py 内部按 `now_iso\\(\\)|: t,|finished_at|created_at` 全量正则扫描，2026-10-20 复核）：\n- `pipeline.py`：33,68,97\n- `grow.py`：127（`now_human` 上下文包）、193（`time`）、222（`next_item` 的 `at`）\n- `packer.py`：82（`now_human` 上下文包）\n- `server.py`：280,299,336,338（`updated_at`）\n- `verify_demo.py`：163（写入验收演示 .md 的「生成时间」）\n- `decompose.py` 三类落值面（详见下节，均为 naive 同源）\n\n**decompose.py 落值面（权威锚点，2026-10-20 修正）**：\n1. `now_iso()` 直接调用点 8 处 —— 103,130,146,183,214,231,283,324。其中 130/146/214/231 是 `task.update(finished_at=storage.now_iso())` 形态，103/183/283/324 是 `t = storage.now_iso()` 赋值形态。\n2. task 时间戳经变量 `t` 落值行 **6 处** —— 108、191、287、**293**、329、**332**。其中 108/191/287/329 为 `\"created_at\": t,`；293 为 `\"error\": None, \"finished_at\": t,`；332 为 `\"produced_card\": None, \"error\": None, \"finished_at\": t,`。\n3. calls 档案经变量 `t` 落值行 **6 处** —— 124、138、208、224、297、341，均为 `\"call_id\": call_id, \"time\": t, \"model_endpoint\": ...`。\n\n**任务时间戳完整落值面 = 1 ∪ 2 = 14 行**：`103,108,130,146,183,191,214,231,283,287,293,324,329,332`。三类（1/2/3）合计 20 行，是 decompose.py 内全部时间戳落值点。\n\n**与工作卡A 锚点差异的裁决（经 2026-10-20 二次复算修正）**：两卡原判「行号互斥」实为**锚层不同**——A 锚「调用点 ∪ t 落值行」，本卡初稿锚「`now_iso()` 调用点」；A 的 `108/191/287/329` 均已逐行打开核实为 `\"created_at\": t` 类落值行，非事实矛盾。\n- **A 的清单为 8 行**（`103,108,130,146,191,231,287,329`），**相对 14 行完整落值面缺 6 行：`183、214、283、324、293、332`**。\n- 其中成对的任务创建路径三条：`183→191`（推演路径，A 已有落值行 191 但缺赋值点 183）、`283→287`（手工分解路径，A 缺赋值点 283）、`324→329`（手工事项路径，A 缺赋值点 324）。214 是 183 路径的失败分支（`finished_at` 直调），与 183 同属一条路径的失败态。\n- **本卡初稿曾写「A 缺 183、214 两个调用点」，按并集口径实为 4 行**（漏计同为调用点的 283、324）；本卡初稿另漏计 task 落值行 293、332，导致当时写的「并集 12 行」不足，实为 14 行。两处均以本条为准。\n\n**落盘位置与字段**：\n- `cards/cNNN.json`：`created_at`（`storage.py:158`）、`updated_at`（`server.py:280,299,336,338`）\n- `calls/call_NNNN.json`：`time`（`pipeline.py:56,86`；`grow.py:193`；`decompose.py` 第 3 类 6 行）\n- `tasks/task_NNNN.json`：`created_at`／`finished_at`（`decompose.py` 第 1、2 类；`pipeline.py:33,68,97`）\n- `card_history/<card_id>/*.json`：`snapshot_at`（`storage.py:244`）+ 文件名前缀（`storage.py:233`）\n- `evidence/evidence.json`：`entries[].updated_at`（naive 19 字符）\n\n**实测依据（2026-10-20 09:44 复核）**：\n- `now_iso()=2026-10-20T09:44:28`，`datetime.utcnow()=01:44:28`，整差 8 小时；`astimezone().utcoffset()=+08:00:00`；`time.tzname=('中国标准时间','中国夏令时')`；输出长度 19\n- 全量扫描 cards/calls/tasks/card_history：`created_at`／`finished_at`／`updated_at`／`time`／`snapshot_at` 共 34 个字段，**34/34 匹配 `^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$`**，无一携带偏移\n- c003–c010 的 `created_at` 与对应 `calls/*.json` 的 `time` 同秒相等（例：c003 = call_0001 = `2026-10-01T21:08:08`）\n\n**对「一致性观察员」两个问题的答复（均已核实）**：\n1. 是否有出口写入带偏移或 UTC 的时间串——**没有**。全库 grep `strftime|datetime.now|datetime.utcnow|.today(|fromtimestamp|time.time(`，业务代码只命中上述三处定义与调用点；唯一非 naive 例外是 `mock_endpoint.py:86 int(time.time())`，属模拟端点 OpenAI 兼容响应的 Unix 秒字段，不落盘、不对外暴露。另 `verify_demo.py:163` 写出的是 naive 本地时间，与全库口径一致。\n2. 数据层是否依赖宿主本地时区——**完全依赖**，无任何时区钉死（不依赖 TZ 环境变量、无 `astimezone`、无时区配置项）。上述核实成立的前提是宿主为 UTC+8，换机器需重新实测。\n\n**不被本口径覆盖的例外**：\n- **卡片平台自身时间戳是两套口径**：写卡/影子返回形如 `2026-10-20T09:50:15.768464+08:00`（6 位微秒 + 偏移），与本项目 19 字符 naive 串**不同源、不同形态**。平台时间戳不得当作本项目 `created_at` 写入，否则打破 naive 契约。\n- `evidence.entries[].date` 为人工录入的自然语言日期，非代码生成、形态不统一：e001–e005 为 `YYYY-MM-DD`，e006=`2024-09`，e007=`2024-09-30 / 2024-10-08`，e008=`2024-09~10`。不可参与时间戳排序或差值计算。\n- `cards/c001.json`、`c002.json` 的 `created_at` 为整点 `2026-10-01T00:00:00`；c002 该值与 calls 中任何 `time` 均不相等。\n\n**已知风险**：\n- 函数名 `now_iso` 名不副实：输出非带偏移 ISO 8601，仅一段 naive 串，易被消费方按 UTC 解析而产生 8 小时偏差。\n- 口径随宿主时区漂移：实现未钉死 UTC+8。\n- 跨表排序/比较目前依赖字符串字典序，在同格式 naive 值下正确；一旦混入带偏移值、平台微秒串或上列 date 类字段即失效。\n- 锚点类事实（行号清单）易随代码改动漂移，且两卡锚层不同；引用前须逐行打开核对，不得凭转述采信。",
+      "requirements": "",
+      "history": [
+        "- [2026-10-20T09:41:28.683146+08:00] 卡片创建",
+        "- [2026-10-20T09:41:28.760329+08:00] 预置现状",
+        "- [2026-10-20T09:41:28.932539+08:00] [角色] 根卡 card_001建立订阅：card_003 ↔ card_004",
+        "- [2026-10-20T09:49:58.821043+08:00] 由「工作卡B」对话编辑正文",
+        "- [2026-10-20T09:52:31.079782+08:00] 由「工作卡B」对话编辑正文"
+      ]
+    }
+  }
+}

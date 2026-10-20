@@ -1,4 +1,4 @@
-/* stream.js - [会话渲染单源化 2026-10-15] 单一事件流 → 装配器 → 节点快照 → 快照渲染。
+﻿/* stream.js - [会话渲染单源化 2026-10-15] 单一事件流 → 装配器 → 节点快照 → 快照渲染。
  *            [对话流照抄 dsh 2026-10-16] 渲染层改为**按节点增量装配**（dsh A1/A2）。
  *
  *   用户裁定（任务书《会话渲染单源化》C1–C6 ＋《对话流照抄 dsh》T1/T2/T3/T4）：
@@ -38,7 +38,7 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=36";
+import { API } from "./esm/api.js?v=39";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
@@ -343,6 +343,19 @@ const BOARD_CFG = Object.assign(
         // SSE 保活帧：注册表认它（不加会掉进 C5 兜底刷一屏「未识别事件」），
         // 但它不是给用户看的内容——照旧 renderEvent 的 default:break，不出行。
         return null;
+      // [角色机制 5710] 巡检判词 / 警报：台账里的两类关键事件，给可读行
+      case "role_judged": {
+        const speak = d.decision === "speak";
+        return makeRow(t,
+          "角色巡检" + fld("sources", (d.sources || []).join("、")) + fld("reason", d.reason),
+          speak ? "发言" : "沉默", fmtData(d), speak ? "ok" : null);
+      }
+      case "role_alarm":
+        return makeRow(t,
+          "角色警报：" + fld("severity", d.severity) + fld("title", d.title) +
+          fld("detail", d.detail),
+          esc(d.severity || "warn"), fmtData(d),
+          d.severity === "critical" ? "fail err" : (d.severity === "warn" ? "warn" : null));
       case "reasoning":
         // 该轮有思考却始终没有正式回复（run 以 error 收尾、或被后续轮顶替）：
         // 旧实现在这里直接丢弃思考文本，此处照示出来，不丢。
