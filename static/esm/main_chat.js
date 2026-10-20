@@ -13,8 +13,8 @@ import { API } from "./api.js?v=37";
 import "./util.js?v=30";
 import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts } from "./theme.js?v=7";
 import { initModelBadge } from "./model_picker.js?v=3";
-import "../stream.js?v=51";
-import "../workspace.js?v=68";
+import "../stream.js?v=52";
+import "../workspace.js?v=69";
 
 window.API = API;   // 调试便利（非功能依赖；与 api.js 薄壳同属兼容层）
 

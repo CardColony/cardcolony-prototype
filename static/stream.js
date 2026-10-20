@@ -42,7 +42,7 @@ import { API } from "./esm/api.js?v=37";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
-import { createAssembler } from "./esm/assembler.js?v=38";
+import { createAssembler } from "./esm/assembler.js?v=39";
 import { createChatView } from "./esm/flow/chat-view.js?v=4";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 
