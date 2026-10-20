@@ -3106,13 +3106,23 @@ async def _h_send_card_message(work_id: str, current_id: str,
     if require_link and not _role_edge:
         # 走 policy.check_linked **而不是** check(..., scope=SCOPE_LINKED)：
         # read 不在 TREE_SWITCHES 内，scope 会被 check 整体跳过（实测放行任意卡）。
+        #
+        # [5713 同步进 5700 · 兼容退回 2026-10-20] 5713 原口径是**纯线**：父↔子
+        # 之间没有线也一律 DENIED（纯函数实测 5713 policy：card_001→card_004
+        # DENIED、card_004→card_001 DENIED）。原样搬到生产会顺手收走本来能走的
+        # 纵向通道——现存所有「子卡发信回报主卡」的协作会立刻断掉，那是对既有
+        # 行为的回归。故补一条退回：**已有通信线 OR 互为祖先-后代**，任一成立
+        # 即放行。线是**新增的平级通道**，不是对纵向通道的替代；纵深与横向并存。
         try:
             policy.check_linked(current_id, target_id, cards)
         except PermissionError:
-            return err(
-                "denied",
-                f"越权：{target_id} 与你没有通信线——卡间通信走专门的通信线，"
-                f"请先用 link_cards 建一条指向它的线（type 取 关联），再发信")
+            if not (policy._is_in_subtree(current_id, target_id, cards)
+                    or policy._is_in_subtree(target_id, current_id, cards)):
+                return err(
+                    "denied",
+                    f"越权：{target_id} 与你既没有通信线、也不是祖先-后代——"
+                    f"卡间通信走专门的通信线，请先用 link_cards 建一条指向它的线"
+                    f"（type 取 关联），再发信")
     # 落信 + 留痕 + 记触发意图（错误在前面全走 err 信封不落档——发信成功才落信）
     #
     # [卡片底座第一步 2026-10-14] **落点改**：从「塞对话块（session_facade.append）」
