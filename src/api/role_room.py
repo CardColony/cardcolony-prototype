@@ -1007,12 +1007,12 @@ async def _finalize(work_id: str, role_id: str,
     decision = str(last.get("decision") or "silent")
     reason = str(last.get("reason") or "")
     try:
-        prof = role_store.get_profile(work_id, role_id) or {}
-        duty = dict(prof.get("duty") or {})
-        duty["last_wake_at"] = _now()
-        duty.setdefault("state", "active")
-        duty["pending_sync"] = len(pending_batch(work_id, role_id))
-        await role_store.update_profile(work_id, role_id, {"duty": duty})
+        # [role-sync 2026-10-20 · card_007] 只合并记账字段，不整字典写回：
+        # 旧写法拿旧 duty 快照整体覆盖，与 set_duty 并发时把刚改的 state
+        #（如复职 active）冲回旧值（丢更新），复职补巡检从此静默不起。
+        await role_store.touch_duty(
+            work_id, role_id, last_wake_at=_now(),
+            pending_sync=len(pending_batch(work_id, role_id)))
     except Exception:  # noqa: BLE001
         pass
     try:
