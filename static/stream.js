@@ -447,10 +447,14 @@ const BOARD_CFG = Object.assign(
     }
     // 其余键值对逐行（不含已提取的）
     const rest = {};
+    const objs = [];
     for (const k of Object.keys(d)) {
       if (k === "ok" || k === "error" || k === "content" || k === "files" || k === "items") continue;
-      if (typeof d[k] === "object") continue;
       if (d[k] === null || d[k] === "") continue;
+      /* [5715 · 修] 对象型字段原来**整条丢弃**（continue）⇒ 工具结果里只有对象字段时
+         展开体是**一片空白**（实测 create_card 的结果只有 card 对象 ⇒ 点开什么都没有，
+         用户以为点坏了）。改为给一段截断 JSON 摘要。 */
+      if (typeof d[k] === "object") { objs.push([k, d[k]]); continue; }
       rest[k] = d[k];
     }
     const rks = Object.keys(rest);
@@ -461,6 +465,22 @@ const BOARD_CFG = Object.assign(
         "<span class='f'><span class='k'>" + esc(k) + "</span> = <span class='v'>" + esc(String(rest[k])) + "</span></span>"
       ).join(" ");
       out.push(kv);
+    }
+    for (const pair of objs) {
+      const o = document.createElement("div");
+      o.className = "tr-kv tr-kv-obj";
+      /* 截断到 2000 字：对象字段是附属信息（正文在 content 字段，不截断），
+         整份 card/meta JSON 可能上万字，全量倒出来会淹没结果区。 */
+      o.innerHTML = "<span class='f'><span class='k'>" + esc(pair[0]) + "</span> = <span class='v'>"
+        + esc(clip(fmtData(pair[1]), 2000)) + "</span></span>";
+      out.push(o);
+    }
+    /* [5715 · 修] 实在没有可展示的字段 ⇒ 明说"没有"，别留一片空白让人以为点坏了。 */
+    if (!out.length) {
+      const e = document.createElement("div");
+      e.className = "tr-empty";
+      e.textContent = "（该结果没有可展示的字段）";
+      out.push(e);
     }
     return out;
   }
@@ -1054,9 +1074,14 @@ const BOARD_CFG = Object.assign(
     // 后台结算回流走 resync()——**不激活**，结果落该卡自己的（可能游离的）画板（§五.5）。
     const st = activate(wid, cid);
     stopES(st);
-    const items = await fetchTimeline(st, wid, cid);
-    renderSnapshot(st, st.asm.rebuild(items));
-    if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
+    /* [5715 · 修] 骨架必须在**任何**结局下收起：原来 markLoaded 只在末尾调，
+       fetchTimeline 抛错 ⇒ 骨架永久停留（用户看到"一直在加载"却什么也没发生）。 */
+    try {
+      const items = await fetchTimeline(st, wid, cid);
+      renderSnapshot(st, st.asm.rebuild(items));
+    } finally {
+      if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
+    }
   }
 
   /** 结算后回流：与刷新同一条路（唯一数据源仍是 timeline）。
@@ -1298,5 +1323,13 @@ export const EventFlow = {
   setEmpty(wid, cid, payload) {
     const st = sessions.get(skey(wid, cid));
     if (st && st.view && typeof st.view.setEmpty === "function") st.view.setEmpty(payload);
+  },
+  /* [5715 · 修] 收首屏骨架：宿主在「确定没有数据」时调用。
+     病根：骨架只在 markLoaded() 后收起，而 markLoaded 只在 replayTrace 末尾调
+     ⇒ 草稿路径（/work/draft、新建卡）不走 replayTrace ⇒ **骨架永远不收**，
+     空态也被 loading 判据挡着 ⇒ 新用户第一屏是"永远在加载"。 */
+  markLoaded(wid, cid) {
+    const st = sessions.get(skey(wid, cid));
+    if (st && st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
   },
 };

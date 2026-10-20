@@ -6,14 +6,14 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=47";
+import { EventFlow } from "./stream.js?v=49";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=36";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=34";
+import { createNavSystem } from "./esm/nav_system.js?v=35";
 import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=31";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
@@ -167,8 +167,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     root.className = "cseg root";
     root.textContent = (p.title || "").trim() || rootCid;
     root.title = "返回画布（项目名即根卡）";
-    // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 整页跳转到画布页 URL。
-    root.onclick = () => location.assign("/work/" + WORK_ID);
+    /* [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 整页跳转到画布页 URL。
+       [5715 · 修] 与顶栏「返回项目画布」按钮**行为统一**：同样带 ?sel=当前卡，
+       回去后画布直接选中它（原来只有图标带、这里不带 ⇒ 两个入口行为不一致）。 */
+    root.onclick = () => {
+      const sel = cardId ? "?sel=" + encodeURIComponent(cardId) : "";
+      location.assign("/work/" + WORK_ID + sel);
+    };
     el.appendChild(root);
 
     /* [对话界面商业化 2026-10-17] 深层卡的面包屑折叠：
@@ -249,15 +254,11 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
          恢复完再按后端真实运行态接流——此前只有页面加载（bootRestore）会接，
          页内切卡后只能刷新才动。 */
       attachRunningState(cardId).catch(() => {});
-      // [刷新恢复 2026-10-03] 卡号写进 URL hash：刷新后按 hash 自动重开这张卡。
-      // 用 replaceState 不堆积浏览历史、不触发页面重载；URL 即状态，不引入前端存储。
-      // [S2/R-09] 选中入 URL 走选中层复合键（#WORK_ID/cardId）。
-      if (location.hash !== navStore.select.serialize(WORK_ID, cardId)) {
-        navStore.select.set(WORK_ID, cardId);
-      }
-      // [阶段2 A2.2 2026-10-17] URL 即页面身份：选中卡同步进**路径**（取代 hash 承载）。
-      // replaceState 不堆历史、不重载；旧 hash 链接由 bootRestore 一次性重定向到本形态。
-      history.replaceState(null, "", "/work/" + WORK_ID + "/card/" + cardId);
+      /* [5715 · 修] 选中态写**路径**（页面身份即选中态）。
+       * 原写法：先 select.set() 写 hash、再 replaceState 写路径 ⇒ hash 被后写者抹掉
+       * ⇒ select.get() 恒 null ⇒ **侧栏从不高亮当前卡**、面包屑/定位/收起全部全失准。
+       * hash 已退役承载选中（2026-10-17 A2.2），旧 hash 链接由 bootRestore 一次性重定向。 */
+      navStore.select.set(WORK_ID, cardId);
       // [S3/R-25/V3-F5] 成功跳转（getCard 已取回）才记最近访问；失败/灰态不进此路径
       navFind.recordRecent(WORK_ID, cardId, card.meta.title);
       // [阶段5 A5.1] 视图切换机制退役：本页恒为对话态，无需 setAppView。
@@ -296,6 +297,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         window.__WORK_ID__ = w.work_id;                          // nav/rule 惰性读，随取随新
         IS_DRAFT_PROJECT = false;
         _draftRootCardId = w.work_card_id || "";
+        syncCanvasEntry();   // [5715] 落库后才有画布可回 ⇒ 放出「返回项目画布」入口
         loadRulePanel().catch(() => {});
       }
       // ② 新卡
@@ -351,6 +353,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     };
     const boardKey = "new-" + (++_draftBoardSeq);
     try { EventFlow.activate(WORK_ID, boardKey); } catch (e) { /* 零阻断 */ }
+    /* [5715 · 修] 草稿卡原本零空态 ⇒ 整屏空白。补上（按卡类型给文案，视图键＝画板键）。
+       顺带收首屏骨架：草稿路径不走 replayTrace ⇒ markLoaded 从不被调 ⇒ 骨架永远不收。 */
+    applyEmptyState(currentCard, boardKey);
+    try { EventFlow.markLoaded(WORK_ID, boardKey); } catch (e) { /* 零阻断 */ }
     switchComposer("draft");   // [5702] 新卡用独立输入会话（随后 setDraft("") 清空）
     // [对话流照抄 dsh v3] board() 现在返回视图的**节点列**：不再清 innerHTML
     //（那会把视图骨架一起抹掉）。新 boardKey ⇒ 新会话 ⇒ 视图天然是空的。
@@ -379,6 +385,17 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       body: { mission: "", status_block: "", rulings: "", history: [] },
     };
     try { EventFlow.activate(WORK_ID, "draft"); } catch (e) { /* 零阻断 */ }
+    /* [5715 · 修] 新建项目页原本零空态 ⇒ 整屏空白（新用户第一屏什么都没有）。
+       补一张项目落地引导：说清"从这儿开始"，并给三个可直接点的起始问法。 */
+    try {
+      EventFlow.setEmpty(WORK_ID, "draft", {
+        title: "新项目",
+        desc: DRAFT_PROJECT_COPY.desc,
+        hints: DRAFT_PROJECT_COPY.hints.map((h) => ({ label: h, text: h })),
+      });
+    } catch (e) { /* 零阻断 */ }
+    /* [5715 · 修] 收首屏骨架：草稿路径不走 replayTrace ⇒ markLoaded 从不被调 ⇒ 骨架永远不收。 */
+    try { EventFlow.markLoaded(WORK_ID, "draft"); } catch (e) { /* 零阻断 */ }
     switchComposer("draft");   // [5702] 草稿项目页独立输入会话
     renderInspector().catch(() => {});
     const crumb = document.getElementById("chatCrumb");
@@ -949,7 +966,15 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     },
   };
 
-  function applyEmptyState(card) {
+  /* [5715 · 修] 新建项目页（/work/draft）的空态文案。
+     原状：零消息 ⇒ 整屏空白（只有输入框），新用户第一眼看到的是"什么都没有"。
+     这张卡是项目根卡的落地面，说的应该是"从这儿开始"，不是内部术语。 */
+  const DRAFT_PROJECT_COPY = {
+    desc: "先说清楚这个项目要达成什么、边界在哪。系统会据此拆出卡片树，每一步的结论都沉淀成可回溯的卡片。",
+    hints: ["这个项目要解决什么问题？", "拆成哪几个子项目并行推进", "先把已有材料整理成现状"],
+  };
+
+  function applyEmptyState(card, viewKey) {
     const meta = (card && card.meta) || {};
     const type = String(meta.card_type || "");
     const title = String(meta.title || "").trim();
@@ -957,7 +982,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       desc: "在下面输入框说点什么，这张卡的对话会从这里开始。",
       hints: ["先介绍这张卡的情况", "把已有结论整理成现状"],
     };
-    EventFlow.setEmpty(WORK_ID, String(meta.card_id || ""), {
+    /* [5715 · 修] 草稿态的视图键与 meta.card_id 不同（草稿卡用 "new-N" 画板键），
+       允许显式传视图键，否则空态会写到别人的画板上。 */
+    EventFlow.setEmpty(WORK_ID, String(viewKey || meta.card_id || ""), {
       title: title ? title : "还没有对话",
       desc: copy.desc,
       hints: copy.hints.map((h) => ({ label: h, text: h })),
@@ -1470,10 +1497,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       enterNewCard({ title: d.title || "", parent: d.parent || "", card_type: d.card_type || "" });
       return true;
     }
-    const sel = navStore.select.get();   // 解析自旧 hash（无 hash 则 null）
-    if (sel) {
+    /* [5715 · 修] 旧 hash 链接兼容：**只认 hash**。
+     * 不能用 select.get()——它现在优先读路径，对话页会返回「当前页自己」，
+     * 于是 location.replace 把自己换掉 ⇒ 无限重定向。 */
+    const legacy = navStore.select.parse(location.hash);
+    if (legacy && legacy.cid) {
       // 旧 hash 链接 → 新地址（wid 不同也一并收敛，原跨 work 分支并入此处）
-      location.replace("/work/" + sel.wid + "/card/" + sel.cid);
+      location.replace("/work/" + legacy.wid + "/card/" + legacy.cid);
       return true;
     }
     if (!pathCid) return false;          // 无卡号：停在画布态（现行为）
@@ -1489,12 +1519,14 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     }
   }
 
-  // 浏览器后退/前进时同步切卡（hash 变化即重开）
-  window.addEventListener("hashchange", () => {
-    const sel = navStore.select.get();
-    if (!sel) return;
+  /* [5715 · 修] 浏览器前进/后退时同步切卡。
+   * 监听对象由 hashchange 改 popstate——选中态已迁到路径，hash 不再变化。
+   * 读路径（parsePath），不用 select.get()：后退到「无卡」的路径时 get() 会回退读 hash。 */
+  window.addEventListener("popstate", () => {
+    const sel = navStore.select.parsePath(location.pathname);
+    if (!sel || !sel.cid) return;
     if (sel.wid !== WORK_ID) {
-      window.location.href = "/work/" + sel.wid + "#" + sel.cid;
+      window.location.href = "/work/" + sel.wid + "/card/" + sel.cid;
       return;
     }
     if (!currentCard || currentCard.meta.card_id !== sel.cid) {
@@ -1866,11 +1898,19 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 一个状态两个入口，不新增第二套开合逻辑（避免两处状态漂移）。
   const topInsp = document.getElementById("topInspBtn");
   if (topInsp) topInsp.onclick = toggleInspector;
-  // [画布入口 2026-10-16 用户令] 顶部栏最左 icon → 返回本项目画布（根卡/子卡聊天态常显）
+  // [画布入口 2026-10-16 用户令] 顶栏 → 返回本项目画布（根卡/子卡聊天态常显）
   const canvasEntryBtn = document.getElementById("canvasEntryBtn");
   // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 回画布＝整页跳转到画布页 URL。
   // [画布 2026-10-18] 返回画布时带上当前卡：回去之后画布直接选中它，
   // 用户不用在一屏 5 张卡里重新找"我刚才在哪"。
+  /* [5715 · 修] 草稿态隐藏：/work/draft 时项目还没落库，没有画布可回，
+     按钮点了只会跳回本页（无效入口）。落库后由 ensurePersisted 放出来。 */
+  function syncCanvasEntry() {
+    if (!canvasEntryBtn) return;
+    const usable = !!WORK_ID && WORK_ID !== "draft";
+    canvasEntryBtn.style.display = usable ? "inline-flex" : "none";
+  }
+  syncCanvasEntry();
   if (canvasEntryBtn) canvasEntryBtn.onclick = () => {
     const cid = (window.__CARD_ID__ || "").trim();
     location.assign("/work/" + WORK_ID + (cid ? "?sel=" + encodeURIComponent(cid) : ""));
