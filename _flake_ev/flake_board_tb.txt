@@ -1,0 +1,53 @@
+work = {'work_id': 'work_001', 'title': '回归测试剧本', 'work_card_id': 'card_001', 'ending_derived': False, ...}
+
+    async def test_apply_revision_dual_ledger_and_dirty_flush(work):
+        wid, cid = work["work_id"], work["work_card_id"]
+        await create_board(wid, cid, "n", _steps("a", "b", "c"))
+        b = await get_board(wid, cid)
+        await b.mark_done_and_advance()  # current -> 1 (s2/b)
+    
+        r = await b.apply_revision("insert", {"after_id": "s1",
+                                              "step": {"id": "s_new", "prompt": "新步",
+                                                       "criteria": "新步判据", "deliverable": "新步产出",
+                                                       "type": "execute"}})
+        assert r["ok"] is True, r
+        snap = r["board"]
+        assert [s["id"] for s in snap["steps"]] == ["s1", "s_new", "s2", "s3"]
+        assert snap["current"] == 2  # s2 的新位（指针按 id 重定位）
+        assert snap["steps"][1]["status"] == "pending"  # 插入步 pending 起步
+    
+        # insert 缺 criteria/deliverable → 结构性拒绝（写入口②同契约）
+        assert "criteria" in (await b.apply_revision(
+            "insert", {"after_id": "s1",
+                       "step": {"id": "s_x", "prompt": "x", "deliverable": "d", "type": "execute"}}))["error"]
+        assert "deliverable" in (await b.apply_revision(
+            "insert", {"after_id": "s1",
+                       "step": {"id": "s_y", "prompt": "x", "criteria": "c", "type": "execute"}}))["error"]
+    
+        r2 = await b.apply_revision("remove", {"id": "s1"})  # 删非当前步
+        assert r2["ok"] and r2["board"]["current"] == 1  # s2 新位（序变 [s_new, s2, s3]）
+    
+        # 当前步不可删（结构性拒绝——删了指针没处指）
+        assert (await b.apply_revision("remove", {"id": "s2"}))["error"] == "当前步不可删"
+    
+        r3 = await b.apply_revision("modify", {"id": "s3", "prompt": "改写后的要求"})
+        assert r3["ok"] and r3["board"]["steps"][2]["prompt"] == "改写后的要求"
+    
+        # modify 新字段：criteria/deliverable/status（五态）
+        r5 = await b.apply_revision("modify", {"id": "s2", "criteria": "改后的判据",
+                                               "deliverable": "改后的产出", "status": "blocked"})
+        assert r5["ok"] and r5["board"]["steps"][1]["criteria"] == "改后的判据"
+        assert r5["board"]["steps"][1]["status"] == "blocked"
+        bad_status = await b.apply_revision("modify", {"id": "s2", "status": "done_x"})
+        assert bad_status["ok"] is False and "status" in bad_status["error"]
+    
+        r4 = await b.apply_revision("remove", {"id": "s_new"})  # 再删一个非当前步
+        assert r4["ok"] and [s["id"] for s in r4["board"]["steps"]] == ["s2", "s3"]
+    
+        # 非法改板拒绝
+        assert (await b.apply_revision("reorder", {"order": ["s2"]}))["ok"] is False
+        assert (await b.apply_revision("remove", {"id": "不存在"}))["ok"] is False
+        assert (await b.apply_revision("warp", {}))["ok"] is False
+        assert (await b.apply_revision("modify", {"id": "s2"}))["ok"] is False  # 零字段
+    
+        # 板上 revisions[] 自动记（动作/时间/改前快照/改后快

@@ -1,0 +1,65 @@
+sandbox = namespace(base=WindowsPath('D:/Temp/pytest-of-Administrator/pytest-416/test_k3_live_a_to_b_invokes_re0/app_home'), wor...kes_re0/app_home/logs'), tmp=WindowsPath('D:/Temp/pytest-of-Administrator/pytest-416/test_k3_live_a_to_b_invokes_re0'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001D35C3DF1D0>
+
+    async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
+        """真跑 A→B：[12:34] 流程侧调内部接口发信 → 收口 schedule → B 被调起；激励文不落 B 档案。"""
+        from src.storage import work_store
+        wid = (await work_store.create_work("K3真跑剧本"))["work_id"]
+        cards = await _make_tree(wid)
+        assert "card_002" in cards and "card_003" in cards
+    
+        a_reply = "已向孙卡A1发出询问。"
+        b_reply = "收到询问：第二节数字为 42，已复核。"
+    
+        async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
+            # B 回合判定＝激励文 user_prompt（K3 唯一改写 user_prompt 的路径，锚点可靠；
+            # 动态激励文仍以「请阅读这些消息并处理」收尾——模板末句保留）
+            if "请阅读这些消息并处理" in str(user_prompt):
+                return ({"content": b_reply, "tool_calls": []}, "fake")
+            # A 回合：模型不再调发信工具（12:34 已摘出工具面）；只产内容
+            return ({"content": a_reply, "tool_calls": []}, "fake")
+    
+        monkeypatch.setattr(model_service, "call_main", fake_call_main)
+        monkeypatch.setenv("MOCK_LLM", "1")
+    
+        # A 回合：模型只产内容（不碰发信工具——它已不在模型可见清单里）
+        await routes._run_message(wid, "card_002", "请向孙卡A1核对数字")
+        # 流程代码调用内部接口发信（基础设施唯一入口；模型不可见、参数由流程语义决定）
+        r = await card_tools.send_card_message(
+            wid, "card_002", target_id="card_003", msg_type="msg_ask",
+            content="第二节数字是多少？")
+        assert "msg_id" in r
+        sent_msg_id = r["msg_id"]
+        # 信落**收件箱**（不进对话块）
+        pending = await card_db.list_pending(wid, "card_003")
+        assert any(p["msg_id"] == sent_msg_id for p in pending)
+        # A 再跑一个回合：收口 schedule 发现 TRIGGERS 有信 → 异步调起 B
+        await routes._run_message(wid, "card_002", "继续")
+        # 让出事件循环等 B 的回合跑完
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            blocks_b = await session_facade.read(wid, "card_003")
+            if any(b.get("actor") == "assistant" for b in blocks_b):
+                break
+        blocks_b = await session_facade.read(wid, "card_003")
+        actors = [b.get("actor") for b in blocks_b]
+        # [卡片底座第一步 2026-10-14] 新消息**不进对话块**——B 档案无 card: 块
+        assert "card:card_002" not in actors, f"新消息不进对话块，实 {actors}"
+        assistants = [b for b in blocks_b if b.get("actor") == "assistant"]
+        assert assistants, "B 应被调起产出 assistant 块"
+        assert b_reply in assistants[-1]["content"]
+        # 激励文不落档：B 档案无承载激励文的 user 块
+        for b in blocks_b:
+            assert b.get("actor") != "human", "激励文不得落成 user/human 块"
+            assert "请阅读这些消息并处理" not in str(b.get("content", ""))
+        # 回合收口：该信在收件箱里置 consumed（**不删行**）
+        rows = await card_db.run_read(
+            wid, lambda c: [dict(x) for x in c.execute(
+                "SELECT * FROM inbox WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
+>       assert rows and rows[0]["status"] == "consumed" and rows[0]["consumed_at"]
+E       AssertionError: assert ([{'msg_id': 'card_002-54cbbc1a', 'work_id': 'work_001', 'target_card_id': 'card_003', 'from_card': 'card_002', ...}] and 'pending' == 'consumed'
+E         
+E         - consumed
+E         + pending)
+
+tests\test_card_msg.py:750: AssertionError
