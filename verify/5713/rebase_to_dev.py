@@ -115,11 +115,16 @@ def main() -> int:
     rc, head_after = sh(["git", "rev-parse", "HEAD"], repo)
     rc, behind = sh(["git", "rev-list", "--count", "HEAD.." + a.onto], repo)
     rc, ahead = sh(["git", "rev-list", "--count", f"{a.onto}..HEAD"], repo)
-    rc, cont = sh(["git", "merge-base", "--is-ancestor", a.onto, "HEAD"], repo)
+    # 用解析后的 sha 判定，不用分支名——rebase 这几秒里 dev 可能又前进了，
+    # 用 "dev" 判会得出「不在祖先链上」的假警报（实测踩到过）。
+    rc, cont = sh(["git", "merge-base", "--is-ancestor", onto_sha.strip(), "HEAD"], repo)
 
     print("=" * 64)
     print(f"[ok] rebase 完成：{head_before[:9]} → {head_after[:9]}")
-    print(f"     目标 {a.onto}({onto_sha.strip()}) 在祖先链上：{cont == 0}")
+    print(f"     目标基点 {onto_sha.strip()} 在祖先链上：{cont == 0}")
+    rc, dev_now = sh(["git", "rev-parse", "--short", "dev"], repo)
+    if dev_now.strip() and dev_now.strip() != onto_sha.strip():
+        print(f"     [注意] dev 在你 rebase 期间又到了 {dev_now.strip()}（移动靶，属常态）")
     print(f"     落后 {behind.strip()} / 领先 {ahead.strip()}")
     print(f"     回退：git checkout 5713 && git reset --hard {tag}")
     print("-" * 64)
