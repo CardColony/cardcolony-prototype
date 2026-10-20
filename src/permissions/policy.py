@@ -38,6 +38,11 @@ from ..api import prompt_log
 __all__ = [
     "SWITCHES",
     "TREE_SWITCHES",
+    "SCOPE_SUBTREE",
+    "SCOPE_LINKED",
+    "SCOPE_ANY",
+    "linked",
+    "_linked_between",
     "PERMISSIONS_PATH",
     "PERM_KEY",
     "PERM_VERSION_KEY",
@@ -113,6 +118,15 @@ SWITCHES: frozenset[str] = frozenset({
     SWITCH_SEARCH,
     SWITCH_LIST_MEMORY,
 })
+
+#: [5713 通道试走 · 用户口径 2026-10-20「卡间通信有专门的通信线」]
+#: 树作用域档位——卡间通信的边界**是通信线，不是 parent 树**：
+#:   · subtree（缺省，历史行为）＝只看自己子树，仅父子方向；
+#:   · linked＝两卡之间已有通信线即通过（沿通信线通信、方向不限）；
+#:   · any＝不判树作用域，只判类型授权（建线/解线用：平级卡可自主建线）。
+SCOPE_SUBTREE = "subtree"
+SCOPE_LINKED = "linked"
+SCOPE_ANY = "any"
 
 #: 树类开关：类型分权通过后追加「操作者是否在目标上游」限定（方案 §4）
 TREE_SWITCHES: frozenset[str] = frozenset({
@@ -275,11 +289,19 @@ def _deny_message(card_id: str, switch: str,
 
 
 def check(actor_id: str, target_id: str, switch: str,
-          cards: Mapping[str, dict[str, Any]] | None) -> bool:
+          cards: Mapping[str, dict[str, Any]] | None,
+          *, scope: str = SCOPE_SUBTREE) -> bool:
     """统一权限关口：类型分权 →（树类开关）树作用域。通过 True，拒绝抛 PermissionError。
 
     ``cards`` 为卡面 meta 表（``{card_id: meta}``）。两级失败的文案各自独立
     （「分类不授权」/「越出子树」），便于模型分辨。
+
+    ``scope``（仅对 ``TREE_SWITCHES`` 有效）＝树作用域的**档位**：
+      - ``subtree``（缺省，行为逐字不变）：actor 须在 target 上游（只看自己子树）；
+      - ``linked``：两卡之间已有**通信线**即通过（沿通信线，方向不限）——
+        这正是「卡间通信走专门的通信线」的落地：边界是线，不是树；
+      - ``any``：不判树作用域（建线/解线用——平级卡可自主建线，跨树也能建）。
+    类型分权一级对三档一视同仁（放宽作用域不放宽授权）。
 
     打点：类型分权一条（fn="check"）、树作用域命中时再一条（fn="tree_scope"），
     两态同记（granted true/false）。
@@ -298,7 +320,12 @@ def check(actor_id: str, target_id: str, switch: str,
         raise PermissionError(_deny_message(target_id, switch, target))
 
     if switch in TREE_SWITCHES:
-        scope_ok = _is_in_subtree(actor_id, target_id, cards)
+        if scope == SCOPE_LINKED:      # [5713] 沿通信线：有线即通，方向不限
+            scope_ok = _linked_between(actor_id, target_id, cards)
+        elif scope == SCOPE_ANY:       # [5713] 建线/解线：不判树作用域
+            scope_ok = True
+        else:
+            scope_ok = _is_in_subtree(actor_id, target_id, cards)
         prompt_log.append_perm_log({
             "fn": "tree_scope",
             "actor_id": actor_id,
@@ -350,3 +377,36 @@ def _is_in_subtree(
             break
         node = nm.get("parent", "")
     return False
+
+
+def _linked_between(actor_id: str, target_id: str,
+                    cards: Mapping[str, dict[str, Any]] | None) -> bool:
+    """两卡之间是否已有**通信线**（links 边）——卡间通信的唯一边界判据。
+
+    [5713 通道试走·用户口径「卡间通信有专门的通信线」] 通信的边界是线不是树：
+    平级/兄弟卡之间只要建了线就能通，没有线的（哪怕同父同树）也不通。
+
+    方向：**任一侧有 links 条目指向对方即成立**（已建立的边语义）。理由：一条线
+    是双方的事——A 建线给 B 之后，B 的应答必须能沿同一条线回到 A，否则线只能
+    单向喊话、对讲不成立。
+
+    不参与通信的线不算：``relations``（依赖关联线）只记关系与内容，不在本判据内。
+    自指不成立（自己不需要线）；缺卡即假。
+    """
+    if not actor_id or not target_id or actor_id == target_id:
+        return False
+    cards = cards or {}
+    if actor_id not in cards or target_id not in cards:
+        return False
+
+    def _has_edge(src: str, dst: str) -> bool:
+        meta = cards.get(src) or {}
+        for rel in meta.get("links") or []:
+            if isinstance(rel, dict) and str(rel.get("target") or "") == dst:
+                return True
+            if isinstance(rel, str) and rel == dst:   # 旧数据兼容：links 存纯字符串
+                return True
+        return False
+
+    return _has_edge(actor_id, target_id) or _has_edge(target_id, actor_id)
+

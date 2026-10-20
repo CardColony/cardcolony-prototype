@@ -1546,10 +1546,14 @@ async def _h_link_cards(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
         return err("validation", "不能与自身建立关系")
-    # [权限底座重做 2026-10-12] 关口 LINK：目标卡 perms 须授 link；树类开关再
-    # 收紧为「只能连自己子树内的卡」（交办单「待用户知悉」明示的收紧，可推翻）
+    # [权限底座重做 2026-10-12] 关口 LINK：目标卡 perms 须授 link。
+    # [5713 通道试走·用户口径「卡间通信有专门的通信线」] 建线**不再叠 parent 树
+    # 作用域**：通信的边界是线本身，不是父子关系——否则平级卡永远建不出线，
+    # 也就永远通不了话（"先有鸡先有蛋"）。故作用域档取 SCOPE_ANY（只判类型授权）。
+    # 通不通话由**发信**端把关（见 _h_send_card_message 的 SCOPE_LINKED）。
     try:
-        policy.check(current_id, target_id, policy.SWITCH_LINK, cards)
+        policy.check(current_id, target_id, policy.SWITCH_LINK, cards,
+                     scope=policy.SCOPE_ANY)
     except PermissionError:
         return err("denied", f"越权：无权与 {target_id} 建立关系")
     current = await card_store.read_card(work_id, current_id)
@@ -1595,7 +1599,9 @@ async def _h_unlink_cards(work_id: str, current_id: str,
     # 目标不存在则无卡可查，保留直接可解的现状，不误伤清理主用例。
     if target_id in cards:
         try:
-            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards)
+            # [5713] 解线与建线对称：不叠树作用域（平级卡自己建得起、就解得掉）
+            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards,
+                         scope=policy.SCOPE_ANY)
         except PermissionError:
             return err("denied", f"越权：无权解除与 {target_id} 的连线")
     current = await card_store.read_card(work_id, current_id)
@@ -1656,9 +1662,11 @@ async def _h_link_rel(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
         return err("validation", "不能与自身建立关系")
-    # 权限复用 LINK 关口（不新开）：目标卡 perms 须授 link；树类收紧同款
+    # 权限复用 LINK 关口（不新开）：目标卡 perms 须授 link。
+    # [5713 通道试走] 树类收紧撤销：同 link_cards，平级卡可自主建依赖关联线
     try:
-        policy.check(current_id, target_id, policy.SWITCH_LINK, cards)
+        policy.check(current_id, target_id, policy.SWITCH_LINK, cards,
+                     scope=policy.SCOPE_ANY)
     except PermissionError:
         return err("denied", f"越权：无权与 {target_id} 建立依赖关联")
     current = await card_store.read_card(work_id, current_id)
@@ -1707,7 +1715,9 @@ async def _h_unlink_rel(work_id: str, current_id: str,
                    f"kind 非法: {kind}，只允许 {'/'.join(MODEL_DEP_KINDS)}")
     if target_id in cards:
         try:
-            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards)
+            # [5713] 与 link_rel 对称：不叠树作用域
+            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards,
+                         scope=policy.SCOPE_ANY)
         except PermissionError:
             return err("denied", f"越权：无权解除与 {target_id} 的依赖关联")
     current = await card_store.read_card(work_id, current_id)
@@ -2993,7 +3003,14 @@ thinkchain_plan_tools.register_into(TOOL_REGISTRY, ToolDef)
 # ============================================================
 async def _h_send_card_message(work_id: str, current_id: str,
                                arguments: dict[str, Any],
-                               cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                               cards: dict[str, dict[str, Any]],
+                               *, require_link: bool = True) -> dict[str, Any]:
+    """发信执行体。``require_link``＝是否要求两卡之间已有通信线。
+
+    模型侧（工具面 send_card_message）一律 True——**通信走专门的通信线**；
+    流程/系统侧（下方 send_card_message 薄壳：完工回执、blocked 通知、S4 自动
+    回发）传 False：它们不是模型自主通信，不受"先建线"约束。
+    """
     target_id = arguments.get("target_card_id", "")
     # ① 收件卡存在（照 _h_read_card 先例：先判存在再判权限）
     if target_id not in cards:
@@ -3015,28 +3032,31 @@ async def _h_send_card_message(work_id: str, current_id: str,
     content = str(arguments.get("content", "")).strip()
     if not content:
         return err("invalid", "消息正文不得为空")
-    # 权限＝分类 READ 关口 ＋ 显式子树判定（政策收口前的卡间册 §4.3 字面口径；
-    # 详见下方修正说明的沿革）。
-    # [锚点实测修正——卡间册 §4.3 字面与 policy 现状有一处偏差，见回报卡点①]
-    # policy.check 的树作用域只对 TREE_SWITCHES（edit/delete/link/unlink/
-    # create_child）生效，read 不在其中——照册字面只传 read 会退化为纯类型
-    # 判权、子树限定失效（兄弟卡互发不被挡）。故类型关口照走 read，
-    # 「收件方必须落在发件方子树内」显式落 _is_in_subtree（向上/跨树发信挡死）。
+    # 权限＝分类 READ 关口（收件卡 perms 须授 read，与改造前逐字同一道）。
     try:
         policy.check(current_id, target_id, policy.SWITCH_READ, cards)
     except PermissionError:
         return err("denied", f"越权：无权向 {target_id} 发送消息")
-    # [用户 10-09 20:24 要点]「方案书卡有不确定的信息，直接发回主卡」——
-    # 子卡须能发回父卡/祖先链。判定由「收件卡必须在发件卡子树内」放宽为
-    # 「两卡同一棵任务树内」（双向各查一次）：父子/祖先链可互发；兄弟、
-    # 跨树仍挡死（双向均不命中）。发信不改树结构，不引入环。
-    # [角色机制 5710] 角色卡离树，不在一棵任务树内——但「角色 ↔ 关注卡」
-    # 是**已建立的订阅边**，允许双向发信（建议/警报回执）。未连线的角色仍挡死。
+    # [角色机制 5710 · rebase 后保留] 角色卡离树、不挂在任何一棵任务树里，但
+    # 「角色 ↔ 关注卡」是**已建立的订阅边**（role_room.link 在两侧卡面各写一条
+    # links），按新口径本就算已有通信线；这里仍显式认这条边，护住只有档案、
+    # 未落 links 的 v1 订阅数据。非角色卡恒 False，一律走下面的线边界。
     _role_edge = role_room.linked(work_id, current_id, target_id)
-    if not _role_edge and not (
-            policy._is_in_subtree(current_id, target_id, cards)
-            or policy._is_in_subtree(target_id, current_id, cards)):
-        return err("denied", f"越权：{target_id} 与你不在一棵任务树内")
+    # [5713 通道试走 · 用户口径 2026-10-20 逐字]「卡间通信有专门的通信线」
+    # ——通信的边界**是通信线，不是 parent 树**。故判定由「两卡同一棵任务树内」
+    # 改为「两卡之间已有通信线」（scope=SCOPE_LINKED，任一侧有 links 条目即成立，
+    # 这样 A 建的线 B 能沿它回话）。沿革：原判定用 _is_in_subtree 双向判定来
+    # 近似"同树"，但兄弟卡彼此都不在对方子树内 ⇒ 平级卡恒不通过、永远通不了话。
+    # 无线即挡死并指路（先 link_cards 建线），跨树跨枝一视同仁。
+    if require_link and not _role_edge:
+        try:
+            policy.check(current_id, target_id, policy.SWITCH_READ, cards,
+                         scope=policy.SCOPE_LINKED)
+        except PermissionError:
+            return err(
+                "denied",
+                f"越权：{target_id} 与你没有通信线——卡间通信走专门的通信线，"
+                f"请先用 link_cards 建一条指向它的线（type 取 关联），再发信")
     # 落信 + 留痕 + 记触发意图（错误在前面全走 err 信封不落档——发信成功才落信）
     #
     # [卡片底座第一步 2026-10-14] **落点改**：从「塞对话块（session_facade.append）」
@@ -3105,6 +3125,10 @@ async def send_card_message(
 
     参数由流程语义决定（不吃模型风格参数包）；本函数只做参数翻译并
     取卡表，随后把真实行为委托给 _h_send_card_message（门槛一条不减）。
+
+    [5713] 本薄壳的调用方全部是**系统/流程**路径（编程卡完工回执、blocked 通知、
+    S4 自动回发）——它们不是"模型自主发起通信"，故传 require_link=False，
+    不受"两卡之间须有通信线"约束（否则完工回执到主卡会被自己的新闸挡死）。
     """
     cards = card_store.iter_card_metas(work_id)
     arguments = {
@@ -3113,7 +3137,8 @@ async def send_card_message(
         "content": content,
         "reply_to": reply_to,
     }
-    return await _h_send_card_message(work_id, from_id, arguments, cards)
+    return await _h_send_card_message(work_id, from_id, arguments, cards,
+                                      require_link=False)
 
 
 # ============================================================
@@ -3212,7 +3237,9 @@ TOOL_REGISTRY["send_card_message"] = ToolDef(
             "处理完后**自动把答案回发给你**（你会被再次唤醒）。\n"
             "msg_answer＝回应你收到的一条询问：必须带 reply_to（原询问的 msg_id）。\n"
             "msg_notify＝告知对方一件事，不需要对方回话。\n"
-            "只能发给同一棵任务树内的卡（父卡／子卡／祖先）；跨树会被拒。"
+            "**前提：卡间通信走专门的通信线**——你和收件卡之间要有一条通信线，"
+            "没有就先用 link_cards 建一条指向它的线（type 取 关联）再发；无线会被拒。"
+            "线是双向的：你建的线，对方能沿同一条线回话。\n"
             "发完不必空等：你可以先做别的，答案回来时系统会唤醒你。"
         ),
         "parameters": {
