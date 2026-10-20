@@ -296,14 +296,14 @@ def test_frontend_version_stamps_bumped():
     chat-view 3→4、main_chat 2.3→2.4（逐字流进装配器，旧 live 旁路退役）；
     style 41→45（本分支既存漂移：home/settings 仍是 40，本次统一到 45）。
     """
-    assert "../stream.js?v=52" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=69" in _read("static/esm/main_chat.js")
-    assert "./stream.js?v=52" in _read("static/workspace.js")
+    assert "../stream.js?v=53" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=70" in _read("static/esm/main_chat.js")
+    assert "./stream.js?v=53" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=5" in _read("static/workspace.js")
     assert "/static/style.css?v=47" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=2.17" in _read("templates/card.html")
-    # [5715] 2.16→2.17：本轮「运行条先入 DOM」改了 chat-view.js（4→5），
-    # 按依赖图级联 ⇒ main_chat 升号（引用它的 card.html 同步）。
+    assert "/static/esm/main_chat.js?v=2.18" in _read("templates/card.html")
+    # [5715] 2.17→2.18：本轮把「消息操作条/卡详情开关」抽成 esm 模块 ⇒ 改了
+    # stream.js/workspace.js ⇒ 按依赖图级联 ⇒ main_chat 升号（引用它的 card.html 同步）。
 
 
 # ════════════════════════════════════════════════════════════════════
