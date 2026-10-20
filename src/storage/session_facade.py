@@ -656,15 +656,20 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
 
 
 async def _emit_block_event(work_id: str, card_id: str,
-                            blk: dict[str, Any], hint: str) -> None:
+                            blk: dict[str, Any], hint: str,
+                            event_content: str | None = None) -> None:
     """[消息底座能力对齐 · 件2] 消息块同步落 events jsonl（裁定 C1/C5）。
 
     落盘位置＝append 成功后、ops 打点之前：会话文件与事件流同一次写路径内
     完成，不新增第二次落盘点。形状由 ``emit_message_event`` 承载（单一来源）。
+
+    [5715] ``event_content`` 非 None 时用它作为**事件流**里的内容（会话块 content 不变），
+    None ⇒ 用块内容（既有行为，逐字不变）。
     """
     ev_type = _block_event_type(str(blk.get("actor") or ""), hint, blk.get("tool_calls"))
+    content = blk.get("content", "") if event_content is None else event_content
     await emit_message_event(
-        work_id, card_id, ev_type, blk.get("content", ""),
+        work_id, card_id, ev_type, content,
         run_id=str(blk.get("pair_id") or ""), round_=int(blk.get("turn") or 0),
         model=str(blk.get("model") or ""), end=str(blk.get("end") or ""),
         source=blk.get("source"),
@@ -784,7 +789,9 @@ def _write_new_blocks_locked(work_id: str, card_id: str, path: Path,
                     work_id, card_id, len(conv) + len(new_blks))
 
 
-async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str, Any]:
+async def append(work_id: str, card_id: str, block: dict[str, Any],
+                 event_content: str | None = None,
+                 emit_event: bool = True) -> dict[str, Any]:
     """追加一块，返回落盘后的完整块（T024）。
 
     门面内自动分配 seq（写入时分配落盘，T053）、turn、pair、闭合轮界
@@ -793,6 +800,11 @@ async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str,
     {content, actor|role, model?, end?, from?, behavior?, pair?, tool_calls?,
     tool_call_id?}。V1 文件先现场升格（4.8：转换→tmp→os.replace→再追加，
     块数不变）。与旧写路径共用 session_store 字节锁（切换过渡期双写方互斥）。
+
+    [5715] ``event_content``：**事件流里这条消息的内容覆盖**（会话块 content 不变）。
+    用于「会话块给模型看的内容」与「事件流给界面看的内容」不同的场景
+    （如：各轮正文已按轮单独落事件，收口那条就不该再落一遍拼接全文）。
+    它是**函数参数不是块字段** ⇒ 不进会话文件、不进块头白名单、不影响模型上下文。
     """
     # [消息底座能力对齐 · 件2] 卡间信的 msg_* 类型由调用方显式给定（瞬态提示，
     # 不进 V2 块头白名单、不落会话文件）；其余块忽略。
@@ -804,7 +816,8 @@ async def append(work_id: str, card_id: str, block: dict[str, Any]) -> dict[str,
         new_blk = _assign_block(existing, block)
         _write_new_blocks_locked(work_id, card_id, path, text, fmt, existing, [new_blk])
     # [消息底座能力对齐 · 件2] 消息块同步落 events jsonl（会话落盘后同路径完成）
-    await _emit_block_event(work_id, card_id, new_blk, event_type_hint)
+    if emit_event:
+        await _emit_block_event(work_id, card_id, new_blk, event_type_hint, event_content)
     # [T152] append 点位：work/card/seq/turn/actor/结果
     session_ops.ops_log("append", work_id, card_id,
                         {"seq": new_blk["seq"], "turn": new_blk["turn"],

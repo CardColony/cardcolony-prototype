@@ -12,7 +12,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=45">
+<link rel="stylesheet" href="/static/style.css?v=47">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -101,20 +101,22 @@
           <path d="M2.5 4h11M2.5 8h11M2.5 12h11"/>
         </svg>
       </button>
-      <!-- [画布入口 2026-10-16 用户令] 顶部栏最左：返回本项目画布的 icon 入口。
-           根卡/子卡聊天态常显（data-view=chat）；画布态隐藏（已在画布，点了无意义）。 -->
-      <button id="canvasEntryBtn" class="canvas-entry" title="返回项目画布" aria-label="返回项目画布">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/>
-          <path d="M1.5 6h13M6 1.5v13"/>
-        </svg>
-      </button>
       <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
       <div id="chatCrumb" class="crumb"></div>
       <span class="spacer"></span>
       <!-- [对话界面商业化 2026-10-17] 顶栏右侧动作区：主题切换（深浅双主题，
            localStorage 记忆）＋ 卡详情抽屉开关（替代原右缘竖排文字标签）。 -->
       <div class="topbar-actions">
+        <!-- [5715 · 修] 「返回项目画布」从顶栏最左移入右侧动作区。
+             原位置紧贴侧栏右缘，视觉上像侧栏自己的控件（实测截图确认），
+             且与面包屑首段「项目名」功能重复 ⇒ 顶栏出现两个「回画布」入口。
+             左侧只留面包屑＝「我在哪」，右侧＝「我能做什么」，两区各司其职。 -->
+        <button id="canvasEntryBtn" class="canvas-entry" title="返回项目画布" aria-label="返回项目画布">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/>
+            <path d="M1.5 6h13M6 1.5v13"/>
+          </svg>
+        </button>
         <button id="procToggleBtn" class="tb-btn" type="button" title="收起过程细节" aria-label="过程细节" aria-pressed="true">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true">
             <path d="M2 4h12M2 8h12M2 12h8"/>
@@ -198,7 +200,7 @@
 <!-- [迭代四 F4②] 通知面板（浮层）：列表项「时间·发件卡名→收件卡名·类型·摘要」；
      点击跳收件卡；format_ok:false 归「格式异常」分组 -->
 <div id="notifyPanel" class="notify-panel">
-  <div class="np-head">卡间消息 <button id="npClose" class="np-close">×</button></div>
+  <div class="np-head">卡间消息 <button id="npClose" class="np-close" aria-label="关闭通知面板">×</button></div>
   <div id="npList" class="np-list"></div>
 </div>
 <!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗（modal）：遮罩＋面板＋标题栏＋
@@ -210,7 +212,7 @@
   <div class="draft-modal-panel" role="dialog" aria-modal="true">
     <div class="draft-modal-head">
       <span id="draftModalTitle">需求文档起草</span>
-      <button class="draft-modal-close" id="draftModalX" title="关闭（丢弃草稿）">×</button>
+      <button class="draft-modal-close" id="draftModalX" title="关闭（丢弃草稿）" aria-label="关闭草稿弹窗">×</button>
     </div>
     <div class="draft-modal-body" id="draftModalBody">
       <div class="draft-area" id="draftArea">起草中…</div>
@@ -238,7 +240,7 @@
   <div class="draft-modal-panel" role="dialog" aria-modal="true">
     <div class="draft-modal-head">
       <span id="statusModalTitle">更新现状 · 原/新对比</span>
-      <button class="draft-modal-close" id="statusModalX" title="关闭（不落盘）">×</button>
+      <button class="draft-modal-close" id="statusModalX" title="关闭（不落盘）" aria-label="关闭现状更新弹窗">×</button>
     </div>
     <div class="draft-modal-body" id="statusModalBody">
       <div class="status-diff" id="statusDiffArea"></div>
