@@ -1,0 +1,540 @@
+{
+  "work_id": "work_004",
+  "role": {
+    "role_id": "card_004",
+    "title": "时间口径观察员",
+    "card_type": "role",
+    "profile": {
+      "role_id": "card_004",
+      "work_id": "work_004",
+      "jurisdiction": {
+        "domain": "timeline_contract",
+        "statement": "接口时间口径：UTC 带 Z 与本地 naive 不得混用",
+        "exclusive_key": "timeline_contract"
+      },
+      "watch": {
+        "cards": [
+          "card_002",
+          "card_003"
+        ],
+        "signals": [
+          "status_changed",
+          "turn_completed"
+        ]
+      },
+      "speak_contract": {
+        "advice_when": [
+          "one_side_missing_constraint"
+        ],
+        "alarm_when": [
+          "mutually_exclusive_fact"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "escalation": {
+        "advice_to": "source_card",
+        "alarm_to": "human",
+        "critical_to": "root_and_human"
+      },
+      "duty": {
+        "state": "active",
+        "since": "2026-10-20T10:30:27.743151+08:00",
+        "last_wake_at": "2026-10-20T10:37:21.440412+08:00",
+        "pending_sync": 0
+      },
+      "charter": {
+        "version": 1,
+        "text": "你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。",
+        "ratified_by": "root:card_001",
+        "ratified_at": "2026-10-20T10:30:27.743151+08:00"
+      },
+      "created_at": "2026-10-20T10:30:27.744216+08:00",
+      "updated_at": "2026-10-20T10:37:21.441416+08:00"
+    },
+    "jurisdiction": {
+      "domain": "timeline_contract",
+      "statement": "接口时间口径：UTC 带 Z 与本地 naive 不得混用",
+      "exclusive_key": "timeline_contract"
+    },
+    "watch": {
+      "cards": [
+        {
+          "card_id": "card_002",
+          "title": "甲·接口层",
+          "card_type": "sub_project"
+        },
+        {
+          "card_id": "card_003",
+          "title": "乙·数据层",
+          "card_type": "sub_project"
+        }
+      ],
+      "signals": [
+        "status_changed",
+        "turn_completed"
+      ]
+    },
+    "speak_contract": {
+      "advice_when": [
+        "one_side_missing_constraint"
+      ],
+      "alarm_when": [
+        "mutually_exclusive_fact"
+      ],
+      "silence_default": true,
+      "max_messages_per_wake": 2
+    },
+    "escalation": {
+      "advice_to": "source_card",
+      "alarm_to": "human",
+      "critical_to": "root_and_human"
+    },
+    "duty": {
+      "state": "active",
+      "since": "2026-10-20T10:30:27.743151+08:00",
+      "last_wake_at": "2026-10-20T10:37:21.440412+08:00",
+      "pending_sync": 0
+    },
+    "charter": {
+      "version": 1,
+      "text": "你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。",
+      "ratified_by": "root:card_001",
+      "history": [
+        {
+          "version": 1,
+          "text": "你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。",
+          "ratified_by": "root:card_001",
+          "ratified_at": "2026-10-20T10:30:27.743151+08:00",
+          "note": "组阁立项"
+        }
+      ]
+    },
+    "verdicts": [
+      {
+        "id": "92984ac904f2",
+        "ts": "2026-10-20T10:37:07.346148+08:00",
+        "decision": "speak",
+        "reason": "card_002 与 card_003 对同一字段 created_at/finished_at 给出互斥时间写法（UTC 带 Z vs 东八区 19 字符 naive），命中 mutually_exclusive_fact，发 warn 警报并各发一条 msg_notify。",
+        "sources": [
+          "card_002",
+          "card_003"
+        ],
+        "targets": [
+          "card_002",
+          "card_003"
+        ],
+        "evidence": [
+          "card_002 现状：「接口返回时间字段 created_at/finished_at。口径：UTC，字符串带 Z 后缀（如 2026-10-20T01:44:28Z）。」",
+          "card_003 现状：「接口返回时间字段 created_at/finished_at。口径：本地时间（东八区），字符串不含 +08:00/Z 后缀，19 字符。」",
+          "card_002 影子卡：待协作事项为空、无产物清单（无实现细节可判别谁在实现口径）",
+          "card_003 影子卡：待协作事项为空、无产物清单",
+          "两卡定论块 D01–D03 均为占位文本，未见口径裁定记录"
+        ],
+        "auto": false,
+        "superseded_by": ""
+      }
+    ],
+    "alarms": [
+      {
+        "id": "2a4091737967",
+        "ts": "2026-10-20T10:37:07.309837+08:00",
+        "role_id": "card_004",
+        "severity": "warn",
+        "title": "时间口径互斥：同一字段两卡给出互斥写法（UTC+Z vs 本地 naive）",
+        "detail": "card_002《甲·接口层》现状写：created_at/finished_at 口径为 UTC，字符串带 Z 后缀，样例 2026-10-20T01:44:28Z。\ncard_003《乙·数据层》现状写：created_at/finished_at 口径为本地时间（东八区），字符串不含 +08:00/Z 后缀，19 字符。\n两者是同一对接口字段、同一事实的互斥写法，属 mutually_exclusive_fact。影响：下游按 UTC 解析 19 字符 naive 值会按 UTC 解读，东八区场景下产生 8 小时偏差且无标识可辨。\n已分别向 card_002、card_003 发 msg_notify，建议由根卡 card_001 裁定唯一口径，另一方对齐。",
+        "status": "open",
+        "acked_at": "",
+        "corrected_by": "",
+        "supersedes": ""
+      }
+    ],
+    "open_alarms": [
+      {
+        "id": "2a4091737967",
+        "ts": "2026-10-20T10:37:07.309837+08:00",
+        "role_id": "card_004",
+        "severity": "warn",
+        "title": "时间口径互斥：同一字段两卡给出互斥写法（UTC+Z vs 本地 naive）",
+        "detail": "card_002《甲·接口层》现状写：created_at/finished_at 口径为 UTC，字符串带 Z 后缀，样例 2026-10-20T01:44:28Z。\ncard_003《乙·数据层》现状写：created_at/finished_at 口径为本地时间（东八区），字符串不含 +08:00/Z 后缀，19 字符。\n两者是同一对接口字段、同一事实的互斥写法，属 mutually_exclusive_fact。影响：下游按 UTC 解析 19 字符 naive 值会按 UTC 解读，东八区场景下产生 8 小时偏差且无标识可辨。\n已分别向 card_002、card_003 发 msg_notify，建议由根卡 card_001 裁定唯一口径，另一方对齐。",
+        "status": "open",
+        "acked_at": "",
+        "corrected_by": "",
+        "supersedes": ""
+      }
+    ],
+    "pending_sources": [],
+    "text": "## 管辖\n接口时间口径：UTC 带 Z 与本地 naive 不得混用\n责任域: timeline_contract（排他键 timeline_contract）\n\n## 关注\n工作卡: card_002, card_003\n关注信号: status_changed, turn_completed\n\n## 发言契约\n建议条件: one_side_missing_constraint\n警报条件: mutually_exclusive_fact\n默认沉默: True；单次最多发言: 2\n\n## 升级线\n建议→source_card；警报→human；严重→root_and_human\n\n## 值班\n状态: active；最后巡检: 2026-10-20T10:37:21.440412+08:00；待同步: 0 源\n\n## 判断簿\n- 2026-10-20T10:37 speak · card_002 与 card_003 对同一字段 created_at/finished_at 给出互斥时间写法（UTC 带 Z vs 东八区 19 字符 naive），命中 mutually_exclusive_fact，发 warn 警报并各发一条 msg_notify。\n\n## 警报簿\n- 2026-10-20T10:37 [warn/open] 时间口径互斥：同一字段两卡给出互斥写法（UTC+Z vs 本地 naive）\n\n## 职责书（v1）\n你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。"
+  },
+  "alarms": {
+    "alarms": [
+      {
+        "id": "2a4091737967",
+        "ts": "2026-10-20T10:37:07.309837+08:00",
+        "role_id": "card_004",
+        "severity": "warn",
+        "title": "时间口径互斥：同一字段两卡给出互斥写法（UTC+Z vs 本地 naive）",
+        "detail": "card_002《甲·接口层》现状写：created_at/finished_at 口径为 UTC，字符串带 Z 后缀，样例 2026-10-20T01:44:28Z。\ncard_003《乙·数据层》现状写：created_at/finished_at 口径为本地时间（东八区），字符串不含 +08:00/Z 后缀，19 字符。\n两者是同一对接口字段、同一事实的互斥写法，属 mutually_exclusive_fact。影响：下游按 UTC 解析 19 字符 naive 值会按 UTC 解读，东八区场景下产生 8 小时偏差且无标识可辨。\n已分别向 card_002、card_003 发 msg_notify，建议由根卡 card_001 裁定唯一口径，另一方对齐。",
+        "status": "open",
+        "acked_at": "",
+        "corrected_by": "",
+        "supersedes": ""
+      }
+    ]
+  },
+  "messages": {
+    "items": [
+      {
+        "id": "card_004-4c642ddb",
+        "ts": "2026-10-20T10:37:07.342147+08:00",
+        "seq": 2,
+        "from_card": "card_004",
+        "from_title": "时间口径观察员",
+        "to_card": "card_003",
+        "msg_type": "msg_notify",
+        "type_display": "通知",
+        "summary": "【时间口径观察员·warn】card_002 与 card_003 对同一对字段 created_at/finished_at 给出互斥口径：你写本地东八区、1",
+        "format_ok": true
+      },
+      {
+        "id": "card_004-89e853d0",
+        "ts": "2026-10-20T10:37:07.330145+08:00",
+        "seq": 1,
+        "from_card": "card_004",
+        "from_title": "时间口径观察员",
+        "to_card": "card_002",
+        "msg_type": "msg_notify",
+        "type_display": "通知",
+        "summary": "【时间口径观察员·warn】card_002 与 card_003 对同一对字段 created_at/finished_at 给出互斥口径：你写 UTC 带 ",
+        "format_ok": true
+      }
+    ],
+    "unread_by_card": {
+      "card_002": 1,
+      "card_003": 1
+    }
+  },
+  "role_card": {
+    "meta": {
+      "card_id": "card_004",
+      "title": "时间口径观察员",
+      "source": "系统派生",
+      "card_type": "role",
+      "parent": "",
+      "state": "active",
+      "tags": [],
+      "links": [
+        {
+          "target": "card_002",
+          "type": "关注",
+          "note": "由根卡 card_001建立"
+        },
+        {
+          "target": "card_003",
+          "type": "关注",
+          "note": "由根卡 card_001建立"
+        }
+      ],
+      "relations": [],
+      "session_ref": "sessions/session_004.md",
+      "perms": [
+        "read",
+        "edit",
+        "read_linked",
+        "send_card_message",
+        "shadow_write"
+      ],
+      "perms_version": 6,
+      "created_at": "2026-10-20T10:30:27.713517+08:00",
+      "updated_at": "2026-10-20T10:37:15.058012+08:00",
+      "auto_mode": 0,
+      "goal_rounds": 0,
+      "goal_await_children": 0,
+      "goal_await_wakes": 0
+    },
+    "body": {
+      "mission": "你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。",
+      "status_block": "值班中。已发出警报 2a4091737967（warn）：card_002 与 card_003 对同一对字段 created_at/finished_at 给出互斥口径——card_002＝UTC 带 Z（2026-10-20T01:44:28Z），card_003＝东八区本地 naive（19 字符、无 +08:00/Z）。已各发 msg_notify（card_004-89e853d0→card_002、card_004-4c642ddb→card_003），要求对齐并推动根卡 card_001 裁定唯一口径、注明裁定来源后回执。\n\n现状核验到的事实：两卡影子卡均为空（无进度、无待协作、无产物清单），定论块 D01–D03 仍是占位文本，无口径裁定记录——因此无法从过程记录判断哪一侧已实现，判定按现状文本的互斥写法成立。\n\n阻塞点：在根卡 card_001 裁定唯一时间口径、两卡回执前，本域无新增可判内容。判定标准见定论块。",
+      "requirements": "D01【裁定】同一对字段名（created_at/finished_at）在两卡现状中给出互斥口径时，判 mutually_exclusive_fact：一律先 raise_alarm(warn) 再各发一条 msg_notify，即使两卡影子卡/定论块为空、无法判断哪一侧已实现——互斥的是对外事实本身，与实现进度无关。只发通知不给裁定方案：口径归属由根卡 card_001 定，工作卡不得单方改口径后只通知另一方。（2026-10-20）",
+      "history": [
+        "- [2026-10-20T10:30:27.713517+08:00] 卡片创建",
+        "- [2026-10-20T10:30:27.750740+08:00] [角色] 根卡 card_001建立订阅：card_004 ↔ card_002",
+        "- [2026-10-20T10:30:27.801859+08:00] [角色] 根卡 card_001建立订阅：card_004 ↔ card_003",
+        "- [2026-10-20T10:37:15.046013+08:00] 由「时间口径观察员」更新现状",
+        "- [2026-10-20T10:37:15.058012+08:00] 由「时间口径观察员」追加定论 D01"
+      ]
+    },
+    "role": {
+      "role_id": "card_004",
+      "title": "时间口径观察员",
+      "card_type": "role",
+      "profile": {
+        "role_id": "card_004",
+        "work_id": "work_004",
+        "jurisdiction": {
+          "domain": "timeline_contract",
+          "statement": "接口时间口径：UTC 带 Z 与本地 naive 不得混用",
+          "exclusive_key": "timeline_contract"
+        },
+        "watch": {
+          "cards": [
+            "card_002",
+            "card_003"
+          ],
+          "signals": [
+            "status_changed",
+            "turn_completed"
+          ]
+        },
+        "speak_contract": {
+          "advice_when": [
+            "one_side_missing_constraint"
+          ],
+          "alarm_when": [
+            "mutually_exclusive_fact"
+          ],
+          "silence_default": true,
+          "max_messages_per_wake": 2
+        },
+        "escalation": {
+          "advice_to": "source_card",
+          "alarm_to": "human",
+          "critical_to": "root_and_human"
+        },
+        "duty": {
+          "state": "active",
+          "since": "2026-10-20T10:30:27.743151+08:00",
+          "last_wake_at": "2026-10-20T10:37:21.440412+08:00",
+          "pending_sync": 0
+        },
+        "charter": {
+          "version": 1,
+          "text": "你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。",
+          "ratified_by": "root:card_001",
+          "ratified_at": "2026-10-20T10:30:27.743151+08:00"
+        },
+        "created_at": "2026-10-20T10:30:27.744216+08:00",
+        "updated_at": "2026-10-20T10:37:21.441416+08:00"
+      },
+      "jurisdiction": {
+        "domain": "timeline_contract",
+        "statement": "接口时间口径：UTC 带 Z 与本地 naive 不得混用",
+        "exclusive_key": "timeline_contract"
+      },
+      "watch": {
+        "cards": [
+          {
+            "card_id": "card_002",
+            "title": "甲·接口层",
+            "card_type": "sub_project"
+          },
+          {
+            "card_id": "card_003",
+            "title": "乙·数据层",
+            "card_type": "sub_project"
+          }
+        ],
+        "signals": [
+          "status_changed",
+          "turn_completed"
+        ]
+      },
+      "speak_contract": {
+        "advice_when": [
+          "one_side_missing_constraint"
+        ],
+        "alarm_when": [
+          "mutually_exclusive_fact"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "escalation": {
+        "advice_to": "source_card",
+        "alarm_to": "human",
+        "critical_to": "root_and_human"
+      },
+      "duty": {
+        "state": "active",
+        "since": "2026-10-20T10:30:27.743151+08:00",
+        "last_wake_at": "2026-10-20T10:37:21.440412+08:00",
+        "pending_sync": 0
+      },
+      "charter": {
+        "version": 1,
+        "text": "你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。",
+        "ratified_by": "root:card_001",
+        "history": [
+          {
+            "version": 1,
+            "text": "你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。",
+            "ratified_by": "root:card_001",
+            "ratified_at": "2026-10-20T10:30:27.743151+08:00",
+            "note": "组阁立项"
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "92984ac904f2",
+          "ts": "2026-10-20T10:37:07.346148+08:00",
+          "decision": "speak",
+          "reason": "card_002 与 card_003 对同一字段 created_at/finished_at 给出互斥时间写法（UTC 带 Z vs 东八区 19 字符 naive），命中 mutually_exclusive_fact，发 warn 警报并各发一条 msg_notify。",
+          "sources": [
+            "card_002",
+            "card_003"
+          ],
+          "targets": [
+            "card_002",
+            "card_003"
+          ],
+          "evidence": [
+            "card_002 现状：「接口返回时间字段 created_at/finished_at。口径：UTC，字符串带 Z 后缀（如 2026-10-20T01:44:28Z）。」",
+            "card_003 现状：「接口返回时间字段 created_at/finished_at。口径：本地时间（东八区），字符串不含 +08:00/Z 后缀，19 字符。」",
+            "card_002 影子卡：待协作事项为空、无产物清单（无实现细节可判别谁在实现口径）",
+            "card_003 影子卡：待协作事项为空、无产物清单",
+            "两卡定论块 D01–D03 均为占位文本，未见口径裁定记录"
+          ],
+          "auto": false,
+          "superseded_by": ""
+        }
+      ],
+      "alarms": [
+        {
+          "id": "2a4091737967",
+          "ts": "2026-10-20T10:37:07.309837+08:00",
+          "role_id": "card_004",
+          "severity": "warn",
+          "title": "时间口径互斥：同一字段两卡给出互斥写法（UTC+Z vs 本地 naive）",
+          "detail": "card_002《甲·接口层》现状写：created_at/finished_at 口径为 UTC，字符串带 Z 后缀，样例 2026-10-20T01:44:28Z。\ncard_003《乙·数据层》现状写：created_at/finished_at 口径为本地时间（东八区），字符串不含 +08:00/Z 后缀，19 字符。\n两者是同一对接口字段、同一事实的互斥写法，属 mutually_exclusive_fact。影响：下游按 UTC 解析 19 字符 naive 值会按 UTC 解读，东八区场景下产生 8 小时偏差且无标识可辨。\n已分别向 card_002、card_003 发 msg_notify，建议由根卡 card_001 裁定唯一口径，另一方对齐。",
+          "status": "open",
+          "acked_at": "",
+          "corrected_by": "",
+          "supersedes": ""
+        }
+      ],
+      "open_alarms": [
+        {
+          "id": "2a4091737967",
+          "ts": "2026-10-20T10:37:07.309837+08:00",
+          "role_id": "card_004",
+          "severity": "warn",
+          "title": "时间口径互斥：同一字段两卡给出互斥写法（UTC+Z vs 本地 naive）",
+          "detail": "card_002《甲·接口层》现状写：created_at/finished_at 口径为 UTC，字符串带 Z 后缀，样例 2026-10-20T01:44:28Z。\ncard_003《乙·数据层》现状写：created_at/finished_at 口径为本地时间（东八区），字符串不含 +08:00/Z 后缀，19 字符。\n两者是同一对接口字段、同一事实的互斥写法，属 mutually_exclusive_fact。影响：下游按 UTC 解析 19 字符 naive 值会按 UTC 解读，东八区场景下产生 8 小时偏差且无标识可辨。\n已分别向 card_002、card_003 发 msg_notify，建议由根卡 card_001 裁定唯一口径，另一方对齐。",
+          "status": "open",
+          "acked_at": "",
+          "corrected_by": "",
+          "supersedes": ""
+        }
+      ],
+      "pending_sources": [],
+      "text": "## 管辖\n接口时间口径：UTC 带 Z 与本地 naive 不得混用\n责任域: timeline_contract（排他键 timeline_contract）\n\n## 关注\n工作卡: card_002, card_003\n关注信号: status_changed, turn_completed\n\n## 发言契约\n建议条件: one_side_missing_constraint\n警报条件: mutually_exclusive_fact\n默认沉默: True；单次最多发言: 2\n\n## 升级线\n建议→source_card；警报→human；严重→root_and_human\n\n## 值班\n状态: active；最后巡检: 2026-10-20T10:37:21.440412+08:00；待同步: 0 源\n\n## 判断簿\n- 2026-10-20T10:37 speak · card_002 与 card_003 对同一字段 created_at/finished_at 给出互斥时间写法（UTC 带 Z vs 东八区 19 字符 naive），命中 mutually_exclusive_fact，发 warn 警报并各发一条 msg_notify。\n\n## 警报簿\n- 2026-10-20T10:37 [warn/open] 时间口径互斥：同一字段两卡给出互斥写法（UTC+Z vs 本地 naive）\n\n## 职责书（v1）\n你只盯接口时间口径。两卡对同一事实给出互斥写法（一方 UTC 带 Z、另一方本地无后缀）就立即 raise_alarm(warn) 并给两卡各发一条 msg_notify；如果只是一方缺约束、不互斥，只发建议；没有新增矛盾就沉默。每次必须 record_verdict，evidence 写你实际读到的卡/字段。"
+    }
+  },
+  "a": {
+    "meta": {
+      "card_id": "card_002",
+      "title": "甲·接口层",
+      "source": "用户直接创建",
+      "card_type": "sub_project",
+      "parent": "card_001",
+      "state": "active",
+      "tags": [],
+      "links": [
+        {
+          "target": "card_004",
+          "type": "角色",
+          "note": "由根卡 card_001建立"
+        }
+      ],
+      "relations": [],
+      "session_ref": "sessions/session_002.md",
+      "perms": [
+        "read",
+        "edit",
+        "delete",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "tools_file",
+        "tools_web",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "perms_version": 6,
+      "created_at": "2026-10-20T10:30:27.536335+08:00",
+      "updated_at": "2026-10-20T10:30:27.765853+08:00",
+      "auto_mode": 0,
+      "goal_rounds": 0,
+      "goal_await_children": 0,
+      "goal_await_wakes": 0
+    },
+    "body": {
+      "mission": "（本卡作用/目标、授权来源；≤5行；立项定稿，改动需用户确认）",
+      "status_block": "接口返回时间字段 created_at/finished_at。口径：UTC，字符串带 Z 后缀（如 2026-10-20T01:44:28Z）。",
+      "requirements": "（对本卡相关事项的决定；只追加，仅经收口仪式写入）\nD01【裁定】……（日期·依据）\nD02【决定】……（日期·依据）\nD03【收敛】……（日期·死过什么）\n→ 被D05取代（因……）",
+      "history": [
+        "- [2026-10-20T10:30:27.536335+08:00] 卡片创建",
+        "- [2026-10-20T10:30:27.659147+08:00] 预置现状",
+        "- [2026-10-20T10:30:27.765853+08:00] [角色] 根卡 card_001建立订阅：card_002 ↔ card_004"
+      ]
+    }
+  },
+  "b": {
+    "meta": {
+      "card_id": "card_003",
+      "title": "乙·数据层",
+      "source": "用户直接创建",
+      "card_type": "sub_project",
+      "parent": "card_001",
+      "state": "active",
+      "tags": [],
+      "links": [
+        {
+          "target": "card_004",
+          "type": "角色",
+          "note": "由根卡 card_001建立"
+        }
+      ],
+      "relations": [],
+      "session_ref": "sessions/session_003.md",
+      "perms": [
+        "read",
+        "edit",
+        "delete",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "tools_file",
+        "tools_web",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "perms_version": 6,
+      "created_at": "2026-10-20T10:30:27.599334+08:00",
+      "updated_at": "2026-10-20T10:30:27.818325+08:00",
+      "auto_mode": 0,
+      "goal_rounds": 0,
+      "goal_await_children": 0,
+      "goal_await_wakes": 0
+    },
+    "body": {
+      "mission": "（本卡作用/目标、授权来源；≤5行；立项定稿，改动需用户确认）",
+      "status_block": "接口返回时间字段 created_at/finished_at。口径：本地时间（东八区），字符串不含 +08:00/Z 后缀，19 字符。",
+      "requirements": "（对本卡相关事项的决定；只追加，仅经收口仪式写入）\nD01【裁定】……（日期·依据）\nD02【决定】……（日期·依据）\nD03【收敛】……（日期·死过什么）\n→ 被D05取代（因……）",
+      "history": [
+        "- [2026-10-20T10:30:27.599334+08:00] 卡片创建",
+        "- [2026-10-20T10:30:27.688612+08:00] 预置现状",
+        "- [2026-10-20T10:30:27.818325+08:00] [角色] 根卡 card_001建立订阅：card_003 ↔ card_004"
+      ]
+    }
+  }
+}

@@ -966,12 +966,15 @@ async def manual_check(work_id: str, role_id: str) -> dict[str, Any]:
         if not src:
             continue
         last = await _last_seq(work_id, src)
+        # 工作卡可能只有「现状」而没有会话块（用户直接改现状/预置场景）：
+        # 人工巡检仍要把当前现状作为一个区间给它看，不能因 last<0 静默跳过。
         if last < 0:
-            continue
+            last = 0
         from_seq = await _sync_from(work_id, role_id, src)
         if last >= from_seq:
-            await role_store.add_sync(work_id, role_id, src, from_seq, last,
-                                      ["manual_check"])
+            await role_store.add_sync(
+                work_id, role_id, src, from_seq, last,
+                ["manual_check", "status_changed", "decision_appended"])
     started = spawn(work_id, role_id)
     return {"started": started,
             "pending_sources": [p["source"] for p in pending_batch(work_id, role_id)]}
