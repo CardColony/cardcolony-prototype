@@ -1,0 +1,269 @@
+{
+  "started_at": "2026-10-20T15:01:44",
+  "base": "http://127.0.0.1:5713",
+  "arms": [
+    {
+      "arm": "control",
+      "steps": [
+        {
+          "step": "create_work",
+          "at": "2026-10-20T15:01:44",
+          "ok": true,
+          "work_id": "work_006",
+          "root": "card_001"
+        },
+        {
+          "step": "patch_root_auto",
+          "at": "2026-10-20T15:01:44",
+          "ok": true
+        },
+        {
+          "step": "send_task",
+          "at": "2026-10-20T15:03:48",
+          "status": 200,
+          "resp": "{'reply': '先勘探环境：看看 5713 沙箱里有什么数据结构。\\n\\n两个目录都是空的。用 shell 进一步勘探整个 5713 沙箱的目录结构。\\n\\n勘探已完成，环境结构清楚。把拆分方案写进现状块，然后 pause 等批复。\\n\\n拆分方案已获批复，现在按方案建 3 张编程子卡并行执行巡检。\\n\\n三张编程子卡已派出并开跑（card_002 works 完整性 / card_003 "
+        },
+        {
+          "step": "plan_captured",
+          "at": "2026-10-20T15:04:03",
+          "phase": "post_hoc",
+          "plan_chars": 0
+        },
+        {
+          "step": "inject_reply",
+          "at": "2026-10-20T15:04:25",
+          "arm": "control",
+          "status": 200,
+          "resp": "{'reply': '三张编程子卡正在并行执行中：\\n\\n- **card_002「巡检·works 数据完整性」** — 校验 6 个 work 的 canvas/work.json/cards.db/events/sessions/memory\\n- **card_003「巡检·快照与恢复路径」** — 快照清点＋指纹核验＋还原演练\\n- **card_004「巡检·运行日志留痕质量」** —"
+        },
+        {
+          "step": "children_stable",
+          "at": "2026-10-20T15:05:40",
+          "n": 3
+        },
+        {
+          "step": "evidence_collected",
+          "at": "2026-10-20T15:05:40",
+          "children": 3,
+          "create_calls": 3
+        },
+        {
+          "step": "cleanup_done",
+          "at": "2026-10-20T15:05:40",
+          "cards": 4
+        }
+      ],
+      "work_id": "work_006",
+      "root": "card_001",
+      "phase": "post_hoc",
+      "plan_pre": "",
+      "children": [
+        {
+          "card_id": "card_002",
+          "title": "巡检·works 数据完整性",
+          "card_type": "coder",
+          "goal_state": "active",
+          "goal_text": "巡检 5713 沙箱 works 卡片数据完整性。范围仅限 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\works\\（硬约束：不得读写该沙箱以外的任何路径，尤其不许碰 5700）。\n\n任务内容：\n1. 对 work_001 ~ work_006 逐一检查：\n   - canvas.json、work.json、model_override.json：存在性、JSON 可解析、关键字段（work.json 的 work_id/title/work_card_id/created_at）\n   - cards.db（及存在的 cards.db-wal/cards.db-shm）：用 sqlite3 打开（只读模式 uri，如 file:...?mode=ro），执行 PRAGMA integrity_check，列出表清单与每张表行数\n   - events\\*.jsonl：逐行 JSON 解析，统计行数与解析失败行号\n   - sessions\\*.md：存在、非空、可读（UTF-8）\n   - memory\\*：存在的 work 检查 JSON 可解析；缺失 memory 目录的 work 要记录\n   - _ops\\revisions.jsonl：逐行可解析\n2. 检查 works\\_ops\\session_ops.jsonl 逐行 JSON 可解析、统计行数。\n3. 把检查结果写成一份 Markdown 结论文件：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\inspect_works.md\n   格式：每 work 一节，每类文件一行结论（OK / 缺块 / 损坏 / 不可读＋证据如错误信息、行号）；最后给一张汇总表与发现的问题清单。\n完成后 report_done(summary) 报告文件路径与主要发现条数。",
+          "score": {
+            "chars": 837,
+            "step_markers": 3,
+            "howto_hits": 0,
+            "mission_hits": 0,
+            "has_acceptance": false,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_003",
+          "title": "巡检·快照与恢复路径",
+          "card_type": "coder",
+          "goal_state": "active",
+          "goal_text": "巡检 5713 沙箱「快照与恢复路径」。范围仅限 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\（硬约束：不得读写该沙箱以外的任何路径，尤其不许碰 5700）。\n\n任务内容：\n1. 快照在位清点：snapshots\\work_001~work_006\\ 与 snapshots\\_ops\\ 下每个时点快照目录，列出每个快照内含什么（works\\ 子树？哪些文件？canvas.json/cards.db/work.json/sessions 是否齐全）。统计每 work 快照数。\n2. 指纹核验：读取沙箱根 .snapshot_fingerprints.json（含 6 个 work 的 sha256），判断该指纹口径（自己推断或按文件内容说明它对应什么），尝试对各 work 现行 works\\<id> 目录做一致口径的 sha256 比对，报告哪些匹配、哪些不匹配、哪些无法判定。\n3. 恢复演练（抽样）：从 work_001 的任一时点快照，把其 works\\work_001 副本复制到 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\restore_test\\work_001\\，然后校验还原件可读（canvas.json JSON 可解析、cards.db 可用 sqlite3 只读打开并 SELECT 出数据、work.json 可解析、sessions 文件非空）。演练完成后可保留或删除 restore_test 目录（报告中注明）。\n4. 结论文件：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\inspect_snapshots.md\n   内容：快照清单＋每快照完整性结论、指纹核验结果、恢复演练证据（还原了哪些文件、校验输出摘录）、问题清单与「哪些是好的」。\n完成后 report_done(summary) 报告文件路径与主要发现条数。",
+          "score": {
+            "chars": 889,
+            "step_markers": 4,
+            "howto_hits": 1,
+            "mission_hits": 0,
+            "has_acceptance": false,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_004",
+          "title": "巡检·运行日志留痕质量",
+          "card_type": "coder",
+          "goal_state": "active",
+          "goal_text": "巡检 5713 沙箱「运行日志留痕质量」。范围仅限 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\（硬约束：不得读写该沙箱以外的任何路径，尤其不许碰 5700）。\n\n任务内容：\n1. logs\\ 目录：共 16 个文件（prompt_card_XXX_时间戳.json ×15 ＋ perm 相关 ×1）。逐文件检查：存在、非空、JSON 可解析；对 prompt_*.json 分析其结构（顶层键、是否含完整提示词/模型/时间信息），统计覆盖哪些 card、时间分布；判断单份日志是否足以还原「这一轮模型看到了什么」。\n2. experiments\\ask_once\\：检查 ask_once_experiment.py、console.log、run.log、evidence_ask_once.json 四件套是否齐全可读；评估 run.log（注意其中 GBK 中文在 UTF-8 下可能乱码，按 GBK 读取试试）＋console.log＋evidence json 三者组合是否足以复盘 2026-10-20 那次 control 实验运行（做了什么、结果如何、有没有失败记录如 14:56 的 URLError）。\n3. 示范复盘：用上述日志实际复盘一次运行（写 3~6 句：什么时间、哪个实验、创建了什么、成功/失败、依据哪些文件）。\n4. 结论文件：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\inspect_logs.md\n   内容：逐文件结论表、复盘示范、问题清单（含严重度建议）与「哪些是好的」。\n完成后 report_done(summary) 报告文件路径与主要发现条数。",
+          "score": {
+            "chars": 766,
+            "step_markers": 4,
+            "howto_hits": 3,
+            "mission_hits": 0,
+            "has_acceptance": false,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "create_card_calls": [
+        {
+          "tool": "create_coder_card",
+          "args": {
+            "task": "巡检 5713 沙箱 works 卡片数据完整性。范围仅限 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\works\\（硬约束：不得读写该沙箱以外的任何路径，尤其不许碰 5700）。\n\n任务内容：\n1. 对 work_001 ~ work_006 逐一检查：\n   - canvas.json、work.json、model_override.json：存在性、JSON 可解析、关键字段（work.json 的 work_id/title/work_card_id/created_at）\n   - cards.db（及存在的 cards.db-wal/cards.db-shm）：用 sqlite3 打开（只读模式 uri，如 file:...?mode=ro），执行 PRAGMA integrity_check，列出表清单与每张表行数\n   - events\\*.jsonl：逐行 JSON 解析，统计行数与解析失败行号\n   - sessions\\*.md：存在、非空、可读（UTF-8）\n   - memory\\*：存在的 work 检查 JSON 可解析；缺失 memory 目录的 work 要记录\n   - _ops\\revisions.jsonl：逐行可解析\n2. 检查 works\\_ops\\session_ops.jsonl 逐行 JSON 可解析、统计行数。\n3. 把检查结果写成一份 Markdown 结论文件：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\inspect_works.md\n   格式：每 work 一节，每类文件一行结论（OK / 缺块 / 损坏 / 不可读＋证据如错误信息、行号）；最后给一张汇总表与发现的问题清单。\n完成后 report_done(summary) 报告文件路径与主要发现条数。",
+            "title": "巡检·works 数据完整性"
+          },
+          "ts": "2026-10-20T15:03:41.083+08:00",
+          "seq": 153,
+          "score": {
+            "chars": 1,
+            "step_markers": 0,
+            "howto_hits": 0,
+            "mission_hits": 0,
+            "has_acceptance": false,
+            "cls": "mixed"
+          }
+        },
+        {
+          "tool": "create_coder_card",
+          "args": {
+            "task": "巡检 5713 沙箱「快照与恢复路径」。范围仅限 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\（硬约束：不得读写该沙箱以外的任何路径，尤其不许碰 5700）。\n\n任务内容：\n1. 快照在位清点：snapshots\\work_001~work_006\\ 与 snapshots\\_ops\\ 下每个时点快照目录，列出每个快照内含什么（works\\ 子树？哪些文件？canvas.json/cards.db/work.json/sessions 是否齐全）。统计每 work 快照数。\n2. 指纹核验：读取沙箱根 .snapshot_fingerprints.json（含 6 个 work 的 sha256），判断该指纹口径（自己推断或按文件内容说明它对应什么），尝试对各 work 现行 works\\<id> 目录做一致口径的 sha256 比对，报告哪些匹配、哪些不匹配、哪些无法判定。\n3. 恢复演练（抽样）：从 work_001 的任一时点快照，把其 works\\work_001 副本复制到 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\restore_test\\work_001\\，然后校验还原件可读（canvas.json JSON 可解析、cards.db 可用 sqlite3 只读打开并 SELECT 出数据、work.json 可解析、sessions 文件非空）。演练完成后可保留或删除 restore_test 目录（报告中注明）。\n4. 结论文件：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\inspect_snapshots.md\n   内容：快照清单＋每快照完整性结论、指纹核验结果、恢复演练证据（还原了哪些文件、校验输出摘录）、问题清单与「哪些是好的」。\n完成后 report_done(summary) 报告文件路径与主要发现条数。",
+            "title": "巡检·快照与恢复路径"
+          },
+          "ts": "2026-10-20T15:03:41.139+08:00",
+          "seq": 155,
+          "score": {
+            "chars": 1,
+            "step_markers": 0,
+            "howto_hits": 0,
+            "mission_hits": 0,
+            "has_acceptance": false,
+            "cls": "mixed"
+          }
+        },
+        {
+          "tool": "create_coder_card",
+          "args": {
+            "task": "巡检 5713 沙箱「运行日志留痕质量」。范围仅限 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\（硬约束：不得读写该沙箱以外的任何路径，尤其不许碰 5700）。\n\n任务内容：\n1. logs\\ 目录：共 16 个文件（prompt_card_XXX_时间戳.json ×15 ＋ perm 相关 ×1）。逐文件检查：存在、非空、JSON 可解析；对 prompt_*.json 分析其结构（顶层键、是否含完整提示词/模型/时间信息），统计覆盖哪些 card、时间分布；判断单份日志是否足以还原「这一轮模型看到了什么」。\n2. experiments\\ask_once\\：检查 ask_once_experiment.py、console.log、run.log、evidence_ask_once.json 四件套是否齐全可读；评估 run.log（注意其中 GBK 中文在 UTF-8 下可能乱码，按 GBK 读取试试）＋console.log＋evidence json 三者组合是否足以复盘 2026-10-20 那次 control 实验运行（做了什么、结果如何、有没有失败记录如 14:56 的 URLError）。\n3. 示范复盘：用上述日志实际复盘一次运行（写 3~6 句：什么时间、哪个实验、创建了什么、成功/失败、依据哪些文件）。\n4. 结论文件：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\inspect_logs.md\n   内容：逐文件结论表、复盘示范、问题清单（含严重度建议）与「哪些是好的」。\n完成后 report_done(summary) 报告文件路径与主要发现条数。",
+            "title": "巡检·运行日志留痕质量"
+          },
+          "ts": "2026-10-20T15:03:41.391+08:00",
+          "seq": 157,
+          "score": {
+            "chars": 1,
+            "step_markers": 0,
+            "howto_hits": 0,
+            "mission_hits": 0,
+            "has_acceptance": false,
+            "cls": "mixed"
+          }
+        }
+      ],
+      "root_final_status": "## 巡检范围勘探结果（2026-10-20）\n\n沙箱根：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\`，结构如下：\n- `works\\`：work_001~work_006 六个工作实例，每个含 canvas.json / cards.db（部分带 wal/shm）/ work.json / events\\（jsonl 事件流）/ sessions\\（会话留痕 md）/ memory\\（work_006 缺该目录）/ _ops\\revisions.jsonl；另有 works\\_ops\\session_ops.jsonl\n- `snapshots\\`：按 work_001~006 分组的时序快照目录（每组 2~12 个时点快照＋daily_20261020，快照内含 works\\ 子树副本）＋ snapshots\\_ops\\\n- `.snapshot_fingerprints.json`：6 个 work 的 sha256 指纹\n- `logs\\`：16 个文件（15 个 prompt_card_XXX_时间戳.json ＋ 1 个 perm 相关）\n- `experiments\\ask_once\\`：实验脚本＋run.log＋console.log＋evidence json\n- `trading-workspace\\` 与 `推演agent\\` 子目录为空\n- `_start5713.bat` 启动脚本\n\n## 拆分方案（待批复，未建任何子卡）\n\n判断：数据量小（6 个 work、16 个日志、快照若干），三项巡检彼此独立、可并行，拆 3 张编程子卡＋本卡汇总：\n\n1. 「巡检·works 数据完整性」— 逐一校验 work_001~006 的 canvas.json/work.json/cards.db 可读性、events/*.jsonl 逐行 JSON 解析、sessions/*.md 非空可读、memory 缺失情况；验收：输出每 work 每类文件的检查结果表（OK/缺块/损坏/不可读），写入指定文件。\n2. 「巡检·快照与恢复路径」— 校验 snapshots 下每 work 快照完整性（含 works 子树关键文件）、.snapshot_fingerprints.json 与实体的覆盖关系、抽样一次「从快照还原到临时目录并校验可读」的演练；验收：快照清单＋完整性结论＋一次还原演练证据，写入指定文件。\n3. 「巡检·运行日志留痕质量」— 校验 logs/ 16 个文件可读性与 JSON 结构、experiments/ask_once 的 run.log/console.log/evidence 三件套是否足以复盘一次运行；验收：逐文件结论＋能否复盘的一次示范，写入指定文件。\n\n汇总验收：本卡读取三份结论，合成最终《巡检报告》（问题清单＋严重度＋修复建议＋哪些是好的），写入沙箱内文件并在现状块给路径。",
+      "root_goal_state": "active",
+      "summary": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 0,
+        "avg_step_markers": 3.67,
+        "avg_howto_hits": 1.33
+      },
+      "verdict": "collected"
+    },
+    {
+      "arm": "ask",
+      "steps": [
+        {
+          "step": "create_work",
+          "at": "2026-10-20T15:05:41",
+          "ok": true,
+          "work_id": "work_007",
+          "root": "card_001"
+        },
+        {
+          "step": "patch_root_auto",
+          "at": "2026-10-20T15:05:41",
+          "ok": true
+        },
+        {
+          "step": "send_task",
+          "at": "2026-10-20T15:08:40",
+          "status": 200,
+          "resp": "{'reply': '开始勘探环境。先看沙箱两个允许目录的结构。\\n\\n继续勘探：看 works 每个 work 的内部结构、snapshots 内容和 _ops。\\n\\n环境已基本探明。补几个关键点勘探：work_007 缺 memory 目录、指纹文件、logs 与 experiments 的内容。\\n\\n勘探完成，拆分方案已写入现状块。按流程暂停等批复。\\n\\n目标仍处于 paused 状态"
+        },
+        {
+          "step": "plan_captured",
+          "at": "2026-10-20T15:08:55",
+          "phase": "pre_split",
+          "plan_chars": 1682
+        },
+        {
+          "step": "inject_reply",
+          "at": "2026-10-20T15:11:02",
+          "arm": "ask",
+          "status": 502,
+          "resp": "{'error': \"模型调用失败: [MODEL_CALL_FAILED] 模型 kimi-k3 流式重试 3 次后仍失败: You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage"
+        },
+        {
+          "step": "replan_captured",
+          "at": "2026-10-20T15:11:17",
+          "changed": true,
+          "post_chars": 1996
+        },
+        {
+          "step": "ask_approve",
+          "at": "2026-10-20T15:11:23",
+          "status": 502,
+          "resp": "{'error': \"模型调用失败: [MODEL_CALL_FAILED] 模型 kimi-k3 流式重试 3 次后仍失败: You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage"
+        },
+        {
+          "step": "evidence_collected",
+          "at": "2026-10-20T15:56:30",
+          "children": 0,
+          "create_calls": 0
+        },
+        {
+          "step": "cleanup_done",
+          "at": "2026-10-20T15:56:30",
+          "cards": 1
+        }
+      ],
+      "work_id": "work_007",
+      "root": "card_001",
+      "phase": "pre_split",
+      "plan_pre": "【环境勘探结果（已核实）】\n沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 下数据域：\n- works\\：work_001~007 共 7 个 work + _ops（session_ops.jsonl）。每个 work 含 canvas.json、work.json、cards.db（SQLite，带 -shm/-wal）、model_override.json、events\\（card_*.jsonl）、sessions\\（session_*.md）、memory\\（card_*.json）。\n  已发现疑点：work_007 无 memory\\ 目录（cards.db 仅 4KB、wal 432KB，疑似未 checkpoint）；work_001~005 events 只到 card_003、work_006 到 card_004、work_007 仅 card_001——是否为实验设计（ask 拆分实验）待核验。\n- snapshots\\：work_001~007 + _ops；work_001 含 13 个时间戳快照 + daily_20261020；_ops 含 34 个快照 + daily。根下有 .snapshot_fingerprints.json（7 work + _ops 各一条 sha256，可用于完整性校验）。\n- logs\\：prompt_*.json（card_001/002/003/004 共 20 个）+ prompt_perm_audit.jsonl。\n- experiments\\ask_once\\：ask_once_experiment.py、run.log、console.log、evidence_ask_once.json。\n\n【拆分方案】拆 3 张子卡，与巡检三范围一一对应，互不重叠；我负责汇总验收并出总报告：\n1. 子卡A「works数据完整性巡检」——使命：核查 7 个 work + _ops 的卡数据（cards.db 可开库可查）、事件流（jsonl 逐行可解析、卡号连续）、会话留痕（session_*.md 可读）、memory、canvas/work.json 一致性，列出缺块/损坏清单。验收判据：每个 work 一张核查表（通过/问题项），所有疑点（如 work_007 缺 memory 目录）有定性结论；产出机器可读结果文件（json/md）并给出路径。\n2. 子卡B「快照与恢复路径巡检」——使命：核对 snapshots 与 .snapshot_fingerprints.json 指纹是否吻合、快照内容是否完整（对比 works 现状结构）、并实际演练一次从快照还原到临时目录验证可打开/可读（还原目标限定沙箱内新目录，不覆盖原数据）。验收判据：每个 work 的指纹校验结果表；至少 1 个 work 完成还原演练并验证 cards.db 可查询；产出结果文件并给出路径。\n3. 子卡C「运行日志留痕质量巡检」——使命：核查 logs\\ 下 20 个 prompt_*.json 与 prompt_perm_audit.jsonl 是否可读可解析、时间线是否连续，并选 card_002 或 card_003 的一次运行做复盘演示（从日志重建该次运行的输入/工具调用序列）；同时扫一眼 experiments\\ask_once\\ 的 run.log/console.log 质量。验收判据：日志清单＋可解析率；至少 1 次运行完成复盘重建并写入结果；产出结果文件并给出路径。\n说明：三张子卡全部只读沙箱数据，仅子卡B在沙箱内新建还原演练临时目录；不碰 5700。\n\n【当前状态】拆分方案已就绪，按流程暂停等批复；批复前不建任何子卡。巡检总报告将输出到沙箱内（拟 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\巡检报告_health_check_5713.md）。",
+      "plan_post": "【环境勘探结果（已核实）】\n沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 下数据域：\n- works\\：work_001~007 共 7 个 work + _ops（session_ops.jsonl）。每个 work 含 canvas.json、work.json、cards.db（SQLite，带 -shm/-wal）、model_override.json、events\\（card_*.jsonl）、sessions\\（session_*.md）、memory\\（card_*.json）。\n  观察：work_007 无 memory\\ 目录（cards.db 仅 4KB、wal 432KB，疑似未 checkpoint）；work_001~005 events 到 card_003、work_006 到 card_004、work_007 仅 card_001——卡少很可能就是 ask 拆分实验的设计，判据应是内部一致性而非卡号绝对值。\n- snapshots\\：work_001~007 + _ops；work_001 含 13 个时间戳快照 + daily_20261020；_ops 含 34 个快照 + daily。根下 .snapshot_fingerprints.json 有 8 条 sha256，但指纹口径（哈希对象/算法/对应哪个快照）不自明。\n- logs\\：prompt_*.json 20 个（card_001×2、card_002×7、card_003×10、card_004×1）+ prompt_perm_audit.jsonl。\n- experiments\\ask_once\\：ask_once_experiment.py、run.log、console.log、evidence_ask_once.json。\n\n【方案复盘结论（第二轮）】原 3 卡方案（与巡检三范围 1:1）存在四个问题：①完整性卡与快照卡隐性重复——还原演练的验收\"cards.db 可查询\"就是完整性卡那套检查，拆开则重造或浅查；快照价值本就由\"能否还原出健康 works 数据\"定义，是同一条证据链，不该断在两卡。②指纹校验漏了前提：指纹口径需先逆向，逆向不出应定性为\"留痕文档缺陷\"这条发现而非强行比对。③完整性判据写偏：应以\"DB↔events↔sessions↔memory↔canvas 内部一致性\"为准，而非卡号绝对值。④3 卡组织成本高于实际并行收益（大头是一次性脚本）。故改为 2 卡。\n\n【拆分方案 v2（等批复）】\n1. 子卡1「数据与快照完整性巡检」——使命：(a) 核查 7 work + _ops 的 cards.db 可开可查、events/sessions/memory/canvas/work.json 内部一致性（判据＝互相对得上，不报\"卡号少\"本身）；(b) 逆向 .snapshot_fingerprints.json 口径并逐 work 校验，逆向不出则记为文档缺陷；(c) 在沙箱内新建临时目录做一次快照还原演练，并用 (a) 的同一张核查表验证还原副本。验收判据：每 work 一张核查表（通过/问题项＋严重度）；8 条指纹逐条有结论；≥1 个 work 完成还原演练且还原副本通过核查；work_007 缺 memory 目录有定性；产出 巡检结果\\data_snapshot_integrity.{json,md}。\n2. 子卡2「运行日志留痕质量巡检」——使命：核查 logs\\ 20 个 prompt_*.json 与 prompt_perm_audit.jsonl 可读可解析、按时间线排序并映射到各 work；选 card_002 或 card_003 的一次运行从日志重建输入/工具调用序列做复盘演示；扫 experiments\\ask_once\\ 的 run.log/console.log 质量。验收判据：日志清单＋可解析率（20/20 或列明失败项）；≥1 次运行完成复盘重建并写入结果；产出 巡检结果\\logs_quality.{json,md}。\n统一约定：严重度三级——高＝数据丢失/不可读/无法还原；中＝留痕缺块但主数据可用、或不可验证；低＝噪音/不规范不影响使用。产出目录 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\巡检结果\\（沙箱内新建）。两卡只读沙箱数据，仅子卡1建还原演练临时目录；不碰 5700。我负责汇总验收，总报告输出 5713_sandbox\\巡检报告_health_check_5713.md。\n\n【当前状态】拆分方案 v2 已就绪，按流程暂停等批复；批复前不建任何子卡。",
+      "plan_changed": true,
+      "children": [],
+      "create_card_calls": [],
+      "root_final_status": "【环境勘探结果（已核实）】\n沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 下数据域：\n- works\\：work_001~007 共 7 个 work + _ops（session_ops.jsonl）。每个 work 含 canvas.json、work.json、cards.db（SQLite，带 -shm/-wal）、model_override.json、events\\（card_*.jsonl）、sessions\\（session_*.md）、memory\\（card_*.json）。\n  观察：work_007 无 memory\\ 目录（cards.db 仅 4KB、wal 432KB，疑似未 checkpoint）；work_001~005 events 到 card_003、work_006 到 card_004、work_007 仅 card_001——卡少很可能就是 ask 拆分实验的设计，判据应是内部一致性而非卡号绝对值。\n- snapshots\\：work_001~007 + _ops；work_001 含 13 个时间戳快照 + daily_20261020；_ops 含 34 个快照 + daily。根下 .snapshot_fingerprints.json 有 8 条 sha256，但指纹口径（哈希对象/算法/对应哪个快照）不自明。\n- logs\\：prompt_*.json 20 个（card_001×2、card_002×7、card_003×10、card_004×1）+ prompt_perm_audit.jsonl。\n- experiments\\ask_once\\：ask_once_experiment.py、run.log、console.log、evidence_ask_once.json。\n\n【方案复盘结论（第二轮）】原 3 卡方案（与巡检三范围 1:1）存在四个问题：①完整性卡与快照卡隐性重复——还原演练的验收\"cards.db 可查询\"就是完整性卡那套检查，拆开则重造或浅查；快照价值本就由\"能否还原出健康 works 数据\"定义，是同一条证据链，不该断在两卡。②指纹校验漏了前提：指纹口径需先逆向，逆向不出应定性为\"留痕文档缺陷\"这条发现而非强行比对。③完整性判据写偏：应以\"DB↔events↔sessions↔memory↔canvas 内部一致性\"为准，而非卡号绝对值。④3 卡组织成本高于实际并行收益（大头是一次性脚本）。故改为 2 卡。\n\n【拆分方案 v2（等批复）】\n1. 子卡1「数据与快照完整性巡检」——使命：(a) 核查 7 work + _ops 的 cards.db 可开可查、events/sessions/memory/canvas/work.json 内部一致性（判据＝互相对得上，不报\"卡号少\"本身）；(b) 逆向 .snapshot_fingerprints.json 口径并逐 work 校验，逆向不出则记为文档缺陷；(c) 在沙箱内新建临时目录做一次快照还原演练，并用 (a) 的同一张核查表验证还原副本。验收判据：每 work 一张核查表（通过/问题项＋严重度）；8 条指纹逐条有结论；≥1 个 work 完成还原演练且还原副本通过核查；work_007 缺 memory 目录有定性；产出 巡检结果\\data_snapshot_integrity.{json,md}。\n2. 子卡2「运行日志留痕质量巡检」——使命：核查 logs\\ 20 个 prompt_*.json 与 prompt_perm_audit.jsonl 可读可解析、按时间线排序并映射到各 work；选 card_002 或 card_003 的一次运行从日志重建输入/工具调用序列做复盘演示；扫 experiments\\ask_once\\ 的 run.log/console.log 质量。验收判据：日志清单＋可解析率（20/20 或列明失败项）；≥1 次运行完成复盘重建并写入结果；产出 巡检结果\\logs_quality.{json,md}。\n统一约定：严重度三级——高＝数据丢失/不可读/无法还原；中＝留痕缺块但主数据可用、或不可验证；低＝噪音/不规范不影响使用。产出目录 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\巡检结果\\（沙箱内新建）。两卡只读沙箱数据，仅子卡1建还原演练临时目录；不碰 5700。我负责汇总验收，总报告输出 5713_sandbox\\巡检报告_health_check_5713.md。\n\n【当前状态】拆分方案 v2 已就绪，按流程暂停等批复；批复前不建任何子卡。",
+      "root_goal_state": "paused",
+      "summary": {},
+      "verdict": "collected"
+    }
+  ],
+  "instance": {
+    "instance": "test-instance",
+    "pid": 32068,
+    "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+    "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox",
+    "sandbox_enabled": true
+  },
+  "compare": {
+    "control": {
+      "n": 3,
+      "mission_like": 0,
+      "subagent_like": 3,
+      "mixed": 0,
+      "with_acceptance": 0,
+      "avg_step_markers": 3.67,
+      "avg_howto_hits": 1.33
+    },
+    "ask": {},
+    "ask_plan_changed": true,
+    "ask_phase": "pre_split",
+    "control_phase": "post_hoc"
+  },
+  "finished_at": "2026-10-20T15:56:30",
+  "verdict": "done"
+}

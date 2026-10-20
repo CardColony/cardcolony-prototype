@@ -1,0 +1,837 @@
+{
+  "started_at": "2026-10-20T16:21:34",
+  "base": "http://127.0.0.1:5713",
+  "model": "ds-flash-official",
+  "arms": [
+    {
+      "arm": "ask_post",
+      "model": "ds-flash-official",
+      "timeline": [
+        {
+          "t": "2026-10-20T16:22:55",
+          "stage": "wait_plan",
+          "goal_state": "paused",
+          "status_chars": 3585,
+          "children": 0
+        },
+        {
+          "t": "2026-10-20T16:24:03",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:24:18",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:24:33",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:24:48",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:25:03",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:27:38",
+          "stage": "wait_post_ask",
+          "goal_state": "active",
+          "children": 4,
+          "status_chars": 3499
+        }
+      ],
+      "steps": [
+        {
+          "step": "create_work",
+          "at": "2026-10-20T16:21:34",
+          "ok": true,
+          "work_id": "work_019",
+          "root": "card_001"
+        },
+        {
+          "step": "patch_root_auto",
+          "at": "2026-10-20T16:21:34",
+          "ok": true
+        },
+        {
+          "step": "set_card_model",
+          "at": "2026-10-20T16:21:34",
+          "ok": true,
+          "status": 200,
+          "resp": "{'ok': True, 'work_id': 'work_019', 'card_id': 'card_001', 'work': None, 'cards': {'card_001': {'default_model': 'ds-flash-official'}}}",
+          "model": "ds-flash-official"
+        },
+        {
+          "step": "send_task",
+          "at": "2026-10-20T16:22:40",
+          "status": 200,
+          "resp": "{'reply': '我先勘探沙箱环境，再确定拆分方案。\\n\\n环境勘探完成。现在把拆分方案写进现状块。\\n\\n已完成第 1 轮：勘探、方案、暂停待批三件事都做完了。\\n\\n**勘探结论（16:22 实测，仅限 `5713_sandbox`）**\\n- `works/` 19 个 work ＋ `_ops/sessio"
+        },
+        {
+          "step": "plan_captured",
+          "at": "2026-10-20T16:22:55",
+          "phase": "pre_split",
+          "plan_chars": 3585
+        },
+        {
+          "step": "inject_approve",
+          "at": "2026-10-20T16:23:47",
+          "status": 200,
+          "resp": "{'reply': '收到批复，已经按方案执行，三张子卡已建好并自动开跑。\\n\\n**本轮做的事**\\n1. **目标恢复**：`update_goal(resume)` → 目标态 active。\\n2. **签发巡检口径**（主卡自留的第一件事）：`trading-workspace/healthcheck_run"
+        },
+        {
+          "step": "children_stable",
+          "at": "2026-10-20T16:25:03",
+          "n": 3
+        },
+        {
+          "step": "inject_ask_post",
+          "at": "2026-10-20T16:27:23",
+          "status": 200,
+          "resp": "{'reply': '停下检查过了，**这个拆法有问题，已经动手改了。** 三处是硬伤，不是口味问题。\\n\\n## 一、问题在哪（都是拿子卡实跑落盘的东西查出来的，不是猜的）\\n\\n**1）串行依赖倒置——最严重**\\n我在口径里写的是「A 交三份共享键 → B/C 拿去用」。但实跑两分钟后就发现：**B 自己已经把 ",
+          "children_before": 3
+        },
+        {
+          "step": "evidence_collected",
+          "at": "2026-10-20T16:28:08",
+          "children": 4,
+          "create_calls": 4,
+          "summary": {
+            "n": 4,
+            "mission_like": 0,
+            "subagent_like": 2,
+            "mixed": 2,
+            "with_acceptance": 4,
+            "avg_step_markers": 1.0,
+            "avg_howto_hits": 2.5
+          }
+        },
+        {
+          "step": "cleanup_done",
+          "at": "2026-10-20T16:28:09",
+          "cards": 5
+        }
+      ],
+      "work_id": "work_019",
+      "root": "card_001",
+      "phase": "pre_split",
+      "plan_pre": "## 一、已探明的环境事实（2026-10-20T16:22 实测，仅限本实例沙箱）\n\n沙箱根：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`，其下 5 个数据面：\n\n| 目录 | 实测内容 |\n|---|---|\n| `works/` | 19 个 work 目录（work_001…work_019）＋ `_ops/session_ops.jsonl`(348KB) |\n| `snapshots/` | 20 个目录（19 个 work ＋ `_ops`），每个下为若干「时间点快照目录」＋ 一个 `daily_20261020` |\n| `logs/` | 64 个文件：63 份 `prompt_card_<card>_<ts>.json` ＋ 1 份 `prompt_perm_audit.jsonl`，mtime 覆盖 12:51:55–16:21:52 |\n| `experiments/` | ask_once 实验脚本 2 个 + 运行日志 6 个（console/run/v2/v3） |\n| `trading-workspace/` | 历史产物区（含 `healthcheck_5713/` 与多份 `_final.json` 等旧运行残留） |\n\n**单个 work 的数据面**（逐 work 实测）：`canvas.json`、`cards.db`(+`cards.db-wal`/`cards.db-shm`)、`work.json`、`model_override.json`、`events/card_NNN.jsonl`、`memory/card_NNN.json`、`sessions/session_NNN.md`、`_ops/revisions.jsonl`。\n\n**快照内部结构**（实测）：`snapshots/<work>/<YYYYMMDD_HHMMSS_micro>/works/<work>/{canvas.json,cards.db,work.json,model_override.json,events/,memory/,sessions/,_ops/}`。\n\n**本卡实例身份**：`work_019`（`work.json.title` = 「拆分实验v2-ask_post-1020-162134」，与本卡标题一致；created_at 16:21:34）。**巡检期间它自己在写**（mtime 距实测时刻 0.0 分钟），存在自指效应，不能当静态样本。\n\n**活性实测**（mtime 距 16:22 的分钟数）：活实例 = work_013(0.0) / work_016(0.0) / work_017(5.7) / work_018(1.5) / work_019(0.0)（本卡自身）；其余 14 个静默 22.2–188.3 分钟。\n\n**已观察到的疑点（未定性，待子卡实测）**：\n1. 7 个 work（work_007/013/014/015/016/017/018）的 `cards.db` 仅 4096B，实体数据在 519KB–2.69MB 的 `cards.db-wal` 里，未 checkpoint。\n2. `work_009` 只有 `sessions/`（4 份，均 71B），**无 `events/`、无 `memory/`、无 `_ops/`**；`work_019` 无 `memory/`。\n3. `events` 与 `memory` 卡号不齐：work_011 events 有 card_002/003/005/006 而 memory 缺 card_003；work_016 events 有 003/004/005 而 memory 缺 005。\n4. 多数 work 的 `sessions/session_001.md` 恒为 71B（疑似空占位）。\n5. `daily_20261020` 快照内容显著少于时间点快照：work_014 的 daily 内只有 `sessions/session_001.md`，**无 events/、无 memory/、无 _ops/**。\n\n**残留物与撞名风险**：`trading-workspace/healthcheck_5713/parts/00_口径.md` 是**另一次运行**（文件内自述 `run=work_018`）签发的口径，`healthcheck_5713/tmp/` 下另有 ~80 份旧扫描产物。本次**不复用其结论、不写入该目录**，另立 `trading-workspace/healthcheck_run019/`。\n\n---\n\n## 二、拆分方案（**待批复，未建任何子卡**）\n\n拆 3 张子卡，与巡检范围的三个面一一对应；主卡（card_001）负责口径签发、交叉对账、汇总成文。\n\n**子卡 A ·「works 卡数据完整性」**\n- 一句话使命：逐 work 校验卡片数据面（`cards.db` 只读打开＋`canvas.json`＋`events/*.jsonl`＋`sessions/*.md`＋`memory/`＋`_ops/`）是否有缺块/损坏/不可读，交问题清单与逐 work 数据面清单。\n- 验收判据：① 19 个 work × 全数据面 100% 有实测记录，每个二元结论都带「文件路径＋实测动作＋实测结果」；② 每个打不开/解析失败的库或行，**错误原文照抄**，不许写\"可能\"；③ 交 `events` 与 `memory`、`sessions` 的卡号级齐备性矩阵，与 `canvas.json` 声明的卡集合逐一比对，缺哪张卡指名到 card 号；④ 每条异常带编号（A-nn）、锚点、严重度 S0–S3＋定级问句回答、修复建议＋代价（改配置/改采集器/改代码）；⑤ 单独一节「哪些是好的」只写实测确认正常的项；⑥ 交 `tmp/A_pair_ids.json`（各 work 的 pair_id 全集）与逐 work 现状卡数（带测量时刻）。\n\n**子卡 B ·「快照与恢复路径」**\n- 一句话使命：核实快照是否在位、能否据以还原，并实测「按 daily 还原会丢什么」，交可复核的还原结论。\n- 验收判据：① 20 个快照目录全部在位性核验（每 work 时间点快照数、最新一份时刻、daily 存在性）带时点；② 至少对**每个 work 的最新时间点快照**做一次真实还原演练（拷贝到 `tmp_restore/` 下只读打开，`count(*)` 与表结构可读性），演练失败照抄错误；③ 交逐 work「快照还原卡数」与快照时刻，供 R1 对账；④ 以 A 的数据面清单为基准，逐 work 输出「按 daily 还原会丢哪些文件」的可验证清单；⑤ 每条异常同 A 的六项格式；⑥ 严禁对原库做 checkpoint/VACUUM/写操作，所有实验只在拷贝上做。\n\n**子卡 C ·「运行日志留痕质量」**\n- 一句话使命：判定 `logs/` 64 份留痕是否可读、结构是否完整、能否据此复盘一次运行。\n- 验收判据：① 64 份文件 100% 可读性实测（JSON 解析、字符集、截断、零字节）带结论；② 至少挑 2 份不同 card 的 `prompt_card_*.json` 做「照此复盘一次运行」的实操演练，写明能复原到哪一步、断在哪一字段；③ 用 A 的 `pair_id` 全集把日志归属回 work，给「唯一归属/一对多/匹配不上」三类计数，**必须用 A 的全集自证复算**；④ 每条异常同 A 的六项格式；⑤ 结论里明确回答「能否据此复盘一次运行」，答不能则指出缺什么字段。\n\n**主卡（本卡）自留**：签发巡检口径（T0、活/死判据、S0–S3 唯一定义、三条跨卡对账规则 R1/R2/R3、防撞命名与只读硬约束）；交叉校验三张子卡的对账项；写最终巡检报告到 `trading-workspace/healthcheck_run019/巡检报告_work_019.md`，并在本卡现状块给出路径。\n\n**为什么这么拆（不拆成 19 张按 work 分的卡）**：三个面各自需要的实测手法互不相同（SQLite 只读还原 / 文件级齐备性 / 日志结构复盘），而 work 维度只是同一种手法重复 19 次——按面拆能让每张子卡的方法论一次成型、判据单一，也天然对应报告的三章；按 work 拆会产生 19 份互不相干的碎片，反而增量成本更高。\n",
+      "children_before_ask": 3,
+      "children": [
+        {
+          "card_id": "card_002",
+          "title": "A · works 卡数据完整性",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "你是巡检子卡 A，负责「works 卡片数据的完整性」这一面。主卡 = card_001（实例 work_019）。\n\n## 第一步（必做，不得跳过）\n先读巡检口径全文：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run019\\parts\\00_口径.md`\n它定义了：T0、活/死实例判据、S0–S3 唯一定义、三条跨卡对账项 R1/R2/R3、产物命名与只读硬约束、异常交付格式。**与你的判断冲突时以口径为准。**\n\n## 你的使命（一句话）\n逐 work 校验卡片数据面（`cards.db` 只读打开 ＋ `canvas.json` ＋ `events/*.jsonl` ＋ `sessions/*.md` ＋ `memory/` ＋ `_ops/`）是否有缺块/损坏/不可读，交问题清单与逐 work 数据面清单。\n\n## 范围\n沙箱根 = `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`，被测对象 = `works/work_001 … work_019`（19 个）＋ `works/_ops/session_ops.jsonl`。全部只读。\n\n## 验收判据（六条，缺一条主卡退回）\n① 19 个 work × 全数据面 **100% 有实测记录**，每个二元结论都带「文件路径 ＋ 实测动作 ＋ 实测结果」；\n② 每个打不开/解析失败的库或行，**错误原文照抄**，不许写「可能」；\n③ 交 `events` / `memory` / `sessions` 的**卡号级齐备性矩阵**，并与 `canvas.json` 声明的卡集合逐一比对，缺哪张卡**指名到 card 号**；\n④ 每条异常带编号（A-nn）、锚点、严重度 S0–S3＋定级问句回答、修复建议＋代价（改配置/改采集器/改代码）；活实例的 WAL 未 checkpoint 等**一律按口径 §1 计入「活实例观测项」，不得计入损坏**；\n⑤ 单独一节「哪些是好的」只写实测确认正常的项；\n⑥ 交两个机器证据文件：\n   - `trading-workspace/healthcheck_run019/tmp/A_pair_ids.json` — 各 work 的 `pair_id` 全集（从 `events` 的 `run_start.data.pair_id` 抽取），供子卡 C 做 R2 对账；\n   - `trading-workspace/healthcheck_run019/tmp/A_card_counts.json` — 各 work 的**现状卡数**（`cards` 表 `count(*)`，带测量时刻），供子卡 B 做 R1 对账；\n   - 另交 `trading-workspace/healthcheck_run019/tmp/A_surface_inventory.json` — 各 work 的**数据面清单**（events/ 几个文件、memory/ 几个、sessions/ 几个、_ops/ 有无、canvas.json 尺寸），供子卡 B 做 R3 对账。\n\n## 交付物\n分报告：`trading-workspace/healthcheck_run019/parts/A_works.md`（首行写 `<!-- run=work_019 generated=YYYY-MM-DDTHH:MM:SS -->`；开头写 `扫描起 = HH:MM:SS，扫描止 = HH:MM:SS`）。\n\n## 硬约束\n- 读写仅限 `5713_sandbox`；**绝对不许碰 5700**。\n- `works/`、`snapshots/`、`logs/` 下原始文件**只读**：不改、不删、不移、不重命名。\n- **严禁对原库做任何写操作**（checkpoint / VACUUM / PRAGMA wal_checkpoint / 建表 / 写事务）。所有 SQLite 操作在**拷贝**上做；拷贝含 WAL 的库必须 `cards.db`＋`cards.db-wal`＋`cards.db-shm` **三件一起拷**。\n- 产物**只写** `healthcheck_run019/`，**严禁写入** `healthcheck_5713/`（那是另一次运行 run=work_018 的目录）。\n- 打开 SQLite 用 `file:...?mode=ro` 或拷贝后只读；遇 `database is locked` 照抄错误、隔一会儿重试一次，仍失败就如实记录。\n\n## 收口\n做完调 report_done，summary 里必须包含：异常条数与分级分布、三份机器证据文件的绝对路径、分报告路径、以及「哪些是好的」的一句话概括。",
+          "score": {
+            "chars": 2067,
+            "step_markers": 1,
+            "howto_hits": 3,
+            "mission_hits": 4,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_003",
+          "title": "B · 快照与恢复路径",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "你是巡检子卡 B，负责「快照与恢复路径」这一面。主卡 = card_001（实例 work_019）。\n\n## 第一步（必做，不得跳过）\n先读巡检口径全文：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run019\\parts\\00_口径.md`\n它定义了：T0、活/死实例判据、S0–S3 唯一定义、三条跨卡对账项 R1/R2/R3、产物命名与只读硬约束、异常交付格式。**与你的判断冲突时以口径为准。**\n\n## 你的使命（一句话）\n核实快照是否在位、能否据以还原，并实测「按 daily 还原会丢什么」，交可复核的还原结论。\n\n## 范围\n沙箱根 = `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`。被测对象 = `snapshots/` 下 20 个目录（`work_001…work_019` ＋ `_ops`），每个目录内含若干「时间点快照目录 `<YYYYMMDD_HHMMSS_micro>`」＋ 一个 `daily_20261020`；快照内部层次为 `snapshots/<work>/<ts>/works/<work>/{canvas.json,cards.db,work.json,model_override.json,events/,memory/,sessions/,_ops/}`。全部只读。\n\n## 验收判据（六条，缺一条主卡退回）\n① 20 个快照目录**全部在位性核验**（每 work 时间点快照数、最新一份时刻、daily 存在性）带时点；\n② 至少对**每个 work 的最新时间点快照**做一次**真实还原演练**（拷贝到 `healthcheck_run019/tmp_restore/B_<work>_latest/` 下只读打开，验 `count(*)` 与表结构可读性），演练失败**照抄错误原文**；\n③ 交逐 work「快照还原卡数」与快照时刻 → `trading-workspace/healthcheck_run019/tmp/B_restore_counts.json`，供 R1 对账；\n④ 以子卡 A 的数据面清单（`healthcheck_run019/tmp/A_surface_inventory.json`）为基准，逐 work 输出「按 daily 还原会丢哪些文件」的可验证清单 → `trading-workspace/healthcheck_run019/tmp/B_daily_loss.json`（R3）。**若 A 的清单尚未落盘，先做 ①②③ 并在报告里标明 R3 待 A 交付后补算；不得自己编 A 的清单。**\n⑤ 每条异常同 A 的六项格式（编号 B-nn、锚点、现象、判定依据、严重度 S0–S3＋问句回答、修复建议＋代价、置信度）；\n⑥ 单独一节「哪些是好的」只写实测确认正常的项。\n\n## 交付物\n分报告：`trading-workspace/healthcheck_run019/parts/B_snapshot.md`（首行写 `<!-- run=work_019 generated=YYYY-MM-DDTHH:MM:SS -->`；开头写 `扫描起 = HH:MM:SS，扫描止 = HH:MM:SS`）。\n\n## 硬约束\n- 读写仅限 `5713_sandbox`；**绝对不许碰 5700**。\n- `snapshots/`、`works/` 下原始文件**只读**：不改、不删、不移、不重命名。\n- **严禁对原库（含快照内的库）做任何写操作**：checkpoint / VACUUM / PRAGMA wal_checkpoint / 建表 / 写事务。所有演练只在**拷贝**上做。\n- 拷贝含 WAL 的库必须 `cards.db`＋`cards.db-wal`＋`cards.db-shm` **三件一起拷**；**只拷 `cards.db` 会得到空库/旧库，据此下的「快照不可还原」结论一律作废**——这是本卡最容易犯的错，务必先检查源目录有没有 `-wal`。\n- 产物**只写** `healthcheck_run019/`，**严禁写入** `healthcheck_5713/`（那是另一次运行 run=work_018 的目录，其中已有 `tmp/rs_work_*_daily` 等旧演练产物，**不得复用其结论**）。\n- 磁盘开销注意：`snapshots/` 总量约 630MB，拷贝请逐个 work 做完即清理（或只拷 `cards.db` 三件＋目录清单），不要在 `tmp_restore/` 堆满全量拷贝。\n\n## 收口\n做完调 report_done，summary 里必须包含：20 个快照目录的在位性结论、逐 work 还原演练成功率、两份机器证据文件绝对路径、分报告路径、daily 会丢什么的**一句定量概括**、以及「哪些是好的」的一句话概括。",
+          "score": {
+            "chars": 2136,
+            "step_markers": 1,
+            "howto_hits": 2,
+            "mission_hits": 5,
+            "has_acceptance": true,
+            "cls": "mixed"
+          }
+        },
+        {
+          "card_id": "card_004",
+          "title": "C · 运行日志留痕质量",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "你是巡检子卡 C，负责「运行日志的留痕质量」这一面。主卡 = card_001（实例 work_019）。\n\n## 第一步（必做，不得跳过）\n先读巡检口径全文：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run019\\parts\\00_口径.md`\n它定义了：T0、活/死实例判据、S0–S3 唯一定义、三条跨卡对账项 R1/R2/R3、产物命名与只读硬约束、异常交付格式。**与你的判断冲突时以口径为准。**\n\n## 你的使命（一句话）\n判定 `logs/` 64 份留痕是否可读、结构是否完整、能否据此复盘一次运行。\n\n## 范围\n沙箱根 = `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`。被测对象 = `logs/` 下 64 份文件：63 份 `prompt_card_<card号>_<YYYYMMDDHHMMSS>.json` ＋ 1 份 `prompt_perm_audit.jsonl`。mtime 实测跨 12:51:55–16:21:52。全部只读。\n\n## 验收判据（五条，缺一条主卡退回）\n① **64 份文件 100% 可读性实测**（JSON 解析结果、字符集是否 UTF-8、是否截断、是否零字节、顶层键结构），逐份带结论；\n② 至少挑 **2 份不同 card 号** 的 `prompt_card_*.json` 做「**照此复盘一次运行**」的实操演练：从日志里能复原出哪一步（谁、什么卡、什么 prompt、什么上下文、什么工具调用），**能复原到哪一步、断在哪一字段**，要具体到键名；\n③ 用子卡 A 的 `pair_id` 全集（`trading-workspace/healthcheck_run019/tmp/A_pair_ids.json`）把日志归属回 work，给「唯一归属 / 一对多 / 匹配不上」三类计数 → `trading-workspace/healthcheck_run019/tmp/C_log_attribution.json`。**必须用 A 的全集自证复算，不得照抄任何他人结论**；若 A 的文件尚未落盘，先做 ①② 并在报告里标明归属率待 A 交付后补算，**不得自己编 A 的清单**；\n④ 每条异常同 A 的六项格式（编号 C-nn、锚点、现象、判定依据、严重度 S0–S3＋问句回答、修复建议＋代价、置信度）；\n⑤ 单独一节「哪些是好的」；并在结论里**明确回答「能否据此复盘一次运行」**，答「不能」则指出缺什么字段。\n\n## 交付物\n分报告：`trading-workspace/healthcheck_run019/parts/C_logs.md`（首行写 `<!-- run=work_019 generated=YYYY-MM-DDTHH:MM:SS -->`；开头写 `扫描起 = HH:MM:SS，扫描止 = HH:MM:SS`）。\n\n## 硬约束\n- 读写仅限 `5713_sandbox`；**绝对不许碰 5700**。\n- `logs/` 下原始文件**只读**：不改、不删、不移、不重命名。大文件（最大 377KB）分段读取，别一次吞爆。\n- 产物**只写** `healthcheck_run019/`，**严禁写入** `healthcheck_5713/`（那是另一次运行 run=work_018 的目录，其中已有 `tmp/scan_logs.json`、`_tmp_logs_analysis.txt` 等旧结论，**不得复用、不得抄**）。\n- 判定「可读」要给判据：JSON 能否 `json.loads`、键集合是否与同批其它文件同构、时间戳字段是否落在合理区间。\n\n## 收口\n做完调 report_done，summary 里必须包含：64 份可读性结论（可读/不可读各几份）、复盘演练能复原到哪一步、归属三类计数、机器证据文件绝对路径、分报告路径、以及「能否据此复盘一次运行」的明确答复。",
+          "score": {
+            "chars": 1740,
+            "step_markers": 1,
+            "howto_hits": 2,
+            "mission_hits": 5,
+            "has_acceptance": true,
+            "cls": "mixed"
+          }
+        },
+        {
+          "card_id": "card_005",
+          "title": "D · 操作留痕链一致性",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "你是巡检子卡 D，负责「操作留痕链一致性」这一面。主卡 = card_001（实例 work_019）。\n\n## 为什么有你（主卡派你的理由）\n本次巡检原定三卡（A 现役态 / B 快照态 / C 日志态），实测后发现一条**无人覆盖的证据链**：`works/_ops/session_ops.jsonl`、各 work 的 `_ops/revisions.jsonl`、`snapshots/_ops/` 三层操作留痕。它不属于 A 的文件齐备性检查、不属于 B 的还原演练、不属于 C 的 prompt 日志分析，却是回答「能否复盘一次运行」的**第三方证据**。你补这个洞。\n\n## 第一步（必做，不得跳过）\n先读巡检口径全文：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run019\\parts\\00_口径.md`（**v2**，注意 §9 接缝表里你独占的「操作留痕链」一态，以及明确不属你的事）。\n\n## 你的使命（一句话）\n核实三层操作留痕（根级 `session_ops` / 各 work 级 `revisions` / 快照级 `_ops`）是否可读、是否同构、能否串成一条完整操作链并据此复盘一次运行。\n\n## 范围（全部只读）\n- `works/_ops/session_ops.jsonl` —— 主卡实测 348426B（T0 时点，**注意它在增长**：旧运行曾记到 51813B/298 行，说明它是活文件）\n- `works/work_001…work_019/_ops/revisions.jsonl` —— 逐 work，实测 132–528B 不等\n- `snapshots/_ops/` —— 实测 184 个「时间点快照目录」＋ `daily_20261020`（T0 后已涨到 192，**必须自己重数**）\n- 需要时可**只读引用** `works/<work>/events/*.jsonl` 与现役 `cards.db` 的 `card_history` 表（用于验证链是否接通），但**不得**对 events/cards 的完整性下判定（那是 A 的事），**不得**做快照还原演练（那是 B 的事）。\n\n## 验收判据（六条，缺一条主卡退回）\n① **逐层实测**：三层各自的可读性（能否逐行 JSON 解析、坏行/空行行号、字段集合、时间跨度、记录条数），每层结论带时点；\n② **同构性判定**：三层是否同一套 schema（字段名、id 命名、时间格式）？不同构的话差异在哪、能否映射？要具体到键名；\n③ **链是否接通**（本卡核心）：任取至少 2 个 work，试着从「`session_ops` 里的一条操作」一路对到「该 work 的 `revisions` 行」再对到「`cards.db.card_history` 的那一行」。写成 `session_ops:L行 → revisions:L行 → card_history:字段` 的可复现锚点。**接通几例、断在哪一例的哪个字段，都要写清**；\n④ **能否据此复盘一次运行**：给出明确答复。能复原到哪一步（谁、什么卡、什么动作、什么前后值、什么时刻），**断在哪**。答「不能」就指名缺哪个字段、缺在哪一层；\n⑤ 每条异常按口径 §6 六项格式（编号 D-nn、锚点、现象、判定依据、严重度 S0–S3＋问句回答、修复建议＋代价、置信度）；活实例的未闭合/未 checkpoint 一律只进「活实例观测项」；\n⑥ 独立一节「哪些是好的」只写实测确认正常的项。\n\n## 交付物\n- 分报告：`trading-workspace/healthcheck_run019/parts/D_ops.md`（首行 `<!-- run=work_019 generated=YYYY-MM-DDTHH:MM:SS -->`；开头 `扫描起 = HH:MM:SS，扫描止 = HH:MM:SS`）\n- 机器证据：`trading-workspace/healthcheck_run019/tmp/D_ops_scan.json`（三层扫描原始结果）、`tmp/D_chain_check.json`（链接通验证的逐例结果）\n\n## 硬约束\n- 读写仅限 `5713_sandbox`；**绝对不许碰 5700**。\n- `works/`、`snapshots/` 下原始文件**只读**：不改、不删、不移、不重命名。\n- **严禁对原库做任何写操作**（checkpoint / VACUUM / PRAGMA wal_checkpoint / 建表 / 写事务）。需要开库一律拷三件到 `tmp_restore/D_<work>_<用途>/` 后再开（口径 §5.4）。\n- 产物**只写** `healthcheck_run019/`，**严禁写入** `healthcheck_5713/`（那是另一次运行 run=work_018 的目录，其 `tmp/` 下有旧结论，不得复用、不得抄）。\n- 探测类中间产物落 `tmp/`（口径 §10）。\n- **不要等待任何卡**：本卡无前置依赖，pair_id / work 清单等键自己抽。\n- 收口时在分报告里列出你实际写出的全部文件路径。\n\n## 收口\n做完调 report_done，summary 必须含：三层各自的条数与可读性结论、同构性判定（同构/不同构/差异点）、链接通例数与断点、能否据此复盘一次运行及断在哪、两份机器证据绝对路径、分报告路径、「哪些是好的」一句话。",
+          "score": {
+            "chars": 2384,
+            "step_markers": 1,
+            "howto_hits": 3,
+            "mission_hits": 3,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "create_card_calls": [
+        {
+          "tool": "create_card",
+          "args": {
+            "title": "A · works 卡数据完整性",
+            "goal": "你是巡检子卡 A，负责「works 卡片数据的完整性」这一面。主卡 = card_001（实例 work_019）。\n\n## 第一步（必做，不得跳过）\n先读巡检口径全文：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run019\\parts\\00_口径.md`\n它定义了：T0、活/死实例判据、S0–S3 唯一定义、三条跨卡对账项 R1/R2/R3、产物命名与只读硬约束、异常交付格式。**与你的判断冲突时以口径为准。**\n\n## 你的使命（一句话）\n逐 work 校验卡片数据面（`cards.db` 只读打开 ＋ `canvas.json` ＋ `events/*.jsonl` ＋ `sessions/*.md` ＋ `memory/` ＋ `_ops/`）是否有缺块/损坏/不可读，交问题清单与逐 work 数据面清单。\n\n## 范围\n沙箱根 = `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`，被测对象 = `works/work_001 … work_019`（19 个）＋ `works/_ops/session_ops.jsonl`。全部只读。\n\n## 验收判据（六条，缺一条主卡退回）\n① 19 个 work × 全数据面 **100% 有实测记录**，每个二元结论都带「文件路径 ＋ 实测动作 ＋ 实测结果」；\n② 每个打不开/解析失败的库或行，**错误原文照抄**，不许写「可能」；\n③ 交 `events` / `memory` / `sessions` 的**卡号级齐备性矩阵**，并与 `canvas.json` 声明的卡集合逐一比对，缺哪张卡**指名到 card 号**；\n④ 每条异常带编号（A-nn）、锚点、严重度 S0–S3＋定级问句回答、修复建议＋代价（改配置/改采集器/改代码）；活实例的 WAL 未 checkpoint 等**一律按口径 §1 计入「活实例观测项」，不得计入损坏**；\n⑤ 单独一节「哪些是好的」只写实测确认正常的项；\n⑥ 交两个机器证据文件：\n   - `trading-workspace/healthcheck_run019/tmp/A_pair_ids.json` — 各 work 的 `pair_id` 全集（从 `events` 的 `run_start.data.pair_id` 抽取），供子卡 C 做 R2 对账；\n   - `trading-workspace/healthcheck_run019/tmp/A_card_counts.json` — 各 work 的**现状卡数**（`cards` 表 `count(*)`，带测量时刻），供子卡 B 做 R1 对账；\n   - 另交 `trading-workspace/healthcheck_run019/tmp/A_surface_inventory.json` — 各 work 的**数据面清单**（events/ 几个文件、memory/ 几个、sessions/ 几个、_ops/ 有无、canvas.json 尺寸），供子卡 B 做 R3 对账。\n\n## 交付物\n分报告：`trading-workspace/healthcheck_run019/parts/A_works.md`（首行写 `<!-- run=work_019 generated=YYYY-MM-DDTHH:MM:SS -->`；开头写 `扫描起 = HH:MM:SS，扫描止 = HH:MM:SS`）。\n\n## 硬约束\n- 读写仅限 `5713_sandbox`；**绝对不许碰 5700**。\n- `works/`、`snapshots/`、`logs/` 下原始文件**只读**：不改、不删、不移、不重命名。\n- **严禁对原库做任何写操作**（checkpoint / VACUUM / PRAGMA wal_checkpoint / 建表 / 写事务）。所有 SQLite 操作在**拷贝**上做；拷贝含 WAL 的库必须 `cards.db`＋`cards.db-wal`＋`cards.db-shm` **三件一起拷**。\n- 产物**只写** `healthcheck_run019/`，**严禁写入** `healthcheck_5713/`（那是另一次运行 run=work_018 的目录）。\n- 打开 SQLite 用 `file:...?mode=ro` 或拷贝后只读；遇 `database is locked` 照抄错误、隔一会儿重试一次，仍失败就如实记录。\n\n## 收口\n做完调 report_done，summary 里必须包含：异常条数与分级分布、三份机器证据文件的绝对路径、分报告路径、以及「哪些是好的」的一句话概括。",
+            "content": "# 子卡 A · works 卡数据完整性\n\n使命与验收判据见本卡使命块与 goal。口径以 `trading-workspace/healthcheck_run019/parts/00_口径.md` 为准。\n\n## 现状\n（待填：19 个 work 的实测结论 + 三份机器证据路径 + 分报告路径）"
+          },
+          "ts": "2026-10-20T16:23:18.158+08:00",
+          "seq": 3886,
+          "score": {
+            "chars": 2219,
+            "step_markers": 1,
+            "howto_hits": 3,
+            "mission_hits": 5,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "content": "# 子卡 B · 快照与恢复路径\n\n使命与验收判据见本卡使命块与 goal。口径以 `trading-workspace/healthcheck_run019/parts/00_口径.md` 为准。\n\n## 现状\n（待填：20 个快照目录在位性核验结论 + 逐 work 还原演练结果 + 两份机器证据路径 + 分报告路径）",
+            "goal": "你是巡检子卡 B，负责「快照与恢复路径」这一面。主卡 = card_001（实例 work_019）。\n\n## 第一步（必做，不得跳过）\n先读巡检口径全文：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run019\\parts\\00_口径.md`\n它定义了：T0、活/死实例判据、S0–S3 唯一定义、三条跨卡对账项 R1/R2/R3、产物命名与只读硬约束、异常交付格式。**与你的判断冲突时以口径为准。**\n\n## 你的使命（一句话）\n核实快照是否在位、能否据以还原，并实测「按 daily 还原会丢什么」，交可复核的还原结论。\n\n## 范围\n沙箱根 = `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`。被测对象 = `snapshots/` 下 20 个目录（`work_001…work_019` ＋ `_ops`），每个目录内含若干「时间点快照目录 `<YYYYMMDD_HHMMSS_micro>`」＋ 一个 `daily_20261020`；快照内部层次为 `snapshots/<work>/<ts>/works/<work>/{canvas.json,cards.db,work.json,model_override.json,events/,memory/,sessions/,_ops/}`。全部只读。\n\n## 验收判据（六条，缺一条主卡退回）\n① 20 个快照目录**全部在位性核验**（每 work 时间点快照数、最新一份时刻、daily 存在性）带时点；\n② 至少对**每个 work 的最新时间点快照**做一次**真实还原演练**（拷贝到 `healthcheck_run019/tmp_restore/B_<work>_latest/` 下只读打开，验 `count(*)` 与表结构可读性），演练失败**照抄错误原文**；\n③ 交逐 work「快照还原卡数」与快照时刻 → `trading-workspace/healthcheck_run019/tmp/B_restore_counts.json`，供 R1 对账；\n④ 以子卡 A 的数据面清单（`healthcheck_run019/tmp/A_surface_inventory.json`）为基准，逐 work 输出「按 daily 还原会丢哪些文件」的可验证清单 → `trading-workspace/healthcheck_run019/tmp/B_daily_loss.json`（R3）。**若 A 的清单尚未落盘，先做 ①②③ 并在报告里标明 R3 待 A 交付后补算；不得自己编 A 的清单。**\n⑤ 每条异常同 A 的六项格式（编号 B-nn、锚点、现象、判定依据、严重度 S0–S3＋问句回答、修复建议＋代价、置信度）；\n⑥ 单独一节「哪些是好的」只写实测确认正常的项。\n\n## 交付物\n分报告：`trading-workspace/healthcheck_run019/parts/B_snapshot.md`（首行写 `<!-- run=work_019 generated=YYYY-MM-DDTHH:MM:SS -->`；开头写 `扫描起 = HH:MM:SS，扫描止 = HH:MM:SS`）。\n\n## 硬约束\n- 读写仅限 `5713_sandbox`；**绝对不许碰 5700**。\n- `snapshots/`、`works/` 下原始文件**只读**：不改、不删、不移、不重命名。\n- **严禁对原库（含快照内的库）做任何写操作**：checkpoint / VACUUM / PRAGMA wal_checkpoint / 建表 / 写事务。所有演练只在**拷贝**上做。\n- 拷贝含 WAL 的库必须 `cards.db`＋`cards.db-wal`＋`cards.db-shm` **三件一起拷**；**只拷 `cards.db` 会得到空库/旧库，据此下的「快照不可还原」结论一律作废**——这是本卡最容易犯的错，务必先检查源目录有没有 `-wal`。\n- 产物**只写** `healthcheck_run019/`，**严禁写入** `healthcheck_5713/`（那是另一次运行 run=work_018 的目录，其中已有 `tmp/rs_work_*_daily` 等旧演练产物，**不得复用其结论**）。\n- 磁盘开销注意：`snapshots/` 总量约 630MB，拷贝请逐个 work 做完即清理（或只拷 `cards.db` 三件＋目录清单），不要在 `tmp_restore/` 堆满全量拷贝。\n\n## 收口\n做完调 report_done，summary 里必须包含：20 个快照目录的在位性结论、逐 work 还原演练成功率、两份机器证据文件绝对路径、分报告路径、daily 会丢什么的**一句定量概括**、以及「哪些是好的」的一句话概括。",
+            "title": "B · 快照与恢复路径"
+          },
+          "ts": "2026-10-20T16:23:24.585+08:00",
+          "seq": 3889,
+          "score": {
+            "chars": 2299,
+            "step_markers": 1,
+            "howto_hits": 2,
+            "mission_hits": 6,
+            "has_acceptance": true,
+            "cls": "mixed"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "content": "# 子卡 C · 运行日志留痕质量\n\n使命与验收判据见本卡使命块与 goal。口径以 `trading-workspace/healthcheck_run019/parts/00_口径.md` 为准。\n\n## 现状\n（待填：64 份日志可读性实测结论 + 复盘演练结果 + 归属率计数 + 机器证据路径 + 分报告路径）",
+            "goal": "你是巡检子卡 C，负责「运行日志的留痕质量」这一面。主卡 = card_001（实例 work_019）。\n\n## 第一步（必做，不得跳过）\n先读巡检口径全文：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run019\\parts\\00_口径.md`\n它定义了：T0、活/死实例判据、S0–S3 唯一定义、三条跨卡对账项 R1/R2/R3、产物命名与只读硬约束、异常交付格式。**与你的判断冲突时以口径为准。**\n\n## 你的使命（一句话）\n判定 `logs/` 64 份留痕是否可读、结构是否完整、能否据此复盘一次运行。\n\n## 范围\n沙箱根 = `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`。被测对象 = `logs/` 下 64 份文件：63 份 `prompt_card_<card号>_<YYYYMMDDHHMMSS>.json` ＋ 1 份 `prompt_perm_audit.jsonl`。mtime 实测跨 12:51:55–16:21:52。全部只读。\n\n## 验收判据（五条，缺一条主卡退回）\n① **64 份文件 100% 可读性实测**（JSON 解析结果、字符集是否 UTF-8、是否截断、是否零字节、顶层键结构），逐份带结论；\n② 至少挑 **2 份不同 card 号** 的 `prompt_card_*.json` 做「**照此复盘一次运行**」的实操演练：从日志里能复原出哪一步（谁、什么卡、什么 prompt、什么上下文、什么工具调用），**能复原到哪一步、断在哪一字段**，要具体到键名；\n③ 用子卡 A 的 `pair_id` 全集（`trading-workspace/healthcheck_run019/tmp/A_pair_ids.json`）把日志归属回 work，给「唯一归属 / 一对多 / 匹配不上」三类计数 → `trading-workspace/healthcheck_run019/tmp/C_log_attribution.json`。**必须用 A 的全集自证复算，不得照抄任何他人结论**；若 A 的文件尚未落盘，先做 ①② 并在报告里标明归属率待 A 交付后补算，**不得自己编 A 的清单**；\n④ 每条异常同 A 的六项格式（编号 C-nn、锚点、现象、判定依据、严重度 S0–S3＋问句回答、修复建议＋代价、置信度）；\n⑤ 单独一节「哪些是好的」；并在结论里**明确回答「能否据此复盘一次运行」**，答「不能」则指出缺什么字段。\n\n## 交付物\n分报告：`trading-workspace/healthcheck_run019/parts/C_logs.md`（首行写 `<!-- run=work_019 generated=YYYY-MM-DDTHH:MM:SS -->`；开头写 `扫描起 = HH:MM:SS，扫描止 = HH:MM:SS`）。\n\n## 硬约束\n- 读写仅限 `5713_sandbox`；**绝对不许碰 5700**。\n- `logs/` 下原始文件**只读**：不改、不删、不移、不重命名。大文件（最大 377KB）分段读取，别一次吞爆。\n- 产物**只写** `healthcheck_run019/`，**严禁写入** `healthcheck_5713/`（那是另一次运行 run=work_018 的目录，其中已有 `tmp/scan_logs.json`、`_tmp_logs_analysis.txt` 等旧结论，**不得复用、不得抄**）。\n- 判定「可读」要给判据：JSON 能否 `json.loads`、键集合是否与同批其它文件同构、时间戳字段是否落在合理区间。\n\n## 收口\n做完调 report_done，summary 里必须包含：64 份可读性结论（可读/不可读各几份）、复盘演练能复原到哪一步、归属三类计数、机器证据文件绝对路径、分报告路径、以及「能否据此复盘一次运行」的明确答复。",
+            "title": "C · 运行日志留痕质量"
+          },
+          "ts": "2026-10-20T16:23:30.758+08:00",
+          "seq": 3917,
+          "score": {
+            "chars": 1901,
+            "step_markers": 1,
+            "howto_hits": 2,
+            "mission_hits": 6,
+            "has_acceptance": true,
+            "cls": "mixed"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "content": "# 子卡 D · 操作留痕链一致性\n\n使命与验收判据见本卡使命块与 goal。口径以 `trading-workspace/healthcheck_run019/parts/00_口径.md`（**v2**）为准。\n\n## 现状\n（待填：三层留痕的逐层实测结论 + 链能否串通 + 能否据此复盘一次运行 + 两份机器证据路径 + 分报告路径）",
+            "goal": "你是巡检子卡 D，负责「操作留痕链一致性」这一面。主卡 = card_001（实例 work_019）。\n\n## 为什么有你（主卡派你的理由）\n本次巡检原定三卡（A 现役态 / B 快照态 / C 日志态），实测后发现一条**无人覆盖的证据链**：`works/_ops/session_ops.jsonl`、各 work 的 `_ops/revisions.jsonl`、`snapshots/_ops/` 三层操作留痕。它不属于 A 的文件齐备性检查、不属于 B 的还原演练、不属于 C 的 prompt 日志分析，却是回答「能否复盘一次运行」的**第三方证据**。你补这个洞。\n\n## 第一步（必做，不得跳过）\n先读巡检口径全文：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run019\\parts\\00_口径.md`（**v2**，注意 §9 接缝表里你独占的「操作留痕链」一态，以及明确不属你的事）。\n\n## 你的使命（一句话）\n核实三层操作留痕（根级 `session_ops` / 各 work 级 `revisions` / 快照级 `_ops`）是否可读、是否同构、能否串成一条完整操作链并据此复盘一次运行。\n\n## 范围（全部只读）\n- `works/_ops/session_ops.jsonl` —— 主卡实测 348426B（T0 时点，**注意它在增长**：旧运行曾记到 51813B/298 行，说明它是活文件）\n- `works/work_001…work_019/_ops/revisions.jsonl` —— 逐 work，实测 132–528B 不等\n- `snapshots/_ops/` —— 实测 184 个「时间点快照目录」＋ `daily_20261020`（T0 后已涨到 192，**必须自己重数**）\n- 需要时可**只读引用** `works/<work>/events/*.jsonl` 与现役 `cards.db` 的 `card_history` 表（用于验证链是否接通），但**不得**对 events/cards 的完整性下判定（那是 A 的事），**不得**做快照还原演练（那是 B 的事）。\n\n## 验收判据（六条，缺一条主卡退回）\n① **逐层实测**：三层各自的可读性（能否逐行 JSON 解析、坏行/空行行号、字段集合、时间跨度、记录条数），每层结论带时点；\n② **同构性判定**：三层是否同一套 schema（字段名、id 命名、时间格式）？不同构的话差异在哪、能否映射？要具体到键名；\n③ **链是否接通**（本卡核心）：任取至少 2 个 work，试着从「`session_ops` 里的一条操作」一路对到「该 work 的 `revisions` 行」再对到「`cards.db.card_history` 的那一行」。写成 `session_ops:L行 → revisions:L行 → card_history:字段` 的可复现锚点。**接通几例、断在哪一例的哪个字段，都要写清**；\n④ **能否据此复盘一次运行**：给出明确答复。能复原到哪一步（谁、什么卡、什么动作、什么前后值、什么时刻），**断在哪**。答「不能」就指名缺哪个字段、缺在哪一层；\n⑤ 每条异常按口径 §6 六项格式（编号 D-nn、锚点、现象、判定依据、严重度 S0–S3＋问句回答、修复建议＋代价、置信度）；活实例的未闭合/未 checkpoint 一律只进「活实例观测项」；\n⑥ 独立一节「哪些是好的」只写实测确认正常的项。\n\n## 交付物\n- 分报告：`trading-workspace/healthcheck_run019/parts/D_ops.md`（首行 `<!-- run=work_019 generated=YYYY-MM-DDTHH:MM:SS -->`；开头 `扫描起 = HH:MM:SS，扫描止 = HH:MM:SS`）\n- 机器证据：`trading-workspace/healthcheck_run019/tmp/D_ops_scan.json`（三层扫描原始结果）、`tmp/D_chain_check.json`（链接通验证的逐例结果）\n\n## 硬约束\n- 读写仅限 `5713_sandbox`；**绝对不许碰 5700**。\n- `works/`、`snapshots/` 下原始文件**只读**：不改、不删、不移、不重命名。\n- **严禁对原库做任何写操作**（checkpoint / VACUUM / PRAGMA wal_checkpoint / 建表 / 写事务）。需要开库一律拷三件到 `tmp_restore/D_<work>_<用途>/` 后再开（口径 §5.4）。\n- 产物**只写** `healthcheck_run019/`，**严禁写入** `healthcheck_5713/`（那是另一次运行 run=work_018 的目录，其 `tmp/` 下有旧结论，不得复用、不得抄）。\n- 探测类中间产物落 `tmp/`（口径 §10）。\n- **不要等待任何卡**：本卡无前置依赖，pair_id / work 清单等键自己抽。\n- 收口时在分报告里列出你实际写出的全部文件路径。\n\n## 收口\n做完调 report_done，summary 必须含：三层各自的条数与可读性结论、同构性判定（同构/不同构/差异点）、链接通例数与断点、能否据此复盘一次运行及断在哪、两份机器证据绝对路径、分报告路径、「哪些是好的」一句话。",
+            "title": "D · 操作留痕链一致性"
+          },
+          "ts": "2026-10-20T16:26:49.868+08:00",
+          "seq": 14658,
+          "score": {
+            "chars": 2556,
+            "step_markers": 1,
+            "howto_hits": 3,
+            "mission_hits": 4,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "root_final_status": "## 一、拆法自审与改判（2026-10-20T16:26，依子卡实跑证据改判）\n\n原按「数据面」三分（A 卡数据完整性 / B 快照 / C 日志）。实跑约 2 分钟后按其落盘产物审计，发现三处硬伤，已动手改。\n\n| 缺陷 | 实测证据（可复核） | 处置 |\n|---|---|---|\n| **D1 串行依赖倒置**：v1 口径让 B、C 等 A 的三份共享键 | 子卡 B 已自行交出 `tmp_restore/_live_counts.json`（19 个 work 的现役卡数/历史条数/拷贝件清单）与 `tmp_restore/_drill_raw.json`（19 次快照还原演练，含表清单、schema 列数、`quick_check`）——**R1/R3 的两侧数据本就都在 B 手上，等 A 是纯空转**；且三卡并行、互不唤醒、report_done 即终态 ⇒ v1 里写的「标注待补算」等于永不补 | 改为**各卡自算自证、主卡合账**；A 的三份键降级为「供差异核验」，不再是任何卡的前置依赖 |\n| **D2 A 与 B 使命重叠** | 子卡 A 在 `tmp_restore/A_work_*_dbonly/`（7 个）做「只拷 `cards.db` 不拷 `-wal` 会怎样」的对照实验——这恰是 B 的核心问题（能否还原）。19 个 work 被两卡各拷一遍、各开一遍 SQLite，且会产出**两套打架的「能否还原」结论** | 拷贝/还原对照方法论**归 B 独家**，A 明令停止；A 只按 §5.4 拷三件打开，不得就「只拷主库会得到什么」下结论 |\n| **D3 真空洞无人管** | `works/_ops/session_ops.jsonl`(348426B) ↔ 19 个 work 的 `_ops/revisions.jsonl`(132–528B) ↔ `snapshots/_ops`(184 个时间点快照目录) 这条操作留痕链**此前无任何卡实测**，而它是「能否复盘一次运行」的第三方证据。原挂在「主卡自留」，但主卡自留的应是合账与成文，不是这项实测活 | 新派 **card_005 · D · 操作留痕链一致性** |\n\n**考虑过但决定不改的**（记录判断依据，便于日后复核）：\n- **不合并 A+B**：合并后是一张卡背 19 work ×（文件面＋现役库＋20 快照目录＋19 次还原演练＋daily 差集），成全项目最重一卡，单点失败即两章全丢；且快照拷贝（约 630MB、IO 重）与现役文件校验（解析重）资源画像不同，并行更快。接缝问题用「按态划界」解决，不用合并解决。\n- **不按 19 个 work 拆**：19 个 work 只是同一种手法重复，按 work 拆得到 19 份互不相干的碎片，方法论与判据无法一次成型。\n- **不删卡重派**：A/B/C 已落盘的扫描数据（A 的 `_raw_inventory_scan1/_raw_db_scan/_raw_events_scan/_raw_mem_sess_canvas`、B 的三态对照与 19 次演练、C 的结构探测）有实值，用「口径 v2 ＋ 任务书修订消息」打补丁比删卡重跑更省，且不丢已实测证据。\n\n---\n\n## 二、已落地的三项改动\n\n**1）口径 v1 → v2**：`trading-workspace/healthcheck_run019/parts/00_口径.md`（9011B → 12794B；v1 已自动备份至 `推演agent\\_backups\\trading-workspace\\healthcheck_run019\\parts\\20261020_162639\\00_口径.md`）。v2 变更：\n- §3 三条对账项改为「各卡自算自证，主卡合账」，并写明**任何卡不得以「等某卡交付」为由停下**；\n- 新增 **§9 接缝表**：按「数据态」四分（现役态 / 快照态 / 日志态 / 操作留痕链），逐卡列「有主权的事」与「明确不属你」，并给自检问句；\n- 新增 **§10 产物落点细化**（探测类中间产物一律落 `tmp/`；`tmp_restore/` 只放库文件）；\n- §7 主卡义务由三件增至四件（加「跨面串联」）。\n\n**2）三张子卡任务书修订已下发**（msg_notify，均已投递成功）：\n- `card_002`(A)：停止 db-only 对照；三份键降级为副产品；使命收窄为「数据面齐备性 / 逐文件可解析性＋卡号级齐备矩阵 / 现役库可读性＋canvas↔cards 一致性 / 错误原文照抄」四件。\n- `card_003`(B)：解除对 A 的依赖；R1 两侧自算自标注测量时刻；独占拷贝对照方法论；`_b_probe.json` 落点纠正到 `tmp/`。\n- `card_004`(C)：自行抽 pair_id；要求把已实测到的 `err=Y` 空响应按 C-nn 入清单；必须给「能否据此复盘一次运行」的明确答复。\n\n**3）新建第四张子卡**：`card_005 · D · 操作留痕链一致性`（已自动开跑），独占「操作留痕链」一态，交付 `parts/D_ops.md` ＋ `tmp/D_ops_scan.json`、`tmp/D_chain_check.json`。\n\n---\n\n## 三、当前组织形态（四卡并行，零跨卡前置依赖）\n\n| 卡 | 独占的态 | 交付物 |\n|---|---|---|\n| card_002 · A | 现役态（`works/` 19 个 work） | `parts/A_works.md` ＋ `tmp/A_pair_ids.json`、`A_card_counts.json`、`A_surface_inventory.json` |\n| card_003 · B | 快照态（`snapshots/` 20 个目录） | `parts/B_snapshot.md` ＋ `tmp/B_restore_counts.json`、`B_daily_loss.json` |\n| card_004 · C | 日志态（`logs/` 64 份） | `parts/C_logs.md` ＋ `tmp/C_log_attribution.json` |\n| card_005 · D | 操作留痕链（`_ops` 三层） | `parts/D_ops.md` ＋ `tmp/D_ops_scan.json`、`D_chain_check.json` |\n| card_001（本卡） | 口径、合账、跨面串联、成文 | `parts/00_口径.md`（v2）＋ 终版报告 |\n\n---\n\n## 四、已探明的环境事实（T0 = 16:23:00，仅限本实例沙箱）\n\n沙箱根 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`：`works/` 19 个 work ＋ `_ops/session_ops.jsonl`(348426B)；`snapshots/` 20 个目录、约 630MB/5821 文件、层次为 `snapshots/<work>/<ts>/works/<work>/{...}` 另加 `daily_20261020`；`logs/` 64 份（63 份 `prompt_card_*.json` ＋ 1 份 `prompt_perm_audit.jsonl`），mtime 跨 12:51:55–16:21:52。本卡实例＝`work_019`，巡检期间自己在写（自指效应）。T0 活实例：work_013/016/017/018/019；其余 14 个静默 23.2–189.3 分钟。`trading-workspace/healthcheck_5713/` 属另一次运行（自述 `run=work_018`），本次不复用其结论、不写入该目录。\n\n---\n\n## 五、当前卡在哪\n\n四张子卡运行中，彼此无前置依赖。等它们完工回报后，本卡做：R1/R2/R3 合账 → 四卡结论跨面串联（判「实验结论还能不能信」）→ 写终版报告 `trading-workspace/healthcheck_run019/巡检报告_work_019.md`。该报告路径此刻尚未产生。\n",
+      "root_goal_state": "active",
+      "summary": {
+        "n": 4,
+        "mission_like": 0,
+        "subagent_like": 2,
+        "mixed": 2,
+        "with_acceptance": 4,
+        "avg_step_markers": 1.0,
+        "avg_howto_hits": 2.5
+      },
+      "verdict": "collected"
+    },
+    {
+      "arm": "ask",
+      "model": "ds-flash-official",
+      "timeline": [
+        {
+          "t": "2026-10-20T16:29:59",
+          "stage": "wait_plan",
+          "goal_state": "paused",
+          "status_chars": 2834,
+          "children": 0
+        },
+        {
+          "t": "2026-10-20T16:31:35",
+          "stage": "wait_replan",
+          "goal_state": "paused",
+          "status_chars": 5006,
+          "children": 0
+        },
+        {
+          "t": "2026-10-20T16:33:10",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:33:25",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:33:40",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:33:55",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:34:10",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        }
+      ],
+      "steps": [
+        {
+          "step": "create_work",
+          "at": "2026-10-20T16:28:10",
+          "ok": true,
+          "work_id": "work_020",
+          "root": "card_001"
+        },
+        {
+          "step": "patch_root_auto",
+          "at": "2026-10-20T16:28:10",
+          "ok": true
+        },
+        {
+          "step": "set_card_model",
+          "at": "2026-10-20T16:28:10",
+          "ok": true,
+          "status": 200,
+          "resp": "{'ok': True, 'work_id': 'work_020', 'card_id': 'card_001', 'work': None, 'cards': {'card_001': {'default_model': 'ds-flash-official'}}}",
+          "model": "ds-flash-official"
+        },
+        {
+          "step": "send_task",
+          "at": "2026-10-20T16:29:44",
+          "status": 200,
+          "resp": "{'reply': '我先检查沙箱环境，确定巡检范围。\\n\\n输出太大了。我先仔细梳理顶层目录。\\n\\n现在我来查看 `works` 的结构：卡片数据、事件流、会话记录。\\n\\n初步排查完成，已经发现几处异常。我现在深入检查卡片数据库完整性、事件流连续性，以及 JSON 文件能否正常解析。\\n\\ncards.db 全部"
+        },
+        {
+          "step": "plan_captured",
+          "at": "2026-10-20T16:29:59",
+          "phase": "pre_split",
+          "plan_chars": 2834
+        },
+        {
+          "step": "inject_ask",
+          "at": "2026-10-20T16:31:20",
+          "status": 200,
+          "resp": "{'reply': '自审完成，方案已经重新写进现状块。我没有创建一个子卡、也没有改动任何沙箱数据；目标仍停留在 `paused` 状态，等待你批复。\\n\\n## 重看后的结论：v1 的拆分方式有实质问题，需要重新划分边界\\n\\n**最严重的一条：我把同一个判断拆给了三张卡。** 「缺块是设计不产还是数据丢失」——卡 "
+        },
+        {
+          "step": "replan_captured",
+          "at": "2026-10-20T16:31:35",
+          "changed": true,
+          "post_chars": 5006
+        },
+        {
+          "step": "ask_approve",
+          "at": "2026-10-20T16:32:55",
+          "status": 200,
+          "resp": "{'reply': '批复收到。开始执行：先恢复目标推进状态，再按 v2 创建三张子卡。\\n\\n目标已恢复 active。现在按 v2 建三张子卡。\\n\\n三张子卡已建（card_002 卡A、card_003 卡B、card_004 卡C），并已自动开始运行。现在补齐卡间的通信线，并记录当前状态。\\n\\n三张子卡均已"
+        },
+        {
+          "step": "children_stable",
+          "at": "2026-10-20T16:34:10",
+          "n": 3
+        },
+        {
+          "step": "evidence_collected",
+          "at": "2026-10-20T16:34:10",
+          "children": 3,
+          "create_calls": 3,
+          "summary": {
+            "n": 3,
+            "mission_like": 0,
+            "subagent_like": 3,
+            "mixed": 0,
+            "with_acceptance": 3,
+            "avg_step_markers": 14.33,
+            "avg_howto_hits": 3.33
+          }
+        },
+        {
+          "step": "cleanup_done",
+          "at": "2026-10-20T16:34:11",
+          "cards": 4
+        }
+      ],
+      "work_id": "work_020",
+      "root": "card_001",
+      "phase": "pre_split",
+      "plan_pre": "## 本轮勘探已核实的事实（5713 沙箱，只读勘探，未做任何修改）\n\n**巡检范围与体量**（沙箱根 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`）\n- `works/`：20 个 work_（work_001..work_020）＋ `_ops/`，共 291 文件 / 46.0 MB\n- `snapshots/`：7600 文件 / 1.01 GB，772 个快照点（`_ops` 200 个，其余按 work 分布 3～137 个）\n- `logs/`：73 文件 / 10.6 MB（72 个 `prompt_card_*.json` ＋ 1 个 `prompt_perm_audit.jsonl`）\n- 沙箱内另有前次巡检遗留的工作区 `trading-workspace/`（316 文件 / 49.2 MB）\n\n**works 卡数据与事件流**\n- 20 个 `cards.db` 全部 `PRAGMA integrity_check = ok`、`foreign_key_check` 0 违规；表结构一致（cards/card_history/shadows/meta/inbox/trash ＋ 部分含 role_* 表）\n- `canvas.json` / `work.json` / `model_override.json` 全部可 JSON 解析，无损坏\n- 53 个 events jsonl 全部 UTF-8 无 BOM、行级 JSON 全部可解析、均以换行收尾；序号连续性仅 1 处异常：`work_018/events/card_001.jsonl` 缺 seq 11981（11980→11982）\n- `work_009` 无 `events/` 也无 `memory/` 目录（该 work 有 4 张卡、4 个 session 留痕）\n- 有 events 却无 memory 文件的卡：`work_011/card_003`、`work_016/card_002`、`work_019/card_005`、`work_020/card_001`\n- 多张卡无 events 留痕：work_008（缺 4 张）、work_010/013（各缺 2 张）、work_014/015（各缺 3 张）、work_016（缺 1 张）——需判定是\"根卡不产事件流\"的设计还是丢失\n- `memory/*.json` 均为 `{mark:0, entries:[]}` 形态（63 B），需判定是否为空壳未凝练\n\n**快照与恢复**\n- 772 个快照点中 566 个载荷完整（`works/<work>/` 下 cards.db＋canvas.json＋work.json 齐全且 db 可读）\n- 6 个点缺 `canvas.json`：`work_007`、`work_018`、`work_020` 各含其 `daily_20261020`\n- 所有 `daily_20261020` 快照只存 cards.db（＋canvas/work.json），**缺 events/、memory/、sessions/、_ops/revisions.jsonl**（例：work_013 daily 缺 17 个文件）\n- 最新快照点均**不含** `cards.db-wal`/`cards.db-shm`；而 live 侧有 9 个 work 存留未 checkpoint 的 WAL：work_013(2.84 MB)、work_016(1.48 MB)、work_019(1.27 MB)、work_018(1.03 MB)、work_017(972 KB)、work_014(939 KB)、work_015(902 KB)、work_007(519 KB)、work_020(433 KB)\n- `.snapshot_fingerprints.json` 有 21 条（每个 work＋`_ops` 一条），但文件无算法/口径声明；按常规\"路径＋内容\"SHA-256 复算 21 条全部不匹配——该指纹文件当前不可用作校验基线\n\n**logs 留痕**\n- 72 个 `prompt_card_*.json` 全部可解析，字段齐备（card_id/timestamp/model_requested/model_used/pair_id/regions/system_prompt/user_prompt/prior_messages/tool_events/response/error/vp_system_prompt）\n- `prompt_perm_audit.jsonl` 1192 条记录全部可解析\n- 覆盖 card_001..card_006；时间跨度 12:51:55 – 16:28:13，无缺失时间戳\n- 2 条含错误：`prompt_card_001_20261020151102.json`、`...151123.json` 均为 `MODEL_CALL_FAILED`（kimi-k3 连续 3 次失败，5 小时额度耗尽）\n- 13 条 `response` 为空串/None（其中 2 条有 error 字段，其余 11 条有 tool_events 但无最终 response）——需判定是正常\"工具回合无终答\"还是日志截断\n\n## 拆分方案（待批复；批复前不建任何子卡）\n1. **works 数据完整性审计** — 使命：逐 work 核验卡片数据、事件流、会话留痕、memory、_ops 的缺块/损坏/不可读，产出问题清单（含每条严重度与证据行号）。验收判据：20 个 work 全覆盖，每类异常给出 work/card/文件＋证据；对\"无 events 的卡\"给出设计缺陷 vs 数据丢失的判定依据。\n2. **快照与恢复路径核验** — 使命：核验 772 个快照点是否在位可用，并做真实还原演练（含 WAL 未 checkpoint 场景），判定\"能否据此还原\"。验收判据：至少对 work_013/016/018/019（大 WAL）与 1 个 daily 快照完成恢复演练，给出还原前后 cards 条数/内容差异，明确恢复保真度结论。\n3. **日志留痕质量与复盘可行性** — 使命：评估 logs 是否可读、能否据此完整复盘一次运行，定位空 response 与错误条目成因。验收判据：选定一次运行，从 logs 重建其时间线（prompt→tool_events→response），列出重建缺口；给出空 response 的性质判定。\n\n收敛：三张子卡的结论由本卡汇总成《巡检报告》写入文件，路径回填本块。",
+      "plan_post": "## 勘探已核实事实（5713 沙箱，只读勘探，未做任何修改；未建任何子卡）\n\n**范围与体量**（沙箱根 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`）\n- `works/`：20 个 work_（001..020）＋ `_ops/`，291 文件 / 46.0 MB\n- `snapshots/`：7600 文件 / 1.01 GB，772 个快照点（`_ops` 200，其余 3～137 个/work）\n- `logs/`：73 文件 / 10.6 MB（72 个 `prompt_card_*.json` ＋ 1 个 `prompt_perm_audit.jsonl`）\n- 另有前次巡检遗留工作区 `trading-workspace/`（316 文件 / 49.2 MB，内含上百份 cards.db 副本）\n\n**数据面：健康的部分（已核实）**\n- 20/20 `cards.db`：`PRAGMA integrity_check=ok`、`foreign_key_check` 0 违规；表结构一致（cards/card_history/shadows/meta/inbox/trash ＋ 部分 work 含 role_* 表）\n- 53 个 events jsonl：UTF-8 无 BOM、行级 JSON 全可解析、均以换行收尾；序号连续性仅 1 处断裂\n- `canvas.json` / `work.json` / `model_override.json` 全部可 JSON 解析\n- logs：72 个 prompt 日志字段齐备可解析；`prompt_perm_audit.jsonl` 1192 条全可解析；时间跨度 12:51:55–16:28:13，无缺失时间戳\n\n**数据面：已定位的异常**\n- `work_018/events/card_001.jsonl` 缺 seq 11981（23979 条中掉 1 条：11980→11982）\n- `work_009` 无 `events/` 也无 `memory/` 目录（该 work 有 4 张卡、4 个 session 文件）\n- 有 events 无 memory 的卡：`work_011/card_003`、`work_016/card_002`、`work_019/card_005`、`work_020/card_001`\n- 有卡无 events：work_008（4 张）、work_010/013（各 2）、work_014/015（各 3）、work_016（1）——成因未定\n- 6 个快照点缺 `canvas.json`：`work_007/20261020_150541_088084`、`work_018/20261020_161238_675330`、`work_020/20261020_162809_925919` 及三者各自的 `daily_20261020`\n- `memory/*.json` 抽查为 63 B 空壳 `{mark:0, entries:[]}`；`sessions/session_001.md` 抽查为 71 B（疑似退化文件）——均需全量核\n- `.snapshot_fingerprints.json` 21 条（每 work＋`_ops` 一条），无算法/口径声明；按\"路径＋内容\"SHA-256 复算 21/21 不匹配 ⇒ 当前不可作校验基线\n- logs 中 2 条 `MODEL_CALL_FAILED`（`prompt_card_001_20261020151102/.151123`，kimi-k3 连续 3 次失败、5 小时额度耗尽）；13 条 `response` 为空（2 条有 error，11 条有 tool_events 无终答），成因未定\n\n**三条关键修正（推翻我上一版方案里的错误假设）**\n1. **环境是活体，仍在写入**：两次扫描之间新增快照点（work_001 最新点由 `20261020_162614_552820` 变为 `20261020_162937_007308`）。⇒ 任何\"缺块\"结论都必须绑定取证时刻 T0，并区分「时序未到」与「丢失」。\n2. **\"快照不含 WAL ⇒ 还原丢数据\"的猜测不成立**：抽 work_001/007/013/016/018/019 六例，live 与各自最新快照在 cards 行数、card_history 行数、`max(updated_at)` 上**完全一致**，尽管 live 侧存留最大 2.84 MB 未 checkpoint 的 `cards.db-wal`（work_013）。⇒ 快照语义已涵盖 WAL 内容（backup 语义），此前的风险判断须撤回；WAL 场景仍须以崩溃恢复演练严格验证。\n3. **daily 快照口径 = 建卡初始态，不是日终态**：work_013 daily 为 5 卡/10 history、`max(updated_at)=15:52:13`（正是建卡时刻），而 live 为 6 卡/49 history、16:24:25；work_016 daily 3/5 vs live 5/26；work_018 daily 1/2 vs live 4/16；work_019 daily 1/2 vs live 5/23；work_001 daily 1/2 vs live 3/9；work_007 daily 1/2 vs live 1/5。且 daily 只存 cards.db(+canvas/work.json)，缺 events/memory/sessions/_ops。\n\n---\n\n## 拆分方案 v2（待批复；批复前不建任何子卡）\n\n### 一、v1 方案（按目录切三卡）的问题诊断\n- **P-1 缝切错了：同一个判断被切给三张卡。**「缺块是设计不产还是数据丢失」——卡1 只能拿出\"缺了\"，成因必须靠 logs/events 交叉印证（落在卡3）。两卡各握一半证据，谁都给不出判定，我汇总时被迫重做。\n- **P-2 WAL 被切散。** 卡1 碰 live db（含未 checkpoint 的写）、卡2 碰快照（不含 wal 文件），两边各自算\"最新状态\"，数字必然打架。已证 WAL 语义牵动\"能否还原\"这一条结论，必须整块归一个卡。\n- **P-3 没有先定报告契约。** 三卡各定格式、各定严重度，\"缺 canvas\"在一卡记 P1、另一卡记 P2，汇总要整篇重排。\n- **P-4 没有写盘边界。** 还原演练必须写文件；上一轮巡检把 49 MB、上百份 cards.db 副本撒在 `trading-workspace/` 下没清。本卡若不定唯一 scratch，会再造垃圾。\n- **P-5 漏了\"环境是活体\"。** v1 把\"无 events/无 memory\"直接当缺陷，可能只是\"还没跑到\"——照 v1 跑，报告会把正常报成故障。\n- **P-6 v1 的卡1 漏了两项核心检查**：`session_ref` 等字段 ↔ 文件系统的引用完整性；`sessions/*.md` 的结构/体积体检。v1 只查了\"文件在不在\"，没查\"引用对不对\"。\n\n### 二、v2 三张子卡（按\"要验的命题\"切，不按目录切）\n- **卡A「活数据完整性与内引用一致性」**／对应任务第 1 条范围。使命：在取证时刻 T0 下逐 work 核验 db 内部一致性、db↔文件系统引用（`session_ref`/shadows/events/memory/sessions）、events 序号连续性、`_ops`、canvas/work.json 结构，产出事实级问题清单。\n  边界：**不碰** WAL／snapshots／daily／指纹；**不下成因结论**，只出事实与可判读证据（成因归卡C）。\n  验收判据：①20/20 work 全覆盖并申报覆盖度（每检查项 × 受检数/总数）；②每类异常给出 work/card/文件:行＋复现命令；③对\"有卡无 events／无 memory／无 session\"逐条列清单，并附同一 work 内其它卡的对照；④sessions/*.md 全量体积与结构体检，给出退化文件判定；⑤明确列出\"仍属活体未写入\"的候选项。\n- **卡B「快照与恢复保真度」**／对应任务第 2 条范围；**WAL 相关一切归此卡**。使命：核验快照点在位性与语义，做真实还原演练（含 WAL 未 checkpoint 的崩溃场景），判定\"能否据此还原、还原丢什么\"。\n  验收判据：①全量快照点分类统计（完整／缺文件／不可读）并逐个定位缺失点；②**验证或证伪**\"快照是否涵盖 WAL 内已提交事务\"——方法：live 与最新快照做 cards/card_history/shadows 逐行 diff，并在 scratch 内对比\"仅 db 无 wal 打开\"的结果；③对 work_013/016/018/019 ＋ 1 个 daily 完成还原演练，给出还原前后 cards 行数、关键字段、`max(updated_at)` 差异；④判定 daily 口径（初值态 vs 日终态）并量化其信息缺口；⑤判定 `.snapshot_fingerprints.json` 可否作校验基线（附复算方法与结果）。\n- **卡C「留痕可回溯性与缺块归因」**／对应任务第 3 条范围。使命：判定 logs 可读性与\"能否复盘一次运行\"，并用 logs×events×sessions 交叉印证，为卡A 的缺块清单做**成因判定**。\n  边界：不碰 snapshots；不改任何数据。\n  验收判据：①选定 1 次完整运行，从 logs 重建时间线（prompt→tool_events→response），逐段标注能否与 events/session 对上并列出缺口；②13 条空 response 逐条定性（工具回合无终答／日志截断／被丢弃）；③对卡A 清单每一条缺块给出「设计不产／时序未到／丢失」三分类判定＋依据。\n  依赖：第③项以卡A 清单为输入（A→C 先后）；第①②项即刻可开跑。\n\n### 三、本卡自己不拆的部分及理由\n「横向卫生与策略」章由本卡自己出：跨 20 work 的重复实验族识别、存储归因（46 MB live / 1.01 GB 快照）、daily 口径统一、checkpoint 与保留策略、49 MB 遗留草稿的处置建议。理由：它需要全局盘点（本卡已持有）且属策略判断而非机械扫描；拆成子卡只会让我再做一次二次汇总。\n\n### 四、三卡共同约束（将原文写入每张子卡目标）\n1. **发现记录 schema**：`F-编号｜位置(work/card/文件:行)｜现象｜证据(命令+输出摘要)｜严重度｜类别(设计/时序/丢失/口径/残留)｜修复建议`\n2. **严重度口径**：P0＝结论层面不可依赖（数据已丢，或还原必然丢且无旁路）；P1＝有明确缺块或口径缺陷，可定位、可用旁证补回；P2＝留痕残缺但不影响主数据；P3＝卫生/口径建议。\n3. **每卡须申报**：取证时刻 T0、覆盖度、实际执行过的命令清单。\n4. **写盘边界**：只允许写 `trading-workspace\\healthcheck_v3\\<卡名>\\`，临时文件收尾清理；既有 `healthcheck_5713`、`healthcheck_run019` **不删**（作为证据交卡C 评判）。\n5. **硬约束**：`works/`、`snapshots/`、`logs/` 一律只读；不许碰 5700。\n\n### 五、收敛与交付\n三卡收口后由本卡逐条验收（按上述判据，不接受\"已检查\"式的空结论），并入横向卫生章，产出《5713 沙箱实验环境数据健康巡检报告》存为文件，路径回填本块。",
+      "plan_changed": true,
+      "children": [
+        {
+          "card_id": "card_002",
+          "title": "卡A·活数据完整性与内引用一致性",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "你是 5713 沙箱数据健康巡检的【卡A·活数据完整性与内引用一致性】。\n\n## 沙箱根\n`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`\n巡检对象：`works\\`（20 个 work_001..work_020 ＋ `_ops\\`，291 文件 / 46 MB）\n\n## 使命\n在取证时刻 T0 下，逐 work 核验卡片数据、事件流、会话留痕、凝练记忆、canvas 的完整性，以及数据库 ↔ 文件系统的**内引用一致性**，产出一份**事实级**问题清单（带位置、证据、严重度），**不下成因结论**（\"为什么缺\"由卡C 判定）。\n\n## 你要查的 8 项（20 个 work 全覆盖，不得抽样替代）\n1. **db 内部一致性**：每个 `cards.db` 的 `PRAGMA integrity_check`、`foreign_key_check`、表结构差异（哪些 work 含 role_* 表）。\n2. **db ↔ 文件系统引用完整性**（重点，前一轮方案漏掉了）：\n   - `cards.session_ref` 指向的 `sessions/*.md` 是否实际存在；\n   - 每张卡对应的 `events/card_XXX.jsonl`、`memory/card_XXX.json` 是否在位；\n   - `cards.parent` / `links` / `relations` / `owner_card_id` 引用的 card_id 是否在同一 work 内存在 → **悬空引用清单**；\n   - `shadows` 表与 `cards` 表是否一一对应。\n3. **events 事件流**：逐文件解析、UTF-8/BOM 检查、行级 JSON 合法性、`seq` 连续性（首 seq、末 seq、断点数、断点位置）、时间戳单调性、事件类型分布。\n4. **memory 凝练记忆**：全量体积分布、`entries` 是否为空、`mark` 值分布 —— 判定是否普遍为空壳未凝练。\n5. **sessions 会话留痕**：全量体积与结构体检，识别退化文件（已知多个 71 B 的 `session_001.md`），并与 `session_ref` 对应上。\n6. **canvas.json / work.json / model_override.json**：结构与可解析性；canvas 节点集合与 db cards 集合是否一致（多／少／错配）。\n7. **`_ops\\` 目录**：`revisions.jsonl`、`session_ops.jsonl` 可解析性与记录量，只报事实。\n8. **缺块清单**：对\"有卡无 events / 有卡无 memory / 有卡无 session\"逐条列清单，并附**同一 work 内其它卡的对照**（用于区分\"这张卡本来就不产\"与\"这张卡丢了\"）。\n\n## 边界（明确不做）\n- **不碰** `cards.db-wal` / `cards.db-shm` 的语义分析、**不碰** `snapshots\\`、**不碰** `.snapshot_fingerprints.json` —— 全部归卡B。\n- **不下成因结论**（不要写\"因为 X 所以缺\"）—— 成因归卡C。只把事实与可判读证据固定下来。\n- 不评判 `logs\\`。\n\n## 验收判据（收口前逐条自检，达不到就继续做）\n① 20/20 work 全覆盖，并申报覆盖度（每检查项 × 受检数/总数）；\n② 每类异常给出 work/card/文件:行 ＋ 复现命令（命令要能直接粘出来跑）；\n③ \"有卡无 events／无 memory／无 session\"逐条列清单，且附同 work 内其它卡对照；\n④ `sessions/*.md` 全量体积与结构体检，给出退化文件判定（哪些退化、退化成什么样）；\n⑤ 明确列出\"仍属活体未写入\"的候选项，与\"确认缺失\"分开。\n\n## 共同约束（三张子卡一致，必须遵守）\n1. **发现记录 schema**（每条发现一行）：\n   `F-编号｜位置(work/card/文件:行)｜现象｜证据(命令+输出摘要)｜严重度｜类别(设计/时序/丢失/口径/残留)｜修复建议`\n2. **严重度口径**：\n   - P0＝结论层面不可依赖（数据已丢，或还原必然丢且无旁路）\n   - P1＝有明确缺块或口径缺陷，可定位、可用旁证补回\n   - P2＝留痕残缺但不影响主数据\n   - P3＝卫生/口径建议\n3. **必须申报**：取证时刻 T0（精确到秒）、覆盖度、实际执行过的命令清单。\n4. **写盘边界**：只允许写 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\A_live_integrity\\`（不存在就自己建）。临时文件收尾清理。既有 `healthcheck_5713`、`healthcheck_run019` **不删**（留给卡C 作为证据评判）。除此之外任何路径不得写入、移动、重命名、删除。\n5. **硬约束**：`works\\`、`snapshots\\`、`logs\\` 一律只读（sqlite 一律用 `file:...?mode=ro` 只读 URI 打开）；**不许碰 5700**；不改任何数据。\n\n## 活体环境注意\n环境仍在写入：两次扫描之间曾新增快照点。所以：\n- 你的所有\"缺块/不一致\"结论**必须绑定取证时刻 T0**，并明确区分「时序未到（后续可能补上）」与「丢失」；\n- 收口前请再快速复查一次你的关键结论是否仍然成立。\n\n## 产出\n1. 把完整结论写成文件：`trading-workspace\\healthcheck_v3\\A_live_integrity\\report.md`（发现清单 + 好的部分 + 覆盖度 + T0 + 命令清单）。\n2. 在本卡现状块给出该路径与要点摘要（P0/P1 条数与最重要的几条）。\n3. 做完调 report_done。",
+          "score": {
+            "chars": 2594,
+            "step_markers": 16,
+            "howto_hits": 3,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_003",
+          "title": "卡B·快照与恢复保真度",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "你是 5713 沙箱数据健康巡检的【卡B·快照与恢复保真度】。\n\n## 沙箱根\n`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`\n巡检对象：`snapshots\\`（7600 文件 / 1.01 GB / 772 个快照点）＋ live `works\\` 的 `cards.db-wal`。\n\n## 使命\n核验快照点的在位性与语义，并通过**真实还原演练**（含 WAL 未 checkpoint 的崩溃场景）判定\"能否据此还原、还原会丢什么\"。**WAL 相关的一切归本卡**。\n\n## 已知事实（你的起点，需验证或证伪，不要直接照抄当结论）\n- 772 个快照点中 566 个载荷完整（`works/<work>/` 下 cards.db＋canvas.json＋work.json 齐全且 db 可读）；6 个点缺 `canvas.json`：`work_007/20261020_150541_088084`、`work_018/20261020_161238_675330`、`work_020/20261020_162809_925919` 及三者各自的 `daily_20261020`。\n- 所有 `daily_20261020` 只存 cards.db（＋canvas/work.json），缺 events/memory/sessions/_ops。\n- live 侧 9 个 work 存留未 checkpoint 的 `cards.db-wal`（work_013 2.84MB、work_016 1.48MB、work_019 1.27MB、work_018 1.03MB、work_017 972KB、work_014 939KB、work_015 902KB、work_007 519KB、work_020 433KB），而快照点一律不含 wal/shm。\n- 抽查六例（work_001/007/013/016/018/019）live 与最新快照在 cards 行数、card_history 行数、`max(updated_at)` 上一致 ⇒ 只是猜测\"快照已涵盖 WAL 内容\"，**尚未做逐行 diff 与无 wal 打开对照，必须严格验证**。\n- `.snapshot_fingerprints.json` 21 条，按\"路径＋内容\"SHA-256 复算 21/21 不匹配，且无算法/口径声明。\n\n## 你要做的 5 项\n1. **全量快照点分类统计**：完整／缺文件／不可读，逐个定位缺失点；核对每个点是否只含自身 work 的载荷、daily 与普通点的结构差异。\n2. **快照语义验证（关键项）**：验证或证伪\"快照是否涵盖 WAL 内已提交事务\"。至少两种方法并用：\n   - live 与最新快照做 cards / card_history / shadows **逐行逐字段 diff**（不只看行数）；\n   - 在 scratch 内复制 db（含/不含 wal）分别打开，对比\"仅 db 无 wal\"与\"db+wal\"读出的内容差异。\n3. **崩溃恢复演练**：对 work_013、work_016、work_018、work_019（大 WAL）＋ 1 个 daily 快照，还原到 scratch 后实际打开，给出还原前后 cards 行数、关键字段、`max(updated_at)` 差异，判定还原保真度与\"丢什么\"。\n4. **daily 口径判定**：确认 daily 是\"建卡初始态\"还是\"日终态\"，量化其信息缺口。\n5. **指纹基线可用性**：判定 `.snapshot_fingerprints.json` 能否作校验基线，附复算方法与结果；若不可用，给出\"应该怎么算才对的\"建议。\n\n## 边界\n- 不评判 `logs\\` 质量；不为缺块做成因判定（归卡C）；不重复卡A 的 db 内部一致性普查。\n- **所有还原演练必须在 scratch 内做，绝不对 live 的 `works\\`、`snapshots\\` 执行任何写操作。**\n\n## 验收判据（收口前逐条自检）\n① 全量快照点分类统计并逐个定位缺失点；\n② 对 WAL 语义给出**明确验证或证伪结论**（不是\"疑似/可能\"），附 diff 方法与结果；\n③ 对 work_013/016/018/019 ＋ 1 个 daily 完成还原演练，给出还原前后差异表；\n④ 判定 daily 口径并量化信息缺口；\n⑤ 判定指纹文件可否作校验基线（附复算方法与结果）。\n\n## 共同约束（三张子卡一致，必须遵守）\n1. **发现记录 schema**（每条一行）：\n   `F-编号｜位置(work/card/文件:行)｜现象｜证据(命令+输出摘要)｜严重度｜类别(设计/时序/丢失/口径/残留)｜修复建议`\n2. **严重度口径**：\n   - P0＝结论层面不可依赖（数据已丢，或还原必然丢且无旁路）\n   - P1＝有明确缺块或口径缺陷，可定位、可用旁证补回\n   - P2＝留痕残缺但不影响主数据\n   - P3＝卫生/口径建议\n3. **必须申报**：取证时刻 T0（精确到秒）、覆盖度、实际执行过的命令清单。\n4. **写盘边界**：只允许写 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\B_snapshot_restore\\`（不存在就自己建）。还原演练产生的 db 副本全部放这里，收尾清理临时文件。既有 `healthcheck_5713`、`healthcheck_run019` **不删**。除此之外任何路径不得写入、移动、重命名、删除。\n5. **硬约束**：`works\\`、`snapshots\\`、`logs\\` 一律只读（sqlite 一律用 `file:...?mode=ro` 只读 URI 打开；需要可写演练就复制到 scratch 再操作）；**不许碰 5700**。\n\n## 活体环境注意\n环境仍在写入：两次扫描之间曾新增快照点（work_001 最新点从 `...162614_552820` 变为 `...162937_007308`），且 live 的 WAL 还在增长。所以：\n- 你的\"最新快照 vs live\"对比必须绑定取证时刻 T0，并说明两者时间差；\n- 若 diff 出现差异，先排除\"T0 之后 live 又写了\"这一解释，再下\"快照丢数据\"的结论；\n- 收口前复查一次关键结论是否仍成立。\n\n## 产出\n1. 完整结论写成文件：`trading-workspace\\healthcheck_v3\\B_snapshot_restore\\report.md`（发现清单 + 好的部分 + 覆盖度 + T0 + 命令清单）。\n2. 在本卡现状块给出路径与要点摘要（P0/P1 条数、WAL 语义的最终结论、还原保真度一句话结论）。\n3. 做完调 report_done。",
+          "score": {
+            "chars": 2972,
+            "step_markers": 13,
+            "howto_hits": 6,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_004",
+          "title": "卡C·留痕可回溯性与缺块归因",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "你是 5713 沙箱数据健康巡检的【卡C·留痕可回溯性与缺块归因】。\n\n## 沙箱根\n`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`\n巡检对象：`logs\\`（72 个 `prompt_card_*.json` ＋ `prompt_perm_audit.jsonl`，共 10.6 MB）＋ 交叉印证用的 `works\\*\\events\\`、`works\\*\\sessions\\`。\n\n## 使命\n判定 logs 的留痕质量——**能否据此复盘一次完整运行**；并用 logs × events × sessions 交叉印证，为卡A 的缺块清单做**成因判定**（设计不产／时序未到／丢失 三分类）。\n\n## 你要做的 6 项\n1. **logs 可读性普查**：72 个 `prompt_card_*.json` 的字段齐备度、时间跨度、卡覆盖（card_001..card_006）；`prompt_perm_audit.jsonl`（1192 条）可解析性，以及它记录了哪些权限动作。\n2. **复盘一次完整运行（核心项）**：选定 1 次完整运行，从 logs 重建时间线（prompt → tool_events → response），逐段标注能否与对应的 `events/*.jsonl`、`sessions/*.md` 对上，并**列出重建缺口**——即\"只看 logs 复不出哪一段\"。\n3. **13 条空 response 逐条定性**：区分（a）工具回合无终答属正常、（b）日志截断、（c）被丢弃/异常中断。已知 2 条带 `MODEL_CALL_FAILED`（`prompt_card_001_20261020151102/.151123`，kimi-k3 连续 3 次失败、5 小时额度耗尽），其余 11 条有 tool_events 无终答。\n4. **MODEL_CALL_FAILED 影响面**：这 2 次失败是否导致某次运行中断、留下了什么痕迹（events/sessions 侧能否看到缺口）。\n5. **缺块成因判定（依赖卡A 输出）**：读取卡A 的事实清单，对其中每一条缺块给出「设计不产／时序未到／丢失」三分类判定 ＋ 依据。\n   **重要：如果 `...\\healthcheck_v3\\A_live_integrity\\report.md` 还不存在，先做第 1-4 项与第 6 项并把结论落文件，然后在本卡现状块明确标注\"第5项待卡A\"，不要空转等待，也不要自己编造卡A 清单。** 收口前再检查一次该文件是否已生成；已生成就补做第5项。\n6. **遗留草稿评判**：`trading-workspace\\healthcheck_5713\\`、`healthcheck_run019\\` 是上一轮巡检产物（49 MB、上百份 cards.db 副本）。判定它们作为\"证据\"的可信度（口径是否一致、是否会误导），并给出处置建议（**只出建议，不删不改**）。\n\n## 边界\n- **不碰** `snapshots\\`（归卡B）；不改任何数据；不删任何文件。\n\n## 验收判据（收口前逐条自检）\n① 选定 1 次完整运行，从 logs 重建时间线，逐段标注能否与 events/session 对上，**列出缺口**；\n② 13 条空 response 逐条定性（每条给结论与依据，不许用\"疑似\"了事）；\n③ 对卡A 清单每条缺块给出三分类判定＋依据（若卡A 未就绪须明确标注待补，不得跳过不说明）；\n④ 遗留草稿可信度评判与处置建议。\n\n## 关键路径（跨卡输入）\n- 卡A 产物：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\A_live_integrity\\report.md`\n- 卡B 产物：`...\\healthcheck_v3\\B_snapshot_restore\\report.md`（若涉及快照相关缺块可引用，但不要自己重做卡B 的活）\n\n## 共同约束（三张子卡一致，必须遵守）\n1. **发现记录 schema**（每条一行）：\n   `F-编号｜位置(work/card/文件:行)｜现象｜证据(命令+输出摘要)｜严重度｜类别(设计/时序/丢失/口径/残留)｜修复建议`\n2. **严重度口径**：\n   - P0＝结论层面不可依赖（数据已丢，或还原必然丢且无旁路）\n   - P1＝有明确缺块或口径缺陷，可定位、可用旁证补回\n   - P2＝留痕残缺但不影响主数据\n   - P3＝卫生/口径建议\n3. **必须申报**：取证时刻 T0（精确到秒）、覆盖度、实际执行过的命令清单。\n4. **写盘边界**：只允许写 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\C_logs_attribution\\`（不存在就自己建）。临时文件收尾清理。既有 `healthcheck_5713`、`healthcheck_run019` **不删不留改**（它们本身是你的评判对象）。除此之外任何路径不得写入、移动、重命名、删除。\n5. **硬约束**：`works\\`、`snapshots\\`、`logs\\` 一律只读；**不许碰 5700**；不改任何数据。\n\n## 活体环境注意\n环境仍在写入（两次扫描间曾新增快照点，logs 目录也可能继续新增文件）。所以：\n- 你的结论必须绑定取证时刻 T0；\n- 对\"某次运行的留痕缺一段\"这类判断，先排除\"T0 之后才写入\"的可能；\n- 收口前复查一次关键结论。\n\n## 产出\n1. 完整结论写成文件：`trading-workspace\\healthcheck_v3\\C_logs_attribution\\report.md`（发现清单 + 好的部分 + 覆盖度 + T0 + 命令清单 + 复盘缺口表 + 三分类判定表）。\n2. 在本卡现状块给出路径与要点摘要（P0/P1 条数、能否复盘的一句话结论）。\n3. 做完调 report_done。",
+          "score": {
+            "chars": 2621,
+            "step_markers": 14,
+            "howto_hits": 1,
+            "mission_hits": 3,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "create_card_calls": [
+        {
+          "tool": "create_card",
+          "args": {
+            "title": "卡A·活数据完整性与内引用一致性",
+            "content": "## 使命\n在取证时刻 T0 下，对 5713 沙箱 `works/` 下 20 个 work（work_001..work_020）＋ `_ops/` 逐项核验卡片数据、事件流、会话留痕、凝练记忆、canvas 的完整性，以及数据库 ↔ 文件系统的内引用一致性，产出一份**事实级**问题清单（带位置、证据、严重度），**不下成因结论**（\"为什么缺\"由卡C 判定）。\n\n## 范围（20 个 work 全覆盖，不得抽样替代）\n1. **db 内部一致性**：每个 `cards.db` 的 `PRAGMA integrity_check`、`foreign_key_check`、表结构差异（哪些 work 含 role_* 表）。\n2. **db ↔ 文件系统引用完整性**（v1 方案漏掉的核心项，务必做）：\n   - `cards.session_ref` 指向的 `sessions/*.md` 是否实际存在；\n   - 每张卡对应的 `events/card_XXX.jsonl`、`memory/card_XXX.json` 是否在位；\n   - `cards.parent` / `links` / `relations` / `owner_card_id` 引用的 card_id 是否在同一 work 内存在 → **悬空引用清单**；\n   - `shadows` 表与 `cards` 表是否一一对应。\n3. **events 事件流**：逐文件解析、UTF-8/BOM 检查、行级 JSON 合法性、`seq` 连续性（首 seq、末 seq、断点数、断点位置）、时间戳单调性、事件类型分布。\n4. **memory 凝练记忆**：全量体积分布、`entries` 是否为空、`mark` 值分布——判定是否普遍为空壳未凝练。\n5. **sessions 会话留痕**：全量体积与结构体检，识别退化文件（已发现多个 71 B 的 `session_001.md`），并与 `session_ref` 对应上。\n6. **canvas.json / work.json / model_override.json**：结构与可解析性；canvas 节点集合与 db cards 集合是否一致（多／少／错配）。\n7. **`_ops/` 目录**：`revisions.jsonl`、`session_ops.jsonl` 可解析性与记录量，只报事实。\n8. **缺块清单**：对\"有卡无 events / 有卡无 memory / 有卡无 session\"逐条列清单，并附**同一 work 内其它卡的对照**（用来区分\"这张卡本来就不产\"和\"这张卡丢了\"）。\n\n## 边界（明确不做）\n- **不碰** `cards.db-wal` / `cards.db-shm` 的语义分析，**不碰** `snapshots/`，**不碰** `.snapshot_fingerprints.json` —— 全部归卡B。\n- **不下成因结论**（不写\"因为 X 所以缺\"）—— 成因归卡C。你只负责把事实与可判读证据固定下来。\n- 不评判 `logs/`。\n\n## 验收判据（收口前逐条自检）\n① 20/20 work 全覆盖，并申报覆盖度（每检查项 × 受检数/总数）；\n② 每类异常给出 work/card/文件:行 ＋ 复现命令（命令要能直接粘出来跑）；\n③ \"有卡无 events／无 memory／无 session\"逐条列清单，且附同 work 内其它卡对照；\n④ `sessions/*.md` 全量体积与结构体检，给出退化文件判定（哪些是退化、退化成什么样）；\n⑤ 明确列出\"仍属活体未写入\"的候选项（T0 之后可能补上的），与\"确认缺失\"分开。",
+            "goal": "你是 5713 沙箱数据健康巡检的【卡A·活数据完整性与内引用一致性】。\n\n## 沙箱根\n`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`\n巡检对象：`works\\`（20 个 work_001..work_020 ＋ `_ops\\`，291 文件 / 46 MB）\n\n## 使命\n在取证时刻 T0 下，逐 work 核验卡片数据、事件流、会话留痕、凝练记忆、canvas 的完整性，以及数据库 ↔ 文件系统的**内引用一致性**，产出一份**事实级**问题清单（带位置、证据、严重度），**不下成因结论**（\"为什么缺\"由卡C 判定）。\n\n## 你要查的 8 项（20 个 work 全覆盖，不得抽样替代）\n1. **db 内部一致性**：每个 `cards.db` 的 `PRAGMA integrity_check`、`foreign_key_check`、表结构差异（哪些 work 含 role_* 表）。\n2. **db ↔ 文件系统引用完整性**（重点，前一轮方案漏掉了）：\n   - `cards.session_ref` 指向的 `sessions/*.md` 是否实际存在；\n   - 每张卡对应的 `events/card_XXX.jsonl`、`memory/card_XXX.json` 是否在位；\n   - `cards.parent` / `links` / `relations` / `owner_card_id` 引用的 card_id 是否在同一 work 内存在 → **悬空引用清单**；\n   - `shadows` 表与 `cards` 表是否一一对应。\n3. **events 事件流**：逐文件解析、UTF-8/BOM 检查、行级 JSON 合法性、`seq` 连续性（首 seq、末 seq、断点数、断点位置）、时间戳单调性、事件类型分布。\n4. **memory 凝练记忆**：全量体积分布、`entries` 是否为空、`mark` 值分布 —— 判定是否普遍为空壳未凝练。\n5. **sessions 会话留痕**：全量体积与结构体检，识别退化文件（已知多个 71 B 的 `session_001.md`），并与 `session_ref` 对应上。\n6. **canvas.json / work.json / model_override.json**：结构与可解析性；canvas 节点集合与 db cards 集合是否一致（多／少／错配）。\n7. **`_ops\\` 目录**：`revisions.jsonl`、`session_ops.jsonl` 可解析性与记录量，只报事实。\n8. **缺块清单**：对\"有卡无 events / 有卡无 memory / 有卡无 session\"逐条列清单，并附**同一 work 内其它卡的对照**（用于区分\"这张卡本来就不产\"与\"这张卡丢了\"）。\n\n## 边界（明确不做）\n- **不碰** `cards.db-wal` / `cards.db-shm` 的语义分析、**不碰** `snapshots\\`、**不碰** `.snapshot_fingerprints.json` —— 全部归卡B。\n- **不下成因结论**（不要写\"因为 X 所以缺\"）—— 成因归卡C。只把事实与可判读证据固定下来。\n- 不评判 `logs\\`。\n\n## 验收判据（收口前逐条自检，达不到就继续做）\n① 20/20 work 全覆盖，并申报覆盖度（每检查项 × 受检数/总数）；\n② 每类异常给出 work/card/文件:行 ＋ 复现命令（命令要能直接粘出来跑）；\n③ \"有卡无 events／无 memory／无 session\"逐条列清单，且附同 work 内其它卡对照；\n④ `sessions/*.md` 全量体积与结构体检，给出退化文件判定（哪些退化、退化成什么样）；\n⑤ 明确列出\"仍属活体未写入\"的候选项，与\"确认缺失\"分开。\n\n## 共同约束（三张子卡一致，必须遵守）\n1. **发现记录 schema**（每条发现一行）：\n   `F-编号｜位置(work/card/文件:行)｜现象｜证据(命令+输出摘要)｜严重度｜类别(设计/时序/丢失/口径/残留)｜修复建议`\n2. **严重度口径**：\n   - P0＝结论层面不可依赖（数据已丢，或还原必然丢且无旁路）\n   - P1＝有明确缺块或口径缺陷，可定位、可用旁证补回\n   - P2＝留痕残缺但不影响主数据\n   - P3＝卫生/口径建议\n3. **必须申报**：取证时刻 T0（精确到秒）、覆盖度、实际执行过的命令清单。\n4. **写盘边界**：只允许写 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\A_live_integrity\\`（不存在就自己建）。临时文件收尾清理。既有 `healthcheck_5713`、`healthcheck_run019` **不删**（留给卡C 作为证据评判）。除此之外任何路径不得写入、移动、重命名、删除。\n5. **硬约束**：`works\\`、`snapshots\\`、`logs\\` 一律只读（sqlite 一律用 `file:...?mode=ro` 只读 URI 打开）；**不许碰 5700**；不改任何数据。\n\n## 活体环境注意\n环境仍在写入：两次扫描之间曾新增快照点。所以：\n- 你的所有\"缺块/不一致\"结论**必须绑定取证时刻 T0**，并明确区分「时序未到（后续可能补上）」与「丢失」；\n- 收口前请再快速复查一次你的关键结论是否仍然成立。\n\n## 产出\n1. 把完整结论写成文件：`trading-workspace\\healthcheck_v3\\A_live_integrity\\report.md`（发现清单 + 好的部分 + 覆盖度 + T0 + 命令清单）。\n2. 在本卡现状块给出该路径与要点摘要（P0/P1 条数与最重要的几条）。\n3. 做完调 report_done。"
+          },
+          "ts": "2026-10-20T16:32:05.948+08:00",
+          "seq": 16385,
+          "score": {
+            "chars": 4187,
+            "step_markers": 24,
+            "howto_hits": 4,
+            "mission_hits": 4,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "content": "## 使命\n核验 5713 沙箱 `snapshots/` 下 772 个快照点的在位性与语义，并通过**真实还原演练**（含 WAL 未 checkpoint 的崩溃场景）判定\"能否据此还原、还原会丢什么\"。WAL 相关的一切归本卡。\n\n## 已知事实（本卡起点，需验证或证伪）\n- 772 个快照点中 566 个载荷完整；6 个点缺 `canvas.json`：`work_007/20261020_150541_088084`、`work_018/20261020_161238_675330`、`work_020/20261020_162809_925919` 及三者各自的 `daily_20261020`\n- 所有 daily 快照只存 cards.db（＋canvas/work.json），缺 events/memory/sessions/_ops\n- live 侧 9 个 work 存留未 checkpoint 的 `cards.db-wal`（最大 work_013 2.84MB），而快照点一律不含 wal/shm\n- 抽查六例（work_001/007/013/016/018/019）live 与最新快照在 cards 行数、card_history 行数、`max(updated_at)` 上一致 ⇒ 猜测\"快照已涵盖 WAL 内容\"，**但尚未做逐行 diff 与无 wal 打开对照，须严格验证**\n- `.snapshot_fingerprints.json` 21 条，按\"路径＋内容\"SHA-256 复算 21/21 不匹配，且无算法声明\n\n## 范围与任务\n1. **全量快照点分类统计**：完整／缺文件／不可读，逐个定位缺失点；核对每个点是否只含自身 work 的载荷。\n2. **快照语义验证（关键项）**：验证或证伪\"快照是否涵盖 WAL 内已提交事务\"。方法至少两种并用：\n   - live 与最新快照做 cards / card_history / shadows **逐行 diff**（逐字段，不只行数）；\n   - 在 scratch 内复制 db（含/不含 wal）分别打开，对比\"仅 db 无 wal\"与\"db+wal\"读出的内容差异。\n3. **崩溃恢复演练**：对 work_013、work_016、work_018、work_019（大 WAL）＋ 1 个 daily 快照，还原到 scratch 后实际打开，给出还原前后 cards 行数、关键字段、`max(updated_at)` 差异，判定还原保真度与丢什么。\n4. **daily 口径判定**：确认 daily 是\"建卡初始态\"还是\"日终态\"，量化其信息缺口（已知 daily 缺 events/memory/sessions/_ops）。\n5. **指纹基线可用性**：判定 `.snapshot_fingerprints.json` 能否作校验基线，附复算方法与结果；若不可用，给出应该怎么算才对的建议。\n\n## 边界\n- 不评判 `logs/` 质量；不为缺块做成因判定（归卡C）；不重复卡A 的 db 内部一致性普查。\n- **所有还原演练必须在 scratch 内做，绝不对 live 的 `works/`、`snapshots/` 执行任何写操作。**\n\n## 验收判据\n① 全量快照点分类统计并逐个定位缺失点；\n② 对 WAL 语义给出**明确的验证或证伪结论**（不是\"疑似\"），附 diff 方法与结果；\n③ 对 work_013/016/018/019 ＋ 1 个 daily 完成还原演练，给出还原前后差异表；\n④ 判定 daily 口径并量化信息缺口；\n⑤ 判定指纹文件可否作校验基线（附复算方法与结果）。",
+            "goal": "你是 5713 沙箱数据健康巡检的【卡B·快照与恢复保真度】。\n\n## 沙箱根\n`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`\n巡检对象：`snapshots\\`（7600 文件 / 1.01 GB / 772 个快照点）＋ live `works\\` 的 `cards.db-wal`。\n\n## 使命\n核验快照点的在位性与语义，并通过**真实还原演练**（含 WAL 未 checkpoint 的崩溃场景）判定\"能否据此还原、还原会丢什么\"。**WAL 相关的一切归本卡**。\n\n## 已知事实（你的起点，需验证或证伪，不要直接照抄当结论）\n- 772 个快照点中 566 个载荷完整（`works/<work>/` 下 cards.db＋canvas.json＋work.json 齐全且 db 可读）；6 个点缺 `canvas.json`：`work_007/20261020_150541_088084`、`work_018/20261020_161238_675330`、`work_020/20261020_162809_925919` 及三者各自的 `daily_20261020`。\n- 所有 `daily_20261020` 只存 cards.db（＋canvas/work.json），缺 events/memory/sessions/_ops。\n- live 侧 9 个 work 存留未 checkpoint 的 `cards.db-wal`（work_013 2.84MB、work_016 1.48MB、work_019 1.27MB、work_018 1.03MB、work_017 972KB、work_014 939KB、work_015 902KB、work_007 519KB、work_020 433KB），而快照点一律不含 wal/shm。\n- 抽查六例（work_001/007/013/016/018/019）live 与最新快照在 cards 行数、card_history 行数、`max(updated_at)` 上一致 ⇒ 只是猜测\"快照已涵盖 WAL 内容\"，**尚未做逐行 diff 与无 wal 打开对照，必须严格验证**。\n- `.snapshot_fingerprints.json` 21 条，按\"路径＋内容\"SHA-256 复算 21/21 不匹配，且无算法/口径声明。\n\n## 你要做的 5 项\n1. **全量快照点分类统计**：完整／缺文件／不可读，逐个定位缺失点；核对每个点是否只含自身 work 的载荷、daily 与普通点的结构差异。\n2. **快照语义验证（关键项）**：验证或证伪\"快照是否涵盖 WAL 内已提交事务\"。至少两种方法并用：\n   - live 与最新快照做 cards / card_history / shadows **逐行逐字段 diff**（不只看行数）；\n   - 在 scratch 内复制 db（含/不含 wal）分别打开，对比\"仅 db 无 wal\"与\"db+wal\"读出的内容差异。\n3. **崩溃恢复演练**：对 work_013、work_016、work_018、work_019（大 WAL）＋ 1 个 daily 快照，还原到 scratch 后实际打开，给出还原前后 cards 行数、关键字段、`max(updated_at)` 差异，判定还原保真度与\"丢什么\"。\n4. **daily 口径判定**：确认 daily 是\"建卡初始态\"还是\"日终态\"，量化其信息缺口。\n5. **指纹基线可用性**：判定 `.snapshot_fingerprints.json` 能否作校验基线，附复算方法与结果；若不可用，给出\"应该怎么算才对的\"建议。\n\n## 边界\n- 不评判 `logs\\` 质量；不为缺块做成因判定（归卡C）；不重复卡A 的 db 内部一致性普查。\n- **所有还原演练必须在 scratch 内做，绝不对 live 的 `works\\`、`snapshots\\` 执行任何写操作。**\n\n## 验收判据（收口前逐条自检）\n① 全量快照点分类统计并逐个定位缺失点；\n② 对 WAL 语义给出**明确验证或证伪结论**（不是\"疑似/可能\"），附 diff 方法与结果；\n③ 对 work_013/016/018/019 ＋ 1 个 daily 完成还原演练，给出还原前后差异表；\n④ 判定 daily 口径并量化信息缺口；\n⑤ 判定指纹文件可否作校验基线（附复算方法与结果）。\n\n## 共同约束（三张子卡一致，必须遵守）\n1. **发现记录 schema**（每条一行）：\n   `F-编号｜位置(work/card/文件:行)｜现象｜证据(命令+输出摘要)｜严重度｜类别(设计/时序/丢失/口径/残留)｜修复建议`\n2. **严重度口径**：\n   - P0＝结论层面不可依赖（数据已丢，或还原必然丢且无旁路）\n   - P1＝有明确缺块或口径缺陷，可定位、可用旁证补回\n   - P2＝留痕残缺但不影响主数据\n   - P3＝卫生/口径建议\n3. **必须申报**：取证时刻 T0（精确到秒）、覆盖度、实际执行过的命令清单。\n4. **写盘边界**：只允许写 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\B_snapshot_restore\\`（不存在就自己建）。还原演练产生的 db 副本全部放这里，收尾清理临时文件。既有 `healthcheck_5713`、`healthcheck_run019` **不删**。除此之外任何路径不得写入、移动、重命名、删除。\n5. **硬约束**：`works\\`、`snapshots\\`、`logs\\` 一律只读（sqlite 一律用 `file:...?mode=ro` 只读 URI 打开；需要可写演练就复制到 scratch 再操作）；**不许碰 5700**。\n\n## 活体环境注意\n环境仍在写入：两次扫描之间曾新增快照点（work_001 最新点从 `...162614_552820` 变为 `...162937_007308`），且 live 的 WAL 还在增长。所以：\n- 你的\"最新快照 vs live\"对比必须绑定取证时刻 T0，并说明两者时间差；\n- 若 diff 出现差异，先排除\"T0 之后 live 又写了\"这一解释，再下\"快照丢数据\"的结论；\n- 收口前复查一次关键结论是否仍成立。\n\n## 产出\n1. 完整结论写成文件：`trading-workspace\\healthcheck_v3\\B_snapshot_restore\\report.md`（发现清单 + 好的部分 + 覆盖度 + T0 + 命令清单）。\n2. 在本卡现状块给出路径与要点摘要（P0/P1 条数、WAL 语义的最终结论、还原保真度一句话结论）。\n3. 做完调 report_done。",
+            "title": "卡B·快照与恢复保真度"
+          },
+          "ts": "2026-10-20T16:32:18.170+08:00",
+          "seq": 16444,
+          "score": {
+            "chars": 4557,
+            "step_markers": 18,
+            "howto_hits": 9,
+            "mission_hits": 3,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "content": "## 使命\n判定 5713 沙箱 `logs/` 的留痕质量——能否据此复盘一次完整运行；并用 logs × events × sessions 交叉印证，为卡A 的缺块清单做**成因判定**（设计不产／时序未到／丢失 三分类）。\n\n## 范围与任务\n1. **logs 可读性普查**：72 个 `prompt_card_*.json` 的字段齐备度、时间跨度、卡覆盖（card_001..card_006）；`prompt_perm_audit.jsonl`（1192 条）可解析性与它记录了哪些权限动作。\n2. **复盘一次完整运行（核心项）**：选定 1 次完整运行，从 logs 重建时间线（prompt → tool_events → response），逐段标注能否与对应的 `events/*.jsonl`、`sessions/*.md` 对上，并**列出重建缺口**——即\"只看 logs 复不出哪一段\"。\n3. **13 条空 response 逐条定性**：区分（a）工具回合无终答属正常、（b）日志截断、（c）被丢弃/异常中断。已知其中 2 条带 `MODEL_CALL_FAILED`（`prompt_card_001_20261020151102/.151123`，kimi-k3 连续 3 次失败、5 小时额度耗尽），其余 11 条有 tool_events 无终答。\n4. **MODEL_CALL_FAILED 影响面**：这 2 次失败是否导致某次运行中断、留下了什么痕迹（events/sessions 侧能否看到缺口）。\n5. **缺块成因判定（依赖卡A 输出）**：读取卡A 的事实清单，对其中每一条缺块给出「设计不产／时序未到／丢失」三分类判定 ＋ 依据。**若卡A 的报告尚未生成，先完成第 1-4 项与第 6 项并把结论落文件，然后在本卡现状块明确标注\"第5项待卡A\"，不要空转等待，也不要自己编造卡A 清单。**\n6. **遗留草稿评判**：`trading-workspace/healthcheck_5713/`、`healthcheck_run019/` 是上一轮巡检产物（49 MB、上百份 cards.db 副本）。判定它们作为\"证据\"的可信度（口径是否一致、是否会误导），并给出处置建议（**只出建议，不删不改**）。\n\n## 边界\n- **不碰** `snapshots/`（归卡B）；不改任何数据；不删任何文件。\n\n## 验收判据\n① 选定 1 次完整运行，从 logs 重建时间线，逐段标注能否与 events/session 对上，**列出缺口**；\n② 13 条空 response 逐条定性（每条给结论与依据，不许\"疑似\"了事）；\n③ 对卡A 清单每条缺块给出三分类判定＋依据（若卡A 未就绪，须明确标注待补，不得跳过）；\n④ 遗留草稿可信度评判与处置建议。\n\n## 关键路径（跨卡输入）\n- 卡A 产物：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\A_live_integrity\\report.md`\n- 卡B 产物：`...\\healthcheck_v3\\B_snapshot_restore\\report.md`（若涉及快照相关缺块，可引用但不要自己重做）",
+            "goal": "你是 5713 沙箱数据健康巡检的【卡C·留痕可回溯性与缺块归因】。\n\n## 沙箱根\n`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`\n巡检对象：`logs\\`（72 个 `prompt_card_*.json` ＋ `prompt_perm_audit.jsonl`，共 10.6 MB）＋ 交叉印证用的 `works\\*\\events\\`、`works\\*\\sessions\\`。\n\n## 使命\n判定 logs 的留痕质量——**能否据此复盘一次完整运行**；并用 logs × events × sessions 交叉印证，为卡A 的缺块清单做**成因判定**（设计不产／时序未到／丢失 三分类）。\n\n## 你要做的 6 项\n1. **logs 可读性普查**：72 个 `prompt_card_*.json` 的字段齐备度、时间跨度、卡覆盖（card_001..card_006）；`prompt_perm_audit.jsonl`（1192 条）可解析性，以及它记录了哪些权限动作。\n2. **复盘一次完整运行（核心项）**：选定 1 次完整运行，从 logs 重建时间线（prompt → tool_events → response），逐段标注能否与对应的 `events/*.jsonl`、`sessions/*.md` 对上，并**列出重建缺口**——即\"只看 logs 复不出哪一段\"。\n3. **13 条空 response 逐条定性**：区分（a）工具回合无终答属正常、（b）日志截断、（c）被丢弃/异常中断。已知 2 条带 `MODEL_CALL_FAILED`（`prompt_card_001_20261020151102/.151123`，kimi-k3 连续 3 次失败、5 小时额度耗尽），其余 11 条有 tool_events 无终答。\n4. **MODEL_CALL_FAILED 影响面**：这 2 次失败是否导致某次运行中断、留下了什么痕迹（events/sessions 侧能否看到缺口）。\n5. **缺块成因判定（依赖卡A 输出）**：读取卡A 的事实清单，对其中每一条缺块给出「设计不产／时序未到／丢失」三分类判定 ＋ 依据。\n   **重要：如果 `...\\healthcheck_v3\\A_live_integrity\\report.md` 还不存在，先做第 1-4 项与第 6 项并把结论落文件，然后在本卡现状块明确标注\"第5项待卡A\"，不要空转等待，也不要自己编造卡A 清单。** 收口前再检查一次该文件是否已生成；已生成就补做第5项。\n6. **遗留草稿评判**：`trading-workspace\\healthcheck_5713\\`、`healthcheck_run019\\` 是上一轮巡检产物（49 MB、上百份 cards.db 副本）。判定它们作为\"证据\"的可信度（口径是否一致、是否会误导），并给出处置建议（**只出建议，不删不改**）。\n\n## 边界\n- **不碰** `snapshots\\`（归卡B）；不改任何数据；不删任何文件。\n\n## 验收判据（收口前逐条自检）\n① 选定 1 次完整运行，从 logs 重建时间线，逐段标注能否与 events/session 对上，**列出缺口**；\n② 13 条空 response 逐条定性（每条给结论与依据，不许用\"疑似\"了事）；\n③ 对卡A 清单每条缺块给出三分类判定＋依据（若卡A 未就绪须明确标注待补，不得跳过不说明）；\n④ 遗留草稿可信度评判与处置建议。\n\n## 关键路径（跨卡输入）\n- 卡A 产物：`D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\A_live_integrity\\report.md`\n- 卡B 产物：`...\\healthcheck_v3\\B_snapshot_restore\\report.md`（若涉及快照相关缺块可引用，但不要自己重做卡B 的活）\n\n## 共同约束（三张子卡一致，必须遵守）\n1. **发现记录 schema**（每条一行）：\n   `F-编号｜位置(work/card/文件:行)｜现象｜证据(命令+输出摘要)｜严重度｜类别(设计/时序/丢失/口径/残留)｜修复建议`\n2. **严重度口径**：\n   - P0＝结论层面不可依赖（数据已丢，或还原必然丢且无旁路）\n   - P1＝有明确缺块或口径缺陷，可定位、可用旁证补回\n   - P2＝留痕残缺但不影响主数据\n   - P3＝卫生/口径建议\n3. **必须申报**：取证时刻 T0（精确到秒）、覆盖度、实际执行过的命令清单。\n4. **写盘边界**：只允许写 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_v3\\C_logs_attribution\\`（不存在就自己建）。临时文件收尾清理。既有 `healthcheck_5713`、`healthcheck_run019` **不删不留改**（它们本身是你的评判对象）。除此之外任何路径不得写入、移动、重命名、删除。\n5. **硬约束**：`works\\`、`snapshots\\`、`logs\\` 一律只读；**不许碰 5700**；不改任何数据。\n\n## 活体环境注意\n环境仍在写入（两次扫描间曾新增快照点，logs 目录也可能继续新增文件）。所以：\n- 你的结论必须绑定取证时刻 T0；\n- 对\"某次运行的留痕缺一段\"这类判断，先排除\"T0 之后才写入\"的可能；\n- 收口前复查一次关键结论。\n\n## 产出\n1. 完整结论写成文件：`trading-workspace\\healthcheck_v3\\C_logs_attribution\\report.md`（发现清单 + 好的部分 + 覆盖度 + T0 + 命令清单 + 复盘缺口表 + 三分类判定表）。\n2. 在本卡现状块给出路径与要点摘要（P0/P1 条数、能否复盘的一句话结论）。\n3. 做完调 report_done。",
+            "title": "卡C·留痕可回溯性与缺块归因"
+          },
+          "ts": "2026-10-20T16:32:29.039+08:00",
+          "seq": 16447,
+          "score": {
+            "chars": 4049,
+            "step_markers": 20,
+            "howto_hits": 1,
+            "mission_hits": 5,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "root_final_status": "## 巡检范围与体量（沙箱根 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`）\n- `works/`：20 个 work_（001..020）＋ `_ops/`，291 文件 / 46.0 MB\n- `snapshots/`：7600 文件 / 1.01 GB，772 个快照点（`_ops` 200，其余 3～137 个/work）\n- `logs/`：73 文件 / 10.6 MB（72 个 `prompt_card_*.json` ＋ 1 个 `prompt_perm_audit.jsonl`）\n- 另有前次巡检遗留工作区 `trading-workspace/`（316 文件 / 49.2 MB，内含上百份 cards.db 副本）\n\n## 组织状态（已批复的拆分方案 v2，2026-10-20 执行中）\n用户已批复方案 v2，按\"要验的命题\"而非按目录切三卡，三卡均已建卡并开跑：\n- `card_002` 卡A·活数据完整性与内引用一致性 — 产出 `trading-workspace\\healthcheck_v3\\A_live_integrity\\report.md`\n- `card_003` 卡B·快照与恢复保真度（WAL 相关一切归此卡）— 产出 `...\\healthcheck_v3\\B_snapshot_restore\\report.md`\n- `card_004` 卡C·留痕可回溯性与缺块归因 — 产出 `...\\healthcheck_v3\\C_logs_attribution\\report.md`\n- 卡间依赖：卡A 出事实清单 → 卡C 做成因三分类判定（卡C 第5项以卡A 报告文件为输入）\n- 横向卫生与策略章（重复实验族、存储归因、daily 口径、checkpoint 与保留策略、遗留草稿处置）由本卡自出，不另拆\n\n三卡统一约束（已原文写入各卡目标）：发现记录 schema（位置／现象／证据／严重度／类别／修复建议）；严重度 P0–P3 统一口径；每卡申报取证时刻 T0、覆盖度、命令清单；只许写各自 `healthcheck_v3\\<卡名>\\` 且收尾清理；`works/`、`snapshots/`、`logs/` 只读，不碰 5700。\n\n## 勘探已核实的事实\n\n**健康的部分**\n- 20/20 `cards.db`：`PRAGMA integrity_check=ok`、`foreign_key_check` 0 违规；表结构一致（cards/card_history/shadows/meta/inbox/trash，部分 work 含 role_* 表）\n- 53 个 events jsonl：UTF-8 无 BOM、行级 JSON 全可解析、均以换行收尾；序号连续性仅 1 处断裂\n- `canvas.json` / `work.json` / `model_override.json` 全部可 JSON 解析\n- logs：72 个 prompt 日志字段齐备可解析；`prompt_perm_audit.jsonl` 1192 条全可解析；时间跨度 12:51:55–16:28:13，无缺失时间戳\n\n**已定位的异常**\n- `work_018/events/card_001.jsonl` 缺 seq 11981（23979 条中掉 1 条：11980→11982）\n- `work_009` 无 `events/` 也无 `memory/` 目录（该 work 有 4 张卡、4 个 session 文件）\n- 有 events 无 memory 的卡：`work_011/card_003`、`work_016/card_002`、`work_019/card_005`、`work_020/card_001`\n- 有卡无 events：work_008（4 张）、work_010/013（各 2）、work_014/015（各 3）、work_016（1）——成因未定\n- 6 个快照点缺 `canvas.json`：`work_007/20261020_150541_088084`、`work_018/20261020_161238_675330`、`work_020/20261020_162809_925919` 及三者各自的 `daily_20261020`\n- `memory/*.json` 抽查为 63 B 空壳 `{mark:0, entries:[]}`；`sessions/session_001.md` 抽查为 71 B（疑似退化文件）——均需全量核\n- `.snapshot_fingerprints.json` 21 条（每 work＋`_ops` 一条），无算法/口径声明；按\"路径＋内容\"SHA-256 复算 21/21 不匹配 ⇒ 当前不可作校验基线\n- logs 中 2 条 `MODEL_CALL_FAILED`（`prompt_card_001_20261020151102/.151123`，kimi-k3 连续 3 次失败、5 小时额度耗尽）；13 条 `response` 为空（2 条有 error，11 条有 tool_events 无终答），成因未定\n\n**三条关键修正（推翻早期错误假设）**\n1. **环境是活体，仍在写入**：两次扫描之间新增快照点（work_001 最新点由 `20261020_162614_552820` 变为 `20261020_162937_007308`）。⇒ 任何\"缺块\"结论必须绑定取证时刻 T0，并区分「时序未到」与「丢失」。\n2. **\"快照不含 WAL ⇒ 还原丢数据\"的猜测不成立**：抽 work_001/007/013/016/018/019 六例，live 与各自最新快照在 cards 行数、card_history 行数、`max(updated_at)` 上完全一致，尽管 live 侧存留最大 2.84 MB 未 checkpoint 的 `cards.db-wal`（work_013）。⇒ 快照语义疑似已涵盖 WAL 内容，但尚未做逐行 diff 与无 wal 打开对照，须卡B 严格验证。\n3. **daily 快照口径 = 建卡初始态，不是日终态**：work_013 daily 为 5 卡/10 history、`max(updated_at)=15:52:13`（正是建卡时刻），而 live 为 6 卡/49 history、16:24:25；work_016 daily 3/5 vs live 5/26；work_018 daily 1/2 vs live 4/16；work_019 daily 1/2 vs live 5/23；work_001 daily 1/2 vs live 3/9；work_007 daily 1/2 vs live 1/5。且 daily 只存 cards.db(+canvas/work.json)，缺 events/memory/sessions/_ops。\n\n## 交付物\n《5713 沙箱实验环境数据健康巡检报告》— 待三张子卡收口后由本卡验收汇总，产出后在此回填路径。",
+      "root_goal_state": "active",
+      "summary": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 14.33,
+        "avg_howto_hits": 3.33
+      },
+      "verdict": "collected"
+    },
+    {
+      "arm": "control",
+      "model": "ds-flash-official",
+      "timeline": [
+        {
+          "t": "2026-10-20T16:36:00",
+          "stage": "wait_plan",
+          "goal_state": "paused",
+          "status_chars": 3172,
+          "children": 0
+        },
+        {
+          "t": "2026-10-20T16:37:04",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:37:19",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:37:34",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:37:49",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:38:04",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        }
+      ],
+      "steps": [
+        {
+          "step": "create_work",
+          "at": "2026-10-20T16:34:12",
+          "ok": true,
+          "work_id": "work_021",
+          "root": "card_001"
+        },
+        {
+          "step": "patch_root_auto",
+          "at": "2026-10-20T16:34:12",
+          "ok": true
+        },
+        {
+          "step": "set_card_model",
+          "at": "2026-10-20T16:34:12",
+          "ok": true,
+          "status": 200,
+          "resp": "{'ok': True, 'work_id': 'work_021', 'card_id': 'card_001', 'work': None, 'cards': {'card_001': {'default_model': 'ds-flash-official'}}}",
+          "model": "ds-flash-official"
+        },
+        {
+          "step": "send_task",
+          "at": "2026-10-20T16:35:45",
+          "status": 200,
+          "resp": "{'reply': 'I\\'ll start by exploring the sandbox environment to understand what data actually exists before deciding how to split the work.\\n\\n输出太大了，我改用结构化摘要来汇总。"
+        },
+        {
+          "step": "plan_captured",
+          "at": "2026-10-20T16:36:00",
+          "phase": "pre_split",
+          "plan_chars": 3172
+        },
+        {
+          "step": "inject_approve",
+          "at": "2026-10-20T16:36:49",
+          "status": 200,
+          "resp": "{'reply': '方案已获批。我先把目标重新点火，然后按批复建立三张子卡。\\n\\n目标已恢复为 active。现在按批复派三张子卡；我先把统一的问题条目 schema 写进它们的任务里，便于我后续合并去重。\\n\\n三张子卡都已建立，并开始运行。我先更新本卡记录，让后续接手的人能看到真实状态。\\n\\n三张子卡已经派出"
+        },
+        {
+          "step": "children_stable",
+          "at": "2026-10-20T16:38:04",
+          "n": 3
+        },
+        {
+          "step": "evidence_collected",
+          "at": "2026-10-20T16:38:04",
+          "children": 3,
+          "create_calls": 3,
+          "summary": {
+            "n": 3,
+            "mission_like": 0,
+            "subagent_like": 3,
+            "mixed": 0,
+            "with_acceptance": 3,
+            "avg_step_markers": 6.33,
+            "avg_howto_hits": 3.67
+          }
+        },
+        {
+          "step": "cleanup_done",
+          "at": "2026-10-20T16:38:04",
+          "cards": 4
+        }
+      ],
+      "work_id": "work_021",
+      "root": "card_001",
+      "phase": "pre_split",
+      "plan_pre": "## 一、环境勘探结果（2026-10-20 实测，全部在 5713 沙箱内，未触碰 5700）\n\n沙箱根 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`，6 项内容：\n\n| 目录 | 内容 | 规模 |\n|---|---|---|\n| `works/` | 21 个 work（work_001..work_021）+ `_ops/session_ops.jsonl` | 105 文件 / 14.7 MB |\n| `snapshots/` | 21 个 work 各自时间戳快照（5–160 个/work，约 600+）+ 各 work `daily_20261020` + `_ops`（200 个） | — |\n| `logs/` | 80 个 `prompt_card_XXX_<ts>.json` + `prompt_perm_audit.jsonl`（1290 行） | 81 文件 / 12.3 MB |\n| `experiments/ask_once/` | 实验代码 3 个 + run*.log + evidence*.json | 14 文件 / 0.36 MB |\n| `trading-workspace/` | `contracts/` 文档 10 个、`inventory/`（空）、3 个历史巡检残留目录 | 22 文件 |\n| `推演agent/` | 仅 `_backups/`（空） | 0 |\n\n单个 work 的标准结构：`work.json`、`canvas.json`（schema_version=17）、`cards.db`（SQLite，13 表：cards/card_history/shadows/meta/inbox/trash/role_*）、`events/card_*.jsonl`、`memory/card_*.json`、`sessions/session_*.md`（v2 文本格式）、`_ops/revisions.jsonl`。\n\n## 二、勘探阶段已确认的异常（实测证据，待正式巡检复核）\n\n1. **11/21 个 work 的 `cards.db` 仅 4096B（只剩库头页），全部数据在 `cards.db-wal`（0.43–3.11 MB）**：work_007、013、014、015、016、017、018、019、020、021。实测：连 wal 一起复制后 `pragma integrity_check` 全 ok、cards 计数正常；**只复制 `cards.db` 则该库为空**。这是快照/恢复路径上的致命细节。\n2. **work_009 缺 `events/`、`memory/`、`_ops/` 三个目录**，但其 cards 表有 4 张卡 → 4 张卡的事件流与记忆整体缺失。\n3. **work_021 缺 `memory/` 目录**。\n4. **events 与 memory 的卡片集合不一致**：work_011 事件流有 card_003、memory 无；work_016 事件流有 card_002、memory 无。\n5. 大量 `sessions/session_XXX.md` 为 71B 占位（仅一行 `<!-- session: card_001, created: ... -->` 注释头）；work_008 的 5 个会话文件里占 4 个。\n6. **logs 无 work 归属字段**：80 个 prompt 日志全部可 `json.load` 解析，字段完整（system_prompt / user_prompt / prior_messages / response / tool_events / pair_id / regions / model_requested / model_used / error），但**不含 work_id**，而 card_001..card_006 在 21 个 work 中重复出现 → 单看日志无法确定某次运行属于哪个 work。\n7. 2 个日志带 `error`（kimi-k3 配额耗尽，`prompt_card_001_20261020151102/1123.json`），属正常错误留痕。\n8. 历史巡检残留：`trading-workspace/healthcheck_5713/tmp/` 下 `dbcopy/` `probe_/` `rs_/` `A_dbcopy/` `A_dbprobe/` 数百份 cards.db 副本（数十 MB），数据只到 work_018/019，另有根级 `_tmp_*.txt` 临时文件。\n\n## 三、拆分方案（待批复；批复前不建任何子卡）\n\n计划产出目录：`trading-workspace/healthcheck_hc4/`（新命名空间，不混入历史残留目录）。\n\n**子卡1「A-works 卡片数据完整性巡检」**\n- 使命：对 `works/` 下 21 个 work 逐项核验卡数据、事件流、会话留痕的完整性，输出结构化问题清单（含严重度与证据）。\n- 验收判据：① 21/21 个 work 均在「带 wal 复制副本」上跑 `pragma integrity_check` 并留结果；② 逐 work 给出 cards/card_history/shadows 计数与 `events/`、`memory/`、`sessions/` 文件命名集合的三方比对表，逐一列出不一致项；③ 每条问题都带证据（文件路径＋行号或计数），不收「疑似」而无证据的条目；④ 产物落 `healthcheck_hc4/A_works_integrity.json` + `.md`。\n\n**子卡2「B-快照与恢复路径巡检」**\n- 使命：核验 `snapshots/` 是否在位、指纹是否可信、能否据快照真正还原一个 work。\n- 验收判据：① 逐 work 统计快照数、最新时间戳、每日快照是否齐，并给出 live 与 latest/daily 的 cards 计数比对表；② 至少做 2 次真实恢复演练（必须含 1 个 `cards.db` 仅 4096B 的 work + 1 个正常 work）：把快照内容复制到沙箱内独立目录重开，跑 `integrity_check` 与计数比对，留命令与原始输出；③ 校验 `.snapshot_fingerprints.json` 与实际内容 sha256 是否一致；④ 产物落 `healthcheck_hc4/B_snapshot_restore.json` + `.md`。\n\n**子卡3「C-运行日志留痕质量巡检」**\n- 使命：核验 `logs/` 可读性与可复盘性，判定能否据日志复盘一次运行。\n- 验收判据：① 81 个文件逐个解析，统计字段缺失/空值/异常；② 实测选 1 次真实运行，仅用日志字段复原「输入→模型→工具调用→输出」链路，写清因缺哪些字段而不能完整复盘；③ 量化日志→work 的不可归属比例（仅凭 card_id+时间戳能否唯一落位）；④ `prompt_perm_audit.jsonl` 1290 行解析与权限授予核对；⑤ 产物落 `healthcheck_hc4/C_logs.json` + `.md`。\n\n**本卡（CEO）自己承担**：跨三份产物的统一严重度口径、去重合并、撰写最终巡检报告（问题清单＋严重度＋修复建议＋「哪些是好的」）并给出路径。",
+      "children": [
+        {
+          "card_id": "card_002",
+          "title": "A-works 卡片数据完整性巡检",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "【任务】对 5713 沙箱内 works/ 下 21 个 work 逐项核验卡片数据、事件流、会话留痕的完整性，输出结构化问题清单。\n\n【硬约束】所有读写只准在沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 之内。严禁触碰 D:\\AI_station\\推演agent（5700 主实例）及任何沙箱外路径。不得修改 works/ 下的原始数据（只读）；一切副本/临时文件只许写在 trading-workspace\\healthcheck_hc4\\tmp\\ 下。\n\n【已知线索（必须自行复核，不得直接采信）】勘探阶段观察到：11 个 work（work_007、013、014、015、016、017、018、019、020、021）的 cards.db 仅 4096 字节，数据全在 cards.db-wal 里；work_009 缺 events/、memory/、_ops/ 三目录；work_021 缺 memory/；work_011 事件流有 card_003 但 memory 无、work_016 事件流有 card_002 但 memory 无；大量 sessions/*.md 为 71B 占位。以上每一条都要用你自己的实测证据确认或推翻。\n\n【必须完成的工作】\n1. 21/21 个 work：把 cards.db + cards.db-wal + cards.db-shm 一起复制到 healthcheck_hc4/tmp/ 下的独立目录，在该副本上执行 pragma integrity_check，记录原始输出；同时记录 cards / card_history / shadows / meta / inbox / trash / role_* 各表计数，以及 db/wal/shm 三个文件字节数。\n2. 反证实验：对含 wal 的 work，再做一次「只复制 cards.db（不带 wal）」的副本，跑 integrity_check 与 cards 计数，与上一步对比，用实测数据证明/否定「单拷 cards.db 会丢数据」。\n3. 三方比对表：逐 work 比对 (a) cards 表里的 card_id 集合、(b) events/ 下 card_*.jsonl 文件名集合、(c) memory/ 下 card_*.json 文件名集合、(d) sessions/ 下 session_*.md 集合，逐一列出缺失/多余/不一致项。\n4. 事件流与 memory 文件的可读性：逐行 json 解析 events/*.jsonl（统计总行数、坏行数、坏行行号与原文片段）；逐个 json 解析 memory/*.json（记录 mark/entries 结构与是否为空）。\n5. 会话留痕完整性：统计每个 sessions/*.md 的字节数与是否仅为注释头占位；对非占位文件校验 ---SESSION--- / ---MSG--- 结构是否完整、seq 是否连续、有无截断（末段是否以 --> 或完整分隔符收尾）。\n6. canvas.json：21 个逐探能否 json.load、schema_version 是否为 17、work_id 是否与目录名一致、recent_events 引用到的 card_id 是否都存在于 cards 表。\n7. work.json：work_id / work_card_id / created_at 字段是否齐、与目录名及 cards 表是否自洽。\n\n【问题条目统一 schema（务必照此写，我要跨三份产物合并）】\n每条问题一个对象：id（A-01 起）、severity（S1阻断 / S2严重 / S3一般 / S4提示）、title（一句话）、works（涉及的 work_id 列表）、evidence（必须可复核：文件相对路径 + 行号或计数或命令输出片段）、impact（这条会导致什么后果）、fix（具体修复建议）。\n判定口径：S1=数据已丢失或恢复路径必然失效；S2=数据不完整/不可复盘但仍有补救；S3=留痕质量问题、不影响数据正确性；S4=规范性与整洁度。\n\n【验收判据（全部满足才算完成）】\n① 21/21 个 work 均有带 wal 副本的 integrity_check 结果，且留有原始输出；\n② 三方比对表覆盖 21/21 个 work，每个不一致项都点名到具体 card_id 或文件名；\n③ 每条问题都带可复核证据，不收「疑似」而无证据的条目；\n④ 产物落 trading-workspace/healthcheck_hc4/A_works_integrity.json（结构化，含上面 schema 的全部条目 + 21 work 的原始探测明细）与 A_works_integrity.md（人读版：先给结论速览，再给逐 work 明细表）。\n\n【交付方式】完成后调用 report_done，summary 里写清：S1/S2/S3/S4 各几条、最严重的 3 条是什么、两份产物路径。",
+          "score": {
+            "chars": 2139,
+            "step_markers": 7,
+            "howto_hits": 5,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_003",
+          "title": "B-快照与恢复路径巡检",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "【任务】核验 5713 沙箱内 snapshots/ 是否在位、指纹是否可信、能否据快照真正还原一个 work，输出结构化问题清单。\n\n【硬约束】所有读写只准在沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 之内。严禁触碰 D:\\AI_station\\推演agent（5700 主实例）及任何沙箱外路径。不得修改 snapshots/ 与 works/ 下的原始数据（只读）；一切副本/演练目录只许写在 trading-workspace\\healthcheck_hc4\\tmp_restore\\ 下。\n\n【已知线索（必须自行复核，不得直接采信）】11 个 work（work_007、013～021）的 live cards.db 仅 4096 字节、数据全在 cards.db-wal；若快照只拷了 cards.db 而未带 wal，则快照可能本身是空的——这一点是本任务的核心疑点，必须用恢复演练证伪或证实。快照数量差异极大（work_015 仅 8 个，work_013 有 160 个）。\n\n【必须完成的工作】\n1. 快照清点：逐 work 统计时间戳快照个数、最早/最新时间戳、是否存在 daily_20261020 每日快照、每个快照目录内实际文件清单与字节数（注意快照目录结构是 snapshots/<work>/<ts>/works/<work>/...）。同时清点 snapshots/_ops（约 200 个）。\n2. 快照内容保真度：对每个 work 至少取 latest 一个快照，读其中 cards.db（带该快照目录内的 wal/shm，如有），在 tmp_restore 副本上跑 integrity_check 与各表计数，与 live 的对应计数做比对表（live vs latest vs daily），标出差异并解读差异是「快照早于最新写入」还是「快照本身残缺」。\n3. 真实恢复演练（硬性要求，至少 2 次，必须覆盖）：\n   (a) 一个 live cards.db 为 4096B 的 work（从 work_007/013/014/015/016/017/018/019/020/021 中选，建议取快照数最多的 work_013）；\n   (b) 一个 live cards.db 正常的 work（从 work_001～006/008～012 中选）。\n   演练做法：把快照内容完整复制到 tmp_restore/ 下独立目录，按快照原样重开该库，跑 integrity_check + 全表计数，并与 live 比对；必须保留**完整命令与原始输出**（不是转述）。若快照目录内 cards.db 为 4096B 且无 wal，要明确记录这种情况下恢复出来是什么（空库？报错？），这就是要交付的关键结论。\n4. 指纹校验：读沙箱根 .snapshot_fingerprints.json，按它的口径（自行判定是对哪个对象做的 sha256）实际重算并逐条比对，列出一致/不一致条目；若其口径无法从数据推定，明确写出「口径不可考」并用最可能的两种解释各验一次。\n5. 冗余与成本：统计快照总体积、重复度（同 work 相邻快照是否大量内容相同）、是否已有清理策略痕迹；`.snapshot_fingerprints.json` 是否覆盖全部 work（含 work_019/020/021 等后期 work）。\n6. 结论性判定：明确回答「据现有快照能否完整还原任意一个 work」，分「能/部分能/不能」并逐类给出证据。\n\n【问题条目统一 schema（务必照此写，我要跨三份产物合并）】\n每条问题一个对象：id（B-01 起）、severity（S1阻断 / S2严重 / S3一般 / S4提示）、title（一句话）、works（涉及的 work_id 列表）、evidence（必须可复核：文件相对路径 + 行号/计数/命令与原始输出片段）、impact（会导致什么后果）、fix（具体修复建议）。\n判定口径：S1=恢复路径必然失效/快照不可用；S2=数据不完整、能还原但丢内容；S3=留痕与成本问题；S4=规范性整洁度。\n\n【验收判据（全部满足才算完成）】\n① 21/21 个 work 的快照清点表（数量、时间戳、daily 有无、文件清单）；\n② 至少 2 次真实恢复演练，含 1 个 4096B 库头 work + 1 个正常 work，每次都有完整命令与原始输出留档；\n③ live vs latest vs daily 计数比对表覆盖 21/21；\n④ .snapshot_fingerprints.json 逐条校验结论（一致几条、不一致几条、口径是什么）；\n⑤ 产物落 trading-workspace/healthcheck_hc4/B_snapshot_restore.json 与 B_snapshot_restore.md。\n\n【交付方式】完成后调用 report_done，summary 里写清：S1/S2/S3/S4 各几条、恢复演练的结论（快照到底能不能还原）、两份产物路径。",
+          "score": {
+            "chars": 2163,
+            "step_markers": 6,
+            "howto_hits": 2,
+            "mission_hits": 3,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_004",
+          "title": "C-运行日志留痕质量巡检",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "【任务】核验 5713 沙箱内 logs/ 的可读性与可复盘性，判定能否据日志复盘一次运行，输出结构化问题清单。\n\n【硬约束】所有读写只准在沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 之内。严禁触碰 D:\\AI_station\\推演agent（5700 主实例）及任何沙箱外路径。不得修改 logs/ 原始数据（只读）；一切中间产物只许写在 trading-workspace\\healthcheck_hc4\\tmp\\ 下。\n\n【已知线索（必须自行复核，不得直接采信）】logs/ 共 81 个文件：80 个 prompt_card_XXX_<ts>.json + prompt_perm_audit.jsonl（1290 行）。80 个 json 全部可解析，顶层字段含 card_id / timestamp / model_requested / model_used / system_prompt / prior_messages / user_prompt / response / error / tool_events / pair_id / regions（部分含 vp_system_prompt）。关键疑点：**日志不含 work_id**，而 card_001..card_006 在 21 个 work 中重复出现，故单看日志可能无法确定某次运行属于哪个 work——这一点必须量化。另有 2 个日志 error 字段非空（kimi-k3 配额耗尽）。\n\n【必须完成的工作】\n1. 逐文件解析 81 个：统计解析失败；逐字段统计缺失/空值/null/类型异常（含 vp_system_prompt 这类「部分日志有」的字段，务必统计出现率而非只报有无）；记录每个文件的字节数与时间戳。\n2. 以 card_id + timestamp 为线索，把每条日志与 works/ 中实际 work 做归属推断：给出「可唯一归属 / 多候选无法唯一 / 完全无法归属」三类的数量与占比。判据要写清（例如时间戳是否落在该 work 的 created_at 之后、是否落在该 work 的事件流时间区间内、是否与 sessions/ 中对应 pair_id 匹配）。若能用 work 的 events/sessions 时间区间把多数日志唯一落位，要给出落位方法和落位数。\n3. 复盘链路实测（硬性要求）：挑 1 条 error 为空的真实日志，仅用该 json 里的字段复原「输入（system_prompt/user_prompt/prior_messages）→ 模型（model_requested/model_used）→ 工具调用（tool_events）→ 输出（response）」完整链路，把复原结果写成可读的链路记录；并明确列出「因缺哪些字段而无法完整复盘」的清单（例如缺 work 归属、缺耗时/费用/token 数、缺工具返回原文、缺重试记录等）。\n4. 交叉校验：把日志与 works/ 侧的留痕对齐看——tool_events 里的工具调用能否在对应 work 的 events/card_*.jsonl 中找到对应条目？pair_id 能否在 sessions/*.md 的 pair_id 中找到？给出匹配率与不匹配样例（至少 3 个具体样例）。\n5. prompt_perm_audit.jsonl：1290 行逐行解析（统计坏行）；核对字段（ts / fn / card_id / card_type / granted_tools 等）；统计每种 card_type 被授予的工具集合，检查有无越权（例如 coder 卡被授予 create_card/send_card_message 等其类型不应有的工具、rule 卡被授予写工具）；列出所有授予集合的不同形态与各自出现次数。\n6. error 日志专项：2 条配额耗尽错误，记录模型名、错误原文、是否有重试痕迹、是否在后续日志中恢复成功。\n\n【问题条目统一 schema（务必照此写，我要跨三份产物合并）】\n每条问题一个对象：id（C-01 起）、severity（S1阻断 / S2严重 / S3一般 / S4提示）、title（一句话）、scope（影响的日志文件列表或数量）、evidence（必须可复核：文件相对路径 + 行号/字段名/计数）、impact（会导致什么后果）、fix（具体修复建议）。\n判定口径：S1=日志完全无法用于复盘或存在越权证据；S2=关键字段缺失导致复盘不完整/无法归属；S3=留痕质量问题；S4=规范性与整洁度。\n\n【验收判据（全部满足才算完成）】\n① 81 个文件逐个解析结论 + 字段缺失/异常统计表；\n② 1 次真实运行的完整复盘链路记录，且明确列出不能复盘的原因清单；\n③ 日志→work 不可归属比例量化（三类计数与占比），方法可复核；\n④ prompt_perm_audit.jsonl 1290 行解析结论 + 按 card_type 的授予集合核对与越权判定；\n⑤ 产物落 trading-workspace/healthcheck_hc4/C_logs.json 与 C_logs.md。\n\n【交付方式】完成后调用 report_done，summary 里写清：S1/S2/S3/S4 各几条、日志到底能不能复盘一次运行（结论）、不可归属比例、两份产物路径。",
+          "score": {
+            "chars": 2289,
+            "step_markers": 6,
+            "howto_hits": 4,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "create_card_calls": [
+        {
+          "tool": "create_card",
+          "args": {
+            "title": "A-works 卡片数据完整性巡检",
+            "parent": "card_001",
+            "goal": "【任务】对 5713 沙箱内 works/ 下 21 个 work 逐项核验卡片数据、事件流、会话留痕的完整性，输出结构化问题清单。\n\n【硬约束】所有读写只准在沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 之内。严禁触碰 D:\\AI_station\\推演agent（5700 主实例）及任何沙箱外路径。不得修改 works/ 下的原始数据（只读）；一切副本/临时文件只许写在 trading-workspace\\healthcheck_hc4\\tmp\\ 下。\n\n【已知线索（必须自行复核，不得直接采信）】勘探阶段观察到：11 个 work（work_007、013、014、015、016、017、018、019、020、021）的 cards.db 仅 4096 字节，数据全在 cards.db-wal 里；work_009 缺 events/、memory/、_ops/ 三目录；work_021 缺 memory/；work_011 事件流有 card_003 但 memory 无、work_016 事件流有 card_002 但 memory 无；大量 sessions/*.md 为 71B 占位。以上每一条都要用你自己的实测证据确认或推翻。\n\n【必须完成的工作】\n1. 21/21 个 work：把 cards.db + cards.db-wal + cards.db-shm 一起复制到 healthcheck_hc4/tmp/ 下的独立目录，在该副本上执行 pragma integrity_check，记录原始输出；同时记录 cards / card_history / shadows / meta / inbox / trash / role_* 各表计数，以及 db/wal/shm 三个文件字节数。\n2. 反证实验：对含 wal 的 work，再做一次「只复制 cards.db（不带 wal）」的副本，跑 integrity_check 与 cards 计数，与上一步对比，用实测数据证明/否定「单拷 cards.db 会丢数据」。\n3. 三方比对表：逐 work 比对 (a) cards 表里的 card_id 集合、(b) events/ 下 card_*.jsonl 文件名集合、(c) memory/ 下 card_*.json 文件名集合、(d) sessions/ 下 session_*.md 集合，逐一列出缺失/多余/不一致项。\n4. 事件流与 memory 文件的可读性：逐行 json 解析 events/*.jsonl（统计总行数、坏行数、坏行行号与原文片段）；逐个 json 解析 memory/*.json（记录 mark/entries 结构与是否为空）。\n5. 会话留痕完整性：统计每个 sessions/*.md 的字节数与是否仅为注释头占位；对非占位文件校验 ---SESSION--- / ---MSG--- 结构是否完整、seq 是否连续、有无截断（末段是否以 --> 或完整分隔符收尾）。\n6. canvas.json：21 个逐探能否 json.load、schema_version 是否为 17、work_id 是否与目录名一致、recent_events 引用到的 card_id 是否都存在于 cards 表。\n7. work.json：work_id / work_card_id / created_at 字段是否齐、与目录名及 cards 表是否自洽。\n\n【问题条目统一 schema（务必照此写，我要跨三份产物合并）】\n每条问题一个对象：id（A-01 起）、severity（S1阻断 / S2严重 / S3一般 / S4提示）、title（一句话）、works（涉及的 work_id 列表）、evidence（必须可复核：文件相对路径 + 行号或计数或命令输出片段）、impact（这条会导致什么后果）、fix（具体修复建议）。\n判定口径：S1=数据已丢失或恢复路径必然失效；S2=数据不完整/不可复盘但仍有补救；S3=留痕质量问题、不影响数据正确性；S4=规范性与整洁度。\n\n【验收判据（全部满足才算完成）】\n① 21/21 个 work 均有带 wal 副本的 integrity_check 结果，且留有原始输出；\n② 三方比对表覆盖 21/21 个 work，每个不一致项都点名到具体 card_id 或文件名；\n③ 每条问题都带可复核证据，不收「疑似」而无证据的条目；\n④ 产物落 trading-workspace/healthcheck_hc4/A_works_integrity.json（结构化，含上面 schema 的全部条目 + 21 work 的原始探测明细）与 A_works_integrity.md（人读版：先给结论速览，再给逐 work 明细表）。\n\n【交付方式】完成后调用 report_done，summary 里写清：S1/S2/S3/S4 各几条、最严重的 3 条是什么、两份产物路径。"
+          },
+          "ts": "2026-10-20T16:36:26.724+08:00",
+          "seq": 7245,
+          "score": {
+            "chars": 2140,
+            "step_markers": 7,
+            "howto_hits": 5,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "title": "B-快照与恢复路径巡检",
+            "parent": "card_001",
+            "goal": "【任务】核验 5713 沙箱内 snapshots/ 是否在位、指纹是否可信、能否据快照真正还原一个 work，输出结构化问题清单。\n\n【硬约束】所有读写只准在沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 之内。严禁触碰 D:\\AI_station\\推演agent（5700 主实例）及任何沙箱外路径。不得修改 snapshots/ 与 works/ 下的原始数据（只读）；一切副本/演练目录只许写在 trading-workspace\\healthcheck_hc4\\tmp_restore\\ 下。\n\n【已知线索（必须自行复核，不得直接采信）】11 个 work（work_007、013～021）的 live cards.db 仅 4096 字节、数据全在 cards.db-wal；若快照只拷了 cards.db 而未带 wal，则快照可能本身是空的——这一点是本任务的核心疑点，必须用恢复演练证伪或证实。快照数量差异极大（work_015 仅 8 个，work_013 有 160 个）。\n\n【必须完成的工作】\n1. 快照清点：逐 work 统计时间戳快照个数、最早/最新时间戳、是否存在 daily_20261020 每日快照、每个快照目录内实际文件清单与字节数（注意快照目录结构是 snapshots/<work>/<ts>/works/<work>/...）。同时清点 snapshots/_ops（约 200 个）。\n2. 快照内容保真度：对每个 work 至少取 latest 一个快照，读其中 cards.db（带该快照目录内的 wal/shm，如有），在 tmp_restore 副本上跑 integrity_check 与各表计数，与 live 的对应计数做比对表（live vs latest vs daily），标出差异并解读差异是「快照早于最新写入」还是「快照本身残缺」。\n3. 真实恢复演练（硬性要求，至少 2 次，必须覆盖）：\n   (a) 一个 live cards.db 为 4096B 的 work（从 work_007/013/014/015/016/017/018/019/020/021 中选，建议取快照数最多的 work_013）；\n   (b) 一个 live cards.db 正常的 work（从 work_001～006/008～012 中选）。\n   演练做法：把快照内容完整复制到 tmp_restore/ 下独立目录，按快照原样重开该库，跑 integrity_check + 全表计数，并与 live 比对；必须保留**完整命令与原始输出**（不是转述）。若快照目录内 cards.db 为 4096B 且无 wal，要明确记录这种情况下恢复出来是什么（空库？报错？），这就是要交付的关键结论。\n4. 指纹校验：读沙箱根 .snapshot_fingerprints.json，按它的口径（自行判定是对哪个对象做的 sha256）实际重算并逐条比对，列出一致/不一致条目；若其口径无法从数据推定，明确写出「口径不可考」并用最可能的两种解释各验一次。\n5. 冗余与成本：统计快照总体积、重复度（同 work 相邻快照是否大量内容相同）、是否已有清理策略痕迹；`.snapshot_fingerprints.json` 是否覆盖全部 work（含 work_019/020/021 等后期 work）。\n6. 结论性判定：明确回答「据现有快照能否完整还原任意一个 work」，分「能/部分能/不能」并逐类给出证据。\n\n【问题条目统一 schema（务必照此写，我要跨三份产物合并）】\n每条问题一个对象：id（B-01 起）、severity（S1阻断 / S2严重 / S3一般 / S4提示）、title（一句话）、works（涉及的 work_id 列表）、evidence（必须可复核：文件相对路径 + 行号/计数/命令与原始输出片段）、impact（会导致什么后果）、fix（具体修复建议）。\n判定口径：S1=恢复路径必然失效/快照不可用；S2=数据不完整、能还原但丢内容；S3=留痕与成本问题；S4=规范性整洁度。\n\n【验收判据（全部满足才算完成）】\n① 21/21 个 work 的快照清点表（数量、时间戳、daily 有无、文件清单）；\n② 至少 2 次真实恢复演练，含 1 个 4096B 库头 work + 1 个正常 work，每次都有完整命令与原始输出留档；\n③ live vs latest vs daily 计数比对表覆盖 21/21；\n④ .snapshot_fingerprints.json 逐条校验结论（一致几条、不一致几条、口径是什么）；\n⑤ 产物落 trading-workspace/healthcheck_hc4/B_snapshot_restore.json 与 B_snapshot_restore.md。\n\n【交付方式】完成后调用 report_done，summary 里写清：S1/S2/S3/S4 各几条、恢复演练的结论（快照到底能不能还原）、两份产物路径。"
+          },
+          "ts": "2026-10-20T16:36:26.764+08:00",
+          "seq": 7247,
+          "score": {
+            "chars": 2164,
+            "step_markers": 6,
+            "howto_hits": 2,
+            "mission_hits": 3,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "title": "C-运行日志留痕质量巡检",
+            "parent": "card_001",
+            "goal": "【任务】核验 5713 沙箱内 logs/ 的可读性与可复盘性，判定能否据日志复盘一次运行，输出结构化问题清单。\n\n【硬约束】所有读写只准在沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox 之内。严禁触碰 D:\\AI_station\\推演agent（5700 主实例）及任何沙箱外路径。不得修改 logs/ 原始数据（只读）；一切中间产物只许写在 trading-workspace\\healthcheck_hc4\\tmp\\ 下。\n\n【已知线索（必须自行复核，不得直接采信）】logs/ 共 81 个文件：80 个 prompt_card_XXX_<ts>.json + prompt_perm_audit.jsonl（1290 行）。80 个 json 全部可解析，顶层字段含 card_id / timestamp / model_requested / model_used / system_prompt / prior_messages / user_prompt / response / error / tool_events / pair_id / regions（部分含 vp_system_prompt）。关键疑点：**日志不含 work_id**，而 card_001..card_006 在 21 个 work 中重复出现，故单看日志可能无法确定某次运行属于哪个 work——这一点必须量化。另有 2 个日志 error 字段非空（kimi-k3 配额耗尽）。\n\n【必须完成的工作】\n1. 逐文件解析 81 个：统计解析失败；逐字段统计缺失/空值/null/类型异常（含 vp_system_prompt 这类「部分日志有」的字段，务必统计出现率而非只报有无）；记录每个文件的字节数与时间戳。\n2. 以 card_id + timestamp 为线索，把每条日志与 works/ 中实际 work 做归属推断：给出「可唯一归属 / 多候选无法唯一 / 完全无法归属」三类的数量与占比。判据要写清（例如时间戳是否落在该 work 的 created_at 之后、是否落在该 work 的事件流时间区间内、是否与 sessions/ 中对应 pair_id 匹配）。若能用 work 的 events/sessions 时间区间把多数日志唯一落位，要给出落位方法和落位数。\n3. 复盘链路实测（硬性要求）：挑 1 条 error 为空的真实日志，仅用该 json 里的字段复原「输入（system_prompt/user_prompt/prior_messages）→ 模型（model_requested/model_used）→ 工具调用（tool_events）→ 输出（response）」完整链路，把复原结果写成可读的链路记录；并明确列出「因缺哪些字段而无法完整复盘」的清单（例如缺 work 归属、缺耗时/费用/token 数、缺工具返回原文、缺重试记录等）。\n4. 交叉校验：把日志与 works/ 侧的留痕对齐看——tool_events 里的工具调用能否在对应 work 的 events/card_*.jsonl 中找到对应条目？pair_id 能否在 sessions/*.md 的 pair_id 中找到？给出匹配率与不匹配样例（至少 3 个具体样例）。\n5. prompt_perm_audit.jsonl：1290 行逐行解析（统计坏行）；核对字段（ts / fn / card_id / card_type / granted_tools 等）；统计每种 card_type 被授予的工具集合，检查有无越权（例如 coder 卡被授予 create_card/send_card_message 等其类型不应有的工具、rule 卡被授予写工具）；列出所有授予集合的不同形态与各自出现次数。\n6. error 日志专项：2 条配额耗尽错误，记录模型名、错误原文、是否有重试痕迹、是否在后续日志中恢复成功。\n\n【问题条目统一 schema（务必照此写，我要跨三份产物合并）】\n每条问题一个对象：id（C-01 起）、severity（S1阻断 / S2严重 / S3一般 / S4提示）、title（一句话）、scope（影响的日志文件列表或数量）、evidence（必须可复核：文件相对路径 + 行号/字段名/计数）、impact（会导致什么后果）、fix（具体修复建议）。\n判定口径：S1=日志完全无法用于复盘或存在越权证据；S2=关键字段缺失导致复盘不完整/无法归属；S3=留痕质量问题；S4=规范性与整洁度。\n\n【验收判据（全部满足才算完成）】\n① 81 个文件逐个解析结论 + 字段缺失/异常统计表；\n② 1 次真实运行的完整复盘链路记录，且明确列出不能复盘的原因清单；\n③ 日志→work 不可归属比例量化（三类计数与占比），方法可复核；\n④ prompt_perm_audit.jsonl 1290 行解析结论 + 按 card_type 的授予集合核对与越权判定；\n⑤ 产物落 trading-workspace/healthcheck_hc4/C_logs.json 与 C_logs.md。\n\n【交付方式】完成后调用 report_done，summary 里写清：S1/S2/S3/S4 各几条、日志到底能不能复盘一次运行（结论）、不可归属比例、两份产物路径。"
+          },
+          "ts": "2026-10-20T16:36:27.113+08:00",
+          "seq": 7249,
+          "score": {
+            "chars": 2290,
+            "step_markers": 6,
+            "howto_hits": 4,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "root_final_status": "## 一、环境与范围（2026-10-20 实测，全部在 5713 沙箱内，未触碰 5700）\n\n沙箱根 `D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox`，内容：\n\n| 目录 | 内容 | 规模 |\n|---|---|---|\n| `works/` | 21 个 work（work_001..work_021）+ `_ops/session_ops.jsonl` | 105 文件 / 14.7 MB |\n| `snapshots/` | 21 个 work 各自时间戳快照（8–160 个/work）+ 各 work `daily_20261020` + `_ops`（200 个） | — |\n| `logs/` | 80 个 `prompt_card_XXX_<ts>.json` + `prompt_perm_audit.jsonl`（1290 行） | 81 文件 / 12.3 MB |\n| `experiments/ask_once/` | 实验代码 3 个 + run*.log + evidence*.json | 14 文件 / 0.36 MB |\n| `trading-workspace/` | `contracts/` 10 个、`inventory/`（空）、3 个历史巡检残留目录 | 22 文件 |\n\n单个 work 标准结构：`work.json`、`canvas.json`（schema_version=17）、`cards.db`（13 表：cards/card_history/shadows/meta/inbox/trash/role_*）、`events/card_*.jsonl`、`memory/card_*.json`、`sessions/session_*.md`（v2 文本格式）、`_ops/revisions.jsonl`。\n\n## 二、勘探阶段已实测的异常（待三张子卡正式复核）\n\n1. **11/21 个 work 的 `cards.db` 仅 4096B（只剩库头页），数据全在 `cards.db-wal`（0.43–3.11 MB）**：work_007、013、014、015、016、017、018、019、020、021。实测：连 wal 一起复制后 `pragma integrity_check` 全 ok、各表计数正常；**只复制 `cards.db` 则该库为空**。\n2. **work_009 缺 `events/`、`memory/`、`_ops/` 三目录**，但其 cards 表有 4 张卡 → 4 张卡的事件流与记忆整体缺失；**work_021 缺 `memory/`**。\n3. **events 与 memory 卡片集合不一致**：work_011 事件流有 card_003、memory 无；work_016 事件流有 card_002、memory 无。\n4. 大量 `sessions/session_XXX.md` 为 71B 占位（仅一行 `<!-- session: card_001, created: ... -->`）；work_008 的 5 个会话文件里占 4 个；work_009 的 4 个全占位。\n5. **logs 无 work 归属字段**：80 个 json 全部可解析、字段完整（card_id/timestamp/model_requested/model_used/system_prompt/prior_messages/user_prompt/response/error/tool_events/pair_id/regions，部分含 vp_system_prompt），但**不含 work_id**，而 card_001..card_006 在 21 个 work 中重复出现。\n6. 2 个日志 error 非空（kimi-k3 配额耗尽）：`prompt_card_001_20261020151102.json`、`prompt_card_001_20261020151123.json`。\n7. 历史巡检残留：`trading-workspace/healthcheck_5713/tmp/` 下数百份 cards.db 副本（数十 MB，数据只到 work_018/019），另有根级 `_tmp_*.txt`。另有 `healthcheck_run019/`、`healthcheck_v3/` 两个同名历史产物目录。**这些历史产物一律不采信，本次全部自验。**\n\n## 三、执行组织（2026-10-20 用户批复后已建卡）\n\n产出目录：`trading-workspace/healthcheck_hc4/`（新命名空间，不混入历史残留）。\n\n| 卡 | 范围 | 产物 |\n|---|---|---|\n| card_002「A-works 卡片数据完整性巡检」 | 21 个 work 的卡数据/事件流/记忆/会话留痕/ canvas 自洽性 | `A_works_integrity.json` + `.md` |\n| card_003「B-快照与恢复路径巡检」 | 快照在位性、live vs latest vs daily 保真、2 次真实恢复演练、指纹校验 | `B_snapshot_restore.json` + `.md` |\n| card_004「C-运行日志留痕质量巡检」 | 81 文件解析、复盘链路实测、日志→work 可归属性、权限审计 1290 行 | `C_logs.json` + `.md` |\n\n三卡共用一套问题条目 schema：`id / severity(S1阻断·S2严重·S3一般·S4提示) / title / works 或 scope / evidence(路径+行号或计数) / impact / fix`。\n\n本卡（card_001）自留：统一严重度口径、跨三份产物去重合并、撰写最终巡检报告（问题清单＋严重度＋修复建议＋「哪些是好的」）。\n\n## 四、当前状态\n\n- 三张子卡已建并自动开跑，本卡等待其完工回执。\n- 最终报告尚未生成。\n- 待收口项：三份产物到齐后由本卡验收（核对验收判据逐条是否满足），再合并成一份报告。",
+      "root_goal_state": "active",
+      "summary": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 6.33,
+        "avg_howto_hits": 3.67
+      },
+      "verdict": "collected"
+    }
+  ],
+  "instance": {
+    "instance": "test-instance",
+    "pid": 26324,
+    "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+    "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox",
+    "sandbox_enabled": true
+  },
+  "compare": {
+    "control_vs_ask": {
+      "summary_a": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 6.33,
+        "avg_howto_hits": 3.67
+      },
+      "summary_b": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 14.33,
+        "avg_howto_hits": 3.33
+      },
+      "phase_a": "pre_split",
+      "phase_b": "pre_split",
+      "plan_changed_b": true
+    },
+    "ask_vs_ask_post": {
+      "summary_a": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 14.33,
+        "avg_howto_hits": 3.33
+      },
+      "summary_b": {
+        "n": 4,
+        "mission_like": 0,
+        "subagent_like": 2,
+        "mixed": 2,
+        "with_acceptance": 4,
+        "avg_step_markers": 1.0,
+        "avg_howto_hits": 2.5
+      },
+      "phase_a": "pre_split",
+      "phase_b": "pre_split",
+      "plan_changed_b": null
+    },
+    "control_vs_ask_post": {
+      "summary_a": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 6.33,
+        "avg_howto_hits": 3.67
+      },
+      "summary_b": {
+        "n": 4,
+        "mission_like": 0,
+        "subagent_like": 2,
+        "mixed": 2,
+        "with_acceptance": 4,
+        "avg_step_markers": 1.0,
+        "avg_howto_hits": 2.5
+      },
+      "phase_a": "pre_split",
+      "phase_b": "pre_split",
+      "plan_changed_b": null
+    }
+  },
+  "finished_at": "2026-10-20T16:38:04",
+  "verdict": "done"
+}

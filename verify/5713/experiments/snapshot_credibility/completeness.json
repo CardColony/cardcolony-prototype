@@ -1,0 +1,1283 @@
+{
+  "snapshot_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\snapshots",
+  "works": [
+    {
+      "work": "_ops",
+      "live_files": 1,
+      "batches": 200,
+      "real_batches": 199,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 200,
+      "missing_cards_db_pct": 100.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 1,
+      "latest_real_batch": "20261020_183119_832076",
+      "latest_real_has_cards_db": false,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_182940_408119",
+          "files": 1,
+          "has_cards_db": false
+        },
+        {
+          "stamp": "20261020_182947_040961",
+          "files": 1,
+          "has_cards_db": false
+        },
+        {
+          "stamp": "20261020_183105_246227",
+          "files": 1,
+          "has_cards_db": false
+        },
+        {
+          "stamp": "20261020_183119_832076",
+          "files": 1,
+          "has_cards_db": false
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 1,
+          "has_cards_db": false
+        }
+      ]
+    },
+    {
+      "work": "work_001",
+      "live_files": 12,
+      "batches": 39,
+      "real_batches": 38,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_165247_384894",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165247_702843",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_002",
+      "live_files": 12,
+      "batches": 33,
+      "real_batches": 32,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_003",
+      "live_files": 12,
+      "batches": 32,
+      "real_batches": 31,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_004",
+      "live_files": 12,
+      "batches": 31,
+      "real_batches": 30,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_005",
+      "live_files": 12,
+      "batches": 35,
+      "real_batches": 34,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_006",
+      "live_files": 17,
+      "batches": 29,
+      "real_batches": 28,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_007",
+      "live_files": 8,
+      "batches": 13,
+      "real_batches": 12,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 2,
+      "latest_real_batch": "20261020_182803_409410",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_154118_322322",
+          "files": 8,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_155214_043029",
+          "files": 8,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_155630_158925",
+          "files": 8,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_182803_409410",
+          "files": 8,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 2,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_008",
+      "live_files": 12,
+      "batches": 30,
+      "real_batches": 29,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_009",
+      "live_files": 8,
+      "batches": 22,
+      "real_batches": 21,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 8,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 8,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 8,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 8,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_010",
+      "live_files": 19,
+      "batches": 61,
+      "real_batches": 60,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_011",
+      "live_files": 18,
+      "batches": 51,
+      "real_batches": 50,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 18,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 18,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 18,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 18,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_012",
+      "live_files": 12,
+      "batches": 32,
+      "real_batches": 31,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_165407_409729",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165401_687961",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165407_409729",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_013",
+      "live_files": 21,
+      "batches": 195,
+      "real_batches": 194,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 4,
+      "latest_real_batch": "20261020_165031_393640",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_013/cards.db-shm",
+        "works/work_013/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164932_546410",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164933_505874",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164938_980880",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165031_393640",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 4,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_014",
+      "live_files": 13,
+      "batches": 11,
+      "real_batches": 10,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_155619_277593",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_014/cards.db-shm",
+        "works/work_014/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_155523_887491",
+          "files": 11,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_155611_455183",
+          "files": 11,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_155615_385214",
+          "files": 11,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_155619_277593",
+          "files": 11,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_015",
+      "live_files": 13,
+      "batches": 8,
+      "real_batches": 7,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_155946_975449",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_015/cards.db-shm",
+        "works/work_015/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_155927_493180",
+          "files": 10,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_155927_949425",
+          "files": 10,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_155942_575221",
+          "files": 10,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_155946_975449",
+          "files": 11,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_016",
+      "live_files": 20,
+      "batches": 103,
+      "real_batches": 102,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_163640_080666",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_016/cards.db-shm",
+        "works/work_016/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_163534_674795",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163538_242299",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163626_801333",
+          "files": 18,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163640_080666",
+          "files": 18,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_017",
+      "live_files": 19,
+      "batches": 18,
+      "real_batches": 17,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_161641_900410",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_017/cards.db-shm",
+        "works/work_017/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_161116_277914",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_161133_682733",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_161238_306863",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_161641_900410",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_018",
+      "live_files": 19,
+      "batches": 24,
+      "real_batches": 23,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 2,
+      "latest_real_batch": "20261020_162134_508396",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_018/cards.db-shm",
+        "works/work_018/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_161944_062137",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_162012_893280",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_162013_458118",
+          "files": 15,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_162134_508396",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 2,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_019",
+      "live_files": 22,
+      "batches": 32,
+      "real_batches": 31,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_162932_106366",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_019/cards.db-shm",
+        "works/work_019/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_162712_898708",
+          "files": 16,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_162808_683990",
+          "files": 16,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_162809_446973",
+          "files": 18,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_162932_106366",
+          "files": 20,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_020",
+      "live_files": 19,
+      "batches": 24,
+      "real_batches": 23,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 2,
+      "latest_real_batch": "20261020_163454_400542",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_020/cards.db-shm",
+        "works/work_020/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_163408_699575",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163410_873052",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163412_510915",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163454_400542",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 2,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_021",
+      "live_files": 19,
+      "batches": 16,
+      "real_batches": 15,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 2,
+      "latest_real_batch": "20261020_163847_122447",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_021/cards.db-shm",
+        "works/work_021/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_163640_453391",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163804_811235",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163805_056441",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_163847_122447",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 2,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_022",
+      "live_files": 19,
+      "batches": 14,
+      "real_batches": 13,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_164631_619001",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_022/cards.db-shm",
+        "works/work_022/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_164413_474389",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164533_114793",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164533_502502",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_164631_619001",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_023",
+      "live_files": 19,
+      "batches": 19,
+      "real_batches": 18,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_165248_072810",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_023/cards.db-shm",
+        "works/work_023/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_165127_280570",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165247_384894",
+          "files": 14,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165247_702843",
+          "files": 15,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165248_072810",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_024",
+      "live_files": 17,
+      "batches": 17,
+      "real_batches": 16,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 2,
+      "latest_real_batch": "20261020_172750_245207",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [],
+      "sample_last5": [
+        {
+          "stamp": "20261020_165626_737922",
+          "files": 15,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_165626_923997",
+          "files": 15,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_172749_336439",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_172750_245207",
+          "files": 17,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 2,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_025",
+      "live_files": 12,
+      "batches": 8,
+      "real_batches": 7,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_174159_759478",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_025/cards.db-shm",
+        "works/work_025/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_173455_129208",
+          "files": 9,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_174159_448132",
+          "files": 9,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_174159_627797",
+          "files": 10,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_174159_759478",
+          "files": 10,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_026",
+      "live_files": 14,
+      "batches": 9,
+      "real_batches": 8,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_181452_768667",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_026/cards.db-shm",
+        "works/work_026/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_180632_257518",
+          "files": 11,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_180646_361447",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_180649_339166",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_181452_768667",
+          "files": 12,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_027",
+      "live_files": 21,
+      "batches": 60,
+      "real_batches": 59,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_183119_832076",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_027/cards.db-shm",
+        "works/work_027/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_182940_408119",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_182947_040961",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_183105_246227",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_183119_832076",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_028",
+      "live_files": 15,
+      "batches": 17,
+      "real_batches": 16,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_181935_267264",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_028/cards.db-shm",
+        "works/work_028/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_181922_515798",
+          "files": 13,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_181924_022070",
+          "files": 13,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_181924_492271",
+          "files": 13,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_181935_267264",
+          "files": 13,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    },
+    {
+      "work": "work_029",
+      "live_files": 21,
+      "batches": 39,
+      "real_batches": 38,
+      "daily_batches": 1,
+      "batches_missing_cards_db": 0,
+      "missing_cards_db_pct": 0.0,
+      "latest_batch": "daily_20261020",
+      "latest_batch_files": 5,
+      "latest_real_batch": "20261020_182936_971584",
+      "latest_real_has_cards_db": true,
+      "live_files_absent_from_latest_real_batch": [
+        "works/work_029/cards.db-shm",
+        "works/work_029/cards.db-wal"
+      ],
+      "sample_last5": [
+        {
+          "stamp": "20261020_182848_184281",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_182906_595426",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_182920_553125",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "20261020_182936_971584",
+          "files": 19,
+          "has_cards_db": true
+        },
+        {
+          "stamp": "daily_20261020",
+          "files": 5,
+          "has_cards_db": true
+        }
+      ]
+    }
+  ]
+}
