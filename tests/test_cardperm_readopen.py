@@ -302,9 +302,14 @@ def test_tool_card_toolface_matches_its_perms():
     # _visible 池**（列 OP_ONLY_TOOLS、非卡片内挂；_visible 的初始池已与
     # build_tool_schemas 真实工具池同口径排除它）⇒ 分类层镜头里也看不见：
     # 见 tests/test_status_update.py::test_propose_status_not_in_normal_toolface。
+    # [换父 2026-10-20] reparent_card 挂 edit ⇒ **分类层镜头里看得见**（本测试
+    # 只跑 _filter_by_category，不跑后四段）；真实下发面被 build_tool_schemas 的
+    # 五级闸摘掉（tool 卡 can_have_children=false，没有子树可调）：
+    # 见 tests/test_reparent_card.py::test_toolface_only_for_types_that_can_have_children。
     assert _visible(card) == {"read_card", "read_memory", "read_shadow",
                               "read_linked", "draft_rule_edit", "list_roles",
                               "edit_card", "delete_card", "update_shadow",
+                              "reparent_card",
                               "create_plan", "plan_reorder", "plan_insert",
                               "plan_remove", "plan_modify", "step_complete"}
     # [编程卡 2026-10-15 · C2 裁定] search 回归词表＝**预留机关**（coder 行占位码；

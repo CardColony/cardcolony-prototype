@@ -1185,6 +1185,38 @@ async def update_card(
         parent_type = str((_meta_of(work_id, new_parent) or {}).get("card_type") or "")
         if not _type_can_have_children(parent_type):
             return {"error": f"「{parent_type}」类型不可有子卡，不能作为父卡"}
+        # [换父 2026-10-20 · 数据从属] 带 owner 的卡（工具卡/编程卡）换父后，若原
+        # owner 已不在**新祖先链**上，owner 跟着改到新父链上最近的合法 owner 卡。
+        #
+        # 为什么必须改：owner 的语义是「谁调用它、产物归谁」（注册表闸3），它与
+        # parent 是两条边。只改 parent 不改 owner ⇒ 出现「挂在 A 下、产物归 B」，
+        # 那张卡的数据归属与树形归属互相矛盾——正是「换父不能只换视觉」的那一半。
+        # 子树内其它卡的 owner 不动：工具卡的 owner 恒等于建它的卡（＝当时的
+        # parent），子树整体迁移后它仍在子树内、仍是祖先，链没断。
+        cur_owner = str(cur_meta.get("owner_card_id") or "")
+        if cur_owner:
+            _metas = iter_card_metas(work_id)
+            _chain: set[str] = set()
+            _node, _guard = new_parent, 0
+            while _node and _guard < 1000:
+                _chain.add(_node)
+                _guard += 1
+                _node = str((_metas.get(_node) or {}).get("parent") or "")
+            if cur_owner not in _chain:
+                _new_owner, _node, _guard = "", new_parent, 0
+                while _node and _guard < 1000:
+                    if str((_metas.get(_node) or {}).get("card_type") or "") \
+                            in TOOL_CARD_OWNER_TYPES:
+                        _new_owner = _node
+                        break
+                    _guard += 1
+                    _node = str((_metas.get(_node) or {}).get("parent") or "")
+                if _new_owner:
+                    updates["owner_card_id"] = _new_owner
+                    # 留痕写明「归属卡也变了」——事后对账时，owner 被改这件事
+                    # 必须能从 card_history 看出来，否则等于静默改数据归属。
+                    history_note = (f"{history_note}"
+                                    f"（归属卡 {cur_owner} → {_new_owner}）")
 
     # [自动模式 2026-10-17 · 回灌 5700 块0.2] **开关动作**：auto_mode 变化 ⇒
     # 权限随之重算。0→1：perms 重算为全开集（policy.auto_perms()，专用

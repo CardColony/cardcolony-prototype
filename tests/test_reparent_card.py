@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """换父（reparent）· 回归网
 
-[换父 2026-10-20 · 5718] 钉住四件事：
+[换父 2026-10-20 · 5718] 钉住五件事：
 
 1. **存储层是唯一裁决点**：人（PATCH）与模型（reparent_card）走同一道校验——
    判据只有一份，不会出现「人拖得动、模型拖不动」或反过来。
@@ -9,7 +9,11 @@
    ★ 其中「父卡不存在」原实现是**静默回退根卡**（写错 id 也返回成功，卡被悄悄
    挂到根卡下）——本文件把它钉成报错。
 3. **子树整体迁移**：改的是边，不是节点。被移动卡的孙子仍是它的孙子。
-4. **模型工具的作用域＝只在自己子树内**（用户 2026-10-20 裁定）：不改自己的
+4. **归属真的变了，不是只换视觉**（用户 2026-10-20 明确要求）：
+   · 数据从属 —— 带 owner 的卡换父后 owner 跟到新父链（不留「挂在 A 下、产物归 B」）；
+   · 权限从属 —— 旧父卡失去写权、新父卡获得写权（树作用域按 parent 链现算）；
+   · 权限集 —— 不随父卡变（它由 project_class × card_type 定死），钉住这条边界。
+5. **模型工具的作用域＝只在自己子树内**（用户 2026-10-20 裁定）：不改自己的
    归属、不把卡挪出子树。
 
 机制层铁律同 conftest：不 import main、不触真实数据（沙箱由 autouse fixture 提供）。
@@ -246,6 +250,84 @@ def test_toolface_only_for_types_that_can_have_children(typed_registry):
 
     assert "reparent_card" in _names("sub_project")
     assert "reparent_card" not in _names("tool")
+
+
+# ---------------------------------------------------------------- 归属（数据/权限）
+
+async def test_owner_follows_new_parent(typed_work):
+    """数据从属：工具卡的 owner 跟着父卡走（不留「挂在 A 下、产物归 B」）。"""
+    wid = typed_work["work_id"]
+    root = typed_work["work_card_id"]
+    a = await _mk(wid, "A", root)
+    c = await _mk(wid, "C", root)
+    tool = await _mk(wid, "工具卡", a, card_type="tool", owner_card_id=a)
+    assert card_store.iter_card_metas(wid)[tool]["owner_card_id"] == a
+
+    r = await card_store.update_card(wid, tool, {"parent": c}, "测试：工具卡换父")
+    assert "error" not in r, r
+    meta = card_store.iter_card_metas(wid)[tool]
+    assert meta["parent"] == c
+    assert meta["owner_card_id"] == c, "owner 没跟着改（数据归属仍指向旧父卡）"
+
+
+async def test_owner_kept_when_still_ancestor(typed_work):
+    """整棵子树迁移时，子树内工具卡的 owner 不变——它仍是祖先，链没断。"""
+    wid = typed_work["work_id"]
+    root = typed_work["work_card_id"]
+    a = await _mk(wid, "A", root)
+    b = await _mk(wid, "B", a)
+    c = await _mk(wid, "C", root)
+    tool = await _mk(wid, "工具卡", b, card_type="tool", owner_card_id=b)
+
+    r = await card_store.update_card(wid, b, {"parent": c}, "测试：整支迁移")
+    assert "error" not in r, r
+    metas = card_store.iter_card_metas(wid)
+    assert metas[b]["parent"] == c
+    assert metas[tool]["owner_card_id"] == b, "子树内 owner 被误改"
+    assert policy._is_in_subtree(b, tool, metas), "工具卡与 owner 的从属链断了"
+
+
+async def test_permission_scope_follows_new_parent(typed_work):
+    """权限从属：换父后**旧父卡失去写权、新父卡获得写权**（树作用域按 parent 链现算）。"""
+    wid = typed_work["work_id"]
+    root = typed_work["work_card_id"]
+    a = await _mk(wid, "A", root)
+    c = await _mk(wid, "C", root)
+    b = await _mk(wid, "B", a)
+
+    metas = card_store.iter_card_metas(wid)
+    policy.check(a, b, policy.SWITCH_EDIT, metas)          # 移动前：A 管得着 B
+
+    r = await card_store.update_card(wid, b, {"parent": c}, "测试：B 改挂 C")
+    assert "error" not in r, r
+
+    metas = card_store.iter_card_metas(wid)
+    with pytest.raises(PermissionError):
+        policy.check(a, b, policy.SWITCH_EDIT, metas)      # 旧父卡：越出子树
+    policy.check(c, b, policy.SWITCH_EDIT, metas)          # 新父卡：管得着
+    # 反向：被移动卡也不能再动旧父卡
+    with pytest.raises(PermissionError):
+        policy.check(b, a, policy.SWITCH_EDIT, metas)
+
+
+async def test_perms_set_itself_is_type_bound_not_parent_bound(typed_work):
+    """权限**集**（开关列表）不随父卡变——它由 (project_class, card_type) 定死。
+
+    这条是「权限从属」的边界说明：换父改的是**作用域**（能管到谁），不是
+    **授权面**（有哪些开关）。同一 work 内 project_class 唯一、card_type 不变
+    ⇒ 开关列表本来就不该变；若哪天它变了，说明有人把类型分权做成了按树分权。
+    """
+    wid = typed_work["work_id"]
+    root = typed_work["work_card_id"]
+    a = await _mk(wid, "A", root)
+    c = await _mk(wid, "C", root)
+    b = await _mk(wid, "B", a)
+
+    before = list(card_store.iter_card_metas(wid)[b]["perms"])
+    r = await card_store.update_card(wid, b, {"parent": c}, "测试：B 改挂 C")
+    assert "error" not in r, r
+    after = list(card_store.iter_card_metas(wid)[b]["perms"])
+    assert before == after
 
 
 # ---------------------------------------------------------------- 人面（PATCH）
