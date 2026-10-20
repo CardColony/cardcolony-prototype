@@ -465,3 +465,19 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
 .app-nav > .home-new-project { padding: 12px 10px 0; }
 .home-new-project .btn { width: 100%; font-size: 13px; padding: 7px 10px; }
 
+
+/* ============================================================
+   [角色机制 5710] 左栏角色卡行 + 项目警报红点
+   ============================================================ */
+.nav-card.nav-role .nav-ico.role { color: #c9a227; }
+.nav-card.nav-role .nav-ctitle { font-style: italic; }
+.nav-role-badge {
+  flex: none; font-size: 9px; line-height: 14px; padding: 0 4px;
+  margin-right: 4px; border-radius: 4px; color: #c9a227;
+  border: 1px solid rgba(201, 162, 39, 0.45);
+}
+.nav-phead.has-alarm .nav-pname::after {
+  content: ""; display: inline-block; width: 7px; height: 7px;
+  margin-left: 6px; border-radius: 50%; background: #d05656;
+  box-shadow: 0 0 0 2px rgba(208, 86, 86, 0.18); vertical-align: middle;
+}

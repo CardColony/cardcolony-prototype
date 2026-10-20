@@ -48,6 +48,8 @@ export const REGISTRY = {
   done: { kind: "sys" }, error: { kind: "sys" }, rescue: { kind: "sys" },
   card_op: { kind: "sys" }, context: { kind: "sys" }, round_start: { kind: "sys" },
   round_end: { kind: "sys" }, run_start: { kind: "sys" },
+  // [角色机制 5710] 角色巡检判词 / 警报
+  role_judged: { kind: "sys" }, role_alarm: { kind: "sys" },
 
   context_preamble: { kind: "injection" }, context_injection: { kind: "injection" },
   judgment_protocol: { kind: "injection" }, context_seat_identity: { kind: "injection" },

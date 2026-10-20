@@ -4,10 +4,10 @@
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=36";
+import { notify } from "./api.js?v=37";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=30";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=32";
+import { createNavRenderer } from "./nav_render.js?v=33";
 import { createNavFind } from "./nav_find.js?v=30";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -87,10 +87,13 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
         const all = p.cards || [];
         const ids = new Set(all.map(c => c.card_id));
         const root = p.work_card_id || "";
-        snap.setChildren(wid, "", all.filter(c => {
+        const seg = all.filter(c => {
           const pa = c.parent || "";
           return pa === "" || pa === root || (pa && !ids.has(pa));
-        }));
+        });
+        // [角色机制 5710] 角色卡排根层末尾（作业卡在前、盯梢的在后）。
+        seg.sort((a, b) => (a.card_type === "role" ? 1 : 0) - (b.card_type === "role" ? 1 : 0));
+        snap.setChildren(wid, "", seg);
         dirty = true;
       }
       for (const e of navStore.prefs.listExpanded(wid)) {

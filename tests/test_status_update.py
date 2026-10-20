@@ -55,7 +55,7 @@ def test_version_and_ontology():
     [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     auto 卡工具面件数变化）。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-11"  # [G2] tc-9→tc-10（+通信两件进 auto 面）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-13"  # [G2] tc-9→tc-10（+通信两件进 auto 面）
     assert "propose_status" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_REGISTRY["propose_status"].readonly is True
     assert "propose_status" in card_tools.TOOL_SWITCH
@@ -293,12 +293,12 @@ def test_frontend_version_stamps_bumped():
     main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 样式段）。
     [6702 移植 P8] workspace 56→57（autoResume 按钮）、style 40→41（仅升戳）。
     """
-    assert "../stream.js?v=42" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=57" in _read("static/esm/main_chat.js")
-    assert "./stream.js?v=42" in _read("static/workspace.js")
+    assert "../stream.js?v=45" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=60" in _read("static/esm/main_chat.js")
+    assert "./stream.js?v=45" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=4" in _read("static/workspace.js")
-    assert "/static/style.css?v=41" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=2.3" in _read("templates/card.html")
+    assert "/static/style.css?v=45" in _read("templates/work.html")
+    assert "/static/esm/main_chat.js?v=2.7" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════

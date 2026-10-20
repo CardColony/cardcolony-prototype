@@ -1,4 +1,4 @@
-/* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
+﻿/* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
  * 迭代四 F2③：IIFE → ES module（module 作用域＝原闭包隔离）；escapeHtml 收编 esm/util.js；
  * API 经 esm/api.js 静态 import；跨文件（RenderNav）由 main.js 装配序保证。
  * [阶段2 A2.3 2026-10-17] canvas→workspace 的边**已彻底拆除**：点卡不再调 Workspace.open，
@@ -19,13 +19,13 @@
  *   V10 重绘入口唯一——改 state 后必经 renderAll（全量）/reflowAll（不重建）/
  *      applyViewState（视图变换），不存在改 state 后自行重绘或漏重绘的路径。
  */
-import { API } from "./esm/api.js?v=36";
+import { API } from "./esm/api.js?v=37";
 import { escapeHtml } from "./esm/util.js?v=30";
 // 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=34";
-import { notify } from "./esm/api.js?v=36";
+import { RenderNav } from "./esm/nav_system.js?v=35";
+import { notify } from "./esm/api.js?v=37";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
 // 卡片 → 最近一条活动事件（renderCanvas 每轮重建，供 createNode 查）

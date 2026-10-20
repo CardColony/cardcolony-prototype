@@ -521,6 +521,9 @@ def rebuild(work_id: str) -> dict[str, Any]:
     links: list[dict[str, Any]] = []
     for row in rows:
         card_id = row["card_id"]
+        # [角色机制 5710] 角色卡离树，不进工作画布（它在左栏单列/角色页里活）。
+        if str(row["card_type"] or "") == "role":
+            continue
         # 定论条目：一张卡解析一次，下面 count 与 last 共用
         # 定论可能落在两个字段里：老卡把整篇正文塞进 status_block（含 ## 定论 段），
         # 新卡走三列模型，定论在独立的 rulings 列。两处都扫，否则换一种写法就看不见。
