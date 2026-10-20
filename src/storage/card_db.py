@@ -71,6 +71,11 @@ _CARD_COLUMNS: tuple[str, ...] = (
     # row_to_meta 都走本清单）——不进则写了不落、读了不带，驱动器/工具/权限全挂。
     "auto_mode", "goal", "goal_state", "goal_rounds", "goal_await_children",
     "goal_await_wakes",
+    # [goal 域 2026-10-20 · 照抄 dsh-goal] 目标的事件溯源投影列。权威是
+    # ``events/<card>.jsonl`` 里的 goal/change 事件；这几列只是供画布/旧读方
+    # 直接查的缓存（原版 sessionProjections 的 goal 单元同一定位）。
+    "goal_id", "goal_revision", "goal_max_rounds", "goal_created_at",
+    "goal_updated_at", "goal_blocked_code", "goal_blocked_message",
 )
 
 # 以小 JSON 文本存的列（短列表 / 小字典，不拆表——方案 §1.3.4）
@@ -489,6 +494,14 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     # [6702 移植 2026-10-17] 等子卡活锁兜底。唤醒计数器带 DEFAULT 0（存量行取
     # 0＝「没被唤醒过」），与 goal_rounds 同口径。
     ("cards", "goal_await_wakes", "goal_await_wakes INTEGER DEFAULT 0"),
+    # [goal 域 2026-10-20] 事件溯源的投影列（见 _CARD_COLUMNS 处说明）。
+    ("cards", "goal_id", "goal_id TEXT DEFAULT ''"),
+    ("cards", "goal_revision", "goal_revision INTEGER DEFAULT 0"),
+    ("cards", "goal_max_rounds", "goal_max_rounds INTEGER DEFAULT 0"),
+    ("cards", "goal_created_at", "goal_created_at INTEGER DEFAULT 0"),
+    ("cards", "goal_updated_at", "goal_updated_at INTEGER DEFAULT 0"),
+    ("cards", "goal_blocked_code", "goal_blocked_code TEXT DEFAULT ''"),
+    ("cards", "goal_blocked_message", "goal_blocked_message TEXT DEFAULT ''"),
 )
 
 

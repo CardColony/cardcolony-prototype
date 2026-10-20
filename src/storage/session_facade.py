@@ -618,7 +618,8 @@ def _block_event_type(actor: str, hint: str, tool_calls: Any = None) -> str:
 async def emit_message_event(work_id: str, card_id: str, ev_type: str,
                              content: str, run_id: str = "",
                              round_: int = 0,
-                             model: str = "", end: str = "") -> None:
+                             model: str = "", end: str = "",
+                             source: Any = None) -> None:
     """消息类事件落 events jsonl（**单一落点**）。
 
     [卡片底座第一步 2026-10-14] 卡间信不再写会话块（改落待处理收件箱），但其
@@ -638,6 +639,11 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
             data["model"] = str(model)
         if end:
             data["end"] = str(end)
+        # [goal 域 2026-10-20 · 照抄 dsh] 回合来源。续轮消息带
+        # {"kind":"goal","goalId","revision","round"}——这是 goal fold 里
+        # roundsStarted 的**唯一**推进依据（原版 GoalMessageSource）。
+        if source:
+            data["source"] = dict(source)
         await event_log.append(work_id, card_id, {
             "run_id": str(run_id or ""),
             "round": int(round_ or 0),
@@ -661,6 +667,7 @@ async def _emit_block_event(work_id: str, card_id: str,
         work_id, card_id, ev_type, blk.get("content", ""),
         run_id=str(blk.get("pair_id") or ""), round_=int(blk.get("turn") or 0),
         model=str(blk.get("model") or ""), end=str(blk.get("end") or ""),
+        source=blk.get("source"),
     )
 
 
@@ -701,7 +708,7 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
         init_seq = _last_human_in_turn(existing, turn)
         pair = block.get("pair") or (str(init_seq) if init_seq is not None else "unknown")
     now = session_store._now_iso()
-    return {
+    out = {
         "role": {"human": "user", "assistant": "assistant"}.get(actor, actor),
         "content": block.get("content", ""),
         "timestamp": now,
@@ -719,6 +726,12 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
         "ts": now,
         "format": "v2",
     }
+    # [goal 域 2026-10-20 · 照抄 dsh] 回合来源要跟着块走，否则 _emit_block_event
+    # 拿不到它，goal fold 也就无法把这一轮记进 roundsStarted（原版
+    # GoalMessageSource 随 user/message 事件一起落盘）。
+    if block.get("source"):
+        out["source"] = dict(block["source"])
+    return out
 
 
 async def _read_existing_locked(work_id: str, card_id: str,
