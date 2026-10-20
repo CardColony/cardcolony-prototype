@@ -571,6 +571,26 @@ async def ensure_goal_from_message(work_id: str, card_id: str, content: str) -> 
     goal = str(content or "").strip()
     if not goal:
         return False
+    # [goal 域 2026-10-20 · 单一写者] 目标只能由 GoalService 创建/arm——这里原来
+    # 直接 UPDATE goal/goal_state，绕开了事件溯源。改为走域服务：没有目标就
+    # create（自动 arm），已有目标就 resume（人发话＝显式续跑授权）。
+    try:
+        from ..goal.runtime import GoalError
+        from ..goal.service import get_service
+        from ..goal.types import CreateGoalRequest
+        _svc = get_service()
+        _cur = await _svc.get(work_id, card_id)
+        if _cur is None or _cur.phase == "complete":
+            await _svc.create(work_id, card_id, CreateGoalRequest(objective=goal))
+        else:
+            await _svc.resume(work_id, card_id, _cur.ref())
+        return True
+    except GoalError as exc:
+        logger.warning("[goal] 首条消息建目标失败 work=%s card=%s: %s", work_id, card_id, exc)
+        return False
+    except Exception as exc:  # noqa: BLE001 兜底
+        logger.warning("[goal] 首条消息建目标异常 work=%s card=%s: %s", work_id, card_id, exc)
+        return False
     try:
         # [等子卡活锁兜底 2026-10-17] 新目标＝新生命周期 ⇒ 空等重挂计数**归零**。
         # 语义口径（见 _AWAIT_RESUME_DEADLOCK_GIVEUP）：计数是「连续空等重挂」次数，

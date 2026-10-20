@@ -101,6 +101,21 @@ app = FastAPI(title="推演agent画布 v1")
 
 startup_init()
 
+
+@app.on_event("startup")
+async def _start_goal_driver() -> None:
+    """[goal 域 2026-10-20 · 照抄 dsh-goal] 装载续轮驱动。
+
+    原版是插件 ``apply``：订阅 ``agent/status`` 与 ``goal/changed``。我们这边
+    idle 事件由 ``routes._run_message`` 的 finally 报；这里补 goal/changed 监听。
+    activation 永不落盘 ⇒ 进程重启后全部 disarmed，必须人显式 /goal resume。
+    """
+    try:
+        from src.goal import driver as goal_driver
+        goal_driver.install()
+    except Exception as exc:  # noqa: BLE001 装载失败不阻断主服务
+        print(f"[startup] goal 驱动装载失败（不阻断）: {exc}", flush=True)
+
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)
 # [模型设置第二步 2026-10-12] 设置接口（供应商/模型/角色绑定 + 密钥 + 备份还原）
 from src.api.settings_api import router as settings_router  # noqa: E402

@@ -1186,6 +1186,17 @@ async def post_card_auto_resume(work_id: str, card_id: str):
     return {"resumed": True, "goal_state": auto_driver.GOAL_ACTIVE}
 
 
+# [goal 域 2026-10-20 · 照抄 dsh-command-goal] 人面 /goal 命令。
+# 语法：input 为空＝看状态；否则 clear / pause / resume / edit <objective> / <objective>。
+@router.post("/works/{work_id}/cards/{card_id}/goal")
+async def post_goal_command(work_id: str, card_id: str, req: dict):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    from ..goal import command as goal_command
+    result = await goal_command.execute_command(work_id, card_id, str((req or {}).get("input") or ""))
+    return result
+
+
 # [实时反馈 2026-10-02] 调用进度查询：纯展示层，前端轮询用。
 # 只读内存态，不进任何模型输入，不拦截任何调用——不是闸。
 @router.get("/works/{work_id}/cards/{card_id}/progress")
@@ -1310,7 +1321,8 @@ async def post_message_compat(card_id: str, req: PostMessageRequest):
 async def _run_message(work_id: str, card_id: str, content: str,
                        client_pair_id: Optional[str] = None,
                        append_user: bool = True,
-                       op: str = "") -> Any:
+                       op: str = "",
+                       source: Optional[dict[str, Any]] = None) -> Any:
     """完整 messages 链路，新旧路由共用。
 
     顺序：读卡 → 取历史 → 追加用户消息 → context_assembler 组装 →
@@ -1344,12 +1356,30 @@ async def _run_message(work_id: str, card_id: str, content: str,
     # no-op。取在互斥体之后：同卡重入被互斥体挡在前面，闸上不会出现同卡双取。
     await serial_gate.acquire(work_id, card_id)
     failed = False
+    # [goal 域 2026-10-20 · 照抄 dsh] 回合来源。工具权威判定（create/edit/pause/
+    # resume 必须直接人类回合；complete/blocked 允许当前 goal round）全靠它。
+    # 缺省＝人类回合（原版 ``Agent.followup()`` 省略 source 时解析为 user）。
+    from ..goal import authority as goal_authority
+    from ..goal import driver as goal_driver
+    turn_source = dict(source) if source else {"kind": "user"}
+    source_token = goal_authority.set_turn_source(turn_source)
+    if turn_source.get("kind") == "user":
+        # 人插话 ⇒ 自动轮让位（原版 agent/inbox/inserted 的 competingQueued）
+        goal_driver.notify_human_input(work_id, card_id)
+    outcome = "ok"
     try:
         result = await _run_message_inner(work_id, card_id, content, client_pair_id,
-                                          append_user=append_user, op=op)
+                                          append_user=append_user, op=op, source=turn_source)
+    except asyncio.CancelledError:
+        # 取消 ⇒ 已预留/已接纳的那一轮必须 pause 目标，绝不能自动重启（原版
+        # turn/end reason=aborted 的 idle 检查点语义）。
+        outcome = "aborted"
+        failed = True
+        raise
     except BaseException:
-        # 异常＝回合未正常收口（dsh 口径：异常结果**不自动重试**）⇒ 本卡不再起轮，
+        # 异常＝回合未正常收口（dsh 口径：异常结果**不自动重试**）⇒ 撤销续轮，
         # 执行锁必须在 finally 里放掉，否则串行队列全部饿死。
+        outcome = "error"
         failed = True
         raise
     finally:
@@ -1360,6 +1390,15 @@ async def _run_message(work_id: str, card_id: str, content: str,
         event_stream.reset_stream_context(_stream_ctx_token)
         if failed:
             serial_gate.release(work_id, card_id)
+        # [goal 域 2026-10-20 · 照抄 dsh] **idle 事件**：成功/异常/取消三条路径
+        # 都报一次。这就是「自动模式会不断唤醒」的落点——不再依赖回合尾部的
+        # 顺序调用（原版 ctx.on('agent/status', idle)）。
+        try:
+            goal_driver.notify_idle(work_id, card_id, outcome)
+            goal_driver.notify_parent_idle(work_id, card_id)
+        except Exception as exc:  # noqa: BLE001 驱动异常不影响回合返回
+            logger.warning("[goal] idle 通知失败 card=%s: %s", card_id, exc)
+        goal_authority.reset_turn_source(source_token)
     # ---- [自动模式 2026-10-17 · 回灌 5700 块0.3 · 红线 5] 驱动检查排在
     # **互斥体释放之后** ----
     # 结构＝「取结果 → finally 释放 → 后置 → 返回」（编排语义逐字不变：返回同一个
@@ -1375,23 +1414,17 @@ async def _run_message(work_id: str, card_id: str, content: str,
         keep = False
     if not keep:
         serial_gate.release(work_id, card_id)
-    try:
-        # [阶段2.7 · TC3 空转兜底] 本轮工具调用次数取自 finish 响应体的
-        # tool_events（自动模式的空转判定原料）；非 dict 形态（错误响应）⇒
-        # None＝不判定。
-        _tool_n = None
-        if isinstance(result, dict):
-            _tool_n = len(result.get("tool_events") or [])
-        await auto_driver.after_turn(work_id, card_id, tool_n=_tool_n)
-    except Exception as exc:  # noqa: BLE001 驱动器异常不影响本回合返回
-        logger.error("[auto] 驱动检查异常 work=%s card=%s: %s", work_id, card_id, exc)
+    # [goal 域 2026-10-20] 旧 ``auto_driver.after_turn`` 的续轮职责已整体移交
+    # ``src/goal/driver.py``（idle 事件驱动，见上方 finally）；父卡唤醒改由
+    # ``notify_parent_idle`` 承担。此处不再调 after_turn——两套并存会双起点火。
     return result
 
 
 async def _run_message_inner(work_id: str, card_id: str, content: str,
                              client_pair_id: Optional[str] = None,
                              append_user: bool = True,
-                             op: str = "") -> Any:
+                             op: str = "",
+                             source: Optional[dict[str, Any]] = None) -> Any:
     """_run_message 的实际链路体（外层只负责逐字流 contextvar 的设/还原）。
 
     [T-0009 拆分] 本函数**只做三件事**：① 装配（读卡/pair 去重/上下文）
@@ -1412,6 +1445,20 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
+
+    # [goal 域 2026-10-20 · 照抄 dsh pre-step] 续轮回合进入模型**之前**再校验一次
+    # 预留是否仍然有效（goal id / revision / round 未变、未 stale、未 cancelled）。
+    # 失效 ⇒ 本轮直接拒（不调模型、不落 user 消息），并把预留丢掉让驱动重排。
+    if source and source.get("kind") == "goal":
+        from ..goal import driver as _goal_driver
+        _ok_res, _why = _goal_driver.validate_reservation(work_id, card_id, source)
+        if not _ok_res:
+            _goal_driver.drop_attempt(work_id, card_id)
+            logger.warning("[goal] 续轮预留失效，拒绝本轮 card=%s reason=%s", card_id, _why)
+            event_stream.emit(work_id, card_id, "goal_round_rejected",
+                              {"round": source.get("round"), "reason": _why})
+            _goal_driver.request_drive(work_id, card_id)
+            return _err(409, f"续轮预留失效（{_why}），本轮不执行")
 
     # a0. [T10-1-1] 读取历史之前生成本次请求标识（UUID4 十六进制串），打点含标识与卡号
     pair_id = uuid.uuid4().hex
@@ -1460,9 +1507,17 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
         # 进收件方档案（卡间册 §4.4.4「本方案唯一改既有函数签名处」；默认 True
         # ⇒ 既有调用方行为逐字不变）。重发分支（上方 pair 复用）本就不落盘。
         if append_user:
-            await session_facade.append(work_id, card_id,
-                                        {"role": "user", "content": content,
-                                         "pair_id": pair_id})
+            _block: dict[str, Any] = {"role": "user", "content": content, "pair_id": pair_id}
+            if source and source.get("kind") == "goal":
+                # 续轮消息：带 GoalMessageSource，这是 roundsStarted 的唯一推进口
+                _block["source"] = dict(source)
+            await session_facade.append(work_id, card_id, _block)
+            if source and source.get("kind") == "goal":
+                from ..goal import driver as _goal_driver
+                from ..goal.service import get_service as _goal_service
+                _goal_driver.mark_admitted(work_id, card_id, source)
+                # roundsStarted 在这一刻推进（fold），投影要同步刷新（见该方法说明）
+                await _goal_service().refresh_projection(work_id, card_id)
             logger.info("[T10] 用户消息落盘 pair_id=%s card=%s", pair_id, card_id)
 
     # [信息流 Task3] run_start：清该卡 journal 重放（A45）＋过程卡秒现（V1）。
