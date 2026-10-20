@@ -3412,11 +3412,23 @@ async def _h_raise_alarm(work_id: str, current_id: str,
     if not title:
         return err("validation", "title 不能为空")
     severity = str(arguments.get("severity") or "warn").strip().lower()
+    raw_opts = arguments.get("options") or []
+    if isinstance(raw_opts, str):
+        raw_opts = [raw_opts]
     rec = await role_room.raise_alarm(
         work_id, current_id, severity, title, detail,
-        supersedes=str(arguments.get("supersedes") or ""))
+        supersedes=str(arguments.get("supersedes") or ""),
+        question=str(arguments.get("question") or ""),
+        options=[str(x) for x in raw_opts],
+        recommendation=str(arguments.get("recommendation") or ""),
+        default_action=str(arguments.get("default_action") or ""),
+        deadline=str(arguments.get("deadline") or ""))
+    if rec.get("error"):
+        return err("validation", str(rec["error"]))
     return {"alarm_id": rec["id"], "severity": rec["severity"],
-            "title": rec["title"], "supersedes": rec.get("supersedes", "")}
+            "title": rec["title"], "supersedes": rec.get("supersedes", ""),
+            "question": rec.get("question", ""),
+            "default_action": rec.get("default_action", "")}
 
 
 async def _h_correct_alarm(work_id: str, current_id: str,
@@ -3742,9 +3754,15 @@ TOOL_REGISTRY["raise_alarm"] = ToolDef(
                 "severity": {"type": "string", "enum": ["info", "warn", "critical"]},
                 "title": {"type": "string"},
                 "detail": {"type": "string"},
+                "question": {"type": "string", "description": "要用户决定什么（不是技术问题复述）"},
+                "options": {"type": "array", "items": {"type": "string"},
+                            "description": "可选项（用户能理解的取舍）"},
+                "recommendation": {"type": "string", "description": "角色推荐哪个选项及理由"},
+                "default_action": {"type": "string", "description": "用户不回复时角色按什么默认动作执行"},
+                "deadline": {"type": "string", "description": "默认动作生效时间（可选）"},
                 "supersedes": {"type": "string"},
             },
-            "required": ["severity", "title"],
+            "required": ["severity", "title", "question", "default_action"],
         },
     },
     handler=_h_raise_alarm,

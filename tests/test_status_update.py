@@ -294,11 +294,11 @@ def test_frontend_version_stamps_bumped():
     [6702 移植 P8] workspace 56→57（autoResume 按钮）、style 40→41（仅升戳）。
     """
     assert "../stream.js?v=47" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=64" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=65" in _read("static/esm/main_chat.js")
     assert "./stream.js?v=47" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=4" in _read("static/workspace.js")
     assert "/static/style.css?v=45" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=3.1" in _read("templates/card.html")
+    assert "/static/esm/main_chat.js?v=3.2" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════

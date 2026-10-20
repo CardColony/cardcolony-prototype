@@ -2353,6 +2353,7 @@ body.page-chat .role-alarm-head .role-ack {
   border: 0; background: none; color: var(--dimmer, #8a8a8a);
   cursor: pointer; font-size: 11px;
 }
+body.page-chat .role-alarm-q { margin-top: 4px; font-weight: 600; color: #d8b84a; }
 body.page-chat .role-alarm-detail { margin-top: 3px; line-height: 1.5; color: var(--dimmer, #b0b0b0); }
 
 body.page-chat .role-create { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 14px; }

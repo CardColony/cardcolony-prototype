@@ -485,6 +485,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
               ${a.status === "open" ? `<button class="role-ack" data-id="${escapeHtml(a.id || "")}">已知</button>` : ""}
               ${a.status !== "corrected" ? `<button class="role-correct" data-id="${escapeHtml(a.id || "")}">更正</button>` : ""}
             </div>
+            ${a.question ? `<div class="role-alarm-q">要你决定：${escapeHtml(a.question)}</div>` : ""}
+            ${(a.options || []).length ? `<div class="role-ve">选项：${a.options.map(escapeHtml).join(" / ")}</div>` : ""}
+            ${a.recommendation ? `<div class="role-ve">推荐：${escapeHtml(a.recommendation)}</div>` : ""}
+            ${a.default_action ? `<div class="role-ve">你不回复，我按：${escapeHtml(a.default_action)}${a.deadline ? `（${escapeHtml(a.deadline)} 生效）` : ""}</div>` : ""}
             <div class="role-alarm-detail">${escapeHtml(a.detail || "")}</div>
             ${a.corrected_by ? `<div class="role-ve">已更正 → ${escapeHtml(a.corrected_by)}</div>` : ""}
           </div>`).join("")

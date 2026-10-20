@@ -328,9 +328,9 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        "stream.js": "47", "workspace.js": "64", "canvas.js": "75",
+        "stream.js": "47", "workspace.js": "65", "canvas.js": "75",
         "assembler.js": "36", "style.css": "45", "main.js": "73.2",
-        "main_chat.js": "3.1",
+        "main_chat.js": "3.2",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "4", "queue-dock.js": "1", "queue-store.js": "1",
         "chat-view.js": "3", "message-item.js": "1",

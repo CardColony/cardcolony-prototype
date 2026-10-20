@@ -713,13 +713,31 @@ async def list_verdicts(work_id: str, role_id: str,
 
 
 async def raise_alarm(work_id: str, role_id: str, severity: str, title: str,
-                      detail: str, supersedes: str = "") -> dict[str, Any]:
+                      detail: str, supersedes: str = "",
+                      question: str = "", options: Optional[list[str]] = None,
+                      recommendation: str = "", default_action: str = "",
+                      deadline: str = "") -> dict[str, Any]:
+    """报警＝**决策请求**：只给“只有用户能决定”的事，必须带问题与默认动作。
+
+    技术问题不进报警——角色应下指令/自己处理/让卡返工；把技术细节丢给不懂技术
+    的用户，等于角色没有负责。
+    """
+    q = str(question or "").strip()
+    default = str(default_action or "").strip()
+    if not q:
+        return {"error": "报警必须是决策请求：question 写清‘用户要决定什么’；技术问题请用指令"}
+    if not default:
+        return {"error": "报警必须带 default_action：用户不回复时角色按什么默认动作执行"}
     severity = str(severity or "warn").strip().lower()
     if severity not in ("info", "warn", "critical"):
         severity = "warn"
-    rec = await role_store.add_alarm(work_id, role_id, severity,
-                                     str(title or "").strip() or "角色警报",
-                                     str(detail or "").strip(), supersedes)
+    rec = await role_store.add_alarm(
+        work_id, role_id, severity,
+        str(title or "").strip() or "角色决策请求",
+        str(detail or "").strip(), supersedes,
+        question=q, options=[str(x) for x in (options or [])],
+        recommendation=str(recommendation or "").strip(),
+        default_action=default, deadline=str(deadline or "").strip())
     rec["role_title"] = str(_meta_of(work_id, role_id).get("title") or "")
     session_ops.ops_log("role_alarm", work_id, role_id, {
         "severity": severity, "title": rec["title"][:120],
