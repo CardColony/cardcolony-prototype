@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """卡片底座第一步 · 沿关系的数据访问与通信（V1–V5 验收网）。
 
 覆盖任务书验收标准：
@@ -195,4 +195,4 @@ def test_read_linked_tool_registered_and_readonly():
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel 两件，
     # 依赖关联线；通信线 relations→links 改名）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-11"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-13"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）

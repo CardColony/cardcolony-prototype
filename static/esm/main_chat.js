@@ -1,4 +1,4 @@
-/* esm/main_chat.js —— 对话页唯一入口。
+﻿/* esm/main_chat.js —— 对话页唯一入口。
  *
  * [阶段3 A3.3 2026-10-17] 双入口装配的**对话侧**：模块图 util → api → store →
  *   stream → workspace（workspace 内部再装配 nav_system / rule_panel）。
@@ -9,12 +9,12 @@
  * workspace.js 的消费点自带 `window.GetCanvasState &&` 空守卫。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=36";
+import { API } from "./api.js?v=37";
 import "./util.js?v=30";
 import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts } from "./theme.js?v=6";
 import { initModelBadge } from "./model_picker.js?v=2";
-import "../stream.js?v=42";
-import "../workspace.js?v=57";
+import "../stream.js?v=45";
+import "../workspace.js?v=60";
 
 window.API = API;   // 调试便利（非功能依赖；与 api.js 薄壳同属兼容层）
 

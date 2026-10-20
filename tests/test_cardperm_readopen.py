@@ -224,7 +224,8 @@ def _visible(card_meta: dict) -> set[str]:
     """
     pool = [n for n in card_tools.TOOL_SWITCH
             if n not in card_tools.OP_ONLY_TOOLS
-            and n not in card_tools.AUTO_ONLY_TOOLS]
+            and n not in card_tools.AUTO_ONLY_TOOLS
+            and n not in card_tools.ROLE_ONLY_TOOLS]
     tools = [{"name": n} for n in pool]
     cards = {"card_x": card_meta}
     return {t["name"] for t in
@@ -258,7 +259,7 @@ def test_no_permission_means_tool_invisible_not_just_denied():
     base = {"card_id": "card_x", "card_type": "sub_project", "perms": full}
 
     # 基线：全权限时每件工具都可见
-    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS, "全权限不该有工具被藏（两类非卡片内挂件除外）"  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除
+    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS - card_tools.ROLE_ONLY_TOOLS, "全权限不该有工具被藏（非卡片内挂件除外）"  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除；[角色机制5710] ROLE_ONLY 同
 
     # 逐个开关摘掉 → 对应工具必须从可见集合里消失
     for switch, tool_name in (
@@ -373,7 +374,7 @@ async def test_plan_switch_controls_toolface():
     """摘掉 plan 开关 ⇒ 思维链六件从工具面消失（不是只被拒）。"""
     full = policy.perms_for("rd_project", "sub_project")
     base = {"card_id": "card_x", "card_type": "sub_project", "perms": full}
-    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除
+    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS - card_tools.ROLE_ONLY_TOOLS  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除；[角色机制5710] ROLE_ONLY 同
 
     card = dict(base, perms=[p for p in full if p != "plan"])
     vis = _visible(card)
