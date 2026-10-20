@@ -1,4 +1,4 @@
-﻿/* esm/nav_render.js —— [左栏接线 步2] 行结构按定稿重写（样式定稿 v1+v2 全量落地）。
+/* esm/nav_render.js —— [左栏接线 步2] 行结构按定稿重写（样式定稿 v1+v2 全量落地）。
  *
  * 行骨架（卡行）：segs 线段层 ＋ 箭头(nav-chev, data-twist) ＋ 图标(nav-ico) ＋
  *                 标题(nav-ctitle) ＋ 行尾槽(nav-tail：时间/运行中转圈 二选一 ＋ ⋯)。
@@ -23,10 +23,10 @@
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=39";
+import { notify } from "./api.js?v=40";
 import { createRowModel } from "./row_model.js?v=30";
 import { createVirtualList } from "./nav_virtual.js?v=30";
-import { NAV_ROW_HEIGHT } from "./state_layers.js?v=30";
+import { NAV_ROW_HEIGHT } from "./state_layers.js?v=31";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
 import { projectAggregate, isProjectEmpty, cardInSnapshot } from "./nav_badge.js?v=30";
 // [左栏接线 步2] 行几何纯函数（微推进／图标列／树线段）
