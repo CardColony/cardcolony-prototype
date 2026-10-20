@@ -1216,7 +1216,11 @@ async def get_work_progress(work_id: str, card_id: str):
 class CreateRoleRequest(BaseModel):
     title: str
     charter: str
+    jurisdiction: Optional[dict[str, Any]] = None
     watch_card_ids: list[str] = Field(default_factory=list)
+    signals: list[str] = Field(default_factory=list)
+    speak_contract: Optional[dict[str, Any]] = None
+    escalation: Optional[dict[str, Any]] = None
 
 
 class RoleWatchRequest(BaseModel):
@@ -1224,12 +1228,29 @@ class RoleWatchRequest(BaseModel):
     action: str = "add"
 
 
+class RoleProfileRequest(BaseModel):
+    jurisdiction: Optional[dict[str, Any]] = None
+    watch_card_ids: Optional[list[str]] = None
+    signals: Optional[list[str]] = None
+    speak_contract: Optional[dict[str, Any]] = None
+    escalation: Optional[dict[str, Any]] = None
+    charter: Optional[str] = None
+
+
+class RoleDutyRequest(BaseModel):
+    state: str
+    note: str = ""
+
+
 @router.get("/works/{work_id}/roles")
 async def list_work_roles(work_id: str):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    return {"roles": [role_room.role_summary(work_id, str(m.get("card_id") or ""))
-                      for m in role_room.list_roles(work_id)]}
+    roles = []
+    for m in role_room.list_roles(work_id):
+        roles.append(await role_room.role_summary(
+            work_id, str(m.get("card_id") or "")))
+    return {"roles": roles}
 
 
 @router.post("/works/{work_id}/roles")
@@ -1241,8 +1262,13 @@ async def create_work_role(work_id: str, req: CreateRoleRequest):
     root_id = str(w.get("work_card_id") or "")
     cards = card_tools._collect_card_meta(work_id)
     res = await card_tools._h_create_role(work_id, root_id, {
-        "title": req.title, "charter": req.charter,
+        "title": req.title,
+        "charter": req.charter,
+        "jurisdiction": req.jurisdiction,
         "watch_card_ids": list(req.watch_card_ids or []),
+        "signals": list(req.signals or []),
+        "speak_contract": req.speak_contract,
+        "escalation": req.escalation,
     }, cards)
     if isinstance(res, dict) and res.get("ok") is False:
         err = res.get("error") or {}
@@ -1259,7 +1285,47 @@ async def get_work_role(work_id: str, role_id: str):
         return _err(404, f"卡片不存在: {role_id}")
     if str(meta.get("card_type") or "") != "role":
         return _err(400, f"{role_id} 不是角色卡")
-    return role_room.role_summary(work_id, role_id)
+    return await role_room.role_summary(work_id, role_id)
+
+
+@router.patch("/works/{work_id}/roles/{role_id}")
+async def patch_work_role(work_id: str, role_id: str, req: RoleProfileRequest):
+    """根卡/用户更新角色档案（管辖域/关注信号/发言契约/升级线/职责书）。"""
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    root_id = str(w.get("work_card_id") or "")
+    args: dict[str, Any] = {"role_card_id": role_id}
+    for key in ("jurisdiction", "speak_contract", "escalation", "charter"):
+        val = getattr(req, key)
+        if val is not None:
+            args[key] = val
+    if req.watch_card_ids is not None:
+        args["watch_card_ids"] = list(req.watch_card_ids)
+    if req.signals is not None:
+        args["signals"] = list(req.signals)
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_update_role_profile(work_id, root_id, args, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "更新失败"))
+    return res
+
+
+@router.post("/works/{work_id}/roles/{role_id}/duty")
+async def set_work_role_duty(work_id: str, role_id: str, req: RoleDutyRequest):
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    root_id = str(w.get("work_card_id") or "")
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_set_role_duty(work_id, root_id, {
+        "role_card_id": role_id, "state": req.state, "note": req.note,
+    }, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "操作失败"))
+    return res
 
 
 @router.post("/works/{work_id}/roles/{role_id}/check")
@@ -1307,13 +1373,22 @@ async def list_work_alarms(work_id: str, status: str = "open"):
 async def ack_work_alarm(work_id: str, alarm_id: str):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    for it in role_room.list_alarms(work_id, status=""):
-        if str(it.get("id") or "") == alarm_id:
-            rid = str(it.get("role_id") or "")
-            ok = role_room.ack_alarm(work_id, rid, alarm_id)
-            return {"ok": bool(ok), "alarm_id": alarm_id}
-    return _err(404, f"警报不存在: {alarm_id}")
+    hits = [it for it in role_room.list_alarms(work_id, status="")
+            if str(it.get("id") or "") == alarm_id]
+    if not hits:
+        return _err(404, f"警报不存在: {alarm_id}")
+    ok = await role_room.ack_alarm(work_id, alarm_id)
+    return {"ok": bool(ok), "alarm_id": alarm_id}
 
+
+@router.post("/works/{work_id}/alarms/{alarm_id}/correct")
+async def correct_work_alarm(work_id: str, alarm_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    ok = await role_room.correct_alarm(work_id, alarm_id, "user")
+    if not ok:
+        return _err(404, f"警报不存在或不可更正: {alarm_id}")
+    return {"ok": True, "alarm_id": alarm_id, "status": "corrected"}
 
 
 # [phase8.5] 原文只读端点（给未来前端留口，不加写端点）

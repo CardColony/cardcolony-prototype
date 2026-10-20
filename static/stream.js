@@ -1,4 +1,4 @@
-/* stream.js - [会话渲染单源化 2026-10-15] 单一事件流 → 装配器 → 节点快照 → 快照渲染。
+﻿/* stream.js - [会话渲染单源化 2026-10-15] 单一事件流 → 装配器 → 节点快照 → 快照渲染。
  *            [对话流照抄 dsh 2026-10-16] 渲染层改为**按节点增量装配**（dsh A1/A2）。
  *
  *   用户裁定（任务书《会话渲染单源化》C1–C6 ＋《对话流照抄 dsh》T1/T2/T3/T4）：
@@ -38,7 +38,7 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=37";
+import { API } from "./esm/api.js?v=38";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";

@@ -1,13 +1,13 @@
-/* esm/nav_system.js —— 左栏导航系统（状态容器 + 渲染 + 交互 + 通知面板）。
+﻿/* esm/nav_system.js —— 左栏导航系统（状态容器 + 渲染 + 交互 + 通知面板）。
    [阶段1 A1.2 2026-10-17] 自 static/workspace.js 逐字搬运，零行为变更。
    装配：workspace.js 传入 workId / navTree / api / getCurrentCard / open / inspector。
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=37";
+import { notify } from "./api.js?v=38";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=30";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=33";
+import { createNavRenderer } from "./nav_render.js?v=34";
 import { createNavFind } from "./nav_find.js?v=30";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
