@@ -129,44 +129,6 @@ def project_status_task_message(data: dict[str, Any]) -> dict[str, Any]:
             "content": f"{STATUS_MARK}\n{str(data.get('content') or '')}"}
 
 
-# ============================================================
-# [引导实验 2026-10-19 · permexp] 注入口单变量实验
-#
-# 实验条件：思维链关闭、无规划、无步骤——只有「普通调用 + 本注入口」。
-# 唯一变量＝下面这段 GUIDE_TEXT。改它、重跑、看行为，别的一行不动。
-# ============================================================
-GUIDE_MARK = "〔这一轮只做一件事：组建团队〕"
-
-GUIDE_TEXT = """\
-不要写代码、不要探环境、不要写文档——那些是部门的事，不是你的。
-
-这一轮你只做一件事：把这件事分成 2-4 个部门，每个部门建一张子卡。
-每张子卡的 goal 只写两样：要它达成什么、它交付什么算完成。
-建完就结束本回合，等它们跑完。
-
-你自己只负责：定目标、派活、看结果、整合收口。"""
-
-
-def _build_guide_event(work_id: str, card_id: str) -> dict[str, Any] | None:
-    """引导注入（仅自动模式卡）。内容＝GUIDE_TEXT（实验变量）。
-
-    [A/B 对照 2026-10-19] 开关走环境变量 ``GUIDE_ENABLED``（缺省 1＝开）：
-    同一份代码，只切换"有没有这条注入"，其余条件全同——这样才归因得了。
-    """
-    import os
-    if os.environ.get("GUIDE_ENABLED", "1") != "1":
-        return None
-    try:
-        from ..storage import card_store
-        meta = card_store._meta_of(work_id, card_id) or {}
-    except Exception:  # noqa: BLE001 取不到＝不发，不阻断
-        return None
-    if not bool(meta.get("auto_mode")):
-        return None
-    return {"type": TYPE_INJECTION,
-            "data": {"source_kind": "guide", "content": GUIDE_TEXT}}
-
-
 def build_injection_events(work_id: str, card_id: str) -> list[dict[str, Any]]:
     """本卡当前可发的注入事件 ``[{"type", "data"}, ...]``（无来源 → 空列表）。
 
@@ -176,11 +138,6 @@ def build_injection_events(work_id: str, card_id: str) -> list[dict[str, Any]]:
     toolcard = toolcard_step_prompt.build_injection_data(work_id, card_id)
     if toolcard is not None:
         return [{"type": TYPE_INJECTION, "data": toolcard}]
-
-    # [引导实验 2026-10-19 · permexp] 实验期唯一注入：引导词（思维链关闭时也发）。
-    guide = _build_guide_event(work_id, card_id)
-    if guide is not None:
-        return [guide]
 
     # [纯单模型 2026-10-17] 关链：165 区（固定总领＋当前步骤）一律不发
     from ..thinkchain import enabled as _tc_enabled
@@ -203,21 +160,13 @@ def project_message(ev_type: str, data: dict[str, Any]) -> dict[str, Any]:
     if ev_type == TYPE_PREAMBLE:
         body = thinkchain_step_region.render_preamble(data)
         mark = PREAMBLE_MARK
-    elif kind == "guide":
-        # [引导实验 2026-10-19] 引导词原样投影（内容即实验变量）
-        body = str(data.get("content") or "")
-        mark = GUIDE_MARK
     elif kind == "toolcard":
         body = toolcard_step_prompt.render_injection(data)
         mark = INJECTION_MARK
     else:
         body = thinkchain_step_region.render_injection(data)
         mark = INJECTION_MARK
-    # [引导实验 2026-10-19] 引导词用 **user** 角色：assistant 角色的注入会被模型
-    # 当成「我自己说过的话」（独白），不是「对我的要求」——实测它能原样复述
-    # 引导词却不照做。其余注入（思维链/工具卡）仍走 assistant 自述口径。
-    role = "user" if kind == "guide" else INJECTION_ROLE
-    return {"role": role, "content": f"{mark}\n{body}"}
+    return {"role": INJECTION_ROLE, "content": f"{mark}\n{body}"}
 
 
 def injection_key(ev_type: str, data: dict[str, Any]) -> str:

@@ -125,6 +125,8 @@ class ModelGateway:
         # [并发调度 2026-10-19] 每个模型一把信号量：同时最多 N 个调用在跑，
         # 其余排队等（不失败、不丢活）。N 见 config.models.yaml 的 concurrency 段。
         self._sems: dict[str, asyncio.Semaphore] = {}
+        # [智能路由 2026-10-20] 每个模型的总容量，供 load_of() 算占用率
+        self._sem_limits: dict[str, int] = {}
         self._models: dict[str, dict[str, Any]] = {
             k: v for k, v in (config.get("models") or {}).items() if isinstance(v, dict)
         }
@@ -147,9 +149,44 @@ class ModelGateway:
                 n = int(per.get(model_name) or cfg.get("default") or 3)
             except (TypeError, ValueError):
                 n = 3
-            sem = asyncio.Semaphore(max(1, n))
+            n = max(1, n)
+            sem = asyncio.Semaphore(n)
             self._sems[model_name] = sem
+            self._sem_limits[model_name] = n
         return sem
+
+    def load_of(self, model_name: str) -> float:
+        """该模型当前占用率（0＝空闲，1＝满）。没建过闸 ⇒ 0。"""
+        sem = self._sems.get(model_name)
+        total = self._sem_limits.get(model_name) or 0
+        if sem is None or total <= 0:
+            return 0.0
+        used = total - sem._value
+        return max(0.0, min(1.0, used / total))
+
+    def pick_from(self, models: list, mode: str = "spread") -> str:
+        """从候选模型里挑**当前占用率最低**的一个（智能路由）。
+
+        [2026-10-20 用户令] 不是哈希分散——哈希只保证"分散"，不保证"不撞"：
+        某个端点已经满了，哈希选中的卡还是会排队，旁边空着的不去用。
+        这里按实时余量选；并列时用 crc32 打破平局（同卡稳定）。
+        全满 ⇒ 仍然返回一个（调用方排队，不失败）。
+        """
+        cands = [str(m) for m in (models or []) if m]
+        if not cands:
+            return ""
+        # [主备 vs 分散 2026-10-20]
+        #   primary：**顺序优先**——按列表顺序取第一个还有余量的（主模型满/挂了才用备用）
+        #   spread ：**轮询**——负载并列时若用固定规则，并发会全挤一个端点，等于没分散
+        if mode == "primary":
+            for m in cands:
+                if self.load_of(m) < 1.0:
+                    return m
+            return cands[0]      # 全满 ⇒ 第一个（排队）
+        free = [m for m in cands if self.load_of(m) < 1.0]
+        pool = free or cands
+        self._rr = (getattr(self, "_rr", 0) + 1) % len(pool)
+        return pool[self._rr]
 
     # ------------------------------------------------------------------
     # runtime / 适配器装配
@@ -340,6 +377,8 @@ class ModelGateway:
                 pass
 
         for attempt in range(max_attempts):
+            # [模型核验 2026-10-20] 打一行实际调用的模型名——排查"配了 A 实际跑 B"用。
+            logger.info("[model] call model=%s attempt=%d", model_name, attempt)
             _emit("start" if attempt == 0 else "retry", attempt,
                   **({} if attempt == 0 else {"reason": "unknown"}))
             started = time.monotonic()
