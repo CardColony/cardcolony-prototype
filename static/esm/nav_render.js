@@ -663,7 +663,48 @@ export function createNavRenderer(deps) {
     return vl.reslice();
   }
 
+  /* [切卡加速 2026-10-20] 左栏快照的会话级缓存。
+     问题：画布 ⇄ 对话是**整页跳转**（location.assign），每跳一次 JS 世界重建、
+     左栏要从零拉 /api/nav + /api/nav/version 再渲染——用户感受就是「切来切去」。
+     做法：把上次的快照按版本号存进 sessionStorage，跳转后**先渲染缓存**（零网络），
+     网络回来照常覆盖（版本没变时 render 是幂等的，DOM 复用，不闪）。 */
+  const NAV_CACHE_KEY = "nav.snap.v1";
+
+  function readNavCache() {
+    try {
+      const raw = window.sessionStorage.getItem(NAV_CACHE_KEY);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      if (!o || !o.data || !Array.isArray(o.data.projects)) return null;
+      return o;
+    } catch (e) { return null; }
+  }
+
+  function writeNavCache(data, ver) {
+    try {
+      window.sessionStorage.setItem(NAV_CACHE_KEY,
+        JSON.stringify({ data, ver: ver || null, at: Date.now() }));
+    } catch (e) { /* 配额/隐私模式：缓存失败零影响 */ }
+  }
+
+  let cacheApplied = false;
+
   async function refresh() {
+    // ① 首帧：有缓存就先出左栏，不等网络（跳转后左栏立刻有内容）
+    if (!cacheApplied && appliedFor === "") {
+      cacheApplied = true;
+      const cached = readNavCache();
+      if (cached) {
+        try {
+          store.snapshot.set(cached.data);
+          if (cached.ver) store.snapshot.setVersion(cached.ver.version, cached.ver.by_work);
+          applyDefaultFold();
+          snapshotRootsWithOrphans(workId);
+          render();
+        } catch (e) { /* 缓存坏了大不了等网络，零阻断 */ }
+      }
+    }
+    // ② 正常拉取（权威数据，覆盖缓存）
     let data = null;
     try {
       const [d, v] = await Promise.all([
@@ -674,6 +715,7 @@ export function createNavRenderer(deps) {
       if (data) {
         store.snapshot.set(data);
         if (v) store.snapshot.setVersion(v.version, v.by_work);
+        writeNavCache(data, v);
       }
     } catch (e) {
       return;   // toast 已由 api.js 处理；导航失败不影响画布与对话
