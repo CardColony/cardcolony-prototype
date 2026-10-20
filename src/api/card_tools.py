@@ -51,7 +51,7 @@ from ..storage import event_log, session_facade, session_ops
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 
 from ..goal import tools as goal_tools
-from . import card_msg, context_regions, event_stream, role_room
+from . import card_msg, context_regions, credential_guard, event_stream, role_room
 from ..toolcard import driver as toolcard_driver
 from ..toolcard import script_loader as toolcard_script_loader
 from ..toolcard import step_prompt as toolcard_step_prompt
@@ -2006,6 +2006,25 @@ _EXEC_TIMEOUT_SECONDS = 120.0
 _EXEC_DRAIN_TIMEOUT_SECONDS = 2.0
 
 
+def _log_exec_guard(action: str, *, hits: int = 0, names: list[str] | None = None,
+                    shell_cmd: str | None = None, argv: list[str] | None = None) -> None:
+    """[凭证保护 2026-10-20] 凭证闸留痕：拒绝/脱敏各记一条（与权限判定同通道）。"""
+    prompt_log.append_perm_log({
+        "fn": "exec_credential_guard",
+        "action": action,
+        "hits": int(hits),
+        "names": list(names or []),
+        "cmd_head": (shell_cmd or " ".join(argv or []))[:200],
+    })
+
+
+def _credential_deny_message(names: list[str], tool: str) -> str:
+    """静态闸的拒绝文案：说清为什么、并给出不改判据的替代做法。"""
+    return (f"拒绝执行：{tool} 的入参里出现凭证类文件名 {names}。"
+            "凭证文件的内容不得经 exec 类工具读取（与 read_file/search_files 同一份黑名单）；"
+            "确需确认某个配置项时，请查非凭证文件（如 .env.example）或向用户索取。")
+
+
 def _clip_output(data: bytes) -> tuple[str, bool]:
     """按**字节**截断到 50KB 再解码（utf-8 replace），返回 (文本, 是否截断)。"""
     total = len(data)
@@ -2110,6 +2129,19 @@ async def _run_subprocess(
 
     stdout, cut_out = _clip_output(out or b"")
     stderr, cut_err = _clip_output(e or b"")
+    # [凭证保护 2026-10-20] 执行后值闸：返回值里出现凭证值就替换成 REDACTED。
+    # **这是安全边界**（静态闸只挡直读，拼接/编码绕得过；值闸只认"明文相等"）。
+    # 走 to_thread：首次采集要扫 BASE_DIR 下的凭证文件名，不冻住事件循环。
+    stdout, n_out = await asyncio.to_thread(credential_guard.redact_output, stdout)
+    stderr, n_err = await asyncio.to_thread(credential_guard.redact_output, stderr)
+    hits = int(n_out) + int(n_err)
+    if hits:
+        note = f"\n…（输出中 {hits} 处凭证值已脱敏）"
+        if stdout:
+            stdout += note
+        else:
+            stderr += note
+        _log_exec_guard("redact", hits=hits, shell_cmd=shell_cmd, argv=argv)
     return {
         "exit_code": int(proc.returncode or 0),
         "stdout": stdout,
@@ -2125,6 +2157,11 @@ async def _h_bash(work_id: str, current_id: str,
     command = str(arguments.get("command") or "").strip()
     if not command:
         return err("validation", "command 不能为空")
+    # [凭证保护 2026-10-20] 执行前静态闸：命令里直接点名凭证文件 ⇒ 拒绝执行。
+    refs = credential_guard.find_credential_refs(command)
+    if refs:
+        _log_exec_guard("deny", names=refs, shell_cmd=command)
+        return err("denied", _credential_deny_message(refs, "bash"))
     return await _run_subprocess(shell_cmd=command)
 
 
@@ -2136,6 +2173,11 @@ async def _h_python(work_id: str, current_id: str,
     code = str(arguments.get("code") or "")
     if not code.strip():
         return err("validation", "code 不能为空")
+    # [凭证保护 2026-10-20] 执行前静态闸：代码里直接点名凭证文件 ⇒ 拒绝执行。
+    refs = credential_guard.find_credential_refs(code)
+    if refs:
+        _log_exec_guard("deny", names=refs, argv=[code])
+        return err("denied", _credential_deny_message(refs, "python"))
     tmp_path = ""
     try:
         try:
