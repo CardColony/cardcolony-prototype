@@ -53,7 +53,7 @@ D:\AI_station\推演agent\.venv\Scripts\python.exe verify\5713\channel_walk.py ^
 | `A_sent_ask` | 卡间消息里有一条 `msg_ask` 从 A → B |
 | `B_answered` | 有一条 `msg_answer` 从 B → A |
 | `answer_reply_to_matches_ask` | 应答的头行 `reply_to` 正是 A 那条询问（从事件流原文核，不从推断） |
-| `B_self_answered_wrote_status` | B 自己的现状块里写了它发的 `msg_answer`（是它自己答的，不是系统代答） |
+| `B_self_answered_wrote_status` | B 自己发的应答（不是系统代答）：B 现状块里落了**本次应答的事实锚点**——`msg_answer` 原文 / 应答自己的 msg_id / 被应答的询问 id，三者有其一即成立（判定里记 `B_self_answered_anchor` 备查）。原实现只找 ASCII 关键词，模型用中文写「回发应答」并抄上应答 msg_id 就误报 false（5713 三跑误报 2 次，2026-10-20 改为事实锚点） |
 | `A_wrote_evidence_in_status` | A 收口时把四段结果写进了自己的现状块 |
 
 ## 四、清场
