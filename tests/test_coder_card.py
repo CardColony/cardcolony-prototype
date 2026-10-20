@@ -92,7 +92,7 @@ def test_toolset_fingerprints_and_switch_bindings():
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-15"  # [自动模式块0.4] tc-8→tc-9
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"  # [自动模式块0.4] tc-8→tc-9
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
     assert prompts.BASE_PROMPT_VERSION == "t22-1"

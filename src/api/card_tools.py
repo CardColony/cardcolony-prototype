@@ -202,6 +202,7 @@ TOOL_SWITCH: dict[str, str] = {
     "role_watch_cards": policy.SWITCH_LINK,
     "update_role_profile": policy.SWITCH_CREATE_CHILD,
     "role_set_duty": policy.SWITCH_CREATE_CHILD,
+    "list_roles": policy.SWITCH_READ,
     "update_shadow": policy.SWITCH_SHADOW_WRITE,
     "list_manuscript": policy.SWITCH_MANUSCRIPT,
     "read_manuscript": policy.SWITCH_MANUSCRIPT,
@@ -263,7 +264,7 @@ TOOL_SWITCH: dict[str, str] = {
 #   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
 #   「注册表工具集/schema 变更」（T12-R3 纪律）。
 #   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
-TOOL_TABLE_VERSION = "tools-tc-15"
+TOOL_TABLE_VERSION = "tools-tc-16"
 
 
 # ============================================================
@@ -3594,15 +3595,57 @@ TOOL_REGISTRY["verify_directive"] = ToolDef(
 )
 
 
+async def _h_list_roles(work_id: str, current_id: str,
+                        arguments: dict[str, Any],
+                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """根卡组阁前先看已有角色/责任域，避免重复组阁。"""
+    root_id = work_store.work_card_id_of(work_id)
+    if not root_id or current_id != root_id:
+        return err("denied", "只有项目根卡可以查看角色清单")
+    out: list[dict[str, Any]] = []
+    for m in role_room.list_roles(work_id):
+        rid = str(m.get("card_id") or "")
+        try:
+            s = await role_room.role_summary(work_id, rid)
+        except Exception:  # noqa: BLE001
+            continue
+        jur = s.get("jurisdiction") or {}
+        watch = s.get("watch") or {}
+        out.append({
+            "role_card_id": rid,
+            "title": s.get("title") or "",
+            "domain": jur.get("domain") or "",
+            "statement": jur.get("statement") or "",
+            "watch_cards": [w.get("card_id") for w in (watch.get("cards") or [])],
+            "signals": watch.get("signals") or [],
+            "duty": (s.get("duty") or {}).get("state") or "active",
+            "open_directives": len(s.get("open_directives") or []),
+            "open_alarms": len(s.get("open_alarms") or []),
+        })
+    return {"roles": out}
+
+
+TOOL_REGISTRY["list_roles"] = ToolDef(
+    schema={
+        "name": "list_roles",
+        "description": (
+            "（根卡专用）列出项目已有角色与责任域：角色 id、标题、"
+            "jurisdiction、关注卡、信号、值班态、未验收指令/未处理警报。"
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    handler=_h_list_roles,
+    readonly=True,
+)
+
+
 TOOL_REGISTRY["create_role"] = ToolDef(
     schema={
         "name": "create_role",
         "description": (
-            "（根卡专用）**遇到持续责任时的第一动作**：创建一张离树的角色卡，"
-            "写结构化档案与职责书。角色卡不挂任务树、不干活；它关注你指定的"
-            "工作卡，命中关注信号时收到同步，能下指令、验收、发决策请求。"
-            "一次性具体任务用 create_card/create_coder_card；持续责任（一致性/"
-            "安全/体验/架构约束）先组阁，不要自己读源码/修 bug。"
+            "（根卡专用）创建一张离树的角色卡，写结构化档案与职责书。"
+            "角色卡不挂任务树、不干活；它关注指定的工作卡，命中关注信号时"
+            "收到同步，能下指令、验收、发决策请求。"
         ),
         "parameters": {
             "type": "object",
@@ -4011,7 +4054,7 @@ def _filter_by_card_type(
 # ============================================================
 ROOT_ONLY_TOOLS: frozenset[str] = frozenset(
     {"draft_rule_edit", "create_role", "role_watch_cards",
-     "update_role_profile", "role_set_duty"})
+     "update_role_profile", "role_set_duty", "list_roles"})
 
 
 def _filter_root_only(

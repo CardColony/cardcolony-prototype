@@ -143,7 +143,7 @@ async def test_role_toolface_is_narrow_and_lifecycle_is_root_only(work):
 
     root_tools = {t["name"] for t in card_tools.build_tool_schemas(
         card_id=root, work_id=wid, cards=cards)}
-    assert {"create_role", "role_watch_cards",
+    assert {"create_role", "role_watch_cards", "list_roles",
             "update_role_profile", "role_set_duty"} <= root_tools
 
 
@@ -551,12 +551,42 @@ async def test_overdue_directive_blocks_completion(work):
     assert summary["open_directives"] == []
 
 
-def test_root_prompt_knows_how_to_staff_roles():
-    """根卡不是只拿到 create_role 工具：它要在职责说明里知道何时/如何组阁。"""
-    root = prompts.select_base_prompt({"card_type": "project", "auto_mode": 0})
-    assert "根卡的第一动作：组阁" in root
-    assert "create_role" in root and "角色卡不是作业卡" in root
-    child = prompts.select_base_prompt({"card_type": "sub_project", "auto_mode": 0})
-    assert "根卡的第一动作：组阁" not in child
+def test_root_prompt_has_no_role_guidance():
+    """冻结版：根卡 prompt 不写角色行为引导，角色信息只在工具/角色自身说明。"""
+    assert prompts.select_base_prompt(
+        {"card_type": "project", "auto_mode": 0}) == prompts.BASE_PROMPT
+    assert prompts.select_base_prompt(
+        {"card_type": "project", "auto_mode": 1}) == prompts.AUTO_BASE_PROMPT
+    assert prompts.select_base_prompt(
+        {"card_type": "sub_project", "auto_mode": 0}) == prompts.BASE_PROMPT
     role = prompts.select_base_prompt({"card_type": "role", "auto_mode": 0})
-    assert "根卡的第一动作：组阁" not in role
+    assert role == prompts.ROLE_CARD_BASE_PROMPT
+    assert "角色卡" in role
+
+
+async def test_role_info_lives_in_tools_not_root_prompt(work):
+    """根卡工具面有角色工具与说明；根卡 prompt 不规定组阁动作。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    cards = card_tools._collect_card_meta(wid)
+    tools = {t["name"]: t for t in card_tools.build_tool_schemas(
+        card_id=root, work_id=wid, cards=cards)}
+    for name in ("create_role", "list_roles", "role_watch_cards",
+                 "update_role_profile", "role_set_duty"):
+        assert name in tools, name
+    desc = tools["create_role"]["description"]
+    assert "角色卡" in desc and "不挂任务树" in desc
+    assert "第一动作" not in desc and "先组阁" not in desc
+
+
+async def test_root_can_list_roles_before_staffing(work):
+    """根卡组阁前可看已有角色/责任域，避免重复组阁。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk_child(wid, root, "甲")
+    rid = await _mk_role(wid, root, [a], title="时间口径守门人")
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(wid, root, "list_roles", {}, cards)
+    assert r["ok"] is True
+    roles = r["data"]["roles"]
+    assert roles and roles[0]["role_card_id"] == rid
+    assert roles[0]["domain"] == "timeline_contract"
+    assert roles[0]["watch_cards"] == [a]
