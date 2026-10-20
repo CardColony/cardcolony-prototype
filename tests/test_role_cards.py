@@ -367,3 +367,32 @@ async def test_role_turn_can_advise_and_alarm(work, monkeypatch):
     assert len(await card_db.list_pending(wid, a)) == 1
     alarms = role_room.list_alarms(wid, "open", rid)
     assert alarms and alarms[0]["title"] == "时间口径冲突"
+
+
+async def test_role_cannot_write_other_cards_even_by_direct_tool_call(work):
+    """防御纵深：edit 是树作用域开关；角色离树 ⇒ 只能写自己。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk_child(wid, root, "甲")
+    rid = await _mk_role(wid, root, [a])
+    cards = card_tools._collect_card_meta(wid)
+
+    r = await card_tools.execute_tool(wid, rid, "update_status", {
+        "card_id": a, "content": "角色越权改别人现状",
+    }, cards)
+    assert r["ok"] is False and r["error"]["code"] == "denied"
+
+    r = await card_tools.execute_tool(wid, rid, "append_ruling", {
+        "card_id": a, "text": "角色越权给别人立定论",
+    }, cards)
+    assert r["ok"] is False and r["error"]["code"] == "denied"
+
+    r = await card_tools.execute_tool(wid, rid, "edit_card", {
+        "card_id": a, "content": "## 使命\n越权",
+    }, cards)
+    assert r["ok"] is False and r["error"]["code"] == "denied"
+
+    # 写自己可以
+    r = await card_tools.execute_tool(wid, rid, "update_status", {
+        "content": "本轮巡检：无新增矛盾。",
+    }, cards)
+    assert r["ok"] is True
