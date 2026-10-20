@@ -40,11 +40,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import httpx
-import pytest
-from fastapi import FastAPI
-
-from src.api import model_service, routes
+from src.api import model_service
 from src.storage import event_log, session_facade
 
 # ---------------------------------------------------------------- 假网关
@@ -140,20 +136,8 @@ class ScriptedGateway:
 
 
 # ---------------------------------------------------------------- 夹具
-
-@pytest.fixture
-def app():
-    a = FastAPI()
-    a.include_router(routes.router)
-    return a
-
-
-@pytest.fixture
-async def client(app):
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as c:
-        yield c
+# [5715] ``app`` / ``client`` 两个夹具已上收到 ``tests/conftest.py``
+# （对话模块两张网共用一份，不各写一份）。
 
 
 def _types(items: list[dict[str, Any]]) -> list[str]:
