@@ -1,0 +1,166 @@
+[gate] 实际使用的解释器：D:\AI_station\推演agent\.venv\Scripts\python.exe
+[gate] 解释器来源：项目自己的 .venv：由本文件位置向上找到 D:\AI_station\推演agent
+[gate] 基线未过期：HEAD = faa5fddbbcdc
+[gate] 用现成报告：D:\AI_station\推演agent\.worktrees\5713\verify\5713\_c22_gate\gate3_cleared.xml
+
+==============================================================================
+【新增红】= 本次红 - 基线 known-red ：0 条  ← 非 0 即判本次改动有问题
+
+【已清红】= 基线 known-red - 本次红 ：1 条  ← 修好了
+  - tests/test_auto_await_explicit.py::test_a2_explicit_works_without_any_child
+      AssertionError     tests/test_auto_await_explicit.py:164 assert r["ok"] is True, r
+
+【剩余 known-red】                    ：75 条  ← 老账，不影响判定
+  = tests/test_auto_await_explicit.py::test_a_explicit_flag_and_resume_after_child_done
+      AssertionError     tests/test_auto_await_explicit.py:137 assert r["ok"] is True, r
+  = tests/test_auto_await_explicit.py::test_b2_work015_old_inference_would_have_hung
+      AssertionError     tests/test_auto_await_explicit.py:233 assert auto_driver.wake_verdict(wid, p) == auto_driver.WAKE_NONE
+  = tests/test_auto_await_explicit.py::test_b_work015_children_already_complete_still_resumes
+      AssertionError     tests/test_auto_await_explicit.py:203 assert r["ok"] is True, r
+  = tests/test_auto_await_explicit.py::test_c2_implicit_and_explicit_agree_when_child_active
+                         tests/test_auto_await_explicit.py:275 assert explicit_flag == 1
+  = tests/test_auto_await_explicit.py::test_c_implicit_inference_no_regression
+      AssertionError     tests/test_auto_await_explicit.py:253 assert _await_flag(wid, p) == 1, \
+  = tests/test_auto_await_explicit.py::test_d2_false_await_children_behaves_like_plain_pause
+      AssertionError     tests/test_auto_await_explicit.py:313 assert r["ok"] is True, r
+  = tests/test_auto_await_explicit.py::test_d_plain_pause_without_children_semantics_unchanged
+      AssertionError     tests/test_auto_await_explicit.py:294 assert r["ok"] is True, r
+  = tests/test_auto_await_explicit.py::test_e2_livelock_needs_explicit_redeclaration
+      AssertionError     tests/test_auto_await_explicit.py:389 assert _await_flag(wid, p) == 1, "重新显式声明 ? 再次置位（语义正确）"
+  = tests/test_auto_await_explicit.py::test_e3_user_stop_still_wins_over_explicit_flag
+      AssertionError     tests/test_auto_await_explicit.py:401 assert _await_flag(wid, p) == 1
+  = tests/test_auto_await_explicit.py::test_e_no_livelock_second_plause_is_not_rewoken
+      AssertionError     tests/test_auto_await_explicit.py:349 assert _await_flag(wid, p) == 1
+  = tests/test_auto_await_explicit.py::test_f2_schema_surface_and_untouched_invariants
+      AssertionError     tests/test_auto_await_explicit.py:449 assert "await_children" in props, "schema 必须暴露该参数给模型"
+  = tests/test_auto_await_explicit.py::test_f_non_auto_card_untouched
+      AssertionError     tests/test_auto_await_explicit.py:432 assert res["ok"] is False and res["error"]["code"] == "denied", res
+  = tests/test_auto_await_livelock.py::test_a_resume_prompt_carries_wake_facts
+      AssertionError     tests/test_auto_await_livelock.py:192 assert _state(wid, p) == "paused" and _await_flag(wid, p) == 1
+  = tests/test_auto_await_livelock.py::test_b_work017_third_phantom_hang_stops_being_woken
+      AssertionError     tests/test_auto_await_livelock.py:284 assert _wakes(wid, p) == 1, "第 1 次空等重挂 ? 计数 1"
+  = tests/test_auto_await_livelock.py::test_c2_new_goal_lifecycle_resets_counter
+      AssertionError     tests/test_auto_await_livelock.py:392 assert _wakes(wid, p) == 0, "★ 换目标 ? 旧生命周期的死锁证据不连坐新目标"
+  = tests/test_auto_await_livelock.py::test_c_real_wait_resets_counter_and_normal_loop_unblocked
+      AssertionError     tests/test_auto_await_livelock.py:356 assert _wakes(wid, p) == 0, "★ 真等待（确有未终止子卡）? 连击清零，计数攒不起来"
+  = tests/test_auto_await_livelock.py::test_d2_stop_then_redeclare_is_a_new_explicit_wait
+      AssertionError     tests/test_auto_await_livelock.py:437 assert _wakes(wid, p) == 1
+  = tests/test_auto_await_livelock.py::test_d_user_stop_still_wins
+      AssertionError     tests/test_auto_await_livelock.py:411 assert _await_flag(wid, p) == 1 and _wakes(wid, p) == 0 # 真等待清零
+  = tests/test_auto_await_livelock.py::test_e_non_auto_card_untouched
+      AssertionError     tests/test_auto_await_livelock.py:464 assert res["ok"] is False and res["error"]["code"] == "denied", res
+  = tests/test_auto_await_livelock.py::test_f3_prompt_surface_auto_t8
+      AssertionError     tests/test_auto_await_livelock.py:536 assert prompts.BASE_PROMPT_VERSION == "t22-1", "普通版不得被本次改动波及"
+  = tests/test_auto_await_livelock.py::test_f4_complete_gate_and_await_flag_semantics_untouched
+      AssertionError     tests/test_auto_await_livelock.py:562 assert r["ok"] is True, r
+  = tests/test_auto_await_resume.py::test_a2_pause_sets_flag_via_auto_driver_verdict
+      AssertionError     tests/test_auto_await_resume.py:141 assert _await_flag(wid, p) == 1
+  = tests/test_auto_await_resume.py::test_a_pause_with_active_child_sets_await_flag
+      AssertionError     tests/test_auto_await_resume.py:125 assert r["ok"] is True, r
+  = tests/test_auto_await_resume.py::test_b3_paused_parent_not_woken_while_child_still_active
+      AssertionError     tests/test_auto_await_resume.py:202 assert meta["goal_state"] == "paused", "子卡还在跑 ? 父卡不得被恢复"
+  = tests/test_auto_await_resume.py::test_c2_pause_with_no_child_at_all
+      AssertionError     tests/test_auto_await_resume.py:235 assert r["ok"] is True, r
+  = tests/test_auto_await_resume.py::test_c3_blocked_and_complete_never_set_flag
+      AssertionError     tests/test_auto_await_resume.py:248 assert r["ok"] is True, r
+  = tests/test_auto_await_resume.py::test_c_pause_without_active_child_does_not_wake
+      AssertionError     tests/test_auto_await_resume.py:218 assert r["ok"] is True, r
+  = tests/test_auto_await_resume.py::test_d_user_stop_clears_await_flag
+      AssertionError     tests/test_auto_await_resume.py:267 assert _await_flag(wid, p) == 1, "前置：此刻确实在等子卡"
+  = tests/test_auto_await_resume.py::test_e2_non_auto_parent_chain_not_woken_by_child
+      AssertionError     tests/test_auto_await_resume.py:365 assert res["ok"] is False and res["error"]["code"] == "denied", res
+  = tests/test_auto_await_resume.py::test_e_non_auto_card_untouched_end_to_end
+      AssertionError     tests/test_auto_await_resume.py:357 assert res["ok"] is False and res["error"]["code"] == "denied", res
+  = tests/test_auto_await_resume.py::test_f3_will_continue_semantics_unchanged
+      AssertionError     tests/test_auto_await_resume.py:418 assert _await_flag(wid, p) == 1
+  = tests/test_auto_mode.py::test_auto_prompt_no_unconditional_restart_claim
+      AssertionError     tests/test_auto_mode.py:1214       assert "只要没有在跑的子卡" in sec
+  = tests/test_auto_mode.py::test_auto_prompt_version_after_p7
+      AssertionError     tests/test_auto_mode.py:1247       assert prompts.BASE_PROMPT_VERSION == "t22-1"
+  = tests/test_auto_mode.py::test_block2_child_inherits_auto_and_all_open
+      AssertionError     tests/test_auto_mode.py:247        assert set(m[policy.PERM_KEY]) == set(policy.AUTO_SWITCHES)
+  = tests/test_auto_mode.py::test_block2_refresh_perms_skips_auto
+                         tests/test_auto_mode.py:278        assert after[policy.PERM_VERSION_KEY] == policy.AUTO_PERMS_VERSION
+  = tests/test_auto_mode.py::test_block2_toggle_on_off_recomputes_perms
+      AssertionError     tests/test_auto_mode.py:228        assert set(m1[policy.PERM_KEY]) == set(policy.AUTO_SWITCHES)
+  = tests/test_auto_mode.py::test_block3_create_child_with_goal_kicks
+      AssertionError     tests/test_auto_mode.py:739        assert m["goal_state"] == "complete"
+  = tests/test_auto_mode.py::test_block3_driver_runs_after_mutex_release
+      AssertionError     tests/test_auto_mode.py:768        assert len(calls) >= 2, "第二轮没跑起来（驱动器被互斥体 409 拒？）"
+  = tests/test_auto_mode.py::test_block3_shipped_default_is_serial
+      AssertionError     tests/test_auto_mode.py:370        assert cfg["mode"] == "serial"
+  = tests/test_auto_mode.py::test_block4_auto_toolface_is_normal_plus_update_goal
+      AssertionError     tests/test_auto_mode.py:487        assert set(auto_names) == ((set(normal) - {"delete_card"})
+  = tests/test_auto_mode.py::test_block4_prompt_version_and_section
+      AssertionError     tests/test_auto_mode.py:596        assert prompts.BASE_PROMPT_VERSION == "t22-1"
+  = tests/test_auto_mode.py::test_block4_tool_table_and_registry
+      AssertionError     tests/test_auto_mode.py:612        assert card_tools.AUTO_ONLY_TOOLS == {"update_goal", "send_card_messag
+  = tests/test_auto_mode.py::test_block4_update_goal_complete_sets_state
+      AssertionError     tests/test_auto_mode.py:520        assert r["ok"] is True, r
+  = tests/test_auto_mode.py::test_block4_update_goal_denied_on_non_auto
+      AssertionError     tests/test_auto_mode.py:532        assert r["ok"] is False and r["error"]["code"] == "denied", r
+  = tests/test_auto_mode.py::test_block4_update_goal_rejects_bad_action
+      AssertionError     tests/test_auto_mode.py:539        assert r["ok"] is False and r["error"]["code"] == "validation", r
+  = tests/test_auto_mode.py::test_g4_blocked_notifies_sender
+      AssertionError     tests/test_auto_mode.py:1081       assert res["ok"] is True, res
+  = tests/test_auto_mode.py::test_g4_complete_blocked_by_unanswered_ask
+      AssertionError     tests/test_auto_mode.py:1040       assert res["ok"] is False and res["error"]["code"] == "validation", re
+  = tests/test_auto_mode.py::test_g4_complete_passes_after_answer
+      AssertionError     tests/test_auto_mode.py:1065       assert res["ok"] is True, res
+  = tests/test_auto_mode.py::test_rework_1_base_prompt_byte_identical_to_t22_1
+      AssertionError     tests/test_auto_mode.py:624        assert hashlib.sha256(base.encode("utf-8")).hexdigest() == T22_1_BASE_
+  = tests/test_auto_mode.py::test_rework_2_versions
+      AssertionError     tests/test_auto_mode.py:635        assert prompts.BASE_PROMPT_VERSION == "t22-1"
+  = tests/test_auto_mode.py::test_rework_4_auto_prompt_has_full_toolset_and_no_false_sentence
+      AssertionError     tests/test_auto_mode.py:668        assert line in auto, f"auto 版工具清单缺：{line}"
+  = tests/test_auto_mode.py::test_stage2_patch_auto_mode_lands_and_reverts
+      AssertionError     tests/test_auto_mode.py:1191       assert set(m1[policy.PERM_KEY]) == set(policy.AUTO_SWITCHES)
+  = tests/test_board.py::test_step_brief_template_verbatim
+                         tests/test_board.py:382            assert "【步骤执行】你现在执行计划的一步，只做本步的事。" in text
+  = tests/test_card_draft.py::test_base_prompt_version_is_t20_1
+      AssertionError     tests/test_card_draft.py:64        assert prompts.BASE_PROMPT_VERSION == "t22-1"
+  = tests/test_card_region_guide.py::test_five_cross_card_categories_present
+      AssertionError     tests/test_card_region_guide.py:88 assert k in t, f"缺跨卡信息类别：{k}"
+  = tests/test_card_region_semantics.py::test_base_prompt_version_bumped
+      AssertionError     tests/test_card_region_semantics.py:435 assert prompts.BASE_PROMPT_VERSION == "t22-1"
+  = tests/test_coder_card.py::test_toolset_fingerprints_and_switch_bindings
+                         tests/test_coder_card.py:93        assert src.count('": ToolDef(') == 32 # [角色机制 5710] 28→32（+create_role
+  = tests/test_condfold.py::test_v3_condense_call_targets_glm_flash
+      AssertionError     tests/test_condfold.py:75          assert seen["model_name"] == "glm-flash"
+  = tests/test_decision_gate.py::test_complete_passes_after_decision_appended
+      AssertionError     tests/test_decision_gate.py:78     assert res["ok"] is True, res
+  = tests/test_decision_gate.py::test_complete_rejected_without_decision
+      AssertionError     tests/test_decision_gate.py:60     assert res["ok"] is False and res["error"]["code"] == "validation", re
+  = tests/test_decision_gate.py::test_skeleton_placeholder_is_not_a_decision
+      AssertionError     tests/test_decision_gate.py:100    assert "定论" in res["error"]["message"]
+  = tests/test_dep_relations.py::test_b2_tool_table_and_versions
+                         tests/test_dep_relations.py:177    assert src.count('": ToolDef(') == 32 # [角色机制 5710] 28→32（+create_role
+  = tests/test_dep_relations.py::test_b3_region_table_16_regions_with_250
+      AssertionError     tests/test_dep_relations.py:363    assert len(context_regions.REGION_TABLE) == 17
+  = tests/test_frontend_readability.py::test_u1_font_sizes_within_allowed_set
+      AssertionError     tests/test_frontend_readability.py:70 assert not bad, "越集字号（非画布）: " + "; ".join(bad)
+  = tests/test_model_override_scope.py::test_api_work_roundtrip_and_effective
+      AssertionError     tests/test_model_override_scope.py:149 assert eff["default_model"] == "m1" # 无卡时 = 全局默认（不再用 work 默认）
+  = tests/test_model_override_scope.py::test_precedence_card_than_work_than_global
+      AssertionError     tests/test_model_override_scope.py:94 assert model_config.default_model(work_id="work_100") == "m1"
+  = tests/test_offline_e2e.py::test_mock_llm_round_trip
+      AssertionError     tests/test_offline_e2e.py:147      assert body["reply"].startswith("[mock:haiku]")
+  = tests/test_rule_card.py::test_base_prompt_rule_section_t21_1
+      AssertionError     tests/test_rule_card.py:302        assert prompts.BASE_PROMPT_VERSION == "t22-1"
+  = tests/test_rule_card.py::test_inject_section_by_card_type
+      ValueError         tests/test_rule_card.py:270        assert sp.index("你在一个卡片系统内工作") < sp.index("## 规则\n子项目规则A") < sp.index(
+  = tests/test_slots_control.py::test_midflight_stop_closes_turn_human_stop
+      AssertionError     tests/test_slots_control.py:156    assert blocks[-1]["end"] == "human_stop", "回合以 human_stop 闭合（T124）"
+  = tests/test_snapshot_roundtrip.py::test_snapshot_restore_roundtrip
+      AssertionError     tests/test_snapshot_roundtrip.py:78 assert data["body"]["status_block"] == "第一版正文"
+  = tests/test_status_update.py::test_status_task_event_carries_three_kinds_and_current_status
+      AssertionError     tests/test_status_update.py:155    assert token in body, token
+  = tests/test_status_update.py::test_version_and_ontology
+      AssertionError     tests/test_status_update.py:65     assert prompts.BASE_PROMPT_VERSION == "t22-1"
+  = tests/test_t12_memory.py::test_tool_table_has_read_memory_and_version
+      AssertionError     tests/test_t12_memory.py:397       assert prompts.BASE_PROMPT_VERSION == "t22-1"
+  = tests/test_tool_capability_boost.py::test_seven_new_tools_registered
+      AssertionError     tests/test_tool_capability_boost.py:63 assert len(card_tools.TOOL_REGISTRY) == 50 # [角色机制 5710] 38→42（+4 件角色工
+==============================================================================
+[gate] 汇总：本次红 75 条（跑批共 1214 例）｜基线 known-red 76 条｜新增 0｜已清 1｜剩余 75
+[gate] 退出码 0（0=无新增红，1=有新增红）
