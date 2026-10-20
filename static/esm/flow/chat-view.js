@@ -90,6 +90,13 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   column.appendChild(olderWrap);
   column.appendChild(emptyEl);
   column.appendChild(skeletonEl);
+  /* [5715 · 网抓修] 运行条**先在 DOM 里**（不等到首次 render 才挂上去）：
+     原来它只在 render() 末尾被 appendChild ⇒ 若 setRunning(true) 早于首次
+     渲染（先发消息、后到时间线），运行条压根不在 DOM 里 ⇒ 「Deep diving...」
+     静默消失，用户以为没跑起来。
+     初态是隐藏（paintStatus 在下面统一处理）；render() 里那句 appendChild
+     仍保留——它把运行条挪到末位（节点行之后），行为不变。 */
+  column.appendChild(statusEl);
   scroll.appendChild(column);
   scroll.appendChild(toBottomSlot);
   root.appendChild(scroll);
@@ -109,6 +116,10 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   let statusStart = null;
   let hasNew = false;      // 读者上翻期间有新节点到达
   let loading = true;           // 首屏骨架：首次 render 落地即收
+  let stopping = false;         // 停止指令已发出、回合尚未收口
+                                  // （[5715] 上移到状态区：构造期就要调
+                                  //   paintStatus() 藏运行条，而 paintStatus 读它
+                                  //   ——留在运行条段会撞 TDZ 报错）
 
   /** 空态内容（由宿主按卡类型注入；未注入则用中性默认）。 */
   function setEmpty(payload) {
@@ -154,6 +165,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   paintOlder();
   paintToBottom();
   paintEmpty();
+  paintStatus();   // 初态隐藏运行条（它此刻已在 DOM 里，见上面的挂载说明）
 
   // ---- 回底 ----
   function toBottom() {
@@ -349,7 +361,6 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   }
 
   // ---- 运行条（15s 后才显时钟）----
-  let stopping = false;
   function paintStatus() {
     const running = !!(isRunning && isRunning());
     if (!running && !stopping) {

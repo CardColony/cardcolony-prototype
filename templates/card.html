@@ -200,7 +200,7 @@
 <!-- [迭代四 F4②] 通知面板（浮层）：列表项「时间·发件卡名→收件卡名·类型·摘要」；
      点击跳收件卡；format_ok:false 归「格式异常」分组 -->
 <div id="notifyPanel" class="notify-panel">
-  <div class="np-head">卡间消息 <button id="npClose" class="np-close">×</button></div>
+  <div class="np-head">卡间消息 <button id="npClose" class="np-close" aria-label="关闭通知面板">×</button></div>
   <div id="npList" class="np-list"></div>
 </div>
 <!-- [卡片编辑机制改造 2026-10-12 · 块3] 起草确认弹窗（modal）：遮罩＋面板＋标题栏＋
@@ -212,7 +212,7 @@
   <div class="draft-modal-panel" role="dialog" aria-modal="true">
     <div class="draft-modal-head">
       <span id="draftModalTitle">需求文档起草</span>
-      <button class="draft-modal-close" id="draftModalX" title="关闭（丢弃草稿）">×</button>
+      <button class="draft-modal-close" id="draftModalX" title="关闭（丢弃草稿）" aria-label="关闭草稿弹窗">×</button>
     </div>
     <div class="draft-modal-body" id="draftModalBody">
       <div class="draft-area" id="draftArea">起草中…</div>
@@ -240,7 +240,7 @@
   <div class="draft-modal-panel" role="dialog" aria-modal="true">
     <div class="draft-modal-head">
       <span id="statusModalTitle">更新现状 · 原/新对比</span>
-      <button class="draft-modal-close" id="statusModalX" title="关闭（不落盘）">×</button>
+      <button class="draft-modal-close" id="statusModalX" title="关闭（不落盘）" aria-label="关闭现状更新弹窗">×</button>
     </div>
     <div class="draft-modal-body" id="statusModalBody">
       <div class="status-diff" id="statusDiffArea"></div>
@@ -268,6 +268,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main_chat.js?v=2.16"></script>
+<script type="module" src="/static/esm/main_chat.js?v=2.17"></script>
 </body>
 </html>
