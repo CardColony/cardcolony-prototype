@@ -100,7 +100,10 @@ AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
 # ``card_type=="role"`` 的当前卡上由 build_tool_schemas 末段追加。
 # 角色卡不是作业卡：它只判断、记录判断、必要时发言/警报。
 # ============================================================
-ROLE_ONLY_TOOLS: frozenset[str] = frozenset({"record_verdict", "raise_alarm", "correct_alarm"})
+ROLE_ONLY_TOOLS: frozenset[str] = frozenset({
+    "record_verdict", "raise_alarm", "correct_alarm",
+    "issue_directive", "verify_directive",
+})
 
 # [权限底座重做 2026-10-12] 工具组→工具名映射（build_tool_schemas 过滤面）。
 # 由卡上的 tools_file / tools_web 两个开关决定下发哪几组：缺哪个开关就不下发
@@ -191,6 +194,8 @@ TOOL_SWITCH: dict[str, str] = {
     "record_verdict": policy.SWITCH_READ,
     "raise_alarm": policy.SWITCH_READ,
     "correct_alarm": policy.SWITCH_READ,
+    "issue_directive": policy.SWITCH_SEND_MESSAGE,
+    "verify_directive": policy.SWITCH_READ,
     # 组阁权挂 create_child（根卡才有），关注管理挂 link；两件都只对根卡下发。
     "create_role": policy.SWITCH_CREATE_CHILD,
     "role_watch_cards": policy.SWITCH_LINK,
@@ -257,7 +262,7 @@ TOOL_SWITCH: dict[str, str] = {
 #   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
 #   「注册表工具集/schema 变更」（T12-R3 纪律）。
 #   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
-TOOL_TABLE_VERSION = "tools-tc-14"
+TOOL_TABLE_VERSION = "tools-tc-15"
 
 
 # ============================================================
@@ -3406,6 +3411,116 @@ async def _h_correct_alarm(work_id: str, current_id: str,
     return {"ok": True, "alarm_id": alarm_id, "status": "corrected"}
 
 
+async def _h_issue_directive(work_id: str, current_id: str,
+                               arguments: dict[str, Any],
+                               cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """角色在管辖域内向关注卡下**指令**：不是建议，卡必须执行或说明不能执行。"""
+    if not role_room.is_role(work_id, current_id):
+        return err("denied", "只有角色卡可以下指令")
+    target_id = str(arguments.get("target_card_id") or "").strip()
+    instruction = str(arguments.get("instruction") or "").strip()
+    acceptance = str(arguments.get("acceptance") or "").strip()
+    if target_id not in cards:
+        return err("not_found", f"卡片不存在: {target_id}")
+    if str((cards.get(target_id) or {}).get("card_type") or "") == role_room.ROLE_TYPE:
+        return err("invalid", "不能给另一个角色下指令")
+    if not role_room.linked(work_id, current_id, target_id):
+        return err("denied", f"{target_id} 不在你的关注范围（先建立关注连线）")
+    if not instruction:
+        return err("validation", "instruction 不能为空")
+    if not acceptance:
+        return err("validation", "acceptance 不能为空（没有验收判据的指令不可验收）")
+    content = (
+        f"【角色指令】{instruction}\n\n"
+        f"验收判据：{acceptance}\n\n"
+        "这是指令，不是建议：请执行；不能在回复/现状里说明理由、需要什么支持、"
+        "预计何时完成。执行结果要落进现状，便于我下一轮验收。"
+    )
+    sent = await _h_send_card_message(work_id, current_id, {
+        "target_card_id": target_id,
+        "msg_type": "msg_directive",
+        "content": content,
+    }, cards)
+    if isinstance(sent, dict) and sent.get("ok") is False:
+        return sent
+    rec = await role_room.record_directive(
+        work_id, current_id, target_id, instruction, acceptance,
+        msg_id=str((sent or {}).get("msg_id") or ""),
+        due_at=str(arguments.get("due_at") or ""))
+    return {
+        "directive_id": rec["id"],
+        "msg_id": str((sent or {}).get("msg_id") or ""),
+        "target_card_id": target_id,
+        "status": rec["status"],
+    }
+
+
+async def _h_verify_directive(work_id: str, current_id: str,
+                              arguments: dict[str, Any],
+                              cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """角色按实际结果验收指令：complied / rejected / cancelled。"""
+    if not role_room.is_role(work_id, current_id):
+        return err("denied", "只有角色卡可以验收指令")
+    directive_id = str(arguments.get("directive_id") or "").strip()
+    status = str(arguments.get("status") or "").strip().lower()
+    evidence = str(arguments.get("evidence") or "").strip()
+    if status not in ("complied", "rejected", "cancelled"):
+        return err("validation", f"status 非法: {status!r}（complied/rejected/cancelled）")
+    if status == "rejected" and not evidence:
+        return err("validation", "rejected 必须写 evidence（缺什么/差在哪）")
+    res = await role_room.verify_directive(
+        work_id, current_id, directive_id, status, evidence)
+    if res.get("error"):
+        return err("not_found", str(res["error"]))
+    return res
+
+
+TOOL_REGISTRY["issue_directive"] = ToolDef(
+    schema={
+        "name": "issue_directive",
+        "description": (
+            "（角色卡专用）在管辖域内给已关注的工作卡下指令。不是建议："
+            "卡必须执行，或说明不能执行的理由/需要什么支持/何时完成。"
+            "必须同时给验收判据；下一轮用 verify_directive 验收。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_card_id": {"type": "string"},
+                "instruction": {"type": "string", "description": "要它做什么（明确、可执行）"},
+                "acceptance": {"type": "string", "description": "验收判据（怎么算做到）"},
+                "due_at": {"type": "string", "description": "期望完成时间（可选）"},
+            },
+            "required": ["target_card_id", "instruction", "acceptance"],
+        },
+    },
+    handler=_h_issue_directive,
+    readonly=False,
+)
+
+TOOL_REGISTRY["verify_directive"] = ToolDef(
+    schema={
+        "name": "verify_directive",
+        "description": (
+            "（角色卡专用）按实际结果验收一条指令：complied=达标，rejected=未达标"
+            "（必须写 evidence 差在哪），cancelled=撤销。不要凭对方回话说“已改”就判达标，"
+            "先读实际现状/证据。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "directive_id": {"type": "string"},
+                "status": {"type": "string", "enum": ["complied", "rejected", "cancelled"]},
+                "evidence": {"type": "string"},
+            },
+            "required": ["directive_id", "status"],
+        },
+    },
+    handler=_h_verify_directive,
+    readonly=False,
+)
+
+
 TOOL_REGISTRY["create_role"] = ToolDef(
     schema={
         "name": "create_role",
@@ -4032,7 +4147,8 @@ _ROLE_FACE_DROP = frozenset({"edit_card", "delete_card", "create_card",
 def _apply_role_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = [t for t in tools if str(t.get("name", "")) not in _ROLE_FACE_DROP]
     for name in ("send_card_message", "read_inbox", "record_verdict",
-                 "raise_alarm", "correct_alarm", "update_status", "append_ruling"):
+                 "raise_alarm", "correct_alarm", "issue_directive",
+                 "verify_directive", "update_status", "append_ruling"):
         if name in TOOL_REGISTRY:
             out.append(_schema_of(TOOL_REGISTRY[name]))
     # 去重（防同一件工具从基础面与追加面各来一份）

@@ -280,6 +280,22 @@ _ROLE_DDL: tuple[str, ...] = (
     consumed_at     TEXT DEFAULT ''
 )""",
     "CREATE INDEX IF NOT EXISTS idx_role_sync_pending ON role_sync(role_id, status)",
+    """CREATE TABLE IF NOT EXISTS role_directives (
+    id              TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    role_id         TEXT NOT NULL,
+    target_card_id  TEXT NOT NULL,
+    instruction     TEXT,
+    acceptance      TEXT,
+    msg_id          TEXT DEFAULT '',
+    status          TEXT DEFAULT 'issued',
+    evidence        TEXT DEFAULT '',
+    created_at      TEXT,
+    updated_at      TEXT,
+    verified_at     TEXT DEFAULT '',
+    due_at          TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_role_directives_role ON role_directives(role_id, status)",
     """CREATE TABLE IF NOT EXISTS role_charter_history (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     work_id         TEXT NOT NULL,

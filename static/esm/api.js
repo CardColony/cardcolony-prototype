@@ -144,6 +144,10 @@ export const API = {
   updateRole: (wid, rid, body) => call("PATCH", `/api/works/${wid}/roles/${rid}`, body),
   setRoleDuty: (wid, rid, state, note = "") =>
     call("POST", `/api/works/${wid}/roles/${rid}/duty`, { state, note }),
+  issueDirective: (wid, rid, body) =>
+    call("POST", `/api/works/${wid}/roles/${rid}/directives`, body),
+  verifyDirective: (wid, rid, did, status, evidence = "") =>
+    call("POST", `/api/works/${wid}/roles/${rid}/directives/${did}/verify`, { status, evidence }),
   checkRole: (wid, rid) => call("POST", `/api/works/${wid}/roles/${rid}/check`),
   watchRole: (wid, rid, card_ids, action = "add") =>
     call("POST", `/api/works/${wid}/roles/${rid}/watch`, { card_ids, action }),

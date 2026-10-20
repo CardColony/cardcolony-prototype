@@ -764,7 +764,8 @@ def _batch_ref(batch: list[dict[str, Any]]) -> str:
 def _render_sections(prof: dict[str, Any],
                      verdicts: list[dict[str, Any]],
                      alarms: list[dict[str, Any]],
-                     pending: list[str]) -> str:
+                     pending: list[str],
+                     directives: Optional[list[dict[str, Any]]] = None) -> str:
     jur = prof.get("jurisdiction") or {}
     watch = prof.get("watch") or {}
     sc = prof.get("speak_contract") or {}
@@ -793,6 +794,11 @@ def _render_sections(prof: dict[str, Any],
             f"- {v['ts'][:16]} {v['decision']} · {v['reason'][:160]}"
             + (f" → 被 {v['superseded_by']} 取代" if v.get("superseded_by") else "")
             for v in verdicts[:10]) or "（暂无）"),
+        "## 指令簿\n" + ("\n".join(
+            f"- {d['created_at'][:16]} [{d['status']}] → {d['target_card_id']}："
+            f"{d['instruction'][:120]}"
+            + (f"（验收：{d['acceptance'][:80]}）" if d.get("acceptance") else "")
+            for d in (directives or [])[:10]) or "（暂无）"),
         "## 警报簿\n" + ("\n".join(
             f"- {a['ts'][:16]} [{a['severity']}/{a['status']}] {a['title']}"
             + (f"（更正→{a['corrected_by']}）" if a.get("corrected_by") else "")
@@ -809,7 +815,8 @@ def build_prompt(work_id: str, role_id: str,
     verdicts = role_store.list_verdicts(work_id, role_id, 15)
     alarms = role_store.list_alarms(work_id, status="", role_id=role_id)
     pending = [i["source"] for i in pending_batch(work_id, role_id)]
-    body = _render_sections(prof, verdicts, alarms, pending)
+    directives = role_store.list_directives(work_id, role_id)
+    body = _render_sections(prof, verdicts, alarms, pending, directives)
     parts = [
         f"〔角色巡检〕你是本项目的角色卡《{title}》（{role_id}）。",
         "你不是作业卡：你不做具体工作，你对你负责的管辖域保持观察、判断，"
@@ -981,6 +988,37 @@ async def manual_check(work_id: str, role_id: str) -> dict[str, Any]:
 
 
 # ============================================================
+# 指令（角色 -> 关注卡，直接、可验收）
+# ============================================================
+
+async def record_directive(work_id: str, role_id: str, target_card_id: str,
+                           instruction: str, acceptance: str,
+                           msg_id: str = "", due_at: str = "") -> dict[str, Any]:
+    rec = await role_store.add_directive(
+        work_id, role_id, target_card_id, instruction, acceptance, msg_id, due_at)
+    session_ops.ops_log("role_directive", work_id, role_id, {
+        "directive_id": rec["id"], "target": target_card_id,
+        "instruction": instruction[:160],
+    })
+    return rec
+
+
+async def verify_directive(work_id: str, role_id: str, directive_id: str,
+                           status: str, evidence: str = "") -> dict[str, Any]:
+    rec = role_store.get_directive(work_id, directive_id)
+    if rec is None or str(rec.get("role_id") or "") != role_id:
+        return {"error": f"指令不存在或不属于该角色: {directive_id}"}
+    ok = await role_store.verify_directive(work_id, directive_id, status, evidence)
+    if not ok:
+        return {"error": f"验收失败（status={status}）"}
+    rec = role_store.get_directive(work_id, directive_id) or rec
+    session_ops.ops_log("role_directive_verify", work_id, role_id, {
+        "directive_id": directive_id, "status": status,
+    })
+    return {"ok": True, "directive": rec}
+
+
+# ============================================================
 # 查询（UI / 模型）
 # ============================================================
 
@@ -991,6 +1029,7 @@ async def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
     meta = _meta_of(work_id, role_id)
     verdicts = role_store.list_verdicts(work_id, role_id, 30)
     alarms = role_store.list_alarms(work_id, status="", role_id=role_id)
+    directives = role_store.list_directives(work_id, role_id)
     open_alarms = [a for a in alarms if a.get("status") == "open"]
     pending = pending_batch(work_id, role_id)
     watch = prof.get("watch") or {}
@@ -1021,11 +1060,14 @@ async def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
                     "ratified_by": charter.get("ratified_by", ""),
                     "history": history},
         "verdicts": verdicts,
+        "directives": directives,
+        "open_directives": [d for d in directives
+                            if d.get("status") in ("issued", "rejected")],
         "alarms": alarms,
         "open_alarms": open_alarms,
         "pending_sources": [p["source"] for p in pending],
         "text": _render_sections(prof, verdicts, alarms,
-                                 [p["source"] for p in pending]),
+                                 [p["source"] for p in pending], directives),
     }
 
 

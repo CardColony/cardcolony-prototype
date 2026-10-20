@@ -2409,3 +2409,25 @@ body.page-chat .role-alarm-head .role-correct {
   border: 0; background: none; color: #d05656;
   cursor: pointer; font-size: 11px;
 }
+
+/* [角色机制 5710 v3] 指令簿：角色 -> 关注卡，必须执行/可验收 */
+body.page-chat .role-directives { display: flex; flex-direction: column; gap: 5px; margin: 4px 0 8px; }
+body.page-chat .role-dir {
+  font-size: 12px; padding: 5px 7px; border-radius: 6px;
+  border-left: 2px solid #7f9fd0; background: rgba(127,159,208,0.06);
+}
+body.page-chat .role-dir.complied { border-left-color: #7fc08a; background: rgba(127,192,138,0.06); }
+body.page-chat .role-dir.rejected { border-left-color: #d05656; background: rgba(208,86,86,0.07); }
+body.page-chat .role-dir-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+body.page-chat .role-dir-head b { font-weight: 500; }
+body.page-chat .role-dir-status { font-size: 10px; color: var(--dimmer, #9aa0a6); }
+body.page-chat .role-dir-ts { margin-left: auto; font-size: 10px; color: var(--dimmer, #8a8a8a); }
+body.page-chat .role-dir-body { margin-top: 3px; line-height: 1.5; word-break: break-word; }
+body.page-chat .role-dir-actions { display: flex; gap: 8px; margin-top: 4px; }
+body.page-chat .role-dir-verify {
+  border: 0; background: none; color: var(--dimmer, #b0b0b0);
+  cursor: pointer; font-size: 11px; padding: 0;
+}
+body.page-chat .role-dir-verify[data-status="rejected"] { color: #d05656; }
+body.page-chat .role-dir-new { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+body.page-chat .role-dir-new .btn { align-self: flex-start; }

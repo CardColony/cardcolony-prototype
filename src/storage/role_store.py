@@ -470,3 +470,95 @@ async def import_alarm(work_id: str, role_id: str, rec: dict[str, Any]) -> None:
              str(rec.get("supersedes") or "")))
 
     await card_db.run_write(work_id, _fn)
+
+
+# ============================================================
+# 指令簿（角色 -> 关注卡，可验收）
+# ============================================================
+
+def _directive_row(r: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": r["id"],
+        "role_id": r["role_id"],
+        "target_card_id": r["target_card_id"],
+        "instruction": r["instruction"] or "",
+        "acceptance": r["acceptance"] or "",
+        "msg_id": r["msg_id"] or "",
+        "status": r["status"] or "issued",
+        "evidence": r["evidence"] or "",
+        "created_at": r["created_at"] or "",
+        "updated_at": r["updated_at"] or "",
+        "verified_at": r["verified_at"] or "",
+        "due_at": r["due_at"] or "",
+    }
+
+
+async def add_directive(work_id: str, role_id: str, target_card_id: str,
+                        instruction: str, acceptance: str,
+                        msg_id: str = "", due_at: str = "") -> dict[str, Any]:
+    import uuid
+    rec = {
+        "id": uuid.uuid4().hex[:12],
+        "role_id": role_id,
+        "target_card_id": target_card_id,
+        "instruction": instruction,
+        "acceptance": acceptance,
+        "msg_id": msg_id,
+        "status": "issued",
+        "evidence": "",
+        "created_at": _now(),
+        "updated_at": _now(),
+        "verified_at": "",
+        "due_at": due_at,
+    }
+
+    def _fn(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "INSERT INTO role_directives"
+            " (id, work_id, role_id, target_card_id, instruction, acceptance,"
+            "  msg_id, status, evidence, created_at, updated_at, verified_at, due_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (rec["id"], work_id, role_id, target_card_id, instruction, acceptance,
+             msg_id, "issued", "", rec["created_at"], rec["updated_at"], "", due_at))
+
+    await card_db.run_write(work_id, _fn)
+    return rec
+
+
+def list_directives(work_id: str, role_id: str,
+                    status: str = "") -> list[dict[str, Any]]:
+    def _fn(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM role_directives WHERE work_id=? AND role_id=?"
+        args: list[Any] = [work_id, role_id]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        sql += " ORDER BY created_at DESC"
+        return [_directive_row(r) for r in conn.execute(sql, tuple(args)).fetchall()]
+
+    return card_db.read_sync(work_id, _fn, []) or []
+
+
+def get_directive(work_id: str, directive_id: str) -> Optional[dict[str, Any]]:
+    def _fn(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
+        row = conn.execute(
+            "SELECT * FROM role_directives WHERE work_id=? AND id=?",
+            (work_id, directive_id)).fetchone()
+        return _directive_row(row) if row is not None else None
+
+    return card_db.read_sync(work_id, _fn, None)
+
+
+async def verify_directive(work_id: str, directive_id: str, status: str,
+                           evidence: str = "") -> bool:
+    if status not in ("complied", "rejected", "cancelled"):
+        return False
+
+    def _fn(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "UPDATE role_directives SET status=?, evidence=?, verified_at=?,"
+            " updated_at=? WHERE work_id=? AND id=?",
+            (status, evidence, _now(), _now(), work_id, directive_id))
+        return cur.rowcount > 0
+
+    return bool(await card_db.run_write(work_id, _fn))

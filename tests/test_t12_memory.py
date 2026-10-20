@@ -388,7 +388,7 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     # [编程卡 2026-10-15] tc-4 → tc-5（新增 report_done / create_coder_card 两件）。
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-14"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-15"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
     # [判断协议改注入 2026-10-14] t17-1 → t18-1（判断协议摘出 BASE_PROMPT）。
     # [卡片区域语义 v3 2026-10-14] t18-1 → t19-1（read_shadow 只读本卡自己的影子）。
     # [编程卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## 编程卡」节）。
