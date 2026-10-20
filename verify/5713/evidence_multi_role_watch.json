@@ -1,0 +1,240 @@
+{
+  "started_at": "2026-10-20T23:07:13",
+  "base": "http://127.0.0.1:5714",
+  "phases": [
+    {
+      "phase": "0_instance_check",
+      "at": "2026-10-20T23:07:13",
+      "ok": true,
+      "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+      "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox_ceo"
+    },
+    {
+      "phase": "1_create_work",
+      "at": "2026-10-20T23:07:13",
+      "ok": true,
+      "work_id": "work_004",
+      "root": "card_001"
+    },
+    {
+      "phase": "1b_pin_model",
+      "at": "2026-10-20T23:07:13",
+      "ok": true,
+      "model": "ds-v41-flash-aliyun"
+    },
+    {
+      "phase": "2_shared_card",
+      "at": "2026-10-20T23:07:13",
+      "ok": true,
+      "card_id": "card_002"
+    },
+    {
+      "phase": "3_role_contract_guard",
+      "at": "2026-10-20T23:07:13",
+      "ok": true,
+      "role_id": "card_003",
+      "status": 201
+    },
+    {
+      "phase": "3_role_cost_budget",
+      "at": "2026-10-20T23:07:13",
+      "ok": true,
+      "role_id": "card_004",
+      "status": 201
+    },
+    {
+      "phase": "3b_baseline",
+      "at": "2026-10-20T23:07:13",
+      "verdicts": {
+        "contract_guard": 0,
+        "cost_budget": 0
+      },
+      "watch": {
+        "contract_guard": [
+          "card_002"
+        ],
+        "cost_budget": [
+          "card_002"
+        ]
+      }
+    },
+    {
+      "phase": "4_change",
+      "at": "2026-10-20T23:07:13",
+      "ok": true
+    },
+    {
+      "phase": "5_collected",
+      "at": "2026-10-20T23:08:26",
+      "verdicts": {
+        "contract_guard": 1,
+        "cost_budget": 1
+      }
+    }
+  ],
+  "verdict": "PASS",
+  "note": "验的是同步与唤醒的机械互斥；不验判词质量（judgment 由判词行数/ID 锚定）",
+  "instance": {
+    "instance": "test-instance",
+    "pid": 32616,
+    "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+    "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox_ceo",
+    "sandbox_enabled": true
+  },
+  "work_id": "work_004",
+  "shared_card": "card_002",
+  "roles": {
+    "contract_guard": "card_003",
+    "cost_budget": "card_004"
+  },
+  "baseline_verdicts": {
+    "contract_guard": 0,
+    "cost_budget": 0
+  },
+  "baseline_watch": {
+    "contract_guard": [
+      "card_002"
+    ],
+    "cost_budget": [
+      "card_002"
+    ]
+  },
+  "final": {
+    "contract_guard": {
+      "role_id": "card_003",
+      "verdicts": [
+        {
+          "id": "1796c3d21b98",
+          "decision": "speak",
+          "ts": "2026-10-20T23:08:10.048457+08:00",
+          "sources": [
+            "card_002"
+          ]
+        }
+      ],
+      "alarms": [],
+      "duty": {
+        "state": "active",
+        "since": "2026-10-20T23:07:13.588806+08:00",
+        "last_wake_at": "2026-10-20T23:08:21.203452+08:00",
+        "pending_sync": 0
+      },
+      "watch": [
+        "card_002"
+      ]
+    },
+    "cost_budget": {
+      "role_id": "card_004",
+      "verdicts": [
+        {
+          "id": "268e8a898e5b",
+          "decision": "speak",
+          "ts": "2026-10-20T23:07:51.715807+08:00",
+          "sources": [
+            "card_002"
+          ]
+        }
+      ],
+      "alarms": [
+        {
+          "id": "909f846fc2f7",
+          "severity": "warn"
+        }
+      ],
+      "duty": {
+        "state": "active",
+        "since": "2026-10-20T23:07:13.722246+08:00",
+        "last_wake_at": "2026-10-20T23:08:14.558469+08:00",
+        "pending_sync": 0
+      },
+      "watch": [
+        "card_002"
+      ]
+    }
+  },
+  "sync_rows": [
+    {
+      "seq": 1,
+      "role_id": "card_003",
+      "source": "card_002",
+      "from_seq": 0,
+      "to_seq": 0,
+      "signals": "[\"status_changed\"]",
+      "status": "consumed",
+      "created_at": "2026-10-20T23:07:13.870185+08:00"
+    },
+    {
+      "seq": 2,
+      "role_id": "card_004",
+      "source": "card_002",
+      "from_seq": 0,
+      "to_seq": 0,
+      "signals": "[\"status_changed\"]",
+      "status": "consumed",
+      "created_at": "2026-10-20T23:07:13.885292+08:00"
+    }
+  ],
+  "prompt_logs": [
+    {
+      "card_id": "card_003",
+      "file": "prompt_card_003_20261020230821.json",
+      "model_requested": "ds-v41-flash-aliyun",
+      "model_used": "deepseek-v4.1-flash-1017",
+      "error": ""
+    },
+    {
+      "card_id": "card_004",
+      "file": "prompt_card_004_20261020230814.json",
+      "model_requested": "ds-v41-flash-aliyun",
+      "model_used": "deepseek-v4.1-flash-1017",
+      "error": ""
+    }
+  ],
+  "verdict_detail": {
+    "both_watch_shared_card": true,
+    "both_woke_and_judged": true,
+    "verdict_growth": {
+      "contract_guard": [
+        0,
+        1
+      ],
+      "cost_budget": [
+        0,
+        1
+      ]
+    },
+    "both_judged_on_shared_card": true,
+    "sync_rows_per_role": {
+      "contract_guard": 1,
+      "cost_budget": 1
+    },
+    "sync_rows_isolated": true,
+    "prompt_logs_per_role": {
+      "contract_guard": 1,
+      "cost_budget": 1
+    },
+    "both_had_model_turn": true,
+    "models_observed": [
+      "deepseek-v4.1-flash-1017"
+    ],
+    "any_model_error": false,
+    "observations": {
+      "decisions": {
+        "contract_guard": [
+          "speak"
+        ],
+        "cost_budget": [
+          "speak"
+        ]
+      },
+      "pending_sync": {
+        "contract_guard": 0,
+        "cost_budget": 0
+      }
+    }
+  },
+  "finished_at": "2026-10-20T23:08:26",
+  "elapsed_seconds": 72.9,
+  "verdict_original_judge": "INCOMPLETE",
+  "verdict_note": "初版判据用 all(遍历所有字段) 把 any_model_error=False（好事）当成不满足，且把计数/列表字段当布尔 ⇒ 误判 INCOMPLETE。已改为显式 PASS_KEYS 清单＋『无模型错误』单独取反；**用同一份证据重算，未重跑、原始事实未改**。"
+}
