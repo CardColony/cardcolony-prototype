@@ -10,6 +10,8 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   const mount = document.getElementById(mountId);
   if (!mount || !workId) return;
   const scope = cardId ? "card" : "work";
+  /* 草稿态判定：与 rule_panel.js 的 isDraft 同口径（home.js 新建项目走 /work/draft）。 */
+  const isDraft = () => workId === "draft" || cardId === "draft";
   const state = { open: false, settings: null, override: null, lastClickInside: false };
   let panel = null;
 
@@ -83,6 +85,10 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   }
 
   async function choose(val) {
+    // [草稿态 2026-10-20] workId/cardId 为 "draft" ⇒ 项目/卡还没落盘，覆盖无处可存。
+    // 原来照样 PUT /api/settings/model-overrides/draft ⇒ 404 ⇒ 只弹「保存失败」，
+    // 用户看不出原因（实测 5700 日志：GET/PUT .../draft/card/draft 都是 404）。
+    if (isDraft()) { toast("项目还没保存，先保存项目再切模型"); closePanel(); return; }
     const base = `/api/settings/model-overrides/${encodeURIComponent(workId)}`;
     const path = scope === "card" ? `${base}/card/${encodeURIComponent(cardId)}` : base;
     const r = val
@@ -98,6 +104,7 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   function render() { mount.innerHTML = pill(); }
 
   async function reload() {
+    if (isDraft()) { render(); return; }   // 草稿态不查库（GET 对 draft 必 404）
     const o = await api(`/api/settings/model-overrides/${encodeURIComponent(workId)}`);
     state.override = o.ok && o.data ? o.data : state.override;
     render();
