@@ -5,10 +5,10 @@
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
 import { notify } from "./api.js?v=36";
-import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=30";
+import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=31";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=32";
-import { createNavFind } from "./nav_find.js?v=30";
+import { createNavRenderer } from "./nav_render.js?v=33";
+import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
 
@@ -177,7 +177,8 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       return;   // toast 已由 api.js 处理
     }
     if (cur() && cur().meta.card_id === cid) {
-      history.replaceState(null, "", location.pathname + location.search);   // 删的是当前卡：摘 hash
+      // [5715 · 修] 删的是当前卡：摘**路径**里的卡段（选中态已从 hash 迁到路径）。
+      history.replaceState(null, "", location.pathname.replace(/\/card\/[^/]+$/, "") + location.search);
     }
     await renderNav();
   }
@@ -273,12 +274,12 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   }
 
   // [S3/R-21] 灰态兜底：点击的卡不在快照（多标签删除/快照缝隙）→ 置灰不跳；
-  // 该卡恰为当前选中 → 清选中（hash 摘除，restoreFromHash 清失效 hash 同款）＋面包屑回父卡。
+  // 该卡恰为当前选中 → 清选中（**路径**摘卡段，5715 起选中态不再由 hash 承载）＋面包屑回父卡。
   function handleMissingCard(rowEl, wid, cid) {
     rowEl.classList.add("deleted");
     const sel = navStore.select.get();
     if (sel && sel.wid === wid && sel.cid === cid) {
-      history.replaceState(null, "", location.pathname + location.search);
+      history.replaceState(null, "", location.pathname.replace(/\/card\/[^/]+$/, "") + location.search);
       const parentCid = (cur() && cur().meta.card_id === cid)
         ? (cur().meta.parent || "") : "";
       if (parentCid) {

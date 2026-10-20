@@ -1239,8 +1239,11 @@ body.page-chat .psteps .pstep .f {
 body.page-chat .step-detail {
   flex-basis: 100%;
   display: none;
-  margin: 6px 0 2px 10px;
-  padding: 10px 12px;
+  /* [5715 · 修] 缩进由 **margin** 改 **padding**（margin 不计进 flex-basis，
+     10px 外边距把这一行推出容器 ⇒ 整行横向溢出 10px、右边框被裁，实测 19 行全中）。
+     padding 计入 border-box（全局 box-sizing:border-box），缩进保留、溢出归零。 */
+  margin: 6px 0 2px 0;
+  padding: 10px 12px 10px 22px;
   border: 1px solid var(--ui-line);
   border-radius: var(--ui-r-sm);
   background: var(--ui-surface-2);

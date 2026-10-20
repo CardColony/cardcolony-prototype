@@ -24,9 +24,9 @@
  */
 import { escapeHtml } from "./util.js?v=30";
 import { notify } from "./api.js?v=36";
-import { createRowModel } from "./row_model.js?v=30";
-import { createVirtualList } from "./nav_virtual.js?v=30";
-import { NAV_ROW_HEIGHT } from "./state_layers.js?v=30";
+import { createRowModel } from "./row_model.js?v=31";
+import { createVirtualList } from "./nav_virtual.js?v=31";
+import { NAV_ROW_HEIGHT } from "./state_layers.js?v=31";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
 import { projectAggregate, isProjectEmpty, cardInSnapshot } from "./nav_badge.js?v=30";
 // [左栏接线 步2] 行几何纯函数（微推进／图标列／树线段）

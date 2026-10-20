@@ -4,7 +4,7 @@
  * 六字段（expanded/source/loading/error/loaded/selected）全部由 props(store)
  * 实时投影自三层状态——对行对象 Object.freeze 后 props 仍正确（零状态铁证，V-S4）。
  */
-import { NAV_ROW_HEIGHT, NAV_PHEAD_HEIGHT } from "./state_layers.js?v=30";
+import { NAV_ROW_HEIGHT, NAV_PHEAD_HEIGHT } from "./state_layers.js?v=31";
 
 export function createRowModel(card, store, ctx = {}) {
   const row = {

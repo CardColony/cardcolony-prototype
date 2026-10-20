@@ -12,7 +12,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=45">
+<link rel="stylesheet" href="/static/style.css?v=47">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -21,7 +21,7 @@
 <!-- [对话界面商业化 2026-10-17] 设计系统与主题层：仅对话页引入。
      作用域全部以 body.page-chat 收口，画布页 work.html 不引本文件、零影响。
      必须排在 style.css / nav.css 之后：靠层叠覆盖旧视觉，不改旧规则本身。 -->
-<link rel="stylesheet" href="/static/ui.css?v=4">
+<link rel="stylesheet" href="/static/ui.css?v=5">
 <script>
   /* 主题早置位：在样式表解析前写 <html data-theme>，避免深→浅闪白。
      取值优先级：localStorage 记忆 → 系统偏好 → 深色（产品默认）。 */
@@ -101,20 +101,22 @@
           <path d="M2.5 4h11M2.5 8h11M2.5 12h11"/>
         </svg>
       </button>
-      <!-- [画布入口 2026-10-16 用户令] 顶部栏最左：返回本项目画布的 icon 入口。
-           根卡/子卡聊天态常显（data-view=chat）；画布态隐藏（已在画布，点了无意义）。 -->
-      <button id="canvasEntryBtn" class="canvas-entry" title="返回项目画布" aria-label="返回项目画布">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/>
-          <path d="M1.5 6h13M6 1.5v13"/>
-        </svg>
-      </button>
       <!-- 聊天态面包屑（workspace.js renderChatCrumb 填：项目名 › 祖先卡 › 当前卡） -->
       <div id="chatCrumb" class="crumb"></div>
       <span class="spacer"></span>
       <!-- [对话界面商业化 2026-10-17] 顶栏右侧动作区：主题切换（深浅双主题，
            localStorage 记忆）＋ 卡详情抽屉开关（替代原右缘竖排文字标签）。 -->
       <div class="topbar-actions">
+        <!-- [5715 · 修] 「返回项目画布」从顶栏最左移入右侧动作区。
+             原位置紧贴侧栏右缘，视觉上像侧栏自己的控件（实测截图确认），
+             且与面包屑首段「项目名」功能重复 ⇒ 顶栏出现两个「回画布」入口。
+             左侧只留面包屑＝「我在哪」，右侧＝「我能做什么」，两区各司其职。 -->
+        <button id="canvasEntryBtn" class="canvas-entry" title="返回项目画布" aria-label="返回项目画布">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/>
+            <path d="M1.5 6h13M6 1.5v13"/>
+          </svg>
+        </button>
         <button id="procToggleBtn" class="tb-btn" type="button" title="收起过程细节" aria-label="过程细节" aria-pressed="true">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true">
             <path d="M2 4h12M2 8h12M2 12h8"/>
@@ -266,6 +268,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main_chat.js?v=2.9"></script>
+<script type="module" src="/static/esm/main_chat.js?v=2.12"></script>
 </body>
 </html>
