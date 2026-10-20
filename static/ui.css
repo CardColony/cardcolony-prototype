@@ -43,7 +43,12 @@ body.page-chat {
   --ui-accent-hi: #909af5;
   --ui-accent-lo: rgba(125, 136, 238, 0.14);
   --ui-accent-line: rgba(125, 136, 238, 0.32);
-  --ui-accent-ink: #ffffff;
+  /* [5715 · 对比度网] 强调底上的字用**深墨**，不用白字：
+     白字压 --ui-accent(#7d88ee) 只有 3.17:1、压 hover 底(#909af5) 只有 2.58:1
+     —— 都低于 WCAG AA 正文线 4.5:1（按钮标签是正文，不算大字）。
+     深墨 #0b0d11 压底：6.14:1（常态）/ 7.53:1（hover）⇒ 过线。
+     浅色主题那边强调色本来就深（#5560d8），白字 5.18:1 够 ⇒ 那边仍用白字。 */
+  --ui-accent-ink: #0b0d11;
 
   /* 语义 */
   --ui-ok: #4ec98a;
@@ -116,6 +121,8 @@ html[data-theme="light"] body.page-chat {
   --ui-accent-hi: #4652cc;
   --ui-accent-lo: rgba(85, 96, 216, 0.09);
   --ui-accent-line: rgba(85, 96, 216, 0.26);
+  /* [5715 · 对比度网] 浅色主题的强调色本来就深（#5560d8），白字 5.18:1 够 AA ⇒
+     仍用白字；深色主题那边强调色偏亮 ⇒ 那边改用深墨（见上方深色块）。 */
   --ui-accent-ink: #ffffff;
 
   --ui-ok: #17925c;
