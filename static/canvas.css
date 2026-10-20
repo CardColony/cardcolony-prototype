@@ -645,8 +645,13 @@
   width: 76px;
   /* [画布 5711] 命中区：原来整条 input 只有 3px 高（轨道高度），实测抓不住
      （探针量到 76×3）。改成 input 18px 高、透明底，可见轨道交给
-     ::-webkit-slider-runnable-track 画 —— 视觉完全不变，命中区 3px→18px。 */
-  height: 18px;
+     ::-webkit-slider-runnable-track 画 —— 视觉完全不变，命中区 3px→18px。
+     [画布 5711 · 第二轮] 18→24px：WCAG 2.2 SC 2.5.8 的最小目标尺寸是 24×24，
+     18px 仍不达标（探针仍把它列进 smallHits）。可见轨道仍是 3px
+     （::-webkit-slider-runnable-track），**视觉零变化**，只是更好抓。
+     滑块拇指是相对轨道居中的（margin-top:-4.5 = (3-12)/2），
+     所以 input 变高不需要改拇指偏移。 */
+  height: 24px;
   appearance: none;
   background: transparent;
   outline: none;
@@ -1251,23 +1256,27 @@
    画布上原本只有两条进对话的路：单击（220ms 后整页跳走）、双击（就地展开）。
    后者是用户 10-19 反复要的"在画布上同时看几个对话的进程并随时回复"，但它是个
    **纯隐藏手势** —— 卡面上没有任何东西提示"这里能双击"，用户根本不知道有这条路。
-   ⇒ 现在给它一个**看得见、点得到**的按钮（卡的左下角，hover 显形），
-   双击保留为快捷方式。功能从"隐藏手势"升级为"入口"。
+   ⇒ 现在给它一个**看得见、点得到**的按钮（卡的左下角，hover 显形）。
+   [画布 5711 · 产品] 双击手势已撤除 ⇒ 没有"双击快捷方式"这回事；
+   就地展开的入口是 💬 按钮 / 右键菜单 / Enter 键。功能从"隐藏手势"升级为"入口"。
 
    位置：左下角（与右侧的 ↗ 分居两端，各管一件事，不打架）。
    ========================================================================== */
 .page-canvas .cv-chat {
   position: absolute;
-  left: 6px;
-  bottom: 5px;
-  width: calc(22px / var(--z, 1));
-  height: calc(22px / var(--z, 1));
+  left: 5px;
+  bottom: 4px;
+  /* [画布 5711 · 第二轮] 22→24px：与右上角的 ↗ 同一档，且达到 WCAG 2.2
+     SC 2.5.8 的最小目标尺寸 24×24（22px 时探针仍把它列进 smallHits）。
+     视觉只大 2px；/var(--z) 补偿照旧 ⇒ 缩放时屏幕尺寸恒定。 */
+  width: calc(24px / var(--z, 1));
+  height: calc(24px / var(--z, 1));
   padding: 0;
   border: 1px solid var(--cv-line-2);
   border-radius: 5px;
   background: rgba(20, 24, 31, 0.92);
   color: var(--cv-text-2);
-  font-size: calc(11px / var(--z, 1));
+  font-size: calc(12px / var(--z, 1));
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -1409,8 +1418,10 @@
 .page-canvas .proj-stat .ps-item[data-act="triage"] {
   cursor: pointer;
   border-radius: 4px;
-  padding: 2px 6px;
-  margin: -2px -6px;
+  /* [画布 5711 · 第二轮] padding 2→3px：命中区 22px→24px（WCAG 2.2 最小目标
+     尺寸）。负 margin 同步加大 ⇒ **外部占位不变**，顶栏排版零变化。 */
+  padding: 3px 6px;
+  margin: -3px -6px;
 }
 .page-canvas .proj-stat .ps-item[data-act="triage"]:hover { background: rgba(245, 181, 68, 0.12); }
 

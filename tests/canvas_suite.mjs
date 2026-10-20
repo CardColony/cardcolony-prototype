@@ -64,8 +64,8 @@ const ev = async (x) => {
 // ⚠ 之前只等"节点数 > 0"，而导航是异步的 ⇒ 旧页面（对话页）里也有 .card-node
 //   时等待会立刻满足，随后所有操作都落在**对话页**上（表现为"节点不存在"）。
 //   ⇒ 现在同时校验 pathname 是画布页、节点数连续两次相同。
-const load = async () => {
-  await send("Page.navigate", { url: `${BASE}/work/${WID}` });
+const load = async (wid = WID) => {
+  await send("Page.navigate", { url: `${BASE}/work/${wid}` });
   let last = -1, stable = 0;
   for (let i = 0; i < 200; i++) {
     await sleep(60);
@@ -73,7 +73,7 @@ const load = async () => {
       path: location.pathname,
       n: document.querySelectorAll('.card-node').length,
     }))()`);
-    const onCanvas = st && st.path === `/work/${WID}` && st.n > 0;
+    const onCanvas = st && st.path === `/work/${wid}` && st.n > 0;
     if (onCanvas && st.n === last) { stable++; if (stable >= 3) return; }
     else stable = 0;
     last = st && st.n;
@@ -211,6 +211,65 @@ const pick = (sel) => ev(`(() => {
   if (!el) return null;
   const c = el.closest ? el.closest('.card-node') : null;
   return c ? c.dataset.id : null;
+})()`);
+
+/* ── 同层顺序三件套（T10.1 / T11.4 共用） ──
+ * 画布的口径是"拖拽＝调顺序"：拖动的语义是"这张卡排在这一层的第几位"，
+ * 绝对坐标仍由布局算。所以验收"拖拽生效"不能看坐标变没变（顺序没变时坐标
+ * 本来就不变），要看**同层次序**有没有按落点变。
+ */
+
+// 找一组"都在场"的同层卡（≥3 张），按世界 y 排好序
+const siblingGroups = (wid) => ev(`(async () => {
+  const api = await (await fetch('/api/works/${wid}/canvas')).json();
+  const kids = {};
+  for (const c of (api.cards || [])) {
+    if (c.card_type === 'rule') continue;
+    const p = c.parent || '';
+    (kids[p] = kids[p] || []).push(c.card_id);
+  }
+  const out = [];
+  for (const p of Object.keys(kids)) {
+    if (kids[p].length < 3) continue;
+    const rows = kids[p].map(id => {
+      const n = document.querySelector('.card-node[data-id="' + id + '"]');
+      return n ? { id, top: parseFloat(n.style.top) } : null;
+    }).filter(Boolean);
+    if (rows.length < 3) continue;
+    rows.sort((a, b) => a.top - b.top);
+    out.push({ parent: p, ids: rows.map(x => x.id), tops: rows.map(x => x.top) });
+  }
+  out.sort((a, b) => a.tops[0] - b.tops[0]);
+  return out[0] || null;
+})()`);
+
+// 读某个父卡下、同层在场卡的当前次序（按世界 y）
+const groupOrder = (parent, wid) => ev(`(async () => {
+  const api = await (await fetch('/api/works/${wid}/canvas')).json();
+  const ids = (api.cards || [])
+    .filter(c => (c.parent || '') === ${JSON.stringify(parent)} && c.card_type !== 'rule')
+    .map(c => c.card_id);
+  const rows = ids.map(id => {
+    const n = document.querySelector('.card-node[data-id="' + id + '"]');
+    return n ? { id, top: parseFloat(n.style.top) } : null;
+  }).filter(Boolean);
+  rows.sort((a, b) => a.top - b.top);
+  return { ids: rows.map(r => r.id), tops: rows.map(r => r.top) };
+})()`);
+
+// 把某张卡拖到指定的世界 y（落点＝卡片顶边落在该 y）
+const dragToWorldY = (id, targetWorldY) => ev(`(() => {
+  const n = document.querySelector('.card-node[data-id="${id}"]');
+  if (!n) return { ok: false, err: 'no node' };
+  const r = n.getBoundingClientRect();
+  const from = parseFloat(n.style.top);
+  const z = parseFloat(getComputedStyle(document.getElementById('world')).getPropertyValue('--z')) || 1;
+  const d = (${targetWorldY} - from) * z;
+  const sx = r.x + 30, sy = r.y + 12;
+  n.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: sx, clientY: sy }));
+  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: sx, clientY: sy + d }));
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, buttons: 0, clientX: sx, clientY: sy + d }));
+  return { ok: true, from, to: ${targetWorldY}, z, delta: d };
 })()`);
 
 // T3.1 单击标题 ⇒ 进对话页
@@ -624,6 +683,448 @@ await load();
   })`);
   T("T9.1 DOM 规模合理（<6000）", m.dom < 6000, `dom=${m.dom}`);
   T("T9.2 卡片节点数与投影一致", m.nodes > 0, `nodes=${m.nodes}`);
+}
+
+/* t10_block.mjs —— T10 交互面用例（供 canvas_suite.mjs 内联） */
+G("T10 交互面");
+await load();
+{
+  // T10.1 拖拽 ⇒ 同层顺序按落点变化（画布口径：拖拽＝调顺序）
+  //
+  // ⚠ 口径修正（此前本用例是**假红**）：原来断言"拖完坐标变了"。但画布的产品口径
+  //   是"拖拽＝调顺序，绝对坐标仍由布局算"——只要同层顺序没变，落点后坐标就回到
+  //   同一个槽位（坐标不变是**设计**，不是没生效）。而且原用例选中的第一张非根卡
+  //   常常没有同层兄弟，拖了也不可能改顺序。
+  // ⇒ 现在断言真正该成立的那件事：**拖过同层卡之后，它排到了落点指定的那一位**。
+  const grp = await siblingGroups(WID);
+  if (!grp) {
+    T("T10.1 找得到同层多卡的分组", false, "没有 ≥3 张且都在场的同层卡");
+  } else {
+    const last = grp.ids[grp.ids.length - 1];
+    const mid = (grp.tops[0] + grp.tops[1]) / 2;    // 落点＝第一、二张之间的中点
+    const dr = await dragToWorldY(last, mid);
+    await sleep(900);
+    const after = await groupOrder(grp.parent, WID);
+    T("T10.1 拖过同层卡 ⇒ 顺序按落点变化（落到第 2 位）",
+      after.ids[1] === last, JSON.stringify({ before: grp.ids, after: after.ids, dr }));
+    // 落库：坐标写进了 /canvas 的 positions
+    const api2 = await (await fetch(`${BASE}/api/works/${WID}/canvas`)).json();
+    const pos = (api2.positions || {})[last];
+    T("T10.1 拖拽后坐标已落库", !!pos, JSON.stringify(pos || null));
+  }
+  // T10.2 拖拽后布局不变量（零重叠）
+  const ov2 = await ev(`(() => {
+    const ns = [...document.querySelectorAll('.card-node')].map(n => { const r = n.getBoundingClientRect(); return { x:r.x,y:r.y,w:r.width,h:r.height }; });
+    let c = 0;
+    for (let i=0;i<ns.length;i++) for (let j=i+1;j<ns.length;j++) { const a=ns[i],b=ns[j];
+      const ox=Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x), oy=Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y);
+      if (ox>2&&oy>2) c++; }
+    return c; })()`);
+  T_EQ("T10.2 拖拽后仍无重叠", ov2, 0);
+}
+await load();
+{
+  // T10.3 框选（Shift+拖空白）⇒ 选中多张
+  const selN = await ev(`(() => {
+    const vp = document.getElementById('viewport');
+    const r = vp.getBoundingClientRect();
+    const x = r.x + 20, y = r.y + 20;
+    vp.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, shiftKey: true, clientX: x, clientY: y }));
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, button: 0, buttons: 1, shiftKey: true, clientX: r.right - 20, clientY: r.bottom - 20 }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, buttons: 0, shiftKey: true, clientX: r.right - 20, clientY: r.bottom - 20 }));
+    return document.querySelectorAll('.card-node.is-selected').length;
+  })()`);
+  await sleep(500);
+  const selAfter = await ev(`document.querySelectorAll('.card-node.is-selected').length`);
+  T("T10.3 Shift+拖空白 ⇒ 框选选中多张", selAfter >= 1, `selected=${selAfter} (immediate=${selN})`);
+}
+await load();
+{
+  // T10.4 滚轮 ⇒ 平移，不缩放
+  const z0 = await ev(`document.getElementById('zoomDisplay').textContent`);
+  const tf0 = await ev(`document.getElementById('world').style.transform`);
+  await ev(`(() => {
+    const vp = document.getElementById('viewport');
+    vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120, clientX: 400, clientY: 300 }));
+    return true; })()`);
+  await sleep(500);
+  const z1 = await ev(`document.getElementById('zoomDisplay').textContent`);
+  const tf1 = await ev(`document.getElementById('world').style.transform`);
+  T("T10.4 滚轮 ⇒ 平移（不缩放）", z0 === z1 && tf0 !== tf1, `zoom ${z0}→${z1} tf ${tf0}→${tf1}`);
+  // T10.5 Ctrl+滚轮 ⇒ 缩放
+  await ev(`(() => {
+    const vp = document.getElementById('viewport');
+    vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -120, ctrlKey: true, clientX: 400, clientY: 300 }));
+    return true; })()`);
+  await sleep(500);
+  const z2 = await ev(`document.getElementById('zoomDisplay').textContent`);
+  T("T10.5 Ctrl+滚轮 ⇒ 缩放", z2 !== z1, `${z1} → ${z2}`);
+}
+await load();
+{
+  // T10.6 顶栏按钮：更多菜单 / 规则面板 / 活动抽屉 / 整理画布
+  const clickBtn = (bid) => ev(`(() => { const b=document.getElementById(${JSON.stringify(bid)}); if(!b) return false; b.click(); return true; })()`);
+  await clickBtn("moreBtn");
+  await sleep(300);
+  T("T10.6 「更多」菜单可打开", (await ev(`!!document.querySelector('.cv-more-menu') && getComputedStyle(document.querySelector('.cv-more-menu')).display !== 'none'`)) === true);
+  await key("Escape");
+  await clickBtn("ruleToggleBtn");
+  await sleep(400);
+  T("T10.6 规则面板可开合", (await ev(`document.getElementById('rulePanel').classList.contains('is-open')`)) === true);
+  await clickBtn("ruleToggleBtn");
+  await sleep(300);
+  await clickBtn("activityBtn");
+  await sleep(400);
+  T("T10.6 项目动态抽屉可开合", (await ev(`!!document.getElementById('activityDrawer') && getComputedStyle(document.getElementById('activityDrawer')).display !== 'none'`)) === true);
+  await clickBtn("activityBtn");
+  await sleep(300);
+  const nBefore = await ev(`document.querySelectorAll('.card-node').length`);
+  await clickBtn("reorganizeBtn");
+  await sleep(900);
+  const nAfter = await ev(`document.querySelectorAll('.card-node').length`);
+  T("T10.6 「整理画布」不丢卡", nAfter === nBefore, `${nBefore} → ${nAfter}`);
+  T("T10.6 「整理画布」零 JS 异常", consoleErrs.length === 0, JSON.stringify(consoleErrs.slice(0, 2)));
+}
+await load();
+{
+  // T10.7 Ctrl+K 搜索面板
+  await key("k", { modifiers: "ctrlKey: true" });
+  await sleep(500);
+  const pal = await ev(`(() => {
+    const inputs = [...document.querySelectorAll('input')].filter(i => i.offsetParent !== null);
+    const p = document.querySelector('.cv-palette, .cv-search, [class*=palette]');
+    return { inputs: inputs.length, palette: !!p, visible: p ? getComputedStyle(p).display !== 'none' : false };
+  })()`);
+  T("T10.7 Ctrl+K ⇒ 搜索面板出现", pal.palette === true || pal.visible === true, JSON.stringify(pal));
+  await key("Escape");
+  await sleep(300);
+}
+await load();
+{
+  // T10.8 顶栏统计与真实数据一致
+  const api3 = await (await fetch(`${BASE}/api/works/${WID}/canvas`)).json();
+  const cards = api3.cards || [];
+  const stat = await ev(`(() => {
+    const el = document.getElementById('projectStat');
+    return el ? el.textContent.replace(/\\s+/g, ' ').trim() : '';
+  })()`);
+  const total = cards.filter(c => c.card_type !== "rule").length;
+  const pending = cards.reduce((a, c) => a + Number(c.pending_count || 0), 0);
+  T("T10.8 顶栏显示的卡数与数据一致", stat.includes(String(total)), `stat="${stat}" total=${total}`);
+  T("T10.8 顶栏显示的待裁定数与数据一致", stat.includes(String(pending)), `stat="${stat}" pending=${pending}`);
+}
+await load();
+{
+  // T10.9 右键菜单 → 新建子卡（走真实弹窗）
+  const id = await pick(".card-node");
+  const nBefore = await ev(`document.querySelectorAll('.card-node').length`);
+  await ev(`(() => { const n = document.querySelector('.card-node[data-id="${id}"]');
+    const r = n.getBoundingClientRect();
+    n.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 20, clientY: r.y + 20 }));
+    return true; })()`);
+  await sleep(400);
+  const picked = await ev(`(() => {
+    const items = [...document.querySelectorAll('[data-act]')];
+    const it = items.find(x => (x.textContent || '').includes('新建子卡'));
+    if (!it) return false;
+    it.click(); return true; })()`);
+  T("T10.9 右键菜单有「新建子卡」", picked === true);
+  if (picked) {
+    await sleep(500);
+    const hasInput = await ev(`!!document.querySelector('.cv-modal-input')`);
+    T("T10.9 新建弹窗有输入框", hasInput === true);
+    if (hasInput) {
+      await ev(`(() => { const i = document.querySelector('.cv-modal-input');
+        i.value = 'T10 验收新建卡'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+      await ev(`(() => { const b = document.querySelector('.cv-modal-btn[data-role=ok]'); if(b) b.click(); return true; })()`);
+      await sleep(1600);
+      const nAfter = await ev(`document.querySelectorAll('.card-node').length`);
+      T("T10.9 新建子卡 ⇒ 画布上多了一张", nAfter > nBefore, `${nBefore} → ${nAfter}`);
+      // 清理：把这张卡删掉
+      const created = await ev(`(() => { const ns=[...document.querySelectorAll('.card-node')];
+        const t = ns.find(n => (n.querySelector('.tname')||{}).textContent === 'T10 验收新建卡');
+        return t ? t.dataset.id : null; })()`);
+      if (created) {
+        await fetch(`${BASE}/api/works/${WID}/cards/${created}`, { method: "DELETE" });
+        await sleep(800);
+      }
+    }
+  }
+}
+await load();
+{
+  // T10.10 选中 + Delete ⇒ 删卡（弹窗确认）
+  //
+  // ⚠ **自给自足**（修本用例的自我饿死）：原来它去画布上找一张"没有子卡的叶子卡"
+  //   当删除对象，**而且真的把它删掉** ⇒ 每跑一次套件就少一张叶子卡。
+  //   沙箱 work_002 的叶子卡被吃光后（实测：37 张 → 35 张，叶子归零），
+  //   本用例开始假红（"找不到"），而画布其实没有任何问题。
+  // ⇒ 现在：自己建一张叶子卡（走真实 API），只删自己建的那张，删完即净。
+  const jpost = async (url, body) => (await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  })).json();
+  const cvs0 = await (await fetch(`${BASE}/api/works/${WID}/canvas`)).json();
+  const root0 = (cvs0.cards || []).find(c => !c.parent);
+  const made = await jpost(`${BASE}/api/works/${WID}/cards`, {
+    title: "T10 验收删除卡", source: "用户直接创建", parent: root0 ? root0.card_id : undefined,
+  });
+  const leaf = (made && made.card_id) || (made && made.meta && made.meta.card_id);
+  if (!leaf) T("T10.10 造得出待删的叶子卡", false, JSON.stringify(made).slice(0, 200));
+  else {
+    await load();                      // 让新卡进画布
+    const onCanvas = await ev(`!!document.querySelector('.card-node[data-id="${leaf}"]')`);
+    T("T10.10 造得出的叶子卡已进画布", onCanvas === true, `leaf=${leaf}`);
+    const nBefore = await ev(`document.querySelectorAll('.card-node').length`);
+    await ev(`(() => { const n = document.querySelector('.card-node[data-id="${leaf}"]');
+      n.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,shiftKey:true})); return true; })()`);
+    await sleep(300);
+    await key("Delete");
+    await sleep(500);
+    const dlg = await ev(`!!document.querySelector('.cv-modal-mask')`);
+    T("T10.10 Delete 弹出确认框（不静默删）", dlg === true);
+    if (dlg) {
+      await ev(`(() => { const b=document.querySelector('.cv-modal-btn[data-role=ok]'); if(b) b.click(); return true; })()`);
+      await sleep(1500);
+      const nAfter = await ev(`document.querySelectorAll('.card-node').length`);
+      T("T10.10 确认后卡被删掉", nAfter < nBefore, `${nBefore} → ${nAfter}`);
+    }
+    // 兜底清理（万一删除没生效，别把垃圾留在沙箱里）
+    const still = await fetch(`${BASE}/api/works/${WID}/cards/${leaf}`, { method: "DELETE" });
+    if (!still.ok) { /* 已经删掉了，DELETE 回 404 属正常 */ }
+  }
+}
+await load();
+{
+  // T10.11 窄视口（900px）：顶栏不重叠、卡片仍在视口内
+  await send("Emulation.setDeviceMetricsOverride", { width: 900, height: 800, deviceScaleFactor: 1, mobile: false });
+  await send("Page.navigate", { url: `${BASE}/work/${WID}` });
+  await sleep(2200);
+  const narrow = await ev(`(() => {
+    const tb = document.querySelector('.topbar');
+    const r = tb.getBoundingClientRect();
+    const kids = [...tb.children].filter(x => { const b = x.getBoundingClientRect(); return b.width > 0; })
+      .map(x => { const b = x.getBoundingClientRect(); return { cls: (x.className||'').slice(0,24), l: Math.round(b.left), r: Math.round(b.right) }; });
+    let overlaps = 0;
+    for (let i = 0; i < kids.length; i++) for (let j = i + 1; j < kids.length; j++) {
+      if (kids[i].r > kids[j].l + 1 && kids[j].r > kids[i].l + 1) overlaps++;
+    }
+    const vp = document.getElementById('viewport').getBoundingClientRect();
+    const ns = [...document.querySelectorAll('.card-node')];
+    const inView = ns.filter(n => { const b = n.getBoundingClientRect(); return b.right > vp.left && b.left < vp.right; }).length;
+    return { overlaps, kids: kids.length, inView, n: ns.length, tbW: Math.round(r.width), vpW: Math.round(vp.width) };
+  })()`);
+  T("T10.11 窄视口：顶栏控件不重叠", narrow.overlaps === 0, JSON.stringify(narrow));
+  T("T10.11 窄视口：卡片仍在视口内（不跑飞）", narrow.n === 0 || narrow.inView > 0, JSON.stringify(narrow));
+  await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   T11 手势一致性与视图锚点
+   ══════════════════════════════════════════════════════════════════════
+   本组验两件"界面说错话 / 行为做错事"的事：
+   ① 菜单里印出来的快捷键提示必须与**真实**手势一致（提示骗人＝功能不存在）；
+   ② 视图根（布局锚点）拖拽必须＝移动视图，而不是"拖了又弹回"。
+   */
+G("T11 手势与锚点");
+await load();
+{
+  // T11.1 菜单快捷键提示 vs 真实手势
+  const cardId = await ev(`(() => {
+    const ns = [...document.querySelectorAll('.card-node')];
+    const n = ns.find(x => !x.classList.contains('is-root'));
+    return n ? n.dataset.id : null;
+  })()`);
+  await ev(`(() => { const n = document.querySelector('.card-node[data-id="${cardId}"]');
+    const r = n.getBoundingClientRect();
+    n.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 20, clientY: r.y + 20 }));
+    return true; })()`);
+  await sleep(400);
+  const menu = await ev(`(() => {
+    const mis = [...document.querySelectorAll('.cv-menu .cv-mi')];
+    const read = (needle) => {
+      const m = mis.find(x => (x.textContent || '').includes(needle));
+      if (!m) return null;
+      const k = m.querySelector('.cv-kbd');
+      const sp = m.querySelector('span');
+      return { label: sp ? (sp.textContent || '') : '', kbd: k ? (k.textContent || '') : null };
+    };
+    return {
+      open: !!document.querySelector('.cv-menu'),
+      expandChat: read('在此展开对话'),
+      openPage: read('打开对话'),
+      drill: read('下钻到此卡'),
+      anyDbl: mis.filter(x => (x.textContent || '').includes('双击')).map(x => (x.textContent || '').trim()),
+      all: mis.map(x => (x.textContent || '').trim()),
+    };
+  })()`);
+  T("T11.1 右键菜单能打开", menu.open === true, JSON.stringify(menu.all));
+  T("T11.1 「在此展开对话」标 ↵（真实手势就是 Enter）",
+    !!menu.expandChat && menu.expandChat.kbd === "↵", JSON.stringify(menu.expandChat));
+  T("T11.1 「打开对话」不标 ↵（↵ 并不是它的快捷键）",
+    !!menu.openPage && menu.openPage.kbd === null, JSON.stringify(menu.openPage));
+  T("T11.1 菜单里不出现「双击」（双击手势已撤除）",
+    menu.anyDbl.length === 0, JSON.stringify(menu.anyDbl));
+  T("T11.1 下钻写的是 Alt+单击",
+    !!menu.drill && menu.drill.label.indexOf("Alt+单击") >= 0, JSON.stringify(menu.drill));
+  await ev(`(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true; })()`);
+  await sleep(200);
+}
+await load();
+{
+  // T11.2 下钻后，视图根（布局锚点）拖拽＝移动视图，而不是"拖了又弹回"
+  //
+  // 背景：computeLayout 钉在原点的是 **viewRoot**，而下钻会改 viewRoot。
+  // 旧实现拿 workCardId 判"根卡" ⇒ 下钻后判错 ⇒ 锚点卡走普通拖拽分支：
+  // 落库坐标后 reflowAll 又把它拉回 (0,0)（拖了又弹回），且视图根本平移不了。
+  const target = await ev(`(() => {
+    const ns = [...document.querySelectorAll('.card-node')];
+    const n = ns.find(x => !x.classList.contains('is-root') && x.querySelector('.kid-badge'));
+    return n ? n.dataset.id : null;
+  })()`);
+  if (!target) {
+    T("T11.2 找得到可下钻的卡（非根且有子卡）", false, "没有这样的卡");
+  } else {
+    await ev(`(() => { const n = document.querySelector('.card-node[data-id="${target}"]');
+      n.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, altKey: true }));
+      return true; })()`);
+    await sleep(1200);
+    const drilled = await ev(`(() => {
+      const r = document.querySelector('.card-node.is-root');
+      return { rootId: r ? r.dataset.id : null, n: document.querySelectorAll('.card-node').length };
+    })()`);
+    T("T11.2 Alt+单击 ⇒ 视图根换成那张卡", drilled.rootId === target, JSON.stringify(drilled));
+    const panOf = () => ev(`(() => { const w = document.getElementById('world'); return w ? w.style.transform : ''; })()`);
+    const posOf = (id) => ev(`(() => { const n = document.querySelector('.card-node[data-id="${id}"]'); return n ? n.style.left + '|' + n.style.top : null; })()`);
+    const posBefore = await (await fetch(`${BASE}/api/works/${WID}/canvas`)).json().then(d => (d.positions || {})[target] || null);
+    const pan0 = await panOf();
+    const pos0 = await posOf(target);
+    await ev(`(() => {
+      const n = document.querySelector('.card-node[data-id="${target}"]');
+      const r = n.getBoundingClientRect();
+      const x = r.x + 30, y = r.y + 12;
+      n.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: x, clientY: y }));
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: x, clientY: y + 50 }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, buttons: 0, clientX: x, clientY: y + 50 }));
+      return true;
+    })()`);
+    await sleep(700);
+    const pan1 = await panOf();
+    const pos1 = await posOf(target);
+    T("T11.2 拖视图根 ⇒ 视图被平移（world transform 变化）", pan1 !== pan0, `pan0=${pan0} pan1=${pan1}`);
+    T("T11.2 拖视图根 ⇒ 锚点自身位置不变（不被布局拉回）", pos1 === pos0, `pos0=${pos0} pos1=${pos1}`);
+    const posAfter = await (await fetch(`${BASE}/api/works/${WID}/canvas`)).json().then(d => (d.positions || {})[target] || null);
+    T("T11.2 拖视图根不写坐标记录（无落库副作用）",
+      JSON.stringify(posBefore) === JSON.stringify(posAfter),
+      `before=${JSON.stringify(posBefore)} after=${JSON.stringify(posAfter)}`);
+  }
+}
+await load();
+{
+  // T11.3 默认视图：拖项目根卡＝移动视图（老行为的回归护栏，不能被上一条修坏）
+  const rootId = await ev(`(() => { const r = document.querySelector('.card-node.is-root'); return r ? r.dataset.id : null; })()`);
+  if (!rootId) {
+    T("T11.3 默认视图找得到根卡", false, "没有 .is-root");
+  } else {
+    const panOf = () => ev(`(() => { const w = document.getElementById('world'); return w ? w.style.transform : ''; })()`);
+    const posOf = (id) => ev(`(() => { const n = document.querySelector('.card-node[data-id="${id}"]'); return n ? n.style.left + '|' + n.style.top : null; })()`);
+    const drag = (dx, dy) => ev(`(() => {
+      const n = document.querySelector('.card-node[data-id="${rootId}"]');
+      const r = n.getBoundingClientRect();
+      const x = r.x + 30, y = r.y + 12;
+      n.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: x, clientY: y }));
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: x + ${dx}, clientY: y + ${dy} }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, buttons: 0, clientX: x + ${dx}, clientY: y + ${dy} }));
+      return true;
+    })()`);
+    const pan0 = await panOf();
+    const pos0 = await posOf(rootId);
+    await drag(60, 40);
+    await sleep(500);
+    const pan1 = await panOf();
+    const pos1 = await posOf(rootId);
+    T("T11.3 默认视图拖根卡 ⇒ 视图被平移", pan1 !== pan0, `pan0=${pan0} pan1=${pan1}`);
+    T("T11.3 默认视图拖根卡 ⇒ 根卡位置不变", pos1 === pos0, `pos0=${pos0} pos1=${pos1}`);
+    await drag(-60, -40);   // 复原平移，别把状态留给后面的用例
+    await sleep(300);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   T11.4 拖拽落点＝同层次序（用户意图不被忽略）
+   ══════════════════════════════════════════════════════════════════════ */
+{
+  // 用一个一次性脚手架工程（根卡 + 3 张子卡，**都没有坐标记录**）——
+  // 这正是 bug 的高发场景：同层里第一次拖某张卡时，旧实现会把它提到该层最前面，
+  // 用户的落点被完全忽略（实测：把 card_017 拖到 card_010 下面，它却跑到第 3 位）。
+  // 子卡每次重建（删了再建 ⇒ 坐标记录随卡一起消失），
+  // 所以这条用例每次跑都在"同层从没拖过"的干净前提下验，不受上一轮残留影响。
+  const jpost = async (url, body) => (await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  })).json();
+  const jdel = async (url) => { try { await fetch(url, { method: "DELETE" }); } catch { } };
+  const list = await (await fetch(`${BASE}/api/works`)).json();
+  let sw = (list.works || []).find(w => (w.title || "").indexOf("T11 拖拽顺序验收") >= 0);
+  if (!sw) sw = await jpost(`${BASE}/api/works`, { title: "T11 拖拽顺序验收" });
+  const swid = sw.work_id;
+  const cvs = await (await fetch(`${BASE}/api/works/${swid}/canvas`)).json();
+  const root = (cvs.cards || []).find(c => !c.parent);
+  const rootId = root ? root.card_id : sw.work_card_id;
+  for (const c of (cvs.cards || [])) {
+    if (c.card_id !== rootId) await jdel(`${BASE}/api/works/${swid}/cards/${c.card_id}`);
+  }
+  const kids = [];
+  for (const t of ["甲", "乙", "丙"]) {
+    const c = await jpost(`${BASE}/api/works/${swid}/cards`, { title: "T11-" + t, source: "用户直接创建", parent: rootId });
+    // 建卡接口回的是 {meta:{card_id,...}}（信封在端点层成形），不是顶层 card_id
+    const cid = (c && c.card_id) || (c && c.meta && c.meta.card_id);
+    if (cid) kids.push(cid);
+  }
+  if (kids.length !== 3) {
+    T("T11.4 脚手架工程建好（根卡 + 3 张子卡）", false, JSON.stringify(kids));
+  } else {
+    T("T11.4 脚手架工程建好（根卡 + 3 张子卡）", true);
+    await load(swid);
+    const g0 = await siblingGroups(swid);
+    if (!g0) {
+      T("T11.4 脚手架里找得到同层 3 张卡", false, "没有");
+    } else {
+      const last = g0.ids[g0.ids.length - 1];
+      const mid = (g0.tops[0] + g0.tops[1]) / 2;    // 落点＝第一、二张之间的中点
+      await dragToWorldY(last, mid);
+      await sleep(1000);
+      const g1 = await groupOrder(g0.parent, swid);
+      T("T11.4 拖到第一张卡下面 ⇒ 它排到第 2 位（落点被尊重）",
+        g1.ids[1] === last, JSON.stringify({ before: g0.ids, after: g1.ids }));
+    }
+    for (const k of kids) await jdel(`${BASE}/api/works/${swid}/cards/${k}`);   // 清理
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   T11.5 关键控件命中区（WCAG 2.2 最小目标尺寸 24×24）
+   ══════════════════════════════════════════════════════════════════════ */
+await load();
+{
+  const hits = await ev(`(() => {
+    const one = (sel) => {
+      const n = document.querySelector(sel);
+      if (!n) return null;
+      const r = n.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height) };
+    };
+    return {
+      chat: one('.card-node .cv-chat'),          // 💬 在此展开对话
+      open: one('.card-node .cv-open'),            // ↗ 打开对话页
+      slider: one('#zoomSlider'),                  // 缩放滑块
+      zbtn: one('#zoomInBtn'),                    // ＋
+      triage: one('.proj-stat .ps-item[data-act="triage"]'),  // 待裁定入口
+    };
+  })()`);
+  const small = Object.entries(hits)
+    .filter(([, v]) => v && Math.min(v.w, v.h) < 24)
+    .map(([k, v]) => `${k}=${v.w}x${v.h}`);
+  T("T11.5 关键控件命中区都 ≥24px（WCAG 2.2 最小目标尺寸）", small.length === 0,
+    `偏小：${JSON.stringify(small)} 全量：${JSON.stringify(hits)}`);
 }
 
 /* ───────────────────────── 汇总 ───────────────────────── */

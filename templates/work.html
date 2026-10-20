@@ -21,7 +21,7 @@
 <!-- [画布商业化重做 2026-10-17] 画布页专属视觉体系独立成 canvas.css（只在 .page-canvas
      作用域内生效，不污染对话页）。必须在本行之后引入：同特异性后者胜，用它覆盖 style.css
      里的旧画布段；改动本文件必须升 ?v=。 -->
-<link rel="stylesheet" href="/static/canvas.css?v=25">
+<link rel="stylesheet" href="/static/canvas.css?v=27">
 </head>
 <body class="page-canvas">
 <div class="work-page">
@@ -91,7 +91,7 @@
       <!-- [画布 2026-10-19 · 事故排查] 构建戳：用户看不到改动时，第一件事是确认
            "他加载的到底是哪一版 HTML"。这里放一个极小的版本号，肉眼可读、不打扰。
            改动 canvas.js/css 时**必须同步改这个号**（连同 main.js 里的 import 版本）。 -->
-      <span class="build-stamp canvas-only" title="构建版本：看不到这个号变化＝浏览器还在用旧 HTML">v83</span>
+      <span class="build-stamp canvas-only" title="构建版本：看不到这个号变化＝浏览器还在用旧 HTML">v84</span>
       <span class="spacer"></span>
       <!-- [缩放控件 2026-10-16 用户令] 滚轮缩放废除（canvas.js wheel 监听已删），
            缩放只走此控件组：−/＋每按一次 ±25%；拖动条 25% 档位吸附（min25/max200/step25）；
@@ -188,6 +188,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=82.0"></script>
+<script type="module" src="/static/esm/main.js?v=83.0"></script>
 </body>
 </html>
