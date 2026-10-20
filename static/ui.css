@@ -29,6 +29,11 @@ body.page-chat {
   --ui-line: rgba(255, 255, 255, 0.07);
   --ui-line-2: rgba(255, 255, 255, 0.12);
   --ui-line-3: rgba(255, 255, 255, 0.18);
+  /* [5715 · 1.4.11] 输入框边界：**控件的识别线**（不是装饰线）——
+     输入卡面与页面底只差 1.04:1 ⇒ 边框是唯一能认出「这里能打字」的东西
+     ⇒ 按 WCAG 1.4.11（非文字对比）须 ≥3:1（--ui-line-2 只有 1.35:1）。
+     对页面底 3.35:1、对卡面 3.21:1 ⇒ 两边都过线。 */
+  --ui-line-input: #5f6670;
 
   /* 文字：对比度按 WCAG 反推（正文 ≥7、次要 ≥4.5、装饰 ≥3）
      text-3 原 #6d7480 只有 4.1:1，时间/语言标签这类**要读**的字不合格；
@@ -43,7 +48,12 @@ body.page-chat {
   --ui-accent-hi: #909af5;
   --ui-accent-lo: rgba(125, 136, 238, 0.14);
   --ui-accent-line: rgba(125, 136, 238, 0.32);
-  --ui-accent-ink: #ffffff;
+  /* [5715 · 对比度网] 强调底上的字用**深墨**，不用白字：
+     白字压 --ui-accent(#7d88ee) 只有 3.17:1、压 hover 底(#909af5) 只有 2.58:1
+     —— 都低于 WCAG AA 正文线 4.5:1（按钮标签是正文，不算大字）。
+     深墨 #0b0d11 压底：6.14:1（常态）/ 7.53:1（hover）⇒ 过线。
+     浅色主题那边强调色本来就深（#5560d8），白字 5.18:1 够 ⇒ 那边仍用白字。 */
+  --ui-accent-ink: #0b0d11;
 
   /* 语义 */
   --ui-ok: #4ec98a;
@@ -106,6 +116,8 @@ html[data-theme="light"] body.page-chat {
   --ui-line: rgba(16, 19, 24, 0.08);
   --ui-line-2: rgba(16, 19, 24, 0.13);
   --ui-line-3: rgba(16, 19, 24, 0.2);
+  /* [5715 · 1.4.11] 输入框边界（控件识别线，须 ≥3:1）：对页面底 3.65:1、对卡面 3.77:1。 */
+  --ui-line-input: #7d848f;
 
   --ui-text: #14171c;      /* 15.8:1 */
   --ui-text-2: #4d545e;    /* 8.3:1 */
@@ -116,6 +128,8 @@ html[data-theme="light"] body.page-chat {
   --ui-accent-hi: #4652cc;
   --ui-accent-lo: rgba(85, 96, 216, 0.09);
   --ui-accent-line: rgba(85, 96, 216, 0.26);
+  /* [5715 · 对比度网] 浅色主题的强调色本来就深（#5560d8），白字 5.18:1 够 AA ⇒
+     仍用白字；深色主题那边强调色偏亮 ⇒ 那边改用深墨（见上方深色块）。 */
   --ui-accent-ink: #ffffff;
 
   --ui-ok: #17925c;
@@ -128,6 +142,29 @@ html[data-theme="light"] body.page-chat {
   --ui-shadow-1: 0 1px 2px rgba(16, 19, 24, 0.06);
   --ui-shadow-2: 0 8px 24px rgba(16, 19, 24, 0.1);
   --ui-shadow-3: 0 18px 44px rgba(16, 19, 24, 0.14);
+}
+
+/* ---------------------------------------------------------------------------
+   [5715 · 修] 老令牌桥接（浅色主题）
+   对话页里仍有一批控件用的是 style.css 的**老令牌**（--panel/--text/--dim/
+   --border/--bg…），而老令牌在 :root 只有**一套深色值、没有浅色覆盖**——
+   浅色主题只重定义了 --ui-*。后果：模型选择器 `.model-pill`（--panel 底 +
+   --text 字）在浅色界面里是**近黑底白字的实心药丸**，一屏浅色里视觉权重最高
+   （实测截图），读起来像个告警条而不是辅助控件。
+
+   修法：在对话页作用域内把老令牌**映射**到新设计系统的对应值——
+   一次修好所有还在用老令牌的对话页控件，而不是逐个打补丁。
+   只作用于浅色主题：深色下老令牌的观感已由既有样式调过，不动它（零回归）。
+   --------------------------------------------------------------------------- */
+html[data-theme="light"] body.page-chat {
+  --bg: var(--ui-bg);
+  --bg-deep: var(--ui-surface-3);
+  --panel: var(--ui-surface-1);
+  --panel-hover: var(--ui-surface-2);
+  --border: var(--ui-line-2);
+  --text: var(--ui-text);
+  --text-soft: var(--ui-text-2);
+  --dim: var(--ui-text-3);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1239,8 +1276,11 @@ body.page-chat .psteps .pstep .f {
 body.page-chat .step-detail {
   flex-basis: 100%;
   display: none;
-  margin: 6px 0 2px 10px;
-  padding: 10px 12px;
+  /* [5715 · 修] 缩进由 **margin** 改 **padding**（margin 不计进 flex-basis，
+     10px 外边距把这一行推出容器 ⇒ 整行横向溢出 10px、右边框被裁，实测 19 行全中）。
+     padding 计入 border-box（全局 box-sizing:border-box），缩进保留、溢出归零。 */
+  margin: 6px 0 2px 0;
+  padding: 10px 12px 10px 22px;
   border: 1px solid var(--ui-line);
   border-radius: var(--ui-r-sm);
   background: var(--ui-surface-2);
@@ -1584,7 +1624,8 @@ body.page-chat .composer-seat {
 body.page-chat .flow-input-root { padding-bottom: 14px; }
 
 body.page-chat .flow-input-card {
-  border: 1px solid var(--ui-line-2);
+  /* [5715 · 1.4.11] 描边是**控件识别线**（不是装饰线）⇒ 用 ≥3:1 的 --ui-line-input */
+  border: 1px solid var(--ui-line-input);
   border-radius: var(--ui-r-xl);
   background: var(--ui-surface-1);
   box-shadow: none;

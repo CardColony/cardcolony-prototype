@@ -33,7 +33,7 @@ from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, role_room, serial_gate, simple_service, text_tool_rescue, tool_fold
+from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, role_room, serial_gate, simple_service, steer, text_tool_rescue, tool_fold
 
 logger = logging.getLogger("api.routes")
 
@@ -1199,6 +1199,28 @@ async def post_work_stop(work_id: str, card_id: str):
     return {**res, **auto_res}
 
 
+@router.post("/works/{work_id}/cards/{card_id}/steer")
+async def post_card_steer(work_id: str, card_id: str, req: dict):
+    """**插话**：把一条用户消息投递进**正在跑**的这一轮。
+
+    [5715] 此前 UI 上有"插话"（Cmd/Ctrl+Enter、`T.steerQueue` 文案），
+    但实现是空的——运行中只弹一句「轮结束后依序发出」，用户等的是整轮跑完（1–8 分钟）。
+    本端点是真投递：``steer.request_steer`` 置位 ⇒ ``message_runner`` 下一次模型
+    调用前插进轮槽 ⇒ 模型下一轮就能看到。
+
+    - **无在途回合** ⇒ ``applied:false``（前端回退成普通发送，不假装成功）；
+    - 已在途 ⇒ ``applied:true``，消息进队列，下一轮模型调用生效。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    text = str((req or {}).get("content") or (req or {}).get("text") or "")
+    res = await steer.request_steer(work_id, card_id, text)
+    # [5715] 「没插上」也返回 200：端点成功执行了「尝试插话」这个动作，只是这一轮
+    # 赶不上了（无在途回合）。用 409 会让前端弹一个错误提示——那不是错误，
+    # 是正常的时序，处置是「回退成排队」而不是「报错」。
+    return res
+
+
 @router.post("/works/{work_id}/cards/{card_id}/auto/resume")
 async def post_card_auto_resume(work_id: str, card_id: str):
     """**人工**恢复：把停在 paused / blocked 的自动模式卡重新拉起。
@@ -1669,6 +1691,9 @@ async def _run_message(work_id: str, card_id: str, content: str,
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
         control.discard_stop(work_id, card_id)
+        # [5715] 插话残留清扫（对齐 control.discard_stop 的纪律）：回合窗口外
+        # 的插话一律作废——不能留给下一回合，否则那句话会凭空出现在下一轮。
+        steer.discard_steer(work_id, card_id)
         session_facade.turn_release(work_id, card_id, turn_owner)
         event_stream.reset_stream_context(_stream_ctx_token)
         if failed:

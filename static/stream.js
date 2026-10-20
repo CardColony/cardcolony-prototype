@@ -42,9 +42,10 @@ import { API } from "./esm/api.js?v=39";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
-import { createAssembler } from "./esm/assembler.js?v=37";
-import { createChatView } from "./esm/flow/chat-view.js?v=4";
+import { createAssembler } from "./esm/assembler.js?v=39";
+import { createChatView } from "./esm/flow/chat-view.js?v=5";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
+import { createCopyButton, createResendButton } from "./esm/flow/message-actions.js?v=1";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
    键 `${wid}/${cid}`；字段即原 `current` 单例的原样搬运（asm/view/liveSlot/
@@ -460,10 +461,14 @@ const BOARD_CFG = Object.assign(
     }
     // 其余键值对逐行（不含已提取的）
     const rest = {};
+    const objs = [];
     for (const k of Object.keys(d)) {
       if (k === "ok" || k === "error" || k === "content" || k === "files" || k === "items") continue;
-      if (typeof d[k] === "object") continue;
       if (d[k] === null || d[k] === "") continue;
+      /* [5715 · 修] 对象型字段原来**整条丢弃**（continue）⇒ 工具结果里只有对象字段时
+         展开体是**一片空白**（实测 create_card 的结果只有 card 对象 ⇒ 点开什么都没有，
+         用户以为点坏了）。改为给一段截断 JSON 摘要。 */
+      if (typeof d[k] === "object") { objs.push([k, d[k]]); continue; }
       rest[k] = d[k];
     }
     const rks = Object.keys(rest);
@@ -474,6 +479,22 @@ const BOARD_CFG = Object.assign(
         "<span class='f'><span class='k'>" + esc(k) + "</span> = <span class='v'>" + esc(String(rest[k])) + "</span></span>"
       ).join(" ");
       out.push(kv);
+    }
+    for (const pair of objs) {
+      const o = document.createElement("div");
+      o.className = "tr-kv tr-kv-obj";
+      /* 截断到 2000 字：对象字段是附属信息（正文在 content 字段，不截断），
+         整份 card/meta JSON 可能上万字，全量倒出来会淹没结果区。 */
+      o.innerHTML = "<span class='f'><span class='k'>" + esc(pair[0]) + "</span> = <span class='v'>"
+        + esc(clip(fmtData(pair[1]), 2000)) + "</span></span>";
+      out.push(o);
+    }
+    /* [5715 · 修] 实在没有可展示的字段 ⇒ 明说"没有"，别留一片空白让人以为点坏了。 */
+    if (!out.length) {
+      const e = document.createElement("div");
+      e.className = "tr-empty";
+      e.textContent = "（该结果没有可展示的字段）";
+      out.push(e);
     }
     return out;
   }
@@ -626,7 +647,9 @@ const BOARD_CFG = Object.assign(
 
     /* [对话界面商业化 2026-10-17] 用户消息操作条（hover 浮出）：
        复制 + 重新发送。重发不直接调 workspace——stream 不持有发送闭包，
-       用一次自定义事件把「用户要求重发这段原文」交给宿主，避免反向依赖。 */
+       用一次自定义事件把「用户要求重发这段原文」交给宿主，避免反向依赖。
+       [5715 · 抽模块] 两个按钮的逻辑搬进 esm/flow/message-actions.js
+       （原先长在渲染闭包里 ⇒ 不可单测、且剪贴板回退逻辑写了两份）。 */
     const actions = document.createElement("div");
     actions.className = "msg-actions";
     const bubble = row.querySelector(".flow-user-bubble");
@@ -636,49 +659,11 @@ const BOARD_CFG = Object.assign(
     const when = fmtClock(node.ts);
     if (when) { t.textContent = when; t.title = String(node.ts); actions.appendChild(t); }
 
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "msg-act";
-    copyBtn.title = "复制";
-    copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.2" y="5.2" width="8" height="8" rx="1.6"/><path d="M10.8 3.2H3.6a.8.8 0 0 0-.8.8v7.2"/></svg>';
-    copyBtn.onclick = () => {
-      const text = bubble ? bubble.innerText : "";
-      if (!text) return;
-      const done = () => {
-        const old = copyBtn.innerHTML;
-        copyBtn.classList.add("is-ok");
-        copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6.5"/></svg>';
-        setTimeout(() => {
-          copyBtn.classList.remove("is-ok");
-          copyBtn.innerHTML = old;
-        }, 1400);
-      };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, () => { /* 静默 */ });
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand("copy"); done(); } catch (e) { /* 静默 */ }
-        document.body.removeChild(ta);
-      }
-    };
-    actions.appendChild(copyBtn);
+    const getUserText = () => (bubble ? bubble.innerText : "");
+    actions.appendChild(createCopyButton({ getText: getUserText, title: "复制" }));
 
     if (!node.pending) {
-      const reBtn = document.createElement("button");
-      reBtn.type = "button";
-      reBtn.className = "msg-act";
-      reBtn.title = "重新发送这条提问";
-      reBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7"/><path d="M13.4 2.6v3.2h-3.2"/></svg>';
-      reBtn.onclick = () => {
-        const text = bubble ? bubble.innerText : "";
-        if (!text) return;
-        try {
-          window.dispatchEvent(new CustomEvent("ui:resend", { detail: { content: text } }));
-        } catch (e) { /* 零阻断 */ }
-      };
-      actions.appendChild(reBtn);
+      actions.appendChild(createResendButton({ getText: getUserText }));
     }
 
     /* 挂进气泡容器而不是行容器：行是全宽 flex 列，挂行上只能排在气泡下方，
@@ -1067,9 +1052,14 @@ const BOARD_CFG = Object.assign(
     // 后台结算回流走 resync()——**不激活**，结果落该卡自己的（可能游离的）画板（§五.5）。
     const st = activate(wid, cid);
     stopES(st);
-    const items = await fetchTimeline(st, wid, cid);
-    renderSnapshot(st, st.asm.rebuild(items));
-    if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
+    /* [5715 · 修] 骨架必须在**任何**结局下收起：原来 markLoaded 只在末尾调，
+       fetchTimeline 抛错 ⇒ 骨架永久停留（用户看到"一直在加载"却什么也没发生）。 */
+    try {
+      const items = await fetchTimeline(st, wid, cid);
+      renderSnapshot(st, st.asm.rebuild(items));
+    } finally {
+      if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
+    }
   }
 
   /** 结算后回流：与刷新同一条路（唯一数据源仍是 timeline）。
@@ -1311,5 +1301,13 @@ export const EventFlow = {
   setEmpty(wid, cid, payload) {
     const st = sessions.get(skey(wid, cid));
     if (st && st.view && typeof st.view.setEmpty === "function") st.view.setEmpty(payload);
+  },
+  /* [5715 · 修] 收首屏骨架：宿主在「确定没有数据」时调用。
+     病根：骨架只在 markLoaded() 后收起，而 markLoaded 只在 replayTrace 末尾调
+     ⇒ 草稿路径（/work/draft、新建卡）不走 replayTrace ⇒ **骨架永远不收**，
+     空态也被 loading 判据挡着 ⇒ 新用户第一屏是"永远在加载"。 */
+  markLoaded(wid, cid) {
+    const st = sessions.get(skey(wid, cid));
+    if (st && st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
   },
 };
