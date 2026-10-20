@@ -4,7 +4,7 @@
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=40";
+import { notify } from "./api.js?v=41";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=31";
 import { createNavAsync } from "./nav_async.js?v=30";
 import { createNavRenderer } from "./nav_render.js?v=35";

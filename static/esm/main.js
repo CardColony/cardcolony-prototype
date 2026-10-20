@@ -10,7 +10,7 @@
  * （store.state.canvasState 由 canvas.js 注册）。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=40";
+import { API } from "./api.js?v=41";
 import "./util.js?v=30";
 import "../canvas.js?v=77";
 import { createNavSystem } from "./nav_system.js?v=37";

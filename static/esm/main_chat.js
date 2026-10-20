@@ -9,11 +9,11 @@
  * workspace.js 的消费点自带 `window.GetCanvasState &&` 空守卫。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=40";
+import { API } from "./api.js?v=41";
 import "./util.js?v=30";
 import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts } from "./theme.js?v=6";
 import { initModelBadge } from "./model_picker.js?v=3";
-import "../stream.js?v=50";
+import "../stream.js?v=51";
 import "../workspace.js?v=66";
 
 window.API = API;   // 调试便利（非功能依赖；与 api.js 薄壳同属兼容层）

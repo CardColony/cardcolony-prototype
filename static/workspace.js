@@ -4,12 +4,12 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=40";
+import { API } from "./esm/api.js?v=41";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=50";
+import { EventFlow } from "./stream.js?v=51";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=40";
+import { notify, postStop } from "./esm/api.js?v=41";
 // [5715 · 抽模块] 卡间信的解析/剥头行与呈现都搬进 esm/flow/card-msg-node.js
 //   （原先在装配闭包里 ⇒ 不可单测）；此处不再需要 cardmsg.js 的解析件。
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。

@@ -178,8 +178,17 @@ export const API = {
   // 等价**（后端 `frm` 默认 0＝全量）；传 N 则只回 seq>=N 的记录（后端语义**含端点**，
   // routes.py `frm=Query(0, alias="from")` → `event_log.timeline(from_seq=frm)`）。
   // ★ 这里的 N 必须是**落盘 events seq**，绝不是内存 journal seq（两套计数空间）。
-  getTimeline: (wid, cid, from) => call("GET",
-    `/api/works/${wid}/cards/${cid}/timeline${(typeof from === "number" && from > 0) ? "?from=" + from : ""}`),
+  /* [对话流分页 2026-10-20] opts.tail / opts.before 是**窗口参数**（后端同名 Query）：
+       tail=N   → 只回最后 N 条（打开卡片用；长会话从上千条降到几百条）
+       before=S → 只回 seq < S（往上翻历史用）
+     不传 opts ＝ 全量（与改前逐字等价，其它调用点零影响）。 */
+  getTimeline: (wid, cid, from, opts) => {
+    const q = [];
+    if (typeof from === "number" && from > 0) q.push("from=" + from);
+    if (opts && opts.tail > 0) q.push("tail=" + opts.tail);
+    if (opts && opts.before > 0) q.push("before=" + opts.before);
+    return call("GET", `/api/works/${wid}/cards/${cid}/timeline${q.length ? "?" + q.join("&") : ""}`);
+  },
   // [更新现状按钮改造 2026-10-16] op 缺省不带到请求体 ⇒ 普通发送与改前逐字等价；
   // 传 op（如 "update_status"）⇒ 本轮走专用通道（后端认它注入专用任务 + 追加专用工具）。
   postMessage: (wid, cid, content, op) => call("POST",

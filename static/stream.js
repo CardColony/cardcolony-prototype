@@ -38,7 +38,7 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=40";
+import { API } from "./esm/api.js?v=41";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
@@ -68,7 +68,11 @@ function skey(wid, cid) { return wid + "/" + cid; }
    idleReleaseMs —— T3 静默超时：多久没用就释放。
    sweepMs       —— T3 释放扫描周期。 */
 const BOARD_CFG = Object.assign(
-  { pageNodes: 120, residentMax: 8, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000 },
+  { pageNodes: 120, residentMax: 8, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000,
+    /* [对话流分页 2026-10-20] 打开卡片时只拉**最后多少条事件**。
+       改前是全量：card_004 有 1746 条事件 ⇒ 装配 1185 个节点，打开要 2.8 秒 CPU。
+       400 条约覆盖最近 20~40 轮，往上翻再按需补。 */
+    initialEvents: 400 },
   (typeof window !== "undefined" && window.__FLOW_BOARD__) || {}
 );
 
@@ -740,8 +744,9 @@ const BOARD_CFG = Object.assign(
       onLoadOlder: () => { loadEarlier(st); },
       runningStart: () => st.turnStart,
       isRunning: () => !!st.busy,
-      hasMore: () => (st.winStart || 0) > 0,
-      isLoadingOlder: () => false,
+      // [对话流分页 2026-10-20] 内存窗口还有 ⇒ 有；窗口到顶但后端还有 ⇒ 也算有
+      hasMore: () => (st.winStart || 0) > 0 || !!st.hasEarlier,
+      isLoadingOlder: () => !!st.loadingOlder,
     });
     st.view.setUserKeyTest((key) => {
       const node = st.asm.snapshot().nodes.get(key);
@@ -760,9 +765,43 @@ const BOARD_CFG = Object.assign(
 
   /** 往前插一页：锚点由 chat-view 在点击时先记好，这里只改窗口并重画。 */
   function loadEarlier(st) {
-    if (!st || !st.winStart || st.winStart <= 0) return false;
-    st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageNodes);
-    renderSnapshot(st, st.asm.snapshot());
+    if (!st) return false;
+    /* ① 内存窗口里还有 ⇒ 零网络前移一页（改前行为，逐字保留） */
+    if ((st.winStart || 0) > 0) {
+      st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageNodes);
+      renderSnapshot(st, st.asm.snapshot());
+      return true;
+    }
+    /* ② 窗口已到顶，但后端还有更早的 ⇒ 拉一段更早的，合并后重建。
+       [对话流分页 2026-10-20] 这就是「首次只拉尾部」的配套：不补这一段，
+       往上翻就翻不到历史了（功能退化）。 */
+    if (!st.hasEarlier || st.loadingOlder) return false;
+    st.loadingOlder = true;
+    (async () => {
+      try {
+        const before = st.firstSeq || 0;
+        if (!before) { st.hasEarlier = false; return; }
+        const older = await fetchTimeline(st, st.wid, st.cid, undefined,
+          { tail: BOARD_CFG.initialEvents, before: before });
+        if (!older || !older.length) { st.hasEarlier = false; return; }
+        const prevItems = st.loadedItems || [];
+        const seen = new Set(prevItems.map((x) => x.seq));
+        const merged = older.filter((x) => !seen.has(x.seq)).concat(prevItems);
+        const totalBefore = st.asm.snapshot().order.length;
+        st.loadedItems = merged;
+        st.asm.rebuild(merged);
+        const totalAfter = st.asm.snapshot().order.length;
+        const addedNodes = Math.max(0, totalAfter - totalBefore);
+        // 视野不跳：把窗口起点后移到「新增段的尾部」，用户看到的是接缝处
+        st.winStart = Math.max(0, addedNodes - BOARD_CFG.pageNodes);
+        renderSnapshot(st, st.asm.snapshot());
+      } catch (e) {
+        /* 拉不到就保持现状（不静默清空） */
+      } finally {
+        st.loadingOlder = false;
+        try { if (st.view) st.view.paintStatus(); } catch (e) { /* 零阻断 */ }
+      }
+    })();
     return true;
   }
 
@@ -1080,7 +1119,10 @@ const BOARD_CFG = Object.assign(
     /* [5715 · 修] 骨架必须在**任何**结局下收起：原来 markLoaded 只在末尾调，
        fetchTimeline 抛错 ⇒ 骨架永久停留（用户看到"一直在加载"却什么也没发生）。 */
     try {
-      const items = await fetchTimeline(st, wid, cid);
+      // [对话流分页 2026-10-20] 首次只拉尾部 initialEvents 条（不是全量）。
+      // 全量时 card_004 要装配 1185 个节点、打开耗 2.8 秒 CPU；尾部 400 条约 200 节点。
+      const items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
+      st.loadedItems = items || [];
       renderSnapshot(st, st.asm.rebuild(items));
     } finally {
       if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
@@ -1118,15 +1160,22 @@ const BOARD_CFG = Object.assign(
   /** 拉 timeline。`from` 省略＝全量（刷新/结算）；给值＝只取 seq>=from 的增量（T5）。
       ★ 无论全量还是增量，都把本次 items 的**末条 seq** 记进 `st.diskSeq`（落盘水位）——
       这是增量游标唯一的播种源；**绝不与 `st.lastSeq`（内存 journal seq）互写**。 */
-  async function fetchTimeline(st, wid, cid, from) {
+  async function fetchTimeline(st, wid, cid, from, opts) {
     try {
-      const resp = await API.getTimeline(wid, cid, from);
+      const resp = await API.getTimeline(wid, cid, from, opts);
       const items = (resp && resp.items) || [];
       if (st && items.length) {
         const last = items[items.length - 1];
         if (last && typeof last.seq === "number") {
           st.diskSeq = Math.max(st.diskSeq || 0, last.seq);
         }
+      }
+      /* [对话流分页 2026-10-20] 窗口边界记在会话状态上：
+           hasEarlier — 后端是否还有更早的（决定「加载更早」是否可用）
+           firstSeq   — 已加载的最早 seq（下次 before 的锚点） */
+      if (st && resp) {
+        st.hasEarlier = !!resp.has_earlier;
+        if (typeof resp.first_seq === "number" && resp.first_seq > 0) st.firstSeq = resp.first_seq;
       }
       return items;
     } catch (e) {
