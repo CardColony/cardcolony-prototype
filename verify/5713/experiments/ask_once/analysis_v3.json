@@ -1,0 +1,356 @@
+{
+  "evidence": "evidence_v3.json",
+  "model": "ds-flash-official",
+  "arms": [
+    {
+      "arm": "ask_post",
+      "work_id": "work_019",
+      "model": "ds-flash-official",
+      "injects": [
+        {
+          "ts": "2026-10-20T16:22:55.836+08:00",
+          "content": "批复：方案收到，按此执行。"
+        },
+        {
+          "ts": "2026-10-20T16:25:03.317+08:00",
+          "content": "现在停一下，看你已经派出去的子卡：这个拆法有没有问题？有没有更好的拆法？如果该改，就动手改（改任务书、合并、删掉重派都可以），并把改了什么、为什么改写进现状块。"
+        }
+      ],
+      "action_counts_total": {
+        "update_status": 3,
+        "update_goal": 2,
+        "update_shadow": 3,
+        "write_file": 2,
+        "create_card": 4,
+        "link_cards": 3,
+        "send_card_message": 3,
+        "append_ruling": 1
+      },
+      "action_counts_after_inject": {
+        "append_ruling": 1,
+        "send_card_message": 3,
+        "update_shadow": 2,
+        "link_cards": 3,
+        "write_file": 2,
+        "create_card": 4,
+        "update_goal": 1,
+        "update_status": 2
+      },
+      "actions_after_inject": [
+        {
+          "ts": "2026-10-20T16:23:11.780+08:00",
+          "stage": "after_inject_1",
+          "tool": "update_goal",
+          "brief": "resume"
+        },
+        {
+          "ts": "2026-10-20T16:23:11.874+08:00",
+          "stage": "after_inject_1",
+          "tool": "write_file",
+          "brief": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run0"
+        },
+        {
+          "ts": "2026-10-20T16:23:18.158+08:00",
+          "stage": "after_inject_1",
+          "tool": "create_card",
+          "brief": "A · works 卡数据完整性"
+        },
+        {
+          "ts": "2026-10-20T16:23:24.585+08:00",
+          "stage": "after_inject_1",
+          "tool": "create_card",
+          "brief": "B · 快照与恢复路径"
+        },
+        {
+          "ts": "2026-10-20T16:23:30.758+08:00",
+          "stage": "after_inject_1",
+          "tool": "create_card",
+          "brief": "C · 运行日志留痕质量"
+        },
+        {
+          "ts": "2026-10-20T16:23:38.077+08:00",
+          "stage": "after_inject_1",
+          "tool": "update_status",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:23:43.174+08:00",
+          "stage": "after_inject_1",
+          "tool": "update_shadow",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:26:13.384+08:00",
+          "stage": "after_inject_2",
+          "tool": "link_cards",
+          "brief": "card_002"
+        },
+        {
+          "ts": "2026-10-20T16:26:13.411+08:00",
+          "stage": "after_inject_2",
+          "tool": "link_cards",
+          "brief": "card_003"
+        },
+        {
+          "ts": "2026-10-20T16:26:13.441+08:00",
+          "stage": "after_inject_2",
+          "tool": "link_cards",
+          "brief": "card_004"
+        },
+        {
+          "ts": "2026-10-20T16:26:39.788+08:00",
+          "stage": "after_inject_2",
+          "tool": "write_file",
+          "brief": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\trading-workspace\\healthcheck_run0"
+        },
+        {
+          "ts": "2026-10-20T16:26:39.792+08:00",
+          "stage": "after_inject_2",
+          "tool": "send_card_message",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:26:39.804+08:00",
+          "stage": "after_inject_2",
+          "tool": "send_card_message",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:26:39.829+08:00",
+          "stage": "after_inject_2",
+          "tool": "send_card_message",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:26:49.868+08:00",
+          "stage": "after_inject_2",
+          "tool": "create_card",
+          "brief": "D · 操作留痕链一致性"
+        },
+        {
+          "ts": "2026-10-20T16:27:07.610+08:00",
+          "stage": "after_inject_2",
+          "tool": "update_status",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:27:07.654+08:00",
+          "stage": "after_inject_2",
+          "tool": "append_ruling",
+          "brief": "card_001"
+        },
+        {
+          "ts": "2026-10-20T16:27:12.832+08:00",
+          "stage": "after_inject_2",
+          "tool": "update_shadow",
+          "brief": ""
+        }
+      ],
+      "plan_chars_pre": 3585,
+      "plan_chars_post": 0,
+      "plan_changed": null,
+      "children_summary": {
+        "n": 4,
+        "mission_like": 0,
+        "subagent_like": 2,
+        "mixed": 2,
+        "with_acceptance": 4,
+        "avg_step_markers": 1.0,
+        "avg_howto_hits": 2.5
+      },
+      "children_before_ask": 3
+    },
+    {
+      "arm": "ask",
+      "work_id": "work_020",
+      "model": "ds-flash-official",
+      "injects": [
+        {
+          "ts": "2026-10-20T16:29:59.397+08:00",
+          "content": "先别执行。重看一遍你的拆分方案：这个拆法有没有问题？有没有更好的拆法？把你想清楚后的结论（改哪里、为什么这么改；或为什么不改）写进现状块，然后再报一次方案等我批复。"
+        },
+        {
+          "ts": "2026-10-20T16:31:35.995+08:00",
+          "content": "批复：按你重报的方案执行。"
+        }
+      ],
+      "action_counts_total": {
+        "update_status": 3,
+        "update_shadow": 3,
+        "update_goal": 2,
+        "create_card": 3,
+        "link_cards": 3
+      },
+      "action_counts_after_inject": {
+        "update_shadow": 2,
+        "link_cards": 3,
+        "create_card": 3,
+        "update_goal": 1,
+        "update_status": 2
+      },
+      "actions_after_inject": [
+        {
+          "ts": "2026-10-20T16:31:07.778+08:00",
+          "stage": "after_inject_1",
+          "tool": "update_status",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:31:13.528+08:00",
+          "stage": "after_inject_1",
+          "tool": "update_shadow",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:31:54.576+08:00",
+          "stage": "after_inject_2",
+          "tool": "update_goal",
+          "brief": "resume"
+        },
+        {
+          "ts": "2026-10-20T16:32:05.948+08:00",
+          "stage": "after_inject_2",
+          "tool": "create_card",
+          "brief": "卡A·活数据完整性与内引用一致性"
+        },
+        {
+          "ts": "2026-10-20T16:32:18.170+08:00",
+          "stage": "after_inject_2",
+          "tool": "create_card",
+          "brief": "卡B·快照与恢复保真度"
+        },
+        {
+          "ts": "2026-10-20T16:32:29.039+08:00",
+          "stage": "after_inject_2",
+          "tool": "create_card",
+          "brief": "卡C·留痕可回溯性与缺块归因"
+        },
+        {
+          "ts": "2026-10-20T16:32:36.074+08:00",
+          "stage": "after_inject_2",
+          "tool": "link_cards",
+          "brief": "card_002"
+        },
+        {
+          "ts": "2026-10-20T16:32:36.089+08:00",
+          "stage": "after_inject_2",
+          "tool": "link_cards",
+          "brief": "card_003"
+        },
+        {
+          "ts": "2026-10-20T16:32:36.115+08:00",
+          "stage": "after_inject_2",
+          "tool": "link_cards",
+          "brief": "card_004"
+        },
+        {
+          "ts": "2026-10-20T16:32:43.082+08:00",
+          "stage": "after_inject_2",
+          "tool": "update_status",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:32:48.166+08:00",
+          "stage": "after_inject_2",
+          "tool": "update_shadow",
+          "brief": ""
+        }
+      ],
+      "plan_chars_pre": 2834,
+      "plan_chars_post": 5006,
+      "plan_changed": true,
+      "children_summary": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 14.33,
+        "avg_howto_hits": 3.33
+      },
+      "children_before_ask": null
+    },
+    {
+      "arm": "control",
+      "work_id": "work_021",
+      "model": "ds-flash-official",
+      "injects": [
+        {
+          "ts": "2026-10-20T16:36:00.832+08:00",
+          "content": "批复：方案收到，按此执行。"
+        }
+      ],
+      "action_counts_total": {
+        "update_status": 2,
+        "update_shadow": 2,
+        "update_goal": 2,
+        "create_card": 3,
+        "append_ruling": 1
+      },
+      "action_counts_after_inject": {
+        "append_ruling": 1,
+        "update_shadow": 1,
+        "create_card": 3,
+        "update_goal": 1,
+        "update_status": 1
+      },
+      "actions_after_inject": [
+        {
+          "ts": "2026-10-20T16:36:06.080+08:00",
+          "stage": "after_inject_1",
+          "tool": "update_goal",
+          "brief": "resume"
+        },
+        {
+          "ts": "2026-10-20T16:36:26.724+08:00",
+          "stage": "after_inject_1",
+          "tool": "create_card",
+          "brief": "A-works 卡片数据完整性巡检"
+        },
+        {
+          "ts": "2026-10-20T16:36:26.764+08:00",
+          "stage": "after_inject_1",
+          "tool": "create_card",
+          "brief": "B-快照与恢复路径巡检"
+        },
+        {
+          "ts": "2026-10-20T16:36:27.113+08:00",
+          "stage": "after_inject_1",
+          "tool": "create_card",
+          "brief": "C-运行日志留痕质量巡检"
+        },
+        {
+          "ts": "2026-10-20T16:36:39.989+08:00",
+          "stage": "after_inject_1",
+          "tool": "update_status",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:36:40.015+08:00",
+          "stage": "after_inject_1",
+          "tool": "append_ruling",
+          "brief": ""
+        },
+        {
+          "ts": "2026-10-20T16:36:40.046+08:00",
+          "stage": "after_inject_1",
+          "tool": "update_shadow",
+          "brief": ""
+        }
+      ],
+      "plan_chars_pre": 3172,
+      "plan_chars_post": 0,
+      "plan_changed": null,
+      "children_summary": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 6.33,
+        "avg_howto_hits": 3.67
+      },
+      "children_before_ask": null
+    }
+  ]
+}
