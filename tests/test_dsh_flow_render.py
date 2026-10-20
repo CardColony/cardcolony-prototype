@@ -332,11 +332,11 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        "stream.js": "49", "workspace.js": "66", "canvas.js": "73",
-        "assembler.js": "37", "style.css": "47", "main.js": "72.1",
-        "main_chat.js": "2.13",
+        "stream.js": "51", "workspace.js": "68", "canvas.js": "74",
+        "assembler.js": "38", "style.css": "47", "main.js": "72.2",
+        "main_chat.js": "2.15",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
-        "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
+        "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
         "chat-view.js": "4", "message-item.js": "1",
     }
     for name, ver in expect.items():

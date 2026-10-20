@@ -10,11 +10,11 @@
  * （store.state.canvasState 由 canvas.js 注册）。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=36";
+import { API } from "./api.js?v=37";
 import "./util.js?v=30";
-import "../canvas.js?v=73";
-import { createNavSystem } from "./nav_system.js?v=35";
-import { loadRulePanel } from "./rule_panel.js?v=31";
+import "../canvas.js?v=74";
+import { createNavSystem } from "./nav_system.js?v=36";
+import { loadRulePanel } from "./rule_panel.js?v=32";
 
 const WORK_ID = window.__WORK_ID__;
 const navTree = document.getElementById("navTree");

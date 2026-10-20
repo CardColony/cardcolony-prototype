@@ -97,8 +97,10 @@ export function createQueueStore() {
         return;
       }
       if (action.kind === "steer") {
-        // [适配层边界] 本机后端没有「轮内投递窗口」，无法真正把消息注入正在跑的轮；
-        // 等价可达的语义是「这条优先」⇒ 提到队首，轮结束先发它。
+        /* [5715] **适配层边界已解除**：后端已开轮内投递窗口（``api/steer.py`` ＋
+           ``POST /works/{wid}/cards/{cid}/steer``），真插话由宿主经 onSteer 回调
+           投递（queue-dock 优先走它）。此处的「提到队首」保留为**没有宿主回调时**
+           的退化语义（仍比原地等待强：轮结束先发它）。 */
         const idx = rows.findIndex((r) => r.id === id);
         if (idx > 0) {
           const row = rows[idx];

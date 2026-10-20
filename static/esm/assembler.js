@@ -106,6 +106,8 @@ export function createAssembler() {
   /** 该轮尚无 assistant 时暂存的思考（待吸收）。 */
   let pendingReasoning = "";
   let pendingReasoningOrd = 0;
+  /** [5715] 上面这批思考属于哪个 run —— 归位时只允许**同 run** 的 assistant 吸收。 */
+  let pendingReasoningRun = "";
   let snapCache = null;
   let snapCacheRev = -1;
 
@@ -141,6 +143,7 @@ export function createAssembler() {
       node.reasoning = pendingReasoning;
       pendingReasoning = "";
       pendingReasoningOrd = 0;
+      pendingReasoningRun = "";
     }
     byKey.set(skey, node);
     order = order.concat([skey]);
@@ -155,11 +158,21 @@ export function createAssembler() {
     structRev++;
   }
 
-  /** 最近一条 assistant 节点（主模型思考的归属目标）。 */
-  function lastAssistant() {
+  /** 最近一条 assistant 节点（主模型思考的归属目标）。
+   *
+   *  [5715 · 修] 限定**同一个 run**。原来不限 run ⇒ 落盘路径下「后一个 run 的
+   *  思考」会挂到「前一个 run 的 assistant」上——实测：长程调用链那个 run 的
+   *  **247 条 reasoning 全部挂到前一个 run（21:26）那条老消息下**。
+   *  ⇒ 刷新后：长链 run 自己只剩「工具行 + 最后一段正文」，而中间那段
+   *  「模型在干什么」整段出现在**更早的消息**下面 ⇒ 工具归工具、内容给内容、
+   *  信息顺序全乱。
+   *  run_id 缺失（极老数据）时不限制，保持既有行为。 */
+  function lastAssistant(runId) {
     for (let i = order.length - 1; i >= 0; i--) {
       const n = byKey.get(order[i]);
-      if (n && n.kind === "assistant") return n;
+      if (!n || n.kind !== "assistant") continue;
+      if (runId && n.run_id && n.run_id !== runId) continue;
+      return n;
     }
     return null;
   }
@@ -194,28 +207,31 @@ export function createAssembler() {
     return seats.members[key];
   }
 
-  function appendReasoning(text) {
+  function appendReasoning(text, runId) {
     if (!text) return;
-    const target = lastAssistant();
+    const target = lastAssistant(runId);
     if (target) {
       target.reasoning = (target.reasoning || "") + text;
       target.rev++;
     } else {
       pendingReasoning += text;
+      // [5715] 记下这批思考属于哪个 run：归位时只允许**同 run** 的 assistant 吸收它
+      // （原来不限 run ⇒ 长链 run 的思考被前一个 run 的消息认领）。
+      if (!pendingReasoningRun) pendingReasoningRun = runId || "";
       if (!pendingReasoningOrd) pendingReasoningOrd = ord + 1;
     }
   }
 
   /** 该轮收口：思考若始终无人认领，落一条兜底节点（不丢文本）。 */
-  function flushPendingReasoning() {
+  function flushPendingReasoning(runId) {
     if (!pendingReasoning) return;
-    if (!lastAssistant()) {
+    if (!lastAssistant(runId)) {
       const tailKey = order[order.length - 1];
       const tail = tailKey ? byKey.get(tailKey) : null;
       const seq = tail ? tail.seq : 0;
       const ns = (tail && tail.ns) || "disk";
       const node = {
-        seq, ns, type: "reasoning", kind: "sys", round: tail ? tail.round : 0, run_id: "",
+        seq, ns, type: "reasoning", kind: "sys", round: tail ? tail.round : 0, run_id: runId || "",
         data: { text: pendingReasoning, orphan: true }, model: "",
         key: String(ns) + ":orphan:" + toInt(seq, 0),
         rev: 1,
@@ -226,6 +242,7 @@ export function createAssembler() {
     }
     pendingReasoning = "";
     pendingReasoningOrd = 0;
+    pendingReasoningRun = "";
   }
 
   /** tool_result 的配对目标：tool_call_id 精确优先，其次最近未闭合调用行。 */
@@ -253,6 +270,7 @@ export function createAssembler() {
     order = keepKeys;
     pendingReasoning = "";
     pendingReasoningOrd = 0;
+    pendingReasoningRun = "";
     structRev++;
   }
 
@@ -358,11 +376,18 @@ export function createAssembler() {
       }
       if (kind === "assistant") {
         node.reasoning = "";
-        if (pendingReasoning) {           // pending 思考在此归位（吸收）
+        /* [5715] 只吸收**同 run** 的 pending 思考。
+           原来不限 run ⇒ 长链 run 的思考被前一个 run 的消息认领（实测 247 条
+           全挂到 21:26 那条老消息下）⇒ 刷新后「工具与正文之间那段模型在想什么」
+           整段丢失、位置全错。run_id 缺失时不限（保持既有行为）。 */
+        const sameRun = !pendingReasoningRun || !runId || !node.run_id
+          || pendingReasoningRun === node.run_id;
+        if (pendingReasoning && sameRun) {   // pending 思考在此归位（吸收）
           node.reasoning = pendingReasoning;
           node.rev++;
           pendingReasoning = "";
           pendingReasoningOrd = 0;
+          pendingReasoningRun = "";
         }
       }
       return node;
@@ -426,12 +451,12 @@ export function createAssembler() {
       }
       const sn = byKey.get("stream:" + (runId || "?") + ":" + toInt(rec.round, 0));
       if (sn) { sn.reasoning = (sn.reasoning || "") + text; sn.rev++; return sn; }
-      appendReasoning(text);                    // 落盘历史：并入最近一条 assistant
+      appendReasoning(text, runId);             // 落盘历史：并入**同 run** 最近一条 assistant
       return null;
     }
 
     const node = push(Object.assign({}, base)); // chain / sys / injection
-    if (type === "done" || type === "error") flushPendingReasoning();
+    if (type === "done" || type === "error") flushPendingReasoning(runId);
     return node;
   }
 
@@ -444,6 +469,7 @@ export function createAssembler() {
     pendingLocalKey = null;
     pendingReasoning = "";
     pendingReasoningOrd = 0;
+    pendingReasoningRun = "";
     snapCache = null;
     snapCacheRev = -1;
     if (Array.isArray(items)) for (const rec of items) applyRecord(rec);
