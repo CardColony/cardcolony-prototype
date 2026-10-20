@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -11,7 +11,7 @@
      home.css 只放首页自有的少量规则（.home-*，不碰 .nav-*——那是 nav.css 的唯一真相）。
      两个 ?v= 与 work.html 保持同源同步——任一份改动都必须两处一起升，否则浏览器吃旧缓存。 -->
 <link rel="stylesheet" href="/static/style.css?v=45">
-<link rel="stylesheet" href="/static/nav.css?v=15">
+<link rel="stylesheet" href="/static/nav.css?v=16">
 <link rel="stylesheet" href="/static/home.css?v=1.1">
 </head>
 <body>
@@ -67,6 +67,6 @@
 <!-- [首页两态 2026-10-15] ES module 入口（与工作页同一形态，不走 IIFE 薄壳）。
      直接静态 import esm/api.js —— 薄壳时代那个「顶层先跑、API 后到」的时序缺口
      （见 git 7d09280 修复记录）在静态 import 下本就不存在，不必再写等待轮询。 -->
-<script type="module" src="/static/esm/home.js?v=1.2"></script>
+<script type="module" src="/static/esm/home.js?v=1.5"></script>
 </body>
 </html>

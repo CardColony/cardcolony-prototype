@@ -61,6 +61,12 @@ def test_t10_readonly_whitelist():
         # [自动模式 2026-10-17 · 回灌 5700 G2] 新增 read_inbox（auto 卡读自己的
         # 收件箱，零写入——出向视图的 answered 判定也是纯读账本）
         "read_inbox",
+        # [goal 域 2026-10-20] get_goal 只读
+        "get_goal",
+        # [基础工具找回] glob_files 只读
+        "glob_files",
+        # [角色机制 5710] list_roles 根卡只读清单
+        "list_roles",
     } & set(card_tools.TOOL_REGISTRY)
 
     assert card_tools.READONLY_TOOLS == frozenset(expected)
