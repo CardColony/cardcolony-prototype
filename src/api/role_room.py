@@ -615,6 +615,13 @@ async def _notify_card_changed(work_id: str, card_id: str,
         meta = _meta_of(work_id, card_id)
         if not meta or str(meta.get("card_type") or "") == ROLE_TYPE:
             return
+        # 有会话块的工作卡：同步按「回合收口」走（`after_turn`），这里不插手——
+        # 既避免一次改动触发两路同步/两起火，也保住「按回合收口、不按事件逐条推」
+        # 的既有口径。这里只补 `after_turn` 够不着的那一类：**没有会话块的卡**
+        # （只有现状/定论、用户直接改出来的卡）——它们没有回合，永远等不到收口。
+        last = await _last_seq(work_id, card_id)
+        if last >= 0:
+            return
         roles = await roles_watching_any(work_id, card_id)
         if not roles:
             return
@@ -622,7 +629,6 @@ async def _notify_card_changed(work_id: str, card_id: str,
         body = card.get("body") or {}
         status_h = _hash(str(body.get("status_block") or ""))
         third_h = _hash(str(body.get("requirements") or body.get("rulings") or ""))
-        last = await _last_seq(work_id, card_id)
         for role in roles:
             role_id = str(role.get("card_id") or "")
             if not role_id:
