@@ -20,70 +20,12 @@ import assert from "node:assert/strict";
 
 import { createChatView } from "../static/esm/flow/chat-view.js";
 import { createMessageItem } from "../static/esm/flow/message-item.js";
+import {
+  setupDom, makeScrollable, stubRects, JSDOM_AVAILABLE, SKIP_REASON,
+} from "./dom_scaffold.mjs";
 
 /* ---- jsdom 可选依赖：没装就整体跳过（不误红，也不假装跑过） ---- */
-let JSDOM = null;
-try {
-  ({ JSDOM } = await import("jsdom"));
-} catch {
-  JSDOM = null;
-}
-const SKIP = JSDOM ? false : "jsdom 未安装（npm install 后可跑本文件）";
-
-/* ---------------------------------------------------------------- 脚手架 */
-
-/** 建一个真 DOM 环境，把 window/document 挂到全局（模块按全局取用）。 */
-function setupDom() {
-  const dom = new JSDOM(
-    `<!doctype html><html><body><div id="chatArea"></div></body></html>`,
-    { pretendToBeVisual: true },
-  );
-  const { window } = dom;
-  globalThis.window = window;
-  globalThis.document = window.document;
-  globalThis.CustomEvent = window.CustomEvent;
-  globalThis.HTMLElement = window.HTMLElement;
-  globalThis.Element = window.Element;
-  globalThis.Node = window.Node;
-
-  // 假 ResizeObserver：把「列高变化」的回调暴露出来，好断言「底部不飘」。
-  const observers = [];
-  globalThis.ResizeObserver = class {
-    constructor(cb) { this.cb = cb; observers.push(this); }
-    observe(el) { this.el = el; }
-    disconnect() {}
-  };
-
-  return {
-    dom,
-    window,
-    mount: window.document.getElementById("chatArea"),
-    observers,
-  };
-}
-
-/**
- * jsdom 没有布局引擎：scrollHeight/clientHeight 恒 0、scrollTop 写不进去。
- * 这里给滚动容器造出**可推演的尺寸**，好把「跟随 / 离底 / 回底」跑成真行为。
- */
-function makeScrollable(scroll, { height = 1000, viewport = 400 } = {}) {
-  let top = 0;
-  Object.defineProperty(scroll, "scrollHeight", { value: height, configurable: true });
-  Object.defineProperty(scroll, "clientHeight", { value: viewport, configurable: true });
-  Object.defineProperty(scroll, "scrollTop", {
-    get: () => top,
-    set: (v) => { top = Math.max(0, Math.min(Number(v) || 0, height)); },
-    configurable: true,
-  });
-  // jsdom 未实现 scrollTo（会报 not implemented）——这里替它落成「写 scrollTop」
-  // 并记录调用，好断言「点回到底部 ⇒ 平滑滚到底」。
-  const calls = [];
-  scroll.scrollTo = (opts) => {
-    calls.push(opts);
-    scroll.scrollTop = opts && typeof opts === "object" ? opts.top : opts;
-  };
-  return { calls, get top() { return top; } };
-}
+const SKIP = JSDOM_AVAILABLE ? false : SKIP_REASON;
 
 /** 造一条节点行（renderRow 的替身）。 */
 function rowFor(text) {
@@ -251,6 +193,36 @@ test("分页：没有更多 ⇒ 「加载更早」隐藏；有更多 ⇒ 可见�
   assert.notEqual(wrap.style.display, "none", "有更多时必须给出「加载更早」");
   view.el.querySelector(".flow-view-older-btn").click();
   assert.equal(loaded, 1, "点「加载更早」必须真的去加载");
+});
+
+/* ================================================================ 分页锚点 */
+
+/* [5715 · 补网] 上翻加载后**锚点保位**：更早的一页插到前面后，
+   原来那行必须回到同一位置（否则读者正看的内容被顶走）。 */
+test("分页锚点保位：插入更早的行后，被锚定的那行回到同一位置", { skip: SKIP }, (t) => {
+  let loaded = 0;
+  const { view, scroll, rows } = mountView(t, {
+    hasMore: () => true,
+    onLoadOlder: () => { loaded += 1; },
+  });
+  view.render(["b", "c"], () => 1);
+  view.markLoaded();
+  // 造出可推演的布局（jsdom 无布局引擎）：b 在 100、c 在 150
+  const rects = stubRects([rows.get("b"), rows.get("c")], { top: 100, height: 50 });
+
+  // 读者先滚一段（scrollTop 与程序台账不同 ⇒ 判为「读者真滚动」）
+  scroll.scrollTop = 200;
+  scroll.dispatchEvent(new window.Event("scroll"));
+  // 再滚到顶 ⇒ 触发上翻加载，并记下锚（首行 b 的位置）
+  scroll.scrollTop = 0;
+  scroll.dispatchEvent(new window.Event("scroll"));
+  assert.equal(loaded, 1, "滚到顶必须触发上翻加载");
+
+  // 更早的一页到了 ⇒ 布局整体下移（b 从 100 挪到 160，被顶下去 60px）
+  rects.setTop(rows.get("b"), 160);
+  view.render(["a", "b", "c"], () => 1);
+  assert.equal(scroll.scrollTop, 60,
+    "锚定的那行必须回到原位置（scrollTop 要补上被顶下去的 60px）");
 });
 
 /* ================================================================ 运行条 */

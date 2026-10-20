@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=37";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=52";
+import { EventFlow } from "./stream.js?v=53";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=37";
@@ -23,6 +23,10 @@ import { InputMachine } from "./esm/flow/machine.js?v=1";
 import { createInputBar } from "./esm/flow/input-bar.js?v=5";
 import { createQueueStore } from "./esm/flow/queue-store.js?v=2";
 import { createQueueDock } from "./esm/flow/queue-dock.js?v=3";
+// [5715 · 抽模块] 消息操作条（复制/重发）与卡详情抽屉开合：原生长在渲染/装配闭包里
+// ⇒ 导不出来、单测驱动不了；抽出后行为逐字不变，但可被 DOM 行为网驱动。
+import { createCopyButton } from "./esm/flow/message-actions.js?v=1";
+import { initInspectorToggle } from "./esm/inspector.js?v=1";
 
 /* [惰性新建 2026-10-17] WORK_ID 由 const 改 let：草稿项目/草稿卡落库成功后就地换真 id
  * （不整页跳转，首条消息"只感知正常发送"），本模块所有闭包引用同一绑定，随取随新。
@@ -917,29 +921,18 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
        时间来自事件 ts（落盘/实时同源），无 ts 的旧记录不显示时间、不补假值。 */
     const actions = document.createElement("div");
     actions.className = "msg-actions";
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "msg-act";
-    copyBtn.dataset.act = "copy";
-    copyBtn.title = "复制这条回复";
-    copyBtn.innerHTML =
-      '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">' +
-      '<rect x="5.2" y="5.2" width="8" height="8" rx="1.6"/><path d="M10.8 3.2H3.6a.8.8 0 0 0-.8.8v7.2"/></svg>';
-    copyBtn.onclick = () => {
-      const body = el.querySelector(".md");
-      const text = body ? body.innerText : "";
-      copyText(text).then(() => {
-        const old = copyBtn.innerHTML;
-        copyBtn.classList.add("is-ok");
-        copyBtn.title = "已复制";
-        copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6.5"/></svg>';
-        setTimeout(() => {
-          copyBtn.classList.remove("is-ok");
-          copyBtn.title = "复制这条回复";
-          copyBtn.innerHTML = old;
-        }, 1400);
-      });
-    };
+    // [5715 · 抽模块] 复制按钮搬进 esm/flow/message-actions.js（复制实现仍用本文件
+    // 自己的 copyText ⇒ 行为逐字不变；只是按钮的构造与反馈可被单测驱动了）。
+    const copyBtn = createCopyButton({
+      title: "复制这条回复",
+      okTitle: "已复制",
+      act: "copy",
+      getText: () => {
+        const body = el.querySelector(".md");
+        return body ? body.innerText : "";
+      },
+      copy: (text) => copyText(text),
+    });
     actions.appendChild(copyBtn);
     el.appendChild(actions);
     return el;
@@ -1946,12 +1939,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   //   ② 无独立「← 画布」按钮（用户 17:17 ②「不需要画布按钮…点击这个就是回画布」）
   // 原 #wsBackBtn/#inspToggleBtn 随 .ws-head 整条删除（用户 17:17 ④ 去「ⓘ 卡详情」顶部按钮），
   // 卡详情开关只留右缘竖条 #inspTab。
-  const toggleInspector = () => inspector.classList.toggle("open");
-  document.getElementById("inspTab").onclick = toggleInspector;
-  // [对话界面商业化 2026-10-17] 顶栏「卡详情」按钮与右缘竖条同一动作：
-  // 一个状态两个入口，不新增第二套开合逻辑（避免两处状态漂移）。
-  const topInsp = document.getElementById("topInspBtn");
-  if (topInsp) topInsp.onclick = toggleInspector;
+  // [5715 · 抽模块] 卡详情开合搬进 esm/inspector.js（原先在装配闭包里 ⇒ 导不出来、
+  // 两个入口各绑一次容易漂移；新件里两个入口共用同一个 toggle 动作）。
+  initInspectorToggle();
   // [画布入口 2026-10-16 用户令] 顶栏 → 返回本项目画布（根卡/子卡聊天态常显）
   const canvasEntryBtn = document.getElementById("canvasEntryBtn");
   // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 回画布＝整页跳转到画布页 URL。
