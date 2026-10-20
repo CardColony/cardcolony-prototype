@@ -224,29 +224,40 @@ def _key(work_id: str, card_id: str) -> tuple[str, str]:
 # 实测 card_005 17394 条事件里 16822 条是 reasoning（占 87% 字节 / 3.64MB），
 # 对话页回放时装配器逐条 rev++ 重渲染 ⇒ 页面卡死。改为**按轮累积、到轮界合并落一条**：
 # 实时 SSE 逐帧不变（前端仍逐字出），只是**落盘**合并。
-# [5715 · 修] 缓冲**必须按 model 分桶**（原实现只按 (work, card) 分）：
-#   三席的思考是**并发交织**的（每个席位一个 model）⇒ 只按卡分桶会把甲席与乙席
-#   的思考**混成一条**落盘 ⇒ 前端按 ``data.model``/顶层 model 分桶时只看到一条
-#   ⇒ 席位并排显示串桶。（原提交自己写的意图也是「按 (card, run_id, round, model) 累积」，
-#   实现漏了 model 这一维。）
-_reason_buf: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+# [5715 · 修] 缓冲**必须按 (model, run, round) 分桶**：
+#   ① **model 维度**：三席的思考是**并发交织**的（每个席位一个 model）⇒ 只按卡分桶
+#      会把甲席与乙席的思考**混成一条**落盘 ⇒ 前端按 model 分桶时只看到一条
+#      ⇒ 席位并排显示串桶。
+#   ② **run/round 维度**：同一席位在同一张卡的**不同轮**（或不同 run）也是不同的
+#      思考段 ⇒ 混成一条会让「这一轮想了什么」失真。
+#   （原提交自己写的意图就是「按 (card, run_id, round, model) 累积」，实现漏了后三维。）
+_reason_buf: dict[tuple[str, str], dict[tuple[str, str, int], dict[str, Any]]] = {}
+
+
+def flush_pending_reasoning(work_id: str, card_id: str) -> None:
+    """把缓冲里的思考落盘（回合收口/异常时调用）——**不丢字**。
+
+    思考是「到轮界才合并落一条」的；万一某一轮没走到任何轮界事件（异常/中断），
+    缓冲里的思考会随回合一起丢掉 ⇒ 收口时无条件 flush 一次（空缓冲是 no-op）。
+    """
+    _flush_reasoning(work_id, card_id)
 
 
 def _flush_reasoning(work_id: str, card_id: str) -> None:
-    """把累积的 reasoning 文本**按 model 各自**合并成一条事件落盘（空则跳过）。"""
+    """把累积的 reasoning 文本**按 (model, run, round) 各自**合并成一条落盘。"""
     key = _key(work_id, card_id)
-    by_model = _reason_buf.pop(key, None)
-    if not by_model:
+    by_bucket = _reason_buf.pop(key, None)
+    if not by_bucket:
         return
-    for model, buf in by_model.items():
+    for (model, run_id, round_), buf in by_bucket.items():
         text = buf.get("text") or ""
         if not text.strip():
             continue
         try:
             from ..storage import event_log
             event_log.append_bg(work_id, card_id, {
-                "run_id": buf.get("run_id") or "",
-                "round": int(buf.get("round") or 0),
+                "run_id": run_id or buf.get("run_id") or "",
+                "round": int(round_ or 0),
                 "type": "reasoning",
                 "data": {"text": text},
                 "model": model or "",
@@ -591,18 +602,20 @@ def emit_token(work_id: str, card_id: str, ev_type: str, text: str,
         # 正文增量（content_chunk）**不落盘**——最终 assistant_text 一条落盘（裁定 C7）。
         if ev_type == "reasoning_chunk":
             # 累积到缓冲，等轮界（emit 任意其它事件时）合并落一条
-            # [5715 · 修] 缓冲**按 model 分桶**（三席的思考并发交织 ⇒ 不能混成一条）。
+            # [5715 · 修] 缓冲**按 (model, run, round) 分桶**（三席的思考并发交织
+            # ⇒ 不能混成一条；同一席的不同轮也是不同的思考段）。
             _rk = _key(work_id, card_id)
+            _anchor = _anchors.get(_rk) or {}
             _model = str(data.get("model") or "")
-            _by_model = _reason_buf.setdefault(_rk, {})
-            _b = _by_model.get(_model)
+            _run_id = str(_anchor.get("pair_id") or "")
+            _round = int(_anchor.get("turn") or 0)
+            _bk = (_model, _run_id, _round)
+            _by_bucket = _reason_buf.setdefault(_rk, {})
+            _b = _by_bucket.get(_bk)
             if _b is None:
-                _anchor = _anchors.get(_rk) or {}
-                _b = {"text": "", "model": _model,
-                      "round": int(_anchor.get("turn") or 0),
-                      "run_id": str(_anchor.get("pair_id") or ""),
-                      "ts": evt.get("ts")}
-                _by_model[_model] = _b
+                _b = {"text": "", "model": _model, "run_id": _run_id,
+                      "round": _round, "ts": evt.get("ts")}
+                _by_bucket[_bk] = _b
             _b["text"] += text
         # [对话流渲染 T4] 已删 5000 条环形弹出（原 pop(0) 丢前字）
         # 逐字流每帧给 /progress 打一次心跳：仍在吐字的超长请求持续被判为
