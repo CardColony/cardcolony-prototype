@@ -207,6 +207,22 @@ async def get_profile(work_id: str, role_id: str) -> Optional[dict[str, Any]]:
     return await ensure_profile(work_id, role_id)
 
 
+async def _domain_conflict(work_id: str, domain: str,
+                           exclude_role: str = "") -> Optional[dict[str, Any]]:
+    if not domain:
+        return None
+    for prof in await role_store.list_profiles(work_id):
+        rid = str(prof.get("role_id") or "")
+        if not rid or rid == exclude_role:
+            continue
+        if str((prof.get("duty") or {}).get("state") or "active") == "archived":
+            continue
+        jur = prof.get("jurisdiction") or {}
+        if str(jur.get("exclusive_key") or jur.get("domain") or "") == domain:
+            return prof
+    return None
+
+
 async def create_role_card(work_id: str, root_id: str, title: str,
                            charter: str, *,
                            jurisdiction: Any = None,
@@ -221,6 +237,13 @@ async def create_role_card(work_id: str, root_id: str, title: str,
         return {"error": "title 不能为空"}
     if not charter:
         return {"error": "职责书不能为空（写清这个角色对什么负责）"}
+    dop = make_profile(title, charter, jurisdiction=jurisdiction)
+    conflict = await _domain_conflict(
+        work_id, str((dop.get("jurisdiction") or {}).get("exclusive_key") or ""))
+    if conflict is not None:
+        return {"error": (
+            f"责任域已被角色 {conflict.get('role_id')} 占用；同一排他域只能有一个角色"
+        )}
     body = (f"## 使命\n{charter}\n\n## 现状\n（值班中；判词与警报见角色档案）\n\n"
             "## 定论\n")
     created = await card_store.create_card(
@@ -261,9 +284,19 @@ async def update_profile(work_id: str, role_id: str,
         return {"error": f"不是角色卡或档案缺失: {role_id}"}
     allowed = ("jurisdiction", "watch", "speak_contract", "escalation")
     changed: dict[str, Any] = {}
+    if isinstance(patch.get("jurisdiction"), str):
+        jur = str(patch["jurisdiction"]).strip()
+        patch["jurisdiction"] = {"domain": _slug(jur), "statement": jur,
+                                 "exclusive_key": _slug(jur)}
     for key in allowed:
         if key in patch and isinstance(patch[key], (dict, list)):
             changed[key] = patch[key]
+    if isinstance(patch.get("jurisdiction"), dict):
+        jur = patch["jurisdiction"]
+        domain = str(jur.get("exclusive_key") or jur.get("domain") or "")
+        conflict = await _domain_conflict(work_id, domain, exclude_role=role_id)
+        if conflict is not None:
+            return {"error": f"责任域 {domain} 已被角色 {conflict.get('role_id')} 占用"}
     charter_text = patch.get("charter")
     if isinstance(charter_text, str) and charter_text.strip():
         old = str((prof.get("charter") or {}).get("text") or "").strip()
@@ -968,6 +1001,8 @@ async def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
                             "card_type": str(m.get("card_type") or "")})
     charter = prof.get("charter") or {}
     history = await role_store.charter_history(work_id, role_id, 10)
+    duty = dict(prof.get("duty") or {})
+    duty["pending_sync"] = len(pending)
     return {
         "role_id": role_id,
         "title": str(meta.get("title") or ""),
@@ -977,7 +1012,7 @@ async def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
         "watch": {"cards": watched, "signals": watch.get("signals") or []},
         "speak_contract": prof.get("speak_contract") or {},
         "escalation": prof.get("escalation") or {},
-        "duty": prof.get("duty") or {},
+        "duty": duty,
         "charter": {"version": charter.get("version", 1),
                     "text": charter.get("text", ""),
                     "ratified_by": charter.get("ratified_by", ""),

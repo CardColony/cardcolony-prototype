@@ -595,6 +595,12 @@ async def get_work_card(work_id: str, card_id: str):
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
+    # [角色机制 5710 v2] 角色卡读侧附独立结构（六节/判断簿/警报簿），
+    # 不让通用三块冒充角色卡结构。
+    if str((result.get("meta") or {}).get("card_type") or "") == "role":
+        result = _apply_block_set(result, work_id)
+        result["role"] = await role_room.role_summary(work_id, card_id)
+        return result
     # [卡片编辑机制改造 2026-10-12 · 块1] 读侧按块集判据过滤 body 键
     return _apply_block_set(result, work_id)
 
