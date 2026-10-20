@@ -109,7 +109,9 @@
 **更强的机械形式（本轮补入）：钉「破坏点前一提交」跑同一条用例。**
 `git worktree add --detach <疑似破坏提交>~1` → 同用例跑 3 次 → 旧码 3/3 绿、新码 3/3 红 ⇒ 不但证明"现在没做到"，还证明"**曾经做到过，是被这一刀砍坏的**"。比 10 行链路脚本硬：脚本只证当下，对照能证因果。`human_stop` 即按此判定（见 R10）。
 
-**子形态「回执不诚实」（card_015 提出，本域采纳）**：`ok=True` 但效果未达成——不是"声明的意图没做到"，是"**回执谎报做到了**"。判据极廉价：失败信息里同时出现 `ok=True` 与「内容未变」即直接落这一档，**不必再跑整套×3**（它的问题不是不稳定，是返回值在撒谎）。实例：`restore_from_snapshot` 返回 `ok=True`，读回仍是恢复后写入的版本。
+**子形态「回执不诚实」（card_015 提出；本卡原版主张"免跑整套×3"，经 card_014 反驳后**已收回**）**：`ok=True` 但效果未达成——不是"声明的意图没做到"，是"**回执谎报做到了**"。判据＝失败信息里**同时**出现 ①成功回执（`ok=True`／`skipped=False`）②断言读到"未被改动的值"。**只作 C 类的定性标签**（统一措辞与归口），**噪声闸不减免**——理由可证伪：该型实例的成因本身就是 `-wal`/`-shm` 句柄占用（实测 `WinError 32`），是**时序**；把它放进免检通道，等于先放行最需要噪声闸的样本。且它已在 75 条 stable_red 内（5 轮全红），本就走"基线外新红"口径，省那 5 分钟不值这个风险。（收口裁定见 `docs/5713-下一批修复方案裁决-20261020.md` §1.3 第 74 行。）
+
+**证据强度三档（判定 C 类真坏时按此排，强 → 弱；三者不能互替）**：①**代码层可读出**（如本例无条件 `return {"ok": True}`——缺陷在源码里，不依赖重跑统计）＞②**旧过新败对照**（旧码 3/3 绿 vs 新码 3/3 红，能证因果）＞③**重跑全红**（只能证"不稳的可能性低"）。⚠️ 但**①也不能替代噪声闸**：代码有缺陷 ≠ 这条用例的红由它引起；反过来 ③ 过了闸也只能证明"不是噪声"，证不了"是不是真坏"。三者各管一件事，缺哪档就在结论里标明缺哪档。
 
 **口径纪律（本轮踩过的坑）**：`git log -S <符号>` 是**字符串增删**口径，不是语义口径——某刀引入的行为若不含该字面量（如 `human_stop` 那刀用的是 `pending_stop()` ＋合成帧），`-S` 会完全漏掉。查"哪个提交引入了这个行为"要用 `git blame -L` / 二分 / 旧码新码对照，**不能只凭 `-S` 下结论**。
 
@@ -167,7 +169,7 @@
 > 收敛账：**3 条真坏**＝snapshot_restore（数据域已定性）／human_stop（架构域已定性，本卡独立复现旧过新败）／CSS 9px（前端）；**2 条改判语义型断言滞后**＝模型优先级（`T=fd11ce3` 是 `C=34df2b5` 祖先）；**1 条并入契约迁移**＝`block3_driver_runs_after_mutex_release`（M3 改完仍红则按第 3 步重判）。下表的判定标准不变：只给判据与归属，不代他域下结论。
 | 用例 | 现象 | 归属 |
 |---|---|---|
-| `test_snapshot_roundtrip::test_snapshot_restore_roundtrip` | `restore_from_snapshot` 返回 `ok=True`，读回仍是"第二版正文"（未回滚） | **数据域**（会骗人的恢复） |
+| `test_snapshot_roundtrip::test_snapshot_restore_roundtrip` | `restore_from_snapshot` 返回 `ok=True`，读回仍是"第二版正文"（未回滚）。**机制锚点＝`data_snapshot.py:467-476`**：`copy2` 回库后清 `-wal`/`-shm`，清不掉只 `logger.warning("…（不阻断）")` 就照样 `return {"ok": True, …}`（实测 `WinError 32` 句柄占用）⇒ 陈旧 WAL 回放覆盖恢复结果。**回归判据必须双面**：既钉"回执诚实"（清理失败 ⇒ `ok=False` 或 `ok=True`+`warnings`）**又**钉"效果达成"（读回快照态），只钉内容会退化成"效果对了但回执撒谎" | **数据域**（会骗人的恢复；归第 2 批，与病2＋病4 同批） |
 | ~~`test_model_override_scope` ×2~~ | **已改判为「语义型断言滞后」**：`T=fd11ce3` 是 `C=34df2b5` 的祖先，C 只改 `src/api/model_config.py`、`tests/` 0 文件；C 的动机是修用户可见 bug（work 级覆盖被丢＝页面切模型不生效）⇒ 改测试不改代码 | 已结（本卡独立复跑 2 failed/13 passed 确认） |
 | `test_slots_control::test_midflight_stop_closes_turn_human_stop` | 正文对，块尾 `end` 是 `model_done` 而非 `human_stop`。**破坏点＝`776b9e5`(10-15)**：`model_service.py:130-139` 的 `pending_stop()` 窥视断流＋合成 `tool_calls: []`，使人停回合第一次走进 `message_runner.py:740/748` 那个不查 control 的出口，绕开 `:991` 的正确闭合。**契约＝`a0c9aae`(10-10)**（`tests:156` 的 `end` 断言与 `message_runner:216-218` 消费段同出，早破坏 5 天）⇒ 无任何提交声明契约变更。**旧过新败本卡独立复现**：`de36f1c`(＝`776b9e5~1`) **3/3 passed**、`f822911` **3/3 failed** | 架构域（修点＝`message_runner.py` 出口，不稳点锚定 `model_service.py:130-139`） |
 | `test_frontend_readability::test_u1_font_sizes_within_allowed_set` | CSS 字号越集 | 前端（有 `.mjs` 网，但不在 pytest 内） |
