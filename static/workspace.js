@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=43";
+import { EventFlow } from "./stream.js?v=44";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=36";
@@ -1085,7 +1085,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       setRunState(true);
       // [对话流照抄 dsh v3] 刷新恢复只做两件事：置运行态（主键变停止键）＋ 接上事件流。
       // 等待气泡已退役——运行条由 chat-view 出（"Deep diving..."，15s 后显时钟）。
-      if (EventFlow) EventFlow.start(WORK_ID, cardId, null);
+      if (EventFlow) EventFlow.start(WORK_ID, cardId, null, { replayTokens: true });
       return true;
     } catch (e) {
       return false;   // 查询失败静默：不影响页面其余功能
