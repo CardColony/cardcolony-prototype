@@ -64,3 +64,44 @@ for /f "tokens=5" %i in ('netstat -ano ^| findstr :5713 ^| findstr LISTENING') d
 ```
 
 沙箱根 `…\5713_sandbox` 可留着看数据，也可整个删掉（与生产数据无关）。
+
+---
+
+# 二、涌现实验场景台（exp_scenario.py）
+
+## 它是什么
+一条命令按 spec 起实验场景（work + N 个节点 + 可选观测角色），一条命令拉观测面并机械打分。
+**内容归 CEO，接口归环境 owner**：节点使命全部写在 spec 里，工具里不硬编码
+—— 替节点定使命等于替 CEO 定方向。
+
+## 起场景
+```bat
+python verify\5713\exp_scenario.py up --spec my_exp.spec.json
+python verify\5713\exp_scenario.py up --spec my_exp.spec.json --no-wait   :: 只建卡不点火
+```
+spec 格式见 `exp_scenario.spec.example.json`（模板里的使命是占位符，必须 CEO 本人填）。
+建卡顺序是**先全部建成无 goal（不点火），最后统一点火** —— 否则先建的会立刻开跑，
+而它需要的邻居还没建出来，观测到的是半成品场景。
+
+## 拉观测（只读，可反复跑）
+```bat
+python verify\5713\exp_scenario.py observe --work work_030
+```
+输出：每张卡的卡面（parent／类型／auto／目标态／轮次／现状字数）、建线明细、
+卡间信按边与 msg_type 统计、ask→answer 配对数（从事件流原文核 `reply_to`）、
+双向往返数、越界被拒记录、观测角色台账（值班／待同步／判词全文），以及一句**判读**。
+
+## 判读怎么读（最容易读错的地方）
+- **「零建线零发信」先别当成"没有涌现"** —— 先看 `status_len` 与 `goal_states`：
+  现状块接近空／目标未推进 = **回合根本没跑**，属仪器问题，不是行为结论。
+- **「有 denied 记录」是好事**：说明节点**尝试过**接触但被拒。断路场景下
+  「尝试了被拒」与「压根没试」的差别，就是全部结论的差别。
+- **角色关注线不算自主建线**：组阁时系统自动写 links，工具已用 `is_role_edge`
+  把它们排除在 `peer_link_count` 之外。把 CEO 组阁读成节点涌现，是最贵的一种错。
+
+## 两处「仪器错误」的实证（都是本工具自己踩的，留档防复犯）
+1. `read_events` 起初取顶层 `content/text`，而真实帧是 `{"type":"msg_answer",
+   "data":{"content":"[[card-msg ... reply_to=X]]"}}` ⇒ 配对恒判 0。
+   抓法：拿 **channel_walk 判 PASS 的同一跑次**当对照物，两边判不一致就是尺子错。
+2. 起初把「角色关注线」算进建线数 ⇒ 会把 CEO 组阁读成节点自主建线。
+   抓法：拿 `--no-wait` 未点火的自检场景对照（节点没跑却"建了线"，必是系统代建）。
