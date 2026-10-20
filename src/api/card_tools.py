@@ -1576,6 +1576,10 @@ async def _h_link_cards(work_id: str, current_id: str,
     )
     if "error" in result:
         return result
+    # [5713 通道试走] 同轮 meta 缓存同步（与 _h_create_card 同手法）：模型可以在
+    # **同一轮**里先 link_cards 再 send_card_message——不做这一步，发信读到的还是
+    # 本回合开始时的旧卡面（没有新线），会被「无线即拒」错杀（g2 用例实测踩到）。
+    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
     return {"ok": True, "source": current_id, "target": target_id, "type": rel_type}
 
 
@@ -1627,6 +1631,10 @@ async def _h_unlink_cards(work_id: str, current_id: str,
     )
     if "error" in result:
         return result
+    # [5713 通道试走] 同轮 meta 缓存同步（与 _h_create_card 同手法）：模型可以在
+    # **同一轮**里先 link_cards 再 send_card_message——不做这一步，发信读到的还是
+    # 本回合开始时的旧卡面（没有新线），会被「无线即拒」错杀（g2 用例实测踩到）。
+    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
     return {"ok": True, "source": current_id, "target": target_id, "removed": removed}
 
 
@@ -1694,6 +1702,7 @@ async def _h_link_rel(work_id: str, current_id: str,
     )
     if "error" in result:
         return result
+    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
     return {"ok": True, "source": current_id, "target": target_id, "kind": kind}
 
 
@@ -1742,6 +1751,10 @@ async def _h_unlink_rel(work_id: str, current_id: str,
     )
     if "error" in result:
         return result
+    # [5713 通道试走] 同轮 meta 缓存同步（与 _h_create_card 同手法）：模型可以在
+    # **同一轮**里先 link_cards 再 send_card_message——不做这一步，发信读到的还是
+    # 本回合开始时的旧卡面（没有新线），会被「无线即拒」错杀（g2 用例实测踩到）。
+    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
     return {"ok": True, "source": current_id, "target": target_id, "removed": removed}
 
 

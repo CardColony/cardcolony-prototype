@@ -954,7 +954,8 @@ async def test_g2_auto_cards_can_talk_end_to_end(typed_registry, work, monkeypat
     read_inbox 读——K3 调起/S4 回发现有链对 auto 卡正常工作。"""
     wid, root = work["work_id"], work["work_card_id"]
     wid, a = await _mk_auto(work, goal="问乙一件事")   # _mk_auto 返 (wid, card_id)
-    # 乙建成甲的子卡（同树闸放行父子互发——见 test_g2_read_inbox_outgoing_view 注）
+    # [5713 通道试走 2026-10-20] 「卡间通信走专门的通信线」——**先建线才发得出去**，
+    # 光同树不够（父子也一样）。故乙虽是甲的子卡，仍要甲自己先 link_cards 建线。
     b = await _mk(wid, "乙", a)
     await card_store.update_card(wid, b, {"auto_mode": 1}, "开自动")
 
@@ -968,9 +969,14 @@ async def test_g2_auto_cards_can_talk_end_to_end(typed_registry, work, monkeypat
         seen.setdefault(cid, []).append(names)
         n = len(seen[cid])
         if cid == a:
-            # 甲：第 1 轮发问；第 2 轮声明完成；此后空手交付（收敛，防无闸循环）
+            # 甲：第 1 轮**先建线再发问**（5713：卡间通信须沿通信线，没线发不出去）；
+            # 第 2 轮声明完成；此后空手交付（收敛，防无闸循环）
             if n == 1:
                 return ({"content": "", "tool_calls": [{
+                    "name": "link_cards",
+                    "arguments": {"target_id": b, "type": "关联",
+                                  "note": "auto 卡自主建线（5713）"},
+                }, {
                     "name": "send_card_message",
                     "arguments": {"target_card_id": b, "msg_type": "msg_ask",
                                   "content": "乙，报告一下现状"},
@@ -1001,6 +1007,11 @@ async def test_g2_auto_cards_can_talk_end_to_end(typed_registry, work, monkeypat
     # 甲的工具面见过 send_card_message（auto 面下发），乙也被调起过
     assert any("send_card_message" in ns for ns in seen.get(a, [])), \
         f"甲的 auto 工具面未见 send_card_message：{seen.get(a)}"
+    # [5713] 线是**甲自己**建的，且建线在前、发信在后——否则上面那条 msg_ask 会被
+    # 「无线即拒」挡掉、乙根本不会被调起。
+    meta_a = card_store.iter_card_metas(wid).get(a) or {}
+    assert any(str(x.get("target")) == b for x in (meta_a.get("links") or [])), \
+        f"甲没有建出到乙的通信线：{meta_a.get('links')}"
     assert seen.get(b), "乙未被调起（K3 链对 auto 卡失效）"
 
 
