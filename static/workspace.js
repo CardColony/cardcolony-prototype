@@ -889,8 +889,17 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const el = document.createElement("div");
     el.className = "msg assistant";
     el.dataset.seq = node.seq;
-    // [对话界面商业化 2026-10-17] 模型名从**节点顶层**取：落盘记录的 model 在顶层
-    // （data 里没有），SSE 帧的 model 已由装配器并入节点。两处取法不同，缺一不可。
+    /* [对话界面商业化 2026-10-17] 模型名取自**节点顶层**。
+       [5715 · 纠偏] 原注释写「落盘记录的 model 在顶层（data 里没有）」——**说反了**：
+       落盘记录的模型名在 **data.model**（实测 timeline：assistant_text 事件
+       `data.model = "deepseek-v4-pro"`），顶层没有 model 键；是装配器的
+       `modelOf(rec, data)`（rec.model 优先、再 data.model）把它**算**到节点顶层的
+       `node.model` 上。所以这里取 `node.model` 就是取 data.model，
+       后面的 `d.model` 只是冗余兜底。
+       ⚠ 照着原注释去改「顶层落盘形状」会改错地方——**真正的数据源是 data.model**。
+       另注：2026-10-04/05 的老记录**当时**就没传 model（调用方未传），
+       故老消息只有时间、没有模型徽标；后端 `emit_message_event` 早已支持 model
+       （会话渲染单源化·偏差③补 2026-10-15），新消息正常带。 */
     const badge = assistantMeta(node.model || d.model, d.behavior, d.end, node.ts);
     /* [5702 · C-1] 流式节点正文在 data.text（累积），落盘节点在 data.content；
        定稿后两者并存（content 优先）。对应 dsh assistant-step 的 blocks 语义。 */
