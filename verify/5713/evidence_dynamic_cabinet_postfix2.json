@@ -1,0 +1,406 @@
+{
+  "started_at": "2026-10-20T17:27:48",
+  "base": "http://127.0.0.1:5713",
+  "phases": [
+    {
+      "phase": "0_instance_check",
+      "at": "2026-10-20T17:27:48",
+      "ok": true,
+      "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+      "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713\\..\\5713_sandbox"
+    },
+    {
+      "phase": "1_create_work",
+      "at": "2026-10-20T17:27:49",
+      "ok": true,
+      "work_id": "work_025",
+      "root": "card_001"
+    },
+    {
+      "phase": "1_create_W1",
+      "at": "2026-10-20T17:27:49",
+      "ok": true,
+      "card_id": "card_002",
+      "title": "生产订单统计接口"
+    },
+    {
+      "phase": "1_create_W2",
+      "at": "2026-10-20T17:27:49",
+      "ok": true,
+      "card_id": "card_003",
+      "title": "库存接口"
+    },
+    {
+      "phase": "1_seed_conflict_material",
+      "at": "2026-10-20T17:27:49",
+      "ok": true,
+      "W1_status": "生产订单统计接口现状：时间口径已定稿——全部用 UTC，ISO8601 带 Z 后缀，例 2026-10-20T08:00:00Z。对外文档与实现已按此交付。",
+      "W2_status": "库存接口现状：时间口径已定稿——全部用本地时间，naive 19 字符，例 2026-10-20 16:00:00（不带时区）。下游对账已按此跑批。"
+    },
+    {
+      "phase": "A_create_role",
+      "at": "2026-10-20T17:27:49",
+      "ok": true,
+      "status": 201,
+      "role_id": "card_004",
+      "watched": [
+        "card_002",
+        "card_003"
+      ],
+      "charter_version": 1,
+      "duty": "active",
+      "exclusive_key": "interface_contract"
+    },
+    {
+      "phase": "A_dup_domain_rejected",
+      "at": "2026-10-20T17:27:49",
+      "ok": true,
+      "status": 400,
+      "resp": "{'error': '责任域已被角色 card_004 占用；同一排他域只能有一个角色'}"
+    },
+    {
+      "phase": "A_check",
+      "at": "2026-10-20T17:27:49",
+      "ok": true,
+      "started": true,
+      "pending_sources": [
+        "card_002",
+        "card_003"
+      ]
+    },
+    {
+      "phase": "A_verdict",
+      "at": "2026-10-20T17:34:54",
+      "ok": false,
+      "decision": null,
+      "auto": null,
+      "reason": "None",
+      "verdict_id": null,
+      "alarms_open": 0,
+      "alarm_severities": []
+    },
+    {
+      "phase": "B_amend_charter",
+      "at": "2026-10-20T17:34:54",
+      "ok": true,
+      "status": 200,
+      "version": 2,
+      "history_len": 2,
+      "v1_kept": true
+    },
+    {
+      "phase": "C_suspended",
+      "at": "2026-10-20T17:34:54",
+      "duty": "suspended",
+      "check_started": false,
+      "pending_sources": [
+        "card_002",
+        "card_003"
+      ],
+      "pending_sync": 2
+    },
+    {
+      "phase": "D_resumed",
+      "at": "2026-10-20T17:41:59",
+      "ok": false,
+      "duty": "active",
+      "decision": null,
+      "reason": "None",
+      "open_alarms_after": 0,
+      "corrected_alarms": 0
+    },
+    {
+      "phase": "E_archived",
+      "at": "2026-10-20T17:41:59",
+      "duty": "archived",
+      "watched_after": 0,
+      "verdicts_kept": 0,
+      "alarms_kept": 0,
+      "charter_history_kept": 2
+    },
+    {
+      "phase": "F_refill",
+      "at": "2026-10-20T17:41:59",
+      "refill_ok": true,
+      "new_role": "card_005",
+      "dup_after_refill_rejected": true,
+      "dup_status": 400,
+      "resp": "{'error': '责任域已被角色 card_005 占用；同一排他域只能有一个角色'}"
+    }
+  ],
+  "verdict": "INCOMPLETE",
+  "boundary_note": "组阁/改档/停复撤的决策由实验场景预置（HTTP 面与根卡工具同一执行体），本实验验的是机械通道与台账逐环走通，不验根卡模型的组阁决策质量。",
+  "instance": {
+    "instance": "test-instance",
+    "pid": 44116,
+    "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+    "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713\\..\\5713_sandbox",
+    "sandbox_enabled": true
+  },
+  "role_R1": "card_004",
+  "cards": {
+    "W1": "card_002",
+    "W2": "card_003"
+  },
+  "verdict_A": null,
+  "alarms_A": [],
+  "verdict_D": null,
+  "role_R2": "card_005",
+  "final_R1": {
+    "role_id": "card_004",
+    "title": "口径一致性角色",
+    "card_type": "role",
+    "profile": {
+      "role_id": "card_004",
+      "work_id": "work_025",
+      "jurisdiction": {
+        "domain": "interface_contract",
+        "statement": "接口口径一致性",
+        "exclusive_key": "interface_contract"
+      },
+      "watch": {
+        "cards": [],
+        "signals": [
+          "turn_completed",
+          "status_changed",
+          "decision_appended"
+        ]
+      },
+      "speak_contract": {
+        "advice_when": [
+          "gap_or_risk"
+        ],
+        "alarm_when": [
+          "mutually_exclusive_fact"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "escalation": {
+        "advice_to": "source_card",
+        "alarm_to": "human",
+        "critical_to": "root_and_human"
+      },
+      "duty": {
+        "state": "archived",
+        "since": "2026-10-20T17:41:59.506323+08:00",
+        "last_wake_at": "",
+        "pending_sync": 0,
+        "note": "动态调阁实验：CEO 撤岗"
+      },
+      "charter": {
+        "version": 2,
+        "text": "对全项目接口口径一致性负责（v2 增补）：除互斥口径警报外，新增检查时间戳精度一致性（秒 vs 毫秒）；精度不一致时先给关注卡发建议，只有互斥才警报。",
+        "ratified_by": "根卡 card_001",
+        "ratified_at": "2026-10-20T17:34:54.629223+08:00"
+      },
+      "created_at": "2026-10-20T17:27:49.560817+08:00",
+      "updated_at": "2026-10-20T17:41:59.506323+08:00"
+    },
+    "jurisdiction": {
+      "domain": "interface_contract",
+      "statement": "接口口径一致性",
+      "exclusive_key": "interface_contract"
+    },
+    "watch": {
+      "cards": [],
+      "signals": [
+        "turn_completed",
+        "status_changed",
+        "decision_appended"
+      ]
+    },
+    "speak_contract": {
+      "advice_when": [
+        "gap_or_risk"
+      ],
+      "alarm_when": [
+        "mutually_exclusive_fact"
+      ],
+      "silence_default": true,
+      "max_messages_per_wake": 2
+    },
+    "escalation": {
+      "advice_to": "source_card",
+      "alarm_to": "human",
+      "critical_to": "root_and_human"
+    },
+    "duty": {
+      "state": "archived",
+      "since": "2026-10-20T17:41:59.506323+08:00",
+      "last_wake_at": "",
+      "pending_sync": 2,
+      "note": "动态调阁实验：CEO 撤岗"
+    },
+    "charter": {
+      "version": 2,
+      "text": "对全项目接口口径一致性负责（v2 增补）：除互斥口径警报外，新增检查时间戳精度一致性（秒 vs 毫秒）；精度不一致时先给关注卡发建议，只有互斥才警报。",
+      "ratified_by": "根卡 card_001",
+      "history": [
+        {
+          "version": 2,
+          "text": "对全项目接口口径一致性负责（v2 增补）：除互斥口径警报外，新增检查时间戳精度一致性（秒 vs 毫秒）；精度不一致时先给关注卡发建议，只有互斥才警报。",
+          "ratified_by": "根卡 card_001",
+          "ratified_at": "2026-10-20T17:34:54.629223+08:00",
+          "note": "职责书修订"
+        },
+        {
+          "version": 1,
+          "text": "对全项目接口口径一致性负责。巡检关注卡时，若发现两张卡的时间/格式口径互相排斥（无法同时为真），必须 raise_alarm(severity=warn) 并把互斥原文写进证据；口径一致或不构成互斥时保持沉默（判 silent 也须 record_verdict 落账）。",
+          "ratified_by": "root:card_001",
+          "ratified_at": "2026-10-20T17:27:49.560817+08:00",
+          "note": "组阁立项"
+        }
+      ]
+    },
+    "verdicts": [],
+    "directives": [],
+    "open_directives": [],
+    "alarms": [],
+    "open_alarms": [],
+    "pending_sources": [
+      "card_002",
+      "card_003"
+    ],
+    "text": "## 管辖\n接口口径一致性\n责任域: interface_contract（排他键 interface_contract）\n\n## 关注\n工作卡: （无）\n关注信号: turn_completed, status_changed, decision_appended\n\n## 发言契约\n建议条件: gap_or_risk\n警报条件: mutually_exclusive_fact\n默认沉默: True；单次最多发言: 2\n\n## 升级线\n建议→source_card；警报→human；严重→root_and_human\n\n## 值班\n状态: archived；最后巡检: （无）；待同步: 2 源\n\n## 判断簿\n（暂无）\n\n## 指令簿\n（暂无）\n\n## 警报簿\n（暂无）\n\n## 职责书（v2）\n对全项目接口口径一致性负责（v2 增补）：除互斥口径警报外，新增检查时间戳精度一致性（秒 vs 毫秒）；精度不一致时先给关注卡发建议，只有互斥才警报。"
+  },
+  "final_R2": {
+    "role_id": "card_005",
+    "title": "接口契约守门员",
+    "card_type": "role",
+    "profile": {
+      "role_id": "card_005",
+      "work_id": "work_025",
+      "jurisdiction": {
+        "domain": "interface_contract",
+        "statement": "接口契约",
+        "exclusive_key": "interface_contract"
+      },
+      "watch": {
+        "cards": [
+          "card_002",
+          "card_003"
+        ],
+        "signals": [
+          "turn_completed"
+        ]
+      },
+      "speak_contract": {
+        "advice_when": [
+          "gap_or_risk"
+        ],
+        "alarm_when": [
+          "mutually_exclusive_fact"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "escalation": {
+        "advice_to": "source_card",
+        "alarm_to": "human",
+        "critical_to": "root_and_human"
+      },
+      "duty": {
+        "state": "active",
+        "since": "2026-10-20T17:41:59.572395+08:00",
+        "last_wake_at": "",
+        "pending_sync": 0
+      },
+      "charter": {
+        "version": 1,
+        "text": "对接口契约（含口径）负全责",
+        "ratified_by": "root:card_001",
+        "ratified_at": "2026-10-20T17:41:59.572395+08:00"
+      },
+      "created_at": "2026-10-20T17:41:59.572395+08:00",
+      "updated_at": "2026-10-20T17:41:59.645146+08:00"
+    },
+    "jurisdiction": {
+      "domain": "interface_contract",
+      "statement": "接口契约",
+      "exclusive_key": "interface_contract"
+    },
+    "watch": {
+      "cards": [
+        {
+          "card_id": "card_002",
+          "title": "生产订单统计接口",
+          "card_type": "sub_project"
+        },
+        {
+          "card_id": "card_003",
+          "title": "库存接口",
+          "card_type": "sub_project"
+        }
+      ],
+      "signals": [
+        "turn_completed"
+      ]
+    },
+    "speak_contract": {
+      "advice_when": [
+        "gap_or_risk"
+      ],
+      "alarm_when": [
+        "mutually_exclusive_fact"
+      ],
+      "silence_default": true,
+      "max_messages_per_wake": 2
+    },
+    "escalation": {
+      "advice_to": "source_card",
+      "alarm_to": "human",
+      "critical_to": "root_and_human"
+    },
+    "duty": {
+      "state": "active",
+      "since": "2026-10-20T17:41:59.572395+08:00",
+      "last_wake_at": "",
+      "pending_sync": 0
+    },
+    "charter": {
+      "version": 1,
+      "text": "对接口契约（含口径）负全责",
+      "ratified_by": "root:card_001",
+      "history": [
+        {
+          "version": 1,
+          "text": "对接口契约（含口径）负全责",
+          "ratified_by": "root:card_001",
+          "ratified_at": "2026-10-20T17:41:59.572395+08:00",
+          "note": "组阁立项"
+        }
+      ]
+    },
+    "verdicts": [],
+    "directives": [],
+    "open_directives": [],
+    "alarms": [],
+    "open_alarms": [],
+    "pending_sources": [],
+    "text": "## 管辖\n接口契约\n责任域: interface_contract（排他键 interface_contract）\n\n## 关注\n工作卡: card_002, card_003\n关注信号: turn_completed\n\n## 发言契约\n建议条件: gap_or_risk\n警报条件: mutually_exclusive_fact\n默认沉默: True；单次最多发言: 2\n\n## 升级线\n建议→source_card；警报→human；严重→root_and_human\n\n## 值班\n状态: active；最后巡检: （无）；待同步: 0 源\n\n## 判断簿\n（暂无）\n\n## 指令簿\n（暂无）\n\n## 警报簿\n（暂无）\n\n## 职责书（v1）\n对接口契约（含口径）负全责"
+  },
+  "verdict_detail": {
+    "A_role_created": true,
+    "A_watch_bound": true,
+    "A_dup_domain_rejected": true,
+    "A_check_started": true,
+    "A_verdict_recorded": false,
+    "A_alarm_raised_on_conflict": false,
+    "B_charter_v2": true,
+    "B_history_keeps_v1": true,
+    "C_check_blocked_when_suspended": true,
+    "C_sync_still_queued": true,
+    "D_resume_new_verdict": false,
+    "E_archived_unwatched": true,
+    "E_ledgers_retained": false,
+    "F_refill_created": true,
+    "F_conflict_rejected_again": true,
+    "observations": {
+      "D_decision_when_aligned": null,
+      "D_corrected_alarms": 0,
+      "D_open_alarms_after": 0
+    }
+  },
+  "finished_at": "2026-10-20T17:41:59"
+}
