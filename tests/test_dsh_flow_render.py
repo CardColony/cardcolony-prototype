@@ -357,8 +357,8 @@ def test_t6_touched_modules_bumped():
         # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
         # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
         "stream.js": "51", "workspace.js": "67", "canvas.js": "77",
-        "assembler.js": "40", "style.css": "48", "main.js": "73.4",
-        "main_chat.js": "3.5",
+        "assembler.js": "40", "style.css": "48", "main.js": "73.5",
+        "main_chat.js": "3.6",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
         "chat-view.js": "6", "message-item.js": "1",
