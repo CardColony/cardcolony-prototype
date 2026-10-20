@@ -244,9 +244,19 @@ async def test_v6_positive_registered_type_shadow_ok(typed_registry, work):
 
 # ---------------------------------------------------------------- 连线/解线收紧
 
-async def test_link_unlink_subtree_tightening(typed_registry, work):
-    """树类开关叠树作用域：只能连/解自己子树内的卡；悬空线保留直接可解；
-    tool 目标不可连。"""
+async def test_link_unlink_no_tree_scope_with_type_gate(typed_registry, work):
+    """建线/解线**不叠 parent 树作用域**，但类型分权照旧把关。
+
+    [5713 通道试走 2026-10-20·用户口径「卡间通信有专门的通信线」] 本用例原名
+    ``test_link_unlink_subtree_tightening``，断言「旁支不可连/不可解」——那属于
+    **旧的树作用域**口径，已被本次改动**有意推翻**：通信的边界是线本身，不是父子
+    关系；平级卡若建不出线，就永远通不了话（先有鸡先有蛋）。
+
+    仍保留的硬约束（一条不少）：
+      · 类型分权——目标卡没授 link/unlink 就拒（用 tool 类型卡构造）；
+      · 自身 → 拒（不能连自己）；
+      · 悬空线（目标已删）→ 不查卡、直接可解（既有清理语义）。
+    """
     wid, root = work["work_id"], work["work_card_id"]
 
     async def mk(title, parent):
@@ -254,18 +264,18 @@ async def test_link_unlink_subtree_tightening(typed_registry, work):
         assert "error" not in r, r
         return r["meta"]["card_id"]
     a = await mk("甲", root)
-    b = await mk("乙", root)      # a 的旁支
+    b = await mk("乙", root)      # a 的旁支（旧口径：不可连；新口径：可连）
     c = await mk("丙", a)         # a 的子
     d = await mk("丁", a)         # a 的子（稍后删成悬空）
 
     def cards():
         return card_tools._collect_card_meta(wid)
 
-    # 旁支不可连（树类开关收紧为子树内）
+    # 旁支可连（[5713] 有意放开：建线不受树作用域约束）
     r = await card_tools.execute_tool(
         wid, a, "link_cards", {"target_id": b, "type": "关联"}, cards())
-    assert r["ok"] is False and "越权" in r["error"]["message"]
-    # 自己子树内可连
+    assert r["ok"] is True and r["error"] is None, r
+    # 自己子树内可连（历史行为，不变）
     r = await card_tools.execute_tool(
         wid, a, "link_cards", {"target_id": c, "type": "关联"}, cards())
     assert r["ok"] is True and r["error"] is None
@@ -273,19 +283,23 @@ async def test_link_unlink_subtree_tightening(typed_registry, work):
     r = await card_tools.execute_tool(
         wid, root, "link_cards", {"target_id": b, "type": "关联"}, cards())
     assert r["ok"] is True
-    # tool 目标不可连（构造工具卡 meta 直接走关口层）
+    # 类型分权仍把关：tool 类型卡没授 link ⇒ 拒（作用域放开不等于授权放开）
     with pytest.raises(PermissionError):
         policy.check(a, "card_tool_y", policy.SWITCH_LINK,
                      {"card_tool_y": _meta("tool")})
+    # 自身 → 拒
+    r = await card_tools.execute_tool(
+        wid, a, "link_cards", {"target_id": a, "type": "关联"}, cards())
+    assert r["ok"] is False and r["error"]["code"] == "validation"
 
     # 解线：子树内可解
     r = await card_tools.execute_tool(
         wid, a, "unlink_cards", {"target_id": c, "type": "关联"}, cards())
     assert r["ok"] is True and r["data"]["removed"] == 1
-    # 旁支不可解
+    # 旁支可解（与建线对称：自己建得起，就解得掉）
     r = await card_tools.execute_tool(
         wid, a, "unlink_cards", {"target_id": b, "type": "关联"}, cards())
-    assert r["ok"] is False and "越权" in r["error"]["message"]
+    assert r["ok"] is True and r["data"]["removed"] == 1
     # 悬空线：目标已删 → 不在关口判定面 → 直接可解（既有清理语义保留）
     r = await card_tools.execute_tool(
         wid, a, "link_cards", {"target_id": d, "type": "关联"}, cards())
