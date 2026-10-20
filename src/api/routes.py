@@ -33,7 +33,7 @@ from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, serial_gate, simple_service, text_tool_rescue, tool_fold
+from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, role_room, serial_gate, simple_service, text_tool_rescue, tool_fold
 
 logger = logging.getLogger("api.routes")
 
@@ -261,12 +261,16 @@ async def get_nav():
         # 两段稳定排序：先并列收尾键 card_id 升序，再按活跃降序（空串排末位）
         cards.sort(key=lambda c: c["card_id"])
         cards.sort(key=lambda c: c["last_active_at"] or "", reverse=True)
+        # [角色机制 5710] 角色卡离树，排在项目内所有作业卡之后（左栏一眼分区）。
+        cards.sort(key=lambda c: 0 if c.get("card_type") == "role" else -1)
         projects.append({
             "work_id": wid,
             "title": w.get("title", ""),
             "work_card_id": root_id,
             "last_active_at": w.get("last_active_at", ""),
             "card_count": w.get("card_count", 0),
+            # [角色机制 5710] 未处理警报数：左栏项目行红点的数据源。
+            "open_alarms": len(role_room.list_alarms(wid, "open")),
             "cards": cards,
         })
     return {"projects": projects}
@@ -304,9 +308,18 @@ async def get_nav_children(work_id: str = "", parent: str = ""):
         for m in metas
         if m.get("parent", "") == eff_parent
     ]
+    # [角色机制 5710] 角色卡 parent=""，不属于任何一层的子卡；根层展开时
+    # 一并带上（排最后），否则异步灌段会把左栏的角色行冲掉。
+    if not parent:
+        cards.extend(
+            _card_obj(m, act, 0, work_id) for m in metas
+            if str(m.get("card_type") or "") == "role"
+        )
     # 与 /api/nav 同款两段稳定排序（card_id 升序收尾→活跃降序，刷新不跳序）
     cards.sort(key=lambda c: c["card_id"])
     cards.sort(key=lambda c: c["last_active_at"] or "", reverse=True)
+    if not parent:
+        cards.sort(key=lambda c: 0 if c.get("card_type") == "role" else -1)
     return {"work_id": work_id, "parent": parent, "cards": cards}
 
 
@@ -582,6 +595,12 @@ async def get_work_card(work_id: str, card_id: str):
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
+    # [角色机制 5710 v2] 角色卡读侧附独立结构（六节/判断簿/警报簿），
+    # 不让通用三块冒充角色卡结构。
+    if str((result.get("meta") or {}).get("card_type") or "") == "role":
+        result = _apply_block_set(result, work_id)
+        result["role"] = await role_room.role_summary(work_id, card_id)
+        return result
     # [卡片编辑机制改造 2026-10-12 · 块1] 读侧按块集判据过滤 body 键
     return _apply_block_set(result, work_id)
 
@@ -1242,6 +1261,235 @@ async def get_work_progress(work_id: str, card_id: str):
     return st if st is not None else {"stage": "idle", "detail": "", "ts": 0.0}
 
 
+# ============================================================
+# [角色机制 5710] 角色卡：组阁 / 关注 / 巡检 / 判词 / 警报
+# ============================================================
+
+class CreateRoleRequest(BaseModel):
+    title: str
+    charter: str
+    jurisdiction: Optional[dict[str, Any]] = None
+    watch_card_ids: list[str] = Field(default_factory=list)
+    signals: list[str] = Field(default_factory=list)
+    speak_contract: Optional[dict[str, Any]] = None
+    escalation: Optional[dict[str, Any]] = None
+
+
+class RoleWatchRequest(BaseModel):
+    card_ids: list[str] = Field(default_factory=list)
+    action: str = "add"
+
+
+class RoleProfileRequest(BaseModel):
+    jurisdiction: Optional[dict[str, Any]] = None
+    watch_card_ids: Optional[list[str]] = None
+    signals: Optional[list[str]] = None
+    speak_contract: Optional[dict[str, Any]] = None
+    escalation: Optional[dict[str, Any]] = None
+    charter: Optional[str] = None
+
+
+class RoleDutyRequest(BaseModel):
+    state: str
+    note: str = ""
+
+
+class RoleDirectiveRequest(BaseModel):
+    target_card_id: str
+    instruction: str
+    acceptance: str
+    due_at: str = ""
+
+
+class RoleDirectiveVerifyRequest(BaseModel):
+    status: str
+    evidence: str = ""
+
+
+@router.get("/works/{work_id}/roles")
+async def list_work_roles(work_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    roles = []
+    for m in role_room.list_roles(work_id):
+        roles.append(await role_room.role_summary(
+            work_id, str(m.get("card_id") or "")))
+    return {"roles": roles}
+
+
+@router.post("/works/{work_id}/roles")
+async def create_work_role(work_id: str, req: CreateRoleRequest):
+    """前端组阁入口：与根卡工具 create_role 同一执行体（同一套校验）。"""
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    root_id = str(w.get("work_card_id") or "")
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_create_role(work_id, root_id, {
+        "title": req.title,
+        "charter": req.charter,
+        "jurisdiction": req.jurisdiction,
+        "watch_card_ids": list(req.watch_card_ids or []),
+        "signals": list(req.signals or []),
+        "speak_contract": req.speak_contract,
+        "escalation": req.escalation,
+    }, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "创建失败"))
+    return JSONResponse(status_code=201, content=res)
+
+
+@router.get("/works/{work_id}/roles/{role_id}")
+async def get_work_role(work_id: str, role_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    meta = card_store._meta_of(work_id, role_id) or {}
+    if not meta:
+        return _err(404, f"卡片不存在: {role_id}")
+    if str(meta.get("card_type") or "") != "role":
+        return _err(400, f"{role_id} 不是角色卡")
+    return await role_room.role_summary(work_id, role_id)
+
+
+@router.patch("/works/{work_id}/roles/{role_id}")
+async def patch_work_role(work_id: str, role_id: str, req: RoleProfileRequest):
+    """根卡/用户更新角色档案（管辖域/关注信号/发言契约/升级线/职责书）。"""
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    root_id = str(w.get("work_card_id") or "")
+    args: dict[str, Any] = {"role_card_id": role_id}
+    for key in ("jurisdiction", "speak_contract", "escalation", "charter"):
+        val = getattr(req, key)
+        if val is not None:
+            args[key] = val
+    if req.watch_card_ids is not None:
+        args["watch_card_ids"] = list(req.watch_card_ids)
+    if req.signals is not None:
+        args["signals"] = list(req.signals)
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_update_role_profile(work_id, root_id, args, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "更新失败"))
+    return res
+
+
+@router.post("/works/{work_id}/roles/{role_id}/directives")
+async def issue_role_directive(work_id: str, role_id: str, req: RoleDirectiveRequest):
+    """UI 以角色身份下指令（同一个执行体；权限仍按角色闸）。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_issue_directive(work_id, role_id, {
+        "target_card_id": req.target_card_id,
+        "instruction": req.instruction,
+        "acceptance": req.acceptance,
+        "due_at": req.due_at,
+    }, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "下指令失败"))
+    return JSONResponse(status_code=201, content=res)
+
+
+@router.post("/works/{work_id}/roles/{role_id}/directives/{directive_id}/verify")
+async def verify_role_directive(work_id: str, role_id: str, directive_id: str,
+                                req: RoleDirectiveVerifyRequest):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_verify_directive(work_id, role_id, {
+        "directive_id": directive_id,
+        "status": req.status,
+        "evidence": req.evidence,
+    }, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "验收失败"))
+    return res
+
+
+@router.post("/works/{work_id}/roles/{role_id}/duty")
+async def set_work_role_duty(work_id: str, role_id: str, req: RoleDutyRequest):
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    root_id = str(w.get("work_card_id") or "")
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_set_role_duty(work_id, root_id, {
+        "role_card_id": role_id, "state": req.state, "note": req.note,
+    }, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "操作失败"))
+    return res
+
+
+@router.post("/works/{work_id}/roles/{role_id}/check")
+async def check_work_role(work_id: str, role_id: str):
+    """人工触发一次巡检（有新同步才起回合；无新增则 started=false）。"""
+    meta = card_store._meta_of(work_id, role_id) or {}
+    if not meta:
+        return _err(404, f"卡片不存在: {role_id}")
+    if str(meta.get("card_type") or "") != "role":
+        return _err(400, f"{role_id} 不是角色卡")
+    return await role_room.manual_check(work_id, role_id)
+
+
+@router.post("/works/{work_id}/roles/{role_id}/watch")
+async def watch_role_cards(work_id: str, role_id: str, req: RoleWatchRequest):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    cards = card_tools._collect_card_meta(work_id)
+    root_id = str(work_store.read_work(work_id).get("work_card_id") or "")
+    res = await card_tools._h_role_watch_cards(work_id, root_id, {
+        "role_card_id": role_id, "action": req.action,
+        "card_ids": list(req.card_ids or []),
+    }, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "操作失败"))
+    return res
+
+
+@router.delete("/works/{work_id}/roles/{role_id}/watch/{card_id}")
+async def unwatch_role_card(work_id: str, role_id: str, card_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    return await role_room.unlink(work_id, role_id, card_id, actor="用户")
+
+
+@router.get("/works/{work_id}/alarms")
+async def list_work_alarms(work_id: str, status: str = "open"):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    return {"alarms": role_room.list_alarms(work_id, status=status)}
+
+
+@router.post("/works/{work_id}/alarms/{alarm_id}/ack")
+async def ack_work_alarm(work_id: str, alarm_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    hits = [it for it in role_room.list_alarms(work_id, status="")
+            if str(it.get("id") or "") == alarm_id]
+    if not hits:
+        return _err(404, f"警报不存在: {alarm_id}")
+    ok = await role_room.ack_alarm(work_id, alarm_id)
+    return {"ok": bool(ok), "alarm_id": alarm_id}
+
+
+@router.post("/works/{work_id}/alarms/{alarm_id}/correct")
+async def correct_work_alarm(work_id: str, alarm_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    ok = await role_room.correct_alarm(work_id, alarm_id, "user")
+    if not ok:
+        return _err(404, f"警报不存在或不可更正: {alarm_id}")
+    return {"ok": True, "alarm_id": alarm_id, "status": "corrected"}
+
+
 # [phase8.5] 原文只读端点（给未来前端留口，不加写端点）
 @router.get("/works/{work_id}/manuscript")
 async def list_work_manuscript(work_id: str):
@@ -1449,9 +1697,17 @@ async def _run_message(work_id: str, card_id: str, content: str,
         keep = False
     if not keep:
         serial_gate.release(work_id, card_id)
-    # [goal 域 2026-10-20] 旧 ``auto_driver.after_turn`` 的续轮职责已整体移交
-    # ``src/goal/driver.py``（idle 事件驱动，见上方 finally）；父卡唤醒改由
-    # ``notify_parent_idle`` 承担。此处不再调 after_turn——两套并存会双起点火。
+    # [goal 域 2026-10-20] 旧 `auto_driver.after_turn` 的续轮职责已整体移交
+    # `src/goal/driver.py`（idle 事件驱动，见上方 finally）；父卡唤醒改由
+    # `notify_parent_idle` 承担。此处不再调 after_turn——两套并存会双起点火。
+    # [角色机制 5710] 回合收口同步给关注它的角色卡（离树观察者）。
+    # 排在互斥体释放之后、与 auto 驱动同级：同步失败/角色卡起不来绝不
+    # 影响本回合返回；角色卡自己的回合不再触发（after_turn 内部跳过 role）。
+    try:
+        await role_room.after_turn(work_id, card_id, result)
+    except Exception as exc:  # noqa: BLE001 角色同步异常不影响本回合返回
+        logger.error("[role] 回合收口同步异常 work=%s card=%s: %s",
+                     work_id, card_id, exc)
     return result
 
 

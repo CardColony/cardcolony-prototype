@@ -790,7 +790,9 @@ def rule_section_names(registry: dict[str, Any]) -> list[str]:
             continue
         for t in (vocab.get("types") or []):
             code = str((t or {}).get("code") or "")
-            if code and code not in out:
+            # [角色机制 5710] 角色卡不在规则卡分区体系内（行为由根卡写的职责书
+            # 约束，走专用 ROLE_CARD_BASE_PROMPT），不计入规则六区。
+            if code and code != "role" and code not in out:
                 out.append(code)
     return out
 

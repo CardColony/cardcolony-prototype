@@ -44,7 +44,7 @@ def _card(card_type: str, perms: list[str]) -> dict:
 # 权限底座 v5 给 rule 的 perms 只有 read（用户裁定·红线2「模型永远不能直接写
 # 规则」的同源纪律）——它永无 tools_file 开关，路径锁第三段对它是恒拒死路径
 # （缺键＝拒＝安全方向，零生产影响）；FILE_SCOPE 属 §四 白名单外文件，零触碰。
-_NO_FILE_SCOPE_TYPES = {"rule"}
+_NO_FILE_SCOPE_TYPES = {"rule", "role"}
 
 
 class TestFileScopeKeys:

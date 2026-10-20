@@ -1,13 +1,13 @@
-/* esm/nav_system.js —— 左栏导航系统（状态容器 + 渲染 + 交互 + 通知面板）。
+﻿/* esm/nav_system.js —— 左栏导航系统（状态容器 + 渲染 + 交互 + 通知面板）。
    [阶段1 A1.2 2026-10-17] 自 static/workspace.js 逐字搬运，零行为变更。
    装配：workspace.js 传入 workId / navTree / api / getCurrentCard / open / inspector。
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=36";
+import { notify } from "./api.js?v=39";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=30";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=32";
+import { createNavRenderer } from "./nav_render.js?v=35";
 import { createNavFind } from "./nav_find.js?v=30";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -87,10 +87,13 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
         const all = p.cards || [];
         const ids = new Set(all.map(c => c.card_id));
         const root = p.work_card_id || "";
-        snap.setChildren(wid, "", all.filter(c => {
+        const seg = all.filter(c => {
           const pa = c.parent || "";
           return pa === "" || pa === root || (pa && !ids.has(pa));
-        }));
+        });
+        // [角色机制 5710] 角色卡排根层末尾（作业卡在前、盯梢的在后）。
+        seg.sort((a, b) => (a.card_type === "role" ? 1 : 0) - (b.card_type === "role" ? 1 : 0));
+        snap.setChildren(wid, "", seg);
         dirty = true;
       }
       for (const e of navStore.prefs.listExpanded(wid)) {

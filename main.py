@@ -120,6 +120,14 @@ async def _start_auto_scheduler() -> None:
         scheduler.start(limit)
     except Exception as exc:  # noqa: BLE001 调度器起不来不影响主服务
         print(f"[startup] 调度器启动失败（不阻断）: {exc}", flush=True)
+    # [角色机制 5710 v2] 重启续跑：同步队列在 SQLite，重启后把 active 角色的
+    # pending 同步重新唤醒。fail-open，不阻断启动。
+    try:
+        import asyncio as _asyncio
+        from src.api import role_room as _role_room
+        _asyncio.create_task(_role_room.startup_sweep_all())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] 角色续跑启动失败（不阻断）: {exc}", flush=True)
 
 
 @app.on_event("startup")
