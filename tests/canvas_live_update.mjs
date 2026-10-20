@@ -86,6 +86,39 @@ const snap = () => ev(`(() => {
 
 const before = await snap();
 
+// 记录基线：DOM 顺序（第一张卡 = 视图根，其后按同层排布顺序）
+const domOrder = () => ev(`(() => [...document.querySelectorAll('.card-node')].map(n => n.dataset.id).join(','))()`);
+const orderBefore = await domOrder();
+
+/* ── 不变量：实时更新后的画布 ≡ 刷新后的画布 ──
+ * 病根（实测踩出来的）：实时更新把新卡 push 到 state.data.cards 末尾，
+ * 而服务端投影是 ORDER BY card_id ⇒ childMap 顺序变了 ⇒ 同层卡排布变了
+ * ⇒ 布局与"刷新后"不同（用户看不出，但按坐标点击会落到不同的卡上）。
+ * 判据：建一张卡再删掉它（触发两轮实时更新）之后，DOM 顺序必须与
+ *       **重新加载页面**之后的 DOM 顺序逐字相同。 */
+const mkCard = async (parentId) => {
+  const r = await fetch(`${BASE}/api/works/${WID}/cards`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: "实时更新不变量探针", source: "用户直接创建", parent: parentId, card_type: "" }),
+  });
+  return await r.json().catch(() => ({}));
+};
+const probeCard = await mkCard("");
+const probeId = probeCard.card_id || probeCard.meta?.card_id || "";
+await sleep(1500);
+let delStatus = 0;
+if (probeId) {
+  const dr = await fetch(`${BASE}/api/works/${WID}/cards/${probeId}`, { method: "DELETE" });
+  delStatus = dr.status;
+}
+await sleep(1500);
+const orderAfterLive = await domOrder();
+// 刷新页面，取"刷新后"的顺序作对照
+await send("Page.navigate", { url: `${BASE}/work/${WID}` });
+for (let i = 0; i < 200; i++) { await sleep(50); if (Number(await ev(`document.querySelectorAll('.card-node').length`)) > 0) break; }
+await sleep(1200);
+const orderAfterReload = await domOrder();
+
 // 记录目标卡原标题（用于改回去）
 const origTitle = await ev(`(function(){const n=document.querySelector('.card-node[data-id="${CID}"]');return n?(n.querySelector('.tname')||{}).textContent:""})()`);
 const NEW_TITLE = "实时更新验收_" + Date.now().toString().slice(-6);
@@ -130,8 +163,16 @@ const out = {
   othersUnchanged: before.others === after.others,
   othersChangedSample: before.others === after.others ? null
     : { b: (before.others || "").slice(0, 120), a: (after.others || "").slice(0, 120) },
+  // 不变量：实时更新后的 DOM 顺序 ≡ 刷新后的 DOM 顺序
+  invariant_liveEqualsReload: orderAfterLive === orderAfterReload,
+  invariant_detail: {
+    probeCreateStatus: probeCard.card_id || probeCard.meta?.card_id ? 201 : (probeCard.error || "?"),
+    probeDeleteStatus: delStatus,
+    orderBefore, orderAfterLive, orderAfterReload,
+  },
   consoleErrors: consoleErrs,
 };
+out.pass = out.pass && out.invariant_liveEqualsReload;
 console.log(JSON.stringify(out, null, 1));
 ws.close();
 child.kill();

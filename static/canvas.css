@@ -142,7 +142,11 @@
     top 200ms var(--cv-ease),
     border-color var(--cv-fast) var(--cv-ease),
     box-shadow var(--cv-base) var(--cv-ease),
-    background var(--cv-fast) var(--cv-ease);
+    background var(--cv-fast) var(--cv-ease),
+    /* [画布 5711] 入场用的位移过渡（配 @starting-style，见下方"卡片入场"段）。
+       ⚠ 不过渡 opacity —— 起始态一旦带 opacity 且过渡没跑，卡片会永远透明
+       （实测：画布只剩连线、卡片全无）。 */
+    transform 200ms var(--cv-ease);
   box-sizing: border-box;
   /* 宽度由**层级**决定（data-depth），不由缩放决定——见下方「深度即层级」。
      这里给的是 d1 基准值，d0/d2/d3 各自覆盖。 */
@@ -182,6 +186,44 @@
   z-index: 30;
   border-color: rgba(255, 255, 255, 0.3);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7);
+}
+
+/* ==========================================================================
+   [画布 5711 · P0 修] 卡片入场：**起始态里不许出现 opacity**。
+   ==========================================================================
+   实测到的两条"卡片看不见"的机制（画布页专属，探针逐条复现过）：
+
+   ① style.css:289 `.card-node.entering { animation: card-in .18s ease; }`，而
+      `@keyframes card-in { from { opacity: 0; transform: scale(.96) } }` ——
+      **animation 的起始帧在"动画没跑起来"时仍然生效**：标签页在后台/窗口未绘制
+      ⇒ 浏览器不推进动画 ⇒ 卡片**永远停在 opacity:0**。
+      症状：画布上只剩一片连线、卡片全无（截图实测），控制台一声不吭。
+      ⇒ 画布页显式 `animation: none`（不继承 style.css 那条）。
+
+   ② `@starting-style` + transition **有同样的失败模式**：transition 没跑时，
+      starting-style 的值会**一直挂着**（探针实测：animation 关掉后 p3 仍是
+      opacity=0）。所以"改用 transition 就安全"是错的。
+
+   ⇒ 结论（唯一可靠的口径）：**入场的起始态里不能有 opacity**。
+   改成只动 transform（位移 + 缩放）：起始态即便钉住，卡片也**照样看得见**，
+   只是没有淡入效果。退化方向必须是"少个动画"，不能是"看不见"。
+
+   ⚠ .entering 期间只保留 transform 过渡 —— left/top 的过渡要关掉，
+     否则新卡会从占位坐标 (0,0) 飞过来。
+   ========================================================================== */
+.page-canvas .card-node.entering {
+  /* 不继承 style.css 的 card-in 动画（它的起始帧 opacity:0 会把卡片钉死）。 */
+  animation: none !important;
+  /* 只过渡 transform；left/top 的过渡关掉（否则卡片从占位坐标飞过来）。 */
+  transition: transform 200ms var(--cv-ease);
+  /* 光标不该是"抓取"——它不是拖拽态（那属于 .dragging）。 */
+  cursor: pointer;
+}
+@starting-style {
+  .page-canvas .card-node.entering {
+    /* 起始态只有位移/缩放，**没有 opacity** ⇒ 钉住也看得见。 */
+    transform: translateY(6px) scale(0.985);
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1001,13 +1043,10 @@
 .page-canvas .cv-guide.v { width: 1px; }
 .page-canvas .cv-guide.h { height: 1px; }
 
-/* 进入动画 */
-@keyframes cv-card-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.985); }
-  to { opacity: 1; transform: none; }
-}
-
-.page-canvas .card-node.entering { animation: cv-card-in 200ms var(--cv-ease); }
+/* [画布 5711] 旧的入场 @keyframes（cv-card-in）已退役：animation 的起始帧在
+   "动画没跑"时仍生效（后台标签页暂停 / 减少动效置 none）⇒ 卡片会永远停在
+   opacity:0 看不见。改用 transition + @starting-style，见上方"卡片入场"段。
+   —— 死件不留（与本项目"死件纪律"一致）。 */
 
 /* [画布 5711] 删掉这段：选择器以逗号结尾且**没有任何声明** ⇒ 整条无效
    （死代码）。真正生效的"减少动效"规则在文件末尾那段。 */

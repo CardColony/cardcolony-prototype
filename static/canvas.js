@@ -1663,6 +1663,10 @@ const WORK_ID = window.__WORK_ID__;
       // 顺带保证任何时刻画布上都只有一种布局结果。
       if (hidWorld) world.style.visibility = "";
       reflowAll();
+      // [画布 5711] 增量渲染自检：节点建出来了但坐标没落到位（布局里缺这张卡）
+      // ⇒ 节点永远停在占位坐标 + .entering（透明）⇒ 卡片不可见，且**不报错**。
+      // 命中就退回全量重绘：慢一点，但一定对。
+      _assertNoGhostNodes();
     } finally {
       // 兜底：异常路径也绝不许把 #world 留在 hidden（静默白屏）。
       if (hidWorld) world.style.visibility = "";
@@ -5134,8 +5138,11 @@ const WORK_ID = window.__WORK_ID__;
 
 
   // ==================== 数据加载 ====================
-  async function reloadCanvas() {
-    showCanvasState("loading");   // [F3④]
+  async function reloadCanvas(opts) {
+    // [画布 5711] opts.silent：静默重拉（兜底轮询命中时用）——画布上已经有内容了，
+    // 再弹一次骨架屏就是一次"白一下"，没必要。默认行为逐字不变。
+    const _silent = !!(opts && opts.silent);
+    if (!_silent) showCanvasState("loading");   // [F3④]
     try {
       const data = await API.getCanvas(WORK_ID);
       state.data.cards = data.cards || [];
@@ -5188,7 +5195,7 @@ const WORK_ID = window.__WORK_ID__;
       // 骨架屏没了、卡片也还没画出来 ⇒ 用户看到的是「打开画布先白一下」，
       // 而不是「骨架 → 内容」的连贯过渡。移除动作挪到 renderAll 之后。
       renderAll();          // [画布第三步 T4] 数据就绪 → 统一重绘入口
-      showCanvasState("clear");   // ← 渲染完成，此刻才收起骨架屏
+      if (!_silent) showCanvasState("clear");   // ← 渲染完成，此刻才收起骨架屏
       // [画布 2026-10-18 · 工作台] 首屏**不再把整张图缩到装得下**。
       // 43 张卡全装进 1600×1000 要缩到 60%，待裁定条目在 60% 下根本读不了——
       // 那等于"打开了但什么也读不到"。工作台打开就该带你去该干活的地方：
@@ -6598,7 +6605,14 @@ const WORK_ID = window.__WORK_ID__;
   // 于是"事件驱动的卡面"与"首屏的卡面"不可能不一致。
   // ══════════════════════════════════════════════════════════════════════
 
+  // ── 订阅工作级事件流 ──
+  //
+  // [画布 5711] 订阅**健康度**单独记一个标志：EventSource 对象存在 ≠ 连接可用
+  // （企业代理会"接受连接但不投递"，onerror 甚至可能不触发）。兜底轮询必须按
+  // **健康度**决定接管与否，不能只看对象在不在——否则 SSE 静默失效时兜底永远
+  // 不上场，画布就永远不更新（这正是"必须刷新"的另一种成因）。
   let _workEs = null;
+  let _workEsHealthy = false;
   const _liveQueue = new Map();   // card_id → 最新载荷（同一张卡的多次变化合并）
   let _liveTimer = 0;
 
@@ -6633,32 +6647,51 @@ const WORK_ID = window.__WORK_ID__;
     const card = payload.card || null;
 
     if (kind === "deleted") {
-      // 索引：卡片没了，父卡的子卡列表也要摘掉。
+      // [画布 5711 · 修] **两张表都要改**：state.data.cards 与 state.index。
+      //
+      // 病根（实测捕获的严重回归）：本函数原来只改 state.index，而**布局算法读的是
+      // state.data.cards**（collectProjectionInput → computeLayout(input.cards…)）。
+      // 两张表一分裂，布局算出来的位置里就没有这张卡 ⇒ 增量渲染写不回坐标 ⇒
+      // 节点永远停在占位坐标 (0,0) 且带 .entering（入场动画起点 opacity:0）
+      // ⇒ **整片画布的卡片全部不可见，只剩连线**。
+      // 这是"索引是派生数据、原始列表才是真相"的典型：只改派生数据 = 制造不一致。
+      const _ci = state.data.cards.findIndex((c) => c && c.card_id === cardId);
+      if (_ci >= 0) state.data.cards.splice(_ci, 1);
       delete state.index.cardMap[cardId];
-      for (const k of Object.keys(state.index.childMap)) {
-        const arr = state.index.childMap[k];
-        const i = arr.findIndex((c) => c && c.card_id === cardId);
-        if (i >= 0) arr.splice(i, 1);
-      }
       state.view.selected.delete(cardId);
       const node = nodeMap.get(cardId);
       if (node) { node.remove(); nodeMap.delete(cardId); }
+      // 索引重建（childMap 由 cards 派生 ⇒ 必须整体重建，不能局部补丁）
+      rebuildCardMap();
       // 子树没了 ⇒ 布局要重排（后面的卡要往上收）＋连线要重画。
       reflowAll();
       return true;
     }
 
     if (!card) return false;
-    // 索引先行：即便这张卡当前不在画布上，索引也得是最新的（下次展开时才对）。
-    state.index.cardMap[cardId] = card;
-    const parentId = card.parent || "";
-    if (parentId) {
-      if (!state.index.childMap[parentId]) state.index.childMap[parentId] = [];
-      const siblings = state.index.childMap[parentId];
-      if (!siblings.some((c) => c && c.card_id === cardId)) {
-        siblings.push({ card_id: cardId, card_type: card.card_type, title: card.title });
-      }
+    // [画布 5711 · 修] 同样两张表都要改（见上）。卡片是**新增**时进 cards 列表，
+    // 是**更新**时就地替换——布局读的就是这张列表。
+    //
+    // ⚠ 新卡必须**按 card_id 升序插到正确位置**，不能 push 到末尾：
+    //   childMap 的顺序决定同层卡的排布顺序，顺序一乱，布局就和"刷新后"不一样
+    //   ⇒ 实时更新过的画布与刷新过的画布**长得不一样**（实测：e2e 的坐标点击
+    //   因此落到不同的卡上，表现为"点击行为与基线不一致"）。
+    //   服务端投影是 ORDER BY card_id，这里保持同口径 ⇒ 两条路径产出同一布局。
+    const _arr = state.data.cards;
+    let _ci = -1;
+    for (let _k = 0; _k < _arr.length; _k++) {
+      if (_arr[_k] && _arr[_k].card_id === cardId) { _ci = _k; break; }
     }
+    if (_ci >= 0) {
+      _arr[_ci] = card;
+    } else {
+      let _j = _arr.length;
+      while (_j > 0 && _arr[_j - 1] && String(_arr[_j - 1].card_id) > String(cardId)) _j--;
+      _arr.splice(_j, 0, card);
+    }
+    const parentId = card.parent || "";
+    // 索引整体重建（childMap 由 cards 派生）
+    rebuildCardMap();
 
     const onCanvas = nodeMap.has(cardId);
     if (onCanvas) {
@@ -6675,9 +6708,35 @@ const WORK_ID = window.__WORK_ID__;
     if (kind === "created" && parentId && nodeMap.has(parentId)
         && state.view.expanded.has(parentId)) {
       renderSubtree(parentId);
+      _assertNoGhostNodes();
       return true;
     }
-    // 新卡若父卡不在画布上（或没展开）⇒ 画布结构没变，索引更新即可。
+    // 新卡若父卡不在画布上（或没展开）⇒ 画布结构没变，数据更新即可。
+    return false;
+  }
+
+  // [画布 5711] **半渲染自检**：增量渲染之后，检查是否还有节点停在占位坐标。
+  //
+  // 为什么要有这道闸：增量路径（renderSubtree）失败时**不报错**——节点建出来了，
+  // 但坐标写不进去（因为布局里没有它），节点就永远停在 (0,0) 且带 .entering
+  // （入场动画的起点是 opacity:0）⇒ **卡片不可见**。而这类失败在控制台上是安静的，
+  // 用户只看到"画布空了"。
+  //
+  // 判据（机械、可测）：在场节点里若还有"既是 (0,0)、又带 .entering"的 ⇒
+  // 说明这一轮增量渲染没把坐标落到位 ⇒ 退回**全量重绘**。
+  // 全量重绘慢一点，但一定对；半渲染错一点点，就是整片看不见。
+  function _assertNoGhostNodes() {
+    let ghosts = 0;
+    for (const [cid, node] of nodeMap) {
+      // 根卡本来就坐在 (0,0)（它是布局原点）⇒ 不算幽灵。
+      if (cid === state.nav.viewRoot) continue;
+      const l = parseFloat(node.style.left);
+      const t = parseFloat(node.style.top);
+      if (l === 0 && t === 0 && node.classList.contains("entering")) ghosts++;
+    }
+    if (!ghosts) return true;
+    console.warn("[canvas] 增量渲染留下未落位的节点（" + ghosts + " 张）⇒ 退回全量重绘");
+    renderAll();
     return false;
   }
 
@@ -6729,7 +6788,10 @@ const WORK_ID = window.__WORK_ID__;
     try {
       const es = new EventSource(`/api/works/${WORK_ID}/events`);
       _workEs = es;
+      es.onopen = () => { _workEsHealthy = true; };
+      es.onerror = () => { _workEsHealthy = false; /* 断线 ⇒ 兜底接管 */ };
       es.onmessage = (m) => {
+        _workEsHealthy = true;
         let evt = null;
         try { evt = JSON.parse(m.data); } catch (e) { return; }
         if (!evt || evt.type !== "card_changed") return;
@@ -6737,27 +6799,28 @@ const WORK_ID = window.__WORK_ID__;
         if (!d.card_id) return;
         scheduleLiveApply(d.card_id, d);
       };
-      es.onerror = () => { /* SSE 断开静默；EventSource 自带重连（retry: 3000） */ };
     } catch (e) {
       // EventSource 不可用（老浏览器/代理）⇒ 退回轮询兜底（见下）。
       _workEs = null;
+      _workEsHealthy = false;
     }
   }
   subscribeWorkEvents();
-  // 兜底：SSE 不可用或长时间没消息时，用卡片版本指纹做低频差分探测。
+  // 兜底：SSE 不可用或**不健康**时，用卡片版本指纹做低频差分探测。
   // 指纹端点（/api/nav/version）现成，左栏已用它 60s 探测；这里复用同口径，
-  // 间隔更短（4s），命中即全量重拉（只在 SSE 失效时才走到这条）。
+  // 间隔更短（4s），命中即重拉。
   let _liveFallbackTimer = 0;
   let _liveFallbackSig = "";
   async function liveFallbackProbe() {
-    if (_workEs) return;            // SSE 活着就不轮询
+    if (_workEsHealthy) return;      // SSE 活着就不轮询
     try {
       const r = await fetch("/api/nav/version");
       if (!r.ok) return;
       const d = await r.json();
       const sig = (d.by_work || {})[WORK_ID] || "";
       if (_liveFallbackSig && sig && sig !== _liveFallbackSig) {
-        await reloadCanvas();
+        // 静默重拉：画布上已经有内容了，别再弹骨架屏（那是一次"白一下"）。
+        await reloadCanvas({ silent: true });
       }
       _liveFallbackSig = sig;
     } catch (e) { /* 零阻断 */ }
