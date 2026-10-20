@@ -166,3 +166,30 @@ async def test_manual_check_queues_snapshot_for_session_less_card(work, monkeypa
     # 已在队里 ⇒ 再点一次巡检不重复灌
     await role_room.manual_check(wid, rid)
     assert len(role_store.pending_syncs(wid, rid)) == 1
+
+async def test_duty_bookkeeping_never_clobbers_state(work):
+    """回归 dynamic_cabinet D 段实测的丢更新：收尾记账只合并字段，
+    不得把 set_duty 刚写入的 state 冲回旧值（旧实现整字典写回，
+    复职 active 被上轮收尾的 suspended 快照覆盖，spawn 从此静默拒起）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    c = await _mk_child(wid, root, "值班记账卡")
+    rid = await _mk_role(wid, root, [c], signals=["status_changed"])
+
+    await role_room.set_duty(wid, rid, "suspended", actor="用例")
+    # 模拟上轮巡检收尾与停职/复职并发：记账必须只动 last_wake_at/pending_sync
+    await role_store.touch_duty(wid, rid, last_wake_at="T1", pending_sync=0)
+    duty = (role_store.get_profile(wid, rid) or {}).get("duty") or {}
+    assert duty.get("state") == "suspended", duty   # state 不被记账冲掉
+    assert duty.get("last_wake_at") == "T1", duty
+
+    # 复职后再记账：state 保持 active（丢更新回归点）
+    await role_room.set_duty(wid, rid, "active", actor="用例")
+    await role_store.touch_duty(wid, rid, last_wake_at="T2", pending_sync=1)
+    duty = (role_store.get_profile(wid, rid) or {}).get("duty") or {}
+    assert duty.get("state") == "active", duty
+    assert duty.get("last_wake_at") == "T2" and duty.get("pending_sync") == 1, duty
+
+    # set_duty_state 原子合并：不丢 touch 写下的记账字段
+    await role_room.set_duty(wid, rid, "suspended", actor="用例", note="再停")
+    duty = (role_store.get_profile(wid, rid) or {}).get("duty") or {}
+    assert duty.get("state") == "suspended" and duty.get("last_wake_at") == "T2", duty
