@@ -1220,6 +1220,21 @@ async def update_card(
     # 不用手动刷新，也不用整棵重建。
     await _notify_card_changed(work_id, card_id, "updated")
 
+    # [role-sync 2026-10-20 · card_004] body block changed => notify roles watching
+    # this card. Old gap: sync was only hooked to work-card turn completion
+    # (role_room.after_turn), so (1) PATCHing status_block/rulings never reached
+    # roles, and (2) cards without session blocks have no turns at all, so a role
+    # could only ever see their first snapshot. Hooked after the single write gate
+    # => covers both tool path and HTTP path. Never breaks the write.
+    if "status_block" in updates or "rulings" in updates:
+        try:
+            from ..api import role_room as _role_room
+
+            _role_room.schedule_card_changed(work_id, card_id, updates)
+        except Exception as exc:  # noqa: BLE001 role notify must not break card write
+            logger.warning("[role] card-change notify failed work=%s card=%s: %s",
+                           work_id, card_id, exc)
+
     # [phase8.3] "剧本卡切确定→派生目标卡"触发已废除；
     # 目标卡改为创建剧本时即派生（见 derive_ending / work_store.create_work）。
 
