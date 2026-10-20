@@ -2133,7 +2133,8 @@ const WORK_ID = window.__WORK_ID__;
     //   又只做"跳整页"这一件事。
     //   ⇒ 用户站在画布上问"我怎么进对话"，答案是"你得知道双击这个隐藏手势"。
     //   ⇒ 把"就地展开"变成一个**看得见、点得到**的按钮：功能从"隐藏手势"变成"入口"。
-    //   双击仍然保留（它是快捷方式，不是唯一路径）。
+    // [画布 5711 · 产品] 双击手势已撤除 ⇒ 这里**不再有**"双击仍保留"的快捷方式，
+    // 就地展开的三个入口是：💬 按钮 / 右键菜单 / Enter 键（一个语义一个入口）。
     const chatBtn = node.querySelector(".cv-chat");
     if (chatBtn) {
       chatBtn.addEventListener("click", (e) => {
@@ -2148,17 +2149,15 @@ const WORK_ID = window.__WORK_ID__;
     // 卡面子元素的监听（换卡面后要重绑，见 bindCardFace 注释）。
     bindCardFace(node, card);
 
-    // 明确入口：卡右上角的 ↗（常驻，不靠 hover 才发现）
-    // [画布 2026-10-19 · 用户令] 双击 = **在画布上打开这张卡的对话**，不跳页。
+    // 明确入口：卡右上角的 ↗（常驻，不靠 hover 才发现）——进**完整对话页**。
     //
-    // 用户两次要求"在画布界面同时看到几个对话的进程并随时回复"。跳整页去做这件事
-    // 与需求相反——一跳页，画布上下文全没了，也谈不上"同时看几个"。
-    // 所以：双击/Enter → 并行层里开这个卡的窗口（进程 + 回复 + 全文）；
-    // 卡上的 ↗ 仍然进完整对话页（需要大屏长文时用）。
-    // [画布 5711 · 产品] **双击手势已撤除**（原 dblclick → toggleCell 就地展开）。
-    // 理由见 click 处理器的注释：单击与双击是同一手势的两个互斥结果，而双击在真实
-    // 使用中（间隔 150–300ms > 判据窗口 220ms）根本到不了。
-    // "就地展开对话"现在只走三个明确入口：💬 按钮 / 右键菜单 / Enter 键。
+    // [画布 5711 · 产品] 这一段原来写的是"双击＝在画布上打开这张卡的对话"，那是
+    // 2026-10-19 的设计，**已被 2026-10-20 的用户裁定推翻**：
+    //   · 双击手势**已撤除**（原 dblclick → toggleCell 就地展开）。
+    //     理由见 click 处理器的注释：单击与双击是同一手势的两个互斥结果，而双击在
+    //     真实使用中（间隔 150–300ms > 判据窗口 220ms）根本到不了。
+    //   · "就地展开对话"（不跳页）现在只走三个明确入口：**💬 按钮 / 右键菜单 / Enter**。
+    //   · ↗ 的语义从头到尾没变过：**跳整页**（需要大屏长文时用）。
     // 保留这段空实现是为了让"为什么没有双击"在代码里有据可查，而不是无声消失。
 
     // 拖拽
@@ -2173,7 +2172,19 @@ const WORK_ID = window.__WORK_ID__;
       // [画布商业化 2026-10-17] 根卡是布局坐标系的锚点（computeLayout 恒把它放在
       // 原点，子卡相对它排布）——单独拖根卡会被下一轮布局拉回原位，表现为"拖了又弹回"。
       // 故拖根卡＝拖画布：语义是"移动整个视图"，落点即时生效、不会弹。
-      if (card.card_id === state.nav.workCardId
+      //
+      // [画布 5711 · P1 修] 锚点判据改成 **viewRoot**，不是 workCardId。
+      // 病根：computeLayout 钉在原点的那个卡是 **viewRoot**（collectProjectionInput
+      // 传的就是 state.nav.viewRoot；下钻 setViewRoot 会改它），而这里判的是
+      // workCardId（项目根卡，全生命期不变）。⇒ **下钻之后两者不是同一张卡**：
+      //   ① 当前视图根（就是标着 .is-root 的那张）走普通拖拽分支 ⇒ 落库坐标后
+      //      reflowAll 又被 computeLayout 拉回 (0,0) ⇒ **拖了又弹回**，
+      //      而且用户已经"拖成功"了（卡跟着鼠标动过），落空感极强；
+      //   ② 真正该"拖根卡=平移"的项目根卡此时不在可见集里 ⇒ 下钻后没有任何卡
+      //      能用来平移视图（只能去拖空白处）。
+      // 改成 viewRoot 后：默认视图行为**逐字不变**（viewRoot === workCardId），
+      // 下钻后则由当前视图根承担"拖＝移动视图"，与 .is-root 样式、布局口径完全一致。
+      if (card.card_id === state.nav.viewRoot
           && !(state.view.selected.has(card.card_id) && state.view.selected.size > 1)) {
         panState = {
           startX: e.clientX, startY: e.clientY,
@@ -2242,10 +2253,16 @@ const WORK_ID = window.__WORK_ID__;
       if (dragState.moved && dragGroup) {
         suppressClickUntil = Date.now() + 320;
         // 多选整组落库：逐张写用户松手的坐标（persistCardPos 自带 500ms 批量合并）
+        const movedIds = [];
         for (const g of dragGroup) {
           g.node.classList.remove("dragging");
           persistCardPos(g.id, parseFloat(g.node.style.left), parseFloat(g.node.style.top));
+          movedIds.push(g.id);
         }
+        // [画布 5711 · P1 修] 同层顺序归一化（见 normalizeSiblingOrder 注释）：
+        // 整组拖动时，组内各卡的落点已是彼此的相对位置，只需把**没被拖的同层卡**
+        // 的当前位置显式记下来，这一层的顺序才是"人摆的顺序"。
+        normalizeSiblingOrder(movedIds);
         dragGroup = null;
         reflowAll();
       } else if (dragState.moved) {
@@ -2260,6 +2277,9 @@ const WORK_ID = window.__WORK_ID__;
         // （T18 交付件，留作将来显式恢复显示仲裁的候选，不再被本路径调用）。
         node.classList.remove("dragging");
         persistCardPos(card.card_id, newLeft, newTop);
+        // [画布 5711 · P1 修] 同层顺序归一化：把"用户把卡放在哪"变成"同层里它排第几"。
+        // 不做这一步的话，同层里第一次拖某张卡时它会被提到该层最前面（用户落点被忽略）。
+        normalizeSiblingOrder([card.card_id]);
         // [card_045 E4] 拖动落定后立刻走统一重算的「不重建节点」分支（reflowAll→
         // reflowLayout，画布第三步 T2/T4 统一入口）：显示坐标与连线吃同一份现算
         // 结果——不再有快照可读，也不需要。
@@ -2316,10 +2336,14 @@ const WORK_ID = window.__WORK_ID__;
   // ══════════════════════════════════════════════════════════════════════
   // [画布商业化 2026-10-17] 选择系统
   //
-  // 语义变更（用户已授权全权改造画布交互）：旧行为是「单击卡片＝立刻整页跳去
-  // 对话页」——画布上任何一次误点都会把人弹走，这是白板类产品最忌讳的交互。
-  // 新行为对齐商业白板：**单击＝选中，双击＝进入**。进对话的通道有三个：
-  // 双击、选中后按 Enter、右键菜单「打开对话」。
+  // [画布 5711 · 产品] 语义已再次演进，这段说明按**当前**事实重写（原文本描述的是
+  // 一版已被推翻的设计：那时是"单击＝选中、双击＝进入"）：
+  //   现在单击＝**进对话页**（唯一的主操作，2026-10-20 用户裁定）；
+  //   双击手势**已撤除**（单击与双击互斥，且真实双击间隔 150–300ms 根本到不了
+  //   220ms 判据窗口，双击永远等不到）；
+  //   选择走 Shift/Ctrl/⌘+单击，展开子卡走 ▸N 徽标或空格，下钻走 Alt+单击。
+  //   进对话有两条路：跳整页（单击 / ↗ / 右键「打开对话」）、就地展开
+  //   （💬 / 右键「在此展开对话」/ Enter）。
   // ══════════════════════════════════════════════════════════════════════
   function selectionIds() {
     return [...state.view.selected];
@@ -3090,7 +3114,7 @@ const WORK_ID = window.__WORK_ID__;
     }
   }
 
-  // 在并行层打开这张卡的对话（双击 / Enter 的主路径）
+  // 在并行层打开这张卡的对话（并排比较弹窗里的「开对话」按钮走这条）
   function openCardWatch(cardId) {
     if (!cardId) return;
     selectOnly(cardId);
@@ -3867,7 +3891,7 @@ const WORK_ID = window.__WORK_ID__;
   // ──────────────────────────────────────────────────────────────────────────
   // [画布 2026-10-19 · 用户令] 原来整张卡悬停就弹一块 420×620 的纯文字浮层，
   // 把底下的卡片全遮住，内容还和卡面重复。现在：
-  //   卡片悬停 → 什么都不弹（要看对话就双击展开）
+  //   卡片悬停 → 什么都不弹（要看对话就点 💬 / 右键「在此展开对话」/ 按 Enter）
   //   徽章 ▸N 悬停 → 只列里面几张卡的名字 + 几张有活
   // 这是卡面确实没有的信息，而且只在"要不要展开"这一刻才需要。
   // ══════════════════════════════════════════════════════════════════════════
@@ -4829,6 +4853,42 @@ const WORK_ID = window.__WORK_ID__;
     if (patchTimer) clearTimeout(patchTimer);
     patchTimer = setTimeout(flushPatches, 500);
   }
+
+  // [画布 5711 · P1 修] **同层顺序归一化**：让"落点"真正表达"排第几"。
+  //
+  // 病根（实测复现）：布局的同层排序是"按存储的 y 排；**没存过 y 的排在有 y 的后面**"
+  // （见 layoutTree 的 kidsOf）。⇒ **同层里第一次拖某张卡时，它会被提到该层最前面**，
+  // 用户的落点被完全忽略。实测：把 card_017 拖到 card_010 下面（落点 y=50，介于
+  // card_010 的 20 与 card_016 的 108 之间），结果它跑到第 3 位 —— 想插在中间，
+  // 却插到了最前面。只有"以前拖过的卡"之间才比得公平。
+  //
+  // 修法（不碰布局纯函数、不改存储格式）：落子那一刻，把**同层所有卡**的 y 统一
+  // 写成"它们当前占的位置"（被拖的那张写成落点 y）——一层人的顺序于是被显式记下，
+  // 布局按 y 排序即可原样复现用户的意图。
+  // 为什么不写进布局：布局是纯函数（card_045 E1 纪律），不该读 DOM；而"同层当前
+  // 次序"是**运行时**信息，只有落子那一刻才确定。
+  // 为什么不新增字段：positions 的 {x,y,pinned} 结构是前后端共用的（存储语义
+  // 见 card_045 E7），复用 y 作排序键最省事，也不牵动后端。
+  function normalizeSiblingOrder(draggedIds) {
+    const moved = new Set(draggedIds);
+    const groups = new Map();          // 父卡 → 本次被拖的卡
+    for (const cid of moved) {
+      const c = state.index.cardMap[cid];
+      if (!c) continue;
+      const p = c.parent || "";
+      if (!groups.has(p)) groups.set(p, []);
+      groups.get(p).push(cid);
+    }
+    for (const parent of groups.keys()) {
+      const sibs = state.index.childMap[parent] || [];
+      for (const s of sibs) {
+        if (moved.has(s.card_id)) continue;      // 被拖的那几张保留自己的落点 y
+        const n = nodeMap.get(s.card_id);
+        if (!n) continue;                         // 不在场 ⇒ 不参与这一层的排序
+        persistCardPos(s.card_id, parseFloat(n.style.left) || 0, parseFloat(n.style.top) || 0);
+      }
+    }
+  }
   async function flushPatches() {
     const patch = { ...pendingPatches };
     for (const k in pendingPatches) delete pendingPatches[k];
@@ -4869,52 +4929,51 @@ const WORK_ID = window.__WORK_ID__;
   // 而"在某张卡下面挂一张子卡"是画布内的结构操作，跳走会打断布局工作。
   function openNewCardDialog(parentId) {
     const isChild = !!parentId;
-    const node = document.createElement("div");
-    node.style.cssText = "position:fixed;top:60px;right:20px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;z-index:1000;display:flex;flex-direction:column;gap:8px;min-width:260px;box-shadow:0 12px 32px rgba(0,0,0,.55);";
-    node.innerHTML = `
-      <div style="font-size:12px;color:var(--dim);margin-bottom:2px;">${isChild ? "新建子卡（挂在当前卡下）" : "新建卡片"}</div>
-      <input type="text" id="newCardTitle" placeholder="卡片标题" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;">
-      <div style="display:flex;gap:6px;">
-        <button class="btn primary" id="newCardOk" style="flex:1;">创建</button>
-        <button class="btn ghost" id="newCardCancel">取消</button>
-      </div>
-    `;
-    document.body.appendChild(node);
-    const titleInput = node.querySelector("#newCardTitle");
-    titleInput.focus();
-    const submit = async () => {
-      const title = titleInput.value.trim();
-      if (!title) { API.toast("请输入标题", "error"); return; }
+    // [画布 5711 · 产品] 统一到 cvDialog（与"重命名""删除"同一套弹窗）。
+    //
+    // 病根（产品不一致 + 一个真 bug）：新建卡原来用的是**另一套自制小面板**
+    // （inline style 拼的、右上角浮出、无遮罩）。同一族"改卡"操作用两套交互语言，
+    // 而且这套自制面板有两个实打实的问题：
+    //   ① 它的 Escape 只 `node.remove()`，**事件继续冒泡** ⇒ 画布的全局 Esc 处理器
+    //      跟着执行 ⇒ **关弹窗的同时把选中的卡也清了**（一个动作干了两件事）；
+    //   ② 没有遮罩、没有焦点陷阱、没有 aria-modal ⇒ 读屏/键盘用户完全没提示
+    //      "弹窗开着"（Tab 会跑到背后的画布上）。
+    // cvDialog 这三样都有（捕获阶段拦 Escape/Enter、Tab 焦点陷阱、初始焦点在输入框）。
+    //
+    // 行为保持：子卡＝就地建卡并刷新画布；顶层卡＝填完标题跳草稿页（产品决定不变）。
+    (async () => {
+      const title = await cvDialog({
+        title: isChild ? "新建子卡" : "新建卡片",
+        lines: isChild ? ["挂在当前卡下。"] : ["先说清楚要做什么，再落库。"],
+        input: true,
+        defaultValue: "",
+        okText: isChild ? "创建" : "下一步",
+      });
+      if (title === null) return;                 // 取消
+      const t = String(title).trim();
+      if (!t) { API.toast("请输入标题", "error"); return; }
       if (isChild) {
-        node.remove();
         try {
-          await API.createCard(WORK_ID, { title, source: "用户直接创建", card_type: "", parent: parentId });
+          await API.createCard(WORK_ID, { title: t, source: "用户直接创建", card_type: "", parent: parentId });
           state.view.expanded.add(parentId);
           scheduleSaveView();
           await reloadCanvas();
-          notify("已创建：" + title);
+          notify("已创建：" + t);
         } catch (e) {
           notify("创建失败：" + (e && e.message ? e.message : e), "error");
         }
         return;
       }
-      node.remove();   // ★ 立刻关弹窗——不等任何网络
       // [惰性新建 2026-10-17 · 治建卡延迟] **先出画面，数据后到**：
       // 提交标题立刻跳进这张卡的对话画面（零等待、零 POST）；落库由对话页**后台立刻发起**。
       // 标题/父卡/类型经 sessionStorage 一次性携带（跳页清空内存；URL 只承担页面身份）。
       try {
         sessionStorage.setItem("newCard:" + WORK_ID, JSON.stringify({
-          title, parent: state.nav.viewRoot || "", card_type: "",
+          title: t, parent: state.nav.viewRoot || "", card_type: "",
         }));
       } catch (e) { /* 存储不可用：退化为默认标题，不阻断跳转 */ }
       location.assign("/work/" + WORK_ID + "/card/draft");
-    };
-    node.querySelector("#newCardOk").onclick = submit;
-    node.querySelector("#newCardCancel").onclick = () => node.remove();
-    titleInput.onkeydown = (e) => {
-      if (e.key === "Enter") submit();
-      if (e.key === "Escape") node.remove();
-    };
+    })();
   }
 
   if (newCardBtn) newCardBtn.onclick = () => openNewCardDialog(null);
@@ -5032,18 +5091,25 @@ const WORK_ID = window.__WORK_ID__;
     const multi = state.view.selected.size > 1;
 
     openCtxMenu(e.clientX, e.clientY, [
-      { act: "open", label: multi ? `打开对话（${state.view.selected.size} 张中第一张）` : "打开对话", kbd: "↵", run: () => openCardChat(cid) },
+      // [画布 5711 · P1 修] "打开对话"**不再标 ↵**：↵ 的真实语义是**就地展开对话**
+      // （toggleCell，见节点级与全局级两个 Enter 处理），不是跳整页。
+      // 原来两条提示正好写反了：↵ 标在"打开对话"上、"就地展开"标着"双击"。
+      // 而"双击"上一轮已撤除（单击与双击互斥），按双击什么都不会发生 ⇒ 纯骗人。
+      // 现在：↵ 只标在它真正对应的动作上，其余不标。
+      { act: "open", label: multi ? `打开对话（${state.view.selected.size} 张中第一张）` : "打开对话", run: () => openCardChat(cid) },
       // [画布 5711 · 产品] 「在此展开对话」：不离开画布地看这张卡的对话并直接回复。
       // 与卡面上的 💬 按钮同一个动作 —— 菜单里也必须有一份，否则"按钮在卡上、
       // 菜单里没有"会让人以为这是两件事。
-      { act: "expand-chat", label: "在此展开对话（不离开画布）", kbd: "双击", run: () => toggleCell(cid) },
+      { act: "expand-chat", label: "在此展开对话（不离开画布）", kbd: "↵", run: () => toggleCell(cid) },
       { act: "focus", label: "以此卡为中心", kbd: "F", run: () => focusCard(cid) },
       { act: "watch", label: "盯这张卡（并行对话层）", run: () => watchAdd(cid) },
       multi ? { act: "cmp", label: `并排比较这 ${state.view.selected.size} 张`, run: () => openCompare([...state.view.selected]) } : null,
       { sep: true },
       { act: "child", label: "新建子卡", run: () => openNewCardDialog(cid) },
       hasKids ? { act: "toggle", label: isExpanded ? "收起子卡" : "展开子卡", run: () => toggleExpand(cid) } : null,
-      { act: "drill", label: "下钻到此卡（Alt+双击）", run: () => setViewRoot(cid) },
+      // [画布 5711 · P1 修] 原来写"Alt+双击"——下钻的真实手势是 **Alt+单击**
+      // （click 处理器里 e.altKey 分支），双击根本到不了这里。
+      { act: "drill", label: "下钻到此卡（Alt+单击）", run: () => setViewRoot(cid) },
       { sep: true },
       { act: "rename", label: "重命名", run: () => renameCard(cid) },
       { act: "copy", label: "复制标题", run: () => { try { navigator.clipboard.writeText(card.title || ""); notify("标题已复制"); } catch (err) { /* 剪贴板不可用 */ } } },

@@ -331,6 +331,10 @@ def test_t6_touched_modules_bumped():
       深度样式从未生效）；⑥ 新增工作级实时更新（订阅 /api/works/{w}/events，
       写卡后**就地**换掉那一张卡，不重建整树）；⑦ 首屏适配重试机制（_autoFitPending
       原来恒 false，机制从未跑过）。
+    ★ [画布 5711 · 新建卡弹窗统一] canvas 82→83、main 82.0→83.0、build-stamp v83→v84：
+      "新建卡片"原来自制 inline-style 小面板（另一套交互语言），本轮并入 cvDialog
+      （与重命名/删除同一套）：顺带修掉一个真 bug——旧面板的 Escape 只 remove 自己、
+      事件继续冒泡 ⇒ 关弹窗的同时把画布选中的卡也清了。
     """
     vm = _version_map()
     expect = {
@@ -338,8 +342,8 @@ def test_t6_touched_modules_bumped():
         # stream/workspace/assembler/main_chat/flow/*；画布 5711 这条线动了
         # canvas.js 与 main.js（main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也升）。
         # canvas.js 两边都改了 ⇒ 画布链取**大于两边**的号（77），其余取 dev 那条线。
-        "stream.js": "47", "workspace.js": "65", "canvas.js": "82",
-        "assembler.js": "37", "style.css": "45", "main.js": "82.0",
+        "stream.js": "47", "workspace.js": "65", "canvas.js": "83",
+        "assembler.js": "37", "style.css": "45", "main.js": "83.0",
         "main_chat.js": "3.2",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
