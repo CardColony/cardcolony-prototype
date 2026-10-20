@@ -420,15 +420,15 @@ const BOARD_CFG = Object.assign(
     if (d.content != null && d.content !== "") {
       const c = document.createElement("div");
       c.className = "tr-content";
-      c.textContent = String(d.content).length > 4000
-        ? String(d.content).slice(0, 4000) + "…（已截断）"
-        : String(d.content);
+      /* [5702 · C-1] 不截断（dsh tool-node-reader 读全文）：事件层早已无 8KB 闸，
+         这里再切 4000 字＝用户看不到完整结果。折叠态不构建，展开才付代价。 */
+      c.textContent = String(d.content);
       out.push(c);
     }
     if (Array.isArray(d.files) && d.files.length) {
       const ul = document.createElement("ul");
       ul.className = "tr-files";
-      for (const f of d.files.slice(0, 200)) {
+      for (const f of d.files) {
         const li = document.createElement("li");
         li.textContent = String(f);
         ul.appendChild(li);
@@ -438,7 +438,7 @@ const BOARD_CFG = Object.assign(
     if (Array.isArray(d.items) && d.items.length) {
       const ul = document.createElement("ul");
       ul.className = "tr-files";
-      for (const it of d.items.slice(0, 200)) {
+      for (const it of d.items) {
         const li = document.createElement("li");
         li.textContent = typeof it === "object" ? fmtData(it) : String(it);
         ul.appendChild(li);
@@ -532,14 +532,20 @@ const BOARD_CFG = Object.assign(
       sum.textContent = summary;
       row.appendChild(sum);
     }
-    // 完整内容：默认折叠（点整行展开）
+    // 完整内容：默认折叠（点整行展开）；**首次展开才构建**（dsh 两段式）。
+    // 折叠态不预构建的原因：工具结果不截断（见 renderResultContent），
+    // 大结果若在折叠时就建 DOM，等于白烧一次。
     const body = document.createElement("div");
     body.className = "tool-body" + (ok ? "" : " err");
-    for (const p of renderResultContent(res.result || res)) body.appendChild(p);
+    let bodyBuilt = false;
     row.appendChild(body);
     row.classList.add("has-detail");
     row.onclick = (e) => {
       if (e.target.closest(".tool-body")) return;
+      if (!bodyBuilt) {
+        bodyBuilt = true;
+        for (const p of renderResultContent(res.result || res)) body.appendChild(p);
+      }
       row.classList.toggle("open");
     };
     return [row];
@@ -1195,8 +1201,9 @@ const BOARD_CFG = Object.assign(
       过程帧（/stream）→ 装配器 → 受影响节点 upsert；
       逐字帧（/tokens）→ live 正文气泡（不进装配器）。
       onFail 在事件流连不上时回调一次（降级保底）。 */
-  function start(wid, cid, onFail) {
+  function start(wid, cid, onFail, opts) {
     const st = ensureRun(wid, cid);
+    const replayTokens = !!(opts && opts.replayTokens);   // [5702] 打开在跑的卡：回放本 run
     stopES(st);
     st.liveRunId = "";        // 新一轮：轮锚随 run_start 帧到达后才落
     st.settled = false;       // 解冻：上一轮的收口状态不带到这一轮
@@ -1230,8 +1237,9 @@ const BOARD_CFG = Object.assign(
 
     // 逐字流独立 SSE。刻意**不**接 onFail：连不上只少逐字显示。
     try {
-      const tFrom = st.lastTokenSeq > 0 ? st.lastTokenSeq + 1 : 0;
-      const esT = new EventSource(`/api/works/${wid}/cards/${cid}/tokens?from=${tFrom}`);
+      const tFrom = replayTokens ? 0 : (st.lastTokenSeq > 0 ? st.lastTokenSeq + 1 : 0);
+      const esT = new EventSource(
+        `/api/works/${wid}/cards/${cid}/tokens?from=${tFrom}${replayTokens ? "&replay=1" : ""}`);
       st.esT = esT;
       esT.onmessage = (m) => {
         try { onTokenFrame(st, JSON.parse(m.data)); } catch (e) { /* 单帧坏不致命 */ }
