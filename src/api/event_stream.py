@@ -220,6 +220,36 @@ def _key(work_id: str, card_id: str) -> tuple[str, str]:
 # 一路管「现在正在发生什么」，一路管「过去发生了什么」——不互相替代。
 # 落盘字段：run_id＝回合锚 pair_id，round＝轮锚 turn，model 仅 reasoning 带。
 # 零阻断：落盘失败只记 warning，不影响 SSE 与主流程（展示层同族纪律）。
+# [reasoning 合并落盘 2026-10-20] 逐帧落盘会把一次思考拆成上千条事件：
+# 实测 card_005 17394 条事件里 16822 条是 reasoning（占 87% 字节 / 3.64MB），
+# 对话页回放时装配器逐条 rev++ 重渲染 ⇒ 页面卡死。改为**按轮累积、到轮界合并落一条**：
+# 实时 SSE 逐帧不变（前端仍逐字出），只是**落盘**合并。
+_reason_buf: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _flush_reasoning(work_id: str, card_id: str) -> None:
+    """把累积的 reasoning 文本合并成一条事件落盘（空则跳过）。"""
+    key = _key(work_id, card_id)
+    buf = _reason_buf.pop(key, None)
+    if not buf:
+        return
+    text = buf.get("text") or ""
+    if not text.strip():
+        return
+    try:
+        from ..storage import event_log
+        event_log.append_bg(work_id, card_id, {
+            "run_id": buf.get("run_id") or "",
+            "round": int(buf.get("round") or 0),
+            "type": "reasoning",
+            "data": {"text": text},
+            "model": buf.get("model") or "",
+            "ts": buf.get("ts"),
+        })
+    except Exception as exc:  # noqa: BLE001 展示层零阻断
+        logger.warning("[flow] reasoning 合并落盘失败 card=%s: %s", card_id, exc)
+
+
 def _persist_log(work_id: str, card_id: str, ev_type: str,
                  data: Any, model: str = "", ts: Any = None) -> None:
     try:
@@ -405,6 +435,8 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
     try:
         key = _key(work_id, card_id)
         d = data or {}
+        # 轮界先落掉累积的思考文本（保证顺序：reasoning 在后续事件之前）
+        _flush_reasoning(work_id, card_id)
         if ev_type == "run_start":
             # [A5/T092] 清零退役：旧段保留；登记回合锚（pair_id）＋逐字流开新段
             _anchors[key] = {"pair_id": d.get("pair_id", ""), "turn": 0}
@@ -552,8 +584,17 @@ def emit_token(work_id: str, card_id: str, ev_type: str, text: str,
         # 三席带 model（extra.model＝席位模型名，前端据此分桶），主模型空串。
         # 正文增量（content_chunk）**不落盘**——最终 assistant_text 一条落盘（裁定 C7）。
         if ev_type == "reasoning_chunk":
-            _persist_log(work_id, card_id, "reasoning", {"text": text},
-                         model=str(data.get("model") or ""))
+            # 累积到缓冲，等轮界（emit 任意其它事件时）合并落一条
+            _rk = _key(work_id, card_id)
+            _b = _reason_buf.get(_rk)
+            if _b is None:
+                _anchor = _anchors.get(_rk) or {}
+                _b = {"text": "", "model": str(data.get("model") or ""),
+                      "round": int(_anchor.get("turn") or 0),
+                      "run_id": str(_anchor.get("pair_id") or ""),
+                      "ts": evt.get("ts")}
+                _reason_buf[_rk] = _b
+            _b["text"] += text
         # [对话流渲染 T4] 已删 5000 条环形弹出（原 pop(0) 丢前字）
         # 逐字流每帧给 /progress 打一次心跳：仍在吐字的超长请求持续被判为
         # 「仍在推进」，刷新后仍能补出「进行中」（V-T4-1）。
