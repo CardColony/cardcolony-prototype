@@ -54,6 +54,9 @@ export const REGISTRY = {
   status_update_task: { kind: "injection" },
 
   reasoning: { kind: "reasoning" },
+  /* [5702 · C-1 2026-10-20] 逐字流增量直接进装配器（dsh `assistant/chunk` 语义）。
+     此前它们只写旁挂 live DOM、round_start 一清就没——「中间轮文字被吞」的直接原因。 */
+  reasoning_chunk: { kind: "reasoning" },
 
   // 真实落盘数据里存在、但不在任务书清单里的三类（见旧版注释）：
   card_message: { kind: "sys" }, triage_verdict: { kind: "sys" }, ping: { kind: "sys" },
@@ -257,6 +260,40 @@ export function createAssembler() {
       return null;
     }
 
+    /* [5702 · C-1 2026-10-20] 正文增量 → **稳定的流式 assistant 节点**。
+       键＝`stream:{run_id}:{round}`（不是 seq）：同一轮所有 chunk 累积进同一个节点；
+       轮界只换键、**不清字**（旧实现 round_start 直接清空 live DOM，中间轮文字永久丢失）。
+       节点对渲染层就是一个普通 assistant 节点，`data.text` 为累积正文。 */
+    if (type === "content_chunk") {
+      const text = String(data.text || "");
+      if (!text) return null;
+      const roundNo = toInt(rec.round, 0);
+      const skey = "stream:" + (runId || "?") + ":" + roundNo;
+      let node = byKey.get(skey);
+      if (!node) {
+        node = {
+          seq, ns, type: "assistant_text", kind: "assistant",
+          round: roundNo, run_id: runId,
+          data: { content: "", text: "" },
+          model: modelOf(rec, data),
+          key: skey, rev: 1, ord: ++ord, streaming: true,
+        };
+        if (pendingReasoning) {           // 先到的思考随节点归位（不丢）
+          node.reasoning = pendingReasoning;
+          pendingReasoning = "";
+          pendingReasoningOrd = 0;
+        }
+        byKey.set(skey, node);
+        order = order.concat([skey]);
+        structRev++;
+      } else {
+        node.rev++;
+        if (!node.model) node.model = modelOf(rec, data);
+      }
+      node.data.text = String(node.data.text || "") + text;
+      return node;
+    }
+
     const kind = kindOf(type);
     const base = {
       seq, ns, type, kind, round: toInt(rec.round, 0), run_id: runId,
@@ -285,6 +322,24 @@ export function createAssembler() {
           if (rec.ts) n.ts = String(rec.ts);
           n.rev++;
           return n;
+        }
+      }
+      /* [5702 · C-1] 落盘 assistant_text 到达：同一 run+round 的流式节点**就地定稿**，
+         不另起一条（否则同一轮会出现「流式一份 + 落盘一份」双份文本）。
+         `data.content` 优先于 `data.text` 渲染；text 保留作兜底（content 为空时）。 */
+      if (kind === "assistant" && !isLocal) {
+        const skey = "stream:" + (runId || "?") + ":" + toInt(rec.round, 0);
+        const sn = byKey.get(skey);
+        if (sn && sn.streaming) {
+          sn.streaming = false;
+          sn.seq = seq;
+          sn.ns = ns;
+          sn.type = type;
+          sn.data = Object.assign({}, data, { text: (sn.data && sn.data.text) || "" });
+          sn.model = modelOf(rec, data) || sn.model || "";
+          if (rec.ts) sn.ts = String(rec.ts);
+          sn.rev++;
+          return sn;
         }
       }
       const node = push(Object.assign({}, base));
@@ -352,7 +407,17 @@ export function createAssembler() {
         if (m) { m.thinking += text; node.rev++; }
         return node;
       }
-      appendReasoning(text);                    // 主模型思考 → 最近一条 assistant
+      /* [5702 · C-1] 主模型思考优先落**本 run+round** 的流式节点——
+         不能再用「最近一条 assistant」（那是跨轮串：round2 的思考会贴到 round1）。 */
+      const skey = "stream:" + (runId || "?") + ":" + toInt(rec.round, 0);
+      const sn = byKey.get(skey);
+      if (sn) { sn.reasoning = (sn.reasoning || "") + text; sn.rev++; return sn; }
+      if (ns === "live") {                      // 本轮流式节点还没建：暂存，创建时归位
+        pendingReasoning += text;
+        if (!pendingReasoningOrd) pendingReasoningOrd = ord + 1;
+      } else {
+        appendReasoning(text);                  // 落盘历史：并入最近一条 assistant
+      }
       return null;
     }
 

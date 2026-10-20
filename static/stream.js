@@ -42,8 +42,8 @@ import { API } from "./esm/api.js?v=36";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
-import { createAssembler } from "./esm/assembler.js?v=35";
-import { createChatView } from "./esm/flow/chat-view.js?v=3";
+import { createAssembler } from "./esm/assembler.js?v=36";
+import { createChatView } from "./esm/flow/chat-view.js?v=4";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
@@ -816,6 +816,7 @@ const BOARD_CFG = Object.assign(
 
   function renderSnapshot(st, snap) {
     const v = viewOf(st);
+    st._dirty = null;                 // 结构重建：作废尚未落地的增量刷新
     const total = snap.order.length;
     const start = winStartOf(st, total);
     markDates(snap);
@@ -827,7 +828,10 @@ const BOARD_CFG = Object.assign(
     logInfo("[flow-render] snapshot(" + win.length + "/" + total + " nodes)");
   }
 
-  /** 实时增量：结构没变（order 引用未变）⇒ 只换受影响那一行。 */
+  /** 实时增量：结构没变（order 引用未变）⇒ 只换受影响那一行。
+      [5702 · C-1] 内容更新按**帧**合并（dsh `publication:"animation-frame"`）：
+      逐字流一帧一条，若每条都重渲染 Markdown，主线程会被打满、观感「一顿一顿」。
+      同一帧内多次更新只落一次——这是「流畅」的来源。 */
   function renderAffected(st, node) {
     if (!st || !st.asm) return;
     const snap = st.asm.snapshot();
@@ -836,10 +840,20 @@ const BOARD_CFG = Object.assign(
     const idx = snap.order.indexOf(node.key);
     if (idx < 0) return;
     if (idx < (st.winStart || 0)) return;     // 窗口之上：不进 DOM
-    const v = viewOf(st);
-    v.refresh(node.key, node.rev || 0);
-    v.paintStatus();
-    logInfo("[flow-render] node-update(" + node.key + ")");
+    if (!st._dirty) st._dirty = new Map();
+    st._dirty.set(node.key, node.rev || 0);
+    if (st._raf) return;
+    const flush = () => {
+      st._raf = null;
+      const dirty = st._dirty || new Map();
+      st._dirty = null;
+      const v = viewOf(st);
+      for (const [k, rev] of dirty) v.refresh(k, rev);
+      v.paintStatus();
+    };
+    st._raf = (typeof requestAnimationFrame === "function")
+      ? requestAnimationFrame(flush)
+      : setTimeout(flush, 16);
   }
 
   /* ==================================================================
@@ -880,20 +894,18 @@ const BOARD_CFG = Object.assign(
       scrollTop: 0,             // 切走时的滚动位置（切回恢复）
       lastUsed: Date.now(),     // [T3] 最近使用时刻（LRU/静默超时判据）
       busy: false,              // [T3] 本轮在跑（start→resync/stop 之间）——在跑卡永不释放
-      asm: createAssembler(), view: null, liveSlot: null, liveRunId: "", settled: false,
+      asm: createAssembler(), view: null, liveRunId: "", settled: false,
       /* [对话流照抄 dsh v3] 扁平节点表的分页窗口与「上一帧的 order 引用」：
          winStart      = 窗口起始**节点下标**
          renderedOrder = 上次落位时的 order 数组引用（引用未变＝结构未变）
          turnStart     = 本轮开始时刻（运行条 15s 时钟的锚） */
       winStart: null, renderedOrder: null, turnStart: null,
-      textEl: null, textBody: null, reasoning: null, reasoningText: null, reasoningSum: null,
       fallbackUsed: false, esDead: false, lastSeq: 0, lastTokenSeq: 0,
       /* [T5 2026-10-16] 两套 seq 分家，**严禁互写**：
          lastSeq   = 内存 journal seq（SSE 续传游标；event_stream._seq_counters，重启归零）
          diskSeq   = 已见的最大**落盘** events seq（event_log 从文件尾 +1 续号，重启不归零）
          pullSeq   = pullUserBubble 的增量游标（**落盘空间**；初值播种自 diskSeq） */
       diskSeq: 0, pullSeq: null,
-      textRaw: "", _mdTimer: null,
     };
     sessions.set(key, st);
     return st;
@@ -964,7 +976,6 @@ const BOARD_CFG = Object.assign(
     if (key === activeKey) return false;   // 当前在看：永不释放
     if (isBusy(st)) return false;          // 有任务在跑：永不释放
     stopES(st);
-    releaseText(st);                       // 清节流/走秒计时器，免得吊住已丢的 DOM
     if (st.board && st.board.parentNode) st.board.parentNode.removeChild(st.board);
     sessions.delete(key);
     logInfo("[flow-board] release " + key);
@@ -1029,13 +1040,6 @@ const BOARD_CFG = Object.assign(
     if (st.asm.dropLocal()) renderSnapshot(st, st.asm.snapshot());
   }
 
-  /** 清掉 live 逐字槽（正式节点接管时调用）。 */
-  function clearLiveSlot(st) {
-    releaseText(st);
-    if (st.liveSlot && st.liveSlot.parentNode) st.liveSlot.parentNode.removeChild(st.liveSlot);
-    st.liveSlot = null;
-  }
-
   /** 刷新/换卡恢复：GET /timeline → rebuild → renderSnapshot。
       ★ 断 timeline 即会话区空——单源单通道的代价与证据（判据2）：
       这里**不做任何第二数据源兜底**，也不保留上一轮的 DOM。 */
@@ -1044,7 +1048,6 @@ const BOARD_CFG = Object.assign(
     // 后台结算回流走 resync()——**不激活**，结果落该卡自己的（可能游离的）画板（§五.5）。
     const st = activate(wid, cid);
     stopES(st);
-    clearLiveSlot(st);        // 交出 live 正文引用：它已由快照里的正式节点接管
     const items = await fetchTimeline(st, wid, cid);
     renderSnapshot(st, st.asm.rebuild(items));
     if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
@@ -1058,7 +1061,6 @@ const BOARD_CFG = Object.assign(
     const st = ensureRun(wid, cid);
     const items = await fetchTimeline(st, wid, cid);
     st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
-    clearLiveSlot(st);           // live 气泡随正式节点接管退场
     const snap = st.asm.rebuild(items);
     renderSnapshot(st, snap);
     if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
@@ -1127,161 +1129,29 @@ const BOARD_CFG = Object.assign(
   }
 
   /* ==================================================================
-     五、逐字正文（live 气泡）：/tokens 直写，不进装配器
+     五、逐字流：/tokens 帧 → 装配器（dsh `assistant/chunk` 语义）
+     —— 正文按 run:round 累积进**同一个** assistant 节点；轮界只换轮次、
+        **不清字**；渲染走统一节点渲染器（workspace 注入的 assistant 渲染器）。
+        旧「旁挂 live 气泡 ＋ 100ms 定时重排 ＋ round_start 清字」整段退役：
+        它正是「中间轮文字被吞 / 流式与落盘两套数据」的根因。
      ================================================================== */
-
-  /** live 逐字槽：挂在视图列里、**运行条之前**（chat-view 负责把它压在末位）。 */
-  function liveSlot(st) {
-    const v = viewOf(st);
-    if (!v) return null;
-    return v.ensureLiveSlot();
-  }
-
-  /** 正文条目恒压队尾（live 槽恒在节点座位之后）。 */
-  function keepTextLast(st) {
-    const slot = liveSlot(st);
-    if (!slot || !st.textEl) return;
-    if (st.textEl.parentNode !== slot) slot.appendChild(st.textEl);
-  }
-
-  function textEntry(st) {
-    if (st.textEl) return st;
-    const slot = liveSlot(st);
-    if (!slot) return st;
-    const el = document.createElement("div");
-    el.className = "msg assistant live";
-    el.innerHTML = '<div class="md live-content"></div>';
-    slot.appendChild(el);
-    st.textEl = el;
-    st.textBody = el.querySelector(".live-content");
-    logInfo("[flow-render] msg created(assistant.live)");
-    return st;
-  }
-
-  /* [⑧ 边出边渲染 2026-10-14] 流式正文节流渲染：最多每 100ms 渲染一次。 */
-  function scheduleMd(st) {
-    if (st._mdTimer) return;
-    st._mdTimer = setTimeout(() => {
-      st._mdTimer = null;
-      if (!st.textBody) return;
-      st.textBody.innerHTML = renderMarkdown(st.textRaw);
-      keepTextLast(st);
-    }, 100);
-  }
-
-  function flushMd(st) {
-    if (st._mdTimer) { clearTimeout(st._mdTimer); st._mdTimer = null; }
-    if (st.textBody && st.textRaw) {
-      st.textBody.innerHTML = renderMarkdown(st.textRaw);
-      keepTextLast(st);
-    }
-  }
-
-  /** 主模型 think（reasoning_chunk 不带 model）：live 可折叠 Think 行（dsh 规格）。 */
-  function ensureReasoning(st) {
-    if (st.reasoning) return st;
-    textEntry(st);
-    if (!st.textEl) return st;
-    const r = makeThink("", { done: false });
-    st.textEl.insertBefore(r, st.textBody);
-    st.reasoning = r;
-    st.reasoningText = r.querySelector(".think-body");
-    st.reasoningSum = r.querySelector(".think-sum");
-    st._thinkT0 = performance.now();
-    const timeEl = r.querySelector(".think-time");
-    st._thinkTimer = setInterval(() => {
-      if (!st._thinkT0) return;
-      timeEl.textContent = ((performance.now() - st._thinkT0) / 1000).toFixed(1) + "s";
-    }, 200);
-    return st;
-  }
-
-  /** think 收尾：停走秒、头行转已完成态（摘要由「最新一行」切到「第一行」）。 */
-  function finishReasoning(st) {
-    if (!st.reasoning) return;
-    if (st._thinkTimer) { clearInterval(st._thinkTimer); st._thinkTimer = null; }
-    if (st._thinkT0) {
-      const s = ((performance.now() - st._thinkT0) / 1000).toFixed(1);
-      st._thinkT0 = 0;
-      const t = st.reasoning.querySelector(".think-time");
-      if (t) t.textContent = s + "s";
-      st.reasoning.classList.remove("thinking");
-      st.reasoning.classList.add("done");
-      if (st.reasoningSum) {
-        st.reasoningSum.textContent = thinkSummary(st.reasoningText ? st.reasoningText.textContent : "", false);
-      }
-    }
-  }
-
-  function appendChunk(st, kind, text, seq, model) {
-    if (!text) return;
-    if (kind === "reasoning") {
-      // 带 model 的是三席思考（并发交织）→ 实时落进该轮 seats 节点（装配器内合流）；
-      // 不带 model 的是主模型思考 → 落 live 正文条目内的 Think 行。
-      if (model) {
-        applyLiveFrame(st, {
-          seq: seq, type: "reasoning", pair_id: st.liveRunId,
-          turn: 0, data: { text: text, model: model },
-        });
-        return;
-      }
-      ensureReasoning(st);
-      if (!st.reasoningText) return;
-      st.reasoningText.textContent += text;
-      if (st.reasoningSum) st.reasoningSum.textContent = thinkSummary(st.reasoningText.textContent, true);
-    } else {
-      textEntry(st);
-      if (!st.textBody) return;
-      st.textRaw += text;
-      scheduleMd(st);
-      keepTextLast(st);
-    }
-    logInfo("[flow-render] chunk(" + kind + ", " + text.length + ", " + (seq == null ? "-" : seq) + ")");
-  }
-
-  function releaseText(st) {
-    st.textEl = null; st.textBody = null; st.reasoning = null; st.reasoningText = null;
-    st.reasoningSum = null;
-    st.textRaw = "";
-    if (st._mdTimer) { clearTimeout(st._mdTimer); st._mdTimer = null; }
-    if (st._thinkTimer) { clearInterval(st._thinkTimer); st._thinkTimer = null; }
-    st._thinkT0 = 0;
-  }
-
-  /** 轮界：正文条目只留当前这一轮（切轮时清字，不动任何已渲染的组）。 */
-  function clearText(st) {
-    if (!st.textEl) return;
-    if (st.textBody) st.textBody.innerHTML = "";
-    st.textRaw = "";
-    if (st._mdTimer) { clearTimeout(st._mdTimer); st._mdTimer = null; }
-    if (st.reasoningText) st.reasoningText.textContent = "";
-    if (st.reasoning && !(st.reasoningText && st.reasoningText.textContent)) {
-      try { st.reasoning.remove(); } catch (e) { /* noop */ }
-      st.reasoning = null; st.reasoningText = null; st.reasoningSum = null;
-    }
-    keepTextLast(st);
-  }
 
   function onTokenFrame(st, evt) {
     if (evt && typeof evt.seq === "number" && evt.seq > st.lastTokenSeq) st.lastTokenSeq = evt.seq;
     const type = (evt && evt.type) || "";
-    const data = (evt && evt.data) || {};
-    const text = data.text || "";
-    const model = data.model || "";
-    // 轮界标记帧（type 复用 run_start/round_start）
-    if (type === "run_start" || type === "round_start") { clearText(st); return; }
-    if (type === "content_chunk") appendChunk(st, "content", text, evt && evt.seq, model);
-    else if (type === "reasoning_chunk") appendChunk(st, "reasoning", text, evt && evt.seq, model);
+    if (!type) return;
+    /* [5702 · C-1] 轮界帧只更新轮锚（后端 emit 已写），**不再清字**——清字是
+       「中间轮文字被吞」的直接原因。正文/思考增量统一走装配器：
+       按 run:round 累积进同一个 assistant 节点（dsh assistant/chunk 语义）。 */
+    if (type === "run_start" || type === "round_start") return;
+    if (type === "content_chunk" || type === "reasoning_chunk") {
+      applyLiveFrame(st, evt);
+    }
   }
 
   /* ==================================================================
      六、流启停
      ================================================================== */
-
-  function finish(st) {
-    finishReasoning(st || {});
-    flushMd(st || {});
-  }
 
   function stopES(st) {
     if (!st) return;

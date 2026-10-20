@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=42";
+import { EventFlow } from "./stream.js?v=43";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=36";
@@ -210,6 +210,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         await EventFlow.replayTrace(WORK_ID, cardId);
         if (stale()) return;
       }
+      /* [5702 · 治「切到在跑的卡不再更新」] replayTrace 内部会 stopES 关流；
+         恢复完再按后端真实运行态接流——此前只有页面加载（bootRestore）会接，
+         页内切卡后只能刷新才动。 */
+      attachRunningState(cardId).catch(() => {});
       // [刷新恢复 2026-10-03] 卡号写进 URL hash：刷新后按 hash 自动重开这张卡。
       // 用 replaceState 不堆积浏览历史、不触发页面重载；URL 即状态，不引入前端存储。
       // [S2/R-09] 选中入 URL 走选中层复合键（#WORK_ID/cardId）。
@@ -833,8 +837,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // [对话界面商业化 2026-10-17] 模型名从**节点顶层**取：落盘记录的 model 在顶层
     // （data 里没有），SSE 帧的 model 已由装配器并入节点。两处取法不同，缺一不可。
     const badge = assistantMeta(node.model || d.model, d.behavior, d.end, node.ts);
+    /* [5702 · C-1] 流式节点正文在 data.text（累积），落盘节点在 data.content；
+       定稿后两者并存（content 优先）。对应 dsh assistant-step 的 blocks 语义。 */
+    const bodyText = (d.content != null && String(d.content) !== "")
+      ? String(d.content)
+      : String(d.text || "");
     el.innerHTML = badge +
-      '<div class="md">' + renderMarkdown(d.content == null ? "" : String(d.content)) + "</div>";
+      '<div class="md">' + renderMarkdown(bodyText) + "</div>";
 
     /* [对话界面商业化 2026-10-17] 消息级操作条：hover 浮出（CSS 控显隐），
        动作只做「复制全文」——重新生成只对最后一轮成立（resend 复用最后一条
