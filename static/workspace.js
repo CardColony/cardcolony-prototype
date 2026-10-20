@@ -10,7 +10,8 @@ import { EventFlow } from "./stream.js?v=53";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=37";
-import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
+// [5715 · 抽模块] 卡间信的解析/剥头行与呈现都搬进 esm/flow/card-msg-node.js
+//   （原先在装配闭包里 ⇒ 不可单测）；此处不再需要 cardmsg.js 的解析件。
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
 import { createNavSystem } from "./esm/nav_system.js?v=36";
@@ -27,6 +28,8 @@ import { createQueueDock } from "./esm/flow/queue-dock.js?v=3";
 // ⇒ 导不出来、单测驱动不了；抽出后行为逐字不变，但可被 DOM 行为网驱动。
 import { createCopyButton } from "./esm/flow/message-actions.js?v=1";
 import { initInspectorToggle } from "./esm/inspector.js?v=1";
+// [5715 · 抽模块] 卡间信在对话流里的呈现（原先在装配闭包里 ⇒ 不可单测）。
+import { createCardMsgRenderer } from "./esm/flow/card-msg-node.js?v=1";
 
 /* [惰性新建 2026-10-17] WORK_ID 由 const 改 let：草稿项目/草稿卡落库成功后就地换真 id
  * （不整页跳转，首条消息"只感知正常发送"），本模块所有闭包引用同一绑定，随取随新。
@@ -1061,51 +1064,14 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   // 显示名与「须回应」镜像自 config/message_type_registry.json（后端 display_of 的同表；
   // 本路径无注册表端点，故前端持一份最小镜像，未知类型回落显示 code 本身＝fail-open）。
   const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知" };
-  const CARD_MSG_CLS = { msg_ask: "ask", msg_answer: "answer", msg_notify: "notify" };
-  const CARD_MSG_MUST = { msg_ask: true };
 
   /** 卡间消息节点（注入 stream.js）：返回元素，**不自行 append**——
-      位置由快照决定（C2）。role 形如 "card:card_007"（前 5 字符是来源前缀）。 */
-  function renderCardMsgNode(node) {
-    const d = node.data || {};
-    const content = d.content == null ? "" : String(d.content);
-    const hdr = parseCardHeader(content);
-    const from = node.from || (node.data && node.data.from) || "";
-    const to = (currentCard && currentCard.meta && currentCard.meta.card_id) || "本卡";
-    const div = document.createElement("div");
-    div.className = "msg cmsg" + (hdr ? (CARD_MSG_CLS[hdr.type] ? " " + CARD_MSG_CLS[hdr.type] : "") : " bad");
-    if (hdr) div.dataset.cm = hdr.type;
-    const bar = document.createElement("div");
-    bar.className = "bar";
-    const body = document.createElement("div");
-    body.className = "body";
-    const head = document.createElement("div");
-    head.className = "head";
-    const txt = document.createElement("div");
-    txt.className = "txt";
-    if (hdr) {
-      const disp = CARD_MSG_DISPLAY[hdr.type] || hdr.type;
-      head.innerHTML = `<span class="tag">${escapeHtml(hdr.type)} · ${escapeHtml(disp)}</span>` +
-        (CARD_MSG_MUST[hdr.type] ? `<span class="must">须回应</span>` : "") +
-        `<span class="dir">${escapeHtml(from)} → ${escapeHtml(to)}</span>`;
-      txt.textContent = stripCardHeader(content);
-    } else {
-      head.innerHTML = `<span class="tag">消息格式异常</span><span class="dir">${escapeHtml(from)} → ${escapeHtml(to)}</span>`;
-      txt.textContent = content;   // 原文全文照示
-      try { console.info("[cardmsg] render bad header"); } catch (e) { /* 零阻断 */ }
-    }
-    body.appendChild(head);
-    body.appendChild(txt);
-    if (hdr && hdr.reply_to) {
-      const rt = document.createElement("div");
-      rt.className = "replyto";
-      rt.textContent = "回应 " + hdr.reply_to;
-      body.appendChild(rt);
-    }
-    div.appendChild(bar);
-    div.appendChild(body);
-    return div;
-  }
+      位置由快照决定（C2）。role 形如 "card:card_007"（前 5 字符是来源前缀）。
+      [5715 · 抽模块] 渲染搬进 esm/flow/card-msg-node.js（原先在装配闭包里 ⇒
+      导不出来、这条产品面没有断言保护）；这里只留「去向标签」的取法。 */
+  const renderCardMsgNode = createCardMsgRenderer({
+    getToLabel: () => (currentCard && currentCard.meta && currentCard.meta.card_id) || "本卡",
+  });
 
   // [迭代四 F3②] 保存三态反馈（形态照 B-24 .edit-row .save-status 既有三态）
   function setSaveStatus(el, state, text) {

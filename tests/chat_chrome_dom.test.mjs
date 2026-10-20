@@ -13,6 +13,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { readFileSync } from "node:fs";
 import { setupDom, CHAT_HTML } from "./dom_scaffold.mjs";
 import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts }
   from "../static/esm/theme.js";
@@ -129,6 +130,40 @@ test("搜索清除：有输入才出现；点它清空并把 input 事件交回�
   assert.equal(input.value, "", "点清除必须清空输入");
   assert.ok(fired >= 1, "必须重发 input 事件（搜索逻辑靠它刷新）");
   assert.ok(!box.classList.contains("has-value"), "清空后清除键该收起来");
+});
+
+/* ================================================================ 过程折叠的 CSS 效果 */
+
+/* [5715 · 补网] 「折叠态到底藏了哪些行」此前只有**源码级**断言（正则找 CSS 串）。
+   〔实测坑〕jsdom 没有级联布局 ⇒ 「某元素会不会被 display:none 盖住」测不了。
+   ⇒ 换一条**能测的路**：把**真规则**（含 :not() 与属性选择器）拿来，
+   对**真 DOM 元素**做 `element.matches(selector)` —— 匹配＝该规则会命中它
+   （即它会被那条 display:none 藏起来）。
+   这不是「读源码找字符串」：选择器变了、类名改了，匹配结果就变。 */
+test("过程折叠的 CSS 效果：折叠后只藏「装配类过程行」，工具行与轮次分隔留着", { skip: SKIP }, () => {
+  const { document } = setupDom();
+  const css = readFileSync(new URL("../static/ui.css", import.meta.url), "utf8");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, sel, body]) => sel.includes("proc-collapsed") && /display\s*:\s*none/.test(body))
+    // 注释会落进选择器那一段 ⇒ 先剥掉（否则 el.matches 报「不是合法选择器」）
+    .map(([, sel]) => sel.replace(/\/\*[\s\S]*?\*\//g, "").trim())
+    .filter((sel) => sel.length);
+  assert.ok(rules.length, "ui.css 里应有折叠态的 display:none 规则");
+
+  document.body.className = "page-chat proc-collapsed";
+  const step = document.createElement("div");
+  step.className = "step-row";                       // 装配类过程行 ⇒ 该藏
+  const tool = document.createElement("div");
+  tool.className = "step-row tool-row";              // 工具行 ⇒ 留着（它是「干了什么」）
+  const round = document.createElement("div");
+  round.className = "step-row";
+  round.dataset.ev = "round_start";                  // 轮次分隔 ⇒ 留着
+  document.body.append(step, tool, round);
+
+  const hit = (el) => rules.some((sel) => el.matches(sel));
+  assert.ok(hit(step), "折叠态必须藏装配类过程行（注入/判断协议这类脚注）");
+  assert.ok(!hit(tool), "折叠态**要留**工具行（它是「它到底做了什么」的实质动作）");
+  assert.ok(!hit(round), "折叠态**要留**轮次分隔");
 });
 
 /* ================================================================ Esc 逐层关闭 */
