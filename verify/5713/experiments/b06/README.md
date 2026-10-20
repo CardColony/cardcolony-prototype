@@ -29,3 +29,13 @@
   - `r10_conn_forensics.py` —— 全进程 `sqlite3.connect` 挂钩测活（告警瞬间零活连接仍 WinError 32）
 - 复跑：`cd .worktrees\5713_sandbox\experiments\b06 && set PYTHONIOENCODING=utf-8 && ..\..\..\..\.venv\Scripts\python.exe r10_probe_v5.py`
   （`r10_probe_v3.py` / `r10_probe_v4.py` 同法；三个脚本都自建沙箱根、不碰生产数据）
+
+## 追加（第三轮）：修法B 的落盘形态与验收判据（card_014 复现提醒 → 本域 v6 实测）
+
+- `r10_fixB_sidecar_form.py`（沙箱原件名 `r10_probe_v6.py`）—— 故意留一条活连接贯穿修复过程，
+  量「修法B 之后 `-wal`/`-shm` 到底在不在」与「三条读路径各读到哪一版」。
+  产物 `evidence_r10_v6.json`。
+- **结论（进报告 §7.7）**：修法B 之后 `-wal` **仍存在、被 checkpoint 截断为 0 字节（无待重放页）**，
+  `-shm` 也还在；本项目里**「旁挂不存在」不能当验收判据**（同一现场它判不通过、而「读回快照态」判通过）。
+  正确判据＝`card_store.read_card` 读回快照态 ＋ 独立只读连接同一状态 ＋ `-wal` 无待重放页 ＋ 回执诚实。
+- 复跑：`cd .worktrees\5713_sandbox\experiments\b06 && set PYTHONIOENCODING=utf-8 && ..\..\..\..\.venv\Scripts\python.exe r10_probe_v6.py`

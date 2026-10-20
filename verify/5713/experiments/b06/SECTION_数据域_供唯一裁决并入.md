@@ -37,7 +37,12 @@
   （`src.backup(dst)` + `wal_checkpoint(TRUNCATE)`，实测绿；不依赖任何句柄状态），文件级替换只能当兜底且删不走即 `ok=False`；
   ⑤ 恢复后做内容校验（rev/行数与快照不符即 `ok=False`）。
 - **验收**：用 `snapshot_sync` 返回值能直接恢复同一批；worktree 里跑 CLI 恢复必须落实例根或被拒（复现 T9 即用例）；
-  **WAL 下 `card_store.read_card` 必须读回快照态**（复现 R10 即用例，即 `test_snapshot_restore_roundtrip` 转绿）。
+  **WAL 下 `card_store.read_card` 必须读回快照态**（复现 R10 即用例，即 `test_snapshot_restore_roundtrip` 转绿）；
+  **回执诚实**：清不掉旁挂时必须 `ok=False`（不得以 `ok=True`＋`warnings` 替代）。
+- **⚠ 验收不得用「旁挂不存在」当判据**（v6 实测，`evidence_r10_v6.json`）：修法B 之后 `-wal` **仍存在、
+  只是被 checkpoint 截断为 0 字节**，`-shm` 也还在；关掉连接后也不消失。同一现场「旁挂不存在」判不通过、
+  「读回快照态」判通过 ⇒ 正确判据是 **`card_store.read_card` 读回快照态 ＋ 独立只读连接读到同一状态
+  ＋ `-wal` 无待重放页（0 字节或不存在）＋ 回执诚实**。施工方若照「旁挂被删掉」写断言，会写出一条永远失败的用例。
 
 ### P2 · 病1 全量拷贝无锁 —— 拆两步，顺序写死
 - **为什么最后**：最贵的架构改动，而数据安全伤害已被两道保护挤小（db 走 `VACUUM INTO`；memory/session 走 `tmp+os.replace`）。
