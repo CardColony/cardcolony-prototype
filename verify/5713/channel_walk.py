@@ -239,13 +239,29 @@ def _judge(ev: dict, aid: str, bid: str) -> dict:
     reply_ok = (bool(ask_id)
                 and f"from={bid} reply_to={ask_id}" in blob)
 
+    # ―― B 是"自己答的"还是"S4 兜底代答"：看 B 自己的现状块里有没有落下**这次应答的事实锚点**
+    # 锚点三选一：①应答 msg_type 原文 `msg_answer`；②应答自己的 msg_id；③被应答的那条询问 id。
+    # 只认 ASCII 关键词会误报——模型可能用中文写「回发应答」并把应答 msg_id / reply_to 原文抄进现状块，
+    # 实质行为全在却判 false（5713 三跑里误报 2 次，2026-10-20 实测）。故改事实锚点。
+    _status_b = str(ev.get("status_B") or "")
+    _ans_ids = [str(m.get("id") or m.get("msg_id") or "") for m in ans]
+    _ans_ids = [x for x in _ans_ids if x]
+    _anchor = ""
+    if "msg_answer" in _status_b:
+        _anchor = "msg_type_literal"
+    elif any(x in _status_b for x in _ans_ids):
+        _anchor = "answer_msg_id"
+    elif ask_id and ask_id in _status_b:
+        _anchor = "ask_msg_id"
+
     return {
         "A_found_B": bool(bid),
         "A_built_link_to_B": any(str(l.get("target")) == bid for l in _links(ev.get("meta_A"))),
         "A_sent_ask": len(ask) > 0,
         "B_answered": len(ans) > 0,
-        # B 的应答是 B 自己发的（不是 S4 兜底代答）：B 自己的现状块里写了这条 msg_answer
-        "B_self_answered_wrote_status": "msg_answer" in (ev.get("status_B") or ""),
+        # B 的应答是 B 自己发的（不是 S4 兜底代答）：B 现状块里落了本次应答的事实锚点
+        "B_self_answered_wrote_status": bool(_anchor),
+        "B_self_answered_anchor": _anchor or "none",
         "answer_reply_to_matches_ask": reply_ok,
         "A_wrote_evidence_in_status": "通道试走完成" in (ev.get("status_A") or ""),
         "counts": {"ask": len(ask), "answer": len(ans), "all_items": len(items)},

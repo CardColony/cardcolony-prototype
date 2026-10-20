@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-10-20T15:23:46",
+  "purpose": "验证 B_self_answered_wrote_status 判据由「ASCII 关键词」改为「事实锚点」后，用 3 份留档实跑的原始输入重判——不改原始证据，只重算这一项",
+  "probe": "anchor = msg_answer 原文 | 应答自己的 msg_id | 被应答的询问 id（三选一）",
+  "runs": {
+    "run1": {
+      "source": "verify/5713/evidence_rebase_20261021/run1_INCOMPLETE.json",
+      "A": "card_003",
+      "B": "card_002",
+      "old_verdict": "INCOMPLETE",
+      "old_B_self_answered": false,
+      "new_B_self_answered": true,
+      "anchor": "answer_msg_id",
+      "new_verdict": "PASS"
+    },
+    "run2": {
+      "source": "verify/5713/evidence_rebase_20261021/run2_PASS.json",
+      "A": "card_003",
+      "B": "card_002",
+      "old_verdict": "PASS",
+      "old_B_self_answered": true,
+      "new_B_self_answered": true,
+      "anchor": "msg_type_literal",
+      "new_verdict": "PASS"
+    },
+    "run3": {
+      "source": "verify/5713/evidence_rebase_20261021/run3_INCOMPLETE.json",
+      "A": "card_003",
+      "B": "card_002",
+      "old_verdict": "INCOMPLETE",
+      "old_B_self_answered": false,
+      "new_B_self_answered": true,
+      "anchor": "answer_msg_id",
+      "new_verdict": "PASS"
+    }
+  }
+}
