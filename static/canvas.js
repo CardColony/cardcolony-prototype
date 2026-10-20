@@ -2167,6 +2167,21 @@ const WORK_ID = window.__WORK_ID__;
     let dragGroup = null;
     node.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      // [画布 5711 · P1 修] 按在**卡内控件**上（💬 / ↗ / ▸N 徽标）时，**不进拖拽/平移分支**。
+      //
+      // 病根（实测抓到的真 bug）：平移态的 CSS 是
+      //   `.page-canvas #viewport.panning .card-node { pointer-events: none; }`
+      // —— 平移中**所有卡片都不可点**。而根卡（视图根）的 mousedown 会进
+      // "拖根卡＝平移"分支 ⇒ 按下的瞬间 viewport 就进了 .panning ⇒
+      // **鼠标抬起的落点变成 viewport** ⇒ click 事件的 target 是 viewport，
+      // 控件的 click 处理器**根本没被调用**。
+      // ⇒ 症状：**根卡上的 💬（在此展开对话）／↗（打开对话页）／▸N（展开子卡）点了没反应**
+      //   —— 而根卡恰是打开画布看到的第一张卡、最显眼的那张。
+      //   （其它卡不受影响：它们的 mousedown 只起拖拽、不加 .panning。）
+      // ⇒ 修法：控件上的按下**不抢**——让控件自己处理这次点击。
+      if (e.target && e.target.closest && e.target.closest("button, .kid-badge, input, textarea, select, a")) {
+        return;
+      }
       // [R1] 若上一次拖拽的监听器尚未卸掉（异常路径），先卸，避免重复挂载
       if (activeDragDetach) activeDragDetach();
       // [画布商业化 2026-10-17] 根卡是布局坐标系的锚点（computeLayout 恒把它放在
@@ -5281,19 +5296,49 @@ const WORK_ID = window.__WORK_ID__;
       if (!state.nav.workCardId) {
         // [T07-1-10] 判据源切换：根卡不再按 card_type 找，改按 card_id == work_card_id
         // （work_card_id 取自既有 /api/works 端点的 work.json 权威字段）
-        let _wcId = "";
-        try {
-          const _works = await API.listWorks();
-          const _list = Array.isArray(_works) ? _works : (_works.works || []);
-          const _w = _list.find(x => (x.work_id || x.id) === WORK_ID);
-          _wcId = (_w && _w.work_card_id) || "";
-        } catch (_e) { /* 取不到时走回退，不影响画布加载 */ }
+        // [画布 5711 · P0 修] **根卡不再等 /api/works**（这一改是修一个"永久白屏"）。
+        //
+        // 病根（实测抓到的 P0）：原来这里 `await API.listWorks()` 是**出图的关键路径**
+        // 上的一次网络往返。浏览器对同一源有 **6 条并发连接**的上限（HTTP/1.1），
+        // 而画布页**常驻**着 SSE 长连接（工作级 /events ＋ 单卡 stream）⇒ 页面加载
+        // 时的并发请求一旦把连接槽占满，这条往返就会被**排队、永远发不出去** ⇒
+        // `await` 悬着 ⇒ reloadCanvas 停在半路 ⇒ **画布永远空白（骨架屏不撤）**。
+        // 实测：屏蔽工作级 /events ⇒ 画布正常出卡；不屏蔽 ⇒ 永久 0 张卡。
+        //
+        // 修法：**根卡本来就画布数据里带着**——parent 为空的那张就是项目本体
+        // （card_store._normalize_parent：剧本卡 parent 强制 ""）。用它直接出图，
+        // **零往返**；/api/works 退化成异步补充（只用来核对权威 id 与补标题），
+        // 拿不到也不影响出图。
+        let rootCard = state.data.cards.find(c => !(c.parent || ""));
+        if (!rootCard) rootCard = state.data.cards[0];
         t07SwitchLog("canvas.reloadCanvas.rootFind", WORK_ID,
-          state.data.cards.some(c => c.card_type === "\u5267\u672c"), !!_wcId);
-        const wc = _wcId ? state.data.cards.find(c => c.card_id === _wcId) : null;
-        state.nav.workCardId = wc ? wc.card_id : (state.data.cards[0] && state.data.cards[0].card_id) || "";
-        state.nav.workTitle = wc ? wc.title : "";
+          state.data.cards.some(c => c.card_type === "\u5267\u672c"), !!(rootCard && !(rootCard.parent || "")));
+        state.nav.workCardId = rootCard ? rootCard.card_id : "";
+        state.nav.workTitle = rootCard ? rootCard.title : "";
         state.nav.viewRoot = state.nav.workCardId;
+        // 权威字段（work.json 的 work_card_id）异步补：与数据推出的根卡不一致时
+        // （极少见）以权威为准并重画；标题也用它。**全程不阻塞出图。**
+        try {
+          API.listWorks().then((_works) => {
+            const _list = Array.isArray(_works) ? _works : (_works.works || []);
+            const _w = _list.find(x => (x.work_id || x.id) === WORK_ID);
+            if (!_w) return;
+            const _wcId = _w.work_card_id || "";
+            if (!_wcId) return;
+            if (_wcId === state.nav.workCardId) {
+              if (_w.title) state.nav.workTitle = _w.title;
+              return;
+            }
+            const _wc = state.data.cards.find(c => c.card_id === _wcId);
+            if (!_wc) return;
+            console.warn("[canvas] 权威 work_card_id 与数据推出的根卡不一致，以权威为准",
+              _wcId, state.nav.workCardId);
+            state.nav.workCardId = _wcId;
+            state.nav.workTitle = _wc.title || state.nav.workTitle;
+            state.nav.viewRoot = _wcId;
+            renderAll();
+          }).catch(() => { /* 拿不到就用数据里的根卡，不影响出图 */ });
+        } catch (e) { /* listWorks 不可用零阻断 */ }
       }
       rebuildCardMap();
       // [画布商业化 2026-10-17] 首次加载：有存档就恢复，无存档就**整幅适配**。
@@ -6650,6 +6695,13 @@ const WORK_ID = window.__WORK_ID__;
 
   // [迭代四 F4④] 未读角标数据面：拉 K4 端点 unread_by_card → 更新徽章；
   // 收件方自己的键上监听 SSE card_message 帧增量（分键 A21）；60s 轮询兜底。
+  // [画布 5711 · P0 修] 增量帧改由**工作级**流带过来（见下面 subscribeWorkEvents）：
+  // 原来那条独立 SSE 监听了**错的键**（card_id 位置传的是 work_id）⇒ 从来没触发过。
+  let _unreadTimer = 0;
+  function scheduleUnreadRefresh() {
+    if (_unreadTimer) clearTimeout(_unreadTimer);
+    _unreadTimer = setTimeout(() => { _unreadTimer = 0; refreshUnread(); }, 300);
+  }
   async function refreshUnread() {
     try {
       const r = await fetch(`/api/works/${WORK_ID}/card-messages?limit=200`);
@@ -6682,11 +6734,15 @@ const WORK_ID = window.__WORK_ID__;
       if (lastProjection) renderEdges(lastProjection, collectViewModel());
     } catch (e) { /* 展示层零阻断 */ }
   }
-  try {
-    const es = new EventSource(`/api/works/${WORK_ID}/cards/${WORK_ID}/stream`);
-    es.addEventListener("card_message", () => refreshUnread());
-    es.onerror = () => { /* SSE 断开静默，轮询兜底 */ };
-  } catch (e) { /* EventSource 不可用零阻断 */ }
+  // [画布 5711 · P0 修] **不再单独开一条"单卡 stream"**。
+  //
+  // 原来开的是 `/api/works/{w}/cards/{w}/stream` —— card_id 那个位置传的是
+  // **work_id**（不是卡号）⇒ 订阅的是一条**永远不会有帧**的键 ⇒
+  //   ① 未读角标的增量通道**从来没活过**（只剩 60s 轮询）；
+  //   ② 却**长期占着一条浏览器连接**——而浏览器每源只有 6 条并发连接（HTTP/1.1），
+  //      画布页的常驻连接必须省着用（见 reloadCanvas 里"找根卡不再走网络"那段）。
+  // ⇒ 现在：未读增量由**工作级**流（/events）带过来——后端落卡间信时额外广播
+  //   一帧 card_message（card_tools.py），画布一条连接收全。
   setInterval(refreshUnread, 60000);
   refreshUnread();
 
@@ -6909,8 +6965,16 @@ const WORK_ID = window.__WORK_ID__;
         _workEsHealthy = true;
         let evt = null;
         try { evt = JSON.parse(m.data); } catch (e) { return; }
-        if (!evt || evt.type !== "card_changed") return;
+        if (!evt) return;
         const d = evt.data || {};
+        // [画布 5711 · P0 修] 卡间信帧：工作级通道顺带带过来（后端落信时多广播一帧）
+        // ⇒ 未读角标与通信线能及时刷新。原来这条走的是一条**监听了错键**的独立
+        // SSE（card_id 位置传的是 work_id）⇒ 从来没触发过，只有 60s 轮询在扛。
+        if (evt.type === "card_message") {
+          scheduleUnreadRefresh();
+          return;
+        }
+        if (evt.type !== "card_changed") return;
         if (!d.card_id) return;
         scheduleLiveApply(d.card_id, d);
       };

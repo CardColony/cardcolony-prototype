@@ -101,36 +101,52 @@ check("1 画布渲染卡片", nodes > 0, nodes + " 张");
 await key("0", { code: "Digit0", modifiers: MOD.ctrl });
 await sleep(600);
 
-// ── 2 单击＝选中（不跳页、也不开右栏）；进对话页走卡片右上角的 ↗ ──
+// ── 2 单击＝进入对话页（2026-10-20 用户裁定）──
 // [画布 2026-10-19] 右栏卡片详情已整件删除：它的内容（标题/状态/结论/待裁定）
-// 与悬停浮层、卡片面高度重复，用户明确否掉。现在单击只选中，对话在并行层里开。
+// 与悬停浮层、卡片面高度重复，用户明确否掉。
+// [画布 5711 · 2026-10-20] 单击语义已改为**进对话页**（用户问"我怎么进对话"）。
+// 旧断言"单击＝选中且不跳页"是 10-19 的设计，已作废——
+// 照旧写会在新语义下把整条路径带偏（点完就跳页，后续步骤全落在对话页上）。
 let b = await centerOf(".card-node", 1);
 await click(b.x, b.y);
-await sleep(300);
-const stayedOnCanvas = (await ev("location.pathname")) === `/work/${WID}`;
-const detailHidden = await ev("!!document.querySelector('#cardDetail') && document.querySelector('#cardDetail').hidden");
-const selected = await ev("document.querySelectorAll('.card-node.is-selected').length");
-check("2a 单击＝选中（不跳页、不开右栏）", stayedOnCanvas && detailHidden && selected > 0,
-      `canvas=${stayedOnCanvas} hidden=${detailHidden} sel=${selected}`);
+await sleep(900);
+const pClick = await ev("location.pathname");
+check("2a 单击卡＝进入对话页", String(pClick).includes("/card/"), pClick);
+
+// ── 3 对话页返回画布 ──
+const backBtn = await centerOf("#canvasEntryBtn", 0);
+if (backBtn) { await click(backBtn.x, backBtn.y); await sleep(1400); }
+let p2 = await ev("location.pathname");
+check("3 对话页→返回画布", p2 === `/work/${WID}`, p2);
+
+// ── 2b 点 ↗ ＝进入对话页（另一条路）──
 await ev(`document.querySelectorAll('.card-node .cv-open')[1].click()`);
 await sleep(1100);
 let p1 = await ev("location.pathname");
 check("2b 点 ↗ ＝进入对话页", String(p1).includes("/card/"), p1);
+const backBtn2 = await centerOf("#canvasEntryBtn", 0);
+if (backBtn2) { await click(backBtn2.x, backBtn2.y); await sleep(1400); }
 
-// ── 3 对话页返回画布 ──
-const backBtn = await centerOf("#canvasEntryBtn", 0);
-if (backBtn) { await click(backBtn.x, backBtn.y); await sleep(1200); }
-let p2 = await ev("location.pathname");
-check("3 对话页→返回画布", p2 === `/work/${WID}`, p2);
-
-// ── 4 单击＝选中（不跳页）；Shift+单击＝加选 ──
+// ── 4 选中（不跳页）：Shift+单击＝加选 ──
+// 单击已改成"进对话页"，画布上**不跳页**的选中路径是 Shift/Ctrl/⌘+单击。
 await nav(`${BASE}/work/${WID}`);
+await sleep(600);
 b = await centerOf(".card-node", 1);
-await click(b.x, b.y);
-await sleep(300);
-check("4 单击＝选中且不跳页",
-  (await ev("location.pathname")) === `/work/${WID}`
-  && Number(await ev("document.querySelectorAll('.card-node.is-selected').length")) === 1);
+await ev(`(() => {
+  const n = document.querySelectorAll('.card-node')[1];
+  if (!n) return 0;
+  const r = n.getBoundingClientRect();
+  n.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: true,
+    clientX: Math.round(r.x + r.width / 2), clientY: Math.round(r.y + r.height / 2) }));
+  return 1;
+})()`);
+await sleep(400);
+const st4 = await ev(`JSON.stringify({
+  path: location.pathname,
+  nodes: document.querySelectorAll('.card-node').length,
+  sel: document.querySelectorAll('.card-node.is-selected').length,
+})`);
+check("4 Shift+单击＝选中且不跳页", st4.includes(`"path":"/work/${WID}"`) && st4.includes('"sel":1'), st4);
 
 // ── 5 展开/折叠 ──
 const before = Number(await ev("document.querySelectorAll('.card-node').length"));
@@ -150,27 +166,51 @@ if (zin) { await click(zin.x, zin.y); await sleep(300); }
 const z1 = await ev("(document.getElementById('zoomDisplay')||{}).textContent");
 check("7 缩放＋按钮生效", parseInt(z1) > parseInt(z0), `${z0} → ${z1}`);
 
-// ── 8 小地图点击导航 ──
-// 先整幅适配：A4–A7 动过缩放/平移
+// ── 8 💬 ＝就地展开对话（不离开画布）──
+// [画布 5711] 旧步骤测的是**小地图点击导航**，而小地图已被产品删除
+// （"删小地图"）⇒ 那一步早就成了永远通过的空步骤。换成 10-20 的新入口：
+// 卡上的 💬 ＝就地展开这张卡的对话（不跳页、可直接回复）。
+// ⚠ 前面动过缩放 ⇒ 先整幅适配，并挑一个**在视口内**的 💬：
+//   视口外的按钮坐标点了也白点（会落到别的元素上）。
 await key("0", { code: "Digit0", modifiers: MOD.ctrl });
-await sleep(500);
-// 用 DOM 派发 mousedown：坐标点击在小地图上不稳（canvas 与视口框子元素叠在一起），
-// 而这条测的是"小地图导航逻辑"本身，不是坐标命中（坐标命中由 A3/A6 覆盖）
-const panBefore = await ev("(document.getElementById('world')||{style:{}}).style.transform");
-await ev(`(() => {
-  const c = document.querySelector('.cv-minimap canvas');
-  if (!c) return;
-  const r = c.getBoundingClientRect();
-  c.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true,
-    clientX: Math.round(r.x + r.width * 0.2), clientY: Math.round(r.y + r.height * 0.8) }));
-  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+await sleep(700);
+const chatBtn = await J(`(() => {
+  const vp = document.getElementById('viewport');
+  const vr = vp ? vp.getBoundingClientRect() : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+  for (const b of document.querySelectorAll('.card-node .cv-chat')) {
+    const r = b.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    if (r.left < vr.left || r.right > vr.right || r.top < vr.top || r.bottom > vr.bottom) continue;
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  }
+  return null;
 })()`);
-await sleep(400);
-const panAfter = await ev("(document.getElementById('world')||{style:{}}).style.transform");
-check("8 小地图点击＝移动视口", panBefore !== panAfter, `${String(panBefore).slice(0,34)} → ${String(panAfter).slice(0,34)}`);
+if (chatBtn) {
+  const atPoint = await ev(`(() => { const el = document.elementFromPoint(${chatBtn.x}, ${chatBtn.y}); return el ? ((el.className || '') + '|' + el.tagName) : 'null'; })()`);
+  console.log("   [diag] 💬 点击点上的元素 =", atPoint, "坐标 =", JSON.stringify(chatBtn));
+  await click(chatBtn.x, chatBtn.y);
+  await sleep(1600);
+}
+const cellState = await ev(`(() => {
+  const n = [...document.querySelectorAll('.card-node')].find(x => x.dataset.open === '1');
+  return {
+    open: !!n,
+    cell: !!(n && n.querySelector('.cv-cell')),
+    hasInput: !!(n && n.querySelector('.cv-cell-input')),
+    path: location.pathname,
+  };
+})()`);
+check("8 点 💬＝就地展开对话（不离开画布）",
+  cellState.open === true && cellState.cell === true && cellState.path === `/work/${WID}`,
+  JSON.stringify(cellState));
 
 // ── 9 整理布局 ──
-await click(...Object.values(await centerOf("#reorganizeBtn", 0)).slice(0, 2));
+// 「整理布局」在**「更多」菜单**里（#moreWrap），必须先展开菜单再点：
+// 直接点隐藏元素的坐标会落到别的元素上（隐藏时 getBoundingClientRect 全是 0，
+// 旧写法在 5700 上就是在这儿崩的）。
+await ev(`(() => { const b = document.getElementById('moreBtn'); if (b) b.click(); return 1; })()`);
+await sleep(450);
+await ev(`(() => { const b = document.getElementById('reorganizeBtn'); if (b) b.click(); return 1; })()`);
 await sleep(900);
 check("9 整理布局不报错", errs.length === 0, errs.slice(0, 2).join(" | "));
 

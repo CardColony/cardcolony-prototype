@@ -56,6 +56,14 @@ async function loadPage() {
   await send("Page.navigate", { url: `${BASE}/work/${WID}` });
   for (let i = 0; i < 120; i++) { await sleep(50); if (Number(await ev(`document.querySelectorAll('.card-node').length`)) > 0) break; }
   await sleep(1000);
+  // 兜底：可见集里若没有"带子卡的卡"（有些工程的默认视图就是这样，比如 300 卡那棵），
+  // 行为矩阵就没有样本 ⇒ 那样报出来的"失败"是**前提不具备**，不是产品缺陷。
+  // ⇒ 先"全部展开"把它变成有样本。
+  const hasBadge = await ev(`!![...document.querySelectorAll('.card-node')].find(x => x.querySelector('.kid-badge'))`);
+  if (!hasBadge) {
+    await ev(`(() => { const b = document.getElementById('expandAllBtn'); if (b) b.click(); return 1; })()`);
+    await sleep(1500);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -81,7 +89,19 @@ const hitRows = await ev(`(() => {
     if (!t) continue;
     const tr = t.getBoundingClientRect(), nr = node.getBoundingClientRect();
     const r = { id: node.dataset.id, pts: {} };
-    r.pts.titleText = at(tr.x + 12, tr.y + tr.height / 2);
+    // ⚠ "点标题文字"的探针必须落在**文字本身**上，不能用"标题盒左边缘 + 12"：
+    //   根卡的标题是**居中**的（style.css .card-node.is-root{text-align:center}），
+    //   标题盒比文字宽得多 ⇒ 盒左+12 落在**空白**上（甚至正好落在 💬 上）⇒ 假红。
+    //   实测：work_002 的根卡因此误报"点标题命中的是 cv-chat"。
+    //   真实文字矩形用 Range 量（selectNodeContents）。
+    let tx = tr;
+    try {
+      const rg = document.createRange();
+      rg.selectNodeContents(t);
+      const rr = rg.getBoundingClientRect();
+      if (rr.width > 2) tx = rr;
+    } catch (e) { /* 退回盒矩形 */ }
+    r.pts.titleText = at(tx.x + Math.min(6, tx.width / 2), tx.y + tx.height / 2);
     r.pts.titleCenter = at(tr.x + tr.width / 2, tr.y + tr.height / 2);
     r.pts.cardBlank = at(nr.x + 8, nr.y + nr.height - 4);
     if (b) { const br = b.getBoundingClientRect(); r.pts.badge = at(br.x + br.width / 2, br.y + br.height / 2); }
