@@ -738,8 +738,9 @@ async def _read_existing_locked(work_id: str, card_id: str,
                                 path: Path) -> tuple[str, int, list[dict[str, Any]]]:
     """锁内读现状：返回 (原文, 格式号, 已落块列表)。V1 委托旧解析并补派生字段。"""
     if path.exists():
-        async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
-            text = await f.read()
+        # [读路径锁重试 2026-10-20] 原来这里裸 `aiofiles.open`——撞上 Windows 文件锁
+        # 直接抛 Errno 13，整轮被按「模型调用失败」收口。与写路径同一套重试。
+        text = await session_store.aread_text_with_lock_retry(path, "facade-read")
     else:
         text = ""
     fmt = _detect_format(text)
