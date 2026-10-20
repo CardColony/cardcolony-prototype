@@ -336,8 +336,8 @@ def test_t6_touched_modules_bumped():
         # [合并 2026-10-20] 两侧各改各的：对话流 5702 那条线动了 stream/workspace/
         # assembler/main_chat/flow/*；画布 5711 这条线动了 canvas.js 与 main.js
         # （main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也必须升）。
-        "stream.js": "47", "workspace.js": "62", "canvas.js": "73",
-        "assembler.js": "37", "style.css": "45", "main.js": "73.0",
+        "stream.js": "47", "workspace.js": "62", "canvas.js": "76",
+        "assembler.js": "37", "style.css": "45", "main.js": "76.0",
         "main_chat.js": "2.9",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
