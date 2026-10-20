@@ -78,6 +78,15 @@
           "can_have_children": false,
           "requires_owner": false,
           "default_template": "rule"
+        },
+        {
+          "code": "role",
+          "label": "角色卡",
+          "description": "离树的观察者/顾问。由项目根卡创建并写入职责书；不挂 parent，不进任务树；工作卡通过连线订阅它，它在回合收口时收到同步并自行判断发言或沉默。",
+          "can_have_children": false,
+          "requires_owner": false,
+          "off_tree": true,
+          "default_template": "role"
         }
       ]
     },
@@ -100,6 +109,15 @@
           "can_have_children": false,
           "requires_owner": false,
           "default_template": "rule"
+        },
+        {
+          "code": "role",
+          "label": "角色卡",
+          "description": "离树的观察者/顾问。由项目根卡创建并写入职责书；不挂 parent，不进任务树；工作卡通过连线订阅它，它在回合收口时收到同步并自行判断发言或沉默。",
+          "can_have_children": false,
+          "requires_owner": false,
+          "off_tree": true,
+          "default_template": "role"
         }
       ]
     },

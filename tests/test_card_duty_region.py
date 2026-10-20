@@ -104,7 +104,7 @@ async def test_v6_new_type_auto_appears(sandbox, monkeypatch, tmp_path):
     # [编程卡 2026-10-15 · C1 指纹随词表推进] rd_project 词表加 coder ⇒ 原 4 类 → 5 类
     # [规则卡 2026-10-15 · 随版本推进翻新] 两词表各加 rule ⇒ 6 → 8（意图不变：加
     # 类型即自动多一行）。
-    assert r90["entries"] == 8  # 现 7 类（project/sub_project/tool/coder/topic 等＋rule×2）＋ 新 1 类
+    assert r90["entries"] == 10  # [角色机制 5710] 两词表各 +role ⇒ 8→10，再 +new_kind
 
 
 # ---------------------------------------------------------------------------

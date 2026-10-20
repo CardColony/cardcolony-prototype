@@ -1,4 +1,4 @@
-/* esm/nav_render.js —— [左栏接线 步2] 行结构按定稿重写（样式定稿 v1+v2 全量落地）。
+﻿/* esm/nav_render.js —— [左栏接线 步2] 行结构按定稿重写（样式定稿 v1+v2 全量落地）。
  *
  * 行骨架（卡行）：segs 线段层 ＋ 箭头(nav-chev, data-twist) ＋ 图标(nav-ico) ＋
  *                 标题(nav-ctitle) ＋ 行尾槽(nav-tail：时间/运行中转圈 二选一 ＋ ⋯)。
@@ -23,7 +23,7 @@
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=36";
+import { notify } from "./api.js?v=39";
 import { createRowModel } from "./row_model.js?v=30";
 import { createVirtualList } from "./nav_virtual.js?v=30";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=30";
@@ -36,6 +36,8 @@ import { indentOf, rowSegs, childGuides } from "./nav_geo.js?v=30";
 const SVG_CHEV = '<svg viewBox="0 0 16 16" fill="none"><path class="under" d="M5.5 3.5 10 8l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/><path class="top" d="M5.5 3.5 10 8l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const SVG_FOLDER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2H6l1.7 1.5h5.8A1.5 1.5 0 0 1 15 5v7.5A1.5 1.5 0 0 1 13.5 14h-11A1.5 1.5 0 0 1 1 12.5z"/></svg>';
 const SVG_DOC = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 2.5h7L12.5 5v8A1.5 1.5 0 0 1 11 14.5H3A1.5 1.5 0 0 1 1.5 13v-9A1.5 1.5 0 0 1 3 2.5z"/><path d="M10 2.5V5h2.5"/></svg>';
+// [角色机制 5710] 角色卡图标：离树的观察者（人形），与作业卡区分。
+const SVG_ROLE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="5.2" r="2.4"/><path d="M3.2 13.6c.5-2.7 2.2-4 4.8-4s4.3 1.3 4.8 4"/></svg>';
 const SVG_DOTS = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>';
 // [用户 2026-10-15 ①] 新建子卡从 ⋯ 菜单取出，单列一个 ＋ 入口（悬停时 ⋯ 左移一位、＋ 落原位）
 const SVG_PLUS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.6v8.8"/><path d="M3.6 8h8.8"/></svg>';
@@ -57,7 +59,8 @@ function fmtRel(iso) {
 
 function cardTip(c) {
   // [B4/E2 既有口径] 活跃/分支活跃走 tooltip 三分列（行内不堆文字，定稿第 2 条）
-  return escapeHtml(c.title)
+  return (c.card_type === "role" ? "〔角色〕" : "")
+    + escapeHtml(c.title)
     + (c.last_active_at ? `｜本卡活跃 ${fmtRel(c.last_active_at)}` : "｜无对话")
     + (c.branch_active_at ? `｜分支活跃 ${fmtRel(c.branch_active_at)}` : "");
 }
@@ -213,7 +216,19 @@ export function createNavRenderer(deps) {
     const ico = document.createElement("span");
     ico.className = "nav-ico doc";
     ico.innerHTML = SVG_DOC;
-    el.appendChild(ico);
+    // [角色机制 5710] 角色卡离树：单独图标 + 行样式，一眼区分「干活的卡 / 盯梢的卡」
+    if (c.card_type === "role") {
+      el.classList.add("nav-role");
+      ico.classList.add("role");
+      ico.innerHTML = SVG_ROLE;
+      const badge = document.createElement("span");
+      badge.className = "nav-role-badge";
+      badge.textContent = "角色";
+      el.appendChild(ico);
+      el.appendChild(badge);
+    } else {
+      el.appendChild(ico);
+    }
     const title = document.createElement("span");
     title.className = "nav-ctitle";
     el.__title = title;
@@ -276,6 +291,8 @@ export function createNavRenderer(deps) {
     const agg = projectAggregate(p);
     el.__tail.__time.textContent = fmtRel(agg.latest || p.last_active_at);
     el.title = p.title || "";
+    // [角色机制 5710] 项目行警报红点：角色卡有未处理警报时，不用点进去也能看见。
+    el.classList.toggle("has-alarm", Number(p.open_alarms || 0) > 0);
     // [S3/R-35] 空项目态：展开且零卡 → 行内「空·去新建」（data-add 复用既有事件委托→建卡入口）
     const emptyBadge = el.querySelector(".nav-pempty");
     const needEmpty = pr.expanded && isProjectEmpty(store.snapshot, p.work_id);
@@ -467,6 +484,8 @@ export function createNavRenderer(deps) {
       const pa = c.parent || "";
       return pa === "" || pa === root || (pa && !ids.has(pa));   // 孤儿契约：根层末尾，不丢弃
     });
+    // [角色机制 5710] 角色卡离树，但排在根层末尾（作业卡在前、盯梢的在后）。
+    seg.sort((a, b) => (a.card_type === "role" ? 1 : 0) - (b.card_type === "role" ? 1 : 0));
     store.snapshot.setChildren(wid, "", seg);
   }
 

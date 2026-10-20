@@ -322,7 +322,8 @@ def test_t6_touched_modules_bumped():
     ★ [画布 2026-10-19 · 实时状况/并行操作] canvas 62→72、main 62.0→72.0：
       新增 /pulse 轮询、卡面运行态、项目动态抽屉、多选批量下指令与排队态、
       全局视图图例与适配修正。canvas.css 19→20（同步升）。
-    ★ [画布 5711 · 画布优化] canvas 72→73、main 72.0→73.0、canvas.css 20→21：
+    ★ [画布 5711 · 画布优化] canvas 72→77、main 72.0→77.0、canvas.css 20→23、
+      build-stamp v72→v79、nav.css 15→16（nav.css 是并入 dev 的角色机制那条线）：
       ① 两阶段渲染改 try/finally（异常不再留下永久白屏）；② 骨架屏改在渲染完成后
       才移除（首屏不再白一下）；③ 浮层级联修复（display 收回 .active——原来恒为
       flex，浮层永久可见且吃掉左上角点击）；④ 选中集与在场节点求交（不再删掉
@@ -333,12 +334,13 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        # [合并 2026-10-20] 两侧各改各的：对话流 5702 那条线动了 stream/workspace/
-        # assembler/main_chat/flow/*；画布 5711 这条线动了 canvas.js 与 main.js
-        # （main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也必须升）。
-        "stream.js": "47", "workspace.js": "62", "canvas.js": "76",
-        "assembler.js": "37", "style.css": "45", "main.js": "76.0",
-        "main_chat.js": "2.9",
+        # [合并 2026-10-20] 两侧各改各的：对话流 5702 与角色机制 5710 那条线动了
+        # stream/workspace/assembler/main_chat/flow/*；画布 5711 这条线动了
+        # canvas.js 与 main.js（main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也升）。
+        # canvas.js 两边都改了 ⇒ 画布链取**大于两边**的号（77），其余取 dev 那条线。
+        "stream.js": "47", "workspace.js": "65", "canvas.js": "77",
+        "assembler.js": "37", "style.css": "45", "main.js": "77.0",
+        "main_chat.js": "3.2",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
         "chat-view.js": "4", "message-item.js": "1",

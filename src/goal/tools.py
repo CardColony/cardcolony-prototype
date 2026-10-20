@@ -103,6 +103,22 @@ async def h_create_goal(work_id: str, current_id: str,
 async def h_update_goal(work_id: str, current_id: str,
                         arguments: dict[str, Any], cards: dict[str, Any]) -> dict[str, Any]:
     action = str(arguments.get("action") or "").strip()
+    # [角色机制 5710] 指令闸：目标卡还有未验收的角色指令时不许 complete。
+    # 放在 authority 之前：即使调用方不在开放回合，也先如实告诉它“先完成指令”。
+    if action == "complete":
+        try:
+            from ..api import role_room
+            _blockers = role_room.open_directives_for(work_id, current_id)
+        except Exception:  # noqa: BLE001 读不到闸表不阻断主链（fail-open）
+            _blockers = []
+        if _blockers:
+            _desc = "；".join(
+                f"{d.get('id')}: {str(d.get('instruction') or '')[:60]}"
+                for d in _blockers[:3])
+            return _err("ROLE_DIRECTIVE_BLOCKING",
+                        f"收口被拒：本卡还有 {len(_blockers)} 条未验收的角色指令"
+                        f"（{_desc}）。先按指令做完，让角色 verify_directive(complied)，"
+                        "或 update_goal(blocked) 说明卡在哪。")
     try:
         source = authority.current_turn_source()
         authority.goal_tool_execution(source)

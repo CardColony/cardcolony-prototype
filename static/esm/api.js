@@ -137,6 +137,26 @@ export const API = {
   patchPositions: (wid, positions) => call("PATCH", `/api/works/${wid}/canvas/positions`, { positions }),
   createCard: (wid, body) => call("POST", `/api/works/${wid}/cards`, body),
   getCard: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}`),
+  // [角色机制 5710] 角色卡：组阁/关注/巡检/判词/警报
+  getRoles: (wid) => call("GET", `/api/works/${wid}/roles`),
+  getRole: (wid, rid) => call("GET", `/api/works/${wid}/roles/${rid}`),
+  createRole: (wid, body) => call("POST", `/api/works/${wid}/roles`, body),
+  updateRole: (wid, rid, body) => call("PATCH", `/api/works/${wid}/roles/${rid}`, body),
+  setRoleDuty: (wid, rid, state, note = "") =>
+    call("POST", `/api/works/${wid}/roles/${rid}/duty`, { state, note }),
+  issueDirective: (wid, rid, body) =>
+    call("POST", `/api/works/${wid}/roles/${rid}/directives`, body),
+  verifyDirective: (wid, rid, did, status, evidence = "") =>
+    call("POST", `/api/works/${wid}/roles/${rid}/directives/${did}/verify`, { status, evidence }),
+  checkRole: (wid, rid) => call("POST", `/api/works/${wid}/roles/${rid}/check`),
+  watchRole: (wid, rid, card_ids, action = "add") =>
+    call("POST", `/api/works/${wid}/roles/${rid}/watch`, { card_ids, action }),
+  unwatchRole: (wid, rid, cid) =>
+    call("DELETE", `/api/works/${wid}/roles/${rid}/watch/${cid}`),
+  getAlarms: (wid, status = "open") =>
+    call("GET", `/api/works/${wid}/alarms?status=${encodeURIComponent(status)}`),
+  ackAlarm: (wid, aid) => call("POST", `/api/works/${wid}/alarms/${aid}/ack`),
+  correctAlarm: (wid, aid) => call("POST", `/api/works/${wid}/alarms/${aid}/correct`),
   patchCard: (wid, cid, updates, history_note) =>
     call("PATCH", `/api/works/${wid}/cards/${cid}`, { updates, history_note }),
   deleteCard: (wid, cid) => call("DELETE", `/api/works/${wid}/cards/${cid}`),

@@ -18,7 +18,7 @@
     ]
   },
 
-  "version": 5,
+  "version": 6,
 
   "permissions": {
     "rd_project": {
@@ -26,12 +26,14 @@
       "sub_project": ["read", "edit", "delete", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
       "tool":        ["read", "edit", "delete", "plan", "shadow_write", "read_linked", "send_card_message"],
       "coder":       ["read", "edit", "tools_file", "tools_web", "search", "plan", "shadow_write", "read_linked", "list_memory"],
-      "rule":        ["read"]
+      "rule":        ["read"],
+      "role":        ["read", "edit", "read_linked", "send_card_message", "shadow_write"]
     },
     "research_project": {
       "project": ["read", "edit", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
       "topic":   ["read", "edit", "delete", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
-      "rule":    ["read"]
+      "rule":    ["read"],
+      "role":    ["read", "edit", "read_linked", "send_card_message", "shadow_write"]
     }
   }
 }

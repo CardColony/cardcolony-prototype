@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """建卡工具通道（create_card）· 回归网
 
 [建卡工具化 2026-10-08] 钉住三件事：
@@ -79,7 +79,7 @@ def test_tool_table_version_bumped():
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status，op 专用）。
     # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     # auto 卡工具面件数变化；常规面仍不含它——AUTO_ONLY_TOOLS 机制）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-12"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():

@@ -1,4 +1,4 @@
-/* esm/main.js —— 画布页唯一入口。
+﻿/* esm/main.js —— 画布页唯一入口。
  *
  * [阶段3 A3.3 2026-10-17] 双入口装配的**画布侧**：本入口只装画布所需模块图——
  *   util → api → store → canvas → nav_system → rule_panel。
@@ -10,11 +10,11 @@
  * （store.state.canvasState 由 canvas.js 注册）。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=36";
+import { API } from "./api.js?v=39";
 import "./util.js?v=30";
-import "../canvas.js?v=76";
-import { createNavSystem } from "./nav_system.js?v=34";
-import { loadRulePanel } from "./rule_panel.js?v=31";
+import "../canvas.js?v=77";
+import { createNavSystem } from "./nav_system.js?v=37";
+import { loadRulePanel } from "./rule_panel.js?v=33";
 
 const WORK_ID = window.__WORK_ID__;
 const navTree = document.getElementById("navTree");

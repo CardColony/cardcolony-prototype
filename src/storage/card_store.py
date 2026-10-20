@@ -291,9 +291,10 @@ def _normalize_parent(work_id: str, parent: Optional[str], card_type: str) -> st
     """parent 规则：
     - project 根卡无视 parent 入参，强制为 ""（[底座收口 T2.b] 原判「剧本」
       随类型退役换为 project；防御纵深——闸2 已拦子卡写 project）
+    - role 角色卡**离树**：无视 parent 入参，强制为 ""（5710 角色机制）
     - parent=None 或父卡不存在 → 回退 work_card_id
     """
-    if card_type == "project":
+    if card_type in ("project", "role"):
         return ""
     wid = work_store.work_card_id_of(work_id)
     if parent is None or parent == "":
@@ -671,6 +672,15 @@ def _write_gate(work_id: str, action: str, card_id: str,
     # project_class 只许根卡写
     if project_class and not is_root:
         return {"error": "project_class 只允许写在剧本根卡上"}
+
+    # ---------- [角色机制 5710] 角色卡离树：不可有子卡 ----------
+    # 角色卡 parent=""；若有人把子卡挂到角色卡下，角色就重新变成树节点，
+    # 它的同步/订阅语义会与父子授权语义搅在一起。显式拒绝，不静默改父。
+    parent_id = str(payload.get("parent", "") or "")
+    if parent_id:
+        parent_meta = _meta_of(work_id, parent_id) or {}
+        if str(parent_meta.get("card_type") or "") == "role":
+            return {"error": "角色卡不可有子卡（离树观察者不建树）"}
 
     # ---------- 闸 3：工具卡 owner 必填且合法 ----------
     if card_type == "tool":
