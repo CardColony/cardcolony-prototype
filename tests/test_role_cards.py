@@ -396,3 +396,52 @@ async def test_role_cannot_write_other_cards_even_by_direct_tool_call(work):
         "content": "本轮巡检：无新增矛盾。",
     }, cards)
     assert r["ok"] is True
+
+
+async def test_directive_is_mandatory_and_verifiable(work):
+    """角色可给关注卡下指令；指令是消息类型、落指令簿、必须给验收判据、可验收。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk_child(wid, root, "甲")
+    b = await _mk_child(wid, root, "乙")
+    rid = await _mk_role(wid, root, [a])
+    cards = card_tools._collect_card_meta(wid)
+
+    r = await card_tools.execute_tool(wid, rid, "issue_directive", {
+        "target_card_id": a,
+        "instruction": "把现状里的 UTC 带 Z 改成统一口径，并补一条契约测试",
+        "acceptance": "现状写明统一口径；测试文件含该用例",
+    }, cards)
+    assert r["ok"] is True, r
+    did = r["data"]["directive_id"]
+    pending = await card_db.list_pending(wid, a)
+    assert pending and pending[-1]["type"] == "msg_directive"
+
+    summary = await role_room.role_summary(wid, rid)
+    assert summary["directives"][0]["id"] == did
+    assert summary["directives"][0]["status"] == "issued"
+    assert "## 指令簿" in summary["text"]
+
+    # 未关注卡：拒
+    r = await card_tools.execute_tool(wid, rid, "issue_directive", {
+        "target_card_id": b, "instruction": "x", "acceptance": "y",
+    }, cards)
+    assert r["ok"] is False and r["error"]["code"] == "denied"
+
+    # 缺验收判据：拒
+    r = await card_tools.execute_tool(wid, rid, "issue_directive", {
+        "target_card_id": a, "instruction": "x", "acceptance": "",
+    }, cards)
+    assert r["ok"] is False and r["error"]["code"] == "validation"
+
+    # 验收：打回必须写证据
+    r = await card_tools.execute_tool(wid, rid, "verify_directive", {
+        "directive_id": did, "status": "rejected",
+    }, cards)
+    assert r["ok"] is False and r["error"]["code"] == "validation"
+    r = await card_tools.execute_tool(wid, rid, "verify_directive", {
+        "directive_id": did, "status": "rejected", "evidence": "测试文件还没有该用例",
+    }, cards)
+    assert r["ok"] is True
+    summary = await role_room.role_summary(wid, rid)
+    assert summary["directives"][0]["status"] == "rejected"
+    assert summary["directives"][0]["evidence"] == "测试文件还没有该用例"

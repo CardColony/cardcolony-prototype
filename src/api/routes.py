@@ -1248,6 +1248,18 @@ class RoleDutyRequest(BaseModel):
     note: str = ""
 
 
+class RoleDirectiveRequest(BaseModel):
+    target_card_id: str
+    instruction: str
+    acceptance: str
+    due_at: str = ""
+
+
+class RoleDirectiveVerifyRequest(BaseModel):
+    status: str
+    evidence: str = ""
+
+
 @router.get("/works/{work_id}/roles")
 async def list_work_roles(work_id: str):
     if work_store.read_work(work_id) is None:
@@ -1315,6 +1327,41 @@ async def patch_work_role(work_id: str, role_id: str, req: RoleProfileRequest):
     if isinstance(res, dict) and res.get("ok") is False:
         err = res.get("error") or {}
         return _err(400, str(err.get("message") or err.get("code") or "更新失败"))
+    return res
+
+
+@router.post("/works/{work_id}/roles/{role_id}/directives")
+async def issue_role_directive(work_id: str, role_id: str, req: RoleDirectiveRequest):
+    """UI 以角色身份下指令（同一个执行体；权限仍按角色闸）。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_issue_directive(work_id, role_id, {
+        "target_card_id": req.target_card_id,
+        "instruction": req.instruction,
+        "acceptance": req.acceptance,
+        "due_at": req.due_at,
+    }, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "下指令失败"))
+    return JSONResponse(status_code=201, content=res)
+
+
+@router.post("/works/{work_id}/roles/{role_id}/directives/{directive_id}/verify")
+async def verify_role_directive(work_id: str, role_id: str, directive_id: str,
+                                req: RoleDirectiveVerifyRequest):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    cards = card_tools._collect_card_meta(work_id)
+    res = await card_tools._h_verify_directive(work_id, role_id, {
+        "directive_id": directive_id,
+        "status": req.status,
+        "evidence": req.evidence,
+    }, cards)
+    if isinstance(res, dict) and res.get("ok") is False:
+        err = res.get("error") or {}
+        return _err(400, str(err.get("message") or err.get("code") or "验收失败"))
     return res
 
 

@@ -4,10 +4,10 @@
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=38";
+import { notify } from "./api.js?v=39";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=30";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=34";
+import { createNavRenderer } from "./nav_render.js?v=35";
 import { createNavFind } from "./nav_find.js?v=30";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";

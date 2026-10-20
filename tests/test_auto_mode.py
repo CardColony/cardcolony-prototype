@@ -600,7 +600,7 @@ def test_block4_prompt_version_and_section():
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-14"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-15"
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
@@ -798,7 +798,7 @@ def test_block5_auto_mark_in_source():
     css = (REPO / "static" / "style.css").read_text(encoding="utf-8")
     assert ".auto-badge" in css and ".auto-switch" in css, "style.css 缺 auto 样式"
     card_html = (REPO / "templates" / "card.html").read_text(encoding="utf-8")
-    assert "main_chat.js?v=2.9" in card_html
+    assert "main_chat.js?v=3.0" in card_html
     assert "style.css?v=45" in card_html
     work_html = (REPO / "templates" / "work.html").read_text(encoding="utf-8")
     assert "style.css?v=45" in work_html

@@ -4,17 +4,17 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=38";
+import { API } from "./esm/api.js?v=39";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=46";
+import { EventFlow } from "./stream.js?v=47";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=38";
+import { notify, postStop } from "./esm/api.js?v=39";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=36";
-import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=32";
+import { createNavSystem } from "./esm/nav_system.js?v=37";
+import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=33";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
@@ -449,6 +449,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const charter = info.charter || prof.charter || {};
     const verdicts = (info.verdicts || []).slice(0, 10);
     const alarms = (info.alarms || []).slice(0, 10);
+    const directives = (info.directives || []).slice(0, 10);
+    const openDirs = (info.open_directives || []).length;
+    const dirStatus = { issued: "已下发", complied: "达标", rejected: "未达标", cancelled: "撤销" };
     const pending = (info.pending_sources || []).length;
     const dutyState = duty.state || "active";
     const canRun = dutyState === "active";
@@ -538,6 +541,33 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         <div class="role-sec">
           <div class="role-sec-title">判断簿 · verdicts <span class="note">发言与沉默都落账</span></div>
           <div class="role-verdicts">${verdictHtml}</div>
+        </div>
+
+        <div class="role-sec">
+          <div class="role-sec-title">指令簿 · directives <span class="note">${openDirs} 条待验收</span></div>
+          <div class="role-directives">
+            ${directives.length ? directives.map(d => `<div class="role-dir ${escapeHtml(d.status || "issued")}">
+              <div class="role-dir-head"><b>→ ${escapeHtml(d.target_card_id)}</b>
+                <span class="role-dir-status">${escapeHtml(dirStatus[d.status] || d.status || "已下发")}</span>
+                <span class="role-dir-ts">${escapeHtml(fmtRoleTs(d.created_at))}</span></div>
+              <div class="role-dir-body">${escapeHtml(d.instruction || "")}</div>
+              <div class="role-ve">验收：${escapeHtml(d.acceptance || "（未写）")}</div>
+              ${d.evidence ? `<div class="role-ve">证据：${escapeHtml(d.evidence)}</div>` : ""}
+              ${(d.status === "issued" || d.status === "rejected") ? `<div class="role-dir-actions">
+                <button class="role-dir-verify" data-id="${escapeHtml(d.id)}" data-status="complied">达标</button>
+                <button class="role-dir-verify" data-id="${escapeHtml(d.id)}" data-status="rejected">打回</button>
+              </div>` : ""}
+            </div>`).join("") : `<div class="rej-empty">（还没有指令）</div>`}
+          </div>
+          <div class="role-dir-new">
+            <select id="roleDirectiveTarget" class="role-input">
+              <option value="">选择已关注的工作卡</option>
+              ${watched.map(w => `<option value="${escapeHtml(w.card_id)}">${escapeHtml(w.card_id)} · ${escapeHtml(w.title)}</option>`).join("")}
+            </select>
+            <input type="text" id="roleDirectiveInstruction" class="role-input" placeholder="指令：要它做什么（明确、可执行）">
+            <input type="text" id="roleDirectiveAcceptance" class="role-input" placeholder="验收判据：怎么算做到">
+            <button class="btn" id="roleDirectiveIssue">下指令</button>
+          </div>
         </div>
 
         <div class="role-sec">
@@ -1122,6 +1152,47 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         }
       };
     }
+    const dirIssue = document.getElementById("roleDirectiveIssue");
+    if (dirIssue) {
+      dirIssue.onclick = async () => {
+        if (!currentCard) return;
+        const target = (document.getElementById("roleDirectiveTarget") || {}).value || "";
+        const instruction = (document.getElementById("roleDirectiveInstruction") || {}).value || "";
+        const acceptance = (document.getElementById("roleDirectiveAcceptance") || {}).value || "";
+        if (!target || !instruction.trim() || !acceptance.trim()) {
+          notify("目标、指令、验收判据都要写", "warn");
+          return;
+        }
+        dirIssue.disabled = true;
+        try {
+          const r = await API.issueDirective(WORK_ID, currentCard.meta.card_id, {
+            target_card_id: target, instruction: instruction.trim(),
+            acceptance: acceptance.trim(),
+          });
+          notify("指令已下发：" + (r.directive_id || ""), "success");
+          await renderInspector();
+        } catch (e) {
+          dirIssue.disabled = false;
+        }
+      };
+    }
+    document.querySelectorAll(".role-dir-verify").forEach((btn) => {
+      btn.onclick = async () => {
+        if (!currentCard) return;
+        const did = btn.dataset.id || "";
+        const status = btn.dataset.status || "";
+        let evidence = "";
+        if (status === "rejected") {
+          evidence = window.prompt("打回：差在哪？") || "";
+          if (!evidence.trim()) return;
+        }
+        try {
+          await API.verifyDirective(WORK_ID, currentCard.meta.card_id, did, status, evidence);
+          notify(status === "complied" ? "已验收达标" : "已打回", status === "complied" ? "success" : "info");
+          await renderInspector();
+        } catch (e) { /* toast 已处理 */ }
+      };
+    });
     document.querySelectorAll(".role-unwatch").forEach((btn) => {
       btn.onclick = async () => {
         if (!currentCard) return;
