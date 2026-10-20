@@ -335,6 +335,11 @@ def test_t6_touched_modules_bumped():
       "新建卡片"原来自制 inline-style 小面板（另一套交互语言），本轮并入 cvDialog
       （与重命名/删除同一套）：顺带修掉一个真 bug——旧面板的 Escape 只 remove 自己、
       事件继续冒泡 ⇒ 关弹窗的同时把画布选中的卡也清了。
+    ★ [画布 5711 · P0 修"画布永久空白"] canvas 83→84、main 83.0→84.0、build-stamp v84→v85：
+      ① 画布"找根卡"不再 await /api/works（它挡在出图关键路径上，浏览器 6 连接上限
+      一被常驻 SSE 占满就永远排队 ⇒ 画布永久空白）；根卡改从画布数据里取，零往返。
+      ② 去掉一条**监听了错键**的常驻 SSE（card_id 位置传的是 work_id）⇒ 画布页
+      常驻长连接 2 条降为 1 条，未读角标的增量通道改由工作级流带（原来从没活过）。
     """
     vm = _version_map()
     expect = {
@@ -342,8 +347,8 @@ def test_t6_touched_modules_bumped():
         # stream/workspace/assembler/main_chat/flow/*；画布 5711 这条线动了
         # canvas.js 与 main.js（main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也升）。
         # canvas.js 两边都改了 ⇒ 画布链取**大于两边**的号（77），其余取 dev 那条线。
-        "stream.js": "47", "workspace.js": "65", "canvas.js": "83",
-        "assembler.js": "37", "style.css": "45", "main.js": "83.0",
+        "stream.js": "47", "workspace.js": "65", "canvas.js": "85",
+        "assembler.js": "37", "style.css": "45", "main.js": "85.0",
         "main_chat.js": "3.2",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",

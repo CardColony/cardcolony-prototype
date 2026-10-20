@@ -45,11 +45,13 @@ for (let i = 0; i < 80 && !tr; i++) {
 const ws = new WebSocket(tr.webSocketDebuggerUrl);
 let id = 0; const pending = new Map();
 const consoleErrs = [];
+const netUrls = [];   // Network.responseReceived 的 URL（T12 用）
 const send = (m, p = {}) => new Promise((res) => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
 await new Promise((r) => { ws.onopen = r; });
 ws.onmessage = (e) => {
   const m = JSON.parse(e.data);
   if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); return; }
+  if (m.method === "Network.responseReceived") { netUrls.push(m.params.response.url); return; }
   if (m.method === "Runtime.exceptionThrown") consoleErrs.push("EXC " + String(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text).slice(0, 200));
   if (m.method === "Runtime.consoleAPICalled" && m.params.type === "error") consoleErrs.push("ERR " + (m.params.args || []).map(a => a.value ?? a.description ?? "").join(" ").slice(0, 200));
 };
@@ -256,6 +258,32 @@ const groupOrder = (parent, wid) => ev(`(async () => {
   rows.sort((a, b) => a.top - b.top);
   return { ids: rows.map(r => r.id), tops: rows.map(r => r.top) };
 })()`);
+
+// 找视口内**可见**的某个元素，返回其中心坐标（视口外的点了也白点）
+const centerOfVisible = (sel) => ev(`(() => {
+  const vp = document.getElementById('viewport');
+  const vr = vp ? vp.getBoundingClientRect() : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+  for (const n of document.querySelectorAll(${JSON.stringify(sel)})) {
+    const r = n.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    if (r.left < vr.left || r.right > vr.right || r.top < vr.top || r.bottom > vr.bottom) continue;
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  }
+  return null;
+})()`);
+
+// **真实**鼠标按下→抬起（CDP Input 域）。
+// 为什么不能用 el.click()：只有真实的按下/抬起才会让浏览器合成 click，
+// 而 click 的 target 取决于"抬起时指针下面是谁"——
+// 这正是"根卡上的控件点了没反应"那个 bug 的测法。
+const realClick = async (x, y) => {
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await sleep(90);
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+  await sleep(70);
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
+  await sleep(280);
+};
 
 // 把某张卡拖到指定的世界 y（落点＝卡片顶边落在该 y）
 const dragToWorldY = (id, targetWorldY) => ev(`(() => {
@@ -1125,6 +1153,101 @@ await load();
     .map(([k, v]) => `${k}=${v.w}x${v.h}`);
   T("T11.5 关键控件命中区都 ≥24px（WCAG 2.2 最小目标尺寸）", small.length === 0,
     `偏小：${JSON.stringify(small)} 全量：${JSON.stringify(hits)}`);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   T11.6 根卡上的控件点得动
+   ══════════════════════════════════════════════════════════════════════ */
+await load();
+{
+  // 病根（实测抓到的真 bug）：平移态的 CSS 是
+  //   `.page-canvas #viewport.panning .card-node { pointer-events: none; }`
+  // —— 平移中**所有卡片都不可点**。而根卡（视图根）的 mousedown 会进
+  // "拖根卡＝平移"分支 ⇒ 按下的瞬间 viewport 就进了 .panning ⇒
+  // **鼠标抬起的落点变成 viewport** ⇒ 浏览器合成的 click 的 target 是 viewport，
+  // 控件的 click 处理器**根本没被调用**。
+  // ⇒ 症状：**根卡上的 💬（在此展开对话）／↗（打开对话页）／▸N（展开子卡）点了没反应**
+  //   —— 而根卡恰是打开画布看到的第一张卡、最显眼的那张。
+  //
+  // ⚠ 这条**必须用真实鼠标事件**验：只有真实的"按下→抬起"才会让浏览器合成 click，
+  // 而 click 的落点取决于"抬起时指针下面是谁"。用 `el.click()` 走的是直接派发，
+  // 永远命中按钮 ⇒ 假通过。
+  const rootChat = await centerOfVisible(".card-node.is-root .cv-chat");
+  if (!rootChat) {
+    T("T11.6 根卡上的 💬 点得动（就地展开对话，不跳页）", false, "视口内找不到根卡的 💬");
+  } else {
+    await realClick(rootChat.x, rootChat.y);
+    await sleep(1400);
+    const opened = await ev(`(() => {
+      const n = document.querySelector('.card-node.is-root');
+      return { open: n ? (n.dataset.open || '') : null, path: location.pathname };
+    })()`);
+    T("T11.6 根卡上的 💬 点得动（就地展开对话，不跳页）",
+      opened.open === "1" && opened.path === `/work/${WID}`, JSON.stringify(opened));
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   T12 加载鲁棒性：出图不能被一条网络往返卡住
+   ══════════════════════════════════════════════════════════════════════ */
+G("T12 加载鲁棒性");
+{
+  // T12.1 屏蔽 /api/works（项目列表端点）⇒ 画布**仍然出图**
+  //
+  // 病根（实测抓到的 P0）：画布"找根卡"原来 `await API.listWorks()`，
+  // 那是一次**在出图关键路径上**的网络往返。浏览器每源 6 条并发连接（HTTP/1.1），
+  // 而画布页常驻 SSE 长连接 ⇒ 并发请求占满连接槽时，这条往返被**排队、永不发出**
+  // ⇒ await 悬着 ⇒ reloadCanvas 停在半路 ⇒ **画布永久空白**（骨架屏不撤）。
+  // ⇒ 现在根卡直接取自画布数据（parent 为空的那张 = 项目本体），零往返。
+  // ⚠ 不用 Network.setBlockedURLs：它的模式是**前缀匹配**，`*/api/works` 会把
+  //   `/api/works/{id}/canvas`（画布数据本体）一起挡掉 ⇒ 测的就不是要测的东西了。
+  //   这里改成：页面脚本跑起来**之前**注入一个 fetch 包装，只让**精确的**项目列表
+  //   端点**永不 settle**。
+  //   为什么是"永不 settle"而不是"失败"：真症状是"请求被连接槽排队、永远发不出去"
+  //   （不是报错）；旧实现 await 的是这条往返 ⇒ 它挂住 ⇒ 画布永远出不来。
+  //   若只是让请求**失败**，旧实现的 catch 有兜底（退回 cards[0]）⇒ 画布照样出图
+  //   ⇒ 这条用例就变成"假守护"（护不住真正的缺陷）。
+  const inject = await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const orig = window.fetch;
+      window.fetch = function (u, o) {
+        const s = String(u && u.url ? u.url : u);
+        if (/(^|\\/)api\\/works$/.test(s)) {
+          return new Promise(() => {});   // 永不 settle：模拟"连接被占满 ⇒ 排队不发"
+        }
+        return orig.apply(this, arguments);
+      };
+    })();`,
+  });
+  await load();
+  const blocked = await ev(`(() => {
+    const n = document.querySelectorAll('.card-node').length;
+    const root = document.querySelector('.card-node.is-root');
+    return { n, root: root ? root.dataset.id : null };
+  })()`);
+  T("T12.1 项目列表端点挂住 ⇒ 画布仍出图（根卡不依赖网络往返）",
+    blocked.n > 0 && !!blocked.root, JSON.stringify(blocked));
+  if (inject && inject.result && inject.result.identifier) {
+    await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: inject.result.identifier });
+  }
+}
+{
+  // T12.2 画布页的**常驻长连接只有一条**（工作级 /events）
+  //
+  // 原来还有第二条：`/api/works/{w}/cards/{w}/stream` —— card_id 位置传的是
+  // **work_id**（不是卡号）⇒ 订阅的是一条**永远不会有帧**的键 ⇒
+  //   ① 未读角标的增量通道从来没活过；② 却长期占着一条浏览器连接。
+  // 浏览器每源只有 6 条并发连接 ⇒ 这种"白占的连接"会挤掉真正要用的请求。
+  await send("Network.enable");     // 必须先开 Network，否则 netUrls 是空的 ⇒ 断言真空跑
+  netUrls.length = 0;
+  await load();
+  await sleep(1500);
+  const sse = netUrls.filter(u => /\/events(\?|$)/.test(u) || /\/stream(\?|$)/.test(u));
+  const wrongKey = sse.filter(u => u.includes(`/cards/${WID}/stream`));
+  T("T12.2 画布页不订阅「把 work id 当 card id」的那条流", wrongKey.length === 0,
+    JSON.stringify(sse.map(u => u.replace(/^https?:\/\/[^/]+/, ""))));
+  T("T12.3 画布页只常驻一条长连接（工作级 /events）",
+    sse.filter(u => /\/events(\?|$)/.test(u)).length === 1, JSON.stringify(sse.map(u => u.replace(/^https?:\/\/[^/]+/, ""))));
 }
 
 /* ───────────────────────── 汇总 ───────────────────────── */

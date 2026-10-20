@@ -3066,6 +3066,19 @@ async def _h_send_card_message(work_id: str, current_id: str,
     # 展示层绝不影响主流程）。前端靠它增量更新角标与未读数（F4 消费）。
     event_stream.emit(work_id, target_id, "card_message",
                       {"msg_id": msg_id, "from": current_id, "type": mt})
+    # [画布 5711 · P0 修] **同时**广播到工作级通道。
+    #
+    # 病根：画布页原来靠 `new EventSource('/api/works/{w}/cards/{w}/stream')` 听
+    # card_message —— 但那个 URL 的 card_id 传的是 **work_id**（不是卡号）⇒
+    # 订阅的是一条**永远不会有帧**的键 ⇒ 未读角标的增量通道**从来没活过**
+    # （只剩 60s 轮询）。而画布页要知道自己工作里"哪张卡来消息了"，本来
+    # 就需要**工作级**的广播。
+    # ⇒ 现在：工作级流多带一帧 card_message，画布页一条连接就能收全。
+    #   顺带把画布页的**常驻长连接从 2 条降到 1 条**（浏览器每源 6 连接上限很紧，
+    #   见 reloadCanvas 里"找根卡不再走网络"的说明）。
+    event_stream.emit_work(work_id, "card_message",
+                           {"card_id": target_id, "msg_id": msg_id,
+                            "from": current_id, "type": mt})
     return {"msg_id": msg_id, "target_card_id": target_id, "type": mt}
 
 
