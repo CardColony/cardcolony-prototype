@@ -151,28 +151,42 @@ test("reasoning 不带 model → 并进最近一条 assistant 的思考区（拼
   assert.equal(nodes[0].reasoning, "先想…再想…", "两段拼进同一条 assistant");
 });
 
-test("reasoning 不带 model 且尚无 assistant → pending，assistant 到达时吸收", () => {
+/* [5715 · 契约变更] 思考的落盘归属改判据：
+ *   原：并进「最近一条 assistant」（**不限 run、不限轮**）⇒ 长链 run 的思考挂到前一个
+ *       run 的消息上、同 run 内轮 1 的思考挂到轮 2 的回复上（用户亲报：刷新后
+ *       「工具归工具、内容给内容、信息顺序全乱」）。
+ *   现：**每 (run, round) 一个 assistant 节点**（键与 live 路径的
+ *       `stream:{run}:{round}` 相同）⇒ 思考归本轮自己的节点，位置＝思考到达处
+ *       （工具之前），与活体逐点一致；该轮后续 assistant_text **定稿**同一节点。
+ *   老数据（round 缺失/为 0）仍走 pending 兜底，不回归。
+ */
+test("reasoning 不带 model 且尚无 assistant → 建本轮节点（思考-only 的一步），assistant 到达时定稿它", () => {
   reset();
   const a = createAssembler();
   a.applyRecord(rec("user_message", { content: "q" }, { seq: 1 }));
   a.applyRecord(rec("reasoning", { text: "进行中的思考" }, { seq: 2 }));
   a.applyRecord(rec("reasoning", { text: "还在想" }, { seq: 3 }));
-  assert.equal(list(a).length, 1, "pending 期不成节点");
+  const mid = list(a);
+  assert.equal(mid.length, 2, "思考立即建本轮节点（不再等 assistant 才落位）");
+  assert.equal(mid[1].kind, "assistant");
+  assert.equal(mid[1].reasoning, "进行中的思考还在想");
   a.applyRecord(rec("assistant_text", { content: "答" }, { seq: 4 }));
   const nodes = list(a);
-  assert.equal(nodes.length, 2);
-  assert.equal(nodes[1].reasoning, "进行中的思考还在想");
+  assert.equal(nodes.length, 2, "assistant 到达是**定稿**同一节点，不新增");
+  assert.equal(nodes[1].data.content, "答");
+  assert.equal(nodes[1].reasoning, "进行中的思考还在想", "思考不被正文覆盖");
 });
 
-test("reasoning 永不丢：无 assistant 时落兜底节点", () => {
+test("reasoning 永不丢：无 assistant 时也落节点（思考-only 的一步）", () => {
   reset();
   const a = createAssembler();
   a.applyRecord(rec("user_message", { content: "q" }, { seq: 1 }));
   a.applyRecord(rec("reasoning", { text: "无人认领的思考" }, { seq: 2 }));
   a.applyRecord(rec("error", { error: "boom" }, { seq: 3 }));
-  const orphan = list(a).find((n) => n.data && n.data.orphan);
-  assert.ok(orphan, "思考以兜底节点落盘");
-  assert.equal(orphan.data.text, "无人认领的思考");
+  const nodes = list(a);
+  const holder = nodes.find((n) => n.reasoning && n.reasoning.includes("无人认领的思考"));
+  assert.ok(holder, "思考必须落到某个节点上（不丢文本）");
+  assert.equal(holder.reasoning, "无人认领的思考");
 });
 
 /* ── 4. revoke 软删 ── */

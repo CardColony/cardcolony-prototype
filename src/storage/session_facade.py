@@ -789,7 +789,8 @@ def _write_new_blocks_locked(work_id: str, card_id: str, path: Path,
 
 
 async def append(work_id: str, card_id: str, block: dict[str, Any],
-                 event_content: str | None = None) -> dict[str, Any]:
+                 event_content: str | None = None,
+                 emit_event: bool = True) -> dict[str, Any]:
     """追加一块，返回落盘后的完整块（T024）。
 
     门面内自动分配 seq（写入时分配落盘，T053）、turn、pair、闭合轮界
@@ -814,7 +815,8 @@ async def append(work_id: str, card_id: str, block: dict[str, Any],
         new_blk = _assign_block(existing, block)
         _write_new_blocks_locked(work_id, card_id, path, text, fmt, existing, [new_blk])
     # [消息底座能力对齐 · 件2] 消息块同步落 events jsonl（会话落盘后同路径完成）
-    await _emit_block_event(work_id, card_id, new_blk, event_type_hint, event_content)
+    if emit_event:
+        await _emit_block_event(work_id, card_id, new_blk, event_type_hint, event_content)
     # [T152] append 点位：work/card/seq/turn/actor/结果
     session_ops.ops_log("append", work_id, card_id,
                         {"seq": new_blk["seq"], "turn": new_blk["turn"],
