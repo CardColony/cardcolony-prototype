@@ -98,6 +98,16 @@ async def test_create_role_has_independent_structure_and_is_off_tree(work):
     }, cards)
     assert denied["ok"] is False and denied["error"]["code"] == "denied"
 
+    # 同一排他域只允许一个角色
+    dup = await card_tools._h_create_role(wid, root, {
+        "title": "重复域角色",
+        "charter": "重复域",
+        "jurisdiction": {"domain": "timeline_contract", "statement": "重复"},
+        "watch_card_ids": [b],
+    }, cards)
+    assert dup["ok"] is False
+    assert "责任域" in str(dup["error"]["message"])
+
     # 模型读角色卡：返回独立结构，不是三块
     r = await card_tools.execute_tool(wid, rid, "read_card",
                                       {"card_id": rid}, cards)
@@ -288,3 +298,72 @@ async def test_profile_update_versions_charter_and_rewires_watch(work):
     assert [m["card_id"] for m in await role_room.watched_cards(wid, rid)] == [b]
     hist = await role_store.charter_history(wid, rid)
     assert [h["version"] for h in hist] == [2, 1]
+
+
+async def test_startup_sweep_resumes_pending_sync(work, monkeypatch):
+    """重启续跑：pending 同步在库里，startup_sweep_all 能重新唤醒角色。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk_child(wid, root, "甲")
+    rid = await _mk_role(wid, root, [a])
+    await session_facade.append(wid, a, {"role": "assistant", "content": "重启前的新增。"})
+    last = await role_room._last_seq(wid, a)
+    await role_store.add_sync(wid, rid, a, 0, last, ["turn_completed"])
+    assert [p["source"] for p in role_room.pending_batch(wid, rid)] == [a]
+
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None,
+                             tools=None, model_name=None, **kwargs):
+        return ({"content": "", "tool_calls": [{
+            "name": "record_verdict",
+            "arguments": {"decision": "silent", "reason": "重启后无新增风险"},
+        }]}, "fake")
+
+    monkeypatch.setattr("src.api.model_service.call_main", fake_call_main)
+    started = await role_room.startup_sweep_all()
+    assert started >= 1
+    recs = await _wait_verdicts(wid, rid)
+    assert recs and recs[0]["decision"] == "silent"
+    assert "重启后无新增风险" in recs[0]["reason"]
+
+
+async def test_role_turn_can_advise_and_alarm(work, monkeypatch):
+    """真实角色回合：模型依次发建议、发警报、落判词，再收口。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk_child(wid, root, "甲")
+    rid = await _mk_role(wid, root, [a])
+    await session_facade.append(wid, a, {"role": "assistant", "content": "A 的现状变了。"})
+    calls = {"n": 0}
+
+    async def fake_call_main(system_prompt, user_prompt, prior_messages=None,
+                             tools=None, model_name=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ({"content": "", "tool_calls": [{
+                "name": "send_card_message",
+                "arguments": {"target_card_id": a, "msg_type": "msg_notify",
+                              "content": "请补齐时间口径。"},
+            }]}, "fake")
+        if calls["n"] == 2:
+            return ({"content": "", "tool_calls": [{
+                "name": "raise_alarm",
+                "arguments": {"severity": "warn", "title": "时间口径冲突",
+                              "detail": "两卡互斥"},
+            }]}, "fake")
+        if calls["n"] == 3:
+            return ({"content": "", "tool_calls": [{
+                "name": "record_verdict",
+                "arguments": {"decision": "speak", "reason": "两卡时间口径互斥",
+                              "evidence": ["card_002#现状"]},
+            }]}, "fake")
+        return ({"content": "已建议并报警。", "tool_calls": []}, "fake")
+
+    monkeypatch.setattr("src.api.model_service.call_main", fake_call_main)
+    await role_room.after_turn(wid, a, {"reply": "ok"})
+    recs = await _wait_verdicts(wid, rid)
+    assert recs and recs[0]["decision"] == "speak"
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if await card_db.list_pending(wid, a):
+            break
+    assert len(await card_db.list_pending(wid, a)) == 1
+    alarms = role_room.list_alarms(wid, "open", rid)
+    assert alarms and alarms[0]["title"] == "时间口径冲突"

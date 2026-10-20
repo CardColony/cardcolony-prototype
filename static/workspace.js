@@ -556,6 +556,17 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
           <input type="text" id="roleJurStatement" class="role-input" placeholder="一句话职责说明" value="${escapeHtml(jurisdiction.statement || "")}">
           <div class="role-kv">关注信号</div>
           <select id="roleSignalSel" class="role-input" multiple size="4">${signalOpts}</select>
+          <div class="role-kv">发言契约</div>
+          <input type="text" id="roleAdvice" class="role-input" placeholder="建议条件，逗号分隔" value="${escapeHtml((sc.advice_when || []).join(","))}">
+          <input type="text" id="roleAlarm" class="role-input" placeholder="警报条件，逗号分隔" value="${escapeHtml((sc.alarm_when || []).join(","))}">
+          <div class="role-create-row">
+            <input type="number" id="roleMaxMsg" class="role-input" min="1" max="9" placeholder="单次最多几条" value="${escapeHtml(sc.max_messages_per_wake || 2)}">
+            <label class="role-kv"><input type="checkbox" id="roleSilence" ${sc.silence_default === false ? "" : "checked"}> 默认沉默</label>
+          </div>
+          <div class="role-kv">升级线</div>
+          <input type="text" id="roleEscAdvice" class="role-input" placeholder="建议发给谁" value="${escapeHtml(esc.advice_to || "source_card")}">
+          <input type="text" id="roleEscAlarm" class="role-input" placeholder="警报发给谁" value="${escapeHtml(esc.alarm_to || "human")}">
+          <input type="text" id="roleEscCritical" class="role-input" placeholder="严重风险发给谁" value="${escapeHtml(esc.critical_to || "root_and_human")}">
           <div class="role-kv">职责书（保存后生成新版本）</div>
           <textarea id="roleCharterEdit" class="role-input" rows="5">${escapeHtml(charter.text || "")}</textarea>
           <div class="role-actions"><button class="btn" id="roleSaveProfile">保存档案</button>
@@ -1018,10 +1029,30 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         const signalSel = document.getElementById("roleSignalSel");
         const signals = signalSel ? Array.from(signalSel.selectedOptions).map(o => o.value) : [];
         const charter = (document.getElementById("roleCharterEdit") || {}).value || "";
+        const splitCsv = (id) => ((document.getElementById(id) || {}).value || "")
+          .split(/[,，]/).map(x => x.trim()).filter(Boolean);
+        const advice = splitCsv("roleAdvice");
+        const alarmWhen = splitCsv("roleAlarm");
+        const maxMsg = parseInt((document.getElementById("roleMaxMsg") || {}).value || "2", 10) || 2;
+        const silence = !!(document.getElementById("roleSilence") || {}).checked;
+        const escAdvice = (document.getElementById("roleEscAdvice") || {}).value || "source_card";
+        const escAlarm = (document.getElementById("roleEscAlarm") || {}).value || "human";
+        const escCritical = (document.getElementById("roleEscCritical") || {}).value || "root_and_human";
         try {
           await API.updateRole(WORK_ID, currentCard.meta.card_id, {
             jurisdiction: { domain: domain.trim(), statement: statement.trim() },
             signals, charter,
+            speak_contract: {
+              advice_when: advice.length ? advice : ["gap_or_risk"],
+              alarm_when: alarmWhen.length ? alarmWhen : ["mutually_exclusive_fact"],
+              max_messages_per_wake: Math.max(1, Math.min(9, maxMsg)),
+              silence_default: silence,
+            },
+            escalation: {
+              advice_to: escAdvice.trim() || "source_card",
+              alarm_to: escAlarm.trim() || "human",
+              critical_to: escCritical.trim() || "root_and_human",
+            },
           });
           notify("角色档案已更新", "success");
           await renderInspector();
