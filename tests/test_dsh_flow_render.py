@@ -332,12 +332,12 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        "stream.js": "54", "workspace.js": "71", "canvas.js": "74",
+        "stream.js": "55", "workspace.js": "71", "canvas.js": "74",
         "assembler.js": "39", "style.css": "47", "main.js": "72.2",
         # [5715 · 第六轮] stream 53→54、main_chat 2.19→2.20（思考增量渲染模块）：
         # 「消息操作条/卡详情开关」抽成 esm 模块 ⇒ 改了 stream.js/workspace.js ⇒ 级联
         # ⇒ 引 stream 的 main_chat 升号 ⇒ 引 main_chat 的 card.html 同步）。
-        "main_chat.js": "2.20",
+        "main_chat.js": "2.21",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
         "chat-view.js": "5", "message-item.js": "1",
