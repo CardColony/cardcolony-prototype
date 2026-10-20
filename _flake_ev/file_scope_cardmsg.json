@@ -1,0 +1,22 @@
+[
+ {
+  "pass": false,
+  "secs": 10.8
+ },
+ {
+  "pass": true,
+  "secs": 10.8
+ },
+ {
+  "pass": true,
+  "secs": 10.5
+ },
+ {
+  "pass": true,
+  "secs": 10.9
+ },
+ {
+  "pass": true,
+  "secs": 10.5
+ }
+]
