@@ -13,7 +13,7 @@ import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=41";
 import "./util.js?v=30";
 import "../canvas.js?v=77";
-import { createNavSystem } from "./nav_system.js?v=37";
+import { createNavSystem } from "./nav_system.js?v=38";
 import { loadRulePanel } from "./rule_panel.js?v=33";
 
 const WORK_ID = window.__WORK_ID__;
