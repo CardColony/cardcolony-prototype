@@ -93,8 +93,8 @@ OP_ONLY_TOOLS: frozenset[str] = frozenset({"propose_status"})
 #: 块 0.4：update_goal（声明目标态——「停」的唯一权威在模型）。
 #: G2 起扩为三件：＋send_card_message/read_inbox（把卡间通信交回模型）。
 AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
-    {"update_goal", "get_goal", "create_goal", "send_card_message", "read_inbox",
-     "update_status", "append_ruling"})
+    {"update_goal", "get_goal", "create_goal", "resume_child", "send_card_message",
+     "read_inbox", "update_status", "append_ruling"})
 
 # ============================================================
 # [角色机制 5710] 角色卡专用工具（非卡片内挂）
@@ -180,6 +180,9 @@ TOOL_SWITCH: dict[str, str] = {
     # 要求每件工具都有开关映射，缺了就等于「有工具但永远看不见」）。
     "get_goal": policy.SWITCH_PLAN,
     "create_goal": policy.SWITCH_PLAN,
+    # [恢复子卡 2026-10-20] 与目标三件套同组：它是「替子卡 resume」的那一步，
+    # 没有它，父卡只能把子卡叫醒一次、续不上目标。
+    "resume_child": policy.SWITCH_PLAN,
     # [编程卡 2026-10-15 · §六块2] create_coder_card 挂既有 create_child（建
     # coder 子卡走同一建卡关口）：无 create_child 的类型（tool/coder）压根看不见
     # 它，有 create_child 的（project/sub_project）按下发面规则可见。
@@ -2817,6 +2820,12 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=goal_tools.h_update_goal,
         readonly=False,
     ),
+    # [恢复子卡 2026-10-20] 父卡把停下的子卡拉回自主推进的唯一手段。
+    "resume_child": ToolDef(
+        schema=goal_tools.RESUME_CHILD_SCHEMA,
+        handler=goal_tools.h_resume_child,
+        readonly=False,
+    ),
     "bash": ToolDef(
         schema={
             "name": "bash",
@@ -4251,7 +4260,11 @@ def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             out.append(t)
     # 追加序固定（块0.4 起 update_goal 首位；G2 起两件通信随后）——集合成员
     # 增长不改首位语义，测试与审计都认这个序。
-    for auto_name in ("update_goal", "send_card_message", "read_inbox",
+    # [goal 域 2026-10-20 · 修漏] 这份清单是**硬编码**的：只在 TOOL_REGISTRY /
+    # AUTO_ONLY_TOOLS 里登记、没加到这里 ⇒ 工具注册了但**永远不下发**（实测
+    # get_goal/create_goal 就漏了这一层，resume_child 同样）。
+    for auto_name in ("update_goal", "get_goal", "create_goal", "resume_child",
+                      "send_card_message", "read_inbox",
                       "update_status", "append_ruling"):
         if auto_name in AUTO_ONLY_TOOLS:
             out.append(_schema_of(TOOL_REGISTRY[auto_name]))
