@@ -49,6 +49,7 @@ from ..storage import card_db, card_store, manuscript_store, memory_store, shado
 from ..storage import event_log, session_facade, session_ops
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 
+from ..goal import tools as goal_tools
 from . import card_msg, context_regions, event_stream
 from ..toolcard import driver as toolcard_driver
 from ..toolcard import script_loader as toolcard_script_loader
@@ -91,7 +92,8 @@ OP_ONLY_TOOLS: frozenset[str] = frozenset({"propose_status"})
 #: 块 0.4：update_goal（声明目标态——「停」的唯一权威在模型）。
 #: G2 起扩为三件：＋send_card_message/read_inbox（把卡间通信交回模型）。
 AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
-    {"update_goal", "send_card_message", "read_inbox", "update_status", "append_ruling"})
+    {"update_goal", "get_goal", "create_goal", "send_card_message", "read_inbox",
+     "update_status", "append_ruling"})
 
 # [权限底座重做 2026-10-12] 工具组→工具名映射（build_tool_schemas 过滤面）。
 # 由卡上的 tools_file / tools_web 两个开关决定下发哪几组：缺哪个开关就不下发
@@ -865,15 +867,28 @@ async def _h_report_done(work_id: str, current_id: str,
         return err("internal", f"coder_final 落盘失败: {exc}")
     upd = await card_store.update_card(
         work_id, current_id,
-        # [2026-10-19 实验 permexp] 完工同时把 goal_state 置 complete——否则
-        # coder 卡（建卡时已带 goal、goal_state=active）在完工后仍被
-        # auto_driver.will_continue 判为「该续轮」（该判据不看 state），
-        # 而 post_work_message 对 completed 编程卡直接 400 ⇒ 反复起空轮。
-        {"state": "completed", "goal_state": "complete"},
+        # [goal 域 2026-10-20 · 单一写者] **不再直接写 goal_state**。
+        # 之前这里顺手把 goal_state 置 complete，等于绕开 goal 域改相位——实测
+        # card_029 因此出现「DB 说 complete、事件流说 active」，驱动照着事件流
+        # 一直续轮（跑到 43 轮才被人叫停）。目标相位只能由 GoalService 写。
+        {"state": "completed"},
         f"编程卡完工收口（report_done）：{summary[:80]}",
     )
     if isinstance(upd, dict) and upd.get("error"):
         return err("internal", str(upd["error"]))
+    # [goal 域 2026-10-20] 完工 ⇒ 走 GoalService.complete（写 goal/change 事件 +
+    # 投影），不碰列。目标已不在 active 就跳过（幂等）。
+    try:
+        from ..goal.runtime import GoalError
+        from ..goal.service import get_service as _goal_service
+        _svc = _goal_service()
+        _goal = await _svc.get(work_id, current_id)
+        if _goal is not None and _goal.phase == "active":
+            await _svc.complete(work_id, current_id, _goal.ref())
+    except GoalError:
+        pass
+    except Exception as exc:  # noqa: BLE001 收口失败不阻断完工本身
+        logger.warning("[goal] report_done 收口失败 card=%s: %s", current_id, exc)
     # 同轮后续工具能看到新状态（与 _h_create_card 同手法的缓存同步）
     cards[current_id] = {**upd.get("meta", {}), "card_id": current_id}
 
@@ -2709,41 +2724,23 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     # 卡追加 ⇒ 常规工具面逐字不变（块0.4 硬判据 1）。
     # TOOL_SWITCH 挂 plan 只为满足「注册表每件工具都要有开关映射」的完备性
     # 不变量（执行层双保险见 _h_update_goal）。
+    # [goal 域 2026-10-20 · 照抄 dsh-tool-goal] 三件目标工具。原版是
+    # get_goal / create_goal / update_goal(goal_id, revision, action)。旧的
+    # ``update_goal(action, reason, await_children)`` 已整体退役——那是我们自己
+    # 发明的简化版，没有版本号、没有权威校验、没有轮次上限。
+    "get_goal": ToolDef(
+        schema=goal_tools.GET_GOAL_SCHEMA,
+        handler=goal_tools.h_get_goal,
+        readonly=True,
+    ),
+    "create_goal": ToolDef(
+        schema=goal_tools.CREATE_GOAL_SCHEMA,
+        handler=goal_tools.h_create_goal,
+        readonly=False,
+    ),
     "update_goal": ToolDef(
-        schema={
-            "name": "update_goal",
-            "description": (
-                "（自动模式专用）声明你的目标推进状态——这是「停」的唯一权威："
-                "不声明，系统会自动再起一轮。"
-                "action：complete＝目标已完成；pause＝暂停（等外部条件）；"
-                "blocked＝卡住做不下去（必须给 reason）。"
-                "await_children：只在 pause 时有意义——传 true 表示「我这次 pause 是在等子卡跑完」，"
-                "系统据此在子卡全部完工时自动叫醒你；不传则按「单纯暂停」处理，不会被叫醒。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["complete", "pause", "blocked"],
-                        "description": "complete＝完成；pause＝暂停；blocked＝卡住",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "原因（blocked 必填：说清卡在哪）",
-                    },
-                    "await_children": {
-                        "type": "boolean",
-                        "description": (
-                            "仅 action=pause 时有意义：true＝这次暂停是在等子卡跑完，"
-                            "子卡全部完工时叫醒我。只在「当下确实还有未完工的子卡」时才传 true。"
-                        ),
-                    },
-                },
-                "required": ["action"],
-            },
-        },
-        handler=_h_update_goal,
+        schema=goal_tools.UPDATE_GOAL_SCHEMA,
+        handler=goal_tools.h_update_goal,
         readonly=False,
     ),
     "bash": ToolDef(
