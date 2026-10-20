@@ -1,0 +1,48 @@
+{
+  "at": "2026-10-20T19:32:41",
+  "pre_commit": "cab7535",
+  "mark": "sk-probe-5713-credguard-0001",
+  "cases": [
+    {
+      "case": "runpy_indirect",
+      "code": "import runpy; runpy.run_path('trading-workspace/env_check.py', run_name='__main__')",
+      "pre_fix": {
+        "exit_code": 0,
+        "stdout": "DEEPSEEK_API_KEY = sk-probe-5713-credguard-0001\r\nPROBE_NOTE = probe-only-not-a-real-secret\r\n",
+        "stderr": "",
+        "truncated": false
+      },
+      "post_fix": {
+        "exit_code": 0,
+        "stdout": "DEEPSEEK_API_KEY = ***REDACTED***\r\nPROBE_NOTE = ***REDACTED***\r\n\n…（输出中 2 处凭证值已脱敏）",
+        "stderr": "",
+        "truncated": false
+      },
+      "pre_fix_leaks": true,
+      "post_fix_leaks": false,
+      "post_fix_has_redacted": true
+    },
+    {
+      "case": "direct_env",
+      "code": "print(open('.env', encoding='utf-8').read())",
+      "pre_fix": {
+        "exit_code": 0,
+        "stdout": "DEEPSEEK_API_KEY=sk-probe-5713-credguard-0001\r\nPROBE_NOTE=probe-only-not-a-real-secret\r\n\r\n",
+        "stderr": "",
+        "truncated": false
+      },
+      "post_fix": {
+        "ok": false,
+        "error": {
+          "code": "denied",
+          "message": "拒绝执行：python 的入参里出现凭证类文件名 ['.env']。凭证文件的内容不得经 exec 类工具读取（与 read_file/search_files 同一份黑名单）；确需确认某个配置项时，请查非凭证文件（如 .env.example）或向用户索取。"
+        },
+        "data": null
+      },
+      "pre_fix_leaks": true,
+      "post_fix_leaks": false,
+      "post_fix_has_redacted": false
+    }
+  ],
+  "verdict": "FIXED"
+}
