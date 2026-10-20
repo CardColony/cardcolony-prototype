@@ -36,6 +36,7 @@ import urllib.request
 from datetime import datetime
 
 POLL = 8
+_RUN_T0 = 0.0
 VERDICT_TIMEOUT = 420
 
 # ── 不可约的互斥材料 ────────────────────────────────────────────────
@@ -136,8 +137,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:5713")
     ap.add_argument("--out", default="verify/5713/evidence_dynamic_cabinet_v2.json")
+    # 模型钉死：minimax 的 Token Plan 配额会耗尽（实测 2056），而同实例换模型照样跑真机。
+    # 默认钉到 aliyun 的 deepseek-v4.1-flash-1017；写进 work 级 model_override.json,
+    # 覆盖该 work 内全部卡片（含离树角色卡）。留空 = 不钉，走全局默认。
+    ap.add_argument("--pin-model", default="ds-v41-flash-aliyun")
     args = ap.parse_args()
 
+    global _RUN_T0
+    _RUN_T0 = time.time()
     ev = {"started_at": datetime.now().isoformat(timespec="seconds"),
           "base": args.base, "phases": [], "verdict": "unknown",
           "boundary_note": "组阁/改档/停复撤的**决策**由实验场景预置；验的是机械通道与台账"
@@ -180,6 +187,22 @@ def main() -> int:
         return 3
     phase("1_create_work", ok=True, work_id=wid, root=root)
     ev["work_id"] = wid
+
+    # ── 1b 钉模型（work 级覆盖；文件属运行数据，随沙箱走，不进 git）──
+    if args.pin_model:
+        ov_dir = os.path.join(sb, "works", wid)
+        ov_path = os.path.join(ov_dir, "model_override.json")
+        try:
+            data = {}
+            if os.path.exists(ov_path):
+                with open(ov_path, encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            data.setdefault("work", {})["default_model"] = args.pin_model
+            with open(ov_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            phase("1b_pin_model", ok=True, model=args.pin_model, path=ov_path)
+        except Exception as exc:  # noqa: BLE001 钉不上就照跑，但必须留痕
+            phase("1b_pin_model", ok=False, model=args.pin_model, error=str(exc)[:200])
 
     cards = {}
     for key, title in (("W1", "生产订单统计接口"), ("W2", "库存接口"), ("W3", "结算接口")):
@@ -305,6 +328,16 @@ def main() -> int:
           verdicts_total=len(sD.get("verdicts") or []))
     ev["verdict_D"] = vD
 
+    # D 段判词在回合中途就落账（模型先 record_verdict 再收尾），而 prompt 日志是
+    # 回合**结束时**才写的。要拿「这次跑到底用的哪个模型」的自证，必须等回合收完：
+    # 等 pending 排空 + 再给一段写入窗口，否则证据里只会记到 A 段那一条日志
+    # （实测：work_028 采集时只看到 1 条，D 段那条晚 60 秒才落盘）。
+    for _ in range(20):
+        if not (_role(args.base, wid, r1_id).get("pending_sources") or []):
+            break
+        time.sleep(POLL)
+    time.sleep(15)
+
     # ── E 撤岗 ⇒ 关注解除、台账保留 ──
     vcE = len(_role(args.base, wid, r1_id).get("verdicts") or [])
     acE = len(_role(args.base, wid, r1_id).get("alarms") or [])
@@ -334,6 +367,8 @@ def main() -> int:
           dup_after_refill_rejected=st3 == 400, dup_status=st3, resp=str(dup2)[:200])
 
     # ── 终态取证＋机械判定 ──
+    ev["model_pin"] = args.pin_model
+    ev["model_observed"] = _models_used(sb, wid, _RUN_T0)
     ev["final_R1"] = _role(args.base, wid, r1_id)
     if r2_id:
         ev["final_R2"] = _role(args.base, wid, r2_id)
@@ -348,6 +383,54 @@ def main() -> int:
     print(json.dumps(vd, ensure_ascii=False, indent=2), flush=True)
     print(f"证据：{args.out}", flush=True)
     return 0 if ev["verdict"] == "PASS" else 1
+
+
+def _models_used(sandbox_root: str, wid: str, since_ts: float = 0.0) -> dict:
+    """本次真跑实际用的模型名（证明钉模型生效，而不是只在文件里写着）。
+
+    两路取，**只认真实调用记录**：
+    1) `logs/prompt_*.json` 的 `model_used`（每次真调用的落地凭据，最权威）；
+    2) 事件流里的非空 `model` 字段（有的卡事件不带，取不到就不报）。
+    取不到的就不报，绝不猜。
+    """
+    seen: dict[str, int] = {}
+    logs_dir = os.path.join(sandbox_root, "logs")
+    if os.path.isdir(logs_dir):
+        for name in os.listdir(logs_dir):
+            if not (name.startswith("prompt_") and name.endswith(".json")):
+                continue
+            fp = os.path.join(logs_dir, name)
+            try:
+                if os.path.getmtime(fp) < since_ts:
+                    continue
+                with open(fp, encoding="utf-8", errors="replace") as f:
+                    d = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            m = str(d.get("model_used") or "").strip()
+            if m:
+                seen[m] = seen.get(m, 0) + 1
+    ev_dir = os.path.join(sandbox_root, "works", wid, "events")
+    if os.path.isdir(ev_dir):
+        for name in os.listdir(ev_dir):
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                with open(os.path.join(ev_dir, name), encoding="utf-8",
+                          errors="replace") as f:
+                    for line in f:
+                        if '"model"' not in line:
+                            continue
+                        try:
+                            e = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        m = str(e.get("model") or "").strip()
+                        if m:
+                            seen[m] = seen.get(m, 0) + 1
+            except OSError:
+                continue
+    return seen
 
 
 def _patch(base, wid, cid, updates):
