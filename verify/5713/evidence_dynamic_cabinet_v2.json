@@ -1,0 +1,629 @@
+{
+  "started_at": "2026-10-20T15:41:17",
+  "base": "http://127.0.0.1:5713",
+  "phases": [
+    {
+      "phase": "0_instance_check",
+      "at": "2026-10-20T15:41:17",
+      "ok": true,
+      "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+      "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox"
+    },
+    {
+      "phase": "1_create_work",
+      "at": "2026-10-20T15:41:18",
+      "ok": true,
+      "work_id": "work_011",
+      "root": "card_001"
+    },
+    {
+      "phase": "1_create_W1",
+      "at": "2026-10-20T15:41:18",
+      "ok": true,
+      "card_id": "card_002",
+      "title": "生产订单统计接口"
+    },
+    {
+      "phase": "1_create_W2",
+      "at": "2026-10-20T15:41:18",
+      "ok": true,
+      "card_id": "card_003",
+      "title": "库存接口"
+    },
+    {
+      "phase": "1_create_W3",
+      "at": "2026-10-20T15:41:18",
+      "ok": true,
+      "card_id": "card_004",
+      "title": "结算接口"
+    },
+    {
+      "phase": "1_seed_material",
+      "at": "2026-10-20T15:41:18",
+      "ok": true,
+      "W1": "生产订单统计接口现状：对外时间字段口径**已定稿并要求全项目对齐**——一律 UTC、ISO8601 带 Z 后缀，例 2026-10-20T08:00:00Z。已据此交付。",
+      "W2": "库存接口现状：对外时间字段口径**已定稿**——一律本地时间、naive 19 字符、不带时区，例 2026-10-20 08:00:00。注意：与生产订单统计接口同日同时刻，但按各自口径解释差 8 小时。",
+      "note": "两卡示例同数字不同基准、契约相反 ⇒ 不可换算"
+    },
+    {
+      "phase": "A_create_role",
+      "at": "2026-10-20T15:41:18",
+      "ok": true,
+      "status": 201,
+      "role_id": "card_005",
+      "watched": [
+        "card_002",
+        "card_003"
+      ],
+      "charter_version": 1,
+      "duty": "active",
+      "exclusive_key": "interface_contract"
+    },
+    {
+      "phase": "A_dup_domain_rejected",
+      "at": "2026-10-20T15:41:18",
+      "ok": true,
+      "status": 400,
+      "resp": "{'error': '责任域已被角色 card_005 占用；同一排他域只能有一个角色'}"
+    },
+    {
+      "phase": "A_check",
+      "at": "2026-10-20T15:41:18",
+      "ok": true,
+      "started": true,
+      "pending_sources": [
+        "card_002",
+        "card_003"
+      ]
+    },
+    {
+      "phase": "A_verdict",
+      "at": "2026-10-20T15:42:47",
+      "ok": true,
+      "decision": "speak",
+      "auto": false,
+      "reason": "card_002 与 card_003 对同一对外时间字段均称「已定稿」，且 UTC/Z 与本地 naive 两种规定无法同时为真、同一字面值差 8 小时，命中职责书「带时区 vs 不带时区／同一数字不同基准」的必报条件。",
+      "verdict_id": "4acc0007375e",
+      "alarms_open": 1,
+      "alarm_severities": [
+        "warn"
+      ]
+    },
+    {
+      "phase": "B_amend_charter",
+      "at": "2026-10-20T15:42:47",
+      "ok": true,
+      "status": 200,
+      "version": 2,
+      "history_len": 2,
+      "v1_kept": true
+    },
+    {
+      "phase": "B2_rewatch",
+      "at": "2026-10-20T15:42:47",
+      "ok": true,
+      "watched_after_drop": [
+        "card_002"
+      ],
+      "watched_after_add": [
+        "card_002",
+        "card_003"
+      ]
+    },
+    {
+      "phase": "C_suspended",
+      "at": "2026-10-20T15:42:47",
+      "duty": "suspended",
+      "check_started": false,
+      "sync_rows_before": 2,
+      "sync_rows_after": 2,
+      "new_rows": [],
+      "verdicts_while_suspended": 1
+    },
+    {
+      "phase": "D_resumed",
+      "at": "2026-10-20T15:43:03",
+      "ok": false,
+      "duty": "active",
+      "decision": "speak",
+      "reason": "card_002 与 card_003 对同一对外时间字段均称「已定稿」，且 UTC/Z 与本地 naive 两种规定无法同时为真、同一字面值差 8 小时，命中职责书「带时区 vs 不带时区／同一数字不同基准」的必报条件。",
+      "open_alarms_after": 1,
+      "verdicts_total": 1
+    },
+    {
+      "phase": "E_archived",
+      "at": "2026-10-20T15:43:03",
+      "duty": "archived",
+      "watched_after": 0,
+      "verdicts_kept": 1,
+      "verdicts_expected": 1,
+      "alarms_kept": 1,
+      "alarms_expected": 1,
+      "charter_history_kept": 2
+    },
+    {
+      "phase": "F_refill",
+      "at": "2026-10-20T15:43:04",
+      "refill_ok": true,
+      "new_role": "card_006",
+      "dup_after_refill_rejected": true,
+      "dup_status": 400,
+      "resp": "{'error': '责任域已被角色 card_006 占用；同一排他域只能有一个角色'}"
+    }
+  ],
+  "verdict": "INCOMPLETE",
+  "boundary_note": "组阁/改档/停复撤的**决策**由实验场景预置；验的是机械通道与台账逐环走通＋真模型判词/警报的真实反应，不验根卡模型的组阁决策质量。",
+  "instance": {
+    "instance": "test-instance",
+    "pid": 28508,
+    "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+    "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox",
+    "sandbox_enabled": true
+  },
+  "work_id": "work_011",
+  "cards": {
+    "W1": "card_002",
+    "W2": "card_003",
+    "W3": "card_004"
+  },
+  "role_R1": "card_005",
+  "verdict_A": {
+    "id": "4acc0007375e",
+    "ts": "2026-10-20T15:42:39.688734+08:00",
+    "decision": "speak",
+    "reason": "card_002 与 card_003 对同一对外时间字段均称「已定稿」，且 UTC/Z 与本地 naive 两种规定无法同时为真、同一字面值差 8 小时，命中职责书「带时区 vs 不带时区／同一数字不同基准」的必报条件。",
+    "sources": [
+      "card_002",
+      "card_003"
+    ],
+    "targets": [
+      "card_002",
+      "card_003"
+    ],
+    "evidence": [
+      "card_002 现状原文：「对外时间字段口径已定稿并要求全项目对齐——一律 UTC、ISO8601 带 Z 后缀，例 2026-10-20T08:00:00Z。已据此交付。」",
+      "card_003 现状原文：「对外时间字段口径已定稿——一律本地时间、naive 19 字符、不带时区，例 2026-10-20 08:00:00。注意：与生产订单统计接口同日同时刻，但按各自口径解释差 8 小时。」",
+      "card_004 现状：「结算接口现状：时间口径未定稿。」（未纳入关注，仅作影响面判断）",
+      "card_002/card_003 影子均为「（暂无记录）」，无更细口径文档可读",
+      "alarm_id=30b225b2aa98；directive_id=2880ffe1e3c2（target=card_003）"
+    ],
+    "auto": false,
+    "superseded_by": ""
+  },
+  "alarms_A": [
+    {
+      "id": "30b225b2aa98",
+      "ts": "2026-10-20T15:42:32.767743+08:00",
+      "role_id": "card_005",
+      "severity": "warn",
+      "title": "对外时间字段口径互斥：card_002「UTC 带 Z 全项目对齐」 vs card_003「本地时间 naive 不带时区」，两卡均称已定稿",
+      "detail": "互斥原文（两卡现状块，均为\"已定稿\"）：\n\n① card_002《生产订单统计接口》现状原文：\n「生产订单统计接口现状：对外时间字段口径**已定稿并要求全项目对齐**——一律 UTC、ISO8601 带 Z 后缀，例 2026-10-20T08:00:00Z。已据此交付。」\n\n② card_003《库存接口》现状原文：\n「库存接口现状：对外时间字段口径**已定稿**——一律本地时间、naive 19 字符、不带时区，例 2026-10-20 08:00:00。注意：与生产订单统计接口同日同时刻，但按各自口径解释差 8 小时。」\n\n冲突点（属职责书列举的\"带时区 vs 不带时区\"、\"同一数字不同基准\"）：\n· 同一对外时间字段，两卡各称已定稿；\n· card_002 主张\"全项目对齐 UTC/Z\"，与 card_003 的\"本地时间/naive\"直接对撞，两句不能同时为真；\n· 同一字面值 2026-10-20 08:00:00 在两套口径下相差 8 小时；\n· card_003 输出不含时区信息，接收方无法可靠换算（本地时区/夏令时未声明），不属\"可换算为同一事实\"，按职责书须升级裁决而非沉默。\n\n影响面：任何跨接口的时序/对账/统计关联会出现 8 小时错位；card_004《结算接口》现状为\"时间口径未定稿\"，若不先定基准，会任选一套沿用并放大偏差。",
+      "status": "open",
+      "acked_at": "",
+      "corrected_by": "",
+      "supersedes": "",
+      "question": "全项目对外时间字段以哪一套口径为准、谁让步？",
+      "options": [
+        "统一 UTC/Z：card_003 改为 UTC、ISO8601 带 Z；card_002 已交付成果不动；card_004 按此起草",
+        "统一本地时间 naive：card_002 放弃已交付的 Z 格式并回改，card_003 不动",
+        "过渡方案：各接口暂保留自身格式，但每个接口必须显式声明时区基准、禁止跨接口直接比对同一时刻数值；同时冻结 card_004 的时间字段定稿，等统一裁决",
+        "立即全量转 UTC/Z，并一次性对齐库存接口历史数据与既有消费方（改动面与回归成本最大）"
+      ],
+      "recommendation": "建议以选项 3 作为立即止血、选项 1 作为长期目标。理由：card_002 已定稿并交付，回改为本地 naive 会倒退已交付成果并引入夏令时歧义；card_003 缺时区信息使\"约定可换算\"不可靠，而加显式基准声明是零回退成本、可立即执行的动作。",
+      "default_action": "用户未回复前：①不改 card_002 已交付的 UTC/Z 格式；②已向 card_003 下指令，在其对外契约中显式声明\"本地时间、naive 19 字符、不含时区\"，并标注与 UTC/Z 口径互斥、同一字面值相差 8 小时、禁止跨接口直接比较同一时刻数值——本轮不改其口径，等待裁决；③card_004《结算接口》时间口径在裁决前不定稿（其现状为\"未定稿\"，暂无回退成本）。",
+      "deadline": "2026-10-21T12:00:00+08:00"
+    }
+  ],
+  "verdict_D": {
+    "id": "4acc0007375e",
+    "ts": "2026-10-20T15:42:39.688734+08:00",
+    "decision": "speak",
+    "reason": "card_002 与 card_003 对同一对外时间字段均称「已定稿」，且 UTC/Z 与本地 naive 两种规定无法同时为真、同一字面值差 8 小时，命中职责书「带时区 vs 不带时区／同一数字不同基准」的必报条件。",
+    "sources": [
+      "card_002",
+      "card_003"
+    ],
+    "targets": [
+      "card_002",
+      "card_003"
+    ],
+    "evidence": [
+      "card_002 现状原文：「对外时间字段口径已定稿并要求全项目对齐——一律 UTC、ISO8601 带 Z 后缀，例 2026-10-20T08:00:00Z。已据此交付。」",
+      "card_003 现状原文：「对外时间字段口径已定稿——一律本地时间、naive 19 字符、不带时区，例 2026-10-20 08:00:00。注意：与生产订单统计接口同日同时刻，但按各自口径解释差 8 小时。」",
+      "card_004 现状：「结算接口现状：时间口径未定稿。」（未纳入关注，仅作影响面判断）",
+      "card_002/card_003 影子均为「（暂无记录）」，无更细口径文档可读",
+      "alarm_id=30b225b2aa98；directive_id=2880ffe1e3c2（target=card_003）"
+    ],
+    "auto": false,
+    "superseded_by": ""
+  },
+  "role_R2": "card_006",
+  "final_R1": {
+    "role_id": "card_005",
+    "title": "口径一致性角色",
+    "card_type": "role",
+    "profile": {
+      "role_id": "card_005",
+      "work_id": "work_011",
+      "jurisdiction": {
+        "domain": "interface_contract",
+        "statement": "接口口径一致性",
+        "exclusive_key": "interface_contract"
+      },
+      "watch": {
+        "cards": [],
+        "signals": [
+          "turn_completed",
+          "status_changed",
+          "decision_appended"
+        ]
+      },
+      "speak_contract": {
+        "advice_when": [
+          "gap_or_risk"
+        ],
+        "alarm_when": [
+          "mutually_exclusive_fact"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "escalation": {
+        "advice_to": "source_card",
+        "alarm_to": "human",
+        "critical_to": "root_and_human"
+      },
+      "duty": {
+        "state": "archived",
+        "since": "2026-10-20T15:43:03.661035+08:00",
+        "last_wake_at": "2026-10-20T15:42:55.874161+08:00",
+        "pending_sync": 0,
+        "note": "动态调阁实验：CEO 撤岗"
+      },
+      "charter": {
+        "version": 2,
+        "text": "对全项目接口口径一致性负责（v2 增补）：除互斥口径警报外，新增检查时间戳精度一致性（秒 vs 毫秒）；精度不一致先给关注卡发建议，只有互斥才警报。",
+        "ratified_by": "根卡 card_001",
+        "ratified_at": "2026-10-20T15:42:47.055710+08:00"
+      },
+      "created_at": "2026-10-20T15:41:18.736239+08:00",
+      "updated_at": "2026-10-20T15:43:03.661035+08:00"
+    },
+    "jurisdiction": {
+      "domain": "interface_contract",
+      "statement": "接口口径一致性",
+      "exclusive_key": "interface_contract"
+    },
+    "watch": {
+      "cards": [],
+      "signals": [
+        "turn_completed",
+        "status_changed",
+        "decision_appended"
+      ]
+    },
+    "speak_contract": {
+      "advice_when": [
+        "gap_or_risk"
+      ],
+      "alarm_when": [
+        "mutually_exclusive_fact"
+      ],
+      "silence_default": true,
+      "max_messages_per_wake": 2
+    },
+    "escalation": {
+      "advice_to": "source_card",
+      "alarm_to": "human",
+      "critical_to": "root_and_human"
+    },
+    "duty": {
+      "state": "archived",
+      "since": "2026-10-20T15:43:03.661035+08:00",
+      "last_wake_at": "2026-10-20T15:42:55.874161+08:00",
+      "pending_sync": 0,
+      "note": "动态调阁实验：CEO 撤岗"
+    },
+    "charter": {
+      "version": 2,
+      "text": "对全项目接口口径一致性负责（v2 增补）：除互斥口径警报外，新增检查时间戳精度一致性（秒 vs 毫秒）；精度不一致先给关注卡发建议，只有互斥才警报。",
+      "ratified_by": "根卡 card_001",
+      "history": [
+        {
+          "version": 2,
+          "text": "对全项目接口口径一致性负责（v2 增补）：除互斥口径警报外，新增检查时间戳精度一致性（秒 vs 毫秒）；精度不一致先给关注卡发建议，只有互斥才警报。",
+          "ratified_by": "根卡 card_001",
+          "ratified_at": "2026-10-20T15:42:47.055710+08:00",
+          "note": "职责书修订"
+        },
+        {
+          "version": 1,
+          "text": "对全项目接口口径一致性负责。巡检关注卡时，若两张卡对同一字段的口径规定无法同时为真（含：带时区 vs 不带时区、同一数字不同基准），必须 raise_alarm(severity=warn) 并把互斥原文写进证据；口径一致或可换算为同一事实时保持沉默（判 silent 也须 record_verdict 落账）。",
+          "ratified_by": "root:card_001",
+          "ratified_at": "2026-10-20T15:41:18.735247+08:00",
+          "note": "组阁立项"
+        }
+      ]
+    },
+    "verdicts": [
+      {
+        "id": "4acc0007375e",
+        "ts": "2026-10-20T15:42:39.688734+08:00",
+        "decision": "speak",
+        "reason": "card_002 与 card_003 对同一对外时间字段均称「已定稿」，且 UTC/Z 与本地 naive 两种规定无法同时为真、同一字面值差 8 小时，命中职责书「带时区 vs 不带时区／同一数字不同基准」的必报条件。",
+        "sources": [
+          "card_002",
+          "card_003"
+        ],
+        "targets": [
+          "card_002",
+          "card_003"
+        ],
+        "evidence": [
+          "card_002 现状原文：「对外时间字段口径已定稿并要求全项目对齐——一律 UTC、ISO8601 带 Z 后缀，例 2026-10-20T08:00:00Z。已据此交付。」",
+          "card_003 现状原文：「对外时间字段口径已定稿——一律本地时间、naive 19 字符、不带时区，例 2026-10-20 08:00:00。注意：与生产订单统计接口同日同时刻，但按各自口径解释差 8 小时。」",
+          "card_004 现状：「结算接口现状：时间口径未定稿。」（未纳入关注，仅作影响面判断）",
+          "card_002/card_003 影子均为「（暂无记录）」，无更细口径文档可读",
+          "alarm_id=30b225b2aa98；directive_id=2880ffe1e3c2（target=card_003）"
+        ],
+        "auto": false,
+        "superseded_by": ""
+      }
+    ],
+    "directives": [
+      {
+        "id": "2880ffe1e3c2",
+        "role_id": "card_005",
+        "target_card_id": "card_003",
+        "instruction": "在库存接口的对外契约/接口文档中补齐时间字段基准声明（三点）：①显式写明对外时间字段为「本地时间、naive 19 字符、不含时区」，并给出示例 2026-10-20 08:00:00；②显式标注该口径与生产订单统计接口的「UTC、ISO8601 带 Z」口径互斥，同一日期同一字面值按各自口径解释相差 8 小时；③显式写明禁止把本接口时间值与生产订单统计接口时间值当作同一时刻直接比较（相等判断、相减、跨接口排序必须先做时区转换）。本轮不得擅自把口径改为 UTC/Z 或删除 naive 现状说明——全项目统一口径正在由用户裁决。",
+        "acceptance": "读取 card_003 的现状块/定论块可见：①含「本地时间」及「naive／不含时区」的显式说明与 19 字符示例；②含与 UTC/Z 口径互斥、同一字面值相差 8 小时的说明；③含\"禁止跨接口直接比较同一时刻数值、须先做时区转换\"的明确提示；④口径本身仍标为本地时间 naive，未被静默改为 UTC/Z。",
+        "msg_id": "card_005-b3f835df",
+        "status": "issued",
+        "evidence": "",
+        "created_at": "2026-10-20T15:42:32.797639+08:00",
+        "updated_at": "2026-10-20T15:42:32.797639+08:00",
+        "verified_at": "",
+        "due_at": "2026-10-21T12:00:00+08:00",
+        "parent_id": "",
+        "attempt": 1
+      }
+    ],
+    "open_directives": [
+      {
+        "id": "2880ffe1e3c2",
+        "role_id": "card_005",
+        "target_card_id": "card_003",
+        "instruction": "在库存接口的对外契约/接口文档中补齐时间字段基准声明（三点）：①显式写明对外时间字段为「本地时间、naive 19 字符、不含时区」，并给出示例 2026-10-20 08:00:00；②显式标注该口径与生产订单统计接口的「UTC、ISO8601 带 Z」口径互斥，同一日期同一字面值按各自口径解释相差 8 小时；③显式写明禁止把本接口时间值与生产订单统计接口时间值当作同一时刻直接比较（相等判断、相减、跨接口排序必须先做时区转换）。本轮不得擅自把口径改为 UTC/Z 或删除 naive 现状说明——全项目统一口径正在由用户裁决。",
+        "acceptance": "读取 card_003 的现状块/定论块可见：①含「本地时间」及「naive／不含时区」的显式说明与 19 字符示例；②含与 UTC/Z 口径互斥、同一字面值相差 8 小时的说明；③含\"禁止跨接口直接比较同一时刻数值、须先做时区转换\"的明确提示；④口径本身仍标为本地时间 naive，未被静默改为 UTC/Z。",
+        "msg_id": "card_005-b3f835df",
+        "status": "issued",
+        "evidence": "",
+        "created_at": "2026-10-20T15:42:32.797639+08:00",
+        "updated_at": "2026-10-20T15:42:32.797639+08:00",
+        "verified_at": "",
+        "due_at": "2026-10-21T12:00:00+08:00",
+        "parent_id": "",
+        "attempt": 1
+      }
+    ],
+    "alarms": [
+      {
+        "id": "30b225b2aa98",
+        "ts": "2026-10-20T15:42:32.767743+08:00",
+        "role_id": "card_005",
+        "severity": "warn",
+        "title": "对外时间字段口径互斥：card_002「UTC 带 Z 全项目对齐」 vs card_003「本地时间 naive 不带时区」，两卡均称已定稿",
+        "detail": "互斥原文（两卡现状块，均为\"已定稿\"）：\n\n① card_002《生产订单统计接口》现状原文：\n「生产订单统计接口现状：对外时间字段口径**已定稿并要求全项目对齐**——一律 UTC、ISO8601 带 Z 后缀，例 2026-10-20T08:00:00Z。已据此交付。」\n\n② card_003《库存接口》现状原文：\n「库存接口现状：对外时间字段口径**已定稿**——一律本地时间、naive 19 字符、不带时区，例 2026-10-20 08:00:00。注意：与生产订单统计接口同日同时刻，但按各自口径解释差 8 小时。」\n\n冲突点（属职责书列举的\"带时区 vs 不带时区\"、\"同一数字不同基准\"）：\n· 同一对外时间字段，两卡各称已定稿；\n· card_002 主张\"全项目对齐 UTC/Z\"，与 card_003 的\"本地时间/naive\"直接对撞，两句不能同时为真；\n· 同一字面值 2026-10-20 08:00:00 在两套口径下相差 8 小时；\n· card_003 输出不含时区信息，接收方无法可靠换算（本地时区/夏令时未声明），不属\"可换算为同一事实\"，按职责书须升级裁决而非沉默。\n\n影响面：任何跨接口的时序/对账/统计关联会出现 8 小时错位；card_004《结算接口》现状为\"时间口径未定稿\"，若不先定基准，会任选一套沿用并放大偏差。",
+        "status": "open",
+        "acked_at": "",
+        "corrected_by": "",
+        "supersedes": "",
+        "question": "全项目对外时间字段以哪一套口径为准、谁让步？",
+        "options": [
+          "统一 UTC/Z：card_003 改为 UTC、ISO8601 带 Z；card_002 已交付成果不动；card_004 按此起草",
+          "统一本地时间 naive：card_002 放弃已交付的 Z 格式并回改，card_003 不动",
+          "过渡方案：各接口暂保留自身格式，但每个接口必须显式声明时区基准、禁止跨接口直接比对同一时刻数值；同时冻结 card_004 的时间字段定稿，等统一裁决",
+          "立即全量转 UTC/Z，并一次性对齐库存接口历史数据与既有消费方（改动面与回归成本最大）"
+        ],
+        "recommendation": "建议以选项 3 作为立即止血、选项 1 作为长期目标。理由：card_002 已定稿并交付，回改为本地 naive 会倒退已交付成果并引入夏令时歧义；card_003 缺时区信息使\"约定可换算\"不可靠，而加显式基准声明是零回退成本、可立即执行的动作。",
+        "default_action": "用户未回复前：①不改 card_002 已交付的 UTC/Z 格式；②已向 card_003 下指令，在其对外契约中显式声明\"本地时间、naive 19 字符、不含时区\"，并标注与 UTC/Z 口径互斥、同一字面值相差 8 小时、禁止跨接口直接比较同一时刻数值——本轮不改其口径，等待裁决；③card_004《结算接口》时间口径在裁决前不定稿（其现状为\"未定稿\"，暂无回退成本）。",
+        "deadline": "2026-10-21T12:00:00+08:00"
+      }
+    ],
+    "open_alarms": [
+      {
+        "id": "30b225b2aa98",
+        "ts": "2026-10-20T15:42:32.767743+08:00",
+        "role_id": "card_005",
+        "severity": "warn",
+        "title": "对外时间字段口径互斥：card_002「UTC 带 Z 全项目对齐」 vs card_003「本地时间 naive 不带时区」，两卡均称已定稿",
+        "detail": "互斥原文（两卡现状块，均为\"已定稿\"）：\n\n① card_002《生产订单统计接口》现状原文：\n「生产订单统计接口现状：对外时间字段口径**已定稿并要求全项目对齐**——一律 UTC、ISO8601 带 Z 后缀，例 2026-10-20T08:00:00Z。已据此交付。」\n\n② card_003《库存接口》现状原文：\n「库存接口现状：对外时间字段口径**已定稿**——一律本地时间、naive 19 字符、不带时区，例 2026-10-20 08:00:00。注意：与生产订单统计接口同日同时刻，但按各自口径解释差 8 小时。」\n\n冲突点（属职责书列举的\"带时区 vs 不带时区\"、\"同一数字不同基准\"）：\n· 同一对外时间字段，两卡各称已定稿；\n· card_002 主张\"全项目对齐 UTC/Z\"，与 card_003 的\"本地时间/naive\"直接对撞，两句不能同时为真；\n· 同一字面值 2026-10-20 08:00:00 在两套口径下相差 8 小时；\n· card_003 输出不含时区信息，接收方无法可靠换算（本地时区/夏令时未声明），不属\"可换算为同一事实\"，按职责书须升级裁决而非沉默。\n\n影响面：任何跨接口的时序/对账/统计关联会出现 8 小时错位；card_004《结算接口》现状为\"时间口径未定稿\"，若不先定基准，会任选一套沿用并放大偏差。",
+        "status": "open",
+        "acked_at": "",
+        "corrected_by": "",
+        "supersedes": "",
+        "question": "全项目对外时间字段以哪一套口径为准、谁让步？",
+        "options": [
+          "统一 UTC/Z：card_003 改为 UTC、ISO8601 带 Z；card_002 已交付成果不动；card_004 按此起草",
+          "统一本地时间 naive：card_002 放弃已交付的 Z 格式并回改，card_003 不动",
+          "过渡方案：各接口暂保留自身格式，但每个接口必须显式声明时区基准、禁止跨接口直接比对同一时刻数值；同时冻结 card_004 的时间字段定稿，等统一裁决",
+          "立即全量转 UTC/Z，并一次性对齐库存接口历史数据与既有消费方（改动面与回归成本最大）"
+        ],
+        "recommendation": "建议以选项 3 作为立即止血、选项 1 作为长期目标。理由：card_002 已定稿并交付，回改为本地 naive 会倒退已交付成果并引入夏令时歧义；card_003 缺时区信息使\"约定可换算\"不可靠，而加显式基准声明是零回退成本、可立即执行的动作。",
+        "default_action": "用户未回复前：①不改 card_002 已交付的 UTC/Z 格式；②已向 card_003 下指令，在其对外契约中显式声明\"本地时间、naive 19 字符、不含时区\"，并标注与 UTC/Z 口径互斥、同一字面值相差 8 小时、禁止跨接口直接比较同一时刻数值——本轮不改其口径，等待裁决；③card_004《结算接口》时间口径在裁决前不定稿（其现状为\"未定稿\"，暂无回退成本）。",
+        "deadline": "2026-10-21T12:00:00+08:00"
+      }
+    ],
+    "pending_sources": [],
+    "text": "## 管辖\n接口口径一致性\n责任域: interface_contract（排他键 interface_contract）\n\n## 关注\n工作卡: （无）\n关注信号: turn_completed, status_changed, decision_appended\n\n## 发言契约\n建议条件: gap_or_risk\n警报条件: mutually_exclusive_fact\n默认沉默: True；单次最多发言: 2\n\n## 升级线\n建议→source_card；警报→human；严重→root_and_human\n\n## 值班\n状态: archived；最后巡检: 2026-10-20T15:42:55.874161+08:00；待同步: 0 源\n\n## 判断簿\n- 2026-10-20T15:42 speak · card_002 与 card_003 对同一对外时间字段均称「已定稿」，且 UTC/Z 与本地 naive 两种规定无法同时为真、同一字面值差 8 小时，命中职责书「带时区 vs 不带时区／同一数字不同基准」的必报条件。\n\n## 指令簿\n- 2026-10-20T15:42 [issued] → card_003：在库存接口的对外契约/接口文档中补齐时间字段基准声明（三点）：①显式写明对外时间字段为「本地时间、naive 19 字符、不含时区」，并给出示例 2026-10-20 08:00:00；②显式标注该口径与生产订单统计接口的「UTC、ISO8（验收：读取 card_003 的现状块/定论块可见：①含「本地时间」及「naive／不含时区」的显式说明与 19 字符示例；②含与 UTC/Z 口径互斥、同一字面值相）\n\n## 警报簿\n- 2026-10-20T15:42 [warn/open] 对外时间字段口径互斥：card_002「UTC 带 Z 全项目对齐」 vs card_003「本地时间 naive 不带时区」，两卡均称已定稿\n\n## 职责书（v2）\n对全项目接口口径一致性负责（v2 增补）：除互斥口径警报外，新增检查时间戳精度一致性（秒 vs 毫秒）；精度不一致先给关注卡发建议，只有互斥才警报。"
+  },
+  "final_R2": {
+    "role_id": "card_006",
+    "title": "接口契约守门员",
+    "card_type": "role",
+    "profile": {
+      "role_id": "card_006",
+      "work_id": "work_011",
+      "jurisdiction": {
+        "domain": "interface_contract",
+        "statement": "接口契约",
+        "exclusive_key": "interface_contract"
+      },
+      "watch": {
+        "cards": [
+          "card_002",
+          "card_003"
+        ],
+        "signals": [
+          "turn_completed"
+        ]
+      },
+      "speak_contract": {
+        "advice_when": [
+          "gap_or_risk"
+        ],
+        "alarm_when": [
+          "mutually_exclusive_fact"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "escalation": {
+        "advice_to": "source_card",
+        "alarm_to": "human",
+        "critical_to": "root_and_human"
+      },
+      "duty": {
+        "state": "active",
+        "since": "2026-10-20T15:43:03.810424+08:00",
+        "last_wake_at": "",
+        "pending_sync": 0
+      },
+      "charter": {
+        "version": 1,
+        "text": "对接口契约（含口径）负全责",
+        "ratified_by": "root:card_001",
+        "ratified_at": "2026-10-20T15:43:03.810424+08:00"
+      },
+      "created_at": "2026-10-20T15:43:03.810424+08:00",
+      "updated_at": "2026-10-20T15:43:03.946856+08:00"
+    },
+    "jurisdiction": {
+      "domain": "interface_contract",
+      "statement": "接口契约",
+      "exclusive_key": "interface_contract"
+    },
+    "watch": {
+      "cards": [
+        {
+          "card_id": "card_002",
+          "title": "生产订单统计接口",
+          "card_type": "sub_project"
+        },
+        {
+          "card_id": "card_003",
+          "title": "库存接口",
+          "card_type": "sub_project"
+        }
+      ],
+      "signals": [
+        "turn_completed"
+      ]
+    },
+    "speak_contract": {
+      "advice_when": [
+        "gap_or_risk"
+      ],
+      "alarm_when": [
+        "mutually_exclusive_fact"
+      ],
+      "silence_default": true,
+      "max_messages_per_wake": 2
+    },
+    "escalation": {
+      "advice_to": "source_card",
+      "alarm_to": "human",
+      "critical_to": "root_and_human"
+    },
+    "duty": {
+      "state": "active",
+      "since": "2026-10-20T15:43:03.810424+08:00",
+      "last_wake_at": "",
+      "pending_sync": 0
+    },
+    "charter": {
+      "version": 1,
+      "text": "对接口契约（含口径）负全责",
+      "ratified_by": "root:card_001",
+      "history": [
+        {
+          "version": 1,
+          "text": "对接口契约（含口径）负全责",
+          "ratified_by": "root:card_001",
+          "ratified_at": "2026-10-20T15:43:03.810424+08:00",
+          "note": "组阁立项"
+        }
+      ]
+    },
+    "verdicts": [],
+    "directives": [],
+    "open_directives": [],
+    "alarms": [],
+    "open_alarms": [],
+    "pending_sources": [],
+    "text": "## 管辖\n接口契约\n责任域: interface_contract（排他键 interface_contract）\n\n## 关注\n工作卡: card_002, card_003\n关注信号: turn_completed\n\n## 发言契约\n建议条件: gap_or_risk\n警报条件: mutually_exclusive_fact\n默认沉默: True；单次最多发言: 2\n\n## 升级线\n建议→source_card；警报→human；严重→root_and_human\n\n## 值班\n状态: active；最后巡检: （无）；待同步: 0 源\n\n## 判断簿\n（暂无）\n\n## 指令簿\n（暂无）\n\n## 警报簿\n（暂无）\n\n## 职责书（v1）\n对接口契约（含口径）负全责"
+  },
+  "sync_rows_final": [
+    {
+      "seq": 1,
+      "role_id": "card_005",
+      "source": "card_002",
+      "from_seq": 0,
+      "to_seq": 0,
+      "signals": "[\"manual_check\", \"status_changed\", \"decision_appended\"]",
+      "status": "consumed",
+      "created_at": "2026-10-20T15:41:18.974265+08:00",
+      "consumed_at": "2026-10-20T15:42:55.850155+08:00"
+    },
+    {
+      "seq": 2,
+      "role_id": "card_005",
+      "source": "card_003",
+      "from_seq": 0,
+      "to_seq": 0,
+      "signals": "[\"manual_check\", \"status_changed\", \"decision_appended\"]",
+      "status": "consumed",
+      "created_at": "2026-10-20T15:41:18.986403+08:00",
+      "consumed_at": "2026-10-20T15:42:55.850155+08:00"
+    }
+  ],
+  "verdict_detail": {
+    "A_role_created": true,
+    "A_watch_bound": true,
+    "A_dup_domain_rejected": true,
+    "A_check_started": true,
+    "A_verdict_recorded": true,
+    "A_alarm_raised_on_conflict": true,
+    "B_charter_v2": true,
+    "B_history_keeps_v1": true,
+    "B2_watch_set_swappable": true,
+    "C_check_blocked_when_suspended": true,
+    "C_new_fact_queued_while_suspended": false,
+    "C_no_verdict_while_suspended": true,
+    "D_resume_new_verdict": false,
+    "E_archived_unwatched": true,
+    "E_verdicts_retained": true,
+    "E_alarms_retained": true,
+    "E_charter_history_retained": true,
+    "F_refill_created": true,
+    "F_conflict_rejected_again": true,
+    "observations": {
+      "A_decision": "speak",
+      "A_alarms_open": 1,
+      "D_decision": "speak",
+      "D_open_alarms_after": 1,
+      "sync_rows_total": 2
+    }
+  },
+  "finished_at": "2026-10-20T15:43:04"
+}
