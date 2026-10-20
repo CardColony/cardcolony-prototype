@@ -9,7 +9,7 @@
  * R-25 最近访问：storageGet/storageSet 键 nav.recent.v1；{wid,cid,title,ts} 上限 10 条、
  *   同卡去重更新 ts、倒序；UI＝查找面板「最近」区，点击直达。
  */
-import { storageGet, storageSet } from "./state_layers.js?v=30";
+import { storageGet, storageSet } from "./state_layers.js?v=31";
 
 export const NAV_RECENT_KEY = "nav.recent.v1";
 export const NAV_RECENT_MAX = 10;

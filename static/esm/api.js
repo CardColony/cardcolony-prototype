@@ -99,6 +99,13 @@ export async function postStop(wid, cid) {
   return call("POST", `/api/works/${wid}/cards/${cid}/stop`);
 }
 
+/* [5715] 插话：把一条用户消息投递进**正在跑**的这一轮。
+   返回 {applied:bool, reason:string}：applied=false ＝ 这一轮赶不上了
+   （无在途回合）⇒ 调用方回退成排队，不是错误。 */
+export async function postSteer(wid, cid, content) {
+  return call("POST", `/api/works/${wid}/cards/${cid}/steer`, { content: String(content || "") });
+}
+
 export const API = {
   toast,
   call,
@@ -180,6 +187,8 @@ export const API = {
   getProgress: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/progress`),
   // [迭代四 F3①] 停止按钮（U-7）
   postStop: (wid, cid) => postStop(wid, cid),
+  // [5715] 插话（投递进正在跑的这一轮）
+  postSteer: (wid, cid, content) => postSteer(wid, cid, content),
   // [迭代四 F4] 卡间消息端点
   getCardMessages: (wid, limit = 200) =>
     call("GET", `/api/works/${wid}/card-messages?limit=${limit}`),

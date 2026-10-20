@@ -1,0 +1,8 @@
+{
+  "name": "tuoyan-agent-frontend-tests",
+  "private": true,
+  "description": "前端行为网用的开发依赖（仅测试用；产品前端本身零依赖、不打包）",
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}

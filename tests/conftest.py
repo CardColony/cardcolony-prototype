@@ -135,6 +135,36 @@ async def work(sandbox):
     return wdata
 
 @pytest.fixture
+def app():
+    """一个只挂路由的 FastAPI app（**不挂** ``/static``、**不 import main**）。
+
+    与真服务同一条路由链路（``src.api.routes.router``），差别只在外壳：
+    真服务外面还套了 ``/static`` 与首页模板，见 conftest 顶部「铁律二」。
+
+    [5715] 提到 conftest：对话模块的两张网（``test_conversation_flow`` /
+    ``test_conversation_edges``）都要这套夹具，留在各自文件里会各写一份。
+    """
+    from fastapi import FastAPI
+
+    from src.api import routes
+
+    a = FastAPI()
+    a.include_router(routes.router)
+    return a
+
+
+@pytest.fixture
+async def client(app):
+    """经 ``httpx.ASGITransport`` 走真实 HTTP 链路（不监听端口）。"""
+    import httpx
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        yield c
+
+
+@pytest.fixture
 def typed_registry(monkeypatch):
     """[permgmt T8 · 2026-10-09] 注册分类沙箱：TYPE_REGISTRY_PATH 指向 tests/
     _fixtures 下的 registry 副本。

@@ -913,9 +913,15 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .step-row.has-detail:hover { background: var(--panel-hover); border-radius: 4px; }
 .step-row .step-detail {
   display: none;
+  /* [5715 · 修] 缩进由 **margin** 改 **padding**。
+     原写法：flex:1 0 100%（basis＝行内容盒 100%＝766）＋ margin-left:16px
+     ⇒ 外尺寸 766+16 > 行宽 ⇒ 整行横向溢出 10px，右边框被裁（实测 19 行全中）。
+     margin 不计在 flex-basis 里，padding 计入（全局 box-sizing:border-box），
+     改后 border-box 恰为 766，缩进保留、溢出归零。 */
   flex: 1 0 100%;
-  margin: 4px 0 2px 16px;
-  padding: 8px 8px;
+  min-width: 0;
+  margin: 4px 0 2px 0;
+  padding: 8px 8px 8px 24px;
   background: var(--bg-deep);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1006,6 +1012,11 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
 .tool-body .tr-kv .v { color: var(--text-soft); }
 .tool-body .tr-files { margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--text-soft); }
 .tool-body .tr-files li { margin: 1px 0; }
+/* [5715] 对象型字段摘要：与 .tr-kv 同族但弱一档（附属信息，不与正文争视线） */
+.tool-body .tr-kv-obj { color: var(--dim); opacity: .9; }
+.tool-body .tr-kv-obj .v { white-space: pre-wrap; word-break: break-word; }
+/* [5715] 空结果明说：不给"点了没反应"的空白 */
+.tool-body .tr-empty { font-size: 12px; color: var(--dim); font-style: italic; }
 /* ============ [T4 dsh ToolRow 2026-10-16] 工具行 ============
    恒一行：事件名徽标（沿用定宽 128px 的列对齐）＋ 前导状态点 ＋ 工具名 ＋ 参数摘要；
    状态槽＝运行中／✓ 耗时／✗ 错误。下一行＝结果首段摘要（ellipsis 截断）。
