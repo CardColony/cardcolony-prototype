@@ -171,3 +171,67 @@
 - 批次内**跨文件一致性**没有任何校验，恢复层也不校验（T10）⇒ P1/P2 的校验项。
 - 日备（`daily_`）是"当天首拍"，与"日终刷新"语义不符（card_009 P7），本轮**未复测**，不做新结论。
 - 整批恢复**只补不删**（非时间点回滚）：本轮未复测（T3 是整目录删除后恢复，不涉及该情形）。
+
+## 7 复核（质量域 R10 移交）：`test_snapshot_restore_roundtrip` 红 —— **真坏**，并据此修正 §3 的「能恢复」口径
+
+> 移交方：card_016（质量域）。它的判据是「同 commit 两次整套跑都红、隔离单跑亦红 ⇒ 确定性红」，
+> 现象 `ok=True` 但读回仍是「第二版正文」。本域复核结论：**真坏，不是断言滞后、不是噪声**；而且它牵出
+> §3 里一条我自己写宽了的口径，下面一并修正。证据：`evidence_r10*.json`、探针 `r10_restore_ok_but_no_rollback.py` /
+> `r10_holder_forensics.py`。
+
+### 7.1 现象与复现（机械，非推理）
+
+| 所见 | 值 |
+|---|---|
+| `pytest tests/test_snapshot_roundtrip.py::test_snapshot_restore_roundtrip` | **1 failed**（`assert '第二版正文' == '第一版正文'`） |
+| 恢复后主库 `cards.db` | 163,840 字节、**含「第一版正文」1 处、「第二版正文」0 处** ⇒ **拷贝这一步是对的** |
+| 恢复后旁挂 `cards.db-wal` | **仍在，444,992 字节，含「第一版」「第二版」各 1 处** ⇒ stale WAL 没删掉 |
+| 此后任何读（含 `card_store.read_card`） | 返回**第二版正文** ⇒ SQLite 把 stale WAL 重放到刚恢复的主库之上 |
+| 恢复函数返回值 | **`ok: true`**，只有一条 `logger.warning` |
+
+⇒ 失败语义不是「恢复失败」，而是**「恢复成功」的回执不诚实**：主库确实被换成快照态，
+但旧 WAL 一重放就把快照态盖掉。这与病4 同族（`ok=True` 而目的未达成），但它发生在**库文件**上，
+所以单列一条：**病4b · 恢复回执不诚实（恢复后 stale WAL 重放覆盖）**。
+
+### 7.2 根因：`data_snapshot.py:468-475` 把「删不掉旁挂」降级成 warning
+
+```python
+shutil.copy2(src, dst)                       # 主库被替换（对）
+if dst.suffix == ".db":
+    for suffix in ("-wal", "-shm"):
+        side = dst.with_name(dst.name + suffix)
+        try:
+            if side.exists(): side.unlink()  # WinError 32：另一个程序正在使用此文件
+        except OSError as exc:
+            logger.warning("恢复后清理旁挂文件失败（不阻断）...")   # ← 静默吞掉，ok 照发
+return {"ok": True, ...}
+```
+
+**为什么删不掉——两条都实测排除/确认过**：
+
+1. 不是 `card_db` 缓存连接没关：告警那一瞬间 `_conns`、`_read_conns` **两张表都是空的**
+   （`r10_probe_v3` 的 `alarm_hits.card_db`）。
+2. 也不是有漏关的 sqlite 连接：把进程内所有 `sqlite3.connect()` 逐个挂钩记录、告警瞬间逐条测活，
+   **一条都没开着**（`r10_probe_v4`：`sqlite_conns_still_open: []`），可 unlink 仍报 WinError 32。
+   ⇒ **「先关连接、再删 -wal/-shm、再覆盖主库」这条路在 Windows 上不可靠**（句柄/映射释放时序不在我们手里）。
+
+**为什么生产中必然踩到**：生产实例长期持有连接，`cards.db` 处于 WAL 模式且主库常常只有 4,096 字节
+（数据全在 `-wal` 里，实测：快照前主库 4,096B / WAL 428,512B）。恢复时主库被换成 163,840B 的快照副本，
+而 WAL 还在 ⇒ 重放旧账。**这不是边界情况，是常态路径。**
+
+### 7.3 修法候选（两条都实测能真回滚，建议 B 为主、A 为兜底）
+
+- **修法A · 删旁挂带重试 + 失败即硬失败**：先 `close_work`，对 `-wal`/`-shm` 做有界重试删除
+  （复用 `session_facade._LOCK_RETRY_ATTEMPTS` 那套），删不掉就 **`ok=False` 并写明**，绝不吞成 warning；
+  删成功后才 `copy2` 主库。实测：连接全关 + 重试下 → 读回「第一版正文」（`FIX_A` 绿）。
+- **修法B · 用 SQLite backup API 反向导入（推荐）**：不碰文件，直接把快照库 `src.backup(dst)`
+  写进活库，再 `PRAGMA wal_checkpoint(TRUNCATE)`。实测：`FIX_B` 绿，且**不依赖任何句柄状态**。
+- **共同要求**：恢复后做**内容校验**（打开库读 `meta.rev`/关键表行数，与快照库不符即 `ok=False`）；
+  把「恢复 ok 但读回还是新版」做成回归红线用例（现成的这条 `test_snapshot_restore_roundtrip` 就是）。
+
+### 7.4 这条对 §3「能恢复」的修正（重要，上一轮的结论写宽了）
+
+- 上一轮 T3/T4 用的是**裸 `sqlite3` 夹具**，库是 journal_mode=delete、没有旁挂 ⇒ 恢复绿。
+- 一旦库处在 **WAL 模式且进程有活连接**（＝生产常态），同一套 `restore_from_snapshot` **回 ok 但不回滚**。
+- ⇒ §3 的「能恢复」必须缩小为：**非 WAL／无 sidecar 残留的场景能恢复**；
+  「WAL + 活连接」这一常态场景**不能**，直到 §7.3 的修法落地。D02 的口径按此修正（旧条不改，追加订正）。
