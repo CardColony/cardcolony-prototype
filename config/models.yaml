@@ -13,6 +13,26 @@
 # ============================================================
 
 providers:
+  deepseek-official:
+    protocol: openai
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    note: DeepSeek 官方（只认 deepseek-flash / deepseek-v4-pro）
+  volcengine-token-plan:
+    protocol: openai
+    base_url: https://ark.cn-beijing.volces.com/api/plan/v3
+    api_key_env: VOLCENGINE_TOKEN_PLAN_API_KEY
+    note: 火山方舟 token plan 端点（ark-code-latest）
+  volcengine-coding:
+    protocol: openai
+    base_url: https://ark.cn-beijing.volces.com/api/coding/v3
+    api_key_env: VOLCENGINE_CODING_API_KEY
+    note: 火山方舟 coding 端点（OpenAI 兼容）
+  kimi:
+    protocol: openai
+    base_url: https://api.kimi.com/coding/v1
+    api_key_env: KIMI_API_KEY
+    note: Kimi Coding Plan（OpenAI 兼容）
   nous:
     protocol: openai
     base_url: https://inference-api.nousresearch.com/v1
@@ -46,6 +66,42 @@ providers:
       x-opencode-session: zhuge-3080
     note: opencode-go 聚合端点（OpenAI 兼容；需 x-opencode-session 头，MissingSessionID 拒单）
 models:
+  ds-v4-flash-volc:
+    provider: volcengine-coding
+    model: deepseek-v4-flash
+    temperature: 1
+    note: 火山方舟 coding · deepseek v4 flash
+  ds-flash-official:
+    provider: deepseek-official
+    model: deepseek-flash
+    temperature: 1
+    note: DeepSeek 官方 flash（用户给的 key）
+  ds-v41-flash-aliyun:
+    provider: aliyun
+    model: deepseek-v4.1-flash
+    temperature: 1
+    note: 阿里云 token plan · deepseek v4.1 flash（替代过期的 opencode）
+  ds-v4-flash-aliyun:
+    provider: aliyun
+    model: deepseek-v4-flash-0731
+    temperature: 1
+    note: 阿里云 token plan · deepseek v4 flash
+  ark-code-latest:
+    provider: volcengine-token-plan
+    model: ark-code-latest
+    temperature: 1
+    note: 火山方舟 token plan · ark code latest
+  minimax-m31:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 1
+    note: MiniMax M3
+  kimi-k3:
+    provider: kimi
+    model: k3
+    temperature: 1          # k3 只接受 1
+    thinking: 'on'
+    note: Kimi K3（coding plan 端点）
   deepseek-pro:
     provider: opencode
     model: deepseek-v4-pro
@@ -183,3 +239,31 @@ concurrency:
     glm-53-flashx: 5
     deepseek-v41-flash: 8
     deepseek-pro: 4
+
+# ============================================================
+# 模型分级（按卡在树中的深度选模型）
+#
+# 规则：depth_0 = 根卡，depth_1 = 部门，depth_2 = 组，default = 叶子及更深。
+# 只在「卡/项目没有显式覆盖」且「卡是自动模式」时生效。
+# 值必须是上面 models: 里已有的名字。留空 = 该层走 bindings。
+#
+# 可选模型（已同步）：
+#   kimi-k3 · deepseek-pro · qwen-max · anthropic-claude-haiku-55
+#   glm-53 · glm-53-flash · glm-53-flashx · minimax-m31-flash-preview
+#   deepseek-v41-flash · deepseek-v4-flash · longcat-25-preview-free · step-5-preview-free
+# ============================================================
+tiers:
+  depth_0:                    # 根卡：k3 为主，deepseek 官方 flash 备用
+    - kimi-k3
+    - ds-flash-official
+  depth_1: ds-flash-official  # 第一级（deepseek 官方 flash）
+  depth_2:                    # 第二级及之后：四个端点按卡 id 分散
+    - ds-v4-flash-aliyun
+    - ds-v4-flash-volc
+    - ark-code-latest
+    - minimax-m31
+  default:
+    - ds-v4-flash-aliyun
+    - ds-v4-flash-volc
+    - ark-code-latest
+    - minimax-m31
