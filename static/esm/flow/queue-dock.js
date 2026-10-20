@@ -221,7 +221,7 @@ export function createQueueDock({ mount, store, isMutable, isRunning, notify }) 
     if (ok) { editing = null; editorEl = null; render(); }
   }
 
-  const unsub = store.subscribe(render);
+  let unsub = store.subscribe(render);
   render();
 
   return {
@@ -229,6 +229,17 @@ export function createQueueDock({ mount, store, isMutable, isRunning, notify }) 
     render,
     /** 运行态变化会影响 steer 键可用性 ⇒ 由 shell 通知重绘。 */
     refresh: render,
+    /** [5702 · 2026-10-20] 换绑到另一张卡的队列（每卡一份前端权威队列）。
+        切卡后旧卡的排队消息不再显示在新卡上方。 */
+    setStore(next) {
+      if (!next || next === store) return;
+      try { unsub(); } catch (e) { /* noop */ }
+      store = next;
+      editing = null;
+      editorEl = null;
+      unsub = store.subscribe(render);
+      render();
+    },
     destroy() {
       unsub();
       if (root.parentNode) root.parentNode.removeChild(root);

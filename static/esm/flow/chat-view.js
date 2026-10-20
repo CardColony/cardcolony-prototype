@@ -107,7 +107,6 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   let firstKey = null;
   let statusTimer = null;
   let statusStart = null;
-  let liveSlot = null;
   let hasNew = false;      // 读者上翻期间有新节点到达
   let loading = true;           // 首屏骨架：首次 render 落地即收
 
@@ -155,14 +154,6 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   paintOlder();
   paintToBottom();
   paintEmpty();
-
-  /** 逐字正文槽（/tokens 直写区）：恒在运行条之前、全部节点座位之后。 */
-  function ensureLiveSlot() {
-    if (liveSlot === null) liveSlot = el("div", "flow-view-live-slot");
-    column.appendChild(liveSlot);
-    column.appendChild(statusEl);
-    return liveSlot;
-  }
 
   // ---- 回底 ----
   function toBottom() {
@@ -294,8 +285,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
       if (e.parentNode !== column || prev.nextSibling !== e) column.insertBefore(e, prev.nextSibling);
       prev = e;
     }
-    // 逐字槽与运行条恒在末位之后（顺序：live 槽 → 运行条）
-    if (liveSlot !== null) column.appendChild(liveSlot);
+    // 运行条恒在末位之后（live 逐字槽已退役：正文进节点表，见 stream.js §五）
     column.appendChild(statusEl);
     paintEmpty();
 
@@ -405,7 +395,6 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
        否则「先渲染一帧空数组」会把骨架换成空态，再闪回内容）。 */
     markLoaded() { loading = false; paintEmpty(); },
     refresh,
-    ensureLiveSlot,
     toBottom,
     paintOlder,
     paintStatus,

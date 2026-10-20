@@ -40,9 +40,13 @@ async def main() -> int:
     base = Path(tempfile.mkdtemp(prefix="goal_check_"))
     works = base / "works"
     works.mkdir(parents=True)
-    card_store.WORKS_DIR = works
-    session_store.WORKS_DIR = works
-    card_db.WORKS_DIR = works
+    # 全部 WORKS_DIR 都要指到临时沙箱——只改 card_store/card_db 时，
+    # work_store.create_work 仍会写进**真实 works**（实测在主树跑一次就往 5700
+    # 生产目录里塞了一个「自检」空项目，work_018/019/020）。
+    from src.storage import work_store, canvas_store, session_ops
+    for _mod in (card_store, session_store, card_db, work_store, canvas_store, session_ops):
+        if hasattr(_mod, "WORKS_DIR"):
+            _mod.WORKS_DIR = works
 
     # 建项目 + 一张 auto 卡
     work = await work_store.create_work("自检")

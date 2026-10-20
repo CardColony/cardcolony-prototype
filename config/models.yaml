@@ -78,9 +78,9 @@ models:
     note: DeepSeek 官方 flash（用户给的 key）
   ds-v41-flash-aliyun:
     provider: aliyun
-    model: deepseek-v4.1-flash
+    model: deepseek-v4.1-flash-1017
     temperature: 1
-    note: 阿里云 token plan · deepseek v4.1 flash（替代过期的 opencode）
+    note: 阿里云 token plan · deepseek v4.1 flash 1017（第一层用）
   ds-v4-flash-aliyun:
     provider: aliyun
     model: deepseek-v4-flash-0731
@@ -256,14 +256,12 @@ tiers:
   depth_0:                    # 根卡：k3 为主，deepseek 官方 flash 备用
     - kimi-k3
     - ds-flash-official
-  depth_1: ds-flash-official  # 第一级（deepseek 官方 flash）
-  depth_2:                    # 第二级及之后：四个端点按卡 id 分散
-    - ds-v4-flash-aliyun
+  depth_1: ds-v41-flash-aliyun  # 第一级（aliyun deepseek v4.1 flash 1017）
+  depth_2:                    # 第二级及之后：三个端点按卡 id 分散（去掉了 aliyun）
     - ds-v4-flash-volc
     - ark-code-latest
     - minimax-m31
   default:
-    - ds-v4-flash-aliyun
     - ds-v4-flash-volc
     - ark-code-latest
     - minimax-m31

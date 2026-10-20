@@ -292,13 +292,16 @@ def test_frontend_version_stamps_bumped():
     [自动模式回灌 2026-10-17] workspace 52→53（autoToggle 开关＋insp 标记）、
     main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 样式段）。
     [6702 移植 P8] workspace 56→57（autoResume 按钮）、style 40→41（仅升戳）。
+    [5702 · C-1 2026-10-20] stream 42→43、workspace 57→58、assembler 35→36、
+    chat-view 3→4、main_chat 2.3→2.4（逐字流进装配器，旧 live 旁路退役）；
+    style 41→45（本分支既存漂移：home/settings 仍是 40，本次统一到 45）。
     """
-    assert "../stream.js?v=42" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=57" in _read("static/esm/main_chat.js")
-    assert "./stream.js?v=42" in _read("static/workspace.js")
-    assert "./esm/flow/input-bar.js?v=4" in _read("static/workspace.js")
-    assert "/static/style.css?v=41" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=2.3" in _read("templates/card.html")
+    assert "../stream.js?v=47" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=62" in _read("static/esm/main_chat.js")
+    assert "./stream.js?v=47" in _read("static/workspace.js")
+    assert "./esm/flow/input-bar.js?v=5" in _read("static/workspace.js")
+    assert "/static/style.css?v=45" in _read("templates/work.html")
+    assert "/static/esm/main_chat.js?v=2.9" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════
