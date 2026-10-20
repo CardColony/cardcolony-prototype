@@ -264,7 +264,12 @@ _ROLE_DDL: tuple[str, ...] = (
     status          TEXT DEFAULT 'open',
     acked_at        TEXT DEFAULT '',
     corrected_by    TEXT DEFAULT '',
-    supersedes      TEXT DEFAULT ''
+    supersedes      TEXT DEFAULT '',
+    question        TEXT DEFAULT '',
+    options         TEXT DEFAULT '[]',
+    recommendation  TEXT DEFAULT '',
+    default_action  TEXT DEFAULT '',
+    deadline        TEXT DEFAULT ''
 )""",
     "CREATE INDEX IF NOT EXISTS idx_role_alarms_role ON role_alarms(role_id, status)",
     """CREATE TABLE IF NOT EXISTS role_sync (
@@ -686,6 +691,21 @@ def _ensure_role_columns(conn: sqlite3.Connection) -> None:
             try:
                 conn.execute(f"ALTER TABLE role_directives ADD COLUMN {name} {ddl}")
             except Exception:  # noqa: BLE001 并发首建时可能已加
+                pass
+    try:
+        acols = {str(r["name"]) for r in conn.execute(
+            "PRAGMA table_info(role_alarms)").fetchall()}
+    except Exception:  # noqa: BLE001
+        acols = set()
+    for name, ddl in (("question", "TEXT DEFAULT ''"),
+                      ("options", "TEXT DEFAULT '[]'"),
+                      ("recommendation", "TEXT DEFAULT ''"),
+                      ("default_action", "TEXT DEFAULT ''"),
+                      ("deadline", "TEXT DEFAULT ''")):
+        if name not in acols:
+            try:
+                conn.execute(f"ALTER TABLE role_alarms ADD COLUMN {name} {ddl}")
+            except Exception:  # noqa: BLE001
                 pass
 
 

@@ -21,7 +21,7 @@
 <!-- [对话界面商业化 2026-10-17] 设计系统与主题层：仅对话页引入。
      作用域全部以 body.page-chat 收口，画布页 work.html 不引本文件、零影响。
      必须排在 style.css / nav.css 之后：靠层叠覆盖旧视觉，不改旧规则本身。 -->
-<link rel="stylesheet" href="/static/ui.css?v=10">
+<link rel="stylesheet" href="/static/ui.css?v=11">
 <script>
   /* 主题早置位：在样式表解析前写 <html data-theme>，避免深→浅闪白。
      取值优先级：localStorage 记忆 → 系统偏好 → 深色（产品默认）。 */
@@ -266,6 +266,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main_chat.js?v=3.1"></script>
+<script type="module" src="/static/esm/main_chat.js?v=3.2"></script>
 </body>
 </html>

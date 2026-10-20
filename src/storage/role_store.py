@@ -350,11 +350,19 @@ def _alarm_row(r: sqlite3.Row) -> dict[str, Any]:
         "acked_at": r["acked_at"] or "",
         "corrected_by": r["corrected_by"] or "",
         "supersedes": r["supersedes"] or "",
+        "question": r["question"] or "",
+        "options": _loads(r["options"], []),
+        "recommendation": r["recommendation"] or "",
+        "default_action": r["default_action"] or "",
+        "deadline": r["deadline"] or "",
     }
 
 
 async def add_alarm(work_id: str, role_id: str, severity: str, title: str,
-                    detail: str, supersedes: str = "") -> dict[str, Any]:
+                    detail: str, supersedes: str = "",
+                    question: str = "", options: list[str] | None = None,
+                    recommendation: str = "", default_action: str = "",
+                    deadline: str = "") -> dict[str, Any]:
     rec = {
         "id": uuid.uuid4().hex[:12],
         "ts": _now(),
@@ -366,16 +374,23 @@ async def add_alarm(work_id: str, role_id: str, severity: str, title: str,
         "acked_at": "",
         "corrected_by": "",
         "supersedes": supersedes,
+        "question": question,
+        "options": list(options or []),
+        "recommendation": recommendation,
+        "default_action": default_action,
+        "deadline": deadline,
     }
 
     def _fn(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT INTO role_alarms"
             " (id, work_id, role_id, ts, severity, title, detail, status,"
-            "  acked_at, corrected_by, supersedes)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "  acked_at, corrected_by, supersedes, question, options,"
+            "  recommendation, default_action, deadline)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rec["id"], work_id, role_id, rec["ts"], severity, title, detail,
-             "open", "", "", supersedes))
+             "open", "", "", supersedes, question, _dumps(rec["options"]),
+             recommendation, default_action, deadline))
         if supersedes:
             conn.execute(
                 "UPDATE role_alarms SET status='corrected', corrected_by=?"

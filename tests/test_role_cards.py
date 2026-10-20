@@ -163,8 +163,19 @@ async def test_verdict_alarm_correction_and_linked_message(work):
     assert recs[0]["decision"] == "speak"
     assert recs[0]["evidence"] == ["甲#现状", "乙#现状"]
 
+    # 技术问题不能裸报警：缺决策字段直接拒
     r = await card_tools.execute_tool(wid, rid, "raise_alarm", {
         "severity": "warn", "title": "口径冲突", "detail": "合并会出错",
+    }, cards)
+    assert r["ok"] is False and r["error"]["code"] == "validation"
+
+    r = await card_tools.execute_tool(wid, rid, "raise_alarm", {
+        "severity": "warn", "title": "口径冲突", "detail": "合并会出错",
+        "question": "旧数据兼容 UTC 还是统一新口径？",
+        "options": ["保留旧数据兼容", "统一新口径并迁移"],
+        "recommendation": "统一新口径并迁移",
+        "default_action": "按统一新口径执行，旧数据只读",
+        "deadline": "2026-10-21T10:00:00+08:00",
     }, cards)
     assert r["ok"] is True
     alarm_id = r["data"]["alarm_id"]
@@ -176,6 +187,8 @@ async def test_verdict_alarm_correction_and_linked_message(work):
     # 更正：新警报 supersedes 旧警报，旧警报置 corrected
     r = await card_tools.execute_tool(wid, rid, "raise_alarm", {
         "severity": "info", "title": "更正", "detail": "上一条判据不足",
+        "question": "是否接受按统一口径继续？",
+        "default_action": "继续按统一口径执行",
         "supersedes": alarm_id,
     }, cards)
     assert r["ok"] is True
@@ -346,7 +359,9 @@ async def test_role_turn_can_advise_and_alarm(work, monkeypatch):
             return ({"content": "", "tool_calls": [{
                 "name": "raise_alarm",
                 "arguments": {"severity": "warn", "title": "时间口径冲突",
-                              "detail": "两卡互斥"},
+                              "detail": "两卡互斥",
+                              "question": "旧数据兼容还是统一新口径？",
+                              "default_action": "统一新口径"},
             }]}, "fake")
         if calls["n"] == 3:
             return ({"content": "", "tool_calls": [{
