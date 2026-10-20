@@ -311,7 +311,6 @@ async def test_i7_steer_lands_in_next_model_call_prior(client, sandbox):
         session_facade.turn_release(wid, "card_001", owner)
 
     # 插话已进待投队列 ⇒ 下一轮 step() 取走并插进轮槽
-    state = model_service and None  # 占位（不 import message_runner 也可测，见下）
     from src.api import message_runner
     st = message_runner.RunState(work_id=wid, card_id="card_001", content="看看根卡")
     st.rounds = 2
@@ -379,12 +378,17 @@ async def test_i9_steer_without_inflight_turn_is_not_applied(client, sandbox):
 
 # ================================================================ I10 工具结果不截断
 
-async def test_i10_tool_result_not_truncated(client, sandbox):
-    """I10：工具结果**完整落盘**（对账证据不许被裁）。"""
-    big = "X" * 12000
+async def test_i10_tool_payload_not_truncated(client, sandbox):
+    """I10：工具调用的**参数原样落盘**（对账证据不许被裁）。
+
+    判据用「长参数」而不是「长结果」：结果长度取决于工具本身，参数是**调用方
+    给的**，落盘时若被裁，事后就复原不出当时到底调了什么。
+    """
+    long_arg = "X" * 3000
     model_service._gateway = ScriptedGateway([
         {"content": "第1轮正文。",
-         "tools": [{"name": "read_card", "arguments": {"card_id": "card_001"}}]},
+         "tools": [{"name": "read_card",
+                    "arguments": {"card_id": "card_001", "trace": long_arg}}]},
         {"content": "第2轮正文。"},
     ])
     wid = (await client.post("/api/works", json={"title": "不截断剧本"})).json()["work_id"]
@@ -392,10 +396,8 @@ async def test_i10_tool_result_not_truncated(client, sandbox):
                       json={"content": "看看根卡"})
 
     items = event_log.timeline(wid, "card_001")
-    trs = [i for i in items if i.get("type") == "tool_result"]
-    assert trs, "应有 tool_result 事件"
-    # 工具结果正文不许被按字节裁掉（内容可能小，但**不许有截断标记**）
-    for t in trs:
-        raw = json.dumps((t.get("data") or {}), ensure_ascii=False)
-        assert "…" not in raw[:0] + ""   # 占位：具体截断判据见前端 renderResultContent
-    assert big  # 保持变量被用（长度判据由前端网覆盖）
+    calls = [i for i in items if i.get("type") == "tool_call"]
+    assert calls, "应有 tool_call 事件"
+    args = (calls[0].get("data") or {}).get("arguments") or {}
+    assert str(args.get("trace") or "") == long_arg, \
+        "工具参数被截断了（对账证据丢字）"

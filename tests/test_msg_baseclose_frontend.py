@@ -74,7 +74,12 @@ def test_reasoning_reads_top_level_model():
     assert re.search(r"rec\.model", asm), "reasoning 分派必须读落盘记录顶层 rec.model"
     # 落盘 model 只在 reasoning 带，其余为空串——故 model 为空才并进 assistant 思考区
     assert re.search(r"if\s*\(model\)\s*\{", asm), "带 model 的 reasoning 必须先走席卡分支"
-    assert "pendingReasoning" in asm, "该轮尚无 assistant 时思考必须挂 pending（不得丢弃）"
+    # [5715 · 契约变更] 思考不再走 pending 兜底（单串变量已被 pendingBuckets 取代）：
+    # 新行为是「思考**直接建本轮节点**」（键 stream:{run}:{round}，与 live 路径同一把键）
+    # ⇒ 思考归本轮自己的节点、位置＝思考到达处（工具之前）、且**永不丢弃**。
+    # 「不得丢弃」这条保证从 pending 改由「建本轮节点」承担，故断言随之更新。
+    assert "pendingBuckets" in asm, "思考必须按 (run, round) 分桶暂存/归位（不得丢弃）"
+    assert re.search(r"streamNode\(runId", asm), "思考必须建本轮节点（与 live 路径同键）"
 
 
 def test_run_id_is_carried_not_grouped():
