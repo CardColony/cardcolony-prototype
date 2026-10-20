@@ -554,9 +554,9 @@ async def test_overdue_directive_blocks_completion(work):
 def test_root_prompt_knows_how_to_staff_roles():
     """根卡不是只拿到 create_role 工具：它要在职责说明里知道何时/如何组阁。"""
     root = prompts.select_base_prompt({"card_type": "project", "auto_mode": 0})
-    assert "组阁：你可以创建角色卡" in root
+    assert "根卡的第一动作：组阁" in root
     assert "create_role" in root and "角色卡不是作业卡" in root
     child = prompts.select_base_prompt({"card_type": "sub_project", "auto_mode": 0})
-    assert "组阁：你可以创建角色卡" not in child
+    assert "根卡的第一动作：组阁" not in child
     role = prompts.select_base_prompt({"card_type": "role", "auto_mode": 0})
-    assert "组阁：你可以创建角色卡" not in role
+    assert "根卡的第一动作：组阁" not in role
