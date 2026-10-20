@@ -1,4 +1,4 @@
-﻿/* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
+/* canvas.js - 画布核心：视口变换、布局引擎、LOD、拖拽。
  * 迭代四 F2③：IIFE → ES module（module 作用域＝原闭包隔离）；escapeHtml 收编 esm/util.js；
  * API 经 esm/api.js 静态 import；跨文件（RenderNav）由 main.js 装配序保证。
  * [阶段2 A2.3 2026-10-17] canvas→workspace 的边**已彻底拆除**：点卡不再调 Workspace.open，
@@ -2037,10 +2037,19 @@ const WORK_ID = window.__WORK_ID__;
       if (e.target !== node) return;           // 卡内按钮/输入各自处理
       if (e.key === "Enter") {
         e.preventDefault();
+        // [画布 5711 · P0 修] **必须止冒泡**。
+        // 病根：document 级还有一个全局 keydown（`ids.length===1` ⇒ 同样 toggleCell）。
+        // 焦点在卡上时，节点级先展开、事件继续冒泡、全局级又展开一次 ⇒ 展开又被收起
+        // ⇒ **按 Enter 看着像没反应**（全量套件 T3.8 抓到的就是这条）。
+        // ⇒ 止冒泡后：焦点在卡上 ⇒ 只有节点级处理；焦点在别处 ⇒ 只有全局级处理。
+        e.stopPropagation();
         toggleCell(card.card_id);
       } else if (e.key === " " || e.key === "Spacebar") {
         if (!(state.index.childMap[card.card_id] || []).length) return;
         e.preventDefault();
+        // 同上：全局的 Space 是"抓手态"（按住空格拖动平移）⇒ 节点级处理完必须止冒泡，
+        // 否则**同一按空格**既展开子卡、又把视口切进抓手态（两个动作抢一个键）。
+        e.stopPropagation();
         toggleExpand(card.card_id);
       }
     });
