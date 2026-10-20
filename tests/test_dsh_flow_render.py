@@ -349,9 +349,9 @@ def test_t6_touched_modules_bumped():
         # 版本戳处置按 5715 那次的规程：**在 dev 的编号基础上重算**，不是逐文件取大
         # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
         # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
-        "stream.js": "48", "workspace.js": "66", "canvas.js": "76",
+        "stream.js": "49", "workspace.js": "66", "canvas.js": "76",
         "assembler.js": "40", "style.css": "48", "main.js": "73.4",
-        "main_chat.js": "3.3",
+        "main_chat.js": "3.4",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
         "chat-view.js": "6", "message-item.js": "1",
