@@ -45,6 +45,8 @@ import urllib.request
 from datetime import datetime
 
 POLL = 10
+# 归属用：本次材料里的唯一串（不是给模型的提示，只用于把日志认回本 work）
+FINGERPRINTS = ("E-4402", "9.2 万", "待联调")
 _T0 = 0.0
 RUN_TIMEOUT = 900          # 根卡自动模式跑一个真实任务，留 15 分钟
 MODEL_PIN_DEFAULT = "ds-v41-flash-aliyun"
@@ -84,6 +86,17 @@ W3_STATUS_WORSE = (
     "1) 已于 2026-10-15 上线并全量交付业务方（首批 12 个报表已验收）。\n"
     "2) 待联调：与账务系统的导出通道尚未联调通过，当前报表不含坏账口径。\n"
     "3) 成本：部门预算是 5 万元/月；截至本月实际支出已达 14.6 万元/月（重跑与人工补数持续叠加）。"
+)
+
+# 阶段二（new_card 模式）：不改进已有卡，新增第四张接口卡。真实项目本来就会加接口。
+# 上次 phase2 用 PATCH 改已有卡，与根卡自己的编辑撞车，它把外部注入读成「卡面被回写/篡改」
+# （evidence_appointer_B.json 的 phase2 现状块原文可见），污染了「会不会调整」的观测。
+W4_TITLE = "支付回调接口"
+W4_STATUS = (
+    "支付回调接口现状：\n"
+    "1) 对外时间字段口径：使用 Unix 毫秒时间戳（13 位整数），以事件到达时刻为准。\n"
+    "2) 回调重试成本：每月约 3.4 万元/月（未列部门预算）。\n"
+    "3) 状态：已上线灰度 10%，待与订单结算接口对账联调。"
 )
 
 GOAL_A = """把这个项目的三张接口卡收口：确认真实状态、找出交付上的问题、能处理的处理掉、处理不了的写清卡在哪。
@@ -137,6 +150,8 @@ def main() -> int:
     ap.add_argument("--pin-model", default=MODEL_PIN_DEFAULT)
     ap.add_argument("--timeout", type=int, default=RUN_TIMEOUT)
     ap.add_argument("--phase2", default="1", help="1=做完就改局面再观察一轮；0=只跑第一阶段")
+    ap.add_argument("--phase2-mode", default="patch", choices=["patch", "new_card"],
+                    help="patch=改已有卡（与根卡编辑易撞车）；new_card=新增一张接口卡（干净，测扩关注）")
     args = ap.parse_args()
     out = args.out or f"verify/5713/evidence_appointer_{args.arm}.json"
 
@@ -258,14 +273,30 @@ def main() -> int:
 
     # ── 6 阶段二：改局面，看它会不会跟着调整 ──
     if args.phase2 == "1":
-        _req(args.base, "PATCH", f"/api/works/{wid}/cards/{cards['W2']}",
-             {"updates": {"status_block": W2_STATUS_FIXED},
-              "history_note": "局面变化：库存接口口径改为与结算接口一致，互斥已消除"})
-        _req(args.base, "PATCH", f"/api/works/{wid}/cards/{cards['W3']}",
-             {"updates": {"status_block": W3_STATUS_WORSE},
-              "history_note": "局面变化：报表导出成本进一步超支到 14.6 万/月"})
-        phase("6_situation_changed", ok=True,
-              note="P1 互斥消除；P3 成本恶化 (9.2→14.6)")
+        if args.phase2_mode == "new_card":
+            # 干净的注入通道：不改已有卡（避免与根卡自己的编辑混淆），只新增一张接口卡。
+            # 测点更准：已有角色会不会被**扩大关注范围**（改档＝扩 watch／升 charter），
+            # 还是干脆不管、或者另起一个角色。
+            st, c = _req(args.base, "POST", f"/api/works/{wid}/cards",
+                         {"title": W4_TITLE, "source": "用户直接创建",
+                          "card_type": "sub_project", "parent": root, "goal": ""})
+            w4 = ((c.get("meta") or c).get("card_id") if isinstance(c, dict) else None)
+            if w4:
+                _req(args.base, "PATCH", f"/api/works/{wid}/cards/{w4}",
+                     {"updates": {"status_block": W4_STATUS}, "history_note": "新接口加入项目"})
+            cards["W4"] = w4
+            ev["cards"] = cards
+            phase("6_situation_changed", ok=bool(w4), mode="new_card", card_id=w4,
+                  note="新增支付回调接口（Unix 毫秒时间戳＋未列预算成本），不改已有卡")
+        else:
+            _req(args.base, "PATCH", f"/api/works/{wid}/cards/{cards['W2']}",
+                 {"updates": {"status_block": W2_STATUS_FIXED},
+                  "history_note": "局面变化：库存接口口径改为与结算接口一致，互斥已消除"})
+            _req(args.base, "PATCH", f"/api/works/{wid}/cards/{cards['W3']}",
+                 {"updates": {"status_block": W3_STATUS_WORSE},
+                  "history_note": "局面变化：报表导出成本进一步超支到 14.6 万/月"})
+            phase("6_situation_changed", ok=True, mode="patch",
+                  note="P1 互斥消除；P3 成本恶化 (9.2→14.6)")
         # 再点一次根卡，让它有余地调整（改档/撤岗/补角色都算）
         # 用 goal 命令的 edit 把同一目标「重新交给」根卡（不是新目标，保持可比）
         st_e, ed = _req(args.base, "POST", f"/api/works/{wid}/cards/{root}/goal",
@@ -332,7 +363,7 @@ def _snapshot(base, wid, root, sb, cards):
         "root_status": rb.get("status_block") or "",
         "root_rulings": rb.get("requirements") or rb.get("rulings") or "",
         "tool_calls": _tool_calls(sb, wid, root),
-        "models": _models_used(sb, wid, _T0),
+        "models": _models_used(sb, wid, _T0, FINGERPRINTS),
     }
 
 
@@ -360,30 +391,41 @@ def _tool_calls(sandbox_root, wid, cid):
     return out
 
 
-def _models_used(sandbox_root, wid, since_ts=0.0):
-    """本 run 实际用到的模型（**只认本次时间窗内的日志**）。
+def _models_used(sandbox_root, wid, since_ts=0.0, fingerprints=None):
+    """本 run 实际用到的模型。
 
-    第一版漏了时间过滤，把同一沙箱里别的 work（甚至别的卡在跑的实验）的 prompt 日志
-    一起统计进来，于是出现 k3/minimax/deepseek-flash 混杂——那是假象。实测教训：
-    **统计口径不圈定时间窗/范围，就是把别人的账记到自己头上。**
+    **两版都不够，记下来别再犯**：
+    v1 不圈时间窗 ⇒ 把整个沙箱历史日志都算进来（出现 k3/minimax 假象）。
+    v2 只圈时间窗 ⇒ 同一时间窗内**别的 work 也在跑**（实测：card_006 的拆分实验与本次
+       并行，它的 prompt 日志落在同一个 logs 目录），于是混进 deepseek-flash。
+    v3（本版）＝ 时间窗 **且** 材料指纹归属：只统计 prompt 里含本次埋点指纹
+       （E-4402 / 9.2 万 / 待联调 …）的日志——日志文件名只有 card_id 没有 work_id，
+       所以只能用内容归属，不能靠路径。
     """
     seen = {}
+    tips = list(fingerprints or [])
     logs = os.path.join(sandbox_root, "logs")
-    if os.path.isdir(logs):
-        for n in os.listdir(logs):
-            if not (n.startswith("prompt_") and n.endswith(".json")):
+    if not os.path.isdir(logs):
+        return seen
+    for n in os.listdir(logs):
+        if not (n.startswith("prompt_") and n.endswith(".json")):
+            continue
+        fp = os.path.join(logs, n)
+        try:
+            if os.path.getmtime(fp) < since_ts:
                 continue
-            fp = os.path.join(logs, n)
-            try:
-                if os.path.getmtime(fp) < since_ts:
-                    continue
-                with open(fp, encoding="utf-8", errors="replace") as f:
-                    d = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                continue
-            m = str(d.get("model_used") or "").strip()
-            if m:
-                seen[m] = seen.get(m, 0) + 1
+            with open(fp, encoding="utf-8", errors="replace") as f:
+                d = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if tips:
+            blob = json.dumps({"s": d.get("system_prompt"), "u": d.get("user_prompt"),
+                              "p": d.get("prior_messages")}, ensure_ascii=False)
+            if sum(1 for t in tips if t in blob) < 2:
+                continue          # 不属于本次跑的材料 ⇒ 不计入
+        m = str(d.get("model_used") or "").strip()
+        if m:
+            seen[m] = seen.get(m, 0) + 1
     return seen
 
 
@@ -437,6 +479,10 @@ def _judge(ev):
         "duty_changed_p2": (
             {r.get("role_id"): r.get("duty") for r in roles2} !=
             {r.get("role_id"): r.get("duty") for r in roles1}) if p2 else None,
+        "new_card_watched_p2": [
+            {"role": r.get("role_id"),
+             "watched_new_card": (ev.get("cards") or {}).get("W4") in (r.get("watch") or [])}
+            for r in roles2],
         "any_adjustment_p2": bool(p2) and (
             bool(p2_ids - p1_ids) or bool(p1_ids - p2_ids)
             or ({r.get("role_id"): r.get("charter_version") for r in roles2} !=
