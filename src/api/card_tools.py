@@ -953,6 +953,10 @@ async def _h_create_coder_card(work_id: str, current_id: str,
         card_type="coder", parent=current_id,
         charter=f"## 使命\n{task}",
         goal=task,
+        # [调度改造 2026-10-19] 本工具**自己负责首跑**（下面 ③ `_spawn_tracked`
+        # 带任务正文）。若建卡也点一次，会起一个没有任务正文的空回合，把正式首跑
+        # 挡在互斥体外面 ⇒ coder 卡零产出（实测 test_coder_card 两条都挂）。
+        skip_kick=True,
     )
     if "error" in result:
         return result

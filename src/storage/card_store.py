@@ -793,8 +793,14 @@ async def create_card(
     project_class: str = "",
     owner_card_id: str = "",
     goal: str = "",
+    skip_kick: bool = False,
 ) -> dict[str, Any]:
     """创建卡片 + 对应会话文件，更新 canvas 缓存。
+
+    ``skip_kick=True``：**建卡不点火**——给「建卡方自己负责首跑」的调用路径用
+    （`create_coder_card` 用 `_spawn_tracked` 带任务正文起跑；若这里也点一次，
+    会起一个没有任务正文的空回合，把正式首跑挡在互斥体外面，实测 coder 卡
+    因此零产出）。
 
     [底座收口 T5.a · 建卡入口适配] card_type 缺省从"线索"改为 ""：
     空值时按本树根卡 project_class 映射该树 L1 词表的唯一/首个子卡类型
@@ -943,15 +949,27 @@ async def create_card(
             logger.warning("影子派生失败（不阻断建卡）work=%s card=%s: %s", work_id, card_id, exc)
         # [自动模式 2026-10-17 · 回灌 5700 块0.4 · D2 建卡即起跑] 子卡继承到 auto
         # 且带目标 ⇒ 点火。放在 create_card 内（而非各调用方）⇒ HTTP 与模型工具
-        # 两条建卡入口**自动覆盖**。延迟 import：storage 不依赖 api（auto_driver
-        # 只 import storage/permissions）。非 auto 卡 ⇒ kick 立即返回 None
-        # （零行为变化，红线 2）。
+        # 两条建卡入口**自动覆盖**。
+        #
+        # [调度改造 2026-10-19 · 5704 承载力] 原先是**直接 kick**（建卡即起一个回合）。
+        # 实测 k3 几分钟建 104 张卡 ⇒ 104 个回合同时起跑 ⇒ 端点打爆、进程被
+        # safe-delete 守卫杀掉。改为**入调度队列**：卡照建、目标照设、照样会跑，
+        # 只是从「瞬间全点火」变成「按容量排队点火」。行为不变，只改同时性。
+        # 调度器不可用（脚本/测试/未启动）⇒ 退回直点，保证旧路径逐字可用。
+        if skip_kick:
+            return await read_card(work_id, card_id)
         try:
-            from ..api import auto_driver
-            auto_driver.kick(work_id, card_id)
-        except Exception as exc:  # noqa: BLE001 起跑失败不阻断建卡
-            logger.warning("自动模式起跑失败（不阻断建卡）work=%s card=%s: %s",
+            from ..api import scheduler as _sched
+            _sched.enqueue(work_id, card_id)
+        except Exception as exc:  # noqa: BLE001 入队失败 ⇒ 退回直点，绝不阻断建卡
+            logger.warning("[sched] 入队失败，退回直点 work=%s card=%s: %s",
                            work_id, card_id, exc)
+            try:
+                from ..api import auto_driver
+                auto_driver.kick(work_id, card_id)
+            except Exception as exc2:  # noqa: BLE001 起跑失败不阻断建卡
+                logger.warning("自动模式起跑失败（不阻断建卡）work=%s card=%s: %s",
+                               work_id, card_id, exc2)
         return await read_card(work_id, card_id)
     except CardLockedError:
         raise
