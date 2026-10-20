@@ -1,0 +1,165 @@
+{
+  "stages": {
+    "O1_rw_only": {
+      "order": "O1_rw_only",
+      "after_fix": {
+        "sidecars": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "rw_read": "第一版正文"
+      },
+      "sidecars_after_all_closed": {
+        "-wal": {
+          "exists": false
+        },
+        "-shm": {
+          "exists": false
+        }
+      },
+      "reopen_rw": null,
+      "sidecars_final": {
+        "-wal": {
+          "exists": false
+        },
+        "-shm": {
+          "exists": false
+        }
+      }
+    },
+    "O2_ro_first_then_rw": {
+      "order": "O2_ro_first_then_rw",
+      "after_fix": {
+        "sidecars": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "rw_read": "第一版正文"
+      },
+      "sidecars_after_all_closed": {
+        "-wal": {
+          "exists": false
+        },
+        "-shm": {
+          "exists": false
+        }
+      },
+      "reopen_rw": null,
+      "sidecars_final": {
+        "-wal": {
+          "exists": false
+        },
+        "-shm": {
+          "exists": false
+        }
+      }
+    },
+    "O3_rw_first_then_ro": {
+      "order": "O3_rw_first_then_ro",
+      "after_fix": {
+        "sidecars": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "rw_read": "第一版正文"
+      },
+      "sidecars_after_all_closed": {
+        "-wal": {
+          "exists": true,
+          "bytes": 0
+        },
+        "-shm": {
+          "exists": true,
+          "bytes": 32768
+        }
+      },
+      "reopen_rw": null,
+      "sidecars_final": {
+        "-wal": {
+          "exists": true,
+          "bytes": 0
+        },
+        "-shm": {
+          "exists": true,
+          "bytes": 32768
+        }
+      }
+    },
+    "O4_then_rw_reopen": {
+      "order": "O4_then_rw_reopen",
+      "after_fix": {
+        "sidecars": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "rw_read": "第一版正文"
+      },
+      "sidecars_after_all_closed": {
+        "-wal": {
+          "exists": true,
+          "bytes": 0
+        },
+        "-shm": {
+          "exists": true,
+          "bytes": 32768
+        }
+      },
+      "reopen_rw": {
+        "read": "第一版正文",
+        "sidecars": {
+          "-wal": {
+            "exists": false
+          },
+          "-shm": {
+            "exists": false
+          }
+        }
+      },
+      "sidecars_final": {
+        "-wal": {
+          "exists": false
+        },
+        "-shm": {
+          "exists": false
+        }
+      }
+    },
+    "VERDICT": {
+      "O1_gone": true,
+      "O2_gone": true,
+      "O3_gone": false,
+      "O4_gone": true,
+      "rule_holds": true,
+      "rule": "删 -wal/-shm 需写权限：最后关闭的是 mode=ro 只读连接时删不掉（文件留着），直到下一次有读写连接干净关闭才被清掉",
+      "implication": "凡涉及只读连接池（card_db._read_conns 就是 mode=ro）的实例，旁挂存灭取决于关闭顺序 ⇒ 任何「断言旁挂存在/不存在」的用例都会跟顺序漂"
+    }
+  },
+  "meta": {
+    "code_head": "8c88806",
+    "item": "旁挂存灭的真正变量＝最后关闭者的写权限（关闭顺序）"
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "stages": {
+    "SCENARIO_RW_only": {
+      "use_readonly_conn": false,
+      "after_fix": {
+        "sidecars": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "live_read": "第一版正文",
+        "ro_read": null
+      },
+      "after_all_closed": {
+        "sidecars": {
+          "-wal": {
+            "exists": false
+          },
+          "-shm": {
+            "exists": false
+          }
+        },
+        "reopen_rw_read": "第一版正文",
+        "sidecars_after_reopen": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "sidecars_final": {
+          "-wal": {
+            "exists": false
+          },
+          "-shm": {
+            "exists": false
+          }
+        }
+      }
+    },
+    "SCENARIO_RO_involved": {
+      "use_readonly_conn": true,
+      "after_fix": {
+        "sidecars": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "live_read": "第一版正文",
+        "ro_read": "第一版正文"
+      },
+      "after_all_closed": {
+        "sidecars": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "reopen_rw_read": "第一版正文",
+        "sidecars_after_reopen": {
+          "-wal": {
+            "exists": true,
+            "bytes": 0
+          },
+          "-shm": {
+            "exists": true,
+            "bytes": 32768
+          }
+        },
+        "sidecars_final": {
+          "-wal": {
+            "exists": false
+          },
+          "-shm": {
+            "exists": false
+          }
+        }
+      }
+    },
+    "VERDICT": {
+      "rw_only_final": {
+        "-wal": {
+          "exists": false
+        },
+        "-shm": {
+          "exists": false
+        }
+      },
+      "ro_involved_final": {
+        "-wal": {
+          "exists": false
+        },
+        "-shm": {
+          "exists": false
+        }
+      },
+      "same": true,
+      "conclusion": "两场景一致——归因需另找"
+    }
+  },
+  "meta": {
+    "code_head": "8c88806",
+    "item": "旁挂存灭的真正变量：只读连接 vs 连接数"
+  }
+}
