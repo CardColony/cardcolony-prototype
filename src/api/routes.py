@@ -877,7 +877,8 @@ async def post_work_rule_commit(work_id: str, req: RuleCommitRequest):
 
 
 @router.get("/works/{work_id}/cards/{card_id}/timeline")
-async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
+async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from"),
+                            tail: int = Query(0), before: int = Query(0)):
     """[消息底座能力对齐 · 件4] 恢复唯一入口（C3/C4）：合并时序表。
 
     items＝消息块（user_message/assistant_text/msg_*）＋过程事件（tool_call/
@@ -896,12 +897,22 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
-    items = event_log.timeline(work_id, card_id, from_seq=frm)
+    items = event_log.timeline(work_id, card_id, from_seq=frm, tail=tail, before=before)
+    # [对话流分页 2026-10-20] has_earlier＝「这次是窗口请求，且拿满了窗口」
+    # ⇒ 更早还有。前端据此决定「往上翻」是否还有东西可拉。
+    # 全量请求（tail=0）恒 false：已经拿到全部。
+    try:
+        _tail_n = int(tail or 0)
+    except (TypeError, ValueError):
+        _tail_n = 0
+    has_earlier = bool(_tail_n) and len(items) >= _tail_n
     return {
         "work_id": work_id,
         "card_id": card_id,
         "items": items,
         "last_seq": items[-1]["seq"] if items else 0,
+        "first_seq": items[0]["seq"] if items else 0,
+        "has_earlier": has_earlier,
     }
 
 
@@ -909,9 +920,10 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
 # 查询参数给定，缺省转发 work_001（与既有 /api/cards/{id}/… 兼容层同口径）。
 @router.get("/card/{card_id}/timeline")
 async def get_card_timeline_compat(card_id: str, work_id: str = DEFAULT_WORK_ID,
-                                   frm: int = Query(0, alias="from")):
+                                   frm: int = Query(0, alias="from"),
+                                   tail: int = Query(0), before: int = Query(0)):
     # frm 显式传：直接调路由函数时 Query(...) 默认值是 Query 对象而非 0
-    return await get_card_timeline(work_id, card_id, frm)
+    return await get_card_timeline(work_id, card_id, frm, tail, before)
 
 
 @router.get("/works/{work_id}/cards/{card_id}/stream")

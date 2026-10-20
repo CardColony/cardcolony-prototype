@@ -335,6 +335,13 @@ def test_t6_touched_modules_bumped():
       "新建卡片"原来自制 inline-style 小面板（另一套交互语言），本轮并入 cvDialog
       （与重命名/删除同一套）：顺带修掉一个真 bug——旧面板的 Escape 只 remove 自己、
       事件继续冒泡 ⇒ 关弹窗的同时把画布选中的卡也清了。
+    ★ [性能 2026-10-20 · 画布与对话流] canvas.js 76→77、canvas.css 21→22、
+      main.js 73.4→77.0、stream.js 50→51、api.js 40→41：
+      ① 画布 11 处 infinite 动画 60fps→10fps（steps）；cv-comm-dot 的 r 几何动画
+        改 transform:scale；通信线拆独立 <svg id=commSvg>（实测空闲 CPU 117~159%→55~69%）。
+      ② 对话流分页：/timeline 新增 tail/before/has_earlier，打开卡片只拉尾部 400 条
+        （card_004 全量 1964 条→400 条，装配节点 1185→约 200），往上翻再补更早一段。
+      api.js 被六个模块 import ⇒ 全链同升 41（双版本断言会抓）。
     ★ [画布 5711 · P0 修"画布永久空白"] canvas 83→84、main 83.0→84.0、build-stamp v84→v85：
       ① 画布"找根卡"不再 await /api/works（它挡在出图关键路径上，浏览器 6 连接上限
       一被常驻 SSE 占满就永远排队 ⇒ 画布永久空白）；根卡改从画布数据里取，零往返。
@@ -349,7 +356,7 @@ def test_t6_touched_modules_bumped():
         # 版本戳处置按 5715 那次的规程：**在 dev 的编号基础上重算**，不是逐文件取大
         # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
         # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
-        "stream.js": "50", "workspace.js": "66", "canvas.js": "76",
+        "stream.js": "51", "workspace.js": "66", "canvas.js": "77",
         "assembler.js": "40", "style.css": "48", "main.js": "73.4",
         "main_chat.js": "3.5",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
