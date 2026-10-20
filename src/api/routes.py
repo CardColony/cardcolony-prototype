@@ -910,22 +910,33 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
 
     async def gen():
         yield "retry: 3000\n\n"
-        # from=0 → 游标落在末帧（零重放）；from>0 → 断点续传（逐字不变）
-        last = frm - 1 if frm > 0 else event_stream.journal_last_seq(work_id, card_id)
-        idle = 0.0
-        while True:
-            batch = [e for e in event_stream.journal_of(work_id, card_id) if e["seq"] > last]
-            if batch:
-                for evt in batch:
-                    yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
-                    last = evt["seq"]
-                idle = 0.0
-                continue
-            await asyncio.sleep(0.4)
-            idle += 0.4
-            if idle >= 15.0:
-                yield ": ping\n\n"
-                idle = 0.0
+        # [5702 · C-1 2026-10-20] 真推送：订阅 journal（先补 from 之后的存量，再随
+        # emit 的 fanout 实时送达），不再每 0.4s 全量拷贝一次 journal。
+        # from=0 → 游标落在末帧（零重放）；from>0 → 断点续传（语义不变）。
+        start = frm if frm > 0 else event_stream.journal_last_seq(work_id, card_id) + 1
+        it = event_stream.subscribe(work_id, card_id, from_seq=start)
+        nxt = None
+        try:
+            while True:
+                if nxt is None:
+                    nxt = asyncio.create_task(it.__anext__())
+                done, _pending = await asyncio.wait({nxt}, timeout=15.0)
+                if not done:
+                    yield ": ping\n\n"          # 空闲保活；不取消挂起的 anext
+                    continue
+                task, nxt = nxt, None
+                try:
+                    evt = task.result()
+                except StopAsyncIteration:
+                    break
+                yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+        finally:
+            if nxt is not None:
+                nxt.cancel()
+            try:
+                await it.aclose()
+            except Exception:  # noqa: BLE001 关闭期异常不阻断
+                pass
 
     return StreamingResponse(
         gen(),
@@ -985,7 +996,8 @@ async def stream_work_events(work_id: str):
 
 
 @router.get("/works/{work_id}/cards/{card_id}/tokens")
-async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
+async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, alias="from"),
+                             replay: int = Query(0)):
     """[信息流重出 Task4] SSE 逐字流通道（**独立**于 /stream 的过程卡流）。
 
     与既有 17 类事件隔离申报（红线4）：独立 journal、不占主 seq。帧形态与
@@ -1004,21 +1016,44 @@ async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, ali
 
     async def gen():
         yield "retry: 3000\n\n"
-        last = frm - 1 if frm > 0 else event_stream.token_journal_last_seq(work_id, card_id)
-        idle = 0.0
-        while True:
-            batch = [e for e in event_stream.token_journal_of(work_id, card_id) if e["seq"] > last]
-            if batch:
-                for evt in batch:
-                    yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
-                    last = evt["seq"]
-                idle = 0.0
-                continue
-            await asyncio.sleep(0.25)
-            idle += 0.25
-            if idle >= 10.0:
-                yield ": ping\n\n"
-                idle = 0.0
+        # [5702 · C-1 2026-10-20] 同 /stream：逐字流也改真推送（原 0.25s 轮询
+        # ＋ 每次全量拷贝 token journal，是「吐字一顿一顿」的另一半原因）。
+        if frm > 0:
+            start = frm
+        elif replay:
+            # 打开**正在跑**的卡：从本 run 的首帧回放，补出已经吐过的字
+            # （dsh 的 host 快照自带当前 blocks；本机没有快照，用 journal 回放等价）。
+            start = 1
+            for _e in reversed(event_stream.token_journal_of(work_id, card_id)):
+                if (_e.get("type") == "run_start"
+                        and (_e.get("data") or {}).get("segment") == "run"):
+                    start = int(_e.get("seq") or 1)
+                    break
+        else:
+            start = event_stream.token_journal_last_seq(work_id, card_id) + 1
+        it = event_stream.subscribe_tokens(work_id, card_id, from_seq=start)
+        nxt = None
+        try:
+            while True:
+                if nxt is None:
+                    nxt = asyncio.create_task(it.__anext__())
+                done, _pending = await asyncio.wait({nxt}, timeout=10.0)
+                if not done:
+                    yield ": ping\n\n"
+                    continue
+                task, nxt = nxt, None
+                try:
+                    evt = task.result()
+                except StopAsyncIteration:
+                    break
+                yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+        finally:
+            if nxt is not None:
+                nxt.cancel()
+            try:
+                await it.aclose()
+            except Exception:  # noqa: BLE001 关闭期异常不阻断
+                pass
 
     return StreamingResponse(
         gen(),

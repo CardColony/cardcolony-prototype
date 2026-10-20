@@ -154,7 +154,7 @@ def test_t2_queue_dock_shape():
 def test_t2_queue_autosend_after_turn():
     """轮结束自动依序发出：send 的 finally 必须出队。"""
     body = _fn_body(_strip_js_comments(WS.read_text(encoding="utf-8")), "async function send")
-    assert "drainQueue()" in body, "send 收口必须调 drainQueue（轮结束自动发出）"
+    assert "drainQueue(" in body, "send 收口必须调 drainQueue（轮结束自动发出）"
     assert "finally" in body, "出队必须在 finally 里（成功失败都要走）"
     drain = _fn_body(_strip_js_comments(WS.read_text(encoding="utf-8")), "function drainQueue")
     assert "dequeue()" in drain and "send()" in drain, "drainQueue 必须出队并重发"
@@ -190,9 +190,13 @@ def test_t3_renderer_is_flat_and_incremental():
     assert "createChatView" in src, "视图骨架必须来自 flow/chat-view"
     assert "function viewOf" in src, "必须有每会话视图入口"
     assert "v.render(win, revGetter(snap))" in src, "全序落位必须走 chat-view.render"
-    assert "v.refresh(node.key" in src, "内容变化必须只换那一行"
+    assert "v.refresh(k, rev)" in src, "内容变化必须只换那一行"
+    assert "requestAnimationFrame(flush)" in src, "逐字更新必须按帧合并（dsh animation-frame）"
     for dead in ("ensureGroupView", "renderGroup", "pruneGroups", "lanesOf",
-                 "paintToggle", "msgs-round"):
+                 "paintToggle", "msgs-round",
+                 # [5702 · C-1 2026-10-20] 旧 live 旁路（吞字根因）整段退役：
+                 # 正文改为按 run:round 进装配器，轮界不再清字。
+                 "appendChunk", "clearText", "ensureLiveSlot", "liveSlot(", "scheduleMd"):
         assert dead not in src, f"★ 退役物 {dead} 仍在 stream.js"
     # 整列清空重建＝P2/P3 的根：全文件不得再有「清空列」的写法
     assert "while (box.firstChild)" not in src, "仍在整列清空重建"
@@ -329,12 +333,43 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        "stream.js": "42", "workspace.js": "56", "canvas.js": "73",
-        "assembler.js": "35", "style.css": "45", "main.js": "73.0",
-        "main_chat.js": "2.3",
+        # [合并 2026-10-20] 两侧各改各的：对话流 5702 那条线动了 stream/workspace/
+        # assembler/main_chat/flow/*；画布 5711 这条线动了 canvas.js 与 main.js
+        # （main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也必须升）。
+        "stream.js": "47", "workspace.js": "62", "canvas.js": "73",
+        "assembler.js": "37", "style.css": "45", "main.js": "73.0",
+        "main_chat.js": "2.9",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
-        "input-bar.js": "4", "queue-dock.js": "1", "queue-store.js": "1",
-        "chat-view.js": "3", "message-item.js": "1",
+        "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
+        "chat-view.js": "4", "message-item.js": "1",
     }
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"
+
+
+# ---------------------------------------------------------------- 输入会话按卡
+
+def test_composer_state_is_per_card():
+    """[5702 · 2026-10-20] 输入会话按卡隔离。
+
+    防回退：一旦有人把 machine/queue 改回全局单例，切卡时草稿/排队/运行态
+    又会跟着走（用户报的「输入框文字被带走」）。
+    """
+    ws = _strip_js_comments(WS.read_text(encoding="utf-8"))
+    assert "composerSessions" in ws, "缺按卡输入会话表"
+    assert "function switchComposer" in ws, "缺切卡换绑入口"
+    assert "inputBar.bindSession(" in ws, "切卡必须换绑 machine"
+    assert "queueDock.setStore(" in ws, "切卡必须换绑队列"
+
+    assert "switchComposer(" in _fn_body(ws, "async function open"), \
+        "open() 未换绑输入会话（点下去草稿必须立刻按卡切换）"
+    send_body = _fn_body(ws, "async function send")
+    assert "sendingMachine" in send_body, "send() 未捕获发起时的 machine"
+    assert "commitSent(sendingMachine)" in send_body, "commitSent 未绑定发起会话"
+    assert "commitSent()" not in ws, "★ 仍有不带目标的 commitSent()（切卡后会清错卡）"
+
+    bar = _strip_js_comments((FLOW / "input-bar.js").read_text(encoding="utf-8"))
+    assert "let machine = new InputMachine" in bar, "machine 必须可换绑（let）"
+    assert "bindSession(next)" in bar, "input-bar 缺 bindSession"
+    dock = _strip_js_comments((FLOW / "queue-dock.js").read_text(encoding="utf-8"))
+    assert "setStore(next)" in dock, "queue-dock 缺 setStore"
