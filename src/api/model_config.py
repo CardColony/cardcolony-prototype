@@ -132,6 +132,13 @@ def _compile(raw: dict[str, Any]) -> dict[str, Any]:
         # 「选模型」与「调用」用同一份 config，测试替身替换 gateway 时二者同步）。
         "bindings": raw.get("bindings") or {},
         "system": raw.get("system") or {},
+        # [模型分层 / 并发调度 2026-10-19] 一并编译进 config：
+        #   tiers       —— 按卡深度选模型（resolve 读）
+        #   concurrency —— 每模型并发上限（gateway._sem_for 读）
+        # 与 bindings/system 同理：gateway 不理会这两个键，但 resolve 与并发闸要
+        # 跟「调用」读同一份 config。
+        "tiers": raw.get("tiers") or {},
+        "concurrency": raw.get("concurrency") or {},
     }
 
 
@@ -280,6 +287,14 @@ def default_model(*, work_id: Optional[str] = None,
         v = card_ov.get("default_model")
         if isinstance(v, str) and v.strip():
             return v.strip()
+    # 1.5) [模型分层 2026-10-20 · 关键修复] 按卡深度选模型。
+    # 纯单模型模式（thinkchain 关闭）走的是 `pick_model("default")` →
+    # `default_model()`，**不经 resolve** —— 所以 tier 之前只在 resolve 里生效，
+    # 等于从来没生效过（实测 5704 的卡全走 system.default_model）。
+    _tier = _tier_for("default", work_id, card_id, _gateway_config())
+    if _tier:
+        return _tier
+
     # 2) 项目配置表 types[card_type]
     ct = _card_type_of(work_id, card_id) if card_id else ""
     if work_id and ct:
@@ -316,6 +331,11 @@ def resolve(role: str, *, work_id: Optional[str] = None,
         if hit is not None:
             return [str(x) for x in hit] if isinstance(hit, list) else str(hit)
     cfg = _gateway_config()
+    # [模型分层 2026-10-19 · 5704 承载力迭代] 卡/项目没有显式覆盖 ⇒ 按卡深度选 tier。
+    # 越靠上越贵（判断影响整棵树），越靠下越便宜（只影响一个文件）。
+    tier = _tier_for(role, work_id, card_id, cfg)
+    if tier is not None:
+        return tier
     bindings = cfg.get("bindings") or {}
     hit = bindings.get(role)
     if hit is None or hit == "" or hit == []:
@@ -323,6 +343,73 @@ def resolve(role: str, *, work_id: Optional[str] = None,
 
     if isinstance(hit, list):
         return [str(x) for x in hit]
+    return str(hit)
+
+
+#: 受深度分层影响的角色（其余角色——如 condense/compress——仍走 bindings）
+_TIER_ROLES = frozenset({"execute", "think", "synthesize", "draft", "default"})
+
+
+def _card_depth(work_id: str, card_id: str) -> int:
+    """卡在树中的深度（根卡＝0）。读不到 / 成环 / 超过 32 层 ⇒ 停在当前值。"""
+    try:
+        from ..storage import card_store
+    except Exception:  # noqa: BLE001 存储不可用 ⇒ 当作根
+        return 0
+    depth = 0
+    cur = str(card_id or "")
+    seen: set[str] = set()
+    while cur and cur not in seen and depth < 32:
+        seen.add(cur)
+        try:
+            meta = card_store._meta_of(work_id, cur)
+        except Exception:  # noqa: BLE001 读不到就停
+            break
+        cur = str((meta or {}).get("parent") or "")
+        if cur:
+            depth += 1
+    return depth
+
+
+def _tier_for(role: str, work_id: Optional[str], card_id: Optional[str],
+              cfg: dict[str, Any]) -> Optional[str]:
+    """按卡深度取 tier 模型名；不适用 ⇒ None（退回 bindings）。
+
+    **只对 auto 模式的卡生效**：分层是为「一棵自动组织起来的树」设计的——普通
+    对话卡有自己的角色绑定，不该被深度改写（否则用户在设置里配的 execute 模型
+    会被一张卡在树里的位置悄悄覆盖）。
+    """
+    tiers = cfg.get("tiers") or {}
+    if not tiers or not card_id or str(role) not in _TIER_ROLES:
+        return None
+    try:
+        from ..storage import card_store
+        meta = card_store._meta_of(str(work_id or ""), str(card_id)) or {}
+    except Exception:  # noqa: BLE001 读不到卡 ⇒ 不分层
+        return None
+    if not meta.get("auto_mode"):
+        return None
+    depth = _card_depth(str(work_id or ""), str(card_id))
+    hit = tiers.get(f"depth_{depth}") or tiers.get("default")
+    if not hit:
+        return None
+    # [智能路由 2026-10-20] tier 值可以是**列表**：交给 gateway 按**实时占用率**
+    # 选（余量最大的优先），不是哈希分散——哈希只保证"分散"，不保证"不撞"：
+    # 哈希选中的端点满了还是要排队，旁边空着的不去用。
+    # gateway 拿不到（未初始化/测试）⇒ 退回 crc32 分散（同卡稳定、跨卡分散）。
+    if isinstance(hit, (list, tuple)) and hit:
+        try:
+            from . import model_service as _ms
+            # 上层（depth ≤ 1）主备顺序优先；深层（depth ≥ 2）轮询分散
+            _mode = "primary" if depth <= 1 else "spread"
+            picked = _ms.get_gateway().pick_from(list(hit), mode=_mode)
+            if picked:
+                return picked
+        except Exception:  # noqa: BLE001 gateway 不可用 ⇒ 退回静态分散
+            pass
+        import zlib
+        idx = zlib.crc32(str(card_id).encode("utf-8")) % len(hit)
+        return str(hit[idx])
     return str(hit)
 
 

@@ -101,6 +101,26 @@ app = FastAPI(title="推演agent画布 v1")
 
 startup_init()
 
+
+@app.on_event("startup")
+async def _start_auto_scheduler() -> None:
+    """[调度改造 2026-10-19 · 5704 承载力] 启动建卡点火调度器。
+
+    容量取 ``config.models.yaml`` 的 ``concurrency.default``（缺省 3）：
+    同时最多 N 个回合在跑，其余排队。建卡行为不变，只是不瞬间爆发。
+    """
+    try:
+        from src.api import model_config, scheduler
+        limit = 3
+        try:
+            cfg = model_config.load().get("concurrency") or {}
+            limit = int(cfg.get("default") or 3)
+        except Exception:  # noqa: BLE001 配置读不到就用 3
+            limit = 3
+        scheduler.start(limit)
+    except Exception as exc:  # noqa: BLE001 调度器起不来不影响主服务
+        print(f"[startup] 调度器启动失败（不阻断）: {exc}", flush=True)
+
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)
 # [模型设置第二步 2026-10-12] 设置接口（供应商/模型/角色绑定 + 密钥 + 备份还原）
 from src.api.settings_api import router as settings_router  # noqa: E402

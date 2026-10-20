@@ -322,6 +322,56 @@ def _lock_for(key: str) -> threading.RLock:
     return lock
 
 
+# ============================================================
+# [存储拆锁 2026-10-19 · 5704 承载力迭代]
+#
+# 病根：原先**所有读**都经 `_read_sync` 抢同一把写锁（`_lock_for`）＋共用同一条
+# 连接 ⇒ 104 个并发回合的读全在排队，前端渲染也跟着排，画布卡死。
+#
+# 拆法：只读走**每线程一条独立只读连接**（`mode=ro`）。WAL 天然支持「多读一写」，
+# 读与读、读与写都不再互斥；写仍然串行（一写）。
+#
+# 约束：`run_read` 的 fn **必须是纯查询**——只读连接上执行写会抛
+# `sqlite3.OperationalError: attempt to write a readonly database`。这是有意的
+# 硬约束：真要在读路径里写，那是调用方语义错了，应该走 `run_write`。
+# ============================================================
+#: 只读连接池，key = (库路径, 线程 id)。
+#: **不用 threading.local**：`asyncio.to_thread` 走线程池，每个线程一条连接，
+#: 而 thread-local 只能从**本线程**访问到自己的 `.conn` ⇒ `reset_caches` 清不掉
+#: 别的线程的连接，测试之间会读到上一个 tmp 库（实测 `test_v3_v4_v5_loop_end_to_end`
+#: 单跑通过、整套失败，正是这个原因）。显式 map 才能全量关闭。
+_read_conns: dict[tuple[str, int], sqlite3.Connection] = {}
+
+
+def _read_conn(work_id: str) -> Optional[sqlite3.Connection]:
+    """取该 work 的**只读**连接（每线程一条，懒建）。库不存在 ⇒ None。"""
+    db = db_path(work_id)
+    if not db.exists():
+        # 与 `_get_conn` 同口径：有 md 无库 ⇒ 明确报错，绝不静默返空
+        _guard_migration(work_id, db)
+        return None
+    key = (str(db), threading.get_ident())
+    conn = _read_conns.get(key)
+    if conn is None:
+        # 首次建只读连接前，**先走写连接做一次 schema 就绪检查**（`_ensure_schema`
+        # 里有 ALTER/删列等写操作，只读连接做不了）。只在这一刻持锁，之后所有读
+        # 都不再抢锁——这正是"拆锁"的意义。
+        try:
+            with _lock_for(str(db)):
+                _get_conn(work_id, create=False)
+        except Exception:  # noqa: BLE001 schema 检查失败不阻断读（旧数据可能仍可读）
+            logger.warning("[card_db] schema 就绪检查失败（继续只读）work=%s", work_id)
+        try:
+            conn = sqlite3.connect(
+                f"file:{db.as_posix()}?mode=ro", uri=True, timeout=5.0,
+            )
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error:  # noqa: BLE001 建不了只读连接 ⇒ 退回共享连接路径
+            return None
+        _read_conns[key] = conn
+    return conn
+
+
 def reset_caches() -> None:
     """测试沙箱用：关掉全部连接、清空缓存（用例之间 work_id 相同但库在不同 tmp 目录）。"""
     for conn in _conns.values():
@@ -331,6 +381,14 @@ def reset_caches() -> None:
             pass
     _conns.clear()
     _locks.clear()
+    # [存储拆锁 2026-10-19] 只读连接同样要关：用例之间库文件换目录，旧连接会
+    # 指着上一个 tmp 库（读到空表/旧数据，测试互染）。
+    for conn in _read_conns.values():
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    _read_conns.clear()
 
 
 def close_work(work_id: str) -> None:
@@ -345,6 +403,16 @@ def close_work(work_id: str) -> None:
             conn.close()
         except Exception:  # noqa: BLE001
             pass
+    # [存储拆锁 2026-10-19] 只读连接也握 -wal/-shm：恢复快照后不关，读会拿到旧视图。
+    # key 是 (库路径, 线程 id) ⇒ 要按库路径扫出所有线程的那条。
+    _db = str(db_path(work_id))
+    for _k in [k for k in _read_conns if k[0] == _db]:
+        ro = _read_conns.pop(_k, None)
+        if ro is not None:
+            try:
+                ro.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _guard_migration(work_id: str, db: Path) -> None:
@@ -634,11 +702,22 @@ async def run_read(work_id: str, fn: Callable[[sqlite3.Connection], Any],
 
 
 def _read_sync(work_id: str, fn: Callable[[sqlite3.Connection], Any], default: Any) -> Any:
-    with _lock_for(str(db_path(work_id))):
-        conn = _get_conn(work_id, create=False)
-        if conn is None:
-            return default
+    """只读执行（**不抢写锁**，走线程内独立只读连接）。
+
+    [存储拆锁 2026-10-19] 见 `_read_conn` 的病根段：原先持写锁 ⇒ 读全排队。
+    现在读走 `mode=ro` 独立连接，WAL 下与写并行；`_read_conn` 拿不到（库不存在
+    / 建连失败）⇒ 返回 default（与旧行为一致）。
+    """
+    conn = _read_conn(work_id)
+    if conn is None:
+        return default
+    try:
         return fn(conn)
+    except sqlite3.OperationalError as exc:
+        # 只读连接上遇到写操作 ⇒ 调用方语义错（该走 run_write），如实抛出便于定位
+        raise sqlite3.OperationalError(
+            f"只读路径出现写操作（run_read 的 fn 必须纯查询）: {exc}"
+        ) from exc
 
 
 def read_sync(work_id: str, fn: Callable[[sqlite3.Connection], Any],
