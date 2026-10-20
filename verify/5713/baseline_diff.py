@@ -47,7 +47,81 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_BASELINE = Path(__file__).resolve().with_name("baseline_known_red.json")
-DEFAULT_CMD = [sys.executable, "-m", "pytest", "tests", "-q", "--junitxml={xml}"]
+
+
+# ─────────────────────────────── 解释器：钉到**本项目自己的** venv（card_022）
+#
+# 旧写法是 ``sys.executable``。在本机，「谁启动了本工具」的那个 python 并**不是**
+# 本项目的 venv（实测：它是隔壁项目的 .venv，两份 venv 的 fastapi/uvicorn 版本
+# 不同）。于是同一 HEAD、同一条命令，红名单会随**启动者**而变——基线就绑不住
+# 命令作用域了（A7 的「基线绑采集 commit ＋ 命令作用域」要求落空）。
+#
+# 故改成：从**本文件位置**向上找含 ``.venv`` 的那层，取它下面的解释器。
+#   · 不硬编码项目名（B-03「路径无单一注入点」正在修，再写死一个项目名
+#     等于新增一处债）；推导只依赖 __file__ 与 .venv 这一约定；
+#   · 上界由 git 定（主仓根），不会一路走到盘根去捡**别的项目**的 venv；
+#   · 找不到 ⇒ 回退 sys.executable，但**显式告警**并写进基线的
+#     command_scope.note，让「结果可能不可复现」留痕，而不是静默发生。
+def _venv_python_under(base: Path) -> Path | None:
+    """base 下若有 .venv，返回其解释器（Windows 布局优先，其次 POSIX）。"""
+    for rel in (("Scripts", "python.exe"), ("bin", "python")):
+        cand = base.joinpath(".venv", *rel)
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _main_repo_root(cwd: Path) -> Path | None:
+    """主仓根＝``git rev-parse --git-common-dir`` 的父目录；取不到返回 None。
+
+    worktree（``.worktrees/<x>``）里也指回主仓：本项目自己的 .venv 挂在主仓根，
+    worktree 下通常没有副本。没有 git 也不致命——那只是少了上界。
+    """
+    for extra in (["--path-format=absolute"], []):
+        try:
+            r = subprocess.run(["git", "rev-parse", *extra, "--git-common-dir"],
+                               cwd=str(cwd), capture_output=True, text=True)
+        except OSError:  # pragma: no cover  没有 git 二进制
+            return None
+        out = (r.stdout or "").strip()
+        if r.returncode == 0 and out:
+            p = Path(out)
+            if not p.is_absolute():
+                p = (cwd / p).resolve()
+            return p.parent
+    return None
+
+
+def _bounded_ancestors(start: Path) -> list[Path]:
+    """start 及其祖辈，**截到主仓根为止**（含主仓根）。
+
+    截断的意义：宁可回退 sys.executable 并告警，也不能越界去捡父项目/盘根下
+    别的项目的 .venv——悄悄用错环境正是本卡的病灶。
+    """
+    chain = [start, *start.parents]
+    root = _main_repo_root(start)
+    if root is None:
+        return chain
+    kept = [c for c in chain if c == root or root in c.parents]
+    return kept or chain
+
+
+def resolve_project_python(start: Path | None = None) -> tuple[Path, str, Path | None]:
+    """→ (解释器绝对路径, 来源说明, 项目根或 None)。从本文件位置向上推导。"""
+    here = (start or Path(__file__)).resolve()
+    for base in _bounded_ancestors(here.parent):
+        exe = _venv_python_under(base)
+        if exe is not None:
+            return (exe.resolve(),
+                    "项目自己的 .venv：由本文件位置向上找到 %s" % base,
+                    base)
+    return (Path(sys.executable),
+            "⚠ 未找到项目 venv，回退 sys.executable，结果可能不可复现",
+            None)
+
+
+PROJECT_PYTHON, PROJECT_PYTHON_SOURCE, PROJECT_VENV_ROOT = resolve_project_python()
+DEFAULT_CMD = [str(PROJECT_PYTHON), "-m", "pytest", "tests", "-q", "--junitxml={xml}"]
 
 # [5713 · M1] 打印必须不可能把工具搞崩：控制台若是 GBK（本机 cp936），失败签名里的
 # 中文与「⇒」之类字符会抛 UnicodeEncodeError——那会让闸以**非零码**退出，而闸的
@@ -167,10 +241,44 @@ def parse_report(path: Path) -> dict:
 
 # ────────────────────────────────────────────── 跑 pytest
 
+def interpreter_source(exe) -> str:
+    """这个解释器是谁——项目自己的 venv／回退的 sys.executable／--cmd 自定义。
+
+    打印与基线都走这一个判据，避免「打印说 A、基线记 B」。
+    """
+    try:
+        p = Path(str(exe)).resolve()
+        if PROJECT_VENV_ROOT is not None and p == PROJECT_PYTHON.resolve():
+            return PROJECT_PYTHON_SOURCE
+        if p == Path(sys.executable).resolve():
+            return "⚠ 非项目 venv（回退 sys.executable），结果可能不可复现"
+    except OSError:  # pragma: no cover
+        pass
+    return "自定义解释器（--cmd 指定）"
+
+
+def announce_interpreter() -> None:
+    """每次开跑先把「用的哪个解释器」摊开：验收要能一眼核对指向哪个 venv。
+
+    旧打印把解释器缩写成了 ``python``——两个项目各有一份 ``python``，那行等于
+    没说。改成打**完整绝对路径**＋来源。
+    """
+    print("[gate] 实际使用的解释器：%s" % PROJECT_PYTHON)
+    print("[gate] 解释器来源：%s" % PROJECT_PYTHON_SOURCE)
+    if PROJECT_VENV_ROOT is None:
+        print("!" * 78)
+        print("警告：未找到项目 venv，改用 sys.executable，结果可能不可复现")
+        print("      基线的 command_scope.note 会记下这次回退；正式重采前请先备好 <项目根>/.venv")
+        print("!" * 78)
+    sys.stdout.flush()
+
+
 def run_pytest(xml_path: Path, cmd: list[str] | None, cwd: Path) -> tuple[int, str]:
     cmd = list(cmd or DEFAULT_CMD)
     args = [a.format(xml=str(xml_path)) for a in cmd]
-    print("[gate] 跑批：%s" % " ".join(a if not a.startswith(sys.executable) else "python" for a in args))
+    print("[gate] 跑批：%s" % " ".join(args))
+    print("[gate] 实际使用的解释器：%s" % args[0])
+    print("[gate] 解释器来源：%s" % interpreter_source(args[0]))
     print("[gate] cwd=%s" % cwd)
     sys.stdout.flush()
     p = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True,
@@ -260,7 +368,13 @@ def collect(args) -> int:
         "command_scope": {
             "cmd": [a.format(xml="<tmp>.xml") for a in (args.cmd or DEFAULT_CMD)],
             "cwd": str(REPO),
-            "note": "在仓库根（本 worktree）执行；<tmp>.xml 为当次 junit 输出位置，不影响判定",
+            "interpreter": str((args.cmd or DEFAULT_CMD)[0]),
+            "interpreter_source": interpreter_source((args.cmd or DEFAULT_CMD)[0]),
+            "project_venv_root": (str(PROJECT_VENV_ROOT) if PROJECT_VENV_ROOT else ""),
+            "note": ("在仓库根（本 worktree）执行；<tmp>.xml 为当次 junit 输出位置，不影响判定；"
+                     + ("解释器＝项目自己的 .venv（%s）" % PROJECT_VENV_ROOT
+                        if PROJECT_VENV_ROOT else
+                        "警告：未找到项目 venv，改用 sys.executable，结果可能不可复现")),
         },
         "env": env_snapshot(),
         "platform": {"python": platform.python_version(), "os": platform.platform()},
@@ -404,6 +518,7 @@ def main(argv=None) -> int:
     ap.add_argument("--cmd", nargs=argparse.REMAINDER,
                     help="自定义 pytest 命令（须含 {xml} 占位，例：--cmd python -m pytest tests -q --junitxml={xml}）")
     args = ap.parse_args(argv)
+    announce_interpreter()
     return collect(args) if args.collect else diff(args)
 
 

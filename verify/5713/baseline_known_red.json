@@ -1,17 +1,16 @@
 {
   "schema": 1,
   "what": "5713 测试基线（known-red）。比对口径：nodeid ＋ 失败签名。",
-  "collected_at": "2026-10-20T23:31:49",
-  "commit": "29689c1f47c74487b4b1e6e2b22d24151473257d",
+  "collected_at": "2026-10-21T00:19:32",
+  "commit": "faa5fddbbcdc2d69a160e62bd5dab3746a629656",
   "branch": "5713",
   "code_fingerprint": {
     "src": "72b9b935ddd2b8472e5d8e568f1e0df54656b89f",
     "tests": "591cbc5ff32fcd59b80dfc452f7e803fb57a8a0b"
   },
-  "code_fingerprint_note": "被测代码面指纹＝采集 commit 下 src/ 与 tests/ 两棵树的 sha。用途：本文件入册那次提交会把 HEAD 往前推一笔（改 verify/，零 src），若只绑 commit，闸会在每次入册后立刻喊「过期」，而重采又会再推一笔 HEAD。指纹一致即说明代码面未变。",
   "command_scope": {
     "cmd": [
-      "D:\\AI_station\\写作agent\\.venv\\Scripts\\python.exe",
+      "D:\\AI_station\\推演agent\\.venv\\Scripts\\python.exe",
       "-m",
       "pytest",
       "tests",
@@ -19,7 +18,10 @@
       "--junitxml=<tmp>.xml"
     ],
     "cwd": "D:\\AI_station\\推演agent\\.worktrees\\5713",
-    "note": "在仓库根（本 worktree）执行；<tmp>.xml 为当次 junit 输出位置，不影响判定"
+    "interpreter": "D:\\AI_station\\推演agent\\.venv\\Scripts\\python.exe",
+    "interpreter_source": "项目自己的 .venv：由本文件位置向上找到 D:\\AI_station\\推演agent",
+    "project_venv_root": "D:\\AI_station\\推演agent",
+    "note": "在仓库根（本 worktree）执行；<tmp>.xml 为当次 junit 输出位置，不影响判定；解释器＝项目自己的 .venv（D:\\AI_station\\推演agent）"
   },
   "env": {
     "MOCK_LLM": "0",
