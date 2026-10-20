@@ -253,15 +253,21 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       }
       if (inputBar) inputBar.refresh();   // 会话面到场 ⇒ 输入卡解除 inert
       applyEmptyState(card);
-      await renderInspector();
-      if (stale()) return;
       // [会话渲染单源化 2026-10-15 · C1] 刷新/换卡恢复走**唯一一条路**：
       // GET /timeline → 装配器 → 节点快照 → 渲染。原「先 renderChat 读 /session
       // 上屏消息、再 replayTrace 补过程行」两通道已合并成这一次调用。
+      //
+      // [首屏顺序 2026-10-20] **先出对话，再填右栏**（原来是反的）。
+      // 原因：renderInspector 对角色卡要额外 await /api/.../role（档案+六节+判断簿+
+      // 警报簿+职责书），它压在 replayTrace 之前 ⇒ 用户点卡后先等右栏、才看到对话。
+      // 对话区是主区域，右栏是附属；把主区域的 await 提到前面，点卡立刻出内容。
+      // 仍然是串行（不是并行）——两处都写 DOM，并行会在快速切卡时互相写错卡。
       {
         await EventFlow.replayTrace(WORK_ID, cardId);
         if (stale()) return;
       }
+      await renderInspector();
+      if (stale()) return;
       /* [5702 · 治「切到在跑的卡不再更新」] replayTrace 内部会 stopES 关流；
          恢复完再按后端真实运行态接流——此前只有页面加载（bootRestore）会接，
          页内切卡后只能刷新才动。 */
