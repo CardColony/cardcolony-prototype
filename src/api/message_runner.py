@@ -58,6 +58,7 @@ from . import (
     prompt_log,
     prompts,
     simple_service,
+    steer,
     text_tool_rescue,
     tool_fold,
 )
@@ -108,6 +109,10 @@ class RunState:
     rounds: int = 0
     model_calls: int = 0
     final_reply: Optional[str] = None
+    # [5715] 末轮**原始**正文（compose_delivery 拼接前存下）：收口那条 assistant_text
+    # 事件只落它——各轮正文已按轮单独落事件（见 step() 工具轮分支），
+    # 再落一遍 clean_text（拼接全文）就重复了。会话块内容仍是 clean_text（模型上下文不变）。
+    final_only: str = ""
     # [T14-1-1] 带工具轮的分析正文采集（只读）：落盘型工作流的分析写在带工具轮
     # 的 assistant_content 里，末轮判定只取纯对话轮正文——分析结构性上不了屏。
     # 采集后与末轮回执拼接交付（分析在前、回执在后），不取代回执。
@@ -160,6 +165,9 @@ class RunState:
     #   preamble_emitted —— 固定总领本 run 只发一次；
     #   injection_keys —— 已发动态注入的幂等键集合（同 run 同键不重发）。
     turn_tail: list[dict[str, Any]] = field(default_factory=list)
+    # [5715] 首轮收到的插话暂存（独立于 turn_tail：turn_tail 会被 turn_tail_engaged
+    # 幂等闸挡住，首轮之后插进来的就再也固化不了）。随 _engage_slot 一并固化。
+    steer_tail: list[dict[str, Any]] = field(default_factory=list)
     turn_tail_engaged: bool = False
     preamble_emitted: bool = False
     injection_keys: set[str] = field(default_factory=set)
@@ -492,6 +500,10 @@ def _engage_slot(state: RunState) -> None:
     （轮槽被使用），必须把它们落进轮槽——否则 rounds>=2 的 ``wire_messages``
     会丢掉它们。**只固化注入消息**（``turn_tail`` 不含 user 原文，user 仍走
     既有 ``user_prompt``/``append_plain`` 路径，本函数不改它）。
+
+    [5715] 插话消息（``steer_tail``）同机制固化：首轮收到的插话若暂存在
+    ``turn_tail``，会被 ``turn_tail_engaged`` 幂等闸挡在门外（engaged 已是 True
+    ⇒ 永远不被固化 ⇒ 丢失），故插话用**独立字段**、在本函数里一并固化。
     """
     if state.turn_tail_engaged:
         return
@@ -500,6 +512,32 @@ def _engage_slot(state: RunState) -> None:
         return
     for m in state.turn_tail:
         state.slot.append_plain(m)
+    # [5715] 首轮插话：固化在**用户原文之后**（用户原文在同段先固化）⇒ 顺序正确。
+    for m in state.steer_tail:
+        state.slot.append_plain(m)
+    state.steer_tail = []
+
+
+def _apply_steer(state: RunState) -> int:
+    """取走本卡的待投插话并**插进轮槽**——下一次模型调用即可见。
+
+    [5715] 落点纪律：
+    - rounds==1：暂存 ``steer_tail``，随 ``_engage_slot`` 固化（**在用户原文之后**，
+      顺序与语义都对：先说的事在前，后插的话在后）；
+    - rounds>=2：直接 ``append_plain`` 进轮槽——续跳轮的 ``wire_messages`` 直接
+      带上它（tool 之后跟 user 是合法形态）。
+    """
+    msgs = steer.take_steer(state.work_id, state.card_id)
+    if not msgs:
+        return 0
+    prepared = [{"role": "user", "content": steer.STEER_MARK + t} for t in msgs]
+    if state.rounds <= 1:
+        state.steer_tail.extend(prepared)
+    elif state.slot is not None:
+        for m in prepared:
+            state.slot.append_plain(m)
+    logger.info("[steer] 插话入槽 card=%s round=%s 条数=%s", state.card_id, state.rounds, len(prepared))
+    return len(prepared)
 
 
 async def step(state: RunState) -> StepOutcome:
@@ -525,6 +563,10 @@ async def step(state: RunState) -> StepOutcome:
     # 机械预检、无独立判定调用（旧 JSON 判定轮已退役）。
 
     state.rounds += 1
+    # [5715] 插话入槽：**每次模型调用前**取一次（在 prior 装配之前）——
+    # 续跳轮的 wire_messages 直接带上它 ⇒ 用户在上一轮跑的时候插的话，
+    # 这一轮模型就能看到（不必等整轮收口）。
+    _apply_steer(state)
     # [判断协议改注入 2026-10-14] 判断协议注入（仅轮首、且本卡无活板）——先于
     # 注入事件，使事件序＝user_message → judgment_protocol →（有板时）preamble/
     # injection → round_start。两者互斥（有板无判断、无板无注入来源），不会同现。
@@ -642,6 +684,13 @@ async def step(state: RunState) -> StepOutcome:
             return StepOutcome("continue", "await_step_tool")
 
     if not tool_calls:
+        # [5715] 插话优先于收口：模型这一轮没调工具、正文已定（**正要收口**），
+        # 但用户在模型跑的时候插了话 ⇒ 不收口，把插话插进轮槽、继续下一轮。
+        # 否则那句话会被丢掉（回合收口即清扫残留）——用户说了话，却没人听见。
+        if steer.pending_steer(state.work_id, state.card_id) > 0:
+            _apply_steer(state)
+            state.user_prompt = "用户在你回答时插了话。先读那条插话，再继续。"
+            return StepOutcome("continue", "steered")
         state.final_reply = assistant_content
         if text_rescue_note:
             # 反馈兜底：疑似调用未被识别这个事实必须回到模型上下文，
@@ -668,6 +717,12 @@ async def step(state: RunState) -> StepOutcome:
     # [T11] 经轮槽 append_plain 入槽（首轮用户原文固化＝不折红线之一）
     if state.rounds == 1:
         state.slot.append_plain({"role": "user", "content": state.content})
+    # [5715] 首轮收到的插话：紧接着用户原文固化（**语义顺序**：先说的话在前，
+    # 后插的话在后）。走 steer_tail 暂存、在用户原文之后才进槽。
+    if state.steer_tail and state.slot is not None:
+        for m in state.steer_tail:
+            state.slot.append_plain(m)
+        state.steer_tail = []
     # [当前轮注入消息事件 2026-10-14] 首轮注入消息随之固化进轮槽（幂等）
     _engage_slot(state)
 
@@ -854,6 +909,30 @@ async def step(state: RunState) -> StepOutcome:
              "tool_calls": _asst_msg["tool_calls"]},
             *_round_tool_blocks,
         ])
+    # [5715 · 修] 本轮正文**单独落一条 assistant_text 事件**（只进事件日志，**不写会话块**）。
+    #
+    # 病根：带工具轮的正文只进 state.analysis_parts，收口时与末轮回执**合并成一条**
+    # assistant 会话块落盘 ⇒ 该块必然排在**该 run 全部工具之后**（会话块按 append 序落）。
+    # 于是刷新后按 seq 重建时序：「用户消息 → 一堆工具 → 一大坨合并正文」，
+    # 而活体是「用户消息 → 工具 → 本轮正文 → 工具 → 本轮正文」。
+    # ⇒ 工具归工具、内容给内容、信息顺序全乱。
+    #
+    # 修法（本条只落事件、不动会话块）：
+    #   ① 本轮正文按轮落事件，位置在本轮工具之后 ⇒ 刷新后时序与活体一致；
+    #   ② 收口那条只落末轮回执（finish 里用 event_content 覆盖）⇒ 不与本条重复。
+    # 会话块内容一字不改 ⇒ **模型上下文零变化**（各轮正文早已在轮槽里，
+    # clean_text 的作用只是把它们补进会话文件供下一回合读——那部分完全保留）。
+    if assistant_content and str(assistant_content).strip():
+        try:
+            await session_facade.emit_message_event(
+                state.work_id, state.card_id, "assistant_text",
+                str(assistant_content),
+                run_id=str(state.pair_id or ""), round_=int(state.rounds or 0),
+                model=str(state.model_used or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 事件落盘零阻断（与既有纪律一致）
+            logger.warning("[5715] 本轮正文事件落盘失败（不阻断）card=%s round=%s: %s",
+                           state.card_id, state.rounds, exc)
     state.user_prompt = "工具结果已返回。"
     # [信息流 Task2/打点 A92/A96] 同请求续跳：占位符只进模型不入用户流
     logger.info("[flow] 断点续跳 resume_kind=同请求续跳 no_user_visible=True round=%s card=%s",
@@ -1070,6 +1149,9 @@ def write_logs(state: RunState) -> None:
 #   有分析有回执＝正常拼接；有分析无回执＝只交付中间轮；
 #   皆空＝空回复；无分析有回执＝纯对话轮原样（回归不变）。
 def compose_delivery(state: RunState) -> str:
+    # [5715] 末轮原始正文先存下（此刻 state.final_reply 还是末轮原文；调用方随后会把它
+    # 覆盖成拼接后的 delivered）。收口事件只落它，避免与「各轮正文按轮落的事件」重复。
+    state.final_only = str(state.final_reply or "")
     if state.analysis_parts:
         if state.final_reply:
             state.branch = "normal"
@@ -1182,11 +1264,15 @@ async def finish(state: RunState) -> dict[str, Any]:
     # [T10-1-4] 回复条携带与用户条逐字相同的 pair_id。
     # [A6b/T024] 写切换：门面追加（V1 文件现场升格；end 显式传入——正常回合
     # 缺省 model_done，human_stop/policy_stop 由控制面消费段写定）。
+    # [5715] event_content：事件流里这条 assistant_text **只落末轮原始正文**（state.final_only），
+    # 不落 clean_text（拼接全文）——各轮正文已按轮单独落事件（step() 工具轮分支），
+    # 这里再落一遍就重复了。**会话块 content 仍是 clean_text，一字未改**
+    # ⇒ 模型上下文零变化（clean_text 的作用是把各轮正文补进会话文件供下一回合读）。
     await session_facade.append(state.work_id, state.card_id, {
         "role": "assistant", "content": state.clean_text,
         "model": state.model_used, "pair_id": state.pair_id,
         "end": state.end_reason or "model_done",
-    })
+    }, event_content=state.final_only)
     logger.info("[T10] 回复落盘 pair_id=%s card=%s end=%s",
                 state.pair_id, state.card_id, state.end_reason or "model_done")
     # [手动停止板清理 2026-10-14] 中止态（human_stop/policy_stop）清理残留板：

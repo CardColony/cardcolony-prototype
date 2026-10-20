@@ -4,25 +4,25 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=36";
+import { API } from "./esm/api.js?v=37";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=49";
+import { EventFlow } from "./stream.js?v=51";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=36";
+import { notify, postStop } from "./esm/api.js?v=37";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=35";
-import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=31";
+import { createNavSystem } from "./esm/nav_system.js?v=36";
+import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=32";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
 import { ComposerSubmissionPolicy } from "./esm/flow/submission-policy.js?v=1";
 import { InputMachine } from "./esm/flow/machine.js?v=1";
 import { createInputBar } from "./esm/flow/input-bar.js?v=5";
-import { createQueueStore } from "./esm/flow/queue-store.js?v=1";
-import { createQueueDock } from "./esm/flow/queue-dock.js?v=2";
+import { createQueueStore } from "./esm/flow/queue-store.js?v=2";
+import { createQueueDock } from "./esm/flow/queue-dock.js?v=3";
 
 /* [惰性新建 2026-10-17] WORK_ID 由 const 改 let：草稿项目/草稿卡落库成功后就地换真 id
  * （不整页跳转，首条消息"只感知正常发送"），本模块所有闭包引用同一绑定，随取随新。
@@ -1432,9 +1432,39 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
    * 提交去向（原文 default-sink 的 shell 侧）：
    *   · 不忙 ⇒ 直接发（send()）
    *   · 忙 ⇒ 入队（QueueDock 显示；轮结束由 drainQueue 依序发出）
-   * ★ 本机后端没有「轮内投递窗口」⇒ steer（插话）无法真正注入正在跑的轮：
-   *   per-row steer 实现为「提到队首，轮结束优先发出」，整队 steer 在运行中
-   *   只提示不改状态。这是**适配层**的已知边界，不是对 dsh 语义的改写。 */
+   *   · 忙且 steer ⇒ **真插话**（[5715] 后端已开轮内投递窗口，见 steerToRunning）
+   */
+
+  /* [5715] 插话投递：把消息送进**正在跑**的这一轮。
+   *   投递成功 ⇒ 消息已经在轮里了（从队列摘掉）；投递不上（这一轮刚收口）
+   *   ⇒ 退回队列，轮结束后照常发出——**不丢消息，也不假装成功**。 */
+  function steerToRunning(text, queuedRows) {
+    const cid = (currentCard && currentCard.meta && currentCard.meta.card_id) || "";
+    if (!cid) { notify("当前没有打开的卡", "warn"); return; }
+    const fallback = () => {
+      if (!queuedRows) queueStore.enqueue(text);
+      if (inputBar) inputBar.commitSent(inputBar.machine);
+      if (queueDock) queueDock.refresh();
+    };
+    API.postSteer(WORK_ID, cid, text).then((res) => {
+      if (res && res.applied) {
+        if (queuedRows) {
+          queuedRows.forEach((r) => { queueStore.updateQueue(r.id, { kind: "remove" }); });
+        } else if (inputBar) {
+          inputBar.commitSent(inputBar.machine);
+        }
+        if (queueDock) queueDock.refresh();
+        notify("已插话：这一轮模型就能看到", "success");
+      } else {
+        fallback();
+        notify("这一轮刚结束，已改为排队发送", "info");
+      }
+    }).catch(() => {
+      fallback();
+      notify("插话投递失败，已改为排队发送", "warn");
+    });
+  }
+
   function initComposer() {
     const seat = document.getElementById("composerSeat");
     if (!seat) return;
@@ -1445,6 +1475,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       store: queueStore,
       isMutable: () => !sessionState.subagent,
       isRunning: () => sessionState.running,
+      /* [5715] 队列行上的「插话发送」＝真投递（后端轮内投递窗口）。
+         投递成功后由 steerToRunning 把这条从队列摘掉。 */
+      onSteer: (row) => {
+        const text = String((row && row.text) || "");
+        if (!text) { notify("这条消息没有内容", "warn"); return; }
+        steerToRunning(text, [row]);
+      },
       notify: (level, text) => notify(text, level === "error" ? "error" : "info"),
     });
     const barMount = document.createElement("div");
@@ -1460,6 +1497,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         submit(draft, mode) {
           const text = String(draft == null ? "" : draft);
           if (sessionState.running) {
+            /* [5715] 真插话：mode==="steer" 时把这条**投递进正在跑的这一轮**
+               （后端 steer 通道：下一次模型调用即可见），而不是干等整轮收口。
+               此前这里只有入队，UI 上的「插话」二字是假的。 */
+            if (mode === "steer") { steerToRunning(text); return; }
             queueStore.enqueue(text);
             // [5702] 入队也走「发起会话」：同步路径下就是当前绑定的 machine
             if (inputBar) inputBar.commitSent(inputBar.machine);
@@ -1471,7 +1512,11 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         stop() { doStop(); },
         steerQueue() {
           if (!sessionState.running) { drainQueue(queueStore); return; }
-          notify("本轮进行中，排队消息将在轮结束后依序发出", "info");
+          /* [5715] 整队插话：把排队里的消息**一次性**插进正在跑的这一轮。
+             原来这里只弹一句「轮结束后依序发出」——用户等的是 1–8 分钟。 */
+          const items = queueStore.queued();
+          if (!items.length) { notify("没有排队中的消息", "info"); return; }
+          steerToRunning(items.map((i) => String(i.text || "")).join("\n\n"), items);
         },
         notify,
       },
