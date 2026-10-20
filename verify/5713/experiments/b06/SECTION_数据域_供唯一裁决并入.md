@@ -31,7 +31,7 @@
 - **病2**（`data_snapshot.py:368`）：返回的 `dir` 恒不存在（缺 work 层；拍全部时只给单个 dir）。
 - **病4**（`restore_from_snapshot.py:25/27/69`）：CLI 硬编码 `推演agent_data_snapshots`＋脚本目录自算根；
   T9 真跑恢复回 `ok=True` 却写进 `.worktrees\5713\works\` 平行树、活实例零改动；盘上 4 个 `*_data_snapshots` 根 ⇒ 跨实例读错库。
-- **病4b（新）**：见上表 R10 行；`data_snapshot.py:468-475` 把「删不掉 `-wal`/`-shm`」降级成 warning 后照发 `ok=True`。
+- **病4b（新）**：见上表 R10 行；`data_snapshot.py:467-476` 把「删不掉 `-wal`/`-shm`」降级成 warning 后照发 `ok=True`（锚点含 `:467 copy2` 与 `:476 return {"ok": True}` —— 「真写了／清不掉只 warning／照样回 ok」三段同属一个缺陷）。
 - **修法**：① 返回**真实批次**（或逐批给 `{root, work_id, stamp}`）；② CLI 不再自算根，直接用库常量与库函数；
   ③ 恢复落点显式给 target，写前校验落在实例数据根内，否则拒绝；④**恢复 db 改用 SQLite backup API 反向导入**
   （`src.backup(dst)` + `wal_checkpoint(TRUNCATE)`，实测绿；不依赖任何句柄状态），文件级替换只能当兜底且删不走即 `ok=False`；
