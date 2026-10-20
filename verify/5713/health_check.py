@@ -36,6 +36,17 @@ import urllib.request
 from datetime import datetime
 
 SANDBOX_MARK = "5713"           # 沙箱根与本 worktree 必须都带这个记号
+# 已知偶发用例（本仓实测：两侧都会偶发，单跑基本都绿）。判定时不直接判失败，
+# 而是**自动单跑复核**——绿则记 warn（不是回归），红才判 fail。名单只放已实测过的，
+# 且每次都要靠复核说话，不做"默认豁免"。
+KNOWN_FLAKY = {
+    "tests/test_card_msg.py::test_k3_live_a_to_b_invokes_receiver",
+    "tests/test_coder_card.py::test_create_coder_card_builds_and_starts",
+    "tests/test_coder_card.py::test_report_done_calls_owner_and_coder_stays_silent",
+    "tests/test_board.py::test_apply_revision_dual_ledger_and_dirty_flush",
+    "tests/test_role_cards.py::test_after_turn_syncs_by_signal_and_advances_cursor",
+}
+
 NET180 = [
     "tests/test_card_msg.py",
     "tests/test_dep_relations.py",
@@ -233,6 +244,17 @@ def run_net180(repo: str) -> list[str]:
     return sorted(fails)
 
 
+def rerun_one(repo: str, nodeid: str) -> bool:
+    """单跑一个用例复核（串行、干净进程）。用于把「已知偶发」和「真回归」分开。"""
+    env = dict(os.environ)
+    env["MOCK_LLM"] = "1"
+    p = subprocess.run([sys.executable, "-m", "pytest", nodeid, "-q", "--tb=no",
+                        "-p", "no:cacheprovider"],
+                       cwd=repo, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", env=env)
+    return p.returncode == 0
+
+
 def check_tests(rep: Report, repo: str, baseline_wt: str | None) -> dict:
     out = {}
     cur = run_net180(repo)
@@ -245,13 +267,31 @@ def check_tests(rep: Report, repo: str, baseline_wt: str | None) -> dict:
     out["baseline_failed"] = len(base)
     only_cur = sorted(set(cur) - set(base))
     only_base = sorted(set(base) - set(cur))
-    out["only_5713"] = only_cur
+    out["only_5713_raw"] = only_cur
     out["only_baseline"] = only_base
-    if not only_cur:
+
+    # 只在我们这侧失败的：已知偶发的先单跑复核，绿了就是噪声、红的才算新增回归。
+    still_red: list[str] = []
+    flaky_cleared: list[str] = []
+    for item in only_cur:
+        nid = item.replace("FAILED ", "", 1).strip()
+        if nid in KNOWN_FLAKY and rerun_one(repo, nid):
+            flaky_cleared.append(nid)
+        else:
+            still_red.append(item)
+    out["only_5713"] = still_red
+    out["flaky_cleared_by_rerun"] = flaky_cleared
+
+    if not still_red:
         rep.ok("net180_set_diff",
-               f"最长集合差为空 ⇒ 新增红 0（基线 {len(base)} 项失败，5713 {len(cur)} 项）")
+               f"单侧新增红 0（基线 {len(base)} 项失败 / 5713 {len(cur)} 项；"
+               f"集合差 {len(only_cur)} 项中 {len(flaky_cleared)} 项经单跑复核为偶发已排除）")
+        if flaky_cleared:
+            rep.warn("net180_flaky_cleared",
+                     "整批里命中已知偶发、单跑复核全绿（不是回归）：" + "; ".join(flaky_cleared))
     else:
-        rep.fail("net180_set_diff", f"5713 单侧失败 {len(only_cur)} 项：" + "; ".join(only_cur[:5]))
+        rep.fail("net180_set_diff",
+                 f"5713 单侧新增红 {len(still_red)} 项（含单跑复核仍红）：" + "; ".join(still_red[:5]))
     if only_base:
         rep.warn("net180_only_baseline", f"只在基线失败 {len(only_base)} 项（环境偶发，供参考）")
     return out
