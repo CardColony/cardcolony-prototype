@@ -298,7 +298,7 @@ def test_frontend_version_stamps_bumped():
     assert "./stream.js?v=42" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=4" in _read("static/workspace.js")
     assert "/static/style.css?v=41" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=2.3" in _read("templates/card.html")
+    assert "/static/esm/main_chat.js?v=2.4" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════
