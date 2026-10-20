@@ -181,6 +181,9 @@ async def test_verdict_alarm_correction_and_linked_message(work):
     alarm_id = r["data"]["alarm_id"]
     alarms = role_room.list_alarms(wid, "open", rid)
     assert len(alarms) == 1 and alarms[0]["severity"] == "warn"
+    assert alarms[0]["question"] == "旧数据兼容 UTC 还是统一新口径？"
+    assert alarms[0]["default_action"] == "按统一新口径执行，旧数据只读"
+    assert alarms[0]["options"] == ["保留旧数据兼容", "统一新口径并迁移"]
     assert await role_room.ack_alarm(wid, alarm_id) is True
     assert role_room.list_alarms(wid, "open", rid) == []
 
