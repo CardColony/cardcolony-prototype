@@ -106,6 +106,13 @@
 - 做到 ⇒ 断言滞后（改测试）；做不到 ⇒ **真坏**（改代码）。
 - 判完必须落一条裁决（"这是要的新契约"也是裁决，不能默认）。
 
+**更强的机械形式（本轮补入）：钉「破坏点前一提交」跑同一条用例。**
+`git worktree add --detach <疑似破坏提交>~1` → 同用例跑 3 次 → 旧码 3/3 绿、新码 3/3 红 ⇒ 不但证明"现在没做到"，还证明"**曾经做到过，是被这一刀砍坏的**"。比 10 行链路脚本硬：脚本只证当下，对照能证因果。`human_stop` 即按此判定（见 R10）。
+
+**子形态「回执不诚实」（card_015 提出，本域采纳）**：`ok=True` 但效果未达成——不是"声明的意图没做到"，是"**回执谎报做到了**"。判据极廉价：失败信息里同时出现 `ok=True` 与「内容未变」即直接落这一档，**不必再跑整套×3**（它的问题不是不稳定，是返回值在撒谎）。实例：`restore_from_snapshot` 返回 `ok=True`，读回仍是恢复后写入的版本。
+
+**口径纪律（本轮踩过的坑）**：`git log -S <符号>` 是**字符串增删**口径，不是语义口径——某刀引入的行为若不含该字面量（如 `human_stop` 那刀用的是 `pending_stop()` ＋合成帧），`-S` 会完全漏掉。查"哪个提交引入了这个行为"要用 `git blame -L` / 二分 / 旧码新码对照，**不能只凭 `-S` 下结论**。
+
 ### 第 4 步（噪声归因）：定族再修，禁止"加重试"
 固定时间窗（`for _ in range(N): sleep(0.05)`）／轮询谓词≠断言目标／跨用例共享状态／并发写同一文件——各配一个定性实验。
 **禁止的处置**：`--reruns` 重试、放宽阈值、拉长 sleep 常数。那只会把偶发红变成永远绿，把噪声藏起来（本项目**没装** `pytest-timeout`/`pytest-rerunfailures`/`pytest-randomly`/`xdist`，这是唯一没被工具掩盖的原因，别装回来当解药）。
@@ -155,12 +162,14 @@
 - `glm-flash`→`glm-53-flash`；mock 标签变 `minimax-m31-flash-preview`。
 - **复现**：`pytest tests/test_condfold.py::test_v3_condense_call_targets_glm_flash -q`。
 
-### R10 · 真坏候选（**6 条，本轮不下"真坏"结论，只给判据与归属**）
+### R10 · 真坏候选（**原 6 条；至本轮收口已定性收敛为 3 条真坏 ＋ 2 条改判 ＋ 1 条并入**）
+
+> 收敛账：**3 条真坏**＝snapshot_restore（数据域已定性）／human_stop（架构域已定性，本卡独立复现旧过新败）／CSS 9px（前端）；**2 条改判语义型断言滞后**＝模型优先级（`T=fd11ce3` 是 `C=34df2b5` 祖先）；**1 条并入契约迁移**＝`block3_driver_runs_after_mutex_release`（M3 改完仍红则按第 3 步重判）。下表的判定标准不变：只给判据与归属，不代他域下结论。
 | 用例 | 现象 | 归属 |
 |---|---|---|
 | `test_snapshot_roundtrip::test_snapshot_restore_roundtrip` | `restore_from_snapshot` 返回 `ok=True`，读回仍是"第二版正文"（未回滚） | **数据域**（会骗人的恢复） |
 | ~~`test_model_override_scope` ×2~~ | **已改判为「语义型断言滞后」**：`T=fd11ce3` 是 `C=34df2b5` 的祖先，C 只改 `src/api/model_config.py`、`tests/` 0 文件；C 的动机是修用户可见 bug（work 级覆盖被丢＝页面切模型不生效）⇒ 改测试不改代码 | 已结（本卡独立复跑 2 failed/13 passed 确认） |
-| `test_slots_control::test_midflight_stop_closes_turn_human_stop` | 正文对，块尾 `end` 是 `model_done` 而非 `human_stop`（人停优先权） | 架构域（回合收口） |
+| `test_slots_control::test_midflight_stop_closes_turn_human_stop` | 正文对，块尾 `end` 是 `model_done` 而非 `human_stop`。**破坏点＝`776b9e5`(10-15)**：`model_service.py:130-139` 的 `pending_stop()` 窥视断流＋合成 `tool_calls: []`，使人停回合第一次走进 `message_runner.py:740/748` 那个不查 control 的出口，绕开 `:991` 的正确闭合。**契约＝`a0c9aae`(10-10)**（`tests:156` 的 `end` 断言与 `message_runner:216-218` 消费段同出，早破坏 5 天）⇒ 无任何提交声明契约变更。**旧过新败本卡独立复现**：`de36f1c`(＝`776b9e5~1`) **3/3 passed**、`f822911` **3/3 failed** | 架构域（修点＝`message_runner.py` 出口，不稳点锚定 `model_service.py:130-139`） |
 | `test_frontend_readability::test_u1_font_sizes_within_allowed_set` | CSS 字号越集 | 前端（有 `.mjs` 网，但不在 pytest 内） |
 | `test_auto_mode::test_block3_driver_runs_after_mutex_release` | 第二轮没跑起来 | 已归入 1-契约迁移·驱动；**该族里唯一可能不是断言滞后的**，M3 改完仍红则按第 3 步重判 |
 
@@ -194,7 +203,7 @@
 
 - 没有改任何产品代码、没有改任何断言、没有动 `tests/conftest.py`，没有动 5700。
 - 没有把任何红"修绿"，也没有给任何 flake 加重试或放宽阈值。
-- 没有对 R10 的 6 条下"真坏"结论（证据不足不下结论，只给判据与归属）。
+- 没有代他域对 R10 各条下"真坏"结论（只给判据与归属）；但**对 human_stop 一条做了独立复算**：`de36f1c` 3/3 passed vs `f822911` 3/3 failed（旧过新败），并据此更正了我上一版给出的错误理由（见 D05）。
 - 没有给 4 条自不稳用例的失败率定量（n=3 只能定性"存在"）。
 
 ---
