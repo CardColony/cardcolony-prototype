@@ -1,0 +1,41 @@
+{
+  "_说明": "这是给 exp_scenario.py up 用的场景规格**模板**。接口归环境 owner（card_005），内容归 CEO —— 节点使命请你本人填，工具里不硬编码、我也不会替你造。填完删掉本 _说明 段。",
+  "_怎么用": "python verify/5713/exp_scenario.py up --spec verify/5713/exp_scenario.spec.example.json",
+  "work_title": "涌现实验-第N轮",
+  "root_auto": true,
+
+  "nodes": [
+    {
+      "key": "A",
+      "title": "（节点A的卡名）",
+      "goal": "（节点A持的使命。写清：它要做什么、做到什么算完、它对另外两张卡知道什么/不知道什么 —— 信息不对称是实验变量，别写成互相通报）"
+    },
+    {
+      "key": "B",
+      "title": "（节点B的卡名）",
+      "goal": "（节点B的使命）"
+    },
+    {
+      "key": "C",
+      "title": "（节点C的卡名）",
+      "goal": "（节点C的使命）"
+    }
+  ],
+
+  "role": {
+    "_说明": "观测角色。不需要就整段删掉。",
+    "title": "观测员",
+    "charter": "（观测员持什么职责：盯什么、什么条件下建议、什么条件下报警、默认沉默）",
+    "jurisdiction": {
+      "domain": "observation",
+      "statement": "（一句话：它负责观测什么）",
+      "exclusive_key": "observation"
+    },
+    "watch": ["A", "B", "C"],
+    "signals": ["turn_completed", "status_changed", "decision_appended"],
+    "speak_contract": {
+      "advice_when": ["gap_or_risk"],
+      "alarm_when": ["mutually_exclusive_fact"]
+    }
+  }
+}
