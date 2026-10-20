@@ -150,4 +150,8 @@ if __name__ == "__main__":
     # 实例（PID 30548）占用——非本任务启动，故不抢占、不终止，改用相邻空闲端口。
     # 换端口不影响取证：跑的是同一批路由函数与同一份静态资源。
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5702
+    # [goal 域 2026-10-20] 本脚本**不 import main**（见文件头说明），所以 main.py 里
+    # 的 startup 钩子在这条路径上不会跑——续轮驱动必须在这里显式装载。
+    from src.goal import driver as _goal_driver
+    _goal_driver.install()
     uvicorn.run(app, host="127.0.0.1", port=port)
