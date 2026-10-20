@@ -55,7 +55,7 @@ def test_version_and_ontology():
     [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     auto 卡工具面件数变化）。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-15"  # [G2] tc-9→tc-10（+通信两件进 auto 面）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"  # [G2] tc-9→tc-10（+通信两件进 auto 面）
     assert "propose_status" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_REGISTRY["propose_status"].readonly is True
     assert "propose_status" in card_tools.TOOL_SWITCH

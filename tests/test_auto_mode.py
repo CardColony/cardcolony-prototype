@@ -600,7 +600,7 @@ def test_block4_prompt_version_and_section():
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-15"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
