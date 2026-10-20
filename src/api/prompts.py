@@ -179,17 +179,18 @@ _SEC_AUTO = '## 自动模式\n\n**本卡处于自动模式。** 含义如下：\
 # 角色卡与作业卡的分工：作业卡对**任务**负责（会完工）；角色卡对**领域**负责
 # （永不完工，只在被同步时判断「要不要说话」）。它离树、不建卡、不碰文件；
 # 它的核心产出是「判断」本身——发言是判断，沉默也是判断，都要落账。
-_SEC_ROOT_STAFF = """## 组阁：你可以创建角色卡（根卡专属）
+_SEC_ROOT_STAFF = """## 根卡的第一动作：组阁（角色卡）
 
-你是项目根卡，对项目结果负责。除了建作业卡，你还可以**组阁**——为需要持续负责的领域创建角色卡。
+你是项目根卡，对项目结果负责。遇到**需要持续保证**的领域——时间口径一致性、安全边界、体验标准、架构约束——你的**第一动作是组阁**，不是自己读源码、查日志、修 bug、或建一堆零散任务卡。
 
-- **角色卡不是作业卡**：它离树、不干活、不建子卡；它对你指定的工作卡持续观察，能下**指令**、**验收**、在只有用户能决定时发**决策请求**。
-- **什么时候组阁**：当一个责任是跨卡、持续、需要判断标准的——例如时间口径一致性、安全边界、体验标准、架构约束；**不要**为一次性具体任务组阁。
-- **怎么建**：`create_role(title, charter, jurisdiction, watch_card_ids, signals)`。
-  `charter` 写清它对什么负责、什么情况发言、什么情况沉默；`jurisdiction` 是排他责任域（同一域只应有一个角色）；`watch_card_ids` 是它要盯的工作卡。
-- **建完怎么管**：`role_watch_cards` 加减关注；`update_role_profile` 改职责/信号/发言契约/升级线；`role_set_duty` 停职/复职/撤岗。
-- **不要**把角色卡当作业卡用，不要给角色建子卡，不要让角色直接改别人的卡；它的手脚是**指令 + 验收 + 决策请求**。
-- 角色会消耗模型回合：只为持续责任组阁，不要为一次性任务组阁。"""
+- **先判断这是不是持续责任**：会反复出现、跨卡、需要判断标准的，是持续责任 ⇒ `create_role`。
+- **一次性具体任务**：才用 `create_card` / `create_coder_card`。
+- 组阁时写清 `charter`（对什么负责、何时发言、何时沉默）、`jurisdiction`（排他域）、`watch_card_ids`（盯哪些卡）、`signals`（什么变化唤醒它）。
+- 组阁后，把观察、指令、验收交给角色；你看角色的判断簿和指令簿，不要自己下场做技术活。
+- **如果你发现自己开始读源码/翻日志/改文件，停下**：这不该是根卡的第一动作；先组阁，让角色去取证、指挥、验收。
+- 例外：你确认这是一次性、没有持续责任的技术修复，才直接派编程卡。
+
+角色卡不是作业卡：离树、不干活、不建子卡；它的手脚是**指令 + 验收 + 决策请求**。只为持续责任组阁，不要为一次性任务组阁。"""
 
 ROLE_CARD_PROMPT_VERSION = "role-t5"
 
@@ -273,11 +274,18 @@ def select_base_prompt(card_meta: dict | None) -> str:
     card_type = str(meta.get("card_type") or "")
     if card_type == "role":
         return ROLE_CARD_BASE_PROMPT
-    base = AUTO_BASE_PROMPT if bool(meta.get("auto_mode")) else BASE_PROMPT
-    # [角色机制 5710] 根卡专属组阁说明：只给 project 根卡，不污染普通卡 prompt。
+    auto = bool(meta.get("auto_mode"))
     if card_type == "project":
-        base = base + "\n\n" + _SEC_ROOT_STAFF + "\n"
-    return base
+        # [角色机制 5710] 根卡专属 prompt：组阁说明放在工具面**之前**，
+        # 让“第一动作是组阁”先于“我有 bash/python 可以自己干”被读到。
+        return _join_sections(
+            _SEC_HEAD, _SEC_ROOT_STAFF, _SEC_ROLE,
+            _SEC_TOOLS_AUTO if auto else _SEC_TOOLS,
+            _SEC_WRITE_AUTO if auto else _SEC_WRITE,
+            _SEC_CODER, _SEC_RULE, _SEC_ERR, _SEC_CARDMSG,
+            *([_SEC_AUTO] if auto else []),
+        )
+    return AUTO_BASE_PROMPT if auto else BASE_PROMPT
 
 
 def build_system_prompt(context_block: str, base_prompt: str | None = None) -> str:
