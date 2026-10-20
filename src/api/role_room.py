@@ -993,9 +993,11 @@ async def manual_check(work_id: str, role_id: str) -> dict[str, Any]:
 
 async def record_directive(work_id: str, role_id: str, target_card_id: str,
                            instruction: str, acceptance: str,
-                           msg_id: str = "", due_at: str = "") -> dict[str, Any]:
+                           msg_id: str = "", due_at: str = "",
+                           parent_id: str = "", attempt: int = 1) -> dict[str, Any]:
     rec = await role_store.add_directive(
-        work_id, role_id, target_card_id, instruction, acceptance, msg_id, due_at)
+        work_id, role_id, target_card_id, instruction, acceptance, msg_id,
+        due_at, parent_id=parent_id, attempt=attempt)
     session_ops.ops_log("role_directive", work_id, role_id, {
         "directive_id": rec["id"], "target": target_card_id,
         "instruction": instruction[:160],
@@ -1005,6 +1007,7 @@ async def record_directive(work_id: str, role_id: str, target_card_id: str,
 
 async def verify_directive(work_id: str, role_id: str, directive_id: str,
                            status: str, evidence: str = "") -> dict[str, Any]:
+    await role_store.refresh_overdue(work_id, role_id)
     rec = role_store.get_directive(work_id, directive_id)
     if rec is None or str(rec.get("role_id") or "") != role_id:
         return {"error": f"指令不存在或不属于该角色: {directive_id}"}
@@ -1022,10 +1025,16 @@ async def verify_directive(work_id: str, role_id: str, directive_id: str,
 # 查询（UI / 模型）
 # ============================================================
 
+def open_directives_for(work_id: str, target_card_id: str) -> list[dict[str, Any]]:
+    """目标卡上未验收的指令（issued/rejected/overdue）——收口闸的判据。"""
+    return role_store.list_open_directives(work_id, target_card_id)
+
+
 async def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
     prof = await ensure_profile(work_id, role_id)
     if prof is None:
         return {"role_id": role_id, "error": "不是角色卡或档案缺失"}
+    await role_store.refresh_overdue(work_id, role_id)
     meta = _meta_of(work_id, role_id)
     verdicts = role_store.list_verdicts(work_id, role_id, 30)
     alarms = role_store.list_alarms(work_id, status="", role_id=role_id)
@@ -1062,7 +1071,7 @@ async def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
         "verdicts": verdicts,
         "directives": directives,
         "open_directives": [d for d in directives
-                            if d.get("status") in ("issued", "rejected")],
+                            if d.get("status") in ("issued", "rejected", "overdue")],
         "alarms": alarms,
         "open_alarms": open_alarms,
         "pending_sources": [p["source"] for p in pending],

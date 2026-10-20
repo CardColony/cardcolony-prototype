@@ -179,7 +179,7 @@ _SEC_AUTO = '## 自动模式\n\n**本卡处于自动模式。** 含义如下：\
 # 角色卡与作业卡的分工：作业卡对**任务**负责（会完工）；角色卡对**领域**负责
 # （永不完工，只在被同步时判断「要不要说话」）。它离树、不建卡、不碰文件；
 # 它的核心产出是「判断」本身——发言是判断，沉默也是判断，都要落账。
-ROLE_CARD_PROMPT_VERSION = "role-t3"
+ROLE_CARD_PROMPT_VERSION = "role-t4"
 
 _SEC_ROLE_CARD = '''## 你是谁
 
@@ -208,7 +208,7 @@ _SEC_ROLE_CARD = '''## 你是谁
 - 每次被调起，**必须调用 record_verdict(decision, reason, evidence)**：decision="speak" 或 "silent"，reason 一句话写清依据，evidence 填你实际看过的文件/行/卡。**沉默不落账＝没有判断**，系统会按「机械补记」处理。
 - 只在管辖域内、且**新出现**的风险上发言；没有新增风险就沉默，不要为了说话而说话。发言前先看发言契约的阈值。
 - 普通建议用 send_card_message（msg_notify）发给最相关的工作卡；管辖域内要它**必须做到**的事，用 issue_directive 下指令，并同时给验收判据；严重风险才用 raise_alarm 直通用户。
-- 下了指令之后，下一轮要按实际现状/证据用 verify_directive 验收：达标 complied，未达标 rejected（写清差在哪），不能只听对方回话。
+- 下了指令之后，下一轮要按实际现状/证据用 verify_directive 验收：达标 complied，未达标 rejected（写清差在哪），不能只听对方回话。未验收的指令会阻止目标卡收口（update_goal complete / report_done）；rejected 会自动返工一条新指令（最多 3 次），超限就改判据/换方案/升级，不要机械重试。
 - 若发现**自己此前某条警报判错了**：用 raise_alarm(..., supersedes=<旧 alarm_id>) 发更正，或 correct_alarm(alarm_id) 直接撤回；不要假装没发过。
 - 你只能改**你自己**的现状/定论/影子；不得修改别人的卡、不得建卡、不得调文件或命令。
 - 你的现状写「我最近看到了什么、判断如何」；定论写「我立下的判断标准/判例」。'''

@@ -451,7 +451,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const alarms = (info.alarms || []).slice(0, 10);
     const directives = (info.directives || []).slice(0, 10);
     const openDirs = (info.open_directives || []).length;
-    const dirStatus = { issued: "已下发", complied: "达标", rejected: "未达标", cancelled: "撤销" };
+    const dirStatus = { issued: "已下发", complied: "达标", rejected: "未达标", rework: "已返工", overdue: "已超时", cancelled: "撤销" };
     const pending = (info.pending_sources || []).length;
     const dutyState = duty.state || "active";
     const canRun = dutyState === "active";
@@ -553,7 +553,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
               <div class="role-dir-body">${escapeHtml(d.instruction || "")}</div>
               <div class="role-ve">验收：${escapeHtml(d.acceptance || "（未写）")}</div>
               ${d.evidence ? `<div class="role-ve">证据：${escapeHtml(d.evidence)}</div>` : ""}
-              ${(d.status === "issued" || d.status === "rejected") ? `<div class="role-dir-actions">
+              ${(d.status === "issued" || d.status === "rejected" || d.status === "overdue") ? `<div class="role-dir-actions">
                 <button class="role-dir-verify" data-id="${escapeHtml(d.id)}" data-status="complied">达标</button>
                 <button class="role-dir-verify" data-id="${escapeHtml(d.id)}" data-status="rejected">打回</button>
               </div>` : ""}
@@ -566,6 +566,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
             </select>
             <input type="text" id="roleDirectiveInstruction" class="role-input" placeholder="指令：要它做什么（明确、可执行）">
             <input type="text" id="roleDirectiveAcceptance" class="role-input" placeholder="验收判据：怎么算做到">
+            <input type="text" id="roleDirectiveDue" class="role-input" placeholder="期望完成时间（可选，ISO 时间）">
             <button class="btn" id="roleDirectiveIssue">下指令</button>
           </div>
         </div>
@@ -1159,6 +1160,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         const target = (document.getElementById("roleDirectiveTarget") || {}).value || "";
         const instruction = (document.getElementById("roleDirectiveInstruction") || {}).value || "";
         const acceptance = (document.getElementById("roleDirectiveAcceptance") || {}).value || "";
+        const due = (document.getElementById("roleDirectiveDue") || {}).value || "";
         if (!target || !instruction.trim() || !acceptance.trim()) {
           notify("目标、指令、验收判据都要写", "warn");
           return;
@@ -1167,7 +1169,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         try {
           const r = await API.issueDirective(WORK_ID, currentCard.meta.card_id, {
             target_card_id: target, instruction: instruction.trim(),
-            acceptance: acceptance.trim(),
+            acceptance: acceptance.trim(), due_at: due.trim(),
           });
           notify("指令已下发：" + (r.directive_id || ""), "success");
           await renderInspector();
