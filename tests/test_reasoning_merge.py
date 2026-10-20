@@ -88,3 +88,30 @@ async def test_empty_reasoning_is_not_written(sandbox):
     event_stream.emit(wid, cid, "round_start", {"round": 1})
     await _drain()
     assert not _reasoning(event_log.timeline(wid, cid)), "空思考不该落盘"
+
+
+async def test_pending_reasoning_is_flushed_at_turn_end(sandbox):
+    """〔5715 · 性能·不丢字〕**收口时必落盘**缓冲里的思考。
+
+    思考是「到轮界才合并落一条」的；万一这一轮**没走到任何轮界事件**
+    （异常/中断/直退），缓冲里的思考会**随回合一起丢掉** ⇒ 刷新后看不到这段思考。
+    ⇒ 收口路径（routes 的 finally）无条件 flush 一次。
+    """
+    wid, cid = "work_perf_5", "card_001"
+    event_stream.emit_token(wid, cid, "reasoning_chunk", "没走到轮界的思考", {"model": "m1"})
+    await _drain()
+    assert not _reasoning(event_log.timeline(wid, cid)), "轮界前不该落盘"
+
+    event_stream.flush_pending_reasoning(wid, cid)     # 收口
+    await _drain()
+    rs = _reasoning(event_log.timeline(wid, cid))
+    assert len(rs) == 1, f"收口必须把缓冲的思考落盘（不丢字）：{len(rs)} 条"
+    assert (rs[0].get("data") or {}).get("text") == "没走到轮界的思考"
+
+
+async def test_flush_on_empty_buffer_is_noop(sandbox):
+    """收口时缓冲为空 ⇒ no-op（不产生空事件）。"""
+    wid, cid = "work_perf_6", "card_001"
+    event_stream.flush_pending_reasoning(wid, cid)
+    await _drain()
+    assert not _reasoning(event_log.timeline(wid, cid)), "空缓冲不该落事件"
