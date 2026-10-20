@@ -681,6 +681,7 @@ async def test_k4_sse_frame_on_receiver_key(sandbox):
 import asyncio  # noqa: E402
 import inspect  # noqa: E402
 
+import async_settle  # noqa: E402
 from src.api import message_runner, model_service, routes  # noqa: E402
 
 
@@ -725,13 +726,11 @@ async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
     pending = await card_db.list_pending(wid, "card_003")
     assert any(p["msg_id"] == sent_msg_id for p in pending)
     # A 再跑一个回合：收口 schedule 发现 TRIGGERS 有信 → 异步调起 B
+    _pre = async_settle.snapshot()
     await routes._run_message(wid, "card_002", "继续")
-    # 让出事件循环等 B 的回合跑完
-    for _ in range(60):
-        await asyncio.sleep(0.05)
-        blocks_b = await session_facade.read(wid, "card_003")
-        if any(b.get("actor") == "assistant" for b in blocks_b):
-            break
+    # [5713 · M2] 等这批异步调起自己收口（等待期间**不读**会话文件：读句柄会让
+    # 收口落块的 tmp→os.replace 撞 WinError 5），收口后读一次。
+    await async_settle.settle(since=_pre)
     blocks_b = await session_facade.read(wid, "card_003")
     actors = [b.get("actor") for b in blocks_b]
     # [卡片底座第一步 2026-10-14] 新消息**不进对话块**——B 档案无 card: 块
@@ -744,9 +743,16 @@ async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
         assert b.get("actor") != "human", "激励文不得落成 user/human 块"
         assert "请阅读这些消息并处理" not in str(b.get("content", ""))
     # 回合收口：该信在收件箱里置 consumed（**不删行**）
-    rows = await card_db.run_read(
-        wid, lambda c: [dict(x) for x in c.execute(
-            "SELECT * FROM inbox WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
+    # [5713 · M2] 「assistant 块已出现」≠「收口已把信置 consumed」——旧写法等到
+    # 前者就断言后者（典型「轮询谓词≠断言目标」）。现改为**等断言本身的不变量**
+    # 成立：纯查库、不碰会话文件，故不会再造出上面那种文件争用。
+    async def _consumed_row():
+        _r = await card_db.run_read(
+            wid, lambda c: [dict(x) for x in c.execute(
+                "SELECT * FROM inbox WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
+        return _r if (_r and _r[0]["status"] == "consumed" and _r[0]["consumed_at"]) else None
+
+    rows = await async_settle.wait_until(_consumed_row, what="信在收件箱内置 consumed")
     assert rows and rows[0]["status"] == "consumed" and rows[0]["consumed_at"]
     # A 的档案：assistant 回执正常（A 链路本身无恙）
     blocks_a = await session_facade.read(wid, "card_002")
