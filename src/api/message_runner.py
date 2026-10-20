@@ -568,6 +568,32 @@ def _apply_steer(state: RunState, into_slot: bool = False) -> int:
     return len(prepared)
 
 
+def _board_all_steps_done(work_id: str, card_id: str) -> bool:
+    """板是否**全部步 done**（以板的事实为准，不看「谁交的最后一步」）。
+
+    [5715 · 修] 为什么要有这个：链完成原先只认「**主模型**那次 step_complete 的
+    返回值」里的 ``all_steps_done``。但末步可能��**板自己的执行器**交掉的（主模型
+    随后拿到的是「本步结果已收过」的幂等回执）⇒ ``state.chain_completed`` 永远是
+    False ⇒ 明明板已全 done，提交轮三席却**不会触发**——而末步的工具结果里明写
+    「随后进入提交轮：三席将核对本步成果是否满足判据」⇒ **承诺落空**。
+
+    ⇒ 判据改为：**板全 done ⇒ 链完成**（板是事实，工具返回值是回执）。
+    """
+    try:
+        snap = thinkchain_board.snapshot_sync(work_id, card_id)
+    except Exception:  # noqa: BLE001 读板失败＝按「未完成」处理，绝不抛
+        return False
+    if not snap:
+        return False
+    steps = snap.get("steps") or []
+    if not steps:
+        return False
+    return all(
+        str(s.get("status") or "") == "done"
+        for s in steps if isinstance(s, dict)
+    )
+
+
 async def step(state: RunState) -> StepOutcome:
     """一次状态推进＝工具循环的一个显式状态点。
 
@@ -736,9 +762,15 @@ async def step(state: RunState) -> StepOutcome:
         # done（收口）后、交付前，固定触发三席质询＋统合交付。空手轮旁路
         # （旧「无工具即三席」）退役——直答回合零三席。
         if (thinkchain_enabled() and thinkchain_seats_enabled()
-                and state.chain_completed
                 and not state.seats_done):   # [规划驱动 2026-10-19] 三席另有开关
-            return StepOutcome("seats", "finalize_review")
+            # [5715 · 修] 链完成的判据以**板的真实状态**为准：主模型那次
+            # step_complete 的返回值只是回执（末步若由板的执行器交掉，主模型拿到
+            # 的是幂等回执 ⇒ 标志永远 False ⇒ 承诺的提交轮三席落空）。
+            if not state.chain_completed:
+                state.chain_completed = _board_all_steps_done(
+                    state.work_id, state.card_id)
+            if state.chain_completed:
+                return StepOutcome("seats", "finalize_review")
         return StepOutcome("deliver", "chain_done" if state.chain_completed else "direct")
 
     # —— 有工具调用：本轮执行工具，续跳 ——

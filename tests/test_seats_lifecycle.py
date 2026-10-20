@@ -110,10 +110,12 @@ class RecordingGateway:
     """记录每次模型调用的替身（主模型与三席都记）。"""
 
     def __init__(self, script: list[list[dict[str, Any]]] | None = None,
-                 config: dict[str, Any] | None = None):
+                 config: dict[str, Any] | None = None, on_call=None):
         self.config = config or FAKE_CONFIG
         self.script = script or []
         self.calls: list[dict[str, Any]] = []
+        #: 第 N 次调用时触发的回调（用于模拟「模型跑着的时候板被别人交完了」）
+        self.on_call = on_call
 
     async def call(self, model_name, system_prompt, user_prompt, **kw):
         self.calls.append({
@@ -141,6 +143,9 @@ class RecordingGateway:
             "tools": tools,
             "turn_tail": list(turn_tail or []),
         })
+        if self.on_call is not None:
+            cb, self.on_call = self.on_call, None
+            await cb(self)
         idx = len(self.calls) - 1
         tool_calls = self.script[idx] if idx < len(self.script) else []
         is_seat = str(model_name).startswith("vp")
@@ -156,15 +161,20 @@ class RecordingGateway:
                "tokens_used": 1, "latency_ms": 1}
 
 
+def _create_plan_call() -> dict[str, Any]:
+    """建板那一次的 tool_call（两步计划）。"""
+    return {"name": "create_plan", "arguments": {
+        "name": "两步计划",
+        "steps": [{"id": "s1", "prompt": "做甲", "criteria": "甲的判据是文件存在",
+                   "deliverable": "甲产出", "type": "execute"},
+                  {"id": "s2", "prompt": "做乙", "criteria": "乙的判据是结论落板",
+                   "deliverable": "乙产出", "type": "think"}]}}
+
+
 def _plan_script() -> list[list[dict[str, Any]]]:
     """建板 → 逐步完成 → 收口后空手（触发三席）。"""
     return [
-        [{"name": "create_plan", "arguments": {
-            "name": "两步计划",
-            "steps": [{"id": "s1", "prompt": "做甲", "criteria": "甲的判据是文件存在",
-                       "deliverable": "甲产出", "type": "execute"},
-                      {"id": "s2", "prompt": "做乙", "criteria": "乙的判据是结论落板",
-                       "deliverable": "乙产出", "type": "think"}]}}],
+        [_create_plan_call()],
         [{"name": "step_complete", "arguments": {"result": "甲做完了",
                                                  "criteria_met": "判据满足：文件在"}}],
         [{"name": "step_complete", "arguments": {"result": "乙做完了",
@@ -229,8 +239,7 @@ async def test_seats_triggered_after_chain_done(client, work, monkeypatch):
     body = await _post(client, work["work_id"], work["work_card_id"], "帮我把甲乙两件事做成")
 
     seats = await _wait_for_seats(gw, timeout=20.0)
-    if not seats:
-        pytest.skip("三席本轮未触发（板后台步执行与脚本替身相互干扰，已知不稳定）")
+    assert seats, "三席必须真被调（板全 done ⇒ 提交轮三席）"
     assert len(seats) == len(FAKE_CONFIG["bindings"]["viewpoint"]), \
         f"席数应等于 viewpoint 绑定数：{len(seats)} vs {FAKE_CONFIG['bindings']['viewpoint']}"
     assert sorted(c["model"] for c in seats) == sorted(_seat_model_names()), f"每席各调一次：{seats}"
@@ -280,8 +289,7 @@ async def test_synthesizer_gets_anonymous_seat_sections(client, work, monkeypatc
     await _post(client, work["work_id"], work["work_card_id"], "帮我把甲乙两件事做成")
 
     seats = await _wait_for_seats(gw, timeout=20.0)
-    if not seats:
-        pytest.skip("三席本轮未触发（板后台步执行与脚本替身相互干扰，已知不稳定）")
+    assert seats, "三席必须真被调"
     synth = [c for c in gw.calls if "其他模型的输出" in str(c["user_prompt"])]
     assert synth, f"统合官应被调并收到席材料：{[c['model'] for c in gw.calls]}"
     prompt = synth[0]["user_prompt"]
@@ -314,8 +322,7 @@ async def test_seat_events_order_and_shape(client, work, monkeypatch):
     gw = RecordingGateway(script=_plan_script(), config=FAKE_CONFIG)
     monkeypatch.setattr(model_service, "_gateway", gw)
     await _post(client, work["work_id"], work["work_card_id"], "帮我把甲乙两件事做成")
-    if not await _wait_for_seats(gw, timeout=20.0):
-        pytest.skip("三席本轮未触发（板后台步执行与脚本替身相互干扰，已知不稳定）")
+    assert await _wait_for_seats(gw, timeout=20.0), "三席必须真被调"
     await event_log.drain()
 
     items = event_log.timeline(work["work_id"], work["work_card_id"])
@@ -337,14 +344,54 @@ async def test_seat_events_order_and_shape(client, work, monkeypatch):
 
 # ================================================================ 卡面回写
 
+async def test_chain_completed_judged_by_board_state_not_tool_receipt(
+        client, work, monkeypatch):
+    """〔P15 回归〕链完成的判据＝**板的事实**（全步 done），不是「主模型那次
+    step_complete 的回执」。
+
+    病根：末步若由**板的执行器**交掉，主模型随后拿到的是幂等回执（没有
+    ``all_steps_done``）⇒ ``state.chain_completed`` 永远是 False ⇒ 板明明全 done，
+    提交轮三席**不触发**——而末步的工具结果里明写「随后进入提交轮：三席将核对
+    本步成果是否满足判据」⇒ **承诺落空**。
+
+    本条直接钉判据本身（不构造「在途请求里外部交板」那种假状态——那会让板的后台
+    任务持锁，与提交轮互等而死锁，是测试造出来的状态，不是产品会到的状态）。
+    """
+    from src.api import message_runner
+
+    wid, cid = work["work_id"], work["work_card_id"]
+
+    # ① 没有板 ⇒ 未完成
+    assert message_runner._board_all_steps_done("work_none", "card_none") is False
+
+    # ② 建板（直接用板 API，不走模型回合——本条只钉判据，不牵扯流程）
+    r = await board_mod.create_board(wid, cid, "两步计划", [
+        {"id": "s1", "prompt": "做甲", "criteria": "甲的判据", "deliverable": "甲产出",
+         "type": "execute"},
+        {"id": "s2", "prompt": "做乙", "criteria": "乙的判据", "deliverable": "乙产出",
+         "type": "think"},
+    ])
+    assert r.get("ok"), f"建板应成功：{r}"
+
+    # ③ 板还有没交的步 ⇒ 未完成
+    assert message_runner._board_all_steps_done(wid, cid) is False
+
+    # ④ 板全 done（末步由别人交掉）⇒ **完成**（判据只看板的事实，不看谁交的）
+    b = await board_mod.get_board(wid, cid)
+    assert b is not None
+    for st in b._data["steps"]:
+        st["status"] = "done"
+    b._data["current"] = len(b._data["steps"])
+    assert message_runner._board_all_steps_done(wid, cid) is True
+
+
 async def test_chain_summary_written_back_to_card(client, work, monkeypatch):
     """三席收口后卡面要留痕（思维链收口 ＋ 计划名 ＋ 步成果）——不留痕等于
     「模型干了活，档案上什么都没有」。"""
     gw = RecordingGateway(script=_plan_script(), config=FAKE_CONFIG)
     monkeypatch.setattr(model_service, "_gateway", gw)
     await _post(client, work["work_id"], work["work_card_id"], "帮我把甲乙两件事做成")
-    if not await _wait_for_seats(gw, timeout=20.0):
-        pytest.skip("三席本轮未触发（板后台步执行与脚本替身相互干扰，已知不稳定）")
+    assert await _wait_for_seats(gw, timeout=20.0), "三席必须真被调"
 
     card = await card_store.read_card(work["work_id"], work["work_card_id"])
     body = card["body"]
