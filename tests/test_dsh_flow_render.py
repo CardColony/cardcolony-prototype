@@ -343,16 +343,18 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        # [合并 2026-10-20] 两侧各改各的：对话流 5702 与角色机制 5710 那条线动了
-        # stream/workspace/assembler/main_chat/flow/*；画布 5711 这条线动了
+        # [合并 2026-10-20] 两侧各改各的：对话流那条线（5702/5710/5715）动了
+        # stream/workspace/assembler/style/main_chat/flow/*；画布 5711 这条线动了
         # canvas.js 与 main.js（main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也升）。
-        # canvas.js 两边都改了 ⇒ 画布链取**大于两边**的号（77），其余取 dev 那条线。
-        "stream.js": "47", "workspace.js": "65", "canvas.js": "86",
-        "assembler.js": "37", "style.css": "45", "main.js": "86.0",
-        "main_chat.js": "3.2",
+        # 版本戳处置按 5715 那次的规程：**在 dev 的编号基础上重算**，不是逐文件取大
+        # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
+        # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
+        "stream.js": "48", "workspace.js": "66", "canvas.js": "76",
+        "assembler.js": "40", "style.css": "48", "main.js": "73.4",
+        "main_chat.js": "3.3",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
-        "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
-        "chat-view.js": "4", "message-item.js": "1",
+        "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
+        "chat-view.js": "6", "message-item.js": "1",
     }
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"

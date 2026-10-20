@@ -76,3 +76,6 @@ _pytest_canvas.log
 
 # 临时诊断脚本（一次性，不进仓库）
 scripts/_*.cjs
+
+# [5715] 前端行为网（jsdom）的开发依赖目录，不入库
+node_modules/

@@ -25,7 +25,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .runtime import GOAL_CHANGE_EVENT, GOAL_CHANGE_VERSION, USER_MESSAGE_EVENT, GoalStreamError
+from .runtime import (GOAL_CHANGE_EVENT, GOAL_CHANGE_VERSION, GOAL_ROUND_EVENT,
+                      USER_MESSAGE_EVENT, GoalStreamError)
 from .types import PHASES, GoalBlockReason, GoalRef, GoalSnapshot
 
 _SNAPSHOT_OPERATIONS = frozenset({"create", "edit", "pause", "resume", "complete", "block"})
@@ -294,6 +295,27 @@ def apply_goal_event(state: GoalFoldState, event: dict[str, Any]) -> None:
         if change is None:
             raise GoalStreamError(f"goal change at session event {event.get('seq')} has an invalid kind")
         apply_goal_change(state, change)
+        return
+    if etype == GOAL_ROUND_EVENT:
+        # [轮次脱钩 2026-10-20] 续轮不再往会话塞 user 消息（那会让上下文逐轮累积
+        # 同一份目标），改由 driver 记一条几十字节的 goal_round 事件来推进轮次。
+        # 校验与旧口径一致：必须是当前 active 目标的下一轮、且不超上限。
+        data = event.get("data") or {}
+        try:
+            gid = str(data["goalId"])
+            rev = int(data["revision"])
+            rnd = int(data["round"])
+        except (KeyError, TypeError, ValueError):
+            raise GoalStreamError(
+                f"goal round at session event {event.get('seq')} has an invalid kind")
+        current = state.goal
+        if (current is None or current.phase != "active"
+                or gid != current.id or rev != current.revision
+                or rnd != state.rounds_started + 1
+                or rnd > current.max_goal_rounds):
+            raise GoalStreamError(
+                f"goal round at session event {event.get('seq')} is not the next admitted round of the active goal")
+        state.rounds_started = rnd
         return
     if etype == USER_MESSAGE_EVENT:
         source = _goal_source(event)

@@ -10,9 +10,9 @@
  * （store.state.canvasState 由 canvas.js 注册）。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=39";
+import { API } from "./api.js?v=40";
 import "./util.js?v=30";
-import "../canvas.js?v=86";
+import "../canvas.js?v=76";
 import { createNavSystem } from "./nav_system.js?v=37";
 import { loadRulePanel } from "./rule_panel.js?v=33";
 
