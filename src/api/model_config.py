@@ -281,12 +281,21 @@ def default_model(*, work_id: Optional[str] = None,
     if not (work_id or card_id):
         return gd
 
-    # 1) 单卡显式覆盖
+    # 1) 显式覆盖：card 优先，其次 work。
+    # [覆盖失效修复 2026-10-20] 原来这里写的是 `_, card_ov = ...`——**把 work 级
+    # 覆盖整个丢掉了**。而前端模型选择器写的就是 work 级
+    # （PUT /api/settings/model-overrides/{work_id} {default_model}）⇒ 用户在页面上
+    # 切模型，文件写进去了、load_scope 也读得到，但这条解析链看不见它，于是
+    # 纯单模型模式（role=default）下**切了等于没切**（实测：写 glm-53 后仍返回
+    # minimax）。顺序与 `resolve()` 对齐：card > work > tier > types > 全局默认。
+    work_ov, card_ov = _scope_overrides(work_id, card_id) if work_id else ({}, {})
     if card_id:
-        _, card_ov = _scope_overrides(work_id, card_id)
         v = card_ov.get("default_model")
         if isinstance(v, str) and v.strip():
             return v.strip()
+    v = work_ov.get("default_model")
+    if isinstance(v, str) and v.strip():
+        return v.strip()
     # 1.5) [模型分层 2026-10-20 · 关键修复] 按卡深度选模型。
     # 纯单模型模式（thinkchain 关闭）走的是 `pick_model("default")` →
     # `default_model()`，**不经 resolve** —— 所以 tier 之前只在 resolve 里生效，
