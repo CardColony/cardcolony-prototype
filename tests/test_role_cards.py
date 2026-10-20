@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from src.api import card_tools, role_room
+from src.api import card_tools, prompts, role_room
 from src.permissions import policy
 from src.storage import card_db, card_store, role_store, session_facade
 
@@ -549,3 +549,14 @@ async def test_overdue_directive_blocks_completion(work):
     assert r["ok"] is True
     summary = await role_room.role_summary(wid, rid)
     assert summary["open_directives"] == []
+
+
+def test_root_prompt_knows_how_to_staff_roles():
+    """根卡不是只拿到 create_role 工具：它要在职责说明里知道何时/如何组阁。"""
+    root = prompts.select_base_prompt({"card_type": "project", "auto_mode": 0})
+    assert "组阁：你可以创建角色卡" in root
+    assert "create_role" in root and "角色卡不是作业卡" in root
+    child = prompts.select_base_prompt({"card_type": "sub_project", "auto_mode": 0})
+    assert "组阁：你可以创建角色卡" not in child
+    role = prompts.select_base_prompt({"card_type": "role", "auto_mode": 0})
+    assert "组阁：你可以创建角色卡" not in role
