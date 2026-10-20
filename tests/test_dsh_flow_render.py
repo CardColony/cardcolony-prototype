@@ -154,7 +154,7 @@ def test_t2_queue_dock_shape():
 def test_t2_queue_autosend_after_turn():
     """轮结束自动依序发出：send 的 finally 必须出队。"""
     body = _fn_body(_strip_js_comments(WS.read_text(encoding="utf-8")), "async function send")
-    assert "drainQueue()" in body, "send 收口必须调 drainQueue（轮结束自动发出）"
+    assert "drainQueue(" in body, "send 收口必须调 drainQueue（轮结束自动发出）"
     assert "finally" in body, "出队必须在 finally 里（成功失败都要走）"
     drain = _fn_body(_strip_js_comments(WS.read_text(encoding="utf-8")), "function drainQueue")
     assert "dequeue()" in drain and "send()" in drain, "drainQueue 必须出队并重发"
@@ -332,12 +332,40 @@ def test_t6_touched_modules_bumped():
     """
     vm = _version_map()
     expect = {
-        "stream.js": "45", "workspace.js": "60", "canvas.js": "72",
+        "stream.js": "47", "workspace.js": "62", "canvas.js": "72",
         "assembler.js": "37", "style.css": "45", "main.js": "72.0",
-        "main_chat.js": "2.6",
+        "main_chat.js": "2.8",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
-        "input-bar.js": "4", "queue-dock.js": "1", "queue-store.js": "1",
+        "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
         "chat-view.js": "4", "message-item.js": "1",
     }
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"
+
+
+# ---------------------------------------------------------------- 输入会话按卡
+
+def test_composer_state_is_per_card():
+    """[5702 · 2026-10-20] 输入会话按卡隔离。
+
+    防回退：一旦有人把 machine/queue 改回全局单例，切卡时草稿/排队/运行态
+    又会跟着走（用户报的「输入框文字被带走」）。
+    """
+    ws = _strip_js_comments(WS.read_text(encoding="utf-8"))
+    assert "composerSessions" in ws, "缺按卡输入会话表"
+    assert "function switchComposer" in ws, "缺切卡换绑入口"
+    assert "inputBar.bindSession(" in ws, "切卡必须换绑 machine"
+    assert "queueDock.setStore(" in ws, "切卡必须换绑队列"
+
+    assert "switchComposer(" in _fn_body(ws, "async function open"), \
+        "open() 未换绑输入会话（点下去草稿必须立刻按卡切换）"
+    send_body = _fn_body(ws, "async function send")
+    assert "sendingMachine" in send_body, "send() 未捕获发起时的 machine"
+    assert "commitSent(sendingMachine)" in send_body, "commitSent 未绑定发起会话"
+    assert "commitSent()" not in ws, "★ 仍有不带目标的 commitSent()（切卡后会清错卡）"
+
+    bar = _strip_js_comments((FLOW / "input-bar.js").read_text(encoding="utf-8"))
+    assert "let machine = new InputMachine" in bar, "machine 必须可换绑（let）"
+    assert "bindSession(next)" in bar, "input-bar 缺 bindSession"
+    dock = _strip_js_comments((FLOW / "queue-dock.js").read_text(encoding="utf-8"))
+    assert "setStore(next)" in dock, "queue-dock 缺 setStore"

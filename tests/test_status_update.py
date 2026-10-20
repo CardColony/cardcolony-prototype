@@ -296,12 +296,12 @@ def test_frontend_version_stamps_bumped():
     chat-view 3→4、main_chat 2.3→2.4（逐字流进装配器，旧 live 旁路退役）；
     style 41→45（本分支既存漂移：home/settings 仍是 40，本次统一到 45）。
     """
-    assert "../stream.js?v=45" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=60" in _read("static/esm/main_chat.js")
-    assert "./stream.js?v=45" in _read("static/workspace.js")
-    assert "./esm/flow/input-bar.js?v=4" in _read("static/workspace.js")
+    assert "../stream.js?v=47" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=62" in _read("static/esm/main_chat.js")
+    assert "./stream.js?v=47" in _read("static/workspace.js")
+    assert "./esm/flow/input-bar.js?v=5" in _read("static/workspace.js")
     assert "/static/style.css?v=45" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=2.6" in _read("templates/card.html")
+    assert "/static/esm/main_chat.js?v=2.8" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════

@@ -1067,7 +1067,15 @@ const BOARD_CFG = Object.assign(
     const st = ensureRun(wid, cid);
     const items = await fetchTimeline(st, wid, cid);
     st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
-    const snap = st.asm.rebuild(items);
+    /* [5702 · 2026-10-20] 实时表**已完整**（SSE 活着且已收到 done/error）⇒ 不重建。
+       重建会把运行中按轮分开的 assistant 节点抹成落盘的一条（后端每 run 只落一条
+       assistant_text）——文本不丢但结构塌陷。只有「流断了 / 实时没收到收口」才重建。 */
+    const liveSnap = st.asm.snapshot();
+    const liveComplete = !st.esDead && liveSnap.order.some((k) => {
+      const n = liveSnap.nodes.get(k);
+      return n && n.ns === "live" && (n.type === "done" || n.type === "error");
+    });
+    const snap = liveComplete ? liveSnap : st.asm.rebuild(items);
     renderSnapshot(st, snap);
     if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
     setRunning(wid, cid, false); // 结算＝本轮结束（运行条收、主键回发送态）
@@ -1197,6 +1205,12 @@ const BOARD_CFG = Object.assign(
     return !!st.esDead;
   }
 
+  /** [5702 · 2026-10-20] 某卡是否在跑（按卡查，供输入系统切卡时恢复运行态）。 */
+  function sessionRunning(wid, cid) {
+    const st = sessions.get(skey(wid, cid));
+    return !!(st && st.busy);
+  }
+
   /** 开始跟踪新一轮：两路 SSE。
       过程帧（/stream）→ 装配器 → 受影响节点 upsert；
       逐字帧（/tokens）→ live 正文气泡（不进装配器）。
@@ -1219,7 +1233,7 @@ const BOARD_CFG = Object.assign(
         try {
           const frame = JSON.parse(m.data);
           if (typeof frame.seq === "number" && frame.seq > st.lastSeq) st.lastSeq = frame.seq;
-          if (frame.type === "done" || frame.type === "error") finish(st);
+          // [5702] 旧 finish(st)（live 槽收尾）已随旁路退役；done/error 由装配器落节点。
           applyLiveFrame(st, frame);
         } catch (e) { /* 单帧坏不致命 */ }
       };
@@ -1251,7 +1265,7 @@ const BOARD_CFG = Object.assign(
 
 export const EventFlow = {
   start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers,
-  optimisticUser, dropOptimisticUser, streamDead,
+  optimisticUser, dropOptimisticUser, streamDead, sessionRunning,
   // [对话流照抄 dsh v3] 运行态唯一入口：在跑卡不释放 ＋ 运行条 ＋ 主键两态
   setRunning,
   // [画板四机制 T1] 会话表对外两口：activate＝把某卡画板挂上 #chatArea（open 用）；
