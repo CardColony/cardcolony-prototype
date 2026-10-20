@@ -143,9 +143,15 @@ async def test_card_message_broadcasts_to_work_channel(work):
     from src.storage import card_store as cs
 
     wid, root = work["work_id"], work["work_card_id"]
-    # 发信必须是**父子对**：产品规则（2026-10-09「同一棵任务树内」双向各查一次）
-    # 明确挡住兄弟卡互发与跨树发信 ⇒ 用父卡→子卡才合法。
+    # 发信边界（5713 口径，2026-10-20 用户逐字拍定）：不再是「同一棵任务树内即可」，
+    # 而是**必须已有通信线（links）**——无线即拒并指路 link_cards；线双向通用。
+    # 所以本用例要先铺线再发信（与 tests/test_card_msg.py 的夹具同一手法）。
+    # 本用例验的主题是「落信时同时广播 card_message」，不是发信闸本身。
     b = (await cs.create_card(wid, "收信方", "用户直接创建", parent=root))["meta"]["card_id"]
+    await cs.update_card(
+        wid, root, {"links": [{"target": b, "type": "关联"}]},
+        "单测夹具：铺通信线（新口径下才允许发信）",
+    )
     cards = {
         cid: (await cs.read_card(wid, cid)).get("meta") or {}
         for cid in (root, b)
