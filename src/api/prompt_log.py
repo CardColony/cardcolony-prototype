@@ -29,6 +29,7 @@ def write_prompt_log(
     pair_id: Optional[str] = None,
     regions: Optional[list[dict[str, Any]]] = None,
     fold_ops: Optional[list[dict[str, Any]]] = None,
+    work_id: str = "",
 ) -> Optional[Path]:
     """写一条 prompt 日志，返回文件路径；失败只记日志返回 None，不中断主流程。
 
@@ -52,7 +53,12 @@ def write_prompt_log(
         payload = {
             "card_id": card_id,
             "timestamp": now.isoformat(),
-            "model_requested": model_config.default_model(),
+            # [日志字段修复 2026-10-20] 原来写的是 `default_model()`——**不带 work/card**，
+            # 于是永远记全局默认（minimax），把三层分层、卡/项目覆盖全盖掉了。
+            # 实测 5700 自动卡：实际 model_used=k3 / deepseek-v4.1-flash-1017，
+            # 但 model_requested 一直写 minimax-m31-flash-preview，看起来像"没按配置走"。
+            "model_requested": model_config.default_model(
+                work_id=work_id or None, card_id=card_id or None),
             "model_used": model_used,
             "system_prompt": system_prompt,
             "prior_messages": prior_messages,

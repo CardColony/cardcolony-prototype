@@ -1020,6 +1020,7 @@ def write_logs(state: RunState) -> None:
     )
     log_path = prompt_log.write_prompt_log(
         card_id=state.card_id,
+        work_id=state.work_id,
         system_prompt=state.system_prompt,
         prior_messages=state.prior_for_gateway,
         user_prompt=state.content,
