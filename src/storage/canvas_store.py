@@ -627,6 +627,32 @@ def load(work_id: str) -> dict[str, Any]:
 
 
 # ============================================================
+# [画布 5711] 单卡投影摘要 —— 工作级事件的载荷
+# ============================================================
+# 为什么要有它：画布要"实时更新"，后端就得能把**一张卡**的最新投影推给前端；
+# 推整份投影（300 卡 = 24KB）不现实，也不该——前端只需要变更的那一张。
+#
+# 为什么从 canvas.json 取而不是重算：canvas.json 是**刚刚重建过**的派生缓存
+# （每次写卡都会 update_cache → rebuild），字段与 /canvas 端点返回的**完全同源**
+# ——前端拿到的 card 对象与首屏拿到的 card 对象形状一致，不会出现"事件里的字段
+# 少一个"导致卡面缺零件。
+#
+# 零阻断：读不到就返回 None，调用方按"没有摘要"处理（前端保留旧值）。
+
+def card_projection(work_id: str, card_id: str) -> dict[str, Any] | None:
+    """取一张卡在当前投影里的条目；卡不存在（已删）或读不到 ⇒ None。"""
+    try:
+        data = load(work_id)
+        for c in data.get("cards") or []:
+            if c.get("card_id") == card_id:
+                return c
+    except Exception as exc:  # noqa: BLE001 零阻断
+        logger.warning("单卡投影读取失败（不阻断）work=%s card=%s: %s",
+                       work_id, card_id, exc)
+    return None
+
+
+# ============================================================
 # [画布重构 2026-10-15 · 阶段 1.2] 用户坐标存储：layout.json → cards 表
 #
 # 旧形态（画布第二步 D1/D2）：works/{work_id}/layout.json 存用户坐标，

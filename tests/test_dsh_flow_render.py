@@ -318,18 +318,19 @@ def test_t6_touched_modules_bumped():
     ★ [画布 2026-10-19 · 实时状况/并行操作] canvas 62→72、main 62.0→72.0：
       新增 /pulse 轮询、卡面运行态、项目动态抽屉、多选批量下指令与排队态、
       全局视图图例与适配修正。canvas.css 19→20（同步升）。
-    ★ [画布 2026-10-19 · 实时状况/并行操作] canvas 62→72、main 62.0→72.0：
-      新增 /pulse 轮询、卡面运行态、项目动态抽屉、多选批量下指令与排队态、
-      全局视图图例与适配修正。canvas.css 19→20（同步升）。
-    ★ [自动模式回灌 2026-10-17] autoToggle 开关＋insp 标记：workspace 52→53、
-      main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 段）；
-      input-bar 本轮**未涉改**（按钮在 card.html 的 #flowInputLeft 里，由 input-bar
-      既有收编逻辑带进 modes）⇒ 不升号。
+    ★ [画布 5711 · 画布优化] canvas 72→73、main 72.0→73.0、canvas.css 20→21：
+      ① 两阶段渲染改 try/finally（异常不再留下永久白屏）；② 骨架屏改在渲染完成后
+      才移除（首屏不再白一下）；③ 浮层级联修复（display 收回 .active——原来恒为
+      flex，浮层永久可见且吃掉左上角点击）；④ 选中集与在场节点求交（不再删掉
+      看不见的卡）；⑤ 连线分层读 projection.depthOf（原来读 vm.depthOf 恒 undefined，
+      深度样式从未生效）；⑥ 新增工作级实时更新（订阅 /api/works/{w}/events，
+      写卡后**就地**换掉那一张卡，不重建整树）；⑦ 首屏适配重试机制（_autoFitPending
+      原来恒 false，机制从未跑过）。
     """
     vm = _version_map()
     expect = {
-        "stream.js": "42", "workspace.js": "56", "canvas.js": "72",
-        "assembler.js": "35", "style.css": "45", "main.js": "72.0",
+        "stream.js": "42", "workspace.js": "56", "canvas.js": "73",
+        "assembler.js": "35", "style.css": "45", "main.js": "73.0",
         "main_chat.js": "2.3",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "4", "queue-dock.js": "1", "queue-store.js": "1",

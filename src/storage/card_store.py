@@ -779,6 +779,40 @@ def _is_descendant(work_id: str, candidate: str, ancestor: str) -> bool:
 
 
 # ============================================================
+# [画布 5711] 工作级事件广播钩子（写卡 → 通知画布）
+# ============================================================
+# 为什么需要：画布上卡片的结论/待裁定数/work_state/最新对话**只在 renderAll
+# 全量重建才更新**，而 renderAll 只由用户自己的操作触发 ⇒ 后台真实发生的变化
+# （模型写卡、裁定被记下、自动模式推进）**到不了画布** ⇒ 必须手动刷新页面。
+#
+# 机制：写卡成功后发一帧工作级 `card_changed`（带这张卡的最新投影摘要），
+# 画布页订阅后**就地换掉那一张卡的节点**——毫秒级、零闪烁、不重建整棵树。
+#
+# 三条纪律：
+#   ① 延迟 import（storage 不在导入期依赖 api，避免循环依赖）——既有先例：
+#      本文件里 `from ..api import scheduler as _sched` 就是这么做的；
+#   ② 零阻断：广播失败绝不影响写卡本身（展示层铁则）；
+#   ③ 载荷取自**刚刚重建过的画布投影**（canvas_store.card_projection），
+#      与 /canvas 端点返回的字段**完全同源**——前端拿到的 card 形状与首屏一致。
+async def _notify_card_changed(work_id: str, card_id: str, kind: str) -> None:
+    """写卡后广播工作级事件。零阻断。"""
+    try:
+        from ..api import event_stream
+        from . import canvas_store
+        card = None
+        if kind != "deleted":
+            card = canvas_store.card_projection(work_id, card_id)
+        event_stream.emit_work(work_id, "card_changed", {
+            "card_id": card_id,
+            "kind": kind,       # created | updated | deleted
+            "card": card,       # 单卡投影摘要（deleted 时为 None）
+        })
+    except Exception as exc:  # noqa: BLE001 零阻断：广播失败不影响写卡
+        logger.warning("工作级事件广播失败（不阻断写卡）work=%s card=%s: %s",
+                       work_id, card_id, exc)
+
+
+# ============================================================
 # 公开 API
 # ============================================================
 
@@ -956,6 +990,10 @@ async def create_card(
         # safe-delete 守卫杀掉。改为**入调度队列**：卡照建、目标照设、照样会跑，
         # 只是从「瞬间全点火」变成「按容量排队点火」。行为不变，只改同时性。
         # 调度器不可用（脚本/测试/未启动）⇒ 退回直点，保证旧路径逐字可用。
+        # [画布 5711] 广播工作级事件：画布页据此**就地**长出新卡/更新那张卡，
+        # 不必等用户手动刷新（也不必整棵重建）。放在 update_cache 之后 ⇒ 载荷
+        # 里的投影摘要是**重建过的新值**。
+        await _notify_card_changed(work_id, card_id, "created")
         if skip_kick:
             return await read_card(work_id, card_id)
         try:
@@ -1168,6 +1206,9 @@ async def update_card(
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
     await data_snapshot.schedule(f"[snapshot][{work_id}] update: {card_id}")
+    # [画布 5711] 广播工作级事件：画布页就地更新这张卡（结论/待裁定/状态/最新对话），
+    # 不用手动刷新，也不用整棵重建。
+    await _notify_card_changed(work_id, card_id, "updated")
 
     # [phase8.3] "剧本卡切确定→派生目标卡"触发已废除；
     # 目标卡改为创建剧本时即派生（见 derive_ending / work_store.create_work）。
@@ -1262,6 +1303,8 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
     await data_snapshot.schedule(f"[snapshot][{work_id}] delete: {card_id}")
+    # [画布 5711] 广播工作级事件：画布页就地摘掉这张卡（不必等用户手动刷新）。
+    await _notify_card_changed(work_id, card_id, "deleted")
     return {"ok": True, "deleted": card_id}
 
 
@@ -1340,6 +1383,8 @@ async def restore_card(work_id: str, card_id: str) -> dict[str, Any]:
 
     await canvas_store.update_cache(work_id)
     await data_snapshot.schedule(f"[snapshot][{work_id}] restore: {card_id}")
+    # [画布 5711] 广播工作级事件：画布页就地长回这张卡。
+    await _notify_card_changed(work_id, card_id, "created")
     return {"ok": True, "restored": card_id}
 
 

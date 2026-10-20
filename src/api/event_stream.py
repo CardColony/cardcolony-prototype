@@ -488,6 +488,88 @@ def subscriber_count(work_id: str, card_id: str) -> int:
     return len(_subscribers.get(_key(work_id, card_id), ()))
 
 
+# ============================================================================
+# [画布 5711] 工作级事件广播 —— 画布"实时更新"的地基
+# ============================================================================
+#
+# 病根（实测复现）：画布上卡片的**结论 / 待裁定数 / work_state / 运行态 / 最新对话**
+# 只有 renderAll（全量重建）才会更新；而 renderAll **只由用户自己的操作触发**
+# （建卡、删卡、重命名、拖动落定…）。后台真实发生的变化——模型写卡、裁定被记下、
+# 自动模式推进——**没有任何通道能通知画布**。⇒ 用户看到的画布永远停在"我上次点它时"
+# 的样子 ⇒ 必须手动刷新页面。
+#
+# 断点（逐条核实过，不是推测）：
+#   ① 既有 SSE 是**单卡**的：订阅表 key=(work, card)，没有工作级广播；
+#   ② canvas.js 订阅的是 card_id=WORK_ID（根卡）那一条流 ⇒ 别的卡的
+#      card_message 收不到；
+#   ③ /works/{w}/pulse 的 running/recent 不驱动卡面重绘（applyLiveStates 只写
+#      dataset.live 与一行消息条，conclusion/pending_count/work_state 一个都不碰）；
+#   ④ 结论/待裁定/work_state/runstate 都写在 createNode 里 ⇒ 只有重建节点才生效。
+#
+# 解法：新增**工作级**订阅（key=work_id）。写卡路径发一帧 `card_changed`
+# （带该卡的最新投影摘要），画布页订阅后**就地换掉那一张卡的节点**，
+# 不重建整棵树 ⇒ 毫秒级、零闪烁。
+#
+# 与主通道的隔离（沿用逐字流通道的既有纪律）：
+#   - 不进 _journals、不占主 seq（工作级有自己的 _work_seq）；
+#   - 不写 works 文件、不进 session/prior/模型输入；
+#   - 零阻塞、零抛出（展示层绝不影响主流程）。
+# ============================================================================
+
+_work_subscribers: dict[str, set[asyncio.Queue]] = {}
+_work_seq: dict[str, int] = {}
+
+
+def emit_work(work_id: str, ev_type: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """工作级事件广播。零阻塞零抛出。
+
+    帧格式与主通道一致（seq/ts/type/data），便于前端用同一套解析。
+    """
+    try:
+        if not work_id:
+            return {}
+        _work_seq[work_id] = _work_seq.get(work_id, 0) + 1
+        evt = {
+            "seq": _work_seq[work_id],
+            "ts": time.time(),
+            "type": ev_type,
+            "data": _jsonable(data or {}),
+        }
+        _fanout(_work_subscribers.get(work_id, ()), evt, work_id, "*", "工作级")
+        logger.info("[flow] work-event type=%s work=%s seq=%s data=%s",
+                    ev_type, work_id, evt["seq"],
+                    json.dumps(evt["data"], ensure_ascii=False)[:300])
+        return evt
+    except Exception as exc:  # noqa: BLE001 展示层零阻断
+        logger.warning("[flow] emit_work 失败（不阻断主流程）type=%s work=%s: %s",
+                       ev_type, work_id, exc)
+        return {}
+
+
+async def subscribe_work(work_id: str) -> AsyncIterator[dict[str, Any]]:
+    """工作级 SSE 订阅：只推「连上之后新发生的事」（无存量重放）。
+
+    为什么不重放：工作级事件描述的是"变化"而不是"状态"，重放旧变化会让前端
+    以为卡刚变过。连上之后的每一次变化都会再触发一次前端刷新，重放是冗余的。
+    断连自动清理订阅者队列。
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _work_subscribers.setdefault(work_id, set()).add(queue)
+    try:
+        while True:
+            evt = await queue.get()
+            yield evt
+    finally:
+        try:
+            _work_subscribers.get(work_id, set()).discard(queue)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def work_subscriber_count(work_id: str) -> int:
+    return len(_work_subscribers.get(work_id, ()))
+
+
 def journal_last_seq(work_id: str, card_id: str) -> int:
     """主 journal 当前末帧 seq（无帧＝0）。
 

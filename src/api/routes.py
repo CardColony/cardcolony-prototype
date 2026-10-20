@@ -934,6 +934,56 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
     )
 
 
+@router.get("/works/{work_id}/events")
+async def stream_work_events(work_id: str):
+    """[画布 5711] **工作级** SSE：画布页订阅，卡片一变就推。
+
+    为什么需要这个端点（实测复现的断点，不是推测）：
+      既有 SSE 是**单卡**的（`/cards/{cid}/stream`，订阅表 key=(work,card)），
+      没有任何"整个项目变了"的广播；而画布上卡片的结论／待裁定数／work_state／
+      最新对话**只在 renderAll 全量重建才更新**，renderAll 又只由用户自己的
+      操作触发 ⇒ 后台真实发生的变化（模型写卡、裁定被记下、自动模式推进）
+      **到不了画布** ⇒ 用户必须手动刷新页面才看得到。
+
+    本端点补上这一层：写卡路径（`card_store`）发一帧 `card_changed`
+    （带那张卡的最新投影摘要），画布页订阅后**就地换掉那一张卡的节点**——
+    毫秒级、零闪烁、不重建整棵树。
+
+    契约：
+      帧形态与 `/cards/{cid}/stream` 同构：``{"seq","ts","type","data"}``；
+      type  当前只有 ``card_changed``；
+      data  ``{card_id, kind: created|updated|deleted, card: {...}|None}``；
+      无存量重放（工作级事件描述的是"变化"，重放会让前端误判"刚变过"）；
+      15s 心跳（注释帧），与既有两条流同口径。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+
+    async def gen():
+        """带心跳的 SSE 生成器。
+
+        订阅队列空转时每 15s 发一个注释帧（`: ping`），防止中间代理掐断长连——
+        与既有两条流（/stream、/tokens）同口径。
+        """
+        yield "retry: 3000\n\n"
+        it = event_stream.subscribe_work(work_id).__aiter__()
+        while True:
+            try:
+                evt = await asyncio.wait_for(it.__anext__(), timeout=15.0)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+                continue
+            except StopAsyncIteration:
+                break
+            yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/works/{work_id}/cards/{card_id}/tokens")
 async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
     """[信息流重出 Task4] SSE 逐字流通道（**独立**于 /stream 的过程卡流）。
