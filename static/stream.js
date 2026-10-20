@@ -45,6 +45,8 @@ import { renderMarkdown } from "./esm/md.js?v=31";
 import { createAssembler } from "./esm/assembler.js?v=39";
 import { createChatView } from "./esm/flow/chat-view.js?v=5";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
+// [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
+import { createThinkRenderer, createTextUpdater } from "./esm/flow/think-stream.js?v=1";
 import { createCopyButton, createResendButton } from "./esm/flow/message-actions.js?v=1";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
@@ -173,29 +175,18 @@ const BOARD_CFG = Object.assign(
     return running ? lines[lines.length - 1] : lines[0];
   }
 
-  function makeThink(text, opts) {
-    const o = opts || {};
-    const r = document.createElement("div");
-    r.className = "think" + (o.done ? " done" : " thinking") + " collapsed";
-    r.innerHTML =
-      '<div class="think-head">' +
-        '<i class="think-ico"></i>' +
-        '<span class="think-lab">Think</span>' +
-        '<span class="think-sep">·</span>' +
-        '<span class="think-sum"></span>' +
-        '<span class="think-time"></span>' +
-      "</div>" +
-      '<div class="think-body"></div>';
-    r.querySelector(".think-sum").textContent = thinkSummary(text, !o.done);
-    r.querySelector(".think-body").textContent = text || "";
-    r.querySelector(".think-head").onclick = () => {
-      r.classList.toggle("collapsed");
-    };
-    return r;
-  }
+  /* [5715 · 性能] 思考渲染器的**构造**搬进 esm/flow/think-stream.js：直播时每帧
+     思考都会让那一行重渲染，而行里含**累积全文** ⇒ 一次思考 N 帧 ⇒ 写入量 O(N²)
+     ⇒ 长思考把主线程打满（页面卡死的一半原因；另一半在落盘侧，已由
+     event_stream 的「按轮合并落一条」解决）。
+     新件在文本是**前缀扩展**时只追加增量（O(增量)），并保留用户的折叠态。 */
+  const _thinkRenderer = createThinkRenderer({ summaryOf: thinkSummary });
+  /* [5715 · 性能] 席位并排卡里的思考（``.tk``）同样是逐帧增长的整块文本 ⇒
+     同样走增量文本器（否则三席并发时又是一个 O(N²)）。 */
+  const _seatText = createTextUpdater();
 
   /** 三席并排卡片（seats 节点：三席各一卡，思考与输出同卡）。 */
-  function makeSeats(members) {
+  function makeSeats(members, nodeKey) {
     const host = document.createElement("div");
     host.className = "seats";
     for (const key of Object.keys(members)) {
@@ -208,7 +199,10 @@ const BOARD_CFG = Object.assign(
         '<div class="sc-body"><span class="tk"></span></div>' +
         '<div class="sc-foot"><span class="ok"></span><span class="meta"></span></div>';
       card.querySelector(".sc-head .m").textContent = m.model || key;
-      card.querySelector(".tk").textContent = m.thinking || "";
+      // [5715 · 性能] 席位的思考也是**逐帧增长**的整块文本 ⇒ 整块重写同样是 O(N²)
+      // ⇒ 走增量文本器（键＝节点键+席位键）。
+      _seatText.set((nodeKey || "seats") + "|" + key,
+        card.querySelector(".tk"), m.thinking || "");
       const end = m.end;
       if (end) {
         if (end.text) {
@@ -582,7 +576,7 @@ const BOARD_CFG = Object.assign(
         "并行质询", null, "lv3"));
     }
     const members = node.members || {};
-    if (Object.keys(members).length) out.push(makeSeats(members));
+    if (Object.keys(members).length) out.push(makeSeats(members, node.key));
     return out;
   }
 
@@ -674,7 +668,8 @@ const BOARD_CFG = Object.assign(
     // 思考块插在正文之前（位置＝数据的函数：思考属本轮 assistant）
     if (node.reasoning) {
       const md = el.querySelector(".md");
-      const think = makeThink(node.reasoning, { done: true });
+      // [5715 · 性能] 走增量渲染器：直播时每帧只**追加**新增部分（不重写整块）。
+      const think = _thinkRenderer.row(node.key, node.reasoning, { done: true });
       if (md) el.insertBefore(think, md); else el.appendChild(think);
     }
     return withDate(node, el);
@@ -815,6 +810,8 @@ const BOARD_CFG = Object.assign(
     v.render(win, revGetter(snap));
     v.paintOlder();
     v.paintStatus();
+    // [5715 · 性能] 思考渲染器的缓存只留**当前还挂着的节点**（防持有旧元素）
+    _thinkRenderer.prune(new Set(snap.order));
     st.renderedOrder = snap.order;
     logInfo("[flow-render] snapshot(" + win.length + "/" + total + " nodes)");
   }
