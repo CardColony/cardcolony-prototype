@@ -183,6 +183,63 @@ async def h_update_goal(work_id: str, current_id: str,
         return _err("GOAL_TOOL_INVALID_UPDATE", f"{type(exc).__name__}: {exc}")
 
 
+async def h_resume_child(work_id: str, current_id: str,
+                         arguments: dict[str, Any], cards: dict[str, Any]) -> dict[str, Any]:
+    """让**自己子树内**一张停下的卡重新开始自主推进。
+
+    为什么需要：goal 域里 ``update_goal`` 只能改**自己的**目标（原版 dsh 同此），
+    于是父卡看见子卡 paused/blocked 时只能发 msg_ask 把它叫醒一次，叫醒之后它
+    目标仍是 paused，驱动不会再续 —— 「叫得醒、续不上」。这条工具补的就是那一步：
+    把子卡的目标 resume（写 goal/change + arm）并立刻 request_drive。
+
+    边界（都是硬判据，不靠模型自觉）：
+      · 只能是自己**子树内**的卡（``policy._is_in_subtree``）；
+      · 目标卡必须是 ``auto_mode=1``；
+      · ``complete`` 不可恢复（goal 域铁律：已完成不能复活，要新任务就新建卡）；
+      · 已在 active+armed ⇒ 幂等返回，不重复点火。
+    """
+    from ..permissions import policy
+
+    target = str(arguments.get("card_id") or "").strip()
+    if not target:
+        return _err("validation", "card_id 不能为空")
+    meta = (cards or {}).get(target) or {}
+    if not meta:
+        return _err("not_found", f"卡片不存在: {target}")
+    if not bool(meta.get("auto_mode")):
+        return _err("denied", f"{target} 不是自动模式卡，没有目标可恢复")
+    try:
+        if not policy._is_in_subtree(current_id, target, cards):
+            return _err("denied", f"越权：{target} 不在你的子树内，不能替它恢复目标")
+    except Exception as exc:  # noqa: BLE001 判定失败一律拒（宁可不动）
+        return _err("denied", f"子树判定失败，已拒绝：{exc}")
+
+    service = get_service()
+    try:
+        goal = await service.get(work_id, target)
+        if goal is None:
+            return _err("validation", f"{target} 没有目标；要它干活请给它发消息或建子卡")
+        if goal.phase == "complete":
+            return _err("validation", f"{target} 的目标已完成，不能恢复；要新任务请新建子卡")
+        if goal.phase == "active" and goal.activation == "armed":
+            return _ok({"resumed": False, "reason": "已在推进中", **_goal_value(goal)})
+        view = await service.resume(work_id, target, goal.ref())
+    except GoalError as exc:
+        return _err(exc.code, exc.message)
+
+    # 立刻评估点火（不等下一轮 idle）——resume 本身也会触发 goal/changed 监听，
+    # 这里再叫一次是幂等的（request_drive 有 requested 合并）。
+    try:
+        from . import driver as _driver
+        _driver.request_drive(work_id, target)
+    except Exception as exc:  # noqa: BLE001 点火失败不回滚 resume，只记日志
+        logger.warning("[goal] resume_child 点火失败 card=%s: %s", target, exc)
+
+    data = _goal_value(view)
+    data["resumed"] = True
+    return _ok(data)
+
+
 # ---------------------------------------------------------------- schemas
 GET_GOAL_SCHEMA: dict[str, Any] = {
     "name": "get_goal",
@@ -230,5 +287,22 @@ UPDATE_GOAL_SCHEMA: dict[str, Any] = {
             "blocked_reason": {"type": "string", "description": "具体阻塞条件，仅 action=blocked 必填。"},
         },
         "required": ["goal_id", "revision", "action"],
+    },
+}
+
+
+RESUME_CHILD_SCHEMA: dict[str, Any] = {
+    "name": "resume_child",
+    "description": (
+        "让一张**停下的子卡重新开始自主推进**：把它的目标从 paused/blocked 恢复成 active，"
+        "并立刻点火让它接着跑（不用你再发消息催）。只能用于自己子树内、自动模式、未完成的卡；"
+        "已完成的目标不能恢复。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "card_id": {"type": "string", "description": "要恢复的子卡 id"},
+        },
+        "required": ["card_id"],
     },
 }
