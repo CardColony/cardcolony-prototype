@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import stat
 import time
 from datetime import datetime
 from pathlib import Path
@@ -104,13 +106,57 @@ async def append_message(work_id: str, card_id: str, role: str, content: str,
     return msg
 
 
+# ---------------------------------------------------------------- 读路径锁重试
+_READ_RETRY_ATTEMPTS = 5
+_READ_RETRY_BASE_SLEEP = 0.08
+
+
+def _is_read_lock_race(exc: OSError, path: Path) -> bool:
+    """读路径的「Windows 文件锁竞态」判定（与 session_facade 的写路径同口径）。
+
+    单路径 ``[Errno 13] Permission denied: 'path'`` 且**不带只读位** ⇒ 按锁竞态重试；
+    带只读位 ⇒ 真无权限，立即上抛。
+    """
+    if os.name != "nt" or not isinstance(exc, PermissionError):
+        return False
+    if exc.errno != 13:
+        return False
+    try:
+        if not (path.stat().st_mode & stat.S_IWRITE):
+            return False
+    except OSError:
+        pass
+    return True
+
+
+async def aread_text_with_lock_retry(path: Path, what: str = "session-read") -> str:
+    """异步 open，遇 Windows 文件锁竞态做有界重试＋指数退避。
+
+    [读路径锁重试 2026-10-20] 写路径（session_facade）早就有这套重试，**读路径没有**：
+    会话文件被外部进程（杀软实时扫描／索引服务）短暂独占时，`aiofiles.open(..., "r")`
+    直接抛 `[Errno 13] Permission denied`，整轮被按「模型调用失败」收口。线上 5700
+    实测复发（session_001/002 都撞过）。只重试 open 本身，无副作用。
+    """
+    for attempt in range(_READ_RETRY_ATTEMPTS):
+        try:
+            async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
+                return await f.read()
+        except PermissionError as exc:
+            if attempt == _READ_RETRY_ATTEMPTS - 1 or not _is_read_lock_race(exc, path):
+                raise
+            if not attempt:
+                logger.warning("[session_store] 读遇文件锁，重试 path=%s what=%s: %s",
+                               path.name, what, exc)
+            await asyncio.sleep(_READ_RETRY_BASE_SLEEP * (2 ** attempt))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 async def read_session(work_id: str, card_id: str) -> list[dict[str, Any]]:
     """解析会话文件为消息列表。文件不存在返回空列表。"""
     path = _session_path(work_id, card_id)
     if not path.exists():
         return []
-    async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
-        text = await f.read()
+    text = await aread_text_with_lock_retry(path, "read_session")
 
     lines = text.split("\n")
     messages: list[dict[str, Any]] = []
