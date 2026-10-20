@@ -75,6 +75,19 @@ SHARED_STATUS = (
 )
 
 
+
+def _wait_verdict(base, wid, rid, before, timeout=300):
+    """等单角色新增判词（积压实验复职补巡检用）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(POLL)
+        s = _role(base, wid, rid)
+        vs = s.get("verdicts") or []
+        if len(vs) > before:
+            return s, True
+        _log(f"等判词…… verdicts={len(vs)}（起点 {before}）")
+    return _role(base, wid, rid), False
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -225,8 +238,76 @@ def main() -> int:
         "watch": [w.get("card_id") for w in ((s.get("watch") or {}).get("cards") or [])],
     } for k, s in final.items()}
     ev["sync_rows"] = _sync_rows(sb, wid)
-    ev["prompt_logs"] = _prompt_logs(sb, t_change)
+    ev["prompt_logs"] = _prompt_logs(sb, _RUN_T0)
     phase("5_collected", verdicts={k: len(v["verdicts"]) for k, v in ev["final"].items()})
+
+    # ── 5b 等上轮巡检回合排空（异步收口）再进空白二 ──
+    # work_060 实测：停职时 phase5 的回合还没消费完（旧 pending 在队里），
+    # 停职后第一次改动的 status_changed 被 add_sync 幂等合并进旧行 ⇒ added=0
+    # 的不对称。必须先等 pending 排空 + 给收口日志留窗，才是干净的观测点。
+    for _ in range(40):
+        cur = {k: _role(args.base, wid, v) for k, v in roles.items()}
+        pend = {k: len((cur[k].get("pending_sources") or [])) for k in roles}
+        _log(f"等排空…… pending={pend}")
+        if all(v == 0 for v in pend.values()):
+            break
+        time.sleep(POLL)
+    time.sleep(8)   # 上轮收口的 prompt 日志落盘窗口
+
+    # ── 6 空白二：停职期连改 20 次 ⇒ 队列合并有界；复职 ⇒ 补巡检清空 ──
+    bk = {"phases": []}
+    def bk_phase(name, **kw):
+        rec = {"phase": name, "at": datetime.now().isoformat(timespec="seconds"), **kw}
+        bk["phases"].append(rec)
+        _log(f"{name}: {json.dumps(kw, ensure_ascii=False)[:300]}")
+        save()
+        return rec
+
+    def _rows_for(wid_, role_id):
+        return [r for r in _sync_rows(sb, wid_) if r.get("role_id") == role_id]
+
+    def _pending_rows(wid_, role_id):
+        return [r for r in _rows_for(wid_, role_id) if r.get("status") == "pending"]
+
+    # 6a 停职两角色（只挡起回合，不挡事实入队）
+    for k, rid in roles.items():
+        st, _ = _req(args.base, "POST", f"/api/works/{wid}/roles/{rid}/duty",
+                     {"state": "suspended", "note": "积压实验：停职"})
+        _log(f"停职 {k} status={st}")
+    time.sleep(2)
+    rows_before = {k: len(_rows_for(wid, roles[k])) for k in roles}
+
+    # 6b 停职期连改 20 次（每次内容不同）：add_sync 幂等 ⇒ 全部合并成一条 pending
+    for i in range(20):
+        _req(args.base, "PATCH", f"/api/works/{wid}/cards/{shared}",
+             {"updates": {"status_block": SHARED_STATUS + f"\n5) 停职期第 {i} 次改动（积压实验）。"},
+              "history_note": "积压实验：停职期连改"})
+    time.sleep(4)   # 等异步通知任务全部落地
+    rows_after = {k: len(_rows_for(wid, roles[k])) for k in roles}
+    pending_rows = {k: len(_pending_rows(wid, roles[k])) for k in roles}
+    bk_phase("6a_suspended_20_changes",
+             rows_before=rows_before, rows_after=rows_after,
+             added_per_role={k: rows_after[k] - rows_before[k] for k in roles},
+             pending_rows_per_role=pending_rows,
+             merged=all(rows_after[k] - rows_before[k] == 1 for k in roles)
+                    and all(pending_rows[k] == 1 for k in roles))
+
+    # 6c 复职 ⇒ 补巡检 ⇒ 判词新增、pending 清空（停职期的新事实不能丢）
+    for k, rid in roles.items():
+        v_before = len(_role(args.base, wid, rid).get("verdicts") or [])
+        st, _ = _req(args.base, "POST", f"/api/works/{wid}/roles/{rid}/duty",
+                     {"state": "active", "note": "积压实验：复职"})
+        s6, got = _wait_verdict(args.base, wid, rid, v_before, timeout=300)
+        bk_phase(f"6c_resume_{k}", ok=got, duty=(s6.get("duty") or {}).get("state"),
+                 verdicts_after=len(s6.get("verdicts") or []),
+                 pending_sync_after=(s6.get("duty") or {}).get("pending_sync"))
+    time.sleep(8)   # 复职回合的 prompt 日志落盘窗口
+    ev["backlog"] = bk
+    # 复职回合的 prompt 日志也纳入（窗口=整跑）
+    ev["prompt_logs"] = _prompt_logs(sb, _RUN_T0)
+
+
+
 
     vd = _judge(ev)
     ev["verdict_detail"] = vd
