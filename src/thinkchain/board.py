@@ -72,6 +72,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -256,15 +257,66 @@ async def _acquire(lock: asyncio.Lock) -> None:
 
 # ---------------------------------------------------------------- 原子写
 
+# [5713 · M2 2026-10-20] 改名争用重试预算：5 次尝试，指数退避 0.08/0.16/0.32/0.64 秒
+# ⇒ 单次写最多让出约 1.2 秒。与 storage.session_facade 同一套策略，但**本地实现**：
+# 不 import 其私有符号——B-04 L4「跨包私有访问=0」要守，宁可重写十行。
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BASE_SLEEP = 0.08
+
+
+def _is_windows_lock_race(exc: OSError) -> bool:
+    """winerror 5/32 ＝ MoveFileEx 撞独占句柄（共享冲突），可重试；其余形态原样上抛。
+
+    5＝拒绝访问、32＝另一进程正在使用。两者都是 Windows 上 rename 目标被句柄占用
+    的经典形态（POSIX 允许 rename 覆盖被读的文件，Windows 不允许）。
+    """
+    if os.name != "nt" or not isinstance(exc, PermissionError):
+        return False
+    return getattr(exc, "winerror", None) in (5, 32)
+
+
+def _replace_with_retry(tmp: Path, path: Path) -> None:
+    """tmp→目标改名，撞 Windows 共享冲突做**有界**重试。
+
+    MoveFileEx 失败是原子的（要么换成功、要么源仍在），故重试不产生半态。
+
+    重试耗尽或不可重试 ⇒ **ERROR 级留痕（路径＋尝试次数）后原样上抛**。
+    不许静默：本函数的调用方之一是 ``_flush``（fire-and-forget 任务），异常若被
+    吞掉，盘上状态落后于内存将无人知晓——5713 M2 实测过它的后果：一次瞬时
+    WinError 5 就够让一次置脏合并永久丢写，只剩一条 "Task exception was never
+    retrieved" 躺在 stderr 里。
+
+    旧码（本轮修复前）此路径为裸 ``os.replace``，零重试：实测 48 次写里 1 次瞬时
+    WinError 5，**首次重试 3.1ms 即过**——即冲突是毫秒级瞬时的，一次重试即可覆盖。
+    """
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError as exc:
+            if attempt == _REPLACE_ATTEMPTS - 1 or not _is_windows_lock_race(exc):
+                logger.error(
+                    "[board] 原子写改名失败（重试耗尽或不可重试）：path=%s attempts=%d winerror=%s",
+                    path, attempt + 1, getattr(exc, "winerror", None))
+                raise
+            time.sleep(_REPLACE_BASE_SLEEP * (2 ** attempt))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
-    """tmp→fsync→os.replace 原子落盘（memory_store.py:179-182 同法）。"""
+    """tmp→fsync→os.replace 原子落盘（memory_store.py:179-182 同法）。
+
+    [5713 · M2] rename 换 ``_replace_with_retry``（原为裸 ``os.replace``）——
+    语义零变化：同样的 tmp 落盘、同样的异常类型上抛，只是撞瞬时共享冲突不再
+    一次就死。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(json.dumps(data, ensure_ascii=False, indent=2))
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    _replace_with_retry(tmp, path)
 
 
 # ---------------------------------------------------------------- PlanBoard
@@ -338,6 +390,12 @@ class PlanBoard:
                 self._flush_pending = False
                 if _boards.get(key) is self:  # 清理后不再回头写
                     await self._save_locked()
+            except Exception:  # noqa: BLE001  [5713 · M2 2026-10-20]
+                # fire-and-forget 任务里没人接异常 ⇒ 不记就只剩一条
+                # "Task exception was never retrieved"。而「盘上状态已落后于内存」
+                # 是必须被人看见的事，故此处 ERROR 留痕（work/card＋traceback）。
+                logger.error("[board] 置脏合并落盘失败，盘上状态落后于内存 work=%s card=%s",
+                             self._work_id, self._card_id, exc_info=True)
             finally:
                 lock.release()
 
