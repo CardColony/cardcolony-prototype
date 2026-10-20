@@ -1,0 +1,314 @@
+{
+ "tests.test_auto_await_explicit::test_a_explicit_flag_and_resume_after_child_done": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "子卡跑完再整合\", await_children=True)\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_explicit.py:137: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_a2_explicit_works_without_any_child": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "（其实还没建）\", await_children=True)\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_explicit.py:164: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_b_work015_children_already_complete_still_resumes": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "子卡跑完再整合\", await_children=True)\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_explicit.py:203: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_b2_work015_old_inference_would_have_hung": {
+  "msg": "AssertionError: assert 'active' == ''      + active",
+  "tail": "      assert _await_flag(wid, p) == 0, \\\n            \"对照组：旧推断在「子卡已全完工」时判假 ⇒ 这正是 work_015 挂死的那一侧\"\n>       assert auto_driver.wake_verdict(wid, p) == auto_driver.WAKE_NONE\nE       AssertionError: assert 'active' == ''\nE         \nE         + active\n\ntests\\test_auto_await_explicit.py:233: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_c_implicit_inference_no_regression": {
+  "msg": "AssertionError: 不带参数且有未终止子卡 ⇒ 旧推断必须仍然置位（无退化） assert 0 == 1  +  where 0 = _await_flag('work_001', 'card_002')",
+  "tail": "跑完回报\")      # **不传参**\n    \n>       assert _await_flag(wid, p) == 1, \\\n            \"不带参数且有未终止子卡 ⇒ 旧推断必须仍然置位（无退化）\"\nE       AssertionError: 不带参数且有未终止子卡 ⇒ 旧推断必须仍然置位（无退化）\nE       assert 0 == 1\nE        +  where 0 = _await_flag('work_001', 'card_002')\n\ntests\\test_auto_await_explicit.py:253: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_c2_implicit_and_explicit_agree_when_child_active": {
+  "msg": "assert 0 == 1",
+  "tail": "auto(work, goal=\"父目标\")\n        c = await _mk(wid, \"子卡\", p, goal=\"子目标\")\n    \n        await _goal_tool(wid, p, \"pause\", \"等子卡\", await_children=True)\n        explicit_flag = _await_flag(wid, p)\n>       assert explicit_flag == 1\nE       assert 0 == 1\n\ntests\\test_auto_await_explicit.py:275: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_d_plain_pause_without_children_semantics_unchanged": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "ol(wid, p, \"pause\", \"等用户确认口径\")\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_explicit.py:294: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_d2_false_await_children_behaves_like_plain_pause": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": ", \"等子卡\", await_children=False)\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_explicit.py:313: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_e_no_livelock_second_plause_is_not_rewoken": {
+  "msg": "AssertionError: assert 0 == 1  +  where 0 = _await_flag('work_001', 'card_002')",
+  "tail": " # —— 圈①：显式声明等子卡 → 本轮收口内恢复并起轮 ——\n        await _goal_tool(wid, p, \"pause\", \"等两张子卡跑完再整合\", await_children=True)\n>       assert _await_flag(wid, p) == 1\nE       AssertionError: assert 0 == 1\nE        +  where 0 = _await_flag('work_001', 'card_002')\n\ntests\\test_auto_await_explicit.py:349: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_e2_livelock_needs_explicit_redeclaration": {
+  "msg": "AssertionError: 重新显式声明 ⇒ 再次置位（语义正确） assert 0 == 1  +  where 0 = _await_flag('work_001', 'card_002')",
+  "tail": " _goal_tool(wid, p, \"pause\", \"还要再等等\", await_children=True)\n>       assert _await_flag(wid, p) == 1, \"重新显式声明 ⇒ 再次置位（语义正确）\"\nE       AssertionError: 重新显式声明 ⇒ 再次置位（语义正确）\nE       assert 0 == 1\nE        +  where 0 = _await_flag('work_001', 'card_002')\n\ntests\\test_auto_await_explicit.py:389: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_e3_user_stop_still_wins_over_explicit_flag": {
+  "msg": "AssertionError: assert 0 == 1  +  where 0 = _await_flag('work_001', 'card_002')",
+  "tail": "= await _mk(wid, \"子卡\", p, goal=\"子目标\")\n        await _goal_tool(wid, p, \"pause\", \"等子卡跑完\", await_children=True)\n>       assert _await_flag(wid, p) == 1\nE       AssertionError: assert 0 == 1\nE        +  where 0 = _await_flag('work_001', 'card_002')\n\ntests\\test_auto_await_explicit.py:401: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_f_non_auto_card_untouched": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' =",
+  "tail": "_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE           assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' == 'denied'\nE             \nE             - denied\nE             + GOAL_TOOL_DRIVER_REQUIRED)\n\ntests\\test_auto_await_explicit.py:432: AssertionError"
+ },
+ "tests.test_auto_await_explicit::test_f2_schema_surface_and_untouched_invariants": {
+  "msg": "AssertionError: schema 必须暴露该参数给模型 assert 'await_children' in {'goal_id': {'type': 'string', 'description': 'get_goal 返回的精确 id。'}, 'revision': {'type': 'integer', 'description': 'g...it | pause | resum",
+  "tail": "' in {'goal_id': {'type': 'string', 'description': 'get_goal 返回的精确 id。'}, 'revision': {'type': 'integer', 'description': 'g...it | pause | resume | complete | blocked'}, 'objective': {'type': 'string', 'description': '替换目标，仅 action=edit。'}, ...}\n\ntests\\test_auto_await_explicit.py:449: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_a_resume_prompt_carries_wake_facts": {
+  "msg": "AssertionError: assert ('active' == 'paused'      - paused   + active)",
+  "tail": "     await _goal_tool(wid, p, \"pause\", \"等子卡跑完再整合\", await_children=True)\n>       assert _state(wid, p) == \"paused\" and _await_flag(wid, p) == 1\nE       AssertionError: assert ('active' == 'paused'\nE         \nE         - paused\nE         + active)\n\ntests\\test_auto_await_livelock.py:192: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_b_work017_third_phantom_hang_stops_being_woken": {
+  "msg": "AssertionError: 第 1 次空等重挂 ⇒ 计数 1 assert 0 == 1  +  where 0 = _wakes('work_001', 'card_002')",
+  "tail": "        await _goal_tool(wid, p, \"pause\", \"等子卡跑完再整合\", await_children=True)\n>       assert _wakes(wid, p) == 1, \"第 1 次空等重挂 ⇒ 计数 1\"\nE       AssertionError: 第 1 次空等重挂 ⇒ 计数 1\nE       assert 0 == 1\nE        +  where 0 = _wakes('work_001', 'card_002')\n\ntests\\test_auto_await_livelock.py:284: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_c_real_wait_resets_counter_and_normal_loop_unblocked": {
+  "msg": "AssertionError: ★ 真等待（确有未终止子卡）⇒ 连击清零，计数攒不起来 assert 2 == 0  +  where 2 = _wakes('work_001', 'card_002')",
+  "tail": "ol(wid, p, \"pause\", \"等子卡跑完再整合\", await_children=True)\n>       assert _wakes(wid, p) == 0, \"★ 真等待（确有未终止子卡）⇒ 连击清零，计数攒不起来\"\nE       AssertionError: ★ 真等待（确有未终止子卡）⇒ 连击清零，计数攒不起来\nE       assert 2 == 0\nE        +  where 2 = _wakes('work_001', 'card_002')\n\ntests\\test_auto_await_livelock.py:356: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_c2_new_goal_lifecycle_resets_counter": {
+  "msg": "AssertionError: ★ 换目标 ⇒ 旧生命周期的死锁证据不连坐新目标 assert 7 == 0  +  where 7 = _wakes('work_001', 'card_002')",
+  "tail": "= \"全新目标\"\n        assert meta.get(\"goal_state\") == \"active\"\n>       assert _wakes(wid, p) == 0, \"★ 换目标 ⇒ 旧生命周期的死锁证据不连坐新目标\"\nE       AssertionError: ★ 换目标 ⇒ 旧生命周期的死锁证据不连坐新目标\nE       assert 7 == 0\nE        +  where 7 = _wakes('work_001', 'card_002')\n\ntests\\test_auto_await_livelock.py:392: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_d_user_stop_still_wins": {
+  "msg": "AssertionError: assert (0 == 1)  +  where 0 = _await_flag('work_001', 'card_002')",
+  "tail": "ren=True)\n>       assert _await_flag(wid, p) == 1 and _wakes(wid, p) == 0   # 真等待清零\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       AssertionError: assert (0 == 1)\nE        +  where 0 = _await_flag('work_001', 'card_002')\n\ntests\\test_auto_await_livelock.py:411: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_d2_stop_then_redeclare_is_a_new_explicit_wait": {
+  "msg": "AssertionError: assert 0 == 1  +  where 0 = _wakes('work_001', 'card_002')",
+  "tail": "       # 按停后模型又显式声明等子卡（新意图）——此时子卡已全完工 ⇒ 空等计数 +1\n        await _goal_tool(wid, p, \"pause\", \"又想等子卡\", await_children=True)\n>       assert _wakes(wid, p) == 1\nE       AssertionError: assert 0 == 1\nE        +  where 0 = _wakes('work_001', 'card_002')\n\ntests\\test_auto_await_livelock.py:437: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_e_non_auto_card_untouched": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' =",
+  "tail": "_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE           assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' == 'denied'\nE             \nE             - denied\nE             + GOAL_TOOL_DRIVER_REQUIRED)\n\ntests\\test_auto_await_livelock.py:464: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_f3_prompt_surface_auto_t8": {
+  "msg": "AssertionError: 普通版不得被本次改动波及 assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": "被本次改动波及（本分支基线＝t23-2，一字未动）\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\", \"普通版不得被本次改动波及\"\nE       AssertionError: 普通版不得被本次改动波及\nE       assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_auto_await_livelock.py:536: AssertionError"
+ },
+ "tests.test_auto_await_livelock::test_f4_complete_gate_and_await_flag_semantics_untouched": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "ool(wid, p, \"complete\", \"做完了\")\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_livelock.py:562: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_a_pause_with_active_child_sets_await_flag": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "tool(wid, p, \"pause\", \"等子卡跑完回报\")\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_resume.py:125: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_a2_pause_sets_flag_via_auto_driver_verdict": {
+  "msg": "AssertionError: assert 0 == 1  +  where 0 = _await_flag('work_001', 'card_002')",
+  "tail": "k, goal=\"父目标\")\n        c = await _mk(wid, \"子卡\", p, goal=\"子目标\")\n        await _goal_tool(wid, p, \"pause\", \"等子卡\")\n>       assert _await_flag(wid, p) == 1\nE       AssertionError: assert 0 == 1\nE        +  where 0 = _await_flag('work_001', 'card_002')\n\ntests\\test_auto_await_resume.py:141: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_b3_paused_parent_not_woken_while_child_still_active": {
+  "msg": "AssertionError: 子卡还在跑 ⇒ 父卡不得被恢复 assert 'active' == 'paused'      - paused   + active",
+  "tail": "这一轮结束但仍 active\n        meta = card_store._meta_of(wid, p)\n>       assert meta[\"goal_state\"] == \"paused\", \"子卡还在跑 ⇒ 父卡不得被恢复\"\nE       AssertionError: 子卡还在跑 ⇒ 父卡不得被恢复\nE       assert 'active' == 'paused'\nE         \nE         - paused\nE         + active\n\ntests\\test_auto_await_resume.py:202: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_c_pause_without_active_child_does_not_wake": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "tool(wid, p, \"pause\", \"这件事先不做了\")\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_resume.py:218: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_c2_pause_with_no_child_at_all": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "l_tool(wid, p, \"pause\", \"等外部条件\")\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_resume.py:235: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_c3_blocked_and_complete_never_set_flag": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "_tool(wid, p, \"blocked\", \"被闸拦住\")\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_await_resume.py:248: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_d_user_stop_clears_await_flag": {
+  "msg": "AssertionError: 前置：此刻确实在等子卡 assert 0 == 1  +  where 0 = _await_flag('work_001', 'card_002')",
+  "tail": "wid, \"子卡\", p, goal=\"子目标\")\n        await _goal_tool(wid, p, \"pause\", \"等子卡跑完\")\n>       assert _await_flag(wid, p) == 1, \"前置：此刻确实在等子卡\"\nE       AssertionError: 前置：此刻确实在等子卡\nE       assert 0 == 1\nE        +  where 0 = _await_flag('work_001', 'card_002')\n\ntests\\test_auto_await_resume.py:267: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_e_non_auto_card_untouched_end_to_end": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' =",
+  "tail": "'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' == 'denied'\nE         \nE         - denied\nE         + GOAL_TOOL_DRIVER_REQUIRED)\n\ntests\\test_auto_await_resume.py:357: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_e2_non_auto_parent_chain_not_woken_by_child": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' =",
+  "tail": "'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' == 'denied'\nE         \nE         - denied\nE         + GOAL_TOOL_DRIVER_REQUIRED)\n\ntests\\test_auto_await_resume.py:365: AssertionError"
+ },
+ "tests.test_auto_await_resume::test_f3_will_continue_semantics_unchanged": {
+  "msg": "AssertionError: assert 0 == 1  +  where 0 = _await_flag('work_001', 'card_002')",
+  "tail": "l(wid, p, \"pause\", \"等子卡\")\n        await card_store.update_card(wid, c, {\"goal_state\": \"complete\"}, \"子卡完成\")\n    \n>       assert _await_flag(wid, p) == 1\nE       AssertionError: assert 0 == 1\nE        +  where 0 = _await_flag('work_001', 'card_002')\n\ntests\\test_auto_await_resume.py:418: AssertionError"
+ },
+ "tests.test_auto_mode::test_block2_toggle_on_off_recomputes_perms": {
+  "msg": "AssertionError: assert {'create_chil...uscript', ...} == {'create_chil...uscript', ...}      Extra items in the left set:   'delete'   Extra items in the right set:   'list_memory'   'search'   Use -v",
+  "tail": "sert {'create_chil...uscript', ...} == {'create_chil...uscript', ...}\nE         \nE         Extra items in the left set:\nE         'delete'\nE         Extra items in the right set:\nE         'list_memory'\nE         'search'\nE         Use -v to get more diff\n\ntests\\test_auto_mode.py:228: AssertionError"
+ },
+ "tests.test_auto_mode::test_block2_child_inherits_auto_and_all_open": {
+  "msg": "AssertionError: assert {'create_chil...uscript', ...} == {'create_chil...uscript', ...}      Extra items in the left set:   'delete'   Extra items in the right set:   'list_memory'   'search'   Use -v",
+  "tail": "sert {'create_chil...uscript', ...} == {'create_chil...uscript', ...}\nE         \nE         Extra items in the left set:\nE         'delete'\nE         Extra items in the right set:\nE         'list_memory'\nE         'search'\nE         Use -v to get more diff\n\ntests\\test_auto_mode.py:247: AssertionError"
+ },
+ "tests.test_auto_mode::test_block2_refresh_perms_skips_auto": {
+  "msg": "assert 6 == -1  +  where -1 = policy.AUTO_PERMS_VERSION",
+  "tail": "        after = card_store._meta_of(wid, a)\n        assert after[policy.PERM_KEY] == before[policy.PERM_KEY]\n>       assert after[policy.PERM_VERSION_KEY] == policy.AUTO_PERMS_VERSION\nE       assert 6 == -1\nE        +  where -1 = policy.AUTO_PERMS_VERSION\n\ntests\\test_auto_mode.py:278: AssertionError"
+ },
+ "tests.test_auto_mode::test_block3_shipped_default_is_serial": {
+  "msg": "AssertionError: assert 'parallel' == 'serial'      - serial   + parallel",
+  "tail": "最稳的模式开始。\n        \"\"\"\n        cfg = json.loads((REPO / \"config\" / \"exec_mode.json\").read_text(encoding=\"utf-8\"))\n>       assert cfg[\"mode\"] == \"serial\"\nE       AssertionError: assert 'parallel' == 'serial'\nE         \nE         - serial\nE         + parallel\n\ntests\\test_auto_mode.py:370: AssertionError"
+ },
+ "tests.test_auto_mode::test_block4_auto_toolface_is_normal_plus_update_goal": {
+  "msg": "AssertionError: auto 面应为「常规 - delete_card（TC1） + auto 专用件」：多=set() 少={'edit_card'} assert {'append_ruli...te_card', ...} == {'append_ruli...te_file', ...}      Extra items in the left set:   'delete_c",
+  "tail": "ard'}\nE       assert {'append_ruli...te_card', ...} == {'append_ruli...te_file', ...}\nE         \nE         Extra items in the left set:\nE         'delete_card'\nE         Extra items in the right set:\nE         'edit_card'\nE         Use -v to get more diff\n\ntests\\test_auto_mode.py:487: AssertionError"
+ },
+ "tests.test_auto_mode::test_block4_update_goal_complete_sets_state": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "          {\"action\": \"complete\"}, cards)\n>       assert r[\"ok\"] is True, r\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_mode.py:520: AssertionError"
+ },
+ "tests.test_auto_mode::test_block4_update_goal_denied_on_non_auto": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' =",
+  "tail": "rror': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' == 'denied'\nE         \nE         - denied\nE         + GOAL_TOOL_DRIVER_REQUIRED)\n\ntests\\test_auto_mode.py:532: AssertionError"
+ },
+ "tests.test_auto_mode::test_block4_update_goal_rejects_bad_action": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' =",
+  "tail": "'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' == 'validation'\nE         \nE         - validation\nE         + GOAL_TOOL_DRIVER_REQUIRED)\n\ntests\\test_auto_mode.py:539: AssertionError"
+ },
+ "tests.test_auto_mode::test_block4_prompt_version_and_section": {
+  "msg": "AssertionError: assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": "auto-t2＝G2（自主通信\n        两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。\n        \"\"\"\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\"\nE       AssertionError: assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_auto_mode.py:596: AssertionError"
+ },
+ "tests.test_auto_mode::test_block4_tool_table_and_registry": {
+  "msg": "AssertionError: assert frozenset({'a...essage', ...}) == {'read_inbox'...'update_goal'}      Extra items in the left set:   'append_ruling'   'create_goal'   'update_status'   'get_goal'   'resume_chi",
+  "tail": ".essage', ...}) == {'read_inbox'...'update_goal'}\nE         \nE         Extra items in the left set:\nE         'append_ruling'\nE         'create_goal'\nE         'update_status'\nE         'get_goal'\nE         'resume_child'\nE         Use -v to get more diff\n\ntests\\test_auto_mode.py:612: AssertionError"
+ },
+ "tests.test_auto_mode::test_rework_1_base_prompt_byte_identical_to_t22_1": {
+  "msg": "AssertionError: BASE_PROMPT 与记录的 t22-1 sha256 不符 assert 'f1dd25b29f68...5cef7944fe8f6' == '9657ae2f422c...f2226801afec5'      - 9657ae2f422c461d21cb9b9fc5e21f527155d4317ba9ef5ae89f2226801afec5   + f1d",
+  "tail": " sha256 不符\nE       assert 'f1dd25b29f68...5cef7944fe8f6' == '9657ae2f422c...f2226801afec5'\nE         \nE         - 9657ae2f422c461d21cb9b9fc5e21f527155d4317ba9ef5ae89f2226801afec5\nE         + f1dd25b29f68a8a20f1d4630fe0e9f6c90eb6007128b044d92f5cef7944fe8f6\n\ntests\\test_auto_mode.py:624: AssertionError"
+ },
+ "tests.test_auto_mode::test_rework_2_versions": {
+  "msg": "AssertionError: assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": "():\n        \"\"\"BASE_PROMPT_VERSION 不动；AUTO_BASE_PROMPT_VERSION 存在且非空。\"\"\"\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\"\nE       AssertionError: assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_auto_mode.py:635: AssertionError"
+ },
+ "tests.test_auto_mode::test_rework_4_auto_prompt_has_full_toolset_and_no_false_sentence": {
+  "msg": "AssertionError: auto 版工具清单缺：update_goal(action, reason?, await_children?) assert 'update_goal(action, reason?, await_children?)' in '以下是你所在的系统，以及你在这个系统里的身份。\\n\\n## 系统结构\\n\\n- 全部内容以卡片组织；卡与卡通过 parent（父子）、",
+  "tail": "children?)' in '以下是你所在的系统，以及你在这个系统里的身份。\\n\\n## 系统结构\\n\\n- 全部内容以卡片组织；卡与卡通过 parent（父子）、links（通信线）与 relations（依赖关联线）构成树状结构。\\n- links 是通信线：...o）答，或 update_goal(blocked, reason=...) 说明卡在哪（系统会把理由自动通知发问方）。**不能无视**。\\n- **你建的子卡也是自动模式**：把任务写进建卡时的 goal，它们会自己跑完并回报你。\\n'\n\ntests\\test_auto_mode.py:668: AssertionError"
+ },
+ "tests.test_auto_mode::test_block3_create_child_with_goal_kicks": {
+  "msg": "AssertionError: assert 'active' == 'complete'      - complete   + active",
+  "tail": "跑（D2 建卡即起跑）\"\n        assert any(\"子目标\" in x for x in calls), calls\n        m = card_store._meta_of(wid, c)\n>       assert m[\"goal_state\"] == \"complete\"\nE       AssertionError: assert 'active' == 'complete'\nE         \nE         - complete\nE         + active\n\ntests\\test_auto_mode.py:739: AssertionError"
+ },
+ "tests.test_auto_mode::test_block3_driver_runs_after_mutex_release": {
+  "msg": "AssertionError: 第二轮没跑起来（驱动器被互斥体 409 拒？） assert 1 >= 2  +  where 1 = len(['开始'])",
+  "tail": "   \n        await routes._run_message(wid, a, \"开始\")\n        await _drain_trigger_tasks()\n    \n>       assert len(calls) >= 2, \"第二轮没跑起来（驱动器被互斥体 409 拒？）\"\nE       AssertionError: 第二轮没跑起来（驱动器被互斥体 409 拒？）\nE       assert 1 >= 2\nE        +  where 1 = len(['开始'])\n\ntests\\test_auto_mode.py:768: AssertionError"
+ },
+ "tests.test_auto_mode::test_g4_complete_blocked_by_unanswered_ask": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' =",
+  "tail": "code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' == 'validation'\nE         \nE         - validation\nE         + GOAL_TOOL_DRIVER_REQUIRED)\n\ntests\\test_auto_mode.py:1040: AssertionError"
+ },
+ "tests.test_auto_mode::test_g4_complete_passes_after_answer": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "al\", {\"action\": \"complete\"}, cards)\n>       assert res[\"ok\"] is True, res\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_mode.py:1065: AssertionError"
+ },
+ "tests.test_auto_mode::test_g4_blocked_notifies_sender": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "d\", \"reason\": \"缺上游数据，做不下去\"}, cards)\n>       assert res[\"ok\"] is True, res\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_auto_mode.py:1081: AssertionError"
+ },
+ "tests.test_auto_mode::test_stage2_patch_auto_mode_lands_and_reverts": {
+  "msg": "AssertionError: assert {'create_chil...uscript', ...} == {'create_chil...uscript', ...}      Extra items in the left set:   'delete'   Extra items in the right set:   'list_memory'   'search'   Use -v",
+  "tail": "ert {'create_chil...uscript', ...} == {'create_chil...uscript', ...}\nE         \nE         Extra items in the left set:\nE         'delete'\nE         Extra items in the right set:\nE         'list_memory'\nE         'search'\nE         Use -v to get more diff\n\ntests\\test_auto_mode.py:1191: AssertionError"
+ },
+ "tests.test_auto_mode::test_auto_prompt_no_unconditional_restart_claim": {
+  "msg": "AssertionError: assert '只要没有在跑的子卡' in '## 自动模式\\n\\n**本卡处于自动模式。** 含义如下：\\n\\n- **你的权限和普通卡相同**——按卡片类型分权，不是全开。上面工具清单列的是全部工具，但**只有你有权的那部分才调得动**；调没有权限的会被系统拒绝。自动模式只改..._to）答，或 update_goal(blocked, reason=...) ",
+  "tail": "只要没有在跑的子卡' in '## 自动模式\\n\\n**本卡处于自动模式。** 含义如下：\\n\\n- **你的权限和普通卡相同**——按卡片类型分权，不是全开。上面工具清单列的是全部工具，但**只有你有权的那部分才调得动**；调没有权限的会被系统拒绝。自动模式只改..._to）答，或 update_goal(blocked, reason=...) 说明卡在哪（系统会把理由自动通知发问方）。**不能无视**。\\n- **你建的子卡也是自动模式**：把任务写进建卡时的 goal，它们会自己跑完并回报你。'\n\ntests\\test_auto_mode.py:1214: AssertionError"
+ },
+ "tests.test_auto_mode::test_auto_prompt_version_after_p7": {
+  "msg": "AssertionError: assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": "2 移植 P7] 版本号：普通版不动，自动版到 auto-t7。\"\"\"\n        from src.api import prompts\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\"\nE       AssertionError: assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_auto_mode.py:1247: AssertionError"
+ },
+ "tests.test_board::test_apply_revision_dual_ledger_and_dirty_flush": {
+  "msg": "AssertionError: 盘上状态未达预期: D:\\Temp\\pytest-of-Administrator\\pytest-562\\test_apply_revision_dual_ledge0\\app_home\\works\\work_001\\plans\\plan_card_001.json",
+  "tail": "   return data\n            await asyncio.sleep(0.01)\n>       raise AssertionError(f\"盘上状态未达预期: {path}\")\nE       AssertionError: 盘上状态未达预期: D:\\Temp\\pytest-of-Administrator\\pytest-562\\test_apply_revision_dual_ledge0\\app_home\\works\\work_001\\plans\\plan_card_001.json\n\ntests\\test_board.py:77: AssertionError"
+ },
+ "tests.test_board::test_step_brief_template_verbatim": {
+  "msg": "assert '【步骤执行】你现在执行计划的一步，只做本步的事。' in '【推进一步】你在推进计划的一步。这一步可以由你自己做，也可以交给一个新节点做——按这一步的类型来。\\n\\n本步要求：查资料\\n完成判据：文件存在（满足它，这一步才算完成）\\n产出物：notes.md\\n\\n推进纪律：\\n1. 先判断这...术。\\n3. 自己做时，需要取证就调工具，不凭想象。\\n4. 完成判据不满足，就说\"",
+  "tail": "行计划的一步，只做本步的事。' in '【推进一步】你在推进计划的一步。这一步可以由你自己做，也可以交给一个新节点做——按这一步的类型来。\\n\\n本步要求：查资料\\n完成判据：文件存在（满足它，这一步才算完成）\\n产出物：notes.md\\n\\n推进纪律：\\n1. 先判断这...术。\\n3. 自己做时，需要取证就调工具，不凭想象。\\n4. 完成判据不满足，就说\"没完成\"，不许谎报\"已完成\"。\\n5. 做完立刻调 step_complete：result 写本步成果，criteria_met 写\"判据如何满足\"。'\n\ntests\\test_board.py:376: AssertionError"
+ },
+ "tests.test_card_draft::test_base_prompt_version_is_t20_1": {
+  "msg": "AssertionError: assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": "e_prompt_version_is_t20_1():\n        # [依赖关联线 2026-10-16] t21-1 → t22-1。\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\"\nE       AssertionError: assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_card_draft.py:64: AssertionError"
+ },
+ "tests.test_card_region_guide::test_five_cross_card_categories_present": {
+  "msg": "AssertionError: 缺跨卡信息类别：当前确定状态 assert '当前确定状态' in '〔卡片区域说明〕这张卡的正文分三块，各管各的，不要混写：\\n\\n使命——这张卡要做什么、要做成什么（目标与交付物）。\\n      写法：≤5 行，一句话说清；立项定稿，只有用户能改，你没有写它的通道。\\n\\n现状——这张卡现在实际是...针，不搬正文。\\n\\n待协作事项——需要谁提供什么、卡在什",
+  "tail": "定状态' in '〔卡片区域说明〕这张卡的正文分三块，各管各的，不要混写：\\n\\n使命——这张卡要做什么、要做成什么（目标与交付物）。\\n      写法：≤5 行，一句话说清；立项定稿，只有用户能改，你没有写它的通道。\\n\\n现状——这张卡现在实际是...针，不搬正文。\\n\\n待协作事项——需要谁提供什么、卡在什么外部条件上。\\n      写法：一条一项，写清“等谁确认什么、确认后本卡才能继续”。\\n\\n迭代历史——系统自动记的改动留痕，你不用写。\\n\\n进度——不重要，不必特意维护。'\n\ntests\\test_card_region_guide.py:88: AssertionError"
+ },
+ "tests.test_card_region_semantics::test_base_prompt_version_bumped": {
+  "msg": "AssertionError: assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": "-1（新增「## 规则卡」节）。\n        # [依赖关联线 2026-10-16] t21-1 → t22-1。\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\"\nE       AssertionError: assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_card_region_semantics.py:435: AssertionError"
+ },
+ "tests.test_coder_card::test_toolset_fingerprints_and_switch_bindings": {
+  "msg": "assert 35 == 32  +  where 35 = <built-in method count of str object at 0x000002823898CE00>('\": ToolDef(')  +    where <built-in method count of str object at 0x000002823898CE00> = '# -*- coding: utf-8",
+  "tail": "8CE00> = '# -*- coding: utf-8 -*-\\n\"\"\"卡片工具与权限（白板版 2026-10-02）。\\n\\n工具接口只含机械事实：\\n- read_card：返回标题、父卡、连线、正文——不暴露内部四区语义\\n- edit_car...gger.error(\"execute_tool 异常 tool=%s args=%s: %s\", tool_name, arguments, exc)\\n        return err(\"internal\", str(exc))'.count\n\ntests\\test_coder_card.py:91: AssertionError"
+ },
+ "tests.test_coder_card::test_create_coder_card_builds_and_starts": {
+  "msg": "AssertionError: 建卡即首跑（回合已产出） assert False  +  where False = any(<generator object test_create_coder_card_builds_and_starts.<locals>.<genexpr> at 0x000002823955C740>)",
+  "tail": "y(b.get(\"actor\") == \"assistant\" for b in blocks), \"建卡即首跑（回合已产出）\"\nE       AssertionError: 建卡即首跑（回合已产出）\nE       assert False\nE        +  where False = any(<generator object test_create_coder_card_builds_and_starts.<locals>.<genexpr> at 0x000002823955C740>)\n\ntests\\test_coder_card.py:259: AssertionError"
+ },
+ "tests.test_coder_card::test_report_done_calls_owner_and_coder_stays_silent": {
+  "msg": "AssertionError: 完工回执应调起主卡验收 assert False  +  where False = any(<generator object test_report_done_calls_owner_and_coder_stays_silent.<locals>.<genexpr> at 0x0000028239782C00>)",
+  "tail": "tor\") == \"assistant\" for b in blocks_a), \"完工回执应调起主卡验收\"\nE       AssertionError: 完工回执应调起主卡验收\nE       assert False\nE        +  where False = any(<generator object test_report_done_calls_owner_and_coder_stays_silent.<locals>.<genexpr> at 0x0000028239782C00>)\n\ntests\\test_coder_card.py:297: AssertionError"
+ },
+ "tests.test_condfold::test_v3_condense_call_targets_glm_flash": {
+  "msg": "AssertionError: assert 'glm-53-flash' == 'glm-flash'      - glm-flash   + glm-53-flash   ?    +++",
+  "tail": "n\", fake_call_main)\n        await memory_store._condense_call(\"hello\")\n>       assert seen[\"model_name\"] == \"glm-flash\"\nE       AssertionError: assert 'glm-53-flash' == 'glm-flash'\nE         \nE         - glm-flash\nE         + glm-53-flash\nE         ?    +++\n\ntests\\test_condfold.py:75: AssertionError"
+ },
+ "tests.test_decision_gate::test_complete_rejected_without_decision": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' =",
+  "tail": "de': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert (False is False and 'GOAL_TOOL_DRIVER_REQUIRED' == 'validation'\nE         \nE         - validation\nE         + GOAL_TOOL_DRIVER_REQUIRED)\n\ntests\\test_decision_gate.py:60: AssertionError"
+ },
+ "tests.test_decision_gate::test_complete_passes_after_decision_appended": {
+  "msg": "AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None} assert False is True",
+  "tail": "action\": \"complete\"}, cards)\n    \n>       assert res[\"ok\"] is True, res\nE       AssertionError: {'ok': False, 'error': {'code': 'GOAL_TOOL_DRIVER_REQUIRED', 'message': 'goal tools require an open model turn'}, 'data': None}\nE       assert False is True\n\ntests\\test_decision_gate.py:78: AssertionError"
+ },
+ "tests.test_decision_gate::test_skeleton_placeholder_is_not_a_decision": {
+  "msg": "AssertionError: assert '定论' in 'goal tools require an open model turn'",
+  "tail": "ools.execute_tool(wid, cid, \"update_goal\", {\"action\": \"complete\"}, cards)\n        assert res[\"ok\"] is False, \"骨架示例行不该被当成定论放行\"\n>       assert \"定论\" in res[\"error\"][\"message\"]\nE       AssertionError: assert '定论' in 'goal tools require an open model turn'\n\ntests\\test_decision_gate.py:100: AssertionError"
+ },
+ "tests.test_dep_relations::test_b2_tool_table_and_versions": {
+  "msg": "assert 35 == 32  +  where 35 = <built-in method count of str object at 0x00000282384D6A20>('\": ToolDef(')  +    where <built-in method count of str object at 0x00000282384D6A20> = '# -*- coding: utf-8",
+  "tail": "0> = '# -*- coding: utf-8 -*-\\n\"\"\"卡片工具与权限（白板版 2026-10-02）。\\n\\n工具接口只含机械事实：\\n- read_card：返回标题、父卡、连线、正文——不暴露内部四区语义\\n- edit_car...gger.error(\"execute_tool 异常 tool=%s args=%s: %s\", tool_name, arguments, exc)\\n        return err(\"internal\", str(exc))'.count\n\ntests\\test_dep_relations.py:177: AssertionError"
+ },
+ "tests.test_frontend_readability::test_u1_font_sizes_within_allowed_set": {
+  "msg": "AssertionError: 越集字号（非画布）: L1924 .model-pill .mp-caret font-size: 9px assert not ['L1924 .model-pill .mp-caret font-size: 9px']",
+  "tail": "{sel.strip()[:50]} font-size: {m.group(1)}px\")\n>       assert not bad, \"越集字号（非画布）: \" + \"; \".join(bad)\nE       AssertionError: 越集字号（非画布）: L1924 .model-pill .mp-caret font-size: 9px\nE       assert not ['L1924 .model-pill .mp-caret font-size: 9px']\n\ntests\\test_frontend_readability.py:70: AssertionError"
+ },
+ "tests.test_model_override_scope::test_precedence_card_than_work_than_global": {
+  "msg": "AssertionError: assert 'm2' == 'm1'      - m1   + m2",
+  "tail": "  # 无卡 → 全局默认（新模型：默认模型按卡类型解析，项目级无单一默认）\n        assert model_config.default_model() == \"m1\"\n>       assert model_config.default_model(work_id=\"work_100\") == \"m1\"\nE       AssertionError: assert 'm2' == 'm1'\nE         \nE         - m1\nE         + m2\n\ntests\\test_model_override_scope.py:94: AssertionError"
+ },
+ "tests.test_model_override_scope::test_api_work_roundtrip_and_effective": {
+  "msg": "AssertionError: assert 'm2' == 'm1'      - m1   + m2",
+  "tail": "verrides/work_100/effective\").json()\n>       assert eff[\"default_model\"] == \"m1\"          # 无卡时 = 全局默认（不再用 work 默认）\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       AssertionError: assert 'm2' == 'm1'\nE         \nE         - m1\nE         + m2\n\ntests\\test_model_override_scope.py:149: AssertionError"
+ },
+ "tests.test_offline_e2e::test_mock_llm_round_trip": {
+  "msg": "AssertionError: assert False  +  where False = <built-in method startswith of str object at 0x0000028239FA0570>('[mock:haiku]')  +    where <built-in method startswith of str object at 0x0000028239FA0",
+  "tail": "rt False\nE        +  where False = <built-in method startswith of str object at 0x0000028239FA0570>('[mock:haiku]')\nE        +    where <built-in method startswith of str object at 0x0000028239FA0570> = '[mock:minimax-m31-flash-preview] 你好\\n'.startswith\n\ntests\\test_offline_e2e.py:147: AssertionError"
+ },
+ "tests.test_rule_card::test_inject_section_by_card_type": {
+  "msg": "ValueError: substring not found",
+  "tail": "则A\"\n        # compose 结果断言 instruction < 规则 < 卡片职责 的文本顺序\n        sp = main[\"system_prompt\"]\n>       assert sp.index(\"你在一个卡片系统内工作\") < sp.index(\"## 规则\\n子项目规则A\") < sp.index(\"## 卡片职责\")\n               ^^^^^^^^^^^^^^^^^^^^^^^\nE       ValueError: substring not found\n\ntests\\test_rule_card.py:270: ValueError"
+ },
+ "tests.test_rule_card::test_base_prompt_rule_section_t21_1": {
+  "msg": "AssertionError: assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": " from src.api import prompts\n        # [依赖关联线 2026-10-16] t21-1 → t22-1。\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\"\nE       AssertionError: assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_rule_card.py:302: AssertionError"
+ },
+ "tests.test_slots_control::test_midflight_stop_closes_turn_human_stop": {
+  "msg": "AssertionError: 回合以 human_stop 闭合（T124） assert 'model_done' == 'human_stop'      - human_stop   + model_done",
+  "tail": "sion_facade.read(wid, cid)\n>       assert blocks[-1][\"end\"] == \"human_stop\", \"回合以 human_stop 闭合（T124）\"\nE       AssertionError: 回合以 human_stop 闭合（T124）\nE       assert 'model_done' == 'human_stop'\nE         \nE         - human_stop\nE         + model_done\n\ntests\\test_slots_control.py:156: AssertionError"
+ },
+ "tests.test_snapshot_roundtrip::test_snapshot_restore_roundtrip": {
+  "msg": "AssertionError: assert '第二版正文' == '第一版正文'      - 第一版正文   ?  ^   + 第二版正文   ?  ^",
+  "tail": "status_block\n        # （写入侧 update_card 仍兼容旧键 conclusion 并归一到新键）。\n>       assert data[\"body\"][\"status_block\"] == \"第一版正文\"\nE       AssertionError: assert '第二版正文' == '第一版正文'\nE         \nE         - 第一版正文\nE         ?  ^\nE         + 第二版正文\nE         ?  ^\n\ntests\\test_snapshot_roundtrip.py:78: AssertionError"
+ },
+ "tests.test_status_update::test_version_and_ontology": {
+  "msg": "AssertionError: assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": "EVENT_TYPES\n        # 本轮没动 system 提示词 ⇒ 版本号不动（版本纪律：只动 BASE_PROMPT 才升）\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\"\nE       AssertionError: assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_status_update.py:65: AssertionError"
+ },
+ "tests.test_status_update::test_status_task_event_carries_three_kinds_and_current_status": {
+  "msg": "AssertionError: 接口与约定 assert '接口与约定' in '我这一轮的任务：把本卡的「现状」更新一遍。\\n\\n现状是什么：本卡现在实际是什么样——写事实，不写打算。\\n别的卡（尤其上级卡）读本卡，先读的就是它——所以这里只写别人能拿去验证的东西，\\n不是只给本卡后续对话看的。它不是使命（本卡要...ropose_status(content)，把「新现状正文」交给它——它只提",
+  "tail": "'接口与约定' in '我这一轮的任务：把本卡的「现状」更新一遍。\\n\\n现状是什么：本卡现在实际是什么样——写事实，不写打算。\\n别的卡（尤其上级卡）读本卡，先读的就是它——所以这里只写别人能拿去验证的东西，\\n不是只给本卡后续对话看的。它不是使命（本卡要...ropose_status(content)，把「新现状正文」交给它——它只提议、不落盘。\\n4. 不直接改卡（我没有直写现状的通道），也不要动使命块和第三块。\\n\\n当前现状（原样给出，供我对照修订）：\\n当前确定状态：接口已定稿\\n'\n\ntests\\test_status_update.py:155: AssertionError"
+ },
+ "tests.test_t12_memory::test_tool_table_has_read_memory_and_version": {
+  "msg": "AssertionError: assert 't24-1' == 't22-1'      - t22-1   ?   ^   + t24-1   ?   ^",
+  "tail": "t20-1 → t21-1（新增「## 规则卡」节）。\n        # [依赖关联线 2026-10-16] t21-1 → t22-1。\n>       assert prompts.BASE_PROMPT_VERSION == \"t22-1\"\nE       AssertionError: assert 't24-1' == 't22-1'\nE         \nE         - t22-1\nE         ?   ^\nE         + t24-1\nE         ?   ^\n\ntests\\test_t12_memory.py:397: AssertionError"
+ },
+ "tests.test_tool_capability_boost::test_seven_new_tools_registered": {
+  "msg": "AssertionError: assert 51 == 50  +  where 51 = len({'read_card': ToolDef(schema={'name': 'read_card', 'description': '读取指定卡（标题、父卡、连线、正文各块）。返回含使命／现状／第三块（第三块名按本树类型为 requir...'}}, 'required': ['card_id',",
+  "tail": "chema={'name': 'read_card', 'description': '读取指定卡（标题、父卡、连线、正文各块）。返回含使命／现状／第三块（第三块名按本树类型为 requir...'}}, 'required': ['card_id', 'content']}}, handler=<function _h_edit_card at 0x00000282349EEAC0>, readonly=False), ...} = card_tools.TOOL_REGISTRY\n\ntests\\test_tool_capability_boost.py:63: AssertionError"
+ }
+}
