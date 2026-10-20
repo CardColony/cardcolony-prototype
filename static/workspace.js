@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=36";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=45";
+import { EventFlow } from "./stream.js?v=47";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=36";
@@ -19,9 +19,10 @@ import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=31";
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
 import { ComposerSubmissionPolicy } from "./esm/flow/submission-policy.js?v=1";
-import { createInputBar } from "./esm/flow/input-bar.js?v=4";
+import { InputMachine } from "./esm/flow/machine.js?v=1";
+import { createInputBar } from "./esm/flow/input-bar.js?v=5";
 import { createQueueStore } from "./esm/flow/queue-store.js?v=1";
-import { createQueueDock } from "./esm/flow/queue-dock.js?v=1";
+import { createQueueDock } from "./esm/flow/queue-dock.js?v=2";
 
 /* [惰性新建 2026-10-17] WORK_ID 由 const 改 let：草稿项目/草稿卡落库成功后就地换真 id
  * （不整页跳转，首条消息"只感知正常发送"），本模块所有闭包引用同一绑定，随取随新。
@@ -67,14 +68,47 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   let submitPolicy = null;    // flow/submission-policy 实例
 
   // 运行态唯一入口：一处改，四处生效（会话事实 / 输入条 / 排队条 / 事件流运行条）
-  function setRunState(running) {
+  // [5702] 可显式给 cardId：切卡恢复运行态时不能写到「上一张卡」的运行条上。
+  function setRunState(running, cardId) {
     sessionState.running = !!running;
     if (inputBar) inputBar.refresh();
     if (queueDock) queueDock.refresh();
-    if (currentCard) {
-      const cid = currentCard.meta.card_id;
+    const cid = cardId || (currentCard ? currentCard.meta.card_id : "");
+    if (cid) {
       try { EventFlow.setRunning(WORK_ID, cid, !!running); } catch (e) { /* 零阻断 */ }
     }
+  }
+
+  /* ═══ [5702 · 2026-10-20] 输入会话按卡隔离 ═══
+     每张卡一个 InputMachine ＋ 一份前端权威队列；DOM 仍是单实例（dsh「一次建好」），
+     切卡只**换绑**。此前是「全页一个 machine/queue」⇒ 切卡时草稿、排队消息、
+     运行态全部跟着走（用户报的「输入框文字被带走」）。 */
+  const composerSessions = new Map();   // cardId -> { machine, queue }
+  let activeComposer = null;            // { key, session }
+
+  function composerOf(cardId) {
+    const key = String(cardId || "draft");
+    let s = composerSessions.get(key);
+    if (!s) {
+      s = { machine: new InputMachine({ now: () => Date.now() }), queue: createQueueStore() };
+      composerSessions.set(key, s);
+    }
+    return s;
+  }
+
+  /** 切到某卡的输入会话：换绑 machine ＋ 换绑队列 ＋ 按该卡真实 busy 恢复运行态。 */
+  function switchComposer(cardId) {
+    if (!inputBar) return;
+    const key = String(cardId || "draft");
+    if (activeComposer && activeComposer.key === key) return;
+    const session = composerOf(key);
+    activeComposer = { key, session };
+    queueStore = session.queue;                    // 既有路径（enqueue/hasQueued/drain）随之切换
+    inputBar.bindSession(session.machine);
+    if (queueDock) queueDock.setStore(session.queue);
+    let busy = false;
+    try { busy = EventFlow.sessionRunning(WORK_ID, key); } catch (e) { /* 零阻断 */ }
+    setRunState(busy, key);
   }
 
   let currentCard = null;     // 完整 card 数据 {meta, body}
@@ -195,6 +229,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // #chatArea，不等 getCard/inspector/timeline 任一 await——否则旧卡内容滞留，
     // 且快速连点时后到的 await 会把旧卡写进新卡（P4 串卡的界面侧表现）。
     bindBoard(WORK_ID, cardId);
+    switchComposer(cardId);   // [5702] 输入会话同步换绑：点下去草稿立刻按卡切换
     try {
       const card = await API.getCard(WORK_ID, cardId);
       if (stale()) return;
@@ -290,6 +325,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
            等发送时 DRAFT_CARD 已是 null，三步分支根本不进——板会一直停在 new-N，
            气泡写进游离板，假界面原样复现。换绑跟着「id 变了」走，不跟「谁触发」走。 */
         bindBoard(WORK_ID, cid);
+        switchComposer(cid);                // [5702] 草稿卡落库：输入会话跟着换到真 id
         renderNav().catch(() => {});        // 新项目/新卡进左栏
         renderInspector().catch(() => {});  // 右栏把临时 id 换成真 card_id
       } else {
@@ -315,6 +351,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     };
     const boardKey = "new-" + (++_draftBoardSeq);
     try { EventFlow.activate(WORK_ID, boardKey); } catch (e) { /* 零阻断 */ }
+    switchComposer("draft");   // [5702] 新卡用独立输入会话（随后 setDraft("") 清空）
     // [对话流照抄 dsh v3] board() 现在返回视图的**节点列**：不再清 innerHTML
     //（那会把视图骨架一起抹掉）。新 boardKey ⇒ 新会话 ⇒ 视图天然是空的。
     renderInspector().catch(() => {});
@@ -342,6 +379,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       body: { mission: "", status_block: "", rulings: "", history: [] },
     };
     try { EventFlow.activate(WORK_ID, "draft"); } catch (e) { /* 零阻断 */ }
+    switchComposer("draft");   // [5702] 草稿项目页独立输入会话
     renderInspector().catch(() => {});
     const crumb = document.getElementById("chatCrumb");
     if (crumb) crumb.innerHTML = `<span class="cseg cur">新项目</span>`;
@@ -1101,6 +1139,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const statusOp = (op === "update_status");
     if (!currentCard) return;
     if (sessionState.running) return;   // 一轮在跑时不重入（运行中主键＝停止，见 doStop）
+    /* [5702] 捕获**发起这次发送**的输入会话：切卡后迟到的 commitSent/drain
+       不能作用到新卡（否则会清掉新卡草稿、或替新卡发队列）。 */
+    const sendingMachine = inputBar ? inputBar.machine : null;
+    const sendingQueue = queueStore;
     const content = statusOp ? "更新现状" : String(inputBar ? inputBar.getDraft() : "").trim();
     if (!content) return;
 
@@ -1132,7 +1174,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     /* [发送被接受] 清草稿并清撤销栈（machine.ts:544-553：已发内容不得被撤销复活）。
        专用回合（更新现状）不占输入框。 */
-    if (!statusOp && inputBar) inputBar.commitSent();
+    if (!statusOp && inputBar) inputBar.commitSent(sendingMachine);
 
     // 本轮回复基线：异常恢复判据＝「resync 后是否多出一条 assistant」，不是「有没有 assistant」
     const asstBefore = (() => {
@@ -1214,7 +1256,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       };
     } finally {
       setRunState(false);
-      drainQueue();   // 轮结束：排队消息依序发出
+      /* [5702] 只给「还在看的这张卡」出队：切走了就不替别的卡发消息
+         （队列留在那张卡自己的 store 里，切回时仍在）。 */
+      if (!currentCard || currentCard.meta.card_id === cardId) drainQueue(sendingQueue);
     }
   }
 
@@ -1252,10 +1296,11 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
   /* 轮结束自动出队：把队首交回发送链路（QueueDock 的「轮结束自动依序发出」）。
      一次只发一条——它自己收口时再调一次，天然串行。 */
-  function drainQueue() {
-    if (!queueStore || sessionState.running) return;
+  function drainQueue(qs) {
+    const q = qs || queueStore;
+    if (!q || sessionState.running) return;
     if (!currentCard) return;
-    const next = queueStore.dequeue();
+    const next = q.dequeue();
     if (!next) return;
     if (inputBar) inputBar.setDraft(String(next.text || ""));
     send();
@@ -1380,7 +1425,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           const text = String(draft == null ? "" : draft);
           if (sessionState.running) {
             queueStore.enqueue(text);
-            if (inputBar) inputBar.commitSent();
+            // [5702] 入队也走「发起会话」：同步路径下就是当前绑定的 machine
+            if (inputBar) inputBar.commitSent(inputBar.machine);
             if (queueDock) queueDock.refresh();
             return;
           }
@@ -1388,7 +1434,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         },
         stop() { doStop(); },
         steerQueue() {
-          if (!sessionState.running) { drainQueue(); return; }
+          if (!sessionState.running) { drainQueue(queueStore); return; }
           notify("本轮进行中，排队消息将在轮结束后依序发出", "info");
         },
         notify,
@@ -1396,6 +1442,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     });
     inputBar.refresh();
     if (queueDock) queueDock.refresh();
+    // [5702] 建好后先绑一张（bootRestore 会按真实卡再换绑）
+    switchComposer(currentCard ? currentCard.meta.card_id : "draft");
   }
 
   initComposer();
