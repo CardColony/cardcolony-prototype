@@ -220,6 +220,80 @@ _TRASH_DDL: tuple[str, ...] = (
 )
 
 
+# ===========================================================================
+# [角色机制 5710] 角色卡独立结构：档案 / 判断簿 / 警报簿 / 同步队列 / 职责书史
+# ===========================================================================
+# 角色卡不再把职责、判词、警报塞进普通卡三块正文；本组表是它的正式结构。
+# 与 inbox/trash 同款：幂等 CREATE，既有 work 首次连接即补建。
+_ROLE_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS role_profiles (
+    card_id         TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    jurisdiction    TEXT NOT NULL DEFAULT '{}',
+    watch           TEXT NOT NULL DEFAULT '{}',
+    speak_contract  TEXT NOT NULL DEFAULT '{}',
+    escalation      TEXT NOT NULL DEFAULT '{}',
+    duty            TEXT NOT NULL DEFAULT '{}',
+    charter         TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT,
+    updated_at      TEXT
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_role_profiles_work ON role_profiles(work_id)",
+    """CREATE TABLE IF NOT EXISTS role_verdicts (
+    id              TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    role_id         TEXT NOT NULL,
+    ts              TEXT,
+    decision        TEXT,
+    reason          TEXT,
+    sources         TEXT,
+    targets         TEXT,
+    evidence        TEXT,
+    auto            INTEGER DEFAULT 0,
+    superseded_by   TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_role_verdicts_role ON role_verdicts(role_id, ts)",
+    """CREATE TABLE IF NOT EXISTS role_alarms (
+    id              TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    role_id         TEXT NOT NULL,
+    ts              TEXT,
+    severity        TEXT,
+    title           TEXT,
+    detail          TEXT,
+    status          TEXT DEFAULT 'open',
+    acked_at        TEXT DEFAULT '',
+    corrected_by    TEXT DEFAULT '',
+    supersedes      TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_role_alarms_role ON role_alarms(role_id, status)",
+    """CREATE TABLE IF NOT EXISTS role_sync (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_id         TEXT NOT NULL,
+    role_id         TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    from_seq        INTEGER,
+    to_seq          INTEGER,
+    signals         TEXT,
+    status          TEXT DEFAULT 'pending',
+    created_at      TEXT,
+    consumed_at     TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_role_sync_pending ON role_sync(role_id, status)",
+    """CREATE TABLE IF NOT EXISTS role_charter_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_id         TEXT NOT NULL,
+    role_id         TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    text            TEXT,
+    ratified_by     TEXT,
+    ratified_at     TEXT,
+    note            TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_role_charter_role ON role_charter_history(role_id, version)",
+)
+
+
 #: 每个 work 的回收站上限。payload 里含完整会话正文（可能几百 KB），
 #: 不封顶就会随删卡次数无限增长——回收站是"手滑保险"，不是归档系统。
 TRASH_KEEP_PER_WORK = 100
@@ -575,6 +649,8 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     for ddl in _INBOX_DDL:
         conn.execute(ddl)
     for ddl in _TRASH_DDL:
+        conn.execute(ddl)
+    for ddl in _ROLE_DDL:
         conn.execute(ddl)
 
 

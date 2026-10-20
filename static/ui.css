@@ -2363,3 +2363,48 @@ body.page-chat .role-create textarea {
   font-family: inherit; resize: vertical;
 }
 body.page-chat .role-create .btn { align-self: flex-start; }
+
+/* [角色机制 5710 v2] 独立六节 + 生命周期 */
+body.page-chat .role-duty {
+  font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.18); color: var(--dimmer, #9aa0a6);
+}
+body.page-chat .role-duty.active { color: #7fc08a; border-color: rgba(127,192,138,0.45); }
+body.page-chat .role-duty.suspended { color: #e0a23a; border-color: rgba(224,162,58,0.45); }
+body.page-chat .role-duty.archived { color: #9aa0a6; border-color: rgba(154,160,166,0.35); }
+body.page-chat .role-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 4px; }
+body.page-chat .role-actions .btn { font-size: 11px; padding: 3px 8px; }
+body.page-chat .role-sec { margin: 10px 0 4px; }
+body.page-chat .role-sec-title {
+  font-size: 11px; font-weight: 600; letter-spacing: .02em;
+  color: var(--dimmer, #b0b0b0); margin-bottom: 4px;
+}
+body.page-chat .role-sec-title .note { font-weight: 400; color: var(--dimmer, #8a8a8a); margin-left: 4px; }
+body.page-chat .role-domain { font-size: 12px; color: #d8b84a; }
+body.page-chat .role-statement { font-size: 12px; line-height: 1.5; margin-top: 2px; }
+body.page-chat .role-kv { font-size: 12px; line-height: 1.55; color: var(--dimmer, #c0c0c0); }
+body.page-chat .role-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+body.page-chat .role-chip {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(255,255,255,0.05); color: var(--dimmer, #b0b0b0);
+}
+body.page-chat .role-charter {
+  font-size: 12px; line-height: 1.6; white-space: pre-wrap;
+  padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.03);
+  color: var(--dimmer, #c8c8c8);
+}
+body.page-chat .role-ve { font-size: 11px; color: var(--dimmer, #8a8a8a); margin-top: 2px; }
+body.page-chat .role-edit { margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.12); }
+body.page-chat .role-input {
+  width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 7px;
+  margin-bottom: 6px; background: rgba(255,255,255,0.04); color: inherit;
+  border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+  font-family: inherit; resize: vertical;
+}
+body.page-chat .role-create-row { display: flex; gap: 6px; }
+body.page-chat .role-create-row input { flex: 1; min-width: 0; }
+body.page-chat .btn.danger { background: transparent; color: #d05656; border-color: rgba(208,86,86,0.4); }
+body.page-chat .role-alarm-head .role-correct {
+  margin-left: auto; border: 0; background: none; color: #d05656;
+  cursor: pointer; font-size: 11px;
+}

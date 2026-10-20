@@ -1,0 +1,59 @@
+{
+  "work_id": "work_003",
+  "http_full_chain": {
+    "role_card_id": "card_004",
+    "jurisdiction": {
+      "domain": "timeline_contract",
+      "statement": "接口层时间口径",
+      "exclusive_key": "timeline_contract"
+    },
+    "watch": {
+      "cards": [
+        {
+          "card_id": "card_002",
+          "title": "工作卡A",
+          "card_type": "sub_project"
+        },
+        {
+          "card_id": "card_003",
+          "title": "工作卡B",
+          "card_type": "sub_project"
+        }
+      ],
+      "signals": [
+        "turn_completed",
+        "status_changed"
+      ]
+    },
+    "duty": {
+      "state": "active",
+      "since": "2026-10-20T10:20:36.072059+08:00",
+      "last_wake_at": "2026-10-20T10:20:36.576534+08:00",
+      "pending_sync": 0
+    },
+    "verdicts": [
+      {
+        "decision": "silent",
+        "auto": true,
+        "reason": "（机械补记：本轮未调用 record_verdict，按沉默处理）"
+      }
+    ],
+    "pending_sources": [],
+    "six_sections": true
+  },
+  "ui_created_role": {
+    "role_card_id": "card_005",
+    "jurisdiction": {
+      "domain": "ui_domain",
+      "statement": "UI 创建的管辖域",
+      "exclusive_key": "ui_domain"
+    },
+    "duty": {
+      "state": "active",
+      "since": "2026-10-20T10:23:27.352351+08:00",
+      "last_wake_at": "",
+      "pending_sync": 0
+    },
+    "charter_version": 1
+  }
+}

@@ -4,17 +4,17 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=37";
+import { API } from "./esm/api.js?v=38";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=45";
+import { EventFlow } from "./stream.js?v=46";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=37";
+import { notify, postStop } from "./esm/api.js?v=38";
 import { parseCardHeader, stripCardHeader } from "./esm/cardmsg.js?v=30";
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=35";
-import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=31";
+import { createNavSystem } from "./esm/nav_system.js?v=36";
+import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=32";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
@@ -430,11 +430,28 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     return m ? m[1] : s.slice(0, 16);
   }
 
+  function roleDutyLabel(state) {
+    return ({ active: "值班中", suspended: "已停职", archived: "已撤岗" })[state] || state;
+  }
+
   function buildRoleHtml(info, m) {
     if (!info) {
       return `<div class="role-panel"><div class="rej-empty">角色信息读取失败（稍后重试）</div></div>`;
     }
-    const watched = info.watched || [];
+    const prof = info.profile || {};
+    const jurisdiction = info.jurisdiction || prof.jurisdiction || {};
+    const watch = info.watch || prof.watch || {};
+    const watched = watch.cards || [];
+    const signals = watch.signals || [];
+    const sc = info.speak_contract || prof.speak_contract || {};
+    const esc = info.escalation || prof.escalation || {};
+    const duty = info.duty || prof.duty || {};
+    const charter = info.charter || prof.charter || {};
+    const verdicts = (info.verdicts || []).slice(0, 10);
+    const alarms = (info.alarms || []).slice(0, 10);
+    const pending = (info.pending_sources || []).length;
+    const dutyState = duty.state || "active";
+    const canRun = dutyState === "active";
     const watchIds = new Set(watched.map(w => w.card_id));
     const candidates = ((navStore.snapshot.get().projects || []).flatMap(p => p.cards || []))
       .filter(c => c.card_id !== m.card_id && c.card_type !== "role" && !watchIds.has(c.card_id));
@@ -447,42 +464,103 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const options = candidates
       .map(c => `<option value="${escapeHtml(c.card_id)}">${escapeHtml(c.card_id)} · ${escapeHtml(c.title)}</option>`)
       .join("");
-    const verdicts = (info.verdicts || []).slice(0, 10);
+    const signalOpts = ["turn_completed", "status_changed", "decision_appended", "turn_error"]
+      .map(s => `<option value="${s}" ${signals.includes(s) ? "selected" : ""}>${s}</option>`).join("");
     const verdictHtml = verdicts.length
       ? verdicts.map(v => `<div class="role-v">
             <span class="role-vd ${v.decision === "speak" ? "speak" : "silent"}">${v.decision === "speak" ? "发言" : "沉默"}</span>
             <span class="role-vr">${escapeHtml(v.reason || "")}</span>
             <span class="role-vt">${escapeHtml(fmtRoleTs(v.ts))}</span>
+            ${v.evidence && v.evidence.length ? `<div class="role-ve">证据：${v.evidence.map(escapeHtml).join("；")}</div>` : ""}
+            ${v.superseded_by ? `<div class="role-ve">已被 ${escapeHtml(v.superseded_by)} 取代</div>` : ""}
           </div>`).join("")
       : `<div class="rej-empty">（还没有巡检记录）</div>`;
-    const alarms = info.alarms || [];
     const alarmHtml = alarms.length
       ? alarms.map(a => `<div class="role-alarm ${escapeHtml(a.severity || "warn")}">
             <div class="role-alarm-head"><b>${escapeHtml(a.title || "")}</b>
-              <span>${escapeHtml(fmtRoleTs(a.ts))}</span>
-              <button class="role-ack" data-id="${escapeHtml(a.id || "")}">已知</button></div>
+              <span>${escapeHtml(fmtRoleTs(a.ts))} · ${escapeHtml(a.status || "open")}</span>
+              ${a.status === "open" ? `<button class="role-ack" data-id="${escapeHtml(a.id || "")}">已知</button>` : ""}
+              ${a.status !== "corrected" ? `<button class="role-correct" data-id="${escapeHtml(a.id || "")}">更正</button>` : ""}
+            </div>
             <div class="role-alarm-detail">${escapeHtml(a.detail || "")}</div>
+            ${a.corrected_by ? `<div class="role-ve">已更正 → ${escapeHtml(a.corrected_by)}</div>` : ""}
           </div>`).join("")
-      : `<div class="rej-empty">（没有未处理警报）</div>`;
-    const pending = (info.pending_sources || []).length;
+      : `<div class="rej-empty">（没有警报）</div>`;
+    const history = (charter.history || []).length;
     return `
       <div class="role-panel">
         <div class="role-head">
           <span class="role-badge">角色卡 · 离树观察者</span>
+          <span class="role-duty ${escapeHtml(dutyState)}">${escapeHtml(roleDutyLabel(dutyState))}</span>
           <span class="role-pending">${pending ? pending + " 源待巡检" : "已同步"}</span>
-          <button class="btn" id="roleCheckBtn">立即巡检</button>
         </div>
-        <div class="role-sub">关注 ${watched.length} 张工作卡；工作卡收口时系统把新增内容同步给它，它自行判断发言或沉默。</div>
-        <div class="blocktitle">关注的工作卡（${watched.length}）</div>
-        <div class="role-watch-list">${watchHtml}</div>
-        <div class="role-watch-add">
-          <select id="roleWatchSel"><option value="">＋ 关注一张工作卡</option>${options}</select>
-          <button class="btn ghost" id="roleWatchAdd">关注</button>
+        <div class="role-actions">
+          <button class="btn" id="roleCheckBtn" ${canRun ? "" : "disabled"}>立即巡检</button>
+          <button class="btn ghost" id="roleEditBtn">编辑档案</button>
+          ${dutyState === "active"
+            ? `<button class="btn ghost" id="roleSuspendBtn">停职</button>`
+            : dutyState === "suspended"
+              ? `<button class="btn ghost" id="roleResumeBtn">复职</button>`
+              : ""}
+          ${dutyState !== "archived" ? `<button class="btn danger" id="roleArchiveBtn">撤岗</button>` : ""}
         </div>
-        <div class="blocktitle">判断台账（${verdicts.length}）<span class="note">发言与沉默都落账</span></div>
-        <div class="role-verdicts">${verdictHtml}</div>
-        <div class="blocktitle">警报（${alarms.length}）</div>
-        <div class="role-alarms">${alarmHtml}</div>
+        <div class="role-sub">最后巡检：${escapeHtml(duty.last_wake_at || "（从未）")}　·　职责书 v${escapeHtml(charter.version || 1)}（${history} 个版本）</div>
+
+        <div class="role-sec">
+          <div class="role-sec-title">管辖 · jurisdiction <span class="note">排他域 ${escapeHtml(jurisdiction.exclusive_key || "")}</span></div>
+          <div class="role-domain">${escapeHtml(jurisdiction.domain || "（未设置）")}</div>
+          <div class="role-statement">${escapeHtml(jurisdiction.statement || "（未写职责说明）")}</div>
+        </div>
+
+        <div class="role-sec">
+          <div class="role-sec-title">关注 · watch <span class="note">${watched.length} 张工作卡 · 信号 ${signals.length}</span></div>
+          <div class="role-watch-list">${watchHtml}</div>
+          <div class="role-watch-add">
+            <select id="roleWatchSel"><option value="">＋ 关注一张工作卡</option>${options}</select>
+            <button class="btn ghost" id="roleWatchAdd">关注</button>
+          </div>
+          <div class="role-chips">${signals.map(s => `<span class="role-chip">${escapeHtml(s)}</span>`).join("") || "（未声明信号）"}</div>
+        </div>
+
+        <div class="role-sec">
+          <div class="role-sec-title">发言契约 · speak contract</div>
+          <div class="role-kv">建议：${escapeHtml((sc.advice_when || []).join("、") || "（未写）")}</div>
+          <div class="role-kv">警报：${escapeHtml((sc.alarm_when || []).join("、") || "（未写）")}</div>
+          <div class="role-kv">默认沉默 ${sc.silence_default === false ? "否" : "是"} · 单次最多 ${escapeHtml(sc.max_messages_per_wake || 2)} 条</div>
+        </div>
+
+        <div class="role-sec">
+          <div class="role-sec-title">升级线 · escalation</div>
+          <div class="role-kv">建议 → ${escapeHtml(esc.advice_to || "source_card")}</div>
+          <div class="role-kv">警报 → ${escapeHtml(esc.alarm_to || "human")}　·　严重 → ${escapeHtml(esc.critical_to || "root_and_human")}</div>
+        </div>
+
+        <div class="role-sec">
+          <div class="role-sec-title">判断簿 · verdicts <span class="note">发言与沉默都落账</span></div>
+          <div class="role-verdicts">${verdictHtml}</div>
+        </div>
+
+        <div class="role-sec">
+          <div class="role-sec-title">警报簿 · alarms <span class="note">${alarms.filter(a => a.status === "open").length} 条未处理</span></div>
+          <div class="role-alarms">${alarmHtml}</div>
+        </div>
+
+        <div class="role-sec">
+          <div class="role-sec-title">职责书 · charter <span class="note">v${escapeHtml(charter.version || 1)} · ${escapeHtml(charter.ratified_by || "")}</span></div>
+          <div class="role-charter">${escapeHtml(charter.text || "（空）")}</div>
+        </div>
+
+        <div class="role-edit" id="roleEditPanel" style="display:none">
+          <div class="role-sec-title">编辑档案</div>
+          <input type="text" id="roleJurDomain" class="role-input" placeholder="责任域排他键，如 timeline_contract" value="${escapeHtml(jurisdiction.domain || "")}">
+          <input type="text" id="roleJurStatement" class="role-input" placeholder="一句话职责说明" value="${escapeHtml(jurisdiction.statement || "")}">
+          <div class="role-kv">关注信号</div>
+          <select id="roleSignalSel" class="role-input" multiple size="4">${signalOpts}</select>
+          <div class="role-kv">职责书（保存后生成新版本）</div>
+          <textarea id="roleCharterEdit" class="role-input" rows="5">${escapeHtml(charter.text || "")}</textarea>
+          <div class="role-actions"><button class="btn" id="roleSaveProfile">保存档案</button>
+          <button class="btn ghost" id="roleCancelProfile">取消</button></div>
+        </div>
       </div>`;
   }
 
@@ -575,10 +653,15 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       <div class="blocktitle">角色（参谋线）<span class="note">离树观察者 · 组阁权在根卡</span></div>
       <div class="role-create">
         <input type="text" id="roleTitle" placeholder="角色名，如「一致性观察员」">
+        <div class="role-create-row">
+          <input type="text" id="roleDomain" placeholder="责任域排他键，如 timeline_contract">
+          <input type="text" id="roleStatement" placeholder="一句话职责说明">
+        </div>
         <textarea id="roleCharter" rows="3" placeholder="职责书：盯什么、什么情况必须说话、什么情况直接报你"></textarea>
         <button class="btn" id="roleCreateBtn">组阁</button>
       </div>` : ""}
 
+      <div id="genericBlocks" style="${isRoleCard ? "display:none" : ""}">
       <div class="blocktitle">使命 · mission <span class="note">${isRoleCard ? "根卡组阁时写入 · 可编辑" : "由上级卡对话创建 · 可编辑"}</span></div>
       <textarea class="ws-edit" id="charterEdit" placeholder="本卡作用/目标、授权来源">${escapeHtml(b.mission || "")}</textarea>
       <div class="edit-row">
@@ -600,10 +683,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
 
       <div class="blocktitle">${thirdLabel}</div>
       ${thirdHtml}
+      </div>
 
+      <div id="roleRelations" ${isRoleCard ? 'style="display:none"' : ""}>
       <div class="blocktitle">关系</div>
       ${linksHtml}
       ${relAddHtml}
+      </div>
 
       <div class="blocktitle">修改历史（${historyCount} 条）</div>
       <div class="history-block">
@@ -879,6 +965,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
 
   // ==================== [角色机制 5710] 角色面板交互 ====================
   function bindRolePanel() {
+    const refresh = () => { if (currentCard) renderInspector().catch(() => {}); };
     const checkBtn = document.getElementById("roleCheckBtn");
     if (checkBtn) {
       checkBtn.onclick = async () => {
@@ -889,9 +976,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
           const r = await API.checkRole(WORK_ID, cid);
           notify(r.started ? "巡检已启动，回合结束后台账自动刷新" : "没有新同步，未起回合",
                  r.started ? "success" : "info");
-          // 角色回合是异步的：轮询几次把新判词/警报刷出来（不阻塞输入）。
-          for (let i = 1; i <= 8; i += 1) {
-            setTimeout(() => { if (currentCard && currentCard.meta.card_id === cid) renderInspector().catch(() => {}); }, i * 1200);
+          for (let i = 1; i <= 10; i += 1) {
+            setTimeout(() => { if (currentCard && currentCard.meta.card_id === cid) refresh(); }, i * 1200);
           }
         } catch (e) {
           checkBtn.disabled = false;
@@ -912,13 +998,80 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         } catch (e) { /* toast 已处理 */ }
       };
     }
-    // 根卡组阁：标题 + 职责书 → 建一张离树角色卡
+    const editBtn = document.getElementById("roleEditBtn");
+    const editPanel = document.getElementById("roleEditPanel");
+    if (editBtn && editPanel) {
+      editBtn.onclick = () => {
+        editPanel.style.display = editPanel.style.display === "none" ? "block" : "none";
+      };
+    }
+    const cancelEdit = document.getElementById("roleCancelProfile");
+    if (cancelEdit && editPanel) {
+      cancelEdit.onclick = () => { editPanel.style.display = "none"; };
+    }
+    const saveProfile = document.getElementById("roleSaveProfile");
+    if (saveProfile) {
+      saveProfile.onclick = async () => {
+        if (!currentCard) return;
+        const domain = (document.getElementById("roleJurDomain") || {}).value || "";
+        const statement = (document.getElementById("roleJurStatement") || {}).value || "";
+        const signalSel = document.getElementById("roleSignalSel");
+        const signals = signalSel ? Array.from(signalSel.selectedOptions).map(o => o.value) : [];
+        const charter = (document.getElementById("roleCharterEdit") || {}).value || "";
+        try {
+          await API.updateRole(WORK_ID, currentCard.meta.card_id, {
+            jurisdiction: { domain: domain.trim(), statement: statement.trim() },
+            signals, charter,
+          });
+          notify("角色档案已更新", "success");
+          await renderInspector();
+        } catch (e) { /* toast 已处理 */ }
+      };
+    }
+    const suspendBtn = document.getElementById("roleSuspendBtn");
+    if (suspendBtn) {
+      suspendBtn.onclick = async () => {
+        if (!currentCard) return;
+        try {
+          await API.setRoleDuty(WORK_ID, currentCard.meta.card_id, "suspended");
+          notify("角色已停职：不再同步、不再巡检", "info");
+          await renderInspector();
+        } catch (e) { /* toast 已处理 */ }
+      };
+    }
+    const resumeBtn = document.getElementById("roleResumeBtn");
+    if (resumeBtn) {
+      resumeBtn.onclick = async () => {
+        if (!currentCard) return;
+        try {
+          await API.setRoleDuty(WORK_ID, currentCard.meta.card_id, "active");
+          notify("角色已复职", "success");
+          await renderInspector();
+        } catch (e) { /* toast 已处理 */ }
+      };
+    }
+    const archiveBtn = document.getElementById("roleArchiveBtn");
+    if (archiveBtn) {
+      archiveBtn.onclick = async () => {
+        if (!currentCard) return;
+        const title = currentCard.meta.title || currentCard.meta.card_id;
+        if (!window.confirm(`撤岗《${title}》？档案与判断/警报台账保留，只解除关注连线。`)) return;
+        try {
+          await API.setRoleDuty(WORK_ID, currentCard.meta.card_id, "archived");
+          notify("角色已撤岗（台账保留）", "info");
+          await renderInspector();
+        } catch (e) { /* toast 已处理 */ }
+      };
+    }
+    // 根卡组阁：标题 + 管辖域 + 职责书 → 建一张离树角色卡
     const createBtn = document.getElementById("roleCreateBtn");
     if (createBtn) {
       createBtn.onclick = async () => {
         if (!currentCard) return;
         const title = (document.getElementById("roleTitle") || {}).value || "";
         const charter = (document.getElementById("roleCharter") || {}).value || "";
+        const domain = (document.getElementById("roleDomain") || {}).value || "";
+        const statement = (document.getElementById("roleStatement") || {}).value || "";
         if (!title.trim() || !charter.trim()) {
           notify("角色名与职责书都要写", "warn");
           return;
@@ -926,7 +1079,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         createBtn.disabled = true;
         try {
           const r = await API.createRole(WORK_ID, {
-            title: title.trim(), charter: charter.trim(), watch_card_ids: [],
+            title: title.trim(), charter: charter.trim(),
+            jurisdiction: { domain: domain.trim() || title.trim(), statement: statement.trim() },
+            watch_card_ids: [],
           });
           notify("角色卡已创建：" + (r.role_card_id || ""), "success");
           await renderNav();
@@ -952,6 +1107,16 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         if (!currentCard) return;
         try {
           await API.ackAlarm(WORK_ID, btn.dataset.id || "");
+          await renderInspector();
+        } catch (e) { /* toast 已处理 */ }
+      };
+    });
+    document.querySelectorAll(".role-correct").forEach((btn) => {
+      btn.onclick = async () => {
+        if (!currentCard) return;
+        try {
+          await API.correctAlarm(WORK_ID, btn.dataset.id || "");
+          notify("警报已更正", "info");
           await renderInspector();
         } catch (e) { /* toast 已处理 */ }
       };

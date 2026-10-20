@@ -1,29 +1,33 @@
 # -*- coding: utf-8 -*-
-"""角色卡机制（5710）——离树的观察者。
+"""角色卡机制 v2（5710）——独立结构、离树观察者。
 
-设计（与用户 2026-10-20 对齐）：
-- 角色卡不挂树：``card_type=role``、``parent=""``，由根卡创建并写职责书。
-- 连线＝订阅：工作卡 links 上 ``type="角色"`` 指向角色卡；角色卡 links 上
-  ``type="关注"`` 指向工作卡。两边同写，任一侧都能查出关系。
-- 同步是机械的：工作卡回合收口时，把「自上次巡检以来新增的会话块」按 seq
-  区间记进角色卡的 sync.jsonl；**不复制正文**，唤醒时再按区间读源会话。
-- 判断是模型的：角色卡被调起后自己判断发言/沉默；**沉默也必须落账**
-  （record_verdict）。模型没记录时，系统机械补一条 silent。
-- 双通道：建议走 send_card_message（进工作卡收件箱）；警报走 raise_alarm
-  （进 alarms.jsonl，人可见）。
-- 游标只在角色回合成功收口后推进；失败则保留待下一次重放（最多重复，不丢）。
+角色卡不是“普通卡＋prompt”。它有独立的档案与三本台账（见
+``src/storage/role_store.py`` 与 ``card_db._ROLE_DDL``）：
+
+- ``jurisdiction``：管辖域（对什么负责；带排他键）
+- ``watch``：关注卡与关注信号（同步按信号剪枝）
+- ``speak_contract``：建议/警报/沉默的阈值
+- ``escalation``：建议/警报/严重警报分别发给谁
+- ``duty``：值班态（active/suspended/archived）、最后巡检、待同步数
+- ``charter``：职责书（版本化，根卡/人批准）
+- 判断簿 ``role_verdicts``：每次巡检的 speak/silent、依据、来源、证据、被取代
+- 警报簿 ``role_alarms``：severity、状态、ack、更正链
+- 同步队列 ``role_sync``：来源、seq 区间、命中信号、pending/consumed
+
+离树：``parent=""``，不可有子卡；工作卡通过连线订阅它（连线只是传输，
+``watch.cards`` 才是声明的管辖范围）。
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from ..storage import card_store, session_facade, session_ops, shadow_store
+from ..storage import card_store, role_store, session_facade, session_ops, shadow_store
 
 logger = logging.getLogger("api.role_room")
 
@@ -31,12 +35,12 @@ ROLE_TYPE = "role"
 LINK_TYPE_ROLE = "角色"    # 工作卡 -> 角色卡
 LINK_TYPE_WATCH = "关注"   # 角色卡 -> 工作卡
 
-#: 单次唤醒最多带多少字符的同步材料（防一次喂爆上下文）。
-_MAX_BATCH_CHARS = 24000
-#: 单个会话块最多带多少字符。
-_MAX_BLOCK_CHARS = 4000
-#: 两次唤醒之间的最小间隔（秒）——防「建议→改动→再建议」高速打转。
-_SPAWN_COOLDOWN = 2.0
+MAX_BATCH_CHARS = 24000
+MAX_BLOCK_CHARS = 4000
+SPAWN_COOLDOWN = 2.0
+
+DEFAULT_SIGNALS = ("turn_completed",)
+ALL_SIGNALS = ("turn_completed", "status_changed", "decision_appended", "turn_error")
 
 _LAST_SPAWN: dict[tuple[str, str], float] = {}
 _ACTIVE: dict[tuple[str, str], dict[str, Any]] = {}
@@ -51,60 +55,8 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat()
 
 
-def _role_dir(work_id: str, role_id: str) -> Path:
-    d = card_store.WORKS_DIR / work_id / "roles" / role_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _path(work_id: str, role_id: str, name: str) -> Path:
-    return _role_dir(work_id, role_id) / name
-
-
-def _read_json(path: Path, default: Any) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 读不到＝默认值（fail-open 到空）
-        return default
-
-
-def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _append_jsonl(path: Path, rec: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(item, dict):
-                    out.append(item)
-    except FileNotFoundError:
-        return []
-    return out
-
-
-def _lock_for(work_id: str, role_id: str) -> asyncio.Lock:
-    key = (work_id, role_id)
-    if key not in _LOCKS:
-        _LOCKS[key] = asyncio.Lock()
-    return _LOCKS[key]
+def _hash(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
 
 
 def _meta_of(work_id: str, card_id: str) -> dict[str, Any]:
@@ -127,8 +79,14 @@ def list_roles(work_id: str) -> list[dict[str, Any]]:
             if str(m.get("card_type") or "") == ROLE_TYPE]
 
 
+def _lock_for(work_id: str, role_id: str) -> asyncio.Lock:
+    key = (work_id, role_id)
+    if key not in _LOCKS:
+        _LOCKS[key] = asyncio.Lock()
+    return _LOCKS[key]
+
+
 async def _last_seq(work_id: str, card_id: str) -> int:
-    """该卡会话最后一个块 seq；空会话 = -1。"""
     try:
         blocks = await session_facade.read(work_id, card_id)
     except Exception:  # noqa: BLE001
@@ -138,90 +96,318 @@ async def _last_seq(work_id: str, card_id: str) -> int:
     return max(seqs) if seqs else -1
 
 
-def _cursor_path(work_id: str, role_id: str) -> Path:
-    return _path(work_id, role_id, "cursor.json")
+def _slug(text: str) -> str:
+    s = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (text or ""))
+    return s.strip("_")[:48] or "role"
 
 
-def _cursor(work_id: str, role_id: str) -> dict[str, int]:
-    raw = _read_json(_cursor_path(work_id, role_id), {})
-    out: dict[str, int] = {}
-    if isinstance(raw, dict):
-        for k, v in raw.items():
-            try:
-                out[str(k)] = int(v)
-            except (TypeError, ValueError):
-                continue
+# ============================================================
+# 档案
+# ============================================================
+
+def make_profile(title: str, charter: str,
+                 jurisdiction: Any = None,
+                 watch_cards: Optional[list[str]] = None,
+                 signals: Optional[list[str]] = None,
+                 speak_contract: Optional[dict[str, Any]] = None,
+                 escalation: Optional[dict[str, Any]] = None,
+                 ratified_by: str = "root_card") -> dict[str, Any]:
+    """构造一份合法的角色档案（调用方负责落库）。"""
+    if isinstance(jurisdiction, str):
+        jurisdiction = {"domain": _slug(jurisdiction), "statement": jurisdiction}
+    if not isinstance(jurisdiction, dict):
+        jurisdiction = {}
+    domain = str(jurisdiction.get("domain") or _slug(title))
+    jur = {
+        "domain": domain,
+        "statement": str(jurisdiction.get("statement") or "").strip(),
+        "exclusive_key": str(jurisdiction.get("exclusive_key") or domain),
+    }
+    sigs = [s for s in (signals or DEFAULT_SIGNALS) if s in ALL_SIGNALS]
+    if not sigs:
+        sigs = list(DEFAULT_SIGNALS)
+    sc = speak_contract if isinstance(speak_contract, dict) else {}
+    esc = escalation if isinstance(escalation, dict) else {}
+    now = _now()
+    return {
+        "jurisdiction": jur,
+        "watch": {
+            "cards": [str(c) for c in (watch_cards or []) if c],
+            "signals": sigs,
+        },
+        "speak_contract": {
+            "advice_when": [str(x) for x in (sc.get("advice_when") or ["gap_or_risk"])],
+            "alarm_when": [str(x) for x in (sc.get("alarm_when") or ["mutually_exclusive_fact"])],
+            "silence_default": bool(sc.get("silence_default", True)),
+            "max_messages_per_wake": int(sc.get("max_messages_per_wake", 2)),
+        },
+        "escalation": {
+            "advice_to": str(esc.get("advice_to") or "source_card"),
+            "alarm_to": str(esc.get("alarm_to") or "human"),
+            "critical_to": str(esc.get("critical_to") or "root_and_human"),
+        },
+        "duty": {"state": "active", "since": now,
+                 "last_wake_at": "", "pending_sync": 0},
+        "charter": {"version": 1, "text": str(charter or "").strip(),
+                    "ratified_by": ratified_by, "ratified_at": now},
+    }
+
+
+async def ensure_profile(work_id: str, role_id: str) -> Optional[dict[str, Any]]:
+    """角色档案缺失（老原型卡）→ 从卡面使命/连线派生一份，保证可继续用。"""
+    prof = role_store.get_profile(work_id, role_id)
+    if prof is not None:
+        return prof
+    meta = _meta_of(work_id, role_id)
+    if not meta or str(meta.get("card_type") or "") != ROLE_TYPE:
+        return None
+    try:
+        card = await card_store.read_card(work_id, role_id)
+        charter = str((card.get("body") or {}).get("mission") or "").strip()
+    except Exception:  # noqa: BLE001
+        charter = ""
+    watch_cards = []
+    for rel in (meta.get("links") or []):
+        if isinstance(rel, dict) and rel.get("type") == LINK_TYPE_WATCH:
+            watch_cards.append(str(rel.get("target") or ""))
+    prof = make_profile(str(meta.get("title") or role_id), charter,
+                        watch_cards=[c for c in watch_cards if c])
+    out = await role_store.ensure_profile(work_id, role_id, prof)
+    await _import_legacy_ledgers(work_id, role_id)
     return out
 
 
-def _set_cursor(work_id: str, role_id: str, cursors: dict[str, int]) -> None:
-    _write_json(_cursor_path(work_id, role_id), cursors)
+async def _import_legacy_ledgers(work_id: str, role_id: str) -> None:
+    """v1 原型把判词/警报放在 JSONL；首次建 v2 档案时导入 DB，台账不丢。"""
+    base = Path(card_store.WORKS_DIR) / work_id / "roles" / role_id
+    if not base.exists():
+        return
+    for name, importer in (("verdicts.jsonl", role_store.import_verdict),
+                           ("alarms.jsonl", role_store.import_alarm)):
+        p = base / name
+        if not p.exists():
+            continue
+        try:
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                if isinstance(rec, dict):
+                    await importer(work_id, role_id, rec)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[role] 旧台账导入失败 %s: %s", p, exc)
 
 
-def _sync_path(work_id: str, role_id: str) -> Path:
-    return _path(work_id, role_id, "sync.jsonl")
+async def get_profile(work_id: str, role_id: str) -> Optional[dict[str, Any]]:
+    """公开读取角色档案（缺失时按卡面派生）。"""
+    return await ensure_profile(work_id, role_id)
 
 
-def _verdict_path(work_id: str, role_id: str) -> Path:
-    return _path(work_id, role_id, "verdicts.jsonl")
+async def create_role_card(work_id: str, root_id: str, title: str,
+                           charter: str, *,
+                           jurisdiction: Any = None,
+                           watch_cards: Optional[list[str]] = None,
+                           signals: Optional[list[str]] = None,
+                           speak_contract: Optional[dict[str, Any]] = None,
+                           escalation: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """根卡组阁：建离树角色卡 + 档案 + 职责书 v1 + 订阅连线。"""
+    title = str(title or "").strip()
+    charter = str(charter or "").strip()
+    if not title:
+        return {"error": "title 不能为空"}
+    if not charter:
+        return {"error": "职责书不能为空（写清这个角色对什么负责）"}
+    body = (f"## 使命\n{charter}\n\n## 现状\n（值班中；判词与警报见角色档案）\n\n"
+            "## 定论\n")
+    created = await card_store.create_card(
+        work_id, title=title, source="系统派生", card_type=ROLE_TYPE,
+        parent="", charter=body, skip_kick=True,
+    )
+    if "error" in created:
+        return created
+    role_id = str((created.get("meta") or {}).get("card_id") or "")
+    if not role_id:
+        return {"error": "角色卡创建失败（无卡号）"}
+    prof = make_profile(title, charter, jurisdiction=jurisdiction,
+                        watch_cards=watch_cards, signals=signals,
+                        speak_contract=speak_contract, escalation=escalation,
+                        ratified_by=f"root:{root_id}")
+    await role_store.ensure_profile(work_id, role_id, prof)
+    watched: list[str] = []
+    for cid in (watch_cards or []):
+        cid = str(cid or "").strip()
+        if cid and cid != role_id:
+            res = await link(work_id, role_id, cid, actor=f"根卡 {root_id}")
+            if res.get("ok"):
+                watched.append(cid)
+    session_ops.ops_log("role_create", work_id, role_id,
+                        {"root": root_id, "title": title,
+                         "jurisdiction": prof["jurisdiction"],
+                         "watched": watched})
+    return {"role_card_id": role_id, "title": title,
+            "jurisdiction": prof["jurisdiction"], "watched": watched}
 
 
-def _alarm_path(work_id: str, role_id: str) -> Path:
-    return _path(work_id, role_id, "alarms.jsonl")
+async def update_profile(work_id: str, role_id: str,
+                         patch: dict[str, Any],
+                         actor: str = "用户") -> dict[str, Any]:
+    """更新档案；职责书文本变化走版本化，不覆盖历史。"""
+    prof = await ensure_profile(work_id, role_id)
+    if prof is None:
+        return {"error": f"不是角色卡或档案缺失: {role_id}"}
+    allowed = ("jurisdiction", "watch", "speak_contract", "escalation")
+    changed: dict[str, Any] = {}
+    for key in allowed:
+        if key in patch and isinstance(patch[key], (dict, list)):
+            changed[key] = patch[key]
+    charter_text = patch.get("charter")
+    if isinstance(charter_text, str) and charter_text.strip():
+        old = str((prof.get("charter") or {}).get("text") or "").strip()
+        if charter_text.strip() != old:
+            charter = await role_store.append_charter(
+                work_id, role_id, charter_text.strip(), actor, "职责书修订")
+            changed["charter"] = charter
+            try:
+                await card_store.update_card(
+                    work_id, role_id, {"mission": charter_text.strip()},
+                    f"[角色] {actor}修订职责书")
+            except Exception as exc:  # noqa: BLE001 卡面同步失败不阻断档案
+                logger.warning("[role] 职责书同步卡面失败 role=%s: %s", role_id, exc)
+    if "watch" in changed and isinstance(changed["watch"], dict):
+        cards = [str(c) for c in (changed["watch"].get("cards") or []) if c]
+        signals = [s for s in (changed["watch"].get("signals") or []) if s in ALL_SIGNALS]
+        changed["watch"] = {"cards": cards, "signals": signals or list(DEFAULT_SIGNALS)}
+        # 关注集合＝声明范围；连线跟着声明走
+        current = {str(m.get("card_id")) for m in await watched_cards(work_id, role_id)}
+        for cid in cards:
+            if cid not in current:
+                await link(work_id, role_id, cid, actor=actor)
+        for cid in current - set(cards):
+            await unlink(work_id, role_id, cid, actor=actor)
+    if changed:
+        await role_store.update_profile(work_id, role_id, changed)
+    return await role_summary(work_id, role_id)
+
+
+async def set_duty(work_id: str, role_id: str, state: str,
+                   actor: str = "用户", note: str = "") -> dict[str, Any]:
+    if state not in ("active", "suspended", "archived"):
+        return {"error": f"非法值班态: {state}"}
+    prof = await ensure_profile(work_id, role_id)
+    if prof is None:
+        return {"error": f"不是角色卡或档案缺失: {role_id}"}
+    if state == "archived":
+        for m in await watched_cards(work_id, role_id):
+            await unlink(work_id, role_id, str(m.get("card_id")), actor=actor)
+    duty = await role_store.set_duty_state(work_id, role_id, state, note)
+    session_ops.ops_log("role_duty", work_id, role_id,
+                        {"state": state, "actor": actor, "note": note})
+    if state == "active":
+        spawn(work_id, role_id)
+    return {"ok": True, "duty": duty}
 
 
 # ============================================================
 # 连线＝订阅
 # ============================================================
 
-def watched_cards(work_id: str, role_id: str) -> list[dict[str, Any]]:
-    meta = _meta_of(work_id, role_id)
+async def watched_cards(work_id: str, role_id: str) -> list[dict[str, Any]]:
+    prof = await ensure_profile(work_id, role_id)
     metas = card_store.iter_card_metas(work_id)
+    ids: list[str] = []
+    if prof is not None:
+        ids = [str(c) for c in ((prof.get("watch") or {}).get("cards") or [])]
+    if not ids:
+        meta = _meta_of(work_id, role_id)
+        ids = [str(r.get("target")) for r in (meta.get("links") or [])
+               if isinstance(r, dict) and r.get("type") == LINK_TYPE_WATCH]
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for rel in (meta.get("links") or []):
-        if not isinstance(rel, dict) or rel.get("type") != LINK_TYPE_WATCH:
+    for cid in ids:
+        if not cid or cid in seen:
             continue
-        tid = str(rel.get("target") or "")
-        if not tid or tid in seen:
-            continue
-        seen.add(tid)
-        m = metas.get(tid)
+        seen.add(cid)
+        m = metas.get(cid)
         if m:
             out.append(m)
     out.sort(key=lambda m: str(m.get("card_id") or ""))
     return out
 
 
-def roles_watching(work_id: str, card_id: str) -> list[dict[str, Any]]:
-    """哪些角色卡关注这张工作卡（角色 links 的 关注 边为准）。"""
+async def roles_watching(work_id: str, card_id: str) -> list[dict[str, Any]]:
+    """关注这张工作卡的 active 角色（档案 watch.cards 为准）。"""
     out: list[dict[str, Any]] = []
     for m in list_roles(work_id):
-        for rel in (m.get("links") or []):
-            if (isinstance(rel, dict) and rel.get("type") == LINK_TYPE_WATCH
-                    and str(rel.get("target") or "") == card_id):
-                out.append(m)
-                break
+        rid = str(m.get("card_id") or "")
+        prof = await ensure_profile(work_id, rid)
+        if prof is None:
+            continue
+        if str((prof.get("duty") or {}).get("state") or "active") != "active":
+            continue
+        cards = [str(c) for c in ((prof.get("watch") or {}).get("cards") or [])]
+        if card_id in cards:
+            out.append(m)
     return out
 
 
 def linked(work_id: str, a: str, b: str) -> bool:
-    """a、b 之间是否有「角色—工作」订阅边（任一方向）。"""
+    """a、b 之间是否有「角色—工作」订阅边（任一方向；同步查档案，廉价格式）。"""
     am, bm = _meta_of(work_id, a), _meta_of(work_id, b)
     if str(am.get("card_type") or "") == ROLE_TYPE:
-        return any(isinstance(r, dict) and r.get("type") == LINK_TYPE_WATCH
-                   and str(r.get("target") or "") == b
-                   for r in (am.get("links") or []))
+        return _profile_watches_sync(work_id, a, b)
     if str(bm.get("card_type") or "") == ROLE_TYPE:
-        return any(isinstance(r, dict) and r.get("type") == LINK_TYPE_WATCH
-                   and str(r.get("target") or "") == a
-                   for r in (bm.get("links") or []))
+        return _profile_watches_sync(work_id, b, a)
     return False
+
+
+def _profile_watches_sync(work_id: str, role_id: str, card_id: str) -> bool:
+    prof = role_store.get_profile(work_id, role_id)
+    if prof is not None:
+        return card_id in [str(c) for c in ((prof.get("watch") or {}).get("cards") or [])]
+    meta = _meta_of(work_id, role_id)
+    return any(isinstance(r, dict) and r.get("type") == LINK_TYPE_WATCH
+               and str(r.get("target") or "") == card_id
+               for r in (meta.get("links") or []))
+
+
+async def _add_link(work_id: str, owner_id: str, rel: dict[str, Any],
+                    actor: str) -> None:
+    cur = await card_store.read_card(work_id, owner_id)
+    links = list(cur["meta"].get("links") or [])
+    for r in links:
+        if (isinstance(r, dict) and r.get("target") == rel["target"]
+                and r.get("type") == rel["type"]):
+            return
+    links.append(rel)
+    await card_store.update_card(
+        work_id, owner_id, {"links": links},
+        f"[角色] {actor}建立订阅：{owner_id} ↔ {rel['target']}")
+
+
+async def _drop_link(work_id: str, owner_id: str, target: str,
+                     typ: str, actor: str) -> int:
+    try:
+        cur = await card_store.read_card(work_id, owner_id)
+    except Exception:  # noqa: BLE001
+        return 0
+    links = list(cur["meta"].get("links") or [])
+    keep = [r for r in links
+            if not (isinstance(r, dict) and r.get("target") == target
+                    and r.get("type") == typ)]
+    removed = len(links) - len(keep)
+    if removed:
+        await card_store.update_card(
+            work_id, owner_id, {"links": keep},
+            f"[角色] {actor}解除订阅：{owner_id} ↔ {target}")
+    return removed
 
 
 async def link(work_id: str, role_id: str, source_id: str,
                actor: str = "用户") -> dict[str, Any]:
-    """建立订阅：角色关注工作卡。幂等。"""
     role = _meta_of(work_id, role_id)
     source = _meta_of(work_id, source_id)
     if str(role.get("card_type") or "") != ROLE_TYPE:
@@ -232,29 +418,24 @@ async def link(work_id: str, role_id: str, source_id: str,
         return {"error": "角色卡不能被另一个角色卡关注（v1 角色之间不通信）"}
     if role_id == source_id:
         return {"error": "角色卡不能关注自己"}
-
-    async def _add(owner_id: str, rel: dict[str, Any]) -> None:
-        cur = await card_store.read_card(work_id, owner_id)
-        links = list(cur["meta"].get("links") or [])
-        for r in links:
-            if (isinstance(r, dict) and r.get("target") == rel["target"]
-                    and r.get("type") == rel["type"]):
-                return
-        links.append(rel)
-        await card_store.update_card(
-            work_id, owner_id, {"links": links},
-            f"[角色] {actor}建立订阅：{owner_id} ↔ {rel['target']}",
-        )
-
-    await _add(role_id, {"target": source_id, "type": LINK_TYPE_WATCH,
-                         "note": f"由{actor}建立"})
-    await _add(source_id, {"target": role_id, "type": LINK_TYPE_ROLE,
-                           "note": f"由{actor}建立"})
-    # 建线即从「现在」开始算，不回头同步历史（避免角色一上任就被灌爆）。
-    async with _lock_for(work_id, role_id):
-        cursors = _cursor(work_id, role_id)
-        cursors[source_id] = await _last_seq(work_id, source_id)
-        _set_cursor(work_id, role_id, cursors)
+    await ensure_profile(work_id, role_id)
+    prof = role_store.get_profile(work_id, role_id) or {}
+    watch = dict(prof.get("watch") or {})
+    cards = [str(c) for c in (watch.get("cards") or [])]
+    if source_id not in cards:
+        cards.append(source_id)
+    watch["cards"] = cards
+    watch.setdefault("signals", list(DEFAULT_SIGNALS))
+    await role_store.update_profile(work_id, role_id, {"watch": watch})
+    await _add_link(work_id, role_id,
+                    {"target": source_id, "type": LINK_TYPE_WATCH,
+                     "note": f"由{actor}建立"}, actor)
+    await _add_link(work_id, source_id,
+                    {"target": role_id, "type": LINK_TYPE_ROLE,
+                     "note": f"由{actor}建立"}, actor)
+    # 建线即从「现在」起算：把当前末尾记为基线，不回灌历史
+    last = await _last_seq(work_id, source_id)
+    await _set_baseline(work_id, role_id, source_id, last)
     session_ops.ops_log("role_link", work_id, role_id,
                         {"source": source_id, "actor": actor})
     return {"ok": True, "role_id": role_id, "source_id": source_id}
@@ -262,83 +443,146 @@ async def link(work_id: str, role_id: str, source_id: str,
 
 async def unlink(work_id: str, role_id: str, source_id: str,
                  actor: str = "用户") -> dict[str, Any]:
-    async def _drop(owner_id: str, target: str, typ: str) -> int:
-        try:
-            cur = await card_store.read_card(work_id, owner_id)
-        except Exception:  # noqa: BLE001
-            return 0
-        links = list(cur["meta"].get("links") or [])
-        keep = [r for r in links
-                if not (isinstance(r, dict) and r.get("target") == target
-                        and r.get("type") == typ)]
-        removed = len(links) - len(keep)
-        if removed:
-            await card_store.update_card(
-                work_id, owner_id, {"links": keep},
-                f"[角色] {actor}解除订阅：{owner_id} ↔ {target}",
-            )
-        return removed
-
-    a = await _drop(role_id, source_id, LINK_TYPE_WATCH)
-    b = await _drop(source_id, role_id, LINK_TYPE_ROLE)
-    async with _lock_for(work_id, role_id):
-        cursors = _cursor(work_id, role_id)
-        cursors.pop(source_id, None)
-        _set_cursor(work_id, role_id, cursors)
+    prof = role_store.get_profile(work_id, role_id) or {}
+    watch = dict(prof.get("watch") or {})
+    cards = [str(c) for c in (watch.get("cards") or []) if str(c) != source_id]
+    watch["cards"] = cards
+    await role_store.update_profile(work_id, role_id, {"watch": watch})
+    a = await _drop_link(work_id, role_id, source_id, LINK_TYPE_WATCH, actor)
+    b = await _drop_link(work_id, source_id, role_id, LINK_TYPE_ROLE, actor)
     session_ops.ops_log("role_unlink", work_id, role_id,
                         {"source": source_id, "actor": actor, "removed": a + b})
     return {"ok": True, "removed": a + b}
 
 
 # ============================================================
-# 同步（机械）
+# 同步（机械）与信号
 # ============================================================
 
-def record_sync(work_id: str, role_id: str, source_id: str,
-                from_seq: int, to_seq: int) -> Optional[dict[str, Any]]:
-    """记一条同步事件（只记 seq 区间，不复制正文）。同一源区间幂等。"""
-    events = _read_jsonl(_sync_path(work_id, role_id))
-    for ev in reversed(events):
-        if (str(ev.get("source") or "") == source_id
-                and int(ev.get("to_seq") or -1) >= to_seq):
-            return None
-    rec = {
-        "seq": len(events) + 1,
-        "ts": _now(),
-        "source": source_id,
-        "from_seq": int(from_seq),
-        "to_seq": int(to_seq),
-    }
-    _append_jsonl(_sync_path(work_id, role_id), rec)
-    return rec
+def _state_key(work_id: str, card_id: str, field: str) -> str:
+    return f"role_state:{work_id}:{card_id}:{field}"
+
+
+def _baseline_key(work_id: str, role_id: str, source: str) -> str:
+    return f"role_base:{work_id}:{role_id}:{source}"
+
+
+def _get_meta(work_id: str, key: str, default: str = "") -> str:
+    from ..storage import card_db
+    return str(card_db.read_sync(
+        work_id, lambda conn: card_db.get_meta_value(conn, key, default), default) or "")
+
+
+async def _set_meta(work_id: str, key: str, value: str) -> None:
+    from ..storage import card_db
+
+    def _fn(conn: Any) -> None:
+        card_db.set_meta_value(conn, key, value)
+
+    await card_db.run_write(work_id, _fn)
+
+
+async def _set_baseline(work_id: str, role_id: str, source: str, seq: int) -> None:
+    await _set_meta(work_id, _baseline_key(work_id, role_id, source), str(int(seq)))
+
+
+def _baseline(work_id: str, role_id: str, source: str) -> int:
+    raw = _get_meta(work_id, _baseline_key(work_id, role_id, source), "-1")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return -1
+
+
+async def _sync_from(work_id: str, role_id: str, source: str) -> int:
+    base = _baseline(work_id, role_id, source)
+    consumed = role_store.last_consumed_seq(work_id, role_id, source)
+    return max(base, consumed) + 1
+
+
+async def _turn_signals(work_id: str, card_id: str, result: Any) -> list[str]:
+    signals = ["turn_completed"]
+    try:
+        card = await card_store.read_card(work_id, card_id)
+        body = card.get("body") or {}
+        status = str(body.get("status_block") or "")
+        third = str(body.get("requirements") or body.get("rulings") or "")
+    except Exception:  # noqa: BLE001
+        return signals
+    for field, value, sig in (("status", status, "status_changed"),
+                              ("third", third, "decision_appended")):
+        key = _state_key(work_id, card_id, field)
+        prev = _get_meta(work_id, key, "")
+        now = _hash(value)
+        if prev and prev != now:
+            signals.append(sig)
+        # 首次只建立基线，不把「没有历史」误判成「变了」
+        await _set_meta(work_id, key, now)
+    if not isinstance(result, dict):
+        signals.append("turn_error")
+    return signals
+
+
+async def after_turn(work_id: str, card_id: str, result: Any = None) -> None:
+    """工作卡回合收口：按角色声明的信号决定是否同步、是否唤醒。永不抛出。"""
+    try:
+        meta = _meta_of(work_id, card_id)
+        if not meta or str(meta.get("card_type") or "") == ROLE_TYPE:
+            return
+        roles = await roles_watching(work_id, card_id)
+        if not roles:
+            return
+        last = await _last_seq(work_id, card_id)
+        if last < 0:
+            return
+        signals = await _turn_signals(work_id, card_id, result)
+        for role in roles:
+            role_id = str(role.get("card_id") or "")
+            if not role_id:
+                continue
+            prof = role_store.get_profile(work_id, role_id) or {}
+            wanted = set((prof.get("watch") or {}).get("signals") or DEFAULT_SIGNALS)
+            hit = [s for s in signals if s in wanted]
+            if not hit:
+                session_ops.ops_log("role_sync_skipped", work_id, role_id,
+                                    {"source": card_id, "signals": signals})
+                continue
+            from_seq = await _sync_from(work_id, role_id, card_id)
+            if last < from_seq:
+                continue
+            async with _lock_for(work_id, role_id):
+                await role_store.add_sync(work_id, role_id, card_id,
+                                          from_seq, last, hit)
+            spawn(work_id, role_id)
+    except Exception as exc:  # noqa: BLE001 同步失败不得吃掉工作卡回合
+        logger.warning("[role] after_turn 同步失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
 
 
 def pending_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
-    """按游标聚出待巡检批次：每个来源一条，含 seq 区间。"""
-    cursors = _cursor(work_id, role_id)
-    events = _read_jsonl(_sync_path(work_id, role_id))
-    by_source: dict[str, dict[str, int]] = {}
-    for ev in events:
-        src = str(ev.get("source") or "")
-        if not src:
-            continue
-        cur = int(cursors.get(src, -1))
-        to_seq = int(ev.get("to_seq") or -1)
-        if to_seq <= cur:
-            continue
-        item = by_source.setdefault(src, {"from": int(ev.get("from_seq") or 0),
-                                          "to": to_seq})
-        item["from"] = min(item["from"], int(ev.get("from_seq") or 0))
-        item["to"] = max(item["to"], to_seq)
-    out: list[dict[str, Any]] = []
-    for src, rng in by_source.items():
-        out.append({"source": src, "from_seq": rng["from"], "to_seq": rng["to"]})
+    rows = role_store.pending_syncs(work_id, role_id)
+    by_source: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        src = str(row.get("source") or "")
+        item = by_source.setdefault(src, {
+            "source": src,
+            "from_seq": int(row.get("from_seq") or 0),
+            "to_seq": int(row.get("to_seq") or 0),
+            "signals": [],
+            "ids": [],
+        })
+        item["from_seq"] = min(item["from_seq"], int(row.get("from_seq") or 0))
+        item["to_seq"] = max(item["to_seq"], int(row.get("to_seq") or 0))
+        item["ids"].append(int(row.get("seq") or 0))
+        for s in (row.get("signals") or []):
+            if s not in item["signals"]:
+                item["signals"].append(s)
+    out = list(by_source.values())
     out.sort(key=lambda x: x["source"])
     return out
 
 
 async def build_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
-    """把 seq 区间展开成可读材料（此时才读源会话，不落副本）。"""
     items = pending_batch(work_id, role_id)
     out: list[dict[str, Any]] = []
     total = 0
@@ -353,51 +597,76 @@ async def build_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
                   if isinstance(b, dict) and isinstance(b.get("seq"), int)
                   and item["from_seq"] <= int(b["seq"]) <= item["to_seq"]]
         lines: list[str] = []
+        # 状态/定论变化不在会话块里：按信号把当前正文补进材料，否则
+        # “status_changed” 唤醒角色却看不到新现状，等于空跑。
+        try:
+            card = await card_store.read_card(work_id, src)
+            cb = card.get("body") or {}
+            if "status_changed" in (item.get("signals") or []):
+                st = str(cb.get("status_block") or "").strip()
+                if st:
+                    lines.append("【当前现状】" + st[:MAX_BLOCK_CHARS])
+            if "decision_appended" in (item.get("signals") or []):
+                third = str(cb.get("requirements") or cb.get("rulings") or "").strip()
+                if third:
+                    lines.append("【当前第三块】" + third[:MAX_BLOCK_CHARS])
+        except Exception:  # noqa: BLE001
+            pass
         length = 0
         for b in picked:
             actor = str(b.get("actor") or b.get("role") or "?")
             text = str(b.get("content") or "").strip()
-            if len(text) > _MAX_BLOCK_CHARS:
-                text = text[:_MAX_BLOCK_CHARS] + "……（截断）"
+            if len(text) > MAX_BLOCK_CHARS:
+                text = text[:MAX_BLOCK_CHARS] + "……（截断）"
             piece = f"[{actor}] {text}" if text else f"[{actor}]（空正文）"
-            if total + length + len(piece) > _MAX_BATCH_CHARS:
+            if total + length + len(piece) > MAX_BATCH_CHARS:
                 lines.append("……（本批材料超长，已截断；完整内容见源卡会话）")
                 break
             lines.append(piece)
             length += len(piece)
         total += length
-        out.append({
-            "source": src,
-            "title": str(meta.get("title") or ""),
-            "from_seq": item["from_seq"],
-            "to_seq": item["to_seq"],
-            "blocks": len(picked),
-            "text": "\n".join(lines) if lines else "（该区间没有可读块）",
-        })
+        if not lines:
+            try:
+                card = await card_store.read_card(work_id, src)
+                st = str((card.get("body") or {}).get("status_block") or "").strip()
+                if st:
+                    lines.append("【当前现状】" + st[:MAX_BLOCK_CHARS])
+            except Exception:  # noqa: BLE001
+                pass
+        out.append({**item, "title": str(meta.get("title") or ""),
+                    "blocks": len(picked),
+                    "text": "\n".join(lines) if lines else "（该区间没有可读块）"})
     return out
 
 
 # ============================================================
-# 判词 / 警报台账
+# 判词 / 警报
 # ============================================================
 
-def record_verdict(work_id: str, role_id: str, decision: str, reason: str,
-                   targets: Optional[list[str]] = None,
-                   batch: Optional[list[dict[str, Any]]] = None,
-                   auto: bool = False) -> dict[str, Any]:
+def active_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
+    item = _ACTIVE.get((work_id, role_id)) or {}
+    batch = item.get("batch") or []
+    return batch if isinstance(batch, list) else []
+
+
+async def record_verdict(work_id: str, role_id: str, decision: str, reason: str,
+                         targets: Optional[list[str]] = None,
+                         evidence: Optional[list[str]] = None,
+                         batch: Optional[list[dict[str, Any]]] = None,
+                         auto: bool = False,
+                         supersedes: str = "") -> dict[str, Any]:
     decision = str(decision or "").strip().lower()
     if decision not in ("speak", "silent"):
         decision = "silent"
-    rec = {
-        "id": uuid.uuid4().hex[:12],
-        "ts": _now(),
-        "decision": decision,
-        "reason": str(reason or "").strip(),
-        "targets": [str(t) for t in (targets or [])],
-        "sources": [str(i.get("source") or "") for i in (batch or [])],
-        "auto": bool(auto),
-    }
-    _append_jsonl(_verdict_path(work_id, role_id), rec)
+    batch = batch if batch is not None else active_batch(work_id, role_id)
+    sources = [str(i.get("source") or "") for i in batch]
+    rec = await role_store.add_verdict(
+        work_id, role_id, decision, str(reason or "").strip(),
+        sources, [str(t) for t in (targets or [])],
+        [str(e) for e in (evidence or [])], auto=auto)
+    if supersedes:
+        await role_store.supersede_verdict(work_id, supersedes, rec["id"])
+        rec["supersedes"] = supersedes
     session_ops.ops_log("role_verdict", work_id, role_id, {
         "decision": decision, "reason": rec["reason"][:160],
         "targets": rec["targets"], "auto": rec["auto"],
@@ -405,67 +674,48 @@ def record_verdict(work_id: str, role_id: str, decision: str, reason: str,
     return rec
 
 
-def list_verdicts(work_id: str, role_id: str, limit: int = 20) -> list[dict[str, Any]]:
-    items = _read_jsonl(_verdict_path(work_id, role_id))
-    return items[-limit:][::-1]
+async def list_verdicts(work_id: str, role_id: str,
+                        limit: int = 30) -> list[dict[str, Any]]:
+    return role_store.list_verdicts(work_id, role_id, limit)
 
 
-def record_alarm(work_id: str, role_id: str, severity: str, title: str,
-                 detail: str) -> dict[str, Any]:
+async def raise_alarm(work_id: str, role_id: str, severity: str, title: str,
+                      detail: str, supersedes: str = "") -> dict[str, Any]:
     severity = str(severity or "warn").strip().lower()
     if severity not in ("info", "warn", "critical"):
         severity = "warn"
-    rec = {
-        "id": uuid.uuid4().hex[:12],
-        "ts": _now(),
-        "role_id": role_id,
-        "role_title": str(_meta_of(work_id, role_id).get("title") or ""),
-        "severity": severity,
-        "title": str(title or "").strip() or "角色警报",
-        "detail": str(detail or "").strip(),
-        "status": "open",
-    }
-    _append_jsonl(_alarm_path(work_id, role_id), rec)
+    rec = await role_store.add_alarm(work_id, role_id, severity,
+                                     str(title or "").strip() or "角色警报",
+                                     str(detail or "").strip(), supersedes)
+    rec["role_title"] = str(_meta_of(work_id, role_id).get("title") or "")
     session_ops.ops_log("role_alarm", work_id, role_id, {
         "severity": severity, "title": rec["title"][:120],
+        "supersedes": supersedes,
     })
     try:
         from . import event_stream
         event_stream.emit(work_id, role_id, "role_alarm", {
             "id": rec["id"], "severity": severity,
             "title": rec["title"], "detail": rec["detail"][:500],
+            "supersedes": supersedes,
         })
     except Exception:  # noqa: BLE001 展示层零阻断
         pass
     return rec
 
 
-def list_alarms(work_id: str, status: str = "open") -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for role in list_roles(work_id):
-        rid = str(role.get("card_id") or "")
-        for item in _read_jsonl(_alarm_path(work_id, rid)):
-            if status and str(item.get("status") or "open") != status:
-                continue
-            out.append(item)
-    out.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
-    return out
+def list_alarms(work_id: str, status: str = "open",
+                role_id: str = "") -> list[dict[str, Any]]:
+    return role_store.list_alarms(work_id, status=status, role_id=role_id)
 
 
-def ack_alarm(work_id: str, role_id: str, alarm_id: str) -> bool:
-    path = _alarm_path(work_id, role_id)
-    items = _read_jsonl(path)
-    hit = False
-    for it in items:
-        if str(it.get("id") or "") == alarm_id:
-            it["status"] = "acked"
-            it["acked_at"] = _now()
-            hit = True
-    if hit:
-        path.write_text(
-            "\n".join(json.dumps(x, ensure_ascii=False) for x in items) + "\n",
-            encoding="utf-8")
-    return hit
+async def ack_alarm(work_id: str, alarm_id: str) -> bool:
+    return await role_store.ack_alarm(work_id, alarm_id)
+
+
+async def correct_alarm(work_id: str, alarm_id: str,
+                        corrected_by: str) -> bool:
+    return await role_store.correct_alarm(work_id, alarm_id, corrected_by)
 
 
 # ============================================================
@@ -478,118 +728,123 @@ def _batch_ref(batch: list[dict[str, Any]]) -> str:
     return ",".join(f"{i['source']}:{i['from_seq']}-{i['to_seq']}" for i in batch)
 
 
-def active_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
-    """当前巡检回合正在处理的批次（供 record_verdict 记来源）。"""
-    item = _ACTIVE.get((work_id, role_id)) or {}
-    batch = item.get("batch") or []
-    return batch if isinstance(batch, list) else []
+def _render_sections(prof: dict[str, Any],
+                     verdicts: list[dict[str, Any]],
+                     alarms: list[dict[str, Any]],
+                     pending: list[str]) -> str:
+    jur = prof.get("jurisdiction") or {}
+    watch = prof.get("watch") or {}
+    sc = prof.get("speak_contract") or {}
+    esc = prof.get("escalation") or {}
+    duty = prof.get("duty") or {}
+    charter = prof.get("charter") or {}
+    lines = [
+        f"## 管辖\n{jur.get('statement') or '（未写）'}\n"
+        f"责任域: {jur.get('domain','')}（排他键 {jur.get('exclusive_key','')}）",
+        "## 关注\n"
+        f"工作卡: {', '.join(watch.get('cards') or []) or '（无）'}\n"
+        f"关注信号: {', '.join(watch.get('signals') or []) or '（无）'}",
+        "## 发言契约\n"
+        f"建议条件: {', '.join(sc.get('advice_when') or []) or '（未写）'}\n"
+        f"警报条件: {', '.join(sc.get('alarm_when') or []) or '（未写）'}\n"
+        f"默认沉默: {bool(sc.get('silence_default', True))}；"
+        f"单次最多发言: {sc.get('max_messages_per_wake', 2)}",
+        "## 升级线\n"
+        f"建议→{esc.get('advice_to','source_card')}；"
+        f"警报→{esc.get('alarm_to','human')}；"
+        f"严重→{esc.get('critical_to','root_and_human')}",
+        "## 值班\n"
+        f"状态: {duty.get('state','active')}；最后巡检: {duty.get('last_wake_at','') or '（无）'}；"
+        f"待同步: {len(pending)} 源",
+        "## 判断簿\n" + ("\n".join(
+            f"- {v['ts'][:16]} {v['decision']} · {v['reason'][:160]}"
+            + (f" → 被 {v['superseded_by']} 取代" if v.get("superseded_by") else "")
+            for v in verdicts[:10]) or "（暂无）"),
+        "## 警报簿\n" + ("\n".join(
+            f"- {a['ts'][:16]} [{a['severity']}/{a['status']}] {a['title']}"
+            + (f"（更正→{a['corrected_by']}）" if a.get("corrected_by") else "")
+            for a in alarms[:10]) or "（暂无）"),
+        f"## 职责书（v{charter.get('version', 1)}）\n{charter.get('text','')}",
+    ]
+    return "\n\n".join(lines)
 
 
 def build_prompt(work_id: str, role_id: str,
                  batch: list[dict[str, Any]]) -> str:
-    meta = _meta_of(work_id, role_id)
-    title = str(meta.get("title") or role_id)
-    watched = watched_cards(work_id, role_id)
-    watch_lines = "\n".join(
-        f"- {m.get('card_id')}《{m.get('title')}》" for m in watched) or "（暂无）"
+    prof = role_store.get_profile(work_id, role_id) or {}
+    title = str(_meta_of(work_id, role_id).get("title") or role_id)
+    verdicts = role_store.list_verdicts(work_id, role_id, 15)
+    alarms = role_store.list_alarms(work_id, status="", role_id=role_id)
+    pending = [i["source"] for i in pending_batch(work_id, role_id)]
+    body = _render_sections(prof, verdicts, alarms, pending)
     parts = [
         f"〔角色巡检〕你是本项目的角色卡《{title}》（{role_id}）。",
-        "你不是作业卡：你不做具体工作，你对你负责的领域保持观察、判断，"
+        "你不是作业卡：你不做具体工作，你对你负责的管辖域保持观察、判断，"
         "只在必要时给出建议或警报。",
         "",
-        "## 你的职责书（根卡立项，用户可改）",
-        _mission_text(work_id, role_id) or "（职责书为空——请按卡片标题自行理解）",
-        "",
-        "## 你关注的工作卡",
-        watch_lines,
+        body,
         "",
         "## 自上次巡检以来，你关注的工作卡新增了以下内容",
     ]
     for item in batch:
         parts.append(
             f"### {item['source']}《{item['title']}》 块 {item['from_seq']}..{item['to_seq']}"
-            f"（{item['blocks']} 块）")
+            f"（命中信号：{', '.join(item.get('signals') or []) or 'turn_completed'}）")
         parts.append(item["text"])
     parts += [
         "",
-        "## 你本轮必须做的事",
-        "1. 判断：这些新内容里，有没有值得你发言的事？只按职责书里写明要关注的范围判断。",
-        "2. **无论发言还是沉默，必须调用 record_verdict(decision, reason)** 记录本次判断：",
+        "## 本轮必须做的事",
+        "1. 判断：这些新增内容里，有没有落在你的管辖域、且触发发言契约的事？",
+        "2. **无论发言还是沉默，必须调用 record_verdict(decision, reason, evidence)**：",
         "   - decision=\"speak\"：你决定发言（建议或警报）；",
         "   - decision=\"silent\"：你判断无需干预。",
-        "   reason 一句话写清依据（引用你看到的具体内容）。沉默也是判断，必须落账。",
-        "3. 若发言：",
-        "   - 普通建议：调用 send_card_message 发给最相关的那张工作卡"
-        "（默认发回本次内容的来源卡），类型用 msg_notify；",
-        "   - 严重风险：调用 raise_alarm 直通用户；可同时发建议。",
-        "4. 可以用 update_status / append_ruling 更新**你自己**的现状与定论（只限你自己）。",
-        "5. 不得修改别人的卡、不得建卡、不得调文件或命令。",
-        "",
-        "判断标准：没有新增风险就沉默。不要为了说话而说话。",
+        "   reason 一句话写清依据；evidence 填你实际看过的文件/行/卡（可空，但建议填）。"
+        "沉默也是判断，必须落账。",
+        "3. 若发言：普通建议用 send_card_message 发给最相关的工作卡（msg_notify）；"
+        "严重风险用 raise_alarm；若在纠正自己此前的警报，raise_alarm 时传 "
+        "supersedes=<旧 alarm_id>（系统会把旧警报置为 corrected）。",
+        "4. 只能写**你自己**的档案/职责书（update_status/append_ruling）；"
+        "不得修改别人的卡、不得建卡、不得调文件或命令。",
+        "5. 没有新增风险就沉默，不要为了说话而说话。",
     ]
     return "\n".join(parts)
 
 
-def _mission_text(work_id: str, role_id: str) -> str:
-    """同步读角色卡正文的使命块（build_prompt 是同步函数，故走库读）。"""
-    try:
-        from ..storage import card_db
-        row = card_db.read_sync(
-            work_id,
-            lambda conn: card_db.get_card_row(conn, role_id), None)
-        if row is None:
-            return ""
-        from ..storage.hash_utils import split_body_sections
-        _meta, body = _row_body(row)
-        return str(split_body_sections(body).get("mission") or "").strip()
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _row_body(row: Any) -> tuple[dict[str, Any], str]:
-    """把 cards 行还原成 (meta, 正文)——与 card_store.read_card 同口径的最小版。"""
-    from ..storage import card_db
-    meta = card_db.row_to_meta(row)
-    body = "\n".join([
-        "## 使命", str(row["mission"] or ""),
-        "## 现状", str(row["status_block"] or ""),
-        "## 定论", str(row["rulings"] or ""),
-    ])
-    return meta, body
-
-
-async def _finalize(work_id: str, role_id: str, batch: list[dict[str, Any]],
+async def _finalize(work_id: str, role_id: str,
+                    batch: list[dict[str, Any]],
                     before: int, resp: Any) -> None:
-    """角色回合收口：推进游标、机械补记沉默、落影子日志、释放活跃位。"""
     key = (work_id, role_id)
     _ACTIVE.pop(key, None)
     ok = isinstance(resp, dict)
     if not ok:
         session_ops.ops_log("role_turn_failed", work_id, role_id,
                             {"batch": _batch_ref(batch)})
-        logger.warning("[role] 巡检回合失败，游标不推进 role=%s", role_id)
+        logger.warning("[role] 巡检回合失败，同步队列保留 role=%s", role_id)
         return
-    # 1) 推进游标（只推进本批已处理的区间）
+    ids = [int(i) for item in batch for i in (item.get("ids") or [])]
     try:
-        cursors = _cursor(work_id, role_id)
-        for item in batch:
-            cursors[item["source"]] = max(
-                int(cursors.get(item["source"], -1)), int(item["to_seq"]))
-        _set_cursor(work_id, role_id, cursors)
+        await role_store.consume_syncs(work_id, ids)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[role] 游标推进失败 role=%s: %s", role_id, exc)
-    # 2) 机械补记：模型没调用 record_verdict ⇒ 沉默仍要落账
-    verdicts = _read_jsonl(_verdict_path(work_id, role_id))
+        logger.warning("[role] 同步队列收口失败 role=%s: %s", role_id, exc)
+    verdicts = role_store.list_verdicts(work_id, role_id, 1000)
     if len(verdicts) <= before:
-        rec = record_verdict(
+        await record_verdict(
             work_id, role_id, "silent",
             "（机械补记：本轮未调用 record_verdict，按沉默处理）",
             batch=batch, auto=True)
-        verdicts.append(rec)
-    last = verdicts[-1] if verdicts else {}
+        verdicts = role_store.list_verdicts(work_id, role_id, 1000)
+    last = verdicts[0] if verdicts else {}
     decision = str(last.get("decision") or "silent")
     reason = str(last.get("reason") or "")
-    # 3) 角色自己的过程日志（影子 ## 进度）
+    try:
+        prof = role_store.get_profile(work_id, role_id) or {}
+        duty = dict(prof.get("duty") or {})
+        duty["last_wake_at"] = _now()
+        duty.setdefault("state", "active")
+        duty["pending_sync"] = len(pending_batch(work_id, role_id))
+        await role_store.update_profile(work_id, role_id, {"duty": duty})
+    except Exception:  # noqa: BLE001
+        pass
     try:
         await shadow_store.append_to_section(
             work_id, role_id, "## 进度",
@@ -605,13 +860,12 @@ async def _finalize(work_id: str, role_id: str, batch: list[dict[str, Any]],
         })
     except Exception:  # noqa: BLE001
         pass
-    # 4) 巡检期间又有新同步 ⇒ 冷却后追一次（角色自己的回合不会再触发 after_turn）
     try:
         if pending_batch(work_id, role_id):
             from . import message_runner as _mr
 
             async def _followup() -> None:
-                await asyncio.sleep(_SPAWN_COOLDOWN + 0.1)
+                await asyncio.sleep(SPAWN_COOLDOWN + 0.1)
                 spawn(work_id, role_id)
 
             _mr._spawn_tracked(_followup())
@@ -624,8 +878,13 @@ def spawn(work_id: str, role_id: str) -> bool:
     key = (work_id, role_id)
     if key in _ACTIVE:
         return False
+    prof = role_store.get_profile(work_id, role_id)
+    if prof is None:
+        return False
+    if str((prof.get("duty") or {}).get("state") or "active") != "active":
+        return False
     now = asyncio.get_event_loop().time()
-    if now - _LAST_SPAWN.get(key, 0.0) < _SPAWN_COOLDOWN:
+    if now - _LAST_SPAWN.get(key, 0.0) < SPAWN_COOLDOWN:
         return False
     try:
         if session_facade.turn_holder(work_id, role_id):
@@ -637,18 +896,24 @@ def spawn(work_id: str, role_id: str) -> bool:
         return False
     _LAST_SPAWN[key] = now
     _ACTIVE[key] = {"batch": batch, "started": _now()}
-    before = len(_read_jsonl(_verdict_path(work_id, role_id)))
+    before = len(role_store.list_verdicts(work_id, role_id, 1000))
     try:
         from . import message_runner as _mr
         from . import routes as _routes
 
         async def _run() -> None:
-            material = await build_batch(work_id, role_id)
-            _ACTIVE[key]["batch"] = material
-            real_prompt = build_prompt(work_id, role_id, material)
-            resp = await _routes._run_message(
-                work_id, role_id, real_prompt, None, append_user=False)
-            await _finalize(work_id, role_id, material, before, resp)
+            try:
+                material = await build_batch(work_id, role_id)
+                _ACTIVE[key]["batch"] = material
+                real_prompt = build_prompt(work_id, role_id, material)
+                resp = await _routes._run_message(
+                    work_id, role_id, real_prompt, None, append_user=False)
+                await _finalize(work_id, role_id, material, before, resp)
+            except Exception as exc:  # noqa: BLE001 单次巡检失败不拖死角色
+                _ACTIVE.pop(key, None)
+                logger.error("[role] 巡检回合异常 role=%s: %s", role_id, exc)
+                session_ops.ops_log("role_turn_error", work_id, role_id,
+                                    {"error": str(exc)[:200]})
 
         _mr._spawn_tracked(_run())
         return True
@@ -658,72 +923,112 @@ def spawn(work_id: str, role_id: str) -> bool:
         return False
 
 
-async def after_turn(work_id: str, card_id: str, result: Any = None) -> None:
-    """工作卡回合收口：把新增会话同步给关注它的角色卡。永不抛出。"""
-    try:
-        meta = _meta_of(work_id, card_id)
-        if not meta or str(meta.get("card_type") or "") == ROLE_TYPE:
-            return
-        roles = roles_watching(work_id, card_id)
-        if not roles:
-            return
-        last = await _last_seq(work_id, card_id)
-        if last < 0:
-            return
-        for role in roles:
-            role_id = str(role.get("card_id") or "")
-            if not role_id:
-                continue
-            async with _lock_for(work_id, role_id):
-                cur = int(_cursor(work_id, role_id).get(card_id, -1))
-                if last > cur:
-                    record_sync(work_id, role_id, card_id, cur + 1, last)
-            spawn(work_id, role_id)
-    except Exception as exc:  # noqa: BLE001 同步失败不得吃掉工作卡回合
-        logger.warning("[role] after_turn 同步失败 work=%s card=%s: %s",
-                       work_id, card_id, exc)
-
-
 async def manual_check(work_id: str, role_id: str) -> dict[str, Any]:
-    """人工触发一次巡检：先把关注卡的新增补进队列，再起回合。"""
-    for m in watched_cards(work_id, role_id):
+    """人工触发一次巡检：把关注卡的新增补进队列，再起回合。"""
+    prof = await ensure_profile(work_id, role_id)
+    if prof is None:
+        return {"error": f"不是角色卡或档案缺失: {role_id}"}
+    for m in await watched_cards(work_id, role_id):
         src = str(m.get("card_id") or "")
         if not src:
             continue
         last = await _last_seq(work_id, src)
         if last < 0:
             continue
-        async with _lock_for(work_id, role_id):
-            cur = int(_cursor(work_id, role_id).get(src, -1))
-            if last > cur:
-                record_sync(work_id, role_id, src, cur + 1, last)
+        from_seq = await _sync_from(work_id, role_id, src)
+        if last >= from_seq:
+            await role_store.add_sync(work_id, role_id, src, from_seq, last,
+                                      ["manual_check"])
     started = spawn(work_id, role_id)
     return {"started": started,
             "pending_sources": [p["source"] for p in pending_batch(work_id, role_id)]}
 
 
 # ============================================================
-# 查询（UI）
+# 查询（UI / 模型）
 # ============================================================
 
-def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
+async def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
+    prof = await ensure_profile(work_id, role_id)
+    if prof is None:
+        return {"role_id": role_id, "error": "不是角色卡或档案缺失"}
     meta = _meta_of(work_id, role_id)
-    watched = watched_cards(work_id, role_id)
-    verdicts = list_verdicts(work_id, role_id, limit=20)
-    alarms = [a for a in list_alarms(work_id, status="open")
-              if str(a.get("role_id") or "") == role_id]
+    verdicts = role_store.list_verdicts(work_id, role_id, 30)
+    alarms = role_store.list_alarms(work_id, status="", role_id=role_id)
+    open_alarms = [a for a in alarms if a.get("status") == "open"]
     pending = pending_batch(work_id, role_id)
-    mission = _mission_text(work_id, role_id)
+    watch = prof.get("watch") or {}
+    watched = []
+    metas = card_store.iter_card_metas(work_id)
+    for cid in (watch.get("cards") or []):
+        m = metas.get(str(cid))
+        if m:
+            watched.append({"card_id": str(m.get("card_id")),
+                            "title": str(m.get("title") or ""),
+                            "card_type": str(m.get("card_type") or "")})
+    charter = prof.get("charter") or {}
+    history = await role_store.charter_history(work_id, role_id, 10)
     return {
         "role_id": role_id,
         "title": str(meta.get("title") or ""),
         "card_type": str(meta.get("card_type") or ""),
-        "mission": mission,
-        "watched": [{"card_id": str(m.get("card_id") or ""),
-                     "title": str(m.get("title") or ""),
-                     "card_type": str(m.get("card_type") or "")} for m in watched],
+        "profile": prof,
+        "jurisdiction": prof.get("jurisdiction") or {},
+        "watch": {"cards": watched, "signals": watch.get("signals") or []},
+        "speak_contract": prof.get("speak_contract") or {},
+        "escalation": prof.get("escalation") or {},
+        "duty": prof.get("duty") or {},
+        "charter": {"version": charter.get("version", 1),
+                    "text": charter.get("text", ""),
+                    "ratified_by": charter.get("ratified_by", ""),
+                    "history": history},
         "verdicts": verdicts,
         "alarms": alarms,
+        "open_alarms": open_alarms,
         "pending_sources": [p["source"] for p in pending],
-        "open_alarm_count": len(alarms),
+        "text": _render_sections(prof, verdicts, alarms,
+                                 [p["source"] for p in pending]),
     }
+
+
+async def role_text(work_id: str, role_id: str) -> str:
+    """给 read_card / UI 的角色六节正文。"""
+    summary = await role_summary(work_id, role_id)
+    return str(summary.get("text") or "")
+
+
+async def startup_sweep_all(limit: int = 20) -> int:
+    """进程启动后把「有 pending 同步的 active 角色」重新唤醒。
+
+    同步队列与判断/警报台账都在 SQLite，重启不丢；本函数只负责续跑。
+    fail-open：任何单个 work/角色失败不影响其他。
+    """
+    from ..storage import work_store
+
+    started = 0
+    try:
+        works = work_store.list_works()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[role] 启动续跑取 work 列表失败: %s", exc)
+        return 0
+    for w in works[:50]:
+        wid = str(w.get("work_id") or "")
+        if not wid:
+            continue
+        try:
+            for prof in await role_store.list_profiles(wid):
+                rid = str(prof.get("role_id") or "")
+                if not rid:
+                    continue
+                if str((prof.get("duty") or {}).get("state") or "active") != "active":
+                    continue
+                if not pending_batch(wid, rid):
+                    continue
+                if spawn(wid, rid):
+                    started += 1
+                if started >= limit:
+                    return started
+                await asyncio.sleep(0.05)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[role] 启动续跑 work=%s 失败: %s", wid, exc)
+    return started

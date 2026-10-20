@@ -100,7 +100,7 @@ AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
 # ``card_type=="role"`` 的当前卡上由 build_tool_schemas 末段追加。
 # 角色卡不是作业卡：它只判断、记录判断、必要时发言/警报。
 # ============================================================
-ROLE_ONLY_TOOLS: frozenset[str] = frozenset({"record_verdict", "raise_alarm"})
+ROLE_ONLY_TOOLS: frozenset[str] = frozenset({"record_verdict", "raise_alarm", "correct_alarm"})
 
 # [权限底座重做 2026-10-12] 工具组→工具名映射（build_tool_schemas 过滤面）。
 # 由卡上的 tools_file / tools_web 两个开关决定下发哪几组：缺哪个开关就不下发
@@ -190,9 +190,12 @@ TOOL_SWITCH: dict[str, str] = {
     # 实际下发不走这些开关（ROLE_ONLY_TOOLS 从常规池排除，角色面末段追加）。
     "record_verdict": policy.SWITCH_READ,
     "raise_alarm": policy.SWITCH_READ,
+    "correct_alarm": policy.SWITCH_READ,
     # 组阁权挂 create_child（根卡才有），关注管理挂 link；两件都只对根卡下发。
     "create_role": policy.SWITCH_CREATE_CHILD,
     "role_watch_cards": policy.SWITCH_LINK,
+    "update_role_profile": policy.SWITCH_CREATE_CHILD,
+    "role_set_duty": policy.SWITCH_CREATE_CHILD,
     "update_shadow": policy.SWITCH_SHADOW_WRITE,
     "list_manuscript": policy.SWITCH_MANUSCRIPT,
     "read_manuscript": policy.SWITCH_MANUSCRIPT,
@@ -254,7 +257,7 @@ TOOL_SWITCH: dict[str, str] = {
 #   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
 #   「注册表工具集/schema 变更」（T12-R3 纪律）。
 #   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
-TOOL_TABLE_VERSION = "tools-tc-13"
+TOOL_TABLE_VERSION = "tools-tc-14"
 
 
 # ============================================================
@@ -456,6 +459,18 @@ async def _h_read_card(work_id: str, current_id: str,
         return err("denied", f"越权：无权读取 {target_id}")
     result = await card_store.read_card(work_id, target_id)
     body = result["body"] or {}
+    # [角色机制 5710 v2] 角色卡返回**独立结构**（管辖/关注/发言契约/升级线/
+    # 值班/判断簿/警报簿/职责书），不再拿普通卡三块冒充。
+    if str(result["meta"].get("card_type") or "") == role_room.ROLE_TYPE:
+        summary = await role_room.role_summary(work_id, target_id)
+        return {
+            "card_id": target_id,
+            "title": result["meta"].get("title", ""),
+            "parent": "",
+            "card_type": role_room.ROLE_TYPE,
+            "role": summary,
+            "text": summary.get("text", ""),
+        }
     # 第三块在库内恒为 rulings 一列；对外叫什么名由本树 project_class 决定。
     try:
         pc = card_store._root_project_class(work_id)
@@ -3208,54 +3223,45 @@ TOOL_SWITCH["read_inbox"] = policy.SWITCH_READ
 async def _h_create_role(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """根卡组阁：建一张离树的角色卡，写职责书，并按需连线关注对象。"""
+    """根卡组阁：建一张离树的角色卡，写结构化档案与职责书。"""
     root_id = work_store.work_card_id_of(work_id)
     if not root_id or current_id != root_id:
         return err("denied", "只有项目根卡可以组阁（创建角色卡）")
     title = str(arguments.get("title") or "").strip()
+    charter = str(arguments.get("charter") or "").strip()
     if not title:
         return err("validation", "title 不能为空")
-    charter = str(arguments.get("charter") or "").strip()
     if not charter:
-        return err("validation", "charter 不能为空（写清这个角色盯什么）")
-    # 职责书必须是三块形态；只给一段文字时补骨架（使命＝正文）。
-    body = charter if "## " in charter else (
-        f"## 使命\n{charter}\n\n## 现状\n（尚未巡检）\n\n## 定论\n")
-    created = await card_store.create_card(
-        work_id, title=title, source="系统派生", card_type="role",
-        parent="", charter=body, skip_kick=True,
-    )
-    if "error" in created:
-        return created
-    role_id = str((created.get("meta") or {}).get("card_id") or "")
-    if not role_id:
-        return err("internal", "角色卡创建失败（无卡号）")
-    watched: list[str] = []
+        return err("validation", "charter 不能为空（写清这个角色对什么负责）")
     raw_watch = arguments.get("watch_card_ids") or []
     if isinstance(raw_watch, str):
         raw_watch = [raw_watch]
-    for cid in raw_watch:
-        cid = str(cid or "").strip()
-        if not cid or cid == role_id:
-            continue
-        res = await role_room.link(work_id, role_id, cid, actor=f"根卡 {current_id}")
-        if res.get("ok"):
-            watched.append(cid)
-    logger.info("[role] 根卡组阁 work=%s role=%s watched=%s", work_id, role_id, watched)
-    return {"role_card_id": role_id, "title": title, "watched": watched}
+    res = await role_room.create_role_card(
+        work_id, root_id, title, charter,
+        jurisdiction=arguments.get("jurisdiction"),
+        watch_cards=[str(c) for c in raw_watch if c],
+        signals=arguments.get("signals"),
+        speak_contract=arguments.get("speak_contract"),
+        escalation=arguments.get("escalation"),
+    )
+    if res.get("error"):
+        return err("validation", str(res["error"]))
+    logger.info("[role] 根卡组阁 work=%s role=%s watched=%s",
+                work_id, res.get("role_card_id"), res.get("watched"))
+    return res
 
 
 async def _h_role_watch_cards(work_id: str, current_id: str,
                               arguments: dict[str, Any],
                               cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """根卡管理订阅：给角色卡加/减关注对象。"""
+    """根卡管理订阅：给角色卡加/减关注对象（同步更新档案 watch.cards）。"""
     root_id = work_store.work_card_id_of(work_id)
     if not root_id or current_id != root_id:
         return err("denied", "只有项目根卡可以调整角色卡的关注对象")
     role_id = str(arguments.get("role_card_id") or "").strip()
     if role_id not in cards:
         return err("not_found", f"卡片不存在: {role_id}")
-    if str((cards.get(role_id) or {}).get("card_type") or "") != "role":
+    if str((cards.get(role_id) or {}).get("card_type") or "") != role_room.ROLE_TYPE:
         return err("validation", f"{role_id} 不是角色卡")
     action = str(arguments.get("action") or "add").strip().lower()
     raw = arguments.get("card_ids") or []
@@ -3272,8 +3278,67 @@ async def _h_role_watch_cards(work_id: str, current_id: str,
             res = await role_room.link(work_id, role_id, cid, actor=f"根卡 {current_id}")
         if res.get("ok"):
             changed.append(cid)
+    watched = await role_room.watched_cards(work_id, role_id)
     return {"role_card_id": role_id, "action": action, "changed": changed,
-            "watched": [str(m.get("card_id")) for m in role_room.watched_cards(work_id, role_id)]}
+            "watched": [str(m.get("card_id")) for m in watched]}
+
+
+async def _h_update_role_profile(work_id: str, current_id: str,
+                                 arguments: dict[str, Any],
+                                 cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """根卡/用户更新角色档案：管辖域、关注与信号、发言契约、升级线、职责书。"""
+    root_id = work_store.work_card_id_of(work_id)
+    if not root_id or current_id != root_id:
+        return err("denied", "只有项目根卡可以修改角色档案")
+    role_id = str(arguments.get("role_card_id") or "").strip()
+    if role_id not in cards:
+        return err("not_found", f"卡片不存在: {role_id}")
+    if str((cards.get(role_id) or {}).get("card_type") or "") != role_room.ROLE_TYPE:
+        return err("validation", f"{role_id} 不是角色卡")
+    prof = await role_room.get_profile(work_id, role_id)
+    if prof is None:
+        return err("not_found", f"角色档案不存在: {role_id}")
+    patch: dict[str, Any] = {}
+    for key in ("jurisdiction", "speak_contract", "escalation"):
+        if key in arguments:
+            patch[key] = arguments[key]
+    if "charter" in arguments:
+        patch["charter"] = arguments["charter"]
+    if "signals" in arguments or "watch_card_ids" in arguments:
+        old_watch = prof.get("watch") or {}
+        cards_now = ([str(c) for c in (arguments.get("watch_card_ids") or [])]
+                     if "watch_card_ids" in arguments
+                     else [str(c) for c in (old_watch.get("cards") or [])])
+        signals = ([str(s) for s in (arguments.get("signals") or [])]
+                   if "signals" in arguments
+                   else [str(s) for s in (old_watch.get("signals") or [])])
+        patch["watch"] = {"cards": cards_now, "signals": signals}
+    if not patch:
+        return err("validation", "没有可更新的档案字段")
+    res = await role_room.update_profile(work_id, role_id, patch,
+                                         actor=f"根卡 {current_id}")
+    if res.get("error"):
+        return err("validation", str(res["error"]))
+    return res
+
+
+async def _h_set_role_duty(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """根卡/用户给角色停职、复职、撤岗（撤岗保留档案与台账，只解除关注）。"""
+    root_id = work_store.work_card_id_of(work_id)
+    if not root_id or current_id != root_id:
+        return err("denied", "只有项目根卡可以调整角色值班态")
+    role_id = str(arguments.get("role_card_id") or "").strip()
+    state = str(arguments.get("state") or "").strip().lower()
+    if state not in ("active", "suspended", "archived"):
+        return err("validation", f"state 非法: {state!r}（active/suspended/archived）")
+    res = await role_room.set_duty(work_id, role_id, state,
+                                   actor=f"根卡 {current_id}",
+                                   note=str(arguments.get("note") or ""))
+    if res.get("error"):
+        return err("validation", str(res["error"]))
+    return res
 
 
 async def _h_record_verdict(work_id: str, current_id: str,
@@ -3291,10 +3356,14 @@ async def _h_record_verdict(work_id: str, current_id: str,
     targets = arguments.get("targets") or []
     if isinstance(targets, str):
         targets = [targets]
-    rec = role_room.record_verdict(
+    evidence = arguments.get("evidence") or []
+    if isinstance(evidence, str):
+        evidence = [evidence]
+    rec = await role_room.record_verdict(
         work_id, current_id, decision, reason,
         targets=[str(t) for t in targets],
-        batch=role_room.active_batch(work_id, current_id),
+        evidence=[str(e) for e in evidence],
+        supersedes=str(arguments.get("supersedes") or ""),
     )
     return {"recorded": True, "id": rec["id"], "decision": decision}
 
@@ -3302,7 +3371,7 @@ async def _h_record_verdict(work_id: str, current_id: str,
 async def _h_raise_alarm(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """角色卡把严重风险直通用户。"""
+    """角色卡把严重风险直通用户；可传 supersedes 更正自己此前的警报。"""
     if not role_room.is_role(work_id, current_id):
         return err("denied", "只有角色卡可以发警报")
     title = str(arguments.get("title") or "").strip()
@@ -3310,27 +3379,82 @@ async def _h_raise_alarm(work_id: str, current_id: str,
     if not title:
         return err("validation", "title 不能为空")
     severity = str(arguments.get("severity") or "warn").strip().lower()
-    rec = role_room.record_alarm(work_id, current_id, severity, title, detail)
-    return {"alarm_id": rec["id"], "severity": rec["severity"], "title": rec["title"]}
+    rec = await role_room.raise_alarm(
+        work_id, current_id, severity, title, detail,
+        supersedes=str(arguments.get("supersedes") or ""))
+    return {"alarm_id": rec["id"], "severity": rec["severity"],
+            "title": rec["title"], "supersedes": rec.get("supersedes", "")}
+
+
+async def _h_correct_alarm(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """角色卡更正自己的一条警报（不新发警报，只把它置为 corrected）。"""
+    if not role_room.is_role(work_id, current_id):
+        return err("denied", "只有角色卡可以更正警报")
+    alarm_id = str(arguments.get("alarm_id") or "").strip()
+    if not alarm_id:
+        return err("validation", "alarm_id 不能为空")
+    own = [a for a in role_room.list_alarms(work_id, status="",
+                                            role_id=current_id)
+           if str(a.get("id")) == alarm_id]
+    if not own:
+        return err("not_found", f"你的警报里没有 {alarm_id}")
+    ok = await role_room.correct_alarm(work_id, alarm_id, current_id)
+    if not ok:
+        return err("invalid", f"警报 {alarm_id} 已不可更正（可能已更正/撤岗）")
+    return {"ok": True, "alarm_id": alarm_id, "status": "corrected"}
 
 
 TOOL_REGISTRY["create_role"] = ToolDef(
     schema={
         "name": "create_role",
         "description": (
-            "（根卡专用）组阁：创建一张离树的角色卡，由你写入它的职责书。"
-            "角色卡不挂任务树、不干活；它关注你指定的工作卡，在它们每回合收口时"
-            "收到同步，自行判断是否给出建议或警报。职责书要写清：盯什么、什么情况"
-            "必须说话、什么情况沉默、什么情况直接报用户。"
+            "（根卡专用）组阁：创建一张离树的角色卡，写结构化档案与职责书。"
+            "角色卡不挂任务树、不干活；它关注你指定的工作卡，只在这些卡命中"
+            "关注信号时收到同步，自行判断建议/警报/沉默。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "角色名，如「一致性观察员」"},
-                "charter": {"type": "string", "description": "职责书正文（可含 ## 使命/现状/定论 三块；只给一段时自动成使命块）"},
+                "charter": {"type": "string", "description": "职责书正文：对什么负责、什么情况发言、什么情况沉默"},
+                "jurisdiction": {
+                    "type": "object",
+                    "description": "管辖域：对什么负责（domain 是排他键，同一项目同一域只应有一个角色）",
+                    "properties": {
+                        "domain": {"type": "string", "description": "英文/拼音排他键，如 timeline_contract"},
+                        "statement": {"type": "string", "description": "一句话职责说明"},
+                    },
+                },
                 "watch_card_ids": {
                     "type": "array", "items": {"type": "string"},
-                    "description": "要关注的工作卡 id 列表（可空，之后用 role_watch_cards 补）",
+                    "description": "要关注的工作卡 id 列表",
+                },
+                "signals": {
+                    "type": "array", "items": {"type": "string",
+                                               "enum": ["turn_completed", "status_changed",
+                                                        "decision_appended", "turn_error"]},
+                    "description": "关注信号；命中才同步/唤醒。缺省 turn_completed",
+                },
+                "speak_contract": {
+                    "type": "object",
+                    "description": "发言契约（可选）：advice_when/alarm_when/silence_default/max_messages_per_wake",
+                    "properties": {
+                        "advice_when": {"type": "array", "items": {"type": "string"}},
+                        "alarm_when": {"type": "array", "items": {"type": "string"}},
+                        "silence_default": {"type": "boolean"},
+                        "max_messages_per_wake": {"type": "integer"},
+                    },
+                },
+                "escalation": {
+                    "type": "object",
+                    "description": "升级线（可选）：advice_to/alarm_to/critical_to",
+                    "properties": {
+                        "advice_to": {"type": "string"},
+                        "alarm_to": {"type": "string"},
+                        "critical_to": {"type": "string"},
+                    },
                 },
             },
             "required": ["title", "charter"],
@@ -3343,17 +3467,13 @@ TOOL_REGISTRY["create_role"] = ToolDef(
 TOOL_REGISTRY["role_watch_cards"] = ToolDef(
     schema={
         "name": "role_watch_cards",
-        "description": (
-            "（根卡专用）调整某张角色卡的关注对象：action=add 加关注，remove 解除关注。"
-            "关注＝把工作卡与角色卡连线；工作卡回合收口时信息会同步给角色卡。"
-        ),
+        "description": "（根卡专用）调整角色卡的关注对象：action=add/remove。",
         "parameters": {
             "type": "object",
             "properties": {
                 "role_card_id": {"type": "string", "description": "角色卡 id"},
-                "action": {"type": "string", "enum": ["add", "remove"], "description": "加/减关注"},
-                "card_ids": {"type": "array", "items": {"type": "string"},
-                             "description": "工作卡 id 列表"},
+                "action": {"type": "string", "enum": ["add", "remove"]},
+                "card_ids": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["role_card_id", "card_ids"],
         },
@@ -3362,22 +3482,68 @@ TOOL_REGISTRY["role_watch_cards"] = ToolDef(
     readonly=False,
 )
 
-TOOL_REGISTRY["record_verdict"] = ToolDef(
+TOOL_REGISTRY["update_role_profile"] = ToolDef(
     schema={
-        "name": "record_verdict",
+        "name": "update_role_profile",
         "description": (
-            "（角色卡专用）记录本次巡检判断。**每次被调起都必须调用**："
-            "decision=speak 表示你决定发言（建议或警报），silent 表示你判断无需干预。"
-            "reason 写一句话依据（引用你看到的具体内容）。沉默不落账＝没有判断。"
+            "（根卡专用）更新角色档案：管辖域、关注卡、关注信号、发言契约、"
+            "升级线、职责书。职责书文本变化会生成新版本，不覆盖历史。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "decision": {"type": "string", "enum": ["speak", "silent"],
-                             "description": "发言 / 沉默"},
-                "reason": {"type": "string", "description": "一句话判断依据"},
-                "targets": {"type": "array", "items": {"type": "string"},
-                            "description": "若发言，你发给谁（卡 id 列表，可空）"},
+                "role_card_id": {"type": "string"},
+                "jurisdiction": {"type": "object"},
+                "watch_card_ids": {"type": "array", "items": {"type": "string"}},
+                "signals": {"type": "array", "items": {"type": "string"}},
+                "speak_contract": {"type": "object"},
+                "escalation": {"type": "object"},
+                "charter": {"type": "string"},
+            },
+            "required": ["role_card_id"],
+        },
+    },
+    handler=_h_update_role_profile,
+    readonly=False,
+)
+
+TOOL_REGISTRY["role_set_duty"] = ToolDef(
+    schema={
+        "name": "role_set_duty",
+        "description": (
+            "（根卡专用）调整角色值班态：active 复职、suspended 停职、"
+            "archived 撤岗（保留档案与台账，解除关注）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "role_card_id": {"type": "string"},
+                "state": {"type": "string", "enum": ["active", "suspended", "archived"]},
+                "note": {"type": "string"},
+            },
+            "required": ["role_card_id", "state"],
+        },
+    },
+    handler=_h_set_role_duty,
+    readonly=False,
+)
+
+TOOL_REGISTRY["record_verdict"] = ToolDef(
+    schema={
+        "name": "record_verdict",
+        "description": (
+            "（角色卡专用）记录本次巡检判断。每次被调起都必须调用："
+            "decision=speak/silent；reason 一句话依据；evidence 填实际看过的"
+            "文件/行/卡（可空）。沉默不落账＝没有判断。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "decision": {"type": "string", "enum": ["speak", "silent"]},
+                "reason": {"type": "string"},
+                "targets": {"type": "array", "items": {"type": "string"}},
+                "evidence": {"type": "array", "items": {"type": "string"}},
+                "supersedes": {"type": "string", "description": "被本判词取代的旧判词 id（可空）"},
             },
             "required": ["decision", "reason"],
         },
@@ -3390,20 +3556,36 @@ TOOL_REGISTRY["raise_alarm"] = ToolDef(
     schema={
         "name": "raise_alarm",
         "description": (
-            "（角色卡专用）把严重风险直通用户。普通建议用 send_card_message 发给工作卡；"
+            "（角色卡专用）把严重风险直通用户。普通建议用 send_card_message；"
             "只有用户需要立刻知道的风险才用警报。severity：info/warn/critical。"
+            "更正自己此前的警报时传 supersedes=<旧 alarm_id>。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "severity": {"type": "string", "enum": ["info", "warn", "critical"]},
-                "title": {"type": "string", "description": "一句话风险标题"},
-                "detail": {"type": "string", "description": "风险详情与依据"},
+                "title": {"type": "string"},
+                "detail": {"type": "string"},
+                "supersedes": {"type": "string"},
             },
             "required": ["severity", "title"],
         },
     },
     handler=_h_raise_alarm,
+    readonly=False,
+)
+
+TOOL_REGISTRY["correct_alarm"] = ToolDef(
+    schema={
+        "name": "correct_alarm",
+        "description": "（角色卡专用）更正自己的一条警报（置为 corrected，不新发警报）。",
+        "parameters": {
+            "type": "object",
+            "properties": {"alarm_id": {"type": "string"}},
+            "required": ["alarm_id"],
+        },
+    },
+    handler=_h_correct_alarm,
     readonly=False,
 )
 
@@ -3632,7 +3814,8 @@ def _filter_by_card_type(
 # 的只有合成卡面的测试直调——宁可少发、不可错发。
 # ============================================================
 ROOT_ONLY_TOOLS: frozenset[str] = frozenset(
-    {"draft_rule_edit", "create_role", "role_watch_cards"})
+    {"draft_rule_edit", "create_role", "role_watch_cards",
+     "update_role_profile", "role_set_duty"})
 
 
 def _filter_root_only(
@@ -3849,7 +4032,7 @@ _ROLE_FACE_DROP = frozenset({"edit_card", "delete_card", "create_card",
 def _apply_role_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = [t for t in tools if str(t.get("name", "")) not in _ROLE_FACE_DROP]
     for name in ("send_card_message", "read_inbox", "record_verdict",
-                 "raise_alarm", "update_status", "append_ruling"):
+                 "raise_alarm", "correct_alarm", "update_status", "append_ruling"):
         if name in TOOL_REGISTRY:
             out.append(_schema_of(TOOL_REGISTRY[name]))
     # 去重（防同一件工具从基础面与追加面各来一份）
