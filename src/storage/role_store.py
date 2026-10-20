@@ -490,12 +490,15 @@ def _directive_row(r: sqlite3.Row) -> dict[str, Any]:
         "updated_at": r["updated_at"] or "",
         "verified_at": r["verified_at"] or "",
         "due_at": r["due_at"] or "",
+        "parent_id": r["parent_id"] or "",
+        "attempt": int(r["attempt"] or 1),
     }
 
 
 async def add_directive(work_id: str, role_id: str, target_card_id: str,
                         instruction: str, acceptance: str,
-                        msg_id: str = "", due_at: str = "") -> dict[str, Any]:
+                        msg_id: str = "", due_at: str = "",
+                        parent_id: str = "", attempt: int = 1) -> dict[str, Any]:
     import uuid
     rec = {
         "id": uuid.uuid4().hex[:12],
@@ -510,16 +513,20 @@ async def add_directive(work_id: str, role_id: str, target_card_id: str,
         "updated_at": _now(),
         "verified_at": "",
         "due_at": due_at,
+        "parent_id": parent_id,
+        "attempt": max(1, int(attempt or 1)),
     }
 
     def _fn(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT INTO role_directives"
             " (id, work_id, role_id, target_card_id, instruction, acceptance,"
-            "  msg_id, status, evidence, created_at, updated_at, verified_at, due_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "  msg_id, status, evidence, created_at, updated_at, verified_at,"
+            "  due_at, parent_id, attempt)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rec["id"], work_id, role_id, target_card_id, instruction, acceptance,
-             msg_id, "issued", "", rec["created_at"], rec["updated_at"], "", due_at))
+             msg_id, "issued", "", rec["created_at"], rec["updated_at"], "",
+             due_at, parent_id, rec["attempt"]))
 
     await card_db.run_write(work_id, _fn)
     return rec
@@ -559,6 +566,49 @@ async def verify_directive(work_id: str, directive_id: str, status: str,
             "UPDATE role_directives SET status=?, evidence=?, verified_at=?,"
             " updated_at=? WHERE work_id=? AND id=?",
             (status, evidence, _now(), _now(), work_id, directive_id))
+        return cur.rowcount > 0
+
+    return bool(await card_db.run_write(work_id, _fn))
+
+
+def list_open_directives(work_id: str, target_card_id: str) -> list[dict[str, Any]]:
+    """阻塞目标卡收口的指令：issued/rejected/overdue。"""
+    def _fn(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT * FROM role_directives WHERE work_id=? AND target_card_id=?"
+            " AND status IN ('issued','rejected','overdue')"
+            " ORDER BY created_at", (work_id, target_card_id)).fetchall()
+        return [_directive_row(r) for r in rows]
+
+    return card_db.read_sync(work_id, _fn, []) or []
+
+
+async def refresh_overdue(work_id: str, role_id: str = "") -> int:
+    """把已过 due_at 的 issued 指令置 overdue（幂等；到点后阻塞收口）。"""
+    now = _now()
+
+    def _fn(conn: sqlite3.Connection) -> int:
+        sql = ("UPDATE role_directives SET status='overdue', updated_at=?"
+               " WHERE work_id=? AND status='issued' AND due_at<>'' AND due_at<?")
+        args: list[Any] = [now, work_id, now]
+        if role_id:
+            sql += " AND role_id=?"
+            args.append(role_id)
+        cur = conn.execute(sql, tuple(args))
+        return int(cur.rowcount or 0)
+
+    return int(await card_db.run_write(work_id, _fn) or 0)
+
+
+async def mark_directive_rework(work_id: str, old_id: str, new_id: str) -> bool:
+    """旧指令已由返工指令接续：置 rework（不再阻塞），保留原证据。"""
+    def _fn(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "UPDATE role_directives SET status='rework',"
+            " evidence = CASE WHEN evidence='' THEN ? ELSE evidence || '；' || ? END,"
+            " updated_at=? WHERE work_id=? AND id=? AND status='rejected'",
+            (f"→ 返工指令 {new_id}", f"→ 返工指令 {new_id}", _now(),
+             work_id, old_id))
         return cur.rowcount > 0
 
     return bool(await card_db.run_write(work_id, _fn))

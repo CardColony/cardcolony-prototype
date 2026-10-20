@@ -441,7 +441,93 @@ async def test_directive_is_mandatory_and_verifiable(work):
     r = await card_tools.execute_tool(wid, rid, "verify_directive", {
         "directive_id": did, "status": "rejected", "evidence": "测试文件还没有该用例",
     }, cards)
+    assert r["ok"] is True and r["data"].get("rework")
+    summary = await role_room.role_summary(wid, rid)
+    by_id = {d["id"]: d for d in summary["directives"]}
+    assert by_id[did]["status"] == "rework"
+    assert "测试文件还没有该用例" in by_id[did]["evidence"]
+    new_id = r["data"]["rework"]["directive_id"]
+    assert by_id[new_id]["status"] == "issued"
+    assert by_id[new_id]["attempt"] == 2
+
+
+async def test_directive_blocks_completion_and_reject_auto_rework(work):
+    """指令闸：未验收指令阻止收口；打回自动返工并接续旧指令。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk_child(wid, root, "甲")
+    rid = await _mk_role(wid, root, [a])
+    await card_store.update_card(wid, a, {"auto_mode": 1}, "测试开自动")
+    cards = card_tools._collect_card_meta(wid)
+
+    # 无指令时先不设前提（定论闸/占位骨架的基线不属本用例）
+    r = await card_tools.execute_tool(wid, rid, "issue_directive", {
+        "target_card_id": a,
+        "instruction": "把现状改成统一 UTC+Z",
+        "acceptance": "现状含 UTC+Z，且无 naive 表述",
+    }, cards)
+    did = r["data"]["directive_id"]
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(wid, a, "update_goal", {
+        "action": "complete", "reason": "done"}, cards)
+    assert r["ok"] is False and "未验收的角色指令" in str(r["error"]["message"])
+
+    r = await card_tools.execute_tool(wid, rid, "verify_directive", {
+        "directive_id": did, "status": "rejected",
+        "evidence": "现状仍是 naive 本地时间",
+    }, cards)
+    assert r["ok"] is True and r["data"].get("rework"), r
+    summary = await role_room.role_summary(wid, rid)
+    by_id = {d["id"]: d for d in summary["directives"]}
+    assert by_id[did]["status"] == "rework"
+    new_id = r["data"]["rework"]["directive_id"]
+    assert by_id[new_id]["status"] == "issued"
+    assert by_id[new_id]["attempt"] == 2
+
+    # 新指令仍阻塞
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(wid, a, "update_goal", {
+        "action": "complete", "reason": "done"}, cards)
+    assert r["ok"] is False and "未验收的角色指令" in str(r["error"]["message"])
+
+    # 达标后解除阻塞（后续可能被定论闸拦，但不再是指令闸）
+    r = await card_tools.execute_tool(wid, rid, "verify_directive", {
+        "directive_id": new_id, "status": "complied",
+        "evidence": "现状已改 UTC+Z",
+    }, cards)
     assert r["ok"] is True
     summary = await role_room.role_summary(wid, rid)
-    assert summary["directives"][0]["status"] == "rejected"
-    assert summary["directives"][0]["evidence"] == "测试文件还没有该用例"
+    assert summary["open_directives"] == []
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(wid, a, "update_goal", {
+        "action": "complete", "reason": "done"}, cards)
+    assert r["ok"] is True or "未验收" not in str((r.get("error") or {}).get("message") or "")
+
+
+async def test_overdue_directive_blocks_completion(work):
+    """超时指令：due_at 过期后置 overdue，仍阻塞收口；达标记 complied 解除。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    a = await _mk_child(wid, root, "甲")
+    rid = await _mk_role(wid, root, [a])
+    await card_store.update_card(wid, a, {"auto_mode": 1}, "测试开自动")
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(wid, rid, "issue_directive", {
+        "target_card_id": a,
+        "instruction": "补契约测试",
+        "acceptance": "测试文件含时间口径用例",
+        "due_at": "2000-01-01T00:00:00+08:00",
+    }, cards)
+    assert r["ok"] is True
+    did = r["data"]["directive_id"]
+    summary = await role_room.role_summary(wid, rid)
+    by_id = {d["id"]: d for d in summary["directives"]}
+    assert by_id[did]["status"] == "overdue"
+    r = await card_tools.execute_tool(wid, a, "update_goal", {
+        "action": "complete", "reason": "done"}, cards)
+    assert r["ok"] is False and "未验收的角色指令" in str(r["error"]["message"])
+
+    r = await card_tools.execute_tool(wid, rid, "verify_directive", {
+        "directive_id": did, "status": "complied", "evidence": "已补测试",
+    }, cards)
+    assert r["ok"] is True
+    summary = await role_room.role_summary(wid, rid)
+    assert summary["open_directives"] == []

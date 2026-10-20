@@ -2418,6 +2418,8 @@ body.page-chat .role-dir {
 }
 body.page-chat .role-dir.complied { border-left-color: #7fc08a; background: rgba(127,192,138,0.06); }
 body.page-chat .role-dir.rejected { border-left-color: #d05656; background: rgba(208,86,86,0.07); }
+body.page-chat .role-dir.overdue { border-left-color: #e0a23a; background: rgba(224,162,58,0.08); }
+body.page-chat .role-dir.rework { border-left-color: #9aa0a6; opacity: 0.78; }
 body.page-chat .role-dir-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 body.page-chat .role-dir-head b { font-weight: 500; }
 body.page-chat .role-dir-status { font-size: 10px; color: var(--dimmer, #9aa0a6); }

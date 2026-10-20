@@ -293,7 +293,9 @@ _ROLE_DDL: tuple[str, ...] = (
     created_at      TEXT,
     updated_at      TEXT,
     verified_at     TEXT DEFAULT '',
-    due_at          TEXT DEFAULT ''
+    due_at          TEXT DEFAULT '',
+    parent_id       TEXT DEFAULT '',
+    attempt         INTEGER DEFAULT 1
 )""",
     "CREATE INDEX IF NOT EXISTS idx_role_directives_role ON role_directives(role_id, status)",
     """CREATE TABLE IF NOT EXISTS role_charter_history (
@@ -668,6 +670,23 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
     for ddl in _ROLE_DDL:
         conn.execute(ddl)
+    _ensure_role_columns(conn)
+
+
+def _ensure_role_columns(conn: sqlite3.Connection) -> None:
+    """role_directives 的增量列（既有库幂等补列）。"""
+    try:
+        cols = {str(r["name"]) for r in conn.execute(
+            "PRAGMA table_info(role_directives)").fetchall()}
+    except Exception:  # noqa: BLE001
+        return
+    for name, ddl in (("parent_id", "TEXT DEFAULT ''"),
+                      ("attempt", "INTEGER DEFAULT 1")):
+        if name not in cols:
+            try:
+                conn.execute(f"ALTER TABLE role_directives ADD COLUMN {name} {ddl}")
+            except Exception:  # noqa: BLE001 并发首建时可能已加
+                pass
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:

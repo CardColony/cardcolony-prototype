@@ -45,7 +45,8 @@ from datetime import datetime
 from typing import Any, Callable, Union
 
 from ..permissions import policy
-from ..storage import card_db, card_store, manuscript_store, memory_store, shadow_store, work_store
+from ..storage import (card_db, card_store, manuscript_store, memory_store,
+                       role_store, shadow_store, work_store)
 from ..storage import event_log, session_facade, session_ops
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 
@@ -673,6 +674,22 @@ async def _h_update_goal(work_id: str, current_id: str,
                 and str((it or {}).get("msg_id") or "") not in answered]
 
     if action == "complete":
+        # [角色机制 5710 v3] **指令闸**：目标卡上有未验收的角色指令
+        # （issued/rejected/overdue）时不许收口；出路由角色 verify_directive
+        # 判 complied/cancelled，或先把卡退回 blocked 说明卡在哪。
+        try:
+            _blockers = role_room.open_directives_for(work_id, current_id)
+        except Exception:  # noqa: BLE001 读不到闸表不阻断主链（fail-open）
+            _blockers = []
+        if _blockers:
+            _desc = "；".join(
+                f"{d.get('id')}→{d.get('target_card_id')}: "
+                f"{str(d.get('instruction') or '')[:60]}"
+                for d in _blockers[:3])
+            return err("validation",
+                       f"收口被拒：本卡还有 {len(_blockers)} 条未验收的角色指令"
+                       f"（{_desc}）。先按指令做完，让角色 verify_directive(complied)，"
+                       "或调用 update_goal(blocked) 说明卡在哪。")
         # [画布 2026-10-19] **定论闸**：收口前，本卡正文必须至少有一条定论。
         #
         # 为什么卡在这里：定论是这张卡对外的**唯一结论形态**——画布上显示的是它，
@@ -878,6 +895,17 @@ async def _h_report_done(work_id: str, current_id: str,
     summary = str(arguments.get("summary", "") or "").strip()
     if not summary:
         return err("validation", "summary 不能为空")
+    # [角色机制 5710 v3] 编程卡同样受指令闸约束：有未验收的角色指令不许完工。
+    try:
+        _blockers = role_room.open_directives_for(work_id, current_id)
+    except Exception:  # noqa: BLE001
+        _blockers = []
+    if _blockers:
+        _desc = "；".join(f"{d.get('id')}: {str(d.get('instruction') or '')[:60]}"
+                          for d in _blockers[:3])
+        return err("validation",
+                   f"完工被拒：本卡还有 {len(_blockers)} 条未验收的角色指令"
+                   f"（{_desc}）。先完成并让角色 verify_directive(complied)。")
     owner = str(meta.get("parent", "") or "") or work_store.work_card_id_of(work_id)
 
     # ② 落盘 state=completed ＋ coder_final。
@@ -3446,7 +3474,9 @@ async def _h_issue_directive(work_id: str, current_id: str,
     rec = await role_room.record_directive(
         work_id, current_id, target_id, instruction, acceptance,
         msg_id=str((sent or {}).get("msg_id") or ""),
-        due_at=str(arguments.get("due_at") or ""))
+        due_at=str(arguments.get("due_at") or ""),
+        parent_id=str(arguments.get("parent_id") or ""),
+        attempt=int(arguments.get("attempt") or 1))
     return {
         "directive_id": rec["id"],
         "msg_id": str((sent or {}).get("msg_id") or ""),
@@ -3472,6 +3502,37 @@ async def _h_verify_directive(work_id: str, current_id: str,
         work_id, current_id, directive_id, status, evidence)
     if res.get("error"):
         return err("not_found", str(res["error"]))
+    if status == "rejected":
+        old = res.get("directive") or {}
+        attempt = int(old.get("attempt") or 1)
+        if attempt >= 3:
+            res["escalate"] = True
+            res["note"] = ("已连续打回 3 次，系统不再自动返工；"
+                           "请角色升级处理（改判据/换方案/报警给人）。")
+            return res
+        # 打回即返工：自动下一条新指令（保留旧 rejected 作为阻塞与审计），
+        # 目标卡在新指令验收前仍不能收口。
+        rework = await _h_issue_directive(work_id, current_id, {
+            "target_card_id": str(old.get("target_card_id") or ""),
+            "instruction": (f"返工（第 {attempt + 1} 次）："
+                            f"{old.get('instruction') or ''}\n"
+                            f"上次打回：{evidence}"),
+            "acceptance": str(old.get("acceptance") or ""),
+            "due_at": str(old.get("due_at") or ""),
+            "parent_id": str(old.get("id") or ""),
+            "attempt": attempt + 1,
+        }, cards)
+        if isinstance(rework, dict) and rework.get("ok") is False:
+            res["rework_error"] = rework
+        else:
+            res["rework"] = rework
+            try:
+                if res.get("directive", {}).get("id") and rework.get("directive_id"):
+                    await role_store.mark_directive_rework(
+                        work_id, str(res["directive"]["id"]),
+                        str(rework["directive_id"]))
+            except Exception:  # noqa: BLE001 返工接续失败不阻断回复
+                pass
     return res
 
 
