@@ -21,7 +21,7 @@
 <!-- [画布商业化重做 2026-10-17] 画布页专属视觉体系独立成 canvas.css（只在 .page-canvas
      作用域内生效，不污染对话页）。必须在本行之后引入：同特异性后者胜，用它覆盖 style.css
      里的旧画布段；改动本文件必须升 ?v=。 -->
-<link rel="stylesheet" href="/static/canvas.css?v=21">
+<link rel="stylesheet" href="/static/canvas.css?v=22">
 </head>
 <body class="page-canvas">
 <div class="work-page">
@@ -136,6 +136,10 @@
       <div id="viewport">
         <div id="world">
           <svg class="edges" id="edgesSvg"></svg>
+          <!-- [性能 2026-10-20] 通信线单独一层：它的流动动画（stroke-dashoffset）
+               每帧都会重绘**整个** SVG；与父子线/关系线同层时，几十条静态 path
+               陪着一起重绘（实测占 40 个 CPU 点）。拆开后只重绘这几条通信线。 -->
+          <svg class="edges comm-layer" id="commSvg"></svg>
           <!-- 卡片节点由 canvas.js 动态注入 -->
         </div>
         <div id="cardTooltip" class="card-tooltip"></div>
