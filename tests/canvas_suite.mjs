@@ -707,10 +707,16 @@ await load();
     dom: document.querySelectorAll('*').length,
     nodes: document.querySelectorAll('.card-node').length,
     svg: document.querySelectorAll('#edgesSvg *').length,
+    cells: document.querySelectorAll('.cv-cell').length,
+    openCells: document.querySelectorAll('.card-node[data-open="1"]').length,
     canvasMs: -1,
   })`);
   T("T9.1 DOM 规模合理（<6000）", m.dom < 6000, `dom=${m.dom}`);
   T("T9.2 卡片节点数与投影一致", m.nodes > 0, `nodes=${m.nodes}`);
+  // [画布 5711] 未展开的卡**不预置**空的就地展开容器（原来每卡一个空 div：
+  // 300 卡 = 300 个空节点，占整棵画布 DOM 的一成，而它们绝大多数永远用不上）。
+  T("T9.3 没有多余空的就地展开容器（DOM 瘦身）", m.cells === m.openCells,
+    `空容器=${m.cells} 已展开=${m.openCells}`);
 }
 
 /* t10_block.mjs —— T10 交互面用例（供 canvas_suite.mjs 内联） */
@@ -1248,6 +1254,89 @@ G("T12 加载鲁棒性");
     JSON.stringify(sse.map(u => u.replace(/^https?:\/\/[^/]+/, ""))));
   T("T12.3 画布页只常驻一条长连接（工作级 /events）",
     sse.filter(u => /\/events(\?|$)/.test(u)).length === 1, JSON.stringify(sse.map(u => u.replace(/^https?:\/\/[^/]+/, ""))));
+}
+
+{
+  // T12.2 **SSE 断线窗口里的变化不丢**（重连即补齐）
+  //
+  // 病根：工作级通道只推"连上之后新发生的事"（**不重放**）⇒ 断线期间的变化会被丢掉；
+  // 而兜底轮询只在 SSE 不健康时跑、且它**首轮只记基线不比对** ⇒ 接不上那段窗口。
+  // ⇒ 症状：服务重启/网络抖动那几秒里某张卡变了 ⇒ 画布上那张卡**一直显示旧内容**。
+  //
+  // 怎么造这个场景：把 EventSource 换成**可控的假身**（页面脚本之前注入），
+  // 就能精确地"断线 → 改卡 → 重连"。同时把指纹端点 /api/nav/version 也挡掉
+  // ——否则兜底轮询会把这次变化接住，这条用例就护不住真正的缺陷了。
+  const inject = await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      class FakeES {
+        constructor(url) {
+          this.url = String(url);
+          this.readyState = 1;
+          this.onopen = null; this.onerror = null; this.onmessage = null;
+          this.addEventListener = (t, fn) => { if (t === 'message') this.onmessage = fn; };
+          this.close = () => { this.readyState = 2; };
+          setTimeout(() => { if (this.onopen) this.onopen({}); }, 30);
+          if (this.url.indexOf('/events') >= 0 && this.url.indexOf('/cards/') < 0) {
+            window.__fakeWorkEs = this;
+          }
+        }
+      }
+      window.EventSource = FakeES;
+      window.__fakeDrop = () => { const e = window.__fakeWorkEs; if (e && e.onerror) e.onerror({}); return 1; };
+      window.__fakeRise = () => { const e = window.__fakeWorkEs; if (e && e.onopen) e.onopen({}); return 1; };
+    })();`,
+  });
+  await load();
+  const cardId = await ev(`(() => {
+    const n = [...document.querySelectorAll('.card-node')].find(x => !x.classList.contains('is-root'));
+    return n ? n.dataset.id : null;
+  })()`);
+  if (!cardId) {
+    T("T12.2 断线窗口里的变化会被补齐（重连即补）", false, "没有可用的卡");
+  } else {
+    const before = await ev(`(() => {
+      const n = document.querySelector('.card-node[data-id="${cardId}"]');
+      return (n.querySelector('.tname') || {}).textContent || '';
+    })()`);
+    // ① 造一次断线：让假 EventSource 触发 onerror
+    await ev(`(() => { if (window.__fakeDrop) window.__fakeDrop(); return 1; })()`);
+    await sleep(300);
+    // ② 把指纹端点也挡掉 ⇒ 兜底轮询变瞎（否则它会接住这次变化，用例就失去意义）
+    await send("Network.enable");
+    await send("Network.setBlockedURLs", { urls: ["*/api/nav/version*"] });
+    // ③ 改这张卡的标题（此刻 SSE 是断的、轮询也瞎 ⇒ 画布收不到）
+    const NEW_TITLE = "断线窗口里的改动";
+    await fetch(`${BASE}/api/works/${WID}/cards/${cardId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates: { title: NEW_TITLE }, history_note: "套件：断线补齐验收" }),
+    });
+    await sleep(1200);
+    const during = await ev(`(() => {
+      const n = document.querySelector('.card-node[data-id="${cardId}"]');
+      return (n.querySelector('.tname') || {}).textContent || '';
+    })()`);
+    T("T12.2 断线期间画布确实没收到（SSE 断 + 轮询瞎）", during === before, `before=${before} during=${during}`);
+    // ④ 重连 ⇒ 画布应自己补齐
+    await ev(`(() => { if (window.__fakeRise) window.__fakeRise(); return 1; })()`);
+    let after = during;
+    for (let i = 0; i < 30 && after !== NEW_TITLE; i++) {
+      await sleep(400);
+      after = await ev(`(() => {
+        const n = document.querySelector('.card-node[data-id="${cardId}"]');
+        return (n.querySelector('.tname') || {}).textContent || '';
+      })()`);
+    }
+    T("T12.2 重连后画布补齐了断线窗口里的变化", after === NEW_TITLE, `after=${after} 期望=${NEW_TITLE}`);
+    // 收尾：还原标题、放开指纹端点、撤掉假 EventSource
+    await fetch(`${BASE}/api/works/${WID}/cards/${cardId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates: { title: before }, history_note: "套件：断线补齐验收-还原" }),
+    });
+    await send("Network.setBlockedURLs", { urls: [] });
+    if (inject && inject.result && inject.result.identifier) {
+      await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: inject.result.identifier });
+    }
+  }
 }
 
 /* ───────────────────────── 汇总 ───────────────────────── */

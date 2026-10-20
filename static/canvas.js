@@ -2000,7 +2000,6 @@ const WORK_ID = window.__WORK_ID__;
       </div>
       ${msgLine || decLine}
       ${runLine}
-      <div class="cv-cell"></div>
       ${bodyHtml}
     `;
 
@@ -3055,6 +3054,22 @@ const WORK_ID = window.__WORK_ID__;
   //   折叠＝一行索引；展开＝这张卡的对话 + 输入框，就地。
   // 多张同时展开，就是一屏多个对话，每个都能直接回。不需要第二个容器。
   // ══════════════════════════════════════════════════════════════════════════
+  // [画布 5711 · P1 修] **就地展开的对话容器按需创建**（原来每张卡都预置一个空的
+  // `.cv-cell` div）。300 张卡就是 300 个空节点 —— 占整棵画布 DOM 的一成，
+  // 而它们**绝大多数永远用不上**（只有"就地展开"的那几张才有内容）。
+  // ⇒ 现在第一次展开时才建；收起时直接移除，DOM 回到精简状态。
+  //   位置保持不变：插在正文（.summary / .cv-empty-hint）之前，和原来的模板顺序一致。
+  function ensureCell(node) {
+    let cell = node.querySelector(".cv-cell");
+    if (cell) return cell;
+    cell = document.createElement("div");
+    cell.className = "cv-cell";
+    const body = node.querySelector(".summary, .cv-empty-hint");
+    if (body && body.parentNode === node) node.insertBefore(cell, body);
+    else node.appendChild(cell);
+    return cell;
+  }
+
   async function toggleCell(cardId) {
     const node = nodeMap.get(cardId);
     if (!node) return;
@@ -3063,14 +3078,13 @@ const WORK_ID = window.__WORK_ID__;
       node.dataset.open = "";
       state.view.openCells.delete(cardId);
       const cell = node.querySelector(".cv-cell");
-      if (cell) { cell.innerHTML = ""; cell.dataset.loaded = ""; }
+      if (cell) cell.remove();       // 收起＝连容器一起收掉（DOM 回到精简状态）
       scheduleReflow();
       return;
     }
     node.dataset.open = "1";
     state.view.openCells.add(cardId);
-    const cell = node.querySelector(".cv-cell");
-    if (!cell) return;
+    const cell = ensureCell(node);
     cell.innerHTML = `<div class="cv-cell-empty">正在读取对话…</div>`;
     await loadCell(cardId);
     scheduleReflow();
@@ -3081,8 +3095,7 @@ const WORK_ID = window.__WORK_ID__;
   async function loadCell(cardId) {
     const node = nodeMap.get(cardId);
     if (!node) return;
-    const cell = node.querySelector(".cv-cell");
-    if (!cell) return;
+    const cell = ensureCell(node);
     try {
       const d = await API.getTimeline(WORK_ID, cardId);
       const lines = (d.items || []).slice(-12).map(watchLineOf).filter(Boolean);
@@ -6782,6 +6795,7 @@ const WORK_ID = window.__WORK_ID__;
   // 不上场，画布就永远不更新（这正是"必须刷新"的另一种成因）。
   let _workEs = null;
   let _workEsHealthy = false;
+  let _workEsDropped = false;   // 断过线（重连时要补齐断点窗口）
   const _liveQueue = new Map();   // card_id → 最新载荷（同一张卡的多次变化合并）
   let _liveTimer = 0;
 
@@ -6959,8 +6973,25 @@ const WORK_ID = window.__WORK_ID__;
     try {
       const es = new EventSource(`/api/works/${WORK_ID}/events`);
       _workEs = es;
-      es.onopen = () => { _workEsHealthy = true; };
-      es.onerror = () => { _workEsHealthy = false; /* 断线 ⇒ 兜底接管 */ };
+      es.onopen = () => {
+        _workEsHealthy = true;
+        // [画布 5711 · P1 修] **重连即补齐**。
+        //
+        // 病根：工作级通道只推"连上之后新发生的事"（不重放）⇒ **断线窗口里发生的
+        // 变化会被丢掉**。而兜底轮询只在 SSE 不健康时跑，且它**首轮只记基线不比对**
+        // ⇒ 接不上那段窗口。于是"服务重启/网络抖动那几秒里某张卡变了"⇒ 画布上那张卡
+        // **一直显示旧内容**，直到下一次变化或用户手动刷新。
+        // ⇒ 修法：断过线之后**重连成功**的那一刻，静默重拉一次画布，把窗口补回来。
+        // （静默＝不弹骨架屏，画布上已有内容。）
+        if (_workEsDropped) {
+          _workEsDropped = false;
+          reloadCanvas({ silent: true }).catch(() => { /* 补齐失败零阻断 */ });
+        }
+      };
+      es.onerror = () => {
+        _workEsHealthy = false; /* 断线 ⇒ 兜底接管 */
+        _workEsDropped = true;  /* 记住"断过"⇒ 重连时补齐 */
+      };
       es.onmessage = (m) => {
         _workEsHealthy = true;
         let evt = null;

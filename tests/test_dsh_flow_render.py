@@ -347,8 +347,8 @@ def test_t6_touched_modules_bumped():
         # stream/workspace/assembler/main_chat/flow/*；画布 5711 这条线动了
         # canvas.js 与 main.js（main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也升）。
         # canvas.js 两边都改了 ⇒ 画布链取**大于两边**的号（77），其余取 dev 那条线。
-        "stream.js": "47", "workspace.js": "65", "canvas.js": "85",
-        "assembler.js": "37", "style.css": "45", "main.js": "85.0",
+        "stream.js": "47", "workspace.js": "65", "canvas.js": "86",
+        "assembler.js": "37", "style.css": "45", "main.js": "86.0",
         "main_chat.js": "3.2",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
