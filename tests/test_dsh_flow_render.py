@@ -334,10 +334,13 @@ def test_t6_touched_modules_bumped():
     expect = {
         "stream.js": "52", "workspace.js": "69", "canvas.js": "74",
         "assembler.js": "39", "style.css": "47", "main.js": "72.2",
-        "main_chat.js": "2.16",
+        # [5715 · 第三轮] main_chat 2.16→2.17、chat-view 4→5：
+        # 「运行条先入 DOM」改了 chat-view.js ⇒ 按依赖图级联（引它的 stream 升号
+        # ⇒ 引 stream 的 main_chat 升号 ⇒ 引 main_chat 的 card.html 同步）。
+        "main_chat.js": "2.17",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
-        "chat-view.js": "4", "message-item.js": "1",
+        "chat-view.js": "5", "message-item.js": "1",
     }
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"

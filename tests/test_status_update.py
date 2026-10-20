@@ -301,7 +301,9 @@ def test_frontend_version_stamps_bumped():
     assert "./stream.js?v=52" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=5" in _read("static/workspace.js")
     assert "/static/style.css?v=47" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=2.16" in _read("templates/card.html")
+    assert "/static/esm/main_chat.js?v=2.17" in _read("templates/card.html")
+    # [5715] 2.16→2.17：本轮「运行条先入 DOM」改了 chat-view.js（4→5），
+    # 按依赖图级联 ⇒ main_chat 升号（引用它的 card.html 同步）。
 
 
 # ════════════════════════════════════════════════════════════════════
