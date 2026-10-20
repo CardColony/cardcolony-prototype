@@ -41,6 +41,7 @@ __all__ = [
     "SCOPE_SUBTREE",
     "SCOPE_LINKED",
     "SCOPE_ANY",
+    "check_linked",
     "linked",
     "_linked_between",
     "PERMISSIONS_PATH",
@@ -409,4 +410,31 @@ def _linked_between(actor_id: str, target_id: str,
         return False
 
     return _has_edge(actor_id, target_id) or _has_edge(target_id, actor_id)
+
+
+def check_linked(actor_id: str, target_id: str,
+                 cards: Mapping[str, dict[str, Any]] | None) -> bool:
+    """通信线边界关口：卡间通信须**沿通信线**（两卡之间已有 links 边）。
+
+    [5713 通道试走] 为什么不复用 ``check(..., scope=SCOPE_LINKED)``：树作用域
+    那段只在 ``switch in TREE_SWITCHES`` 时才跑，而发信的开关是 read／
+    send_card_message（都不在树类里）——硬塞 scope 会被整体跳过、等于没拦
+    （5713 首版实测踩到：发信对任意卡都放行了）。故把线边界做成**独立关口**，
+    判定只有一条：``_linked_between``。
+
+    打点沿用 perm 口径（fn="check_linked"，switch="linked"，两态同记）。
+    """
+    ok = _linked_between(actor_id, target_id, cards)
+    prompt_log.append_perm_log({
+        "fn": "check_linked",
+        "actor_id": actor_id,
+        "target_id": target_id,
+        "switch": "linked",
+        "granted": ok,
+    })
+    if not ok:
+        raise PermissionError(
+            f"[perm] denied card={target_id} action=send_card_message "
+            f"wire: {actor_id} 与 {target_id} 之间没有通信线")
+    return True
 

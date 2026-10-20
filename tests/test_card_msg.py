@@ -283,6 +283,20 @@ async def _make_tree(wid):
     # 按生产形态铺会话（建卡即铺；测试直建卡不带）——见 conftest.prime_card_session
     for _cid in ("card_002", "card_003", "card_004"):
         prime_card_session(wid, _cid)
+    # [5713 通道试走 2026-10-20] **卡间通信走专门的通信线**——发信的前提从
+    #   "同一棵任务树" 改为 "两卡之间已有通信线（links）"。故夹具负责铺线：
+    #   只铺本文件用例真正要发信的那几条，**刻意不铺 002→004**（越权例要用无线）。
+    #   注意：update_card({"links": ...}) 是**整块覆盖**，同一源卡的多条线必须
+    #   一次写完（分两次写会互相冲掉——首版就在这踩过一脚）。
+    _wires = {
+        "card_001": ["card_002", "card_004"],   # 根 → 子卡A（T6）／根 → 兄弟卡B（K4）
+        "card_002": ["card_003"],               # 子卡A → 孙卡A1（主线）
+    }
+    for _src, _dsts in _wires.items():
+        await card_store.update_card(
+            wid, _src,
+            {"links": [{"target": _d, "type": "关联"} for _d in _dsts]},
+            f"测试夹具：建立通信线 {_src} → {'/'.join(_dsts)}")
     return card_store.iter_card_metas(wid)
 
 
@@ -357,7 +371,7 @@ async def test_t4_eight_positive_negative_cases(sandbox):
     async def pending_count(cid):
         return len(await card_db.list_pending(wid, cid))
 
-    # 1 合法通过（a→a1 子树内）
+    # 1 合法通过（a→a1，**已有通信线**；线由 _make_tree 夹具铺好）
     r = await h(wid, "card_002", {"target_card_id": "card_003",
                                   "msg_type": "msg_ask", "content": "三号位情况如何？"}, cards)
     assert "msg_id" in r
@@ -389,10 +403,15 @@ async def test_t4_eight_positive_negative_cases(sandbox):
     r = await h(wid, "card_002", {"target_card_id": "card_003",
                                   "msg_type": "msg_ask", "content": "   "}, cards)
     assert r["error"]["code"] == "invalid"
-    # 8 越权（兄弟卡，不在子树内）→ denied
+    # 8 越权（与本卡之间没有通信线）→ denied
     r = await h(wid, "card_002", {"target_card_id": "card_004",
                                   "msg_type": "msg_ask", "content": "x"}, cards)
     assert r["error"]["code"] == "denied"
+    # 8b [5713] 线的边界取代树的边界：**子树内**但没线的也拒（card_003 → 无线的卡）
+    r8b = await h(wid, "card_003", {"target_card_id": "card_004",
+                                    "msg_type": "msg_ask", "content": "x"}, cards)
+    assert r8b["error"]["code"] == "denied", r8b
+    assert "通信线" in r8b["error"]["message"]      # 错误文案要指路（先建线）
     # 失败例全部不落档：card_004 收件箱零条；card_003 仍只有第 1 步那一条
     assert await pending_count("card_004") == 0
     assert await pending_count("card_003") == n3

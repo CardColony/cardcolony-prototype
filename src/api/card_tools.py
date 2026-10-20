@@ -3049,9 +3049,10 @@ async def _h_send_card_message(work_id: str, current_id: str,
     # 近似"同树"，但兄弟卡彼此都不在对方子树内 ⇒ 平级卡恒不通过、永远通不了话。
     # 无线即挡死并指路（先 link_cards 建线），跨树跨枝一视同仁。
     if require_link and not _role_edge:
+        # 走 policy.check_linked **而不是** check(..., scope=SCOPE_LINKED)：
+        # read 不在 TREE_SWITCHES 内，scope 会被 check 整体跳过（实测放行任意卡）。
         try:
-            policy.check(current_id, target_id, policy.SWITCH_READ, cards,
-                         scope=policy.SCOPE_LINKED)
+            policy.check_linked(current_id, target_id, cards)
         except PermissionError:
             return err(
                 "denied",
