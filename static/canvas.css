@@ -801,7 +801,7 @@
   border-radius: var(--cv-r-lg);
   background: #151a21;
   border: 1px solid rgba(255, 255, 255, 0.05);
-  animation: cv-sk-breathe 1.6s ease-in-out infinite;
+  animation: cv-sk-breathe 1.6s steps(16, end) infinite;
 }
 @keyframes cv-sk-breathe {
   0%, 100% { opacity: 0.55; }
@@ -1657,7 +1657,7 @@
 .page-canvas .card-node.lm[data-runstate="running"] {
   border-color: rgba(91, 140, 255, 0.75);
   border-left-color: var(--cv-accent);
-  animation: cv-run-border 1.8s ease-in-out infinite;
+  animation: cv-run-border 1.8s steps(18, end) infinite;
 }
 @keyframes cv-run-border {
   0%, 100% { border-color: rgba(91, 140, 255, 0.28); }
@@ -1688,7 +1688,7 @@
   height: 3px;
   border-radius: 3px 3px 0 0;
   background: var(--cv-accent);
-  animation: cv-run-pulse 1.2s ease-in-out infinite;
+  animation: cv-run-pulse 1.2s steps(12, end) infinite;
   pointer-events: none;
 }
 @keyframes cv-run-pulse {
@@ -1742,7 +1742,7 @@
   height: 5px;
   border-radius: 50%;
   background: var(--cv-accent);
-  animation: cv-run-blink 1.2s ease-in-out infinite;
+  animation: cv-run-blink 1.2s steps(12, end) infinite;
 }
 @keyframes cv-run-blink {
   0%, 100% { opacity: 0.25; }
@@ -1802,7 +1802,7 @@
    用虚线段流动而不是渐变/发光：一眼能看出方向，且不引入装饰。
    ========================================================================== */
 .page-canvas .cv-comm-line {
-  animation: cv-comm-flow 1.1s linear infinite;
+  animation: cv-comm-flow 1.1s steps(11, end) infinite;
   filter: drop-shadow(0 0 3px rgba(91, 140, 255, 0.45));
 }
 @keyframes cv-comm-flow {
@@ -1810,11 +1810,16 @@
   to   { stroke-dashoffset: -26; }   /* 正好一个 dash 周期(7+6)*2，循环无缝 */
 }
 .page-canvas .cv-comm-dot {
-  animation: cv-comm-dot 1.6s ease-in-out infinite;
+  animation: cv-comm-dot 1.6s steps(16, end) infinite;
+  /* [性能 2026-10-20] 原来是 r:3→5 的**几何属性动画**——改 r 每帧要重算 SVG 图形，
+     实测它 + cv-comm-line 一起占 36 个 CPU 点。改成 transform: scale（合成层可做），
+     观感等价：基准 r=4，3/4=0.75、5/4=1.25。 */
+  transform-box: fill-box;
+  transform-origin: center;
 }
 @keyframes cv-comm-dot {
-  0%, 100% { opacity: 0.35; r: 3; }
-  50%      { opacity: 1;    r: 5; }
+  0%, 100% { opacity: 0.35; transform: scale(0.75); }
+  50%      { opacity: 1;    transform: scale(1.25); }
 }
 
 /* 工具栏开关的"已开启"态 */
@@ -1885,7 +1890,7 @@
   width: 7px; height: 7px; border-radius: 50%;
   flex: none; background: #6b7686;
 }
-.watch-dot[data-rs="running"] { background: #5b8cff; animation: cv-run-blink 1.2s ease-in-out infinite; }
+.watch-dot[data-rs="running"] { background: #5b8cff; animation: cv-run-blink 1.2s steps(12, end) infinite; }
 .watch-dot[data-rs="done"] { background: #4fc07f; }
 .watch-dot[data-rs="blocked"] { background: #e2695f; }
 .watch-dot[data-rs="paused"] { background: #7c8798; }
@@ -2972,7 +2977,7 @@
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask-composite: exclude;
-  animation: cv-edge-flow 2.6s linear infinite;
+  animation: cv-edge-flow 2.6s steps(26, end) infinite;
   pointer-events: none;
 }
 @keyframes cv-edge-flow {
@@ -2999,7 +3004,7 @@
   margin-right: 5px;
   border-radius: 50%;
   background: var(--cv-accent);
-  animation: cv-run-blink 1.2s ease-in-out infinite;
+  animation: cv-run-blink 1.2s steps(12, end) infinite;
   vertical-align: 1px;
 }
 
@@ -3123,7 +3128,7 @@
   margin-top: 5px;
   border-radius: 50%;
   background: var(--cv-accent);
-  animation: cv-run-blink 1.2s ease-in-out infinite;
+  animation: cv-run-blink 1.2s steps(12, end) infinite;
 }
 .page-canvas .cv-act-empty {
   padding: 24px 12px;
@@ -3228,7 +3233,7 @@
   margin-right: 4px;
 }
 .page-canvas .cv-ovl-dot[data-k="warn"] { background: var(--cv-warn); }
-.page-canvas .cv-ovl-dot[data-k="live"] { background: var(--cv-accent); animation: cv-run-blink 1.2s ease-in-out infinite; }
+.page-canvas .cv-ovl-dot[data-k="live"] { background: var(--cv-accent); animation: cv-run-blink 1.2s steps(12, end) infinite; }
 .page-canvas .cv-ovl-bar {
   width: 3px;
   height: 12px;
@@ -3419,3 +3424,15 @@ body.has-dock #viewport { right: 360px; }
   padding-left: 7px;
 }
 .page-canvas .card-node[data-unread="1"] .cv-msgline .cv-msg-who { color: #cfe0ff; }
+
+
+
+/* [性能 2026-10-20] 通信线层独立合成：拆成独立 <svg> 还不够——同在一个合成层里时，
+   path 的 stroke-dashoffset 动画仍会让浏览器重绘整块区域。contain:paint 把它裁成
+   自己的绘制边界，will-change 提前提升为独立层，动画重绘不再牵连父子线/卡片。 */
+.page-canvas #world svg.comm-layer {
+  /* 只提升为独立合成层，**不用 contain:paint**——那会把 overflow:visible 的线裁掉
+     （通信线可能溢出 bbox，marker 也会）。layout 隔离不影响绘制范围，安全。 */
+  will-change: transform;
+  contain: layout;
+}

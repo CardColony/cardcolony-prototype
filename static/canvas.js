@@ -48,6 +48,9 @@ const WORK_ID = window.__WORK_ID__;
   const viewport = document.getElementById("viewport");
   const world = document.getElementById("world");
   const edgesSvg = document.getElementById("edgesSvg");
+  // [性能 2026-10-20] 通信线独立 SVG 层（见 work.html 注释）：dashoffset 动画
+  // 只重绘这一层，不牵连父子线/关系线的几百条 path。
+  const commSvg = document.getElementById("commSvg") || edgesSvg;
   const tooltip = document.getElementById("cardTooltip");
   const crumbEl = document.getElementById("crumb");
   const zoomDisplay = document.getElementById("zoomDisplay");
@@ -3663,6 +3666,15 @@ const WORK_ID = window.__WORK_ID__;
     edgesSvg.style.top = box.minY + "px";
     edgesSvg.setAttribute("viewBox", `${box.minX} ${box.minY} ${box.w} ${box.h}`);
     edgesSvg.innerHTML = "";
+    // 通信线层与主层同几何（同一 viewBox、同一偏移），否则线会错位
+    if (commSvg !== edgesSvg) {
+      commSvg.setAttribute("width", box.w);
+      commSvg.setAttribute("height", box.h);
+      commSvg.style.left = box.minX + "px";
+      commSvg.style.top = box.minY + "px";
+      commSvg.setAttribute("viewBox", `${box.minX} ${box.minY} ${box.w} ${box.h}`);
+      commSvg.innerHTML = "";
+    }
     // [T08-2-1/2-3＋诸葛 2026-10-04 21:52 锚点按相对位置自动选边] 父子折线段与
     // 外接框的推导规则全文见 computeEdgeGeometry（T1 上收，规则一字不改）；此处只消费。
     const elbowSegs = projection.edges.elbowSegs;
@@ -3725,7 +3737,7 @@ const WORK_ID = window.__WORK_ID__;
     // ── 第二层：通信线（卡间信 from_card → to_card，只在时间窗内画）──
     const commG = document.createElementNS(SVGNS, "g");
     commG.setAttribute("data-edge-group", "communication");
-    edgesSvg.appendChild(commG);
+    commSvg.appendChild(commG);
     // 通信是**事件**不是结构：30 分钟前的信不再画线，只留收件箱里的记录。
     // 这样画布上出现的每一条通信线都意味着"刚刚发生了信息流动"。
     const COMM_WINDOW_MS = 30 * 60 * 1000;
