@@ -67,7 +67,9 @@ function el(tag, cls, html) {
  * @param {(level:string,text:string)=>void} [opts.notify]
  */
 export function createInputBar({ mount, actions, policy, session, hasQueued, notify }) {
-  const machine = new InputMachine({ now: () => Date.now() });
+  /* [5702 · 2026-10-20] machine 由 const 改 let：单实例 DOM 不变，切卡时**换绑**
+     到该卡自己的 InputMachine（草稿/撤销栈/相位天然按卡隔离）。 */
+  let machine = new InputMachine({ now: () => Date.now() });
 
   // ---- DOM（一次建好，永不重建：原文 :248-253 的「一个生命周期」）----
   const root = el("div", "flow-input-root");
@@ -379,16 +381,30 @@ export function createInputBar({ mount, actions, policy, session, hasQueued, not
   // ---- 对外 ----
   const bar = {
     el: root,
-    machine,
+    /** 当前绑定的输入会话（切卡后随之变化，故用 getter）。 */
+    get machine() { return machine; },
     /** 运行态/会话事实变化后刷新按钮与占位符。 */
     refresh() {
       syncValue();
       refreshPrimary();
     },
-    /** 发送被接受：清草稿、清撤销栈（machine.ts:544-553）。 */
-    commitSent() {
-      run({ type: "send-committed" });
-      clearNotice();
+    /** [5702] 换绑到另一张卡的输入会话。单实例 DOM；草稿/撤销栈/相位随 machine 走。 */
+    bindSession(next) {
+      if (!next || next === machine) return;
+      machine = next;
+      notice = null;
+      syncValue();
+      refreshPrimary();
+    },
+    /** 发送被接受：清草稿、清撤销栈（machine.ts:544-553）。
+        [5702] 可指定**发起发送的那个 machine**：切卡后迟到的结算不能清掉新卡的草稿。 */
+    commitSent(target) {
+      const t = target || machine;
+      t.dispatch({ type: "send-committed" });
+      if (t === machine) {
+        syncValue();
+        clearNotice();
+      }
     },
     /** 发送失败：草稿保住 + 红条（machine.ts:501-507 的 notice 语义）。 */
     failSend(message) {

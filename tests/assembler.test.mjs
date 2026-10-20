@@ -22,6 +22,7 @@ function rec(type, data = {}, opts = {}) {
     type,
     data,
     model: opts.model || "",
+    ...(opts.ns ? { ns: opts.ns } : {}),
   };
 }
 function reset() { _seq = 0; }
@@ -365,4 +366,57 @@ test("兜底思考节点不与尾节点撞 key（渲染层按 key 复用 DOM）"
   a.applyRecord(rec("error", { error: "x" }, { seq: 7 }));
   const keys = a.snapshot().order;
   assert.equal(new Set(keys).size, keys.length, "key 必须两两不同");
+});
+
+/* ── [5702 · C-1 2026-10-20] 逐字流进节点（dsh assistant/chunk 语义）──
+   这三条锁的是「中间轮文字被吞」的根因：此前正文只写旁挂 DOM、
+   round_start 一清就没；现在按 run:round 累积进节点、落盘就地定稿。 */
+
+test("content_chunk：同 run+round 累积进同一个 assistant 节点", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("user_message", { content: "问" }, { run_id: "R", round: 1 }));
+  a.applyRecord(rec("content_chunk", { text: "你" }, { run_id: "R", round: 1, ns: "live" }));
+  const n2 = a.applyRecord(rec("content_chunk", { text: "好" }, { run_id: "R", round: 1, ns: "live" }));
+  const nodes = list(a);
+  assert.equal(nodes.length, 2, "两帧正文只出一个节点");
+  assert.equal(nodes[1].key, "stream:R:1", "键＝run:round（稳定，不随 seq 变）");
+  assert.equal(nodes[1].data.text, "你好", "正文按到达序累积");
+  assert.ok(n2.rev > 1, "内容变化 rev 递增（渲染层据此换这一行）");
+});
+
+test("content_chunk：换轮开新节点，上一轮文字不清", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("content_chunk", { text: "第一轮的话" }, { run_id: "R", round: 1, ns: "live" }));
+  a.applyRecord(rec("content_chunk", { text: "第二轮的话" }, { run_id: "R", round: 2, ns: "live" }));
+  const nodes = list(a);
+  assert.equal(nodes.length, 2, "两轮两个节点，互不覆盖");
+  assert.equal(nodes[0].data.text, "第一轮的话", "第一轮文字仍在");
+  assert.equal(nodes[1].data.text, "第二轮的话");
+});
+
+test("assistant_text：同 run+round 就地定稿，不新增重复节点", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("content_chunk", { text: "流式草稿" }, { run_id: "R", round: 1, ns: "live" }));
+  const fin = a.applyRecord(rec("assistant_text", { content: "最终定稿" }, { run_id: "R", round: 1 }));
+  const nodes = list(a);
+  assert.equal(nodes.length, 1, "流式与落盘是同一个节点（不出双份）");
+  assert.equal(nodes[0].streaming, false, "定稿后不再是 streaming");
+  assert.equal(nodes[0].data.content, "最终定稿");
+  assert.equal(nodes[0].data.text, "流式草稿", "流式原文保留作兜底");
+  assert.equal(fin, nodes[0], "返回的就是那个节点（渲染层只换这一行）");
+});
+
+test("reasoning_chunk：主模型思考落本轮流式节点，不串到上一轮", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("content_chunk", { text: "第一轮" }, { run_id: "R", round: 1, ns: "live" }));
+  a.applyRecord(rec("reasoning_chunk", { text: "第二轮的思考" }, { run_id: "R", round: 2, ns: "live" }));
+  a.applyRecord(rec("content_chunk", { text: "第二轮" }, { run_id: "R", round: 2, ns: "live" }));
+  const nodes = list(a);
+  assert.equal(nodes.length, 2);
+  assert.equal(nodes[0].reasoning, undefined, "第一轮不吸收第二轮的思考");
+  assert.equal(nodes[1].reasoning, "第二轮的思考");
 });

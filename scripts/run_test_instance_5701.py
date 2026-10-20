@@ -33,6 +33,9 @@ from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from src.api.routes import router as api_router  # noqa: E402
+# [5702 · 2026-10-20] 与 main.py 同源：设置/模型选择器路由也挂上，
+# 否则对话页的模型选择器请求 /api/settings/* 在测试实例上 404（验收噪音）。
+from src.api.settings_api import router as settings_router  # noqa: E402
 
 
 def redirect_roots() -> str | None:
@@ -93,6 +96,7 @@ _SANDBOX_ROOT = redirect_roots()
 app = FastAPI(title="推演agent 5701 测试实例")
 
 app.include_router(api_router)
+app.include_router(settings_router)   # [5702] 与 main.py 逐行一致：设置路由
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
