@@ -2329,7 +2329,7 @@ body.page-chat .role-verdicts, body.page-chat .role-alarms {
   display: flex; flex-direction: column; gap: 5px; margin: 4px 0 10px;
 }
 body.page-chat .role-v {
-  display: flex; align-items: baseline; gap: 6px; font-size: 12px;
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 12px;
   padding: 4px 6px; border-left: 2px solid rgba(255,255,255,0.15);
   background: rgba(255,255,255,0.02);
 }
@@ -2338,7 +2338,7 @@ body.page-chat .role-vd {
 }
 body.page-chat .role-vd.speak { color: #d8b84a; background: rgba(201,162,39,0.15); }
 body.page-chat .role-vd.silent { color: #9aa0a6; background: rgba(154,160,166,0.12); }
-body.page-chat .role-vr { flex: 1; line-height: 1.45; word-break: break-word; }
+body.page-chat .role-vr { flex: 1 1 60%; min-width: 0; line-height: 1.45; word-break: break-word; }
 body.page-chat .role-vt { flex: none; font-size: 10px; color: var(--dimmer, #8a8a8a); }
 body.page-chat .role-alarm {
   font-size: 12px; padding: 6px 8px; border-radius: 6px;
@@ -2346,10 +2346,11 @@ body.page-chat .role-alarm {
 }
 body.page-chat .role-alarm.warn { border-left-color: #e0a23a; }
 body.page-chat .role-alarm.critical { border-left-color: #d05656; background: rgba(208,86,86,0.08); }
-body.page-chat .role-alarm-head { display: flex; align-items: baseline; gap: 8px; }
+body.page-chat .role-alarm-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+body.page-chat .role-alarm-head b { flex-basis: 100%; }
 body.page-chat .role-alarm-head span { font-size: 10px; color: var(--dimmer, #8a8a8a); }
 body.page-chat .role-alarm-head .role-ack {
-  margin-left: auto; border: 0; background: none; color: var(--dimmer, #8a8a8a);
+  border: 0; background: none; color: var(--dimmer, #8a8a8a);
   cursor: pointer; font-size: 11px;
 }
 body.page-chat .role-alarm-detail { margin-top: 3px; line-height: 1.5; color: var(--dimmer, #b0b0b0); }
@@ -2393,7 +2394,7 @@ body.page-chat .role-charter {
   padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.03);
   color: var(--dimmer, #c8c8c8);
 }
-body.page-chat .role-ve { font-size: 11px; color: var(--dimmer, #8a8a8a); margin-top: 2px; }
+body.page-chat .role-ve { flex-basis: 100%; font-size: 11px; color: var(--dimmer, #8a8a8a); margin-top: 2px; }
 body.page-chat .role-edit { margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.12); }
 body.page-chat .role-input {
   width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 7px;
@@ -2405,6 +2406,6 @@ body.page-chat .role-create-row { display: flex; gap: 6px; }
 body.page-chat .role-create-row input { flex: 1; min-width: 0; }
 body.page-chat .btn.danger { background: transparent; color: #d05656; border-color: rgba(208,86,86,0.4); }
 body.page-chat .role-alarm-head .role-correct {
-  margin-left: auto; border: 0; background: none; color: #d05656;
+  border: 0; background: none; color: #d05656;
   cursor: pointer; font-size: 11px;
 }
