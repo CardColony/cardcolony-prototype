@@ -1738,6 +1738,11 @@ async def _run_message(work_id: str, card_id: str, content: str,
         failed = True
         raise
     finally:
+        # [5715 · 性能] 回合结束**必落盘**缓冲里的思考：思考是按轮累积、到轮界
+        # 才合并落一条的；万一这一轮**没走到任何轮界事件**（异常/中断/直退），
+        # 缓冲里的思考会**随回合一起丢掉**（刷新后看不到这段思考）。
+        # ⇒ 收口时无条件 flush 一次（空缓冲是 no-op）。
+        event_stream.flush_pending_reasoning(work_id, card_id)
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
         control.discard_stop(work_id, card_id)

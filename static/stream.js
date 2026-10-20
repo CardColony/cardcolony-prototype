@@ -47,6 +47,8 @@ import { createChatView } from "./esm/flow/chat-view.js?v=6";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 // [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
 import { createThinkRenderer, createTextUpdater } from "./esm/flow/think-stream.js?v=1";
+// [5715 · 性能] 同一节点的重渲染最小间隔（正文流 O(N²) ⇒ 节流）
+import { createRenderGate } from "./esm/flow/render-gate.js?v=1";
 import { createCopyButton, createResendButton } from "./esm/flow/message-actions.js?v=1";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
@@ -184,6 +186,8 @@ const BOARD_CFG = Object.assign(
   /* [5715 · 性能] 席位并排卡里的思考（``.tk``）同样是逐帧增长的整块文本 ⇒
      同样走增量文本器（否则三席并发时又是一个 O(N²)）。 */
   const _seatText = createTextUpdater();
+  /* [5715 · 性能] 同一节点的重渲染最小间隔（正文是 Markdown ⇒ 只能节流不能增量）。 */
+  const _renderGate = createRenderGate({ minMs: 100 });
 
   /** 三席并排卡片（seats 节点：三席各一卡，思考与输出同卡）。 */
   function makeSeats(members, nodeKey) {
@@ -838,8 +842,15 @@ const BOARD_CFG = Object.assign(
     const snap = st.asm.snapshot();
     if (st.renderedOrder !== snap.order) { renderSnapshot(st, snap); return; }
     if (!node) return;
-    const idx = snap.order.indexOf(node.key);
-    if (idx < 0) return;
+    /* [5715 · 性能] 节点下标**随快照缓存**（原来每帧 order.indexOf(key)＝O(n)：
+       一张卡 n 个节点、每帧来一次 ⇒ O(n²) 的纯查找开销，白白吃掉主线程）。 */
+    if (st._orderRef !== snap.order) {
+      st._orderRef = snap.order;
+      st._orderIndex = new Map();
+      for (let i = 0; i < snap.order.length; i++) st._orderIndex.set(snap.order[i], i);
+    }
+    const idx = st._orderIndex.get(node.key);
+    if (idx == null || idx < 0) return;
     if (idx < (st.winStart || 0)) return;     // 窗口之上：不进 DOM
     if (!st._dirty) st._dirty = new Map();
     st._dirty.set(node.key, node.rev || 0);
@@ -849,12 +860,29 @@ const BOARD_CFG = Object.assign(
       const dirty = st._dirty || new Map();
       st._dirty = null;
       const v = viewOf(st);
-      for (const [k, rev] of dirty) v.refresh(k, rev);
+      /* [5715 · 性能] 同一节点的**重渲染最小间隔**（100ms）：
+         直播时正文逐帧到，行里含**累积全文**且正文要**重跑 Markdown 解析**
+         ⇒ 每帧全量重渲 ⇒ 一次长回复 N 帧就是 O(N²) 的写入与解析 ⇒ 主线程被吃满。
+         （思考块已改为增量追加，见 esm/flow/think-stream.js；正文是 Markdown
+         不能追加，只能节流。）
+         ★ 被节流掉的帧**不丢**：留在 _dirty 里，稍后再来一次 ⇒ 最终文本一定落地。 */
+      const again = new Map();
+      for (const [k, rev] of dirty) {
+        if (!_renderGate.allow(k)) { again.set(k, rev); continue; }
+        v.refresh(k, rev);
+      }
       v.paintStatus();
+      if (again.size) {
+        st._dirty = again;         // 保留待刷（不丢最终文本）
+        schedule();
+      }
     };
-    st._raf = (typeof requestAnimationFrame === "function")
-      ? requestAnimationFrame(flush)
-      : setTimeout(flush, 16);
+    const schedule = () => {
+      st._raf = (typeof requestAnimationFrame === "function")
+        ? requestAnimationFrame(flush)
+        : setTimeout(flush, 16);
+    };
+    schedule();
   }
 
   /* ==================================================================
