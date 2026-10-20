@@ -29,6 +29,11 @@ body.page-chat {
   --ui-line: rgba(255, 255, 255, 0.07);
   --ui-line-2: rgba(255, 255, 255, 0.12);
   --ui-line-3: rgba(255, 255, 255, 0.18);
+  /* [5715 · 1.4.11] 输入框边界：**控件的识别线**（不是装饰线）——
+     输入卡面与页面底只差 1.04:1 ⇒ 边框是唯一能认出「这里能打字」的东西
+     ⇒ 按 WCAG 1.4.11（非文字对比）须 ≥3:1（--ui-line-2 只有 1.35:1）。
+     对页面底 3.35:1、对卡面 3.21:1 ⇒ 两边都过线。 */
+  --ui-line-input: #5f6670;
 
   /* 文字：对比度按 WCAG 反推（正文 ≥7、次要 ≥4.5、装饰 ≥3）
      text-3 原 #6d7480 只有 4.1:1，时间/语言标签这类**要读**的字不合格；
@@ -111,6 +116,8 @@ html[data-theme="light"] body.page-chat {
   --ui-line: rgba(16, 19, 24, 0.08);
   --ui-line-2: rgba(16, 19, 24, 0.13);
   --ui-line-3: rgba(16, 19, 24, 0.2);
+  /* [5715 · 1.4.11] 输入框边界（控件识别线，须 ≥3:1）：对页面底 3.65:1、对卡面 3.77:1。 */
+  --ui-line-input: #7d848f;
 
   --ui-text: #14171c;      /* 15.8:1 */
   --ui-text-2: #4d545e;    /* 8.3:1 */
@@ -1617,7 +1624,8 @@ body.page-chat .composer-seat {
 body.page-chat .flow-input-root { padding-bottom: 14px; }
 
 body.page-chat .flow-input-card {
-  border: 1px solid var(--ui-line-2);
+  /* [5715 · 1.4.11] 描边是**控件识别线**（不是装饰线）⇒ 用 ≥3:1 的 --ui-line-input */
+  border: 1px solid var(--ui-line-input);
   border-radius: var(--ui-r-xl);
   background: var(--ui-surface-1);
   box-shadow: none;

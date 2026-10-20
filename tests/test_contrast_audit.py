@@ -158,6 +158,16 @@ PAIRS: list[tuple[str, str, float, str]] = [
     ("--ui-warn", "--ui-bg", 3.0, "警告色/页面底"),
     ("--ui-err", "--ui-bg", 3.0, "错误色/页面底"),
     ("--ui-err", "--ui-surface-1", 3.0, "错误色/卡面"),
+    # [5715 · 1.4.11] 输入框边界＝**控件识别线**（不是装饰线）：
+    # 输入卡面与页面底只差 ~1.04:1 ⇒ 边框是唯一能认出「这里能打字」的东西
+    # ⇒ 须 ≥3:1，且对**两侧**（页面底与卡面）都得够。
+    ("--ui-line-input", "--ui-bg", 3.0, "输入框边界/页面底（控件识别线）"),
+    ("--ui-line-input", "--ui-surface-1", 3.0, "输入框边界/卡面（控件识别线）"),
+]
+
+#: 大字线（WCAG 1.4.3 大字 ≥3:1）：这些色**可以**用在大字上，但不得用作正文
+LARGE_TEXT_PAIRS: list[tuple[str, str, str]] = [
+    ("--ui-text-4", "--ui-bg", "弱文字（可作大字，不可作正文）"),
 ]
 
 #: 装饰色阶：只要求「可见」（≥1:1），且不许被当正文用
@@ -263,6 +273,45 @@ def test_decorative_tokens_are_visible_but_not_text_grade():
             if r < 1.0:
                 bad.append(f"{theme} {label}: {r:.2f}:1 —— 装饰色也得看得见")
     assert not bad, "\n  ".join(bad)
+
+
+def test_large_text_line_is_reachable():
+    """C5 的一半：**大字线**（≥3:1）必须真的够——弱文字可以用于大字，但不得用于正文。
+
+    （这条不是说「弱文字可以当正文用」——正文那条在 C1 里按 4.5:1 卡着。）
+    """
+    bad = []
+    for theme, toks in THEMES:
+        bg = _effective(toks, "--ui-bg", (0, 0, 0, 1))
+        for fg, bgn, label in LARGE_TEXT_PAIRS:
+            bgc = _effective(toks, bgn, bg)
+            fgc = _effective(toks, fg, bgc)
+            r = _contrast(fgc, bgc)
+            if r < 3.0:
+                bad.append(f"{theme} {label}: {r:.2f}:1 < 3.0（大字线）")
+    assert not bad, "\n  ".join(bad)
+
+
+def test_input_boundary_is_the_only_identifier():
+    """〔1.4.11 的推理写进断言〕输入框边界是**控件识别线**。
+
+    输入卡的**卡面**与页面底只差 ~1.04:1 ⇒ 用户认出「这里能打字」**只能靠边框**
+    ⇒ 按 WCAG 1.4.11（非文字对比），边框须 ≥3:1（且对页面底与卡面**两侧**都够）。
+
+    ⇒ 如果哪天输入卡面本身能与背景区分开（≥3:1），这条会提醒改口径：那时边框
+    可以退化作装饰线（--ui-line-2），1.4.11 就不再要求 3:1。
+    """
+    for theme, toks in THEMES:
+        bg = _effective(toks, "--ui-bg", (0, 0, 0, 1))
+        surf = _effective(toks, "--ui-surface-1", bg)
+        r_surf = _contrast(surf, bg)
+        assert r_surf < 3.0, (
+            f"{theme}主题：输入卡面已能与背景区分（{r_surf:.2f}:1）⇒ 边框可作装饰线，"
+            "1.4.11 的口径要改（--ui-line-input 可退回 --ui-line-2）")
+        line = _effective(toks, "--ui-line-input", bg)
+        for other, label in ((bg, "页面底"), (surf, "卡面")):
+            r = _contrast(line, other)
+            assert r >= 3.0, f"{theme}主题：输入框边界对{label}只有 {r:.2f}:1 < 3.0"
 
 
 def test_decorative_text4_is_marked_as_decorative_in_source():
