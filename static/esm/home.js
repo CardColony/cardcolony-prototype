@@ -1,4 +1,4 @@
-﻿/* esm/home.js —— [首页两态 2026-10-15] 首页入口（旧项目列表页退役后的继任者）。
+/* esm/home.js —— [首页两态 2026-10-15] 首页入口（旧项目列表页退役后的继任者）。
  *
  * 入口判定（方案定稿 v2，全在前端——后端读不到 localStorage）：
  *   1. localStorage nav.recent.v1 有最近记录 → 跳上次停留的对话页 /work/{wid}/card/{cid}
@@ -9,8 +9,8 @@
  * 就绪。此前那个「薄壳异步 import 晚于页面顶层 load()」的时序缺口
  * （见 git 7d09280 修复记录）在静态 import 形态下不存在，无需等待轮询。
  */
-import { API, toast } from "./api.js?v=39";
-import { storageGet } from "./state_layers.js?v=30";
+import { API, toast } from "./api.js?v=40";
+import { storageGet } from "./state_layers.js?v=31";
 import { NAV_RECENT_KEY } from "./nav_find.js?v=30";
 
 const newBtn = document.getElementById("homeNewBtn");
