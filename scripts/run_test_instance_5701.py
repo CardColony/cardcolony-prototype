@@ -33,6 +33,11 @@ from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from src.api.routes import router as api_router  # noqa: E402
+# [画布 5711] 补上设置路由（与 main.py 装配一致）。
+# 原来只 include 了 api_router ⇒ 画布页的模型设置请求（/api/settings/models、
+# /api/settings/model-overrides/{work}）在测试实例上**全部 404**——取证时看到的
+# 网络失败其实是**实例装配缺件**，不是产品缺陷。补齐后实例与生产同构。
+from src.api.settings_api import router as settings_router  # noqa: E402
 
 
 def redirect_roots() -> str | None:
@@ -93,6 +98,7 @@ _SANDBOX_ROOT = redirect_roots()
 app = FastAPI(title="推演agent 5701 测试实例")
 
 app.include_router(api_router)
+app.include_router(settings_router)   # [画布 5711] 与 main.py 装配一致（见上方注释）
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 

@@ -1301,9 +1301,26 @@ const WORK_ID = window.__WORK_ID__;
     try {
       // [画布第三步 V8] 序列化面＝panX/panY/zoom/expanded 四项（视图桶）；
       // 拖拽临时位移（闭包内 dragState）不在其列，亦不进任何持久化载体
+      //
+      // [画布 5711 · P2-4 修] expanded 写之前按当前卡片表过滤。
+      // 病根：读侧（restoreViewState）会过滤失效 id，写侧却原样写全 ⇒
+      // 删掉的卡，其 id 永远留在存档里，存档单调增长、每次读都要过滤一遍
+      // 越来越大的集合。写侧过滤 ⇒ 存档与真实卡片表同口径。
+      const expanded = [];
+      for (const id of state.view.expanded) {
+        if (state.index.cardMap[id]) expanded.push(id);
+      }
+      // [画布 5711 · P2-5 修] openCells 一起存。
+      // 病根：state.view.openCells 的注释写着"必须持久"，但 saveViewState
+      // 根本没存它 ⇒ 刷新页面后所有就地展开的卡全部合上（用户以为丢了内容）。
+      const openCells = [];
+      for (const id of (state.view.openCells || [])) {
+        if (state.index.cardMap[id]) openCells.push(id);
+      }
       localStorage.setItem(`projView:${WORK_ID}`, JSON.stringify({
         panX: state.view.panX, panY: state.view.panY, zoom: state.view.zoom,
-        expanded: [...state.view.expanded],
+        expanded,
+        openCells,
       }));
     } catch (e) { /* 存储不可用零阻断 */ }
   }
@@ -1322,6 +1339,10 @@ const WORK_ID = window.__WORK_ID__;
       if (Number.isFinite(v.zoom)) state.view.zoom = Math.max(0.25, Math.min(2.0, v.zoom));
       if (Array.isArray(v.expanded)) {
         state.view.expanded = new Set(v.expanded.filter(id => state.index.cardMap[id]));
+      }
+      // [画布 5711 · P2-5 修] 恢复"就地展开"的卡（与写侧对称）。
+      if (Array.isArray(v.openCells)) {
+        state.view.openCells = new Set(v.openCells.filter(id => state.index.cardMap[id]));
       }
       // [画布商业化 2026-10-17] 返回是否真的命中存档：首次进项目（无存档）要
       // 自动 fit 内容，而不是落在硬编码的 (80,40) 上让卡片溢出视口。
@@ -1408,58 +1429,88 @@ const WORK_ID = window.__WORK_ID__;
 
     const { visibleIds, depthOf } = computeVisibleSet(pin.viewRoot, pin.childMap, pin.expanded);
 
-    // [card_045 E3] 两阶段渲染（阶段一）：按占位坐标建全部节点，整层**隐藏但占位**。
-    // ✱ 纪律性约束（写死）：必须用「隐藏但占位」的方式（visibility——元素仍在布局流、
-    // 尺寸可读），不许用「不占位」的方式（display:none——元素不参与布局、量不到尺寸）。
-    // 这是沿用既有约定（static/style.css「隐藏的画布保持可测量」条），不是本任务新立的规矩。
-    // 改错的具体后果：不会报错、不会异常——只会让测量拿到 0 或拿不到，然后整个
-    // 两阶段静默退化成「全用估算值」，而表面上一切正常。
-    world.style.visibility = "hidden";
-    // 每张卡最近一条活动（后端按 ts 倒序给，取首条即最新）
-    _maxWeight = 1;
-    for (const cid of visibleIds) {
-      const c = vm.cardsById[cid];
-      if (c) _maxWeight = Math.max(_maxWeight, Number(c.content_len || 0));
-    }
-    _evByCard = new Map();
-    for (const e of (vm.recentEvents || [])) {
-      if (e && e.card_id && !_evByCard.has(e.card_id)) _evByCard.set(e.card_id, e);
-    }
-    const frag = document.createDocumentFragment();
-    for (const cid of visibleIds) {
-      const card = vm.cardsById[cid];
-      if (!card) continue;
-      if (card.card_type === "rule") continue;   // [规则卡 2026-10-16] 规则卡不上画布——它是吸附屏幕右侧的常驻卡（workspace.js 规则面板即其呈现）
-      // 占位坐标（阶段二一次性应用最终位）；深度决定卡面形态
-      const node = createNode(card, { x: 0, y: 0 }, vm, depthOf[cid] || 0);
-      if (!prevIds.has(cid)) {
-        // [T08-3-4] 新出现卡淡入（只动 opacity/transform；连线不做补间）
-        node.classList.add("entering");
-        node.addEventListener("animationend", () => node.classList.remove("entering"), { once: true });
+    // [画布 5711 · P0-1 修] **异常安全的两阶段渲染**。
+    //
+    // 病根：原来 `world.style.visibility="hidden"` 在函数中段、恢复语句在函数末尾
+    // （不是 finally）。隐藏窗口覆盖了 createNode 循环、applyLODClasses、
+    // measureSizes()（读全部 offsetWidth/offsetHeight，强制同步布局）、computeProjection
+    // 与写坐标——其中任何一步抛异常，#world 就**永久**停在 visibility:hidden：
+    // 整屏空白、卡片不可点、**控制台不报任何错**（异常被 reloadCanvas 的 catch 吃掉，
+    // 而它不解除 hidden）。用户看到的就是"画布打开是空的，怎么点都没反应"。
+    //
+    // 作者在 renderSubtree 的注释里写过同一个坑（"会永久停在 visibility:hidden
+    // （整屏空白，且不报任何错）"），但那里也只是靠"本轮是否隐藏过"判断，不是
+    // finally —— 一样会漏。两处一并改成 finally。
+    //
+    // 为什么必须用 visibility（不是 display:none）：元素仍在布局流、尺寸可读——
+    // display:none 的元素不参与布局、量不到尺寸，两阶段会静默退化成"全用估算值"
+    // 而表面一切正常。这条纪律保留。
+    let projection = null;
+    try {
+      world.style.visibility = "hidden";
+      // 每张卡最近一条活动（后端按 ts 倒序给，取首条即最新）
+      _maxWeight = 1;
+      for (const cid of visibleIds) {
+        const c = vm.cardsById[cid];
+        if (c) _maxWeight = Math.max(_maxWeight, Number(c.content_len || 0));
       }
-      frag.appendChild(node);
-      nodeMap.set(cid, node);
-    }
-    // [画布商业化 2026-10-17] 一次性插入（DocumentFragment）：232 张卡时省掉
-    // 231 次中间重排，首屏更快且没有逐张闪烁。
-    world.appendChild(frag);
+      _evByCard = new Map();
+      for (const e of (vm.recentEvents || [])) {
+        if (e && e.card_id && !_evByCard.has(e.card_id)) _evByCard.set(e.card_id, e);
+      }
+      const frag = document.createDocumentFragment();
+      for (const cid of visibleIds) {
+        const card = vm.cardsById[cid];
+        if (!card) continue;
+        if (card.card_type === "rule") continue;   // [规则卡 2026-10-16] 规则卡不上画布——它是吸附屏幕右侧的常驻卡（workspace.js 规则面板即其呈现）
+        // 占位坐标（阶段二一次性应用最终位）；深度决定卡面形态
+        const node = createNode(card, { x: 0, y: 0 }, vm, depthOf[cid] || 0);
+        if (!prevIds.has(cid)) {
+          // [T08-3-4] 新出现卡淡入（只动 opacity/transform；连线不做补间）
+          node.classList.add("entering");
+          // [画布 5711 · P1 修] animationend 不是可靠信号：系统开了"减少动效"时
+          // CSS 把 .entering 的 animation 置为 none ⇒ 永远不触发 animationend ⇒
+          // .entering 永不移除 ⇒ 新卡永久带 entering 的副作用（transition:none、
+          // cursor:grabbing、z-index:30 压住邻卡、亮描边重投影）。
+          // ⇒ 加 animationcancel ＋ setTimeout 双保险（动画 200ms，260ms 收口）。
+          const _clearEntering = () => node.classList.remove("entering");
+          node.addEventListener("animationend", _clearEntering, { once: true });
+          node.addEventListener("animationcancel", _clearEntering, { once: true });
+          setTimeout(_clearEntering, 260);
+        }
+        frag.appendChild(node);
+        nodeMap.set(cid, node);
+      }
+      // [画布商业化 2026-10-17] 一次性插入（DocumentFragment）：232 张卡时省掉
+      // 231 次中间重排，首屏更快且没有逐张闪烁。
+      world.appendChild(frag);
 
-    // [card_045 E3] 两阶段渲染（阶段二）：一次性全量实测 → 纯函数算基准 → 避让 →
-    // 一次性全部应用 → 取消隐藏。一轮渲染内尺寸测量恰为 1 次（改前 3 次：
-    // layoutTree 内部测量＋此处＋renderEdges 各一次——E1 已参数化第一处、
-    // renderEdges 改吃本处尺寸表）。
-    applyLODClasses(vm.zoom, true);
-    const projection = computeProjection({ ...pin, sizes: measureSizes() });
-    lastProjection = projection;   // [画布重构 2.1] 供 renderSubtree 打补丁（连线的全画布基底）
-    for (const cid of visibleIds) {
-      const node = nodeMap.get(cid);
-      const p = projection.layout[cid];
-      if (node && p) {
-        node.style.left = p.x + "px";
-        node.style.top = p.y + "px";
+      // [card_045 E3] 两阶段渲染（阶段二）：一次性全量实测 → 纯函数算基准 → 避让 →
+      // 一次性全部应用 → 取消隐藏。一轮渲染内尺寸测量恰为 1 次（改前 3 次：
+      // layoutTree 内部测量＋此处＋renderEdges 各一次——E1 已参数化第一处、
+      // renderEdges 改吃本处尺寸表）。
+      applyLODClasses(vm.zoom, true);
+      projection = computeProjection({ ...pin, sizes: measureSizes() });
+      lastProjection = projection;   // [画布重构 2.1] 供 renderSubtree 打补丁（连线的全画布基底）
+      for (const cid of visibleIds) {
+        const node = nodeMap.get(cid);
+        const p = projection.layout[cid];
+        if (node && p) {
+          node.style.left = p.x + "px";
+          node.style.top = p.y + "px";
+        }
       }
+    } finally {
+      // 无论成败都必须恢复可见——这是"绝不出现静默白屏"的最后一道闸。
+      world.style.visibility = "";
     }
-    world.style.visibility = "";
+    if (!projection) return;   // 投影算不出来 ⇒ 不画连线（异常已向上抛，这里只是不继续画）
+
+    // [画布 5711 · P1-3 修] 选中集必须与在场节点求交。
+    // 病根：state.view.selected 只在选中动作里改，从不与 nodeMap 求交 ⇒
+    // 收起某张卡的父卡后，那张看不见的卡**仍留在选中集**里；此时按 Delete
+    // 会把它一起删掉——**删掉一个用户在画布上根本看不到的卡**（数据丢失）。
+    pruneSelectionToVisible();
 
     renderEdges(projection, vm);
     renderBreadcrumb(projection.breadcrumb);
@@ -1473,7 +1524,10 @@ const WORK_ID = window.__WORK_ID__;
         const n = nodeMap.get(cid);
         if (!n) continue;
         n.dataset.open = "1";
-        loadCell(cid);
+        // [画布 5711 · P1-4 修] 展开的对话写进 .cv-cell ⇒ 卡片变高 ⇒ 布局要重排，
+        // 否则它压住下一张卡。对照 toggleCell：那条路径 await 之后有 scheduleReflow，
+        // 只有这条（重建后恢复已展开的卡）漏了。
+        loadCell(cid).then(() => scheduleReflow()).catch(() => { /* 读取失败不阻断 */ });
       }
     }
 
@@ -1562,44 +1616,61 @@ const WORK_ID = window.__WORK_ID__;
     // ② 建：新建节点。沿用 renderCanvas 的两阶段纪律——**隐藏但占位**（visibility 而非
     //    display:none），否则量不到尺寸、整轮静默退化成「全用估算值」而表面一切正常
     //    （既有约定，理由见 renderCanvas 同处注释）。只在真要建节点时才隐藏整层。
-    //    恢复条件看「本轮是否隐藏过」而不是「建成了几个」——后者为 0 却不恢复，
-    //    画布会永久停在 visibility:hidden（整屏空白，且不报任何错）。
+    //
+    // [画布 5711 · P0-2 修] **用 try/finally 收口**。
+    // 病根：隐藏语句在这里、恢复语句在函数末尾（不是 finally）。隐藏窗口里
+    // createNode 抛一次（脏数据、缺字段、OOM）⇒ #world **永久**停在
+    // visibility:hidden ⇒ 整屏空白、点任何卡片都无反应、**不报任何错**。
+    // 注释里本来就写着这个后果（"会永久停在 visibility:hidden（整屏空白，
+    // 且不报任何错）"），但当时只用"本轮是否隐藏过"判断，不是 finally —— 一样会漏。
     let hidWorld = false;
-    if (plan.create.length) {
-      world.style.visibility = "hidden";
-      hidWorld = true;
-      const lodLevel = currentLODLevel(vm.zoom);
-      for (const cid of plan.create) {
-        const card = vm.cardsById[cid];
-        if (!card) continue;
-        const node = createNode(card, anchorPos, vm, plan.depthOf[cid] || 0);   // 占位坐标，⑤ 之后一次性改写
-        node.classList.add(lodLevel);        // zoom 未变 ⇒ 档位与全量渲染同一判据
-        node.classList.add("entering");      // 新出现卡淡入（与 renderCanvas 同款）
-        node.addEventListener("animationend",
-          () => node.classList.remove("entering"), { once: true });
-        world.appendChild(node);
-        nodeMap.set(cid, node);
+    try {
+      if (plan.create.length) {
+        world.style.visibility = "hidden";
+        hidWorld = true;
+        const lodLevel = currentLODLevel(vm.zoom);
+        for (const cid of plan.create) {
+          const card = vm.cardsById[cid];
+          if (!card) continue;
+          const node = createNode(card, anchorPos, vm, plan.depthOf[cid] || 0);   // 占位坐标，⑤ 之后一次性改写
+          node.classList.add(lodLevel);        // zoom 未变 ⇒ 档位与全量渲染同一判据
+          node.classList.add("entering");      // 新出现卡淡入（与 renderCanvas 同款）
+          // [画布 5711 · P1 修] animationend 在"减少动效"下不触发 ⇒ 兜底移除
+          const _clearEntering = () => node.classList.remove("entering");
+          node.addEventListener("animationend", _clearEntering, { once: true });
+          node.addEventListener("animationcancel", _clearEntering, { once: true });
+          setTimeout(_clearEntering, 260);
+          world.appendChild(node);
+          nodeMap.set(cid, node);
+        }
       }
+
+      // ③ 锚点自己的徽标翻面（▸↔▾）——就地改这一处文本，不重建锚点节点
+      updateExpandBadge(anchorNode, (pin.childMap[cardId] || []).length,
+                        pin.expanded.has(cardId));
+
+      // ④~⑥ [画布 2026-10-19] 结构性变更（展开/收起）后走**全量重排**。
+      //
+      // 原来走的是"只排 anchor 单元 + 局部避让"，两个毛病：
+      //   ① 局部避让还是 separateOverlaps，会横向推卡，把层级列推散；
+      //   ② 单元之外不重排：展开的子树变高后会压到邻居。实测 114 卡项目残留
+      //      3 对重叠、232 卡项目六组兄弟的三列 y 完全对不上。
+      //      而同一份数据只要强制全量重排就 0 重叠、三列 y 逐项相等。
+      //
+      // 全量布局现在是 O(n) 纯函数（避让已摘除），232 张卡重排也就几毫秒，
+      // 不值得为省这点计算再维护第二套布局实现——两套实现必然漂移，而漂移的
+      // 表现就是"点开一张卡，别处的卡歪了"。收起/叶子卡切换同样走这里，
+      // 顺带保证任何时刻画布上都只有一种布局结果。
+      if (hidWorld) world.style.visibility = "";
+      reflowAll();
+    } finally {
+      // 兜底：异常路径也绝不许把 #world 留在 hidden（静默白屏）。
+      if (hidWorld) world.style.visibility = "";
     }
-
-    // ③ 锚点自己的徽标翻面（▸↔▾）——就地改这一处文本，不重建锚点节点
-    updateExpandBadge(anchorNode, (pin.childMap[cardId] || []).length,
-                      pin.expanded.has(cardId));
-
-    // ④~⑥ [画布 2026-10-19] 结构性变更（展开/收起）后走**全量重排**。
-    //
-    // 原来走的是"只排 anchor 单元 + 局部避让"，两个毛病：
-    //   ① 局部避让还是 separateOverlaps，会横向推卡，把层级列推散；
-    //   ② 单元之外不重排：展开的子树变高后会压到邻居。实测 114 卡项目残留
-    //      3 对重叠、232 卡项目六组兄弟的三列 y 完全对不上。
-    //      而同一份数据只要强制全量重排就 0 重叠、三列 y 逐项相等。
-    //
-    // 全量布局现在是 O(n) 纯函数（避让已摘除），232 张卡重排也就几毫秒，
-    // 不值得为省这点计算再维护第二套布局实现——两套实现必然漂移，而漂移的
-    // 表现就是"点开一张卡，别处的卡歪了"。收起/叶子卡切换同样走这里，
-    // 顺带保证任何时刻画布上都只有一种布局结果。
-    if (hidWorld) world.style.visibility = "";
-    reflowAll();
+    // [画布 5711 · P1-3 修] 收起子树 ⇒ 在场节点减少 ⇒ 选中集必须同步裁剪，
+    // 否则"收起一张卡的父卡"后，那张看不见的卡仍留在选中集里，
+    // 按 Delete 会把它一起删掉（删掉用户根本没看见的卡 ＝ 数据丢失）。
+    pruneSelectionToVisible();
     lazyLoadVisibleSummaries(vm.cardsById);
   }
 
@@ -1931,8 +2002,13 @@ const WORK_ID = window.__WORK_ID__;
     return node;
   }
 
-  function bindNodeEvents(node, card) {
-
+  // [画布 5711] 卡面**子元素**的监听（子卡徽章 / ↗ / 待裁定条目）。
+  //
+  // 为什么单独成函数：卡面内容被整体换掉时（后台实时更新），子元素是新的、
+  // 监听器没了，必须**重绑**；而节点级监听（click / keydown / dblclick /
+  // 拖拽 / 悬停）绑在 node 本身，node 没换 ⇒ **不能重绑**——重绑就是重复绑定
+  // （单击跳两次页、展开翻两次）。
+  function bindCardFace(node, card) {
     // [T08-3-1] ▸/▾ 徽章单击＝展开/折叠该卡子树（原语义为下钻 setViewRoot，已改）
     const badge = node.querySelector(".kid-badge");
     if (badge) {
@@ -2017,6 +2093,11 @@ const WORK_ID = window.__WORK_ID__;
         openCardChat(card.card_id);
       });
     }
+  }
+
+  function bindNodeEvents(node, card) {
+    // 卡面子元素的监听（换卡面后要重绑，见 bindCardFace 注释）。
+    bindCardFace(node, card);
 
     // 明确入口：卡右上角的 ↗（常驻，不靠 hover 才发现）
     // [画布 2026-10-19 · 用户令] 双击 = **在画布上打开这张卡的对话**，不跳页。
@@ -2406,6 +2487,17 @@ const WORK_ID = window.__WORK_ID__;
     cardDetailEl.innerHTML = "";
   }
 
+  // [画布 5711 · P1-5b] 轻量选中态：**只切 class**，不重建任何面板。
+  // 框选拖动过程中每个 mousemove 都会调它（重面板留到 mouseup）。
+  function applySelectionClassesLite() {
+    for (const [cid, node] of nodeMap) {
+      const on = state.view.selected.has(cid);
+      if (node.classList.contains("is-selected") !== on) {
+        node.classList.toggle("is-selected", on);
+      }
+    }
+  }
+
   function selectOnly(id) {
     state.view.selected.clear();
     if (id) state.view.selected.add(id);
@@ -2413,6 +2505,32 @@ const WORK_ID = window.__WORK_ID__;
     focusSelectedCard();   // 点选后把 DOM 焦点交给这张卡（读屏播报 + 后续键盘操作）
     // 浮层在 applySelectionClasses → renderCardDetail 里打开，等它开完再校正视野
     if (id) setTimeout(() => ensureCardVisible(id), 0);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // [画布 5711 · P1-3 修] 选中集与在场节点求交（防"删掉看不见的卡"）
+  //
+  // 病根：state.view.selected 只在选中动作里改，**从不与 nodeMap 求交**。
+  // 于是「选中 2 张 → 收起其中一张的父卡」之后，那张已经不在画布上的卡
+  // 仍然留在选中集里；此时按 Delete 会把它一起删掉——删的是一张
+  // **用户在画布上根本看不到**的卡。这是数据丢失，不是视觉瑕疵。
+  //
+  // 触发点：renderCanvas（全量重建）、renderSubtree（收起子树）之后，
+  // 以及 deleteSelected 执行前（最后一道闸）。
+  // ══════════════════════════════════════════════════════════════════════
+  function pruneSelectionToVisible() {
+    if (!state.view.selected || !state.view.selected.size) return 0;
+    const before = state.view.selected.size;
+    for (const id of [...state.view.selected]) {
+      if (!nodeMap.has(id)) state.view.selected.delete(id);
+    }
+    const after = state.view.selected.size;
+    if (after !== before) {
+      // 选中数变了 ⇒ 选择条/右栏的文案得跟着变（它们读的是 state.view.selected）
+      renderSelectionBar();
+      renderCardDetail();
+    }
+    return before - after;
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -3347,11 +3465,21 @@ const WORK_ID = window.__WORK_ID__;
     catchupEl = el;
   }
 
+  // [画布 5711 · P2-3 修] **可见集单一来源**（V3 不变量）。
+  // 原来这里返回视图根的**全部后代**（不看 expanded），唯一使用点是"整理画布"
+  // —— 于是折叠着的分支里的卡也被重排/解钉，而它们在画布上根本看不见
+  // （用户以为没动的卡，位置被改了）。
+  // 现在用投影里的 visibleIds（computeVisibleSet 的产物，与渲染同一份）。
   function getVisibleIds() {
+    if (lastProjection && lastProjection.visibleIds) {
+      return new Set(lastProjection.visibleIds);
+    }
+    // 兜底（还没有投影时）：按展开态算一次，不返回"全部后代"。
     const ids = new Set([state.nav.viewRoot]);
     const stack = [state.nav.viewRoot];
     while (stack.length) {
       const id = stack.pop();
+      if (!state.view.expanded.has(id)) continue;
       for (const child of (state.index.childMap[id] || [])) {
         if (!ids.has(child.card_id)) { ids.add(child.card_id); stack.push(child.card_id); }
       }
@@ -3421,6 +3549,14 @@ const WORK_ID = window.__WORK_ID__;
     const visibleIds = projection.visibleIds;
     const layout = projection.layout;
     const sizes = projection.sizes || measureSizes();
+    // [画布 5711 · P1-6 修] 连线按父卡深度分层的样式**从未生效**。
+    // 病根：深度表读的是 `vm.depthOf`，而 collectViewModel() 里**根本没有这个字段**
+    // ⇒ vm.depthOf 恒 undefined ⇒ `d` 恒为 0 ⇒ 所有边都走 else 分支（同一权重）。
+    // 而 computeProjection 的返回值里**本来就带 depthOf**（computeVisibleSet 的产物）
+    // —— 一直都在，只是没人读。
+    // 后果：全展开时 200+ 条边同权重，糊成一片（这正是这段注释想避免的）。
+    // 修法：读 projection.depthOf（同一份投影、同一轮、同一个可见集）。
+    const depthOf = projection.depthOf || (vm && vm.depthOf) || {};
     const box = projection.edges.bbox;
     edgesSvg.setAttribute("width", box.w);
     edgesSvg.setAttribute("height", box.h);
@@ -3466,7 +3602,7 @@ const WORK_ID = window.__WORK_ID__;
       const path = makeEdgePath(seg.x1, seg.y1, seg.x2, seg.y2, "#4a6ea8", "1.2", seg);
       // [画布商业化 2026-10-17] 按父卡深度递减线宽与不透明度：全展开时 200+ 条边
       // 同权重会糊成一片（截图实测）。近根的主干保持醒目，深层枝节退为背景。
-      const d = vm.depthOf ? (vm.depthOf[seg.from] || 0) : 0;
+      const d = depthOf[seg.from] || 0;
       if (d >= 2) { path.setAttribute("stroke-width", "1"); path.setAttribute("opacity", "0.4"); }
       else if (d >= 1) { path.setAttribute("stroke-width", "1.1"); path.setAttribute("opacity", "0.6"); }
       else { path.setAttribute("opacity", "0.7"); }
@@ -4213,21 +4349,36 @@ const WORK_ID = window.__WORK_ID__;
       el.style.width = w + "px";
       el.style.height = h + "px";
       // 命中判定：把卡片世界坐标换算到视口坐标再求交
+      //
+      // [画布 5711 · P1-5a 修] 尺寸**不再逐节点读 DOM**。
+      // 病根：offsetWidth/offsetHeight 是布局属性，在 mousemove 里逐个读 ⇒
+      // 每帧一次强制同步布局（232 卡时框选掉帧）。现在读上一轮投影里已经测好的
+      // 尺寸缓存（lastProjection.sizes，与布局用的是同一份）——零 DOM 查询。
+      // 拿不到缓存时回退原读法（不是所有路径都有投影）。
       const z = state.view.zoom;
+      const cachedSizes = (lastProjection && lastProjection.sizes) || null;
       const hit = [];
       for (const [cid, node] of nodeMap) {
         const nx = parseFloat(node.style.left) || 0;
         const ny = parseFloat(node.style.top) || 0;
         const sx = nx * z + state.view.panX;
         const sy = ny * z + state.view.panY;
-        const sw = (node.offsetWidth || 220) * z;
-        const sh = (node.offsetHeight || 120) * z;
+        const cs = cachedSizes && cachedSizes[cid];
+        const sw = (cs ? cs.w : (node.offsetWidth || 220)) * z;
+        const sh = (cs ? cs.h : (node.offsetHeight || 120)) * z;
         if (sx < x + w && sx + sw > x && sy < y + h && sy + sh > y) hit.push(cid);
       }
       const next = new Set(marqueeState.base);
       for (const id of hit) next.add(id);
       state.view.selected = next;
-      applySelectionClasses();
+      // [画布 5711 · P1-5b 修] 拖动过程中只做**轻量**选中态切换。
+      // 原来每个 mousemove 都走 applySelectionClasses()，而它内部会
+      // renderSelectionBar()（重建 innerHTML + 重绑监听）＋ renderCardDetail()
+      // （重建整个右栏）＋ highlightEdges()（遍历全部边 path）——拖一个框
+      // = 几百次 DOM 重建。
+      // 现在：拖动中只切 class（纯样式，可撤销），
+      // 重面板留到 mouseup 一次性做（见 detachDragListeners 之后的收尾）。
+      applySelectionClassesLite();
     }
   });
 
@@ -4251,6 +4402,11 @@ const WORK_ID = window.__WORK_ID__;
       marqueeState.el.remove();
       marqueeState = null;
       viewport.classList.remove("marquee");
+      // [画布 5711 · P1-5b 修] 拖动过程中只做了轻量选中态（applySelectionClassesLite），
+      // 这里补一次**完整**的面板重建：选择条（已选几张 + 批量动作）、右栏
+      // （多选清单与批量操作）、连线高亮——它们都读 state.view.selected，
+      // 不在这里刷就会停留在框选前的状态（选择条上的张数是旧的）。
+      applySelectionClasses();
     }
   });
 
@@ -4393,6 +4549,10 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   async function deleteSelected() {
+    // [画布 5711 · P1-3 修] 删卡前的最后一道闸：只删**画布上看得见**的卡。
+    // 病根：选中集从不与 nodeMap 求交，收起父卡后看不见的卡还留在选中集里，
+    // 按 Delete 会把它一起删掉——数据丢失。这里先裁一次再进入删除流程。
+    pruneSelectionToVisible();
     const ids = selectionIds();
     if (!ids.length) return;
     const blocked = ids.filter((id) =>
@@ -5023,14 +5183,26 @@ const WORK_ID = window.__WORK_ID__;
         _needFit = !restoreViewState();
         __VIEW_RESTORED__ = true;
       }
-      showCanvasState("clear");
+      // [画布 5711 · P1 修] **骨架屏必须在渲染完成之后才移除**。
+      // 病根：原来 `showCanvasState("clear")` 在 renderAll() **之前** ⇒ 中间那几帧
+      // 骨架屏没了、卡片也还没画出来 ⇒ 用户看到的是「打开画布先白一下」，
+      // 而不是「骨架 → 内容」的连贯过渡。移除动作挪到 renderAll 之后。
       renderAll();          // [画布第三步 T4] 数据就绪 → 统一重绘入口
+      showCanvasState("clear");   // ← 渲染完成，此刻才收起骨架屏
       // [画布 2026-10-18 · 工作台] 首屏**不再把整张图缩到装得下**。
       // 43 张卡全装进 1600×1000 要缩到 60%，待裁定条目在 60% 下根本读不了——
       // 那等于"打开了但什么也读不到"。工作台打开就该带你去该干活的地方：
       //   100% 缩放，视野落在**第一张有待裁定的卡**上；没有待裁定才退回整幅适配。
       if (_needFit) {
-        _autoFitPending = false;
+        // [画布 5711 · P1-2 修] `_autoFitPending` 原来在这里被置 **false**，
+        // 而全文件只有这一处、还有 `scheduleAutoFit` 里的两处读取——三处全是 false，
+        // 于是 `scheduleAutoFit()` 的 `if (!_autoFitPending) return;` **恒成立**：
+        // 注释描述的「回填改变卡高 → reflow → 重试适配」这套机制**一次也没跑过**。
+        // 后果：首屏 fit 算在"矮版本"卡高上，随后内容回填把布局撑长 ⇒ 画布溢出、
+        // 底部卡片被裁掉（用户看到"下面还有卡，但怎么滚都看不到"）。
+        // 现在真正打开它：首屏 fit 之后保持 pending，让后续 reflow 能触发重适配。
+        _autoFitPending = true;
+        _autoFitRounds = 0;
         _userMoved = false;
         // [画布 2026-10-18 · 画布自己承载全局] 首屏**整幅适配**，一屏看见整棵树。
         // 之前锚定"第一张子卡 100%"，一屏只看得见 5 张卡，所以才需要左栏目录来补
@@ -5049,12 +5221,21 @@ const WORK_ID = window.__WORK_ID__;
       // hideWorkspace() 函数保留（setViewRoot 下钻路径仍在用，现为无害空操作）。
     } catch (e) {
       // [迭代四 F3④] 三态容器：加载失败可见（原静默 catch 界面无态——B-18）
-      showCanvasState("error");
+      //
+      // [画布 5711 · P0-3 修] 原来这里只有 `showCanvasState("error")`：
+      //   ① 异常对象 `e` 被**整个丢弃**——控制台没有堆栈、界面只有一句"画布加载失败"，
+      //      排障完全没有入口（B-18 只解决了"有没有态"，没解决"知不知道原因"）；
+      //   ② 叠加 renderCanvas 的 visibility 死锁 ⇒ 画布既空白又看不出为什么。
+      // 现在：记日志（带堆栈）＋ 把真因写进错误框＋ 先解除 world 的隐藏
+      //      （宁可让用户看到一堆叠在一起的占位卡，也不要静默白屏）。
+      console.error("[canvas] reloadCanvas 失败", e);
+      try { if (world) world.style.visibility = ""; } catch (_e) { /* 忽略 */ }
+      showCanvasState("error", (e && (e.message || String(e))) || "未知错误");
     }
   }
 
   // [迭代四 F3④] 画布三态容器：loading／error（失败＋重试）／empty。
-  function showCanvasState(kind) {
+  function showCanvasState(kind, detail) {
     if (!viewport) return;   // [阶段3 A3.2] 非画布页：无画布态容器可挂，整体空转
     let box = document.getElementById("canvasStateBox");
     if (!box) {
@@ -5065,7 +5246,10 @@ const WORK_ID = window.__WORK_ID__;
     }
     if (kind === "clear") { box.remove(); return; }
     if (kind === "error") {
-      box.innerHTML = `<div class="cs-error">画布加载失败 <button class="btn" id="csRetry">重试</button></div>`;
+      // [画布 5711 · P0-3 修] 错误框带真因（前端直接显示，不再只显示 HTTP 500 那样的
+      // 空话）。原因来自后端或前端异常的真实 message，排障不必再猜。
+      const _detail = detail ? `<div class="cs-error-detail">${escapeHtml(String(detail))}</div>` : "";
+      box.innerHTML = `<div class="cs-error">画布加载失败 ${_detail}<button class="btn" id="csRetry">重试</button></div>`;
       const b = box.querySelector("#csRetry");
       if (b) b.onclick = () => { box.innerHTML = `<div class="cs-loading">加载中…</div>`; reloadCanvas(); };
     } else if (kind === "loading") {
@@ -5490,19 +5674,51 @@ const WORK_ID = window.__WORK_ID__;
 
   // [画布商业化 2026-10-17] 首次自动适配的收尾：内容稳定后（reflow 之后）再 fit 一次。
   // 用户一动（滚轮/拖拽）立即放弃，绝不跟用户抢镜头。
+  //
+  // [画布 5711 · P1-2 修] 原来这里只有 `_autoFitPending = false` 一句收尾 ⇒
+  // 整套"重试适配"机制从未生效（见 reloadCanvas 里的说明）。现在：
+  //   ① 首屏 fit 之后 _autoFitPending 保持 true；
+  //   ② 每次 reflow（内容/卡高变了）都来重试一次；
+  //   ③ 用「布局签名」判断内容是否还在变——不变就收手（_autoFitPending=false），
+  //      还变就再来一轮，但最多 _AUTO_FIT_MAX_ROUNDS 轮（防无限重排）；
+  //   ④ 用户一动（_userMoved）立即放弃，绝不跟用户抢镜头。
   let _autoFitTimer = 0;
+  let _autoFitRounds = 0;
+  const _AUTO_FIT_MAX_ROUNDS = 3;
+
+  // 布局签名：只用坐标（style.left/top），不读 offsetWidth/Height（不触发强制布局）。
+  // 坐标变了 ⇒ 布局变了 ⇒ 需要重新适配。
+  function _layoutSignature() {
+    if (!lastProjection || !lastProjection.layout) return "";
+    let sig = "";
+    for (const cid of Object.keys(lastProjection.layout).sort()) {
+      const p = lastProjection.layout[cid];
+      if (!p) continue;
+      sig += cid + ":" + Math.round(p.x) + "," + Math.round(p.y) + ";";
+    }
+    return sig;
+  }
+
   function scheduleAutoFit() {
     if (!_autoFitPending || _userMoved) return;
     clearTimeout(_autoFitTimer);
     _autoFitTimer = setTimeout(() => {
       if (!_autoFitPending || _userMoved) return;
-      _autoFitPending = false;
+      const before = _layoutSignature();
       // [画布 2026-10-19 · 自查] 这里原来调 `fitView(1)` —— 那是**第二套适配**，
       // 下限 0.25、无内容判定；而首屏真正用的是 fitToContent（下限 0.9、两遍收敛）。
       // 两套并存的结果：fitToContent 先算出可读的 0.9，220ms 后 fitView 把它覆盖成
       // 0.55（39 卡实测）——**打开一个 39 卡的项目，看到的是 39 个没有任何文字的灰块**。
       // 现在只有一套：fitToContent。
       fitToContent();
+      const after = _layoutSignature();
+      if (before !== after && _autoFitRounds < _AUTO_FIT_MAX_ROUNDS) {
+        _autoFitRounds++;
+        // 内容还在变 ⇒ 保持 pending（下一轮 reflow 会再触发一次）
+      } else {
+        _autoFitPending = false;   // 稳定了 ⇒ 收手，别再跟用户抢镜头
+        _autoFitRounds = 0;
+      }
       scheduleSaveView();
     }, 220);
   }
@@ -6353,3 +6569,198 @@ const WORK_ID = window.__WORK_ID__;
   } catch (e) { /* EventSource 不可用零阻断 */ }
   setInterval(refreshUnread, 60000);
   refreshUnread();
+
+  // ══════════════════════════════════════════════════════════════════════
+  // [画布 5711] 工作级实时更新 —— "不用刷新才更新"
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // 病根（实测复现，不是推测）：画布上卡片的**结论／待裁定数／work_state／
+  // 最新对话／运行态**只写在 createNode 里 ⇒ 只有 renderAll（全量重建）才生效；
+  // 而 renderAll **只由用户自己的操作触发**（建卡、删卡、重命名、拖动落定…）。
+  // 后台真实发生的变化——模型写卡、裁定被记下、自动模式推进——**到不了画布**。
+  // ⇒ 用户看到的画布永远停在"我上次点它时"的样子 ⇒ 必须手动刷新页面。
+  //
+  // 断点（逐条核实过）：
+  //   ① 既有 SSE 是**单卡**的（订阅表 key=(work,card)），没有工作级广播；
+  //   ② canvas.js 订阅的是 card_id=WORK_ID（根卡）那一条 ⇒ 别的卡收不到；
+  //   ③ /works/{w}/pulse 的 running/recent 不驱动卡面重绘（applyLiveStates
+  //      只写 dataset.live 与一行消息条，conclusion/pending_count/work_state
+  //      一个都不碰）；
+  //   ④ 结论/待裁定/work_state/runstate 都写在 createNode 里。
+  //
+  // 解法：订阅 /api/works/{w}/events（后端写卡时推一帧 card_changed，载荷带
+  // 那张卡的最新投影摘要）→ **就地换掉那一张卡的节点**。
+  // 不重建整棵树 ⇒ 零闪烁、零全量布局重排、毫秒级。
+  //
+  // 为什么是"换节点"而不是"逐字段改"：卡面有十几个字段（标题／状态点／待裁定数／
+  // 引用数／定论／最新对话／多久没动／子卡数…）散在 DOM 多个位置，逐字段映射
+  // 必然漏、必然漂。createNode 是卡面的**唯一构造口**——换节点＝复用它，
+  // 于是"事件驱动的卡面"与"首屏的卡面"不可能不一致。
+  // ══════════════════════════════════════════════════════════════════════
+
+  let _workEs = null;
+  const _liveQueue = new Map();   // card_id → 最新载荷（同一张卡的多次变化合并）
+  let _liveTimer = 0;
+
+  function scheduleLiveApply(cardId, payload) {
+    _liveQueue.set(cardId, payload);
+    if (_liveTimer) return;
+    // 合并到一帧：多张卡同时变 ⇒ 一次批量应用（不是 N 次 DOM 抖动）。
+    _liveTimer = requestAnimationFrame(() => {
+      _liveTimer = 0;
+      flushLiveApply();
+    });
+  }
+
+  function flushLiveApply() {
+    if (!_liveQueue.size) return;
+    const items = [..._liveQueue.entries()];
+    _liveQueue.clear();
+    let structureChanged = false;
+    for (const [cid, payload] of items) {
+      if (applyCardChange(cid, payload)) structureChanged = true;
+    }
+    if (structureChanged && lastProjection) {
+      renderEdges(lastProjection, collectViewModel());
+    }
+    // 顶栏项目概览（待裁定总数／结论分布）跟着变——它读的是 state.data.cards。
+    renderProjectStat();
+  }
+
+  // 返回 true 表示"结构/几何变了"（需要重画连线）。
+  function applyCardChange(cardId, payload) {
+    const kind = String(payload.kind || "updated");
+    const card = payload.card || null;
+
+    if (kind === "deleted") {
+      // 索引：卡片没了，父卡的子卡列表也要摘掉。
+      delete state.index.cardMap[cardId];
+      for (const k of Object.keys(state.index.childMap)) {
+        const arr = state.index.childMap[k];
+        const i = arr.findIndex((c) => c && c.card_id === cardId);
+        if (i >= 0) arr.splice(i, 1);
+      }
+      state.view.selected.delete(cardId);
+      const node = nodeMap.get(cardId);
+      if (node) { node.remove(); nodeMap.delete(cardId); }
+      // 子树没了 ⇒ 布局要重排（后面的卡要往上收）＋连线要重画。
+      reflowAll();
+      return true;
+    }
+
+    if (!card) return false;
+    // 索引先行：即便这张卡当前不在画布上，索引也得是最新的（下次展开时才对）。
+    state.index.cardMap[cardId] = card;
+    const parentId = card.parent || "";
+    if (parentId) {
+      if (!state.index.childMap[parentId]) state.index.childMap[parentId] = [];
+      const siblings = state.index.childMap[parentId];
+      if (!siblings.some((c) => c && c.card_id === cardId)) {
+        siblings.push({ card_id: cardId, card_type: card.card_type, title: card.title });
+      }
+    }
+
+    const onCanvas = nodeMap.has(cardId);
+    if (onCanvas) {
+      // 画布上那张卡 ⇒ 就地换掉它的节点（内容、状态点、待裁定数、最新对话全跟着变）。
+      refreshCardNode(cardId, card);
+    }
+    // 父卡的"子卡数"徽章也可能变了（新卡/删卡）⇒ 父卡也要刷一次。
+    const parentNode = parentId ? nodeMap.get(parentId) : null;
+    if (parentNode) {
+      const pcard = state.index.cardMap[parentId];
+      if (pcard) refreshCardNode(parentId, pcard);
+    }
+    // 新卡若其父卡在场且已展开，它应当**出现**（增量入口：只动父卡这一单元）。
+    if (kind === "created" && parentId && nodeMap.has(parentId)
+        && state.view.expanded.has(parentId)) {
+      renderSubtree(parentId);
+      return true;
+    }
+    // 新卡若父卡不在画布上（或没展开）⇒ 画布结构没变，索引更新即可。
+    return false;
+  }
+
+  // 更新一张卡：**保留节点身份，只换卡面**。
+  //
+  // [画布 5711] 为什么不换节点（实测回归）：
+  //   早先的做法是 `old.replaceWith(fresh)` —— 后台一次更新就把用户**正要点的**
+  //   那张卡换掉了，那个 click 落在一个已脱离文档的节点上 ⇒ 点了没反应。
+  //   实测：e2e「A10a 单击＝进入对话页」在换节点版本上 FAIL（URL 停在
+  //   /work/work_001），保留节点的版本 PASS。真实场景同构：用户点卡的瞬间
+  //   后台写了这张卡 ⇒ 点击丢失。
+  //
+  // 现在：节点身份保留 ⇒ 监听器、焦点、拖拽态、展开的对话单元全都在；
+  // 只把**卡面**搬过去。createNode 仍是卡面的唯一构造口（不重复实现卡面）。
+  function refreshCardNode(cardId, card) {
+    const old = nodeMap.get(cardId);
+    if (!old) return false;
+    const vm = collectViewModel();
+    const pos = { x: parseFloat(old.style.left) || 0, y: parseFloat(old.style.top) || 0 };
+    const depth = depthFromViewRoot(cardId);
+    // 用 createNode 生成一份新卡面（它是卡面的唯一真相），只取内容不取节点。
+    const fresh = createNode(card, pos, vm, depth);
+    // LOD 档位：createNode 不加档位类（档位由 applyLODClasses 统一刷）。
+    // 老节点自带档位类（节点没换，档位不变）⇒ 这里不需要动。
+    const wasOpen = old.dataset.open === "1";
+    old.innerHTML = fresh.innerHTML;
+    // 数据属性同步：fresh 有的搬过去，没有的删掉（否则旧值会赖着不走）。
+    for (const k of ["ws", "pending", "ck", "weight", "basew", "fresh",
+                     "unread", "runstate", "depth", "type"]) {
+      if (fresh.dataset[k] !== undefined) old.dataset[k] = fresh.dataset[k];
+      else delete old.dataset[k];
+    }
+    old.setAttribute("aria-label", fresh.getAttribute("aria-label") || "");
+    old.classList.toggle("is-pinned", fresh.classList.contains("is-pinned"));
+    // 卡面里的子元素是新的 ⇒ 重绑它们的监听（节点级监听不动）。
+    bindCardFace(old, card);
+    // 就地展开的对话单元：内容不能被冲掉（重新拉一次）。
+    if (wasOpen) {
+      old.dataset.open = "1";
+      loadCell(cardId);
+    }
+    applySelectionClasses();
+    return true;
+  }
+
+  // ── 订阅工作级事件流 ──
+  function subscribeWorkEvents() {
+    if (_workEs) return;
+    try {
+      const es = new EventSource(`/api/works/${WORK_ID}/events`);
+      _workEs = es;
+      es.onmessage = (m) => {
+        let evt = null;
+        try { evt = JSON.parse(m.data); } catch (e) { return; }
+        if (!evt || evt.type !== "card_changed") return;
+        const d = evt.data || {};
+        if (!d.card_id) return;
+        scheduleLiveApply(d.card_id, d);
+      };
+      es.onerror = () => { /* SSE 断开静默；EventSource 自带重连（retry: 3000） */ };
+    } catch (e) {
+      // EventSource 不可用（老浏览器/代理）⇒ 退回轮询兜底（见下）。
+      _workEs = null;
+    }
+  }
+  subscribeWorkEvents();
+  // 兜底：SSE 不可用或长时间没消息时，用卡片版本指纹做低频差分探测。
+  // 指纹端点（/api/nav/version）现成，左栏已用它 60s 探测；这里复用同口径，
+  // 间隔更短（4s），命中即全量重拉（只在 SSE 失效时才走到这条）。
+  let _liveFallbackTimer = 0;
+  let _liveFallbackSig = "";
+  async function liveFallbackProbe() {
+    if (_workEs) return;            // SSE 活着就不轮询
+    try {
+      const r = await fetch("/api/nav/version");
+      if (!r.ok) return;
+      const d = await r.json();
+      const sig = (d.by_work || {})[WORK_ID] || "";
+      if (_liveFallbackSig && sig && sig !== _liveFallbackSig) {
+        await reloadCanvas();
+      }
+      _liveFallbackSig = sig;
+    } catch (e) { /* 零阻断 */ }
+  }
+  _liveFallbackTimer = setInterval(liveFallbackProbe, 4000);
+  if (_liveFallbackTimer && typeof _liveFallbackTimer.unref === "function") _liveFallbackTimer.unref();
