@@ -1639,6 +1639,81 @@ async def _h_unlink_cards(work_id: str, current_id: str,
 
 
 # ============================================================
+# [换父 2026-10-20] 结构边可变：把自己子树内的卡挂到另一张卡下
+# ============================================================
+# 与 link_cards 的区别：那条改的是**通信线**（卡间发信沿它寻址）；本工具改的是
+# **父子边**——树的形状、权限作用域（写侧限子树）、画布层级全由它决定。
+#
+# 用户 2026-10-20 裁定的边界是「只在自己子树内调整」：
+#   · 不给自己换父（自己的归属归上级管）；
+#   · 不把卡挪出子树（那是「交出去」，会让写侧子树语义松一档）。
+# 人与模型共用同一道存储校验（card_store.update_card 的 parent 分支）——
+# 画布拖拽走 PATCH、模型走这里，判据只有一份。
+async def _h_reparent_card(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """把 ``card_id`` 挂到 ``new_parent_id`` 下；被移动卡的整棵子树随之迁移。
+
+    判据（全部机械、逐条拒绝并说明原因）：
+      1. 被移动卡 ∈ 本卡**严格**子树（不能改自己的归属）；
+      2. 新父卡 ∈ 本卡子树（**含本卡自身**——子卡可以直接挂到自己名下）；
+      3. 新父卡不是被移动卡自身或其后代（防环；存储层再判一次，双保险）；
+      4. 新父卡类型须允许有子卡（工具卡/角色卡/编程卡/规则卡不可）——由存储层读
+         注册表 can_have_children 判，本函数不重复硬编码；
+      5. 已是该父卡 ⇒ 幂等返回，不重复写（不留无谓历史）。
+    权限：关口 ``EDIT``（树类开关 ⇒ 被移动卡必须在自己子树内），与 edit_card 同一
+    开关；新父卡的子树归属另判一次（第 2 条）。
+    """
+    card_id = str(arguments.get("card_id") or "").strip()
+    new_parent_id = str(arguments.get("new_parent_id") or "").strip()
+    if not card_id or not new_parent_id:
+        return err("validation", "card_id 与 new_parent_id 都必填")
+    if card_id == current_id:
+        return err("denied", "不能改自己的归属——只能调整自己子树内的卡")
+    if card_id not in cards:
+        return err("not_found", f"卡片不存在: {card_id}")
+    if new_parent_id not in cards:
+        return err("not_found", f"卡片不存在: {new_parent_id}")
+    # 判据 1：关口 EDIT（树类）＝被移动卡必须在自己子树内
+    try:
+        policy.check(current_id, card_id, policy.SWITCH_EDIT, cards)
+    except PermissionError:
+        return err("denied", f"越权：{card_id} 不在你的子树内")
+    # 判据 2：新父卡也必须在子树内（含自身）——不能把卡挪出子树
+    if new_parent_id != current_id and not policy._is_in_subtree(
+            current_id, new_parent_id, cards):
+        return err("denied",
+                   f"越权：{new_parent_id} 不在你的子树内，不能把卡挂过去")
+    # 判据 3：防环
+    if new_parent_id == card_id or policy._is_in_subtree(card_id, new_parent_id, cards):
+        return err("validation", "不能挂到自身或自己的后代下（会成环）")
+    # 判据 5：幂等（已是该父卡 ⇒ 不写）
+    if str((cards.get(card_id) or {}).get("parent") or "") == new_parent_id:
+        return {"ok": True, "existed": True,
+                "card_id": card_id, "parent": new_parent_id}
+    # 迁移规模在**改父之前**数——改完再数，子树已按新边算，数出来的是别人的子树
+    moved_subtree = sum(
+        1 for cid in cards
+        if cid == card_id or policy._is_in_subtree(card_id, cid, cards))
+    moved_title = str((cards.get(card_id) or {}).get("title") or "")
+    parent_title = str((cards.get(new_parent_id) or {}).get("title") or "")
+    actor_title = str((cards.get(current_id) or {}).get("title") or "")
+    result = await card_store.update_card(
+        work_id, card_id,
+        {"parent": new_parent_id},
+        f"由「{actor_title}」调整归属：「{moved_title}」挂到「{parent_title}」下"
+        f"（连子树 {moved_subtree} 张）",
+    )
+    if "error" in result:
+        return err("validation", str(result["error"]))
+    # 同轮 meta 缓存同步（与 _h_link_cards 同手法）：同一轮里后续 read_card /
+    # 再调本工具时读到的必须是新父卡，否则会按旧树判越权。
+    cards[card_id] = {**(result.get("meta") or {}), "card_id": card_id}
+    return {"ok": True, "card_id": card_id, "parent": new_parent_id,
+            "moved_subtree": moved_subtree}
+
+
+# ============================================================
 # [依赖关联线 2026-10-16] 第三种线「依赖关联线」的建线/解线工具
 #
 # 与 link_cards / unlink_cards **对称但不混用**：写的是卡上**另一个字段**——
@@ -3003,6 +3078,37 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     ),
 }
 
+# [换父 2026-10-20] 结构边（父子）可变——追加在字面量**之后**，不插进既有序列
+# 中间：既有工具面的顺序因此逐字不变，新增项排末尾。
+# 开关挂 EDIT（与 edit_card 同一授权）：EDIT 是树类开关 ⇒ 执行层再判一次子树，
+# 与工具面「看得见」同源——没这个开关就看不见它，调了也必拒。
+TOOL_REGISTRY["reparent_card"] = ToolDef(
+    schema={
+        "name": "reparent_card",
+        "description": (
+            "把自己子树内的一张卡挂到另一张卡下（改父子归属），它的整棵子树随之迁移。"
+            "只能在自己子树内调整：被移动的卡、新的父卡都必须在你的子树内；"
+            "不能改自己的归属、不能把卡挪出子树、不能成环。"
+            "新父卡的类型必须允许有子卡（工具卡/角色卡/编程卡/规则卡不行）。"
+            "只改树形归属，不动卡片正文，也不动通信线。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string",
+                            "description": "要移动的卡 id（必须在你子树内）"},
+                "new_parent_id": {"type": "string",
+                                  "description": "新的父卡 id（可以是你自己；必须在你子树内）"},
+            },
+            "required": ["card_id", "new_parent_id"],
+        },
+    },
+    handler=_h_reparent_card,
+    readonly=False,
+)
+
+TOOL_SWITCH["reparent_card"] = policy.SWITCH_EDIT
+
 
 def _register_file_tools() -> None:
     """把 file_tools 四件登记进同一注册表（模块加载时调用一次）。
@@ -4260,6 +4366,16 @@ def build_tool_schemas(
     tools = _filter_by_card_type(tools, card_id, work_id, cards)
     # ---- 四级：根卡闸（规则卡 2026-10-15 · 块3）----
     tools = _filter_root_only(tools, card_id, work_id, cards)
+    # ---- 五级：[换父 2026-10-20] 不能有子卡的卡不下发换父工具 ----
+    # 工具卡/编程卡/规则卡自己没有子树可调（角色卡的整个工具面在末段③被替换，
+    # 走不到这里也无妨）。执行层同样会拒，但「工具面与执行层同源」的意思是
+    # **看不见＝不该做**：给它一个永远调不通的工具，只会白烧一次模型调用。
+    # 判据读注册表 can_have_children，不硬编码类型名。
+    if card_id and cards is not None:
+        _self_type = str((cards.get(card_id) or {}).get("card_type") or "")
+        if _self_type and not card_store._type_can_have_children(_self_type):
+            tools = [t for t in tools
+                     if str(t.get("name", "")) != "reparent_card"]
     # ---- 末段①：自动模式专用工具面（非卡片内挂；只对 auto_mode=1 的卡）----
     # 追加在四段之后 ⇒ 不经任何按卡过滤（不随 perms 收敛），可见性唯一由
     # auto_mode 决定。非 auto 卡 ⇒ 本段不进 ⇒ 输出与基线逐字一致。
@@ -4316,6 +4432,8 @@ def _create_card_schema_with_goal(schema: dict[str, Any]) -> dict[str, Any]:
 _PLAN_GATE_BLOCKED: frozenset[str] = frozenset({
     "create_card", "create_coder_card", "delete_card",
     "link_cards", "unlink_cards", "link_rel", "unlink_rel",
+    # [换父 2026-10-20] 改父子边＝改结构，与建卡/连线同档：无活板时不给
+    "reparent_card",
     "write_file", "edit_file", "move_file", "rename_file", "delete_file",
     "run_tool_card", "send_card_message",
 })
