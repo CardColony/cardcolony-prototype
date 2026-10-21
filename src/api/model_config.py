@@ -546,14 +546,15 @@ def _tier_raw(work_id: Optional[str], card_id: Optional[str],
               cfg: dict[str, Any]) -> Any:
     """该卡在深度分层里的原始值（str 或 list）；不适用 ⇒ None。
 
-    **只对 auto 模式的卡生效**：分层是为「一棵自动组织起来的树」设计的默认设置——
-    普通对话卡有自己的角色绑定，不该被它在树里的位置悄悄改写。
+    [默认三层 = 所有卡的默认设置 2026-10-21 · 用户裁定]
+    「默认三层是一个默认设置，手动改的权重最高」——所以分层**对所有卡生效**，
+    不再只看 auto_mode。改前这里有一句 `if not meta.get("auto_mode"): return None`，
+    于是普通卡（绝大多数）一律落到 system.default_model（minimax 兜底），
+    用户看到的就是「怎么永远锁在 minimax」。
+    人的选择走 card/work 覆盖（权重最高，见 pick 的前两步），不靠这里。
 
-    [模型选择底座 2026-10-21] 取消原 `_TIER_ROLES` 白名单：分层是「这张卡的
-    默认模型」，对**所有角色**成立（三席跟着池走、工具轮跟着走）。原来只放行
-    execute/think/synthesize/draft/default，导致同一个底座里有两套规则：
-    auto 卡上角色绑定被 tier 静默盖掉，而 viewpoint/condense 又不受分层管——
-    这正是「互相冲突」的来源。现在一条规则：auto 卡按深度，手动卡按绑定。
+    [模型选择底座] 取消原 `_TIER_ROLES` 白名单：分层对**所有角色**成立
+    （三席跟着池走、工具轮跟着走），一条规则，不再有「谁被静默盖掉」。
     """
     tiers = cfg.get("tiers") or {}
     if not tiers or not card_id:
@@ -562,8 +563,6 @@ def _tier_raw(work_id: Optional[str], card_id: Optional[str],
         from ..storage import card_store
         meta = card_store._meta_of(str(work_id or ""), str(card_id)) or {}
     except Exception:  # noqa: BLE001 读不到卡 ⇒ 不分层
-        return None
-    if not meta.get("auto_mode"):
         return None
     depth = _card_depth(str(work_id or ""), str(card_id))
     return tiers.get(f"depth_{depth}") or tiers.get("default") or None
