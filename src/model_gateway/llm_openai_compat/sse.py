@@ -38,8 +38,12 @@ async def parse_sse(
 ) -> AsyncIterator[str]:
     """把 SSE 字节流解析成 event ``data`` 载荷。
 
-    原版 ``parseSse``（sse.ts:28-40）。最后一个值是 ``[DONE]`` 然后 return；
-    若流在未见 ``[DONE]`` 时结束，抛 ``LlmError('STREAM_CLOSED')``。
+    [流收尾判据 2026-10-21] ``[DONE]`` 是 **OpenAI 自己的哨兵，不是 SSE 规范**：
+    nous（跑 anthropic 模型）、minimax 这些兼容端点直接关连接、不发 ``[DONE]``，
+    但它们会正常发 ``finish_reason``。所以**本层不再判协议违约**——EOF 就是流结束，
+    完整性由上层按 ``finish_reason`` 判（见 ``translate.translate``）。
+    改前这里在 EOF 无条件抛 ``STREAM_CLOSED``，于是 haiku / minimax 的流一律被判成
+    「断了」，重试 3 次全失败（实测 `SSE stream ended without [DONE]`）。
 
     :param stream: 原始 SSE 字节；读取可切在任何位置，包括 UTF-8 序列中间。
     :param on_comment: 可选的传输活动回调；注释**绝不**进入产出载荷流。
@@ -69,8 +73,8 @@ async def parse_sse(
                 if payload == DONE:
                     return
 
-    # EOF：未遇 [DONE] ⇒ 截断（原版 sse.ts:39）。
-    raise LlmError("SSE stream ended without [DONE]", "STREAM_CLOSED")
+    # EOF：流自然结束。**不在这里判违约**——有没有 finish_reason 由上层判。
+    return
 
 
 def _find_line_terminator(buf: str) -> Optional[tuple[int, int]]:
