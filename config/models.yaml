@@ -93,22 +93,19 @@ models:
     note: 火山方舟 token plan · ark code latest
   minimax-m31:
     provider: minimax
-    model: MiniMax-M3
+    model: MiniMax-M3.1-Flash
     temperature: 1
-    note: MiniMax M3
+    note: MiniMax M3.1 Flash（M3 已下架）
   kimi-k3:
     provider: kimi
     model: k3
-    temperature: 1          # k3 只接受 1
+    temperature: 1
     thinking: 'on'
     note: Kimi K3（coding plan 端点）
   deepseek-pro:
     provider: opencode
     model: deepseek-v4-pro
     temperature: 0.3
-    # [思考流补 2026-10-16] thinking: on——deepseek 天生产思考，但必须显式声明
-    # 才会经 model_config 注入 reasoning_effort=default_effort(high)；缺声明时
-    # 端点退化成内联 <think> 形态（实测 10-16：正文尾部带 </think> 污染）。
     thinking: 'on'
     note: DeepSeek V4 Pro（按需选用；[2026-10-19 裁定] 已无降级模型概念）
     retry:
@@ -163,10 +160,10 @@ models:
     note: ''
   minimax-m31-flash-preview:
     provider: minimax
-    model: MiniMax-M3.1-Flash-Preview
-    temperature: 0.7
+    model: MiniMax-M3.1-Flash
+    temperature: 1
     thinking: 'on'
-    note: ''
+    note: MiniMax M3.1 Flash（原 -Preview id 已失效）
   deepseek-v41-flash:
     provider: opencode
     model: deepseek-v4.1-flash
@@ -202,8 +199,6 @@ models:
     thinking: 'on'
     note: ''
 bindings:
-  # [2026-10-19 permexp] deepseek/claude 的 key 均过期；思维链打开后按步类型选模，
-  # 故 execute/think/synthesize 一并切到 glm-53-flash，否则每步都 MODEL_CALL_FAILED。
   execute: glm-53-flash
   think: glm-53-flash
   synthesize: glm-53-flash
@@ -215,21 +210,11 @@ bindings:
   - glm-53
   - minimax-m31-flash-preview
 system:
-  # [合并 2026-10-19] 保留 dev 的默认模型；permexp 实验期的 glm-53-flash
-  # 与 fallback_model 空串不并入（dev 已拆 fallback 机制）。
   default_model: minimax-m31-flash-preview
 simple:
   enabled: true
 retry_grading:
   enabled: false
-
-# ============================================================
-# [并发上限 2026-10-19] 每个模型同时在跑的调用数。
-# 为什么要有：实测 k3 在几分钟内拆出 54 个并发回合，全部打向同一端点，
-# 服务端限流/挂起，整个进程被拖垮。
-# 不探测（各供应商都说"按套餐动态调整"，查不到准数）——用保守默认 + 可按套餐覆盖。
-# 调度器按这张表排队：满了就等，不失败、不丢活。
-# ============================================================
 concurrency:
   default: 3
   per_model:
@@ -239,29 +224,16 @@ concurrency:
     glm-53-flashx: 5
     deepseek-v41-flash: 8
     deepseek-pro: 4
-
-# ============================================================
-# 模型分级（按卡在树中的深度选模型）
-#
-# 规则：depth_0 = 根卡，depth_1 = 部门，depth_2 = 组，default = 叶子及更深。
-# 只在「卡/项目没有显式覆盖」且「卡是自动模式」时生效。
-# 值必须是上面 models: 里已有的名字。留空 = 该层走 bindings。
-#
-# 可选模型（已同步）：
-#   kimi-k3 · deepseek-pro · qwen-max · anthropic-claude-haiku-55
-#   glm-53 · glm-53-flash · glm-53-flashx · minimax-m31-flash-preview
-#   deepseek-v41-flash · deepseek-v4-flash · longcat-25-preview-free · step-5-preview-free
-# ============================================================
 tiers:
-  depth_0:                    # 根卡：k3 为主，deepseek 官方 flash 备用
-    - kimi-k3
-    - ds-flash-official
-  depth_1: ds-v41-flash-aliyun  # 第一级（aliyun deepseek v4.1 flash 1017）
-  depth_2:                    # 第二级及之后：三个端点按卡 id 分散（去掉了 aliyun）
-    - ds-v4-flash-volc
-    - ark-code-latest
-    - minimax-m31
+  depth_0:
+  - kimi-k3
+  - ds-flash-official
+  depth_1: ds-v41-flash-aliyun
+  depth_2:
+  - ds-v4-flash-volc
+  - ark-code-latest
+  - minimax-m31
   default:
-    - ds-v4-flash-volc
-    - ark-code-latest
-    - minimax-m31
+  - ds-v4-flash-volc
+  - ark-code-latest
+  - minimax-m31
