@@ -223,14 +223,14 @@ TOOL_SWITCH: dict[str, str] = {
     # [基础工具找回 2026-10-18 · Cardlo 搬运] 七件全挂 tools_file
     "bash": policy.SWITCH_TOOLS_FILE,
     "python": policy.SWITCH_TOOLS_FILE,
-    "glob_files": policy.SWITCH_TOOLS_FILE,
+    "glob_files": policy.SWITCH_TOOLS_READ_FILE,
     "delete_file": policy.SWITCH_TOOLS_FILE,
     "move_file": policy.SWITCH_TOOLS_FILE,
     "rename_file": policy.SWITCH_TOOLS_FILE,
     "edit_file": policy.SWITCH_TOOLS_FILE,
-    "list_files": policy.SWITCH_TOOLS_FILE,
-    "read_file": policy.SWITCH_TOOLS_FILE,
-    "search_files": policy.SWITCH_TOOLS_FILE,
+    "list_files": policy.SWITCH_TOOLS_READ_FILE,
+    "read_file": policy.SWITCH_TOOLS_READ_FILE,
+    "search_files": policy.SWITCH_TOOLS_READ_FILE,
     "write_file": policy.SWITCH_TOOLS_FILE,
     # 思维链六件（plan_tools 注册进本注册表）
     "create_plan": policy.SWITCH_PLAN,

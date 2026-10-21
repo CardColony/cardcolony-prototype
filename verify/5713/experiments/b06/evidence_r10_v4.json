@@ -1,0 +1,52 @@
+{
+  "stages": {
+    "V4": {
+      "ok": true,
+      "read_after": "第二版正文",
+      "rolled_back": false,
+      "sqlite_conns_open_before_restore": [
+        {
+          "target": "cards.db",
+          "thread": 18072,
+          "stack": [
+            "card_db.py:831 _write_sync",
+            "card_db.py:787 _get_conn"
+          ]
+        },
+        {
+          "target": "file:D:/AI_station/推演agent/.worktrees/5713_sandbox/experiments/b06/r10_v4/app_home/works/work_001/cards.db?mode=ro",
+          "thread": 36152,
+          "stack": [
+            "card_store.py:737 card_exists",
+            "card_db.py:873 read_sync",
+            "card_db.py:855 _read_sync",
+            "card_db.py:467 _read_conn"
+          ]
+        }
+      ],
+      "unlink_failures": 2,
+      "alarm_hits": [
+        {
+          "at": "21:30:57",
+          "sqlite_conns_still_open": [],
+          "total_connects_recorded": 8
+        },
+        {
+          "at": "21:30:57",
+          "sqlite_conns_still_open": [],
+          "total_connects_recorded": 8
+        }
+      ],
+      "wal_after": {
+        "bytes": 444992,
+        "v1": 1,
+        "v2": 1
+      },
+      "main_after": {
+        "bytes": 163840,
+        "v1": 1,
+        "v2": 0
+      }
+    }
+  }
+}

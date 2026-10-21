@@ -71,13 +71,18 @@ def test_region_table_six_regions_no_current_turn_region():
     # 300 对话历史之前）⇒ 全表 16 区。
     # [自动模式 2026-10-17 · 回灌 5700 块0.4] 新增 order 152「自动模式·目标」区
     # （150 当前卡之后、155 区域说明之前；只对 auto 卡有内容）⇒ 全表 17 区。
+    # [第二层区 2026-10-20 · card_004] 新增 order 175「第二层·职能角色」
+    # （170 直接子卡现状之后、200 记忆之前；**只对项目根卡有内容**）⇒ 全表 18 区。
+    # 依据：组阁判断力实验实测「根卡会设角色、不会调角色」——`list_roles`→`read_card`
+    # 读过角色卡仍不改档/不撤岗 ⇒ 调阁触发必须外置成机制（见 test_role_cabinet_region.py）。
     orders = [r["order"] for r in context_regions.REGION_TABLE]
     names = {r["name"] for r in context_regions.REGION_TABLE}
-    assert orders == [0, 85, 90, 95, 100, 150, 152, 155, 170, 200, 250, 300,
+    assert orders == [0, 85, 90, 95, 100, 150, 152, 155, 170, 175, 200, 250, 300,
                       900, 999, 1000, 1010, 1020]
     assert names == {"使用说明", "规则注入", "卡片职责", "卡片思维", "卡片清单", "当前卡",
                      "自动模式·目标",
-                     "卡片区域说明", "直接子卡现状", "记忆（condense_fold）", "依赖关联",
+                     "卡片区域说明", "直接子卡现状", "第二层·职能角色",
+                     "记忆（condense_fold）", "依赖关联",
                      "对话历史",
                      "本轮工具轮",
                      "用户消息", "判断协议注入", "工作规范与流程注入", "三席身份注入"}
@@ -124,7 +129,12 @@ async def test_v1_byte_equal_multi_card_tree(sandbox):
         guide = context_regions.render_card_region_guide(
             str((card_store._meta_of(wid, current) or {}).get("card_type") or ""),
             card_store._root_project_class(wid))
-        expect = context_regions.assemble_regions([duty, old, guide])
+        # [第二层区 2026-10-20 · card_004] 迭代新增 order 175（只对项目根卡有内容）——
+        # 与上面 duty(90)/guide(155) 同一手法：新区并进 expect，冻结副本仍是其后基准。
+        # 非根卡取数层返回 {} ⇒ 渲染空串、不影响本断言。
+        cab = context_regions.render_role_cabinet_region(
+            context_assembler.build_ctx(wid, current))
+        expect = context_regions.assemble_regions([duty, old, guide, cab])
         new = context_assembler.build_neutral_context(wid, current)
         assert new == expect
         assert new.encode("utf-8") == expect.encode("utf-8")
@@ -176,7 +186,8 @@ async def test_v1_context_regions_join_equals_neutral_context(sandbox):
     joined = context_regions.assemble_regions([r["text"] for r in regions])
     assert joined == context_assembler.build_neutral_context(wid, "card_001")
     # 无规则卡 → order 85 渲染空串，「没有来源就不出现这个区」，join 不含它。
-    assert [r["order"] for r in regions] == [90, 100, 150, 155]
+    # [第二层区 2026-10-20 · card_004] 多卡树的根卡 ⇒ 175 有来源（≥2 张工作卡、无角色）。
+    assert [r["order"] for r in regions] == [90, 100, 150, 155, 175]
     # regions 条目只带指针性元数据，不带正文复制字段以外的意外大字段
     for r in regions:
         assert set(r) == {"order", "name", "channel", "seats", "text", "entries"}
