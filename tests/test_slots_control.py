@@ -216,3 +216,52 @@ def test_behavior_registry_two_types_judge_empty(sandbox):
         assert entry["judge"] == "", f"{name}.judge 判据位必须空串（X4 线）"
         assert entry["note"], f"{name}.note 非空"
     assert control.check("w", "c") == control.CONTINUE, "判据位空 → 恒 CONTINUE"
+
+
+# ---------- 6：硬停兜底（[立刻停止 2026-10-21]） ----------
+
+async def test_stop_hard_cancels_turn_that_never_yields(monkeypatch):
+    """模型一个字都不吐、卡在流里时，软停等不到边界 ⇒ 1.5 秒后必须硬取消。
+
+    实测背景：card_031 卡在模型流里 9 分钟，点停止只置位、回合不动，
+    再发消息永远 409「回合进行中」。软停只对「还在吐字/走到步边界」有效。
+    """
+    from src.storage import session_facade
+
+    wid, cid = "w_hard", "c_hard"
+    monkeypatch.setattr(control, "STOP_HARD_CANCEL_DELAY", 0.05)
+    session_facade.turn_release(wid, cid, "whatever")
+    assert session_facade.turn_try_acquire(wid, cid, "turn:hard")
+    task = asyncio.create_task(asyncio.sleep(30))
+    control.bind_turn_task(wid, cid, task)
+    try:
+        r = control.request_stop(wid, cid)
+        assert r["stopped"] is True
+        await asyncio.sleep(0.25)
+        assert task.done(), "卡死的回合必须被硬取消（否则互斥体永不释放）"
+        assert task.cancelled()
+    finally:
+        control.unbind_turn_task(wid, cid, task)
+        session_facade.turn_release(wid, cid, "turn:hard")
+        control.discard_stop(wid, cid)
+
+
+async def test_stop_does_not_kill_a_turn_that_finishes_in_time(monkeypatch):
+    """正常收口的回合（软停已生效）不许被兜底误杀。"""
+    from src.storage import session_facade
+
+    wid, cid = "w_fast", "c_fast"
+    monkeypatch.setattr(control, "STOP_HARD_CANCEL_DELAY", 0.2)
+    session_facade.turn_try_acquire(wid, cid, "turn:fast")
+    task = asyncio.create_task(asyncio.sleep(30))
+    control.bind_turn_task(wid, cid, task)
+    try:
+        control.request_stop(wid, cid)
+        # 回合在兜底时间之前正常收口（释放互斥体）
+        session_facade.turn_release(wid, cid, "turn:fast")
+        await asyncio.sleep(0.35)
+        assert not task.done(), "已收口的回合不该被硬停误杀"
+    finally:
+        task.cancel()
+        control.unbind_turn_task(wid, cid, task)
+        control.discard_stop(wid, cid)

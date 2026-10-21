@@ -1739,12 +1739,26 @@ async def _run_message(work_id: str, card_id: str, content: str,
         logger.warning("[A4] 同卡在途拒绝 409 work=%s card=%s holder=%s",
                        work_id, card_id, holder)
         event_stream.reset_stream_context(_stream_ctx_token)
-        return _err(409, f"卡片回合进行中（{holder}），请稍后重试")
+        # [立刻停止 2026-10-21] 括号里原来是内部回合编号（turn:1a2b3c4d），
+        # 用户看不懂也没法处理。说人话 + 给出唯一有效动作。
+        return _err(409, "这张卡正在跑（回合进行中）。点「停止」会立刻中断，然后就能发消息。")
+    # [立刻停止 2026-10-21 · 用户令] 把本轮协程登记到 control：停止端点直接
+    # cancel 它，**不再「置位等步边界」**——一轮模型调用可能跑几分钟，步边界
+    # 恰恰在最需要停的时候等不到（实测 card_031 卡在流里 9 分钟，停止无效）。
+    _turn_task = asyncio.current_task()
+    control.bind_turn_task(work_id, card_id, _turn_task)
     # [自动模式 2026-10-17 · 回灌 5700 块0.3 · 方案 §3.8] 起回合前经**执行闸**：
     # 串行模式下拿不到锁＝**排队等待**（await，不是 409——这是与上面卡互斥体的
     # 关键差别）；并行模式直接过；同卡已持有（＝本卡目标生命周期内继续跑）⇒
     # no-op。取在互斥体之后：同卡重入被互斥体挡在前面，闸上不会出现同卡双取。
-    await serial_gate.acquire(work_id, card_id)
+    try:
+        await serial_gate.acquire(work_id, card_id)
+    except asyncio.CancelledError:
+        # 停在「等执行闸」这一瞬间：互斥体已登记，必须在这里放掉（还没进下面的 try）
+        session_facade.turn_release(work_id, card_id, turn_owner)
+        control.unbind_turn_task(work_id, card_id, _turn_task)
+        event_stream.reset_stream_context(_stream_ctx_token)
+        raise
     failed = False
     # [goal 域 2026-10-20 · 照抄 dsh] 回合来源。工具权威判定（create/edit/pause/
     # resume 必须直接人类回合；complete/blocked 允许当前 goal round）全靠它。
@@ -1795,6 +1809,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
         # 的插话一律作废——不能留给下一回合，否则那句话会凭空出现在下一轮。
         steer.discard_steer(work_id, card_id)
         session_facade.turn_release(work_id, card_id, turn_owner)
+        # [立刻停止 2026-10-21] 解登记本轮协程（传 task 只解自己，防误删后续回合）
+        control.unbind_turn_task(work_id, card_id, _turn_task)
         event_stream.reset_stream_context(_stream_ctx_token)
         if failed:
             serial_gate.release(work_id, card_id)
