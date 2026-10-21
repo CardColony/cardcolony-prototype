@@ -28,7 +28,8 @@ def test_vt4_ontology_23_types():
     # [判断协议改注入 2026-10-14] 再 +1：judgment_protocol → 24 原 + 2 逐字流 = 26。
     # [三席身份注入 2026-10-14] 再 +1：context_seat_identity → 25 原 + 2 逐字流 = 27。
     # [更新现状按钮改造 2026-10-16] 再 +1：status_update_task → 26 原 + 2 逐字流 = 28。
-    assert len(event_stream.EVENT_TYPES) == 28
+    # [运行态单一真相源 2026-10-21] 再 +1：turn_end → 27 原 + 2 逐字流 = 29。
+    assert len(event_stream.EVENT_TYPES) == 29
     for t in ("triage_verdict", "plan_created", "step_advanced",
               "judgment", "step_start",
               "card_op", "run_start", "deliver", "ping"):
@@ -149,7 +150,9 @@ async def test_vt1_direct_tool_reply_real_landing_and_events(sandbox, work, monk
     # V8 事件序（本回合段）：run_start→context→round_start→tool_call→tool_result→…→done 有序
     types = _last_round_types(work["work_id"], work["work_card_id"])
     assert types[0] == "run_start" and "context" in types
-    assert types[-1] == "done"
+    # [运行态单一真相源 2026-10-21] 回合终止帧 turn_end 恒在 done 之后（后端
+    # _run_message 的 finally 无条件发）⇒ 末位是 turn_end，done 仍是内容层收口。
+    assert types[-1] == "turn_end" and "done" in types
     idx = {t: types.index(t) for t in set(types)}
     assert idx["round_start"] < idx["tool_call"] < idx["tool_result"] < idx["deliver"] < idx["done"]
     # 判定轮与并表通道全部退役
@@ -176,7 +179,7 @@ async def test_vt1_direct_reply_no_seats(sandbox, work, monkeypatch):
     assert body["viewpoints_meta"] == []
     types = _last_round_types(work["work_id"], work["work_card_id"])
     assert types.count("seats_enter") == 0 and types.count("seat_end") == 0
-    assert "deliver" in types and types[-1] == "done"
+    assert "deliver" in types and "done" in types and types[-1] == "turn_end"
 
 
 # ---------------------------------------------------------------- V-T3-1 SSE＋环形

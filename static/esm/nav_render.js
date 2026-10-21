@@ -23,7 +23,7 @@
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=41";
+import { notify } from "./api.js?v=42";
 import { createRowModel } from "./row_model.js?v=30";
 import { createVirtualList } from "./nav_virtual.js?v=30";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=31";
@@ -689,7 +689,16 @@ export function createNavRenderer(deps) {
 
   let cacheApplied = false;
 
-  async function refresh() {
+  /* [切卡不再重拉导航 2026-10-21]
+     病根：open() 每次都调 renderNav() ⇒ refresh() 无条件 `Promise.all([/api/nav,
+     /api/nav/version])`。切一张卡就要多两次往返，而这两份数据**跟当前选中哪张卡
+     毫无关系**——切卡只需要把已有快照按新选中重画（高亮 / 祖先展开 / 面包屑）。
+     连点十张卡 = 二十个请求排队，用户看到的就是「切来切去很慢」。
+     现在：`refresh({ network:false })` ＝ 只重画、零网络（快照缺失时自动退回拉取）；
+     网络拉取只发生在首帧、版本探测、以及数据真的变了之后。 */
+  async function refresh(opts) {
+    const o = opts || {};
+    const hasSnap = () => !!((store.snapshot.get().projects || []).length);
     // ① 首帧：有缓存就先出左栏，不等网络（跳转后左栏立刻有内容）
     if (!cacheApplied && appliedFor === "") {
       cacheApplied = true;
@@ -703,6 +712,12 @@ export function createNavRenderer(deps) {
           render();
         } catch (e) { /* 缓存坏了大不了等网络，零阻断 */ }
       }
+    }
+    // ①.5 零网络重画（切卡 / 局部刷新）：快照在手就不必问后端
+    if (o.network === false && hasSnap()) {
+      applyDefaultFold();
+      render();
+      return;
     }
     // ② 正常拉取（权威数据，覆盖缓存）
     let data = null;
