@@ -59,7 +59,7 @@ def _legacy_path_for(work_id: str) -> Path:
 
 
 def _normalize_row(raw: dict) -> dict:
-    """一行标准化：model（主模型）+ bindings（角色例外，值可 str 或 list）。"""
+    """一行标准化：model（主模型）+ fallbacks（层内兜底）+ bindings（角色例外）。"""
     out: dict[str, Any] = {}
     if not isinstance(raw, dict):
         return out
@@ -68,6 +68,13 @@ def _normalize_row(raw: dict) -> dict:
         v = raw.get("default_model")          # v1 兼容
     if isinstance(v, str) and v.strip():
         out["model"] = v.strip()
+    # [层内兜底 2026-10-21] 同层其余成员（按优先序）。首选在主模型里，这里不重复。
+    fb = raw.get("fallbacks")
+    if isinstance(fb, (list, tuple)):
+        items = [str(x).strip() for x in fb if isinstance(x, str) and str(x).strip()]
+        items = [x for x in items if x != out.get("model")]
+        if items:
+            out["fallbacks"] = items
     b = raw.get("bindings")
     if isinstance(b, dict):
         cleaned: dict[str, Any] = {}
@@ -234,7 +241,11 @@ def put_rows(work_id: str, rows: dict[str, dict]) -> dict:
 
 
 def update_all_models(work_id: str, model: str) -> dict:
-    """项目级改模型：把表里**每一行**的主模型改成它（bindings 保留）。"""
+    """项目级改模型：把表里**每一行**的主模型改成它（bindings 保留）。
+
+    [层内兜底 2026-10-21] 换首选时把它从兜底链里剔掉（它已经是首选了），
+    其余同层成员保持——兜底仍然是「这一层里的其他模型」，不是全局兜底。
+    """
     data = load(work_id)
     m = str(model or "").strip()
     for row in (data.get("cards") or {}).values():
@@ -242,6 +253,11 @@ def update_all_models(work_id: str, model: str) -> dict:
             continue          # 人手改过的那一行不动（手动权重最高）
         if m:
             row["model"] = m
+            fb = [x for x in (row.get("fallbacks") or []) if x != m]
+            if fb:
+                row["fallbacks"] = fb
+            else:
+                row.pop("fallbacks", None)
         else:
             row.pop("model", None)
     data["_meta"] = {"version": 2, "updated_at": _now()}
@@ -321,6 +337,8 @@ def _clean(override: dict) -> dict:
     out: dict[str, Any] = {}
     if row.get("model"):
         out["default_model"] = row["model"]
+    if row.get("fallbacks"):
+        out["fallbacks"] = row["fallbacks"]
     if row.get("bindings"):
         out["bindings"] = row["bindings"]
     return out
@@ -342,6 +360,8 @@ def table_summary(work_id: str) -> dict[str, Any]:
         if row.get("model"):
             item["default_model"] = row["model"]
             models.add(row["model"])
+        if row.get("fallbacks"):
+            item["fallbacks"] = row["fallbacks"]      # [层内兜底] 同层其余成员
         if row.get("bindings"):
             item["bindings"] = row["bindings"]
         if row.get("src") == "manual":

@@ -301,7 +301,7 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     # 照 call_main 的签名顺序与默认值补形参；:304 断言不动（替身修好后自然成立）。
     async def fake_call_main(system_prompt, user_prompt, prior_messages=None,
                              tools=None, model_name=None, turn_tail=None,
-                             turn_once=None):
+                             turn_once=None, fallbacks=None):
         calls["n"] += 1
         captured_wires.append([dict(m) for m in (prior_messages or [])])
         n = calls["n"]
