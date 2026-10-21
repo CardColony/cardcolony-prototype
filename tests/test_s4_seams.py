@@ -212,8 +212,8 @@ async def test_catalyst_nags_until_step_complete(work, monkeypatch):
     assert "产出物：本步要求原文XYZ的产出" in gw.calls[1]["user_prompt"]
     assert "不许谎报" in gw.calls[1]["user_prompt"]
     assert "本步要求原文XYZ" in gw.calls[2]["user_prompt"]  # 第二次催仍带原文
-    # 圈4：工具结果回灌轮（占位符）
-    assert gw.calls[3]["user_prompt"] == "工具结果已返回。"
+    # 圈4：工具结果回灌轮（user 位留空——2026-10-21 起不再编「工具结果已返回」假发言）
+    assert gw.calls[3]["user_prompt"] == ""
     # 末步交作业→收口→（三席关）空手正常交付
     assert body["reply"] if "reply" in body else True
     # 板已收口清理

@@ -62,7 +62,7 @@ payload 字段、最终 body 全字段、落盘文件路径与归一后内容哈
 覆盖判据说明：
 - S1＝快车道单模型直答（`mode==fastlane` ⇒ `break`，跳三席与统合官）。
 - S2＝工具轮＋`card_op` 并表（快车道卡操作走 card_op 而非 tool_result）＋
-  `user_prompt="工具结果已返回。"` 续跳占位 ＋ T14「normal」拼接。
+  工具轮 user 位**留空**（2026-10-21 起不再有「工具结果已返回。」续跳占位） ＋ T14「normal」拼接。
 - S3＝chain 路径：工具查证（tool_result）→ `seats_enter` → 三席（seat_start/seat_end）→
   统合轮（round_start phase=synthesize）→ deliver，含 viewpoints 追加。
 

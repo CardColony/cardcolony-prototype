@@ -255,7 +255,13 @@ class ModelGateway:
         messages: list[dict[str, Any]] = []
         if prior_messages:
             messages.extend(prior_messages)
-        messages.append({"role": "user", "content": user_prompt})
+        # [工具轮去假 user 2026-10-21] **只有真的有用户发言才拼 user 消息**。
+        # 工具轮的 prior 末尾是 role=tool（工具结果），模型据此直接续写即可——
+        # 原来无条件拼一条 user，逼得调用方编「工具结果已返回。」塞进用户位，
+        # 模型会把它当成"用户说的话"（实测每轮思考都在念它）。
+        # dsh 与 WorkBuddy 均无此占位；协议也不要求末尾必须是 user。
+        if user_prompt:
+            messages.append({"role": "user", "content": user_prompt})
         if turn_once:
             messages.extend(turn_once)
         if turn_tail:

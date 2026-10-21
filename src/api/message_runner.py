@@ -994,9 +994,12 @@ async def step(state: RunState) -> StepOutcome:
     # （round＝轮号）。收口那条（clean_text 合并全文）**不再落事件**（会话块照落
     # ⇒ 模型上下文零变化），免得与各轮正文重复。
     await _land_round_reply(state, assistant_content)
-    state.user_prompt = "工具结果已返回。"
-    # [信息流 Task2/打点 A92/A96] 同请求续跳：占位符只进模型不入用户流
-    logger.info("[flow] 断点续跳 resume_kind=同请求续跳 no_user_visible=True round=%s card=%s",
+    # [工具轮去假 user 2026-10-21] 原来这里塞占位符「工具结果已返回。」填用户位——
+    # 模型会把这句话当成**用户说的话**（实测每轮思考都在念它）。工具轮的 prior 末尾
+    # 已是 role=tool 的工具结果，模型据此直接续写；用户位**留空**，不再编造发言。
+    # （gateway._build_options 已改为「user_prompt 为空则不拼 user 消息」。）
+    state.user_prompt = ""
+    logger.info("[flow] 断点续跳 resume_kind=同请求续跳 no_user_message=True round=%s card=%s",
                 state.rounds, state.card_id)
     verdict = check_control(state)   # 中止缝：出口挂点（[A8/R3] 控制三态）
     if verdict == control.STOP:
