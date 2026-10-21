@@ -51,7 +51,7 @@ from ..storage import event_log, session_facade, session_ops
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 
 from ..goal import tools as goal_tools
-from . import card_msg, context_regions, credential_guard, event_stream, process_guard, role_room
+from . import card_msg, context_regions, credential_guard, event_stream, role_room
 from ..toolcard import driver as toolcard_driver
 from ..toolcard import script_loader as toolcard_script_loader
 from ..toolcard import step_prompt as toolcard_step_prompt
@@ -2237,12 +2237,6 @@ async def _h_bash(work_id: str, current_id: str,
     if refs:
         _log_exec_guard("deny", names=refs, shell_cmd=command)
         return err("denied", _credential_deny_message(refs, "bash"))
-    # [进程护栏 2026-10-21 · 用户令] 不许按镜像名通杀解释器进程——宿主服务同名。
-    # 实测事故：card_031 执行 `taskkill /F /IM python.exe` 把 5700 直接杀了。
-    kills = process_guard.find_process_kill(command)
-    if kills:
-        process_guard.log_deny(work_id, current_id, kills, command)
-        return err("denied", process_guard.deny_message(kills, "bash"))
     return await _run_subprocess(shell_cmd=command)
 
 
@@ -2259,11 +2253,6 @@ async def _h_python(work_id: str, current_id: str,
     if refs:
         _log_exec_guard("deny", names=refs, argv=[code])
         return err("denied", _credential_deny_message(refs, "python"))
-    # [进程护栏 2026-10-21] python 代码里同样不许按镜像名通杀（含 subprocess 列表写法）。
-    kills = process_guard.find_process_kill(code)
-    if kills:
-        process_guard.log_deny(work_id, current_id, kills, code)
-        return err("denied", process_guard.deny_message(kills, "python"))
     tmp_path = ""
     try:
         try:
