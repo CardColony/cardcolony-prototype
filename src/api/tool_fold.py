@@ -108,7 +108,7 @@ async def _compress_round(assistant_msg: dict[str, Any],
     for m in tool_msgs:
         parts.append(f"返回（tool_call_id={m.get('tool_call_id', '')}）：{m.get('content', '')}")
     gw = model_service.get_gateway()
-    seat = model_config.resolve("compress") or model_config.default_model()
+    seat = model_config.pick_one("compress")
     result = await gw.call(seat, _COMPRESS_SYSTEM, "\n".join(parts),
                            skip_completion_marker=True)
     content = (result.get("content") or "").strip()

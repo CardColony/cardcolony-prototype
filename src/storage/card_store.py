@@ -1004,6 +1004,15 @@ async def create_card(
         # 不必等用户手动刷新（也不必整棵重建）。放在 update_cache 之后 ⇒ 载荷
         # 里的投影摘要是**重建过的新值**。
         await _notify_card_changed(work_id, card_id, "created")
+        # [模型配置表 2026-10-21 · 用户裁定] 建卡即把默认策略的结果**填进项目表**。
+        # 运行时只读表、不做仲裁 ⇒ 必须在这一刻把行写好（否则第一次取模型才补，
+        # 期间表与实际不同步）。填表失败不阻断建卡（回落首次取用时自愈）。
+        try:
+            from ..api import model_config as _mc
+            _mc.seed_card(work_id, card_id)
+        except Exception as exc:  # noqa: BLE001 填表失败不阻断建卡
+            logger.warning("[模型表] 建卡填行失败 work=%s card=%s: %s",
+                           work_id, card_id, exc)
         if skip_kick:
             return await read_card(work_id, card_id)
         try:

@@ -29,12 +29,10 @@ def pick_model(role: str = "default", *, work_id: Optional[str] = None,
     """
     if role == "default":
         return model_config.default_model(work_id=work_id, card_id=card_id)
-    hit = model_config.resolve(role, work_id=work_id, card_id=card_id)
-    if hit is not None:
-        return str(hit)
-    logger.warning("模型选择：类型 %s 未配置，落默认模型 %s",
-                   role, model_config.default_model(work_id=work_id, card_id=card_id))
-    return model_config.default_model(work_id=work_id, card_id=card_id)
+    # [模型选择底座 2026-10-21] 必须走 pick_one：分层池是 list，直接 str(hit)
+    # 会得到 "['kimi-k3', ...]" 这种假模型名（改前 resolve 内部已选好单值，
+    # 现在池的选取归底座，消费点不能再假设 resolve 返 str）。
+    return model_config.pick_one(role, work_id=work_id, card_id=card_id)
 
 
 def resolve_model(role: str, *, work_id: Optional[str] = None,
@@ -45,12 +43,10 @@ def resolve_model(role: str, *, work_id: Optional[str] = None,
     校验值合法性（非法回落 + 留痕），pick_model 保留原始值让消费点显式报错。
     work_id / card_id 可选：传了走 card>work>global 优先序覆盖。
     """
-    hit = model_config.resolve(role, work_id=work_id, card_id=card_id)
-    if hit is None:
+    hit = model_config.pick_one(role, work_id=work_id, card_id=card_id)
+    name = str(hit or "")
+    if not name:
         return model_config.default_model(work_id=work_id, card_id=card_id)
-    if isinstance(hit, list):
-        return str(hit[0]) if hit else model_config.default_model(work_id=work_id, card_id=card_id)
-    name = str(hit)
     if name not in model_config.model_names():
         logger.warning("模型选择：类型 %s 指向非法模型 %s，回落默认 %s",
                        role, name, model_config.default_model(work_id=work_id, card_id=card_id))
