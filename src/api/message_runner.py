@@ -1640,9 +1640,6 @@ async def schedule_card_message_triggers(state: RunState) -> None:
             _tmeta = card_store._meta_of(work_id, target_id) or {}
         except Exception:  # noqa: BLE001 读不出 meta ⇒ 不在此处置，走既有链
             _tmeta = {}
-        if str(_tmeta.get("card_type") or "") == "coder" \
-                and str(_tmeta.get("state") or "") == "completed":
-            continue
         try:
             pending = await card_db.list_pending(work_id, target_id)
         except Exception as exc:  # noqa: BLE001
@@ -1652,6 +1649,22 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         if not pending:
             # 信已被先前某次收口调起并处理完（收件箱里已无 pending）——不再重复调起。
             continue
+        # [编程卡 2026-10-15 · §六块3 静默判定②] 完工编程卡不被 K3 调起。
+        # [coder 卡可继续派活 2026-10-21 · 用户令] 但**派活**要放行：主卡/人发
+        # msg_ask 给一张完工 coder，就是「这条线还有后续」——先复位（state=active
+        # ＋目标重开）再正常调起，而不是另建一张卡。纯回执类（coder_done 等）
+        # 仍然跳过：否则完工回执会把它自己再叫起来一遍。
+        if str(_tmeta.get("card_type") or "") == "coder" \
+                and str(_tmeta.get("state") or "") == "completed":
+            _is_dispatch = any(
+                str((m or {}).get("type") or "") == "msg_ask" for m in pending)
+            if not _is_dispatch:
+                continue
+            try:
+                await _routes._revive_coder_card(work_id, target_id, "")
+            except Exception as exc:  # noqa: BLE001 复位失败就不调起，信留 pending
+                logger.error("[K3] 完工编程卡复位失败 target=%s: %s", target_id, exc)
+                continue
         session_ops.ops_log("card_msg_deliver", work_id, target_id,
                             {"msg_id": str(pending[-1].get("msg_id") or ""),
                              "msg_ids": list(msg_ids)})
