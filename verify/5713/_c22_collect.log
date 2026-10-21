@@ -1,0 +1,4 @@
+[gate] 实际使用的解释器：D:\AI_station\推演agent\.venv\Scripts\python.exe
+[gate] 解释器来源：项目自己的 .venv：由本文件位置向上找到 D:\AI_station\推演agent
+[gate] 基线已写：D:\AI_station\推演agent\.worktrees\5713\verify\5713\baseline_known_red.json
+[gate] commit=faa5fddbbcdc rounds=3 每轮红数=[76, 76, 76] known-red=76

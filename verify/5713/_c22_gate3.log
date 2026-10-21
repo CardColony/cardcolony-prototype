@@ -1,0 +1,6 @@
+[3态] 派生报告：{'clean': WindowsPath('D:/AI_station/推演agent/.worktrees/5713/verify/5713/_c22_gate/gate1_clean.xml'), 'newred': WindowsPath('D:/AI_station/推演agent/.worktrees/5713/verify/5713/_c22_gate/gate2_new_red.xml'), 'cleared': WindowsPath('D:/AI_station/推演agent/.worktrees/5713/verify/5713/_c22_gate/gate3_cleared.xml'), 'victim': 'tests/test_auto_await_explicit.py::test_a2_explicit_works_without_any_child', 'dropped': 1}
+[3态] ① 干净（r3 原样）  →  exit=0  日志 gate1.out.txt
+[3态] ② 临时新红（r3 ＋ 自造 tests/test_c22_synthetic.py::test_temp_new_red）  →  exit=1  日志 gate2.out.txt
+[3态] ③ 已清一条（r3 摘掉 tests/test_auto_await_explicit.py::test_a2_explicit_works_without_any_child，摘到 1 条）  →  exit=0  日志 gate3.out.txt
+[3态] 期望：exit 0 / 1 / 0；实得：[0, 1, 0]
+[3态] 启动本脚本的解释器（刻意用隔壁项目的）：D:\AI_station\写作agent\.venv\Scripts\python.exe

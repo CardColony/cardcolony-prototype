@@ -1,0 +1,91 @@
+{
+  "stages": {
+    "S1_live_connection_held": {
+      "read": "第二版正文",
+      "journal_mode": "wal",
+      "sidecars_before_fix": {
+        "main": {
+          "exists": true,
+          "bytes": 4096,
+          "v1": 0,
+          "v2": 0
+        },
+        "-wal": {
+          "exists": true,
+          "bytes": 444992,
+          "v1": 1,
+          "v2": 1
+        },
+        "-shm": {
+          "exists": true,
+          "bytes": 32768,
+          "v1": 0,
+          "v2": 0
+        }
+      }
+    },
+    "S2_after_fixB_with_live_conn": {
+      "error": null,
+      "checkpoint": [
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "live_conn_read": "第一版正文",
+      "card_store_read": "第一版正文",
+      "fresh_ro_read": "第一版正文",
+      "sidecars_after_fix": {
+        "main": {
+          "exists": true,
+          "bytes": 163840,
+          "v1": 1,
+          "v2": 0
+        },
+        "-wal": {
+          "exists": true,
+          "bytes": 0,
+          "v1": 0,
+          "v2": 0
+        },
+        "-shm": {
+          "exists": true,
+          "bytes": 32768,
+          "v1": 0,
+          "v2": 0
+        }
+      },
+      "criterion_sidecar_absent": false,
+      "criterion_read_is_snapshot": true,
+      "verdict": "「旁挂不存在」判据：不通过 ／「读回快照态」判据：通过"
+    },
+    "S3_after_close_live": {
+      "sidecars": {
+        "main": {
+          "exists": true,
+          "bytes": 163840,
+          "v1": 1,
+          "v2": 0
+        },
+        "-wal": {
+          "exists": true,
+          "bytes": 0,
+          "v1": 0,
+          "v2": 0
+        },
+        "-shm": {
+          "exists": true,
+          "bytes": 32768,
+          "v1": 0,
+          "v2": 0
+        }
+      },
+      "note": "v5 看到 -wal:null 就是因为那一步没有活连接：SQLite 在最后一个连接正常关闭时删掉 -wal"
+    }
+  },
+  "meta": {
+    "code_head": "91b9968",
+    "item": "修法B 的落盘形态与验收判据（R10 场景）"
+  }
+}

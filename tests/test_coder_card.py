@@ -21,6 +21,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import async_settle  # 测试侧等待原语（同目录模块）
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -232,6 +234,7 @@ async def test_create_coder_card_builds_and_starts(coder_registry, work, monkeyp
     monkeypatch.setattr(model_service, "call_main", fake_call_main)
     monkeypatch.setenv("MOCK_LLM", "1")
 
+    _pre = async_settle.snapshot()
     r = await card_tools.execute_tool(
         wid, a, "create_coder_card",
         {"title": "修复监听器泄漏", "task": "修复 src/api 下的监听器泄漏并补测"},
@@ -250,11 +253,9 @@ async def test_create_coder_card_builds_and_starts(coder_registry, work, monkeyp
     assert "## 使命" in blob and "修复 src/api 下的监听器泄漏并补测" in blob, blob[:200]
 
     # 建卡即首跑：等首跑回合收口（激励文 → assistant 块）
-    for _ in range(80):
-        await asyncio.sleep(0.05)
-        blocks = await session_facade.read(wid, nid)
-        if any(b.get("actor") == "assistant" for b in blocks):
-            break
+    # [5713 · M2] 等首跑回合自己收口（等待期间**不读**会话文件：读句柄与收口落块
+    # 的 tmp→os.replace 争同一目标 ⇒ WinError 5，实测 8 次挂 2 次），收口后读一次。
+    await async_settle.settle(since=_pre)
     blocks = await session_facade.read(wid, nid)
     assert any(b.get("actor") == "assistant" for b in blocks), "建卡即首跑（回合已产出）"
     types = [e["type"] for e in event_stream.journal_of(wid, nid)]
@@ -286,25 +287,23 @@ async def test_report_done_calls_owner_and_coder_stays_silent(
     assert r["ok"] is True, r
 
     # ① 回收口触发：主卡被调起（K3 现有链，零改）
+    _pre1 = async_settle.snapshot()
     await message_runner.schedule_card_message_triggers(
         message_runner.RunState(work_id=wid, card_id=a, content="x"))
-    for _ in range(80):
-        await asyncio.sleep(0.05)
-        blocks_a = await session_facade.read(wid, a)
-        if any(b.get("actor") == "assistant" for b in blocks_a):
-            break
+    # [5713 · M2] 同上：等调度起的异步链路全部收口，再读一次会话。
+    await async_settle.settle(since=_pre1)
     blocks_a = await session_facade.read(wid, a)
     assert any(b.get("actor") == "assistant" for b in blocks_a), "完工回执应调起主卡验收"
     assert any("完工摘要A" in p for p in captured), "激励文应带完工内容"
 
     # ② S4 自动回发：验收 answer 落编程卡收件箱（留档，pending）
-    answer = None
-    for _ in range(80):
-        await asyncio.sleep(0.05)
-        rows = await card_db.list_pending(wid, c)
-        answer = next((p for p in rows if p.get("type") == "msg_answer"), None)
-        if answer:
-            break
+    # [5713 · M2] 等断言本身的不变量（纯查库，不读会话文件）。
+    async def _answer_row():
+        _rows = await card_db.list_pending(wid, c)
+        return next((p for p in _rows if p.get("type") == "msg_answer"), None)
+
+    answer = await async_settle.wait_until(
+        _answer_row, what="主卡验收 answer 回落到编程卡收件箱")
     assert answer is not None, "主卡验收 answer 应回落编程卡收件箱留档"
 
     # ③ 编程卡静默：档案无新块、事件流无 run_start
@@ -314,10 +313,12 @@ async def test_report_done_calls_owner_and_coder_stays_silent(
 
     # ④ K3 再收口：completed coder 被跳过——不调起、信仍 pending、不打 ops deliver
     assert (wid, c) in card_msg.TRIGGERS, "S4 回发已登记调起意图（待下个收口消费）"
+    _pre2 = async_settle.snapshot()
     await message_runner.schedule_card_message_triggers(
         message_runner.RunState(work_id=wid, card_id=a, content="x2"))
-    for _ in range(20):
-        await asyncio.sleep(0.05)
+    # [5713 · M2] 负向断言（「不得有新回合」）没有正不变量可等，但也不该赌 1 秒：
+    # 等这次调度起的异步链路**全部收口**，再断言它没产出回合——比固定窗口更强。
+    await async_settle.settle(since=_pre2)
     rows_after = await card_db.list_pending(wid, c)
     assert any(p.get("msg_id") == answer.get("msg_id") for p in rows_after), \
         "验收信必须仍 pending（留档，不消费）"

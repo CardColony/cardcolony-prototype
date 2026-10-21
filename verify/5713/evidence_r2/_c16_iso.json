@@ -1,0 +1,22 @@
+{
+ "tests/test_board.py::test_apply_revision_dual_ledger_and_dirty_flush": [
+  "pass | 1 passed in 6.63s",
+  "FAIL | 1 failed in 11.18s",
+  "pass | 1 passed in 0.85s"
+ ],
+ "tests/test_card_msg.py::test_k3_live_a_to_b_invokes_receiver": [
+  "FAIL | 1 failed in 1.58s",
+  "pass | 1 passed in 1.46s",
+  "pass | 1 passed in 1.67s"
+ ],
+ "tests/test_coder_card.py::test_create_coder_card_builds_and_starts": [
+  "FAIL | 1 failed in 7.64s",
+  "pass | 1 passed in 1.71s",
+  "pass | 1 passed in 1.58s"
+ ],
+ "tests/test_coder_card.py::test_report_done_calls_owner_and_coder_stays_silent": [
+  "pass | 1 passed in 2.85s",
+  "FAIL | 1 failed in 7.59s",
+  "pass | 1 passed in 2.34s"
+ ]
+}

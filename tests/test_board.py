@@ -20,6 +20,7 @@ import os
 
 import pytest
 
+import async_settle
 from src.storage import card_store, session_store, work_store  # noqa: F401
 from src.thinkchain import board
 from src.thinkchain.board import (
@@ -66,15 +67,20 @@ def _steps(*prompts: str) -> list[dict]:
             for i, p in enumerate(prompts)]
 
 
-async def _wait_disk(path, pred, tries: int = 300):
-    """等置脏合并任务把状态写到盘（修订是异步合并落盘）。"""
-    for _ in range(tries):
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if pred(data):
-                return data
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"盘上状态未达预期: {path}")
+async def _wait_disk(path, pred):
+    """等置脏合并任务把状态写到盘（修订是异步合并落盘）。
+
+    [5713 · M2 2026-10-20] 旧实现每 10ms **读一次盘**去等谓词成立——读句柄与
+    flush 的 ``tmp→os.replace`` 争同一个 plan 文件，Windows 上 rename 直接
+    ``WinError 5``；而 ``board._atomic_write_json`` 的 ``os.replace`` 是裸的
+    （无重试），flush 任务当场异常退出，盘上永远到不了预期 ⇒ 3 秒后报
+    「盘上状态未达预期」。现改为：**等这批 flush 任务自己跑完**（循环条件＝
+    「没有未完成的异步合并」），收口后读一次盘。断言一个字没改。
+    """
+    await async_settle.settle()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert pred(data), f"盘上状态未达预期: {path}"
+    return data
 
 
 # ------------------------------------------------------------- ① 正常建板落盘
