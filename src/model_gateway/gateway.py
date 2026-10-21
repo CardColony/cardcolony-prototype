@@ -46,6 +46,7 @@ from .llm.types import (
     TextBlock,
     ToolCallBlock,
     ToolSchema,
+    _usage_to_dict,
 )
 from .llm_openai_compat.adapter import (
     CompatAdapterOptions,
@@ -336,6 +337,10 @@ class ModelGateway:
             "finish_reason": finish_reason or "stop",
             "tokens_used": tokens,
             "latency_ms": latency,
+            # [用量账本 2026-10-20] 把**分项**用量一并交出（`tokens_used` 只有合计）。
+            # 账本的**主判据**是 `promptTokens`（输入侧实际上下文长度），必须有分项；
+            # 无 usage 时为 None（账本侧退化为字符/4 估算）。
+            "usage": _usage_to_dict(usage) if usage is not None else None,
         }
 
     # ------------------------------------------------------------------

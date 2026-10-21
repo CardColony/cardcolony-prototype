@@ -176,6 +176,80 @@ CREATE TABLE IF NOT EXISTS meta (
 # 故这里另走一段**幂等**补建（CREATE TABLE IF NOT EXISTS），见 _ensure_tables。
 # ===========================================================================
 
+# ===========================================================================
+# 原文表（session_blocks —— [原文入库 2026-10-20] 照抄 dsh origin-contract/selfread）
+#
+# dsh 的原文是「事件流」（`seq / type / time / data / surfaceOp / sourceEventSeqs`），
+# 我们的原文是「会话块」。⇒ 一条块 = 一个事件，`data` 存整块原样（零加工透传）。
+#
+# 为什么要这张表：记忆条目靠 `seq` 指向原文，而原文原先只在 md 里 ⇒ 库里追不到。
+# 有这张表，`记忆条目.seq_from/seq_to` → 一条 SELECT 就能取回原文块。
+#
+# 纪律同 inbox：既有库的建表路径（_SCHEMA）只对新建库跑一次，故另走幂等补建。
+# ===========================================================================
+
+_SESSION_BLOCKS_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS session_blocks (
+    card_id   TEXT NOT NULL,
+    seq       INTEGER NOT NULL,
+    type      TEXT,
+    time      INTEGER,
+    content   TEXT,
+    data      TEXT,
+    PRIMARY KEY (card_id, seq)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_sb_card_seq ON session_blocks(card_id, seq)",
+)
+
+# ===========================================================================
+# 记忆域表（[记忆因果链 2026-10-20] 照抄 dsh `memory-domain.ts` 的四表之二的本地化）
+#
+# dsh 的 `memory` 表 = 「每个会话一条：因果链 chain ＋ 两个半开水位」；
+# `archive` 表 = 「描述层（process）／文档路径／锚点索引」。
+# （规则 rules／知识 knowledge／soul 三表按用户令**不搬**。）
+#
+# 我们的 `memory_store` 现在仍写 json（entries）；本组表是**因果链模型**的落点，
+# 用于 I1–I5 不变量校验与 coveredSeqs 追溯。
+# ===========================================================================
+
+_MEMORY_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS events (
+    card_id    TEXT NOT NULL,
+    event_id   TEXT NOT NULL,
+    title      TEXT,
+    status     TEXT,
+    summary    TEXT,
+    subject    TEXT,
+    object_key TEXT,
+    seq_from   INTEGER,
+    seq_to     INTEGER,
+    salience   INTEGER,
+    confidence TEXT,
+    version_no INTEGER,
+    created_at INTEGER,
+    updated_at INTEGER,
+    PRIMARY KEY (card_id, event_id)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_ev_card_status ON events(card_id, status)",
+    """CREATE TABLE IF NOT EXISTS memory (
+    card_id       TEXT PRIMARY KEY,
+    chain         TEXT,
+    condense_mark INTEGER,
+    fold_mark     INTEGER,
+    batch_starts  TEXT,
+    updated_at    TEXT
+)""",
+    """CREATE TABLE IF NOT EXISTS memory_archive (
+    card_id   TEXT NOT NULL,
+    seq       INTEGER NOT NULL,
+    role      TEXT NOT NULL,
+    process   TEXT,
+    doc_paths TEXT,
+    doc_refs  TEXT,
+    PRIMARY KEY (card_id, seq, role)
+)""",
+)
+
 _INBOX_COLUMNS: tuple[str, ...] = (
     "msg_id", "work_id", "target_card_id", "from_card", "type",
     "content", "reply_to", "status", "seq", "created_at", "consumed_at",
@@ -683,6 +757,10 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     可安全地每次建连接都调。**不碰任何既有表、不读写任何既有行。**
     """
     for ddl in _INBOX_DDL:
+        conn.execute(ddl)
+    for ddl in _SESSION_BLOCKS_DDL:
+        conn.execute(ddl)
+    for ddl in _MEMORY_DDL:
         conn.execute(ddl)
     for ddl in _TRASH_DDL:
         conn.execute(ddl)
