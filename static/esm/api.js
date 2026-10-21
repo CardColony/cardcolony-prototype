@@ -219,7 +219,9 @@ export const API = {
   correctAlarm: (wid, aid) => call("POST", `/api/works/${wid}/alarms/${aid}/correct`),
   patchCard: (wid, cid, updates, history_note) =>
     call("PATCH", `/api/works/${wid}/cards/${cid}`, { updates, history_note }),
-  deleteCard: (wid, cid) => call("DELETE", `/api/works/${wid}/cards/${cid}`),
+  // [级联删除 2026-10-21] cascade=true ⇒ 连同整棵子树一起删（每张进回收站）
+  deleteCard: (wid, cid, cascade) =>
+    call("DELETE", `/api/works/${wid}/cards/${cid}${cascade ? "?cascade=true" : ""}`),
   // [画布 2026-10-19] 撤销删除：从回收站按原 card_id 恢复（幂等）
   restoreCard: (wid, cid) => call("POST", `/api/works/${wid}/cards/${cid}/restore`),
   getTrash: (wid) => call("GET", `/api/works/${wid}/trash`),

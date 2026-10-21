@@ -4,10 +4,10 @@
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=42";
+import { notify } from "./api.js?v=43";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=38";
+import { createNavRenderer } from "./nav_render.js?v=39";
 import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -151,7 +151,9 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     const p = navStore.snapshot.project(wid);
     const card = p && (p.cards || []).find(c => c.card_id === cid);
     const kids = card ? (card.child_count || 0) : 0;
-    const delDisabled = isProject || kids > 0;
+    /* [级联删除 2026-10-21 · 用户令] 有子卡**不再置灰**——删父卡就删整棵子树
+       （后端 cascade，每张进回收站）。只有项目根卡仍不可删（它是项目入口）。 */
+    const delDisabled = isProject;
     // [用户 2026-10-15 ②] 根卡行的「打开 →」「＋卡」两钮已撤（改为与子卡相同的悬停 ⋯＋），
     // 该行 ⋯ 菜单**不加新条目**——用户要的是"取消这两个操作"，不是换个地方再放一个。
     // 项目行删除恒置灰：card_store 拒删根卡（card_id == work_card_id，403 语义），
@@ -189,9 +191,15 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // [定稿] 删卡：确认 → DELETE 端点 → 重拉导航（快照/版本探测同一条既有链，零新机制）
   async function doDeleteCard(wid, cid, card) {
     const title = (card && card.title) || cid;
-    if (!window.confirm(`删除「${title}」？`)) return;
+    const kids = card ? (card.child_count || 0) : 0;
+    /* [级联删除 2026-10-21] 有子卡就一次删整棵子树：确认框必须把「会删掉什么」
+       说清，否则就是骗用户点确认。都进回收站，可逐个恢复。 */
+    const msg = kids > 0
+      ? `删除「${title}」以及它下面的所有子卡？\n\n（全部进回收站，可从回收站逐个恢复）`
+      : `删除「${title}」？\n\n（进回收站，可从回收站恢复）`;
+    if (!window.confirm(msg)) return;
     try {
-      await API.deleteCard(wid, cid);
+      await API.deleteCard(wid, cid, kids > 0);
     } catch (e) {
       return;   // toast 已由 api.js 处理
     }
