@@ -219,9 +219,8 @@ export const API = {
   correctAlarm: (wid, aid) => call("POST", `/api/works/${wid}/alarms/${aid}/correct`),
   patchCard: (wid, cid, updates, history_note) =>
     call("PATCH", `/api/works/${wid}/cards/${cid}`, { updates, history_note }),
-  // [删项目 2026-10-21] 整个项目目录移到 works/_trash/（可恢复）。confirm 必须是项目名。
-  deleteWork: (wid, confirm) =>
-    call("DELETE", `/api/works/${wid}?confirm=${encodeURIComponent(confirm || "")}`),
+  // [删项目 2026-10-21] 整个项目目录移到 works/_trash/（可恢复）。
+  deleteWork: (wid) => call("DELETE", `/api/works/${wid}`),
   // [级联删除 2026-10-21] cascade=true ⇒ 连同整棵子树一起删（每张进回收站）
   deleteCard: (wid, cid, cascade) =>
     call("DELETE", `/api/works/${wid}/cards/${cid}${cascade ? "?cascade=true" : ""}`),

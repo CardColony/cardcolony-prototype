@@ -4,10 +4,10 @@
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=44";
+import { notify } from "./api.js?v=46";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=40";
+import { createNavRenderer } from "./nav_render.js?v=42";
 import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -221,22 +221,13 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     await renderNav();
   }
 
-  /* [删项目 2026-10-21] 一次点击不该毁掉一个项目：要求**手输项目名**才算确认。
-     删法是把整个目录搬进 works/_trash/（不是抹掉），要找回搬回来即可。 */
+  /* [删项目 2026-10-21] 一个「是否删除」弹窗就够——不再要求输入项目名
+     （用户明确：删就删，别搞多余确认）。删法是把整个目录搬进 works/_trash/。 */
   async function doDeleteWork(wid, card) {
     const title = String((card && card.title) || "").trim() || wid;
-    const typed = window.prompt(
-      `删除项目「${title}」？\n\n` +
-      `整个项目（所有卡片、对话、事件）会移到 works/_trash/，不会真正抹掉。\n` +
-      `要找回：把那个目录搬回 works/${wid} 即可。\n\n` +
-      `请输入项目名以确认：`, "");
-    if (typed === null) return;                       // 取消
-    if (String(typed).trim() !== title) {
-      notify("项目名不匹配，已取消", "warn");
-      return;
-    }
+    if (!window.confirm(`删除项目「${title}」？\n\n（会移到 works/_trash，可找回）`)) return;
     try {
-      await API.deleteWork(wid, title);
+      await API.deleteWork(wid);
     } catch (e) {
       return;   // toast 已由 api.js 处理
     }
