@@ -144,28 +144,6 @@ async def call_main(
     # 字段名用协议名 reasoning_content；无思考时为空串（与旧行为逐字兼容——
     # 旧 result 无此键，新增键不改变既有读取）。
     result["reasoning_content"] = "".join(_reasoning_parts)
-    # [用量账本 2026-10-20 · 照抄 dsh lifecycle/monitor] 记一条调用用量。
-    # **主判据＝promptTokens（输入侧实际上下文长度）**；网关没给 usage 时退化为字符/4 估算。
-    # 打点失败不影响调用（monitor 内部已兜住一切异常）。
-    try:
-        from ..storage import monitor as _monitor
-        _u = result.get("usage") or {}
-        _prompt_tokens = _u.get("input_tokens")
-        _sess = f"{ctx[0]}/{ctx[1]}" if ctx else ""
-        _monitor.record_usage(
-            session_id=_sess,
-            model=str(model_name or ""),
-            prompt_tokens=(int(_prompt_tokens) if _prompt_tokens is not None
-                           else _monitor.estimate_tokens(str(system_prompt) + str(user_prompt))),
-            completion_tokens=int(_u.get("output_tokens") or 0),
-            text_len=len(str(result.get("content") or "")),
-            cache_read_tokens=_u.get("cache_read_tokens"),
-            cache_write_tokens=_u.get("cache_write_tokens"),
-            reasoning_tokens=_u.get("reasoning_tokens"),
-        )
-    except Exception as exc:  # noqa: BLE001 账本失败不阻断
-        import logging as _logging
-        _logging.getLogger("api.model_service").warning("[monitor] 用量打点失败: %s", exc)
     if is_mock():
         model_used = "mock"
     else:
