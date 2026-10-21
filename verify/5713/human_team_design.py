@@ -258,7 +258,7 @@ def main() -> int:
     time.sleep(12)
 
     # ── 5 取证 ──
-    roles = _roles(args.base, wid)
+    roles = _roles(args.base, wid, sb, t0)
     st, rc = _req(args.base, "GET", f"/api/works/{wid}/cards/{root}")
     rb = (rc.get("body") if isinstance(rc, dict) else {}) or {}
     ev["roles"] = roles
@@ -279,7 +279,70 @@ def main() -> int:
     return 0
 
 
-def _roles(base, wid):
+def _role_toolface(sandbox_root, rid, since_ts):
+    """角色实际拿到的工具面（从 prompt 日志的 system_prompt 取，结构事实）。
+
+    2026-10-21 起角色被补了 tools_read_file（只读四件）。本函数回答：
+    这次跑它到底有没有这项能力、有没有真的用上——
+    「补了能力但一次没调用」与「没能力」，在判词质量上是一回事。
+    """
+    logs = os.path.join(sandbox_root, "logs")
+    face = {"has_read_file": False, "has_list_files": False,
+            "has_search_files": False, "has_glob_files": False, "scanned": 0}
+    if not os.path.isdir(logs):
+        return face
+    for n in os.listdir(logs):
+        if not (n.startswith(f"prompt_{rid}_") and n.endswith(".json")):
+            continue
+        fp = os.path.join(logs, n)
+        try:
+            if os.path.getmtime(fp) < since_ts - 5:
+                continue
+            with open(fp, encoding="utf-8", errors="replace") as f:
+                d = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        sp = str(d.get("system_prompt") or "")
+        face["scanned"] += 1
+        face["has_read_file"] |= "read_file" in sp
+        face["has_list_files"] |= "list_files" in sp
+        face["has_search_files"] |= "search_files" in sp
+        face["has_glob_files"] |= "glob_files" in sp
+    return face
+
+
+def _tool_calls(sandbox_root, wid, rid, since_ts):
+    """角色事件流里真调过哪些工具（行为层）。"""
+    p = os.path.join(sandbox_root, "works", wid, "events", f"{rid}.jsonl")
+    out = []
+    if not os.path.exists(p):
+        return out
+    with open(p, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line or '"tool_call"' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if str(e.get("type")) != "tool_call":
+                continue
+            ts = str(e.get("ts") or "")
+            if since_ts and ts:
+                try:
+                    if datetime.fromisoformat(ts).timestamp() < since_ts - 5:
+                        continue
+                except ValueError:
+                    pass
+            d = e.get("data") or {}
+            nm = str(d.get("name") or d.get("tool") or "")
+            if nm:
+                out.append(nm)
+    return out
+
+
+def _roles(base, wid, sandbox_root="", since_ts=0.0):
     st, rl = _req(base, "GET", f"/api/works/{wid}/roles")
     out = []
     for r in ((rl or {}).get("roles") or []):
@@ -303,6 +366,10 @@ def _roles(base, wid):
                             "instruction": str(d.get("instruction") or "")[:160],
                             "status": d.get("status")}
                            for d in (s.get("directives") or [])],
+            "toolface": (_role_toolface(sandbox_root, rid, since_ts)
+                         if sandbox_root else {}),
+            "tool_calls": (_tool_calls(sandbox_root, wid, rid, since_ts)
+                           if sandbox_root else []),
         })
     return out
 
@@ -403,6 +470,19 @@ def _judge(ev):
         # 三、可落地性
         "unactionable_hands_on": [x["id"] for x in per_role if x["hands_on_phrase"]],
         "per_role": per_role,
+        # 四、只读核验能力（2026-10-21 新增能力，看这次跑有没有用上）
+        "roles_with_file_tools": sum(
+            1 for r in roles
+            if (r.get("toolface") or {}).get("has_read_file")
+            or (r.get("toolface") or {}).get("has_list_files")),
+        "roles_that_called_file_tools": sum(
+            1 for r in roles
+            if any(c in ("read_file", "list_files", "search_files", "glob_files")
+                   for c in (r.get("tool_calls") or []))),
+        "file_tool_usage": {r["role_id"]: [
+            c for c in (r.get("tool_calls") or [])
+            if c in ("read_file", "list_files", "search_files", "glob_files")]
+            for r in roles},
         "models": ev.get("models"),
         "observations": {
             "root_rulings_len": len(str(ev.get("root_rulings") or "")),
