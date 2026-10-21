@@ -15,7 +15,11 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
      ② 在卡 B 上再切，PUT 的路径还是卡 A ⇒ 写错行。
      现在：当前卡可变，宿主切卡后派发 ui:card-changed，本件跟着换行重读。 */
   let curCard = cardId || "";
-  const scopeOf = () => (curCard && curCard !== "draft" ? "card" : "work");
+  /* [新建项目 2026-10-21 · 修] 作用域只看「有没有当前卡」：
+     · 项目草稿（workId=draft, 无卡）⇒ work
+     · 卡草稿（workId 真, curCard="draft"）⇒ **card**（改的是这张新卡，不是整个项目）
+     原来把 "draft" 当空值排除，草稿卡选模型会被写成项目级 ⇒ 整个项目都变。 */
+  const scopeOf = () => (curCard ? "card" : "work");
   /* 草稿态判定：与 rule_panel.js 的 isDraft 同口径（home.js 新建项目走 /work/draft）。 */
   const isDraft = () => workId === "draft" || curCard === "draft";
   const state = { open: false, settings: null, override: null, lastClickInside: false };
@@ -32,7 +36,13 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  function gd() { return (state.settings && state.settings.system && state.settings.system.default_model) || ""; }
+  function gd() {
+    const s = state.settings || {};
+    /* [新建项目 2026-10-21] 草稿态显示「新项目默认」（depth_0 首选）——
+       原来显示 system.default_model（minimax 兜底），用户看着莫名其妙。 */
+    if (isDraft()) return s.new_project_default || (s.system && s.system.default_model) || "";
+    return (s.system && s.system.default_model) || "";
+  }
   function wd() { const w = (state.override && state.override.work) || {}; return w.default_model || ""; }
   function cd() { if (!curCard) return ""; const c = (state.override && state.override.cards && state.override.cards[curCard]) || {}; return c.default_model || ""; }
   function chosen() { return scopeOf() === "card" ? cd() : wd(); }
@@ -46,7 +56,8 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     const eff = effective();
     /* [作用域标记 2026-10-21] 卡级**不显示**任何标记——卡片页本来就是「这张卡」，
        加「本卡」两个字是废话。只有「本项目」（会波及全部卡）才标出来。 */
-    const proj = scopeOf() !== "card";
+    /* 只有「真项目级」才标——新建项目页整页就是新项目，标「本项目」是废话。 */
+    const proj = scopeOf() !== "card" && workId !== "draft";
     return `<button type="button" class="model-pill" data-mp="open" title="${proj ? "本项目" : "本卡"}模型：${esc(display(eff || ""))}（点击切换）">
       ${proj ? '<span class="mp-pill-scope">本项目</span>' : ""}
       <span class="mp-pill-name">${eff ? esc(display(eff)) : "未配置"}</span>
@@ -95,10 +106,20 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   }
 
   async function choose(val) {
-    // [草稿态 2026-10-20] workId/cardId 为 "draft" ⇒ 项目/卡还没落盘，覆盖无处可存。
-    // 原来照样 PUT /api/settings/model-overrides/draft ⇒ 404 ⇒ 只弹「保存失败」，
-    // 用户看不出原因（实测 5700 日志：GET/PUT .../draft/card/draft 都是 404）。
-    if (isDraft()) { toast("项目还没保存，先保存项目再切模型"); closePanel(); return; }
+    /* [草稿态 2026-10-21] 项目/卡还没落盘，表还没生成 ⇒ 选择先记在本机，
+       落库那一刻由 workspace.ensurePersisted 写进配置表（并通知本件刷新）。
+       改前这里直接拒绝（"先保存项目再切模型"）——用户点了没反应，等于不能切。 */
+    if (isDraft()) {
+      const sc = workId === "draft" ? "work" : "card";
+      try {
+        sessionStorage.setItem("draftModel", JSON.stringify({ scope: sc, model: val || "" }));
+      } catch (e) { /* 隐私模式：记不住也不阻断本次显示 */ }
+      state.override = { cards: {}, work: val ? { default_model: val } : null };
+      closePanel();
+      render();
+      toast(val ? "已选，项目保存后生效" : "已恢复默认");
+      return;
+    }
     const base = `/api/settings/model-overrides/${encodeURIComponent(workId)}`;
     const path = scopeOf() === "card" ? `${base}/card/${encodeURIComponent(curCard)}` : base;
     const r = val
@@ -166,6 +187,16 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       const s = await api("/api/settings/models");
       state.settings = s.ok && s.data ? s.data : {};
       await reload();
+      // 草稿态：把上次选过、还没落库的那个模型读回来（刷新不丢）
+      if (isDraft()) {
+        try {
+          const pick = JSON.parse(sessionStorage.getItem("draftModel") || "null");
+          if (pick && pick.model) {
+            state.override = { cards: {}, work: { default_model: pick.model } };
+            render();
+          }
+        } catch (e) { /* 坏值当没选过 */ }
+      }
     } catch (e) { /* 静默 */ }
   })();
 }
