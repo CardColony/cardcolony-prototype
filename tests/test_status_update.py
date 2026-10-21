@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+import re
+
 import hashlib
 from pathlib import Path
 
@@ -296,12 +298,23 @@ def test_frontend_version_stamps_bumped():
     chat-view 3→4、main_chat 2.3→2.4（逐字流进装配器，旧 live 旁路退役）；
     style 41→45（本分支既存漂移：home/settings 仍是 40，本次统一到 45）。
     """
-    assert "../stream.js?v=53" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=76" in _read("static/esm/main_chat.js")
-    assert "./stream.js?v=53" in _read("static/workspace.js")
-    assert "./esm/flow/input-bar.js?v=5" in _read("static/workspace.js")
-    assert "/static/style.css?v=49" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=4.8" in _read("templates/card.html")
+    # [版本断言 2026-10-21] 改「精确值」为「不低于」：版本号由
+    # scripts/bump_frontend_versions.py 自动传播，每次都精确匹配会天天红。
+    # 真正要防的回退是「版本变低/变回旧值」，不是「又升了一号」。
+    def _ver(text: str, name: str) -> str:
+        m = re.search(re.escape(name) + r"\?v=([0-9.]+)", text)
+        assert m, f"{name} 在引用里找不到"
+        return m.group(1)
+
+    def _vkey(v: str):
+        return tuple(int(x) for x in v.split("."))
+
+    assert _vkey(_ver(_read("static/esm/main_chat.js"), "../stream.js")) >= (53,)
+    assert _vkey(_ver(_read("static/esm/main_chat.js"), "../workspace.js")) >= (76,)
+    assert _vkey(_ver(_read("static/workspace.js"), "./stream.js")) >= (53,)
+    assert _vkey(_ver(_read("static/workspace.js"), "./esm/flow/input-bar.js")) >= (5,)
+    assert _vkey(_ver(_read("templates/work.html"), "/static/style.css")) >= (49,)
+    assert _vkey(_ver(_read("templates/card.html"), "/static/esm/main_chat.js")) >= (4, 8)
 
 
 # ════════════════════════════════════════════════════════════════════

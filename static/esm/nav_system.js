@@ -4,10 +4,10 @@
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=43";
+import { notify } from "./api.js?v=44";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=39";
+import { createNavRenderer } from "./nav_render.js?v=40";
 import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -158,9 +158,15 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     // 该行 ⋯ 菜单**不加新条目**——用户要的是"取消这两个操作"，不是换个地方再放一个。
     // 项目行删除恒置灰：card_store 拒删根卡（card_id == work_card_id，403 语义），
     // 提前置灰＝把后端既有防护搬到眼前，不是新规矩。画布入口仍在顶栏面包屑首段（根卡名）。
+    /* [删项目 2026-10-21 · 用户令] 项目行原来只有一条置灰的「删除」（根卡不能删）——
+       等于项目永远删不掉。现在项目行给的是「删除项目」（整目录搬进回收站）。 */
     const items = [];
-    if (!isProject && wid !== WID()) items.push(`<div class="nav-menu-item" data-act="detail">打开此卡</div>`);
-    items.push(`<div class="nav-menu-item danger${delDisabled ? " disabled" : ""}" data-act="del">删除</div>`);
+    if (isProject) {
+      items.push(`<div class="nav-menu-item danger" data-act="delwork">删除项目</div>`);
+    } else {
+      if (wid !== WID()) items.push(`<div class="nav-menu-item" data-act="detail">打开此卡</div>`);
+      items.push(`<div class="nav-menu-item danger${delDisabled ? " disabled" : ""}" data-act="del">删除</div>`);
+    }
     navMenuEl = document.createElement("div");
     navMenuEl.className = "nav-menu";
     navMenuEl.innerHTML = items.join("");
@@ -182,6 +188,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
         const act = item.dataset.act;
         closeNavMenu();
         if (act === "del") { doDeleteCard(wid, cid, card); return; }
+        if (act === "delwork") { doDeleteWork(wid, card); return; }
         gotoCard(cid, wid, act === "child");
       };
     });
@@ -211,6 +218,30 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       return;
     }
     cardsChanged();          // 画布页：就地重建（否则那张卡还挂在画布上）
+    await renderNav();
+  }
+
+  /* [删项目 2026-10-21] 一次点击不该毁掉一个项目：要求**手输项目名**才算确认。
+     删法是把整个目录搬进 works/_trash/（不是抹掉），要找回搬回来即可。 */
+  async function doDeleteWork(wid, card) {
+    const title = String((card && card.title) || "").trim() || wid;
+    const typed = window.prompt(
+      `删除项目「${title}」？\n\n` +
+      `整个项目（所有卡片、对话、事件）会移到 works/_trash/，不会真正抹掉。\n` +
+      `要找回：把那个目录搬回 works/${wid} 即可。\n\n` +
+      `请输入项目名以确认：`, "");
+    if (typed === null) return;                       // 取消
+    if (String(typed).trim() !== title) {
+      notify("项目名不匹配，已取消", "warn");
+      return;
+    }
+    try {
+      await API.deleteWork(wid, title);
+    } catch (e) {
+      return;   // toast 已由 api.js 处理
+    }
+    notify(`已删除项目「${title}」（可在 works/_trash 找回）`, "success");
+    if (wid === WID()) { location.href = "/"; return; }   // 删的是当前项目：回首页
     await renderNav();
   }
 
