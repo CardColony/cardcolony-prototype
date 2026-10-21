@@ -44,9 +44,11 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
 
   function pill() {
     const eff = effective();
-    const sc = scopeOf() === "card" ? "本卡" : "本项目";
-    return `<button type="button" class="model-pill" data-mp="open" title="${sc}模型：${esc(display(eff || ""))}（点击切换）">
-      <span class="mp-pill-scope">${sc}</span>
+    /* [作用域标记 2026-10-21] 卡级**不显示**任何标记——卡片页本来就是「这张卡」，
+       加「本卡」两个字是废话。只有「本项目」（会波及全部卡）才标出来。 */
+    const proj = scopeOf() !== "card";
+    return `<button type="button" class="model-pill" data-mp="open" title="${proj ? "本项目" : "本卡"}模型：${esc(display(eff || ""))}（点击切换）">
+      ${proj ? '<span class="mp-pill-scope">本项目</span>' : ""}
       <span class="mp-pill-name">${eff ? esc(display(eff)) : "未配置"}</span>
       <span class="mp-caret">▾</span>
     </button>`;
