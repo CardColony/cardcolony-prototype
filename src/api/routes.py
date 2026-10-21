@@ -1116,22 +1116,76 @@ async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, ali
     )
 
 
+async def _revive_coder_card(work_id: str, card_id: str, content: str) -> None:
+    """完工的编程卡**重新派活**：卡复位 active ＋ 目标重新激活。
+
+    [coder 卡可继续派活 2026-10-21 · 用户令] 改前完工卡收到消息直接 400
+    「不再激活；新任务请新建编程卡」⇒ 同一件事的后续、同一处返工，只能另开
+    一张卡，上下文与留痕全断（用户原话：「明明是继续的任务，它也只能新开卡执行」）。
+    现在把「再发一条消息」当作**重新派活**：
+      · ``state: completed → active``（否则 report_done 判态、K3 调起都会拦）；
+      · 目标是 complete ⇒ 用这条消息开**新生命周期**（create 是唯一合法入口），
+        消息内容就是新目标——它本来就是「接下来要干什么」；
+      · paused/blocked ⇒ resume（清等待位与活锁计数）。
+    """
+    await card_store.update_card(
+        work_id, card_id, {"state": "active"}, "重新派活：完工编程卡复位为 active")
+    meta = card_store._meta_of(work_id, card_id) or {}
+    if not bool(meta.get("auto_mode")):
+        return
+    from ..goal.service import get_service
+    from ..goal.types import CreateGoalRequest
+
+    svc = get_service()
+    goal = await svc.get(work_id, card_id)
+    text = str(content or "").strip()
+    if goal is None:
+        if text:
+            await svc.create(work_id, card_id, CreateGoalRequest(objective=text))
+        return
+    if goal.phase == "complete":
+        await svc.create(work_id, card_id,
+                         CreateGoalRequest(objective=text or goal.objective))
+    elif goal.phase in ("paused", "blocked"):
+        await svc.resume(work_id, card_id, goal.ref())
+    # 目标重开后会立刻 arm ⇒ 驱动器抢在用户这条消息之前起一轮 ⇒ 这条消息撞 409。
+    # 先 disarm：本轮由这条消息来跑，跑完 after_turn 按 goal_state=active 正常续轮。
+    try:
+        await svc.disarm(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 撤销 arm 失败不阻断（最坏是多起一轮）
+        logger.warning("[coder] 重新派活后撤销 arm 失败 card=%s: %s", card_id, exc)
+
+
 @router.post("/works/{work_id}/cards/{card_id}/messages")
 async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest):
     """对话主链路（模块 H2）。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    # [编程卡 2026-10-15 · §六块3 静默判定①] 完工编程卡不再被激活：
-    # 只读 card_type/state 两字段的**机械判定**（任务书红线 2），在 pair_id
-    # 进入回合前拦下。读卡失败（卡不存在等）不在此处置，仍走 _run_message
-    # 既有口径（静默判定只多不少地拦，不改既有错误语义）。
+    # [编程卡 2026-10-15 · §六块3 静默判定①] 完工编程卡不再被激活。
+    # [coder 卡可继续派活 2026-10-21 · 用户令] 这条**改了**：不再 400 拒绝，
+    # 而是把「再发一条消息」当成重新派活（卡复位 + 目标重新激活）——否则同一件
+    # 事的后续只能另开一张卡。读卡失败仍走 _run_message 既有口径。
     try:
         _meta = (await card_store.read_card(work_id, card_id)).get("meta") or {}
     except Exception:  # noqa: BLE001
         _meta = {}
+    _revive_owner = ""
     if str(_meta.get("card_type") or "") == "coder" \
             and str(_meta.get("state") or "") == "completed":
-        return _err(400, "编程卡已完工，不再激活；新任务请新建编程卡")
+        # [重新派活竞态 2026-10-21] 改目标会 emit goal/changed ⇒ 驱动器立刻
+        # request_drive 抢一轮，把互斥体占掉 ⇒ 用户这条消息反而撞 409。
+        # 所以在改目标期间**先占住互斥体**（临时 owner），让驱动器这一跳被跳过；
+        # 下面 ensure 完再释放，_run_message 紧接着自己拿。
+        _revive_owner = f"revive:{uuid.uuid4().hex[:8]}"
+        session_facade.turn_try_acquire(work_id, card_id, _revive_owner)
+        try:
+            await _revive_coder_card(work_id, card_id, req.content)
+        except Exception as exc:  # noqa: BLE001 复位失败才如实拒绝
+            logger.error("[coder] 重新派活失败 work=%s card=%s: %s",
+                         work_id, card_id, exc)
+            if _revive_owner:
+                session_facade.turn_release(work_id, card_id, _revive_owner)
+            return _err(500, f"编程卡重新派活失败：{exc}")
     # [自动模式 2026-10-17 · 回灌 5700 块0.3 · D2] auto 卡收到**首条消息** ⇒
     # 该消息成为 goal、goal_state=active（起跑条件齐备；本轮跑完后驱动器自动
     # 续轮）。已有目标 ⇒ 不动（中途引导，目标不变——方案 §3.4）。非 auto 卡
@@ -1141,6 +1195,9 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     except Exception as exc:  # noqa: BLE001 目标设定失败不阻断本次消息
         logger.warning("[auto] 首条消息设定目标失败 work=%s card=%s: %s",
                        work_id, card_id, exc)
+    finally:
+        if _revive_owner:
+            session_facade.turn_release(work_id, card_id, _revive_owner)
     return await _run_message(work_id, card_id, req.content, req.pair_id,
                               op=req.op or "")
 
