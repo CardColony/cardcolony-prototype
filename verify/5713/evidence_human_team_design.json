@@ -1,0 +1,491 @@
+{
+  "started_at": "2026-10-21T10:15:53",
+  "base": "http://127.0.0.1:5714",
+  "phases": [
+    {
+      "phase": "0_instance_check",
+      "at": "2026-10-21T10:15:53",
+      "ok": true,
+      "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+      "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox_ceo"
+    },
+    {
+      "phase": "1_create_work",
+      "at": "2026-10-21T10:15:53",
+      "ok": true,
+      "work_id": "work_006",
+      "root": "card_001"
+    },
+    {
+      "phase": "1b_pin_model",
+      "at": "2026-10-21T10:15:53",
+      "ok": true,
+      "model": "ds-v41-flash-aliyun"
+    },
+    {
+      "phase": "2_card_W1",
+      "at": "2026-10-21T10:15:54",
+      "ok": true,
+      "card_id": "card_002",
+      "title": "需求与口径定义"
+    },
+    {
+      "phase": "2_card_W2",
+      "at": "2026-10-21T10:15:54",
+      "ok": true,
+      "card_id": "card_003",
+      "title": "核心对账引擎实现"
+    },
+    {
+      "phase": "2_card_W3",
+      "at": "2026-10-21T10:15:54",
+      "ok": true,
+      "card_id": "card_004",
+      "title": "联调与测试"
+    },
+    {
+      "phase": "2_card_W4",
+      "at": "2026-10-21T10:15:54",
+      "ok": true,
+      "card_id": "card_005",
+      "title": "上线与运维切换"
+    },
+    {
+      "phase": "3_set_goal",
+      "at": "2026-10-21T10:15:54",
+      "ok": true,
+      "goal": "把对账系统 V1 做出来并上线：30 天内交付，预算 40 万，对业务方承诺 99.9% 可用性。\n\n开工之前，先按**人类团队里职能分工的方式**把这支团队建起来——用 create_role 建角色，\n把各个职能设计清楚。至于设几个职能、每个职能管什么、盯哪些卡、职责书怎么写，\n全部由你判断，我不给建议。这一步不能跳过。"
+    },
+    {
+      "phase": "4_root_finished",
+      "at": "2026-10-21T10:40:59",
+      "goal_state": "active"
+    },
+    {
+      "phase": "5_collected",
+      "at": "2026-10-21T10:41:11",
+      "roles": 5
+    }
+  ],
+  "verdict": "COLLECTED",
+  "design": "材料＝一个要真交付的项目（需求/实现/测试/上线四阶段＋依赖倒置/预算冲突/上线风险）；goal 只强制『按人类团队的职能方式建团队』，不规定设几个、不规定切什么域",
+  "compare_to": "evidence_forced_cabinet.json（同机制，但材料是『待审成品卡』⇒ 只长出观察员）",
+  "instance": {
+    "instance": "test-instance",
+    "pid": 30880,
+    "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+    "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox_ceo",
+    "sandbox_enabled": true
+  },
+  "work_id": "work_006",
+  "cards": {
+    "W1": "card_002",
+    "W2": "card_003",
+    "W3": "card_004",
+    "W4": "card_005"
+  },
+  "stage_titles": {
+    "W1": "需求与口径定义",
+    "W2": "核心对账引擎实现",
+    "W3": "联调与测试",
+    "W4": "上线与运维切换"
+  },
+  "goal": "把对账系统 V1 做出来并上线：30 天内交付，预算 40 万，对业务方承诺 99.9% 可用性。\n\n开工之前，先按**人类团队里职能分工的方式**把这支团队建起来——用 create_role 建角色，\n把各个职能设计清楚。至于设几个职能、每个职能管什么、盯哪些卡、职责书怎么写，\n全部由你判断，我不给建议。这一步不能跳过。",
+  "roles": [
+    {
+      "role_id": "card_006",
+      "title": "交付总控（技术负责人）",
+      "exclusive_key": "delivery_execution",
+      "statement": "对整体交付节奏、关键路径与卡间协作断点负责",
+      "watch": [
+        "card_002",
+        "card_003",
+        "card_004",
+        "card_005"
+      ],
+      "signals": [
+        "turn_completed",
+        "status_changed",
+        "turn_error"
+      ],
+      "speak_contract": {
+        "advice_when": [
+          "技术实现方案需要拍板",
+          "存在可避免的返工路径"
+        ],
+        "alarm_when": [
+          "关键路径上出现互相等待或责任真空",
+          "某张工作卡连续两轮无实质进展",
+          "已发生或即将发生返工"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "charter": "职责：对「30 天内交付可上线的对账系统 V1」的整体交付节奏负责，盯关键路径，不替工作卡干活。\n\n发言条件：\n1) 关键路径上出现卡与卡互相等待、依赖断裂、责任真空 → 立即报警。\n2) 任一工作卡的完成度/结论连续两轮无实质变化 → 报警。\n3) 出现已发生的返工，或明显将发生返工（实现依赖未冻结的上游结论）→ 报警。\n4) 技术实现方案（不含业务口径）需要拍板时 → 给建议。\n\n边界：业务口径（账务范围/时间基准/差异阈值）一律不裁决，推给口径角色；预算与工期数字不改，交 PMO 角色。\n沉默默认：无上述情形不发言。",
+      "duty": "active",
+      "verdicts": 2,
+      "alarms": 0,
+      "directives": [
+        {
+          "id": "e35704bdc2e6",
+          "target": "card_004",
+          "instruction": "返工（第 2 次）：你的现状块仍在陈述一个已经不成立的处境：「等引擎稳定（W2 说差异清单还没做），引擎说等测试环境——两边在互相等」，以及「计划手工跑 3 个业务线各 20 笔」。前者被 card_001 D04 明令作废，后者被你自己 D01 明确作废；同时口径已由 card_002 D01–D06 冻结（含差异清",
+          "status": "issued"
+        },
+        {
+          "id": "79731b94b81b",
+          "target": "card_003",
+          "instruction": "返工（第 2 次）：你的现状块与被下游观察到的实际交付状态不一致，且旧文会直接诱发返工与二次停摆，必须整块重写为可核实事实。事实依据：card_002 已落 D01–D06 冻结版（8 字段、band 边界、行序、Decimal(18,2)、三线入站适配，权威＝card_002 定论区），而 trading-works",
+          "status": "issued"
+        },
+        {
+          "id": "7d1515fc84ca",
+          "target": "card_004",
+          "instruction": "你的现状块仍在陈述一个已经不成立的处境：「等引擎稳定（W2 说差异清单还没做），引擎说等测试环境——两边在互相等」，以及「计划手工跑 3 个业务线各 20 笔」。前者被 card_001 D04 明令作废，后者被你自己 D01 明确作废；同时口径已由 card_002 D01–D06 冻结（含差异清单 8 列、band",
+          "status": "rework"
+        },
+        {
+          "id": "0604687e6194",
+          "target": "card_003",
+          "instruction": "你的现状块与被下游观察到的实际交付状态不一致，且旧文会直接诱发返工与二次停摆，必须整块重写为可核实事实。事实依据：card_002 已落 D01–D06 冻结版（8 字段、band 边界、行序、Decimal(18,2)、三线入站适配，权威＝card_002 定论区），而 trading-workspace/recon",
+          "status": "rework"
+        },
+        {
+          "id": "ce07ab14668c",
+          "target": "card_002",
+          "instruction": "你本轮起草的 CFZ-V1.0 目前只存在于对话里，卡面没落：read_card(card_002) 的现状块仍是旧文「口径尚未经任何人裁决／需要一个能拍板的人／定完才能冻结」，定论区只有 D01 一条，你起草的 D02（差异清单字段定义）／D03（三线入站适配与 tz_suspect）／D04（版本与变更机制）全部没",
+          "status": "complied"
+        }
+      ]
+    },
+    {
+      "role_id": "card_007",
+      "title": "口径与业务裁决（产品负责人）",
+      "exclusive_key": "business_definition",
+      "statement": "对账口径三项冲突的裁决与冻结版发布",
+      "watch": [
+        "card_002",
+        "card_003",
+        "card_004"
+      ],
+      "signals": [
+        "status_changed",
+        "decision_appended",
+        "turn_completed"
+      ],
+      "speak_contract": {
+        "advice_when": [
+          "口径冲突需要裁决",
+          "某业务线的口径适配方式不明确"
+        ],
+        "alarm_when": [
+          "实现按未冻结口径推进",
+          "跨业务线口径再次出现不一致"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "charter": "职责：对账口径的唯一权威。账务范围、跨系统时间基准、差异判定阈值三项，只认本角色确认并冻结过的版本。\n\n发言条件：\n1) 发现任何实现按「未经冻结」的口径推进 → 立即报警。\n2) 任一侧业务线单方面修改口径，或三个业务线的口径再次出现不一致 → 立即报警。\n3) 输出口径冻结版时必须写明：三项各定成什么、为什么这么定、生效版本与日期、各业务线如何适配。\n4) 差异阈值必须给出可计算的定义（绝对值／比例／分档），不能留「看情况」。\n\n边界：不评价技术方案、不改工期与预算；不直接改工作卡正文，只下指令与升级。\n沉默默认：口径已冻结且无人越界时不发言。",
+      "duty": "active",
+      "verdicts": 4,
+      "alarms": 0,
+      "directives": [
+        {
+          "id": "f729fc592164",
+          "target": "card_002",
+          "instruction": "你本轮给出的现状块替换稿与 D02–D04 草案，内容我已核对合格：三项口径与 card_001 D02/D03 一致，差异阈值给出可计算判据（abs_diff ≤0.01 判平、>0.01 判差异、无比例豁免），8 列字段逐列定义到位，CFZ-V1.0 版本号与生效日期 2026-10-21 齐备，零售/批发/电商三",
+          "status": "complied"
+        },
+        {
+          "id": "f7ab2727c81e",
+          "target": "card_003",
+          "instruction": "你现状写「按零售那版口径实现（UTC 带 Z、秒级）」，而冻结版口径要求传输与存储统一 UTC、ISO-8601 带 Z、毫秒 3 位，对账比较一律同一 UTC 时刻——秒级截断会使同一笔交易在比较时落在不同时刻，属时间基准口径不一致，必须按冻结版收敛。请在交付物中给出可核实证据：①差异清单的 trade_time_u",
+          "status": "issued"
+        },
+        {
+          "id": "f90e3d5c1544",
+          "target": "card_002",
+          "instruction": "口径冻结版 D01 内容与 card_001 D02/D03 一致，但按口径冻结版成立条件仍有三处缺口，请补齐（不要再等外部拍板）：①补版本标识与生效日期——现只有「（2026-10-21）」，请给出冻结版版本号（如 v1.0）与生效日期，后续变更只按该版本号做修订；②补「各业务线如何适配」——明确零售为本版对账范围与",
+          "status": "complied"
+        }
+      ]
+    },
+    {
+      "role_id": "card_008",
+      "title": "质量与验收（QA 负责人）",
+      "exclusive_key": "quality_acceptance",
+      "statement": "对验收标准的可检验性与上线前证据链负责",
+      "watch": [
+        "card_003",
+        "card_004"
+      ],
+      "signals": [
+        "turn_completed",
+        "status_changed",
+        "turn_error"
+      ],
+      "speak_contract": {
+        "advice_when": [
+          "验收标准有歧义",
+          "需要设计替代验证方案"
+        ],
+        "alarm_when": [
+          "无验收证据却计划联调或切换",
+          "缺陷无回归路径",
+          "测试环境阻塞超过一轮"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "charter": "职责：对「上线前拿得出验收证据」负责——单元测试、差异清单的可校验性、三业务线样例的通过记录。\n\n发言条件：\n1) 计划进入联调/切换却拿不出验收证据 → 立即报警。\n2) 缺陷无法复现、无回归路径、或只有手工一次性验证 → 报警。\n3) 测试环境不可用超过一轮 → 报警，并要求给出可执行的替代验证方案（桩数据／本地环境），不允许测试以「等环境」为由停摆。\n4) 验收标准本身有歧义时 → 给建议，口径歧义推给口径角色。\n\n边界：不裁决业务口径；不承诺工期与预算。\n沉默默认：证据齐备且缺陷可回归时不发言。",
+      "duty": "active",
+      "verdicts": 1,
+      "alarms": 0,
+      "directives": []
+    },
+    {
+      "role_id": "card_009",
+      "title": "上线与可靠性（SRE 负责人）",
+      "exclusive_key": "production_reliability",
+      "statement": "对切换、回滚、监控告警与可用性承诺的可验证性负责",
+      "watch": [
+        "card_005",
+        "card_003",
+        "card_004"
+      ],
+      "signals": [
+        "turn_completed",
+        "status_changed",
+        "decision_appended"
+      ],
+      "speak_contract": {
+        "advice_when": [
+          "灰度范围与切换窗口需要拍板",
+          "可用性承诺需要降级或附条件"
+        ],
+        "alarm_when": [
+          "无回滚方案即计划切换",
+          "无监控告警",
+          "99.9% 无测算依据"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "charter": "职责：对「切得上去、切得回来、出问题看得见」负责，并对 99.9% 可用性承诺的可测算性负责。\n\n发言条件：\n1) 缺回滚方案、缺监控告警、缺可用性测算依据，任一缺失即在上线评审上否决 → 立即报警。\n2) 切换方案没有「切一半失败」的处理路径与数据不丢不重的校验手段 → 报警。\n3) 必须给出：99.9%（年停机 ≤ 8.76 小时）在当前架构下成立的条件清单；不成立时给降级承诺的量化替代方案。\n4) 上线范围与灰度策略需要拍板时 → 给建议。\n\n边界：不改业务口径、不改预算工期数字。\n沉默默认：三项（回滚／监控／测算）齐备且演练过时不发言。",
+      "duty": "active",
+      "verdicts": 4,
+      "alarms": 0,
+      "directives": []
+    },
+    {
+      "role_id": "card_010",
+      "title": "预算与工期管控（PMO）",
+      "exclusive_key": "budget_schedule",
+      "statement": "对预算、工期、范围与返工代价的账目负责",
+      "watch": [
+        "card_002",
+        "card_003",
+        "card_004",
+        "card_005"
+      ],
+      "signals": [
+        "status_changed",
+        "turn_completed",
+        "decision_appended"
+      ],
+      "speak_contract": {
+        "advice_when": [
+          "需要在砍范围/加预算/延工期之间取舍",
+          "存在省小钱引致大返工的风险"
+        ],
+        "alarm_when": [
+          "剩余预算不足以覆盖未完成范围",
+          "新增返工无代价出处"
+        ],
+        "silence_default": true,
+        "max_messages_per_wake": 2
+      },
+      "charter": "职责：对 40 万预算与 30 天工期这两个硬约束负责，管账、管范围、管返工。\n\n发言条件：\n1) 剩余预算（已花 32 万／共 40 万，余 8 万）不足以覆盖未完成范围 → 立即报警，并给出「砍范围／加预算／延工期」三选一的具体代价。\n2) 出现新的返工或范围扩张，必须给出这笔钱与天的出处 → 报警。\n3) 每次觉醒给出当前账：已花／剩余／按现状预计超支额与超期天数。\n4) 关键路径上出现「省小钱导致后期大返工」的判断时 → 给建议。\n\n边界：不裁决技术方案与业务口径；只给代价与约束，不代替业务判断。\n沉默默认：账目在预算内且无新增返工时不发言。",
+      "duty": "active",
+      "verdicts": 3,
+      "alarms": 2,
+      "directives": [
+        {
+          "id": "7ce16aaf7ffc",
+          "target": "card_005",
+          "instruction": "W4 上线运维包已经在产出（工作区 trading-workspace/recon_v1/runbook/ 下已有 rollback.md、monitoring.md、availability.md、alerts.yml），但我的账上 W4 没有任何成本上限，也没有已用/剩余人天，8 万余额无法拆到 W4 这一格。请在",
+          "status": "issued"
+        },
+        {
+          "id": "1880223c8397",
+          "target": "card_002",
+          "instruction": "CFZ-V1.0（你的 D02/D03/D04）相对「零售原口径 + 毫秒3位」新增了一批实现工作，但没有任何一处给出代价出处，余 8 万也没有分项上限。请在你的现状块或定论区补一份【增量实现项清单】，逐项列明并各标两栏：①是否改变判定规则（改变判定规则＝V1 必需；仅影响格式/辅助标记/非切换线＝可降级或延后）；②你",
+          "status": "complied"
+        }
+      ]
+    }
+  ],
+  "root_status": "## 已做成（可核实）\n1) 组阁完成：5 张角色卡建成并 active，职责域互斥、已挂关注卡——\n   card_006 交付总控（delivery_execution，盯 c002–c005）／card_007 口径与业务裁决（business_definition，盯 c002–c004）／\n   card_008 质量与验收（quality_acceptance，盯 c003、c004）／card_009 上线与可靠性（production_reliability，盯 c005、c003、c004）／\n   card_010 预算与工期管控（budget_schedule，盯 c002–c005）。可用 list_roles 复核。\n2) 定论区已落 D01–D06：口径冻结版（UTC/ISO-8601 带 Z/毫秒 + 单笔绝对差 ≤0.01 元判平 + 零售范围）、V1 范围收窄为零售、\n   破 W2/W3 互相等待、99.9% 三件前置（监控/回滚/测算）、剩余 8 万为硬约束。\n## 对外接口\n- 口径唯一权威＝本卡 D02（read_card(card_001) 定论块）；任何实现与本卡定论冲突即为越界。\n## 现在卡在哪\n1) 四张工作卡（card_002–card_005）读到的活性均为「空闲」，**尚无任何按 D02–D06 产出的交付物**：\n   差异清单、重跑幂等、单元测试、验收证据、回滚方案、监控告警、可用性测算，全部未产出。\n2) 唯一合法外部依赖：测试环境安全域审批（已走两周）。\n3) 修正方向：本卡已向四张工作卡下发指令，要求按 D02–D06 收敛并回执。",
+  "root_rulings": "D01【裁定】组阁：按职能设 5 个角色卡——交付总控（delivery_execution，盯 c002/c003/c004/c005）、口径与业务裁决（business_definition，盯 c002/c003/c004）、质量与验收（quality_acceptance，盯 c003/c004）、上线与可靠性（production_reliability，盯 c005/c003/c004）、预算与工期管控（budget_schedule，盯四张工作卡）；角色只观察/下指令/升级，不替工作卡干活，异常一律升级到本卡。依据：现状四大结构性风险正好对应四类职能，且四张工作卡此前无人关注。（2026-10-21）\nD02【裁定】口径裁决（三项冲突一次定死，作为 V1 冻结版）：①时间基准——系统间传输与存储统一 UTC、ISO-8601 带 Z、毫秒精度，业务线本地 naive 时间在入站适配层完成转换，对账比较一律以同一 UTC 时刻为准，零售/电商两版口径均不原样采用；②差异阈值——单笔绝对差 ≤ 0.01 元判平，超出即入差异清单，V1 不引入比例豁免，风控需求以「差异清单按金额分档标记」满足，不改判定规则；③账务范围——以零售业务线的账务范围为准（见 D03）。依据：一个基准才能算出可复现的差异，比例阈值不可解释、不可验收，且三线口径互斥本身说明缺的是权威而非共识。（2026-10-21）\nD03【裁定】范围裁决：V1 上线范围收窄为零售业务线全量对账；批发、电商两条线在 V1 只做口径适配与试跑，不纳入切换范围、不追验收证据。依据：预算已花 32 万、余 8 万，30 天工期内三线同时上线与回滚/监控能力不可兼得，先让一条线真上线再复制。（2026-10-21）\nD04【裁定】破僵局裁定：引擎卡（c003）不得以「等测试环境」为由停摆——测试环境未就绪期间必须以桩数据/本地环境交付三项：差异清单输出、重跑幂等、单元测试；联调卡（c004）不得以「等引擎稳定」为由停摆——先按桩环境建用例并在引擎交付桩数据版本后立即跑。两卡互相等待的状态即刻作废，安全域审批（外部）作为唯一合法外部依赖，由上线卡与 PMO 一起盯。依据：互相等待是责任真空而非依赖，V1 无一项可等外部审批才开始做。（2026-10-21）\nD05【裁定】可用性裁定：99.9%（年停机 ≤ 8.76 小时）只在「有监控告警、有可执行回滚、有测算依据」三件齐备的前提下对外承诺；由 SRE 角色在切换评审前给出成立条件清单与实测口径，测算不成立则改以月度可用性实测值＋分阶段承诺对外，且必须书面通知业务方。无测算依据不得以 99.9% 背书。依据：当前架构下该数字无支撑，承诺与能力不符比降级承诺的代价更高。（2026-10-21）\nD06【裁定】预算裁定：剩余 8 万为硬约束，只投上线必需项（差异清单、幂等、验收用例、回滚与监控）；批发/电商联调、自动化全覆盖等一律不进 V1 预算。任何新增返工须由 PMO 角色记账并给出「砍范围/加预算/延工期」代价，不得默默超支。依据：已花 32 万中两轮返工占比过高，返工是被未冻结口径养出来的，禁止再以返工解决需求不确定。（2026-10-21）",
+  "models": {
+    "deepseek-v4.1-flash-1017": 18
+  },
+  "verdict_detail": {
+    "role_count": 5,
+    "exclusive_keys": [
+      "delivery_execution",
+      "business_definition",
+      "quality_acceptance",
+      "production_reliability",
+      "budget_schedule"
+    ],
+    "keys_unique": true,
+    "duplicate_keys": [],
+    "cards_watched_by": {
+      "card_002": [
+        "card_006",
+        "card_007",
+        "card_010"
+      ],
+      "card_003": [
+        "card_006",
+        "card_007",
+        "card_008",
+        "card_009",
+        "card_010"
+      ],
+      "card_004": [
+        "card_006",
+        "card_007",
+        "card_008",
+        "card_009",
+        "card_010"
+      ],
+      "card_005": [
+        "card_006",
+        "card_009",
+        "card_010"
+      ]
+    },
+    "uncovered_cards": [],
+    "covers_all_cards": true,
+    "roles_with_directives": 3,
+    "total_directives": 10,
+    "roles_that_judged": 5,
+    "type_heuristic_counts": {
+      "执行型": 1,
+      "混合": 3,
+      "未分类": 1
+    },
+    "has_exec_type": true,
+    "only_watch_types": false,
+    "unactionable_hands_on": [],
+    "per_role": [
+      {
+        "id": "card_006",
+        "title": "交付总控（技术负责人）",
+        "key": "delivery_execution",
+        "watch": [
+          "card_002",
+          "card_003",
+          "card_004",
+          "card_005"
+        ],
+        "charter_len": 264,
+        "verdicts": 2,
+        "alarms": 0,
+        "directive_count": 5,
+        "directive_targets": [
+          "card_002",
+          "card_003",
+          "card_004"
+        ],
+        "type_heuristic": "混合",
+        "hands_on_phrase": false
+      },
+      {
+        "id": "card_007",
+        "title": "口径与业务裁决（产品负责人）",
+        "key": "business_definition",
+        "watch": [
+          "card_002",
+          "card_003",
+          "card_004"
+        ],
+        "charter_len": 277,
+        "verdicts": 4,
+        "alarms": 0,
+        "directive_count": 3,
+        "directive_targets": [
+          "card_002",
+          "card_003"
+        ],
+        "type_heuristic": "执行型",
+        "hands_on_phrase": false
+      },
+      {
+        "id": "card_008",
+        "title": "质量与验收（QA 负责人）",
+        "key": "quality_acceptance",
+        "watch": [
+          "card_003",
+          "card_004"
+        ],
+        "charter_len": 254,
+        "verdicts": 1,
+        "alarms": 0,
+        "directive_count": 0,
+        "directive_targets": [],
+        "type_heuristic": "混合",
+        "hands_on_phrase": false
+      },
+      {
+        "id": "card_009",
+        "title": "上线与可靠性（SRE 负责人）",
+        "key": "production_reliability",
+        "watch": [
+          "card_005",
+          "card_003",
+          "card_004"
+        ],
+        "charter_len": 275,
+        "verdicts": 4,
+        "alarms": 0,
+        "directive_count": 0,
+        "directive_targets": [],
+        "type_heuristic": "混合",
+        "hands_on_phrase": false
+      },
+      {
+        "id": "card_010",
+        "title": "预算与工期管控（PMO）",
+        "key": "budget_schedule",
+        "watch": [
+          "card_002",
+          "card_003",
+          "card_004",
+          "card_005"
+        ],
+        "charter_len": 278,
+        "verdicts": 3,
+        "alarms": 2,
+        "directive_count": 2,
+        "directive_targets": [
+          "card_002",
+          "card_005"
+        ],
+        "type_heuristic": "未分类",
+        "hands_on_phrase": false
+      }
+    ],
+    "models": {
+      "deepseek-v4.1-flash-1017": 18
+    },
+    "observations": {
+      "root_rulings_len": 1350,
+      "root_status_len": 711
+    }
+  },
+  "finished_at": "2026-10-21T10:41:11",
+  "elapsed_seconds": 1517.8
+}

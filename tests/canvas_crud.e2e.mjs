@@ -74,25 +74,27 @@ check("1a 菜单里有「新建子卡」", !!mi);
 if (mi) {
   await click(mi.x, mi.y);
   await sleep(400);
-  const hasDlg = await ev("!!document.getElementById('newCardTitle')");
+  // [画布 5711] 新建卡弹窗已并入 cvDialog（与重命名/删除同一套）：
+  // 旧的自制小面板（#newCardTitle）已退役，断言跟着换选择器。
+  const hasDlg = await ev("!!document.querySelector('.cv-modal-input')");
   check("1b 弹窗出现", hasDlg);
   if (hasDlg) {
-    // 走真实输入路径：聚焦输入框 → 键入 → Enter（弹窗的 onkeydown 会提交）。
+    // 走真实输入路径：聚焦输入框 → 键入 → Enter（cvDialog 捕获阶段拦 Enter 提交）。
     // 聚焦用 DOM focus 而不是坐标点击：整幅适配后弹窗位置随视口变化，
     // 坐标点击会偶发落空（实测 2 次里挂 1 次），而 focus 不依赖坐标。
-    await ev(`document.getElementById('newCardTitle').focus()`);
+    await ev(`document.querySelector('.cv-modal-input').focus()`);
     await sleep(120);
     await send("Input.insertText", { text: "走查新建的子卡" });
     await sleep(200);
-    const typed = await ev("(document.getElementById('newCardTitle')||{}).value || ''");
+    const typed = await ev("(document.querySelector('.cv-modal-input')||{}).value || ''");
     await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
     await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
     await sleep(2600);
     check("1b2 输入框收到文字", typed === "走查新建的子卡", typed);
     // 诊断：Enter 之后到底发生了什么（弹窗是否关闭 / fetch 是否发出 / 焦点在哪）
     const diag = await ev(`JSON.stringify({
-      dlg: !!document.getElementById('newCardTitle'),
-      active: (document.activeElement||{}).id || (document.activeElement||{}).tagName,
+      dlg: !!document.querySelector('.cv-modal-input'),
+      active: (document.activeElement||{}).className || (document.activeElement||{}).tagName,
       calls: (window.__calls||[]).slice(-4),
       path: location.pathname,
     })`);
@@ -107,13 +109,22 @@ if (mi) {
 await send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
 const delBox = await J(`(() => { const n = [...document.querySelectorAll('.card-node')].find(e => (e.querySelector('.tname')||{}).textContent === '走查新建的子卡'); if (!n) return null; const r = n.getBoundingClientRect(); return { id: n.dataset.id, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
 if (delBox) {
-  await ev("window.confirm = () => true");   // 自动接受确认框
+  // [画布 5711] 删除确认是**应用内弹窗**（cvDialog），不是 window.confirm
+  // ⇒ 不能靠 stub window.confirm 自动通过，得点弹窗的「确定」。
   await rightClick(delBox.x, delBox.y);
   const delItem = await J(`(() => { const it = [...document.querySelectorAll('.cv-menu .cv-mi')].find(e => e.textContent.trim().startsWith('删除')); if (!it) return null; const r = it.getBoundingClientRect(); return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) }; })()`);
   if (delItem) { await click(delItem.x, delItem.y); }
+  await sleep(700);
+  const cfm = await ev("!!document.querySelector('.cv-modal-btn[data-role=ok]')");
+  check("2a 删除前弹确认框（不静默删）", cfm === true);
+  const okBox = await centerOf('.cv-modal-btn[data-role="ok"]', 0);
+  if (okBox) { await click(okBox.x, okBox.y); }
   await sleep(2200);
   // 按 card_id 判（同名卡可能有多张，按标题判会假阴性）
-  const still = await ev(`!![...document.querySelectorAll('.card-node')].find((x) => x.dataset.id === ${JSON.stringify('${delBox.id}')})`);
+  // ⚠ 旧写法是 `JSON.stringify('${delBox.id}')` —— 那是**字面量**（单引号包住了
+  //   插值表达式），卡号根本没进表达式 ⇒ 断言恒为 false ⇒ 这条一直是**空跑通过**。
+  //   断言恒真的检查 = 没有检查。
+  const still = await ev(`!![...document.querySelectorAll('.card-node')].find((x) => x.dataset.id === ${JSON.stringify(delBox.id)})`);
   check("2 删除卡生效", still === false, still ? `仍在 ${delBox.id}` : `已删 ${delBox.id}`);
 } else {
   check("2 删除卡生效", false, "找不到刚建的卡");

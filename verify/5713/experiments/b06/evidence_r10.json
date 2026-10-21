@@ -1,0 +1,140 @@
+{
+  "stages": {
+    "S1_original_order": {
+      "read_before": "第二版正文",
+      "read_after": "第二版正文",
+      "ok": true,
+      "rolled_back": false,
+      "unlink_failures": 2,
+      "alarm_hits": [
+        {
+          "at": "21:30:23",
+          "holders": [
+            "cards.db-shm",
+            "cards.db",
+            "cards.db-wal"
+          ],
+          "card_db": {
+            "_conns": [],
+            "_read_conns": []
+          }
+        },
+        {
+          "at": "21:30:23",
+          "holders": [
+            "cards.db-shm",
+            "cards.db",
+            "cards.db-wal"
+          ],
+          "card_db": {
+            "_conns": [],
+            "_read_conns": []
+          }
+        }
+      ],
+      "state_before_restore": {
+        "holders": [
+          "cards.db-shm",
+          "cards.db",
+          "cards.db-wal"
+        ],
+        "card_db": {
+          "_conns": [
+            "cards.db"
+          ],
+          "_read_conns": [
+            "cards.db@24996",
+            "cards.db@8908",
+            "cards.db@20056"
+          ]
+        }
+      },
+      "main_after": {
+        "bytes": 163840,
+        "v1": 1,
+        "v2": 0
+      },
+      "wal_after": {
+        "bytes": 444992,
+        "v1": 1,
+        "v2": 1
+      },
+      "batch_db_status": {
+        "bytes": 163840,
+        "v1": 1,
+        "v2": 0
+      }
+    },
+    "S2_pre_gc": {
+      "read_before": "第二版正文",
+      "read_after": "第二版正文",
+      "ok": true,
+      "rolled_back": false,
+      "unlink_failures": 2,
+      "alarm_hits": [
+        {
+          "at": "21:30:24",
+          "holders": [
+            "cards.db",
+            "cards.db-shm",
+            "cards.db-wal"
+          ],
+          "card_db": {
+            "_conns": [],
+            "_read_conns": []
+          }
+        },
+        {
+          "at": "21:30:24",
+          "holders": [
+            "cards.db",
+            "cards.db-shm",
+            "cards.db-wal"
+          ],
+          "card_db": {
+            "_conns": [],
+            "_read_conns": []
+          }
+        }
+      ],
+      "state_before_restore": {
+        "holders": [
+          "cards.db",
+          "cards.db-shm",
+          "cards.db-wal"
+        ],
+        "card_db": {
+          "_conns": [
+            "cards.db"
+          ],
+          "_read_conns": [
+            "cards.db@43768",
+            "cards.db@20056",
+            "cards.db@8908",
+            "cards.db@24996",
+            "cards.db@8200"
+          ]
+        }
+      },
+      "main_after": {
+        "bytes": 163840,
+        "v1": 1,
+        "v2": 0
+      },
+      "wal_after": {
+        "bytes": 444992,
+        "v1": 1,
+        "v2": 1
+      },
+      "batch_db_status": {
+        "bytes": 163840,
+        "v1": 1,
+        "v2": 0
+      }
+    }
+  },
+  "meta": {
+    "code_head": "df82072",
+    "item": "R10 test_snapshot_restore_roundtrip"
+  }
+}

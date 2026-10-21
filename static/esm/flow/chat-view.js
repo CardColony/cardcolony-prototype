@@ -90,6 +90,13 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   column.appendChild(olderWrap);
   column.appendChild(emptyEl);
   column.appendChild(skeletonEl);
+  /* [5715 · 网抓修] 运行条**先在 DOM 里**（不等到首次 render 才挂上去）：
+     原来它只在 render() 末尾被 appendChild ⇒ 若 setRunning(true) 早于首次
+     渲染（先发消息、后到时间线），运行条压根不在 DOM 里 ⇒ 「Deep diving...」
+     静默消失，用户以为没跑起来。
+     初态是隐藏（paintStatus 在下面统一处理）；render() 里那句 appendChild
+     仍保留——它把运行条挪到末位（节点行之后），行为不变。 */
+  column.appendChild(statusEl);
   scroll.appendChild(column);
   scroll.appendChild(toBottomSlot);
   root.appendChild(scroll);
@@ -109,6 +116,10 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   let statusStart = null;
   let hasNew = false;      // 读者上翻期间有新节点到达
   let loading = true;           // 首屏骨架：首次 render 落地即收
+  let stopping = false;         // 停止指令已发出、回合尚未收口
+                                  // （[5715] 上移到状态区：构造期就要调
+                                  //   paintStatus() 藏运行条，而 paintStatus 读它
+                                  //   ——留在运行条段会撞 TDZ 报错）
 
   /** 空态内容（由宿主按卡类型注入；未注入则用中性默认）。 */
   function setEmpty(payload) {
@@ -154,12 +165,17 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   paintOlder();
   paintToBottom();
   paintEmpty();
+  paintStatus();   // 初态隐藏运行条（它此刻已在 DOM 里，见上面的挂载说明）
 
   // ---- 回底 ----
+  /* [渲染层 2026-10-21] 原来「写 scrollTop → 立刻读回 scrollTop」是写后读，
+     必然强制一次同步布局（实测 178ms）。最大值就是 scrollHeight，写进去的
+     就是这个值，不必读回来自证——台账直接记它。 */
   function toBottom() {
     anchor = null;
-    scroll.scrollTop = scroll.scrollHeight;
-    observedTop = scroll.scrollTop;
+    const top = scroll.scrollHeight;
+    if (scroll.scrollTop !== top) scroll.scrollTop = top;
+    observedTop = top;
     atBottom = true;
     paintToBottom();
   }
@@ -171,26 +187,53 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     if (lab) lab.textContent = hasNew ? "新消息" : "";
   }
 
-  /** 读者真实滚动判据：scrollTop 偏离台账（程序写入恒等于台账）。 */
+  /** 读者真实滚动判据：scrollTop 偏离台账（程序写入恒等于台账）。
+      [渲染层 2026-10-21] 两处根因修在这里：
+       ① 每次 scroll 都读 scrollHeight/clientHeight（读）＋ 紧接着 paintToBottom
+          写 style（写）⇒ 读—写—读交替，每一帧都在强制同步布局（实测 28ms/次且
+          无节流，滚轮一动就是几十次）。
+       ② rowOf 遍历 querySelectorAll 反查（O(n) DOM 查询）。
+      现在：读全部提到最前（一次布局），写全部放在后面；整段用 rAF 合并
+      （同一帧内的多个 scroll 事件只处理最后一次状态）；rowOf 直接查座位表。 */
+  let _scrollRaf = 0;
   function onScroll() {
-    const floor = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
-    const movedByReader = Math.abs(scroll.scrollTop - Math.min(observedTop, floor)) > 0.5;
+    if (_scrollRaf) return;
+    _scrollRaf = (typeof requestAnimationFrame === "function")
+      ? requestAnimationFrame(() => { _scrollRaf = 0; handleScroll(); })
+      : setTimeout(() => { _scrollRaf = 0; handleScroll(); }, 16);
+  }
+
+  function handleScroll() {
+    // ── 读：一次取齐（此后到写之前不再读布局） ──
+    const sh = scroll.scrollHeight;
+    const ch = scroll.clientHeight;
+    const stTop = scroll.scrollTop;
+    const floor = Math.max(0, sh - ch);
+    const movedByReader = Math.abs(stTop - Math.min(observedTop, floor)) > 0.5;
     const isAtBottom = movedByReader
-      ? floor - scroll.scrollTop <= FOLLOW_THRESHOLD + 1
+      ? floor - stTop <= FOLLOW_THRESHOLD + 1
       : atBottom;
     if (!movedByReader && isAtBottom) { toBottom(); return; }
+    const needAnchorRefresh = !isAtBottom && anchor !== null;
+    const needLoadOlder = movedByReader && stTop <= 8
+      && hasMore && hasMore() && !(isLoadingOlder && isLoadingOlder());
+    // 锚点重定位：需要行位置（读），放在所有写之前
+    let anchorTop = null;
+    if (needAnchorRefresh) {
+      const row = rowOf(anchor.key);
+      if (row) anchorTop = flowTop(row);
+    }
+    // 前插锚点：也要读行位置 ⇒ 同样放在写之前（原实现在写之后读，多一次强制布局）
+    if (needLoadOlder) captureAnchor();
+    // ── 写：状态与样式 ──
     atBottom = isAtBottom;
     if (isAtBottom) hasNew = false;
     paintToBottom();
     if (isAtBottom) anchor = null;
-    else if (anchor !== null) {
-      const row = rowOf(anchor.key);
-      if (row) anchor = { key: anchor.key, top: flowTop(row) };
-    }
-    observedTop = scroll.scrollTop;
-    // 滚到顶自动往前插一页（本项目既有行为；锚点在插入前记好）
-    if (movedByReader && scroll.scrollTop <= 8 && hasMore && hasMore() && !(isLoadingOlder && isLoadingOlder())) {
-      captureAnchor();
+    else if (needAnchorRefresh && anchorTop !== null) anchor = { key: anchor.key, top: anchorTop };
+    observedTop = stTop;
+    // 滚到顶自动往前插一页（本项目既有行为；锚点已在读段记好）
+    if (needLoadOlder) {
       if (typeof onLoadOlder === "function") onLoadOlder();
     }
   }
@@ -203,11 +246,10 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     if (row) anchor = { key: first, top: flowTop(row) };
   }
 
+  /** 键 → 行元素。座位表就是 key→el 的权威映射，不必再回 DOM 里线性查找。 */
   function rowOf(key) {
-    for (const row of column.querySelectorAll("[data-chat-anchor-key]")) {
-      if (row.dataset.chatAnchorKey === key) return row;
-    }
-    return null;
+    const seat = seats.get(key);
+    return seat ? seat.el : null;
   }
 
   function flowTop(row) {
@@ -349,7 +391,6 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   }
 
   // ---- 运行条（15s 后才显时钟）----
-  let stopping = false;
   function paintStatus() {
     const running = !!(isRunning && isRunning());
     if (!running && !stopping) {

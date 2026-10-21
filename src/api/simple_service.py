@@ -284,8 +284,10 @@ async def run_viewpoints(
     """
     gw = model_service.get_gateway()
     cfg = gw.config.get("simple") or {}
-    viewpoint_binding = model_config.resolve("viewpoint", work_id=work_id, card_id=card_id)
-    viewpoints = list(viewpoint_binding) if isinstance(viewpoint_binding, list) else []
+    # [模型选择底座 2026-10-21] 三席走 pick_pool：auto 卡上就是该深度的 tier 池
+    # （席数＝池大小），手动卡上是 bindings.viewpoint。单值池也返回 [x]——
+    # 原来 resolve 返 str 时这里 `isinstance(list)` 判空 ⇒ 三席静默变零席。
+    viewpoints = model_config.pick_pool("viewpoint", work_id=work_id, card_id=card_id)
     if not cfg.get("enabled") or not viewpoints:
         return [], []
 

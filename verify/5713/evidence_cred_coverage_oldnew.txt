@@ -1,0 +1,77 @@
+===== OLD CODE @ HEAD (pytest exit=1) =====
+_tool_output_redact0/app_home'), wor...redact0/app_home/logs'), tmp=WindowsPath('D:/Temp/pytest-of-Administrator/pytest-552/test_python_tool_output_redact0'))
+
+    async def test_python_tool_output_redacted_under_real_layout_noise(sandbox):
+        """`python` 工具真的跑出来一段绕法代码，返回值必须已脱敏（端到端，非只测采集集）。
+    
+        这就是任务书点名的组合绕过：`open('.en' + 'v')` 能过静态闸，只能靠值闸兜住。
+        与上面两条的区别：这条走完 `_h_python` 全链路（落临时 .py → 子进程 → 输出截断
+        → 值脱敏），断言的是**工具返回值**而不是内部集合。
+        """
+        base = sandbox.base
+        _plant_noise(base, files=40)
+        proj = base / "推演agent"
+        proj.mkdir(parents=True, exist_ok=True)
+        (proj / ".env").write_text(f"DEEPSEEK_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+        credential_guard.reset_cache()
+    
+        code = "print(open('推演agent/.en' + 'v', encoding='utf-8').read())"
+        assert credential_guard.find_credential_refs(code) == [], "静态闸不该看见它（这就是缺口）"
+    
+        cards = {"c1": {"card_id": "c1", "card_type": "sub_project",
+                        "perms": ["read", "edit", "tools_file"]}}
+        r = await card_tools._h_python("w", "c1", {"code": code}, cards)
+        blob = str(r.get("stdout", "")) + str(r.get("stderr", ""))
+        assert r.get("exit_code") == 0, r
+>       assert FAKE_KEY not in blob, f"明文回显了：{blob[:200]}"
+E       AssertionError: 明文回显了：DEEPSEEK_API_KEY=sk-fake-5713-noisecup-0001
+
+E         
+
+E         
+E       assert 'sk-fake-5713-noisecup-0001' not in 'DEEPSEEK_AP...0001\r\n\r\n'
+E         
+E         'sk-fake-5713-noisecup-0001' is contained here:
+E           DEEPSEEK_API_KEY=sk-fake-5713-noisecup-0001
+
+tests\test_credential_guard_coverage.py:135: AssertionError
+_________________ test_real_project_env_values_are_collected __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001D1A89C4350>
+
+    def test_real_project_env_values_are_collected(monkeypatch):
+        """本项目真实 `.env` 的值必须出现在采集集里（只断言布尔与计数，不落明文）。"""
+        real_base = Path(r"D:\AI_station")
+        env = real_base / "推演agent" / ".env"
+        if not env.is_file():
+            pytest.skip("本机没有真实 .env，跳过红线用例")
+    
+        monkeypatch.setattr(file_tools, "BASE_DIR", real_base)
+        credential_guard.reset_cache()
+        try:
+            expected = credential_guard._harvest_file(env)
+            assert expected, "真实 .env 应当至少解析出一个可采值"
+            got = set(credential_guard.secret_values())
+            missing = expected - got
+            # 只比计数：断言失败时 pytest 会把被比较的对象打出来，而这里装的是真值。
+>           assert len(missing) == 0, (
+                f"真实 .env 有 {len(missing)}/{len(expected)} 个值未被采集（覆盖断了）")
+E               AssertionError: 真实 .env 有 35/35 个值未被采集（覆盖断了）
+E               assert 35 == 0
+E                +  where 35 = len({'<masked len=32>', '<masked len=49>', '7d23685607f20478fc3f95cff07...BlMzZjMjA4MDMxZDcwZTAzOTU3NTU1', '<masked len=33>', '<masked len=41>', ...})
+
+tests\test_credential_guard_coverage.py:155: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_credential_guard_coverage.py::test_project_env_survives_cert_noise_under_old_cap
+FAILED tests/test_credential_guard_coverage.py::test_project_tier_not_starved_by_station_budget
+FAILED tests/test_credential_guard_coverage.py::test_python_tool_output_redacted_under_real_layout_noise
+FAILED tests/test_credential_guard_coverage.py::test_real_project_env_values_are_collected
+4 failed in 1.10s
+
+===== NEW CODE @ working tree (pytest exit=0) =====
+....                                                                     [100%]
+4 passed in 3.46s
+
+===== SUMMARY =====
+OLD: 4 failed in 1.10s
+NEW: 4 passed in 3.46s

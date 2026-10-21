@@ -1,0 +1,161 @@
+##### tests.test_model_override_scope::test_precedence_card_than_work_than_global
+ws = WindowsPath('D:/Temp/pytest-of-Administrator/pytest-414/test_precedence_card_than_work0/works')
+gw = {'models': {'exec-global': {}, 'm1': {}, 'm2': {}, 'm3': {}}, 'bindings': {'execute': 'exec-global'}, 'system': {'default_model': 'm1'}}
+
+    def test_precedence_card_than_work_than_global(ws, gw):
+        """卡片覆盖 > 项目 types > 全局模板 > 全局默认；角色绑定仍走 card > work > global。"""
+        model_override.update_work("work_100",
+                                   {"default_model": "m2", "bindings": {"execute": "m2"}})
+        model_override.update_card("work_100", "card_002",
+                                   {"default_model": "m3", "bindings": {"execute": "m3"}})
+        model_override.seed_types("work_100", {"sub_project": "m4"})
+    
+        # 无卡 → 全局默认（新模型：默认模型按卡类型解析，项目级无单一默认）
+        assert model_config.default_model() == "m1"
+>       assert model_config.default_model(work_id="work_100") == "m1"
+E       AssertionError: assert 'm2' == 'm1'
+E         
+E         - m1
+E         + m2
+
+tests\test_model_override_scope.py:94: AssertionError
+
+##### tests.test_model_override_scope::test_api_work_roundtrip_and_effective
+client = <starlette.testclient.TestClient object at 0x0000016D83493890>
+
+    def test_api_work_roundtrip_and_effective(client):
+        """work 级覆盖可存可读（兼容）；但默认模型按卡类型解析，work 级不再提供单一默认。"""
+        r = client.put("/api/settings/model-overrides/work_100",
+                       json={"default_model": "m2", "bindings": {"execute": "m2"}})
+        assert r.status_code == 200, r.text
+        assert r.json()["work"]["default_model"] == "m2"
+    
+        g = client.get("/api/settings/model-overrides/work_100").json()
+        assert g["work"]["default_model"] == "m2"
+    
+        eff = client.get("/api/settings/model-overrides/work_100/effective").json()
+>       assert eff["default_model"] == "m1"          # 无卡时 = 全局默认（不再用 work 默认）
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 'm2' == 'm1'
+E         
+E         - m1
+E         + m2
+
+tests\test_model_override_scope.py:149: AssertionError
+
+##### tests.test_offline_e2e::test_mock_llm_round_trip
+client = <httpx.AsyncClient object at 0x0000016D83542C10>
+sandbox = namespace(base=WindowsPath('D:/Temp/pytest-of-Administrator/pytest-414/test_mock_llm_round_trip0/app_home'), works=Win...m_round_trip0/app_home/logs'), tmp=WindowsPath('D:/Temp/pytest-of-Administrator/pytest-414/test_mock_llm_round_trip0'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000016D83F01350>
+
+    async def test_mock_llm_round_trip(client, sandbox, monkeypatch):
+        """完成判据原文：MOCK_LLM=1 下跑通一轮消息，全程无外网。"""
+        monkeypatch.setenv("MOCK_LLM", "1")
+        # 不替换 _gateway：让 model_service 读真实 config/models.yaml 建 MockGateway
+    
+        wid = (await client.post("/api/works", json={"title": "Mock 剧本"})).json()["work_id"]
+        r = await client.post(f"/api/works/{wid}/cards/card_001/messages",
+                              json={"content": "你好"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["model"] == "mock"
+>       assert body["reply"].startswith("[mock:haiku]")
+E       AssertionError: assert False
+E        +  where False = <built-in method startswith of str object at 0x0000016D83E12EB0>('[mock:haiku]')
+E        +    where <built-in method startswith of str object at 0x0000016D83E12EB0> = '[mock:minimax-m31-flash-preview] 你好\n'.startswith
+
+tests\test_offline_e2e.py:147: AssertionError
+
+##### tests.test_slots_control::test_midflight_stop_closes_turn_human_stop
+sandbox = namespace(base=WindowsPath('D:/Temp/pytest-of-Administrator/pytest-414/test_midflight_stop_closes_tur0/app_home'), wor...es_tur0/app_home/logs'), tmp=WindowsPath('D:/Temp/pytest-of-Administrator/pytest-414/test_midflight_stop_closes_tur0'))
+work = {'work_id': 'work_001', 'title': '回归测试剧本', 'work_card_id': 'card_001', 'ending_derived': False, ...}
+client = <httpx.AsyncClient object at 0x0000016D83C68CD0>
+
+    async def test_midflight_stop_closes_turn_human_stop(sandbox, work, client):
+        wid, cid = work["work_id"], "card_001"
+        gw = HangingGateway(tool_script=[{"name": "read_card",
+                                          "arguments": {"card_id": cid}}])
+        model_service._gateway = gw
+    
+        task = asyncio.create_task(client.post(
+            f"/api/works/{wid}/cards/{cid}/messages", json={"content": "查一下"}))
+        await asyncio.wait_for(gw.entered.wait(), 5)      # 模型调用进行中
+        r = await client.post(f"/api/works/{wid}/cards/{cid}/stop")
+        assert r.status_code == 200 and r.json()["stopped"] is True
+        gw.release.set()
+        resp = await asyncio.wait_for(task, 10)
+    
+        assert resp.status_code == 200, resp.text
+        # 人停回合：出口消费 → end=human_stop。
+        # [直接停止 2026-10-15 裁定] 人停＝**立刻断流**（不再等模型吐完）＋**已产出的字
+        # 照常交付**（本测试钉的原意「不丢已产出的字」保留）。断流点在本帧处理之后，
+        # 故交付的是**已收到的增量**「罐头」——终帧「罐头正文」属未收到部分，不交付。
+        assert resp.json()["reply"] == "罐头\n", resp.json()
+        blocks = await session_facade.read(wid, cid)
+>       assert blocks[-1]["end"] == "human_stop", "回合以 human_stop 闭合（T124）"
+E       AssertionError: 回合以 human_stop 闭合（T124）
+E       assert 'model_done' == 'human_stop'
+E         
+E         - human_stop
+E         + model_done
+
+tests\test_slots_control.py:156: AssertionError
+
+##### tests.test_snapshot_roundtrip::test_snapshot_restore_roundtrip
+work = {'work_id': 'work_001', 'title': '回归测试剧本', 'work_card_id': 'card_001', 'ending_derived': False, ...}
+
+    async def test_snapshot_restore_roundtrip(work):
+        """[卡片存储迁移 SQLite] 快照装的是库文件 ``cards.db``（VACUUM INTO 一致副本），
+        不再是卡片 md。往返后库内容逐字还原。"""
+        import sqlite3
+    
+        wid, root = work["work_id"], work["work_card_id"]
+    
+        await card_store.update_card(wid, root, {"conclusion": "第一版正文"}, "写入第一版")
+        # [T-0001 §6-4] 清指纹，确保本次快照真实执行（不是断言放宽）
+        if data_snapshot._FINGERPRINT_FILE.exists():
+            data_snapshot._FINGERPRINT_FILE.unlink()
+        r = data_snapshot.snapshot_sync("roundtrip-A")
+        assert r["ok"] is True and r["files"] > 0 and r["skipped"] is False
+    
+        stamp = Path(r["dir"]).name
+        batch = data_snapshot.SNAPSHOT_ROOT / wid / stamp
+        rel = f"works/{wid}/cards.db"
+        src = batch / rel
+        assert src.exists(), f"批次内缺库副本: {src}"
+    
+        # 副本必须是**可用** SQLite 库（WAL 下直接 copy 会拿到不含最新提交的副本）
+        con = sqlite3.connect(str(src))
+        try:
+            row = con.execute(
+                "SELECT status_block FROM cards WHERE card_id = ?", (root,)
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None and "第一版正文" in (row[0] or "")
+    
+        # 快照只装运行数据（PROTECTED_DIRS = works/），代码不进快照
+        tops = {
+            p.relative_to(batch).parts[0]
+            for p in batch.rglob("*") if p.is_file()
+        }
+        assert tops == {"works"}, tops
+    
+        # 改动之后，恢复必须回到快照态（库内容逐字还原）
+        await card_store.update_card(wid, root, {"conclusion": "第二版正文"}, "写入第二版")
+        assert (await card_store.read_card(wid, root))["body"]["status_block"] == "第二版正文"
+    
+        res = data_snapshot.restore_from_snapshot(wid, stamp, rel)
+        assert res["ok"] is True
+        data = await card_store.read_card(wid, root)
+        # [销红 2026-10-12] C.4（S2-5 卡面新四键裁定）：body 读取侧须用 status_block
+        # （写入侧 update_card 仍兼容旧键 conclusion 并归一到新键）。
+>       assert data["body"]["status_block"] == "第一版正文"
+E       AssertionError: assert '第二版正文' == '第一版正文'
+E         
+E         - 第一版正文
+E         ?  ^
+E         + 第二版正文
+E         ?  ^
+
+tests\test_snapshot_roundtrip.py:78: AssertionError

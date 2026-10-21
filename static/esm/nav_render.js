@@ -1,4 +1,4 @@
-﻿/* esm/nav_render.js —— [左栏接线 步2] 行结构按定稿重写（样式定稿 v1+v2 全量落地）。
+/* esm/nav_render.js —— [左栏接线 步2] 行结构按定稿重写（样式定稿 v1+v2 全量落地）。
  *
  * 行骨架（卡行）：segs 线段层 ＋ 箭头(nav-chev, data-twist) ＋ 图标(nav-ico) ＋
  *                 标题(nav-ctitle) ＋ 行尾槽(nav-tail：时间/运行中转圈 二选一 ＋ ⋯)。
@@ -23,10 +23,10 @@
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=39";
-import { createRowModel } from "./row_model.js?v=30";
-import { createVirtualList } from "./nav_virtual.js?v=30";
-import { NAV_ROW_HEIGHT } from "./state_layers.js?v=30";
+import { notify } from "./api.js?v=46";
+import { createRowModel } from "./row_model.js?v=31";
+import { createVirtualList } from "./nav_virtual.js?v=31";
+import { NAV_ROW_HEIGHT } from "./state_layers.js?v=32";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
 import { projectAggregate, isProjectEmpty, cardInSnapshot } from "./nav_badge.js?v=30";
 // [左栏接线 步2] 行几何纯函数（微推进／图标列／树线段）
@@ -663,7 +663,63 @@ export function createNavRenderer(deps) {
     return vl.reslice();
   }
 
-  async function refresh() {
+  /* [切卡加速 2026-10-20] 左栏快照的会话级缓存。
+     问题：画布 ⇄ 对话是**整页跳转**（location.assign），每跳一次 JS 世界重建、
+     左栏要从零拉 /api/nav + /api/nav/version 再渲染——用户感受就是「切来切去」。
+     做法：把上次的快照按版本号存进 sessionStorage，跳转后**先渲染缓存**（零网络），
+     网络回来照常覆盖（版本没变时 render 是幂等的，DOM 复用，不闪）。 */
+  const NAV_CACHE_KEY = "nav.snap.v1";
+
+  function readNavCache() {
+    try {
+      const raw = window.sessionStorage.getItem(NAV_CACHE_KEY);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      if (!o || !o.data || !Array.isArray(o.data.projects)) return null;
+      return o;
+    } catch (e) { return null; }
+  }
+
+  function writeNavCache(data, ver) {
+    try {
+      window.sessionStorage.setItem(NAV_CACHE_KEY,
+        JSON.stringify({ data, ver: ver || null, at: Date.now() }));
+    } catch (e) { /* 配额/隐私模式：缓存失败零影响 */ }
+  }
+
+  let cacheApplied = false;
+
+  /* [切卡不再重拉导航 2026-10-21]
+     病根：open() 每次都调 renderNav() ⇒ refresh() 无条件 `Promise.all([/api/nav,
+     /api/nav/version])`。切一张卡就要多两次往返，而这两份数据**跟当前选中哪张卡
+     毫无关系**——切卡只需要把已有快照按新选中重画（高亮 / 祖先展开 / 面包屑）。
+     连点十张卡 = 二十个请求排队，用户看到的就是「切来切去很慢」。
+     现在：`refresh({ network:false })` ＝ 只重画、零网络（快照缺失时自动退回拉取）；
+     网络拉取只发生在首帧、版本探测、以及数据真的变了之后。 */
+  async function refresh(opts) {
+    const o = opts || {};
+    const hasSnap = () => !!((store.snapshot.get().projects || []).length);
+    // ① 首帧：有缓存就先出左栏，不等网络（跳转后左栏立刻有内容）
+    if (!cacheApplied && appliedFor === "") {
+      cacheApplied = true;
+      const cached = readNavCache();
+      if (cached) {
+        try {
+          store.snapshot.set(cached.data);
+          if (cached.ver) store.snapshot.setVersion(cached.ver.version, cached.ver.by_work);
+          applyDefaultFold();
+          snapshotRootsWithOrphans(workId);
+          render();
+        } catch (e) { /* 缓存坏了大不了等网络，零阻断 */ }
+      }
+    }
+    // ①.5 零网络重画（切卡 / 局部刷新）：快照在手就不必问后端
+    if (o.network === false && hasSnap()) {
+      applyDefaultFold();
+      render();
+      return;
+    }
+    // ② 正常拉取（权威数据，覆盖缓存）
     let data = null;
     try {
       const [d, v] = await Promise.all([
@@ -674,6 +730,7 @@ export function createNavRenderer(deps) {
       if (data) {
         store.snapshot.set(data);
         if (v) store.snapshot.setVersion(v.version, v.by_work);
+        writeNavCache(data, v);
       }
     } catch (e) {
       return;   // toast 已由 api.js 处理；导航失败不影响画布与对话

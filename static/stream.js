@@ -38,13 +38,18 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=39";
+import { API } from "./esm/api.js?v=46";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
-import { createAssembler } from "./esm/assembler.js?v=37";
-import { createChatView } from "./esm/flow/chat-view.js?v=4";
+import { createAssembler } from "./esm/assembler.js?v=40";
+import { createChatView } from "./esm/flow/chat-view.js?v=7";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
+// [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
+import { createThinkRenderer, createTextUpdater } from "./esm/flow/think-stream.js?v=1";
+// [5715 · 性能] 同一节点的重渲染最小间隔（正文流 O(N²) ⇒ 节流）
+import { createRenderGate } from "./esm/flow/render-gate.js?v=1";
+import { createCopyButton, createResendButton } from "./esm/flow/message-actions.js?v=1";
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
    键 `${wid}/${cid}`；字段即原 `current` 单例的原样搬运（asm/view/liveSlot/
@@ -63,7 +68,19 @@ function skey(wid, cid) { return wid + "/" + cid; }
    idleReleaseMs —— T3 静默超时：多久没用就释放。
    sweepMs       —— T3 释放扫描周期。 */
 const BOARD_CFG = Object.assign(
-  { pageNodes: 120, residentMax: 8, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000 },
+  /* [切卡即时 2026-10-21] 常驻上限 8 → 40：原来切过 8 张卡后最早的被 LRU 扔掉，
+     切回去又变成「首次加载」——用户看到的就是「明明有内存却不用」。
+     一张卡的画板是现成 DOM（约 120 节点），40 张的内存代价可接受。
+     pageNodes 120 → 60：首次打开要渲染的节点减半（往上翻再补）。 */
+  { pageNodes: 60, residentMax: 40, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000,
+    /* [对话流分页 2026-10-20] 打开卡片时只拉**最后多少条事件**。
+       改前是全量：card_004 有 1746 条事件 ⇒ 装配 1185 个节点，打开要 2.8 秒 CPU。
+       400 条约覆盖最近 20~40 轮，往上翻再按需补。 */
+    initialEvents: 400,
+    /* [运行态单一真相源 2026-10-21] 收口去抖：done/error/turn_end 到达后先等这么久。
+       为什么去抖：自动续轮的下一轮 run_start 可能紧跟在上一轮收口之后（毫秒级），
+       不去抖的话主键/运行条会「收 → 起」闪一下。窗口内来了 run_start 就取消收口。 */
+    settleDebounceMs: 400 },
   (typeof window !== "undefined" && window.__FLOW_BOARD__) || {}
 );
 
@@ -172,29 +189,20 @@ const BOARD_CFG = Object.assign(
     return running ? lines[lines.length - 1] : lines[0];
   }
 
-  function makeThink(text, opts) {
-    const o = opts || {};
-    const r = document.createElement("div");
-    r.className = "think" + (o.done ? " done" : " thinking") + " collapsed";
-    r.innerHTML =
-      '<div class="think-head">' +
-        '<i class="think-ico"></i>' +
-        '<span class="think-lab">Think</span>' +
-        '<span class="think-sep">·</span>' +
-        '<span class="think-sum"></span>' +
-        '<span class="think-time"></span>' +
-      "</div>" +
-      '<div class="think-body"></div>';
-    r.querySelector(".think-sum").textContent = thinkSummary(text, !o.done);
-    r.querySelector(".think-body").textContent = text || "";
-    r.querySelector(".think-head").onclick = () => {
-      r.classList.toggle("collapsed");
-    };
-    return r;
-  }
+  /* [5715 · 性能] 思考渲染器的**构造**搬进 esm/flow/think-stream.js：直播时每帧
+     思考都会让那一行重渲染，而行里含**累积全文** ⇒ 一次思考 N 帧 ⇒ 写入量 O(N²)
+     ⇒ 长思考把主线程打满（页面卡死的一半原因；另一半在落盘侧，已由
+     event_stream 的「按轮合并落一条」解决）。
+     新件在文本是**前缀扩展**时只追加增量（O(增量)），并保留用户的折叠态。 */
+  const _thinkRenderer = createThinkRenderer({ summaryOf: thinkSummary });
+  /* [5715 · 性能] 席位并排卡里的思考（``.tk``）同样是逐帧增长的整块文本 ⇒
+     同样走增量文本器（否则三席并发时又是一个 O(N²)）。 */
+  const _seatText = createTextUpdater();
+  /* [5715 · 性能] 同一节点的重渲染最小间隔（正文是 Markdown ⇒ 只能节流不能增量）。 */
+  const _renderGate = createRenderGate({ minMs: 100 });
 
   /** 三席并排卡片（seats 节点：三席各一卡，思考与输出同卡）。 */
-  function makeSeats(members) {
+  function makeSeats(members, nodeKey) {
     const host = document.createElement("div");
     host.className = "seats";
     for (const key of Object.keys(members)) {
@@ -207,7 +215,10 @@ const BOARD_CFG = Object.assign(
         '<div class="sc-body"><span class="tk"></span></div>' +
         '<div class="sc-foot"><span class="ok"></span><span class="meta"></span></div>';
       card.querySelector(".sc-head .m").textContent = m.model || key;
-      card.querySelector(".tk").textContent = m.thinking || "";
+      // [5715 · 性能] 席位的思考也是**逐帧增长**的整块文本 ⇒ 整块重写同样是 O(N²)
+      // ⇒ 走增量文本器（键＝节点键+席位键）。
+      _seatText.set((nodeKey || "seats") + "|" + key,
+        card.querySelector(".tk"), m.thinking || "");
       const end = m.end;
       if (end) {
         if (end.text) {
@@ -460,10 +471,14 @@ const BOARD_CFG = Object.assign(
     }
     // 其余键值对逐行（不含已提取的）
     const rest = {};
+    const objs = [];
     for (const k of Object.keys(d)) {
       if (k === "ok" || k === "error" || k === "content" || k === "files" || k === "items") continue;
-      if (typeof d[k] === "object") continue;
       if (d[k] === null || d[k] === "") continue;
+      /* [5715 · 修] 对象型字段原来**整条丢弃**（continue）⇒ 工具结果里只有对象字段时
+         展开体是**一片空白**（实测 create_card 的结果只有 card 对象 ⇒ 点开什么都没有，
+         用户以为点坏了）。改为给一段截断 JSON 摘要。 */
+      if (typeof d[k] === "object") { objs.push([k, d[k]]); continue; }
       rest[k] = d[k];
     }
     const rks = Object.keys(rest);
@@ -474,6 +489,22 @@ const BOARD_CFG = Object.assign(
         "<span class='f'><span class='k'>" + esc(k) + "</span> = <span class='v'>" + esc(String(rest[k])) + "</span></span>"
       ).join(" ");
       out.push(kv);
+    }
+    for (const pair of objs) {
+      const o = document.createElement("div");
+      o.className = "tr-kv tr-kv-obj";
+      /* 截断到 2000 字：对象字段是附属信息（正文在 content 字段，不截断），
+         整份 card/meta JSON 可能上万字，全量倒出来会淹没结果区。 */
+      o.innerHTML = "<span class='f'><span class='k'>" + esc(pair[0]) + "</span> = <span class='v'>"
+        + esc(clip(fmtData(pair[1]), 2000)) + "</span></span>";
+      out.push(o);
+    }
+    /* [5715 · 修] 实在没有可展示的字段 ⇒ 明说"没有"，别留一片空白让人以为点坏了。 */
+    if (!out.length) {
+      const e = document.createElement("div");
+      e.className = "tr-empty";
+      e.textContent = "（该结果没有可展示的字段）";
+      out.push(e);
     }
     return out;
   }
@@ -574,7 +605,7 @@ const BOARD_CFG = Object.assign(
         "并行质询", null, "lv3"));
     }
     const members = node.members || {};
-    if (Object.keys(members).length) out.push(makeSeats(members));
+    if (Object.keys(members).length) out.push(makeSeats(members, node.key));
     return out;
   }
 
@@ -626,7 +657,9 @@ const BOARD_CFG = Object.assign(
 
     /* [对话界面商业化 2026-10-17] 用户消息操作条（hover 浮出）：
        复制 + 重新发送。重发不直接调 workspace——stream 不持有发送闭包，
-       用一次自定义事件把「用户要求重发这段原文」交给宿主，避免反向依赖。 */
+       用一次自定义事件把「用户要求重发这段原文」交给宿主，避免反向依赖。
+       [5715 · 抽模块] 两个按钮的逻辑搬进 esm/flow/message-actions.js
+       （原先长在渲染闭包里 ⇒ 不可单测、且剪贴板回退逻辑写了两份）。 */
     const actions = document.createElement("div");
     actions.className = "msg-actions";
     const bubble = row.querySelector(".flow-user-bubble");
@@ -636,49 +669,11 @@ const BOARD_CFG = Object.assign(
     const when = fmtClock(node.ts);
     if (when) { t.textContent = when; t.title = String(node.ts); actions.appendChild(t); }
 
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "msg-act";
-    copyBtn.title = "复制";
-    copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.2" y="5.2" width="8" height="8" rx="1.6"/><path d="M10.8 3.2H3.6a.8.8 0 0 0-.8.8v7.2"/></svg>';
-    copyBtn.onclick = () => {
-      const text = bubble ? bubble.innerText : "";
-      if (!text) return;
-      const done = () => {
-        const old = copyBtn.innerHTML;
-        copyBtn.classList.add("is-ok");
-        copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6.5"/></svg>';
-        setTimeout(() => {
-          copyBtn.classList.remove("is-ok");
-          copyBtn.innerHTML = old;
-        }, 1400);
-      };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, () => { /* 静默 */ });
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand("copy"); done(); } catch (e) { /* 静默 */ }
-        document.body.removeChild(ta);
-      }
-    };
-    actions.appendChild(copyBtn);
+    const getUserText = () => (bubble ? bubble.innerText : "");
+    actions.appendChild(createCopyButton({ getText: getUserText, title: "复制" }));
 
     if (!node.pending) {
-      const reBtn = document.createElement("button");
-      reBtn.type = "button";
-      reBtn.className = "msg-act";
-      reBtn.title = "重新发送这条提问";
-      reBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7"/><path d="M13.4 2.6v3.2h-3.2"/></svg>';
-      reBtn.onclick = () => {
-        const text = bubble ? bubble.innerText : "";
-        if (!text) return;
-        try {
-          window.dispatchEvent(new CustomEvent("ui:resend", { detail: { content: text } }));
-        } catch (e) { /* 零阻断 */ }
-      };
-      actions.appendChild(reBtn);
+      actions.appendChild(createResendButton({ getText: getUserText }));
     }
 
     /* 挂进气泡容器而不是行容器：行是全宽 flex 列，挂行上只能排在气泡下方，
@@ -702,7 +697,8 @@ const BOARD_CFG = Object.assign(
     // 思考块插在正文之前（位置＝数据的函数：思考属本轮 assistant）
     if (node.reasoning) {
       const md = el.querySelector(".md");
-      const think = makeThink(node.reasoning, { done: true });
+      // [5715 · 性能] 走增量渲染器：直播时每帧只**追加**新增部分（不重写整块）。
+      const think = _thinkRenderer.row(node.key, node.reasoning, { done: true });
       if (md) el.insertBefore(think, md); else el.appendChild(think);
     }
     return withDate(node, el);
@@ -756,8 +752,9 @@ const BOARD_CFG = Object.assign(
       onLoadOlder: () => { loadEarlier(st); },
       runningStart: () => st.turnStart,
       isRunning: () => !!st.busy,
-      hasMore: () => (st.winStart || 0) > 0,
-      isLoadingOlder: () => false,
+      // [对话流分页 2026-10-20] 内存窗口还有 ⇒ 有；窗口到顶但后端还有 ⇒ 也算有
+      hasMore: () => (st.winStart || 0) > 0 || !!st.hasEarlier,
+      isLoadingOlder: () => !!st.loadingOlder,
     });
     st.view.setUserKeyTest((key) => {
       const node = st.asm.snapshot().nodes.get(key);
@@ -776,9 +773,43 @@ const BOARD_CFG = Object.assign(
 
   /** 往前插一页：锚点由 chat-view 在点击时先记好，这里只改窗口并重画。 */
   function loadEarlier(st) {
-    if (!st || !st.winStart || st.winStart <= 0) return false;
-    st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageNodes);
-    renderSnapshot(st, st.asm.snapshot());
+    if (!st) return false;
+    /* ① 内存窗口里还有 ⇒ 零网络前移一页（改前行为，逐字保留） */
+    if ((st.winStart || 0) > 0) {
+      st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageNodes);
+      renderSnapshot(st, st.asm.snapshot());
+      return true;
+    }
+    /* ② 窗口已到顶，但后端还有更早的 ⇒ 拉一段更早的，合并后重建。
+       [对话流分页 2026-10-20] 这就是「首次只拉尾部」的配套：不补这一段，
+       往上翻就翻不到历史了（功能退化）。 */
+    if (!st.hasEarlier || st.loadingOlder) return false;
+    st.loadingOlder = true;
+    (async () => {
+      try {
+        const before = st.firstSeq || 0;
+        if (!before) { st.hasEarlier = false; return; }
+        const older = await fetchTimeline(st, st.wid, st.cid, undefined,
+          { tail: BOARD_CFG.initialEvents, before: before });
+        if (!older || !older.length) { st.hasEarlier = false; return; }
+        const prevItems = st.loadedItems || [];
+        const seen = new Set(prevItems.map((x) => x.seq));
+        const merged = older.filter((x) => !seen.has(x.seq)).concat(prevItems);
+        const totalBefore = st.asm.snapshot().order.length;
+        st.loadedItems = merged;
+        st.asm.rebuild(merged);
+        const totalAfter = st.asm.snapshot().order.length;
+        const addedNodes = Math.max(0, totalAfter - totalBefore);
+        // 视野不跳：把窗口起点后移到「新增段的尾部」，用户看到的是接缝处
+        st.winStart = Math.max(0, addedNodes - BOARD_CFG.pageNodes);
+        renderSnapshot(st, st.asm.snapshot());
+      } catch (e) {
+        /* 拉不到就保持现状（不静默清空） */
+      } finally {
+        st.loadingOlder = false;
+        try { if (st.view) st.view.paintStatus(); } catch (e) { /* 零阻断 */ }
+      }
+    })();
     return true;
   }
 
@@ -843,6 +874,8 @@ const BOARD_CFG = Object.assign(
     v.render(win, revGetter(snap));
     v.paintOlder();
     v.paintStatus();
+    // [5715 · 性能] 思考渲染器的缓存只留**当前还挂着的节点**（防持有旧元素）
+    _thinkRenderer.prune(new Set(snap.order));
     st.renderedOrder = snap.order;
     logInfo("[flow-render] snapshot(" + win.length + "/" + total + " nodes)");
   }
@@ -856,8 +889,15 @@ const BOARD_CFG = Object.assign(
     const snap = st.asm.snapshot();
     if (st.renderedOrder !== snap.order) { renderSnapshot(st, snap); return; }
     if (!node) return;
-    const idx = snap.order.indexOf(node.key);
-    if (idx < 0) return;
+    /* [5715 · 性能] 节点下标**随快照缓存**（原来每帧 order.indexOf(key)＝O(n)：
+       一张卡 n 个节点、每帧来一次 ⇒ O(n²) 的纯查找开销，白白吃掉主线程）。 */
+    if (st._orderRef !== snap.order) {
+      st._orderRef = snap.order;
+      st._orderIndex = new Map();
+      for (let i = 0; i < snap.order.length; i++) st._orderIndex.set(snap.order[i], i);
+    }
+    const idx = st._orderIndex.get(node.key);
+    if (idx == null || idx < 0) return;
     if (idx < (st.winStart || 0)) return;     // 窗口之上：不进 DOM
     if (!st._dirty) st._dirty = new Map();
     st._dirty.set(node.key, node.rev || 0);
@@ -867,12 +907,29 @@ const BOARD_CFG = Object.assign(
       const dirty = st._dirty || new Map();
       st._dirty = null;
       const v = viewOf(st);
-      for (const [k, rev] of dirty) v.refresh(k, rev);
+      /* [5715 · 性能] 同一节点的**重渲染最小间隔**（100ms）：
+         直播时正文逐帧到，行里含**累积全文**且正文要**重跑 Markdown 解析**
+         ⇒ 每帧全量重渲 ⇒ 一次长回复 N 帧就是 O(N²) 的写入与解析 ⇒ 主线程被吃满。
+         （思考块已改为增量追加，见 esm/flow/think-stream.js；正文是 Markdown
+         不能追加，只能节流。）
+         ★ 被节流掉的帧**不丢**：留在 _dirty 里，稍后再来一次 ⇒ 最终文本一定落地。 */
+      const again = new Map();
+      for (const [k, rev] of dirty) {
+        if (!_renderGate.allow(k)) { again.set(k, rev); continue; }
+        v.refresh(k, rev);
+      }
       v.paintStatus();
+      if (again.size) {
+        st._dirty = again;         // 保留待刷（不丢最终文本）
+        schedule();
+      }
     };
-    st._raf = (typeof requestAnimationFrame === "function")
-      ? requestAnimationFrame(flush)
-      : setTimeout(flush, 16);
+    const schedule = () => {
+      st._raf = (typeof requestAnimationFrame === "function")
+        ? requestAnimationFrame(flush)
+        : setTimeout(flush, 16);
+    };
+    schedule();
   }
 
   /* ==================================================================
@@ -995,6 +1052,7 @@ const BOARD_CFG = Object.assign(
     if (key === activeKey) return false;   // 当前在看：永不释放
     if (isBusy(st)) return false;          // 有任务在跑：永不释放
     stopES(st);
+    _cancelSettle(st);                     // 待收口的去抖定时器一并作废（不留悬空回调）
     if (st.board && st.board.parentNode) st.board.parentNode.removeChild(st.board);
     sessions.delete(key);
     logInfo("[flow-board] release " + key);
@@ -1035,6 +1093,10 @@ const BOARD_CFG = Object.assign(
     if (st.settled) return;
     const rec = frameToRecord(frame);
     if (!rec.type) return;
+    /* [运行态单一真相源 2026-10-21] turn_end 是**运行态专用**帧（后端回合 finally
+       无条件发一次），它不承载任何可展示内容——不进装配器，否则会话流里会多出
+       一行谁都看不懂的「turn_end」。它的用途只有 _observeRunFrame 那一条。 */
+    if (rec.type === "turn_end") return;
     if (rec.run_id) st.liveRunId = rec.run_id;
     const node = st.asm.applyRecord(rec);
     renderAffected(st, node);
@@ -1067,9 +1129,20 @@ const BOARD_CFG = Object.assign(
     // 后台结算回流走 resync()——**不激活**，结果落该卡自己的（可能游离的）画板（§五.5）。
     const st = activate(wid, cid);
     stopES(st);
-    const items = await fetchTimeline(st, wid, cid);
-    renderSnapshot(st, st.asm.rebuild(items));
-    if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
+    /* [5715 · 修] 骨架必须在**任何**结局下收起：原来 markLoaded 只在末尾调，
+       fetchTimeline 抛错 ⇒ 骨架永久停留（用户看到"一直在加载"却什么也没发生）。 */
+    try {
+      // [对话流分页 2026-10-20] 首次只拉尾部 initialEvents 条（不是全量）。
+      // 全量时 card_004 要装配 1185 个节点、打开耗 2.8 秒 CPU；尾部 400 条约 200 节点。
+      const items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
+      st.loadedItems = items || [];
+      /* [切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」] 成功加载一次就打标记：
+         切回这张卡时直接用内存里的画板（零网络、零装配），不再重拉 400 条事件。 */
+      st.loadedOnce = true;
+      renderSnapshot(st, st.asm.rebuild(items || []));
+    } finally {
+      if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
+    }
   }
 
   /** 结算后回流：与刷新同一条路（唯一数据源仍是 timeline）。
@@ -1103,15 +1176,22 @@ const BOARD_CFG = Object.assign(
   /** 拉 timeline。`from` 省略＝全量（刷新/结算）；给值＝只取 seq>=from 的增量（T5）。
       ★ 无论全量还是增量，都把本次 items 的**末条 seq** 记进 `st.diskSeq`（落盘水位）——
       这是增量游标唯一的播种源；**绝不与 `st.lastSeq`（内存 journal seq）互写**。 */
-  async function fetchTimeline(st, wid, cid, from) {
+  async function fetchTimeline(st, wid, cid, from, opts) {
     try {
-      const resp = await API.getTimeline(wid, cid, from);
+      const resp = await API.getTimeline(wid, cid, from, opts);
       const items = (resp && resp.items) || [];
       if (st && items.length) {
         const last = items[items.length - 1];
         if (last && typeof last.seq === "number") {
           st.diskSeq = Math.max(st.diskSeq || 0, last.seq);
         }
+      }
+      /* [对话流分页 2026-10-20] 窗口边界记在会话状态上：
+           hasEarlier — 后端是否还有更早的（决定「加载更早」是否可用）
+           firstSeq   — 已加载的最早 seq（下次 before 的锚点） */
+      if (st && resp) {
+        st.hasEarlier = !!resp.has_earlier;
+        if (typeof resp.first_seq === "number" && resp.first_seq > 0) st.firstSeq = resp.first_seq;
       }
       return items;
     } catch (e) {
@@ -1200,14 +1280,72 @@ const BOARD_CFG = Object.assign(
     if (st) { stopES(st); setRunning(st.wid, st.cid, false); }
   }
 
+  /* ══════════════════════════════════════════════════════════════════
+     [运行态单一真相源 2026-10-21] 运行态改由**事件流**驱动，宿主只做投影。
+
+     改前的三条病根（用户报的「对话结束页面还在运行中，必须刷新才变完成态」）：
+       ① 两套状态单向同步：`workspace.sessionState.running`（UI 唯一读点）与
+          本文件的 `st.busy`；只有 workspace→stream，stream 从不回写。
+       ② 清除只挂在 send 链上：`setRunState(false)` 只在 POST 成功/失败收口与
+          doStop 里调用。**自动续轮、卡间消息调起、刷新接上的回合都不走 send()**
+          ⇒ 这些回合结束时没有人清运行态，永远停在 true。
+       ③ done/error 帧不参与状态机：`es.onmessage` 只把帧丢给装配器落节点，
+          从不据此收口——帧明明到了，状态却没人管。
+
+     现在：run_start ⇒ 起；done / error / turn_end ⇒ 收（400ms 去抖，窗口内来了
+     下一轮 run_start 就不收）。收口经 `onRunChange` 回告宿主，宿主只更新自己那份
+     投影（不再回写本模块）——单向、无环。宿主主动发起（send/doStop/切卡）仍走
+     `setRunning(..., {fromHost:true})`，同样落到这一处，**状态只有一个写入口**。
+     ══════════════════════════════════════════════════════════════════ */
+
+  let _runListener = null;
+  const _settleTimers = new Map();     // sessionKey → timer
+
+  function _notifyRunChange(st, running) {
+    if (typeof _runListener !== "function") return;
+    try { _runListener(st.wid, st.cid, !!running); } catch (e) { /* 宿主异常不阻断流 */ }
+  }
+
+  function _cancelSettle(st) {
+    const t = _settleTimers.get(st.key);
+    if (t) { clearTimeout(t); _settleTimers.delete(st.key); }
+  }
+
+  /** 收口去抖：窗口内来了新轮的 run_start 就作废（见 BOARD_CFG.settleDebounceMs）。 */
+  function _scheduleSettle(st) {
+    _cancelSettle(st);
+    const t = setTimeout(() => {
+      _settleTimers.delete(st.key);
+      if (!st.busy) return;
+      setRunning(st.wid, st.cid, false, { fromStream: true });
+    }, Math.max(0, BOARD_CFG.settleDebounceMs));
+    if (t && typeof t.unref === "function") t.unref();
+    _settleTimers.set(st.key, t);
+  }
+
+  /** 帧 → 运行态。这是「一轮在不在跑」的唯一判据来源。 */
+  function _observeRunFrame(st, frame) {
+    const t = (frame && frame.type) || "";
+    if (t === "run_start") {
+      _cancelSettle(st);
+      setRunning(st.wid, st.cid, true, { fromStream: true });
+      return;
+    }
+    if (t === "done" || t === "error" || t === "turn_end") _scheduleSettle(st);
+  }
+
   /** 运行态：一条入口管「在跑卡不释放」「运行条」「主键两态」三处。 */
-  function setRunning(wid, cid, running) {
+  function setRunning(wid, cid, running, opts) {
     const st = ensureRun(wid, cid);
-    st.busy = !!running;
-    if (running) st.turnStart = Date.now();
+    const next = !!running;
+    const changed = st.busy !== next;
+    st.busy = next;
+    if (next) { st.turnStart = Date.now(); _cancelSettle(st); }
     const v = viewOf(st);
-    v.setRunning(!!running);
+    v.setRunning(next);
     v.paintStatus();
+    // 宿主主动发起（fromHost）不再回传，否则「宿主 → stream → 宿主」成环。
+    if (changed && !(opts && opts.fromHost)) _notifyRunChange(st, next);
     return st;
   }
 
@@ -1216,6 +1354,15 @@ const BOARD_CFG = Object.assign(
     const st = sessions.get(skey(wid, cid));
     if (!st) return true;
     return !!st.esDead;
+  }
+
+  /** [切卡零重建 2026-10-21] 这张卡的画板是否已在内存里（切回时免重拉）。
+      只认「成功加载过一次」——加载失败不打标记，下次还会重试。 */
+  function isLoaded(wid, cid) {
+    const st = sessions.get(skey(wid, cid));
+    const hit = !!(st && st.loadedOnce && st.view);
+    logInfo("[flow-board] " + (hit ? "hit " : "miss ") + skey(wid, cid));
+    return hit;
   }
 
   /** [5702 · 2026-10-20] 某卡是否在跑（按卡查，供输入系统切卡时恢复运行态）。 */
@@ -1247,6 +1394,9 @@ const BOARD_CFG = Object.assign(
           const frame = JSON.parse(m.data);
           if (typeof frame.seq === "number" && frame.seq > st.lastSeq) st.lastSeq = frame.seq;
           // [5702] 旧 finish(st)（live 槽收尾）已随旁路退役；done/error 由装配器落节点。
+          // [运行态单一真相源 2026-10-21] 但**运行态**必须由帧推进——否则自动续轮/
+          // 卡间调起/刷新接上的回合结束时，没有任何人把运行态收掉（病根②③）。
+          _observeRunFrame(st, frame);
           applyLiveFrame(st, frame);
         } catch (e) { /* 单帧坏不致命 */ }
       };
@@ -1279,8 +1429,14 @@ const BOARD_CFG = Object.assign(
 export const EventFlow = {
   start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers,
   optimisticUser, dropOptimisticUser, streamDead, sessionRunning,
+  // [切卡零重建] 画板已在内存 ⇒ 切回时免重拉
+  isLoaded,
   // [对话流照抄 dsh v3] 运行态唯一入口：在跑卡不释放 ＋ 运行条 ＋ 主键两态
   setRunning,
+  /* [运行态单一真相源 2026-10-21] 宿主注册「运行态变了」的回告口（单向）：
+     (wid, cid, running) => void。宿主在回调里只更新自己那份投影，**不得回写**
+     setRunning——否则成环（宿主主动发起时传 {fromHost:true} 即可）。 */
+  onRunChange(fn) { _runListener = typeof fn === "function" ? fn : null; },
   // [画板四机制 T1] 会话表对外两口：activate＝把某卡画板挂上 #chatArea（open 用）；
   // board＝取某卡自己的容器（workspace 把系统行写进该卡那份，不再写全局唯一列）。
   activate, board,
@@ -1311,5 +1467,13 @@ export const EventFlow = {
   setEmpty(wid, cid, payload) {
     const st = sessions.get(skey(wid, cid));
     if (st && st.view && typeof st.view.setEmpty === "function") st.view.setEmpty(payload);
+  },
+  /* [5715 · 修] 收首屏骨架：宿主在「确定没有数据」时调用。
+     病根：骨架只在 markLoaded() 后收起，而 markLoaded 只在 replayTrace 末尾调
+     ⇒ 草稿路径（/work/draft、新建卡）不走 replayTrace ⇒ **骨架永远不收**，
+     空态也被 loading 判据挡着 ⇒ 新用户第一屏是"永远在加载"。 */
+  markLoaded(wid, cid) {
+    const st = sessions.get(skey(wid, cid));
+    if (st && st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
   },
 };

@@ -38,6 +38,12 @@ from ..api import prompt_log
 __all__ = [
     "SWITCHES",
     "TREE_SWITCHES",
+    "SCOPE_SUBTREE",
+    "SCOPE_LINKED",
+    "SCOPE_ANY",
+    "check_linked",
+    "linked",
+    "_linked_between",
     "PERMISSIONS_PATH",
     "PERM_KEY",
     "PERM_VERSION_KEY",
@@ -67,6 +73,15 @@ SWITCH_CREATE_CHILD = "create_child"    # 能在它下面建子卡
 SWITCH_LINK = "link"                    # 能连线
 SWITCH_UNLINK = "unlink"                # 能解线
 SWITCH_TOOLS_FILE = "tools_file"        # 能读写文件
+# [角色只读核验 2026-10-21 · card_004] **只读文件开关**：给「只能看、不能改」的卡用。
+# 为什么不能复用 tools_file：那一个开关管着 11 件工具——read_file／list_files／
+# search_files／glob_files 之外，还有 **write_file／edit_file／delete_file／
+# move_file／rename_file／bash／python**。把 tools_file 发给离树的职能角色，
+# 等于同时给它写盘权和 shell 执行权，与「第二层只说话不动手」直接冲突。
+# ⇒ 拆一个弱化开关，只解锁四件只读工具。
+# 包含关系见 _SWITCH_IMPLIES：有 tools_file 者自动具备 tools_read_file，
+# 故编程卡/根卡行为逐字不变、无需改配置；反向不成立（只读 ≠ 可写）。
+SWITCH_TOOLS_READ_FILE = "tools_read_file"   # 只读文件/列目录/检索，不能写、不能执行
 SWITCH_TOOLS_WEB = "tools_web"          # 能联网
 SWITCH_SHADOW_WRITE = "shadow_write"    # 能写自己的影子卡
 SWITCH_MANUSCRIPT = "manuscript"        # 能查阅本项目存档的原始资料（manuscript 三件）
@@ -103,6 +118,7 @@ SWITCHES: frozenset[str] = frozenset({
     SWITCH_LINK,
     SWITCH_UNLINK,
     SWITCH_TOOLS_FILE,
+    SWITCH_TOOLS_READ_FILE,
     SWITCH_TOOLS_WEB,
     SWITCH_SHADOW_WRITE,
     SWITCH_MANUSCRIPT,
@@ -113,6 +129,25 @@ SWITCHES: frozenset[str] = frozenset({
     SWITCH_SEARCH,
     SWITCH_LIST_MEMORY,
 })
+
+#: **开关包含关系**（2026-10-21 · card_004）：具备 key 的卡自动具备 value 里的全部开关。
+#:
+#: 只用于「宽权隐含窄权」这一个方向——有写权限的卡当然能读，
+#: 但只读卡**不会**因此获得写权（方向单向，不可逆）。
+#: 落地目的：给职能角色加 tools_read_file 后，编程卡/根卡不必改配置也不会掉能力。
+_SWITCH_IMPLIES: dict[str, tuple[str, ...]] = {
+    SWITCH_TOOLS_FILE: (SWITCH_TOOLS_READ_FILE,),
+}
+
+
+#: [5713 通道试走 · 用户口径 2026-10-20「卡间通信有专门的通信线」]
+#: 树作用域档位——卡间通信的边界**是通信线，不是 parent 树**：
+#:   · subtree（缺省，历史行为）＝只看自己子树，仅父子方向；
+#:   · linked＝两卡之间已有通信线即通过（沿通信线通信、方向不限）；
+#:   · any＝不判树作用域，只判类型授权（建线/解线用：平级卡可自主建线）。
+SCOPE_SUBTREE = "subtree"
+SCOPE_LINKED = "linked"
+SCOPE_ANY = "any"
 
 #: 树类开关：类型分权通过后追加「操作者是否在目标上游」限定（方案 §4）
 TREE_SWITCHES: frozenset[str] = frozenset({
@@ -259,7 +294,15 @@ def has_perm(card_meta: Mapping[str, Any] | None, switch: str) -> bool:
     perms = meta.get(PERM_KEY)
     if not isinstance(perms, (list, tuple, set, frozenset)):
         return False
-    return str(switch) in {str(s) for s in perms}
+    granted = {str(s) for s in perms}
+    if str(switch) in granted:
+        return True
+    # [2026-10-21] 单一方向隐含：宽权包含窄权（有 tools_file ⇒ 具备 tools_read_file）。
+    # 反向不成立——只读卡不会因为这一条拿到写权。
+    for g in granted:
+        if str(switch) in _SWITCH_IMPLIES.get(g, ()):
+            return True
+    return False
 
 
 def _deny_message(card_id: str, switch: str,
@@ -275,11 +318,19 @@ def _deny_message(card_id: str, switch: str,
 
 
 def check(actor_id: str, target_id: str, switch: str,
-          cards: Mapping[str, dict[str, Any]] | None) -> bool:
+          cards: Mapping[str, dict[str, Any]] | None,
+          *, scope: str = SCOPE_SUBTREE) -> bool:
     """统一权限关口：类型分权 →（树类开关）树作用域。通过 True，拒绝抛 PermissionError。
 
     ``cards`` 为卡面 meta 表（``{card_id: meta}``）。两级失败的文案各自独立
     （「分类不授权」/「越出子树」），便于模型分辨。
+
+    ``scope``（仅对 ``TREE_SWITCHES`` 有效）＝树作用域的**档位**：
+      - ``subtree``（缺省，行为逐字不变）：actor 须在 target 上游（只看自己子树）；
+      - ``linked``：两卡之间已有**通信线**即通过（沿通信线，方向不限）——
+        这正是「卡间通信走专门的通信线」的落地：边界是线，不是树；
+      - ``any``：不判树作用域（建线/解线用——平级卡可自主建线，跨树也能建）。
+    类型分权一级对三档一视同仁（放宽作用域不放宽授权）。
 
     打点：类型分权一条（fn="check"）、树作用域命中时再一条（fn="tree_scope"），
     两态同记（granted true/false）。
@@ -298,7 +349,12 @@ def check(actor_id: str, target_id: str, switch: str,
         raise PermissionError(_deny_message(target_id, switch, target))
 
     if switch in TREE_SWITCHES:
-        scope_ok = _is_in_subtree(actor_id, target_id, cards)
+        if scope == SCOPE_LINKED:      # [5713] 沿通信线：有线即通，方向不限
+            scope_ok = _linked_between(actor_id, target_id, cards)
+        elif scope == SCOPE_ANY:       # [5713] 建线/解线：不判树作用域
+            scope_ok = True
+        else:
+            scope_ok = _is_in_subtree(actor_id, target_id, cards)
         prompt_log.append_perm_log({
             "fn": "tree_scope",
             "actor_id": actor_id,
@@ -350,3 +406,63 @@ def _is_in_subtree(
             break
         node = nm.get("parent", "")
     return False
+
+
+def _linked_between(actor_id: str, target_id: str,
+                    cards: Mapping[str, dict[str, Any]] | None) -> bool:
+    """两卡之间是否已有**通信线**（links 边）——卡间通信的唯一边界判据。
+
+    [5713 通道试走·用户口径「卡间通信有专门的通信线」] 通信的边界是线不是树：
+    平级/兄弟卡之间只要建了线就能通，没有线的（哪怕同父同树）也不通。
+
+    方向：**任一侧有 links 条目指向对方即成立**（已建立的边语义）。理由：一条线
+    是双方的事——A 建线给 B 之后，B 的应答必须能沿同一条线回到 A，否则线只能
+    单向喊话、对讲不成立。
+
+    不参与通信的线不算：``relations``（依赖关联线）只记关系与内容，不在本判据内。
+    自指不成立（自己不需要线）；缺卡即假。
+    """
+    if not actor_id or not target_id or actor_id == target_id:
+        return False
+    cards = cards or {}
+    if actor_id not in cards or target_id not in cards:
+        return False
+
+    def _has_edge(src: str, dst: str) -> bool:
+        meta = cards.get(src) or {}
+        for rel in meta.get("links") or []:
+            if isinstance(rel, dict) and str(rel.get("target") or "") == dst:
+                return True
+            if isinstance(rel, str) and rel == dst:   # 旧数据兼容：links 存纯字符串
+                return True
+        return False
+
+    return _has_edge(actor_id, target_id) or _has_edge(target_id, actor_id)
+
+
+def check_linked(actor_id: str, target_id: str,
+                 cards: Mapping[str, dict[str, Any]] | None) -> bool:
+    """通信线边界关口：卡间通信须**沿通信线**（两卡之间已有 links 边）。
+
+    [5713 通道试走] 为什么不复用 ``check(..., scope=SCOPE_LINKED)``：树作用域
+    那段只在 ``switch in TREE_SWITCHES`` 时才跑，而发信的开关是 read／
+    send_card_message（都不在树类里）——硬塞 scope 会被整体跳过、等于没拦
+    （5713 首版实测踩到：发信对任意卡都放行了）。故把线边界做成**独立关口**，
+    判定只有一条：``_linked_between``。
+
+    打点沿用 perm 口径（fn="check_linked"，switch="linked"，两态同记）。
+    """
+    ok = _linked_between(actor_id, target_id, cards)
+    prompt_log.append_perm_log({
+        "fn": "check_linked",
+        "actor_id": actor_id,
+        "target_id": target_id,
+        "switch": "linked",
+        "granted": ok,
+    })
+    if not ok:
+        raise PermissionError(
+            f"[perm] denied card={target_id} action=send_card_message "
+            f"wire: {actor_id} 与 {target_id} 之间没有通信线")
+    return True
+

@@ -7,7 +7,7 @@
  *   hover 显隐、无 JS 事件，只有 RO 能事件驱动地抓到 0→N 的尺寸变化。
  * - sliceRange 是纯函数（测试直接打它，V-V1）。
  */
-import { NAV_ROW_HEIGHT, NAV_PHEAD_HEIGHT } from "./state_layers.js?v=30";
+import { NAV_ROW_HEIGHT, NAV_PHEAD_HEIGHT } from "./state_layers.js?v=32";
 
 // offsets[i] = 第 i 行 top；返回可视行区间（含上下各 buf 行缓冲）与总高
 export function sliceRange(offsets, heights, viewTop, viewHeight, buf = 1) {

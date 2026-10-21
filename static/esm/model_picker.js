@@ -9,9 +9,19 @@
 export function initModelBadge({ mountId, workId, cardId = "" }) {
   const mount = document.getElementById(mountId);
   if (!mount || !workId) return;
-  const scope = cardId ? "card" : "work";
+  /* [切卡跟手 2026-10-21] 病根：cardId 原来是**页面加载时**的常量
+     （window.__CARD_ID__），而切卡是前端路由（open(cid)），页面不刷新 ⇒
+     ① 徽标一直显示「打开页面时那张卡」的模型：在卡 A 切了 k3，切到卡 B 还显示 k3；
+     ② 在卡 B 上再切，PUT 的路径还是卡 A ⇒ 写错行。
+     现在：当前卡可变，宿主切卡后派发 ui:card-changed，本件跟着换行重读。 */
+  let curCard = cardId || "";
+  /* [新建项目 2026-10-21 · 修] 作用域只看「有没有当前卡」：
+     · 项目草稿（workId=draft, 无卡）⇒ work
+     · 卡草稿（workId 真, curCard="draft"）⇒ **card**（改的是这张新卡，不是整个项目）
+     原来把 "draft" 当空值排除，草稿卡选模型会被写成项目级 ⇒ 整个项目都变。 */
+  const scopeOf = () => (curCard ? "card" : "work");
   /* 草稿态判定：与 rule_panel.js 的 isDraft 同口径（home.js 新建项目走 /work/draft）。 */
-  const isDraft = () => workId === "draft" || cardId === "draft";
+  const isDraft = () => workId === "draft" || curCard === "draft";
   const state = { open: false, settings: null, override: null, lastClickInside: false };
   let panel = null;
 
@@ -26,19 +36,30 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  function gd() { return (state.settings && state.settings.system && state.settings.system.default_model) || ""; }
+  function gd() {
+    const s = state.settings || {};
+    /* [新建项目 2026-10-21] 草稿态显示「新项目默认」（depth_0 首选）——
+       原来显示 system.default_model（minimax 兜底），用户看着莫名其妙。 */
+    if (isDraft()) return s.new_project_default || (s.system && s.system.default_model) || "";
+    return (s.system && s.system.default_model) || "";
+  }
   function wd() { const w = (state.override && state.override.work) || {}; return w.default_model || ""; }
-  function cd() { if (!cardId) return ""; const c = (state.override && state.override.cards && state.override.cards[cardId]) || {}; return c.default_model || ""; }
-  function chosen() { return cardId ? cd() : wd(); }
-  function effective() { const g = gd(), w = wd(), c = cardId ? cd() : ""; return cardId ? (c || w || g) : (w || g); }
-  function inheritName() { const g = gd(), w = wd(); const run = cardId ? (w || g) : g; return run ? display(run) : "（未配置）"; }
+  function cd() { if (!curCard) return ""; const c = (state.override && state.override.cards && state.override.cards[curCard]) || {}; return c.default_model || ""; }
+  function chosen() { return scopeOf() === "card" ? cd() : wd(); }
+  function effective() { const g = gd(), w = wd(), c = scopeOf() === "card" ? cd() : ""; return scopeOf() === "card" ? (c || w || g) : (w || g); }
+  function inheritName() { const g = gd(), w = wd(); const run = scopeOf() === "card" ? (w || g) : g; return run ? display(run) : "（未配置）"; }
   function display(key) { const m = (state.settings && state.settings.models && state.settings.models[key]) || {}; return m.model || key; }
   function providers() { return Object.keys((state.settings && state.settings.providers) || {}); }
   function models() { return (state.settings && state.settings.models) || {}; }
 
   function pill() {
     const eff = effective();
-    return `<button type="button" class="model-pill" data-mp="open" title="选择模型：${esc(display(eff || ""))}">
+    /* [作用域标记 2026-10-21] 卡级**不显示**任何标记——卡片页本来就是「这张卡」，
+       加「本卡」两个字是废话。只有「本项目」（会波及全部卡）才标出来。 */
+    /* 只有「真项目级」才标——新建项目页整页就是新项目，标「本项目」是废话。 */
+    const proj = scopeOf() !== "card" && workId !== "draft";
+    return `<button type="button" class="model-pill" data-mp="open" title="${proj ? "本项目" : "本卡"}模型：${esc(display(eff || ""))}（点击切换）">
+      ${proj ? '<span class="mp-pill-scope">本项目</span>' : ""}
       <span class="mp-pill-name">${eff ? esc(display(eff)) : "未配置"}</span>
       <span class="mp-caret">▾</span>
     </button>`;
@@ -67,7 +88,7 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       rows += `<div class="mp-grp"><div class="mp-grp-title">${esc(prov)}</div>` +
         keys.map((k) => rButton(k, display(k), k === ch)).join("") + `</div>`;
     }
-    rows += `<div class="mp-foot">选择即对本${scope === "card" ? "卡" : "项目"}生效；选「默认」则跟进全局/项目。</div>`;
+    rows += `<div class="mp-foot">选择即对本${scopeOf() === "card" ? "卡" : "项目"}生效；选「默认」则跟进全局/项目。</div>`;
     panel.innerHTML = rows;
     document.body.appendChild(panel);
     state.open = true;
@@ -85,12 +106,22 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   }
 
   async function choose(val) {
-    // [草稿态 2026-10-20] workId/cardId 为 "draft" ⇒ 项目/卡还没落盘，覆盖无处可存。
-    // 原来照样 PUT /api/settings/model-overrides/draft ⇒ 404 ⇒ 只弹「保存失败」，
-    // 用户看不出原因（实测 5700 日志：GET/PUT .../draft/card/draft 都是 404）。
-    if (isDraft()) { toast("项目还没保存，先保存项目再切模型"); closePanel(); return; }
+    /* [草稿态 2026-10-21] 项目/卡还没落盘，表还没生成 ⇒ 选择先记在本机，
+       落库那一刻由 workspace.ensurePersisted 写进配置表（并通知本件刷新）。
+       改前这里直接拒绝（"先保存项目再切模型"）——用户点了没反应，等于不能切。 */
+    if (isDraft()) {
+      const sc = workId === "draft" ? "work" : "card";
+      try {
+        sessionStorage.setItem("draftModel", JSON.stringify({ scope: sc, model: val || "" }));
+      } catch (e) { /* 隐私模式：记不住也不阻断本次显示 */ }
+      state.override = { cards: {}, work: val ? { default_model: val } : null };
+      closePanel();
+      render();
+      toast(val ? "已选，项目保存后生效" : "已恢复默认");
+      return;
+    }
     const base = `/api/settings/model-overrides/${encodeURIComponent(workId)}`;
-    const path = scope === "card" ? `${base}/card/${encodeURIComponent(cardId)}` : base;
+    const path = scopeOf() === "card" ? `${base}/card/${encodeURIComponent(curCard)}` : base;
     const r = val
       ? await api(path, { method: "PUT", body: JSON.stringify({ default_model: val }) })
       : await api(path, { method: "DELETE" });
@@ -98,14 +129,24 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     state.override = r.ok && r.data ? r.data : state.override;
     closePanel();
     render();
-    toast("已保存");
+    /* [切卡跟手 2026-10-21] 作用域不同，结果差得很远，提示必须说清改了几张：
+       本卡＝只有这一张；本项目＝表里所有「策略填的」行（人手改过的不动）。 */
+    if (scopeOf() === "work" && val) {
+      const n = Number((r.data && r.data.affected) || 0);
+      toast(n ? `已保存：本项目 ${n} 张卡都换成了这个模型` : "已保存");
+    } else {
+      toast("已保存");
+    }
   }
 
   function render() { mount.innerHTML = pill(); }
 
   async function reload() {
     if (isDraft()) { render(); return; }   // 草稿态不查库（GET 对 draft 必 404）
-    const o = await api(`/api/settings/model-overrides/${encodeURIComponent(workId)}`);
+    /* [按需补行 2026-10-21] 带上当前卡：后端发现表里没这张卡就按默认策略补一行
+       （老项目第一次打开某张卡时自动补齐），否则读不到值会一路回落到 minimax。 */
+    const q = curCard ? `?card_id=${encodeURIComponent(curCard)}` : "";
+    const o = await api(`/api/settings/model-overrides/${encodeURIComponent(workId)}${q}`);
     state.override = o.ok && o.data ? o.data : state.override;
     render();
   }
@@ -134,11 +175,31 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
 
+  /* [切卡跟手 2026-10-21] 宿主（workspace.open）切卡后派发：本件换行重读，
+     徽标立刻变成**当前这张卡**的模型（不再停留在打开页面时那张）。 */
+  window.addEventListener("ui:card-changed", (e) => {
+    const cid = String((e && e.detail && e.detail.cardId) || "");
+    if (cid === curCard) return;
+    curCard = cid;
+    closePanel();
+    reload();
+  });
+
   (async () => {
     try {
       const s = await api("/api/settings/models");
       state.settings = s.ok && s.data ? s.data : {};
       await reload();
+      // 草稿态：把上次选过、还没落库的那个模型读回来（刷新不丢）
+      if (isDraft()) {
+        try {
+          const pick = JSON.parse(sessionStorage.getItem("draftModel") || "null");
+          if (pick && pick.model) {
+            state.override = { cards: {}, work: { default_model: pick.model } };
+            render();
+          }
+        } catch (e) { /* 坏值当没选过 */ }
+      }
     } catch (e) { /* 静默 */ }
   })();
 }

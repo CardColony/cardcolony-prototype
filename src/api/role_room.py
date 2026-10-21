@@ -288,6 +288,30 @@ async def update_profile(work_id: str, role_id: str,
         jur = str(patch["jurisdiction"]).strip()
         patch["jurisdiction"] = {"domain": _slug(jur), "statement": jur,
                                  "exclusive_key": _slug(jur)}
+    # [排他键保全 2026-10-20 · card_004] 改档不得静默丢掉排他键。
+    # 真机实测（work_001）：根卡只是想把职责范围从"三张接口"改成"四张接口"，
+    # 调 update_role_profile 时只写了 {domain, statement} —— jurisdiction 是**整字典
+    # 覆盖**（下面 changed[key] = patch[key]），于是 exclusive_key 被擦成 None。
+    # 后果：①我新加的 175 区渲染出「域=?」，根卡失去判断"这域归谁"的凭据；
+    # ②排他键从稳定标识退化成"靠 domain 兜底"，改域/改档多次后不再可追溯。
+    # 合并规则（最小、可预期）：
+    #   · 传了 exclusive_key ⇒ 听传的；
+    #   · 没传、且 domain 没变（原地改档）⇒ 继承旧键；
+    #   · 没传、但 domain 变了（有意换域）⇒ 键跟新 domain 走，不继承旧键。
+    if isinstance(patch.get("jurisdiction"), dict):
+        jur = dict(patch["jurisdiction"])
+        old_jur = dict(prof.get("jurisdiction") or {})
+        old_key = str(old_jur.get("exclusive_key") or "").strip()
+        old_dom = str(old_jur.get("domain") or "").strip()
+        new_dom = str(jur.get("domain") or "").strip()
+        if not new_dom and old_dom:
+            jur["domain"] = old_dom          # 只改 statement 时，domain 也要在
+            new_dom = old_dom
+        if not str(jur.get("exclusive_key") or "").strip():
+            jur["exclusive_key"] = (old_key if (old_key and new_dom == old_dom)
+                                    else (new_dom or old_key))
+        patch["jurisdiction"] = jur
+
     for key in allowed:
         if key in patch and isinstance(patch[key], (dict, list)):
             changed[key] = patch[key]
@@ -373,13 +397,31 @@ async def watched_cards(work_id: str, role_id: str) -> list[dict[str, Any]]:
 
 async def roles_watching(work_id: str, card_id: str) -> list[dict[str, Any]]:
     """关注这张工作卡的 active 角色（档案 watch.cards 为准）。"""
+    return await _roles_watching(work_id, card_id, active_only=True)
+
+
+async def roles_watching_any(work_id: str, card_id: str) -> list[dict[str, Any]]:
+    """关注这张工作卡的角色，**含停职的**（只排除已撤岗）。
+
+    为什么需要它：停职只该挡住「起回合」，不该挡住「事实入队」。否则停职期间
+    工作卡改了现状，角色永远补不上这一段——复职后看到的还是停职前的材料。
+    起回合这一层由 `spawn()` 按 duty 状态把关，天然分开。
+    """
+    return await _roles_watching(work_id, card_id, active_only=False)
+
+
+async def _roles_watching(work_id: str, card_id: str, *,
+                          active_only: bool) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in list_roles(work_id):
         rid = str(m.get("card_id") or "")
         prof = await ensure_profile(work_id, rid)
         if prof is None:
             continue
-        if str((prof.get("duty") or {}).get("state") or "active") != "active":
+        state = str((prof.get("duty") or {}).get("state") or "active")
+        if active_only and state != "active":
+            continue
+        if not active_only and state == "archived":
             continue
         cards = [str(c) for c in ((prof.get("watch") or {}).get("cards") or [])]
         if card_id in cards:
@@ -496,6 +538,11 @@ def _state_key(work_id: str, card_id: str, field: str) -> str:
     return f"role_state:{work_id}:{card_id}:{field}"
 
 
+def _role_state_key(work_id: str, role_id: str, card_id: str, field: str) -> str:
+    """按 (work, role, source, field) 记的内容哈希键——「这个角色看过这份内容没有」。"""
+    return f"role_seen:{work_id}:{role_id}:{card_id}:{field}"
+
+
 def _baseline_key(work_id: str, role_id: str, source: str) -> str:
     return f"role_base:{work_id}:{role_id}:{source}"
 
@@ -556,6 +603,89 @@ async def _turn_signals(work_id: str, card_id: str, result: Any) -> list[str]:
     return signals
 
 
+def schedule_card_changed(work_id: str, card_id: str, updates: dict[str, Any]) -> None:
+    """卡片正文块变更 → 排一个异步任务通知关注角色（同步函数，给存储层调）。
+
+    `card_store.update_card` 是唯一写门，它在事务提交后调本函数。这里只负责
+    「拿到 running loop 就排任务」——绝不阻塞、绝不抛出：角色同步失败不能
+    影响写卡结果。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        loop.create_task(_notify_card_changed(work_id, card_id, dict(updates or {})))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[role] 排卡片变更通知失败 card=%s: %s", card_id, exc)
+
+
+async def _notify_card_changed(work_id: str, card_id: str,
+                              updates: dict[str, Any]) -> None:
+    """正文块（现状/定论）被改 ⇒ 按角色声明的信号入队，再按值班态起/不起回合。
+
+    三个口径：
+    - **去重按 (work, role, source, field)** 记内容哈希：同一份内容重复 PATCH 不重复
+      入队；不同角色各记各的（旧 `_state_key` 是**按卡**记的，两个角色订同一张卡时
+      后一个会被前一个写下的哈希挡掉）；
+    - **停职也要入队**（`roles_watching_any`，只排除 archived）：停职只该挡住起回合，
+      不该挡住事实入队——否则复职后永远补不上停职那一段；
+    - **无会话块的卡走快照口径**（from_seq=to_seq=0）：这类卡没有回合，材料由
+      `build_batch` 按信号补「【当前现状】/【当前第三块】」。
+    队列语义是「有一份新东西给你」，同一来源同时有一条 pending 就够（`add_sync`
+    幂等），多次改动会合并成一次唤醒——与「同步按回合收口、不按事件逐条推」一致。
+    """
+    try:
+        meta = _meta_of(work_id, card_id)
+        if not meta or str(meta.get("card_type") or "") == ROLE_TYPE:
+            return
+        # 有会话块的工作卡：同步按「回合收口」走（`after_turn`），这里不插手——
+        # 既避免一次改动触发两路同步/两起火，也保住「按回合收口、不按事件逐条推」
+        # 的既有口径。这里只补 `after_turn` 够不着的那一类：**没有会话块的卡**
+        # （只有现状/定论、用户直接改出来的卡）——它们没有回合，永远等不到收口。
+        last = await _last_seq(work_id, card_id)
+        if last >= 0:
+            return
+        roles = await roles_watching_any(work_id, card_id)
+        if not roles:
+            return
+        card = await card_store.read_card(work_id, card_id)
+        body = card.get("body") or {}
+        status_h = _hash(str(body.get("status_block") or ""))
+        third_h = _hash(str(body.get("requirements") or body.get("rulings") or ""))
+        for role in roles:
+            role_id = str(role.get("card_id") or "")
+            if not role_id:
+                continue
+            prof = role_store.get_profile(work_id, role_id) or {}
+            wanted = set((prof.get("watch") or {}).get("signals") or DEFAULT_SIGNALS)
+            hit: list[str] = []
+            if "status_block" in updates and "status_changed" in wanted:
+                key = _role_state_key(work_id, role_id, card_id, "status")
+                if _get_meta(work_id, key, "") != status_h:
+                    await _set_meta(work_id, key, status_h)
+                    hit.append("status_changed")
+            if "rulings" in updates and "decision_appended" in wanted:
+                key = _role_state_key(work_id, role_id, card_id, "third")
+                if _get_meta(work_id, key, "") != third_h:
+                    await _set_meta(work_id, key, third_h)
+                    hit.append("decision_appended")
+            if not hit:
+                continue
+            async with _lock_for(work_id, role_id):
+                if last < 0:
+                    await role_store.add_sync(work_id, role_id, card_id, 0, 0, hit)
+                else:
+                    from_seq = await _sync_from(work_id, role_id, card_id)
+                    if last >= from_seq:
+                        await role_store.add_sync(work_id, role_id, card_id,
+                                                  from_seq, last, hit)
+            spawn(work_id, role_id)
+    except Exception as exc:  # noqa: BLE001 通知失败不得影响写卡/回合
+        logger.warning("[role] 卡片变更通知失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+
+
 async def after_turn(work_id: str, card_id: str, result: Any = None) -> None:
     """工作卡回合收口：按角色声明的信号决定是否同步、是否唤醒。永不抛出。"""
     try:
@@ -566,8 +696,8 @@ async def after_turn(work_id: str, card_id: str, result: Any = None) -> None:
         if not roles:
             return
         last = await _last_seq(work_id, card_id)
-        if last < 0:
-            return
+        # [role-sync 2026-10-20 · card_004] 无会话块不再直接放弃：这类卡一样会改
+        # 现状/定论，第二层角色必须看得到。快照口径（0..0）在下面分支覆盖。
         signals = await _turn_signals(work_id, card_id, result)
         for role in roles:
             role_id = str(role.get("card_id") or "")
@@ -579,6 +709,12 @@ async def after_turn(work_id: str, card_id: str, result: Any = None) -> None:
             if not hit:
                 session_ops.ops_log("role_sync_skipped", work_id, role_id,
                                     {"source": card_id, "signals": signals})
+                continue
+            if last < 0:
+                # 快照口径：无会话块 ⇒ 目标物就是「当前现状 / 当前第三块」
+                async with _lock_for(work_id, role_id):
+                    await role_store.add_sync(work_id, role_id, card_id, 0, 0, hit)
+                spawn(work_id, role_id)
                 continue
             from_seq = await _sync_from(work_id, role_id, card_id)
             if last < from_seq:
@@ -895,12 +1031,12 @@ async def _finalize(work_id: str, role_id: str,
     decision = str(last.get("decision") or "silent")
     reason = str(last.get("reason") or "")
     try:
-        prof = role_store.get_profile(work_id, role_id) or {}
-        duty = dict(prof.get("duty") or {})
-        duty["last_wake_at"] = _now()
-        duty.setdefault("state", "active")
-        duty["pending_sync"] = len(pending_batch(work_id, role_id))
-        await role_store.update_profile(work_id, role_id, {"duty": duty})
+        # [role-sync 2026-10-20 · card_007] 只合并记账字段，不整字典写回：
+        # 旧写法拿旧 duty 快照整体覆盖，与 set_duty 并发时把刚改的 state
+        #（如复职 active）冲回旧值（丢更新），复职补巡检从此静默不起。
+        await role_store.touch_duty(
+            work_id, role_id, last_wake_at=_now(),
+            pending_sync=len(pending_batch(work_id, role_id)))
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -990,11 +1126,19 @@ async def manual_check(work_id: str, role_id: str) -> dict[str, Any]:
         src = str(m.get("card_id") or "")
         if not src:
             continue
+        # 已有待消费同步 ⇒ 不重复灌（同一份材料进两次队只是让角色多看一遍）
+        if any(str(p.get("source") or "") == src
+               for p in role_store.pending_syncs(work_id, role_id)):
+            continue
         last = await _last_seq(work_id, src)
-        # 工作卡可能只有「现状」而没有会话块（用户直接改现状/预置场景）：
-        # 人工巡检仍要把当前现状作为一个区间给它看，不能因 last<0 静默跳过。
         if last < 0:
-            last = 0
+            # 无会话块（用户直接改现状/预置场景）：快照口径入队（0..0）。
+            # 旧写法把 last 归 0 再与 from_seq(≥1) 比较，0>=1 恒假 ——
+            # 那段「兜底」从来没生效过，新现状进不了队。
+            await role_store.add_sync(
+                work_id, role_id, src, 0, 0,
+                ["manual_check", "status_changed", "decision_appended"])
+            continue
         from_seq = await _sync_from(work_id, role_id, src)
         if last >= from_seq:
             await role_store.add_sync(

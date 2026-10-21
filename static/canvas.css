@@ -30,7 +30,11 @@
   /* ---- 文本 ---- */
   --cv-text-1: #e8ecf3;
   --cv-text-2: #9ba6b6;
-  --cv-text-3: #6c7788;
+  /* [画布 5711] 对比度修正：#6c7788 在卡面底 #1c222b 上约 3.5:1、在画布底
+     #0b0d10 上约 4.3:1，均低于正文 4.5:1 —— 而用它的全是 9.5–11px 的小字
+     （.cv-ref / .tt-sec / .cd-section-label / .build-stamp / .cv-act-sec）。
+     提到 #7d8899（对 #1c222b ≈4.6:1）。 */
+  --cv-text-3: #7d8899;
 
   /* ---- 语义 ---- */
   --cv-accent: #5b8cff;
@@ -138,7 +142,11 @@
     top 200ms var(--cv-ease),
     border-color var(--cv-fast) var(--cv-ease),
     box-shadow var(--cv-base) var(--cv-ease),
-    background var(--cv-fast) var(--cv-ease);
+    background var(--cv-fast) var(--cv-ease),
+    /* [画布 5711] 入场用的位移过渡（配 @starting-style，见下方"卡片入场"段）。
+       ⚠ 不过渡 opacity —— 起始态一旦带 opacity 且过渡没跑，卡片会永远透明
+       （实测：画布只剩连线、卡片全无）。 */
+    transform 200ms var(--cv-ease);
   box-sizing: border-box;
   /* 宽度由**层级**决定（data-depth），不由缩放决定——见下方「深度即层级」。
      这里给的是 d1 基准值，d0/d2/d3 各自覆盖。 */
@@ -178,6 +186,60 @@
   z-index: 30;
   border-color: rgba(255, 255, 255, 0.3);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7);
+}
+
+/* [换父 2026-10-20] 拖动时的落点反馈：能被挂上去的卡 vs 挂不上去的卡。
+   用 outline 而不是 border/box-shadow：outline 不参与盒模型，不会让卡片
+   在拖拽过程中尺寸抖动（border 会撑开、box-shadow 会被 .dragging 覆盖）。 */
+.page-canvas .card-node.drop-ok {
+  outline: 2px solid var(--cv-ok);
+  outline-offset: 2px;
+  background: var(--cv-ok-soft);
+}
+
+.page-canvas .card-node.drop-bad {
+  outline: 2px solid var(--cv-danger);
+  outline-offset: 2px;
+  background: var(--cv-danger-soft);
+  cursor: not-allowed;
+}
+
+/* ==========================================================================
+   [画布 5711 · P0 修] 卡片入场：**起始态里不许出现 opacity**。
+   ==========================================================================
+   实测到的两条"卡片看不见"的机制（画布页专属，探针逐条复现过）：
+
+   ① style.css:289 `.card-node.entering { animation: card-in .18s ease; }`，而
+      `@keyframes card-in { from { opacity: 0; transform: scale(.96) } }` ——
+      **animation 的起始帧在"动画没跑起来"时仍然生效**：标签页在后台/窗口未绘制
+      ⇒ 浏览器不推进动画 ⇒ 卡片**永远停在 opacity:0**。
+      症状：画布上只剩一片连线、卡片全无（截图实测），控制台一声不吭。
+      ⇒ 画布页显式 `animation: none`（不继承 style.css 那条）。
+
+   ② `@starting-style` + transition **有同样的失败模式**：transition 没跑时，
+      starting-style 的值会**一直挂着**（探针实测：animation 关掉后 p3 仍是
+      opacity=0）。所以"改用 transition 就安全"是错的。
+
+   ⇒ 结论（唯一可靠的口径）：**入场的起始态里不能有 opacity**。
+   改成只动 transform（位移 + 缩放）：起始态即便钉住，卡片也**照样看得见**，
+   只是没有淡入效果。退化方向必须是"少个动画"，不能是"看不见"。
+
+   ⚠ .entering 期间只保留 transform 过渡 —— left/top 的过渡要关掉，
+     否则新卡会从占位坐标 (0,0) 飞过来。
+   ========================================================================== */
+.page-canvas .card-node.entering {
+  /* 不继承 style.css 的 card-in 动画（它的起始帧 opacity:0 会把卡片钉死）。 */
+  animation: none !important;
+  /* 只过渡 transform；left/top 的过渡关掉（否则卡片从占位坐标飞过来）。 */
+  transition: transform 200ms var(--cv-ease);
+  /* 光标不该是"抓取"——它不是拖拽态（那属于 .dragging）。 */
+  cursor: pointer;
+}
+@starting-style {
+  .page-canvas .card-node.entering {
+    /* 起始态只有位移/缩放，**没有 opacity** ⇒ 钉住也看得见。 */
+    transform: translateY(6px) scale(0.985);
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -404,10 +466,23 @@
    桌面端 24px 高是可接受的折中），数字也放大到 11.5px。
    同时 caret 从 4px 加宽到 5px——它是"这里能展开"的唯一图形暗示。 */
 .page-canvas .kid-badge {
-  /* 必须是流内元素：它是底栏里的一个按钮，不是浮标。
-     （旧 style.css 的 `position:absolute; top:1px; right:0` 会盖住这里没声明的
-     position —— 于是徽章飘在卡片右上角、底栏高度算成 0。显式写死。） */
-  position: static;
+  /* [画布 5711 · P0 修] 必须是 **relative**，不是 static。
+   *
+   * 病根（我自己引入的回归，用户 2026-10-20 当面指出"单击有子卡的卡片，操作
+   * 变成展开/折叠子卡"）：为了把徽标的命中区外扩 4 屏幕像素，给它加了
+   * `::after{position:absolute;left:0;right:0;…}`。而徽标当时是 position:static
+   * ⇒ 它的 ::after 的**包含块不是徽标自己**，而是最近的定位祖先 —— **整张卡**
+   * （.card-node 是 position:absolute）⇒ `left:0;right:0` 把伪元素拉成
+   * **横跨整张卡** ⇒ **整张卡的点击全被徽标吃掉**。
+   *
+   * 症状与用户看到的完全一致：
+   *   · 有子卡的卡（带徽标）→ 单击＝展开/折叠子卡，不是进对话；
+   *   · 没有子卡的卡（无徽标）→ 单击正常进对话。
+   * 差异正是"这张卡有没有徽标"。
+   *
+   * 修：徽标改 position:relative ⇒ 伪元素以徽标自身为包含块 ⇒ 外扩只作用在
+   * 徽标那一小块，不再跨卡。 */
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -445,6 +520,16 @@
 }
 
 .page-canvas .kid-badge.is-open .cv-caret { transform: rotate(90deg); }
+
+/* [画布 5711] 见上：伪元素扩出来的命中区（不参与布局）。 */
+.page-canvas .kid-badge::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(-4px / var(--z, 1));
+  bottom: calc(-4px / var(--z, 1));
+}
 
 /* 未读角标 */
 /* 未读角标：收在卡内左上角。
@@ -530,7 +615,16 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
+  /* [画布 5711] 合并：这条选择器原本写了三次（此处基础 / 窄栏压缩 / 最小宽度），
+     后写的 min-width 会盖掉先写的 —— 同选择器多条规则是本项目明令禁止的写法
+     （注释里记着"这个坑已经踩过两次"）。合并为一条，语义如下：
+       · 窄画布下可压缩（flex: 0 1 auto）＋ ellipsis；
+       · 但至少留 80px，别把项目名压成"项目"两个字。 */
+  min-width: 80px;
+  flex: 0 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .page-canvas .topbar .crumb .sep { color: var(--cv-text-3); opacity: 0.6; }
@@ -565,12 +659,27 @@
 
 .page-canvas .zoom-ctrl .zoom-slider {
   width: 76px;
-  height: 3px;
+  /* [画布 5711] 命中区：原来整条 input 只有 3px 高（轨道高度），实测抓不住
+     （探针量到 76×3）。改成 input 18px 高、透明底，可见轨道交给
+     ::-webkit-slider-runnable-track 画 —— 视觉完全不变，命中区 3px→18px。
+     [画布 5711 · 第二轮] 18→24px：WCAG 2.2 SC 2.5.8 的最小目标尺寸是 24×24，
+     18px 仍不达标（探针仍把它列进 smallHits）。可见轨道仍是 3px
+     （::-webkit-slider-runnable-track），**视觉零变化**，只是更好抓。
+     滑块拇指是相对轨道居中的（margin-top:-4.5 = (3-12)/2），
+     所以 input 变高不需要改拇指偏移。 */
+  height: 24px;
   appearance: none;
-  border-radius: 999px;
-  background: var(--cv-line-2);
+  background: transparent;
   outline: none;
   cursor: pointer;
+}
+.page-canvas .zoom-ctrl .zoom-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--cv-line-2);
+}
+.page-canvas .zoom-ctrl .zoom-slider::-webkit-slider-thumb {
+  margin-top: -4.5px;   /* 3px 轨道 + 12px 滑块 ⇒ 居中对齐 */
 }
 
 .page-canvas .zoom-ctrl .zoom-slider::-webkit-slider-thumb {
@@ -596,6 +705,24 @@
   border-radius: var(--cv-r-sm);
 }
 .page-canvas .zoom-ctrl .zoom-display:hover { background: rgba(255, 255, 255, 0.06); color: var(--cv-text-1); }
+
+/* [画布 5711] 焦点环：此前 :focus-visible 只写给了 .card-node 与 .cv-modal-btn，
+   顶栏这一排控件（缩放滑块、−/＋、整幅适配、搜索、更多、新建卡）与更多菜单项
+   **全都没有可见焦点指示** —— 键盘用户 Tab 过去看不出焦点在哪。
+   一条规则覆盖全部（focus-visible 只在键盘导航时出现，鼠标点击不打扰）。 */
+.page-canvas .zoom-slider:focus-visible,
+.page-canvas .zoom-ctrl .zbtn:focus-visible,
+.page-canvas .zoom-ctrl .zoom-display:focus-visible,
+.page-canvas .icon-btn:focus-visible,
+.page-canvas .topbar .btn:focus-visible,
+.page-canvas .cv-mi-btn:focus-visible,
+.page-canvas .cv-open:focus-visible,
+.page-canvas .kid-badge:focus-visible,
+.page-canvas .proj-stat .ps-item:focus-visible {
+  outline: 2px solid var(--cv-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 
 .page-canvas .btn {
   height: 30px;
@@ -666,7 +793,9 @@
 .page-canvas .rule-panel {
   position: absolute;
   right: 0;
-  top: 44px;
+  /* [画布 5711] 44→48：顶栏实测高 48px，面板从 44 起 ⇒ 压住顶栏下沿 4px
+     （z-index 40/60 > 顶栏），顶栏的下边框被盖掉一条。 */
+  top: 48px;
   bottom: 0;
   width: 380px;
   transform: translateX(100%);
@@ -688,7 +817,7 @@
   border-radius: var(--cv-r-lg);
   background: #151a21;
   border: 1px solid rgba(255, 255, 255, 0.05);
-  animation: cv-sk-breathe 1.6s ease-in-out infinite;
+  animation: cv-sk-breathe 1.6s steps(16, end) infinite;
 }
 @keyframes cv-sk-breathe {
   0%, 100% { opacity: 0.55; }
@@ -944,19 +1073,13 @@
 .page-canvas .cv-guide.v { width: 1px; }
 .page-canvas .cv-guide.h { height: 1px; }
 
-/* 进入动画 */
-@keyframes cv-card-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.985); }
-  to { opacity: 1; transform: none; }
-}
+/* [画布 5711] 旧的入场 @keyframes（cv-card-in）已退役：animation 的起始帧在
+   "动画没跑"时仍生效（后台标签页暂停 / 减少动效置 none）⇒ 卡片会永远停在
+   opacity:0 看不见。改用 transition + @starting-style，见上方"卡片入场"段。
+   —— 死件不留（与本项目"死件纪律"一致）。 */
 
-.page-canvas .card-node.entering { animation: cv-card-in 200ms var(--cv-ease); }
-
-/* 减少动效偏好 */
-@media (prefers-reduced-motion: reduce) {
-  .page-canvas .card-node,
-  .page-canvas .cv-menu,
-}
+/* [画布 5711] 删掉这段：选择器以逗号结尾且**没有任何声明** ⇒ 整条无效
+   （死代码）。真正生效的"减少动效"规则在文件末尾那段。 */
 
 /* ==========================================================================
    分组底衬：同一父卡的子卡组（≥2 张）画一块极淡的底，直接表达"这是一组"
@@ -1112,27 +1235,101 @@
 }
 .page-canvas .cd-multi-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--cv-text-1); }
 
-/* 卡片右上角的"打开完整对话"按钮：常驻但很轻，hover 才明显 */
+/* 卡片右侧的"打开完整对话页"按钮（↗）
+   [画布 5711 · 产品] **常驻可见**（原来 opacity .45，hover 才 1）——
+   它是画布上唯一**显式**的"进对话"入口，却最不显眼：用户站在画布上问
+   "我怎么进对话"，看到的是一片没有提示的暗色小箭头。
+   ⇒ 提到 .78（hover 到 1），暗底上仍安静，但不隐形。 */
 .page-canvas .cv-open {
   position: absolute;
   right: 5px;
   top: 50%;
   transform: translateY(-50%);
-  width: 20px;
-  height: 20px;
+  /* [画布 5711] 命中区随缩放补偿：#world 带 scale(zoom)，卡内控件的世界尺寸
+     会被一起缩小（20px × 0.5 = 10px 屏幕）。--z 是画布暴露的缩放变量
+     （canvas.js applyTransform 写 world.style.setProperty("--z", …)），
+     用 calc(24px / var(--z)) 把屏幕尺寸钉在 24px。
+     绝对定位 ⇒ 不参与布局，改它不会动卡高。 */
+  width: calc(24px / var(--z, 1));
+  height: calc(24px / var(--z, 1));
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: var(--cv-text-3);
+  color: var(--cv-text-2);
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.45;
+  opacity: 0.78;
   transition: opacity var(--cv-fast) var(--cv-ease), background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
 }
 .page-canvas .card-node:hover .cv-open { opacity: 1; }
 .page-canvas .cv-open:hover { background: rgba(255, 255, 255, 0.09); color: var(--cv-text-1); }
+
+/* ==========================================================================
+   [画布 5711 · 产品] 「在此展开对话」入口（💬）——把隐藏手势变成看得见的入口
+   ==========================================================================
+   画布上原本只有两条进对话的路：单击（220ms 后整页跳走）、双击（就地展开）。
+   后者是用户 10-19 反复要的"在画布上同时看几个对话的进程并随时回复"，但它是个
+   **纯隐藏手势** —— 卡面上没有任何东西提示"这里能双击"，用户根本不知道有这条路。
+   ⇒ 现在给它一个**看得见、点得到**的按钮（卡的左下角，hover 显形）。
+   [画布 5711 · 产品] 双击手势已撤除 ⇒ 没有"双击快捷方式"这回事；
+   就地展开的入口是 💬 按钮 / 右键菜单 / Enter 键。功能从"隐藏手势"升级为"入口"。
+
+   位置：左下角（与右侧的 ↗ 分居两端，各管一件事，不打架）。
+   ========================================================================== */
+.page-canvas .cv-chat {
+  position: absolute;
+  left: 5px;
+  bottom: 4px;
+  /* [画布 5711 · 第二轮] 22→24px：与右上角的 ↗ 同一档，且达到 WCAG 2.2
+     SC 2.5.8 的最小目标尺寸 24×24（22px 时探针仍把它列进 smallHits）。
+     视觉只大 2px；/var(--z) 补偿照旧 ⇒ 缩放时屏幕尺寸恒定。 */
+  width: calc(24px / var(--z, 1));
+  height: calc(24px / var(--z, 1));
+  padding: 0;
+  border: 1px solid var(--cv-line-2);
+  border-radius: 5px;
+  background: rgba(20, 24, 31, 0.92);
+  color: var(--cv-text-2);
+  font-size: calc(12px / var(--z, 1));
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--cv-fast) var(--cv-ease), background var(--cv-fast) var(--cv-ease), color var(--cv-fast) var(--cv-ease);
+  z-index: 3;
+}
+.page-canvas .card-node:hover .cv-chat { opacity: 1; }
+.page-canvas .cv-chat:hover { background: var(--cv-accent-soft); color: var(--cv-accent); border-color: var(--cv-accent-line); }
+/* 卡片已就地展开对话时，💬 不必再出现（对话就在卡里）。 */
+.page-canvas .card-node[data-open="1"] .cv-chat { opacity: 0; pointer-events: none; }
+
+/* ==========================================================================
+   [画布 5711 · 产品] 单击的即时反馈：「正在打开对话…」
+   ==========================================================================
+   单击＝进对话页，但跳转前有 220ms 的双击判据延迟 ⇒ 这 220ms 里界面毫无反应，
+   第一感受是"点了没反应"，过一会儿又突然整页跳走（一个像坏了，一个像失灵）。
+   ⇒ 点下去**立刻**在卡上给出可见反馈，让延迟变成"看得见的等待"。
+   ========================================================================== */
+.page-canvas .cv-opening {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 8px 5px;
+  font-size: calc(10.5px / var(--z, 1));
+  line-height: 1.3;
+  text-align: center;
+  color: var(--cv-accent);
+  background: linear-gradient(to top, rgba(12, 15, 20, 0.97) 60%, rgba(12, 15, 20, 0));
+  border-radius: 0 0 8px 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms var(--cv-ease);
+  z-index: 4;
+}
+.page-canvas .card-node.is-opening .cv-opening { opacity: 1; }
+.page-canvas .card-node.is-opening { border-color: var(--cv-accent-line); }
 
 /* （标题不再单独给 ↗ 留位：那件事现在由 .cv-card-row 的右内边距统一负责，
    否则两处相加会白吃掉 50px 的标题宽度） */
@@ -1209,13 +1406,6 @@
 /* 顶栏在窄画布下不许换行：项目名与状态条都可以被压缩/截断，工具栏按钮不动。
    实测：右栏拉到 580 时中栏 708，"项目管理 agent" 被压成两行。 */
 .page-canvas .topbar { flex-wrap: nowrap; }
-.page-canvas .topbar .crumb {
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 .page-canvas .proj-stat { flex: 0 1 auto; overflow: hidden; }
 @media (max-width: 1560px) {
   /* 更窄时先砍掉"未开始"这种次要项，保留卡数与待裁定 */
@@ -1244,8 +1434,10 @@
 .page-canvas .proj-stat .ps-item[data-act="triage"] {
   cursor: pointer;
   border-radius: 4px;
-  padding: 2px 6px;
-  margin: -2px -6px;
+  /* [画布 5711 · 第二轮] padding 2→3px：命中区 22px→24px（WCAG 2.2 最小目标
+     尺寸）。负 margin 同步加大 ⇒ **外部占位不变**，顶栏排版零变化。 */
+  padding: 3px 6px;
+  margin: -3px -6px;
 }
 .page-canvas .proj-stat .ps-item[data-act="triage"]:hover { background: rgba(245, 181, 68, 0.12); }
 
@@ -1259,8 +1451,6 @@
 .page-canvas .proj-stat { text-overflow: ellipsis; }
 .page-canvas .proj-stat .ps-item { white-space: nowrap; }
 
-/* 项目名至少留 80px，别被压成"项目"两个字 */
-.page-canvas .topbar .crumb { min-width: 80px; }
 
 /* ⚠ 目录行必须 flex:none：.cv-catalog 是 flex column，232 张卡时 232 行会被
    整体压缩（实测行高从 22px 压到 11px，文字互相重叠）——目录直接不可用。 */
@@ -1324,16 +1514,26 @@
 /* ==========================================================================
    hover 浮层：完整内容（标题 / 结论全文 / 待裁定条目全部）
    —— 卡片是索引，浮层是全文；截断的文字在这里能读全
+
+   [画布 5711 · P0 修] display 必须由 .active 驱动。
+   病根（级联冲突）：style.css:311 的 `.card-tooltip{display:none}` 是 (0,1,0)，
+   本文件原来的 `.page-canvas .card-tooltip{display:flex}` 是 (0,2,0) 且**加载更晚**
+   ⇒ display 恒为 flex，`style.css` 的 `.card-tooltip.active{display:block}` 被压掉，
+   于是浮层**永久可见**（未悬停时是画布左上角一个 320×26 的空盒），且
+   pointer-events:auto 让它**吃掉画布左上角的点击**（拖拽/框选/点卡都落不到卡片上）。
+   修法：把 display 收回 .active，样式本身仍由本文件接管（不改外观，只改显隐语义）。
    ========================================================================== */
 .page-canvas .card-tooltip {
-
-  display: flex;
+  display: none;
   flex-direction: column;
   width: max-content;
   min-width: 320px;
   max-width: min(560px, 46vw);
+  /* [P1-5 修] 原来 overflow:hidden —— 结论中位 79 字、最长 2316 字，超出 68vh 的部分
+     被**直接裁掉**且没有滚动入口（注释自称"能滚动"是假的）。改为纵向可滚。 */
   max-height: 68vh;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px 14px;
   background: #171b22;
   border: 1px solid var(--cv-line-3);
@@ -1343,6 +1543,11 @@
   pointer-events: auto;
   font-size: 12px;
 }
+
+/* [画布 5711 · P0 修] 显隐由 .active 驱动（与 style.css 的语义一致，但样式由本文件接管）。
+   ⚠ 不能用 display:block —— 本文件把浮层做成了 flex 纵向布局（标题/正文/按钮各一行），
+   用 block 会让子元素挤成一行。 */
+.page-canvas .card-tooltip.active { display: flex; }
 
 .page-canvas .card-tooltip .tt-title {
   font-size: 13.5px;
@@ -1468,7 +1673,7 @@
 .page-canvas .card-node.lm[data-runstate="running"] {
   border-color: rgba(91, 140, 255, 0.75);
   border-left-color: var(--cv-accent);
-  animation: cv-run-border 1.8s ease-in-out infinite;
+  animation: cv-run-border 1.8s steps(18, end) infinite;
 }
 @keyframes cv-run-border {
   0%, 100% { border-color: rgba(91, 140, 255, 0.28); }
@@ -1499,7 +1704,7 @@
   height: 3px;
   border-radius: 3px 3px 0 0;
   background: var(--cv-accent);
-  animation: cv-run-pulse 1.2s ease-in-out infinite;
+  animation: cv-run-pulse 1.2s steps(12, end) infinite;
   pointer-events: none;
 }
 @keyframes cv-run-pulse {
@@ -1520,7 +1725,11 @@
 /* 结束态胶囊：底栏里说明结果。running 不挂它——上面那行动态行已经在说进度了。 */
 .page-canvas .cv-runchip {
   flex: none;
-  padding: 1px 6px;
+  /* [画布 5711] 合并：这条选择器原本写了两次，后一条把 padding 从 1px 6px
+     抹成 0 4px（胶囊的竖向内边距被抹平）。合并为一条，取后一条的意图。 */
+  min-width: 16px;
+  padding: 0 4px;
+  text-align: center;
   border-radius: 4px;
   font-size: 10px;
   font-weight: 650;
@@ -1549,7 +1758,7 @@
   height: 5px;
   border-radius: 50%;
   background: var(--cv-accent);
-  animation: cv-run-blink 1.2s ease-in-out infinite;
+  animation: cv-run-blink 1.2s steps(12, end) infinite;
 }
 @keyframes cv-run-blink {
   0%, 100% { opacity: 0.25; }
@@ -1609,7 +1818,7 @@
    用虚线段流动而不是渐变/发光：一眼能看出方向，且不引入装饰。
    ========================================================================== */
 .page-canvas .cv-comm-line {
-  animation: cv-comm-flow 1.1s linear infinite;
+  animation: cv-comm-flow 1.1s steps(11, end) infinite;
   filter: drop-shadow(0 0 3px rgba(91, 140, 255, 0.45));
 }
 @keyframes cv-comm-flow {
@@ -1617,11 +1826,16 @@
   to   { stroke-dashoffset: -26; }   /* 正好一个 dash 周期(7+6)*2，循环无缝 */
 }
 .page-canvas .cv-comm-dot {
-  animation: cv-comm-dot 1.6s ease-in-out infinite;
+  animation: cv-comm-dot 1.6s steps(16, end) infinite;
+  /* [性能 2026-10-20] 原来是 r:3→5 的**几何属性动画**——改 r 每帧要重算 SVG 图形，
+     实测它 + cv-comm-line 一起占 36 个 CPU 点。改成 transform: scale（合成层可做），
+     观感等价：基准 r=4，3/4=0.75、5/4=1.25。 */
+  transform-box: fill-box;
+  transform-origin: center;
 }
 @keyframes cv-comm-dot {
-  0%, 100% { opacity: 0.35; r: 3; }
-  50%      { opacity: 1;    r: 5; }
+  0%, 100% { opacity: 0.35; transform: scale(0.75); }
+  50%      { opacity: 1;    transform: scale(1.25); }
 }
 
 /* 工具栏开关的"已开启"态 */
@@ -1692,7 +1906,7 @@
   width: 7px; height: 7px; border-radius: 50%;
   flex: none; background: #6b7686;
 }
-.watch-dot[data-rs="running"] { background: #5b8cff; animation: cv-run-blink 1.2s ease-in-out infinite; }
+.watch-dot[data-rs="running"] { background: #5b8cff; animation: cv-run-blink 1.2s steps(12, end) infinite; }
 .watch-dot[data-rs="done"] { background: #4fc07f; }
 .watch-dot[data-rs="blocked"] { background: #e2695f; }
 .watch-dot[data-rs="paused"] { background: #7c8798; }
@@ -1948,7 +2162,14 @@
   .cv-pulse-dot,
   .cv-modal,
   .cv-modal-mask,
-  .watch-dot[data-rs="running"] {
+  .watch-dot[data-rs="running"],
+  /* [画布 5711] 白名单补漏：这几个是**无限**动画（渐变旋转/呼吸），原先没被
+     覆盖 ⇒ 开了"减少动效"的用户仍然看到不停动的元素（与该偏好的目的相反）。 */
+  .page-canvas .card-node[data-live="running"]::before,
+  .page-canvas .cv-sk-card,
+  .page-canvas .ps-live-dot,
+  .page-canvas .cv-act-dot-live,
+  .page-canvas .cv-ovl-dot[data-k="live"] {
     animation: none !important;
   }
   .page-canvas .card-node { transition: none !important; }
@@ -2052,8 +2273,6 @@
 .page-canvas .cv-wsdot[data-ws="discussing"] { background: #5b8cff; }
 .page-canvas .cv-wsdot[data-ws="empty"] { background: #4a5261; }
 
-/* 结束态图标（✓ / ✕ / ‖）保持胶囊形状，但只放一个字符 */
-.page-canvas .cv-runchip { min-width: 16px; padding: 0 4px; text-align: center; }
 
 /* 浮层里的"里面有什么"（子卡概览）——卡片面只给 ▸N，这里给名字 */
 .page-canvas .card-tooltip .tt-kids {
@@ -2120,6 +2339,11 @@
    ========================================================================== */
 .page-canvas .card-node.l0 .summary,
 .page-canvas .card-node.l1 .summary { display: none; }
+
+/* [画布 5711] 旧规则残留：style.css:239 的 `.card-node .summary` 还带着
+   `border-top: 1px solid #21262d` + `padding-top: 6px` —— 那是旧卡面的分隔线，
+   画布页的卡面早已重排（结论不再带分隔线），这条硬编码旧色就成了一道脏线。 */
+.page-canvas .card-node .summary { border-top: 0; padding-top: 0; }
 
 .page-canvas .card-node.l2 .summary {
   display: -webkit-box;
@@ -2544,6 +2768,11 @@
 .page-canvas .cv-overview .card-node.lm .cv-open,
 .page-canvas .cv-overview .card-node.lm .cv-runchip { display: none; }
 
+/* [画布 5711] 通知面板让开左栏窄条：.notify-panel 的 left:12px 会横跨
+   44px 宽的 rail，把窄条上的通知按钮盖掉 25/30px，点它又关不掉面板。
+   画布页把起点挪到 rail 之后（52px）。 */
+.page-canvas .notify-panel { left: 52px; }
+
 /* 构建戳：极小、极暗，只在"怀疑加载了旧版"时用。 */
 .page-canvas .build-stamp {
   flex: none;
@@ -2764,7 +2993,7 @@
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask-composite: exclude;
-  animation: cv-edge-flow 2.6s linear infinite;
+  animation: cv-edge-flow 2.6s steps(26, end) infinite;
   pointer-events: none;
 }
 @keyframes cv-edge-flow {
@@ -2791,7 +3020,7 @@
   margin-right: 5px;
   border-radius: 50%;
   background: var(--cv-accent);
-  animation: cv-run-blink 1.2s ease-in-out infinite;
+  animation: cv-run-blink 1.2s steps(12, end) infinite;
   vertical-align: 1px;
 }
 
@@ -2803,7 +3032,8 @@
    ========================================================================== */
 .page-canvas .cv-drawer {
   position: fixed;
-  top: 44px;
+  /* [画布 5711] 同上：44→48，别压住顶栏下沿。 */
+  top: 48px;
   right: 0;
   bottom: 0;
   width: 340px;
@@ -2914,7 +3144,7 @@
   margin-top: 5px;
   border-radius: 50%;
   background: var(--cv-accent);
-  animation: cv-run-blink 1.2s ease-in-out infinite;
+  animation: cv-run-blink 1.2s steps(12, end) infinite;
 }
 .page-canvas .cv-act-empty {
   padding: 24px 12px;
@@ -3019,7 +3249,7 @@
   margin-right: 4px;
 }
 .page-canvas .cv-ovl-dot[data-k="warn"] { background: var(--cv-warn); }
-.page-canvas .cv-ovl-dot[data-k="live"] { background: var(--cv-accent); animation: cv-run-blink 1.2s ease-in-out infinite; }
+.page-canvas .cv-ovl-dot[data-k="live"] { background: var(--cv-accent); animation: cv-run-blink 1.2s steps(12, end) infinite; }
 .page-canvas .cv-ovl-bar {
   width: 3px;
   height: 12px;
@@ -3210,3 +3440,15 @@ body.has-dock #viewport { right: 360px; }
   padding-left: 7px;
 }
 .page-canvas .card-node[data-unread="1"] .cv-msgline .cv-msg-who { color: #cfe0ff; }
+
+
+
+/* [性能 2026-10-20] 通信线层独立合成：拆成独立 <svg> 还不够——同在一个合成层里时，
+   path 的 stroke-dashoffset 动画仍会让浏览器重绘整块区域。contain:paint 把它裁成
+   自己的绘制边界，will-change 提前提升为独立层，动画重绘不再牵连父子线/卡片。 */
+.page-canvas #world svg.comm-layer {
+  /* 只提升为独立合成层，**不用 contain:paint**——那会把 overflow:visible 的线裁掉
+     （通信线可能溢出 bbox，marker 也会）。layout 隔离不影响绘制范围，安全。 */
+  will-change: transform;
+  contain: layout;
+}

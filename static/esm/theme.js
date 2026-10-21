@@ -155,8 +155,13 @@ export function initShortcuts() {
       }
       const np = document.getElementById("notifyPanel");
       if (np && getComputedStyle(np).display !== "none") {
+        /* [5715 · 修] 原来这里除了摘 class 还写了内联 ``style.display="none"``。
+           内联样式**压过**类规则（``.notify-panel.open { display:block }``），
+           而打开面板的处理器只加 class、不清内联样式 ⇒ **按一次 Esc 之后，
+           通知面板就再也打不开了**（class 加上去了，但内联 display:none 仍然生效）。
+           修法：只摘 class——`.notify-panel` 的默认态本就是 display:none，摘 class 即隐藏。 */
         np.classList.remove("open");
-        np.style.display = "none";
+        np.style.removeProperty("display");
         return;
       }
       if (document.body.classList.contains("nav-open")) {

@@ -1,0 +1,66 @@
+[
+  {
+    "evidence": "evidence_v4.json",
+    "model": "ds-flash-official",
+    "arms": [
+      {
+        "arm": "gate",
+        "work_id": "work_022",
+        "phase": "pre_split",
+        "plan_chars": [
+          4354,
+          0
+        ],
+        "plan_changed": null,
+        "children_before_ask": null,
+        "n_children": 3,
+        "avg_ops_leak": 0.33,
+        "avg_tool_names": 0.0,
+        "avg_artifact": 3.0,
+        "avg_dims": 5.0,
+        "accept_ratio": "3/3",
+        "cls": {
+          "manual": 0,
+          "blue": 3,
+          "mission": 0,
+          "other": 0
+        },
+        "books": [
+          {
+            "card_id": "card_002",
+            "title": "works 卡片数据完整性巡检",
+            "chars": 930,
+            "ops_leak": 0,
+            "tool_names": 0,
+            "artifact_spec": 2,
+            "dim_items": 5,
+            "accept": true,
+            "cls": "blue"
+          },
+          {
+            "card_id": "card_003",
+            "title": "快照与恢复路径巡检",
+            "chars": 934,
+            "ops_leak": 1,
+            "tool_names": 0,
+            "artifact_spec": 5,
+            "dim_items": 5,
+            "accept": true,
+            "cls": "blue"
+          },
+          {
+            "card_id": "card_004",
+            "title": "运行日志留痕质量巡检",
+            "chars": 768,
+            "ops_leak": 0,
+            "tool_names": 0,
+            "artifact_spec": 2,
+            "dim_items": 5,
+            "accept": true,
+            "cls": "blue"
+          }
+        ]
+      }
+    ]
+  }
+]

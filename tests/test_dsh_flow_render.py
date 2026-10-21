@@ -262,8 +262,12 @@ def test_t5_workspace_wired_to_flow():
     assert "createInputBar" in src and "createQueueDock" in src, "workspace 未接 flow 输入系统"
     assert "ComposerSubmissionPolicy" in src, "workspace 未建提交策略"
     body = _fn_body(src, "function setRunState")
-    assert "inputBar.refresh()" in body and "EventFlow.setRunning" in body, \
-        "setRunState 必须同时刷新输入条与事件流运行条"
+    # [运行态单一真相源 2026-10-21] 运行态拆成两半：setRunState＝回写事件流，
+    # applyRunState＝更新本文件投影（输入条/排队条）。两半都必须存在。
+    assert "EventFlow.setRunning" in body and "applyRunState" in body, \
+        "setRunState 必须落到事件流运行条（并经 applyRunState 更新投影）"
+    proj = _fn_body(src, "function applyRunState")
+    assert "inputBar.refresh()" in proj, "运行态投影变化必须刷新输入条"
     html = CARD_HTML.read_text(encoding="utf-8")
     assert 'id="composerSeat"' in html, "card.html 缺输入座位"
     assert 'id="inputBox"' not in html, "★ #inputBox 必须已退役"
@@ -322,25 +326,61 @@ def test_t6_touched_modules_bumped():
     ★ [画布 2026-10-19 · 实时状况/并行操作] canvas 62→72、main 62.0→72.0：
       新增 /pulse 轮询、卡面运行态、项目动态抽屉、多选批量下指令与排队态、
       全局视图图例与适配修正。canvas.css 19→20（同步升）。
-    ★ [画布 2026-10-19 · 实时状况/并行操作] canvas 62→72、main 62.0→72.0：
-      新增 /pulse 轮询、卡面运行态、项目动态抽屉、多选批量下指令与排队态、
-      全局视图图例与适配修正。canvas.css 19→20（同步升）。
-    ★ [自动模式回灌 2026-10-17] autoToggle 开关＋insp 标记：workspace 52→53、
-      main_chat 1.9→2.0（import workspace 53）、style 39→40（.auto-* 段）；
-      input-bar 本轮**未涉改**（按钮在 card.html 的 #flowInputLeft 里，由 input-bar
-      既有收编逻辑带进 modes）⇒ 不升号。
+    ★ [画布 5711 · 画布优化] canvas 72→77、main 72.0→77.0、canvas.css 20→23、
+      build-stamp v72→v79、nav.css 15→16（nav.css 是并入 dev 的角色机制那条线）：
+      ① 两阶段渲染改 try/finally（异常不再留下永久白屏）；② 骨架屏改在渲染完成后
+      才移除（首屏不再白一下）；③ 浮层级联修复（display 收回 .active——原来恒为
+      flex，浮层永久可见且吃掉左上角点击）；④ 选中集与在场节点求交（不再删掉
+      看不见的卡）；⑤ 连线分层读 projection.depthOf（原来读 vm.depthOf 恒 undefined，
+      深度样式从未生效）；⑥ 新增工作级实时更新（订阅 /api/works/{w}/events，
+      写卡后**就地**换掉那一张卡，不重建整树）；⑦ 首屏适配重试机制（_autoFitPending
+      原来恒 false，机制从未跑过）。
+    ★ [画布 5711 · 新建卡弹窗统一] canvas 82→83、main 82.0→83.0、build-stamp v83→v84：
+      "新建卡片"原来自制 inline-style 小面板（另一套交互语言），本轮并入 cvDialog
+      （与重命名/删除同一套）：顺带修掉一个真 bug——旧面板的 Escape 只 remove 自己、
+      事件继续冒泡 ⇒ 关弹窗的同时把画布选中的卡也清了。
+    ★ [性能 2026-10-20 · 画布与对话流] canvas.js 76→77、canvas.css 21→22、
+      main.js 73.4→77.0、stream.js 50→51、api.js 40→41：
+      ① 画布 11 处 infinite 动画 60fps→10fps（steps）；cv-comm-dot 的 r 几何动画
+        改 transform:scale；通信线拆独立 <svg id=commSvg>（实测空闲 CPU 117~159%→55~69%）。
+      ② 对话流分页：/timeline 新增 tail/before/has_earlier，打开卡片只拉尾部 400 条
+        （card_004 全量 1964 条→400 条，装配节点 1185→约 200），往上翻再补更早一段。
+      api.js 被六个模块 import ⇒ 全链同升 41（双版本断言会抓）。
+    ★ [画布 5711 · P0 修"画布永久空白"] canvas 83→84、main 83.0→84.0、build-stamp v84→v85：
+      ① 画布"找根卡"不再 await /api/works（它挡在出图关键路径上，浏览器 6 连接上限
+      一被常驻 SSE 占满就永远排队 ⇒ 画布永久空白）；根卡改从画布数据里取，零往返。
+      ② 去掉一条**监听了错键**的常驻 SSE（card_id 位置传的是 work_id）⇒ 画布页
+      常驻长连接 2 条降为 1 条，未读角标的增量通道改由工作级流带（原来从没活过）。
+    ★ [换父 2026-10-20 · 5718] canvas 77→78、main 73.4→78.0、canvas.css 22→23、
+      build-stamp v73→v74：拖拽语义从「调同层顺序」改成「改父子归属」（拖到卡上＝
+      挂到它下面，拖到空白/非法目标＝回弹），新增落点高亮 .drop-ok/.drop-bad。
     """
     vm = _version_map()
     expect = {
-        "stream.js": "47", "workspace.js": "65", "canvas.js": "75",
-        "assembler.js": "37", "style.css": "45", "main.js": "73.2",
-        "main_chat.js": "3.2",
+        # [合并 2026-10-20] 两侧各改各的：对话流那条线（5702/5710/5715）动了
+        # stream/workspace/assembler/style/main_chat/flow/*；画布 5711 这条线动了
+        # canvas.js 与 main.js（main.js 改了 import canvas.js 的版本戳 ⇒ 自身戳也升）。
+        # 版本戳处置按 5715 那次的规程：**在 dev 的编号基础上重算**，不是逐文件取大
+        # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
+        # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
+"stream.js": "53", "workspace.js": "76", "canvas.js": "83",
+        "assembler.js": "40", "style.css": "49", "main.js": "78.5",
+        "main_chat.js": "4.8",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
-        "input-bar.js": "5", "queue-dock.js": "2", "queue-store.js": "1",
-        "chat-view.js": "4", "message-item.js": "1",
+        "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
+        "chat-view.js": "7", "message-item.js": "1",
     }
+    # [版本断言 2026-10-21] 改为「不低于」：版本由
+    # scripts/bump_frontend_versions.py 自动传播，精确匹配会天天红。
+    # 要防的回退是「变低」，不是「又升了一号」；同时仍要求全链唯一版本。
+    def _vkey(v: str):
+        return tuple(int(x) for x in v.split("."))
+
     for name, ver in expect.items():
-        assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"
+        got = vm.get(name)
+        assert got and len(got) == 1, f"{name} 应只有一个版本，实为 {got}"
+        actual = next(iter(got))
+        assert _vkey(actual) >= _vkey(ver), f"{name} 版本应 >= {ver}，实为 {actual}"
 
 
 # ---------------------------------------------------------------- 输入会话按卡
@@ -369,3 +409,152 @@ def test_composer_state_is_per_card():
     assert "bindSession(next)" in bar, "input-bar 缺 bindSession"
     dock = _strip_js_comments((FLOW / "queue-dock.js").read_text(encoding="utf-8"))
     assert "setStore(next)" in dock, "queue-dock 缺 setStore"
+
+
+def test_nav_project_row_click_uses_single_identity_gate():
+    """[当前卡单源 2026-10-21] 「是不是当前这张卡」只许问一个口：select.is(wid, cid)。
+
+    实测 5700 的 12 个项目**根卡 id 全是 card_001**；原来项目行早退拼了三个条件
+    （在对话页 且 当前卡存在 且 卡号相同）却少比项目号 ⇒ 点 B 项目被判成"已经在看"，
+    毫无反应（用户报「没办法从 A 项目直接点到 B 项目的根卡上」）。
+    """
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert "navStore.select.is(phead.dataset.wid, rootCid)" in nav, \
+        "项目行早退必须走 select.is(项目, 卡)"
+    assert "cur().meta.card_id === rootCid" not in nav, \
+        "不许再手拼「卡号相同」的判断（漏项目号）"
+    # 跨项目跳转走页面身份路径，不再拼旧 hash
+    assert '"/work/" + wid + "/card/" + cid' in nav
+    assert '"/work/" + wid + "#" + cid' not in nav
+
+    # 身份源：state_layers 的 select 提供唯一判断口，get() 只读路径
+    st = (ROOT / "static" / "esm" / "state_layers.js").read_text(encoding="utf-8")
+    assert "function selectIs(wid, cid)" in st, "缺唯一判断口 select.is"
+    assert "is: selectIs" in st
+    assert "parseHash(loc.hash)" not in st, \
+        "get() 不该再回退读 hash（画布页会误判成「有当前卡」）"
+
+
+def test_nav_project_row_click_uses_single_identity_gate():
+    """[当前卡单源 2026-10-21] 「是不是当前这张卡」只许问一个口：select.is(wid, cid)。
+
+    实测 5700 的 12 个项目**根卡 id 全是 card_001**；原来项目行早退拼了三个条件
+    （在对话页 且 当前卡存在 且 卡号相同）却少比项目号 ⇒ 点 B 项目被判成"已经在看"，
+    毫无反应（用户报「没办法从 A 项目直接点到 B 项目的根卡上」）。
+    """
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert "navStore.select.is(phead.dataset.wid, rootCid)" in nav, \
+        "项目行早退必须走 select.is(项目, 卡)"
+    assert "cur().meta.card_id === rootCid" not in nav, \
+        "不许再手拼「卡号相同」的判断（漏项目号）"
+    # 跨项目跳转走页面身份路径，不再拼旧 hash
+    assert '"/work/" + wid + "/card/" + cid' in nav
+    assert '"/work/" + wid + "#" + cid' not in nav
+
+    # 身份源：state_layers 的 select 提供唯一判断口，get() 只读路径
+    st = (ROOT / "static" / "esm" / "state_layers.js").read_text(encoding="utf-8")
+    assert "function selectIs(wid, cid)" in st, "缺唯一判断口 select.is"
+    assert "is: selectIs" in st
+    assert "parseHash(loc.hash)" not in st, \
+        "get() 不该再回退读 hash（画布页会误判成「有当前卡」）"
+
+
+def test_nav_delete_card_is_not_a_dead_button():
+    """[删卡 2026-10-21] 用户报「左侧 ⋯ 里的删除是无效按钮」。
+
+    三处都要成立：
+      ① 置灰的删除被点时**说清原因**（原来静默 return ⇒ 点了完全没反应）；
+      ② 删的是当前卡 ⇒ 回项目画布页（原来只 replaceState 去 hash，而 hash 早没了
+         ⇒ 等于什么都没做，页面停在指向已删卡的死地址）；
+      ③ 画布页删卡 ⇒ 通知宿主就地重建（只 renderNav 的话画布上那张卡还挂着）。
+    """
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert "项目根卡不能删" in nav and "还有子卡" in nav, "置灰的删除必须给出原因"
+    assert 'location.href = "/work/" + wid' in nav, "删当前卡应回项目画布页"
+    assert "cardsChanged()" in nav, "删卡后要通知宿主重建（画布页）"
+    assert "onCardsChanged" in nav, "缺「卡数据变了」注入口"
+
+    main_js = (ROOT / "static" / "esm" / "main.js").read_text(encoding="utf-8")
+    assert "reloadCanvas" in main_js and "onCardsChanged" in main_js, \
+        "画布页必须注入 reloadCanvas 作为重建回调"
+
+
+def test_nav_delete_card_is_not_a_dead_button():
+    """[删卡 2026-10-21] 用户报「左侧 ⋯ 里的删除是无效按钮」。
+
+    三处都要成立：
+      ① 置灰的删除被点时**说清原因**（原来静默 return ⇒ 点了完全没反应）；
+      ② 删的是当前卡 ⇒ 回项目画布页（原来只 replaceState 去 hash，而 hash 早没了
+         ⇒ 等于什么都没做，页面停在指向已删卡的死地址）；
+      ③ 画布页删卡 ⇒ 通知宿主就地重建（只 renderNav 的话画布上那张卡还挂着）。
+    """
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert "项目根卡不能删" in nav and "还有子卡" in nav, "置灰的删除必须给出原因"
+    assert 'location.href = "/work/" + wid' in nav, "删当前卡应回项目画布页"
+    assert "cardsChanged()" in nav, "删卡后要通知宿主重建（画布页）"
+    assert "onCardsChanged" in nav, "缺「卡数据变了」注入口"
+
+    main_js = (ROOT / "static" / "esm" / "main.js").read_text(encoding="utf-8")
+    assert "reloadCanvas" in main_js and "onCardsChanged" in main_js, \
+        "画布页必须注入 reloadCanvas 作为重建回调"
+
+
+def test_switch_card_reuses_memory_board():
+    """[切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」]
+
+    切回已经看过的卡必须**零网络、零装配**——只把内存里的画板挂回去。
+    改前每次 open 都 replayTrace（重拉 400 条事件 + rebuild 整张表 + 重渲 200 节点），
+    用户感受就是「延迟打开，慢得要死，根本不是即时响应」。
+    """
+    st = (ROOT / "static" / "stream.js").read_text(encoding="utf-8")
+    assert "st.loadedOnce = true" in st, "replayTrace 成功后必须打「已加载」标记"
+    assert "function isLoaded(wid, cid)" in st, "缺 isLoaded 查询口"
+    assert "loadedOnce && st.view" in st, "isLoaded 只认成功加载过的会话"
+    assert "isLoaded," in st, "isLoaded 必须导出"
+
+    ws = (ROOT / "static" / "workspace.js").read_text(encoding="utf-8")
+    assert "EventFlow.isLoaded(WORK_ID, cardId)" in ws, "open 必须查内存里有没有"
+    # 缓存命中时不许走 replayTrace
+    i = ws.index("EventFlow.isLoaded(WORK_ID, cardId)")
+    seg = ws[i:i + 600]
+    assert "replayTrace" in seg, "缓存未命中仍要加载（else 分支）"
+    assert "if (cached)" in ws
+
+
+def test_switch_card_reuses_memory_board():
+    """[切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」]
+
+    切回已经看过的卡必须**零网络、零装配**——只把内存里的画板挂回去。
+    改前每次 open 都 replayTrace（重拉 400 条事件 + rebuild 整张表 + 重渲 200 节点），
+    用户感受就是「延迟打开，慢得要死，根本不是即时响应」。
+    """
+    st = (ROOT / "static" / "stream.js").read_text(encoding="utf-8")
+    assert "st.loadedOnce = true" in st, "replayTrace 成功后必须打「已加载」标记"
+    assert "function isLoaded(wid, cid)" in st, "缺 isLoaded 查询口"
+    assert "loadedOnce && st.view" in st, "isLoaded 只认成功加载过的会话"
+    assert "isLoaded," in st, "isLoaded 必须导出"
+
+    ws = (ROOT / "static" / "workspace.js").read_text(encoding="utf-8")
+    assert "EventFlow.isLoaded(WORK_ID, cardId)" in ws, "open 必须查内存里有没有"
+    # 缓存命中时不许走 replayTrace
+    i = ws.index("EventFlow.isLoaded(WORK_ID, cardId)")
+    seg = ws[i:i + 600]
+    assert "replayTrace" in seg, "缓存未命中仍要加载（else 分支）"
+    assert "if (cached)" in ws
+
+
+def test_root_card_name_is_project_name():
+    """[根卡名＝项目名 2026-10-21 · 用户令] 项目名不许单独维护，必须有改名入口。
+
+    用户：「项目名根本没有地方编辑，麻烦你根卡名就是项目名」。
+    改前：work.json 的 title 与根卡 title 各存一份、且全系统没有任何改名入口。
+    现在：读 work 时 title 从根卡派生；左栏 ⋯ 菜单提供「重命名」。
+    """
+    ws = (ROOT / "src" / "storage" / "work_store.py").read_text(encoding="utf-8")
+    assert "def _apply_root_title" in ws, "缺「项目名从根卡派生」"
+    assert ws.count("_apply_root_title(") >= 3, "list_works 与 read_work 都要派生"
+
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert 'data-act="rename"' in nav, "左栏 ⋯ 菜单缺「重命名」"
+    assert "async function doRenameCard" in nav
+    assert "API.patchCard(wid, cid, { title: name }" in nav, "改名要写卡标题"

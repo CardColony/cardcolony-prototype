@@ -1,0 +1,18 @@
+
+===== git log -S 't22-1' (src/ config/) =====
+8f058a5|2026-10-18|基础工具找回：七件（bash/python/glob_files/delete_file/move_file/rename_file/edit_file）+search_files正则 直落 automode-5700 主树（tools-tc-12/t23-1，Cardlo 源搬运）
+433bd82|2026-10-17|feat(自动模式): 块0.4 update_goal+goal区+两套instruction（回灌5700）
+beb408c|2026-10-16|迭代十批次入库（并行会话 2026-10-16 下午：模型层网关重写＋画板四机制＋对账画板架构）
+
+===== git log -S 'GOAL_TOOL_DRIVER_REQUIRED' (src/ config/) =====
+1559219|2026-10-20|自动模式照抄 dsh-goal：事件溯源 + idle 驱动 + 轮次上限 + 权威校验
+
+===== git log -S 'AUTO_PERMS_VERSION' (src/ config/) =====
+620c6bf|2026-10-17|feat(自动模式): 块0.2 权限层 AUTO_SWITCHES+auto_perms+refresh跳过（回灌5700）
+
+===== git log -S 'glm-flash' (src/ config/) =====
+cf30128|2026-10-15|迭代八批次入库（并行会话 2026-10-13~15：消息底座＋SQLite 迁移＋当前轮注入＋卡片区域语义＋上下文底座化）
+bbe0e00|2026-10-12|迭代七批次入库（并行会话 2026-10-12 下午：模型设置三步＋工具线＋思考流＋侧边栏前端批）
+
+===== git log -S '[mock:haiku]' (src/ config/) =====
+(无)

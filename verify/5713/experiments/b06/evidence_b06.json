@@ -1,0 +1,378 @@
+{
+  "meta": {
+    "code_head": "f822911",
+    "sandbox_base": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713",
+    "sandbox_snapshot_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots",
+    "prod_snapshot_root_touched": false,
+    "library_snapshot_root_rule": "BASE_DIR.parent / f'{BASE_DIR.name}_data_snapshots'",
+    "keep_batches": 200,
+    "protected_dirs": [
+      "works"
+    ],
+    "sandbox_snapshot_bytes": 236756442
+  },
+  "stages": {
+    "fixture": {
+      "source": {
+        "canvas.json": {
+          "size": 243,
+          "sha": "34523a7d228b6037ada5d6c7babbcddff458f0b3481b592eefb1fe2489d26e00"
+        },
+        "cards.db": {
+          "size": 24576,
+          "sha": null
+        },
+        "work.json": {
+          "size": 42,
+          "sha": "0feb1f6308215bd2cd3d2465e83d239d6a277a5524ea42650fbea85aaa30004d"
+        },
+        "events/card_001.jsonl": {
+          "size": 1591,
+          "sha": "9c810d9729e938ddabad6b4b0bcb3e17ceae60f398518d64cd6dd2d4508b0413"
+        },
+        "events/card_002.jsonl": {
+          "size": 1591,
+          "sha": "9c810d9729e938ddabad6b4b0bcb3e17ceae60f398518d64cd6dd2d4508b0413"
+        },
+        "events/card_003.jsonl": {
+          "size": 1591,
+          "sha": "9c810d9729e938ddabad6b4b0bcb3e17ceae60f398518d64cd6dd2d4508b0413"
+        },
+        "memory/card_001.json": {
+          "size": 83,
+          "sha": "8a2874ff8db0cb7fdbab01c57604fd142e4ae9bdee4f4a12c42679de0ba01abf"
+        },
+        "memory/card_002.json": {
+          "size": 83,
+          "sha": "503471f6df9b3b4eb73a9b779c13c09f4a764b34daeb595cb135ab8871a034eb"
+        },
+        "memory/card_003.json": {
+          "size": 83,
+          "sha": "9e5f812e804409bd3882c5dc2d39a0402c298cb705d67070f87a33a56cda41a2"
+        },
+        "sessions/session_001.md": {
+          "size": 4613,
+          "sha": "566318768a77ff7c9cb5d2f578b036f8950b861065283559120e632f56f09090"
+        },
+        "sessions/session_002.md": {
+          "size": 4613,
+          "sha": "a77b0b896d0024e09b213c71e21e2ae7c3c303f412b9b22a1635a807d07587ba"
+        },
+        "sessions/session_003.md": {
+          "size": 4613,
+          "sha": "494b27ee36fc5fcb67aa7217944748b579cf199a61b5a39fcb7936481bcd58ae"
+        }
+      },
+      "db": {
+        "integrity": "ok",
+        "tables": [
+          "cards",
+          "meta",
+          "shadow"
+        ],
+        "rows": {
+          "cards": 5,
+          "meta": 1,
+          "shadow": 5
+        }
+      }
+    },
+    "T1_can_snapshot": {
+      "result": {
+        "ok": true,
+        "work_id": "work_b06",
+        "files": 12,
+        "dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\20261020_210628_917018",
+        "daily": true,
+        "skipped": false,
+        "reason": "T1 baseline",
+        "failed": []
+      },
+      "stamp": "20261020_210628_917018",
+      "actual_batch_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\work_b06\\20261020_210628_917018",
+      "batch_dir_exists": true,
+      "batch_files": 12,
+      "non_db_sha_match": true,
+      "db_in_batch": {
+        "integrity": "ok",
+        "tables": [
+          "cards",
+          "meta",
+          "shadow"
+        ],
+        "rows": {
+          "cards": 5,
+          "meta": 1,
+          "shadow": 5
+        }
+      },
+      "batch_total_bytes": 43722,
+      "source_total_bytes": 43722
+    },
+    "T2_returned_path": {
+      "single_work": {
+        "returned_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\20261020_210628_917018",
+        "returned_exists": false,
+        "actual_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\work_b06\\20261020_210628_917018",
+        "actual_exists": true,
+        "same": false
+      },
+      "all_works": {
+        "returned_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\20261020_210629_030816",
+        "returned_exists": false,
+        "work_ids": "work_b06,work_b06_other",
+        "skipped": false
+      },
+      "work_level_present_in_returned": false
+    },
+    "T3a_deleted": {
+      "dir_absent": true
+    },
+    "T3b_restored_batch": {
+      "restore_result": {
+        "ok": true,
+        "files": 12,
+        "overwritten": 0,
+        "backup": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\backups\\pre_restore_20261020_210629",
+        "from": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\work_b06\\20261020_210628_917018"
+      },
+      "files_back": 12,
+      "all_files_back": true,
+      "non_db_sha_match": true,
+      "db_before": {
+        "integrity": "ok",
+        "tables": [
+          "cards",
+          "meta",
+          "shadow"
+        ],
+        "rows": {
+          "cards": 5,
+          "meta": 1,
+          "shadow": 5
+        }
+      },
+      "db_after": {
+        "integrity": "ok",
+        "tables": [
+          "cards",
+          "meta",
+          "shadow"
+        ],
+        "rows": {
+          "cards": 5,
+          "meta": 1,
+          "shadow": 5
+        }
+      },
+      "db_identical": true
+    },
+    "T4_single_file_restore": {
+      "result": {
+        "ok": true,
+        "from": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\work_b06\\20261020_210628_917018\\works\\work_b06\\sessions\\session_001.md",
+        "to": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713\\works\\work_b06\\sessions\\session_001.md",
+        "size": 4613
+      },
+      "sha_back": "566318768a77ff7c9cb5d2f578b036f8950b861065283559120e632f56f09090",
+      "sha_expected": "566318768a77ff7c9cb5d2f578b036f8950b861065283559120e632f56f09090",
+      "match": true
+    },
+    "T5_fingerprint_skip": {
+      "same_size": true,
+      "same_mtime": true,
+      "explicit_snapshot_result": {
+        "ok": true,
+        "work_id": "work_fp",
+        "files": 0,
+        "dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\20261020_210629_168643",
+        "daily": false,
+        "skipped": true,
+        "reason": "T5 显式快照：改前保险",
+        "failed": []
+      },
+      "batches_before": 2,
+      "batches_after": 2,
+      "new_batch_created": false,
+      "restored_content_is_A": true,
+      "restored_content_is_new_B": false,
+      "new_content_in_any_batch": false,
+      "restore_result": {
+        "ok": true,
+        "from": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\work_fp\\20261020_210629_152545\\works\\work_fp\\doc.md",
+        "to": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713\\works\\work_fp\\doc.md",
+        "size": 4096
+      }
+    },
+    "T6_no_point_in_time": {
+      "writer_updates": 25,
+      "writer_errors": 2,
+      "pairs": [
+        {
+          "stamp": "20261020_210629_313817",
+          "db": 12,
+          "canvas": 11,
+          "coherent_pair": true,
+          "failed_files": []
+        },
+        {
+          "stamp": "20261020_210629_704929",
+          "db": 14,
+          "canvas": 13,
+          "coherent_pair": true,
+          "failed_files": []
+        },
+        {
+          "stamp": "20261020_210629_819761",
+          "db": 19,
+          "canvas": 18,
+          "coherent_pair": true,
+          "failed_files": []
+        },
+        {
+          "stamp": "20261020_210629_895515",
+          "db": 25,
+          "canvas": 20,
+          "coherent_pair": false,
+          "failed_files": [
+            {
+              "work": "work_conc",
+              "file": "works\\work_conc\\canvas.json.tmp",
+              "stage": "batch",
+              "error": "FileNotFoundError: [Errno 2] No such file or directory: 'D:\\\\AI_station\\\\推演agent\\\\.worktrees\\\\5713_sandbox\\\\experiments\\\\b06\\\\inst5713\\\\works\\\\work_conc\\\\canvas.json.tmp'"
+            }
+          ]
+        }
+      ],
+      "incoherent": [
+        {
+          "stamp": "20261020_210629_895515",
+          "db": 25,
+          "canvas": 20,
+          "coherent_pair": false,
+          "failed_files": [
+            {
+              "work": "work_conc",
+              "file": "works\\work_conc\\canvas.json.tmp",
+              "stage": "batch",
+              "error": "FileNotFoundError: [Errno 2] No such file or directory: 'D:\\\\AI_station\\\\推演agent\\\\.worktrees\\\\5713_sandbox\\\\experiments\\\\b06\\\\inst5713\\\\works\\\\work_conc\\\\canvas.json.tmp'"
+            }
+          ]
+        }
+      ],
+      "note": "写入顺序固定 db 后 canvas ⇒ 可能的一致对只有 (db=k,canvas=k) 或 (db=k,canvas=k-1)"
+    },
+    "T7_torn_copy": {
+      "writes": 293,
+      "attempts": 6,
+      "torn_count": 4,
+      "detail": [
+        {
+          "stamp": "20261020_210630_305022",
+          "state": "TORN",
+          "size": 0,
+          "err": "Expecting value: line 1 column 1 (char 0)"
+        },
+        {
+          "stamp": "20261020_210630_986750",
+          "state": "TORN",
+          "size": 0,
+          "err": "Expecting value: line 1 column 1 (char 0)"
+        },
+        {
+          "stamp": "20261020_210631_450879",
+          "state": "TORN",
+          "size": 1048576,
+          "err": "Unterminated string starting at: line 2 column 10 (char 11)"
+        },
+        {
+          "stamp": "20261020_210631_841879",
+          "state": "missing-file",
+          "failed": []
+        },
+        {
+          "stamp": "20261020_210631_935123",
+          "state": "missing-file",
+          "failed": []
+        },
+        {
+          "stamp": "20261020_210632_022113",
+          "state": "TORN",
+          "size": 1048576,
+          "err": "Unterminated string starting at: line 2 column 10 (char 11)"
+        }
+      ],
+      "note": "canvas.json 在产品里由 canvas_store.py:598 原地 write_text 写（非原子）；memory/session 走 tmp+os.replace 原子写"
+    },
+    "T10_torn_batch_restore": {
+      "torn_stamp": "20261020_210630_305022",
+      "live_size_before_delete": 1500030,
+      "restore_result": {
+        "ok": true,
+        "from": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713_data_snapshots\\work_torn\\20261020_210630_305022\\works\\work_torn\\canvas.json",
+        "to": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\b06\\inst5713\\works\\work_torn\\canvas.json",
+        "size": 0
+      },
+      "size_after_restore": 0,
+      "parses_after_restore": false,
+      "note": "恢复层不校验内容：撕裂批次里的 0 字节文件被原样种回数据根"
+    },
+    "T8_full_copy_cost": {
+      "source_files": 400,
+      "source_bytes": 48600000,
+      "runs": [
+        {
+          "run": 0,
+          "seconds": 4.837,
+          "files": 400,
+          "batch_bytes": 48600000,
+          "source_bytes": 48600000
+        },
+        {
+          "run": 1,
+          "seconds": 0.689,
+          "files": 400,
+          "batch_bytes": 48600000,
+          "source_bytes": 48600000
+        },
+        {
+          "run": 2,
+          "seconds": 0.722,
+          "files": 400,
+          "batch_bytes": 48600000,
+          "source_bytes": 48600000
+        }
+      ]
+    },
+    "T9_restore_destination": {
+      "cli_list_stdout": [
+        "快照根: D:\\AI_station\\推演agent\\.worktrees\\推演agent_data_snapshots",
+        "  （无批次）"
+      ],
+      "cli_computed_root": "D:\\AI_station\\推演agent\\.worktrees\\推演agent_data_snapshots",
+      "cli_root_exists_before": true,
+      "library_rule_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_data_snapshots",
+      "same_root": false,
+      "restore_stdout": "{'ok': True, 'to': 'D:\\\\AI_station\\\\推演agent\\\\.worktrees\\\\5713\\\\works\\\\work_b06probe\\\\session_001.md', 'size': 28, 'backup': '（原文件不存在，无需备份）'}",
+      "restore_rc": 0,
+      "wrote_parallel_tree": "D:\\AI_station\\推演agent\\.worktrees\\5713\\works\\work_b06probe\\session_001.md",
+      "parallel_tree_exists": true,
+      "live_data_untouched": true,
+      "note": "CLI 用 BASE_DIR=脚本所在目录 + 硬编码 '推演agent_data_snapshots'；库用 BASE_DIR 名派生"
+    },
+    "T9_cleanup": {
+      "hardcoded_root_gone": true,
+      "parallel_gone": true,
+      "prod_probe_gone": true
+    },
+    "T9b_cross_instance": {
+      "sibling_snapshot_roots": [
+        "_tooltest_20261012_data_snapshots",
+        "推演agent-5705_data_snapshots",
+        "推演agent_data_snapshots",
+        "推演agent_test_data_snapshots"
+      ],
+      "note": "库按 BASE_DIR.name 派生 SNAPSHOT_ROOT；CLI 恒指 '推演agent_data_snapshots' ⇒ 任何非正式实例（如 推演agent_test）跑 CLI 都会去读正式实例的快照库，并把内容恢复进自己的 BASE_DIR"
+    }
+  }
+}

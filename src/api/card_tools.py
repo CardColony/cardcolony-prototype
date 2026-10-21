@@ -51,7 +51,7 @@ from ..storage import event_log, session_facade, session_ops
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 
 from ..goal import tools as goal_tools
-from . import card_msg, context_regions, event_stream, role_room
+from . import card_msg, context_regions, credential_guard, event_stream, role_room
 from ..toolcard import driver as toolcard_driver
 from ..toolcard import script_loader as toolcard_script_loader
 from ..toolcard import step_prompt as toolcard_step_prompt
@@ -223,14 +223,14 @@ TOOL_SWITCH: dict[str, str] = {
     # [基础工具找回 2026-10-18 · Cardlo 搬运] 七件全挂 tools_file
     "bash": policy.SWITCH_TOOLS_FILE,
     "python": policy.SWITCH_TOOLS_FILE,
-    "glob_files": policy.SWITCH_TOOLS_FILE,
+    "glob_files": policy.SWITCH_TOOLS_READ_FILE,
     "delete_file": policy.SWITCH_TOOLS_FILE,
     "move_file": policy.SWITCH_TOOLS_FILE,
     "rename_file": policy.SWITCH_TOOLS_FILE,
     "edit_file": policy.SWITCH_TOOLS_FILE,
-    "list_files": policy.SWITCH_TOOLS_FILE,
-    "read_file": policy.SWITCH_TOOLS_FILE,
-    "search_files": policy.SWITCH_TOOLS_FILE,
+    "list_files": policy.SWITCH_TOOLS_READ_FILE,
+    "read_file": policy.SWITCH_TOOLS_READ_FILE,
+    "search_files": policy.SWITCH_TOOLS_READ_FILE,
     "write_file": policy.SWITCH_TOOLS_FILE,
     # 思维链六件（plan_tools 注册进本注册表）
     "create_plan": policy.SWITCH_PLAN,
@@ -1546,10 +1546,14 @@ async def _h_link_cards(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
         return err("validation", "不能与自身建立关系")
-    # [权限底座重做 2026-10-12] 关口 LINK：目标卡 perms 须授 link；树类开关再
-    # 收紧为「只能连自己子树内的卡」（交办单「待用户知悉」明示的收紧，可推翻）
+    # [权限底座重做 2026-10-12] 关口 LINK：目标卡 perms 须授 link。
+    # [5713 通道试走·用户口径「卡间通信有专门的通信线」] 建线**不再叠 parent 树
+    # 作用域**：通信的边界是线本身，不是父子关系——否则平级卡永远建不出线，
+    # 也就永远通不了话（"先有鸡先有蛋"）。故作用域档取 SCOPE_ANY（只判类型授权）。
+    # 通不通话由**发信**端把关（见 _h_send_card_message 的 SCOPE_LINKED）。
     try:
-        policy.check(current_id, target_id, policy.SWITCH_LINK, cards)
+        policy.check(current_id, target_id, policy.SWITCH_LINK, cards,
+                     scope=policy.SCOPE_ANY)
     except PermissionError:
         return err("denied", f"越权：无权与 {target_id} 建立关系")
     current = await card_store.read_card(work_id, current_id)
@@ -1572,6 +1576,10 @@ async def _h_link_cards(work_id: str, current_id: str,
     )
     if "error" in result:
         return result
+    # [5713 通道试走] 同轮 meta 缓存同步（与 _h_create_card 同手法）：模型可以在
+    # **同一轮**里先 link_cards 再 send_card_message——不做这一步，发信读到的还是
+    # 本回合开始时的旧卡面（没有新线），会被「无线即拒」错杀（g2 用例实测踩到）。
+    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
     return {"ok": True, "source": current_id, "target": target_id, "type": rel_type}
 
 
@@ -1595,7 +1603,9 @@ async def _h_unlink_cards(work_id: str, current_id: str,
     # 目标不存在则无卡可查，保留直接可解的现状，不误伤清理主用例。
     if target_id in cards:
         try:
-            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards)
+            # [5713] 解线与建线对称：不叠树作用域（平级卡自己建得起、就解得掉）
+            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards,
+                         scope=policy.SCOPE_ANY)
         except PermissionError:
             return err("denied", f"越权：无权解除与 {target_id} 的连线")
     current = await card_store.read_card(work_id, current_id)
@@ -1621,7 +1631,86 @@ async def _h_unlink_cards(work_id: str, current_id: str,
     )
     if "error" in result:
         return result
+    # [5713 通道试走] 同轮 meta 缓存同步（与 _h_create_card 同手法）：模型可以在
+    # **同一轮**里先 link_cards 再 send_card_message——不做这一步，发信读到的还是
+    # 本回合开始时的旧卡面（没有新线），会被「无线即拒」错杀（g2 用例实测踩到）。
+    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
     return {"ok": True, "source": current_id, "target": target_id, "removed": removed}
+
+
+# ============================================================
+# [换父 2026-10-20] 结构边可变：把自己子树内的卡挂到另一张卡下
+# ============================================================
+# 与 link_cards 的区别：那条改的是**通信线**（卡间发信沿它寻址）；本工具改的是
+# **父子边**——树的形状、权限作用域（写侧限子树）、画布层级全由它决定。
+#
+# 用户 2026-10-20 裁定的边界是「只在自己子树内调整」：
+#   · 不给自己换父（自己的归属归上级管）；
+#   · 不把卡挪出子树（那是「交出去」，会让写侧子树语义松一档）。
+# 人与模型共用同一道存储校验（card_store.update_card 的 parent 分支）——
+# 画布拖拽走 PATCH、模型走这里，判据只有一份。
+async def _h_reparent_card(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """把 ``card_id`` 挂到 ``new_parent_id`` 下；被移动卡的整棵子树随之迁移。
+
+    判据（全部机械、逐条拒绝并说明原因）：
+      1. 被移动卡 ∈ 本卡**严格**子树（不能改自己的归属）；
+      2. 新父卡 ∈ 本卡子树（**含本卡自身**——子卡可以直接挂到自己名下）；
+      3. 新父卡不是被移动卡自身或其后代（防环；存储层再判一次，双保险）；
+      4. 新父卡类型须允许有子卡（工具卡/角色卡/编程卡/规则卡不可）——由存储层读
+         注册表 can_have_children 判，本函数不重复硬编码；
+      5. 已是该父卡 ⇒ 幂等返回，不重复写（不留无谓历史）。
+    权限：关口 ``EDIT``（树类开关 ⇒ 被移动卡必须在自己子树内），与 edit_card 同一
+    开关；新父卡的子树归属另判一次（第 2 条）。
+    """
+    card_id = str(arguments.get("card_id") or "").strip()
+    new_parent_id = str(arguments.get("new_parent_id") or "").strip()
+    if not card_id or not new_parent_id:
+        return err("validation", "card_id 与 new_parent_id 都必填")
+    if card_id == current_id:
+        return err("denied", "不能改自己的归属——只能调整自己子树内的卡")
+    if card_id not in cards:
+        return err("not_found", f"卡片不存在: {card_id}")
+    if new_parent_id not in cards:
+        return err("not_found", f"卡片不存在: {new_parent_id}")
+    # 判据 1：关口 EDIT（树类）＝被移动卡必须在自己子树内
+    try:
+        policy.check(current_id, card_id, policy.SWITCH_EDIT, cards)
+    except PermissionError:
+        return err("denied", f"越权：{card_id} 不在你的子树内")
+    # 判据 2：新父卡也必须在子树内（含自身）——不能把卡挪出子树
+    if new_parent_id != current_id and not policy._is_in_subtree(
+            current_id, new_parent_id, cards):
+        return err("denied",
+                   f"越权：{new_parent_id} 不在你的子树内，不能把卡挂过去")
+    # 判据 3：防环
+    if new_parent_id == card_id or policy._is_in_subtree(card_id, new_parent_id, cards):
+        return err("validation", "不能挂到自身或自己的后代下（会成环）")
+    # 判据 5：幂等（已是该父卡 ⇒ 不写）
+    if str((cards.get(card_id) or {}).get("parent") or "") == new_parent_id:
+        return {"ok": True, "existed": True,
+                "card_id": card_id, "parent": new_parent_id}
+    # 迁移规模在**改父之前**数——改完再数，子树已按新边算，数出来的是别人的子树
+    moved_subtree = sum(
+        1 for cid in cards
+        if cid == card_id or policy._is_in_subtree(card_id, cid, cards))
+    moved_title = str((cards.get(card_id) or {}).get("title") or "")
+    parent_title = str((cards.get(new_parent_id) or {}).get("title") or "")
+    actor_title = str((cards.get(current_id) or {}).get("title") or "")
+    result = await card_store.update_card(
+        work_id, card_id,
+        {"parent": new_parent_id},
+        f"由「{actor_title}」调整归属：「{moved_title}」挂到「{parent_title}」下"
+        f"（连子树 {moved_subtree} 张）",
+    )
+    if "error" in result:
+        return err("validation", str(result["error"]))
+    # 同轮 meta 缓存同步（与 _h_link_cards 同手法）：同一轮里后续 read_card /
+    # 再调本工具时读到的必须是新父卡，否则会按旧树判越权。
+    cards[card_id] = {**(result.get("meta") or {}), "card_id": card_id}
+    return {"ok": True, "card_id": card_id, "parent": new_parent_id,
+            "moved_subtree": moved_subtree}
 
 
 # ============================================================
@@ -1656,9 +1745,11 @@ async def _h_link_rel(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
         return err("validation", "不能与自身建立关系")
-    # 权限复用 LINK 关口（不新开）：目标卡 perms 须授 link；树类收紧同款
+    # 权限复用 LINK 关口（不新开）：目标卡 perms 须授 link。
+    # [5713 通道试走] 树类收紧撤销：同 link_cards，平级卡可自主建依赖关联线
     try:
-        policy.check(current_id, target_id, policy.SWITCH_LINK, cards)
+        policy.check(current_id, target_id, policy.SWITCH_LINK, cards,
+                     scope=policy.SCOPE_ANY)
     except PermissionError:
         return err("denied", f"越权：无权与 {target_id} 建立依赖关联")
     current = await card_store.read_card(work_id, current_id)
@@ -1686,6 +1777,7 @@ async def _h_link_rel(work_id: str, current_id: str,
     )
     if "error" in result:
         return result
+    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
     return {"ok": True, "source": current_id, "target": target_id, "kind": kind}
 
 
@@ -1707,7 +1799,9 @@ async def _h_unlink_rel(work_id: str, current_id: str,
                    f"kind 非法: {kind}，只允许 {'/'.join(MODEL_DEP_KINDS)}")
     if target_id in cards:
         try:
-            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards)
+            # [5713] 与 link_rel 对称：不叠树作用域
+            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards,
+                         scope=policy.SCOPE_ANY)
         except PermissionError:
             return err("denied", f"越权：无权解除与 {target_id} 的依赖关联")
     current = await card_store.read_card(work_id, current_id)
@@ -1732,6 +1826,10 @@ async def _h_unlink_rel(work_id: str, current_id: str,
     )
     if "error" in result:
         return result
+    # [5713 通道试走] 同轮 meta 缓存同步（与 _h_create_card 同手法）：模型可以在
+    # **同一轮**里先 link_cards 再 send_card_message——不做这一步，发信读到的还是
+    # 本回合开始时的旧卡面（没有新线），会被「无线即拒」错杀（g2 用例实测踩到）。
+    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
     return {"ok": True, "source": current_id, "target": target_id, "removed": removed}
 
 
@@ -1983,6 +2081,25 @@ _EXEC_TIMEOUT_SECONDS = 120.0
 _EXEC_DRAIN_TIMEOUT_SECONDS = 2.0
 
 
+def _log_exec_guard(action: str, *, hits: int = 0, names: list[str] | None = None,
+                    shell_cmd: str | None = None, argv: list[str] | None = None) -> None:
+    """[凭证保护 2026-10-20] 凭证闸留痕：拒绝/脱敏各记一条（与权限判定同通道）。"""
+    prompt_log.append_perm_log({
+        "fn": "exec_credential_guard",
+        "action": action,
+        "hits": int(hits),
+        "names": list(names or []),
+        "cmd_head": (shell_cmd or " ".join(argv or []))[:200],
+    })
+
+
+def _credential_deny_message(names: list[str], tool: str) -> str:
+    """静态闸的拒绝文案：说清为什么、并给出不改判据的替代做法。"""
+    return (f"拒绝执行：{tool} 的入参里出现凭证类文件名 {names}。"
+            "凭证文件的内容不得经 exec 类工具读取（与 read_file/search_files 同一份黑名单）；"
+            "确需确认某个配置项时，请查非凭证文件（如 .env.example）或向用户索取。")
+
+
 def _clip_output(data: bytes) -> tuple[str, bool]:
     """按**字节**截断到 50KB 再解码（utf-8 replace），返回 (文本, 是否截断)。"""
     total = len(data)
@@ -2087,6 +2204,19 @@ async def _run_subprocess(
 
     stdout, cut_out = _clip_output(out or b"")
     stderr, cut_err = _clip_output(e or b"")
+    # [凭证保护 2026-10-20] 执行后值闸：返回值里出现凭证值就替换成 REDACTED。
+    # **这是安全边界**（静态闸只挡直读，拼接/编码绕得过；值闸只认"明文相等"）。
+    # 走 to_thread：首次采集要扫 BASE_DIR 下的凭证文件名，不冻住事件循环。
+    stdout, n_out = await asyncio.to_thread(credential_guard.redact_output, stdout)
+    stderr, n_err = await asyncio.to_thread(credential_guard.redact_output, stderr)
+    hits = int(n_out) + int(n_err)
+    if hits:
+        note = f"\n…（输出中 {hits} 处凭证值已脱敏）"
+        if stdout:
+            stdout += note
+        else:
+            stderr += note
+        _log_exec_guard("redact", hits=hits, shell_cmd=shell_cmd, argv=argv)
     return {
         "exit_code": int(proc.returncode or 0),
         "stdout": stdout,
@@ -2102,6 +2232,11 @@ async def _h_bash(work_id: str, current_id: str,
     command = str(arguments.get("command") or "").strip()
     if not command:
         return err("validation", "command 不能为空")
+    # [凭证保护 2026-10-20] 执行前静态闸：命令里直接点名凭证文件 ⇒ 拒绝执行。
+    refs = credential_guard.find_credential_refs(command)
+    if refs:
+        _log_exec_guard("deny", names=refs, shell_cmd=command)
+        return err("denied", _credential_deny_message(refs, "bash"))
     return await _run_subprocess(shell_cmd=command)
 
 
@@ -2113,6 +2248,11 @@ async def _h_python(work_id: str, current_id: str,
     code = str(arguments.get("code") or "")
     if not code.strip():
         return err("validation", "code 不能为空")
+    # [凭证保护 2026-10-20] 执行前静态闸：代码里直接点名凭证文件 ⇒ 拒绝执行。
+    refs = credential_guard.find_credential_refs(code)
+    if refs:
+        _log_exec_guard("deny", names=refs, argv=[code])
+        return err("denied", _credential_deny_message(refs, "python"))
     tmp_path = ""
     try:
         try:
@@ -2938,6 +3078,37 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     ),
 }
 
+# [换父 2026-10-20] 结构边（父子）可变——追加在字面量**之后**，不插进既有序列
+# 中间：既有工具面的顺序因此逐字不变，新增项排末尾。
+# 开关挂 EDIT（与 edit_card 同一授权）：EDIT 是树类开关 ⇒ 执行层再判一次子树，
+# 与工具面「看得见」同源——没这个开关就看不见它，调了也必拒。
+TOOL_REGISTRY["reparent_card"] = ToolDef(
+    schema={
+        "name": "reparent_card",
+        "description": (
+            "把自己子树内的一张卡挂到另一张卡下（改父子归属），它的整棵子树随之迁移。"
+            "只能在自己子树内调整：被移动的卡、新的父卡都必须在你的子树内；"
+            "不能改自己的归属、不能把卡挪出子树、不能成环。"
+            "新父卡的类型必须允许有子卡（工具卡/角色卡/编程卡/规则卡不行）。"
+            "只改树形归属，不动卡片正文，也不动通信线。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string",
+                            "description": "要移动的卡 id（必须在你子树内）"},
+                "new_parent_id": {"type": "string",
+                                  "description": "新的父卡 id（可以是你自己；必须在你子树内）"},
+            },
+            "required": ["card_id", "new_parent_id"],
+        },
+    },
+    handler=_h_reparent_card,
+    readonly=False,
+)
+
+TOOL_SWITCH["reparent_card"] = policy.SWITCH_EDIT
+
 
 def _register_file_tools() -> None:
     """把 file_tools 四件登记进同一注册表（模块加载时调用一次）。
@@ -2993,7 +3164,14 @@ thinkchain_plan_tools.register_into(TOOL_REGISTRY, ToolDef)
 # ============================================================
 async def _h_send_card_message(work_id: str, current_id: str,
                                arguments: dict[str, Any],
-                               cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                               cards: dict[str, dict[str, Any]],
+                               *, require_link: bool = True) -> dict[str, Any]:
+    """发信执行体。``require_link``＝是否要求两卡之间已有通信线。
+
+    模型侧（工具面 send_card_message）一律 True——**通信走专门的通信线**；
+    流程/系统侧（下方 send_card_message 薄壳：完工回执、blocked 通知、S4 自动
+    回发）传 False：它们不是模型自主通信，不受"先建线"约束。
+    """
     target_id = arguments.get("target_card_id", "")
     # ① 收件卡存在（照 _h_read_card 先例：先判存在再判权限）
     if target_id not in cards:
@@ -3015,28 +3193,42 @@ async def _h_send_card_message(work_id: str, current_id: str,
     content = str(arguments.get("content", "")).strip()
     if not content:
         return err("invalid", "消息正文不得为空")
-    # 权限＝分类 READ 关口 ＋ 显式子树判定（政策收口前的卡间册 §4.3 字面口径；
-    # 详见下方修正说明的沿革）。
-    # [锚点实测修正——卡间册 §4.3 字面与 policy 现状有一处偏差，见回报卡点①]
-    # policy.check 的树作用域只对 TREE_SWITCHES（edit/delete/link/unlink/
-    # create_child）生效，read 不在其中——照册字面只传 read 会退化为纯类型
-    # 判权、子树限定失效（兄弟卡互发不被挡）。故类型关口照走 read，
-    # 「收件方必须落在发件方子树内」显式落 _is_in_subtree（向上/跨树发信挡死）。
+    # 权限＝分类 READ 关口（收件卡 perms 须授 read，与改造前逐字同一道）。
     try:
         policy.check(current_id, target_id, policy.SWITCH_READ, cards)
     except PermissionError:
         return err("denied", f"越权：无权向 {target_id} 发送消息")
-    # [用户 10-09 20:24 要点]「方案书卡有不确定的信息，直接发回主卡」——
-    # 子卡须能发回父卡/祖先链。判定由「收件卡必须在发件卡子树内」放宽为
-    # 「两卡同一棵任务树内」（双向各查一次）：父子/祖先链可互发；兄弟、
-    # 跨树仍挡死（双向均不命中）。发信不改树结构，不引入环。
-    # [角色机制 5710] 角色卡离树，不在一棵任务树内——但「角色 ↔ 关注卡」
-    # 是**已建立的订阅边**，允许双向发信（建议/警报回执）。未连线的角色仍挡死。
+    # [角色机制 5710 · rebase 后保留] 角色卡离树、不挂在任何一棵任务树里，但
+    # 「角色 ↔ 关注卡」是**已建立的订阅边**（role_room.link 在两侧卡面各写一条
+    # links），按新口径本就算已有通信线；这里仍显式认这条边，护住只有档案、
+    # 未落 links 的 v1 订阅数据。非角色卡恒 False，一律走下面的线边界。
     _role_edge = role_room.linked(work_id, current_id, target_id)
-    if not _role_edge and not (
-            policy._is_in_subtree(current_id, target_id, cards)
-            or policy._is_in_subtree(target_id, current_id, cards)):
-        return err("denied", f"越权：{target_id} 与你不在一棵任务树内")
+    # [5713 通道试走 · 用户口径 2026-10-20 逐字]「卡间通信有专门的通信线」
+    # ——通信的边界**是通信线，不是 parent 树**。故判定由「两卡同一棵任务树内」
+    # 改为「两卡之间已有通信线」（scope=SCOPE_LINKED，任一侧有 links 条目即成立，
+    # 这样 A 建的线 B 能沿它回话）。沿革：原判定用 _is_in_subtree 双向判定来
+    # 近似"同树"，但兄弟卡彼此都不在对方子树内 ⇒ 平级卡恒不通过、永远通不了话。
+    # 无线即挡死并指路（先 link_cards 建线），跨树跨枝一视同仁。
+    if require_link and not _role_edge:
+        # 走 policy.check_linked **而不是** check(..., scope=SCOPE_LINKED)：
+        # read 不在 TREE_SWITCHES 内，scope 会被 check 整体跳过（实测放行任意卡）。
+        #
+        # [5713 同步进 5700 · 兼容退回 2026-10-20] 5713 原口径是**纯线**：父↔子
+        # 之间没有线也一律 DENIED（纯函数实测 5713 policy：card_001→card_004
+        # DENIED、card_004→card_001 DENIED）。原样搬到生产会顺手收走本来能走的
+        # 纵向通道——现存所有「子卡发信回报主卡」的协作会立刻断掉，那是对既有
+        # 行为的回归。故补一条退回：**已有通信线 OR 互为祖先-后代**，任一成立
+        # 即放行。线是**新增的平级通道**，不是对纵向通道的替代；纵深与横向并存。
+        try:
+            policy.check_linked(current_id, target_id, cards)
+        except PermissionError:
+            if not (policy._is_in_subtree(current_id, target_id, cards)
+                    or policy._is_in_subtree(target_id, current_id, cards)):
+                return err(
+                    "denied",
+                    f"越权：{target_id} 与你既没有通信线、也不是祖先-后代——"
+                    f"卡间通信走专门的通信线，请先用 link_cards 建一条指向它的线"
+                    f"（type 取 关联），再发信")
     # 落信 + 留痕 + 记触发意图（错误在前面全走 err 信封不落档——发信成功才落信）
     #
     # [卡片底座第一步 2026-10-14] **落点改**：从「塞对话块（session_facade.append）」
@@ -3066,6 +3258,19 @@ async def _h_send_card_message(work_id: str, current_id: str,
     # 展示层绝不影响主流程）。前端靠它增量更新角标与未读数（F4 消费）。
     event_stream.emit(work_id, target_id, "card_message",
                       {"msg_id": msg_id, "from": current_id, "type": mt})
+    # [画布 5711 · P0 修] **同时**广播到工作级通道。
+    #
+    # 病根：画布页原来靠 `new EventSource('/api/works/{w}/cards/{w}/stream')` 听
+    # card_message —— 但那个 URL 的 card_id 传的是 **work_id**（不是卡号）⇒
+    # 订阅的是一条**永远不会有帧**的键 ⇒ 未读角标的增量通道**从来没活过**
+    # （只剩 60s 轮询）。而画布页要知道自己工作里"哪张卡来消息了"，本来
+    # 就需要**工作级**的广播。
+    # ⇒ 现在：工作级流多带一帧 card_message，画布页一条连接就能收全。
+    #   顺带把画布页的**常驻长连接从 2 条降到 1 条**（浏览器每源 6 连接上限很紧，
+    #   见 reloadCanvas 里"找根卡不再走网络"的说明）。
+    event_stream.emit_work(work_id, "card_message",
+                           {"card_id": target_id, "msg_id": msg_id,
+                            "from": current_id, "type": mt})
     return {"msg_id": msg_id, "target_card_id": target_id, "type": mt}
 
 
@@ -3092,6 +3297,10 @@ async def send_card_message(
 
     参数由流程语义决定（不吃模型风格参数包）；本函数只做参数翻译并
     取卡表，随后把真实行为委托给 _h_send_card_message（门槛一条不减）。
+
+    [5713] 本薄壳的调用方全部是**系统/流程**路径（编程卡完工回执、blocked 通知、
+    S4 自动回发）——它们不是"模型自主发起通信"，故传 require_link=False，
+    不受"两卡之间须有通信线"约束（否则完工回执到主卡会被自己的新闸挡死）。
     """
     cards = card_store.iter_card_metas(work_id)
     arguments = {
@@ -3100,7 +3309,8 @@ async def send_card_message(
         "content": content,
         "reply_to": reply_to,
     }
-    return await _h_send_card_message(work_id, from_id, arguments, cards)
+    return await _h_send_card_message(work_id, from_id, arguments, cards,
+                                      require_link=False)
 
 
 # ============================================================
@@ -3199,7 +3409,9 @@ TOOL_REGISTRY["send_card_message"] = ToolDef(
             "处理完后**自动把答案回发给你**（你会被再次唤醒）。\n"
             "msg_answer＝回应你收到的一条询问：必须带 reply_to（原询问的 msg_id）。\n"
             "msg_notify＝告知对方一件事，不需要对方回话。\n"
-            "只能发给同一棵任务树内的卡（父卡／子卡／祖先）；跨树会被拒。"
+            "**前提：卡间通信走专门的通信线**——你和收件卡之间要有一条通信线，"
+            "没有就先用 link_cards 建一条指向它的线（type 取 关联）再发；无线会被拒。"
+            "线是双向的：你建的线，对方能沿同一条线回话。\n"
             "发完不必空等：你可以先做别的，答案回来时系统会唤醒你。"
         ),
         "parameters": {
@@ -4154,6 +4366,16 @@ def build_tool_schemas(
     tools = _filter_by_card_type(tools, card_id, work_id, cards)
     # ---- 四级：根卡闸（规则卡 2026-10-15 · 块3）----
     tools = _filter_root_only(tools, card_id, work_id, cards)
+    # ---- 五级：[换父 2026-10-20] 不能有子卡的卡不下发换父工具 ----
+    # 工具卡/编程卡/规则卡自己没有子树可调（角色卡的整个工具面在末段③被替换，
+    # 走不到这里也无妨）。执行层同样会拒，但「工具面与执行层同源」的意思是
+    # **看不见＝不该做**：给它一个永远调不通的工具，只会白烧一次模型调用。
+    # 判据读注册表 can_have_children，不硬编码类型名。
+    if card_id and cards is not None:
+        _self_type = str((cards.get(card_id) or {}).get("card_type") or "")
+        if _self_type and not card_store._type_can_have_children(_self_type):
+            tools = [t for t in tools
+                     if str(t.get("name", "")) != "reparent_card"]
     # ---- 末段①：自动模式专用工具面（非卡片内挂；只对 auto_mode=1 的卡）----
     # 追加在四段之后 ⇒ 不经任何按卡过滤（不随 perms 收敛），可见性唯一由
     # auto_mode 决定。非 auto 卡 ⇒ 本段不进 ⇒ 输出与基线逐字一致。
@@ -4210,6 +4432,8 @@ def _create_card_schema_with_goal(schema: dict[str, Any]) -> dict[str, Any]:
 _PLAN_GATE_BLOCKED: frozenset[str] = frozenset({
     "create_card", "create_coder_card", "delete_card",
     "link_cards", "unlink_cards", "link_rel", "unlink_rel",
+    # [换父 2026-10-20] 改父子边＝改结构，与建卡/连线同档：无活板时不给
+    "reparent_card",
     "write_file", "edit_file", "move_file", "rename_file", "delete_file",
     "run_tool_card", "send_card_message",
 })

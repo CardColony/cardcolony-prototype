@@ -1,0 +1,254 @@
+{
+  "started_at": "2026-10-20T16:41:24",
+  "base": "http://127.0.0.1:5713",
+  "model": "ds-flash-official",
+  "arms": [
+    {
+      "arm": "gate",
+      "model": "ds-flash-official",
+      "timeline": [
+        {
+          "t": "2026-10-20T16:43:38",
+          "stage": "wait_plan",
+          "goal_state": "paused",
+          "status_chars": 4354,
+          "children": 0
+        },
+        {
+          "t": "2026-10-20T16:44:32",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:44:47",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:45:02",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:45:17",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        },
+        {
+          "t": "2026-10-20T16:45:32",
+          "stage": "wait_split",
+          "goal_state": "active",
+          "children": 3
+        }
+      ],
+      "steps": [
+        {
+          "step": "create_work",
+          "at": "2026-10-20T16:41:24",
+          "ok": true,
+          "work_id": "work_022",
+          "root": "card_001"
+        },
+        {
+          "step": "patch_root_auto",
+          "at": "2026-10-20T16:41:24",
+          "ok": true
+        },
+        {
+          "step": "set_card_model",
+          "at": "2026-10-20T16:41:24",
+          "ok": true,
+          "status": 200,
+          "resp": "{'ok': True, 'work_id': 'work_022', 'card_id': 'card_001', 'work': None, 'cards': {'card_001': {'default_model': 'ds-flash-official'}}}",
+          "model": "ds-flash-official"
+        },
+        {
+          "step": "send_task",
+          "at": "2026-10-20T16:43:23",
+          "status": 200,
+          "resp": "{'reply': \"I'll start by exploring the sandbox environment to understand what's actually there before proposing any split plan.\\n\\n沙箱里已经存在之前几次运行留下的产物。在提出任何方案之前，"
+        },
+        {
+          "step": "plan_captured",
+          "at": "2026-10-20T16:43:38",
+          "phase": "pre_split",
+          "plan_chars": 4354
+        },
+        {
+          "step": "gate_audit",
+          "at": "2026-10-20T16:43:38",
+          "attempt": 0,
+          "ops_leak": 2,
+          "chars": 4354
+        },
+        {
+          "step": "inject_approve",
+          "at": "2026-10-20T16:44:17",
+          "status": 200,
+          "resp": "{'reply': '批复收到。按流程，我先恢复目标状态，再建三张子卡。\\n\\n目标已恢复为 active。现在按批准原文建三张子卡，任务书一字不改地贴入。\\n\\n三张子卡已建成并自动开跑（card_002 / card_003 / card_004）。我把状态记准，然后等它们回报。\\n\\n批复已落地执行。本轮做完的事"
+        },
+        {
+          "step": "children_stable",
+          "at": "2026-10-20T16:45:32",
+          "n": 3
+        },
+        {
+          "step": "evidence_collected",
+          "at": "2026-10-20T16:45:33",
+          "children": 3,
+          "create_calls": 3,
+          "summary": {
+            "n": 3,
+            "mission_like": 0,
+            "subagent_like": 3,
+            "mixed": 0,
+            "with_acceptance": 3,
+            "avg_step_markers": 5.0,
+            "avg_howto_hits": 0.0
+          }
+        },
+        {
+          "step": "cleanup_done",
+          "at": "2026-10-20T16:45:33",
+          "cards": 4
+        }
+      ],
+      "work_id": "work_022",
+      "root": "card_001",
+      "phase": "pre_split",
+      "plan_pre": "## 一、勘探结论（已核实，均可复现）\n\n环境布局（沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox）：\n- works/ ＝ work_001…work_022 共 22 个 work ＋ works/_ops/session_ops.jsonl（2877 行）\n- snapshots/ ＝ 22 个 work 目录 ＋ snapshots/_ops，快照目录合计 941 个\n- logs/ ＝ 89 份 prompt_card_*.json ＋ prompt_perm_audit.jsonl（1380 行）\n- 另有 experiments/、trading-workspace/、_start5713.bat、.snapshot_fingerprints.json\n\n通过的项（正面结论，已实测）：\n- 22/22 个 cards.db `PRAGMA integrity_check` = ok；表结构统一（cards/card_history/shadows/meta/inbox/trash 及 role_* 扩展）\n- 全部 events/*.jsonl 逐行 JSON 解析 0 失败、无截断、无编码错误；memory/*.json 全部可解析；sessions/*.md 全部可读\n- _ops/revisions.jsonl 合计 58 行、0 解析失败；未发现断链的 session_ref，未发现 reply_to 悬空的 inbox 记录\n- 快照独立还原抽测 4/4 通过：单拷快照内 cards.db 即可打开，integrity ok 且卡数/历史数/影子数自洽\n- 89 份 prompt json 全部可解析，13 个字段（含 system_prompt/prior_messages/user_prompt/response/tool_events）无缺项，时间戳格式全部合法\n\n发现的缺陷（已定位到具体文件/目录）：\n- work_009：events/、memory/、_ops/ 三个目录整体缺失，而 DB 内实有 4 张卡 → 该 work 无任何事件流与记忆留痕\n- work_022：memory/ 目录缺失（1 张卡无记忆文件）\n- work_008 / work_014 / work_015：仅 1 张卡有 events+memory，其余 3–4 张卡均无\n- work_010 / 011 / 013 / 016：card_001 与 card_004 无事件文件、无记忆文件\n- work_001–005 / 012：根卡 card_001 无事件/记忆文件（而 work_006/017–021 根卡有 → 疑为 variant 差异，需判定不宜直接判损坏）\n- 11 个 work（007、013–022）live `cards.db` 仅 4096 B，schema 与数据全部驻留 `cards.db-wal`（最大 3.19 MB）；已实测：只拷 cards.db（不带 wal）后打开报 `no such table: cards` → 文件级整目录备份会得到空库\n- snapshots 内含 741 份 cards.db、0 份 wal（快照库已 checkpoint，故可独立还原；与上一条不矛盾，已分别实测）\n- snapshots/_ops 200 条快照中，部分缺目标 work 的 cards.db/work.json\n- logs 无 work_id / run_id 字段 → 无法把日志绑定到具体 work，无法复盘「某一次运行」\n- pair_id 89/89 全部唯一（每值仅 1 条）→ 不构成请求/响应或轮次配对键\n- 21 条空 response，其中仅 3 条记录了 error → 18 条静默失败（无 error 留痕）\n- 型号错标：24 条 requested=minimax-m31-flash-preview 而 model_used=deepseek-v4.1-flash-1017；3 条 model_used=None\n- logs 覆盖卡片仅 card_001–card_006\n\n勘误留痕：我最初用 `select id from cards` 做交叉核对，报出 22 个 work「事件文件对应卡不在 DB」，经查 schema 实际主键为 `card_id` —— 该批告警是我脚本的错误，**已作废、不进入结论**。同理，「快照还原丢 43 条历史」曾被记为快照损坏，隔离测试后判定其实是 daily 快照时点较旧造成的陈旧，非损坏。\n\n## 二、拆分方案（待批复 · 尚未建任何子卡）\n\n严重度统一口径（三张子卡必须共用，便于收口）：P0＝数据不可读/不可还原，按现状必然丢数据；P1＝关键留痕缺失，导致无法复盘或审计；P2＝局部缺块或字段错标，影响可信度但有替代路径；P3＝规范/一致性问题。\n\n拆三张子卡，各对应巡检范围一项，理由：三者取证手段与判据互不相同（DB/文件自洽 vs 还原实测 vs 日志可复盘性），并行取证更深；由本卡统一收口、统一严重度、合并成一份报告。\n\n- 子卡A「works 卡片数据完整性」｜一句话使命：逐 work 核验卡数据、事件流、会话留痕的可读性与自洽性并产出缺陷清单｜验收判据：22/22 work 全覆盖五项结论表；每条缺陷含路径/现象/复现命令/严重度/修复建议；区分「已证实损坏」与「疑似 variant 差异」；列出通过项；产物 findings_works.md\n- 子卡B「快照与恢复路径」｜一句话使命：核验 941 个快照的在位与完整性，并实测恢复路径能否真还原出可用库｜验收判据：逐 work 快照数与缺口统计；至少 6 个 work（覆盖有/无 wal 两类）做仅拷快照 cards.db 的还原实测并给 integrity 与计数比对；明确回答能否还原并附证据；产物 findings_snapshots.md\n- 子卡C「运行日志留痕质量」｜一句话使命：核验 90 份日志的可读性与复盘能力，判定能否据此复盘一次运行｜验收判据：90 份全覆盖给解析率/字段完整性/时间戳合法性；回答能否复盘并指出缺失关联键证据；统计空 response 与静默失败、逐条列出型号错标；产物 findings_logs.md\n\n## 三、任务书全文草案（供逐张预审，一字不改地贴）\n\n### 子卡A 任务书草案\n标题：works 卡片数据完整性巡检\n使命：逐 work 核验 cards.db、events/*.jsonl、memory/*.json、sessions/*.md、_ops/revisions.jsonl 的可读性与自洽性，产出缺陷清单。\n范围：只读 5713 沙箱 works/ 下 work_001–work_022 与 works/_ops；严禁读写 5700；严禁修改、修复、删除任何被检数据；一切只读。\n验收判据：\n1. 22/22 work 全覆盖，逐 work 给出五项结论表（db integrity / 事件流 / 记忆 / 会话 / revisions）；\n2. 每条缺陷含 work 路径、具体文件、现象、可复现命令、严重度（P0–P3）、修复建议；\n3. 必须区分「已证实的损坏」与「疑似 variant 设计差异（不同 work 事件流覆盖率不同）」两类，不得把后者直接判为损坏；\n4. 单列「哪些是好的」，给出通过项与覆盖计数（如 integrity_check 22/22 ok）；\n5. 不得直接引用主卡已给数字作为自身结论，须自行复核取得；产物写入 findings_works.md 并回报路径。\n\n### 子卡B 任务书草案\n标题：快照与恢复路径巡检\n使命：核验 941 个快照是否在位、完整、可独立还原，并实测恢复路径是否真能还原到可用状态。\n范围：只读 snapshots/ 与 .snapshot_fingerprints.json；还原实测须在沙箱内新建独立 scratch 目录进行，不得写回 works/ 与 snapshots/；严禁读写 5700。\n验收判据：\n1. 统计每个 work 的快照数、缺口（缺 cards.db/work.json/canvas.json）、零字节文件；\n2. 至少抽 6 个 work（须覆盖「有 cards.db-wal」与「无 wal」两类）做「仅拷快照 cards.db 单独打开」的还原实测，给出 integrity_check 结果与 卡数/历史数/影子数 同 live 的比对；\n3. 明确回答「能否据此还原」并附证据；若不能，指出缺口具体在哪一层；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 须区分「快照时点较旧导致的陈旧差」与「快照损坏/不完整」，不得混判；产物写入 findings_snapshots.md 并回报路径。\n\n### 子卡C 任务书草案\n标题：运行日志留痕质量巡检\n使命：核验 logs/ 下 89 份 prompt json 与 prompt_perm_audit.jsonl 的可读性与复盘能力，判定能否据此复盘一次具体运行。\n范围：只读 logs/；不得修改或补写日志；不得联网；严禁读写 5700。\n验收判据：\n1. 90 份文件全覆盖，给出解析成功率、字段完整性、时间戳合法性；\n2. 明确回答「能否复盘一次运行」，并指出缺失的关联键（如 work_id/run_id）与配对键问题的具体证据；\n3. 统计失败留痕：空 response 数、其中未记录 error 的静默失败数；型号错标逐条列出（requested vs used）；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 产物写入 findings_logs.md 并回报路径。\n\n## 四、交付物路径（收口用）\n总报告：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\INSPECTION_REPORT.md\n（三张子卡的 findings_*.md 同目录；本卡负责合并、统一严重度、复验关键结论后定稿）\n\n## 五、当前状态\n勘探已完成，方案与三份任务书草案已就位；**尚未建任何子卡**，正按流程停在等批复。\n",
+      "plan_gate_final": "## 一、勘探结论（已核实，均可复现）\n\n环境布局（沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox）：\n- works/ ＝ work_001…work_022 共 22 个 work ＋ works/_ops/session_ops.jsonl（2877 行）\n- snapshots/ ＝ 22 个 work 目录 ＋ snapshots/_ops，快照目录合计 941 个\n- logs/ ＝ 89 份 prompt_card_*.json ＋ prompt_perm_audit.jsonl（1380 行）\n- 另有 experiments/、trading-workspace/、_start5713.bat、.snapshot_fingerprints.json\n\n通过的项（正面结论，已实测）：\n- 22/22 个 cards.db `PRAGMA integrity_check` = ok；表结构统一（cards/card_history/shadows/meta/inbox/trash 及 role_* 扩展）\n- 全部 events/*.jsonl 逐行 JSON 解析 0 失败、无截断、无编码错误；memory/*.json 全部可解析；sessions/*.md 全部可读\n- _ops/revisions.jsonl 合计 58 行、0 解析失败；未发现断链的 session_ref，未发现 reply_to 悬空的 inbox 记录\n- 快照独立还原抽测 4/4 通过：单拷快照内 cards.db 即可打开，integrity ok 且卡数/历史数/影子数自洽\n- 89 份 prompt json 全部可解析，13 个字段（含 system_prompt/prior_messages/user_prompt/response/tool_events）无缺项，时间戳格式全部合法\n\n发现的缺陷（已定位到具体文件/目录）：\n- work_009：events/、memory/、_ops/ 三个目录整体缺失，而 DB 内实有 4 张卡 → 该 work 无任何事件流与记忆留痕\n- work_022：memory/ 目录缺失（1 张卡无记忆文件）\n- work_008 / work_014 / work_015：仅 1 张卡有 events+memory，其余 3–4 张卡均无\n- work_010 / 011 / 013 / 016：card_001 与 card_004 无事件文件、无记忆文件\n- work_001–005 / 012：根卡 card_001 无事件/记忆文件（而 work_006/017–021 根卡有 → 疑为 variant 差异，需判定不宜直接判损坏）\n- 11 个 work（007、013–022）live `cards.db` 仅 4096 B，schema 与数据全部驻留 `cards.db-wal`（最大 3.19 MB）；已实测：只拷 cards.db（不带 wal）后打开报 `no such table: cards` → 文件级整目录备份会得到空库\n- snapshots 内含 741 份 cards.db、0 份 wal（快照库已 checkpoint，故可独立还原；与上一条不矛盾，已分别实测）\n- snapshots/_ops 200 条快照中，部分缺目标 work 的 cards.db/work.json\n- logs 无 work_id / run_id 字段 → 无法把日志绑定到具体 work，无法复盘「某一次运行」\n- pair_id 89/89 全部唯一（每值仅 1 条）→ 不构成请求/响应或轮次配对键\n- 21 条空 response，其中仅 3 条记录了 error → 18 条静默失败（无 error 留痕）\n- 型号错标：24 条 requested=minimax-m31-flash-preview 而 model_used=deepseek-v4.1-flash-1017；3 条 model_used=None\n- logs 覆盖卡片仅 card_001–card_006\n\n勘误留痕：我最初用 `select id from cards` 做交叉核对，报出 22 个 work「事件文件对应卡不在 DB」，经查 schema 实际主键为 `card_id` —— 该批告警是我脚本的错误，**已作废、不进入结论**。同理，「快照还原丢 43 条历史」曾被记为快照损坏，隔离测试后判定其实是 daily 快照时点较旧造成的陈旧，非损坏。\n\n## 二、拆分方案（待批复 · 尚未建任何子卡）\n\n严重度统一口径（三张子卡必须共用，便于收口）：P0＝数据不可读/不可还原，按现状必然丢数据；P1＝关键留痕缺失，导致无法复盘或审计；P2＝局部缺块或字段错标，影响可信度但有替代路径；P3＝规范/一致性问题。\n\n拆三张子卡，各对应巡检范围一项，理由：三者取证手段与判据互不相同（DB/文件自洽 vs 还原实测 vs 日志可复盘性），并行取证更深；由本卡统一收口、统一严重度、合并成一份报告。\n\n- 子卡A「works 卡片数据完整性」｜一句话使命：逐 work 核验卡数据、事件流、会话留痕的可读性与自洽性并产出缺陷清单｜验收判据：22/22 work 全覆盖五项结论表；每条缺陷含路径/现象/复现命令/严重度/修复建议；区分「已证实损坏」与「疑似 variant 差异」；列出通过项；产物 findings_works.md\n- 子卡B「快照与恢复路径」｜一句话使命：核验 941 个快照的在位与完整性，并实测恢复路径能否真还原出可用库｜验收判据：逐 work 快照数与缺口统计；至少 6 个 work（覆盖有/无 wal 两类）做仅拷快照 cards.db 的还原实测并给 integrity 与计数比对；明确回答能否还原并附证据；产物 findings_snapshots.md\n- 子卡C「运行日志留痕质量」｜一句话使命：核验 90 份日志的可读性与复盘能力，判定能否据此复盘一次运行｜验收判据：90 份全覆盖给解析率/字段完整性/时间戳合法性；回答能否复盘并指出缺失关联键证据；统计空 response 与静默失败、逐条列出型号错标；产物 findings_logs.md\n\n## 三、任务书全文草案（供逐张预审，一字不改地贴）\n\n### 子卡A 任务书草案\n标题：works 卡片数据完整性巡检\n使命：逐 work 核验 cards.db、events/*.jsonl、memory/*.json、sessions/*.md、_ops/revisions.jsonl 的可读性与自洽性，产出缺陷清单。\n范围：只读 5713 沙箱 works/ 下 work_001–work_022 与 works/_ops；严禁读写 5700；严禁修改、修复、删除任何被检数据；一切只读。\n验收判据：\n1. 22/22 work 全覆盖，逐 work 给出五项结论表（db integrity / 事件流 / 记忆 / 会话 / revisions）；\n2. 每条缺陷含 work 路径、具体文件、现象、可复现命令、严重度（P0–P3）、修复建议；\n3. 必须区分「已证实的损坏」与「疑似 variant 设计差异（不同 work 事件流覆盖率不同）」两类，不得把后者直接判为损坏；\n4. 单列「哪些是好的」，给出通过项与覆盖计数（如 integrity_check 22/22 ok）；\n5. 不得直接引用主卡已给数字作为自身结论，须自行复核取得；产物写入 findings_works.md 并回报路径。\n\n### 子卡B 任务书草案\n标题：快照与恢复路径巡检\n使命：核验 941 个快照是否在位、完整、可独立还原，并实测恢复路径是否真能还原到可用状态。\n范围：只读 snapshots/ 与 .snapshot_fingerprints.json；还原实测须在沙箱内新建独立 scratch 目录进行，不得写回 works/ 与 snapshots/；严禁读写 5700。\n验收判据：\n1. 统计每个 work 的快照数、缺口（缺 cards.db/work.json/canvas.json）、零字节文件；\n2. 至少抽 6 个 work（须覆盖「有 cards.db-wal」与「无 wal」两类）做「仅拷快照 cards.db 单独打开」的还原实测，给出 integrity_check 结果与 卡数/历史数/影子数 同 live 的比对；\n3. 明确回答「能否据此还原」并附证据；若不能，指出缺口具体在哪一层；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 须区分「快照时点较旧导致的陈旧差」与「快照损坏/不完整」，不得混判；产物写入 findings_snapshots.md 并回报路径。\n\n### 子卡C 任务书草案\n标题：运行日志留痕质量巡检\n使命：核验 logs/ 下 89 份 prompt json 与 prompt_perm_audit.jsonl 的可读性与复盘能力，判定能否据此复盘一次具体运行。\n范围：只读 logs/；不得修改或补写日志；不得联网；严禁读写 5700。\n验收判据：\n1. 90 份文件全覆盖，给出解析成功率、字段完整性、时间戳合法性；\n2. 明确回答「能否复盘一次运行」，并指出缺失的关联键（如 work_id/run_id）与配对键问题的具体证据；\n3. 统计失败留痕：空 response 数、其中未记录 error 的静默失败数；型号错标逐条列出（requested vs used）；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 产物写入 findings_logs.md 并回报路径。\n\n## 四、交付物路径（收口用）\n总报告：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\INSPECTION_REPORT.md\n（三张子卡的 findings_*.md 同目录；本卡负责合并、统一严重度、复验关键结论后定稿）\n\n## 五、当前状态\n勘探已完成，方案与三份任务书草案已就位；**尚未建任何子卡**，正按流程停在等批复。\n",
+      "gate_leak_before": 2,
+      "gate_leak_after": 2,
+      "children": [
+        {
+          "card_id": "card_002",
+          "title": "works 卡片数据完整性巡检",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "任务书：works 卡片数据完整性巡检\n\n使命：逐 work 核验 cards.db、events/*.jsonl、memory/*.json、sessions/*.md、_ops/revisions.jsonl 的可读性与自洽性，产出缺陷清单。\n\n范围：只读 5713 沙箱 works/ 下 work_001–work_022 与 works/_ops；严禁读写 5700；严禁修改、修复、删除任何被检数据；一切只读。沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox。\n\n验收判据：\n1. 22/22 work 全覆盖，逐 work 给出五项结论表（db integrity / 事件流 / 记忆 / 会话 / revisions）；\n2. 每条缺陷含 work 路径、具体文件、现象、可复现命令、严重度（P0–P3）、修复建议；\n3. 必须区分「已证实的损坏」与「疑似 variant 设计差异（不同 work 事件流覆盖率不同）」两类，不得把后者直接判为损坏；\n4. 单列「哪些是好的」，给出通过项与覆盖计数（如 integrity_check 22/22 ok）；\n5. 不得直接引用主卡已给数字作为自身结论，须自行复核取得；产物写入 findings_works.md 并回报路径。\n\n严重度口径（三子卡共用）：P0＝数据不可读/不可还原，按现状必然丢数据；P1＝关键留痕缺失，导致无法复盘或审计；P2＝局部缺块或字段错标，影响可信度但有替代路径；P3＝规范/一致性问题。\n\n产物：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_works.md，并在本卡现状块给出路径。\n\n避坑（主卡踩过，仅供避坑不作结论）：cards 表主键是 card_id 不是 id，用 select id from cards 会报错并导出假告警；11 个 work 的 cards.db 仅 4096 B、数据在 cards.db-wal，只拷 db 会报 no such table: cards。",
+          "score": {
+            "chars": 930,
+            "step_markers": 5,
+            "howto_hits": 0,
+            "mission_hits": 1,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_003",
+          "title": "快照与恢复路径巡检",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "任务书：快照与恢复路径巡检\n\n使命：核验 941 个快照是否在位、完整、可独立还原，并实测恢复路径是否真能还原到可用状态。\n\n范围：只读 snapshots/ 与 .snapshot_fingerprints.json；还原实测须在沙箱内新建独立 scratch 目录进行，不得写回 works/ 与 snapshots/；严禁读写 5700。沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox。\n\n验收判据：\n1. 统计每个 work 的快照数、缺口（缺 cards.db/work.json/canvas.json）、零字节文件；\n2. 至少抽 6 个 work（须覆盖「有 cards.db-wal」与「无 wal」两类）做「仅拷快照 cards.db 单独打开」的还原实测，给出 integrity_check 结果与 卡数/历史数/影子数 同 live 的比对；\n3. 明确回答「能否据此还原」并附证据；若不能，指出缺口具体在哪一层；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 须区分「快照时点较旧导致的陈旧差」与「快照损坏/不完整」，不得混判；产物写入 findings_snapshots.md 并回报路径。\n\n严重度口径（三子卡共用）：P0＝数据不可读/不可还原，按现状必然丢数据；P1＝关键留痕缺失，导致无法复盘或审计；P2＝局部缺块或字段错标，影响可信度但有替代路径；P3＝规范/一致性问题。\n\n产物：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_snapshots.md，并在本卡现状块给出路径。\n\n避坑（主卡踩过，仅供避坑不作结论）：快照与 live 计数不一致常见成因是 daily 快照时点较旧（陈旧差），不等于损坏，判损坏须做 scratch 隔离打开测试；live 侧有 11 个 work 的 cards.db 仅 4096 B、数据在 cards.db-wal，与快照里 160–348 KB 的已 checkpoint 库尺寸差异属正常。",
+          "score": {
+            "chars": 934,
+            "step_markers": 5,
+            "howto_hits": 0,
+            "mission_hits": 1,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "card_id": "card_004",
+          "title": "运行日志留痕质量巡检",
+          "card_type": "sub_project",
+          "goal_state": "active",
+          "goal_text": "任务书：运行日志留痕质量巡检\n\n使命：核验 logs/ 下 89 份 prompt json 与 prompt_perm_audit.jsonl 的可读性与复盘能力，判定能否据此复盘一次具体运行。\n\n范围：只读 logs/；不得修改或补写日志；不得联网；严禁读写 5700。沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox。\n\n验收判据：\n1. 90 份文件全覆盖，给出解析成功率、字段完整性、时间戳合法性；\n2. 明确回答「能否复盘一次运行」，并指出缺失的关联键（如 work_id/run_id）与配对键问题的具体证据；\n3. 统计失败留痕：空 response 数、其中未记录 error 的静默失败数；型号错标逐条列出（requested vs used）；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 产物写入 findings_logs.md 并回报路径。\n\n严重度口径（三子卡共用）：P0＝数据不可读/不可还原，按现状必然丢数据；P1＝关键留痕缺失，导致无法复盘或审计；P2＝局部缺块或字段错标，影响可信度但有替代路径；P3＝规范/一致性问题。\n\n产物：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_logs.md，并在本卡现状块给出路径。\n\n避坑（主卡踩过，仅供避坑不作结论）：型号 requested 与 used 不一致要分两类——别名/规范名映射可能正常，跨厂商跨模型才是真错标；pair_id 非空不等于配对成立，须看每个值是否只出现一次；空 response 是否属静默失败取决于是否同时记录 error，要分别计数。",
+          "score": {
+            "chars": 768,
+            "step_markers": 5,
+            "howto_hits": 0,
+            "mission_hits": 1,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "create_card_calls": [
+        {
+          "tool": "create_card",
+          "args": {
+            "title": "works 卡片数据完整性巡检",
+            "content": "## 使命\n逐 work 核验 cards.db、events/*.jsonl、memory/*.json、sessions/*.md、_ops/revisions.jsonl 的可读性与自洽性，产出缺陷清单。\n\n## 范围\n只读 5713 沙箱 works/ 下 work_001–work_022 与 works/_ops；严禁读写 5700；严禁修改、修复、删除任何被检数据；一切只读。\n沙箱根：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\n\n## 验收判据\n1. 22/22 work 全覆盖，逐 work 给出五项结论表（db integrity / 事件流 / 记忆 / 会话 / revisions）；\n2. 每条缺陷含 work 路径、具体文件、现象、可复现命令、严重度（P0–P3）、修复建议；\n3. 必须区分「已证实的损坏」与「疑似 variant 设计差异（不同 work 事件流覆盖率不同）」两类，不得把后者直接判为损坏；\n4. 单列「哪些是好的」，给出通过项与覆盖计数（如 integrity_check 22/22 ok）；\n5. 不得直接引用主卡已给数字作为自身结论，须自行复核取得；产物写入 findings_works.md 并回报路径。\n\n## 严重度口径（三子卡共用，必须照用）\n- P0＝数据不可读/不可还原，按现状必然丢数据\n- P1＝关键留痕缺失，导致无法复盘或审计\n- P2＝局部缺块或字段错标，影响可信度但有替代路径\n- P3＝规范/一致性问题\n\n## 产物\n写入 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_works.md，并在本卡现状块给出路径。\n\n## 避坑提示（主卡勘探时踩过，仅供避坑；不得直接当作结论引用）\n- cards 表主键是 card_id 而非 id。用 `select id from cards` 会报 `no such column: id`，若据此判定会得出「22 个 work 事件流孤儿」的**假告警**。务必先读 sqlite_master 确认真实列名再交叉核对。\n- 11 个 work（work_007、013–022）的 live cards.db 仅 4096 B，schema 与数据驻留 cards.db-wal；只拷 cards.db 不带 wal 会报 `no such table: cards`。核对 DB 时须带 -wal/-shm 或读 live 原位。\n",
+            "goal": "任务书：works 卡片数据完整性巡检\n\n使命：逐 work 核验 cards.db、events/*.jsonl、memory/*.json、sessions/*.md、_ops/revisions.jsonl 的可读性与自洽性，产出缺陷清单。\n\n范围：只读 5713 沙箱 works/ 下 work_001–work_022 与 works/_ops；严禁读写 5700；严禁修改、修复、删除任何被检数据；一切只读。沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox。\n\n验收判据：\n1. 22/22 work 全覆盖，逐 work 给出五项结论表（db integrity / 事件流 / 记忆 / 会话 / revisions）；\n2. 每条缺陷含 work 路径、具体文件、现象、可复现命令、严重度（P0–P3）、修复建议；\n3. 必须区分「已证实的损坏」与「疑似 variant 设计差异（不同 work 事件流覆盖率不同）」两类，不得把后者直接判为损坏；\n4. 单列「哪些是好的」，给出通过项与覆盖计数（如 integrity_check 22/22 ok）；\n5. 不得直接引用主卡已给数字作为自身结论，须自行复核取得；产物写入 findings_works.md 并回报路径。\n\n严重度口径（三子卡共用）：P0＝数据不可读/不可还原，按现状必然丢数据；P1＝关键留痕缺失，导致无法复盘或审计；P2＝局部缺块或字段错标，影响可信度但有替代路径；P3＝规范/一致性问题。\n\n产物：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_works.md，并在本卡现状块给出路径。\n\n避坑（主卡踩过，仅供避坑不作结论）：cards 表主键是 card_id 不是 id，用 select id from cards 会报错并导出假告警；11 个 work 的 cards.db 仅 4096 B、数据在 cards.db-wal，只拷 db 会报 no such table: cards。"
+          },
+          "ts": "2026-10-20T16:44:02.725+08:00",
+          "seq": 9488,
+          "score": {
+            "chars": 2048,
+            "step_markers": 10,
+            "howto_hits": 0,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "title": "快照与恢复路径巡检",
+            "content": "## 使命\n核验 941 个快照是否在位、完整、可独立还原，并实测恢复路径是否真能还原到可用状态。\n\n## 范围\n只读 snapshots/ 与 .snapshot_fingerprints.json；还原实测须在沙箱内新建独立 scratch 目录进行，不得写回 works/ 与 snapshots/；严禁读写 5700。\n沙箱根：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\n\n## 验收判据\n1. 统计每个 work 的快照数、缺口（缺 cards.db/work.json/canvas.json）、零字节文件；\n2. 至少抽 6 个 work（须覆盖「有 cards.db-wal」与「无 wal」两类）做「仅拷快照 cards.db 单独打开」的还原实测，给出 integrity_check 结果与 卡数/历史数/影子数 同 live 的比对；\n3. 明确回答「能否据此还原」并附证据；若不能，指出缺口具体在哪一层；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 须区分「快照时点较旧导致的陈旧差」与「快照损坏/不完整」，不得混判；产物写入 findings_snapshots.md 并回报路径。\n\n## 严重度口径（三子卡共用，必须照用）\n- P0＝数据不可读/不可还原，按现状必然丢数据\n- P1＝关键留痕缺失，导致无法复盘或审计\n- P2＝局部缺块或字段错标，影响可信度但有替代路径\n- P3＝规范/一致性问题\n\n## 产物\n写入 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_snapshots.md，并在本卡现状块给出路径。\n\n## 避坑提示（主卡勘探时踩过，仅供避坑；不得直接当作结论引用）\n- 「快照 vs live 计数不一致」有多种成因，最常见是 daily 快照时点较旧（陈旧差），**不等于快照损坏**。判损坏必须做隔离测试：在 scratch 里只放该快照的 cards.db 单独打开，看 integrity_check 是否 ok、表是否齐全。\n- live 侧 11 个 work 的 cards.db 仅 4096 B、数据驻留 cards.db-wal；而快照里的 cards.db 是 160–348 KB 的已 checkpoint 库。两者尺寸差异是正常的，不是快照缺陷。\n- 比对「同 live」时必须带 wal 读 live（或原地读），否则会误判快照「无损」。\n",
+            "goal": "任务书：快照与恢复路径巡检\n\n使命：核验 941 个快照是否在位、完整、可独立还原，并实测恢复路径是否真能还原到可用状态。\n\n范围：只读 snapshots/ 与 .snapshot_fingerprints.json；还原实测须在沙箱内新建独立 scratch 目录进行，不得写回 works/ 与 snapshots/；严禁读写 5700。沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox。\n\n验收判据：\n1. 统计每个 work 的快照数、缺口（缺 cards.db/work.json/canvas.json）、零字节文件；\n2. 至少抽 6 个 work（须覆盖「有 cards.db-wal」与「无 wal」两类）做「仅拷快照 cards.db 单独打开」的还原实测，给出 integrity_check 结果与 卡数/历史数/影子数 同 live 的比对；\n3. 明确回答「能否据此还原」并附证据；若不能，指出缺口具体在哪一层；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 须区分「快照时点较旧导致的陈旧差」与「快照损坏/不完整」，不得混判；产物写入 findings_snapshots.md 并回报路径。\n\n严重度口径（三子卡共用）：P0＝数据不可读/不可还原，按现状必然丢数据；P1＝关键留痕缺失，导致无法复盘或审计；P2＝局部缺块或字段错标，影响可信度但有替代路径；P3＝规范/一致性问题。\n\n产物：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_snapshots.md，并在本卡现状块给出路径。\n\n避坑（主卡踩过，仅供避坑不作结论）：快照与 live 计数不一致常见成因是 daily 快照时点较旧（陈旧差），不等于损坏，判损坏须做 scratch 隔离打开测试；live 侧有 11 个 work 的 cards.db 仅 4096 B、数据在 cards.db-wal，与快照里 160–348 KB 的已 checkpoint 库尺寸差异属正常。"
+          },
+          "ts": "2026-10-20T16:44:02.751+08:00",
+          "seq": 9490,
+          "score": {
+            "chars": 2041,
+            "step_markers": 10,
+            "howto_hits": 0,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        },
+        {
+          "tool": "create_card",
+          "args": {
+            "title": "运行日志留痕质量巡检",
+            "content": "## 使命\n核验 logs/ 下 89 份 prompt json 与 prompt_perm_audit.jsonl 的可读性与复盘能力，判定能否据此复盘一次具体运行。\n\n## 范围\n只读 logs/；不得修改或补写日志；不得联网；严禁读写 5700。\n沙箱根：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\n\n## 验收判据\n1. 90 份文件全覆盖，给出解析成功率、字段完整性、时间戳合法性；\n2. 明确回答「能否复盘一次运行」，并指出缺失的关联键（如 work_id/run_id）与配对键问题的具体证据；\n3. 统计失败留痕：空 response 数、其中未记录 error 的静默失败数；型号错标逐条列出（requested vs used）；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 产物写入 findings_logs.md 并回报路径。\n\n## 严重度口径（三子卡共用，必须照用）\n- P0＝数据不可读/不可还原，按现状必然丢数据\n- P1＝关键留痕缺失，导致无法复盘或审计\n- P2＝局部缺块或字段错标，影响可信度但有替代路径\n- P3＝规范/一致性问题\n\n## 产物\n写入 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_logs.md，并在本卡现状块给出路径。\n\n## 避坑提示（主卡勘探时踩过，仅供避坑；不得直接当作结论引用）\n- 判「型号错标」要区分两种：requested 是别名而 used 是解析后的规范名（可能属正常映射），与 requested 与 used 指向**不同厂商/不同模型**（真错标）。逐条列出时请把两类分开，别一律算错标。\n- `pair_id` 每条都非空不等于配对成立：要看每个 pair_id 是否只出现一次（只出现一次＝无法配对）。\n- 空 response 是否算「静默失败」取决于是否同时记录 error，要分别计数。\n",
+            "goal": "任务书：运行日志留痕质量巡检\n\n使命：核验 logs/ 下 89 份 prompt json 与 prompt_perm_audit.jsonl 的可读性与复盘能力，判定能否据此复盘一次具体运行。\n\n范围：只读 logs/；不得修改或补写日志；不得联网；严禁读写 5700。沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox。\n\n验收判据：\n1. 90 份文件全覆盖，给出解析成功率、字段完整性、时间戳合法性；\n2. 明确回答「能否复盘一次运行」，并指出缺失的关联键（如 work_id/run_id）与配对键问题的具体证据；\n3. 统计失败留痕：空 response 数、其中未记录 error 的静默失败数；型号错标逐条列出（requested vs used）；\n4. 每条缺陷含严重度（P0–P3）与修复建议；单列通过项；\n5. 产物写入 findings_logs.md 并回报路径。\n\n严重度口径（三子卡共用）：P0＝数据不可读/不可还原，按现状必然丢数据；P1＝关键留痕缺失，导致无法复盘或审计；P2＝局部缺块或字段错标，影响可信度但有替代路径；P3＝规范/一致性问题。\n\n产物：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\findings_logs.md，并在本卡现状块给出路径。\n\n避坑（主卡踩过，仅供避坑不作结论）：型号 requested 与 used 不一致要分两类——别名/规范名映射可能正常，跨厂商跨模型才是真错标；pair_id 非空不等于配对成立，须看每个值是否只出现一次；空 response 是否属静默失败取决于是否同时记录 error，要分别计数。"
+          },
+          "ts": "2026-10-20T16:44:03.112+08:00",
+          "seq": 9492,
+          "score": {
+            "chars": 1657,
+            "step_markers": 10,
+            "howto_hits": 0,
+            "mission_hits": 2,
+            "has_acceptance": true,
+            "cls": "subagent_like"
+          }
+        }
+      ],
+      "root_final_status": "## 一、勘探结论（已核实，均可复现）\n\n环境布局（沙箱根 D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox）：\n- works/ ＝ work_001…work_022 共 22 个 work ＋ works/_ops/session_ops.jsonl（2877 行）\n- snapshots/ ＝ 22 个 work 目录 ＋ snapshots/_ops，快照目录合计 941 个\n- logs/ ＝ 89 份 prompt_card_*.json ＋ prompt_perm_audit.jsonl（1380 行）\n- 另有 experiments/、trading-workspace/、_start5713.bat、.snapshot_fingerprints.json\n\n通过的项（正面结论，已实测）：\n- 22/22 个 cards.db `PRAGMA integrity_check` = ok；表结构统一（cards/card_history/shadows/meta/inbox/trash 及 role_* 扩展）\n- 全部 events/*.jsonl 逐行 JSON 解析 0 失败、无截断、无编码错误；memory/*.json 全部可解析；sessions/*.md 全部可读\n- _ops/revisions.jsonl 合计 58 行、0 解析失败；未发现断链的 session_ref，未发现 reply_to 悬空的 inbox 记录\n- 快照独立还原抽测 4/4 通过：单拷快照内 cards.db 即可打开，integrity ok 且卡数/历史数/影子数自洽\n- 89 份 prompt json 全部可解析，13 个字段（含 system_prompt/prior_messages/user_prompt/response/tool_events）无缺项，时间戳格式全部合法\n\n发现的缺陷（已定位到具体文件/目录）：\n- work_009：events/、memory/、_ops/ 三个目录整体缺失，而 DB 内实有 4 张卡 → 该 work 无任何事件流与记忆留痕\n- work_022：memory/ 目录缺失（1 张卡无记忆文件）\n- work_008 / work_014 / work_015：仅 1 张卡有 events+memory，其余 3–4 张卡均无\n- work_010 / 011 / 013 / 016：card_001 与 card_004 无事件文件、无记忆文件\n- work_001–005 / 012：根卡 card_001 无事件/记忆文件（而 work_006/017–021 根卡有 → 疑为 variant 差异，不宜直接判损坏）\n- 11 个 work（007、013–022）live `cards.db` 仅 4096 B，schema 与数据全部驻留 `cards.db-wal`（最大 3.19 MB）；已实测：只拷 cards.db（不带 wal）后打开报 `no such table: cards` → 文件级整目录备份会得到空库\n- snapshots 内含 741 份 cards.db、0 份 wal（快照库已 checkpoint，故可独立还原；与上一条不矛盾，已分别实测）\n- snapshots/_ops 200 条快照中，部分缺目标 work 的 cards.db/work.json\n- logs 无 work_id / run_id 字段 → 无法把日志绑定到具体 work，无法复盘「某一次运行」\n- pair_id 89/89 全部唯一（每值仅 1 条）→ 不构成请求/响应或轮次配对键\n- 21 条空 response，其中仅 3 条记录了 error → 18 条静默失败（无 error 留痕）\n- 型号错标：24 条 requested=minimax-m31-flash-preview 而 model_used=deepseek-v4.1-flash-1017；3 条 model_used=None\n- logs 覆盖卡片仅 card_001–card_006\n\n勘误留痕：我最初用 `select id from cards` 做交叉核对，报出 22 个 work「事件文件对应卡不在 DB」，经查 schema 实际主键为 `card_id` —— 该批告警是我脚本的错误，**已作废、不进入结论**。同理，「快照还原丢 43 条历史」经隔离测试判定其实是 daily 快照时点较旧造成的陈旧，非损坏。\n\n## 二、严重度统一口径（三子卡共用，D01 定格）\n- P0＝数据不可读/不可还原，按现状必然丢数据\n- P1＝关键留痕缺失，导致无法复盘或审计\n- P2＝局部缺块或字段错标，影响可信度但有替代路径\n- P3＝规范/一致性问题\n\n## 三、拆分与执行状态\n用户 2026-10-20 批复「方案收到，按此执行」，已按批准原文建三张子卡（任务书一字未改，已落各卡使命/现状块，并由各卡 goal 自动开跑）：\n\n| 卡号 | 标题 | 使命 | 产物 |\n|---|---|---|---|\n| card_002 | works 卡片数据完整性巡检 | 逐 work 核验卡数据、事件流、会话留痕的可读性与自洽性并产出缺陷清单 | findings_works.md |\n| card_003 | 快照与恢复路径巡检 | 核验 941 个快照的在位与完整性，并实测恢复路径能否真还原出可用库 | findings_snapshots.md |\n| card_004 | 运行日志留痕质量巡检 | 核验 90 份日志的可读性与复盘能力，判定能否据此复盘一次运行 | findings_logs.md |\n\n## 四、交付物路径\n- 三份子卡产出目录：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\\n- 总报告（本卡合并定稿）：D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\health_inspection_20261020\\INSPECTION_REPORT.md\n\n## 五、当前状态\n三张子卡已建成并在跑，均未完工、未产出 findings 文件；总报告尚未动笔。本卡在等三卡完工回报后统一验收、复验关键结论、合并定稿。\n",
+      "root_goal_state": "active",
+      "summary": {
+        "n": 3,
+        "mission_like": 0,
+        "subagent_like": 3,
+        "mixed": 0,
+        "with_acceptance": 3,
+        "avg_step_markers": 5.0,
+        "avg_howto_hits": 0.0
+      },
+      "verdict": "collected"
+    }
+  ],
+  "instance": {
+    "instance": "test-instance",
+    "pid": 26324,
+    "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+    "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox",
+    "sandbox_enabled": true
+  },
+  "compare": {},
+  "finished_at": "2026-10-20T16:45:33",
+  "verdict": "done"
+}

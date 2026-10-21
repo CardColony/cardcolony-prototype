@@ -182,8 +182,8 @@ async def draft(
             request["system_prompt"], request["user_prompt"],
             prior_messages=request["prior_messages"] or None,
             # [模型设置按项目/卡片覆盖 2026-10-19] 起草按当前 work/card 作用域选模型
-            model_name=model_config.resolve("draft", work_id=work_id, card_id=card_id)
-            or model_config.default_model(work_id=work_id, card_id=card_id),
+            # [模型选择底座 2026-10-21] 一条链（pick_one），不再 resolve-or-default 两段拼
+            model_name=model_config.pick_one("draft", work_id=work_id, card_id=card_id),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("draft 模型调用失败 work=%s card=%s: %s", work_id, card_id, exc)

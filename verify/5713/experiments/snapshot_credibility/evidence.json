@@ -1,0 +1,691 @@
+{
+  "run_at": "2026-10-20T18:31:53",
+  "wt": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+  "exp_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility",
+  "phases": {
+    "P0_setup": {
+      "material": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\works\\work_007",
+      "files": [
+        "_ops/revisions.jsonl",
+        "canvas.json",
+        "cards.db",
+        "events/card_001.jsonl",
+        "memory/card_001.json",
+        "model_override.json",
+        "sessions/session_001.md",
+        "work.json"
+      ],
+      "db_state": {
+        "exists": true,
+        "size": 172032,
+        "integrity": "ok",
+        "journal_mode": "wal",
+        "rowcounts": {
+          "card_history": 5,
+          "cards": 1,
+          "inbox": 0,
+          "meta": 3,
+          "role_alarms": 0,
+          "role_charter_history": 0,
+          "role_directives": 0,
+          "role_profiles": 0,
+          "role_sync": 0,
+          "role_verdicts": 0,
+          "shadows": 1,
+          "sqlite_sequence": 0,
+          "trash": 0
+        },
+        "cards": [
+          [
+            "card_001",
+            "拆分实验-ask-1020-150540"
+          ]
+        ],
+        "cards_sha": "b222a9b2c95323796337470613d7d7f27e7e8f6600b216d9fa2a6cc990d2f2ef"
+      },
+      "snapshot_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots",
+      "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\base"
+    },
+    "P1_snapshot": {
+      "result": {
+        "ok": true,
+        "work_id": "work_007",
+        "files": 8,
+        "dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\20261020_183153_593370",
+        "daily": true,
+        "skipped": false,
+        "reason": "P1 baseline",
+        "failed": []
+      },
+      "elapsed_ms": 73.7,
+      "batches": [
+        "20261020_183153_593370",
+        "daily_20261020"
+      ],
+      "stamp": "20261020_183153_593370",
+      "batch_files": [
+        "works/work_007/_ops/revisions.jsonl",
+        "works/work_007/canvas.json",
+        "works/work_007/cards.db",
+        "works/work_007/events/card_001.jsonl",
+        "works/work_007/memory/card_001.json",
+        "works/work_007/model_override.json",
+        "works/work_007/sessions/session_001.md",
+        "works/work_007/work.json"
+      ],
+      "pre_delete_tree_sha_files": 7,
+      "pre_delete_db": {
+        "exists": true,
+        "size": 172032,
+        "integrity": "ok",
+        "journal_mode": "wal",
+        "rowcounts": {
+          "card_history": 5,
+          "cards": 1,
+          "inbox": 0,
+          "meta": 3,
+          "role_alarms": 0,
+          "role_charter_history": 0,
+          "role_directives": 0,
+          "role_profiles": 0,
+          "role_sync": 0,
+          "role_verdicts": 0,
+          "shadows": 1,
+          "sqlite_sequence": 0,
+          "trash": 0
+        },
+        "cards": [
+          [
+            "card_001",
+            "拆分实验-ask-1020-150540"
+          ]
+        ],
+        "cards_sha": "b222a9b2c95323796337470613d7d7f27e7e8f6600b216d9fa2a6cc990d2f2ef"
+      }
+    },
+    "P2_delete_restore": {
+      "dir_deleted": true,
+      "restore_return": {
+        "ok": true,
+        "files": 8,
+        "overwritten": 0,
+        "backup": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\pre_restore_backups\\pre_restore_20261020_183153",
+        "from": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\work_007\\20261020_183153_593370"
+      },
+      "files_expected_non_db": 7,
+      "files_same": 7,
+      "files_diff": [],
+      "files_missing": [],
+      "files_extra": [],
+      "pre_db": {
+        "exists": true,
+        "size": 172032,
+        "integrity": "ok",
+        "journal_mode": "wal",
+        "rowcounts": {
+          "card_history": 5,
+          "cards": 1,
+          "inbox": 0,
+          "meta": 3,
+          "role_alarms": 0,
+          "role_charter_history": 0,
+          "role_directives": 0,
+          "role_profiles": 0,
+          "role_sync": 0,
+          "role_verdicts": 0,
+          "shadows": 1,
+          "sqlite_sequence": 0,
+          "trash": 0
+        },
+        "cards": [
+          [
+            "card_001",
+            "拆分实验-ask-1020-150540"
+          ]
+        ],
+        "cards_sha": "b222a9b2c95323796337470613d7d7f27e7e8f6600b216d9fa2a6cc990d2f2ef"
+      },
+      "post_db": {
+        "exists": true,
+        "size": 167936,
+        "integrity": "ok",
+        "journal_mode": "delete",
+        "rowcounts": {
+          "card_history": 5,
+          "cards": 1,
+          "inbox": 0,
+          "meta": 3,
+          "role_alarms": 0,
+          "role_charter_history": 0,
+          "role_directives": 0,
+          "role_profiles": 0,
+          "role_sync": 0,
+          "role_verdicts": 0,
+          "shadows": 1,
+          "sqlite_sequence": 0,
+          "trash": 0
+        },
+        "cards": [
+          [
+            "card_001",
+            "拆分实验-ask-1020-150540"
+          ]
+        ],
+        "cards_sha": "b222a9b2c95323796337470613d7d7f27e7e8f6600b216d9fa2a6cc990d2f2ef"
+      },
+      "db_logical_equal": true,
+      "integrity_after": "ok",
+      "wal_shm_after": []
+    },
+    "P3_single_file_restore": {
+      "pre_hash": "7f15748d50b8c33935ed6de838fae4ae55584039f1d2718440f25382728230ad",
+      "corrupted_hash": "0020d5bd9de3f16b9185a514e54c0b816641aa5f9b4b92983e7969c5402b561e",
+      "after_hash": "7f15748d50b8c33935ed6de838fae4ae55584039f1d2718440f25382728230ad",
+      "corrupted_differs_from_pre": true,
+      "restore_return": {
+        "ok": true,
+        "from": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\work_007\\20261020_183153_593370\\works\\work_007\\sessions\\session_001.md",
+        "to": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\base\\works\\work_007\\sessions\\session_001.md",
+        "size": 33554
+      },
+      "restored_exact": true
+    },
+    "P4_no_delete_semantics": {
+      "restore_return": {
+        "ok": true,
+        "files": 8,
+        "overwritten": 8,
+        "backup": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\pre_restore_backups\\pre_restore_20261020_183153",
+        "from": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\work_007\\20261020_183153_593370"
+      },
+      "post_snapshot_new_file_still_present": true,
+      "modified_file_reverted": true
+    },
+    "P5_coverage_gap": {
+      "snapshot_result": {
+        "ok": true,
+        "work_id": "work_007",
+        "files": 9,
+        "dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\20261020_183153_757159",
+        "daily": false,
+        "skipped": false,
+        "reason": "P5 coverage",
+        "failed": []
+      },
+      "batch_files_after": [
+        "works/work_007/_ops/revisions.jsonl",
+        "works/work_007/canvas.json",
+        "works/work_007/cards.db",
+        "works/work_007/cards/card_999.md",
+        "works/work_007/events/card_001.jsonl",
+        "works/work_007/memory/card_001.json",
+        "works/work_007/model_override.json",
+        "works/work_007/sessions/session_001.md",
+        "works/work_007/work.json"
+      ],
+      "trading_workspace_in_batch": false,
+      "file_recoverable": false,
+      "restore_return": {
+        "ok": false,
+        "error": "快照不存在: D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\work_007\\20261020_183153_757159\\trading-workspace\\notes\\user_note.md"
+      },
+      "protected_dirs": [
+        "works"
+      ]
+    },
+    "P6_fingerprint_blind": {
+      "flip_offset": 15,
+      "size_before": 33554,
+      "size_after": 33554,
+      "mtime_forced_equal": true,
+      "snapshot_result": {
+        "ok": true,
+        "work_id": "work_007",
+        "files": 0,
+        "dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\20261020_183153_810157",
+        "daily": false,
+        "skipped": true,
+        "reason": "P6 fingerprint",
+        "failed": []
+      },
+      "batches_before": 2,
+      "batches_after": 2,
+      "new_batch_created": false,
+      "after_delete_restore_equals_v1": true,
+      "after_delete_restore_equals_v2": false
+    },
+    "P7_daily_backup": {
+      "snapshot_result": {
+        "ok": true,
+        "work_id": "work_007",
+        "files": 9,
+        "dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\20261020_183153_821158",
+        "daily": false,
+        "skipped": false,
+        "reason": "P7 daily",
+        "failed": []
+      },
+      "daily_batches": [
+        "daily_20261020"
+      ],
+      "latest_batch": "20261020_183153_821158",
+      "daily_newest_file_equals_live": false,
+      "latest_batch_equals_live": true,
+      "daily_equals_latest_batch": false,
+      "daily_file_age_seconds": 12036.3
+    },
+    "P8_live_connection": {
+      "s1_batch": "20261020_183153_821158",
+      "s2_batch": "20261020_183153_877983",
+      "s2_batch_cards_at_snapshot_time": [
+        [
+          "card_001",
+          "拆分实验-ask-1020-150540"
+        ],
+        [
+          "card_777",
+          "P8 追加卡"
+        ]
+      ],
+      "live_conn_count_before_restore": 2,
+      "restore_return": {
+        "ok": true,
+        "from": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\snapshots\\work_007\\20261020_183153_821158\\works\\work_007\\cards.db",
+        "to": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\experiments\\snapshot_credibility\\base\\works\\work_007\\cards.db",
+        "size": 167936
+      },
+      "disk_state_after_restore_cards": [
+        [
+          "card_001",
+          "拆分实验-ask-1020-150540"
+        ]
+      ],
+      "disk_journal_mode_after_restore": "delete",
+      "live_conn_count_after_restore": 1,
+      "live_read_err": null,
+      "live_write_err": null,
+      "final_state": {
+        "exists": true,
+        "size": 172032,
+        "integrity": "ok",
+        "journal_mode": "delete",
+        "rowcounts": {
+          "card_history": 5,
+          "cards": 1,
+          "inbox": 0,
+          "meta": 3,
+          "role_alarms": 0,
+          "role_charter_history": 0,
+          "role_directives": 0,
+          "role_profiles": 0,
+          "role_sync": 0,
+          "role_verdicts": 0,
+          "shadows": 1,
+          "sqlite_sequence": 0,
+          "trash": 0
+        },
+        "cards": [
+          [
+            "card_001",
+            "拆分实验-ask-1020-150540 [活连接写入]"
+          ]
+        ],
+        "cards_sha": "e498fcb12a58d03fef2695e57cc89818553de678d986d4b6be4d2e837b4db278"
+      },
+      "wal_shm_after": []
+    },
+    "P9_shipped_cli": {
+      "cmd": "python restore_from_snapshot.py --list  (cwd=.worktrees/5713)",
+      "returncode": 0,
+      "stdout": "快照根: D:\\AI_station\\推演agent\\.worktrees\\推演agent_data_snapshots\n  （无批次）",
+      "stderr": "",
+      "computed_root": "D:\\AI_station\\推演agent\\.worktrees\\agent_data_snapshots",
+      "computed_root_exists": false
+    },
+    "P10_read_after_restore": {
+      "cards_via_product_path": [
+        [
+          "card_001",
+          "拆分实验-ask-1020-150540 [活连接写入]"
+        ]
+      ],
+      "error": null,
+      "journal_mode_after_product_connect": "delete",
+      "wal_shm_now": []
+    },
+    "P11_coverage_measure": {
+      "instance_data_roots": {
+        "works": {
+          "files": 458,
+          "bytes": 88169246
+        },
+        "trading-workspace": {
+          "files": 540,
+          "bytes": 91127793
+        },
+        "logs": {
+          "files": 138,
+          "bytes": 27171125
+        },
+        "推演agent": {
+          "files": 103,
+          "bytes": 1416046
+        }
+      },
+      "snapshot_root_size": {
+        "files": 13827,
+        "bytes": 2086655621
+      },
+      "protected_roots_in_code": [
+        "works"
+      ]
+    },
+    "P12_snapshot_audit": {
+      "works_total": 30,
+      "works_without_batch": [],
+      "works_without_daily": [],
+      "detail": [
+        {
+          "work": "_ops",
+          "live_files": 1,
+          "live_newest": "2026-10-20 18:31:42",
+          "snapshot_batches": 199,
+          "daily_batches": 1,
+          "latest_batch": "20261020_183119_832076",
+          "latest_batch_files": 1,
+          "lag_minutes_live_vs_batch": 0.4
+        },
+        {
+          "work": "work_001",
+          "live_files": 12,
+          "live_newest": "2026-10-20 13:13:41",
+          "snapshot_batches": 38,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 12,
+          "lag_minutes_live_vs_batch": -220.4
+        },
+        {
+          "work": "work_002",
+          "live_files": 12,
+          "live_newest": "2026-10-20 14:44:34",
+          "snapshot_batches": 32,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 12,
+          "lag_minutes_live_vs_batch": -129.5
+        },
+        {
+          "work": "work_003",
+          "live_files": 12,
+          "live_newest": "2026-10-20 15:05:40",
+          "snapshot_batches": 31,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 12,
+          "lag_minutes_live_vs_batch": -108.4
+        },
+        {
+          "work": "work_004",
+          "live_files": 12,
+          "live_newest": "2026-10-20 15:05:40",
+          "snapshot_batches": 30,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 12,
+          "lag_minutes_live_vs_batch": -108.4
+        },
+        {
+          "work": "work_005",
+          "live_files": 12,
+          "live_newest": "2026-10-20 15:01:45",
+          "snapshot_batches": 34,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 12,
+          "lag_minutes_live_vs_batch": -112.4
+        },
+        {
+          "work": "work_006",
+          "live_files": 17,
+          "live_newest": "2026-10-20 15:56:06",
+          "snapshot_batches": 28,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 17,
+          "lag_minutes_live_vs_batch": -58.0
+        },
+        {
+          "work": "work_007",
+          "live_files": 8,
+          "live_newest": "2026-10-20 18:27:18",
+          "snapshot_batches": 12,
+          "daily_batches": 1,
+          "latest_batch": "20261020_182803_409410",
+          "latest_batch_files": 8,
+          "lag_minutes_live_vs_batch": -0.7
+        },
+        {
+          "work": "work_008",
+          "live_files": 12,
+          "live_newest": "2026-10-20 15:56:06",
+          "snapshot_batches": 29,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 12,
+          "lag_minutes_live_vs_batch": -58.0
+        },
+        {
+          "work": "work_009",
+          "live_files": 8,
+          "live_newest": "2026-10-20 15:56:06",
+          "snapshot_batches": 21,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 8,
+          "lag_minutes_live_vs_batch": -58.0
+        },
+        {
+          "work": "work_010",
+          "live_files": 19,
+          "live_newest": "2026-10-20 15:56:06",
+          "snapshot_batches": 60,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 19,
+          "lag_minutes_live_vs_batch": -58.0
+        },
+        {
+          "work": "work_011",
+          "live_files": 18,
+          "live_newest": "2026-10-20 15:52:13",
+          "snapshot_batches": 50,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 18,
+          "lag_minutes_live_vs_batch": -61.9
+        },
+        {
+          "work": "work_012",
+          "live_files": 12,
+          "live_newest": "2026-10-20 15:56:06",
+          "snapshot_batches": 31,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165407_409729",
+          "latest_batch_files": 12,
+          "lag_minutes_live_vs_batch": -58.0
+        },
+        {
+          "work": "work_013",
+          "live_files": 21,
+          "live_newest": "2026-10-20 16:49:40",
+          "snapshot_batches": 194,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165031_393640",
+          "latest_batch_files": 19,
+          "lag_minutes_live_vs_batch": -0.8
+        },
+        {
+          "work": "work_014",
+          "live_files": 13,
+          "live_newest": "2026-10-20 15:56:19",
+          "snapshot_batches": 10,
+          "daily_batches": 1,
+          "latest_batch": "20261020_155619_277593",
+          "latest_batch_files": 11,
+          "lag_minutes_live_vs_batch": 0.0
+        },
+        {
+          "work": "work_015",
+          "live_files": 13,
+          "live_newest": "2026-10-20 15:59:46",
+          "snapshot_batches": 7,
+          "daily_batches": 1,
+          "latest_batch": "20261020_155946_975449",
+          "latest_batch_files": 11,
+          "lag_minutes_live_vs_batch": 0.0
+        },
+        {
+          "work": "work_016",
+          "live_files": 20,
+          "live_newest": "2026-10-20 16:36:28",
+          "snapshot_batches": 102,
+          "daily_batches": 1,
+          "latest_batch": "20261020_163640_080666",
+          "latest_batch_files": 18,
+          "lag_minutes_live_vs_batch": -0.2
+        },
+        {
+          "work": "work_017",
+          "live_files": 19,
+          "live_newest": "2026-10-20 16:16:17",
+          "snapshot_batches": 17,
+          "daily_batches": 1,
+          "latest_batch": "20261020_161641_900410",
+          "latest_batch_files": 17,
+          "lag_minutes_live_vs_batch": -0.4
+        },
+        {
+          "work": "work_018",
+          "live_files": 19,
+          "live_newest": "2026-10-20 16:20:32",
+          "snapshot_batches": 23,
+          "daily_batches": 1,
+          "latest_batch": "20261020_162134_508396",
+          "latest_batch_files": 17,
+          "lag_minutes_live_vs_batch": -1.0
+        },
+        {
+          "work": "work_019",
+          "live_files": 22,
+          "live_newest": "2026-10-20 16:29:04",
+          "snapshot_batches": 31,
+          "daily_batches": 1,
+          "latest_batch": "20261020_162932_106366",
+          "latest_batch_files": 20,
+          "lag_minutes_live_vs_batch": -0.5
+        },
+        {
+          "work": "work_020",
+          "live_files": 19,
+          "live_newest": "2026-10-20 16:34:24",
+          "snapshot_batches": 23,
+          "daily_batches": 1,
+          "latest_batch": "20261020_163454_400542",
+          "latest_batch_files": 17,
+          "lag_minutes_live_vs_batch": -0.5
+        },
+        {
+          "work": "work_021",
+          "live_files": 19,
+          "live_newest": "2026-10-20 16:38:13",
+          "snapshot_batches": 15,
+          "daily_batches": 1,
+          "latest_batch": "20261020_163847_122447",
+          "latest_batch_files": 17,
+          "lag_minutes_live_vs_batch": -0.6
+        },
+        {
+          "work": "work_022",
+          "live_files": 19,
+          "live_newest": "2026-10-20 16:45:58",
+          "snapshot_batches": 13,
+          "daily_batches": 1,
+          "latest_batch": "20261020_164631_619001",
+          "latest_batch_files": 17,
+          "lag_minutes_live_vs_batch": -0.5
+        },
+        {
+          "work": "work_023",
+          "live_files": 19,
+          "live_newest": "2026-10-20 16:52:48",
+          "snapshot_batches": 18,
+          "daily_batches": 1,
+          "latest_batch": "20261020_165248_072810",
+          "latest_batch_files": 17,
+          "lag_minutes_live_vs_batch": 0.0
+        },
+        {
+          "work": "work_024",
+          "live_files": 17,
+          "live_newest": "2026-10-20 17:27:49",
+          "snapshot_batches": 16,
+          "daily_batches": 1,
+          "latest_batch": "20261020_172750_245207",
+          "latest_batch_files": 17,
+          "lag_minutes_live_vs_batch": -0.0
+        },
+        {
+          "work": "work_025",
+          "live_files": 12,
+          "live_newest": "2026-10-20 17:41:59",
+          "snapshot_batches": 7,
+          "daily_batches": 1,
+          "latest_batch": "20261020_174159_759478",
+          "latest_batch_files": 10,
+          "lag_minutes_live_vs_batch": 0.0
+        },
+        {
+          "work": "work_026",
+          "live_files": 14,
+          "live_newest": "2026-10-20 18:07:15",
+          "snapshot_batches": 8,
+          "daily_batches": 1,
+          "latest_batch": "20261020_181452_768667",
+          "latest_batch_files": 12,
+          "lag_minutes_live_vs_batch": -7.6
+        },
+        {
+          "work": "work_027",
+          "live_files": 21,
+          "live_newest": "2026-10-20 18:31:42",
+          "snapshot_batches": 59,
+          "daily_batches": 1,
+          "latest_batch": "20261020_183119_832076",
+          "latest_batch_files": 19,
+          "lag_minutes_live_vs_batch": 0.4
+        },
+        {
+          "work": "work_028",
+          "live_files": 15,
+          "live_newest": "2026-10-20 18:19:35",
+          "snapshot_batches": 16,
+          "daily_batches": 1,
+          "latest_batch": "20261020_181935_267264",
+          "latest_batch_files": 13,
+          "lag_minutes_live_vs_batch": 0.0
+        },
+        {
+          "work": "work_029",
+          "live_files": 21,
+          "live_newest": "2026-10-20 18:29:36",
+          "snapshot_batches": 38,
+          "daily_batches": 1,
+          "latest_batch": "20261020_182936_971584",
+          "latest_batch_files": 19,
+          "lag_minutes_live_vs_batch": 0.0
+        }
+      ]
+    }
+  }
+}

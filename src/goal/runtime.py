@@ -11,6 +11,7 @@ GOAL_CHANGE_VERSION: Final[int] = 1
 GOAL_CHANGE_EVENT: Final[str] = "goal/change"
 
 #: 续轮消息在会话日志里的事件类型（原版 ``user/message``）。
+GOAL_ROUND_EVENT = "goal_round"
 USER_MESSAGE_EVENT: Final[str] = "user_message"
 
 #: 部署缺省轮次上限（原版 ``defaultMaxGoalRounds: 256``）。

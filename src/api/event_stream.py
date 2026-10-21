@@ -115,6 +115,12 @@ EVENT_TYPES: tuple[str, ...] = (
     # 自述、抬头〔现状更新〕。单列一类——语义是「专用操作任务」，复用 judgment_protocol
     # 或 context_preamble 都会让前端把标签渲染错。
     "status_update_task",
+    # [运行态单一真相源 2026-10-21] 回合终止帧（本体论 28 → 29）：``_run_message``
+    # 的 finally 里无条件发一次，携带 outcome（ok / error / aborted）。它是**运行态**
+    # 的权威终止信号——done/error 是「内容层」收口（由 compose_delivery /
+    # handle_error 发，异常早于二者时就没有），turn_end 保证任何路径都有终点。
+    # 前端**不把它渲染成行**（stream.js applyLiveFrame 直接跳过），只用于收口。
+    "turn_end",
 ) + TOKEN_EVENT_TYPES
 
 # [对话流渲染 T4] 以下两个上限常量已删——都是「丢字/丢步骤闸」：
@@ -220,6 +226,53 @@ def _key(work_id: str, card_id: str) -> tuple[str, str]:
 # 一路管「现在正在发生什么」，一路管「过去发生了什么」——不互相替代。
 # 落盘字段：run_id＝回合锚 pair_id，round＝轮锚 turn，model 仅 reasoning 带。
 # 零阻断：落盘失败只记 warning，不影响 SSE 与主流程（展示层同族纪律）。
+# [reasoning 合并落盘 2026-10-20] 逐帧落盘会把一次思考拆成上千条事件：
+# 实测 card_005 17394 条事件里 16822 条是 reasoning（占 87% 字节 / 3.64MB），
+# 对话页回放时装配器逐条 rev++ 重渲染 ⇒ 页面卡死。改为**按轮累积、到轮界合并落一条**：
+# 实时 SSE 逐帧不变（前端仍逐字出），只是**落盘**合并。
+# [5715 · 修] 缓冲**必须按 (model, run, round) 分桶**：
+#   ① **model 维度**：三席的思考是**并发交织**的（每个席位一个 model）⇒ 只按卡分桶
+#      会把甲席与乙席的思考**混成一条**落盘 ⇒ 前端按 model 分桶时只看到一条
+#      ⇒ 席位并排显示串桶。
+#   ② **run/round 维度**：同一席位在同一张卡的**不同轮**（或不同 run）也是不同的
+#      思考段 ⇒ 混成一条会让「这一轮想了什么」失真。
+#   （原提交自己写的意图就是「按 (card, run_id, round, model) 累积」，实现漏了后三维。）
+_reason_buf: dict[tuple[str, str], dict[tuple[str, str, int], dict[str, Any]]] = {}
+
+
+def flush_pending_reasoning(work_id: str, card_id: str) -> None:
+    """把缓冲里的思考落盘（回合收口/异常时调用）——**不丢字**。
+
+    思考是「到轮界才合并落一条」的；万一某一轮没走到任何轮界事件（异常/中断），
+    缓冲里的思考会随回合一起丢掉 ⇒ 收口时无条件 flush 一次（空缓冲是 no-op）。
+    """
+    _flush_reasoning(work_id, card_id)
+
+
+def _flush_reasoning(work_id: str, card_id: str) -> None:
+    """把累积的 reasoning 文本**按 (model, run, round) 各自**合并成一条落盘。"""
+    key = _key(work_id, card_id)
+    by_bucket = _reason_buf.pop(key, None)
+    if not by_bucket:
+        return
+    for (model, run_id, round_), buf in by_bucket.items():
+        text = buf.get("text") or ""
+        if not text.strip():
+            continue
+        try:
+            from ..storage import event_log
+            event_log.append_bg(work_id, card_id, {
+                "run_id": run_id or buf.get("run_id") or "",
+                "round": int(round_ or 0),
+                "type": "reasoning",
+                "data": {"text": text},
+                "model": model or "",
+                "ts": buf.get("ts"),
+            })
+        except Exception as exc:  # noqa: BLE001 展示层零阻断
+            logger.warning("[flow] reasoning 合并落盘失败 card=%s: %s", card_id, exc)
+
+
 def _persist_log(work_id: str, card_id: str, ev_type: str,
                  data: Any, model: str = "", ts: Any = None) -> None:
     try:
@@ -405,6 +458,8 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
     try:
         key = _key(work_id, card_id)
         d = data or {}
+        # 轮界先落掉累积的思考文本（保证顺序：reasoning 在后续事件之前）
+        _flush_reasoning(work_id, card_id)
         if ev_type == "run_start":
             # [A5/T092] 清零退役：旧段保留；登记回合锚（pair_id）＋逐字流开新段
             _anchors[key] = {"pair_id": d.get("pair_id", ""), "turn": 0}
@@ -488,6 +543,88 @@ def subscriber_count(work_id: str, card_id: str) -> int:
     return len(_subscribers.get(_key(work_id, card_id), ()))
 
 
+# ============================================================================
+# [画布 5711] 工作级事件广播 —— 画布"实时更新"的地基
+# ============================================================================
+#
+# 病根（实测复现）：画布上卡片的**结论 / 待裁定数 / work_state / 运行态 / 最新对话**
+# 只有 renderAll（全量重建）才会更新；而 renderAll **只由用户自己的操作触发**
+# （建卡、删卡、重命名、拖动落定…）。后台真实发生的变化——模型写卡、裁定被记下、
+# 自动模式推进——**没有任何通道能通知画布**。⇒ 用户看到的画布永远停在"我上次点它时"
+# 的样子 ⇒ 必须手动刷新页面。
+#
+# 断点（逐条核实过，不是推测）：
+#   ① 既有 SSE 是**单卡**的：订阅表 key=(work, card)，没有工作级广播；
+#   ② canvas.js 订阅的是 card_id=WORK_ID（根卡）那一条流 ⇒ 别的卡的
+#      card_message 收不到；
+#   ③ /works/{w}/pulse 的 running/recent 不驱动卡面重绘（applyLiveStates 只写
+#      dataset.live 与一行消息条，conclusion/pending_count/work_state 一个都不碰）；
+#   ④ 结论/待裁定/work_state/runstate 都写在 createNode 里 ⇒ 只有重建节点才生效。
+#
+# 解法：新增**工作级**订阅（key=work_id）。写卡路径发一帧 `card_changed`
+# （带该卡的最新投影摘要），画布页订阅后**就地换掉那一张卡的节点**，
+# 不重建整棵树 ⇒ 毫秒级、零闪烁。
+#
+# 与主通道的隔离（沿用逐字流通道的既有纪律）：
+#   - 不进 _journals、不占主 seq（工作级有自己的 _work_seq）；
+#   - 不写 works 文件、不进 session/prior/模型输入；
+#   - 零阻塞、零抛出（展示层绝不影响主流程）。
+# ============================================================================
+
+_work_subscribers: dict[str, set[asyncio.Queue]] = {}
+_work_seq: dict[str, int] = {}
+
+
+def emit_work(work_id: str, ev_type: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """工作级事件广播。零阻塞零抛出。
+
+    帧格式与主通道一致（seq/ts/type/data），便于前端用同一套解析。
+    """
+    try:
+        if not work_id:
+            return {}
+        _work_seq[work_id] = _work_seq.get(work_id, 0) + 1
+        evt = {
+            "seq": _work_seq[work_id],
+            "ts": time.time(),
+            "type": ev_type,
+            "data": _jsonable(data or {}),
+        }
+        _fanout(_work_subscribers.get(work_id, ()), evt, work_id, "*", "工作级")
+        logger.info("[flow] work-event type=%s work=%s seq=%s data=%s",
+                    ev_type, work_id, evt["seq"],
+                    json.dumps(evt["data"], ensure_ascii=False)[:300])
+        return evt
+    except Exception as exc:  # noqa: BLE001 展示层零阻断
+        logger.warning("[flow] emit_work 失败（不阻断主流程）type=%s work=%s: %s",
+                       ev_type, work_id, exc)
+        return {}
+
+
+async def subscribe_work(work_id: str) -> AsyncIterator[dict[str, Any]]:
+    """工作级 SSE 订阅：只推「连上之后新发生的事」（无存量重放）。
+
+    为什么不重放：工作级事件描述的是"变化"而不是"状态"，重放旧变化会让前端
+    以为卡刚变过。连上之后的每一次变化都会再触发一次前端刷新，重放是冗余的。
+    断连自动清理订阅者队列。
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _work_subscribers.setdefault(work_id, set()).add(queue)
+    try:
+        while True:
+            evt = await queue.get()
+            yield evt
+    finally:
+        try:
+            _work_subscribers.get(work_id, set()).discard(queue)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def work_subscriber_count(work_id: str) -> int:
+    return len(_work_subscribers.get(work_id, ()))
+
+
 def journal_last_seq(work_id: str, card_id: str) -> int:
     """主 journal 当前末帧 seq（无帧＝0）。
 
@@ -552,8 +689,22 @@ def emit_token(work_id: str, card_id: str, ev_type: str, text: str,
         # 三席带 model（extra.model＝席位模型名，前端据此分桶），主模型空串。
         # 正文增量（content_chunk）**不落盘**——最终 assistant_text 一条落盘（裁定 C7）。
         if ev_type == "reasoning_chunk":
-            _persist_log(work_id, card_id, "reasoning", {"text": text},
-                         model=str(data.get("model") or ""))
+            # 累积到缓冲，等轮界（emit 任意其它事件时）合并落一条
+            # [5715 · 修] 缓冲**按 (model, run, round) 分桶**（三席的思考并发交织
+            # ⇒ 不能混成一条；同一席的不同轮也是不同的思考段）。
+            _rk = _key(work_id, card_id)
+            _anchor = _anchors.get(_rk) or {}
+            _model = str(data.get("model") or "")
+            _run_id = str(_anchor.get("pair_id") or "")
+            _round = int(_anchor.get("turn") or 0)
+            _bk = (_model, _run_id, _round)
+            _by_bucket = _reason_buf.setdefault(_rk, {})
+            _b = _by_bucket.get(_bk)
+            if _b is None:
+                _b = {"text": "", "model": _model, "run_id": _run_id,
+                      "round": _round, "ts": evt.get("ts")}
+                _by_bucket[_bk] = _b
+            _b["text"] += text
         # [对话流渲染 T4] 已删 5000 条环形弹出（原 pop(0) 丢前字）
         # 逐字流每帧给 /progress 打一次心跳：仍在吐字的超长请求持续被判为
         # 「仍在推进」，刷新后仍能补出「进行中」（V-T4-1）。
