@@ -810,11 +810,19 @@ async def put_model_override(work_id: str, request: Request) -> JSONResponse:
     if errors:
         return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
     # [模型配置表 2026-10-21] 项目级改模型＝改表里每一行（人手改过的行不动）
+    # 返回 affected：这次真正改了几张卡——前端据此明确提示「本项目 N 张卡」，
+    # 避免用户以为只改了当前这张（他报的「切了一张卡结果全变了」正是这个歧义）。
+    def _models_now() -> dict:
+        return {cid: (v or {}).get("default_model")
+                for cid, v in model_override.table_summary(work_id)["cards"].items()}
+    before = _models_now()
     model_override.update_work(work_id, cleaned)
+    after = _models_now()
+    affected = sum(1 for cid in after if before.get(cid) != after[cid])
     view = model_override.table_summary(work_id)
     return JSONResponse({
         "ok": True, "work_id": work_id,
-        "work": view["work"], "cards": view["cards"],
+        "work": view["work"], "cards": view["cards"], "affected": affected,
     })
 
 

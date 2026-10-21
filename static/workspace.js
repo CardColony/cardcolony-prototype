@@ -278,6 +278,12 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       const card = await API.getCard(WORK_ID, cardId, { signal: ctrl.signal });
       if (stale()) return;
       currentCard = card;
+      /* [切卡跟手 2026-10-21] 模型徽标（顶栏那颗）原来绑的是**页面加载时**的卡号
+         （window.__CARD_ID__），切卡不刷新 ⇒ 在卡 A 切了 k3，切到卡 B 还显示 k3，
+         而且在卡 B 上再切会写进卡 A。这里把「当前卡变了」广播出去，徽标换行重读。 */
+      try {
+        window.dispatchEvent(new CustomEvent("ui:card-changed", { detail: { cardId } }));
+      } catch (e) { /* 零阻断 */ }
       // [角色机制 5710] 角色卡的主界面就是右栏台账（关注/判词/警报）；
       // 进角色页自动展开 Inspector，否则用户只看到聊天，看不到它在盯什么。
       if (card.meta && card.meta.card_type === "role") {
