@@ -638,12 +638,35 @@ async def restore_work_card(work_id: str, card_id: str):
     return result
 
 
+@router.delete("/works/{work_id}")
+async def delete_work_api(work_id: str):
+    """删项目：整个项目目录移到 works/_trash/（可恢复）。
+
+    [删项目 2026-10-21 · 用户令] 原来 work 层根本没有删除函数，根卡又不让删 ⇒
+    用户建错的项目永远删不掉。现在提供删除；确认只在前端做一个「是否删除」弹窗，
+    后端不再要求输入项目名（用户明确：删就删，别搞多余确认）。
+    """
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    result = work_store.delete_work(work_id)
+    if "error" in result:
+        return _err(500, result["error"])
+    return result
+
+
 @router.delete("/works/{work_id}/cards/{card_id}")
-async def delete_work_card(work_id: str, card_id: str):
+async def delete_work_card(work_id: str, card_id: str, cascade: bool = False):
+    """删卡。``?cascade=true`` ⇒ 连同整棵子树一起删（每张都进回收站，可逐个恢复）。
+
+    [级联删除 2026-10-21 · 用户令] 原来有子卡就 400 拒删，把复杂度推给用户
+    （手动一层层删）。删父卡的正确语义就是删掉它和它下面的一切。
+    项目根卡仍然拒删（它是项目入口，删了项目就空了）。
+    """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     try:
-        result = await card_store.delete_card(work_id, card_id)
+        result = await card_store.delete_card(work_id, card_id, cascade=cascade)
     except CardNotFoundError:
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
@@ -887,7 +910,8 @@ async def post_work_rule_commit(work_id: str, req: RuleCommitRequest):
 
 
 @router.get("/works/{work_id}/cards/{card_id}/timeline")
-async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
+async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from"),
+                            tail: int = Query(0), before: int = Query(0)):
     """[消息底座能力对齐 · 件4] 恢复唯一入口（C3/C4）：合并时序表。
 
     items＝消息块（user_message/assistant_text/msg_*）＋过程事件（tool_call/
@@ -906,12 +930,22 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
-    items = event_log.timeline(work_id, card_id, from_seq=frm)
+    items = event_log.timeline(work_id, card_id, from_seq=frm, tail=tail, before=before)
+    # [对话流分页 2026-10-20] has_earlier＝「这次是窗口请求，且拿满了窗口」
+    # ⇒ 更早还有。前端据此决定「往上翻」是否还有东西可拉。
+    # 全量请求（tail=0）恒 false：已经拿到全部。
+    try:
+        _tail_n = int(tail or 0)
+    except (TypeError, ValueError):
+        _tail_n = 0
+    has_earlier = bool(_tail_n) and len(items) >= _tail_n
     return {
         "work_id": work_id,
         "card_id": card_id,
         "items": items,
         "last_seq": items[-1]["seq"] if items else 0,
+        "first_seq": items[0]["seq"] if items else 0,
+        "has_earlier": has_earlier,
     }
 
 
@@ -919,9 +953,10 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
 # 查询参数给定，缺省转发 work_001（与既有 /api/cards/{id}/… 兼容层同口径）。
 @router.get("/card/{card_id}/timeline")
 async def get_card_timeline_compat(card_id: str, work_id: str = DEFAULT_WORK_ID,
-                                   frm: int = Query(0, alias="from")):
+                                   frm: int = Query(0, alias="from"),
+                                   tail: int = Query(0), before: int = Query(0)):
     # frm 显式传：直接调路由函数时 Query(...) 默认值是 Query 对象而非 0
-    return await get_card_timeline(work_id, card_id, frm)
+    return await get_card_timeline(work_id, card_id, frm, tail, before)
 
 
 @router.get("/works/{work_id}/cards/{card_id}/stream")
@@ -1091,22 +1126,76 @@ async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, ali
     )
 
 
+async def _revive_coder_card(work_id: str, card_id: str, content: str) -> None:
+    """完工的编程卡**重新派活**：卡复位 active ＋ 目标重新激活。
+
+    [coder 卡可继续派活 2026-10-21 · 用户令] 改前完工卡收到消息直接 400
+    「不再激活；新任务请新建编程卡」⇒ 同一件事的后续、同一处返工，只能另开
+    一张卡，上下文与留痕全断（用户原话：「明明是继续的任务，它也只能新开卡执行」）。
+    现在把「再发一条消息」当作**重新派活**：
+      · ``state: completed → active``（否则 report_done 判态、K3 调起都会拦）；
+      · 目标是 complete ⇒ 用这条消息开**新生命周期**（create 是唯一合法入口），
+        消息内容就是新目标——它本来就是「接下来要干什么」；
+      · paused/blocked ⇒ resume（清等待位与活锁计数）。
+    """
+    await card_store.update_card(
+        work_id, card_id, {"state": "active"}, "重新派活：完工编程卡复位为 active")
+    meta = card_store._meta_of(work_id, card_id) or {}
+    if not bool(meta.get("auto_mode")):
+        return
+    from ..goal.service import get_service
+    from ..goal.types import CreateGoalRequest
+
+    svc = get_service()
+    goal = await svc.get(work_id, card_id)
+    text = str(content or "").strip()
+    if goal is None:
+        if text:
+            await svc.create(work_id, card_id, CreateGoalRequest(objective=text))
+        return
+    if goal.phase == "complete":
+        await svc.create(work_id, card_id,
+                         CreateGoalRequest(objective=text or goal.objective))
+    elif goal.phase in ("paused", "blocked"):
+        await svc.resume(work_id, card_id, goal.ref())
+    # 目标重开后会立刻 arm ⇒ 驱动器抢在用户这条消息之前起一轮 ⇒ 这条消息撞 409。
+    # 先 disarm：本轮由这条消息来跑，跑完 after_turn 按 goal_state=active 正常续轮。
+    try:
+        await svc.disarm(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 撤销 arm 失败不阻断（最坏是多起一轮）
+        logger.warning("[coder] 重新派活后撤销 arm 失败 card=%s: %s", card_id, exc)
+
+
 @router.post("/works/{work_id}/cards/{card_id}/messages")
 async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest):
     """对话主链路（模块 H2）。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    # [编程卡 2026-10-15 · §六块3 静默判定①] 完工编程卡不再被激活：
-    # 只读 card_type/state 两字段的**机械判定**（任务书红线 2），在 pair_id
-    # 进入回合前拦下。读卡失败（卡不存在等）不在此处置，仍走 _run_message
-    # 既有口径（静默判定只多不少地拦，不改既有错误语义）。
+    # [编程卡 2026-10-15 · §六块3 静默判定①] 完工编程卡不再被激活。
+    # [coder 卡可继续派活 2026-10-21 · 用户令] 这条**改了**：不再 400 拒绝，
+    # 而是把「再发一条消息」当成重新派活（卡复位 + 目标重新激活）——否则同一件
+    # 事的后续只能另开一张卡。读卡失败仍走 _run_message 既有口径。
     try:
         _meta = (await card_store.read_card(work_id, card_id)).get("meta") or {}
     except Exception:  # noqa: BLE001
         _meta = {}
+    _revive_owner = ""
     if str(_meta.get("card_type") or "") == "coder" \
             and str(_meta.get("state") or "") == "completed":
-        return _err(400, "编程卡已完工，不再激活；新任务请新建编程卡")
+        # [重新派活竞态 2026-10-21] 改目标会 emit goal/changed ⇒ 驱动器立刻
+        # request_drive 抢一轮，把互斥体占掉 ⇒ 用户这条消息反而撞 409。
+        # 所以在改目标期间**先占住互斥体**（临时 owner），让驱动器这一跳被跳过；
+        # 下面 ensure 完再释放，_run_message 紧接着自己拿。
+        _revive_owner = f"revive:{uuid.uuid4().hex[:8]}"
+        session_facade.turn_try_acquire(work_id, card_id, _revive_owner)
+        try:
+            await _revive_coder_card(work_id, card_id, req.content)
+        except Exception as exc:  # noqa: BLE001 复位失败才如实拒绝
+            logger.error("[coder] 重新派活失败 work=%s card=%s: %s",
+                         work_id, card_id, exc)
+            if _revive_owner:
+                session_facade.turn_release(work_id, card_id, _revive_owner)
+            return _err(500, f"编程卡重新派活失败：{exc}")
     # [自动模式 2026-10-17 · 回灌 5700 块0.3 · D2] auto 卡收到**首条消息** ⇒
     # 该消息成为 goal、goal_state=active（起跑条件齐备；本轮跑完后驱动器自动
     # 续轮）。已有目标 ⇒ 不动（中途引导，目标不变——方案 §3.4）。非 auto 卡
@@ -1116,6 +1205,9 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     except Exception as exc:  # noqa: BLE001 目标设定失败不阻断本次消息
         logger.warning("[auto] 首条消息设定目标失败 work=%s card=%s: %s",
                        work_id, card_id, exc)
+    finally:
+        if _revive_owner:
+            session_facade.turn_release(work_id, card_id, _revive_owner)
     return await _run_message(work_id, card_id, req.content, req.pair_id,
                               op=req.op or "")
 
@@ -1296,8 +1388,10 @@ async def post_card_auto_resume(work_id: str, card_id: str):
       · 非 auto 卡                   ⇒ 400（信息自带出路）
       · 无 goal                      ⇒ 400（信息自带出路）
       · ``goal_state == active``     ⇒ 200 ``{"resumed": False}``（幂等，不重复起轮）
-      · ``goal_state == complete``   ⇒ 400（已完成的目标不能恢复）
       · ``paused`` / ``blocked``     ⇒ 落三字段 ＋ kick ⇒ 200 ``{"resumed": True}``
+      · ``complete``                 ⇒ 用同一 objective 新建 goal（轮次归零）＋ kick
+        [coder 卡可重新激活 2026-10-21 · 用户令] 改前这里 400「已完成不能恢复」，
+        而发消息也不会动（goal 非空即早退）⇒ 跑完的卡只能新建一张卡才能接着干。
     """
     from . import auto_driver
 
@@ -1314,12 +1408,11 @@ async def post_card_auto_resume(work_id: str, card_id: str):
     state = str(meta.get("goal_state") or "")
     if state == auto_driver.GOAL_ACTIVE:
         return {"resumed": False, "reason": "已在推进中"}
-    if state == auto_driver.GOAL_COMPLETE:
-        return _err(400, "该目标已完成，不能恢复；如需新任务请重新设定目标")
-    ok = await auto_driver.resume_card(work_id, card_id)
+    ok = await auto_driver.reactivate_card(work_id, card_id)
     if not ok:
         return _err(500, "恢复失败（状态写入未成功），请查看服务日志")
-    return {"resumed": True, "goal_state": auto_driver.GOAL_ACTIVE}
+    return {"resumed": True, "goal_state": auto_driver.GOAL_ACTIVE,
+            "from": state}
 
 
 # [goal 域 2026-10-20 · 照抄 dsh-command-goal] 人面 /goal 命令。
@@ -1329,7 +1422,24 @@ async def post_goal_command(work_id: str, card_id: str, req: dict):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     from ..goal import command as goal_command
-    result = await goal_command.execute_command(work_id, card_id, str((req or {}).get("input") or ""))
+    raw = str((req or {}).get("input") or "")
+    result = await goal_command.execute_command(work_id, card_id, raw)
+    # [coder 卡可改目标 2026-10-21 · 用户令] 建/改目标之后，auto 卡应当**立刻**按新
+    # 目标跑——否则用户改完目标看着卡一动不动，以为又坏了。
+    # 只对 create/edit 生效：pause/clear/resume 各自语义已在命令里落地，别插手。
+    try:
+        from . import auto_driver
+
+        kind = str(goal_command.parse(raw).get("kind") or "")
+        if result.get("ok") and kind in ("create", "edit"):
+            meta = card_store._meta_of(work_id, card_id) or {}
+            if bool(meta.get("auto_mode")):
+                if str(meta.get("goal_state") or "") == auto_driver.GOAL_ACTIVE:
+                    auto_driver.kick(work_id, card_id)
+                else:
+                    await auto_driver.reactivate_card(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 起跑失败不影响命令本身的结果
+        logger.warning("[goal] 改目标后起跑失败 work=%s card=%s: %s", work_id, card_id, exc)
     return result
 
 
@@ -1787,12 +1897,26 @@ async def _run_message(work_id: str, card_id: str, content: str,
         logger.warning("[A4] 同卡在途拒绝 409 work=%s card=%s holder=%s",
                        work_id, card_id, holder)
         event_stream.reset_stream_context(_stream_ctx_token)
-        return _err(409, f"卡片回合进行中（{holder}），请稍后重试")
+        # [立刻停止 2026-10-21] 括号里原来是内部回合编号（turn:1a2b3c4d），
+        # 用户看不懂也没法处理。说人话 + 给出唯一有效动作。
+        return _err(409, "这张卡正在跑（回合进行中）。点「停止」会立刻中断，然后就能发消息。")
+    # [立刻停止 2026-10-21 · 用户令] 把本轮协程登记到 control：停止端点直接
+    # cancel 它，**不再「置位等步边界」**——一轮模型调用可能跑几分钟，步边界
+    # 恰恰在最需要停的时候等不到（实测 card_031 卡在流里 9 分钟，停止无效）。
+    _turn_task = asyncio.current_task()
+    control.bind_turn_task(work_id, card_id, _turn_task)
     # [自动模式 2026-10-17 · 回灌 5700 块0.3 · 方案 §3.8] 起回合前经**执行闸**：
     # 串行模式下拿不到锁＝**排队等待**（await，不是 409——这是与上面卡互斥体的
     # 关键差别）；并行模式直接过；同卡已持有（＝本卡目标生命周期内继续跑）⇒
     # no-op。取在互斥体之后：同卡重入被互斥体挡在前面，闸上不会出现同卡双取。
-    await serial_gate.acquire(work_id, card_id)
+    try:
+        await serial_gate.acquire(work_id, card_id)
+    except asyncio.CancelledError:
+        # 停在「等执行闸」这一瞬间：互斥体已登记，必须在这里放掉（还没进下面的 try）
+        session_facade.turn_release(work_id, card_id, turn_owner)
+        control.unbind_turn_task(work_id, card_id, _turn_task)
+        event_stream.reset_stream_context(_stream_ctx_token)
+        raise
     failed = False
     # [goal 域 2026-10-20 · 照抄 dsh] 回合来源。工具权威判定（create/edit/pause/
     # resume 必须直接人类回合；complete/blocked 允许当前 goal round）全靠它。
@@ -1826,6 +1950,16 @@ async def _run_message(work_id: str, card_id: str, content: str,
         # 缓冲里的思考会**随回合一起丢掉**（刷新后看不到这段思考）。
         # ⇒ 收口时无条件 flush 一次（空缓冲是 no-op）。
         event_stream.flush_pending_reasoning(work_id, card_id)
+        # [运行态单一真相源 2026-10-21] 回合终止的**权威帧**：成功 / 异常 / 取消
+        # 三条路径都必然发一次。前端运行态据此收口——此前只认 done/error，而它们由
+        # compose_delivery / handle_error 发，若链路在两者之前抛（context 组装、
+        # 交付拼接等），就一个终止信号都没有 ⇒ 前端永远停在「运行中」，只能刷新。
+        # 位置必须在 notify_idle **之前**：idle 会起下一轮，下一轮的 run_start 必须
+        # 晚于本帧到达前端，否则前端可能先起后收（顺序反了）。
+        try:
+            event_stream.emit(work_id, card_id, "turn_end", {"outcome": outcome})
+        except Exception as exc:  # noqa: BLE001 帧发不出去不影响回合返回
+            logger.warning("[flow] turn_end 帧发送失败 card=%s: %s", card_id, exc)
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
         control.discard_stop(work_id, card_id)
@@ -1833,6 +1967,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
         # 的插话一律作废——不能留给下一回合，否则那句话会凭空出现在下一轮。
         steer.discard_steer(work_id, card_id)
         session_facade.turn_release(work_id, card_id, turn_owner)
+        # [立刻停止 2026-10-21] 解登记本轮协程（传 task 只解自己，防误删后续回合）
+        control.unbind_turn_task(work_id, card_id, _turn_task)
         event_stream.reset_stream_context(_stream_ctx_token)
         if failed:
             serial_gate.release(work_id, card_id)

@@ -10,11 +10,11 @@
  * （store.state.canvasState 由 canvas.js 注册）。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=40";
+import { API } from "./api.js?v=46";
 import "./util.js?v=30";
-import "../canvas.js?v=76";
-import { createNavSystem } from "./nav_system.js?v=37";
-import { loadRulePanel } from "./rule_panel.js?v=33";
+import { reloadCanvas } from "../canvas.js?v=89";
+import { createNavSystem } from "./nav_system.js?v=53";
+import { loadRulePanel } from "./rule_panel.js?v=37";
 
 const WORK_ID = window.__WORK_ID__;
 const navTree = document.getElementById("navTree");
@@ -31,6 +31,9 @@ const navSystem = createNavSystem({
   getCurrentCard: () => null,
   open: (cid) => { location.assign("/work/" + WORK_ID + "/card/" + cid); },
   inspector: null,
+  /* [删卡刷新 2026-10-21] 画布页删卡后要就地重建：左栏重画只动左栏，
+     画布上那张卡不重建就还挂着，用户看着像"没删掉"。 */
+  onCardsChanged: () => { try { reloadCanvas(); } catch (e) { /* 零阻断 */ } },
 });
 
 /* [阶段2 A2.2 补齐 2026-10-17] 旧 hash 链接兼容（**画布页侧**）。
@@ -41,7 +44,8 @@ const navSystem = createNavSystem({
  * 与 bootRestore 同一份解析，不另造第二套。
  * 放在 startNav() 之前：既然要跳走，就别先把导航/画布渲染一遍。 */
 {
-  const sel = navSystem.navStore.select.get();
+  // [当前卡单源 2026-10-21] 旧链接判定**只认 hash**（select.get 现在只读路径）。
+  const sel = navSystem.navStore.select.parse(location.hash);
   if (sel && sel.cid) {
     location.replace("/work/" + sel.wid + "/card/" + sel.cid);
   }

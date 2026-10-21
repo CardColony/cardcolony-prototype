@@ -220,11 +220,12 @@ async def test_tool_loop_closes_with_tool_result(client, sandbox):
     # [思维链真实落地] 主循环真实调用序（判定轮退役——判断归模型；直答链
     # 零三席）：模型调 read_card 拿结果后空手交付，全程 2 次主模型调用：
     #   0 = 首轮（带全量工具面、prior=0、发 read_card）
-    #   1 = 工具续跳（"工具结果已返回。"、prior=3＝user 原文固化+assistant(tool_calls)+tool 结果）
+    #   1 = 工具续跳（user 位**留空**：工具结果本身即最后一条，模型据此续写；
+    #       2026-10-21 起不再塞「工具结果已返回。」假用户发言）
     assert len(main_calls) == 2
     assert main_calls[0]["prior_len"] == 0
     assert main_calls[1]["prior_len"] == 3
-    assert main_calls[1]["user_prompt"] == "工具结果已返回。"
+    assert main_calls[1]["user_prompt"] == ""
     # 工具面：卡片工具 ＋ 文件工具都在首轮手里（判断+行动合一，全量工具面）
     assert "read_card" in main_calls[0]["tools"]
     assert "write_file" in main_calls[0]["tools"]

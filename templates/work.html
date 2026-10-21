@@ -12,7 +12,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=48">
+<link rel="stylesheet" href="/static/style.css?v=49">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -21,7 +21,7 @@
 <!-- [画布商业化重做 2026-10-17] 画布页专属视觉体系独立成 canvas.css（只在 .page-canvas
      作用域内生效，不污染对话页）。必须在本行之后引入：同特异性后者胜，用它覆盖 style.css
      里的旧画布段；改动本文件必须升 ?v=。 -->
-<link rel="stylesheet" href="/static/canvas.css?v=21">
+<link rel="stylesheet" href="/static/canvas.css?v=23">
 </head>
 <body class="page-canvas">
 <div class="work-page">
@@ -91,7 +91,7 @@
       <!-- [画布 2026-10-19 · 事故排查] 构建戳：用户看不到改动时，第一件事是确认
            "他加载的到底是哪一版 HTML"。这里放一个极小的版本号，肉眼可读、不打扰。
            改动 canvas.js/css 时**必须同步改这个号**（连同 main.js 里的 import 版本）。 -->
-      <span class="build-stamp canvas-only" title="构建版本：看不到这个号变化＝浏览器还在用旧 HTML">v73</span>
+      <span class="build-stamp canvas-only" title="构建版本：看不到这个号变化＝浏览器还在用旧 HTML">v74</span>
       <span class="spacer"></span>
       <!-- [缩放控件 2026-10-16 用户令] 滚轮缩放废除（canvas.js wheel 监听已删），
            缩放只走此控件组：−/＋每按一次 ±25%；拖动条 25% 档位吸附（min25/max200/step25）；
@@ -136,6 +136,10 @@
       <div id="viewport">
         <div id="world">
           <svg class="edges" id="edgesSvg"></svg>
+          <!-- [性能 2026-10-20] 通信线单独一层：它的流动动画（stroke-dashoffset）
+               每帧都会重绘**整个** SVG；与父子线/关系线同层时，几十条静态 path
+               陪着一起重绘（实测占 40 个 CPU 点）。拆开后只重绘这几条通信线。 -->
+          <svg class="edges comm-layer" id="commSvg"></svg>
           <!-- 卡片节点由 canvas.js 动态注入 -->
         </div>
         <div id="cardTooltip" class="card-tooltip"></div>
@@ -188,6 +192,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=73.4"></script>
+<script type="module" src="/static/esm/main.js?v=78.11"></script>
 </body>
 </html>

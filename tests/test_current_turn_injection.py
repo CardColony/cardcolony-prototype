@@ -572,7 +572,8 @@ def test_judgment_event_ontology_and_frontend():
     from pathlib import Path
     # [三席身份注入 2026-10-14] 本体论 26 → 27（+context_seat_identity）
     # [更新现状按钮改造 2026-10-16] 27 → 28（+status_update_task）
-    assert len(event_stream.EVENT_TYPES) == 28
+    # [运行态单一真相源 2026-10-21] 28 → 29（+turn_end：回合终止的权威帧）
+    assert len(event_stream.EVENT_TYPES) == 29
     assert "judgment_protocol" in event_stream.EVENT_TYPES
     assert "status_update_task" in event_stream.EVENT_TYPES
     js = (Path(__file__).resolve().parents[1] / "static" / "stream.js").read_text(

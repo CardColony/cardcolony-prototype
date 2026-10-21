@@ -54,6 +54,7 @@ from . import (
     context_regions,
     current_turn,
     event_stream,
+    model_config,
     model_service,
     progress,
     prompt_log,
@@ -119,6 +120,11 @@ class RunState:
     # 采集后与末轮回执拼接交付（分析在前、回执在后），不取代回执。
     analysis_parts: list[str] = field(default_factory=list)
     model_used: Optional[str] = None
+    # [模型选择底座 2026-10-21] 本轮**实际请求**的模型名（_pick_step_model /
+    # resolve_model 的返回值）。prompt 日志记它，而不是另算一次 default_model——
+    # 原来日志记的是「默认模型」，与实际调用的角色模型（execute/think/synthesize）
+    # 常常不是一个，看起来像「没按配置走」。
+    model_requested: Optional[str] = None
     # [DeepSeek 思考回传 2026-10-15] 本轮模型调用产出的思考（reasoning_content）。
     # 只做调用链内部传递：拿到 result 后立刻写入、存 assistant 条时立刻取用并清空。
     # **不进对话内容、不进前端渲染**（展示走 emit_token 独立通道）。
@@ -646,10 +652,16 @@ async def step(state: RunState) -> StepOutcome:
             prior_key="history", user_content=state.user_prompt,
             turn_tail=state.turn_tail, turn_once=state.judgment_tail,
         )
+        # [模型选择底座 2026-10-21] 座位只算一次，请求与日志同源
+        _seat = _pick_step_model(state)
+        state.model_requested = _seat
         result, state.model_used = await model_service.call_main(
             request["system_prompt"], request["user_prompt"], request["prior_messages"],
             tools=state.tools,
-            model_name=_pick_step_model(state),
+            model_name=_seat,
+            # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
+            fallbacks=model_config.layer_fallbacks(
+                _seat, work_id=state.work_id, card_id=state.card_id),
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
         )
@@ -671,10 +683,15 @@ async def step(state: RunState) -> StepOutcome:
             state, profile="main", prior_messages=wire_messages,
             prior_key="tool_turn", user_content=state.user_prompt,
         )
+        _seat = _pick_step_model(state)
+        state.model_requested = _seat
         result, state.model_used = await model_service.call_main(
             request["system_prompt"], request["user_prompt"], request["prior_messages"],
             tools=state.tools,
-            model_name=_pick_step_model(state),
+            model_name=_seat,
+            # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
+            fallbacks=model_config.layer_fallbacks(
+                _seat, work_id=state.work_id, card_id=state.card_id),
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
         )
@@ -985,9 +1002,12 @@ async def step(state: RunState) -> StepOutcome:
     # （round＝轮号）。收口那条（clean_text 合并全文）**不再落事件**（会话块照落
     # ⇒ 模型上下文零变化），免得与各轮正文重复。
     await _land_round_reply(state, assistant_content)
-    state.user_prompt = "工具结果已返回。"
-    # [信息流 Task2/打点 A92/A96] 同请求续跳：占位符只进模型不入用户流
-    logger.info("[flow] 断点续跳 resume_kind=同请求续跳 no_user_visible=True round=%s card=%s",
+    # [工具轮去假 user 2026-10-21] 原来这里塞占位符「工具结果已返回。」填用户位——
+    # 模型会把这句话当成**用户说的话**（实测每轮思考都在念它）。工具轮的 prior 末尾
+    # 已是 role=tool 的工具结果，模型据此直接续写；用户位**留空**，不再编造发言。
+    # （gateway._build_options 已改为「user_prompt 为空则不拼 user 消息」。）
+    state.user_prompt = ""
+    logger.info("[flow] 断点续跳 resume_kind=同请求续跳 no_user_message=True round=%s card=%s",
                 state.rounds, state.card_id)
     verdict = check_control(state)   # 中止缝：出口挂点（[A8/R3] 控制三态）
     if verdict == control.STOP:
@@ -1077,12 +1097,17 @@ async def run_seats(state: RunState) -> StepOutcome:
     # [迭代五 S2·E10] 统合官模型可配：model_pick.resolve_model("synthesize")，
     # 未配置回落默认模型（model_config.default_model()，缺省行为逐字不变）。
     # [模型设置按项目/卡片覆盖 2026-10-19] 带 work/card 作用域解析。
+    # [模型选择底座 2026-10-21] 座位只算一次：请求与日志同源。
+    _synth_seat = model_pick.resolve_model("synthesize",
+                                          work_id=state.work_id,
+                                          card_id=state.card_id)
+    state.model_requested = _synth_seat
     result, state.model_used = await model_service.call_main(
         synth_request["system_prompt"], synth_request["user_prompt"],
         synth_request["prior_messages"], tools=state.tools,
-        model_name=model_pick.resolve_model("synthesize",
-                                            work_id=state.work_id,
-                                            card_id=state.card_id),
+        model_name=_synth_seat,
+        fallbacks=model_config.layer_fallbacks(
+            _synth_seat, work_id=state.work_id, card_id=state.card_id),
         turn_tail=synth_request["turn_tail"],
         turn_once=synth_request["turn_once"],
     )
@@ -1156,6 +1181,8 @@ def write_logs(state: RunState) -> None:
         prior_messages=state.prior_for_gateway,
         user_prompt=state.content,
         model_used=state.model_used if state.error is None else None,
+        # [模型选择底座 2026-10-21] 记**实际请求**的模型（座位），不是另算一次默认。
+        model_requested=state.model_requested,
         # [T14-3] response 保末轮供审计（拼接在日志写之后，此时 final_reply 仍是
         # 末轮正文——prompt_log.response 语义不动，RD-08）；交付全文（分析＋回执）
         # 可经会话 assistant 条/prompt 日志 prior_messages 复核。
@@ -1669,9 +1696,6 @@ async def schedule_card_message_triggers(state: RunState) -> None:
             _tmeta = card_store._meta_of(work_id, target_id) or {}
         except Exception:  # noqa: BLE001 读不出 meta ⇒ 不在此处置，走既有链
             _tmeta = {}
-        if str(_tmeta.get("card_type") or "") == "coder" \
-                and str(_tmeta.get("state") or "") == "completed":
-            continue
         try:
             pending = await card_db.list_pending(work_id, target_id)
         except Exception as exc:  # noqa: BLE001
@@ -1681,6 +1705,22 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         if not pending:
             # 信已被先前某次收口调起并处理完（收件箱里已无 pending）——不再重复调起。
             continue
+        # [编程卡 2026-10-15 · §六块3 静默判定②] 完工编程卡不被 K3 调起。
+        # [coder 卡可继续派活 2026-10-21 · 用户令] 但**派活**要放行：主卡/人发
+        # msg_ask 给一张完工 coder，就是「这条线还有后续」——先复位（state=active
+        # ＋目标重开）再正常调起，而不是另建一张卡。纯回执类（coder_done 等）
+        # 仍然跳过：否则完工回执会把它自己再叫起来一遍。
+        if str(_tmeta.get("card_type") or "") == "coder" \
+                and str(_tmeta.get("state") or "") == "completed":
+            _is_dispatch = any(
+                str((m or {}).get("type") or "") == "msg_ask" for m in pending)
+            if not _is_dispatch:
+                continue
+            try:
+                await _routes._revive_coder_card(work_id, target_id, "")
+            except Exception as exc:  # noqa: BLE001 复位失败就不调起，信留 pending
+                logger.error("[K3] 完工编程卡复位失败 target=%s: %s", target_id, exc)
+                continue
         session_ops.ops_log("card_msg_deliver", work_id, target_id,
                             {"msg_id": str(pending[-1].get("msg_id") or ""),
                              "msg_ids": list(msg_ids)})

@@ -319,14 +319,21 @@ def read(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, Any]]:
     return out
 
 
-def timeline(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, Any]]:
+def timeline(work_id: str, card_id: str, from_seq: int = 0,
+             tail: int = 0, before: int = 0) -> list[dict[str, Any]]:
     """合并时序表：按 seq 升序，**跳过被 revoke 覆盖的段**（软删语义）。
 
     - revoke 记录自身不进渲染面（它是控制位，不是给用户看的内容）；
     - 遇到 revoke{from_seq:N} → 已收进结果的 seq>=N 全部撤下（含被编辑掉的
       旧提问与其后一切），其后的新 run 正常进入；
     - 存量文件（无 revoke）＝原样全量，零行为变化。
+
+    [对话流分页 2026-10-20] ``tail`` / ``before`` 是**窗口参数**：
+      · ``tail=N``   —— 只回最后 N 条（打开卡片时用，长会话从上千条降到几百条）；
+      · ``before=S`` —— 只回 seq < S 的部分（往上翻历史时用）。
+    为什么放在**过滤之后**截：revoke 必须按全量时序生效，先截会把已作废的段复活。
     """
+
     items: list[dict[str, Any]] = []
     # 全量读后再按 from_seq 截：**revoke 必须在截断之前处理**——若直接
     # from_seq 读，越过 revoke 记录就会把已作废的段复活（软删失效）。
@@ -342,6 +349,20 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, An
             continue
         if int(rec.get("seq") or 0) >= from_seq:
             items.append(rec)
+    if before:
+        try:
+            b = int(before)
+        except (TypeError, ValueError):
+            b = 0
+        if b > 0:
+            items = [x for x in items if int(x.get("seq") or 0) < b]
+    if tail:
+        try:
+            t = int(tail)
+        except (TypeError, ValueError):
+            t = 0
+        if t > 0:
+            items = items[-t:]
     return items
 
 

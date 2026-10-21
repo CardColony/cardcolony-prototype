@@ -737,3 +737,79 @@ label.set-model-row input[type="checkbox"] { accent-color: var(--set-brand); }
 /* 按卡片类型设置默认模型 */
 .set-ctm-foot { display:flex; align-items:center; gap:10px; margin-top:12px; }
 .set-ctm-foot .set-note { font-size:12px; }
+
+/* ---------------------------------------------------------------- 分层与兜底
+   每层一行：左边层名，右边**有序**模型 chips（序号＝尝试顺序，1 是首选）。
+   [层内兜底 2026-10-21 · 用户令] 顺序即兜底顺序，所以序号必须显眼。 */
+.tier-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--set-border);
+}
+.tier-row:last-child { border-bottom: none; }
+.tier-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+  padding-top: 3px;
+}
+.tier-name { font-size: 13px; color: var(--set-text); }
+.tier-count { font-size: 11px; color: var(--set-text-faint); }
+.tier-pool { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1; }
+.tier-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 4px;
+  border: 1px solid var(--set-border);
+  border-radius: 8px;
+  background: var(--set-surface-2);
+  font-size: 12px;
+}
+.tier-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--set-brand);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.tier-model {
+  color: var(--set-text);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tier-btn {
+  border: none;
+  background: transparent;
+  color: var(--set-text-faint);
+  cursor: pointer;
+  padding: 0 3px;
+  font-size: 12px;
+  line-height: 1;
+}
+.tier-btn:hover:not(:disabled) { color: var(--set-text); }
+.tier-btn:disabled { opacity: .25; cursor: default; }
+.tier-btn.del:hover { color: var(--set-danger); }
+.tier-empty { font-size: 12px; color: var(--set-text-faint); font-style: italic; }
+.tier-add {
+  height: 26px;
+  border: 1px dashed var(--set-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--set-text-subtle);
+  font-size: 12px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.tier-add:hover { border-color: var(--set-border-hover); color: var(--set-text); }

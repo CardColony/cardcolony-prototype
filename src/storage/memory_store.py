@@ -47,7 +47,7 @@ from typing import Any
 
 import tiktoken
 
-from . import session_facade, session_store
+from . import memory_domain, session_facade, session_store
 
 logger = logging.getLogger("storage.memory")
 
@@ -61,21 +61,55 @@ DEFAULT_TRIGGER_TOKENS = 800_000
 # 单批窗口预算＝300,000 token（用户令：一次凝练 30 万 token；旧实现折成 630,000
 # 字节系同一自造系数的产物）。★与触发线必须同尺——两者共用 _msg_meter_tokens，
 # 只改一个会造成「触发按 80 万 token、一次只切 30 万字节」的口径分裂。
-# 单 job 批上限（源侧 condenseMaxBatchesPerJob 形态，缺省 20）、折叠触发周期
-# （源侧 fold-l1 FOLD_EVERY_BATCHES=5，游标式 batch_count − last_fold_check ≥ 5）。
+# 单 job 批上限（照抄源侧 dsh `condense.ts:2905` 的 **2026-09-09 用户裁定**）：
+#   「maxBatchesOverride：自动触发（maybeCondense）传 1——一次触发只跑一批，
+#    批后 mark 即停、未凝从窗口大小重新起算，等下一次自然触发；不再续派连跑。」
+#   源侧常量 `CONDENSE_MAX_BATCHES_PER_JOB = 2` **只给 import-drive 全量导入**用。
+# ★ 本项目此前缺省写成 20 并让自动触发吃缺省值 ⇒ 一次触发把触发线以上的积压
+#   全部压完（实测 card_006：3 批把 80 万 token 全吃掉，mark 推到 1825/1915，
+#   历史区只剩 90 块，模型近乎失忆）。**缺省必须＝1。**
 DEFAULT_WINDOW_BUDGET_TOKENS = 300_000
-DEFAULT_MAX_BATCHES = 20
+DEFAULT_MAX_BATCHES = 1
 FOLD_EVERY_BATCHES = 5
 
 # [T15-任务 3] 凝练 prompt 骨架（诸葛定，用户可事后推翻）：纯文本产出、
 # 不涉工具解析（call_main tools=None——统合官文本泄漏路径不触发）。
+# [记忆因果链 2026-10-20] 凝练 prompt 升级：照抄 dsh `condense/prompts.ts` 的
+# **S2 gist 写作契约（史书标准）** ＋ 节点化 JSON 产出（`CausalNode` 的 anchor/gist/
+# kind/coveredSeqs/process/lesson/start/result）。旧【结论】/【依据】格式**保留兼容**
+# （解析器 JSON 优先、标记回退），存量 fake 与老模型输出都不会因此失败。
+#
+# dsh 原契约要点（逐条保留）：
+#   · 读者模型＝**没有任何上下文的未来读者**（不知编号/章节/缩写，只读这一条就要懂）
+#   · 谁-因-事-果：谁（有意义的施事主语）→ 因（触发原因/具体诉求）→ 事（外人能懂的动词）→ 果（终态）
+#   · 编号/章节引用：首现即人话括注，或下沉到 process；不得裸留
+#   · 保真红线优先：原文没有的「因」不得补——宁可缺因，不虚构
 CONDENSE_SYSTEM_PROMPT = (
-    "你是记忆凝练器。把给定的对话段压成记忆条目。每条输出：【结论】一句话陈述"
-    "这段对话确立的事实或判断；【依据】指向结论所依据的具体对话块号。"
-    "不写感想、不写计划、不改写原文。"
+    "你是记忆凝练器。把给定的对话段压成**因果链节点**，只输出纯 JSON，不要任何解释文字、"
+    "不要代码块包裹。\n"
+    "\n"
+    "# gist 写作契约（史书标准）\n"
+    "★ 读者模型：每条 gist 写给**没有任何上下文的未来读者**（几个月后的模型/换过的模型/人）。"
+    "他不知道编号指什么、章节是哪章、缩写是什么。他只读你这一条就要判断“历史上发生了什么”"
+    "——每条默认承受“去掉所有上下文后读者仍懂”的检验。\n"
+    "★ 谁-因-事-果：每条 gist 按「谁 → 因 → 事 → 果」组织：\n"
+    "- 谁＝有意义的施事主语（用户要求／实施者完成／某卡决定）；纯编号自指不算主语；\n"
+    "- 因＝触发原因或具体诉求——**情绪事件必须记因**（“用户怒斥”要写明怒的本质诉求）；\n"
+    "- 事＝外人能理解的自然语言动词；禁止仅“完成/处理 + 编号”的流水句；\n"
+    "- 果＝终态（落地了／被拒／通过）。\n"
+    "★ 编号/章节引用：翻译成人话并首现括注，或整体下沉到 process；不得裸留外层。\n"
+    "★ 保真红线优先：原文没有的「因」不得补——宁可缺因，不虚构。\n"
+    "\n"
+    "# 输出格式（纯 JSON）\n"
+    '{"nodes": [{"anchor": {"seq": <该节点起点块号>}, "gist": "<一句话，按上面的契约>", '
+    '"kind": "fact|decision|todo|exclusion|assumption", '
+    '"coveredSeqs": [<本节点覆盖的块号，连续区间>, ...], '
+    '"start": "<起因，可空>", "result": "<结果，可空>", '
+    '"process": "<过程记述，可空>", "lesson": "<教训，可空>"}]}\n'
+    "块号只能取给定原文里出现过的 [块N]；拿不准就拆细，不要猜。"
 )
 
-# 【结论】/【依据】标记与块号引用的机械解析（任务 3/4）
+# 【结论】/【依据】标记与块号引用的机械解析（旧格式兼容）
 _CONCLUSION_MARK = "【结论】"
 _EVIDENCE_MARK = "【依据】"
 _BLOCK_REF_RE = re.compile(r"\[?块(\d+)\]?")
@@ -158,8 +192,12 @@ def window_budget_tokens() -> int:
 
 
 def condense_max_batches() -> int:
-    """单 job 批上限 [任务3，源侧 condenseMaxBatchesPerJob 形态]：
-    CONDENSE_MAX_BATCHES 覆盖优先，缺省 20（循环至窗口清空或达上限，源侧原义）。"""
+    """单 job 批上限（照抄源侧 2026-09-09 用户裁定）。
+
+    自动触发**只跑一批**（缺省 1）：批后 mark 即停，未凝从窗口大小重新起算，
+    等下一次自然触发。`CONDENSE_MAX_BATCHES` 仅供「全量导入」这类显式场景上调
+    （源侧对应 import-drive 用 `condenseMaxBatchesPerJob`，常量 2）。
+    """
     raw = os.environ.get("CONDENSE_MAX_BATCHES", "").strip()
     if raw:
         try:
@@ -346,8 +384,12 @@ def _build_condense_user_prompt(pending: list[dict[str, Any]]) -> str:
     """
     parts: list[str] = []
     for m in pending:
-        actor = str(m.get("actor") or "")
-        if actor not in ("human", "assistant"):
+        # [原文判定收口 2026-10-20 · 照抄 dsh predicates] 用**共享判据**决定什么算原文：
+        # `is_condense_original_event` ＝ 原文 且非工具块。它比原来的
+        # `actor in ("human","assistant")` 多排除了两类**注入块**（source.kind =
+        # plugin / steer）——dsh 红线：不排除的话机器生成的指令会被记忆吸收、每轮重放累积。
+        from . import predicates
+        if not predicates.is_condense_original_event(m):
             continue
         content = str(m.get("content", "") or "")
         if not content.strip():
@@ -356,8 +398,94 @@ def _build_condense_user_prompt(pending: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+def _drop_overlapping(entries: list[dict[str, Any]], lo: int, hi: int) -> list[dict[str, Any]]:
+    """摘掉覆盖区间与 [lo, hi] 相交的旧条目（重凝去重）。
+
+    条目覆盖区间取 `seq_from..seq_to`（无则退化为单点 `seq`）。
+    区间不相交 ⇒ 原样保留（不同段的结论互不影响）。
+    """
+    out: list[dict[str, Any]] = []
+    for e in entries or []:
+        a = e.get("seq_from")
+        b = e.get("seq_to")
+        if a is None or b is None:
+            a = b = int(e.get("seq", 0) or 0)
+        try:
+            a = int(a); b = int(b)
+        except (TypeError, ValueError):
+            out.append(e)
+            continue
+        if b < lo or a > hi:      # 不相交
+            out.append(e)
+    return out
+
+
 def _parse_condense_output(text: str, default_seq: int) -> list[dict[str, Any]]:
-    """按【结论】/【依据】标记逐条切分（任务 3）。
+    """凝练产出解析：**JSON 节点优先，旧【结论】/【依据】格式回退**。
+
+    [记忆因果链 2026-10-20] dsh 的凝练产出是**节点 JSON**（`{"nodes":[{anchor,gist,
+    kind,coveredSeqs,start,result,process,lesson}]}`）。本项目升级到该格式，但保留
+    旧标记格式的解析——存量 fake、老模型、以及模型偶发退回旧写法时都不至于全批失败。
+
+    统一返回条目字典（下游 render/落盘只认这些键）：
+    `seq / conclusion / evidence / kind / coveredSeqs / start / result / process / lesson`
+    （旧格式只有前三键，其余缺省——`chain_from_entries` 会补缺省）。
+    """
+    raw = str(text or "").strip()
+    nodes = _try_parse_node_json(raw)
+    if nodes is not None:
+        out: list[dict[str, Any]] = []
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            gist = str(n.get("gist") or "").strip()
+            if not gist:
+                continue
+            anchor = n.get("anchor") or {}
+            seq = anchor.get("seq") if isinstance(anchor, dict) else None
+            if not isinstance(seq, int):
+                covered = n.get("coveredSeqs") or []
+                seq = int(covered[0]) if covered else default_seq
+            covered = [int(x) for x in (n.get("coveredSeqs") or []) if isinstance(x, (int, float))]
+            out.append({
+                "seq": int(seq),
+                "conclusion": gist,
+                "evidence": str(n.get("process") or ""),
+                "kind": str(n.get("kind") or "fact"),
+                "coveredSeqs": covered or [int(seq)],
+                "start": str(n.get("start") or ""),
+                "result": str(n.get("result") or ""),
+                "process": str(n.get("process") or ""),
+                "lesson": str(n.get("lesson") or ""),
+            })
+        if out:
+            return out
+    return _parse_condense_markers(raw, default_seq)
+
+
+def _try_parse_node_json(text: str) -> Optional[list[dict[str, Any]]]:
+    """宽松取 JSON：整段能解就用；否则截取第一个 `{` 到最后一个 `}`。解不出＝None。"""
+    candidates = [text]
+    lo, hi = text.find("{"), text.rfind("}")
+    if 0 <= lo < hi:
+        candidates.append(text[lo:hi + 1])
+    lo, hi = text.find("["), text.rfind("]")
+    if 0 <= lo < hi:
+        candidates.append(text[lo:hi + 1])
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("nodes"), list):
+            return data["nodes"]
+        if isinstance(data, list):
+            return data
+    return None
+
+
+def _parse_condense_markers(text: str, default_seq: int) -> list[dict[str, Any]]:
+    """按【结论】/【依据】标记逐条切分（**旧格式兼容**，任务 3 原实现）。
 
     以标记为分隔符做全文分词（真模型实测会把【依据】写在与【结论】同一行——
     按行切会丢锚）；标记间的续行/续段归当前段（长产出不截断，RD-05 同源）。
@@ -414,9 +542,8 @@ async def _condense_call(user_prompt: str) -> str:
 
     result, _model = await model_service.call_main(
         CONDENSE_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
-        model_name=model_config.resolve("condense") or model_config.default_model())
+        model_name=model_config.pick_one("condense"))
     return str((result or {}).get("content") or "")
-
 
 async def _condense_one_batch(work_id: str, card_id: str,
                               window: list[dict[str, Any]], mark: int) -> bool:
@@ -481,13 +608,60 @@ async def _condense_one_batch(work_id: str, card_id: str,
                         work_id, card_id, int(state.get("mark", 0) or 0), len(existing), fingerprint)
         return True
     # 任务 4：五字段落 entries（seq/conclusion/evidence/occurred_at/fingerprint）
+    # [原文入库 2026-10-20] 再加两键 `seq_from`/`seq_to`：**这条记忆压自哪一段原文**
+    # （块序号闭区间）。追溯链＝ entry.seq_from/seq_to → origin_store.trace_entry →
+    # session_blocks 行。原先只记 `seq`（最小块号），覆盖范围只能靠相邻条目反推。
     occurred_at = datetime.now().astimezone().isoformat()
-    final_entries = [dict(e, occurred_at=occurred_at, fingerprint=fingerprint) for e in fresh]
+    _win_from = int(window[0].get("seq", 0) or 0) if window else int(mark or 0)
+    _win_to = int(window[-1].get("seq", 0) or 0) if window else _win_from
+    final_entries = [dict(e, occurred_at=occurred_at, fingerprint=fingerprint,
+                          seq_from=_win_from, seq_to=_win_to) for e in fresh]
+    # [重凝去重 2026-10-21] 同一段原文只留一条结论：窗口 [win_from, win_to] 已被
+    # 旧条目覆盖的，把旧条目摘掉再落新的。否则一旦水位回退（人工恢复/重跑）就会
+    # 出现「同一 seq 两条结论」⇒ 因果链 I1「身份重复」违例、记忆区重复占 token。
+    _kept_existing = _drop_overlapping(existing, _win_from, _win_to)
+    if len(_kept_existing) != len(existing):
+        logger.info("[condense_fold] 重凝去重：窗口 %s..%s 摘掉 %d 条旧结论（保留 %d 条）card=%s",
+                    _win_from, _win_to, len(existing) - len(_kept_existing),
+                    len(_kept_existing), card_id)
+    existing = _kept_existing
     await save_memory(work_id, card_id,
                       {"card_id": card_id, "mark": target_mark, "entries": existing + final_entries,
                        "batch_count": state.get("batch_count", 0),
                        "last_fold_check": state.get("last_fold_check", 0),
                        "folded": state.get("folded", [])})
+    # [记忆因果链 2026-10-20] 条目 → 单层链落库，并跑 I1–I5 不变量（违例只记日志、不阻断）。
+    # 链落 `memory` 表（dsh 同表：每会话一条 = 链 + 两个半开水位）；追溯走 coveredSeqs。
+    try:
+        chain = memory_domain.chain_from_entries(existing + final_entries, card_id,
+                                                 folded_fingerprints=set(state.get("folded") or []))
+        viol = memory_domain.check_invariants(chain)
+        if viol:
+            logger.warning("[memory_domain] 条目不变量违例 %d 条 card=%s: %s",
+                           len(viol), card_id, viol[:3])
+        memory_domain.save_chain(work_id, card_id, chain, condense_mark=target_mark)
+        # [archive 接线 2026-10-20] 描述层（process/docPaths/docRefs）进 memory_archive——
+        # dsh 口径：chain 只留 gist（结论），长正文进 archive，展开时按锚点取。
+        memory_domain.save_archive(work_id, card_id, chain)
+        # [多层链 2026-10-20 · 照抄 dsh condense/migrate-archive] 把描述层正文**物化**成
+        # description 子节点（anchor 与父同、level=父+1、upper=[父]、coveredSeqs 拷父、
+        # 文本同父 gist ⇒ degraded）——这才是 dsh 的**两层链**（gist 结论 + description 描述）。
+        # 物化后若 I1–I5 有违例 ⇒ **拒绝写**（只记日志，保留原单层链）。
+        _arc_rows = [{"seq": int((n.get("anchor") or {}).get("seq", 0) or 0),
+                      "process": n.get("process")}
+                     for n in chain if n.get("process")]
+        if _arc_rows:
+            _migrated, _mrep = memory_domain.migrate_archive(chain, _arc_rows)
+            if _mrep["created"]:
+                if _mrep["violations"]:
+                    logger.warning("[condense_fold] 多层物化违例（拒绝写，保留单层链）card=%s: %s",
+                                   card_id, _mrep["violations"][:3])
+                else:
+                    memory_domain.save_chain(work_id, card_id, _migrated,
+                                             condense_mark=target_mark)
+                    chain = _migrated
+    except Exception as exc:  # noqa: BLE001 链落库/校验失败不阻断凝练
+        logger.warning("[memory_domain] 链落库/校验失败（不阻断）card=%s: %s", card_id, exc)
     logger.info("[condense_fold] 凝练完成 work=%s card=%s 输入块数=%d 输入字节=%d 产出条数=%d mark %d→%d fingerprint=%s",
                 work_id, card_id, len(window), input_bytes, len(final_entries), mark, target_mark, fingerprint)
     return True
@@ -573,7 +747,7 @@ async def _fold_call(user_prompt: str) -> str:
 
     result, _model = await model_service.call_main(
         FOLD_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
-        model_name=model_config.resolve("condense") or model_config.default_model())
+        model_name=model_config.pick_one("condense"))
     return str((result or {}).get("content") or "")
 
 
