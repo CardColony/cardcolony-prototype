@@ -108,7 +108,9 @@ async def test_v1_switch_off_no_slice_no_region(sandbox, monkeypatch):
                      "occurred_at": "t", "fingerprint": "fp"}]})
     regions = context_assembler.build_context_regions(wid, cid)
     # [卡片职责区 2026-10-14] 迭代新增 order 90（卡片职责）
-    assert [r["order"] for r in regions] == [90, 100, 150, 155]
+    # [2026-10-21] 配置演进至 v9 新增 order 92（card_ability）；测试构造的
+    # 真实 work/card 会渲染出 92 区，按实测渲染结果同步期望（非照抄 22 区）
+    assert [r["order"] for r in regions] == [90, 92, 100, 150, 155]
     assert all("关闸不得出现" not in r["text"] for r in regions)
 
 

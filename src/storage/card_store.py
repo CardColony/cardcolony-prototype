@@ -837,6 +837,7 @@ async def create_card(
     project_class: str = "",
     owner_card_id: str = "",
     goal: str = "",
+    mission: str = "",
     skip_kick: bool = False,
 ) -> dict[str, Any]:
     """创建卡片 + 对应会话文件，更新 canvas 缓存。
@@ -895,6 +896,11 @@ async def create_card(
             "status_block": sections.get("status_block", ""),
             "rulings": sections.get("rulings", ""),
         }
+        # [父卡设子卡使命 2026-10-21] mission 显式参数优先于正文区头解析：
+        # 「这张卡负责什么」是立项定稿，必须与 goal（本轮目标，会随轮次变）分离；
+        # 此前 create_card 没有 mission 参数 ⇒ 子卡使命块只能是占位符或靠塞区头 hack。
+        if mission and str(mission).strip():
+            body["mission"] = str(mission).strip()
         history_line = f"- [{now}] 卡片创建"
 
         def _fn(conn: Any) -> tuple[str, Any, str, int]:

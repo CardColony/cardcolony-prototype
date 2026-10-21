@@ -148,7 +148,9 @@ async def test_v3_v4_v5_loop_end_to_end(sandbox, monkeypatch):
     # V3：收件箱出现 status=pending
     pending = await card_db.list_pending(wid, b_id)
     assert len(pending) == 1
-    assert pending[0]["msg_id"] == msg_id and pending[0]["status"] == "pending"
+    # [取消 inbox 状态机 2026-10-22 · D25] 无 status 状态位；"未处理"由读取水位算（该卡水位仍为 -1 ⇒ 它是新的）
+    assert pending[0]["msg_id"] == msg_id and pending[0].get("status") is None
+    assert await card_db.get_seen_seq(wid, b_id) == -1
     # V3：事件流照旧有 msg_* 事件（收件方键）
     evs = [e for e in event_log.read(wid, b_id) if e.get("type") == "msg_ask"]
     assert evs, "事件流应照旧留痕 msg_*"
@@ -171,12 +173,15 @@ async def test_v3_v4_v5_loop_end_to_end(sandbox, monkeypatch):
     assert "第二节数字是多少？" in captured[0], captured[0][:200]
     assert "请阅读这些消息并处理" in captured[0]
 
-    # V4：msg_id 置 consumed（状态置位，不删行）
-    rows = await card_db.run_read(
+    # [取消 inbox 状态机 2026-10-22 · D25] 不再有 status/consumed_at 状态位。
+    # 「已处理」的唯一凭据是**读取水位推进到这条消息的 seq**。
+    _rec = await card_db.run_read(
         wid, lambda c: [dict(x) for x in c.execute(
-            "SELECT * FROM inbox WHERE msg_id = ?", (msg_id,)).fetchall()], [])
-    assert rows, "consumed 是状态置位，行不删"
-    assert rows[0]["status"] == "consumed" and rows[0]["consumed_at"]
+            "SELECT seq FROM messages WHERE msg_id = ?", (msg_id,)).fetchall()], [])
+    assert _rec, "消息应已落库（记录不删）"
+    _seen = await card_db.get_seen_seq(wid, b_id)
+    assert _seen >= int(_rec[0]["seq"]), (
+        f"B 处理完后水位应推进到 {_rec[0]['seq']}，实际 {_seen}")
 
     # V5：B 的 assistant 回复仍进对话块；对话块无 card: 块
     blocks_b = await session_facade.read(wid, b_id)

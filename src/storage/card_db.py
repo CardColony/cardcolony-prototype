@@ -199,9 +199,118 @@ _INBOX_DDL: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_inbox_work   ON inbox(work_id)",
 )
 
+# ===========================================================================
+# [取消 inbox 状态机 2026-10-22 · 用户裁定 D25]
+#
+# 用户：「收件箱是个垃圾机制，就给完全被两档通信取消掉」
+#
+# 实测支撑：生产 work_018 的 inbox 108 条里 37 条长期 pending，最早躺 34 小时；
+# 我给 card_041 发的 5 条 msg_ask 全 pending 而它明明在处理 ⇒ pending/consumed
+# 这个状态机跟实际处理已完全脱节：既不能驱动处理，也不能证明处理。
+#
+# 改法：**消息记录保留（审计 / reply_to 应答链需要），状态机删除**，
+# 改为「每卡一个读取水位」——「待处理」是算出来的（seq > 水位），不是存出来的。
+#   · messages 表：与 inbox 同列，去掉 status / consumed_at
+#   · 水位存 meta：key = f"msg_seen_{card_id}"，value = 最后处理到的 seq
+#   · 送达靠两档保证：对方空闲→立即点火；对方在跑→本轮收口时按水位自动续一轮
+# ===========================================================================
+
+_MESSAGES_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS messages (
+    msg_id          TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    target_card_id  TEXT,
+    from_card       TEXT,
+    type            TEXT,
+    content         TEXT,
+    reply_to        TEXT,
+    seq             INTEGER,
+    created_at      TEXT
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_messages_target ON messages(target_card_id, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_work   ON messages(work_id, seq)",
+)
+
+
+def _migrate_inbox_to_messages(conn: sqlite3.Connection) -> int:
+    """把旧 inbox 表的行搬进 messages（幂等）。返回本次搬运行数。
+
+    **不删旧表**——保留作兜底与审计；新代码只读写 messages。
+    """
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='inbox'"
+        ).fetchone()
+        if row is None:
+            return 0
+        before = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+        conn.execute(
+            "INSERT OR IGNORE INTO messages"
+            " (msg_id, work_id, target_card_id, from_card, type,"
+            "  content, reply_to, seq, created_at)"
+            " SELECT msg_id, work_id, target_card_id, from_card, type,"
+            "        content, reply_to, seq, created_at FROM inbox"
+        )
+        after = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+        return int(after) - int(before)
+    except sqlite3.Error:
+        return 0
+
+
+def get_msg_seen_seq(conn: sqlite3.Connection, work_id: str, card_id: str) -> int:
+    """该卡最后处理到的消息 seq（水位）。读不到 ⇒ -1（一条都没读过）。"""
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", ("msg_seen_" + str(card_id),)
+        ).fetchone()
+    except sqlite3.Error:
+        return -1
+    if row is None:
+        return -1
+    try:
+        return int(row[0])
+    except (TypeError, ValueError, IndexError):
+        return -1
+
+
+def set_msg_seen_seq(conn: sqlite3.Connection, work_id: str, card_id: str,
+                     seq: int) -> None:
+    """把该卡读取水位推到 seq（**只增不减**，防并发回退）。"""
+    cur = get_msg_seen_seq(conn, work_id, card_id)
+    if int(seq) <= cur:
+        return
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES(?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        ("msg_seen_" + str(card_id), str(int(seq))),
+    )
+
+
+async def get_seen_seq(work_id: str, card_id: str) -> int:
+    """异步读某卡的读取水位（库不存在 ⇒ -1）。给 routes / 回合收口用。"""
+    out = await run_read(
+        work_id,
+        lambda conn: get_msg_seen_seq(conn, work_id, card_id),
+        -1,
+    )
+    try:
+        return int(out)
+    except (TypeError, ValueError):
+        return -1
+
+
+async def advance_seen_seq(work_id: str, card_id: str, seq: int) -> int:
+    """异步推进某卡的读取水位。返回推进后的水位。"""
+    await run_write(
+        work_id,
+        lambda conn: set_msg_seen_seq(conn, work_id, card_id, seq),
+    )
+    return await get_seen_seq(work_id, card_id)
+
 #: 待处理状态值（唯一的两态；不设第三态）
-INBOX_PENDING = "pending"
-INBOX_CONSUMED = "consumed"
+# [取消 inbox 状态机 2026-10-22 · D25] 两个状态常量已删除。
+# 「待处理」现在由读取水位算出来（get_msg_seen_seq），不再是一个会失真的状态位。
+# 若仍有代码引用这两个名字，说明该处是待清理的旧逻辑，应改为按水位判断。
 
 # ===========================================================================
 # 回收站（删卡可撤销）
@@ -319,6 +428,92 @@ _ROLE_DDL: tuple[str, ...] = (
     note            TEXT DEFAULT ''
 )""",
     "CREATE INDEX IF NOT EXISTS idx_role_charter_role ON role_charter_history(role_id, version)",
+)
+
+# ===========================================================================
+# [function 实体化第一步 2026-10-21 · card_028] 职能（function）独立五表
+# ===========================================================================
+# 职能是「角色」剥掉卡的皮之后的独立实体：身份用独立号段 fn_NNN（不再是
+# card_NNN）、**不写 cards 表**——因此不出现在画布/卡片清单/卡树/任何按卡遍历。
+# 表结构与 role_* 五张表一一对应（纯改名迁移：card_id/role_id → function_id），
+# 另按任务书要求 profile 增加 ``function_name`` 列——职能没有 cards 行，名字只能
+# 自己扛（模型自填，本层只存不管内容，不设白名单）。
+#
+# 与 inbox/trash/role_* 同款：幂等 CREATE 挂在 ``_ensure_tables``（每次连接都跑，
+# 已存在即空操作），存量 work 首次连接即补建、不动任何既有行。
+# 存储操作在 ``src/storage/function_store.py``（纯存储，不 import api/card_store）。
+_FUNCTION_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS function_profiles (
+    function_id     TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    function_name   TEXT NOT NULL DEFAULT '',
+    jurisdiction    TEXT NOT NULL DEFAULT '{}',
+    watch           TEXT NOT NULL DEFAULT '{}',
+    speak_contract  TEXT NOT NULL DEFAULT '{}',
+    escalation      TEXT NOT NULL DEFAULT '{}',
+    duty            TEXT NOT NULL DEFAULT '{}',
+    charter         TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT,
+    updated_at      TEXT
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_function_profiles_work ON function_profiles(work_id)",
+    """CREATE TABLE IF NOT EXISTS function_verdicts (
+    id              TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    function_id     TEXT NOT NULL,
+    ts              TEXT,
+    decision        TEXT,
+    reason          TEXT,
+    sources         TEXT,
+    targets         TEXT,
+    evidence        TEXT,
+    auto            INTEGER DEFAULT 0,
+    superseded_by   TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_function_verdicts_fn ON function_verdicts(function_id, ts)",
+    """CREATE TABLE IF NOT EXISTS function_alarms (
+    id              TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    function_id     TEXT NOT NULL,
+    ts              TEXT,
+    severity        TEXT,
+    title           TEXT,
+    detail          TEXT,
+    status          TEXT DEFAULT 'open',
+    acked_at        TEXT DEFAULT '',
+    corrected_by    TEXT DEFAULT '',
+    supersedes      TEXT DEFAULT '',
+    question        TEXT DEFAULT '',
+    options         TEXT DEFAULT '[]',
+    recommendation  TEXT DEFAULT '',
+    default_action  TEXT DEFAULT '',
+    deadline        TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_function_alarms_fn ON function_alarms(function_id, status)",
+    """CREATE TABLE IF NOT EXISTS function_sync (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_id         TEXT NOT NULL,
+    function_id     TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    from_seq        INTEGER,
+    to_seq          INTEGER,
+    signals         TEXT,
+    status          TEXT DEFAULT 'pending',
+    created_at      TEXT,
+    consumed_at     TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_function_sync_pending ON function_sync(function_id, status)",
+    """CREATE TABLE IF NOT EXISTS function_charter_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_id         TEXT NOT NULL,
+    function_id     TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    text            TEXT,
+    ratified_by     TEXT,
+    ratified_at     TEXT,
+    note            TEXT DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_function_charter_fn ON function_charter_history(function_id, version)",
 )
 
 
@@ -688,6 +883,14 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
     for ddl in _ROLE_DDL:
         conn.execute(ddl)
+    for ddl in _FUNCTION_DDL:
+        conn.execute(ddl)
+    # [取消 inbox 状态机 2026-10-22 · D25] messages 表 + 旧 inbox 数据迁移。
+    # 迁移是幂等的（INSERT OR IGNORE），存量 work 首次连接即完成搬迁；
+    # 旧 inbox 表**保留不删**——兜底与审计用，新代码只读写 messages。
+    for ddl in _MESSAGES_DDL:
+        conn.execute(ddl)
+    _migrate_inbox_to_messages(conn)
     _ensure_role_columns(conn)
 
 
@@ -1092,6 +1295,21 @@ def next_seq(conn: sqlite3.Connection) -> int:
         return 1
 
 
+
+def next_fn_seq(conn: sqlite3.Connection) -> int:
+    """发下一个**职能号**（独立号段 ``meta.fn_seq``；不落盘；由调用方与建行同事务写回）。
+
+    [function 实体化第一步 2026-10-21 · card_028] 与 ``next_seq``（cards 的
+    meta.seq）同款先例，但键独立——职能号段与卡号段互不侵占；职能身份是
+    ``fn_001`` 形态，不占 card_NNN。
+    """
+    raw = get_meta_value(conn, "fn_seq", "0")
+    try:
+        return int(raw) + 1
+    except (TypeError, ValueError):
+        return 1
+
+
 def bump_rev(conn: sqlite3.Connection) -> int:
     """单调递增的库版本号（每次写 +1）。/nav/version 指纹读它——不依赖
     WAL 下可能不更新的主库文件 mtime（方案 §7.1.1）。"""
@@ -1116,7 +1334,17 @@ def bump_rev(conn: sqlite3.Connection) -> int:
 # ---------------------------------------------------------------------------
 
 def _inbox_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return {col: row[col] for col in _INBOX_COLUMNS}
+    """行 → dict。**兼容 messages 表**（无 status / consumed_at 两列）。
+
+    [取消 inbox 状态机 2026-10-22 · D25] messages 表没有状态列，这里补 None，
+    保证老调用方拿到的 dict 形状不变；但 status 已不再是任何逻辑的驱动源，
+    读它的代码都属于待清理项（见 routes.py 的未读角标）。
+    """
+    try:
+        keys = set(row.keys())
+    except Exception:  # noqa: BLE001
+        keys = set(_INBOX_COLUMNS)
+    return {col: (row[col] if col in keys else None) for col in _INBOX_COLUMNS}
 
 
 def _now_iso() -> str:
@@ -1128,29 +1356,37 @@ def _now_iso() -> str:
 def insert_inbox(conn: sqlite3.Connection, *, msg_id: str, work_id: str,
                  target_card_id: str, from_card: str, type: str,
                  content: str, reply_to: str = "", created_at: str = "") -> int:
-    """投递一条消息（status=pending）。返回其 seq（work 内投递序，1 起）。"""
+    """投递一条消息。返回其 seq（work 内投递序号，1 起）。
+
+    [取消 inbox 状态机 2026-10-22 · D25] 写 `messages` 表，**不再写 status**——
+    消息只是一条记录；是否被处理由「读取水位」算出来（见 get_msg_seen_seq）。
+    """
     row = conn.execute(
-        "SELECT COALESCE(MAX(seq), 0) AS m FROM inbox WHERE work_id = ?",
+        "SELECT COALESCE(MAX(seq), 0) AS m FROM messages WHERE work_id = ?",
         (work_id,),
     ).fetchone()
-    nxt = int(row["m"]) + 1
+    nxt = int((row[0] if row is not None else 0) or 0) + 1
     conn.execute(
-        "INSERT INTO inbox (msg_id, work_id, target_card_id, from_card, type,"
-        " content, reply_to, status, seq, created_at, consumed_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT INTO messages (msg_id, work_id, target_card_id, from_card, type,"
+        " content, reply_to, seq, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (msg_id, work_id, target_card_id, from_card, type, content, reply_to,
-         INBOX_PENDING, nxt, created_at),
+         nxt, created_at),
     )
     return nxt
-
-
 def select_pending(conn: sqlite3.Connection, work_id: str,
                    target_card_id: str) -> list[dict[str, Any]]:
-    """列某收件卡的**待处理**消息（按投递序升序）。"""
+    """列某收件卡**尚未处理**的消息（按投递序升序）。
+
+    [取消 inbox 状态机 2026-10-22 · D25] **不再是 status 查询，而是水位比较**：
+    该卡读过的最后一条 seq 之后的消息就是待处理。水位只增不减，所以这里算出的
+    「待处理」不会像旧的 pending 状态位那样失真——它反映的是真实处理进度。
+    """
+    seen = get_msg_seen_seq(conn, work_id, target_card_id)
     rows = conn.execute(
-        "SELECT * FROM inbox WHERE work_id = ? AND target_card_id = ?"
-        " AND status = ? ORDER BY seq",
-        (work_id, target_card_id, INBOX_PENDING),
+        "SELECT * FROM messages WHERE work_id = ? AND target_card_id = ?"
+        " AND seq > ? ORDER BY seq",
+        (work_id, target_card_id, seen),
     ).fetchall()
     return [_inbox_row_to_dict(r) for r in rows]
 
@@ -1167,25 +1403,36 @@ def select_inbox(conn: sqlite3.Connection, work_id: str,
     """
     if target_card_id:
         rows = conn.execute(
-            "SELECT * FROM inbox WHERE work_id = ? AND target_card_id = ? ORDER BY seq",
+            "SELECT * FROM messages WHERE work_id = ? AND target_card_id = ? ORDER BY seq",
             (work_id, target_card_id),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM inbox WHERE work_id = ? ORDER BY seq", (work_id,)
+            "SELECT * FROM messages WHERE work_id = ? ORDER BY seq", (work_id,)
         ).fetchall()
     return [_inbox_row_to_dict(r) for r in rows]
 
 
 def set_consumed(conn: sqlite3.Connection, msg_id: str,
                  consumed_at: str = "") -> int:
-    """把一条消息移出待处理（status→consumed，**不删行**）。返回受影响行数。"""
-    cur = conn.execute(
-        "UPDATE inbox SET status = ?, consumed_at = ?"
-        " WHERE msg_id = ? AND status = ?",
-        (INBOX_CONSUMED, consumed_at, msg_id, INBOX_PENDING),
-    )
-    return cur.rowcount
+    """标记一条消息已被处理。返回受影响行数（1＝推进成功，0＝找不到该消息）。
+
+    [取消 inbox 状态机 2026-10-22 · D25] **不再逐条改状态，而是推进该卡的读取水位**：
+    处理到这条消息 = 该卡读过它及之前的全部消息。水位只增不减，
+    所以并发/乱序处理都不会把已读的退回成未读。
+    """
+    row = conn.execute(
+        "SELECT work_id, target_card_id, seq FROM messages WHERE msg_id = ?",
+        (msg_id,),
+    ).fetchone()
+    if row is None:
+        return 0
+    try:
+        set_msg_seen_seq(conn, str(row["work_id"]),
+                         str(row["target_card_id"] or ""), int(row["seq"]))
+    except (TypeError, ValueError, IndexError):
+        return 0
+    return 1
 
 
 async def append_inbox(work_id: str, *, msg_id: str, target_card_id: str,

@@ -75,6 +75,16 @@ class RegionCtx:
     # 别的卡为 {}，区不出现）。取数在 context_assembler._load_role_cabinet（唯一 IO），
     # 渲染器只读它。存在理由见 render_role_cabinet_region 的 docstring。
     role_cabinet: dict[str, Any] = field(default_factory=dict)
+    # [function 实体化第二步 2026-10-21 · card_031] 两个新来源，**取数在装配层**
+    # （context_assembler.build_ctx），渲染器只读、绝不自己查库：
+    #   function_roster ＝ 本 work 全部职能档案（function_store.list_profiles）
+    #                    —— 只给项目根卡看（只有根卡能组阁/调阁）；
+    #   function_meta    ＝ **当前这一回合是谁**的职能档案（含 charter 全���、
+    #                    watch、speak_contract）。职能**不是卡**：它没有 cards 行、
+    #                    没有正卡三块、没有影子；它靠这个字段看到「我是谁」。
+    # 两者都缺省空 ⇒ 对应区输出空串（「没有来源就不出现这个区」）。
+    function_roster: list[dict[str, Any]] = field(default_factory=list)
+    function_meta: dict[str, Any] = field(default_factory=dict)
 
 
 def _count_duty_lines(ctx: RegionCtx, text: str) -> int:
@@ -117,8 +127,8 @@ def render_role_cabinet_region(ctx: RegionCtx) -> str:
 
     lines: list[str] = ["## 第二层（职能角色）· 阁员现状与变化信号"]
     lines.append("本卡是项目根卡：组阁与调阁的通道都在你手上"
-                 "（create_role / list_roles / role_watch_cards / "
-                 "update_role_profile / role_set_duty）。")
+                 "（create_function / list_functions / function_watch_cards / "
+                 "update_function_profile / set_function_duty）。")
 
     if roles:
         lines.append("")
@@ -175,6 +185,96 @@ def render_role_cabinet_region(ctx: RegionCtx) -> str:
     lines.append("要不要改档／停职／撤岗／新设，由你按局面判断；"
                  "判断为不需要就继续当前工作，不必解释。")
     return "\n".join(lines)
+
+
+# ============================================================
+# [function 实体化第二步 2026-10-21 · card_031] 两个职能区
+# ============================================================
+
+
+def render_function_roster_region(ctx: RegionCtx) -> str:
+    """93 区渲染（现有职能）：**只对项目根卡出**，一行一个职能。
+
+    为什么单独占一个区：91 区（card_029）只给「职能该按什么标准定」的判断标准，
+    是**没有存量**时的引导；本区给的是**已经建了哪些职能**这个事实——根卡要调阁
+    （改档／撤岗／扩关注）就得先看得见现状，否则和没建一样（实测「会设不会调」，
+    依据见 render_role_cabinet_region 的 docstring）。
+
+    判据（两条同时成立才出，fail-open）：
+      1. 当前卡是项目根卡：``cur_meta.card_id``（无则退回 ``ctx.card_id``）
+         等于 ``ctx.work_card_id``——只有根卡能组阁/调阁，给别的卡既无用也是噪音；
+      2. 本 work 至少有一个职能（``function_roster`` 非空）。
+    一个都没有 ⇒ 空串（「没有来源就不出现这个区」）——**不催建、不编造职能**。
+
+    纯函数：数据由 context_assembler.build_ctx 一次取好（function_store.
+    list_profiles），渲染器只读、自己不查库。
+    """
+    meta = ctx.cur_meta or {}
+    cur_card_id = str(meta.get("card_id") or ctx.card_id or "")
+    if not cur_card_id or not ctx.work_card_id:
+        return ""
+    if cur_card_id != str(ctx.work_card_id):
+        return ""                       # 非根卡一律空串
+    roster = [f for f in (ctx.function_roster or []) if isinstance(f, dict)]
+    if not roster:
+        return ""                       # 零职能＝没有来源＝不出这个区
+    lines: list[str] = ["## 现有职能"]
+    for f in roster:
+        fid = str(f.get("function_id") or "")
+        name = str(f.get("function_name") or "")
+        jur = f.get("jurisdiction") or {}
+        stmt = str(jur.get("statement") or jur.get("domain") or "（未写职责说明）")
+        watch_cards = (f.get("watch") or {}).get("cards") or []
+        duty = str((f.get("duty") or {}).get("state") or "active")
+        lines.append(f"- {name}（{fid}）：{stmt}"
+                     f"｜盯 {len(watch_cards)} 张卡｜值班 {duty}")
+    return "\n".join(lines)
+
+
+def render_function_self_region(ctx: RegionCtx) -> str:
+    """145 区渲染（你的职能）：职能**自己**回合的「我是谁」。
+
+    职能不是卡 ⇒ 没有 cards 行、没有正卡三块、没有影子、也不出现在卡片清单里。
+    以前角色卡靠「自己是张卡」天然看到自己的身份；职能把这层皮剥掉之后，
+    **必须由机制显式把档案摊给它**，否则它不知道自己是谁、也接不到活。
+    本区就是那个机制：只讲事实（我是谁／职责书／盯谁／什么时候开口），
+    末尾一句把它的行为边界说死——不干活、只盯、该开口才开口。
+
+    ``ctx.function_meta`` 为空（缺省／取数失败）⇒ 输出空串，**fail-open 不抛**
+    （「没有来源就不出现这个区」）。
+    """
+    meta = ctx.function_meta
+    if not isinstance(meta, dict) or not meta:
+        return ""
+    fid = str(meta.get("function_id") or "")
+    name = str(meta.get("function_name") or "")
+    if not fid and not name:
+        return ""                       # 没有可辨识的身份 ⇒ 不出这个区
+
+    lines: list[str] = ["## 你的职能", f"你是 {name or fid}（{fid}）"]
+
+    charter = str((meta.get("charter") or {}).get("text") or "").strip()
+    if charter:
+        lines += ["", "**职责书**", charter]
+
+    watch = (meta.get("watch") or {})
+    watch_cards = [str(c) for c in (watch.get("cards") or [])]
+    lines += ["", "**你盯的卡**"]
+    lines += [f"- {c}" for c in watch_cards] or ["- （空：你还没有盯任何卡）"]
+
+    sc = meta.get("speak_contract") or {}
+    advice = [str(x) for x in (sc.get("advice_when") or [])]
+    alarm = [str(x) for x in (sc.get("alarm_when") or [])]
+    lines += [
+        "",
+        "**你什么时候开口**",
+        f"- 建议（advice_when）：{'；'.join(advice) if advice else '（未设）'}",
+        f"- 警报（alarm_when）：{'；'.join(alarm) if alarm else '（未设）'}",
+        "",
+        "你不在任务树里，不干活，只盯；该开口时才开口，否则沉默。",
+    ]
+    return "\n".join(lines)
+
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +344,60 @@ REGION_TABLE: list[dict[str, Any]] = [
         "count": _count_duty_lines,
     },
     {
+        # [职能组建区 2026-10-21] order 91：紧跟 90 卡片职责之后、92 卡片能力之前。
+        # 只对**项目根卡 ＋ 自动模式**注入；非根卡 / 非自动模式 → 空区不出现。
+        # 只给判断标准，**不建职能表、不做白名单校验**（守 D02「职能不定死」）。
+        "key": "team_function_instruction",
+        "order": 91,
+        "name": "组建职能",
+        "channel": "system",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "逐字常量（无外部来源）：职能判断标准，仅根卡自动模式出区",
+        "render": lambda ctx: render_team_function_instruction_region(ctx),
+        "count": 1,
+    },
+    {
+        # [卡片能力区 2026-10-21] order 92：紧随 90 卡片职责之后、95 卡片思维之前。
+        # 90 讲「这类卡是什么」，本区讲「**你这张卡**手上有什么、动手前先想什么」。
+        # 来源＝卡自己的 perms（建卡时写死在卡上，不查配置、不看上级任务书）
+        # ⇒ 能力由系统授予，不依赖上级是否记得往下传（实测 30+ 张子卡 0 张被告知）。
+        "key": "card_ability",
+        "order": 92,
+        "name": "卡片能力",
+        "channel": "system",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "当前卡 meta.perms（建卡时按 config/permissions.json 算一次写死）",
+        "render": lambda ctx: render_card_ability_region(ctx),
+        "count": 1,
+    },
+    {
+        # [function 实体化第二步 2026-10-21 · card_031] order 93：在 92 卡片能力
+        # 之后、95 卡片思维之前。**只对项目根卡出**（只有根卡能组阁/调阁）。
+        # 与 91 区（card_029）的分工：91 给「职能该按什么标准定」的判断标准
+        # （没有存量时的引导、逐字常量），本区给**已建了哪些**的事实（可调可撤）。
+        # 零职能 ⇒ 空串（不催建、不编造，守 D02「职能不定死」）。
+        "key": "function_roster",
+        "order": 93,
+        "name": "现有职能",
+        "channel": "system",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main",),
+        "source": "function_store.list_profiles（装配层一次 read_sync，仅项目根卡）",
+        "render": lambda ctx: render_function_roster_region(ctx),
+        "count": lambda ctx, text: len(ctx.function_roster or []),
+    },
+    {
         # [卡片思维区 2026-10-15] order 95：紧随 90 卡片职责之后——
         # 90 讲「这类卡**干什么**」（类型级职责，来自类型注册表），
         # 本区讲「这类卡**该怎么想**」（类型级文本，来自 config/type_texts.json
@@ -276,6 +430,24 @@ REGION_TABLE: list[dict[str, Any]] = [
         "source": "context_assembler._load_cards_index（查库，每卡一行 id·标题·父卡）",
         "render": lambda ctx: render_card_list_region(ctx.cards, ctx.work_card_id),
         "count": lambda ctx, text: len(ctx.cards),
+    },
+    {
+        # [function 实体化第二步 2026-10-21 · card_031] order 145：在 100 卡片清单
+        # 之后、150 当前卡之前——「我是谁」紧跟在「这棵树上有哪些卡」之后，
+        # 早于「当前卡」。职能**不是卡**，所以 100 区不会有它的一行、150 区也没有
+        # 它的正文三块：本区是它唯一的身份来源（function_meta 由装配层取好）。
+        "key": "function_self",
+        "order": 145,
+        "name": "你的职能",
+        "channel": "system",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main",),
+        "source": "function_store.get_profile（装配层取好当前这一回合所属职能的档案）",
+        "render": lambda ctx: render_function_self_region(ctx),
+        "count": lambda ctx, text: 1 if text else 0,
     },
     {
         "key": "current_card",
@@ -736,6 +908,168 @@ def render_card_duty_region(registry: dict[str, Any]) -> str:
             lines.append(f"- {label}（{code}）：{desc}")
     if len(lines) == 1:  # 注册表里没有任何类型 → 空区
         return ""
+    return "\n".join(lines)
+
+
+# ============================================================
+# [职能组建区 2026-10-21 · order 91]
+# ============================================================
+# 这个区**只给判断标准，不给职能清单**（守 D02「职能不定死」）：
+#   职能名、设几个、盯什么卡，全部由模型看着眼下这件事自己判断；
+#   系统**不建职能表、不做白名单/枚举校验**，职能名对不对由它自己负责。
+# 为什么值得单独占一个区：写进 goal 里靠自觉，且只在「本轮目标恰好提到」时生效；
+# 而组阁恰恰是根卡「每一轮的第一件事」，漏一轮就漏一整段盯防。
+# 边界：本区**不做轮次闸门**（不判「有没有职能」「建过没有子卡」）
+#       —— 那是别的卡的事；这里只回答「职能该按什么标准定」。
+_TEAM_FUNCTION_INSTRUCTION_TEXT = """## 组建职能（你这一轮的第一件事）
+
+在动手做事之前，先把这件事需要的**职能**建出来。
+
+**职能＝人类团队里真实存在的岗位。** 产品、架构、研发、质量、安全、运维、数据、体验、交付……这些只是让你理解什么叫职能，**不是清单，也不许照抄**。它该是什么，由你看着眼下这件事自己判断。
+
+判断标准只有一条：**如果这个职能在你熟悉的人类团队里找不到对应的人，就不要建它。**
+
+- 不要把「任务」当职能（「写文档」是任务，不是职能）。
+- 不要把「模块」当职能（「存储层」是模块，不是职能）。
+- 不要为了凑数编一个。想不出该设什么职能，就直说这件事不需要专职职能、理由是什么——那比编一个好。
+
+职能不挂在你的任务树下，它不干活，只盯。你想清楚要盯什么、什么情况下它该开口，再建。"""
+
+
+def render_team_function_instruction_region(ctx: RegionCtx) -> str:
+    """91 区渲染（组建职能）：**只有项目根卡 ＋ 自动模式**才出，逐字常量注入。
+
+    两条渲染条件同时满足才输出，否则空串（fail-open，读不到就不出这个区）：
+      1. 当前卡是项目根卡：`cur_meta.card_id == work_card_id`
+         （`cur_meta` 里没有 card_id 时退回用 `ctx.card_id` 比）；
+      2. 自动模式：`bool(cur_meta.auto_mode)`。
+    故意 fail-open：这两项读不到（空 dict／坏数据）时宁可**不出**，
+    也不猜「大概它是根卡吧」—— 猜错会给非根卡注入组织指令。
+    """
+    meta = ctx.cur_meta or {}
+    cur_card_id = str(meta.get("card_id") or ctx.card_id or "")
+    if not cur_card_id or cur_card_id != str(ctx.work_card_id or ""):
+        return ""
+    if not bool(meta.get("auto_mode")):
+        return ""
+    return _TEAM_FUNCTION_INSTRUCTION_TEXT
+
+
+# ============================================================
+# [卡片能力区 2026-10-21 · 洞察来自 card_006 研究 + 用户裁定]
+# ============================================================
+# 为什么要有这个区（实测依据，不是设计偏好）：
+#   v1–v9 共 30+ 张子卡，**没有一张**被上级告知「你可以建自己的子卡 / 写自己的
+#   定论 / 发消息」。这项知识一直只写在「给根卡的那段提示」里，要不要往下传
+#   全靠上级自觉 ⇒ 实测 0/30 传下去了。子卡不知道该能干什么，于是只执行；
+#   上级以为子卡只能执行，于是把判断全做完再派活 —— 「子卡被用成子 agent」
+#   就是这么生产出来的。
+#   ⇒ 修法不是继续教上级怎么写任务书（那要靠自觉），而是**系统按每张卡自己的
+#   perms 直接注入**：上级写不写都不影响；执行体也照实看到「你没有建卡权」。
+# 与 90 区（卡片职责）的分工：
+#   90 讲「这类卡在系统里是什么」（类型级职责，来自注册表）；
+#   本区讲「**你这张卡**手上有什么、动手前该先想什么」（实例级能力，来自 perms）。
+# 空来源（读不到 perms）→ 只出纪律那一段，不编造能力。
+_ABILITY_SWITCH_LINES: tuple[tuple[str, str], ...] = (
+    ("create_child", "建自己的子卡"),
+    ("edit", "改自己的正文、写自己的定论"),
+    ("send_card_message", "发卡间消息（先建通信线）"),
+    ("read_linked", "沿通信线读对方卡"),
+    ("link", "建线/解线"),
+    ("plan", "建计划并推进步骤"),
+    ("tools_file", "读写文件、跑命令"),
+    ("tools_web", "联网查证"),
+    ("manuscript", "查本项目存档资料"),
+    ("invoke_tool", "调用工具卡"),
+    ("delete", "删卡"),
+)
+
+_RULE_TAIL = (
+    "**动手之前先想清楚：这件事该怎样拆解才合理** —— 要不要拆、拆成几块、"
+    "块与块之间是什么关系。"
+)
+
+_DISCIPLINE = (
+    "- 你负责范围内的判断由**你自己下**，写进自己的定论块；不要等上级把判据替你定完。"
+)
+
+# [2026-10-21 修正] 「还没拆过」是**提示**，不是闸门。
+# 用户裁定：第一轮只做组织过于机械——一张卡面对的第一轮完全可能是对话、
+# 讨论、澄清，这时该照常回答，不该被逼着拆。所以这里只把事实说出来，
+# 由它自己判断这一轮要不要拆；工具面不动。
+_NOT_SPLIT_HINT = (
+    "- 你负责的这件事**还没拆过**。如果它需要拆（分得开、能各自负责到底），"
+    "先按职责把卡建好、把每张卡的使命写清，再动手；"
+    "如果这一轮只是讨论、澄清或问情况，就照常回答——**不必为了拆而拆**。"
+)
+
+
+def render_card_ability_region(ctx: RegionCtx) -> str:
+    """92 区渲染（卡片能力）：把「这张卡手上有什么」按**它自己的 perms** 渲染。
+
+    三条硬规矩（改这个区时不要破坏）：
+    1. **来源是卡自己的 perms**（建卡时按 permissions.json 算一次写死在卡上），
+       不是卡类型猜的、不是上级任务书里写的 ⇒ 上级传不传都不影响。
+    2. 能力必须**照实**：没有 create_child 就明说没有（执行体不该被暗示能组织），
+       有就明说可以、并明说「不必等上级替你想好怎么分」。
+    3. perms 读不到（旧卡/坏数据）→ 不编造能力，只出纪律段（fail-open 不阻断装配）。
+    """
+    meta = ctx.cur_meta or {}
+    card_type = str(meta.get("card_type") or "")
+    card_id = str(meta.get("card_id") or ctx.card_id or "")
+    perms = meta.get("perms")
+    has = set(perms) if isinstance(perms, list) else None
+
+    head = ["## 你的能力（系统按卡类型授予，与上级怎么写你的任务书无关）"]
+    if card_type or card_id:
+        head.append(f"你是 `{card_id}`，卡类型 `{card_type}`。")
+    head.append("下面这些能力是**系统直接给这张卡**的；上级写不写进任务书都不增减，"
+                "也不用去问上级要。")
+
+    lines: list[str] = list(head)
+    # [拆分流程 2026-10-21] 使命还是模板占位 => 直接告诉它去要，别自己猜。
+    # 实测背景：使命通道打通前，子卡拿到占位符模板却照样开工，
+    # 于是只能从 goal 反推自己该干什么——那正是「子 agent」的由来。
+    _mission_txt = str(meta.get("mission") or "").strip()
+    if (not _mission_txt) or _mission_txt.startswith("（本卡作用/目标"):
+        lines.append(
+            "- **你的使命尚未设定**（现在是模板占位）。先向上级要清「你负责哪一块、"
+            "负责到什么程度」，不要从目标反推、也不要自己猜。"
+        )
+    if has is not None:
+        if "create_child" in has:
+            lines.append(
+                "- **建自己的子卡：可以。** 你负责的这一块如果还能再分"
+                "（几个可独立推进的部件、几条互不依赖的活），就自己建子卡，"
+                "**不必等上级替你想好怎么分**；建出来的卡同样拿到这份能力说明。")
+        # [2026-10-21 修正] 还没拆过 ⇒ 把事实说出来，让它自己判断这一轮要不要拆。
+        # 不做工具面闸门（那会挡住「第一轮其实是讨论」的正常回合）。
+        # 判据：有建卡权（能拆）＋ 系统里还没有它的直接子卡（没拆过）＋ 自动模式卡。
+        _has_child_perms = isinstance(has, set) and "create_child" in has
+        _no_children = not (ctx.direct_child_status or [])
+        if _has_child_perms and _no_children and bool(meta.get("auto_mode")):
+            lines.append(_NOT_SPLIT_HINT)
+
+        else:
+            why = ("你是执行体：一次一件事、做完即完工、不长树"
+                   if card_type == "coder" else "本卡类型不长树")
+            lines.append(
+                f"- **建自己的子卡：没有这个能力**（{why}）。"
+                "这一块如果需要再分，是派你活的上级该解决的问题——把你看到的"
+                "分工问题如实报上去，不要自己硬扛。")
+        for sw, label in _ABILITY_SWITCH_LINES:
+            if sw == "create_child" or sw not in has:
+                continue
+            lines.append(f"- {label}：可以。")
+        missing = [label for sw, label in _ABILITY_SWITCH_LINES
+                   if sw != "create_child" and sw not in has]
+        if missing:
+            lines.append(f"- 没有：{'、'.join(missing)}。")
+    else:
+        lines.append("- （系统未读到本卡的权限表，能力以系统提示为准。）")
+
+    lines.append(_DISCIPLINE)
+    lines.append(_RULE_TAIL)
     return "\n".join(lines)
 
 

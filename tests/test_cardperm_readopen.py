@@ -255,7 +255,9 @@ def test_no_permission_means_tool_invisible_not_just_denied():
     edit，模型照样看得见 edit_card。改一个开关要同时收掉「可见」和「可调」，
     否则权限收束对模型是假象。
     """
-    full = policy.perms_for("rd_project", "sub_project")
+    # [执行权集中 2026-10-21] 用合成全开关当夹具，
+    # 不再拿 sub_project（管理卡已无执行权，见 _FULL_SWITCHES 说明）
+    full = sorted(policy.SWITCHES)
     base = {"card_id": "card_x", "card_type": "sub_project", "perms": full}
 
     # 基线：全权限时每件工具都可见
@@ -271,13 +273,32 @@ def test_no_permission_means_tool_invisible_not_just_denied():
         ("shadow_write", "update_shadow"),
         ("manuscript", "read_manuscript"),
         ("invoke_tool", "run_tool_card"),
-        ("tools_file", "read_file"),
+        # [执行权集中 2026-10-21] 读文件改挂 tools_read_file（读写分离）：
+        # 摘掉 tools_file 只收走写/执行，读要看 tools_read_file。
+        # 读文件的开关有「写隐含读」语义（policy._SWITCH_IMPLIES），
+        # 单独摘 tools_read_file 不该让 read_file 消失 —— 见循环后的专项断言。
+        ("tools_file", "write_file"),
         ("tools_web", "web_search"),
         ("plan", "create_plan"),
     ):
         card = dict(base, perms=[p for p in full if p != switch])
         assert tool_name not in _visible(card), \
             f"摘掉 {switch} 后 {tool_name} 仍可见 —— 工具面没跟上执行层"
+
+    # ── 读写分离的专项断言（[执行权集中 2026-10-21]）──────────────
+    # 语义：tools_file（写）隐含 tools_read_file（读）——写权限包含读权限，
+    #       policy._SWITCH_IMPLIES 里有这条；反过来不成立。
+    no_write = dict(base, perms=[p for p in full if p != "tools_file"])
+    assert "write_file" not in _visible(no_write)
+    assert "read_file" in _visible(no_write), "留 tools_read_file 时应能读（写已摘）"
+
+    no_read = dict(base, perms=[p for p in full if p != "tools_read_file"])
+    assert "read_file" in _visible(no_read), "留 tools_file 时读仍可见（写隐含读）"
+
+    neither = dict(base, perms=[p for p in full
+                                if p not in ("tools_file", "tools_read_file")])
+    assert "read_file" not in _visible(neither), "读写开关都摘掉后不应能读"
+    assert "write_file" not in _visible(neither)
 
     # 默认关门：卡上没有 perms / 空 perms ⇒ 一件工具都看不见
     for bad in ({"card_id": "card_x", "card_type": "sub_project"},
@@ -303,7 +324,7 @@ def test_tool_card_toolface_matches_its_perms():
     # build_tool_schemas 真实工具池同口径排除它）⇒ 分类层镜头里也看不见：
     # 见 tests/test_status_update.py::test_propose_status_not_in_normal_toolface。
     assert _visible(card) == {"read_card", "read_memory", "read_shadow",
-                              "read_linked", "draft_rule_edit", "list_roles",
+                              "read_linked", "draft_rule_edit", "list_functions",
                               "edit_card", "delete_card", "update_shadow",
                               "create_plan", "plan_reorder", "plan_insert",
                               "plan_remove", "plan_modify", "step_complete"}
@@ -372,7 +393,9 @@ async def test_plan_tools_have_exec_gate():
 
 async def test_plan_switch_controls_toolface():
     """摘掉 plan 开关 ⇒ 思维链六件从工具面消失（不是只被拒）。"""
-    full = policy.perms_for("rd_project", "sub_project")
+    # [执行权集中 2026-10-21] 用合成全开关当夹具，
+    # 不再拿 sub_project（管理卡已无执行权，见 _FULL_SWITCHES 说明）
+    full = sorted(policy.SWITCHES)
     base = {"card_id": "card_x", "card_type": "sub_project", "perms": full}
     assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS - card_tools.ROLE_ONLY_TOOLS  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除；[角色机制5710] ROLE_ONLY 同
 
