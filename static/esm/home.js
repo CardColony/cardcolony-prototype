@@ -10,8 +10,8 @@
  * （见 git 7d09280 修复记录）在静态 import 形态下不存在，无需等待轮询。
  */
 import { API, toast } from "./api.js?v=42";
-import { storageGet } from "./state_layers.js?v=31";
-import { NAV_RECENT_KEY } from "./nav_find.js?v=30";
+import { storageGet } from "./state_layers.js?v=32";
+import { NAV_RECENT_KEY } from "./nav_find.js?v=31";
 
 const newBtn = document.getElementById("homeNewBtn");
 const createBtn = document.getElementById("homeCreateBtn");

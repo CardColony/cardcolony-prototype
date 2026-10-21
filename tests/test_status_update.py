@@ -297,11 +297,11 @@ def test_frontend_version_stamps_bumped():
     style 41→45（本分支既存漂移：home/settings 仍是 40，本次统一到 45）。
     """
     assert "../stream.js?v=52" in _read("static/esm/main_chat.js")
-    assert "../workspace.js?v=70" in _read("static/esm/main_chat.js")
+    assert "../workspace.js?v=72" in _read("static/esm/main_chat.js")
     assert "./stream.js?v=52" in _read("static/workspace.js")
     assert "./esm/flow/input-bar.js?v=5" in _read("static/workspace.js")
     assert "/static/style.css?v=49" in _read("templates/work.html")
-    assert "/static/esm/main_chat.js?v=4.1" in _read("templates/card.html")
+    assert "/static/esm/main_chat.js?v=4.3" in _read("templates/card.html")
 
 
 # ════════════════════════════════════════════════════════════════════

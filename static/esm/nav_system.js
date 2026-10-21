@@ -5,10 +5,10 @@
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
 import { notify } from "./api.js?v=42";
-import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=31";
+import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=37";
-import { createNavFind } from "./nav_find.js?v=30";
+import { createNavRenderer } from "./nav_render.js?v=38";
+import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
 
@@ -115,8 +115,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   function gotoCard(cid, wid, focusChild) {
     if (!cid) return;
     if (wid && wid !== WID()) {
-      // 跨项目：整页跳转，目标 work 页走既有 restoreFromHash 链恢复（V8）
-      window.location.href = "/work/" + wid + "#" + cid;
+      /* [跨项目跳转 2026-10-21 · 修] 原来拼 `/work/{wid}#{cid}`（旧 hash 路由），
+         hash 已退役（选中态在路径里）⇒ 靠 bootRestore / main.js 的旧链接兼容链
+         多跳一次才落地，任何一环没跟上就是"点了没反应"。直接走页面身份路径。 */
+      window.location.href = "/work/" + wid + "/card/" + cid;
       return;
     }
     open(cid).then(() => {
@@ -358,8 +360,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       // 只在「对话态且已打开根卡」时不重复打开——画布态时 cur() 留着旧值，
       // 若按「当前卡==根卡」判会变成死点击（点了没反应），必须同时看视图态。
       // [阶段5 A5.1] 视图态改判页静态标记（body.page-chat），不再读 data-view。
-      const inChat = document.body.classList.contains("page-chat");
-      if (inChat && cur() && cur().meta.card_id === rootCid) return;
+      /* [当前卡单源 2026-10-21] 早退只问一个口：select.is(项目, 卡)。
+         改前这里拼了三个条件（在对话页 且 当前卡存在 且 卡号相同），少比了项目号
+         ——而所有项目的根卡都叫 card_001 ⇒ 点 B 项目被判成"已经在看"，毫无反应。 */
+      if (navStore.select.is(phead.dataset.wid, rootCid)) return;
       gotoCard(rootCid, phead.dataset.wid, false);
       return;
     }
