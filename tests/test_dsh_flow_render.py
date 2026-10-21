@@ -541,3 +541,20 @@ def test_switch_card_reuses_memory_board():
     seg = ws[i:i + 600]
     assert "replayTrace" in seg, "缓存未命中仍要加载（else 分支）"
     assert "if (cached)" in ws
+
+
+def test_root_card_name_is_project_name():
+    """[根卡名＝项目名 2026-10-21 · 用户令] 项目名不许单独维护，必须有改名入口。
+
+    用户：「项目名根本没有地方编辑，麻烦你根卡名就是项目名」。
+    改前：work.json 的 title 与根卡 title 各存一份、且全系统没有任何改名入口。
+    现在：读 work 时 title 从根卡派生；左栏 ⋯ 菜单提供「重命名」。
+    """
+    ws = (ROOT / "src" / "storage" / "work_store.py").read_text(encoding="utf-8")
+    assert "def _apply_root_title" in ws, "缺「项目名从根卡派生」"
+    assert ws.count("_apply_root_title(") >= 3, "list_works 与 read_work 都要派生"
+
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert 'data-act="rename"' in nav, "左栏 ⋯ 菜单缺「重命名」"
+    assert "async function doRenameCard" in nav
+    assert "API.patchCard(wid, cid, { title: name }" in nav, "改名要写卡标题"

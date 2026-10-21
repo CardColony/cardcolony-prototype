@@ -61,6 +61,26 @@ def _card_count(work_id: str) -> int:
     return int(card_db.read_sync(work_id, _fn, 0) or 0)
 
 
+def _root_title(work_id: str, root_cid: str) -> str:
+    """根卡的标题（＝项目名）。读不到 ⇒ ""（调用方保留 work.json 里的旧值）。"""
+    if not root_cid:
+        return ""
+    try:
+        from . import card_store
+        meta = card_store._meta_of(work_id, root_cid) or {}
+        return str(meta.get("title") or "").strip()
+    except Exception:  # noqa: BLE001 库读不到就沿用 work.json
+        return ""
+
+
+def _apply_root_title(work_id: str, data: dict[str, Any]) -> None:
+    """[根卡名＝项目名 2026-10-21 · 用户令] 项目名不再单独维护：**读的时候从根卡派生**。
+    改根卡名 ⇒ 项目名自动跟着变；不会出现「项目名和根卡名两个值、还没有地方改」。"""
+    t = _root_title(work_id, str(data.get("work_card_id") or ""))
+    if t:
+        data["title"] = t
+
+
 def list_works() -> list[dict[str, Any]]:
     """扫描 works/work_*/work.json，每项附 card_count 与 last_active_at，
     并按 last_active_at 降序排（并列按 work_id 升序稳定收尾，刷新不跳序）。
@@ -87,6 +107,7 @@ def list_works() -> list[dict[str, Any]]:
             continue
         if data.get("deleted_at"):
             continue          # [删项目 2026-10-21] 标记删除的项目不再出现在列表里
+        _apply_root_title(p.name, data)
         data["card_count"] = _card_count(p.name)
         data["last_active_at"] = activity.work_last_active(p.name)
         works.append(data)
@@ -102,10 +123,13 @@ def read_work(work_id: str) -> Optional[dict[str, Any]]:
     if not jf.exists():
         return None
     try:
-        return json.loads(jf.read_text(encoding="utf-8"))
+        data = json.loads(jf.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.warning("解析 work.json 失败 %s: %s", jf, exc)
         return None
+    if isinstance(data, dict):
+        _apply_root_title(work_id, data)   # 根卡名＝项目名（读时派生）
+    return data
 
 
 def write_work(work_id: str, data: dict[str, Any]) -> None:

@@ -160,7 +160,9 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     // 提前置灰＝把后端既有防护搬到眼前，不是新规矩。画布入口仍在顶栏面包屑首段（根卡名）。
     /* [删项目 2026-10-21 · 用户令] 项目行原来只有一条置灰的「删除」（根卡不能删）——
        等于项目永远删不掉。现在项目行给的是「删除项目」（整目录搬进回收站）。 */
-    const items = [];
+    /* [根卡名＝项目名 2026-10-21 · 用户令] 项目名没有独立字段可改——它就是根卡名。
+       所以项目行的「重命名」改的就是根卡标题，改完项目名自动跟着变。 */
+    const items = [`<div class="nav-menu-item" data-act="rename">重命名</div>`];
     if (isProject) {
       items.push(`<div class="nav-menu-item danger" data-act="delwork">删除项目</div>`);
     } else {
@@ -187,6 +189,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
         }
         const act = item.dataset.act;
         closeNavMenu();
+        if (act === "rename") { doRenameCard(wid, cid, card); return; }
         if (act === "del") { doDeleteCard(wid, cid, card); return; }
         if (act === "delwork") { doDeleteWork(wid, card); return; }
         gotoCard(cid, wid, act === "child");
@@ -227,6 +230,23 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     }
     cardsChanged();          // 画布页：就地重建（否则那张卡还挂在画布上）
     await renderNav();
+  }
+
+  /* [根卡名＝项目名 2026-10-21] 重命名：改的是卡标题（根卡 ⇒ 项目名跟着变）。
+     原来全系统**没有任何改名入口**，项目名和根卡名还是两个字段，改不动也说不清。 */
+  async function doRenameCard(wid, cid, card) {
+    const cur = String((card && card.title) || "").trim();
+    const next = window.prompt("新名字：", cur);
+    if (next === null) return;
+    const name = String(next).trim();
+    if (!name || name === cur) return;
+    try {
+      await API.patchCard(wid, cid, { title: name }, "用户重命名");
+    } catch (e) {
+      return;   // toast 已由 api.js 处理
+    }
+    await renderNav();          // 重新拉导航：项目名是从根卡派生的，会一起变
+    notify("已改名：" + name, "success");
   }
 
   /* [删项目 2026-10-21] 一个「是否删除」弹窗就够——不再要求输入项目名
