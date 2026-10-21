@@ -53,6 +53,7 @@ from . import (
     context_regions,
     current_turn,
     event_stream,
+    model_config,
     model_service,
     progress,
     prompt_log,
@@ -657,6 +658,9 @@ async def step(state: RunState) -> StepOutcome:
             request["system_prompt"], request["user_prompt"], request["prior_messages"],
             tools=state.tools,
             model_name=_seat,
+            # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
+            fallbacks=model_config.layer_fallbacks(
+                _seat, work_id=state.work_id, card_id=state.card_id),
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
         )
@@ -684,6 +688,9 @@ async def step(state: RunState) -> StepOutcome:
             request["system_prompt"], request["user_prompt"], request["prior_messages"],
             tools=state.tools,
             model_name=_seat,
+            # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
+            fallbacks=model_config.layer_fallbacks(
+                _seat, work_id=state.work_id, card_id=state.card_id),
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
         )
@@ -1098,6 +1105,8 @@ async def run_seats(state: RunState) -> StepOutcome:
         synth_request["system_prompt"], synth_request["user_prompt"],
         synth_request["prior_messages"], tools=state.tools,
         model_name=_synth_seat,
+        fallbacks=model_config.layer_fallbacks(
+            _synth_seat, work_id=state.work_id, card_id=state.card_id),
         turn_tail=synth_request["turn_tail"],
         turn_once=synth_request["turn_once"],
     )

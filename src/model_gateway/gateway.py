@@ -350,6 +350,41 @@ class ModelGateway:
     async def call(
         self,
         model_name: str,
+        *args: Any,
+        fallbacks: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """调用模型；``fallbacks`` = **同层**兜底链（层内依次尝试，绝不跨层）。
+
+        [层内兜底 2026-10-21 · 用户令] 「不是原来那套用一个模型兜所有底，而是按照
+        层级策略，每一个层级内互相兜底」⇒ 首选重试耗尽就换同层下一个，
+        层内全挂才如实上抛，不会落到 system.default_model 那种全局兜底。
+
+        单模型的全部逻辑（重试/续写/统计）原样留在 ``_call_once``，本函数只加一层
+        「换人」循环——这样两条路径的行为差异只有「换哪个模型」。
+        """
+        chain = _dedup_chain(model_name, fallbacks)
+        last: ModelError | None = None
+        for idx, mname in enumerate(chain):
+            try:
+                res = await self._call_once(mname, *args, **kwargs)
+                # [层内兜底] 把**实际成功的模型**带回去：切过人之后日志/界面
+                # 必须记「真跑的是谁」，不能还写着首选（否则排查又被误导）。
+                if isinstance(res, dict):
+                    res.setdefault("model_used", mname)
+                return res
+            except ModelError as exc:
+                last = exc
+                if idx + 1 >= len(chain):
+                    break
+                logger.warning("[model] 层内兜底：%s 失败 ⇒ 换 %s（%s）",
+                               mname, chain[idx + 1], str(exc)[:160])
+        raise last if last is not None else ModelError(
+            ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 调用失败")
+
+    async def _call_once(
+        self,
+        model_name: str,
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.5,
@@ -498,6 +533,40 @@ class ModelGateway:
     async def stream_call(
         self,
         model_name: str,
+        *args: Any,
+        fallbacks: list[str] | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """流式调用；``fallbacks`` = **同层**兜底链。
+
+        [层内兜底 2026-10-21] 与 ``call`` 同一语义，但多一条硬约束：
+        **一旦已经吐过增量就不再换模型**——否则用户会看到半句话接另一个模型的
+        开头，等于把同一轮输出两遍。只有「一个字都还没出就失败」才换下一个。
+        """
+        chain = _dedup_chain(model_name, fallbacks)
+        last: ModelError | None = None
+        for idx, mname in enumerate(chain):
+            emitted = False
+            try:
+                async for ev in self._stream_once(mname, *args, **kwargs):
+                    if "chunk_type" in ev:
+                        emitted = True
+                    elif isinstance(ev, dict):
+                        ev.setdefault("model_used", mname)   # 终帧：实际使用的模型
+                    yield ev
+                return
+            except ModelError as exc:
+                last = exc
+                if emitted or idx + 1 >= len(chain):
+                    break
+                logger.warning("[model] 层内兜底（流式）：%s 失败 ⇒ 换 %s（%s）",
+                               mname, chain[idx + 1], str(exc)[:160])
+        raise last if last is not None else ModelError(
+            ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 流式调用失败")
+
+    async def _stream_once(
+        self,
+        model_name: str,
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.5,
@@ -572,6 +641,16 @@ class ModelGateway:
                     ErrorCode.MODEL_CALL_FAILED,
                     f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc}",
                 ) from exc
+
+
+def _dedup_chain(primary: str, fallbacks: list[str] | None) -> list[str]:
+    """``[首选] + 同层兜底``，去重去空、保持顺序。"""
+    out = [str(primary)] if str(primary or "").strip() else []
+    for m in (fallbacks or []):
+        m = str(m or "").strip()
+        if m and m not in out:
+            out.append(m)
+    return out
 
 
 class ModelCallFailure(Exception):

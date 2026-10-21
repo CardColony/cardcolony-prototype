@@ -386,6 +386,32 @@ def _fetch_headers(api_key: str, extra: Optional[dict] = None) -> dict[str, str]
     return headers
 
 
+@router.put("/tiers")
+async def put_tiers(request: Request) -> JSONResponse:
+    """保存**分层与兜底顺序**（models.yaml 的 tiers 一段）。
+
+    [层内兜底 2026-10-21 · 用户令] 「兜底的设置，你在设置里给我界面好了」。
+    每层是一个有序模型列表：第一个是首选，后面依次是它挂掉时接替的。
+    保存后立刻按新分层重算已有项目的默认行（src=manual 的不动）——
+    否则界面改了、老卡还跑旧链，用户会以为没生效。
+    """
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400,
+                            content={"ok": False, "errors": ["请求体不是合法 JSON"]})
+    tiers = payload.get("tiers") if isinstance(payload, dict) else None
+    if not isinstance(tiers, dict):
+        return JSONResponse(status_code=400,
+                            content={"ok": False, "errors": ["tiers 必须是对象"]})
+    res = model_config.save_tiers(tiers)
+    if not res.get("ok"):
+        return JSONResponse(status_code=400, content=res)
+    logger.info("[分层保存] tiers=%s 重算=%s", res.get("tiers"),
+                (res.get("reseed") or {}).get("changed"))
+    return JSONResponse(res)
+
+
 @router.post("/models/fetch")
 async def fetch_models(request: Request) -> JSONResponse:
     """拉某供应商的模型列表（加供应商时「拉取 → 勾选」用）。

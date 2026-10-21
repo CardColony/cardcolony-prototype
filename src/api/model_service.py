@@ -53,6 +53,7 @@ async def call_main(
     model_name: Optional[str] = None,
     turn_tail: Optional[list[dict[str, Any]]] = None,
     turn_once: Optional[list[dict[str, Any]]] = None,
+    fallbacks: Optional[list[str]] = None,
 ) -> tuple[dict[str, Any], str]:
     """以指定模型名发起调用，返回 (gateway结果, 实际使用的模型名)。
 
@@ -113,6 +114,9 @@ async def call_main(
         # [判断协议改注入 2026-10-14] 「仅本次」下发消息（判断协议投影）——
         # 追加在用户消息之后，**不进轮槽、不固化**；默认 None ⇒ 逐字同旧。
         turn_once=turn_once or None,
+        # [层内兜底 2026-10-21 · 用户令] 首选重试耗尽就换**同一层**的下一个；
+        # 层内全挂才如实失败，不跨层、不落到全局兜底。
+        fallbacks=fallbacks or None,
     ):
         if "chunk_type" in ev:
             # 逐字流增量：进独立通道，不进 content
@@ -147,7 +151,7 @@ async def call_main(
     if is_mock():
         model_used = "mock"
     else:
-        # [模型设置 2026-10-19 产品裁定] 无降级模型：实际所用即请求所指定。
-        entry = model_name
+        # [层内兜底 2026-10-21] 实际所用由网关回报（切过人时 ≠ 请求指定的那个）。
+        entry = (result.get("model_used") if isinstance(result, dict) else None) or model_name
         model_used = (gw.config.get("models") or {}).get(entry, {}).get("model", entry)
     return result, model_used
