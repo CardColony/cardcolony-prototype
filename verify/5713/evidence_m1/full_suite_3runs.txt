@@ -1,0 +1,6 @@
+M2 档2 整套档：pytest tests -q 连跑 3 轮（每轮 76 failed / 1014 passed / 125 skipped；4 条目标用例三轮皆绿）
+==============================================================================
+=== f1 exit=1 434.0s  76 failed, 1014 passed, 125 skipped, 1 warning in 432.59s (0:07:12)
+=== f2 exit=1 607.0s  76 failed, 1014 passed, 125 skipped, 1 warning in 605.12s (0:10:05)
+=== f3 exit=1 316.3s  76 failed, 1014 passed, 125 skipped, 1 warning in 314.70s (0:05:14)
+DONE

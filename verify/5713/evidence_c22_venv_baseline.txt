@@ -1,0 +1,166 @@
+[5713 · card_022] 闸工具与基线用了「别的项目的 venv」——修复与重采证据
+================================================================================
+日期：2026-10-21　分支：5713　worktree：D:\AI_station\推演agent\.worktrees\5713
+
+一、缺陷（旧态，可核对）
+--------------------------------------------------------------------------------
+1. 旧基线 verify/5713/baseline_known_red.json 的 command_scope.cmd[0] 是
+       D:\AI_station\写作agent\.venv\Scripts\python.exe        ← 隔壁项目的 venv
+2. 旧 baseline_diff.py 的 DEFAULT_CMD = [sys.executable, "-m", "pytest", ...]
+   而工具环境下 sys.executable 实测就是上面那个「写作agent」的 python。
+3. 旧基线原样留档（不覆盖、不删）：
+       verify/5713/baseline_known_red.json.bak-badvenv-20261021T000331
+   它就是「这份基线是在错误 venv 下采的」这一事实的证据。
+4. 后果：基线绑的不是「本项目的命令作用域」，而是「谁的 python 启动了这个工具」。
+   换机器 / 换启动方式，同一 HEAD 同一命令也会漂 —— 裁决 A7 的「命令作用域」当时是假的。
+
+二、修法（verify/5713/baseline_diff.py，行号以本提交为准）
+--------------------------------------------------------------------------------
+  L65   _venv_python_under(base)     base 下有 .venv 就返回其解释器（先 Scripts/python.exe，后 bin/python）
+  L74   _main_repo_root(cwd)         主仓根 = git rev-parse --git-common-dir 的父目录（worktree 下也指回主仓）
+  L95   _bounded_ancestors(start)    从本文件位置向上找，**截到主仓根为止**：宁可回退也不越界去捡别的项目的 venv
+  L109  resolve_project_python()     返回 (解释器, 来源说明, 项目根)；找不到 ⇒ 回退 sys.executable
+  L123  PROJECT_PYTHON / PROJECT_PYTHON_SOURCE / PROJECT_VENV_ROOT
+  L124  DEFAULT_CMD = [str(PROJECT_PYTHON), "-m", "pytest", "tests", "-q", "--junitxml={xml}"]
+  L244  interpreter_source(exe)      打印与基线共用同一个判据（不会「打印说 A、基线记 B」）
+  L260  announce_interpreter()       每次开跑先打**完整绝对路径**＋来源；回退时打醒目警告
+  L521  main() 调用它 —— --collect 与跑闸两条路径都会打出这一行
+
+  钉法的三条约束都落在代码里：
+  · **不硬编码项目名**：路径只由 __file__ 位置与「.venv 这一目录约定」推导，全程没有项目名字面量
+    （B-03「路径无单一注入点」正在修，不能反手新增一处硬编码债）；
+  · **回退必须留痕**：找不到 .venv ⇒ 回退 sys.executable，打
+    「警告：未找到项目 venv，改用 sys.executable，结果可能不可复现」，
+    并把同一句话写进基线 command_scope.note（新基线另有 interpreter_source / project_venv_root 两个字段）；
+  · **打印不许再缩写**：旧打印把解释器缩成 ``python``（两个项目各有一个 python，等于没说），
+    现在打完整路径。
+
+三、解释器实证（验收 ②）
+--------------------------------------------------------------------------------
+命令（**故意用隔壁项目的 python 启动**，看闸自己钉不钉回项目 venv）：
+
+    python verify\5713\baseline_diff.py --report verify\5713\evidence_r2\_c16_full1.xml
+
+输出（原样，见 verify/5713/_c22_probe_report.txt）：
+
+    [gate] 实际使用的解释器：D:\AI_station\推演agent\.venv\Scripts\python.exe
+    [gate] 解释器来源：项目自己的 .venv：由本文件位置向上找到 D:\AI_station\推演agent
+
+同一行在三态复验的三份日志里都出现（_c22_gate/gate1..3.out.txt）。
+
+四、重采（验收 ②的落盘结果）：项目 venv，3 轮整套
+--------------------------------------------------------------------------------
+采集脚本 verify/5713/_c22_collect.py（启动解释器自校验，不是项目 venv 就中止）。
+verify/5713/_c22_rounds/run.log 原样：
+
+    START 2026-10-21 00:01:29
+    PY=D:\AI_station\推演agent\.venv\Scripts\python.exe  (is_project_venv=True)
+    REPO=D:\AI_station\推演agent\.worktrees\5713
+    ROUND1 exit=1 305.6s at 00:06:35 xml=True
+    ROUND2 exit=1 315.0s at 00:11:50 xml=True
+    ROUND3 exit=1 355.1s at 00:17:45 xml=True
+    DONE 2026-10-21 00:17:45
+
+每轮 1215 例 / 76 红（三轮同数）。--collect（verify/5713/_c22_collect.log）：
+
+    [gate] 基线已写：...\verify\5713\baseline_known_red.json
+    [gate] commit=faa5fddbbcdc rounds=3 每轮红数=[76, 76, 76] known-red=76
+
+新基线自述（json 摘要）：
+
+    commit            = faa5fddbbcdc2d69a160e62bd5dab3746a629656
+    branch            = 5713
+    code_fingerprint  = {src: 72b9b935ddd2b8472e5d8e568f1e0df54656b89f,
+                         tests: 591cbc5ff32fcd59b80dfc452f7e803fb57a8a0b}
+    rounds            = 3
+    counts            = {collected_cases: 1215, red_per_round: [76,76,76], known_red: 76}
+    command_scope.cmd[0]        = D:\AI_station\推演agent\.venv\Scripts\python.exe
+    command_scope.interpreter_source = 项目自己的 .venv：由本文件位置向上找到 D:\AI_station\推演agent
+    command_scope.project_venv_root  = D:\AI_station\推演agent
+    command_scope.note          = ...；解释器＝项目自己的 .venv（D:\AI_station\推演agent）
+    env               = {MOCK_LLM: "0", PYTHONHASHSEED: null, PYTHONIOENCODING: null, TZ: null, PYTEST_ADDOPTS: null}
+    platform          = {python: 3.11.9, os: Windows-10-10.0.26300-SP0}
+
+口径与旧基线一致：3 轮取「每轮都红」者为 known-red；env 与旧基线同（MOCK_LLM=0，其余 null），
+未为了让基线「好看」而放宽任何判定。
+
+五、新旧基线对比（本卡最有价值的产出）
+--------------------------------------------------------------------------------
+见 verify/5713/_c22_compare.log（脚本 _c22_compare.py）：
+
+    旧基线：baseline_known_red.json.bak-badvenv-20261021T000331
+      commit=29689c1f47c7 rounds=3 counts={1215 例, [76,76,76], known_red 76}
+      cmd[0]=D:\AI_station\写作agent\.venv\Scripts\python.exe
+    新基线：baseline_known_red.json
+      commit=faa5fddbbcdc rounds=3 counts={1215 例, [76,76,76], known_red 76}
+      cmd[0]=D:\AI_station\推演agent\.venv\Scripts\python.exe
+
+    known-red 条数：旧 76 → 新 76
+    共同保留 76｜只在旧基线 0｜只在新基线 0｜signature 变了 0
+
+  ⇒ **差异 nodeid 列表：空**（0 条）。
+  ⇒ 结论：两版 venv 的 fastapi（0.140.0 vs 0.115.6）、uvicorn（0.51.0 vs 0.34.0）、
+     pydantic-settings（无 vs 2.16.0）在这 1215 条用例上**没有**改变任何一条的红/绿，
+     连失败面（exc_type/loc/snippet 签名）都一字不差。所以本次新旧基线**没有需要逐条解释的差异**。
+  ⇒ 但缺陷仍是缺陷：旧基线不可复现（换启动方式即漂移），只是这次运气好没漂出可见差异。
+     两份 basline 的被测代码面指纹一致（src 72b9b935d / tests 591cbc5ff），故这是同一代码面下的
+     纯环境对照，不是代码变化混入。
+
+六、改后闸三态复验（验收 ④）
+--------------------------------------------------------------------------------
+脚本 verify/5713/_c22_gate3.py，输入是**真实整套报告** _c22_rounds/r3.xml（1215 例 / 76 红），
+派生三份报告逐一喂闸（刻意用隔壁项目的 python 启动闸，顺带验钉法）：
+
+  ① 干净（r3.xml 原样）
+      [gate] 基线未过期：HEAD = faa5fddbbcdc
+      【新增红】0 条｜【已清红】0 条｜【剩余 known-red】76 条
+      汇总：本次红 76 条（共 1215 例）｜基线 known-red 76 条｜新增 0｜已清 0｜剩余 76
+      退出码 0
+  ② 临时新红（r3.xml ＋ 自造 tests/test_c22_synthetic.py::test_temp_new_red）
+      【新增红】1 条
+        + tests/test_c22_synthetic.py::test_temp_new_red
+      汇总：本次红 77 条（共 1216 例）｜新增 1｜已清 0｜剩余 76
+      退出码 1
+  ③ 已清一条（r3.xml 摘掉基线第一条 tests/test_auto_await_explicit.py::test_a2_explicit_works_without_any_child）
+      【新增红】0 条
+      【已清红】1 条
+        - tests/test_auto_await_explicit.py::test_a2_explicit_works_without_any_child
+      汇总：本次红 75 条（共 1214 例）｜新增 0｜已清 1｜剩余 75
+      退出码 0
+  ⇒ 三态齐备：干净 0/exit0、造新红 exit1 且报出该 nodeid、已清只落「已清红」不落「新增红」。
+
+七、边界与遗留
+--------------------------------------------------------------------------------
+· 只动 verify/5713/：baseline_diff.py（改）、baseline_known_red.json（重采）、
+  旧基线备份 .bak-badvenv-20261021T000331、本证据、三支复现脚本（_c22_collect/_c22_compare/_c22_gate3）。
+  零 src、零 tests。5700 生产目录/进程未触碰。
+· 采集期间另有卡在提交 docs（HEAD 由 d1718222 前进到 faa5fdd），但 src/ 与 tests/ 树指纹不变
+  （72b9b935d / 591cbc5ff），故三轮跑的是同一被测代码面，基线有效。
+· 遗留（本卡不做）：① 其他仍用 sys.executable 的 verify 脚本（arch_scan / boundary_scan /
+  channel_walk 等）是否也该钉项目 venv，属各自卡的事；② 「项目 venv 在 worktree 之外」这一布局
+  本身（worktree 共用主仓 .venv）没有单点声明，B-03 路径收口时值得一并收。
+
+八、提交自检（git show HEAD --stat）
+--------------------------------------------------------------------------------
+`git show HEAD --stat` 的文件清单（本卡提交；hash 每次 amend 会变，故只抄清单与行数）：
+
+     verify/5713/_c22_collect.log                       |   4 +
+     verify/5713/_c22_collect.py                        |  55 ++
+     verify/5713/_c22_compare.log                       |  10 +
+     verify/5713/_c22_compare.py                        |  72 ++
+     verify/5713/_c22_gate/gate1.out.txt                | 166 ++++
+     verify/5713/_c22_gate/gate2.out.txt                | 168 ++++
+     verify/5713/_c22_gate/gate3.out.txt                | 166 ++++
+     verify/5713/_c22_gate3.log                         |   6 +
+     verify/5713/_c22_gate3.py                          | 123 +++
+     verify/5713/_c22_probe_report.txt                  | 183 ++++
+     verify/5713/_c22_rounds/run.log                    |   7 +
+     verify/5713/baseline_diff.py                       | 121 ++-
+     verify/5713/baseline_known_red.json                |  12 +-
+     ...line_known_red.json.bak-badvenv-20261021T000331 | 959 +++++++++++++++++++++
+     verify/5713/evidence_c22_venv_baseline.txt         | 145 ++++
+     15 files changed, 2189 insertions(+), 8 deletions(-)
+
+    改动全部落在 verify/5713/：**零 src、零 tests**（清单里没有一条 src/** 或 tests/**）。
+    提交前逐条 `git status --porcelain` 核对过，只 add 了本卡自己的文件，
+    没有 `git add -A`（同 worktree 其他卡的在途日志仍是未跟踪状态）。
