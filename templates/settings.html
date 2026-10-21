@@ -11,7 +11,7 @@
      右：选中供应商的模型详细设置（连接字段 + 模型列表）。
      添加供应商 = 模板选择器；操作收进「⋯」菜单。-->
 <link rel="stylesheet" href="/static/style.css?v=49">
-<link rel="stylesheet" href="/static/settings.css?v=10.12">
+<link rel="stylesheet" href="/static/settings.css?v=10.13">
 </head>
 <body class="set-body">
 <div class="set-page">
@@ -90,6 +90,20 @@
         </div>
       </section>
 
+      <!-- 分层与兜底：每层是一个有序模型列表 —— 第一个是首选，后面依次接替 -->
+      <section class="set-block">
+        <div class="set-h2-row">
+          <h2 class="set-h2">分层与兜底</h2>
+          <span class="set-hint" id="tierHint">每层从上到下依次尝试：第一个是首选，它失败就换下一个。只在本层内兜底，不会跨层。</span>
+        </div>
+        <div class="set-card" id="tierList"></div>
+        <div class="set-ctm-foot">
+          <span class="set-note" id="tierStatus"></span>
+          <span class="spacer" style="flex:1"></span>
+          <button class="btn primary" id="tierSaveBtn">保存分层</button>
+        </div>
+      </section>
+
       <!-- 操作栏：属于【模型】分区，不是整个页面。
            保存/还原只作用于模型配置（models.yaml）。
            未来左侧加权限、通用等分区时，每个分区自带自己的操作区，
@@ -158,6 +172,6 @@
 </div>
 
 <div id="toastContainer" class="toast-container"></div>
-<script src="/static/settings.js?v=10.12"></script>
+<script src="/static/settings.js?v=10.13"></script>
 </body>
 </html>

@@ -78,11 +78,12 @@ async def test_draft_returns_draft_and_base_hash_without_tools(sandbox, monkeypa
     captured = {}
     orig = card_draft.model_service.call_main
 
-    async def spy(system_prompt, user_prompt, prior_messages=None, tools=None, model_name="main"):
+    async def spy(system_prompt, user_prompt, prior_messages=None, tools=None,
+                  model_name="main", turn_tail=None, turn_once=None, fallbacks=None):
         captured["tools"] = tools
         captured["system"] = system_prompt
         return await orig(system_prompt, user_prompt, prior_messages=prior_messages,
-                          tools=tools, model_name=model_name)
+                          tools=tools, model_name=model_name, fallbacks=fallbacks)
 
     monkeypatch.setattr(card_draft.model_service, "call_main", spy)
     r = await card_draft.draft(wid, cid, "requirements")
@@ -271,10 +272,11 @@ async def test_draft_with_feedback_and_prev_draft(sandbox, monkeypatch):
     captured = {}
     orig = card_draft.model_service.call_main
 
-    async def spy(system_prompt, user_prompt, prior_messages=None, tools=None, model_name="main"):
+    async def spy(system_prompt, user_prompt, prior_messages=None, tools=None,
+                  model_name="main", turn_tail=None, turn_once=None, fallbacks=None):
         captured["user"] = user_prompt
         return await orig(system_prompt, user_prompt, prior_messages=prior_messages,
-                          tools=tools, model_name=model_name)
+                          tools=tools, model_name=model_name, fallbacks=fallbacks)
 
     monkeypatch.setattr(card_draft.model_service, "call_main", spy)
     r = await card_draft.draft(

@@ -414,12 +414,23 @@ def _policy_value(role: str, work_id: Optional[str],
 
 
 def _policy_row(work_id: str, card_id: str) -> dict:
-    """按默认策略生成**表里的一行**：主模型 ＋ 三席池（若有）。"""
+    """按默认策略生成**表里的一行**：主模型 ＋ 层内兜底链 ＋ 三席池（若有）。
+
+    [层内兜底 2026-10-21 · 用户令] 「按照层级策略，每一个层级内互相兜底」——
+    所以这一行必须把**整层的候选链**记下来（首选在前，其余按 models.yaml 顺序），
+    不能像改前那样挑一个写进去、把池里其他成员丢掉（丢了就无从兜底）。
+    """
     row: dict[str, Any] = {}
     main = _policy_value("default", work_id, card_id)
     if isinstance(main, list):
-        main = _choose_from_pool(main, work_id, card_id)
-    if main:
+        pool = [str(x) for x in main if str(x).strip()]
+        chosen = _choose_from_pool(pool, work_id, card_id)
+        if chosen:
+            row["model"] = chosen
+            rest = [x for x in pool if x != chosen]
+            if rest:
+                row["fallbacks"] = rest
+    elif main:
         row["model"] = str(main)
     pool = _policy_value("viewpoint", work_id, card_id)
     if isinstance(pool, list):
@@ -505,6 +516,88 @@ def pick_pool(role: str, *, work_id: Optional[str] = None,
     return list(v) if isinstance(v, list) else [str(v)]
 
 
+def _layer_pool(work_id: Optional[str], card_id: Optional[str]) -> list[str]:
+    """这张卡所在**层**的原始候选池（含首选，按 models.yaml 里的顺序）。"""
+    raw = _tier_raw(work_id, card_id, _gateway_config())
+    if raw is None:
+        return []
+    pool = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+    return [str(x).strip() for x in pool if str(x).strip()]
+
+
+def fallback_chain(role: str = "default", *, work_id: Optional[str] = None,
+                   card_id: Optional[str] = None) -> list[str]:
+    """**候选链**：``[首选, 同层兜底…]``。运行时唯一取模型的口。
+
+    [层内兜底 2026-10-21 · 用户令] 「模型还是需要一个 fallback 机制，但不是原来那套
+    用一个模型兜所有底，而是按照层级策略，每一个层级内互相兜底」。
+    ⇒ 兜底只发生在**同一个层**里（depth_2 三个模型互相兜），绝不跨层，
+      更不会落到 system.default_model 那种全局兜底。
+
+    来源：表里那一行的 ``model`` + ``fallbacks``（建卡时按层池写好）。
+    行里没有 ``fallbacks``（老行）⇒ 按当前层池现算并**补回表里**（自愈，一次）。
+    人手动换过主模型 ⇒ 兜底仍是该层其余成员（**位置决定层**，人只改首选）。
+    """
+    primary = pick_one(role, work_id=work_id, card_id=card_id)
+    if not primary:
+        return []
+    if str(role) != "default":
+        # 三席/凝练/折叠等角色：语义不是「主备」，不套层内兜底
+        return [primary]
+
+    rest: list[str] = []
+    if work_id and card_id:
+        from ..storage import model_override as _mo
+        row = _mo.get_row(work_id, card_id) or {}
+        rest = [str(x) for x in (row.get("fallbacks") or []) if str(x).strip()]
+        if not rest:
+            rest = [m for m in _layer_pool(work_id, card_id) if m != primary]
+            if rest:
+                try:
+                    newrow = dict(row)
+                    newrow["fallbacks"] = rest
+                    _mo.put_row(work_id, card_id, newrow,
+                                src=str(row.get("src") or "default"))
+                except Exception as exc:  # noqa: BLE001 补链失败不影响本次调用
+                    logger.warning("补层内兜底链失败 work=%s card=%s: %s",
+                                   work_id, card_id, exc)
+
+    out = [primary]
+    for m in rest:
+        if m not in out and _still_available(m):
+            out.append(m)
+    return out
+
+
+def layer_fallbacks(model_name: str, *, work_id: Optional[str] = None,
+                    card_id: Optional[str] = None) -> list[str]:
+    """**同层其余成员**（去掉 ``model_name`` 自己）——给「已经选好座位」的调用方用。
+
+    与 :func:`fallback_chain` 的区别：那边是「我来选首选」，这边是「首选已经定了，
+    给我它挂掉时该换谁」。两者都只在本层内取，绝不跨层。
+
+    顺序：表里那一行配的 ``fallbacks`` 在前（设置界面/人手配的优先），
+    再用当前层池补齐（层池加了新成员也能跟上）。
+    """
+    me = str(model_name or "").strip()
+    if not me:
+        return []
+    rest: list[str] = []
+    if work_id and card_id:
+        try:
+            from ..storage import model_override as _mo
+            row = _mo.get_row(work_id, card_id) or {}
+            rest.extend(str(x) for x in (row.get("fallbacks") or []) if str(x).strip())
+        except Exception:  # noqa: BLE001 读不到表 ⇒ 只用层池
+            pass
+    rest.extend(m for m in _layer_pool(work_id, card_id) if m != me)
+    out: list[str] = []
+    for m in rest:
+        if m != me and m not in out and _still_available(m):
+            out.append(m)
+    return out
+
+
 def default_model(*, work_id: Optional[str] = None,
                   card_id: Optional[str] = None) -> str:
     """「这张卡/项目的默认模型」＝ pick_one("default")。保留旧签名（多处消费）。"""
@@ -540,6 +633,144 @@ def _card_depth(work_id: str, card_id: str) -> int:
         if cur:
             depth += 1
     return depth
+
+
+#: 分层键（顺序＝树从浅到深，最后是兜底层）。设置界面按这个顺序展示。
+TIER_LEVELS: tuple[str, ...] = ("depth_0", "depth_1", "depth_2", "default")
+
+
+def _as_pool(v: Any) -> list[str]:
+    """层配置值 → 模型名列表（单值/元组都归一，去空串、去重保序）。"""
+    if v in (None, "", []):
+        return []
+    pool = list(v) if isinstance(v, (list, tuple)) else [v]
+    out: list[str] = []
+    for x in pool:
+        m = str(x).strip()
+        if m and m not in out:
+            out.append(m)
+    return out
+
+
+def tiers() -> dict[str, list[str]]:
+    """当前分层配置，统一成 ``{层: [模型…]}``——**列表顺序就是兜底顺序**。
+
+    第一项是首选，后面依次是「首选挂了换它」。设置界面与 ``layer_fallbacks``
+    都读这一份，所以界面上看到的顺序就是运行时的尝试顺序。
+    """
+    raw = _gateway_config().get("tiers") or {}
+    out: dict[str, list[str]] = {}
+    for k in TIER_LEVELS:
+        pool = _as_pool(raw.get(k))
+        if pool:
+            out[k] = pool
+    for k, v in raw.items():          # 额外层（depth_3…）原样带上
+        if str(k) in out or str(k) in TIER_LEVELS:
+            continue
+        pool = _as_pool(v)
+        if pool:
+            out[str(k)] = pool
+    return out
+
+
+def save_tiers(new_tiers: dict[str, Any]) -> dict[str, Any]:
+    """保存分层（含层内兜底顺序）并重算已有项目的默认行。
+
+    校验：每个模型名必须在当前模型目录里（不许发明模型）。
+    「表存结果」的代价是规则变了旧行不会自己变 ⇒ 保存后立刻 reseed 一次，
+    人手改过的行（src=manual）不动。
+    """
+    known = model_names()
+    errs: list[str] = []
+    clean: dict[str, list[str]] = {}
+    for k, v in (new_tiers or {}).items():
+        key = str(k).strip()
+        if not key:
+            continue
+        pool = _as_pool(v)
+        ok_pool: list[str] = []
+        for m in pool:
+            if m not in known:
+                errs.append(f"{key} 里的模型不在模型目录：{m}")
+                continue
+            ok_pool.append(m)
+        if ok_pool:
+            clean[key] = ok_pool
+    if errs:
+        return {"ok": False, "errors": errs, "tiers": tiers()}
+
+    raw = _load_raw_file()
+    raw["tiers"] = clean
+    save(raw)
+    reload()
+    # 网关实例的 config 是启动时编译的副本——只改文件的话 tiers() 还会读到旧值。
+    # tiers 不参与适配器构造，所以**就地替换这一节**即可，不必重建网关。
+    try:
+        from . import model_service as _ms
+        gw = getattr(_ms, "_gateway", None)
+        if gw is not None and isinstance(getattr(gw, "config", None), dict):
+            gw.config["tiers"] = clean
+    except Exception as exc:  # noqa: BLE001 无实例/测试替身 ⇒ 下次读文件即可
+        logger.debug("分层保存：网关实例 config 同步失败（忽略）: %s", exc)
+    return {"ok": True, "errors": [], "tiers": tiers(), "reseed": reseed_tables()}
+
+
+def _row_key(row: dict) -> tuple:
+    """比较两行是否等价（主模型 ＋ 兜底链 ＋ 角色例外）。"""
+    return (str(row.get("model") or ""),
+            tuple(str(x) for x in (row.get("fallbacks") or [])),
+            json.dumps(row.get("bindings") or {}, sort_keys=True, ensure_ascii=False))
+
+
+def reseed_tables(work_id: str = "", *, dry_run: bool = False) -> dict[str, Any]:
+    """按当前默认策略重算表里 **src=default** 的行（manual 不动）。
+
+    供设置界面「保存分层」后自动调用，也是 ``scripts/reseed_model_tables.py`` 的实现。
+    """
+    from ..storage import model_override as _mo
+    from ..storage import work_store
+
+    root = Path(work_store.WORKS_DIR)
+    scanned = changed = 0
+    items: list[dict[str, Any]] = []
+    if not root.exists():
+        return {"scanned": 0, "changed": 0, "items": items, "dry_run": dry_run}
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        wid = d.name
+        if work_id and wid != work_id:
+            continue
+        if not (d / _mo.TABLE_FILE).exists():
+            continue
+        data = _mo.load(wid)
+        for cid, row in list((data.get("cards") or {}).items()):
+            scanned += 1
+            if row.get("src") == "manual":
+                continue
+            new_row = _policy_row(wid, cid)
+            # [保留原首选 2026-10-21] 重算**只补/改兜底链，不轻易换主模型**：
+            # 原主模型只要还在这一层的池里就留着——否则每保存一次分层，
+            # 那些按「实时占用分散」选出来的卡就会无意义地跳来跳去。
+            old_model = str(row.get("model") or "")
+            pool = _layer_pool(wid, cid)
+            if old_model and (not pool or old_model in pool):
+                new_row["model"] = old_model
+                rest = [m for m in pool if m != old_model]
+                if rest:
+                    new_row["fallbacks"] = rest
+                else:
+                    new_row.pop("fallbacks", None)
+            if _row_key(row) == _row_key(new_row):
+                continue
+            changed += 1
+            items.append({"work_id": wid, "card_id": cid,
+                          "from": row.get("model") or "",
+                          "to": new_row.get("model") or "",
+                          "fallbacks": new_row.get("fallbacks") or []})
+            if not dry_run:
+                _mo.put_row(wid, cid, new_row, src="default")
+    return {"scanned": scanned, "changed": changed, "items": items, "dry_run": dry_run}
 
 
 def _tier_raw(work_id: Optional[str], card_id: Optional[str],
