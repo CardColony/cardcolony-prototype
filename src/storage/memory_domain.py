@@ -316,16 +316,23 @@ def covered_seqs_of(chain: list[dict[str, Any]]) -> list[int]:
 # ---------------------------------------------------------------------------
 
 def chain_from_entries(entries: list[dict[str, Any]],
-                       session_id: str) -> list[dict[str, Any]]:
+                       session_id: str,
+                       folded_fingerprints: set[str] | None = None) -> list[dict[str, Any]]:
     """把现有的扁平记忆条目转成**单层链**（每条＝一个 level=1 的 root 节点）。
 
     - `anchor.seq` ＝条目的 `seq`；`gist` ＝`conclusion`；
     - `coveredSeqs` ＝ `[seq_from..seq_to]`（条目已带追溯范围）；
     - `level=1`、`upper=[]`、`lower=[]` ⇒ **天然满足 I1–I5**（单层森林）。
 
+    `folded_fingerprints`：低频归拢（`memory_store._maybe_fold` 的 `state.folded` 指纹账）
+    里已归拢的成员。这些条目**物理仍在 entries**（既有实现不删），但已不是顶层散条 ⇒
+    对应节点标 `supersededBy="folded"`，由 `memory_lifecycle.visible_chain` 过滤掉，
+    **节点与原文都保留可查**（与 dsh「旧成员降层保留」同口径）。
+
     这是过渡形态：dsh 的链是模型产出 `upper/lower` 的多层图；我们先把"可校验、可追溯"
-    这层立住，多层生长等凝练提示词改造后再开（见回报 §五）。
+    这层立住，多层生长由 `migrate_archive` 物化 description 子节点承担（见回报 §五）。
     """
+    folded = folded_fingerprints or set()
     chain: list[dict[str, Any]] = []
     for e in entries or []:
         seq = int(e.get("seq", 0) or 0)
@@ -351,6 +358,9 @@ def chain_from_entries(entries: list[dict[str, Any]],
             val = e.get(src)
             if val and not node.get(dst):
                 node[dst] = str(val)
+        # 已被低频归拢吸收的成员：标 supersededBy（节点不删，渲染时过滤）
+        if folded and str(e.get("fingerprint") or "") in folded:
+            node["supersededBy"] = "folded"
         chain.append(node)
     return chain
 

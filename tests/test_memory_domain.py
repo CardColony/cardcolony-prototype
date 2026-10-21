@@ -246,3 +246,27 @@ def test_migrate_archive_is_idempotent():
     twice, rep2 = md.migrate_archive(once, [{"seq": 5, "process": "描述正文"}])
     assert rep1["created"] == 1 and rep2["created"] == 0, "幂等：不重复造"
     assert len(twice) == len(once)
+
+
+# ---------------------------------------------------------------- 与既有归拢（state.folded）对接
+
+def test_chain_marks_folded_entries_superseded():
+    """低频归拢吸收的成员（指纹在 state.folded 里）⇒ 链节点标 supersededBy，节点不删。"""
+    from src.storage import memory_lifecycle as lc
+
+    entries = [
+        {"seq": 1, "conclusion": "甲（已被并）", "fingerprint": "fp-a", "seq_from": 1, "seq_to": 2},
+        {"seq": 3, "conclusion": "乙（已被并）", "fingerprint": "fp-b", "seq_from": 3, "seq_to": 4},
+        {"seq": 5, "conclusion": "甲乙合并后", "fingerprint": "fp-m", "seq_from": 1, "seq_to": 4},
+    ]
+    chain = md.chain_from_entries(entries, "s1", folded_fingerprints={"fp-a", "fp-b"})
+    assert len(chain) == 3, "节点一个不删"
+    assert [bool(n.get("supersededBy")) for n in chain] == [True, True, False]
+    vis = lc.visible_chain(chain)
+    assert [n["gist"] for n in vis] == ["甲乙合并后"], "只露合并后的那条"
+    assert md.check_invariants(chain) == []
+
+
+def test_chain_without_folded_ledger_is_unchanged():
+    entries = [{"seq": 1, "conclusion": "甲", "fingerprint": "fp-a"}]
+    assert md.chain_from_entries(entries, "s1")[0].get("supersededBy") is None

@@ -47,7 +47,7 @@ from typing import Any
 
 import tiktoken
 
-from . import fold_l1, memory_domain, session_facade, session_store
+from . import memory_domain, session_facade, session_store
 
 logger = logging.getLogger("storage.memory")
 
@@ -514,17 +514,6 @@ async def _condense_call(user_prompt: str) -> str:
         model_name=model_config.pick_one("condense"))
     return str((result or {}).get("content") or "")
 
-async def _fold_call(user_prompt: str) -> str:
-    """归拢（fold-l1）的模型调用：与凝练同一个 condense 绑定，**换 system 提示**。"""
-    from ..api import model_config, model_service
-
-    result, _model = await model_service.call_main(
-        fold_l1.FOLD_STEP1_PROMPT, user_prompt, prior_messages=[], tools=None,
-        model_name=model_config.resolve("condense") or model_config.default_model())
-    return str(result.get("content") or "")
-
-
-
 async def _condense_one_batch(work_id: str, card_id: str,
                               window: list[dict[str, Any]], mark: int) -> bool:
     """单批凝练（原管线本体逐段保留，[任务3] 批化拆出）：取段→模型写→解析→
@@ -604,7 +593,8 @@ async def _condense_one_batch(work_id: str, card_id: str,
     # [记忆因果链 2026-10-20] 条目 → 单层链落库，并跑 I1–I5 不变量（违例只记日志、不阻断）。
     # 链落 `memory` 表（dsh 同表：每会话一条 = 链 + 两个半开水位）；追溯走 coveredSeqs。
     try:
-        chain = memory_domain.chain_from_entries(existing + final_entries, card_id)
+        chain = memory_domain.chain_from_entries(existing + final_entries, card_id,
+                                                 folded_fingerprints=set(state.get("folded") or []))
         viol = memory_domain.check_invariants(chain)
         if viol:
             logger.warning("[memory_domain] 条目不变量违例 %d 条 card=%s: %s",
@@ -630,28 +620,6 @@ async def _condense_one_batch(work_id: str, card_id: str,
                     memory_domain.save_chain(work_id, card_id, _migrated,
                                              condense_mark=target_mark)
                     chain = _migrated
-        # [低频归拢 2026-10-21 · 照抄 dsh condense/fold-l1] 每 FOLD_EVERY_BATCHES 批把顶层结论
-        # 归拢一次。**触发≠必然凝练**：顶层<2 时 run_fold 直接返回、零模型调用；
-        # 失败（模型抛错/输出不成形）⇒ 链一点不动，下轮重试。
-        _batch_now = int(state.get("batch_count", 0) or 0) + 1
-        if fold_l1.should_fold(_batch_now, int(state.get("last_fold_check", 0) or 0)):
-            try:
-                if len(fold_l1.foldable_tops(chain)) >= 2:
-                    _ftext = await _fold_call(fold_l1.build_fold_prompt(chain))
-                    _folded, _frep = fold_l1.apply_fold_text(chain, _ftext, card_id)
-                    if _frep["outcome"] == "committed":
-                        memory_domain.save_chain(work_id, card_id, _folded,
-                                                 condense_mark=target_mark)
-                        chain = _folded
-                        _mem = load_memory(work_id, card_id)
-                        _mem["last_fold_check"] = _batch_now
-                        await save_memory(work_id, card_id, _mem)
-                    logger.info("[condense_fold] 归拢 outcome=%s merges=%s 点名=%s 落地=%s",
-                                _frep.get("outcome"), _frep.get("merges"),
-                                _frep.get("named"), _frep.get("landed"))
-            except Exception as exc:  # noqa: BLE001 归拢失败不阻断凝练
-                logger.warning("[condense_fold] 归拢失败（链不动，下轮重试）card=%s: %s",
-                               card_id, exc)
     except Exception as exc:  # noqa: BLE001 链落库/校验失败不阻断凝练
         logger.warning("[memory_domain] 链落库/校验失败（不阻断）card=%s: %s", card_id, exc)
     logger.info("[condense_fold] 凝练完成 work=%s card=%s 输入块数=%d 输入字节=%d 产出条数=%d mark %d→%d fingerprint=%s",
