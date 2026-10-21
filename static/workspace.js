@@ -277,7 +277,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     switchComposer(cardId);   // [5702] 输入会话同步换绑：点下去草稿立刻按卡切换
     /* [当前卡单源 2026-10-21] 身份在「点下去」这一刻就写进路径——它是 select.is()
        的唯一来源。原来拖到 open 末尾才写，中途任何判断（早退/高亮/徽标）看到的
-       都还是上一张卡。 */
+       都还是上一张卡。取卡失败要把身份**回滚**（否则地址栏指着打不开的卡）。 */
+    const prevSel = (() => { try { return navStore.select.get(); } catch (e) { return null; } })();
     try { navStore.select.set(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
     try {
       const card = await API.getCard(WORK_ID, cardId, { signal: ctrl.signal });
@@ -337,7 +338,15 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       scrollChatBottom();
       // [phase8.6-C] 同理：textarea auto-grow 必须在面板可见后执行
       autoGrowAll();
-    } catch (e) { /* toast 已处理 */ }
+    } catch (e) {
+      /* [当前卡单源 2026-10-21] 取卡失败 ⇒ 身份回滚到上一张：身份写早了不能留个
+         "地址栏指向打不开的卡"的状态（原实现只在末尾写，天然没有这个问题）。 */
+      if (prevSel && prevSel.cid && !stale()) {
+        try { navStore.select.set(prevSel.wid, prevSel.cid); } catch (e0) { /* 零阻断 */ }
+        try { window.dispatchEvent(new CustomEvent("ui:card-changed", { detail: { cardId: prevSel.cid } })); } catch (e0) { /* 零阻断 */ }
+      }
+      /* toast 已处理 */
+    }
   }
   export const Workspace = { open };
 
