@@ -1007,6 +1007,17 @@ const BOARD_CFG = Object.assign(
         if (prev.board.parentNode) prev.board.parentNode.removeChild(prev.board);   // 摘下
       }
     }
+    /* [连接上限 2026-10-22 · 实测「连续切三次卡必报网络错误」]
+       浏览器同域 HTTP/1.1 只有 **6 条**连接，而每张卡占 **2 条** SSE
+       （`/stream` ＋ `/tokens`）。切 3 张卡就 6 条占满 ⇒ 第 3 次切卡的普通请求
+       （getCard / timeline）根本拿不到连接 ⇒ fetch 抛 TypeError ⇒ 弹「网络错误」。
+       之前 stopES 只关**自己这张**，别的卡的两条流一直挂着不关。
+       ⇒ 切卡时把**其他会话**的 SSE 全关掉，只留当前这张：
+         · 左栏「运行中」走 /api/nav/running 轮询，不依赖 SSE，转圈不受影响；
+         · 切回来时 replayTrace 按 lastSeq 断点续传，不丢帧。 */
+    for (const [otherKey, otherSt] of sessions) {
+      if (otherKey !== key) stopES(otherSt);
+    }
     const board = boardOf(st);
     if (ca) {
       // #chatArea 只承载当前会话的画板：游离画板不进文档流（不变量 1）
