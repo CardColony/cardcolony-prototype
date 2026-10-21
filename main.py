@@ -155,6 +155,20 @@ app.include_router(settings_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
+# [开发期缓存 2026-10-21] 页面与静态资源一律 no-cache（浏览器每次带 ETag 验证）：
+# 文件没变走 304（几乎零成本），变了立刻拿到新的。
+# 为什么要这条：`?v=NN` 手工/脚本升号是**唯一**的失效手段，只要漏一次，
+# 用户就会看到「改了不生效」——今天为此浪费了三轮。本机单用户场景下
+# 关掉强缓存没有任何代价。
+@app.middleware("http")
+async def _no_cache_assets(request, call_next):
+    resp = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/") or resp.headers.get("content-type", "").startswith("text/html"):
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
+
+
 # [画布验收 2026-10-19] 静态资源"可缓存但必须回源校验"，详见 src/api/asset_cache.py。
 # 病根：原来全靠模板里手写 `?v=NN` 升号破缓存，忘了升号就改了不生效（白验收），
 # 发版后用户旧缓存还会把新结构撑坏。
