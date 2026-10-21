@@ -60,8 +60,13 @@ async def test_cascade_does_not_touch_siblings(work):
     assert card_store.card_exists(wid, b), "兄弟分支不该被波及"
 
 
-async def test_root_card_still_denied(work):
-    """项目根卡仍然不可删（它是项目入口）。"""
+async def test_delete_root_card_deletes_project(work):
+    """[删根卡＝删项目 2026-10-21] 根卡是项目入口，删它没有第二种语义：
+    整项目搬进 works/_trash/（可找回），不再拒删。"""
+    from src.storage import work_store
+
     wid, root = work["work_id"], work["work_card_id"]
-    with pytest.raises(CardDeleteDeniedError):
-        await card_store.delete_card(wid, root, cascade=True)
+    r = await card_store.delete_card(wid, root)
+    assert r.get("ok") is True, r
+    assert r.get("mode") in ("moved", "marked"), r
+    assert not any(w["work_id"] == wid for w in work_store.list_works())

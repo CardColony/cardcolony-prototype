@@ -205,10 +205,18 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       ? `删除「${title}」以及它下面的所有子卡？\n\n（全部进回收站，可从回收站逐个恢复）`
       : `删除「${title}」？\n\n（进回收站，可从回收站恢复）`;
     if (!window.confirm(msg)) return;
+    let res = null;
     try {
-      await API.deleteCard(wid, cid, kids > 0);
+      res = await API.deleteCard(wid, cid, kids > 0);
     } catch (e) {
       return;   // toast 已由 api.js 处理
+    }
+    /* [删根卡＝删项目 2026-10-21] 删的是根卡时后端返回的是「项目删除结果」
+       （带 mode）——整个项目没了，回首页；不能再回 /work/{wid}（那里也没了）。 */
+    if (res && res.mode) {
+      notify("项目已删除（可在 works/_trash 找回）", "success");
+      location.href = "/";
+      return;
     }
     /* [删卡后去哪 2026-10-21 · 修] 删的是当前卡 ⇒ 路径还指着已删的卡（原来只
        replaceState 去 hash，而 hash 早就没了 ⇒ 等于什么都没做），页面停在死地址上。

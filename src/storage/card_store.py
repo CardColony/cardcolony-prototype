@@ -1340,7 +1340,10 @@ async def delete_card(work_id: str, card_id: str,
     if work_store.read_work(work_id) is None:
         return {"error": f"剧本不存在: {work_id}"}
     if card_id == work_store.work_card_id_of(work_id):
-        raise CardDeleteDeniedError(f"剧本根卡不可删除: {card_id}")
+        # [删根卡＝删项目 2026-10-21 · 用户令] 根卡不是「一张卡」，它是项目入口——
+        # 删它没有第二种合理语义。整项目搬进 works/_trash/（可找回），
+        # 不再拒删（原来「根卡不能删」+「work 不可删除」= 项目永远删不掉）。
+        return work_store.delete_work(work_id)
 
     if not card_exists(work_id, card_id):
         raise CardNotFoundError(f"卡片不存在: {card_id}")
