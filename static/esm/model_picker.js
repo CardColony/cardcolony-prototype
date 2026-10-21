@@ -143,7 +143,10 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
 
   async function reload() {
     if (isDraft()) { render(); return; }   // 草稿态不查库（GET 对 draft 必 404）
-    const o = await api(`/api/settings/model-overrides/${encodeURIComponent(workId)}`);
+    /* [按需补行 2026-10-21] 带上当前卡：后端发现表里没这张卡就按默认策略补一行
+       （老项目第一次打开某张卡时自动补齐），否则读不到值会一路回落到 minimax。 */
+    const q = curCard ? `?card_id=${encodeURIComponent(curCard)}` : "";
+    const o = await api(`/api/settings/model-overrides/${encodeURIComponent(workId)}${q}`);
     state.override = o.ok && o.data ? o.data : state.override;
     render();
   }

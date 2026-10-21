@@ -12,7 +12,7 @@ import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=42";
 import "./util.js?v=30";
 import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts } from "./theme.js?v=6";
-import { initModelBadge } from "./model_picker.js?v=7";
+import { initModelBadge } from "./model_picker.js?v=8";
 import "../stream.js?v=52";
 import "../workspace.js?v=73";
 

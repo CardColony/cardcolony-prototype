@@ -779,12 +779,23 @@ async def get_model_override_effective(work_id: str, card_id: str = "") -> JSONR
 
 
 @router.get("/model-overrides/{work_id}")
-async def get_model_override(work_id: str) -> JSONResponse:
-    """读某项目的覆盖（work 级 + 各卡）。"""
+async def get_model_override(work_id: str, card_id: str = "") -> JSONResponse:
+    """读某项目的模型配置表（每张卡一行）。
+
+    [按需补行 2026-10-21] 带 card_id 时，若表里还没有这张卡，按默认策略补一行再返回。
+    老项目（表还没建）否则永远读不到值 ⇒ 前端一路回落到 system.default_model
+    （minimax），用户看到的就是「怎么永远锁在 minimax」。只补**这一张**（O(1)），
+    不遍历全项目。
+    """
     missing = _override_work_or_404(work_id)
     if missing is not None:
         return missing
     from ..storage import model_override
+    if card_id:
+        try:
+            model_config.seed_card(work_id, card_id)   # 缺行就按默认策略补（幂等）
+        except Exception as exc:  # noqa: BLE001 补行失败不影响读
+            logger.warning("补模型配置行失败 work=%s card=%s: %s", work_id, card_id, exc)
     # [模型配置表 2026-10-21] 内部是「一张表存结果」；对外仍用旧形状（前端零改动）
     view = model_override.table_summary(work_id)
     return JSONResponse({
