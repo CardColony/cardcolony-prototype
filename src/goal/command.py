@@ -61,6 +61,10 @@ def _parse(raw: str) -> dict[str, Any]:
     return {"kind": "create", "objective": text}
 
 
+#: 解析结果对外可见（路由要按 kind 决定「改完目标要不要立刻起跑」）。
+parse = _parse
+
+
 async def execute_command(work_id: str, card_id: str, raw_input: str) -> dict[str, Any]:
     """执行一条人面命令（原版 ``executeGoalCommand``）。"""
     cmd = _parse(raw_input)

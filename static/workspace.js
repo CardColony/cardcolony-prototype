@@ -572,11 +572,43 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       const r = await API.call(
         "POST", `/api/works/${WORK_ID}/cards/${cid}/auto/resume`);
       currentCard = await API.getCard(WORK_ID, cid);
-      notify(r && r.resumed ? "已恢复自动推进" : "该卡已在推进中", "warn");
+      const wasComplete = String((currentCard.meta || {}).goal_state || "") === "complete";
+      notify(r && r.resumed
+        ? (wasComplete ? "已重新激活，按原目标继续跑" : "已恢复自动推进")
+        : "该卡已在推进中", "warn");
       await renderInspector();
       renderAutoToggle();
     } catch (e) {
       notify("恢复失败", "error");
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  /* [coder 卡可改目标 2026-10-21 · 用户令] 右栏目标行的「改」：
+     走既有 /goal 命令（edit <新目标>）；后端改完会立刻按新目标起跑
+     （create 新 goal 或 resume），所以这里只负责提交与刷新。 */
+  async function editGoal(btn) {
+    if (!currentCard) return;
+    const cid = currentCard.meta.card_id;
+    const cur = String(currentCard.meta.goal || "").trim();
+    const next = window.prompt("新目标（改完立刻按新目标继续跑）：", cur);
+    if (next === null) return;
+    const text = String(next).trim();
+    if (!text || text === cur) return;
+    if (btn) btn.disabled = true;
+    try {
+      const r = await API.call(
+        "POST", `/api/works/${WORK_ID}/cards/${cid}/goal`, { input: "edit " + text });
+      if (r && r.ok === false) {
+        notify(String(r.text || "改目标失败"), "error");
+        if (btn) btn.disabled = false;
+        return;
+      }
+      currentCard = await API.getCard(WORK_ID, cid);
+      notify("目标已更新，按新目标继续", "success");
+      await renderInspector();
+    } catch (e) {
+      notify("改目标失败", "error");
       if (btn) btn.disabled = false;
     }
   }
@@ -831,16 +863,22 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const isAutoCard = Number(m.auto_mode || 0) === 1;
     // [6702 移植 P8] 停在 paused/blocked 的卡给一条人工恢复入口：
     // 死锁兜底与空转兜底都会把卡停在 paused，而没有这条按钮就只能手改数据库。
-    const canResume = isAutoCard
-      && ["paused", "blocked"].includes(String(m.goal_state || "").trim());
+    // [coder 卡可重新激活 2026-10-21 · 用户令] complete 也纳入：跑完的卡想接着干，
+    // 改前只能新建一张卡（后端 /auto/resume 直接 400、发消息也不动）。
+    const goalState = String(m.goal_state || "").trim();
+    const canResume = isAutoCard && ["paused", "blocked", "complete"].includes(goalState);
+    const resumeLabel = goalState === "complete" ? "重新激活" : "恢复自动推进";
+    const resumeTitle = goalState === "complete"
+      ? "用同一个目标重新开一轮（轮次归零），立刻继续干"
+      : "重新拉起：清等待位与活锁计数，立刻续跑";
     const autoRowHtml = isRoleCard ? "" : (isAutoCard
       ? `<div class="auto-row">
           <span class="auto-badge">自动模式</span>
           <span class="auto-meta">${escapeHtml(goalStateLabel(m.goal_state))} · 已跑 ${Number(m.goal_rounds || 0)} 轮</span>
-          ${canResume ? `<button class="btn ghost auto-resume" id="autoResume" title="重新拉起：清等待位与活锁计数，立刻续跑">恢复自动推进</button>` : ""}
+          ${canResume ? `<button class="btn ghost auto-resume" id="autoResume" title="${resumeTitle}">${resumeLabel}</button>` : ""}
           <button class="btn ghost auto-toggle" id="autoToggle" title="关闭后：停自动继续、按类型还原权限">关闭自动</button>
         </div>
-        <div class="auto-goal"><span class="auto-goal-k">目标</span>${escapeHtml((m.goal || "").trim() || "（尚未设定——本卡收到的首条消息即成为目标）")}</div>`
+        <div class="auto-goal"><span class="auto-goal-k">目标</span>${escapeHtml((m.goal || "").trim() || "（尚未设定——本卡收到的首条消息即成为目标）")}${(m.goal || "").trim() ? `<button class="btn ghost auto-goal-edit" id="goalEdit" title="改目标：改完立刻按新目标继续跑">改</button>` : ""}</div>`
       : `<div class="auto-row">
           <button class="btn ghost auto-toggle" id="autoToggle" title="开了就权限全开、自动续跑，直到模型声明完成">开启自动模式</button>
           <span class="auto-hint">开了就权限全开，模型自己一轮接一轮跑到声明完成</span>
@@ -994,6 +1032,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // [6702 移植 P8] 人工恢复：清等待位与活锁计数后立刻续跑。
     const resumeBtn = document.getElementById("autoResume");
     if (resumeBtn) resumeBtn.onclick = () => resumeAuto(resumeBtn);
+    const goalEditBtn = document.getElementById("goalEdit");
+    if (goalEditBtn) goalEditBtn.onclick = () => editGoal(goalEditBtn);
     const autoBtnBottom = document.getElementById("autoToggleBtn");
     if (autoBtnBottom) autoBtnBottom.onclick = () => toggleAutoMode(autoBtnBottom);
 

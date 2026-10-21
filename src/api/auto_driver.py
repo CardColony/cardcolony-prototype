@@ -385,6 +385,45 @@ async def resume_card(work_id: str, card_id: str) -> bool:
     return True
 
 
+async def reactivate_card(work_id: str, card_id: str) -> bool:
+    """**重新激活**：已 ``complete`` 的目标重新开一轮生命周期。
+
+    [coder 卡可重新激活 2026-10-21 · 用户令] 改前 ``complete`` 是死胡同：
+      · ``/auto/resume`` 直接 400「已完成的目标不能恢复」；
+      · ``ensure_goal_from_message`` 在 ``goal`` 非空时早退 ⇒ 再发消息也不会动；
+      · ``GoalService.resume`` 的允许集合不含 ``complete``。
+    ⇒ 一张跑完的 coder 卡（实测 work_018 里 7 张全是 complete）想接着干，只能新建卡。
+
+    语义分两种（都**不改 objective 内容**）：
+      · ``complete`` ⇒ 用同一个 objective **新建** goal（phase=active、轮次归零）——
+        这是 goal 域里唯一允许「从 complete 回到 active」的合法路径（create 明确
+        允许在 complete 之后调用）；
+      · ``paused`` / ``blocked`` ⇒ 沿用 ``resume_card``（清等待位与活锁计数）。
+    最后都 ``kick`` 起轮。
+    """
+    meta = _meta(work_id, card_id)
+    if not is_auto(meta):
+        return False
+    objective = str(meta.get("goal") or "").strip()
+    if not objective:
+        return False
+    if str(meta.get("goal_state") or "") != GOAL_COMPLETE:
+        return await resume_card(work_id, card_id)
+    try:
+        from ..goal.service import get_service
+        from ..goal.types import CreateGoalRequest
+
+        await get_service().create(
+            work_id, card_id, CreateGoalRequest(objective=objective))
+    except Exception as exc:  # noqa: BLE001 建新 goal 失败 ⇒ 不起轮，如实返回
+        logger.warning("[auto] 重新激活失败 work=%s card=%s: %s", work_id, card_id, exc)
+        return False
+    logger.info("[auto] 目标重新激活（complete → active）work=%s card=%s",
+                work_id, card_id)
+    kick(work_id, card_id)
+    return True
+
+
 def will_continue(work_id: str, card_id: str) -> bool:
     """本卡此刻是否应当再起一轮（纯判定，无副作用）。**驱动器与执行锁共用同一判据**。"""
     meta = _meta(work_id, card_id)
