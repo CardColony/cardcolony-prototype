@@ -1,0 +1,293 @@
+{
+  "started_at": "2026-10-21T02:25:16",
+  "base": "http://127.0.0.1:5713",
+  "phases": [
+    {
+      "phase": "0_instance_check",
+      "at": "2026-10-21T02:25:16",
+      "ok": true,
+      "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+      "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox"
+    },
+    {
+      "phase": "1_create_work",
+      "at": "2026-10-21T02:25:17",
+      "ok": true,
+      "work_id": "work_061",
+      "root": "card_001"
+    },
+    {
+      "phase": "1b_pin_model",
+      "at": "2026-10-21T02:25:17",
+      "ok": true,
+      "model": "ds-v41-flash-aliyun"
+    },
+    {
+      "phase": "2_shared_card",
+      "at": "2026-10-21T02:25:17",
+      "ok": true,
+      "card_id": "card_002"
+    },
+    {
+      "phase": "3_role_contract_guard",
+      "at": "2026-10-21T02:25:17",
+      "ok": true,
+      "role_id": "card_003",
+      "status": 201
+    },
+    {
+      "phase": "3_role_cost_budget",
+      "at": "2026-10-21T02:25:17",
+      "ok": true,
+      "role_id": "card_004",
+      "status": 201
+    },
+    {
+      "phase": "3b_baseline",
+      "at": "2026-10-21T02:25:17",
+      "verdicts": {
+        "contract_guard": 0,
+        "cost_budget": 0
+      },
+      "watch": {
+        "contract_guard": [
+          "card_002"
+        ],
+        "cost_budget": [
+          "card_002"
+        ]
+      }
+    },
+    {
+      "phase": "4_change",
+      "at": "2026-10-21T02:25:17",
+      "ok": true
+    },
+    {
+      "phase": "5_collected",
+      "at": "2026-10-21T02:26:05",
+      "verdicts": {
+        "contract_guard": 1,
+        "cost_budget": 1
+      }
+    }
+  ],
+  "verdict": "PASS",
+  "note": "验的是同步与唤醒的机械互斥；不验判词质量（judgment 由判词行数/ID 锚定）",
+  "instance": {
+    "instance": "test-instance",
+    "pid": 34064,
+    "base_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+    "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox",
+    "sandbox_enabled": true
+  },
+  "work_id": "work_061",
+  "shared_card": "card_002",
+  "roles": {
+    "contract_guard": "card_003",
+    "cost_budget": "card_004"
+  },
+  "baseline_verdicts": {
+    "contract_guard": 0,
+    "cost_budget": 0
+  },
+  "baseline_watch": {
+    "contract_guard": [
+      "card_002"
+    ],
+    "cost_budget": [
+      "card_002"
+    ]
+  },
+  "final": {
+    "contract_guard": {
+      "role_id": "card_003",
+      "verdicts": [
+        {
+          "id": "74a03bd31389",
+          "decision": "speak",
+          "ts": "2026-10-21T02:25:53.446079+08:00",
+          "sources": [
+            "card_002"
+          ]
+        }
+      ],
+      "alarms": [],
+      "duty": {
+        "state": "active",
+        "since": "2026-10-21T02:25:17.316844+08:00",
+        "last_wake_at": "",
+        "pending_sync": 1
+      },
+      "watch": [
+        "card_002"
+      ]
+    },
+    "cost_budget": {
+      "role_id": "card_004",
+      "verdicts": [
+        {
+          "id": "0f047ac6ef48",
+          "decision": "speak",
+          "ts": "2026-10-21T02:25:41.666644+08:00",
+          "sources": [
+            "card_002"
+          ]
+        }
+      ],
+      "alarms": [
+        {
+          "id": "024f7331d608",
+          "severity": "critical"
+        }
+      ],
+      "duty": {
+        "state": "active",
+        "since": "2026-10-21T02:25:17.400773+08:00",
+        "last_wake_at": "2026-10-21T02:25:54.605250+08:00",
+        "pending_sync": 0
+      },
+      "watch": [
+        "card_002"
+      ]
+    }
+  },
+  "sync_rows": [
+    {
+      "seq": 1,
+      "role_id": "card_003",
+      "source": "card_002",
+      "from_seq": 0,
+      "to_seq": 0,
+      "signals": "[\"status_changed\"]",
+      "status": "pending",
+      "created_at": "2026-10-21T02:25:17.559295+08:00"
+    },
+    {
+      "seq": 2,
+      "role_id": "card_004",
+      "source": "card_002",
+      "from_seq": 0,
+      "to_seq": 0,
+      "signals": "[\"status_changed\"]",
+      "status": "consumed",
+      "created_at": "2026-10-21T02:25:17.575298+08:00"
+    }
+  ],
+  "prompt_logs": [
+    {
+      "card_id": "card_003",
+      "file": "prompt_card_003_20261021022605.json",
+      "model_requested": "ds-v41-flash-aliyun",
+      "model_used": "deepseek-v4.1-flash-1017",
+      "error": ""
+    },
+    {
+      "card_id": "card_003",
+      "file": "prompt_card_003_20261021022720.json",
+      "model_requested": "ds-v41-flash-aliyun",
+      "model_used": "deepseek-v4.1-flash-1017",
+      "error": ""
+    },
+    {
+      "card_id": "card_004",
+      "file": "prompt_card_004_20261021022554.json",
+      "model_requested": "ds-v41-flash-aliyun",
+      "model_used": "deepseek-v4.1-flash-1017",
+      "error": ""
+    },
+    {
+      "card_id": "card_004",
+      "file": "prompt_card_004_20261021022736.json",
+      "model_requested": "ds-v41-flash-aliyun",
+      "model_used": "deepseek-v4.1-flash-1017",
+      "error": ""
+    }
+  ],
+  "backlog": {
+    "phases": [
+      {
+        "phase": "6a_suspended_20_changes",
+        "at": "2026-10-21T02:26:28",
+        "rows_before": {
+          "contract_guard": 1,
+          "cost_budget": 1
+        },
+        "rows_after": {
+          "contract_guard": 2,
+          "cost_budget": 2
+        },
+        "added_per_role": {
+          "contract_guard": 1,
+          "cost_budget": 1
+        },
+        "pending_rows_per_role": {
+          "contract_guard": 1,
+          "cost_budget": 1
+        },
+        "merged": true
+      },
+      {
+        "phase": "6c_resume_contract_guard",
+        "at": "2026-10-21T02:27:08",
+        "ok": true,
+        "duty": "active",
+        "verdicts_after": 2,
+        "pending_sync_after": 1
+      },
+      {
+        "phase": "6c_resume_cost_budget",
+        "at": "2026-10-21T02:27:32",
+        "ok": true,
+        "duty": "active",
+        "verdicts_after": 2,
+        "pending_sync_after": 1
+      }
+    ]
+  },
+  "verdict_detail": {
+    "both_watch_shared_card": true,
+    "both_woke_and_judged": true,
+    "verdict_growth": {
+      "contract_guard": [
+        0,
+        1
+      ],
+      "cost_budget": [
+        0,
+        1
+      ]
+    },
+    "both_judged_on_shared_card": true,
+    "sync_rows_per_role": {
+      "contract_guard": 1,
+      "cost_budget": 1
+    },
+    "sync_rows_isolated": true,
+    "prompt_logs_per_role": {
+      "contract_guard": 2,
+      "cost_budget": 2
+    },
+    "both_had_model_turn": true,
+    "models_observed": [
+      "deepseek-v4.1-flash-1017"
+    ],
+    "any_model_error": false,
+    "observations": {
+      "decisions": {
+        "contract_guard": [
+          "speak"
+        ],
+        "cost_budget": [
+          "speak"
+        ]
+      },
+      "pending_sync": {
+        "contract_guard": 1,
+        "cost_budget": 0
+      }
+    }
+  },
+  "finished_at": "2026-10-21T02:27:40",
+  "elapsed_seconds": 143.6
+}

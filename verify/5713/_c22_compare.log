@@ -1,0 +1,10 @@
+[cmp] 旧基线：baseline_known_red.json.bak-badvenv-20261021T000331
+      commit=29689c1f47c7 rounds=3 counts={'collected_cases': 1215, 'red_per_round': [76, 76, 76], 'known_red': 76}
+      cmd[0]=D:\AI_station\写作agent\.venv\Scripts\python.exe
+[cmp] 新基线：baseline_known_red.json
+      commit=faa5fddbbcdc rounds=3 counts={'collected_cases': 1215, 'red_per_round': [76, 76, 76], 'known_red': 76}
+      cmd[0]=D:\AI_station\推演agent\.venv\Scripts\python.exe
+
+[cmp] known-red 条数：旧 76 → 新 76
+[cmp] 共同保留 76｜只在旧基线 0｜只在新基线 0｜signature 变了 0
+

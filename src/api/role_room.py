@@ -288,6 +288,30 @@ async def update_profile(work_id: str, role_id: str,
         jur = str(patch["jurisdiction"]).strip()
         patch["jurisdiction"] = {"domain": _slug(jur), "statement": jur,
                                  "exclusive_key": _slug(jur)}
+    # [排他键保全 2026-10-20 · card_004] 改档不得静默丢掉排他键。
+    # 真机实测（work_001）：根卡只是想把职责范围从"三张接口"改成"四张接口"，
+    # 调 update_role_profile 时只写了 {domain, statement} —— jurisdiction 是**整字典
+    # 覆盖**（下面 changed[key] = patch[key]），于是 exclusive_key 被擦成 None。
+    # 后果：①我新加的 175 区渲染出「域=?」，根卡失去判断"这域归谁"的凭据；
+    # ②排他键从稳定标识退化成"靠 domain 兜底"，改域/改档多次后不再可追溯。
+    # 合并规则（最小、可预期）：
+    #   · 传了 exclusive_key ⇒ 听传的；
+    #   · 没传、且 domain 没变（原地改档）⇒ 继承旧键；
+    #   · 没传、但 domain 变了（有意换域）⇒ 键跟新 domain 走，不继承旧键。
+    if isinstance(patch.get("jurisdiction"), dict):
+        jur = dict(patch["jurisdiction"])
+        old_jur = dict(prof.get("jurisdiction") or {})
+        old_key = str(old_jur.get("exclusive_key") or "").strip()
+        old_dom = str(old_jur.get("domain") or "").strip()
+        new_dom = str(jur.get("domain") or "").strip()
+        if not new_dom and old_dom:
+            jur["domain"] = old_dom          # 只改 statement 时，domain 也要在
+            new_dom = old_dom
+        if not str(jur.get("exclusive_key") or "").strip():
+            jur["exclusive_key"] = (old_key if (old_key and new_dom == old_dom)
+                                    else (new_dom or old_key))
+        patch["jurisdiction"] = jur
+
     for key in allowed:
         if key in patch and isinstance(patch[key], (dict, list)):
             changed[key] = patch[key]
