@@ -347,6 +347,9 @@ def test_t6_touched_modules_bumped():
       一被常驻 SSE 占满就永远排队 ⇒ 画布永久空白）；根卡改从画布数据里取，零往返。
       ② 去掉一条**监听了错键**的常驻 SSE（card_id 位置传的是 work_id）⇒ 画布页
       常驻长连接 2 条降为 1 条，未读角标的增量通道改由工作级流带（原来从没活过）。
+    ★ [换父 2026-10-20 · 5718] canvas 77→78、main 73.4→78.0、canvas.css 22→23、
+      build-stamp v73→v74：拖拽语义从「调同层顺序」改成「改父子归属」（拖到卡上＝
+      挂到它下面，拖到空白/非法目标＝回弹），新增落点高亮 .drop-ok/.drop-bad。
     """
     vm = _version_map()
     expect = {
@@ -356,8 +359,10 @@ def test_t6_touched_modules_bumped():
         # 版本戳处置按 5715 那次的规程：**在 dev 的编号基础上重算**，不是逐文件取大
         # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
         # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
-        "stream.js": "51", "workspace.js": "67", "canvas.js": "77",
-        "assembler.js": "40", "style.css": "48", "main.js": "73.5",
+        # [换父 2026-10-20 · 5718] 画布链再 +1：canvas.js 77→78、main.js →78.0；
+        # main_chat 取 dev 的 3.6（ac9f338 升的入口戳，比本分支的 3.5 高）。
+        "stream.js": "51", "workspace.js": "67", "canvas.js": "78",
+        "assembler.js": "40", "style.css": "48", "main.js": "78.0",
         "main_chat.js": "3.6",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",

@@ -188,6 +188,22 @@
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7);
 }
 
+/* [换父 2026-10-20] 拖动时的落点反馈：能被挂上去的卡 vs 挂不上去的卡。
+   用 outline 而不是 border/box-shadow：outline 不参与盒模型，不会让卡片
+   在拖拽过程中尺寸抖动（border 会撑开、box-shadow 会被 .dragging 覆盖）。 */
+.page-canvas .card-node.drop-ok {
+  outline: 2px solid var(--cv-ok);
+  outline-offset: 2px;
+  background: var(--cv-ok-soft);
+}
+
+.page-canvas .card-node.drop-bad {
+  outline: 2px solid var(--cv-danger);
+  outline-offset: 2px;
+  background: var(--cv-danger-soft);
+  cursor: not-allowed;
+}
+
 /* ==========================================================================
    [画布 5711 · P0 修] 卡片入场：**起始态里不许出现 opacity**。
    ==========================================================================

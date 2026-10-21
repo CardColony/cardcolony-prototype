@@ -536,6 +536,28 @@ def _l1_type_spec(registry: dict[str, Any], project_class: str,
     return None
 
 
+def _type_can_have_children(card_type: str) -> bool:
+    """该卡类型是否允许有子卡（读注册表的 ``can_have_children``）。
+
+    [换父 2026-10-20] 为什么现在才读它：这个字段从卡片分类基座起就在注册表里，
+    但**代码零消费**——「工具卡不可有子卡」「角色卡不可有子卡」是两处各自硬编码
+    的（见 _write_gate 闸内）。换父把「谁能当父卡」从**建卡时的固定事实**变成
+    **运行时可变的判定**，硬编码两处不够用（coder/rule 同样是 false），且每加一种
+    类型就要再补一处。改为读注册表，与「注册表是校验源」同口径。
+
+    降级：注册表缺失 / 类型查不到 ⇒ 放行（不因校验源缺失阻断写路径，与
+    load_type_registry 的降级约定一致）。**只拒绝明确写 false 的类型。**
+    """
+    registry = load_type_registry()
+    if not registry:
+        return True
+    for vocab in (registry.get("l1_vocabularies") or {}).values():
+        for t in ((vocab or {}).get("types") or []):
+            if isinstance(t, dict) and str(t.get("code", "")) == card_type:
+                return bool(t.get("can_have_children"))
+    return True
+
+
 def _l1_all_codes(registry: dict[str, Any]) -> set[str]:
     """注册表内所有已定义 L1 词表 code 的并集。"""
     out: set[str] = set()
@@ -1137,17 +1159,64 @@ async def update_card(
         except CardTypeValueError as exc:
             return {"error": str(exc)}
 
-    # parent 变更防环
+    # parent 变更：防环 + 结构校验
+    # [换父 2026-10-20] 人与模型共用此门：画布拖拽走 PATCH、模型走 reparent_card
+    # 工具，两条路都落到这里，判据只有一份（动作只有一个权威解释）。
     if "parent" in updates and not is_root_card:
-        new_parent = updates["parent"]
+        new_parent = str(updates.get("parent") or "")
+        # 空串归一成项目根卡：原实现让空串原样落库 ⇒ 卡片成了「parent 键存在但为
+        # 空」的悬空节点——不在任何人的 childMap 下，只有 /canvas 全量才看得见。
+        # 归一后语义与建卡 _normalize_parent 一致：空＝挂回顶层。
+        if not new_parent:
+            new_parent = work_store.work_card_id_of(work_id)
+        updates["parent"] = new_parent
         if new_parent == card_id:
             return {"error": "parent 不能指向自身或后代"}
-        if new_parent and new_parent != "" and _is_descendant(work_id, new_parent, card_id):
+        if _is_descendant(work_id, new_parent, card_id):
             return {"error": "parent 不能指向自身或后代"}
-        # parent 卡必须存在，否则回退 work_card_id
-        if new_parent and new_parent != "" and not card_exists(work_id, new_parent):
-            new_parent = work_store.work_card_id_of(work_id)
-            updates["parent"] = new_parent
+        # [换父 2026-10-20] 原实现「父卡不存在 ⇒ 静默回退 work_card_id」：一次写错
+        # 父卡 id 就把卡**悄悄挂到根卡下**，调用方还拿到成功。改为如实报错。
+        if not card_exists(work_id, new_parent):
+            return {"error": f"目标父卡不存在: {new_parent}"}
+        # 角色卡离树（parent 恒空）：被移动方与目标父卡两头都拦，避免把离树观察者
+        # 重新变回树节点——它的同步/订阅语义会与父子授权语义搅在一起。
+        if cur_type == "role":
+            return {"error": "角色卡离树，不能挂到别的卡下"}
+        parent_type = str((_meta_of(work_id, new_parent) or {}).get("card_type") or "")
+        if not _type_can_have_children(parent_type):
+            return {"error": f"「{parent_type}」类型不可有子卡，不能作为父卡"}
+        # [换父 2026-10-20 · 数据从属] 带 owner 的卡（工具卡/编程卡）换父后，若原
+        # owner 已不在**新祖先链**上，owner 跟着改到新父链上最近的合法 owner 卡。
+        #
+        # 为什么必须改：owner 的语义是「谁调用它、产物归谁」（注册表闸3），它与
+        # parent 是两条边。只改 parent 不改 owner ⇒ 出现「挂在 A 下、产物归 B」，
+        # 那张卡的数据归属与树形归属互相矛盾——正是「换父不能只换视觉」的那一半。
+        # 子树内其它卡的 owner 不动：工具卡的 owner 恒等于建它的卡（＝当时的
+        # parent），子树整体迁移后它仍在子树内、仍是祖先，链没断。
+        cur_owner = str(cur_meta.get("owner_card_id") or "")
+        if cur_owner:
+            _metas = iter_card_metas(work_id)
+            _chain: set[str] = set()
+            _node, _guard = new_parent, 0
+            while _node and _guard < 1000:
+                _chain.add(_node)
+                _guard += 1
+                _node = str((_metas.get(_node) or {}).get("parent") or "")
+            if cur_owner not in _chain:
+                _new_owner, _node, _guard = "", new_parent, 0
+                while _node and _guard < 1000:
+                    if str((_metas.get(_node) or {}).get("card_type") or "") \
+                            in TOOL_CARD_OWNER_TYPES:
+                        _new_owner = _node
+                        break
+                    _guard += 1
+                    _node = str((_metas.get(_node) or {}).get("parent") or "")
+                if _new_owner:
+                    updates["owner_card_id"] = _new_owner
+                    # 留痕写明「归属卡也变了」——事后对账时，owner 被改这件事
+                    # 必须能从 card_history 看出来，否则等于静默改数据归属。
+                    history_note = (f"{history_note}"
+                                    f"（归属卡 {cur_owner} → {_new_owner}）")
 
     # [自动模式 2026-10-17 · 回灌 5700 块0.2] **开关动作**：auto_mode 变化 ⇒
     # 权限随之重算。0→1：perms 重算为全开集（policy.auto_perms()，专用
