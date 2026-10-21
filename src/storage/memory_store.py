@@ -398,6 +398,28 @@ def _build_condense_user_prompt(pending: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+def _drop_overlapping(entries: list[dict[str, Any]], lo: int, hi: int) -> list[dict[str, Any]]:
+    """摘掉覆盖区间与 [lo, hi] 相交的旧条目（重凝去重）。
+
+    条目覆盖区间取 `seq_from..seq_to`（无则退化为单点 `seq`）。
+    区间不相交 ⇒ 原样保留（不同段的结论互不影响）。
+    """
+    out: list[dict[str, Any]] = []
+    for e in entries or []:
+        a = e.get("seq_from")
+        b = e.get("seq_to")
+        if a is None or b is None:
+            a = b = int(e.get("seq", 0) or 0)
+        try:
+            a = int(a); b = int(b)
+        except (TypeError, ValueError):
+            out.append(e)
+            continue
+        if b < lo or a > hi:      # 不相交
+            out.append(e)
+    return out
+
+
 def _parse_condense_output(text: str, default_seq: int) -> list[dict[str, Any]]:
     """凝练产出解析：**JSON 节点优先，旧【结论】/【依据】格式回退**。
 
@@ -594,6 +616,15 @@ async def _condense_one_batch(work_id: str, card_id: str,
     _win_to = int(window[-1].get("seq", 0) or 0) if window else _win_from
     final_entries = [dict(e, occurred_at=occurred_at, fingerprint=fingerprint,
                           seq_from=_win_from, seq_to=_win_to) for e in fresh]
+    # [重凝去重 2026-10-21] 同一段原文只留一条结论：窗口 [win_from, win_to] 已被
+    # 旧条目覆盖的，把旧条目摘掉再落新的。否则一旦水位回退（人工恢复/重跑）就会
+    # 出现「同一 seq 两条结论」⇒ 因果链 I1「身份重复」违例、记忆区重复占 token。
+    _kept_existing = _drop_overlapping(existing, _win_from, _win_to)
+    if len(_kept_existing) != len(existing):
+        logger.info("[condense_fold] 重凝去重：窗口 %s..%s 摘掉 %d 条旧结论（保留 %d 条）card=%s",
+                    _win_from, _win_to, len(existing) - len(_kept_existing),
+                    len(_kept_existing), card_id)
+    existing = _kept_existing
     await save_memory(work_id, card_id,
                       {"card_id": card_id, "mark": target_mark, "entries": existing + final_entries,
                        "batch_count": state.get("batch_count", 0),
