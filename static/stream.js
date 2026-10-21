@@ -68,7 +68,11 @@ function skey(wid, cid) { return wid + "/" + cid; }
    idleReleaseMs —— T3 静默超时：多久没用就释放。
    sweepMs       —— T3 释放扫描周期。 */
 const BOARD_CFG = Object.assign(
-  { pageNodes: 120, residentMax: 8, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000,
+  /* [切卡即时 2026-10-21] 常驻上限 8 → 40：原来切过 8 张卡后最早的被 LRU 扔掉，
+     切回去又变成「首次加载」——用户看到的就是「明明有内存却不用」。
+     一张卡的画板是现成 DOM（约 120 节点），40 张的内存代价可接受。
+     pageNodes 120 → 60：首次打开要渲染的节点减半（往上翻再补）。 */
+  { pageNodes: 60, residentMax: 40, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000,
     /* [对话流分页 2026-10-20] 打开卡片时只拉**最后多少条事件**。
        改前是全量：card_004 有 1746 条事件 ⇒ 装配 1185 个节点，打开要 2.8 秒 CPU。
        400 条约覆盖最近 20~40 轮，往上翻再按需补。 */
@@ -1356,7 +1360,9 @@ const BOARD_CFG = Object.assign(
       只认「成功加载过一次」——加载失败不打标记，下次还会重试。 */
   function isLoaded(wid, cid) {
     const st = sessions.get(skey(wid, cid));
-    return !!(st && st.loadedOnce && st.view);
+    const hit = !!(st && st.loadedOnce && st.view);
+    logInfo("[flow-board] " + (hit ? "hit " : "miss ") + skey(wid, cid));
+    return hit;
   }
 
   /** [5702 · 2026-10-20] 某卡是否在跑（按卡查，供输入系统切卡时恢复运行态）。 */
