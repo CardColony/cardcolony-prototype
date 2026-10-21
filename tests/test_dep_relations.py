@@ -360,9 +360,11 @@ def test_b3_region_table_16_regions_with_250():
     （150 当前卡之后、155 区域说明之前；只对 auto 卡有内容）。
     """
     orders = [r["order"] for r in context_regions.REGION_TABLE]
-    assert len(context_regions.REGION_TABLE) == 17
-    assert orders == [0, 85, 90, 95, 100, 150, 152, 155, 170, 200, 250, 300,
-                      900, 999, 1000, 1010, 1020]
+    # [2026-10-21] 配置演进至 v9：新增 91 team_function_instruction / 92 card_ability /
+    # 93 function_roster / 145 function_self / 175 role_cabinet 五区，17→22 同步快照
+    assert len(context_regions.REGION_TABLE) == 22
+    assert orders == [0, 85, 90, 91, 92, 93, 95, 100, 145, 150, 152, 155,
+                      170, 175, 200, 250, 300, 900, 999, 1000, 1010, 1020]
     by_key = {r["key"]: r for r in context_regions.REGION_TABLE}
     assert by_key["goal"]["name"] == "自动模式·目标"
     assert by_key["relations"]["name"] == "依赖关联"
@@ -378,7 +380,8 @@ def test_b3_config_v5_has_relations_region():
     [自动模式 2026-10-17 · 回灌 5700 块0.4] v5→v6（加 goal 区条目）。
     """
     cfg = json.loads((ROOT / "config" / "context_regions.json").read_text(encoding="utf-8"))
-    assert cfg["_meta"]["version"] == "context-regions-v6"
+    # [2026-10-21] 配置演进 v6→v9（新增 function 相关区），同步版本号断言
+    assert cfg["_meta"]["version"] == "context-regions-v9"
     assert cfg["regions"]["relations"] == {"enabled": True, "order": 250}
     assert cfg["regions"]["goal"] == {"enabled": True, "order": 152}
 

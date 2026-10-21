@@ -22,6 +22,14 @@ autouse fixture 里重定向进 pytest 的 tmp_path。手法与既有离线预�
 """
 from __future__ import annotations
 
+import os
+
+# [取消 inbox 状态机 2026-10-22 · D25] 测试环境关闭「发信即投递」。
+# 既有测试大量是同步时序写的（发信 → 断言 pending → 手动 schedule → 断言回话），
+# 自动投递会在发信瞬间起异步回合与它们冲突，并放大 Windows 会话文件锁抖动。
+# 真实链路不受影响（见 message_runner.deliver_now 里的同名开关）。
+os.environ.setdefault("ECO_NO_AUTO_DELIVER", "1")
+
 import sys
 from pathlib import Path
 from types import SimpleNamespace

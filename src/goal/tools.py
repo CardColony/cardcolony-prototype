@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from . import authority
 from .runtime import DEFAULT_BLOCKED_AFTER_ROUNDS, GoalError
@@ -73,6 +73,81 @@ def _has_round_cap(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value != 0
 
 
+async def _zero_role_close_gate_block(work_id: str, current_id: str,
+                                      cards: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """[5713 收口闸 · card_023] 零角色收口闸的机械判定。
+
+    方向变更（card_004-799a7954）：删掉「【无人盯】写理由即可放行」出口——用户原话
+    「强制它做一步拆分团队，不要规定它拆法，只是强制它拆」。唯一出路＝真的调
+    create_role 建成至少一个**非空壳 active 角色**；空壳与不设同罪。
+
+    判据（纯机械，同时满足才拦）：
+      ① current_id == work_store.work_card_id_of(work_id)——只拦项目根卡
+         （非根卡/编程卡一律不拦）；
+      ② 该 work 工作卡 ≥ 2（card_type != "role"、parent != ""、不是根卡自己；
+         影子卡 card_type="shadow" 天然排除）；
+      ③ 无非空壳 active 职能（duty.state=="active" 才算在盯，suspended/archived
+         不算；且 active 职能里至少一个 exclusive_key 非空、职责书非空）。
+
+    [card_031 改接] 模型建的是**职能**（create_function，写 function_profiles）、
+    不再是 role 卡——故判据 ③ 同时认两套：**function_profiles**（新路径，主）与
+    role_profiles（旧路径，存量 role 卡仍在盯的也算）。出路文案把 create_function
+    放在第一位；保留 create_role 字样以兼容 card_023 既有断言（旧路径仍可用）。
+
+    返回：拦下 ⇒ 错误信封；放行 ⇒ None。闸只要求「拆」，不规定拆法（守 D02）。
+    """
+    try:
+        from ..storage import function_store, role_store, work_store
+        _root_id = work_store.work_card_id_of(work_id)
+        _is_root = bool(_root_id) and current_id == _root_id
+        _work_cards = [
+            cid for cid, m in (cards or {}).items()
+            if not str(cid or "").startswith("shadow_")
+            and str((m or {}).get("card_type") or "") != "role"
+            and str((m or {}).get("parent") or "") != ""
+            and cid != _root_id
+        ]
+        # [card_031 改接] 判据 ③ 同时认两套「在盯的职能」：
+        #   · function_profiles（新路径，模型经 create_function 建，主）；
+        #   · role_profiles（旧路径，存量 role 卡仍在盯的也算）。
+        # 两套各自判「非空壳 active」：duty.state==active 且 exclusive_key 非空
+        # 且职责书非空。任一套命中即放行——闸的目的只是「真的有人盯」。
+        _solid = False
+        try:
+            _fns = function_store.list_profiles(work_id) or []
+            _solid = _solid or any(
+                str((f.get("duty") or {}).get("state") or "") == "active"
+                and str((f.get("jurisdiction") or {}).get("exclusive_key")
+                        or (f.get("jurisdiction") or {}).get("domain") or "").strip()
+                and str((f.get("charter") or {}).get("text") or "").strip()
+                for f in _fns)
+        except Exception:  # noqa: BLE001 新表读不到不阻断（还有旧路径可查）
+            pass
+        if not _solid:
+            _roles = await role_store.list_profiles(work_id)
+            _active_roles = [pr for pr in (_roles or [])
+                             if str((pr.get("duty") or {}).get("state") or "") == "active"]
+            _solid = any(
+                str((pr.get("jurisdiction") or {}).get("exclusive_key") or "").strip()
+                and str((pr.get("charter") or {}).get("text") or "").strip()
+                for pr in _active_roles)
+    except Exception as exc:  # noqa: BLE001 读不到职能/角色表不阻断主链（fail-open）
+        logger.warning("[5713 收口闸] 查职能失败（放行）card=%s: %s", current_id, exc)
+        _is_root, _work_cards, _solid = False, [], False
+    if _is_root and len(_work_cards) >= 2 and not _solid:
+        return _err("validation",
+                    "收口被拒：本 work 有 "
+                    f"{len(_work_cards)} 张工作卡"
+                    f"（{', '.join(_work_cards[:5])}"
+                    f"{'…' if len(_work_cards) > 5 else ''}），当前零个职能角色在盯"
+                    "（active 职能数为 0，或均为空壳——空壳等于没人盯）。"
+                    "出路：用 create_function 组建职能（设几个、设什么域、盯哪些卡，"
+                    "由你判断；建好后需 duty.state=active 且职责书非空）；"
+                    "旧 create_role 组阁路径仍可用；"
+                    "或调 update_goal(blocked, reason=...) 说明卡在哪。")
+    return None
+
+
 # ---------------------------------------------------------------- handlers
 async def h_get_goal(work_id: str, current_id: str,
                      arguments: dict[str, Any], cards: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +194,13 @@ async def h_update_goal(work_id: str, current_id: str,
                         f"收口被拒：本卡还有 {len(_blockers)} 条未验收的角色指令"
                         f"（{_desc}）。先按指令做完，让角色 verify_directive(complied)，"
                         "或 update_goal(blocked) 说明卡在哪。")
+
+        # [5713 收口闸 · card_023] 零角色收口闸：项目根卡收口时若多张工作卡
+        # 零人盯，收口被拒（强制做一步拆分团队，不规定拆法）。放在 authority
+        # 之前：即使调用方不在开放回合，也先如实告诉它卡在哪（同指令闸手法）。
+        _role_gate = await _zero_role_close_gate_block(work_id, current_id, cards)
+        if _role_gate is not None:
+            return _role_gate
     try:
         source = authority.current_turn_source()
         authority.goal_tool_execution(source)

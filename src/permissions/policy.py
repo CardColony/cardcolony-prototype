@@ -254,6 +254,14 @@ def compute_perms(project_class: str, card_type: str) -> tuple[list[str], int]:
 # ============================================================
 
 #: 自动模式排除的开关（见上方 TC1 落地解释）。空集＝照搬全开（方案 C）。
+#: 自动模式排除开关（红线级 TC1 · 决策停）：占用安全、不可逆、防误改三类。
+#: [执行权集中 2026-10-21 · 用户裁定] 追加排除 tools_file / tools_web：
+#: 自动模式 ＝ 复杂任务场景，管理卡（project/sub_project）「做事」就是组织
+#: （建卡/立使命/连线/发信/写卡面）；执行（写文件/跑命令/联网抓取）全部
+#: 在执行卡（coder）手上——它走类型分权那一行，手里有执行权。
+#: 注意：read_file/search_files/list_files 是只读件，不挂 tools_file 开关，
+#: 不受本排除影响——管理卡仍能「看」，只是不能「动手」。
+#: 自动模式排除开关（红线级 TC1 · 决策停）：占用安全、不可逆、防误改三类。
 AUTO_EXCLUDE_SWITCHES: frozenset[str] = frozenset({SWITCH_DELETE})
 
 #: 自动模式「全开集」＝全部开关减排除项（U3：模型可操作所有功能）。

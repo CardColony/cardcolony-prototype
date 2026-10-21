@@ -36,25 +36,31 @@ from src.storage import card_store, shadow_store
 #   [卡片底座第一步 2026-10-14 · v3] 新增 read_linked（沿通信线读）与
 #   send_card_message（沿关系发消息）——给**所有已授 read 的类型**一并配两码。
 _LINKED = {"read_linked", "send_card_message"}
+
+#: [执行权集中在执行卡 2026-10-21] 合成「权限全开」夹具。
+#: 这里要验的机制是「有没有开关 ⇒ 工具看不看得见」；以前拿 sub_project
+#: 当全开样本，现在管理卡不再有执行权，就不能再拿它当夹具。
+#: 用 SWITCHES 全集（不属于任何真实卡型），测试意图不变。
+_FULL_SWITCHES: set[str] = set(policy.SWITCHES)
 _EXPECTED: dict[tuple[str, str], set[str]] = {
     ("rd_project", "project"): {
         "read", "edit", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_file", "tools_web", "shadow_write"} | _LINKED,
+        "tools_read_file", "shadow_write"} | _LINKED,
     ("rd_project", "sub_project"): {
         "read", "edit", "delete", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_file", "tools_web", "shadow_write"} | _LINKED,
+        "tools_read_file", "shadow_write"} | _LINKED,
     ("rd_project", "tool"): {
         "read", "edit", "delete", "plan", "shadow_write"} | _LINKED,
     ("research_project", "project"): {
         "read", "edit", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_file", "tools_web", "shadow_write"} | _LINKED,
+        "tools_read_file", "shadow_write"} | _LINKED,
     ("research_project", "topic"): {
         "read", "edit", "delete", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_file", "tools_web", "shadow_write"} | _LINKED,
+        "tools_read_file", "shadow_write"} | _LINKED,
 }
 
 
@@ -83,6 +89,15 @@ def test_two_level_lookup_and_switch_vocabulary():
     # 树类开关＝卡片操作五项；read 不在其中 ⇒ 读不受子树限定
     assert policy.TREE_SWITCHES == {"edit", "delete", "link", "unlink", "create_child"}
     assert policy.config_version() >= 1
+
+
+def _full_meta() -> dict:
+    """权限全开的合成卡面（夹具用，非真实卡型）——见 _FULL_SWITCHES 说明。"""
+    return {
+        "card_type": "sub_project",
+        "perms": sorted(_FULL_SWITCHES),
+        "perms_version": policy.config_version(),
+    }
 
 
 def _meta(card_type: str, project_class: str = "rd_project") -> dict:
@@ -164,7 +179,7 @@ def test_v4_positive_control_registered_types_see_all():
     expected_all = len((set(card_tools.TOOL_SWITCH) - coder_only - root_only
                         - op_only - auto_only - role_only) & set(card_tools.TOOL_REGISTRY))
     n_all = len(card_tools.build_tool_schemas(
-        "card_x", cards={"card_x": _meta("sub_project")}))
+        "card_x", cards={"card_x": _full_meta()}))
     assert n_all == expected_all, (
         f"工作单元型卡应见 {expected_all} 件"
         f"（TOOL_SWITCH {len(card_tools.TOOL_SWITCH)} 件减 "
@@ -173,17 +188,26 @@ def test_v4_positive_control_registered_types_see_all():
         f"OP_ONLY_TOOLS {sorted(op_only)} 减 "
         f"AUTO_ONLY_TOOLS {sorted(auto_only)}），实 {n_all} 件"
     )
+    # [执行权集中 2026-10-21] 管理卡（project / sub_project / topic）
+    # 不再看到写与执行类工具，但**仍看得到只读类**——「看得见、不动手」。
+    # 直接断言这条契约，而不是数工具总数（数总数会把工具增删也当成契约变化）。
+    SELF_EXEC_TOOLS = {"write_file", "edit_file", "move_file", "rename_file",
+                       "delete_file", "bash", "python", "web_search", "fetch_web"}
+    READONLY_TOOLS = {"read_file", "list_files", "search_files", "glob_files"}
     for pc, ct in (("rd_project", "sub_project"),
                    ("research_project", "topic"),
                    ("rd_project", "project")):
-        schemas = card_tools.build_tool_schemas("card_x", cards={"card_x": _meta(ct, pc)})
-        expected = expected_all - (1 if ct == "project" else 0)
-        assert len(schemas) == expected, (
-            f"{pc}/{ct} 应见 {expected} 件，实 {len(schemas)} 件"
-        )
+        names = {s["name"] for s in card_tools.build_tool_schemas(
+            "card_x", cards={"card_x": _meta(ct, pc)})}
+        bad = names & SELF_EXEC_TOOLS
+        assert not bad, f"{pc}/{ct} 不应看到执行类工具，却看到 {sorted(bad)}"
+        assert READONLY_TOOLS <= names, (
+            f"{pc}/{ct} 应能看到只读文件工具，缺 {sorted(READONLY_TOOLS - names)}")
+        assert "create_card" in names and "set_child_mission" in names, (
+            f"{pc}/{ct} 必须能建卡并立使命")
         if ct == "project":
-            # 根卡唯一缺的就是删卡
-            assert "delete_card" not in {s["name"] for s in schemas}
+            assert "delete_card" not in names
+
 
 
 def test_v4_default_closed_when_no_card_context():
@@ -205,9 +229,12 @@ def test_v5_no_file_permission_type_denied():
     assert file_tools.check_file_access("docs/notes.md", {"card_type": "tool"}) is False
     # 未配置类型（空 perms）经文件工具通道同样拒绝
     assert file_tools.check_file_access("docs/notes.md", _meta("no_such_type")) is False
-    # 有 tools_file 的注册类型：路径须落在 ALLOWED_ROOTS 内（沙箱＝trading-workspace）
+    # [执行权集中 2026-10-21] 执行权在 coder 手上：它能访问文件；
+    # 管理卡（sub_project）没有 tools_file ⇒ 不能访问 —— 这条锁住新契约。
     assert file_tools.check_file_access("trading-workspace/notes.md",
-                                        _meta("sub_project")) is True
+                                        _meta("coder")) is True
+    assert file_tools.check_file_access("trading-workspace/notes.md",
+                                        _meta("sub_project")) is False
     # 凭证排除照常生效（与开关无关的第二层）
     assert file_tools.check_file_access(".env", _meta("sub_project")) is False
     # 关口层：未配置类型连 read 都拒

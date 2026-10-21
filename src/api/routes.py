@@ -26,8 +26,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..storage import (
-    activity, canvas_store, card_db, card_store, event_log, manuscript_store,
-    memory_store, session_facade, session_ops, session_store, work_store,
+    activity, canvas_store, card_db, card_store, event_log, function_store,
+    manuscript_store, memory_store, session_facade, session_ops, session_store,
+    work_store,
 )
 from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
@@ -468,6 +469,13 @@ async def list_card_messages(work_id: str, limit: int = 200):
     items: list[dict[str, Any]] = []
     unread_by_card: dict[str, int] = {}
     seen: set[str] = set()
+    # [取消 inbox 状态机 2026-10-22 · D25] 每卡的读取水位，用于算未读
+    seen_seq: dict[str, int] = {}
+    for _cid in cards:
+        try:
+            seen_seq[_cid] = await card_db.get_seen_seq(work_id, _cid)
+        except Exception:  # noqa: BLE001 读不到按「一条都没读过」
+            seen_seq[_cid] = -1
 
     # ── 源一：收件箱（新机制，含 consumed）────────────────────────────
     for row in await card_db.list_inbox(work_id):
@@ -492,7 +500,9 @@ async def list_card_messages(work_id: str, limit: int = 200):
         })
         if msg_id:
             seen.add(msg_id)
-        if row.get("status") == card_db.INBOX_PENDING and target:
+        # [取消 inbox 状态机 2026-10-22 · D25] 未读不再看 status（那个位已删），
+        # 改为「该卡读取水位之后收到的消息」——即真实未处理的那批。
+        if target and isinstance(row.get("seq"), int) and row["seq"] > seen_seq.get(target, -1):
             unread_by_card[target] = 1
 
     # ── 源二：会话档案里的 card: 块（旧机制，仅存量）──────────────────
@@ -1560,6 +1570,79 @@ async def correct_work_alarm(work_id: str, alarm_id: str):
     if not ok:
         return _err(404, f"警报不存在或不可更正: {alarm_id}")
     return {"ok": True, "alarm_id": alarm_id, "status": "corrected"}
+
+
+# ============================================================
+# [function 实体化 · card_034] 职能：外部创建 / 列表（独立号段 fn_NNN，不进 cards）
+# ============================================================
+
+class CreateFunctionRequest(BaseModel):
+    """外部建职能请求体（首测端点）。function_name / charter 必填（缺失在
+    handler 内统一判 400，不依赖 pydantic 422——保证「4xx＋明确 message」口径）。"""
+    function_name: Optional[str] = None
+    charter: Optional[str] = None
+    jurisdiction: Optional[dict[str, Any]] = None
+    watch_card_ids: list[str] = Field(default_factory=list)
+    signals: list[str] = Field(default_factory=list)
+    speak_contract: Optional[dict[str, Any]] = None
+    escalation: Optional[dict[str, Any]] = None
+    ratified_by: Optional[str] = None
+
+
+@router.get("/works/{work_id}/functions")
+async def list_work_functions(work_id: str):
+    """列出该 work 全部职能的 function_id / function_name / duty / watch。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    profs = function_store.list_profiles(work_id)
+    out = []
+    for prof in profs:
+        watch = (prof.get("watch") or {})
+        out.append({
+            "function_id": prof.get("function_id"),
+            "function_name": prof.get("function_name"),
+            "duty": (prof.get("duty") or {}).get("state") or "active",
+            "watch": watch.get("cards") or [],
+        })
+    return {"functions": out}
+
+
+@router.post("/works/{work_id}/functions")
+async def create_work_function(work_id: str, req: CreateFunctionRequest):
+    """外部建职能：独立号段 fn_NNN，不写 cards 表（职能不进卡片世界）。
+
+    与根卡工具 create_function 同一存储体（function_store.create_function），
+    档案形状照 role_room.make_profile（默认值与旧角色路径同源）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    name = (req.function_name or "").strip()
+    charter = (req.charter or "").strip()
+    if not name:
+        return _err(400, "function_name 不能为空（写清这是什么职能）")
+    if not charter:
+        return _err(400, "charter 不能为空（职责书：对什么负责、什么情况发言、什么情况沉默）")
+    watch = [str(c) for c in (req.watch_card_ids or []) if c]
+    prof = role_room.make_profile(
+        name, charter,
+        jurisdiction=req.jurisdiction,
+        watch_cards=watch,
+        signals=req.signals,
+        speak_contract=req.speak_contract,
+        escalation=req.escalation,
+        ratified_by=req.ratified_by or "http:external",
+    )
+    prof["function_name"] = name
+    created = await function_store.create_function(work_id, name, prof)
+    fid = str(created.get("function_id") or "")
+    return JSONResponse(status_code=201, content={
+        "function_id": fid,
+        "function_name": name,
+        "watch": [str(c) for c in ((created.get("watch") or {}).get("cards") or [])],
+        "duty": (created.get("duty") or {}).get("state") or "active",
+        "in_cards_table": False,
+    })
+
 
 
 # [phase8.5] 原文只读端点（给未来前端留口，不加写端点）

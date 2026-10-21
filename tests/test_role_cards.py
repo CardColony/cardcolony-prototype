@@ -129,8 +129,8 @@ async def test_role_toolface_is_narrow_and_lifecycle_is_root_only(work):
             "send_card_message", "read_card", "read_linked"} <= role_tools
     assert "edit_card" not in role_tools
     assert "create_card" not in role_tools
-    assert "update_role_profile" not in role_tools
-    assert "role_set_duty" not in role_tools
+    assert "update_function_profile" not in role_tools
+    assert "set_function_duty" not in role_tools
     assert "bash" not in role_tools and "write_file" not in role_tools
 
     work_tools = {t["name"] for t in card_tools.build_tool_schemas(
@@ -138,13 +138,16 @@ async def test_role_toolface_is_narrow_and_lifecycle_is_root_only(work):
     assert "record_verdict" not in work_tools
     assert "raise_alarm" not in work_tools
     assert "correct_alarm" not in work_tools
-    assert "update_role_profile" not in work_tools
-    assert "role_set_duty" not in work_tools
+    assert "update_function_profile" not in work_tools
+    assert "set_function_duty" not in work_tools
 
     root_tools = {t["name"] for t in card_tools.build_tool_schemas(
         card_id=root, work_id=wid, cards=cards)}
-    assert {"create_role", "role_watch_cards", "list_roles",
-            "update_role_profile", "role_set_duty"} <= root_tools
+    assert {"create_function", "function_watch_cards", "list_functions",
+            "update_function_profile", "set_function_duty"} <= root_tools
+    # [card_031] 旧的五件 role 工具**已从模型工具面消失**（模型建的是职能、不是角色）
+    assert not ({"create_role", "role_watch_cards", "list_roles",
+                 "update_role_profile", "role_set_duty"} & root_tools)
 
 
 async def test_verdict_alarm_correction_and_linked_message(work):
@@ -298,14 +301,19 @@ async def test_profile_update_versions_charter_and_rewires_watch(work):
     b = await _mk_child(wid, root, "乙")
     rid = await _mk_role(wid, root, [a])
 
-    res = await card_tools.execute_tool(wid, root, "update_role_profile", {
+    # [card_031] 旧 role 卡路径改直调私有 handler——与 routes.py 的
+    # PATCH /works/{w}/roles/{role_id} 端点（1427-1444）同一条执行体；
+    # 模型工具面已无 update_role_profile（改接 function_*），但旧路径必须仍可用。
+    res = await card_tools._h_update_role_profile(wid, root, {
         "role_card_id": rid,
         "jurisdiction": {"domain": "timeline_contract", "statement": "时间口径 v2"},
         "watch_card_ids": [b],
         "signals": ["status_changed"],
         "charter": "新版职责书：只盯时间口径。",
     }, card_tools._collect_card_meta(wid))
-    assert res["ok"] is True
+    # [card_031] 私有 handler 直接返回档案字典（不走 execute_tool 的信封化），
+    # 成功判据＝无 error——与 routes.py 端点的用法一致。
+    assert res.get("ok") is not False and "error" not in res, res
     prof = await role_room.get_profile(wid, rid)
     assert prof["jurisdiction"]["statement"] == "时间口径 v2"
     assert prof["watch"]["cards"] == [b]
@@ -570,11 +578,14 @@ async def test_role_info_lives_in_tools_not_root_prompt(work):
     cards = card_tools._collect_card_meta(wid)
     tools = {t["name"]: t for t in card_tools.build_tool_schemas(
         card_id=root, work_id=wid, cards=cards)}
-    for name in ("create_role", "list_roles", "role_watch_cards",
-                 "update_role_profile", "role_set_duty"):
+    for name in ("create_function", "list_functions", "function_watch_cards",
+                 "update_function_profile", "set_function_duty"):
         assert name in tools, name
-    desc = tools["create_role"]["description"]
-    assert "角色卡" in desc and "不挂任务树" in desc
+    desc = tools["create_function"]["description"]
+    # 意图逐字保留：**职能不是卡**（不占号、不进清单、不挂任务树、不干活），
+    # 只是随改名换了措辞——「不挂任务树」这一条由「不进卡片清单与任务树」承担。
+    assert "职能" in desc and "不是卡" in desc
+    assert "不占卡片号" in desc and "任务树" in desc and "不干活" in desc
     assert "第一动作" not in desc and "先组阁" not in desc
 
 
@@ -584,9 +595,11 @@ async def test_root_can_list_roles_before_staffing(work):
     a = await _mk_child(wid, root, "甲")
     rid = await _mk_role(wid, root, [a], title="时间口径守门人")
     cards = card_tools._collect_card_meta(wid)
-    r = await card_tools.execute_tool(wid, root, "list_roles", {}, cards)
-    assert r["ok"] is True
-    roles = r["data"]["roles"]
+    # [card_031] 旧 role 清单：直调私有 handler（同 routes.py GET /roles 端点，
+    # 1381-1389 走 role_room.list_roles）；模型工具面已改为 list_functions。
+    r = await card_tools._h_list_roles(wid, root, {}, cards)
+    assert r.get("ok") is not False, r
+    roles = r["roles"]
     assert roles and roles[0]["role_card_id"] == rid
     assert roles[0]["domain"] == "timeline_contract"
     assert roles[0]["watch_cards"] == [a]
