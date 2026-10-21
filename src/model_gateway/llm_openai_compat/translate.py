@@ -104,10 +104,16 @@ def _close_block(block: _OpenBlock) -> ContentBlock:
 
 
 async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
-    """消费 SSE data 载荷（以 ``[DONE]`` 终结）并产出 StreamChunk。
+    """消费 SSE data 载荷并产出 StreamChunk。
 
-    原版 ``translate``（translate.ts:86-185）。坏 JSON 载荷以 ``MALFORMED_RESPONSE``
-    中止流（**不静默跳过**）。
+    [流收尾判据 2026-10-21] 收尾有**两条合法路径**：
+      ① 收到 ``[DONE]``（OpenAI 官方哨兵）；
+      ② 流自然结束，但**已经收到过 ``finish_reason``**（nous / minimax 这类
+         直接关连接、不发 ``[DONE]`` 的兼容端点）。
+    只有「既没有 ``[DONE]``、也没有 ``finish_reason``」才算真截断（``STREAM_CLOSED``）。
+    改前只认 ①，于是 haiku / minimax 的流一律被判成断了。
+
+    坏 JSON 载荷以 ``MALFORMED_RESPONSE`` 中止流（**不静默跳过**）。
     """
     next_index = 0
     text_block: Optional[_OpenBlock] = None
@@ -124,23 +130,11 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
         order.append(block)
         return block
 
+    seen_done = False
     async for payload in payloads:
         if payload == DONE:
-            for block in order:
-                yield BlockEnd(index=block.index, block=_close_block(block))
-            if pending_usage is not None:
-                yield UsageChunk(usage=pending_usage)
-            reason = pending_finish if pending_finish is not None else StopReason()
-            if reason.kind == "stop" and len(order) == 0:
-                # 退化完成（stop 且零块）→ EMPTY_RESPONSE 错误，不是成功空消息。
-                yield FinishChunk(
-                    reason=ErrorReason(
-                        failure=_failure("model returned a completed response with no content", EMPTY_RESPONSE_CODE)
-                    )
-                )
-            else:
-                yield FinishChunk(reason=reason)
-            return
+            seen_done = True
+            break
 
         try:
             chunk = json.loads(payload)
@@ -174,10 +168,17 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
                     block = open_block("tool-call")
                     tool_blocks[wire_index] = block
                     yield BlockStart(index=block.index, block_type="tool-call")
-                if call.get("id") is not None:
+                # [tool_calls 空串覆盖 2026-10-21 · 实测 ark-code-latest]
+                # 首片带 id/name，**后续分片带的是空串**（`{"function":{"arguments":"{",
+                # "name":""}, "id":""}`）。原来写的是「非 None 就覆盖」⇒ 空串把首片的
+                # 真值覆盖掉 ⇒ 工具名变 ""，上层认不出 ⇒ 整个 tool_call 被丢弃。
+                # 现象：模型 `finish_reason=tool_calls` 但我们解析出 0 个调用，
+                # 于是「调一次就断、根本不执行」。注释本来就写着「只取首片」，
+                # 实现与注释不符——这里改成**真值判断**（空串/None 都不覆盖）。
+                if call.get("id"):
                     block.call_id = call["id"]
                 function = call.get("function") or {}
-                if function.get("name") is not None:
+                if function.get("name"):
                     block.name = function["name"]
                 fragment = function.get("arguments") or ""
                 block.text += fragment
@@ -195,5 +196,22 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
         if chunk.get("usage"):
             pending_usage = map_usage(chunk["usage"])
 
-    # parse_sse 保证 [DONE] 哨兵（否则抛错）；走到这里说明载荷源违约了。
-    raise LlmError("SSE payload stream ended without [DONE]", "STREAM_CLOSED")
+    # 收尾（两条合法路径都到这里）：[DONE] 或「流自然结束 + 收到过 finish_reason」。
+    if not seen_done and pending_finish is None:
+        raise LlmError(
+            "SSE stream ended without [DONE] or finish_reason", "STREAM_CLOSED")
+
+    for block in order:
+        yield BlockEnd(index=block.index, block=_close_block(block))
+    if pending_usage is not None:
+        yield UsageChunk(usage=pending_usage)
+    reason = pending_finish if pending_finish is not None else StopReason()
+    if reason.kind == "stop" and len(order) == 0:
+        # 退化完成（stop 且零块）→ EMPTY_RESPONSE 错误，不是成功空消息。
+        yield FinishChunk(
+            reason=ErrorReason(
+                failure=_failure("model returned a completed response with no content", EMPTY_RESPONSE_CODE)
+            )
+        )
+    else:
+        yield FinishChunk(reason=reason)

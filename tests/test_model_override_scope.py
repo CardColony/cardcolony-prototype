@@ -63,42 +63,37 @@ def test_clean_drops_empty_and_normalizes(ws):
                    "bindings": {"execute": "m2", "viewpoint": ["m1", "m2"]}}
 
 
-def test_update_clear_roundtrip(ws):
-    model_override.update_work("work_100", {"default_model": "m2"})
-    assert model_override.load_scope("work_100")[0]["default_model"] == "m2"
+def test_row_put_get_clear_roundtrip(ws):
+    """表是结果：写一行 / 读一行 / 删一行（删了下次访问按策略重填）。"""
+    model_override.put_row("work_100", "card_002", {"model": "m2"})
+    row = model_override.get_row("work_100", "card_002")
+    assert row["model"] == "m2" and row["src"] == "manual"
 
-    model_override.update_card("work_100", "card_002", {"default_model": "m3"})
-    _, co = model_override.load_scope("work_100", "card_002")
-    assert co["default_model"] == "m3"
+    model_override.put_row("work_100", "card_002",
+                           {"model": "m3", "bindings": {"viewpoint": ["m1", "m2"]}})
+    row = model_override.get_row("work_100", "card_002")
+    assert row["model"] == "m3"
+    assert row["bindings"]["viewpoint"] == ["m1", "m2"]
 
     model_override.clear_card("work_100", "card_002")
-    assert model_override.load_scope("work_100", "card_002")[1] == {}
-
+    assert model_override.get_row("work_100", "card_002") is None
     model_override.clear_work("work_100")
-    assert model_override.load("work_100") == {}
+    assert model_override.load("work_100")["cards"] == {}
 
+def test_table_is_the_only_truth(ws, gw):
+    """运行时**只读表**：没行就按策略填一行；改行立刻生效；策略不再参与。"""
+    # 没有行 ⇒ 第一次取按默认策略填行（自愈）并落盘
+    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m1"
+    row = model_override.get_row("work_100", "card_002")
+    assert row and row["model"] == "m1" and row["src"] == "default"
 
-# ---------------------------------------------------------------- 解析层
-
-
-def test_precedence_card_than_work_than_global(ws, gw):
-    """卡片覆盖 > 项目 types > 全局模板 > 全局默认；角色绑定仍走 card > work > global。"""
-    model_override.update_work("work_100",
-                               {"default_model": "m2", "bindings": {"execute": "m2"}})
-    model_override.update_card("work_100", "card_002",
-                               {"default_model": "m3", "bindings": {"execute": "m3"}})
-    model_override.seed_types("work_100", {"sub_project": "m4"})
-
-    # 无卡 → 全局默认（新模型：默认模型按卡类型解析，项目级无单一默认）
-    assert model_config.default_model() == "m1"
-    assert model_config.default_model(work_id="work_100") == "m1"
-    # 卡片覆盖（m3）优先于项目表
+    # 改行 ⇒ 立刻生效（不再有任何优先级仲裁）
+    model_override.put_row("work_100", "card_002", {"model": "m3"})
     assert model_config.default_model(work_id="work_100", card_id="card_002") == "m3"
-    # 角色绑定：card > work > global
-    assert model_config.resolve("execute") == "exec-global"
-    assert model_config.resolve("execute", work_id="work_100") == "m2"
+    # 同一行的角色查询也走它（行里没有该角色例外 ⇒ 用主模型）
     assert model_config.resolve("execute", work_id="work_100", card_id="card_002") == "m3"
-
+    # 全局绑定不再参与（表里已有行）
+    assert model_config.resolve("execute") == "exec-global"
 
 def test_clear_card_falls_back_to_project_types(ws, gw, tmp_path, monkeypatch):
     """清掉卡片覆盖后回落项目 types[card_type]。"""
@@ -136,22 +131,30 @@ def client(ws, gw, monkeypatch):
 
 
 def test_api_work_roundtrip_and_effective(client):
-    """work 级覆盖可存可读（兼容）；但默认模型按卡类型解析，work 级不再提供单一默认。"""
+    """项目级改模型＝改表里所有（非手动）行；effective 反映表。"""
+    model_override.put_row("work_100", "card_002", {"model": "m1"}, src="default")
     r = client.put("/api/settings/model-overrides/work_100",
-                   json={"default_model": "m2", "bindings": {"execute": "m2"}})
+                   json={"default_model": "m2"})
     assert r.status_code == 200, r.text
     assert r.json()["work"]["default_model"] == "m2"
 
     g = client.get("/api/settings/model-overrides/work_100").json()
-    assert g["work"]["default_model"] == "m2"
+    assert g["cards"]["card_002"]["default_model"] == "m2"
 
     eff = client.get("/api/settings/model-overrides/work_100/effective").json()
-    assert eff["default_model"] == "m1"          # 无卡时 = 全局默认（不再用 work 默认）
-    assert eff["bindings"]["execute"] == "m2"    # 角色绑定仍读 work 覆盖
+    assert eff["default_model"] == "m2"
 
     assert client.delete("/api/settings/model-overrides/work_100").status_code == 200
-    assert client.get("/api/settings/model-overrides/work_100").json()["work"] is None
+    assert client.get("/api/settings/model-overrides/work_100").json()["cards"] == {}
 
+
+def test_api_work_does_not_touch_manual_rows(client):
+    """项目级改模型不覆盖人手改过的那一行（手动权重最高）。"""
+    model_override.put_row("work_100", "card_002", {"model": "m3"})            # manual
+    model_override.put_row("work_100", "card_003", {"model": "m1"}, src="default")
+    client.put("/api/settings/model-overrides/work_100", json={"default_model": "m2"})
+    assert model_override.get_row("work_100", "card_002")["model"] == "m3"
+    assert model_override.get_row("work_100", "card_003")["model"] == "m2"
 
 def test_api_card_roundtrip(client):
     r = client.put("/api/settings/model-overrides/work_100/card/card_002",
@@ -184,34 +187,27 @@ def test_api_404_unknown_card(client):
 
 
 def test_api_list_marks_points(client):
-    client.put("/api/settings/model-overrides/work_100", json={"default_model": "m2"})
+    model_override.put_row("work_100", "card_002", {"model": "m2"})
     lst = client.get("/api/settings/model-overrides").json()["works"]
     hit = next((w for w in lst if w["work_id"] == "work_100"), None)
     assert hit is not None
     assert hit["has_work"] is True
 
-
-# ---------------------------------------------------------------- 主回合接线
-
-
-def test_pick_step_model_uses_card_override(ws, gw):
-    """主 agent 回合真正走卡片覆盖：纯单模型下 _pick_step_model 取该卡默认模型。"""
+def test_pick_step_model_uses_card_row(ws, gw):
+    """主 agent 回合真正读表：改哪一行，这一步就用哪个模型。"""
     from src.api import message_runner
     from src.thinkchain import enabled as _tc_enabled
 
     if _tc_enabled():  # 若某测试把思维链开了，本断言前提不成立
         pytest.skip("thinkchain 已开启，跳过单模型口径断言")
 
-    model_override.update_card("work_100", "card_002", {"default_model": "m3"})
+    model_override.put_row("work_100", "card_002", {"model": "m3"})
+    # 项目级改模型不会动这一行（manual）
     model_override.update_work("work_100", {"default_model": "m2"})
 
     state = message_runner.RunState(work_id="work_100", card_id="card_002", content="x")
     model = message_runner._pick_step_model(state)
-    assert model == "m3", f"应取卡片覆盖 m3，实际 {model}"
-
-
-# ---------------------------------------------------------------- 按卡片类型设置默认模型
-
+    assert model == "m3", f"应取表里那一行 m3，实际 {model}"
 
 def test_seed_types_copies_template_into_project(ws, tmp_path, monkeypatch):
     """新建项目种子化：全局模板整体拷进项目 types 表。"""
@@ -224,26 +220,25 @@ def test_seed_types_copies_template_into_project(ws, tmp_path, monkeypatch):
     assert model_override.load_types("work_100") == {"project": "m2", "sub_project": "m3"}
 
 
-def test_default_model_resolution_chain(ws, gw, tmp_path, monkeypatch):
-    """解析链：卡片覆盖 > 项目 types[card_type] > 全局模板[card_type] > 全局默认。"""
+def test_seed_row_reads_policy_once(ws, gw, tmp_path, monkeypatch):
+    """默认策略只在**填行那一刻**被读一次；之后改策略不影响已有行（表是结果）。"""
     from src.api import model_config
     tpl = tmp_path / "card_type_models.json"
     tpl.write_text('{"types": {}}', encoding="utf-8")
     monkeypatch.setattr(model_config, "CARD_TYPE_MODELS_PATH", tpl)
     monkeypatch.setattr(model_config, "_card_type_of", lambda wid, cid: "sub_project")
 
-    # 全局默认 m1（gw stub 的 system.default_model）
+    # 首次取 ⇒ 按策略填行（此时模板空 ⇒ 全局默认 m1）
     assert model_config.default_model(work_id="work_100", card_id="card_002") == "m1"
-    # 全局模板命中
+    # 改策略（模板给 m2）⇒ 已有行不变
     tpl.write_text('{"types": {"sub_project": "m2"}}', encoding="utf-8")
+    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m1"
+    # 删行 ⇒ 重新按策略填（此时 m2）
+    model_override.clear_card("work_100", "card_002")
     assert model_config.default_model(work_id="work_100", card_id="card_002") == "m2"
-    # 项目表命中（覆盖全局模板）
-    model_override.seed_types("work_100", {"sub_project": "m3"})
+    # 人手改行 ⇒ 覆盖策略
+    model_override.put_row("work_100", "card_002", {"model": "m3"})
     assert model_config.default_model(work_id="work_100", card_id="card_002") == "m3"
-    # 卡片覆盖 > 项目表
-    model_override.update_card("work_100", "card_002", {"default_model": "m2"})
-    assert model_config.default_model(work_id="work_100", card_id="card_002") == "m2"
-
 
 def test_api_card_type_models_roundtrip(client, tmp_path, monkeypatch):
     """后台按卡类型模板的读/写/校验。"""

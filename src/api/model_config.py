@@ -161,55 +161,65 @@ def reload() -> dict[str, Any]:
     return load()
 
 
+#: 未建 gateway 时的编译配置缓存（按 models.yaml mtime 失效）。
+#  选模型是高频动作（每轮每步一次），每次重读 yaml + 编译太贵（实测 18 个模型
+#  的编译在每次 pick 里跑一遍）。gateway 建好后走它的 config，与本缓存无关。
+_CFG_CACHE: dict[str, Any] = {"key": None, "cfg": {}}
+
+
+def _compiled_config_cached() -> dict[str, Any]:
+    # key 必须含**路径**：测试/沙箱会把 CONFIG_PATH 指到临时文件，而同一秒内
+    # 创建的两个 tmp 文件 mtime 可能相同 ⇒ 只按 mtime 会命中别人的缓存。
+    try:
+        st = CONFIG_PATH.stat()
+        key = (str(CONFIG_PATH), st.st_mtime, st.st_size)
+    except OSError:
+        return {}
+    if _CFG_CACHE.get("key") == key and _CFG_CACHE.get("cfg"):
+        return _CFG_CACHE["cfg"]
+    cfg = _compile(_load_raw_file())
+    _CFG_CACHE["key"] = key
+    _CFG_CACHE["cfg"] = cfg
+    return cfg
+
+
 def _gateway_config() -> dict[str, Any]:
-    """取 gateway 的 config（与调用同源）。取不到返空 dict（fail-open）。"""
+    """取 gateway 的 config（与调用同源）。取不到返空 dict（fail-open）。
+
+    [模型配置表 2026-10-21 · 修] **绝不在这里构造 gateway**。
+    原实现调 `model_service.get_gateway()`，而它是懒初始化单例——于是「选模型」
+    这个纯读动作会把网关（含 MOCK_LLM 判定、真实适配器）提前固化下来。
+    实测踩到：建卡时 seed 一次模型 → 网关在 MOCK_LLM 生效前就被建成真实网关
+    ⇒ 之后所有测试都打真实 API。选模型不需要实例，只需要配置。
+    """
     try:
         from . import model_service as _ms  # 延迟 import 避循环
-        return _ms.get_gateway().config or {}
+        gw = getattr(_ms, "_gateway", None)
+        if gw is not None:
+            return gw.config or {}
     except Exception:  # noqa: BLE001
-        logger.warning("模型配置：gateway config 获取失败")
+        pass
+    try:
+        return _compiled_config_cached()     # 未建实例：读+编译（按 mtime 缓存）
+    except Exception:  # noqa: BLE001
+        logger.warning("模型配置：编译配置获取失败")
         return {}
 
 
 # ============================================================
-# [模型设置按项目/卡片覆盖 2026-10-19]
-# 覆盖层：card > work > global(models.yaml)。载体与读写见
-# src/storage/model_override.py；本模块只做「解析优先序」，不碰文件。
+# [模型配置表 2026-10-21] 项目级配置的载体与读写全在
+# src/storage/model_override.py（``works/{wid}/model_config_table.json``）。
+# 本模块**不再做「覆盖优先序」**——那是旧设计（card>work>global），已被
+# 「一张表存结果、运行时只读表」取代。原来这里两个函数
+# ``_scope_overrides`` / ``_override_hit`` 已删除（无人调用）。
 # ============================================================
 
 
-def _scope_overrides(work_id: str, card_id: Optional[str]):
-    """按需取 (work 级覆盖, card 级覆盖)；失败/缺失 ⇒ 两个空 dict（fail-open）。"""
-    try:
-        from ..storage import model_override as _mo  # 延迟 import 避循环
-    except Exception:  # noqa: BLE001
-        return {}, {}
-    try:
-        return _mo.load_scope(work_id, card_id)
-    except Exception:  # noqa: BLE001
-        logger.warning("模型覆盖读取失败 work=%s card=%s", work_id, card_id)
-        return {}, {}
-
-
-def _pick_override_binding(role: str, work_ov: dict, card_ov: dict):
-    """按 card > work 顺序在覆盖 bindings 里找 role；命中即返原始值（str/list），
-    未命中返 None（让位全局）。"""
-    for ov in (card_ov, work_ov):
-        b = ov.get("bindings")
-        if not isinstance(b, dict):
-            continue
-        if role in b:
-            return b[role]
-    return None
-
-
-# ============================================================
-# [按卡片类型设置默认模型 2026-10-19]
-# 全局模板 config/card_type_models.json：type → 模型键。新建项目时整体拷贝进
-# 该项目 model_override.json 的 types 表；之后项目内改卡片模型以卡片为准。
-# 解析链（某张卡实际用什么模型）：
-#   cards[card_id].default_model > work.types[card_type] > 全局模板[card_type] > system.default_model
-# ============================================================
+def _norm(v: Any) -> Any:
+    """统一成 str 或 list[str]（配置里可能写成元组/带空串）。"""
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v if str(x).strip()]
+    return str(v)
 
 
 def _load_card_type_models() -> dict[str, Any]:
@@ -269,94 +279,339 @@ def _card_type_of(work_id: str, card_id: str) -> str:
         return ""
 
 
-def default_model(*, work_id: Optional[str] = None,
-                  card_id: Optional[str] = None) -> str:
-    """一张卡/项目实际用的默认模型（角色未绑定/未单独指定时）。
+def _work_type_model(work_id: str, card_type: str) -> str:
+    """项目配置表 types[card_type]；读不到 ⇒ ""。"""
+    try:
+        from ..storage import model_override as _mo
+        return str(_mo.load_types(work_id).get(card_type) or "")
+    except Exception:  # noqa: BLE001 读不到 ⇒ 交给下一层
+        return ""
 
-    解析链：card 覆盖 > 项目 types[card_type] > 全局模板[card_type] > system.default_model。
-    项目 types 在新建项目时从全局模板拷贝，之后项目内改卡片以卡片覆盖为准。
+
+# ============================================================
+# [模型配置表 2026-10-21 · 用户裁定]
+#   「每个项目有且只有一张模型配置表，整个系统都按这张表调模型；
+#     新建项目/卡时按一套默认策略走，把结果填进这张表；
+#     改卡片模型就是更新表里那一行。」
+#
+# ⇒ 运行时**只读表**，不做优先级仲裁（改前那套 card>work>tier>bindings>types
+#   的链是错的：多个来源并存，必然出现「改了不生效 / 谁赢谁」）。
+#   默认策略（_policy_value）只在**填表那一刻**被调用一次：
+#     · 新建卡：card_store 建完立刻 seed_card()
+#     · 老卡/漏填：第一次取模型时现算一次并写入（自愈）
+#
+# 三个消费口，其余全是薄包装：
+#   pick()      → 表里那一行给该角色的值（str | list[str]）
+#   pick_one()  → 单值（池则按深度选：上层主备优先、深层轮询分散）
+#   pick_pool() → 列表（单值包成 [x]；三席用它）
+# ============================================================
+
+
+def pick(role: str, *, work_id: Optional[str] = None,
+         card_id: Optional[str] = None) -> Any:
+    """模型选择：**读配置表**。表里没有这张卡 ⇒ 按默认策略填一次再读。"""
+    role = str(role or "default")
+
+    if work_id and card_id:
+        from ..storage import model_override as _mo
+        row = _mo.get_row(work_id, card_id)
+        if row is None:
+            row = _policy_row(work_id, card_id)
+            try:
+                _mo.put_row(work_id, card_id, row, src="default")   # 自愈填行
+            except Exception as exc:  # noqa: BLE001 写表失败不影响本次选择
+                logger.warning("模型配置表写入失败 work=%s card=%s: %s",
+                               work_id, card_id, exc)
+        got = _row_value(role, row)
+        if got is not None:
+            if _still_available(got):
+                return got
+            # 表里那个模型已经不在当前模型目录（换过 models.yaml / 测试替身）
+            # ⇒ 按当前策略回落，**不改表**（人的选择留着，等他自己改或补回目录）
+            logger.warning("模型配置表里的模型已不可用，按默认策略回落 "
+                           "work=%s card=%s role=%s model=%s",
+                           work_id, card_id, role, got)
+            return _policy_value(role, work_id, card_id)
+        # 行里没有这个角色的例外、也没有主模型（极端）⇒ 现算兜底，不落表
+
+    # 无卡（全局后台动作：凝练/压缩等）⇒ 按默认策略现算，不落表
+    return _policy_value(role, work_id, card_id)
+
+
+def new_project_default() -> str:
+    """新建项目的默认模型（草稿态徽标显示它；项目落库后根卡也用这个）。
+
+    [新建项目 2026-10-21] 原来草稿态显示的是 `system.default_model`（minimax 兜底），
+    用户看着莫名其妙——新项目的根卡是**树的第一层**，按分层策略就该用 depth_0。
+    取 depth_0 首选；没有分层配置才回落 system.default_model。
     """
-    system = (_gateway_config().get("system")) or {}
-    gd = str(system.get("default_model")) if system.get("default_model") else DEFAULT_MODEL
-    if not (work_id or card_id):
-        return gd
+    cfg = _gateway_config()
+    t0 = (cfg.get("tiers") or {}).get("depth_0")
+    if t0:
+        pool = [str(x) for x in t0] if isinstance(t0, (list, tuple)) else [str(t0)]
+        pool = [x for x in pool if x.strip()]
+        if pool:
+            return pool[0]
+    system = (cfg.get("system") or {})
+    return str(system.get("default_model") or DEFAULT_MODEL)
 
-    # 1) 显式覆盖：card 优先，其次 work。
-    # [覆盖失效修复 2026-10-20] 原来这里写的是 `_, card_ov = ...`——**把 work 级
-    # 覆盖整个丢掉了**。而前端模型选择器写的就是 work 级
-    # （PUT /api/settings/model-overrides/{work_id} {default_model}）⇒ 用户在页面上
-    # 切模型，文件写进去了、load_scope 也读得到，但这条解析链看不见它，于是
-    # 纯单模型模式（role=default）下**切了等于没切**（实测：写 glm-53 后仍返回
-    # minimax）。顺序与 `resolve()` 对齐：card > work > tier > types > 全局默认。
-    work_ov, card_ov = _scope_overrides(work_id, card_id) if work_id else ({}, {})
-    if card_id:
-        v = card_ov.get("default_model")
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    v = work_ov.get("default_model")
-    if isinstance(v, str) and v.strip():
-        return v.strip()
-    # 1.5) [模型分层 2026-10-20 · 关键修复] 按卡深度选模型。
-    # 纯单模型模式（thinkchain 关闭）走的是 `pick_model("default")` →
-    # `default_model()`，**不经 resolve** —— 所以 tier 之前只在 resolve 里生效，
-    # 等于从来没生效过（实测 5704 的卡全走 system.default_model）。
-    _tier = _tier_for("default", work_id, card_id, _gateway_config())
-    if _tier:
-        return _tier
 
-    # 2) 项目配置表 types[card_type]
-    ct = _card_type_of(work_id, card_id) if card_id else ""
-    if work_id and ct:
-        try:
-            from ..storage import model_override as _mo
-            pt = _mo.load_types(work_id).get(ct)
+def _still_available(v: Any) -> bool:
+    """表里的值是否还在当前模型目录里。目录取不到（gateway 未就绪）⇒ 不判。"""
+    try:
+        names = model_names()
+    except Exception:  # noqa: BLE001
+        return True
+    if not names:
+        return True
+    items = v if isinstance(v, list) else [v]
+    return any(str(x) in names for x in items)
+
+
+def _row_value(role: str, row: dict) -> Any:
+    """从表的一行里取该角色的值：bindings[role] 优先，其次该行主模型。"""
+    if not isinstance(row, dict):
+        return None
+    b = row.get("bindings")
+    if isinstance(b, dict):
+        v = b.get(role)
+        if v not in (None, "", []):
+            return _norm(v)
+    m = row.get("model")
+    if isinstance(m, str) and m.strip():
+        return m.strip()
+    return None
+
+
+def _policy_value(role: str, work_id: Optional[str],
+                  card_id: Optional[str]) -> Any:
+    """**默认策略**（只在填表时用，运行时不该走到这里）。
+
+    auto 卡按深度（tiers）> 角色绑定（bindings）> 卡类型模板（types）> 系统默认。
+    """
+    cfg = _gateway_config()
+
+    tier = _tier_raw(work_id, card_id, cfg)
+    if tier is not None:
+        return _norm(tier)
+
+    hit = (cfg.get("bindings") or {}).get(role)
+    if hit not in (None, "", []):
+        return _norm(hit)
+
+    if work_id and card_id:
+        ct = _card_type_of(work_id, card_id)
+        if ct:
+            pt = _work_type_model(work_id, ct)
             if pt:
                 return pt
-        except Exception:  # noqa: BLE001
+            gt = card_type_models().get(ct)
+            if gt:
+                return str(gt)
+
+    system = (cfg.get("system") or {})
+    return str(system.get("default_model") or DEFAULT_MODEL)
+
+
+def _policy_row(work_id: str, card_id: str) -> dict:
+    """按默认策略生成**表里的一行**：主模型 ＋ 层内兜底链 ＋ 三席池（若有）。
+
+    [层内兜底 2026-10-21 · 用户令] 「按照层级策略，每一个层级内互相兜底」——
+    所以这一行必须把**整层的候选链**记下来（首选在前，其余按 models.yaml 顺序），
+    不能像改前那样挑一个写进去、把池里其他成员丢掉（丢了就无从兜底）。
+    """
+    row: dict[str, Any] = {}
+    main = _policy_value("default", work_id, card_id)
+    if isinstance(main, list):
+        pool = [str(x) for x in main if str(x).strip()]
+        chosen = _choose_from_pool(pool, work_id, card_id)
+        if chosen:
+            row["model"] = chosen
+            rest = [x for x in pool if x != chosen]
+            if rest:
+                row["fallbacks"] = rest
+    elif main:
+        row["model"] = str(main)
+    pool = _policy_value("viewpoint", work_id, card_id)
+    if isinstance(pool, list):
+        pool = [str(x) for x in pool if str(x).strip()]
+        if len(pool) > 1:            # 单值不必存例外（主模型就是它）
+            row["bindings"] = {"viewpoint": pool}
+    return row
+
+
+def seed_card(work_id: str, card_id: str, *, force: bool = False) -> dict:
+    """把某张卡的默认策略结果**写进表**（新建卡时调用；force=True 覆盖已有行）。"""
+    from ..storage import model_override as _mo
+    if not work_id or not card_id:
+        return {}
+    if not force and _mo.get_row(work_id, card_id) is not None:
+        return _mo.get_row(work_id, card_id) or {}
+    row = _policy_row(work_id, card_id)
+    try:
+        _mo.put_row(work_id, card_id, row, src="default")   # 策略填的（人没改过）
+    except Exception as exc:  # noqa: BLE001 建卡不因填表失败而失败
+        logger.warning("模型配置表填行失败 work=%s card=%s: %s", work_id, card_id, exc)
+    return row
+
+
+def seed_project(work_id: str, card_ids: Optional[list[str]] = None) -> int:
+    """把项目里**还没填过的卡**一次性填进表（老项目自愈 / 建项目后补全）。"""
+    from ..storage import model_override as _mo
+    if card_ids is None:
+        try:
+            from ..storage import card_store
+            card_ids = [c.get("card_id") for c in card_store.list_cards(work_id) or []
+                        if c.get("card_id")]
+        except Exception:  # noqa: BLE001 列不出来就只填已有行
+            card_ids = list(_mo.list_rows(work_id).keys())
+    n = 0
+    for cid in card_ids or []:
+        if _mo.get_row(work_id, cid) is None:
+            seed_card(work_id, cid)
+            n += 1
+    return n
+
+
+def _choose_from_pool(pool: list[str], work_id: Optional[str],
+                      card_id: Optional[str]) -> str:
+    """池里挑一个：上层（depth ≤ 1）主备顺序优先；深层（depth ≥ 2）按实时占用分散。
+
+    gateway 拿不到（未初始化/测试）⇒ crc32 分散（同卡稳定、跨卡分散）。
+    """
+    pool = [str(x) for x in (pool or []) if str(x).strip()]
+    if not pool:
+        return ""
+    if len(pool) == 1:
+        return pool[0]
+    depth = _card_depth(str(work_id or ""), str(card_id or "")) if card_id else 0
+    try:
+        from . import model_service as _ms
+        gw = getattr(_ms, "_gateway", None)   # 只读已有实例，不构造（见 _gateway_config 注）
+        if gw is not None:
+            mode = "primary" if depth <= 1 else "spread"
+            picked = gw.pick_from(list(pool), mode=mode)
+            if picked:
+                return picked
+    except Exception:  # noqa: BLE001 gateway 不可用 ⇒ 退回静态分散
+        pass
+    import zlib
+    idx = zlib.crc32(str(card_id or "").encode("utf-8")) % len(pool)
+    return pool[idx]
+
+
+def pick_one(role: str, *, work_id: Optional[str] = None,
+             card_id: Optional[str] = None) -> str:
+    """单值口：池按深度选一个。所有「只接受一个模型名」的调用方用它。"""
+    v = pick(role, work_id=work_id, card_id=card_id)
+    if isinstance(v, list):
+        return _choose_from_pool(v, work_id, card_id)
+    return str(v)
+
+
+def pick_pool(role: str, *, work_id: Optional[str] = None,
+              card_id: Optional[str] = None) -> list[str]:
+    """列表口：单值包成 [x]。三席（viewpoint）用它——席数＝池大小。"""
+    v = pick(role, work_id=work_id, card_id=card_id)
+    return list(v) if isinstance(v, list) else [str(v)]
+
+
+def _layer_pool(work_id: Optional[str], card_id: Optional[str]) -> list[str]:
+    """这张卡所在**层**的原始候选池（含首选，按 models.yaml 里的顺序）。"""
+    raw = _tier_raw(work_id, card_id, _gateway_config())
+    if raw is None:
+        return []
+    pool = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+    return [str(x).strip() for x in pool if str(x).strip()]
+
+
+def fallback_chain(role: str = "default", *, work_id: Optional[str] = None,
+                   card_id: Optional[str] = None) -> list[str]:
+    """**候选链**：``[首选, 同层兜底…]``。运行时唯一取模型的口。
+
+    [层内兜底 2026-10-21 · 用户令] 「模型还是需要一个 fallback 机制，但不是原来那套
+    用一个模型兜所有底，而是按照层级策略，每一个层级内互相兜底」。
+    ⇒ 兜底只发生在**同一个层**里（depth_2 三个模型互相兜），绝不跨层，
+      更不会落到 system.default_model 那种全局兜底。
+
+    来源：表里那一行的 ``model`` + ``fallbacks``（建卡时按层池写好）。
+    行里没有 ``fallbacks``（老行）⇒ 按当前层池现算并**补回表里**（自愈，一次）。
+    人手动换过主模型 ⇒ 兜底仍是该层其余成员（**位置决定层**，人只改首选）。
+    """
+    primary = pick_one(role, work_id=work_id, card_id=card_id)
+    if not primary:
+        return []
+    if str(role) != "default":
+        # 三席/凝练/折叠等角色：语义不是「主备」，不套层内兜底
+        return [primary]
+
+    rest: list[str] = []
+    if work_id and card_id:
+        from ..storage import model_override as _mo
+        row = _mo.get_row(work_id, card_id) or {}
+        rest = [str(x) for x in (row.get("fallbacks") or []) if str(x).strip()]
+        if not rest:
+            rest = [m for m in _layer_pool(work_id, card_id) if m != primary]
+            if rest:
+                try:
+                    newrow = dict(row)
+                    newrow["fallbacks"] = rest
+                    _mo.put_row(work_id, card_id, newrow,
+                                src=str(row.get("src") or "default"))
+                except Exception as exc:  # noqa: BLE001 补链失败不影响本次调用
+                    logger.warning("补层内兜底链失败 work=%s card=%s: %s",
+                                   work_id, card_id, exc)
+
+    out = [primary]
+    for m in rest:
+        if m not in out and _still_available(m):
+            out.append(m)
+    return out
+
+
+def layer_fallbacks(model_name: str, *, work_id: Optional[str] = None,
+                    card_id: Optional[str] = None) -> list[str]:
+    """**同层其余成员**（去掉 ``model_name`` 自己）——给「已经选好座位」的调用方用。
+
+    与 :func:`fallback_chain` 的区别：那边是「我来选首选」，这边是「首选已经定了，
+    给我它挂掉时该换谁」。两者都只在本层内取，绝不跨层。
+
+    顺序：表里那一行配的 ``fallbacks`` 在前（设置界面/人手配的优先），
+    再用当前层池补齐（层池加了新成员也能跟上）。
+    """
+    me = str(model_name or "").strip()
+    if not me:
+        return []
+    rest: list[str] = []
+    if work_id and card_id:
+        try:
+            from ..storage import model_override as _mo
+            row = _mo.get_row(work_id, card_id) or {}
+            rest.extend(str(x) for x in (row.get("fallbacks") or []) if str(x).strip())
+        except Exception:  # noqa: BLE001 读不到表 ⇒ 只用层池
             pass
-        # 3) 全局模板 types[card_type]
-        gt = card_type_models().get(ct)
-        if gt:
-            return gt
-    # 4) 全局默认
-    return gd
+    rest.extend(m for m in _layer_pool(work_id, card_id) if m != me)
+    out: list[str] = []
+    for m in rest:
+        if m != me and m not in out and _still_available(m):
+            out.append(m)
+    return out
+
+
+def default_model(*, work_id: Optional[str] = None,
+                  card_id: Optional[str] = None) -> str:
+    """「这张卡/项目的默认模型」＝ pick_one("default")。保留旧签名（多处消费）。"""
+    return pick_one("default", work_id=work_id, card_id=card_id)
 
 
 def resolve(role: str, *, work_id: Optional[str] = None,
-            card_id: Optional[str] = None) -> Optional[Any]:
-    """角色 → 模型名（全局 bindings 同源读；work/card 覆盖优先）。
+            card_id: Optional[str] = None) -> Any:
+    """角色 → 模型名（保留旧签名）。**实现只有 pick 一条链**。
 
-    解析优先序：card 覆盖 > work 覆盖 > 全局 bindings。
-    multi 返 list[str]，单角色返 str；未绑定（缺键/空值）返 None。
-    值是否合法由上层校验：pick_model 保留原始值让消费点显式报错，
-    resolve_model 用 model_names() 校验并回落——分层校验，避免「配错名静默用默认」。
-
-    同源保证「选模型」与「调用」同一份 config；热生效经
-    reload_gateway 重建 gateway（先建后换）后自然更新。
+    与改前的差别：未绑定不再返 None——底座自带兜底（system.default_model）。
+    需要「未配置」语义的调用方请自行比较返回值与 bindings，不要再分叉解析。
     """
-    if work_id or card_id:
-        work_ov, card_ov = _scope_overrides(work_id, card_id)
-        hit = _pick_override_binding(role, work_ov, card_ov)
-        if hit is not None:
-            return [str(x) for x in hit] if isinstance(hit, list) else str(hit)
-    cfg = _gateway_config()
-    # [模型分层 2026-10-19 · 5704 承载力迭代] 卡/项目没有显式覆盖 ⇒ 按卡深度选 tier。
-    # 越靠上越贵（判断影响整棵树），越靠下越便宜（只影响一个文件）。
-    tier = _tier_for(role, work_id, card_id, cfg)
-    if tier is not None:
-        return tier
-    bindings = cfg.get("bindings") or {}
-    hit = bindings.get(role)
-    if hit is None or hit == "" or hit == []:
-        return None
-
-    if isinstance(hit, list):
-        return [str(x) for x in hit]
-    return str(hit)
-
-
-#: 受深度分层影响的角色（其余角色——如 condense/compress——仍走 bindings）
-_TIER_ROLES = frozenset({"execute", "think", "synthesize", "draft", "default"})
+    return pick(role, work_id=work_id, card_id=card_id)
 
 
 def _card_depth(work_id: str, card_id: str) -> int:
@@ -380,46 +635,168 @@ def _card_depth(work_id: str, card_id: str) -> int:
     return depth
 
 
-def _tier_for(role: str, work_id: Optional[str], card_id: Optional[str],
-              cfg: dict[str, Any]) -> Optional[str]:
-    """按卡深度取 tier 模型名；不适用 ⇒ None（退回 bindings）。
+#: 分层键（顺序＝树从浅到深，最后是兜底层）。设置界面按这个顺序展示。
+TIER_LEVELS: tuple[str, ...] = ("depth_0", "depth_1", "depth_2", "default")
 
-    **只对 auto 模式的卡生效**：分层是为「一棵自动组织起来的树」设计的——普通
-    对话卡有自己的角色绑定，不该被深度改写（否则用户在设置里配的 execute 模型
-    会被一张卡在树里的位置悄悄覆盖）。
+
+def _as_pool(v: Any) -> list[str]:
+    """层配置值 → 模型名列表（单值/元组都归一，去空串、去重保序）。"""
+    if v in (None, "", []):
+        return []
+    pool = list(v) if isinstance(v, (list, tuple)) else [v]
+    out: list[str] = []
+    for x in pool:
+        m = str(x).strip()
+        if m and m not in out:
+            out.append(m)
+    return out
+
+
+def tiers() -> dict[str, list[str]]:
+    """当前分层配置，统一成 ``{层: [模型…]}``——**列表顺序就是兜底顺序**。
+
+    第一项是首选，后面依次是「首选挂了换它」。设置界面与 ``layer_fallbacks``
+    都读这一份，所以界面上看到的顺序就是运行时的尝试顺序。
+    """
+    raw = _gateway_config().get("tiers") or {}
+    out: dict[str, list[str]] = {}
+    for k in TIER_LEVELS:
+        pool = _as_pool(raw.get(k))
+        if pool:
+            out[k] = pool
+    for k, v in raw.items():          # 额外层（depth_3…）原样带上
+        if str(k) in out or str(k) in TIER_LEVELS:
+            continue
+        pool = _as_pool(v)
+        if pool:
+            out[str(k)] = pool
+    return out
+
+
+def save_tiers(new_tiers: dict[str, Any]) -> dict[str, Any]:
+    """保存分层（含层内兜底顺序）并重算已有项目的默认行。
+
+    校验：每个模型名必须在当前模型目录里（不许发明模型）。
+    「表存结果」的代价是规则变了旧行不会自己变 ⇒ 保存后立刻 reseed 一次，
+    人手改过的行（src=manual）不动。
+    """
+    known = model_names()
+    errs: list[str] = []
+    clean: dict[str, list[str]] = {}
+    for k, v in (new_tiers or {}).items():
+        key = str(k).strip()
+        if not key:
+            continue
+        pool = _as_pool(v)
+        ok_pool: list[str] = []
+        for m in pool:
+            if m not in known:
+                errs.append(f"{key} 里的模型不在模型目录：{m}")
+                continue
+            ok_pool.append(m)
+        if ok_pool:
+            clean[key] = ok_pool
+    if errs:
+        return {"ok": False, "errors": errs, "tiers": tiers()}
+
+    raw = _load_raw_file()
+    raw["tiers"] = clean
+    save(raw)
+    reload()
+    # 网关实例的 config 是启动时编译的副本——只改文件的话 tiers() 还会读到旧值。
+    # tiers 不参与适配器构造，所以**就地替换这一节**即可，不必重建网关。
+    try:
+        from . import model_service as _ms
+        gw = getattr(_ms, "_gateway", None)
+        if gw is not None and isinstance(getattr(gw, "config", None), dict):
+            gw.config["tiers"] = clean
+    except Exception as exc:  # noqa: BLE001 无实例/测试替身 ⇒ 下次读文件即可
+        logger.debug("分层保存：网关实例 config 同步失败（忽略）: %s", exc)
+    return {"ok": True, "errors": [], "tiers": tiers(), "reseed": reseed_tables()}
+
+
+def _row_key(row: dict) -> tuple:
+    """比较两行是否等价（主模型 ＋ 兜底链 ＋ 角色例外）。"""
+    return (str(row.get("model") or ""),
+            tuple(str(x) for x in (row.get("fallbacks") or [])),
+            json.dumps(row.get("bindings") or {}, sort_keys=True, ensure_ascii=False))
+
+
+def reseed_tables(work_id: str = "", *, dry_run: bool = False) -> dict[str, Any]:
+    """按当前默认策略重算表里 **src=default** 的行（manual 不动）。
+
+    供设置界面「保存分层」后自动调用，也是 ``scripts/reseed_model_tables.py`` 的实现。
+    """
+    from ..storage import model_override as _mo
+    from ..storage import work_store
+
+    root = Path(work_store.WORKS_DIR)
+    scanned = changed = 0
+    items: list[dict[str, Any]] = []
+    if not root.exists():
+        return {"scanned": 0, "changed": 0, "items": items, "dry_run": dry_run}
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        wid = d.name
+        if work_id and wid != work_id:
+            continue
+        if not (d / _mo.TABLE_FILE).exists():
+            continue
+        data = _mo.load(wid)
+        for cid, row in list((data.get("cards") or {}).items()):
+            scanned += 1
+            if row.get("src") == "manual":
+                continue
+            new_row = _policy_row(wid, cid)
+            # [保留原首选 2026-10-21] 重算**只补/改兜底链，不轻易换主模型**：
+            # 原主模型只要还在这一层的池里就留着——否则每保存一次分层，
+            # 那些按「实时占用分散」选出来的卡就会无意义地跳来跳去。
+            old_model = str(row.get("model") or "")
+            pool = _layer_pool(wid, cid)
+            if old_model and (not pool or old_model in pool):
+                new_row["model"] = old_model
+                rest = [m for m in pool if m != old_model]
+                if rest:
+                    new_row["fallbacks"] = rest
+                else:
+                    new_row.pop("fallbacks", None)
+            if _row_key(row) == _row_key(new_row):
+                continue
+            changed += 1
+            items.append({"work_id": wid, "card_id": cid,
+                          "from": row.get("model") or "",
+                          "to": new_row.get("model") or "",
+                          "fallbacks": new_row.get("fallbacks") or []})
+            if not dry_run:
+                _mo.put_row(wid, cid, new_row, src="default")
+    return {"scanned": scanned, "changed": changed, "items": items, "dry_run": dry_run}
+
+
+def _tier_raw(work_id: Optional[str], card_id: Optional[str],
+              cfg: dict[str, Any]) -> Any:
+    """该卡在深度分层里的原始值（str 或 list）；不适用 ⇒ None。
+
+    [默认三层 = 所有卡的默认设置 2026-10-21 · 用户裁定]
+    「默认三层是一个默认设置，手动改的权重最高」——所以分层**对所有卡生效**，
+    不再只看 auto_mode。改前这里有一句 `if not meta.get("auto_mode"): return None`，
+    于是普通卡（绝大多数）一律落到 system.default_model（minimax 兜底），
+    用户看到的就是「怎么永远锁在 minimax」。
+    人的选择走 card/work 覆盖（权重最高，见 pick 的前两步），不靠这里。
+
+    [模型选择底座] 取消原 `_TIER_ROLES` 白名单：分层对**所有角色**成立
+    （三席跟着池走、工具轮跟着走），一条规则，不再有「谁被静默盖掉」。
     """
     tiers = cfg.get("tiers") or {}
-    if not tiers or not card_id or str(role) not in _TIER_ROLES:
+    if not tiers or not card_id:
         return None
     try:
         from ..storage import card_store
         meta = card_store._meta_of(str(work_id or ""), str(card_id)) or {}
     except Exception:  # noqa: BLE001 读不到卡 ⇒ 不分层
         return None
-    if not meta.get("auto_mode"):
-        return None
     depth = _card_depth(str(work_id or ""), str(card_id))
-    hit = tiers.get(f"depth_{depth}") or tiers.get("default")
-    if not hit:
-        return None
-    # [智能路由 2026-10-20] tier 值可以是**列表**：交给 gateway 按**实时占用率**
-    # 选（余量最大的优先），不是哈希分散——哈希只保证"分散"，不保证"不撞"：
-    # 哈希选中的端点满了还是要排队，旁边空着的不去用。
-    # gateway 拿不到（未初始化/测试）⇒ 退回 crc32 分散（同卡稳定、跨卡分散）。
-    if isinstance(hit, (list, tuple)) and hit:
-        try:
-            from . import model_service as _ms
-            # 上层（depth ≤ 1）主备顺序优先；深层（depth ≥ 2）轮询分散
-            _mode = "primary" if depth <= 1 else "spread"
-            picked = _ms.get_gateway().pick_from(list(hit), mode=_mode)
-            if picked:
-                return picked
-        except Exception:  # noqa: BLE001 gateway 不可用 ⇒ 退回静态分散
-            pass
-        import zlib
-        idx = zlib.crc32(str(card_id).encode("utf-8")) % len(hit)
-        return str(hit[idx])
-    return str(hit)
+    return tiers.get(f"depth_{depth}") or tiers.get("default") or None
 
 
 def validate_override(override: dict) -> list[str]:

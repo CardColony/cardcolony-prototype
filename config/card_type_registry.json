@@ -194,16 +194,16 @@
     }
   ],
   "state_machine": {
-    "_doc": "工具卡/子卡通用状态机（任务书 T4）。写入经闸 4 校验。",
+    "_doc": "工具卡/子卡通用状态机（任务书 T4）。写入经闸 4 校验。[2026-10-21] completed 可回到 active（coder 卡重新派活：同一件事的后续留在同一张卡上，不再只能新建卡）。",
     "initial": "active",
-    "terminal": [
-      "completed"
-    ],
+    "terminal": [],
     "transitions": {
       "active": [
         "completed"
       ],
-      "completed": []
+      "completed": [
+        "active"
+      ]
     }
   },
   "write_gates": {

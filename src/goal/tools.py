@@ -209,26 +209,49 @@ async def h_update_goal(work_id: str, current_id: str,
         view = await service.get(work_id, current_id)
 
         if action == "edit":
-            authority.require_direct_human(source)
+            # [自动续跑可改目标 2026-10-21 · 用户令] 原来 edit 要求**直接人类回合**，
+            # 于是自动续轮里模型发现「这条线还有后续」也改不了目标，只能新开一张卡
+            # 从头再来——同一件事被拆成两张卡，上下文和留痕全断。
+            # 现在放开：模型在自己的续轮里就能改目标并继续（complete 也一样）。
             if _has_text(arguments.get("blocked_reason")):
                 raise GoalError("blocked_reason is valid only with action blocked", "GOAL_TOOL_INVALID_UPDATE")
-            view = await service.edit(work_id, current_id, ref, EditGoalRequest(
-                objective=(str(arguments["objective"]) if _has_text(arguments.get("objective")) else None),
-                max_goal_rounds=(int(arguments["max_goal_rounds"])
-                                 if _has_round_cap(arguments.get("max_goal_rounds")) else None),
-            ))
+            _objective = (str(arguments["objective"])
+                          if _has_text(arguments.get("objective")) else None)
+            _rounds = (int(arguments["max_goal_rounds"])
+                       if _has_round_cap(arguments.get("max_goal_rounds")) else None)
+            if view is not None and view.phase == "complete":
+                # complete 在状态机里不能 edit 回 active（edit 保持 phase）⇒
+                # 用新 objective 开一轮新生命周期（create 是唯一合法入口）。
+                view = await service.create(work_id, current_id, CreateGoalRequest(
+                    objective=_objective or view.objective, max_goal_rounds=_rounds))
+            else:
+                view = await service.edit(work_id, current_id, ref, EditGoalRequest(
+                    objective=_objective, max_goal_rounds=_rounds))
+                if view.phase in ("paused", "blocked"):
+                    # 改完目标顺手激活：只改不激活＝改了也不跑，用户会以为没生效。
+                    view = await service.resume(work_id, current_id, view.ref())
             return _ok(_goal_value(view))
 
         if action in ("pause", "resume"):
-            authority.require_direct_human(source)
+            # pause 仍要求直接人类回合（停是人的决定）；resume 放开——
+            # 模型判断「还有后续要干」时自己就能重新激活，不必等人来点。
+            if action == "pause":
+                authority.require_direct_human(source)
             if (_has_text(arguments.get("objective")) or _has_round_cap(arguments.get("max_goal_rounds"))
                     or _has_text(arguments.get("blocked_reason"))):
                 raise GoalError(
                     "objective and max_goal_rounds are valid only with action edit; "
                     "blocked_reason is valid only with action blocked",
                     "GOAL_TOOL_INVALID_UPDATE")
-            view = (await service.pause(work_id, current_id, ref) if action == "pause"
-                    else await service.resume(work_id, current_id, ref))
+            if action == "pause":
+                view = await service.pause(work_id, current_id, ref)
+            elif view is not None and view.phase == "complete":
+                # [重新激活 2026-10-21 · 用户令] complete 不能 resume（状态机不允许）
+                # ⇒ 用同一目标开新生命周期。这就是「重新激活这张卡」。
+                view = await service.create(work_id, current_id, CreateGoalRequest(
+                    objective=view.objective))
+            else:
+                view = await service.resume(work_id, current_id, ref)
             return _ok(_goal_value(view))
 
         if action not in ("complete", "blocked"):
@@ -277,7 +300,8 @@ async def h_resume_child(work_id: str, current_id: str,
     边界（都是硬判据，不靠模型自觉）：
       · 只能是自己**子树内**的卡（``policy._is_in_subtree``）；
       · 目标卡必须是 ``auto_mode=1``；
-      · ``complete`` 不可恢复（goal 域铁律：已完成不能复活，要新任务就新建卡）；
+      · ``complete`` 也能恢复：用同一目标开**新生命周期**（轮次归零），
+        不再要求父卡新建子卡（[2026-10-21 · 用户令]）；
       · 已在 active+armed ⇒ 幂等返回，不重复点火。
     """
     from ..permissions import policy
@@ -302,10 +326,15 @@ async def h_resume_child(work_id: str, current_id: str,
         if goal is None:
             return _err("validation", f"{target} 没有目标；要它干活请给它发消息或建子卡")
         if goal.phase == "complete":
-            return _err("validation", f"{target} 的目标已完成，不能恢复；要新任务请新建子卡")
-        if goal.phase == "active" and goal.activation == "armed":
+            # [重新激活子卡 2026-10-21 · 用户令] 父卡给一张**已完成**的子卡派新活时，
+            # 不必再新建一张子卡：用同一目标开新生命周期（create 是 complete 之后
+            # 唯一合法入口），上下文/留痕都留在原来那张卡上。
+            view = await service.create(
+                work_id, target, CreateGoalRequest(objective=goal.objective))
+        elif goal.phase == "active" and goal.activation == "armed":
             return _ok({"resumed": False, "reason": "已在推进中", **_goal_value(goal)})
-        view = await service.resume(work_id, target, goal.ref())
+        else:
+            view = await service.resume(work_id, target, goal.ref())
     except GoalError as exc:
         return _err(exc.code, exc.message)
 
@@ -354,7 +383,10 @@ UPDATE_GOAL_SCHEMA: dict[str, Any] = {
     "name": "update_goal",
     "description": (
         "更新当前目标的精确版本（先用 get_goal 取 goal_id 与 revision）。"
-        "action：edit/pause/resume 需要**直接人类回合**；complete/blocked 在自动续轮里也允许。"
+        "action=edit 改目标：**自动续轮里也能用**——任务做完了但还有后续，改目标继续，"
+        "不要新开一张卡（complete 状态下 edit 会开一轮新生命周期并立刻继续）；"
+        "action=resume 重新激活：paused/blocked/complete 都能拉回 active 继续跑。"
+        "action=pause 需要直接人类回合（停是人的决定）。"
         "blocked 在未达最少轮次前会被拒；模型负责判断“同一个阻塞条件确实连续存在”，并写进 blocked_reason。"
     ),
     "parameters": {
@@ -377,8 +409,8 @@ RESUME_CHILD_SCHEMA: dict[str, Any] = {
     "name": "resume_child",
     "description": (
         "让一张**停下的子卡重新开始自主推进**：把它的目标从 paused/blocked 恢复成 active，"
-        "并立刻点火让它接着跑（不用你再发消息催）。只能用于自己子树内、自动模式、未完成的卡；"
-        "已完成的目标不能恢复。"
+        "并立刻点火让它接着跑（不用你再发消息催）。只能用于自己子树内、自动模式卡；"
+        "已完成（complete）的卡也能恢复：用同一目标开新生命周期，不必新建子卡。"
     ),
     "parameters": {
         "type": "object",

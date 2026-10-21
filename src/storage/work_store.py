@@ -5,13 +5,18 @@ work.json 结构：
     {"work_id","title","work_card_id","ending_derived","created_at"}
 
 剧本卡（work_card_id 指向）= 剧本的总架构卡，card_type="剧本"、parent=""。
-work 不可删除（不提供删除函数）。
+
+[删项目 2026-10-21 · 用户令] 原来这里写着「work 不可删除（不提供删除函数）」
+——于是用户建错的项目永远删不掉（根卡也不能删，等于项目无法清除）。
+现在提供 delete_work()：**整个项目目录移到 works/_trash/{wid}_{ts}/**，
+不真删（可手动移回），并先关掉该项目的 SQLite 连接（Windows 下打开的文件移不动）。
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -56,6 +61,26 @@ def _card_count(work_id: str) -> int:
     return int(card_db.read_sync(work_id, _fn, 0) or 0)
 
 
+def _root_title(work_id: str, root_cid: str) -> str:
+    """根卡的标题（＝项目名）。读不到 ⇒ ""（调用方保留 work.json 里的旧值）。"""
+    if not root_cid:
+        return ""
+    try:
+        from . import card_store
+        meta = card_store._meta_of(work_id, root_cid) or {}
+        return str(meta.get("title") or "").strip()
+    except Exception:  # noqa: BLE001 库读不到就沿用 work.json
+        return ""
+
+
+def _apply_root_title(work_id: str, data: dict[str, Any]) -> None:
+    """[根卡名＝项目名 2026-10-21 · 用户令] 项目名不再单独维护：**读的时候从根卡派生**。
+    改根卡名 ⇒ 项目名自动跟着变；不会出现「项目名和根卡名两个值、还没有地方改」。"""
+    t = _root_title(work_id, str(data.get("work_card_id") or ""))
+    if t:
+        data["title"] = t
+
+
 def list_works() -> list[dict[str, Any]]:
     """扫描 works/work_*/work.json，每项附 card_count 与 last_active_at，
     并按 last_active_at 降序排（并列按 work_id 升序稳定收尾，刷新不跳序）。
@@ -80,6 +105,9 @@ def list_works() -> list[dict[str, Any]]:
         except Exception as exc:
             logger.warning("解析 work.json 失败，跳过 %s: %s", jf, exc)
             continue
+        if data.get("deleted_at"):
+            continue          # [删项目 2026-10-21] 标记删除的项目不再出现在列表里
+        _apply_root_title(p.name, data)
         data["card_count"] = _card_count(p.name)
         data["last_active_at"] = activity.work_last_active(p.name)
         works.append(data)
@@ -95,10 +123,13 @@ def read_work(work_id: str) -> Optional[dict[str, Any]]:
     if not jf.exists():
         return None
     try:
-        return json.loads(jf.read_text(encoding="utf-8"))
+        data = json.loads(jf.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.warning("解析 work.json 失败 %s: %s", jf, exc)
         return None
+    if isinstance(data, dict):
+        _apply_root_title(work_id, data)   # 根卡名＝项目名（读时派生）
+    return data
 
 
 def write_work(work_id: str, data: dict[str, Any]) -> None:
@@ -173,6 +204,9 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
         from ..api import model_config
         from . import model_override
         model_override.seed_types(work_id, model_config.card_type_models())
+        # [模型配置表 2026-10-21] 建项目即把默认策略的结果填进表（含刚建好的根卡）；
+        # 之后新建的卡由 card_store.create_card 各自填行。运行时只读表。
+        model_config.seed_project(work_id)
     except Exception as exc:  # noqa: BLE001 种子化失败不阻断建项目（回落全局默认）
         logger.warning("create_work: 模型配置表种子化失败 work=%s: %s", work_id, exc)
 
@@ -186,6 +220,48 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
     work_data = read_work(work_id) or work_data  # 取回 ending_derived 最新值
     work_data["card_count"] = _card_count(work_id)
     return work_data
+
+
+def delete_work(work_id: str) -> dict[str, Any]:
+    """删除项目：整个目录移到 ``works/_trash/{work_id}_{ts}/``（可恢复，不真删）。
+
+    [删项目 2026-10-21 · 用户令] 原设计是「work 不可删除」——但根卡也不能删，
+    合起来就是**项目永远删不掉**（用户质问「那不就是项目不能删吗」）。
+    删除是必要的维护动作，做法是搬走而不是抹掉：
+      · 先关该项目的 SQLite 连接（Windows 下打开的文件不能 move）
+      · 整目录搬到 _trash/（卡片、会话、事件、模型表、canvas 全在里面）
+      · 要找回：把目录搬回 works/{work_id} 即可
+    """
+    wd = _work_dir(work_id)
+    if not wd.exists():
+        return {"error": f"剧本不存在: {work_id}"}
+    try:
+        from . import card_db
+        card_db.close_work(work_id)
+    except Exception as exc:  # noqa: BLE001 关连接失败不阻断（下面 move 会报错再说）
+        logger.warning("删项目：关连接失败 work=%s: %s", work_id, exc)
+
+    trash_root = Path(WORKS_DIR) / "_trash"
+    trash_root.mkdir(parents=True, exist_ok=True)
+    dest = trash_root / f"{work_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    try:
+        shutil.move(str(wd), str(dest))
+        logger.info("[删项目] work=%s -> %s", work_id, dest)
+        return {"ok": True, "work_id": work_id, "moved_to": str(dest), "mode": "moved"}
+    except Exception as exc:  # noqa: BLE001
+        # [Windows 文件占用 2026-10-21] cards.db 的 -wal/-shm 可能仍被某个连接握着
+        # （跨线程/第三方持有），搬不动目录。此时**标记删除**：立刻从列表消失，
+        # 文件留在盘上等清理——比"删不掉"好，也不会丢数据。
+        logger.warning("删项目：目录搬不动，改标记删除 work=%s: %s", work_id, exc)
+        try:
+            data = read_work(work_id) or {}
+            data["deleted_at"] = datetime.now().isoformat(timespec="seconds")
+            write_work(work_id, data)
+        except Exception as exc2:  # noqa: BLE001
+            logger.error("删项目失败（标记也写不进）work=%s: %s", work_id, exc2)
+            return {"error": f"删除失败: {exc}"}
+        return {"ok": True, "work_id": work_id, "mode": "marked",
+                "note": "目录被占用，已从列表移除；重启后可物理清理"}
 
 
 def work_card_id_of(work_id: str) -> str:

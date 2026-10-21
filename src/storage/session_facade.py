@@ -72,7 +72,7 @@ from typing import Any, Optional
 
 import aiofiles
 
-from . import card_store, event_log, revision_store, session_ops, session_store
+from . import card_store, event_log, origin_store, revision_store, session_ops, session_store
 
 logger = logging.getLogger("storage.session_facade")
 
@@ -787,6 +787,11 @@ def _write_new_blocks_locked(work_id: str, card_id: str, path: Path,
                                        {"card": card_id, "blocks": len(conv)})
         logger.info("[facade] 现场升格 V1→V2 work=%s card=%s blocks=%d（含新块）",
                     work_id, card_id, len(conv) + len(new_blks))
+
+    # [原文入库 2026-10-20] md 落盘成功后，把**同一批块**写进原文表（双写）。
+    # 追溯链：记忆条目 seq_from/seq_to → origin_store.trace_entry → 这里的行。
+    # md 仍是写路径的真相源；库是第二份可查副本，写失败只记日志（待 backfill 补）。
+    origin_store.write_blocks_sync(work_id, card_id, new_blks)
 
 
 async def append(work_id: str, card_id: str, block: dict[str, Any],

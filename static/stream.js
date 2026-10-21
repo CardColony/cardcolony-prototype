@@ -38,12 +38,12 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=40";
+import { API } from "./esm/api.js?v=46";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { createAssembler } from "./esm/assembler.js?v=40";
-import { createChatView } from "./esm/flow/chat-view.js?v=6";
+import { createChatView } from "./esm/flow/chat-view.js?v=7";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 // [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
 import { createThinkRenderer, createTextUpdater } from "./esm/flow/think-stream.js?v=1";
@@ -68,7 +68,19 @@ function skey(wid, cid) { return wid + "/" + cid; }
    idleReleaseMs —— T3 静默超时：多久没用就释放。
    sweepMs       —— T3 释放扫描周期。 */
 const BOARD_CFG = Object.assign(
-  { pageNodes: 120, residentMax: 8, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000 },
+  /* [切卡即时 2026-10-21] 常驻上限 8 → 40：原来切过 8 张卡后最早的被 LRU 扔掉，
+     切回去又变成「首次加载」——用户看到的就是「明明有内存却不用」。
+     一张卡的画板是现成 DOM（约 120 节点），40 张的内存代价可接受。
+     pageNodes 120 → 60：首次打开要渲染的节点减半（往上翻再补）。 */
+  { pageNodes: 60, residentMax: 40, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000,
+    /* [对话流分页 2026-10-20] 打开卡片时只拉**最后多少条事件**。
+       改前是全量：card_004 有 1746 条事件 ⇒ 装配 1185 个节点，打开要 2.8 秒 CPU。
+       400 条约覆盖最近 20~40 轮，往上翻再按需补。 */
+    initialEvents: 400,
+    /* [运行态单一真相源 2026-10-21] 收口去抖：done/error/turn_end 到达后先等这么久。
+       为什么去抖：自动续轮的下一轮 run_start 可能紧跟在上一轮收口之后（毫秒级），
+       不去抖的话主键/运行条会「收 → 起」闪一下。窗口内来了 run_start 就取消收口。 */
+    settleDebounceMs: 400 },
   (typeof window !== "undefined" && window.__FLOW_BOARD__) || {}
 );
 
@@ -740,8 +752,9 @@ const BOARD_CFG = Object.assign(
       onLoadOlder: () => { loadEarlier(st); },
       runningStart: () => st.turnStart,
       isRunning: () => !!st.busy,
-      hasMore: () => (st.winStart || 0) > 0,
-      isLoadingOlder: () => false,
+      // [对话流分页 2026-10-20] 内存窗口还有 ⇒ 有；窗口到顶但后端还有 ⇒ 也算有
+      hasMore: () => (st.winStart || 0) > 0 || !!st.hasEarlier,
+      isLoadingOlder: () => !!st.loadingOlder,
     });
     st.view.setUserKeyTest((key) => {
       const node = st.asm.snapshot().nodes.get(key);
@@ -760,9 +773,43 @@ const BOARD_CFG = Object.assign(
 
   /** 往前插一页：锚点由 chat-view 在点击时先记好，这里只改窗口并重画。 */
   function loadEarlier(st) {
-    if (!st || !st.winStart || st.winStart <= 0) return false;
-    st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageNodes);
-    renderSnapshot(st, st.asm.snapshot());
+    if (!st) return false;
+    /* ① 内存窗口里还有 ⇒ 零网络前移一页（改前行为，逐字保留） */
+    if ((st.winStart || 0) > 0) {
+      st.winStart = Math.max(0, st.winStart - BOARD_CFG.pageNodes);
+      renderSnapshot(st, st.asm.snapshot());
+      return true;
+    }
+    /* ② 窗口已到顶，但后端还有更早的 ⇒ 拉一段更早的，合并后重建。
+       [对话流分页 2026-10-20] 这就是「首次只拉尾部」的配套：不补这一段，
+       往上翻就翻不到历史了（功能退化）。 */
+    if (!st.hasEarlier || st.loadingOlder) return false;
+    st.loadingOlder = true;
+    (async () => {
+      try {
+        const before = st.firstSeq || 0;
+        if (!before) { st.hasEarlier = false; return; }
+        const older = await fetchTimeline(st, st.wid, st.cid, undefined,
+          { tail: BOARD_CFG.initialEvents, before: before });
+        if (!older || !older.length) { st.hasEarlier = false; return; }
+        const prevItems = st.loadedItems || [];
+        const seen = new Set(prevItems.map((x) => x.seq));
+        const merged = older.filter((x) => !seen.has(x.seq)).concat(prevItems);
+        const totalBefore = st.asm.snapshot().order.length;
+        st.loadedItems = merged;
+        st.asm.rebuild(merged);
+        const totalAfter = st.asm.snapshot().order.length;
+        const addedNodes = Math.max(0, totalAfter - totalBefore);
+        // 视野不跳：把窗口起点后移到「新增段的尾部」，用户看到的是接缝处
+        st.winStart = Math.max(0, addedNodes - BOARD_CFG.pageNodes);
+        renderSnapshot(st, st.asm.snapshot());
+      } catch (e) {
+        /* 拉不到就保持现状（不静默清空） */
+      } finally {
+        st.loadingOlder = false;
+        try { if (st.view) st.view.paintStatus(); } catch (e) { /* 零阻断 */ }
+      }
+    })();
     return true;
   }
 
@@ -960,6 +1007,17 @@ const BOARD_CFG = Object.assign(
         if (prev.board.parentNode) prev.board.parentNode.removeChild(prev.board);   // 摘下
       }
     }
+    /* [连接上限 2026-10-22 · 实测「连续切三次卡必报网络错误」]
+       浏览器同域 HTTP/1.1 只有 **6 条**连接，而每张卡占 **2 条** SSE
+       （`/stream` ＋ `/tokens`）。切 3 张卡就 6 条占满 ⇒ 第 3 次切卡的普通请求
+       （getCard / timeline）根本拿不到连接 ⇒ fetch 抛 TypeError ⇒ 弹「网络错误」。
+       之前 stopES 只关**自己这张**，别的卡的两条流一直挂着不关。
+       ⇒ 切卡时把**其他会话**的 SSE 全关掉，只留当前这张：
+         · 左栏「运行中」走 /api/nav/running 轮询，不依赖 SSE，转圈不受影响；
+         · 切回来时 replayTrace 按 lastSeq 断点续传，不丢帧。 */
+    for (const [otherKey, otherSt] of sessions) {
+      if (otherKey !== key) stopES(otherSt);
+    }
     const board = boardOf(st);
     if (ca) {
       // #chatArea 只承载当前会话的画板：游离画板不进文档流（不变量 1）
@@ -1005,6 +1063,7 @@ const BOARD_CFG = Object.assign(
     if (key === activeKey) return false;   // 当前在看：永不释放
     if (isBusy(st)) return false;          // 有任务在跑：永不释放
     stopES(st);
+    _cancelSettle(st);                     // 待收口的去抖定时器一并作废（不留悬空回调）
     if (st.board && st.board.parentNode) st.board.parentNode.removeChild(st.board);
     sessions.delete(key);
     logInfo("[flow-board] release " + key);
@@ -1045,6 +1104,10 @@ const BOARD_CFG = Object.assign(
     if (st.settled) return;
     const rec = frameToRecord(frame);
     if (!rec.type) return;
+    /* [运行态单一真相源 2026-10-21] turn_end 是**运行态专用**帧（后端回合 finally
+       无条件发一次），它不承载任何可展示内容——不进装配器，否则会话流里会多出
+       一行谁都看不懂的「turn_end」。它的用途只有 _observeRunFrame 那一条。 */
+    if (rec.type === "turn_end") return;
     if (rec.run_id) st.liveRunId = rec.run_id;
     const node = st.asm.applyRecord(rec);
     renderAffected(st, node);
@@ -1080,8 +1143,14 @@ const BOARD_CFG = Object.assign(
     /* [5715 · 修] 骨架必须在**任何**结局下收起：原来 markLoaded 只在末尾调，
        fetchTimeline 抛错 ⇒ 骨架永久停留（用户看到"一直在加载"却什么也没发生）。 */
     try {
-      const items = await fetchTimeline(st, wid, cid);
-      renderSnapshot(st, st.asm.rebuild(items));
+      // [对话流分页 2026-10-20] 首次只拉尾部 initialEvents 条（不是全量）。
+      // 全量时 card_004 要装配 1185 个节点、打开耗 2.8 秒 CPU；尾部 400 条约 200 节点。
+      const items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
+      st.loadedItems = items || [];
+      /* [切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」] 成功加载一次就打标记：
+         切回这张卡时直接用内存里的画板（零网络、零装配），不再重拉 400 条事件。 */
+      st.loadedOnce = true;
+      renderSnapshot(st, st.asm.rebuild(items || []));
     } finally {
       if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
     }
@@ -1118,15 +1187,22 @@ const BOARD_CFG = Object.assign(
   /** 拉 timeline。`from` 省略＝全量（刷新/结算）；给值＝只取 seq>=from 的增量（T5）。
       ★ 无论全量还是增量，都把本次 items 的**末条 seq** 记进 `st.diskSeq`（落盘水位）——
       这是增量游标唯一的播种源；**绝不与 `st.lastSeq`（内存 journal seq）互写**。 */
-  async function fetchTimeline(st, wid, cid, from) {
+  async function fetchTimeline(st, wid, cid, from, opts) {
     try {
-      const resp = await API.getTimeline(wid, cid, from);
+      const resp = await API.getTimeline(wid, cid, from, opts);
       const items = (resp && resp.items) || [];
       if (st && items.length) {
         const last = items[items.length - 1];
         if (last && typeof last.seq === "number") {
           st.diskSeq = Math.max(st.diskSeq || 0, last.seq);
         }
+      }
+      /* [对话流分页 2026-10-20] 窗口边界记在会话状态上：
+           hasEarlier — 后端是否还有更早的（决定「加载更早」是否可用）
+           firstSeq   — 已加载的最早 seq（下次 before 的锚点） */
+      if (st && resp) {
+        st.hasEarlier = !!resp.has_earlier;
+        if (typeof resp.first_seq === "number" && resp.first_seq > 0) st.firstSeq = resp.first_seq;
       }
       return items;
     } catch (e) {
@@ -1215,14 +1291,72 @@ const BOARD_CFG = Object.assign(
     if (st) { stopES(st); setRunning(st.wid, st.cid, false); }
   }
 
+  /* ══════════════════════════════════════════════════════════════════
+     [运行态单一真相源 2026-10-21] 运行态改由**事件流**驱动，宿主只做投影。
+
+     改前的三条病根（用户报的「对话结束页面还在运行中，必须刷新才变完成态」）：
+       ① 两套状态单向同步：`workspace.sessionState.running`（UI 唯一读点）与
+          本文件的 `st.busy`；只有 workspace→stream，stream 从不回写。
+       ② 清除只挂在 send 链上：`setRunState(false)` 只在 POST 成功/失败收口与
+          doStop 里调用。**自动续轮、卡间消息调起、刷新接上的回合都不走 send()**
+          ⇒ 这些回合结束时没有人清运行态，永远停在 true。
+       ③ done/error 帧不参与状态机：`es.onmessage` 只把帧丢给装配器落节点，
+          从不据此收口——帧明明到了，状态却没人管。
+
+     现在：run_start ⇒ 起；done / error / turn_end ⇒ 收（400ms 去抖，窗口内来了
+     下一轮 run_start 就不收）。收口经 `onRunChange` 回告宿主，宿主只更新自己那份
+     投影（不再回写本模块）——单向、无环。宿主主动发起（send/doStop/切卡）仍走
+     `setRunning(..., {fromHost:true})`，同样落到这一处，**状态只有一个写入口**。
+     ══════════════════════════════════════════════════════════════════ */
+
+  let _runListener = null;
+  const _settleTimers = new Map();     // sessionKey → timer
+
+  function _notifyRunChange(st, running) {
+    if (typeof _runListener !== "function") return;
+    try { _runListener(st.wid, st.cid, !!running); } catch (e) { /* 宿主异常不阻断流 */ }
+  }
+
+  function _cancelSettle(st) {
+    const t = _settleTimers.get(st.key);
+    if (t) { clearTimeout(t); _settleTimers.delete(st.key); }
+  }
+
+  /** 收口去抖：窗口内来了新轮的 run_start 就作废（见 BOARD_CFG.settleDebounceMs）。 */
+  function _scheduleSettle(st) {
+    _cancelSettle(st);
+    const t = setTimeout(() => {
+      _settleTimers.delete(st.key);
+      if (!st.busy) return;
+      setRunning(st.wid, st.cid, false, { fromStream: true });
+    }, Math.max(0, BOARD_CFG.settleDebounceMs));
+    if (t && typeof t.unref === "function") t.unref();
+    _settleTimers.set(st.key, t);
+  }
+
+  /** 帧 → 运行态。这是「一轮在不在跑」的唯一判据来源。 */
+  function _observeRunFrame(st, frame) {
+    const t = (frame && frame.type) || "";
+    if (t === "run_start") {
+      _cancelSettle(st);
+      setRunning(st.wid, st.cid, true, { fromStream: true });
+      return;
+    }
+    if (t === "done" || t === "error" || t === "turn_end") _scheduleSettle(st);
+  }
+
   /** 运行态：一条入口管「在跑卡不释放」「运行条」「主键两态」三处。 */
-  function setRunning(wid, cid, running) {
+  function setRunning(wid, cid, running, opts) {
     const st = ensureRun(wid, cid);
-    st.busy = !!running;
-    if (running) st.turnStart = Date.now();
+    const next = !!running;
+    const changed = st.busy !== next;
+    st.busy = next;
+    if (next) { st.turnStart = Date.now(); _cancelSettle(st); }
     const v = viewOf(st);
-    v.setRunning(!!running);
+    v.setRunning(next);
     v.paintStatus();
+    // 宿主主动发起（fromHost）不再回传，否则「宿主 → stream → 宿主」成环。
+    if (changed && !(opts && opts.fromHost)) _notifyRunChange(st, next);
     return st;
   }
 
@@ -1231,6 +1365,15 @@ const BOARD_CFG = Object.assign(
     const st = sessions.get(skey(wid, cid));
     if (!st) return true;
     return !!st.esDead;
+  }
+
+  /** [切卡零重建 2026-10-21] 这张卡的画板是否已在内存里（切回时免重拉）。
+      只认「成功加载过一次」——加载失败不打标记，下次还会重试。 */
+  function isLoaded(wid, cid) {
+    const st = sessions.get(skey(wid, cid));
+    const hit = !!(st && st.loadedOnce && st.view);
+    logInfo("[flow-board] " + (hit ? "hit " : "miss ") + skey(wid, cid));
+    return hit;
   }
 
   /** [5702 · 2026-10-20] 某卡是否在跑（按卡查，供输入系统切卡时恢复运行态）。 */
@@ -1262,6 +1405,9 @@ const BOARD_CFG = Object.assign(
           const frame = JSON.parse(m.data);
           if (typeof frame.seq === "number" && frame.seq > st.lastSeq) st.lastSeq = frame.seq;
           // [5702] 旧 finish(st)（live 槽收尾）已随旁路退役；done/error 由装配器落节点。
+          // [运行态单一真相源 2026-10-21] 但**运行态**必须由帧推进——否则自动续轮/
+          // 卡间调起/刷新接上的回合结束时，没有任何人把运行态收掉（病根②③）。
+          _observeRunFrame(st, frame);
           applyLiveFrame(st, frame);
         } catch (e) { /* 单帧坏不致命 */ }
       };
@@ -1294,8 +1440,14 @@ const BOARD_CFG = Object.assign(
 export const EventFlow = {
   start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers,
   optimisticUser, dropOptimisticUser, streamDead, sessionRunning,
+  // [切卡零重建] 画板已在内存 ⇒ 切回时免重拉
+  isLoaded,
   // [对话流照抄 dsh v3] 运行态唯一入口：在跑卡不释放 ＋ 运行条 ＋ 主键两态
   setRunning,
+  /* [运行态单一真相源 2026-10-21] 宿主注册「运行态变了」的回告口（单向）：
+     (wid, cid, running) => void。宿主在回调里只更新自己那份投影，**不得回写**
+     setRunning——否则成环（宿主主动发起时传 {fromHost:true} 即可）。 */
+  onRunChange(fn) { _runListener = typeof fn === "function" ? fn : null; },
   // [画板四机制 T1] 会话表对外两口：activate＝把某卡画板挂上 #chatArea（open 用）；
   // board＝取某卡自己的容器（workspace 把系统行写进该卡那份，不再写全局唯一列）。
   activate, board,

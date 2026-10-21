@@ -115,6 +115,12 @@ EVENT_TYPES: tuple[str, ...] = (
     # 自述、抬头〔现状更新〕。单列一类——语义是「专用操作任务」，复用 judgment_protocol
     # 或 context_preamble 都会让前端把标签渲染错。
     "status_update_task",
+    # [运行态单一真相源 2026-10-21] 回合终止帧（本体论 28 → 29）：``_run_message``
+    # 的 finally 里无条件发一次，携带 outcome（ok / error / aborted）。它是**运行态**
+    # 的权威终止信号——done/error 是「内容层」收口（由 compose_delivery /
+    # handle_error 发，异常早于二者时就没有），turn_end 保证任何路径都有终点。
+    # 前端**不把它渲染成行**（stream.js applyLiveFrame 直接跳过），只用于收口。
+    "turn_end",
 ) + TOKEN_EVENT_TYPES
 
 # [对话流渲染 T4] 以下两个上限常量已删——都是「丢字/丢步骤闸」：

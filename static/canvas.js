@@ -19,13 +19,13 @@
  *   V10 重绘入口唯一——改 state 后必经 renderAll（全量）/reflowAll（不重建）/
  *      applyViewState（视图变换），不存在改 state 后自行重绘或漏重绘的路径。
  */
-import { API } from "./esm/api.js?v=40";
+import { API } from "./esm/api.js?v=46";
 import { escapeHtml } from "./esm/util.js?v=30";
 // 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=37";
-import { notify } from "./esm/api.js?v=40";
+import { RenderNav } from "./esm/nav_system.js?v=53";
+import { notify } from "./esm/api.js?v=46";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
 // 卡片 → 最近一条活动事件（renderCanvas 每轮重建，供 createNode 查）
@@ -48,6 +48,9 @@ const WORK_ID = window.__WORK_ID__;
   const viewport = document.getElementById("viewport");
   const world = document.getElementById("world");
   const edgesSvg = document.getElementById("edgesSvg");
+  // [性能 2026-10-20] 通信线独立 SVG 层（见 work.html 注释）：dashoffset 动画
+  // 只重绘这一层，不牵连父子线/关系线的几百条 path。
+  const commSvg = document.getElementById("commSvg") || edgesSvg;
   const tooltip = document.getElementById("cardTooltip");
   const crumbEl = document.getElementById("crumb");
   const zoomDisplay = document.getElementById("zoomDisplay");
@@ -2225,6 +2228,14 @@ const WORK_ID = window.__WORK_ID__;
         startX: e.clientX, startY: e.clientY,
         nodeLeft: parseFloat(node.style.left), nodeTop: parseFloat(node.style.top),
         moved: false,
+        // [换父 2026-10-20] 拖拽＝改归属手势的三个新字段：
+        //   rects   —— 拖拽开始时给**没被拖的卡**各拍一张视口矩形（拖拽期间它们
+        //              不动，一次快照就够，避免每帧 N 次 getBoundingClientRect
+        //              触发强制重排；缩放/平移变了就重拍，见 onDragMove）；
+        //   dropEl  —— 当前高亮的落点卡节点（换目标时要摘掉旧高亮）；
+        //   dropId  —— 当前落点卡 id（只在变化时重画高亮）。
+        rects: null, rectsZoom: 0, rectsPanX: 0, rectsPanY: 0,
+        dropEl: null, dropId: null,
       };
       // [R1] 只在拖拽期间挂 document 监听器（松手即卸，见 detachDragListeners）
       document.addEventListener("mousemove", onDragMove);
@@ -2259,51 +2270,168 @@ const WORK_ID = window.__WORK_ID__;
         node.style.top = (dragState.nodeTop + dy + snap.dy) + "px";
         showGuides(null, snap.vy);
       }
+      // [换父 2026-10-20] 拖动中实时判定落点：指到哪张卡就高亮哪张卡
+      _updateDropTarget(e.clientX, e.clientY);
     }
 
     function onDragUp(e) {
       if (!dragState) return;
       clearGuides();
-      if (dragState.moved && dragGroup) {
-        suppressClickUntil = Date.now() + 320;
-        // 多选整组落库：逐张写用户松手的坐标（persistCardPos 自带 500ms 批量合并）
-        const movedIds = [];
-        for (const g of dragGroup) {
-          g.node.classList.remove("dragging");
-          persistCardPos(g.id, parseFloat(g.node.style.left), parseFloat(g.node.style.top));
-          movedIds.push(g.id);
+      const moved = dragState.moved;
+      // [换父 2026-10-20 · 用户裁定] 拖拽只表达一件事：**把这张卡挂到谁下面**。
+      //   · 落在合法卡上 → 改父子归属（整棵子树跟着走）；
+      //   · 落在空白 / 非法目标 → **回弹**，不写坐标、不改归属。
+      // ⇒ persistCardPos / normalizeSiblingOrder 已从本路径撤除：「拖拽调同层
+      //   顺序」这条旧语义不再存在（用户明示：空白处＝什么都不做）。
+      const hitId = moved ? _dropHitAt(e.clientX, e.clientY) : null;
+      const verdict = _dropVerdict(hitId);
+      const draggedIds = dragGroup ? dragGroup.map((g) => g.id) : [card.card_id];
+      if (moved) suppressClickUntil = Date.now() + 320;
+      _clearDropHighlight();
+      if (moved) {
+        _revertDragVisual();
+        if (verdict.ok) {
+          _applyReparent(draggedIds, verdict.targetId);
+        } else if (verdict.reason) {
+          notify(verdict.reason, "warn");
         }
-        // [画布 5711 · P1 修] 同层顺序归一化（见 normalizeSiblingOrder 注释）：
-        // 整组拖动时，组内各卡的落点已是彼此的相对位置，只需把**没被拖的同层卡**
-        // 的当前位置显式记下来，这一层的顺序才是"人摆的顺序"。
-        normalizeSiblingOrder(movedIds);
-        dragGroup = null;
-        reflowAll();
-      } else if (dragState.moved) {
-        suppressClickUntil = Date.now() + 320;
-        let newLeft = parseFloat(node.style.left);
-        let newTop = parseFloat(node.style.top);
-        // [card_045 E5] 存／显分离＋钉住语义（L1「人的位置只由人给」／L4「动作只有一个
-        // 权威解释」）：存盘只写**用户松手的原始坐标**；T18-C3 的落点仲裁（resolveDrop）
-        // 在此退役出调用链——「拖卡让在场卡」会把系统推算冒充用户意图（病灶 2），
-        // 且与「用户放哪就是哪，系统不自作主张」直接冲突。行为取舍（任务书已声明）：
-        // 用户把卡拖到另一张钉住的卡上时，会真的重叠。resolveDrop 函数本体保留
-        // （T18 交付件，留作将来显式恢复显示仲裁的候选，不再被本路径调用）。
-        node.classList.remove("dragging");
-        persistCardPos(card.card_id, newLeft, newTop);
-        // [画布 5711 · P1 修] 同层顺序归一化：把"用户把卡放在哪"变成"同层里它排第几"。
-        // 不做这一步的话，同层里第一次拖某张卡时它会被提到该层最前面（用户落点被忽略）。
-        normalizeSiblingOrder([card.card_id]);
-        // [card_045 E4] 拖动落定后立刻走统一重算的「不重建节点」分支（reflowAll→
-        // reflowLayout，画布第三步 T2/T4 统一入口）：显示坐标与连线吃同一份现算
-        // 结果——不再有快照可读，也不需要。
-        // 拖动卡即刻 pinned（E5 语义），重算不会移动它——它停在用户松手的位置。
-        reflowAll();
       }
+      dragGroup = null;
       dragState = null;
       // [R1] 松手即卸——用同一命名函数引用（onDragMove/onDragUp 是函数声明，引用稳定；
       // 若写成匿名箭头函数则 removeEventListener 卸不掉）
       detachDragListeners();
+    }
+
+    // ── [换父 2026-10-20] 拖拽改归属：落点快照 / 命中 / 判定 / 高亮 / 回弹 ──
+    //
+    // 为什么用「矩形快照」而不是 elementFromPoint：拖拽中的卡正好压在指针下面，
+    // 要让它让开就得给 .dragging 加 pointer-events:none——而那条规则会连带影响
+    // 卡内控件与悬停浮层的命中。几何判定不碰 DOM 命中链，且快照一次就够
+    // （拖拽期间没被拖的卡不会动），比每帧 N 次 getBoundingClientRect 便宜得多。
+    function _snapshotDropRects() {
+      const skip = new Set(dragGroup ? dragGroup.map((g) => g.id) : [card.card_id]);
+      const out = [];
+      for (const [id, el] of nodeMap) {
+        if (skip.has(id) || !el || !el.isConnected) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;   // 折叠/隐藏的卡不是落点
+        out.push({ id, rect: r });
+      }
+      dragState.rects = out;
+      dragState.rectsZoom = state.view.zoom;
+      dragState.rectsPanX = state.view.panX;
+      dragState.rectsPanY = state.view.panY;
+    }
+
+    function _dropHitAt(clientX, clientY) {
+      if (!dragState) return null;
+      // 缩放/平移变了 ⇒ 快照失效，重拍（拖拽中滚轮缩放是可能的）
+      if (!dragState.rects
+          || dragState.rectsZoom !== state.view.zoom
+          || dragState.rectsPanX !== state.view.panX
+          || dragState.rectsPanY !== state.view.panY) {
+        _snapshotDropRects();
+      }
+      for (const it of dragState.rects) {
+        const r = it.rect;
+        if (clientX >= r.left && clientX <= r.right
+            && clientY >= r.top && clientY <= r.bottom) return it.id;
+      }
+      return null;
+    }
+
+    function _descendantIds(cid) {
+      const out = new Set();
+      const stack = [cid];
+      while (stack.length) {
+        const cur = stack.pop();
+        for (const ch of (state.index.childMap[cur] || [])) {
+          if (ch.card_id === cid || out.has(ch.card_id)) continue;
+          out.add(ch.card_id);
+          stack.push(ch.card_id);
+        }
+      }
+      return out;
+    }
+
+    // 前端只判**结构事实**（自己、自己的后代、已经是子卡）——这三条它手里有数据。
+    // 「目标类型能不能接子卡」由服务端按注册表 can_have_children 判：前端不复制
+    // 一份类型表，否则注册表一改两边就分叉。被拒时服务端回 400，call() 弹提示。
+    function _dropVerdict(targetId) {
+      if (!targetId) return { ok: false, reason: "" };     // 空白：静默回弹
+      const dragged = dragGroup ? dragGroup.map((g) => g.id) : [card.card_id];
+      if (dragged.includes(targetId)) return { ok: false, reason: "不能挂到自己身上" };
+      for (const id of dragged) {
+        if (_descendantIds(id).has(targetId)) {
+          return { ok: false, reason: "不能挂到自己的子卡下（会成环）" };
+        }
+      }
+      if (dragged.length === 1) {
+        const t = state.index.cardMap[targetId] || {};
+        if (String(t.parent || "") === dragged[0]) {
+          return { ok: false, reason: "它已经是这张卡的子卡了" };
+        }
+      }
+      return { ok: true, targetId };
+    }
+
+    function _updateDropTarget(clientX, clientY) {
+      const hitId = _dropHitAt(clientX, clientY);
+      if (hitId === dragState.dropId) return;
+      _clearDropHighlight();
+      dragState.dropId = hitId;
+      if (!hitId) return;
+      const el = nodeMap.get(hitId);
+      if (!el) return;
+      el.classList.add(_dropVerdict(hitId).ok ? "drop-ok" : "drop-bad");
+      dragState.dropEl = el;
+    }
+
+    function _clearDropHighlight() {
+      if (!dragState) return;
+      if (dragState.dropEl) {
+        dragState.dropEl.classList.remove("drop-ok", "drop-bad");
+        dragState.dropEl = null;
+      }
+      dragState.dropId = null;
+    }
+
+    function _revertDragVisual() {
+      if (dragGroup) {
+        for (const g of dragGroup) {
+          g.node.classList.remove("dragging");
+          g.node.style.left = g.left + "px";
+          g.node.style.top = g.top + "px";
+        }
+      } else {
+        node.classList.remove("dragging");
+        node.style.left = dragState.nodeLeft + "px";
+        node.style.top = dragState.nodeTop + "px";
+      }
+      // 没写库 ⇒ 重排必然把它们放回原处（回弹＝布局重算，不是"再拖回去"）
+      reflowAll();
+    }
+
+    async function _applyReparent(ids, targetId) {
+      const targetTitle = (state.index.cardMap[targetId] || {}).title || targetId;
+      let done = 0;
+      for (const id of ids) {
+        try {
+          await API.patchCard(WORK_ID, id, { parent: targetId },
+            `画布拖拽调整归属：挂到「${targetTitle}」下`);
+          done += 1;
+        } catch (e) {
+          // call() 已把服务端原因弹成提示（类型不允许有子卡/卡不存在等），不重复弹
+          break;
+        }
+      }
+      if (done) {
+        notify(done > 1 ? `已把 ${done} 张卡挂到「${targetTitle}」下`
+                        : `已挂到「${targetTitle}」下`, "success");
+      }
+      // 成败都重拉：成功要让新树重排；失败要让"回弹后仍是真布局"。
+      await reloadCanvas();
     }
 
     // [R1] 卸载本节点的拖拽监听器；被 onDragUp 与 window.blur 兜底共用。
@@ -2315,6 +2443,8 @@ const WORK_ID = window.__WORK_ID__;
         // 兜底路径（窗口失焦）进来时，把拖拽状态一并取消
         node.classList.remove("dragging");
         if (dragGroup) { for (const g of dragGroup) g.node.classList.remove("dragging"); dragGroup = null; }
+        // [换父 2026-10-20] 落点高亮也要摘：失焦时没人会替它清
+        _clearDropHighlight();
         dragState = null;
       }
       if (activeDragDetach === detachDragListeners) activeDragDetach = null;
@@ -3663,6 +3793,15 @@ const WORK_ID = window.__WORK_ID__;
     edgesSvg.style.top = box.minY + "px";
     edgesSvg.setAttribute("viewBox", `${box.minX} ${box.minY} ${box.w} ${box.h}`);
     edgesSvg.innerHTML = "";
+    // 通信线层与主层同几何（同一 viewBox、同一偏移），否则线会错位
+    if (commSvg !== edgesSvg) {
+      commSvg.setAttribute("width", box.w);
+      commSvg.setAttribute("height", box.h);
+      commSvg.style.left = box.minX + "px";
+      commSvg.style.top = box.minY + "px";
+      commSvg.setAttribute("viewBox", `${box.minX} ${box.minY} ${box.w} ${box.h}`);
+      commSvg.innerHTML = "";
+    }
     // [T08-2-1/2-3＋诸葛 2026-10-04 21:52 锚点按相对位置自动选边] 父子折线段与
     // 外接框的推导规则全文见 computeEdgeGeometry（T1 上收，规则一字不改）；此处只消费。
     const elbowSegs = projection.edges.elbowSegs;
@@ -3725,7 +3864,7 @@ const WORK_ID = window.__WORK_ID__;
     // ── 第二层：通信线（卡间信 from_card → to_card，只在时间窗内画）──
     const commG = document.createElementNS(SVGNS, "g");
     commG.setAttribute("data-edge-group", "communication");
-    edgesSvg.appendChild(commG);
+    commSvg.appendChild(commG);
     // 通信是**事件**不是结构：30 分钟前的信不再画线，只留收件箱里的记录。
     // 这样画布上出现的每一条通信线都意味着"刚刚发生了信息流动"。
     const COMM_WINDOW_MS = 30 * 60 * 1000;

@@ -1,0 +1,22 @@
+{
+  "work_018": {
+    "role_profiles": 1,
+    "role_verdicts": 26,
+    "role_alarms": 1,
+    "role_sync": 28,
+    "role_charter_history": 4,
+    "role_directives": 0,
+    "role_cards": 1,
+    "role_inbox_messages": 0
+  },
+  "work_022": {
+    "role_profiles": 2,
+    "role_verdicts": 0,
+    "role_alarms": 0,
+    "role_sync": 0,
+    "role_charter_history": 2,
+    "role_directives": 0,
+    "role_cards": 2,
+    "role_inbox_messages": 0
+  }
+}
