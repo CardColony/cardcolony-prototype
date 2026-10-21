@@ -221,3 +221,46 @@ async def test_one_trigger_condenses_only_one_batch(sandbox, work, monkeypatch):
     assert st["batch_count"] == 1
     assert len(st["entries"]) == 1
     assert len(calls) == 1, "只调一次模型"
+
+
+# ---------------------------------------------------------------- 重凝去重（水位回退后不许重复）
+
+def test_drop_overlapping_helper():
+    """覆盖区间相交 ⇒ 摘掉；不相交 ⇒ 原样保留。"""
+    ents = [
+        {"seq": 0, "seq_from": 0, "seq_to": 9, "conclusion": "老结论"},
+        {"seq": 20, "seq_from": 20, "seq_to": 29, "conclusion": "另一段"},
+        {"seq": 40, "conclusion": "无区间"},          # 退化单点 40
+    ]
+    kept = memory_store._drop_overlapping(ents, 0, 5)
+    assert [e["conclusion"] for e in kept] == ["另一段", "无区间"]
+    assert len(memory_store._drop_overlapping(ents, 10, 19)) == 3, "不相交一条不动"
+
+
+async def test_recondense_same_window_no_duplicate(sandbox, work, monkeypatch):
+    """水位回退后再凝同一段：旧结论被替换，不出现「同一 seq 两条结论」。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "85")
+    monkeypatch.delenv("CONDENSE_MAX_BATCHES", raising=False)
+    # 先落一条覆盖 0..5 的老结论（模拟已凝过、随后水位被人工回退）
+    await memory_store.save_memory(wid, cid, {
+        "card_id": cid, "mark": 0, "batch_count": 1, "last_fold_check": 0, "folded": [],
+        "entries": [{"seq": 0, "conclusion": "老结论", "evidence": "块0",
+                     "seq_from": 0, "seq_to": 5, "fingerprint": "old"}],
+    })
+    pending = [_mk_msg(i, "六六六六六六") for i in range(30)]
+
+    async def fake(user_prompt: str) -> str:
+        return "【结论】新结论【依据】块0"
+
+    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    await memory_store._run_condense_pipeline(wid, cid, pending, 0)
+    st = memory_store.load_memory(wid, cid)
+    cons = [e["conclusion"] for e in st["entries"]]
+    print("entries:", cons, "mark:", st["mark"])
+    assert "老结论" not in cons, "被覆盖的旧结论要摘掉"
+    assert cons == ["新结论"]
+    # 因果链不许出现同一 seq 两条结论（I1 身份重复）
+    from src.storage import memory_domain as md
+    chain = md.chain_from_entries(st["entries"], cid)
+    assert md.check_invariants(chain) == [], md.check_invariants(chain)
