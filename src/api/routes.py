@@ -1321,8 +1321,10 @@ async def post_card_auto_resume(work_id: str, card_id: str):
       · 非 auto 卡                   ⇒ 400（信息自带出路）
       · 无 goal                      ⇒ 400（信息自带出路）
       · ``goal_state == active``     ⇒ 200 ``{"resumed": False}``（幂等，不重复起轮）
-      · ``goal_state == complete``   ⇒ 400（已完成的目标不能恢复）
       · ``paused`` / ``blocked``     ⇒ 落三字段 ＋ kick ⇒ 200 ``{"resumed": True}``
+      · ``complete``                 ⇒ 用同一 objective 新建 goal（轮次归零）＋ kick
+        [coder 卡可重新激活 2026-10-21 · 用户令] 改前这里 400「已完成不能恢复」，
+        而发消息也不会动（goal 非空即早退）⇒ 跑完的卡只能新建一张卡才能接着干。
     """
     from . import auto_driver
 
@@ -1339,12 +1341,11 @@ async def post_card_auto_resume(work_id: str, card_id: str):
     state = str(meta.get("goal_state") or "")
     if state == auto_driver.GOAL_ACTIVE:
         return {"resumed": False, "reason": "已在推进中"}
-    if state == auto_driver.GOAL_COMPLETE:
-        return _err(400, "该目标已完成，不能恢复；如需新任务请重新设定目标")
-    ok = await auto_driver.resume_card(work_id, card_id)
+    ok = await auto_driver.reactivate_card(work_id, card_id)
     if not ok:
         return _err(500, "恢复失败（状态写入未成功），请查看服务日志")
-    return {"resumed": True, "goal_state": auto_driver.GOAL_ACTIVE}
+    return {"resumed": True, "goal_state": auto_driver.GOAL_ACTIVE,
+            "from": state}
 
 
 # [goal 域 2026-10-20 · 照抄 dsh-command-goal] 人面 /goal 命令。
@@ -1354,7 +1355,24 @@ async def post_goal_command(work_id: str, card_id: str, req: dict):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     from ..goal import command as goal_command
-    result = await goal_command.execute_command(work_id, card_id, str((req or {}).get("input") or ""))
+    raw = str((req or {}).get("input") or "")
+    result = await goal_command.execute_command(work_id, card_id, raw)
+    # [coder 卡可改目标 2026-10-21 · 用户令] 建/改目标之后，auto 卡应当**立刻**按新
+    # 目标跑——否则用户改完目标看着卡一动不动，以为又坏了。
+    # 只对 create/edit 生效：pause/clear/resume 各自语义已在命令里落地，别插手。
+    try:
+        from . import auto_driver
+
+        kind = str(goal_command.parse(raw).get("kind") or "")
+        if result.get("ok") and kind in ("create", "edit"):
+            meta = card_store._meta_of(work_id, card_id) or {}
+            if bool(meta.get("auto_mode")):
+                if str(meta.get("goal_state") or "") == auto_driver.GOAL_ACTIVE:
+                    auto_driver.kick(work_id, card_id)
+                else:
+                    await auto_driver.reactivate_card(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 起跑失败不影响命令本身的结果
+        logger.warning("[goal] 改目标后起跑失败 work=%s card=%s: %s", work_id, card_id, exc)
     return result
 
 
