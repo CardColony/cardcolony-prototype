@@ -38,12 +38,12 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=41";
+import { API } from "./esm/api.js?v=42";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { createAssembler } from "./esm/assembler.js?v=40";
-import { createChatView } from "./esm/flow/chat-view.js?v=6";
+import { createChatView } from "./esm/flow/chat-view.js?v=7";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 // [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
 import { createThinkRenderer, createTextUpdater } from "./esm/flow/think-stream.js?v=1";
@@ -72,7 +72,11 @@ const BOARD_CFG = Object.assign(
     /* [对话流分页 2026-10-20] 打开卡片时只拉**最后多少条事件**。
        改前是全量：card_004 有 1746 条事件 ⇒ 装配 1185 个节点，打开要 2.8 秒 CPU。
        400 条约覆盖最近 20~40 轮，往上翻再按需补。 */
-    initialEvents: 400 },
+    initialEvents: 400,
+    /* [运行态单一真相源 2026-10-21] 收口去抖：done/error/turn_end 到达后先等这么久。
+       为什么去抖：自动续轮的下一轮 run_start 可能紧跟在上一轮收口之后（毫秒级），
+       不去抖的话主键/运行条会「收 → 起」闪一下。窗口内来了 run_start 就取消收口。 */
+    settleDebounceMs: 400 },
   (typeof window !== "undefined" && window.__FLOW_BOARD__) || {}
 );
 
@@ -1044,6 +1048,7 @@ const BOARD_CFG = Object.assign(
     if (key === activeKey) return false;   // 当前在看：永不释放
     if (isBusy(st)) return false;          // 有任务在跑：永不释放
     stopES(st);
+    _cancelSettle(st);                     // 待收口的去抖定时器一并作废（不留悬空回调）
     if (st.board && st.board.parentNode) st.board.parentNode.removeChild(st.board);
     sessions.delete(key);
     logInfo("[flow-board] release " + key);
@@ -1084,6 +1089,10 @@ const BOARD_CFG = Object.assign(
     if (st.settled) return;
     const rec = frameToRecord(frame);
     if (!rec.type) return;
+    /* [运行态单一真相源 2026-10-21] turn_end 是**运行态专用**帧（后端回合 finally
+       无条件发一次），它不承载任何可展示内容——不进装配器，否则会话流里会多出
+       一行谁都看不懂的「turn_end」。它的用途只有 _observeRunFrame 那一条。 */
+    if (rec.type === "turn_end") return;
     if (rec.run_id) st.liveRunId = rec.run_id;
     const node = st.asm.applyRecord(rec);
     renderAffected(st, node);
@@ -1264,14 +1273,72 @@ const BOARD_CFG = Object.assign(
     if (st) { stopES(st); setRunning(st.wid, st.cid, false); }
   }
 
+  /* ══════════════════════════════════════════════════════════════════
+     [运行态单一真相源 2026-10-21] 运行态改由**事件流**驱动，宿主只做投影。
+
+     改前的三条病根（用户报的「对话结束页面还在运行中，必须刷新才变完成态」）：
+       ① 两套状态单向同步：`workspace.sessionState.running`（UI 唯一读点）与
+          本文件的 `st.busy`；只有 workspace→stream，stream 从不回写。
+       ② 清除只挂在 send 链上：`setRunState(false)` 只在 POST 成功/失败收口与
+          doStop 里调用。**自动续轮、卡间消息调起、刷新接上的回合都不走 send()**
+          ⇒ 这些回合结束时没有人清运行态，永远停在 true。
+       ③ done/error 帧不参与状态机：`es.onmessage` 只把帧丢给装配器落节点，
+          从不据此收口——帧明明到了，状态却没人管。
+
+     现在：run_start ⇒ 起；done / error / turn_end ⇒ 收（400ms 去抖，窗口内来了
+     下一轮 run_start 就不收）。收口经 `onRunChange` 回告宿主，宿主只更新自己那份
+     投影（不再回写本模块）——单向、无环。宿主主动发起（send/doStop/切卡）仍走
+     `setRunning(..., {fromHost:true})`，同样落到这一处，**状态只有一个写入口**。
+     ══════════════════════════════════════════════════════════════════ */
+
+  let _runListener = null;
+  const _settleTimers = new Map();     // sessionKey → timer
+
+  function _notifyRunChange(st, running) {
+    if (typeof _runListener !== "function") return;
+    try { _runListener(st.wid, st.cid, !!running); } catch (e) { /* 宿主异常不阻断流 */ }
+  }
+
+  function _cancelSettle(st) {
+    const t = _settleTimers.get(st.key);
+    if (t) { clearTimeout(t); _settleTimers.delete(st.key); }
+  }
+
+  /** 收口去抖：窗口内来了新轮的 run_start 就作废（见 BOARD_CFG.settleDebounceMs）。 */
+  function _scheduleSettle(st) {
+    _cancelSettle(st);
+    const t = setTimeout(() => {
+      _settleTimers.delete(st.key);
+      if (!st.busy) return;
+      setRunning(st.wid, st.cid, false, { fromStream: true });
+    }, Math.max(0, BOARD_CFG.settleDebounceMs));
+    if (t && typeof t.unref === "function") t.unref();
+    _settleTimers.set(st.key, t);
+  }
+
+  /** 帧 → 运行态。这是「一轮在不在跑」的唯一判据来源。 */
+  function _observeRunFrame(st, frame) {
+    const t = (frame && frame.type) || "";
+    if (t === "run_start") {
+      _cancelSettle(st);
+      setRunning(st.wid, st.cid, true, { fromStream: true });
+      return;
+    }
+    if (t === "done" || t === "error" || t === "turn_end") _scheduleSettle(st);
+  }
+
   /** 运行态：一条入口管「在跑卡不释放」「运行条」「主键两态」三处。 */
-  function setRunning(wid, cid, running) {
+  function setRunning(wid, cid, running, opts) {
     const st = ensureRun(wid, cid);
-    st.busy = !!running;
-    if (running) st.turnStart = Date.now();
+    const next = !!running;
+    const changed = st.busy !== next;
+    st.busy = next;
+    if (next) { st.turnStart = Date.now(); _cancelSettle(st); }
     const v = viewOf(st);
-    v.setRunning(!!running);
+    v.setRunning(next);
     v.paintStatus();
+    // 宿主主动发起（fromHost）不再回传，否则「宿主 → stream → 宿主」成环。
+    if (changed && !(opts && opts.fromHost)) _notifyRunChange(st, next);
     return st;
   }
 
@@ -1311,6 +1378,9 @@ const BOARD_CFG = Object.assign(
           const frame = JSON.parse(m.data);
           if (typeof frame.seq === "number" && frame.seq > st.lastSeq) st.lastSeq = frame.seq;
           // [5702] 旧 finish(st)（live 槽收尾）已随旁路退役；done/error 由装配器落节点。
+          // [运行态单一真相源 2026-10-21] 但**运行态**必须由帧推进——否则自动续轮/
+          // 卡间调起/刷新接上的回合结束时，没有任何人把运行态收掉（病根②③）。
+          _observeRunFrame(st, frame);
           applyLiveFrame(st, frame);
         } catch (e) { /* 单帧坏不致命 */ }
       };
@@ -1345,6 +1415,10 @@ export const EventFlow = {
   optimisticUser, dropOptimisticUser, streamDead, sessionRunning,
   // [对话流照抄 dsh v3] 运行态唯一入口：在跑卡不释放 ＋ 运行条 ＋ 主键两态
   setRunning,
+  /* [运行态单一真相源 2026-10-21] 宿主注册「运行态变了」的回告口（单向）：
+     (wid, cid, running) => void。宿主在回调里只更新自己那份投影，**不得回写**
+     setRunning——否则成环（宿主主动发起时传 {fromHost:true} 即可）。 */
+  onRunChange(fn) { _runListener = typeof fn === "function" ? fn : null; },
   // [画板四机制 T1] 会话表对外两口：activate＝把某卡画板挂上 #chatArea（open 用）；
   // board＝取某卡自己的容器（workspace 把系统行写进该卡那份，不再写全局唯一列）。
   activate, board,

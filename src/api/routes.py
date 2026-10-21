@@ -1755,6 +1755,16 @@ async def _run_message(work_id: str, card_id: str, content: str,
         # 缓冲里的思考会**随回合一起丢掉**（刷新后看不到这段思考）。
         # ⇒ 收口时无条件 flush 一次（空缓冲是 no-op）。
         event_stream.flush_pending_reasoning(work_id, card_id)
+        # [运行态单一真相源 2026-10-21] 回合终止的**权威帧**：成功 / 异常 / 取消
+        # 三条路径都必然发一次。前端运行态据此收口——此前只认 done/error，而它们由
+        # compose_delivery / handle_error 发，若链路在两者之前抛（context 组装、
+        # 交付拼接等），就一个终止信号都没有 ⇒ 前端永远停在「运行中」，只能刷新。
+        # 位置必须在 notify_idle **之前**：idle 会起下一轮，下一轮的 run_start 必须
+        # 晚于本帧到达前端，否则前端可能先起后收（顺序反了）。
+        try:
+            event_stream.emit(work_id, card_id, "turn_end", {"outcome": outcome})
+        except Exception as exc:  # noqa: BLE001 帧发不出去不影响回合返回
+            logger.warning("[flow] turn_end 帧发送失败 card=%s: %s", card_id, exc)
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
         control.discard_stop(work_id, card_id)

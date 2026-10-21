@@ -262,8 +262,12 @@ def test_t5_workspace_wired_to_flow():
     assert "createInputBar" in src and "createQueueDock" in src, "workspace 未接 flow 输入系统"
     assert "ComposerSubmissionPolicy" in src, "workspace 未建提交策略"
     body = _fn_body(src, "function setRunState")
-    assert "inputBar.refresh()" in body and "EventFlow.setRunning" in body, \
-        "setRunState 必须同时刷新输入条与事件流运行条"
+    # [运行态单一真相源 2026-10-21] 运行态拆成两半：setRunState＝回写事件流，
+    # applyRunState＝更新本文件投影（输入条/排队条）。两半都必须存在。
+    assert "EventFlow.setRunning" in body and "applyRunState" in body, \
+        "setRunState 必须落到事件流运行条（并经 applyRunState 更新投影）"
+    proj = _fn_body(src, "function applyRunState")
+    assert "inputBar.refresh()" in proj, "运行态投影变化必须刷新输入条"
     html = CARD_HTML.read_text(encoding="utf-8")
     assert 'id="composerSeat"' in html, "card.html 缺输入座位"
     assert 'id="inputBox"' not in html, "★ #inputBox 必须已退役"
@@ -356,12 +360,12 @@ def test_t6_touched_modules_bumped():
         # 版本戳处置按 5715 那次的规程：**在 dev 的编号基础上重算**，不是逐文件取大
         # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
         # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
-        "stream.js": "51", "workspace.js": "67", "canvas.js": "77",
-        "assembler.js": "40", "style.css": "48", "main.js": "73.5",
-        "main_chat.js": "3.6",
+        "stream.js": "52", "workspace.js": "68", "canvas.js": "77",
+        "assembler.js": "40", "style.css": "48", "main.js": "73.6",
+        "main_chat.js": "3.7",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
-        "chat-view.js": "6", "message-item.js": "1",
+        "chat-view.js": "7", "message-item.js": "1",
     }
     for name, ver in expect.items():
         assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"
