@@ -24,7 +24,6 @@
       "根卡类型 project 已立项（2026-10-08 底座收口）：独立 root scope，取代「剧本」。"
     ]
   },
-
   "project_classes": [
     {
       "code": "rd_project",
@@ -39,7 +38,6 @@
       "l1_vocabulary_ref": "research_project"
     }
   ],
-
   "l1_vocabularies": {
     "rd_project": {
       "scope": "rd_project",
@@ -51,7 +49,10 @@
           "can_have_children": true,
           "requires_owner": false,
           "default_template": "sub_project",
-          "allowed_transitions": ["active", "completed"]
+          "allowed_transitions": [
+            "active",
+            "completed"
+          ]
         },
         {
           "code": "tool",
@@ -60,7 +61,10 @@
           "can_have_children": false,
           "requires_owner": true,
           "default_template": "tool",
-          "allowed_transitions": ["active", "completed"]
+          "allowed_transitions": [
+            "active",
+            "completed"
+          ]
         },
         {
           "code": "coder",
@@ -69,7 +73,10 @@
           "can_have_children": false,
           "requires_owner": false,
           "default_template": "coder",
-          "allowed_transitions": ["active", "completed"]
+          "allowed_transitions": [
+            "active",
+            "completed"
+          ]
         },
         {
           "code": "rule",
@@ -100,7 +107,10 @@
           "can_have_children": true,
           "requires_owner": false,
           "default_template": "topic",
-          "allowed_transitions": ["active", "completed"]
+          "allowed_transitions": [
+            "active",
+            "completed"
+          ]
         },
         {
           "code": "rule",
@@ -131,37 +141,71 @@
           "can_have_children": true,
           "requires_owner": false,
           "default_template": "project",
-          "allowed_transitions": ["active", "completed"]
+          "allowed_transitions": [
+            "active",
+            "completed"
+          ]
         }
       ]
     }
   },
-
   "legacy_types": [
-    { "code": "剧本", "deprecated": true, "write_blocked": true, "used_by": "migrated: 3 根卡→project（底座收口 2026-10-08）",
-      "migration_hint": "原兼任根卡类型；底座收口后根卡统一为 project（root scope），三张根卡已迁移，写路径退役。" },
-    { "code": "线索", "deprecated": true, "write_blocked": true, "used_by": "migrated: work_002→sub_project(T7), work_001/work_003→topic(研究树批次 2026-10-08)",
-      "migration_hint": "真实语义为「没选」；存量已全部归位——work_002 32 张→sub_project（T7）、work_001 22 张与 work_003 13 张→topic（研究树批次）。**迁移完成后 write_blocked=true（[研究项目词表与迁移] 任务书 T3）**：写路径显式报错，读路径宽容。注意 create_card 默认 card_type='线索'，收紧后建卡必须显式传词表类型。" },
-    { "code": "世界观", "deprecated": true, "write_blocked": true, "used_by": null,
-      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" },
-    { "code": "行为体", "deprecated": true, "write_blocked": true, "used_by": null,
-      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" },
-    { "code": "节点", "deprecated": true, "write_blocked": true, "used_by": null,
-      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" },
-    { "code": "假设", "deprecated": true, "write_blocked": true, "used_by": null,
-      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。" }
+    {
+      "code": "剧本",
+      "deprecated": true,
+      "write_blocked": true,
+      "used_by": "migrated: 3 根卡→project（底座收口 2026-10-08）",
+      "migration_hint": "原兼任根卡类型；底座收口后根卡统一为 project（root scope），三张根卡已迁移，写路径退役。"
+    },
+    {
+      "code": "线索",
+      "deprecated": true,
+      "write_blocked": true,
+      "used_by": "migrated: work_002→sub_project(T7), work_001/work_003→topic(研究树批次 2026-10-08)",
+      "migration_hint": "真实语义为「没选」；存量已全部归位——work_002 32 张→sub_project（T7）、work_001 22 张与 work_003 13 张→topic（研究树批次）。**迁移完成后 write_blocked=true（[研究项目词表与迁移] 任务书 T3）**：写路径显式报错，读路径宽容。注意 create_card 默认 card_type='线索'，收紧后建卡必须显式传词表类型。"
+    },
+    {
+      "code": "世界观",
+      "deprecated": true,
+      "write_blocked": true,
+      "used_by": null,
+      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。"
+    },
+    {
+      "code": "行为体",
+      "deprecated": true,
+      "write_blocked": true,
+      "used_by": null,
+      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。"
+    },
+    {
+      "code": "节点",
+      "deprecated": true,
+      "write_blocked": true,
+      "used_by": null,
+      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。"
+    },
+    {
+      "code": "假设",
+      "deprecated": true,
+      "write_blocked": true,
+      "used_by": null,
+      "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。"
+    }
   ],
-
   "state_machine": {
-    "_doc": "工具卡/子卡通用状态机（任务书 T4）。写入经闸 4 校验。",
+    "_doc": "工具卡/子卡通用状态机（任务书 T4）。写入经闸 4 校验。[2026-10-21] completed 可回到 active（coder 卡重新派活：同一件事的后续留在同一张卡上，不再只能新建卡）。",
     "initial": "active",
-    "terminal": ["completed"],
+    "terminal": [],
     "transitions": {
-      "active": ["completed"],
-      "completed": []
+      "active": [
+        "completed"
+      ],
+      "completed": [
+        "active"
+      ]
     }
   },
-
   "write_gates": {
     "_doc": "三闸定义（任务书 §4.3）。落点＝card_store._write_gate（T-0007 补丁已立门位）。顺序固定：闸1 非法值 → 闸 2 词表归属 → 闸 3 工具卡 owner → 闸 4 状态迁移。",
     "gate_1_illegal_value": {
