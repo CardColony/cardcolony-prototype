@@ -23,7 +23,7 @@
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=44";
+import { notify } from "./api.js?v=46";
 import { createRowModel } from "./row_model.js?v=31";
 import { createVirtualList } from "./nav_virtual.js?v=31";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=32";

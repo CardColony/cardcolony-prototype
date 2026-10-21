@@ -3,7 +3,7 @@
 
 原来 work 层写着「不可删除（不提供删除函数）」，根卡又拒删 ⇒ 用户建错的项目
 永远删不掉（质问：「那不就是项目不能删吗？有病吗？」）。
-删法是把整个目录搬进 works/_trash/（可恢复），并要求 confirm 等于项目名。
+删法是把整个目录搬进 works/_trash/（可恢复）；确认只在前端一个弹窗，后端不设门槛。
 """
 from __future__ import annotations
 
@@ -40,23 +40,16 @@ async def test_delete_work_missing_returns_error(work):
     assert "error" in r
 
 
-async def test_delete_work_api_requires_exact_name(work):
-    """confirm 必须等于项目名——一次点击不该毁掉一个项目。"""
+async def test_delete_work_api_deletes_without_extra_confirm(work):
+    """[用户令 2026-10-21] 一个「是否删除」弹窗就够，后端不再要求输入项目名。"""
     import httpx
 
     from main import app
 
     wid = work["work_id"]
-    title = (work_store.read_work(wid) or {}).get("title") or ""
-    assert title, "夹具应带标题"
-
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url="http://t") as client:
-        r = await client.delete(f"/api/works/{wid}", params={"confirm": "错的名字"})
-        assert r.status_code == 400, r.text
-        assert (Path(work_store.WORKS_DIR) / wid).exists(), "确认失败不能删"
-
-        r = await client.delete(f"/api/works/{wid}", params={"confirm": title})
+        r = await client.delete(f"/api/works/{wid}")
         assert r.status_code == 200, r.text
         assert r.json().get("ok") is True
         assert not any(w["work_id"] == wid for w in work_store.list_works())
