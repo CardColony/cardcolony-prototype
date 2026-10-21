@@ -558,3 +558,41 @@ def test_root_card_name_is_project_name():
     assert 'data-act="rename"' in nav, "左栏 ⋯ 菜单缺「重命名」"
     assert "async function doRenameCard" in nav
     assert "API.patchCard(wid, cid, { title: name }" in nav, "改名要写卡标题"
+
+
+def test_switch_card_closes_other_sse():
+    """[连接上限 2026-10-22] 切卡必须关掉**其他会话**的 SSE。
+
+    实测：连续切三次卡，第三次必弹「网络错误」。原因是浏览器同域 HTTP/1.1 只有
+    **6 条**连接，而每张卡占 **2 条** SSE（`/stream` ＋ `/tokens`）——切 3 张卡
+    正好占满，第 3 次切卡的普通请求（getCard / timeline）拿不到连接，fetch 直接
+    抛 TypeError。改前 `stopES` 只关自己这张，别的卡两条流一直挂着。
+
+    修法：`activate()` 里关掉其他会话的 SSE。左栏运行态走 /api/nav/running 轮询
+    （不依赖 SSE），切回来时 replayTrace 按 lastSeq 断点续传，不丢帧。
+    """
+    src = (ROOT / "static" / "stream.js").read_text(encoding="utf-8")
+    i = src.index("function activate(wid, cid)")
+    seg = src[i:i + 2800]
+    assert "for (const [otherKey, otherSt] of sessions)" in seg, \
+        "activate 必须遍历其他会话"
+    assert "stopES(otherSt)" in seg, "切卡要关掉其他会话的 SSE（否则 6 条连接被占满）"
+
+
+def test_switch_card_closes_other_sse():
+    """[连接上限 2026-10-22] 切卡必须关掉**其他会话**的 SSE。
+
+    实测：连续切三次卡，第三次必弹「网络错误」。原因是浏览器同域 HTTP/1.1 只有
+    **6 条**连接，而每张卡占 **2 条** SSE（`/stream` ＋ `/tokens`）——切 3 张卡
+    正好占满，第 3 次切卡的普通请求（getCard / timeline）拿不到连接，fetch 直接
+    抛 TypeError。改前 `stopES` 只关自己这张，别的卡两条流一直挂着。
+
+    修法：`activate()` 里关掉其他会话的 SSE。左栏运行态走 /api/nav/running 轮询
+    （不依赖 SSE），切回来时 replayTrace 按 lastSeq 断点续传，不丢帧。
+    """
+    src = (ROOT / "static" / "stream.js").read_text(encoding="utf-8")
+    i = src.index("function activate(wid, cid)")
+    seg = src[i:i + 2800]
+    assert "for (const [otherKey, otherSt] of sessions)" in seg, \
+        "activate 必须遍历其他会话"
+    assert "stopES(otherSt)" in seg, "切卡要关掉其他会话的 SSE（否则 6 条连接被占满）"
