@@ -73,6 +73,15 @@ SWITCH_CREATE_CHILD = "create_child"    # 能在它下面建子卡
 SWITCH_LINK = "link"                    # 能连线
 SWITCH_UNLINK = "unlink"                # 能解线
 SWITCH_TOOLS_FILE = "tools_file"        # 能读写文件
+# [角色只读核验 2026-10-21 · card_004] **只读文件开关**：给「只能看、不能改」的卡用。
+# 为什么不能复用 tools_file：那一个开关管着 11 件工具——read_file／list_files／
+# search_files／glob_files 之外，还有 **write_file／edit_file／delete_file／
+# move_file／rename_file／bash／python**。把 tools_file 发给离树的职能角色，
+# 等于同时给它写盘权和 shell 执行权，与「第二层只说话不动手」直接冲突。
+# ⇒ 拆一个弱化开关，只解锁四件只读工具。
+# 包含关系见 _SWITCH_IMPLIES：有 tools_file 者自动具备 tools_read_file，
+# 故编程卡/根卡行为逐字不变、无需改配置；反向不成立（只读 ≠ 可写）。
+SWITCH_TOOLS_READ_FILE = "tools_read_file"   # 只读文件/列目录/检索，不能写、不能执行
 SWITCH_TOOLS_WEB = "tools_web"          # 能联网
 SWITCH_SHADOW_WRITE = "shadow_write"    # 能写自己的影子卡
 SWITCH_MANUSCRIPT = "manuscript"        # 能查阅本项目存档的原始资料（manuscript 三件）
@@ -109,6 +118,7 @@ SWITCHES: frozenset[str] = frozenset({
     SWITCH_LINK,
     SWITCH_UNLINK,
     SWITCH_TOOLS_FILE,
+    SWITCH_TOOLS_READ_FILE,
     SWITCH_TOOLS_WEB,
     SWITCH_SHADOW_WRITE,
     SWITCH_MANUSCRIPT,
@@ -119,6 +129,16 @@ SWITCHES: frozenset[str] = frozenset({
     SWITCH_SEARCH,
     SWITCH_LIST_MEMORY,
 })
+
+#: **开关包含关系**（2026-10-21 · card_004）：具备 key 的卡自动具备 value 里的全部开关。
+#:
+#: 只用于「宽权隐含窄权」这一个方向——有写权限的卡当然能读，
+#: 但只读卡**不会**因此获得写权（方向单向，不可逆）。
+#: 落地目的：给职能角色加 tools_read_file 后，编程卡/根卡不必改配置也不会掉能力。
+_SWITCH_IMPLIES: dict[str, tuple[str, ...]] = {
+    SWITCH_TOOLS_FILE: (SWITCH_TOOLS_READ_FILE,),
+}
+
 
 #: [5713 通道试走 · 用户口径 2026-10-20「卡间通信有专门的通信线」]
 #: 树作用域档位——卡间通信的边界**是通信线，不是 parent 树**：
@@ -274,7 +294,15 @@ def has_perm(card_meta: Mapping[str, Any] | None, switch: str) -> bool:
     perms = meta.get(PERM_KEY)
     if not isinstance(perms, (list, tuple, set, frozenset)):
         return False
-    return str(switch) in {str(s) for s in perms}
+    granted = {str(s) for s in perms}
+    if str(switch) in granted:
+        return True
+    # [2026-10-21] 单一方向隐含：宽权包含窄权（有 tools_file ⇒ 具备 tools_read_file）。
+    # 反向不成立——只读卡不会因为这一条拿到写权。
+    for g in granted:
+        if str(switch) in _SWITCH_IMPLIES.get(g, ()):
+            return True
+    return False
 
 
 def _deny_message(card_id: str, switch: str,

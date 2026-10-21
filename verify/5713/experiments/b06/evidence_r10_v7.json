@@ -1,0 +1,150 @@
+{
+  "stages": {
+    "A_controlled_conn_table": {
+      "before_fix": {
+        "wal": {
+          "exists": false
+        },
+        "write_read": "第二版正文",
+        "ro_read": "第二版正文"
+      },
+      "steps": {
+        "fixB": {
+          "checkpoint": [
+            [
+              0,
+              0,
+              0
+            ]
+          ],
+          "sidecars": {
+            "wal": {
+              "exists": true,
+              "bytes": 0,
+              "v1": 0,
+              "v2": 0
+            },
+            "shm": {
+              "exists": true,
+              "bytes": 32768
+            }
+          },
+          "write_read": "第一版正文",
+          "ro_read": "第一版正文"
+        },
+        "close_write_only": {
+          "sidecars": {
+            "wal": {
+              "exists": true,
+              "bytes": 0,
+              "v1": 0,
+              "v2": 0
+            },
+            "shm": {
+              "exists": true,
+              "bytes": 32768
+            }
+          },
+          "ro_still_open_read": "第一版正文"
+        },
+        "close_all": {
+          "sidecars": {
+            "wal": {
+              "exists": true,
+              "bytes": 0,
+              "v1": 0,
+              "v2": 0
+            },
+            "shm": {
+              "exists": true,
+              "bytes": 32768
+            }
+          }
+        },
+        "reopen_probe": {
+          "sidecars": {
+            "wal": {
+              "exists": true,
+              "bytes": 0,
+              "v1": 0,
+              "v2": 0
+            },
+            "shm": {
+              "exists": true,
+              "bytes": 32768
+            }
+          },
+          "probe_read": "第一版正文"
+        },
+        "close_probe": {
+          "sidecars": {
+            "wal": {
+              "exists": true,
+              "bytes": 0,
+              "v1": 0,
+              "v2": 0
+            },
+            "shm": {
+              "exists": true,
+              "bytes": 32768
+            }
+          }
+        }
+      }
+    },
+    "C_replay_v6_order": {
+      "live_read_after": "第一版正文",
+      "sidecars_before_close": {
+        "wal": {
+          "exists": true,
+          "bytes": 0,
+          "v1": 0,
+          "v2": 0
+        },
+        "shm": {
+          "exists": true,
+          "bytes": 32768
+        }
+      },
+      "sidecars_after_write_close_only": {
+        "wal": {
+          "exists": true,
+          "bytes": 0,
+          "v1": 0,
+          "v2": 0
+        },
+        "shm": {
+          "exists": true,
+          "bytes": 32768
+        }
+      },
+      "connections_still_open_then": [
+        {
+          "target": "file:D:/AI_station/推演agent/.worktrees/5713_sandbox/experiments/b06/r10_v7_C/app_home/works/work_001/cards.db?mode=ro",
+          "thread": 44100,
+          "stack": [
+            "r10_probe_v7.py:189",
+            "r10_probe_v7.py:163"
+          ]
+        }
+      ],
+      "sidecars_after_all_close": {
+        "wal": {
+          "exists": true,
+          "bytes": 0,
+          "v1": 0,
+          "v2": 0
+        },
+        "shm": {
+          "exists": true,
+          "bytes": 32768
+        }
+      },
+      "note": "v6 的 S3 只关了我自己的 live 连，池里那条只读连接没关 ⇒ 旁挂留着；这说明「关掉活连接后仍不消失」不是普遍规律，而是「还剩连接」时的形态"
+    }
+  },
+  "meta": {
+    "code_head": "8c88806",
+    "item": "旁挂存灭与连接数的关系（纠正 §7.7 的普遍化表述）"
+  }
+}

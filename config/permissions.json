@@ -17,23 +17,115 @@
       "【v5 · 2026-10-15 规则卡】新增 rd_project/rule 与 research_project/rule 两行（各仅 read 一码——规则卡模型侧只读，shadow_write/edit 等一概不给；唯一模型侧写通道＝根卡 draft_rule_edit 提议+用户审批落盘，不走本表）。既有行逐字不动。"
     ]
   },
-
-  "version": 6,
-
+  "version": 7,
   "permissions": {
     "rd_project": {
-      "project":     ["read", "edit", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
-      "sub_project": ["read", "edit", "delete", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
-      "tool":        ["read", "edit", "delete", "plan", "shadow_write", "read_linked", "send_card_message"],
-      "coder":       ["read", "edit", "tools_file", "tools_web", "search", "plan", "shadow_write", "read_linked", "list_memory"],
-      "rule":        ["read"],
-      "role":        ["read", "edit", "read_linked", "send_card_message", "shadow_write"]
+      "project": [
+        "read",
+        "edit",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "tools_file",
+        "tools_web",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "sub_project": [
+        "read",
+        "edit",
+        "delete",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "tools_file",
+        "tools_web",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "tool": [
+        "read",
+        "edit",
+        "delete",
+        "plan",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "coder": [
+        "read",
+        "edit",
+        "tools_file",
+        "tools_web",
+        "search",
+        "plan",
+        "shadow_write",
+        "read_linked",
+        "list_memory"
+      ],
+      "rule": [
+        "read"
+      ],
+      "role": [
+        "read",
+        "edit",
+        "read_linked",
+        "tools_read_file",
+        "send_card_message",
+        "shadow_write"
+      ]
     },
     "research_project": {
-      "project": ["read", "edit", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
-      "topic":   ["read", "edit", "delete", "create_child", "link", "unlink", "manuscript", "invoke_tool", "plan", "tools_file", "tools_web", "shadow_write", "read_linked", "send_card_message"],
-      "rule":    ["read"],
-      "role":    ["read", "edit", "read_linked", "send_card_message", "shadow_write"]
+      "project": [
+        "read",
+        "edit",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "tools_file",
+        "tools_web",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "topic": [
+        "read",
+        "edit",
+        "delete",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "tools_file",
+        "tools_web",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
+      ],
+      "rule": [
+        "read"
+      ],
+      "role": [
+        "read",
+        "edit",
+        "read_linked",
+        "tools_read_file",
+        "send_card_message",
+        "shadow_write"
+      ]
     }
   }
 }
