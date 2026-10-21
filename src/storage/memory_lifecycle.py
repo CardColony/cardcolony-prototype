@@ -195,7 +195,7 @@ def reclaim(chain: list[dict[str, Any]], now_ms: int) -> tuple[list[dict[str, An
 def visible_chain(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """渲染/索引可见的链：剔除「沉底」与「已被归拢取代」（原文与条目本身**不删**）。
 
-    `supersededBy` 由低频归拢（fold_l1）写：合并后旧结论不再露，但**留在链上可查**。
+    `supersededBy` 由低频归拢写（`memory_store._maybe_fold` 的指纹账 → 链节点标记）：合并后旧结论不再露，但**留在链上可查**。
     """
     return [n for n in chain or []
             if not n.get("sunk") and not n.get("supersededBy")]
