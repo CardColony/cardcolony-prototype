@@ -9,7 +9,7 @@
  * 就绪。此前那个「薄壳异步 import 晚于页面顶层 load()」的时序缺口
  * （见 git 7d09280 修复记录）在静态 import 形态下不存在，无需等待轮询。
  */
-import { API, toast } from "./api.js?v=43";
+import { API, toast } from "./api.js?v=44";
 import { storageGet } from "./state_layers.js?v=32";
 import { NAV_RECENT_KEY } from "./nav_find.js?v=31";
 

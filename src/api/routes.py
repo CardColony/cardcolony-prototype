@@ -628,6 +628,26 @@ async def restore_work_card(work_id: str, card_id: str):
     return result
 
 
+@router.delete("/works/{work_id}")
+async def delete_work_api(work_id: str, confirm: str = ""):
+    """删项目：整个项目目录移到 works/_trash/（可恢复）。
+
+    [删项目 2026-10-21 · 用户令] 原来 work 层根本没有删除函数，根卡又不让删 ⇒
+    用户建错的项目永远删不掉。现在提供删除，但要求 **confirm 等于项目名**
+    （防误删：一次点击不该毁掉一个项目）。
+    """
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    title = str(w.get("title") or "").strip()
+    if str(confirm).strip() != title:
+        return _err(400, f"确认名不匹配：需要输入项目名「{title}」")
+    result = work_store.delete_work(work_id)
+    if "error" in result:
+        return _err(500, result["error"])
+    return result
+
+
 @router.delete("/works/{work_id}/cards/{card_id}")
 async def delete_work_card(work_id: str, card_id: str, cascade: bool = False):
     """删卡。``?cascade=true`` ⇒ 连同整棵子树一起删（每张都进回收站，可逐个恢复）。

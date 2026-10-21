@@ -370,8 +370,17 @@ def test_t6_touched_modules_bumped():
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
         "chat-view.js": "7", "message-item.js": "1",
     }
+    # [版本断言 2026-10-21] 改为「不低于」：版本由
+    # scripts/bump_frontend_versions.py 自动传播，精确匹配会天天红。
+    # 要防的回退是「变低」，不是「又升了一号」；同时仍要求全链唯一版本。
+    def _vkey(v: str):
+        return tuple(int(x) for x in v.split("."))
+
     for name, ver in expect.items():
-        assert vm.get(name) == {ver}, f"{name} 版本应为 {ver}，实为 {vm.get(name)}"
+        got = vm.get(name)
+        assert got and len(got) == 1, f"{name} 应只有一个版本，实为 {got}"
+        actual = next(iter(got))
+        assert _vkey(actual) >= _vkey(ver), f"{name} 版本应 >= {ver}，实为 {actual}"
 
 
 # ---------------------------------------------------------------- 输入会话按卡
