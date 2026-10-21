@@ -186,18 +186,16 @@ models:
     - high
     - max
     default_effort: high
-  longcat-25-preview-free:
+  minimax-m31-flash-free:
     provider: opencode
-    model: longcat-2.5-preview-free
-    temperature: 0.7
-    thinking: 'on'
-    note: ''
-  step-5-preview-free:
+    model: minimax-m3.1-flash-free
+    temperature: 1
+    note: 免费（2026-10-22 实调通过）
+  beam-free:
     provider: opencode
-    model: step-5-preview-free
+    model: beam-free
     temperature: 0.7
-    thinking: 'on'
-    note: ''
+    note: 免费（Reflection Beam，带 reasoning；2026-10-22 实调通过）
 bindings:
   execute: glm-53-flash
   think: glm-53-flash
