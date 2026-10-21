@@ -389,6 +389,27 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         switchComposer(cid);                // [5702] 草稿卡落库：输入会话跟着换到真 id
         renderNav().catch(() => {});        // 新项目/新卡进左栏
         renderInspector().catch(() => {});  // 右栏把临时 id 换成真 card_id
+        /* [草稿模型 2026-10-21] 草稿态在徽标上选的模型，落库这一刻写进项目配置表：
+           scope=work ⇒ 项目级（表里所有卡，此时只有根卡）；scope=card ⇒ 只写这张新卡。
+           写前先清暂存，写完通知徽标换行重读（它此时还停在 "draft" 那套显示上）。 */
+        try {
+          const pick = JSON.parse(sessionStorage.getItem("draftModel") || "null");
+          if (pick && pick.model) {
+            sessionStorage.removeItem("draftModel");
+            const url = pick.scope === "card"
+              ? `/api/settings/model-overrides/${WORK_ID}/card/${cid}`
+              : `/api/settings/model-overrides/${WORK_ID}`;
+            fetch(url, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ default_model: pick.model }),
+            }).then(() => {
+              try {
+                window.dispatchEvent(new CustomEvent("ui:card-changed", { detail: { cardId: cid } }));
+              } catch (e) { /* 零阻断 */ }
+            }).catch(() => { /* 写不进不影响建项目本身 */ });
+          }
+        } catch (e) { /* 暂存坏了当没选过 */ }
       } else {
         history.replaceState(null, "", "/work/" + WORK_ID);
       }

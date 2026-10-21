@@ -12,9 +12,9 @@ import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=42";
 import "./util.js?v=30";
 import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts } from "./theme.js?v=6";
-import { initModelBadge } from "./model_picker.js?v=5";
+import { initModelBadge } from "./model_picker.js?v=7";
 import "../stream.js?v=52";
-import "../workspace.js?v=69";
+import "../workspace.js?v=70";
 
 window.API = API;   // 调试便利（非功能依赖；与 api.js 薄壳同属兼容层）
 

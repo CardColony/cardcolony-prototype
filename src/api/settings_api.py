@@ -160,6 +160,10 @@ async def get_models() -> JSONResponse:
         "models": enriched,
         "bindings": raw.get("bindings") or {},
         "system": raw.get("system") or {},
+        # [新建项目 2026-10-21] 分层配置与「新项目默认」：草稿态徽标显示后者
+        # （depth_0 首选），不再拿 system.default_model 那个兜底值糊在用户脸上。
+        "tiers": raw.get("tiers") or {},
+        "new_project_default": model_config.new_project_default(),
         "simple": raw.get("simple") or {},
         "retry_grading": raw.get("retry_grading") or {},
         "roles": roles.list_roles(),

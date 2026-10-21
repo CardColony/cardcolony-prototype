@@ -338,6 +338,24 @@ def pick(role: str, *, work_id: Optional[str] = None,
     return _policy_value(role, work_id, card_id)
 
 
+def new_project_default() -> str:
+    """新建项目的默认模型（草稿态徽标显示它；项目落库后根卡也用这个）。
+
+    [新建项目 2026-10-21] 原来草稿态显示的是 `system.default_model`（minimax 兜底），
+    用户看着莫名其妙——新项目的根卡是**树的第一层**，按分层策略就该用 depth_0。
+    取 depth_0 首选；没有分层配置才回落 system.default_model。
+    """
+    cfg = _gateway_config()
+    t0 = (cfg.get("tiers") or {}).get("depth_0")
+    if t0:
+        pool = [str(x) for x in t0] if isinstance(t0, (list, tuple)) else [str(t0)]
+        pool = [x for x in pool if x.strip()]
+        if pool:
+            return pool[0]
+    system = (cfg.get("system") or {})
+    return str(system.get("default_model") or DEFAULT_MODEL)
+
+
 def _still_available(v: Any) -> bool:
     """表里的值是否还在当前模型目录里。目录取不到（gateway 未就绪）⇒ 不判。"""
     try:
