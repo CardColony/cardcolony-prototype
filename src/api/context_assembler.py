@@ -36,15 +36,20 @@ def _load_cards_index(work_id: str) -> list[dict[str, Any]]:
         # [依赖关联线 2026-10-16] 多带一列 relations（依赖关联线）——供
         # build_ctx 反向扫（谁依赖/关联我）零额外 IO。清单渲染只用前三键，
         # 多带一列不影响它。
+        # [第二层区 2026-10-20] 多带 created_at：供「组阁之后又新增了卡」这条机械信号
+        # （清单渲染仍只用 id/title/parent，多带的列不进上下文）。
         for r in conn.execute(
-                "SELECT card_id, title, parent, relations FROM cards ORDER BY card_id"):
+                "SELECT card_id, title, parent, relations, created_at, card_type"
+                " FROM cards ORDER BY card_id"):
             try:
                 rels = _json.loads(r["relations"] or "[]")
             except (TypeError, ValueError):
                 rels = []
             out.append({"card_id": r["card_id"], "title": r["title"] or "",
                         "parent": r["parent"] or "",
-                        "relations": rels if isinstance(rels, list) else []})
+                        "relations": rels if isinstance(rels, list) else [],
+                        "created_at": r["created_at"] or "",
+                        "card_type": r["card_type"] or ""})
         return out
 
     return card_db.read_sync(work_id, _fn, []) or []
@@ -226,6 +231,65 @@ def _load_rule_sections(work_id: str) -> dict[str, str]:
     return sections
 
 
+def _load_role_cabinet(work_id: str, current_id: str,
+                        cards: list[dict[str, Any]]) -> dict[str, Any]:
+    """取「第二层职能角色」现状与机械信号（只对项目根卡取数，其它卡返回空）。
+
+    **为什么要有这个区**：实测（card_004 的 D06/D07）——根卡手上有全部调阁工具、
+    也知道有角色（`list_roles` → `read_card` 读过），但局面变了它不会去改档/撤岗；
+    组阁更是「问一次才有」。结论：**调阁触发必须外置成机制**，不能靠文档提醒。
+
+    这里只做两件事，**都不含任何"你应该组阁"的指令**（D02：职能不定死，
+    设不设/怎么设是 CEO 的判断）：
+      1. 把当前阁员摊开（域/值班/职责书版本/关注/最近一次判词）——省掉它自己查；
+      2. 把**机械能检出的局面变化**列成事实（新卡没人看、角色空转、连续沉默、已撤岗）。
+    最后落一句中性问话，交由模型判断。
+
+    取数口径：一次 read_sync 查库（role_profiles ＋ 每人最近 3 条判词），零逐人 IO。
+    """
+    root_id = ""
+    try:
+        root_id = work_store.work_card_id_of(work_id)
+    except Exception:  # noqa: BLE001 取不到根卡＝无来源，不阻断装配
+        return {}
+    if not root_id or current_id != root_id:
+        return {}          # 只有根卡能调阁，别的卡不给这个区
+
+    def _fn(conn: Any) -> dict[str, Any]:
+        import json as _json
+        roles: list[dict[str, Any]] = []
+        for r in conn.execute(
+                "SELECT card_id, jurisdiction, watch, duty, charter, created_at"
+                " FROM role_profiles WHERE work_id=? ORDER BY card_id", (work_id,)):
+            def _j(raw: Any) -> dict[str, Any]:
+                try:
+                    v = _json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    return {}
+                return v if isinstance(v, dict) else {}
+            jur, watch, duty, charter = (_j(r["jurisdiction"]), _j(r["watch"]),
+                                         _j(r["duty"]), _j(r["charter"]))
+            vs = [dict(x) for x in conn.execute(
+                "SELECT ts, decision FROM role_verdicts WHERE work_id=? AND role_id=?"
+                " ORDER BY ts DESC LIMIT 3", (work_id, r["card_id"]))]
+            roles.append({
+                "role_id": r["card_id"],
+                "exclusive_key": str(jur.get("exclusive_key") or jur.get("domain") or ""),
+                "watch": [str(c) for c in (watch.get("cards") or [])],
+                "duty": str(duty.get("state") or "active"),
+                "charter_version": int(charter.get("version") or 1),
+                "created_at": r["created_at"] or "",
+                "recent": vs,
+            })
+        return {"roles": roles}
+
+    try:
+        return card_db.read_sync(work_id, _fn, {}) or {}
+    except Exception as exc:  # noqa: BLE001 该区取不到就不出现，绝不影响装配
+        logger.warning("[region] 第二层取数失败 work=%s: %s", work_id, exc)
+        return {}
+
+
 def build_ctx(work_id: str, current_id: str,
               memory_state: dict[str, Any] | None = None,
               history_source: list[dict[str, Any]] | None = None) -> context_regions.RegionCtx:
@@ -259,6 +323,8 @@ def build_ctx(work_id: str, current_id: str,
         dep_relations_out=dep_out,
         dep_relations_in=dep_in,
         direct_child_status=_load_direct_child_status(work_id, current_id),
+        # [第二层区 2026-10-20] 只对根卡取数（别的卡返回 {}，区不出现）。
+        role_cabinet=_load_role_cabinet(work_id, current_id, cards),
         project_class=pc,
         type_registry=card_store.load_type_registry(),
         type_texts=load_type_texts(),

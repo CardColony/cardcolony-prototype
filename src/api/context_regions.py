@@ -71,10 +71,110 @@ class RegionCtx:
     # 反向扫**零额外 IO**：在已加载的全库卡索引上算（见 context_assembler）。
     dep_relations_out: list[dict[str, Any]] = field(default_factory=list)
     dep_relations_in: list[dict[str, Any]] = field(default_factory=list)
+    # [第二层区 2026-10-20 · card_004] 职能角色现状与机械信号（只对项目根卡取数；
+    # 别的卡为 {}，区不出现）。取数在 context_assembler._load_role_cabinet（唯一 IO），
+    # 渲染器只读它。存在理由见 render_role_cabinet_region 的 docstring。
+    role_cabinet: dict[str, Any] = field(default_factory=dict)
 
 
 def _count_duty_lines(ctx: RegionCtx, text: str) -> int:
     return sum(1 for ln in text.splitlines() if ln.startswith("- "))
+
+
+def render_role_cabinet_region(ctx: RegionCtx) -> str:
+    """第二层（职能角色）现状 ＋ **机械可检的局面变化** ＋ 一句中性问话。
+
+    **为什么这个区必须存在（实测依据，不是设计偏好）**
+    card_004 的组阁判断力实验（`docs/5713-组阁判断力实验-报告-20261020.md`）：
+      · 零干预下根卡 45 次工具调用里一次没组阁，尽管工具在手、四个跨卡问题全部发现；
+      · goal 末尾加一句「该不该有人专门盯着」，它立刻组出高质量角色（排他键唯一、
+        触发线逐条、主动划界）；
+      · 局面变了（新增一张冲突卡）后，它 `list_roles` → `read_card` **读过角色卡**，
+        仍然不改档、不撤岗、不扩关注范围。
+    ⇒ **它会设，不会调**。所以「设/调」不能只写在纪律文档里等人记得——
+      要由机制在每轮把现状与变化摊到它眼前，让它不用"想起来"。
+
+    **边界（守 D02「职能不定死」）**
+    本区只给事实（阁员现状 ＋ 机械检测到的变化），**不给"你应该组阁"的指令**，
+    也不给职能清单。设不设、设什么域、改不改档，是当前卡（CEO）的判断；
+    判断为不需要就继续干别的，不必解释。这样机制触发不会退化成"服从测试"。
+    """
+    cab = ctx.role_cabinet or {}
+    if not cab:
+        return ""
+    roles = list(cab.get("roles") or [])
+
+    # 工作卡＝树里的非根卡、非角色卡（角色卡离树，不在此列）
+    work_cards = [c for c in (ctx.cards or [])
+                  if c.get("card_id") != ctx.work_card_id
+                  and str(c.get("card_type") or "") != "role"
+                  and str(c.get("parent") or "") != ""]
+    if not roles and len(work_cards) < 2:
+        return ""          # 还没到"有跨卡面"的程度，不出现
+
+    active = [r for r in roles if r.get("duty") == "active"]
+    archived = [r for r in roles if r.get("duty") == "archived"]
+
+    lines: list[str] = ["## 第二层（职能角色）· 阁员现状与变化信号"]
+    lines.append("本卡是项目根卡：组阁与调阁的通道都在你手上"
+                 "（create_role / list_roles / role_watch_cards / "
+                 "update_role_profile / role_set_duty）。")
+
+    if roles:
+        lines.append("")
+        lines.append(f"**当前阁员 {len(active)} 人在值**"
+                     + (f"（另有 {len(archived)} 人已撤岗、台账保留）" if archived else ""))
+        title_of = {c.get("card_id"): str(c.get("title") or "")
+                    for c in (ctx.cards or [])}
+        for r in active:
+            watch = r.get("watch") or []
+            watch_s = ",".join(f"{w}({title_of.get(w, '?')})" for w in watch) or "（空）"
+            recent = r.get("recent") or []
+            if recent:
+                v0 = recent[0]
+                last = f"{v0.get('decision')}@{str(v0.get('ts') or '')[5:16].replace('T', ' ')}"
+            else:
+                last = "尚未巡检"
+            lines.append(f"- {r.get('role_id')}｜域={r.get('exclusive_key') or '?'}"
+                         f"｜值班={r.get('duty')}｜职责书v{r.get('charter_version')}"
+                         f"｜关注={watch_s}｜最近判词={last}")
+
+    sig: list[str] = []
+    if not roles:
+        sig.append(f"当前项目有 {len(work_cards)} 张工作卡，**没有任何角色在关注它们**")
+    watched: set[str] = set()
+    for r in active:
+        watched.update(str(c) for c in (r.get("watch") or []))
+    role_born = [str(r.get("created_at") or "") for r in roles if r.get("created_at")]
+    born_min = min(role_born) if role_born else ""
+    for c in work_cards:
+        cid = str(c.get("card_id") or "")
+        if cid in watched:
+            continue
+        created = str(c.get("created_at") or "")
+        if roles and born_min and created and created > born_min:
+            sig.append(f"**组阁之后新增的卡、没有角色在看**：{cid}「{c.get('title')}」"
+                       f"（本卡 {created[:16].replace('T', ' ')} 建立，"
+                       f"全部角色 {born_min[:16].replace('T', ' ')} 之前建立）")
+        elif roles:
+            sig.append(f"没有角色在看：{cid}「{c.get('title')}」")
+    for r in active:
+        rid = str(r.get("role_id") or "")
+        if not (r.get("watch") or []):
+            sig.append(f"{rid} 的关注集合为空（在值但没有观察对象）")
+        recent = r.get("recent") or []
+        if len(recent) >= 3 and all(str(v.get("decision")) == "silent" for v in recent):
+            sig.append(f"{rid} 最近 {len(recent)} 轮判词全为 silent（可能已无触发对象）")
+
+    if sig:
+        lines.append("")
+        lines.append("**机械检测到的局面变化**（事实，不是建议）")
+        lines.extend(f"- {x}" for x in sig)
+
+    lines.append("")
+    lines.append("要不要改档／停职／撤岗／新设，由你按局面判断；"
+                 "判断为不需要就继续当前工作，不必解释。")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +348,25 @@ REGION_TABLE: list[dict[str, Any]] = [
         "render": lambda ctx: render_direct_child_status_region(ctx.direct_child_status),
         "count": lambda ctx, text: sum(
             1 for child in ctx.direct_child_status if _child_status_body(child)),
+    },
+    {
+        # [第二层区 2026-10-20 · card_004] order 175：紧跟 170 直接子卡现状之后——
+        # 170 讲「作业树现在什么样」（做事的那层），本区讲「职能层现在什么样、变了什么」。
+        # **只对项目根卡出现**（取数层已按 card_id == work_card_id 过滤）：
+        # 只有根卡能组阁/调阁，把阁员状态摊给别的卡既无用也是噪音。
+        # 实测依据见 render_role_cabinet_region 的 docstring（会设、不会调）。
+        "key": "role_cabinet",
+        "order": 175,
+        "name": "第二层·职能角色",
+        "channel": "system",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main",),
+        "source": "role_profiles ＋ role_verdicts（装配层一次 read_sync，仅根卡）",
+        "render": lambda ctx: render_role_cabinet_region(ctx),
+        "count": lambda ctx, text: len((ctx.role_cabinet or {}).get("roles") or []),
     },
     {
         # [T12 二期] 凝练记忆区（condense_fold）——order 200 空闲位插入（REL-01：

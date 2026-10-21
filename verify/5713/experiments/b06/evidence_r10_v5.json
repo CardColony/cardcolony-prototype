@@ -1,0 +1,63 @@
+{
+  "stages": {
+    "S0_reproduce_red": {
+      "ok": true,
+      "read": "第二版正文",
+      "rolled_back": false,
+      "files": {
+        "main": {
+          "b": 163840,
+          "v1": 1,
+          "v2": 0
+        },
+        "-wal": {
+          "b": 444992,
+          "v1": 1,
+          "v2": 1
+        },
+        "-shm": {
+          "b": 32768,
+          "v1": 0,
+          "v2": 0
+        }
+      }
+    },
+    "FIX_A_delete_sidecars_then_copy": {
+      "deleted": [
+        "-wal",
+        "-shm"
+      ],
+      "errors": {},
+      "read": "第一版正文",
+      "rolled_back": true,
+      "files": {
+        "main": {
+          "b": 163840,
+          "v1": 1,
+          "v2": 0
+        },
+        "-wal": null,
+        "-shm": null
+      }
+    },
+    "FIX_B_sqlite_backup_api": {
+      "before": "第二版正文",
+      "error": null,
+      "read": "第一版正文",
+      "rolled_back": true,
+      "files": {
+        "main": {
+          "b": 163840,
+          "v1": 1,
+          "v2": 0
+        },
+        "-wal": null,
+        "-shm": null
+      }
+    }
+  },
+  "meta": {
+    "code_head": "df82072",
+    "item": "R10 test_snapshot_restore_roundtrip / 修法候选"
+  }
+}
