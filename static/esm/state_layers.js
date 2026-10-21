@@ -138,7 +138,23 @@ export function createNavStateStore(deps = {}) {
     },
   };
 
-  /* ---------- 选中层（URL hash 复合键） ---------- */
+  /* ---------- 选中层 ---------- */
+  /* [5715 · 修] 承载载体从 hash 迁到**路径**。
+   *
+   * 病根（实测 5715）：2026-10-17「阶段2 A2.2」把页面身份搬进路径（/work/{wid}/card/{cid}），
+   * 选中态却还留在 hash。于是 open() 里先 select.set() 写 hash、紧接着的 replaceState 写路径
+   * **把 hash 抹掉** ⇒ select.get() 恒 null ⇒
+   *   ① 侧栏从不高亮当前卡（row_model 的 selected 判据失效）；
+   *   ② 「收起全部保留当前链」「定位到当前卡」全失准；
+   *   ③ 画布面包屑读不到选中卡。
+   * 三处读点（row_model / nav_system / nav_breadcrumb）全吃这一个通道，**一处根因、三处症状**。
+   *
+   * 修法：选中态走路径（与「URL 即页面身份」同源）；hash 只保留作**旧链接兼容**
+   * （esm/main.js 与 workspace.js bootRestore 各认一次，见 select.parse）。 */
+  function parsePathCard(pathname) {
+    const m = /^\/work\/([^/]+)\/card\/([^/]+)/.exec(pathname || "");
+    return m ? { wid: m[1], cid: m[2] } : null;
+  }
   // 复合形态 "#wid/cid"；旧形态 "#cid" ＝ 回落当前页 WORK_ID（R-09 兼容旧链接）
   function parseHash(hash) {
     const h = (hash || "").replace(/^#/, "");
@@ -147,15 +163,37 @@ export function createNavStateStore(deps = {}) {
     if (i > 0) return { wid: h.slice(0, i), cid: h.slice(i + 1) };
     return { wid: workId, cid: h };
   }
-  function serializeHash(wid, cid) { return "#" + wid + "/" + cid; }
+  function serializePath(wid, cid) { return "/work/" + wid + "/card/" + cid; }
+  function serializeHash(wid, cid) { return "#" + wid + "/" + cid; }   // 旧链接形态（仅供旧链接判定/测试）
+  /* [当前卡单源 2026-10-21] 「当前在看哪张卡」只有一个答案：**页面路径**。
+     改前 get() 还会回退读 hash（旧链接兼容）⇒ 画布页也能"有当前卡" ⇒ 逼得每个
+     判断点自己加 `inChat` 兜；而项目行早退少比了 work_id（所有项目的根卡都叫
+     card_001）⇒ 点 B 项目毫无反应。现在：
+       · get() 只读路径（旧链接判定走 parse(hash)，只在两个入口各做一次）
+       · is(wid, cid) 是**唯一**的「是不是当前这张卡」判断口，别处不许再拼条件
+     card_id 跨项目不唯一，所以身份必须是 (wid, cid) 复合键——这是数据模型既定事实。 */
+  function selectGet() {
+    return loc ? parsePathCard(loc.pathname) : null;
+  }
+  function selectIs(wid, cid) {
+    const s = selectGet();
+    if (!s) return false;
+    return String(s.wid) === String(wid) && String(s.cid) === String(cid);
+  }
   const select = {
     set(wid, cid) {
       if (!wid || !cid) return;
-      if (hist) hist.replaceState(null, "", serializeHash(wid, cid));
+      // 写路径（＝页面身份）。不写 hash 的两个原因：
+      //   ① 写 hash 会被随后的 replaceState 写路径抹掉（原病根）；
+      //   ② 画布页读到 hash 会 location.replace 跳回对话页（esm/main.js 的旧链接重定向）。
+      if (hist) hist.replaceState(null, "", serializePath(wid, cid));
     },
-    get() { return loc ? parseHash(loc.hash) : null; },
-    parse: parseHash,      // 纯函数透出（restoreFromHash / 测试共用）
-    serialize: serializeHash,
+    get: selectGet,
+    is: selectIs,
+    parse: parseHash,          // 纯函数透出（**只认 hash**：旧链接判定的唯一入口）
+    parsePath: parsePathCard,  // 纯函数透出（路径形态）
+    serialize: serializePath,
+    serializeHash,
   };
 
   /* ---------- 快照层（服务端数据投影） ---------- */

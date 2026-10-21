@@ -135,18 +135,58 @@ async def update_profile(work_id: str, role_id: str,
 
 async def set_duty_state(work_id: str, role_id: str,
                          state: str, note: str = "") -> dict[str, Any]:
-    prof = get_profile(work_id, role_id) or {}
-    duty = dict(prof.get("duty") or {})
-    old = str(duty.get("state") or "active")
-    duty["state"] = state
-    duty["since"] = _now()
-    if note:
-        duty["note"] = note
-    duty.setdefault("last_wake_at", "")
-    duty.setdefault("pending_sync", 0)
-    await update_profile(work_id, role_id, {"duty": duty})
+    # [role-sync 2026-10-20 · card_007] 读-改-写必须在一个写事务内完成：
+    # 旧写法先 get_profile 再整字典 update_profile，与并发中的 duty 写互踩
+    #（dynamic_cabinet D 段实测：复职写入被上轮收尾的旧快照覆盖回 suspended）。
+    def _fn(conn: sqlite3.Connection) -> tuple[dict[str, Any], str]:
+        row = conn.execute(
+            "SELECT duty FROM role_profiles WHERE work_id=? AND card_id=?", 
+            (work_id, role_id)).fetchone()
+        duty = dict(_loads(row["duty"], {})) if row is not None else {}
+        old = str(duty.get("state") or "active")
+        duty["state"] = state
+        duty["since"] = _now()
+        if note:
+            duty["note"] = note
+        duty.setdefault("last_wake_at", "")
+        duty.setdefault("pending_sync", 0)
+        conn.execute(
+            "UPDATE role_profiles SET duty=?, updated_at=?"
+            " WHERE work_id=? AND card_id=?", 
+            (_dumps(duty), _now(), work_id, role_id))
+        return duty, old
+
+    duty, old = await card_db.run_write(work_id, _fn)
     duty["previous"] = old
     return duty
+
+
+async def touch_duty(work_id: str, role_id: str, *,
+                     last_wake_at: str | None = None,
+                     pending_sync: int | None = None) -> dict[str, Any]:
+    """只合并 duty 的巡检记账字段（last_wake_at/pending_sync），绝不碰 state。
+
+    为什么不整字典写回：_finalize 收尾与 set_duty 并发时（复职恰逢上轮巡检
+    收尾的几百毫秒窗口），旧读快照会把刚写入的 state=active 冲回 suspended
+    （丢更新）——spawn 的值班闸随即静默拒起，复职补巡检永远不来。
+    """
+    def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
+        row = conn.execute(
+            "SELECT duty FROM role_profiles WHERE work_id=? AND card_id=?", 
+            (work_id, role_id)).fetchone()
+        duty = dict(_loads(row["duty"], {})) if row is not None else {}
+        if last_wake_at is not None:
+            duty["last_wake_at"] = last_wake_at
+        if pending_sync is not None:
+            duty["pending_sync"] = int(pending_sync)
+        duty.setdefault("state", "active")
+        conn.execute(
+            "UPDATE role_profiles SET duty=?, updated_at=?"
+            " WHERE work_id=? AND card_id=?", 
+            (_dumps(duty), _now(), work_id, role_id))
+        return duty
+
+    return await card_db.run_write(work_id, _fn)
 
 
 async def list_profiles(work_id: str) -> list[dict[str, Any]]:

@@ -1,0 +1,53 @@
+===== 测试文件最后改动 =====
+tests/test_auto_mode.py
+    580c817 2026-10-20 fix(5713 通道试走): 同轮"先建线再发信"要能走通——建线后同步 meta 缓存；验收网对齐新口径
+tests/test_card_draft.py
+    beb408c 2026-10-16 迭代十批次入库（并行会话 2026-10-16 下午：模型层网关重写＋画板四机制＋对账画板架构）
+tests/test_card_region_semantics.py
+    beb408c 2026-10-16 迭代十批次入库（并行会话 2026-10-16 下午：模型层网关重写＋画板四机制＋对账画板架构）
+tests/test_rule_card.py
+    beb408c 2026-10-16 迭代十批次入库（并行会话 2026-10-16 下午：模型层网关重写＋画板四机制＋对账画板架构）
+tests/test_status_update.py
+    cf788c5 2026-10-20 merge(对话界面): 5715 第七轮 —— 性能这条线做完（正文流节流 / 缓冲键带 run+round / 收口必落盘 / 下标索引）
+tests/test_t12_memory.py
+    4c50b7f 2026-10-20 freeze(角色机制): 5710 冻结——根卡不加行为引导，角色信息只在工具/角色说明/UI
+tests/test_auto_await_livelock.py
+    7281076 2026-10-18 fix(自动模式): 说明书纠正「不声明就再起轮」的假话 ＋ 空转兜底不误伤让位等待（auto-t7）[移植 P7]
+tests/test_coder_card.py
+    4c50b7f 2026-10-20 freeze(角色机制): 5710 冻结——根卡不加行为引导，角色信息只在工具/角色说明/UI
+tests/test_dep_relations.py
+    ae1359b 2026-10-20 test(5713 通道试走): 验收网随新口径对齐——线是通信边界，不是树
+tests/test_tool_capability_boost.py
+    68b48a8 2026-10-20 merge: 角色机制 5710 并入 5700（dev）
+tests/test_condfold.py
+    46deb1d 2026-10-17 feat(会话): 工具结果落会话（v2）
+tests/test_offline_e2e.py
+    cf30128 2026-10-15 迭代八批次入库（并行会话 2026-10-13~15：消息底座＋SQLite 迁移＋当前轮注入＋卡片区域语义＋上下文底座化）
+tests/test_model_override_scope.py
+    fd11ce3 2026-10-19 feat(模型设置): 按卡片类型设置默认模型，新建项目整体拷贝成该项目配置表
+tests/test_snapshot_roundtrip.py
+    cf30128 2026-10-15 迭代八批次入库（并行会话 2026-10-13~15：消息底座＋SQLite 迁移＋当前轮注入＋卡片区域语义＋上下文底座化）
+tests/test_slots_control.py
+    776b9e5 2026-10-15 迭代九批次入库（并行会话 2026-10-15：首页重设计＋编程卡＋SQLite 位置列＋画布卡原型）
+tests/test_board.py
+    d0e1ce5 2026-10-12 迭代六批次入库（10-09~10-12）：权限底座重做v2＋triage退役＋侧边栏/画布三步/卡片编辑机制改造
+tests/test_card_msg.py
+    ae1359b 2026-10-20 test(5713 通道试走): 验收网随新口径对齐——线是通信边界，不是树
+
+===== 生产码最后改动（对应模块） =====
+src/api/prompts.py
+    a0853ed 2026-10-20 feat(5713 通道试走): 卡间通信的边界改为通信线——建线不受 parent 树约束，发信须已有线
+src/api/card_tools.py
+    580c817 2026-10-20 fix(5713 通道试走): 同轮"先建线再发信"要能走通——建线后同步 meta 缓存；验收网对齐新口径
+src/api/permission.py
+    (无)
+src/goal/service.py
+    1559219 2026-10-20 自动模式照抄 dsh-goal：事件溯源 + idle 驱动 + 轮次上限 + 权威校验
+src/config/model_config.py
+    (无)
+src/storage/data_snapshot.py
+    e02cb01 2026-10-19 feat(画布): 卡面索引化＋就地展开对话＋悬停回复＋删卡回收站（5707 验收版）
+src/storage/card_db.py
+    68b48a8 2026-10-20 merge: 角色机制 5710 并入 5700（dev）
+config/models.yaml
+    b13fc60 2026-10-20 config(tiers): 第一层换 aliyun deepseek-v4.1-flash-1017；第二层及之后去掉 aliyun

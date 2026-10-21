@@ -105,9 +105,9 @@ export function createAssembler() {
   let structRev = 0;
   /** 待认领的本地用户节点键（乐观上屏）。 */
   let pendingLocalKey = null;
-  /** 该轮尚无 assistant 时暂存的思考（待吸收）。 */
-  let pendingReasoning = "";
-  let pendingReasoningOrd = 0;
+  /** [5715] 按 (run, round) 分桶的待认领思考：key＝`${run}|${round}`。
+   *  一轮一个桶——归位时只允许**同 run 同轮** 的 assistant 吸收自己那桶。 */
+  let pendingBuckets = new Map();
   let snapCache = null;
   let snapCacheRev = -1;
 
@@ -139,10 +139,12 @@ export function createAssembler() {
       model: model || "",
       key: skey, rev: 1, ord: ++ord, streaming: true,
     };
-    if (pendingReasoning) {           // 落盘历史里先到的思考随节点归位（不丢）
-      node.reasoning = pendingReasoning;
-      pendingReasoning = "";
-      pendingReasoningOrd = 0;
+    /* [5715] 落盘历史里先到的思考随节点归位（不丢）：只取**同 (run, round)** 那一桶。 */
+    const bkey = bucketKey(runId, roundNo);
+    const bkt = pendingBuckets.get(bkey);
+    if (bkt) {
+      node.reasoning = bkt.text;
+      pendingBuckets.delete(bkey);
     }
     byKey.set(skey, node);
     order = order.concat([skey]);
@@ -157,11 +159,29 @@ export function createAssembler() {
     structRev++;
   }
 
-  /** 最近一条 assistant 节点（主模型思考的归属目标）。 */
-  function lastAssistant() {
+  /** 最近一条 assistant 节点（主模型思考的归属目标）。
+   *
+   *  [5715 · 修] 归属**精确到 run + round**（与 live 路径的 ``stream:{run}:{round}``
+   *  同源）。原实现只按「最近一条 assistant」找，**既不限 run 也不限轮**：
+   *   · 跨 run：后一个 run 的 thinking 挂到前一个 run 的消息上（实测长链 run 的
+   *     247 条思考全挂到 21:26 那条老消息下）⇒ 刷新后那整段思考位置全错、丢失；
+   *   · 同 run 跨轮：第 1 轮的思考并到第 2 轮的回复上（实测：第 1 轮思考整个消失）。
+   *  ⇒ 根子是 **disk 路径没有「每轮一个 assistant 节点」的概念**，与 live 不同源。
+   *  现在 disk 路径也每轮落一条 assistant 节点（后端 ``_land_round_reply``），
+   *  这里就能按 (run, round) 精确归位。
+   *
+   *  口径缺失（老数据没有 run_id 或 round）时退回「同 run 最近一条」，保持既有行为。 */
+  function lastAssistant(runId, round) {
+    const hasRound = round !== undefined && round !== null && round !== "";
     for (let i = order.length - 1; i >= 0; i--) {
       const n = byKey.get(order[i]);
-      if (n && n.kind === "assistant") return n;
+      if (!n || n.kind !== "assistant") continue;
+      if (runId && n.run_id && n.run_id !== runId) continue;   // 跨 run 不认
+      if (hasRound && n.round !== undefined && n.round !== null && n.round !== ""
+          && Number(n.round) === Number(round)) {
+        return n;                                            // 同 run 同 round：精确命中
+      }
+      if (runId && n.run_id === runId && !hasRound) return n; // 老数据：无 round ⇒ 退回
     }
     return null;
   }
@@ -196,52 +216,69 @@ export function createAssembler() {
     return seats.members[key];
   }
 
-  function appendReasoning(text) {
+  function appendReasoning(text, runId, round) {
     if (!text) return;
-    const target = lastAssistant();
+    const target = lastAssistant(runId, round);
     if (target) {
       target.reasoning = (target.reasoning || "") + text;
       target.rev++;
     } else {
-      pendingReasoning += text;
-      if (!pendingReasoningOrd) pendingReasoningOrd = ord + 1;
+      /* [5715] 按 (run, round) 分桶暂存：归位时只允许**同 run 同轮** 的 assistant
+         吸收（原来是一个字符串 ⇒ 轮 1 的思考被轮 2 的回复吸收，跨轮串）。 */
+      const key = bucketKey(runId, round);
+      const cur = pendingBuckets.get(key);
+      pendingBuckets.set(key, {
+        text: (cur ? cur.text : "") + text,
+        ord: cur ? cur.ord : (ord + 1),
+      });
     }
   }
 
-  /** 该轮收口：思考若始终无人认领，落一条兜底节点（不丢文本）。 */
-  function flushPendingReasoning() {
-    if (!pendingReasoning) return;
-    if (!lastAssistant()) {
-      const tailKey = order[order.length - 1];
-      const tail = tailKey ? byKey.get(tailKey) : null;
-      const seq = tail ? tail.seq : 0;
-      const ns = (tail && tail.ns) || "disk";
+  /** (run, round) 分桶键。round 缺失时用空串（老数据按「同 run 最近一条」兼容）。 */
+  function bucketKey(runId, round) {
+    const r = (round === undefined || round === null) ? "" : String(round);
+    return String(runId || "") + "|" + r;
+  }
+
+  /** 该轮收口：思考若始终无人认领，落一条兜底节点（不丢文本）。**每个残余桶一条**。 */
+  function flushPendingReasoning(runId, round) {
+    if (!pendingBuckets.size) return;
+    const tailKey = order[order.length - 1];
+    const tail = tailKey ? byKey.get(tailKey) : null;
+    const seq = tail ? tail.seq : 0;
+    const ns = (tail && tail.ns) || "disk";
+    for (const b of pendingBuckets.values()) {
       const node = {
-        seq, ns, type: "reasoning", kind: "sys", round: tail ? tail.round : 0, run_id: "",
-        data: { text: pendingReasoning, orphan: true }, model: "",
-        key: String(ns) + ":orphan:" + toInt(seq, 0),
+        seq, ns, type: "reasoning", kind: "sys", round: tail ? tail.round : 0, run_id: runId || "",
+        data: { text: b.text, orphan: true }, model: "",
+        key: String(ns) + ":orphan:" + toInt(seq, 0) + ":" + toInt(b.ord, 0),
         rev: 1,
-        ord: pendingReasoningOrd || ((tail ? tail.ord : 0) + 0.5),
+        ord: b.ord,
       };
       if (!byKey.has(node.key)) { byKey.set(node.key, node); order = order.concat([node.key]); }
-      resort();
     }
-    pendingReasoning = "";
-    pendingReasoningOrd = 0;
+    pendingBuckets = new Map();
+    resort();
   }
 
-  /** tool_result 的配对目标：tool_call_id 精确优先，其次最近未闭合调用行。 */
-  function toolTargetOf(d) {
+  /** tool_result 的配对目标：tool_call_id 精确优先，其次最近未闭合调用行。
+   *  [5715] 限定**同一个 run**（原来不限 ⇒ 后一个 run 的 result 配到前一个 run 的
+   *  call 上 ⇒ 工具与内容张冠李戴，刷新后读不出「谁调了什么、结果是什么」）。 */
+  function toolTargetOf(d, runId) {
     const id = d && (d.tool_call_id || d.call_id);
     if (id) {
       for (let i = order.length - 1; i >= 0; i--) {
         const n = byKey.get(order[i]);
-        if (n && n.kind === "tool" && n.call && (n.call.tool_call_id || n.call.call_id) === id) return n;
+        if (!n || n.kind !== "tool" || !n.call) continue;
+        if (runId && n.run_id && n.run_id !== runId) continue;   // 跨 run 不认
+        if ((n.call.tool_call_id || n.call.call_id) === id) return n;
       }
     }
     for (let i = order.length - 1; i >= 0; i--) {
       const n = byKey.get(order[i]);
-      if (n && n.kind === "tool" && !n.closed) return n;
+      if (!n || n.kind !== "tool" || n.closed) continue;
+      if (runId && n.run_id && n.run_id !== runId) continue;   // 跨 run 不认
+      return n;
     }
     return null;
   }
@@ -253,8 +290,7 @@ export function createAssembler() {
     const keep = new Set(keepKeys);
     for (const k of Array.from(byKey.keys())) if (!keep.has(k)) byKey.delete(k);
     order = keepKeys;
-    pendingReasoning = "";
-    pendingReasoningOrd = 0;
+    pendingBuckets = new Map();
     structRev++;
   }
 
@@ -315,6 +351,40 @@ export function createAssembler() {
     };
 
     if (kind === "user" || kind === "assistant" || kind === "cardmsg") {
+      /* [5715] **disk 路径与 live 路径同构**：assistant 节点键一律用
+         `stream:{run_id}:{round}`（不再用 `keyOf(ns, seq, kind)`）。
+         live 路径本来就是这个键（content_chunk 建节点、assistant_text 定稿同节点）⇒
+         落盘历史用同一个键，两条路径的节点**完全可互换**：
+           · 轮首落一条（正文空）⇒ 建节点，位置＝轮首（工具之前）；
+           · 轮末落一条（正文全）⇒ 定稿同节点，位置不变、内容更新；
+           · 该轮的思考按 (run, round) 桶归到这个节点上 ⇒ 思考在工具**之前**，
+             与活体完全一致。
+         老数据没有「轮首那条」⇒ 走下面的定稿分支找不到节点 ⇒ 退回原 keyOf 路径
+         （老记录照常渲染，位置＝轮末——保持既有行为，不回归）。 */
+      if (kind === "assistant" && !isLocal) {
+        const skey = "stream:" + (runId || "?") + ":" + toInt(rec.round, 0);
+        const sn = byKey.get(skey);
+        if (sn) {
+          // 同 run+round 已建节点 ⇒ 定稿（内容优先，text 兜底）
+          sn.streaming = false;
+          sn.seq = seq;
+          sn.ns = ns;
+          sn.type = type;
+          sn.data = Object.assign({}, data, { text: (sn.data && sn.data.text) || "" });
+          sn.model = modelOf(rec, data) || sn.model || "";
+          if (rec.ts) sn.ts = String(rec.ts);
+          sn.rev++;
+          return sn;
+        }
+        // 轮首那条：建节点，键＝stream:{run}:{round}（与 live 同键）
+        base.key = skey;
+        base.data = Object.assign({}, data, { text: (data && data.text) || "" });
+        const node = push(Object.assign({}, base));
+        const bkey = bucketKey(node.run_id || runId, node.round);
+        const bkt = pendingBuckets.get(bkey);
+        if (bkt) { node.reasoning = bkt.text; node.rev++; pendingBuckets.delete(bkey); }
+        return node;
+      }
       if (kind === "user") {
         // 轮界：上一轮的兜底思考先落位
         flushPendingReasoning();
@@ -334,24 +404,9 @@ export function createAssembler() {
           return n;
         }
       }
-      /* [5702 · C-1] 落盘 assistant_text 到达：同一 run+round 的流式节点**就地定稿**，
-         不另起一条（否则同一轮会出现「流式一份 + 落盘一份」双份文本）。
-         `data.content` 优先于 `data.text` 渲染；text 保留作兜底（content 为空时）。 */
-      if (kind === "assistant" && !isLocal) {
-        const skey = "stream:" + (runId || "?") + ":" + toInt(rec.round, 0);
-        const sn = byKey.get(skey);
-        if (sn && sn.streaming) {
-          sn.streaming = false;
-          sn.seq = seq;
-          sn.ns = ns;
-          sn.type = type;
-          sn.data = Object.assign({}, data, { text: (sn.data && sn.data.text) || "" });
-          sn.model = modelOf(rec, data) || sn.model || "";
-          if (rec.ts) sn.ts = String(rec.ts);
-          sn.rev++;
-          return sn;
-        }
-      }
+      /* [5702 · C-1] 落盘 assistant_text 的**就地定稿**已并入上面那段
+         （[5715] disk 与 live 同键、同定稿语义）；此处保留 push 路径，
+         供**老数据**（没有「轮首那条」⇒ 上面找不到同键节点）走原 keyOf 键。 */
       const node = push(Object.assign({}, base));
       if (kind === "user" && isLocal) {
         node.pending = true;
@@ -360,11 +415,16 @@ export function createAssembler() {
       }
       if (kind === "assistant") {
         node.reasoning = "";
-        if (pendingReasoning) {           // pending 思考在此归位（吸收）
-          node.reasoning = pendingReasoning;
+        /* [5715] 只吸收**同 (run, round)** 桶里的思考。
+           原来不限 run 不限轮 ⇒ 长链 run 的思考被前一个 run 的消息认领（实测 247 条
+           全挂到 21:26 那条老消息下）、同 run 内轮 1 的思考被轮 2 的回复吸收
+           ⇒ 刷新后「工具与正文之间那段模型在想什么」整段丢失、位置全错。 */
+        const bkey = bucketKey(node.run_id || runId, node.round !== undefined ? node.round : rec.round);
+        const bkt = pendingBuckets.get(bkey);
+        if (bkt) {
+          node.reasoning = bkt.text;
           node.rev++;
-          pendingReasoning = "";
-          pendingReasoningOrd = 0;
+          pendingBuckets.delete(bkey);
         }
       }
       return node;
@@ -375,7 +435,7 @@ export function createAssembler() {
       if (merge === "call") {
         return push(Object.assign({}, base, { call: data, result: null, closed: false }));
       }
-      const target = toolTargetOf(data);
+      const target = toolTargetOf(data, runId);
       if (target) {
         target.result = data;
         target.closed = true;
@@ -419,21 +479,28 @@ export function createAssembler() {
       }
       /* [5702 · C-1] 主模型思考：**每 run+round 一个节点**（思考-only 的轮也建），
          不能再用「最近一条 assistant」（跨轮串）也不能只靠 pending
-         （否则思考-only 的轮会把思考并到下一轮）。 */
-      if (ns === "live") {
-        const sn = streamNode(runId, toInt(rec.round, 0), seq, ns, modelOf(rec, data));
+         （否则思考-only 的轮会把思考并到下一轮）。
+         [5715] **disk 与 live 彻底同构**：两条路径都用 ``stream:{run}:{round}`` 这个键
+         建 assistant 节点 ⇒
+           · 节点位置＝思考到达处（工具**之前**）⇒ 与活体逐点一致；
+           · 思考挂在本轮自己的节点上 ⇒ 不会跨 run、不会跨轮串；
+           · 该轮后续的 assistant_text 事件**定稿**同一个节点（内容更新、位置不变）。
+         老数据（round 缺失/为 0，多轮挤同一键）仍走 pending 兜底，不回归。 */
+      const roundNo = toInt(rec.round, 0);
+      if (ns === "live" || roundNo > 0) {
+        const sn = streamNode(runId, roundNo, seq, ns, modelOf(rec, data));
         sn.reasoning = (sn.reasoning || "") + text;
         sn.rev++;
         return sn;
       }
       const sn = byKey.get("stream:" + (runId || "?") + ":" + toInt(rec.round, 0));
       if (sn) { sn.reasoning = (sn.reasoning || "") + text; sn.rev++; return sn; }
-      appendReasoning(text);                    // 落盘历史：并入最近一条 assistant
+      appendReasoning(text, runId, toInt(rec.round, 0));  // 落盘历史：并入**同 run 同轮**的 assistant
       return null;
     }
 
     const node = push(Object.assign({}, base)); // chain / sys / injection
-    if (type === "done" || type === "error") flushPendingReasoning();
+    if (type === "done" || type === "error") flushPendingReasoning(runId, toInt(rec.round, 0));
     return node;
   }
 
@@ -444,8 +511,7 @@ export function createAssembler() {
     ord = 0;
     structRev++;
     pendingLocalKey = null;
-    pendingReasoning = "";
-    pendingReasoningOrd = 0;
+    pendingBuckets = new Map();
     snapCache = null;
     snapCacheRev = -1;
     if (Array.isArray(items)) for (const rec of items) applyRecord(rec);

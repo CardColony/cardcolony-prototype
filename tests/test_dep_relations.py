@@ -262,9 +262,11 @@ async def test_b2_isolation_send_card_message_not_reached_by_relations(sandbox):
         wid, "card_002",
         {"target_card_id": "card_003", "msg_type": "msg_ask", "content": "hi"}, cards)
     assert r["error"]["code"] == "denied", r
-    # 机械佐证：发信执行体不读任何线（既不读 links 也不读 relations）
+    # 机械佐证：[5713] 改口径——发信执行体**不读依赖线**（relations 不构成通行证），
+    # 通信线的判定单点收在 policy.check_linked（执行体只调这一个关口）。
     src = inspect.getsource(card_tools._h_send_card_message)
-    assert "relations" not in src and "links" not in src
+    assert "relations" not in src
+    assert "policy.check_linked" in src
 
 
 async def test_b2_unlink_rel_default_and_by_kind(sandbox):
@@ -290,8 +292,15 @@ async def test_b2_unlink_rel_default_and_by_kind(sandbox):
     assert r3["error"]["code"] == "not_found"
 
 
-async def test_b2_link_rel_denied_outside_subtree(sandbox):
-    """硬判据5：link_rel 连子树外的卡 → denied。"""
+async def test_b2_link_rel_no_tree_scope_limit(sandbox):
+    """硬判据5：link_rel 建线**不受 parent 树约束**（平级卡可自主建线）。
+
+    [5713 通道试走 2026-10-20·用户口径「卡间通信有专门的通信线」] 本用例原名
+    ``test_b2_link_rel_denied_outside_subtree``，断言「连子树外 → denied」。
+    该断言属于**旧的树作用域**口径，已被本次改动有意推翻：建线的边界是线本身，
+    平级卡若连不出线，就永远通不了话。故改为：兄弟卡建线放行；
+    target/kind/detail 的校验一律不变（仍是 validation）。
+    """
     wid = (await work_store.create_work("越权剧本"))["work_id"]
     # 根 001 → A(002)、B(003) 兄弟；A 连 B（不在 A 子树内）→ denied
     await card_store.create_card(wid, "A", "用户直接创建",
@@ -301,7 +310,9 @@ async def test_b2_link_rel_denied_outside_subtree(sandbox):
     cards = card_store.iter_card_metas(wid)
     r = await card_tools._h_link_rel(
         wid, "card_002", {"target_id": "card_003", "kind": "依赖", "detail": "x"}, cards)
-    assert r["error"]["code"] == "denied", r
+    assert r.get("ok") is True, r          # [5713] 平级卡建线放行
+    _m = (await card_store.read_card(wid, "card_002"))["meta"]
+    assert [x["target"] for x in _m["relations"]] == ["card_003"]
     # 自身 → validation
     r2 = await card_tools._h_link_rel(
         wid, "card_002", {"target_id": "card_002", "kind": "依赖", "detail": "x"}, cards)

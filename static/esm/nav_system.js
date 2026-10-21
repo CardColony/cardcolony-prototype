@@ -1,14 +1,14 @@
-﻿/* esm/nav_system.js —— 左栏导航系统（状态容器 + 渲染 + 交互 + 通知面板）。
+/* esm/nav_system.js —— 左栏导航系统（状态容器 + 渲染 + 交互 + 通知面板）。
    [阶段1 A1.2 2026-10-17] 自 static/workspace.js 逐字搬运，零行为变更。
    装配：workspace.js 传入 workId / navTree / api / getCurrentCard / open / inspector。
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=39";
-import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=30";
+import { notify } from "./api.js?v=46";
+import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=35";
-import { createNavFind } from "./nav_find.js?v=30";
+import { createNavRenderer } from "./nav_render.js?v=42";
+import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
 
@@ -16,9 +16,14 @@ import { cardInSnapshot } from "./nav_badge.js?v=30";
 let _renderNavImpl = () => {};
 export const RenderNav = () => _renderNavImpl();
 
-export function createNavSystem({ workId, navTree, api, getCurrentCard, open, inspector }) {
+export function createNavSystem({ workId, navTree, api, getCurrentCard, open, inspector,
+                                 onCardsChanged }) {
   const API = api;
   const cur = () => getCurrentCard();  // 搬运段原文的 currentCard（只读）
+  /* [删卡刷新 2026-10-21] 卡数据变了要通知宿主：画布页传 reloadCanvas（就地重建），
+     对话页不传（它靠 renderNav + 路径跳转）。原来删完只 renderNav，画布上那张卡
+     还在原地——用户看着像"没删掉"。 */
+  const cardsChanged = typeof onCardsChanged === "function" ? onCardsChanged : () => {};
   // [惰性新建 2026-10-17] 当前 work_id 改**惰性读**：草稿落库成功后 window.__WORK_ID__
   // 就地更新（画布/对话页写），本模块的跳转/建卡/通知口须随取随新——原 const 捕获在
   // 落库后失准（跳转会退回整页重载、通知口打草稿 id → 404）。INIT_WORK_ID 是创建
@@ -66,8 +71,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     vl: navRenderer.vl,
   });
 
-  async function renderNav() {
-    await navRenderer.refresh();
+  /* opts 透传给渲染器：[切卡不再重拉导航 2026-10-21] 传 { network:false } ⇒ 只按
+     已有快照重画（切卡/换选中走这条），不额外请求 /api/nav ＋ /api/nav/version。 */
+  async function renderNav(opts) {
+    await navRenderer.refresh(opts);
     // [S3/R-29] 展开态还原：S2 refresh 只灌当前 work 的段——其余「prefs 记着开着」的
     // 项目与分支 reload/切回后段缺失（▾ 却无行）。从全量快照零网络补灌后再重切。
     if (restoreOpenSegments()) navRenderer.render();
@@ -113,8 +120,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   function gotoCard(cid, wid, focusChild) {
     if (!cid) return;
     if (wid && wid !== WID()) {
-      // 跨项目：整页跳转，目标 work 页走既有 restoreFromHash 链恢复（V8）
-      window.location.href = "/work/" + wid + "#" + cid;
+      /* [跨项目跳转 2026-10-21 · 修] 原来拼 `/work/{wid}#{cid}`（旧 hash 路由），
+         hash 已退役（选中态在路径里）⇒ 靠 bootRestore / main.js 的旧链接兼容链
+         多跳一次才落地，任何一环没跟上就是"点了没反应"。直接走页面身份路径。 */
+      window.location.href = "/work/" + wid + "/card/" + cid;
       return;
     }
     open(cid).then(() => {
@@ -142,14 +151,24 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     const p = navStore.snapshot.project(wid);
     const card = p && (p.cards || []).find(c => c.card_id === cid);
     const kids = card ? (card.child_count || 0) : 0;
-    const delDisabled = isProject || kids > 0;
+    /* [级联删除 2026-10-21 · 用户令] 有子卡**不再置灰**——删父卡就删整棵子树
+       （后端 cascade，每张进回收站）。只有项目根卡仍不可删（它是项目入口）。 */
+    const delDisabled = isProject;
     // [用户 2026-10-15 ②] 根卡行的「打开 →」「＋卡」两钮已撤（改为与子卡相同的悬停 ⋯＋），
     // 该行 ⋯ 菜单**不加新条目**——用户要的是"取消这两个操作"，不是换个地方再放一个。
     // 项目行删除恒置灰：card_store 拒删根卡（card_id == work_card_id，403 语义），
     // 提前置灰＝把后端既有防护搬到眼前，不是新规矩。画布入口仍在顶栏面包屑首段（根卡名）。
-    const items = [];
-    if (!isProject && wid !== WID()) items.push(`<div class="nav-menu-item" data-act="detail">打开此卡</div>`);
-    items.push(`<div class="nav-menu-item danger${delDisabled ? " disabled" : ""}" data-act="del">删除</div>`);
+    /* [删项目 2026-10-21 · 用户令] 项目行原来只有一条置灰的「删除」（根卡不能删）——
+       等于项目永远删不掉。现在项目行给的是「删除项目」（整目录搬进回收站）。 */
+    /* [根卡名＝项目名 2026-10-21 · 用户令] 项目名没有独立字段可改——它就是根卡名。
+       所以项目行的「重命名」改的就是根卡标题，改完项目名自动跟着变。 */
+    const items = [`<div class="nav-menu-item" data-act="rename">重命名</div>`];
+    if (isProject) {
+      items.push(`<div class="nav-menu-item danger" data-act="delwork">删除项目</div>`);
+    } else {
+      if (wid !== WID()) items.push(`<div class="nav-menu-item" data-act="detail">打开此卡</div>`);
+      items.push(`<div class="nav-menu-item danger${delDisabled ? " disabled" : ""}" data-act="del">删除</div>`);
+    }
     navMenuEl = document.createElement("div");
     navMenuEl.className = "nav-menu";
     navMenuEl.innerHTML = items.join("");
@@ -160,10 +179,19 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     navMenuEl.querySelectorAll(".nav-menu-item").forEach(item => {
       item.onclick = (e) => {
         e.stopPropagation();
-        if (item.classList.contains("disabled")) return;   // 带子卡的卡：删除不可点
+        if (item.classList.contains("disabled")) {
+          /* [删卡可解释 2026-10-21] 原来静默 return ⇒ 用户点了完全没反应，
+             以为按钮坏了。现在说清为什么不能删。 */
+          closeNavMenu();
+          if (isProject) notify("项目根卡不能删（它是这个项目的入口）", "warn");
+          else notify("这张卡还有子卡，先删掉子卡", "warn");
+          return;
+        }
         const act = item.dataset.act;
         closeNavMenu();
+        if (act === "rename") { doRenameCard(wid, cid, card); return; }
         if (act === "del") { doDeleteCard(wid, cid, card); return; }
+        if (act === "delwork") { doDeleteWork(wid, card); return; }
         gotoCard(cid, wid, act === "child");
       };
     });
@@ -173,15 +201,66 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // [定稿] 删卡：确认 → DELETE 端点 → 重拉导航（快照/版本探测同一条既有链，零新机制）
   async function doDeleteCard(wid, cid, card) {
     const title = (card && card.title) || cid;
-    if (!window.confirm(`删除「${title}」？`)) return;
+    const kids = card ? (card.child_count || 0) : 0;
+    /* [级联删除 2026-10-21] 有子卡就一次删整棵子树：确认框必须把「会删掉什么」
+       说清，否则就是骗用户点确认。都进回收站，可逐个恢复。 */
+    const msg = kids > 0
+      ? `删除「${title}」以及它下面的所有子卡？\n\n（全部进回收站，可从回收站逐个恢复）`
+      : `删除「${title}」？\n\n（进回收站，可从回收站恢复）`;
+    if (!window.confirm(msg)) return;
+    let res = null;
     try {
-      await API.deleteCard(wid, cid);
+      res = await API.deleteCard(wid, cid, kids > 0);
     } catch (e) {
       return;   // toast 已由 api.js 处理
     }
-    if (cur() && cur().meta.card_id === cid) {
-      history.replaceState(null, "", location.pathname + location.search);   // 删的是当前卡：摘 hash
+    /* [删根卡＝删项目 2026-10-21] 删的是根卡时后端返回的是「项目删除结果」
+       （带 mode）——整个项目没了，回首页；不能再回 /work/{wid}（那里也没了）。 */
+    if (res && res.mode) {
+      notify("项目已删除（可在 works/_trash 找回）", "success");
+      location.href = "/";
+      return;
     }
+    /* [删卡后去哪 2026-10-21 · 修] 删的是当前卡 ⇒ 路径还指着已删的卡（原来只
+       replaceState 去 hash，而 hash 早就没了 ⇒ 等于什么都没做），页面停在死地址上。
+       现在直接回项目画布页。 */
+    if (navStore.select.is(wid, cid)) {
+      location.href = "/work/" + wid;
+      return;
+    }
+    cardsChanged();          // 画布页：就地重建（否则那张卡还挂在画布上）
+    await renderNav();
+  }
+
+  /* [根卡名＝项目名 2026-10-21] 重命名：改的是卡标题（根卡 ⇒ 项目名跟着变）。
+     原来全系统**没有任何改名入口**，项目名和根卡名还是两个字段，改不动也说不清。 */
+  async function doRenameCard(wid, cid, card) {
+    const cur = String((card && card.title) || "").trim();
+    const next = window.prompt("新名字：", cur);
+    if (next === null) return;
+    const name = String(next).trim();
+    if (!name || name === cur) return;
+    try {
+      await API.patchCard(wid, cid, { title: name }, "用户重命名");
+    } catch (e) {
+      return;   // toast 已由 api.js 处理
+    }
+    await renderNav();          // 重新拉导航：项目名是从根卡派生的，会一起变
+    notify("已改名：" + name, "success");
+  }
+
+  /* [删项目 2026-10-21] 一个「是否删除」弹窗就够——不再要求输入项目名
+     （用户明确：删就删，别搞多余确认）。删法是把整个目录搬进 works/_trash/。 */
+  async function doDeleteWork(wid, card) {
+    const title = String((card && card.title) || "").trim() || wid;
+    if (!window.confirm(`删除项目「${title}」？\n\n（会移到 works/_trash，可找回）`)) return;
+    try {
+      await API.deleteWork(wid);
+    } catch (e) {
+      return;   // toast 已由 api.js 处理
+    }
+    notify(`已删除项目「${title}」（可在 works/_trash 找回）`, "success");
+    if (wid === WID()) { location.href = "/"; return; }   // 删的是当前项目：回首页
     await renderNav();
   }
 
@@ -356,8 +435,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       // 只在「对话态且已打开根卡」时不重复打开——画布态时 cur() 留着旧值，
       // 若按「当前卡==根卡」判会变成死点击（点了没反应），必须同时看视图态。
       // [阶段5 A5.1] 视图态改判页静态标记（body.page-chat），不再读 data-view。
-      const inChat = document.body.classList.contains("page-chat");
-      if (inChat && cur() && cur().meta.card_id === rootCid) return;
+      /* [当前卡单源 2026-10-21] 早退只问一个口：select.is(项目, 卡)。
+         改前这里拼了三个条件（在对话页 且 当前卡存在 且 卡号相同），少比了项目号
+         ——而所有项目的根卡都叫 card_001 ⇒ 点 B 项目被判成"已经在看"，毫无反应。 */
+      if (navStore.select.is(phead.dataset.wid, rootCid)) return;
       gotoCard(rootCid, phead.dataset.wid, false);
       return;
     }

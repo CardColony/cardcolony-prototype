@@ -174,10 +174,17 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
                     block = open_block("tool-call")
                     tool_blocks[wire_index] = block
                     yield BlockStart(index=block.index, block_type="tool-call")
-                if call.get("id") is not None:
+                # [tool_calls 空串覆盖 2026-10-21 · 实测 ark-code-latest]
+                # 首片带 id/name，**后续分片带的是空串**（`{"function":{"arguments":"{",
+                # "name":""}, "id":""}`）。原来写的是「非 None 就覆盖」⇒ 空串把首片的
+                # 真值覆盖掉 ⇒ 工具名变 ""，上层认不出 ⇒ 整个 tool_call 被丢弃。
+                # 现象：模型 `finish_reason=tool_calls` 但我们解析出 0 个调用，
+                # 于是「调一次就断、根本不执行」。注释本来就写着「只取首片」，
+                # 实现与注释不符——这里改成**真值判断**（空串/None 都不覆盖）。
+                if call.get("id"):
                     block.call_id = call["id"]
                 function = call.get("function") or {}
-                if function.get("name") is not None:
+                if function.get("name"):
                     block.name = function["name"]
                 fragment = function.get("arguments") or ""
                 block.text += fragment

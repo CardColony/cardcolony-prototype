@@ -1,0 +1,4 @@
+124x  纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+      e.g. tests.test_context_registry::test_registry_shape
+  1x  真模型实弹须显式 CARDPERM_LIVE=1
+      e.g. tests.test_cardperm_live::test_v7_live_model_read_open_and_write_denied

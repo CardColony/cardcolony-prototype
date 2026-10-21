@@ -62,9 +62,10 @@ function el(tag, cls, html) {
  * @param {object} opts.store        queue-store（getSnapshot/subscribe/updateQueue）
  * @param {() => boolean} opts.isMutable  queueMutable（dsh: subagent===null）
  * @param {() => boolean} opts.isRunning  running（决定 steer 键可用）
+ * @param {(row:{id:string,text:string|null})=>void} [opts.onSteer] [5715] 真插话回调
  * @param {(level:string,text:string)=>void} opts.notify
  */
-export function createQueueDock({ mount, store, isMutable, isRunning, notify }) {
+export function createQueueDock({ mount, store, isMutable, isRunning, onSteer, notify }) {
   const root = el("div", "flow-queue-dock");
   root.setAttribute("data-queue-dock", "");
   const panel = el("div", "flow-queue-panel");
@@ -170,6 +171,9 @@ export function createQueueDock({ mount, store, isMutable, isRunning, notify }) 
         });
         remove.disabled = busy !== null;
         const steer = actionBtn(T.steer, ICON.send, () => {
+          /* [5715] 真插话：宿主给了 onSteer（后端已开轮内投递窗口）⇒ 真的把这条
+             送进正在跑的这一轮；没有 onSteer ⇒ 退回旧语义（提到队首）。 */
+          if (typeof onSteer === "function") { onSteer(row); return; }
           void applyAction(row.id, { kind: "steer" }, T.steerFailed);
         });
         if (!isRunning()) steer.title = T.steerUnavailable;

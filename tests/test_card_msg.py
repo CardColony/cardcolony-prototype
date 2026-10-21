@@ -283,6 +283,20 @@ async def _make_tree(wid):
     # 按生产形态铺会话（建卡即铺；测试直建卡不带）——见 conftest.prime_card_session
     for _cid in ("card_002", "card_003", "card_004"):
         prime_card_session(wid, _cid)
+    # [5713 通道试走 2026-10-20] **卡间通信走专门的通信线**——发信的前提从
+    #   "同一棵任务树" 改为 "两卡之间已有通信线（links）"。故夹具负责铺线：
+    #   只铺本文件用例真正要发信的那几条，**刻意不铺 002→004**（越权例要用无线）。
+    #   注意：update_card({"links": ...}) 是**整块覆盖**，同一源卡的多条线必须
+    #   一次写完（分两次写会互相冲掉——首版就在这踩过一脚）。
+    _wires = {
+        "card_001": ["card_002", "card_004"],   # 根 → 子卡A（T6）／根 → 兄弟卡B（K4）
+        "card_002": ["card_003"],               # 子卡A → 孙卡A1（主线）
+    }
+    for _src, _dsts in _wires.items():
+        await card_store.update_card(
+            wid, _src,
+            {"links": [{"target": _d, "type": "关联"} for _d in _dsts]},
+            f"测试夹具：建立通信线 {_src} → {'/'.join(_dsts)}")
     return card_store.iter_card_metas(wid)
 
 
@@ -357,7 +371,7 @@ async def test_t4_eight_positive_negative_cases(sandbox):
     async def pending_count(cid):
         return len(await card_db.list_pending(wid, cid))
 
-    # 1 合法通过（a→a1 子树内）
+    # 1 合法通过（a→a1，**已有通信线**；线由 _make_tree 夹具铺好）
     r = await h(wid, "card_002", {"target_card_id": "card_003",
                                   "msg_type": "msg_ask", "content": "三号位情况如何？"}, cards)
     assert "msg_id" in r
@@ -389,10 +403,15 @@ async def test_t4_eight_positive_negative_cases(sandbox):
     r = await h(wid, "card_002", {"target_card_id": "card_003",
                                   "msg_type": "msg_ask", "content": "   "}, cards)
     assert r["error"]["code"] == "invalid"
-    # 8 越权（兄弟卡，不在子树内）→ denied
+    # 8 越权（与本卡之间没有通信线）→ denied
     r = await h(wid, "card_002", {"target_card_id": "card_004",
                                   "msg_type": "msg_ask", "content": "x"}, cards)
     assert r["error"]["code"] == "denied"
+    # 8b [5713] 线的边界取代树的边界：**子树内**但没线的也拒（card_003 → 无线的卡）
+    r8b = await h(wid, "card_003", {"target_card_id": "card_004",
+                                    "msg_type": "msg_ask", "content": "x"}, cards)
+    assert r8b["error"]["code"] == "denied", r8b
+    assert "通信线" in r8b["error"]["message"]      # 错误文案要指路（先建线）
     # 失败例全部不落档：card_004 收件箱零条；card_003 仍只有第 1 步那一条
     assert await pending_count("card_004") == 0
     assert await pending_count("card_003") == n3
@@ -662,6 +681,7 @@ async def test_k4_sse_frame_on_receiver_key(sandbox):
 import asyncio  # noqa: E402
 import inspect  # noqa: E402
 
+import async_settle  # noqa: E402
 from src.api import message_runner, model_service, routes  # noqa: E402
 
 
@@ -706,13 +726,11 @@ async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
     pending = await card_db.list_pending(wid, "card_003")
     assert any(p["msg_id"] == sent_msg_id for p in pending)
     # A 再跑一个回合：收口 schedule 发现 TRIGGERS 有信 → 异步调起 B
+    _pre = async_settle.snapshot()
     await routes._run_message(wid, "card_002", "继续")
-    # 让出事件循环等 B 的回合跑完
-    for _ in range(60):
-        await asyncio.sleep(0.05)
-        blocks_b = await session_facade.read(wid, "card_003")
-        if any(b.get("actor") == "assistant" for b in blocks_b):
-            break
+    # [5713 · M2] 等这批异步调起自己收口（等待期间**不读**会话文件：读句柄会让
+    # 收口落块的 tmp→os.replace 撞 WinError 5），收口后读一次。
+    await async_settle.settle(since=_pre)
     blocks_b = await session_facade.read(wid, "card_003")
     actors = [b.get("actor") for b in blocks_b]
     # [卡片底座第一步 2026-10-14] 新消息**不进对话块**——B 档案无 card: 块
@@ -725,9 +743,16 @@ async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
         assert b.get("actor") != "human", "激励文不得落成 user/human 块"
         assert "请阅读这些消息并处理" not in str(b.get("content", ""))
     # 回合收口：该信在收件箱里置 consumed（**不删行**）
-    rows = await card_db.run_read(
-        wid, lambda c: [dict(x) for x in c.execute(
-            "SELECT * FROM inbox WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
+    # [5713 · M2] 「assistant 块已出现」≠「收口已把信置 consumed」——旧写法等到
+    # 前者就断言后者（典型「轮询谓词≠断言目标」）。现改为**等断言本身的不变量**
+    # 成立：纯查库、不碰会话文件，故不会再造出上面那种文件争用。
+    async def _consumed_row():
+        _r = await card_db.run_read(
+            wid, lambda c: [dict(x) for x in c.execute(
+                "SELECT * FROM inbox WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
+        return _r if (_r and _r[0]["status"] == "consumed" and _r[0]["consumed_at"]) else None
+
+    rows = await async_settle.wait_until(_consumed_row, what="信在收件箱内置 consumed")
     assert rows and rows[0]["status"] == "consumed" and rows[0]["consumed_at"]
     # A 的档案：assistant 回执正常（A 链路本身无恙）
     blocks_a = await session_facade.read(wid, "card_002")

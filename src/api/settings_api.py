@@ -160,6 +160,10 @@ async def get_models() -> JSONResponse:
         "models": enriched,
         "bindings": raw.get("bindings") or {},
         "system": raw.get("system") or {},
+        # [新建项目 2026-10-21] 分层配置与「新项目默认」：草稿态徽标显示后者
+        # （depth_0 首选），不再拿 system.default_model 那个兜底值糊在用户脸上。
+        "tiers": raw.get("tiers") or {},
+        "new_project_default": model_config.new_project_default(),
         "simple": raw.get("simple") or {},
         "retry_grading": raw.get("retry_grading") or {},
         "roles": roles.list_roles(),
@@ -731,10 +735,11 @@ async def list_model_overrides() -> JSONResponse:
     for w in work_store.list_works():
         wid = str(w.get("work_id") or "")
         raw = model_override.load(wid)
-        work_has = bool(raw.get("work"))
+        # [模型配置表 2026-10-21] 表里没有「work 级」：有行＝这个项目有配置
         cards = raw.get("cards")
         card_ids = [cid for cid, ov in (cards or {}).items()
                     if isinstance(ov, dict) and ov]
+        work_has = bool(card_ids)
         works.append({
             "work_id": wid,
             "title": w.get("title") or wid,
@@ -752,10 +757,17 @@ async def get_model_override_effective(work_id: str, card_id: str = "") -> JSONR
         return missing
     cid = card_id or None
     # 解析当前生效的默认模型与各角色绑定
-    default = model_config.default_model(work_id=work_id, card_id=cid)
+    # [模型配置表 2026-10-21] 无卡＝项目的"表里一致的那个主模型"（项目默认）；
+    # 表里各行不一致 ⇒ 没有单一项目默认，回落策略值。
+    if cid:
+        default = model_config.default_model(work_id=work_id, card_id=cid)
+    else:
+        from ..storage import model_override as _mo
+        default = (_mo.project_default(work_id)
+                   or model_config.default_model(work_id=work_id))
     role_eff: dict[str, Any] = {}
     for rid in roles.list_roles():
-        val = model_config.resolve(rid, work_id=work_id, card_id=cid)
+        val = model_config.pick_one(rid, work_id=work_id, card_id=cid)
         if val is not None:
             role_eff[rid] = val
     extra = {"card_id": card_id} if cid else {}
@@ -767,18 +779,30 @@ async def get_model_override_effective(work_id: str, card_id: str = "") -> JSONR
 
 
 @router.get("/model-overrides/{work_id}")
-async def get_model_override(work_id: str) -> JSONResponse:
-    """读某项目的覆盖（work 级 + 各卡）。"""
+async def get_model_override(work_id: str, card_id: str = "") -> JSONResponse:
+    """读某项目的模型配置表（每张卡一行）。
+
+    [按需补行 2026-10-21] 带 card_id 时，若表里还没有这张卡，按默认策略补一行再返回。
+    老项目（表还没建）否则永远读不到值 ⇒ 前端一路回落到 system.default_model
+    （minimax），用户看到的就是「怎么永远锁在 minimax」。只补**这一张**（O(1)），
+    不遍历全项目。
+    """
     missing = _override_work_or_404(work_id)
     if missing is not None:
         return missing
     from ..storage import model_override
-    raw = model_override.load(work_id)
+    if card_id:
+        try:
+            model_config.seed_card(work_id, card_id)   # 缺行就按默认策略补（幂等）
+        except Exception as exc:  # noqa: BLE001 补行失败不影响读
+            logger.warning("补模型配置行失败 work=%s card=%s: %s", work_id, card_id, exc)
+    # [模型配置表 2026-10-21] 内部是「一张表存结果」；对外仍用旧形状（前端零改动）
+    view = model_override.table_summary(work_id)
     return JSONResponse({
         "ok": True, "work_id": work_id,
-        "work": raw.get("work") or None,
-        "types": raw.get("types") or {},       # 项目自己的按卡类型配置表（新建时从全局模板拷贝）
-        "cards": raw.get("cards") or {},
+        "work": view["work"],
+        "types": view["types"],                # 项目的按卡类型策略快照（建卡时用）
+        "cards": view["cards"],
     })
 
 
@@ -800,11 +824,20 @@ async def put_model_override(work_id: str, request: Request) -> JSONResponse:
     errors = model_config.validate_override(cleaned)
     if errors:
         return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
-    saved = model_override.update_work(work_id, cleaned)
+    # [模型配置表 2026-10-21] 项目级改模型＝改表里每一行（人手改过的行不动）
+    # 返回 affected：这次真正改了几张卡——前端据此明确提示「本项目 N 张卡」，
+    # 避免用户以为只改了当前这张（他报的「切了一张卡结果全变了」正是这个歧义）。
+    def _models_now() -> dict:
+        return {cid: (v or {}).get("default_model")
+                for cid, v in model_override.table_summary(work_id)["cards"].items()}
+    before = _models_now()
+    model_override.update_work(work_id, cleaned)
+    after = _models_now()
+    affected = sum(1 for cid in after if before.get(cid) != after[cid])
+    view = model_override.table_summary(work_id)
     return JSONResponse({
         "ok": True, "work_id": work_id,
-        "work": saved.get("work") or None,
-        "cards": saved.get("cards") or {},
+        "work": view["work"], "cards": view["cards"], "affected": affected,
     })
 
 
@@ -840,11 +873,12 @@ async def put_model_override_card(work_id: str, card_id: str, request: Request) 
     errors = model_config.validate_override(cleaned)
     if errors:
         return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
-    saved = model_override.update_card(work_id, card_id, cleaned)
+    # [模型配置表 2026-10-21] 改卡片模型＝改表里那一行（记 manual）
+    model_override.update_card(work_id, card_id, cleaned)
+    view = model_override.table_summary(work_id)
     return JSONResponse({
         "ok": True, "work_id": work_id, "card_id": card_id,
-        "work": saved.get("work") or None,
-        "cards": saved.get("cards") or {},
+        "work": view["work"], "cards": view["cards"],
     })
 
 

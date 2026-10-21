@@ -33,7 +33,7 @@ from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, role_room, serial_gate, simple_service, text_tool_rescue, tool_fold
+from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, role_room, serial_gate, simple_service, steer, text_tool_rescue, tool_fold
 
 logger = logging.getLogger("api.routes")
 
@@ -628,12 +628,35 @@ async def restore_work_card(work_id: str, card_id: str):
     return result
 
 
+@router.delete("/works/{work_id}")
+async def delete_work_api(work_id: str):
+    """删项目：整个项目目录移到 works/_trash/（可恢复）。
+
+    [删项目 2026-10-21 · 用户令] 原来 work 层根本没有删除函数，根卡又不让删 ⇒
+    用户建错的项目永远删不掉。现在提供删除；确认只在前端做一个「是否删除」弹窗，
+    后端不再要求输入项目名（用户明确：删就删，别搞多余确认）。
+    """
+    w = work_store.read_work(work_id)
+    if w is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    result = work_store.delete_work(work_id)
+    if "error" in result:
+        return _err(500, result["error"])
+    return result
+
+
 @router.delete("/works/{work_id}/cards/{card_id}")
-async def delete_work_card(work_id: str, card_id: str):
+async def delete_work_card(work_id: str, card_id: str, cascade: bool = False):
+    """删卡。``?cascade=true`` ⇒ 连同整棵子树一起删（每张都进回收站，可逐个恢复）。
+
+    [级联删除 2026-10-21 · 用户令] 原来有子卡就 400 拒删，把复杂度推给用户
+    （手动一层层删）。删父卡的正确语义就是删掉它和它下面的一切。
+    项目根卡仍然拒删（它是项目入口，删了项目就空了）。
+    """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     try:
-        result = await card_store.delete_card(work_id, card_id)
+        result = await card_store.delete_card(work_id, card_id, cascade=cascade)
     except CardNotFoundError:
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
@@ -877,7 +900,8 @@ async def post_work_rule_commit(work_id: str, req: RuleCommitRequest):
 
 
 @router.get("/works/{work_id}/cards/{card_id}/timeline")
-async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from")):
+async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from"),
+                            tail: int = Query(0), before: int = Query(0)):
     """[消息底座能力对齐 · 件4] 恢复唯一入口（C3/C4）：合并时序表。
 
     items＝消息块（user_message/assistant_text/msg_*）＋过程事件（tool_call/
@@ -896,12 +920,22 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
-    items = event_log.timeline(work_id, card_id, from_seq=frm)
+    items = event_log.timeline(work_id, card_id, from_seq=frm, tail=tail, before=before)
+    # [对话流分页 2026-10-20] has_earlier＝「这次是窗口请求，且拿满了窗口」
+    # ⇒ 更早还有。前端据此决定「往上翻」是否还有东西可拉。
+    # 全量请求（tail=0）恒 false：已经拿到全部。
+    try:
+        _tail_n = int(tail or 0)
+    except (TypeError, ValueError):
+        _tail_n = 0
+    has_earlier = bool(_tail_n) and len(items) >= _tail_n
     return {
         "work_id": work_id,
         "card_id": card_id,
         "items": items,
         "last_seq": items[-1]["seq"] if items else 0,
+        "first_seq": items[0]["seq"] if items else 0,
+        "has_earlier": has_earlier,
     }
 
 
@@ -909,9 +943,10 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
 # 查询参数给定，缺省转发 work_001（与既有 /api/cards/{id}/… 兼容层同口径）。
 @router.get("/card/{card_id}/timeline")
 async def get_card_timeline_compat(card_id: str, work_id: str = DEFAULT_WORK_ID,
-                                   frm: int = Query(0, alias="from")):
+                                   frm: int = Query(0, alias="from"),
+                                   tail: int = Query(0), before: int = Query(0)):
     # frm 显式传：直接调路由函数时 Query(...) 默认值是 Query 对象而非 0
-    return await get_card_timeline(work_id, card_id, frm)
+    return await get_card_timeline(work_id, card_id, frm, tail, before)
 
 
 @router.get("/works/{work_id}/cards/{card_id}/stream")
@@ -956,6 +991,56 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
                 await it.aclose()
             except Exception:  # noqa: BLE001 关闭期异常不阻断
                 pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/works/{work_id}/events")
+async def stream_work_events(work_id: str):
+    """[画布 5711] **工作级** SSE：画布页订阅，卡片一变就推。
+
+    为什么需要这个端点（实测复现的断点，不是推测）：
+      既有 SSE 是**单卡**的（`/cards/{cid}/stream`，订阅表 key=(work,card)），
+      没有任何"整个项目变了"的广播；而画布上卡片的结论／待裁定数／work_state／
+      最新对话**只在 renderAll 全量重建才更新**，renderAll 又只由用户自己的
+      操作触发 ⇒ 后台真实发生的变化（模型写卡、裁定被记下、自动模式推进）
+      **到不了画布** ⇒ 用户必须手动刷新页面才看得到。
+
+    本端点补上这一层：写卡路径（`card_store`）发一帧 `card_changed`
+    （带那张卡的最新投影摘要），画布页订阅后**就地换掉那一张卡的节点**——
+    毫秒级、零闪烁、不重建整棵树。
+
+    契约：
+      帧形态与 `/cards/{cid}/stream` 同构：``{"seq","ts","type","data"}``；
+      type  当前只有 ``card_changed``；
+      data  ``{card_id, kind: created|updated|deleted, card: {...}|None}``；
+      无存量重放（工作级事件描述的是"变化"，重放会让前端误判"刚变过"）；
+      15s 心跳（注释帧），与既有两条流同口径。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+
+    async def gen():
+        """带心跳的 SSE 生成器。
+
+        订阅队列空转时每 15s 发一个注释帧（`: ping`），防止中间代理掐断长连——
+        与既有两条流（/stream、/tokens）同口径。
+        """
+        yield "retry: 3000\n\n"
+        it = event_stream.subscribe_work(work_id).__aiter__()
+        while True:
+            try:
+                evt = await asyncio.wait_for(it.__anext__(), timeout=15.0)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+                continue
+            except StopAsyncIteration:
+                break
+            yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         gen(),
@@ -1197,6 +1282,28 @@ async def post_work_stop(work_id: str, card_id: str):
                      work_id, card_id, exc)
         auto_res = {"paused": [], "lock_released": False}
     return {**res, **auto_res}
+
+
+@router.post("/works/{work_id}/cards/{card_id}/steer")
+async def post_card_steer(work_id: str, card_id: str, req: dict):
+    """**插话**：把一条用户消息投递进**正在跑**的这一轮。
+
+    [5715] 此前 UI 上有"插话"（Cmd/Ctrl+Enter、`T.steerQueue` 文案），
+    但实现是空的——运行中只弹一句「轮结束后依序发出」，用户等的是整轮跑完（1–8 分钟）。
+    本端点是真投递：``steer.request_steer`` 置位 ⇒ ``message_runner`` 下一次模型
+    调用前插进轮槽 ⇒ 模型下一轮就能看到。
+
+    - **无在途回合** ⇒ ``applied:false``（前端回退成普通发送，不假装成功）；
+    - 已在途 ⇒ ``applied:true``，消息进队列，下一轮模型调用生效。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    text = str((req or {}).get("content") or (req or {}).get("text") or "")
+    res = await steer.request_steer(work_id, card_id, text)
+    # [5715] 「没插上」也返回 200：端点成功执行了「尝试插话」这个动作，只是这一轮
+    # 赶不上了（无在途回合）。用 409 会让前端弹一个错误提示——那不是错误，
+    # 是正常的时序，处置是「回退成排队」而不是「报错」。
+    return res
 
 
 @router.post("/works/{work_id}/cards/{card_id}/auto/resume")
@@ -1666,9 +1773,27 @@ async def _run_message(work_id: str, card_id: str, content: str,
         failed = True
         raise
     finally:
+        # [5715 · 性能] 回合结束**必落盘**缓冲里的思考：思考是按轮累积、到轮界
+        # 才合并落一条的；万一这一轮**没走到任何轮界事件**（异常/中断/直退），
+        # 缓冲里的思考会**随回合一起丢掉**（刷新后看不到这段思考）。
+        # ⇒ 收口时无条件 flush 一次（空缓冲是 no-op）。
+        event_stream.flush_pending_reasoning(work_id, card_id)
+        # [运行态单一真相源 2026-10-21] 回合终止的**权威帧**：成功 / 异常 / 取消
+        # 三条路径都必然发一次。前端运行态据此收口——此前只认 done/error，而它们由
+        # compose_delivery / handle_error 发，若链路在两者之前抛（context 组装、
+        # 交付拼接等），就一个终止信号都没有 ⇒ 前端永远停在「运行中」，只能刷新。
+        # 位置必须在 notify_idle **之前**：idle 会起下一轮，下一轮的 run_start 必须
+        # 晚于本帧到达前端，否则前端可能先起后收（顺序反了）。
+        try:
+            event_stream.emit(work_id, card_id, "turn_end", {"outcome": outcome})
+        except Exception as exc:  # noqa: BLE001 帧发不出去不影响回合返回
+            logger.warning("[flow] turn_end 帧发送失败 card=%s: %s", card_id, exc)
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
         control.discard_stop(work_id, card_id)
+        # [5715] 插话残留清扫（对齐 control.discard_stop 的纪律）：回合窗口外
+        # 的插话一律作废——不能留给下一回合，否则那句话会凭空出现在下一轮。
+        steer.discard_steer(work_id, card_id)
         session_facade.turn_release(work_id, card_id, turn_owner)
         event_stream.reset_stream_context(_stream_ctx_token)
         if failed:

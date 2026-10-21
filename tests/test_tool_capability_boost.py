@@ -60,7 +60,10 @@ def _schema(name: str) -> dict:
 def test_seven_new_tools_registered():
     assert SEVEN <= set(card_tools.TOOL_REGISTRY)
     # tc-8 基线 32 件（22 字面量 ＋ 4 文件 ＋ 6 思维链）＋ 本批 7 件 ＝ 39 件
-    assert len(card_tools.TOOL_REGISTRY) == 50  # [角色机制 5710] 38→42（+4 件角色工具）
+    # [角色机制 5710] 38→42（+4 件角色工具）
+    # [换父 2026-10-20 · 5718] +1（reparent_card）⇒ 52。
+    # ★ 本条在 5718 之前就已陈旧（断言 50、实际 51）——一并对齐，恢复指纹作用。
+    assert len(card_tools.TOOL_REGISTRY) == 52
 
 
 def test_seven_schemas_have_required_params():

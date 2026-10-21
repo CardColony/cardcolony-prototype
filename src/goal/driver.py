@@ -222,10 +222,20 @@ async def _spawn_goal_round(work_id: str, card_id: str, content: str,
     """起一轮：与人类回合同一条链路，只多了 ``source``（原版 ``Agent.followup``）。"""
     from ..api import message_runner
     from ..api import routes as _routes
+    from ..storage import event_log
 
+    # [轮次脱钩 2026-10-20] 先把这一轮记进事件流（几十字节），再起轮。
+    # 会话里**一个字都不写**：目标/目标态/已跑轮次已由 system prompt 的
+    # 「自动模式·目标」区每轮渲染，塞进会话只会逐轮累积同一份文案
+    # （实测 card_005 41 轮 = 30KB 重复目标）。
+    await event_log.append(work_id, card_id, {
+        "run_id": "", "round": 0, "type": "goal_round",
+        "data": {"goalId": source.goal_id, "revision": source.revision,
+                 "round": source.round},
+    })
     message_runner._spawn_tracked(  # noqa: SLF001 与 auto_driver 同一条起轮路径
         _routes._run_message(work_id, card_id, content, None,
-                             append_user=True, source=source.as_json())
+                             append_user=False, source=source.as_json())
     )
     print(f"[goal] 续轮已排队 card={card_id} round={source.round}", flush=True)
 

@@ -536,6 +536,28 @@ def _l1_type_spec(registry: dict[str, Any], project_class: str,
     return None
 
 
+def _type_can_have_children(card_type: str) -> bool:
+    """该卡类型是否允许有子卡（读注册表的 ``can_have_children``）。
+
+    [换父 2026-10-20] 为什么现在才读它：这个字段从卡片分类基座起就在注册表里，
+    但**代码零消费**——「工具卡不可有子卡」「角色卡不可有子卡」是两处各自硬编码
+    的（见 _write_gate 闸内）。换父把「谁能当父卡」从**建卡时的固定事实**变成
+    **运行时可变的判定**，硬编码两处不够用（coder/rule 同样是 false），且每加一种
+    类型就要再补一处。改为读注册表，与「注册表是校验源」同口径。
+
+    降级：注册表缺失 / 类型查不到 ⇒ 放行（不因校验源缺失阻断写路径，与
+    load_type_registry 的降级约定一致）。**只拒绝明确写 false 的类型。**
+    """
+    registry = load_type_registry()
+    if not registry:
+        return True
+    for vocab in (registry.get("l1_vocabularies") or {}).values():
+        for t in ((vocab or {}).get("types") or []):
+            if isinstance(t, dict) and str(t.get("code", "")) == card_type:
+                return bool(t.get("can_have_children"))
+    return True
+
+
 def _l1_all_codes(registry: dict[str, Any]) -> set[str]:
     """注册表内所有已定义 L1 词表 code 的并集。"""
     out: set[str] = set()
@@ -789,6 +811,40 @@ def _is_descendant(work_id: str, candidate: str, ancestor: str) -> bool:
 
 
 # ============================================================
+# [画布 5711] 工作级事件广播钩子（写卡 → 通知画布）
+# ============================================================
+# 为什么需要：画布上卡片的结论/待裁定数/work_state/最新对话**只在 renderAll
+# 全量重建才更新**，而 renderAll 只由用户自己的操作触发 ⇒ 后台真实发生的变化
+# （模型写卡、裁定被记下、自动模式推进）**到不了画布** ⇒ 必须手动刷新页面。
+#
+# 机制：写卡成功后发一帧工作级 `card_changed`（带这张卡的最新投影摘要），
+# 画布页订阅后**就地换掉那一张卡的节点**——毫秒级、零闪烁、不重建整棵树。
+#
+# 三条纪律：
+#   ① 延迟 import（storage 不在导入期依赖 api，避免循环依赖）——既有先例：
+#      本文件里 `from ..api import scheduler as _sched` 就是这么做的；
+#   ② 零阻断：广播失败绝不影响写卡本身（展示层铁则）；
+#   ③ 载荷取自**刚刚重建过的画布投影**（canvas_store.card_projection），
+#      与 /canvas 端点返回的字段**完全同源**——前端拿到的 card 形状与首屏一致。
+async def _notify_card_changed(work_id: str, card_id: str, kind: str) -> None:
+    """写卡后广播工作级事件。零阻断。"""
+    try:
+        from ..api import event_stream
+        from . import canvas_store
+        card = None
+        if kind != "deleted":
+            card = canvas_store.card_projection(work_id, card_id)
+        event_stream.emit_work(work_id, "card_changed", {
+            "card_id": card_id,
+            "kind": kind,       # created | updated | deleted
+            "card": card,       # 单卡投影摘要（deleted 时为 None）
+        })
+    except Exception as exc:  # noqa: BLE001 零阻断：广播失败不影响写卡
+        logger.warning("工作级事件广播失败（不阻断写卡）work=%s card=%s: %s",
+                       work_id, card_id, exc)
+
+
+# ============================================================
 # 公开 API
 # ============================================================
 
@@ -966,6 +1022,19 @@ async def create_card(
         # safe-delete 守卫杀掉。改为**入调度队列**：卡照建、目标照设、照样会跑，
         # 只是从「瞬间全点火」变成「按容量排队点火」。行为不变，只改同时性。
         # 调度器不可用（脚本/测试/未启动）⇒ 退回直点，保证旧路径逐字可用。
+        # [画布 5711] 广播工作级事件：画布页据此**就地**长出新卡/更新那张卡，
+        # 不必等用户手动刷新（也不必整棵重建）。放在 update_cache 之后 ⇒ 载荷
+        # 里的投影摘要是**重建过的新值**。
+        await _notify_card_changed(work_id, card_id, "created")
+        # [模型配置表 2026-10-21 · 用户裁定] 建卡即把默认策略的结果**填进项目表**。
+        # 运行时只读表、不做仲裁 ⇒ 必须在这一刻把行写好（否则第一次取模型才补，
+        # 期间表与实际不同步）。填表失败不阻断建卡（回落首次取用时自愈）。
+        try:
+            from ..api import model_config as _mc
+            _mc.seed_card(work_id, card_id)
+        except Exception as exc:  # noqa: BLE001 填表失败不阻断建卡
+            logger.warning("[模型表] 建卡填行失败 work=%s card=%s: %s",
+                           work_id, card_id, exc)
         if skip_kick:
             return await read_card(work_id, card_id)
         try:
@@ -1099,17 +1168,64 @@ async def update_card(
         except CardTypeValueError as exc:
             return {"error": str(exc)}
 
-    # parent 变更防环
+    # parent 变更：防环 + 结构校验
+    # [换父 2026-10-20] 人与模型共用此门：画布拖拽走 PATCH、模型走 reparent_card
+    # 工具，两条路都落到这里，判据只有一份（动作只有一个权威解释）。
     if "parent" in updates and not is_root_card:
-        new_parent = updates["parent"]
+        new_parent = str(updates.get("parent") or "")
+        # 空串归一成项目根卡：原实现让空串原样落库 ⇒ 卡片成了「parent 键存在但为
+        # 空」的悬空节点——不在任何人的 childMap 下，只有 /canvas 全量才看得见。
+        # 归一后语义与建卡 _normalize_parent 一致：空＝挂回顶层。
+        if not new_parent:
+            new_parent = work_store.work_card_id_of(work_id)
+        updates["parent"] = new_parent
         if new_parent == card_id:
             return {"error": "parent 不能指向自身或后代"}
-        if new_parent and new_parent != "" and _is_descendant(work_id, new_parent, card_id):
+        if _is_descendant(work_id, new_parent, card_id):
             return {"error": "parent 不能指向自身或后代"}
-        # parent 卡必须存在，否则回退 work_card_id
-        if new_parent and new_parent != "" and not card_exists(work_id, new_parent):
-            new_parent = work_store.work_card_id_of(work_id)
-            updates["parent"] = new_parent
+        # [换父 2026-10-20] 原实现「父卡不存在 ⇒ 静默回退 work_card_id」：一次写错
+        # 父卡 id 就把卡**悄悄挂到根卡下**，调用方还拿到成功。改为如实报错。
+        if not card_exists(work_id, new_parent):
+            return {"error": f"目标父卡不存在: {new_parent}"}
+        # 角色卡离树（parent 恒空）：被移动方与目标父卡两头都拦，避免把离树观察者
+        # 重新变回树节点——它的同步/订阅语义会与父子授权语义搅在一起。
+        if cur_type == "role":
+            return {"error": "角色卡离树，不能挂到别的卡下"}
+        parent_type = str((_meta_of(work_id, new_parent) or {}).get("card_type") or "")
+        if not _type_can_have_children(parent_type):
+            return {"error": f"「{parent_type}」类型不可有子卡，不能作为父卡"}
+        # [换父 2026-10-20 · 数据从属] 带 owner 的卡（工具卡/编程卡）换父后，若原
+        # owner 已不在**新祖先链**上，owner 跟着改到新父链上最近的合法 owner 卡。
+        #
+        # 为什么必须改：owner 的语义是「谁调用它、产物归谁」（注册表闸3），它与
+        # parent 是两条边。只改 parent 不改 owner ⇒ 出现「挂在 A 下、产物归 B」，
+        # 那张卡的数据归属与树形归属互相矛盾——正是「换父不能只换视觉」的那一半。
+        # 子树内其它卡的 owner 不动：工具卡的 owner 恒等于建它的卡（＝当时的
+        # parent），子树整体迁移后它仍在子树内、仍是祖先，链没断。
+        cur_owner = str(cur_meta.get("owner_card_id") or "")
+        if cur_owner:
+            _metas = iter_card_metas(work_id)
+            _chain: set[str] = set()
+            _node, _guard = new_parent, 0
+            while _node and _guard < 1000:
+                _chain.add(_node)
+                _guard += 1
+                _node = str((_metas.get(_node) or {}).get("parent") or "")
+            if cur_owner not in _chain:
+                _new_owner, _node, _guard = "", new_parent, 0
+                while _node and _guard < 1000:
+                    if str((_metas.get(_node) or {}).get("card_type") or "") \
+                            in TOOL_CARD_OWNER_TYPES:
+                        _new_owner = _node
+                        break
+                    _guard += 1
+                    _node = str((_metas.get(_node) or {}).get("parent") or "")
+                if _new_owner:
+                    updates["owner_card_id"] = _new_owner
+                    # 留痕写明「归属卡也变了」——事后对账时，owner 被改这件事
+                    # 必须能从 card_history 看出来，否则等于静默改数据归属。
+                    history_note = (f"{history_note}"
+                                    f"（归属卡 {cur_owner} → {_new_owner}）")
 
     # [自动模式 2026-10-17 · 回灌 5700 块0.2] **开关动作**：auto_mode 变化 ⇒
     # 权限随之重算。0→1：perms 重算为全开集（policy.auto_perms()，专用
@@ -1178,6 +1294,24 @@ async def update_card(
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
     await data_snapshot.schedule(f"[snapshot][{work_id}] update: {card_id}")
+    # [画布 5711] 广播工作级事件：画布页就地更新这张卡（结论/待裁定/状态/最新对话），
+    # 不用手动刷新，也不用整棵重建。
+    await _notify_card_changed(work_id, card_id, "updated")
+
+    # [role-sync 2026-10-20 · card_004] body block changed => notify roles watching
+    # this card. Old gap: sync was only hooked to work-card turn completion
+    # (role_room.after_turn), so (1) PATCHing status_block/rulings never reached
+    # roles, and (2) cards without session blocks have no turns at all, so a role
+    # could only ever see their first snapshot. Hooked after the single write gate
+    # => covers both tool path and HTTP path. Never breaks the write.
+    if "status_block" in updates or "rulings" in updates:
+        try:
+            from ..api import role_room as _role_room
+
+            _role_room.schedule_card_changed(work_id, card_id, updates)
+        except Exception as exc:  # noqa: BLE001 role notify must not break card write
+            logger.warning("[role] card-change notify failed work=%s card=%s: %s",
+                           work_id, card_id, exc)
 
     # [phase8.3] "剧本卡切确定→派生目标卡"触发已废除；
     # 目标卡改为创建剧本时即派生（见 derive_ending / work_store.create_work）。
@@ -1185,8 +1319,14 @@ async def update_card(
     return await read_card(work_id, card_id)
 
 
-async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
+async def delete_card(work_id: str, card_id: str,
+                      cascade: bool = False) -> dict[str, Any]:
     """[用户删卡 2026-10-02] 删除卡片（库行 ＋ 修改历史）＋对应 session 文件。
+
+    [级联删除 2026-10-21 · 用户令] ``cascade=True``：连同整棵子树一起删
+    （每张都各自进回收站，可逐个恢复）。用户质问「凭什么有子卡就删不了」——
+    原来直接把复杂度推给用户（先手动删子卡），这是错的取舍：
+    删父卡的正确语义就是删掉它和它下面的一切，而不是拒绝。
 
     结构性防护（机械判据，不判内容）：
     - 剧本不存在 → {"error": ...}
@@ -1200,19 +1340,33 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     if work_store.read_work(work_id) is None:
         return {"error": f"剧本不存在: {work_id}"}
     if card_id == work_store.work_card_id_of(work_id):
-        raise CardDeleteDeniedError(f"剧本根卡不可删除: {card_id}")
+        # [删根卡＝删项目 2026-10-21 · 用户令] 根卡不是「一张卡」，它是项目入口——
+        # 删它没有第二种合理语义。整项目搬进 works/_trash/（可找回），
+        # 不再拒删（原来「根卡不能删」+「work 不可删除」= 项目永远删不掉）。
+        return work_store.delete_work(work_id)
 
     if not card_exists(work_id, card_id):
         raise CardNotFoundError(f"卡片不存在: {card_id}")
 
-    # 子卡防护：任何卡的 parent 指向 card_id → 拒删
-    for other_id, m in iter_card_metas(work_id).items():
-        if other_id == card_id:
-            continue
-        if m.get("parent") == card_id:
+    # 子卡处理：cascade=True ⇒ 后序删整棵子树（子先父后，每张都走本函数，
+    # 因此每张都进回收站、都删影子/会话）；cascade=False ⇒ 沿用旧防护（拒删）。
+    kids = [oid for oid, m in iter_card_metas(work_id).items()
+            if oid != card_id and m.get("parent") == card_id]
+    if kids:
+        if not cascade:
             raise CardDeleteDeniedError(
-                f"存在子卡 {other_id}，先删子卡或改挂他卡"
+                f"存在子卡 {kids[0]}，先删子卡或改挂他卡"
             )
+        removed: list[str] = []
+        for cid in _subtree_postorder(work_id, card_id):
+            if cid == card_id:
+                continue
+            try:
+                await delete_card(work_id, cid, cascade=True)
+                removed.append(cid)
+            except (CardNotFoundError, CardDeleteDeniedError):
+                continue
+        result_cascade = {"deleted": removed, "cascade": True}
 
     # [T-0007 补丁] 写路径唯一门·delete 闸位（no-op 放行）。
     # 插在所有结构性防护之后、实际删除之前——保证闸位放行后才动数据。
@@ -1272,7 +1426,45 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
     await data_snapshot.schedule(f"[snapshot][{work_id}] delete: {card_id}")
-    return {"ok": True, "deleted": card_id}
+    # [画布 5711] 广播工作级事件：画布页就地摘掉这张卡（不必等用户手动刷新）。
+    await _notify_card_changed(work_id, card_id, "deleted")
+    out = {"ok": True, "deleted": card_id}
+    if "result_cascade" in locals():
+        out["cascade"] = True
+        out["deleted_subtree"] = result_cascade.get("deleted") or []
+    return out
+
+
+def _subtree_postorder(work_id: str, root: str) -> list[str]:
+    """root 子树的后序（子先父后，含 root 本身）。迭代实现，防深递归。
+
+    级联删除必须后序：先删叶子，再删父——否则每删一张都会被「有子卡」挡住。
+    """
+    children: dict[str, list[str]] = {}
+    try:
+        metas = iter_card_metas(work_id)
+    except Exception:  # noqa: BLE001 读不到 ⇒ 只删自己
+        return [root]
+    for cid, m in metas.items():
+        p = str((m or {}).get("parent") or "")
+        if p:
+            children.setdefault(p, []).append(cid)
+    out: list[str] = []
+    seen: set[str] = set()
+    stack: list[tuple[str, bool]] = [(root, False)]
+    while stack:
+        cid, expanded = stack.pop()
+        if expanded:
+            out.append(cid)
+            continue
+        if cid in seen:
+            continue
+        seen.add(cid)
+        stack.append((cid, True))
+        for ch in children.get(cid, []):
+            if ch not in seen:
+                stack.append((ch, False))
+    return out
 
 
 async def list_trash(work_id: str) -> list[dict[str, Any]]:
@@ -1350,6 +1542,8 @@ async def restore_card(work_id: str, card_id: str) -> dict[str, Any]:
 
     await canvas_store.update_cache(work_id)
     await data_snapshot.schedule(f"[snapshot][{work_id}] restore: {card_id}")
+    # [画布 5711] 广播工作级事件：画布页就地长回这张卡。
+    await _notify_card_changed(work_id, card_id, "created")
     return {"ok": True, "restored": card_id}
 
 

@@ -1,0 +1,1446 @@
+{
+ "meta": {
+  "worktree": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+  "branch": "5713",
+  "head": "5bfc537449b3521cc85bdc10b34eb1c3c5a5a8a4",
+  "generated_at": "2026-10-20T18:34:12",
+  "python": "3.11.9",
+  "tracked_files": 925,
+  "dirty": [
+   "?? _flake_ev/",
+   "?? verify/5713/boundary_scan.py",
+   "?? verify/5713/boundary_scan_7cdc6ac.json",
+   "?? verify/5713/evidence_channel_walk_18c5e7c.json"
+  ]
+ },
+ "C1_abs_path_literals": {
+  "code": [
+   {
+    "file": "scripts/reconcile_session_facade.py",
+    "line": 35,
+    "literal": "D:\\AI_station\\底座差距研究",
+    "text": "DEFAULT_REPORT_DIR = r\"D:\\AI_station\\底座差距研究\""
+   },
+   {
+    "file": "src/api/card_tools.py",
+    "line": 2905,
+    "literal": "D:\\\\AI_station",
+    "text": "\"path\": {\"type\": \"string\", \"description\": \"要删除的文件路径（相对 D:\\\\AI_station 或绝对）\"}"
+   },
+   {
+    "file": "src/api/card_tools.py",
+    "line": 2920,
+    "literal": "D:\\\\AI_station",
+    "text": "\"src\": {\"type\": \"string\", \"description\": \"源文件路径（相对 D:\\\\AI_station 或绝对）\"},"
+   },
+   {
+    "file": "src/api/card_tools.py",
+    "line": 2936,
+    "literal": "D:\\\\AI_station",
+    "text": "\"path\": {\"type\": \"string\", \"description\": \"要改名的文件路径（相对 D:\\\\AI_station 或绝对）\"},"
+   },
+   {
+    "file": "src/api/card_tools.py",
+    "line": 2952,
+    "literal": "D:\\\\AI_station",
+    "text": "\"path\": {\"type\": \"string\", \"description\": \"文件路径（相对 D:\\\\AI_station 或绝对）\"},"
+   },
+   {
+    "file": "src/api/file_tools.py",
+    "line": 38,
+    "literal": "D:\\AI_station",
+    "text": "BASE_DIR = Path(r\"D:\\AI_station\")"
+   },
+   {
+    "file": "src/api/file_tools.py",
+    "line": 558,
+    "literal": "D:\\\\AI_station",
+    "text": "\"path\": {\"type\": \"string\", \"description\": \"目录路径（相对 D:\\\\AI_station 或绝对）；缺省列 trading-workspace\"},"
+   },
+   {
+    "file": "src/api/file_tools.py",
+    "line": 570,
+    "literal": "D:\\\\AI_station",
+    "text": "\"path\": {\"type\": \"string\", \"description\": \"文件路径（相对 D:\\\\AI_station 或绝对）\"},"
+   },
+   {
+    "file": "src/api/file_tools.py",
+    "line": 600,
+    "literal": "D:\\\\AI_station",
+    "text": "\"path\": {\"type\": \"string\", \"description\": \"文件路径（相对 D:\\\\AI_station 或绝对）\"},"
+   },
+   {
+    "file": "src/api/prompts.py",
+    "line": 156,
+    "literal": "D:\\\\AI_station",
+    "text": "_SEC_TOOLS = '## 工具\\n\\n- read_card(card_id)：读取指定卡（标题、父卡、通信线与依赖关联线、正文）。只能读取你有权访问的卡。\\n- read_memory(card_id?, from_seq?, to_seq?)：下探指定卡（缺省当前卡）的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】），可按块序号锚点区间取回。记忆条目"
+   },
+   {
+    "file": "src/api/prompts.py",
+    "line": 169,
+    "literal": "D:\\\\AI_station",
+    "text": "_SEC_TOOLS_AUTO = '## 工具\\n\\n- read_card(card_id)：读取指定卡（标题、父卡、通信线与依赖关联线、正文）。只能读取你有权访问的卡。\\n- read_memory(card_id?, from_seq?, to_seq?)：下探指定卡（缺省当前卡）的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】），可按块序号锚点区间取回"
+   }
+  ],
+  "doc_or_comment": [
+   {
+    "file": "restore_from_snapshot.py",
+    "line": 13,
+    "literal": "D:\\\\AI_station\\\\推演agent_backups\\\\pre_restore_",
+    "text": "- 恢复前先把「当前 works/」整体备份到 D:\\\\AI_station\\\\推演agent_backups\\\\pre_restore_<时间戳>\\\\"
+   },
+   {
+    "file": "scripts/reconcile_session_facade.py",
+    "line": 17,
+    "literal": "D:\\\\AI_station\\\\底座差距研究\\\\）。",
+    "text": "产物：stdout 明细 ＋ markdown 报告落盘（默认 D:\\\\AI_station\\\\底座差距研究\\\\）。"
+   },
+   {
+    "file": "src/api/card_tools.py",
+    "line": 342,
+    "literal": "D:\\\\AI_station）冻结进",
+    "text": "（D:\\\\AI_station）冻结进 schema（实测：该描述对 ALLOWED_ROOTS"
+   },
+   {
+    "file": "src/api/card_tools.py",
+    "line": 2071,
+    "literal": "D:\\\\AI_station。",
+    "text": "测试期命令跑进真实 D:\\\\AI_station。"
+   },
+   {
+    "file": "src/api/card_tools.py",
+    "line": 2986,
+    "literal": "D:\\AI_station",
+    "text": "# D:\\AI_station ⇒ 与本函数 docstring 宣称的「call-time 现取」不符。"
+   },
+   {
+    "file": "src/api/file_tools.py",
+    "line": 5,
+    "literal": "D:\\\\AI_station，全部子目录可读可写；",
+    "text": "边界＝全盘（用户 2026-10-03 11:23 裁定）：基准目录 D:\\\\AI_station，全部子目录可读可写；"
+   },
+   {
+    "file": "src/api/file_tools.py",
+    "line": 6,
+    "literal": "D:\\\\AI_station",
+    "text": "路径规范化后校验前缀，只防 ../ 逃逸（越出 D:\\\\AI_station 仍拒）。"
+   },
+   {
+    "file": "src/api/file_tools.py",
+    "line": 49,
+    "literal": "D:\\AI_station。两者各错一半。",
+    "text": "放宽到整个 D:\\AI_station。两者各错一半。"
+   },
+   {
+    "file": "src/api/file_tools.py",
+    "line": 102,
+    "literal": "D:\\AI_station\\推演agent」）。全仓无任何裁定写过",
+    "text": "# list_files 报「越权：无权访问 D:\\AI_station\\推演agent」）。全仓无任何裁定写过"
+   },
+   {
+    "file": "src/storage/data_snapshot.py",
+    "line": 4,
+    "literal": "D:\\\\AI_station\\\\推演agent_data_snapshots\\\\），",
+    "text": "与 git 仓库物理分离（D:\\\\AI_station\\\\推演agent_data_snapshots\\\\），"
+   },
+   {
+    "file": "src/thinkchain/__init__.py",
+    "line": 21,
+    "literal": "E:\\\\_bak_thinkchain_removal_20261017\\\\code_snapshot.tar.gz`",
+    "text": "- E 盘改前全树备份：`E:\\\\_bak_thinkchain_removal_20261017\\\\code_snapshot.tar.gz`"
+   }
+  ]
+ },
+ "C2_root_constants": [
+  {
+   "file": "backfill_shadows.py",
+   "line": 20,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parent",
+   "kind": "file_derived"
+  },
+  {
+   "file": "main.py",
+   "line": 18,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parent",
+   "kind": "file_derived"
+  },
+  {
+   "file": "restore_from_snapshot.py",
+   "line": 25,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parent",
+   "kind": "file_derived"
+  },
+  {
+   "file": "restore_from_snapshot.py",
+   "line": 27,
+   "name": "SNAPSHOT_ROOT",
+   "value": "BASE_DIR.parent / '推演agent_data_snapshots'",
+   "kind": "other"
+  },
+  {
+   "file": "scripts/backfill_event_ts.py",
+   "line": 33,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "scripts/migrate_card_types.py",
+   "line": 26,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "scripts/migrate_card_types.py",
+   "line": 35,
+   "name": "WORKS_DIR",
+   "value": "BASE_DIR / 'works'",
+   "kind": "other"
+  },
+  {
+   "file": "scripts/preflight_shadow_offline.py",
+   "line": 14,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 26,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 31,
+   "name": "DATA_ROOT",
+   "value": "Path(os.environ.get('ECO_5707_DATA') or BASE_DIR / '_data5707').resolve()",
+   "kind": "other"
+  },
+  {
+   "file": "scripts/run_test_instance_5701.py",
+   "line": 23,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "scripts/seed_scale_work.py",
+   "line": 25,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "scripts/verify_shadow_acceptance.py",
+   "line": 13,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "scripts/verify_shadow_read.py",
+   "line": 15,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/api/card_msg.py",
+   "line": 27,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/api/context_assembler.py",
+   "line": 23,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/api/env_store.py",
+   "line": 33,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/api/env_store.py",
+   "line": 35,
+   "name": "BACKUP_DIR",
+   "value": "BASE_DIR / '_backups'",
+   "kind": "other"
+  },
+  {
+   "file": "src/api/file_tools.py",
+   "line": 38,
+   "name": "BASE_DIR",
+   "value": "Path('D:\\\\AI_station')",
+   "kind": "abs"
+  },
+  {
+   "file": "src/api/file_tools.py",
+   "line": 39,
+   "name": "ALLOWED_ROOTS",
+   "value": "(BASE_DIR.resolve(),)",
+   "kind": "other"
+  },
+  {
+   "file": "src/api/file_tools.py",
+   "line": 82,
+   "name": "BACKUP_DIR",
+   "value": "BASE_DIR / '推演agent' / '_backups'",
+   "kind": "other"
+  },
+  {
+   "file": "src/api/model_config.py",
+   "line": 42,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/api/prompt_log.py",
+   "line": 16,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/api/prompt_log.py",
+   "line": 17,
+   "name": "LOGS_DIR",
+   "value": "BASE_DIR / 'logs'",
+   "kind": "other"
+  },
+  {
+   "file": "src/api/serial_gate.py",
+   "line": 35,
+   "name": "EXEC_MODE_PATH",
+   "value": "Path(__file__).resolve().parents[2] / 'config' / 'exec_mode.json'",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/api/settings_api.py",
+   "line": 57,
+   "name": "BACKUP_DIR",
+   "value": "env_store.BACKUP_DIR",
+   "kind": "other"
+  },
+  {
+   "file": "src/permissions/policy.py",
+   "line": 148,
+   "name": "PERMISSIONS_PATH",
+   "value": "Path(__file__).resolve().parents[2] / 'config' / 'permissions.json'",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/roles.py",
+   "line": 23,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[1]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/activity.py",
+   "line": 27,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/activity.py",
+   "line": 28,
+   "name": "WORKS_DIR",
+   "value": "BASE_DIR / 'works'",
+   "kind": "other"
+  },
+  {
+   "file": "src/storage/canvas_store.py",
+   "line": 65,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/canvas_store.py",
+   "line": 66,
+   "name": "WORKS_DIR",
+   "value": "BASE_DIR / 'works'",
+   "kind": "other"
+  },
+  {
+   "file": "src/storage/canvas_store.py",
+   "line": 70,
+   "name": "PROJECT_NAME",
+   "value": "'推演agent'",
+   "kind": "other"
+  },
+  {
+   "file": "src/storage/card_store.py",
+   "line": 36,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/card_store.py",
+   "line": 37,
+   "name": "WORKS_DIR",
+   "value": "BASE_DIR / 'works'",
+   "kind": "other"
+  },
+  {
+   "file": "src/storage/data_snapshot.py",
+   "line": 28,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/data_snapshot.py",
+   "line": 34,
+   "name": "SNAPSHOT_ROOT",
+   "value": "BASE_DIR.parent / f'{BASE_DIR.name}_data_snapshots'",
+   "kind": "other"
+  },
+  {
+   "file": "src/storage/data_snapshot.py",
+   "line": 44,
+   "name": "_FINGERPRINT_FILE",
+   "value": "BASE_DIR / '.snapshot_fingerprints.json'",
+   "kind": "other"
+  },
+  {
+   "file": "src/storage/git_auto_commit.py",
+   "line": 12,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/manuscript_store.py",
+   "line": 23,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/manuscript_store.py",
+   "line": 24,
+   "name": "WORKS_DIR",
+   "value": "BASE_DIR / 'works'",
+   "kind": "other"
+  },
+  {
+   "file": "src/storage/session_store.py",
+   "line": 32,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/session_store.py",
+   "line": 33,
+   "name": "WORKS_DIR",
+   "value": "BASE_DIR / 'works'",
+   "kind": "other"
+  },
+  {
+   "file": "src/storage/work_store.py",
+   "line": 21,
+   "name": "BASE_DIR",
+   "value": "Path(__file__).resolve().parents[2]",
+   "kind": "file_derived"
+  },
+  {
+   "file": "src/storage/work_store.py",
+   "line": 22,
+   "name": "WORKS_DIR",
+   "value": "BASE_DIR / 'works'",
+   "kind": "other"
+  },
+  {
+   "file": "src/toolcard/script_loader.py",
+   "line": 49,
+   "name": "SCRIPTS_ROOT",
+   "value": "Path(__file__).resolve().parents[2] / 'works' / 'toolcard_scripts'",
+   "kind": "file_derived"
+  }
+ ],
+ "C3_cross_module_writes": [
+  {
+   "file": "scripts/check_goal_domain.py",
+   "line": 129,
+   "target": "driver._spawn_goal_round",
+   "module": "src.goal.driver"
+  },
+  {
+   "file": "scripts/crash_drill_session.py",
+   "line": 62,
+   "target": "session_store.WORKS_DIR",
+   "module": "src.storage.session_store"
+  },
+  {
+   "file": "scripts/migrate_sessions_v1_to_v2.py",
+   "line": 61,
+   "target": "session_store.WORKS_DIR",
+   "module": "src.storage.session_store"
+  },
+  {
+   "file": "scripts/preflight_shadow_offline.py",
+   "line": 33,
+   "target": "card_store.WORKS_DIR",
+   "module": "src.storage.card_store"
+  },
+  {
+   "file": "scripts/preflight_shadow_offline.py",
+   "line": 34,
+   "target": "work_store.WORKS_DIR",
+   "module": "src.storage.work_store"
+  },
+  {
+   "file": "scripts/preflight_shadow_offline.py",
+   "line": 35,
+   "target": "canvas_store.WORKS_DIR",
+   "module": "src.storage.canvas_store"
+  },
+  {
+   "file": "scripts/preflight_shadow_offline.py",
+   "line": 36,
+   "target": "data_snapshot.SNAPSHOT_ROOT",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/preflight_shadow_offline.py",
+   "line": 106,
+   "target": "shadow_store.derive_shadow",
+   "module": "src.storage.shadow_store"
+  },
+  {
+   "file": "scripts/preflight_shadow_offline.py",
+   "line": 113,
+   "target": "shadow_store.derive_shadow",
+   "module": "src.storage.shadow_store"
+  },
+  {
+   "file": "scripts/reconcile_session_facade.py",
+   "line": 82,
+   "target": "session_store.WORKS_DIR",
+   "module": "src.storage.session_store"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 57,
+   "target": "data_snapshot.BASE_DIR",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 58,
+   "target": "data_snapshot.SNAPSHOT_ROOT",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 59,
+   "target": "data_snapshot._FINGERPRINT_FILE",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 61,
+   "target": "prompt_log.LOGS_DIR",
+   "module": "src.api.prompt_log"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 64,
+   "target": "file_tools.BASE_DIR",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 65,
+   "target": "file_tools.ALLOWED_ROOTS",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/run_canvas_5707.py",
+   "line": 66,
+   "target": "file_tools.BACKUP_DIR",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/run_test_instance_5701.py",
+   "line": 81,
+   "target": "data_snapshot.BASE_DIR",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/run_test_instance_5701.py",
+   "line": 82,
+   "target": "data_snapshot.SNAPSHOT_ROOT",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/run_test_instance_5701.py",
+   "line": 83,
+   "target": "data_snapshot._FINGERPRINT_FILE",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/run_test_instance_5701.py",
+   "line": 84,
+   "target": "prompt_log.LOGS_DIR",
+   "module": "src.api.prompt_log"
+  },
+  {
+   "file": "scripts/run_test_instance_5701.py",
+   "line": 85,
+   "target": "file_tools.BASE_DIR",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/run_test_instance_5701.py",
+   "line": 86,
+   "target": "file_tools.ALLOWED_ROOTS",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/run_test_instance_5701.py",
+   "line": 89,
+   "target": "file_tools.BACKUP_DIR",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/s4_compare_snapshot.py",
+   "line": 52,
+   "target": "data_snapshot.BASE_DIR",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/s4_compare_snapshot.py",
+   "line": 53,
+   "target": "data_snapshot.SNAPSHOT_ROOT",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/s4_compare_snapshot.py",
+   "line": 54,
+   "target": "data_snapshot._FINGERPRINT_FILE",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/s4_compare_snapshot.py",
+   "line": 55,
+   "target": "prompt_log.LOGS_DIR",
+   "module": "src.api.prompt_log"
+  },
+  {
+   "file": "scripts/s4_compare_snapshot.py",
+   "line": 56,
+   "target": "file_tools.BASE_DIR",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/s4_compare_snapshot.py",
+   "line": 57,
+   "target": "file_tools.ALLOWED_ROOTS",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/s4_compare_snapshot.py",
+   "line": 59,
+   "target": "file_tools.BACKUP_DIR",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/s4_compare_snapshot.py",
+   "line": 60,
+   "target": "model_service._gateway",
+   "module": "src.api.model_service"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 56,
+   "target": "data_snapshot.BASE_DIR",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 57,
+   "target": "data_snapshot.SNAPSHOT_ROOT",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 58,
+   "target": "data_snapshot._FINGERPRINT_FILE",
+   "module": "src.storage.data_snapshot"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 59,
+   "target": "prompt_log.LOGS_DIR",
+   "module": "src.api.prompt_log"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 60,
+   "target": "file_tools.BASE_DIR",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 61,
+   "target": "file_tools.ALLOWED_ROOTS",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 63,
+   "target": "file_tools.BACKUP_DIR",
+   "module": "src.api.file_tools"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 64,
+   "target": "model_service._gateway",
+   "module": "src.api.model_service"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 137,
+   "target": "triage_mod._call_model",
+   "module": "src.thinkchain.triage"
+  },
+  {
+   "file": "scripts/s5_crash_drill.py",
+   "line": 145,
+   "target": "model_service._gateway",
+   "module": "src.api.model_service"
+  }
+ ],
+ "C4_imports": {
+  "statements": 689,
+  "lazy_statements": 207,
+  "modules": 90,
+  "package_edges": [
+   {
+    "from": "(root)",
+    "to": "api",
+    "n": 6
+   },
+   {
+    "from": "(root)",
+    "to": "goal",
+    "n": 1
+   },
+   {
+    "from": "(root)",
+    "to": "storage",
+    "n": 5
+   },
+   {
+    "from": "(root)",
+    "to": "thinkchain",
+    "n": 1
+   },
+   {
+    "from": "api",
+    "to": "(root)",
+    "n": 1
+   },
+   {
+    "from": "api",
+    "to": "goal",
+    "n": 12
+   },
+   {
+    "from": "api",
+    "to": "model_gateway",
+    "n": 2
+   },
+   {
+    "from": "api",
+    "to": "permissions",
+    "n": 3
+   },
+   {
+    "from": "api",
+    "to": "storage",
+    "n": 91
+   },
+   {
+    "from": "api",
+    "to": "thinkchain",
+    "n": 11
+   },
+   {
+    "from": "api",
+    "to": "toolcard",
+    "n": 5
+   },
+   {
+    "from": "check_goal_domain",
+    "to": "goal",
+    "n": 10
+   },
+   {
+    "from": "check_goal_domain",
+    "to": "storage",
+    "n": 9
+   },
+   {
+    "from": "compact_reasoning_events",
+    "to": "storage",
+    "n": 2
+   },
+   {
+    "from": "crash_drill_session",
+    "to": "storage",
+    "n": 2
+   },
+   {
+    "from": "goal",
+    "to": "api",
+    "n": 4
+   },
+   {
+    "from": "goal",
+    "to": "permissions",
+    "n": 1
+   },
+   {
+    "from": "goal",
+    "to": "storage",
+    "n": 6
+   },
+   {
+    "from": "migrate_card_types",
+    "to": "storage",
+    "n": 8
+   },
+   {
+    "from": "migrate_cards_add_position_columns",
+    "to": "storage",
+    "n": 1
+   },
+   {
+    "from": "migrate_cards_to_sqlite",
+    "to": "storage",
+    "n": 7
+   },
+   {
+    "from": "migrate_sessions_to_events",
+    "to": "api",
+    "n": 1
+   },
+   {
+    "from": "migrate_sessions_to_events",
+    "to": "storage",
+    "n": 4
+   },
+   {
+    "from": "migrate_sessions_v1_to_v2",
+    "to": "storage",
+    "n": 2
+   },
+   {
+    "from": "model_gateway",
+    "to": "infra",
+    "n": 4
+   },
+   {
+    "from": "permissions",
+    "to": "api",
+    "n": 1
+   },
+   {
+    "from": "preflight_shadow_offline",
+    "to": "api",
+    "n": 1
+   },
+   {
+    "from": "preflight_shadow_offline",
+    "to": "storage",
+    "n": 5
+   },
+   {
+    "from": "reconcile_session_facade",
+    "to": "storage",
+    "n": 2
+   },
+   {
+    "from": "refresh_perms",
+    "to": "permissions",
+    "n": 1
+   },
+   {
+    "from": "refresh_perms",
+    "to": "storage",
+    "n": 1
+   },
+   {
+    "from": "run_canvas_5707",
+    "to": "api",
+    "n": 5
+   },
+   {
+    "from": "run_canvas_5707",
+    "to": "storage",
+    "n": 7
+   },
+   {
+    "from": "run_test_instance_5701",
+    "to": "api",
+    "n": 4
+   },
+   {
+    "from": "run_test_instance_5701",
+    "to": "goal",
+    "n": 1
+   },
+   {
+    "from": "run_test_instance_5701",
+    "to": "storage",
+    "n": 6
+   },
+   {
+    "from": "s4_compare_snapshot",
+    "to": "api",
+    "n": 4
+   },
+   {
+    "from": "s4_compare_snapshot",
+    "to": "storage",
+    "n": 8
+   },
+   {
+    "from": "s5_crash_drill",
+    "to": "api",
+    "n": 6
+   },
+   {
+    "from": "s5_crash_drill",
+    "to": "storage",
+    "n": 8
+   },
+   {
+    "from": "s5_crash_drill",
+    "to": "thinkchain",
+    "n": 3
+   },
+   {
+    "from": "seed_scale_work",
+    "to": "storage",
+    "n": 5
+   },
+   {
+    "from": "storage",
+    "to": "api",
+    "n": 9
+   },
+   {
+    "from": "storage",
+    "to": "permissions",
+    "n": 3
+   },
+   {
+    "from": "thinkchain",
+    "to": "api",
+    "n": 1
+   },
+   {
+    "from": "thinkchain",
+    "to": "permissions",
+    "n": 1
+   },
+   {
+    "from": "thinkchain",
+    "to": "storage",
+    "n": 8
+   },
+   {
+    "from": "toolcard",
+    "to": "storage",
+    "n": 5
+   },
+   {
+    "from": "verify_shadow_acceptance",
+    "to": "api",
+    "n": 1
+   },
+   {
+    "from": "verify_shadow_acceptance",
+    "to": "storage",
+    "n": 1
+   },
+   {
+    "from": "verify_shadow_read",
+    "to": "api",
+    "n": 1
+   },
+   {
+    "from": "verify_shadow_read",
+    "to": "storage",
+    "n": 3
+   }
+  ],
+  "reverse_edges": [
+   {
+    "file": "src/api/settings_api.py",
+    "line": 50,
+    "edge": "api->(root)",
+    "target": "src.roles",
+    "lazy": false
+   },
+   {
+    "file": "src/goal/driver.py",
+    "line": 223,
+    "edge": "goal->api",
+    "target": "src.api.message_runner",
+    "lazy": true
+   },
+   {
+    "file": "src/goal/driver.py",
+    "line": 224,
+    "edge": "goal->api",
+    "target": "src.api.routes",
+    "lazy": true
+   },
+   {
+    "file": "src/goal/driver.py",
+    "line": 179,
+    "edge": "goal->api",
+    "target": "src.api.auto_driver",
+    "lazy": true
+   },
+   {
+    "file": "src/goal/tools.py",
+    "line": 110,
+    "edge": "goal->api",
+    "target": "src.api.role_room",
+    "lazy": true
+   },
+   {
+    "file": "src/permissions/policy.py",
+    "line": 36,
+    "edge": "permissions->api",
+    "target": "src.api.prompt_log",
+    "lazy": false
+   },
+   {
+    "file": "src/storage/card_store.py",
+    "line": 175,
+    "edge": "storage->permissions",
+    "target": "src.permissions.policy",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/card_store.py",
+    "line": 189,
+    "edge": "storage->permissions",
+    "target": "src.permissions.policy",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/card_store.py",
+    "line": 810,
+    "edge": "storage->api",
+    "target": "src.api.event_stream",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/card_store.py",
+    "line": 1158,
+    "edge": "storage->permissions",
+    "target": "src.permissions.policy",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/card_store.py",
+    "line": 1010,
+    "edge": "storage->api",
+    "target": "src.api.scheduler",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/card_store.py",
+    "line": 1231,
+    "edge": "storage->api",
+    "target": "src.api.role_room",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/card_store.py",
+    "line": 1016,
+    "edge": "storage->api",
+    "target": "src.api.auto_driver",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/memory_store.py",
+    "line": 413,
+    "edge": "storage->api",
+    "target": "src.api.model_config",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/memory_store.py",
+    "line": 413,
+    "edge": "storage->api",
+    "target": "src.api.model_service",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/memory_store.py",
+    "line": 572,
+    "edge": "storage->api",
+    "target": "src.api.model_config",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/memory_store.py",
+    "line": 572,
+    "edge": "storage->api",
+    "target": "src.api.model_service",
+    "lazy": true
+   },
+   {
+    "file": "src/storage/work_store.py",
+    "line": 173,
+    "edge": "storage->api",
+    "target": "src.api.model_config",
+    "lazy": true
+   },
+   {
+    "file": "src/thinkchain/model_pick.py",
+    "line": 15,
+    "edge": "thinkchain->api",
+    "target": "src.api.model_config",
+    "lazy": false
+   }
+  ],
+  "scc_runtime": [
+   [
+    "src.toolcard.step_prompt",
+    "src.toolcard.state_store",
+    "src.toolcard.finalize",
+    "src.toolcard.driver",
+    "src.toolcard.artifact_store",
+    "src.thinkchain.step_region",
+    "src.thinkchain.plan_tools",
+    "src.thinkchain.model_pick",
+    "src.thinkchain.finalize",
+    "src.thinkchain.board",
+    "src.permissions.policy",
+    "src.goal.tools",
+    "src.goal.invariant",
+    "src.goal.driver",
+    "src.goal.service",
+    "src.goal.command",
+    "src.storage.work_store",
+    "src.storage.shadow_store",
+    "src.storage.session_ops",
+    "src.storage.session_facade",
+    "src.storage.role_store",
+    "src.storage.revision_store",
+    "src.storage.model_override",
+    "src.api.tool_fold",
+    "src.storage.memory_store",
+    "src.storage.event_log",
+    "src.storage.data_snapshot",
+    "src.api.steer",
+    "src.api.simple_service",
+    "src.api.settings_api",
+    "src.api.scheduler",
+    "src.api.routes",
+    "src.api.role_room",
+    "src.api.prompt_log",
+    "src.api.model_service",
+    "src.api.model_config",
+    "src.api.message_runner",
+    "src.api.file_tools",
+    "src.api.event_stream",
+    "src.api.current_turn",
+    "src.api.control",
+    "src.api.context_regions",
+    "src.api.context_assembler",
+    "src.api.card_tools",
+    "src.api.card_proposal",
+    "src.api.card_draft",
+    "src.api.auto_driver",
+    "src.storage.card_store",
+    "src.storage.card_db",
+    "src.storage.canvas_store",
+    "src.storage.activity"
+   ]
+  ],
+  "scc_import_time": [
+   [
+    "src.thinkchain.step_region",
+    "src.thinkchain.plan_tools",
+    "src.thinkchain.model_pick",
+    "src.thinkchain.finalize",
+    "src.api.tool_fold",
+    "src.api.simple_service",
+    "src.api.settings_api",
+    "src.api.prompt_log",
+    "src.api.model_service",
+    "src.api.message_runner",
+    "src.api.file_tools",
+    "src.api.current_turn",
+    "src.api.context_regions",
+    "src.api.context_assembler",
+    "src.api.card_tools",
+    "src.permissions.policy",
+    "src.api.card_proposal",
+    "src.api.card_draft",
+    "src.api.routes"
+   ],
+   [
+    "src.storage.shadow_store",
+    "src.storage.session_ops",
+    "src.storage.session_facade",
+    "src.storage.role_store",
+    "src.storage.revision_store",
+    "src.storage.model_override",
+    "src.storage.memory_store",
+    "src.storage.event_log",
+    "src.storage.card_store",
+    "src.storage.canvas_store",
+    "src.storage.activity"
+   ],
+   [
+    "src.goal.tools",
+    "src.goal.driver",
+    "src.goal.service",
+    "src.goal.command"
+   ],
+   [
+    "src.toolcard.step_prompt",
+    "src.toolcard.finalize",
+    "src.toolcard.driver"
+   ]
+  ],
+  "scc_package_runtime": [
+   [
+    "toolcard",
+    "thinkchain",
+    "storage",
+    "permissions",
+    "goal",
+    "api",
+    "(root)"
+   ]
+  ],
+  "scc_package_import_time": [
+   [
+    "thinkchain",
+    "permissions",
+    "api",
+    "(root)"
+   ]
+  ],
+  "private_symbol_imports": [
+   {
+    "file": "scripts/migrate_card_types.py",
+    "line": 30,
+    "target": "src.storage.card_store._meta_of"
+   },
+   {
+    "file": "scripts/migrate_card_types.py",
+    "line": 30,
+    "target": "src.storage.card_store._card_path"
+   },
+   {
+    "file": "scripts/migrate_card_types.py",
+    "line": 30,
+    "target": "src.storage.card_store._l1_all_codes"
+   },
+   {
+    "file": "scripts/migrate_card_types.py",
+    "line": 248,
+    "target": "src.storage.card_store._meta_of"
+   },
+   {
+    "file": "src/api/card_draft.py",
+    "line": 26,
+    "target": "src.api.routes._apply_block_set"
+   },
+   {
+    "file": "src/api/card_tools.py",
+    "line": 1321,
+    "target": "src.api.card_draft._is_placeholder"
+   },
+   {
+    "file": "src/api/context_regions.py",
+    "line": 666,
+    "target": "src.api.card_draft._is_placeholder"
+   },
+   {
+    "file": "src/api/context_regions.py",
+    "line": 900,
+    "target": "src.api.card_draft._is_placeholder"
+   },
+   {
+    "file": "src/api/current_turn.py",
+    "line": 93,
+    "target": "src.api.card_draft._is_placeholder"
+   },
+   {
+    "file": "src/storage/data_snapshot.py",
+    "line": 136,
+    "target": "src.storage.session_facade._LOCK_RETRY_ATTEMPTS"
+   },
+   {
+    "file": "src/storage/data_snapshot.py",
+    "line": 136,
+    "target": "src.storage.session_facade._LOCK_RETRY_BASE_SLEEP"
+   },
+   {
+    "file": "src/storage/data_snapshot.py",
+    "line": 136,
+    "target": "src.storage.session_facade._is_windows_lock_race"
+   },
+   {
+    "file": "src/storage/data_snapshot.py",
+    "line": 136,
+    "target": "src.storage.session_facade._log_lock_race"
+   },
+   {
+    "file": "src/toolcard/state_store.py",
+    "line": 91,
+    "target": "src.storage.card_store._now_iso"
+   }
+  ],
+  "import_time_registrations": [
+   {
+    "file": "src/api/card_tools.py",
+    "line": 3006,
+    "call": "thinkchain_plan_tools.register_into(TOOL_REGISTRY, ToolDef)"
+   }
+  ]
+ },
+ "C5_endpoints": {
+  "ports": [
+   {
+    "file": "main.py",
+    "line": 310,
+    "port": 5700,
+    "text": "uvicorn.run(app, host=\"127.0.0.1\", port=5700)"
+   },
+   {
+    "file": "restart_safe.py",
+    "line": 27,
+    "port": 5700,
+    "text": "PORT = 5700"
+   },
+   {
+    "file": "src/api/search_tool.py",
+    "line": 11,
+    "port": 8888,
+    "text": "- 主通道 SearxNG 本机元搜（localhost:8888，docker 容器 searxng）："
+   },
+   {
+    "file": "src/api/search_tool.py",
+    "line": 27,
+    "port": 8888,
+    "text": "_SEARXNG_URL = os.environ.get(\"SEARXNG_URL\", \"http://localhost:8888\")"
+   },
+   {
+    "file": "src/storage/memory_store.py",
+    "line": 110,
+    "port": 2361,
+    "text": "做法照抄源侧 condense.ts:2361 逐字「已 deprecated……该键不再参与任何判定」。"
+   },
+   {
+    "file": "start.bat",
+    "line": 31,
+    "port": 5700,
+    "text": "echo 访问 http://localhost:5700"
+   }
+  ],
+  "loopback": [
+   {
+    "file": "main.py",
+    "line": 310,
+    "host": "127.0.0.1",
+    "port": null,
+    "text": "uvicorn.run(app, host=\"127.0.0.1\", port=5700)"
+   },
+   {
+    "file": "restart_safe.py",
+    "line": 28,
+    "host": "127.0.0.1",
+    "port": null,
+    "text": "BASE = f\"http://127.0.0.1:{PORT}\""
+   },
+   {
+    "file": "scripts/run_canvas_5707.py",
+    "line": 145,
+    "host": "127.0.0.1",
+    "port": null,
+    "text": "uvicorn.run(app, host=\"127.0.0.1\", port=port)"
+   },
+   {
+    "file": "scripts/run_test_instance_5701.py",
+    "line": 161,
+    "host": "127.0.0.1",
+    "port": null,
+    "text": "uvicorn.run(app, host=\"127.0.0.1\", port=port)"
+   },
+   {
+    "file": "src/api/search_tool.py",
+    "line": 11,
+    "host": "localhost",
+    "port": "8888",
+    "text": "- 主通道 SearxNG 本机元搜（localhost:8888，docker 容器 searxng）："
+   },
+   {
+    "file": "src/api/search_tool.py",
+    "line": 27,
+    "host": "localhost",
+    "port": "8888",
+    "text": "_SEARXNG_URL = os.environ.get(\"SEARXNG_URL\", \"http://localhost:8888\")"
+   },
+   {
+    "file": "start.bat",
+    "line": 31,
+    "host": "localhost",
+    "port": "5700",
+    "text": "echo 访问 http://localhost:5700"
+   }
+  ]
+ },
+ "C6_runtime_resolution": {
+  "ok": true,
+  "values": {
+   "file_tools.BASE_DIR": "D:\\AI_station",
+   "file_tools.ALLOWED_ROOTS": [
+    "D:\\AI_station"
+   ],
+   "file_tools.BACKUP_DIR": "D:\\AI_station\\推演agent\\_backups",
+   "data_snapshot.BASE_DIR": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+   "data_snapshot.SNAPSHOT_ROOT": "D:\\AI_station\\推演agent\\.worktrees\\5713_data_snapshots",
+   "data_snapshot._FINGERPRINT_FILE": "D:\\AI_station\\推演agent\\.worktrees\\5713\\.snapshot_fingerprints.json",
+   "card_store.WORKS_DIR": "D:\\AI_station\\推演agent\\.worktrees\\5713\\works",
+   "work_store.WORKS_DIR": "D:\\AI_station\\推演agent\\.worktrees\\5713\\works",
+   "canvas_store.WORKS_DIR": "D:\\AI_station\\推演agent\\.worktrees\\5713\\works",
+   "session_store.WORKS_DIR": "D:\\AI_station\\推演agent\\.worktrees\\5713\\works",
+   "prompt_log.LOGS_DIR": "D:\\AI_station\\推演agent\\.worktrees\\5713\\logs",
+   "env_store.BACKUP_DIR": "D:\\AI_station\\推演agent\\.worktrees\\5713\\_backups",
+   "policy.PERMISSIONS_PATH": "D:\\AI_station\\推演agent\\.worktrees\\5713\\config\\permissions.json",
+   "toolcard.SCRIPTS_ROOT": "D:\\AI_station\\推演agent\\.worktrees\\5713\\works\\toolcard_scripts"
+  }
+ }
+}
