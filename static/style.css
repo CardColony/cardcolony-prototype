@@ -1920,6 +1920,17 @@ body.page-chat .rule-panel { display: none; }
   white-space: nowrap;
 }
 .model-pill:hover { border-color: var(--panel-hover); background: var(--panel-hover); }
+/* [切卡跟手 2026-10-21] 作用域前缀：一眼分清「本卡」还是「本项目」——
+   切错作用域会让整个项目的卡都换模型，这是之前分不清的直接原因。 */
+.model-pill .mp-pill-scope {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--panel-hover);
+  color: var(--dim);
+  letter-spacing: 0.02em;
+}
 .model-pill .mp-pill-name { overflow: hidden; text-overflow: ellipsis; }
 .model-pill .mp-caret { font-size: 9px; color: var(--dim); }
 

@@ -9,9 +9,15 @@
 export function initModelBadge({ mountId, workId, cardId = "" }) {
   const mount = document.getElementById(mountId);
   if (!mount || !workId) return;
-  const scope = cardId ? "card" : "work";
+  /* [切卡跟手 2026-10-21] 病根：cardId 原来是**页面加载时**的常量
+     （window.__CARD_ID__），而切卡是前端路由（open(cid)），页面不刷新 ⇒
+     ① 徽标一直显示「打开页面时那张卡」的模型：在卡 A 切了 k3，切到卡 B 还显示 k3；
+     ② 在卡 B 上再切，PUT 的路径还是卡 A ⇒ 写错行。
+     现在：当前卡可变，宿主切卡后派发 ui:card-changed，本件跟着换行重读。 */
+  let curCard = cardId || "";
+  const scopeOf = () => (curCard && curCard !== "draft" ? "card" : "work");
   /* 草稿态判定：与 rule_panel.js 的 isDraft 同口径（home.js 新建项目走 /work/draft）。 */
-  const isDraft = () => workId === "draft" || cardId === "draft";
+  const isDraft = () => workId === "draft" || curCard === "draft";
   const state = { open: false, settings: null, override: null, lastClickInside: false };
   let panel = null;
 
@@ -28,17 +34,19 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   }
   function gd() { return (state.settings && state.settings.system && state.settings.system.default_model) || ""; }
   function wd() { const w = (state.override && state.override.work) || {}; return w.default_model || ""; }
-  function cd() { if (!cardId) return ""; const c = (state.override && state.override.cards && state.override.cards[cardId]) || {}; return c.default_model || ""; }
-  function chosen() { return cardId ? cd() : wd(); }
-  function effective() { const g = gd(), w = wd(), c = cardId ? cd() : ""; return cardId ? (c || w || g) : (w || g); }
-  function inheritName() { const g = gd(), w = wd(); const run = cardId ? (w || g) : g; return run ? display(run) : "（未配置）"; }
+  function cd() { if (!curCard) return ""; const c = (state.override && state.override.cards && state.override.cards[curCard]) || {}; return c.default_model || ""; }
+  function chosen() { return scopeOf() === "card" ? cd() : wd(); }
+  function effective() { const g = gd(), w = wd(), c = scopeOf() === "card" ? cd() : ""; return scopeOf() === "card" ? (c || w || g) : (w || g); }
+  function inheritName() { const g = gd(), w = wd(); const run = scopeOf() === "card" ? (w || g) : g; return run ? display(run) : "（未配置）"; }
   function display(key) { const m = (state.settings && state.settings.models && state.settings.models[key]) || {}; return m.model || key; }
   function providers() { return Object.keys((state.settings && state.settings.providers) || {}); }
   function models() { return (state.settings && state.settings.models) || {}; }
 
   function pill() {
     const eff = effective();
-    return `<button type="button" class="model-pill" data-mp="open" title="选择模型：${esc(display(eff || ""))}">
+    const sc = scopeOf() === "card" ? "本卡" : "本项目";
+    return `<button type="button" class="model-pill" data-mp="open" title="${sc}模型：${esc(display(eff || ""))}（点击切换）">
+      <span class="mp-pill-scope">${sc}</span>
       <span class="mp-pill-name">${eff ? esc(display(eff)) : "未配置"}</span>
       <span class="mp-caret">▾</span>
     </button>`;
@@ -67,7 +75,7 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       rows += `<div class="mp-grp"><div class="mp-grp-title">${esc(prov)}</div>` +
         keys.map((k) => rButton(k, display(k), k === ch)).join("") + `</div>`;
     }
-    rows += `<div class="mp-foot">选择即对本${scope === "card" ? "卡" : "项目"}生效；选「默认」则跟进全局/项目。</div>`;
+    rows += `<div class="mp-foot">选择即对本${scopeOf() === "card" ? "卡" : "项目"}生效；选「默认」则跟进全局/项目。</div>`;
     panel.innerHTML = rows;
     document.body.appendChild(panel);
     state.open = true;
@@ -90,7 +98,7 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     // 用户看不出原因（实测 5700 日志：GET/PUT .../draft/card/draft 都是 404）。
     if (isDraft()) { toast("项目还没保存，先保存项目再切模型"); closePanel(); return; }
     const base = `/api/settings/model-overrides/${encodeURIComponent(workId)}`;
-    const path = scope === "card" ? `${base}/card/${encodeURIComponent(cardId)}` : base;
+    const path = scopeOf() === "card" ? `${base}/card/${encodeURIComponent(curCard)}` : base;
     const r = val
       ? await api(path, { method: "PUT", body: JSON.stringify({ default_model: val }) })
       : await api(path, { method: "DELETE" });
@@ -98,7 +106,14 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     state.override = r.ok && r.data ? r.data : state.override;
     closePanel();
     render();
-    toast("已保存");
+    /* [切卡跟手 2026-10-21] 作用域不同，结果差得很远，提示必须说清改了几张：
+       本卡＝只有这一张；本项目＝表里所有「策略填的」行（人手改过的不动）。 */
+    if (scopeOf() === "work" && val) {
+      const n = Number((r.data && r.data.affected) || 0);
+      toast(n ? `已保存：本项目 ${n} 张卡都换成了这个模型` : "已保存");
+    } else {
+      toast("已保存");
+    }
   }
 
   function render() { mount.innerHTML = pill(); }
@@ -133,6 +148,16 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     if (panel && !panel.contains(e.target) && !mount.contains(e.target)) closePanel();
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
+
+  /* [切卡跟手 2026-10-21] 宿主（workspace.open）切卡后派发：本件换行重读，
+     徽标立刻变成**当前这张卡**的模型（不再停留在打开页面时那张）。 */
+  window.addEventListener("ui:card-changed", (e) => {
+    const cid = String((e && e.detail && e.detail.cardId) || "");
+    if (cid === curCard) return;
+    curCard = cid;
+    closePanel();
+    reload();
+  });
 
   (async () => {
     try {

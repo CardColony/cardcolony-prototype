@@ -12,7 +12,7 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=48">
+<link rel="stylesheet" href="/static/style.css?v=49">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
@@ -268,6 +268,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main_chat.js?v=3.7"></script>
+<script type="module" src="/static/esm/main_chat.js?v=3.8"></script>
 </body>
 </html>
