@@ -226,11 +226,13 @@ tiers:
   depth_0:
   - kimi-k3
   - ds-flash-official
-  depth_1: ds-v41-flash-aliyun
+  depth_1:
+  - ds-v41-flash-aliyun
   depth_2:
   - ds-v4-flash-volc
   - ark-code-latest
   - minimax-m31
+  - minimax-m31-flash-free
   default:
   - ds-v4-flash-volc
   - ark-code-latest
