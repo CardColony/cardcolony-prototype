@@ -1319,8 +1319,14 @@ async def update_card(
     return await read_card(work_id, card_id)
 
 
-async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
+async def delete_card(work_id: str, card_id: str,
+                      cascade: bool = False) -> dict[str, Any]:
     """[用户删卡 2026-10-02] 删除卡片（库行 ＋ 修改历史）＋对应 session 文件。
+
+    [级联删除 2026-10-21 · 用户令] ``cascade=True``：连同整棵子树一起删
+    （每张都各自进回收站，可逐个恢复）。用户质问「凭什么有子卡就删不了」——
+    原来直接把复杂度推给用户（先手动删子卡），这是错的取舍：
+    删父卡的正确语义就是删掉它和它下面的一切，而不是拒绝。
 
     结构性防护（机械判据，不判内容）：
     - 剧本不存在 → {"error": ...}
@@ -1339,14 +1345,25 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     if not card_exists(work_id, card_id):
         raise CardNotFoundError(f"卡片不存在: {card_id}")
 
-    # 子卡防护：任何卡的 parent 指向 card_id → 拒删
-    for other_id, m in iter_card_metas(work_id).items():
-        if other_id == card_id:
-            continue
-        if m.get("parent") == card_id:
+    # 子卡处理：cascade=True ⇒ 后序删整棵子树（子先父后，每张都走本函数，
+    # 因此每张都进回收站、都删影子/会话）；cascade=False ⇒ 沿用旧防护（拒删）。
+    kids = [oid for oid, m in iter_card_metas(work_id).items()
+            if oid != card_id and m.get("parent") == card_id]
+    if kids:
+        if not cascade:
             raise CardDeleteDeniedError(
-                f"存在子卡 {other_id}，先删子卡或改挂他卡"
+                f"存在子卡 {kids[0]}，先删子卡或改挂他卡"
             )
+        removed: list[str] = []
+        for cid in _subtree_postorder(work_id, card_id):
+            if cid == card_id:
+                continue
+            try:
+                await delete_card(work_id, cid, cascade=True)
+                removed.append(cid)
+            except (CardNotFoundError, CardDeleteDeniedError):
+                continue
+        result_cascade = {"deleted": removed, "cascade": True}
 
     # [T-0007 补丁] 写路径唯一门·delete 闸位（no-op 放行）。
     # 插在所有结构性防护之后、实际删除之前——保证闸位放行后才动数据。
@@ -1408,7 +1425,43 @@ async def delete_card(work_id: str, card_id: str) -> dict[str, Any]:
     await data_snapshot.schedule(f"[snapshot][{work_id}] delete: {card_id}")
     # [画布 5711] 广播工作级事件：画布页就地摘掉这张卡（不必等用户手动刷新）。
     await _notify_card_changed(work_id, card_id, "deleted")
-    return {"ok": True, "deleted": card_id}
+    out = {"ok": True, "deleted": card_id}
+    if "result_cascade" in locals():
+        out["cascade"] = True
+        out["deleted_subtree"] = result_cascade.get("deleted") or []
+    return out
+
+
+def _subtree_postorder(work_id: str, root: str) -> list[str]:
+    """root 子树的后序（子先父后，含 root 本身）。迭代实现，防深递归。
+
+    级联删除必须后序：先删叶子，再删父——否则每删一张都会被「有子卡」挡住。
+    """
+    children: dict[str, list[str]] = {}
+    try:
+        metas = iter_card_metas(work_id)
+    except Exception:  # noqa: BLE001 读不到 ⇒ 只删自己
+        return [root]
+    for cid, m in metas.items():
+        p = str((m or {}).get("parent") or "")
+        if p:
+            children.setdefault(p, []).append(cid)
+    out: list[str] = []
+    seen: set[str] = set()
+    stack: list[tuple[str, bool]] = [(root, False)]
+    while stack:
+        cid, expanded = stack.pop()
+        if expanded:
+            out.append(cid)
+            continue
+        if cid in seen:
+            continue
+        seen.add(cid)
+        stack.append((cid, True))
+        for ch in children.get(cid, []):
+            if ch not in seen:
+                stack.append((ch, False))
+    return out
 
 
 async def list_trash(work_id: str) -> list[dict[str, Any]]:

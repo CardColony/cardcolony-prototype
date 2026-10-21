@@ -629,11 +629,17 @@ async def restore_work_card(work_id: str, card_id: str):
 
 
 @router.delete("/works/{work_id}/cards/{card_id}")
-async def delete_work_card(work_id: str, card_id: str):
+async def delete_work_card(work_id: str, card_id: str, cascade: bool = False):
+    """删卡。``?cascade=true`` ⇒ 连同整棵子树一起删（每张都进回收站，可逐个恢复）。
+
+    [级联删除 2026-10-21 · 用户令] 原来有子卡就 400 拒删，把复杂度推给用户
+    （手动一层层删）。删父卡的正确语义就是删掉它和它下面的一切。
+    项目根卡仍然拒删（它是项目入口，删了项目就空了）。
+    """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     try:
-        result = await card_store.delete_card(work_id, card_id)
+        result = await card_store.delete_card(work_id, card_id, cascade=cascade)
     except CardNotFoundError:
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
