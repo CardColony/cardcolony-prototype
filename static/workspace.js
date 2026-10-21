@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=46";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=56";
+import { EventFlow } from "./stream.js?v=58";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=46";
@@ -307,8 +307,19 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       // 对话区是主区域，右栏是附属；把主区域的 await 提到前面，点卡立刻出内容。
       // 仍然是串行（不是并行）——两处都写 DOM，并行会在快速切卡时互相写错卡。
       {
-        await EventFlow.replayTrace(WORK_ID, cardId);
-        if (stale()) return;
+        /* [切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」]
+           画板已在内存（开头 bindBoard 已把它挂上）⇒ **零网络、零装配**，
+           对话立刻可见。改前每次切卡都重拉 400 条事件 + 重建整张装配表，
+           200 个节点重新渲染——这就是「慢得要死、根本不是即时响应」的来源。 */
+        const cached = (() => {
+          try { return EventFlow.isLoaded(WORK_ID, cardId); } catch (e) { return false; }
+        })();
+        if (cached) {
+          try { EventFlow.activate(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
+        } else {
+          await EventFlow.replayTrace(WORK_ID, cardId);
+          if (stale()) return;
+        }
       }
       await renderInspector();
       if (stale()) return;

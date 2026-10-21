@@ -497,3 +497,47 @@ def test_nav_delete_card_is_not_a_dead_button():
     main_js = (ROOT / "static" / "esm" / "main.js").read_text(encoding="utf-8")
     assert "reloadCanvas" in main_js and "onCardsChanged" in main_js, \
         "画布页必须注入 reloadCanvas 作为重建回调"
+
+
+def test_switch_card_reuses_memory_board():
+    """[切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」]
+
+    切回已经看过的卡必须**零网络、零装配**——只把内存里的画板挂回去。
+    改前每次 open 都 replayTrace（重拉 400 条事件 + rebuild 整张表 + 重渲 200 节点），
+    用户感受就是「延迟打开，慢得要死，根本不是即时响应」。
+    """
+    st = (ROOT / "static" / "stream.js").read_text(encoding="utf-8")
+    assert "st.loadedOnce = true" in st, "replayTrace 成功后必须打「已加载」标记"
+    assert "function isLoaded(wid, cid)" in st, "缺 isLoaded 查询口"
+    assert "loadedOnce && st.view" in st, "isLoaded 只认成功加载过的会话"
+    assert "isLoaded," in st, "isLoaded 必须导出"
+
+    ws = (ROOT / "static" / "workspace.js").read_text(encoding="utf-8")
+    assert "EventFlow.isLoaded(WORK_ID, cardId)" in ws, "open 必须查内存里有没有"
+    # 缓存命中时不许走 replayTrace
+    i = ws.index("EventFlow.isLoaded(WORK_ID, cardId)")
+    seg = ws[i:i + 600]
+    assert "replayTrace" in seg, "缓存未命中仍要加载（else 分支）"
+    assert "if (cached)" in ws
+
+
+def test_switch_card_reuses_memory_board():
+    """[切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」]
+
+    切回已经看过的卡必须**零网络、零装配**——只把内存里的画板挂回去。
+    改前每次 open 都 replayTrace（重拉 400 条事件 + rebuild 整张表 + 重渲 200 节点），
+    用户感受就是「延迟打开，慢得要死，根本不是即时响应」。
+    """
+    st = (ROOT / "static" / "stream.js").read_text(encoding="utf-8")
+    assert "st.loadedOnce = true" in st, "replayTrace 成功后必须打「已加载」标记"
+    assert "function isLoaded(wid, cid)" in st, "缺 isLoaded 查询口"
+    assert "loadedOnce && st.view" in st, "isLoaded 只认成功加载过的会话"
+    assert "isLoaded," in st, "isLoaded 必须导出"
+
+    ws = (ROOT / "static" / "workspace.js").read_text(encoding="utf-8")
+    assert "EventFlow.isLoaded(WORK_ID, cardId)" in ws, "open 必须查内存里有没有"
+    # 缓存命中时不许走 replayTrace
+    i = ws.index("EventFlow.isLoaded(WORK_ID, cardId)")
+    seg = ws[i:i + 600]
+    assert "replayTrace" in seg, "缓存未命中仍要加载（else 分支）"
+    assert "if (cached)" in ws

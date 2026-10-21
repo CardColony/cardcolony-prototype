@@ -1132,7 +1132,10 @@ const BOARD_CFG = Object.assign(
       // 全量时 card_004 要装配 1185 个节点、打开耗 2.8 秒 CPU；尾部 400 条约 200 节点。
       const items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
       st.loadedItems = items || [];
-      renderSnapshot(st, st.asm.rebuild(items));
+      /* [切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」] 成功加载一次就打标记：
+         切回这张卡时直接用内存里的画板（零网络、零装配），不再重拉 400 条事件。 */
+      st.loadedOnce = true;
+      renderSnapshot(st, st.asm.rebuild(items || []));
     } finally {
       if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
     }
@@ -1349,6 +1352,13 @@ const BOARD_CFG = Object.assign(
     return !!st.esDead;
   }
 
+  /** [切卡零重建 2026-10-21] 这张卡的画板是否已在内存里（切回时免重拉）。
+      只认「成功加载过一次」——加载失败不打标记，下次还会重试。 */
+  function isLoaded(wid, cid) {
+    const st = sessions.get(skey(wid, cid));
+    return !!(st && st.loadedOnce && st.view);
+  }
+
   /** [5702 · 2026-10-20] 某卡是否在跑（按卡查，供输入系统切卡时恢复运行态）。 */
   function sessionRunning(wid, cid) {
     const st = sessions.get(skey(wid, cid));
@@ -1413,6 +1423,8 @@ const BOARD_CFG = Object.assign(
 export const EventFlow = {
   start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers,
   optimisticUser, dropOptimisticUser, streamDead, sessionRunning,
+  // [切卡零重建] 画板已在内存 ⇒ 切回时免重拉
+  isLoaded,
   // [对话流照抄 dsh v3] 运行态唯一入口：在跑卡不释放 ＋ 运行条 ＋ 主键两态
   setRunning,
   /* [运行态单一真相源 2026-10-21] 宿主注册「运行态变了」的回告口（单向）：
