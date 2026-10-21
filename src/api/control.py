@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -34,19 +35,94 @@ DEFER_HUMAN = "DEFER_HUMAN"
 # 人停置位（consume-once：check 返回 STOP 即清除，不影响下一回合）
 _stop_requests: set[tuple[str, str]] = set()
 
+#: 在途回合的协程任务（key=(work_id, card_id)）。
+#:
+#: [立刻停止 2026-10-21 · 用户令] 改前「停止」只往 `_stop_requests` 放个标记，
+#: 靠 `check()` 在**步边界**消费。而一轮模型调用可能跑几分钟——步边界恰恰在
+#: 最需要停的时候等不到。于是「明明点了停止，后端还在跑，发消息 409」。
+#: 行业做法（OpenAI 的 cancel run、Claude Code 的 Esc、HTTP 的 abort）都是
+#: **立刻中断正在进行的 I/O**。本机一直有这条通道：取消协程即可。
+#: 所以停止端点直接 cancel 这个 task，`_run_message` 的 finally 照常释放互斥体。
+_turn_tasks: dict[tuple[str, str], Any] = {}
+
+
+def bind_turn_task(work_id: str, card_id: str, task: Any) -> None:
+    """登记在途回合的协程（`_run_message` 入口调用）。"""
+    _turn_tasks[(work_id, card_id)] = task
+
+
+def unbind_turn_task(work_id: str, card_id: str, task: Any = None) -> None:
+    """解登记（回合 finally 调用）。传 task 时只解自己那一个，防误删后续回合。"""
+    key = (work_id, card_id)
+    if task is None or _turn_tasks.get(key) is task:
+        _turn_tasks.pop(key, None)
+
+
+def cancel_turn(work_id: str, card_id: str) -> bool:
+    """立刻掐断在途回合（返回是否真的取消了）。
+
+    同一个协程里调（内部调用 / 单测直接在回合 task 里调）**不能 cancel 自己**——
+    那等于自杀，回合连 finally 都走不完。这种情况返回 False，退回「置位等步边界」。
+    生产里停止端点跑在**另一个**请求 task 里，所以永远走得到 cancel。
+    """
+    task = _turn_tasks.get((work_id, card_id))
+    if task is None or task.done():
+        return False
+    if task is asyncio.current_task():
+        logger.debug("[control] 停止请求与回合同协程，退回置位 work=%s card=%s",
+                     work_id, card_id)
+        return False
+    task.cancel()
+    logger.info("[control] 立刻停止（cancel 协程）work=%s card=%s", work_id, card_id)
+    return True
+
+
+#: 软停等不到边界时，多久之后硬取消（秒）。
+#: 软停是「下一个 chunk / 步边界就断」，正常吐字时毫秒级生效、还能保住已产出的字；
+#: 但模型**一个字都不吐**卡在那里时，边界永远不会来 —— 这时候必须硬掐。
+STOP_HARD_CANCEL_DELAY = 1.5
+
+
+async def _hard_cancel_after(work_id: str, card_id: str, holder: str,
+                             delay: float | None = None) -> None:
+    """软停兜底：``delay`` 秒后这一轮还没收口 ⇒ 直接 cancel 协程。
+
+    比对 ``holder`` 再动手：期间若已换了一轮（或已释放），绝不误杀。
+    ``delay`` 缺省时**现读**模块常量（测试可 monkeypatch 缩短）。
+    """
+    delay = STOP_HARD_CANCEL_DELAY if delay is None else float(delay)
+    await asyncio.sleep(delay)
+    if session_facade.turn_holder(work_id, card_id) != holder:
+        return
+    if cancel_turn(work_id, card_id):
+        logger.warning("[control] 软停 %.1fs 未收口 ⇒ 硬取消 work=%s card=%s",
+                       delay, work_id, card_id)
+
 
 def request_stop(work_id: str, card_id: str) -> dict[str, Any]:
-    """人停置位（stop 端点唯一入口——**不是**直接写 stop_requested，
-    接口被消费才算数，T120）。无在途回合＝no-op 幂等（T123）：
-    不报错、不造轮、返回当前状态。"""
+    """人停（stop 端点唯一入口）。
+
+    [立刻停止 2026-10-21 · 用户令] 两条腿并行，不再只靠那条等不到的：
+      ① **软停**：置位，下一个 chunk / 步边界即断（毫秒级，且保住已产出的字——
+         2026-10-15 裁定「不丢已产出的字」不推翻）；
+      ② **硬停兜底**：1.5 秒还没收口 ⇒ cancel 协程。模型一个字都不吐、卡在
+         流里时，软停永远等不到边界（实测 card_031 卡 9 分钟，停止无效、409 发不出）。
+    """
     holder = session_facade.turn_holder(work_id, card_id)
     if not holder:
         return {"stopped": False, "reason": "no_inflight_turn",
                 "idempotent": True, "holder": ""}
     _stop_requests.add((work_id, card_id))
+    try:
+        asyncio.get_running_loop().create_task(
+            _hard_cancel_after(work_id, card_id, holder))
+    except RuntimeError:
+        # 没有事件循环（同步上下文调用）⇒ 只能立刻硬取消
+        cancel_turn(work_id, card_id)
     session_ops.ops_log("human_stop", work_id, card_id,
                         {"action": "requested", "holder": holder})
-    logger.info("[control] 人停置位 work=%s card=%s holder=%s", work_id, card_id, holder)
+    logger.info("[control] 人停 work=%s card=%s holder=%s（软停＋1.5s 硬停兜底）",
+                work_id, card_id, holder)
     return {"stopped": True, "reason": "stop_requested", "holder": holder}
 
 

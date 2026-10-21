@@ -313,6 +313,126 @@
     toast("已保存");
   }
 
+  // ------------------------------------------------------------ 分层与兜底
+  // [层内兜底 2026-10-21 · 用户令] 每层一个**有序**列表：第 1 个是首选，
+  // 它失败就换第 2 个，依次接替。只在本层内兜底，绝不跨层。
+  const TIER = {
+    levels: ["depth_0", "depth_1", "depth_2", "default"],
+    labels: {
+      depth_0: "第 0 层 · 项目根卡",
+      depth_1: "第 1 层",
+      depth_2: "第 2 层",
+      default: "兜底层 · 没有对应深度时",
+    },
+    tiers: {},
+  };
+
+  function tierLevels() {
+    const known = TIER.levels.slice(0, -1);
+    const extra = Object.keys(TIER.tiers).filter((k) => !TIER.levels.includes(k)).sort();
+    return known.concat(extra, ["default"]);
+  }
+
+  function tierLabel(lv) {
+    if (TIER.labels[lv]) return TIER.labels[lv];
+    const m = /^depth_(\d+)$/.exec(lv);
+    return m ? `第 ${m[1]} 层` : lv;
+  }
+
+  function tierOptions(pool) {
+    const names = Object.keys(DATA.models || {}).sort();
+    let html = '<option value="">＋ 添加模型</option>';
+    for (const m of names) {
+      if (pool.indexOf(m) >= 0) continue;
+      html += `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`;
+    }
+    return html;
+  }
+
+  function renderTiers() {
+    const box = $("tierList");
+    if (!box) return;
+    box.innerHTML = tierLevels().map((lv) => {
+      const pool = TIER.tiers[lv] || [];
+      const chips = pool.map((m, i) => `
+        <span class="tier-chip">
+          <span class="tier-idx">${i + 1}</span>
+          <span class="tier-model" title="${escapeHtml(m)}">${escapeHtml(m)}</span>
+          <button class="tier-btn" data-tier="up" data-lv="${escapeHtml(lv)}" data-i="${i}"${i === 0 ? " disabled" : ""} title="上移（更优先）">↑</button>
+          <button class="tier-btn" data-tier="down" data-lv="${escapeHtml(lv)}" data-i="${i}"${i === pool.length - 1 ? " disabled" : ""} title="下移（更靠后兜底）">↓</button>
+          <button class="tier-btn del" data-tier="del" data-lv="${escapeHtml(lv)}" data-i="${i}" title="移除">×</button>
+        </span>`).join("");
+      return `<div class="tier-row">
+        <div class="tier-head">
+          <span class="tier-name">${escapeHtml(tierLabel(lv))}</span>
+          <span class="tier-count">${pool.length ? pool.length + " 个" : "空"}</span>
+        </div>
+        <div class="tier-pool">
+          ${chips || '<span class="tier-empty">这一层还没有模型</span>'}
+          <select class="tier-add" data-tier-add="${escapeHtml(lv)}">${tierOptions(pool)}</select>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  function onTierClick(e) {
+    const btn = e.target.closest("[data-tier]");
+    if (!btn) return;
+    const lv = btn.dataset.lv;
+    const i = Number(btn.dataset.i);
+    const pool = (TIER.tiers[lv] || []).slice();
+    if (!pool.length) return;
+    const act = btn.dataset.tier;
+    if (act === "up" && i > 0) {
+      const t = pool[i - 1]; pool[i - 1] = pool[i]; pool[i] = t;
+    } else if (act === "down" && i < pool.length - 1) {
+      const t = pool[i + 1]; pool[i + 1] = pool[i]; pool[i] = t;
+    } else if (act === "del") {
+      pool.splice(i, 1);
+    } else {
+      return;
+    }
+    TIER.tiers[lv] = pool;
+    renderTiers();
+  }
+
+  function onTierAdd(e) {
+    const sel = e.target.closest("[data-tier-add]");
+    if (!sel || !sel.value) return;
+    const lv = sel.dataset.tierAdd;
+    const pool = (TIER.tiers[lv] || []).slice();
+    if (pool.indexOf(sel.value) < 0) pool.push(sel.value);
+    TIER.tiers[lv] = pool;
+    renderTiers();
+  }
+
+  async function saveTiers() {
+    const st = $("tierStatus");
+    const payload = {};
+    for (const lv of tierLevels()) {
+      const pool = TIER.tiers[lv] || [];
+      if (pool.length) payload[lv] = pool;
+    }
+    const r = await api("/api/settings/tiers", {
+      method: "PUT", body: JSON.stringify({ tiers: payload }),
+    });
+    if (!r.ok) {
+      const detail = r.data ? ((r.data.errors || []).join("；") || r.data.error) : "";
+      if (st) { st.textContent = "保存失败：" + (detail || "未知错误"); st.style.color = "#f85149"; }
+      return;
+    }
+    TIER.tiers = r.data.tiers || payload;
+    renderTiers();
+    const changed = ((r.data.reseed || {}).changed) || 0;
+    if (st) {
+      st.textContent = changed
+        ? `已保存；按新分层重算了 ${changed} 张卡的默认模型（人手改过的不动）`
+        : "已保存（已有卡都在新分层下，无需重算）";
+      st.style.color = "#3fb950";
+    }
+    toast("分层已保存");
+  }
+
   async function load() {
     const r = await api("/api/settings/models");
     if (!r.ok || !r.data) {
@@ -328,6 +448,14 @@
     DATA.roles = r.data.roles || {};
     DATA.key_status = r.data.key_status || {};
     META = r.data.meta || {};
+    // [分层与兜底] 归一成 {层: [模型…]}（配置里可能是单值）
+    TIER.tiers = {};
+    const rawTiers = r.data.tiers || {};
+    for (const k of Object.keys(rawTiers)) {
+      const v = rawTiers[k];
+      const pool = (Array.isArray(v) ? v : (v ? [v] : [])).map(String).filter(Boolean);
+      if (pool.length) TIER.tiers[k] = pool;
+    }
     setSaveStatus("配置已加载", false);
     // 保持当前选中；失效则回退到第一个
     if (!CURRENT || !DATA.providers[CURRENT]) {
@@ -343,6 +471,7 @@
     renderDetail();
     renderBindings();
     renderAdvanced();
+    renderTiers();
   }
 
   // ------------------------------------------------------------ 左：供应商导航列表
@@ -1129,6 +1258,15 @@
     // [按卡片类型设置默认模型] 保存模板
     const ctmSave = $("ctmSaveBtn");
     if (ctmSave) ctmSave.addEventListener("click", saveCardTypeModels);
+
+    // [分层与兜底] 排序/增删 + 保存
+    const tierSave = $("tierSaveBtn");
+    if (tierSave) tierSave.addEventListener("click", saveTiers);
+    const tierBox = $("tierList");
+    if (tierBox) {
+      tierBox.addEventListener("click", onTierClick);
+      tierBox.addEventListener("change", onTierAdd);
+    }
     $("restoreCancelBtn").addEventListener("click", () => { $("restoreModal").style.display = "none"; });
     $("restoreList").addEventListener("dblclick", () => doRestore());
 
