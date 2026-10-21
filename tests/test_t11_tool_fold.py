@@ -65,8 +65,8 @@ def test_t10_readonly_whitelist():
         "get_goal",
         # [基础工具找回] glob_files 只读
         "glob_files",
-        # [角色机制 5710] list_roles 根卡只读清单
-        "list_roles",
+        # [角色机制 5710] list_roles→list_functions（职能实体化改名，仍为只读清单）
+        "list_functions",
     } & set(card_tools.TOOL_REGISTRY)
 
     assert card_tools.READONLY_TOOLS == frozenset(expected)
@@ -282,6 +282,17 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "1")
     monkeypatch.setenv("TOOL_FOLD_ENABLED", "1")
     wid = work["work_id"]
+    # [执行权集中 2026-10-22 · D04] 本测试验「工具折叠」机制，需要卡能**读大文件**。
+    # project 卡（管理卡）现在没有 tools_file（执行权只在 coder 手上），
+    # 故给**测试夹具**显式补回只读+工具权限——只作用于本测试，不代表生产配置。
+    from src.storage import card_store as _cs
+    _root = work["work_card_id"]
+    _cur = (_cs._meta_of(wid, _root) or {})
+    _perms = list(_cur.get("perms") or [])
+    for _p in ("tools_file", "tools_web"):
+        if _p not in _perms:
+            _perms.append(_p)
+    await _cs.update_card(wid, _root, {"perms": _perms}, "测试夹具：补文件权限（验折叠）")
 
     big = "行内容一二三四五六七八九十\n" * 12000  # ≈330KB 文本
     big_path = sandbox.base / "trading-workspace" / "big_e2e.txt"
@@ -337,6 +348,9 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     # （session_facade.py:335「统一入口：V1 委托旧读，V2 走 V2 解析」，V2 块含 role 键）。
     # 断言本体（两条、user→assistant、折叠不进会话）不动。
     sess_all = await session_facade.read(wid, "card_001")
+    # 注：本测试验「工具折叠」机制，需要卡能读大文件。执行权集中后 project 卡
+    # 没有 tools_file（D04），故这里给**测试夹具**显式补上——只影响本测试，
+    # 不代表生产配置。折叠逻辑与谁有权限无关。
     # [工具结果落会话 2026-10-17] 会话现含工具调用块（assistant+tool_calls）与工具
     # 结果块（actor=tool）——本任务的正常落盘。过滤后仍是 user→assistant 两条，
     # 且折叠替身（【结论】/【依据】）仍不进会话（约束 9 不破）。
@@ -370,8 +384,9 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     payload = json.loads(open(logs[-1], encoding="utf-8").read())
     # [卡片区域说明 2026-10-14] 区集合随迭代：90（卡片职责）/155（卡片区域说明）已入表。
     # 本断言只钉"regions 落了哪些区"，与下方 T-02 阻塞无关。
-    assert [r["order"] for r in payload["regions"]] == [0, 90, 100, 150, 155, 300, 900, 999]
-    assert len(payload["regions"]) == 8
+    # [2026-10-22] 新增 92 卡片能力 区（按卡 perms 渲染）⇒ 8 → 9 区
+    assert [r["order"] for r in payload["regions"]] == [0, 90, 92, 100, 150, 155, 300, 900, 999]
+    assert len(payload["regions"]) == 9
     ops = payload["fold_ops"]
     assert [o["round"] for o in ops] == [1, 2]
     assert [o["tools"] for o in ops] == [["read_file"], ["update_shadow"]]

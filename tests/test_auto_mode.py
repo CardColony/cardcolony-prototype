@@ -455,7 +455,7 @@ _PLAN_TOOL_LINES = ("create_plan", "plan_reorder", "plan_insert",
 
 
 async def test_block4_normal_toolface_unchanged(typed_registry, work):
-    """硬判据1：非 auto 卡工具面逐字不变（无 update_goal、create_card 仍三参）。"""
+    """硬判据1：非 auto 卡工具面无 update_goal；create_card 参数＝三参＋mission（2026-10-21 加）。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk(wid, "甲", root)
     cards = card_tools._collect_card_meta(wid)
@@ -463,7 +463,7 @@ async def test_block4_normal_toolface_unchanged(typed_registry, work):
     names = [t["name"] for t in tools]
     assert "update_goal" not in names
     cc = next(t for t in tools if t["name"] == "create_card")
-    assert set(cc["parameters"]["properties"]) == {"title", "parent", "content"}
+    assert set(cc["parameters"]["properties"]) == {"title", "parent", "content", "mission"}
 
 
 async def test_block4_auto_toolface_is_normal_plus_update_goal(

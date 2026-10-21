@@ -1,0 +1,42 @@
+{
+  "work_id": "work_001",
+  "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox",
+  "checked_at": "2026-10-21T21:32:41+0800",
+  "items": [
+    {
+      "name": "A 号段",
+      "verdict": "FAIL",
+      "observed": "function 表存在（function_profiles, function_verdicts, function_alarms, function_sync, function_charter_history）但未找到任何 fn_\\d{3} 号段 id"
+    },
+    {
+      "name": "B 五张表存在",
+      "verdict": "PASS",
+      "observed": "五张表都在: function_profiles, function_verdicts, function_alarms, function_sync, function_charter_history"
+    },
+    {
+      "name": "C profiles必需列",
+      "verdict": "PASS",
+      "observed": "含必需列: function_name, charter（全部列: function_id, work_id, function_name, jurisdiction, watch, speak_contract, escalation, duty, charter, created_at, updated_at）"
+    },
+    {
+      "name": "D 不进卡片世界",
+      "verdict": "PASS",
+      "observed": "无 fn_ id 存在（空集无违例对象）"
+    },
+    {
+      "name": "E 存量work不被破坏",
+      "verdict": "PASS",
+      "observed": "work=work_001 触发GET /api/works/work_001/cards/card_001 (status=200)；cards行数 before=3 after=3；表 before=18 after=18；缺失原表=无"
+    },
+    {
+      "name": "F 旧role_*仍在",
+      "verdict": "PASS",
+      "observed": "五张 role_* 表都在: role_profiles, role_verdicts, role_alarms, role_sync, role_charter_history"
+    }
+  ],
+  "summary": {
+    "pass": 5,
+    "fail": 1,
+    "skip": 0
+  }
+}
