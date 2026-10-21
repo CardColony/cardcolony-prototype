@@ -24,7 +24,7 @@ import { escapeHtml } from "./esm/util.js?v=30";
 // 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=41";
+import { RenderNav } from "./esm/nav_system.js?v=42";
 import { notify } from "./esm/api.js?v=42";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复

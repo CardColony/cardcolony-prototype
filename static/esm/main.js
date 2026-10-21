@@ -12,8 +12,8 @@
 import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=42";
 import "./util.js?v=30";
-import "../canvas.js?v=80";
-import { createNavSystem } from "./nav_system.js?v=41";
+import { reloadCanvas } from "../canvas.js?v=81";
+import { createNavSystem } from "./nav_system.js?v=42";
 import { loadRulePanel } from "./rule_panel.js?v=33";
 
 const WORK_ID = window.__WORK_ID__;
@@ -31,6 +31,9 @@ const navSystem = createNavSystem({
   getCurrentCard: () => null,
   open: (cid) => { location.assign("/work/" + WORK_ID + "/card/" + cid); },
   inspector: null,
+  /* [删卡刷新 2026-10-21] 画布页删卡后要就地重建：左栏重画只动左栏，
+     画布上那张卡不重建就还挂着，用户看着像"没删掉"。 */
+  onCardsChanged: () => { try { reloadCanvas(); } catch (e) { /* 零阻断 */ } },
 });
 
 /* [阶段2 A2.2 补齐 2026-10-17] 旧 hash 链接兼容（**画布页侧**）。

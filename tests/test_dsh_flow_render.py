@@ -363,9 +363,9 @@ def test_t6_touched_modules_bumped():
         # 版本戳处置按 5715 那次的规程：**在 dev 的编号基础上重算**，不是逐文件取大
         # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
         # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
-"stream.js": "52", "workspace.js": "73", "canvas.js": "80",
-        "assembler.js": "40", "style.css": "49", "main.js": "78.2",
-        "main_chat.js": "4.5",
+"stream.js": "52", "workspace.js": "74", "canvas.js": "81",
+        "assembler.js": "40", "style.css": "49", "main.js": "78.3",
+        "main_chat.js": "4.6",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
         "chat-view.js": "7", "message-item.js": "1",
@@ -448,3 +448,43 @@ def test_nav_project_row_click_uses_single_identity_gate():
     assert "is: selectIs" in st
     assert "parseHash(loc.hash)" not in st, \
         "get() 不该再回退读 hash（画布页会误判成「有当前卡」）"
+
+
+def test_nav_delete_card_is_not_a_dead_button():
+    """[删卡 2026-10-21] 用户报「左侧 ⋯ 里的删除是无效按钮」。
+
+    三处都要成立：
+      ① 置灰的删除被点时**说清原因**（原来静默 return ⇒ 点了完全没反应）；
+      ② 删的是当前卡 ⇒ 回项目画布页（原来只 replaceState 去 hash，而 hash 早没了
+         ⇒ 等于什么都没做，页面停在指向已删卡的死地址）；
+      ③ 画布页删卡 ⇒ 通知宿主就地重建（只 renderNav 的话画布上那张卡还挂着）。
+    """
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert "项目根卡不能删" in nav and "还有子卡" in nav, "置灰的删除必须给出原因"
+    assert 'location.href = "/work/" + wid' in nav, "删当前卡应回项目画布页"
+    assert "cardsChanged()" in nav, "删卡后要通知宿主重建（画布页）"
+    assert "onCardsChanged" in nav, "缺「卡数据变了」注入口"
+
+    main_js = (ROOT / "static" / "esm" / "main.js").read_text(encoding="utf-8")
+    assert "reloadCanvas" in main_js and "onCardsChanged" in main_js, \
+        "画布页必须注入 reloadCanvas 作为重建回调"
+
+
+def test_nav_delete_card_is_not_a_dead_button():
+    """[删卡 2026-10-21] 用户报「左侧 ⋯ 里的删除是无效按钮」。
+
+    三处都要成立：
+      ① 置灰的删除被点时**说清原因**（原来静默 return ⇒ 点了完全没反应）；
+      ② 删的是当前卡 ⇒ 回项目画布页（原来只 replaceState 去 hash，而 hash 早没了
+         ⇒ 等于什么都没做，页面停在指向已删卡的死地址）；
+      ③ 画布页删卡 ⇒ 通知宿主就地重建（只 renderNav 的话画布上那张卡还挂着）。
+    """
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert "项目根卡不能删" in nav and "还有子卡" in nav, "置灰的删除必须给出原因"
+    assert 'location.href = "/work/" + wid' in nav, "删当前卡应回项目画布页"
+    assert "cardsChanged()" in nav, "删卡后要通知宿主重建（画布页）"
+    assert "onCardsChanged" in nav, "缺「卡数据变了」注入口"
+
+    main_js = (ROOT / "static" / "esm" / "main.js").read_text(encoding="utf-8")
+    assert "reloadCanvas" in main_js and "onCardsChanged" in main_js, \
+        "画布页必须注入 reloadCanvas 作为重建回调"
