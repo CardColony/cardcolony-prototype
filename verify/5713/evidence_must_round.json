@@ -1,0 +1,52 @@
+[
+  {
+    "name": "A 命中必须轮",
+    "verdict": "PASS",
+    "observed": "create_card=False, create_coder_card=False, create_function=True"
+  },
+  {
+    "name": "B 已跑过一轮",
+    "verdict": "PASS",
+    "observed": "create_card=True"
+  },
+  {
+    "name": "C 已有职能",
+    "verdict": "SKIP",
+    "observed": "create_card=False（注入 __function_profiles__ 后闸门仍触发）（缺：实现方读取职能的机制不认 cards 合成键；需预置一个含 function_profiles 行的 work 方可外部验证（本验收器不写库，无法预置））"
+  },
+  {
+    "name": "D 非根卡",
+    "verdict": "PASS",
+    "observed": "create_card=True"
+  },
+  {
+    "name": "E 非 auto",
+    "verdict": "PASS",
+    "observed": "create_card=True"
+  },
+  {
+    "name": "F 必须轮里组织类仍在",
+    "verdict": "PASS",
+    "observed": "create_function=True, update_status=True, append_ruling=True"
+  },
+  {
+    "name": "G 不误伤只读·read_card",
+    "verdict": "PASS",
+    "observed": "read_card=存在"
+  },
+  {
+    "name": "G 不误伤只读·read_file",
+    "verdict": "PASS",
+    "observed": "read_file=存在"
+  },
+  {
+    "name": "G 不误伤只读·list_files",
+    "verdict": "PASS",
+    "observed": "list_files=存在"
+  },
+  {
+    "name": "G 不误伤只读·search_files",
+    "verdict": "PASS",
+    "observed": "search_files=存在"
+  }
+]
