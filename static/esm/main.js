@@ -12,8 +12,8 @@
 import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=42";
 import "./util.js?v=30";
-import "../canvas.js?v=78";
-import { createNavSystem } from "./nav_system.js?v=39";
+import "../canvas.js?v=80";
+import { createNavSystem } from "./nav_system.js?v=41";
 import { loadRulePanel } from "./rule_panel.js?v=33";
 
 const WORK_ID = window.__WORK_ID__;
@@ -41,7 +41,8 @@ const navSystem = createNavSystem({
  * 与 bootRestore 同一份解析，不另造第二套。
  * 放在 startNav() 之前：既然要跳走，就别先把导航/画布渲染一遍。 */
 {
-  const sel = navSystem.navStore.select.get();
+  // [当前卡单源 2026-10-21] 旧链接判定**只认 hash**（select.get 现在只读路径）。
+  const sel = navSystem.navStore.select.parse(location.hash);
   if (sel && sel.cid) {
     location.replace("/work/" + sel.wid + "/card/" + sel.cid);
   }

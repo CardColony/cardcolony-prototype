@@ -14,7 +14,7 @@ import { notify, postStop } from "./esm/api.js?v=42";
 //   （原先在装配闭包里 ⇒ 不可单测）；此处不再需要 cardmsg.js 的解析件。
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=39";
+import { createNavSystem } from "./esm/nav_system.js?v=41";
 import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=33";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
@@ -105,7 +105,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   try {
     EventFlow.onRunChange((wid, cid, running) => {
       if (wid !== WORK_ID) return;
-      if (!currentCard || currentCard.meta.card_id !== cid) return;
+      // [当前卡单源 2026-10-21] 与左栏早退、高亮、面包屑用同一个判断口
+      if (!navStore.select.is(WORK_ID, cid)) return;
       applyRunState(running, cid);
     });
   } catch (e) { /* 旧版 stream 无此口：零阻断 */ }
@@ -274,6 +275,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // 且快速连点时后到的 await 会把旧卡写进新卡（P4 串卡的界面侧表现）。
     bindBoard(WORK_ID, cardId);
     switchComposer(cardId);   // [5702] 输入会话同步换绑：点下去草稿立刻按卡切换
+    /* [当前卡单源 2026-10-21] 身份在「点下去」这一刻就写进路径——它是 select.is()
+       的唯一来源。原来拖到 open 末尾才写，中途任何判断（早退/高亮/徽标）看到的
+       都还是上一张卡。 */
+    try { navStore.select.set(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
     try {
       const card = await API.getCard(WORK_ID, cardId, { signal: ctrl.signal });
       if (stale()) return;
@@ -314,7 +319,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
        * 原写法：先 select.set() 写 hash、再 replaceState 写路径 ⇒ hash 被后写者抹掉
        * ⇒ select.get() 恒 null ⇒ **侧栏从不高亮当前卡**、面包屑/定位/收起全部全失准。
        * hash 已退役承载选中（2026-10-17 A2.2），旧 hash 链接由 bootRestore 一次性重定向。 */
-      navStore.select.set(WORK_ID, cardId);
+      // [当前卡单源] 身份已在函数开头写入路径（点下去即成立），此处不再重复写。
       // [S3/R-25/V3-F5] 成功跳转（getCard 已取回）才记最近访问；失败/灰态不进此路径
       navFind.recordRecent(WORK_ID, cardId, card.meta.title);
       // [阶段5 A5.1] 视图切换机制退役：本页恒为对话态，无需 setAppView。

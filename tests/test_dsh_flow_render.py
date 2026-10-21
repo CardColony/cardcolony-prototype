@@ -363,9 +363,9 @@ def test_t6_touched_modules_bumped():
         # 版本戳处置按 5715 那次的规程：**在 dev 的编号基础上重算**，不是逐文件取大
         # ⇒ 对话侧全取 dev 的号；画布链取 dev 的号 +1（canvas.js 75→76、
         # canvas.css 20→21、main.js 73.3→73.4、build-stamp v72→v73）。
-"stream.js": "52", "workspace.js": "70", "canvas.js": "78",
-        "assembler.js": "40", "style.css": "49", "main.js": "78.0",
-        "main_chat.js": "4.1",
+"stream.js": "52", "workspace.js": "72", "canvas.js": "80",
+        "assembler.js": "40", "style.css": "49", "main.js": "78.2",
+        "main_chat.js": "4.3",
         "machine.js": "1", "submission-policy.js": "1", "composer-submission.js": "1",
         "input-bar.js": "5", "queue-dock.js": "3", "queue-store.js": "2",
         "chat-view.js": "7", "message-item.js": "1",
@@ -400,3 +400,51 @@ def test_composer_state_is_per_card():
     assert "bindSession(next)" in bar, "input-bar 缺 bindSession"
     dock = _strip_js_comments((FLOW / "queue-dock.js").read_text(encoding="utf-8"))
     assert "setStore(next)" in dock, "queue-dock 缺 setStore"
+
+
+def test_nav_project_row_click_uses_single_identity_gate():
+    """[当前卡单源 2026-10-21] 「是不是当前这张卡」只许问一个口：select.is(wid, cid)。
+
+    实测 5700 的 12 个项目**根卡 id 全是 card_001**；原来项目行早退拼了三个条件
+    （在对话页 且 当前卡存在 且 卡号相同）却少比项目号 ⇒ 点 B 项目被判成"已经在看"，
+    毫无反应（用户报「没办法从 A 项目直接点到 B 项目的根卡上」）。
+    """
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert "navStore.select.is(phead.dataset.wid, rootCid)" in nav, \
+        "项目行早退必须走 select.is(项目, 卡)"
+    assert "cur().meta.card_id === rootCid" not in nav, \
+        "不许再手拼「卡号相同」的判断（漏项目号）"
+    # 跨项目跳转走页面身份路径，不再拼旧 hash
+    assert '"/work/" + wid + "/card/" + cid' in nav
+    assert '"/work/" + wid + "#" + cid' not in nav
+
+    # 身份源：state_layers 的 select 提供唯一判断口，get() 只读路径
+    st = (ROOT / "static" / "esm" / "state_layers.js").read_text(encoding="utf-8")
+    assert "function selectIs(wid, cid)" in st, "缺唯一判断口 select.is"
+    assert "is: selectIs" in st
+    assert "parseHash(loc.hash)" not in st, \
+        "get() 不该再回退读 hash（画布页会误判成「有当前卡」）"
+
+
+def test_nav_project_row_click_uses_single_identity_gate():
+    """[当前卡单源 2026-10-21] 「是不是当前这张卡」只许问一个口：select.is(wid, cid)。
+
+    实测 5700 的 12 个项目**根卡 id 全是 card_001**；原来项目行早退拼了三个条件
+    （在对话页 且 当前卡存在 且 卡号相同）却少比项目号 ⇒ 点 B 项目被判成"已经在看"，
+    毫无反应（用户报「没办法从 A 项目直接点到 B 项目的根卡上」）。
+    """
+    nav = (ROOT / "static" / "esm" / "nav_system.js").read_text(encoding="utf-8")
+    assert "navStore.select.is(phead.dataset.wid, rootCid)" in nav, \
+        "项目行早退必须走 select.is(项目, 卡)"
+    assert "cur().meta.card_id === rootCid" not in nav, \
+        "不许再手拼「卡号相同」的判断（漏项目号）"
+    # 跨项目跳转走页面身份路径，不再拼旧 hash
+    assert '"/work/" + wid + "/card/" + cid' in nav
+    assert '"/work/" + wid + "#" + cid' not in nav
+
+    # 身份源：state_layers 的 select 提供唯一判断口，get() 只读路径
+    st = (ROOT / "static" / "esm" / "state_layers.js").read_text(encoding="utf-8")
+    assert "function selectIs(wid, cid)" in st, "缺唯一判断口 select.is"
+    assert "is: selectIs" in st
+    assert "parseHash(loc.hash)" not in st, \
+        "get() 不该再回退读 hash（画布页会误判成「有当前卡」）"

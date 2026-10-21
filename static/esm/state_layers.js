@@ -165,6 +165,21 @@ export function createNavStateStore(deps = {}) {
   }
   function serializePath(wid, cid) { return "/work/" + wid + "/card/" + cid; }
   function serializeHash(wid, cid) { return "#" + wid + "/" + cid; }   // 旧链接形态（仅供旧链接判定/测试）
+  /* [当前卡单源 2026-10-21] 「当前在看哪张卡」只有一个答案：**页面路径**。
+     改前 get() 还会回退读 hash（旧链接兼容）⇒ 画布页也能"有当前卡" ⇒ 逼得每个
+     判断点自己加 `inChat` 兜；而项目行早退少比了 work_id（所有项目的根卡都叫
+     card_001）⇒ 点 B 项目毫无反应。现在：
+       · get() 只读路径（旧链接判定走 parse(hash)，只在两个入口各做一次）
+       · is(wid, cid) 是**唯一**的「是不是当前这张卡」判断口，别处不许再拼条件
+     card_id 跨项目不唯一，所以身份必须是 (wid, cid) 复合键——这是数据模型既定事实。 */
+  function selectGet() {
+    return loc ? parsePathCard(loc.pathname) : null;
+  }
+  function selectIs(wid, cid) {
+    const s = selectGet();
+    if (!s) return false;
+    return String(s.wid) === String(wid) && String(s.cid) === String(cid);
+  }
   const select = {
     set(wid, cid) {
       if (!wid || !cid) return;
@@ -173,11 +188,8 @@ export function createNavStateStore(deps = {}) {
       //   ② 画布页读到 hash 会 location.replace 跳回对话页（esm/main.js 的旧链接重定向）。
       if (hist) hist.replaceState(null, "", serializePath(wid, cid));
     },
-    get() {
-      const p = loc ? parsePathCard(loc.pathname) : null;
-      if (p) return p;
-      return loc ? parseHash(loc.hash) : null;   // 旧链接兜底
-    },
+    get: selectGet,
+    is: selectIs,
     parse: parseHash,          // 纯函数透出（**只认 hash**：旧链接判定的唯一入口）
     parsePath: parsePathCard,  // 纯函数透出（路径形态）
     serialize: serializePath,
