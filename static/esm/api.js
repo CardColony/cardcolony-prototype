@@ -2,38 +2,91 @@
  * 原 static/api.js 的 IIFE 本体收编于此；[首页两态 2026-10-15] 该薄壳随旧列表页
  * 整体退役一并删除，本文件自此是 fetch 封装的唯一一份实现。
  */
-export async function request(method, url, body) {
-  const opts = { method, headers: {} };
-  if (body !== undefined) {
-    opts.headers["Content-Type"] = "application/json";
-    opts.body = JSON.stringify(body);
-  }
-  // messages / draft 不设超时（模型可能 30~120 秒），其他请求 15 秒
-  if (!url.includes("/messages") && !url.includes("/draft")) {
-    const ctrl = new AbortController();
-    opts.signal = ctrl.signal;
-    const t = setTimeout(() => ctrl.abort(), 15000);
-    try {
-      const resp = await fetch(url, opts);
+/* [网络层 2026-10-21] 三个根因在这里一次解决：
+   ① 15s 硬超时 ＋ **零重试**：一次瞬时抖动（后端正被一打请求排队）就报「请求超时」，
+      用户看到的是失败。GET 幂等 ⇒ 超时重试一次；POST 绝不重试（会重复落盘）。
+   ② 请求**无法被调用方取消**：快速切卡时旧请求还在飞，回来还要抢连接、排队写 DOM。
+      现在支持 `opts.signal`，调用方（open）切卡时 abort 上一个。
+   ③ 超时与「调用方主动取消」都表现为 AbortError，原来一律弹「请求超时」——
+      主动取消是正常流程，不该报错。按 signal 归属区分：外部 signal 已 abort ⇒ 静默抛。
+   ④ `opts.silent`：周期探活类请求不弹 toast（失败由调用方静默降级）。 */
+
+const DEFAULT_TIMEOUT_MS = 15000;
+
+/** 合成「外部取消 ＋ 内部超时」两路信号，返回 signal 与收尾函数。 */
+function _composeSignal(outer, ms) {
+  const ctrl = new AbortController();
+  const state = { timedOut: false };
+  const t = setTimeout(() => {
+    state.timedOut = true;
+    try { ctrl.abort(); } catch (e) { /* 零阻断 */ }
+  }, ms);
+  let onAbort = null;
+  if (outer) {
+    if (outer.aborted) {
       clearTimeout(t);
-      return resp;
-    } catch (e) {
-      clearTimeout(t);
-      throw e;
+      try { ctrl.abort(); } catch (e) { /* 零阻断 */ }
+    } else {
+      onAbort = () => { try { ctrl.abort(); } catch (e) { /* 零阻断 */ } };
+      outer.addEventListener("abort", onAbort, { once: true });
     }
   }
-  return await fetch(url, opts);
+  const cleanup = () => {
+    clearTimeout(t);
+    if (outer && onAbort) outer.removeEventListener("abort", onAbort);
+  };
+  return { signal: ctrl.signal, state, cleanup };
 }
 
-export async function call(method, url, body) {
+export async function request(method, url, body, opts) {
+  const o = opts || {};
+  const init = { method, headers: {} };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  // messages / draft 不设超时（模型可能 30~120 秒），其他请求 15 秒
+  if (url.includes("/messages") || url.includes("/draft")) {
+    if (o.signal) init.signal = o.signal;
+    return await fetch(url, init);
+  }
+  const ms = o.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const attempts = (o.retry === false || method !== "GET") ? 1 : 2;
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    const { signal, state, cleanup } = _composeSignal(o.signal, ms);
+    init.signal = signal;
+    try {
+      const resp = await fetch(url, init);
+      cleanup();
+      return resp;
+    } catch (e) {
+      cleanup();
+      lastErr = e;
+      // 调用方主动取消：立刻退出（不重试、不报错）
+      if (o.signal && o.signal.aborted) throw e;
+      // 非超时（断网 / 连接被拒）：不重试
+      if (!state.timedOut) throw e;
+      if (i === attempts - 1) throw e;
+    }
+  }
+  throw lastErr;
+}
+
+export async function call(method, url, body, opts) {
+  const o = opts || {};
   let resp;
   try {
-    resp = await request(method, url, body);
+    resp = await request(method, url, body, o);
   } catch (e) {
-    if (e.name === "AbortError") {
-      toast("请求超时", "error");
-    } else {
-      toast("网络错误：" + e.message, "error");
+    // 主动取消：静默（调用方自己决定后续，界面不该为「用户点了别的卡」报错）
+    if (o.signal && o.signal.aborted) throw e;
+    if (!o.silent) {
+      if (e.name === "AbortError") {
+        toast("请求超时", "error");
+      } else {
+        toast("网络错误：" + e.message, "error");
+      }
     }
     throw e;
   }
@@ -143,7 +196,7 @@ export const API = {
   getCanvas: (wid) => call("GET", `/api/works/${wid}/canvas`),
   patchPositions: (wid, positions) => call("PATCH", `/api/works/${wid}/canvas/positions`, { positions }),
   createCard: (wid, body) => call("POST", `/api/works/${wid}/cards`, body),
-  getCard: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}`),
+  getCard: (wid, cid, opts) => call("GET", `/api/works/${wid}/cards/${cid}`, undefined, opts),
   // [角色机制 5710] 角色卡：组阁/关注/巡检/判词/警报
   getRoles: (wid) => call("GET", `/api/works/${wid}/roles`),
   getRole: (wid, rid) => call("GET", `/api/works/${wid}/roles/${rid}`),
@@ -193,7 +246,7 @@ export const API = {
   // 传 op（如 "update_status"）⇒ 本轮走专用通道（后端认它注入专用任务 + 追加专用工具）。
   postMessage: (wid, cid, content, op) => call("POST",
     `/api/works/${wid}/cards/${cid}/messages`, op ? { content, op } : { content }),
-  getProgress: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/progress`),
+  getProgress: (wid, cid, opts) => call("GET", `/api/works/${wid}/cards/${cid}/progress`, undefined, opts),
   // [迭代四 F3①] 停止按钮（U-7）
   postStop: (wid, cid) => postStop(wid, cid),
   // [5715] 插话（投递进正在跑的这一轮）
