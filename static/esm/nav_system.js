@@ -16,9 +16,14 @@ import { cardInSnapshot } from "./nav_badge.js?v=30";
 let _renderNavImpl = () => {};
 export const RenderNav = () => _renderNavImpl();
 
-export function createNavSystem({ workId, navTree, api, getCurrentCard, open, inspector }) {
+export function createNavSystem({ workId, navTree, api, getCurrentCard, open, inspector,
+                                 onCardsChanged }) {
   const API = api;
   const cur = () => getCurrentCard();  // 搬运段原文的 currentCard（只读）
+  /* [删卡刷新 2026-10-21] 卡数据变了要通知宿主：画布页传 reloadCanvas（就地重建），
+     对话页不传（它靠 renderNav + 路径跳转）。原来删完只 renderNav，画布上那张卡
+     还在原地——用户看着像"没删掉"。 */
+  const cardsChanged = typeof onCardsChanged === "function" ? onCardsChanged : () => {};
   // [惰性新建 2026-10-17] 当前 work_id 改**惰性读**：草稿落库成功后 window.__WORK_ID__
   // 就地更新（画布/对话页写），本模块的跳转/建卡/通知口须随取随新——原 const 捕获在
   // 落库后失准（跳转会退回整页重载、通知口打草稿 id → 404）。INIT_WORK_ID 是创建
@@ -164,7 +169,14 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     navMenuEl.querySelectorAll(".nav-menu-item").forEach(item => {
       item.onclick = (e) => {
         e.stopPropagation();
-        if (item.classList.contains("disabled")) return;   // 带子卡的卡：删除不可点
+        if (item.classList.contains("disabled")) {
+          /* [删卡可解释 2026-10-21] 原来静默 return ⇒ 用户点了完全没反应，
+             以为按钮坏了。现在说清为什么不能删。 */
+          closeNavMenu();
+          if (isProject) notify("项目根卡不能删（它是这个项目的入口）", "warn");
+          else notify("这张卡还有子卡，先删掉子卡", "warn");
+          return;
+        }
         const act = item.dataset.act;
         closeNavMenu();
         if (act === "del") { doDeleteCard(wid, cid, card); return; }
@@ -183,9 +195,14 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     } catch (e) {
       return;   // toast 已由 api.js 处理
     }
-    if (cur() && cur().meta.card_id === cid) {
-      history.replaceState(null, "", location.pathname + location.search);   // 删的是当前卡：摘 hash
+    /* [删卡后去哪 2026-10-21 · 修] 删的是当前卡 ⇒ 路径还指着已删的卡（原来只
+       replaceState 去 hash，而 hash 早就没了 ⇒ 等于什么都没做），页面停在死地址上。
+       现在直接回项目画布页。 */
+    if (navStore.select.is(wid, cid)) {
+      location.href = "/work/" + wid;
+      return;
     }
+    cardsChanged();          // 画布页：就地重建（否则那张卡还挂在画布上）
     await renderNav();
   }
 
