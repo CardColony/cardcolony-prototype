@@ -4,10 +4,10 @@
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=41";
+import { notify } from "./api.js?v=42";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=31";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=36";
+import { createNavRenderer } from "./nav_render.js?v=37";
 import { createNavFind } from "./nav_find.js?v=30";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -66,8 +66,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     vl: navRenderer.vl,
   });
 
-  async function renderNav() {
-    await navRenderer.refresh();
+  /* opts 透传给渲染器：[切卡不再重拉导航 2026-10-21] 传 { network:false } ⇒ 只按
+     已有快照重画（切卡/换选中走这条），不额外请求 /api/nav ＋ /api/nav/version。 */
+  async function renderNav(opts) {
+    await navRenderer.refresh(opts);
     // [S3/R-29] 展开态还原：S2 refresh 只灌当前 work 的段——其余「prefs 记着开着」的
     // 项目与分支 reload/切回后段缺失（▾ 却无行）。从全量快照零网络补灌后再重切。
     if (restoreOpenSegments()) navRenderer.render();

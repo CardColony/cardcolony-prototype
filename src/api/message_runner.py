@@ -118,6 +118,11 @@ class RunState:
     # 采集后与末轮回执拼接交付（分析在前、回执在后），不取代回执。
     analysis_parts: list[str] = field(default_factory=list)
     model_used: Optional[str] = None
+    # [模型选择底座 2026-10-21] 本轮**实际请求**的模型名（_pick_step_model /
+    # resolve_model 的返回值）。prompt 日志记它，而不是另算一次 default_model——
+    # 原来日志记的是「默认模型」，与实际调用的角色模型（execute/think/synthesize）
+    # 常常不是一个，看起来像「没按配置走」。
+    model_requested: Optional[str] = None
     # [DeepSeek 思考回传 2026-10-15] 本轮模型调用产出的思考（reasoning_content）。
     # 只做调用链内部传递：拿到 result 后立刻写入、存 assistant 条时立刻取用并清空。
     # **不进对话内容、不进前端渲染**（展示走 emit_token 独立通道）。
@@ -645,10 +650,13 @@ async def step(state: RunState) -> StepOutcome:
             prior_key="history", user_content=state.user_prompt,
             turn_tail=state.turn_tail, turn_once=state.judgment_tail,
         )
+        # [模型选择底座 2026-10-21] 座位只算一次，请求与日志同源
+        _seat = _pick_step_model(state)
+        state.model_requested = _seat
         result, state.model_used = await model_service.call_main(
             request["system_prompt"], request["user_prompt"], request["prior_messages"],
             tools=state.tools,
-            model_name=_pick_step_model(state),
+            model_name=_seat,
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
         )
@@ -670,10 +678,12 @@ async def step(state: RunState) -> StepOutcome:
             state, profile="main", prior_messages=wire_messages,
             prior_key="tool_turn", user_content=state.user_prompt,
         )
+        _seat = _pick_step_model(state)
+        state.model_requested = _seat
         result, state.model_used = await model_service.call_main(
             request["system_prompt"], request["user_prompt"], request["prior_messages"],
             tools=state.tools,
-            model_name=_pick_step_model(state),
+            model_name=_seat,
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
         )
@@ -1076,12 +1086,15 @@ async def run_seats(state: RunState) -> StepOutcome:
     # [迭代五 S2·E10] 统合官模型可配：model_pick.resolve_model("synthesize")，
     # 未配置回落默认模型（model_config.default_model()，缺省行为逐字不变）。
     # [模型设置按项目/卡片覆盖 2026-10-19] 带 work/card 作用域解析。
+    # [模型选择底座 2026-10-21] 座位只算一次：请求与日志同源。
+    _synth_seat = model_pick.resolve_model("synthesize",
+                                          work_id=state.work_id,
+                                          card_id=state.card_id)
+    state.model_requested = _synth_seat
     result, state.model_used = await model_service.call_main(
         synth_request["system_prompt"], synth_request["user_prompt"],
         synth_request["prior_messages"], tools=state.tools,
-        model_name=model_pick.resolve_model("synthesize",
-                                            work_id=state.work_id,
-                                            card_id=state.card_id),
+        model_name=_synth_seat,
         turn_tail=synth_request["turn_tail"],
         turn_once=synth_request["turn_once"],
     )
@@ -1155,6 +1168,8 @@ def write_logs(state: RunState) -> None:
         prior_messages=state.prior_for_gateway,
         user_prompt=state.content,
         model_used=state.model_used if state.error is None else None,
+        # [模型选择底座 2026-10-21] 记**实际请求**的模型（座位），不是另算一次默认。
+        model_requested=state.model_requested,
         # [T14-3] response 保末轮供审计（拼接在日志写之后，此时 final_reply 仍是
         # 末轮正文——prompt_log.response 语义不动，RD-08）；交付全文（分析＋回执）
         # 可经会话 assistant 条/prompt 日志 prior_messages 复核。

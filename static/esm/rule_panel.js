@@ -2,7 +2,7 @@
    [阶段1 A1.1 2026-10-17] 自 static/workspace.js 逐字搬运，零行为变更。
    面板 DOM：#rulePanelBody（templates/work.html 由本模块动态填充）。
    导出：loadRulePanel / renderRulePanel / saveRuleSection / getRuleCardId。 */
-import { API } from "./api.js?v=41";
+import { API } from "./api.js?v=42";
 import { escapeHtml } from "./util.js?v=30";
 
 /* [惰性新建 2026-10-17] WORK_ID 改惰性读：草稿落库成功后 window.__WORK_ID__ 就地更新

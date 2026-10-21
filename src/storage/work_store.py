@@ -173,6 +173,9 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
         from ..api import model_config
         from . import model_override
         model_override.seed_types(work_id, model_config.card_type_models())
+        # [模型配置表 2026-10-21] 建项目即把默认策略的结果填进表（含刚建好的根卡）；
+        # 之后新建的卡由 card_store.create_card 各自填行。运行时只读表。
+        model_config.seed_project(work_id)
     except Exception as exc:  # noqa: BLE001 种子化失败不阻断建项目（回落全局默认）
         logger.warning("create_work: 模型配置表种子化失败 work=%s: %s", work_id, exc)
 

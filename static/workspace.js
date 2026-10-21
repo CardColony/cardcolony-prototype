@@ -4,17 +4,17 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=41";
+import { API } from "./esm/api.js?v=42";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=51";
+import { EventFlow } from "./stream.js?v=52";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=41";
+import { notify, postStop } from "./esm/api.js?v=42";
 // [5715 · 抽模块] 卡间信的解析/剥头行与呈现都搬进 esm/flow/card-msg-node.js
 //   （原先在装配闭包里 ⇒ 不可单测）；此处不再需要 cardmsg.js 的解析件。
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=38";
+import { createNavSystem } from "./esm/nav_system.js?v=39";
 import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=33";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
@@ -74,17 +74,41 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   let queueDock = null;       // flow/queue-dock 实例
   let submitPolicy = null;    // flow/submission-policy 实例
 
-  // 运行态唯一入口：一处改，四处生效（会话事实 / 输入条 / 排队条 / 事件流运行条）
-  // [5702] 可显式给 cardId：切卡恢复运行态时不能写到「上一张卡」的运行条上。
-  function setRunState(running, cardId) {
+  /* ═══ [运行态单一真相源 2026-10-21] ═══
+     运行态的**唯一真相源是事件流**（stream.js 的 st.busy，由 run_start / done /
+     error / turn_end 帧推进）。本文件只持有它的**投影** sessionState.running
+     （输入条 / 排队条 / 主键共读这一处）。
+       · 宿主主动发起（发送、停止、切卡）：setRunState → 投影 + 回写 stream（fromHost）。
+       · 事件流推进：onRunChange → 只更新投影，**不回写**（单向，不成环）。
+     改前只有 workspace→stream 一个方向，stream 收口时没人告诉宿主 ⇒
+     「对话结束页面还停在运行中，必须刷新」。 */
+
+  /** 只更新本文件的投影（输入条 / 排队条 / 主键三处随之刷新）。 */
+  function applyRunState(running, cardId) {
     sessionState.running = !!running;
     if (inputBar) inputBar.refresh();
     if (queueDock) queueDock.refresh();
+  }
+
+  // 运行态唯一入口：一处改，四处生效（会话投影 / 输入条 / 排队条 / 事件流运行条）
+  // [5702] 可显式给 cardId：切卡恢复运行态时不能写到「上一张卡」的运行条上。
+  function setRunState(running, cardId) {
+    applyRunState(running, cardId);
     const cid = cardId || (currentCard ? currentCard.meta.card_id : "");
     if (cid) {
-      try { EventFlow.setRunning(WORK_ID, cid, !!running); } catch (e) { /* 零阻断 */ }
+      try { EventFlow.setRunning(WORK_ID, cid, !!running, { fromHost: true }); } catch (e) { /* 零阻断 */ }
     }
   }
+
+  /* 事件流推进运行态 → 只落到投影。卡对不上（事件属于别的卡）就忽略：
+     那张卡自己的投影在切回去时由 switchComposer 按 sessionRunning 恢复。 */
+  try {
+    EventFlow.onRunChange((wid, cid, running) => {
+      if (wid !== WORK_ID) return;
+      if (!currentCard || currentCard.meta.card_id !== cid) return;
+      applyRunState(running, cid);
+    });
+  } catch (e) { /* 旧版 stream 无此口：零阻断 */ }
 
   /* ═══ [5702 · 2026-10-20] 输入会话按卡隔离 ═══
      每张卡一个 InputMachine ＋ 一份前端权威队列；DOM 仍是单实例（dsh「一次建好」），
@@ -225,6 +249,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
      不是就立刻停手（一行 DOM 都不写）。这样 A 的异步链在自己这一层就断了，
      根本走不到写 DOM 那一步——不需要给每个写点打补丁。 */
   let _openSeq = 0;
+  /* [切卡取消在途请求 2026-10-21] 光有序号守卫只能「不写 DOM」——旧请求还在飞，
+     仍占着浏览器那 6 条连接，于是新卡的 getCard 排在它后面等，用户看到的就是
+     「切卡转圈、然后超时」。序号变了就把上一个请求**真的取消**（不是等它跑完）。 */
+  let _openCtrl = null;
 
   /** [建项目流程 2026-10-17] 显示板绑定：把某卡的画板挂到 #chatArea。
       从 open() 抽出——草稿落库后要**先换绑显示板、再走原发送路径**，
@@ -237,13 +265,17 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     if (cardId === "draft") return;   // [惰性新建] 草稿卡无真身：不走 getCard（否则 404）
     const mySeq = ++_openSeq;
     const stale = () => mySeq !== _openSeq;
+    // [切卡取消在途请求 2026-10-21] 先掐掉上一张卡还没回来的 getCard
+    if (_openCtrl) { try { _openCtrl.abort(); } catch (e) { /* 零阻断 */ } }
+    const ctrl = new AbortController();
+    _openCtrl = ctrl;
     // [画板四机制 T1/T4 2026-10-16] 点下去**同步翻页**：先把该卡的画板挂上
     // #chatArea，不等 getCard/inspector/timeline 任一 await——否则旧卡内容滞留，
     // 且快速连点时后到的 await 会把旧卡写进新卡（P4 串卡的界面侧表现）。
     bindBoard(WORK_ID, cardId);
     switchComposer(cardId);   // [5702] 输入会话同步换绑：点下去草稿立刻按卡切换
     try {
-      const card = await API.getCard(WORK_ID, cardId);
+      const card = await API.getCard(WORK_ID, cardId, { signal: ctrl.signal });
       if (stale()) return;
       currentCard = card;
       // [角色机制 5710] 角色卡的主界面就是右栏台账（关注/判词/警报）；
@@ -282,7 +314,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       // [阶段5 A5.1] 视图切换机制退役：本页恒为对话态，无需 setAppView。
       if (stale()) return;
       // 导航树重渲以应用当前卡高亮与祖先路径展开
-      await renderNav();
+      /* [切卡不再重拉导航 2026-10-21] 传 {network:false}：切卡只需要按已有快照重画
+         （高亮/祖先展开/面包屑），与 /api/nav、/api/nav/version 无关。此前每切一张卡
+         都白拉这两个接口 ⇒ 连点十张卡二十个请求排队，切卡从 14ms 涨到 655ms。 */
+      await renderNav({ network: false });
       if (stale()) return;
       // [顶栏整合 2026-10-13] 卡标题改由顶栏聊天态面包屑承载（原 #wsHeadTitle 随 .ws-head 整条删除）。
       // 放在 await renderNav() 之后——面包屑吃 navStore.snapshot，快照到位才有祖先链。
@@ -845,11 +880,29 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     autoGrowAll();
   }
 
-  // [phase8.6-C] 文本区高度自适应：内容多高就多高，上限由 CSS max-height 兜底
+  /* [phase8.6-C] 文本区高度自适应：内容多高就多高，上限由 CSS max-height 兜底。
+     [渲染层 2026-10-21] 原来每个元素各来一遍「写 height:auto → 读 scrollHeight →
+     写 height」，而它被 renderInspector / 每次 input 事件随时调用 ⇒ 读写交替，每次
+     读都强制一次同步布局（实测单次 190ms，输入时肉眼可见卡顿）。
+     改成**帧内批处理**：同一帧里先全部写 auto、再统一读、再统一写 ⇒ 一轮只有一次
+     强制布局；并被 rAF 合并（连续输入不会叠加成 N 次布局）。 */
+  const _autoGrowPending = new Set();
+  let _autoGrowRaf = 0;
   function autoGrowEl(el) {
     if (!el) return;
-    el.style.height = "auto";
-    el.style.height = el.scrollHeight + "px";
+    _autoGrowPending.add(el);
+    if (_autoGrowRaf) return;
+    const run = () => {
+      _autoGrowRaf = 0;
+      const els = Array.from(_autoGrowPending);
+      _autoGrowPending.clear();
+      for (const e of els) e.style.height = "auto";               // 批写
+      const hs = els.map((e) => e.scrollHeight);                  // 批读（一次布局）
+      els.forEach((e, i) => { e.style.height = hs[i] + "px"; });  // 批写
+    };
+    _autoGrowRaf = (typeof requestAnimationFrame === "function")
+      ? requestAnimationFrame(run)
+      : setTimeout(run, 0);
   }
   function autoGrowAll() {
     autoGrowEl(document.getElementById("charterEdit"));
@@ -1576,6 +1629,41 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     }
   }
 
+  /* ═══ [断流兜底 2026-10-21] ═══
+     运行态的权威来源是事件流（见 setRunState 上方注释）。但事件流本身会断：
+     代理超时、网络抖动、后端重启——这时 done/turn_end 帧收不到，前端就永远停在
+     「运行中」，只能刷新。这是**离线恢复**，不是给状态机打补丁：
+       · 只在「前端认为在跑」且「事件流已断」时才探活（流健康时零额外请求）；
+       · 后端 /progress 的 active 位是权威判据；
+       · 连续两次判「不在跑」才收口——自动续轮两轮之间有毫秒级空窗，一次不足为凭。 */
+  let _idleProbeHits = 0;
+  let _idleProbeInFlight = false;
+  setInterval(async () => {
+    if (!sessionState.running) { _idleProbeHits = 0; return; }
+    const cid = currentCard ? currentCard.meta.card_id : "";
+    if (!cid) return;
+    try { if (!EventFlow.streamDead(WORK_ID, cid)) { _idleProbeHits = 0; return; } }
+    catch (e) { /* 查不到断流状态就照常探一次 */ }
+    if (_idleProbeInFlight) return;
+    _idleProbeInFlight = true;
+    let st = null;
+    try { st = await API.getProgress(WORK_ID, cid, { silent: true }); }
+    catch (e) { st = null; }
+    finally { _idleProbeInFlight = false; }
+    if (!st) { _idleProbeHits = 0; return; }
+    const alive = (typeof st.active === "boolean")
+      ? st.active
+      : ACTIVE_STAGES.includes(st.stage);
+    if (alive) { _idleProbeHits = 0; return; }
+    _idleProbeHits += 1;
+    if (_idleProbeHits < 2) return;
+    _idleProbeHits = 0;
+    if (!sessionState.running) return;
+    if (!currentCard || currentCard.meta.card_id !== cid) return;
+    setRunState(false, cid);
+    try { EventFlow.stop(WORK_ID, cid); } catch (e) { /* 零阻断 */ }
+  }, 3000);
+
   // [更新现状按钮改造 2026-10-16] `op` 缺省＝普通发送（逐字不变）；传 "update_status"
   // ⇒「更新现状」专用回合：本轮用户消息＝按钮名（可见、留痕，不另编话术），
   // 完整指令走后端轮首注入；收口时多扫一次 propose_status 开对比窗。
@@ -1699,7 +1787,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         resend(content);
       };
     } finally {
-      setRunState(false);
+      /* [运行态单一真相源 2026-10-21] 收口**以事件流为准**：POST 同步返回后，
+         自动续轮/卡间调起可能已经在跑（run_start 帧先到、setRunState(true)）。
+         这里若无脑置 false，就会把刚开始的下一轮运行态抹掉——正是「自动模式
+         页面状态乱跳」的来源。stillBusy 读的就是真相源，只有它确实不在跑才收。 */
+      let stillBusy = false;
+      try { stillBusy = EventFlow.sessionRunning(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
+      if (!stillBusy) setRunState(false, cardId);
       /* [5702] 只给「还在看的这张卡」出队：切走了就不替别的卡发消息
          （队列留在那张卡自己的 store 里，切回时仍在）。 */
       if (!currentCard || currentCard.meta.card_id === cardId) drainQueue(sendingQueue);
@@ -1805,7 +1899,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       ensureMsgs(cardId).appendChild(err);
       err.querySelector(".retry-btn").onclick = () => { err.remove(); resend(content); };
     } finally {
-      setRunState(false);
+      // [运行态单一真相源 2026-10-21] 同 send()：以事件流真相为准，别抹掉已起跑的下一轮
+      let stillBusy = false;
+      try { stillBusy = EventFlow.sessionRunning(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
+      if (!stillBusy) setRunState(false, cardId);
       drainQueue();
     }
   }
