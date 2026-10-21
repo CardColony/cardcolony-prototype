@@ -61,10 +61,15 @@ DEFAULT_TRIGGER_TOKENS = 800_000
 # 单批窗口预算＝300,000 token（用户令：一次凝练 30 万 token；旧实现折成 630,000
 # 字节系同一自造系数的产物）。★与触发线必须同尺——两者共用 _msg_meter_tokens，
 # 只改一个会造成「触发按 80 万 token、一次只切 30 万字节」的口径分裂。
-# 单 job 批上限（源侧 condenseMaxBatchesPerJob 形态，缺省 20）、折叠触发周期
-# （源侧 fold-l1 FOLD_EVERY_BATCHES=5，游标式 batch_count − last_fold_check ≥ 5）。
+# 单 job 批上限（照抄源侧 dsh `condense.ts:2905` 的 **2026-09-09 用户裁定**）：
+#   「maxBatchesOverride：自动触发（maybeCondense）传 1——一次触发只跑一批，
+#    批后 mark 即停、未凝从窗口大小重新起算，等下一次自然触发；不再续派连跑。」
+#   源侧常量 `CONDENSE_MAX_BATCHES_PER_JOB = 2` **只给 import-drive 全量导入**用。
+# ★ 本项目此前缺省写成 20 并让自动触发吃缺省值 ⇒ 一次触发把触发线以上的积压
+#   全部压完（实测 card_006：3 批把 80 万 token 全吃掉，mark 推到 1825/1915，
+#   历史区只剩 90 块，模型近乎失忆）。**缺省必须＝1。**
 DEFAULT_WINDOW_BUDGET_TOKENS = 300_000
-DEFAULT_MAX_BATCHES = 20
+DEFAULT_MAX_BATCHES = 1
 FOLD_EVERY_BATCHES = 5
 
 # [T15-任务 3] 凝练 prompt 骨架（诸葛定，用户可事后推翻）：纯文本产出、
@@ -187,8 +192,12 @@ def window_budget_tokens() -> int:
 
 
 def condense_max_batches() -> int:
-    """单 job 批上限 [任务3，源侧 condenseMaxBatchesPerJob 形态]：
-    CONDENSE_MAX_BATCHES 覆盖优先，缺省 20（循环至窗口清空或达上限，源侧原义）。"""
+    """单 job 批上限（照抄源侧 2026-09-09 用户裁定）。
+
+    自动触发**只跑一批**（缺省 1）：批后 mark 即停，未凝从窗口大小重新起算，
+    等下一次自然触发。`CONDENSE_MAX_BATCHES` 仅供「全量导入」这类显式场景上调
+    （源侧对应 import-drive 用 `condenseMaxBatchesPerJob`，常量 2）。
+    """
     raw = os.environ.get("CONDENSE_MAX_BATCHES", "").strip()
     if raw:
         try:
