@@ -62,12 +62,15 @@ async def test_v1_mock_full_chain(sandbox, monkeypatch, caplog):
     monkeypatch.setattr(memory_store, "_condense_call", fake_condense_call)
     await memory_store.condense_turn_end(wid, cid)
 
-    # 落 entries（五字段恰齐）＋mark 推进到已凝末块＋1
+    # 落 entries（五字段恰齐 ＋ [原文入库 2026-10-20] 追溯两键 seq_from/seq_to）
     st = memory_store.load_memory(wid, cid)
     assert st["mark"] == 6  # 6 块（3 轮 u/a），末块 seq=5，mark=末块+1
     assert len(st["entries"]) == 3
     for e in st["entries"]:
-        assert set(e) == {"seq", "conclusion", "evidence", "occurred_at", "fingerprint"}
+        assert set(e) == {"seq", "conclusion", "evidence", "occurred_at", "fingerprint",
+                          "seq_from", "seq_to"}, "条目须带压自哪段原文（追溯链）"
+        # 追溯范围＝本批窗口（0..5 闭区间），不是反推
+        assert (e["seq_from"], e["seq_to"]) == (0, 5)
     # fingerprint 可复算＝凝练输入（块前缀未凝段全文）sha256 前 16
     # [工具结果落会话 2026-10-17] 改用统一读入门面（带 actor）：_build_condense_user_prompt
     # 现按 actor∈{human,assistant} 过滤，旧读函数 session_store.read_session 不产出
