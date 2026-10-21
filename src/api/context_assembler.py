@@ -290,12 +290,43 @@ def _load_role_cabinet(work_id: str, current_id: str,
         return {}
 
 
+def _load_function_roster(work_id: str, current_id: str) -> list[dict[str, Any]]:
+    """取本 work 的**全部职能档案**（93 区「现有职能」的数据源）。
+
+    **只在装配层取一次**，渲染器只读（context_regions 是纯函数、不做 IO——
+    模块头硬约束）。取自 ``function_store.list_profiles``（function_profiles 表，
+    职能**没有 cards 行**，所以这里只能直接查职能表，查 cards 是取不到的）。
+
+    只对项目根卡取：只有根卡能组阁/调阁，把职能清单摊给别的卡既无用也是噪音。
+    取不到（库异常／work 不存在）⇒ 空列表 ⇒ 区不出现（fail-open，不阻断装配）。
+    """
+    root_id = ""
+    try:
+        root_id = work_store.work_card_id_of(work_id)
+    except Exception:  # noqa: BLE001 取不到根卡＝没有来源，不阻断装配
+        return []
+    if not root_id or current_id != root_id:
+        return []                      # 非根卡：取都不取
+
+    try:
+        from ..storage import function_store
+        return function_store.list_profiles(work_id) or []
+    except Exception as exc:  # noqa: BLE001 该区取不到就不出现，绝不影响装配
+        logger.warning("[region] 职能清单取数失败 work=%s: %s", work_id, exc)
+        return []
+
+
 def build_ctx(work_id: str, current_id: str,
               memory_state: dict[str, Any] | None = None,
-              history_source: list[dict[str, Any]] | None = None) -> context_regions.RegionCtx:
+              history_source: list[dict[str, Any]] | None = None,
+              function_meta: dict[str, Any] | None = None) -> context_regions.RegionCtx:
     """取数一次（**装配链上唯一的 IO 处**）：卡片索引／当前卡／树类／类型注册表／凝练态。
 
     渲染器（`context_regions`）保持纯函数——它们只读这个 ctx，不自己取数。
+
+    ``function_meta``（[card_041]）：职能回合的「我是谁」档案。职能没有 cards 行，
+    由 function_room 回合执行器把 function_store.get_profile 的结果显式传进来，
+    145 区（function_self）才会渲染。缺省 None ⇒ 行为与既往逐字不变（区不出）。
     """
     cards = _load_cards_index(work_id)
     cur = next((c for c in cards if c["card_id"] == current_id), None)
@@ -325,6 +356,12 @@ def build_ctx(work_id: str, current_id: str,
         direct_child_status=_load_direct_child_status(work_id, current_id),
         # [第二层区 2026-10-20] 只对根卡取数（别的卡返回 {}，区不出现）。
         role_cabinet=_load_role_cabinet(work_id, current_id, cards),
+        # [function 实体化第二步 2026-10-21 · card_031] 职能两区取数一次（装配层）。
+        # function_roster 只对根卡非空（别的卡空列表 ⇒ 93 区不出现）；
+        # function_meta 由调用方显式传入（[card_041] 职能回合执行器喂档案，
+        # 145 区 function_self 才会渲染；缺省空 ⇒ fail-open 空串，行为不变）。
+        function_roster=_load_function_roster(work_id, current_id),
+        function_meta=dict(function_meta or {}),
         project_class=pc,
         type_registry=card_store.load_type_registry(),
         type_texts=load_type_texts(),
@@ -355,9 +392,11 @@ def build_context_regions(work_id: str, current_id: str,
 
 def build_context_bundle(work_id: str, current_id: str,
                          memory_state: dict[str, Any] | None = None,
-                         history_source: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                         history_source: list[dict[str, Any]] | None = None,
+                         function_meta: dict[str, Any] | None = None) -> dict[str, Any]:
     """一次建好主模型/三席上下文帧；system、history 均由同一注册表渲染。"""
-    ctx = build_ctx(work_id, current_id, memory_state, history_source)
+    ctx = build_ctx(work_id, current_id, memory_state, history_source,
+                    function_meta=function_meta)
     main = context_regions.compose_model_context(ctx, profile="main")
     viewpoints = context_regions.compose_model_context(ctx, profile="viewpoint")
     return {

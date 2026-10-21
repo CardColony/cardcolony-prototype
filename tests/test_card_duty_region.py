@@ -116,7 +116,8 @@ async def test_v7_fail_open_missing_registry(sandbox, monkeypatch, tmp_path):
     wid, cid = await _make_work()
     monkeypatch.setattr(card_store, "TYPE_REGISTRY_PATH", tmp_path / "nope.json")
     regions = context_assembler.build_context_regions(wid, cid)  # 不抛
-    assert [r["order"] for r in regions] == [100, 150, 155]
+    # [2026-10-22] 新增 92 卡片能力 区
+    assert [r["order"] for r in regions] == [92, 100, 150, 155]
     assert not any(r["name"] == "卡片职责" for r in regions)
 
 

@@ -1,0 +1,53 @@
+{
+  "checked_at": "2026-10-22T00:04:18+0800",
+  "instance": "http://127.0.0.1:5713",
+  "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox",
+  "repo_root": "D:\\AI_station\\推演agent\\.worktrees\\5713",
+  "items": [
+    {
+      "name": "A 旧工具消失",
+      "verdict": "PASS",
+      "observed": "TOOL_REGISTRY 无旧工具残留（查 5 个旧名，注册表共 52 件）"
+    },
+    {
+      "name": "B 新工具齐备",
+      "verdict": "PASS",
+      "observed": "TOOL_REGISTRY 与 TOOL_SWITCH 均含五个新工具（create_function, list_functions, function_watch_cards, update_function_profile, set_function_duty），且无旧名残留；注册表共 52 件"
+    },
+    {
+      "name": "C 常量改名",
+      "verdict": "SKIP",
+      "observed": "ROLE_ONLY_TOOLS 仍存在但与 FUNCTION_ONLY_TOOLS 取值完全相同（判定为保留别名）：旧=['correct_alarm', 'issue_directive', 'raise_alarm', 'record_verdict', 'verify_directive'] 新=['correct_alarm', 'issue_directive', 'raise_alarm', 'record_verdict', 'verify_directive']"
+    },
+    {
+      "name": "D fn_ 身份且不进 cards",
+      "verdict": "PASS",
+      "observed": "work=work_082 建出 id=fn_001（形如 fn_\\d{3}：是）；cards 表命中 0 条；canvas 命中：否；canvas 卡片 1 张"
+    },
+    {
+      "name": "E function_roster 区",
+      "verdict": "PASS",
+      "observed": "order=93 已登记；根卡有数据出区且含职能名「验收哨兵职能甲」（51 字）；空清单出空串；非根卡出空串"
+    },
+    {
+      "name": "F function_self 区",
+      "verdict": "PASS",
+      "observed": "order=145 已登记；有 function_meta 时出区且含职责书原文哨兵、并含「不在任务树」意思句：「你不在任务树里，不干活，只盯；该开口时才开口，否则沉默。」；空 function_meta 出空串且不抛异常"
+    },
+    {
+      "name": "G 配置版本",
+      "verdict": "PASS",
+      "observed": "_meta.version=context-regions-v9；function_roster{order=93,enabled=True}, function_self{order=145,enabled=True} 均 enabled 且 order 正确"
+    },
+    {
+      "name": "H 旧路径未破",
+      "verdict": "PASS",
+      "observed": "work=work_001 的 cards.db 五张 role_* 表齐备（role_profiles, role_verdicts, role_alarms, role_sync, role_charter_history；额外 role_* 表: role_directives）；src.storage.role_store: import OK | src.api.role_room: import OK"
+    }
+  ],
+  "summary": {
+    "pass": 7,
+    "fail": 0,
+    "skip": 1
+  }
+}

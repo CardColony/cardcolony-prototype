@@ -44,8 +44,8 @@ def test_create_card_in_tool_schemas():
     assert names.count("create_card") == 1
     schema = next(t for t in card_tools.build_tool_schemas("card_x", cards=cards)
                   if t["name"] == "create_card")
-    assert set(schema["parameters"]["properties"]) == {"title", "parent", "content"}
-    assert schema["parameters"]["required"] == ["title"]
+    assert set(schema["parameters"]["properties"]) == {"title", "parent", "content", "mission"}
+    assert schema["parameters"]["required"] == ["title", "mission"]
 
 
 def test_no_card_context_returns_empty_toolface():
@@ -133,7 +133,7 @@ async def test_create_card_defaults_parent_to_current(work, sandbox):
     cur = work["work_card_id"]
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
-        wid, cur, "create_card", {"title": "子议题", "content": "正文"}, cards)
+        wid, cur, "create_card", {"mission": "负责验证用的这一块：测试里用来说明这张卡管什么。", "title": "子议题", "content": "正文"}, cards)
     # [T-0010 §1] 成功载荷在 data 内
     assert out["ok"] is True
     assert out["data"]["parent"] == cur
@@ -146,7 +146,7 @@ async def test_create_card_accepts_own_descendant(work, sandbox):
     child = await _mk(wid, "一级子卡", cur)
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
-        wid, child, "create_card", {"title": "孙卡"}, cards)
+        wid, child, "create_card", {"mission": "负责验证用的这一块：测试里用来说明这张卡管什么。", "title": "孙卡"}, cards)
     assert out["ok"] is True
     assert out["data"]["parent"] == child
 
@@ -160,7 +160,7 @@ async def test_create_card_denies_out_of_subtree(work, sandbox):
     before = len(card_store.iter_card_metas(wid))
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
-        wid, me, "create_card", {"title": "越权卡", "parent": other}, cards)
+        wid, me, "create_card", {"mission": "负责验证用的这一块：测试里用来说明这张卡管什么。", "title": "越权卡", "parent": other}, cards)
     # [T-0010 §1] 权限拒绝 → denied，文案逐字不动
     assert out["ok"] is False
     assert out["error"]["code"] == "denied"
@@ -177,7 +177,7 @@ async def test_create_card_rejects_sibling_parent(work, sandbox):
     b = await _mk(wid, "乙", cur)
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
-        wid, a, "create_card", {"title": "越权", "parent": b}, cards)
+        wid, a, "create_card", {"mission": "负责验证用的这一块：测试里用来说明这张卡管什么。", "title": "越权", "parent": b}, cards)
     assert out["ok"] is False and out["error"]["code"] == "denied"
 
 
@@ -187,7 +187,7 @@ async def test_create_card_nonexistent_parent_not_oversight_error(work, sandbox)
     cur = work["work_card_id"]
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools.execute_tool(
-        wid, cur, "create_card", {"title": "X", "parent": "card_999"}, cards)
+        wid, cur, "create_card", {"mission": "负责验证用的这一块：测试里用来说明这张卡管什么。", "title": "X", "parent": "card_999"}, cards)
     # [T-0010 §1] 不存在 → not_found（不是 denied）
     assert out["ok"] is False
     assert out["error"]["code"] == "not_found"
@@ -199,7 +199,7 @@ async def test_create_card_empty_title_rejected(work, sandbox):
     wid = work["work_id"]
     cur = work["work_card_id"]
     cards = card_tools._collect_card_meta(wid)
-    out = await card_tools.execute_tool(wid, cur, "create_card", {"title": "   "}, cards)
+    out = await card_tools.execute_tool(wid, cur, "create_card", {"mission": "负责验证用的这一块：测试里用来说明这张卡管什么。", "title": "   "}, cards)
     # [T-0010 §1] 参数缺失/为空 → validation
     assert out["ok"] is False and out["error"]["code"] == "validation"
 
@@ -211,7 +211,7 @@ async def test_create_card_receipt_has_real_card_id(work, sandbox):
     wid = work["work_id"]
     cur = work["work_card_id"]
     cards = card_tools._collect_card_meta(wid)
-    out = await card_tools.execute_tool(wid, cur, "create_card", {"title": "回执卡"}, cards)
+    out = await card_tools.execute_tool(wid, cur, "create_card", {"mission": "负责验证用的这一块：测试里用来说明这张卡管什么。", "title": "回执卡"}, cards)
     assert out["ok"] is True
     new_id = out["data"]["card_id"]
     assert new_id.startswith("card_")
@@ -226,7 +226,7 @@ async def test_create_card_syncs_meta_cache(work, sandbox):
     wid = work["work_id"]
     cur = work["work_card_id"]
     cards = card_tools._collect_card_meta(wid)
-    out = await card_tools.execute_tool(wid, cur, "create_card", {"title": "新卡"}, cards)
+    out = await card_tools.execute_tool(wid, cur, "create_card", {"mission": "负责验证用的这一块：测试里用来说明这张卡管什么。", "title": "新卡"}, cards)
     assert out["data"]["card_id"] in cards, "新卡须进入同轮 cards 字典"
 
 

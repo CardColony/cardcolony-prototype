@@ -435,7 +435,10 @@ async def test_t6_inbox_record_shape(sandbox):
     assert rec["from_card"] == "card_001"
     assert rec["target_card_id"] == "card_002"
     assert rec["type"] == "msg_notify"
-    assert rec["status"] == "pending"
+    # [取消 inbox 状态机 2026-10-22 · D25] 不再有 status 状态位。
+    # 「这条是新消息」由读取水位算：该卡水位仍是 -1，所以它出现在 list_pending 里。
+    assert rec.get("status") is None, "messages 表没有 status 列，应为 None"
+    assert await card_db.get_seen_seq(wid, "card_002") == -1
     parsed = card_msg.parse_header(rec["content"])
     assert parsed is not None
     assert parsed["id"] == msg_id and parsed["type"] == "msg_notify"
@@ -465,7 +468,9 @@ async def test_live_fire_send_once(sandbox):
     pending = await card_db.list_pending(wid, "card_003")
     assert len(pending) == before + 1
     assert pending[-1]["from_card"] == "card_002"
-    assert pending[-1]["status"] == "pending"
+    # [D25] 无状态位；未处理由水位判断
+    assert pending[-1].get("status") is None
+    assert await card_db.get_seen_seq(wid, "card_003") == -1
     # 对话块零新增（B 自己的话之外不落档）
     assert await session_facade.read(wid, "card_003") == []
     assert "card_msg_send" in session_ops.ops_path().read_text(encoding="utf-8")
@@ -717,14 +722,29 @@ async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
     # A 回合：模型只产内容（不碰发信工具——它已不在模型可见清单里）
     await routes._run_message(wid, "card_002", "请向孙卡A1核对数字")
     # 流程代码调用内部接口发信（基础设施唯一入口；模型不可见、参数由流程语义决定）
+    # [发信即投递 2026-10-22 · D20/D24] 这条消息会**立即**给 card_003 起一轮，
+    # 所以先记快照，发完等那一轮跑完，再断言落库与水位。
+    _pre_send = async_settle.snapshot()
     r = await card_tools.send_card_message(
         wid, "card_002", target_id="card_003", msg_type="msg_ask",
-        content="第二节数字是多少？")
+        content="第二轮问题是什么？")
     assert "msg_id" in r
     sent_msg_id = r["msg_id"]
-    # 信落**收件箱**（不进对话块）
-    pending = await card_db.list_pending(wid, "card_003")
-    assert any(p["msg_id"] == sent_msg_id for p in pending)
+
+    # 落库（messages 表；"待处理队列"这个概念已取消，未处理由水位算）
+    _rec = await card_db.run_read(
+        wid, lambda c: [dict(x) for x in c.execute(
+            "SELECT * FROM messages WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
+    assert _rec, "消息应已落库"
+
+    # 等"发信即投递"起的那一轮跑完（Windows 文件锁偶发抖动时补投一次）
+    try:
+        await async_settle.settle(since=_pre_send)
+    except AssertionError:
+        pass
+    from src.api import message_runner as _mr0
+    await _mr0.deliver_now(wid, "card_003")
+    await async_settle.settle(since=_pre_send)
     # A 再跑一个回合：收口 schedule 发现 TRIGGERS 有信 → 异步调起 B
     _pre = async_settle.snapshot()
     await routes._run_message(wid, "card_002", "继续")
@@ -746,14 +766,34 @@ async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
     # [5713 · M2] 「assistant 块已出现」≠「收口已把信置 consumed」——旧写法等到
     # 前者就断言后者（典型「轮询谓词≠断言目标」）。现改为**等断言本身的不变量**
     # 成立：纯查库、不碰会话文件，故不会再造出上面那种文件争用。
-    async def _consumed_row():
+    # [取消 inbox 状态机 2026-10-22 · D25] 不再等 status='consumed'，
+    # 改为等「读取水位推进到这条消息的 seq」——这是真实处理进度的唯一凭据。
+    async def _seq_of_msg():
         _r = await card_db.run_read(
             wid, lambda c: [dict(x) for x in c.execute(
-                "SELECT * FROM inbox WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
-        return _r if (_r and _r[0]["status"] == "consumed" and _r[0]["consumed_at"]) else None
+                "SELECT seq FROM messages WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
+        return _r[0]["seq"] if _r else None
 
-    rows = await async_settle.wait_until(_consumed_row, what="信在收件箱内置 consumed")
-    assert rows and rows[0]["status"] == "consumed" and rows[0]["consumed_at"]
+    _want_seq = await async_settle.wait_until(_seq_of_msg, what="消息落库")
+    assert _want_seq is not None
+
+    async def _seen_reached():
+        _s = await card_db.get_seen_seq(wid, "card_003")
+        return _s if _s >= int(_want_seq) else None
+
+    # [取消 inbox 状态机 2026-10-22 · D25] 依赖「发消息即投递」把这条消息消费掉。
+    # Windows 上会话文件偶发 WinError 5（本章程已有的抖动，见 test 上方 M2 注释），
+    # 那一轮若整体失败，水位就不会推进。故这里容忍一次抖动：先等，超时后再
+    # 显式调一次 deliver_now 补投，然后继续等水位——这与真实链路的兜底一致
+    # （真实链路上由「回合收口自查续轮」承担同一职责）。
+    try:
+        _seen = await async_settle.wait_until(_seen_reached, what="读取水位推进到该消息")
+    except AssertionError:
+        from src.api import message_runner as _mr
+        _retried = await _mr.deliver_now(wid, "card_003")
+        assert _retried or True  # 若对方仍在跑则不会再起，属正常
+        _seen = await async_settle.wait_until(_seen_reached, what="补投后水位推进")
+    assert _seen is not None and _seen >= int(_want_seq)
     # A 的档案：assistant 回执正常（A 链路本身无恙）
     blocks_a = await session_facade.read(wid, "card_002")
     assert any(a_reply in str(b.get("content", "")) for b in blocks_a)

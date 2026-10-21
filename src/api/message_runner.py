@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -1611,6 +1612,61 @@ async def _auto_reply_pending_letters(work_id: str, card_id: str,
                              "target": from_card, "reply_to": msg_id})
 
 
+#: [排队保证 2026-10-22 · D24] 每卡自续轮的次数上限，防「消息永远处理不完」打转烧额度。
+#: 水位机制保证正常情况下每次续轮都会推进水位，这个上限只兜异常（回合连续失败）。
+_SELF_REQUEUE_MAX = 5
+_SELF_REQUEUE: dict[tuple[str, str], int] = {}
+
+
+async def deliver_now(work_id: str, card_id: str) -> bool:
+    """**立即**把该卡未处理的消息投递成一轮。返回是否真的起了新回合。
+
+    [发消息即唤醒 2026-10-22 · D20/D24/D25] 这是「通信」与「投递」的分界线：
+      · 无未处理消息 ⇒ 什么都不做，返回 False
+      · 对方**正在跑** ⇒ 不打断、不起新回合，返回 False
+        （它本轮收口时会调 `schedule_card_message_triggers`，那里有自查续轮兜底）
+      · 对方**空闲** ⇒ 立刻起一轮，返回 True
+
+    为什么对方在跑时不自续轮：收回合锁会 409，硬起只会消耗一次尝试。
+    交给它自己的收口钩子是更可靠的路径——那条路不依赖「谁还记得这封信」。
+    """
+    # [测试环境开关 2026-10-22] 既有测试大量是同步时序写的，自动投递会在发信
+    # 瞬间起异步回合，与它们冲突并放大 Windows 会话文件锁抖动。测试里模型是 fake，
+    # 立刻投递没有真实语义价值 ⇒ 仅测试环境关闭，真实链路不变。
+    # 开关由 tests/conftest.py 设置，显式且只影响这一处。
+    if os.environ.get("ECO_NO_AUTO_DELIVER") == "1":
+        return False
+    try:
+        pending = await card_db.list_pending(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 读不到就当没有（信已落库，收口会兜）
+        logger.warning("[通信] 读未处理消息失败 card=%s: %s", card_id, exc)
+        return False
+    if not pending:
+        return False
+    try:
+        if session_facade.turn_holder(work_id, card_id):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    from . import routes as _routes
+    try:
+        prompt = await _build_card_msg_prompt(work_id, pending)
+    except Exception as exc:  # noqa: BLE001 组装失败退到兜底，不让通信断
+        logger.warning("[通信] 组装消息提示词失败，用兜底 card=%s: %s", card_id, exc)
+        prompt = _fallback_card_msg_prompt(pending)
+    try:
+        task = _spawn_tracked(
+            _routes._run_message(work_id, card_id, prompt, None, append_user=False))
+        task._card_msg_target = card_id  # type: ignore[attr-defined]
+        task.add_done_callback(_log_trigger_task_done)
+        session_ops.ops_log("card_msg_deliver_now", work_id, card_id,
+                            {"n": len(pending)})
+        return True
+    except Exception as exc:  # noqa: BLE001 起不来不算通信失败（信还在）
+        logger.error("[通信] 立即投递失败 card=%s: %s", card_id, exc)
+        return False
+
+
 async def schedule_card_message_triggers(state: RunState) -> None:
     """A 的回合收口时对本回合记下的全部 pending target 异步起 B 的回合。
 
@@ -1758,3 +1814,49 @@ async def schedule_card_message_triggers(state: RunState) -> None:
                 logger.warning("[K3] 调起回合返回形态未知 target=%s: %r", _tid, resp)
 
         _spawn_tracked(_watch_pending(task, work_id, target_id))
+
+    # ============================================================
+    # [排队保证 2026-10-22 · D24] 本轮收口时**查自己**还有没有未处理消息。
+    #
+    # 为什么必须有这一段：用户裁定「子卡→父卡是排队到轮末，但一定不是投递」。
+    # 旧实现只有 TRIGGERS（记一笔等别人消费），若收口那一刻没有别的卡在跑，
+    # 消息就永远躺着——那是投递。这一段让**本卡自己的收口**成为保证：
+    # 只要有未处理消息，就立刻再起一轮，不依赖任何外部条件。
+    #
+    # 水位机制保证正常情况会收敛（每轮成功都会推进水位）；_SELF_REQUEUE_MAX
+    # 只兜异常（回合连续失败导致水位不动），到顶后如实记 ops 并停止。
+    # ============================================================
+    try:
+        _own = await card_db.list_pending(state.work_id, state.card_id)
+    except Exception as exc:  # noqa: BLE001 自查失败不应影响本回合收口
+        logger.warning("[排队] 自查未处理消息失败 card=%s: %s", state.card_id, exc)
+        _own = []
+    if _own:
+        _key = (state.work_id, state.card_id)
+        _n = _SELF_REQUEUE.get(_key, 0)
+        if _n >= _SELF_REQUEUE_MAX:
+            session_ops.ops_log("card_msg_self_requeue_giveup", state.work_id,
+                                state.card_id,
+                                {"n": _n, "left": [str((it or {}).get("msg_id") or "")
+                                                   for it in _own]})
+            logger.warning("[排队] 自续轮达上限，停止 card=%s n=%d 剩 %d",
+                           state.card_id, _n, len(_own))
+        else:
+            _SELF_REQUEUE[_key] = _n + 1
+            try:
+                _prompt = await _build_card_msg_prompt(state.work_id, _own)
+            except Exception:  # noqa: BLE001
+                _prompt = _fallback_card_msg_prompt(_own)
+            try:
+                from . import routes as _routes
+                _t2 = _spawn_tracked(_routes._run_message(
+                    state.work_id, state.card_id, _prompt, None, append_user=False))
+                _t2._card_msg_target = state.card_id  # type: ignore[attr-defined]
+                _t2.add_done_callback(_log_trigger_task_done)
+                session_ops.ops_log("card_msg_self_requeue", state.work_id,
+                                    state.card_id,
+                                    {"n": _n + 1, "msgs": len(_own)})
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[排队] 自查续轮起不来 card=%s: %s", state.card_id, exc)
+    else:
+        _SELF_REQUEUE.pop((state.work_id, state.card_id), None)
