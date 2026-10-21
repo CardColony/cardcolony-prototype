@@ -414,7 +414,7 @@ async def _condense_call(user_prompt: str) -> str:
 
     result, _model = await model_service.call_main(
         CONDENSE_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
-        model_name=model_config.resolve("condense") or model_config.default_model())
+        model_name=model_config.pick_one("condense"))
     return str((result or {}).get("content") or "")
 
 
@@ -573,7 +573,7 @@ async def _fold_call(user_prompt: str) -> str:
 
     result, _model = await model_service.call_main(
         FOLD_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
-        model_name=model_config.resolve("condense") or model_config.default_model())
+        model_name=model_config.pick_one("condense"))
     return str((result or {}).get("content") or "")
 
 
