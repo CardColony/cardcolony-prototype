@@ -568,6 +568,24 @@ async def get_work_canvas(work_id: str):
     # 坐标列，**本行的键名、类型、嵌套形状一字未动**。
     data = canvas_store.load(work_id)
     data["positions"] = await canvas_store.load_positions(work_id)
+    # [画布职能层 2026-10-22 · 用户令「再在画布上，也把角色卡都显示出来，显示在
+    # 最顶上一排，角色卡与卡片之间的信息互动也一并表现」] 职能不进 cards 表 ⇒
+    # canvas 投影里天然没有它们。这里单独附一份（含 watch 目标），前端画成
+    # 顶部一排的独立节点 + 到被关注卡的虚线。读失败不影响出图（fail-open 空表）。
+    try:
+        data["functions"] = [
+            {
+                "function_id": p.get("function_id", ""),
+                "function_name": p.get("function_name", ""),
+                "duty": (p.get("duty") or {}).get("state") or "active",
+                "watch": list(((p.get("watch") or {}).get("cards")) or []),
+            }
+            for p in function_store.list_profiles(work_id)
+            if p.get("function_id")
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[canvas] 读职能失败 work=%s: %s", work_id, exc)
+        data["functions"] = []
     return data
 
 

@@ -24,7 +24,7 @@ import { escapeHtml } from "./esm/util.js?v=30";
 // 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=56";
+import { RenderNav } from "./esm/nav_system.js?v=58";
 import { notify } from "./esm/api.js?v=46";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
@@ -1516,6 +1516,9 @@ const WORK_ID = window.__WORK_ID__;
     pruneSelectionToVisible();
 
     renderEdges(projection, vm);
+    // [画布职能层 2026-10-22 · 用户令「再在画布上，也把角色卡都显示出来，显示在
+    // 最顶上一排，角色卡与卡片之间的信息互动也一并表现」]
+    renderFunctionLayer(projection);
     renderBreadcrumb(projection.breadcrumb);
     applySelectionClasses();
     applyTransform();
@@ -3774,6 +3777,66 @@ const WORK_ID = window.__WORK_ID__;
     }
   }
 
+  /* [画布职能层 2026-10-22] 职能（fn）在画布上单列一排 + 到被关注卡的虚线。
+     为什么单开一层而不进树布局：职能**不在 cards 表**、没有父子边，
+     塞进 computeLayout 会破坏"树＝交付结构"的语义。所以它们是**顶层观察者**：
+     横排在树的最上方（根卡 y=0 之上），虚线连向它 watch 的每张可见卡。
+     坐标与卡同域（都挂在 #world 下），缩放/平移自动跟随。 */
+  function renderFunctionLayer(projection) {
+    const fns = (state.data && state.data.functions) || [];
+    let layer = document.getElementById("fnLayer");
+    if (!layer) {
+      layer = document.createElement("div");
+      layer.id = "fnLayer";
+      layer.className = "fn-layer";
+      world.appendChild(layer);
+    }
+    layer.innerHTML = "";
+    if (!fns.length || !projection) return;
+    const layout = projection.layout || {};
+    const sizes = projection.sizes || {};
+    const visible = new Set(projection.visibleIds || []);
+    const ys = Object.keys(layout).map((k) => layout[k].y);
+    const minY = ys.length ? Math.min.apply(null, ys) : 0;
+    const NODE_W = 138, NODE_H = 34, GAP = 14;
+    const topY = minY - 118;
+    const totalW = fns.length * NODE_W + (fns.length - 1) * GAP;
+    let x = -totalW / 2;            // 以根卡（0,0）为中心横排
+    const SVGNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("class", "fn-edges");
+    layer.appendChild(svg);
+    fns.forEach((f) => {
+      const cx = x + NODE_W / 2;
+      const el = document.createElement("div");
+      el.className = "fn-node" + (String(f.duty || "") === "archived" ? " off" : "");
+      el.style.left = x + "px";
+      el.style.top = topY + "px";
+      el.style.width = NODE_W + "px";
+      el.style.height = NODE_H + "px";
+      el.textContent = f.function_name || f.function_id || "";
+      el.title = (f.function_name || f.function_id || "") + "（职能）" +
+                 (String(f.duty || "") === "archived" ? " · 已撤岗" : "");
+      el.dataset.fn = f.function_id || "";
+      layer.appendChild(el);
+      for (const cid of (f.watch || [])) {
+        const p = layout[cid];
+        if (!p || !visible.has(cid)) continue;    // 只连当前可见的卡（收起的不画）
+        const s = sizes[cid] || {};
+        const x1 = cx, y1 = topY + NODE_H;
+        const x2 = p.x + (s.w || 120) / 2, y2 = p.y;
+        const midY = (y1 + y2) / 2;
+        const path = document.createElementNS(SVGNS, "path");
+        path.setAttribute("d",
+          `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`);
+        path.setAttribute("class",
+          "fn-edge" + (String(f.duty || "") === "archived" ? " off" : ""));
+        svg.appendChild(path);
+      }
+      x += NODE_W + GAP;
+    });
+  }
+
   function renderEdges(projection, vm) {
     const visibleIds = projection.visibleIds;
     const layout = projection.layout;
@@ -5445,6 +5508,8 @@ const WORK_ID = window.__WORK_ID__;
       // 一律不影响其坐标记录（positions 只按 card_id 键挂靠，不携带任何卡片
       // 语义字段）；验收＝改一张卡的标题／类型后，坐标记录不变、画布位置不变。
       state.data.positions = data.positions || {};
+      // [画布职能层 2026-10-22] 职能不进 cards 表 ⇒ 投影里没有；后端单独附一份。
+      state.data.functions = data.functions || [];
       if (!state.nav.workCardId) {
         // [T07-1-10] 判据源切换：根卡不再按 card_type 找，改按 card_id == work_card_id
         // （work_card_id 取自既有 /api/works 端点的 work.json 权威字段）
