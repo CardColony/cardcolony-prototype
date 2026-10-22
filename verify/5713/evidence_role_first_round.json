@@ -1,0 +1,72 @@
+{
+  "checked_at": "2026-10-22T10:48:43+0800",
+  "instance": "http://127.0.0.1:5713",
+  "instance_reachable": false,
+  "instance_note": "实例 http://127.0.0.1:5713 不可达（URLError: <urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>）；已退回仓库自身路径作为取数根，并在本报告中标明",
+  "sandbox_root": null,
+  "works_dir": "D:\\AI_station\\推演agent\\works",
+  "repo_root": "D:\\AI_station\\推演agent",
+  "fixture": {
+    "work_id": "work_018",
+    "title": "新项目",
+    "root_card_id": "card_001",
+    "child_card_id": "card_004",
+    "root_auto_mode": 1,
+    "root_goal_rounds": 0
+  },
+  "contract": {
+    "region_key": "team_function_instruction",
+    "expected_order": 91,
+    "conditions": [
+      "cur_meta.card_id == ctx.work_card_id",
+      "bool(cur_meta.auto_mode)",
+      "int(cur_meta.goal_rounds or 0) == 0"
+    ],
+    "key_phrases": [
+      "先做一个明确判断",
+      "人类团队里真实存在的岗位"
+    ]
+  },
+  "items": [
+    {
+      "name": "A 轮首出区",
+      "verdict": "PASS",
+      "observed": "len=455 非空=True 含「先做一个明确判断」=True 含「人类团队里真实存在的岗位」=True 附加语义命中=['不拆', '理由', '落到卡面', 'append_ruling']"
+    },
+    {
+      "name": "B 轮首外空串",
+      "verdict": "PASS",
+      "observed": "goal_rounds=2 ⇒ len=0 逐字repr=''"
+    },
+    {
+      "name": "C 非根卡",
+      "verdict": "PASS",
+      "observed": "cur_meta.card_id=card_004(≠work_card_id=card_001) ⇒ len=0 repr=''"
+    },
+    {
+      "name": "D 非 auto",
+      "verdict": "PASS",
+      "observed": "auto_mode=0 ⇒ len=0 repr=''"
+    },
+    {
+      "name": "E 空/坏 meta 不抛",
+      "verdict": "FAIL",
+      "observed": "cur_meta={}⇒len=0空=True; cur_meta=None⇒len=0空=True; cur_meta 无 card_id 键⇒len=455空=False（三种坏 meta 均须返回空串且不抛异常）"
+    },
+    {
+      "name": "F 区位",
+      "verdict": "PASS",
+      "observed": "REGION_TABLE order=91（期望91）; card_duty=90 < 91 < card_ability=92; 装配入口实测 orders=[0, 90, 91, 92, 100, 152]"
+    },
+    {
+      "name": "G 无枚举依赖",
+      "verdict": "PASS",
+      "observed": "基准len=455 塞枚举后len=455 逐字相同=True"
+    }
+  ],
+  "summary": {
+    "pass": 6,
+    "fail": 1,
+    "skip": 0
+  }
+}
