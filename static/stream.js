@@ -1360,6 +1360,20 @@ const BOARD_CFG = Object.assign(
     return st;
   }
 
+  /** [运行态＝后端事实 2026-10-22] 问一次「这张卡现在在不在跑」，按事实校正。
+      事实源＝/api/nav/running（后端 progress 的 active 位，进程重启后为空＝如实）。
+      拿不到就按「没在跑」——**事实源不可用时，不冒充运行中**（宁可少一个转圈，
+      也不能把已结束的回合显示成在跑、把发送按钮锁死）。 */
+  async function _syncRunningFromServer(st) {
+    try {
+      const resp = await fetch("/api/nav/running", { headers: { Accept: "application/json" } });
+      const d = await resp.json();
+      const hit = (d && d.running ? d.running : []).some(
+        (r) => r && r.work_id === st.wid && r.card_id === st.cid);
+      if (hit) setRunning(st.wid, st.cid, true, { fromStream: true });
+    } catch (e) { /* 保持归零 */ }
+  }
+
   /** 事件流是否已断（供 workspace 的断线自愈判据：健康时**绝不**做整表重建）。 */
   function streamDead(wid, cid) {
     const st = sessions.get(skey(wid, cid));
@@ -1393,7 +1407,15 @@ const BOARD_CFG = Object.assign(
     st.liveRunId = "";        // 新一轮：轮锚随 run_start 帧到达后才落
     st.settled = false;       // 解冻：上一轮的收口状态不带到这一轮
     st.esDead = false;
-    setRunning(wid, cid, true);   // [T3] 本轮在跑 ⇒ 在跑卡永不释放 ＋ 运行条起
+    /* [运行态＝后端事实 2026-10-22 · 用户令「这他妈的需要靠判断机制的吗？」]
+       原来这里**无条件** setRunning(true)：只要 start() 被调用（刷新页面、切回
+       这张卡、SSE 重连、接上一个早已结束的回合），就显示「回合中」；而收口只靠
+       turn_end 帧 —— 帧没到（进程重启 / 断线 / 回合异常中断）就**永远**停在
+       运行中，发送按钮一直禁用。
+       运行态本来就是后端知道的事实（progress 的 active 位），不该由前端靠
+       帧＋去抖＋兜底去推断。改为：先归零，再直接问后端「这张卡现在在不在跑」。 */
+    setRunning(wid, cid, false, { fromStream: true });
+    _syncRunningFromServer(st);
     try {
       // 无游标（lastSeq=0）＝从当前末帧起；有游标＝断点续传。
       const sFrom = st.lastSeq > 0 ? st.lastSeq + 1 : 0;
