@@ -18,7 +18,7 @@ verify_role_first_round.py
 方法（怎么测）：
     · `import src.api.context_regions` —— **只读**取 `REGION_TABLE`、`RegionCtx`、
       渲染函数 `render_team_function_instruction_region`、装配入口
-      `render_registered_regions`。不调任何 handler、不写库、不建卡。
+      `render_registered_regions`。**不调任何 handler、不写库、不建卡。**
     · 夹具用**真实卡面**：`cur_meta` 同时设 `card_id`／`auto_mode`／`goal_rounds`，
       且 `ctx.card_id`、`ctx.work_card_id` 一并设成根卡 id。
       （本项目的坑：实现按 `cur_meta.card_id` 判根卡，**不是** `ctx.card_id`；
@@ -61,7 +61,7 @@ NEIGHBOR_AFTER = "card_ability"      # order 92
 KEY_PHRASE_JUDGE = "先做一个明确判断"
 KEY_PHRASE_ROLE = "人类团队里真实存在的岗位"
 
-#: 文案里还必须能看出来的三件事（契约：「要拆就按人类团队真实岗位拆、
+#: 文案里还必须能看出来的几件事（契约：「要拆就按人类团队真实岗位拆、
 #: 不拆要说明理由、判断结果要落到卡面」）——用作 A 项的辅助证据，只记录不单独判。
 EXTRA_PHRASES = (
     "不拆",             # 不拆要说明理由
@@ -170,7 +170,7 @@ def pick_fixture(facts: list[dict[str, Any]]) -> dict[str, Any]:
     """挑一个夹具 work：根卡是 project、有子卡（非根卡反例要真卡）。
 
     优先 auto_mode=1 且 goal_rounds=0 的（最贴近「根卡刚进自动模式」的真场景），
-    退而取任意有子卡的 project 根卡。
+    退而取任意有子卡的 project 根卡。同一条件下按 work_id 排序取首个（可复现）。
     """
     def _ok(f: dict[str, Any]) -> bool:
         return (f["root_type"] == "project" and bool(f["child_card_id"]))
@@ -216,7 +216,7 @@ def make_ctx(reg_mod: Any, root_id: str, child_id: str,
 
 
 def render(reg_mod: Any, ctx: Any) -> str:
-    """只调渲染函数本身（不碰装配入口、不碰 handler）。"""
+    """只调渲染函数本身（不碰 handler、不碰写路径）。"""
     out = reg_mod.render_team_function_instruction_region(ctx)
     return out if isinstance(out, str) else str(out)
 
@@ -275,6 +275,7 @@ def main() -> int:
     print("-" * 78)
 
     results: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
     any_fail = False
 
     def emit(name: str, ok: bool, observed: str, *, skip: bool = False,
@@ -311,6 +312,27 @@ def main() -> int:
         emit("B 轮首外空串", False,
              f"goal_rounds=2 ⇒ 渲染抛异常 {type(exc).__name__}: {exc}")
 
+    # B 的补充实测：契约字面是 `int(goal_rounds or 0) == 0`，
+    # 实现是 `rounds > 0 ⇒ 空`。二者在**负数**轮次上分歧（轮次计数器不会为负，
+    # 但这是字面契约与实现的真实差异，如实记录，不并入 B 的判定）。
+    neg_detail: list[str] = []
+    for bad_rounds in (-1, "abc", None, ""):
+        ctx_n = make_ctx(reg_mod, root_id, child_id, auto=1, rounds=bad_rounds)
+        try:
+            out_n = render(reg_mod, ctx_n)
+            neg_detail.append(f"goal_rounds={bad_rounds!r}⇒len={len(out_n)}")
+        except Exception as exc:  # noqa: BLE001
+            neg_detail.append(f"goal_rounds={bad_rounds!r}⇒抛异常 {type(exc).__name__}")
+    if "goal_rounds=-1⇒len=455" in " ".join(neg_detail):
+        findings.append({
+            "id": "B-extra/负数轮次字面分歧",
+            "detail": ("契约字面为 `int(cur_meta.goal_rounds or 0) == 0` ⇒ rounds=-1 应为空串；"
+                       "实现为 `if rounds > 0: return ''` ⇒ rounds=-1 出区（455 字）。"
+                       "生产写路径只做 `goal_rounds += 1`（auto_driver）、存量默认 0，"
+                       "负数不可达，故非真实缺陷，但字面契约与实现确有一处差异。"),
+            "measured": neg_detail,
+        })
+
     # ── C. 非根卡 ──────────────────────────────────────────────────────
     # 夹具陷阱：实现按 cur_meta.card_id 判根卡 ⇒ 这里必须让 cur_meta.card_id
     # 指向**非根卡**（子卡），ctx.card_id 同样指向子卡，ctx.work_card_id 仍是根卡。
@@ -337,17 +359,22 @@ def main() -> int:
              f"auto_mode=0 ⇒ 渲染抛异常 {type(exc).__name__}: {exc}")
 
     # ── E. 空/坏 meta 不抛 ────────────────────────────────────────────
-    # 三种坏 meta：空 dict、None、以及「连 card_id 都没有」。
-    # 「连 card_id 都没有」＝ cur_meta 里没有 card_id 键（不是 card_id=""）。
-    bad_cases: list[tuple[str, Any]] = [
-        ("cur_meta={}", {}),
-        ("cur_meta=None", None),
-        ("cur_meta 无 card_id 键", {"auto_mode": 1, "goal_rounds": 0}),
+    # 契约明列三种坏 meta：空 dict、None、连 card_id 都没有 ⇒ 空串且不抛。
+    # 「连 card_id 都没有」＝**任何来源都取不到 card_id**（cur_meta 里没有，
+    # 且 ctx.card_id 也为空）⇒ 当前卡身份不可知 ⇒ 按 fail-open 不出区。
+    # （cur_meta 缺 card_id 但 ctx.card_id 有值时，按 card_044 规格
+    #   「退回用 ctx.card_id 比」——那不是「不可知」而是「已知」，单列为 fallback 子情形。）
+    bad_cases: list[tuple[str, Any, str]] = [
+        ("cur_meta={}", {}, root_id),
+        ("cur_meta=None", None, root_id),
+        ("连 card_id 都没有（cur_meta 无 card_id 且 ctx.card_id 也空）",
+         {"auto_mode": 1, "goal_rounds": 0}, ""),
     ]
     e_detail: list[str] = []
     e_ok = True
-    for label, bad_meta in bad_cases:
-        ctx_e = make_ctx(reg_mod, root_id, child_id, auto=1, rounds=0)
+    for label, bad_meta, ctx_card in bad_cases:
+        ctx_e = make_ctx(reg_mod, root_id, child_id, auto=1, rounds=0,
+                         card_id=ctx_card)
         ctx_e.cur_meta = bad_meta
         try:
             out_e = render(reg_mod, ctx_e)
@@ -358,10 +385,42 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             e_ok = False
             e_detail.append(f"{label}⇒抛异常 {type(exc).__name__}: {exc}")
-    emit("E 空/坏 meta 不抛", e_ok, "; ".join(e_detail),
-         note="三种坏 meta 均须返回空串且不抛异常")
 
-    # ── F. 区位（注册表 + 真实装配入口）────────────────────────────────
+    # E 的安全不变量：坏 meta **绝不能**把本区泄漏给非根卡
+    for label, bad_meta, _ in bad_cases:
+        ctx_e2 = make_ctx(reg_mod, root_id, child_id, auto=1, rounds=0,
+                          card_id=child_id)
+        ctx_e2.cur_meta = bad_meta
+        try:
+            out_e2 = render(reg_mod, ctx_e2)
+            if out_e2 != "":
+                e_ok = False
+                e_detail.append(f"[安全不变量] {label} + ctx.card_id=非根卡 ⇒ 泄漏 len={len(out_e2)}")
+        except Exception as exc:  # noqa: BLE001
+            e_ok = False
+            e_detail.append(f"[安全不变量] {label} ⇒ 抛异常 {type(exc).__name__}: {exc}")
+
+    # E 的 fallback 子情形：cur_meta 缺 card_id、ctx.card_id=根卡 ⇒
+    # 按 card_044 规格退回 ctx.card_id 比 ⇒ 输出应与 A 的根卡夹具逐字相同。
+    ctx_fb = make_ctx(reg_mod, root_id, child_id, auto=1, rounds=0,
+                      card_id=root_id)
+    ctx_fb.cur_meta = {"auto_mode": 1, "goal_rounds": 0}
+    try:
+        out_fb = render(reg_mod, ctx_fb)
+        fb_same = (out_fb == out_a)
+        e_detail.append(f"[fallback子情形] cur_meta 无 card_id + ctx.card_id=根卡 ⇒ len={len(out_fb)}"
+                        f" 与A逐字相同={fb_same}")
+        if not fb_same:
+            e_ok = False
+    except Exception as exc:  # noqa: BLE001
+        e_ok = False
+        e_detail.append(f"[fallback子情形] ⇒ 抛异常 {type(exc).__name__}: {exc}")
+
+    emit("E 空/坏 meta 不抛", e_ok, "; ".join(e_detail),
+         note="三种坏 meta 均须空串不抛；且坏 meta 不得泄漏给非根卡；"
+              "fallback 子情形按 card_044 规格「cur_meta 缺 card_id 时退回 ctx.card_id 比」")
+
+    # ── F. 区位（注册表 + 控制面 + 真实装配入口）───────────────────────
     table = {str(s.get("key")): s for s in getattr(reg_mod, "REGION_TABLE", [])}
     spec = table.get(REGION_KEY)
     if spec is None:
@@ -370,7 +429,8 @@ def main() -> int:
         order = spec.get("order")
         before = table.get(NEIGHBOR_BEFORE, {}).get("order")
         after = table.get(NEIGHBOR_AFTER, {}).get("order")
-        # 真实装配入口实测（context_assembler 的控制面同样参与排序）
+        ctl_order = (controls.get(REGION_KEY) or {}).get("order")
+        # 真实装配入口实测（控制面同样参与排序）
         asm_orders: list[int] = []
         asm_keys: list[str] = []
         try:
@@ -382,8 +442,6 @@ def main() -> int:
             asm_orders = [int(r["order"]) for r in regs]
             asm_keys = [str(r["key"]) for r in regs]
         except Exception as exc:  # noqa: BLE001
-            asm_orders = []
-            asm_keys = []
             print(f"[环境] 装配入口实测抛异常：{type(exc).__name__}: {exc}")
         ok_f = (order == EXPECTED_ORDER
                 and before is not None and after is not None
@@ -393,7 +451,7 @@ def main() -> int:
              ok_f,
              f"REGION_TABLE order={order}（期望{EXPECTED_ORDER}）; "
              f"{NEIGHBOR_BEFORE}={before} < {EXPECTED_ORDER} < {NEIGHBOR_AFTER}={after}; "
-             f"装配入口实测 orders={asm_orders}",
+             f"控制面 order={ctl_order}; 装配入口实测 orders={asm_orders}",
              note="" if REGION_KEY in asm_keys else
                   "装配入口未产出该区（可能因控制面禁用或无来源）")
 
@@ -416,6 +474,13 @@ def main() -> int:
     n_skip = sum(1 for r in results if r["verdict"] == "SKIP")
     print("-" * 78)
     print(f"PASS {n_pass} / FAIL {n_fail} / SKIP {n_skip}")
+
+    if inst is None:
+        findings.append({
+            "id": "环境/实例未起",
+            "detail": (f"5713 实例不可达，本轮取数根退回仓库自身 {works_dir}；"
+                       "所有判定仍基于真实 cards.db（只读 mode=ro），不依赖实例在线。"),
+        })
 
     evidence = {
         "checked_at": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -442,6 +507,7 @@ def main() -> int:
             "key_phrases": [KEY_PHRASE_JUDGE, KEY_PHRASE_ROLE],
         },
         "items": results,
+        "findings": findings,
         "summary": {"pass": n_pass, "fail": n_fail, "skip": n_skip},
     }
     EVIDENCE_PATH.write_text(
