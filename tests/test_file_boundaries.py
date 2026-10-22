@@ -140,3 +140,80 @@ def test_tool_schema_surface_is_stable():
     """工具清单是模型的可见接口面，条数与名称属回归项。"""
     names = [s["name"] for s in file_tools.build_file_tool_schemas()]
     assert names == ["list_files", "read_file", "search_files", "write_file"]
+
+# ══════════════════ 读写分档（[只读档 2026-10-22]） ══════════════════
+
+def test_read_only_switch_allows_read_but_not_write():
+    """有 `tools_read_file` 的卡：读放行、写仍拒。
+
+    用户报：「现在的机制是根卡、子卡不能进行文件写入编辑操作，但它把查找文件、
+    读文件也屏蔽了，这显然不行」。实测根因：`check_file_access` 只认 `tools_file`
+    ⇒ 2026-10-21 给根卡/子卡/role 配的 `tools_read_file`（管 read_file / list_files /
+    search_files / glob_files）工具面看得见、**一调就被执行层拒**。
+    """
+    from src.api import file_tools
+
+    meta = {"card_type": "sub_project", "perms": ["read", "tools_read_file"]}
+    target = str(file_tools.BASE_DIR / "推演agent")   # 沙箱 ALLOWED_ROOTS 下
+    assert file_tools.check_file_access(target, meta) is True, "读必须放行"
+    assert file_tools.check_file_access(target, meta, write=True) is False, \
+        "只读卡不许写"
+
+
+def test_write_switch_allows_both():
+    """有 `tools_file` 的卡：读写都放行（行为逐字不变）。"""
+    from src.api import file_tools
+
+    meta = {"card_type": "coder", "perms": ["tools_file"]}
+    target = str(file_tools.BASE_DIR / "推演agent")
+    assert file_tools.check_file_access(target, meta) is True
+    assert file_tools.check_file_access(target, meta, write=True) is True
+
+
+def test_no_file_switch_denies_both():
+    """两个开关都没有的卡：读写都拒（默认关门不变）。"""
+    from src.api import file_tools
+
+    meta = {"card_type": "tool", "perms": ["read", "edit"]}
+    target = str(file_tools.BASE_DIR / "推演agent")
+    assert file_tools.check_file_access(target, meta) is False
+    assert file_tools.check_file_access(target, meta, write=True) is False
+
+
+# ══════════════════ 读写分档（[只读档 2026-10-22]） ══════════════════
+
+def test_read_only_switch_allows_read_but_not_write():
+    """有 `tools_read_file` 的卡：读放行、写仍拒。
+
+    用户报：「现在的机制是根卡、子卡不能进行文件写入编辑操作，但它把查找文件、
+    读文件也屏蔽了，这显然不行」。实测根因：`check_file_access` 只认 `tools_file`
+    ⇒ 2026-10-21 给根卡/子卡/role 配的 `tools_read_file`（管 read_file / list_files /
+    search_files / glob_files）工具面看得见、**一调就被执行层拒**。
+    """
+    from src.api import file_tools
+
+    meta = {"card_type": "sub_project", "perms": ["read", "tools_read_file"]}
+    target = str(file_tools.BASE_DIR / "推演agent")   # 沙箱 ALLOWED_ROOTS 下
+    assert file_tools.check_file_access(target, meta) is True, "读必须放行"
+    assert file_tools.check_file_access(target, meta, write=True) is False, \
+        "只读卡不许写"
+
+
+def test_write_switch_allows_both():
+    """有 `tools_file` 的卡：读写都放行（行为逐字不变）。"""
+    from src.api import file_tools
+
+    meta = {"card_type": "coder", "perms": ["tools_file"]}
+    target = str(file_tools.BASE_DIR / "推演agent")
+    assert file_tools.check_file_access(target, meta) is True
+    assert file_tools.check_file_access(target, meta, write=True) is True
+
+
+def test_no_file_switch_denies_both():
+    """两个开关都没有的卡：读写都拒（默认关门不变）。"""
+    from src.api import file_tools
+
+    meta = {"card_type": "tool", "perms": ["read", "edit"]}
+    target = str(file_tools.BASE_DIR / "推演agent")
+    assert file_tools.check_file_access(target, meta) is False
+    assert file_tools.check_file_access(target, meta, write=True) is False

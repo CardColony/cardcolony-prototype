@@ -49,9 +49,17 @@ _NO_FILE_SCOPE_TYPES = {"rule", "role"}
 
 class TestFileScopeKeys:
     def test_keys_equal_card_type_registry(self):
-        """键集 == 注册表 card_type 全集（－无文件权限的 rule）。不等即红灯。"""
-        assert set(file_tools.FILE_SCOPE) == (
-            _registry_card_types() - _NO_FILE_SCOPE_TYPES)
+        """**注册表**里的 card_type 一个不许漏（－无文件权限的 rule）。不等即红灯。
+
+        [只读档 2026-10-22] 从「完全相等」改为「注册类型必须全覆盖」：
+        FILE_SCOPE 现在多了 ``role``——角色卡不在 l1_vocabularies 里（它是离树的
+        职能类型，5710 引入时未进注册表），但它 2026-10-21 配了 ``tools_read_file``
+        （「能核实交付物，但不给它写权和执行权」）。旧断言用相等，等于**逼着**
+        把 role 从表里删掉、让那份只读权限作废（实测就是这样：能看见读工具、
+        一调就被第三段拒死）。不变量本意是「新注册类型不许漏抄」，子集断言才准。
+        """
+        missing = (_registry_card_types() - _NO_FILE_SCOPE_TYPES) - set(file_tools.FILE_SCOPE)
+        assert not missing, f"这些 card_type 漏了 FILE_SCOPE 键（会全拒）: {missing}"
 
     def test_no_project_class_keys(self):
         """工牌码不得混入：FILE_SCOPE 查的是 card_type，工牌键永不可达＝死键。

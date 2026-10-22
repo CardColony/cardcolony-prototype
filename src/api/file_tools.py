@@ -111,6 +111,10 @@ FILE_SCOPE: dict[str, list[str]] = {
     "topic": [""],
     "coder": [""],        # 编程卡——10-15 补（同因漏抄）
     "tool": [""],
+    # [只读档 2026-10-22] role 补进来：2026-10-21 给职能角色配了 tools_read_file
+    # （「能核实交付物，但不给它写权和执行权」），但本表没有 role 键 ⇒
+    # FILE_SCOPE.get("role", []) 返空 ⇒ any([]) 恒 False ⇒ 那份只读权限等于没给。
+    "role": [""],
 }
 
 
@@ -142,21 +146,30 @@ def _prefix_hit(target: Path, prefix: str) -> bool:
     return str(rel).replace("\\", "/").startswith(prefix)
 
 
-def check_file_access(path: str, card_meta: Any = None) -> bool:
+def check_file_access(path: str, card_meta: Any = None, *,
+                      write: bool = False) -> bool:
     """[T6 路径锁 2026-10-09 → 重做 2026-10-12] 文件路径锁：机械三层判定。
 
-    ① 权限：**当前卡 meta 里固化的 perms 须授 tools_file**（policy.has_perm，
-       读卡面不查配置——裁定 4；未配置的类型/未固化的卡 ⇒ 拒，裁定 5）；
+    ① 权限（**读写分档**）：``write=True`` ⇒ 须授 ``tools_file``；
+       ``write=False``（读类）⇒ ``tools_file`` **或** ``tools_read_file`` 任一即可。
     ② 全盘边界：与 _resolve 同判据（resolve 后须落 ALLOWED_ROOTS 之下）；
     ③ 内部凭证排除＋FILE_SCOPE 前缀（FILE_SCOPE 值现状＝全放行哨兵，
        见上方表注；真实前缀待用户提供，属 Open Item）。
     空路径非权限问题（下游既有「path 不能为空」校验负责），放行交下游。
     T7 打点在唯一出口，两态同记（不做二次判定、无任何闸）。
 
+    [只读档 2026-10-22 · 用户令「它把查找文件、读文件也屏蔽了，这显然不行」]
+    原来这里只认 ``tools_file``。而 2026-10-21 给 role / 根卡 / 子卡配的是
+    **``tools_read_file``**（只读件，管 read_file/list_files/search_files/glob_files）——
+    工具面按它下发了这四件，**执行层却不认**，于是「看得见、一调就拒」。
+    现在读类操作按读档判，写类操作仍要 ``tools_file``（写权限没有被放宽）。
+
     ``card_meta`` 缺省/为 None ⇒ False（认不出卡 ⇒ 默认关门）。
     """
     card_type = str((card_meta or {}).get("card_type", "") or "")
-    has_file = policy.has_perm(card_meta, policy.SWITCH_TOOLS_FILE)
+    has_write = policy.has_perm(card_meta, policy.SWITCH_TOOLS_FILE)
+    has_read = has_write or policy.has_perm(card_meta, policy.SWITCH_TOOLS_READ_FILE)
+    allowed = has_write if write else has_read
     raw = str(path or "").strip()
 
     def _log(granted: bool, prefix_hit: object) -> None:
@@ -164,11 +177,12 @@ def check_file_access(path: str, card_meta: Any = None) -> bool:
             "fn": "check_file_access",
             "path": path,
             "card_type": card_type,
+            "write": bool(write),
             "prefix_hit": prefix_hit,
             "granted": granted,
         })
 
-    if not has_file:
+    if not allowed:
         _log(False, None)
         return False
     if not raw:

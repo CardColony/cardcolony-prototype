@@ -236,12 +236,17 @@ def test_v5_no_file_permission_type_denied():
     assert file_tools.check_file_access("docs/notes.md", {"card_type": "tool"}) is False
     # 未配置类型（空 perms）经文件工具通道同样拒绝
     assert file_tools.check_file_access("docs/notes.md", _meta("no_such_type")) is False
-    # [执行权集中 2026-10-21] 执行权在 coder 手上：它能访问文件；
-    # 管理卡（sub_project）没有 tools_file ⇒ 不能访问 —— 这条锁住新契约。
+    # [执行权集中 2026-10-21] 执行权在 coder 手上：它能读写文件。
+    # [只读档 2026-10-22 · 用户令「把查找文件、读文件也屏蔽了，这显然不行」]
+    # 管理卡（sub_project）没有 tools_file ⇒ **写**仍然拒；但它有 tools_read_file
+    # ⇒ **读**必须放行。原来这条断言把「读」也一并锁死，等于让 10-21 配的只读开关
+    # 形同虚设（工具面看得见 read_file、一调就被执行层拒）。
     assert file_tools.check_file_access("trading-workspace/notes.md",
                                         _meta("coder")) is True
     assert file_tools.check_file_access("trading-workspace/notes.md",
-                                        _meta("sub_project")) is False
+                                        _meta("sub_project")) is True
+    assert file_tools.check_file_access("trading-workspace/notes.md",
+                                        _meta("sub_project"), write=True) is False
     # 凭证排除照常生效（与开关无关的第二层）
     assert file_tools.check_file_access(".env", _meta("sub_project")) is False
     # 关口层：未配置类型连 read 都拒
