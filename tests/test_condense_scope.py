@@ -255,3 +255,38 @@ def test_more_entries_than_blocks_still_unique():
     got = [e["seq"] for e in memory_store._parse_condense_output(txt, 0, [1, 2])]
     assert got[:2] == [1, 2]
     assert len(set(got[:2])) == 2
+
+
+@pytest.mark.asyncio
+async def test_preflight_loops_until_under_target(work, monkeypatch):
+    """超窗的卡一批压不够 ⇒ 预检要**连跑多批**，直到降到目标以下。"""
+    from src.storage import session_facade
+
+    wid, cid = work["work_id"], work["work_card_id"]
+    monkeypatch.setenv("CONDENSE_ENABLED", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "100")
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "100")
+    monkeypatch.setenv("CONDENSE_MAX_BATCHES", "1")
+    monkeypatch.setenv("MODEL_WINDOW_TOKENS", "300")
+
+    # 3 段内容，每段约 100 token ⇒ 需要 2~3 批才降到 270 以下
+    await session_facade.append_many(wid, cid, [
+        {"actor": "human", "content": "六" * 120},
+        {"actor": "assistant", "content": "六" * 120},
+        {"actor": "human", "content": "六" * 120},
+        {"actor": "assistant", "content": "六" * 120},
+        {"actor": "human", "content": "六" * 120},
+    ])
+
+    batches: list[str] = []
+
+    async def fake(prompt: str) -> str:
+        batches.append(prompt)
+        return "【结论】压了【依据】块0"
+
+    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    ran = await memory_store.condense_before_send(wid, cid)
+    st = memory_store.load_memory(wid, cid)
+    print("跑了", len(batches), "批 | mark =", st.get("mark"))
+    assert ran is True
+    assert len(batches) >= 2, f"一批压不够就该继续跑，实际只跑了 {len(batches)} 批"

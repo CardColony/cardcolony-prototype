@@ -944,11 +944,26 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
         size = _meter_sum(pending)
         if size < trigger_k_tokens():
             return False
-        logger.warning("[condense_fold] 发送前预检：未凝 %d token 已到线 %d —— 先凝一批再发 "
-                       "work=%s card=%s 未凝块=%d",
-                       size, trigger_k_tokens(), work_id, card_id, len(pending))
-        await condense_turn_end(work_id, card_id, request_tokens=size)
-        return True
+        # [连跑多批 2026-10-22] 一批只压 30 万；超窗的卡（实测 fn_002 196%）一批压完
+        # 仍 > 窗口 ⇒ 请求照样 502 ⇒ 又没人重试 ⇒ 还是死。故：只要还没降到窗口
+        # 90% 以下、且每批确实推进了 mark，就继续，最多 8 批（防呆上限）。
+        _WIN = int(os.environ.get("MODEL_WINDOW_TOKENS", "1000000") or 1000000)
+        _target = int(_WIN * 0.9)
+        ran = 0
+        cur = size
+        while ran < 8 and cur >= min(trigger_k_tokens(), _target):
+            logger.warning("[condense_fold] 发送前预检：未凝 %d token（线 %d / 窗口目标 %d）"
+                           "—— 第 %d 批 work=%s card=%s",
+                           cur, trigger_k_tokens(), _target, ran + 1, work_id, card_id)
+            before = int(load_memory(work_id, card_id).get("mark", 0) or 0)
+            await condense_turn_end(work_id, card_id, request_tokens=cur)
+            after = int(load_memory(work_id, card_id).get("mark", 0) or 0)
+            ran += 1
+            if after <= before:      # 没推进（失败/无内容）⇒ 停，别空转
+                break
+            blocks = await session_facade.read(work_id, card_id)
+            cur = _meter_sum(blocks[after:])
+        return ran > 0
     except Exception as exc:  # noqa: BLE001 预检失败不阻断回合
         logger.warning("[condense_fold] 发送前预检失败（不阻断）work=%s card=%s: %s",
                        work_id, card_id, exc)
