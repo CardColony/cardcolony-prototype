@@ -301,7 +301,8 @@ _background_tasks: set[asyncio.Task] = set()
 # [T15-任务 7] 同卡互斥标记（竞态防线）：在凝的卡二次触发→跳过留痕，不排队不设闸。
 # 单事件循环内「查＋占」之间无 await，asyncio 语义下原子。
 # [A4/T086] 原 _condensing_cards 集合已并入 session_facade._active_turns 逻辑
-# 互斥体（同一登记处：主线回合与凝练支线互斥）——凝练走 facade.turn_try_acquire
+# [2026-10-22 用户裁定] 凝练是后台任务，**不参与回合串行锁**——只用 _CONDENSING 防自身并发。
+# 旧注释（「凝练走 facade.turn_try_acquire」）已作废：那把锁主线在 finally 才放，凝练永远抢不到。
 # (owner="condense")，主线回合持有期间凝练跳过留痕，凝练持有期间主线回合 409。
 
 
