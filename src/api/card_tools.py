@@ -2,8 +2,8 @@
 """卡片工具与权限（白板版 2026-10-02）。
 
 工具接口只含机械事实：
-- read_card：返回标题、父卡、连线、正文——不暴露内部四区语义
-- edit_card(card_id, content)：覆盖写指定卡正文（内部落存储层正文区）
+- read_card：返回标题、父卡、连线、三个内容块——不暴露内部四区语义
+- edit_card(card_id, content)：覆盖写指定卡三个内容块（内部落存储层三个块列）
 - link_cards：通信线（卡上 links），模型可用类型限 先后/关联（锚定为系统内部关系，不对模型开放）
 - link_rel：依赖关联线（卡上 relations，第三种线），kind 限 依赖/关联；**不参与通信**
 
@@ -227,7 +227,6 @@ TOOL_SWITCH: dict[str, str] = {
     "list_manuscript": policy.SWITCH_MANUSCRIPT,
     "read_manuscript": policy.SWITCH_MANUSCRIPT,
     "search_manuscript": policy.SWITCH_MANUSCRIPT,
-    "run_tool_card": policy.SWITCH_INVOKE_TOOL,
     "web_search": policy.SWITCH_TOOLS_WEB,
     "fetch_web": policy.SWITCH_TOOLS_WEB,
     # [基础工具找回 2026-10-18 · Cardlo 搬运] 七件全挂 tools_file
@@ -1200,7 +1199,7 @@ async def _h_propose_status(work_id: str, current_id: str,
     """
     content = str(arguments.get("content") or "")
     if not content.strip():
-        return err("validation", "content 不能为空：请把「新现状」正文交给本工具")
+        return err("validation", "content 不能为空：请把「新现状」内容交给本工具")
     from .current_turn import read_status_block  # noqa: PLC0415 延迟 import 破环
     old = read_status_block(work_id, current_id)
     return {
@@ -1246,7 +1245,7 @@ async def _h_edit_card(work_id: str, current_id: str,
         return err("denied", f"越权：无权编辑 {target_id}")
     current = await card_store.read_card(work_id, current_id)
     cur_title = current["meta"].get("title", "")
-    history_note = f"由「{cur_title}」对话编辑正文"
+    history_note = f"由「{cur_title}」对话编辑内容"
     # [卡片存储迁移 SQLite 2026-10-14] 取数路径：读 target 的正文三块（库列），
     # 由 _card_body_text 重组为可拆块的正文——``read_card`` 的 ``raw`` 已退役
     # （它原是 md 整篇文本）。current 只为取 cur_title，两处都走同一 read_card。
@@ -2571,7 +2570,7 @@ _MISSION_PLACEHOLDER = "（本卡作用/目标、授权来源"
 # 保留读类与组织类 => 它能把事想清楚、把卡建起来，但动不了代码。
 SPLIT_BLOCKED_TOOLS: frozenset[str] = frozenset({
     "write_file", "edit_file", "move_file", "rename_file", "delete_file",
-    "bash", "python", "run_tool_card",
+    "bash", "python",
 })
 
 OP_SPLIT = "split"
@@ -2580,9 +2579,9 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "read_card",
             "description": (
-                "读取指定卡（标题、父卡、连线、正文各块）。返回含使命／现状／"
-                "第三块（第三块名按本树类型为 requirements 或 rulings），"
-                "以及正文（=现状）。只能读取你有权访问的卡。"
+                "读取指定卡（标题、父卡、连线、三个内容块）。返回三个块：使命／现状／第三块"
+                "（第三块在本树的名字与用途见上下文「卡片区域说明」）。"
+                "只能读取你有权访问的卡。"
             ),
 
             "parameters": {
@@ -2602,7 +2601,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "read_memory": ToolDef(
         schema={
             "name": "read_memory",
-            "description": "下探指定卡的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】）。可用块序号区间按锚点取回。记忆条目不是卡片正文——正文请用 read_card。",
+            "description": "下探指定卡的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】）。可用块序号区间按锚点取回。记忆条目不是卡片内容——三个块请用 read_card。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2638,7 +2637,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                     },
                     "content": {
                         "type": "string",
-                        "description": "卡的正文（结论正文，缺省空）。",
+                        "description": "卡的内容（三个块，缺省空）。",
                     },
                     "mission": {
                         "type": "string",
@@ -2660,13 +2659,13 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "edit_card",
             "description": (
-                "改写你管辖范围内指定卡的正文（覆盖写，content 是整篇正文）。"
-                "正文分三块：## 使命（本卡作用/目标、授权来源；立项定稿，你改它会被拒）、"
-                "## 现状（当前状况快照，覆盖写·单一最新，只写已核实）、"
-                "## 定论（对本卡事项的决定，只追加）。"
-                "定论条目语法 D{nn}【来源】内容（日期·依据），来源三类【裁定】/【决定】/【收敛】，"
-                "序号终身不改；条目失效就地标记「→ 被D05取代（因……）」，不删原文。"
-                "决定不要写进现状块（会被拒）。"
+                "改写你管辖范围内指定卡的三个内容块（覆盖写，content 是整份内容，按三个区头分段）。"
+                "三块：## 使命（这张卡要做什么、要做成什么；立项定稿，你改它会被拒）、"
+                "## 现状（这张卡现在实际是什么样：写事实，覆盖写·单一最新，只写能核实的）、"
+                "第三块（区头名由本树决定，见上下文「卡片区域说明」；只追加，"
+                "条目语法 D{nn}【来源】内容（日期·依据），来源三类【裁定】/【决定】/【收敛】，"
+                "序号终身不改；条目失效就地标记「→ 被D05取代（因……）」，不删原文）。"
+                "第三块该写的内容不要写进现状块（会被拒）。"
             ),
             "parameters": {
                 "type": "object",
@@ -2674,7 +2673,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                     "card_id": {"type": "string", "description": "目标卡 id"},
                     "content": {
                         "type": "string",
-                        "description": "新的正文全文（覆盖写，含 ## 使命/## 现状/## 定论 三块区头）",
+                        "description": "整份内容（覆盖写，按三个区头分段；第三块区头用本树的名字）",
                     },
                 },
                 "required": ["card_id", "content"],
@@ -2719,16 +2718,16 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "update_status",
             "description": (
-                "更新这张卡的「现状」块——只改现状，使命与定论一个字都不碰。"
+                "更新这张卡的「现状」块——只改现状，使命与第三块一个字都不碰。"
                 "现状写**能核实的事实**：已经做成了什么（交付物在哪、能跑的命令、"
                 "跑出什么结果）、对外接口是什么、现在卡在哪。"
-                "不写计划、不写「我打算怎么做」、不写决定（决定用 append_ruling）。"
+                "不写计划、不写「我打算怎么做」、不写第三块该写的内容（第三块用 append_ruling）。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "card_id": {"type": "string", "description": "目标卡 id（缺省＝当前卡）"},
-                    "content": {"type": "string", "description": "新的现状正文（整块替换）"},
+                    "content": {"type": "string", "description": "新的现状内容（整块替换）"},
                 },
                 "required": ["content"],
             },
@@ -2740,7 +2739,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "append_ruling",
             "description": (
-                "往这张卡的「定论」块**追加一条**决定。写的是：定了什么、为什么这么定。"
+                "往这张卡的第三块**追加一条**（第三块在本树的名字与写法见上下文「卡片区域说明」）。"
                 "编号（D{nn}）与日期由系统补，旧条目改不了、也删不掉。"
             ),
             "parameters": {
@@ -2778,20 +2777,20 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
             "name": "update_shadow",
             "description": (
                 "覆盖写你自己（当前卡）的影子卡——过程性记录。无 card_id 参数，只能写当前卡"
-                "自己的影子。影子卡正文有且只有四节，每节内容边界（不得越界、不得改节名、"
+                "自己的影子。影子卡内容有且只有四节，每节内容边界（不得越界、不得改节名、"
                 "不得加节）：【进度】只放本卡推进的时间线记录（什么时间、做到哪一步、当前"
                 "什么状态），不写结论/分析/无关杂事；【待协作事项】只放需要其他卡/模块提供的"
                 "输入、待办、阻塞、协作关系，不放产物位置（那是产物清单）、不放改动记录"
                 "（那是迭代历史）；【产物清单】只放本卡推进中产生的文件/代码/文档的路径与用途"
-                "指针（一行一个：路径＋一句话说明它是什么），只写指针不搬运内容正文；"
+                "指针（一行一个：路径＋一句话说明它是什么），只写指针不搬运内容；"
                 "【迭代历史】只放改动指针（改了什么、为什么改），细节回既有通道查、不在此"
-                "复述。三条禁止：①不许把正卡的结论正文写进影子卡（正卡写结论、影子卡写过程，"
+                "复述。三条禁止：①不许把正卡的内容写进影子卡（正卡写事实与第三块、影子卡写过程，"
                 "不得混）；②不许写与本卡推进无关的内容；③不许把影子卡当备忘录堆杂事。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "description": "影子正文全文（覆盖写）。必须含且仅含四节，节名固定：## 进度 / ## 待协作事项 / ## 产物清单 / ## 迭代历史。每节只放该节边界内的内容（进度＝时间线；待协作事项＝需他卡/模块提供的输入、待办、阻塞、协作关系；产物清单＝路径与用途指针；迭代历史＝改动指针），不得写入正卡结论正文、不得写无关内容、不得堆杂事。"},
+                    "content": {"type": "string", "description": "影子内容全文（覆盖写）。必须含且仅含四节，节名固定：## 进度 / ## 待协作事项 / ## 产物清单 / ## 迭代历史。每节只放该节边界内的内容（进度＝时间线；待协作事项＝需他卡/模块提供的输入、待办、阻塞、协作关系；产物清单＝路径与用途指针；迭代历史＝改动指针），不得写入正卡内容、不得写无关内容、不得堆杂事。"},
                 },
                 "required": ["content"],
             },
@@ -2932,33 +2931,6 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     # 主卡权限收回后**唯一的新增能力**——「只剩调用工具卡」（EC-004/063/161）。
     # readonly=False（它确实建卡、落产物），但**不在** WRITE_TOOLS_REVOKED 里：
     # 它是被保留的那一件，不受角色过滤与执行层拦截。
-    "run_tool_card": ToolDef(
-        schema={
-            "name": "run_tool_card",
-            "description": (
-                "调用一张工具卡：按剧本建一张新工具卡并取回第一步的步骤指令。"
-                "每次调用都新建一张卡，不覆盖已有卡。"
-                "参数：script_name＝剧本名（用错名字会直接报错）；"
-                "instruction 可选，写你这本次想让它做的事（会记进新卡的现状块）。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "script_name": {
-                        "type": "string",
-                        "description": "剧本名，如「方案链」。找不到会报错。",
-                    },
-                    "instruction": {
-                        "type": "string",
-                        "description": "可选：本次调用意图，原文记入新卡现状块。",
-                    },
-                },
-                "required": ["script_name"],
-            },
-        },
-        handler=_h_run_tool_card,
-        readonly=False,
-    ),
     # [卡片底座第一步 2026-10-14] 第 20 件工具：沿通信线读对方卡。
     # 追加在既有 19 件之后 ⇒ 前 19 件的工具面顺序逐字不变。
     # readonly=True（纯读）；开关 read_linked（独立于 read）。
@@ -2966,9 +2938,9 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "read_linked",
             "description": (
-                "沿通信线读取与你**已有连线关系**的卡（正文／影子／对话）。"
+                "沿通信线读取与你**已有连线关系**的卡（内容块／影子／对话）。"
                 "只能读你与它之间已建立连线的卡；没有连线则报「无通信线」。"
-                "part 取：正文（使命／现状／定论三块）／影子（过程记录）／"
+                "part 取：正文（＝这张卡的三个内容块：使命／现状／第三块）／影子（过程记录）／"
                 "对话（该卡的事件时序）。"
             ),
             "parameters": {
@@ -3027,7 +2999,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "编程卡卡名，如「修复监听器泄漏」"},
-                    "task": {"type": "string", "description": "开发任务正文（原样落进新卡的使命块）"},
+                    "task": {"type": "string", "description": "开发任务内容（原样落进新卡的使命块）"},
                 },
                 "required": ["title", "task"],
             },
@@ -3130,7 +3102,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "propose_status",
             "description": (
-                "提议本卡「现状」的新正文（只提议、不落盘）。返回提议内容与盘上现文、"
+                "提议本卡「现状」的新内容（只提议、不落盘）。返回提议内容与盘上现文、"
                 "指纹——你不能直接改现状，本工具只出草案；调用后系统会弹对比窗交用户"
                 "确认，用户点「同意」才写入本卡现状生效。"
             ),
@@ -3139,7 +3111,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                 "properties": {
                     "content": {
                         "type": "string",
-                        "description": "新的现状正文（整块替换草案；只写已确定的结论）",
+                        "description": "新的现状内容（整块替换草案；只写能核实的事实）",
                     },
                 },
                 "required": ["content"],
@@ -3415,7 +3387,7 @@ TOOL_REGISTRY["reparent_card"] = ToolDef(
             "只能在自己子树内调整：被移动的卡、新的父卡都必须在你的子树内；"
             "不能改自己的归属、不能把卡挪出子树、不能成环。"
             "新父卡的类型必须允许有子卡（工具卡/角色卡/编程卡/规则卡不行）。"
-            "只改树形归属，不动卡片正文，也不动通信线。"
+            "只改树形归属，不动卡片内容，也不动通信线。"
         ),
         "parameters": {
             "type": "object",
@@ -5295,7 +5267,7 @@ _PLAN_GATE_BLOCKED: frozenset[str] = frozenset({
     # [换父 2026-10-20] 改父子边＝改结构，与建卡/连线同档：无活板时不给
     "reparent_card",
     "write_file", "edit_file", "move_file", "rename_file", "delete_file",
-    "run_tool_card", "send_card_message",
+    "send_card_message",
 })
 
 
