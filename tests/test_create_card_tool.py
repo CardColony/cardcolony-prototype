@@ -100,7 +100,7 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     # draft_rule_edit 起草＋用户审批落盘）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1（通信线 relations→links；新增
     # 依赖关联线工具两行）。
-    assert prompts.BASE_PROMPT_VERSION == "t26-2"
+    assert prompts.BASE_PROMPT_VERSION == "t26-4"
     assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT

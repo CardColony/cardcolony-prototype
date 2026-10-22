@@ -546,7 +546,7 @@ async def test_edit_file_missing_file_and_dir(sandbox):
 def test_edit_file_version_and_switch():
     """版本 tc-9 / t23-1；edit_file 与 write_file 同开关（tools_file）、写工具。"""
     assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"
-    assert prompts.BASE_PROMPT_VERSION == "t26-2"
+    assert prompts.BASE_PROMPT_VERSION == "t26-4"
     assert card_tools.TOOL_SWITCH["edit_file"] == policy.SWITCH_TOOLS_FILE
     assert card_tools.TOOL_SWITCH["edit_file"] == \
         card_tools.TOOL_SWITCH["write_file"]
