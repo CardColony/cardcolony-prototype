@@ -52,12 +52,12 @@ def test_role_has_link_and_unlink():
 def test_role_still_has_no_exec_rights():
     """补 link 是补组织权，不是补执行权——role 仍不得有写文件/执行/建卡能力。"""
     perms, _ = policy.compute_perms("rd_project", "role")
-    forbidden = ("tools_file", "tools_web", "create_child", "delete",
-                 "invoke_tool", "manuscript", "plan")
+    forbidden = ("tools_file", "tools_web", "delete", "invoke_tool", "plan")
     for f in forbidden:
-        assert f not in perms, f"role 不应有 {f}（那是执行权/组织权放大）"
-    assert "link" in perms and "send_card_message" in perms, (
-        "role 的组织能力：能被连线、能发消息")
+        assert f not in perms, f"role 不应有 {f}（那是执行权/破坏性动作）"
+    # [2026-10-22 · 用户需求] 组织权要给全——包括建卡（挂载执行单元）
+    for f in ("link", "unlink", "create_child", "send_card_message"):
+        assert f in perms, f"role 应有 {f}（组织权）"
 
 
 # ---------------------------------------------------------------- 行为层

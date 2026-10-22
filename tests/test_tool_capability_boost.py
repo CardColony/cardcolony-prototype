@@ -64,7 +64,8 @@ def test_seven_new_tools_registered():
     # [换父 2026-10-20 · 5718] +1（reparent_card）⇒ 52。
     # ★ 本条在 5718 之前就已陈旧（断言 50、实际 51）——一并对齐，恢复指纹作用。
     # [职能实体化 2026-10-21] role 五件改名+新增 set_child_mission ⇒ 52 → 53
-    assert len(card_tools.TOOL_REGISTRY) == 53
+    # [统一唤醒 2026-10-22] 新增 wake_card ⇒ 53 → 54
+    assert len(card_tools.TOOL_REGISTRY) == 54
 
 
 def test_seven_schemas_have_required_params():

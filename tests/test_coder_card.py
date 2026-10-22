@@ -109,16 +109,18 @@ def test_toolset_fingerprints_and_switch_bindings():
 
 
 def test_coder_perms_v4_exactly_nine_and_reserved_switches():
-    # [块1 硬判据2/3] 恰 9 项（search/list_memory 为预留位）
+    # [块1 硬判据2/3] v4 口径：9 项（search/list_memory 为预留位）
+    # [v12 2026-10-22 · 用户裁定「coder 至少能给自己的父卡发信」] 追加
+    # send_card_message —— v4 的原意是「完工回执不要模型自己发」（由 report_done
+    # 系统发），执行成了「整类卡不给发信」，于是 coder 干到一半卡住时**说不了话**。
     assert set(policy.perms_for("rd_project", "coder")) == {
         "read", "edit", "tools_file", "tools_web", "search", "plan",
-        "shadow_write", "read_linked", "list_memory",
+        "shadow_write", "read_linked", "list_memory", "send_card_message",
     }
     assert "search" in policy.SWITCHES and hasattr(policy, "SWITCH_SEARCH")
     assert "list_memory" in policy.SWITCHES and hasattr(policy, "SWITCH_LIST_MEMORY")
-    # 不含建删/发信/调工具/手稿
-    for banned in ("create_child", "delete", "send_card_message",
-                   "invoke_tool", "manuscript"):
+    # 仍不含建树/删卡/调工具/手稿（发信已在 v12 放开，见上）
+    for banned in ("create_child", "delete", "invoke_tool", "manuscript"):
         assert banned not in policy.perms_for("rd_project", "coder")
 
 
@@ -135,9 +137,11 @@ async def test_toolface_coder_vs_main(coder_registry, work):
               "read_file", "search_files", "write_file", "web_search",
               "fetch_web"):
         assert n in coder_face, f"coder 应见 {n}"
-    # 编程卡不长树、不删卡、无发信、不调工具卡（也不见派生工具）
-    assert not ({"create_card", "delete_card", "send_card_message",
+    # 编程卡不长树、不删卡、不调工具卡（也不见派生工具）。
+    # [v12 2026-10-22] send_card_message **放开**：中途要能问主卡（父子关系即通道）。
+    assert not ({"create_card", "delete_card",
                  "run_tool_card", "create_coder_card"} & coder_face), coder_face
+    assert "send_card_message" in coder_face, "coder 必须能向父卡发信（v12）"
 
     main_face = {t["name"] for t in card_tools.build_tool_schemas(
         a, work_id=wid, cards=cards)}

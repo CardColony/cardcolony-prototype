@@ -327,10 +327,12 @@ def test_tool_card_toolface_matches_its_perms():
     # 只跑 _filter_by_category，不跑后四段）；真实下发面被 build_tool_schemas 的
     # 五级闸摘掉（tool 卡 can_have_children=false，没有子树可调）：
     # 见 tests/test_reparent_card.py::test_toolface_only_for_types_that_can_have_children。
+    # [2026-10-22] tool 的 perms 自 v3 起就含 send_card_message，本期望此前漏了它。
+    # wake_card 不在：它挂 CREATE_CHILD，tool 没有该开关（唤醒是组织动作，见 D04）。
     assert _visible(card) == {"read_card", "read_memory", "read_shadow",
                               "read_linked", "draft_rule_edit", "list_functions",
                               "edit_card", "delete_card", "update_shadow",
-                              "reparent_card",
+                              "send_card_message", "reparent_card",
                               "create_plan", "plan_reorder", "plan_insert",
                               "plan_remove", "plan_modify", "step_complete"}
     # [编程卡 2026-10-15 · C2 裁定] search 回归词表＝**预留机关**（coder 行占位码；

@@ -71,13 +71,19 @@ async def refresh_one_work(work_id: str, target_version: int,
     for card_id in sorted(cards):
         stats["total"] += 1
         meta = cards[card_id]
-        # [自动模式 2026-10-17 · 回灌 5700 块0.2 · 红线 4] ★ 跳过 auto_mode=1 的卡——
-        # 自动模式是绕过类型分权（policy.auto_perms() 全开集＋专用 version -1），
-        # 按配置刷新会把全开权限静默冲回类型集。跳过即零改动。
-        if bool(meta.get("auto_mode")):
+        # [自动卡刷新口径 2026-10-22 · 修] 原注释写的是 2026-10-17 的口径
+        # （auto_mode ⇒ auto_perms() 全开），但 **2026-10-19 实验 permexp 已撤销**
+        # 那条：card_store.create_card 里现在是「与普通卡同一份类型分权
+        # （compute_perms），auto_mode 只保留自动续轮语义」。
+        # 脚本却还按旧口径跳过 ⇒ 所有自动卡（几乎全部 coder / 子卡）**永远停在
+        # 建卡那天的权限版本**，配置怎么改都不生效。实测 work_018 的 8 张 coder
+        # 全是 auto=1 / v6，配置已到 v12，它们连 send_card_message 都拿不到。
+        # ⇒ 只保留「旧口径写成全开（v-1）」的卡不动（不缩小既有授权），其余照常刷新。
+        if bool(meta.get("auto_mode")) \
+                and meta.get(policy.PERM_VERSION_KEY) == policy.AUTO_PERMS_VERSION:
             stats.setdefault("auto_skipped", 0)
             stats["auto_skipped"] += 1
-            logger.info("[refresh] 跳过自动模式卡 %s/%s（auto_mode=1，红线4）",
+            logger.info("[refresh] 跳过旧全开口径的自动卡 %s/%s（perms_version=-1）",
                         work_id, card_id)
             continue
         project_class = str(meta.get("project_class") or "") or root_pc
