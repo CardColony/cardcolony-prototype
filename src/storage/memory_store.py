@@ -602,8 +602,16 @@ async def _condense_one_batch(work_id: str, card_id: str,
     input_bytes = len(user_prompt.encode("utf-8"))
     fingerprint = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
     # 任务 3：模型写【结论】＋【依据】
+    # [防挂死 2026-10-23] 模型调用加硬超时：原来一旦上游不回就永远挂住，
+    # 整条凝练线卡死（实测 card_001 一批跑十几分钟没动静）。超时＝该批失败、
+    # mark 不动，下轮再来，绝不无限等。
+    _call_timeout = float(os.environ.get("CONDENSE_CALL_TIMEOUT", "180") or 180)
     try:
-        text = await _condense_call(user_prompt)
+        text = await asyncio.wait_for(_condense_call(user_prompt), timeout=_call_timeout)
+    except asyncio.TimeoutError:
+        logger.warning("[condense_fold] 凝练模型 %.0fs 超时——该批放弃、水位不动 work=%s card=%s",
+                       _call_timeout, work_id, card_id)
+        return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("[condense_fold] 凝练失败——水位一分不动 work=%s card=%s 阶段=模型调用 原因=%s",
                        work_id, card_id, exc)
@@ -729,8 +737,14 @@ async def _run_condense_pipeline(work_id: str, card_id: str,
     await save_memory(work_id, card_id, state)
     logger.info("[condense_fold] 本轮批循环收口 work=%s card=%s 批数=%d 累计批=%d 未凝余=%d块",
                 work_id, card_id, batches, int(state["batch_count"]), len(pending) - idx)
+    # [防挂死 2026-10-23] 归拢线只是"把条目再折一层"，不是凝练本体；
+    # 它卡住不许拖死凝练——加超时，超时就跳过、下轮再说。
+    _fold_timeout = float(os.environ.get("CONDENSE_FOLD_TIMEOUT", "90") or 90)
     try:
-        await _maybe_fold(work_id, card_id)
+        await asyncio.wait_for(_maybe_fold(work_id, card_id), timeout=_fold_timeout)
+    except asyncio.TimeoutError:
+        logger.warning("[condense_fold] 归拢线 %.0fs 超时——跳过，下轮再试 work=%s card=%s",
+                       _fold_timeout, work_id, card_id)
     except Exception as exc:  # noqa: BLE001 归拢线零阻断（失败游标不动，下轮重试）
         logger.warning("[condense_fold] 归拢线异常（不阻断、游标不动、下轮重试）work=%s card=%s: %s",
                        work_id, card_id, exc)
