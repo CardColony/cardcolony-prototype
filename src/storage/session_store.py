@@ -38,7 +38,11 @@ ESCAPED_MARKER = "\\---MSG---"
 
 
 def _session_path(work_id: str, card_id: str) -> Path:
-    seq = card_id.split("_", 1)[1]
+    # [撞号修复 2026-10-22] 原来一律 `split("_",1)[1]`：`fn_002` → "002"，与
+    # `card_002` 指向同一个 session_002.md —— 职能卡与工作卡的历史混在一份文件里，
+    # 两边模型都读到对方的对话。`card_NNN` 保持原文件名（存量不动），
+    # 其余 id（fn_/其它前缀）用**完整 card_id**，从根上不再撞。
+    seq = card_id.split("_", 1)[1] if card_id.startswith("card_") else card_id
     return WORKS_DIR / work_id / "sessions" / f"session_{seq}.md"
 
 
