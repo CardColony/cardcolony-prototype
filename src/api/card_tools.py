@@ -1396,32 +1396,64 @@ async def _h_update_status(work_id: str, current_id: str,
 async def _h_append_ruling(work_id: str, current_id: str,
                            arguments: dict[str, Any],
                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """[2026-10-22 用户裁定] **覆盖写**需求文档块（要什么、验收标准是什么）。
+    """[2026-10-22 用户裁定] 写需求文档块。**两种模式，按需选，都不强制整块重写**：
 
-    旧语义是「追加一条 D{nn} 条目、旧条目改不了」——已废除：需求文档是覆盖写·单一最新的
-    需求确定源，模型每次给整块新内容。骨架占位行不算既有内容，直接清掉。
+    ① 精准编辑（推荐）：给 `old_string` + `new_string`——只替换那一处，
+       `old_string` 必须在块里**恰好出现一次**，否则报错且不动块（与 edit_file 同纪律）。
+       小改小修用这个，不必把整块重抄一遍（整块重抄最容易抄错）。
+    ② 整块写：只给 `text`——整块替换。**骨架占位不算既有内容**，直接覆盖即可。
+
+    旧的「追加一条 D{nn}、旧条目改不了」语义已废除。
     """
     target_id = str(arguments.get("card_id") or current_id)
+    old_string = arguments.get("old_string")
+    new_string = arguments.get("new_string")
     text = str(arguments.get("text") or "").strip()
-    if not text:
-        return err("validation", "text 不能为空")
+
+    has_edit = old_string is not None or new_string is not None
+    if has_edit:
+        if old_string is None or new_string is None:
+            return err("validation", "精准编辑必须同时给 old_string 与 new_string")
+        if not str(old_string).strip():
+            return err("validation", "old_string 不能为空")
+        mode = "edit"
+    elif text:
+        mode = "rewrite"
+    else:
+        return err("validation",
+                   "要么给 text（整块写），要么给 old_string＋new_string（精准编辑）")
+
     blocked = _guard_edit(work_id, current_id, target_id, cards)
     if blocked is not None:
         return blocked
     card = await card_store.read_card(work_id, target_id)
     if not card or not card.get("body"):
         return err("not_found", f"卡片不存在: {target_id}")
-    # 覆盖写·单一最新：整块替换（骨架占位不算既有内容，无特殊处理）。
-    new_rulings = text
+    rulings = str(card["body"].get("rulings") or "")
+
+    if mode == "edit":
+        n = rulings.count(str(old_string))
+        if n == 0:
+            return err("validation",
+                       "old_string 在需求文档块里找不到，未作任何修改。当前块前 200 字："
+                       + rulings[:200])
+        if n > 1:
+            return err("validation",
+                       f"old_string 出现了 {n} 次，必须唯一才能改；请把前后文带上以缩小范围")
+        new_rulings = rulings.replace(str(old_string), str(new_string), 1)
+    else:
+        # 整块写·单一最新（骨架占位不算既有内容，直接覆盖）。
+        new_rulings = text
+
     current = await card_store.read_card(work_id, current_id)
     cur_title = (current.get("meta") or {}).get("title", "")
     upd = await card_store.update_card(
         work_id, target_id, {"rulings": new_rulings},
-        f"由「{cur_title}」写需求文档",
+        f"由「{cur_title}」" + ("精准编辑" if mode == "edit" else "整块写") + "需求文档",
     )
     if isinstance(upd, dict) and upd.get("error"):
         return err("internal", str(upd["error"]))
-    return {"card_id": target_id, "appended": line, "no": no}
+    return {"card_id": target_id, "mode": mode, "bytes": len(new_rulings)}
 
 
 async def _h_delete_card(work_id: str, current_id: str,
@@ -2754,8 +2786,11 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "append_ruling",
             "description": (
-                "把这张卡的**需求文档**块整块写成你要的（覆盖写·单一最新，不是只追加）。"
-                "按需求逐条写清「要什么、验收标准是什么」；只写确定版，讨论/备选/过程不写这里。"
+                "写这张卡的**需求文档**块（按需求逐条写清「要什么、验收标准是什么」；只写确定版）。"
+                "**两种模式**：①精准编辑（推荐）——给 old_string＋new_string，只改那一处，"
+                "old_string 必须在块里恰好出现一次，否则报错且不动块；小改小修用它，别整块重抄。"
+                "②整块写——只给 text，整块替换（骨架占位可直接覆盖）。"
+                "两者都不是「只追加」：改错了可以再改。"
             ),
             "parameters": {
                 "type": "object",
@@ -2763,10 +2798,17 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                     "card_id": {"type": "string", "description": "目标卡 id（缺省＝当前卡）"},
                     "text": {
                         "type": "string",
-                        "description": "决定内容（一句话说清定了什么；编号与日期系统补）",
+                        "description": "整块写时的需求文档全文（与 old_string/new_string 二选一）",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "精准编辑：要被替换的原文（必须在块里恰好出现一次）",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "精准编辑：替换成什么",
                     },
                 },
-                "required": ["text"],
             },
         },
         handler=_h_append_ruling,
