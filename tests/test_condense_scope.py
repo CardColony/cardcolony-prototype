@@ -294,7 +294,7 @@ async def test_preflight_loops_until_under_target(work, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_condense_runs_even_when_turn_lock_held(work, monkeypatch):
-    """主线回合占着锁时，凝练也必须能跑（force 路径）——这是它六小时没凝过的真因。"""
+    """主线回合占着锁时，凝练照跑——凝练是后台任务，本来就不该碰回合锁。"""
     from src.storage import session_facade
 
     wid, cid = work["work_id"], work["work_card_id"]
@@ -315,7 +315,7 @@ async def test_condense_runs_even_when_turn_lock_held(work, monkeypatch):
     # 主线回合先占锁（模拟 routes 里 finally 还没释放的那段）
     assert session_facade.turn_try_acquire(wid, cid, "main") is True
     try:
-        await memory_store.condense_turn_end(wid, cid, request_tokens=100, force=True)
+        await memory_store.condense_turn_end(wid, cid, request_tokens=100)
     finally:
         session_facade.turn_release(wid, cid, "main")
     st = memory_store.load_memory(wid, cid)
