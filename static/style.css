@@ -1981,3 +1981,29 @@ body.page-chat .rule-panel { display: none; }
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
 }
+
+/* ============================================================
+   [画布职能层 2026-10-22 · 用户令「再在画布上，也把角色卡都显示出来，
+   显示在最顶上一排，角色卡与卡片之间的信息互动也一并表现」]
+   职能（fn）不在 cards 表、没有父子边 ⇒ 不进树布局，单开一层横排在树顶，
+   用虚线连向它 watch 的卡。坐标与卡同域（都挂 #world 下），缩放平移自动跟随。
+   ============================================================ */
+.fn-layer { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.fn-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.fn-edge {
+  fill: none; stroke: rgba(110, 168, 201, 0.5); stroke-width: 1.4;
+  stroke-dasharray: 5 4;
+}
+.fn-edge.off { stroke: rgba(150, 150, 150, 0.22); }
+.fn-node {
+  position: absolute;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 8px; box-sizing: border-box; border-radius: 8px;
+  font-size: 12px; color: #cfe6f5; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  background: rgba(110, 168, 201, 0.12);
+  border: 1px solid rgba(110, 168, 201, 0.45);
+  cursor: pointer;
+}
+.fn-node:hover { background: rgba(110, 168, 201, 0.22); }
+.fn-node.off { opacity: 0.4; }
