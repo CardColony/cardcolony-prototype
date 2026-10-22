@@ -897,6 +897,38 @@ async def condense_turn_end(work_id: str, card_id: str,
                        work_id, card_id, exc)
 
 
+async def condense_before_send(work_id: str, card_id: str) -> bool:
+    """[发送前预检 2026-10-22] 未凝量已到触发线 ⇒ **先凝一批再发请求**。
+
+    为什么要它：凝练原本只在「回合成功收口」时触发；一旦请求本身超窗失败，
+    回合永远不成功收口 ⇒ 凝练永远不触发 ⇒ 上下文永远降不下来（实测
+    work_025/card_005：134 万 > 1M 窗口，每轮 502 死锁）。预检把自救提前到
+    发请求之前，不再依赖"先失败一次"。
+
+    返回是否真的跑了凝练。开关关 / 未到线 / 异常 ⇒ 一律返回 False，不阻断回合。
+    """
+    if not condense_enabled():
+        return False
+    try:
+        await ensure_watermark(work_id, card_id)
+        state = load_memory(work_id, card_id)
+        mark = int(state.get("mark", 0) or 0)
+        blocks = await session_facade.read(work_id, card_id)
+        pending = blocks[mark:] if 0 <= mark <= len(blocks) else blocks
+        size = _meter_sum(pending)
+        if size < trigger_k_tokens():
+            return False
+        logger.warning("[condense_fold] 发送前预检：未凝 %d token 已到线 %d —— 先凝一批再发 "
+                       "work=%s card=%s 未凝块=%d",
+                       size, trigger_k_tokens(), work_id, card_id, len(pending))
+        await condense_turn_end(work_id, card_id, request_tokens=size)
+        return True
+    except Exception as exc:  # noqa: BLE001 预检失败不阻断回合
+        logger.warning("[condense_fold] 发送前预检失败（不阻断）work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        return False
+
+
 def maybe_schedule_turn_end(work_id: str, card_id: str,
                             request_tokens: int | None = None) -> None:
     """回合末触发调度口（routes 层唯一调用点）：开关关＝零动作零开销；

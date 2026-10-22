@@ -2203,6 +2203,9 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     event_stream.emit(work_id, card_id, "run_start",
                       {"pair_id": pair_id, "chars": len(content)})
 
+    # [发送前预检 2026-10-22] 未凝量到线 ⇒ 先凝一批，再装配上下文（避免超窗死锁）
+    await message_runner.memory_store.condense_before_send(work_id, card_id)
+
     # 段②③前半：上下文组装＋工具列＋轮槽
     message_runner.build_context(state)
 
