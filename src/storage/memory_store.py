@@ -40,6 +40,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import re
 from datetime import datetime
 from pathlib import Path
@@ -599,6 +600,13 @@ async def _condense_one_batch(work_id: str, card_id: str,
                     "work=%s card=%s 窗口块数=%d mark %d→%d",
                     work_id, card_id, len(window), mark, target_mark)
         return True
+    # [状态监控 2026-10-23] 每批开始/结束都留痕：原来整批几分钟毫无输出，
+    # 只能靠猜"是不是卡死了"。现在能看到它在哪、多大、跑了多久。
+    _t0 = time.time()
+    logger.info("[condense_fold] 批开始 work=%s card=%s 窗口块=%d 送凝练=%d块 prompt=%d字符",
+                work_id, card_id, len(window),
+                sum(1 for m in window if str(m.get("content") or "").strip()),
+                len(user_prompt))
     input_bytes = len(user_prompt.encode("utf-8"))
     fingerprint = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
     # 任务 3：模型写【结论】＋【依据】
@@ -633,6 +641,9 @@ async def _condense_one_batch(work_id: str, card_id: str,
         logger.warning("[condense_fold] 凝练失败——水位一分不动 work=%s card=%s 阶段=产出解析 原因=空产出或无【结论】条目",
                        work_id, card_id)
         return False
+    logger.info("[condense_fold] 批完成 work=%s card=%s 耗时=%.1fs 解析=%d条 mark %d→%d",
+                work_id, card_id, time.time() - _t0, len(fresh), mark,
+                int(window[-1].get("seq", 0) or 0) + 1)
     target_mark = int(window[-1].get("seq", 0) or 0) + 1
     state = load_memory(work_id, card_id)
     existing = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
