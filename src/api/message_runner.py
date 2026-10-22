@@ -846,149 +846,158 @@ async def step(state: RunState) -> StepOutcome:
     # 杜绝"A 已落、B 未落"的中间态——N1 红线：不得出现孤立 tool 块）。
     _round_tool_blocks: list[dict[str, Any]] = []
 
-    for i, tc in enumerate(tool_calls):
-        name = tc.get("name", "")
-        args = tc.get("arguments", {}) or {}
-        # [phase8.5] manuscript 工具没有 card_id：target_id 记 chapter 或 keyword，都没有则空串
-        # [phase8.6-D] link_cards 记 target_id
-        # [联网能力 2026-10-02] web_search 记 query、fetch_web 记 url——审计可见
-        # [建卡工具化 2026-10-08] create_card 无 card_id/parent 入参（parent 可选），
-        #   target_id 记 title（回执前唯一可定位的入参）
-        target_id = (args.get("card_id") or args.get("target_id")
-                     or args.get("chapter") or args.get("keyword")
-                     or args.get("query") or args.get("url")
-                     or (args.get("title") if name == "create_card" else "") or "")
-        # [信息流 Task3] 工具执行前后埋点（V2 即时可见）
-        # [模型过程数据 2026-10-12] step_id：执行前读当前板步（首次观测即发
-        # step_start），call/result 共用同一个值——同一次调用的归属不许劈叉；
-        # 无板（直答查证）→ 空串。
-        _step_id = _sync_step_start(state)
-        # [消息底座能力对齐 · 件3] 结构化落盘：入参原样（arguments 是 dict，
-        # 不是拼好的字符串）——事件日志存的是事实，不是给模型看的投影。
-        event_stream.emit(state.work_id, state.card_id, "tool_call",
-                          {"tool": name, "target": target_id, "step_id": _step_id,
-                           "arguments": args})
-        # [提交轮材料（C6）] step_complete 执行**前**抓板快照——末步执行会
-        # 同步触发收口（finalize 清理板），执行后取板已不可得。每次 step_complete
-        # 前刷新快照，末步前抓到的即全量成果（含全部已推进步的 result）。
-        _done_step_id = ""
-        if name == "step_complete":
-            snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
-            if snap and snap.get("steps"):
-                state.chain_steps_record = [
-                    s for s in snap["steps"] if isinstance(s, dict)]
-                state.chain_plan_name = str(snap.get("name") or "")
-                # [模型过程数据] 被收作业的就是执行前的当前步（指针未动）——
-                # step_id 从这份快照取，与 criteria_met/result 同属一步。
-                _pre_steps = snap.get("steps") or []
-                _pre_cur = snap.get("current", 0)
-                if (isinstance(_pre_cur, int) and 0 <= _pre_cur < len(_pre_steps)
-                        and isinstance(_pre_steps[_pre_cur], dict)):
-                    _done_step_id = str(_pre_steps[_pre_cur].get("id") or "")
-        tool_result = await card_tools.execute_tool(
-            state.work_id, state.card_id, name, args, cards_meta)
-        # [T-0010 §1.5] 成败读信封 ok 字段（改前是「结果里没有 error 键即算成功」）
-        ok = tool_result.get("ok") is True
-        _data = tool_result.get("data") or {}
-        _ev: dict[str, Any] = {"tool": name, "card_id": target_id, "ok": ok}
-        # [建卡工具化 2026-10-08] create_card 成功时把真身卡号/卡名/父带进
-        # tool_events——交付段据此收拢工具通道建卡结果
-        # [T-0010 §1] 成功载荷整体在 data 内，取值改走 data
-        if name == "create_card" and ok:
-            _ev["card_id"] = _data.get("card_id", "")
-            _ev["title"] = _data.get("title", "")
-            _ev["parent"] = _data.get("parent", "")
-        state.tool_events.append(_ev)
-        # [思维链真实落地 2026-10-11] 板子事件 emit（对话流可见拆解上板/步进/收口）：
-        # create_plan 成功→plan_created；step_complete 成功→step_advanced
-        # （all_done=True 时前端渲染收口行）。
-        # [模型过程数据 2026-10-12] plan_created 补完整 steps 数组（建板成功后
-        # 板上已是全字段步定义，emit 时就地取，不解析模型文本）。
-        if ok and name == "create_plan":
-            _bsnap = thinkchain_board.snapshot_sync(state.work_id, state.card_id) or {}
-            _bsteps = _bsnap.get("steps") or []
-            event_stream.emit(state.work_id, state.card_id, "plan_created", {
-                "name": _data.get("plan_name") or "",
-                "total": _data.get("total") or 0,
-                "prompt": _data.get("prompt") or "",
-                "steps": [
-                    {"id": s.get("id", ""), "prompt": s.get("prompt", ""),
-                     "criteria": s.get("criteria", ""),
-                     "deliverable": s.get("deliverable", ""),
-                     "type": s.get("type", "")}
-                    for s in _bsteps if isinstance(s, dict)
-                ],
+    try:
+        for i, tc in enumerate(tool_calls):
+            name = tc.get("name", "")
+            args = tc.get("arguments", {}) or {}
+            # [phase8.5] manuscript 工具没有 card_id：target_id 记 chapter 或 keyword，都没有则空串
+            # [phase8.6-D] link_cards 记 target_id
+            # [联网能力 2026-10-02] web_search 记 query、fetch_web 记 url——审计可见
+            # [建卡工具化 2026-10-08] create_card 无 card_id/parent 入参（parent 可选），
+            #   target_id 记 title（回执前唯一可定位的入参）
+            target_id = (args.get("card_id") or args.get("target_id")
+                         or args.get("chapter") or args.get("keyword")
+                         or args.get("query") or args.get("url")
+                         or (args.get("title") if name == "create_card" else "") or "")
+            # [信息流 Task3] 工具执行前后埋点（V2 即时可见）
+            # [模型过程数据 2026-10-12] step_id：执行前读当前板步（首次观测即发
+            # step_start），call/result 共用同一个值——同一次调用的归属不许劈叉；
+            # 无板（直答查证）→ 空串。
+            _step_id = _sync_step_start(state)
+            # [消息底座能力对齐 · 件3] 结构化落盘：入参原样（arguments 是 dict，
+            # 不是拼好的字符串）——事件日志存的是事实，不是给模型看的投影。
+            event_stream.emit(state.work_id, state.card_id, "tool_call",
+                              {"tool": name, "target": target_id, "step_id": _step_id,
+                               "arguments": args})
+            # [提交轮材料（C6）] step_complete 执行**前**抓板快照——末步执行会
+            # 同步触发收口（finalize 清理板），执行后取板已不可得。每次 step_complete
+            # 前刷新快照，末步前抓到的即全量成果（含全部已推进步的 result）。
+            _done_step_id = ""
+            if name == "step_complete":
+                snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
+                if snap and snap.get("steps"):
+                    state.chain_steps_record = [
+                        s for s in snap["steps"] if isinstance(s, dict)]
+                    state.chain_plan_name = str(snap.get("name") or "")
+                    # [模型过程数据] 被收作业的就是执行前的当前步（指针未动）——
+                    # step_id 从这份快照取，与 criteria_met/result 同属一步。
+                    _pre_steps = snap.get("steps") or []
+                    _pre_cur = snap.get("current", 0)
+                    if (isinstance(_pre_cur, int) and 0 <= _pre_cur < len(_pre_steps)
+                            and isinstance(_pre_steps[_pre_cur], dict)):
+                        _done_step_id = str(_pre_steps[_pre_cur].get("id") or "")
+            tool_result = await card_tools.execute_tool(
+                state.work_id, state.card_id, name, args, cards_meta)
+            # [T-0010 §1.5] 成败读信封 ok 字段（改前是「结果里没有 error 键即算成功」）
+            ok = tool_result.get("ok") is True
+            _data = tool_result.get("data") or {}
+            _ev: dict[str, Any] = {"tool": name, "card_id": target_id, "ok": ok}
+            # [建卡工具化 2026-10-08] create_card 成功时把真身卡号/卡名/父带进
+            # tool_events——交付段据此收拢工具通道建卡结果
+            # [T-0010 §1] 成功载荷整体在 data 内，取值改走 data
+            if name == "create_card" and ok:
+                _ev["card_id"] = _data.get("card_id", "")
+                _ev["title"] = _data.get("title", "")
+                _ev["parent"] = _data.get("parent", "")
+            state.tool_events.append(_ev)
+            # [思维链真实落地 2026-10-11] 板子事件 emit（对话流可见拆解上板/步进/收口）：
+            # create_plan 成功→plan_created；step_complete 成功→step_advanced
+            # （all_done=True 时前端渲染收口行）。
+            # [模型过程数据 2026-10-12] plan_created 补完整 steps 数组（建板成功后
+            # 板上已是全字段步定义，emit 时就地取，不解析模型文本）。
+            if ok and name == "create_plan":
+                _bsnap = thinkchain_board.snapshot_sync(state.work_id, state.card_id) or {}
+                _bsteps = _bsnap.get("steps") or []
+                event_stream.emit(state.work_id, state.card_id, "plan_created", {
+                    "name": _data.get("plan_name") or "",
+                    "total": _data.get("total") or 0,
+                    "prompt": _data.get("prompt") or "",
+                    "steps": [
+                        {"id": s.get("id", ""), "prompt": s.get("prompt", ""),
+                         "criteria": s.get("criteria", ""),
+                         "deliverable": s.get("deliverable", ""),
+                         "type": s.get("type", "")}
+                        for s in _bsteps if isinstance(s, dict)
+                    ],
+                })
+                # 板刚上架＝第 1 步开始：紧随 plan_created 发 step_start（幂等键防重）
+                _sync_step_start(state)
+            elif ok and name == "step_complete":
+                # [模型过程数据 2026-10-12] step_advanced 补步归属与成果：
+                # step_id＝执行前快照的当前步；criteria_met/result＝step_complete
+                # 入参（result 即落板的本步 result，同一份值）；next_prompt/
+                # next_criteria＝工具返回的下一步要求与判据（末步收口时为空串）。
+                event_stream.emit(state.work_id, state.card_id, "step_advanced", {
+                    "advanced": bool(_data.get("advanced")),
+                    "all_done": bool(_data.get("all_steps_done")),
+                    "prompt": _data.get("prompt") or "",
+                    "step_id": _done_step_id,
+                    "criteria_met": str(args.get("criteria_met") or ""),
+                    "result": str(args.get("result") or ""),
+                    "next_prompt": _data.get("prompt") or "",
+                    "next_criteria": _data.get("criteria") or "",
+                })
+                # [提交轮材料（C6）] criteria_met 自述按调用序累积（与板步对齐）；
+                # all_steps_done＝链收口事实（提交轮触发依据）。
+                _cm = args.get("criteria_met")
+                if isinstance(_cm, str) and _cm.strip():
+                    state.chain_criteria_mets.append(_cm.strip())
+                if _data.get("all_steps_done"):
+                    state.chain_completed = True
+            # [信息流 Task4] 工具结果事件（A96 全日志打点）。card_op 并表随
+            # 机械预检退役——全部工具统一 tool_result 一条通道。
+            # [模型过程数据 2026-10-12] step_id 与本次 tool_call 同源（_step_id）。
+            # [消息底座能力对齐 · 件3] result 落**结构化信封**（data/error 原样），
+            # 不再把 render_tool_result 的文本投影当 data 落盘——落盘结构化、
+            # 回灌字符串，两路各自独立（回灌侧仍走单一投影函数 render_tool_result）。
+            _struct_result = ({"ok": True, "data": _data} if ok
+                              else {"ok": False, "error": tool_result.get("error")})
+            event_stream.emit(state.work_id, state.card_id, "tool_result",
+                              {"tool": name, "target": target_id, "ok": ok,
+                               "step_id": _step_id, "result": _struct_result})
+            # [T11-T6] tool 结果经 append_tool_result 入槽（归入当前轮）
+            # [T-0010 §1.6] 回灌文本走单一投影函数（不各自 json.dumps）——
+            # 否则失败信封的 {"code","message"} 会被当数据喂进模型上下文
+            _tool_call_id = f"call_{_run_tag}_{state.rounds}_{i}"
+            _rendered_result = card_tools.render_tool_result(tool_result)
+            state.slot.append_tool_result({
+                "role": "tool",
+                "tool_call_id": _tool_call_id,
+                "content": _rendered_result,
             })
-            # 板刚上架＝第 1 步开始：紧随 plan_created 发 step_start（幂等键防重）
-            _sync_step_start(state)
-        elif ok and name == "step_complete":
-            # [模型过程数据 2026-10-12] step_advanced 补步归属与成果：
-            # step_id＝执行前快照的当前步；criteria_met/result＝step_complete
-            # 入参（result 即落板的本步 result，同一份值）；next_prompt/
-            # next_criteria＝工具返回的下一步要求与判据（末步收口时为空串）。
-            event_stream.emit(state.work_id, state.card_id, "step_advanced", {
-                "advanced": bool(_data.get("advanced")),
-                "all_done": bool(_data.get("all_steps_done")),
-                "prompt": _data.get("prompt") or "",
-                "step_id": _done_step_id,
-                "criteria_met": str(args.get("criteria_met") or ""),
-                "result": str(args.get("result") or ""),
-                "next_prompt": _data.get("prompt") or "",
-                "next_criteria": _data.get("criteria") or "",
+            # [工具结果落会话 2026-10-17] 会话块 B（工具结果）：在内存收齐，
+            # 循环后与块 A 一次性落盘。tool_call_id 与 A 的调用一一配对。
+            _round_tool_blocks.append({
+                "actor": "tool",
+                "tool_call_id": _tool_call_id,
+                "content": _rendered_result,
             })
-            # [提交轮材料（C6）] criteria_met 自述按调用序累积（与板步对齐）；
-            # all_steps_done＝链收口事实（提交轮触发依据）。
-            _cm = args.get("criteria_met")
-            if isinstance(_cm, str) and _cm.strip():
-                state.chain_criteria_mets.append(_cm.strip())
-            if _data.get("all_steps_done"):
-                state.chain_completed = True
-        # [信息流 Task4] 工具结果事件（A96 全日志打点）。card_op 并表随
-        # 机械预检退役——全部工具统一 tool_result 一条通道。
-        # [模型过程数据 2026-10-12] step_id 与本次 tool_call 同源（_step_id）。
-        # [消息底座能力对齐 · 件3] result 落**结构化信封**（data/error 原样），
-        # 不再把 render_tool_result 的文本投影当 data 落盘——落盘结构化、
-        # 回灌字符串，两路各自独立（回灌侧仍走单一投影函数 render_tool_result）。
-        _struct_result = ({"ok": True, "data": _data} if ok
-                          else {"ok": False, "error": tool_result.get("error")})
-        event_stream.emit(state.work_id, state.card_id, "tool_result",
-                          {"tool": name, "target": target_id, "ok": ok,
-                           "step_id": _step_id, "result": _struct_result})
-        # [T11-T6] tool 结果经 append_tool_result 入槽（归入当前轮）
-        # [T-0010 §1.6] 回灌文本走单一投影函数（不各自 json.dumps）——
-        # 否则失败信封的 {"code","message"} 会被当数据喂进模型上下文
-        _tool_call_id = f"call_{_run_tag}_{state.rounds}_{i}"
-        _rendered_result = card_tools.render_tool_result(tool_result)
-        state.slot.append_tool_result({
-            "role": "tool",
-            "tool_call_id": _tool_call_id,
-            "content": _rendered_result,
-        })
-        # [工具结果落会话 2026-10-17] 会话块 B（工具结果）：在内存收齐，
-        # 循环后与块 A 一次性落盘。tool_call_id 与 A 的调用一一配对。
-        _round_tool_blocks.append({
-            "actor": "tool",
-            "tool_call_id": _tool_call_id,
-            "content": _rendered_result,
-        })
-        # [E-探针制] 全文累积（口径④）：三席后置注入用，不折叠不截断
-        # [T-0010 §1.6] 同一投影函数，两个调用点禁止各自拼装
-        state.tool_full_texts.append(
-            f"{name}(target={target_id}) → " + _rendered_result
-        )
+            # [E-探针制] 全文累积（口径④）：三席后置注入用，不折叠不截断
+            # [T-0010 §1.6] 同一投影函数，两个调用点禁止各自拼装
+            state.tool_full_texts.append(
+                f"{name}(target={target_id}) → " + _rendered_result
+            )
 
-    # [工具结果落会话 2026-10-17] 本工具轮的会话块收齐后**一次性原子落盘**：
-    #   块 A（actor=assistant）：content=""，tool_calls=本轮全部调用（与轮槽同源）；
-    #   块 B×N（actor=tool）：tool_call_id 与 A 的调用一一配对，content=工具结果全文。
-    # 顺序：A 在前、B 紧随。同锁同写 ⇒ 不存在"A 已落、B 未落"的中间态
-    # （N1 红线：role=tool 必须紧跟其配对的 assistant(tool_calls)，否则端点 400）。
-    # turn/pair 由门面按所在回合分配（工具块不闭合轮 ⇒ 与同轮用户/回复同 turn）。
-    if _round_tool_blocks:
-        await session_facade.append_many(state.work_id, state.card_id, [
-            {"actor": "assistant", "content": "",
-             "tool_calls": _asst_msg["tool_calls"]},
-            *_round_tool_blocks,
-        ])
+        # [工具结果落会话 2026-10-17] 本工具轮的会话块收齐后**一次性原子落盘**：
+        #   块 A（actor=assistant）：content=""，tool_calls=本轮全部调用（与轮槽同源）；
+        #   块 B×N（actor=tool）：tool_call_id 与 A 的调用一一配对，content=工具结果全文。
+        # 顺序：A 在前、B 紧随。同锁同写 ⇒ 不存在"A 已落、B 未落"的中间态
+        # （N1 红线：role=tool 必须紧跟其配对的 assistant(tool_calls)，否则端点 400）。
+        # turn/pair 由门面按所在回合分配（工具块不闭合轮 ⇒ 与同轮用户/回复同 turn）。
+    finally:
+        # [落盘不保真修复 2026-10-22] **异常也要落**：原先这段在循环之后，
+        # run 中途异常/中止就整轮工具结果丢失（实测 card_005 请求里有 110K 字符的
+        # 工具结果，会话里同 tool_call_id 的块一条都没有）⇒ 落盘比真实请求少 3 倍，
+        # 三尺永远对不齐。放进 finally 保证必落；落盘失败只记日志、不吞原异常。
+        if _round_tool_blocks:
+            try:
+                await session_facade.append_many(state.work_id, state.card_id, [
+                    {"actor": "assistant", "content": "",
+                     "tool_calls": _asst_msg["tool_calls"]},
+                    *_round_tool_blocks,
+                ])
+            except Exception as _exc:  # noqa: BLE001
+                logger.error("[工具块落盘] 失败 card=%s: %s", state.card_id, _exc)
     # [5715 · 修] 本轮**单独**落一条 assistant_text 事件（只进事件日志，不写会话块）。
     #
     # 病根（用户亲报「长程调用链之后刷新，工具归工具、内容给内容、信息顺序全乱」）：
