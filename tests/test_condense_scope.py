@@ -320,3 +320,30 @@ async def test_condense_runs_even_when_turn_lock_held(work, monkeypatch):
         session_facade.turn_release(wid, cid, "main")
     st = memory_store.load_memory(wid, cid)
     assert int(st.get("mark") or 0) > 0, "锁被占也必须凝（否则永远凝不了）"
+
+
+@pytest.mark.asyncio
+async def test_sweeper_condenses_without_any_turn(work, monkeypatch):
+    """纯后台：**没有任何回合**，扫描器自己按触发线把卡凝掉。"""
+    from src.storage import session_facade
+
+    wid, cid = work["work_id"], work["work_card_id"]
+    monkeypatch.setenv("CONDENSE_ENABLED", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "10")
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "300000")
+    monkeypatch.setenv("CONDENSE_MAX_BATCHES", "1")
+
+    await session_facade.append_many(wid, cid, [
+        {"actor": "human", "content": "六" * 60},
+        {"actor": "assistant", "content": "六" * 60},
+    ])
+
+    async def fake(prompt: str) -> str:
+        return "【结论】后台自己凝的【依据】块0"
+
+    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    n = await memory_store.condense_sweep_once()
+    st = memory_store.load_memory(wid, cid)
+    print("扫到", n, "张 | mark =", st.get("mark"))
+    assert n >= 1, "到线的卡应该被后台扫到"
+    assert int(st.get("mark") or 0) > 0, "没有任何回合也要凝"

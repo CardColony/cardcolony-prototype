@@ -120,6 +120,12 @@ async def _start_auto_scheduler() -> None:
         scheduler.start(limit)
     except Exception as exc:  # noqa: BLE001 调度器起不来不影响主服务
         print(f"[startup] 调度器启动失败（不阻断）: {exc}", flush=True)
+    # [纯后台凝练 2026-10-22] 与前台回合无关：后台每 N 秒按触发线扫一遍、到线就凝。
+    try:
+        from src.storage import memory_store as _mem
+        _mem.start_condense_sweeper()
+    except Exception as exc:  # noqa: BLE001 扫描器失败不阻断启动
+        print(f"[startup] 后台凝练扫描器启动失败（不阻断）: {exc}", flush=True)
     # [角色机制 5710 v2] 重启续跑：同步队列在 SQLite，重启后把 active 角色的
     # pending 同步重新唤醒。fail-open，不阻断启动。
     try:
