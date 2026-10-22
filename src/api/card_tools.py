@@ -2108,8 +2108,9 @@ async def _h_write_file(work_id: str, current_id: str,
                         arguments: dict[str, Any],
                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     # [T6 路径锁 2026-10-09] 同上（统一关口）
+    # [只读档 2026-10-22] 写类显式 write=True：只读卡（tools_read_file）不许写。
     if not file_tools.check_file_access(
-        arguments.get("path", ""), cards.get(current_id),
+        arguments.get("path", ""), cards.get(current_id), write=True,
     ):
         return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
     return await asyncio.to_thread(
@@ -2299,8 +2300,9 @@ async def _h_edit_file(work_id: str, current_id: str,
     同构：同一道 ``check_file_access`` 关口、同一个 ``asyncio.to_thread`` 卸载
     ——文件 IO 不冻事件循环。
     """
+    # [只读档 2026-10-22] 写类显式 write=True。
     if not file_tools.check_file_access(
-        arguments.get("path", ""), cards.get(current_id),
+        arguments.get("path", ""), cards.get(current_id), write=True,
     ):
         return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
     return await asyncio.to_thread(
