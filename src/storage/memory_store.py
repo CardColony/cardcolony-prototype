@@ -605,9 +605,15 @@ async def _condense_one_batch(work_id: str, card_id: str,
     # [防挂死 2026-10-23] 模型调用加硬超时：原来一旦上游不回就永远挂住，
     # 整条凝练线卡死（实测 card_001 一批跑十几分钟没动静）。超时＝该批失败、
     # mark 不动，下轮再来，绝不无限等。
-    _call_timeout = float(os.environ.get("CONDENSE_CALL_TIMEOUT", "180") or 180)
+    # [2026-10-23 用户裁定] **默认不设超时**：实测"看起来卡住"其实是每批几分钟、
+    # 一直在推进（card_001 五批把 mark 从 539 推到 845）。机械超时会掐掉这些
+    # "慢但能完成"的批，属掩盖问题。要设上限须显式给 CONDENSE_CALL_TIMEOUT>0。
+    _call_timeout = float(os.environ.get("CONDENSE_CALL_TIMEOUT", "0") or 0)
     try:
-        text = await asyncio.wait_for(_condense_call(user_prompt), timeout=_call_timeout)
+        if _call_timeout > 0:
+            text = await asyncio.wait_for(_condense_call(user_prompt), timeout=_call_timeout)
+        else:
+            text = await _condense_call(user_prompt)
     except asyncio.TimeoutError:
         logger.warning("[condense_fold] 凝练模型 %.0fs 超时——该批放弃、水位不动 work=%s card=%s",
                        _call_timeout, work_id, card_id)
@@ -739,9 +745,12 @@ async def _run_condense_pipeline(work_id: str, card_id: str,
                 work_id, card_id, batches, int(state["batch_count"]), len(pending) - idx)
     # [防挂死 2026-10-23] 归拢线只是"把条目再折一层"，不是凝练本体；
     # 它卡住不许拖死凝练——加超时，超时就跳过、下轮再说。
-    _fold_timeout = float(os.environ.get("CONDENSE_FOLD_TIMEOUT", "90") or 90)
+    _fold_timeout = float(os.environ.get("CONDENSE_FOLD_TIMEOUT", "0") or 0)
     try:
-        await asyncio.wait_for(_maybe_fold(work_id, card_id), timeout=_fold_timeout)
+        if _fold_timeout > 0:
+            await asyncio.wait_for(_maybe_fold(work_id, card_id), timeout=_fold_timeout)
+        else:
+            await _maybe_fold(work_id, card_id)
     except asyncio.TimeoutError:
         logger.warning("[condense_fold] 归拢线 %.0fs 超时——跳过，下轮再试 work=%s card=%s",
                        _fold_timeout, work_id, card_id)
