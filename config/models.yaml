@@ -158,12 +158,6 @@ models:
     temperature: 0.7
     thinking: 'on'
     note: ''
-  minimax-m31-flash-preview:
-    provider: minimax
-    model: MiniMax-M3.1-Flash
-    temperature: 1
-    thinking: 'on'
-    note: MiniMax M3.1 Flash（原 -Preview id 已失效）
   deepseek-v41-flash:
     provider: opencode
     model: deepseek-v4.1-flash
@@ -206,9 +200,9 @@ bindings:
   viewpoint:
   - qwen-max
   - glm-53
-  - minimax-m31-flash-preview
+  - minimax-m31
 system:
-  default_model: minimax-m31-flash-preview
+  default_model: minimax-m31
 simple:
   enabled: true
 retry_grading:
