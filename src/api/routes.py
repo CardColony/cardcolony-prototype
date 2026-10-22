@@ -264,6 +264,25 @@ async def get_nav():
         cards.sort(key=lambda c: c["last_active_at"] or "", reverse=True)
         # [角色机制 5710] 角色卡离树，排在项目内所有作业卡之后（左栏一眼分区）。
         cards.sort(key=lambda c: 0 if c.get("card_type") == "role" else -1)
+        # [职能入口 2026-10-22 · 用户令「新的 fn 角色卡，前端没有任何入口，
+        # 应该像以前的角色卡一样挂在列表上」] 职能**不进 cards 表**（立身之本），
+        # 所以它天然不出现在 cards 里 ⇒ 左栏看不到。这里单独给一份清单，
+        # 数据源与 GET /works/{wid}/functions 同源（function_profiles），
+        # 前端在项目卡列表之后渲染成职能行。读失败不影响 nav（fail-open 给空表）。
+        try:
+            _functions = [
+                {
+                    "function_id": p.get("function_id", ""),
+                    "function_name": p.get("function_name", ""),
+                    "duty": (p.get("duty") or {}).get("state") or "active",
+                    "watch": list(((p.get("watch") or {}).get("cards")) or []),
+                }
+                for p in function_store.list_profiles(wid)
+                if p.get("function_id")
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[nav] 读职能失败 work=%s: %s", wid, exc)
+            _functions = []
         projects.append({
             "work_id": wid,
             "title": w.get("title", ""),
@@ -273,6 +292,8 @@ async def get_nav():
             # [角色机制 5710] 未处理警报数：左栏项目行红点的数据源。
             "open_alarms": len(role_room.list_alarms(wid, "open")),
             "cards": cards,
+            # [职能入口 2026-10-22] 职能清单（不在 cards 表里）
+            "functions": _functions,
         })
     return {"projects": projects}
 
@@ -1715,6 +1736,21 @@ async def list_work_functions(work_id: str):
             "watch": watch.get("cards") or [],
         })
     return {"functions": out}
+
+
+@router.get("/works/{work_id}/functions/{function_id}")
+async def get_work_function(work_id: str, function_id: str):
+    """单个职能的完整档案（左栏点击职能行时用）。
+
+    [职能入口 2026-10-22 · 用户令「fn 角色卡前端没有任何入口，应该像以前的角色卡
+    一样挂在列表上」] nav 里只带 id/名字/状态（省传输），职责书等正文按需拉这一条。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    prof = function_store.get_profile(work_id, function_id)
+    if not prof:
+        return _err(404, f"职能不存在: {function_id}")
+    return {"function": prof}
 
 
 @router.post("/works/{work_id}/functions")

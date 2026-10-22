@@ -7,7 +7,7 @@ import { escapeHtml } from "./util.js?v=30";
 import { notify } from "./api.js?v=46";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=42";
+import { createNavRenderer } from "./nav_render.js?v=44";
 import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -133,6 +133,59 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
         if (el) el.focus();
       }
     });
+  }
+
+  /* [职能入口 2026-10-22 · 用户令「fn 角色卡前端没有任何入口，应该像以前的角色卡
+     一样挂在列表上」] 职能档案面板：左栏点职能行弹一个只读浮层。
+     为什么不做成「像角色卡一样点进对话页」：职能**不进 cards 表**（立身之本），
+     没有 /work/{wid}/card/{fid} 这条路由，也没有事件流；先给档案入口，
+     对话/判词视图要等职能回合有了自己的事件流再做。 */
+  let fnPanelEl = null;
+  function closeFnPanel() {
+    if (fnPanelEl) { fnPanelEl.remove(); fnPanelEl = null; }
+  }
+
+  async function showFunctionPanel(wid, fid, anchor) {
+    closeFnPanel();
+    closeNavMenu();
+    if (!wid || !fid) return;
+    let prof = null;
+    try {
+      const r = await API.call("GET", `/api/works/${wid}/functions/${fid}`);
+      if (!r || !r.ok) { notify("读职能档案失败", "error"); return; }
+      prof = (r.data && r.data.function) || null;
+    } catch (e) {
+      notify("读职能档案失败", "error");
+      return;
+    }
+    if (!prof) return;
+    const duty = String((prof.duty || {}).state || "active");
+    const watch = ((prof.watch || {}).cards || []);
+    const box = document.createElement("div");
+    box.className = "nav-fn-panel";
+    const esc = (t) => String(t == null ? "" : t)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    box.innerHTML =
+      `<div class="nav-fn-ph">` +
+        `<span class="nav-fn-pname">${esc(prof.function_name || fid)}</span>` +
+        `<span class="nav-fn-pstate${duty === "archived" ? " off" : ""}">` +
+          `${duty === "archived" ? "已撤岗" : "在岗"}</span>` +
+      `</div>` +
+      `<div class="nav-fn-prow"><b>编号</b><span>${esc(prof.function_id || fid)}</span></div>` +
+      `<div class="nav-fn-prow"><b>关注</b><span>${watch.length ? esc(watch.join("、")) : "（未指定）"}</span></div>` +
+      `<div class="nav-fn-prow col"><b>职责书</b><span>${esc(prof.charter || "（空）")}</span></div>`;
+    document.body.appendChild(box);
+    const rect = anchor ? anchor.getBoundingClientRect() : { left: 20, bottom: 100 };
+    const top = Math.min(rect.bottom + 4, window.innerHeight - box.offsetHeight - 12);
+    box.style.top = Math.max(8, top) + "px";
+    box.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - box.offsetWidth - 12)) + "px";
+    fnPanelEl = box;
+    setTimeout(() => {
+      document.addEventListener("click", function _away(ev) {
+        if (fnPanelEl && !fnPanelEl.contains(ev.target)) { closeFnPanel(); }
+        document.removeEventListener("click", _away);
+      });
+    }, 0);
   }
 
   let navMenuEl = null;
@@ -425,6 +478,9 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     if (pnew) { gotoCard(pnew.dataset.newchild, pnew.dataset.nwid, true); return; }
     const padd = e.target.closest("[data-add]");
     if (padd) { handleProjectAdd(padd.dataset.add); return; }
+    // [职能入口 2026-10-22] 职能行（不是卡）：点开只读档案面板。
+    const fnRow = e.target.closest("[data-fn]");
+    if (fnRow) { showFunctionPanel(fnRow.dataset.fwid, fnRow.dataset.fn, fnRow); return; }
     const phead = e.target.closest(".nav-phead");
     if (phead) {
       // [用户 2026-10-15 ②] 项目行名字单击＝进根卡对话（与子卡同构）。

@@ -24,7 +24,7 @@
  */
 import { escapeHtml } from "./util.js?v=30";
 import { notify } from "./api.js?v=46";
-import { createRowModel } from "./row_model.js?v=31";
+import { createRowModel } from "./row_model.js?v=33";
 import { createVirtualList } from "./nav_virtual.js?v=31";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=32";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
@@ -108,7 +108,49 @@ export function createNavRenderer(deps) {
 
   function buildRowEl(row) {
     if (row.kind === "project") return buildProjectEl(row);
+    // [职能入口 2026-10-22] 职能不是卡（不进 cards 表），行结构另立。
+    if (row.kind === "function") return buildFunctionEl(row);
     return buildCardEl(row);
+  }
+
+  /* [职能入口 2026-10-22 · 用户令「新的 fn 角色卡，前端没有任何入口，应该像以前的
+     角色卡一样挂在列表上」] 职能行：项目卡列表之后单独一段。
+     · 不可展开（职能没有子卡）、无 ⋯ 菜单（它不是卡，不能删/改名）；
+     · 点击＝打开职能档案面板（data-fn 交给 nav_system 委托）；
+     · duty=archived ⇒ 整行灰掉并标「已撤岗」，一眼看出它还挂在名单上但不再盯。 */
+  function buildFunctionEl(row) {
+    const f = row.card;
+    const el = document.createElement("div");
+    el.className = "nav-frow";
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.dataset.fn = f.function_id || "";
+    el.dataset.fwid = row.wid || "";
+    el.title = (f.function_name || f.function_id || "") + "（职能 · 点击查看档案）";
+    el.style.paddingLeft = indentOf(row.depth) + "px";
+    const segs = document.createElement("div");
+    segs.className = "nav-segs";
+    el.appendChild(segs);
+    const ico = document.createElement("span");
+    ico.className = "nav-ico fn";
+    ico.innerHTML = SVG_ROLE;
+    el.appendChild(ico);
+    const badge = document.createElement("span");
+    badge.className = "nav-fn-badge";
+    badge.textContent = "职能";
+    el.appendChild(badge);
+    const title = document.createElement("span");
+    title.className = "nav-ctitle";
+    title.textContent = f.function_name || f.function_id || "";
+    el.appendChild(title);
+    if (String(f.duty || "") === "archived") {
+      el.classList.add("nav-fn-archived");
+      const off = document.createElement("span");
+      off.className = "nav-fn-off";
+      off.textContent = "已撤岗";
+      el.appendChild(off);
+    }
+    return el;
   }
 
   /* [用户 2026-10-15 ①] 行尾槽＝时间/转圈（状态）＋ ⋯、＋（悬停操作）。
@@ -445,6 +487,13 @@ export function createNavRenderer(deps) {
       if (!store.prefs.getProjectOpen(p.work_id)) continue;
       const start = rows.length;
       pushSegment(rows, p.work_id, "", 0, new Set(), []);
+      // [职能入口 2026-10-22] 职能不进 cards 表 ⇒ 单独一段，排在全部卡之后。
+      for (const f of (p.functions || [])) {
+        if (!f || !f.function_id) continue;
+        rows.push(createRowModel(f, store, {
+          kind: "function", depth: 0, wid: p.work_id,
+        }));
+      }
       if (rows.length > start) rows[rows.length - 1].lastInProject = true;
     }
     // 每个项目的最后一行挂 .nav-last（卡片底边＋下圆角）——上面逐项目标记

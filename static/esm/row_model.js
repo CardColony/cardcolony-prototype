@@ -28,14 +28,27 @@ export function createRowModel(card, store, ctx = {}) {
     rowHeight() { return this.kind === "project" ? NAV_PHEAD_HEIGHT : NAV_ROW_HEIGHT; },
 
     key() {
-      return this.kind === "project"
-        ? "p:" + this.card.work_id
-        : "c:" + this.wid + ":" + this.card.card_id;
+      if (this.kind === "project") return "p:" + this.card.work_id;
+      // [职能入口 2026-10-22] 职能不是卡（不进 cards 表），键用 function_id。
+      if (this.kind === "function") return "f:" + this.wid + ":" + this.card.function_id;
+      return "c:" + this.wid + ":" + this.card.card_id;
     },
 
     // 实时投影六字段（全来自 store 三层，行对象自身无任何状态）
     props(s) {
       const s2 = s || store;
+      // [职能入口 2026-10-22] 职能行：没有展开/加载语义，选中态另立（见 nav 层的
+      // 职能面板）；这里恒返回稳定形状，渲染层按 duty 上色。
+      if (this.kind === "function") {
+        return {
+          expanded: false,
+          source: null,
+          loading: false,
+          error: null,
+          loaded: true,
+          selected: false,
+        };
+      }
       const cid = this.card.card_id;
       if (this.kind === "project") {
         const sel = s2.select.get();
