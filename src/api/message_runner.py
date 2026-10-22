@@ -1368,7 +1368,22 @@ async def finish(state: RunState) -> dict[str, Any]:
     # [T12-SP-04] 回合末凝练触发（condense_fold）：assistant 落盘之后异步触发、
     # 不阻塞对话（异步是工程手段非闸，RD-04）。开关缺省关（RD-08）＝零动作；
     # 开时三期管线仍挂起待路线裁定，触发只量测＋留痕（memory_store.condense_turn_end）。
-    memory_store.maybe_schedule_turn_end(state.work_id, state.card_id)
+    # [口径对齐 2026-10-22] 触发按**含工具结果的真实体积**：这里把本轮实际发出去的
+    # system＋prior（prior 已含本轮工具结果全文）量一遍交下去。落盘块的工具结果被截断
+    # 过，按块量会系统性低估（实测 31 万 vs 实际 104 万），线永远到不了。
+    try:
+        _req_tok = memory_store._msg_meter_tokens(
+            {"content": state.system_prompt or ""})
+        for _m in (state.prior_for_gateway or []):
+            _req_tok += memory_store._msg_meter_tokens(_m)
+        _req_tok += memory_store._msg_meter_tokens(
+            {"content": state.user_prompt or ""})
+    except Exception as _exc:  # noqa: BLE001 量不出来就退回落盘口径
+        logger.warning("[condense_fold] 请求体积计量失败，退回落盘口径 card=%s: %s",
+                       state.card_id, _exc)
+        _req_tok = None
+    memory_store.maybe_schedule_turn_end(
+        state.work_id, state.card_id, request_tokens=_req_tok)
     progress.set_stage(state.work_id, state.card_id, "done", "完成")
     # [信息流 Task3/打点 A96] done 事件
     event_stream.emit(state.work_id, state.card_id, "done",

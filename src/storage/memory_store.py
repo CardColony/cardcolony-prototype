@@ -359,6 +359,9 @@ def _truncate_window(pending: list[dict[str, Any]], budget: int) -> list[dict[st
     即停（继续只会更远，源侧同款剪枝）。单条即超预算的病态窗口保底取 1 条并留痕
     （防该卡窗口永久卡死；源侧取最近点会越线，任务书判据为不超——按任务书执行、
     差异如实声明）。"""
+    # [口径 2026-10-22 复核] 预算按**含工具结果的原始块量**累计（决定这一批推进到哪），
+    # 送模型的内容另由 `_build_condense_user_prompt` 只取 user/assistant。
+    # 用户原话：「窗口/计量按含工具算，喂给凝练的内容不含工具」——两处不得写反。
     used = 0
     best = 0
     for i, m in enumerate(pending):
@@ -843,7 +846,8 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                 int(state.get("mark", 0) or 0), count)
 
 
-async def condense_turn_end(work_id: str, card_id: str) -> None:
+async def condense_turn_end(work_id: str, card_id: str,
+                            request_tokens: int | None = None) -> None:
     """回合末凝练触发（SP-04：assistant 落盘之后、异步、不阻塞对话）。
 
     [T15 任务 1] 路线甲闸开（CONDENSE_ROUTE_RULINGS 2026-10-05 21:12）：K 到线
@@ -860,7 +864,19 @@ async def condense_turn_end(work_id: str, card_id: str) -> None:
         pending = prior[mark:] if 0 <= mark <= len(prior) else prior
         # [2026-10-10 计量口径改 token] 统一计量尺：tiktoken cl100k_base 真编码，
         # 与切片累计同尺。旧版为字节计量 + 配置层 ×2.1 折算（系数自造、无出处）。
-        size = _meter_sum(pending)
+        # [三尺统一 2026-10-22] 触发与窗口/销账读**同一份数据**（会话块[mark:]）。
+        # 本轮真实请求体积只作第二见证：本轮刚执行完、块尚未落盘的那部分会让它偏大，
+        # 取两者较大值＝不低估；两者偏差 >20% 说明落盘又出了问题，打警告。
+        block_size = _meter_sum(pending)
+        size = block_size
+        if request_tokens is not None:
+            req = int(request_tokens)
+            size = max(block_size, req)
+            if block_size and req > block_size * 1.2:
+                logger.warning(
+                    "[condense_fold] 三尺偏差告警：块计量=%d 请求体积=%d（%.1f 倍）"
+                    "work=%s card=%s —— 落盘可能又丢/截了工具结果",
+                    block_size, req, req / max(block_size, 1), work_id, card_id)
         k = trigger_k_tokens()
         if size < k:
             return  # 未到线：安静观察（K 首版估值下常态；标定期看 debug）
@@ -881,13 +897,15 @@ async def condense_turn_end(work_id: str, card_id: str) -> None:
                        work_id, card_id, exc)
 
 
-def maybe_schedule_turn_end(work_id: str, card_id: str) -> None:
+def maybe_schedule_turn_end(work_id: str, card_id: str,
+                            request_tokens: int | None = None) -> None:
     """回合末触发调度口（routes 层唯一调用点）：开关关＝零动作零开销；
     开＝create_task 异步触发、不阻塞对话（SP-04）。调度失败仅留痕。"""
     if not condense_enabled():
         return
     try:
-        task = asyncio.get_running_loop().create_task(condense_turn_end(work_id, card_id))
+        task = asyncio.get_running_loop().create_task(
+            condense_turn_end(work_id, card_id, request_tokens=request_tokens))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
     except Exception as exc:  # noqa: BLE001 调度失败不阻断回合
