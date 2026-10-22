@@ -58,7 +58,7 @@ async def test_complete_rejected_without_decision(typed_registry, work, no_kick)
     res = await card_tools.execute_tool(wid, cid, "update_goal", {"action": "complete"}, cards)
 
     assert res["ok"] is False and res["error"]["code"] == "validation", res
-    assert "定论" in res["error"]["message"]
+    assert "需求文档" in res["error"]["message"]
     assert "edit_card" in res["error"]["message"], "拒绝必须自带出路（验收纪律4）"
     # 被拒时卡面零改动
     assert (card_store._meta_of(wid, cid) or {}).get("goal_state") != "complete"
@@ -80,21 +80,20 @@ async def test_complete_passes_after_decision_appended(typed_registry, work, no_
 
 
 async def test_skeleton_placeholder_is_not_a_decision(typed_registry, work, no_kick):
-    """骨架里的示例行 `D01【裁定】……（日期·依据）` **不算定论**。
+    """骨架里的占位行 `（本卡全部需求的确定版……）` **不算需求文档内容**。
 
-    这条是踩出来的：`create_card` 会把 NEW_CARD_SKELETON 写进正文，里面带着一行
-    示例 D 条目。判据若只匹配 `^D\\d{2}【`，每张新建卡一出生就"有 1 条定论"——
-    闸等于不存在，画布上还会给每张空卡显示 `定1`。
+    这条是踩出来的：`create_card` 会把 NEW_CARD_SKELETON 写进正文，里面带着占位指引行。
+    判据若只匹配"非空即算有内容"，每张新建卡一出生就"有需求文档"——闸等于不存在。
     """
     wid, cid = await _mk_auto(work, "把这件事做完")
-    # 写掉现状（这样正文不再是"未写"状态），但定论仍留着骨架示例行
+    # 写掉现状（这样正文不再是"未写"状态），但需求文档仍留着骨架占位行
     await card_store.update_card(
         wid, cid, {"status_block": "## 现状\n做了一半，卡在选型上。"}, "写现状")
     _cur = await card_store.read_card(wid, cid)
     _full = (_cur["body"]["status_block"] or "") + (_cur["body"]["rulings"] or "")
-    assert "D01【裁定】……" in _full, f"骨架里应有示例行：{_cur['body']}"
+    assert "本卡全部需求的确定版" in _full, f"骨架里应有占位行：{_cur['body']}"
 
     cards = card_tools._collect_card_meta(wid)
     res = await card_tools.execute_tool(wid, cid, "update_goal", {"action": "complete"}, cards)
-    assert res["ok"] is False, "骨架示例行不该被当成定论放行"
-    assert "定论" in res["error"]["message"]
+    assert res["ok"] is False, "骨架占位行不该被当成需求文档内容放行"
+    assert "需求文档" in res["error"]["message"]

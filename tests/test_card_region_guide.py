@@ -39,10 +39,12 @@ def test_rd_card_shows_requirements_and_never_mentions_rulings():
     assert "定论" not in t, "研发树文案不得出现「定论」（用户 22:04 ①）"
 
 
-def test_research_card_shows_rulings_and_never_mentions_requirements():
-    t = _GUIDE("topic", "research_project")
-    assert "定论" in t
-    assert "需求文档" not in t, "研究树文案不得出现「需求文档」（用户 22:04 ①）"
+def test_all_trees_use_one_third_block_name():
+    """[2026-10-22 用户裁定] 第三块全系统统一叫「需求文档」，不再按树分名。"""
+    for pc in ("rd_project", "research_project", None, ""):
+        t = _GUIDE("topic", pc)
+        assert "需求文档" in t, f"{pc} 树该出现「需求文档」"
+        assert "定论" not in t, f"{pc} 树不得再出现「定论」（双名制已废除）"
 
 
 def test_root_card_mission_is_project_scope():
