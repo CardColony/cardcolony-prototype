@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """卡片工具与权限（白板版 2026-10-02）。
 
 工具接口只含机械事实：
@@ -93,7 +93,11 @@ OP_ONLY_TOOLS: frozenset[str] = frozenset({"propose_status"})
 #: 块 0.4：update_goal（声明目标态——「停」的唯一权威在模型）。
 #: G2 起扩为三件：＋send_card_message/read_inbox（把卡间通信交回模型）。
 AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
-    {"update_goal", "get_goal", "create_goal", "resume_child", "send_card_message",
+    # [v12 2026-10-22 · 用户裁定「coder 至少能给自己的父卡发信」] send_card_message
+    # **移出本集**：它原来只随 auto_mode=1 下发，于是非自动卡（含 coder）压根看不见
+    # 发信工具——即使 perms 里给了开关。现在改由 TOOL_SWITCH 常规过滤
+    # （有 send_card_message 开关就可见），与其它工具同一条规则。
+    {"update_goal", "get_goal", "create_goal", "resume_child",
      "read_inbox", "update_status", "append_ruling"})
 
 # ============================================================
@@ -548,6 +552,13 @@ async def _h_read_memory(work_id: str, current_id: str,
 async def _h_create_card(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    # 判定（代码现状口径：只能建自己的子卡片）。parent 缺省＝当前卡自身（建自己
+    # 下一层）；给了 parent 则经 policy.check 判定（parent 卡须授 CREATE_CHILD
+    # ＋ actor 在 target 子树上游），与 edit_card/delete_card 同一关口，
+    # 无第二套规则。结构性护栏（剧本根卡/带子卡者不可删）不在此——建卡不涉删。
+    title = str(arguments.get("title", "") or "").strip()
+    if not title:
+        return err("validation", "title 不能为空")
     # [建卡工具化 2026-10-08][权限底座重做 2026-10-12] 权限＝关口 CREATE_CHILD
     # [拆分流程 2026-10-21 · 用户裁定「按职责拆卡，然后填使命」]
     # 使命必填且必须是真的职责：空串 / 模板占位一律拒。
@@ -563,13 +574,6 @@ async def _h_create_card(work_id: str, current_id: str,
             "validation",
             "mission 不能是模板占位或过短：写清这张卡负责哪一块、负责到什么程度",
         )
-    # 判定（代码现状口径：只能建自己的子卡片）。parent 缺省＝当前卡自身（建自己
-    # 下一层）；给了 parent 则经 policy.check 判定（parent 卡须授 CREATE_CHILD
-    # ＋ actor 在 target 子树上游），与 edit_card/delete_card 同一关口，
-    # 无第二套规则。结构性护栏（剧本根卡/带子卡者不可删）不在此——建卡不涉删。
-    title = str(arguments.get("title", "") or "").strip()
-    if not title:
-        return err("validation", "title 不能为空")
     # parent 缺省＝当前卡自身；显式给空串也按缺省处理（模型常传空串）
     target_parent = str(arguments.get("parent", "") or "").strip() or current_id
     # 存在性先判：已删/不存在的 parent 不误报越权（与 read_card 同序）
@@ -577,14 +581,18 @@ async def _h_create_card(work_id: str, current_id: str,
         return err("not_found", f"父卡不存在: {target_parent}")
     # [权限底座重做 2026-10-12] 关口 CREATE_CHILD：parent 卡上的固化 perms 须授
     # create_child；树类开关再收紧为「只能建自己子树内的卡」
-    try:
-        policy.check(current_id, target_parent, policy.SWITCH_CREATE_CHILD, cards)
-    except PermissionError:
+    # [离开树的角色卡 2026-10-22 · 用户裁定] 组织权作用域由发起方位置决定：
+    #   · 在树内的卡   → 只能建在自己子树内（原语义，逐字不变）
+    #   · 离树的角色卡 → 可建在本项目树内**任意位置**（不含根卡）
+    # 角色卡不在树里，"在自己子树内"对它恒假 ⇒ 不换这个口径它什么也建不出来。
+    if not _org_scope_allows(current_id, target_parent,
+                             policy.SWITCH_CREATE_CHILD, cards):
         return err(
             "denied",
             (
-                f"越权：只能建自己的子卡片，{target_parent} 不在你的子树内"
-                f"（当前卡 {current_id}）"
+                f"越权：不能把卡建到 {target_parent} 之下"
+                f"（当前卡 {current_id}；树内的卡只能用自己的子树，"
+                f"离树角色卡可挂全树但不得动根卡）"
             ),
         )
     result = await card_store.create_card(
@@ -1058,12 +1066,20 @@ async def _h_create_coder_card(work_id: str, current_id: str,
     if current_id not in cards:
         return err("not_found", f"卡片不存在: {current_id}")
     # ① 建卡关口（与 _h_create_card 完全同口径：parent＝当前卡自身）
-    try:
-        policy.check(current_id, current_id, policy.SWITCH_CREATE_CHILD, cards)
-    except PermissionError:
+    # [离开树的角色卡 2026-10-22 · 用户裁定] 新增可选 parent：
+    #   · 不传 → 挂在当前卡下（原语义，逐字不变）
+    #   · 传了 → 走 _org_scope_allows：树内卡仍限自己子树；
+    #            离树角色卡可挂本项目树内任意位置（不含根卡）
+    # 为什么角色卡需要：它要「挂载需要的卡片来执行它布置的任务」，
+    # 而它自己不在树里——不让它指定 parent，它建出来的执行卡无处可挂。
+    _coder_parent = str(arguments.get("parent", "") or "").strip() or current_id
+    if _coder_parent not in cards:
+        return err("not_found", f"父卡不存在: {_coder_parent}")
+    if not _org_scope_allows(current_id, _coder_parent,
+                             policy.SWITCH_CREATE_CHILD, cards):
         return err(
             "denied",
-            f"越权：只能建自己的子卡片，{current_id} 不在你的子树内"
+            f"越权：不能把执行卡建到 {_coder_parent} 之下"
             f"（当前卡 {current_id}）",
         )
     # ② 建 coder 卡：charter 带 ## 使命 区头 ⇒ 区头检测后原样入正文，任务落使命块
@@ -1072,7 +1088,7 @@ async def _h_create_coder_card(work_id: str, current_id: str,
     # ③ 的首跑一次，「一轮做不完就停在那里」。任务原文即目标文本（使命块同源）。
     result = await card_store.create_card(
         work_id, title, "模型生成",
-        card_type="coder", parent=current_id,
+        card_type="coder", parent=_coder_parent,
         charter=f"## 使命\n{task}",
         goal=task,
         # [调度改造 2026-10-19] 本工具**自己负责首跑**（下面 ③ `_spawn_tracked`
@@ -1556,8 +1572,12 @@ async def _h_read_linked(work_id: str, current_id: str,
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """沿通信线读对方卡（模型工具 read_linked 的执行体）。
 
-    权限＝关口 ``policy.SWITCH_READ_LINKED``（与 read 分开授权——沿连线读比
-    直接读更敏感）。源＝当前卡（工具签名里没有 source，写不出别的源）。
+    权限＝只判**发起方**有 ``SWITCH_READ_LINKED``（与 read 分开授权——沿连线读比
+    直接读更敏感）。[通信不看对方 2026-10-22 · 用户令] 原来走 ``policy.check``，
+    会连**目标卡**有没有 read_linked 一起查——那等于「对方同意被读」，而 perms 是
+    建卡时抄的静态值、没有任何同意动作（coder/tool/rule 因此读不了）。线本身就
+    是「谁连了谁」的凭据，不需要第二道许可。
+    源＝当前卡（工具签名里没有 source，写不出别的源）。
     越权回既有 denied 信封；无连线／目标不存在回 not_found（文案含「无通信线」）。
     """
     target_id = str(arguments.get("target_id", "") or "")
@@ -1566,10 +1586,9 @@ async def _h_read_linked(work_id: str, current_id: str,
         return err("validation", "target_id 不能为空")
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_READ_LINKED, cards)
-    except PermissionError:
-        return err("denied", f"越权：无权沿通信线读取 {target_id}")
+    bad = _require_wire_switch(current_id, policy.SWITCH_READ_LINKED, cards, "沿线读取")
+    if bad is not None:
+        return bad
     result = await read_via(work_id, current_id, target_id, part)
     if not result.get("ok"):
         code = "not_found" if result.get("reason") in ("no_link", "not_found") \
@@ -1606,6 +1625,86 @@ async def _h_read_manuscript(work_id: str, current_id: str,
     )
 
 
+def _is_offtree_role(current_id: str,
+                     cards: dict[str, dict[str, Any]]) -> bool:
+    """发起方是不是**离树的角色卡**。
+
+    离树 = parent 为空串；role = card_type 为 "role"。
+    这类卡没有子树，任何"在自己子树内"的判定对它都恒假——
+    但用户要求它能组织整棵树（见 _org_scope_allows）。
+    """
+    me = cards.get(current_id) or {}
+    return (str(me.get("parent") or "") == ""
+            and str(me.get("card_type") or "") == "role")
+
+
+def _root_id_of(cards: dict[str, dict[str, Any]]) -> str:
+    """本 work 的项目根卡 id（card_type=project 的那一张）。找不到返回空串。"""
+    for cid, m in (cards or {}).items():
+        if str((m or {}).get("card_type") or "") == "project":
+            return str(cid)
+    return ""
+
+
+def _org_scope_allows(current_id: str, target_id: str, switch: str,
+                      cards: dict[str, dict[str, Any]]) -> bool:
+    """组织权作用域判定：发起方能否对 target 施加 switch（link/unlink/edit/create_child）。
+
+    **在树内的卡**：走 ``policy.check``（子树判定），与改造前逐字一致。
+    **离树的角色卡**：作用域＝本项目整棵树，但有两条例外——
+      · 不作用于项目根卡（根卡是项目身份，挂走它等于换项目）
+      · 不作用于自己（对自身的操作走别的关口）
+
+    为什么这样分：用户裁定「角色卡可以在整个树内任意位置挂载它觉得需要的卡片」。
+    角色卡不在树里，用"在自己子树内"去卡它，等于让它什么都不能做。
+    """
+    if _is_offtree_role(current_id, cards):
+        if not target_id or target_id == current_id:
+            return False
+        if target_id not in cards:
+            return False
+        if target_id == _root_id_of(cards):
+            return False          # 不许动根卡
+        # 离树卡自身仍须持有该开关（权限面不因作用域扩大而变大）
+        return policy.has_perm(cards.get(current_id), switch)
+    try:
+        policy.check(current_id, target_id, switch, cards)
+        return True
+    except PermissionError:
+        return False
+
+
+def _require_wire_switch(current_id: str, switch: str,
+                         cards: dict[str, dict[str, Any]],
+                         what: str) -> dict[str, Any] | None:
+    """建线／解线的门槛：**只看发起方**，不看目标卡。通过返回 None。
+
+    [连线不看对方 2026-10-22 · 用户令] 原来走 ``policy.check(..., SCOPE_ANY)``，
+    而 ``check`` 的第一级是「**目标卡** perms 须授 link」——理由是「线是双向的，
+    被连方也要能回话」。这个「同意」是假的：
+      · 目标卡的 perms 是建卡时从类型模板抄下来的静态值，没有任何「同意」动作，
+        用户也没有任何地方能表示同意／拒绝；
+      · 实际效果只是「role / coder / tool / rule 四类永远连不上」（它们没有 link）。
+    线的记录写在**发起方**卡上（``links`` / ``relations`` 字段），被连方不需要同意；
+    真正需要双方的是**发信**，那一关由 ``check_linked``（两卡之间已有线）把着，
+    与 perms 无关。
+    ⇒ 门槛只判发起方有没有这个开关。打点照旧（fn="check" 同口径）。
+    """
+    ok = policy.has_perm(cards.get(current_id), switch)
+    prompt_log.append_perm_log({
+        "fn": "check",
+        "actor_id": current_id,
+        "target_id": current_id,
+        "switch": switch,
+        "granted": ok,
+        "note": "wire_self_only",     # 与「查目标卡」的旧记录区分开
+    })
+    if ok:
+        return None
+    return err("denied",
+               f"越权：本卡没有{what}权限（perms 未授 {switch}）")
+
+
 async def _h_link_cards(work_id: str, current_id: str,
                         arguments: dict[str, Any],
                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1618,16 +1717,12 @@ async def _h_link_cards(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
         return err("validation", "不能与自身建立关系")
-    # [权限底座重做 2026-10-12] 关口 LINK：目标卡 perms 须授 link。
-    # [5713 通道试走·用户口径「卡间通信有专门的通信线」] 建线**不再叠 parent 树
-    # 作用域**：通信的边界是线本身，不是父子关系——否则平级卡永远建不出线，
-    # 也就永远通不了话（"先有鸡先有蛋"）。故作用域档取 SCOPE_ANY（只判类型授权）。
-    # 通不通话由**发信**端把关（见 _h_send_card_message 的 SCOPE_LINKED）。
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_LINK, cards,
-                     scope=policy.SCOPE_ANY)
-    except PermissionError:
-        return err("denied", f"越权：无权与 {target_id} 建立关系")
+    # [5713 通道试走] 建线**不叠 parent 树作用域**：通信的边界是线本身，不是父子关系。
+    # [连线不看对方 2026-10-22] 也**不看目标卡**的 perms——「对方同意」是伪命题
+    # （静态开关、无处可同意），只判发起方有没有 link。见 _require_wire_switch。
+    bad = _require_wire_switch(current_id, policy.SWITCH_LINK, cards, "建线")
+    if bad is not None:
+        return bad
     current = await card_store.read_card(work_id, current_id)
     # [依赖关联线 2026-10-16] 通信线读写走 **links**（原 relations 改名）。
     existing = current["meta"].get("links") or []
@@ -1668,18 +1763,12 @@ async def _h_unlink_cards(work_id: str, current_id: str,
         return err("validation", "target_id 不能为空")
     if rel_type and rel_type not in MODEL_REL_TYPES:
         return err("validation", f"关系类型非法: {rel_type}，只允许 先后/关联")
-    # [T5 补漏检口 2026-10-09][权限底座重做 2026-10-12] 关口 UNLINK：目标卡
-    # perms 须授 unlink；树类开关再收紧为「只能解自己子树内的线」
-    # （交办单「待用户知悉」，可推翻）。
-    # 悬空线（目标卡已删，本 handler 既有语义＝清理用途）不在关口判定面内：
-    # 目标不存在则无卡可查，保留直接可解的现状，不误伤清理主用例。
+    # [连线不看对方 2026-10-22] 解线同理：只判发起方有 unlink，不看目标卡。
+    # 悬空线（目标卡已删）本来就是清理用途，不查存在性。
     if target_id in cards:
-        try:
-            # [5713] 解线与建线对称：不叠树作用域（平级卡自己建得起、就解得掉）
-            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards,
-                         scope=policy.SCOPE_ANY)
-        except PermissionError:
-            return err("denied", f"越权：无权解除与 {target_id} 的连线")
+        bad = _require_wire_switch(current_id, policy.SWITCH_UNLINK, cards, "解线")
+        if bad is not None:
+            return bad
     current = await card_store.read_card(work_id, current_id)
     existing = current["meta"].get("links") or []
 
@@ -1746,16 +1835,17 @@ async def _h_reparent_card(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {card_id}")
     if new_parent_id not in cards:
         return err("not_found", f"卡片不存在: {new_parent_id}")
-    # 判据 1：关口 EDIT（树类）＝被移动卡必须在自己子树内
-    try:
-        policy.check(current_id, card_id, policy.SWITCH_EDIT, cards)
-    except PermissionError:
-        return err("denied", f"越权：{card_id} 不在你的子树内")
-    # 判据 2：新父卡也必须在子树内（含自身）——不能把卡挪出子树
-    if new_parent_id != current_id and not policy._is_in_subtree(
-            current_id, new_parent_id, cards):
+    # [离开树的角色卡 2026-10-22 · 用户裁定] 作用域由发起方位置决定：
+    #   树内卡 → 自己子树；离树角色卡 → 本项目整棵树（不含根卡）
+    if not _org_scope_allows(current_id, card_id, policy.SWITCH_EDIT, cards):
         return err("denied",
-                   f"越权：{new_parent_id} 不在你的子树内，不能把卡挂过去")
+                   f"越权：{card_id} 不在你的作用域内，不能移动它"
+                   f"（当前卡 {current_id}）")
+    if new_parent_id != current_id and not _org_scope_allows(
+            current_id, new_parent_id, policy.SWITCH_EDIT, cards):
+        return err("denied",
+                   f"越权：{new_parent_id} 不在你的作用域内，不能把卡挂过去"
+                   f"（当前卡 {current_id}）")
     # 判据 3：防环
     if new_parent_id == card_id or policy._is_in_subtree(card_id, new_parent_id, cards):
         return err("validation", "不能挂到自身或自己的后代下（会成环）")
@@ -1800,7 +1890,9 @@ async def _h_link_rel(work_id: str, current_id: str,
     """建一条依赖关联线：在当前卡 ``relations`` 上追加 ``{target, kind, detail}``。
 
     校验：target 存在、≠自身、kind ∈ ``MODEL_DEP_KINDS``、detail 非空（必填）。
-    权限：关口 ``SWITCH_LINK``（树类收紧：只能连自己子树内的卡）。
+    权限：只判**发起方**有 ``SWITCH_LINK``——不看目标卡、不叠树作用域
+    （[连线不看对方 2026-10-22]；原来 docstring 写的「树类收紧：只能连自己子树内」
+    是 2026-10-20 就已撤销的化石，实现与注释不符，这次一并对齐）。
     幂等：同 ``(target, kind)`` 已存在则不重复追加——detail 变化则**更新** detail。
     """
     target_id = str(arguments.get("target_id", "") or "")
@@ -1817,13 +1909,10 @@ async def _h_link_rel(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
         return err("validation", "不能与自身建立关系")
-    # 权限复用 LINK 关口（不新开）：目标卡 perms 须授 link。
-    # [5713 通道试走] 树类收紧撤销：同 link_cards，平级卡可自主建依赖关联线
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_LINK, cards,
-                     scope=policy.SCOPE_ANY)
-    except PermissionError:
-        return err("denied", f"越权：无权与 {target_id} 建立依赖关联")
+    # 权限只判发起方（[连线不看对方 2026-10-22]）：不看目标卡 perms、不叠树作用域。
+    bad = _require_wire_switch(current_id, policy.SWITCH_LINK, cards, "建线")
+    if bad is not None:
+        return bad
     current = await card_store.read_card(work_id, current_id)
     existing = list(current["meta"].get("relations") or [])
     hit = next((r for r in existing
@@ -1859,8 +1948,8 @@ async def _h_unlink_rel(work_id: str, current_id: str,
     """解除依赖关联线：从当前卡 ``relations`` 移除指向 target 的条目。
 
     ``kind`` 缺省＝移除**全部**指向该 target 的条目；给了 kind 只移除对应条目。
-    权限：关口 ``SWITCH_UNLINK``（与 unlink_cards 同款：目标卡已删的悬空条目
-    仍可清理——目标不存在则无卡可查，直接放行）。
+    权限：只判**发起方**有 ``SWITCH_UNLINK``（[连线不看对方 2026-10-22]）；
+    目标卡已删的悬空条目仍可清理（目标不存在则无卡可查，直接放行）。
     """
     target_id = str(arguments.get("target_id", "") or "")
     kind = str(arguments.get("kind", "") or "").strip()
@@ -1870,12 +1959,10 @@ async def _h_unlink_rel(work_id: str, current_id: str,
         return err("validation",
                    f"kind 非法: {kind}，只允许 {'/'.join(MODEL_DEP_KINDS)}")
     if target_id in cards:
-        try:
-            # [5713] 与 link_rel 对称：不叠树作用域
-            policy.check(current_id, target_id, policy.SWITCH_UNLINK, cards,
-                         scope=policy.SCOPE_ANY)
-        except PermissionError:
-            return err("denied", f"越权：无权解除与 {target_id} 的依赖关联")
+        # [连线不看对方 2026-10-22] 只判发起方（原来查目标卡 perms）。
+        bad = _require_wire_switch(current_id, policy.SWITCH_UNLINK, cards, "解线")
+        if bad is not None:
+            return bad
     current = await card_store.read_card(work_id, current_id)
     existing = list(current["meta"].get("relations") or [])
 
@@ -3206,6 +3293,118 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
 # 中间：既有工具面的顺序因此逐字不变，新增项排末尾。
 # 开关挂 EDIT（与 edit_card 同一授权）：EDIT 是树类开关 ⇒ 执行层再判一次子树，
 # 与工具面「看得见」同源——没这个开关就看不见它，调了也必拒。
+async def _h_wake_card(work_id: str, current_id: str,
+                        arguments: dict[str, Any],
+                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """让目标卡**现在就跑一轮**——不论它是不是 auto、有没有 goal、是否已完成。
+
+    [统一唤醒 2026-10-22 · 用户裁定「根卡逻辑上应该能唤醒所有卡」]
+
+    旧通道 `resume_child` 只能恢复「auto + 有 goal + 未完成 + 子树内」的卡，
+    所以非 auto 卡、无 goal 卡、已完成卡、离树角色卡全都唤不醒。
+    本工具补上这个缺口：它不关心目标处于什么状态，只做一件事——起一轮。
+
+    作用域（`_org_scope_allows`，与建卡/换父同源）：
+      · 项目根卡     → 本项目**任何**卡，含离树的角色卡
+      · 其他卡       → 自己作用域内（树内卡＝自己子树；离树角色卡＝整棵树）
+      · 不作用于自己、不作用于根卡（除非自己就是根卡）
+
+    三种目标各走各的起法：
+      · 角色卡          → role_room.manual_check（收关注卡的同步再 spawn 一轮巡检）
+      · 普通卡 + 有未处理消息 → message_runner.deliver_now（把消息变成一轮）
+      · 普通卡 + 无消息 → 用 why 造一轮（这就是"叫醒它"本身）
+    """
+    target_id = str(arguments.get("card_id") or "").strip()
+    why = str(arguments.get("why") or "").strip()
+    if not target_id:
+        return err("validation", "card_id 不能为空")
+    if target_id not in cards:
+        return err("not_found", f"卡片不存在: {target_id}")
+    if target_id == current_id:
+        return err("validation", "不能唤醒自己；要推进请直接用 update_goal")
+
+    # 作用域：根卡能唤醒全项目（含离树角色）；其他卡走统一作用域判定
+    root_id = _root_id_of(cards)
+    is_root = bool(root_id) and current_id == root_id
+    if not is_root and not _org_scope_allows(
+            current_id, target_id, policy.SWITCH_EDIT, cards):
+        return err(
+            "denied",
+            f"越权：{target_id} 不在你的作用域内"
+            f"（当前卡 {current_id}；根卡可唤醒本项目任何卡，"
+            f"其他卡只能唤醒自己作用域内的卡）",
+        )
+
+    target = cards.get(target_id) or {}
+    is_role = str(target.get("card_type") or "") == "role"
+
+    # ── 角色卡：走巡检引擎 ──
+    if is_role:
+        try:
+            from . import role_room
+            res = await role_room.manual_check(work_id, target_id)
+        except Exception as exc:  # noqa: BLE001
+            return err("internal", f"唤醒角色卡失败: {exc}")
+        if isinstance(res, dict) and res.get("error"):
+            return err("validation", str(res["error"]))
+        started = bool((res or {}).get("started"))
+        if started:
+            return {
+                "ok": True, "card_id": target_id, "via": "role_manual_check",
+                "started": True, "reason": "",
+                "pending_sources": list((res or {}).get("pending_sources") or []),
+            }
+        # [2026-10-22] manual_check 起不来是因为「没有新东西可看」——但上级是**主动**
+        # 叫它，不是等有新情况。所以退到 wake_prompt 造一轮：让它读自己的职责书、
+        # 看当前状态、自己决定要不要说话。否则「根卡能激活角色卡」就只是半句话。
+        logger.info("[唤醒] 角色卡无待处理同步，改用主动唤醒 card=%s", target_id)
+
+    # ── 普通卡：优先把已有消息变成一轮 ──
+    from . import message_runner as _mr
+    started = False
+    via = ""
+    reason = ""
+    try:
+        started = await _mr.deliver_now(work_id, target_id)
+        if started:
+            via = "deliver_now"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[唤醒] deliver_now 失败 card=%s: %s", target_id, exc)
+
+    if not started:
+        # 没有未处理消息（或对方正在跑）⇒ 用 why 造一轮
+        # 对方在跑时不打断：消息/意图留在下面，它本轮收口会自查
+        try:
+            from src.storage import session_facade
+            busy = bool(session_facade.turn_holder(work_id, target_id))
+        except Exception:  # noqa: BLE001
+            busy = False
+        if busy:
+            return {
+                "ok": True, "card_id": target_id, "via": "already_running",
+                "started": False,
+                "reason": "该卡正在跑，不打断；它本轮收口后会自查有无新任务",
+            }
+        _why_text = why or "上级要求你现在跑一轮，看看有没有需要你处理的事。"
+        prompt = (
+            "## 上级唤醒" + "\n\n"
+            + _why_text + "\n\n"
+            + f"这一轮由 `{current_id}` 主动叫起。你可以选择不做事直接结束。"
+        )
+        try:
+            from . import routes as _routes
+            task = _mr._spawn_tracked(
+                _routes._run_message(work_id, target_id, prompt,
+                                     None, append_user=False))
+            started = True
+            via = "wake_prompt"
+        except Exception as exc:  # noqa: BLE001
+            return err("internal", f"起回合失败: {exc}")
+
+    return {"ok": True, "card_id": target_id, "via": via,
+            "started": started, "reason": reason}
+
+
 TOOL_REGISTRY["reparent_card"] = ToolDef(
     schema={
         "name": "reparent_card",
@@ -3232,6 +3431,38 @@ TOOL_REGISTRY["reparent_card"] = ToolDef(
 )
 
 TOOL_SWITCH["reparent_card"] = policy.SWITCH_EDIT
+
+# [统一唤醒 2026-10-22 · 用户裁定「根卡逻辑上应该能唤醒所有卡」]
+# 与 reparent_card 同挂 EDIT：都是**组织动作**，不是执行动作。
+# 为什么单独造一个而不是扩 resume_child：resume_child 语义是「恢复自动推进的目标」，
+# 有 goal 才有意义；而唤醒要能用在没有 goal、没有 auto、已完成、甚至离树角色卡上。
+TOOL_REGISTRY["wake_card"] = ToolDef(
+    schema={
+        "name": "wake_card",
+        "description": (
+            "让一张卡**现在就跑一轮**——不论它是否自动模式、有没有目标、"
+            "是否已完成；角色卡也可以被唤醒。跑完它自己决定做什么（可以什么都不做）。\n"
+            "· 作用域：项目根卡可唤醒本项目**任何**卡（含离树的角色卡）；"
+            "其他卡只能唤醒自己作用域内的卡。\n"
+            "· 与 resume_child 的区别：resume_child 是「恢复自动推进的目标」，"
+            "要求目标卡有 auto+goal 且未完成；wake_card 只要求「叫得动」。\n"
+            "· 建议在 why 里写清为什么要它跑，它会读到这句话。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "要唤醒的卡 id"},
+                "why": {"type": "string",
+                        "description": "为什么要它跑一轮（它会读到；不写则给一句通用说明）"},
+            },
+            "required": ["card_id"],
+        },
+    },
+    handler=_h_wake_card,
+    readonly=False,
+)
+
+TOOL_SWITCH["wake_card"] = policy.SWITCH_CREATE_CHILD
 
 
 def _register_file_tools() -> None:
@@ -3289,12 +3520,17 @@ thinkchain_plan_tools.register_into(TOOL_REGISTRY, ToolDef)
 async def _h_send_card_message(work_id: str, current_id: str,
                                arguments: dict[str, Any],
                                cards: dict[str, dict[str, Any]],
-                               *, require_link: bool = True) -> dict[str, Any]:
+                               *, require_link: bool = True,
+                               require_switch: bool = True) -> dict[str, Any]:
     """发信执行体。``require_link``＝是否要求两卡之间已有通信线。
 
     模型侧（工具面 send_card_message）一律 True——**通信走专门的通信线**；
     流程/系统侧（下方 send_card_message 薄壳：完工回执、blocked 通知、S4 自动
     回发）传 False：它们不是模型自主通信，不受"先建线"约束。
+
+    ``require_switch``＝是否要求**发起方**有 ``send_card_message`` 开关。
+    模型侧 True（它本来就是"这张卡能不能发信"）；系统侧 False——coder 卡刻意
+    没有这个开关（v4：完工回执由系统发，不归模型），系统通道查它会自断回执。
     """
     target_id = arguments.get("target_card_id", "")
     # ① 收件卡存在（照 _h_read_card 先例：先判存在再判权限）
@@ -3317,11 +3553,18 @@ async def _h_send_card_message(work_id: str, current_id: str,
     content = str(arguments.get("content", "")).strip()
     if not content:
         return err("invalid", "消息正文不得为空")
-    # 权限＝分类 READ 关口（收件卡 perms 须授 read，与改造前逐字同一道）。
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_READ, cards)
-    except PermissionError:
-        return err("denied", f"越权：无权向 {target_id} 发送消息")
+    # 权限＝只判**发起方**有发信开关（``require_switch``；系统通道跳过）。
+    # [通信不看对方 2026-10-22 · 用户令] 原来这里是
+    # ``policy.check(current_id, target_id, SWITCH_READ, cards)``——查**目标卡**有没有
+    # read。这是「统一关口」的副作用（check 一律查 target），不是为通信设计的：
+    # 所有类型都有 read，所以它从来没拦过任何人，只多一层误导。真正该管的两件事
+    # 各有其主：能不能发＝发起方的 send_card_message（工具面已按它开关）；
+    # 能不能发给这个对象＝下面那道线边界。
+    if require_switch:
+        bad = _require_wire_switch(current_id, policy.SWITCH_SEND_MESSAGE,
+                                   cards, "发信")
+        if bad is not None:
+            return bad
     # [角色机制 5710 · rebase 后保留] 角色卡离树、不挂在任何一棵任务树里，但
     # 「角色 ↔ 关注卡」是**已建立的订阅边**（role_room.link 在两侧卡面各写一条
     # links），按新口径本就算已有通信线；这里仍显式认这条边，护住只有档案、
@@ -3453,7 +3696,10 @@ async def send_card_message(
         "reply_to": reply_to,
     }
     return await _h_send_card_message(work_id, from_id, arguments, cards,
-                                      require_link=False)
+                                      require_link=False,
+                                      # 系统通道不查发起方开关：coder 卡刻意没有
+                                      # send_card_message（v4），查它会自断完工回执。
+                                      require_switch=False)
 
 
 # ============================================================

@@ -127,8 +127,15 @@ def test_v4_tool_class_card_has_no_file_tools():
     assert not names & {"web_search", "fetch_web"}
     # tool 有：read / edit / delete / shadow_write / plan / read_linked
     # [卡片底座第一步 2026-10-14] tool 类型 v3 起配了 read_linked ⇒ read_linked 可见
+    # [v12 2026-10-22] tool 类型本来就配了 send_card_message（v3 起），只是以前
+    # 该工具被 AUTO_ONLY_TOOLS 挡在自动卡之外——移出后按开关正常可见。
+    # [wake_card] 上游唤醒（2026-10-22 新增，映射 SWITCH_EDIT）：tool 有 edit ⇒ 可见。
+    # [wake_card] 不在 tool 上：唤醒是**组织动作**，挂 SWITCH_CREATE_CHILD。
+    # tool 没有 create_child（它是被调用的执行体，不组织别人）⇒ 看不见 wake_card。
+    # 依据 D04「执行权与组织权分离」：组织权只在 project/sub_project/role 手上。
     expect = {"read_card", "read_memory", "edit_card",
-              "delete_card", "update_shadow", "read_shadow", "read_linked"}
+              "delete_card", "update_shadow", "read_shadow", "read_linked",
+              "send_card_message"}
     # [口径解耦 2026-10-17] 计划六件随 thinkchain 开关（纯单模型模式下不注册）
     if __import__("src.thinkchain", fromlist=["enabled"]).enabled():
         expect |= {"create_plan", "plan_reorder", "plan_insert",

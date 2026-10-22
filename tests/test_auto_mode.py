@@ -905,14 +905,21 @@ async def test_g1_auto_parent_child_with_goal_kicks(typed_registry, work,
 # ============================================================
 
 async def test_g2_normal_toolface_has_no_comm_tools(typed_registry, work):
-    """硬判据1/4：非 auto 卡工具面不含 send_card_message/read_inbox（裁定不破）。"""
+    """硬判据1/4：**read_inbox 仍只在 auto 面**。
+
+    [v12 2026-10-22 · 用户裁定] `send_card_message` **已移出 AUTO_ONLY_TOOLS**，
+    改由 TOOL_SWITCH 常规过滤：卡上给了该开关就能发信。
+    起因是「coder 干到一半卡住时说不话」——那是不合理的。
+    `read_inbox` 仍限 auto（读收件箱带上下文成本，不是发信那种必需动作）。
+    """
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk(wid, "甲", root)
     cards = card_tools._collect_card_meta(wid)
     names = [t["name"] for t in
              card_tools.build_tool_schemas(card_id=a, work_id=wid, cards=cards)]
-    assert "send_card_message" not in names
-    assert "read_inbox" not in names
+    assert "send_card_message" in names, (
+        "发信已按开关过滤，测试卡全权限 ⇒ 应当可见")
+    assert "read_inbox" not in names, "read_inbox 仍只在 auto 面"
 
 
 async def test_g2_read_inbox_outgoing_view(typed_registry, work, no_kick):

@@ -315,12 +315,17 @@ async def test_t1_tool_registered():
     #  _h_send_card_message 六道门槛。
     # ⇒ 判据从「不在注册表」改为「不在常规面／只在 auto 面」，钉的是同一条
     #   不变量：**非自动模式的模型无权发信**；同时新增钉住 auto 面确有此能力。
-    assert "send_card_message" in card_tools.TOOL_REGISTRY      # 注册＝为了条件下发
-    assert "send_card_message" in card_tools.AUTO_ONLY_TOOLS    # 只经 auto 面追加
+    # [v12 2026-10-22 · 用户裁定] send_card_message **已移出 AUTO_ONLY_TOOLS**，
+    # 改由 TOOL_SWITCH 常规过滤——卡上有该开关就可见。原因：coder 干到一半
+    # 卡住（需求不清/要主卡拍板/发现做错）时不能说话，只能硬做完或干等。
+    assert "send_card_message" in card_tools.TOOL_REGISTRY
+    assert "send_card_message" not in card_tools.AUTO_ONLY_TOOLS, (
+        "发信已改为按开关过滤，不再靠 auto 面追加")
     full = list(card_tools.policy.SWITCHES)
     normal = _face("c_norm", {"card_type": "sub_project", "auto_mode": 0,
                               "perms": full, "perms_version": 5, "parent": ""})
-    assert "send_card_message" not in normal, "常规卡面必须不含发信（12:34 裁定不破）"
+    assert "send_card_message" in normal, (
+        "全权限常规卡面现在**有**发信（按开关过滤）")
     assert "read_inbox" not in normal, "常规卡面必须不含 read_inbox"
     auto = _face("c_auto", {"card_type": "sub_project", "auto_mode": 1,
                             "perms": full, "perms_version": -1, "parent": ""})
@@ -332,11 +337,12 @@ async def test_t1_tool_registered():
 def test_t2_schema_enum_reads_registry():
     # [12:34 定性·语义保留] 常规模型面不含发信 schema（见 t1 的常规/auto 分叉断言）；
     # 「加类型零代码」语义保留在函数体校验层
-    assert "send_card_message" in card_tools.AUTO_ONLY_TOOLS  # 只在 auto 面下发
+    # [v12 2026-10-22] 发信改按开关过滤，不再经 AUTO_ONLY_TOOLS
+    assert "send_card_message" not in card_tools.AUTO_ONLY_TOOLS
     full = list(card_tools.policy.SWITCHES)
     normal = _face("c_norm2", {"card_type": "sub_project", "auto_mode": 0,
                                "perms": full, "perms_version": 5, "parent": ""})
-    assert "send_card_message" not in normal
+    assert "send_card_message" in normal
     # 类型可拓展（11:44）：注册表现读、函数体校验层每次现读（type_codes）
     # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done）
     assert list(card_msg.type_codes()) == ["msg_ask", "msg_answer", "msg_notify",

@@ -164,7 +164,9 @@ async def test_create_card_denies_out_of_subtree(work, sandbox):
     # [T-0010 §1] 权限拒绝 → denied，文案逐字不动
     assert out["ok"] is False
     assert out["error"]["code"] == "denied"
-    assert "只能建自己的子卡片" in out["error"]["message"]
+    # [2026-10-22] 文案改了：现在同时说明「树内卡的子树作用域」与
+    # 「离树角色卡可挂全树但不得动根卡」，故断言核心词而非整句。
+    assert "不能把卡建到" in out["error"]["message"]
     after = len(card_store.iter_card_metas(wid))
     assert after == before, "越权必须零落盘"
 

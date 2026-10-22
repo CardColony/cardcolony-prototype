@@ -66,7 +66,13 @@ async def test_create_role_has_independent_structure_and_is_off_tree(work):
     assert meta["parent"] == ""
     perms = set(meta[policy.PERM_KEY])
     assert {"read", "edit", "read_linked", "send_card_message", "shadow_write"} <= perms
-    assert "create_child" not in perms and "delete" not in perms
+    # [2026-10-22 · 用户需求] role **要有** create_child：
+    # 「角色卡可以在整个树内任意位置挂载它觉得需要的卡片来执行它布置的任务」。
+    # 但仍不得有执行权与破坏性动作。
+    assert "create_child" in perms, "role 必须能建卡（挂载执行单元）"
+    assert "delete" not in perms
+    for _f in ("tools_file", "tools_web", "invoke_tool"):
+        assert _f not in perms, f"role 不应有 {_f}"
 
     # 独立档案：不是普通卡三块
     prof = await role_room.get_profile(wid, rid)
