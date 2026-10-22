@@ -481,3 +481,63 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
   margin-left: 6px; border-radius: 50%; background: #d05656;
   box-shadow: 0 0 0 2px rgba(208, 86, 86, 0.18); vertical-align: middle;
 }
+
+/* ============================================================
+   [职能入口 2026-10-22 · 用户令「fn 角色卡前端没有任何入口，
+   应该像以前的角色卡一样挂在列表上」]
+   职能不是卡（不进 cards 表），但要在左栏有一个和卡并列的入口。
+   布局照 .nav-card（虚拟滚动：absolute + 30px 行高，top 由 JS 设）。
+   ============================================================ */
+.nav-frow {
+  position: absolute;
+  box-sizing: border-box;
+  height: 30px;                 /* ＝ NAV_ROW_HEIGHT，与卡行同高 */
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding-right: 10px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  background: var(--panel);
+}
+.nav-frow:hover { box-shadow: inset 0 0 0 999px var(--panel-hover); }
+.nav-frow .nav-ico.fn { color: #6ea8c9; }
+.nav-frow .nav-ctitle { font-style: italic; }
+.nav-fn-badge {
+  flex: none; font-size: 9px; line-height: 14px; padding: 0 4px;
+  margin-right: 4px; border-radius: 4px; color: #6ea8c9;
+  border: 1px solid rgba(110, 168, 201, 0.45);
+}
+.nav-frow.nav-fn-archived { opacity: 0.45; }
+.nav-fn-off {
+  flex: none; margin-left: 6px; font-size: 10px; color: var(--text-faint, #888);
+}
+
+/* 职能档案浮层（点左栏职能行弹出，只读） */
+.nav-fn-panel {
+  position: fixed;
+  z-index: 90;
+  width: 320px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  color: var(--text);
+}
+.nav-fn-ph { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.nav-fn-pname { font-size: 13px; font-weight: 600; }
+.nav-fn-pstate {
+  font-size: 10px; padding: 0 5px; line-height: 15px; border-radius: 4px;
+  color: #5aa76f; border: 1px solid rgba(90, 167, 111, 0.45);
+}
+.nav-fn-pstate.off { color: #9a9a9a; border-color: rgba(154, 154, 154, 0.45); }
+.nav-fn-prow { display: flex; gap: 8px; padding: 3px 0; line-height: 1.5; }
+.nav-fn-prow.col { flex-direction: column; gap: 2px; }
+.nav-fn-prow b { flex: none; font-weight: 500; color: var(--text-faint, #999); }
+.nav-fn-prow span { white-space: pre-wrap; word-break: break-word; }
