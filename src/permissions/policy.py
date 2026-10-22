@@ -325,59 +325,6 @@ def _deny_message(card_id: str, switch: str,
     )
 
 
-def check(actor_id: str, target_id: str, switch: str,
-          cards: Mapping[str, dict[str, Any]] | None,
-          *, scope: str = SCOPE_SUBTREE) -> bool:
-    """统一权限关口：类型分权 →（树类开关）树作用域。通过 True，拒绝抛 PermissionError。
-
-    ``cards`` 为卡面 meta 表（``{card_id: meta}``）。两级失败的文案各自独立
-    （「分类不授权」/「越出子树」），便于模型分辨。
-
-    ``scope``（仅对 ``TREE_SWITCHES`` 有效）＝树作用域的**档位**：
-      - ``subtree``（缺省，行为逐字不变）：actor 须在 target 上游（只看自己子树）；
-      - ``linked``：两卡之间已有**通信线**即通过（沿通信线，方向不限）——
-        这正是「卡间通信走专门的通信线」的落地：边界是线，不是树；
-      - ``any``：不判树作用域（建线/解线用——平级卡可自主建线，跨树也能建）。
-    类型分权一级对三档一视同仁（放宽作用域不放宽授权）。
-
-    打点：类型分权一条（fn="check"）、树作用域命中时再一条（fn="tree_scope"），
-    两态同记（granted true/false）。
-    """
-    cards = cards or {}
-    target = cards.get(target_id)
-    allowed = has_perm(target, switch)
-    prompt_log.append_perm_log({
-        "fn": "check",
-        "actor_id": actor_id,
-        "target_id": target_id,
-        "switch": switch,
-        "granted": allowed,
-    })
-    if not allowed:
-        raise PermissionError(_deny_message(target_id, switch, target))
-
-    if switch in TREE_SWITCHES:
-        if scope == SCOPE_LINKED:      # [5713] 沿通信线：有线即通，方向不限
-            scope_ok = _linked_between(actor_id, target_id, cards)
-        elif scope == SCOPE_ANY:       # [5713] 建线/解线：不判树作用域
-            scope_ok = True
-        else:
-            scope_ok = _is_in_subtree(actor_id, target_id, cards)
-        prompt_log.append_perm_log({
-            "fn": "tree_scope",
-            "actor_id": actor_id,
-            "target_id": target_id,
-            "switch": switch,
-            "granted": scope_ok,
-        })
-        if not scope_ok:
-            raise PermissionError(
-                f"[perm] denied card={target_id} action={switch} "
-                f"scope: actor={actor_id} 不在 target={target_id} 的子树上游"
-            )
-    return True
-
-
 def _is_in_subtree(
     actor_id: str,
     target_id: str,
@@ -446,6 +393,105 @@ def _linked_between(actor_id: str, target_id: str,
         return False
 
     return _has_edge(actor_id, target_id) or _has_edge(target_id, actor_id)
+
+
+def can(actor_id: str, target_id: str, switch: str,
+        cards: Mapping[str, dict[str, Any]] | None) -> bool:
+    """**唯一的作用域判定**：谁能对谁做 switch。
+
+    [权限收口 2026-10-22 · 用户定死三条规则]
+    改前有三套判定并存，同一个问题回答三遍、答案还不一样（`check` 纯子树 /
+    `_org_scope_allows` 组织权 / `_require_wire_switch` 只看发起方）。
+    用户裁定 role / function 的三条：
+      · **能读全树**
+      · **能通信**（link + 发信），但**不改别人卡面**（改只改自己的）
+      · **能建卡，挂在任意卡上面**
+
+    规则表（顺序即优先级）：
+      ① 目标卡须存在
+      ② 类型分权：**目标卡**须持有该开关（权限面，与作用域无关）
+      ③ 对自己：通过
+      ④ 根卡：对本项目任何卡通过（根卡是项目本体）
+      ⑤ 离树卡（role / function）：不动根卡身份、不改别人卡面；其余（读全树 /
+         通信 / 建卡到任意卡下）通过
+      ⑥ 树内卡：目标须在自己子树内
+    """
+    cards = cards or {}
+    target = cards.get(target_id)
+    if target is None:
+        return False
+    if not has_perm(target, switch):
+        return False
+    actor = str(actor_id or "")
+    if not actor:
+        return False
+    if actor == target_id:
+        return True
+    root_id = ""
+    for cid, meta in cards.items():
+        if str((meta or {}).get("card_type") or "") == "project":
+            root_id = str(cid)
+            break
+    if root_id and actor == root_id:
+        return True
+    actor_meta = cards.get(actor) or {}
+    if str(actor_meta.get("card_type") or "") in ("role", "function"):
+        if root_id and target_id == root_id:
+            # 根卡**能读**（它也是树的一部分，"读全树"包含根卡），
+            # 但**不能改**（改根卡使命＝换项目身份）、不能往根卡下面建卡。
+            return switch not in (SWITCH_EDIT, SWITCH_CREATE_CHILD)
+        if switch == SWITCH_EDIT:
+            return False          # 不改别人卡面（写自己走 ③）
+        return True               # 读全树 / 通信 / 建卡到任意卡下
+    return _is_in_subtree(actor, target_id, cards)
+
+
+def check(actor_id: str, target_id: str, switch: str,
+          cards: Mapping[str, dict[str, Any]] | None,
+          *, scope: str = SCOPE_SUBTREE) -> bool:
+    """权限关口：类型分权 → 作用域。通过 True，拒绝抛 PermissionError。
+
+    [权限收口 2026-10-22] 作用域判定**统一走 ``can()``**（唯一规则表），本函数只剩
+    两件事：记打点、把 False 变成 PermissionError。调用点零改动。
+
+    ``scope`` 只对 ``TREE_SWITCHES`` 有效：
+      - ``subtree``（缺省）：走 ``can()`` 的完整规则表；
+      - ``linked``：两卡之间已有通信线即通过（沿通信线，方向不限）；
+      - ``any``：不判作用域（建线/解线用）。
+    """
+    cards = cards or {}
+    target = cards.get(target_id)
+    allowed = has_perm(target, switch)
+    prompt_log.append_perm_log({
+        "fn": "check",
+        "actor_id": actor_id,
+        "target_id": target_id,
+        "switch": switch,
+        "granted": allowed,
+    })
+    if not allowed:
+        raise PermissionError(_deny_message(target_id, switch, target))
+
+    if switch in TREE_SWITCHES:
+        if scope == SCOPE_LINKED:      # [5713] 沿通信线：有线即通，方向不限
+            scope_ok = _linked_between(actor_id, target_id, cards)
+        elif scope == SCOPE_ANY:       # [5713] 建线/解线：不判作用域
+            scope_ok = True
+        else:
+            scope_ok = can(actor_id, target_id, switch, cards)
+        prompt_log.append_perm_log({
+            "fn": "tree_scope",
+            "actor_id": actor_id,
+            "target_id": target_id,
+            "switch": switch,
+            "granted": scope_ok,
+        })
+        if not scope_ok:
+            raise PermissionError(
+                f"[perm] denied card={target_id} action={switch} "
+                f"scope: actor={actor_id} 无权对该卡执行此操作"
+            )
+    return True
 
 
 def check_linked(actor_id: str, target_id: str,
