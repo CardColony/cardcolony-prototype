@@ -872,8 +872,13 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                 int(state.get("mark", 0) or 0), count)
 
 
+#: 进程内防重入（force 路径不走 session_facade 的锁，靠这个挡住自己和自己打架）
+_CONDENSING: set[tuple[str, str]] = set()
+
+
 async def condense_turn_end(work_id: str, card_id: str,
-                            request_tokens: int | None = None) -> None:
+                            request_tokens: int | None = None,
+                            force: bool = False) -> None:
     """回合末凝练触发（SP-04：assistant 落盘之后、异步、不阻塞对话）。
 
     [T15 任务 1] 路线甲闸开（CONDENSE_ROUTE_RULINGS 2026-10-05 21:12）：K 到线
@@ -908,16 +913,37 @@ async def condense_turn_end(work_id: str, card_id: str,
             return  # 未到线：安静观察（K 首版估值下常态；标定期看 debug）
         # [A4/T086] 同卡互斥并入 facade._active_turns（同一登记处）：凝练持有
         # 期间主线回合 409、主线回合持有期间凝练跳过留痕——一个登记处两头生效。
-        if not session_facade.turn_try_acquire(work_id, card_id, "condense"):
-            logger.info("[condense_fold] 触发跳过（同卡在途互斥 holder=%s）work=%s card=%s 未凝token=%d K=%d",
-                        session_facade.turn_holder(work_id, card_id), work_id, card_id, size, k)
-            return
+        # [锁竞争修复 2026-10-22] 主线回合的锁在 routes 的 finally 才放，而本任务在
+        # finish() 里就创建了 ⇒ 一次抢锁几乎必败（实测 fn_002 六小时没凝过）。
+        # 非 force 路径改为重试几次，给 finally 放锁留时间；force 路径（预检，
+        # 本身就在回合内）不抢锁，改用进程内集合防重入。
+        _key = (work_id, card_id)
+        if force:
+            if _key in _CONDENSING:
+                logger.info("[condense_fold] 跳过（进程内已在凝）work=%s card=%s", work_id, card_id)
+                return
+            _CONDENSING.add(_key)
+        else:
+            _got = False
+            for _try in range(3):
+                if session_facade.turn_try_acquire(work_id, card_id, "condense"):
+                    _got = True
+                    break
+                await asyncio.sleep(1.0)
+            if not _got:
+                logger.info("[condense_fold] 触发跳过（同卡在途互斥 holder=%s）work=%s card=%s "
+                            "未凝token=%d K=%d（已重试 3 次）",
+                            session_facade.turn_holder(work_id, card_id), work_id, card_id, size, k)
+                return
         logger.info("[condense_fold] 触发线 K 已到线，启动凝练 work=%s card=%s 未凝token=%d K=%d mark=%d 未凝块数=%d",
                     work_id, card_id, size, k, mark, len(pending))
         try:
             await _run_condense_pipeline(work_id, card_id, pending, mark)
         finally:
-            session_facade.turn_release(work_id, card_id, "condense")
+            if force:
+                _CONDENSING.discard(_key)
+            else:
+                session_facade.turn_release(work_id, card_id, "condense")
     except Exception as exc:  # noqa: BLE001 触发面零阻断（V5 哲学）
         logger.warning("[condense_fold] 回合末触发失败（不阻断、留痕、水位不动）work=%s card=%s: %s",
                        work_id, card_id, exc)
@@ -956,7 +982,7 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
                            "—— 第 %d 批 work=%s card=%s",
                            cur, trigger_k_tokens(), _target, ran + 1, work_id, card_id)
             before = int(load_memory(work_id, card_id).get("mark", 0) or 0)
-            await condense_turn_end(work_id, card_id, request_tokens=cur)
+            await condense_turn_end(work_id, card_id, request_tokens=cur, force=True)
             after = int(load_memory(work_id, card_id).get("mark", 0) or 0)
             ran += 1
             if after <= before:      # 没推进（失败/无内容）⇒ 停，别空转

@@ -290,3 +290,33 @@ async def test_preflight_loops_until_under_target(work, monkeypatch):
     print("跑了", len(batches), "批 | mark =", st.get("mark"))
     assert ran is True
     assert len(batches) >= 2, f"一批压不够就该继续跑，实际只跑了 {len(batches)} 批"
+
+
+@pytest.mark.asyncio
+async def test_condense_runs_even_when_turn_lock_held(work, monkeypatch):
+    """主线回合占着锁时，凝练也必须能跑（force 路径）——这是它六小时没凝过的真因。"""
+    from src.storage import session_facade
+
+    wid, cid = work["work_id"], work["work_card_id"]
+    monkeypatch.setenv("CONDENSE_ENABLED", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "10")
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "300000")
+
+    await session_facade.append_many(wid, cid, [
+        {"actor": "human", "content": "六" * 50},
+        {"actor": "assistant", "content": "六" * 50},
+    ])
+
+    async def fake(prompt: str) -> str:
+        return "【结论】锁着也压了【依据】块0"
+
+    monkeypatch.setattr(memory_store, "_condense_call", fake)
+
+    # 主线回合先占锁（模拟 routes 里 finally 还没释放的那段）
+    assert session_facade.turn_try_acquire(wid, cid, "main") is True
+    try:
+        await memory_store.condense_turn_end(wid, cid, request_tokens=100, force=True)
+    finally:
+        session_facade.turn_release(wid, cid, "main")
+    st = memory_store.load_memory(wid, cid)
+    assert int(st.get("mark") or 0) > 0, "锁被占也必须凝（否则永远凝不了）"
