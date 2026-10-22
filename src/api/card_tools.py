@@ -4274,6 +4274,15 @@ _NO_FUNCTION_DIRECTIVE_LEDGER = (
     "或用 send_card_message 给相关的工作卡发建议（普通建议不受影响）。")
 
 
+def _function_watches(work_id: str, function_id: str, target_id: str) -> bool:
+    """该职能是否关注这张卡（指令只能下给自己盯的卡）。读不到＝False（fail-closed）。"""
+    try:
+        prof = function_store.get_profile(work_id, function_id) or {}
+        return target_id in list(((prof.get("watch") or {}).get("cards")) or [])
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def _h_issue_directive(work_id: str, current_id: str,
                              arguments: dict[str, Any],
                              cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -4281,9 +4290,47 @@ async def _h_issue_directive(work_id: str, current_id: str,
     actor = _function_actor(work_id, current_id, cards)
     if not actor:
         return err("denied", "只有职能（或角色卡）可以下指令")
-    if actor.startswith("fn_"):
-        return err("not_implemented", _NO_FUNCTION_DIRECTIVE_LEDGER)
-    return await _h_issue_directive_legacy(work_id, current_id, arguments, cards)
+    if not actor.startswith("fn_"):
+        return await _h_issue_directive_legacy(work_id, current_id, arguments, cards)
+    # [指令台账 2026-10-22] 职能路径：与 legacy 同一套规则，存储换 function_directives。
+    target_id = str(arguments.get("target_card_id") or "").strip()
+    instruction = str(arguments.get("instruction") or "").strip()
+    acceptance = str(arguments.get("acceptance") or "").strip()
+    if target_id not in cards:
+        return err("not_found", f"卡片不存在: {target_id}")
+    if str((cards.get(target_id) or {}).get("card_type") or "") in ("role", "function"):
+        return err("invalid", "不能给另一个职能/角色下指令")
+    if not _function_watches(work_id, actor, target_id):
+        return err("denied", f"{target_id} 不在你的关注范围（先让根卡把它加进 watch）")
+    if not instruction:
+        return err("validation", "instruction 不能为空")
+    if not acceptance:
+        return err("validation", "acceptance 不能为空（没有验收判据的指令不可验收）")
+    content = (
+        f"【职能指令】{instruction}\n\n"
+        f"验收判据：{acceptance}\n\n"
+        "这是指令，不是建议：请执行；不能在回复/现状里说明理由、需要什么支持、"
+        "预计何时完成。执行结果要落进现状，便于我下一轮验收。"
+    )
+    sent = await _h_send_card_message(work_id, current_id, {
+        "target_card_id": target_id,
+        "msg_type": "msg_directive",
+        "content": content,
+    }, cards)
+    if isinstance(sent, dict) and sent.get("ok") is False:
+        return sent
+    rec = await function_store.add_directive(
+        work_id, actor, target_id, instruction, acceptance,
+        msg_id=str((sent or {}).get("msg_id") or ""),
+        due_at=str(arguments.get("due_at") or ""),
+        parent_id=str(arguments.get("parent_id") or ""),
+        attempt=int(arguments.get("attempt") or 1))
+    return {
+        "directive_id": rec["id"],
+        "msg_id": str((sent or {}).get("msg_id") or ""),
+        "target_card_id": target_id,
+        "status": rec["status"],
+    }
 
 
 async def _h_verify_directive(work_id: str, current_id: str,
@@ -4293,9 +4340,20 @@ async def _h_verify_directive(work_id: str, current_id: str,
     actor = _function_actor(work_id, current_id, cards)
     if not actor:
         return err("denied", "只有职能（或角色卡）可以验收指令")
-    if actor.startswith("fn_"):
-        return err("not_implemented", _NO_FUNCTION_DIRECTIVE_LEDGER)
-    return await _h_verify_directive_legacy(work_id, current_id, arguments, cards)
+    if not actor.startswith("fn_"):
+        return await _h_verify_directive_legacy(work_id, current_id, arguments, cards)
+    directive_id = str(arguments.get("directive_id") or "").strip()
+    status = str(arguments.get("status") or "").strip().lower()
+    evidence = str(arguments.get("evidence") or "").strip()
+    if status not in ("complied", "rejected", "cancelled"):
+        return err("validation", f"status 非法: {status!r}（complied/rejected/cancelled）")
+    if status == "rejected" and not evidence:
+        return err("validation", "rejected 必须写 evidence（缺什么/差在哪）")
+    ok = await function_store.verify_directive(
+        work_id, actor, directive_id, status, evidence)
+    if not ok:
+        return err("not_found", f"你的台账里没有可验收的指令 {directive_id}")
+    return {"ok": True, "directive_id": directive_id, "status": status}
 
 
 

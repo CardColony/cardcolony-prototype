@@ -558,3 +558,147 @@ async def correct_alarm(work_id: str, alarm_id: str,
         return cur.rowcount > 0
 
     return bool(await card_db.run_write(work_id, _fn))
+
+
+# ============================================================
+# [指令台账 2026-10-22] function_directives —— 职能下指令/验收的存储
+# ============================================================
+# 为什么单独补：`issue_directive` / `verify_directive` 原来只做了工具层，
+# 职能（fn_）一调就返回 not_implemented（"function_directives 表尚不存在"）。
+# 语义与 role_directives 逐字同构（纯改名 role_id → function_id），不改任何规则：
+#   issued →（对方执行）→ complied / rejected（必带 evidence）/ cancelled。
+# 表用 CREATE IF NOT EXISTS 幂等建（card_db 是禁改文件，DDL 放本层）。
+
+_DIRECTIVE_DDL = """CREATE TABLE IF NOT EXISTS function_directives (
+    id              TEXT PRIMARY KEY,
+    work_id         TEXT NOT NULL,
+    function_id     TEXT NOT NULL,
+    target_card_id  TEXT NOT NULL,
+    instruction     TEXT,
+    acceptance      TEXT,
+    msg_id          TEXT DEFAULT '',
+    status          TEXT DEFAULT 'issued',
+    evidence        TEXT DEFAULT '',
+    created_at      TEXT,
+    updated_at      TEXT,
+    verified_at     TEXT DEFAULT '',
+    due_at          TEXT DEFAULT '',
+    parent_id       TEXT DEFAULT '',
+    attempt         INTEGER DEFAULT 1
+)"""
+
+_DIRECTIVE_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_function_directives_fn "
+    "ON function_directives(function_id, status)")
+
+_DIRECTIVE_STATUSES = ("issued", "complied", "rejected", "cancelled")
+
+
+def _ensure_directives(conn: sqlite3.Connection) -> None:
+    conn.execute(_DIRECTIVE_DDL)
+    conn.execute(_DIRECTIVE_INDEX)
+
+
+def _directive_row(r: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": r["id"],
+        "function_id": r["function_id"],
+        "target_card_id": r["target_card_id"],
+        "instruction": r["instruction"] or "",
+        "acceptance": r["acceptance"] or "",
+        "msg_id": r["msg_id"] or "",
+        "status": r["status"] or "issued",
+        "evidence": r["evidence"] or "",
+        "created_at": r["created_at"] or "",
+        "updated_at": r["updated_at"] or "",
+        "verified_at": r["verified_at"] or "",
+        "due_at": r["due_at"] or "",
+        "parent_id": r["parent_id"] or "",
+        "attempt": int(r["attempt"] or 1),
+    }
+
+
+async def add_directive(work_id: str, function_id: str, target_card_id: str,
+                        instruction: str, acceptance: str,
+                        msg_id: str = "", due_at: str = "",
+                        parent_id: str = "", attempt: int = 1) -> dict[str, Any]:
+    """职能下一条指令（status=issued）。"""
+    rec = {
+        "id": uuid.uuid4().hex[:12],
+        "function_id": function_id,
+        "target_card_id": target_card_id,
+        "instruction": instruction,
+        "acceptance": acceptance,
+        "msg_id": msg_id,
+        "status": "issued",
+        "evidence": "",
+        "created_at": _now(),
+        "updated_at": _now(),
+        "verified_at": "",
+        "due_at": due_at,
+        "parent_id": parent_id,
+        "attempt": max(1, int(attempt or 1)),
+    }
+
+    def _fn(conn: sqlite3.Connection) -> None:
+        _ensure_directives(conn)
+        conn.execute(
+            "INSERT INTO function_directives"
+            " (id, work_id, function_id, target_card_id, instruction, acceptance,"
+            "  msg_id, status, evidence, created_at, updated_at, verified_at,"
+            "  due_at, parent_id, attempt)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (rec["id"], work_id, function_id, target_card_id, instruction,
+             acceptance, msg_id, "issued", "", rec["created_at"],
+             rec["updated_at"], "", due_at, parent_id, rec["attempt"]))
+
+    await card_db.run_write(work_id, _fn)
+    return rec
+
+
+def list_directives(work_id: str, function_id: str,
+                    status: str = "") -> list[dict[str, Any]]:
+    """列该职能的指令台账（status 空＝全部，按创建时间倒序）。"""
+
+    def _fn(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        _ensure_directives(conn)
+        sql = "SELECT * FROM function_directives WHERE work_id=? AND function_id=?"
+        args: list[Any] = [work_id, function_id]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        sql += " ORDER BY created_at DESC"
+        return [_directive_row(r) for r in conn.execute(sql, tuple(args)).fetchall()]
+
+    return card_db.read_sync(work_id, _fn, []) or []
+
+
+def get_directive(work_id: str, directive_id: str) -> Optional[dict[str, Any]]:
+    def _fn(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
+        _ensure_directives(conn)
+        row = conn.execute(
+            "SELECT * FROM function_directives WHERE work_id=? AND id=?",
+            (work_id, directive_id)).fetchone()
+        return _directive_row(row) if row is not None else None
+
+    return card_db.read_sync(work_id, _fn, None)
+
+
+async def verify_directive(work_id: str, function_id: str, directive_id: str,
+                           status: str, evidence: str = "") -> bool:
+    """验收一条指令：complied / rejected / cancelled。只认自己下的指令。"""
+    if status not in _DIRECTIVE_STATUSES or status == "issued":
+        return False
+    done = {"ok": False}
+
+    def _fn(conn: sqlite3.Connection) -> None:
+        _ensure_directives(conn)
+        cur = conn.execute(
+            "UPDATE function_directives"
+            " SET status=?, evidence=?, updated_at=?, verified_at=?"
+            " WHERE work_id=? AND id=? AND function_id=? AND status='issued'",
+            (status, evidence, _now(), _now(), work_id, directive_id, function_id))
+        done["ok"] = cur.rowcount > 0
+
+    await card_db.run_write(work_id, _fn)
+    return bool(done["ok"])
