@@ -79,8 +79,10 @@ async def test_v1_mock_full_chain(sandbox, monkeypatch, caplog):
     expect_fp = hashlib.sha256(
         memory_store._build_condense_user_prompt(prior).encode("utf-8")).hexdigest()[:16]
     assert all(e["fingerprint"] == expect_fp for e in st["entries"])
-    # seq＝该条依据引用的起始块号
-    assert [e["seq"] for e in st["entries"]] == [0, 0, 2]
+    # seq＝该条依据引用的起始块号；不带块号的条目**按窗口内可送块逐条分配**（不重复）
+    # [seq 身份修复 2026-10-22] 旧期望 [0, 0, 2] 是 bug 的固化：两条都落窗口首块，
+    # 触发「I1 gist 身份重复」⇒ 记忆链拒绝物化。现在第一条用其块号 0，第二条分配 1。
+    assert [e["seq"] for e in st["entries"]] == [0, 1, 2]
 
     # 200 区出现条目（渲染走 render_memory_region 真代码）
     regions = context_assembler.build_context_regions(wid, cid)

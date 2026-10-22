@@ -423,7 +423,8 @@ def _drop_overlapping(entries: list[dict[str, Any]], lo: int, hi: int) -> list[d
     return out
 
 
-def _parse_condense_output(text: str, default_seq: int) -> list[dict[str, Any]]:
+def _parse_condense_output(text: str, default_seq: int,
+                           block_seqs: list[int] | None = None) -> list[dict[str, Any]]:
     """凝练产出解析：**JSON 节点优先，旧【结论】/【依据】格式回退**。
 
     [记忆因果链 2026-10-20] dsh 的凝练产出是**节点 JSON**（`{"nodes":[{anchor,gist,
@@ -463,7 +464,7 @@ def _parse_condense_output(text: str, default_seq: int) -> list[dict[str, Any]]:
             })
         if out:
             return out
-    return _parse_condense_markers(raw, default_seq)
+    return _parse_condense_markers(raw, default_seq, block_seqs)
 
 
 def _try_parse_node_json(text: str) -> Optional[list[dict[str, Any]]]:
@@ -487,7 +488,8 @@ def _try_parse_node_json(text: str) -> Optional[list[dict[str, Any]]]:
     return None
 
 
-def _parse_condense_markers(text: str, default_seq: int) -> list[dict[str, Any]]:
+def _parse_condense_markers(text: str, default_seq: int,
+                            block_seqs: list[int] | None = None) -> list[dict[str, Any]]:
     """按【结论】/【依据】标记逐条切分（**旧格式兼容**，任务 3 原实现）。
 
     以标记为分隔符做全文分词（真模型实测会把【依据】写在与【结论】同一行——
@@ -500,6 +502,25 @@ def _parse_condense_markers(text: str, default_seq: int) -> list[dict[str, Any]]
     mode: str | None = None  # None=前言（丢）｜'conclusion'｜'evidence'
     buf_conc: list[str] = []
     buf_evi: list[str] = []
+    # [seq 身份修复 2026-10-22] 旧格式条目常常不带块号，原来一律兜底成窗口首块 ⇒
+    # 一批条目全挤在同一个 seq（实测 447 上挤了 12 条），触发「I1 gist 身份重复」、
+    # 记忆链拒绝物化。改为：不带块号的条目**按窗口内可送块逐条分配**（顺序对应），
+    # 带块号的仍用块号；两者都避让已占用的 seq。
+    _used: set[int] = set()
+    _pool: list[int] = [int(x) for x in (block_seqs or [])]
+
+    def _pick_seq(refs: list[int]) -> int:
+        if refs:
+            cand = min(refs)
+            if cand not in _used:
+                _used.add(cand)
+                return cand
+        for s_ in _pool:
+            if s_ not in _used:
+                _used.add(s_)
+                return s_
+        _used.add(default_seq)
+        return default_seq
 
     def _flush() -> None:
         nonlocal buf_conc, buf_evi
@@ -508,7 +529,7 @@ def _parse_condense_markers(text: str, default_seq: int) -> list[dict[str, Any]]
             evidence = "\n".join(buf_evi).strip()
             refs = [int(n) for n in _BLOCK_REF_RE.findall(evidence)]
             parsed.append({
-                "seq": min(refs) if refs else default_seq,
+                "seq": _pick_seq(refs),
                 "conclusion": conclusion,
                 "evidence": evidence,
             })
@@ -587,7 +608,12 @@ async def _condense_one_batch(work_id: str, card_id: str,
                        work_id, card_id, exc)
         return False
     # 任务 3：产出解析（失败/空产出→不凝）
-    fresh = _parse_condense_output(text, default_seq=int(window[0].get("seq", mark) or mark))
+    from . import predicates as _pred
+    _send_seqs = [int(m.get("seq") or 0) for m in window
+                  if _pred.is_condense_original_event(m) and str(m.get("content") or "").strip()]
+    fresh = _parse_condense_output(
+        text, default_seq=int(window[0].get("seq", mark) or mark),
+        block_seqs=_send_seqs)
     if not fresh:
         logger.warning("[condense_fold] 凝练失败——水位一分不动 work=%s card=%s 阶段=产出解析 原因=空产出或无【结论】条目",
                        work_id, card_id)
