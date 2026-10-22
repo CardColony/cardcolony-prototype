@@ -179,3 +179,52 @@ def test_request_tokens_never_shrinks_the_window(work, monkeypatch, caplog):
     assert st["mark"] == 3, f"窗口 3 块全在预算内 ⇒ mark=3，实际 {st['mark']}"
     msgs = [r.getMessage() for r in caplog.records]
     assert any("三尺偏差告警" in m for m in msgs), msgs
+
+
+# ---------------------------------------------------------------- 发送前预检（防超窗死锁）
+
+@pytest.mark.asyncio
+async def test_preflight_condenses_when_over_line(work, monkeypatch):
+    """未凝量到线 ⇒ 发请求前先凝一批（否则超窗失败后永远不触发）。"""
+    import asyncio
+
+    from src.storage import session_facade
+
+    wid, cid = work["work_id"], work["work_card_id"]
+    monkeypatch.setenv("CONDENSE_ENABLED", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "50")
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "300000")
+
+    await session_facade.append_many(wid, cid, [
+        {"actor": "human", "content": "六" * 200},
+        {"actor": "assistant", "content": "六" * 200},
+    ])
+
+    async def fake(prompt: str) -> str:
+        return "【结论】预检压了【依据】块0"
+
+    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    ran = await memory_store.condense_before_send(wid, cid)
+    st = memory_store.load_memory(wid, cid)
+    assert ran is True
+    assert int(st.get("mark") or 0) > 0, "到线就该凝并推进 mark"
+
+
+@pytest.mark.asyncio
+async def test_preflight_does_nothing_below_line(work, monkeypatch):
+    """未到线 ⇒ 什么都不做（不调模型、mark 不动）。"""
+    import asyncio
+
+    wid, cid = work["work_id"], work["work_card_id"]
+    monkeypatch.setenv("CONDENSE_ENABLED", "1")
+    monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "800000")
+    called: list[str] = []
+
+    async def fake(prompt: str) -> str:
+        called.append(prompt)
+        return "不该被调用"
+
+    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    ran = await memory_store.condense_before_send(wid, cid)
+    assert ran is False
+    assert called == []
