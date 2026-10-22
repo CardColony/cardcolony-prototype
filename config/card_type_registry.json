@@ -94,6 +94,14 @@
           "requires_owner": false,
           "off_tree": true,
           "default_template": "role"
+        },
+        {
+          "code": "function",
+          "label": "职能卡",
+          "description": "人类团队里真实存在的岗位（不是任务卡）。不进任务树、不出现在画布/卡树/统计；在 cards 表里有一行，只为复用卡的基础设施（权限分权、上下文装配、回合执行、建卡派活）。盯指定的卡，对方收口时收到同步并判断发言或沉默。",
+          "can_have_children": true,
+          "requires_owner": false,
+          "off_tree": true
         }
       ]
     },
@@ -128,6 +136,14 @@
           "requires_owner": false,
           "off_tree": true,
           "default_template": "role"
+        },
+        {
+          "code": "function",
+          "label": "职能卡",
+          "description": "人类团队里真实存在的岗位（不是任务卡）。不进任务树、不出现在画布/卡树/统计；在 cards 表里有一行，只为复用卡的基础设施（权限分权、上下文装配、回合执行、建卡派活）。盯指定的卡，对方收口时收到同步并判断发言或沉默。",
+          "can_have_children": true,
+          "requires_owner": false,
+          "off_tree": true
         }
       ]
     },
@@ -145,6 +161,14 @@
             "active",
             "completed"
           ]
+        },
+        {
+          "code": "function",
+          "label": "职能卡",
+          "description": "人类团队里真实存在的岗位（不是任务卡）。不进任务树、不出现在画布/卡树/统计；在 cards 表里有一行，只为复用卡的基础设施（权限分权、上下文装配、回合执行、建卡派活）。盯指定的卡，对方收口时收到同步并判断发言或沉默。",
+          "can_have_children": true,
+          "requires_owner": false,
+          "off_tree": true
         }
       ]
     }

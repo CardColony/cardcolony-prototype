@@ -17,10 +17,11 @@
       "【v5 · 2026-10-15 规则卡】新增 rd_project/rule 与 research_project/rule 两行（各仅 read 一码——规则卡模型侧只读，shadow_write/edit 等一概不给；唯一模型侧写通道＝根卡 draft_rule_edit 提议+用户审批落盘，不走本表）。既有行逐字不动。",
       "[v10 · 2026-10-22 · 用户实测「根卡不能连线自己的角色卡」] role 补 link/unlink。理由：role 有 send_card_message 却没有 link，而发消息前置是「已有线 OR 互为祖先-后代」；角色卡离树(parent=\"\")永远不可能是祖先/后代 ⇒ 只能靠线，没 link 就建不了线 ⇒ 谁都连不上它、它也发不出任何消息。判据：离树的卡必须有 link。",
       "[v11 · 2026-10-22 · 用户需求] role 补 create_child。用户：「角色卡可以在整个树内任意位置挂载它觉得需要的卡片来执行它布置的任务」。原配置没有 create_child ⇒ 角色卡建不出任何卡，这条需求做不到。配套改动：card_tools._org_scope_allows —— 离树角色卡的组织权作用域＝本项目整棵树（不含根卡）。**仍不给**：tools_file/tools_web（执行权）、delete（破坏性）、bash/python（执行）。角色不干活，但要能组队。",
-      "[v12 · 2026-10-22 · 用户裁定「coder 至少能给自己的父卡发信，这根本不合理」] coder 补 send_card_message。v4 的原意是「完工回执不要模型自己发」（由 report_done 系统发），执行成了「整类卡不给发信」——于是 coder 干到一半卡住（需求不清、要主卡拍板、发现做错）时**说不了话**，只能硬做完或干等。回执仍走 report_done 系统通道（require_switch=False），本条只补「中途能问」这一条路。"
+      "[v12 · 2026-10-22 · 用户裁定「coder 至少能给自己的父卡发信，这根本不合理」] coder 补 send_card_message。v4 的原意是「完工回执不要模型自己发」（由 report_done 系统发），执行成了「整类卡不给发信」——于是 coder 干到一半卡住（需求不清、要主卡拍板、发现做错）时**说不了话**，只能硬做完或干等。回执仍走 report_done 系统通道（require_switch=False），本条只补「中途能问」这一条路。",
+      "[v13 · 2026-10-22 · 用户裁定 A：职能＝cards 表里有一行、但呈现层不露面的实体] 新增 function 类型行，权限同 project（职能是管理者：读卡/沿连线读/发信/建卡派活/连线/调工具/查资料/计划/写自己影子）。为什么必须有一行：perms 分权、build_ctx 上下文装配、_run_message 回合、create_card、spawn 巡检全部按 card_id 焊死；把职能踢出 cards 表＝一次性踢出这一切（实测 fn 只能看 146 字、跑不了回合）。呈现层（画布/卡树/统计）按 card_type='function' 过滤，不进交付树。"
     ]
   },
-  "version": 12,
+  "version": 13,
   "permissions": {
     "rd_project": {
       "project": [
@@ -86,6 +87,20 @@
         "link",
         "unlink",
         "create_child"
+      ],
+      "function": [
+        "read",
+        "tools_read_file",
+        "edit",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
       ]
     },
     "research_project": {
@@ -131,6 +146,20 @@
         "link",
         "unlink",
         "create_child"
+      ],
+      "function": [
+        "read",
+        "tools_read_file",
+        "edit",
+        "create_child",
+        "link",
+        "unlink",
+        "manuscript",
+        "invoke_tool",
+        "plan",
+        "shadow_write",
+        "read_linked",
+        "send_card_message"
       ]
     }
   }

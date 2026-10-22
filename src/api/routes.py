@@ -258,6 +258,10 @@ async def get_nav():
             cid = m.get("card_id", "")
             if cid and cid == root_id:
                 continue
+            # [职能实体化 A 案 2026-10-22] 职能在 cards 表里有一行（为复用基础设施），
+            # 但**不进卡列表**——它们走下面单独的 functions 段。
+            if str(m.get("card_type") or "") == "function":
+                continue
             cards.append(_card_obj(m, act, child_count.get(cid, 0), wid))
         # 两段稳定排序：先并列收尾键 card_id 升序，再按活跃降序（空串排末位）
         cards.sort(key=lambda c: c["card_id"])
@@ -568,6 +572,10 @@ async def get_work_canvas(work_id: str):
     # 坐标列，**本行的键名、类型、嵌套形状一字未动**。
     data = canvas_store.load(work_id)
     data["positions"] = await canvas_store.load_positions(work_id)
+    # [职能实体化 A 案 2026-10-22] 职能不进交付树：画布卡列表里滤掉它们
+    # （它们走下面单独附的 functions，画成顶部一排的观察者节点）。
+    data["cards"] = [c for c in (data.get("cards") or [])
+                     if str(c.get("card_type") or "") != "function"]
     # [画布职能层 2026-10-22 · 用户令「再在画布上，也把角色卡都显示出来，显示在
     # 最顶上一排，角色卡与卡片之间的信息互动也一并表现」] 职能不进 cards 表 ⇒
     # canvas 投影里天然没有它们。这里单独附一份（含 watch 目标），前端画成
@@ -1783,10 +1791,14 @@ async def get_function_timeline(work_id: str, function_id: str,
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    if not function_store.get_profile(work_id, function_id):
+    prof = function_store.get_profile(work_id, function_id)
+    if not prof:
         return _err(404, f"职能不存在: {function_id}")
-    items = event_log.timeline(work_id, function_id, tail=max(1, min(int(tail or 60), 400)))
-    return {"function_id": function_id, "items": items}
+    # [职能实体化 A 案 2026-10-22] 职能回合以 **card_id** 跑（cards 行是基础设施句柄）
+    # ⇒ 事件流落在 card_id 的键上，不是 fn_NNN。旧职能（迁移前）才按 fn_id 落。
+    key = str(prof.get("card_id") or "") or function_id
+    items = event_log.timeline(work_id, key, tail=max(1, min(int(tail or 60), 400)))
+    return {"function_id": function_id, "card_id": key, "items": items}
 
 
 @router.post("/works/{work_id}/functions")
@@ -1817,12 +1829,14 @@ async def create_work_function(work_id: str, req: CreateFunctionRequest):
     prof["function_name"] = name
     created = await function_store.create_function(work_id, name, prof)
     fid = str(created.get("function_id") or "")
+    # [职能实体化 A 案 2026-10-22] 同工具路径：建职能同时建它的 cards 行（id=fn_NNN）。
+    await card_tools.ensure_function_card(work_id, fid, name)
     return JSONResponse(status_code=201, content={
         "function_id": fid,
         "function_name": name,
         "watch": [str(c) for c in ((created.get("watch") or {}).get("cards") or [])],
         "duty": (created.get("duty") or {}).get("state") or "active",
-        "in_cards_table": False,
+        "in_cards_table": True,
     })
 
 
