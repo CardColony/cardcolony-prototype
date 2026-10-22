@@ -755,16 +755,25 @@ async def _h_update_goal(work_id: str, current_id: str,
         #     那说明这张卡还没写过任何内容，拦它只会挡住建卡流程。
         #     `create_card` 会把 NEW_CARD_SKELETON 写进正文，所以"空正文"在真实
         #     流程里几乎不存在，只能按"是否还是模板"来判。
-        _unwritten = "（当前状况快照：" in _body
-        if (_body.strip() and not _unwritten
-                and not re.search(r"^D\d{2}【(裁定|决定|收敛)】\s*(?!…|\.\.\.)", _body, re.M)):
+        # [2026-10-22 用户裁定] 需求文档**不是只追加**——它是覆盖写·单一最新的需求确定源。
+        # 闸的判据随之改为「需求文档块有实质内容」（非空、非骨架占位），不再要求 D{nn} 条目。
+        _unwritten = "（当前状况快照：" in _body or "（本卡全部需求的确定版" in _body
+        _req = str(((_cur or {}).get("body") or {}).get("rulings") or "")
+        if (_req.strip() and not _unwritten):
+            pass   # 有实质内容 ⇒ 放行
+        elif _req.strip() and _unwritten:
             return err("validation",
-                       "收口被拒：本卡还没有需求文档。需求文档是这张卡对外的唯一结论形态——"
+                       "收口被拒：本卡的需求文档还停在骨架占位行。"
+                       "出路：用 edit_card 把 ## 需求文档 段整块写好——"
+                       "按需求逐条写清「要什么、验收标准是什么」，再调 update_goal(complete)。")
+        elif _body.strip():
+            return err("validation",
+                       "收口被拒：本卡还没有写需求文档。需求文档是这张卡对外的唯一结论形态——"
                        "画布上显示的是它，别的卡读到的也是它；没有它，这条线在画布上"
                        "就只剩一个标题。"
-                       "出路：用 edit_card 改写正文，在 ## 需求文档 段追加一条 "
-                       "D{nn}【收敛】本次决定了什么（日期·依据），再调 update_goal(complete)。"
-                                              "需求文档只追加、不覆盖既有条目。")
+                       "出路：用 edit_card 把 ## 需求文档 段整块写好——"
+                       "按需求逐条写清「要什么、验收标准是什么」，再调 update_goal(complete)。")
+        # 全空 ⇒ 不拦（建卡流程与空卡本来无内容可显示）
 
         # [5713 收口闸 · card_023] **零角色收口闸**：项目根卡收口时，若 work 下
         # 有多张工作卡、却零个在盯的职能角色，收口被拒——「强制它做一步拆分团队」。
@@ -1297,7 +1306,7 @@ async def _h_edit_card(work_id: str, current_id: str,
 #
 # 修法：**一个接口一种语义**，让错误不可能发生——
 #   update_status  只替换现状块（输入里没有别的块，也就动不了别的块）
-#   append_ruling  追加一条需求文档（编号系统给，改不了旧条目）
+#   append_ruling  覆盖写需求文档块（要什么、验收标准是什么）
 # 两者只在自动模式面下发（AUTO_ONLY_TOOLS）；普通卡仍走 draft/commit，逐字不变。
 # ============================================================
 
@@ -1308,9 +1317,10 @@ def _guard_edit(work_id: str, current_id: str, target_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     if cards[target_id].get("card_type") == "shadow":
         return err("denied", "影子卡只能由对应正卡经 update_shadow 修改")
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_EDIT, cards)
-    except PermissionError:
+    # [编辑权统一 2026-10-22] 原来走 policy.check（纯子树判定）——离树卡（role/function）
+    # parent 恒空，永远不在任何人的子树里 ⇒ 根卡改不了自己组建的职能卡面。
+    # 改用 _org_scope_allows（与建卡/换父同源）：树内卡行为逐字不变，根卡对全项目有效。
+    if not _org_scope_allows(current_id, target_id, policy.SWITCH_EDIT, cards):
         return err("denied", f"越权：无权编辑 {target_id}")
     return None
 
@@ -1383,16 +1393,14 @@ async def _h_update_status(work_id: str, current_id: str,
     return {"card_id": target_id, "updated": "status", "chars": len(content)}
 
 
-def _next_ruling_no(rulings: str) -> int:
-    """下一条需求文档编号：扫现有 D{nn}【 取最大值 +1（无条目 ⇒ 1）。"""
-    nums = [int(m) for m in re.findall(r"^D(\d{2})【", rulings or "", re.M)]
-    return (max(nums) + 1) if nums else 1
-
-
 async def _h_append_ruling(work_id: str, current_id: str,
                            arguments: dict[str, Any],
                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """追加一条需求文档：编号由系统分配，旧条目一个字不改（物理上做不到）。"""
+    """[2026-10-22 用户裁定] **覆盖写**需求文档块（要什么、验收标准是什么）。
+
+    旧语义是「追加一条 D{nn} 条目、旧条目改不了」——已废除：需求文档是覆盖写·单一最新的
+    需求确定源，模型每次给整块新内容。骨架占位行不算既有内容，直接清掉。
+    """
     target_id = str(arguments.get("card_id") or current_id)
     text = str(arguments.get("text") or "").strip()
     if not text:
@@ -1403,20 +1411,13 @@ async def _h_append_ruling(work_id: str, current_id: str,
     card = await card_store.read_card(work_id, target_id)
     if not card or not card.get("body"):
         return err("not_found", f"卡片不存在: {target_id}")
-    rulings = str(card["body"].get("rulings") or "")
-    # 模板占位不是既有条目：清掉再追加，避免新条目接在「→ 被D05取代」后面。
-    from .card_draft import _is_placeholder  # noqa: PLC0415
-    if _is_placeholder(rulings):
-        rulings = ""
-    no = _next_ruling_no(rulings)
-    today = datetime.now().strftime("%Y-%m-%d")
-    line = f"D{no:02d}【裁定】{text}（{today}）"
-    new_rulings = (rulings.rstrip() + "\n" + line) if rulings.strip() else line
+    # 覆盖写·单一最新：整块替换（骨架占位不算既有内容，无特殊处理）。
+    new_rulings = text
     current = await card_store.read_card(work_id, current_id)
     cur_title = (current.get("meta") or {}).get("title", "")
     upd = await card_store.update_card(
         work_id, target_id, {"rulings": new_rulings},
-        f"由「{cur_title}」追加需求文档 D{no:02d}",
+        f"由「{cur_title}」写需求文档",
     )
     if isinstance(upd, dict) and upd.get("error"):
         return err("internal", str(upd["error"]))
@@ -1657,13 +1658,27 @@ def _org_scope_allows(current_id: str, target_id: str, switch: str,
     为什么这样分：用户裁定「角色卡可以在整个树内任意位置挂载它觉得需要的卡片」。
     角色卡不在树里，用"在自己子树内"去卡它，等于让它什么都不能做。
     """
+    # [根卡管全项目 2026-10-22 · 用户令「为什么根卡不能编辑角色卡的卡面？」]
+    # 根卡是项目本体，本项目里任何卡（含离树的 role / function）都归它管——
+    # 原来只走 policy.check（子树判定），而离树卡 parent 恒空、永远不在任何人的子树里
+    # ⇒ 根卡改不了自己组建的职能卡面（update_status(fn_001) 直接 denied）。
+    # 权限面不变：仍要求**根卡自身**持有该开关（has_perm），只是作用域放到全项目。
+    if current_id and current_id == _root_id_of(cards) and target_id != current_id:
+        return bool(target_id) and target_id in cards and policy.has_perm(
+            cards.get(current_id), switch)
     if _is_offtree_role(current_id, cards):
-        if not target_id or target_id == current_id:
+        if not target_id or target_id not in cards:
             return False
-        if target_id not in cards:
-            return False
+        # 写自己：照旧放行（自己算自己作用域内——原 policy.check 同口径）
+        if target_id == current_id:
+            return policy.has_perm(cards.get(current_id), switch)
         if target_id == _root_id_of(cards):
             return False          # 不许动根卡
+        # [角色不改别人卡面 2026-10-22] 编辑权对离树卡**一律拒**：角色/职能的职责是
+        # 观察与判断，它写自己的现状走自己的口，不该改别人的卡面（原 policy.check
+        # 靠子树判定天然拒；改用组织权后作用域放到全树，必须显式挡回来）。
+        if switch == policy.SWITCH_EDIT:
+            return False
         # 离树卡自身仍须持有该开关（权限面不因作用域扩大而变大）
         return policy.has_perm(cards.get(current_id), switch)
     try:
@@ -2739,8 +2754,8 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "append_ruling",
             "description": (
-                "往这张卡的第三块**追加一条**（第三块在本树的名字与写法见上下文「卡片区域说明」）。"
-                "编号（D{nn}）与日期由系统补，旧条目改不了、也删不掉。"
+                "把这张卡的**需求文档**块整块写成你要的（覆盖写·单一最新，不是只追加）。"
+                "按需求逐条写清「要什么、验收标准是什么」；只写确定版，讨论/备选/过程不写这里。"
             ),
             "parameters": {
                 "type": "object",
@@ -5455,7 +5470,7 @@ def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:
 
 # 规则文案逐字锁定（V2/V3/V8a/V8b 以文本逐字含为判据，改文案即改判据）
 MSG_MISSION_LOCKED = "使命块为立项定稿，修改需用户确认"
-MSG_RULINGS_APPEND_ONLY = "需求文档块只追加；失效用就地标记（→被N取代）"
+MSG_RULINGS_OVERWRITE = "需求文档块覆盖写·单一最新：整块重写，只保留最新一份"
 MSG_DECISION_IN_STATUS = "现状块不装决定；决定进需求文档（D{nn} 条目属需求文档块）"
 
 # 现状块禁装决定的机械判据：整行以 D{nn}【 开头
@@ -5500,30 +5515,6 @@ def _superseded_markers(text: str) -> set[str]:
     return {ln.strip() for ln in (text or "").splitlines() if ln.strip().startswith("→")}
 
 
-def _rulings_superset(old_text: str, new_text: str) -> bool:
-    """需求文档区超集判定（S3-3 规则②③）：True＝合规（只追加或合规失效）。
-
-    判据：
-      1. 旧条目逐条在新块里找「同编号且原文逐字一致」的——找到即合规；
-      2. 找不到的旧条目（被删或被改写）逐条与新块里的**新增失效标记行**做
-         一对一抵扣：一条标记行抵一条被移除的条目。抵扣后仍有剩余 ⇒ 拒。
-    一对一而非「标记行数量 ≥ 0 即放行」：否则模型可以一次性删光所有条目、
-    只留一行标记，绕过只追加约束。抵扣不掉的那一条才是真删除。
-    """
-    old_entries = _rulings_entries(old_text)
-    new_entries = _rulings_entries(new_text)
-    old_markers = _superseded_markers(old_text)
-    new_markers = _superseded_markers(new_text)
-    # 本次新增的标记行（旧的标记行不参与抵扣——它们上一轮就抵过了）
-    fresh_markers = new_markers - old_markers
-    removed = [
-        line for num, line in old_entries.items() if new_entries.get(num) != line
-    ]
-    if len(removed) <= len(fresh_markers):
-        return True
-    return False
-
-
 def _check_block_rules(old_body: str, new_body: str) -> dict[str, Any]:
     """分区 diff 判闸（S3-1/S3-3）。返回 {"ok","rule","message"}。
 
@@ -5557,15 +5548,8 @@ def _check_block_rules(old_body: str, new_body: str) -> dict[str, Any]:
     if new_has_heading and (old_sec["mission"] or "").strip() != (new_sec["mission"] or "").strip():
         return {"ok": False, "rule": "mission_locked", "message": MSG_MISSION_LOCKED}
 
-    # 规则②③：需求文档区只追加。旧条目逐条在新块里找**同编号且原文逐字一致**的；
-    # 找不到即视为被删或被改写 → 拒。失效标记行不参与（规则③）。
-    # 无区头正文＝只提交现状块 ⇒ 需求文档块未提交 ⇒ 不参与本规则。
-    if new_has_heading:
-        if not _rulings_superset(old_sec["rulings"], new_sec["rulings"]):
-            return {
-                "ok": False, "rule": "rulings_not_superset",
-                "message": MSG_RULINGS_APPEND_ONLY,
-            }
+    # [2026-10-22 用户裁定] 需求文档块**覆盖写·单一最新**，不再是只追加 ⇒
+    # 原「规则②③ 超集校验」整条废除（模型可整块重写需求文档）。
 
     # 规则⑦：现状块整行出现 D{nn}【 → 拒（决定归需求文档）。
     # 判据对象＝**实际落进现状块的内容**——有区头时是 status_block 子块，
