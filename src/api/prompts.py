@@ -379,19 +379,11 @@ def select_base_prompt(card_meta: dict | None, project_class: str | None = None)
     if str(meta.get("card_type") or "") == "role":
         return render_for_tree(ROLE_CARD_BASE_PROMPT, pc)
     base = AUTO_BASE_PROMPT if bool(meta.get("auto_mode")) else BASE_PROMPT
-    out = render_for_tree(base, pc)
-    # [做事方法只给子卡自动模式 2026-10-22 · 用户令「这个只生效于子卡的自动模式」]
-    # 「做事的方法与顺序」（_SEC_ROLE）讲的是**一张卡自己接到一件事之后怎么走**——
-    # 只对「自动模式的子卡」成立：
-    #   · 人工对话卡：用户在场指挥，不需要这套自主流程，读了反而多一层噪声；
-    #   · 项目根卡：它的活是组织与收口，走 _SEC_AUTO 的轮次规则；
-    #   · coder / tool / rule：任务是别人给的、流程已定，也不需要。
-    # 常量里保留（BASE_PROMPT 是全局基座，测试也认它），**只在取用时按卡摘掉**。
-    _is_auto = bool(meta.get("auto_mode"))
-    _ct = str(meta.get("card_type") or "")
-    if not (_is_auto and _ct in ("sub_project", "topic")):
-        out = out.replace(_SEC_ROLE + "\n\n", "").replace(_SEC_ROLE, "")
-    return out
+    # [做事方法全卡生效 2026-10-22 · 用户令「全部生效吧」]
+    # 上一版只发给「自动模式的子卡」；用户改主意：所有卡都该知道这套做事顺序
+    # （人工对话卡也一样——用户在场时它仍要知道"目标→需求→交付物"这条链怎么走）。
+    # 于是不再按卡型/auto 摘除，常量原样返回。
+    return render_for_tree(base, pc)
 
 
 def build_system_prompt(context_block: str, base_prompt: str | None = None) -> str:
