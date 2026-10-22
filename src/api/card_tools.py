@@ -731,11 +731,11 @@ async def _h_update_goal(work_id: str, current_id: str,
                        f"收口被拒：本卡还有 {len(_blockers)} 条未验收的角色指令"
                        f"（{_desc}）。先按指令做完，让角色 verify_directive(complied)，"
                        "或调用 update_goal(blocked) 说明卡在哪。")
-        # [画布 2026-10-19] **定论闸**：收口前，本卡正文必须至少有一条定论。
+        # [画布 2026-10-19] **需求文档闸**：收口前，本卡正文必须至少有一条需求文档。
         #
-        # 为什么卡在这里：定论是这张卡对外的**唯一结论形态**——画布上显示的是它，
-        # 别的卡 read_card 读到的也是它。没有定论的卡，在画布上就只剩一个标题，
-        # 用户扫完整棵树也不知道这条线决定了什么（实测 39 张卡只有 1 张写过定论）。
+        # 为什么卡在这里：需求文档是这张卡对外的**唯一结论形态**——画布上显示的是它，
+        # 别的卡 read_card 读到的也是它。没有需求文档的卡，在画布上就只剩一个标题，
+        # 用户扫完整棵树也不知道这条线决定了什么（实测 39 张卡只有 1 张写过需求文档）。
         # 这和上面那条"未回应询问不许收工"是同一类闸：收口是唯一宣称"做完了"的动作，
         # 那它必须留下"做完了什么"的凭据。
         #
@@ -746,11 +746,11 @@ async def _h_update_goal(work_id: str, current_id: str,
             _body = str(((_cur or {}).get("body") or {}).get("status_block") or "")
             _body += "\n" + str(((_cur or {}).get("body") or {}).get("rulings") or "")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[自动模式] 读定论失败（放行）card=%s: %s", current_id, exc)
+            logger.warning("[自动模式] 读需求文档失败（放行）card=%s: %s", current_id, exc)
             _body = ""
-        # 两个必须排除的"假定论/假正文"：
+        # 两个必须排除的"假需求文档/假正文"：
         #  ① 骨架示例行 `D01【裁定】……（日期·依据）`——模板占位不是决定，
-        #     不排除的话每张新建卡一出生就"有定论"，闸等于不存在。
+        #     不排除的话每张新建卡一出生就"有需求文档"，闸等于不存在。
         #  ② 正文仍是骨架（现状块还留着"（当前状况快照：…"这段模板说明）——
         #     那说明这张卡还没写过任何内容，拦它只会挡住建卡流程。
         #     `create_card` 会把 NEW_CARD_SKELETON 写进正文，所以"空正文"在真实
@@ -759,16 +759,16 @@ async def _h_update_goal(work_id: str, current_id: str,
         if (_body.strip() and not _unwritten
                 and not re.search(r"^D\d{2}【(裁定|决定|收敛)】\s*(?!…|\.\.\.)", _body, re.M)):
             return err("validation",
-                       "收口被拒：本卡还没有定论。定论是这张卡对外的唯一结论形态——"
+                       "收口被拒：本卡还没有需求文档。需求文档是这张卡对外的唯一结论形态——"
                        "画布上显示的是它，别的卡读到的也是它；没有它，这条线在画布上"
                        "就只剩一个标题。"
-                       "出路：用 edit_card 改写正文，在 ## 定论 段追加一条 "
+                       "出路：用 edit_card 改写正文，在 ## 需求文档 段追加一条 "
                        "D{nn}【收敛】本次决定了什么（日期·依据），再调 update_goal(complete)。"
-                                              "定论只追加、不覆盖既有条目。")
+                                              "需求文档只追加、不覆盖既有条目。")
 
         # [5713 收口闸 · card_023] **零角色收口闸**：项目根卡收口时，若 work 下
         # 有多张工作卡、却零个在盯的职能角色，收口被拒——「强制它做一步拆分团队」。
-        # 判据与生产路径 goal_tools.h_update_goal 同源（单一 helper），插在定论闸
+        # 判据与生产路径 goal_tools.h_update_goal 同源（单一 helper），插在需求文档闸
         # 之后、未回应询问闸之前（同属"收口必须留凭据"这一族）。
         # 方向变更（card_004-799a7954）：删掉「【无人盯】写理由即可放行」出口——
         # 唯一出路＝真的调 create_role 建成非空壳 active 角色；闸不规定拆法（守 D02）。
@@ -1221,7 +1221,7 @@ def _card_body_text(card: dict[str, Any]) -> str:
     return (
         f"## 使命\n{b.get('mission', '')}\n"
         f"## 现状\n{b.get('status_block', '')}\n"
-        f"## 定论\n{b.get('rulings', '')}\n"
+        f"## 需求文档\n{b.get('rulings', '')}\n"
     )
 
 
@@ -1263,9 +1263,9 @@ async def _h_edit_card(work_id: str, current_id: str,
     #
     # [S3-6 配套 · 方案未列，本环新发现] 无区头正文的语义归一：
     # 模型交来一段不带任何 "## " 区头的纯文本时，拆分器三块全空，
-    # 若三块全写会把使命与定论一起清空 → 必然触使命闸（V2），
+    # 若三块全写会把使命与需求文档一起清空 → 必然触使命闸（V2），
     # 等于「模型永远无法 edit」。故：无区头正文按「这是现状正文」处理，
-    # 只写 status_block，使命与定论沿用卡内现状。
+    # 只写 status_block，使命与需求文档沿用卡内现状。
     # 这与 S1-2 建卡的区头检测同一套判据、同一语义。
     has_heading = any(
         ln.strip().startswith("## ") for ln in content.splitlines()
@@ -1290,14 +1290,14 @@ async def _h_edit_card(work_id: str, current_id: str,
 # ============================================================
 # [分块写入 2026-10-19 · permexp] 用户令：工具要便利模型，不要复杂化模型。
 #
-# 病根：edit_card 收「整篇正文」⇒ 模型只想改现状，也要为使命/定论**逐字不变**
+# 病根：edit_card 收「整篇正文」⇒ 模型只想改现状，也要为使命/需求文档**逐字不变**
 # 负责；而新建卡正文里带着模板占位（D01/D02/D03 + 「→ 被D05取代」），模型重写
-# 时必然带偏 ⇒ 撞「定论块只追加」。实测 MiniMax 连撞 8 次、GLM-5.3 连撞 3 次，
+# 时必然带偏 ⇒ 撞「需求文档块只追加」。实测 MiniMax 连撞 8 次、GLM-5.3 连撞 3 次，
 # 两个模型同一处失败 ⇒ 是接口问题，不是模型问题。
 #
 # 修法：**一个接口一种语义**，让错误不可能发生——
 #   update_status  只替换现状块（输入里没有别的块，也就动不了别的块）
-#   append_ruling  追加一条定论（编号系统给，改不了旧条目）
+#   append_ruling  追加一条需求文档（编号系统给，改不了旧条目）
 # 两者只在自动模式面下发（AUTO_ONLY_TOOLS）；普通卡仍走 draft/commit，逐字不变。
 # ============================================================
 
@@ -1356,7 +1356,7 @@ async def _h_set_child_mission(work_id: str, current_id: str,
 async def _h_update_status(work_id: str, current_id: str,
                            arguments: dict[str, Any],
                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """只写「现状」块：使命与定论一个字都不碰，调用方也不需要知道它们长什么样。"""
+    """只写「现状」块：使命与需求文档一个字都不碰，调用方也不需要知道它们长什么样。"""
     target_id = str(arguments.get("card_id") or current_id)
     content = str(arguments.get("content") or "")
     if not content.strip():
@@ -1370,7 +1370,7 @@ async def _h_update_status(work_id: str, current_id: str,
             return err(
                 "validation",
                 f"这一行是决定条目，不能放现状块：{line.strip()[:40]}"
-                "——改用 append_ruling 追加到定论；现状块只写能核实的事实。",
+                "——改用 append_ruling 追加到需求文档；现状块只写能核实的事实。",
             )
     current = await card_store.read_card(work_id, current_id)
     cur_title = (current.get("meta") or {}).get("title", "")
@@ -1384,7 +1384,7 @@ async def _h_update_status(work_id: str, current_id: str,
 
 
 def _next_ruling_no(rulings: str) -> int:
-    """下一条定论编号：扫现有 D{nn}【 取最大值 +1（无条目 ⇒ 1）。"""
+    """下一条需求文档编号：扫现有 D{nn}【 取最大值 +1（无条目 ⇒ 1）。"""
     nums = [int(m) for m in re.findall(r"^D(\d{2})【", rulings or "", re.M)]
     return (max(nums) + 1) if nums else 1
 
@@ -1392,7 +1392,7 @@ def _next_ruling_no(rulings: str) -> int:
 async def _h_append_ruling(work_id: str, current_id: str,
                            arguments: dict[str, Any],
                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """追加一条定论：编号由系统分配，旧条目一个字不改（物理上做不到）。"""
+    """追加一条需求文档：编号由系统分配，旧条目一个字不改（物理上做不到）。"""
     target_id = str(arguments.get("card_id") or current_id)
     text = str(arguments.get("text") or "").strip()
     if not text:
@@ -1416,7 +1416,7 @@ async def _h_append_ruling(work_id: str, current_id: str,
     cur_title = (current.get("meta") or {}).get("title", "")
     upd = await card_store.update_card(
         work_id, target_id, {"rulings": new_rulings},
-        f"由「{cur_title}」追加定论 D{no:02d}",
+        f"由「{cur_title}」追加需求文档 D{no:02d}",
     )
     if isinstance(upd, dict) and upd.get("error"):
         return err("internal", str(upd["error"]))
@@ -1518,7 +1518,7 @@ async def read_via(work_id: str, source_id: str, target_id: str,
        **也绝不沿新线 relations（依赖关联线）**——新线不参与通信
        （依赖关联线 2026-10-16 裁定 3）。
     ② **part → 现成读工具**（复用不重做，只加「沿边寻址」这一步）：
-       - ``正文`` → ``card_store.read_card``（三块：使命／现状／定论）
+       - ``正文`` → ``card_store.read_card``（三块：使命／现状／需求文档）
        - ``影子`` → ``shadow_store.read_shadow_raw``
        - ``对话`` → ``event_log.timeline``
     ③ 本函数**不做任何权限判断**——资格归权限管（调用方 handler 走
@@ -2662,10 +2662,10 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                 "改写你管辖范围内指定卡的三个内容块（覆盖写，content 是整份内容，按三个区头分段）。"
                 "三块：## 使命（这张卡要做什么、要做成什么；立项定稿，你改它会被拒）、"
                 "## 现状（这张卡现在实际是什么样：写事实，覆盖写·单一最新，只写能核实的）、"
-                "第三块（区头名由本树决定，见上下文「卡片区域说明」；只追加，"
-                "条目语法 D{nn}【来源】内容（日期·依据），来源三类【裁定】/【决定】/【收敛】，"
-                "序号终身不改；条目失效就地标记「→ 被D05取代（因……）」，不删原文）。"
-                "第三块该写的内容不要写进现状块（会被拒）。"
+                "## 需求文档（第三块：本卡全部需求的确定版，唯一确定源；"
+                "按需求逐条写清「要什么、验收标准是什么」；只写确定版，覆盖写·单一最新；"
+                "讨论、备选、过程不写这里）。"
+                "需求文档该写的内容不要写进现状块（会被拒）。"
             ),
             "parameters": {
                 "type": "object",
@@ -5089,7 +5089,7 @@ def _filter_root_only(
 
 
 # ============================================================
-# [card_040 · 2026-10-21] 自动模式启动「必须轮」闸
+# [使用律法 2026-10-22] 自动模式「契约轮」闸（原 card_040「必须轮」的修正）
 #
 # 组织设计（用户裁定）：自动模式＝「给一个目标、让卡多轮自主推进」，启动时
 # 面对的必是复杂任务。动手做事之前，它必须先建职能（职能＝人类团队里真实
@@ -5102,12 +5102,22 @@ def _filter_root_only(
 #       且 auto_mode == 1
 #       且 本 work 一个职能都没有（function_store.list_profiles 为空）
 #       且 goal_rounds == 0
-# 命中时必须轮 ⇒ 摘掉 create_card / create_coder_card（这一轮不搭交付树），
-# 保留 create_function（建职能的唯一通道）。
+# 命中契约轮 ⇒ 摘掉一切"动手"的工具（建卡/写文件/跑命令/完工），
+# 只留读工具 + append_ruling（写需求文档）。
 # ============================================================
 
-#: 必须轮里**必须摘掉**的工具——搭交付树的两件。
-_MUST_ROUND_DROP: frozenset[str] = frozenset({"create_card", "create_coder_card"})
+#: 契约轮里**必须摘掉**的工具——一切"动手"的东西。只留读 + 写需求（append_ruling）。
+#  [使用律法 2026-10-22 · 用户令「自动模式下卡片的第一轮的工作，就是固定的写需求文档」]
+#  原来只摘 create_card / create_coder_card（"先建职能"），实际制造了死锁：
+#  建职能要 watch 的卡还不存在 ⇒ 建不出来 ⇒ 闸永远命中 ⇒ 卡永远出不去
+#  （work_024 实测 blocked）。现在改成"第一轮写需求文档"：需求是唯一事实源，
+#  没有它，后面派活/执行/验收全都没有判据。
+_MUST_ROUND_DROP: frozenset[str] = frozenset({
+    "create_card", "create_coder_card", "delete_card",
+    "write_file", "edit_file", "move_file", "rename_file", "delete_file",
+    "bash", "python", "run_tool_card", "report_done",
+    "link_cards", "link_rel",
+})
 
 
 def _is_must_round(
@@ -5127,28 +5137,16 @@ def _is_must_round(
     cid = str(card_id or "")
     if not cid or not work_id:
         return False
-    # ① 根卡
-    root_id = ""
-    try:
-        root_id = work_store.work_card_id_of(work_id)
-    except Exception:  # noqa: BLE001 认不出 work ⇒ 不是必须轮（fail-closed 到常规面）
-        return False
-    if not root_id or cid != root_id:
-        return False
-    # ② auto_mode == 1
     card = (cards or {}).get(cid) or {}
+    # ① 自动模式
     if not bool(card.get("auto_mode")):
         return False
-    # ④ goal_rounds == 0（本轮是第一轮）
+    # ② 第一轮（没跑过任何一轮）
     if int(card.get("goal_rounds") or 0) != 0:
         return False
-    # ③ 本 work 一个职能都没有（fail-open：读不到按「已有职能」，不触发）
-    try:
-        if function_store.list_profiles(work_id):
-            return False
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("must_round 判定读职能失败，fail-open 跳过闸门 work=%s: %s",
-                       work_id, exc)
+    # ③ 只对**管理卡**（要组织、要派活的那些）。coder 的任务本来就写在使命块里，
+    #    给它加契约轮只会拖慢执行——它不需要再"写一遍需求"。
+    if str(card.get("card_type") or "") not in ("project", "sub_project", "topic"):
         return False
     return True
 
@@ -5375,7 +5373,7 @@ def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 #
 # 角色卡不是作业卡：摘掉 edit_card（不许改别人/整篇正文），只留
 # 读、沿连线读、影子、发建议、读收件箱、记录判词、发警报、写自己的
-# 现状/定论。全部在四段过滤之后追加，常规卡工具面逐字不变。
+# 现状/需求文档。全部在四段过滤之后追加，常规卡工具面逐字不变。
 # ============================================================
 # [职能实体化 A 案 2026-10-22 · 用户裁定] 职能是**管理者**（人类团队里的岗位），
 # 要能派活（create_card / create_coder_card）和建立通信（link/unlink）。
@@ -5457,8 +5455,8 @@ def _collect_card_meta(work_id: str) -> dict[str, dict[str, Any]]:
 
 # 规则文案逐字锁定（V2/V3/V8a/V8b 以文本逐字含为判据，改文案即改判据）
 MSG_MISSION_LOCKED = "使命块为立项定稿，修改需用户确认"
-MSG_RULINGS_APPEND_ONLY = "定论块只追加；失效用就地标记（→被N取代）"
-MSG_DECISION_IN_STATUS = "现状块不装决定；决定进定论（D{nn} 条目属定论块）"
+MSG_RULINGS_APPEND_ONLY = "需求文档块只追加；失效用就地标记（→被N取代）"
+MSG_DECISION_IN_STATUS = "现状块不装决定；决定进需求文档（D{nn} 条目属需求文档块）"
 
 # 现状块禁装决定的机械判据：整行以 D{nn}【 开头
 _DECISION_LINE_RE = re.compile(r"^D\d{2}【")
@@ -5476,7 +5474,7 @@ _SUPERSEDED_TARGET_RE = re.compile(r"被D(\d{2})取代|D(\d{2})\s*已失效")
 
 
 def _rulings_entries(text: str) -> dict[str, str]:
-    """把定论块解析成 {D编号: 该行原文}；非 D 行（说明性文字）不入表。
+    """把需求文档块解析成 {D编号: 该行原文}；非 D 行（说明性文字）不入表。
 
     失效标记行（行首 →）不算条目——它是标记不是决定；它指名的编号
     由 _superseded_ids 单独收走（规则③：就地失效不算删除）。
@@ -5493,17 +5491,17 @@ def _rulings_entries(text: str) -> dict[str, str]:
 
 
 def _superseded_markers(text: str) -> set[str]:
-    """取出定论块里的失效标记行（行首 →）逐字原文集合（S3-3 规则③）。
+    """取出需求文档块里的失效标记行（行首 →）逐字原文集合（S3-3 规则③）。
 
     语义：失效条目**就地一行标记、不保留原文、不设已废区**——被标记的条目
-    在定论块里不再以原文出现，这是**合规的处置**，不是「偷偷删掉」。
+    在需求文档块里不再以原文出现，这是**合规的处置**，不是「偷偷删掉」。
     规则②判「旧条目是否被删改」时，用它做一对一抵扣（见 _rulings_superset）。
     """
     return {ln.strip() for ln in (text or "").splitlines() if ln.strip().startswith("→")}
 
 
 def _rulings_superset(old_text: str, new_text: str) -> bool:
-    """定论区超集判定（S3-3 规则②③）：True＝合规（只追加或合规失效）。
+    """需求文档区超集判定（S3-3 规则②③）：True＝合规（只追加或合规失效）。
 
     判据：
       1. 旧条目逐条在新块里找「同编号且原文逐字一致」的——找到即合规；
@@ -5531,12 +5529,12 @@ def _check_block_rules(old_body: str, new_body: str) -> dict[str, Any]:
 
     七条规则：
       ①使命区不等 → 拒（立项定稿，模型改需用户确认）
-      ②定论区非超集 → 拒（只追加；既有 D 条目被删或被改写即拒）
+      ②需求文档区非超集 → 拒（只追加；既有 D 条目被删或被改写即拒）
       ③行首「→」的失效标记行放行（它在 ② 里不算被删的条目）
       ④现状区 diff 不校验（覆盖写·单一最新，本就该自由改）
       ⑤修改历史区 diff 忽略（机械尾，系统自己写）
       ⑥旧结构卡不校验（旧卡无三块语义，闸不作用于存量卡）
-      ⑦现状区出现整行 D{nn}【 → 拒（决定归定论块）
+      ⑦现状区出现整行 D{nn}【 → 拒（决定归需求文档块）
 
     [S3-4/RD-11] **不含锚点闸**：现状块的「事实带锚点自指」是语义纪律，
     不做机械校验。逐字理由：机械强制会激励伪造锚点，伪证比缺证更伤权威机制。
@@ -5544,7 +5542,7 @@ def _check_block_rules(old_body: str, new_body: str) -> dict[str, Any]:
     old_sec = split_body_sections(old_body or "")
     new_sec = split_body_sections(new_body or "")
 
-    # 规则⑥：旧结构卡不校验（含混挂卡——它们没有可判的使命/定论语义）
+    # 规则⑥：旧结构卡不校验（含混挂卡——它们没有可判的使命/需求文档语义）
     if old_sec["_form"] != "new":
         return {"ok": True, "rule": "skip_old_form", "message": ""}
 
@@ -5559,9 +5557,9 @@ def _check_block_rules(old_body: str, new_body: str) -> dict[str, Any]:
     if new_has_heading and (old_sec["mission"] or "").strip() != (new_sec["mission"] or "").strip():
         return {"ok": False, "rule": "mission_locked", "message": MSG_MISSION_LOCKED}
 
-    # 规则②③：定论区只追加。旧条目逐条在新块里找**同编号且原文逐字一致**的；
+    # 规则②③：需求文档区只追加。旧条目逐条在新块里找**同编号且原文逐字一致**的；
     # 找不到即视为被删或被改写 → 拒。失效标记行不参与（规则③）。
-    # 无区头正文＝只提交现状块 ⇒ 定论块未提交 ⇒ 不参与本规则。
+    # 无区头正文＝只提交现状块 ⇒ 需求文档块未提交 ⇒ 不参与本规则。
     if new_has_heading:
         if not _rulings_superset(old_sec["rulings"], new_sec["rulings"]):
             return {
@@ -5569,7 +5567,7 @@ def _check_block_rules(old_body: str, new_body: str) -> dict[str, Any]:
                 "message": MSG_RULINGS_APPEND_ONLY,
             }
 
-    # 规则⑦：现状块整行出现 D{nn}【 → 拒（决定归定论）。
+    # 规则⑦：现状块整行出现 D{nn}【 → 拒（决定归需求文档）。
     # 判据对象＝**实际落进现状块的内容**——有区头时是 status_block 子块，
     # 无区头时是整篇正文（它整篇落进现状块），两种形态都要照住。
     status_effective = (new_sec["status_block"] if new_has_heading else (new_body or ""))
