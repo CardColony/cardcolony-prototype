@@ -294,12 +294,12 @@ def _extract_pending_items(status_block: str, limit: int = 99) -> list[dict[str,
     return items
 
 
-#: 定论条目语法（card_store.NEW_CARD_SKELETON 定义）：`D01【裁定】内容（日期·依据）`。
+#: 需求文档条目语法（card_store.NEW_CARD_SKELETON 定义）：`D01【裁定】内容（日期·依据）`。
 #: 这是**系统自己规定的结论格式**，不是我从自由文本里猜的：
-#:   使命 = 立项定稿 / 现状 = 覆盖写快照 / 定论 = 只追加的决定
-#: 卡片对外的唯一接口就是这三块，其中"想清楚了什么"全部落在定论里。
-#: ⚠ 骨架里的示例行 `D01【裁定】……（日期·依据）` **不是定论**——它是模板占位。
-#: 用 `(?!…)` 把以省略号开头的行排除掉，否则每张新建卡一出生就算"有 1 条定论"，
+#:   使命 = 立项定稿 / 现状 = 覆盖写快照 / 需求文档 = 只追加的决定
+#: 卡片对外的唯一接口就是这三块，其中"想清楚了什么"全部落在需求文档里。
+#: ⚠ 骨架里的示例行 `D01【裁定】……（日期·依据）` **不是需求文档**——它是模板占位。
+#: 用 `(?!…)` 把以省略号开头的行排除掉，否则每张新建卡一出生就算"有 1 条需求文档"，
 #: 画布上会显示 `定1`、收口闸也会被它骗过去（实测踩过）。
 _DECISION_RE = re.compile(r"^D(\d{2})【(裁定|决定|收敛)】\s*(?!…|\.\.\.)(.+?)\s*$", re.M)
 
@@ -387,11 +387,11 @@ def recent_activity(work_id: str, limit: int = 40) -> list[dict[str, str]]:
 
 
 def _parse_decisions(status_block: str) -> list[dict[str, str]]:
-    """抽出一张卡的定论条目（最多保留最近 20 条）。
+    """抽出一张卡的需求文档条目（最多保留最近 20 条）。
 
     [画布 2026-10-19] 之前画布上那段"结论"是拿正则从**自由文本**里抠 `结论:` 行，
     39 张卡只抠到 5 张，且抠出来的是现状块开头的一句话——那不是结论。
-    定论不同：它是系统规范里明确规定的、只追加的决定条目，天生短、自包含。
+    需求文档不同：它是系统规范里明确规定的、只追加的决定条目，天生短、自包含。
     """
     out: list[dict[str, str]] = []
     for m in _DECISION_RE.finditer(status_block or ""):
@@ -524,9 +524,9 @@ def rebuild(work_id: str) -> dict[str, Any]:
         # [角色机制 5710] 角色卡离树，不进工作画布（它在左栏单列/角色页里活）。
         if str(row["card_type"] or "") == "role":
             continue
-        # 定论条目：一张卡解析一次，下面 count 与 last 共用
-        # 定论可能落在两个字段里：老卡把整篇正文塞进 status_block（含 ## 定论 段），
-        # 新卡走三列模型，定论在独立的 rulings 列。两处都扫，否则换一种写法就看不见。
+        # 需求文档条目：一张卡解析一次，下面 count 与 last 共用
+        # 需求文档可能落在两个字段里：老卡把整篇正文塞进 status_block（含 ## 需求文档 段），
+        # 新卡走三列模型，需求文档在独立的 rulings 列。两处都扫，否则换一种写法就看不见。
         _decisions = _parse_decisions(
             (row["status_block"] or "") + "\n" + (row["rulings"] or ""))
         cards.append({
@@ -547,7 +547,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
             # 卡片按 work_state 上色与排序，顶栏据此算项目概览。
             **dict(zip(("work_state", "pending_count", "conclusion", "conclusion_kind"),
                        _card_work_state(row["status_block"] or "", row["title"] or ""))),
-            # [画布 2026-10-19] 定论：系统规范里的"决定"条目。
+            # [画布 2026-10-19] 需求文档：系统规范里的"决定"条目。
             # 卡面只显示**条数**（一个完整、可比较的事实：9 条＝这条线已经收敛，
             # 0 条＝还在打转），条目正文给浮层——那里有空间把它读完。
             # 最后一条对话消息：卡面实时显示"这张卡刚在说什么"

@@ -103,8 +103,8 @@ _HEADING_RE = re.compile(r"^## ", re.MULTILINE)
 NEW_SECTION_MAPPING = {
     "## 使命": "mission",
     "## 现状": "status_block",
-    "## 定论": "rulings",
-    "## 需求文档": "requirements",
+    "## 需求文档": "rulings",   # [2026-10-22] 第三块全系统统一叫需求文档
+    "## 定论": "rulings",       # 存量卡保形：旧区头继续可解析（195 张存量仍带它）
     "## 修改历史": "history_text",
 }
 

@@ -23,11 +23,12 @@ from typing import Any, Optional
 from ..storage import card_store, memory_store, session_facade, shadow_store, work_store
 from ..storage.hash_utils import apply_hash, parse_front_matter, split_body_sections
 from . import context_assembler, context_regions, model_config, model_service
+from .prompts import third_block_name
 from .routes import _apply_block_set
 
 logger = logging.getLogger("api.card_draft")
 
-# 合法 kind：requirements（第三块·需求文档/定论）| status（现状块）。
+# 合法 kind：requirements（第三块＝需求文档，全系统唯一名）| status（现状块）。
 # 使命不可经此口——它不在本元组内，经此口一律被 draft/commit 开头那道
 # ``kind not in ALLOWED_KINDS`` 拒掉（模型无写通道，只有用户能在界面改）。
 ALLOWED_KINDS = ("requirements", "status")
@@ -52,7 +53,7 @@ async def _is_rd_project(work_id: str) -> bool:
 
 async def _rename_rulings_to_requirements(work_id: str, card_id: str) -> None:
     """[已停用 · 卡片存储迁移 SQLite 2026-10-14] 原为「盘上区头修正」：
-    rd_project 卡的第三块区头由「## 定论」改为「## 需求文档」。
+    rd_project 卡的第三块区头由「## 需求文档」改为「## 需求文档」。
 
     库化后第三块是**一列**（``cards.rulings``），「叫什么名」由读侧按本树
     ``project_class`` 决定（``routes._apply_block_set``），盘上不再有区头可改
@@ -88,8 +89,15 @@ def _get_current_block(result: dict, kind: str) -> str:
     return "" if _is_placeholder(raw) else raw
 
 
-def _kind_label(kind: str) -> str:
-    return "需求文档" if kind == "requirements" else "现状"
+def _kind_label(kind: str, project_class: str | None = None) -> str:
+    """块名。第三块**全系统只有一个名字：需求文档**；现状块固定叫现状。
+
+    [第三块统一命名 2026-10-22 · 用户裁定] 双名制（需求文档／定论）废除——
+    与 prompts.third_block_name 同源，避免两处漂移。
+    """
+    if kind != "requirements":
+        return "现状"
+    return third_block_name(project_class)
 
 
 def _build_prompts(
@@ -102,16 +110,16 @@ def _build_prompts(
     feedback: Optional[str],
 ) -> dict[str, Any]:
     """构造起草调用帧：区块上下文、对话历史、user 草稿材料均由统一底座组合。"""
-    label = _kind_label(kind)
+    label = _kind_label(kind, context_ctx.project_class)
     mission = (card.get("body") or {}).get("mission", "")
     title = (card.get("meta") or {}).get("title", "")
 
     system_prefix = (
         "你是推演工作台的卡片内容起草助手。你的唯一职责：根据下方卡片清单、当前卡、"
-        "记忆与对话历史，起草/修订卡片的「{label}」块内容。你只输出该块的正文文本，"
+        "记忆与对话历史，起草/修订卡片的「{label}」块内容。你只输出该块的内容，"
         "不输出解释、不输出其他块、不调用任何工具、不修改使命块。\n"
         "要求：\n"
-        "1. 输出即为该块完整正文（整块替换语义）。\n"
+        "1. 输出即为该块完整内容（整块替换语义）。\n"
         "2. 使命块不可改——只起草 {label} 块本身。\n"
         "3. 若给了上一版草稿与用户反馈，按反馈修订，保持上下文连续。"
     ).format(label=label)
@@ -124,7 +132,7 @@ def _build_prompts(
         parts.append(f"【上一版草稿】\n{prev_draft.strip()}")
     if feedback is not None and feedback.strip():
         parts.append(f"【用户反馈·按此修订】\n{feedback.strip()}")
-    parts.append(f"请起草{label}块完整正文：")
+    parts.append(f"请起草{label}块完整内容：")
 
     return context_regions.compose_model_context(
         context_ctx, profile="draft", prior_messages=prior,
@@ -232,7 +240,7 @@ async def commit(
     old_hash = current_hash
     new_hash = _block_hash(draft)
     now = _now_iso()
-    kind_label = _kind_label(kind)
+    kind_label = _kind_label(kind, "rd_project" if await _is_rd_project(work_id) else "")
 
     # 整块替换：requirements 经 rulings 键落盘（第三块存储键）、status 经 status_block。
     # card_store.update_card 签名不变；使命键不在 updates 内。

@@ -65,10 +65,10 @@ ALLOWED_UPDATE_KEYS = {
 # [phase8.3] status 二态已废除：PATCH 带 status 一律忽略（不报错）
 
 # [卡片编辑机制改造 2026-10-12 · 块1] 读侧块集判据：rd_project → 需求文档
-# （requirements），其余（research_project 及未分类存量）→ 定论（rulings）。
+# （requirements），其余（research_project 及未分类存量）→ 需求文档（rulings）。
 # card_store.read_card 返回的 body 恒含 rulings 键；此处按根卡 project_class
 # 过滤——rd 卡不外露 rulings、换 requirements；其他卡不外露 requirements。
-# 存量研发卡的定论块内容在 rd 卡上以 requirements 呈现（第三块语义随树类走），
+# 存量研发卡的需求文档块内容在 rd 卡上以 requirements 呈现（第三块语义随树类走），
 # 零数据删除、零迁移；缺失块返回空串不报错。
 def _apply_block_set(result: dict, work_id: str) -> dict:
     """按本树 project_class 过滤 read_card 返回的 body 块键（读侧，纯展示层）。"""

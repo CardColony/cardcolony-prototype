@@ -245,7 +245,7 @@ async def create_role_card(work_id: str, root_id: str, title: str,
             f"责任域已被角色 {conflict.get('role_id')} 占用；同一排他域只能有一个角色"
         )}
     body = (f"## 使命\n{charter}\n\n## 现状\n（值班中；判词与警报见角色档案）\n\n"
-            "## 定论\n")
+            "## 需求文档\n")
     created = await card_store.create_card(
         work_id, title=title, source="系统派生", card_type=ROLE_TYPE,
         parent="", charter=body, skip_kick=True,
@@ -622,7 +622,7 @@ def schedule_card_changed(work_id: str, card_id: str, updates: dict[str, Any]) -
 
 async def _notify_card_changed(work_id: str, card_id: str,
                               updates: dict[str, Any]) -> None:
-    """正文块（现状/定论）被改 ⇒ 按角色声明的信号入队，再按值班态起/不起回合。
+    """正文块（现状/需求文档）被改 ⇒ 按角色声明的信号入队，再按值班态起/不起回合。
 
     三个口径：
     - **去重按 (work, role, source, field)** 记内容哈希：同一份内容重复 PATCH 不重复
@@ -642,7 +642,7 @@ async def _notify_card_changed(work_id: str, card_id: str,
         # 有会话块的工作卡：同步按「回合收口」走（`after_turn`），这里不插手——
         # 既避免一次改动触发两路同步/两起火，也保住「按回合收口、不按事件逐条推」
         # 的既有口径。这里只补 `after_turn` 够不着的那一类：**没有会话块的卡**
-        # （只有现状/定论、用户直接改出来的卡）——它们没有回合，永远等不到收口。
+        # （只有现状/需求文档、用户直接改出来的卡）——它们没有回合，永远等不到收口。
         last = await _last_seq(work_id, card_id)
         if last >= 0:
             return
@@ -697,7 +697,7 @@ async def after_turn(work_id: str, card_id: str, result: Any = None) -> None:
             return
         last = await _last_seq(work_id, card_id)
         # [role-sync 2026-10-20 · card_004] 无会话块不再直接放弃：这类卡一样会改
-        # 现状/定论，第二层角色必须看得到。快照口径（0..0）在下面分支覆盖。
+        # 现状/需求文档，第二层角色必须看得到。快照口径（0..0）在下面分支覆盖。
         signals = await _turn_signals(work_id, card_id, result)
         for role in roles:
             role_id = str(role.get("card_id") or "")
@@ -766,7 +766,7 @@ async def build_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
                   if isinstance(b, dict) and isinstance(b.get("seq"), int)
                   and item["from_seq"] <= int(b["seq"]) <= item["to_seq"]]
         lines: list[str] = []
-        # 状态/定论变化不在会话块里：按信号把当前正文补进材料，否则
+        # 状态/需求文档变化不在会话块里：按信号把当前正文补进材料，否则
         # “status_changed” 唤醒角色却看不到新现状，等于空跑。
         try:
             card = await card_store.read_card(work_id, src)
