@@ -105,3 +105,25 @@ def is_condense_original_event(block: dict[str, Any],
 def is_original_node(block: dict[str, Any]) -> bool:
     """seq 级判据（dsh `isOriginalNode` 的对应物）：单块是否原文。"""
     return is_original_event(block)
+
+
+def enters_context(block: dict[str, Any]) -> bool:
+    """该块是否**进入模型上下文**（历史区投影的唯一判据）。
+
+    [2026-10-23 用户需求] 工具结果不再进上下文 ⇒ 判据收紧为：
+    - 环节留痕块（behavior 非空）不进；
+    - actor=tool（工具结果）不进；
+    - actor=assistant 且带 tool_calls 的 A 块（content 恒空）不进——
+      必须与工具结果成对丢弃，否则留孤立调用 ⇒ 端点 400。
+    其余（human / 有正文的 assistant / 卡间消息）都进。
+
+    **触发线、窗口预算、销账都以此为准**——三尺同一把尺，别再各写一份。
+    """
+    if block.get("behavior"):
+        return False
+    actor = str(block.get("actor") or "")
+    if actor == "tool":
+        return False
+    if actor == "assistant" and block.get("tool_calls"):
+        return False
+    return True

@@ -737,6 +737,14 @@ def project_history_messages(
         if allowed_roles is not None and role not in allowed_roles:
             continue
         actor = str(m.get("actor") or "")
+        # [历史去工具结果 2026-10-23 · 用户需求] 工具结果**不进上下文**：
+        # 留着的代价太大（实测 card_005：工具结果占 92% 的 token——104 万里 98 万），
+        # 而模型真正需要的是它自己的结论（assistant 正文）＋记忆条目。
+        # 必须成对丢：只丢 tool 不丢 assistant(tool_calls) 会留下孤立调用 ⇒ 端点 400，
+        # 所以带 tool_calls 的那条 A 块（content 恒为空）一起丢。
+        from ..storage import predicates as _pred
+        if not _pred.enters_context(m):
+            continue
         item = {
             "role": role,
             "content": (card_msg.render_for_context(m["content"])
