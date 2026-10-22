@@ -933,6 +933,61 @@ async def condense_turn_end(work_id: str, card_id: str,
                        work_id, card_id, exc)
 
 
+async def condense_sweep_once(max_cards: int = 8) -> int:
+    """扫一遍所有 work 的会话文件：未凝量到线的卡就地凝到窗口 90% 以下。
+
+    纯后台：不看回合、不看前台状态，只按触发线记账。返回本轮凝过的卡数。
+    """
+    if not condense_enabled():
+        return 0
+    works = sorted((session_store.WORKS_DIR).glob("*/sessions"))
+    done = 0
+    for sess_dir in works:
+        work_id = sess_dir.parent.name
+        for f in sorted(sess_dir.glob("session_*.md")):
+            if done >= max_cards:
+                return done
+            card_id = "card_" + f.stem.split("_", 1)[1]
+            try:
+                st = load_memory(work_id, card_id)
+                mark = int(st.get("mark", 0) or 0)
+                blocks = await session_facade.read(work_id, card_id)
+                pending = blocks[mark:] if 0 <= mark <= len(blocks) else blocks
+                if _meter_sum(pending) < trigger_k_tokens():
+                    continue
+                logger.warning("[condense_fold] 后台扫描命中：work=%s card=%s 未凝=%d token "
+                               "（线 %d）", work_id, card_id, _meter_sum(pending), trigger_k_tokens())
+                await condense_before_send(work_id, card_id)
+                done += 1
+            except Exception as exc:  # noqa: BLE001 单卡失败不影响其它卡
+                logger.warning("[condense_fold] 后台扫描单卡失败 work=%s card=%s: %s",
+                               work_id, card_id, exc)
+    return done
+
+
+def start_condense_sweeper(interval_sec: float | None = None) -> "asyncio.Task | None":
+    """启动后台凝练扫描器（纯后台，与前台回合无关）。返回 Task 便于测试/停止。"""
+    if not condense_enabled():
+        return None
+    if interval_sec is None:
+        try:
+            interval_sec = float(os.environ.get("CONDENSE_SWEEP_INTERVAL", "300") or 300)
+        except (TypeError, ValueError):
+            interval_sec = 300.0
+
+    async def _loop() -> None:
+        while True:
+            try:
+                await condense_sweep_once()
+            except Exception as exc:  # noqa: BLE001 扫描失败不停摆
+                logger.warning("[condense_fold] 后台扫描失败（下轮继续）: %s", exc)
+            await asyncio.sleep(max(10.0, interval_sec))
+
+    task = asyncio.get_event_loop().create_task(_loop())
+    logger.info("[condense_fold] 后台凝练扫描器已启动 interval=%.0fs", interval_sec)
+    return task
+
+
 async def condense_before_send(work_id: str, card_id: str) -> bool:
     """[发送前预检 2026-10-22] 未凝量已到触发线 ⇒ **先凝一批再发请求**。
 
