@@ -311,6 +311,16 @@ export function createNavRenderer(deps) {
   /* ---------- patch（R-15：只改变化字段；R-19 guard 在最前） ---------- */
 
   function patchRowEl(el, row) {
+    /* [职能行重叠 2026-10-22 · 真根因] 职能行没有 __chev / __tail / __segs 这套卡行
+       结构，落到下面的 patchCardContent 会抛 TypeError；而 patch 是在
+       nav_virtual.reslice() 的循环里逐行调的 ⇒ **一行抛异常，后面所有行的
+       `el.style.top` 就不再被设置**，全部堆在旧位置 —— 表现就是「职能一多就叠在
+       一起」。职能行内容不常变（名字/状态），直接跳过 patch，只同步两个类。 */
+    if (row.kind === "function") {
+      el.classList.toggle("current", false);
+      el.classList.toggle("nav-last", !!row.lastInProject);
+      return true;
+    }
     // [R-19] 交互集守卫（规则定义见模块顶部 shouldSkipPatch，唯一处）
     if (shouldSkipPatch(store, row)) return false;
     if (row.kind === "project") patchProjectContent(el, row);
