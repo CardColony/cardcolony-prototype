@@ -333,6 +333,8 @@ async def get_nav_children(work_id: str = "", parent: str = ""):
         _card_obj(m, act, child_count.get(m.get("card_id", ""), 0), work_id)
         for m in metas
         if m.get("parent", "") == eff_parent
+        # [职能实体化 A 案 2026-10-22] 职能不进卡树（它们走 functions 段）
+        and str(m.get("card_type") or "") != "function"
     ]
     # [角色机制 5710] 角色卡 parent=""，不属于任何一层的子卡；根层展开时
     # 一并带上（排最后），否则异步灌段会把左栏的角色行冲掉。

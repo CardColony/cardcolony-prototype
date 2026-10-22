@@ -501,9 +501,12 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     if (pnew) { gotoCard(pnew.dataset.newchild, pnew.dataset.nwid, true); return; }
     const padd = e.target.closest("[data-add]");
     if (padd) { handleProjectAdd(padd.dataset.add); return; }
-    // [职能入口 2026-10-22] 职能行（不是卡）：点开只读档案面板。
+    /* [职能入口 2026-10-22 · 用户「点不进去」/「UI 没做同步处理」]
+       职能现在在 cards 表里有一行、身份就是 fn_NNN ⇒ 它**能像卡一样打开对话页**
+       （/work/{wid}/card/fn_NNN，后端 /cards/fn_001 实测 200）。所以不再弹只读浮层，
+       直接走 gotoCard——与点普通卡同一条路。 */
     const fnRow = e.target.closest("[data-fn]");
-    if (fnRow) { showFunctionPanel(fnRow.dataset.fwid, fnRow.dataset.fn, fnRow); return; }
+    if (fnRow) { gotoCard(fnRow.dataset.fn, fnRow.dataset.fwid, false); return; }
     const phead = e.target.closest(".nav-phead");
     if (phead) {
       // [用户 2026-10-15 ②] 项目行名字单击＝进根卡对话（与子卡同构）。

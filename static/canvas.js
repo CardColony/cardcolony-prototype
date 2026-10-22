@@ -24,7 +24,7 @@ import { escapeHtml } from "./esm/util.js?v=30";
 // 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=58";
+import { RenderNav } from "./esm/nav_system.js?v=59";
 import { notify } from "./esm/api.js?v=46";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
@@ -3818,6 +3818,13 @@ const WORK_ID = window.__WORK_ID__;
       el.title = (f.function_name || f.function_id || "") + "（职能）" +
                  (String(f.duty || "") === "archived" ? " · 已撤岗" : "");
       el.dataset.fn = f.function_id || "";
+      // [职能入口 2026-10-22 · 用户「点不进去」] 点职能节点＝打开它的对话页
+      // （职能身份就是 fn_NNN，卡页路由 /work/{wid}/card/fn_NNN 直接可用）。
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const fid = f.function_id || "";
+        if (fid) window.location.href = "/work/" + WORK_ID + "/card/" + fid;
+      });
       layer.appendChild(el);
       for (const cid of (f.watch || [])) {
         const p = layout[cid];
