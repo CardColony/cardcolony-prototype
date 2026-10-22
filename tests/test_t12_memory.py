@@ -400,6 +400,6 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
     # [2026-10-22] dev 合并后提示词版本已推进，按实际值同步
-    assert prompts.BASE_PROMPT_VERSION == "t24-1"
+    assert prompts.BASE_PROMPT_VERSION == "t26-2"
     # BASE_PROMPT 工具行在案
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT

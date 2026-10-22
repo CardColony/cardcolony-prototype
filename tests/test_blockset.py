@@ -24,10 +24,11 @@ from src.storage.hash_utils import (
 # ---------------------------------------------------------------- 判据1/4：映射表
 
 def test_new_section_mapping_has_requirements():
-    """硬判据1：NEW_SECTION_MAPPING 含 requirements 键。"""
+    """[2026-10-22 统一命名] 第三块区头＝「## 需求文档」，落 rulings 键（不再有 requirements 键）。"""
     assert "## 需求文档" in NEW_SECTION_MAPPING
-    assert NEW_SECTION_MAPPING["## 需求文档"] == "requirements"
-    assert "requirements" in NEW_KEYS
+    assert NEW_SECTION_MAPPING["## 需求文档"] == "rulings"
+    assert "## 定论" in NEW_SECTION_MAPPING, "存量卡旧区头继续可解析"
+    assert NEW_SECTION_MAPPING["## 定论"] == "rulings"
 
 
 def test_old_key_normalization_unchanged():
@@ -46,12 +47,14 @@ def test_old_key_normalization_unchanged():
 
 
 def test_split_extracts_requirements_section():
+    """[2026-10-22 统一命名] 「## 需求文档」与旧「## 定论」都落到同一个 rulings 键。"""
     body = "## 使命\nM\n## 现状\nS\n## 需求文档\nR1\n## 修改历史\nH"
     s = split_body_sections(body)
-    assert s["requirements"] == "R1"
-    assert s["rulings"] == ""
+    assert s["rulings"] == "R1"
     assert s["mission"] == "M"
     assert s["status_block"] == "S"
+    old = "## 使命\nM\n## 现状\nS\n## 定论\nD1\n## 修改历史\nH"
+    assert split_body_sections(old)["rulings"] == "D1", "存量旧区头保形可读"
 
 
 # ---------------------------------------------------------------- 判据2/3：读侧块集
