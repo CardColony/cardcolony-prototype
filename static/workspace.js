@@ -847,8 +847,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // [卡片编辑机制改造 2026-10-12 · 块3] 第三块按块集判据渲染：body 含 requirements
     // 键（rd_project 树）→ 需求文档；含 rulings 键（其他树）→ 定论。两者互斥（读侧过滤）。
     const thirdKey = ("requirements" in b) ? "requirements" : "rulings";
-    const thirdLabel = thirdKey === "requirements" ? "需求文档 · requirements" : "定论 · rulings";
-    const thirdEmpty = thirdKey === "requirements" ? "（暂无需求文档）" : "（暂无定论）";
+    const thirdLabel = "需求文档 · requirements";   // [2026-10-22] 第三块全系统统一叫需求文档，不再分树
+    const thirdEmpty = "（暂无需求文档）";
     const thirdContent = (b[thirdKey] || "").trim();
     const thirdHtml = thirdContent
       ? thirdContent.split("\n").filter(s => s.trim()).map(line => `<div class="rej-item">${escapeHtml(line)}</div>`).join("")

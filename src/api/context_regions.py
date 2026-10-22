@@ -25,7 +25,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 from . import prompts
-from .prompts import BASE_PROMPT
+from .prompts import BASE_PROMPT, THIRD_BLOCK_NAME_BY_TREE as _THIRD_BLOCK_NAME_BY_TREE
 
 
 @dataclass
@@ -306,7 +306,7 @@ REGION_TABLE: list[dict[str, Any]] = [
         "delivery": "system",
         "profiles": ("main",),
         "source": "prompts.select_base_prompt（BASE_PROMPT / AUTO_BASE_PROMPT 常量，逐字引用不复制——区只持指针）",
-        "render": lambda ctx: prompts.select_base_prompt(ctx.cur_meta),
+        "render": lambda ctx: prompts.select_base_prompt(ctx.cur_meta, ctx.project_class),
         "count": 1,
     },
     {
@@ -936,7 +936,7 @@ _TEAM_FUNCTION_INSTRUCTION_TEXT = """## 拆职能（你这一轮的第一件事�
 
 **不拆**——就直说这件事不需要专职职能、理由是什么。那比编一个凑数好。
 
-**判断结果要落到卡面上**：写进你的定论（append_ruling）或现状（update_status），不要只在心里想。后面接手的人要能看出你判断过。
+**判断结果要落到卡面上**：写进你的需求文档（append_ruling）或现状（update_status），不要只在心里想。后面接手的人要能看出你判断过。
 
 职能不挂在你的任务树下，它不干活，只盯。你想清楚要盯什么、什么情况下它该开口，再建。"""
 
@@ -975,7 +975,7 @@ def render_team_function_instruction_region(ctx: RegionCtx) -> str:
 # ============================================================
 # 为什么要有这个区（实测依据，不是设计偏好）：
 #   v1–v9 共 30+ 张子卡，**没有一张**被上级告知「你可以建自己的子卡 / 写自己的
-#   定论 / 发消息」。这项知识一直只写在「给根卡的那段提示」里，要不要往下传
+#   需求文档 / 发消息」。这项知识一直只写在「给根卡的那段提示」里，要不要往下传
 #   全靠上级自觉 ⇒ 实测 0/30 传下去了。子卡不知道该能干什么，于是只执行；
 #   上级以为子卡只能执行，于是把判断全做完再派活 —— 「子卡被用成子 agent」
 #   就是这么生产出来的。
@@ -987,7 +987,7 @@ def render_team_function_instruction_region(ctx: RegionCtx) -> str:
 # 空来源（读不到 perms）→ 只出纪律那一段，不编造能力。
 _ABILITY_SWITCH_LINES: tuple[tuple[str, str], ...] = (
     ("create_child", "建自己的子卡"),
-    ("edit", "改自己的正文、写自己的定论"),
+    ("edit", "改自己的正文、写自己的需求文档"),
     ("send_card_message", "发卡间消息（先建通信线）"),
     ("read_linked", "沿通信线读对方卡"),
     ("link", "建线/解线"),
@@ -1005,7 +1005,7 @@ _RULE_TAIL = (
 )
 
 _DISCIPLINE = (
-    "- 你负责范围内的判断由**你自己下**，写进自己的定论块；不要等上级把判据替你定完。"
+    "- 你负责范围内的判断由**你自己下**，写进自己的需求文档块；不要等上级把判据替你定完。"
 )
 
 # [2026-10-21 修正] 「还没拆过」是**提示**，不是闸门。
@@ -1133,7 +1133,7 @@ def render_current_card_region(ctx: "RegionCtx") -> str:
     # 延迟 import：card_draft 反向依赖本模块，模块级 import 会成环（同 _child_status_body）。
     from .card_draft import _is_placeholder  # noqa: PLC0415
 
-    third = _THIRD_BLOCK_NAME_BY_TREE.get(ctx.project_class or "", "定论")
+    third = _THIRD_BLOCK_NAME_BY_TREE.get(ctx.project_class or "", "需求文档")
     body = ctx.cur_body or {}
     lines = ["## 当前卡", f"{cur['card_id']} · {cur['title']}"]
 
@@ -1287,21 +1287,18 @@ def rule_inject_counts(registry: dict[str, Any]) -> dict[str, int]:
 
 
 # 第三块：本树 project_class → 对外名（与 routes._apply_block_set 同源口径）
-_THIRD_BLOCK_NAME_BY_TREE = {"rd_project": "需求文档"}
+# [第三块命名单一来源 2026-10-22] 映射表已上移到 prompts.THIRD_BLOCK_NAME_BY_TREE——
+# BASE_PROMPT（按树渲染）与 155 区共用同一处，避免两套定义漂移；
+# 本模块以 `_THIRD_BLOCK_NAME_BY_TREE` 引用（见文件头 import）。
 
 # 第三块「怎么写」——两套，按本树只出一套
 _THIRD_BLOCK_HOWTO = {
+    # [第三块统一命名 2026-10-22 · 用户裁定] 全系统只有「需求文档」一种，
+    # 双名制（需求文档／需求文档）废除——原「需求文档」那套「只追加 D{nn} 条目」写法不再出现。
     "需求文档": (
-        "需求文档——本功能全部需求的确定版详细描述，是本功能需求的唯一确定源。\n"
+        "需求文档——本卡全部需求的确定版详细描述，是本卡需求的唯一确定源。\n"
         "      写法：按需求逐条写清“要什么、验收标准是什么”；只写确定版；\n"
         "            讨论、备选、过程不写这里。"
-    ),
-    "定论": (
-        "定论——本课题已经作出的决定与裁定（定了什么、为什么这么定）。\n"
-        "      写法：只追加、不删不改；一条一行，写清“决定了什么、依据是什么”；\n"
-        "            某条失效就在原处标一行“→ 被Dxx取代”，不保留原文。\n"
-        "      判据：只能被接受或推翻的（取舍、方案选择、边界划定）写这里；\n"
-        "            能被别人拿去验证的事实不写这里，写现状。"
     ),
 }
 
@@ -1309,7 +1306,7 @@ _THIRD_BLOCK_HOWTO = {
 def render_card_region_guide(card_type: str, project_class: str) -> str:
     """155 区渲染（卡片区域说明）：讲清正卡三块与影子四节「是什么、怎么写」。
 
-    - **第三块的名字由本树决定**（`rd_project` → 需求文档；其余 → 定论）——
+    - **第三块的名字由本树决定**（`rd_project` → 需求文档；其余 → 需求文档）——
       文案里**只出那一个名字**，不并列、不互相提及（用户 2026-10-14 22:04）。
     - **影子四节一并说明**（本卡私有，只有本卡读得到）。
     - **不含「修改历史」**（系统留痕，模型不需要知道）。
@@ -1318,11 +1315,11 @@ def render_card_region_guide(card_type: str, project_class: str) -> str:
     if not card_type:
         return ""
     is_root = (card_type == "project")
-    third = _THIRD_BLOCK_NAME_BY_TREE.get(project_class or "", "定论")
+    third = _THIRD_BLOCK_NAME_BY_TREE.get(project_class or "", "需求文档")
     subject = "项目" if is_root else "这张卡"
-    head = ("〔卡片区域说明〕这张是项目根卡，正文分三块，各管各的，不要混写："
+    head = ("〔卡片区域说明〕这张是项目根卡，内容分三个块，各管各的，不要混写："
             if is_root else
-            "〔卡片区域说明〕这张卡的正文分三块，各管各的，不要混写：")
+            "〔卡片区域说明〕这张卡的内容分三个块，各管各的，不要混写：")
     mission = ("使命——整个项目要做成什么（总目标与范围）。"
                if is_root else
                "使命——这张卡要做什么、要做成什么（目标与交付物）。")
@@ -1348,7 +1345,7 @@ def render_card_region_guide(card_type: str, project_class: str) -> str:
         "〔影子卡区域说明〕影子是本卡自己的过程记录，别的卡读不到，只有你能读写：",
         "",
         "产物清单——交接物与权威位置：完成的结果在哪里，哪份文档/代码/数据是准的。",
-        "      写法：一行一条指针（路径＋用途），只写指针，不搬正文。",
+        "      写法：一行一条指针（路径＋用途），只写指针，不搬内容。",
         "",
         "待协作事项——需要谁提供什么、卡在什么外部条件上。",
         "      写法：一条一项，写清“等谁确认什么、确认后本卡才能继续”。",
@@ -1374,7 +1371,7 @@ def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
     """直接子卡现状区（order 170）：只呈现当前卡**直接**子卡的 status_block。
 
     - 上游 SQL 只按 `parent=?` 取一层 ⇒ **结构上不可能含孙级**；
-    - 只输出现状正文，不带使命、第三块（需求文档/定论）、修改历史或影子；
+    - 只输出现状正文，不带使命、第三块（需求文档/需求文档）、修改历史或影子；
     - 空/纯空白/**占位符**（新建卡骨架）都没有信息 ⇒ 跳过该子卡；全空 ⇒
       整个区不出现（沿「没有来源就不出现这个区」）；
     - 子卡顺序由上游按 card_id 固定排序；正文原样呈现，不摘要、不截断
