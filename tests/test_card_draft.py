@@ -61,7 +61,7 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
 # draft_rule_edit 起草＋用户审批落盘）。
 def test_base_prompt_version_is_t20_1():
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t26-4"
+    assert prompts.BASE_PROMPT_VERSION == "t26-5"
 
 
 # ---------------------------------------------------------------- 判据1：draft
