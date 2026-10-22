@@ -3755,7 +3755,13 @@ async def send_card_message(
 async def _h_read_inbox(work_id: str, current_id: str,
                         arguments: dict[str, Any],
                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """读本卡收件箱（默认全部：待处理＋已处理；pending_only=true 只看待处理）。"""
+    """读本卡收件箱。
+
+    [增量语义 2026-10-22 · 用户裁定「读过的内容，下次不应再读到」]
+    入向**默认只回你没读过的**（按读取水位算），返回后水位推进到本次最大 seq——
+    下次再调不会再拿到同样的信。要 deliberate 回看历史，显式传 ``scope="all"``。
+    """
+
     # 执行层关口（与全系统同构的双保险：工具面已按 auto 条件下发，这里再判一次）
     try:
         policy.check(current_id, current_id, policy.SWITCH_READ, cards)
@@ -3769,19 +3775,23 @@ async def _h_read_inbox(work_id: str, current_id: str,
     if direction not in ("incoming", "outgoing", "both"):
         return err("validation",
                    f"direction 非法: {direction or '(空)'}（只允许 incoming/outgoing/both）")
-    # [取消 inbox 状态机 2026-10-22 · D25] `pending_only` 参数已移除。
-    # 语义变更：不再有「待处理状态位」；incoming 返回的就是**你没读过的消息**
-    # （按读取水位算），已读的也在返回里但带上 read 标记，模型自己看得出来龙去脉。
+    # [取消 inbox 状态机 2026-10-22 · D25] `pending_only` 参数已移除；
+    # [增量语义 2026-10-22] 由 `scope` 接管：unread（缺省，只回没读过的）／all（全量回看）。
     if "pending_only" in arguments:
         return err("validation",
                    "pending_only 参数已移除（收件箱状态机已取消）："
-                   "incoming 直接返回未读消息，无需该参数")
+                   "入向默认就是增量（只回没读过的），无需该参数")
+    scope = str(arguments.get("scope") or "unread").strip().lower()
+    if scope not in ("unread", "all"):
+        return err("validation",
+                   f"scope 非法: {scope or '(空)'}（只允许 unread/all）")
     try:
-        # 入向（缺省口径与改造前逐字一致）
+        # 入向（缺省＝增量：只拿读取水位之后的；all＝完整往来记录）
         if direction in ("incoming", "both"):
-            # [取消 inbox 状态机 2026-10-22 · D25] 始终返回该卡的完整往来记录；
-            # 「哪些是新的」由读取水位算（list_pending），不再靠 pending_only 开关。
-            items = await card_db.list_inbox(work_id, current_id)
+            if scope == "unread":
+                items = await card_db.list_pending(work_id, current_id)
+            else:
+                items = await card_db.list_inbox(work_id, current_id)
         else:
             items = []
         # 出向需要全量账本（判 answered 要找有没有人 reply_to 这条）
@@ -3820,9 +3830,18 @@ async def _h_read_inbox(work_id: str, current_id: str,
     if direction in ("outgoing", "both"):
         out += [_row(it, outgoing=True) for it in (all_rows or [])
                 if str((it or {}).get("from_card") or "") == current_id]
+    # [增量语义 2026-10-22] 读过即推进水位：下次不再重发同样这几条。
+    # 只增不减 ⇒ 乱序/并发读都不会把已读退回未读。出向视图不推进（那不是"读"）。
+    seen_after = None
+    if direction in ("incoming", "both") and scope == "unread" and items:
+        try:
+            _max_seq = max(int(it.get("seq") or 0) for it in items)
+            seen_after = await card_db.advance_seen_seq(work_id, current_id, _max_seq)
+        except Exception as exc:  # noqa: BLE001 推进失败不阻断读取
+            logger.warning("[read_inbox] 推进读取水位失败 card=%s: %s", current_id, exc)
     sent_pending = [r for r in out if r.get("answered") is False and r.get("reply_expected")]
     return {"card_id": current_id, "count": len(out), "messages": out,
-            "direction": direction,
+            "direction": direction, "scope": scope, "seen_seq": seen_after,
             # 出向提醒：发了却没人回答的信（发问方据此做知情决策，别默默接受）
             "unanswered_sent": [r["msg_id"] for r in sent_pending]}
 
@@ -3867,8 +3886,10 @@ TOOL_REGISTRY["read_inbox"] = ToolDef(
     schema={
         "name": "read_inbox",
         "description": (
-            "（自动模式专用）读你自己的消息账本：direction=incoming 你收到的（缺省）；"
-            "direction=outgoing 你**发出**的——含 answered（对方是否已回答）与 "
+            "（自动模式专用）读你自己的消息账本。"
+            "**incoming（缺省）是增量的**：只回你没读过的信，读完水位自动推进，"
+            "下次不会再拿到同样的几条；要 deliberate 回看全部往来，显式传 scope=all。"
+            "direction=outgoing 看你**发出**的——含 answered（对方是否已回答）与 "
             "unanswered_sent（你问了但没人答的清单）。"
             "发过 msg_ask 后用 outgoing 确认闭环：没人回答时不要默默接受，"
             "改换手段或 update_goal(pause) 说清在等什么。回应询问前用 incoming 查清 msg_id。"
@@ -3876,9 +3897,13 @@ TOOL_REGISTRY["read_inbox"] = ToolDef(
         "parameters": {
             "type": "object",
             "properties": {
-                "pending_only": {
-                    "type": "boolean",
-                    "description": "true＝只列待处理；缺省＝全部（含已处理）。仅对 incoming 生效",
+                "scope": {
+                    "type": "string",
+                    "enum": ["unread", "all"],
+                    "description": (
+                        "unread（缺省）＝只回你没读过的信，读完水位自动推进；"
+                        "all＝回看全部往来记录（deliberate 翻历史时才用）。"
+                    ),
                 },
                 "direction": {
                     "type": "string",
