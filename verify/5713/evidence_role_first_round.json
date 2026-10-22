@@ -1,16 +1,16 @@
 {
-  "checked_at": "2026-10-22T10:48:43+0800",
+  "checked_at": "2026-10-22T11:14:44+0800",
   "instance": "http://127.0.0.1:5713",
-  "instance_reachable": false,
-  "instance_note": "实例 http://127.0.0.1:5713 不可达（URLError: <urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>）；已退回仓库自身路径作为取数根，并在本报告中标明",
-  "sandbox_root": null,
-  "works_dir": "D:\\AI_station\\推演agent\\works",
+  "instance_reachable": true,
+  "instance_note": "实例 http://127.0.0.1:5713 在线（pid=29052）",
+  "sandbox_root": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox",
+  "works_dir": "D:\\AI_station\\推演agent\\.worktrees\\5713_sandbox\\works",
   "repo_root": "D:\\AI_station\\推演agent",
   "fixture": {
-    "work_id": "work_018",
-    "title": "新项目",
+    "work_id": "work_001",
+    "title": "通道试走-5713-1020-125131",
     "root_card_id": "card_001",
-    "child_card_id": "card_004",
+    "child_card_id": "card_002",
     "root_auto_mode": 1,
     "root_goal_rounds": 0
   },
@@ -41,7 +41,7 @@
     {
       "name": "C 非根卡",
       "verdict": "PASS",
-      "observed": "cur_meta.card_id=card_004(≠work_card_id=card_001) ⇒ len=0 repr=''"
+      "observed": "cur_meta.card_id=card_002(≠work_card_id=card_001) ⇒ len=0 repr=''"
     },
     {
       "name": "D 非 auto",
@@ -50,13 +50,13 @@
     },
     {
       "name": "E 空/坏 meta 不抛",
-      "verdict": "FAIL",
-      "observed": "cur_meta={}⇒len=0空=True; cur_meta=None⇒len=0空=True; cur_meta 无 card_id 键⇒len=455空=False（三种坏 meta 均须返回空串且不抛异常）"
+      "verdict": "PASS",
+      "observed": "cur_meta={}⇒len=0空=True; cur_meta=None⇒len=0空=True; 连 card_id 都没有（cur_meta 无 card_id 且 ctx.card_id 也空）⇒len=0空=True; [fallback子情形] cur_meta 无 card_id + ctx.card_id=根卡 ⇒ len=455 与A逐字相同=True（三种坏 meta 均须空串不抛；且坏 meta 不得泄漏给非根卡；fallback 子情形按 card_044 规格「cur_meta 缺 card_id 时退回 ctx.card_id 比」）"
     },
     {
       "name": "F 区位",
       "verdict": "PASS",
-      "observed": "REGION_TABLE order=91（期望91）; card_duty=90 < 91 < card_ability=92; 装配入口实测 orders=[0, 90, 91, 92, 100, 152]"
+      "observed": "REGION_TABLE order=91（期望91）; card_duty=90 < 91 < card_ability=92; 控制面 order=91; 装配入口实测 orders=[0, 90, 91, 92, 100, 152]"
     },
     {
       "name": "G 无枚举依赖",
@@ -64,9 +64,21 @@
       "observed": "基准len=455 塞枚举后len=455 逐字相同=True"
     }
   ],
+  "findings": [
+    {
+      "id": "B-extra/负数轮次字面分歧",
+      "detail": "契约字面为 `int(cur_meta.goal_rounds or 0) == 0` ⇒ rounds=-1 应为空串；实现为 `if rounds > 0: return ''` ⇒ rounds=-1 出区（455 字）。生产写路径只做 `goal_rounds += 1`（auto_driver）、存量默认 0，负数不可达，故非真实缺陷，但字面契约与实现确有一处差异。",
+      "measured": [
+        "goal_rounds=-1⇒len=455",
+        "goal_rounds='abc'⇒len=455",
+        "goal_rounds=None⇒len=455",
+        "goal_rounds=''⇒len=455"
+      ]
+    }
+  ],
   "summary": {
-    "pass": 6,
-    "fail": 1,
+    "pass": 7,
+    "fail": 0,
     "skip": 0
   }
 }
