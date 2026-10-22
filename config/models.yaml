@@ -53,6 +53,10 @@ providers:
     base_url: https://api.minimaxi.com/v1
     api_key_env: MINIMAX_API_KEY
     note: MiniMax（OpenAI 兼容）
+  mavis:
+    protocol: anthropic
+    base_url: https://agent.minimax.cn/mavis/api/v1/llm/v1
+    note: MiniMax Code（mavis agent 网关·Anthropic Messages 协议·broker 租约鉴权·需本地 MiniMax Code 常驻）
   aliyun:
     protocol: openai
     base_url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
@@ -65,7 +69,22 @@ providers:
     extra_headers:
       x-opencode-session: zhuge-3080
     note: opencode-go 聚合端点（OpenAI 兼容；需 x-opencode-session 头，MissingSessionID 拒单）
+  commandcode:
+    protocol: openai
+    base_url: https://api.commandcode.ai/provider/v1
+    api_key_env: COMMAND_CODE_API_KEY
+    note: >-
+      Command Code Provider API（OpenAI 兼容）。模型 id 带厂商前缀，如
+      deepseek/deepseek-v4.1-flash；官方清单见 GET /provider/v1/models（带 context_length，
+      其中 deepseek-v4.1-flash = 1,000,000）。免费档：reflection/beam:free、
+      minimax/minimax-m3.1-flash:free、poolside/laguna-s-2.1-free、stealth/glyph-cluster:free。
 models:
+  mavis-m31-flash:
+    provider: mavis
+    model: MiniMax-M3.1-Flash
+    temperature: 1
+    max_tokens: 8192
+    note: MiniMax M3.1-Flash（mavis 网关·订阅限免·思考强制开·512K 上下文）
   ds-v4-flash-volc:
     provider: volcengine-coding
     model: deepseek-v4-flash
@@ -190,6 +209,24 @@ models:
     model: beam-free
     temperature: 0.7
     note: 免费（Reflection Beam，带 reasoning；2026-10-22 实调通过）
+  # [2026-10-22 · Command Code Provider API] 厂商前缀是官方 id 的一部分，不可省
+  cmd-ds-v41-flash:
+    provider: commandcode
+    model: deepseek/deepseek-v4.1-flash
+    temperature: 1
+    note: Command Code · DeepSeek V4.1 Flash（context_length=1,000,000；2026-10-22 实调 200）
+  cmd-beam-free:
+    provider: commandcode
+    model: reflection/beam:free
+    temperature: 0.7
+    note: Command Code · Beam 1.0 免费（context_length=1,048,576，带 reasoning；2026-10-22 实调 200）
+  cmd-minimax-free:
+    provider: commandcode
+    model: minimax/minimax-m3.1-flash:free
+    temperature: 1
+    note: >-
+      Command Code · MiniMax M3.1 Flash 免费（context_length=1,000,000；2026-10-22 连测 3/3 通，
+      期间出现过瞬时 429「上游暂不可用」，属容量抖动、可重试）
 bindings:
   execute: glm-53-flash
   think: glm-53-flash

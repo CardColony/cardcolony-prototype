@@ -53,8 +53,19 @@ from .llm_openai_compat.adapter import (
     OpenAICompatAdapter,
 )
 from .llm_openai_compat.serialize import RequestDefaults
+from .llm_anthropic.adapter import (
+    AnthropicAdapterOptions,
+    AnthropicConnectionOptions,
+    AnthropicMessagesAdapter,
+)
+from .llm_anthropic.adapter import DEFAULT_MAX_TOKENS as DEFAULT_ANTHROPIC_MAX_TOKENS
+from .mavis_lease import get_default_client
 
 logger = get_logger(__name__)
+
+#: mavis 路由（MiniMax Code agent 网关）的 vendor 键——与 models.yaml 的 provider 名对应。
+#: 该路由走 Anthropic Messages 协议 + broker 租约鉴权，与 OpenAI 兼容路由平行。
+MAVIS_VENDOR = "mavis"
 
 # 重试分级：按错误类别限定最大尝试次数（与 model 配置取 min 钳制）。语义承自旧单体。
 RETRY_CLASS_CAPS = {
@@ -201,10 +212,32 @@ class ModelGateway:
             return runtime
         # 五家共用一个适配器实例（各厂差异进 facts/dialects），注册键 = vendor。
         runtime.register_adapter(
-            list(self._by_vendor.keys()),
+            [v for v in self._by_vendor if v != MAVIS_VENDOR],
             OpenAICompatAdapter(CompatAdapterOptions(options=self._facts_for)),
         )
+        # mavis 路由（MiniMax Code 网关）：Anthropic Messages 协议，broker 租约鉴权。
+        if MAVIS_VENDOR in self._by_vendor:
+            runtime.register_adapter(
+                [MAVIS_VENDOR],
+                AnthropicMessagesAdapter(
+                    AnthropicAdapterOptions(options=self._anthropic_facts_for)
+                ),
+            )
         return runtime
+
+    def _anthropic_facts_for(self, provider: str, model: str) -> AnthropicConnectionOptions:
+        """``(provider, wire_model) -> mavis 连接事实``（含 broker 令牌提供者）。"""
+        mc = self._lookup(provider, model)
+        try:
+            max_tokens = int(mc.get("max_tokens"))
+        except (TypeError, ValueError):
+            max_tokens = None
+        return AnthropicConnectionOptions(
+            base_url=str(mc.get("base_url") or ""),
+            token_getter=get_default_client().get_token,
+            max_tokens=max_tokens or DEFAULT_ANTHROPIC_MAX_TOKENS,
+            extra_headers=mc.get("extra_headers") if isinstance(mc.get("extra_headers"), dict) else None,
+        )
 
     def _facts_for(self, provider: str, model: str) -> CompatConnectionOptions:
         """``(vendor, wire_model) -> 连接事实``。facts 全部来自编译 config。"""
