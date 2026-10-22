@@ -151,12 +151,13 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     if (!wid || !fid) return;
     let prof = null;
     try {
+      // [职能面板 2026-10-22 · 修] api.call 返回的是**解析后的 JSON 本身**（不是
+      // {ok, data} 信封）；失败时它自己 toast 并 throw。原来按 {ok, data} 取值 ⇒
+      // r.ok 恒 undefined ⇒ 每次都报「读职能档案失败」，一次都没进到面板。
       const r = await API.call("GET", `/api/works/${wid}/functions/${fid}`);
-      if (!r || !r.ok) { notify("读职能档案失败", "error"); return; }
-      prof = (r.data && r.data.function) || null;
+      prof = (r && r.function) || null;
     } catch (e) {
-      notify("读职能档案失败", "error");
-      return;
+      return;                      // toast 已由 api.js 处理，不重复报
     }
     if (!prof) return;
     // [职能对话 2026-10-22] 顺带拉这个职能的对话流（按 function_id 落的事件）。
@@ -165,7 +166,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     try {
       const t = await API.call(
         "GET", `/api/works/${wid}/functions/${fid}/timeline?tail=40`);
-      if (t && t.ok && t.data) items = t.data.items || [];
+      items = (t && t.items) || [];
     } catch (e) { items = []; }
     const duty = String((prof.duty || {}).state || "active");
     const watch = ((prof.watch || {}).cards || []);
