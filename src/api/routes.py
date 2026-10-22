@@ -1753,6 +1753,24 @@ async def get_work_function(work_id: str, function_id: str):
     return {"function": prof}
 
 
+@router.get("/works/{work_id}/functions/{function_id}/timeline")
+async def get_function_timeline(work_id: str, function_id: str,
+                                tail: int = 60):
+    """职能的对话流（职能回合产生的事件）。
+
+    [职能对话 2026-10-22 · 用户「职能卡没有对话的吗？点不进去啊」]
+    职能不进 cards 表 ⇒ 走不了 `/cards/{cid}/timeline`（那条会先校验卡存在）。
+    事件流本身是按 key 落盘的（``events/{key}.jsonl``），所以这里直接按 function_id 读。
+    还没跑过回合的职能返回空数组（不是错误）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    if not function_store.get_profile(work_id, function_id):
+        return _err(404, f"职能不存在: {function_id}")
+    items = event_log.timeline(work_id, function_id, tail=max(1, min(int(tail or 60), 400)))
+    return {"function_id": function_id, "items": items}
+
+
 @router.post("/works/{work_id}/functions")
 async def create_work_function(work_id: str, req: CreateFunctionRequest):
     """外部建职能：独立号段 fn_NNN，不写 cards 表（职能不进卡片世界）。

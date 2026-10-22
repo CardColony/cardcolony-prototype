@@ -490,6 +490,11 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
    ============================================================ */
 .nav-frow {
   position: absolute;
+  /* [职能行重叠 2026-10-22 · 修] 虚拟列表给每行加 .nav-vrow（left:8px; right:8px），
+     而本类只写了 position:absolute ⇒ left 回落 auto、宽度由文字撑开，
+     职能行贴在左边缘、和卡行错位重叠。补上与 .nav-vrow 同一套左右边界。 */
+  left: 8px;
+  right: 8px;
   box-sizing: border-box;
   height: 30px;                 /* ＝ NAV_ROW_HEIGHT，与卡行同高 */
   display: flex;
@@ -541,3 +546,17 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
 .nav-fn-prow.col { flex-direction: column; gap: 2px; }
 .nav-fn-prow b { flex: none; font-weight: 500; color: var(--text-faint, #999); }
 .nav-fn-prow span { white-space: pre-wrap; word-break: break-word; }
+
+/* [职能对话 2026-10-22] 档案浮层加宽 + 对话区 */
+.nav-fn-panel { width: 420px; max-height: 70vh; }
+.nav-fn-talk {
+  max-height: 38vh; overflow: auto; margin-top: 2px;
+  padding: 4px 0; border-top: 1px solid var(--panel-border, rgba(255,255,255,0.1));
+}
+.nav-fn-msg {
+  padding: 4px 7px; border-radius: 6px; margin: 3px 0;
+  line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+}
+.nav-fn-msg.u { background: rgba(110, 168, 201, 0.14); }
+.nav-fn-msg.a { background: rgba(255, 255, 255, 0.05); }
+.nav-fn-msg i { font-style: normal; font-size: 10px; opacity: 0.6; margin-right: 5px; }
