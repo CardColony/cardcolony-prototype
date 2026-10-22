@@ -3883,6 +3883,31 @@ def _function_actor(work_id: str, card_id: str,
     return ""
 
 
+async def ensure_function_card(work_id: str, function_id: str,
+                               function_name: str) -> str:
+    """给职能建/确认它的 cards 行。**id 就用 function_id（fn_NNN）**。
+
+    [职能实体化 A 案 2026-10-22 · 用户裁定「用任务卡底层，但本质要和任务卡区分开」
+     「不能是 card_id，这样会很乱」]
+    底层是 cards 行（perms / build_ctx / _run_message / create_card 全按 card_id 焊死），
+    但**身份就是 fn_NNN**：事件流、会话、档案、左栏、画布全部用同一个号，
+    不出现 card_NNN。呈现层（卡列表/画布/统计）按 card_type='function' 过滤。
+    """
+    fid = str(function_id or "")
+    if not fid:
+        return ""
+    if card_store.card_exists(work_id, fid):
+        return fid
+    r = await card_store.create_card(
+        work_id, function_name or fid, "系统派生",
+        card_type="function", card_id=fid)
+    if "error" in r:
+        logger.warning("[function] 建职能卡失败 work=%s fn=%s: %s",
+                       work_id, fid, r["error"])
+        return ""
+    return fid
+
+
 async def _h_create_function(work_id: str, current_id: str,
                              arguments: dict[str, Any],
                              cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -3924,12 +3949,15 @@ async def _h_create_function(work_id: str, current_id: str,
     prof["function_name"] = name
     created = await function_store.create_function(work_id, name, prof)
     fid = str(created.get("function_id") or "")
+    # [职能实体化 A 案 2026-10-22 · 用户裁定] 建职能同时建它的 cards 行
+    # （id 就用 fn_NNN）——底层复用卡的基础设施，对外身份仍是 fn。
+    await ensure_function_card(work_id, fid, name)
     logger.info("[function] 根卡组建职能 work=%s function=%s watched=%s",
                 work_id, fid, watch)
     return {"function_id": fid, "function_name": name,
             "watch": watch, "duty": (created.get("duty") or {}).get("state") or "active",
             "charter_version": (created.get("charter") or {}).get("version") or 1,
-            "in_cards_table": False}
+            "in_cards_table": True}
 
 
 async def _h_function_watch_cards(work_id: str, current_id: str,
@@ -5349,9 +5377,12 @@ def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # 读、沿连线读、影子、发建议、读收件箱、记录判词、发警报、写自己的
 # 现状/定论。全部在四段过滤之后追加，常规卡工具面逐字不变。
 # ============================================================
-_ROLE_FACE_DROP = frozenset({"edit_card", "delete_card", "create_card",
-                             "create_coder_card", "link_cards", "unlink_cards",
-                             "link_rel", "unlink_rel"})
+# [职能实体化 A 案 2026-10-22 · 用户裁定] 职能是**管理者**（人类团队里的岗位），
+# 要能派活（create_card / create_coder_card）和建立通信（link/unlink）。
+# 只留 delete_card 在摘除集里——职能不删别人的卡。
+# 原集合把 create_card/create_coder_card/link_* 全摘掉，等于"职能不能派活、
+# 不能连线"，与"职能盯卡、必要时要求返工"的职责直接矛盾。
+_ROLE_FACE_DROP = frozenset({"edit_card", "delete_card"})
 
 
 def _is_function_turn(work_id: str, card_id: str,
@@ -5369,12 +5400,19 @@ def _is_function_turn(work_id: str, card_id: str,
     cid = str(card_id or "")
     if not cid:
         return False
+    # [职能实体化 A 案 2026-10-22 · 用户裁定] 职能现在**在 cards 表里有一行**
+    # （card_type="function"），回合以 card_id 跑 ⇒ 直接按类型判，最可靠。
+    _ct = str(((cards or {}).get(cid) or {}).get("card_type") or "")
+    if _ct == "function":
+        return True
+    # 旧路径①：card_id 形如 fn_NNN 且 function_profiles 里真有它（迁移前的职能回合）。
     if cid.startswith("fn_"):
         try:
             return function_store.function_exists(work_id, cid)
         except Exception:  # noqa: BLE001 查不到＝不是职能回合（fail-closed）
             return False
-    return str(((cards or {}).get(cid) or {}).get("card_type") or "") == "role"
+    # 旧路径②：旧 role 卡回合
+    return _ct == "role"
 
 
 def _apply_function_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

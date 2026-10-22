@@ -71,6 +71,10 @@ def _row_to_profile(row: sqlite3.Row) -> dict[str, Any]:
         "charter": _loads(row["charter"], {}),
         "created_at": row["created_at"] or "",
         "updated_at": row["updated_at"] or "",
+        # [职能实体化 A 案 2026-10-22] 职能在 cards 表里那一行的句柄：基础设施
+        # （perms / build_ctx / _run_message / 建卡）全部按 card_id 走。
+        # 老库可能还没补这列 ⇒ 取不到时给空串（迁移脚本会补）。
+        "card_id": (row["card_id"] if "card_id" in row.keys() else "") or "",
     }
 
 

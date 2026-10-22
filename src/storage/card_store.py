@@ -294,7 +294,9 @@ def _normalize_parent(work_id: str, parent: Optional[str], card_type: str) -> st
     - role 角色卡**离树**：无视 parent 入参，强制为 ""（5710 角色机制）
     - parent=None 或父卡不存在 → 回退 work_card_id
     """
-    if card_type in ("project", "role"):
+    if card_type in ("project", "role", "function"):
+        # [职能实体化 A 案 2026-10-22 · 用户裁定] 职能同样离树：它在 cards 表里有一行
+        # 只为复用基础设施（perms/上下文/回合/建卡），**不进任务树**（parent 恒空）。
         return ""
     wid = work_store.work_card_id_of(work_id)
     if parent is None or parent == "":
@@ -861,6 +863,7 @@ async def create_card(
     goal: str = "",
     mission: str = "",
     skip_kick: bool = False,
+    card_id: str = "",
 ) -> dict[str, Any]:
     """创建卡片 + 对应会话文件，更新 canvas 缓存。
 
@@ -925,11 +928,19 @@ async def create_card(
             body["mission"] = str(mission).strip()
         history_line = f"- [{now}] 卡片创建"
 
+        _forced_id = str(card_id or "")   # 调用方指定 id（职能用 fn_NNN）；空＝照旧发号
+
         def _fn(conn: Any) -> tuple[str, Any, str, int]:
             # [卡片存储迁移 SQLite] 发号与建卡同事务：seq 取号 → 建卡 → 写回 seq，
             # 全部在一次 BEGIN IMMEDIATE 内（方案 §三决策 4）。
             seq = card_db.next_seq(conn)
-            card_id = f"card_{seq:03d}"
+            # [职能实体化 A 案 2026-10-22 · 用户令「不能是 card_id，这样会很乱」]
+            # 调用方可以指定 id：职能用它自己的号段（fn_001）当**唯一身份**——
+            # 底层虽是 cards 行，但对外（左栏/画布/事件流/session/档案）全是 fn_NNN，
+            # 不出现 card_NNN，与任务卡彻底分开。不指定则照旧发 card_NNN。
+            # （用 _forced_id 承接：在本闭包里给 card_id 赋值会让它变成局部变量，
+            #   闭包就读不到外层参数了 —— 实测报 UnboundLocalError。）
+            card_id = _forced_id or f"card_{seq:03d}"
             session_name = _session_name(card_id)
             # [自动模式 2026-10-17 · 回灌 5700 块0.1/0.2] 子卡**建卡时继承**父卡的
             # 自动模式（逐代传；父卡退出不影响已建子卡——继承是一次性快照，不回溯）。
