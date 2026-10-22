@@ -355,6 +355,17 @@ def _meter_sum(msgs: list[dict[str, Any]]) -> int:
     return sum(_msg_meter_tokens(m) for m in msgs)
 
 
+def _context_meter(blocks: list[dict[str, Any]]) -> int:
+    """**进上下文的量**（token）——触发线、窗口预算、销账统一用这一把尺。
+
+    [2026-10-23 用户需求] 工具结果不进上下文，所以它们**不算**在这里：
+    按含工具的块量去量，会拿 96% 的"根本不在上下文里的东西"去顶触发线，
+    结果就是白凝（压不存在的体积、白烧额度）。
+    """
+    from . import predicates
+    return sum(_msg_meter_tokens(m) for m in blocks if predicates.enters_context(m))
+
+
 def _truncate_window(pending: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
     """单批窗口切片 [任务2，源侧 truncateWindow 原样搬回]：按统一计量尺（token）
     逐条累加，取「最接近且不超预算」的切片（宁少不超，用户 14:56 口径）；累计越线
@@ -364,12 +375,17 @@ def _truncate_window(pending: list[dict[str, Any]], budget: int) -> list[dict[st
     # [口径 2026-10-22 复核] 预算按**含工具结果的原始块量**累计（决定这一批推进到哪），
     # 送模型的内容另由 `_build_condense_user_prompt` 只取 user/assistant。
     # 用户原话：「窗口/计量按含工具算，喂给凝练的内容不含工具」——两处不得写反。
+    from . import predicates
+
     used = 0
     best = 0
     for i, m in enumerate(pending):
-        used += _msg_meter_tokens(m)
-        if used > budget:
-            break
+        # [2026-10-23 口径统一] 只有**进上下文**的块占预算；工具块照旧落在窗口里
+        # （销账要越过它们），但不计入 30 万。
+        if predicates.enters_context(m):
+            used += _msg_meter_tokens(m)
+            if used > budget:
+                break
         best = i + 1
     if best == 0 and pending:
         logger.warning("[condense_fold] 单条即超窗口预算 budget=%d——保底取 1 条防卡死", budget)
@@ -932,7 +948,7 @@ async def condense_turn_end(work_id: str, card_id: str,
         # [三尺统一 2026-10-22] 触发与窗口/销账读**同一份数据**（会话块[mark:]）。
         # 本轮真实请求体积只作第二见证：本轮刚执行完、块尚未落盘的那部分会让它偏大，
         # 取两者较大值＝不低估；两者偏差 >20% 说明落盘又出了问题，打警告。
-        block_size = _meter_sum(pending)
+        block_size = _context_meter(pending)
         size = block_size
         if request_tokens is not None:
             req = int(request_tokens)
@@ -987,10 +1003,10 @@ async def condense_sweep_once(max_cards: int = 8) -> int:
                 mark = int(st.get("mark", 0) or 0)
                 blocks = await session_facade.read(work_id, card_id)
                 pending = blocks[mark:] if 0 <= mark <= len(blocks) else blocks
-                if _meter_sum(pending) < trigger_k_tokens():
+                if _context_meter(pending) < trigger_k_tokens():
                     continue
                 logger.warning("[condense_fold] 后台扫描命中：work=%s card=%s 未凝=%d token "
-                               "（线 %d）", work_id, card_id, _meter_sum(pending), trigger_k_tokens())
+                               "（线 %d）", work_id, card_id, _context_meter(pending), trigger_k_tokens())
                 await condense_before_send(work_id, card_id)
                 done += 1
             except Exception as exc:  # noqa: BLE001 单卡失败不影响其它卡

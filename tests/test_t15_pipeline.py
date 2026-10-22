@@ -328,7 +328,9 @@ async def test_v7_mutex_second_trigger_skips(sandbox, monkeypatch, caplog):
     st = memory_store.load_memory(wid, cid)
     assert st["mark"] == 4 and len(st["entries"]) == 1  # 无重复条目
     msgs = [r.getMessage() for r in caplog.records]
-    assert any("触发跳过" in m and "互斥" in m for m in msgs)
+    # [2026-10-23] 凝练不再抢回合锁，防重入改用进程内 per-card 集合：
+    # 日志从「触发跳过（同卡在途互斥）」改为「跳过（进程内已在凝）」
+    assert any("跳过" in m and "已在凝" in m for m in msgs)
     assert sum("凝练完成" in m for m in msgs) == 1
 
 

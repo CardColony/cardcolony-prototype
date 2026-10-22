@@ -27,21 +27,19 @@ def _tool(seq: int, n: int = 600) -> dict:
 
 # ---------------------------------------------------------------- C2 / C3
 
-def test_window_budget_counts_tool_blocks():
-    """窗口预算**按含工具结果**的块量算（决定这一批推进到哪）；送模型的内容另滤。"""
+def test_window_budget_ignores_tool_blocks():
+    """窗口预算按**进上下文的量**算：工具块不占预算，但仍留在窗口内供销账推进。"""
     pending = [
         _mk(0, "human", "六" * 6),      # 13 token
-        _tool(1),                       # 600 字 ⇒ 占预算
+        _tool(1),                       # 600 字，但**不进上下文 ⇒ 不占预算**
         _mk(2, "assistant", "六" * 6),  # 13 token
         _mk(3, "human", "六" * 6),      # 13 token
     ]
-    win = memory_store._truncate_window(pending, 630)
+    win = memory_store._truncate_window(pending, 30)
     seqs = [m["seq"] for m in win]
     print("窗口 seq:", seqs)
-    assert seqs == [0, 1, 2], "13+600+13=626 ≤ 630，再加第 4 条越线"
-    # 送凝练的内容只留 user/assistant
-    send = [m for m in win if m["actor"] in ("human", "assistant")]
-    assert [m["seq"] for m in send] == [0, 2], "工具块不进 prompt"
+    assert seqs == [0, 1, 2], "两条正文 26 token ≤ 30，第三条越线；工具块跟着进窗"
+    assert memory_store._context_meter(win) <= 30
 
 
 def test_mark_advances_past_tool_blocks(work, monkeypatch):
@@ -135,7 +133,7 @@ def test_three_rulers_share_one_source(work, monkeypatch):
     """触发、窗口、销账读同一份数据：销账落在**窗口末块**，不因请求体积偏大而多推。"""
     wid, cid = work["work_id"], work["work_card_id"]
     monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "800000")
-    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "630")
+    monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "30")
     pending = [_mk(0, "human", "六" * 6), _tool(1), _mk(2, "assistant", "六" * 6),
                _mk(3, "human", "六" * 6)]
 
