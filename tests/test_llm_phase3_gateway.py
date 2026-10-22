@@ -36,18 +36,60 @@ def _dead_model(vendor="zhipu", wire="m"):
 # ---------------- 判据 1：单适配器 ----------------
 
 def test_only_one_concrete_adapter_class():
-    """适配器类只有 LlmAdapter(ABC) / MockAdapter / OpenAICompatAdapter 三个。"""
+    """具体适配器类＝ LlmAdapter(ABC) / MockAdapter / OpenAICompatAdapter / AnthropicMessagesAdapter。
+
+    [2026-10-22 mavis 接入] 原判据字面是「只有三个类」，其**目的**是消灭
+    litellm 时代「同一协议多套实现」的乱象（deepseek 适配器＋litellm 壳＋
+    compat 三套并行讲同一种 OpenAI 协议）。mavis 网关（MiniMax Code）**只讲
+    Anthropic Messages 协议**（chat/completions 形状实测 400），无法由
+    OpenAICompatAdapter 承担，故按「**每个协议至多一个具体适配器**」的目的
+    口径扩容：OpenAI 协议包一个、Anthropic 协议包一个。
+    """
     names = []
     for path in (_ROOT / "src" / "model_gateway").rglob("*.py"):
         names += re.findall(r"^class (\w+Adapter)\(", path.read_text(encoding="utf-8"), re.M)
-    assert sorted(names) == ["LlmAdapter", "MockAdapter", "OpenAICompatAdapter"]
+    assert sorted(names) == [
+        "AnthropicMessagesAdapter",
+        "LlmAdapter",
+        "MockAdapter",
+        "OpenAICompatAdapter",
+    ]
+    # 目的口径的加强版：任何协议包内不得出现两个以上具体适配器（防换皮 duplication）
+    by_package: dict[str, list[str]] = {}
+    for path in (_ROOT / "src" / "model_gateway").rglob("*.py"):
+        found = re.findall(r"^class (\w+Adapter)\(", path.read_text(encoding="utf-8"), re.M)
+        concrete = [n for n in found if n not in ("LlmAdapter", "MockAdapter")]
+        if concrete:
+            by_package.setdefault(str(path.parent), []).extend(concrete)
+    for package, classes in by_package.items():
+        assert len(classes) == 1, f"{package} 出现多个具体适配器: {classes}"
 
 
 def test_sse_and_translate_have_single_copy():
-    """sse.py / translate.py 全仓（model_gateway 下）各仅一份。"""
-    for name in ("sse.py", "translate.py"):
-        hits = [p for p in (_ROOT / "src" / "model_gateway").rglob(name)]
-        assert len(hits) == 1, [str(h) for h in hits]
+    """sse.py / translate.py 在每个协议包内仅一份（全仓两份＝两个协议包各一）。
+
+    [2026-10-22 mavis 接入] 原判据「全仓仅一份」的目的同样是防同协议多实现。
+    Anthropic 的 SSE 事件与 OpenAI 的 choices[0].delta 是两套 wire，不存在
+    共享解析；故按「**包内单份**」口径允许 llm_openai_compat/ 与
+    llm_anthropic/ 各一份，但任何一包内不得重复、也不得出现在协议包之外。
+    """
+    allowed = {
+        "sse.py": {
+            str(_ROOT / "src" / "model_gateway" / "llm_openai_compat"),
+            str(_ROOT / "src" / "model_gateway" / "llm_anthropic"),
+        },
+        "translate.py": {
+            str(_ROOT / "src" / "model_gateway" / "llm_openai_compat"),
+            str(_ROOT / "src" / "model_gateway" / "llm_anthropic"),
+        },
+    }
+    for name, allowed_packages in allowed.items():
+        hits: dict[str, list] = {}
+        for path in (_ROOT / "src" / "model_gateway").rglob(name):
+            hits.setdefault(str(path.parent), []).append(path)
+        for package, files in hits.items():
+            assert len(files) == 1, f"{package} 出现多份 {name}: {files}"
+        assert set(hits) <= allowed_packages, f"{name} 出现在非协议包目录: {list(hits)}"
 
 
 def test_legacy_packages_are_gone():
