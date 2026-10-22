@@ -159,6 +159,14 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       return;
     }
     if (!prof) return;
+    // [职能对话 2026-10-22] 顺带拉这个职能的对话流（按 function_id 落的事件）。
+    // 没跑过回合就是空数组 —— 显示「还没有对话」而不是报错。
+    let items = [];
+    try {
+      const t = await API.call(
+        "GET", `/api/works/${wid}/functions/${fid}/timeline?tail=40`);
+      if (t && t.ok && t.data) items = t.data.items || [];
+    } catch (e) { items = []; }
     const duty = String((prof.duty || {}).state || "active");
     const watch = ((prof.watch || {}).cards || []);
     const box = document.createElement("div");
@@ -173,7 +181,21 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       `</div>` +
       `<div class="nav-fn-prow"><b>编号</b><span>${esc(prof.function_id || fid)}</span></div>` +
       `<div class="nav-fn-prow"><b>关注</b><span>${watch.length ? esc(watch.join("、")) : "（未指定）"}</span></div>` +
-      `<div class="nav-fn-prow col"><b>职责书</b><span>${esc(prof.charter || "（空）")}</span></div>`;
+      `<div class="nav-fn-prow col"><b>职责书</b><span>${esc(prof.charter || "（空）")}</span></div>` +
+      `<div class="nav-fn-prow col"><b>对话</b><div class="nav-fn-talk">${
+        items.length
+          ? items.map((it) => {
+              const t = String(it.type || "");
+              if (t !== "user_message" && t !== "assistant_text") return "";
+              const d = it.data || {};
+              const txt = String(d.content || d.text || "");
+              if (!txt) return "";
+              const who = t === "user_message" ? "你" : "职能";
+              return `<div class="nav-fn-msg ${t === "user_message" ? "u" : "a"}">` +
+                     `<i>${who}</i>${esc(txt).slice(0, 600)}</div>`;
+            }).join("") || "（还没有对话）"
+          : "（还没有对话——这个职能还没被唤醒跑过回合）"
+      }</div></div>`;
     document.body.appendChild(box);
     const rect = anchor ? anchor.getBoundingClientRect() : { left: 20, bottom: 100 };
     const top = Math.min(rect.bottom + 4, window.innerHeight - box.offsetHeight - 12);
