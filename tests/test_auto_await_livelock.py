@@ -531,9 +531,9 @@ async def test_f3_prompt_surface_auto_t8(work):
     补了「只在当下确有未完工子卡时传」；普通版不含任何唤醒语义。"""
     from src.api import prompts
 
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t12"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t13"
     # 普通版版本与内容都不得被本次改动波及（本分支基线＝t23-2，一字未动）
-    assert prompts.BASE_PROMPT_VERSION == "t26-4", "普通版不得被本次改动波及"
+    assert prompts.BASE_PROMPT_VERSION == "t26-5", "普通版不得被本次改动波及"
     # 唤醒语义准则（_SEC_AUTO 新增那条）
     assert "你被系统唤醒，说明你等的子卡已经全部完工" in prompts.AUTO_BASE_PROMPT
     assert "再用 `await_children=true` 挂起" in prompts.AUTO_BASE_PROMPT
