@@ -228,3 +228,30 @@ async def test_preflight_does_nothing_below_line(work, monkeypatch):
     ran = await memory_store.condense_before_send(wid, cid)
     assert ran is False
     assert called == []
+
+
+# ---------------------------------------------------------------- 条目 seq 身份
+
+def test_entries_get_distinct_seqs_without_block_refs():
+    """旧格式条目不带块号时，按窗口内可送块**逐条分配**，不再全落窗口首块。"""
+    txt = "【结论】A【依据】无块号\n【结论】B【依据】无块号\n【结论】C【依据】无块号"
+    got = [e["seq"] for e in memory_store._parse_condense_output(txt, 0, [10, 20, 30])]
+    assert got == [10, 20, 30], got
+    assert len(set(got)) == 3, "不许重复"
+
+
+def test_entries_with_block_refs_keep_their_seq():
+    """带块号的条目仍以自己的块号为准，且不与他人冲突。"""
+    txt = "【结论】A【依据】块20\n【结论】B【依据】无块号"
+    got = [e["seq"] for e in memory_store._parse_condense_output(txt, 0, [10, 20, 30])]
+    assert got[0] == 20, got
+    assert got[1] in (10, 30), got
+    assert got[0] != got[1], "两条不能同 seq"
+
+
+def test_more_entries_than_blocks_still_unique():
+    """条目数超过可送块数时也不重复（超出的退到默认 seq 之前先避让）。"""
+    txt = "".join(f"【结论】{i}【依据】无块号\n" for i in range(5))
+    got = [e["seq"] for e in memory_store._parse_condense_output(txt, 0, [1, 2])]
+    assert got[:2] == [1, 2]
+    assert len(set(got[:2])) == 2
