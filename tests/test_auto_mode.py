@@ -593,8 +593,8 @@ def test_block4_prompt_version_and_section():
     [回灌 5700 §十 版本号推进表] auto-t1＝块0.4 初版；auto-t2＝G2（自主通信
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
-    assert prompts.BASE_PROMPT_VERSION == "t26-2"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t10"
+    assert prompts.BASE_PROMPT_VERSION == "t26-4"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t12"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
@@ -632,7 +632,7 @@ def test_rework_1_base_prompt_byte_identical_to_t22_1():
 
 def test_rework_2_versions():
     """BASE_PROMPT_VERSION 不动；AUTO_BASE_PROMPT_VERSION 存在且非空。"""
-    assert prompts.BASE_PROMPT_VERSION == "t26-2"
+    assert prompts.BASE_PROMPT_VERSION == "t26-4"
     assert isinstance(prompts.AUTO_BASE_PROMPT_VERSION, str)
     assert prompts.AUTO_BASE_PROMPT_VERSION.strip()
 
@@ -1107,7 +1107,7 @@ def test_g4_auto_prompt_has_two_obligation_rules():
     assert "收到 ask 必须回应" in auto
     assert "不能无视" in auto
     assert "unanswered_sent" in auto
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t10"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t12"
     assert "问出去的信必须有回音" not in prompts.BASE_PROMPT
     assert "收到 ask 必须回应" not in prompts.BASE_PROMPT
 
@@ -1251,8 +1251,8 @@ def test_idle_stop_still_counts_without_children(monkeypatch):
 def test_auto_prompt_version_after_p7():
     """[6702 移植 P7] 版本号：普通版不动，自动版到 auto-t7。"""
     from src.api import prompts
-    assert prompts.BASE_PROMPT_VERSION == "t26-2"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t10"
+    assert prompts.BASE_PROMPT_VERSION == "t26-4"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t12"
 
 
 async def _async_noop(*a, **kw):
