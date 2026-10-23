@@ -16,6 +16,61 @@ logger = logging.getLogger("api.prompt_log")
 BASE_DIR = Path(__file__).resolve().parents[2]
 LOGS_DIR = BASE_DIR / "logs"
 
+# [5715 · 治理] prompt 日志的**预算闸**。
+# 原注释写着「无闸——无轮转/无长度上限/无采样（打点是留痕非闸）」⇒ 每次 LLM 调用
+# 落一个文件、永不清理 ⇒ 实测本机 logs\prompt_card_*.json 1,855 个 / 1.17GB，
+# 且**只增不减**。留痕不该变成垃圾场：给一份**总量预算**（默认 2GB）与**份数上限**
+# （默认 3000 个），超了从**最旧**的开始删（最新的留）。
+PROMPT_LOG_MAX_BYTES = 2 * 1024 * 1024 * 1024
+PROMPT_LOG_MAX_FILES = 3000
+
+#: 清理节流计数（每 N 次写盘才清一次）
+_prune_counter = [0]
+
+
+def _prune_prompt_logs() -> int:
+    """按预算清理 prompt 日志；返回删除文件数。
+
+    只动 ``logs/prompt_*.json``（不碰 perm_log 等别的日志）。
+    清理顺序：**最旧 → 最新**（按 mtime），最新的留。
+    """
+    try:
+        files = [p for p in LOGS_DIR.glob("prompt_*.json") if p.is_file()]
+    except OSError:
+        return 0
+    if not files:
+        return 0
+    files.sort(key=lambda p: p.stat().st_mtime)
+    removed = 0
+    total = 0
+    sizes = {}
+    for p in files:
+        try:
+            s = p.stat().st_size
+        except OSError:
+            s = 0
+        sizes[p] = s
+        total += s
+    # 先按份数：超了就把最旧的删到上限
+    while len(files) - removed > PROMPT_LOG_MAX_FILES and removed < len(files):
+        victim = files[removed]
+        try:
+            victim.unlink()
+        except OSError:
+            pass
+        total -= sizes.get(victim, 0)
+        removed += 1
+    # 再按体积：超了继续从最旧的删
+    while total > PROMPT_LOG_MAX_BYTES and removed < len(files):
+        victim = files[removed]
+        try:
+            victim.unlink()
+        except OSError:
+            pass
+        total -= sizes.get(victim, 0)
+        removed += 1
+    return removed
+
 
 def write_prompt_log(
     card_id: str,
@@ -68,6 +123,11 @@ def write_prompt_log(
         if fold_ops:
             payload["fold_ops"] = fold_ops
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        # [5715 · 治理] 落盘后按预算清理（最旧的先删）——见 _prune_prompt_logs 的口径。
+        # 每 32 次调一次：目录列举是 O(n)，不必每次都做。
+        _prune_counter[0] += 1
+        if _prune_counter[0] % 32 == 0:
+            _prune_prompt_logs()
         # [T10-5] 落盘打点：含文件名与标识（既有 logger 通道）
         logger.info("prompt 日志落盘 file=%s pair_id=%s", path.name, pair_id)
         return path
