@@ -1188,13 +1188,28 @@ body.page-chat .step-row.tool-row .txt {
   align-items: baseline;
   gap: 8px;
   color: var(--ui-text-2);
+  /* 〔5715 · P18 文字超框〕允许这一行在 flex 行里收缩。
+     不写 min-width:0 ⇒ flex item 的自动最小尺寸＝min-content ⇒
+     长内容把这一行撑到内容宽（实测 1953px）⇒ 消息列被顶破、文字漏出框外。 */
+  min-width: 0;
 }
 body.page-chat .step-row.tool-row .txt b {
   font-family: var(--ui-mono);
   font-size: 12px;
   font-weight: 500;
   color: var(--ui-text);
-  flex: none;
+  /* 〔5715 · P18〕原来是 flex:none（＝永不收缩）⇒ 工具名槽按 max-content 撑开。
+     实测：上游把「命令文本」当成了工具名（`cd "…" && python …`），这一槽直接
+     宽 1953px ⇒ 768px 的消息列 scrollWidth 冲到 1994px ⇒ 文字横着漏出去、
+     整条对话出现横向滚动条。
+     改成「可收缩 ＋ 单行省略号」（与同行的 .targs / .tool-sum 同款），
+     完整内容仍在点开的 .tool-body 里。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 body.page-chat .step-row.tool-row .targs {
   font-family: var(--ui-mono);
@@ -1203,22 +1218,33 @@ body.page-chat .step-row.tool-row .targs {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 〔5715 · P18〕不写 min-width:0 ⇒ 自动最小尺寸＝nowrap 全文宽 ⇒
+     这一项自己就把行撑宽（省略号也因此永远不生效）。 */
+  min-width: 0;
+  flex: 0 1 auto;
 }
 body.page-chat .step-row.tool-row.fail .txt b { color: var(--ui-err); }
 body.page-chat .step-row.tool-row .tool-sum {
   flex-basis: 100%;
-  margin: 3px 0 0 23px;
+  /* 〔5715 · P18〕缩进由 **margin** 改 **padding**（与 style.css 的 .step-detail 同理）：
+     margin 不计在 flex-basis 里、padding 计入（全局 box-sizing:border-box）
+     ⇒ 原来 margin-left:23px ＋ basis:100% ＝ 外尺寸超出行宽 12px（实测越界）。 */
+  margin: 3px 0 0 0;
+  padding-left: 23px;
   font-size: 11.5px;
   color: var(--ui-text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 〔5715 · P18〕min-width:0 才能既收缩、又不撑破行。 */
+  min-width: 0;
 }
 body.page-chat .step-row.tool-row .tool-body {
   flex-basis: 100%;
   display: none;
-  margin: 6px 0 2px 23px;
-  padding: 10px 12px;
+  /* 〔5715 · P18〕同上：缩进改 padding，否则展开后同样越界 12px。 */
+  margin: 6px 0 2px 0;
+  padding: 10px 12px 10px 23px;
   border: 1px solid var(--ui-line);
   border-radius: var(--ui-r-sm);
   background: var(--ui-surface-2);
@@ -2318,160 +2344,3 @@ body.page-chat .nav-foot-btn::before {
   mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Zm0 1.4a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8Z'/><path d='M7 1.4h2l.25 1.55.9.52 1.45-.6 1.42 1.42-.6 1.45.52.9L14.9 7v2l-1.55.25-.52.9.6 1.45-1.42 1.42-1.45-.6-.9.52L9 14.6H7l-.25-1.64-.9-.52-1.45.6-1.42-1.42.6-1.45-.52-.9L1.1 9V7l1.64-.25.52-.9-.6-1.45 1.42-1.42 1.45.6.9-.52L7 1.4Z' fill='none' stroke='currentColor' stroke-width='1.3' stroke-linejoin='round'/></svg>") center/contain no-repeat;
 }
 body.page-chat .nav-foot-btn .gear-glyph { display: none; }
-
-/* ============================================================
-   [角色机制 5710] 角色卡面板（卡详情右栏）
-   角色卡是离树观察者：关注列表、判断台账、警报、立即巡检。
-   ============================================================ */
-body.page-chat .role-panel {
-  margin: 10px 0 6px;
-  padding: 10px 12px;
-  border: 1px solid rgba(201, 162, 39, 0.35);
-  border-radius: 10px;
-  background: linear-gradient(180deg, rgba(201, 162, 39, 0.08), rgba(201, 162, 39, 0.02));
-}
-body.page-chat .role-head {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-}
-body.page-chat .role-badge {
-  font-size: 11px; font-weight: 600; letter-spacing: .02em;
-  color: #d8b84a;
-  border: 1px solid rgba(201, 162, 39, 0.5);
-  border-radius: 999px; padding: 1px 8px;
-}
-body.page-chat .role-pending {
-  font-size: 11px; color: var(--dimmer, #8a8a8a);
-}
-body.page-chat .role-head .btn { margin-left: auto; }
-body.page-chat .role-sub {
-  font-size: 11px; line-height: 1.5; color: var(--dimmer, #8a8a8a);
-  margin: 6px 0 2px;
-}
-body.page-chat .role-watch-list {
-  display: flex; flex-direction: column; gap: 4px; margin: 4px 0 8px;
-}
-body.page-chat .role-w {
-  font-size: 12px; padding: 3px 6px; border-radius: 6px;
-  background: rgba(255,255,255,0.03);
-  display: flex; align-items: center; gap: 6px;
-}
-body.page-chat .role-w b { color: var(--dimmer, #8a8a8a); font-weight: 500; }
-body.page-chat .role-unwatch {
-  margin-left: auto; border: 0; background: none; color: var(--dimmer, #8a8a8a);
-  cursor: pointer; font-size: 11px;
-}
-body.page-chat .role-watch-add { display: flex; gap: 6px; margin: 4px 0 8px; }
-body.page-chat .role-watch-add select {
-  flex: 1; min-width: 0; font-size: 12px; padding: 3px 6px;
-  background: rgba(255,255,255,0.04); color: inherit;
-  border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
-}
-body.page-chat .role-verdicts, body.page-chat .role-alarms {
-  display: flex; flex-direction: column; gap: 5px; margin: 4px 0 10px;
-}
-body.page-chat .role-v {
-  display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 12px;
-  padding: 4px 6px; border-left: 2px solid rgba(255,255,255,0.15);
-  background: rgba(255,255,255,0.02);
-}
-body.page-chat .role-vd {
-  flex: none; font-size: 10px; padding: 0 5px; border-radius: 4px;
-}
-body.page-chat .role-vd.speak { color: #d8b84a; background: rgba(201,162,39,0.15); }
-body.page-chat .role-vd.silent { color: #9aa0a6; background: rgba(154,160,166,0.12); }
-body.page-chat .role-vr { flex: 1 1 60%; min-width: 0; line-height: 1.45; word-break: break-word; }
-body.page-chat .role-vt { flex: none; font-size: 10px; color: var(--dimmer, #8a8a8a); }
-body.page-chat .role-alarm {
-  font-size: 12px; padding: 6px 8px; border-radius: 6px;
-  border-left: 3px solid #d8b84a; background: rgba(201,162,39,0.06);
-}
-body.page-chat .role-alarm.warn { border-left-color: #e0a23a; }
-body.page-chat .role-alarm.critical { border-left-color: #d05656; background: rgba(208,86,86,0.08); }
-body.page-chat .role-alarm-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
-body.page-chat .role-alarm-head b { flex-basis: 100%; }
-body.page-chat .role-alarm-head span { font-size: 10px; color: var(--dimmer, #8a8a8a); }
-body.page-chat .role-alarm-head .role-ack {
-  border: 0; background: none; color: var(--dimmer, #8a8a8a);
-  cursor: pointer; font-size: 11px;
-}
-body.page-chat .role-alarm-q { margin-top: 4px; font-weight: 600; color: #d8b84a; }
-body.page-chat .role-alarm-detail { margin-top: 3px; line-height: 1.5; color: var(--dimmer, #b0b0b0); }
-
-body.page-chat .role-create { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 14px; }
-body.page-chat .role-create input,
-body.page-chat .role-create textarea {
-  width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 7px;
-  background: rgba(255,255,255,0.04); color: inherit;
-  border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
-  font-family: inherit; resize: vertical;
-}
-body.page-chat .role-create .btn { align-self: flex-start; }
-
-/* [角色机制 5710 v2] 独立六节 + 生命周期 */
-body.page-chat .role-duty {
-  font-size: 11px; padding: 1px 7px; border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.18); color: var(--dimmer, #9aa0a6);
-}
-body.page-chat .role-duty.active { color: #7fc08a; border-color: rgba(127,192,138,0.45); }
-body.page-chat .role-duty.suspended { color: #e0a23a; border-color: rgba(224,162,58,0.45); }
-body.page-chat .role-duty.archived { color: #9aa0a6; border-color: rgba(154,160,166,0.35); }
-body.page-chat .role-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 4px; }
-body.page-chat .role-actions .btn { font-size: 11px; padding: 3px 8px; }
-body.page-chat .role-sec { margin: 10px 0 4px; }
-body.page-chat .role-sec-title {
-  font-size: 11px; font-weight: 600; letter-spacing: .02em;
-  color: var(--dimmer, #b0b0b0); margin-bottom: 4px;
-}
-body.page-chat .role-sec-title .note { font-weight: 400; color: var(--dimmer, #8a8a8a); margin-left: 4px; }
-body.page-chat .role-domain { font-size: 12px; color: #d8b84a; }
-body.page-chat .role-statement { font-size: 12px; line-height: 1.5; margin-top: 2px; }
-body.page-chat .role-kv { font-size: 12px; line-height: 1.55; color: var(--dimmer, #c0c0c0); }
-body.page-chat .role-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-body.page-chat .role-chip {
-  font-size: 10px; padding: 1px 6px; border-radius: 999px;
-  background: rgba(255,255,255,0.05); color: var(--dimmer, #b0b0b0);
-}
-body.page-chat .role-charter {
-  font-size: 12px; line-height: 1.6; white-space: pre-wrap;
-  padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.03);
-  color: var(--dimmer, #c8c8c8);
-}
-body.page-chat .role-ve { flex-basis: 100%; font-size: 11px; color: var(--dimmer, #8a8a8a); margin-top: 2px; }
-body.page-chat .role-edit { margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.12); }
-body.page-chat .role-input {
-  width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 7px;
-  margin-bottom: 6px; background: rgba(255,255,255,0.04); color: inherit;
-  border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
-  font-family: inherit; resize: vertical;
-}
-body.page-chat .role-create-row { display: flex; gap: 6px; }
-body.page-chat .role-create-row input { flex: 1; min-width: 0; }
-body.page-chat .btn.danger { background: transparent; color: #d05656; border-color: rgba(208,86,86,0.4); }
-body.page-chat .role-alarm-head .role-correct {
-  border: 0; background: none; color: #d05656;
-  cursor: pointer; font-size: 11px;
-}
-
-/* [角色机制 5710 v3] 指令簿：角色 -> 关注卡，必须执行/可验收 */
-body.page-chat .role-directives { display: flex; flex-direction: column; gap: 5px; margin: 4px 0 8px; }
-body.page-chat .role-dir {
-  font-size: 12px; padding: 5px 7px; border-radius: 6px;
-  border-left: 2px solid #7f9fd0; background: rgba(127,159,208,0.06);
-}
-body.page-chat .role-dir.complied { border-left-color: #7fc08a; background: rgba(127,192,138,0.06); }
-body.page-chat .role-dir.rejected { border-left-color: #d05656; background: rgba(208,86,86,0.07); }
-body.page-chat .role-dir.overdue { border-left-color: #e0a23a; background: rgba(224,162,58,0.08); }
-body.page-chat .role-dir.rework { border-left-color: #9aa0a6; opacity: 0.78; }
-body.page-chat .role-dir-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-body.page-chat .role-dir-head b { font-weight: 500; }
-body.page-chat .role-dir-status { font-size: 10px; color: var(--dimmer, #9aa0a6); }
-body.page-chat .role-dir-ts { margin-left: auto; font-size: 10px; color: var(--dimmer, #8a8a8a); }
-body.page-chat .role-dir-body { margin-top: 3px; line-height: 1.5; word-break: break-word; }
-body.page-chat .role-dir-actions { display: flex; gap: 8px; margin-top: 4px; }
-body.page-chat .role-dir-verify {
-  border: 0; background: none; color: var(--dimmer, #b0b0b0);
-  cursor: pointer; font-size: 11px; padding: 0;
-}
-body.page-chat .role-dir-verify[data-status="rejected"] { color: #d05656; }
-body.page-chat .role-dir-new { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
-body.page-chat .role-dir-new .btn { align-self: flex-start; }
