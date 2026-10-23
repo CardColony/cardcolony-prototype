@@ -64,8 +64,8 @@ def batch_bytes(p: Path) -> int:
     return total
 
 
-def collect(root: Path) -> list[tuple[str, Path, int]]:
-    """列出所有**过程批次**（不含日备）：(work_id, 批次目录, 体积)。"""
+def collect(root: Path, include_daily: bool = False) -> list[tuple[str, Path, int]]:
+    """列出待清理的批次：默认**只含过程批次**（不含日备）；``include_daily`` 才把日备也算进来。"""
     out: list[tuple[str, Path, int]] = []
     if not root.exists():
         return out
@@ -73,7 +73,9 @@ def collect(root: Path) -> list[tuple[str, Path, int]]:
         if not work_dir.is_dir() or work_dir.name.startswith("_"):
             continue
         for b in work_dir.iterdir():
-            if not b.is_dir() or b.name.startswith("daily_"):
+            if not b.is_dir():
+                continue
+            if b.name.startswith("daily_") and not include_daily:
                 continue
             out.append((work_dir.name, b, batch_bytes(b)))
     return out
@@ -82,11 +84,13 @@ def collect(root: Path) -> list[tuple[str, Path, int]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="快照库全局清扫（按体积预算删最旧的批次）")
     ap.add_argument("--budget-gb", type=float, default=20.0, help="快照库总预算（GB）")
+    ap.add_argument("--include-daily", action="store_true",
+                    help="也删日备（默认不删：日备是「每天一份」的完整复盘点）")
     ap.add_argument("--apply", action="store_true", help="真删（默认只报告）")
     args = ap.parse_args(argv)
 
     root = data_snapshot.SNAPSHOT_ROOT
-    batches = collect(root)
+    batches = collect(root, include_daily=args.include_daily)
     total = sum(b[2] for b in batches)
     print(f"快照根: {root}")
     print(f"过程批次 {len(batches)} 份，合计 {total/1024**3:.2f} GB（预算 {args.budget_gb:.1f} GB）")
