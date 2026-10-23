@@ -12,12 +12,16 @@
 安全设计：
   - 恢复前先把「当前 works/」整体备份到 D:\\AI_station\\推演agent_backups\\pre_restore_<时间戳>\\
   - 恢复是逐文件 copy2，不做删除（即只补不删；若需删文件请手动）
+  - **例外**：``.db``（卡片库）走 SQLite **backup API** 回写内容，不走 copy2——
+    WAL 模式下 live 库旁的 ``cards.db-wal`` 常被进程占着删不掉，而**删不掉的旧 WAL
+    会把旧数据复活**（文件换成快照内容、一读却是旧值 ⇒ 恢复看着成功、实际没回滚）。
   - 全程不碰 git（正是为了摆脱 git 分支操作的连带伤害）
 """
 from __future__ import annotations
 
 import argparse
 import shutil
+import sqlite3
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -27,6 +31,48 @@ sys.path.insert(0, str(BASE_DIR))
 SNAPSHOT_ROOT = BASE_DIR.parent / "推演agent_data_snapshots"
 BACKUP_ROOT = BASE_DIR.parent / "推演agent_backups"
 _CST = timezone(timedelta(hours=8))
+
+
+def _restore_db(src: Path, dst: Path) -> str | None:
+    """把快照里的 SQLite 库回写进 live 库。
+
+    走 backup API（不是复制文件）：复制文件后，**删不掉的旧 WAL 会把旧数据复活**
+    ⇒ 恢复返回成功、内容却没回滚（静默失败，实测踩过）。
+    返回 ``None``＝成功；返回错误串＝失败（**如实报，不装成功**）。
+    """
+    scon = dcon = None
+    try:
+        scon = sqlite3.connect(str(src))
+        dcon = sqlite3.connect(str(dst), timeout=10.0)
+        dcon.execute("PRAGMA busy_timeout=10000")
+        scon.backup(dcon)
+        # 内容已对齐 ⇒ 旁挂文件只是占地方，删不掉也不影响正确性
+        for suffix in ("-wal", "-shm"):
+            side = dst.with_name(dst.name + suffix)
+            try:
+                if side.exists():
+                    side.unlink()
+            except OSError:
+                pass
+        return None
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+    finally:
+        for con in (scon, dcon):
+            try:
+                if con is not None:
+                    con.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _restore_one(src: Path, dst: Path) -> str | None:
+    """恢复单个文件；``.db`` 走 backup API，其余 copy2。返回错误串或 None。"""
+    if dst.suffix == ".db":
+        return _restore_db(src, dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    return None
 
 
 def _stamp() -> str:
@@ -62,6 +108,7 @@ def restore_batch(work: str, stamp: str) -> dict:
         return {"ok": False, "error": f"快照批次不存在: {src}"}
     bk = backup_current()
     n, skipped = 0, 0
+    errors: list[str] = []
     for p in src.rglob("*"):
         if not p.is_file():
             continue
@@ -70,9 +117,14 @@ def restore_batch(work: str, stamp: str) -> dict:
         if dst.exists():
             skipped += 1
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(p, dst)
+        err = _restore_one(p, dst)
+        if err:
+            errors.append(f"{rel}: {err}")
+            continue
         n += 1
-    return {"ok": True, "files": n, "overwritten": skipped, "backup": str(bk), "from": str(src)}
+    # 失败如实报：恢复没生效就不能说「恢复成功」
+    return {"ok": not errors, "files": n, "overwritten": skipped, "backup": str(bk),
+            "from": str(src), **({"errors": errors} if errors else {})}
 
 
 def restore_file(work: str, stamp: str, rel: str) -> dict:
@@ -85,7 +137,10 @@ def restore_file(work: str, stamp: str, rel: str) -> dict:
     else:
         bk = None
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    err = _restore_one(src, dst)
+    if err:
+        return {"ok": False, "error": f"恢复失败（live 库内容未回滚）: {err}",
+                "to": str(dst), "backup": str(bk) if bk else "（原文件不存在，无需备份）"}
     return {"ok": True, "to": str(dst), "size": dst.stat().st_size,
             "backup": str(bk) if bk else "（原文件不存在，无需备份）"}
 
