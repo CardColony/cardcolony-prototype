@@ -434,3 +434,51 @@ test("reasoning_chunk：主模型思考落本轮流式节点，不串到上一�
   assert.equal(nodes[0].reasoning, undefined, "第一轮不吸收第二轮的思考");
   assert.equal(nodes[1].reasoning, "第二轮的思考");
 });
+
+/* ══════════════ P19 · 轮次出现两次 ══════════════
+ * 实测（work_025/card_054，2026-10-23）：wb_exec 委派路径自己发一条 round_start
+ * （phase=wb_exec，带 executor/model），委派失败回落系统路径又发一条
+ * （phase=main/tools）⇒ 同一轮两条 ⇒ 界面两行「第 N 轮」。
+ * 装配器按 (run_id, round) 给 round_start 稳定键 ⇒ 同轮合流成一行。 */
+
+test("round_start：同一轮的两条（委派＋回落）只成一个节点（轮次不再出现两次）", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("round_start", { round: 1, phase: "wb_exec", executor: "wb-intl", model: "m1" },
+    { run_id: "R", round: 1 }));
+  a.applyRecord(rec("round_start", { round: 1, phase: "tools" }, { run_id: "R", round: 1 }));
+  const nodes = list(a);
+  const rounds = nodes.filter((n) => n.type === "round_start");
+  assert.equal(rounds.length, 1, "同一轮只留一个轮次节点（界面一行「第 N 轮」）");
+  assert.equal(rounds[0].data.phase, "tools", "后到的那条更新数据（回落路径＝实际执行方）");
+  assert.equal(rounds[0].data.executor, "wb-intl", "先到那条的字段不丢");
+});
+
+test("round_start：不同轮 / 不同 run 各自成节点（合流不能跨轮跨 run）", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("round_start", { round: 1, phase: "main" }, { run_id: "R", round: 1 }));
+  a.applyRecord(rec("round_start", { round: 2, phase: "tools" }, { run_id: "R", round: 2 }));
+  a.applyRecord(rec("round_start", { round: 1, phase: "main" }, { run_id: "R2", round: 1 }));
+  const rounds = list(a).filter((n) => n.type === "round_start");
+  assert.equal(rounds.length, 3, "不同轮、不同 run 都不能被合掉");
+});
+
+test("round_start：没有 run_id 的老数据不按轮合流（否则不同 run 的同轮号会被吞）", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord({ seq: 1, round: 1, type: "round_start", data: { round: 1, phase: "main" } });
+  a.applyRecord({ seq: 2, round: 1, type: "round_start", data: { round: 1, phase: "main" } });
+  const rounds = list(a).filter((n) => n.type === "round_start");
+  assert.equal(rounds.length, 2, "无 run_id ⇒ 不合流（宁可多一行，不可吞掉别处的一轮）");
+});
+
+test("round_start：live 与 disk 两条同轮合流（两套数据源也只一行）", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("round_start", { round: 1, phase: "wb_exec" }, { run_id: "R", round: 1, ns: "live" }));
+  a.applyRecord(rec("round_start", { round: 1, phase: "tools" }, { run_id: "R", round: 1, ns: "disk" }));
+  const rounds = list(a).filter((n) => n.type === "round_start");
+  assert.equal(rounds.length, 1, "同一轮的 live/disk 两份只出一个节点");
+});
+
