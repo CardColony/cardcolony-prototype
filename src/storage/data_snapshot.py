@@ -44,8 +44,11 @@ SNAPSHOT_ROOT = (Path(_env_root) if _env_root
 PROTECTED_DIRS = ("works",)
 
 # 保留策略
-KEEP_BATCHES = 200          # 每个 work 保留最近批次数
-KEEP_DAILY_DAYS = 30        # 日备保留天数
+KEEP_BATCHES = 200          # 每个 work 保留最近批次数（过程批次＝只拷可变状态，很小）
+# 〔5715 · 机制改造〕日备是**全量**（含留痕）⇒ 一份就是整个会话的大小
+# （实测那个 22 小时会话：354MB/份）⇒ 留 30 天＝10.6GB/work，太肥。
+# ⇒ 默认只留 **7 天**；更早的完整复盘点靠「周备」或 git 兜底。
+KEEP_DAILY_DAYS = 7         # 日备保留天数
 # [5715 · 治理] 每 work 的快照**体积预算**（字节）。0＝不设闸。
 # 为什么要它：只按份数留 ⇒ 总量 = 200 × 单份体积，而单份体积随会话线性增长
 # （cards.db ＋ events ＋ sessions 全量复制）⇒ **总量无界**。
@@ -83,6 +86,36 @@ def _iter_protected_files() -> list[Path]:
             if p.is_file():
                 out.append(p)
     return out
+
+
+#: 留痕目录名（**只追加**、快照拷它没有意义——它只会越来越长）
+_LOG_DIR_NAMES = ("events", "sessions", "_ops", "memory", "logs")
+
+
+def _is_log_file(p: Path) -> bool:
+    """这个文件是不是「只追加留痕」？
+
+    〔5715 · 机制改造〕原来的快照把**整个会话状态**全量拷一份，其中绝大部分
+    是 events/*.jsonl、sessions/*.md 这类**只追加**的文件——它们不会「变旧」，
+    快照拷它们等于把同一份历史反复抄 N 遍（实测：一份 240MB 的批次里，
+    绝大部分是只追加的留痕；cards.db 才 1MB）。
+
+    ⇒ 过程批次只拷**可变状态**（cards.db 等）；留痕交给**日备**（每天一份全量）。
+    """
+    try:
+        rel = p.relative_to(BASE_DIR)
+    except ValueError:
+        return True
+    return any(part in _LOG_DIR_NAMES for part in rel.parts)
+
+
+def _split_state_and_log(paths: list[Path]) -> tuple[list[Path], list[Path]]:
+    """把受保护文件分成（可变状态, 只追加留痕）。"""
+    state: list[Path] = []
+    log: list[Path] = []
+    for p in paths:
+        (log if _is_log_file(p) else state).append(p)
+    return state, log
 
 
 def _batch_dir(work_id: str, stamp: str) -> Path:
@@ -294,6 +327,7 @@ def _fingerprint(paths: list[Path]) -> str:
     """算一组文件的「内容指纹」：路径 + 大小 + 修改时间。
 
     用途：判断这个 work 自上次快照以来内容有没有变——没变就不必再拍一张。
+    〔5715 · 机制改造〕调用方只传**可变状态**文件 ⇒ 只追加留痕的变化不触发新批次。
     """
     h = hashlib.sha256()
     for p in sorted(paths, key=lambda x: str(x)):
@@ -303,6 +337,46 @@ def _fingerprint(paths: list[Path]) -> str:
         except OSError:
             continue
     return h.hexdigest()
+
+
+#: 进程内记录的「上次拍快照时刻」（work_id → 时间戳）。纯内存，重启后重来。
+_last_snapshot_at: dict[str, float] = {}
+
+#: 过程快照的最小间隔（秒）。默认 30 分钟。
+#: 为什么要间隔：过程快照每 N 分钟才有一份意义（它是「兜底复盘点」，不是
+#: 「每次写的回滚点」——精确回滚用 git 或日备）。没有间隔时，一次连续写操作
+# 会产出几十份几乎相同的副本（实测 22 小时 → 200 份 × 240MB = 48GB）。
+MIN_SNAPSHOT_INTERVAL = 30 * 60
+
+#: 强制拍的理由关键字（不可逆/突变时刻 ⇒ 绕过最小间隔）
+FORCE_REASONS = ("delete", "restore", "finalize", "收口", "删除", "恢复")
+
+
+def _force_snapshot(reason: str) -> bool:
+    r = str(reason or "").lower()
+    return any(k in r for k in FORCE_REASONS)
+
+
+def _interval_elapsed(work_id: str, fps: dict) -> bool:
+    """距上次拍是否已过最小间隔。"""
+    now = time.time()
+    last = _last_snapshot_at.get(work_id)
+    if last is None:
+        last = float(fps.get(f"{work_id}__last_at") or 0)
+    if now - last < MIN_SNAPSHOT_INTERVAL:
+        return False
+    _last_snapshot_at[work_id] = now
+    return True
+
+
+def _write_manifest(batch_dir: Path, payload: dict) -> None:
+    """写批次的 manifest（这批是什么、留痕在哪）——可恢复性的凭据。"""
+    try:
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        (batch_dir / "_manifest.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 manifest 写不了不阻断
+        logger.warning("[snapshot] manifest 写入失败 dir=%s: %s", batch_dir, exc)
 
 
 def _load_fingerprints() -> dict:
@@ -375,15 +449,26 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
         changed = False
         all_failed: list[dict] = []
         for wid, paths in groups.items():
-            fp = _fingerprint(paths)
+            # 〔5715 · 机制改造〕**只按「可变状态」算指纹**：
+            # 只追加的留痕（events/sessions）变了**不触发**新批次
+            # ⇒ 写操作再多，也不会把同一份历史反复抄 N 遍。
+            state_paths, log_paths = _split_state_and_log(paths)
+            fp = _fingerprint(state_paths)
             if fps.get(wid) == fp:
-                logger.info("快照跳过（内容未变）: %s 原因=%s", wid, reason)
+                logger.info("快照跳过（可变状态未变）: %s 原因=%s", wid, reason)
+                continue
+            # 〔5715 · 机制改造〕**最小间隔**：过程快照是「兜底复盘点」，
+            # 不是「每次写的回滚点」（要精确回滚用 git 或日备）⇒ 同一 work 在
+            # 间隔内只拍一份。不可逆/突变时刻（删卡、恢复、收口）**强制拍**。
+            if not _force_snapshot(reason) and not _interval_elapsed(wid, fps):
+                logger.info("快照跳过（未到最小间隔）: %s 原因=%s", wid, reason)
                 continue
             changed = True
             bdir = _batch_dir(wid, stamp)
             # 单文件失败不再中断整批：逐个拷，失败的记账，其余照拷
             failed: list[dict] = []
-            for p in paths:
+            # 〔5715 · 机制改造〕**过程批次只拷可变状态**（留痕交给日备）
+            for p in state_paths:
                 rel = p.relative_to(BASE_DIR)
                 err = _copy_with_lock_retry(p, bdir / rel, wid)
                 if err is None:
@@ -392,7 +477,16 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
                     failed.append(
                         {"work": wid, "file": str(rel), "stage": "batch",
                          "error": err})
-            # 每日首份另存日备（只拷一次，避免膨胀）
+            # 写 manifest：说清这批是什么、留痕在哪（可恢复性的凭据）
+            _write_manifest(bdir, {
+                "mode": "state-only",
+                "created": stamp,
+                "reason": reason,
+                "state_files": [p.relative_to(BASE_DIR).as_posix() for p in state_paths],
+                "omitted_log_files": [p.relative_to(BASE_DIR).as_posix() for p in log_paths],
+                "log_files_note": "只追加留痕未入本批；完整留痕见日备 daily_<日期>",
+            })
+            # 每日首份另存日备（**全量**：含留痕 ⇒ 完整复盘点）
             daily = SNAPSHOT_ROOT / wid / f"daily_{_day_stamp()}"
             if not daily.exists():
                 daily_failed = []
