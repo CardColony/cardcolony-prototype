@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import threading
@@ -31,7 +32,13 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 # 任何在别的目录跑这套代码的实例（如推演agent_test），快照必须落自己的根，
 # 不得写进正式实例的快照库（2026-10-03 实测发现硬编码名导致跨实例污染）。
 # 对正式实例派生结果与原硬编码逐字相同（推演agent → 推演agent_data_snapshots）。
-SNAPSHOT_ROOT = BASE_DIR.parent / f"{BASE_DIR.name}_data_snapshots"
+# [5715 · 治理] 允许**用环境变量把快照库指到别的盘**（如 ECO_SNAPSHOT_ROOT=D:\bigdisk\snapshots）：
+# 派生规则是「实例目录的平级」，所以**实例装在 C 盘时快照就长在 C 盘**——
+# 机制本身不认盘的大小（2026-10-19 WorkBuddy 迁 D 盘时踩过同类坑：
+# 国际版原本在 C 盘真实目录，把 C 盘撑爆）。给一个显式出口，别再靠搬家。
+_env_root = os.environ.get("ECO_SNAPSHOT_ROOT", "").strip()
+SNAPSHOT_ROOT = (Path(_env_root) if _env_root
+                 else BASE_DIR.parent / f"{BASE_DIR.name}_data_snapshots")
 
 # 受保护的数据目录（相对 BASE_DIR）
 PROTECTED_DIRS = ("works",)
@@ -39,6 +46,12 @@ PROTECTED_DIRS = ("works",)
 # 保留策略
 KEEP_BATCHES = 200          # 每个 work 保留最近批次数
 KEEP_DAILY_DAYS = 30        # 日备保留天数
+# [5715 · 治理] 每 work 的快照**体积预算**（字节）。0＝不设闸。
+# 为什么要它：只按份数留 ⇒ 总量 = 200 × 单份体积，而单份体积随会话线性增长
+# （cards.db ＋ events ＋ sessions 全量复制）⇒ **总量无界**。
+# 实测本机快照库 50.8GB（work_018 18.0GB / work_025 29.6GB）——「只计数不计量」
+# 就是没有治理。默认 2GB/work：够回看几天的过程，又不会把盘吃穿。
+KEEP_BATCH_BYTES = 2 * 1024 * 1024 * 1024
 
 # 内容指纹去重：记录各 work 上次快照时的指纹，内容未变则跳过（避免重复拍同一状态）
 _FINGERPRINT_FILE = BASE_DIR / ".snapshot_fingerprints.json"
@@ -200,8 +213,31 @@ def _safe_rmtree(p: Path) -> bool:
         return False
 
 
+def _batch_bytes(p: Path) -> int:
+    """一个批次目录的总体积（字节）。"""
+    total = 0
+    try:
+        for f in p.rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
 def _prune_batches(work_id: str) -> int:
-    """按保留策略清理旧批次；返回删除批次数。"""
+    """按保留策略清理旧批次；返回删除批次数。
+
+    [5715 · 治理] 原来只有**份数**上限（KEEP_BATCHES=200）⇒ 总量 = 200 × 单份体积
+    ⇒ 单份体积随会话线性增长（cards.db ＋ events ＋ sessions 全量复制）⇒
+    **总量无界**：实测本机快照库 50.8GB（work_018 18.0GB / work_025 29.6GB，
+    每份 91.9MB / 151.4MB）⇒ 「只计数不计量」＝ 无治理。
+    ⇒ 追加**体积闸**：每 work 的快照总量超过 KEEP_BATCH_BYTES 就从**最旧**的非日备
+    批次开始删，直到回到预算内（日备是「每天一份」的兜底，不参与这个删法）。
+    """
     wd = SNAPSHOT_ROOT / work_id
     if not wd.exists():
         return 0
@@ -212,6 +248,20 @@ def _prune_batches(work_id: str) -> int:
             if p.name.startswith("daily_"):
                 continue
             if _safe_rmtree(p):
+                removed += 1
+    # [5715 · 治理] 体积闸：总量超预算 ⇒ 从最旧的非日备批次开始删
+    if KEEP_BATCH_BYTES > 0:
+        # 重算（上面可能已删过几份）
+        live = sorted([p for p in wd.iterdir() if p.is_dir()], key=lambda p: p.name)
+        sizes = {p: _batch_bytes(p) for p in live}
+        total = sum(sizes.values())
+        for p in live:
+            if total <= KEEP_BATCH_BYTES:
+                break
+            if p.name.startswith("daily_"):
+                continue          # 日备不参与这个删法
+            if _safe_rmtree(p):
+                total -= sizes.get(p, 0)
                 removed += 1
     # 日备超期清理
     cutoff = datetime.now(_CST).date() - timedelta(days=KEEP_DAILY_DAYS)
