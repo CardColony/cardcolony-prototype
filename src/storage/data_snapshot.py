@@ -53,6 +53,11 @@ KEEP_DAILY_DAYS = 30        # 日备保留天数
 # 就是没有治理。默认 2GB/work：够回看几天的过程，又不会把盘吃穿。
 KEEP_BATCH_BYTES = 2 * 1024 * 1024 * 1024
 
+#: 体积核算的频次（每 N 次修剪才算一次体积）——算体积要遍历批次目录，
+#: 每次快照都算会把快照路径拖慢（实测全量测试 173s → 280s+）。
+VOLUME_PRUNE_EVERY = 16
+_volume_counter = [0]
+
 # 内容指纹去重：记录各 work 上次快照时的指纹，内容未变则跳过（避免重复拍同一状态）
 _FINGERPRINT_FILE = BASE_DIR / ".snapshot_fingerprints.json"
 
@@ -228,7 +233,7 @@ def _batch_bytes(p: Path) -> int:
     return total
 
 
-def _prune_batches(work_id: str) -> int:
+def _prune_batches(work_id: str, force: bool = False) -> int:
     """按保留策略清理旧批次；返回删除批次数。
 
     [5715 · 治理] 原来只有**份数**上限（KEEP_BATCHES=200）⇒ 总量 = 200 × 单份体积
@@ -250,19 +255,26 @@ def _prune_batches(work_id: str) -> int:
             if _safe_rmtree(p):
                 removed += 1
     # [5715 · 治理] 体积闸：总量超预算 ⇒ 从最旧的非日备批次开始删
+    #
+    # ⚠ 算体积要**遍历批次目录**（每个批次里是 cards.db/events/sessions 若干文件）
+    # ⇒ 每次快照都算 ⇒ 快照路径变慢（实测全量测试从 173s 涨到 280s+）。
+    # ⇒ 按频次摊销：每 VOLUME_PRUNE_EVERY 次才做一次体积核算（闸仍有界，只是
+    #    滞后最多 N 个批次——N 很小，磁盘占用不会跑飞）。
     if KEEP_BATCH_BYTES > 0:
-        # 重算（上面可能已删过几份）
-        live = sorted([p for p in wd.iterdir() if p.is_dir()], key=lambda p: p.name)
-        sizes = {p: _batch_bytes(p) for p in live}
-        total = sum(sizes.values())
-        for p in live:
-            if total <= KEEP_BATCH_BYTES:
-                break
-            if p.name.startswith("daily_"):
-                continue          # 日备不参与这个删法
-            if _safe_rmtree(p):
-                total -= sizes.get(p, 0)
-                removed += 1
+        _volume_counter[0] += 1
+        if force or _volume_counter[0] % VOLUME_PRUNE_EVERY == 0:
+            # 重算（上面可能已删过几份）
+            live = sorted([p for p in wd.iterdir() if p.is_dir()], key=lambda p: p.name)
+            sizes = {p: _batch_bytes(p) for p in live}
+            total = sum(sizes.values())
+            for p in live:
+                if total <= KEEP_BATCH_BYTES:
+                    break
+                if p.name.startswith("daily_"):
+                    continue          # 日备不参与这个删法
+                if _safe_rmtree(p):
+                    total -= sizes.get(p, 0)
+                    removed += 1
     # 日备超期清理
     cutoff = datetime.now(_CST).date() - timedelta(days=KEEP_DAILY_DAYS)
     for p in batches:

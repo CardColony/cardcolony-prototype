@@ -51,7 +51,7 @@ def test_snapshot_volume_cap_prunes_oldest_batches(sandbox, monkeypatch, tmp_pat
     _make_batch(root / wid, "20260102_000000_000002", 6 * 1024 * 1024)
     _make_batch(root / wid, "20260103_000000_000003", 6 * 1024 * 1024)   # 最新
 
-    removed = data_snapshot._prune_batches(wid)
+    removed = data_snapshot._prune_batches(wid, force=True)   # force：不等频次，立刻核算体积
     assert removed >= 1, "超预算必须删（原来只按份数 ⇒ 体积无界）"
 
     left = sorted(p.name for p in (root / wid).iterdir() if p.is_dir())
@@ -79,7 +79,7 @@ def test_snapshot_volume_cap_never_deletes_daily_backups(sandbox, monkeypatch, t
     _make_batch(root / wid, f"daily_{today}", 4 * 1024 * 1024)
     _make_batch(root / wid, "20260101_000000_000001", 4 * 1024 * 1024)
 
-    data_snapshot._prune_batches(wid)
+    data_snapshot._prune_batches(wid, force=True)
     left = [p.name for p in (root / wid).iterdir() if p.is_dir()]
     assert f"daily_{today}" in left, "日备不得被体积闸删掉"
     assert "20260101_000000_000001" not in left, "过程批次应被体积闸删掉（超预算）"
