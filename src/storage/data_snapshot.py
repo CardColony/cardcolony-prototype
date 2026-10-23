@@ -286,6 +286,7 @@ def _prune_batches(work_id: str, force: bool = False) -> int:
             if p.name.startswith("daily_"):
                 continue
             if _safe_rmtree(p):
+                _drop_manifest(p)
                 removed += 1
     # [5715 · 治理] 体积闸：总量超预算 ⇒ 从最旧的非日备批次开始删
     #
@@ -306,6 +307,7 @@ def _prune_batches(work_id: str, force: bool = False) -> int:
                 if p.name.startswith("daily_"):
                     continue          # 日备不参与这个删法
                 if _safe_rmtree(p):
+                    _drop_manifest(p)
                     total -= sizes.get(p, 0)
                     removed += 1
     # 日备超期清理
@@ -320,6 +322,15 @@ def _prune_batches(work_id: str, force: bool = False) -> int:
         if d < cutoff:
             if _safe_rmtree(p):
                 removed += 1
+    # 孤儿 manifest 清扫：批次目录没了、manifest 还在（失败批次会留下这种）
+    # ⇒ 顺手带走，免得攒一地孤儿 json。
+    for mf in wd.glob("*.manifest.json"):
+        stem = mf.name[: -len(".manifest.json")]
+        if not (wd / stem).is_dir():
+            try:
+                mf.unlink()
+            except (Exception, SystemExit):  # noqa: BLE001 尽力而为
+                pass
     return removed
 
 
@@ -328,55 +339,69 @@ def _fingerprint(paths: list[Path]) -> str:
 
     用途：判断这个 work 自上次快照以来内容有没有变——没变就不必再拍一张。
     〔5715 · 机制改造〕调用方只传**可变状态**文件 ⇒ 只追加留痕的变化不触发新批次。
+
+    〔5715 · 自我更正〕时间戳用**纳秒**（``st_mtime_ns``）而不是整秒
+    （``int(st_mtime)``）：整秒精度下，**同一秒内的两次改动**（改卡 → 立刻再改）
+    会被判成「没变」⇒ 快照被跳过 ⇒ 那一次改动没有任何恢复点。实测踩中：
+    同一秒内写两遍 cards.db，第二份批次根本没产生。
     """
     h = hashlib.sha256()
     for p in sorted(paths, key=lambda x: str(x)):
         try:
             st = p.stat()
-            h.update(f"{p.relative_to(BASE_DIR)}|{st.st_size}|{int(st.st_mtime)}\n".encode("utf-8"))
+            h.update(
+                f"{p.relative_to(BASE_DIR)}|{st.st_size}|{st.st_mtime_ns}\n".encode("utf-8"))
         except OSError:
             continue
     return h.hexdigest()
 
 
-#: 进程内记录的「上次拍快照时刻」（work_id → 时间戳）。纯内存，重启后重来。
-_last_snapshot_at: dict[str, float] = {}
-
-#: 过程快照的最小间隔（秒）。默认 30 分钟。
-#: 为什么要间隔：过程快照每 N 分钟才有一份意义（它是「兜底复盘点」，不是
-#: 「每次写的回滚点」——精确回滚用 git 或日备）。没有间隔时，一次连续写操作
-# 会产出几十份几乎相同的副本（实测 22 小时 → 200 份 × 240MB = 48GB）。
-MIN_SNAPSHOT_INTERVAL = 30 * 60
-
-#: 强制拍的理由关键字（不可逆/突变时刻 ⇒ 绕过最小间隔）
-FORCE_REASONS = ("delete", "restore", "finalize", "收口", "删除", "恢复")
-
-
-def _force_snapshot(reason: str) -> bool:
-    r = str(reason or "").lower()
-    return any(k in r for k in FORCE_REASONS)
-
-
-def _interval_elapsed(work_id: str, fps: dict) -> bool:
-    """距上次拍是否已过最小间隔。"""
-    now = time.time()
-    last = _last_snapshot_at.get(work_id)
-    if last is None:
-        last = float(fps.get(f"{work_id}__last_at") or 0)
-    if now - last < MIN_SNAPSHOT_INTERVAL:
-        return False
-    _last_snapshot_at[work_id] = now
-    return True
+# ------------------------------------------------------------------ 为什么**没有**最小间隔
+# 〔5715 · 机制改造 · 自我更正〕这里本来有一道「30 分钟最小间隔」（+「删卡/恢复/收口
+# 强制拍」的例外）。**已撤**，三条理由，全部有实测/契约依据：
+#
+# ① 它砍掉了产品里写明的既有契约：
+#    · 「清指纹 ⇒ 本次必须真拍」（tests/test_snapshot_roundtrip.py 的注释原话）；
+#    · 「上批失败 ⇒ 下次必须重试，缺文件的批次不许被当成完整批次而永久跳过」
+#      （tests/test_data_snapshot_lockresilience.py::test_e1）。
+#    间隔闸把这两种情况一律判成 skipped ⇒ 全量跑出 **7 条新红**（已复现并修回）。
+# ② 它是**限量**不是治本：体积的真正来源是「把只追加的留痕反复全量拷」（已用
+#    「过程批次只拷可变状态」治掉：单份 173MB→59MB（work_025）、105MB→12MB
+#    （work_018））。剩下的量级由**份数上限 200** 自然封顶：最重的 work_025
+#    200×59MB=11.7GB、work_018 200×12MB=2.4GB、其余 24 个 work 各 <1GB
+#    ⇒ 全库 ≈15GB（改前实测 49.8GB）。而 D 盘余量 949GB ⇒ **根本用不着限量**。
+# ③ 它给全库挖了 30 分钟**盲窗**：这段时间内的改卡/删卡不在任何过程批次里
+#    （「删卡」能靠 reason 关键字绕开，「改卡」不能），一旦此刻进程挂掉就丢。
+#
+# ⇒ 现在的判据只剩一条：**可变状态的内容指纹没变 ⇒ 不拍**；变了 ⇒ 立刻拍。
 
 
 def _write_manifest(batch_dir: Path, payload: dict) -> None:
-    """写批次的 manifest（这批是什么、留痕在哪）——可恢复性的凭据。"""
+    """写批次的 manifest（这批是什么、留痕在哪）——可恢复性的凭据。
+
+    〔5715 · 自我更正〕manifest **写在批次目录旁边**（``<stamp>.manifest.json``），
+    不写进批次目录里：批次目录的既有契约是「**只装运行数据**（只有 works/…）」——
+    （tests/test_snapshot_roundtrip.py::test_snapshot_restore_roundtrip 断言批次顶层
+    集合恰为 ``{"works"}``）。把 manifest 塞进批次目录会破坏这条契约，也会让
+    ``list_snapshots`` 的「文件数」统计把元数据算成数据。
+    """
     try:
-        batch_dir.mkdir(parents=True, exist_ok=True)
-        (batch_dir / "_manifest.json").write_text(
+        path = batch_dir.with_name(batch_dir.name + ".manifest.json")
+        path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001 manifest 写不了不阻断
         logger.warning("[snapshot] manifest 写入失败 dir=%s: %s", batch_dir, exc)
+
+
+def _drop_manifest(batch_dir: Path) -> None:
+    """删批次时一并删掉旁边的 manifest（否则会攒一地孤儿 json）。"""
+    try:
+        path = batch_dir.with_name(batch_dir.name + ".manifest.json")
+        if path.exists():
+            path.unlink()
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 尽力而为
+        logger.warning("manifest 删除失败（不影响对账）: %s (%s: %s)",
+                       batch_dir, type(exc).__name__, exc)
 
 
 def _load_fingerprints() -> dict:
@@ -456,12 +481,6 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
             fp = _fingerprint(state_paths)
             if fps.get(wid) == fp:
                 logger.info("快照跳过（可变状态未变）: %s 原因=%s", wid, reason)
-                continue
-            # 〔5715 · 机制改造〕**最小间隔**：过程快照是「兜底复盘点」，
-            # 不是「每次写的回滚点」（要精确回滚用 git 或日备）⇒ 同一 work 在
-            # 间隔内只拍一份。不可逆/突变时刻（删卡、恢复、收口）**强制拍**。
-            if not _force_snapshot(reason) and not _interval_elapsed(wid, fps):
-                logger.info("快照跳过（未到最小间隔）: %s 原因=%s", wid, reason)
                 continue
             changed = True
             bdir = _batch_dir(wid, stamp)
@@ -552,6 +571,46 @@ async def snapshot(reason: str = "", work_id: str | None = None) -> bool:
 _snap_tasks: dict[str, "asyncio.Task[None]"] = {}
 _snap_dirty: set[str] = set()
 
+#: 每个 key 上次**拍完**的时刻（``time.monotonic``）。纯内存，重启后重来。
+_snap_last_at: dict[str, float] = {}
+
+#: 后台快照的**合并窗口**（秒）。窗口内的连续写**只拍一份**，且拍的是**最后**那次的态。
+#:
+#: 〔5715 · 自我更正 · 第二次〕这个窗口**必须放在调度层（schedule），不能放 API 层
+#: （snapshot_sync）**：
+#: · API 是「显式调用」⇒ 契约是「调用即执行」（清指纹必须真拍、上批失败下次必须重试）
+#:   —— 这两条契约曾被我塞进 API 的「30 分钟间隔」里砍掉，全量直接多 7 条红。
+#: · 调度层是「跟着写走」⇒ 允许把窗口内的连续写合并成一份，**不丢恢复点**
+#:   （trailing edge：窗口结束时拍的那份装的是最后那次写入后的状态）。
+#:
+#: 为什么必须有窗口（实测）：没有窗口时「每次写都真拍」⇒ 全量测试从 157s 涨到 253s
+#: （一次写 = 拷一份 cards.db ＋ 列目录 ＋ 写指纹 ＋ 修剪），并且会给有时限的用例
+#: （如「建卡即首跑 4 秒内产出」）带来后台抖动。
+SNAPSHOT_COALESCE_SECONDS = int(
+    os.environ.get("ECO_SNAPSHOT_COALESCE_SECONDS") or 30)
+
+#: **强制立刻拍**的理由关键字（不可逆/突变时刻 ⇒ 不等窗口）。
+#: 生产里的 reason 串（card_store / shadow_store / work_store）：
+#:   "[snapshot][work_001] create: card_x"   建卡   → 不强制
+#:   "[snapshot][work_001] update: card_x"   改卡   → 不强制
+#:   "[snapshot][work_001] delete: card_x"   删卡   → **强制**（不可逆）
+#:   "[snapshot][work_001] restore: card_x"  恢复   → **强制**
+#:   "[snapshot][work_001] shadow delete: …" 影子删 → **强制**（含 "delete"）
+FORCE_REASONS = ("delete", "restore", "finalize", "收口", "删除", "恢复")
+
+
+def _force_now(reason: str) -> bool:
+    r = str(reason or "").lower()
+    return any(k in r for k in FORCE_REASONS)
+
+
+def _coalesce_wait(key: str) -> float:
+    """还要等多久才拍（秒）。0＝现在拍。"""
+    last = _snap_last_at.get(key)
+    if last is None:
+        return 0.0          # 第一次：立即拍
+    return max(0.0, SNAPSHOT_COALESCE_SECONDS - (time.monotonic() - last))
+
 
 async def schedule(reason: str = "", work_id: str | None = None) -> None:
     """后台拍快照：**不阻塞调用方**，同 work 合并。
@@ -566,6 +625,8 @@ async def schedule(reason: str = "", work_id: str | None = None) -> None:
       · 立刻返回，快照在后台跑；
       · 同一 work 已有快照在跑 ⇒ 只记一个"脏"标记，跑完再补拍一次
         （连续 10 次写只会产生 2 次快照，而不是 10 次）；
+      · **合并窗口**（默认 30 秒）：窗口内的连续写合并成一份，拍的是**最后**那次的态
+        （trailing edge ⇒ 不丢恢复点）；删卡/恢复/收口**不等窗口，当场拍**；
       · 无运行中的事件循环（同步脚本/测试）⇒ 退回阻塞式，行为可预期。
     """
     try:
@@ -575,6 +636,20 @@ async def schedule(reason: str = "", work_id: str | None = None) -> None:
         return
 
     key = work_id or "*"
+    if _force_now(reason):
+        # 不可逆/突变时刻（删卡、恢复、收口）：**当场拍**，不等合并窗口。
+        # 单独起任务，不打断正在等窗口的那个（醒来后那次会因为指纹相同而自动
+        # 跳过 ⇒ 不会多出一份）。
+        async def _force_run() -> None:
+            try:
+                await snapshot(reason, work_id)
+                _snap_last_at[key] = time.monotonic()
+            except Exception as exc:  # noqa: BLE001 尽力而为
+                logger.warning("强制快照失败（不影响对账）: %s (%s: %s)",
+                               reason, type(exc).__name__, exc)
+        asyncio.create_task(_force_run())
+        return
+
     if key in _snap_tasks:
         _snap_dirty.add(key)
         return
@@ -583,7 +658,13 @@ async def schedule(reason: str = "", work_id: str | None = None) -> None:
         try:
             while True:
                 _snap_dirty.discard(key)
+                wait = _coalesce_wait(key)
+                if wait > 0:
+                    # 合并窗口：等窗口满再拍。窗口里的新写会被并进来 ⇒
+                    # 这一份装的是**最后**那次写入后的状态。
+                    await asyncio.sleep(wait)
                 await snapshot(reason, work_id)
+                _snap_last_at[key] = time.monotonic()
                 if key not in _snap_dirty:
                     break
         finally:
@@ -601,11 +682,43 @@ async def commit(message: str, work_id: str | None = None) -> bool:
     return await snapshot(message, work_id)
 
 
+def _restore_sqlite_content(src: Path, dst: Path) -> str | None:
+    """用 SQLite 的 **backup API** 把快照库的内容写回 live 库。
+
+    〔5715 · 机制改造 · 根因修复〕为什么不能只靠「复制文件 + 删旁挂」：
+
+    · WAL 模式下 live 库旁边有 ``cards.db-wal``/``-shm``；**删不掉**是常态
+      （长活连接还握着它们，Windows 直接 WinError 32「另一个程序正在使用」）。
+    · **删不掉的旧 WAL 会把旧数据复活**：文件已经换成快照内容了，一读却是旧值
+      （实测：``restore_from_snapshot`` 返回 ok=True，内容却没回滚 ⇒ 静默失败）。
+    · backup API 走 SQLite 自己的写事务把快照内容写进 live 库，旧 WAL 帧被新
+      事务覆盖 ⇒ 内容**真的**回到快照态，且不依赖删文件。
+
+    返回 ``None``＝成功；返回错误串＝失败（**不静默装成功**）。
+    """
+    scon = dcon = None
+    try:
+        scon = sqlite3.connect(str(src))
+        dcon = sqlite3.connect(str(dst), timeout=10.0)
+        dcon.execute("PRAGMA busy_timeout=10000")
+        scon.backup(dcon)
+        return None
+    except Exception as exc:  # noqa: BLE001 失败要如实报
+        return f"{type(exc).__name__}: {exc}"
+    finally:
+        for con in (scon, dcon):
+            try:
+                if con is not None:
+                    con.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def restore_from_snapshot(work_id: str, stamp: str, rel_path: str, target: Path | None = None) -> dict:
     """从指定批次恢复单个文件（工具函数，供人工/脚本使用）。
 
-    [卡片存储迁移 SQLite] 恢复 ``*.db`` 时一并清掉旁挂 ``-wal``/``-shm``
-    ——副本内容已含当时提交，留着旧 WAL 会与新库文件错配。
+    [卡片存储迁移 SQLite] 恢复 ``*.db`` 时**用 backup API 回写内容**（不靠删
+    ``-wal``）：旧 WAL 删不掉时会把旧数据复活 ⇒ 恢复看着成功、实际没回滚。
     """
     src = SNAPSHOT_ROOT / work_id / stamp / rel_path
     if not src.exists():
@@ -622,13 +735,20 @@ def restore_from_snapshot(work_id: str, stamp: str, rel_path: str, target: Path 
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     if dst.suffix == ".db":
+        # 内容对齐（真正生效的那一步）：旧 WAL 帧不得把旧数据复活
+        err = _restore_sqlite_content(src, dst)
+        if err:
+            # 不静默装成功：恢复没生效就明说
+            return {"ok": False, "error": f"恢复库内容失败（live 库内容未回滚）: {err}",
+                    "from": str(src), "to": str(dst)}
+        # 内容已对齐后，旁挂文件只是占地方 ⇒ 尽力清（清不掉也不影响正确性）
         for suffix in ("-wal", "-shm"):
             side = dst.with_name(dst.name + suffix)
             try:
                 if side.exists():
                     side.unlink()
             except OSError as exc:  # noqa: BLE001
-                logger.warning("恢复后清理旁挂文件失败（不阻断）%s: %s", side, exc)
+                logger.warning("恢复后清理旁挂文件失败（内容已对齐，不影响）%s: %s", side, exc)
     return {"ok": True, "from": str(src), "to": str(dst), "size": dst.stat().st_size}
 
 
