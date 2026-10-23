@@ -350,6 +350,26 @@ export function createAssembler() {
       ts: String(rec.ts || ""),
     };
 
+    /* [5715 · P19 轮次出现两次] 同一轮的 round_start **只留一个节点**。
+       实测（work_025/card_054，2026-10-23）：wb_exec 委派路径自己发一条 round_start
+       （wb_exec/bridge.py，phase=wb_exec，带 executor/model），委派失败回落系统路径
+       又发一条（phase=main/tools）⇒ **同一轮两条** ⇒ 界面两行「第 N 轮」。
+       这里给 round_start 一个 (run_id, round) 稳定键：同键合流（后到的更新数据、
+       **不新增节点**）⇒ 无论上游发几条、无论新旧历史数据，界面一轮一行。
+       没有 run_id 的老数据**不按轮合流**（否则不同 run 的同轮号会被吞成一条）。 */
+    if (type === "round_start") {
+      const roundNo = toInt(rec.round !== undefined ? rec.round : data.round, 0);
+      const rkey = runId ? "round:" + runId + ":" + roundNo : base.key;
+      const exist = byKey.get(rkey);
+      if (exist) {
+        exist.data = Object.assign({}, exist.data, data);
+        exist.rev++;
+        return exist;
+      }
+      base.key = rkey;
+      return push(Object.assign({}, base));
+    }
+
     if (kind === "user" || kind === "assistant" || kind === "cardmsg") {
       /* [5715] **disk 路径与 live 路径同构**：assistant 节点键一律用
          `stream:{run_id}:{round}`（不再用 `keyOf(ns, seq, kind)`）。
