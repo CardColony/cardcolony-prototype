@@ -157,7 +157,9 @@ def _warn_deprecated_once(key: str, new_key: str) -> None:
 def trigger_k_tokens() -> int:
     """触发线（token）：CONDENSE_TRIGGER_TOKENS 覆盖优先；旧键 CONDENSE_TRIGGER_K 已废弃。
 
-    [2026-10-10 计量口径改 token] 用户 10-07 原话「触发 80 万 token」；旧实现按自造
+    [2026-10-23 用户口径] 触发 **10 万**、单批 **6 万**、只凝 1 批（留 4 万未凝）；
+    计量只看**用户消息＋助手消息**（工具结果不进上下文、也不进凝练）。
+[2026-10-10 计量口径改 token] 用户 10-07 原话「触发 80 万 token」；旧实现按自造
     系数 2.1 折成字节 1,680,000（无出处、且从未触发）。现直接以 _meter_sum 的
     cl100k_base token 数与 800,000 比较，不做任何字节折算。
     """
