@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import json
 import random
+from pathlib import Path
 
 import pytest
 
 from src.api import card_tools
 from src.permissions import policy
 from src.storage import card_store, shadow_store
+
+_REPO = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------- 配置值锁
@@ -42,30 +45,35 @@ _LINKED = {"read_linked", "send_card_message"}
 #: 当全开样本，现在管理卡不再有执行权，就不能再拿它当夹具。
 #: 用 SWITCHES 全集（不属于任何真实卡型），测试意图不变。
 _FULL_SWITCHES: set[str] = set(policy.SWITCHES)
+#: [v14 · 2026-10-24 · 用户裁定「查资料≠动手」] **所有卡型都有 tools_web**
+#: （web_search/fetch_web＝查外部资料）；执行面（tools_file/bash/python/write_file/
+#: invoke_tool）一概不动。⇒ 每行都比 v13 多了 tools_web。
 _EXPECTED: dict[tuple[str, str], set[str]] = {
     ("rd_project", "project"): {
         "read", "edit", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_read_file", "shadow_write"} | _LINKED,
+        "tools_read_file", "tools_web", "shadow_write"} | _LINKED,
     ("rd_project", "sub_project"): {
         "read", "edit", "delete", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_read_file", "shadow_write"} | _LINKED,
+        "tools_read_file", "tools_web", "shadow_write"} | _LINKED,
     ("rd_project", "tool"): {
-        "read", "edit", "delete", "plan", "shadow_write"} | _LINKED,
+        "read", "edit", "delete", "plan", "shadow_write", "tools_web"} | _LINKED,
     ("research_project", "project"): {
         "read", "edit", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_read_file", "shadow_write"} | _LINKED,
+        "tools_read_file", "tools_web", "shadow_write"} | _LINKED,
     ("research_project", "topic"): {
         "read", "edit", "delete", "create_child", "link", "unlink",
         "manuscript", "invoke_tool", "plan",
-        "tools_read_file", "shadow_write"} | _LINKED,
+        "tools_read_file", "tools_web", "shadow_write"} | _LINKED,
 }
 
 
 def test_config_values_locked():
-    """配置值逐项比对（方案 §二.2）；根卡无 delete、tool 无 create_child/文件/联网。"""
+    """配置值逐项比对（方案 §二.2）；根卡无 delete、tool 无 create_child/文件，
+    **但所有卡型都能查资料（tools_web）**——〔v14 · 2026-10-24 用户裁定：
+    「只是不能动手，为啥不能查资料」〕。"""
     for (pc, ct), expected in _EXPECTED.items():
         got = set(policy.perms_for(pc, ct))
         assert got == expected, f"permissions[{pc}][{ct}] = {got} ≠ {expected}"
@@ -76,6 +84,33 @@ def test_config_values_locked():
     assert policy.perms_for("rd_project", "no_such_type") == []
 
 
+def test_every_card_type_can_look_up_materials_but_still_cannot_act():
+    """〔v14 · 2026-10-24 · 用户裁定「查资料≠动手」】
+
+    **所有**卡型都有 ``tools_web``（查外部资料：web_search / fetch_web）；
+    **动手面**（``tools_file`` 带的写文件 / bash / python / write_file、
+    ``invoke_tool`` 调执行体）仍按各行原口径——「不让他动手」与
+    「让他查资料」是**两条独立的闸**，不该绑在一起。
+
+    这条网钉的是**裁定本身**：配置里每行都得有 tools_web；
+    且「能查资料」不得连带把「能动手」也打开。
+    """
+    cfg = json.loads((_REPO / "config" / "permissions.json").read_text(encoding="utf-8"))
+    for pc, types in cfg["permissions"].items():
+        for ct, perms in types.items():
+            assert "tools_web" in perms, f"{pc}/{ct} 应有 tools_web（查资料）"
+            got = set(policy.perms_for(pc, ct))
+            assert got == set(perms), f"{pc}/{ct} 权限与配置不一致：{got} ≠ {set(perms)}"
+    # 动手面没有被顺带放开：bash / python / write_file 都挂 tools_file
+    for pc, ct in (("rd_project", "project"), ("rd_project", "sub_project"),
+                   ("research_project", "project"), ("research_project", "topic"),
+                   ("rd_project", "tool"), ("rd_project", "role"),
+                   ("research_project", "role")):
+        perms = set(policy.perms_for(pc, ct))
+        assert "tools_file" not in perms, (
+            f"{pc}/{ct} 不应有 tools_file（「能查资料」不等于「能动手」）")
+
+
 def test_two_level_lookup_and_switch_vocabulary():
     """两级定位 + 开关词汇表：配置值必须是 SWITCHES 子集；版本号来自配置。"""
     # 根卡与子卡各查各的行
@@ -84,8 +119,10 @@ def test_two_level_lookup_and_switch_vocabulary():
     for switch in policy.perms_for("rd_project", "tool"):
         assert switch in policy.SWITCHES
     assert "create_child" not in policy.perms_for("rd_project", "tool")   # tool 不长树
-    assert "tools_file" not in policy.perms_for("rd_project", "tool")
-    assert "tools_web" not in policy.perms_for("rd_project", "tool")
+    assert "tools_file" not in policy.perms_for("rd_project", "tool")    # tool 不碰文件
+    # 〔v14 · 2026-10-24〕但 tool **能查资料**（tools_web 全卡型都有）——
+    # 「不让他动手」不等于「不让他查资料」。
+    assert "tools_web" in policy.perms_for("rd_project", "tool")
     # 树类开关＝卡片操作五项；read 不在其中 ⇒ 读不受子树限定
     assert policy.TREE_SWITCHES == {"edit", "delete", "link", "unlink", "create_child"}
     assert policy.config_version() >= 1
@@ -118,13 +155,19 @@ def test_v4_tool_class_card_has_no_file_tools():
     create_card / link_cards / manuscript 三件 / run_tool_card），那是
     **工具面只按 file/web 两组过滤**时的旧行为——卡片开关只在执行层拦，
     模型看得见调不动。现已同源：tool 无 create_child/link/unlink/manuscript/
-    invoke_tool/tools_file/tools_web ⇒ 那些工具压根不下发。
+    invoke_tool/tools_file ⇒ 那些工具压根不下发。
+
+    〔v14 · 2026-10-24 · 用户裁定「查资料≠动手」〕**联网两件现在 tool 也看得见**
+    （所有卡型都有 tools_web）——「不让他动手」不该顺带「不让他查资料」；
+    动手面（文件四件/bash/python/write_file）仍然不给。
     """
     cards = {"card_tool_x": _meta("tool")}
     schemas = card_tools.build_tool_schemas("card_tool_x", cards=cards)
     names = {s["name"] for s in schemas}
     assert not names & {"write_file", "read_file", "list_files", "search_files"}
-    assert not names & {"web_search", "fetch_web"}
+    # 〔v14〕查资料：tool 也看得见（v13 之前是「不联网」）
+    assert names >= {"web_search", "fetch_web"}, (
+        f"tool 应能查资料（v14：所有卡型都有 tools_web），实见 {sorted(names)}")
     # tool 有：read / edit / delete / shadow_write / plan / read_linked
     # [卡片底座第一步 2026-10-14] tool 类型 v3 起配了 read_linked ⇒ read_linked 可见
     # [v12 2026-10-22] tool 类型本来就配了 send_card_message（v3 起），只是以前
@@ -135,7 +178,7 @@ def test_v4_tool_class_card_has_no_file_tools():
     # 依据 D04「执行权与组织权分离」：组织权只在 project/sub_project/role 手上。
     expect = {"read_card", "read_memory", "edit_card",
               "delete_card", "update_shadow", "read_shadow", "read_linked",
-              "send_card_message"}
+              "send_card_message", "web_search", "fetch_web"}
     # [口径解耦 2026-10-17] 计划六件随 thinkchain 开关（纯单模型模式下不注册）
     if __import__("src.thinkchain", fromlist=["enabled"]).enabled():
         expect |= {"create_plan", "plan_reorder", "plan_insert",
@@ -198,8 +241,11 @@ def test_v4_positive_control_registered_types_see_all():
     # [执行权集中 2026-10-21] 管理卡（project / sub_project / topic）
     # 不再看到写与执行类工具，但**仍看得到只读类**——「看得见、不动手」。
     # 直接断言这条契约，而不是数工具总数（数总数会把工具增删也当成契约变化）。
+    # 〔v14 · 2026-10-24〕web_search/fetch_web **从执行类里挪出**：它们是
+    # 「查资料」（只读检索），所有卡型都有 tools_web ⇒ 管理卡看得见；
+    # 动手面（文件写/改/删、bash、python）仍然不给。
     SELF_EXEC_TOOLS = {"write_file", "edit_file", "move_file", "rename_file",
-                       "delete_file", "bash", "python", "web_search", "fetch_web"}
+                       "delete_file", "bash", "python"}
     READONLY_TOOLS = {"read_file", "list_files", "search_files", "glob_files"}
     for pc, ct in (("rd_project", "sub_project"),
                    ("research_project", "topic"),
@@ -210,6 +256,10 @@ def test_v4_positive_control_registered_types_see_all():
         assert not bad, f"{pc}/{ct} 不应看到执行类工具，却看到 {sorted(bad)}"
         assert READONLY_TOOLS <= names, (
             f"{pc}/{ct} 应能看到只读文件工具，缺 {sorted(READONLY_TOOLS - names)}")
+        # 〔v14〕查资料：管理卡也看得见（v13 之前 root/sub_project/topic 没有 tools_web）
+        assert {"web_search", "fetch_web"} <= names, (
+            f"{pc}/{ct} 应能查资料（v14：所有卡型都有 tools_web），缺 "
+            f"{sorted({'web_search', 'fetch_web'} - names)}")
         assert "create_card" in names and "set_child_mission" in names, (
             f"{pc}/{ct} 必须能建卡并立使命")
         if ct == "project":

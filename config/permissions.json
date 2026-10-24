@@ -18,10 +18,11 @@
       "[v10 · 2026-10-22 · 用户实测「根卡不能连线自己的角色卡」] role 补 link/unlink。理由：role 有 send_card_message 却没有 link，而发消息前置是「已有线 OR 互为祖先-后代」；角色卡离树(parent=\"\")永远不可能是祖先/后代 ⇒ 只能靠线，没 link 就建不了线 ⇒ 谁都连不上它、它也发不出任何消息。判据：离树的卡必须有 link。",
       "[v11 · 2026-10-22 · 用户需求] role 补 create_child。用户：「角色卡可以在整个树内任意位置挂载它觉得需要的卡片来执行它布置的任务」。原配置没有 create_child ⇒ 角色卡建不出任何卡，这条需求做不到。配套改动：card_tools._org_scope_allows —— 离树角色卡的组织权作用域＝本项目整棵树（不含根卡）。**仍不给**：tools_file/tools_web（执行权）、delete（破坏性）、bash/python（执行）。角色不干活，但要能组队。",
       "[v12 · 2026-10-22 · 用户裁定「coder 至少能给自己的父卡发信，这根本不合理」] coder 补 send_card_message。v4 的原意是「完工回执不要模型自己发」（由 report_done 系统发），执行成了「整类卡不给发信」——于是 coder 干到一半卡住（需求不清、要主卡拍板、发现做错）时**说不了话**，只能硬做完或干等。回执仍走 report_done 系统通道（require_switch=False），本条只补「中途能问」这一条路。",
-      "[v13 · 2026-10-22 · 用户裁定 A：职能＝cards 表里有一行、但呈现层不露面的实体] 新增 function 类型行，权限同 project（职能是管理者：读卡/沿连线读/发信/建卡派活/连线/调工具/查资料/计划/写自己影子）。为什么必须有一行：perms 分权、build_ctx 上下文装配、_run_message 回合、create_card、spawn 巡检全部按 card_id 焊死；把职能踢出 cards 表＝一次性踢出这一切（实测 fn 只能看 146 字、跑不了回合）。呈现层（画布/卡树/统计）按 card_type='function' 过滤，不进交付树。"
+      "[v13 · 2026-10-22 · 用户裁定 A：职能＝cards 表里有一行、但呈现层不露面的实体] 新增 function 类型行，权限同 project（职能是管理者：读卡/沿连线读/发信/建卡派活/连线/调工具/查资料/计划/写自己影子）。为什么必须有一行：perms 分权、build_ctx 上下文装配、_run_message 回合、create_card、spawn 巡检全部按 card_id 焊死；把职能踢出 cards 表＝一次性踢出这一切（实测 fn 只能看 146 字、跑不了回合）。呈现层（画布/卡树/统计）按 card_type='function' 过滤，不进交付树。",
+      "[v14 · 2026-10-24 · 用户裁定「根卡和子卡只是不能动手，为啥不能查资料，给所有可以查资料的工具」] **所有卡型一律开 tools_web**（web_search/fetch_web＝查外部资料）。「查资料」与「动手」是**两码事**：tools_web 只管这两件只读检索工具，不含任何执行面（tools_file 的读写文件、bash/python、write_file、invoke_tool 一概不动）——所以「不让他动手」不该顺带「不让他查资料」。v2 那句「tool 卡…不联网」与 v4 只给 coder 开 tools_web 的旧口径，在「查资料≠动手」这个区分下不再成立，故全开。改动后须跑 scripts/refresh_perms.py 把 perms_version 落后的卡刷齐（否则存量卡看不到新工具）。"
     ]
   },
-  "version": 13,
+  "version": 14,
   "permissions": {
     "rd_project": {
       "project": [
@@ -36,7 +37,8 @@
         "plan",
         "shadow_write",
         "read_linked",
-        "send_card_message"
+        "send_card_message",
+        "tools_web"
       ],
       "sub_project": [
         "read",
@@ -51,7 +53,8 @@
         "plan",
         "shadow_write",
         "read_linked",
-        "send_card_message"
+        "send_card_message",
+        "tools_web"
       ],
       "tool": [
         "read",
@@ -60,7 +63,8 @@
         "plan",
         "shadow_write",
         "read_linked",
-        "send_card_message"
+        "send_card_message",
+        "tools_web"
       ],
       "coder": [
         "read",
@@ -75,7 +79,8 @@
         "send_card_message"
       ],
       "rule": [
-        "read"
+        "read",
+        "tools_web"
       ],
       "role": [
         "read",
@@ -86,7 +91,8 @@
         "shadow_write",
         "link",
         "unlink",
-        "create_child"
+        "create_child",
+        "tools_web"
       ],
       "function": [
         "read",
@@ -100,7 +106,8 @@
         "plan",
         "shadow_write",
         "read_linked",
-        "send_card_message"
+        "send_card_message",
+        "tools_web"
       ]
     },
     "research_project": {
@@ -116,7 +123,8 @@
         "plan",
         "shadow_write",
         "read_linked",
-        "send_card_message"
+        "send_card_message",
+        "tools_web"
       ],
       "topic": [
         "read",
@@ -131,10 +139,12 @@
         "plan",
         "shadow_write",
         "read_linked",
-        "send_card_message"
+        "send_card_message",
+        "tools_web"
       ],
       "rule": [
-        "read"
+        "read",
+        "tools_web"
       ],
       "role": [
         "read",
@@ -145,7 +155,8 @@
         "shadow_write",
         "link",
         "unlink",
-        "create_child"
+        "create_child",
+        "tools_web"
       ],
       "function": [
         "read",
@@ -159,7 +170,8 @@
         "plan",
         "shadow_write",
         "read_linked",
-        "send_card_message"
+        "send_card_message",
+        "tools_web"
       ]
     }
   }

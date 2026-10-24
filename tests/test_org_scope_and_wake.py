@@ -23,7 +23,9 @@
 **反例**：不能因此放大权限——
    · 角色卡动不了根卡（根卡是项目身份）
    · 兄弟卡之间不能互相唤醒
-   · role 仍不得有执行权（tools_file / tools_web / delete / plan）
+   · role 仍不得有**执行权**（tools_file / delete / plan / invoke_tool）
+     〔v14 · 2026-10-24〕**tools_web 除外**——用户裁定「查资料≠动手」，
+     所有卡型（含 role）都能查外部资料。
 """
 from __future__ import annotations
 
@@ -40,14 +42,20 @@ from src.storage import card_store, work_store
 
 
 def test_role_can_create_child_but_still_no_exec():
-    """role 有 create_child（要能组队），但**不得**有执行权。"""
+    """role 有 create_child（要能组队），但**不得**有执行权。
+
+    〔v14 · 2026-10-24 · 用户裁定「查资料≠动手」〕**tools_web 给了**（查外部资料，
+    只读检索，无执行面）；执行权仍然不给——角色不干活。
+    """
     perms, _ = policy.compute_perms("rd_project", "role")
     assert "create_child" in perms, (
         "role 缺 create_child：用户要求「角色卡能挂载它需要的卡片」，"
         "没有这个权限它一张卡都建不出来")
-    # 执行权仍然不给——角色不干活
-    for f in ("tools_file", "tools_web", "delete", "invoke_tool", "plan"):
+    # 执行权仍然不给——角色不干活（tools_web 是「查资料」，不是执行权）
+    for f in ("tools_file", "delete", "invoke_tool", "plan"):
         assert f not in perms, f"role 不应有 {f}（那是执行权/破坏性动作）"
+    # 但能查资料（v14：所有卡型一律有 tools_web）
+    assert "tools_web" in perms, "role 应有 tools_web（查资料≠动手）"
     # 组织权要给全
     for f in ("link", "unlink", "edit", "read", "send_card_message"):
         assert f in perms, f"role 应有 {f}"
