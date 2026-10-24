@@ -329,12 +329,16 @@ def test_tool_card_toolface_matches_its_perms():
     # 见 tests/test_reparent_card.py::test_toolface_only_for_types_that_can_have_children。
     # [2026-10-22] tool 的 perms 自 v3 起就含 send_card_message，本期望此前漏了它。
     # wake_card 不在：它挂 CREATE_CHILD，tool 没有该开关（唤醒是组织动作，见 D04）。
+    # [v14 · 2026-10-24 · 用户裁定「查资料≠动手」] tool 现在也有 tools_web
+    # ⇒ 查资料两件（web_search/fetch_web）在分类层镜头里可见；
+    # **动手面一件没多**（文件四件/bash/python 仍不在）。
     assert _visible(card) == {"read_card", "read_memory", "read_shadow",
                               "read_linked", "draft_rule_edit", "list_functions",
                               "edit_card", "delete_card", "update_shadow",
                               "send_card_message", "reparent_card",
                               "create_plan", "plan_reorder", "plan_insert",
-                              "plan_remove", "plan_modify", "step_complete"}
+                              "plan_remove", "plan_modify", "step_complete",
+                              "web_search", "fetch_web"}
     # [编程卡 2026-10-15 · C2 裁定] search 回归词表＝**预留机关**（coder 行占位码；
     # 仍无独立 search 工具、搜索由 web_search/fetch_web 承担，暂无消费方——
     # 配了不等于能用）。断言意图由「已删」随裁定翻新为「在册为预留」。

@@ -107,8 +107,11 @@ def test_rule_section_names_six_sections():
 
 
 def test_rule_perms_read_only():
-    assert perms_for("rd_project", "rule") == ["read"]
-    assert perms_for("research_project", "rule") == ["read"]
+    """〔v14 · 2026-10-24〕规则卡模型侧**只读**——但「只读」不等于「不能查资料」：
+    tools_web（web_search/fetch_web）是只读检索，仍归所有卡型。
+    """
+    assert set(perms_for("rd_project", "rule")) == {"read", "tools_web"}
+    assert set(perms_for("research_project", "rule")) == {"read", "tools_web"}
 
 
 def test_render_rule_region_three_states():
@@ -323,14 +326,19 @@ async def test_draft_rule_edit_toolface_root_only(sandbox):
 
 
 async def test_rule_card_toolface_no_write_tools(sandbox):
-    """rule 卡模型面只有 read 挂钩三件，无任何写工具、无 draft_rule_edit。"""
+    """rule 卡模型面只有 read 挂钩三件 ＋ **查资料两件**（v14），无任何写工具、无 draft_rule_edit。
+
+    〔v14 · 2026-10-24 · 用户裁定「查资料≠动手」〕规则卡也拿到 tools_web
+    ⇒ 工具面多 web_search/fetch_web；**写工具仍然一件没有**（下面的 writable 断言守住）。
+    """
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
     rc = await _mk_rule_card(wid)
     cards = card_tools._collect_card_meta(wid)
     face = {t["name"] for t in
             card_tools.build_tool_schemas(rc, work_id=wid, cards=cards)}
-    assert face == {"read_card", "read_memory", "read_shadow"}, face
+    assert face == {"read_card", "read_memory", "read_shadow",
+                    "web_search", "fetch_web"}, face
     writable = {n for n in face if not card_tools.TOOL_REGISTRY[n].readonly}
     assert not writable, writable
 

@@ -128,7 +128,8 @@ async def test_dry_run_does_not_touch_db(perm_registry):
     assert item["auto_mode"] == 1
     assert "tools_file" in item["removed"]
     assert "tools_bash" in item["removed"]
-    assert "tools_web" in item["removed"]
+    # 〔v14 · 2026-10-24〕tools_web 不再被移除（所有卡型都有：查资料）
+    assert "tools_web" not in item["removed"]
     assert "tools_read_file" in item["added"]
     assert report["applied"] == 0
 
@@ -160,7 +161,9 @@ async def test_apply_recomputes_perms_and_preserves_other_fields(perm_registry):
     assert set(after_perms) == target
     assert "tools_file" not in after_perms
     assert "tools_bash" not in after_perms
-    assert "tools_web" not in after_perms
+    # 〔v14 · 2026-10-24〕tools_web **不再被回填移除**——所有卡型都有（查资料）；
+    # 被回填收走的仍是**动手面**（tools_file / tools_bash）。
+    assert "tools_web" in after_perms
     assert "tools_read_file" in after_perms
     assert after["perms_version"] == policy.config_version()
 

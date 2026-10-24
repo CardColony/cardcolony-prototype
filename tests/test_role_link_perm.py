@@ -50,11 +50,17 @@ def test_role_has_link_and_unlink():
 
 
 def test_role_still_has_no_exec_rights():
-    """补 link 是补组织权，不是补执行权——role 仍不得有写文件/执行/建卡能力。"""
+    """补 link 是补组织权，不是补执行权——role 仍不得有写文件/执行/建卡能力。
+
+    〔v14 · 2026-10-24 · 用户裁定「查资料≠动手」〕**tools_web 给了**（查外部资料，
+    只读检索、无执行面）；执行权仍然不给——角色不干活。
+    """
     perms, _ = policy.compute_perms("rd_project", "role")
-    forbidden = ("tools_file", "tools_web", "delete", "invoke_tool", "plan")
+    forbidden = ("tools_file", "delete", "invoke_tool", "plan")
     for f in forbidden:
         assert f not in perms, f"role 不应有 {f}（那是执行权/破坏性动作）"
+    # 查资料：所有卡型都有（v14）
+    assert "tools_web" in perms, "role 应有 tools_web（查资料≠动手）"
     # [2026-10-22 · 用户需求] 组织权要给全——包括建卡（挂载执行单元）
     for f in ("link", "unlink", "create_child", "send_card_message"):
         assert f in perms, f"role 应有 {f}（组织权）"
