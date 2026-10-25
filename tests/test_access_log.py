@@ -157,12 +157,68 @@ async def test_l4_logging_failure_never_breaks_the_request(sandbox, monkeypatch,
         assert r2.status_code == 200, "日志写失败不该让上报端点失败"
 
 
+async def test_l6_concurrent_appends_do_not_corrupt_lines(sandbox, monkeypatch, tmp_path):
+    """L6：并发写**不许写坏行**（机器读不了日志比没日志更糟）。
+
+    实测：596 行的访问日志里坏过 1 行——两个线程同时 append 交错写坏了。
+    ⇒ 「开文件→写一行→关文件」必须整体在写锁内。
+    """
+    import threading
+
+    from src.api import access_log
+
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(access_log, "LOG_DIR", log_dir)
+
+    n_threads = 8
+    per_thread = 40
+    barrier = threading.Barrier(n_threads)
+
+    def _worker(tid: int) -> None:
+        barrier.wait()
+        for i in range(per_thread):
+            access_log.append_jsonl("stress.jsonl", {
+                "t": tid, "i": i, "pad": "x" * 200,
+            })
+
+    ts = [threading.Thread(target=_worker, args=(i,)) for i in range(n_threads)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    path = log_dir / "stress.jsonl"
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == n_threads * per_thread, \
+        f"行数不对：{len(lines)}（应为 {n_threads * per_thread}）"
+    bad = 0
+    for ln in lines:
+        try:
+            json.loads(ln)
+        except Exception:
+            bad += 1
+    assert bad == 0, f"有 {bad} 行写坏了（并发 append 交错）"
+
+
 async def test_l5_logging_does_not_block_the_event_loop(sandbox, monkeypatch, tmp_path):
-    """L5：写日志走线程池（同步写文件会堵事件循环 ⇒ 整个服务卡住）。"""
+    """L5：写日志**不许堵事件循环**（同步写文件会卡住整个服务）。
+
+    机制不写死：早年是 `asyncio.to_thread`，现在是**专用**线程池
+    （默认池会被业务占满 ⇒ 实测一次客户端错误上报被拖到 6333ms）。
+    判据是「写盘发生在**别的线程**里」＋「async 路径不直接调 append_jsonl」。
+    """
     import inspect
 
     from src.api import access_log
 
-    src = inspect.getsource(access_log.install_access_log)
-    assert "asyncio.to_thread" in src, \
-        "写日志必须走 asyncio.to_thread（同步写文件会堵死事件循环——那正是本轮治的病）"
+    mid = inspect.getsource(access_log.install_access_log)
+    assert "append_jsonl(" not in mid, \
+        "async 中间件里不许直接调 append_jsonl（那是同步写盘 ⇒ 堵死事件循环）"
+
+    wl = inspect.getsource(access_log.write_log)
+    assert ("wrap_future" in wl or "run_in_executor" in wl) and "submit(" in wl, \
+        "写日志必须交给**另一个线程**执行（不许在事件循环里同步写盘）"
+
+    # 专用执行器：日志不排在业务线程池后面
+    ex = getattr(access_log, "_LOG_EXECUTOR", None)
+    assert ex is not None, "日志应有**专用**执行器（共用默认池 ⇒ 被业务占满时日志排队）"

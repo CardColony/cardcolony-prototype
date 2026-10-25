@@ -31,7 +31,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,16 @@ _SKIP_PREFIX = ("/static/", "/favicon")
 
 #: SSE 长连接端点（耗时是「开着多久」而不是「处理多久」⇒ 单独标记）。
 _SSE_MARKERS = ("/stream", "/tokens", "/events")
+
+#: 写日志的**专用**单线程执行器（2026-10-25）。
+#: 为什么不共用默认线程池：默认池会被业务占满（实测 `/api/nav/version` 一次并发
+#: 35 个指纹任务，SQLite 开库又可能等锁 ⇒ 整池被占）⇒ 日志写入排在后面，
+#: 一次客户端错误上报被拖到 **6333ms**（访问日志实测）。
+#: ⇒ 日志自己占一个线程：① 永远不等业务；② 单写者 ⇒ 天然不交错。
+_LOG_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="access-log")
+
+#: 进程内写锁（跨线程 append 交错会写坏行——实测 596 行里坏过 1 行）。
+_WRITE_LOCK = threading.Lock()
 
 
 def _now_iso() -> str:
@@ -72,13 +84,26 @@ def _rotate_if_needed(path: Path) -> None:
 
 
 def append_jsonl(name: str, rec: dict[str, Any]) -> None:
-    """追加一条 JSONL 记录（**同步**；调用方负责放到线程里跑）。"""
+    """追加一条 JSONL 记录（**同步**；调用方负责放到线程里跑）。
+
+    整个「开文件→写一行→关文件」在**写锁内**完成：并发 append 会交错写坏行
+    （实测 596 行里坏过 1 行，机器读不了）。
+    """
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        path = LOG_DIR / name
-        _rotate_if_needed(path)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with _WRITE_LOCK:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            path = LOG_DIR / name
+            _rotate_if_needed(path)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 日志失败绝不影响主流程
+        pass
+
+
+async def write_log(name: str, rec: dict[str, Any]) -> None:
+    """把一条日志写出去（**走专用线程**，不排在业务的默认线程池后面）。"""
+    try:
+        await asyncio.wrap_future(_LOG_EXECUTOR.submit(append_jsonl, name, rec))
     except Exception:  # noqa: BLE001 日志失败绝不影响主流程
         pass
 
@@ -96,6 +121,13 @@ def log_client_error(rec: dict[str, Any]) -> None:
         append_jsonl("client_errors.jsonl", out)
     except Exception:  # noqa: BLE001 日志失败绝不影响主流程
         pass
+
+
+async def write_client_error(rec: dict[str, Any]) -> None:
+    """客户端错误落盘（**走专用线程**：不等业务线程池——实测被拖到 6333ms）。"""
+    out = {"ts": _now_iso()}
+    out.update(rec)
+    await write_log("client_errors.jsonl", out)
 
 
 def install_access_log(app: FastAPI) -> None:
@@ -133,7 +165,6 @@ def install_access_log(app: FastAPI) -> None:
             }
             if err:
                 rec["err"] = err[:400]
-            try:
-                await asyncio.to_thread(append_jsonl, "access_log.jsonl", rec)
-            except Exception:  # noqa: BLE001
-                pass
+            # 走**专用**写线程（不用默认池：默认池会被业务占满 ⇒ 日志排队 ⇒
+            # 实测一次客户端错误上报被拖到 6333ms）
+            await write_log("access_log.jsonl", rec)
