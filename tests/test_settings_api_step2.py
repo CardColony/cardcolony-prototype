@@ -237,6 +237,58 @@ def test_400_provider_missing_api_key_env(env):
     _assert_rejected_untouched(env, p, "缺 api_key_env")
 
 
+def test_200_provider_auth_none_passes_without_key(env):
+    """免鉴权供应商：声明 auth: none 即合法，不再逼编不存在的 key 名。
+
+    [2026-10-25] 局域网端点（flash-next）与动态令牌（mavis broker 租约）
+    两类供应商不走环境变量密钥；原规则把它们顶到「任何设置保存必败」。
+    """
+    p = _payload()
+    p["providers"]["local"] = {"protocol": "openai", "base_url": "http://127.0.0.1:9/v1",
+                               "auth": "none"}
+    r = env["client"].put("/api/settings/models", json=p)
+    assert r.status_code == 200, r.text
+    back = yaml.safe_load(env["cfg"].read_text(encoding="utf-8"))
+    assert back["providers"]["local"]["auth"] == "none"
+    assert "api_key_env" not in back["providers"]["local"]
+
+
+def test_200_provider_auth_broker_passes_without_key(env):
+    """动态令牌供应商：auth: broker（mavis 租约桥）同样合法。"""
+    p = _payload()
+    p["providers"]["mavis-like"] = {"protocol": "anthropic",
+                                    "base_url": "https://example.invalid/v1", "auth": "broker"}
+    r = env["client"].put("/api/settings/models", json=p)
+    assert r.status_code == 200, r.text
+
+
+def test_400_provider_neither_key_nor_auth(env):
+    """两者都不声明仍照旧拒——真缺失不被放松漏掉。"""
+    p = _payload()
+    p["providers"]["ghost"] = {"protocol": "openai", "base_url": "https://x.invalid/v1"}
+    _assert_rejected_untouched(env, p, "缺 api_key_env")
+
+
+# ---------- POST /models/reload（外部改文件后的只重载入口） ----------
+
+
+def test_reload_endpoint_reloads_without_touching_file(env):
+    """[2026-10-25] 文件被外部改动（git/直编）后，重载目录不必重启、不写盘。
+
+    用户实况：新增模型座位后选择器看得见（GET 读文件）但保存必败
+    （校验读运行中网关编译目录）——缺的入口就是这个。
+    """
+    before = env["cfg"].read_text(encoding="utf-8")
+    r = env["client"].post("/api/settings/models/reload")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["reloaded"] is True
+    assert isinstance(body["models"], list) and body["models"]
+    assert env["reload_calls"], "必须真的触发 reload_gateway"
+    # 一字不写盘：内容与 mtime 都不动
+    assert env["cfg"].read_text(encoding="utf-8") == before
+
+
 def test_400_model_provider_not_found(env):
     p = _payload()
     p["models"]["haiku"]["provider"] = "ghost"

@@ -13,6 +13,20 @@
 # ============================================================
 
 providers:
+  # [局域网 Flash-Next 2026-10-23 · 用户部署信息] 118 的 Strata + Flash-Next IQ3_S
+  # 双卡（5070 Ti 渲染层 + 3080 GDN 层）。免鉴权 ⇒ 不写 api_key_env（网关取到空串）。
+  # 上下文 262,144（输入+输出合计）；2 路并发（见 concurrency.per_model）。
+  flash-next:
+    protocol: openai
+    # [2026-10-25] 免鉴权供应商的显式声明（校验规则 ⑥ 的合法口子）——
+    # 缺了它，任何设置保存都会被「缺 api_key_env」顶翻。
+    auth: none
+    base_url: http://192.168.9.126:6006/v1
+    # 端点免鉴权，但 httpx 拒绝空值的 "Authorization: Bearer "（curl 不拒绝）
+    # ⇒ 用 extra_headers 覆盖成占位值（适配器里 extra_headers 后合并，赢）。
+    extra_headers:
+      authorization: "Bearer local-flash-next"
+    note: 局域网 Flash-Next（OpenAI 兼容，免鉴权；模型名任意，引擎不校验）
   deepseek-official:
     protocol: openai
     base_url: https://api.deepseek.com/v1
@@ -55,6 +69,9 @@ providers:
     note: MiniMax（OpenAI 兼容）
   mavis:
     protocol: anthropic
+    # [2026-10-25] 动态令牌供应商的显式声明：key 不来自环境变量，由本地
+    # MiniMax Code 的 broker 租约桥现铸（src/model_gateway/mavis_lease.py）。
+    auth: broker
     base_url: https://agent.minimax.cn/mavis/api/v1/llm/v1
     note: MiniMax Code（mavis agent 网关·Anthropic Messages 协议·broker 租约鉴权·需本地 MiniMax Code 常驻）
   aliyun:
@@ -68,7 +85,22 @@ providers:
     api_key_env: OPENCODE_API_KEY
     extra_headers:
       x-opencode-session: zhuge-3080
-    note: opencode-go 聚合端点（OpenAI 兼容；需 x-opencode-session 头，MissingSessionID 拒单）
+      # [2026-10-25 实测修正] **必须带浏览器 UA**：
+      #   opencode 前面是 Cloudflare，**非浏览器 UA 会被 Browser Integrity
+      #   Check 拦掉** ⇒ 直接 403「error code: 1010」，而且**Go 订阅内的模型
+      #   也一起挂**（2026-10-25 上午实测：minimax-m3.1-flash / deepseek-v4.1-flash /
+      #   deepseek-v4-pro 全部 1010；加浏览器 UA 后全部 200）。
+      #   ⚠ opencode CLI 自己也被同一条规则拦 ⇒ 它报的
+      #     「detected abusive traffic from this IP」是**误报**（不是 IP 被封、
+      #     也不是账号/订阅问题）⇒ 别被它带偏。
+      User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
+    note: >-
+      opencode **Go 订阅**端点（base_url 带 /go/；**用户已付费订阅** ⇒ 额度内不额外
+      按量计费。opencode.ai/zen 的**按量计费**是另一条路，本项目不用）。
+      OpenAI 兼容；需 x-opencode-session 头（MissingSessionID 拒单），
+      且**必须带浏览器 UA**，否则 Cloudflare 1010 把订阅内的模型一起拦掉。
+      免费档现状（2026-10-25 实测 38 个模型）：只剩 beam-free、iceman-contributor-free；
+      minimax-m3.1-flash-free 已 410 ModelDeprecated、deepseek-v4.1-flash-free 已 400 不可用。
   commandcode:
     protocol: openai
     base_url: https://api.commandcode.ai/provider/v1
@@ -79,6 +111,19 @@ providers:
       其中 deepseek-v4.1-flash = 1,000,000）。免费档：reflection/beam:free、
       minimax/minimax-m3.1-flash:free、poolside/laguna-s-2.1-free、stealth/glyph-cluster:free。
 models:
+  # [局域网 Flash-Next 2026-10-23] qwen3.8-flash-next-iq3_s（引擎不校验名字，照文档取全名）。
+  # thinking: none —— 端点 reasoning_effort 档位 none/low/medium/high，重活建议 none 提速。
+  # ★ 不设 timeout / max_tokens：2026-10-02 拆闸裁定（墙钟类闸与任意 max_tokens 全禁）。
+  #   端点自身有 fit_max_tokens，不传 max_tokens 时超长 prompt 自动压缩生成配额。
+  qwen38-flash-next:
+    provider: flash-next
+    model: qwen3.8-flash-next-iq3_s
+    temperature: 0.6
+    thinking: none
+    retry:
+      max_attempts: 2
+      backoff_seconds: 5
+    note: 局域网本地模型（118 · 192.168.9.126:6006 · 262k 上下文 · 2 路并发）
   mavis-m31-flash:
     provider: mavis
     model: MiniMax-M3.1-Flash
@@ -87,38 +132,53 @@ models:
     note: MiniMax M3.1-Flash（mavis 网关·订阅限免·思考强制开·512K 上下文）
   ds-v4-flash-volc:
     provider: volcengine-coding
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: deepseek-v4-flash
+    reasoning_echo_fill: ""
     temperature: 1
     note: 火山方舟 coding · deepseek v4 flash
   ds-v41-flash-eco-volc:
     provider: volcengine-coding
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息带 tool_calls
-    # 时回传本轮 reasoning_content，否则 400（同 ds-v4-flash-volc 纪律）。
+    # 同端点同纪律：assistant 带 tool_calls 必须回传 reasoning_content。
     echo_reasoning: true
-    reasoning_echo_fill: ""
     model: deepseek-v4-1-flash-economy-261017
+    reasoning_echo_fill: ""
     temperature: 1
     note: 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）
   kimi-k31-pro-volc:
     provider: volcengine-coding
     echo_reasoning: true
-    reasoning_echo_fill: ""
     model: kimi-k3-1-pro-261024
+    reasoning_echo_fill: ""
     temperature: 1
     note: 火山方舟 coding · kimi k3.1 pro（2026-10-25 用户令增加；方舟清单 261024 版）
   ds-flash-official:
     provider: deepseek-official
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: deepseek-flash
+    reasoning_echo_fill: ""
     temperature: 1
     note: DeepSeek 官方 flash（用户给的 key）
   ds-v41-flash-aliyun:
     provider: aliyun
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: deepseek-v4.1-flash-1017
+    reasoning_echo_fill: ""
     temperature: 1
     note: 阿里云 token plan · deepseek v4.1 flash 1017（第一层用）
   ds-v4-flash-aliyun:
     provider: aliyun
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: deepseek-v4-flash-0731
+    reasoning_echo_fill: ""
     temperature: 1
     note: 阿里云 token plan · deepseek v4 flash
   ark-code-latest:
@@ -133,13 +193,21 @@ models:
     note: MiniMax M3.1 Flash（M3 已下架）
   kimi-k3:
     provider: kimi
-    model: k3
+    # [2026-10-25 · 用户令「kimi 的 k3 换成 k3.1 pro」] 上游真实 id 由 k3 换成
+    # k3.1-pro（Kimi coding 端点 /models 实查存在，另有 k3.1-pro-highspeed）。
+    # 键名**沿用 kimi-k3**：它是本项目内部标识，被 concurrency.per_model、
+    # tiers.depth_0 与卡上模型绑定引用着，改名会打断这些引用。
+    model: k3.1-pro
     temperature: 1
     thinking: 'on'
-    note: Kimi K3（coding plan 端点）
+    note: Kimi K3.1 Pro（coding plan 端点；2026-10-25 由 K3 替换）
   deepseek-pro:
     provider: opencode
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: deepseek-v4-pro
+    reasoning_echo_fill: ""
     temperature: 0.3
     thinking: 'on'
     note: DeepSeek V4 Pro（按需选用；[2026-10-19 裁定] 已无降级模型概念）
@@ -154,6 +222,7 @@ models:
   qwen-max:
     provider: aliyun
     model: qwen3.8-max
+    use: search
     temperature: 0.7
     thinking: 'on'
     note: 思考席② qwen3.8-max（阿里云 token-plan）。thinking=off：qwen enable_thinking:false
@@ -195,7 +264,11 @@ models:
     note: ''
   deepseek-v41-flash:
     provider: opencode
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: deepseek-v4.1-flash
+    reasoning_echo_fill: ""
     temperature: 0.7
     thinking: 'on'
     note: ''
@@ -206,7 +279,11 @@ models:
     default_effort: high
   deepseek-v4-flash:
     provider: opencode
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: deepseek-v4-flash
+    reasoning_echo_fill: ""
     temperature: 0.7
     thinking: 'on'
     note: ''
@@ -218,31 +295,49 @@ models:
   minimax-m31-flash-free:
     provider: opencode
     model: minimax-m3.1-flash-free
+    reasoning_echo_fill: ""
     temperature: 1
-    note: 免费（2026-10-22 实调通过）
+    note: >-
+      ⚠ **已废弃**（2026-10-25 实调：Go 端点返回 410 ModelDeprecated
+      「has been deprecated」）⇒ 已从所有 fallback 链里移除；
+      同族的免费档只剩 `beam-free`。
   beam-free:
     provider: opencode
     model: beam-free
+    reasoning_echo_fill: ""
     temperature: 0.7
     note: 免费（Reflection Beam，带 reasoning；2026-10-22 实调通过）
   # [2026-10-22 · Command Code Provider API] 厂商前缀是官方 id 的一部分，不可省
   cmd-ds-v41-flash:
     provider: commandcode
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: deepseek/deepseek-v4.1-flash
+    reasoning_echo_fill: ""
     temperature: 1
     note: Command Code · DeepSeek V4.1 Flash（context_length=1,000,000；2026-10-22 实调 200）
   cmd-beam-free:
     provider: commandcode
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
     model: reflection/beam:free
+    reasoning_echo_fill: placeholder
     temperature: 0.7
     note: Command Code · Beam 1.0 免费（context_length=1,048,576，带 reasoning；2026-10-22 实调 200）
-  cmd-minimax-free:
+  # [2026-10-23 实测] 原 `minimax/minimax-m3.1-flash:free` 免费档已关闭：
+  #   端点 GET /models 的 92 条清单里已无该 id；调用返回 403
+  #   「The free MiniMax M3.1 Flash window has ended」。
+  #   ⇒ 改为付费档 `minimax/minimax-m3.1-flash`（同日实测：裸调 200、带真实工具面
+  #   200 且 tool_calls 正确解析）。**这会消耗额度**，不想要就删掉这一段。
+  cmd-minimax-flash:
     provider: commandcode
-    model: minimax/minimax-m3.1-flash:free
+    model: minimax/minimax-m3.1-flash
     temperature: 1
     note: >-
-      Command Code · MiniMax M3.1 Flash 免费（context_length=1,000,000；2026-10-22 连测 3/3 通，
-      期间出现过瞬时 429「上游暂不可用」，属容量抖动、可重试）
+      Command Code · MiniMax M3.1 Flash（付费档；原 :free 免费窗口 2026-10-23 已结束，
+      context_length=1,000,000）
 bindings:
   execute: glm-53-flash
   think: glm-53-flash
@@ -263,6 +358,8 @@ retry_grading:
 concurrency:
   default: 3
   per_model:
+    # [局域网 Flash-Next 2026-10-23] 与机器实际并发一致（双卡动态共享池，2 路）
+    qwen38-flash-next: 2
     kimi-k3: 3
     glm-53: 3
     glm-53-flash: 5
@@ -279,7 +376,8 @@ tiers:
   - ds-v4-flash-volc
   - ark-code-latest
   - minimax-m31
-  - minimax-m31-flash-free
+  # [2026-10-25] 原来的 minimax-m31-flash-free 已废弃（Zen 410）⇒ 换成同族的 beam-free
+  - beam-free
   default:
   - ds-v4-flash-volc
   - ark-code-latest

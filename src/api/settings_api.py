@@ -195,15 +195,23 @@ def _validate(cfg: dict[str, Any]) -> tuple[list[str], list[str]]:
     if not isinstance(models, dict) or not models:
         errors.append("模型列表不能为空")
 
-    # ⑥ 每个供应商必须有 protocol + api_key_env
+    # ⑥ 每个供应商必须有 protocol ＋（api_key_env 或 auth 声明）
+    # [2026-10-25 用户报「另一个卡片的调用凭什么挡我选模型」追出来的洞]
+    # 原规则「必须有 api_key_env」假定所有供应商都走环境变量密钥——但有两类
+    # 合法供应商不走：免鉴权（局域网端点，flash-next）与动态令牌（mavis 的
+    # broker 租约现铸）。逼它们编一个不存在的 key 名是骗人，故开显式口子：
+    # auth: none（免鉴权）/ auth: broker（租约桥等动态令牌）。两者都不声明
+    # 仍照旧拒——真缺失不会被这条放松漏掉。
     for pname, prov in (providers or {}).items():
         if not isinstance(prov, dict):
             errors.append(f"供应商 '{pname}' 定义不是对象")
             continue
         if not prov.get("protocol"):
             errors.append(f"供应商 '{pname}' 缺 protocol")
-        if not prov.get("api_key_env"):
-            errors.append(f"供应商 '{pname}' 缺 api_key_env")
+        if not prov.get("api_key_env") and not prov.get("auth"):
+            errors.append(
+                f"供应商 '{pname}' 缺 api_key_env（免鉴权/动态令牌供应商须显式声明 auth: none|broker）"
+            )
 
     # ② 每个模型的 provider 必须存在于 providers
     for mname, mdef in (models or {}).items():
@@ -708,6 +716,34 @@ async def restore_backup(request: Request) -> JSONResponse:
         "restored": src.name,
         "backup": saved.name if saved else None,
         "models": list((data.get("models") or {}).keys()),
+    })
+
+
+@router.post("/models/reload")
+async def reload_models() -> JSONResponse:
+    """只重载、不写盘：models.yaml 被外部改动（git 拉取/直接编辑）后，让运行中的
+    进程重读生效，**不必重启、不必打断任何在途调用**。
+
+    为什么需要它（2026-10-25 实况）：直接改文件＋git 提交新增模型座位后，
+    GET /models 读文件（有新座），但保存校验读运行中网关编译的目录（旧）⇒
+    选择器里看得见、保存必失败；而目录重载原本只挂在「保存/还原」后面——
+    两条路都要重写文件（丢注释），外部改文件的场景被逼到「重启」这一条路，
+    重启又是进程级的，会被任何在途调用挡死（用户原话：「另一个卡片的调用，
+    为什么影响这个卡片的模型选择？」——不该影响，缺的就是这个入口）。
+
+    语义同 reload_gateway()：重读→重编译→重建单例，先建后换；在途调用持旧
+    对象跑完，新调用拿新对象。文件已在盘上，编译＋建网关本身就是校验，
+    故本端点不重复校验 payload、不碰文件一个字节。
+    """
+    try:
+        model_service.reload_gateway()
+    except Exception as exc:  # noqa: BLE001 坏配置在此现形：500 + 原文，不吞
+        logger.error("模型配置重载失败: %s", exc)
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"重载失败: {exc}"})
+    return JSONResponse({
+        "ok": True,
+        "reloaded": True,
+        "models": sorted(model_config.model_names()),
     })
 
 
