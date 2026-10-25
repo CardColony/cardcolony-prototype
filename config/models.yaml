@@ -90,6 +90,22 @@ models:
     model: deepseek-v4-flash
     temperature: 1
     note: 火山方舟 coding · deepseek v4 flash
+  ds-v41-flash-eco-volc:
+    provider: volcengine-coding
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息带 tool_calls
+    # 时回传本轮 reasoning_content，否则 400（同 ds-v4-flash-volc 纪律）。
+    echo_reasoning: true
+    reasoning_echo_fill: ""
+    model: deepseek-v4-1-flash-economy-261017
+    temperature: 1
+    note: 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）
+  kimi-k31-pro-volc:
+    provider: volcengine-coding
+    echo_reasoning: true
+    reasoning_echo_fill: ""
+    model: kimi-k3-1-pro-261024
+    temperature: 1
+    note: 火山方舟 coding · kimi k3.1 pro（2026-10-25 用户令增加；方舟清单 261024 版）
   ds-flash-official:
     provider: deepseek-official
     model: deepseek-flash
