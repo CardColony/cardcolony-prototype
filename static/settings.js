@@ -29,13 +29,17 @@
   let CURRENT = null;             // 当前选中供应商
 
   // 内置供应商模板（对应 config/models.yaml 的 6 家 + 自定义空）
+  //
+  // 〔5715 · 模型名收口〕sub 里**不写具体型号**（原来写着各家的型号名）——型号换代后
+  // 这段字会变成过期信息，而且它是**代码里写死的模型名**。型号信息由模型目录
+  // （DATA.models，后端 /api/settings/models 下发）动态显示；这里只说协议与端点特征。
   const TEMPLATES = [
-    { id: "nous",     name: "Nous",        sub: "claude-haiku-5.5 / deepseek-v4-pro", color: "#5c6bc0", protocol: "openai",   base_url: "https://inference-api.nousresearch.com/v1", api_key_env: "NOUS_API_KEY", models_url: "" },
-    { id: "deepseek", name: "DeepSeek",    sub: "官方 deepseek 系列",                  color: "#4d6bfe", protocol: "deepseek", base_url: "", api_key_env: "DEEPSEEK_API_KEY", models_url: "https://api.deepseek.com/models" },
-    { id: "zhipu",    name: "智谱 GLM",     sub: "glm-5.3 / glm-5.3-flash",           color: "#3859ff", protocol: "openai",   base_url: "https://open.bigmodel.cn/api/coding/paas/v4", api_key_env: "ZHIPU_CODING_API_KEY", models_url: "" },
-    { id: "minimax",  name: "MiniMax",     sub: "MiniMax-M3",                          color: "#151515", protocol: "openai",   base_url: "https://api.minimaxi.com/v1", api_key_env: "MINIMAX_API_KEY", models_url: "" },
-    { id: "aliyun",   name: "阿里云",       sub: "qwen3.8-max",                         color: "#ff6a00", protocol: "openai",   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", api_key_env: "ALIYUN_TOKEN_PLAN_API_KEY", models_url: "" },
-    { id: "opencode", name: "OpenCode",    sub: "deepseek-v4.1-flash",                 color: "#22d3ee", protocol: "openai",   base_url: "https://opencode.ai/zen/go/v1", api_key_env: "OPENCODE_API_KEY", models_url: "" },
+    { id: "nous",     name: "Nous",        sub: "OpenAI 兼容 · 需 API Key",         color: "#5c6bc0", protocol: "openai",   base_url: "https://inference-api.nousresearch.com/v1", api_key_env: "NOUS_API_KEY", models_url: "" },
+    { id: "deepseek", name: "DeepSeek",    sub: "官方端点 · 需 API Key",              color: "#4d6bfe", protocol: "deepseek", base_url: "", api_key_env: "DEEPSEEK_API_KEY", models_url: "https://api.deepseek.com/models" },
+    { id: "zhipu",    name: "智谱 GLM",     sub: "OpenAI 兼容 · 需 API Key",          color: "#3859ff", protocol: "openai",   base_url: "https://open.bigmodel.cn/api/coding/paas/v4", api_key_env: "ZHIPU_CODING_API_KEY", models_url: "" },
+    { id: "minimax",  name: "MiniMax",     sub: "OpenAI 兼容 · 需 API Key",          color: "#151515", protocol: "openai",   base_url: "https://api.minimaxi.com/v1", api_key_env: "MINIMAX_API_KEY", models_url: "" },
+    { id: "aliyun",   name: "阿里云",       sub: "OpenAI 兼容 · 支持 enable_search",  color: "#ff6a00", protocol: "openai",   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", api_key_env: "ALIYUN_TOKEN_PLAN_API_KEY", models_url: "" },
+    { id: "opencode", name: "OpenCode",    sub: "OpenAI 兼容 · 需会话头",            color: "#22d3ee", protocol: "openai",   base_url: "https://opencode.ai/zen/go/v1", api_key_env: "OPENCODE_API_KEY", models_url: "" },
   ];
 
   // ------------------------------------------------------------ 工具
@@ -630,7 +634,7 @@
         </div>
         <div class="set-field">
           <label>型号 model</label>
-          <input class="set-input" data-f="model" value="${escapeHtml(m.model || "")}" placeholder="anthropic/claude-haiku-5.5" />
+          <input class="set-input" data-f="model" value="${escapeHtml(m.model || "")}" placeholder="端点上的模型 id（点『刷新』从端点清单拉）" />
         </div>
         <div class="set-field">
           <label>供应商（只读，挂在父供应商下）</label>
