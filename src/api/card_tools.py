@@ -1540,6 +1540,84 @@ async def _h_read_shadow(work_id: str, current_id: str,
 #: 一句映射，不重做读工具）。
 READ_VIA_PARTS: tuple[str, ...] = ("正文", "影子", "对话")
 
+#: 对话读取窗口参数（2026-10-25 · 用户报「read_linked 把所有历史都传了」后定）：
+#: 病根＝read_linked(对话) 直接返全量 timeline，两条卡的历史（各自含对方全史，
+#: 嵌套膨胀）合计 287 万字符 ≈190 万 token，顶爆所有模型上下文，第二轮回写死。
+#: 语义修正：沿通信线读对话＝了解对方现在到哪了，不是搬对方一生。
+_CONV_TAIL_EVENTS = 80
+_CONV_TEXT_MAX = 1200
+_CONV_TOOL_PREVIEW = 240
+_CONV_TOTAL_MAX = 60_000
+#: 工具结果注入模型的字节预算（message_runner 单一投影点使用；事件留痕不受限）。
+TOOL_RESULT_INJECT_BUDGET = 200_000
+
+
+def bound_text(text: str, max_bytes: int = TOOL_RESULT_INJECT_BUDGET) -> str:
+    """按 UTF-8 字节截断并附**明示标记**（不静默丢数据：模型必须知道不完整）。"""
+    raw = str(text or "")
+    data = raw.encode("utf-8")
+    if len(data) <= max_bytes:
+        return raw
+    head = data[:max_bytes].decode("utf-8", "ignore")
+    return (
+        f"{head}\n…（工具结果已截断：原文 {len(data)} 字节，超过单次注入上限 "
+        f"{max_bytes} 字节。这是**不完整数据**，不得当作全量依据；需要完整内容"
+        f"请缩小范围后分次读取。）"
+    )
+
+
+def _clip(text, limit: int) -> str:
+    s = str(text or "")
+    return s if len(s) <= limit else s[:limit] + f"…（共 {len(s)} 字，已截断）"
+
+
+def _conversation_digest(work_id: str, card_id: str) -> dict:
+    """对话的**可读窗口**：尾部 80 条，文本单条 1200 字、工具结果只留摘要
+    （它是嵌套膨胀的载体，实测单条 109 万字——永不回灌正文），总量 60K 字符，
+    超量从最旧丢并明示 truncated。控制类事件（round_start/reasoning 等）不进摘要。
+    """
+    events = event_log.timeline(work_id, card_id, tail=_CONV_TAIL_EVENTS)
+    lines = []
+    for e in events:
+        t = str(e.get("type") or "")
+        d = e.get("data") or {}
+        seq = e.get("seq")
+        text = ""
+        if t == "user_message":
+            text = "用户：" + _clip(d.get("content"), _CONV_TEXT_MAX)
+        elif t == "assistant_text":
+            text = "助手：" + _clip(d.get("content"), _CONV_TEXT_MAX)
+        elif t in ("deliver", "proposal", "done"):
+            text = f"{t}：" + _clip(d.get("content") or d.get("summary") or d, _CONV_TEXT_MAX)
+        elif t == "error":
+            text = "错误：" + _clip(d.get("error"), _CONV_TEXT_MAX)
+        elif t == "tool_call":
+            text = (f"工具调用 {d.get('tool')}（{d.get('target') or ''}）"
+                    + _clip(d.get("arguments"), _CONV_TOOL_PREVIEW))
+        elif t == "tool_result":
+            payload = json.dumps(d.get("result"), ensure_ascii=False)
+            text = (f"工具结果 {d.get('tool')}（{d.get('target') or ''}）"
+                    f"ok={d.get('ok')}：" + _clip(payload, _CONV_TOOL_PREVIEW))
+        else:
+            continue
+        lines.append({"seq": seq, "type": t, "text": text})
+
+    dropped = 0
+    total = sum(len(x["text"]) for x in lines)
+    while lines and total > _CONV_TOTAL_MAX:
+        total -= len(lines[0]["text"])
+        lines.pop(0)
+        dropped += 1
+    first_seq = events[0].get("seq") if events else None
+    truncated = bool(dropped) or (len(events) >= _CONV_TAIL_EVENTS and (first_seq or 0) > 1)
+    return {
+        "events": lines,
+        "window": f"最近 {len(events)} 条事件" + (f"，因超量丢弃最早 {dropped} 条" if dropped else ""),
+        "truncated": truncated,
+        "note": "仅为尾部窗口摘要（工具结果只给摘要不给正文）。需要更早内容：read 不支持分页时，"
+                "改为让对方把结论写进正文/影子再读。",
+    }
+
 
 async def read_via(work_id: str, source_id: str, target_id: str,
                    part: str) -> dict[str, Any]:
@@ -1593,8 +1671,10 @@ async def read_via(work_id: str, source_id: str, target_id: str,
                     "message": f"影子卡不存在: {target_id}"}
         return {"ok": True, "part": part, "card_id": target_id, "value": raw}
     if part == "对话":
+        # [2026-10-25] 不再返全量 timeline（实测两条卡全史 287 万字符顶爆上下文）；
+        # 改返尾部窗口摘要（见 _conversation_digest）。
         return {"ok": True, "part": part, "card_id": target_id,
-                "value": event_log.timeline(work_id, target_id)}
+                "value": _conversation_digest(work_id, target_id)}
     return {"ok": False, "reason": "unknown_part",
             "message": f"未知 part: {part!r}（合法值：{list(READ_VIA_PARTS)}）"}
 
