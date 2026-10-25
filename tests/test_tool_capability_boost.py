@@ -120,7 +120,7 @@ def test_manual_has_seven_lines_and_search_pattern():
 
 async def test_run_subprocess_ok_and_nonzero_exit():
     r = await card_tools._run_subprocess(argv=[sys.executable, "-c", "print('ok')"])
-    assert r["exit_code"] == 0 and "ok" in r["stdout"] and r["truncated"] is False
+    assert r["exit_code"] == 0 and "ok" in r["stdout"]
 
     # 命令失败不是错误：非零退出码原样返回（无 error 信封）
     r = await card_tools._run_subprocess(argv=[sys.executable, "-c",
@@ -128,51 +128,30 @@ async def test_run_subprocess_ok_and_nonzero_exit():
     assert r["exit_code"] == 3 and "error" not in r
 
 
-async def test_run_subprocess_timeout_is_locked_not_hang():
-    # argv 模式：杀的正是解释器本体，管子随即关掉 ⇒ 几乎立刻收场
-    t0 = time.monotonic()
-    r = await card_tools._run_subprocess(
-        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
-        timeout=1.0,
-    )
-    elapsed = time.monotonic() - t0
-    assert _code(r) == "locked" and "超时" in _msg(r), r
-    assert elapsed < 15, elapsed
+async def test_run_subprocess_has_no_wall_clock_gate():
+    """[2026-10-25 用户铁律] 执行器**零闸**：没有墙钟超时（「最恨机械闸、墙钟」）。
 
-
-async def test_run_subprocess_shell_timeout_is_locked():
-    """shell 模式：杀 cmd.exe 杀不到孙进程（它还攥着管道句柄）——
-
-    靠 _EXEC_DRAIN_TIMEOUT_SECONDS 的有界清管兜住「服务不挂死」：
-    总耗时＝超时档 ＋ 清管上限，而非等孙进程自己退完。
+    原 120 秒超时＋两条超时测试已整体拆除（连带清管/杀进程善后）——只验拆干净了。
     """
-    t0 = time.monotonic()
-    r = await card_tools._run_subprocess(
-        shell_cmd="ping -n 30 127.0.0.1 >nul", timeout=1.0)
-    assert _code(r) == "locked" and "超时" in _msg(r), r
-    elapsed = time.monotonic() - t0
-    assert elapsed < 10, elapsed
+    import inspect
+    params = inspect.signature(card_tools._run_subprocess).parameters
+    assert "timeout" not in params
 
 
-async def test_run_subprocess_truncates_long_output():
+async def test_run_subprocess_returns_full_output_without_truncation():
+    """[2026-10-25 用户铁律] 输出原样返回，**绝不截断**（截断不如不显示）。"""
     r = await card_tools._run_subprocess(
-        argv=[sys.executable, "-c", "print('x' * 70000)"],
-        timeout=60.0,
-    )
-    assert r["exit_code"] == 0 and r["truncated"] is True
-    assert r["stdout"].startswith("x" * 100)
-    # 字节数按实际落盘算（Windows 文本模式把 \n 写成 \r\n，故不钉死常数）
-    m = re.search(r"（输出已截断，共 (\d+) 字节）", r["stdout"])
-    assert m, r["stdout"][-80:]
-    assert int(m.group(1)) >= 70001
+        argv=[sys.executable, "-c", "print('x' * 70000)"])
+    assert r["exit_code"] == 0
+    assert r["stdout"].count("x") >= 70000, "大输出必须原样返回"
+    assert "已截断" not in r["stdout"]
+    assert "truncated" not in r, "truncated 字段已随上限一起删除"
 
 
 async def test_run_subprocess_decodes_invalid_utf8_with_replace():
     r = await card_tools._run_subprocess(
         argv=[sys.executable, "-c",
-              r"import sys; sys.stdout.buffer.write(b'\xffab\n')"],
-        timeout=60.0,
-    )
+              r"import sys; sys.stdout.buffer.write(b'\xffab\n')"])
     assert r["exit_code"] == 0 and "\ufffd" in r["stdout"] and "ab" in r["stdout"]
 
 
@@ -180,7 +159,7 @@ async def test_run_subprocess_decodes_invalid_utf8_with_replace():
 
 async def test_bash_echo_ok():
     r = await card_tools._h_bash("w", "c1", {"command": "echo ok"}, {})
-    assert r["exit_code"] == 0 and "ok" in r["stdout"] and r["truncated"] is False
+    assert r["exit_code"] == 0 and "ok" in r["stdout"]
     assert "error" not in r
 
 
@@ -269,7 +248,7 @@ async def test_glob_files_finds_py_under_scope(sandbox):
     (ws / "sub" / "b.py").write_text("x", encoding="utf-8")
 
     r = await card_tools._h_glob_files("w", "c1", {"pattern": "**/*.py"}, {})
-    assert r["truncated"] is False and r["pattern"] == "**/*.py"
+    assert r["pattern"] == "**/*.py"
     matches = r["matches"]
     assert matches and all(m.endswith(".py") for m in matches), matches
     assert any(m.endswith("a.py") for m in matches)
@@ -299,13 +278,18 @@ async def test_glob_files_scoped_path_and_prunes(sandbox):
     assert r["matches"] == [], r
 
 
-async def test_glob_files_caps_at_200(sandbox):
+async def test_glob_files_returns_all_matches_no_cap(sandbox):
+    """[2026-10-25 用户铁律] 原 200 条上限＋truncated 已拆：匹配多少给多少。
+
+    截断不如不显示——上限的真界限是模型上下文窗口，撞了由端点如实报错。
+    """
     ws = sandbox.base / "trading-workspace"
     for i in range(205):
         (ws / f"p{i:03d}.py").write_text("x", encoding="utf-8")
     r = await card_tools._h_glob_files(
         "w", "c1", {"pattern": "*.py", "path": "trading-workspace"}, {})
-    assert len(r["matches"]) == 200 and r["truncated"] is True, r
+    assert len(r["matches"]) == 205, r
+    assert "truncated" not in r
 
 
 async def test_glob_files_empty_pattern_and_out_of_scope(sandbox):
@@ -545,8 +529,8 @@ async def test_edit_file_missing_file_and_dir(sandbox):
 
 def test_edit_file_version_and_switch():
     """版本 tc-9 / t23-1；edit_file 与 write_file 同开关（tools_file）、写工具。"""
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"
-    assert prompts.BASE_PROMPT_VERSION == "t26-5"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-17"
+    assert prompts.BASE_PROMPT_VERSION == "t26-6"
     assert card_tools.TOOL_SWITCH["edit_file"] == policy.SWITCH_TOOLS_FILE
     assert card_tools.TOOL_SWITCH["edit_file"] == \
         card_tools.TOOL_SWITCH["write_file"]

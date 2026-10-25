@@ -2275,14 +2275,9 @@ async def _h_run_tool_card(work_id: str, current_id: str,
 # [基础工具找回 2026-10-18 · Cardlo 搬运] 精准编辑 + 执行器 + 六件 handler（逐字自 Cardlo；置于 TOOL_REGISTRY 之前——注册表引用这些名字）
 # ============================================================
 
-# 输出截断上限（字节）与缺省超时（秒）。
-_EXEC_MAX_OUTPUT_BYTES = 50 * 1024
-_EXEC_TIMEOUT_SECONDS = 120.0
-# 超时杀进程后**清管**（drain）的硬上限（秒）。Windows 下 shell 模式起的是
-# cmd.exe → 孙进程的树：杀掉 cmd.exe 并不关掉孙进程手里的 stdout 句柄，
-# 无界 drain 会等到孙进程自己退出——契约 ②「服务不挂死」就破了。故 drain
-# 有界：管子关得快就拿到收尾数据，关不快也顶多再花这么多秒（输出反正要丢）。
-_EXEC_DRAIN_TIMEOUT_SECONDS = 2.0
+# [2026-10-25 用户铁律] 执行器**零闸**：无输出上限（截断不如不显示）、
+# 无墙钟超时（「最恨机械闸、墙钟」）。命令跑多久等多久；输出有多大给多大。
+# 唯一会提前结束的情况：用户停止 / 进程退出。
 
 
 def _log_exec_guard(action: str, *, hits: int = 0, names: list[str] | None = None,
@@ -2304,37 +2299,10 @@ def _credential_deny_message(names: list[str], tool: str) -> str:
             "确需确认某个配置项时，请查非凭证文件（如 .env.example）或向用户索取。")
 
 
-def _clip_output(data: bytes) -> tuple[str, bool]:
-    """按**字节**截断到 50KB 再解码（utf-8 replace），返回 (文本, 是否截断)。"""
-    total = len(data)
-    if total <= _EXEC_MAX_OUTPUT_BYTES:
-        return data.decode("utf-8", "replace"), False
-    head = data[:_EXEC_MAX_OUTPUT_BYTES].decode("utf-8", "replace")
-    return f"{head}\n…（输出已截断，共 {total} 字节）", True
 
 
-def _kill_quietly(proc: asyncio.subprocess.Process) -> None:
-    """杀子进程（善后用，失败不盖过原结论）。"""
-    try:
-        proc.kill()
-    except (OSError, RuntimeError):
-        pass
 
 
-def _close_transport_quietly(proc: asyncio.subprocess.Process) -> None:
-    """弃管时关掉子进程传输（等价于 3.13 起的公开 ``Process.close()``）。
-
-    超时清管放弃后传输还开着，会在 GC 时向**已关闭的事件循环**要回调
-    （「unclosed transport」「Event loop is closed」两条告警）。趁循环还活着
-    先关掉，告警与 fd 泄漏一起消失。
-    """
-    transport = getattr(proc, "_transport", None)
-    if transport is None:
-        return
-    try:
-        transport.close()
-    except Exception:  # noqa: BLE001 —— 善后失败不盖过原结论
-        pass
 
 
 async def _h_edit_file(work_id: str, current_id: str,
@@ -2361,9 +2329,8 @@ async def _run_subprocess(
     argv: list[str] | None = None,
     shell_cmd: str | None = None,
     cwd: str | None = None,
-    timeout: float = _EXEC_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """异步执行一条命令，返回 ``{exit_code, stdout, stderr, truncated}`` 或 err 信封。
+    """异步执行一条命令，返回 ``{exit_code, stdout, stderr}`` 或 err 信封。
 
     ``cwd`` 缺省＝项目根（``file_tools.BASE_DIR``）：**调用时现取**而不是写死
     导入期常量——测试沙箱正是改写这个模块级常量（conftest 铁律一），写死会让
@@ -2389,26 +2356,12 @@ async def _run_subprocess(
         return err("internal", f"子进程启动失败: {exc}")
 
     try:
-        out, e = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        _kill_quietly(proc)
-        try:
-            # 有界清管：见 _EXEC_DRAIN_TIMEOUT_SECONDS（Windows 孙进程持有
-            # 管道句柄时，无界 drain 会把「超时」变成第二次挂死）。
-            await asyncio.wait_for(
-                proc.communicate(), timeout=_EXEC_DRAIN_TIMEOUT_SECONDS)
-        except TimeoutError:
-            # 管子还是不关（孙进程仍攥着句柄）⇒ 弃管松手
-            _close_transport_quietly(proc)
-        except Exception:  # noqa: BLE001 —— 善后失败不改变「已超时」的结论
-            pass
-        return err("locked", f"执行超时（>{timeout:g}s）")
+        out, e = await proc.communicate()
     except Exception as exc:  # noqa: BLE001
-        _kill_quietly(proc)
         return err("internal", f"子进程输出读取失败: {exc}")
 
-    stdout, cut_out = _clip_output(out or b"")
-    stderr, cut_err = _clip_output(e or b"")
+    stdout = (out or b"").decode("utf-8", "replace")
+    stderr = (e or b"").decode("utf-8", "replace")
     # [凭证保护 2026-10-20] 执行后值闸：返回值里出现凭证值就替换成 REDACTED。
     # **这是安全边界**（静态闸只挡直读，拼接/编码绕得过；值闸只认"明文相等"）。
     # 走 to_thread：首次采集要扫 BASE_DIR 下的凭证文件名，不冻住事件循环。
@@ -2426,7 +2379,6 @@ async def _run_subprocess(
         "exit_code": int(proc.returncode or 0),
         "stdout": stdout,
         "stderr": stderr,
-        "truncated": bool(cut_out or cut_err),
     }
 
 
@@ -2491,13 +2443,9 @@ def _glob_files_impl(pattern: str, path: str) -> dict[str, Any]:
     else:
         start = Path(file_tools.BASE_DIR)
     matches: list[str] = []
-    truncated = False
     try:
         walker = start.rglob(pattern) if "**" in pattern else start.glob(pattern)
         for p in walker:
-            if len(matches) >= 200:
-                truncated = True
-                break
             try:
                 if not p.is_file():
                     continue
@@ -2508,11 +2456,12 @@ def _glob_files_impl(pattern: str, path: str) -> dict[str, Any]:
             matches.append(file_tools._rel(p))
     except (OSError, ValueError) as exc:
         return err("validation", f"glob 模式无效: {exc}")
+    # [2026-10-25 用户铁律] 原 200 条上限＋truncated 标记已拆：截断不如不显示，
+    # 匹配多少给多少（上限的真界限是模型上下文窗口，撞了由端点如实报错）。
     return {
         "pattern": pattern,
         "scope": file_tools._rel(start),
         "matches": matches,
-        "truncated": truncated,
     }
 
 
