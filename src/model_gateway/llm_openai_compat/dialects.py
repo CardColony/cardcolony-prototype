@@ -129,6 +129,61 @@ def _nous_fields(body: dict[str, Any], spec: ThinkingSpec, requested: Optional[s
         body["reasoning_effort"] = effort
 
 
+def _flash_next_fields(body: dict[str, Any], spec: ThinkingSpec, requested: Optional[str], purpose: Optional[str]) -> None:
+    """flash-next（局域网 Flash-Next / Qwen 系）：顶层 ``reasoning_effort`` 档位。
+
+    端点（192.168.9.126:6006，Strata + Flash-Next IQ3_S）接受
+    ``none / low / medium / high``，没有 on/off 形态——关思考＝``none``（用户 2026-10-22
+    部署信息：「重活建议 none 提速」）。默认档位写在 models.yaml 的
+    ``thinking:`` / ``default_effort:`` 上。
+    """
+    if purpose == "session-title":
+        return
+    effort = requested if requested is not None else (
+        _specific_effort(spec.thinking) or spec.default_effort)
+    if effort in ("off", "auto", "on", "enabled", "disabled"):
+        effort = "none"          # 本端点只有档位，没有开关；关思考＝none
+    if effort:
+        body["reasoning_effort"] = effort
+
+
+#: 方舟 coding 端点（volcengine-coding）接受的 reasoning_effort 全档位。
+_VOLCENGINE_EFFORTS = ("low", "medium", "high", "max")
+
+
+def _volcengine_fields(body: dict[str, Any], spec: ThinkingSpec, requested: Optional[str], purpose: Optional[str]) -> None:
+    """volcengine-coding（方舟 coding 端点）：顶层 ``thinking`` 开关 ＋ ``reasoning_effort`` 全档位。
+
+    2026-10-25 实测（kimi-k3-1-pro-261024， probes 全记录）：
+      - 不传参数：默认思考开（reasoning_tokens≈283）
+      - ``thinking:{type:"disabled"}``：reasoning_tokens=0、reasoning_content 消失——开关为真
+      - ``reasoning_effort``：low/medium/high/max 全档位接受、效果递进（单样本
+        low=160/medium=96/high=275/max=339，噪声存在但档位差可见）；非法值端点
+        直接 InvalidParameter 报错（bogus 实测）⇒ 调用层传非法档位同样 fail-loud
+      - ``thinking:{type:"enabled", budget_tokens:N}``：budget 不作硬卡（要 100 得 190）
+        ⇒ 本方言不发 budget_tokens，强度只用品级档位表达
+    """
+    if purpose == "session-title":
+        body["thinking"] = {"type": "disabled"}
+        return
+    if requested is not None and requested not in _VOLCENGINE_EFFORTS + ("off", "auto", "on", "enabled"):
+        raise LlmError(
+            f'方舟 coding 端点不支持 reasoning effort "{requested}"（可用: off/{"/".join(_VOLCENGINE_EFFORTS)}）',
+            "UNSUPPORTED_REASONING_EFFORT",
+        )
+    effort = requested if requested is not None else (
+        _specific_effort(spec.thinking) or spec.default_effort)
+    if effort == "off":
+        body["thinking"] = {"type": "disabled"}
+    elif effort in _VOLCENGINE_EFFORTS:
+        body["thinking"] = {"type": "enabled"}
+        body["reasoning_effort"] = effort
+    elif spec.thinking in ("off", "disabled"):
+        body["thinking"] = {"type": "disabled"}
+    elif spec.thinking in ("on", "enabled"):
+        body["thinking"] = {"type": "enabled"}
+
+
 def _validate_effort(effort: str) -> str:
     if effort in _EFFORTS:
         return effort
@@ -164,6 +219,13 @@ DIALECTS: dict[str, Callable[[dict[str, Any], ThinkingSpec, Optional[str], Optio
     "zhipu": _glm_fields,
     "minimax": _minimax_fields,
     "nous": _nous_fields,
+    # [局域网 Flash-Next 2026-10-23] 与 nous 同形（顶层 reasoning_effort），
+    # 但档位取值是 none/low/medium/high；加供应商＝本表加一行 + models.yaml 加声明。
+    "flash-next": _flash_next_fields,
+    # [方舟 coding 2026-10-25] thinking 开关 + reasoning_effort 全档位（low/medium/
+    # high/max），实测依据见 _volcengine_fields docstring。只注册 coding 端点——
+    # token-plan 端点未探，不冒领。
+    "volcengine-coding": _volcengine_fields,
 }
 
 
