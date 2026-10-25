@@ -283,7 +283,10 @@ TOOL_SWITCH: dict[str, str] = {
 #   仅当 op==OP_UPDATE_STATUS 时追加 ⇒ 常规卡片工具面逐字不变，本号递增只因
 #   「注册表工具集/schema 变更」（T12-R3 纪律）。
 #   TOOL_REGISTRY 字面量条目数 由 21 → 22（验收 grep 口径同 tools-tc-7）。
-TOOL_TABLE_VERSION = "tools-tc-16"
+# tools-tc-17：[read_linked 去对话 2026-10-25 · 用户令] **schema 变更 ⇒ 递增**：
+#   read_linked 的 part 枚举去掉「对话」（跨卡读整条事件流＝287 万字符顶爆上下
+#   文，且语义错：读对方是看进展，不是搬历史）。件数不变（35+追加区）。
+TOOL_TABLE_VERSION = "tools-tc-17"
 
 
 # ============================================================
@@ -878,7 +881,7 @@ async def _h_update_goal(work_id: str, current_id: str,
                         f"系统通知：《{_title}》（{current_id}）已声明 blocked（做不下去）。"
                         f"其上报理由：{reason or '（未填）'}。\n"
                         f"你此前发给它的询问（msg_id：{_ids}）未获回答——它不会自己回信了。\n"
-                        f"请据此调整：可沿通信线读它的对话/影子取细节，或改换手段；"
+                        f"请据此调整：可沿通信线读它的影子/正文取细节，或改换手段；"
                         f"若你要等它，本卡不会自动恢复。"
                     ))
                 if isinstance(_nres, dict) and _nres.get("error"):
@@ -1538,16 +1541,8 @@ async def _h_read_shadow(work_id: str, current_id: str,
 
 #: read_via 的 part 取值（**开放取值**——只定机制不定形态；新增取值＝在此登记
 #: 一句映射，不重做读工具）。
-READ_VIA_PARTS: tuple[str, ...] = ("正文", "影子", "对话")
+READ_VIA_PARTS: tuple[str, ...] = ("正文", "影子")
 
-#: 对话读取窗口参数（2026-10-25 · 用户报「read_linked 把所有历史都传了」后定）：
-#: 病根＝read_linked(对话) 直接返全量 timeline，两条卡的历史（各自含对方全史，
-#: 嵌套膨胀）合计 287 万字符 ≈190 万 token，顶爆所有模型上下文，第二轮回写死。
-#: 语义修正：沿通信线读对话＝了解对方现在到哪了，不是搬对方一生。
-_CONV_TAIL_EVENTS = 80
-_CONV_TEXT_MAX = 1200
-_CONV_TOOL_PREVIEW = 240
-_CONV_TOTAL_MAX = 60_000
 #: 工具结果注入模型的字节预算（message_runner 单一投影点使用；事件留痕不受限）。
 TOOL_RESULT_INJECT_BUDGET = 200_000
 
@@ -1566,59 +1561,6 @@ def bound_text(text: str, max_bytes: int = TOOL_RESULT_INJECT_BUDGET) -> str:
     )
 
 
-def _clip(text, limit: int) -> str:
-    s = str(text or "")
-    return s if len(s) <= limit else s[:limit] + f"…（共 {len(s)} 字，已截断）"
-
-
-def _conversation_digest(work_id: str, card_id: str) -> dict:
-    """对话的**可读窗口**：尾部 80 条，文本单条 1200 字、工具结果只留摘要
-    （它是嵌套膨胀的载体，实测单条 109 万字——永不回灌正文），总量 60K 字符，
-    超量从最旧丢并明示 truncated。控制类事件（round_start/reasoning 等）不进摘要。
-    """
-    events = event_log.timeline(work_id, card_id, tail=_CONV_TAIL_EVENTS)
-    lines = []
-    for e in events:
-        t = str(e.get("type") or "")
-        d = e.get("data") or {}
-        seq = e.get("seq")
-        text = ""
-        if t == "user_message":
-            text = "用户：" + _clip(d.get("content"), _CONV_TEXT_MAX)
-        elif t == "assistant_text":
-            text = "助手：" + _clip(d.get("content"), _CONV_TEXT_MAX)
-        elif t in ("deliver", "proposal", "done"):
-            text = f"{t}：" + _clip(d.get("content") or d.get("summary") or d, _CONV_TEXT_MAX)
-        elif t == "error":
-            text = "错误：" + _clip(d.get("error"), _CONV_TEXT_MAX)
-        elif t == "tool_call":
-            text = (f"工具调用 {d.get('tool')}（{d.get('target') or ''}）"
-                    + _clip(d.get("arguments"), _CONV_TOOL_PREVIEW))
-        elif t == "tool_result":
-            payload = json.dumps(d.get("result"), ensure_ascii=False)
-            text = (f"工具结果 {d.get('tool')}（{d.get('target') or ''}）"
-                    f"ok={d.get('ok')}：" + _clip(payload, _CONV_TOOL_PREVIEW))
-        else:
-            continue
-        lines.append({"seq": seq, "type": t, "text": text})
-
-    dropped = 0
-    total = sum(len(x["text"]) for x in lines)
-    while lines and total > _CONV_TOTAL_MAX:
-        total -= len(lines[0]["text"])
-        lines.pop(0)
-        dropped += 1
-    first_seq = events[0].get("seq") if events else None
-    truncated = bool(dropped) or (len(events) >= _CONV_TAIL_EVENTS and (first_seq or 0) > 1)
-    return {
-        "events": lines,
-        "window": f"最近 {len(events)} 条事件" + (f"，因超量丢弃最早 {dropped} 条" if dropped else ""),
-        "truncated": truncated,
-        "note": "仅为尾部窗口摘要（工具结果只给摘要不给正文）。需要更早内容：read 不支持分页时，"
-                "改为让对方把结论写进正文/影子再读。",
-    }
-
-
 async def read_via(work_id: str, source_id: str, target_id: str,
                    part: str) -> dict[str, Any]:
     """沿**通信线**读对方卡的数据（纯机制）。
@@ -1631,7 +1573,6 @@ async def read_via(work_id: str, source_id: str, target_id: str,
     ② **part → 现成读工具**（复用不重做，只加「沿边寻址」这一步）：
        - ``正文`` → ``card_store.read_card``（三块：使命／现状／需求文档）
        - ``影子`` → ``shadow_store.read_shadow_raw``
-       - ``对话`` → ``event_log.timeline``
     ③ 本函数**不做任何权限判断**——资格归权限管（调用方 handler 走
        ``policy.SWITCH_READ_LINKED`` 关口）。
 
@@ -1670,11 +1611,6 @@ async def read_via(work_id: str, source_id: str, target_id: str,
             return {"ok": False, "reason": "not_found",
                     "message": f"影子卡不存在: {target_id}"}
         return {"ok": True, "part": part, "card_id": target_id, "value": raw}
-    if part == "对话":
-        # [2026-10-25] 不再返全量 timeline（实测两条卡全史 287 万字符顶爆上下文）；
-        # 改返尾部窗口摘要（见 _conversation_digest）。
-        return {"ok": True, "part": part, "card_id": target_id,
-                "value": _conversation_digest(work_id, target_id)}
     return {"ok": False, "reason": "unknown_part",
             "message": f"未知 part: {part!r}（合法值：{list(READ_VIA_PARTS)}）"}
 
@@ -3075,10 +3011,11 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "read_linked",
             "description": (
-                "沿通信线读取与你**已有连线关系**的卡（内容块／影子／对话）。"
+                "沿通信线读取与你**已有连线关系**的卡（内容块／影子）。"
                 "只能读你与它之间已建立连线的卡；没有连线则报「无通信线」。"
-                "part 取：正文（＝这张卡的三个内容块：使命／现状／第三块）／影子（过程记录）／"
-                "对话（该卡的事件时序）。"
+                "part 取：正文（＝这张卡的三个内容块：使命／现状／第三块）／影子（过程记录）。"
+                "**没有「对话」**——要了解对方进展，读它的正文（现状区）与影子；"
+                "对话是各卡自己的过程记录，跨卡不读。"
             ),
             "parameters": {
                 "type": "object",
@@ -3086,8 +3023,8 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                     "target_id": {"type": "string", "description": "对方卡 id，如 card_003"},
                     "part": {
                         "type": "string",
-                        "enum": ["正文", "影子", "对话"],
-                        "description": "读哪部分：正文／影子／对话",
+                        "enum": ["正文", "影子"],
+                        "description": "读哪部分：正文／影子",
                     },
                 },
                 "required": ["target_id", "part"],

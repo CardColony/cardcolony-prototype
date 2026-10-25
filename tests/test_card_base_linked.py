@@ -2,7 +2,8 @@
 """卡片底座第一步 · 沿关系的数据访问与通信（V1–V5 验收网）。
 
 覆盖任务书验收标准：
-- V1 A 沿通信线能读 B 的正文／影子／对话；断线（unlink 后）read_via 返回「无通信线」；
+- V1 A 沿通信线能读 B 的正文／影子（[2026-10-25 用户令] 对话 part 已删除）；
+  断线（unlink 后）read_via 返回「无通信线」；
 - V2 read_via 未授 read_linked 时被 policy 拒（denied 信封）；
 - V3 A 发消息 → 收件箱出现 status=pending；事件流照旧有 msg_* 事件；
 - V4 B 回合被调起、模型在激励文里明确看到待处理消息正文、回复；
@@ -76,13 +77,12 @@ async def test_v1_read_via_three_parts_and_unlink(sandbox):
     out = await card_tools.read_via(wid, a_id, b_id, "影子")
     assert out["ok"] is True and isinstance(out["value"], str)
 
-    # ③ 对话（复用 event_log.timeline）——[2026-10-25] 改为**尾部窗口摘要**：
-    # 旧契约返全量 list（实测两条卡 287 万字符顶爆上下文）；新契约返
-    # {events, window, truncated, note}，工具结果只留摘要。
+    # ③ [2026-10-25 · 用户令「对话应该直接干掉」] 对话不再是合法 part：
+    # 跨卡读整条事件流＝287 万字符顶爆上下文，且语义错——读对方是看进展
+    # （正文现状区＋影子），不是搬历史。
     out = await card_tools.read_via(wid, a_id, b_id, "对话")
-    assert out["ok"] is True and isinstance(out["value"], dict)
-    assert set(out["value"]) >= {"events", "window", "truncated"}
-    assert isinstance(out["value"]["events"], list)
+    assert out["ok"] is False and out["reason"] == "unknown_part"
+    assert card_tools.READ_VIA_PARTS == ("正文", "影子")
 
     # part 非法 → unknown_part（不抛）
     out = await card_tools.read_via(wid, a_id, b_id, "天书")
@@ -204,4 +204,4 @@ def test_read_linked_tool_registered_and_readonly():
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel 两件，
     # 依赖关联线；通信线 relations→links 改名）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-17"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
