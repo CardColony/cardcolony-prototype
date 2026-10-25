@@ -1543,24 +1543,6 @@ async def _h_read_shadow(work_id: str, current_id: str,
 #: 一句映射，不重做读工具）。
 READ_VIA_PARTS: tuple[str, ...] = ("正文", "影子")
 
-#: 工具结果注入模型的字节预算（message_runner 单一投影点使用；事件留痕不受限）。
-TOOL_RESULT_INJECT_BUDGET = 200_000
-
-
-def bound_text(text: str, max_bytes: int = TOOL_RESULT_INJECT_BUDGET) -> str:
-    """按 UTF-8 字节截断并附**明示标记**（不静默丢数据：模型必须知道不完整）。"""
-    raw = str(text or "")
-    data = raw.encode("utf-8")
-    if len(data) <= max_bytes:
-        return raw
-    head = data[:max_bytes].decode("utf-8", "ignore")
-    return (
-        f"{head}\n…（工具结果已截断：原文 {len(data)} 字节，超过单次注入上限 "
-        f"{max_bytes} 字节。这是**不完整数据**，不得当作全量依据；需要完整内容"
-        f"请缩小范围后分次读取。）"
-    )
-
-
 async def read_via(work_id: str, source_id: str, target_id: str,
                    part: str) -> dict[str, Any]:
     """沿**通信线**读对方卡的数据（纯机制）。
