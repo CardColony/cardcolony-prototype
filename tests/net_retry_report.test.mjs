@@ -54,9 +54,16 @@ function installFetch({ failFirst = 0, alwaysFail = false, okStatus = 200 } = {}
   return calls;
 }
 
-async function loadApi() {
+/**
+ * 装一个**独立的** api.js 实例。
+ * 为什么要独立实例：api.js 里有一个**可达性闩**（页面级状态——「后端不可达」要
+ * 只提示一次），它是模块级变量 ⇒ 同一个实例被多个用例共用时，前一个用例把闩按下，
+ * 后一个用例的「恢复」就会弹「服务已恢复」⇒ 用例之间互相污染。
+ * ⇒ 每个用例用**不同的 cache key** ⇒ 各自一份模块实例（各自的闩）。
+ */
+async function loadApi(tag) {
   setupDom();
-  const api = await import("../static/esm/api.js?probe=neterr");
+  const api = await import(`../static/esm/api.js?probe=neterr-${tag}`);
   const store = await import("../static/esm/store.js?v=30");
   return { api, store };
 }
@@ -67,7 +74,7 @@ function resetLog(store) {
 }
 
 test("N1：连接层失败重试一次（GET）——成功就不该弹「网络错误」", { skip: SKIP }, async () => {
-  const { api, store } = await loadApi();
+  const { api, store } = await loadApi("t" + Date.now() + Math.random().toString(36).slice(2, 8));
   resetLog(store);
   const calls = installFetch({ failFirst: 1 });
   const data = await api.call("GET", "/api/probe");
@@ -79,18 +86,22 @@ test("N1：连接层失败重试一次（GET）——成功就不该弹「网络
 });
 
 test("N2：重试也失败 ⇒ 仍然抛错且弹「网络错误」（不许把真失败吞掉）", { skip: SKIP }, async () => {
-  const { api, store } = await loadApi();
+  const { api, store } = await loadApi("t" + Date.now() + Math.random().toString(36).slice(2, 8));
   resetLog(store);
   const calls = installFetch({ alwaysFail: true });
   await assert.rejects(() => api.call("GET", "/api/probe"));
   const hits = calls.filter((c) => c.url.includes("/api/probe"));
   assert.equal(hits.length, 2, "最多重试一次（不是无限重试）");
   const msgs = store.store.state.notifyLog.map((m) => m.msg);
-  assert.ok(msgs.some((m) => m.includes("网络错误")), `应弹「网络错误」，实际：${JSON.stringify(msgs)}`);
+  // [2026-10-25] 提示语改成「无法连接服务，正在重试…」（旧的是「网络错误：Failed to fetch」）
+  // ⇒ **同一个故障只提示一次**，细节改落服务端日志（client_errors.jsonl）。
+  // 判据是「**有提示**」而不是「提示长什么样」——不许把真失败吞掉。
+  assert.ok(msgs.some((m) => /无法连接服务|网络错误|请求超时/.test(m)),
+    `真失败必须提示用户（不许静默吞掉），实际：${JSON.stringify(msgs)}`);
 });
 
 test("N3：真失败要上报到服务端（连接层失败服务端收不到请求 ⇒ 不主动报就永远查不到）", { skip: SKIP }, async () => {
-  const { api, store } = await loadApi();
+  const { api, store } = await loadApi("t" + Date.now() + Math.random().toString(36).slice(2, 8));
   resetLog(store);
   const calls = installFetch({ alwaysFail: true });
   await assert.rejects(() => api.call("GET", "/api/probe"));
@@ -100,7 +111,7 @@ test("N3：真失败要上报到服务端（连接层失败服务端收不到请
 });
 
 test("N3b：重试成功的**瞬时**失败也要上报（用户看不见的那些才是「频繁」的真相）", { skip: SKIP }, async () => {
-  const { api, store } = await loadApi();
+  const { api, store } = await loadApi("t" + Date.now() + Math.random().toString(36).slice(2, 8));
   resetLog(store);
   const calls = installFetch({ failFirst: 1 });
   const data = await api.call("GET", "/api/probe");
@@ -112,7 +123,7 @@ test("N3b：重试成功的**瞬时**失败也要上报（用户看不见的那�
 });
 
 test("N4：POST 绝不重试（不幂等：重发＝重复落盘）", { skip: SKIP }, async () => {
-  const { api, store } = await loadApi();
+  const { api, store } = await loadApi("t" + Date.now() + Math.random().toString(36).slice(2, 8));
   resetLog(store);
   const calls = installFetch({ alwaysFail: true });
   await assert.rejects(() => api.call("POST", "/api/probe", { x: 1 }));
@@ -121,7 +132,7 @@ test("N4：POST 绝不重试（不幂等：重发＝重复落盘）", { skip: SK
 });
 
 test("N5：超时仍重试（既有行为没被改坏）", { skip: SKIP }, async () => {
-  const { api, store } = await loadApi();
+  const { api, store } = await loadApi("t" + Date.now() + Math.random().toString(36).slice(2, 8));
   resetLog(store);
   let n = 0;
   globalThis.fetch = async (input, init) => {
@@ -147,4 +158,43 @@ test("N5：超时仍重试（既有行为没被改坏）", { skip: SKIP }, async
   assert.deepEqual(data, { value: 7 });
   assert.equal(n, 2, "超时后应重试一次");
   assert.equal(store.store.state.notifyLog.length, 0, "重试成功不该弹 toast");
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   可达性闩（2026-10-25 · 治「服务一关，网页就不停报网络错误」）
+
+   病根实测：服务关掉后 120 秒内 47 个请求、30 个失败 ⇒ 旧逻辑**每个失败都弹一个
+   toast** ⇒ 用户看到「每分钟两三个网络错误」。
+   ⇒ 新逻辑：**同一个故障只报一次**（首次提示，之后静默），恢复时提示一次。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+test("N6：服务不可达 ⇒ 只提示一次，后续失败一律静默（不刷屏）", { skip: SKIP }, async () => {
+  const { api, store } = await loadApi("t" + Date.now() + Math.random().toString(36).slice(2, 8));
+  resetLog(store);
+  installFetch({ alwaysFail: true });
+  for (let i = 0; i < 5; i++) {
+    await assert.rejects(() => api.call("GET", "/api/probe"));
+  }
+  const msgs = store.store.state.notifyLog.map((m) => m.msg);
+  assert.equal(msgs.length, 1, `同一个故障只该提示一次，实得 ${JSON.stringify(msgs)}`);
+  assert.match(msgs[0], /无法连接服务|请求超时/, msgs[0]);
+});
+
+test("N7：恢复 ⇒ 提示一次「服务已恢复」；之后再失败又只提示一次", { skip: SKIP }, async () => {
+  const { api, store } = await loadApi("t" + Date.now() + Math.random().toString(36).slice(2, 8));
+  resetLog(store);
+  installFetch({ alwaysFail: true });
+  await assert.rejects(() => api.call("GET", "/api/probe"));     // 不可达 ⇒ 提示一次
+  // 恢复：换成成功的 fetch
+  installFetch({});
+  await api.call("GET", "/api/probe");                          // ⇒ 提示「服务已恢复」
+  let msgs = store.store.state.notifyLog.map((m) => m.msg);
+  assert.ok(msgs.some((m) => m.includes("服务已恢复")), JSON.stringify(msgs));
+  // 恢复后再坏 ⇒ 又只提示一次（闩重新按下）
+  const before = msgs.length;
+  installFetch({ alwaysFail: true });
+  await assert.rejects(() => api.call("GET", "/api/probe"));
+  await assert.rejects(() => api.call("GET", "/api/probe"));
+  msgs = store.store.state.notifyLog.map((m) => m.msg);
+  assert.equal(msgs.length, before + 1, `再坏一次只该多提示一条：${JSON.stringify(msgs)}`);
 });
