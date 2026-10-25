@@ -95,8 +95,20 @@ test("N3：真失败要上报到服务端（连接层失败服务端收不到请
   const calls = installFetch({ alwaysFail: true });
   await assert.rejects(() => api.call("GET", "/api/probe"));
   const reports = calls.filter((c) => c.url.includes("/api/client-errors"));
-  assert.equal(reports.length, 1, "应上报一次客户端错误");
-  assert.equal(reports[0].method, "POST");
+  assert.ok(reports.length >= 1, "应上报客户端错误");
+  for (const r of reports) assert.equal(r.method, "POST");
+});
+
+test("N3b：重试成功的**瞬时**失败也要上报（用户看不见的那些才是「频繁」的真相）", { skip: SKIP }, async () => {
+  const { api, store } = await loadApi();
+  resetLog(store);
+  const calls = installFetch({ failFirst: 1 });
+  const data = await api.call("GET", "/api/probe");
+  assert.deepEqual(data, { value: 42 }, "重试应当成功");
+  const reports = calls.filter((c) => c.url.includes("/api/client-errors"));
+  assert.equal(reports.length, 1, "瞬时失败也要留痕（否则日志里看不到频率）");
+  // 用户层面仍然零打扰
+  assert.equal(store.store.state.notifyLog.length, 0, "瞬时失败不该弹 toast");
 });
 
 test("N4：POST 绝不重试（不幂等：重发＝重复落盘）", { skip: SKIP }, async () => {
