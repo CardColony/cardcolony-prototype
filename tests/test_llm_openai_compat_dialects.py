@@ -99,3 +99,93 @@ def test_serialize_request_glm_and_minimax_shapes():
     assert mm["thinking"] == {"type": "adaptive"}
     nous = serialize_request(_options(), RequestDefaults(vendor="nous", thinking="max"))
     assert nous["reasoning_effort"] == "max"
+
+
+def test_flash_next_dialect_uses_reasoning_effort_tiers():
+    """flash-next（局域网 192.168.9.126:6006）：顶层 reasoning_effort，档位 none/low/medium/high。
+
+    用户 2026-10-22 部署信息：端点接受 none/low/medium/high，没有 on/off 形态；
+    重活建议 none 提速。models.yaml 里 `thinking: none` 即默认档位。
+    """
+    from src.model_gateway.llm_openai_compat.dialects import (
+        ThinkingSpec, apply_thinking, dialect_for,
+    )
+
+    assert dialect_for("flash-next") is not dialect_for("nous"), "必须命中专属方言"
+
+    body = {}
+    apply_thinking(body, ThinkingSpec(vendor="flash-next", thinking="none"),
+                   requested_effort=None, purpose=None)
+    assert body.get("reasoning_effort") == "none", "默认档位来自 thinking: none"
+
+    body2 = {}
+    apply_thinking(body2, ThinkingSpec(vendor="flash-next", thinking="none"),
+                   requested_effort="high", purpose=None)
+    assert body2.get("reasoning_effort") == "high", "请求侧可覆盖"
+
+    body3 = {}
+    apply_thinking(body3, ThinkingSpec(vendor="flash-next"), requested_effort=None, purpose=None)
+    assert "reasoning_effort" not in body3 and "thinking" not in body3, "未声明 ⇒ 不注入"
+
+
+def test_flash_next_config_is_registered():
+    """models.yaml 里必须真的登记了这台机器（provider/模型名/并发/占位鉴权头）。"""
+    import io as _io
+    from pathlib import Path
+
+    import yaml
+
+    cfg = yaml.safe_load(
+        (_io.open(Path(__file__).resolve().parents[1] / "config" / "models.yaml",
+                  encoding="utf-8")).read())
+    prov = cfg["providers"]["flash-next"]
+    assert prov["base_url"] == "http://192.168.9.126:6006/v1"
+    assert prov["extra_headers"]["authorization"].startswith("Bearer "), \
+        "免鉴权端点要给占位头（httpx 拒绝空 Bearer）"
+    m = cfg["models"]["qwen38-flash-next"]
+    assert m["model"] == "qwen3.8-flash-next-iq3_s"
+    assert m["thinking"] == "none"
+    assert cfg["concurrency"]["per_model"]["qwen38-flash-next"] == 2
+
+
+def test_volcengine_coding_dialect_thinking_switch_and_effort_tiers():
+    """volcengine-coding（方舟 coding 端点）：thinking 开关 + reasoning_effort 全档位。
+
+    2026-10-25 实测（kimi-k3-1-pro-261024）：
+      - thinking:{type:"disabled"} ⇒ reasoning_tokens 0、reasoning_content 消失（开关为真）
+      - reasoning_effort：low/medium/high/max 全档位接受；bogus ⇒ 端点 InvalidParameter
+      - 不声明 ⇒ 不发任何参数（端点默认思考开，行为不变）
+    """
+    from src.model_gateway.llm_openai_compat.dialects import (
+        ThinkingSpec, apply_thinking, dialect_for,
+    )
+    from src.model_gateway.llm.errors import LlmError
+    import pytest
+
+    assert dialect_for("volcengine-coding") is not dialect_for("nous"), "必须命中专属方言"
+
+    body = {}
+    apply_thinking(body, ThinkingSpec(vendor="volcengine-coding", thinking="on",
+                                      default_effort="high"),
+                   requested_effort=None, purpose=None)
+    assert body == {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+
+    for tier in ("low", "medium", "high", "max"):
+        b = {}
+        apply_thinking(b, ThinkingSpec(vendor="volcengine-coding", default_effort=tier),
+                       requested_effort=None, purpose=None)
+        assert b == {"thinking": {"type": "enabled"}, "reasoning_effort": tier}, tier
+
+    off = {}
+    apply_thinking(off, ThinkingSpec(vendor="volcengine-coding", thinking="off"),
+                   requested_effort=None, purpose=None)
+    assert off == {"thinking": {"type": "disabled"}}
+
+    silent = {}
+    apply_thinking(silent, ThinkingSpec(vendor="volcengine-coding"),
+                   requested_effort=None, purpose=None)
+    assert silent == {}, "不声明必须不表态（端点自然行为）"
+
+    with pytest.raises(LlmError, match="不支持 reasoning effort"):
+        apply_thinking({}, ThinkingSpec(vendor="volcengine-coding"),
+                       requested_effort="bogus", purpose=None)
