@@ -26,7 +26,21 @@ import requests
 
 _SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8888")
 _ALIYUN_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
-_ALIYUN_MODEL = "qwen3.8-max"
+
+
+def _search_model() -> str:
+    """搜索查询改写用哪一档 —— **从模型目录取**（端点真实 id）。
+
+    〔5715 · 模型名收口〕改前是模块常量 ``_ALIYUN_MODEL = "qwen3.8-max"``：
+    **模型名写死在代码里** ⇒ 端点换代/改名就悄悄失配（要么 404、要么悄悄用了
+    别的模型）。现在由 models.yaml 用 ``use: search`` 标出那一档，代码只取
+    目录里的 ``model:`` 字段（端点真实 id）⇒ 换代只改配置。
+
+    取不到 ⇒ 空串（调用方**如实报错**，不猜模型名）。
+    """
+    from . import model_config  # 延迟 import：api 层内互相引用，避免装载期成环
+
+    return model_config.model_for_purpose("search")
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -77,12 +91,18 @@ def _aliyun(query: str) -> dict[str, Any] | None:
     key = os.environ.get("ALIYUN_TOKEN_PLAN_API_KEY", "")
     if not key:
         return None
+    # 〔5715 · 模型名收口〕用哪一档从**模型目录**取（use: search 标记的那档），
+    # 代码里不写模型名。取不到 ⇒ 这条备用通道**如实不可用**（返回 None），
+    # 不猜一个模型名去撞端点。
+    model = _search_model()
+    if not model:
+        return None
     try:
         r = requests.post(
             _ALIYUN_URL,
             headers={"Authorization": f"Bearer {key}",
                      "Content-Type": "application/json"},
-            json={"model": _ALIYUN_MODEL,
+            json={"model": model,
                   "messages": [{"role": "user",
                                 "content": f"搜索并回答（附来源与日期）：{query}"}],
                   "enable_search": True},
