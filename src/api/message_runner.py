@@ -959,7 +959,9 @@ async def step(state: RunState) -> StepOutcome:
             # [T-0010 §1.6] 回灌文本走单一投影函数（不各自 json.dumps）——
             # 否则失败信封的 {"code","message"} 会被当数据喂进模型上下文
             _tool_call_id = f"call_{_run_tag}_{state.rounds}_{i}"
-            _rendered_result = card_tools.render_tool_result(tool_result)
+            # [工具结果注入有界 2026-10-25] 单一投影点统一截断（事件留痕不受限，只护模型上下文）
+            _rendered_result = card_tools.bound_text(
+                card_tools.render_tool_result(tool_result))
             state.slot.append_tool_result({
                 "role": "tool",
                 "tool_call_id": _tool_call_id,

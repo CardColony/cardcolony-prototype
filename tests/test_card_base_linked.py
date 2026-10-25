@@ -76,9 +76,13 @@ async def test_v1_read_via_three_parts_and_unlink(sandbox):
     out = await card_tools.read_via(wid, a_id, b_id, "影子")
     assert out["ok"] is True and isinstance(out["value"], str)
 
-    # ③ 对话（复用 event_log.timeline）
+    # ③ 对话（复用 event_log.timeline）——[2026-10-25] 改为**尾部窗口摘要**：
+    # 旧契约返全量 list（实测两条卡 287 万字符顶爆上下文）；新契约返
+    # {events, window, truncated, note}，工具结果只留摘要。
     out = await card_tools.read_via(wid, a_id, b_id, "对话")
-    assert out["ok"] is True and isinstance(out["value"], list)
+    assert out["ok"] is True and isinstance(out["value"], dict)
+    assert set(out["value"]) >= {"events", "window", "truncated"}
+    assert isinstance(out["value"]["events"], list)
 
     # part 非法 → unknown_part（不抛）
     out = await card_tools.read_via(wid, a_id, b_id, "天书")
