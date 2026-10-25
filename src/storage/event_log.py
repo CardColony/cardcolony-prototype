@@ -36,6 +36,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+
+#: json.loads 的**模块内别名**：测试可数「解析了多少行」，
+#: 用来钉住「尾部窗口不许退回全量解析」这条性能契约（不碰全局 json）。
+_loads = json.loads
 import logging
 import os
 import threading
@@ -120,7 +124,7 @@ def _tail_seq(path: Path) -> int:
                 if tried > _TAIL_TRY_LINES:
                     break
                 try:
-                    rec = json.loads(ln)
+                    rec = _loads(ln)
                 except (ValueError, TypeError):
                     continue
                 if isinstance(rec, dict):
@@ -302,7 +306,7 @@ def read(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for line in _iter_lines(path):
         try:
-            rec = json.loads(line)
+            rec = _loads(line)
         except (ValueError, TypeError):
             logger.warning("[event_log] 坏行跳过 file=%s", path.name)
             continue
@@ -319,6 +323,109 @@ def read(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, Any]]:
     return out
 
 
+def _tail_records(path: Path, spans: list[tuple[int, int]],
+                  want: int) -> list[dict[str, Any]]:
+    """从**文件尾**往前读，收集最后 ``want`` 条**未被撤销**的记录。
+
+    〔5715 · 治「切卡卡死」〕为什么不能「全量读再切」：长会话的事件文件能到
+    **十几 MB / 数万行**，全量 ``json.loads`` 每行一遍要**秒级**（实测 47492 行
+    ⇒ 0.25~1.6s）——而打开卡片只要**尾部几百条**。
+
+    为什么不能「多取 N 行再截」：事件文件里**同一条 tool_call 会有多条
+    tool_result**（seq 递增但条数 ≫ 调用数）⇒「行数」与「记录数」不成比例，
+    多取固定条数不能保证「窗口内记录数 ≥ want」⇒ 会与原实现差几条。
+
+    本实现：**整文件按字节读一次**（十几 MB 约 20ms——慢的是 json.loads，不是
+    IO）⇒ 切行 ⇒ **只解析尾部需要的那些** ⇒ 收够 want 条就停。
+    撤销语义与改前**逐字同构**：revoke{from_seq:N} 撤掉「N ≤ seq < revoke 自身
+    seq」的记录（升序处理时区间天然重叠 ⇒ 等价于区间并集）⇒ 这里用区间并集判定。
+    """
+    if want <= 0:
+        return []
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    if not data:
+        return []
+    out: list[dict[str, Any]] = []
+    for ln in reversed(data.split(b"\n")):
+        if not ln.strip():
+            continue
+        try:
+            rec = _loads(ln)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        s = rec.get("seq")
+        s = int(s) if isinstance(s, int) and not isinstance(s, bool) else (
+            int(s) if isinstance(s, str) and s.isdigit() else None)
+        if s is None:
+            continue
+        rec["seq"] = s
+        if str(rec.get("type") or "") in CONTROL_TYPES:
+            continue                    # 控制记录不进渲染面（与改前一致）
+        if _in_revoked(s, spans):
+            continue                    # 被 revoke 覆盖的段（区间并集）
+        out.append(rec)
+        if len(out) >= want:
+            break
+    out.reverse()                        # 收集是「新→旧」⇒ 反转成 seq 升序
+    out.sort(key=lambda r: int(r.get("seq") or 0))
+    return out
+
+
+def _revoke_spans(path: Path) -> list[tuple[int, int]]:
+    """扫出所有 revoke 的作废区间 ``(from_seq, revoke_seq)``（**字节级**扫描）。
+
+    〔5715 · 治「切卡卡死」〕原来的 :func:`timeline` 为了让 revoke 生效，
+    对**全文件**逐行 ``json.loads``（47492 行 ⇒ 秒级）——而这个函数是
+    **同步**调用、跑在 async 端点里 ⇒ **堵死事件循环** ⇒ 期间所有请求排队
+    ⇒ 页面「没反应」。
+
+    这里只做**子串命中**（``"revoke"``）才 json.loads 那一行 ⇒
+    13.6MB 的扫描是**字节级**的（几十毫秒），而不是秒级解析。
+    """
+    spans: list[tuple[int, int]] = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "revoke" not in line:
+                    continue
+                try:
+                    rec = _loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(rec, dict) or str(rec.get("type") or "") not in CONTROL_TYPES:
+                    continue
+                data = rec.get("data") or {}
+                try:
+                    fseq = int(data.get("from_seq"))
+                except (TypeError, ValueError):
+                    continue
+                s = rec.get("seq")
+                try:
+                    rseq = int(s)
+                except (TypeError, ValueError):
+                    rseq = fseq
+                spans.append((fseq, rseq))
+    except FileNotFoundError:
+        return spans
+    except OSError as exc:
+        logger.warning("[event_log] 事件文件读取失败 file=%s: %s", path.name, exc)
+        return spans
+    return spans
+
+
+def _in_revoked(seq: int, spans: list[tuple[int, int]]) -> bool:
+    """这条记录是否落在某个 revoke 的作废区间内。"""
+    for f, r in spans:
+        if f <= seq < r:
+            return True
+    return False
+
+
 def timeline(work_id: str, card_id: str, from_seq: int = 0,
              tail: int = 0, before: int = 0) -> list[dict[str, Any]]:
     """合并时序表：按 seq 升序，**跳过被 revoke 覆盖的段**（软删语义）。
@@ -332,11 +439,30 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
       · ``tail=N``   —— 只回最后 N 条（打开卡片时用，长会话从上千条降到几百条）；
       · ``before=S`` —— 只回 seq < S 的部分（往上翻历史时用）。
     为什么放在**过滤之后**截：revoke 必须按全量时序生效，先截会把已作废的段复活。
-    """
 
+    〔5715 · 治「切卡卡死」〕**tail 路径不再全量解析**：
+      · revoke 区间改为**字节级**扫描（子串命中才解析）⇒ 十几 MB 的文件几十毫秒；
+      · 记录只从**文件尾**读「尾部 N 条 ＋ 被撤条数余量」⇒ 与原语义等价
+        （原实现是「全量收 → 撤 → 截尾」；这里先多取被撤的量，撤完仍够 N 条）。
+      · ``before`` / ``from_seq>0`` 仍走全量（翻历史/增量是少数路径），
+        但调用方已把它挪进线程（见 routes.py）⇒ 不再堵事件循环。
+    """
+    path = event_path(work_id, card_id)
+    spans = _revoke_spans(path)
     items: list[dict[str, Any]] = []
-    # 全量读后再按 from_seq 截：**revoke 必须在截断之前处理**——若直接
-    # from_seq 读，越过 revoke 记录就会把已作废的段复活（软删失效）。
+
+    want_tail = 0
+    try:
+        want_tail = int(tail)
+    except (TypeError, ValueError):
+        want_tail = 0
+
+    if want_tail > 0 and not before and from_seq <= 0:
+        # ── 尾部窗口路径：从文件尾往前读，够 N 条就停（不再全量解析）──────
+        items = _tail_records(path, spans, want_tail)
+        return items
+
+    # ── 全量路径（翻历史 / 增量）：与改前逐字一致 ───────────────────────
     for rec in read(work_id, card_id):
         if str(rec.get("type") or "") in CONTROL_TYPES:
             data = rec.get("data") or {}
@@ -356,13 +482,8 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
             b = 0
         if b > 0:
             items = [x for x in items if int(x.get("seq") or 0) < b]
-    if tail:
-        try:
-            t = int(tail)
-        except (TypeError, ValueError):
-            t = 0
-        if t > 0:
-            items = items[-t:]
+    if want_tail > 0:
+        items = items[-want_tail:]
     return items
 
 
