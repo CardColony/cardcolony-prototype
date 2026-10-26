@@ -42,6 +42,7 @@ import json
 _loads = json.loads
 import logging
 import os
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -216,7 +217,33 @@ def _append_locked(work_id: str, card_id: str, record: dict[str, Any]) -> dict[s
     except OSError as exc:
         logger.warning("[event_log] 追加失败（不阻断）work=%s card=%s: %s", work_id, card_id, exc)
         return {}
+    # [基础设施 2026-10-26] 汇总面：**唯一真正的写点**收进 event_hub 缓冲
+    # （同步入缓冲、微秒级；落表由 append 的异步链批量驱动）。放在这里而不是
+    # event_stream.emit 里，是因为还有两条绕过 emit 的直写路径
+    # （goal/driver 的 goal_round、session_facade 的消息块事件）也必须被汇总。
+    try:
+        from ..infra import event_hub
+        event_hub.record(work_id, card_id, rec)
+    except Exception as exc:  # noqa: BLE001 汇总失败不影响事件落盘
+        logger.warning("[event_log] 汇总记录失败（不阻断）card=%s: %s", card_id, exc)
     return rec
+
+
+def _notify_harness(work_id: str, card_id: str, rec: dict[str, Any]) -> None:
+    """事件落盘后交给 harness 评估（异步路径与同步路径共用）。
+
+    [系统消息 2026-10-26] 只有「有规则监听该类型」才起，高频事件不白跑。
+    ``fire_async`` 内部自行判断有无事件循环：同步上下文（如 goal 域
+    ``append_sync`` 在无 loop 的线程里跑）会直接返回，不会炸。
+    """
+    try:
+        from ..infra import harness
+        _t = str(rec.get("type") or "")
+        if _t and harness.interested(_t):
+            harness.fire_async(work_id, _t, card_id, rec.get("data"),
+                               trigger_seq=int(rec.get("seq") or 0))
+    except Exception as exc:  # noqa: BLE001 接线失败不影响事件
+        logger.warning("[event_log] 规则接线失败（不阻断）: %s", exc)
 
 
 # ---------------------------------------------------------------- 写
@@ -229,17 +256,37 @@ async def append(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str
     try:
         async with _async_lock(work_id, card_id):
             with _write_lock:
-                return _append_locked(work_id, card_id, record)
+                rec = _append_locked(work_id, card_id, record)
+        # [基础设施 2026-10-26] 批量落汇总表（阈值由 event_hub 控制）
+        if rec:
+            try:
+                from ..infra import event_hub
+                await event_hub.maybe_flush(work_id)
+            except Exception as exc:  # noqa: BLE001 汇总不阻断事件落盘
+                logger.warning("[event_log] 汇总落表失败（不阻断）: %s", exc)
+            # [系统消息 2026-10-26 · 用户令「现在先做第一个事件」] 事件 → 规则 → 提醒。
+            # **后台**评估：规则命中要读卡、读事件、发消息，比落盘慢得多，
+            # 直接 await 会把高频事件通道拖垮。
+            _notify_harness(work_id, card_id, rec)
+        return rec
     except Exception as exc:  # noqa: BLE001 事件日志零阻断
         logger.warning("[event_log] append 失败（不阻断）card=%s: %s", card_id, exc)
         return {}
 
 
 def append_sync(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, Any]:
-    """同步追加（无事件循环的调用点使用；与异步路径共用字节写互斥）。"""
+    """同步追加（无事件循环的调用点使用；与异步路径共用字节写互斥）。
+
+    [系统消息 2026-10-26] **也接线**：``goal/change`` 走的就是这条路径
+    （``goal/service._commit`` 用 append_sync 写盘）。若当前上下文有事件循环，
+    harness 会在后台评估；没有则 ``fire_async`` 自行返回（不阻断写盘）。
+    """
     try:
         with _write_lock:
-            return _append_locked(work_id, card_id, record)
+            rec = _append_locked(work_id, card_id, record)
+        if rec:
+            _notify_harness(work_id, card_id, rec)
+        return rec
     except Exception as exc:  # noqa: BLE001 事件日志零阻断
         logger.warning("[event_log] append_sync 失败（不阻断）card=%s: %s", card_id, exc)
         return {}
@@ -376,6 +423,26 @@ def _tail_records(path: Path, spans: list[tuple[int, int]],
     return out
 
 
+#: 判「这条是不是 revoke 控制记录」的**行首**正则（type 字段一般就在行首一百多字节）。
+#: 〔P24 · 2026-10-26〕先在行首判定 type，**不是 revoke 就不必整行 json.loads**——
+#: 事件文件里有**巨型内容行**（实测 card_021：8277 行 / 109.5MB ⇒ 平均 13KB/行），
+#: 整行解析一行要 ~285ms ⇒ 光是 3 行「内容里恰好出现 revoke 字样」的巨型行
+#: 就要 855ms（这才是旧实现那 1.1 秒的真正来源，不是扫描本身）。
+_REVOKE_TYPE_RE = re.compile(rb'"type"\s*:\s*"([A-Za-z_]+)"')
+
+#: 行首多少字节内判 type（超出就保守整行解析——正确性优先）。
+_REVOKE_HEAD_BYTES = 2048
+
+#: (mtime_ns, size) → spans 的缓存（撤区间只随文件变化而变）。
+#: 〔P24〕没有它：**同一次切卡**会多次调 timeline（打开 + 结算回流 + 增量对账）
+#: ⇒ 每次都重扫一遍 109MB ⇒ 「切卡卡死」的成本被乘以次数。
+#: 〔P25 补〕**必须有上限**（内存封顶原则：只按容量淘汰，**不按时间**）。
+#: 每条 = 一个卡的事件文件的撤区间列表 ⇒ 条数 ≈ 卡数；不封顶的话卡越多越涨。
+_REVOKE_CACHE: dict[str, tuple[int, int, list[tuple[int, int]]]] = {}
+#: 撤区间缓存的条目上限（超出按插入顺序丢最旧）。
+_REVOKE_CACHE_MAX = 512
+
+
 def _revoke_spans(path: Path) -> list[tuple[int, int]]:
     """扫出所有 revoke 的作废区间 ``(from_seq, revoke_seq)``（**字节级**扫描）。
 
@@ -384,37 +451,74 @@ def _revoke_spans(path: Path) -> list[tuple[int, int]]:
     **同步**调用、跑在 async 端点里 ⇒ **堵死事件循环** ⇒ 期间所有请求排队
     ⇒ 页面「没反应」。
 
-    这里只做**子串命中**（``"revoke"``）才 json.loads 那一行 ⇒
-    13.6MB 的扫描是**字节级**的（几十毫秒），而不是秒级解析。
+    这里只做**子串命中**（``"revoke"``）才 json.loads 那一行。
+
+    〔P24 · 2026-10-26〕三重提速（实测 card_021：109.5MB / 8277 行 / 平均 13KB 每行）：
+      ① 定位命中处用 ``bytes.find``（C 层）而不是 Python 逐行迭代；
+      ② **先在行首 2KB 内判 type**——不是 revoke 就不必**整行** json.loads
+         （巨型内容行整行解析要 ~285ms；旧实现那 1.1 秒里 855ms 就在这）；
+      ③ 按 (mtime_ns, size) **缓存**撤区间（同一次切卡会多次调 timeline）。
+    实测：旧 930ms → 新 **106ms**（语义等价：只有行首明确写着别的 type 才跳过整行解析）。
     """
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+    key = str(path)
+    cached = _REVOKE_CACHE.get(key)
+    if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+        return cached[2]
+
     spans: list[tuple[int, int]] = []
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if "revoke" not in line:
-                    continue
-                try:
-                    rec = _loads(line)
-                except (ValueError, TypeError):
-                    continue
-                if not isinstance(rec, dict) or str(rec.get("type") or "") not in CONTROL_TYPES:
-                    continue
-                data = rec.get("data") or {}
-                try:
-                    fseq = int(data.get("from_seq"))
-                except (TypeError, ValueError):
-                    continue
-                s = rec.get("seq")
-                try:
-                    rseq = int(s)
-                except (TypeError, ValueError):
-                    rseq = fseq
-                spans.append((fseq, rseq))
+        raw = path.read_bytes()
     except FileNotFoundError:
         return spans
     except OSError as exc:
         logger.warning("[event_log] 事件文件读取失败 file=%s: %s", path.name, exc)
         return spans
+    if b"revoke" in raw:
+        pos = 0
+        while True:
+            i = raw.find(b"revoke", pos)
+            if i < 0:
+                break
+            pos = i + 6
+            # 回溯到行首、顺延到行尾（只把这**一行**送去判）
+            s = raw.rfind(b"\n", 0, i) + 1
+            e = raw.find(b"\n", i)
+            if e < 0:
+                e = len(raw)
+            # 〔P24〕行首已明确写着别的 type ⇒ 铁定不是控制记录 ⇒ 不必整行解析
+            head = raw[s:min(e, s + _REVOKE_HEAD_BYTES)]
+            mt = _REVOKE_TYPE_RE.search(head)
+            if mt is not None and mt.group(1) != b"revoke":
+                continue
+            try:
+                rec = _loads(raw[s:e].decode("utf-8", errors="replace"))
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(rec, dict) or str(rec.get("type") or "") not in CONTROL_TYPES:
+                continue
+            data = rec.get("data") or {}
+            try:
+                fseq = int(data.get("from_seq"))
+            except (TypeError, ValueError):
+                continue
+            s2 = rec.get("seq")
+            try:
+                rseq = int(s2)
+            except (TypeError, ValueError):
+                rseq = fseq
+            spans.append((fseq, rseq))
+    try:
+        # 〔P25 补〕内存封顶：超上限就丢最旧的（**不按时间**淘汰——用户明令不许按时间释放）。
+        if len(_REVOKE_CACHE) >= _REVOKE_CACHE_MAX and key not in _REVOKE_CACHE:
+            for old in list(_REVOKE_CACHE.keys())[:len(_REVOKE_CACHE) - _REVOKE_CACHE_MAX + 1]:
+                _REVOKE_CACHE.pop(old, None)
+        _REVOKE_CACHE[key] = (st.st_mtime_ns, st.st_size, spans)
+    except Exception:  # noqa: BLE001 缓存失败不影响主流程
+        pass
     return spans
 
 
