@@ -985,6 +985,18 @@ async def condense_turn_end(work_id: str, card_id: str,
                        work_id, card_id, exc)
 
 
+def _card_id_from_session_stem(stem: str) -> str:
+    """会话文件名 → card_id（与 `session_store._session_path` 互逆）。
+
+    [扫描器撞号修复 2026-10-26] 原实现一律 `"card_" + stem.split("_",1)[1]`：
+    `session_fn_004.md` → `card_fn_004`（不存在的卡）⇒ 职能卡的会话**永远扫不到**，
+    到线也不会凝。实测 work_027/fn_004 14.4 万、fn_006 10 万，mark 恒为 0。
+    互逆规则：纯数字 ⇒ `card_NNN`；其余（fn_/其它前缀）⇒ 原名即 card_id。
+    """
+    rest = stem[len("session_"):] if stem.startswith("session_") else stem
+    return f"card_{rest}" if rest.isdigit() else rest
+
+
 async def condense_sweep_once(max_cards: int = 8) -> int:
     """扫一遍所有 work 的会话文件：未凝量到线的卡就地凝到窗口 90% 以下。
 
@@ -999,7 +1011,7 @@ async def condense_sweep_once(max_cards: int = 8) -> int:
         for f in sorted(sess_dir.glob("session_*.md")):
             if done >= max_cards:
                 return done
-            card_id = "card_" + f.stem.split("_", 1)[1]
+            card_id = _card_id_from_session_stem(f.stem)
             try:
                 st = load_memory(work_id, card_id)
                 mark = int(st.get("mark", 0) or 0)
