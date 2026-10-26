@@ -19,9 +19,10 @@ import logging
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -150,6 +151,16 @@ class PostMessageRequest(BaseModel):
     op: Optional[str] = None
 
 
+# [wb_exec 2026-10-23] 执行体选择（谁干活：WorkBuddy 还是系统自己的模型）
+class SetExecBackendRequest(BaseModel):
+    backend: str = Field(min_length=1)   # auto | system | wb:<版本>:<模型>
+
+
+# [wb_exec 2026-10-23 16:20] 执行体**总开关**（手动、运行时生效，不用重启）
+class SetWbExecSwitchRequest(BaseModel):
+    enabled: bool
+
+
 # [卡片编辑机制改造 2026-10-12 · 块2] draft/commit 请求体
 class DraftRequest(BaseModel):
     kind: str = Field(min_length=1)  # requirements | status（mission 不可经此口）
@@ -193,7 +204,32 @@ async def create_work(req: CreateWorkRequest):
     result = await work_store.create_work(req.title)
     if "error" in result:
         return _err(400, result["error"])
+    # [预设职能 2026-10-24] 建项目即按目录播种(总裁落根卡+其余职能建卡)。
+    # fail-open:目录未启用/播种失败不挡建项目,只留痕。
+    try:
+        from . import function_room as _function_room
+        seeded = await _function_room.seed_work(str(result.get("work_id") or ""))
+        result["functions_seeded"] = seeded
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[works] 职能播种失败(不阻断建项目): %s", exc)
+        result["functions_seeded"] = {"error": str(exc)}
+    # [规则=项目基建 2026-10-25] 建项目即播种默认规则(通用工作流)。
+    try:
+        await ensure_rules(str(result.get("work_id") or ""))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[works] 规则播种失败(不阻断): %s", exc)
     return JSONResponse(status_code=201, content=result)
+
+
+@router.post("/works/{work_id}/functions/seed")
+async def seed_work_functions(work_id: str):
+    """[预设职能 2026-10-24] 给**存量** work 手动播种目录职能(幂等:
+    按 jurisdiction.catalog_code 去重,已播种的条目跳过)。不动 work_025 之类的
+    历史数据——播种与否由人显式决定。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    from . import function_room as _function_room
+    return await _function_room.seed_work(work_id)
 
 
 # ============================================================
@@ -283,6 +319,13 @@ async def get_nav():
                 }
                 for p in function_store.list_profiles(wid)
                 if p.get("function_id")
+                # [总裁=根卡 2026-10-24 · 用户令「不需要单独的总裁卡,两者一体」]
+                # 总裁档案落在根卡上——根卡已在卡列表里(其抽屉有总裁台账面板),
+                # 职能段**不再重复列出**总裁,否则看起来像多出一张卡。
+                and p.get("function_id") != root_id
+                # [旧职能清理 2026-10-24] 归档(撤岗)的不再显示——旧职能已全部
+                # 归档,台账与判词留痕在库,不销毁,可复活。
+                and (p.get("duty") or {}).get("state") != "archived"
             ]
         except Exception as exc:  # noqa: BLE001
             logger.warning("[nav] 读职能失败 work=%s: %s", wid, exc)
@@ -351,6 +394,38 @@ async def get_nav_children(work_id: str = "", parent: str = ""):
     return {"work_id": work_id, "parent": parent, "cards": cards}
 
 
+@router.get("/health")
+async def get_health(request: Request):
+    """[服务自报 2026-10-25] 这个服务跑的是**哪份代码**？
+
+    改了后端要重启才生效，而「重启了没」全靠人猜 ⇒ 这里把**启动那一刻**
+    关键源文件的 mtime 与 git HEAD 报出来：拿它和盘上文件 mtime 一比，
+    盘上更新 ⇒ **服务跑的是旧代码，该重启**。
+
+    另外顺带报三样运维要的数：keep-alive 超时、日志目录、当前访问日志行数。
+    """
+    stamp = {}
+    try:
+        stamp = dict(getattr(request.app.state, "build_stamp", {}) or {})
+    except Exception:  # noqa: BLE001 取不到就如实报空
+        stamp = {}
+    logs = card_store.WORKS_DIR.parent / "logs"
+    n_access = 0
+    try:
+        p = logs / "access_log.jsonl"
+        if p.exists():
+            n_access = sum(1 for _ in p.open("r", encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "ok": True,
+        "build": stamp,
+        "logs_dir": str(logs),
+        "access_log_lines": n_access,
+        "now": time.time(),
+    }
+
+
 @router.get("/nav/running")
 async def get_nav_running():
     """[左栏接线 步1] 「谁在跑」总览：当前处于活跃调用中的卡清单。
@@ -394,9 +469,30 @@ async def get_work_pulse(work_id: str, limit: int = 20):
     }
 
 
-async def _work_fingerprint(wid: str) -> str:
+#: 指纹计算的**专用**线程池（2026-10-25）。
+#: 为什么不用默认池：35 个指纹任务（每个都要开一次 SQLite 库、可能等写锁）
+#: 会把默认线程池占满 ⇒ **业务自己的** to_thread 工作排队
+#: ⇒ 实测一次客户端错误上报被拖到 **6333ms**（访问日志实测）。
+#: 专用池有界（8 个）：既拿到并发提速，又不会抢业务的池子。
+_FP_EXECUTOR: Optional[ThreadPoolExecutor] = None
+
+
+def _fp_executor() -> ThreadPoolExecutor:
+    """指纹计算的专用线程池（懒建；进程内单例）。"""
+    global _FP_EXECUTOR
+    if _FP_EXECUTOR is None:
+        _FP_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="nav-fp")
+    return _FP_EXECUTOR
+
+
+def _work_fingerprint_sync(wid: str) -> str:
     """[S1·R-06] 单 work 变化指纹：work.json、sessions/*.md 的「路径+大小+mtime」
     全列表哈希，**＋库内 cards.rev**（只读遍历，不侵入任何写路径）。
+
+    〔5715 · 治「切卡卡死」〕改成**同步函数**：调用方（get_nav_version）用
+    ``asyncio.to_thread`` 把它挪出事件循环——它是**扫盘**（每 work 扫 work.json ＋
+    sessions/*.md ＋ 读 cards.rev）⇒ 放在 async 端点里直接跑会**堵住整个事件循环**
+    （前端每 60s 探一次版本 ⇒ 那 60s 里所有请求排队 ⇒ 页面像死了）。
 
     [卡片存储迁移 SQLite 2026-10-14] 卡片侧改读库内 ``meta.rev``（每次写 +1）——
     理由（方案 §7.1.1）：SQLite 默认 WAL 把写入落在 ``cards.db-wal``，主库文件
@@ -425,7 +521,7 @@ async def _work_fingerprint(wid: str) -> str:
                     entries.append((f"sessions/{e.name}", st.st_size, int(st.st_mtime)))
     except OSError:
         pass                      # work 无 sessions 子目录＝空指纹，合法
-    rev = await card_db.read_rev_async(wid)
+    rev = card_db.read_rev(wid)
     h = hashlib.sha256()
     for name, size, mtime in sorted(entries):
         h.update(f"{name}|{size}|{mtime}\n".encode("utf-8"))
@@ -450,21 +546,180 @@ async def get_nav_version():
         dirs = list(os.scandir(card_store.WORKS_DIR))
     except OSError:
         dirs = []
+    wids: list[str] = []
     for e in dirs:
         wid = e.name
         if not wid or not e.is_dir():
             continue
         if not (card_store.WORKS_DIR / wid / "work.json").exists():
             continue
-        by_work[wid] = await _work_fingerprint(wid)
+        wids.append(wid)
+    # 〔P22 · 治「页面卡顿」· 2026-10-25〕**并发**算指纹。
+    # 原来是对每个 work **串行** await 一次 to_thread（35 个 work ＝ 35 次开 SQLite 库
+    # 串行等）⇒ 实测 68ms（空载）～ **4387ms**（磁盘忙时，访问日志实测）⇒
+    # 左栏每 60 秒探一次版本 ⇒ 一次就能顶掉好几秒。
+    # 拆开量过：sessions 目录扫描只要 **2ms**（296 个 .md），
+    # 大头是 `card_db.read_rev` 的**逐个开库**（串行 358ms → 并发 **19ms**）。
+    # 〔5715 · 治「切卡卡死」〕指纹是**同步扫盘**（每 work 扫 work.json ＋
+    # sessions/*.md ＋ 读 cards.rev）⇒ 放线程里跑，**不许堵事件循环**
+    # （前端每 60s 探一次版本；堵住＝那 60s 内所有请求排队 ⇒ 页面像死了）。
+    if wids:
+        loop = asyncio.get_running_loop()
+        _fps = await asyncio.gather(*(
+            loop.run_in_executor(_fp_executor(), _work_fingerprint_sync, w) for w in wids))
+        by_work = dict(zip(wids, _fps))
     h = hashlib.sha256()
     for wid in sorted(by_work):
         h.update(f"{wid}|{by_work[wid]}\n".encode("utf-8"))
     return {"version": h.hexdigest(), "by_work": by_work}
 
 
+async def _unread_by_card(work_id: str, cards: dict, inbox_rows=None) -> dict[str, int]:
+    """未读角标＝「收件箱里 seq 超过该卡读取水位(seen_seq)的那些」。
+
+    〔P21 · 治「切页卡死」· 2026-10-25〕**不扫旧档案**（源二）。
+    旧档案块（会话里的 `card:` 块）**从来不参与未读计算**（见 list_card_messages
+    注释：unread_by_card 只看 inbox）⇒ 只算角标时扫它纯属白干：
+    work_025 有 44 张卡 ⇒ 44 份整会话档案读 ⇒ 实测 1.7~2.1s，
+    而左栏角标**每 60 秒**拉一次（nav_system.refreshBadge）⇒ 持续后台负载。
+
+    seen_seq 读取改**并发**（原来 44 次串行 await）。
+    """
+    cids = list(cards.keys())
+    _seqs = await asyncio.gather(
+        *(card_db.get_seen_seq(work_id, c) for c in cids),
+        return_exceptions=True)
+    seen_seq: dict[str, int] = {
+        c: (-1 if isinstance(s, BaseException) else int(s))
+        for c, s in zip(cids, _seqs)
+    }
+    rows = inbox_rows if inbox_rows is not None else await card_db.list_inbox(work_id)
+    unread: dict[str, int] = {}
+    for row in rows:
+        target = str(row.get("target_card_id") or "")
+        seq = row.get("seq")
+        if target and isinstance(seq, int) and seq > seen_seq.get(target, -1):
+            unread[target] = 1
+    return unread
+
+
+@router.get("/works/{work_id}/card-messages/unread")
+async def list_card_messages_unread(work_id: str):
+    """〔P21 · 治「切页卡死」· 2026-10-25〕**只算未读角标**的轻端点。
+
+    与 `/card-messages` 的关系：响应**只有** `unread_by_card` 一个键，
+    数值口径**逐字相同**（同一个 `_unread_by_card` 实现，不另写一套）。
+    差别只有一个：**不扫旧档案**（源二）⇒ 1.7~2.1s → 毫秒级。
+
+    为什么需要它：左栏未读角标每 60 秒轮询一次，只要一个计数，
+    却每次都拖着 44 张卡的整会话档案（= 每分钟一次 1.9 秒的后台负载）。
+
+    旧端点 `/card-messages` **原样保留**（通知面板与画布通信线要 items 全量）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    cards = card_store.iter_card_metas(work_id)
+    return {"unread_by_card": await _unread_by_card(work_id, cards)}
+
+
+# ============================================================
+# [客户端错误上报 2026-10-25] 连接层失败落盘（前端主动报上来）
+# ============================================================
+
+class ClientErrorRequest(BaseModel):
+    """前端连接层失败的上报体。字段全可选——上报本身绝不能成为新的失败源。"""
+    where: str = ""
+    url: str = ""
+    name: str = ""
+    message: str = ""
+    href: str = ""
+    ua: str = ""
+
+
+@router.post("/client-errors")
+async def report_client_error(req: ClientErrorRequest):
+    """客户端连接层错误 → `logs/client_errors.jsonl`。
+
+    为什么需要这个口：用户看到的「网络错误」（Chrome 的
+    `TypeError: Failed to fetch`）发生在**连接层**——请求**压根没进到应用**
+    ⇒ 服务端日志（原先只有 500 的 `server_errors.jsonl`）**天然看不见**
+    ⇒ 排障只能靠猜（这次先后怀疑了释放策略、事件循环堵死，最后才测到
+    uvicorn 5 秒空闲断 keep-alive）。⇒ 由前端把这类失败主动报上来落盘留证。
+    """
+    from src.api import access_log
+    # [2026-10-25] 写盘挪进**专用**写线程：async 端点里同步写盘会堵事件循环
+    # （P20 治的病）；共用默认线程池又会被业务占满（实测被拖到 6333ms）。
+    await access_log.write_client_error({
+        "where": req.where,
+        "url": req.url[:500],
+        "name": req.name,
+        "message": req.message[:500],
+        "href": req.href[:300],
+        "ua": req.ua[:160],
+    })
+    return {"ok": True}
+
+
+#: 旧档案扫描（源二）的**按 work 缓存**（TTL）＋ 每 work 的串行闸。
+#:
+#: 〔P26 · 2026-10-26 · 治「一个旧页面拖死整个服务」〕实测：
+#: 一个**旧版前端**标签页每 60 秒拉一次**全量** card-messages ⇒ 每次都重扫该 work
+#: 的全部会话文件（**活卡的会话文件一直在变 ⇒ 解析缓存命中不了**）⇒ 3~8 秒/次；
+#: 而它把磁盘/线程池占住 ⇒ **整个服务被拖慢**（实测 nav/running 最慢 2978ms、
+#: nav/version 3162ms 都是被它拖的；另一次实测**页面 DCL 106683ms —— 106 秒**）。
+#: ⇒ 前端已改（角标走轻端点 scope=recent），但**旧 bundle 还在跑** ⇒
+#:   服务端也必须扛得住：同一 work 的重复扫描**合并**（TTL 内复用）＋ 串行闸
+#:   （不占满线程池）。
+#:   ⇒ 顺带说明：为什么解析缓存救不了——**活卡的会话文件每次写都变** ⇒
+#:     stamp 变 ⇒ 缓存失效 ⇒ 只能靠这里的 TTL 合并。
+_ARCHIVE_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+#: 旧档案 items 的缓存时长（秒）。前端轮询是 60 秒 ⇒ 取 120 秒可合并掉约一半。
+_ARCHIVE_TTL = 120.0
+_ARCHIVE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+async def _old_archive_items(work_id: str, cards: dict) -> list[dict[str, Any]]:
+    """旧档案里的 card: 块（**带按 work 的 TTL 缓存 ＋ 串行闸**）。"""
+    now = time.monotonic()
+    hit = _ARCHIVE_CACHE.get(work_id)
+    if hit is not None and (now - hit[0]) < _ARCHIVE_TTL:
+        return list(hit[1])
+    lock = _ARCHIVE_LOCKS.setdefault(work_id, asyncio.Lock())
+    async with lock:
+        # 拿到闸后再查一次（等闸期间别人可能已经扫完 ⇒ 直接复用）
+        hit = _ARCHIVE_CACHE.get(work_id)
+        if hit is not None and (time.monotonic() - hit[0]) < _ARCHIVE_TTL:
+            return list(hit[1])
+        out: list[dict[str, Any]] = []
+        _all_blocks = await asyncio.gather(
+            *(session_facade.read(work_id, cid) for cid in cards))
+        for cid, blocks in zip(cards.keys(), _all_blocks):
+            for b in blocks:
+                if not str(b.get("actor") or "").startswith("card:"):
+                    continue
+                content = str(b.get("content") or "")
+                hdr = card_msg.parse_header(content)
+                fmt_ok = hdr is not None
+                sender = str(b.get("from") or "") or (hdr or {}).get("from", "")
+                msg_id = (hdr or {}).get("id") or f"unparsed-{cid}-{b.get('seq', '')}"
+                out.append({
+                    "id": msg_id,
+                    "ts": b.get("ts") or "",
+                    "seq": b.get("seq"),
+                    "from_card": sender,
+                    "from_title": (cards.get(sender) or {}).get("title", ""),
+                    "to_card": cid,
+                    "msg_type": (hdr or {}).get("type", ""),
+                    "type_display": card_msg.display_of((hdr or {}).get("type", "")) if fmt_ok else "",
+                    "summary": card_msg.strip_header(content)[:80],
+                    "format_ok": fmt_ok,
+                })
+        _ARCHIVE_CACHE[work_id] = (time.monotonic(), list(out))
+        return out
+
+
 @router.get("/works/{work_id}/card-messages")
-async def list_card_messages(work_id: str, limit: int = 200):
+async def list_card_messages(work_id: str, limit: int = 200, scope: str = "all"):
     """[迭代四 K4] 卡间消息通知端点（B4「不得静默」的数据面；纯读、零新增存储）。
 
     **数据源＝inbox 收件箱**（[卡片端点改读收件箱 2026-10-15]）：卡间信已改落
@@ -489,6 +744,11 @@ async def list_card_messages(work_id: str, limit: int = 200):
     - 性能口径如实：inbox 侧是单表索引查询（idx_inbox_work / idx_inbox_target），
       比旧的逐卡整档扫描省得多；但按上面第一条，**旧扫描仍在跑**（历史源），
       故总耗时暂未净改善——两源并存到化石清理批次退役旧源为止（不在本任务）。
+      〔P21 · 2026-10-25〕两处收敛：① 未读计算与 seen_seq 读取搬进
+      `_unread_by_card`（**并发**读 seen_seq，原来 44 次串行 await）；
+      ② 只算未读的场景（**左栏角标每 60 秒轮询一次**）改走
+      `/card-messages/unread`——**不扫旧档案**，1.7~2.1s → 毫秒级。
+      本端点保留 items 全量语义（通知面板与画布通信线要用）。
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
@@ -496,16 +756,12 @@ async def list_card_messages(work_id: str, limit: int = 200):
     items: list[dict[str, Any]] = []
     unread_by_card: dict[str, int] = {}
     seen: set[str] = set()
-    # [取消 inbox 状态机 2026-10-22 · D25] 每卡的读取水位，用于算未读
-    seen_seq: dict[str, int] = {}
-    for _cid in cards:
-        try:
-            seen_seq[_cid] = await card_db.get_seen_seq(work_id, _cid)
-        except Exception:  # noqa: BLE001 读不到按「一条都没读过」
-            seen_seq[_cid] = -1
 
     # ── 源一：收件箱（新机制，含 consumed）────────────────────────────
-    for row in await card_db.list_inbox(work_id):
+    _inbox_rows = await card_db.list_inbox(work_id)
+    # 未读口径与 /card-messages/unread **共用同一份实现**（不另写一套，见 _unread_by_card）
+    unread_by_card = await _unread_by_card(work_id, cards, inbox_rows=_inbox_rows)
+    for row in _inbox_rows:
         msg_id = str(row.get("msg_id") or "")
         sender = str(row.get("from_card") or "")
         target = str(row.get("target_card_id") or "")
@@ -529,34 +785,25 @@ async def list_card_messages(work_id: str, limit: int = 200):
             seen.add(msg_id)
         # [取消 inbox 状态机 2026-10-22 · D25] 未读不再看 status（那个位已删），
         # 改为「该卡读取水位之后收到的消息」——即真实未处理的那批。
-        if target and isinstance(row.get("seq"), int) and row["seq"] > seen_seq.get(target, -1):
-            unread_by_card[target] = 1
+        # 〔P21〕判定搬进 _unread_by_card（与 /card-messages/unread 同一份实现）。
 
     # ── 源二：会话档案里的 card: 块（旧机制，仅存量）──────────────────
-    for cid in cards:
-        blocks = await session_facade.read(work_id, cid)
-        for b in blocks:
-            if not str(b.get("actor") or "").startswith("card:"):
+    # 〔5715 · 治「切卡卡死」〕**并发读**（原来逐张 await ⇒ 44 张卡串行 1.6~4.5s）。
+    # 内容口径逐字不变（items 仍含全部旧档案块），只是把 N 次等待变成 1 轮并发。
+    #
+    # 〔P25 · 2026-10-26 · 「页面的内容存进内存态」〕`scope="recent"` ⇒ **不扫旧档案**
+    # （只回 inbox 的信）。为什么需要：画布页首屏那条 `card-messages?limit=200`
+    # 实测 **4417ms**（旧档案扫描：20 张卡 / 16427 块 ⇒ 读 1308ms ＋ 解析 802ms），
+    # 而它把同一时刻的 `nav/version`（4239ms）、`rule`（2262ms）**全拖慢** ⇒ 整页卡。
+    # 而画布的通信线**只画 30 分钟内的信** ⇒ 旧档案（历史遗留）本就不在窗口内
+    # ⇒ 画布页改用 scope=recent ⇒ 首屏不再有那条 4.2 秒的请求。
+    # 默认 scope="all" 逐字不变（通知面板要看全部历史，含旧档案）。
+    if str(scope or "all").lower() != "recent":
+        # 去重仍在这里做（inbox 源已把 msg_id 记进 seen ⇒ 同一 id 不双出）
+        for _it in await _old_archive_items(work_id, cards):
+            if _it.get("id") in seen:
                 continue
-            content = str(b.get("content") or "")
-            hdr = card_msg.parse_header(content)
-            fmt_ok = hdr is not None
-            sender = str(b.get("from") or "") or (hdr or {}).get("from", "")
-            msg_id = (hdr or {}).get("id") or f"unparsed-{cid}-{b.get('seq', '')}"
-            if msg_id in seen:
-                continue
-            items.append({
-                "id": msg_id,
-                "ts": b.get("ts") or "",
-                "seq": b.get("seq"),
-                "from_card": sender,
-                "from_title": (cards.get(sender) or {}).get("title", ""),
-                "to_card": cid,
-                "msg_type": (hdr or {}).get("type", ""),
-                "type_display": card_msg.display_of((hdr or {}).get("type", "")) if fmt_ok else "",
-                "summary": card_msg.strip_header(content)[:80],
-                "format_ok": fmt_ok,
-            })
+            items.append(_it)
 
     items.sort(key=lambda x: str(x["ts"]), reverse=True)
     if limit >= 0:
@@ -583,6 +830,7 @@ async def get_work_canvas(work_id: str):
     # canvas 投影里天然没有它们。这里单独附一份（含 watch 目标），前端画成
     # 顶部一排的独立节点 + 到被关注卡的虚线。读失败不影响出图（fail-open 空表）。
     try:
+        _root_id = work_store.work_card_id_of(work_id) or ""
         data["functions"] = [
             {
                 "function_id": p.get("function_id", ""),
@@ -592,6 +840,11 @@ async def get_work_canvas(work_id: str):
             }
             for p in function_store.list_profiles(work_id)
             if p.get("function_id")
+            # [总裁=根卡 2026-10-24] 总裁档案在根卡上——根卡已是画布主节点,
+            # 顶部职能排不再重复画一个总裁节点(用户令:两者一体,不单出)。
+            and p.get("function_id") != _root_id
+            # [旧职能清理 2026-10-24] 归档的不画(撤岗留痕,不显示)。
+            and (p.get("duty") or {}).get("state") != "archived"
         ]
     except Exception as exc:  # noqa: BLE001
         logger.warning("[canvas] 读职能失败 work=%s: %s", work_id, exc)
@@ -660,8 +913,169 @@ async def get_work_card(work_id: str, card_id: str):
         result = _apply_block_set(result, work_id)
         result["role"] = await role_room.role_summary(work_id, card_id)
         return result
+    # [预设职能 2026-10-24] 职能卡读侧附台账动态面(职责书/观点簿/警报簿/指令簿);
+    # 根卡若已职能化(总裁)也附带其职能身份摘要。fail-open:拼不出不挡读。
+    try:
+        if str((result.get("meta") or {}).get("card_type") or "") == "function":
+            result = _apply_block_set(result, work_id)
+            from . import function_room as _function_room
+            result["function"] = _function_room.summary(work_id, card_id)
+            return result
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("[cards] 职能卡面拼装失败 work=%s fn=%s: %s",
+                       work_id, card_id, _exc)
     # [卡片编辑机制改造 2026-10-12 · 块1] 读侧按块集判据过滤 body 键
-    return _apply_block_set(result, work_id)
+    result = _apply_block_set(result, work_id)
+    # [总裁制 P1 2026-10-24] 根卡已职能化(总裁档案落根卡)⇒ 附总裁职能摘要
+    # (观点簿/决策簿/警报簿)。总裁的 card_type 仍是 project——身份在档案表,
+    # 不改类型;读侧附带,前端与模型都能看到"这张根卡同时是总裁"。
+    try:
+        _root_id = work_store.work_card_id_of(work_id) or ""
+        if card_id == _root_id:
+            from . import function_room as _function_room
+            _prof = _function_room.function_meta_for(work_id, card_id)
+            if _prof:
+                result["ceo"] = _function_room.summary(work_id, card_id)
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("[cards] 总裁摘要拼装失败 work=%s: %s", work_id, _exc)
+    return result
+
+
+# ============================================================
+# [wb_exec 2026-10-23] coder 卡的**执行体选择**（谁干活：WorkBuddy 还是系统自己的模型）
+#
+# 为什么不复用 `PUT /api/settings/model-overrides/{wid}/card/{cid}`：
+# 那个端点是**整行替换**（`model_override.put_row` 覆盖 cards[card_id]），
+# 只带 ``exec_backend`` 提交会把这一行原有的 model/fallbacks/bindings **抹掉**。
+# ⇒ 这里另开**读-改-写**的专用端点：只改 exec_backend 一项。
+# ============================================================
+@router.get("/works/{work_id}/cards/{card_id}/exec-backend")
+async def get_exec_backend(work_id: str, card_id: str):
+    """读这张卡的执行体选择 ＋ 上次实际路由到的模型（卡面 UI 用）。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    try:
+        card = await card_store.read_card(work_id, card_id)
+    except CardNotFoundError:
+        return _err(404, f"卡片不存在: {card_id}")
+    except CardLockedError:
+        return _err(423, "卡片被占用，请稍后重试")
+
+    from .wb_exec import bridge as _wb_bridge
+    from .wb_exec import config as _wb_config
+    cfg = _wb_config.load()
+    row = {}
+    try:
+        from ..storage import model_override as _mo
+        row = _mo.get_row(work_id, card_id) or {}
+    except Exception:  # noqa: BLE001 读不到就当没设
+        row = {}
+    backend = str(row.get("exec_backend") or "auto").strip() or "auto"
+    routed = row.get("last_routed")
+    if not isinstance(routed, dict):
+        routed = None
+    return {
+        "ok": True,
+        "card_id": card_id,
+        "card_type": str((card.get("meta") or {}).get("card_type") or ""),
+        "enabled": bool(cfg.enabled),
+        "backend": backend,
+        "routed": routed,
+        "options": _wb_exec_options(cfg),
+    }
+
+
+@router.put("/works/{work_id}/cards/{card_id}/exec-backend")
+async def put_exec_backend(work_id: str, card_id: str, req: SetExecBackendRequest):
+    """改这张卡的执行体选择（**只改 exec_backend**；下一回合生效）。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    backend = str(req.backend or "").strip()
+    if not backend:
+        return _err(400, "backend 不能为空")
+    if backend not in ("auto", "system") and not backend.startswith("wb:"):
+        return _err(400, f"backend 非法: {backend}")
+    from .wb_exec import config as _wb_config
+    cfg = _wb_config.load()
+    valid = {o["value"] for o in _wb_exec_options(cfg)}
+    if backend not in valid:
+        return _err(400, f"该执行体不存在: {backend}")
+    try:
+        from ..storage import model_override as _mo
+        cur = _mo.get_row(work_id, card_id) or {}
+        new_row = dict(cur)
+        new_row["exec_backend"] = backend
+        _mo.put_row(work_id, card_id, new_row, src="manual")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[wb_exec] 写 exec_backend 失败 card=%s: %s", card_id, exc)
+        return _err(500, f"写执行体失败: {exc}")
+    return {"ok": True, "card_id": card_id, "backend": backend,
+            "note": "已保存；下一回合生效（在跑的回合不打断）"}
+
+
+# ============================================================
+# [wb_exec 2026-10-23 16:20] 执行体**总开关**
+#
+# 用户令：*"再做一个手动开关，开启走workbuddy，关闭走系统模型"*
+#
+# **运行时生效**（写 config/wb_exec_switch.json，**不用重启 5700**）：
+#   开 ⇒ coder 卡走 WorkBuddy 执行体（按配比选模型）
+#   关 ⇒ coder 卡全部走**系统自己的模型**（WorkBuddy 一点不碰）
+#
+# 优先级：运行时开关 > config/wb_exec.json 的 enabled（文件坏了退回配置）。
+# ============================================================
+@router.get("/wb-exec/switch")
+async def get_wb_exec_switch():
+    """读执行体总开关（给卡面 UI 用）。"""
+    from .wb_exec import switch as _wb_switch
+    st = _wb_switch.state()
+    return {"ok": True, **st}
+
+
+@router.put("/wb-exec/switch")
+async def put_wb_exec_switch(req: SetWbExecSwitchRequest):
+    """切执行体总开关（**立即生效**，在跑的回合不打断）。"""
+    from .wb_exec import switch as _wb_switch
+    on = _wb_switch.set_enabled(bool(req.enabled))
+    st = _wb_switch.state()
+    logger.info("[wb_exec] 执行体总开关切换 ⇒ %s", on)
+    return {"ok": True, **st,
+            "note": ("已开启：coder 卡走 WorkBuddy 执行体" if on
+                     else "已关闭：coder 卡全部走系统自己的模型")}
+
+
+def _wb_exec_options(cfg) -> list[dict]:
+    """执行体下拉的候选项：auto / system / 配比表里的每个 (版本, 模型)。"""
+    opts = [
+        {"value": "auto", "label": "自动（按配比）"},
+        {"value": "system", "label": "系统自己的模型"},
+    ]
+    labels = {ex.id: ex.label for ex in cfg.executors}
+    for c in cfg.candidates:
+        # ★ **值必须带 ``wb:`` 前缀**（2026-10-25 实测发现的既有 bug）：
+        #   下面 ``put_exec_backend`` 的校验**只接受** ``auto``/``system``/``wb:*``，
+        #   而这里早先生成的是 ``<executor>:<model>``（**无前缀**）
+        #   ⇒ 前端下拉选任何一项、PUT 都会被 400 拒 ⇒
+        #   **「卡面手动钉死执行体」一直是失效的**（落回 auto）。
+        val = f"wb:{c.executor}:{c.model}"
+        lab = labels.get(c.executor, c.executor)
+        opts.append({"value": val, "label": f"{lab} · {c.model}",
+                     "executor": c.executor, "model": c.model})
+    # **执行体级选项**（2026-10-25）：像 ``wb-oc`` 这种**不在配比表里**的执行体
+    # （配比由用户定，不擅自加）⇒ 也得能在卡面**手动钉**它
+    # ⇒ 否则 ``put_exec_backend`` 的校验（值必须在 options 里）会把它挡掉。
+    in_table = {f"wb:{c.executor}:{c.model}" for c in cfg.candidates}
+    for ex in cfg.executors:
+        if not ex.oc_models:
+            continue
+        for m in ex.oc_models:
+            val = f"wb:{ex.id}:{m}"
+            if val in in_table:
+                continue
+            opts.append({"value": val,
+                         "label": f"{ex.label} · {m}（不在配比表·需手动选）",
+                         "executor": ex.id, "model": m})
+    return opts
 
 
 # [用户删卡 2026-10-02] 仅前端调用；模型工具清单不含删卡（模型无权删卡）
@@ -853,108 +1267,128 @@ def _replace_rule_section(mission: str, section: str, content: str) -> str:
     return "\n".join(rebuilt)
 
 
+_RULE_DEFAULTS: dict[str, str] = {
+    "project": (
+        "1. 拆解用户意图；没有来源的前提列出来向用户确认（confirm_with_user），"
+        "不默认成立。\n"
+        "2. 需求文档由你策展（curate_face）——子卡激活的前提是需求已策展。\n"
+        "3. 派工后等职能评审观点；分歧未消带上分歧问用户。\n"
+        "4. 阶段完成向用户汇报（report_to_user），不等被问。"),
+    "function": (
+        "1. 职责书定义你是谁、什么情况开口；本区是本项目对你的附加规则。\n"
+        "2. 你只在阶段收口被叫醒——对整个阶段表态（speak），沉默不落账等于失职。\n"
+        "3. 与父卡统合判断相左，写分歧（write_ledger, ledger=divergence）。"),
+    "sub_project": (
+        "1. 开工前先读需求文档（总裁策展）；没有就 report_up(kind=ask) 请示。\n"
+        "2. **阶段任务=新建子卡**：一件阶段性的活建一张子卡（需求+验收判据写清），"
+        "不自己在当前卡上直接干；你的卡是管理者——拆阶段、建子卡、等完工。\n"
+        "3. 工作细节你域内自决，不上报待裁；现状块只写能核实的事实。\n"
+        "4. 完工调 update_goal(complete) 收口——这一刻职能会来做阶段验收。\n"
+        "5. 阶段完工才向上汇报（report_up, kind=phase），日常不打扰上级。"),
+    "tool": "按剧本执行；产物与用途落清单。",
+    "coder": (
+        "1. 任务在使命块里；产出＝代码＋report_done 回执。\n"
+        "2. 你没有现状块——进展由回执与代码承载。"),
+    "rule": "本区写规则卡自身的元规则（很少需要）。",
+    "topic": (
+        "1. 开工前先读需求文档；没有就 report_up(kind=ask) 请示。\n"
+        "2. 研究结论写需求文档块，只追加不改。"),
+}
+
+
 def _rule_template_body() -> str:
-    """规则卡初建空模板：六区齐、内容空。"""
-    return "\n\n".join(f"## {n}" for n in _rule_section_names())
+    """规则卡默认模板：七区齐，各区带**通用工作流默认值**（面板可改）。
+
+    [2026-10-25 · 用户令「新项目成立就应该自动建好,很多信息可以默认带进去,
+    比如工作流程」] 默认内容只写通用流程,不含任何任务事实。
+    """
+    parts = []
+    for n in _rule_section_names():
+        parts.append(f"## {n}\n{_RULE_DEFAULTS.get(n, '')}")
+    return "\n\n".join(parts)
+
+
+async def ensure_rules(work_id: str) -> None:
+    """[规则=项目基建 2026-10-25 · 用户令「规则卡混成普通卡才会出现在列表里」]
+
+    规则存 **work.json 的 rules 字段**(不是 cards 表里的一张卡——混进卡片
+    数据层才会出现在列表/画布/清单里)。建项目即播种默认内容(通用工作流);
+    legacy 兜底:基建字段为空而库里存在带内容的旧规则卡 ⇒ 先迁移进来再继续
+    (内容不丢)。幂等。
+    """
+    rules = work_store.get_rules(work_id)
+    if any(str(v or "").strip() for v in rules.values()):
+        return
+    # legacy 迁移:旧规则卡里有实质内容就接过来
+    row = _find_rule_card(work_id)
+    if row is not None:
+        legacy = context_regions.split_rule_sections(row["mission"] or "")
+        legacy.pop("", None)
+        legacy = {k: v for k, v in legacy.items() if str(v or "").strip()}
+        if legacy:
+            work_store.set_rules(work_id, legacy)
+            return
+    work_store.set_rules(work_id, _RULE_DEFAULTS)
 
 
 @router.get("/works/{work_id}/rule")
 async def get_work_rule(work_id: str):
-    """规则面板读口：六区齐全（含空区）、hashes、正被 N 类卡注入。"""
+    """规则面板读口：七区齐全、hashes、正被 N 类卡注入。
+
+    [规则=项目基建 2026-10-25] 读 work.json 的 rules 字段(不再是卡);
+    exists 恒 True——规则随项目自带,不存在「还没有规则」的状态。
+    """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     names = _rule_section_names()
     counts = context_regions.rule_inject_counts(card_store.load_type_registry())
-    row = _find_rule_card(work_id)
-    if row is None:
-        return {"exists": False, "card_id": "",
-                "sections": {n: "" for n in names},
-                "hashes": {n: _rule_section_hash("") for n in names},
-                "inject_type_counts": {n: counts.get(n, 0) for n in names}}
-    sections = context_regions.split_rule_sections(row["mission"])
-    sections.pop("", None)  # 区头前游离文不外露
-    out_sections = {n: sections.get(n, "") for n in names}
-    hashes = {n: _rule_section_hash(out_sections[n]) for n in names}
-    return {"exists": True, "card_id": row["card_id"],
-            "sections": out_sections, "hashes": hashes,
+    await ensure_rules(work_id)
+    sections = {n: work_store.get_rules(work_id).get(n, "") for n in names}
+    hashes = {n: _rule_section_hash(sections[n]) for n in names}
+    return {"exists": True, "card_id": "",
+            "sections": sections, "hashes": hashes,
             "inject_type_counts": {n: counts.get(n, 0) for n in names}}
 
 
 @router.patch("/works/{work_id}/rule/sections/{section}")
 async def patch_work_rule_section(work_id: str, section: str,
                                   req: PatchRuleSectionRequest):
-    """面板直改即存：hash 比对（base_hash 不符→409），经 update_card 写闸。"""
+    """面板直改即存：hash 比对（base_hash 不符→409），写 work.json rules。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     names = _rule_section_names()
     if section not in names:
         return _err(400, f"非法区名: {section}（只允许 {names}）")
-    row = _find_rule_card(work_id)
-    if row is None:
-        return _err(404, "规则卡不存在（本 work 尚未创建 rule 卡）")
-    sections = context_regions.split_rule_sections(row["mission"])
-    cur = sections.get(section, "")
+    await ensure_rules(work_id)
+    rules = work_store.get_rules(work_id)
+    cur = rules.get(section, "")
     old_hash = _rule_section_hash(cur)
     if req.base_hash != old_hash:
         return _err(409, f"hash 不符（当前区 hash={old_hash[:16]}），请刷新后重试")
-    new_mission = _replace_rule_section(row["mission"], section, req.content)
-    try:
-        result = await card_store.update_card(
-            work_id, row["card_id"], {"mission": new_mission},
-            f"用户面板保存规则区 {section}",
-        )
-    except CardLockedError:
-        return _err(423, "卡片被占用，请稍后重试")
-    if "error" in result:
-        return _err(400, result["error"])
+    work_store.set_rules(work_id, {**rules, section: req.content})
     new_hash = _rule_section_hash(req.content)
-    return {"ok": True, "card_id": row["card_id"], "section": section,
+    return {"ok": True, "section": section,
             "old_hash": old_hash, "new_hash": new_hash}
 
 
 @router.post("/works/{work_id}/rule/commit")
 async def post_work_rule_commit(work_id: str, req: RuleCommitRequest):
-    """根卡提议审批落盘：draft_rule_edit 产物经用户「同意」后写入。
-
-    hash 比对同 PATCH（不符→409）；落盘后影子 ## 迭代历史 记一行
-    （时间+section+旧/新hash+来源=根卡审批）。
-    """
+    """根卡提议审批落盘：draft_rule_edit 产物经用户「同意」后写入
+    work.json rules（hash 比对同 PATCH）。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     names = _rule_section_names()
     if req.section not in names:
         return _err(400, f"非法区名: {req.section}（只允许 {names}）")
-    row = _find_rule_card(work_id)
-    if row is None:
-        return _err(404, "规则卡不存在（本 work 尚未创建 rule 卡）")
-    sections = context_regions.split_rule_sections(row["mission"])
-    cur = sections.get(req.section, "")
+    await ensure_rules(work_id)
+    rules = work_store.get_rules(work_id)
+    cur = rules.get(req.section, "")
     old_hash = _rule_section_hash(cur)
     if req.base_hash != old_hash:
         return _err(409, f"hash 不符（当前区 hash={old_hash[:16]}），请重新提议")
-    new_mission = _replace_rule_section(row["mission"], req.section, req.content)
-    try:
-        result = await card_store.update_card(
-            work_id, row["card_id"], {"mission": new_mission},
-            f"根卡提议审批写入规则区 {req.section}",
-        )
-    except CardLockedError:
-        return _err(423, "卡片被占用，请稍后重试")
-    if "error" in result:
-        return _err(400, result["error"])
+    work_store.set_rules(work_id, {**rules, req.section: req.content})
     new_hash = _rule_section_hash(req.content)
-    # 影子 ## 迭代历史 记一行（失败不阻断，与 card_draft.commit 同口径）
-    from ..storage import shadow_store
-    from datetime import datetime as _dt
-    try:
-        await shadow_store.append_to_section(
-            work_id, row["card_id"], "## 迭代历史",
-            [f"- [{_dt.now().astimezone().isoformat()}] 规则审批 {req.section} "
-             f"旧hash={old_hash[:16]} 新hash={new_hash[:16]} 来源=根卡审批"],
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("规则审批影子记失败（不阻断）work=%s: %s", work_id, exc)
-    return {"ok": True, "card_id": row["card_id"], "section": req.section,
+    return {"ok": True, "section": req.section,
             "old_hash": old_hash, "new_hash": new_hash}
 
 
@@ -979,7 +1413,16 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
-    items = event_log.timeline(work_id, card_id, from_seq=frm, tail=tail, before=before)
+    items = await asyncio.to_thread(
+        event_log.timeline, work_id, card_id, from_seq=frm, tail=tail, before=before)
+    # 〔2026-10-26 · 治「切卡卡死」〕**响应层载荷裁剪**（落盘不动）：
+    # 实测打开一张大卡的 `timeline?tail=400` 响应体 **36.9MB**（其中 31.8MB 是
+    # 一条 `tool_result`——read_linked 把整张卡的内容回灌进了事件日志）
+    # ⇒ 服务端序列化 3~7 秒 ＋ 浏览器 parse 36.9MB ＋ 撞 15 秒客户端超时
+    # ⇒ 「请求超时」＋ 内存态建不起来（看着像被释放）⇒ 只能刷新。
+    # 而前端工具行**默认折叠**（摘要只要 content 的第一行）⇒ 裁掉零可见变化。
+    from . import payload_cap
+    payload_cap.cap_records(items)
     # [对话流分页 2026-10-20] has_earlier＝「这次是窗口请求，且拿满了窗口」
     # ⇒ 更早还有。前端据此决定「往上翻」是否还有东西可拉。
     # 全量请求（tail=0）恒 false：已经拿到全部。
@@ -1088,18 +1531,40 @@ async def stream_work_events(work_id: str):
 
         订阅队列空转时每 15s 发一个注释帧（`: ping`），防止中间代理掐断长连——
         与既有两条流（/stream、/tokens）同口径。
+
+        〔P23 · 治「推送不推送」· 2026-10-25〕**必须用手动 task 模式**，不能
+        `asyncio.wait_for(it.__anext__(), timeout=15)`：
+        wait_for 超时会**取消**挂起的 `__anext__` ⇒ 异步生成器被打断，
+        下一轮 `__anext__` 直接抛（already running / CancelledError）⇒
+        **这条流每 15 秒断一次**（访问日志实测：/events 的连接每 18 秒重连一次
+        ＝ 15s 心跳 + 3s 重连）⇒ 「推送为主」其实一直靠兜底轮询撑着。
+        另两条流（/stream、/tokens）早就是手动 task 模式（超时**不**取消挂起的
+        anext）⇒ 稳定。⇒ 这里与它们同款。
         """
         yield "retry: 3000\n\n"
         it = event_stream.subscribe_work(work_id).__aiter__()
-        while True:
+        nxt = None
+        try:
+            while True:
+                if nxt is None:
+                    nxt = asyncio.create_task(it.__anext__())
+                done, _pending = await asyncio.wait({nxt}, timeout=15.0)
+                if not done:
+                    yield ": ping\n\n"        # 空闲保活；**不取消挂起的 anext**
+                    continue
+                task, nxt = nxt, None
+                try:
+                    evt = task.result()
+                except StopAsyncIteration:
+                    break
+                yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+        finally:
+            if nxt is not None:
+                nxt.cancel()
             try:
-                evt = await asyncio.wait_for(it.__anext__(), timeout=15.0)
-            except asyncio.TimeoutError:
-                yield ": ping\n\n"
-                continue
-            except StopAsyncIteration:
-                break
-            yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+                await it.aclose()
+            except Exception:  # noqa: BLE001 关闭期异常不阻断
+                pass
 
     return StreamingResponse(
         gen(),
@@ -1228,6 +1693,19 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
         _meta = (await card_store.read_card(work_id, card_id)).get("meta") or {}
     except Exception:  # noqa: BLE001
         _meta = {}
+    # [coder 归档复活 2026-10-25] 归档卡不是活卡(read_card 查不到)——
+    # 对归档 coder 发消息 = 解档复活,再走下面的重派活分支(同规则)。
+    if not _meta:
+        from ..storage import coder_archive as _ca
+        if _ca.get_record(work_id, card_id) is not None:
+            from . import coder_fold
+            _un = await coder_fold.unarchive_coder(work_id, card_id)
+            if _un.get("ok"):
+                try:
+                    _meta = (await card_store.read_card(
+                        work_id, card_id)).get("meta") or {}
+                except Exception:  # noqa: BLE001
+                    _meta = {}
     _revive_owner = ""
     if str(_meta.get("card_type") or "") == "coder" \
             and str(_meta.get("state") or "") == "completed":
@@ -1258,7 +1736,8 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
         if _revive_owner:
             session_facade.turn_release(work_id, card_id, _revive_owner)
     return await _run_message(work_id, card_id, req.content, req.pair_id,
-                              op=req.op or "")
+                              op=req.op or "",
+                              source_kind="human")
 
 
 # ============================================================
@@ -1346,7 +1825,8 @@ async def edit_work_message(work_id: str, card_id: str, seq: int, req: EditMessa
                         {"seq": seq, "run_id": str(rec.get("run_id") or "")})
     logger.info("[件5] 编辑重生成 work=%s card=%s seq=%s（旧 run_id=%s 已作废）",
                 work_id, card_id, seq, rec.get("run_id") or "")
-    return await _run_message(work_id, card_id, req.content, None)
+    return await _run_message(work_id, card_id, req.content, None,
+                               source_kind="human")
 
 
 @router.post("/works/{work_id}/cards/{card_id}/messages/{seq}/resend")
@@ -1377,7 +1857,8 @@ async def resend_work_message(work_id: str, card_id: str, seq: int):
     session_ops.ops_log("message_resend", work_id, card_id, {"seq": seq, "run_id": run_id})
     logger.info("[件5] 重发重生成 work=%s card=%s seq=%s（复用 run_id=%s）",
                 work_id, card_id, seq, run_id)
-    return await _run_message(work_id, card_id, content, run_id or None)
+    return await _run_message(work_id, card_id, content, run_id or None,
+                               source_kind="human")
 
 
 # [A8/R3-T119-T123] 人停端点：置位控制面（consume-once，接口被消费才算数）；
@@ -1390,7 +1871,9 @@ async def post_work_stop(work_id: str, card_id: str):
     # consume-once）②关自动继续＋级联子卡＋释放执行锁（stop_auto）。非 auto 卡
     # ⇒ stop_auto 全 no-op，停止行为逐字不变（红线 2）。合并返回（前端一次拿到
     # 全量结果）。
-    res = control.request_stop(work_id, card_id)
+    # [强制停止 2026-10-24 · 用户令「停止必须强制」] 用户停止=强制:杀轮 +
+    # goal 级联暂停 + **停止标记**(拒绝内部唤醒,直到用户再次发话)。
+    res = control.halt(work_id, card_id, reason="用户停止", by="user")
     try:
         auto_res = await control.stop_auto(work_id, card_id)
     except Exception as exc:  # noqa: BLE001 停止路径绝不抛
@@ -1947,7 +2430,8 @@ async def get_session_compat(card_id: str):
 
 @router.post("/cards/{card_id}/messages")
 async def post_message_compat(card_id: str, req: PostMessageRequest):
-    return await _run_message(DEFAULT_WORK_ID, card_id, req.content, req.pair_id)
+    return await _run_message(DEFAULT_WORK_ID, card_id, req.content, req.pair_id,
+                               source_kind="human")
 
 
 # ============================================================
@@ -1958,7 +2442,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                        client_pair_id: Optional[str] = None,
                        append_user: bool = True,
                        op: str = "",
-                       source: Optional[dict[str, Any]] = None) -> Any:
+                       source: Optional[dict[str, Any]] = None,
+                       source_kind: str = "internal") -> Any:
     """完整 messages 链路，新旧路由共用。
 
     顺序：读卡 → 取历史 → 追加用户消息 → context_assembler 组装 →
@@ -1970,6 +2455,36 @@ async def _run_message(work_id: str, card_id: str, content: str,
     user_prompt，绝不落收件方档案（「假人声混进档案」禁区）。默认 True ⇒
     全部既有调用方（三参形态）行为逐字不变。
     """
+
+    # [强制停止 2026-10-24] 停止标记闸:halted 的卡拒绝一切**内部**唤醒
+    # (goal 续轮已被 pause 治住;这里治收件箱调起/汇聚/巡检这些旁路)。
+    # 用户直接发话(source_kind="human")= 解除停止并继续——人是最高权威。
+    _halt = control.is_halted(work_id, card_id)
+    if _halt is not None:
+        if source_kind == "human":
+            control.unhalt(work_id, card_id)
+            logger.info("[control] 用户直接发话,解除强制停止 card=%s", card_id)
+        else:
+            session_ops.ops_log("card_halted_reject", work_id, card_id,
+                                {"reason": _halt.get("reason"),
+                                 "wake": str(source_kind)})
+            logger.info("[control] 强制停止中的卡拒绝内部唤醒(%s) card=%s",
+                        source_kind, card_id)
+            return {"error": {"code": "halted",
+                              "message": "该卡已被强制停止:"
+                                         + str(_halt.get("reason") or "")[:120]}}
+    # [沉默 2026-10-24] 沉默的卡拒内部唤醒(信留收件箱);用户直接发话可达
+    # (人是最高权威)但**不解除沉默**——解除唯一口=silence_card(activate)。
+    try:
+        from ..storage import governance_store as _gov
+        if source_kind != "human" and _gov.is_silenced(work_id, card_id):
+            session_ops.ops_log("card_silenced_reject", work_id, card_id,
+                                {"wake": str(source_kind)})
+            return {"error": {"code": "silenced",
+                              "message": "该卡处于沉默态(完工后被上级静音),"
+                                         "不再接收内部消息"}}
+    except Exception:  # noqa: BLE001 治理表读不出 ⇒ 不挡(旧行为)
+        pass
     # [信息流重出 Task4] 标记本请求的逐字流归属卡。model_service.call_main 经
     # contextvar 取到它，才把增量落到 /tokens 独立流；函数退出时还原，
     # 避免污染同进程后续请求（凝练/归拢等无卡调用自然无逐字流）。
@@ -2069,6 +2584,24 @@ async def _run_message(work_id: str, card_id: str, content: str,
         except Exception as exc:  # noqa: BLE001 驱动异常不影响回合返回
             logger.warning("[goal] idle 通知失败 card=%s: %s", card_id, exc)
         goal_authority.reset_turn_source(source_token)
+        # [排队语义 2026-10-23 · 用户令] **摘牌之后**再捞队列：
+        #   「所有消息排队等这一轮跑完，再下一个回合一起进」。
+        # 改前是回合内部自己起下一回合（互斥体还没摘 ⇒ 必然 409，实测一天 82 次
+        # mutex_reject / 12 张卡，消息就此搁死）。现在统一在这里接续：
+        #   · deliver_now 自带判据：无 pending 不动、有人占着就等、多条一起进一轮；
+        #   · 只在**本轮成功收口**时接续——回合失败时自动续跑会变成失败打转，
+        #     队列留着，等下一次真实触发（人发消息 / 卡间消息 / 目标续轮）。
+        if outcome == "ok":
+            try:
+                _picked = await message_runner.deliver_now(work_id, card_id)
+                if _picked:
+                    logger.info("[排队] 摘牌后接续队列 card=%s（消息已在下一回合一起进）",
+                                card_id)
+            except Exception as exc:  # noqa: BLE001 接续失败不影响本回合返回
+                logger.warning("[排队] 摘牌后接续队列失败 card=%s: %s", card_id, exc)
+        # [2026-10-25 · 用户裁定「coder 不能自动归档,应可续派任务延续」]
+        # 自动归档撤除:完工 coder 保持活卡形态(上下文连续,天然可续派)。
+        # 折叠只走显式通道:silence_card(silence)由上级决定。
     # ---- [自动模式 2026-10-17 · 回灌 5700 块0.3 · 红线 5] 驱动检查排在
     # **互斥体释放之后** ----
     # 结构＝「取结果 → finally 释放 → 后置 → 返回」（编排语义逐字不变：返回同一个
@@ -2143,6 +2676,30 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     state.pair_id = pair_id
     logger.info("[T10] 生成请求标识 pair_id=%s card=%s", pair_id, card_id)
 
+    # ============================================================
+    # [起回合带新消息 2026-10-26 · 线上 work_027 067→061 实证]
+    # 收件箱里的未处理消息**必须在本轮就能看到**。改前只有 deliver_now 会
+    # take_pending，而 deliver_now 只由「有人发信」或「回合收口捞队列」触发
+    # ⇒ 空闲卡被人发话起轮时**全程不读收件箱**，sync 这类只落信的消息就永远
+    # 看不到（061 实测：只在 read_inbox 的一格 tool_result 里露过一次）。
+    #
+    # 位置：拼进**本轮模型输入**（user_prompt）之前，**不落任何会话块**——
+    # 落块就会占用用户通道（卡间来信会冒充成「用户说的话」，线上实证见 061
+    # 对话里那段「上一轮之后，你收到了来自其他卡的消息…」）。
+    # 消息的可见面由发送侧落 events 的 msg_* 消息块承载（routes.py:1353 合并渲染）。
+    # deliver_now 起轮时传 append_user=False（它自己已取过件），这里不重复取。
+    # ============================================================
+    _msg_prefix = ""
+    if append_user:
+        try:
+            _pend = await card_db.take_pending(work_id, card_id)
+            if _pend:
+                _msg_prefix = (await message_runner._build_card_msg_prompt(
+                    work_id, _pend)) + "\n\n"
+                logger.info("[起回合带新消息] card=%s n=%d", card_id, len(_pend))
+        except Exception as exc:  # noqa: BLE001 取件失败不挡本轮
+            logger.warning("[起回合带新消息] 取件失败 card=%s: %s", card_id, exc)
+
     # b. 先取历史（此时不含本条）
     # [A6a/T069-T072] 读切换：统一读入门面（五键契约不变，重发去重/装配同尺）
     prior = await session_facade.read(work_id, card_id)
@@ -2201,7 +2758,12 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # [信息流 Task3] run_start：清该卡 journal 重放（A45）＋过程卡秒现（V1）。
     # 位置＝落盘之后、装配之前——先清后写，context 埋点才能留在 journal 里。
     event_stream.emit(work_id, card_id, "run_start",
-                      {"pair_id": pair_id, "chars": len(content)})
+                      {"pair_id": pair_id, "chars": len(content),
+                       # [2026-10-26 · 记录补全] 这一轮**是谁叫醒的**：
+                       # {"kind":"user"|"card_msg"|"goal"|"wake", "from": 卡号}
+                       # 改前只有 pair_id/chars ⇒ 判据无法区分「父卡派活起的轮」
+                       # 与「用户随口问一句起的轮」。
+                       "source": dict(source or {})})
 
     # 段②③前半：上下文组装＋工具列＋轮槽
     message_runner.build_context(state)
@@ -2209,7 +2771,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # [思维链真实落地 2026-10-11] 判断归模型（C1）：判断协议随 BASE_PROMPT
     # 进 system 区（prompts.py），模型首轮带全量工具自主判断——直答（空手
     # 正文即答复）或调 create_plan 拆解上板。代码层零判定、零机械预检。
-    state.user_prompt = content
+    state.user_prompt = _msg_prefix + content
 
     # 段③ 工具循环：**单步推进**（每轮一个显式状态点）
     # [无闸改造 2026-10-02] 工具循环不设轮次封顶：模型停止调用工具即自然结束
