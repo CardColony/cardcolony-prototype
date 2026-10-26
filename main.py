@@ -23,6 +23,22 @@ load_dotenv(BASE_DIR / ".env")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("writing-agent")
 
+# 〔P27 · 2026-10-26〕**服务端日志落盘**（logs/server.log）。
+# 原先只在启动它的控制台里 ⇒ 用户看不到 ⇒「我不知道有没有日志」⇒ 排障只能靠猜。
+# 实现见 src/infra/server_log.py（单独成模块 ⇒ 可单测，不必 import main）。
+try:
+    from src.infra.server_log import install_file_logging
+    install_file_logging(BASE_DIR)
+except Exception as _exc:  # noqa: BLE001 日志装不上也不阻断启动
+    print(f"[startup] 服务端日志落盘失败（不阻断）: {_exc}", flush=True)
+
+# [编码 2026-10-25] Windows 上 stdout 默认是 **GBK 且 strict** ⇒ 任何含
+# 「⇒」「→」这类字符的 print() 都会抛 UnicodeEncodeError（stdout 是 strict，
+# stderr 是 backslashreplace ⇒ 只有 stdout 真的炸）。⇒ 统一切到 UTF-8。
+from src.infra.console_io import ensure_utf8_console
+
+ensure_utf8_console()
+
 
 def init_directories() -> None:
     """a. 创建数据目录（不存在则创建）。
@@ -102,6 +118,40 @@ app = FastAPI(title="推演agent画布 v1")
 startup_init()
 
 
+# [服务自报 2026-10-25] 记下**启动那一刻**关键源文件的 mtime ＋ git HEAD。
+# 为什么要有：改了后端要重启才生效，而「到底重启了没」全靠人猜。
+# ⇒ `/api/health` 把这份戳报出来，和盘上文件 mtime 一比就知道要不要重启
+# （盘上 mtime 比服务报的**新** ⇒ 服务跑的是旧代码）。
+def _build_stamp() -> dict:
+    import subprocess
+    files = {}
+    for rel in ("main.py", "src/api/routes.py", "src/api/access_log.py"):
+        p = BASE_DIR / rel
+        try:
+            files[rel] = os.path.getmtime(p)
+        except OSError:
+            files[rel] = 0.0
+    head = ""
+    try:
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=BASE_DIR,
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:  # noqa: BLE001 git 不可用只影响显示
+        head = ""
+    return {
+        "started": datetime.now().astimezone().isoformat(),
+        "files": files,
+        "git_head": head,
+    }
+
+
+app.state.build_stamp = _build_stamp()
+try:
+    from src.api.access_log import install_access_log
+    install_access_log(app)
+except Exception as _exc:  # noqa: BLE001 日志装不上也不阻断启动
+    print(f"[startup] 访问日志中间件安装失败（不阻断）: {_exc}", flush=True)
+
+
 @app.on_event("startup")
 async def _start_auto_scheduler() -> None:
     """[调度改造 2026-10-19 · 5704 承载力] 启动建卡点火调度器。
@@ -134,6 +184,14 @@ async def _start_auto_scheduler() -> None:
         _asyncio.create_task(_role_room.startup_sweep_all())
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] 角色续跑启动失败（不阻断）: {exc}", flush=True)
+    # [预设职能 P2 2026-10-24] 职能观点队列的重启续跑(目录启用的 work 才有队列;
+    # 空队列 ⇒ no-op)。fail-open,不阻断启动。
+    try:
+        import asyncio as _asyncio
+        from src.api import function_room as _function_room
+        _asyncio.create_task(_function_room.startup_sweep_all())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] 职能续跑启动失败（不阻断）: {exc}", flush=True)
 
 
 @app.on_event("startup")
@@ -327,4 +385,13 @@ app.add_middleware(_BaseExceptionCapture)
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=5700)
+    # [keep-alive 断连 2026-10-25] timeout_keep_alive 5 → 30：
+    # uvicorn 默认**空闲 5 秒就关掉** keep-alive 连接。浏览器把连接池里的连接留着复用，
+    # 空闲超过 5 秒的那条已被服务端关掉 ⇒ 下一次请求落在它身上 ⇒
+    # Chrome 抛 `TypeError: Failed to fetch` ⇒ 前端弹「网络错误」。
+    # 实测（裸 socket，同一条连接隔 N 秒再发一次）：
+    #   等 1s / 3s ⇒ 正常 200；等 6s / 8s ⇒ **WinError 10053 连接中止**。
+    # 浏览器自身通常会重试，但我们的 fetch 封装**故意不重试非超时错误**
+    # （见 static/esm/api.js）⇒ 这类瞬时竞态直接变成用户可见的「网络错误」。
+    # 两头一起治：服务端别在浏览器脚下断连接 ＋ 前端对连接层失败重试一次。
+    uvicorn.run(app, host="127.0.0.1", port=5700, timeout_keep_alive=30)
