@@ -345,3 +345,11 @@ async def test_sweeper_condenses_without_any_turn(work, monkeypatch):
     print("扫到", n, "张 | mark =", st.get("mark"))
     assert n >= 1, "到线的卡应该被后台扫到"
     assert int(st.get("mark") or 0) > 0, "没有任何回合也要凝"
+
+
+def test_sweeper_maps_fn_session_files():
+    """扫描器要能把 session_fn_004.md 还原成 fn_004（否则职能卡永远扫不到、永不凝）。"""
+    f = memory_store._card_id_from_session_stem
+    assert f("session_004") == "card_004"
+    assert f("session_fn_004") == "fn_004"
+    assert f("session_card_004") == "card_004"
