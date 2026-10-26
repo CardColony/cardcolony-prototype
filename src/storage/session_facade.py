@@ -460,6 +460,58 @@ def _enrich_v1(msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------- 读（T023）
+# 〔2026-10-26 · 「页面的内容存进内存态」〕**会话解析结果的内存缓存**。
+#
+# 病根（实测）：旧档案扫描（`/card-messages` 的源二）每次都要把**每张卡的整份
+# 会话文件**读一遍＋解析一遍：work_027 的 20 张卡 / 16427 块 ⇒
+# **读 1308ms（磁盘慢）＋ 解析 802ms ＝ 1.7~2.1 秒**，而且**每次刷新都重算**
+# ⇒ 画布页首屏那条 `card-messages?limit=200` 实测 **4417ms**，把同一时刻的
+# `nav/version`（4239ms）、`rule`（2262ms）全拖慢 ⇒ 整页卡。
+#
+# ⇒ 缓存口径：**key = work/card，失效判据 = 文件的 (mtime_ns, size)**
+# （文件一改就自动失效 ⇒ 写后读不会拿到旧内容）。
+# 命中的块对象与今天一致（今天每次 read 都重新解析 ⇒ 每次都是新 dict；
+# 缓存后是**共享 dict**）——已逐个核对全部调用点（card_draft / memory_store /
+# message_runner / role_room / routes / wb_exec.bridge）**都只读不写**这些块
+# （切片/过滤/投影）⇒ 共享安全。`read()` 末尾本就会新建过滤后的列表。
+_PARSE_CACHE: dict[str, tuple[tuple[int, int], list[dict[str, Any]]]] = {}
+#: 缓存条目上限（超出按插入顺序丢最旧）——内存封顶，不是时间闸。
+_PARSE_CACHE_MAX = 512
+
+
+def _file_stamp(path: Path) -> tuple[int, int]:
+    """文件的 (mtime_ns, size)——缓存失效判据。取不到就当「已变」。"""
+    try:
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0, 0)
+
+
+async def _read_parsed(work_id: str, card_id: str) -> list[dict[str, Any]]:
+    """读＋解析会话文件（**带内存缓存**：文件没变就不读不解析）。"""
+    path = _session_path(work_id, card_id)
+    if not path.exists():
+        return []
+    stamp = _file_stamp(path)
+    key = f"{work_id}/{card_id}"
+    hit = _PARSE_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
+        text = await f.read()
+    if _detect_format(text) == 1:
+        blocks = _enrich_v1(await session_store.read_session(work_id, card_id))
+    else:
+        blocks = _parse_v2(text)["blocks"]
+    if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
+        # 丢最旧的（插入序）——内存封顶
+        for old in list(_PARSE_CACHE.keys())[:len(_PARSE_CACHE) - _PARSE_CACHE_MAX + 1]:
+            _PARSE_CACHE.pop(old, None)
+    _PARSE_CACHE[key] = (stamp, blocks)
+    return blocks
+
+
 async def read(work_id: str, card_id: str, *, from_seq: Optional[int] = None,
                to_seq: Optional[int] = None, actor: Optional[str] = None,
                turn: Optional[int] = None, limit: Optional[int] = None) -> list[dict[str, Any]]:
@@ -467,16 +519,12 @@ async def read(work_id: str, card_id: str, *, from_seq: Optional[int] = None,
 
     damaged 占位条目（seq 缺失者）在任何 seq 过滤下都保留——位次对齐承重语义
     （T117）；显式 actor/turn 过滤按块字段正常生效。
+
+    〔2026-10-26〕解析结果走**内存缓存**（见 `_read_parsed`）：文件没变就不重解析。
     """
-    path = _session_path(work_id, card_id)
-    if not path.exists():
+    blocks = await _read_parsed(work_id, card_id)
+    if not blocks:
         return []
-    async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
-        text = await f.read()
-    if _detect_format(text) == 1:
-        blocks = _enrich_v1(await session_store.read_session(work_id, card_id))
-    else:
-        blocks = _parse_v2(text)["blocks"]
 
     def _keep(b: dict[str, Any]) -> bool:
         if from_seq is not None and b.get("seq") is not None and b["seq"] < from_seq:
@@ -828,6 +876,46 @@ async def append(work_id: str, card_id: str, block: dict[str, Any],
                         {"seq": new_blk["seq"], "turn": new_blk["turn"],
                          "actor": new_blk["actor"], "result": "ok"})
     return new_blk
+
+
+async def append_card_message(work_id: str, card_id: str, *,
+                              from_card: str, text: str,
+                              msg_type: str = "msg_notify",
+                              event_type: str = "") -> dict[str, Any]:
+    """把一条**卡间消息**落成会话块（不进收件箱、不唤醒）。
+
+    [2026-10-26 · 用户裁定] 同步/通知类消息不该走 inbox，也不该只在投递当轮可见：
+
+    - ``inbox`` 是**水位消费**（``take_pending`` 读一次就推进水位）⇒ 模型看一次
+      就永远查不到了，而且空闲卡根本不会去查；
+    - **工具结果只保留当轮** ⇒ 塞进 tool_result 更是看一眼就没。
+
+    落成会话块则相反：它是**历史的一部分**，下次任何回合 ``prior_messages``
+    都带着它——**不需要唤醒**也能被看到（上下文机制本来就支持）。
+
+    口吻：第二人称、明确标出处（「卡 card_067（《标题》）给你发来一条通知」），
+    模型能分清这不是用户本人说的话，不会误当指令来源。
+    """
+    title = from_card
+    try:
+        from . import card_store
+        meta = (await card_store.read_card(work_id, from_card)).get("meta") or {}
+        title = str(meta.get("title") or from_card)
+    except Exception:  # noqa: BLE001 取不到标题不影响送达
+        pass
+    label = {"msg_notify": "通知", "msg_sync": "同步", "msg_report": "汇报",
+             "msg_ask": "询问", "msg_answer": "应答",
+             "msg_directive": "指令", "coder_done": "完工回执"}.get(msg_type, "消息")
+    if str(from_card) in ("system", "", "harness"):
+        # 系统主动发的提醒：不以某张卡的名义说话
+        content = f"系统给你发来一条{label}：\n{text}"
+    else:
+        content = f"卡 {from_card}（《{title}》）给你发来一条{label}：\n{text}"
+    return await append(work_id, card_id, {
+        "role": "user",
+        "content": content,
+        "event_type": event_type or msg_type,
+    })
 
 
 async def append_many(work_id: str, card_id: str,
