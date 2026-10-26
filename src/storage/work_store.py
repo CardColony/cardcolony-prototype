@@ -117,6 +117,24 @@ def list_works() -> list[dict[str, Any]]:
     return works
 
 
+def get_rules(work_id: str) -> dict[str, str]:
+    """本 work 的规则(区名→正文)——**项目基建,存 work.json 的 rules 字段**,
+    不是 cards 表里的一张卡。[2026-10-25 · 用户令「规则卡混成普通卡才会出现
+    在列表里」] 规则从 cards 数据层撤出:无卡可列、无卡可渲染,85 区照常注入。"""
+    data = read_work(work_id) or {}
+    r = data.get("rules")
+    return dict(r) if isinstance(r, dict) else {}
+
+
+def set_rules(work_id: str, rules: dict[str, str]) -> None:
+    """写规则(整字典覆盖;经 write_work 单文件原子写)。"""
+    data = read_work(work_id)
+    if data is None:
+        return
+    data["rules"] = {str(k): str(v or "") for k, v in (rules or {}).items()}
+    write_work(work_id, data)
+
+
 def read_work(work_id: str) -> Optional[dict[str, Any]]:
     """读 work.json；不存在返回 None。"""
     jf = _work_json(work_id)
@@ -216,7 +234,7 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
 
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
     from . import data_snapshot
-    await data_snapshot.schedule(f"[snapshot][{work_id}] create work: {title}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] create work: {title}", work_id)
     work_data = read_work(work_id) or work_data  # 取回 ending_derived 最新值
     work_data["card_count"] = _card_count(work_id)
     return work_data
@@ -235,6 +253,13 @@ def delete_work(work_id: str) -> dict[str, Any]:
     wd = _work_dir(work_id)
     if not wd.exists():
         return {"error": f"剧本不存在: {work_id}"}
+    try:
+        # [基础设施 2026-10-26] 先丢事件汇总缓冲：否则关连接后，缓冲里剩下的
+        # 事件还会再触发一次 run_write 把 cards.db 重新打开 ⇒ 目录又搬不动。
+        from ..infra import event_hub
+        event_hub.drop_work(work_id)
+    except Exception as exc:  # noqa: BLE001 丢缓冲失败不阻断删除
+        logger.warning("删项目：丢事件缓冲失败 work=%s: %s", work_id, exc)
     try:
         from . import card_db
         card_db.close_work(work_id)

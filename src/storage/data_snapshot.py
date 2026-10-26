@@ -75,16 +75,65 @@ def _day_stamp() -> str:
     return datetime.now(_CST).strftime("%Y%m%d")
 
 
-def _iter_protected_files() -> list[Path]:
-    """列出所有受保护数据文件（works/ 下的全部文件）。"""
+def _iter_work_log_files(wid: str) -> list[Path]:
+    """某个 work 的**只追加留痕**文件（events/sessions/…）。
+
+    〔P26 · 2026-10-26〕只在**真要拍这个 work** 时才调用（日备/manifest 需要它），
+    判据与 `_is_log_file` **逐字一致**（路径里含任一留痕目录名即算留痕）。
+    """
     out: list[Path] = []
     for d in PROTECTED_DIRS:
-        root = BASE_DIR / d
+        root = BASE_DIR / d / wid
         if not root.exists():
             continue
         for p in root.rglob("*"):
-            if p.is_file():
+            if p.is_file() and _is_log_file(p):
                 out.append(p)
+    return out
+
+
+def _iter_protected_files() -> list[Path]:
+    """列出所有受保护数据文件（works/ 下的**可变状态**文件）。
+
+    〔P26 · 2026-10-26 · 治「疯狂读写硬盘」〕
+    **遍历时剪掉只追加留痕目录**（events/sessions/…）：原来这里 rglob("*") 把这些
+    目录里的**每个文件**都枚举了一遍（实测 1666 个），而它们本来就不参与指纹、
+    也不被拷进批次 ⇒ 白枚举。留痕改由 `_iter_work_log_files(wid)` **按需**取
+    （只有日备/manifest 需要 ⇒ 不该在每次写操作时枚举）。
+
+    ⚠️ **入口名保留**（旧调用点与测试都 mock 它）⇒ 语义在**内容**上收窄为
+    「可变状态」，行为逐字等价（留痕照旧只进日备）。
+
+    ⚠️ 日备（全量恢复点）**必须**含留痕 ⇒ 它走 `_iter_work_log_files`，
+    不是这个函数。
+    """
+    return _iter_state_files(None)
+
+
+def _iter_state_files(work_id: str | None = None) -> list[Path]:
+    """列出**可变状态**文件（**遍历时剪掉只追加留痕目录**；给了 work_id 则**只看那一个 work**）。
+
+    〔P26 · 2026-10-26 · 治「疯狂读写硬盘」〕
+    病根：原来算指纹前对**每个** work 做 ``rglob("*")`` ⇒ 把 events/ sessions/ 这些
+    **只追加留痕**目录里的**每一个文件**都枚举了一遍（实测 1656 个文件）；
+    而这些文件本来就会被 `_split_state_and_log` 分到「留痕」侧、**不参与指纹也不被拷**
+    ⇒ 枚举了也白枚举。
+    ⇒ 改成**不进**留痕目录 + **只看指定 work** ⇒ 结果逐字相同、IO 大幅下降。
+
+    ⇒ 配合调用点补上 ``work_id``（P26 同批）：一次写操作原本要扫**所有** work
+    （实测 35+ 个 ⇒ 磁盘 %DiskTime 1122% ⇒ 服务不响应、网页全卡），
+    现在只扫**被改的那一个** work。
+    """
+    out: list[Path] = []
+    for d in PROTECTED_DIRS:
+        root = (BASE_DIR / d / work_id) if work_id else (BASE_DIR / d)
+        if not root.exists():
+            continue
+        for sub in os.walk(root):
+            # 剪枝：留痕目录不进（它只追加、快照不拷它 ⇒ 枚举无意义）
+            sub[1][:] = [x for x in sub[1] if x not in _LOG_DIR_NAMES]
+            for name in sub[2]:
+                out.append(Path(sub[0]) / name)
     return out
 
 
@@ -447,6 +496,11 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
     result = {"ok": False, "work_id": "-", "files": 0, "dir": "", "daily": False,
               "skipped": False, "reason": reason, "failed": []}
     try:
+        # 〔P26 · 2026-10-26 · 治「疯狂读写硬盘」〕**只枚举可变状态**（剪掉留痕目录）。
+        # 原来这里对每个 work 做 rglob("*") ⇒ 把 events/sessions 下的每个文件都枚举一遍
+        # （几万次 stat）⇒ 而它们本来就不参与指纹也不被拷 ⇒ 白枚举。
+        # 留痕（manifest 的 omitted_log_files ＋ 日备全量）改为**只在真要拍这个 work
+        # 时**才取（见下面 `_iter_work_log_files`）⇒ 结果逐字相同、IO 大幅下降。
         files = _iter_protected_files()
         if not files:
             result["ok"] = True
@@ -477,7 +531,9 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
             # 〔5715 · 机制改造〕**只按「可变状态」算指纹**：
             # 只追加的留痕（events/sessions）变了**不触发**新批次
             # ⇒ 写操作再多，也不会把同一份历史反复抄 N 遍。
-            state_paths, log_paths = _split_state_and_log(paths)
+            # 〔P26〕files 已来自剪枝遍历 ⇒ 全是「可变状态」⇒ 不必再分类。
+            state_paths = paths
+            log_paths: list[Path] = []
             fp = _fingerprint(state_paths)
             if fps.get(wid) == fp:
                 logger.info("快照跳过（可变状态未变）: %s 原因=%s", wid, reason)
@@ -497,6 +553,8 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
                         {"work": wid, "file": str(rel), "stage": "batch",
                          "error": err})
             # 写 manifest：说清这批是什么、留痕在哪（可恢复性的凭据）
+            # 〔P26〕留痕清单**现在才取**（只有真要拍这个 work 时才需要 ⇒ 不白扫）。
+            log_paths = _iter_work_log_files(wid)
             _write_manifest(bdir, {
                 "mode": "state-only",
                 "created": stamp,
@@ -509,7 +567,8 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
             daily = SNAPSHOT_ROOT / wid / f"daily_{_day_stamp()}"
             if not daily.exists():
                 daily_failed = []
-                for p in paths:
+                # 日备＝**全量**（含留痕 ⇒ 完整复盘点）⇒ 文件集＝可变状态 ＋ 留痕
+                for p in list(state_paths) + list(log_paths):
                     rel = p.relative_to(BASE_DIR)
                     err = _copy_with_lock_retry(p, daily / rel, wid)
                     if err is not None:
@@ -640,14 +699,39 @@ async def schedule(reason: str = "", work_id: str | None = None) -> None:
         # 不可逆/突变时刻（删卡、恢复、收口）：**当场拍**，不等合并窗口。
         # 单独起任务，不打断正在等窗口的那个（醒来后那次会因为指纹相同而自动
         # 跳过 ⇒ 不会多出一份）。
+        #
+        # 〔P26 · 2026-10-26 · 治「服务不响应」〕**同一 key 已有快照在跑 ⇒ 不再新开任务**。
+        # 原来这里**无条件** create_task ⇒ 每次「含 delete 的写」（删卡/删影子/恢复）
+        # 都排一个新任务，而 `snapshot_sync` 用 `_SNAPSHOT_LOCK` **串行** ⇒
+        # 这些任务**全占着默认线程池的 worker 等锁** ⇒ 线程池被占满
+        # ⇒ 服务的其它 `asyncio.to_thread` 工作（**timeline**、nav 指纹…）全部排队
+        # ⇒ **服务在监听却不响应**（实测请求 24 秒连不上）⇒ **所有浏览器都卡死**
+        # （用户原话：「不是一���浏览器卡，是不同浏览器都卡死 ⇒ 服务层面的问题」——判断正确）。
+        # ⇒ 改成与普通分支同款：已在跑就只标"脏"，跑完再补拍一次（合并语义不变、
+        #   但不再堆任务占线程）。强制语义「当场拍」仍成立：正在跑的那次就是当场，
+        #   补拍紧随其后。
+        if key in _snap_tasks:
+            _snap_dirty.add(key)
+            return
+
         async def _force_run() -> None:
             try:
-                await snapshot(reason, work_id)
-                _snap_last_at[key] = time.monotonic()
+                # 〔P26〕与普通分支同款：**一个 key 同时最多一个快照任务**。
+                # 期间又来了强制请求 ⇒ 标脏 ⇒ 这一轮结束后立刻补拍（不等合并窗口）。
+                while True:
+                    _snap_dirty.discard(key)
+                    await snapshot(reason, work_id)
+                    _snap_last_at[key] = time.monotonic()
+                    if key not in _snap_dirty:
+                        break
             except Exception as exc:  # noqa: BLE001 尽力而为
                 logger.warning("强制快照失败（不影响对账）: %s (%s: %s)",
                                reason, type(exc).__name__, exc)
-        asyncio.create_task(_force_run())
+
+        _snap_tasks[key] = asyncio.create_task(_force_run())
+        # 〔P26〕登记进 `_snap_tasks` ⇒ 后续同 key 的请求走「标脏」而不是再开一个任务。
+        # （原来强制分支**从不登记** ⇒ 每次都新开 ⇒ 任务堆着等锁 ⇒ 占满线程池。）
+        _snap_tasks[key].add_done_callback(lambda _t: _snap_tasks.pop(key, None))
         return
 
     if key in _snap_tasks:
