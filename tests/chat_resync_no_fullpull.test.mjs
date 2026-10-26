@@ -23,6 +23,8 @@
  * | R1 | `resync` 里的 timeline 拉取**必须带 tail 窗口**（不许全量） |
  * | R2 | `resync` 必须**先判 liveComplete 再决定拉不拉**（实时表已完整 ⇒ 零请求） |
  * | R3 | 实时表已完整时 `ok` 仍须为 true（不发请求不等于失败） |
+ * | R4 | **角标路径也不许拉全量**：`nav_system` 里任何 `card-messages` 请求都得带 `scope=recent`
+ *      （全量含旧档案扫描 3~6 秒 ⇒ 一个只想知道「有没有未读」的角标把整页拖慢）
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -79,4 +81,23 @@ test("R3：实时表已完整时 ok 仍为 true（不发请求 ≠ 失败）", (
   assert.ok(RESYNC, "stream.js 里应有 resync 函数");
   assert.ok(/ok\s*:\s*items\s*!==\s*null\s*\|\|\s*liveComplete/.test(RESYNC),
     "resync 的 ok 必须是「拉到数据 **或** 实时表已完整」——否则不发请求会被判成失败");
+});
+
+test("R4：自动角标路径不许拉全量（card-messages 必须带 scope=recent）", () => {
+  const NAV = readFileSync(new URL("../static/esm/nav_system.js", import.meta.url), "utf8");
+  // 剥注释：块注释 + 行注释（行注释要求 // 前是空白或行首 ⇒ 不会误伤 http://）
+  const code = NAV
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|\s)\/\/[^\n]*/g, "$1");
+  // 只看**自动角标**那条路（refreshBadge）：通知面板是用户点铃铛的显式动作，
+  // 它要完整历史（语义如此），后端解析缓存已让它第二次打开是毫秒级。
+  const body = fnBody(code, "refreshBadge");
+  assert.ok(body, "nav_system 里应有 refreshBadge");
+  const calls = body.match(/card-messages[^"'`]*/g) || [];
+  assert.ok(calls.length >= 1, "refreshBadge 里应能找到 card-messages 请求");
+  for (const c of calls) {
+    assert.ok(/scope=recent/.test(c) || /card-messages\/unread/.test(c),
+      `自动角标只该打轻端点或 scope=recent，不许拉全量`
+      + `（全量含旧档案扫描 3~6 秒 ⇒ 一个只想知道「有没有未读」的角标把整页拖慢）：${c}`);
+  }
 });
