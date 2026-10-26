@@ -824,7 +824,8 @@ def _is_descendant(work_id: str, candidate: str, ancestor: str) -> bool:
 #   ② 零阻断：广播失败绝不影响写卡本身（展示层铁则）；
 #   ③ 载荷取自**刚刚重建过的画布投影**（canvas_store.card_projection），
 #      与 /canvas 端点返回的字段**完全同源**——前端拿到的 card 形状与首屏一致。
-async def _notify_card_changed(work_id: str, card_id: str, kind: str) -> None:
+async def _notify_card_changed(work_id: str, card_id: str, kind: str,
+                               by: str = "") -> None:
     """写卡后广播工作级事件。零阻断。"""
     try:
         from ..api import event_stream
@@ -834,9 +835,22 @@ async def _notify_card_changed(work_id: str, card_id: str, kind: str) -> None:
             card = canvas_store.card_projection(work_id, card_id)
         event_stream.emit_work(work_id, "card_changed", {
             "card_id": card_id,
-            "kind": kind,       # created | updated | deleted
+            "kind": kind,       # created | updated | deleted | archived | restored
             "card": card,       # 单卡投影摘要（deleted 时为 None）
         })
+        # [基础设施 2026-10-26 · 事件管理] 生命周期状态事件（按卡记录）。
+        # "updated" 不在这里发——卡面块级变更由 update_card 产 card_block_edited，
+        # 这里再发一条就重复了。删除/归档/恢复只有这一条路径，必须在这里记。
+        _life = {"created": "card_created", "deleted": "card_deleted",
+                 "archived": "card_archived", "restored": "card_restored"}.get(kind)
+        if _life:
+            from ..infra import event_hub
+            event_hub.record_state_change(
+                work_id, card_id, _life,
+                card_type=str((card or {}).get("card_type") or ""),
+                by=by, cause="system",
+                extra={"kind": kind},
+            )
     except Exception as exc:  # noqa: BLE001 零阻断：广播失败不影响写卡
         logger.warning("工作级事件广播失败（不阻断写卡）work=%s card=%s: %s",
                        work_id, card_id, exc)
@@ -860,6 +874,7 @@ async def create_card(
     mission: str = "",
     skip_kick: bool = False,
     card_id: str = "",
+    created_by: str = "",
 ) -> dict[str, Any]:
     """创建卡片 + 对应会话文件，更新 canvas 缓存。
 
@@ -1019,7 +1034,7 @@ async def create_card(
 
         await canvas_store.update_cache(work_id)
         # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
-        await data_snapshot.schedule(f"[snapshot][{work_id}] create: {card_id}")
+        await data_snapshot.schedule(f"[snapshot][{work_id}] create: {card_id}", work_id)
         # [影子卡 2026-10-03] 建正卡即派生影子（一正一影，R-03）；失败只记日志不阻断建卡
         from . import shadow_store
         try:
@@ -1038,7 +1053,8 @@ async def create_card(
         # [画布 5711] 广播工作级事件：画布页据此**就地**长出新卡/更新那张卡，
         # 不必等用户手动刷新（也不必整棵重建）。放在 update_cache 之后 ⇒ 载荷
         # 里的投影摘要是**重建过的新值**。
-        await _notify_card_changed(work_id, card_id, "created")
+        await _notify_card_changed(work_id, card_id, "created",
+                                   by=created_by)
         # [模型配置表 2026-10-21 · 用户裁定] 建卡即把默认策略的结果**填进项目表**。
         # 运行时只读表、不做仲裁 ⇒ 必须在这一刻把行写好（否则第一次取模型才补，
         # 期间表与实际不同步）。填表失败不阻断建卡（回落首次取用时自愈）。
@@ -1145,6 +1161,11 @@ async def update_card(
     if "card_type" in updates or "project_class" in updates:
         return {"error": "卡片类型不可修改：card_type / project_class 建卡时定死"}
     # [S2-7] 旧键→新键归一（只此一处；下游一律只见新键）
+    # [基础设施 2026-10-26] 两个**只给事件用**的键，先摘出来不进库：
+    #   _by    操作者卡号（谁改的；缺省空＝系统/未知）
+    #   _cause self|parent|tool|system（主动/被动/系统）
+    _ev_by = str(updates.pop("_by", "") or "")
+    _ev_cause = str(updates.pop("_cause", "") or "")
     updates = _normalize_update_keys(updates)
 
     if not card_exists(work_id, card_id):
@@ -1284,7 +1305,21 @@ async def update_card(
         "goal_await_wakes",
     )
 
+    # [现状告知 2026-10-25 · 修] ``body_patch`` 是在 ``_fn`` **里面**定义的局部变量，
+    # 函数外根本取不到 ⇒ 原写法每次都 NameError（被下面 except 吞掉 ⇒ 父卡收件箱
+    # 摘要信**从来没生效过**，只在日志里留一句 warning）。
+    # 而且 ``body_patch["status_block"]`` 是**新值**（updates 里那个）⇒ 就算不报错，
+    # 拿它当"旧值"比也是**新旧恒等** ⇒ 永远不触发。
+    # ⇒ 这里把**旧值**从 row 里取出来带出去。
+    _old_status_block = ""
+    # [基础设施 2026-10-26] 写前旧正文 / 写后新正文，供写库后产状态变更事件。
+    # 必须由 _fn 带出来（body_patch 是 _fn 的局部变量，外部取不到——同下方
+    # 「现状告知 2026-10-25 修」那条坑）。
+    _old_body: dict[str, str] = {}
+    _new_body: dict[str, str] = {}
+
     def _fn(conn: Any) -> Optional[str]:
+        nonlocal _old_status_block, _old_body, _new_body
         row = card_db.get_card_row(conn, card_id)
         if row is None:
             return None
@@ -1296,6 +1331,17 @@ async def update_card(
             "status_block": updates.get("status_block", row["status_block"] or ""),
             "rulings": updates.get("rulings", row["rulings"] or ""),
         }
+        _old_status_block = str(row["status_block"] or "")
+        _old_body = {b: str(row[b] or "") for b in ("mission", "status_block", "rulings")}
+        _new_body = dict(body_patch)
+        # [卡面版本 2026-10-24 · 用户令] 写前把**被改动块的旧值**存成新版本——
+        # 模型误操作（如一次 edit_card 把 64KB 需求块覆盖成一句占位）后能自己找回。
+        # 同一事务：版本记录与正文写入同生共死，不会出现「改了但没版本」。
+        card_db.append_revisions(
+            conn, card_id, now, history_note,
+            {b: (row[b] or "") for b in ("mission", "status_block", "rulings")},
+            body_patch,
+        )
         card_db.update_card_row(conn, card_id, meta_patch, body_patch)
         card_db.append_history(conn, card_id, f"- [{now}] {history_note}", now)
         card_db.bump_rev(conn)
@@ -1306,10 +1352,52 @@ async def update_card(
 
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
-    await data_snapshot.schedule(f"[snapshot][{work_id}] update: {card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] update: {card_id}", work_id)
     # [画布 5711] 广播工作级事件：画布页就地更新这张卡（结论/待裁定/状态/最新对话），
     # 不用手动刷新，也不用整棵重建。
     await _notify_card_changed(work_id, card_id, "updated")
+
+    # [基础设施 2026-10-26 · 事件管理] **卡面块级变更事件**（按卡记录）。
+    # 改前这里只有一条不落盘的 card_changed（emit_work 只广播不写盘）⇒ 卡面
+    # 编辑在事件流里一条记录都没有，更分不清改了哪块、旧值新值、谁改的。
+    # 载荷：card_type / block / old / new / by / cause（主动/被动/系统）。
+    # 单块超过 2000 字截断——事件是观测面，全文在 card_revisions 里。
+    try:
+        from ..infra import event_hub
+        for _b, _old_val in _old_body.items():
+            _new_val = _new_body.get(_b, "")
+            if _old_val == _new_val:
+                continue
+            event_hub.record_state_change(
+                work_id, card_id, "card_block_edited",
+                card_type=str(cur_meta.get("card_type") or ""),
+                block=_b,
+                old=_old_val[:2000], new=_new_val[:2000],
+                by=_ev_by, cause=_ev_cause or "system",
+            )
+        # [2026-10-26 · 记录补全] **meta 字段变更也要记**。改前只记正文三块，
+        # 改名（title）/改父（parent）/改状态（state/goal_state）/改连线
+        # （link_cards、unlink 都是 update_card(links/relations)）/开关（auto_mode）
+        # 在事件流里**毫无痕迹**——判据与审计都查不到这些动作发生过。
+        _META_TRACKED = ("title", "parent", "state", "goal", "goal_state",
+                         "links", "relations", "auto_mode", "owner_card_id")
+        for _k in _META_TRACKED:
+            if _k not in updates:
+                continue
+            _old_m = cur_meta.get(_k)
+            _new_m = updates.get(_k)
+            if str(_old_m) == str(_new_m):
+                continue
+            event_hub.record_state_change(
+                work_id, card_id, "card_block_edited",
+                card_type=str(cur_meta.get("card_type") or ""),
+                block=_k,
+                old=str(_old_m)[:2000], new=str(_new_m)[:2000],
+                by=_ev_by, cause=_ev_cause or "system",
+            )
+    except Exception as exc:  # noqa: BLE001 事件失败不影响写卡
+        logger.warning("[card_store] 状态变更事件失败（不阻断）card=%s: %s",
+                       card_id, exc)
 
     # [role-sync 2026-10-20 · card_004] body block changed => notify roles watching
     # this card. Old gap: sync was only hooked to work-card turn completion
@@ -1317,13 +1405,30 @@ async def update_card(
     # roles, and (2) cards without session blocks have no turns at all, so a role
     # could only ever see their first snapshot. Hooked after the single write gate
     # => covers both tool path and HTTP path. Never breaks the write.
-    if "status_block" in updates or "rulings" in updates:
+    # [现状告知 2026-10-24 · 用户令] 子卡改现状 ⇒ 父卡收件箱摘要信
+    # (只入箱不唤醒;新旧相同去重)。
+    if "status_block" in updates:
         try:
-            from ..api import role_room as _role_room
-
-            _role_room.schedule_card_changed(work_id, card_id, updates)
-        except Exception as exc:  # noqa: BLE001 role notify must not break card write
-            logger.warning("[role] card-change notify failed work=%s card=%s: %s",
+            _old_sb = _old_status_block
+            _new_sb = str(updates.get("status_block") or "")
+            if _old_sb != _new_sb:
+                _parent = str((await read_card(work_id, card_id)).get("meta", {})
+                              .get("parent") or "")
+                if _parent:
+                    import uuid as _uuid
+                    from datetime import datetime, timezone, timedelta as _td
+                    await card_db.append_inbox(
+                        work_id,
+                        msg_id=f"{card_id}-{_uuid.uuid4().hex[:8]}",
+                        target_card_id=_parent, from_card=card_id,
+                        type="msg_notify",
+                        content=f"【现状更新】{card_id}:"
+                                f"{_new_sb[:200].replace(chr(10), ' ')}",
+                        created_at=datetime.now(
+                            timezone(_td(hours=8))).isoformat(),
+                    )
+        except Exception as exc:  # noqa: BLE001 告知失败不影响写入
+            logger.warning("[status] 父卡告知失败 work=%s card=%s: %s",
                            work_id, card_id, exc)
 
     # [phase8.3] "剧本卡切确定→派生目标卡"触发已废除；
@@ -1438,7 +1543,7 @@ async def delete_card(work_id: str, card_id: str,
 
     await canvas_store.update_cache(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
-    await data_snapshot.schedule(f"[snapshot][{work_id}] delete: {card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] delete: {card_id}", work_id)
     # [画布 5711] 广播工作级事件：画布页就地摘掉这张卡（不必等用户手动刷新）。
     await _notify_card_changed(work_id, card_id, "deleted")
     out = {"ok": True, "deleted": card_id}
@@ -1446,6 +1551,150 @@ async def delete_card(work_id: str, card_id: str,
         out["cascade"] = True
         out["deleted_subtree"] = result_cascade.get("deleted") or []
     return out
+
+
+async def archive_card(work_id: str, card_id: str,
+                       reason: str = "", by: str = "") -> dict[str, Any]:
+    """把一张卡折叠成归档记录（**所有卡、无任何前置判断**）。
+
+    [2026-10-25 · 用户令「让所有卡都可以归档」] 不看卡类型、不看 state、
+    不看有没有子卡：任务做到一定程度、过程有价值但不需要继续的卡，就该能收起来。
+    **判断归用户/模型，存储层只执行。**
+
+    与 ``delete_card`` 是两条语义，不互相替代：
+    - delete：处置/清理 → 进回收站（trash），会话文件一并删除；
+    - archive：**保留过程** → 卡面折叠成记录（三块＋历史＋影子＋整行 meta），
+      会话与事件文件**原位不动**，可随时 ``unarchive_card`` 恢复成卡。
+    """
+    if work_store.read_work(work_id) is None:
+        return {"error": f"剧本不存在: {work_id}"}
+    if not card_exists(work_id, card_id):
+        raise CardNotFoundError(f"卡片不存在: {card_id}")
+
+    cur = await read_card(work_id, card_id)
+    meta = dict(cur.get("meta") or {})
+    body = dict(cur.get("body") or {})
+
+    # 影子三节（本卡私有过程区）——归档后影子行删除，内容进档案
+    shadow_secs: dict[str, str] = {}
+    try:
+        from . import shadow_store
+        raw = await shadow_store.read_shadow_raw(work_id, card_id)
+        if raw:
+            shadow_secs = shadow_store.split_shadow_sections(raw) or {}
+    except Exception as exc:  # noqa: BLE001 影子读不到不挡归档
+        logger.warning("归档：影子读取失败（不阻断）%s: %s", card_id, exc)
+
+    from . import card_archive
+
+    # 修改历史直接从库里读 seq/ts/text 三列（read_card 的 body["history"] 只有
+    # 行文本、没有序号与时间戳——归档要能原样写回，必须取原始三列）。
+    def _hist(conn: Any) -> list[dict[str, Any]]:
+        return [{"seq": r[0], "ts": r[1], "text": r[2]}
+                for r in conn.execute(
+                    "SELECT seq, ts, text FROM card_history WHERE card_id = ?"
+                    " ORDER BY seq", (card_id,))]
+
+    history = card_db.read_sync(work_id, _hist, []) or []
+
+    await card_archive.archive(work_id, card_id, {
+        "meta": meta,
+        "card_type": meta.get("card_type") or "",
+        "title": meta.get("title") or "",
+        "parent": meta.get("parent") or "",
+        "mission": body.get("mission") or "",
+        "status_block": body.get("status_block") or "",
+        "rulings": body.get("rulings") or "",
+        "shadow": shadow_secs,
+        "history": history,
+        "session_ref": meta.get("session_ref") or "",
+        "reason": reason,
+        "archived_by": by,
+    })
+
+    def _fn(conn: Any) -> int:
+        n = card_db.delete_card_row(conn, card_id)
+        card_db.delete_shadow_row(conn, card_id)
+        if n:
+            card_db.bump_rev(conn)
+        return n
+
+    if not await card_db.run_write(work_id, _fn):
+        raise CardNotFoundError(f"卡片不存在: {card_id}")
+
+    await canvas_store.update_cache(work_id)
+    await data_snapshot.schedule(f"[snapshot][{work_id}] archive: {card_id}", work_id)
+    await _notify_card_changed(work_id, card_id, "archived")
+    return {
+        "ok": True, "archived": card_id,
+        "note": ("已归档：卡面从树上收起；三块／修改历史／影子已存进记录，"
+                 "会话与事件原位保留，可用 unarchive_card 恢复"),
+    }
+
+
+async def unarchive_card(work_id: str, card_id: str) -> dict[str, Any]:
+    """把归档记录恢复成卡（cards 行 ＋ 影子重建；会话文件一直在）。"""
+    from . import card_archive
+
+    rec = card_archive.get_record(work_id, card_id)
+    if rec is None:
+        return {"error": f"无归档记录: {card_id}", "code": "not_archived"}
+    if card_exists(work_id, card_id):
+        return {"error": f"卡已存在: {card_id}", "code": "card_exists"}
+
+    meta = dict(rec.get("meta") or {})
+    if not meta:
+        # 兜底：更早的记录没存整行 meta，用记录里的字段拼最小可用集
+        meta = {
+            "card_type": rec.get("card_type") or "",
+            "title": rec.get("title") or "",
+            "parent": rec.get("parent") or "",
+            "session_ref": rec.get("session_ref") or "",
+            "state": "active",
+        }
+    meta["card_id"] = card_id
+    meta["work_id"] = work_id
+    meta.setdefault("state", "active")
+    body = {
+        "mission": rec.get("mission") or "",
+        "status_block": rec.get("status_block") or "",
+        "rulings": rec.get("rulings") or "",
+    }
+
+    def _fn(conn: Any) -> None:
+        card_db.insert_card(conn, meta, body)
+        # 修改历史按原 seq / ts 写回（重排序号等于伪造历史）；兼容只有行文本的老记录
+        for i, h in enumerate(rec.get("history") or []):
+            if isinstance(h, dict):
+                seq, ts, text = h.get("seq", i), h.get("ts") or "", h.get("text") or ""
+            else:
+                seq, ts, text = i, "", str(h)
+            conn.execute(
+                "INSERT OR REPLACE INTO card_history (card_id, seq, ts, text)"
+                " VALUES (?,?,?,?)", (card_id, seq, ts, text))
+        card_db.bump_rev(conn)
+
+    await card_db.run_write(work_id, _fn)
+
+    # 影子重建（四节）——失败不阻断恢复（卡本体已回来）
+    try:
+        from . import shadow_store
+        secs = rec.get("shadow") or {}
+        await shadow_store.derive_shadow(work_id, card_id)
+        if secs:
+            text = "\n\n".join(
+                f"## {name}\n{content}" for name, content in secs.items() if content)
+            if text.strip():
+                await shadow_store.update_shadow(work_id, card_id, text)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("解档：影子重建失败（不阻断）%s: %s", card_id, exc)
+
+    await card_archive.remove(work_id, card_id)
+    await canvas_store.update_cache(work_id)
+    await data_snapshot.schedule(f"[snapshot][{work_id}] unarchive: {card_id}", work_id)
+    await _notify_card_changed(work_id, card_id, "restored")
+    return {"ok": True, "restored": card_id,
+            "note": "已从归档恢复成卡（三块与历史已写回）"}
 
 
 def _subtree_postorder(work_id: str, root: str) -> list[str]:
@@ -1554,7 +1803,7 @@ async def restore_card(work_id: str, card_id: str) -> dict[str, Any]:
             logger.warning("恢复会话文件失败（卡片已恢复）%s: %s", card_id, exc)
 
     await canvas_store.update_cache(work_id)
-    await data_snapshot.schedule(f"[snapshot][{work_id}] restore: {card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] restore: {card_id}", work_id)
     # [画布 5711] 广播工作级事件：画布页就地长回这张卡。
     await _notify_card_changed(work_id, card_id, "created")
     return {"ok": True, "restored": card_id}
@@ -1600,7 +1849,7 @@ async def derive_ending(work_id: str) -> Optional[str]:
         # ending_derived 置 true（幂等标志）
         work_store.update_work(work_id, {"ending_derived": True})
         # [数据与代码分家 2026-10-03] 运行数据不再 git 提交，改走独立快照
-        await data_snapshot.schedule(f"[snapshot][{work_id}] derive ending: {ending_id}")
+        await data_snapshot.schedule(f"[snapshot][{work_id}] derive ending: {ending_id}", work_id)
         return ending_id
     except Exception as exc:  # noqa: BLE001
         logger.error("目标卡派生异常 work=%s: %s", work_id, exc)

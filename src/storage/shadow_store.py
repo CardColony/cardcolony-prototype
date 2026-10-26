@@ -260,7 +260,21 @@ async def write_shadow_raw(
 
     await card_db.run_write(work_id, _fn)
     logger.info("影子写入 work=%s card=%s (%s)", work_id, owner_card_id, reason)
-    await data_snapshot.schedule(f"[snapshot][{work_id}] {reason}: {owner_card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] {reason}: {owner_card_id}", work_id)
+    # [基础设施 2026-10-26 · 事件管理] 影子卡也有事件。
+    # 改前 shadow_store **零事件** ⇒ 影子卡在事件系统里完全不存在（建/改/删都没记录），
+    # 这是「所有类型的卡片都要记录」最明显的一个缺口。
+    try:
+        from ..infra import event_hub
+        event_hub.record_state_change(
+            work_id, shadow_id_of(owner_card_id), "card_block_edited",
+            card_type="shadow", block="body",
+            new=body[:2000], by=owner_card_id, cause="self",
+            extra={"reason": reason},
+        )
+    except Exception as exc:  # noqa: BLE001 事件失败不影响写影子
+        logger.warning("[shadow_store] 状态事件失败（不阻断）card=%s: %s",
+                       owner_card_id, exc)
 
 
 async def derive_shadow(work_id: str, owner_card_id: str) -> dict[str, Any]:
@@ -285,7 +299,16 @@ async def derive_shadow(work_id: str, owner_card_id: str) -> dict[str, Any]:
 
     result = await card_db.run_write(work_id, _fn)
     if result.get("created"):
-        await data_snapshot.schedule(f"[snapshot][{work_id}] shadow create: {owner_card_id}")
+        await data_snapshot.schedule(f"[snapshot][{work_id}] shadow create: {owner_card_id}", work_id)
+        # [基础设施 2026-10-26] 影子卡创建事件（见 write_shadow_raw 同注）
+        try:
+            from ..infra import event_hub
+            event_hub.record_state_change(
+                work_id, shadow_id_of(owner_card_id), "card_created",
+                card_type="shadow", block="body", by=owner_card_id,
+                cause="system", extra={"owner": owner_card_id})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[shadow_store] 创建事件失败（不阻断）: %s", exc)
     return result
 
 
@@ -306,7 +329,7 @@ async def update_shadow(work_id: str, owner_card_id: str, body: str) -> dict[str
         card_db.bump_rev(conn)
 
     await card_db.run_write(work_id, _fn)
-    await data_snapshot.schedule(f"[snapshot][{work_id}] shadow update: {owner_card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] shadow update: {owner_card_id}", work_id)
     return {"ok": True, "owner_card_id": owner_card_id, "updated_at": now}
 
 
@@ -362,8 +385,7 @@ async def append_to_section(
     logger.info("影子分节追加 work=%s card=%s (%s)", work_id, owner_card_id, section)
     try:
         await data_snapshot.schedule(
-            f"[snapshot][{work_id}] shadow append: {owner_card_id} {section}"
-        )
+            f"[snapshot][{work_id}] shadow append: {owner_card_id} {section}", work_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("影子追加快照异常 work=%s card=%s: %s",
                        work_id, owner_card_id, exc)
@@ -382,5 +404,14 @@ async def remove_shadow(work_id: str, owner_card_id: str) -> bool:
     if not n:
         return False
     logger.info("影子删除 work=%s card=%s", work_id, owner_card_id)
-    await data_snapshot.schedule(f"[snapshot][{work_id}] shadow delete: {owner_card_id}")
+    await data_snapshot.schedule(f"[snapshot][{work_id}] shadow delete: {owner_card_id}", work_id)
+    # [基础设施 2026-10-26] 影子卡删除事件
+    try:
+        from ..infra import event_hub
+        event_hub.record_state_change(
+            work_id, shadow_id_of(owner_card_id), "card_deleted",
+            card_type="shadow", by=owner_card_id, cause="system",
+            extra={"owner": owner_card_id})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[shadow_store] 删除事件失败（不阻断）: %s", exc)
     return True
