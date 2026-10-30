@@ -18,7 +18,8 @@
 - b 永不释放的锁 ⇒ **该文件失败、其余照拷**，返回值与日志都能点名缺谁；
 - c 只读属性（真无权限）⇒ **零退避**立即判失败，其余照拷；
 - d 非 Windows / 非 PermissionError ⇒ 行为与改动前一致（单次尝试、零退避）；
-- e 有失败的批次 ⇒ **指纹不更新且不修剪**；解锁后重跑补齐并置位；
+- e 有失败的批次 ⇒ **指纹不更新**（下次照常重试）；**修剪照跑**（保留闸必须无条件生效，
+  见 test_e1_failed_batch_keeps_fingerprint_but_prune_still_runs 的契约变更说明）；
 - f 日备部分失败 ⇒ 整份日备作废（缺文件的日备不许被当成「今日已备」）。
 """
 from __future__ import annotations
@@ -310,8 +311,15 @@ def test_d2_non_windows_judgement_unchanged(sandbox, monkeypatch):
 
 # ---------------------------------------------------------------- e 指纹不更新
 @_WINDOWS_ONLY
-def test_e1_failed_batch_keeps_fingerprint_and_skips_prune(sandbox, monkeypatch):
-    """e：有文件失败的批次 ⇒ **指纹不更新**（下次照常重试这批），且不修剪。"""
+def test_e1_failed_batch_keeps_fingerprint_but_prune_still_runs(sandbox, monkeypatch):
+    """e：有文件失败的批次 ⇒ **指纹不更新**（下次照常重试这批）。
+
+    〔2026-10-30 · 契约变更〕**修剪照跑**（原来这条是「不完整的批次不触发修剪」）：
+    那条契约正是「保留闸永久失效」的病根——线上一个 0 字节的 ``nul`` 野文件
+    让**每一批**都不完整 ⇒ 200 份/2GB 两条保留闸全废 ⇒ 快照库实测涨到
+    **705.61GB**（work_027 一个 work 969 批 / 694.38GB）。
+    ⇒ 修剪只看**保留策略**，与这批完整与否无关；**指纹语义不变**（失败⇒重试）。
+    """
     wid, _ = _stage(sandbox, ["a.json", "b.json"])
     _fix_stamp(monkeypatch)
     pruned = []
@@ -328,16 +336,16 @@ def test_e1_failed_batch_keeps_fingerprint_and_skips_prune(sandbox, monkeypatch)
 
     assert r["failed"], r
     assert wid not in _fps(), "缺文件的批次不许被当成完整批次而永久跳过"
-    assert pruned == [], "不完整的批次不该触发修剪"
+    assert pruned == [wid], "保留闸必须无条件生效（与这批完整与否无关）"
     assert r["skipped"] is False, "未置指纹 ⇒ 本轮不算「内容未变」"
 
-    # 解锁后重跑：这次补齐、置指纹、才修剪
+    # 解锁后重跑：这次补齐、置指纹
     r2 = data_snapshot.snapshot_sync("lockres-e1-retry", work_id=wid)
     assert r2["skipped"] is False, "上一次失败 ⇒ 这次必须真拍而不是跳过"
     assert r2["failed"] == [], r2["failed"]
     assert _batch_dst(wid, "b.json").read_text(encoding="utf-8") == "内容-b.json"
     assert wid in _fps()
-    assert pruned == [wid]
+    assert pruned == [wid, wid]
 
     # 再拍一次：内容未变 ⇒ 走既有跳过语义（指纹语义未被改动）
     r3 = data_snapshot.snapshot_sync("lockres-e1-again", work_id=wid)

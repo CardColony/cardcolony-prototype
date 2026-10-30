@@ -118,21 +118,25 @@ def list_works() -> list[dict[str, Any]]:
 
 
 def get_rules(work_id: str) -> dict[str, str]:
-    """本 work 的规则(区名→正文)——**项目基建,存 work.json 的 rules 字段**,
-    不是 cards 表里的一张卡。[2026-10-25 · 用户令「规则卡混成普通卡才会出现
-    在列表里」] 规则从 cards 数据层撤出:无卡可列、无卡可渲染,85 区照常注入。"""
-    data = read_work(work_id) or {}
-    r = data.get("rules")
-    return dict(r) if isinstance(r, dict) else {}
+    """本 work 的规则(区名→正文)。
+
+    [规则=一个项目一个文件 2026-10-28 · 用户令「唯一要确定的，就是一个项目一个文件」]
+    规则是**项目基建**：存在 ``works/<work_id>/rules.md``（独立文件），不是 cards
+    表里的一张卡，也不再是 work.json 的一个字段（2026-10-25 ～ 10-28 的旧形态，
+    现在只作迁移来源，见 ``rule_store._migrate_from_work_json``）。
+
+    保留本函数名做转发：调用方（装配层 / 路由 / draft_rule_edit）不用关心载体。
+    """
+    from . import rule_store  # noqa: PLC0415 局部 import 避免循环
+
+    return rule_store.read_sections(work_id)
 
 
 def set_rules(work_id: str, rules: dict[str, str]) -> None:
-    """写规则(整字典覆盖;经 write_work 单文件原子写)。"""
-    data = read_work(work_id)
-    if data is None:
-        return
-    data["rules"] = {str(k): str(v or "") for k, v in (rules or {}).items()}
-    write_work(work_id, data)
+    """写规则（整份覆盖；原子写 rules.md）。见 ``rule_store.write_sections``。"""
+    from . import rule_store  # noqa: PLC0415
+
+    rule_store.write_sections(work_id, rules)
 
 
 def read_work(work_id: str) -> Optional[dict[str, Any]]:
@@ -199,6 +203,16 @@ async def create_work(title: str, project_class: str = "rd_project") -> dict[str
         "created_at": now,
     }
     write_work(work_id, work_data)
+
+    # [规则节点 2026-10-28 · 用户令「项目创建的同时，规则就被同步建起来」]
+    # 放在这里而不是路由层：任何建项目路径（API / 脚本 / 测试）都产出规则文件，
+    # 结构上不可能出现「有项目没有规则」。失败不阻断建项目（面板可后补）。
+    try:
+        from . import rule_store  # noqa: PLC0415
+
+        rule_store.ensure(work_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("规则文件播种失败(不阻断建项目) %s: %s", work_id, exc)
 
     # 创建根卡：parent="" 强制（card_store 内部对 card_type=project 无视 parent 入参）
     # [卡片分类基座 T1] 同步标 project_class（L0 项目分类仅挂根卡）

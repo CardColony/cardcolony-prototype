@@ -4,10 +4,10 @@
    导出：navStore / navAsync / navRenderer / navFind / navBreadcrumb / renderNav /
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=46";
+import { notify, request } from "./api.js?v=55";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=45";
+import { createNavRenderer } from "./nav_render.js?v=58";
 import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -17,7 +17,7 @@ let _renderNavImpl = () => {};
 export const RenderNav = () => _renderNavImpl();
 
 export function createNavSystem({ workId, navTree, api, getCurrentCard, open, inspector,
-                                 onCardsChanged }) {
+                                 onCardsChanged, onSwitchProject, onSseHealth }) {
   const API = api;
   const cur = () => getCurrentCard();  // 搬运段原文的 currentCard（只读）
   /* [删卡刷新 2026-10-21] 卡数据变了要通知宿主：画布页传 reloadCanvas（就地重建），
@@ -123,6 +123,18 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       /* [跨项目跳转 2026-10-21 · 修] 原来拼 `/work/{wid}#{cid}`（旧 hash 路由），
          hash 已退役（选中态在路径里）⇒ 靠 bootRestore / main.js 的旧链接兼容链
          多跳一次才落地，任何一环没跟上就是"点了没反应"。直接走页面身份路径。 */
+      /* [5715 · 治「切卡卡死」] **跨项目不再整页跳**。
+         内存态（装配器 / 画板 / 事件流会话表）本来就是**跟卡走**的
+         （EventFlow.sessions 的键＝(work_id, card_id)）⇒ 跨项目切到一张
+         **加载过**的卡本可以零重建、秒切。
+         整页跳 ⇒ 页面重载 ⇒ 内存态全丢 ⇒ 必然重拉 timeline ＋ 重新装配
+         ⇒ 空白 2 秒起步、重卡更久 ⇒ 用户只看到「点了没反应，只能刷新」。
+         改为：把 (wid, cid) 交给宿主（对话页能切项目上下文）⇒ 页面内切，内存态留着。
+         宿主没提供 onSwitchProject（画布页）⇒ 回落整页跳（行为不变）。 */
+      if (typeof onSwitchProject === "function") {
+        try { onSwitchProject(wid, cid); } catch (e) { /* 零阻断：失败回落整页跳 */ }
+        return;
+      }
       window.location.href = "/work/" + wid + "/card/" + cid;
       return;
     }
@@ -524,6 +536,15 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       gotoCard(rootCid, phead.dataset.wid, false);
       return;
     }
+    // [评审入口 2026-10-29] 左栏评审行（临时入口）⇒ 直接进评审卡对话页。
+    // 它不是卡（没有 data-cid / 不在快照里），所以必须在 .nav-card 分支之前拦。
+    const rvRow = e.target.closest("[data-review]");
+    if (rvRow) {
+      const rid = rvRow.dataset.review || "";
+      const rwid = rvRow.dataset.rwid || WID();
+      if (rid) gotoCard(rid, rwid, false);
+      return;
+    }
     const row = e.target.closest(".nav-card");
     if (row) handleCardRowClick(row);
   });
@@ -537,14 +558,37 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // 已知连带：tests/s3/obs_nav_s3.js 是人肉观察脚本（非单测），其中两处 .click() 会取不到元素。
 
   // [S2/M3] 版本探测 / 运行总览周期 + 初始导航渲染（原 workspace.js :1785–1793）
+  //
+  // [推送优先 2026-10-25] 周期探测降级为**兜底**：SSE 健康时**不做**。
+  // 病根：这三个周期探测（60s 版本 / 10s 运行 / 60s 角标）在**服务被关掉**时
+  // 继续打 ⇒ 每次失败都报错 ⇒ 用户看到「整个页面不断报网络错误」
+  // （实测：服务关掉 120 秒内 47 个请求、30 个失败）。
+  // ⇒ 真实变化走**推送**（工作级 SSE /api/works/{w}/events，见 workspace.js），
+  //   周期探测只在 SSE **不健康**时接管（兜底），SSE 健康时零网络请求。
+  // 口径与画布页一致（canvas.js subscribeWorkEvents + liveFallbackProbe）。
+  // 默认（宿主没注入 onSseHealth）＝**不健康** ⇒ 行为与改前逐字相同（老页面不受影响）。
+  const sseHealthy = () => (typeof onSseHealth === "function" ? !!onSseHealth() : false);
+
+  // [推送优先 2026-10-25] 后端**可达**吗（api.js 的可达性闩，只读口）。
+  // 为什么兜底轮询还要看它：SSE 断了**本来就该**兜底轮询（否则左栏永远不更新）；
+  // 但**后端根本不可达**时，探测请求必然失败 ⇒ 只是在制造错误、刷失败日志。
+  // ⇒ 两者都满足「SSE 不健康」**且**「后端可达」才轮询。
+  //   后端恢复后：SSE 会自动重连（EventSource 内置），或可达性闩解开 ⇒ 轮询自动接管。
+  const reachable = () => (typeof API.isReachable === "function" ? API.isReachable() : true);
+  const needFallbackProbe = () => !sseHealthy() && reachable();
+
+  // [推送优先 2026-10-25] 通知角标刷新口（定义在下面的块里 ⇒ 由块内赋值进来）
+  let _refreshBadgeImpl = null;
+
   function startNav() {
   // [S2/M3] 版本探测 60s 周期：version 未变零开销（连 diff 都不跑）；变了才全量重拉
   // 并只 diff 变化 work 子树。相对时间重算随真实数据变更触发（旧「60s 整树重渲」退役）。
-  setInterval(() => { navRenderer.probeVersion(); }, 60000);
+  setInterval(() => { if (needFallbackProbe()) navRenderer.probeVersion(); }, 60000);
   // [左栏接线 步2] 运行中总览 10s 周期：/api/nav/running 纯内存读、开销极小；
   // 一轮长活的起止比卡片数据变更快得多，故不与 60s 版本探测同频。
   // 集合无变化时 probeRunning 内部短路不重渲——状态变化不动用户视野。
-  setInterval(() => { navRenderer.probeRunning(); }, 10000);
+  // [推送优先 2026-10-25] SSE 健康时不做（运行态变化由 card_running 帧推送）。
+  setInterval(() => { if (needFallbackProbe()) navRenderer.probeRunning(); }, 10000);
   // 初始导航渲染（画布态窄条悬停浮层也有树）
   renderNav().then(() => navRenderer.probeRunning());   // 快照就绪后再标「谁在跑」，避免空态闪烁
   }
@@ -555,6 +599,9 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     const panel = document.getElementById("notifyPanel");
     const list = document.getElementById("npList");
     const count = document.getElementById("navNotifyCount");
+    // [推送优先 2026-10-25] refreshBadge 定义在**块内**（块级作用域 ⇒ 函数体外取不到）
+    // ⇒ 这里把它交出去，供宿主（SSE 收到 card_message 帧时）调用。
+    _refreshBadgeImpl = refreshBadge;
     // [惰性新建 2026-10-17] 已读键改惰性函数：草稿落库后 work_id 变，键须随取随新。
     const readKey = () => `projMsgRead:${WID()}`;
 
@@ -569,16 +616,42 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       } catch (e) { /* 零阻断 */ }
     }
 
+    /* 〔P21 · 治「切页卡死」· 2026-10-25〕轻端点（只算未读、**不扫旧档案**）可用性。
+       后端未升级时该端点 404 ⇒ 自动降级回全量端点（口径逐字相同，只是慢），
+       且**本页不再重试**轻端点（免得每分钟多打一个 404）。
+       与 api.js 的 getNavRunning 同一模式：裸 request（不弹 toast）＋ 自行判 ok。 */
+    let _lightUnreadOk = true;
+
     async function refreshBadge() {
       // [D6] 草稿态：无真 work，不打 card-messages（否则 404）；落库后 WID() 变真，自然恢复。
       if (WID() === "draft") { count.textContent = ""; count.className = "nav-notify-count"; return; }
-      try {
-        const d = await API.getCardMessages(WID());
-        const unread = d.unread_by_card || {};
-        const n = Object.keys(unread).length;
-        count.textContent = n > 99 ? "99+" : n;
-        count.className = "nav-notify-count" + (n > 0 ? " on" : "");
-      } catch (e) { /* 展示层零阻断 */ }
+      let unread = null;
+      if (_lightUnreadOk) {
+        try {
+          const resp = await request("GET", `/api/works/${WID()}/card-messages/unread`);
+          if (resp && resp.ok) {
+            const d = await resp.json();
+            unread = d.unread_by_card || {};
+          } else {
+            _lightUnreadOk = false;   // 服务还没这个端点 ⇒ 本页不再试
+          }
+        } catch (e) { _lightUnreadOk = false; }
+      }
+      if (unread === null) {
+        // 〔P26 · 2026-10-26〕降级也**不许拉全量**：全量含旧档案扫描（实测 3~6 秒）
+        // ⇒ 一个「只想知道有没有未读」的角标，把整页都拖慢（这正是用户报的
+        // 「刷新页面卡死」：那个跑旧 bundle 的标签页每 60 秒拉一次全量，
+        // 访问日志实测 63 次/小时）。
+        // ⇒ 降级改拉 **scope=recent**（不扫旧档案，毫秒级）；口径与全量相同
+        // （角标只看 inbox，见后端 _unread_by_card）。
+        try {
+          const d = await API.call("GET", `/api/works/${WID()}/card-messages?scope=recent`);
+          unread = d.unread_by_card || {};
+        } catch (e) { return; }
+      }
+      const n = Object.keys(unread).length;
+      count.textContent = n > 99 ? "99+" : n;
+      count.className = "nav-notify-count" + (n > 0 ? " on" : "");
     }
 
     function renderPanel(items) {
@@ -633,10 +706,18 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     if (npClose) npClose.onclick = () => panel.classList.remove("open");
 
     refreshBadge();
-    setInterval(refreshBadge, 60000);
+    // [推送优先 2026-10-25] 角标 60s 轮询降级为**兜底**（SSE 健康时不做）：
+    // 新的卡间信由工作级 SSE 的 card_message 帧带过来（秒级），
+    // 周期轮询只在 SSE 不健康**且**后端可达时接管（后端都挂了，探测只会制造错误）。
+    setInterval(() => { if (needFallbackProbe()) refreshBadge(); }, 60000);
   }
 
   _renderNavImpl = renderNav;   // 静态导出 RenderNav 的实现注入
   return { navStore, navAsync, navRenderer, navFind, navBreadcrumb,
-           renderNav, RenderNav: renderNav, gotoCard, startNav };
+           renderNav, RenderNav: renderNav, gotoCard, startNav,
+           // [推送优先 2026-10-25] 给宿主（对话页）用：SSE 帧到达时按需刷新这三个面。
+           // 不注入也不会坏——宿主不调用就是没人调。
+           refreshBadge: () => { if (_refreshBadgeImpl) _refreshBadgeImpl(); },
+           probeVersion: () => navRenderer.probeVersion(),
+           probeRunning: () => navRenderer.probeRunning() };
 }

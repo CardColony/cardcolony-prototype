@@ -81,7 +81,16 @@ export function createVirtualList(container, getRows, rowHeight = NAV_ROW_HEIGHT
         m.el.style.top = offsets[i] + "px";
         if (renderer && renderer.patch) renderer.patch(m.el, row);
       } else {
-        const el = renderer && renderer.build ? renderer.build(row) : document.createElement("div");
+        // [2026-10-29 修·实弹] 一行 build 抛错，原来会把整棵树从那里截断
+        // （左栏只剩第一个项目、父卡行消失、评审少几条，全是同一个断点）。
+        // 这里逐行兜：坏行只丢自己，其余照常渲染，并在控制台点名是哪一行。
+        let el;
+        try {
+          el = renderer && renderer.build ? renderer.build(row) : document.createElement("div");
+        } catch (err) {
+          console.error("[nav] 行渲染失败，已跳过", row && row.kind, row && row.card, err);
+          el = document.createElement("div");
+        }
         el.classList.add(opts.rowClass || "nav-vrow");
         el.style.top = offsets[i] + "px";
         el.__navRow = row;

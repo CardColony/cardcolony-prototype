@@ -97,14 +97,14 @@ def replace_fm_field(content: str, key: str, value_line: str) -> str:
 _HEADING_RE = re.compile(r"^## ", re.MULTILINE)
 
 # [卡片信息结构改造 S2-1] 新区名→新键映射。与旧表并存，按正文实际区头自适应。
-#   ## 使命 → mission｜## 现状 → status_block｜## 定论 → rulings｜## 修改历史 → history_text
+#   ## 使命 → mission｜## 现状 → status_block｜## 定论 → requirements｜## 修改历史 → history_text
 # [卡片编辑机制改造 2026-10-12] 增 ## 需求文档 → requirements（研发卡第三块）。
 # OLD_SECTION_MAPPING / OLD_KEY_TO_NEW 零改动——「需求文档」是新区头，不参与旧键归一。
 NEW_SECTION_MAPPING = {
     "## 使命": "mission",
     "## 现状": "status_block",
-    "## 需求文档": "rulings",   # [2026-10-22] 第三块全系统统一叫需求文档
-    "## 定论": "rulings",       # 存量卡保形：旧区头继续可解析（195 张存量仍带它）
+    "## 需求文档": "requirements",   # [2026-10-22] 第三块全系统统一叫需求文档
+    "## 定论": "requirements",       # 存量卡保形：旧区头继续可解析（195 张存量仍带它）
     "## 修改历史": "history_text",
 }
 
@@ -120,13 +120,13 @@ OLD_SECTION_MAPPING = {
 OLD_KEY_TO_NEW = {
     "charter": "mission",
     "conclusion": "status_block",
-    "rejections": "rulings",
+    "rejections": "requirements",
 }
 
 # 规范新键（读侧返回序；history_text 由调用方转 history 列表）
 # [卡片编辑机制改造 2026-10-12] 增 requirements（研发卡第三块；读侧按
-# project_class 判据决定返回 requirements 还是 rulings，见 routes 层）。
-NEW_KEYS = ("mission", "status_block", "rulings", "requirements", "history_text")
+# project_class 判据决定返回 requirements 还是 requirements，见 routes 层）。
+NEW_KEYS = ("mission", "status_block", "requirements", "requirements", "history_text")
 
 # 判形态时忽略的共有区头（它不区分新旧）
 _COMMON_HEADING = "## 修改历史"
@@ -185,7 +185,7 @@ def split_body_sections(body: str) -> dict[str, str]:
 
     新区名：## 使命 / ## 现状 / ## 定论 / ## 修改历史
     旧区名：## 职责区 / ## 结论区 / ## 否决记录区 / ## 修改历史（旧卡保形，见 RD-09）
-    两套并存、自适应：旧卡读出 mission/status_block/rulings，新卡同样；
+    两套并存、自适应：旧卡读出 mission/status_block/requirements，新卡同样；
     混用卡按外层形态归位（effective_form），不报错、不位移内容。
     某区不存在时对应键为空字符串。
 

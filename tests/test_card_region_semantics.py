@@ -97,7 +97,7 @@ def _make_legacy_db(path, *, card_rows=2, shadow_rows=2):
         vals = {
             "card_id": f"card_{i:03d}", "work_id": "work_001", "title": f"旧卡{i}",
             "created_at": "t0", "updated_at": "t0",
-            "mission": f"使命{i}", "status_block": f"现状{i}", "rulings": f"定论{i}",
+            "mission": f"使命{i}", "status_block": f"现状{i}", "requirements": f"定论{i}",
         }
         conn.execute(
             f"INSERT INTO cards ({', '.join(_OLD_CARD_COLS)}) "
@@ -160,7 +160,7 @@ async def test_duty_column_dropped_on_first_access(sandbox):
     assert "duty" not in _raw_cols(db_file, "cards")
     # 存量行一字未动
     r = await card_store.read_card(wid, "card_001")
-    assert (r["body"]["mission"], r["body"]["status_block"], r["body"]["rulings"]) \
+    assert (r["body"]["mission"], r["body"]["status_block"], r["body"]["requirements"]) \
         == ("使命1", "现状1", "定论1")
 
 
@@ -219,7 +219,8 @@ async def test_read_card_body_has_no_duty(sandbox):
     cid = await _mk_child(w["work_id"], "子卡", w["work_card_id"])
     body = (await card_store.read_card(w["work_id"], cid))["body"]
     assert "duty" not in body
-    assert {"mission", "status_block", "rulings", "history"} == set(body)
+    # [goal 变卡面区域 2026-10-28] body 多了 goal 键（不随 project_class 改名）
+    assert {"mission", "status_block", "requirements", "goal", "history"} == set(body)
 
 
 async def test_apply_block_set_has_no_duty(sandbox):
@@ -228,7 +229,7 @@ async def test_apply_block_set_has_no_duty(sandbox):
         w = await _mk_work(pc)
         wid, root = w["work_id"], w["work_card_id"]
         cid = await _mk_child(wid, "子卡", root)
-        await card_store.update_card(wid, cid, {"rulings": "R"}, "测试")
+        await card_store.update_card(wid, cid, {"requirements": "R"}, "测试")
         out = routes._apply_block_set(await card_store.read_card(wid, cid), wid)
         assert "duty" not in out["body"], pc
 
@@ -244,7 +245,7 @@ async def test_read_card_tool_returns_three_blocks(sandbox):
     cid = await _mk_child(wid, "子卡", root)
     await card_store.update_card(
         wid, cid,
-        {"mission": "M", "status_block": "S", "rulings": "R"},
+        {"mission": "M", "status_block": "S", "requirements": "R"},
         "测试",
     )
     reader = await _mk_child(wid, "读者卡", root)
@@ -255,8 +256,9 @@ async def test_read_card_tool_returns_three_blocks(sandbox):
     assert out["使命"] == "M"
     assert out["现状"] == "S"
     assert out["body"] == "S"                       # 旧键保留不变
-    assert out["rulings"] == "R"                   # 研究树：第三块对外名 rulings
-    assert "requirements" not in out
+    # [正名 2026-10-28] 第三块模型侧统一叫「需求文档」（与 使命/现状 同为中文键）
+    assert out["需求文档"] == "R"
+    assert "requirements" not in out and "rulings" not in out
     assert "职责与边界" not in out                  # v3：已取消
     assert "history" not in out and "修改历史" not in out  # 不给模型
 
@@ -265,13 +267,14 @@ async def test_read_card_tool_third_block_named_requirements_on_rd_tree(sandbox)
     w = await _mk_work("rd_project")
     wid, root = w["work_id"], w["work_card_id"]
     cid = await _mk_child(wid, "子卡", root)
-    await card_store.update_card(wid, cid, {"rulings": "REQ"}, "测试")
+    await card_store.update_card(wid, cid, {"requirements": "REQ"}, "测试")
     reader = await _mk_child(wid, "读者卡", root)
     out = await card_tools._h_read_card(
         wid, reader, {"card_id": cid}, card_tools._collect_card_meta(wid)
     )
-    assert out["requirements"] == "REQ"
-    assert "rulings" not in out
+    # [正名 2026-10-28] 键名统一中文；旧键 requirements/rulings 都不外露
+    assert out["需求文档"] == "REQ"
+    assert "requirements" not in out and "rulings" not in out
 
 
 async def test_read_card_tool_envelope_unchanged(sandbox):
@@ -432,4 +435,4 @@ def test_base_prompt_version_bumped():
     # [编程卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## 编程卡」节）。
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t26-5"
+    assert prompts.BASE_PROMPT_VERSION == "t27-2"

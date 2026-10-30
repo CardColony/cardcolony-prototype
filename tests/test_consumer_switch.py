@@ -119,7 +119,12 @@ async def test_condense_pending_slice_matches_facade_read(sandbox, work, monkeyp
     monkeypatch.setattr(memory_store, "_run_condense_pipeline", fake_pipeline)
 
     await memory_store.condense_turn_end(wid, cid)
-    facade_blocks = await session_facade.read(wid, cid)
-    assert seen["pending"] == facade_blocks[mark:], "未凝段与门面读切片逐块一致"
+    # [2026-10-27 · 用户令「凝练水位与窗口只以 sqlite 结算」]
+    # 未凝段 = 原文库里 `seq >= mark` 的块（不再是 md 的 `blocks[mark:]`——
+    # mark 是 seq 水位，当列表下标用会在 seq 有空洞时错位）。
+    from src.storage import origin_store
+    db_blocks = origin_store.read_blocks(wid, cid, from_seq=mark)
+    assert [b["seq"] for b in seen["pending"]] == [b["seq"] for b in db_blocks], \
+        "未凝段与原文库按 seq 过滤的结果逐块一致"
     assert [b["content"] for b in seen["pending"]] == ["第二条", "第三条"]
     assert seen["mark"] == mark

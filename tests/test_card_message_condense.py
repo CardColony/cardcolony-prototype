@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """卡间消息落成的会话块必须**三尺同尺**：进上下文、进触发计量、进凝练。
 
 [2026-10-26 用户需求] 消息模型改成「同步/通知直接落会话块」之后，用户明确要求：
@@ -23,7 +23,12 @@ async def test_card_message_block_enters_context_and_condense(sandbox, work):
     blk = await session_facade.append_card_message(
         wid, cid, from_card="card_099", text="【补件】请核对第三条", msg_type="msg_sync")
 
-    assert blk["actor"] == "human", "必须落成用户侧原文块，否则凝练会漏掉它"
+    # [2026-10-27 · 用户裁定「唤醒以用户消息包装、同步只出现在历史」]
+    # 消息块用 `actor=card:<发信卡>`（不冒充人声），**进凝练靠
+    # `predicates.MESSAGE_TYPES` 收 msg_***，不再靠 actor=human。
+    assert str(blk["actor"]).startswith("card:"), blk["actor"]
+    from src.storage import predicates
+    assert predicates.is_condense_original_event(blk), "消息块必须进凝练"
     assert predicates.enters_context(blk) is True
     assert predicates.is_condense_original_event(blk) is True
     assert M._msg_meter_tokens(blk) > 0, "必须计入触发线/窗口的 token 计量"
@@ -36,7 +41,9 @@ async def test_system_notice_block_also_counted(sandbox, work):
     blk = await session_facade.append_card_message(
         wid, cid, from_card="system", text="该汇报了", msg_type="msg_notify")
 
-    assert blk["actor"] == "human"
+    assert str(blk["actor"]).startswith("card:"), blk["actor"]
+    from src.storage import predicates
+    assert predicates.is_condense_original_event(blk), "系统消息块也必须进凝练"
     assert predicates.enters_context(blk) is True
     assert predicates.is_condense_original_event(blk) is True
     assert "系统给你发来一条" in blk["content"]

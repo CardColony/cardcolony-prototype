@@ -197,7 +197,9 @@ async def test_fn_seq_independent_from_card_seq(work):
         return seq, fn_seq
 
     seq, fn_seq = card_db.read_sync(wid, _meta, ("", ""))
-    assert seq == "2" and fn_seq == "2"
+    # [伴生评审卡 2026-10-27] 一张 sub_project ＝ 子卡 ＋ 伴生评审卡 ⇒ 卡号增 2；
+    # 职能仍不占卡号（fn_seq 独立，语义不变）。
+    assert seq == "3" and fn_seq == "2"
 
 
 # ============================================================

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """[卡片权限改造 2026-10-07 → 权限收口 2026-10-09 → 权限底座重做 2026-10-12]
 读侧全盘放开的政策断言。
 
@@ -90,12 +90,11 @@ async def test_v3_guards_intact(typed_registry, work):
 
     # update_shadow 签名级独占：schema 无 card_id；恶意注入 card_id 也写不出别的目标
     schema = next(t for t in card_tools.build_tool_schemas(root, cards=cards)
-                  if t["name"] == "update_shadow")
+                  if t["name"] == "edit_shadow")
     assert "card_id" not in schema["parameters"]["properties"]
     raw_b_before = await shadow_store.read_shadow_raw(wid, b)
     body = "## 进度\n- 标记XYZ\n\n## 产物清单\n- 无\n\n## 迭代历史\n- v1\n"
-    r = await card_tools.execute_tool(
-        wid, a, "update_shadow", {"card_id": b, "content": body}, cards)
+    r = await card_tools._h_update_shadow(wid, a, {"card_id": b, "content": body}, cards)
     assert r.get("ok") is True
     raw_a = await shadow_store.read_shadow_raw(wid, a)
     assert f"shadow_of: \"{a}\"" in raw_a and "标记XYZ" in raw_a
@@ -110,7 +109,7 @@ async def test_v4_shadow_and_memory_read_open(typed_registry, work):
     cards = card_tools._collect_card_meta(wid)
 
     body = "## 进度\n- 甲的影子正文\n\n## 产物清单\n- 无\n\n## 迭代历史\n- v1\n"
-    r = await card_tools.execute_tool(wid, a, "update_shadow", {"content": body}, cards)
+    r = await card_tools._h_update_shadow(wid, a, {"content": body}, cards)
     assert r.get("ok") is True
 
     # 旁支读影子：放行
@@ -209,7 +208,7 @@ async def test_api_update_whitelist_has_no_card_type():
     assert "project_class" not in routes.ALLOWED_UPDATE_KEYS
     # 其余合法键不许被误删
     for key in ("title", "tags", "relations", "session_ref",
-                "mission", "status_block", "rulings",
+                "mission", "status_block", "requirements",
                 "conclusion", "rejections", "charter", "parent"):
         assert key in routes.ALLOWED_UPDATE_KEYS, key
 
@@ -270,7 +269,7 @@ def test_no_permission_means_tool_invisible_not_just_denied():
         ("create_child", "create_card"),
         ("link", "link_cards"),
         ("unlink", "unlink_cards"),
-        ("shadow_write", "update_shadow"),
+        ("shadow_write", "edit_shadow"),
         ("manuscript", "read_manuscript"),
         ("invoke_tool", "run_tool_card"),
         # [执行权集中 2026-10-21] 读文件改挂 tools_read_file（读写分离）：
@@ -334,10 +333,37 @@ def test_tool_card_toolface_matches_its_perms():
     # **动手面一件没多**（文件四件/bash/python 仍不在）。
     assert _visible(card) == {"read_card", "read_memory", "read_shadow",
                               "read_linked", "draft_rule_edit", "list_functions",
-                              "edit_card", "delete_card", "update_shadow",
-                              "send_card_message", "reparent_card",
+                              "edit_card", "delete_card",
+                              # [影子精准编辑/卡片笔记 2026-10-27] 两件都挂 shadow_write：
+                              # edit_shadow（按节精准）＋ edit_note（笔记）。
+                              # [去全量更新 2026-10-28] update_shadow 已退役；
+                              # 现状改写件 edit_status 挂 edit ⇒ 分类层可见。
+                              "edit_shadow", "edit_note", "edit_status",
+                              # [需求确定按钮改造 2026-10-29] edit_requirements 挂 edit
+                              # ⇒ 分类层镜头里可见；真实下发面被末段⑦按卡类型摘掉
+                              # （tool 卡没有「需求文档→评审→正稿」这条流程）。
+                              "edit_requirements",
+                              "reparent_card",
+                              # [归档 2026-10-25] archive/unarchive 挂 delete；
+                              # [归档读口/stage_open 2026-10-26] read_archive 与
+                              # stage_open 挂 read ⇒ tool 有 read+delete ⇒ 分类层可见
+                              "archive_card", "unarchive_card",
+                              "read_archive", "stage_open",
                               "create_plan", "plan_reorder", "plan_insert",
                               "plan_remove", "plan_modify", "step_complete",
+                              # [harness 给根卡 2026-10-28] design_policy 挂 plan ⇒
+                              # 分类层镜头里可见（tool 有 plan）；真实下发面被第四段
+                              # 根卡闸（ROOT_ONLY_TOOLS）收走，tool 卡拿不到——
+                              # 与 draft_rule_edit 同一种处理。
+                              "design_policy",
+                              # [2026-10-30 评审流程] 两件新工具：
+                              # reject 与 approve 同挂 read（评审表态，分类层可见）；
+                              # update_status 挂 edit（改自己的现状块）。
+                              # 真实下发面仍由末段按卡类型收口（tool 卡走不到评审流程）。
+                              "reject", "update_status",
+                              # promote_draft 挂 edit ⇒ 分类层可见；它自己判
+                              # 「有草稿 + 评审全员通过」，没草稿的卡调了必被拒。
+                              "promote_draft",
                               "web_search", "fetch_web"}
     # [编程卡 2026-10-15 · C2 裁定] search 回归词表＝**预留机关**（coder 行占位码；
     # 仍无独立 search 工具、搜索由 web_search/fetch_web 承担，暂无消费方——

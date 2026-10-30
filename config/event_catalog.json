@@ -1,0 +1,1337 @@
+{
+ "_meta": {
+  "title": "事件类型登记表",
+  "desc": "系统内所有事件类型的唯一登记处。新增事件类型必须在此登记，否则 event_hub.record 会报 UnknownEventType（开发期抛错、生产期 ERROR 日志）。tests/test_event_catalog_coverage.py 会扫源码所有事件产生点与本源对账，未登记即红。",
+  "version": 2,
+  "updated": "2026-10-28",
+  "fields": {
+   "label": "中文名（前端显示 / 日志可读）",
+   "group": "分组，仅用于展示归类",
+   "source": "产生该事件的模块（便于反查）",
+   "channel": "card=卡级事件（落该卡事件流）｜work=工作级事件（无单一卡）",
+   "triggerable": "是否允许作为 harness 规则触发源（高频噪声事件为 false）",
+   "fields.part": "**必须带**的零件：短、可枚举、可比较，harness 条件的唯一取数面。缺一个 ⇒ 测试红",
+   "fields.optional": "允许缺的零件（错误路径等天然没有）",
+   "fields.payload": "原文全文，**不进条件面**（条件只问 part/optional）。注意：payload 是上下文与前端回放的原始数据，**不受任何清理机制处置**；这里的分类只声明「哪些字段不许拿来当条件」，不是寿命约定。",
+   "deprecated": "可选。true=已停用，历史数据仍可解释，但禁止新写入",
+   "write_blocked": "可选。true=写入被拒（配合 deprecated）"
+  }
+ },
+ "types": {
+  "run_start": {
+   "label": "回合开始",
+   "group": "回合",
+   "source": "routes/message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "pair_id"
+    ],
+    "optional": [
+     "source",
+     "chars"
+    ],
+    "payload": []
+   }
+  },
+  "round_start": {
+   "label": "轮次开始",
+   "group": "回合",
+   "source": "message_runner/wb_exec",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "round",
+     "phase"
+    ],
+    "optional": [
+     "model",
+     "executor"
+    ],
+    "payload": []
+   }
+  },
+  "turn_end": {
+   "label": "回合结束",
+   "group": "回合",
+   "source": "routes",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "outcome"
+    ],
+    "optional": [
+     "rounds",
+     "model_calls"
+    ],
+    "payload": []
+   }
+  },
+  "done": {
+   "label": "模型完成",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "card_type"
+    ],
+    "optional": [
+     "rounds",
+     "model_calls",
+     "end_reason",
+     "pair_id"
+    ],
+    "payload": []
+   }
+  },
+  "error": {
+   "label": "回合出错",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "error_type"
+    ],
+    "optional": [
+     "rounds"
+    ],
+    "payload": [
+     "error"
+    ]
+   }
+  },
+  "deliver": {
+   "label": "交付",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "branch"
+    ],
+    "optional": [
+     "bytes"
+    ],
+    "payload": []
+   }
+  },
+  "proposal": {
+   "label": "提案",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "count"
+    ],
+    "optional": [
+     "cards"
+    ],
+    "payload": []
+   }
+  },
+  "plan_created": {
+   "label": "计划建立",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [
+     "name",
+     "total"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "step_start": {
+   "label": "步骤开始",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "step_id",
+     "index",
+     "total"
+    ],
+    "optional": [
+     "type"
+    ],
+    "payload": []
+   }
+  },
+  "step_advanced": {
+   "label": "步骤推进",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "step_id",
+     "advanced",
+     "all_done"
+    ],
+    "optional": [
+     "criteria_met",
+     "next_criteria"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "judgment": {
+   "label": "判断",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "verdict"
+    ],
+    "optional": [
+     "behavior"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "rescue": {
+   "label": "文本抢救",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "count"
+    ],
+    "optional": [
+     "names"
+    ],
+    "payload": []
+   }
+  },
+  "model_resume": {
+   "label": "模型恢复",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "attempt",
+     "max",
+     "round"
+    ],
+    "optional": [],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "context": {
+   "label": "上下文装配",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [
+     "regions",
+     "bytes"
+    ],
+    "payload": []
+   }
+  },
+  "context_preamble": {
+   "label": "上下文前言",
+   "group": "回合",
+   "source": "current_turn",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "source_kind"
+    ],
+    "optional": [],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "context_injection": {
+   "label": "上下文注入",
+   "group": "回合",
+   "source": "current_turn",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "source_kind"
+    ],
+    "optional": [
+     "source_ref",
+     "step_id"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "judgment_protocol": {
+   "label": "判断协议注入",
+   "group": "回合",
+   "source": "current_turn",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "source_kind"
+    ],
+    "optional": [],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "status_update_task": {
+   "label": "现状更新任务",
+   "group": "回合",
+   "source": "current_turn",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "context_seat_identity": {
+   "label": "席位身份注入",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "source_kind"
+    ],
+    "optional": [],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "seats_enter": {
+   "label": "三席开始",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [
+     "tool_results",
+     "steps"
+    ],
+    "payload": []
+   }
+  },
+  "seat_start": {
+   "label": "席位开始",
+   "group": "回合",
+   "source": "simple_service",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "model"
+    ],
+    "optional": [
+     "index"
+    ],
+    "payload": []
+   }
+  },
+  "seat_end": {
+   "label": "席位结束",
+   "group": "回合",
+   "source": "simple_service",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "model",
+     "ok"
+    ],
+    "optional": [
+     "latency_ms",
+     "chars"
+    ],
+    "payload": []
+   }
+  },
+  "tool_call": {
+   "label": "工具调用",
+   "group": "工具",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "tool"
+    ],
+    "optional": [
+     "card_id",
+     "target",
+     "step_id",
+     "round",
+     "tool_call_id"
+    ],
+    "payload": [
+     "arguments"
+    ]
+   }
+  },
+  "tool_result": {
+   "label": "工具结果",
+   "group": "工具",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "tool",
+     "ok"
+    ],
+    "optional": [
+     "card_id",
+     "target",
+     "tool_call_id",
+     "step_id",
+     "round",
+     "status",
+     "elapsed_ms"
+    ],
+    "payload": [
+     "result",
+     "summary"
+    ]
+   }
+  },
+  "user_message": {
+   "label": "用户消息",
+   "group": "消息",
+   "source": "session_facade",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [
+     "source_kind"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "assistant_text": {
+   "label": "助手正文",
+   "group": "消息",
+   "source": "session_facade",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [
+     "model",
+     "end",
+     "round"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "msg_ask": {
+   "label": "询问",
+   "group": "消息",
+   "source": "card_msg",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "from",
+     "to",
+     "msg_type"
+    ],
+    "optional": [
+     "msg_id",
+     "reply_to"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "msg_answer": {
+   "label": "应答",
+   "group": "消息",
+   "source": "card_msg",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "from",
+     "to",
+     "msg_type"
+    ],
+    "optional": [
+     "msg_id",
+     "reply_to"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "msg_notify": {
+   "label": "通知",
+   "group": "消息",
+   "source": "card_msg",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "from",
+     "to",
+     "msg_type"
+    ],
+    "optional": [
+     "msg_id",
+     "reply_to"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "msg_sync": {
+   "label": "同步",
+   "group": "消息",
+   "source": "card_tools/sync",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "from",
+     "to",
+     "msg_type"
+    ],
+    "optional": [
+     "msg_id",
+     "reply_to"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "msg_report": {
+   "label": "汇报",
+   "group": "消息",
+   "source": "card_tools/report_up",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "from",
+     "to",
+     "msg_type"
+    ],
+    "optional": [
+     "msg_id",
+     "reply_to"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "msg_directive": {
+   "label": "指令",
+   "group": "消息",
+   "source": "card_msg",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "from",
+     "to",
+     "msg_type"
+    ],
+    "optional": [
+     "msg_id",
+     "reply_to"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "coder_done": {
+   "label": "编程卡回执",
+   "group": "消息",
+   "source": "card_msg",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "from",
+     "to",
+     "msg_type"
+    ],
+    "optional": [
+     "msg_id",
+     "reply_to"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "card_message": {
+   "label": "卡间消息广播",
+   "group": "消息",
+   "source": "card_tools",
+   "channel": "work",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "msg_id",
+     "from",
+     "type"
+    ],
+    "optional": [
+     "card_id"
+    ],
+    "payload": []
+   }
+  },
+  "card_changed": {
+   "label": "卡片变化广播",
+   "group": "卡",
+   "source": "card_store",
+   "channel": "work",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "card_id",
+     "kind"
+    ],
+    "optional": [],
+    "payload": []
+   }
+  },
+  "card_running": {
+   "label": "卡片运行状态",
+   "group": "卡",
+   "source": "progress",
+   "channel": "work",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "card_id",
+     "stage",
+     "active"
+    ],
+    "optional": [
+     "detail"
+    ],
+    "payload": []
+   }
+  },
+  "card_governance": {
+   "label": "卡片治理",
+   "group": "卡",
+   "source": "card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "state",
+     "by"
+    ],
+    "optional": [],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "card_stopped": {
+   "label": "卡片被停止",
+   "group": "卡",
+   "source": "card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "target",
+     "mode"
+    ],
+    "optional": [],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "card_stopped_self": {
+   "label": "卡片自行停止",
+   "group": "卡",
+   "source": "card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "mode",
+     "by"
+    ],
+    "optional": [],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "card_created": {
+   "label": "卡片创建",
+   "group": "状态",
+   "source": "card_store/shadow_store",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "card_type",
+     "by",
+     "cause"
+    ],
+    "optional": [
+     "block",
+     "kind",
+     "owner"
+    ],
+    "payload": []
+   }
+  },
+  "card_deleted": {
+   "label": "卡片删除",
+   "group": "状态",
+   "source": "card_store",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "card_type",
+     "by",
+     "cause"
+    ],
+    "optional": [
+     "block",
+     "kind",
+     "owner"
+    ],
+    "payload": []
+   }
+  },
+  "card_archived": {
+   "label": "卡片归档",
+   "group": "状态",
+   "source": "card_store",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "card_type",
+     "by",
+     "cause"
+    ],
+    "optional": [
+     "block",
+     "kind"
+    ],
+    "payload": []
+   }
+  },
+  "card_restored": {
+   "label": "卡片恢复",
+   "group": "状态",
+   "source": "card_store",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "card_type",
+     "by",
+     "cause"
+    ],
+    "optional": [
+     "block",
+     "kind"
+    ],
+    "payload": []
+   }
+  },
+  "card_block_edited": {
+   "label": "卡面块编辑",
+   "group": "状态",
+   "source": "card_store/shadow_store/role_store/function_store",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "card_type",
+     "block",
+     "by",
+     "cause"
+    ],
+    "optional": [],
+    "payload": [
+     "old",
+     "new"
+    ]
+   }
+  },
+  "stage_opened": {
+   "label": "阶段开启",
+   "group": "状态",
+   "source": "card_tools/stage_open",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "by"
+    ],
+    "optional": [
+     "title"
+    ],
+    "payload": []
+   }
+  },
+  "harness_message": {
+   "label": "系统提醒",
+   "group": "系统",
+   "source": "infra/harness",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "rule_id",
+     "to"
+    ],
+    "optional": [
+     "wake",
+     "seq"
+    ],
+    "payload": [
+     "text"
+    ]
+   }
+  },
+  "function_opinion": {
+   "label": "职能观点",
+   "group": "职能",
+   "source": "function_room",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "decision"
+    ],
+    "optional": [
+     "sources"
+    ],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "function_ledger": {
+   "label": "职能台账",
+   "group": "职能",
+   "source": "card_tools",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "ledger",
+     "id",
+     "chars"
+    ],
+    "optional": [],
+    "payload": []
+   }
+  },
+  "role_alarm": {
+   "label": "角色报警",
+   "group": "职能",
+   "source": "role_room",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "id",
+     "severity",
+     "supersedes"
+    ],
+    "optional": [
+     "title"
+    ],
+    "payload": [
+     "detail"
+    ]
+   }
+  },
+  "role_judged": {
+   "label": "角色判断",
+   "group": "职能",
+   "source": "role_room",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "decision",
+     "auto"
+    ],
+    "optional": [
+     "sources"
+    ],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "ceo_report": {
+   "label": "总裁汇报用户",
+   "group": "职能",
+   "source": "card_tools",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [],
+    "payload": [
+     "content"
+    ]
+   }
+  },
+  "ceo_confirm_requested": {
+   "label": "总裁待确认",
+   "group": "职能",
+   "source": "card_tools",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [],
+    "payload": [
+     "subject",
+     "premises"
+    ]
+   }
+  },
+  "goal_round": {
+   "label": "目标续轮",
+   "group": "goal",
+   "source": "goal/driver",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "goalId",
+     "revision",
+     "round"
+    ],
+    "optional": [],
+    "payload": []
+   }
+  },
+  "goal/change": {
+   "label": "目标变更",
+   "group": "goal",
+   "source": "goal/service",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "kind",
+     "operation"
+    ],
+    "optional": [
+     "version",
+     "roundsStarted"
+    ],
+    "payload": [
+     "goal"
+    ]
+   }
+  },
+  "goal_round_rejected": {
+   "label": "目标续轮被拒",
+   "group": "goal",
+   "source": "routes",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "goalId",
+     "revision",
+     "round"
+    ],
+    "optional": [],
+    "payload": []
+   }
+  },
+  "wb_exec_start": {
+   "label": "编程执行开始",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "executor",
+     "backend"
+    ],
+    "optional": [
+     "model"
+    ],
+    "payload": []
+   }
+  },
+  "wb_exec_error": {
+   "label": "编程执行出错",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "resumed"
+    ],
+    "optional": [
+     "fallbacks"
+    ],
+    "payload": [
+     "error"
+    ]
+   }
+  },
+  "wb_exec_done": {
+   "label": "编程执行完成",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "executor",
+     "model",
+     "resumed"
+    ],
+    "optional": [
+     "session_id",
+     "tool_calls",
+     "fallbacks",
+     "elapsed_sec"
+    ],
+    "payload": []
+   }
+  },
+  "wb_exec_queued": {
+   "label": "编程执行排队",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "executor"
+    ],
+    "optional": [
+     "model",
+     "waiting_for"
+    ],
+    "payload": []
+   }
+  },
+  "wb_exec_model": {
+   "label": "编程执行模型",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "executor",
+     "model"
+    ],
+    "optional": [
+     "session_id"
+    ],
+    "payload": []
+   }
+  },
+  "wb_exec_fallback": {
+   "label": "编程执行降级",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "from",
+     "to"
+    ],
+    "optional": [],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "wb_exec_interrupted": {
+   "label": "编程执行中断",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "wb_exec_unavailable": {
+   "label": "编程执行不可用",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "executor"
+    ],
+    "optional": [],
+    "payload": [
+     "reason",
+     "error"
+    ]
+   }
+  },
+  "wb_exec_resume": {
+   "label": "编程执行恢复",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "attempt"
+    ],
+    "optional": [],
+    "payload": [
+     "error"
+    ]
+   }
+  },
+  "reasoning": {
+   "label": "思考增量",
+   "group": "其他",
+   "source": "event_stream",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [],
+    "payload": [
+     "text"
+    ]
+   }
+  },
+  "reasoning_chunk": {
+   "label": "思考增量块",
+   "group": "执行",
+   "source": "wb_exec/bridge",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [],
+    "optional": [
+     "round",
+     "step"
+    ],
+    "payload": [
+     "text"
+    ]
+   }
+  },
+  "review_batch_opened": {
+   "label": "评审批次开启",
+   "group": "评审",
+   "source": "api/card_tools",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "batch",
+     "target"
+    ],
+    "optional": [
+     "members",
+     "focus"
+    ],
+    "payload": []
+   }
+  },
+  "review_all_passed": {
+   "label": "评审全员通过",
+   "group": "评审",
+   "source": "api/card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch"
+    ],
+    "optional": [
+     "members"
+    ],
+    "payload": []
+   }
+  },
+  "review_batch_closed": {
+   "label": "评审批次收口",
+   "group": "评审",
+   "source": "api/card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "verdict"
+    ],
+    "optional": [],
+    "payload": []
+   }
+  },
+  "review_round_start": {
+   "label": "评审回合开始",
+   "group": "评审",
+   "source": "api/review_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "batch"
+    ],
+    "optional": [
+     "round"
+    ],
+    "payload": []
+   }
+  },
+  "review_spoke": {
+   "label": "评审角色发言",
+   "group": "评审",
+   "source": "api/review_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "role"
+    ],
+    "optional": [
+     "decision"
+    ],
+    "payload": []
+   }
+  },
+  "review_revise": {
+   "label": "评审中被评卡改草稿",
+   "group": "评审",
+   "source": "api/review_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "target"
+    ],
+    "optional": [
+     "name",
+     "changed"
+    ],
+    "payload": []
+   }
+  },
+  "review_speaking": {
+   "label": "评审轮到谁（正在调用模型）",
+   "group": "评审",
+   "source": "api/review_runner",
+   "channel": "card",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "batch",
+     "role"
+    ],
+    "optional": [
+     "name",
+     "kind"
+    ],
+    "payload": []
+   }
+  },
+  "review_round_done": {
+   "label": "评审一步跑完",
+   "group": "评审",
+   "source": "api/review_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "draft",
+     "all_passed",
+     "passed",
+     "pending",
+     "changed",
+     "reason",
+     "continued"
+    ]
+   }
+  }
+ }
+}

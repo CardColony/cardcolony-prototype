@@ -67,7 +67,7 @@ from src.storage.hash_utils import (  # noqa: E402
 
 WORK_RE = re.compile(r"^work_\d{3,}$")
 _KNOWN_HEADINGS = set(NEW_SECTION_MAPPING) | set(OLD_SECTION_MAPPING)
-_SECTION_KEYS = ("mission", "status_block", "rulings")
+_SECTION_KEYS = ("mission", "status_block", "requirements")
 
 
 class MigrationRefused(Exception):
@@ -115,9 +115,9 @@ def parse_card_md(path: Path, work_card: str) -> dict[str, Any]:
     blocks = {
         "mission": sections["mission"],
         "status_block": sections["status_block"],
-        # 库内第三块只有一列 rulings；`## 需求文档` 形态归入同列
+        # 库内第三块只有一列 requirements；`## 需求文档` 形态归入同列
         # （两者同时非空 ⇒ 下面的不丢内容断言会拦下，不静默丢字）
-        "rulings": sections["rulings"] or sections["requirements"],
+        "requirements": sections["requirements"] or sections["requirements"],
     }
     history = [l for l in sections["history_text"].splitlines() if l.strip()]
     return {"card_id": path.stem, "meta": meta, "body": blocks,

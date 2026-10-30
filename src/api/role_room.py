@@ -586,7 +586,7 @@ async def _turn_signals(work_id: str, card_id: str, result: Any) -> list[str]:
         card = await card_store.read_card(work_id, card_id)
         body = card.get("body") or {}
         status = str(body.get("status_block") or "")
-        third = str(body.get("requirements") or body.get("rulings") or "")
+        third = str(body.get("requirements") or body.get("requirements") or "")
     except Exception:  # noqa: BLE001
         return signals
     for field, value, sig in (("status", status, "status_changed"),
@@ -652,7 +652,7 @@ async def _notify_card_changed(work_id: str, card_id: str,
         card = await card_store.read_card(work_id, card_id)
         body = card.get("body") or {}
         status_h = _hash(str(body.get("status_block") or ""))
-        third_h = _hash(str(body.get("requirements") or body.get("rulings") or ""))
+        third_h = _hash(str(body.get("requirements") or body.get("requirements") or ""))
         for role in roles:
             role_id = str(role.get("card_id") or "")
             if not role_id:
@@ -665,7 +665,7 @@ async def _notify_card_changed(work_id: str, card_id: str,
                 if _get_meta(work_id, key, "") != status_h:
                     await _set_meta(work_id, key, status_h)
                     hit.append("status_changed")
-            if "rulings" in updates and "decision_appended" in wanted:
+            if "requirements" in updates and "decision_appended" in wanted:
                 key = _role_state_key(work_id, role_id, card_id, "third")
                 if _get_meta(work_id, key, "") != third_h:
                     await _set_meta(work_id, key, third_h)
@@ -776,7 +776,7 @@ async def build_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
                 if st:
                     lines.append("【当前现状】" + st[:MAX_BLOCK_CHARS])
             if "decision_appended" in (item.get("signals") or []):
-                third = str(cb.get("requirements") or cb.get("rulings") or "").strip()
+                third = str(cb.get("requirements") or cb.get("requirements") or "").strip()
                 if third:
                     lines.append("【当前第三块】" + third[:MAX_BLOCK_CHARS])
         except Exception:  # noqa: BLE001
@@ -994,10 +994,11 @@ def build_prompt(work_id: str, role_id: str,
         "   - decision=\"silent\"：你判断无需干预。",
         "   reason 一句话写清依据；evidence 填你实际看过的文件/行/卡（可空，但建议填）。"
         "沉默也是判断，必须落账。",
-        "3. 若发言：普通建议用 send_card_message 发给最相关的工作卡（msg_notify）；"
+        "3. 若发言：只是让最相关的工作卡**知道**一件事 → sync(content)（沿通信线、不叫醒它）；"
+        "要它**现在就改** → direct(target_card_id, instruction, acceptance)（带验收判据，会把它叫起来）；"
         "严重风险用 raise_alarm；若在纠正自己此前的警报，raise_alarm 时传 "
         "supersedes=<旧 alarm_id>（系统会把旧警报置为 corrected）。",
-        "4. 只能写**你自己**的档案/职责书（update_status/append_ruling）；"
+        "4. 只能写**你自己**的档案/职责书（edit_status/edit_requirements）；"
         "不得修改别人的卡、不得建卡、不得调文件或命令。",
         "5. 没有新增风险就沉默，不要为了说话而说话。",
     ]

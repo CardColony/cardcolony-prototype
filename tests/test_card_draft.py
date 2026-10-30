@@ -61,7 +61,7 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
 # draft_rule_edit 起草＋用户审批落盘）。
 def test_base_prompt_version_is_t20_1():
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t26-5"
+    assert prompts.BASE_PROMPT_VERSION == "t27-1"
 
 
 # ---------------------------------------------------------------- 判据1：draft
@@ -132,16 +132,16 @@ async def test_commit_hash_mismatch_rejected_no_card_change(sandbox, monkeypatch
     assert "error" not in d, d
 
     # 卡面被外部改动（经 update_card 改 status_block，块 hash 不变——改的是另一块；
-    # 直接改 requirements 对应的 rulings 键使第三块 hash 变化）
-    await card_store.update_card(wid, cid, {"rulings": "外部改动"}, "外部")
+    # 直接改 requirements 对应的 requirements 键使第三块 hash 变化）
+    await card_store.update_card(wid, cid, {"requirements": "外部改动"}, "外部")
 
     r = await card_draft.commit(wid, cid, "requirements", "新草稿", d["base_hash"])
     assert "error" in r
     assert r.get("code") == "hash_mismatch"
     # 卡面仍是外部改动的内容，不是「新草稿」
     raw = await card_store.read_card(wid, cid)
-    assert "外部改动" in raw["body"]["rulings"]
-    assert "新草稿" not in raw["body"]["rulings"]
+    assert "外部改动" in raw["body"]["requirements"]
+    assert "新草稿" not in raw["body"]["requirements"]
 
 
 # ---------------------------------------------------------------- 判据3：使命拒写
@@ -198,8 +198,8 @@ async def test_commit_status_block(sandbox, monkeypatch):
     assert "已核实的新现状快照" in raw["body"]["status_block"]
 
 
-async def test_commit_research_project_writes_rulings(sandbox, monkeypatch):
-    """research_project 卡 commit kind=requirements 落 rulings 键（区头仍为 ## 定论）。"""
+async def test_commit_research_project_writes_requirements(sandbox, monkeypatch):
+    """research_project 卡 commit kind=requirements 落 requirements 键（区头仍为 ## 定论）。"""
     os.environ["MOCK_LLM"] = "1"
     monkeypatch.setattr(card_draft.model_service, "_gateway", None)
     wdata = await _mk_research_work()
@@ -211,7 +211,7 @@ async def test_commit_research_project_writes_rulings(sandbox, monkeypatch):
     r = await card_draft.commit(wid, cid, "requirements", "D01【裁定】研究结论", d["base_hash"])
     assert r.get("ok") is True, r
     raw = await card_store.read_card(wid, cid)
-    assert "D01【裁定】研究结论" in raw["body"]["rulings"]
+    assert "D01【裁定】研究结论" in raw["body"]["requirements"]
 
 
 async def test_commit_rd_writes_requirements_block(sandbox, monkeypatch):
@@ -219,7 +219,7 @@ async def test_commit_rd_writes_requirements_block(sandbox, monkeypatch):
     requirements 外露。
 
     原判据「盘上区头为 ## 需求文档」随 md 退役——库内第三块是**一列**
-    （cards.rulings），「叫什么名」由读侧按本树 project_class 决定
+    （cards.requirements），「叫什么名」由读侧按本树 project_class 决定
     （routes._apply_block_set），不再有盘上区头可改。
     """
     os.environ["MOCK_LLM"] = "1"
@@ -234,7 +234,7 @@ async def test_commit_rd_writes_requirements_block(sandbox, monkeypatch):
     assert r.get("ok") is True, r
 
     card = await card_store.read_card(wid, cid)
-    assert "D01【裁定】研发需求" in card["body"]["rulings"]
+    assert "D01【裁定】研发需求" in card["body"]["requirements"]
     filtered = routes._apply_block_set(card, wid)
     assert "D01【裁定】研发需求" in filtered["body"]["requirements"]
 
@@ -256,7 +256,8 @@ async def test_commit_rd_read_side_shows_requirements(sandbox, monkeypatch):
     raw_card = await card_store.read_card(wid, cid)
     filtered = card_draft._apply_block_set(raw_card, wid)
     assert "D01【裁定】需求正文" in filtered["body"]["requirements"]
-    assert "rulings" not in filtered["body"]  # rd 卡不外露 rulings
+    # [需求文档正名 2026-10-28] 旧键 rulings 已彻底退役：读侧只有一个键 requirements
+    assert "rulings" not in filtered["body"]
 
 
 # ---------------------------------------------------------------- 反馈轮次上下文连续

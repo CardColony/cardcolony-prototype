@@ -182,10 +182,34 @@ def _yield_to_children(work_id: str, card_id: str) -> bool:
         return False
 
 
+def _auto_enabled(work_id: str, card_id: str) -> bool:
+    """该卡此刻是否开着自动模式（``cards.auto_mode``，**用户开关**）。
+
+    [停止失效修复 2026-10-24 · 用户实测「开了自动模式就停不下来，切回手动也停不住」]
+    迁到 goal 包时丢了这道闸：原 ``auto_driver.will_continue`` 第一句就是
+    ``if not is_auto(meta): return False``，而 ``goal.driver.drive`` 只看
+    ``goal.phase`` / ``goal.activation``——**完全不看 auto_mode**。
+    于是用户把开关关掉，goal 仍是 active+armed，驱动照旧续轮，再也停不下来。
+
+    读不到 meta ⇒ 返回 False（**宁停不停不住**）：停不下来的代价远大于少续一轮。
+    """
+    try:
+        from ..storage import card_store
+        return bool((card_store._meta_of(work_id, card_id) or {}).get("auto_mode"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[goal] 读 auto_mode 失败，按关闭处理 card=%s: %s", card_id, exc)
+        return False
+
+
 async def drive(work_id: str, card_id: str, st: Optional[DriverState] = None) -> None:
     """空闲检查点：有 active+armed 目标且还有预算 ⇒ 预留下一轮。"""
     st = st or _state_for(work_id, card_id)
     if st.stopping or st.competing_queued:
+        return
+    # [停止失效修复 2026-10-24] 用户开关优先：auto_mode 关掉就不驱动。
+    # 位置在 goal 判定**之前**——开关关掉时连 goal 都不用读。
+    if not _auto_enabled(work_id, card_id):
+        logger.debug("[goal] auto_mode 已关，不驱动 card=%s", card_id)
         return
     service = get_service()
     goal = await service.get(work_id, card_id)
@@ -202,7 +226,23 @@ async def drive(work_id: str, card_id: str, st: Optional[DriverState] = None) ->
         return
 
     round_no = goal.rounds_started + 1
-    content = render_goal_round_prompt(goal, round_no)
+    # [goal 变卡面区域 2026-10-28 · 用户令] **只认卡面上那段文字为目标**：
+    # 内容从卡的 goal 字段取（它就是卡面 goal 区），不再用 goal 域里 fold 出来的
+    # 副本。两份并存时以卡面为准——否则"父卡/用户改了卡面目标，续轮还在念旧目标"。
+    _obj = ""
+    try:
+        from ..storage import card_store
+        _obj = str((card_store._meta_of(work_id, card_id) or {}).get("goal") or "").strip()
+    except Exception as exc:  # noqa: BLE001 读不到卡面就退回 goal 域副本
+        logger.warning("[goal] 读卡面目标失败 card=%s: %s", card_id, exc)
+    # [goal 变卡面区域 2026-10-28] **卡面没目标 ⇒ 不驱动**。
+    # 目标已经是卡面上的一块了，空着就是"没有目标"——此时续轮只会念一段空目标、
+    # 白烧一轮。这条也顺手把「清空 goal 就等于停掉自动模式」变成结构事实，
+    # 不需要再靠 pause/clear 去同步状态机。
+    if not _obj:
+        logger.debug("[goal] 卡面 goal 为空，不驱动 card=%s", card_id)
+        return
+    content = render_goal_round_prompt(goal, round_no, objective=_obj)
     source = GoalMessageSource(goal_id=goal.id, revision=goal.revision, round=round_no)
     st.attempt = RoundAttempt(goal_id=goal.id, revision=goal.revision, round=round_no,
                               content=content, phase="queued")
@@ -330,3 +370,54 @@ def install() -> None:
     get_service().on_changed(_on_goal_changed)
     _INSTALLED = True
     print("[goal] 续轮驱动已装载（goal/changed 监听已挂）", flush=True)
+
+
+# ---------------------------------------------------------------- 重启恢复
+async def rearm_active_goals() -> int:
+    """**重启后把还在跑的目标重新授上权**，返回恢复张数。
+
+    [goal 重启恢复 2026-10-28 · 用户实测「goal 明明没完成却停下了」]
+    原版设计「activation 永不落盘、启动一律 disarmed」——对一个要求"自动跑到完成"
+    的系统是致命的：服务重启一次，所有 active 目标静默挂死，界面还显示在跑。
+
+    恢复判据（三条都满足才授，缺一不授）：
+      ① ``goal_state == "active"``（durable 相位还在跑）
+      ② ``auto_mode == 1``（用户开关开着）
+      ③ **卡面 goal 非空**（目标真的还在——内容已搬成卡面一块）
+    恢复后逐张 ``request_drive``：有活就接着跑，没活就停在 idle。
+    """
+    from ..storage import card_store
+
+    n = 0
+    try:
+        root = card_store.WORKS_DIR
+        works = [p.name for p in sorted(root.iterdir()) if p.is_dir()]
+    except Exception as exc:  # noqa: BLE001 目录读不了就什么都不做
+        logger.warning("[goal] 重启恢复：扫 works 失败 %s", exc)
+        return 0
+
+    svc = get_service()
+    for wid in works:
+        try:
+            metas = card_store.iter_card_metas(wid) or {}
+        except Exception:  # noqa: BLE001 某个 work 坏了不拖垮其余
+            continue
+        for cid, m in metas.items():
+            if str((m or {}).get("goal_state") or "") != "active":
+                continue
+            if not bool((m or {}).get("auto_mode")):
+                continue
+            if not str((m or {}).get("goal") or "").strip():
+                continue
+            try:
+                view = await svc.arm(wid, cid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[goal] 重启恢复失败 %s/%s: %s", wid, cid, exc)
+                continue
+            if view is None:
+                continue
+            n += 1
+            request_drive(wid, cid)
+    if n:
+        print(f"[goal] 重启恢复：{n} 张卡的目标重新授上续轮权", flush=True)
+    return n

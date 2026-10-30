@@ -16,15 +16,43 @@ _TERMINAL_STAGES = frozenset({"done", "error", "idle"})
 
 
 def set_stage(work_id: str, card_id: str, stage: str, detail: str = "") -> None:
-    _store[(work_id, card_id)] = {
+    key = (work_id, card_id)
+    prev = _store.get(key)
+    was_active = bool(prev and prev.get("active"))
+    active = stage not in _TERMINAL_STAGES
+    _store[key] = {
         "stage": stage,
         "detail": detail,
         "ts": time.time(),
         # [信息流重出 Task4] 显式活跃位：此前前端只能靠阶段白名单反推「还在跑」，
         # 于是超长请求若阶段不变/进程已死，两种情况长得一样 → 刷新后要么误报进行中、
         # 要么误判收尾。现在由写点自己声明。
-        "active": stage not in _TERMINAL_STAGES,
+        "active": active,
     }
+    # [推送优先 2026-10-25] **活跃位翻转**时广播一帧工作级事件。
+    # 为什么：左栏「谁在跑」原来靠 **10 秒轮询** /api/nav/running ⇒
+    #   ① 实时性差（转圈最多晚 10 秒才亮）；② **服务一关就变成报错机**
+    #      （实测：服务关掉 120 秒内 47 个请求/30 个失败）。
+    # ⇒ 改成推送：active 翻转（开始跑 / 收口）时立刻广播，前端零轮询即知。
+    # heartbeat 只刷时间戳不改 active ⇒ 不广播（否则逐字流每帧都广播＝刷屏）。
+    if active != was_active:
+        _broadcast_running(work_id, card_id, stage, detail, active)
+
+
+def _broadcast_running(work_id: str, card_id: str, stage: str, detail: str,
+                       active: bool) -> None:
+    """广播工作级 `card_running` 帧。零阻断（展示层绝不影响主流程）。"""
+    try:
+        from . import event_stream
+        event_stream.emit_work(work_id, "card_running", {
+            "card_id": card_id,
+            "stage": stage,
+            "detail": detail,
+            "active": active,
+            "ts": time.time(),
+        })
+    except Exception:  # noqa: BLE001 零阻断：广播失败不影响运行
+        pass
 
 
 def heartbeat(work_id: str, card_id: str, stage: str = "streaming") -> None:
@@ -37,6 +65,8 @@ def heartbeat(work_id: str, card_id: str, stage: str = "streaming") -> None:
     cur = _store.get(key)
     if cur is None:
         _store[key] = {"stage": stage, "detail": "", "ts": time.time(), "active": True}
+        # [推送优先 2026-10-25] 首次心跳＝这张卡开始跑 ⇒ 广播（否则前端要等 10 秒轮询）
+        _broadcast_running(work_id, card_id, stage, "", True)
         return
     if not cur.get("active"):
         return          # done/error 之后不再复活，避免收尾后又被拉回进行中

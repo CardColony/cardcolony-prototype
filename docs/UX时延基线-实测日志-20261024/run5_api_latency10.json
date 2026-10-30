@@ -1,0 +1,164 @@
+{
+  "GET /api/works": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "GET /api/nav": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "GET /api/works/work_024/canvas": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "GET /api/works/work_024/pulse": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "GET /api/works/work_024/card-messages": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "GET /api/works/work_024/cards/card_001": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "GET /api/works/work_024/cards/card_012": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "GET /api/works/work_024/cards/card_012/session": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "GET /api/works/work_024/rule": {
+    "stat": {
+      "err": "all failed",
+      "status": null
+    },
+    "samples": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}

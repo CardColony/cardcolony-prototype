@@ -31,6 +31,8 @@ export function createRowModel(card, store, ctx = {}) {
       if (this.kind === "project") return "p:" + this.card.work_id;
       // [职能入口 2026-10-22] 职能不是卡（不进 cards 表），键用 function_id。
       if (this.kind === "function") return "f:" + this.wid + ":" + this.card.function_id;
+      // [评审入口 2026-10-29] 评审卡也不进 cards 表（离树），键用 review_card_id。
+      if (this.kind === "review") return "r:" + this.wid + ":" + this.card.review_card_id;
       return "c:" + this.wid + ":" + this.card.card_id;
     },
 
@@ -47,6 +49,20 @@ export function createRowModel(card, store, ctx = {}) {
           error: null,
           loaded: true,
           selected: false,
+        };
+      }
+      // [评审入口 2026-10-29] 评审行同职能行：无展开/加载语义；
+      // 选中态按 review_card_id 判（进评审卡时左栏这一行高亮）。
+      if (this.kind === "review") {
+        const selR = s2.select.get();
+        return {
+          expanded: false,
+          source: null,
+          loading: false,
+          error: null,
+          loaded: true,
+          selected: !!selR && selR.cid === this.card.review_card_id
+            && selR.wid === this.wid,
         };
       }
       const cid = this.card.card_id;

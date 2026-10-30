@@ -88,6 +88,10 @@ async def test_v3_order_before_card_list(sandbox):
 
 async def test_v6_new_type_auto_appears(sandbox, monkeypatch, tmp_path):
     wid, cid = await _make_work()  # 建卡走真实注册表
+    # [2026-10-27] 先取"加类型之前"的行数：本测试的意图是"加一项就多一行"，
+    # 原断言写死 "== 10"，任何人往词表加类型都会让它红（现已 13+ 条）。
+    r90_before = next(
+        r for r in context_assembler.build_context_regions(wid, cid) if r["order"] == 90)
     reg = json.loads(card_store.TYPE_REGISTRY_PATH.read_text(encoding="utf-8"))
     reg["l1_vocabularies"]["rd_project"]["types"].append({
         "code": "new_kind", "label": "新卡种",
@@ -101,10 +105,9 @@ async def test_v6_new_type_auto_appears(sandbox, monkeypatch, tmp_path):
 
     r90 = next(r for r in context_assembler.build_context_regions(wid, cid) if r["order"] == 90)
     assert "- 新卡种（new_kind）：扩展性探针：注册表加一项即多一行。" in r90["text"]
-    # [编程卡 2026-10-15 · C1 指纹随词表推进] rd_project 词表加 coder ⇒ 原 4 类 → 5 类
-    # [规则卡 2026-10-15 · 随版本推进翻新] 两词表各加 rule ⇒ 6 → 8（意图不变：加
-    # 类型即自动多一行）。
-    assert r90["entries"] == 10  # [角色机制 5710] 两词表各 +role ⇒ 8→10，再 +new_kind
+    # [2026-10-27] 改为与"加之前"比：+1。意图不变（加类型即自动多一行），
+    # 但不再因词表条目总数变化而误红。
+    assert r90["entries"] == r90_before["entries"] + 1
 
 
 # ---------------------------------------------------------------------------

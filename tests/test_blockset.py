@@ -4,11 +4,11 @@
 判据（任务书 §六 块1 硬判据）：
 1. NEW_SECTION_MAPPING 含 requirements 键（grep 可验）。
 2. rd_project 卡读侧返回 requirements 块、无定论写入目标；
-   research_project 卡返回 rulings 块。
+   research_project 卡返回 requirements 块。
 3. 存量卡读取不报错，缺失块返回空。
 4. 旧键归一（OLD_SECTION_MAPPING / OLD_KEY_TO_NEW）零改动。
 
-读侧过滤在 routes._apply_block_set（card_store.read_card 恒返回 rulings 键，
+读侧过滤在 routes._apply_block_set（card_store.read_card 恒返回 requirements 键，
 API 层按根卡 project_class 过滤）。card_store.py 本任务零触碰。
 """
 from __future__ import annotations
@@ -24,11 +24,11 @@ from src.storage.hash_utils import (
 # ---------------------------------------------------------------- 判据1/4：映射表
 
 def test_new_section_mapping_has_requirements():
-    """[2026-10-22 统一命名] 第三块区头＝「## 需求文档」，落 rulings 键（不再有 requirements 键）。"""
+    """[2026-10-22 统一命名] 第三块区头＝「## 需求文档」，落 requirements 键（不再有 requirements 键）。"""
     assert "## 需求文档" in NEW_SECTION_MAPPING
-    assert NEW_SECTION_MAPPING["## 需求文档"] == "rulings"
+    assert NEW_SECTION_MAPPING["## 需求文档"] == "requirements"
     assert "## 定论" in NEW_SECTION_MAPPING, "存量卡旧区头继续可解析"
-    assert NEW_SECTION_MAPPING["## 定论"] == "rulings"
+    assert NEW_SECTION_MAPPING["## 定论"] == "requirements"
 
 
 def test_old_key_normalization_unchanged():
@@ -42,19 +42,19 @@ def test_old_key_normalization_unchanged():
     assert OLD_KEY_TO_NEW == {
         "charter": "mission",
         "conclusion": "status_block",
-        "rejections": "rulings",
+        "rejections": "requirements",
     }
 
 
 def test_split_extracts_requirements_section():
-    """[2026-10-22 统一命名] 「## 需求文档」与旧「## 定论」都落到同一个 rulings 键。"""
+    """[2026-10-22 统一命名] 「## 需求文档」与旧「## 定论」都落到同一个 requirements 键。"""
     body = "## 使命\nM\n## 现状\nS\n## 需求文档\nR1\n## 修改历史\nH"
     s = split_body_sections(body)
-    assert s["rulings"] == "R1"
+    assert s["requirements"] == "R1"
     assert s["mission"] == "M"
     assert s["status_block"] == "S"
     old = "## 使命\nM\n## 现状\nS\n## 定论\nD1\n## 修改历史\nH"
-    assert split_body_sections(old)["rulings"] == "D1", "存量旧区头保形可读"
+    assert split_body_sections(old)["requirements"] == "D1", "存量旧区头保形可读"
 
 
 # ---------------------------------------------------------------- 判据2/3：读侧块集
@@ -79,7 +79,7 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
 
 
 async def test_rd_project_read_returns_requirements(work):
-    """硬判据2a：rd_project 卡读侧返回 requirements、无 rulings 键。"""
+    """硬判据2a：rd_project 卡读侧返回 requirements、无 requirements 键。"""
     wid, root = work["work_id"], work["work_card_id"]
     # work 夹具缺省 project_class=rd_project（create_work 缺省值）
     cid = await _mk_child(wid, "子卡", root)
@@ -88,12 +88,12 @@ async def test_rd_project_read_returns_requirements(work):
     )
     body = result["body"]
     assert "requirements" in body
-    assert "rulings" not in body
+    assert "rulings" not in body          # [正名 2026-10-28] 旧键已彻底退役
     assert "mission" in body and "status_block" in body and "history" in body
 
 
-async def test_research_project_read_returns_rulings(work):
-    """硬判据2b：research_project 卡读侧返回 rulings、无 requirements 键。"""
+async def test_research_project_read_returns_requirements(work):
+    """硬判据2b：research_project 卡读侧返回 requirements、无 requirements 键。"""
     wdata = await _mk_research_work()
     wid, root = wdata["work_id"], wdata["work_card_id"]
     cid = await _mk_child(wid, "子卡", root)
@@ -101,8 +101,8 @@ async def test_research_project_read_returns_rulings(work):
         await card_store.read_card(wid, cid), wid
     )
     body = result["body"]
-    assert "rulings" in body
-    assert "requirements" not in body
+    assert "requirements" in body
+    assert "rulings" not in body          # [正名 2026-10-28] 旧键已彻底退役
     assert "mission" in body and "status_block" in body and "history" in body
 
 
@@ -110,13 +110,13 @@ async def test_legacy_rd_card_third_block_shown_as_requirements(work):
     """存量研发卡：盘上 ## 定论 区内容以 requirements 呈现（第三块语义随树类走）。"""
     wid, root = work["work_id"], work["work_card_id"]
     cid = await _mk_child(wid, "存量卡", root)
-    # 经 update_card 写一段 rulings（存量路径：盘上落 ## 定论）
-    r = await card_store.update_card(wid, cid, {"rulings": "D01【裁定】旧定论"}, "测试")
+    # 经 update_card 写一段 requirements（存量路径：盘上落 ## 定论）
+    r = await card_store.update_card(wid, cid, {"requirements": "D01【裁定】旧定论"}, "测试")
     assert "error" not in r, r
     result = routes._apply_block_set(
         await card_store.read_card(wid, cid), wid
     )
-    # rd 树：rulings 内容以 requirements 呈现，不外露 rulings 键
+    # [正名 2026-10-28] 第三块只有一个键 requirements；旧键 rulings 已退役
     assert "D01【裁定】旧定论" in result["body"]["requirements"]
     assert "rulings" not in result["body"]
 
@@ -133,15 +133,15 @@ async def test_missing_block_returns_empty_no_error(work):
     assert isinstance(result["body"]["requirements"], str)
     assert "mission" in result["body"] and "status_block" in result["body"]
 
-    # research 树：新卡 rulings 为骨架占位（非空）；再验一个确实无定论内容的场景
+    # research 树：新卡 requirements 为骨架占位（非空）；再验一个确实无定论内容的场景
     wdata = await _mk_research_work()
     wid2, root2 = wdata["work_id"], wdata["work_card_id"]
     cid2 = await _mk_child(wid2, "无定论卡", root2)
     result2 = routes._apply_block_set(
         await card_store.read_card(wid2, cid2), wid2
     )
-    assert "rulings" in result2["body"]
-    assert isinstance(result2["body"]["rulings"], str)
+    assert "requirements" in result2["body"]
+    assert isinstance(result2["body"]["requirements"], str)
 
 
 async def test_rd_card_requirements_missing_section_returns_empty():

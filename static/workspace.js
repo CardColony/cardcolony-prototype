@@ -4,18 +4,20 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=46";
+import { API } from "./esm/api.js?v=55";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=61";
+import { EventFlow } from "./stream.js?v=79";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=46";
+import { notify, postStop } from "./esm/api.js?v=55";
+// [wb_exec 2026-10-23] 执行体块（纯函数，单独成模块以便单测）
+import { buildExecBackendHtml as buildExecBackendHtmlPure } from "./esm/exec_backend.js?v=3";
 // [5715 · 抽模块] 卡间信的解析/剥头行与呈现都搬进 esm/flow/card-msg-node.js
 //   （原先在装配闭包里 ⇒ 不可单测）；此处不再需要 cardmsg.js 的解析件。
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=59";
-import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=37";
+import { createNavSystem } from "./esm/nav_system.js?v=74";
+import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=47";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
@@ -262,10 +264,22 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     try { EventFlow.activate(wid, cid); } catch (e) { /* 零阻断 */ }
   }
 
-  async function open(cardId) {
+  async function open(cardId, switchWid) {
     if (cardId === "draft") return;   // [惰性新建] 草稿卡无真身：不走 getCard（否则 404）
     const mySeq = ++_openSeq;
     const stale = () => mySeq !== _openSeq;
+    /* [5715 · 治「切卡卡死」] **跨项目切卡**：切项目上下文，**不整页跳**。
+       内存态（装配器 / 画板 / 事件流会话表）本来就是**跟卡走**的
+       （EventFlow.sessions 键＝(work_id, card_id)）⇒ 跨项目切到一张**加载过**的卡
+       本该零重建、秒切；原来整页跳 ⇒ 内存态全丢 ⇒ 必然重拉＋重装 ⇒ 卡死感。
+       这里：先换项目号（WORK_ID 是 let，全模块随取随新；window.__WORK_ID__ 供
+       nav_system / rule_panel 惰性读）⇒ 后面所有按项目取的层自然跟着切。 */
+    let crossProject = false;
+    if (switchWid && switchWid !== WORK_ID) {
+      WORK_ID = switchWid;
+      window.__WORK_ID__ = switchWid;
+      crossProject = true;
+    }
     // [切卡取消在途请求 2026-10-21] 先掐掉上一张卡还没回来的 getCard
     if (_openCtrl) { try { _openCtrl.abort(); } catch (e) { /* 零阻断 */ } }
     const ctrl = new AbortController();
@@ -280,6 +294,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
        都还是上一张卡。取卡失败要把身份**回滚**（否则地址栏指着打不开的卡）。 */
     const prevSel = (() => { try { return navStore.select.get(); } catch (e) { return null; } })();
     try { navStore.select.set(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
+    // [5715 · 切卡跟手] 页面级的卡号全局也要跟着换：模型徽标等读点读的是
+    // window.__CARD_ID__（card.html 注入一次）⇒ 切卡/切项目后它还指着**上一张卡**
+    // ⇒ 徽标显示上一张卡的模型。这里就地更新（页面内切 ⇒ 不重载 ⇒ 必须自己换）。
+    try { window.__CARD_ID__ = cardId; } catch (e) { /* 零阻断 */ }
     try {
       const card = await API.getCard(WORK_ID, cardId, { signal: ctrl.signal });
       if (stale()) return;
@@ -297,6 +315,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       }
       if (inputBar) inputBar.refresh();   // 会话面到场 ⇒ 输入卡解除 inert
       applyEmptyState(card);
+      // [评审浮窗 2026-10-29] 这张卡有进行中的评审批次 ⇒ 右侧浮窗出现；
+      // 没有就什么都不多。**不 await**：浮窗晚到几十毫秒没关系，切卡不能等它。
+      rvRefresh(cardId);
       // [会话渲染单源化 2026-10-15 · C1] 刷新/换卡恢复走**唯一一条路**：
       // GET /timeline → 装配器 → 节点快照 → 渲染。原「先 renderChat 读 /session
       // 上屏消息、再 replayTrace 补过程行」两通道已合并成这一次调用。
@@ -339,8 +360,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       // 导航树重渲以应用当前卡高亮与祖先路径展开
       /* [切卡不再重拉导航 2026-10-21] 传 {network:false}：切卡只需要按已有快照重画
          （高亮/祖先展开/面包屑），与 /api/nav、/api/nav/version 无关。此前每切一张卡
-         都白拉这两个接口 ⇒ 连点十张卡二十个请求排队，切卡从 14ms 涨到 655ms。 */
-      await renderNav({ network: false });
+         都白拉这两个接口 ⇒ 连点十张卡二十个请求排队，切卡从 14ms 涨到 655ms。
+         〔5715 · 跨项目〕**跨项目**时快照是**另一个项目**的 ⇒ 必须重拉（network:true）。 */
+      await renderNav({ network: crossProject });
       if (stale()) return;
       // [顶栏整合 2026-10-13] 卡标题改由顶栏聊天态面包屑承载（原 #wsHeadTitle 随 .ws-head 整条删除）。
       // 放在 await renderNav() 之后——面包屑吃 navStore.snapshot，快照到位才有祖先链。
@@ -453,8 +475,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         card_id: "draft", title: DRAFT_CARD.title, card_type: DRAFT_CARD.card_type || "topic",
         parent: DRAFT_CARD.parent, links: [], source: "用户直接创建", work_id: WORK_ID,
       },
-      // 形状对齐真卡：mission/status_block/rulings 为字符串，history 为数组
-      body: { mission: "", status_block: "", rulings: "", history: [] },
+      // 形状对齐真卡：mission/status_block/requirements 为字符串，history 为数组
+      body: { mission: "", status_block: "", requirements: "", history: [] },
     };
     const boardKey = "new-" + (++_draftBoardSeq);
     try { EventFlow.activate(WORK_ID, boardKey); } catch (e) { /* 零阻断 */ }
@@ -486,8 +508,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         card_id: "draft", title: "新项目", card_type: "project",
         parent: "", links: [], source: "用户直接创建", work_id: WORK_ID,
       },
-      // 形状对齐真卡（同 enterNewCard）：mission/status_block/rulings 字符串、history 数组
-      body: { mission: "", status_block: "", rulings: "", history: [] },
+      // 形状对齐真卡（同 enterNewCard）：mission/status_block/requirements 字符串、history 数组
+      body: { mission: "", status_block: "", requirements: "", history: [] },
     };
     try { EventFlow.activate(WORK_ID, "draft"); } catch (e) { /* 零阻断 */ }
     /* [5715 · 修] 新建项目页原本零空态 ⇒ 整屏空白（新用户第一屏什么都没有）。
@@ -623,6 +645,28 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
 
   function roleDutyLabel(state) {
     return ({ active: "值班中", suspended: "已停职", archived: "已撤岗" })[state] || state;
+  }
+
+  // [总裁制卡面定制 2026-10-24] 职能/总裁的台账面渲染:summary() 的 text 按
+  // "## 标题"切节,标题行做节头、条目行做正文;观点/警报条数徽标。
+  function buildFunctionHtml(info) {
+    if (!info || !info.text) {
+      return `<div class="role-panel"><div class="rej-empty">职能台账面读取失败（稍后重试）</div></div>`;
+    }
+    const name = escapeHtml(info.function_name || info.function_id || "");
+    const sections = String(info.text).split(/\n(?=## )/).map(seg => {
+      const nl = seg.indexOf("\n");
+      const title = nl >= 0 ? seg.slice(0, nl).replace(/^##\s*/, "") : seg.replace(/^##\s*/, "");
+      const body = nl >= 0 ? seg.slice(nl + 1).trim() : "";
+      if (!title) return "";
+      const lines = body ? body.split("\n").filter(l => l.trim())
+        .map(l => `<div class="fn-li">${escapeHtml(l)}</div>`).join("") : "";
+      return `<div class="fn-sec"><div class="fn-sec-t">${escapeHtml(title)}</div>${lines}</div>`;
+    }).join("");
+    return `<div class="role-panel fn-panel">
+      <div class="blocktitle">职能台账 · ${name}<span class="note">按目录 face_blocks 装配</span></div>
+      ${sections}
+    </div>`;
   }
 
   function buildRoleHtml(info, m) {
@@ -801,6 +845,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       </div>`;
   }
 
+  /* [wb_exec 2026-10-23] coder 卡的执行体块 → 抽到 esm/exec_backend.js（可单测）。 */
+  function buildExecBackendHtml(info) { return buildExecBackendHtmlPure(info); }
+
   async function renderInspector() {
     const m = currentCard.meta;
     const b = currentCard.body;
@@ -809,6 +856,35 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     if (isRoleCard && m.card_id && m.card_id !== "draft") {
       try { roleInfo = await API.getRole(WORK_ID, m.card_id); } catch (e) { roleInfo = null; }
     }
+    // [wb_exec 2026-10-23] coder 卡的**执行体选择**（谁干活）。
+    // 未开工 ⇒ 显示 auto；开工后 ⇒ 显示实际路由到的（版本, 模型）。
+    const isCoderCard = m.card_type === "coder";
+    let execInfo = null;
+    let execSwitch = null;
+    if (isCoderCard && m.card_id && m.card_id !== "draft") {
+      try { execInfo = await API.getExecBackend(WORK_ID, m.card_id); } catch (e) { execInfo = null; }
+      // [总开关 2026-10-23 16:20] 全局手动开关（运行时生效，不用重启）
+      try { execSwitch = await API.getWbExecSwitch(); } catch (e) { execSwitch = null; }
+    }
+    const execBackendHtml = (isCoderCard && execInfo)
+      ? buildExecBackendHtml(execInfo, execSwitch) : "";
+
+    // [总裁制卡面定制 2026-10-24] 职能卡/职能化根卡 ⇒ 台账动态面(GET 响应的
+    // function / ceo 字段,由 function_room.summary 按目录 face_blocks 装配)。
+    const isFnCard = m.card_type === "function";
+    const isRootCard = m.card_type === "project";
+    let fnInfo = null;
+    if (isFnCard || isRootCard) {
+      fnInfo = b && (b.function || null) || currentCard.function
+        || currentCard.ceo || null;
+      if (!fnInfo && m.card_id && m.card_id !== "draft") {
+        try {
+          const fresh = await API.getCard(WORK_ID, m.card_id);
+          fnInfo = fresh && (fresh.function || fresh.ceo) || null;
+        } catch (e) { fnInfo = null; }
+      }
+    }
+    const fnPanelHtml = fnInfo ? buildFunctionHtml(fnInfo) : "";
 
     const links = m.links || [];
     // [phase8.6-E] 每条关系尾部 ✕ 删除按钮（data-idx 定位）
@@ -842,11 +918,12 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         <button class="btn" id="relAddBtn">确定</button>
       </div>`;
 
-    // [卡片信息结构改造 S2-10] 键名随拆分器归一：rejections→rulings、charter→mission、
+    // [卡片信息结构改造 S2-10] 键名随拆分器归一：rejections→requirements、charter→mission、
     // conclusion→status_block。存量卡不分叉——读侧已归一，新旧卡在此同一路径渲染。
     // [卡片编辑机制改造 2026-10-12 · 块3] 第三块按块集判据渲染：body 含 requirements
-    // 键（rd_project 树）→ 需求文档；含 rulings 键（其他树）→ 定论。两者互斥（读侧过滤）。
-    const thirdKey = ("requirements" in b) ? "requirements" : "rulings";
+    // 键（rd_project 树）→ 需求文档；含 requirements 键（其他树）→ 定论。两者互斥（读侧过滤）。
+    // [需求文档正名 2026-10-28] 双键分叉已删：第三块只有一个键 requirements。
+    const thirdKey = "requirements";
     const thirdLabel = "需求文档 · requirements";   // [2026-10-22] 第三块全系统统一叫需求文档，不再分树
     const thirdEmpty = "（暂无需求文档）";
     const thirdContent = (b[thirdKey] || "").trim();
@@ -878,7 +955,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
           ${canResume ? `<button class="btn ghost auto-resume" id="autoResume" title="${resumeTitle}">${resumeLabel}</button>` : ""}
           <button class="btn ghost auto-toggle" id="autoToggle" title="关闭后：停自动继续、按类型还原权限">关闭自动</button>
         </div>
-        <div class="auto-goal"><span class="auto-goal-k">目标</span>${escapeHtml((m.goal || "").trim() || "（尚未设定——本卡收到的首条消息即成为目标）")}${(m.goal || "").trim() ? `<button class="btn ghost auto-goal-edit" id="goalEdit" title="改目标：改完立刻按新目标继续跑">改</button>` : ""}</div>`
+        <div class="auto-goal"><span class="auto-goal-k">目标</span>${escapeHtml((m.goal || "").trim() || "（尚未设定——在下面「目标」块里填，或用 /goal <内容>）")}${(m.goal || "").trim() ? `<button class="btn ghost auto-goal-edit" id="goalEdit" title="改目标：改完立刻按新目标继续跑">改</button>` : ""}</div>`
       : `<div class="auto-row">
           <button class="btn ghost auto-toggle" id="autoToggle" title="开了就权限全开、自动续跑，直到模型声明完成">开启自动模式</button>
           <span class="auto-hint">开了就权限全开，模型自己一轮接一轮跑到声明完成</span>
@@ -891,7 +968,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         <span style="font-size:11px;color:var(--dimmer);margin-left:auto;">${escapeHtml(m.card_id)} · ${escapeHtml(m.source)}</span>
       </div>
       ${autoRowHtml}
+      ${execBackendHtml}
       ${isRoleCard ? buildRoleHtml(roleInfo, m) : ""}
+      ${fnPanelHtml}
       ${m.card_type === "project" ? `
       <div class="blocktitle">角色（参谋线）<span class="note">离树观察者 · 组阁权在根卡</span></div>
       <div class="role-create">
@@ -910,6 +989,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       <div class="edit-row">
         <button class="btn" id="saveCharter">保存使命</button>
         <span class="save-status" id="charterStatus"></span>
+      </div>
+
+      <div class="blocktitle">目标 · goal <span class="note">卡面上的一块 · 父卡和你都能改 · 改完它会收到提醒</span></div>
+      <textarea class="ws-edit" id="goalEditBox" placeholder="这张卡要达成什么。留空＝没有目标，自动模式不驱动">${escapeHtml(b.goal || "")}</textarea>
+      <div class="edit-row">
+        <button class="btn" id="saveGoal">保存目标</button>
+        <span class="save-status" id="goalStatus"></span>
       </div>
 
       <div class="blocktitle">现状 · status_block</div>
@@ -1036,6 +1122,44 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     if (goalEditBtn) goalEditBtn.onclick = () => editGoal(goalEditBtn);
     const autoBtnBottom = document.getElementById("autoToggleBtn");
     if (autoBtnBottom) autoBtnBottom.onclick = () => toggleAutoMode(autoBtnBottom);
+    // [wb_exec 2026-10-23 16:20] 执行体**总开关**：开⇒走 WorkBuddy，
+    // 关⇒全部走系统自己的模型。**运行时生效，不用重启。**
+    const execSwitch = document.getElementById("execBackendSwitch");
+    if (execSwitch) {
+      execSwitch.onchange = async () => {
+        const want = !!execSwitch.checked;
+        execSwitch.disabled = true;
+        try {
+          await API.setWbExecSwitch(want);
+          notify(want ? "已开启：coder 卡走 WorkBuddy 执行体"
+                      : "已关闭：coder 卡全部走系统自己的模型", "success");
+        } catch (e) {
+          notify("切换失败：" + (e && e.message ? e.message : e), "error");
+        } finally {
+          execSwitch.disabled = false;
+          try { await renderInspector(); } catch (e) { /* 重渲失败不影响已保存 */ }
+        }
+      };
+    }
+    // [wb_exec 2026-10-23] 执行体选择：随时可改，**下一回合生效**。
+    const execSel = document.getElementById("execBackendSel");
+    if (execSel) {
+      execSel.onchange = async () => {
+        const cid = (currentCard && currentCard.meta && currentCard.meta.card_id) || "";
+        const want = execSel.value;
+        if (!cid) return;
+        execSel.disabled = true;
+        try {
+          await API.setExecBackend(WORK_ID, cid, want);
+          notify("已保存，下一回合生效", "success");
+        } catch (e) {
+          notify("改执行体失败：" + (e && e.message ? e.message : e), "error");
+        } finally {
+          execSel.disabled = false;
+          try { await renderInspector(); } catch (e) { /* 重渲失败不影响已保存 */ }
+        }
+      };
+    }
 
     // [phase8.6-C] 输入时实时撑高
     ["charterEdit", "conclusionEdit"].forEach(id => {
@@ -1087,6 +1211,23 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         const r = await API.patchCard(WORK_ID, currentCard.meta.card_id, { mission: v }, "用户编辑使命区");
         currentCard = r;
         setSaveStatus(status, "ok", "已保存");
+      } catch (e) { setSaveStatus(status, "fail", "保存失败"); }
+    };
+
+    // [goal 变卡面区域 2026-10-28 · 用户令] 目标块保存。
+    // 与使命同一手法：走 patchCard 的 goal 键（后端 ALLOWED_UPDATE_KEYS 已放行）。
+    // 保存后后端会产 `card_block_edited(block="goal")`，harness 据此发「目标已更新」
+    // 提醒——所以这里只负责提交与刷新，不自己去通知。
+    document.getElementById("saveGoal").onclick = async () => {
+      const v = document.getElementById("goalEditBox").value;
+      const status = document.getElementById("goalStatus");
+      setSaveStatus(status, "busy", "保存中…");
+      try {
+        await ensurePersisted();   // 保存目标即数据动作
+        const r = await API.patchCard(WORK_ID, currentCard.meta.card_id,
+                                      { goal: v }, "用户编辑目标区");
+        currentCard = r;
+        setSaveStatus(status, "ok", v.trim() ? "已保存" : "已清空（自动模式将不驱动）");
       } catch (e) { setSaveStatus(status, "fail", "保存失败"); }
     };
 
@@ -1448,6 +1589,100 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     });
   }
 
+  // ==================== [推送优先 2026-10-25] 工作级事件流（对话页）====================
+  //
+  // 用户原话：「前端为什么要轮询，前端应该单纯被推送信息才对吧？」
+  //
+  // 事实：画布页**早就**是这么做的（canvas.js subscribeWorkEvents：订阅
+  // /api/works/{w}/events，轮询只在 SSE **不健康**时兜底），**对话页漏了** ⇒
+  // 只能靠 10s 运行总览 / 60s 版本探测 / 60s 角标这三个**周期轮询**撑着。
+  // 代价（实测，服务一关时）：120 秒内 47 个请求、30 个失败 ⇒ 用户看到
+  // 「整个页面不断报网络错误」；而且服务正常时也白打（每分钟 8 个请求只为等变化）。
+  //
+  // ⇒ 这里照画布页那套做：
+  //   · 订阅 /api/works/{wid}/events（**一条连接**收全工作级变化）
+  //   · card_changed → 导航树变了 → 探一次版本（变了才重拉）
+  //   · card_message → 有新卡间信 → 刷新未读角标
+  //   · card_running → 运行态变了 → 刷新「谁在跑」（转圈）
+  //   · onerror     → SSE 不健康 ⇒ 兜底轮询接管（nav_system 侧按 onSseHealth 判断）
+  //   · onopen（曾掉线）→ 静默补齐一次（断线窗口里的变化不重放 ⇒ 必须补）
+  //
+  // 对话页能**跨项目切**（页面内切，WORK_ID 变）⇒ 订阅要跟着当前 work 走。
+  let _workEs = null;
+  let _workEsWid = "";
+  let _workEsHealthy = false;
+  let _workEsDropped = false;
+
+  function closeWorkEvents() {
+    if (_workEs) { try { _workEs.close(); } catch (e) { /* 零阻断 */ } }
+    _workEs = null;
+    _workEsWid = "";
+    _workEsHealthy = false;
+  }
+
+  function subscribeWorkEvents() {
+    const wid = WORK_ID;
+    if (!wid || wid === "draft") { closeWorkEvents(); return; }
+    if (_workEs && _workEsWid === wid) return;      // 已订阅同一个 work
+    closeWorkEvents();
+    try {
+      const es = new EventSource(`/api/works/${wid}/events`);
+      _workEs = es;
+      _workEsWid = wid;
+      es.onopen = () => {
+        _workEsHealthy = true;
+        // [推送优先 2026-10-25] 长连接恢复 ⇒ 可达性闩解开（提示一次「服务已恢复」）
+        if (typeof API.markReachable === "function") API.markReachable();
+        // [画布 5711 · P1 修] **重连即补齐**：工作级通道只推「连上之后新发生的事」
+        // （不重放）⇒ 断线窗口里的变化会被丢掉 ⇒ 重连成功那一刻静默补一次。
+        if (_workEsDropped) {
+          _workEsDropped = false;
+          try {
+            navSystem.probeVersion();
+            navSystem.probeRunning();
+            navSystem.refreshBadge();
+          } catch (e) { /* 补齐失败零阻断 */ }
+        }
+      };
+      es.onerror = () => {
+        _workEsHealthy = false;   /* 断线 ⇒ 兜底轮询接管 */
+        _workEsDropped = true;    /* 记住「断过」⇒ 重连时补齐 */
+        // 〔P23 · 2026-10-25 修正〕**这里不按可达性闩**。
+        // 原因：SSE 断**不等于**后端不可达（代理抖动也会断），若据此把闩按下，
+        // 兜底轮询也会跟着停（needFallbackProbe 要求后端可达）⇒ **左栏就此不更新**，
+        // 而服务端明明是通的。
+        // ⇒ 改成：SSE 断只让**兜底轮询接管**；「后端不可达」由**实际请求失败**判定
+        //   （api.js 的可达性闩在 call() 的失败分支里按下 ⇒ 第一次失败提示一次，
+        //   之后轮询自己停 ⇒ 不刷屏、不空打）。
+        //   服务恢复时：EventSource 会自己重连 ⇒ onopen ⇒ markReachable 解闩。
+      };
+      es.onmessage = (m) => {
+        _workEsHealthy = true;
+        let evt = null;
+        try { evt = JSON.parse(m.data); } catch (e) { return; }
+        if (!evt) return;
+        const t = evt.type;
+        try {
+          if (t === "card_changed") {
+            // 导航树可能变了：探一次版本（版本没变就不重拉，零开销）
+            navSystem.probeVersion();
+          } else if (t === "card_message") {
+            // 有新的卡间信 ⇒ 未读角标刷新（秒级，不再等 60s 轮询）
+            navSystem.refreshBadge();
+          } else if (t === "card_running") {
+            // 运行态变了（开始跑/收口）⇒ 「谁在跑」转圈立刻跟上（不再等 10s 轮询）
+            navSystem.probeRunning();
+          }
+        } catch (e) { /* 零阻断 */ }
+      };
+    } catch (e) {
+      // EventSource 不可用（老浏览器/代理）⇒ 退回轮询兜底（nav_system 侧自动接管）
+      _workEs = null;
+      _workEsWid = "";
+      _workEsHealthy = false;
+    }
+  }
+
   // ==================== [T17-F4] 左栏对话导航（读 /api/nav，服务端排序原样渲染） ====================
   // [阶段1 A1.2 2026-10-17] 导航系统（状态容器 + 渲染 + 交互 + 通知面板）整体抽入
   // esm/nav_system.js——逐字搬运、零行为变更；此处只做装配（注入 WORK_ID 与跳转回调）。
@@ -1458,6 +1693,12 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     getCurrentCard: () => currentCard,
     open,
     inspector,
+    /* [5715 · 治「切卡卡死」] 跨项目切卡**页面内切**（不整页跳 ⇒ 内存态留着）——
+       内存态跟卡走（EventFlow.sessions 键＝(work_id, card_id)）⇒ 切回加载过的卡秒切。 */
+    onSwitchProject: (wid, cid) => { open(cid, wid); subscribeWorkEvents(); },
+    /* [推送优先 2026-10-25] 把「SSE 健康吗」告诉导航系统 ⇒ 它据此决定
+       **要不要做周期探测**（健康时不做＝推送负责实时性；不健康时兜底）。 */
+    onSseHealth: () => _workEsHealthy,
   });
   const { navStore, navFind, renderNav } = navSystem;
 
@@ -1492,12 +1733,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     el.dataset.seq = node.seq;
     /* [对话界面商业化 2026-10-17] 模型名取自**节点顶层**。
        [5715 · 纠偏] 原注释写「落盘记录的 model 在顶层（data 里没有）」——**说反了**：
-       落盘记录的模型名在 **data.model**（实测 timeline：assistant_text 事件
-       `data.model = "deepseek-v4-pro"`），顶层没有 model 键；是装配器的
+       落盘记录的模型名在 **data.model**（实测 timeline：assistant_text 事件的
+       `data.model` 里是那一档的 wire 名），顶层没有 model 键；是装配器的
        `modelOf(rec, data)`（rec.model 优先、再 data.model）把它**算**到节点顶层的
        `node.model` 上。所以这里取 `node.model` 就是取 data.model，
        后面的 `d.model` 只是冗余兜底。
        ⚠ 照着原注释去改「顶层落盘形状」会改错地方——**真正的数据源是 data.model**。
+       〔5715 · 模型名收口〕注释里也不写具体型号（型号换代后会变成过期信息）。
        另注：2026-10-04/05 的老记录**当时**就没传 model（调用方未传），
        故老消息只有时间、没有模型徽标；后端 `emit_message_event` 早已支持 model
        （会话渲染单源化·偏差③补 2026-10-15），新消息正常带。 */
@@ -1657,7 +1899,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   // [对话流全消息类型 2026-10-13] 形态改 .cmsg（灰阶竖条＋类型标签＋方向行）。
   // 显示名与「须回应」镜像自 config/message_type_registry.json（后端 display_of 的同表；
   // 本路径无注册表端点，故前端持一份最小镜像，未知类型回落显示 code 本身＝fail-open）。
-  const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知" };
+  // [2026-10-26] 补齐新增的卡间消息类型（与 stream.js 同表）
+  const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知",
+                             msg_sync: "同步", msg_report: "汇报",
+                             msg_directive: "指令", coder_done: "完工回报" };
 
   /** 卡间消息节点（注入 stream.js）：返回元素，**不自行 append**——
       位置由快照决定（C2）。role 形如 "card:card_007"（前 5 字符是来源前缀）。
@@ -1756,18 +2001,27 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     try { EventFlow.stop(WORK_ID, cid); } catch (e) { /* 零阻断 */ }
   }, 3000);
 
-  // [更新现状按钮改造 2026-10-16] `op` 缺省＝普通发送（逐字不变）；传 "update_status"
-  // ⇒「更新现状」专用回合：本轮用户消息＝按钮名（可见、留痕，不另编话术），
-  // 完整指令走后端轮首注入；收口时多扫一次 propose_status 开对比窗。
+  // [更新现状按钮改造 2026-10-16] `op` 缺省＝普通发送（逐字不变）；传专用 op
+  // ⇒ 专用回合：本轮用户消息＝按钮名（可见、留痕，不另编话术），
+  // 完整指令走后端轮首注入；更新现状收口时多扫一次 propose_status 开对比窗。
+  // [需求确定按钮改造 2026-10-29] op 扩到三种：后两种由【需求确定】按钮按卡类型选，
+  // 注入的提示词与流程不同（根卡改正稿／其他卡拟草稿后开评审）。
+  const OP_LABELS = {
+    update_status: "更新现状",
+    requirements_final: "需求确定",
+    requirements_draft: "需求确定",
+  };
   async function send(op) {
     const statusOp = (op === "update_status");
+    const opLabel = OP_LABELS[op] || "";
+    const isOp = !!opLabel;
     if (!currentCard) return;
     if (sessionState.running) return;   // 一轮在跑时不重入（运行中主键＝停止，见 doStop）
     /* [5702] 捕获**发起这次发送**的输入会话：切卡后迟到的 commitSent/drain
        不能作用到新卡（否则会清掉新卡草稿、或替新卡发队列）。 */
     const sendingMachine = inputBar ? inputBar.machine : null;
     const sendingQueue = queueStore;
-    const content = statusOp ? "更新现状" : String(inputBar ? inputBar.getDraft() : "").trim();
+    const content = isOp ? opLabel : String(inputBar ? inputBar.getDraft() : "").trim();
     if (!content) return;
 
     /* [建项目流程 2026-10-17] 草稿首条消息：
@@ -1786,7 +2040,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       }
     }
 
-    if (!statusOp) lastSentContent = content;
+    if (!isOp) lastSentContent = content;
     const cardId = currentCard.meta.card_id;
 
     /* [T1 乐观上屏] 点发送瞬间先落用户气泡——不等 POST、不等 timeline 回流。
@@ -1798,7 +2052,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     /* [发送被接受] 清草稿并清撤销栈（machine.ts:544-553：已发内容不得被撤销复活）。
        专用回合（更新现状）不占输入框。 */
-    if (!statusOp && inputBar) inputBar.commitSent(sendingMachine);
+    if (!isOp && inputBar) inputBar.commitSent(sendingMachine);
 
     // 本轮回复基线：异常恢复判据＝「resync 后是否多出一条 assistant」，不是「有没有 assistant」
     const asstBefore = (() => {
@@ -1951,7 +2205,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // [C1 单源] pair_id 也从 timeline 取：落盘记录的 run_id **就是** pair_id
       // （session_facade.emit_message_event 的 run_id＝blk.pair_id），同一个字段，
       // 不必再读 /session。取最近一条 user_message 的 run_id 即上一轮回合对。
-      const tl = await API.getTimeline(WORK_ID, cardId);
+      // 〔P24 · 2026-10-26〕**带 tail 窗口**：这里只倒序找**最近一条** user_message，
+      // 全量是浪费（大卡事件文件 109.5MB ⇒ 生产实测 20~32 秒 ⇒ 15 秒超时
+      // ⇒ 弹「请求超时」＋内存态建不起来 ⇒ 看起来像被释放）。窗口与打开卡同口径。
+      const tl = await API.getTimeline(WORK_ID, cardId, undefined, { tail: 400 });
       const items = (tl && tl.items) || [];
       for (let i = items.length - 1; i >= 0; i--) {
         if (items[i] && items[i].type === "user_message" && String(items[i].run_id || "")) {
@@ -2358,7 +2615,19 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     }
 
     // 事件绑定
-    if (draftBtn) draftBtn.onclick = () => openDraft("requirements");
+    // [需求确定按钮改造 2026-10-29 · 用户令] 不再弹起草窗，改为唤醒一轮专用回合，
+    // 注入的提示词与流程按卡类型分两种（后端 op 常量唯一定义处＝card_tools）：
+    //   · 根卡（card_type=project）→ op=requirements_final：这一轮可直接改需求文档正稿。
+    //     根卡开不出评审、也不需要评审——它的评审人就是用户。
+    //   · 其他卡 → op=requirements_draft：这一轮拟一版草稿，拟完开评审。
+    if (draftBtn) draftBtn.onclick = () => {
+      if (!currentCard) { notify("请先打开一张卡", "warn"); return; }
+      const ct = String((currentCard.meta || {}).card_type || "");
+      if (ct === "project") send("requirements_final");
+      else if (ct === "sub_project" || ct === "topic") send("requirements_draft");
+      // 其他卡型（coder / tool / …）没有需求文档这条流程，保持原起草通道。
+      else openDraft("requirements");
+    };
     // [更新现状按钮改造 2026-10-16] 「更新现状」不再走 /draft 起草通道，改发起一次
     // 带 op 的专用回合（主流程模型 + 卡内全部工具 + 专用工具 propose_status）。
     // op 字符串与后端 card_tools.OP_UPDATE_STATUS 同值（唯一定义处是后端）。
@@ -2518,7 +2787,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       if (dmStatus || modal.classList.contains("open")) return;         // 本窗已在
       if (draftModalEl && draftModalEl.classList.contains("open")) return;  // 起草/规则窗在，不叠开
       try {
-        const tl = await API.getTimeline(WORK_ID, cardId);
+        const tl = await API.getTimeline(WORK_ID, cardId, undefined, { tail: 400 });
         const items = (tl && tl.items) || [];
         for (let i = items.length - 1; i >= 0; i--) {
           const it = items[i];
@@ -2580,6 +2849,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     navNewBtn.onclick = () => { location.assign("/work/draft"); };
   }
   navSystem.startNav();   // [阶段1 A1.2] 导航探测周期与首渲（原 nav 初始化段，已入 nav_system）
+  // [推送优先 2026-10-25] 订阅工作级事件流（一条连接收全导航/角标/运行态的变化）。
+  // 订阅**健康**时，左栏那三个周期探测自动不做（推送负责实时性）⇒
+  // 服务一关也不会变成「不停报错」的轮询机（错误由 api.js 的可达性闩收敛成一次提示）。
+  subscribeWorkEvents();
 
   // ═══ [顶栏整合 2026-10-13] 原顶栏 #stopBtn（「■ 停止」）已并入输入条 #runBtn 两态（doStop 定义见上）═══
   // 用户 17:17 ③：「把发送按钮，处理成【发送前】、【运行中】（运行中就是停止按钮）」——停止不再是独立按钮。
@@ -2686,7 +2959,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     async function maybeOpenRuleEditModal(cardId) {
       if (dmRule) return;   // 已有审批弹窗在，不叠开
       try {
-        const tl = await API.getTimeline(WORK_ID, cardId);
+        const tl = await API.getTimeline(WORK_ID, cardId, undefined, { tail: 400 });
         const items = (tl && tl.items) || [];
         for (let i = items.length - 1; i >= 0; i--) {
           const it = items[i];
@@ -2706,4 +2979,303 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     window.__maybeOpenRuleEditModal = maybeOpenRuleEditModal;
   }
 
-  bootRestore();
+/* ============================================================
+   [评审窗口 2026-10-29 · 用户口径（第四次修正）]
+     「你是不是缩小了正卡对话区域的宽度？就为了你这张浮窗？」
+     「你摆在正卡信息流右侧，空间是足足够够的」
+     「不是真的浮一个窗口在所有信息上方，它的层级和卡片信息流是同级的」
+     「右侧边栏展开，应该盖住它」
+     「点击它展开不是向右展开，是向左展开，挤压卡片本身的信息流，给它留出空间，而且是充分展开」
+     「收缩状态不需要显示那么多信息，显示最近的一条就足够了，永远显示最近的一条，动态的更新」
+
+   四条落地：
+   1. **收缩态不占位**：落在对话列右侧空白带里（列 768 居中，两侧本来就有空白），
+      对话区宽度一点不动，也不覆盖任何文字。
+   2. **收缩态只有一条**：头部 `评审 · 卡名 0/3` ＋ **最近一条事件**（永远只留最新那条，
+      逐字流也往这一条里写）。
+   3. **展开态向左**：宽 640、贴右，`.ws-right` 加 padding-right 让位 ⇒ 对话列被挤窄，
+      这才是"挤压卡片自己的信息流"。iframe 装评审卡对话页（与普通卡完全一致）。
+   4. **层级同级**：z-index 55 < inspector 70 —— 右侧卡详情抽屉展开时盖住本窗口。
+   ============================================================ */
+const RV = {
+  rid: "", es: null, mode: "compact", target: "",
+  batch: "", closedBatch: "", needCatchup: false,
+  who: "", buf: "", at: 0,
+};
+
+function rv$(id) { return document.getElementById(id); }
+const rvEsc = (s) => escapeHtml(String(s == null ? "" : s));
+
+function rvTime(ts) {
+  const n = Number(ts);
+  if (!n || !isFinite(n)) return "";
+  const d = new Date(n * 1000);
+  const p = (x) => String(x).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function rvStop() {
+  if (RV.es) { try { RV.es.close(); } catch (e) { /* 零阻断 */ } RV.es = null; }
+}
+
+function rvReset() {
+  rvStop();
+  RV.rid = ""; RV.batch = ""; RV.who = ""; RV.buf = "";
+  const t = rv$("rvLastTime"); if (t) t.textContent = "";
+  const s = rv$("rvLastText"); if (s) s.textContent = "等待事件…";
+  const cnt = rv$("rvCount"); if (cnt) cnt.textContent = "0/0";
+  const el = rv$("rvWin"); if (el) el.classList.remove("done");
+  rvSetMode("compact");
+}
+
+/** 收缩态：落在正文右侧的空白带里——不动正文、不压字。
+ *  展开态：**挤正文**（向左长到内容区六成），尺寸与让位都由 CSS 管。 */
+function rvPlace() {
+  const el = rv$("rvWin");
+  if (!el || el.hidden) return;
+  if (RV.mode === "full") {
+    // 展开：清掉内联值，交给 CSS（width: var(--rv-full-w) + .ws-right 让位）
+    document.body.classList.add("rv-full");
+    el.style.left = "";
+    el.style.right = "";
+    el.style.top = "";
+    el.style.bottom = "";
+    el.style.width = "";
+    el.style.height = "";
+    return;
+  }
+  document.body.classList.remove("rv-full");
+  el.style.top = "";
+  el.style.bottom = "";
+  el.style.height = "";
+  const col = document.querySelector(".flow-view-column");
+  if (!col) return;
+  const r = col.getBoundingClientRect();
+  if (!r.width) return;                 // 还没布局出来
+  const gap = 14, edge = 10;
+  const avail = window.innerWidth - r.right - gap - edge;
+  const w = Math.max(240, Math.min(380, avail));
+  const left = Math.min(r.right + gap, window.innerWidth - w - edge);
+  el.style.right = "auto";
+  el.style.left = Math.round(Math.max(edge, left)) + "px";
+  el.style.width = Math.round(w) + "px";
+}
+
+function rvSetOn(on) {
+  const el = rv$("rvWin"); if (!el) return;
+  if (!on) { el.hidden = true; rvStop(); document.body.classList.remove("rv-full"); return; }
+  if (RV.closedBatch && RV.closedBatch === RV.batch) return;
+  if (el.hidden) { el.hidden = false; rvPlace(); }
+}
+
+function rvSetMode(mode) {
+  RV.mode = mode;
+  const el = rv$("rvWin"); if (!el) return;
+  el.dataset.mode = mode;
+  const btn = rv$("rvExpandBtn");
+  if (btn) btn.title = mode === "full" ? "收起" : "展开评审卡对话";
+  const fr = rv$("rvFrame");
+  if (fr) {
+    if (mode === "full" && RV.rid) {
+      fr.onload = () => {
+        // 展开态已经铺满内容区，iframe 里再出现一条左栏就成了两条并排的导航。
+        // 同源可直接注入：只留对话区，和正卡的对话页一模一样。
+        try {
+          const d = fr.contentDocument;
+          if (!d) return;
+          const st = d.createElement("style");
+          st.textContent = ".app-nav{display:none!important}";
+          d.head.appendChild(st);
+        } catch (e) { /* 跨源就保持原样 */ }
+      };
+      fr.src = `/work/${WORK_ID}/card/${RV.rid}`;
+    } else {
+      fr.onload = null;
+      fr.src = "about:blank";
+    }
+  }
+  rvPlace();
+}
+
+/** 收缩态的唯一一行：**永远只显示最近一条**（逐字流也写进这一条）。 */
+function rvSetLast(html, ts, live) {
+  const t = rv$("rvLastTime"); if (t) t.textContent = rvTime(ts);
+  const s = rv$("rvLastText"); if (s) s.innerHTML = html;
+  const box = rv$("rvLast"); if (box) box.classList.toggle("live", !!live);
+}
+
+/** 参数/摘要可能是字符串（本模块发）也可能是对象（message_runner 发），两种都认。 */
+function rvArgs(v) {
+  // [2026-10-29 用户令「我最恨数字闸，墙钟」] 这里原来砍到 80 字——砍多少是我拍的。
+  // 现在原样返回，超长由那一行的 CSS 省略号处理（展示层的事，不是数据层的事）。
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  try { return JSON.stringify(v); } catch (e) { return ""; }
+}
+
+/** 把一条事件变成"最近一条"的文案。历史回放与实时推送共用。 */
+function rvPaint(t, d, ts) {
+  let html;
+  switch (t) {
+    case "review_round_start":
+      RV.who = ""; RV.buf = "";
+      html = `开始一轮 · 第 ${d.draft || 1} 版 · 还差 ${(d.pending || []).length} 人`;
+      break;
+    case "review_speaking":
+      RV.who = String(d.name || d.role || ""); RV.buf = "";
+      html = `<b>${rvEsc(RV.who)}</b> 开始${d.kind === "revise" ? "改草稿" : "发言"}`;
+      break;
+    case "tool_call":
+      html = `⚙ ${rvEsc(d.tool || "")} ${rvEsc(rvArgs(d.arguments))}`;
+      break;
+    case "tool_result":
+      html = `← ${rvEsc(d.tool || "")} ${d.ok ? "完成" : "失败"} ${rvEsc(rvArgs(d.summary))}`;
+      break;
+    case "review_spoke":
+      RV.who = "";
+      html = `<b>${rvEsc(d.name || d.role || "")}</b> 发言完成 ${d.chars || 0} 字${d.approve ? " · 通过" : ""}`;
+      break;
+    case "review_revise":
+      RV.who = "";
+      html = `<b>${rvEsc(d.name || d.target || "")}</b> ${d.changed ? "改了草稿" : "没改草稿"}`;
+      break;
+    case "review_all_passed":
+      html = "全员通过";
+      break;
+    case "review_batch_closed":
+      html = "批次收口";
+      break;
+    case "review_batch_opened":
+      html = `批次开启 · ${rvEsc(d.focus || "")}`;
+      break;
+    case "error":
+      html = `错误 ${rvEsc(d.message || d.error || "")}`;
+      break;
+    default:
+      html = rvEsc(t);          // 用户要"所有事件"：没单独排版的照示类型名
+      break;
+  }
+  rvSetLast(html, ts, false);
+}
+
+/** 逐字流：不另起一行，就地刷"最近一条"。 */
+function rvTyping(kind, d) {
+  const txt = String(d.text || "");
+  if (!txt) return;
+  RV.buf = (RV.buf + txt).slice(-200);
+  const now = Date.now();
+  if (now - RV.at < 100) return;
+  RV.at = now;
+  const who = RV.who ? `<b>${rvEsc(RV.who)}</b> ` : "";
+  rvSetLast(who + (kind === "reasoning_chunk" ? "思考中 " : "输出 ")
+    + rvEsc(RV.buf.slice(-56).replace(/\s+/g, " ")),
+    Math.floor(now / 1000), true);
+}
+
+function rvOnFrame(f) {
+  const t = String(f.type || "");
+  const d = f.data || {};
+  if (t === "reasoning_chunk" || t === "content_chunk") { rvTyping(t, d); return; }
+  rvPaint(t, d, f.ts);
+  if (t === "review_spoke" || t === "review_revise"
+      || t === "review_round_start" || t === "review_batch_closed") {
+    rvRefresh(RV.target);      // 通过数/还差谁变了，重拉头部
+  }
+}
+
+/** 打开时先把**最近一条**补上（from=0 只推新事件，不铺历史）。 */
+async function rvLoadHistory() {
+  let tl = null;
+  try {
+    tl = await API.getTimeline(WORK_ID, RV.rid, undefined, { tail: 40 });
+  } catch (e) { return; }
+  const items = (tl && tl.items) || [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (!it || !it.type) continue;
+    const t = String(it.type);
+    if (t === "reasoning_chunk" || t === "content_chunk") continue;
+    rvPaint(t, it.data || {}, it.ts);
+    return;                     // 只要最近一条
+  }
+}
+
+function rvSubscribe() {
+  if (RV.es) { try { RV.es.close(); } catch (e) { /* 零阻断 */ } RV.es = null; }
+  let es;
+  try {
+    es = new EventSource(`/api/works/${WORK_ID}/cards/${RV.rid}/stream?from=0&tokens=1`);
+  } catch (e) { return; }
+  RV.es = es;
+  es.onerror = () => { RV.needCatchup = true; };   // 浏览器会自动重连
+  es.onopen = () => {
+    if (RV.needCatchup) { RV.needCatchup = false; rvLoadHistory(); }
+  };
+  es.onmessage = (m) => {
+    let f = null;
+    try { f = JSON.parse(m.data); } catch (e) { return; }
+    if (f && f.type) rvOnFrame(f);
+  };
+}
+
+// [2026-10-29 用户令「我最恨数字闸，墙钟」] 原来这里是 5 秒 setInterval 轮询兜底。
+// 删掉：EventSource 断线由浏览器自己重连，重连成功（onopen）时补一次最近一条，
+// 断线期间漏的事件就补上了。不用定时器，也不用拍一个间隔。
+
+
+async function rvRefresh(cid) {
+  if (!cid) return;
+  if (cid !== RV.target) {
+    RV.closedBatch = "";
+    rvReset();
+    RV.target = cid;
+  }
+  let st = null;
+  try {
+    st = await API.getReviewStatus(WORK_ID, cid, { silent: true });
+  } catch (e) {
+    return;                     // 拉不到就维持现状，不误收
+  }
+  if (!st || !st.has_review || !st.active) { rvSetOn(false); return; }
+  RV.batch = String(st.batch || "");
+  rvSetOn(true);
+  const win = rv$("rvWin");
+  if (win && win.hidden) return;          // 用户关过这个批次
+  const title = rv$("rvTitle");
+  if (title) title.textContent = "评审 · " + (st.target_title || st.target || "");
+  const cnt = rv$("rvCount");
+  if (cnt) cnt.textContent = `${(st.passed || []).length}/${(st.members || []).length}`;
+  if (win) win.classList.toggle("done", !!st.all_passed);
+  if (RV.rid !== st.review_card_id) {
+    RV.rid = st.review_card_id;
+    await rvLoadHistory();
+    rvSubscribe();
+  }
+}
+
+/* ---- 交互：点头部/那一行 = 展开；再点收起；× 关掉这个批次 ---- */
+(function rvBind() {
+  const head = rv$("rvHead");
+  const last = rv$("rvLast");
+  const toggle = () => rvSetMode(RV.mode === "full" ? "compact" : "full");
+  if (head) head.addEventListener("click", (e) => {
+    if (e.target.closest(".fwin-btn")) return;
+    toggle();
+  });
+  if (last) last.addEventListener("click", toggle);
+
+  const exp = rv$("rvExpandBtn");
+  if (exp) exp.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
+
+  const cls = rv$("rvCloseBtn");
+  if (cls) cls.addEventListener("click", (e) => {
+    e.stopPropagation();
+    RV.closedBatch = RV.batch || "1";
+    rvSetOn(false);
+  });
+
+  window.addEventListener("resize", () => { rvPlace(); });
+})();
+
+// 启动放最后：RV 与 rv* 全部就位之后再跑（避免 TDZ）。
+bootRestore();

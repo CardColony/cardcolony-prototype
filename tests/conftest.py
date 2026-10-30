@@ -29,6 +29,8 @@ import os
 # 自动投递会在发信瞬间起异步回合与它们冲突，并放大 Windows 会话文件锁抖动。
 # 真实链路不受影响（见 message_runner.deliver_now 里的同名开关）。
 os.environ.setdefault("ECO_NO_AUTO_DELIVER", "1")
+# [伴生评审卡 2026-10-27] 测试里不起评审回合（会真调模型）——照上面同一先例。
+os.environ.setdefault("ECO_NO_AUTO_REVIEW", "1")
 
 import sys
 from pathlib import Path
@@ -67,6 +69,12 @@ def sandbox(tmp_path, monkeypatch):
     # 这里显式清掉它的连接/锁缓存：用例之间 work_id 相同（work_001）但库在不同
     # tmp 目录，缓存按库绝对路径索引，跨用例残留会连到上一个沙箱的库。
     card_db.reset_caches()
+    # [2026-10-27] 门面的解析缓存也按 work_id 索引，跨用例会串味 ⇒ 一并清。
+    from src.storage import session_facade as _sf_clear
+    _sf_clear.reset_cache()
+    # [2026-10-27] 门面的解析缓存也按 work_id 索引，跨用例会串味 ⇒ 一并清。
+    from src.storage import session_facade as _sf_clear
+    _sf_clear.reset_cache()
 
     # 快照根：BASE_DIR 用于 _iter_protected_files 与相对路径计算
     monkeypatch.setattr(data_snapshot, "BASE_DIR", base)
@@ -91,6 +99,47 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.delenv("MOCK_LLM", raising=False)
     monkeypatch.setattr(model_service, "_gateway", None)
 
+    # [wb_exec 2026-10-23] **执行体（WorkBuddy）隔离**：
+    # 仓库里的 config/wb_exec.json 是**开闸态**（enabled=true）——
+    # 若测试直接用它，任何跑 coder 卡回合的用例会**真去起 WorkBuddy 网关**
+    # （spawn cbc --serve、等健康 90 秒、可能联网）⇒ 慢且不确定。
+    # ⇒ 全部用例强制指向一份**关着**的临时配置。
+    # （要测开闸态的行为，用例自己 monkeypatch WB_EXEC_CONFIG_PATH 指向真配置。）
+    import json as _json
+    from src.api.wb_exec import config as _wb_config
+    from src.api.wb_exec import picker as _wb_picker
+    from src.api.wb_exec import registry as _wb_registry
+    from src.api.wb_exec import switch as _wb_switch
+    _wb_off = base / "wb_exec_off.json"
+    _wb_off.write_text(_json.dumps({"enabled": False}, ensure_ascii=False),
+                       encoding="utf-8")
+    monkeypatch.setenv(_wb_config.ENV_CONFIG_PATH, str(_wb_off))
+    # **★ 运行时总开关也要关掉**（2026-10-23 23:55 修）：
+    #   ``config/wb_exec_switch.json``（用户手动总开关，enabled=true）**优先级高于**
+    #   上面那份"关着"的配置 ⇒ 只关配置**不够** ⇒ 单元测试里委派照样被打开
+    #   ⇒ 测试会**真去连本机正在跑的 WorkBuddy**（还起 CLI 池、真调模型）
+    #   ⇒ 把 ``test_k3_busy_receiver_keeps_letter`` 这类用例跑挂。
+    #   ⇒ 测试期间把开关指到一份"关着"的临时文件。
+    _wb_sw_off = base / "wb_exec_switch_off.json"
+    _wb_sw_off.write_text(_json.dumps({"enabled": False}, ensure_ascii=False),
+                          encoding="utf-8")
+    monkeypatch.setattr(_wb_switch, "SWITCH_PATH", _wb_sw_off)
+    _wb_config.reset_cache()
+    _wb_picker.reset_pickers()
+    _wb_registry.reset_registry()
+
+    # [预设职能 2026-10-24] **职能目录隔离**：仓库里的 config/function_catalog.json
+    # 是开闸态(seed_on_create=true)——若测试直接用它,任何建 work 的用例会真播种
+    # 五个职能(总裁+四职能卡),改变卡数/收口闸/上下文断言 ⇒ 基线漂移。
+    # ⇒ 全部用例强制指向一份「关着」的临时目录(要测播种的用例自己把
+    #   FUNCTION_CATALOG_PATH 指向真目录或临时开闸文件)。
+    from src.api import function_room as _fr
+    _fc_off = base / "function_catalog_off.json"
+    _fc_off.write_text(_json.dumps({"seed_on_create": False, "functions": []},
+                                   ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv(_fr.ENV_CATALOG_PATH, str(_fc_off))
+    _fr.reset_cache()
+
     # [消息底座能力对齐 2026-10-13] 卡级事件流的进程内 seq 游标：每个用例一份
     # 沙箱文件树 ⇒ 游标必须随之清零（否则用例 B 会接着用例 A 的号往下取，
     # 而它面对的已是一个全新的空文件）。
@@ -104,6 +153,30 @@ def sandbox(tmp_path, monkeypatch):
     # cards.db / -wal / -shm 句柄会让 pytest 的 tmp 目录清理在 Windows 上卡死
     # （实测：测试跑完到 100% 却挂十几分钟不退出）。
     card_db.reset_caches()
+
+    # [自动停止权威性 2026-10-24] goal 服务是**进程单例**，缓存里存的是按事件
+    # fold 出来的目标状态。`control.stop_auto` 现在走 `service.pause()`（权威命令），
+    # 会顺带为那张卡建一份缓存——不清就会跨用例串：下一个用例直接改 DB 的
+    # `goal_state` 列，读到的却还是上个用例的缓存 ⇒ 批量跑红、单跑绿。
+    # 原来只有 test_goal_reactivate 自己清，覆盖面不够；这里统一清。
+    try:
+        from src.goal.service import get_service as _get_goal_service
+        _get_goal_service()._caches.clear()
+    except Exception:  # noqa: BLE001 goal 包未装/未初始化 ⇒ 无需清
+        pass
+
+    # [wb_exec 2026-10-23] 执行体的进程级状态也要清（配比器／未登录记忆／
+    # 网关注册表），否则会跨用例串。
+    from src.api.wb_exec import config as _wb_config
+    from src.api.wb_exec import picker as _wb_picker
+    from src.api.wb_exec import registry as _wb_registry
+    from src.api.wb_exec import switch as _wb_switch
+    _wb_config.reset_cache()
+    _wb_picker.reset_pickers()
+    _wb_registry.reset_registry()
+    # [总开关 2026-10-23 16:20] 执行体总开关的**运行时文件**也要隔离到沙箱
+    # （否则用例里切开关会写仓库的 config/wb_exec_switch.json ⇒ 影响真跑）。
+    _wb_switch.SWITCH_PATH = base / "wb_exec_switch.json"
 
 
 def prime_card_session(work_id: str, card_id: str) -> None:

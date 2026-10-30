@@ -16,11 +16,35 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from typing import Any, Optional
 
 from . import card_db
+
+logger = logging.getLogger("storage.role_store")
+
+
+def _emit_state(work_id: str, role_id: str, block: str, *,
+                old: Any = None, new: Any = None,
+                by: str = "", cause: str = "system") -> None:
+    """[基础设施 2026-10-26 · 事件管理] 角色卡档案变更事件。
+
+    改前 ``role_store`` **零事件**——角色卡只有行为事件（role_alarm/role_judged），
+    档案本身（管辖/订阅/发言契约/值班态/职责书）改了什么都不留痕。
+    「所有类型的卡片都要记录」这条对 role 卡就是靠这里兑现的。
+    """
+    try:
+        from ..infra import event_hub
+        event_hub.record_state_change(
+            work_id, role_id, "card_block_edited",
+            card_type="role", block=block,
+            old=(str(old)[:2000] if old is not None else None),
+            new=(str(new)[:2000] if new is not None else None),
+            by=by, cause=cause)
+    except Exception as exc:  # noqa: BLE001 事件失败不影响写档案
+        logger.warning("[role_store] 状态事件失败（不阻断）card=%s: %s", role_id, exc)
 
 
 def _now() -> str:
@@ -130,6 +154,9 @@ async def update_profile(work_id: str, role_id: str,
             " WHERE work_id=? AND card_id=?", tuple(vals))
 
     await card_db.run_write(work_id, _fn)
+    _emit_state(work_id, role_id, "profile",
+                new={k: v for k, v in patch.items() if k in allowed},
+                cause="system")
     return get_profile(work_id, role_id) or {}
 
 
@@ -158,6 +185,7 @@ async def set_duty_state(work_id: str, role_id: str,
 
     duty, old = await card_db.run_write(work_id, _fn)
     duty["previous"] = old
+    _emit_state(work_id, role_id, "duty", old=old, new=state, cause="system")
     return duty
 
 

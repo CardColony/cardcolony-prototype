@@ -12,16 +12,16 @@
      不升版本号浏览器会吃旧缓存——那份旧 style.css 仍带旧 nav 规则，会与新 nav.css
      打架（旧的项目行 hover 背景色会盖掉新卡片的间距渐变）。
      注：此处不写死旧版本号——它会被并发施工线一并推进，写死即漂移。 -->
-<link rel="stylesheet" href="/static/style.css?v=50">
+<link rel="stylesheet" href="/static/style.css?v=53">
 <!-- [左栏接线 步2] 左侧边栏样式独立成 nav.css（左栏样式的唯一真相）。
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
      版本号：nav.css 改动必须升这里的 ?v=，否则浏览器吃旧缓存、新样式不生效。 -->
-<link rel="stylesheet" href="/static/nav.css?v=18">
+<link rel="stylesheet" href="/static/nav.css?v=20">
 <!-- [对话界面商业化 2026-10-17] 设计系统与主题层：仅对话页引入。
      作用域全部以 body.page-chat 收口，画布页 work.html 不引本文件、零影响。
      必须排在 style.css / nav.css 之后：靠层叠覆盖旧视觉，不改旧规则本身。 -->
-<link rel="stylesheet" href="/static/ui.css?v=12">
+<link rel="stylesheet" href="/static/ui.css?v=43">
 <script>
   /* 主题早置位：在样式表解析前写 <html data-theme>，避免深→浅闪白。
      取值优先级：localStorage 记忆 → 系统偏好 → 深色（产品默认）。 */
@@ -189,12 +189,42 @@
          任何界面都不被盖。分区直改即存；仅根卡可提议修改（draft_rule_edit）、
          弹窗审批落盘。 -->
     <div class="rule-panel" id="rulePanel">
-      <div class="rule-panel-head">规则卡 · 各类卡行为准则（直改即存）</div>
+      <div class="rule-panel-head">项目规则 · 总规则 + 各类卡行为准则（直改即存）</div>
       <div class="rule-panel-body" id="rulePanelBody">
         <!-- workspace.js loadRulePanel 动态填充 -->
       </div>
     </div>
   </div>
+</div>
+<!-- ============================================================
+     [评审窗口 2026-10-29 · 用户口径（第四次修正）]
+       「你是不是缩小了正卡对话区域的宽度？就为了你这张浮窗？」
+       「你摆在正卡信息流右侧，空间是足足够够的」
+       「不是真的浮一个窗口在所有信息上方，它的层级和卡片信息流是同级的」
+       「右侧边栏展开，应该盖住它」
+       「点击它展开不是向右展开，是向左展开，挤压卡片本身的信息流，给它留出空间，而且是充分展开」
+       「收缩状态不需要显示那么多信息，显示最近的一条就足够了，永远显示最近的一条，动态的更新」
+
+     ⇒ **收缩态**：放在对话列右侧的空白带里，**不动对话区宽度、不覆盖任何文字**。
+       高度只有一行：头部（评审 0/3）＋ **最近一条事件**（永远只留最新那条）。
+     ⇒ **展开态**：向左扩到 640，对话区真让位（.ws-right 加 padding-right），
+       iframe 装评审卡对话页。
+     ⇒ **层级**：低于右侧 inspector（它展开时盖住本窗口）。
+     ============================================================ -->
+<div id="rvWin" class="fwin" data-mode="compact" hidden>
+  <div class="fwin-head" id="rvHead">
+    <span class="fwin-dot" id="rvDot"></span>
+    <span class="fwin-title" id="rvTitle">评审</span>
+    <span class="fwin-count" id="rvCount">0/0</span>
+    <span class="fwin-sp"></span>
+    <button class="fwin-btn" id="rvExpandBtn" title="展开评审卡对话">⤢</button>
+    <button class="fwin-btn" id="rvCloseBtn" title="关闭">×</button>
+  </div>
+  <div class="fwin-last" id="rvLast">
+    <time id="rvLastTime"></time>
+    <span class="t" id="rvLastText">等待事件…</span>
+  </div>
+  <iframe id="rvFrame" class="fwin-frame" src="about:blank" title="评审卡对话"></iframe>
 </div>
 <div id="toastContainer" class="toast-container"></div>
 <!-- [迭代四 F4②] 通知面板（浮层）：列表项「时间·发件卡名→收件卡名·类型·摘要」；
@@ -268,6 +298,6 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main_chat.js?v=4.25"></script>
+<script type="module" src="/static/esm/main_chat.js?v=4.61"></script>
 </body>
 </html>

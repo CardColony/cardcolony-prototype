@@ -102,6 +102,14 @@
           "can_have_children": true,
           "requires_owner": false,
           "off_tree": true
+        },
+        {
+          "code": "review",
+          "label": "评审卡",
+          "description": "sub_project 的伴生卡：一对一、建子卡时由系统自动派生、随子卡归档，承载该子卡的全部评审批次。不进任务树、不出现在画布与统计。模型不可建——create_card 无 card_type 参数，类型只能由系统派生。",
+          "can_have_children": false,
+          "requires_owner": false,
+          "off_tree": true
         }
       ]
     },
@@ -142,6 +150,14 @@
           "label": "职能卡",
           "description": "人类团队里真实存在的岗位（不是任务卡）。不进任务树、不出现在画布/卡树/统计；在 cards 表里有一行，只为复用卡的基础设施（权限分权、上下文装配、回合执行、建卡派活）。盯指定的卡，对方收口时收到同步并判断发言或沉默。",
           "can_have_children": true,
+          "requires_owner": false,
+          "off_tree": true
+        },
+        {
+          "code": "review",
+          "label": "评审卡",
+          "description": "topic 的伴生卡：一对一、建课题卡时由系统自动派生、随课题卡归档，承载该卡的全部评审批次。不进任务树、不出现在画布与统计。模型不可建——create_card 无 card_type 参数，类型只能由系统派生。",
+          "can_have_children": false,
           "requires_owner": false,
           "off_tree": true
         }

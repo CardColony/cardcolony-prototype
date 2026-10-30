@@ -230,20 +230,27 @@ def _append_locked(work_id: str, card_id: str, record: dict[str, Any]) -> dict[s
 
 
 def _notify_harness(work_id: str, card_id: str, rec: dict[str, Any]) -> None:
-    """事件落盘后交给 harness 评估（异步路径与同步路径共用）。
+    """事件落盘后交给 harness（异步路径与同步路径共用）。
 
-    [系统消息 2026-10-26] 只有「有规则监听该类型」才起，高频事件不白跑。
-    ``fire_async`` 内部自行判断有无事件循环：同步上下文（如 goal 域
-    ``append_sync`` 在无 loop 的线程里跑）会直接返回，不会炸。
+    [2026-10-28 · 换成条件集] 默认走**新路径** ``policy_runner.feed``：
+    写数据集 → 喂值班员 → 谁凑够了就投递。旧路径（规则表 + ``harness.fire``）
+    保留在 ``ECO_HARNESS_LEGACY=1`` 后面，便于出问题时一键回退。
+
+    两条路径都零阻断：接线失败绝不影响事件本身。
     """
     try:
-        from ..infra import harness
-        _t = str(rec.get("type") or "")
-        if _t and harness.interested(_t):
-            harness.fire_async(work_id, _t, card_id, rec.get("data"),
-                               trigger_seq=int(rec.get("seq") or 0))
+        import os as _os
+        if _os.environ.get("ECO_HARNESS_LEGACY") == "1":
+            from ..infra import harness
+            _t = str(rec.get("type") or "")
+            if _t and harness.interested(_t):
+                harness.fire_async(work_id, _t, card_id, rec.get("data"),
+                                   trigger_seq=int(rec.get("seq") or 0))
+            return
+        from ..infra import policy_runner
+        policy_runner.feed(work_id, rec)
     except Exception as exc:  # noqa: BLE001 接线失败不影响事件
-        logger.warning("[event_log] 规则接线失败（不阻断）: %s", exc)
+        logger.warning("[event_log] 条件集接线失败（不阻断）: %s", exc)
 
 
 # ---------------------------------------------------------------- 写
@@ -371,7 +378,7 @@ def read(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, Any]]:
 
 
 def _tail_records(path: Path, spans: list[tuple[int, int]],
-                  want: int) -> list[dict[str, Any]]:
+                  want: int, min_seq: int = 0) -> list[dict[str, Any]]:
     """从**文件尾**往前读，收集最后 ``want`` 条**未被撤销**的记录。
 
     〔5715 · 治「切卡卡死」〕为什么不能「全量读再切」：长会话的事件文件能到
@@ -386,6 +393,12 @@ def _tail_records(path: Path, spans: list[tuple[int, int]],
     IO）⇒ 切行 ⇒ **只解析尾部需要的那些** ⇒ 收够 want 条就停。
     撤销语义与改前**逐字同构**：revoke{from_seq:N} 撤掉「N ≤ seq < revoke 自身
     seq」的记录（升序处理时区间天然重叠 ⇒ 等价于区间并集）⇒ 这里用区间并集判定。
+
+    ``min_seq``（2026-10-30 增）：文件序＝seq 升序，从尾往前读时 seq 单调递减，
+    **一旦 ``seq < min_seq`` 就可以直接停**——这是「增量拉取」路径
+    （`timeline(from_seq=N)`）的解药：原实现走全量 `read()`，把整个文件逐行
+    `json.loads`（card_061 实测 3831 行 / 53.5MB、单行最大 4.6MB）⇒ 内存爆
+    `MemoryError`，页面打不开。加了停点后只解析 from_seq 之后那几条。
     """
     if want <= 0:
         return []
@@ -411,6 +424,8 @@ def _tail_records(path: Path, spans: list[tuple[int, int]],
         if s is None:
             continue
         rec["seq"] = s
+        if s < min_seq:
+            break                       # 再往前 seq 只会更小 ⇒ 后面的都不用要了
         if str(rec.get("type") or "") in CONTROL_TYPES:
             continue                    # 控制记录不进渲染面（与改前一致）
         if _in_revoked(s, spans):
@@ -566,7 +581,16 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
         items = _tail_records(path, spans, want_tail)
         return items
 
-    # ── 全量路径（翻历史 / 增量）：与改前逐字一致 ───────────────────────
+    if from_seq > 0 and not before:
+        # ── 增量拉取路径（2026-10-30 增）：从文件尾往前读到 from_seq 就停 ──
+        # 原实现落到下面的全量 `read()`：把整个事件文件逐行 json.loads。
+        # card_061 实测 3831 行 / 53.5MB、单行最大 4.6MB（tool_result 回灌整张卡）
+        # ⇒ `line.strip()` 抛 MemoryError，页面直接打不开。
+        # 文件序＝seq 升序，从尾往前读时 seq 单调递减，遇到 seq < from_seq 即可停，
+        # 只解析真正需要的那几条。revoke 语义由 `_in_revoked`（区间并集）照旧处理。
+        return _tail_records(path, spans, want=1_000_000, min_seq=from_seq)
+
+    # ── 全量路径（翻历史）：与改前逐字一致 ───────────────────────
     for rec in read(work_id, card_id):
         if str(rec.get("type") or "") in CONTROL_TYPES:
             data = rec.get("data") or {}

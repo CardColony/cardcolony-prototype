@@ -38,11 +38,11 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=46";
+import { API } from "./esm/api.js?v=55";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
-import { createAssembler } from "./esm/assembler.js?v=40";
+import { createAssembler } from "./esm/assembler.js?v=42";
 import { createChatView } from "./esm/flow/chat-view.js?v=7";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 // [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
@@ -65,14 +65,28 @@ function skey(wid, cid) { return wid + "/" + cid; }
 /* [画板四机制 T2/T3 2026-10-16] 画板可调参数（`window.__FLOW_BOARD__` 可覆盖；生产不设＝默认）。
    pageNodes     —— 分页：每页**节点数**（[对话流照抄 dsh v3] 扁平节点表后单位由「轮」改「节点」）。
    residentMax   —— T3 常驻硬上限：同时留内存的画板数（LRU 超出即丢最旧）。
-   idleReleaseMs —— T3 静默超时：多久没用就释放。
+   idleReleaseMs —— T3 静默超时：多久没用就释放。**0 ＝关闭时间释放**（只按内存封顶走）。
    sweepMs       —— T3 释放扫描周期。 */
 const BOARD_CFG = Object.assign(
   /* [切卡即时 2026-10-21] 常驻上限 8 → 40：原来切过 8 张卡后最早的被 LRU 扔掉，
      切回去又变成「首次加载」——用户看到的就是「明明有内存却不用」。
      一张卡的画板是现成 DOM（约 120 节点），40 张的内存代价可接受。
-     pageNodes 120 → 60：首次打开要渲染的节点减半（往上翻再补）。 */
-  { pageNodes: 60, residentMax: 40, idleReleaseMs: 10 * 60 * 1000, sweepMs: 20000,
+     pageNodes 120 → 60：首次打开要渲染的节点减半（往上翻再补）。
+     [2026-10-24] 40 → **120**：时间闸关掉后，LRU 是**唯一**剩下的释放理由，
+     它不能再制造「切回要重载」。非激活会话不挂 SSE（activate 时统一 stopES），
+     常驻 120 张 = 120 块游离 DOM，内存代价可接受；真超了仍会按最旧丢（内存封顶）。 */
+  { pageNodes: 60, residentMax: 120,
+    /* [治「切回还要重载」· 2026-10-24] 静默超时 **关闭**（10 分钟 → 60 分钟 → 0）。
+       为什么彻底关掉时间释放：
+       - 用户裁定：内存不缺，**不许**按时间把内存态扔掉。
+       - 时间释放换来的收益只是省一点内存，代价却是「切回卡变首次加载」——
+         重新拉事件（timeline 一次几百 KB～26MB）＋ 重新装配 ＋ 重渲染 ⇒
+         用户体感就是「切页卡死，要刷新」。**省内存的收益远小于卡死的代价。**
+       - 改前：10 分钟（切过 8 张卡后最早的还会被 LRU 扔掉——那是 residentMax 8 的老账，
+         已在 2026-10-21 提到 40）→ 60 分钟（2026-10-21）→ **0＝关闭（2026-10-24）**。
+       - sweepMs 20000 → 60000：既然没有时间闸要执行，扫得勤没有意义；
+         扫 LRU 只在会话数变化时才需要，1 分钟一次足够。 */
+    idleReleaseMs: 0, sweepMs: 60000,
     /* [对话流分页 2026-10-20] 打开卡片时只拉**最后多少条事件**。
        改前是全量：card_004 有 1746 条事件 ⇒ 装配 1185 个节点，打开要 2.8 秒 CPU。
        400 条约覆盖最近 20~40 轮，往上翻再按需补。 */
@@ -109,7 +123,11 @@ const BOARD_CFG = Object.assign(
   }
 
   /** 卡间消息类型（Ⅰ：config/message_type_registry.json）→ 中文显示名 */
-  const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知" };
+  // [2026-10-26] 补齐新增的卡间消息类型（原来只有 ask/answer/notify，
+  // 导致 msg_sync / msg_report / msg_directive / coder_done 显示成原始类型码）
+  const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知",
+                             msg_sync: "同步", msg_report: "汇报",
+                             msg_directive: "指令", coder_done: "完工回报" };
 
   function chatEl() {
     return document.getElementById("chatArea");
@@ -371,6 +389,74 @@ const BOARD_CFG = Object.assign(
         // 该轮有思考却始终没有正式回复（run 以 error 收尾、或被后续轮顶替）：
         // 旧实现在这里直接丢弃思考文本，此处照示出来，不丢。
         return makeRow("reasoning", "思考（该轮无正式回复）", null, d.text || "", "void");
+      // [wb_exec 2026-10-23/24] WorkBuddy 执行体委派。
+        // **必须认它**：不认 ⇒ 掉进 C5 兜底 ⇒ 卡面一屏「未识别事件」
+        //   ⇒ 人只看到"一堆看不懂的行" ⇒ **误判成卡死**（2026-10-24 实跑反馈）。
+        //   认了之后能直接看见"派给谁 / 换了谁 / 为什么失败" ⇒ 一眼看穿真假。
+      case "wb_exec_queued":
+        // 槽满 ⇒ **排队等**（在 WorkBuddy 侧等，不花钱）⇒ 看得见才不是"卡死"
+        return makeRow(t, "排队中（等 agent 槽）" + fld("executor", d.executor) +
+          fld("model", d.model) + fld("waiting_for", d.waiting_for),
+          '<span class="mk">…</span>排队', fmtData(d), "warn");
+      case "wb_exec_start":
+        return makeRow(t, "派给 WorkBuddy 执行体" + fld("executor", d.executor) +
+          fld("model", d.model), '<span class="mk">WB</span>派发', fmtData(d), "lv3");
+      case "wb_exec_model":
+        return makeRow(t, "执行体已就位" + fld("executor", d.executor) +
+          fld("model", d.model), '<span class="mk ok">✓</span>就位', fmtData(d), "lv3");
+      case "wb_exec_done":
+        return makeRow(t, "执行体完成" + fld("executor", d.executor) +
+          fld("model", d.model) + fld("tool_calls", d.tool_calls) +
+          fld("elapsed_sec", d.elapsed_sec),
+          '<span class="mk ok">✓</span>完成', fmtData(d), "ok");
+      case "wb_exec_fallback":
+        // 换候选：说明"这个槽被占/这个模型不行" ⇒ **不是卡死**，是自适应。
+        return makeRow(t, "换候选：" + esc(d.from || "") + " → " + esc(d.to || "") +
+          fld("reason", d.reason), '<span class="mk">↻</span>换候选', fmtData(d), "warn");
+      case "wb_exec_resume":
+        return makeRow(t, "断线续跑 第 " + esc(d.attempt || "") + " 次" +
+          fld("error", d.error), '<span class="mk">↻</span>续跑', fmtData(d), "warn");
+      case "wb_exec_wait":
+        return makeRow(t, "等网关空闲" + fld("waited_sec", d.waited_sec),
+          '<span class="mk">…</span>等待', fmtData(d), "warn");
+      case "wb_exec_unavailable":
+        return makeRow(t, "执行体暂不可用" + fld("reason", d.reason),
+          '<span class="mk no">✗</span>不可用', fmtData(d), "fail err");
+      case "wb_exec_interrupted":
+        return makeRow(t, "被中断" + fld("error", d.error),
+          '<span class="mk no">⊘</span>中断', fmtData(d), "warn");
+      case "wb_exec_error":
+        return makeRow(t, "执行体失败" + fld("error", d.error),
+          '<span class="mk no">✗</span>失败', fmtData(d), "fail err");
+      // [评审可读 2026-10-29] 这四类原来掉进 C5 兜底，评审卡上一屏「未识别事件」
+      case "card_created":
+        return makeRow(t, "建卡" + fld("title", d.title) + fld("card_type", d.card_type),
+          "<span class=\"mk\">＋</span>创建", fmtData(d), "ok");
+      case "card_block_edited":
+        return makeRow(t, "卡面编辑" + fld("block", d.block) + fld("by", d.by),
+          "<span class=\"mk\">✎</span>编辑", fmtData(d), "");
+      case "review_batch_opened":
+        return makeRow(t, "评审批次开启" + fld("members", (d.members || []).length)
+          + fld("focus", d.focus),
+          "<span class=\"mk\">◎</span>评审", fmtData(d), "ok");
+      case "review_round_start":
+        return makeRow(t, "评审开始一轮" + fld("draft", d.draft) + fld("criteria", d.criteria)
+          + fld("pending", (d.pending || []).length),
+          "<span class=\"mk\">▶</span>评审", fmtData(d), "");
+      case "review_spoke":
+        return makeRow(t, (d.name || d.role || "") + " 发言" + fld("model", d.model)
+          + fld("chars", d.chars) + (d.approve ? " · 通过" : ""),
+          "<span class=\"mk\">◆</span>评审", fmtData(d), d.approve ? "ok" : "");
+      case "review_revise":
+        // [2026-10-29] 评审是「一边评一边改」：被评卡按意见改草稿这一步也要看得见，
+        // 否则用户只看到发言、看不到"谁把稿子改了"。
+        return makeRow(t, (d.name || d.target || "") + " 改草稿" + fld("model", d.model)
+          + fld("chars", d.chars) + (d.changed ? " · 已改" : " · 未改"),
+          "<span class=\"mk\">✎</span>评审", fmtData(d), d.changed ? "ok" : "");
+      case "review_all_passed":
+        return makeRow(t, "评审全员通过", "<span class=\"mk ok\">✓</span>通过", fmtData(d), "ok");
+      case "review_batch_closed":
+        return makeRow(t, "评审批次收口", "<span class=\"mk\">■</span>收口", fmtData(d), "");
       default:
         // C5 兜底：注册表没有的类型照示出来，不丢不炸。
         return makeRow(t, "未识别事件" + fld("data", clip(JSON.stringify(d || {}), 60)),
@@ -412,6 +498,14 @@ const BOARD_CFG = Object.assign(
       // [更新现状按钮改造 2026-10-16] 「更新现状」专用回合的轮首任务注入。
       case "status_update_task":
         return [makeRow(node.type, "现状更新（轮首注入）" + fld("source_kind", d.source_kind),
+          null, fmtData(d), "lv3")];
+      // [需求确定按钮改造 2026-10-29] 【需求确定】两种专用回合的轮首任务注入：
+      // 根卡＝这一轮直接改需求文档正稿；其他卡＝拟草稿后开评审。
+      case "requirements_final_task":
+        return [makeRow(node.type, "需求确定·定正稿（轮首注入）" + fld("source_kind", d.source_kind),
+          null, fmtData(d), "lv3")];
+      case "requirements_draft_task":
+        return [makeRow(node.type, "需求确定·拟草稿（轮首注入）" + fld("source_kind", d.source_kind),
           null, fmtData(d), "lv3")];
       default:
         return renderSys(node);
@@ -512,7 +606,7 @@ const BOARD_CFG = Object.assign(
   /** 工具参数摘要（dsh ToolRow 的 FILL 截断摘要）。
       正文类字段不参与摘要：把 content 摊在工具行里既读不懂、又把真正的
       关键参数（path / card_id / title）挤没了。 */
-  const ARG_SKIP = new Set(["content", "body", "text", "mission", "status_block", "rulings", "requirements", "prompt"]);
+  const ARG_SKIP = new Set(["content", "body", "text", "mission", "status_block", "requirements", "requirements", "prompt"]);
   function argSummary(args) {
     if (!args || typeof args !== "object") return "";
     const parts = Object.keys(args)
@@ -965,7 +1059,11 @@ const BOARD_CFG = Object.assign(
     if (st) return st;
     st = {
       wid, cid, key,
-      es: null, esT: null,
+      /* [P28 · 连接预算 2026-10-26] **一条** SSE 带两路**（过程帧 + 逐字帧）：
+         帧顶层的 ``ch`` 标记区分（"e"＝过程事件 / "t"＝逐字）。
+         改前是两条（es ＝ /stream、esT ＝ /tokens）⇒ 每张卡占 2 条连接 ⇒
+         切 3 张卡就打满浏览器同源 6 条上限 ⇒ 普通请求排队 ⇒ 报「网络错误」。 */
+      es: null,
       board: null,              // 本会话画板（.msgs）；未激活时游离
       scrollTop: 0,             // 切走时的滚动位置（切回恢复）
       lastUsed: Date.now(),     // [T3] 最近使用时刻（LRU/静默超时判据）
@@ -1051,9 +1149,10 @@ const BOARD_CFG = Object.assign(
         释放只丢 DOM ＋ 装配状态；数据在 timeline（不变量 10），切回按 timeline 重建（兜底）。
      ================================================================== */
 
-  /** 有任务在跑：本轮在飞（busy）或事件流还开着——二者任一即视为在跑。 */
+  /** 有任务在跑：本轮在飞（busy）或事件流还开着——二者任一即视为在跑。
+      [P28] 合并成一条 SSE 后只需看 st.es。 */
   function isBusy(st) {
-    return !!st && (!!st.busy || !!st.es || !!st.esT);
+    return !!st && (!!st.busy || !!st.es);
   }
 
   /** 释放一个会话：只丢 DOM ＋ 装配状态，不丢数据。铁律两道闸都在这里。 */
@@ -1070,12 +1169,18 @@ const BOARD_CFG = Object.assign(
     return true;
   }
 
-  /** 释放扫描：① 静默超时 ② 硬上限（LRU，最旧先丢）。返回扫描后的常驻数。 */
+  /** 释放扫描：① 静默超时（**已关闭**：idleReleaseMs=0 时不启用）② 硬上限（LRU，最旧先丢）。返回扫描后的常驻数。 */
   function sweepSessions() {
     const now = Date.now();
-    for (const [key, st] of Array.from(sessions)) {
-      if (key === activeKey || isBusy(st)) continue;
-      if (now - (st.lastUsed || 0) >= BOARD_CFG.idleReleaseMs) releaseSession(key);
+    /* [治「切回还要重载」· 2026-10-24] 时间闸只在 idleReleaseMs>0 时启用。
+       0 ＝关闭（用户裁定：不按时间释放，只按内存封顶）。
+       保留这个分支是为了：① 现场可用 window.__FLOW_BOARD__.idleReleaseMs 临时开启；
+       ② 老配置/调试时能改回来；③ 语义不变，删了反而看不出历史。 */
+    if (BOARD_CFG.idleReleaseMs > 0) {
+      for (const [key, st] of Array.from(sessions)) {
+        if (key === activeKey || isBusy(st)) continue;
+        if (now - (st.lastUsed || 0) >= BOARD_CFG.idleReleaseMs) releaseSession(key);
+      }
     }
     let over = sessions.size - BOARD_CFG.residentMax;
     if (over > 0) {
@@ -1159,20 +1264,37 @@ const BOARD_CFG = Object.assign(
   /** 结算后回流：与刷新同一条路（唯一数据源仍是 timeline）。
       POST 返回＝本轮事件已全部落盘，此刻拉 timeline 必然含 assistant_text。
       返回 {ok, done}：done＝最后一轮已出现 assistant 节点或 done/error 收口
-      （workspace 的断线自愈轮询据此判「已结算」，不再读 /session 数条数）。 */
+      （workspace 的断线自愈轮询据此判「已结算」，不再读 /session 数条数）。
+
+      〔P24 · 2026-10-26 · 治「切卡卡死／请求超时」〕**先判「实时表已完整」再决定要不要拉落盘**。
+      原来是无条件**先拉全量** timeline：
+        · 大卡的全量是「每卡一份事件文件」——实测 card_021：**8277 条 / 109.5MB**，
+          生产上服务端要 **20~32 秒**（IO 忙时；本地空载 3 秒）；
+        · 客户端 15 秒超时 ⇒ 弹「请求超时」⇒ **拉取被 abort** ⇒ 内存态**建不起来**
+          ⇒ 切回来还要重拉 ⇒ 用户观感就是「内存态被释放了」⇒ 整页卡住只能刷新；
+        · 那 20~32 秒还抢 GIL ⇒ 同期所有请求排队（实测 nav/version 2.7s、rule 2.7s、
+          unread 3.0s，连带 tail=400 都被拖成 13.8s）。
+      而绝大多数情况下 SSE 已经把 done/error 帧送全了（liveComplete）⇒ **根本不需要拉**。
+      ⇒ 现在：liveComplete ⇒ **零请求**；否则拉**尾部窗口**（与打开卡同一条路、同口径），
+        **不用全量**（全量是「刷新整页」的活）。 */
   async function resync(wid, cid) {
     const st = ensureRun(wid, cid);
-    const items = await fetchTimeline(st, wid, cid);
-    st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
-    /* [5702 · 2026-10-20] 实时表**已完整**（SSE 活着且已收到 done/error）⇒ 不重建。
-       重建会把运行中按轮分开的 assistant 节点抹成落盘的一条（后端每 run 只落一条
-       assistant_text）——文本不丢但结构塌陷。只有「流断了 / 实时没收到收口」才重建。 */
+    // [5702 · 2026-10-20] 实时表**已完整**（SSE 活着且已收到 done/error）⇒ 不重建。
+    //   重建会把运行中按轮分开的 assistant 节点抹成落盘的一条（后端每 run 只落一条
+    //   assistant_text）——文本不丢但结构塌陷。只有「流断了 / 实时没收到收口」才重建。
     const liveSnap = st.asm.snapshot();
     const liveComplete = !st.esDead && liveSnap.order.some((k) => {
       const n = liveSnap.nodes.get(k);
       return n && n.ns === "live" && (n.type === "done" || n.type === "error");
     });
-    const snap = liveComplete ? liveSnap : st.asm.rebuild(items);
+    let items = null;
+    let snap = liveSnap;
+    if (!liveComplete) {
+      // 实时没送全 ⇒ 去落盘取**尾部窗口**（与打开卡同款），不拉全量。
+      items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
+      snap = st.asm.rebuild(items || []);
+    }
+    st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
     renderSnapshot(st, snap);
     if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
     setRunning(wid, cid, false); // 结算＝本轮结束（运行条收、主键回发送态）
@@ -1181,7 +1303,8 @@ const BOARD_CFG = Object.assign(
       const n = snap.nodes.get(k);
       return n && (n.kind === "assistant" || n.type === "done" || n.type === "error");
     });
-    return { ok: items !== null, done, runId: st.liveRunId };
+    // ok＝「这一轮的数据已经到位」：实时表已完整时**没有发请求**，也算到位。
+    return { ok: items !== null || liveComplete, done, runId: st.liveRunId };
   }
 
   /** 拉 timeline。`from` 省略＝全量（刷新/结算）；给值＝只取 seq>=from 的增量（T5）。
@@ -1273,8 +1396,8 @@ const BOARD_CFG = Object.assign(
 
   function stopES(st) {
     if (!st) return;
+    /* [P28] 合并成一条 SSE 后只有 st.es（过程帧与逐字帧同一条连接）。 */
     if (st.es) { try { st.es.close(); } catch (e) { /* noop */ } st.es = null; }
-    if (st.esT) { try { st.esT.close(); } catch (e) { /* noop */ } st.esT = null; }
   }
 
   /** 收流：只关两路 SSE，**保留渲染状态**（装配器 ＋ 节点座位 ＋ DOM 归属）。
@@ -1396,9 +1519,9 @@ const BOARD_CFG = Object.assign(
     return !!(st && st.busy);
   }
 
-  /** 开始跟踪新一轮：两路 SSE。
-      过程帧（/stream）→ 装配器 → 受影响节点 upsert；
-      逐字帧（/tokens）→ live 正文气泡（不进装配器）。
+  /** 开始跟踪新一轮：**一条** SSE（过程帧 + 逐字帧合并）。
+      过程帧（ch="e"）→ 装配器 → 受影响节点 upsert；
+      逐字帧（ch="t"）→ 装配器（正文/思考增量，不走过程记录）。
       onFail 在事件流连不上时回调一次（降级保底）。 */
   function start(wid, cid, onFail, opts) {
     const st = ensureRun(wid, cid);
@@ -1417,14 +1540,27 @@ const BOARD_CFG = Object.assign(
     setRunning(wid, cid, false, { fromStream: true });
     _syncRunningFromServer(st);
     try {
-      // 无游标（lastSeq=0）＝从当前末帧起；有游标＝断点续传。
+      /* [P28 · 连接预算 2026-10-26] **一条连接带两路**。
+         病根：浏览器同源 HTTP/1.1 只有 **6 条**并发连接（不是我们设的，是
+         HTTP/1.1＋浏览器的硬上限），而这里每张卡占 **2 条**（/stream ＋
+         /tokens）⇒ 切 3 张卡就 6 条占满 ⇒ 第 3 次切卡的普通请求（getCard /
+         timeline）根本拿不到连接 ⇒ fetch 抛 TypeError ⇒ 弹「网络错误」。
+         ⇒ 后端把两条流合并成一条（?tokens=1），每帧带 ``ch`` 标记
+         （"e"＝过程事件 / "t"＝逐字）⇒ 这里按 ch 分派，消费语义一字不改。
+         两路各自的游标照旧独立（from＝过程、fromT＝逐字）⇒ 断点续传的恢复
+         语义与改前**逐字一致**（不因合并而丢帧）。 */
       const sFrom = st.lastSeq > 0 ? st.lastSeq + 1 : 0;
-      const es = new EventSource(`/api/works/${wid}/cards/${cid}/stream?from=${sFrom}`);
+      const tFrom = replayTokens ? 0 : (st.lastTokenSeq > 0 ? st.lastTokenSeq + 1 : 0);
+      const es = new EventSource(
+        `/api/works/${wid}/cards/${cid}/stream?from=${sFrom}&fromT=${tFrom}&tokens=1`
+        + `${replayTokens ? "&replay=1" : ""}`);
       st.es = es;
       es.onopen = () => { st.esDead = false; };
       es.onmessage = (m) => {
         try {
           const frame = JSON.parse(m.data);
+          // 逐字帧：走逐字上屏（**不进**过程装配器的记录通道）
+          if (frame.ch === "t") { onTokenFrame(st, frame); return; }
           if (typeof frame.seq === "number" && frame.seq > st.lastSeq) st.lastSeq = frame.seq;
           // [5702] 旧 finish(st)（live 槽收尾）已随旁路退役；done/error 由装配器落节点。
           // [运行态单一真相源 2026-10-21] 但**运行态**必须由帧推进——否则自动续轮/
@@ -1444,18 +1580,6 @@ const BOARD_CFG = Object.assign(
       st.esDead = true;
       if (!st.fallbackUsed && typeof onFail === "function") { st.fallbackUsed = true; onFail(); }
     }
-
-    // 逐字流独立 SSE。刻意**不**接 onFail：连不上只少逐字显示。
-    try {
-      const tFrom = replayTokens ? 0 : (st.lastTokenSeq > 0 ? st.lastTokenSeq + 1 : 0);
-      const esT = new EventSource(
-        `/api/works/${wid}/cards/${cid}/tokens?from=${tFrom}${replayTokens ? "&replay=1" : ""}`);
-      st.esT = esT;
-      esT.onmessage = (m) => {
-        try { onTokenFrame(st, JSON.parse(m.data)); } catch (e) { /* 单帧坏不致命 */ }
-      };
-      esT.onerror = () => { /* 静默 */ };
-    } catch (e) { /* 同上 */ }
     return st;
   }
 

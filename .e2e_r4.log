@@ -1,0 +1,85 @@
+[16:35:11] work=work_001 card=card_002 review=card_003 开跑
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:35:15] 5 → 评审员1 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:35:35] 10 工具 reject by fn_001
+[16:35:35] 12 ← 评审员1 0字 approve=False
+[16:35:35] 13 → 评审员2 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:35:55] 18 工具 reject by fn_002
+[16:35:55] 20 ← 评审员2 0字 approve=False
+[16:35:55] 21 → 评审员3 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:36:16] 22 工具 reject by fn_003
+[16:36:16] 24 ← 评审员3 0字 approve=False
+[16:36:16] 25 → card_002 发言
+[16:36:48] 26 工具 edit_requirements by card_002
+[16:38:08] 32 工具 edit_requirements by card_002
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:39:12] 39 改稿 changed=True
+[16:39:12] 41 → 评审员1 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:39:32] 42 工具 reject by fn_001
+[16:39:32] 44 ← 评审员1 0字 approve=False
+[16:39:32] 45 → 评审员2 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:39:48] 46 工具 reject by fn_002
+[16:39:48] 48 ← 评审员2 0字 approve=False
+[16:39:48] 49 → 评审员3 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:40:05] 50 工具 reject by fn_003
+[16:40:05] 52 ← 评审员3 0字 approve=False
+[16:40:05] 53 → card_002 发言
+[16:40:45] 54 工具 edit_requirements by card_002
+[16:41:22] 56 工具 edit_requirements by card_002
+[16:41:46] 60 工具 edit_requirements by card_002
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:42:06] 65 改稿 changed=True
+[16:42:06] 67 → 评审员1 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:42:34] 68 工具 reject by fn_001
+[16:42:34] 70 ← 评审员1 0字 approve=False
+[16:42:34] 71 → 评审员2 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:42:59] 72 工具 reject by fn_002
+[16:42:59] 74 ← 评审员2 0字 approve=False
+[16:42:59] 75 → 评审员3 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:43:23] 76 工具 reject by fn_003
+[16:43:23] 78 ← 评审员3 0字 approve=False
+[16:43:23] 79 → card_002 发言
+[16:43:56] 80 工具 edit_requirements by card_002
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:44:09] 84 改稿 changed=True
+[16:44:09] 86 → 评审员1 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:44:25] 87 工具 reject by fn_001
+[16:44:25] 89 ← 评审员1 0字 approve=False
+[16:44:25] 90 → 评审员2 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:44:45] 91 工具 reject by fn_002
+[16:44:45] 94 ← 评审员2 650字 approve=False
+[16:44:45] 95 → 评审员3 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:45:09] 96 工具 reject by fn_003
+[16:45:09] 99 ← 评审员3 735字 approve=False
+[16:45:09] 100 → card_002 发言
+[16:45:45] 101 工具 edit_requirements by card_002
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:46:57] 110 改稿 changed=True
+[16:46:57] 112 → 评审员1 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:47:25] 113 工具 reject by fn_001
+[16:47:25] 116 ← 评审员1 250字 approve=False
+[16:47:25] 117 → 评审员2 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:48:10] 118 工具 reject by fn_002
+[16:48:10] 120 ← 评审员2 0字 approve=False
+[16:48:10] 121 → 评审员3 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:48:54] 122 工具 reject by fn_003
+[16:48:54] 125 ← 评审员3 342字 approve=False
+[16:48:54] 126 → card_002 发言
+[16:51:30] 136 改稿 changed=False
+[16:55:18] ⏱ 20 分钟没跑完
+最终: {'batch': 'rv_aeb799a5b4', 'draft': 5, 'criteria': 1, 'members': ['fn_001', 'fn_002', 'fn_003'], 'passed': [], 'pending': ['fn_001', 'fn_002', 'fn_003'], 'draft_changed': False, 'all_passed': False}

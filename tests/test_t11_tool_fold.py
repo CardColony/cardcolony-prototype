@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """T11 · 轮槽折叠器离线套件（V3/V5/V7/V8＋不折红线三条＋T9 开关＋T10 白名单）。
 
 折叠压缩的模型压出在行为用例里 monkeypatch _compress_round（确定性结论）；
@@ -70,7 +70,7 @@ def test_t10_readonly_whitelist():
     } & set(card_tools.TOOL_REGISTRY)
 
     assert card_tools.READONLY_TOOLS == frozenset(expected)
-    for w in ("edit_card", "delete_card", "update_shadow",
+    for w in ("edit_card", "delete_card", "edit_shadow",
               "link_cards", "unlink_cards", "write_file"):
         assert w not in card_tools.READONLY_TOOLS
 

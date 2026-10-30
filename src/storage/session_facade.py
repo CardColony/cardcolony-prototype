@@ -67,6 +67,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -479,6 +480,16 @@ _PARSE_CACHE: dict[str, tuple[tuple[int, int], list[dict[str, Any]]]] = {}
 _PARSE_CACHE_MAX = 512
 
 
+def reset_cache() -> None:
+    """清解析缓存。
+
+    [2026-10-27 · 测试隔离] `_PARSE_CACHE` 按 `(work_id, card_id)` 键 + 文件 mtime 戳
+    索引，而各用例的 work_id 相同（work_001）但库/文件在不同 tmp 目录 ⇒ 跨用例会读到
+    上一个沙箱的块。conftest 的 sandbox fixture 里调本函数清掉。
+    """
+    _PARSE_CACHE.clear()
+
+
 def _file_stamp(path: Path) -> tuple[int, int]:
     """文件的 (mtime_ns, size)——缓存失效判据。取不到就当「已变」。"""
     try:
@@ -667,7 +678,11 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
                              content: str, run_id: str = "",
                              round_: int = 0,
                              model: str = "", end: str = "",
-                             source: Any = None) -> None:
+                             source: Any = None,
+                             from_card: str = "",
+                             msg_id: str = "",
+                             reply_to: str = "",
+                             extra: dict[str, Any] | None = None) -> None:
     """消息类事件落 events jsonl（**单一落点**）。
 
     [卡片底座第一步 2026-10-14] 卡间信不再写会话块（改落待处理收件箱），但其
@@ -678,20 +693,46 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
     [会话渲染单源化·偏差③补 2026-10-15] data 增 model/end（assistant_text 的
     元信息徽标数据源——/session 渲染通道退役后 timeline 是唯一数据源，不带
     这两字段则徽标无源可渲染）。user_message/card 事件两字段空串不落键。
+
+    [harness 第 1 步 2026-10-28 · 消息零件化] 消息类事件补 `from`/`to`/`msg_type`/
+    `msg_id`/`reply_to` 五个零件。
+    改前的病根是**同一次发信被劈成两条事件**：``msg_*`` 有正文没发件人，
+    ``card_message`` 有发件人没正文，且 ``msg_*`` 侧连 ``msg_id`` 都没有 ⇒
+    两条事后 join 不起来，"谁给谁发了什么类型"这个问题无法回答。
+    现在一条事件带全五样，条件面才立得住（catalog 的 fields.part 已声明）。
     """
     if not ev_type:
         return
     try:
         data: dict[str, Any] = {"content": content}
+        # [2026-10-26 · 记录补全] 消息事件带**发信方**。改前只有 content，
+        # 判据无法回答「这条是谁发来的」——「父卡派发的任务」这类判断因此不可做。
+        if from_card:
+            data["from"] = str(from_card)
         if model:
             data["model"] = str(model)
         if end:
             data["end"] = str(end)
+        # [harness 第 1 步] 卡间消息的收件方与类型：`to` 就是本条事件所在的卡
+        # （消息落在收件方自己的键上）；`msg_type` 直接取事件型，两者同源不另算。
+        if str(ev_type).startswith("msg_") or str(ev_type) == "coder_done":
+            data["to"] = str(card_id or "")
+            data["msg_type"] = str(ev_type)
+            if msg_id:
+                data["msg_id"] = str(msg_id)
+            if reply_to:
+                data["reply_to"] = str(reply_to)
         # [goal 域 2026-10-20 · 照抄 dsh] 回合来源。续轮消息带
         # {"kind":"goal","goalId","revision","round"}——这是 goal fold 里
         # roundsStarted 的**唯一**推进依据（原版 GoalMessageSource）。
         if source:
             data["source"] = dict(source)
+        # [harness 第 1 步 2026-10-28] 调用方追加的零件（如汇报的 kind）。
+        # 放在最后合并：调用方给的是**该消息类型的专属事实**，不覆盖上面的公共零件。
+        if extra:
+            for _k, _v in dict(extra).items():
+                if _k not in data:
+                    data[_k] = _v
         await event_log.append(work_id, card_id, {
             "run_id": str(run_id or ""),
             "round": int(round_ or 0),
@@ -705,7 +746,8 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
 
 async def _emit_block_event(work_id: str, card_id: str,
                             blk: dict[str, Any], hint: str,
-                            event_content: str | None = None) -> None:
+                            event_content: str | None = None,
+                            origin: dict[str, Any] | None = None) -> None:
     """[消息底座能力对齐 · 件2] 消息块同步落 events jsonl（裁定 C1/C5）。
 
     落盘位置＝append 成功后、ops 打点之前：会话文件与事件流同一次写路径内
@@ -713,14 +755,30 @@ async def _emit_block_event(work_id: str, card_id: str,
 
     [5715] ``event_content`` 非 None 时用它作为**事件流**里的内容（会话块 content 不变），
     None ⇒ 用块内容（既有行为，逐字不变）。
+
+    [harness 第 1 步 2026-10-28 · 修发件人丢失] ``origin`` ＝**入参原块**
+    （``_assign_block`` 之前的那份）。
+    病根：``_assign_block`` 的输出是按白名单重建的新 dict，只把 ``block["from"]``
+    映射进 ``out["from"]``，而 ``append_card_message`` 传进来的键叫 ``from_card``
+    ⇒ **发件人在这一层就掉了**；本函数再去读 ``blk.get("from_card")`` 自然恒空
+    ⇒ ``data["from"]`` 从来没写出来过（全库 88 条 msg_directive 无一条带 from）。
+    修法：入参原块随调用方一起传进来，发件人/消息 id/reply_to 从**原块**取，
+    不再指望白名单输出里还留着它们（会话文件的块形状因此零变化）。
     """
     ev_type = _block_event_type(str(blk.get("actor") or ""), hint, blk.get("tool_calls"))
     content = blk.get("content", "") if event_content is None else event_content
+    src = origin if isinstance(origin, dict) else {}
+    _from = str(src.get("from_card") or src.get("from") or "")
+    _extra = src.get("_extra")
     await emit_message_event(
         work_id, card_id, ev_type, content,
         run_id=str(blk.get("pair_id") or ""), round_=int(blk.get("turn") or 0),
         model=str(blk.get("model") or ""), end=str(blk.get("end") or ""),
         source=blk.get("source"),
+        from_card=_from,
+        msg_id=str(src.get("msg_id") or ""),
+        reply_to=str(src.get("reply_to") or ""),
+        extra=_extra if isinstance(_extra, dict) else None,
     )
 
 
@@ -762,7 +820,15 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
         pair = block.get("pair") or (str(init_seq) if init_seq is not None else "unknown")
     now = session_store._now_iso()
     out = {
-        "role": {"human": "user", "assistant": "assistant"}.get(actor, actor),
+        # [卡间消息身份 2026-10-28 · 用户令「修」] `card:<发信卡>` **不是合法 role**
+        # ——端点只认 system/user/assistant/tool。原来 `.get(actor, actor)` 把 actor
+        # 原样当 role 存，于是库里出现 `role: "card:fn_005"`；读文件那条路
+        # （session_facade:366）有 `card:` → user 的改写，读库那条（origin_store.
+        # read_blocks）没有 ⇒ 块一进请求就 400（「重试 3 次后仍失败」）。
+        # 修在**写入**这一处：卡间来信是「外部输入」，语义就是 user；「是谁发的」
+        # 由 actor 承载，不由 role。存对了，读取就不用每次猜。
+        "role": ("user" if str(actor).startswith("card:")
+                 else {"human": "user", "assistant": "assistant"}.get(actor, actor)),
         "content": block.get("content", ""),
         "timestamp": now,
         "model": block.get("model"),
@@ -870,7 +936,8 @@ async def append(work_id: str, card_id: str, block: dict[str, Any],
         _write_new_blocks_locked(work_id, card_id, path, text, fmt, existing, [new_blk])
     # [消息底座能力对齐 · 件2] 消息块同步落 events jsonl（会话落盘后同路径完成）
     if emit_event:
-        await _emit_block_event(work_id, card_id, new_blk, event_type_hint, event_content)
+        await _emit_block_event(work_id, card_id, new_blk, event_type_hint,
+                                event_content, origin=block)
     # [T152] append 点位：work/card/seq/turn/actor/结果
     session_ops.ops_log("append", work_id, card_id,
                         {"seq": new_blk["seq"], "turn": new_blk["turn"],
@@ -881,7 +948,9 @@ async def append(work_id: str, card_id: str, block: dict[str, Any],
 async def append_card_message(work_id: str, card_id: str, *,
                               from_card: str, text: str,
                               msg_type: str = "msg_notify",
-                              event_type: str = "") -> dict[str, Any]:
+                              event_type: str = "",
+                              reply_to: str = "",
+                              extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """把一条**卡间消息**落成会话块（不进收件箱、不唤醒）。
 
     [2026-10-26 · 用户裁定] 同步/通知类消息不该走 inbox，也不该只在投递当轮可见：
@@ -906,16 +975,41 @@ async def append_card_message(work_id: str, card_id: str, *,
     label = {"msg_notify": "通知", "msg_sync": "同步", "msg_report": "汇报",
              "msg_ask": "询问", "msg_answer": "应答",
              "msg_directive": "指令", "coder_done": "完工回执"}.get(msg_type, "消息")
+    # [2026-10-26 · 用户令「上下文里用用户消息塞，但不要污染客户端样式」]
+    # 必须用 **`card:` actor**，不能用 role="user"：
+    #   · ``_block_event_type`` 对 actor=human **直接返回 user_message、忽略
+    #     event_type** ⇒ 事件流里全是用户消息，前端按用户气泡渲染（分不清哪句
+    #     是用户说的）；
+    #   · actor=`card:<发信卡>` ⇒ 事件类型是 hint（msg_sync/msg_directive…），
+    #     前端 ``routes.py:748`` 专门认这个前缀、按消息块渲染；
+    #   · 上下文装配（``session_facade`` 第 366 行）把 `card:` 映射成 role=user
+    #     ⇒ **模型侧照样当外部输入看得到**。
+    # 正文首行带结构化头（build_header），前端据此取 id/type/from。
+    from ..api import card_msg
+    msg_id = f"cmsg-{uuid.uuid4().hex[:12]}"
+    header = card_msg.build_header(msg_id, msg_type, str(from_card or ""),
+                                   reply_to)
     if str(from_card) in ("system", "", "harness"):
-        # 系统主动发的提醒：不以某张卡的名义说话
-        content = f"系统给你发来一条{label}：\n{text}"
+        body = f"系统给你发来一条{label}：\n{text}"
     else:
-        content = f"卡 {from_card}（《{title}》）给你发来一条{label}：\n{text}"
-    return await append(work_id, card_id, {
-        "role": "user",
-        "content": content,
+        body = f"卡 {from_card}（《{title}》）给你发来一条{label}：\n{text}"
+    rec = await append(work_id, card_id, {
+        "actor": f"card:{from_card}" if from_card else "card:system",
+        "content": header + "\n" + body,
         "event_type": event_type or msg_type,
+        "from_card": str(from_card or ""),
+        # [harness 第 1 步 2026-10-28] msg_id 一并带进入参块：事件流要拿它做
+        # 零件（"这条是对哪条的回话"），否则两条消息事后无法配对。
+        # 它只活在入参块里，_assign_block 的白名单不会把它写进会话文件。
+        "msg_id": msg_id,
+        # 调用方追加的零件（如汇报的 kind）。同样只活在入参块，不进会话文件。
+        **({"_extra": dict(extra)} if extra else {}),
+        **({"reply_to": reply_to} if reply_to else {}),
     })
+    # [2026-10-27] 返回里带上 msg_id：调用方（发信工具）要把它交给模型做 reply_to。
+    out = dict(rec or {})
+    out["msg_id"] = msg_id
+    return out
 
 
 async def append_many(work_id: str, card_id: str,
@@ -944,8 +1038,10 @@ async def append_many(work_id: str, card_id: str,
             new_blks.append(nb)
         _write_new_blocks_locked(work_id, card_id, path, text, fmt, existing, new_blks)
     # 事件流：工具块经 _block_event_type 一律返回空串（不发消息事件）
-    for nb in new_blks:
-        await _emit_block_event(work_id, card_id, nb, "")
+    # [harness 第 1 步] 逐块带**入参原块**（origin）——发件人/消息 id 只在原块里，
+    # 白名单输出（_assign_block）已把它们丢掉。
+    for nb, _src in zip(new_blks, blocks):
+        await _emit_block_event(work_id, card_id, nb, "", origin=_src)
     for nb in new_blks:
         session_ops.ops_log("append", work_id, card_id,
                             {"seq": nb["seq"], "turn": nb["turn"],

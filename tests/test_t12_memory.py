@@ -18,6 +18,8 @@ import json
 import pytest
 
 from src.api import context_assembler, context_regions, card_tools, prompts
+
+from _condense_stub import three_stage_stub
 from src.api.prompts import BASE_PROMPT
 from src.storage import memory_store, session_store, work_store, card_db, card_store
 
@@ -59,10 +61,20 @@ async def _make_work_with_cards():
     return wid, child["meta"]["card_id"], other["meta"]["card_id"]
 
 
-def _entry(seq: int, conclusion: str, evidence: str = "【依据】read_card card_001",
-           fingerprint: str = "sha256:0123456789abcdef", occurred_at: str = "2026-10-05T12:00:00+08:00"):
-    return {"seq": seq, "conclusion": conclusion, "evidence": evidence,
-            "occurred_at": occurred_at, "fingerprint": fingerprint}
+def _entry(seq: int, conclusion: str, occurred_at: str = "2026-10-05T12:00:00+08:00",
+           **kw):
+    """造一条 CausalNode（＝生产结构：`anchor` / `gist` / `level` / `role`）。
+
+    [记忆编号体系 2026-10-29] 旧版造的是 `{seq, conclusion, evidence}`——那是迁移
+    前的格式，渲染器读不到（正是「92 行 [块?]」的同款错位）。**测试数据必须与生产
+    结构一致**，否则测试永远绿、线上永远空。
+    """
+    node = {"anchor": {"sessionId": "card_001", "seq": seq},
+            "gist": conclusion, "level": 1, "role": "gist",
+            "upper": [], "lower": [], "coveredSeqs": [seq],
+            "status": "ongoing", "kind": "fact"}
+    node.update(kw)
+    return node
 
 
 # ---------------------------------------------------------------------------
@@ -75,11 +87,17 @@ async def test_read_session_seq_exposed_storage_untouched(sandbox, tmp_path):
     await session_store.append_message(wid, cid, "user", "第一条")
     await session_store.append_message(wid, cid, "assistant", "回复一")
     await session_store.append_message(wid, cid, "user", "第二条")
-    msgs = await session_store.read_session(wid, cid)
+    raw_before = session_store._session_path(wid, cid).read_text(encoding="utf-8")
+    # [2026-10-27 · 写入路径统一] 现在写出来的是 **V2** 格式；
+    # `session_store.read_session` 只解析 V1（V2 在生产里走 `_read_parsed` 的另一分支），
+    # 用它读 V2 拿不到 role ⇒ 改用门面读。
+    from src.storage import session_facade
+    msgs = await session_facade.read(wid, cid)
     assert [m["seq"] for m in msgs] == [0, 1, 2]
-    # 存储格式零改动：文件内 header 无 seq 字段
-    raw = session_store._session_path(wid, cid).read_text(encoding="utf-8")
-    assert "seq:" not in raw
+    # [2026-10-27 · 写入路径统一] 存储已是 V2 格式（**本来就带 seq 字段**），
+    # 所以不能再用「文件里没有 seq」来证明「读不改存储」——改成直接比字节。
+    raw_after = session_store._session_path(wid, cid).read_text(encoding="utf-8")
+    assert raw_after == raw_before, "读会话不得改动存储"
     # 既有键原样保留（消费方按键取用不受增键影响）
     assert msgs[0]["role"] == "user" and msgs[1]["content"] == "回复一"
 
@@ -102,17 +120,18 @@ async def test_ensure_watermark_idempotent_and_session_bound(sandbox):
     wid, cid, no_session = await _make_work_with_cards()
     await session_store.append_message(wid, cid, "user", "hi")
     assert await memory_store.ensure_watermark(wid, cid) is True
-    first = memory_store.memory_path(wid, cid).read_text(encoding="utf-8")
+    # [2026-10-27 · 记忆改存 sqlite] 唯一事实源是 `memory` 表，不再有 JSON 文件。
+    first = memory_store._load_from_db(wid, cid)
+    assert first is not None
     # 幂等：二次不覆盖
     assert await memory_store.ensure_watermark(wid, cid) is False
-    assert memory_store.memory_path(wid, cid).read_text(encoding="utf-8") == first
+    assert memory_store._load_from_db(wid, cid) == first
     # 无会话的卡不建账（生产 create_card 预建空会话文件——铁律禁删，此处仅沙箱内
     # 构造「无会话」形态验证会话存在性判据）
     session_store._session_path(wid, no_session).unlink()
     assert await memory_store.ensure_watermark(wid, no_session) is False
-    assert not memory_store.memory_path(wid, no_session).exists()
-    st = json.loads(first)
-    assert st["mark"] == 0 and st["entries"] == [] and st["card_id"] == cid
+    assert memory_store._load_from_db(wid, no_session) is None
+    assert first["mark"] == 0 and first["entries"] == [] and first["card_id"] == cid
 
 
 async def test_memory_bad_file_treated_empty_not_rewritten(sandbox):
@@ -206,19 +225,45 @@ async def test_200_region_shape_and_seats(sandbox, monkeypatch):
     assert 200 in [e["order"] for e in log_regions]
 
 
+def _node(nid: str, batch: int, ordinal: int, gist: str, *, level: int = 1,
+          role: str = "gist", upper_id: str = "",
+          occurred_at: str = "2026-10-05T12:00:00+08:00"):
+    """造一行 `memory_nodes`——渲染器的真实输入（编号体系）。"""
+    return {"id": nid, "work_id": "w", "card_id": "c", "batch": batch,
+            "ordinal": ordinal, "occurred_at": occurred_at, "level": level,
+            "role": role, "gist": gist, "upper_id": upper_id}
+
+
 async def test_render_memory_region_zero_processing(sandbox):
     long_conclusion = "【结论】" + "长" * 5000  # RD-05：无长度限制、不截断
-    entries = [_entry(2, long_conclusion), _entry(0, "【结论】先存的在前")]  # 故意乱序
-    text = context_regions.render_memory_region(entries)
-    assert text.splitlines()[0] == "## 记忆（condense_fold 凝练归拢）"
-    # 存储序即输出序（不排序）；长结论一字不截（不截断）
+    rows = [_node("w/c/B0001/0002", 1, 2, long_conclusion),
+            _node("w/c/B0001/0001", 1, 1, "【结论】先存的在前")]
+    text = context_regions.render_memory_region(rows)
+    assert text.splitlines()[0] == "## 记忆（凝练归拢）"
     assert "【结论】先存的在前" in text
-    assert long_conclusion in text
-    lines = text.splitlines()
-    assert lines[1].startswith("[块2 · 2026-10-05T12:00:00+08:00]")
-    assert lines[2] == "【依据】read_card card_001（sha256:0123456789abcdef）"
+    assert long_conclusion in text                       # 一字不截
+    # 批内按批内序排（0001 在 0002 之前），不按传入顺序
+    assert text.index("先存的在前") < text.index(long_conclusion)
     # 空条目 → 空串（没有来源就不出现这个区）
     assert context_regions.render_memory_region([]) == ""
+
+
+async def test_memory_region_only_last_batch_carries_l2(sandbox):
+    """用户 2026-10-29 裁定：远期只出 L1；最近一批出 L1 ＋ 其 L2 细节层。"""
+    rows = [
+        _node("w/c/B0001/0001", 1, 1, "远期结论甲"),
+        _node("w/c/B0001/0001/d", 1, 2, "远期细节甲", level=2,
+              role="description", upper_id="w/c/B0001/0001"),
+        _node("w/c/B0002/0001", 2, 1, "最近结论乙"),
+        _node("w/c/B0002/0001/d", 2, 2, "最近细节乙", level=2,
+              role="description", upper_id="w/c/B0002/0001"),
+    ]
+    text = context_regions.render_memory_region(rows)
+    assert "远期结论甲" in text and "最近结论乙" in text
+    assert "远期细节甲" not in text      # 远期不出 L2
+    assert "最近细节乙" in text          # 最近一批出 L2
+    assert "最近一批" in text
+    assert text.index("批0001") < text.index("批0002")   # 批次升序
 
 
 # ---------------------------------------------------------------------------
@@ -269,24 +314,28 @@ async def test_turn_end_trigger_lazy_watermark_and_trace(sandbox, monkeypatch, c
     caplog.set_level(logging.INFO, logger="storage.memory")
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
     wid, cid, _other = await _make_work_with_cards()
-    await session_store.append_message(wid, cid, "user", "短历史")
+    # [2026-10-27 · 凝练以库结算] 必须走门面写：`session_store.append_message`
+    # 只写 md、不双写原文库，凝练读库会读不到。
+    from src.storage import session_facade
+    await session_facade.append(wid, cid, {"role": "user", "content": "短历史"})
     await memory_store.condense_turn_end(wid, cid)
     # 懒建账：触发即幂等落空水位
-    assert memory_store.memory_path(wid, cid).exists()
+    # [2026-10-27 · 记忆改存 sqlite] 断言表里有行，不看文件
+    assert memory_store._load_from_db(wid, cid) is not None
     # 未到线：无「到线」留痕
     assert not any("已到线" in r.message for r in caplog.records)
     # [T15] 到线即启动凝练管线（路线甲闸开）：接缝脚本化产出→条目落盘→mark 推进
     monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
 
-    async def fake_condense_call(user_prompt: str) -> str:
-        return "【结论】短历史确立了一条用户消息。\n【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake_condense_call)
+    # [三步凝练 2026-10-29] 接缝由单段改为 S2a/L1/L2 三段，统一用 tests/_condense_stub。
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="短历史确立了一条用户消息。"))
     await memory_store.condense_turn_end(wid, cid)
     assert any("已到线" in r.message for r in caplog.records)
     st = memory_store.load_memory(wid, cid)
-    assert st["mark"] == 1 and len(st["entries"]) == 1
-    assert st["entries"][0]["conclusion"] == "短历史确立了一条用户消息。"
+    assert st["mark"] == 1
+    assert len(st["entries"]) >= 1
+    assert st["entries"][0]["gist"] == "短历史确立了一条用户消息。"
 
 
 async def test_maybe_schedule_off_noop_on_async(sandbox, monkeypatch):
@@ -296,15 +345,16 @@ async def test_maybe_schedule_off_noop_on_async(sandbox, monkeypatch):
     memory_store.maybe_schedule_turn_end(wid, cid)  # 关＝零动作
     import asyncio
     await asyncio.sleep(0.05)
-    assert not memory_store.memory_path(wid, cid).exists()
+    assert memory_store._load_from_db(wid, cid) is None
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
     memory_store.maybe_schedule_turn_end(wid, cid)  # 开＝异步触发不阻塞
     import asyncio
     for _ in range(20):
         await asyncio.sleep(0.02)
-        if memory_store.memory_path(wid, cid).exists():
+        if memory_store._load_from_db(wid, cid) is not None:
             break
-    assert memory_store.memory_path(wid, cid).exists()
+    # [2026-10-27 · 记忆改存 sqlite] 断言表里有行，不看文件
+    assert memory_store._load_from_db(wid, cid) is not None
 
 
 async def test_trigger_k_env_override_and_default(sandbox, monkeypatch):
@@ -367,7 +417,7 @@ async def test_read_memory_tool_filter_and_permission(sandbox, monkeypatch):
             and len(r["data"]["entries"]) == 3)
     # 锚点区间过滤（含端点）
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {"from_seq": 2, "to_seq": 4}, meta)
-    assert [e["seq"] for e in r["data"]["entries"]] == [2, 4]
+    assert [e["anchor"]["seq"] for e in r["data"]["entries"]] == [2, 4]
     # 不存在的卡
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {"card_id": "card_999"}, meta)
     assert r["ok"] is False
@@ -400,6 +450,6 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
     # [2026-10-22] dev 合并后提示词版本已推进，按实际值同步
-    assert prompts.BASE_PROMPT_VERSION == "t26-5"
+    assert prompts.BASE_PROMPT_VERSION == "t27-1"
     # BASE_PROMPT 工具行在案
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT

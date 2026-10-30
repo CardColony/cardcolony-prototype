@@ -18,7 +18,14 @@ import json
 from dataclasses import dataclass
 from typing import AsyncIterable, AsyncIterator, Optional
 
-from ..llm.errors import EMPTY_RESPONSE_CODE, LlmError
+from ..llm.errors import (
+    CONTEXT_WINDOW_EXCEEDED_CODE,
+    EMPTY_RESPONSE_CODE,
+    QUOTA_EXCEEDED_CODE,
+    LlmError,
+    is_context_window_exceeded_error,
+    is_quota_exceeded_error,
+)
 from ..llm.types import (
     BlockEnd,
     BlockStart,
@@ -141,11 +148,35 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
         except Exception as exc:  # noqa: BLE001
             raise LlmError(f"malformed SSE payload: {payload[:120]}", "MALFORMED_RESPONSE") from exc
 
+        # [端点反馈 2026-10-30] OpenAI 兼容流在出错时会发一帧 ``{"error": {...}}``，
+        # 然后**可能不关连接**。原实现只读 ``choices`` ⇒ 这帧被当空帧跳过 ⇒ 上层
+        # 永远等下一个 chunk，表现为「无反馈卡死」。端点其实报了错，是我们没取。
+        # （用户原话：所有模型服务出问题都会发反馈通知，只是你没取。）
+        err = chunk.get("error")
+        if isinstance(err, dict):
+            detail = " ".join(str(x) for x in (err.get("code"), err.get("type"),
+                                               err.get("message")) if x).strip()
+            if detail:
+                code = "PROVIDER_STREAM_ERROR"
+                if is_quota_exceeded_error(detail):
+                    code = QUOTA_EXCEEDED_CODE
+                elif is_context_window_exceeded_error(detail):
+                    code = CONTEXT_WINDOW_EXCEEDED_CODE
+                raise LlmError(f"provider stream error: {detail[:200]}", code)
+
         for choice in chunk.get("choices") or []:
             delta = choice.get("delta") or {}
 
             # reasoning 先行：思考模式把它交织在 text 之前。首帧空串不得开块。
+            # [思考字段双形态 2026-10-23] 业界有两种字段名，都要认：
+            #   · reasoning_content —— DeepSeek 系（官方/阿里云/火山/opencode 代理）
+            #   · reasoning         —— OpenRouter 系（commandcode 的 reflection/beam:free
+            #     实测发的是这个，另带 reasoning_details）。只认前者 ⇒ beam 的思考
+            #     整段丢失 ⇒ 多轮时无东西可回传 ⇒ 端点 400
+            #     "Missing required parameter: 'messages[N].reasoning_content'"。
             reasoning = delta.get("reasoning_content")
+            if not (isinstance(reasoning, str) and reasoning != ""):
+                reasoning = delta.get("reasoning")
             if isinstance(reasoning, str) and reasoning != "":
                 if reasoning_block is None:
                     reasoning_block = open_block("reasoning")

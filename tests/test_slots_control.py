@@ -156,6 +156,9 @@ async def test_midflight_stop_closes_turn_human_stop(sandbox, work, client):
     assert blocks[-1]["end"] == "human_stop", "回合以 human_stop 闭合（T124）"
     assert blocks[-1]["actor"] == "assistant"
     assert control.pending_stop(wid, cid) is False, "消费即清"
+    # 在流登记必须回收：否则停止判据永远为真（以后所有停止都不再走 cancel）
+    assert model_service.in_stream(wid, cid) is False, "流登记泄漏"
+    assert model_service._IN_STREAM == {}, "流登记表必须清空"
 
 
 # ---------- 5：端到端（无工具轮：收口清扫、不误伤） ----------
@@ -178,7 +181,10 @@ async def test_no_tool_round_discards_stale_stop_and_next_turn_clean(sandbox, wo
     # 交付内容＝断流前**已收到的增量**（「不丢已产出的字」口径不变）。
     assert resp.json()["reply"] == "罐头\n", "无步边界可消费 → 本回合正常交付"
     blocks = await session_facade.read(wid, cid)
-    assert blocks[-1]["end"] == "model_done", "正常闭合（stop 未在步边界命中）"
+    # [停止语义 2026-10-23] 原来这里断「无步边界 ⇒ model_done」。停止改成信号后，
+    # 流一收到信号就收口（不再等下一帧），本回合的停止**由出口挂点消费** ⇒
+    # 一律以 human_stop 闭合（可审计：人停就是人停，不因有没有步边界而变）。
+    assert blocks[-1]["end"] == "human_stop", "人停一律以 human_stop 闭合"
     assert control.pending_stop(wid, cid) is False, "收口清扫：残留置位已作废"
 
     # 下一回合不受影响（T124）：正常 POST、正常交付
@@ -221,15 +227,18 @@ def test_behavior_registry_two_types_judge_empty(sandbox):
 # ---------- 6：硬停兜底（[立刻停止 2026-10-21]） ----------
 
 async def test_stop_hard_cancels_turn_that_never_yields(monkeypatch):
-    """模型一个字都不吐、卡在流里时，软停等不到边界 ⇒ 1.5 秒后必须硬取消。
+    """卡在**非模型流**的回合（工具/装配里不出让）⇒ 停止立刻 cancel。
+
+    [取消墙钟 2026-10-23] 原来靠 `_hard_cancel_after` 的 1.5 秒定时。现在判据是
+    **状态**：不在模型流里（信号没人等）就立刻 cancel；在流里则由停止信号让流收口
+    （见 test_midflight_stop_closes_turn_human_stop / test_model_resume 的停止信号用例）。
 
     实测背景：card_031 卡在模型流里 9 分钟，点停止只置位、回合不动，
-    再发消息永远 409「回合进行中」。软停只对「还在吐字/走到步边界」有效。
+    再发消息永远 409「回合进行中」。
     """
     from src.storage import session_facade
 
     wid, cid = "w_hard", "c_hard"
-    monkeypatch.setattr(control, "STOP_HARD_CANCEL_DELAY", 0.05)
     session_facade.turn_release(wid, cid, "whatever")
     assert session_facade.turn_try_acquire(wid, cid, "turn:hard")
     task = asyncio.create_task(asyncio.sleep(30))
@@ -237,8 +246,11 @@ async def test_stop_hard_cancels_turn_that_never_yields(monkeypatch):
     try:
         r = control.request_stop(wid, cid)
         assert r["stopped"] is True
-        await asyncio.sleep(0.25)
-        assert task.done(), "卡死的回合必须被硬取消（否则互斥体永不释放）"
+        for _ in range(20):             # 只推进事件循环，不是等钟
+            if task.done():
+                break
+            await asyncio.sleep(0)
+        assert task.done(), "不在流里的回合必须立刻被取消（否则互斥体永不释放）"
         assert task.cancelled()
     finally:
         control.unbind_turn_task(wid, cid, task)
@@ -246,22 +258,26 @@ async def test_stop_hard_cancels_turn_that_never_yields(monkeypatch):
         control.discard_stop(wid, cid)
 
 
-async def test_stop_does_not_kill_a_turn_that_finishes_in_time(monkeypatch):
-    """正常收口的回合（软停已生效）不许被兜底误杀。"""
+async def test_stop_never_touches_an_already_finished_turn(monkeypatch):
+    """已经收口的回合不许被停止误伤（cancel 前必查 task.done()）。
+
+    [取消墙钟 2026-10-23] 旧用例钉的是「1.5 秒宽限内收口就不杀」。宽限本身是钟，
+    已删除；改为钉真正要保的性质：**已完成的回合不受影响**。
+    """
     from src.storage import session_facade
 
     wid, cid = "w_fast", "c_fast"
-    monkeypatch.setattr(control, "STOP_HARD_CANCEL_DELAY", 0.2)
     session_facade.turn_try_acquire(wid, cid, "turn:fast")
-    task = asyncio.create_task(asyncio.sleep(30))
+    task = asyncio.create_task(asyncio.sleep(0))
     control.bind_turn_task(wid, cid, task)
     try:
+        await task                       # 等它自然结束（不是等钟）
+        assert task.done()
         control.request_stop(wid, cid)
-        # 回合在兜底时间之前正常收口（释放互斥体）
-        session_facade.turn_release(wid, cid, "turn:fast")
-        await asyncio.sleep(0.35)
-        assert not task.done(), "已收口的回合不该被硬停误杀"
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert task.done() and not task.cancelled(), "已完成的回合不该被取消"
     finally:
-        task.cancel()
         control.unbind_turn_task(wid, cid, task)
+        session_facade.turn_release(wid, cid, "turn:fast")
         control.discard_stop(wid, cid)

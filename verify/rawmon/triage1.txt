@@ -1,0 +1,16 @@
+=== KEY STATE (samples down / total) ===
+LMB          down=0      of 601     never
+RMB          down=0      of 601     never
+MMB          down=0      of 601     never
+Shift        down=0      of 601     never
+Ctrl         down=0      of 601     never
+Alt          down=0      of 601     never
+LWin         down=0      of 601     never
+RWin         down=0      of 601     never
+CapsLock     down=0      of 601     never
+NumLock      down=0      of 601     never
+ScrollLock   down=0      of 601     never
+=== CURSOR ===
+samples=601 moves=1 maxJumpPx=0 idleSinceLastInputMs=50578
+=== POSITION LOG ===
+0	1572	1341	d=0

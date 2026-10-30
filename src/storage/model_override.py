@@ -89,6 +89,33 @@ def _normalize_row(raw: dict) -> dict:
                 cleaned[str(role)] = val.strip()
         if cleaned:
             out["bindings"] = cleaned
+    # [wb_exec 2026-10-23] 执行体选择：这一行额外带一个 ``exec_backend``。
+    #   auto            缺省 ⇒ coder 卡走 WorkBuddy 执行体（按配比器选模型）
+    #   system          ⇒ 用推演agent 自己的模型（用户在卡上手动切回来的落点）
+    #   wb:<版本>:<模型>  ⇒ 钉死某个 WorkBuddy 模型，不参与配比
+    # **只做形状归一，不做任何裁决**（裁决在 src/api/wb_exec/bridge.py）。
+    eb = raw.get("exec_backend")
+    if isinstance(eb, str) and eb.strip():
+        out["exec_backend"] = eb.strip()
+    # [wb_exec 2026-10-23] 上次**实际**路由到的（版本, 模型）——
+    # 卡面 UI 开工后显示的就是它。必须活过 put_row 的往返
+    # （put_row 是整行替换 ⇒ 归一化时丢了就永远存不住）。
+    lr = raw.get("last_routed")
+    if isinstance(lr, dict) and lr:
+        out["last_routed"] = {
+            "executor": str(lr.get("executor") or ""),
+            "model": str(lr.get("model") or ""),
+            "at": int(lr.get("at") or 0),
+            "tool_calls": int(lr.get("tool_calls") or 0),
+        }
+        # [回落 2026-10-23 19:55] 委派失败**静默回落**系统模型时的记录：
+        #   fallback="system" ＋ reason（原因）。
+        #   **必须活过归一化**（put_row 是整行替换 ⇒ 归一化时丢了就永远存不住）
+        #   ⇒ 卡面才能如实显示"本轮实际走系统自己的模型（原因…）"，不装成在 WorkBuddy 上跑。
+        fb = lr.get("fallback")
+        if isinstance(fb, str) and fb.strip():
+            out["last_routed"]["fallback"] = fb.strip()
+            out["last_routed"]["reason"] = str(lr.get("reason") or "")[:200]
     src = raw.get("src")
     out["src"] = "manual" if src == "manual" else "default"
     return out
@@ -341,6 +368,8 @@ def _clean(override: dict) -> dict:
         out["fallbacks"] = row["fallbacks"]
     if row.get("bindings"):
         out["bindings"] = row["bindings"]
+    if row.get("exec_backend"):
+        out["exec_backend"] = row["exec_backend"]
     return out
 
 

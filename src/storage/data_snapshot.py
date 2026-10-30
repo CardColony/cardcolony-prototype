@@ -13,6 +13,7 @@ git 的任何分支操作都碰不到它。
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import logging
@@ -43,23 +44,71 @@ SNAPSHOT_ROOT = (Path(_env_root) if _env_root
 # 受保护的数据目录（相对 BASE_DIR）
 PROTECTED_DIRS = ("works",)
 
+# ---------------------------------------- 快照**不拷**的东西（产出机制收窄）
+#: 〔2026-10-30 · 治「D 盘一周吃近 1T」〕
+#: 病根不是「只产出不清理」，而是**产出机制太粗暴**：快照把 ``works/<work>/`` 下
+#: **与卡片状态无关**的东西也照抄一份 ⇒ 实测每批 **8.7GB**（work_027）。
+#: 逐文件对账（单批 225 个文件）：
+#:   · ``spike/``          7.07GB —— **压测产物**（s0_3/data ＋ data_prev_20261026）
+#:   · ``cards.db.bak_backfill`` 707MB —— **上一份的库**（备份副本）
+#:   · ``cards.db``        774MB —— 真状态（这才是快照该拷的）
+#:   · ``facts.db``         95MB —— 真状态
+#: ⇒ 前两类与「卡片状态」无关 ⇒ 恢复快照时也用不上 ⇒ **快照不该拷它们**。
+_SKIP_DIR_NAMES = ("spike", "_trash", "__pycache__", ".venv", "node_modules", ".git")
+
+#: 备份/临时副本（fnmatch 模式）。``*.bak*`` 命中 ``cards.db.bak_backfill``。
+_SKIP_FILE_PATTERNS = ("*.bak*", "*.tmp", "*.old", "*.orig")
+
+#: Windows **保留设备名**（这些名字在 Windows 上不是普通文件）。
+#: 实测踩中：``works/work_027/nul``（0 字节，PowerShell 的 ``> nul`` 重定向造的）
+#: ⇒ 拷它必抛 ``SameFileError`` ⇒ **每批都不完整** ⇒ 保留闸永远不触发
+#: （见 `_prune_batches` 的调用点）⇒ 快照库一路涨到 **705.61GB**。
+_WIN_RESERVED_NAMES = frozenset(
+    ["nul", "prn", "aux", "con"]
+    + [f"com{i}" for i in range(1, 10)]
+    + [f"lpt{i}" for i in range(1, 10)]
+)
+
+
+def _is_reserved_name(name: str) -> bool:
+    """这个文件名是不是 Windows 保留设备名（``nul``／``con``／``com1``…）？"""
+    return name.split(".")[0].lower() in _WIN_RESERVED_NAMES
+
+
+def _skip_snapshot_file(p: Path) -> bool:
+    """这个文件**不该**被快照拷走（保留设备名／备份副本）。"""
+    if _is_reserved_name(p.name):
+        return True
+    return any(fnmatch.fnmatch(p.name, pat) for pat in _SKIP_FILE_PATTERNS)
+
+
 # 保留策略
-KEEP_BATCHES = 200          # 每个 work 保留最近批次数（过程批次＝只拷可变状态，很小）
-# 〔5715 · 机制改造〕日备是**全量**（含留痕）⇒ 一份就是整个会话的大小
-# （实测那个 22 小时会话：354MB/份）⇒ 留 30 天＝10.6GB/work，太肥。
-# ⇒ 默认只留 **7 天**；更早的完整复盘点靠「周备」或 git 兜底。
-KEEP_DAILY_DAYS = 7         # 日备保留天数
+# 〔2026-10-30 · 治「D 盘一周吃近 1T」〕**200 份 → 10 份**。
+# 口径来自用户原话：「快照库就是备份，只留最近一次就够，保险一点最近 10 条也够」。
+# 原来 200 份 × 单份 8.7GB（work_027 实测）＝ **理论上限 1.7TB/work** ⇒ 无界。
+KEEP_BATCHES = int(os.environ.get("ECO_SNAPSHOT_KEEP_BATCHES") or 10)
+# 〔2026-10-30〕日备保留 **3 天**（原 7 天）：日备是**全量**（含留痕），
+# 单份就是整个会话的大小（work_027 实测 9.94GB）⇒ 留 7 天＝70GB。
+KEEP_DAILY_DAYS = int(os.environ.get("ECO_SNAPSHOT_KEEP_DAILY_DAYS") or 3)
+#: 同一 work 的日备**最多留几份**（按天留也可能攒出好几份大件）。
+KEEP_DAILY_COUNT = int(os.environ.get("ECO_SNAPSHOT_KEEP_DAILY_COUNT") or 3)
 # [5715 · 治理] 每 work 的快照**体积预算**（字节）。0＝不设闸。
-# 为什么要它：只按份数留 ⇒ 总量 = 200 × 单份体积，而单份体积随会话线性增长
-# （cards.db ＋ events ＋ sessions 全量复制）⇒ **总量无界**。
-# 实测本机快照库 50.8GB（work_018 18.0GB / work_025 29.6GB）——「只计数不计量」
-# 就是没有治理。默认 2GB/work：够回看几天的过程，又不会把盘吃穿。
-KEEP_BATCH_BYTES = 2 * 1024 * 1024 * 1024
+# 〔2026-10-30〕2GB → 20GB：产出收窄后单份约 0.9GB（work_027 实测：
+# cards.db 777MB ＋ facts.db 95MB ＋ 零碎）⇒ 10 份 ≈ 9GB ⇒
+# 2GB 的闸会把「10 份」砍成 2 份（与用户口径打架）。
+KEEP_BATCH_BYTES = int(os.environ.get("ECO_SNAPSHOT_KEEP_BYTES") or (20 * 1024 * 1024 * 1024))
+#: 〔2026-10-30〕**全库**体积预算（字节）。0＝不设闸。
+#: per-work 的闸管不住「很多 work 各自不大、加起来很大」（实测 70 个 work）。
+KEEP_TOTAL_BYTES = int(os.environ.get("ECO_SNAPSHOT_KEEP_TOTAL_BYTES") or (40 * 1024 * 1024 * 1024))
 
 #: 体积核算的频次（每 N 次修剪才算一次体积）——算体积要遍历批次目录，
 #: 每次快照都算会把快照路径拖慢（实测全量测试 173s → 280s+）。
 VOLUME_PRUNE_EVERY = 16
 _volume_counter = [0]
+
+#: 全库闸的核算频次（每 N 次修剪算一次全库体积）。
+GLOBAL_PRUNE_EVERY = 16
+_global_counter = [0]
 
 # 内容指纹去重：记录各 work 上次快照时的指纹，内容未变则跳过（避免重复拍同一状态）
 _FINGERPRINT_FILE = BASE_DIR / ".snapshot_fingerprints.json"
@@ -86,9 +135,18 @@ def _iter_work_log_files(wid: str) -> list[Path]:
         root = BASE_DIR / d / wid
         if not root.exists():
             continue
-        for p in root.rglob("*"):
-            if p.is_file() and _is_log_file(p):
-                out.append(p)
+        # 〔2026-10-30〕用 os.walk 并剪掉产物目录（spike/ 等）：rglob 会把
+        # work_027 的 504 个 spike 文件也走一遍 ⇒ 白枚举。
+        for sub in os.walk(root):
+            sub[1][:] = [x for x in sub[1] if x not in _SKIP_DIR_NAMES]
+            for name in sub[2]:
+                p = Path(sub[0]) / name
+                # 〔2026-10-30〕保留设备名（nul/…）不进日备：日备缺一个文件就
+                # **整份作废**（实测 daily_20261030 就是 0 字节＝被作废的）。
+                if _skip_snapshot_file(p):
+                    continue
+                if _is_log_file(p):
+                    out.append(p)
     return out
 
 
@@ -131,9 +189,17 @@ def _iter_state_files(work_id: str | None = None) -> list[Path]:
             continue
         for sub in os.walk(root):
             # 剪枝：留痕目录不进（它只追加、快照不拷它 ⇒ 枚举无意义）
-            sub[1][:] = [x for x in sub[1] if x not in _LOG_DIR_NAMES]
+            # 〔2026-10-30〕**再剪一剪**：与卡片状态无关的产物目录（spike/ 压测…）
+            # ——它们既不该被拷，也不该被枚举（work_027 的 spike/ 有 504 个文件）。
+            sub[1][:] = [x for x in sub[1]
+                         if x not in _LOG_DIR_NAMES and x not in _SKIP_DIR_NAMES]
             for name in sub[2]:
-                out.append(Path(sub[0]) / name)
+                p = Path(sub[0]) / name
+                # 〔2026-10-30〕保留设备名（nul/…）与备份副本（*.bak*）不拷：
+                # 前者一拷就 SameFileError（把整批打成「不完整」）⇒ 保留闸永关。
+                if _skip_snapshot_file(p):
+                    continue
+                out.append(p)
     return out
 
 
@@ -194,8 +260,13 @@ def _copy_protected_file(p: Path, dst: Path) -> None:
     - ``*.db``（卡片库）→ ``VACUUM INTO`` 产出一致副本；
     - ``*.db-wal`` / ``*.db-shm``（瞬态旁挂）→ 跳过（内容已由 VACUUM INTO 纳入；
       但它们仍参与 ``_fingerprint``，这样 WAL 下的写入也能被探测到）；
+    - 〔2026-10-30〕保留设备名（``nul``/…）与备份副本（``*.bak*``）→ 跳过
+      （枚举层已挡，这里兜底：``nul`` 一拷就 SameFileError ⇒ 整批被打成
+      「不完整」⇒ 保留闸永关 ⇒ 快照库涨到 705GB）；
     - 其余文件照旧 ``copy2``。
     """
+    if _skip_snapshot_file(p):
+        return
     if p.suffix == ".db":
         _vacuum_into(p, dst)
         return
@@ -301,7 +372,22 @@ def _safe_rmtree(p: Path) -> bool:
 
 
 def _batch_bytes(p: Path) -> int:
-    """一个批次目录的总体积（字节）。"""
+    """一个批次目录的总体积（字节）。
+
+    〔2026-10-30〕**先看 manifest 里记的字节数**（新批次都记）⇒ 不必遍历文件。
+    为什么要这条快路径：全库闸要跨 work 算总量，实测全库 4499 个批次、
+    705.61GB ⇒ 逐个 rglob 要几分钟（跑在快照线程里 ⇒ 卡住整个服务）。
+    老批次没有 ``bytes`` 字段 ⇒ 退回遍历（一次性代价）。
+    """
+    try:
+        mf = p.with_name(p.name + ".manifest.json")
+        if mf.is_file():
+            data = json.loads(mf.read_text("utf-8"))
+            n = data.get("bytes")
+            if isinstance(n, int) and n >= 0:
+                return n
+    except Exception:  # noqa: BLE001 manifest 坏了就当没记，退回遍历
+        pass
     total = 0
     try:
         for f in p.rglob("*"):
@@ -324,19 +410,26 @@ def _prune_batches(work_id: str, force: bool = False) -> int:
     每份 91.9MB / 151.4MB）⇒ 「只计数不计量」＝ 无治理。
     ⇒ 追加**体积闸**：每 work 的快照总量超过 KEEP_BATCH_BYTES 就从**最旧**的非日备
     批次开始删，直到回到预算内（日备是「每天一份」的兜底，不参与这个删法）。
+
+    〔2026-10-30 · 治「D 盘一周吃近 1T」〕三条改动：
+    1. **份数闸只数过程批次**（日备不占份数）——原来日备也算进份数。
+    2. **日备加份数上限**（KEEP_DAILY_COUNT）——只按天留也可能攒出好几份大件。
+    3. **体积闸照样不碰日备**（既有契约，见 test_disk_governance）。
     """
     wd = SNAPSHOT_ROOT / work_id
     if not wd.exists():
         return 0
-    batches = sorted([p for p in wd.iterdir() if p.is_dir()], key=lambda p: p.name)
+    all_dirs = sorted([p for p in wd.iterdir() if p.is_dir()], key=lambda p: p.name)
+    proc = [p for p in all_dirs if not p.name.startswith("daily_")]
+    dailies = [p for p in all_dirs if p.name.startswith("daily_")]
     removed = 0
-    if len(batches) > KEEP_BATCHES:
-        for p in batches[: len(batches) - KEEP_BATCHES]:
-            if p.name.startswith("daily_"):
-                continue
+    # ① 份数闸：过程批次只留最近 KEEP_BATCHES 份（**日备不占份数**）
+    if len(proc) > KEEP_BATCHES:
+        for p in proc[: len(proc) - KEEP_BATCHES]:
             if _safe_rmtree(p):
                 _drop_manifest(p)
                 removed += 1
+        proc = proc[len(proc) - KEEP_BATCHES:]
     # [5715 · 治理] 体积闸：总量超预算 ⇒ 从最旧的非日备批次开始删
     #
     # ⚠ 算体积要**遍历批次目录**（每个批次里是 cards.db/events/sessions 若干文件）
@@ -346,29 +439,30 @@ def _prune_batches(work_id: str, force: bool = False) -> int:
     if KEEP_BATCH_BYTES > 0:
         _volume_counter[0] += 1
         if force or _volume_counter[0] % VOLUME_PRUNE_EVERY == 0:
-            # 重算（上面可能已删过几份）
-            live = sorted([p for p in wd.iterdir() if p.is_dir()], key=lambda p: p.name)
-            sizes = {p: _batch_bytes(p) for p in live}
+            sizes = {p: _batch_bytes(p) for p in proc}
             total = sum(sizes.values())
-            for p in live:
+            for p in proc:
                 if total <= KEEP_BATCH_BYTES:
                     break
-                if p.name.startswith("daily_"):
-                    continue          # 日备不参与这个删法
                 if _safe_rmtree(p):
                     _drop_manifest(p)
                     total -= sizes.get(p, 0)
                     removed += 1
-    # 日备超期清理
+    # 日备超期清理（按天）＋ 份数上限
     cutoff = datetime.now(_CST).date() - timedelta(days=KEEP_DAILY_DAYS)
-    for p in batches:
-        if not p.name.startswith("daily_"):
-            continue
+    keep_daily: list[Path] = []
+    for p in dailies:
         try:
             d = datetime.strptime(p.name.replace("daily_", ""), "%Y%m%d").date()
         except Exception:
             continue
         if d < cutoff:
+            if _safe_rmtree(p):
+                removed += 1
+        else:
+            keep_daily.append(p)
+    if len(keep_daily) > KEEP_DAILY_COUNT:
+        for p in keep_daily[: len(keep_daily) - KEEP_DAILY_COUNT]:
             if _safe_rmtree(p):
                 removed += 1
     # 孤儿 manifest 清扫：批次目录没了、manifest 还在（失败批次会留下这种）
@@ -380,6 +474,44 @@ def _prune_batches(work_id: str, force: bool = False) -> int:
                 mf.unlink()
             except (Exception, SystemExit):  # noqa: BLE001 尽力而为
                 pass
+    return removed
+
+
+def _prune_total(force: bool = False) -> int:
+    """**全库**体积闸：整个快照库超过 KEEP_TOTAL_BYTES ⇒ 从最旧的非日备批次删。
+
+    〔2026-10-30 · 治「D 盘一周吃近 1T」〕per-work 的闸管不住「很多 work
+    各自不大、加起来很大」——实测 70 个 work、4499 个批次、705.61GB。
+    ⇒ 加一条**全库**闸：总量超预算 ⇒ 跨 work 从最旧批次开始删（批次名是时间戳
+    ⇒ 名字序＝时间序 ⇒ 「最旧」有唯一答案）。
+
+    体积用 manifest 里记的字节数（见 `_batch_bytes` 快路径）⇒ 跨 work 汇总很便宜。
+    """
+    if KEEP_TOTAL_BYTES <= 0 or not SNAPSHOT_ROOT.exists():
+        return 0
+    _global_counter[0] += 1
+    if not (force or _global_counter[0] % GLOBAL_PRUNE_EVERY == 0):
+        return 0
+    entries: list[tuple[Path, int]] = []
+    try:
+        for wd in SNAPSHOT_ROOT.iterdir():
+            if not wd.is_dir():
+                continue
+            for b in wd.iterdir():
+                if b.is_dir() and not b.name.startswith("daily_"):
+                    entries.append((b, _batch_bytes(b)))
+    except OSError:
+        return 0
+    entries.sort(key=lambda e: e[0].name)
+    total = sum(sz for _b, sz in entries)
+    removed = 0
+    for b, sz in entries:
+        if total <= KEEP_TOTAL_BYTES:
+            break
+        if _safe_rmtree(b):
+            _drop_manifest(b)
+            total -= sz
+            removed += 1
     return removed
 
 
@@ -531,8 +663,11 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
             # 〔5715 · 机制改造〕**只按「可变状态」算指纹**：
             # 只追加的留痕（events/sessions）变了**不触发**新批次
             # ⇒ 写操作再多，也不会把同一份历史反复抄 N 遍。
-            # 〔P26〕files 已来自剪枝遍历 ⇒ 全是「可变状态」⇒ 不必再分类。
-            state_paths = paths
+            # 〔2026-10-30 · 修基线红〕**在这里再分一次类**，不只信遍历的剪枝：
+            # 实测基线里 test_snapshot_mechanism 有两条是红的——遍历被绕过时，
+            # 留痕（events/sessions）混进「可变状态」⇒ 过程批次里出现留痕
+            # （过程批次的契约就是「只装可变状态」）。
+            state_paths, _walk_logs = _split_state_and_log(paths)
             log_paths: list[Path] = []
             fp = _fingerprint(state_paths)
             if fps.get(wid) == fp:
@@ -542,12 +677,19 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
             bdir = _batch_dir(wid, stamp)
             # 单文件失败不再中断整批：逐个拷，失败的记账，其余照拷
             failed: list[dict] = []
+            # 〔2026-10-30〕记下本批实际字节数（manifest 里存）⇒ 全库体积闸
+            # 不必再遍历文件（实测全库 4499 批遍历要几分钟）。
+            copied_bytes = 0
             # 〔5715 · 机制改造〕**过程批次只拷可变状态**（留痕交给日备）
             for p in state_paths:
                 rel = p.relative_to(BASE_DIR)
                 err = _copy_with_lock_retry(p, bdir / rel, wid)
                 if err is None:
                     total += 1
+                    try:
+                        copied_bytes += (bdir / rel).stat().st_size
+                    except OSError:
+                        pass
                 else:
                     failed.append(
                         {"work": wid, "file": str(rel), "stage": "batch",
@@ -559,6 +701,7 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
                 "mode": "state-only",
                 "created": stamp,
                 "reason": reason,
+                "bytes": copied_bytes,
                 "state_files": [p.relative_to(BASE_DIR).as_posix() for p in state_paths],
                 "omitted_log_files": [p.relative_to(BASE_DIR).as_posix() for p in log_paths],
                 "log_files_note": "只追加留痕未入本批；完整留痕见日备 daily_<日期>",
@@ -593,10 +736,19 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
                               for f in failed)[:800])
             else:
                 # 只有**整批完整**才置指纹：缺文件的批次不许被当成完整批次
-                # 而永久跳过（下次照常重试这批）；修剪同理。
+                # 而永久跳过（下次照常重试这批）。
                 fps[wid] = fp
-                _prune_batches(wid)
+            # 〔2026-10-30 · 治「D 盘一周吃近 1T」〕**修剪与批次完整性解耦**：
+            # 原来「整批完整才修剪」⇒ 一个 0 字节的 `nul` 野文件就让**每一批**都
+            # 不完整 ⇒ 200 份 / 2GB 两条保留闸**永久失效** ⇒ 实测快照库涨到
+            # 705.61GB（work_027 一个 work 969 批 / 694.38GB）。
+            # ⇒ 修剪只看**保留策略**（份数/体积/日备），与这批完整与否无关；
+            # 失败的批次照旧**不置指纹** ⇒ 下次照常重试（既有契约不变）。
+            _prune_batches(wid)
 
+        # 〔2026-10-30〕**全库**体积闸（跨 work 收口）：per-work 的闸管不住
+        # 「很多 work 各自不大、加起来很大」（实测 70 个 work / 705.61GB）。
+        _prune_total()
         _save_fingerprints(fps)
         result.update({"ok": True, "work_id": ",".join(groups.keys()),
                        "files": total, "dir": str(SNAPSHOT_ROOT / stamp),

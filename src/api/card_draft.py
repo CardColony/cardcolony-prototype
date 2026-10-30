@@ -7,7 +7,7 @@
 - draft：上下文 = 当前块现有内容（必带）+ 本卡对话相关段 + 上一版草稿 + 用户反馈。
   草稿只存内存/会话态、不落盘；返回 {draft, base_hash}。
 - commit：base_hash 与卡内该块当前 hash 不一致 → 拒绝、卡面零改动；
-  一致则 card_store.update_card 整块替换（requirements 经 rulings 键落盘、
+  一致则 card_store.update_card 整块替换（requirements 经 requirements 键落盘、
   status 经 status_block 键）；随后 shadow_store.append_to_section 往
   ## 迭代历史 记一行（时间、按钮类型、旧/新块 hash、反馈轮数）。
 
@@ -51,11 +51,11 @@ async def _is_rd_project(work_id: str) -> bool:
         return False
 
 
-async def _rename_rulings_to_requirements(work_id: str, card_id: str) -> None:
+async def _rename_requirements_to_requirements(work_id: str, card_id: str) -> None:
     """[已停用 · 卡片存储迁移 SQLite 2026-10-14] 原为「盘上区头修正」：
     rd_project 卡的第三块区头由「## 需求文档」改为「## 需求文档」。
 
-    库化后第三块是**一列**（``cards.rulings``），「叫什么名」由读侧按本树
+    库化后第三块是**一列**（``cards.requirements``），「叫什么名」由读侧按本树
     ``project_class`` 决定（``routes._apply_block_set``），盘上不再有区头可改
     ——本函数随之停用。**清理步删除**（见任务书 §七 第三步）。
     """
@@ -66,6 +66,8 @@ async def _rename_rulings_to_requirements(work_id: str, card_id: str) -> None:
 # draft/commit 命中占位符＝当空——模型从零起草，不照抄模板示例（D01【裁定】…）。
 _PLACEHOLDER_MARKERS = (
     "（本卡作用", "（当前状况快照", "（对本卡相关事项",
+    # [需求文档生命周期 2026-10-28] 需求文档块的骨架模板（新建卡自带这句）
+    "（本卡全部需求的确定版",
     "（日期·依据）", "（日期·死过什么）", "（暂无记录）",
 )
 
@@ -83,7 +85,7 @@ def _get_current_block(result: dict, kind: str) -> str:
     占位符当空——draft 从零起草、commit 以空块为比对基准（两侧同口径，hash 一致）。"""
     body = result.get("body") or {}
     if kind == "requirements":
-        raw = str(body.get("requirements") or body.get("rulings") or "")
+        raw = str(body.get("requirements") or body.get("requirements") or "")
     else:
         raw = str(body.get("status_block") or "")
     return "" if _is_placeholder(raw) else raw
@@ -242,10 +244,10 @@ async def commit(
     now = _now_iso()
     kind_label = _kind_label(kind, "rd_project" if await _is_rd_project(work_id) else "")
 
-    # 整块替换：requirements 经 rulings 键落盘（第三块存储键）、status 经 status_block。
+    # 整块替换：requirements 经 requirements 键落盘（第三块存储键）、status 经 status_block。
     # card_store.update_card 签名不变；使命键不在 updates 内。
     if kind == "requirements":
-        updates = {"rulings": draft}
+        updates = {"requirements": draft}
     else:
         updates = {"status_block": draft}
     history_note = f"用户确认写入{kind_label}块（draft→commit）"
@@ -255,7 +257,7 @@ async def commit(
 
     # [卡片存储迁移 SQLite 2026-10-14] rd_project 卡的第三块区头改名补丁**停用**：
     # 库内第三块是一列，「叫什么名」由读侧按本树 project_class 决定
-    # （routes._apply_block_set），不再需要改盘。原 _rename_rulings_to_requirements
+    # （routes._apply_block_set），不再需要改盘。原 _rename_requirements_to_requirements
     # 保留为停用占位，清理步删除。
 
     # 影子 ## 迭代历史 记一行（系统自动、不让模型写；复用 append_to_section）

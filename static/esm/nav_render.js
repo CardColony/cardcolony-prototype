@@ -23,9 +23,9 @@
  * 本次不 patch；规则写在这里，不散落任何调用点。
  */
 import { escapeHtml } from "./util.js?v=30";
-import { notify } from "./api.js?v=46";
-import { createRowModel } from "./row_model.js?v=33";
-import { createVirtualList } from "./nav_virtual.js?v=31";
+import { notify } from "./api.js?v=55";
+import { createRowModel } from "./row_model.js?v=34";
+import { createVirtualList } from "./nav_virtual.js?v=32";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=32";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
 import { projectAggregate, isProjectEmpty, cardInSnapshot } from "./nav_badge.js?v=30";
@@ -38,6 +38,9 @@ const SVG_FOLDER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" s
 const SVG_DOC = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 2.5h7L12.5 5v8A1.5 1.5 0 0 1 11 14.5H3A1.5 1.5 0 0 1 1.5 13v-9A1.5 1.5 0 0 1 3 2.5z"/><path d="M10 2.5V5h2.5"/></svg>';
 // [角色机制 5710] 角色卡图标：离树的观察者（人形），与作业卡区分。
 const SVG_ROLE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="5.2" r="2.4"/><path d="M3.2 13.6c.5-2.7 2.2-4 4.8-4s4.3 1.3 4.8 4"/></svg>';
+// [编程卡区分 2026-10-23 · 用户令「现在分不清」] 编程卡图标：代码尖括号。
+// 编程卡是**执行体**（干活的叶子），和项目卡（组织）、角色卡（盯梢）一眼要能分开。
+const SVG_CODER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4.5 2 8l3.5 3.5"/><path d="M10.5 4.5 14 8l-3.5 3.5"/></svg>';
 const SVG_DOTS = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>';
 // [用户 2026-10-15 ①] 新建子卡从 ⋯ 菜单取出，单列一个 ＋ 入口（悬停时 ⋯ 左移一位、＋ 落原位）
 const SVG_PLUS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.6v8.8"/><path d="M3.6 8h8.8"/></svg>';
@@ -59,7 +62,8 @@ function fmtRel(iso) {
 
 function cardTip(c) {
   // [B4/E2 既有口径] 活跃/分支活跃走 tooltip 三分列（行内不堆文字，定稿第 2 条）
-  return (c.card_type === "role" ? "〔角色〕" : "")
+  return (c.card_type === "role" ? "〔角色〕"
+          : c.card_type === "coder" ? "〔编程〕" : "")
     + escapeHtml(c.title)
     + (c.last_active_at ? `｜本卡活跃 ${fmtRel(c.last_active_at)}` : "｜无对话")
     + (c.branch_active_at ? `｜分支活跃 ${fmtRel(c.branch_active_at)}` : "");
@@ -110,6 +114,8 @@ export function createNavRenderer(deps) {
     if (row.kind === "project") return buildProjectEl(row);
     // [职能入口 2026-10-22] 职能不是卡（不进 cards 表），行结构另立。
     if (row.kind === "function") return buildFunctionEl(row);
+    // [评审入口 2026-10-29] 评审卡也不是卡（离树、不进 cards 表）。
+    if (row.kind === "review") return buildReviewEl(row);
     return buildCardEl(row);
   }
 
@@ -153,8 +159,7 @@ export function createNavRenderer(deps) {
     return el;
   }
 
-  /* [用户 2026-10-15 ①] 行尾槽＝时间/转圈（状态）＋ ⋯、＋（悬停操作）。
-   * 悬停时 ⋯ 左移一个身位、＋ 落在 ⋯ 原来的位置（＝行尾/时间原位）——CSS 用绝对定位
+  /* [用户 2026-10-15 ①] 行尾槽＝时间/转圈（状态）＋ ⋯、＋（悬停操作）。   * 悬停时 ⋯ 左移一个身位、＋ 落在 ⋯ 原来的位置（＝行尾/时间原位）——CSS 用绝对定位
    * 把两枚图标压在状态区上方（right:20px / right:0），所以悬停不改变行宽、不挤标题。
    * plusKind："child"＝在卡下建子卡（data-newchild）；"card"＝在项目下新建卡（data-add，
    * 复用既有委托分支 handleProjectAdd）。两种只差一个 data 属性，视觉完全一致。 */
@@ -268,6 +273,17 @@ export function createNavRenderer(deps) {
       badge.textContent = "角色";
       el.appendChild(ico);
       el.appendChild(badge);
+    } else if (c.card_type === "coder") {
+      // [编程卡区分 2026-10-23] 编程卡＝执行体（干活的叶子）：代码图标 + 橙色行 + 「编程」徽标。
+      // 与项目卡（组织、蓝色文档图标）、角色卡（盯梢、金色人形）三色三分，扫一眼就分开。
+      el.classList.add("nav-coder");
+      ico.classList.add("coder");
+      ico.innerHTML = SVG_CODER;
+      const badge = document.createElement("span");
+      badge.className = "nav-coder-badge";
+      badge.textContent = "编程";
+      el.appendChild(ico);
+      el.appendChild(badge);
     } else {
       el.appendChild(ico);
     }
@@ -279,6 +295,43 @@ export function createNavRenderer(deps) {
     el.__tail = tail;
     el.appendChild(tail);
     patchCardContent(el, row);
+    return el;
+  }
+
+  /* [评审入口 2026-10-29 · 用户令「左侧列表页临时出入口」]
+     有**进行中批次**的评审卡在左栏占一行（收口即消失，不留常驻入口）。
+     · 不可展开、无 ⋯ 菜单（它不是卡，不能删/改名）；
+     · 点击＝打开评审卡对话页（data-review 交给 nav_system 委托）；
+     · 行尾显示 `通过数/总数`——左栏一眼看出这场评审走到哪了。 */
+  function buildReviewEl(row) {
+    const r = row.card;
+    const el = document.createElement("div");
+    el.className = "nav-rvrow";
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.dataset.review = r.review_card_id || "";
+    el.dataset.rwid = row.wid || "";
+    el.title = `评审 · ${r.target_title || r.target || ""}（${r.passed || 0}/${r.total || 0}）· 点击进入`;
+    el.style.paddingLeft = indentOf(row.depth) + "px";
+    const segs = document.createElement("div");
+    segs.className = "nav-segs";
+    el.appendChild(segs);
+    const ico = document.createElement("span");
+    ico.className = "nav-ico rv";
+    ico.innerHTML = SVG_DOC;
+    el.appendChild(ico);
+    const badge = document.createElement("span");
+    badge.className = "nav-rv-badge";
+    badge.textContent = "评审";
+    el.appendChild(badge);
+    const title = document.createElement("span");
+    title.className = "nav-ctitle";
+    title.textContent = r.target_title || r.target || "评审";
+    el.appendChild(title);
+    const cnt = document.createElement("span");
+    cnt.className = "nav-rv-count";
+    cnt.textContent = `${r.passed || 0}/${r.total || 0}`;
+    el.appendChild(cnt);
     return el;
   }
 
@@ -317,6 +370,17 @@ export function createNavRenderer(deps) {
        `el.style.top` 就不再被设置**，全部堆在旧位置 —— 表现就是「职能一多就叠在
        一起」。职能行内容不常变（名字/状态），直接跳过 patch，只同步两个类。 */
     if (row.kind === "function") {
+      el.classList.toggle("current", false);
+      el.classList.toggle("nav-last", !!row.lastInProject);
+      return true;
+    }
+    /* [评审行 2026-10-29 · 同一个坑] 评审行是 buildReviewEl 自建的结构
+       （__segs / __badge / __count），没有 __chev / __tail；落到下面的
+       patchCardContent 会抛 TypeError，而 patch 在 reslice 循环里逐行调
+       ⇒ 一行抛错，后面所有行的 top 就不再设置（表现：左栏只剩第一个项目、
+       父卡行消失、评审少几条——全是同一个断点）。这里同职能行一样跳过 patch，
+       只同步两个类。 */
+    if (row.kind === "review") {
       el.classList.toggle("current", false);
       el.classList.toggle("nav-last", !!row.lastInProject);
       return true;
@@ -497,6 +561,14 @@ export function createNavRenderer(deps) {
       if (!store.prefs.getProjectOpen(p.work_id)) continue;
       const start = rows.length;
       pushSegment(rows, p.work_id, "", 0, new Set(), []);
+      // [评审入口 2026-10-29] 有进行中批次的评审卡——临时入口，收口即消失。
+      // 排在卡列表之后、职能之前：它跟着"事"走，不是"人"。
+      for (const r of (p.reviews || [])) {
+        if (!r || !r.review_card_id) continue;
+        rows.push(createRowModel(r, store, {
+          kind: "review", depth: 0, wid: p.work_id,
+        }));
+      }
       // [职能入口 2026-10-22] 职能不进 cards 表 ⇒ 单独一段，排在全部卡之后。
       for (const f of (p.functions || [])) {
         if (!f || !f.function_id) continue;

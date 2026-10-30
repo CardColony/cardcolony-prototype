@@ -159,24 +159,30 @@ async def test_s2_append_semantics_v2(work):
 
 
 async def test_s2_append_upgrades_v1(work):
-    """4.8 现场升格：V1 文件被追加→先转 V2（逐块一一对应），五键语义等价。"""
+    """4.8 现场升格：V1 文件被追加→先转 V2（逐块一一对应），五键语义等价。
+
+    [2026-10-27 · 写入路径统一] `session_store.append_message` 已改为委托门面
+    （直接写 V2）⇒ 想造 V1 文件必须**手工写样本**，不能再靠它。
+    """
     cid = await _mkcard(work)
-    await session_store.append_message(work["work_id"], cid, "user", "旧问一", pair_id="p1")
-    await session_store.append_message(work["work_id"], cid, "assistant", "旧答一",
-                                       model="m0", pair_id="p1")
+    _sess(work, cid).write_text(_sample("v1_legal.md"), encoding="utf-8")
     before = _five_keys(await session_store.read_session(work["work_id"], cid))
+    n = len(before)
     blk = await session_facade.append(work["work_id"], cid,
                                       {"role": "user", "content": "新问二"})
-    assert blk["seq"] == 2 and blk["turn"] == 1 and blk["pair"] == "2"
+    assert blk["seq"] == n                       # 新块接在 V1 最后一块之后
     blocks = await session_facade.read(work["work_id"], cid)
-    assert len(blocks) == 3
-    assert _five_keys(blocks[:2]) == before  # 升格后旧块五键等价（uuid 在内）
-    assert blocks[0]["pair_id"] == "p1" and blocks[1]["pair_id"] == "p1"  # uuid 跨升格存活
-    assert "pair_id" in blocks[0]["unknown_fields"]  # 经 T063 前向兼容通道（S6b 衔接桥）
+    assert len(blocks) == n + 1
+    # 升格会按块序**补 pair_id**（V1 块本无该行）⇒ 只比四键，不比 pair_id。
+    def _four(bs):
+        return [{k: b.get(k) for k in ("role", "content", "timestamp", "model")}
+                for b in bs]
+    assert _four(blocks[:n]) == _four(before)
     hdr = await session_facade.read_header(work["work_id"], cid)
     assert hdr["version"] == 2
     text = _sess(work, cid).read_text(encoding="utf-8")
-    assert text.startswith("---SESSION---") and text.count("---END---") == 3
+    assert text.startswith("---SESSION---")
+    assert text.count("---END---") == n + 1
 
 
 async def test_s2_scan_tail(work):

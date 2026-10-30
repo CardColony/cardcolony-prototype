@@ -66,7 +66,17 @@ _CARD_COLUMNS: tuple[str, ...] = (
     "project_class", "owner_card_id", "state", "tags", "links", "relations",
     "session_ref", "toolcard_script", "toolcard_step", "toolcard_round",
     "toolcard_final", "thinkchain_final", "perms", "perms_version",
-    "created_at", "updated_at", "mission", "status_block", "rulings",
+    # [能力底座 2026-10-30] 模式 code（manual / auto / 未来第三种）＋ 这张卡挂了
+    # 哪些能力（能力清单的 code 数组）。工具面从此按 mode→能力上限 ∩ abilities 算。
+    "mode", "abilities",
+    "created_at", "updated_at", "mission", "status_block", "requirements",
+    # [需求文档生命周期 2026-10-28 · 用户令] 需求文档分草稿/正稿两版：
+    #   requirements        ＝**正稿**（所有人可读，作为验收判据）
+    #   requirements_draft  ＝**草稿**（本卡私有，不进 read_card、不进别人的上下文）
+    #   requirements_state  ＝ ""（没写过）/ draft / in_review / approved
+    "requirements_draft", "requirements_state",
+    # [harness 提示词注入 2026-10-28] 待注入队列（JSON 数组文本）
+    "pending_inject",
     # [自动模式 2026-10-17 · 回灌 5700 块0.1] 四列进 meta 管线（insert/update/
     # row_to_meta 都走本清单）——不进则写了不落、读了不带，驱动器/工具/权限全挂。
     "auto_mode", "goal", "goal_state", "goal_rounds", "goal_await_children",
@@ -80,11 +90,13 @@ _CARD_COLUMNS: tuple[str, ...] = (
 
 # 以小 JSON 文本存的列（短列表 / 小字典，不拆表——方案 §1.3.4）
 _JSON_COLUMNS: frozenset[str] = frozenset(
-    {"tags", "links", "relations", "toolcard_final", "thinkchain_final", "perms"}
+    {"tags", "links", "relations", "toolcard_final", "thinkchain_final", "perms",
+     # [能力底座 2026-10-30] 挂载的能力 code 数组
+     "abilities"}
 )
 
 # 正文块（不进 meta）
-_BODY_COLUMNS: tuple[str, ...] = ("mission", "status_block", "rulings")
+_BODY_COLUMNS: tuple[str, ...] = ("mission", "status_block", "requirements")
 
 # 列表型 JSON 列的空值（旧渲染恒写 []，读侧恒给 []）
 _JSON_LIST_COLUMNS: frozenset[str] = frozenset({"tags", "links", "relations"})
@@ -111,11 +123,15 @@ CREATE TABLE IF NOT EXISTS cards (
     thinkchain_final TEXT,
     perms            TEXT,
     perms_version    INTEGER,
+    mode             TEXT,
+    abilities        TEXT,
     created_at       TEXT,
     updated_at       TEXT,
     mission          TEXT,
     status_block     TEXT,
-    rulings          TEXT,
+    requirements     TEXT,
+    requirements_draft TEXT,
+    requirements_state TEXT,
     pos_x            REAL,
     pos_y            REAL,
     pinned           INTEGER DEFAULT 0,
@@ -123,6 +139,8 @@ CREATE TABLE IF NOT EXISTS cards (
     goal             TEXT,
     goal_state       TEXT,
     goal_rounds      INTEGER DEFAULT 0,
+    -- [harness 提示词注入 2026-10-28] 待注入队列（JSON 数组文本）：装配时读出拼入、用完清空
+    pending_inject   TEXT,
     -- [6702 移植 2026-10-17 · 等子卡恢复] 纯**意图**标志位（0/1）：
     --   语义＝「本卡**自己**声明 pause 是在等子卡」，不是「不做了」。
     --   存在理由：``goal_state=paused`` 本身**不可区分**「模型等子卡」与
@@ -131,7 +149,13 @@ CREATE TABLE IF NOT EXISTS cards (
     -- [6702 移植 2026-10-17 · 等子卡活锁兜底] 恢复轮**唤醒事实**计数器：
     --   每被唤醒（子卡完工触发 wake）一次 +1；用于「空 wake 活锁」机械兜底——
     --   第 _AWAIT_RESUME_DEADLOCK_GIVEUP 次仍无子卡进度则放弃等子卡自动恢复。
-    goal_await_wakes INTEGER DEFAULT 0
+    goal_await_wakes INTEGER DEFAULT 0,
+    -- [伴生评审卡 2026-10-27] 评审卡指向它服务的子卡；非评审卡为空。
+    -- 评审卡不设 parent（离树），靠这一列与子卡配对，一对一。
+    review_of        TEXT,
+    -- [伴生评审卡 2026-10-27] 当前批次状态（JSON：batch/draft/criteria/focus/opened_at）。
+    -- 只是"当前态"，历史批次在事件流与 review_approvals 里。
+    review_state     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent);
 CREATE INDEX IF NOT EXISTS idx_cards_type   ON cards(card_type);
@@ -154,7 +178,8 @@ CREATE TABLE IF NOT EXISTS shadows (
     progress      TEXT,
     coordination  TEXT,
     artifacts     TEXT,
-    iterations    TEXT
+    iterations    TEXT,
+    note          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_shadows_work ON shadows(work_id);
 
@@ -305,6 +330,30 @@ _MESSAGES_DDL: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_messages_work   ON messages(work_id, seq)",
 )
 
+# ===========================================================================
+# 评审通过记录（[伴生评审卡 2026-10-27]）
+#
+# 一行＝某角色在某批次上的一次 `approve`。**版本绑定**（P3）：通过只对
+# (draft_ver, criteria_ver) 有效；草稿或判据一变，旧行即失效——判据不删行，
+# 查时比对版本，这样"谁在什么版本上通过过"永久可查（可翻案）。
+#
+# 撤销＝`revoked=1`（软删，不删行）。一个角色一个批次一行：重评即覆盖本行。
+# ===========================================================================
+_REVIEW_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS review_approvals (
+    work_id      TEXT NOT NULL,
+    batch_id     TEXT NOT NULL,
+    role_id      TEXT NOT NULL,
+    draft_ver    INTEGER NOT NULL DEFAULT 0,
+    criteria_ver INTEGER NOT NULL DEFAULT 0,
+    ts           TEXT DEFAULT '',
+    revoked      INTEGER DEFAULT 0,
+    PRIMARY KEY (work_id, batch_id, role_id)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_review_appr_batch"
+    " ON review_approvals(work_id, batch_id)",
+)
+
 
 def _migrate_inbox_to_messages(conn: sqlite3.Connection) -> int:
     """把旧 inbox 表的行搬进 messages（幂等）。返回本次搬运行数。
@@ -405,6 +454,34 @@ _TRASH_DDL: tuple[str, ...] = (
     payload     TEXT NOT NULL
 )""",
     "CREATE INDEX IF NOT EXISTS idx_trash_work ON trash(work_id)",
+)
+
+
+# ===========================================================================
+# [卡面版本 2026-10-24 · 用户令「加历史版本记录，让模型操作失误后找回」]
+# 每次正文写入**之前**，把被改动的那一块的**旧值**存一行。
+#
+# 与 card_history 的分工（两张表同一次事务里写，互不替代）：
+#   card_history   ＝「谁在什么时候改了什么」——一句话流水账，界面展示用；
+#   card_revisions ＝「改之前那块长什么样」——内容快照，**回退用**。
+#
+# 触发：只在 `card_store.update_card` 里记（所有正文写入的唯一门）。
+# 只存**变了的块**：一次只动现状就只存一行现状旧值，不复制未动块。
+# 保留：每卡最近 `_REVISION_KEEP` 个版本，超了删最旧（防 63KB×N 撑爆库）。
+# ===========================================================================
+_REVISION_KEEP = 20
+
+_REVISIONS_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS card_revisions (
+    card_id  TEXT NOT NULL,
+    version  INTEGER NOT NULL,
+    ts       TEXT NOT NULL,
+    block    TEXT NOT NULL,
+    content  TEXT NOT NULL,
+    note     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (card_id, version, block)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_rev_card ON card_revisions(card_id, version DESC)",
 )
 
 
@@ -527,6 +604,7 @@ _FUNCTION_DDL: tuple[str, ...] = (
     escalation      TEXT NOT NULL DEFAULT '{}',
     duty            TEXT NOT NULL DEFAULT '{}',
     charter         TEXT NOT NULL DEFAULT '{}',
+    abilities       TEXT NOT NULL DEFAULT '[]',
     created_at      TEXT,
     updated_at      TEXT
 )""",
@@ -851,6 +929,12 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     # （照 POSITION_COLUMNS 的 pinned 先例：「没写过」与「没开」/「没跑过」是
     # 同一件事）；目标文本两列不带 DEFAULT——「没有目标」不是空串是 NULL。
     ("cards", "auto_mode", "auto_mode INTEGER DEFAULT 0"),
+    # [需求文档生命周期 2026-10-28] 草稿列与状态列（老库靠这一步补上）
+    ("cards", "requirements_draft", "requirements_draft TEXT"),
+    ("cards", "requirements_state", "requirements_state TEXT"),
+    # [能力底座 2026-10-30] 模式与能力挂载（老库靠这一步补上）
+    ("cards", "mode", "mode TEXT"),
+    ("cards", "abilities", "abilities TEXT"),
     ("cards", "goal", "goal TEXT"),
     ("cards", "goal_state", "goal_state TEXT"),
     ("cards", "goal_rounds", "goal_rounds INTEGER DEFAULT 0"),
@@ -860,6 +944,10 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     # [6702 移植 2026-10-17] 等子卡活锁兜底。唤醒计数器带 DEFAULT 0（存量行取
     # 0＝「没被唤醒过」），与 goal_rounds 同口径。
     ("cards", "goal_await_wakes", "goal_await_wakes INTEGER DEFAULT 0"),
+    # [harness 提示词注入 2026-10-28 · 用户定义第三种手段] 待注入队列：
+    # JSON 数组，每条是一段要拼进下一轮上下文的话。装配时读出、拼入、清空。
+    # 与「消息」的区别：消息进会话历史（永久），注入只影响下一次，不留痕。
+    ("cards", "pending_inject", "pending_inject TEXT"),
     # [goal 域 2026-10-20] 事件溯源的投影列（见 _CARD_COLUMNS 处说明）。
     ("cards", "goal_id", "goal_id TEXT DEFAULT ''"),
     ("cards", "goal_revision", "goal_revision INTEGER DEFAULT 0"),
@@ -868,6 +956,12 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     ("cards", "goal_updated_at", "goal_updated_at INTEGER DEFAULT 0"),
     ("cards", "goal_blocked_code", "goal_blocked_code TEXT DEFAULT ''"),
     ("cards", "goal_blocked_message", "goal_blocked_message TEXT DEFAULT ''"),
+    # [伴生评审卡 2026-10-27] 内容列，不带 DEFAULT（照红 2：存量卡该列为 NULL
+    # ⇒ 读侧归一成空串 ⇒ 非评审卡）。评审卡不设 parent，靠本列与子卡一对一配对。
+    ("cards", "review_of", "review_of TEXT"),
+    ("cards", "review_state", "review_state TEXT"),
+    # [卡片笔记 2026-10-27] 影子第五列：卡自己的私密笔记。
+    ("shadows", "note", "note TEXT"),
 )
 
 
@@ -884,6 +978,10 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
 #    旧 relations 当成「新列已存在」而漏补）。
 # 3. 只改表结构：行数据随列搬迁，零读写（SQLite ``RENAME COLUMN`` 语义）。
 _COLUMN_RENAMES: tuple[tuple[str, str, str], ...] = (
+    # [需求文档正名 2026-10-28 · 用户令「ruling 这个词就不对，全部重新对齐需求文档」]
+    # 第三块本树叫「需求文档」，列名却一直沿用旧时代「裁定」的 requirements。
+    # 老库首次连接时自动改名（幂等：有旧列且无新列才动），新库走 _SCHEMA 直接是新列。
+    ("cards", "rulings", "requirements"),
     ("cards", "relations", "links"),
 )
 
@@ -923,6 +1021,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_columns(conn)
     _drop_columns(conn)
     _ensure_tables(conn)
+    _backfill_requirements_state(conn)
 
 
 def _rename_columns(conn: sqlite3.Connection) -> None:
@@ -943,6 +1042,31 @@ def _rename_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
 
 
+def _backfill_requirements_state(conn: sqlite3.Connection) -> None:
+    """存量卡认定：已有需求文档内容、但没有状态位的卡 ⇒ 视为**正稿**（approved）。
+
+    [需求文档生命周期 2026-10-28] 新流程要求「有正稿才允许派工／才点火」。
+    存量卡是在草稿/正稿机制之前写的，若按新规则一律算「无正稿」，整棵树会立刻瘫痪
+    （15 张子卡全部失去派工权）。故一次性认定，**只认定内容已存在且状态为空的行**，
+    幂等：跑过一次之后没有行再满足条件。
+
+    只动 `requirements_state` 一列，不碰正文，不写历史。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT count(*) FROM cards WHERE COALESCE(requirements,'')<>'' "
+            "AND COALESCE(requirements_state,'')=''").fetchone()
+        n = int(rows[0] or 0) if rows else 0
+        if n:
+            conn.execute(
+                "UPDATE cards SET requirements_state='approved' "
+                "WHERE COALESCE(requirements,'')<>'' "
+                "AND COALESCE(requirements_state,'')=''")
+            logger.info("需求文档状态回填：%s 张存量卡认定为正稿", n)
+    except sqlite3.OperationalError as exc:  # 老库还没补列
+        logger.debug("需求文档状态回填跳过（列未就绪）：%s", exc)
+
+
 def _ensure_tables(conn: sqlite3.Connection) -> None:
     """幂等补建**后续新增**的表（如 inbox）。
 
@@ -959,6 +1083,8 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
     for ddl in _TRASH_DDL:
         conn.execute(ddl)
+    for ddl in _REVISIONS_DDL:
+        conn.execute(ddl)
     for ddl in _ROLE_DDL:
         conn.execute(ddl)
     for ddl in _FUNCTION_DDL:
@@ -968,8 +1094,17 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     # 旧 inbox 表**保留不删**——兜底与审计用，新代码只读写 messages。
     for ddl in _MESSAGES_DDL:
         conn.execute(ddl)
+    for ddl in _REVIEW_DDL:
+        conn.execute(ddl)
+    # [三线边表 2026-10-27] 建三张线表 + 从 cards 字段幂等搬迁（只读字段、只写新表）
+    for ddl in _EDGES_DDL:
+        conn.execute(ddl)
+    _migrate_edges_from_cards(conn)
+    # [三线拆开关 2026-10-27] 存量卡补 link_rel/unlink_rel（只加不减）
+    _ensure_link_rel_perm(conn)
     _migrate_inbox_to_messages(conn)
     _ensure_role_columns(conn)
+    _ensure_function_columns(conn)
 
 
 def _ensure_role_columns(conn: sqlite3.Connection) -> None:
@@ -1001,6 +1136,25 @@ def _ensure_role_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE role_alarms ADD COLUMN {name} {ddl}")
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _ensure_function_columns(conn: sqlite3.Connection) -> None:
+    """function_profiles 的增量列（既有库幂等补列）。
+
+    [能力清单 2026-10-30] ``abilities``：这张职能卡挂了哪些能力（code 数组）。
+    空数组＝没挂＝工具面按既有路径走（清单未生效，行为零变化）。
+    """
+    try:
+        cols = {str(r["name"]) for r in conn.execute(
+            "PRAGMA table_info(function_profiles)").fetchall()}
+    except Exception:  # noqa: BLE001 表还没建出来 ⇒ 建表语句已带该列
+        return
+    if "abilities" not in cols:
+        try:
+            conn.execute(
+                "ALTER TABLE function_profiles ADD COLUMN abilities TEXT NOT NULL DEFAULT '[]'")
+        except Exception:  # noqa: BLE001 并发首建时可能已加
+            pass
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -1145,6 +1299,15 @@ def _read_sync(work_id: str, fn: Callable[[sqlite3.Connection], Any], default: A
         ) from exc
 
 
+def write_sync(work_id: str, fn: Callable[[sqlite3.Connection], Any]) -> Any:
+    """**同步**写（供必须保持同步签名的装配链用，如取走待注入队列）。
+
+    [harness 提示词注入 2026-10-28] 上下文装配链（build_ctx）是同步签名，
+    而「取走待注入」是读+清空的写操作；为此暴露这一条，与 read_sync 同量级。
+    """
+    return _write_sync(work_id, fn)
+
+
 def read_sync(work_id: str, fn: Callable[[sqlite3.Connection], Any],
               default: Any = None) -> Any:
     """**同步**只读（供必须保持同步签名的公开接口，如 iter_card_metas）。
@@ -1266,6 +1429,82 @@ def append_history(conn: sqlite3.Connection, card_id: str, line: str,
     )
 
 
+# ---------------------------------------------------------------------------
+# [卡面版本 2026-10-24] 正文块历史版本原语（表结构见 _REVISIONS_DDL）
+# ---------------------------------------------------------------------------
+_BODY_BLOCKS: tuple[str, ...] = ("mission", "status_block", "requirements")
+
+
+def append_revisions(conn: sqlite3.Connection, card_id: str, ts: str, note: str,
+                     old_blocks: dict[str, str],
+                     new_blocks: dict[str, str]) -> Optional[int]:
+    """把**变了的块**的旧值存成一个新版本；无变化返 ``None``（不占版本号）。
+
+    一次改动共用一个 version（多块同时变就多行）。旧值＝调用方读到的 row 值，
+    即「这次改动之前那块长什么样」——回退到 version N 就是回到那次改动**之前**。
+    """
+    changed = {
+        b: (old_blocks.get(b) or "")
+        for b in _BODY_BLOCKS
+        if (old_blocks.get(b) or "") != (new_blocks.get(b) or "")
+    }
+    if not changed:
+        return None
+    row = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) AS m FROM card_revisions WHERE card_id = ?",
+        (card_id,),
+    ).fetchone()
+    ver = int(row["m"]) + 1
+    for block, content in changed.items():
+        conn.execute(
+            "INSERT INTO card_revisions (card_id, version, ts, block, content, note) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (card_id, ver, ts, block, content, note or ""),
+        )
+    # 保留最近 N 版：删掉 version <= 当前-keep 的（同事务，幂等）
+    conn.execute(
+        "DELETE FROM card_revisions WHERE card_id = ? AND version <= ?",
+        (card_id, ver - _REVISION_KEEP),
+    )
+    return ver
+
+
+def list_revisions(conn: sqlite3.Connection, card_id: str,
+                   limit: int = _REVISION_KEEP) -> list[dict[str, Any]]:
+    """版本列表（version 倒序）：每项 ``{version, ts, note, blocks, sizes}``。
+
+    只给**摘要**（各块字节数），不搬全文——列版本不该把 63KB 拉进上下文。
+    要拿内容走 ``get_revision``（回退时内部用）。
+    """
+    rows = conn.execute(
+        "SELECT version, ts, block, length(content) AS n, note FROM card_revisions "
+        "WHERE card_id = ? ORDER BY version DESC, block",
+        (card_id,),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    by_ver: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        v = int(r["version"])
+        e = by_ver.get(v)
+        if e is None:
+            e = {"version": v, "ts": r["ts"], "note": r["note"], "blocks": [], "sizes": {}}
+            by_ver[v] = e
+            out.append(e)
+        e["blocks"].append(r["block"])
+        e["sizes"][r["block"]] = int(r["n"])
+    return out[:limit]
+
+
+def get_revision(conn: sqlite3.Connection, card_id: str,
+                 version: int) -> dict[str, str]:
+    """某版本存下的块内容 ``{block: 旧值}``；版本不存在返空 dict。"""
+    rows = conn.execute(
+        "SELECT block, content FROM card_revisions WHERE card_id = ? AND version = ?",
+        (card_id, version),
+    ).fetchall()
+    return {r["block"]: r["content"] for r in rows}
+
+
 def _line_ts(line: str) -> Optional[str]:
     """从历史行里抽 ``[<ts>]``（好查用；无消费方依赖，抽不到给 NULL）。"""
     start = line.find("[")
@@ -1297,6 +1536,9 @@ SHADOW_SECTIONS: dict[str, str] = {
     "## 进度": "progress",
     "## 待协作事项": "coordination",
     "## 产物清单": "artifacts",
+    # [卡片笔记 2026-10-27 · 用户令] 第五区：卡自己的私密笔记。
+    # 常驻 150 区；**别的卡读不到**（`read_via` 的影子分支剥掉它）。
+    "## 笔记": "note",
     "## 迭代历史": "iterations",
 }
 
@@ -1365,12 +1607,29 @@ def set_meta_value(conn: sqlite3.Connection, key: str, value: Any) -> None:
 
 
 def next_seq(conn: sqlite3.Connection) -> int:
-    """发下一个卡号（不落盘；由调用方与建卡同事务写回）。"""
+    """发下一个卡号（不落盘；由调用方与建卡同事务写回）。
+
+    [编号脱节修复 2026-10-25 · work_027 建子卡 UNIQUE 冲突] 取
+    ``max(meta.seq, 库内实际最大 card_NNN) + 1``，**不再只信 meta.seq**。
+
+    为什么：``create_card`` 支持调用方**强制指定 card_id**（复活归档卡
+    ``coder_fold.unarchive_coder``、建职能卡 ``create_function`` 的 fn 号段）。
+    那条路 id 不按 seq 走，seq 只按「建了几张」前进 ⇒ 一旦某张强制 id 用了
+    比 seq 大的号，seq 就落后于实际最大号；此后正常发号会发到一个**已存在**
+    的号上，建卡直接 ``UNIQUE constraint failed: cards.card_id``。
+    以实际最大号兜底后，两条路径不再脱节（代价：一次 MIN/MAX 扫描，走主键）。
+    """
     raw = get_meta_value(conn, "seq", "0")
     try:
-        return int(raw) + 1
+        base = int(raw)
     except (TypeError, ValueError):
-        return 1
+        base = 0
+    row = conn.execute(
+        "SELECT MAX(CAST(SUBSTR(card_id, 6) AS INTEGER)) AS m FROM cards "
+        "WHERE card_id LIKE 'card_%'"
+    ).fetchone()
+    top = int((row["m"] if row is not None else 0) or 0)
+    return max(base, top) + 1
 
 
 
@@ -1532,6 +1791,39 @@ async def list_pending(work_id: str, target_card_id: str) -> list[dict[str, Any]
     return out or []
 
 
+def take_pending_in_tx(conn: sqlite3.Connection, work_id: str,
+                       target_card_id: str) -> list[dict[str, Any]]:
+    """事务内取走待处理消息：读出 + 把水位推到本批最大 seq。"""
+    pending = select_pending(conn, work_id, target_card_id)
+    if pending:
+        mx = max(int(it.get("seq") or 0) for it in pending)
+        set_msg_seen_seq(conn, work_id, target_card_id, mx)
+    return pending
+
+
+async def take_pending(work_id: str, target_card_id: str) -> list[dict[str, Any]]:
+    """**取走**该卡的待处理消息：同一写事务内「读出 + 推水位到本批最大 seq」。
+
+    [增量投递 2026-10-23 · 用户令「读过的信息就从 box 里清掉，存起来，让它不必
+    再读到」] 逻辑是增量：**投递即消费**。行不删（messages 表永久留档，可回溯），
+    只是水位越过它 ⇒ 下次只投递水位之后的新消息。
+
+    改前的问题（实测 work_025）：投递（deliver_now / K3）把 pending 全文拼进
+    prompt 却不推水位；而水位**只**在模型主动调 ``read_inbox(scope="unread")``
+    时推进（全仓唯一调用点 card_tools.py 的 advance_seen_seq）。模型在 prompt
+    里已经看到消息，没有理由再调 read_inbox ⇒ 水位永远不动 ⇒ 同一批被反复投递：
+      · 299 条永久 pending，17 张卡水位=0（从没调过 read_inbox）
+      · card_029 一次投递 46 条 / 82,720 字符 = prompt 的 98%
+      · 模型自己在会话里写「已是前一轮归档过的内容，无需重复处理」
+
+    原子性：读与推水位在同一个 BEGIN IMMEDIATE 写事务里 ⇒ 两个并发投递不会
+    拿到同一批各投一次。
+    """
+    out = await run_write(
+        work_id, lambda conn: take_pending_in_tx(conn, work_id, target_card_id))
+    return out or []
+
+
 async def list_inbox(work_id: str, target_card_id: Optional[str] = None) -> list[dict[str, Any]]:
     """列该 work 的全部消息行（**含 consumed**；库不存在／无记录 → 空列表）。
 
@@ -1564,3 +1856,302 @@ def read_rev(work_id: str) -> Optional[int]:
 
 async def read_rev_async(work_id: str) -> Optional[int]:
     return await asyncio.to_thread(read_rev, work_id)
+
+
+# ============================================================
+# [三线边表 2026-10-27 · 用户裁定] 三条线不再是卡上的字段，各建一张表。
+#
+# 用户原话：「所有的通信必须基于底层，而不是基于卡本身」「而且要三张表吧」。
+#
+# 为什么建表：
+#   · 反向查询（谁连了我／谁依赖我）原来是全表扫，建索引后 O(1)；
+#   · 删卡能自动清边，不再靠人调 unlink_*；
+#   · 图查询（环闭合率／自主连线率）有了数据基础。
+#
+# 为什么三张不是一张：**约束不同**。
+#   card_parent  —— 一张卡只能有一个父（主键即卡号，唯一性天然成立）
+#   card_links   —— 同 (from,to,type) 唯一，可多条，字段是 type/note
+#   card_relations —— 同 (from,to,kind) 唯一，可多条，字段是 kind/detail
+# 通用边表表达不了「唯一」，且字段会退化成 JSON。
+#
+# links 存**一行、双向可用**：现在 check_linked 的语义是「任一侧有就算有线」，
+# A 建线 B 能回话。存两行会有「删一半」的中间态。
+#
+# 迁移**只读 cards、只写新表**：cards.parent/links/relations 一个字节不改，
+# 迁移错了删表重来即可。
+# ============================================================
+_EDGES_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS card_parent (
+    card_id     TEXT PRIMARY KEY,
+    parent_id   TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT ''
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_card_parent_parent ON card_parent(parent_id)",
+    """CREATE TABLE IF NOT EXISTS card_links (
+    from_card   TEXT NOT NULL,
+    to_card     TEXT NOT NULL,
+    type        TEXT NOT NULL DEFAULT '',
+    note        TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (from_card, to_card, type)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_card_links_to ON card_links(to_card)",
+    """CREATE TABLE IF NOT EXISTS card_relations (
+    from_card   TEXT NOT NULL,
+    to_card     TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (from_card, to_card, kind)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_card_relations_to ON card_relations(to_card)",
+)
+
+
+def _json_list(raw: Any) -> list[dict[str, Any]]:
+    """容错解析卡上存的 JSON 数组（坏数据当空，不炸迁移）。"""
+    import json as _json
+    if not raw:
+        return []
+    try:
+        got = _json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return []
+    return [x for x in got if isinstance(x, dict)] if isinstance(got, list) else []
+
+
+def _migrate_edges_from_cards(conn: sqlite3.Connection) -> None:
+    """把 cards.parent / links / relations 搬进三张边表。**幂等**。
+
+    只读 cards、只写新表；`INSERT OR IGNORE` 重复跑不出错。
+    存量 work 首次连接即完成搬迁，新 work 建卡时同步写入（不走这条）。
+    """
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO card_parent(card_id, parent_id, created_at) "
+            "SELECT card_id, parent, COALESCE(created_at, '') FROM cards "
+            "WHERE parent IS NOT NULL AND TRIM(parent) != ''"
+        )
+    except sqlite3.Error:
+        return                      # cards 表还没有 parent 列等情形：静默跳过
+    for r in list(conn.execute(
+            "SELECT card_id, links, relations, created_at FROM cards")):
+        cid, ts = r["card_id"], (r["created_at"] or "")
+        for e in _json_list(r["links"]):
+            tgt = str(e.get("target") or "").strip()
+            if not tgt:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO card_links"
+                "(from_card,to_card,type,note,created_at) VALUES(?,?,?,?,?)",
+                (cid, tgt, str(e.get("type") or ""), str(e.get("note") or ""), ts))
+        for e in _json_list(r["relations"]):
+            tgt = str(e.get("target") or "").strip()
+            if not tgt:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO card_relations"
+                "(from_card,to_card,kind,detail,created_at) VALUES(?,?,?,?,?)",
+                (cid, tgt, str(e.get("kind") or ""), str(e.get("detail") or ""), ts))
+
+    # ③ 存量父子补默认通信线。
+    # 新建卡在 create_card 里已经补了；存量卡没有 ⇒ 这里补。
+    # 不补的话，「父子默认有线」只对新卡成立——将来拆掉 _is_in_subtree 退路，
+    # 存量父子会立刻通信断掉。
+    # INSERT OR IGNORE 按 (from,to,type) 去重：父子之间已有「关联」线的就不补
+    # （有线的意思就是能通信，不必再多一条）。
+    for r in conn.execute("SELECT card_id, parent_id FROM card_parent"):
+        conn.execute(
+            "INSERT OR IGNORE INTO card_links"
+            "(from_card,to_card,type,note,created_at) VALUES(?,?,?,?,?)",
+            (r["card_id"], r["parent_id"], "关联", "父子默认通信线", ""))
+
+
+# ---------------------------------------------------------------- 边表读
+def edges_index(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    """一次读三张表 → `{card_id: {"parent":…, "links":[…], "relations":[…]}}`。
+
+    只放**有的键**：某卡在表里没有任何行，就不会出现在返回里——
+    调用方据此回退到 cards 行上的旧字段（迁移失败时系统仍可用）。
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for r in conn.execute("SELECT card_id, parent_id FROM card_parent"):
+        out.setdefault(r["card_id"], {})["parent"] = r["parent_id"]
+    for r in conn.execute(
+            "SELECT from_card,to_card,type,note FROM card_links ORDER BY rowid"):
+        out.setdefault(r["from_card"], {}).setdefault("links", []).append(
+            {"target": r["to_card"], "type": r["type"], "note": r["note"]})
+    for r in conn.execute(
+            "SELECT from_card,to_card,kind,detail FROM card_relations ORDER BY rowid"):
+        out.setdefault(r["from_card"], {}).setdefault("relations", []).append(
+            {"target": r["to_card"], "kind": r["kind"], "detail": r["detail"]})
+    return out
+
+
+def edges_of(conn: sqlite3.Connection, card_id: str) -> dict[str, Any]:
+    """单卡的三条线（没有的键不出现）。"""
+    out: dict[str, Any] = {}
+    r = conn.execute("SELECT parent_id FROM card_parent WHERE card_id=?",
+                     (card_id,)).fetchone()
+    if r is not None:
+        out["parent"] = r["parent_id"]
+    links = [{"target": x["to_card"], "type": x["type"], "note": x["note"]}
+             for x in conn.execute(
+                 "SELECT to_card,type,note FROM card_links WHERE from_card=? "
+                 "ORDER BY rowid", (card_id,))]
+    if links:
+        out["links"] = links
+    rels = [{"target": x["to_card"], "kind": x["kind"], "detail": x["detail"]}
+            for x in conn.execute(
+                "SELECT to_card,kind,detail FROM card_relations WHERE from_card=? "
+                "ORDER BY rowid", (card_id,))]
+    if rels:
+        out["relations"] = rels
+    return out
+
+
+def children_of(conn: sqlite3.Connection, card_id: str) -> list[str]:
+    """直接子卡（parent 表反查）。"""
+    return [r["card_id"] for r in conn.execute(
+        "SELECT card_id FROM card_parent WHERE parent_id=? ORDER BY card_id",
+        (card_id,))]
+
+
+def linkers_of(conn: sqlite3.Connection, card_id: str) -> list[str]:
+    """**谁连了我**（links 反向，双向语义：任一侧有即算）。"""
+    seen: list[str] = []
+    for r in conn.execute(
+            "SELECT from_card AS other FROM card_links WHERE to_card=? "
+            "UNION SELECT to_card AS other FROM card_links WHERE from_card=?",
+            (card_id, card_id)):
+        if r["other"] != card_id and r["other"] not in seen:
+            seen.append(r["other"])
+    return seen
+
+
+def dependents_of(conn: sqlite3.Connection, card_id: str) -> list[str]:
+    """**谁依赖我**（relations 反向，带 kind/detail 的原始行另见 dependents_detail）。"""
+    return [r["from_card"] for r in conn.execute(
+        "SELECT from_card FROM card_relations WHERE to_card=? ORDER BY from_card",
+        (card_id,))]
+
+
+def dependents_detail(conn: sqlite3.Connection, card_id: str) -> list[dict[str, Any]]:
+    """谁依赖我 + 它们声明的 kind/detail（依赖通知要用它写清"改了会影响谁"）。"""
+    return [{"from_card": r["from_card"], "kind": r["kind"], "detail": r["detail"]}
+            for r in conn.execute(
+                "SELECT from_card,kind,detail FROM card_relations WHERE to_card=? "
+                "ORDER BY from_card", (card_id,))]
+
+
+def has_link(conn: sqlite3.Connection, a: str, b: str) -> bool:
+    """a 与 b 之间有没有通信线（**双向**：任一侧有即算）。"""
+    r = conn.execute(
+        "SELECT 1 FROM card_links WHERE (from_card=? AND to_card=?) "
+        "OR (from_card=? AND to_card=?) LIMIT 1",
+        (a, b, b, a)).fetchone()
+    return r is not None
+
+
+# ---------------------------------------------------------------- 边表写
+def upsert_parent(conn: sqlite3.Connection, card_id: str, parent_id: str,
+                  created_at: str = "") -> None:
+    if not parent_id:
+        conn.execute("DELETE FROM card_parent WHERE card_id=?", (card_id,))
+        return
+    conn.execute(
+        "INSERT INTO card_parent(card_id,parent_id,created_at) VALUES(?,?,?) "
+        "ON CONFLICT(card_id) DO UPDATE SET parent_id=excluded.parent_id",
+        (card_id, parent_id, created_at or _now_iso()))
+
+
+def upsert_link(conn: sqlite3.Connection, from_card: str, to_card: str,
+                type_: str = "", note: str = "", created_at: str = "") -> None:
+    conn.execute(
+        "INSERT INTO card_links(from_card,to_card,type,note,created_at) "
+        "VALUES(?,?,?,?,?) ON CONFLICT(from_card,to_card,type) DO UPDATE "
+        "SET note=excluded.note",
+        (from_card, to_card, type_, note, created_at or _now_iso()))
+
+
+def delete_link(conn: sqlite3.Connection, from_card: str, to_card: str,
+                type_: str = "") -> int:
+    """删线。type_ 为空 ⇒ 删该方向上全部类型。返回删除行数。"""
+    if type_:
+        cur = conn.execute(
+            "DELETE FROM card_links WHERE from_card=? AND to_card=? AND type=?",
+            (from_card, to_card, type_))
+    else:
+        cur = conn.execute(
+            "DELETE FROM card_links WHERE from_card=? AND to_card=?",
+            (from_card, to_card))
+    return int(cur.rowcount or 0)
+
+
+def upsert_relation(conn: sqlite3.Connection, from_card: str, to_card: str,
+                    kind: str = "", detail: str = "",
+                    created_at: str = "") -> None:
+    conn.execute(
+        "INSERT INTO card_relations(from_card,to_card,kind,detail,created_at) "
+        "VALUES(?,?,?,?,?) ON CONFLICT(from_card,to_card,kind) DO UPDATE "
+        "SET detail=excluded.detail",
+        (from_card, to_card, kind, detail, created_at or _now_iso()))
+
+
+def delete_relation(conn: sqlite3.Connection, from_card: str, to_card: str,
+                    kind: str = "") -> int:
+    if kind:
+        cur = conn.execute(
+            "DELETE FROM card_relations WHERE from_card=? AND to_card=? AND kind=?",
+            (from_card, to_card, kind))
+    else:
+        cur = conn.execute(
+            "DELETE FROM card_relations WHERE from_card=? AND to_card=?",
+            (from_card, to_card))
+    return int(cur.rowcount or 0)
+
+
+def clear_edges_of(conn: sqlite3.Connection, card_id: str) -> None:
+    """删卡时清掉与它相关的**全部边**（三个方向：作父、作子、作两端）。
+
+    用户裁定「通信必须基于底层」的另一面：边是底层实体，卡没了边就该没。
+    改前靠人调 unlink_cards 清理悬空线，漏一次就留一条指向空气的线。
+    """
+    conn.execute("DELETE FROM card_parent WHERE card_id=? OR parent_id=?",
+                 (card_id, card_id))
+    conn.execute("DELETE FROM card_links WHERE from_card=? OR to_card=?",
+                 (card_id, card_id))
+    conn.execute("DELETE FROM card_relations WHERE from_card=? OR to_card=?",
+                 (card_id, card_id))
+
+
+def _ensure_link_rel_perm(conn: sqlite3.Connection) -> None:
+    """存量卡补 `link_rel` / `unlink_rel`（2026-10-27 三条线拆开关）。
+
+    改前 `link_rel`/`unlink_rel` 挂的是 `link`/`unlink`，有连线权的卡本来就能建
+    依赖线。拆成独立开关后要给它们补上，否则**功能倒退**（能建通信线却不能建依赖线）。
+
+    **只加不减**：已有这两个开关的不动；没有 `link` 的也不加（它本来就不能连线）。
+    """
+    try:
+        rows = list(conn.execute(
+            "SELECT card_id, perms FROM cards "
+            "WHERE perms IS NOT NULL AND perms <> ''"))
+    except sqlite3.Error:
+        return
+    for r in rows:
+        try:
+            perms = json.loads(r["perms"])
+        except Exception:  # noqa: BLE001 坏 perms 跳过，不动它
+            continue
+        if not isinstance(perms, list) or "link" not in perms:
+            continue
+        changed = False
+        for sw in ("link_rel", "unlink_rel"):
+            if sw not in perms:
+                perms.append(sw)
+                changed = True
+        if changed:
+            conn.execute(
+                "UPDATE cards SET perms=? WHERE card_id=?",
+                (json.dumps(perms, ensure_ascii=False), r["card_id"]))

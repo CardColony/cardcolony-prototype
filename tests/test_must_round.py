@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """[自动模式启动必须轮 2026-10-21 · card_040] 根卡 auto 启动第一轮只建职能、不搭交付树。
 
 契约（判据全部取自卡面事实，不看请求参数——驱动器发起的回合不带 op）：
@@ -10,14 +10,14 @@
 命中时必须轮 ⇒ build_tool_schemas 返回的工具面里：
     · 必须没有 create_card、create_coder_card（这一轮不搭交付树）
     · 必须有 create_function（建职能的唯一通道）
-    · 保留：update_status、append_ruling、update_shadow、update_goal、read_card、
+    · 保留：update_status、edit_requirements、update_shadow、update_goal、read_card、
       list_functions、只读文件类（read_file / list_files / search_files）
 任一条件不成立 ⇒ 回到常规工具面（有 create_card）。
 
 判据对照（任务书验收判据）：
 - 判据② 场景 A 命中必须轮：根卡+auto=1+无职能+rounds=0 ⇒ 无 create_card/create_coder_card、有 create_function
 - 判据③ 场景 B/C/D/E 四条反例：已跑过一轮 / 已有职能 / 非根卡 / 非 auto ⇒ 有 create_card
-- 判据④ 场景 F：必须轮面上 create_function/update_status/append_ruling 都在
+- 判据④ 场景 F：必须轮面上 create_function/update_status/edit_requirements 都在
 - 判据⑤ 场景 G：只读件 read_card/read_file/list_files/search_files 都在
 - 判据⑥ fail-open：function_store.list_profiles 抛异常 ⇒ 不触发闸门（仍有 create_card），并留 logger.warning
 （判据① 走 verify/5713/verify_must_round.py；判据⑦ 由整套 pytest 跑分。）
@@ -93,10 +93,10 @@ async def test_e_not_auto_untouched(typed_registry, work):
 
 
 async def test_f_org_tools_stay_in_must_round(typed_registry, work):
-    """场景 F：必须轮面上组织类仍在——create_function/update_status/append_ruling。"""
+    """场景 F：必须轮面上组织类仍在——create_function/update_status/edit_requirements。"""
     wid, root = work["work_id"], work["work_card_id"]
     names = await _faces(wid, root, auto=1, rounds=0)
-    for t in ("create_function", "update_status", "append_ruling"):
+    for t in ("create_function", "edit_status", "edit_requirements"):
         assert t in names, f"必须轮组织类 {t} 应保留"
 
 
@@ -112,7 +112,7 @@ async def test_goal_update_and_shadow_stay_in_must_round(typed_registry, work):
     """必须轮保留 update_goal / update_shadow（「停」「记录」的权威不能摘）。"""
     wid, root = work["work_id"], work["work_card_id"]
     names = await _faces(wid, root, auto=1, rounds=0)
-    for t in ("update_goal", "update_shadow", "list_functions"):
+    for t in ("update_goal", "edit_shadow", "list_functions"):
         assert t in names, f"{t} 应保留在必须轮面"
 
 

@@ -101,7 +101,27 @@ body.page-chat {
     "Liberation Mono", Menlo, monospace;
 
   /* 内容列宽：中文正文 68–76 字符的舒适区 */
-  --ui-col: 768px;
+  /* [P29 · 2026-10-30 · 用户「现在的对话页太窄了，加宽一点，注意输入框要同宽」]
+     768 → 960px（+192px，+25%）。
+
+     ★ 为什么改这一个变量就够（这一段就是「同宽」的机关）：
+       ui.css 这套里，**对话页所有横向尺寸都以 --ui-col 为轴**，六处引用同一值：
+         :602  .flow-view-scroll   padding: 0 var(--ui-col-pad) 28px  ← 内容列左右留白
+         :606  .flow-view-column   max-width: var(--ui-col)          ← **内容列**
+         :1594 .flow-view-to-bottom-slot  padding-right: calc((100% - var(--ui-col))/2 - 48px)
+         :1642 .composer-seat  --flow-composer-card-max-width: var(--ui-col) ← **输入卡**
+         :1643 .composer-seat  --flow-composer-side-clearance: var(--ui-col-pad)
+       ⇒ 内容列与输入卡**本来就是同一个变量** ⇒ 改一处必然同宽 ⇒ 天生不会对不齐。
+
+     ★ 反面教材（别重蹈）：本项目另有一套「dsh 照抄」旧规范在 style.css 里
+       （内容列 748px 硬编码 + 输入卡 780px 写死 + 回底钮 calc(100%-748px)，
+       三处各写各的）。它在对话页**不生效**（被本页 body.page-chat 规则覆盖），
+       但它正是「同一个宽度散落三处」的老病根。第一次改宽度时改错到那一套，
+       结果：内容列与输入卡**真的**被改成一个 960 一个 768 ⇒ 反而更不齐。
+       ⇒ 结论：改横向尺寸前，先确认**哪一套规则真正生效**（别改被覆盖的死规范）。
+
+     960px ≈ 每行 60 个中文字（16px 字号），仍在深色大屏的舒适阅读区。 */
+  --ui-col: 960px;
   --ui-col-pad: 28px;
 }
 
@@ -601,6 +621,18 @@ body.page-chat .chat {
 body.page-chat .flow-view-scroll {
   padding: 0 var(--ui-col-pad) 28px;
   scroll-behavior: auto;
+  /* [P29 · 2026-10-30 · 「输入框要同宽」的第二个机关]
+     竖向滚动条会**吃掉内容区的宽度**（Chromium: scrollbar-width:thin = 10px），
+     而输入卡不在这个滚动容器里 ⇒ 两边的「可用宽度」天然不等。
+     实测（探针描边取像素，1280 视口）：
+         内容列 .flow-view-column  left=298.9  right=1242.3  width=943.4
+         输入卡 .flow-input-card   left=298.9  right=1252.6  width=953.7
+                                      ↑ 左缘齐   ↑ 右缘差 10.3px = 滚动条占位
+     ⇒ 同一个 --ui-col **不等于**同宽：还得让两边的滚动条槽位一样。
+     ⇒ 本规则用 `scrollbar-gutter: stable` **恒定预留**槽位（不再随内容长短忽有忽无），
+        输入区用**同一套**机制预留同样槽位（见 .flow-input-root）⇒ 两边可用宽度恒等。
+     ⇒ 顺带修掉一个抖动：会话变长/变短时滚动条出现/消失，内容列宽度会跳 10px。 */
+  scrollbar-gutter: stable;
 }
 body.page-chat .flow-view-column {
   max-width: var(--ui-col);
@@ -649,7 +681,10 @@ body.page-chat .think + .step-row { margin-top: 2px; }
 
 /* 用户 */
 body.page-chat .flow-user-row { padding: 14px 0 2px; }
-body.page-chat .flow-user-stack { position: relative; max-width: min(560px, 84%); gap: 4px; }
+/* [P29 · 2026-10-30] 内容列 768→960 后，用户气泡若还卡 560px，
+   会变成「列里右侧大片空白、字挤在中间」——视觉上等于没加宽。
+   ⇒ 同步放宽到 720px（占列宽 75%），仍保留右侧留白（气泡右对齐）。 */
+body.page-chat .flow-user-stack { position: relative; max-width: min(720px, 84%); gap: 4px; }
 body.page-chat .flow-user-bubble {
   background: var(--ui-accent-lo);
   border: 1px solid var(--ui-accent-line);
@@ -1647,7 +1682,28 @@ body.page-chat .composer-seat {
   padding-top: 10px;
 }
 
-body.page-chat .flow-input-root { padding-bottom: 14px; }
+/* [P29 · 2026-10-30 · 「输入框要同宽」的另一半机关]
+   消息列在 `.flow-view-scroll`（滚动容器）里 ⇒ 竖向滚动条吃掉 10px 宽度；
+   输入卡不在滚动容器里 ⇒ 两边「可用宽度」天然差 10px。
+   实测（探针描边 + 按颜色取像素，1280 视口）：
+       内容列 .flow-view-column  left=298.9  right=1242.3  width=943.4
+       输入卡 .flow-input-card   left=298.9  right=1252.6  width=953.7   ← 右缘差 10.3px
+   ⇒ 同一个 --ui-col **不等于**同宽，还差一个滚动条槽位。
+   ⇒ 解法：两侧用**同一套**机制预留同样宽的槽位（scrollbar-gutter: stable），
+     浏览器在同一个平台给出的槽位宽度必然相同 ⇒ 可用宽度恒等 ⇒ 像素级同宽。
+     · 消息侧 .flow-view-scroll：scrollbar-gutter: stable（恒定预留，不再忽有忽无）
+     · 输入侧 .flow-input-root：同样 stable，并把槽位画成全透明（看不见但占位）
+   ⚠ 为什么不能只在消息侧加 stable：那样内容长短变化时输入卡与内容列会**互相漂移**
+     （一个恒定、一个随滚动条出现而变）⇒ 反而更糟。必须两侧同时改。 */
+body.page-chat .flow-input-root {
+  /* 槽位要隐形：透明轨道 + 透明滑块（否则输入区右侧会多一条可见滚动条） */
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: stable;
+  overflow-y: auto;
+  /* 焦点光环（0 0 0 3px）画在卡片外沿 ⇒ 顶部补 4px 内边距，别被 overflow 裁掉 */
+  padding-top: 4px;
+  padding-bottom: 14px;
+}
 
 body.page-chat .flow-input-card {
   /* [5715 · 1.4.11] 描边是**控件识别线**（不是装饰线）⇒ 用 ≥3:1 的 --ui-line-input */
@@ -1871,17 +1927,28 @@ body.page-chat .sk-line.w85 { width: 85%; }
    --------------------------------------------------------------------------- */
 
 body.page-chat .inspector {
-  position: relative;
+  /* [2026-10-29 用户令] 「右侧边栏的展开，应该不动卡片正文信息，现在正文信息会随
+     右侧边栏展开而移动，根本没有必要」
+     病根：抽屉原来是 flex 子项（flex:none + width 0→348）⇒ 展开时 .ws-right 被挤窄
+     ⇒ 正文列在更窄的空间里重新居中 ⇒ **左移 174px**（1920 屏实测）。
+     它本来就浮在正文右侧的空白上、不压正文，凭什么让正文动？
+     ⇒ 改成**绝对定位浮层**：不参与 flex，`.ws-right` 宽度恒定，正文位置恒定。 */
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
   width: 0;
   flex: none;
   background: var(--ui-surface-1);
   border-left: 0;
-  overflow: visible;
+  overflow: hidden;
   transition: width var(--ui-mid) var(--ui-ease);
+  z-index: 70;
 }
 body.page-chat .inspector.open {
   width: 348px;
   border-left: 1px solid var(--ui-line);
+  box-shadow: -14px 0 36px rgba(0, 0, 0, 0.22);
 }
 body.page-chat .inspector .insp-body {
   width: 348px;
@@ -2344,3 +2411,138 @@ body.page-chat .nav-foot-btn::before {
   mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Zm0 1.4a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8Z'/><path d='M7 1.4h2l.25 1.55.9.52 1.45-.6 1.42 1.42-.6 1.45.52.9L14.9 7v2l-1.55.25-.52.9.6 1.45-1.42 1.42-1.45-.6-.9.52L9 14.6H7l-.25-1.64-.9-.52-1.45.6-1.42-1.42.6-1.45-.52-.9L1.1 9V7l1.64-.25.52-.9-.6-1.45 1.42-1.42 1.45.6.9-.52L7 1.4Z' fill='none' stroke='currentColor' stroke-width='1.3' stroke-linejoin='round'/></svg>") center/contain no-repeat;
 }
 body.page-chat .nav-foot-btn .gear-glyph { display: none; }
+
+/* ============================================================
+   [评审窗口 2026-10-29 · 用户口径（第四次修正）]
+     「你是不是缩小了正卡对话区域的宽度？就为了你这张浮窗？」
+     「你摆在正卡信息流右侧，空间是足足够够的」
+     「不是真的浮一个窗口在所有信息上方，它的层级和卡片信息流是同级的」
+     「右侧边栏展开，应该盖住它」
+     「点击它展开不是向右展开，是向左展开，挤压卡片本身的信息流，给它留出空间，而且是充分展开」
+     「收缩状态不需要显示那么多信息，显示最近的一条就足够了」
+
+   ⇒ 收缩态：落在对话列右侧的**空白带**里，对话区宽度**一点不动**、不覆盖任何文字。
+     高度只有一行（头部 38 ＋ 最近一条 34）。
+   ⇒ 展开态：**向左**扩到 640，`.ws-right` 加 padding-right 让位（这才叫挤压对话区）。
+   ⇒ 层级：低于右侧 inspector（`z-index` 55 vs 70）——它展开时盖住本窗口。
+   ============================================================ */
+body.page-chat .fwin {
+  position: fixed;
+  left: auto;
+  right: 16px;          /* JS 会按对话列右缘改成 left，这里只是兜底 */
+  top: 88px;
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  background: var(--ui-surface-1);
+  border: 1px solid var(--ui-line);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  z-index: 55;          /* 低于 .inspector(70)：右侧抽屉展开时盖住它 */
+  overflow: hidden;
+  transition: width var(--ui-mid, 0.18s) var(--ui-ease, ease),
+              height var(--ui-mid, 0.18s) var(--ui-ease, ease);
+}
+body.page-chat .fwin[hidden] { display: none; }
+body.page-chat .fwin.dragging { transition: none; user-select: none; }
+
+/* 展开：**向左长、把正卡挤窄**，但正卡信息流**还在**（不是换页、不是隐藏）。
+   用户：「点击它展开不是向右展开，是向左展开，挤压卡片本身的信息流，给它留出空间，
+   而且是充分展开」＋「不要这么极端好吗？……你现在完全换了一个页面」
+
+   宽度取内容区的六成左右：1920 屏 → 900（正卡剩 636，对话列被挤窄但仍可读）；
+   1366 屏 → 765（正卡剩 577）。让位用 padding-right，对话列在剩余空间里重新居中。 */
+/* 展开：向左长、把正文**挤窄**（用户：「点击它展开不是向右展开，是向左展开，
+   挤压卡片本身的信息流，给它留出空间，而且是充分展开」）。
+   ★ 注意这里跟 inspector 是**两条不同的规则**：
+     · 评审窗口展开 ⇒ 挤正文（padding-right 让位，正文变窄但仍然在）
+     · 卡详情抽屉展开 ⇒ **不动正文**（它已改成绝对定位浮层，见上）
+   宽度取内容区六成，但给正文留 500px 下限（860 = 左栏 360 ＋ 500）。 */
+body.page-chat { --rv-full-w: min(56vw, 900px, calc(100vw - 860px)); }
+
+body.page-chat .fwin[data-mode="full"] {
+  right: 16px;
+  left: auto;
+  width: var(--rv-full-w);
+  top: 56px;
+  bottom: 20px;
+  height: auto;
+  border-radius: 12px;
+}
+body.page-chat.rv-full .ws-right {
+  padding-right: calc(var(--rv-full-w) + 32px);
+  transition: padding-right var(--ui-mid, 0.18s) var(--ui-ease, ease);
+}
+
+/* 右侧卡详情抽屉展开时盖住本窗口（用户：「右侧边栏展开，应该盖住它」） */
+body.page-chat .inspector { z-index: 70; }
+
+/* ---- 头：一行 ---- */
+body.page-chat .fwin-head {
+  flex: none;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px 0 11px;
+  border-bottom: 1px solid var(--ui-line);
+  cursor: grab;
+  user-select: none;
+}
+body.page-chat .fwin-head:active { cursor: grabbing; }
+body.page-chat .fwin[data-mode="full"] .fwin-head { cursor: default; }
+body.page-chat .fwin-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--ui-accent);
+  box-shadow: 0 0 0 3px rgba(125, 136, 238, 0.16);
+  animation: fwinPulse 1.8s ease-in-out infinite;
+}
+body.page-chat .fwin.done .fwin-dot { background: var(--ui-ok); animation: none; box-shadow: 0 0 0 3px var(--ui-ok-lo); }
+@keyframes fwinPulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }
+body.page-chat .fwin-title {
+  font-size: 12.5px; font-weight: 600; color: var(--ui-text); flex: none;
+  max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+body.page-chat .fwin-count {
+  font-size: 11px; font-variant-numeric: tabular-nums; flex: none;
+  color: var(--ui-text-2); padding: 1px 6px;
+  background: var(--ui-surface-2); border-radius: 6px;
+}
+body.page-chat .fwin-sp { flex: 1; min-width: 4px; }
+body.page-chat .fwin-btn {
+  flex: none; width: 24px; height: 24px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; color: var(--ui-text-2);
+  background: transparent; border: 0; border-radius: 6px; cursor: pointer;
+}
+body.page-chat .fwin-btn:hover { background: var(--ui-surface-3, var(--ui-surface-2)); color: var(--ui-text); }
+
+/* ---- 收缩态：永远只有**最近一条** ---- */
+body.page-chat .fwin-last {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 11px 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ui-text-2);
+  cursor: pointer;
+}
+body.page-chat .fwin-last > time {
+  flex: none; width: 50px; opacity: 0.55; font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+body.page-chat .fwin-last > .t {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+body.page-chat .fwin-last.live > .t { font-style: italic; opacity: 0.9; }
+body.page-chat .fwin[data-mode="full"] .fwin-last { display: none; }
+
+/* ---- 展开态：评审卡对话页 ---- */
+body.page-chat .fwin-frame {
+  flex: 1; min-height: 0; width: 100%;
+  border: 0; background: var(--ui-bg);
+}
+body.page-chat .fwin[data-mode="compact"] .fwin-frame { display: none; }

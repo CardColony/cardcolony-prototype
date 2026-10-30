@@ -110,6 +110,10 @@ class RunState:
     user_prompt: str = ""
     rounds: int = 0
     model_calls: int = 0
+    #: [排队语义 2026-10-23] 收口时队列里仍有未处理消息 ⇒ 置 True。
+    #: 回合**自己不起下一回合**（那时互斥体还没摘，起了必被拒）；
+    #: 由 routes 在 `turn_release()` 之后统一捞队列（deliver_now）接续。
+    requeue_pending: bool = False
     final_reply: Optional[str] = None
     # [5715] 末轮**原始**正文（compose_delivery 拼接前存下）：收口那条 assistant_text
     # 事件只落它——各轮正文已按轮单独落事件（见 step() 工具轮分支），
@@ -190,6 +194,9 @@ class RunState:
     #   status_task_emitted —— 专用注入本 run 只发一次的幂等闸。
     op: str = ""
     status_task_emitted: bool = False
+    # [需求确定按钮改造 2026-10-29] 【需求确定】两种专用回合（根卡改正稿／其他卡拟草稿
+    # 后开评审）的任务注入幂等闸——与 status_task_emitted 同款，本 run 只发一次。
+    requirements_task_emitted: bool = False
 
 
 @dataclass(frozen=True)
@@ -246,10 +253,21 @@ def build_context(state: RunState) -> None:
         memory_store.load_memory(state.work_id, state.card_id)
         if memory_store.condense_enabled() else None
     )
+    # [预设职能 2026-10-24] 145 区(你的职能)取数:独立职能卡(fn_NNN)或职能化的
+    # 根卡(总裁)——此前 build_context_bundle 的 function_meta 参数在生产链路
+    # 无人传 ⇒ 145 区从不渲染(职能不知道自己是谁)。fail-open:查不到传 None。
+    _function_meta = None
+    try:
+        from . import function_room
+        _function_meta = function_room.function_meta_for(state.work_id,
+                                                         state.card_id)
+    except Exception:  # noqa: BLE001 身份取不到 ⇒ 不出 145 区,不挡回合
+        _function_meta = None
     bundle = context_assembler.build_context_bundle(
         state.work_id, state.card_id,
         memory_state=state.condense_state,
         history_source=state.prior,
+        function_meta=_function_meta,
     )
     state.context_ctx = bundle["context"]
     state.ctx_regions = bundle["regions"]
@@ -455,6 +473,34 @@ def _sync_status_task(state: RunState) -> None:
         logger.warning("[现状更新] 注入失败（不阻断）card=%s: %s", state.card_id, exc)
 
 
+# ============================================================
+# [需求确定按钮改造 2026-10-29 · 用户令] 【需求确定】专用回合 · 轮首任务注入
+# ============================================================
+
+def _sync_requirements_task(state: RunState) -> None:
+    """专用操作注入点：**仅 requirements_final / requirements_draft 回合、仅首次**发一条。
+
+    与「更新现状」同族：承载通道＝``turn_tail``（整轮任务指令，续跳轮仍要看得到），
+    不随轮丢弃。两种回合注入的正文不同——
+    · 根卡（``OP_REQUIREMENTS_FINAL``）：这一轮可直接改需求文档**正稿**；
+    · 其他卡（``OP_REQUIREMENTS_DRAFT``）：这一轮拟**草稿**，拟完开评审。
+    用户 2026-10-29 原话：「两边的实现差不多，但注入的提示词不同，流程也有差异」。
+    """
+    if state.op not in card_tools.REQUIREMENTS_OPS:
+        return
+    if state.rounds != 1 or state.requirements_task_emitted:
+        return
+    state.requirements_task_emitted = True
+    try:
+        ev = current_turn.build_requirements_task_event(
+            state.work_id, state.card_id,
+            final=(state.op == card_tools.OP_REQUIREMENTS_FINAL))
+        event_stream.emit(state.work_id, state.card_id, ev["type"], ev["data"])
+        state.turn_tail.append(
+            current_turn.project_requirements_task_message(ev["data"]))
+    except Exception as exc:  # noqa: BLE001 注入零阻断
+        logger.warning("[需求确定] 注入失败（不阻断）card=%s: %s", state.card_id, exc)
+
 
 # ============================================================
 # [当前轮注入消息事件 2026-10-14] 当前轮注入同步（160/165 → 消息事件）
@@ -601,6 +647,70 @@ def _board_all_steps_done(work_id: str, card_id: str) -> bool:
     )
 
 
+# ============================================================
+# [模型中断续跑 2026-10-23 · 用户令] 模型调用失败 ⇒ **接着跑这一轮**，不许判死整轮。
+#
+# 用户原话：「哪个模型断连了都会返回报错，你全部不处理，就设个钟」
+#   ⇒ 断连是**立刻可知**的可恢复事件（socket 异常 → TRANSPORT），
+#     不是「这一轮结束了」。原来的行为：异常一路抛到 routes，outcome=error，
+#     disarm，整轮死；已完成的工具调用白做。
+#
+# 这层做的事：在**同一个位置重发这次模型调用**。
+#   - 不重跑整轮：已落盘的 assistant/tool 块不动，重发的只是这一轮的请求；
+#   - 上下文天然接上：工具结果已经在会话里，重发时模型看到的就是「做到一半」；
+#   - 有界：按**次数**（不是时间）放弃，放弃时如实上抛并留痕是哪一步死的；
+#   - 层内兜底（fallbacks）仍在更下层，本层只管「同一次调用再试」。
+# ============================================================
+
+#: 中断后同一位置最多再试几次（含首次＝总次数）。按次数计，不设墙钟。
+_RESUME_MAX_ATTEMPTS = 3
+
+
+async def _call_model_resumable(state: "RunState | None" = None, **kwargs: Any):
+    """``model_service.call_main`` 的中断续跑包装。
+
+    失败重发**同一次调用**（kwargs 原样），最多 ``_RESUME_MAX_ATTEMPTS`` 次。
+    每次失败发一条 ``model_resume`` 事件，前端/日志能看见「断过、接着跑了」。
+
+    [不设退避 2026-10-23 · 用户令「整个机制全部通过信息反馈」]
+    原来这里 `await asyncio.sleep(2)`。那是**没有反馈时的瞎等**：
+      · 连接被重置/对端关闭 ⇒ socket 已经死了，立刻重连才对，等 2 秒纯浪费；
+      · 限流(429)该等多久，**端点会告诉你**（Retry-After / provider_retry_after_ms），
+        不该由我拍一个数——而那个反馈要 gateway 透出（gateway 禁改，暂拿不到）。
+    ⇒ 现在**零等待立即重发**；限流退避交给下层网关自己的重试（它已有退避）。
+    等 gateway 能透出 Retry-After 时，再按端点给的时长等，仍不是拍数。
+    """
+    from ..infra.errors import ModelError
+
+    _wid = getattr(state, "work_id", "") or ""
+    _cid = getattr(state, "card_id", "") or ""
+    _rnd = getattr(state, "rounds", 0) or 0
+    last: Optional[BaseException] = None
+    for attempt in range(1, _RESUME_MAX_ATTEMPTS + 1):
+        try:
+            return await model_service.call_main(**kwargs)
+        except ModelError as exc:
+            last = exc
+            if attempt >= _RESUME_MAX_ATTEMPTS:
+                break
+            logger.warning(
+                "[resume] 模型调用中断，同一位置立即重发 %d/%d card=%s round=%d 原因=%s",
+                attempt, _RESUME_MAX_ATTEMPTS - 1, _cid, _rnd, str(exc)[:200])
+            try:
+                event_stream.emit(_wid, _cid, "model_resume", {
+                    "attempt": attempt,
+                    "max": _RESUME_MAX_ATTEMPTS - 1,
+                    "round": _rnd,
+                    "reason": str(exc)[:300],
+                })
+            except Exception:  # noqa: BLE001 事件发不出去不影响续跑
+                pass
+    assert last is not None
+    logger.error("[resume] 中断重发耗尽（%d 次）card=%s round=%d 原因=%s",
+                 _RESUME_MAX_ATTEMPTS, _cid, _rnd, str(last)[:300])
+    raise last
+
+
 async def step(state: RunState) -> StepOutcome:
     """一次状态推进＝工具循环的一个显式状态点。
 
@@ -617,6 +727,17 @@ async def step(state: RunState) -> StepOutcome:
         return StepOutcome("deliver", "human_stop")
     if verdict == control.DEFER_HUMAN:
         return StepOutcome("deliver", "policy_stop")
+
+    # [wb_exec 2026-10-23] **委派分支**：coder 卡的回合交给 WorkBuddy 执行体
+    # （见 src/api/wb_exec/）。命中时本函数跑完外部执行体并直接返回
+    # StepOutcome("deliver", …)，让既有交付路径（write_logs → compose_delivery
+    # → create_cards → finish）原样跑完。
+    # **不命中 ⇒ 返回 None ⇒ 本函数后续逐字不变**（配置默认 enabled=false，
+    # 且 exec_backend="system" 时也不委派）。
+    from . import wb_exec as _wb_exec
+    _delegated = await _wb_exec.maybe_delegate(state)
+    if _delegated is not None:
+        return _delegated
 
     # [思维链真实落地 2026-10-11] 判断归模型（C1）：判断协议已随 BASE_PROMPT
     # 进 system 区，模型首轮带全量工具（含 create_plan）读完协议自主判断——
@@ -635,6 +756,8 @@ async def step(state: RunState) -> StepOutcome:
     # [更新现状按钮改造 2026-10-16] 「更新现状」专用回合的轮首任务注入（仅 op 回合）。
     # 放在 _sync_injection 之前 ⇒ turn_tail 里专用任务先于工作规范/流程注入。
     _sync_status_task(state)
+    # [需求确定按钮改造 2026-10-29] 【需求确定】专用回合的任务注入（仅这两种 op）。
+    _sync_requirements_task(state)
     # [当前轮注入消息事件 2026-10-14] 模型调用前同步注入事件（160/165 消息化）：
     # 有来源才发；round1 暂存 turn_tail，后续轮直接进轮槽。放在 round_start 之前，
     # 使事件序＝user_message → preamble → injection → round_start/judgment/…
@@ -655,8 +778,12 @@ async def step(state: RunState) -> StepOutcome:
         # [模型选择底座 2026-10-21] 座位只算一次，请求与日志同源
         _seat = _pick_step_model(state)
         state.model_requested = _seat
-        result, state.model_used = await model_service.call_main(
-            request["system_prompt"], request["user_prompt"], request["prior_messages"],
+        # [模型中断续跑 2026-10-23] 经续跑包装：断连在同一位置重发，不判死整轮
+        result, state.model_used = await _call_model_resumable(
+            state,
+            system_prompt=request["system_prompt"],
+            user_prompt=request["user_prompt"],
+            prior_messages=request["prior_messages"],
             tools=state.tools,
             model_name=_seat,
             # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
@@ -685,8 +812,12 @@ async def step(state: RunState) -> StepOutcome:
         )
         _seat = _pick_step_model(state)
         state.model_requested = _seat
-        result, state.model_used = await model_service.call_main(
-            request["system_prompt"], request["user_prompt"], request["prior_messages"],
+        # [模型中断续跑 2026-10-23] 续跳轮同样经续跑包装
+        result, state.model_used = await _call_model_resumable(
+            state,
+            system_prompt=request["system_prompt"],
+            user_prompt=request["user_prompt"],
+            prior_messages=request["prior_messages"],
             tools=state.tools,
             model_name=_seat,
             # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
@@ -720,7 +851,12 @@ async def step(state: RunState) -> StepOutcome:
                 len(rescue_calls), [c["name"] for c in rescue_calls],
             )
             event_stream.emit(state.work_id, state.card_id, "rescue",
-                              {"count": len(rescue_calls)})
+                              # [harness 第 1 步 2026-10-28] 补 names：
+                              # "模型把哪个工具写成了正文"是可判断的事实（某种工具
+                              # 反复被写进正文 ⇒ 提示词或工具面有问题），只记个数
+                              # 问不出来。
+                              {"count": len(rescue_calls),
+                               "names": [str(c.get("name") or "") for c in rescue_calls]})
         elif unresolved:
             text_rescue_note = text_tool_rescue.feedback_note()
 
@@ -789,6 +925,16 @@ async def step(state: RunState) -> StepOutcome:
                     state.work_id, state.card_id)
             if state.chain_completed:
                 return StepOutcome("seats", "finalize_review")
+        # [停止即闭合 2026-10-23] 停止信号可能在**本轮模型调用期间**到达并被流消费
+        # （`_stop_raced` 让流立刻收口、保住已产出的字）。这条无工具轮的出口原先
+        # 不再看控制面 ⇒ 停止被吞成 model_done，与 T124「人停＝human_stop 闭合」不符。
+        # 这里补一次出口挂点（消费即清，与 1104 行同口径）。
+        _verdict = check_control(state)
+        if _verdict == control.STOP:
+            state.final_reply = state.final_reply if state.final_reply is not None else ""
+            return StepOutcome("deliver", "human_stop")
+        if _verdict == control.DEFER_HUMAN:
+            return StepOutcome("deliver", "policy_stop")
         return StepOutcome("deliver", "chain_done" if state.chain_completed else "direct")
 
     # —— 有工具调用：本轮执行工具，续跳 ——
@@ -826,11 +972,20 @@ async def step(state: RunState) -> StepOutcome:
             for i, tc in enumerate(tool_calls)
         ],
     }
-    # [DeepSeek 思考回传 2026-10-15] DeepSeek 系模型开思考时，多轮调用必须把
-    # 本轮的 reasoning_content 原样回传（否则 400 "must be passed back"）。
-    # 仅对 deepseek 系补——其他家不要求，多带字段可能被拒。
-    if state.turn_reasoning and "deepseek" in (state.model_used or "").lower():
-        _asst_msg["reasoning_content"] = state.turn_reasoning
+    # [多轮思考回传 2026-10-23] 有的端点强制要求：assistant 消息带 tool_calls 时，
+    # 必须同时带回它上一轮给出的 reasoning_content，否则 400
+    # "Missing required parameter: 'messages[N].reasoning_content'"。
+    # 判据取 models.yaml 的显式开关（model_config.reasoning_echo_fill）——
+    # 改前是 `"deepseek" in model_used` 的字符串包含判断，把 commandcode 的
+    # reflection/beam:free 漏在外面：它的思考字段叫 reasoning（不叫
+    # reasoning_content，适配器当时也不认），于是既收不到思考、也不回传，
+    # 带工具面的第二轮起必 400、重试 3 次后整轮判死（用户实测「跑不通」）。
+    # ★ 无思考可回传时补什么（不加字段 / 空串 / 非空占位）由 gateway 统一判据
+    #   决定：DeepSeek 系空串（官方生产口径），beam 系必须非空（空串照样 400）。
+    _echo_fill = model_config.reasoning_echo_fill(
+        state.model_used or "", state.model_requested or "")
+    if _echo_fill is not None:
+        _asst_msg["reasoning_content"] = state.turn_reasoning or _echo_fill
     state.slot.begin_round(_asst_msg)
     # [T14-1-2] 只读采集：带工具轮的 assistant_content（含 L459 抢救处理后
     # 的正文）同步留一份进交付采集列表。不改 begin_round 入参、不额外入槽
@@ -868,6 +1023,10 @@ async def step(state: RunState) -> StepOutcome:
             # 不是拼好的字符串）——事件日志存的是事实，不是给模型看的投影。
             event_stream.emit(state.work_id, state.card_id, "tool_call",
                               {"tool": name, "target": target_id, "step_id": _step_id,
+                               # [harness 第 1 步 2026-10-28] 补 card_id 零件：
+                               # `target` 是模糊字段（各工具含义不同：卡号/章节/查询词），
+                               # 想按"对哪张卡动手"组合条件就必须有确定的 card_id。
+                               "card_id": str(args.get("card_id") or ""),
                                "arguments": args})
             # [提交轮材料（C6）] step_complete 执行**前**抓板快照——末步执行会
             # 同步触发收口（finalize 清理板），执行后取板已不可得。每次 step_complete
@@ -887,7 +1046,11 @@ async def step(state: RunState) -> StepOutcome:
                             and isinstance(_pre_steps[_pre_cur], dict)):
                         _done_step_id = str(_pre_steps[_pre_cur].get("id") or "")
             tool_result = await card_tools.execute_tool(
-                state.work_id, state.card_id, name, args, cards_meta)
+                state.work_id, state.card_id, name, args, cards_meta,
+                # [执行层权限闸 2026-10-25] 工具面只是「看不看得见」，不是执行
+                # 授权：模型硬调一个没下发给它的工具（提示词里写着 bash/python），
+                # 原先会直接跑到 handler 真执行。此处置 True ⇒ 无开关即拒。
+                perm_gate=True)
             # [T-0010 §1.5] 成败读信封 ok 字段（改前是「结果里没有 error 键即算成功」）
             ok = tool_result.get("ok") is True
             _data = tool_result.get("data") or {}
@@ -1111,9 +1274,14 @@ async def run_seats(state: RunState) -> StepOutcome:
                                           work_id=state.work_id,
                                           card_id=state.card_id)
     state.model_requested = _synth_seat
-    result, state.model_used = await model_service.call_main(
-        synth_request["system_prompt"], synth_request["user_prompt"],
-        synth_request["prior_messages"], tools=state.tools,
+    # [模型中断续跑 2026-10-23 · 修] 统合官这一次**也必须续跑**：
+    # 它是产出最终答案的那一次调用，原来漏在包装外 ⇒ 一断连整轮就死，
+    # 前面所有工具轮白做。用户实测「自动重试没生效」即此。
+    result, state.model_used = await _call_model_resumable(
+        state,
+        system_prompt=synth_request["system_prompt"],
+        user_prompt=synth_request["user_prompt"],
+        prior_messages=synth_request["prior_messages"], tools=state.tools,
         model_name=_synth_seat,
         fallbacks=model_config.layer_fallbacks(
             _synth_seat, work_id=state.work_id, card_id=state.card_id),
@@ -1380,8 +1548,21 @@ async def finish(state: RunState) -> dict[str, Any]:
     memory_store.maybe_schedule_turn_end(state.work_id, state.card_id)
     progress.set_stage(state.work_id, state.card_id, "done", "完成")
     # [信息流 Task3/打点 A96] done 事件
+    # [系统消息 2026-10-26 · 用户令「系统消息只允许跟事件挂钩」] 事件**自带**
+    # card_type：规则层只从事件字段判断，不去读卡的状态快照。
+    try:
+        _ct = str(((await card_store.read_card(state.work_id, state.card_id))
+                   .get("meta") or {}).get("card_type") or "")
+    except Exception:  # noqa: BLE001 取不到类型不影响 done 事件本身
+        _ct = ""
     event_stream.emit(state.work_id, state.card_id, "done",
-                      {"rounds": state.rounds, "model_calls": state.model_calls})
+                      {"rounds": state.rounds, "model_calls": state.model_calls,
+                       "card_type": _ct,
+                       # [harness 第 1 步 2026-10-28] 补 end_reason / pair_id：
+                       # 「这轮是正常收口、人停、还是判不了交人」是最直接的判断依据，
+                       # 改前只写进会话块的 end 字段，事件面上问不出来。
+                       "end_reason": state.end_reason or "model_done",
+                       "pair_id": str(state.pair_id or "")})
     return {
         "reply": state.clean_text,
         "model": state.model_used,
@@ -1420,7 +1601,12 @@ def handle_error(state: RunState, exc: Exception) -> None:
         except Exception as snap_exc:  # noqa: BLE001 checkpoint 失败不阻断
             logger.warning("[flow] checkpoint 落位失败（不阻断）: %s", snap_exc)
     event_stream.emit(state.work_id, state.card_id, "error",
-                      {"error": state.error[:200], "rounds": state.rounds})
+                      # [harness 第 1 步 2026-10-28] 补 error_type：异常类名是
+                      # "能当判断依据"的零件（区分断连/超限/权限），整段 error 文本
+                      # 只是载荷。改前两者混在一个字段里，条件面只能做子串匹配。
+                      {"error": state.error[:200],
+                       "error_type": type(exc).__name__,
+                       "rounds": state.rounds})
 
 # ============================================================
 # [迭代四 K3] 卡间来信调起（卡间册 §4.4.2/§4.4.3）。
@@ -1627,7 +1813,9 @@ _SELF_REQUEUE_MAX = 5
 _SELF_REQUEUE: dict[tuple[str, str], int] = {}
 
 
-async def deliver_now(work_id: str, card_id: str) -> bool:
+async def deliver_now(work_id: str, card_id: str, *,
+                      text: str = "",
+                      source: dict[str, Any] | None = None) -> bool:
     """**立即**把该卡未处理的消息投递成一轮。返回是否真的起了新回合。
 
     [发消息即唤醒 2026-10-22 · D20/D24/D25] 这是「通信」与「投递」的分界线：
@@ -1645,27 +1833,62 @@ async def deliver_now(work_id: str, card_id: str) -> bool:
     # 开关由 tests/conftest.py 设置，显式且只影响这一处。
     if os.environ.get("ECO_NO_AUTO_DELIVER") == "1":
         return False
+    # [增量投递 2026-10-23 · 用户令「读过的信息就从 box 里清掉」]
+    # 用 **take_pending**（读 + 推水位同一事务）而不是 list_pending：投递即消费。
+    # 改前只读不消费 ⇒ 水位永不前进 ⇒ 同一批消息被反复拼进 prompt（实测
+    # card_029 一次 46 条占 prompt 98%，模型自己写「已是前一轮归档过的内容」）。
+    # [沉默 2026-10-24] 沉默的卡不取件不唤醒——信留在收件箱 pending,
+    # 解冻后按既有增量投递自然补上(取走就丢等于替它做主)。
     try:
-        pending = await card_db.list_pending(work_id, card_id)
-    except Exception as exc:  # noqa: BLE001 读不到就当没有（信已落库，收口会兜）
-        logger.warning("[通信] 读未处理消息失败 card=%s: %s", card_id, exc)
-        return False
-    if not pending:
-        return False
+        from ..storage import governance_store as _gov
+        if _gov.is_silenced(work_id, card_id):
+            return False
+    except Exception:  # noqa: BLE001 治理表读不出 ⇒ 不挡投递(旧行为)
+        pass
+    # [忙判定前置 2026-10-25] 收件卡在跑 ⇒ **先不取件**——改前 take_pending
+    # (消费)在忙判定之前,B 忙时信被取走但投递 409 ⇒ 信既不在收件箱也不在
+    # 任何人上下文。取走=承诺投递,投不出去就不该取;B 本轮收口的自查续轮
+    # 会再走这里,信不丢。
     try:
         if session_facade.turn_holder(work_id, card_id):
             return False
     except Exception:  # noqa: BLE001
         pass
+    # [2026-10-26 · 消息改落会话块后修唤醒] ``text`` 模式：消息已经写进
+    # **会话历史**（append_card_message），不在收件箱里 ⇒ 不能走 take_pending
+    # （取到空会直接 return False，唤醒失效）。此时只负责起一轮，正文由调用方
+    # 给一句"你收到一条指令，请按上文执行"，真正的正文在历史里。
+    if text:
+        pending = []
+        prompt = text
+    else:
+        try:
+            pending = await card_db.take_pending(work_id, card_id)
+        except Exception as exc:  # noqa: BLE001 取件失败就当没有（信仍在库，收口会兜）
+            logger.warning("[通信] 取未处理消息失败 card=%s: %s", card_id, exc)
+            return False
+        if not pending:
+            return False
+        try:
+            prompt = await _build_card_msg_prompt(work_id, pending)
+        except Exception as exc:  # noqa: BLE001 组装失败退到兜底，不让通信断
+            logger.warning("[通信] 组装消息提示词失败，用兜底 card=%s: %s", card_id, exc)
+            prompt = _fallback_card_msg_prompt(pending)
     from . import routes as _routes
     try:
-        prompt = await _build_card_msg_prompt(work_id, pending)
-    except Exception as exc:  # noqa: BLE001 组装失败退到兜底，不让通信断
-        logger.warning("[通信] 组装消息提示词失败，用兜底 card=%s: %s", card_id, exc)
-        prompt = _fallback_card_msg_prompt(pending)
-    try:
+        # [不占用户通道 2026-10-26] 改前 append_user=True ⇒ 卡间来信的激励文被落成
+        # role="user" 的会话块,前端当成「用户说的话」显示(线上实证:061 对话里
+        # 出现整段「上一轮之后,你收到了来自其他卡的消息…」冒充人声)。K3 原本的
+        # 设计就是 False(routes.py 段⑥注释:「append_user=False(卡间调起)时不落
+        # user 块——激励文绝不进收件方档案」),deliver_now 这处传错了。
+        # 消息的可见面走 events 的 msg_* 消息块(emit_message_event),不占用户通道。
+        # [2026-10-26 · 记录补全] 带上**唤醒源**：这一轮是被哪张卡的消息叫起来的。
+        _src = (dict(source) if source else
+                {"kind": "card_msg",
+                 "from": str((pending[0] or {}).get("from_card") or "")})
         task = _spawn_tracked(
-            _routes._run_message(work_id, card_id, prompt, None, append_user=False))
+            _routes._run_message(work_id, card_id, prompt, None,
+                                 append_user=False, source=_src))
         task._card_msg_target = card_id  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)
         session_ops.ops_log("card_msg_deliver_now", work_id, card_id,
@@ -1682,7 +1905,7 @@ async def schedule_card_message_triggers(state: RunState) -> None:
     - 遍历 `card_msg.TRIGGERS`（K2 落信时记下的调起意图），读完即清（不累积）；
     - [卡片底座第一步 2026-10-14] **待处理判定改读收件箱**：`card_db.list_pending`
       （显式队列状态），不再用 `card_msg.find_pending` 从对话块顺序推导（脆弱约定）；
-    - 有 pending → `asyncio.create_task` 起收件方回合（激励文 append_user=False），
+    - 有 pending → `asyncio.create_task` 起收件方回合(激励文落档——评审/信件全程发生在对话里)，
       **非阻塞**——不 await 任务完成，异常经 done_callback 记日志；
     - 快速通道 vs 持久保证两层分工（写死）：create_task 可能因进程退出而丢；
       **收件箱里的信是持久保证**——丢任务不丢信，下次任一回合收口时重新判 pending
@@ -1702,6 +1925,17 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         # 只读 card_type/state 两字段的机械判定（红线 2），continue 且**不打
         # ops**；信留在收件箱 pending 作验收留档（下次收口重新判，仍跳过）。
         try:
+            # [沉默 2026-10-24] 沉默的收件卡跳过(信留 pending,不唤醒);
+            # 完工编程卡的既有静默判定在下一行,语义独立(那是天然状态,
+            # 这是管理动作)。
+            try:
+                from ..storage import governance_store as _gov
+                if _gov.is_silenced(work_id, target_id):
+                    session_ops.ops_log("card_msg_silenced_skip", work_id,
+                                        target_id, {})
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
             _tmeta = card_store._meta_of(work_id, target_id) or {}
         except Exception:  # noqa: BLE001 读不出 meta ⇒ 不在此处置，走既有链
             _tmeta = {}
@@ -1733,6 +1967,27 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         session_ops.ops_log("card_msg_deliver", work_id, target_id,
                             {"msg_id": str(pending[-1].get("msg_id") or ""),
                              "msg_ids": list(msg_ids)})
+        # [增量投递 2026-10-23 · 用户令「读过的信息就从 box 里清掉」]
+        # 判定用 list_pending（上面编程卡静默判定要「信留在 pending 作验收留档」），
+        # **真正要投递时才 take**：读 + 推水位同一事务 ⇒ 这批消息立刻移出收件箱，
+        # 下次只投递新的。改前只读不消费 ⇒ 同一批被反复投递。
+        # [忙判定前置 2026-10-25] 收件卡在跑 ⇒ 先不取件(取走=承诺投递,
+        # 投不出去就不该取);其本轮收口的自查续轮会再走这里,信不丢。
+        try:
+            if session_facade.turn_holder(work_id, target_id):
+                session_ops.ops_log("card_msg_pending", work_id, target_id,
+                                    {"reason": "receiver_busy"})
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            pending = await card_db.take_pending(work_id, target_id)
+        except Exception as exc:  # noqa: BLE001 取件失败就不投（信仍在库，下次收口再试）
+            logger.error("[K3] 取收件箱失败 wid=%s target=%s: %s",
+                         work_id, target_id, exc)
+            continue
+        if not pending:
+            continue
         # 激励文＝底座提供的「待处理消息」素材（带发件卡名＋类型中文名＋应对
         # 说明＋**消息正文**）。构造失败回落默认文、不阻断调起。
         try:
@@ -1742,7 +1997,7 @@ async def schedule_card_message_triggers(state: RunState) -> None:
             prompt = _fallback_card_msg_prompt(pending)
         task = _spawn_tracked(
             _routes._run_message(work_id, target_id, prompt,
-                                 None, append_user=False))
+                                 None, append_user=True))
         task._card_msg_target = target_id  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)
 
@@ -1825,15 +2080,17 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         _spawn_tracked(_watch_pending(task, work_id, target_id))
 
     # ============================================================
-    # [排队保证 2026-10-22 · D24] 本轮收口时**查自己**还有没有未处理消息。
+    # [排队语义 2026-10-23 · 用户令] 本轮**不在回合内**起下一回合。
     #
-    # 为什么必须有这一段：用户裁定「子卡→父卡是排队到轮末，但一定不是投递」。
-    # 旧实现只有 TRIGGERS（记一笔等别人消费），若收口那一刻没有别的卡在跑，
-    # 消息就永远躺着——那是投递。这一段让**本卡自己的收口**成为保证：
-    # 只要有未处理消息，就立刻再起一轮，不依赖任何外部条件。
+    # 原来这里直接 `_spawn_tracked(_run_message(...))`：回合还没返回、互斥体还没摘，
+    # 新回合去 turn_try_acquire 必然被拒（今天实测 82 次 mutex_reject，12 张卡）——
+    # 消息就躺在队列里没人再捡。
     #
-    # 水位机制保证正常情况会收敛（每轮成功都会推进水位）；_SELF_REQUEUE_MAX
-    # 只兜异常（回合连续失败导致水位不动），到顶后如实记 ops 并停止。
+    # 正确做法（用户原话）：「所有消息排队等这一轮跑完，再下一个回合一起进」：
+    #   · 回合内**只记一个标记**，什么都不起；
+    #   · 由 routes 在 `turn_release()` **之后**统一捞队列（`deliver_now`）——
+    #     那里已有正确判据：有 pending 才起、有人占着就等、多条一起进一个回合。
+    # ⇒ 自续轮这个「回合内起回合」的入口整体退役。
     # ============================================================
     try:
         _own = await card_db.list_pending(state.work_id, state.card_id)
@@ -1841,31 +2098,13 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         logger.warning("[排队] 自查未处理消息失败 card=%s: %s", state.card_id, exc)
         _own = []
     if _own:
-        _key = (state.work_id, state.card_id)
-        _n = _SELF_REQUEUE.get(_key, 0)
-        if _n >= _SELF_REQUEUE_MAX:
-            session_ops.ops_log("card_msg_self_requeue_giveup", state.work_id,
-                                state.card_id,
-                                {"n": _n, "left": [str((it or {}).get("msg_id") or "")
-                                                   for it in _own]})
-            logger.warning("[排队] 自续轮达上限，停止 card=%s n=%d 剩 %d",
-                           state.card_id, _n, len(_own))
-        else:
-            _SELF_REQUEUE[_key] = _n + 1
-            try:
-                _prompt = await _build_card_msg_prompt(state.work_id, _own)
-            except Exception:  # noqa: BLE001
-                _prompt = _fallback_card_msg_prompt(_own)
-            try:
-                from . import routes as _routes
-                _t2 = _spawn_tracked(_routes._run_message(
-                    state.work_id, state.card_id, _prompt, None, append_user=False))
-                _t2._card_msg_target = state.card_id  # type: ignore[attr-defined]
-                _t2.add_done_callback(_log_trigger_task_done)
-                session_ops.ops_log("card_msg_self_requeue", state.work_id,
-                                    state.card_id,
-                                    {"n": _n + 1, "msgs": len(_own)})
-            except Exception as exc:  # noqa: BLE001
-                logger.error("[排队] 自查续轮起不来 card=%s: %s", state.card_id, exc)
+        # 只留痕、只打标记；真正调起交给摘牌后的统一入口（routes 侧）
+        state.requeue_pending = True
+        session_ops.ops_log("card_msg_requeue_pending", state.work_id, state.card_id,
+                            {"msgs": len(_own),
+                             "msg_ids": [str((it or {}).get("msg_id") or "") for it in _own]})
+        logger.info("[排队] 收口时仍有 %d 条未处理消息 ⇒ 摘牌后由统一入口接续 card=%s",
+                    len(_own), state.card_id)
     else:
+        state.requeue_pending = False
         _SELF_REQUEUE.pop((state.work_id, state.card_id), None)

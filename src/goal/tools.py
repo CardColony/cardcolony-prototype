@@ -161,23 +161,93 @@ async def h_get_goal(work_id: str, current_id: str,
 
 async def h_create_goal(work_id: str, current_id: str,
                         arguments: dict[str, Any], cards: dict[str, Any]) -> dict[str, Any]:
+    """给一张卡设目标：**写卡面 goal 区 + 开自动模式**，再让状态机跟上。
+
+    [goal 变卡面区域 2026-10-28 · 用户令] 三处对齐：
+      ① 目标内容的真值是**卡面 goal 区**（不是 goal 对象里的副本）⇒ 先写卡；
+      ② `target` 默认自己，给了就是**父卡给子卡派任务**——这是比 direct 更明确的派活
+         通道（direct 只说一句话，设目标会让它一直跑到声明完成）；
+      ③ 去掉「必须直接人类回合」的限制：父卡在卡间消息回合里也要能派任务。
+         权限改走 `policy.check(SWITCH_PLAN)` + 「必须是我的子卡」。
+    """
+    target = str(arguments.get("target") or "").strip() or current_id
+    objective = str(arguments.get("objective") or "").strip()
+    if not objective:
+        return _err("validation", "objective 不能为空：写清「做到什么算完成」")
     try:
         source = authority.current_turn_source()
         authority.goal_tool_execution(source)
-        authority.require_direct_human(source)
-        view = await get_service().create(work_id, current_id, CreateGoalRequest(
-            objective=str(arguments.get("objective") or ""),
-            max_goal_rounds=(int(arguments["max_goal_rounds"])
-                             if _has_round_cap(arguments.get("max_goal_rounds")) else None),
-        ))
+        if target != current_id:
+            from ..permissions import policy
+            policy.check(current_id, target, policy.SWITCH_PLAN, cards)
+            meta = (cards or {}).get(target) or {}
+            if str(meta.get("parent") or "") != current_id:
+                return _err("denied", f"{target} 不是你的子卡，不能给它设目标")
+        # ① 卡面（目标真值）
+        from ..storage import card_store
+        await card_store.update_card(
+            work_id, target,
+            {"goal": objective, "auto_mode": 1},
+            f"[goal] {current_id} 设定目标")
+        # ② 状态机（只记 phase/rounds，内容以卡面为准）
+        svc = get_service()
+        cur = await svc.get(work_id, target)
+        if cur is None or cur.phase == "complete":
+            view = await svc.create(work_id, target, CreateGoalRequest(
+                objective=objective,
+                max_goal_rounds=(int(arguments["max_goal_rounds"])
+                                 if _has_round_cap(arguments.get("max_goal_rounds")) else None),
+            ))
+        else:
+            view = await svc.edit(work_id, target, cur.ref(),
+                                  EditGoalRequest(objective=objective))
     except GoalError as exc:
         return _err(exc.code, exc.message)
+    except PermissionError as exc:
+        return _err("denied", str(exc))
+    except Exception as exc:  # noqa: BLE001 写卡失败如实回给模型
+        return _err("internal", f"设定目标失败: {exc}")
     return _ok(_goal_value(view))
 
 
 async def h_update_goal(work_id: str, current_id: str,
                         arguments: dict[str, Any], cards: dict[str, Any]) -> dict[str, Any]:
     action = str(arguments.get("action") or "").strip()
+    # [goal 变卡面区域 2026-10-28 · 用户令] 加 target 与「只改内容」分支：
+    #   · target 默认自己，给了就是**父卡改子卡目标**；
+    #   · 只给 objective 不给 action ⇒ 纯改内容，**不需要 goal_id/revision**
+    #     （内容真值是卡面，改卡面就行）；状态机有就跟一步，没有就建一个。
+    target = str(arguments.get("target") or "").strip() or current_id
+    _objective = str(arguments.get("objective") or "").strip()
+    if _objective and not action:
+        try:
+            source = authority.current_turn_source()
+            authority.goal_tool_execution(source)
+            if target != current_id:
+                from ..permissions import policy
+                policy.check(current_id, target, policy.SWITCH_PLAN, cards)
+                meta = (cards or {}).get(target) or {}
+                if str(meta.get("parent") or "") != current_id:
+                    return _err("denied", f"{target} 不是你的子卡，不能改它的目标")
+            from ..storage import card_store
+            await card_store.update_card(
+                work_id, target, {"goal": _objective},
+                f"[goal] {current_id} 更新目标")
+            svc = get_service()
+            cur = await svc.get(work_id, target)
+            if cur is None or cur.phase == "complete":
+                view = await svc.create(work_id, target,
+                                        CreateGoalRequest(objective=_objective))
+            else:
+                view = await svc.edit(work_id, target, cur.ref(),
+                                      EditGoalRequest(objective=_objective))
+        except GoalError as exc:
+            return _err(exc.code, exc.message)
+        except PermissionError as exc:
+            return _err("denied", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _err("internal", f"更新目标失败: {exc}")
+        return _ok(_goal_value(view))
     # [角色机制 5710] 指令闸：目标卡还有未验收的角色指令时不许 complete。
     # 放在 authority 之前：即使调用方不在开放回合，也先如实告诉它“先完成指令”。
     if action == "complete":
@@ -201,6 +271,26 @@ async def h_update_goal(work_id: str, current_id: str,
         _role_gate = await _zero_role_close_gate_block(work_id, current_id, cards)
         if _role_gate is not None:
             return _role_gate
+
+        # [子卡未完成闸 2026-10-28 · 用户实测「goal 形同虚设」] 有子卡还在跑 ⇒ 不许收口。
+        #
+        # 为什么必须加：`drive()` 续轮时有 `_yield_to_children`（有子卡就让位），
+        # 收口却完全不看子卡 ⇒ 卡能在子卡还在跑的时候把自己标 complete，然后
+        # 目标 disarmed、自动模式再也不驱动它。实测 card_061 就是这样：收口时
+        # card_066/card_067 两张子卡还在跑。
+        # 同一条纪律的两端：**续轮让位给子卡，收口也得等子卡**。
+        try:
+            from ..api import auto_driver
+            _kids = auto_driver.has_active_child(work_id, current_id)
+        except Exception:  # noqa: BLE001 判不出来就放行（宁可放过，不误拦）
+            _kids = False
+        if _kids:
+            return _err(
+                "CHILD_PENDING",
+                "收口被拒：本卡还有子卡在跑。目标没真正做完就收口，等于把这条线"
+                "半路关掉（自动模式不会再驱动它）。出路二选一：等子卡收口后再 "
+                "update_goal(complete)；或 update_goal(blocked) 说明卡在哪一步、"
+                "在等哪张子卡。")
     try:
         source = authority.current_turn_source()
         authority.goal_tool_execution(source)
@@ -272,6 +362,10 @@ async def h_update_goal(work_id: str, current_id: str,
                 f"blocked requires at least {DEFAULT_BLOCKED_AFTER_ROUNDS} consecutive goal rounds; "
                 f"current round is {granted['goal'].rounds_started}",
                 "GOAL_TOOL_BLOCK_THRESHOLD")
+        # [阶段收敛 2026-10-25 · 用户令「职能只在阶段完工介入,工作细节域内
+        # 自决」] 逐卡两段式收口闸撤除——逐卡评审=逐卡叫醒职能=无限上报。
+        # 完工即 complete;质量与方向在**阶段收口**由职能统一表态
+        # (全部直接子卡 completed ⇒ 父卡 phase_arrived ⇒ 汇聚)。
 
         view = (await service.complete(work_id, current_id, ref) if action == "complete"
                 else await service.block(work_id, current_id, ref, "model-reported", str(reason)))
@@ -312,6 +406,12 @@ async def h_resume_child(work_id: str, current_id: str,
     meta = (cards or {}).get(target) or {}
     if not meta:
         return _err("not_found", f"卡片不存在: {target}")
+    # [强制停止 2026-10-24] 恢复 = 同时解除停止标记(否则解了 goal 也进不了回合)
+    try:
+        from ..api import control as _control
+        _control.unhalt(work_id, target)
+    except Exception:  # noqa: BLE001
+        pass
     if not bool(meta.get("auto_mode")):
         return _err("denied", f"{target} 不是自动模式卡，没有目标可恢复")
     try:
@@ -356,7 +456,7 @@ GET_GOAL_SCHEMA: dict[str, Any] = {
     "name": "get_goal",
     "description": (
         "读取当前会话的目标：精确 id/revision、objective、phase、已跑轮次、轮次上限、"
-        "blocked 原因，以及是否还允许自动续轮（activation）。**调用 update_goal 之前必须先读它**，"
+        "blocked 原因，以及本目标是否还参与自动续轮（activation）。**调用 update_goal 之前必须先读它**，"
         "并把 id 与 revision 原样抄过去。"
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
@@ -365,14 +465,16 @@ GET_GOAL_SCHEMA: dict[str, Any] = {
 CREATE_GOAL_SCHEMA: dict[str, Any] = {
     "name": "create_goal",
     "description": (
-        "当**当前这条人类请求**是一个需要跨多轮自主推进的长目标时，创建一个持久目标。"
-        "可以从人类意图推断，不必等他说“建个目标”。单轮就能做完的琐事不要建。"
-        "只有直接人类回合有权创建。"
+        "给一张卡设定目标（写入它的**卡面 goal 区**，并打开自动模式）。"
+        "不给 target 就是给自己设；给了 target 就是给子卡派任务——"
+        "这是父卡派活的正规通道，比 direct 更明确：目标会一直驱动它跑到声明完成。"
+        "目标要可验收，写清「做到什么算完成」。单轮就能做完的琐事不要设目标。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "objective": {"type": "string", "description": "从人类请求推断出的、可验收的完成目标。"},
+            "objective": {"type": "string", "description": "要达成的、可验收的目标。"},
+            "target": {"type": "string", "description": "可选：目标卡 id（默认＝自己）。给子卡设目标时填它。"},
             "max_goal_rounds": {"type": "integer", "description": "可选：自动续轮的轮次上限。"},
         },
         "required": ["objective"],
@@ -382,25 +484,26 @@ CREATE_GOAL_SCHEMA: dict[str, Any] = {
 UPDATE_GOAL_SCHEMA: dict[str, Any] = {
     "name": "update_goal",
     "description": (
-        "更新当前目标的精确版本（先用 get_goal 取 goal_id 与 revision）。"
-        "action=edit 改目标：**自动续轮里也能用**——任务做完了但还有后续，改目标继续，"
-        "不要新开一张卡（complete 状态下 edit 会开一轮新生命周期并立刻继续）；"
-        "action=resume 重新激活：paused/blocked/complete 都能拉回 active 继续跑。"
-        "action=pause 需要直接人类回合（停是人的决定）。"
-        "blocked 在未达最少轮次前会被拒；模型负责判断“同一个阻塞条件确实连续存在”，并写进 blocked_reason。"
+        "改一张卡的目标，或改它的目标状态。"
+        "**objective**：改目标内容，直接写它的卡面 goal 区（不需要 goal_id；"
+        "自动续轮里也能用——做完了但还有后续就改目标继续，不要新开一张卡）。"
+        "**action**：声明目标态（complete 收口 / pause 暂停 / resume 复活 / blocked 卡住），"
+        "这时才需要 goal_id 与 revision（先用 get_goal 取）。"
+        "target 不给＝改自己；给了＝改子卡（父卡改子卡目标）。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "goal_id": {"type": "string", "description": "get_goal 返回的精确 id。"},
             "revision": {"type": "integer", "description": "get_goal 返回的精确 revision。"},
+            "target": {"type": "string", "description": "可选：目标卡 id（默认＝自己）。父卡改子卡目标时填它。"},
             "action": {"type": "string", "enum": list(UPDATE_ACTIONS),
-                       "description": "edit | pause | resume | complete | blocked"},
-            "objective": {"type": "string", "description": "替换目标，仅 action=edit。"},
+                       "description": "edit | pause | resume | complete | blocked（只改内容时不用给）"},
+            "objective": {"type": "string", "description": "新目标内容：直接写卡面 goal 区。"},
             "max_goal_rounds": {"type": "integer", "description": "替换轮次上限，仅 action=edit。"},
             "blocked_reason": {"type": "string", "description": "具体阻塞条件，仅 action=blocked 必填。"},
         },
-        "required": ["goal_id", "revision", "action"],
+        "required": [],
     },
 }
 

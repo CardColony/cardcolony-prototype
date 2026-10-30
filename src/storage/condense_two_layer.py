@@ -124,31 +124,42 @@ def _loose_json(text: str) -> Any:
 def parse_groups(text: str, block_seqs: list[int]) -> list[tuple[int, int]]:
     """解析 S2a 的分组 → `[(首块seq, 末块seq), ...]`（**机械兜底**：解析不出 ⇒ 每块一组）。
 
+    `end` 口径 = **窗口下标**（0 起、连续无洞），与 `CONDENSE_S2A_PROMPT` 字面一致：
+    「第 1 组从 idx 0 开始，之后每组从前一组 end+1 开始」。
+    [2026-10-29 修] 原实现把 `end` 当**块号**去做 `block_seqs.index(end)`——窗口一旦
+    不从 0 开始（mark 推进后块号是 500、501…，而下标仍是 0、1…），全部查不到 ⇒
+    退化成逐块 ⇒ 每条消息一条结论，正是「340 条、中位覆盖 1 块」的来源。
+    现按提示词口径直接下标索引，机械校验只有两条（dsh 同款）：严格递增、在范围内。
+
     dsh 口径：分组只是"事件边界"，**取不到就退化为逐块**——宁可多切，不能少切
     （少切会把两件事混成一条结论）。
     """
     data = _loose_json(text)
-    groups: list[tuple[int, int]] = []
-    ends = []
+    ends: list[int] = []
     if isinstance(data, dict) and isinstance(data.get("groups"), list):
-        ends = [int(g.get("end", -1)) for g in data["groups"] if isinstance(g, dict)]
+        for g in data["groups"]:
+            if isinstance(g, dict):
+                try:
+                    ends.append(int(g.get("end", -1)))
+                except (TypeError, ValueError):
+                    continue
     if not ends or not block_seqs:
         return [(s, s) for s in block_seqs]
 
-    prev_idx = -1
+    n = len(block_seqs)
+    groups: list[tuple[int, int]] = []
+    prev = -1
     for end in ends:
-        # end 是块号（原文里的 [块N]），映射到 block_seqs 的下标
-        try:
-            idx = block_seqs.index(end)
-        except ValueError:
+        if end <= prev or end >= n:      # 机械校验：严格递增 + 在 0..n-1 内
             continue
-        if idx <= prev_idx:
-            continue
-        groups.append((block_seqs[prev_idx + 1], block_seqs[idx]))
-        prev_idx = idx
-    if prev_idx < len(block_seqs) - 1:          # 尾巴没收进来 ⇒ 补一组
-        groups.append((block_seqs[prev_idx + 1], block_seqs[-1]))
-    return groups or [(s, s) for s in block_seqs]
+        groups.append((block_seqs[prev + 1], block_seqs[end]))
+        prev = end
+    if not groups:
+        return [(s, s) for s in block_seqs]      # 一条有效切点都没有 ⇒ 逐块
+    # **不补尾巴**：dsh 口径「被消耗段 = 最后一个 end+1 条，可以是窗口前缀——
+    # 拿不准的后段留给下一批」。补一组会把没定界的尾巴和前一组合并，等于让模型
+    # 的「拿不准」被代码改写成「就是一组」。[2026-10-29 修：原实现补了尾巴]
+    return groups
 
 
 def parse_l1(text: str, n_groups: int) -> Optional[list[dict[str, Any]]]:
@@ -237,8 +248,12 @@ def assemble(block_seqs: list[int], groups: list[tuple[int, int]],
             node["lesson"] = row["教训"]
         nodes.append(node)
 
-        # 描述层：子题按 end 递增机械切区间
-        prev_end = covered[0] - 1
+        # 描述层：子题按 end 递增机械切区间。
+        # ★ 起点必须落在 `covered[0]`（父的首块）**之后**：父的首块已被 L1 占作 anchor，
+        #   子题若从它起算，首个子题的 anchor 就会与父撞号 ⇒ I1「gist 身份重复」。
+        #   dsh `condense.ts:3273` 用全局 `used` 集合达成的正是这件事（每个 seq 只归属
+        #   一个节点）。[2026-10-29 修：原实现写 `covered[0] - 1`，必然撞号]
+        prev_end = covered[0]
         for sub in (l2[gi] if l2 and gi < len(l2) else []):
             end = int(sub.get("end") or 0)
             if end < covered[0] or end > covered[-1] or end <= prev_end:
@@ -271,22 +286,44 @@ async def run_two_layer(blocks: list[dict[str, Any]],
     **任一段失败 ⇒ `ok=False`**，调用方必须**不改 mark**（dsh 同口径：整批拒绝）。
     """
     seqs = [int((b.get("seq") if isinstance(b, dict) else b) or 0) for b in blocks]
-    body = "\n\n".join(f"[块{int(b.get('seq') or 0)}]\n{b.get('content') or ''}"
-                       for b in blocks if isinstance(b, dict))
     if not seqs:
         return {"ok": False, "stage": "empty", "nodes": [], "descriptions": []}
 
+    def _text(i: int) -> str:
+        b = blocks[i] if i < len(blocks) else {}
+        return str((b.get("content") if isinstance(b, dict) else "") or "")
+
+    # S2a 的输入按**窗口下标**标注（`[idx i]`，0 起连续无洞）——与 `CONDENSE_S2A_PROMPT`
+    # 的字面口径一致。原实现给的是 `[块{seq}]`（真实块号），而提示词要求模型回报
+    # 窗口下标，两者错位。
+    s2a_body = "\n\n".join(f"[idx {i}]\n{_text(i)}" for i in range(len(seqs)))
+
     # S2a 定界（失败/不成形 ⇒ 逐块兜底，不阻断）
     try:
-        g_text = await call_llm(S2A_PROMPT, body)
+        g_text = await call_llm(S2A_PROMPT, s2a_body)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[two_layer] S2a 调用失败，退化为逐块: %s", exc)
         g_text = ""
     groups = parse_groups(g_text, seqs)
 
+    # L1/L2 的输入**必须带组头与组数**（dsh `buildBlockMessages` 口径：
+    # `【块 i/N】（原文 idx a–b）`）。原实现只给 `[块N]`，模型看不到分组 ⇒ 自己猜
+    # 该分几组 ⇒ 返回组数与 groups 对不上 ⇒ 整批被拒（实测 card_024「给 2 组、回 3 组」）。
+    def _grouped() -> str:
+        parts: list[str] = []
+        for gi, (g_from, g_to) in enumerate(groups):
+            idxs = [i for i, s in enumerate(seqs) if g_from <= s <= g_to]
+            if not idxs:
+                continue
+            inner = "\n\n".join(f"[idx {i}]\n{_text(i)}" for i in idxs)
+            parts.append(f"【组 {gi + 1}/{len(groups)}】"
+                         f"（idx {idxs[0]}–{idxs[-1]}，块号 {g_from}–{g_to}）\n{inner}")
+        return "\n\n".join(parts)
+
     # L1 三栏（组数不符 ⇒ 整批拒绝）
+    l1_body = _grouped() + f"\n\n以上共 {len(groups)} 组，每组写一条。"
     try:
-        l1_text = await call_llm(L1_PROMPT, body)
+        l1_text = await call_llm(L1_PROMPT, l1_body)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[two_layer] L1 调用失败（整批作废）: %s", exc)
         return {"ok": False, "stage": "l1", "nodes": [], "descriptions": []}
@@ -297,7 +334,7 @@ async def run_two_layer(blocks: list[dict[str, Any]],
     # L2 细节（失败 ⇒ 只丢细节，结论照常）
     l2 = None
     try:
-        l2_text = await call_llm(L2_PROMPT, body + "\n\n# L1 三栏\n" +
+        l2_text = await call_llm(L2_PROMPT, _grouped() + "\n\n# L1 三栏\n" +
                                  json.dumps({"l1": l1}, ensure_ascii=False))
         l2 = parse_l2(l2_text, len(groups))
     except Exception as exc:  # noqa: BLE001

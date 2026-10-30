@@ -28,11 +28,36 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from typing import Any, Optional
 
 from . import card_db
+
+logger = logging.getLogger("storage.function_store")
+
+
+def _emit_state(work_id: str, function_id: str, block: str, *,
+                old: Any = None, new: Any = None,
+                by: str = "", cause: str = "system") -> None:
+    """[基础设施 2026-10-26 · 事件管理] 职能卡档案变更事件。
+
+    改前 ``function_store`` **零事件**——职能卡只有行为事件
+    （function_opinion/function_ledger），档案本身（管辖/订阅/发言契约/值班态/
+    职责书）改了什么都不留痕。
+    """
+    try:
+        from ..infra import event_hub
+        event_hub.record_state_change(
+            work_id, function_id, "card_block_edited",
+            card_type="function", block=block,
+            old=(str(old)[:2000] if old is not None else None),
+            new=(str(new)[:2000] if new is not None else None),
+            by=by, cause=cause)
+    except Exception as exc:  # noqa: BLE001 事件失败不影响写档案
+        logger.warning("[function_store] 状态事件失败（不阻断）card=%s: %s",
+                       function_id, exc)
 
 
 def _now() -> str:
@@ -75,6 +100,10 @@ def _row_to_profile(row: sqlite3.Row) -> dict[str, Any]:
         # （perms / build_ctx / _run_message / 建卡）全部按 card_id 走。
         # 老库可能还没补这列 ⇒ 取不到时给空串（迁移脚本会补）。
         "card_id": (row["card_id"] if "card_id" in row.keys() else "") or "",
+        # [能力清单 2026-10-30] 这张卡挂了哪些能力（code 数组）。空＝没挂＝
+        # 工具面按既有路径走。老库未补列时同样给空数组（fail-open 到旧行为）。
+        "abilities": (_loads(row["abilities"], [])
+                      if "abilities" in row.keys() else []),
     }
 
 
@@ -102,6 +131,52 @@ def list_profiles(work_id: str) -> list[dict[str, Any]]:
     return card_db.read_sync(work_id, _fn, []) or []
 
 
+async def get_abilities(work_id: str, function_id: str) -> list[str]:
+    """这张职能卡挂了哪些能力（code 数组）。读不到 ⇒ 空数组（＝没挂）。"""
+    prof = get_profile(work_id, function_id) or {}
+    raw = prof.get("abilities")
+    if not isinstance(raw, list):
+        return []
+    return [str(a) for a in raw if str(a).strip()]
+
+
+async def set_abilities(work_id: str, function_id: str,
+                        codes: list[str], *, kind: str = "function",
+                        by: str = "", cause: str = "system") -> dict[str, Any]:
+    """整组覆盖挂载。返回 ``{"abilities": [...], "rejected": [...]}``。
+
+    校验规则（清单不可用时整体跳过——**fail-open 到"信调用方"**，
+    否则清单文件坏一次就会把所有挂载清空）：
+      · code 必须在清单里，且 ``applies_to`` 含 ``kind``；
+      · 重复项去掉，保序。
+    不合法的 code 不写库、放进 ``rejected``，由调用方决定怎么报。
+    """
+    want = [str(c).strip() for c in (codes or []) if str(c).strip()]
+    rejected: list[str] = []
+    keep: list[str] = []
+    try:
+        from ..infra import capability_registry as _cap
+        if _cap.load().get("enabled"):
+            keep = _cap.filter_mounts(want, kind)
+            keep_set = set(keep)
+            rejected = [c for c in want if c not in keep_set]
+        else:
+            keep = list(dict.fromkeys(want))
+    except Exception as exc:  # noqa: BLE001 清单坏了 ⇒ 不校验
+        logger.warning("[function] 挂载校验跳过（清单不可用）: %s", exc)
+        keep = list(dict.fromkeys(want))
+
+    def _fn(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "UPDATE function_profiles SET abilities=?, updated_at=?"
+            " WHERE work_id=? AND function_id=?",
+            (_dumps(keep), _now(), work_id, function_id))
+
+    await card_db.run_write(work_id, _fn)
+    _emit_state(work_id, function_id, "abilities", new=keep, by=by, cause=cause)
+    return {"abilities": keep, "rejected": rejected}
+
+
 async def create_function(work_id: str, function_name: str,
                           profile: dict[str, Any] | None = None,
                           ) -> dict[str, Any]:
@@ -126,8 +201,9 @@ async def create_function(work_id: str, function_name: str,
         conn.execute(
             "INSERT INTO function_profiles"
             " (function_id, work_id, function_name, jurisdiction, watch,"
-            "  speak_contract, escalation, duty, charter, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "  speak_contract, escalation, duty, charter, abilities,"
+            "  created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (function_id, work_id, str(function_name or ""),
              _dumps(profile.get("jurisdiction") or {}),
              _dumps(profile.get("watch") or {}),
@@ -135,6 +211,7 @@ async def create_function(work_id: str, function_name: str,
              _dumps(profile.get("escalation") or {}),
              _dumps(duty),
              _dumps(profile.get("charter") or {}),
+             _dumps([str(a) for a in (profile.get("abilities") or []) if str(a).strip()]),
              now, now),
         )
         charter = profile.get("charter") or {}
@@ -225,6 +302,9 @@ async def update_profile(work_id: str, function_id: str,
             " WHERE work_id=? AND function_id=?", tuple(vals))
 
     await card_db.run_write(work_id, _fn)
+    _emit_state(work_id, function_id, "profile",
+                new={k: v for k, v in patch.items() if k in allowed},
+                cause="system")
     return get_profile(work_id, function_id) or {}
 
 
@@ -252,6 +332,7 @@ async def set_duty_state(work_id: str, function_id: str,
 
     duty, old = await card_db.run_write(work_id, _fn)
     duty["previous"] = old
+    _emit_state(work_id, function_id, "duty", old=old, new=state, cause="system")
     return duty
 
 
@@ -702,3 +783,115 @@ async def verify_directive(work_id: str, function_id: str, directive_id: str,
 
     await card_db.run_write(work_id, _fn)
     return bool(done["ok"])
+
+
+# ============================================================
+# [职能卡面定制 2026-10-24 · P1 收尾] 专业台账存储(function_ledgers)
+#
+# 每个职能的面不只是「观点簿/警报簿」——目录给每个职能定义了**专业台账**
+# (PM=前提台账/CTO=技术裁定簿/QA=判据与验收台账/涌现守门=判据登记与体检/
+#  总裁=决策簿·汇报簿·分歧待裁)。这些是「卡面=全局权威事实源」在职能侧的
+# 物理落点:职能写自己的台账,别人经面读到。
+# DDL 落本层(function_directives 同法)——card_db 是禁改文件。
+# ============================================================
+
+_LEDGER_DDL = """CREATE TABLE IF NOT EXISTS function_ledgers (
+    id             TEXT PRIMARY KEY,
+    work_id        TEXT NOT NULL,
+    function_id    TEXT NOT NULL,
+    ledger_code    TEXT NOT NULL,
+    ts             TEXT NOT NULL,
+    text           TEXT NOT NULL,
+    meta           TEXT DEFAULT '{}',
+    superseded_by  TEXT DEFAULT ''
+)"""
+
+_LEDGER_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_function_ledgers_fn "
+    "ON function_ledgers(function_id, ledger_code, ts)")
+
+
+def _ensure_ledgers(conn: sqlite3.Connection) -> None:
+    conn.execute(_LEDGER_DDL)
+    conn.execute(_LEDGER_INDEX)
+
+
+def _ledger_row(r: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": r["id"],
+        "work_id": r["work_id"],
+        "function_id": r["function_id"],
+        "ledger_code": r["ledger_code"] or "",
+        "ts": r["ts"] or "",
+        "text": r["text"] or "",
+        "meta": _loads(r["meta"], {}),
+        "superseded_by": r["superseded_by"] or "",
+    }
+
+
+async def add_ledger_entry(work_id: str, function_id: str, ledger_code: str,
+                           text: str, meta: dict[str, Any] | None = None,
+                           supersedes: str = "") -> dict[str, Any]:
+    """写一条专业台账条目(职能写**自己的**面;code 合法性由调用方闸)。"""
+    rec = {
+        "id": uuid.uuid4().hex[:12],
+        "ts": _now(),
+        "ledger_code": str(ledger_code or ""),
+        "text": str(text or ""),
+        "meta": dict(meta or {}),
+        "superseded_by": "",
+    }
+
+    def _fn(conn: sqlite3.Connection) -> None:
+        _ensure_ledgers(conn)
+        conn.execute(
+            "INSERT INTO function_ledgers"
+            " (id, work_id, function_id, ledger_code, ts, text, meta, superseded_by)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (rec["id"], work_id, function_id, rec["ledger_code"], rec["ts"],
+             rec["text"], _dumps(rec["meta"]), supersedes))
+        if supersedes:
+            conn.execute(
+                "UPDATE function_ledgers SET superseded_by=? WHERE id=?",
+                (rec["id"], supersedes))
+
+    await card_db.run_write(work_id, _fn)
+    return rec
+
+
+def list_ledger(work_id: str, function_id: str, ledger_code: str,
+                limit: int = 20) -> list[dict[str, Any]]:
+    """列某本台账(按时间倒序;含已被取代条目,展示层自行过滤)。"""
+
+    def _fn(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        # 表未建过(还没写过任何台账)⇒ 空表——建表只在写路径;read_sync 是
+        # 只读连接,里面跑 DDL 会被拒(与 governance_store.get_state 同坑)。
+        try:
+            rows = conn.execute(
+                "SELECT * FROM function_ledgers"
+                " WHERE work_id=? AND function_id=? AND ledger_code=?"
+                " ORDER BY ts DESC LIMIT ?",
+                (work_id, function_id, ledger_code, int(limit))).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [_ledger_row(r) for r in rows]
+
+    return card_db.read_sync(work_id, _fn, []) or []
+
+
+def list_ledger_work(work_id: str, ledger_code: str,
+                     limit: int = 20) -> list[dict[str, Any]]:
+    """跨职能列某本台账(分歧待裁用:任何职能写的分歧都要在总裁面上可见)。"""
+
+    def _fn(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        try:
+            rows = conn.execute(
+                "SELECT * FROM function_ledgers"
+                " WHERE work_id=? AND ledger_code=?"
+                " ORDER BY ts DESC LIMIT ?",
+                (work_id, ledger_code, int(limit))).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [_ledger_row(r) for r in rows]
+
+    return card_db.read_sync(work_id, _fn, []) or []

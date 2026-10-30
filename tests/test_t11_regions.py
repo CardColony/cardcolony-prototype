@@ -65,7 +65,8 @@ def _legacy_build_viewpoint_system_prompt(context_block: str) -> str:
 def test_region_table_six_regions_no_current_turn_region():
     # [上下文底座全量接管 2026-10-15] registry 现含所有运行通道与动态注入区。
     # [规则卡 2026-10-15] 新增 order 85「规则注入」区（instruction 之后、card_duty 之前）。
-    # [卡片思维区 2026-10-15] 新增 order 95（类型级思维文本）与 170「直接子卡现状」。
+    # [卡片思维区 2026-10-15] 新增 order 95（类型级思维文本）与 170「直接子卡」。
+    # [2026-10-27 用户裁定] 170 区加使命 ⇒ 区名改「直接子卡（使命·现状）」。
     # [合并 2026-10-16] 两线相加：全表 15 区。
     # [依赖关联线 2026-10-16] 新增 order 250「依赖关联」区（200 记忆之后、
     # 300 对话历史之前）⇒ 全表 16 区。
@@ -84,7 +85,7 @@ def test_region_table_six_regions_no_current_turn_region():
     assert names == {
         "使用说明", "规则注入", "卡片职责", "卡片思维", "卡片清单", "当前卡",
         "自动模式·目标",
-        "卡片区域说明", "直接子卡现状", "第二层·职能角色",
+        "卡片区域说明", "直接子卡（使命·现状）", "第二层·职能角色",
         "记忆（condense_fold）", "依赖关联",
         "对话历史",
         "本轮工具轮",

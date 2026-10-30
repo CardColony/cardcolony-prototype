@@ -84,30 +84,16 @@ async def append_message(work_id: str, card_id: str, role: str, content: str,
     [T10-2-3/2-4] 加锁等待超过 1 秒记一行 warning（含 work_id/card_id/等待毫秒数）。
     该阈值只是日志触发条件，不构成任何终止判据：超时仍照常写入、不放弃、不重试。
     """
-    path = _session_path(work_id, card_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ts = _now_iso()
-    header = [MARKER, f"role: {role}", f"timestamp: {ts}"]
-    if pair_id:
-        header.append(f"pair_id: {pair_id}")
+    # [2026-10-27 · 用户令「逻辑上应该只有一条写入路」「我要的结果是上下文读 sqlite」]
+    # **委托门面**：seq/turn/pair 由门面分配，md 与原文库同批双写（md 随之 V1→V2）。
+    # 备份：`_backup_20261027/`（work_027 sessions + cards.db，1.2G）。
+    from . import session_facade as _sf  # noqa: PLC0415 延迟破环
+    blk: dict[str, Any] = {"role": role, "content": content}
     if model is not None:
-        header.append(f"model: {model}")
-    header.append("---")
-    block = "\n".join(header) + "\n" + _escape(content) + "\n"
-    lock = _session_lock(work_id, card_id)
-    wait_started = time.monotonic()
-    async with lock:
-        waited_ms = (time.monotonic() - wait_started) * 1000
-        if waited_ms > 1000:
-            logger.warning(
-                "会话写入锁等待超过 1 秒 work=%s card=%s 等待=%.0fms（照常写入）",
-                work_id, card_id, waited_ms,
-            )
-        async with aiofiles.open(path, mode="a", encoding="utf-8") as f:
-            await f.write(block)
-    msg = {"role": role, "content": content, "timestamp": ts,
-           "model": model, "pair_id": pair_id or ""}
-    return msg
+        blk["model"] = model
+    if pair_id:
+        blk["pair_id"] = pair_id
+    return await _sf.append(work_id, card_id, blk)
 
 
 # ---------------------------------------------------------------- 读路径锁重试

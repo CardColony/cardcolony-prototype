@@ -31,9 +31,12 @@ def test_parse_groups_falls_back_to_per_block():
     assert g == [(0, 0), (1, 1), (2, 2)], "解析不出 ⇒ 逐块兜底（宁可多切）"
 
 
-def test_parse_groups_fills_tail():
+def test_parse_groups_keeps_tail_for_next_batch():
+    # [2026-10-30] dsh 口径：「被消耗段 = 最后一个 end+1 条，可以是窗口前缀——
+    # 拿不准的后段留给下一批」。补尾巴会把模型说的「拿不准」改写成「就是一组」，
+    # 等于把两件事并成一条结论。原断言 [(0,2),(3,5)] 是补尾版。
     g = tl.parse_groups('{"groups":[{"end":2}]}', list(range(6)))
-    assert g == [(0, 2), (3, 5)], "尾巴要补一组"
+    assert g == [(0, 2)], "只消耗模型定的前缀，尾巴留待下一批"
 
 
 # ---------------------------------------------------------------- T2/T3
@@ -72,8 +75,10 @@ def test_assemble_description_ranges_mechanical():
     l2 = [[{"title": "子1", "gist": "细节1", "end": 1},
            {"title": "子2", "gist": "细节2", "end": 3}]]
     nodes, descs = tl.assemble([0, 1, 2, 3], groups, l1, l2, "s1")
-    assert [d["coveredSeqs"] for d in descs] == [[0, 1], [2, 3]], "从上一 end+1 起"
-    assert [d["seq"] for d in descs] == [0, 2]
+    # [2026-10-30] 父的首块（0）已被 L1 占作 anchor ⇒ 子题从它**之后**起算，
+    # 否则首个子题的 anchor 与父撞号（I1 身份重复）。原断言 [[0,1],[2,3]] 是撞号版。
+    assert [d["coveredSeqs"] for d in descs] == [[1], [2, 3]], "父首块归 L1，子题从它之后起"
+    assert [d["seq"] for d in descs] == [1, 2]
     assert descs[0]["parent_seq"] == 0
 
 

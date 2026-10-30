@@ -1,0 +1,151 @@
+{
+ "_meta": {
+  "title": "系统消息规则表（harness 规则层）",
+  "desc": "每条规则＝触发事件 + 条件 + 动作。可任意增删条目，热加载生效（每次现读文件）。坏条目只标记 invalid 并告警，不拖垮整表。条件在**触发那一刻**求值，没有任何定时器（零墙钟禁的是时间驱动系统，不是禁把 ts 当事实查询）。",
+  "version": 2,
+  "updated": "2026-10-28",
+  "schema": {
+   "id": "唯一标识（snake_case）",
+   "enabled": "开关；false 即整条停用但保留配置",
+   "desc": "人读的一句话说明",
+   "trigger": {
+    "types": "触发的事件类型列表（必须已在 config/event_catalog.json 登记且 triggerable=true）",
+    "card_types": "可选，只对这些卡类型生效（留空＝不限）"
+   },
+   "guard": "条件。可写**条件树**（推荐）或旧写法列表。条件树节点：{\"all\":[...]} / {\"any\":[...]} / {\"not\":c} / {\"event\":spec} / {\"count\":spec,\"cmp\":op,\"value\":n} / {\"field\":\"a.b\",\"cmp\":op,\"value\":v}。可任意嵌套。spec={\"types\":[...],\"where\":{...},\"within\":\"turn|card|all|{last:N}\"}；where 的键支持点号路径（result.ok），值可写 {\"gt\":n} 等比较器，以 $ 开头取本卡字段（如 $parent）。",
+   "target": "self | parent | ancestors | links | card:<card_id>",
+   "message": "消息正文模板，可用占位符 {card_id} {card_title} {card_type} {parent} {trigger_type}"
+  },
+  "guard_kinds": {
+   "event": "{\"event\":{\"types\":[...],\"where\":{...},\"within\":\"turn\"}} 选中至少一条事件",
+   "count": "{\"count\":{...},\"cmp\":\">=\",\"value\":2} 选中事件条数满足条件",
+   "field": "{\"field\":\"state\",\"cmp\":\"eq\",\"value\":\"blocked\"} 本卡字段比较",
+   "all/any/not": "逻辑组合，可嵌套",
+   "旧写法": "{\"kind\":\"no_event|has_event\",\"types\":[...],\"where\":{...},\"scope\":\"turn|card\"} 仍然合法（自动翻译）",
+   "比较器": "eq/ne/gt/ge/lt/le/in/contains/exists/matches"
+  }
+ },
+ "rules": [
+  {
+   "id": "turn_end_without_report",
+   "enabled": true,
+   "desc": "卡片正常完成所有动作（本轮有 done 事件）后，没有向上汇报 ⇒ 唤醒并提醒它调 report_up 汇报。判据全部基于事件，不读卡的状态快照。",
+   "trigger": {
+    "types": [
+     "done"
+    ],
+    "card_types": [
+     "coder",
+     "sub_project",
+     "topic"
+    ]
+   },
+   "guard": [
+    {
+     "kind": "no_event",
+     "types": [
+      "tool_result"
+     ],
+     "where": {
+      "tool": "report_up",
+      "ok": true
+     },
+     "scope": "turn"
+    },
+    {
+     "kind": "has_event",
+     "types": [
+      "msg_directive"
+     ],
+     "where": {
+      "from": "$parent"
+     },
+     "scope": "card"
+    }
+   ],
+   "target": "self",
+   "message": "你这一轮正常完成了所有动作，但没有向上汇报。父卡看不到你写在对话里的内容——请调 report_up(kind=done)，把结果、证据与遗留交给父卡。"
+  },
+  {
+   "id": "child_created_needs_mission",
+   "enabled": false,
+   "desc": "【未启用·示例】父卡建了子卡但使命/需求还是空的 ⇒ 提醒它填写卡面并开启阶段。用户 2026-10-26 只批准了第一个事件（完工不汇报），本条留作配置示例，确认后再置 true",
+   "trigger": {
+    "types": [
+     "card_created"
+    ],
+    "card_types": [
+     "sub_project",
+     "topic",
+     "coder"
+    ]
+   },
+   "guard": [
+    {
+     "kind": "no_event",
+     "types": [
+      "card_block_edited"
+     ],
+     "scope": "card"
+    }
+   ],
+   "target": "parent",
+   "message": "你新建了 {card_id}（{card_title}），但使命还没写。请填写使命与需求文档，写完后调 stage_open 开启阶段任务。"
+  },
+  {
+   "id": "review_continue_when_not_finished",
+   "enabled": true,
+   "desc": "评审跑完一步但还没全员通过、且子卡确实改了草稿 ⇒ 按原状态再叫一次评审卡，接着跑下一步。",
+   "trigger": {
+    "types": [
+     "review_round_done"
+    ],
+    "card_types": [
+     "review"
+    ]
+   },
+   "guard": {
+    "event": {
+     "types": [
+      "review_round_done"
+     ],
+     "where": {
+      "all_passed": false,
+      "changed": true
+     },
+     "within": "turn"
+    }
+   },
+   "target": "self",
+   "mode": "continue",
+   "message": "（续接）评审还没全员通过，继续跑下一步：叫还没通过的下一个成员。"
+  },
+  {
+   "id": "review_continue_until_promoted",
+   "enabled": true,
+   "desc": "评审已全员通过但正稿还没写 ⇒ 按原状态再叫一次，让它调 promote_draft 定稿。",
+   "trigger": {
+    "types": [
+     "review_all_passed"
+    ],
+    "card_types": [
+     "review"
+    ]
+   },
+   "guard": {
+    "event": {
+     "types": [
+      "review_all_passed"
+     ],
+     "where": {
+      "need_promote": true
+     },
+     "within": "turn"
+    }
+   },
+   "target": "self",
+   "mode": "continue",
+   "message": "（续接）评审已全员通过，但正稿还没写。请调 promote_draft 把草稿转成正稿。"
+  }
+ ]
+}

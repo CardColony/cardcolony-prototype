@@ -115,6 +115,11 @@ EVENT_TYPES: tuple[str, ...] = (
     # 自述、抬头〔现状更新〕。单列一类——语义是「专用操作任务」，复用 judgment_protocol
     # 或 context_preamble 都会让前端把标签渲染错。
     "status_update_task",
+    # [需求确定按钮改造 2026-10-29] 【需求确定】按钮的两种专用回合任务注入
+    # （本体论 29 → 31）：根卡那一轮直接改正稿（requirements_final_task）、
+    # 其他卡那一轮拟草稿后开评审（requirements_draft_task）。单列两类——
+    # 注入的正文与流程不同，复用 status_update_task 会让前端把标签渲染错。
+    "requirements_final_task", "requirements_draft_task",
     # [运行态单一真相源 2026-10-21] 回合终止帧（本体论 28 → 29）：``_run_message``
     # 的 finally 里无条件发一次，携带 outcome（ok / error / aborted）。它是**运行态**
     # 的权威终止信号——done/error 是「内容层」收口（由 compose_delivery /
@@ -490,6 +495,11 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
         if ev_type == "run_start":
             _trim_journals(key)
         _fanout(_subscribers.get(key, ()), evt, work_id, card_id, "主通道")
+        # [P28 · 连接预算 2026-10-26] 卡级帧**顺带**投给工作级的「卡级帧订阅者」。
+        # 目的：让**一条**工作级连接带全部卡的帧 ⇒ 浏览器连接数与卡数**解耦**
+        # （浏览器同源 HTTP/1.1 只有 6 条；画布原来给每张被盯的卡各开一条）。
+        # 详见本文件「工作级流『顺带』带卡级帧」一节。
+        _fanout_work_card(work_id, card_id, evt)
         # 兼容映射（旧 /progress 零感知）
         stage = _PROGRESS_STAGE.get(ev_type)
         if stage:
@@ -574,6 +584,11 @@ def subscriber_count(work_id: str, card_id: str) -> int:
 _work_subscribers: dict[str, set[asyncio.Queue]] = {}
 _work_seq: dict[str, int] = {}
 
+#: 工作级事件落盘用的**伪卡号**：它不是真实卡片，只作为事件流的"工作级"维度，
+#: 落到 works/{work}/events/_work.jsonl，并在汇总表里以 "_work" 单独统计。
+#: 用固定值而不是空串，是为了让"按卡分开记录"这条在汇总表里没有例外分支。
+_WORK_EVENT_CARD = "_work"
+
 
 def emit_work(work_id: str, ev_type: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     """工作级事件广播。零阻塞零抛出。
@@ -591,6 +606,23 @@ def emit_work(work_id: str, ev_type: str, data: dict[str, Any] | None = None) ->
             "data": _jsonable(data or {}),
         }
         _fanout(_work_subscribers.get(work_id, ()), evt, work_id, "*", "工作级")
+        # [基础设施 2026-10-26 · 事件管理] 工作级事件**也落盘**。
+        # 改前这里只广播、不写盘 ⇒ card_changed / card_running / 工作级
+        # card_message 零持久记录（卡面编辑在事件流里一条都没有，正是这个缺口）。
+        # 落点＝固定的工作级伪卡号 "_work"（works/{work}/events/_work.jsonl），
+        # 不污染任何真实卡的事件流；汇总表里同样以 "_work" 这一"卡"分开统计。
+        try:
+            from ..storage import event_log
+            event_log.append_bg(work_id, _WORK_EVENT_CARD, {
+                "run_id": "",
+                "round": 0,
+                "type": ev_type,
+                "data": _jsonable(data or {}),
+                "ts": _iso_ts(evt.get("ts")),
+            })
+        except Exception as exc:  # noqa: BLE001 落盘失败不阻断广播
+            logger.warning("[flow] 工作级事件落盘失败（不阻断）type=%s work=%s: %s",
+                           ev_type, work_id, exc)
         logger.info("[flow] work-event type=%s work=%s seq=%s data=%s",
                     ev_type, work_id, evt["seq"],
                     json.dumps(evt["data"], ensure_ascii=False)[:300])
@@ -623,6 +655,73 @@ async def subscribe_work(work_id: str) -> AsyncIterator[dict[str, Any]]:
 
 def work_subscriber_count(work_id: str) -> int:
     return len(_work_subscribers.get(work_id, ()))
+
+
+# ============================================================================
+# [P28 · 连接预算 2026-10-26] 工作级流「顺带」带卡级帧
+# ============================================================================
+#
+# 病根（实测，不是推测）：浏览器同源 HTTP/1.1 只有 **6 条**并发连接，而画布
+# 「监控态」原来给**每张被盯的卡**各开一条 SSE（canvas.js 的 watchStream）——
+# 10 张卡并行 ⇒ 10 条 SSE ⇒ **必然打满** ⇒ 普通请求（timeline / card / nav）
+# 排队拿不到连接 ⇒ fetch 抛 TypeError ⇒ 弹「网络错误」、切卡卡死。
+#
+# 关键事实（canvas.js 自己写着）：那条每卡 SSE **不承载内容**——内容是 3 秒
+# 轮询拉的，SSE 只当「有变化了，去重拉」的触发器。
+# ⇒ 每卡一条连接换来的信息量，等于工作级流里多带几个字节。
+#
+# 解法：卡级帧**顺带**投给工作级订阅者 ⇒ 一条工作级连接带全部卡的帧
+# ⇒ **连接数与卡数解耦**（画布 1 条 ⇒ 10 张卡也还是 1 条）。
+#
+# 隔离纪律（沿用工作级既有纪律，逐条）：
+#   - **单独的订阅表**（_work_card_subscribers），不混进 _work_subscribers
+#     ⇒ 不订阅卡级帧的连接（对话页）零浪费；
+#   - **opt-in**：路由层 ?cards=1 才挂上；
+#   - **逐字帧不投**（content_chunk / reasoning_chunk）——那是"每个 token 一帧"，
+#     10 张卡并行会把工作级队列打爆，而画布并不需要逐字；
+#   - 帧加 ``card`` 字段（卡号）⇒ 与工作级原生帧（card_changed / card_message /
+#     card_running，**顶层没有** card 字段）可区分。
+#     ⚠ 卡级帧**也可能有 type="card_message"**（card_tools.py 落卡间信走的就是
+#     emit()）⇒ 前端必须**先判 card 再判 type**，否则卡级卡间信会被当成工作级帧
+#     处理掉（丢掉那张卡的刷新触发）。
+# ============================================================================
+
+_work_card_subscribers: dict[str, set[asyncio.Queue]] = {}
+
+
+def _fanout_work_card(work_id: str, card_id: str, evt: dict[str, Any]) -> None:
+    """把一张卡的帧投给该 work 的「卡级帧订阅者」（帧加 ``card`` 标记）。"""
+    subs = _work_card_subscribers.get(work_id)
+    if not subs:
+        return
+    try:
+        frame = dict(evt)
+        frame["card"] = card_id
+        _fanout(subs, frame, work_id, card_id, "工作级·卡帧")
+    except Exception:  # noqa: BLE001 展示层零阻断
+        pass
+
+
+async def subscribe_work_cards(work_id: str) -> AsyncIterator[dict[str, Any]]:
+    """工作级「卡级帧」订阅（opt-in）。只推「连上之后新发生的事」（无存量重放）。
+
+    为什么不重放：与工作级原生帧同口径——卡级帧描述的是"变化"不是"状态"，
+    重放旧变化会让前端以为卡刚变过（画布会白刷一轮）。
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _work_card_subscribers.setdefault(work_id, set()).add(queue)
+    try:
+        while True:
+            yield await queue.get()
+    finally:
+        try:
+            _work_card_subscribers.get(work_id, set()).discard(queue)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def work_card_subscriber_count(work_id: str) -> int:
+    return len(_work_card_subscribers.get(work_id, ()))
 
 
 def journal_last_seq(work_id: str, card_id: str) -> int:

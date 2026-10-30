@@ -397,7 +397,7 @@ async def test_chain_summary_written_back_to_card(client, work, monkeypatch):
     body = card["body"]
     text = "\n".join([
         body.get("mission", ""), body.get("status_block", ""),
-        body.get("rulings", ""), *(body.get("history") or []),
+        body.get("requirements", ""), *(body.get("history") or []),
     ])
     assert "两步计划" in text, f"卡面应留计划名：{text[:300]}"
     assert "甲做完了" in text, f"卡面应留步成果：{text[:300]}"

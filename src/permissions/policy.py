@@ -70,8 +70,13 @@ SWITCH_READ = "read"                    # 能读
 SWITCH_EDIT = "edit"                    # 能改（未来会收走）
 SWITCH_DELETE = "delete"                # 能删
 SWITCH_CREATE_CHILD = "create_child"    # 能在它下面建子卡
-SWITCH_LINK = "link"                    # 能连线
-SWITCH_UNLINK = "unlink"                # 能解线
+SWITCH_LINK = "link"                    # 能建**通信线**（links）
+SWITCH_UNLINK = "unlink"                # 能解**通信线**
+# [三线拆开关 2026-10-27 · 用户裁定「区分」] 依赖线（relations）单独两个开关。
+# 改前 link_rel/unlink_rel 挂的是 link/unlink，等于「能建通信线就自动能建依赖线」，
+# 两条语义完全不同的线共用一个 perms 位。拆开后可以只给其中一种。
+SWITCH_LINK_REL = "link_rel"            # 能建**依赖线**（relations）
+SWITCH_UNLINK_REL = "unlink_rel"        # 能解**依赖线**
 SWITCH_TOOLS_FILE = "tools_file"        # 能读写文件
 # [角色只读核验 2026-10-21 · card_004] **只读文件开关**：给「只能看、不能改」的卡用。
 # 为什么不能复用 tools_file：那一个开关管着 11 件工具——read_file／list_files／
@@ -117,6 +122,10 @@ SWITCHES: frozenset[str] = frozenset({
     SWITCH_CREATE_CHILD,
     SWITCH_LINK,
     SWITCH_UNLINK,
+    # [三线拆开关 2026-10-27 · 用户裁定「区分」] 依赖线独立开关。
+    # 不进 TREE_SWITCHES——依赖线不叠子树作用域（见 _SWITCH_SCOPE）。
+    SWITCH_LINK_REL,
+    SWITCH_UNLINK_REL,
     SWITCH_TOOLS_FILE,
     SWITCH_TOOLS_READ_FILE,
     SWITCH_TOOLS_WEB,
@@ -446,6 +455,23 @@ def can(actor_id: str, target_id: str, switch: str,
     return _is_in_subtree(actor, target_id, cards)
 
 
+def _is_review_card(actor_id: str, cards: Mapping[str, dict[str, Any]] | None) -> bool:
+    """actor 是不是**评审席上的人**。读不到就当不是。
+
+    两种认法：
+    · 评审卡自己（`card_type == "review"`）
+    · 评审回合里被打了 `_review_seat` 标记的成员（card_001 / fn_004 / fn_005 ——
+      它们本身是普通卡/职能卡，只有坐进评审席时才有全树读权限）
+    """
+    try:
+        meta = (cards or {}).get(actor_id) or {}
+        if str(meta.get("card_type") or "") == "review":
+            return True
+        return bool(meta.get("_review_seat"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def check(actor_id: str, target_id: str, switch: str,
           cards: Mapping[str, dict[str, Any]] | None,
           *, scope: str = SCOPE_SUBTREE) -> bool:
@@ -462,6 +488,12 @@ def check(actor_id: str, target_id: str, switch: str,
     cards = cards or {}
     target = cards.get(target_id)
     allowed = has_perm(target, switch)
+    if not allowed and switch == SWITCH_READ \
+            and str((target or {}).get("card_type") or "") == "review":
+        # [2026-10-30 实跑抓到] 评审卡的 perms 是空的 ⇒ 连「读」都被拒，成员和子卡
+        # 都读不到评审卡（判据、意见全在那张卡上）。评审卡是这张子卡共同的评审现场，
+        # 读它不该要开关。
+        allowed = True
     prompt_log.append_perm_log({
         "fn": "check",
         "actor_id": actor_id,
@@ -476,6 +508,11 @@ def check(actor_id: str, target_id: str, switch: str,
         if scope == SCOPE_LINKED:      # [5713] 沿通信线：有线即通，方向不限
             scope_ok = _linked_between(actor_id, target_id, cards)
         elif scope == SCOPE_ANY:       # [5713] 建线/解线：不判作用域
+            scope_ok = True
+        elif switch == SWITCH_READ and _is_review_card(actor_id, cards):
+            # [2026-10-29 用户令] 「评审卡应该能读所有卡的卡面，否则它无法校对信息，
+            # 毕竟卡面才是唯一事实源」——评审卡的作用域放开到**整个 work 的读**。
+            # 只放开读：写/删仍走原规则表（评审卡不改别人的卡面）。
             scope_ok = True
         else:
             scope_ok = can(actor_id, target_id, switch, cards)

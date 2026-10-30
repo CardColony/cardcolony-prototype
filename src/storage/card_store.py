@@ -294,9 +294,12 @@ def _normalize_parent(work_id: str, parent: Optional[str], card_type: str) -> st
     - role 角色卡**离树**：无视 parent 入参，强制为 ""（5710 角色机制）
     - parent=None 或父卡不存在 → 回退 work_card_id
     """
-    if card_type in ("project", "role", "function"):
+    if card_type in ("project", "role", "function", "review"):
         # [职能实体化 A 案 2026-10-22 · 用户裁定] 职能同样离树：它在 cards 表里有一行
         # 只为复用基础设施（perms/上下文/回合/建卡），**不进任务树**（parent 恒空）。
+        # [伴生评审卡 2026-10-27] 评审卡同为离树类型：靠 `review_of` 与子卡一对一
+        # 配对，不挂 parent——否则被评卡会变成"有子卡"（删不掉）、子卡计数虚高、
+        # 上下文里多出一堆"子卡现状"。
         return ""
     wid = work_store.work_card_id_of(work_id)
     if parent is None or parent == "":
@@ -328,7 +331,7 @@ HISTORY_HEADING = "## 修改历史"
 
 
 def _render_card(meta: dict[str, Any], mission: str, status_block: str,
-                 rulings: str, history_lines: list[str],
+                 requirements: str, history_lines: list[str],
                  form: str = "old") -> str:
     """按固定字段顺序渲染卡片全文（content_hash 由 apply_hash 回填）。
 
@@ -341,7 +344,7 @@ def _render_card(meta: dict[str, Any], mission: str, status_block: str,
     if form not in _SECTION_HEADINGS:
         # mixed 未收敛时不得落盘（拆分器侧已收敛；此处兜底防漏）
         raise ValueError(f"_render_card: form 非法 {form!r}（须为 old/new）")
-    h_mission, h_status, h_rulings = _SECTION_HEADINGS[form]
+    h_mission, h_status, h_requirements = _SECTION_HEADINGS[form]
     fm = [
         "---",
         f"title: {_q(meta['title'])}",
@@ -402,9 +405,9 @@ def _render_card(meta: dict[str, Any], mission: str, status_block: str,
     parts += [h_status, ""]
     if status_block.strip():
         parts += [status_block.strip("\n"), ""]
-    parts += [h_rulings, ""]
-    if rulings.strip():
-        parts += [rulings.strip("\n"), ""]
+    parts += [h_requirements, ""]
+    if requirements.strip():
+        parts += [requirements.strip("\n"), ""]
     parts += [HISTORY_HEADING, ""]
     parts += history_lines
     return "\n".join(parts) + "\n"
@@ -481,7 +484,14 @@ def _meta_of(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
         row = card_db.get_card_row(conn, card_id)
         if row is None:
             return None
-        return _meta_from_row(work_id, row)
+        m = _meta_from_row(work_id, row)
+        # [三线边表 2026-10-27] 同 iter_card_metas：边表有就用表，没有回退旧字段。
+        e = card_db.edges_of(conn, card_id)
+        if e:
+            m["parent"] = e.get("parent", "")
+            m["links"] = e.get("links") or []
+            m["relations"] = e.get("relations") or []
+        return m
 
     try:
         return card_db.read_sync(work_id, _fn, None)
@@ -768,9 +778,19 @@ def iter_card_metas(work_id: str) -> dict[str, dict[str, Any]]:
     """
     def _fn(conn: Any) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
+        # [三线边表 2026-10-27] 三条线改从**边表**读（cards 上的同名字段降级为回退）。
+        # 接口不变：调用方照旧读 meta["parent"]/["links"]/["relations"]。
+        # 某卡在边表里没有任何行 ⇒ 不出现在 edges 里 ⇒ 保留 cards 行上的旧值
+        # （迁移失败时系统仍可用，不会因为表空而全部丢线）。
+        edges = card_db.edges_index(conn)
         for row in conn.execute("SELECT * FROM cards ORDER BY card_id"):
             cid = row["card_id"]
             m = _meta_from_row(work_id, row)
+            e = edges.get(cid) or {}
+            if e:
+                m["parent"] = e.get("parent", "")
+                m["links"] = e.get("links") or []
+                m["relations"] = e.get("relations") or []
             m["card_id"] = cid
             out[cid] = m
         return out
@@ -930,7 +950,7 @@ async def create_card(
         body = {
             "mission": sections.get("mission", ""),
             "status_block": sections.get("status_block", ""),
-            "rulings": sections.get("rulings", ""),
+            "requirements": sections.get("requirements", ""),
         }
         # [父卡设子卡使命 2026-10-21] mission 显式参数优先于正文区头解析：
         # 「这张卡负责什么」是立项定稿，必须与 goal（本轮目标，会随轮次变）分离；
@@ -1010,6 +1030,16 @@ async def create_card(
             card_db.insert_card(
                 conn, {"card_id": card_id, "work_id": work_id, **meta}, body
             )
+            # [三线边表 2026-10-27 · 用户裁定] 建卡**同时落两条线**：
+            #   ① 父子关系线（权限线）——写 card_parent；
+            #   ② 默认通信线——写 card_links（父子之间靠它通信，parent 不再自带通信能力）。
+            # 同时保留 cards 行上的 parent 字段作**回退**（边表读不到时用），
+            # 验证稳定后再停写字段（那一步要单独做）。
+            _pid = str(meta.get("parent") or "")
+            if _pid:
+                card_db.upsert_parent(conn, card_id, _pid, now)
+                card_db.upsert_link(conn, card_id, _pid, "关联",
+                                    "父子默认通信线", now)
             card_db.append_history(conn, card_id, history_line, now)
             card_db.set_meta_value(conn, "seq", str(seq))
             _append_issued(conn, card_id)
@@ -1064,6 +1094,17 @@ async def create_card(
         except Exception as exc:  # noqa: BLE001 填表失败不阻断建卡
             logger.warning("[模型表] 建卡填行失败 work=%s card=%s: %s",
                            work_id, card_id, exc)
+        # [伴生评审卡 2026-10-27 · P7 结构跟着生命周期走] 子项目卡／课题卡
+        # 建卡即派生**伴生评审卡**：一对一、离树、不设 parent、随子卡归档。
+        # 与影子卡同族（都在建卡末尾派生，失败只记日志不阻断建卡）。
+        # 评审卡自己（card_type=review）不再派生，递归深度 1。
+        if card_type in ("sub_project", "topic"):
+            try:
+                from . import review_store as _rv
+                await _rv.ensure_review_card(work_id, card_id, title)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[review] 伴生评审卡派生失败（不阻断建卡）"
+                               " work=%s card=%s: %s", work_id, card_id, exc)
         if skip_kick:
             return await read_card(work_id, card_id)
         try:
@@ -1103,7 +1144,7 @@ async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
     """读卡（库查）。
 
     [卡片存储迁移 SQLite] 返回契约保留 ``{meta, body:{mission,
-    status_block,rulings,history}}``（history 为行列表）；**``raw`` 退役**——它原是「md 整篇
+    status_block,requirements,history}}``（history 为行列表）；**``raw`` 退役**——它原是「md 整篇
     文本」，与「区域独立、不留 md」相悖（方案 §三决策 1）。
     哈希校验与「外部修改」回写一并退役（不留 md，不让手改后失去对象）。
     """
@@ -1119,7 +1160,12 @@ async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
             "body": {
                 "mission": row["mission"] or "",
                 "status_block": row["status_block"] or "",
-                "rulings": row["rulings"] or "",
+                "requirements": row["requirements"] or "",
+                # [goal 变卡面区域 2026-10-28 · 用户令] goal 进 body，与使命/现状/
+                # 需求文档并列，成为卡面上的一块。**复用 cards.goal 列，不新加列**：
+                # 内容本来就在这一列里，缺的只是「读侧把当它一块交出来」——
+                # 改前只有 meta 里能拿到，正文侧看不见，也就谈不上「卡面的一块」。
+                "goal": row["goal"] or "",
                 "history": card_db.get_history(conn, card_id),
             },
         }
@@ -1128,6 +1174,64 @@ async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
     if result is None:
         raise CardNotFoundError(f"卡片不存在: {card_id}")
     return result
+
+
+#: 父子默认通信线的标记（建卡时自动建，换父时迁到新父）。
+#: 用 note 而不是新增字段：线表里"这条线是怎么来的"本来就该写清楚。
+_DEFAULT_LINK_NOTE = "父子默认通信线"
+
+
+def _sync_edges(conn: Any, card_id: str, updates: dict[str, Any],
+                now: str) -> None:
+    """[三线边表 2026-10-27] 把 parent／links／relations 的改动同步进边表。
+
+    **双写**：cards 上的同名字段照旧写（回退用），边表是权威。
+    语义对齐 `update_card`——links/relations 是**整块覆盖**（传什么就是什么），
+    不是增量追加。
+
+    两条特例：
+    - `parent` 变了 ⇒ 旧的「父子默认通信线」删掉、给新父补一条
+      （父子关系断了，默认线也该断；换父后仍然「父子默认有线」）。
+    - `links` 整块覆盖时**保留默认线**（它不在 cards.links 字段里，
+      不保留就会被一次 link_cards 顺手清掉，父子通信无声断掉）。
+    """
+    if "parent" in updates:
+        _new_pid = str(updates.get("parent") or "").strip()
+        _old = conn.execute(
+            "SELECT parent_id FROM card_parent WHERE card_id=?", (card_id,)
+        ).fetchone()
+        if _old is not None and str(_old["parent_id"] or "") != _new_pid:
+            conn.execute(
+                "DELETE FROM card_links WHERE from_card=? AND to_card=? AND note=?",
+                (card_id, _old["parent_id"], _DEFAULT_LINK_NOTE))
+        card_db.upsert_parent(conn, card_id, _new_pid, now)
+        if _new_pid:
+            card_db.upsert_link(conn, card_id, _new_pid, "关联",
+                                _DEFAULT_LINK_NOTE, now)
+    if "links" in updates:
+        conn.execute(
+            "DELETE FROM card_links WHERE from_card=? AND note<>?",
+            (card_id, _DEFAULT_LINK_NOTE))
+        for e in updates.get("links") or []:
+            if not isinstance(e, dict):
+                continue
+            tgt = str(e.get("target") or "").strip()
+            if not tgt:
+                continue
+            card_db.upsert_link(conn, card_id, tgt,
+                                str(e.get("type") or ""),
+                                str(e.get("note") or ""), now)
+    if "relations" in updates:
+        conn.execute("DELETE FROM card_relations WHERE from_card=?", (card_id,))
+        for e in updates.get("relations") or []:
+            if not isinstance(e, dict):
+                continue
+            tgt = str(e.get("target") or "").strip()
+            if not tgt:
+                continue
+            card_db.upsert_relation(conn, card_id, tgt,
+                                    str(e.get("kind") or ""),
+                                    str(e.get("detail") or ""), now)
 
 
 async def update_card(
@@ -1140,7 +1244,7 @@ async def update_card(
 
     updates 支持键（含 Phase 7 扩展）：
       title/tags/links/relations/session_ref/card_type/parent
-      mission/status_block/rulings（正文块·新键）
+      mission/status_block/requirements（正文块·新键）
       charter/conclusion/rejections（正文块·旧键，保留兼容，归一到新键后落同一处）
 
     [权限底座重做 2026-10-12 · 用户裁定 2] **类型不可变**：updates 里出现
@@ -1303,6 +1407,8 @@ async def update_card(
         # 都在本唯一写门上落盘。
         "auto_mode", "goal", "goal_state", "goal_rounds", "goal_await_children",
         "goal_await_wakes",
+        # [需求文档生命周期 2026-10-28] 草稿（私有）与定稿状态（draft/in_review/approved）
+        "requirements_draft", "requirements_state",
     )
 
     # [现状告知 2026-10-25 · 修] ``body_patch`` 是在 ``_fn`` **里面**定义的局部变量，
@@ -1317,9 +1423,13 @@ async def update_card(
     # 「现状告知 2026-10-25 修」那条坑）。
     _old_body: dict[str, str] = {}
     _new_body: dict[str, str] = {}
+    # [2026-10-29] 草稿列（requirements_draft）走 meta 通道、不在 body_patch 里，
+    # 但它是**评审的唯一材料** ⇒ 它的变化必须能触发重评。单独带一份新旧值。
+    _old_draft = ""
+    _new_draft = ""
 
     def _fn(conn: Any) -> Optional[str]:
-        nonlocal _old_status_block, _old_body, _new_body
+        nonlocal _old_status_block, _old_body, _new_body, _old_draft, _new_draft
         row = card_db.get_card_row(conn, card_id)
         if row is None:
             return None
@@ -1329,20 +1439,26 @@ async def update_card(
         body_patch = {
             "mission": updates.get("mission", row["mission"] or ""),
             "status_block": updates.get("status_block", row["status_block"] or ""),
-            "rulings": updates.get("rulings", row["rulings"] or ""),
+            "requirements": updates.get("requirements", row["requirements"] or ""),
         }
         _old_status_block = str(row["status_block"] or "")
-        _old_body = {b: str(row[b] or "") for b in ("mission", "status_block", "rulings")}
+        _old_body = {b: str(row[b] or "") for b in ("mission", "status_block", "requirements")}
         _new_body = dict(body_patch)
+        _old_draft = str(row["requirements_draft"] or "") \
+            if "requirements_draft" in row.keys() else ""
+        _new_draft = str(meta_patch.get("requirements_draft", _old_draft) or "")
         # [卡面版本 2026-10-24 · 用户令] 写前把**被改动块的旧值**存成新版本——
         # 模型误操作（如一次 edit_card 把 64KB 需求块覆盖成一句占位）后能自己找回。
         # 同一事务：版本记录与正文写入同生共死，不会出现「改了但没版本」。
         card_db.append_revisions(
             conn, card_id, now, history_note,
-            {b: (row[b] or "") for b in ("mission", "status_block", "rulings")},
+            {b: (row[b] or "") for b in ("mission", "status_block", "requirements")},
             body_patch,
         )
         card_db.update_card_row(conn, card_id, meta_patch, body_patch)
+        # [三线边表 2026-10-27] 三条线**双写**：cards 字段（回退）＋ 边表（权威）。
+        # 放在唯一写门里 ⇒ 任何走 update_card 的调用方都自动同步，漏不掉。
+        _sync_edges(conn, card_id, updates, now)
         card_db.append_history(conn, card_id, f"- [{now}] {history_note}", now)
         card_db.bump_rev(conn)
         return now
@@ -1401,7 +1517,7 @@ async def update_card(
 
     # [role-sync 2026-10-20 · card_004] body block changed => notify roles watching
     # this card. Old gap: sync was only hooked to work-card turn completion
-    # (role_room.after_turn), so (1) PATCHing status_block/rulings never reached
+    # (role_room.after_turn), so (1) PATCHing status_block/requirements never reached
     # roles, and (2) cards without session blocks have no turns at all, so a role
     # could only ever see their first snapshot. Hooked after the single write gate
     # => covers both tool path and HTTP path. Never breaks the write.
@@ -1415,21 +1531,49 @@ async def update_card(
                 _parent = str((await read_card(work_id, card_id)).get("meta", {})
                               .get("parent") or "")
                 if _parent:
-                    import uuid as _uuid
-                    from datetime import datetime, timezone, timedelta as _td
-                    await card_db.append_inbox(
-                        work_id,
-                        msg_id=f"{card_id}-{_uuid.uuid4().hex[:8]}",
-                        target_card_id=_parent, from_card=card_id,
-                        type="msg_notify",
-                        content=f"【现状更新】{card_id}:"
-                                f"{_new_sb[:200].replace(chr(10), ' ')}",
-                        created_at=datetime.now(
-                            timezone(_td(hours=8))).isoformat(),
-                    )
+                    # [2026-10-27 · 用户裁定「inbox 直接取消」] 落会话块，不进收件箱。
+                    from . import session_facade as _sf
+                    try:
+                        await _sf.append_card_message(
+                            work_id, _parent, from_card=card_id,
+                            text=f"【现状更新】{card_id}："
+                                 f"{_new_sb[:200].replace(chr(10), ' ')}",
+                            msg_type="msg_notify")
+                    except Exception as _exc:  # noqa: BLE001 通知失败不挡写入
+                        logger.warning("[现状更新] 通知父卡失败 %s: %s",
+                                       card_id, _exc)
         except Exception as exc:  # noqa: BLE001 告知失败不影响写入
             logger.warning("[status] 父卡告知失败 work=%s card=%s: %s",
                            work_id, card_id, exc)
+
+    # [伴生评审卡 2026-10-27 · P7] **子卡卡面变了 ⇒ 伴生评审卡按新版本重评一轮**。
+    # 挂在唯一写入口之后：工具路径与 HTTP 路径都覆盖（同 role-sync 的接线理由）。
+    # 评审卡自己没有伴生卡，所以评审卡自身的写入（现状块系统渲染）不会自激。
+    # [2026-10-29] 触发条件收窄到**草稿列**：评审对象是 requirements_draft，
+    # 改使命/现状/正稿都不再触发（sync_draft 内部也只认草稿指纹，这里是省一次读库）。
+    try:
+        _rv_changed = _old_draft != _new_draft
+        if _rv_changed:
+            from ..api import review_runner as _rr
+            await _rr.maybe_rerun(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 触发失败不影响写入
+        logger.warning("[review] 卡面变更触发重评失败 card=%s: %s", card_id, exc)
+
+    # [依赖变更通知 2026-10-27 · 用户令「先把能力具备，开关后置」]
+    # 正文块真变了 ⇒ 查 relations 表「谁依赖我」⇒ 给它们各发一条同步（不唤醒）。
+    # 走 append_card_message 只写会话块、不碰卡面 ⇒ 不会自激。
+    # 开关在 config/edge_notify.json，默认关；关着时本段连库都不查。
+    # ★ 判据与上面评审触发**分开算**：上面只认草稿列，这里认正文三块
+    #   （2026-10-29 收窄评审触发时若不分开，正文块变更会漏掉依赖通知）。
+    try:
+        _blocks = [_b for _b in ("mission", "status_block", "requirements")
+                   if str(_old_body.get(_b, "")) != str(_new_body.get(_b, ""))]
+        if _blocks:
+            from ..api import edge_notify as _en
+            if _en.enabled():
+                await _en.notify_dependents(work_id, card_id, _blocks)
+    except Exception as exc:  # noqa: BLE001 通知失败不影响写入
+        logger.warning("[edge] 依赖变更通知失败 card=%s: %s", card_id, exc)
 
     # [phase8.3] "剧本卡切确定→派生目标卡"触发已废除；
     # 目标卡改为创建剧本时即派生（见 derive_ending / work_store.create_work）。
@@ -1492,6 +1636,20 @@ async def delete_card(work_id: str, card_id: str,
     if gate is not None:
         return gate
 
+    # [伴生评审卡 2026-10-27 · P7 结构跟着生命周期走] 子卡真的要走了 ⇒ 伴生评审卡
+    # 一起走（一对一，不留孤儿）。位置在**所有拒删防护之后**——拒删路径不得顺手
+    # 删掉评审卡（那会让"删不掉子卡"变成"子卡还在、评审记录没了"）。
+    # 评审卡自身 `review_of` 为空 ⇒ 递归到此终止。
+    try:
+        from . import review_store as _rv
+        _rid = await _rv.review_card_of(work_id, card_id)
+        if _rid and _rid != card_id:
+            await delete_card(work_id, _rid, cascade=False)
+    except CardNotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001 评审卡清理失败不挡子卡删除
+        logger.warning("[review] 伴生评审卡清理失败 child=%s: %s", card_id, exc)
+
     # [画布 2026-10-19] 删前留一份完整快照进回收站（撤销用）。
     # 会话正文是**文件**，必须在下面 unlink 之前读出来——晚一步就没了。
     session_text = ""
@@ -1517,6 +1675,9 @@ async def delete_card(work_id: str, card_id: str,
         card_db.trash_card(conn, card_id, work_id, payload, datetime.now().isoformat(timespec="seconds"))
         n = card_db.delete_card_row(conn, card_id)
         if n:
+            # [三线边表 2026-10-27] 卡没了，边也该没——三个方向一起清
+            # （作父、作子、作两端）。改前靠人调 unlink_cards，漏一次就留悬空线。
+            card_db.clear_edges_of(conn, card_id)
             card_db.bump_rev(conn)
         return n
 
@@ -1604,7 +1765,7 @@ async def archive_card(work_id: str, card_id: str,
         "parent": meta.get("parent") or "",
         "mission": body.get("mission") or "",
         "status_block": body.get("status_block") or "",
-        "rulings": body.get("rulings") or "",
+        "requirements": body.get("requirements") or "",
         "shadow": shadow_secs,
         "history": history,
         "session_ref": meta.get("session_ref") or "",
@@ -1658,7 +1819,7 @@ async def unarchive_card(work_id: str, card_id: str) -> dict[str, Any]:
     body = {
         "mission": rec.get("mission") or "",
         "status_block": rec.get("status_block") or "",
-        "rulings": rec.get("rulings") or "",
+        "requirements": rec.get("requirements") or "",
     }
 
     def _fn(conn: Any) -> None:
@@ -1877,3 +2038,80 @@ async def _append_relation(work_id: str, card_id: str, rel: dict[str, Any]) -> N
         card_db.bump_rev(conn)
 
     await card_db.run_write(work_id, _fn)
+
+
+# ---------------------------------------------------------------- 待注入队列
+# [harness 提示词注入 2026-10-28 · 用户定义第三种手段]
+#
+# 三种手段的区别：
+#   · 消息  —— 写进会话历史，**永久**，之后每一轮都看得到（deliver 默认）
+#   · 唤醒  —— 立刻起一轮（wake=true）
+#   · 注入  —— 只拼进**下一轮**的上下文，不进会话历史、不留痕（本队列）
+#
+# 为什么单独一个队列而不复用 context_preamble：那类是**回合内**装配时按来源
+# 模块现生成的，触发时目标卡可能根本没在跑；注入必须能"先存下、下次跑时生效"。
+
+async def push_pending_inject(work_id: str, card_id: str, text: str) -> int:
+    """往待注入队列追加一段话，返回追加后的队列长度。"""
+    from . import card_db
+
+    payload = str(text or "").strip()
+    if not payload:
+        return 0
+
+    def _fn(conn: Any) -> int:
+        row = card_db.get_card_row(conn, card_id)
+        if row is None:
+            raise CardNotFoundError(f"卡片不存在: {card_id}")
+        try:
+            arr = json.loads(row["pending_inject"] or "[]")
+        except (ValueError, TypeError):
+            arr = []
+        if not isinstance(arr, list):
+            arr = []
+        arr.append(payload)
+        conn.execute("UPDATE cards SET pending_inject = ? WHERE card_id = ?",
+                     (json.dumps(arr, ensure_ascii=False), card_id))
+        return len(arr)
+
+    return await card_db.run_write(work_id, _fn) or 0
+
+
+async def take_pending_inject(work_id: str, card_id: str) -> list[str]:
+    """取出并**清空**待注入队列（装配上下文时调，一次性语义）。"""
+    from . import card_db
+
+    def _fn(conn: Any) -> list[str]:
+        row = card_db.get_card_row(conn, card_id)
+        if row is None:
+            return []
+        try:
+            arr = json.loads(row["pending_inject"] or "[]")
+        except (ValueError, TypeError):
+            arr = []
+        if not isinstance(arr, list) or not arr:
+            return []
+        conn.execute("UPDATE cards SET pending_inject = '' WHERE card_id = ?", (card_id,))
+        return [str(x) for x in arr if str(x).strip()]
+
+    return await card_db.run_read(work_id, _fn, []) or []
+
+
+def take_pending_inject_sync(work_id: str, card_id: str) -> list[str]:
+    """同步版：取出并清空待注入队列（上下文装配链是同步签名，用它）。"""
+    from . import card_db
+
+    def _fn(conn: Any) -> list[str]:
+        row = card_db.get_card_row(conn, card_id)
+        if row is None:
+            return []
+        try:
+            arr = json.loads(row["pending_inject"] or "[]")
+        except (ValueError, TypeError):
+            arr = []
+        if not isinstance(arr, list) or not arr:
+            return []
+        conn.execute("UPDATE cards SET pending_inject = '' WHERE card_id = ?", (card_id,))
+        return [str(x) for x in arr if str(x).strip()]
+
+    return card_db.write_sync(work_id, _fn) or []

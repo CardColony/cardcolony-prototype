@@ -458,7 +458,7 @@ async def test_f2_schema_surface_and_untouched_invariants():
         "★ 普通（非 auto）版说明书不得含该参数（逐字不变）"
     # [等子卡活锁修复 2026-10-17] 随 auto-t8（恢复轮唤醒语义 ＋ 空等重挂计数兜底）
     # 同步版本钉子——旧值 auto-t7 是「测试固化旧行为」，非真回归。
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t13"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t18"
 
     assert auto_driver.WAKE_NONE == "" and auto_driver.WAKE_ACTIVE == "active" \
         and auto_driver.WAKE_PAUSED == "paused", "wake_verdict 三值语义未被改"

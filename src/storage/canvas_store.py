@@ -175,7 +175,7 @@ def _conclusion_summary(status_block: str, title: str = "") -> str:
 
 
 #: 「等用户裁定」的标记。这个项目的工作方式是：模型提议一律标【待裁定】，
-#: 用户点头才算数（见 cards 表 rulings 列与各卡正文）。
+#: 用户点头才算数（见 cards 表 requirements 列与各卡正文）。
 #: ⇒ 画布上**最该突出的是"哪里在等你裁定"**，不是"哪张卡拖得好看"。
 _PENDING_RE = re.compile(r"待裁定|【待定】|待确认")
 
@@ -489,7 +489,7 @@ def rebuild(work_id: str) -> dict[str, Any]:
         # links（新线 relations 不进画布——用户裁定「画布展示本次不做」）。
         return [dict(r) for r in conn.execute(
             "SELECT card_id, title, card_type, parent, created_at, updated_at, state,"
-            " links, status_block, rulings,"
+            " links, status_block, requirements,"
             # [画布 2026-10-18 · 自动模式可视化] 这五列决定"AI 正在怎么用这套系统"：
             # auto_mode＝是否自动推进；goal_state＝跑/停/成；goal_rounds＝第几轮；
             # toolcard_step/round＝当前步骤。真实项目里目前全空（自动模式一次没跑过），
@@ -526,9 +526,9 @@ def rebuild(work_id: str) -> dict[str, Any]:
             continue
         # 需求文档条目：一张卡解析一次，下面 count 与 last 共用
         # 需求文档可能落在两个字段里：老卡把整篇正文塞进 status_block（含 ## 需求文档 段），
-        # 新卡走三列模型，需求文档在独立的 rulings 列。两处都扫，否则换一种写法就看不见。
+        # 新卡走三列模型，需求文档在独立的 requirements 列。两处都扫，否则换一种写法就看不见。
         _decisions = _parse_decisions(
-            (row["status_block"] or "") + "\n" + (row["rulings"] or ""))
+            (row["status_block"] or "") + "\n" + (row["requirements"] or ""))
         cards.append({
             "card_id": card_id,
             "title": row["title"] or "",

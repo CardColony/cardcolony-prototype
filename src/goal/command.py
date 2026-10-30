@@ -65,6 +65,23 @@ def _parse(raw: str) -> dict[str, Any]:
 parse = _parse
 
 
+async def _arm_auto_mode(work_id: str, card_id: str) -> None:
+    """`/goal` 建/改目标 ⇒ **同时打开自动模式**（用户 2026-10-28 口径）。
+
+    改前 `/goal xxx` 只建目标、不动 ``auto_mode``，而 ``update_goal`` 的第一道闸
+    就是「本卡不是自动模式卡 ⇒ denied」⇒ 目标建出来了、模型却没法标完成，
+    自动模式也不会续轮。这一处补上，「/goal ＝ 开自动模式 ＋ 填目标」才成立。
+
+    失败不阻断命令本身（目标已经写进去了，开关下一轮还能再开）。
+    """
+    try:
+        from ..storage import card_store
+        await card_store.update_card(
+            work_id, card_id, {"auto_mode": 1}, "[goal] /goal 开启自动模式")
+    except Exception:  # noqa: BLE001 开关失败不影响目标本身
+        pass
+
+
 async def execute_command(work_id: str, card_id: str, raw_input: str) -> dict[str, Any]:
     """执行一条人面命令（原版 ``executeGoalCommand``）。"""
     cmd = _parse(raw_input)
@@ -85,6 +102,7 @@ async def execute_command(work_id: str, card_id: str, raw_input: str) -> dict[st
                     f"A goal is already {_phase_label(current.phase)}. Use /goal edit <objective> "
                     "to change it or /goal clear before replacing it.")}
             view = await service.create(work_id, card_id, CreateGoalRequest(objective=cmd["objective"]))
+            await _arm_auto_mode(work_id, card_id)
             return {"ok": True, "text": render_goal("Goal created", view)}
 
         if current is None:
@@ -92,8 +110,10 @@ async def execute_command(work_id: str, card_id: str, raw_input: str) -> dict[st
 
         if cmd["kind"] == "edit":
             if current.phase == "complete":
+                # 完成态再 edit ＝ 开新生命周期；**不动 auto_mode**（见下条注释）
                 view = await service.create(work_id, card_id, CreateGoalRequest(objective=cmd["objective"]))
                 return {"ok": True, "text": render_goal("Goal created", view)}
+            # 执行中改目标 ⇒ **不动 auto_mode**：它已经在跑，改的是目标内容不是开关
             view = await service.edit(work_id, card_id, current.ref(),
                                       EditGoalRequest(objective=cmd["objective"]))
             return {"ok": True, "text": render_goal("Goal updated", view)}

@@ -153,6 +153,27 @@ except Exception as _exc:  # noqa: BLE001 日志装不上也不阻断启动
 
 
 @app.on_event("startup")
+async def _start_goal_driver() -> None:
+    """[goal 重启恢复 2026-10-28] 装载续轮驱动 + 把还在跑的目标重新授上权。
+
+    两件事一起做，缺一都白搭：
+      ① ``install()``：挂 ``goal/changed`` 监听（改完目标要能立刻点火）；
+         改前这里**从来没被调用过**，所以 `/goal resume` 只置 armed、没人点火。
+      ② ``rearm_active_goals()``：``activation`` 永不落盘，重启后全部 disarmed——
+         不恢复的话，数据库里 goal 还 active、界面上看着在跑，驱动却再也不认它
+         （用户实测「goal 明明没完成却停下了」就是这个）。
+
+    失败不阻断启动（起不来只是不自动续轮，服务本身该能用）。
+    """
+    try:
+        from src.goal import driver as goal_driver
+        goal_driver.install()
+        await goal_driver.rearm_active_goals()
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[startup] goal 驱动装载失败（不阻断启动）: {_exc}", flush=True)
+
+
+@app.on_event("startup")
 async def _start_auto_scheduler() -> None:
     """[调度改造 2026-10-19 · 5704 承载力] 启动建卡点火调度器。
 
@@ -184,14 +205,14 @@ async def _start_auto_scheduler() -> None:
         _asyncio.create_task(_role_room.startup_sweep_all())
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] 角色续跑启动失败（不阻断）: {exc}", flush=True)
-    # [预设职能 P2 2026-10-24] 职能观点队列的重启续跑(目录启用的 work 才有队列;
-    # 空队列 ⇒ no-op)。fail-open,不阻断启动。
-    try:
-        import asyncio as _asyncio
-        from src.api import function_room as _function_room
-        _asyncio.create_task(_function_room.startup_sweep_all())
-    except Exception as exc:  # noqa: BLE001
-        print(f"[startup] 职能续跑启动失败（不阻断）: {exc}", flush=True)
+    # [2026-10-29 删] 这里原来照角色版抄了一行
+    #   `_function_room.startup_sweep_all()`
+    # ——但 `function_room` 里**从来没有这个函数**（也永远不该有）：
+    # 职能只在评审里被叫醒，不许有自动唤醒入口（见 `src/api/system_claims.py`
+    # 的机械判据 banned = notify_event / schedule_event / spawn_opinion /
+    # _profiles_watching / startup_sweep_all）。这行是死调用，每次启动必报错，
+    # 已删除。别再照角色版往这里抄。
+
 
 
 @app.on_event("startup")
@@ -207,6 +228,56 @@ async def _start_goal_driver() -> None:
         goal_driver.install()
     except Exception as exc:  # noqa: BLE001 装载失败不阻断主服务
         print(f"[startup] goal 驱动装载失败（不阻断）: {exc}", flush=True)
+
+@app.on_event("startup")
+async def _resume_reviews() -> None:
+    """[2026-10-29 用户裁定「用 harness 接管评审卡的流程存续」] 重启续跑。
+
+    评审的流程存续现在靠事件驱动（一步一返回 + 策略 continue），进程内没有
+    常驻循环。重启后不会有人自己接着跑 ⇒ 启动时扫一遍「还有批次的评审卡」，
+    每张跑一步，之后交给事件链自己接下去。
+
+    fail-open：任何一张失败只打印，不影响启动和其他卡。
+    """
+    try:
+        import asyncio as _asyncio
+        from src.storage import work_store as _ws
+        from src.storage import card_db as _cdb
+        from src.api import review_runner as _rr
+
+        def _scan(wid: str) -> list[str]:
+            def _fn(conn):
+                out = []
+                for r in conn.execute(
+                        "SELECT card_id, review_state FROM cards"
+                        " WHERE work_id=? AND card_type='review'", (wid,)):
+                    import json as _json
+                    try:
+                        st = _json.loads(r["review_state"] or "{}")
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if isinstance(st, dict) and str(st.get("batch") or ""):
+                        out.append(str(r["card_id"]))
+                return out
+            return _cdb.read_sync(wid, _fn, []) or []
+
+        async def _run() -> None:
+            for w in _ws.list_works():
+                wid = str(w.get("work_id") or "")
+                if not wid:
+                    continue
+                for rid in _scan(wid):
+                    try:
+                        r = await _rr.run_once(wid, rid)
+                        print(f"[startup] 评审续跑 {wid}/{rid}: {r.get('reason')}",
+                              flush=True)
+                    except Exception as exc:  # noqa: BLE001 单张失败不影响别的
+                        print(f"[startup] 评审续跑失败 {wid}/{rid}: {exc}", flush=True)
+
+        _asyncio.create_task(_run())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] 评审续跑装载失败（不阻断）: {exc}", flush=True)
+
 
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)
 # [模型设置第二步 2026-10-12] 设置接口（供应商/模型/角色绑定 + 密钥 + 备份还原）

@@ -212,12 +212,8 @@ def condense_max_batches() -> int:
     return DEFAULT_MAX_BATCHES
 
 
-def load_memory(work_id: str, card_id: str) -> dict[str, Any]:
-    """读记忆文件（routes 层 mark 读取/200 区渲染源，SP-05 IO 分离的 IO 端）。
-
-    缺文件 → 空水位；坏 JSON/形态不对 → 空水位＋warning 留痕（V5 哲学：
-    失败不凝、不阻断、绝不静默改写原文件）。
-    """
+def _load_from_file(work_id: str, card_id: str) -> dict[str, Any]:
+    """**历史路径**：读旧 JSON 记忆文件（只在懒迁移时用）。"""
     path = memory_path(work_id, card_id)
     try:
         raw = path.read_text(encoding="utf-8")
@@ -243,6 +239,278 @@ def load_memory(work_id: str, card_id: str) -> dict[str, Any]:
     return data
 
 
+def _load_from_db(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
+    """从 `memory` 表读（唯一事实源）。表里没这行 ⇒ None（区别于"空水位"）。"""
+    from . import card_db  # 延迟：本模块被 card_db 的调用方引用
+
+    def _fn(conn: Any) -> Optional[dict[str, Any]]:
+        row = conn.execute(
+            "SELECT chain, condense_mark, batch_starts FROM memory WHERE card_id=?",
+            (card_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            entries = json.loads(row["chain"] or "[]")
+        except (ValueError, TypeError):
+            entries = []
+        mark = row["condense_mark"]
+        out = {
+            "card_id": card_id,
+            "mark": int(mark) if isinstance(mark, int) and mark >= 0 else 0,
+            "entries": entries if isinstance(entries, list) else [],
+        }
+        # [2026-10-27 修] 记忆状态不只有 mark/entries：`batch_count` / `last_fold_check`
+        # / `folded` 等也存在同一个 dict 里。改前只存 entries+mark ⇒ 这些字段全丢，
+        # 批循环与去重直接失效（`KeyError: batch_count`）。现在把它们放进
+        # `batch_starts` 列（JSON），读时并回顶层。
+        try:
+            extra = json.loads(row["batch_starts"] or "{}")
+        except (ValueError, TypeError):
+            extra = {}
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if k not in ("mark", "entries", "card_id"):
+                    out[k] = v
+        return out
+
+    try:
+        return card_db.read_sync(work_id, _fn, None)
+    except Exception as exc:  # noqa: BLE001 读库失败按空水位，不阻断
+        logger.warning("[condense_fold] 记忆表读取失败（按空水位）work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        return None
+
+
+def _save_to_db(work_id: str, card_id: str, data: dict[str, Any]) -> None:
+    """写 `memory` 表（唯一事实源）。"""
+    from . import card_db  # 延迟
+
+    # mark/entries 各占一列，**其余状态**（batch_count / last_fold_check / folded …）
+    # 打包进 batch_starts 列，读时并回顶层——否则这些字段一进库就丢。
+    _extra = {k: v for k, v in (data or {}).items()
+              if k not in ("mark", "entries", "card_id")}
+
+    def _fn(conn: Any) -> None:
+        conn.execute(
+            "INSERT INTO memory(card_id, chain, condense_mark, batch_starts, updated_at) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(card_id) DO UPDATE SET "
+            "chain=excluded.chain, condense_mark=excluded.condense_mark, "
+            "batch_starts=excluded.batch_starts, updated_at=excluded.updated_at",
+            (card_id,
+             json.dumps(data.get("entries") or [], ensure_ascii=False),
+             int(data.get("mark") or 0),
+             json.dumps(_extra, ensure_ascii=False),
+             datetime.now().isoformat(timespec="seconds")),
+        )
+
+    card_db._write_sync(work_id, _fn)  # noqa: SLF001 同包内复用写事务边界
+
+
+def load_memory(work_id: str, card_id: str) -> dict[str, Any]:
+    """读记忆：**只读 sqlite 的 `memory` 表**。
+
+    [2026-10-27 · 用户令「所有都以一个事实源，否则还是会混乱」]
+    改前读 `works/{wid}/memory/{card}.json`；现在表是唯一源，JSON 文件降级为
+    历史备份——**只在表里还没有这行时懒迁移一次**，之后再也不读文件。
+    """
+    got = _load_from_db(work_id, card_id)
+    if got is not None:
+        return got
+    legacy = _load_from_file(work_id, card_id)
+    if legacy.get("mark") or legacy.get("entries"):
+        try:
+            _save_to_db(work_id, card_id, legacy)
+            logger.info("[condense_fold] 记忆懒迁移入库 work=%s card=%s mark=%s entries=%d",
+                        work_id, card_id, legacy.get("mark"), len(legacy.get("entries") or []))
+        except Exception as exc:  # noqa: BLE001 迁移失败照旧用文件值，不阻断
+            logger.warning("[condense_fold] 记忆懒迁移失败（本次仍用文件值）%s/%s: %s",
+                           work_id, card_id, exc)
+    return legacy
+
+
+def load_nodes(work_id: str, card_id: str) -> list[dict[str, Any]]:
+    """读记忆节点表 `memory_nodes`（编号体系的条目级事实源）——按批、批内序升序。
+
+    [记忆编号体系 2026-10-29] 每行一个节点，自带编号
+    `{work}/{card}/B{批次}/{批内序}`（L2 细节节点＝父编号 + `/d`）与 `occurred_at`。
+    批次号按时间升序发 ⇒ 编号序 == 时间序，「最近一批」＝批次号最大者。
+
+    与 `load_memory`（读 `memory.chain` 派生物、供凝练管线自己用）分工：
+    渲染/装配只吃本函数，**不再解析 chain**——两处各读一份才不会再次错位。
+    表不存在或无行 ⇒ 空列表（渲染侧按「没有来源就不出现」处理），并留痕。
+    """
+    from . import card_db  # 延迟：本模块被 card_db 的调用方引用
+
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        try:
+            rows = conn.execute(
+                "SELECT id, work_id, card_id, batch, ordinal, occurred_at, level, role,"
+                " gist, anchor_seq, covered_seqs, upper_id, status, kind, process,"
+                " start_text, result, lesson, sunk, superseded_by, extra"
+                " FROM memory_nodes WHERE work_id=? AND card_id=?"
+                " ORDER BY batch, ordinal, level", (work_id, card_id)).fetchall()
+        except Exception as exc:  # noqa: BLE001 表不存在＝未回填，留痕不阻断
+            logger.warning("[memory_nodes] 查询失败（未回填？）work=%s card=%s: %s",
+                           work_id, card_id, exc)
+            return []
+        return [dict(r) for r in rows]
+
+    try:
+        return card_db.read_sync(work_id, _fn, []) or []
+    except Exception as exc:  # noqa: BLE001 读库失败按空，不阻断装配
+        logger.warning("[memory_nodes] 读取失败 work=%s card=%s: %s", work_id, card_id, exc)
+        return []
+
+
+#: memory_nodes 的列序（写口/读口共用，改列只改这一处）
+_NODE_COLS = ("id", "work_id", "card_id", "batch", "ordinal", "occurred_at", "level",
+              "role", "gist", "anchor_seq", "covered_seqs", "upper_id", "status",
+              "kind", "process", "start_text", "result", "lesson", "sunk",
+              "superseded_by", "extra")
+
+_NODE_DDL = """
+CREATE TABLE IF NOT EXISTS memory_nodes (
+    id TEXT PRIMARY KEY, work_id TEXT NOT NULL, card_id TEXT NOT NULL,
+    batch INTEGER NOT NULL DEFAULT 0, ordinal INTEGER NOT NULL DEFAULT 0,
+    occurred_at TEXT NOT NULL DEFAULT '', level INTEGER NOT NULL DEFAULT 1,
+    role TEXT NOT NULL DEFAULT 'gist', gist TEXT NOT NULL DEFAULT '',
+    anchor_seq INTEGER NOT NULL DEFAULT 0, covered_seqs TEXT NOT NULL DEFAULT '[]',
+    upper_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '', process TEXT NOT NULL DEFAULT '',
+    start_text TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '',
+    lesson TEXT NOT NULL DEFAULT '', sunk INTEGER NOT NULL DEFAULT 0,
+    superseded_by TEXT NOT NULL DEFAULT '', extra TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT '')
+"""
+
+#: CausalNode 里已单独成列的键；其余进 extra，保证字段不丢
+_NODE_KNOWN = {
+    "anchor", "gist", "status", "kind", "coveredSeqs", "level", "role",
+    "upper", "lower", "process", "start", "result", "lesson",
+    "sunk", "supersededBy", "degraded", "merged", "lastUsedAt",
+}
+
+
+def _seq_role(node: dict[str, Any]) -> tuple[int, str]:
+    """(原文块号, 角色) —— 条目身份键（I1 保证 gist 按 seq 唯一）。"""
+    a = node.get("anchor")
+    seq = 0
+    if isinstance(a, dict):
+        try:
+            seq = int(a.get("seq", 0) or 0)
+        except (TypeError, ValueError):
+            seq = 0
+    return seq, str(node.get("role") or "gist")
+
+
+def _content_of(node: dict[str, Any]) -> dict[str, Any]:
+    """CausalNode → 行里的内容列（不含身份/编号）。"""
+    return {
+        "gist": str(node.get("gist") or ""),
+        "level": int(node.get("level", 1) or 1),
+        "role": str(node.get("role") or "gist"),
+        "anchor_seq": _seq_role(node)[0],
+        "covered_seqs": json.dumps(node.get("coveredSeqs") or [], ensure_ascii=False),
+        "status": str(node.get("status") or ""),
+        "kind": str(node.get("kind") or ""),
+        "process": str(node.get("process") or ""),
+        "start_text": str(node.get("start") or ""),
+        "result": str(node.get("result") or ""),
+        "lesson": str(node.get("lesson") or ""),
+        "sunk": 1 if node.get("sunk") else 0,
+        "superseded_by": str(node.get("supersededBy") or ""),
+        "extra": json.dumps({k: v for k, v in node.items() if k not in _NODE_KNOWN},
+                            ensure_ascii=False),
+    }
+
+
+def sync_nodes(work_id: str, card_id: str, entries: list[dict[str, Any]]) -> None:
+    """把 `entries`（CausalNode 数组）同步进 `memory_nodes`——编号体系的**写口**。
+
+    [记忆编号体系 2026-10-29] 编号 `{work}/{card}/B{批}/{序}`（L2 为父编号 + `/d`）。
+
+    - **已有条目**（按 `(anchor_seq, role)` 认）沿用原编号、批次与时间戳 ⇒ 编号稳定，
+      不会因为数组重排而变；
+    - **新条目**归入「下一批」（`现有最大批次 + 1`），整批共用**一个**时间戳；
+    - 内容列一律以 `entries` 为准刷新（process 等后补字段能同步）；
+    - 全量重建该卡的行，可重复执行。
+
+    这是**派生写**：`memory.chain` 仍是凝练管线的事实源，本表供渲染/查询。
+    两处都由本函数与 `load_nodes` 对齐，不再各自解析——上次「92 行 [块?]」
+    正是装配与渲染各读一份不同结构造成的。
+    """
+    from . import card_db  # 延迟：本模块被 card_db 的调用方引用
+
+    existing = load_nodes(work_id, card_id)
+    by_key: dict[tuple[int, str], dict[str, Any]] = {}
+    max_batch = 0
+    max_ord: dict[int, int] = {}
+    for r in existing:
+        by_key[(int(r.get("anchor_seq") or 0), str(r.get("role") or "gist"))] = r
+        b = int(r.get("batch") or 0)
+        max_batch = max(max_batch, b)
+        max_ord[b] = max(max_ord.get(b, 0), int(r.get("ordinal") or 0))
+
+    keys = [_seq_role(n) for n in entries]
+    has_new = any(k not in by_key for k in keys)
+    new_batch = max_batch + 1 if has_new else 0
+    now = datetime.now().isoformat(timespec="seconds")
+
+    # 第一遍：定编号（L1 先落 id，L2 用父 id 拼 `/d`）
+    id_of_seq: dict[int, str] = {}
+    planned: list[tuple[dict[str, Any], str, int, int, str]] = []
+    for node, key in zip(entries, keys):
+        seq, _role = key
+        level = int(node.get("level", 1) or 1)
+        old = by_key.get(key)
+        if old:
+            nid = str(old.get("id") or "")
+            batch = int(old.get("batch") or 0)
+            ordv = int(old.get("ordinal") or 0)
+            occurred = str(old.get("occurred_at") or "")
+        else:
+            batch = new_batch
+            max_ord[batch] = max_ord.get(batch, 0) + 1
+            ordv = max_ord[batch]
+            occurred = now
+            nid = f"{work_id}/{card_id}/B{batch:04d}/{ordv:04d}"
+            if level > 1:
+                nid += "/d"
+        if level <= 1 and seq not in id_of_seq:
+            id_of_seq[seq] = nid
+        planned.append((node, nid, batch, ordv, occurred))
+
+    # 第二遍：拼行（upper_id 用第一遍定好的父编号）
+    rows: list[dict[str, Any]] = []
+    for node, nid, batch, ordv, occurred in planned:
+        row: dict[str, Any] = {"id": nid, "work_id": work_id, "card_id": card_id,
+                               "batch": batch, "ordinal": ordv,
+                               "occurred_at": occurred, "upper_id": "",
+                               "updated_at": now}
+        row.update(_content_of(node))
+        up = node.get("upper")
+        if isinstance(up, list) and up and isinstance(up[0], dict):
+            try:
+                useq = int(up[0].get("seq", 0) or 0)
+            except (TypeError, ValueError):
+                useq = 0
+            row["upper_id"] = id_of_seq.get(useq, "")
+        rows.append(row)
+
+    def _fn(conn: Any) -> None:
+        conn.execute(_NODE_DDL)
+        conn.execute("DELETE FROM memory_nodes WHERE work_id=? AND card_id=?",
+                     (work_id, card_id))
+        if rows:
+            cols = list(_NODE_COLS)
+            conn.executemany(
+                "INSERT OR REPLACE INTO memory_nodes(" + ",".join(cols) + ")"
+                " VALUES(" + ",".join("?" * len(cols)) + ")",
+                [[r[c] for c in cols] for r in rows])
+
+    card_db._write_sync(work_id, _fn)  # noqa: SLF001 同包内复用写事务边界
+
+
 # 写锁（session_store 锁家族同款：按 (work_id, card_id) 键控 asyncio.Lock）
 _memory_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
@@ -257,21 +525,27 @@ def _memory_lock(work_id: str, card_id: str) -> asyncio.Lock:
 
 
 async def save_memory(work_id: str, card_id: str, data: dict[str, Any]) -> None:
-    """写记忆文件：锁家族内 tmp→os.replace 原子替换（只写 memory 文件本身，
-    不触碰卡片与会话——RD-01/RD-06/V3）。"""
-    path = memory_path(work_id, card_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    """写记忆：**只写 sqlite 的 `memory` 表**（唯一事实源）。
+
+    [2026-10-27 · 用户令「所有都以一个事实源」] 改前写 JSON 文件；现在不再写文件，
+    表是唯一落点。
+    """
     async with _memory_lock(work_id, card_id):
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, path)
+        _save_to_db(work_id, card_id, data)
+        # [记忆编号体系 2026-10-29] chain 落库后同步派生表 memory_nodes。
+        # 渲染/查询只吃那张表，两处由 sync_nodes 一处对齐——不再各读一份。
+        try:
+            sync_nodes(work_id, card_id, data.get("entries") or [])
+        except Exception as exc:  # noqa: BLE001 派生失败不阻断凝练落库
+            logger.warning("[memory_nodes] 同步失败 work=%s card=%s: %s",
+                           work_id, card_id, exc)
 
 
 async def ensure_watermark(work_id: str, card_id: str) -> bool:
     """空水位建账（任务 1-2，幂等）：已有记忆文件不覆盖；该卡无会话不建。
     返回是否新建。"""
-    if memory_path(work_id, card_id).exists():
+    # [2026-10-27] 建账判据改看**表里有没有行**（唯一事实源），不看文件。
+    if _load_from_db(work_id, card_id) is not None:
         return False
     if not session_store._session_path(work_id, card_id).exists():
         return False
@@ -424,20 +698,39 @@ def _build_condense_user_prompt(pending: list[dict[str, Any]]) -> str:
 def _drop_overlapping(entries: list[dict[str, Any]], lo: int, hi: int) -> list[dict[str, Any]]:
     """摘掉覆盖区间与 [lo, hi] 相交的旧条目（重凝去重）。
 
-    条目覆盖区间取 `seq_from..seq_to`（无则退化为单点 `seq`）。
-    区间不相交 ⇒ 原样保留（不同段的结论互不影响）。
+    覆盖区间**按条目真实覆盖取**，优先级：`coveredSeqs`（CausalNode 的权威覆盖）
+    → `anchor.seq` 单点 → 旧的 `seq_from..seq_to` → `seq`。区间不相交 ⇒ 原样保留。
+
+    [2026-10-29 修] 原实现只看 `seq_from/seq_to`——那是**当时那批的窗口范围**，
+    不是这条结论实际覆盖的块。于是「批 1 记 seq_from=0..72、批 6 重凝 116..116」
+    按窗口算不相交 ⇒ 旧条目不摘 ⇒ 两条结论同占 anchor=116 ⇒ I1 身份重复。
+    实测全库 362 条多余条目（card_001 53、fn_007 137、card_076 43）都是这么来的；
+    不修这条，重凝还会继续叠。
     """
     out: list[dict[str, Any]] = []
     for e in entries or []:
-        a = e.get("seq_from")
-        b = e.get("seq_to")
-        if a is None or b is None:
-            a = b = int(e.get("seq", 0) or 0)
-        try:
-            a = int(a); b = int(b)
-        except (TypeError, ValueError):
-            out.append(e)
-            continue
+        cov = e.get("coveredSeqs")
+        if isinstance(cov, list) and cov:
+            try:
+                a, b = int(min(cov)), int(max(cov))
+            except (TypeError, ValueError):
+                out.append(e)
+                continue
+        else:
+            anc = e.get("anchor")
+            if isinstance(anc, dict) and isinstance(anc.get("seq"), int):
+                a = b = int(anc["seq"])
+            else:
+                a = e.get("seq_from")
+                b = e.get("seq_to")
+                if a is None or b is None:
+                    a = b = int(e.get("seq", 0) or 0)
+                try:
+                    a = int(a)
+                    b = int(b)
+                except (TypeError, ValueError):
+                    out.append(e)
+                    continue
         if b < lo or a > hi:      # 不相交
             out.append(e)
     return out
@@ -574,18 +867,21 @@ def _parse_condense_markers(text: str, default_seq: int,
     return parsed
 
 
-async def _condense_call(user_prompt: str) -> str:
+async def _condense_call(user_prompt: str, system: str | None = None) -> str:
     """凝练模型调用（任务 3）：call_main 纯文本（prior_messages=[]、tools=None）。
 
     测试经 monkeypatch 本接缝注入脚本化产出——MockGateway 罐头内容无
     【结论】/【依据】形态且 gateway.py 禁改（model_service 头注），RD-10
     两文件改动面不容第三件。
     [凝练折叠开启·任务5] 模型位改走 bindings.condense 绑定（当前 glm-flash，经 model_config.resolve("condense")）。
+    [三步凝练 2026-10-29] 加 `system` 形参：S2a / L1 / L2 三段各用各的 system
+    （dsh `CONDENSE_S2A_PROMPT` / `CONDENSE_L1_SYS` / `CONDENSE_L2_SYS` 同口径）；
+    缺省 None ⇒ 沿用单段 `CONDENSE_SYSTEM_PROMPT`，旧调用点行为逐字不变。
     """
     from ..api import model_config, model_service  # 延迟导入：storage 装载期不依赖 api（唯一调用点）
 
     result, _model = await model_service.call_main(
-        CONDENSE_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
+        system or CONDENSE_SYSTEM_PROMPT, user_prompt, prior_messages=[], tools=None,
         model_name=model_config.pick_one("condense"))
     return str((result or {}).get("content") or "")
 
@@ -635,11 +931,34 @@ async def _condense_one_batch(work_id: str, card_id: str,
     # 一直在推进（card_001 五批把 mark 从 539 推到 845）。机械超时会掐掉这些
     # "慢但能完成"的批，属掩盖问题。要设上限须显式给 CONDENSE_CALL_TIMEOUT>0。
     _call_timeout = float(os.environ.get("CONDENSE_CALL_TIMEOUT", "0") or 0)
-    try:
+
+    # [三步凝练 2026-10-29 · 照抄 dsh S2a→L1→L2] **模型零锚点义务**：它只判事件边界
+    # （给切点 end）、只写三栏文字与细节子题，坐标一个都不给；覆盖区间与锚点由
+    # condense_two_layer.assemble 机械算。⇒「同一 seq 两条结论」在结构上不可能出现，
+    # L2 随批直接落库——不再依赖 process 事后物化（那条路撞 I1 就整批拒写，实测
+    # card_001 85 条 process 一条 L2 都没落成）。
+    from . import condense_two_layer as _tl
+
+    # ★ 送凝的块必须用与 `_build_condense_user_prompt` **同一个判据**过滤
+    #   （`is_condense_original_event`：原文且非工具块）。漏了这层，工具输出会被
+    #   原样塞进 S2a/L1/L2 的 prompt——实测 card_066 因此实际请求体达 639 万 token
+    #   （块计量只有 14.6 万，差 43.7 倍），模型直接拒「Prompt exceeds max length」，
+    #   整批作废、水位不动。
+    from . import predicates as _pred
+
+    _blocks = [{"seq": int(m.get("seq") or 0), "content": str(m.get("content") or "")}
+               for m in window
+               if _pred.is_condense_original_event(m)
+               and str(m.get("content") or "").strip()]
+
+    async def _call_stage(system: str, user: str) -> str:
         if _call_timeout > 0:
-            text = await asyncio.wait_for(_condense_call(user_prompt), timeout=_call_timeout)
-        else:
-            text = await _condense_call(user_prompt)
+            return await asyncio.wait_for(_condense_call(user, system),
+                                          timeout=_call_timeout)
+        return await _condense_call(user, system)
+
+    try:
+        _res = await _tl.run_two_layer(_blocks, _call_stage, session_id=card_id)
     except asyncio.TimeoutError:
         logger.warning("[condense_fold] 凝练模型 %.0fs 超时——该批放弃、水位不动 work=%s card=%s",
                        _call_timeout, work_id, card_id)
@@ -648,21 +967,41 @@ async def _condense_one_batch(work_id: str, card_id: str,
         logger.warning("[condense_fold] 凝练失败——水位一分不动 work=%s card=%s 阶段=模型调用 原因=%s",
                        work_id, card_id, exc)
         return False
-    # 任务 3：产出解析（失败/空产出→不凝）
-    from . import predicates as _pred
-    _send_seqs = [int(m.get("seq") or 0) for m in window
-                  if _pred.is_condense_original_event(m) and str(m.get("content") or "").strip()]
-    fresh = _parse_condense_output(
-        text, default_seq=int(window[0].get("seq", mark) or mark),
-        block_seqs=_send_seqs)
+    if not _res.get("ok"):
+        logger.warning("[condense_fold] 三步凝练整批作废——水位不动 work=%s card=%s 阶段=%s",
+                       work_id, card_id, _res.get("stage"))
+        return False
+    fresh = list(_res.get("nodes") or [])
     if not fresh:
-        logger.warning("[condense_fold] 凝练失败——水位一分不动 work=%s card=%s 阶段=产出解析 原因=空产出或无【结论】条目",
+        logger.warning("[condense_fold] 凝练失败——水位一分不动 work=%s card=%s 阶段=产出解析 原因=空产出",
                        work_id, card_id)
         return False
-    logger.info("[condense_fold] 批完成 work=%s card=%s 耗时=%.1fs 解析=%d条 mark %d→%d",
-                work_id, card_id, time.time() - _t0, len(fresh), mark,
-                int(window[-1].get("seq", 0) or 0) + 1)
-    target_mark = int(window[-1].get("seq", 0) or 0) + 1
+
+    # L2 子题 → level=2 的 gist 子节点（口径见 memory_domain.attach_descriptions）。
+    fresh, _l2_added = memory_domain.attach_descriptions(
+        fresh, list(_res.get("descriptions") or []), card_id)
+
+    # 水位只推进到**连续覆盖的前缀**（dsh `consumedPrefix` 同口径）：S2a 可能只定
+    # 前面一段、把拿不准的尾巴留给下一批，此时不能把 mark 推到窗口末尾。
+    # ★ 前缀只在**实际送凝的块**上算：window 里可能有空块/纯工具块（`_blocks` 已过滤），
+    #   拿整个 window 算会在空块处断开 ⇒ 每批只推 1 块、一张 19 块的卡要跑十几批
+    #   （实测 card_024 空块 seq=1 卡住第一批，mark 0→1）。
+    _covered = {int(s) for n in fresh for s in (n.get("coveredSeqs") or [])}
+    _win_seqs = [int(b["seq"]) for b in _blocks]
+    _consumed = 0
+    for _s in _win_seqs:
+        if _s in _covered:
+            _consumed += 1
+        else:
+            break
+    if _consumed == 0:
+        logger.warning("[condense_fold] 三步凝练未覆盖窗口首块——水位不动 work=%s card=%s",
+                       work_id, card_id)
+        return False
+    target_mark = _win_seqs[_consumed - 1] + 1
+    logger.info("[condense_fold] 批完成 work=%s card=%s 耗时=%.1fs 结论=%d条 细节=%d条 mark %d→%d",
+                work_id, card_id, time.time() - _t0,
+                len(fresh) - _l2_added, _l2_added, mark, target_mark)
     state = load_memory(work_id, card_id)
     existing = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
     # 任务 5 幂等：同窗口（同 fingerprint）已凝 → 条目零新增，mark 幂等到位
@@ -716,23 +1055,12 @@ async def _condense_one_batch(work_id: str, card_id: str,
         # [archive 接线 2026-10-20] 描述层（process/docPaths/docRefs）进 memory_archive——
         # dsh 口径：chain 只留 gist（结论），长正文进 archive，展开时按锚点取。
         memory_domain.save_archive(work_id, card_id, chain)
-        # [多层链 2026-10-20 · 照抄 dsh condense/migrate-archive] 把描述层正文**物化**成
-        # description 子节点（anchor 与父同、level=父+1、upper=[父]、coveredSeqs 拷父、
-        # 文本同父 gist ⇒ degraded）——这才是 dsh 的**两层链**（gist 结论 + description 描述）。
-        # 物化后若 I1–I5 有违例 ⇒ **拒绝写**（只记日志，保留原单层链）。
-        _arc_rows = [{"seq": int((n.get("anchor") or {}).get("seq", 0) or 0),
-                      "process": n.get("process")}
-                     for n in chain if n.get("process")]
-        if _arc_rows:
-            _migrated, _mrep = memory_domain.migrate_archive(chain, _arc_rows)
-            if _mrep["created"]:
-                if _mrep["violations"]:
-                    logger.warning("[condense_fold] 多层物化违例（拒绝写，保留单层链）card=%s: %s",
-                                   card_id, _mrep["violations"][:3])
-                else:
-                    memory_domain.save_chain(work_id, card_id, _migrated,
-                                             condense_mark=target_mark)
-                    chain = _migrated
+        # [三步凝练 2026-10-29] 此处**不再**调 migrate_archive：L2 已由 L2 段直接产出、
+        # 以 level=2 的 gist 子节点随批落链（见上方 `_l2_added` 那段）。原「事后物化」
+        # 是把 archive 的 process 变成 description 子节点（anchor 与父同），一旦链里
+        # 有重复锚点就撞 I1、整批拒写 ⇒ 实测 card_001（85 条 process）与 card_021
+        # （25 条）的 L2 一条都没落成。现在锚点由 assemble 机械算、区间不重叠，
+        # I1 在构造上不会触发，L2 必然落地。
     except Exception as exc:  # noqa: BLE001 链落库/校验失败不阻断凝练
         logger.warning("[memory_domain] 链落库/校验失败（不阻断）card=%s: %s", card_id, exc)
     logger.info("[condense_fold] 凝练完成 work=%s card=%s 输入块数=%d 输入字节=%d 产出条数=%d mark %d→%d fingerprint=%s",
@@ -859,7 +1187,15 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
     entries = state.get("entries") or []
     lines = []
     for i, e in tops:
-        lines.append(f"条{i + 1}｜seq={e.get('seq', '?')}｜【结论】{e.get('conclusion', '')}｜【依据】{e.get('evidence', '')}")
+        # [归拢输入 2026-10-30] 条目是 CausalNode：结论在 `gist`、依据在 `start`/`process`、
+        # 序号在 `anchor.seq`。原实现读 `conclusion`/`evidence`/`seq`（旧五字段）⇒
+        # 送进模型的每一条都是「条N｜seq=?｜【结论】｜【依据】」空壳 ⇒ 模型只能判
+        # merges=0 ⇒ 日志「归拢判断无果」。**归拢自 CausalNode 改造后从未真正工作过。**
+        anc = e.get("anchor") if isinstance(e.get("anchor"), dict) else {}
+        seq = anc.get("seq") if anc else e.get("seq")
+        concl = str(e.get("gist") or e.get("conclusion") or "")
+        ev = str(e.get("start") or e.get("evidence") or e.get("process") or "")
+        lines.append(f"条{i + 1}｜seq={seq if seq is not None else '?'}｜【结论】{concl}｜【依据】{ev}")
     user_prompt = "\n".join(lines)
     try:
         text = await _fold_call(user_prompt)
@@ -929,6 +1265,22 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
 _CONDENSING: set[tuple[str, str]] = set()
 
 
+
+def _read_origin(work_id: str, card_id: str, mark: int = 0) -> list[dict[str, Any]]:
+    """凝练结算的**唯一读数入口**：只读原文库，按 seq 过滤。
+
+    [2026-10-27 · 用户令「凝练水位的计算、凝练窗口的投递，应该都只以 sqlite
+    的信息来结算」「哪些信息要进凝练窗口，就把这个信息存进 sqlite 就行了」]
+
+    两处修正：
+    - **来源**：改前读 md 文件（解析脆弱、可被清空），现在读 `session_blocks`；
+    - **切片**：改前 `blocks[mark:]` 把 `mark`（seq 水位）当**列表下标**用，
+      seq 有空洞就错位；现在按 `seq >= mark` 过滤。
+    """
+    from . import origin_store  # 延迟：避免 storage 内部循环
+    return origin_store.read_blocks(work_id, card_id, from_seq=int(mark or 0))
+
+
 async def condense_turn_end(work_id: str, card_id: str,
                             request_tokens: int | None = None) -> None:
     """回合末凝练触发（SP-04：assistant 落盘之后、异步、不阻塞对话）。
@@ -943,8 +1295,20 @@ async def condense_turn_end(work_id: str, card_id: str,
         state = load_memory(work_id, card_id)
         mark = int(state.get("mark", 0) or 0)
         # [A6a/T069-T072] 读切换：统一读入门面（块形态含 content，计量/切片同尺）
-        prior = await session_facade.read(work_id, card_id)
-        pending = prior[mark:] if 0 <= mark <= len(prior) else prior
+        #
+        # [2026-10-27 · 用户问「凝练的结算应该只看存进 sqlite 的信息」]
+        # **结论：方向对，但现在还不能只读库。** 试过改 `origin_store.read_blocks`
+        # 并跑测试，13 个凝练用例破——根因是 `write_blocks_sync` 的失败路径
+        # **静默**（只记日志、不抛），库一旦缺行，凝练就静默读不到东西、
+        # mark 永远不动。而文件是写路径的真相源，坏不了就不缺。
+        #
+        # 要切成只读库，前提是先做三件：
+        #   ① 库写失败不再静默（至少打 error 并计数）；
+        #   ② 有回填/校验（`scripts/backfill_session_blocks.py` 已写，work_027 补了 2941 行）；
+        #   ③ 读库与读文件产出一致性作为常驻断言（已验证：card_021/4008块/189原文、
+        #      fn_004/2104/113、card_061/1157/187，逐项相同）。
+        # 三件齐了再切，别在"库可能静默缺数据"时切。
+        pending = _read_origin(work_id, card_id, mark)
         # [2026-10-10 计量口径改 token] 统一计量尺：tiktoken cl100k_base 真编码，
         # 与切片累计同尺。旧版为字节计量 + 配置层 ×2.1 折算（系数自造、无出处）。
         # [三尺统一 2026-10-22] 触发与窗口/销账读**同一份数据**（会话块[mark:]）。
@@ -1015,8 +1379,7 @@ async def condense_sweep_once(max_cards: int = 8) -> int:
             try:
                 st = load_memory(work_id, card_id)
                 mark = int(st.get("mark", 0) or 0)
-                blocks = await session_facade.read(work_id, card_id)
-                pending = blocks[mark:] if 0 <= mark <= len(blocks) else blocks
+                pending = _read_origin(work_id, card_id, mark)
                 if _context_meter(pending) < trigger_k_tokens():
                     continue
                 logger.warning("[condense_fold] 后台扫描命中：work=%s card=%s 未凝=%d token "
@@ -1068,8 +1431,7 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
         await ensure_watermark(work_id, card_id)
         state = load_memory(work_id, card_id)
         mark = int(state.get("mark", 0) or 0)
-        blocks = await session_facade.read(work_id, card_id)
-        pending = blocks[mark:] if 0 <= mark <= len(blocks) else blocks
+        pending = _read_origin(work_id, card_id, mark)
         size = _meter_sum(pending)
         if size < trigger_k_tokens():
             return False
@@ -1090,8 +1452,7 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
             ran += 1
             if after <= before:      # 没推进（失败/无内容）⇒ 停，别空转
                 break
-            blocks = await session_facade.read(work_id, card_id)
-            cur = _meter_sum(blocks[after:])
+            cur = _meter_sum(_read_origin(work_id, card_id, after))
         return ran > 0
     except Exception as exc:  # noqa: BLE001 预检失败不阻断回合
         logger.warning("[condense_fold] 发送前预检失败（不阻断）work=%s card=%s: %s",

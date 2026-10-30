@@ -46,8 +46,16 @@ __all__ = [
     "provider_retry_after_ms",
 ]
 
-#: 一次流式读挂起时允许的最大空闲间隔。模板 adapter.ts:89。
-DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
+#: 流式读的空闲墙钟——**已废用**（2026-10-23 用户令）。
+#:
+#: 原来这里是 300_000ms：读挂起超过 5 分钟就判 TIMEOUT。这是**墙钟类闸**，
+#: 与 2026-10-02 拆闸裁定（「不允许墙钟类闸」）直接冲突——只是它藏在常量里，
+#: 不像闸。它的两个害处：
+#:   ① 真断连根本不用等钟：socket 会立刻抛异常（TRANSPORT），0 秒就知道；
+#:   ② 慢但在干活（本地模型重思考 12 分钟、排队阶段不出字）会被误杀。
+#: ⇒ 现在**不设读超时**（read=None）：活着的连接要等多久都等，死了靠异常立刻发现。
+#: 保留常量名与字段只为兼容（值改成 None 表示不设），不再参与任何判定。
+DEFAULT_STREAM_IDLE_TIMEOUT_MS: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -155,7 +163,20 @@ class OpenAICompatAdapter(LlmAdapter):
             headers.update({str(k): str(v) for k, v in connection.extra_headers.items()})
 
         timeout = httpx.Timeout(
-            connect=30.0, read=connection.stream_idle_timeout_ms / 1000.0, write=30.0, pool=30.0
+            # [取消墙钟 2026-10-23 · 用户令] 远程等待一律不设墙钟：
+            #   · read=None  ：不设读超时。断连由 socket 异常立刻暴露（TRANSPORT）；
+            #                  「活着但很慢」是正常状态，不该被杀。
+            #   · connect=None：不设连接超时。对端拒绝/不可路由本来就立即报错；
+            #                  只有「包被静默丢弃」才需要等——那交给 **TCP 协议自己**
+            #                  的握手超时（SYN 重传，Windows 约 21s），
+            #                  不该由我们拍一个数（30s 之类的数在协议面前只是摆设）。
+            # 保留 write/pool：它们是**本地资源**等待（socket 缓冲、连接池），
+            # 不涉及远端，不是墙钟闸。
+            connect=None,
+            read=(None if connection.stream_idle_timeout_ms is None
+                  else connection.stream_idle_timeout_ms / 1000.0),
+            write=30.0,
+            pool=30.0,
         )
         url = f"{connection.base_url.rstrip('/')}/chat/completions"
 
@@ -176,8 +197,11 @@ class OpenAICompatAdapter(LlmAdapter):
                 async for chunk in translate(parse_sse(_aiter_bytes(response), None)):
                     yield chunk
             except httpx.TimeoutException as exc:
+                # 读超时已被取消（read=None），这里只剩 connect/write/pool 超时
+                # 或端点自己发的超时。文案不再声称是「空闲墙钟」。
                 raise LlmError(
-                    f"stream idle timeout after {connection.stream_idle_timeout_ms}ms",
+                    f"transport timeout to {connection.base_url} "
+                    f"(connect/write/pool, no idle wall clock)",
                     "TIMEOUT",
                     cause=exc,
                 ) from exc

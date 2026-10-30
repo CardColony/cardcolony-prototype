@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any, Optional
 
@@ -67,7 +68,13 @@ def event_type_of(block: dict[str, Any]) -> str:
     过程通道双份）；那是"事件通道"的口径。**原文存的是块**，工具块必须留型，否则追溯
     时看不出"这一条是工具调用/结果"。两处口径不同是有意的，不要合并。
     """
-    actor = str(block.get("actor") or "")
+    actor = str(block.get("actor") or block.get("role") or "")
+    # [卡间消息 2026-10-27] 消息块的 actor/role 是 `card:<发信卡>`（或 `card:system`），
+    # 改前这里只认 human/assistant/tool ⇒ 消息块事件型恒空 ⇒
+    # `is_condense_original_event` 判 false ⇒ **消息永远不进凝练**。
+    # 事件型由块自己带（msg_sync / msg_directive / …），缺省 msg_notify。
+    if actor.startswith("card:"):
+        return str(block.get("event_type") or "msg_notify")
     if actor == "human":
         return "user_message"
     if actor == "assistant":
@@ -126,11 +133,39 @@ def write_blocks_sync(work_id: str, card_id: str,
     try:
         # 写路径必须走 card_db 的**写**通道：`read_sync` 会拒绝写操作
         # （"只读路径出现写操作（run_read 的 fn 必须纯查询）"）。
-        return int(card_db._write_sync(work_id, _fn) or 0)  # noqa: SLF001 同包内复用写事务边界
-    except Exception as exc:  # noqa: BLE001 库写失败不阻断业务
-        logger.warning("[origin] 原文入库失败（md 已落，待 backfill）card=%s n=%d: %s",
-                       card_id, len(rows), exc)
+        n = int(card_db._write_sync(work_id, _fn) or 0)  # noqa: SLF001 同包内复用写事务边界
+        global _LAST_WRITE_OK_AT
+        _LAST_WRITE_OK_AT = time.time()
+        return n
+    except Exception as exc:  # noqa: BLE001
+        # [凝练结算只认库 2026-10-27 · 用户令] **不再静默**。
+        # 改前这里只 warning：库缺行没人知道，而凝练一旦以库结算就会静默读不到、
+        # 水位不动。现在记 error ＋ 计数 ＋ 时间戳，供 `db_health()` 体检。
+        # 仍然不抛——md 已落盘，库可由 backfill 补回；抛了会让一轮对话因副本失败而失败。
+        _DB_WRITE_FAILS += 1
+        _LAST_WRITE_FAIL[0] = {"work": work_id, "card": card_id,
+                               "n": len(rows), "err": str(exc)[:200]}
+        logger.error(
+            "[origin] 原文写库失败（凝练将漏掉这批块，需 backfill）"
+            "work=%s card=%s n=%d 累计失败=%d: %s",
+            work_id, card_id, len(rows), _DB_WRITE_FAILS, exc)
         return 0
+
+
+#: 原文库写失败累计次数 / 最后一次失败详情 / 最后一次成功时间。
+#: 凝练以库结算后，这三个数是「库还信得过吗」的唯一可观测面。
+_DB_WRITE_FAILS: int = 0
+_LAST_WRITE_FAIL: list[dict[str, Any]] = [{}]
+_LAST_WRITE_OK_AT: float = 0.0
+
+
+def db_health() -> dict[str, Any]:
+    """原文库健康度（给体检/日志用）：失败次数、最后失败、最后成功时间。"""
+    return {
+        "write_fails": _DB_WRITE_FAILS,
+        "last_fail": dict(_LAST_WRITE_FAIL[0]) if _LAST_WRITE_FAIL[0] else {},
+        "last_ok_at": _LAST_WRITE_OK_AT,
+    }
 
 
 async def write_blocks(work_id: str, card_id: str,
@@ -224,3 +259,39 @@ def existing_seqs(work_id: str, card_id: str) -> set[int]:
         return set(card_db.read_sync(work_id, _fn, []) or [])
     except Exception:  # noqa: BLE001
         return set()
+
+
+def read_blocks(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str, Any]]:
+    """从原文表读块，返回**与 `session_facade.read` 同构**的 block 形态。
+
+    [2026-10-27 · 用户问「凝练的结算应该只看存进 sqlite 的信息」] 凝练改从这里读：
+    库有 `(card_id, seq)` 主键索引、不受 md 解析/截断影响，且 seq 天然连续可比。
+
+    还原规则与 `_row_of` 互逆：`data` 里是除 seq/content 之外的全部字段（JSON），
+    `type` 是事件型。`event_type` 一并放回，`predicates` 判原文时优先用它。
+    """
+    span = read_origin_span(work_id, card_id, int(from_seq or 0))
+    out: list[dict[str, Any]] = []
+    for r in (span.get("events") or []):
+        # 注意：`read_origin_span` 已经把 data 列解析成 dict 了，别再 json.loads
+        # （对 dict 调 json.loads 会抛，被下面 except 吞成空块——实测踩过）。
+        raw = r.get("data")
+        if isinstance(raw, dict):
+            b = dict(raw)
+        else:
+            try:
+                b = json.loads(raw or "{}")
+            except Exception:  # noqa: BLE001 坏 data 退化为只带正文
+                b = {}
+        if not isinstance(b, dict):
+            b = {}
+        b["seq"] = int(r.get("seq") or 0)
+        b["content"] = str(r.get("content") or "")
+        b["event_type"] = str(r.get("type") or "")
+        # 库里 `data` 存的是 `role`（会话块形态），文件里存的是 `actor`。
+        # `event_type_of` 只认 actor ⇒ 这里补一次映射，否则从库读出来的块
+        # 全被判成"空事件型"、进不了凝练。
+        if not b.get("actor") and b.get("role"):
+            b["actor"] = b["role"]
+        out.append(b)
+    return out

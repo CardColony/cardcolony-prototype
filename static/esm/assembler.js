@@ -33,7 +33,10 @@
 export const REGISTRY = {
   user_message:          { kind: "user" },
   assistant_text:        { kind: "assistant" },
+  // [2026-10-26] 补齐新增卡间消息类型（不补会落到 sys 兜底 ⇒ 样式全丢）
   msg_ask: { kind: "cardmsg" }, msg_answer: { kind: "cardmsg" }, msg_notify: { kind: "cardmsg" },
+  msg_sync: { kind: "cardmsg" }, msg_report: { kind: "cardmsg" },
+  msg_directive: { kind: "cardmsg" }, coder_done: { kind: "cardmsg" },
 
   tool_call:     { kind: "tool", merge: "call" },   // 同 key 合体
   tool_result:   { kind: "tool", merge: "result" },
@@ -54,6 +57,11 @@ export const REGISTRY = {
   context_preamble: { kind: "injection" }, context_injection: { kind: "injection" },
   judgment_protocol: { kind: "injection" }, context_seat_identity: { kind: "injection" },
   status_update_task: { kind: "injection" },
+  // [需求确定按钮改造 2026-10-29] 【需求确定】两种专用回合的轮首任务注入：
+  // 根卡那一轮直接改正稿、其他卡那一轮拟草稿后开评审。都当注入行渲染，
+  // 让「这一轮在干什么」直接出现在对话里。
+  requirements_final_task: { kind: "injection" },
+  requirements_draft_task: { kind: "injection" },
 
   reasoning: { kind: "reasoning" },
   /* [5702 · C-1 2026-10-20] 逐字流增量直接进装配器（dsh `assistant/chunk` 语义）。
