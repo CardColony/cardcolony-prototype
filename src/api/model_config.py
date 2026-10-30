@@ -51,8 +51,43 @@ CARD_TYPE_REGISTRY_PATH = BASE_DIR / "config" / "card_type_registry.json"
 # 原样带进编译条目，由该适配器的 RequestDefaults 消费。
 # 原 `_THINKING_DIALECT` / `_PROVIDER_DIALECT` 两张表**已删除**。
 
-# 默认模型（角色未绑定时的回落）。承接原 model_pick.json 的 default→main 语义。
-DEFAULT_MODEL = "haiku"
+# 默认模型（角色未绑定时的回落）。**不再有字面量**。
+#
+# 〔5715 · 模型名收口〕改前是 ``DEFAULT_MODEL = "haiku"`` —— 而模型目录里
+# **根本没有 ``haiku`` 这个键**（真实键是 ``anthropic-claude-haiku-55``）⇒
+# 一旦 ``system.default_model`` 缺失，就会回落成一个**不存在的模型名** ⇒ 调用即崩。
+# 现在回落链是「配置 → 模型目录 → 空串（让上层显式报错）」，**任何环节都不猜名字**。
+DEFAULT_MODEL = ""
+
+
+def _first_model_key() -> str:
+    """模型目录里的第一档（**内部键**，按配置书写顺序）—— 兜底用。
+
+    〔5715 · 模型名收口〕兜底也**不许猜名字**：目录里有哪档就取哪档（存在的模型），
+    目录为空 ⇒ 空串（让上层显式报错），绝不回落一个不存在的模型名。
+    """
+    models_cfg = (_gateway_config().get("models")) or {}
+    for key in models_cfg:
+        if str(key).strip():
+            return str(key)
+    return ""
+
+
+def model_for_purpose(purpose: str) -> str:
+    """取「某个用途」该用的模型**端点真实 id**（不是内部键）。
+
+    用途在 models.yaml 里用 ``use: <purpose>`` 标记（如 ``use: search``），
+    代码里**不写模型名** —— 端点换代/改名时只改配置，不改代码。
+
+    取不到时返回空串（调用方**如实报错/跳过**，绝不猜一个模型名）。
+    """
+    models_cfg = (_gateway_config().get("models")) or {}
+    for entry in models_cfg.values():
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("use") or "") == str(purpose):
+            return str(entry.get("model") or "")
+    return ""
 
 # [模型设置第二步 2026-10-12] 非 gateway 字段：设置界面用的字段，编译进 gateway 前一律弹出。
 # [2026-10-16 收窄] thinking / reasoning_efforts / default_effort **不再弹出**——新底座
@@ -181,6 +216,23 @@ def _compiled_config_cached() -> dict[str, Any]:
     _CFG_CACHE["key"] = key
     _CFG_CACHE["cfg"] = cfg
     return cfg
+
+
+def reasoning_echo_fill(model_used: str = "", seat: str = "") -> Optional[str]:
+    """无思考可回传时该补什么（None/""/非空占位）——gateway 同名函数的座位版。
+
+    判据与 gateway.reasoning_echo_fill 同源（同一个函数，只是这里先按座位找条目），
+    只是这里按「座位键 / 线型名」先找到配置条目。见那边 docstring 的三态语义。
+    """
+    from ..model_gateway.gateway import reasoning_echo_fill as _fill
+
+    cfg = _gateway_config().get("models") or {}
+    for key, entry in cfg.items():
+        if not isinstance(entry, dict):
+            continue
+        if key in (seat, model_used) or entry.get("model") in (seat, model_used):
+            return _fill(key, entry)
+    return None
 
 
 def _gateway_config() -> dict[str, Any]:
@@ -353,7 +405,8 @@ def new_project_default() -> str:
         if pool:
             return pool[0]
     system = (cfg.get("system") or {})
-    return str(system.get("default_model") or DEFAULT_MODEL)
+    # 〔5715 · 模型名收口〕兜底不猜名字：配置 → 目录第一档 → 空串（上层显式报错）
+    return str(system.get("default_model") or _first_model_key() or "")
 
 
 def _still_available(v: Any) -> bool:
@@ -410,7 +463,8 @@ def _policy_value(role: str, work_id: Optional[str],
                 return str(gt)
 
     system = (cfg.get("system") or {})
-    return str(system.get("default_model") or DEFAULT_MODEL)
+    # 〔5715 · 模型名收口〕兜底不猜名字：配置 → 目录第一档 → 空串（上层显式报错）
+    return str(system.get("default_model") or _first_model_key() or "")
 
 
 def _policy_row(work_id: str, card_id: str) -> dict:
@@ -571,31 +625,26 @@ def fallback_chain(role: str = "default", *, work_id: Optional[str] = None,
 
 def layer_fallbacks(model_name: str, *, work_id: Optional[str] = None,
                     card_id: Optional[str] = None) -> list[str]:
-    """**同层其余成员**（去掉 ``model_name`` 自己）——给「已经选好座位」的调用方用。
+    """**已废弃：恒返回空**——2026-10-26 用户令「不要兜底」。
 
-    与 :func:`fallback_chain` 的区别：那边是「我来选首选」，这边是「首选已经定了，
-    给我它挂掉时该换谁」。两者都只在本层内取，绝不跨层。
+    [2026-10-26 用户令 · 原话]「你把这一层级的模型兜底都给我去了，我网页选
+    哪个模型就是哪个模型，不需要兜底，何况他妈的兜底还不是我选的」
 
-    顺序：表里那一行配的 ``fallbacks`` 在前（设置界面/人手配的优先），
-    再用当前层池补齐（层池加了新成员也能跟上）。
+    **改前**：返回本层其余成员（`tiers.depth_N` 里除自己），gateway 在首选
+    失败时按顺序换人——用户从没选过这些成员，是系统按分层自动算的。
+
+    **改后**：恒返回空。选了哪个就只跑哪个，失败如实报错。
+    两条理由：
+      1. **决定权**：跑哪个模型只能由人选（设置界面 / 卡上覆盖）决定；
+         自动换人会让"现在跑的到底是哪个"不再由用户掌握。
+      2. **可排查**：换人后只抛最后一站的错，现象会指向一个用户根本没选过的
+         模型（2026-10-26 实测：fn_006 报 deepseek 余额不足，而它首选是
+         minimax-m31——第一二站为什么失败当时无任何记录，只能推断）。
+
+    函数保留（不删签名）是为了不动四个调用点；调用方传空列表时，
+    gateway 的 `_dedup_chain` 得到 `[primary]`，即「只跑首选」。
     """
-    me = str(model_name or "").strip()
-    if not me:
-        return []
-    rest: list[str] = []
-    if work_id and card_id:
-        try:
-            from ..storage import model_override as _mo
-            row = _mo.get_row(work_id, card_id) or {}
-            rest.extend(str(x) for x in (row.get("fallbacks") or []) if str(x).strip())
-        except Exception:  # noqa: BLE001 读不到表 ⇒ 只用层池
-            pass
-    rest.extend(m for m in _layer_pool(work_id, card_id) if m != me)
-    out: list[str] = []
-    for m in rest:
-        if m != me and m not in out and _still_available(m):
-            out.append(m)
-    return out
+    return []
 
 
 def default_model(*, work_id: Optional[str] = None,

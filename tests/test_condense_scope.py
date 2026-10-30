@@ -16,6 +16,8 @@ import pytest
 
 from src.storage import memory_store
 
+from _condense_stub import three_stage_stub
+
 
 def _mk(seq: int, actor: str, content: str) -> dict:
     return {"seq": seq, "actor": actor, "content": content}
@@ -48,10 +50,8 @@ def test_mark_advances_past_tool_blocks(work, monkeypatch):
     monkeypatch.setenv("CONDENSE_WINDOW_BUDGET_TOKENS", "700")
     pending = [_mk(0, "human", "六" * 6), _tool(1), _mk(2, "assistant", "六" * 6)]
 
-    async def fake(prompt: str) -> str:
-        return "【结论】有结论【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="有结论"))
     import asyncio
     asyncio.get_event_loop_policy()
     asyncio.run(memory_store._run_condense_pipeline(wid, cid, pending, 0))
@@ -67,11 +67,8 @@ def test_tool_only_window_is_sold_without_prompt(work, monkeypatch):
     wid, cid = work["work_id"], work["work_card_id"]
     called: list[str] = []
 
-    async def fake(prompt: str) -> str:
-        called.append(prompt)
-        return "不该被调用"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="不该被调用", record=called))
     import asyncio
     asyncio.run(memory_store._run_condense_pipeline(wid, cid, [_tool(0), _tool(1)], 0))
     st = memory_store.load_memory(wid, cid)
@@ -99,11 +96,8 @@ def test_trigger_uses_real_request_tokens(work, monkeypatch):
     asyncio.run(seed())
     ran: list[str] = []
 
-    async def fake(prompt: str) -> str:
-        ran.append(prompt)
-        return "【结论】触发了【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="触发了", record=ran))
     asyncio.run(memory_store.condense_turn_end(wid, cid, request_tokens=1_040_000))
     st = memory_store.load_memory(wid, cid)
     print("ran =", len(ran), "mark =", st["mark"])
@@ -117,11 +111,8 @@ def test_trigger_falls_back_to_block_meter(work, monkeypatch):
     monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "800000")
     ran: list[str] = []
 
-    async def fake(prompt: str) -> str:
-        ran.append(prompt)
-        return "【结论】不该触发【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="不该触发", record=ran))
     import asyncio
     asyncio.run(memory_store.condense_turn_end(wid, cid))
     assert ran == [], "没给真实体积、块量又不到线 ⇒ 不触发"
@@ -137,10 +128,8 @@ def test_three_rulers_share_one_source(work, monkeypatch):
     pending = [_mk(0, "human", "六" * 6), _tool(1), _mk(2, "assistant", "六" * 6),
                _mk(3, "human", "六" * 6)]
 
-    async def fake(prompt: str) -> str:
-        return "【结论】只压第一批【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="只压第一批"))
     import asyncio
     asyncio.run(memory_store._run_condense_pipeline(wid, cid, pending, 0))
     st = memory_store.load_memory(wid, cid)
@@ -167,10 +156,8 @@ def test_request_tokens_never_shrinks_the_window(work, monkeypatch, caplog):
 
     asyncio.run(seed())
 
-    async def fake(prompt: str) -> str:
-        return "【结论】压一批【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="压一批"))
     with caplog.at_level(logging.WARNING, logger="storage.memory_store"):
         asyncio.run(memory_store.condense_turn_end(wid, cid, request_tokens=1_040_000))
     st = memory_store.load_memory(wid, cid)
@@ -198,10 +185,8 @@ async def test_preflight_condenses_when_over_line(work, monkeypatch):
         {"actor": "assistant", "content": "六" * 200},
     ])
 
-    async def fake(prompt: str) -> str:
-        return "【结论】预检压了【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="预检压了"))
     ran = await memory_store.condense_before_send(wid, cid)
     st = memory_store.load_memory(wid, cid)
     assert ran is True
@@ -218,11 +203,8 @@ async def test_preflight_does_nothing_below_line(work, monkeypatch):
     monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "800000")
     called: list[str] = []
 
-    async def fake(prompt: str) -> str:
-        called.append(prompt)
-        return "不该被调用"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="不该被调用", record=called))
     ran = await memory_store.condense_before_send(wid, cid)
     assert ran is False
     assert called == []
@@ -278,11 +260,8 @@ async def test_preflight_loops_until_under_target(work, monkeypatch):
 
     batches: list[str] = []
 
-    async def fake(prompt: str) -> str:
-        batches.append(prompt)
-        return "【结论】压了【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="压了", record=batches))
     ran = await memory_store.condense_before_send(wid, cid)
     st = memory_store.load_memory(wid, cid)
     print("跑了", len(batches), "批 | mark =", st.get("mark"))
@@ -305,10 +284,8 @@ async def test_condense_runs_even_when_turn_lock_held(work, monkeypatch):
         {"actor": "assistant", "content": "六" * 50},
     ])
 
-    async def fake(prompt: str) -> str:
-        return "【结论】锁着也压了【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="锁着也压了"))
 
     # 主线回合先占锁（模拟 routes 里 finally 还没释放的那段）
     assert session_facade.turn_try_acquire(wid, cid, "main") is True
@@ -336,10 +313,8 @@ async def test_sweeper_condenses_without_any_turn(work, monkeypatch):
         {"actor": "assistant", "content": "六" * 60},
     ])
 
-    async def fake(prompt: str) -> str:
-        return "【结论】后台自己凝的【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="后台自己凝的"))
     n = await memory_store.condense_sweep_once()
     st = memory_store.load_memory(wid, cid)
     print("扫到", n, "张 | mark =", st.get("mark"))

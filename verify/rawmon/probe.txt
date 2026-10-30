@@ -1,0 +1,1 @@
+﻿elevated OK user-20240830rs\administrator admin=True

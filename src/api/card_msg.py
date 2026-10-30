@@ -59,6 +59,18 @@ def type_codes() -> tuple[str, ...]:
     return tuple(load_registry().keys())
 
 
+def active_type_codes() -> tuple[str, ...]:
+    """**在役**类型码（跳过 `deprecated: true` 的条目）。
+
+    [通信收拢 2026-10-28] 清退 ≠ 删行：历史 jsonl/会话块里还有 msg_ask/msg_answer
+    的旧消息，注册表必须留着它们（`display_of` 要能渲染、校验要能认），
+    但「模型该知道哪些类型」只算在役的。
+    """
+    reg = load_registry()
+    return tuple(c for c, e in reg.items()
+                 if not (isinstance(e, dict) and e.get("deprecated")))
+
+
 def display_of(code: str) -> str:
     """类型码 → 显示名；**未命中返回 code 本身**（前端容错：不认识的类型显示原文而非空白）。"""
     entry = load_registry().get(code)

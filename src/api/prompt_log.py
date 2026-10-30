@@ -86,6 +86,7 @@ def write_prompt_log(
     fold_ops: Optional[list[dict[str, Any]]] = None,
     work_id: str = "",
     model_requested: Optional[str] = None,
+    reasoning: Optional[str] = None,
 ) -> Optional[Path]:
     """写一条 prompt 日志，返回文件路径；失败只记日志返回 None，不中断主流程。
 
@@ -128,6 +129,10 @@ def write_prompt_log(
             "tool_events": tool_events or [],
             "pair_id": pair_id,
         }
+        # [评审可观测 2026-10-27] 思考过程（reasoning_content）只在非空时写入——
+        # 缺省不传时日志与既往逐字同构，既有键一个不改。
+        if reasoning:
+            payload["reasoning"] = reasoning
         # [T11] 新键为空时不写入（约束 13）：日志与既往逐字同构
         if regions:
             payload["regions"] = regions

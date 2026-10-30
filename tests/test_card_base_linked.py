@@ -69,7 +69,7 @@ async def test_v1_read_via_three_parts_and_unlink(sandbox):
     # ① 正文（复用 card_store.read_card 三块）
     out = await card_tools.read_via(wid, a_id, b_id, "正文")
     assert out["ok"] is True and out["part"] == "正文"
-    assert set(out["value"]) == {"title", "mission", "status_block", "rulings"}
+    assert set(out["value"]) == {"title", "mission", "status_block", "requirements"}
 
     # ② 影子（复用 shadow_store.read_shadow_raw）
     await session_facade.append(wid, b_id, {

@@ -106,6 +106,24 @@ def read_status_block(work_id: str, card_id: str) -> str:
     return "" if _is_placeholder(text) else text
 
 
+def _root_project_class(work_id: str) -> str:
+    """本树 project_class（根卡承载）。读不到按空处理——渲染退回默认「需求文档」。
+
+    [第三块按树 2026-10-22] 供 STATUS_UPDATE_TASK 渲染第三块名用；
+    本函数同步（build_status_task_event 是同步出口），故直接走 card_db.read_sync。
+    """
+    def _fn(conn: Any) -> Any:
+        row = conn.execute(
+            "SELECT project_class FROM cards WHERE card_type = 'project' LIMIT 1"
+        ).fetchone()
+        return None if row is None else row["project_class"]
+
+    try:
+        return str(card_db.read_sync(work_id, _fn, "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def build_status_task_event(work_id: str, card_id: str) -> dict[str, Any]:
     """「更新现状」专用注入事件（含当前现状全文）。
 
@@ -114,8 +132,11 @@ def build_status_task_event(work_id: str, card_id: str) -> dict[str, Any]:
     当前现状为空/占位符 → 正文里填「（暂无现状，从零起草）」。
     """
     status = read_status_block(work_id, card_id)
-    body = _prompts.STATUS_UPDATE_TASK.format(
-        current_status=status if status.strip() else "（暂无现状，从零起草）")
+    # [第三块按树 2026-10-22] 用 replace 而非 format——模板里含 {{THIRD}} 占位符，
+    # format 会把它吃成 {THIRD}，render_for_tree 就替换不到。
+    body = _prompts.STATUS_UPDATE_TASK.replace(
+        "{current_status}", status if status.strip() else "（暂无现状，从零起草）")
+    body = _prompts.render_for_tree(body, _root_project_class(work_id))
     return {"type": TYPE_STATUS_TASK,
             "data": {"source_kind": "status_update_task", "content": body}}
 
@@ -127,6 +148,71 @@ def project_status_task_message(data: dict[str, Any]) -> dict[str, Any]:
     """
     return {"role": INJECTION_ROLE,
             "content": f"{STATUS_MARK}\n{str(data.get('content') or '')}"}
+
+
+# [需求确定按钮改造 2026-10-29 · 用户令] 【需求确定】按钮的两种专用回合，事件与抬头
+# 单列——语义是「定需求」，复用 status_update_task 会让前端把标签渲染错。
+# 哪一种由调用方传 ``final``（根卡＝True），本模块不认 op 常量（避免反向依赖 card_tools）。
+TYPE_REQUIREMENTS_FINAL_TASK = "requirements_final_task"
+TYPE_REQUIREMENTS_DRAFT_TASK = "requirements_draft_task"
+REQUIREMENTS_MARK = "〔需求确定〕"
+
+
+def read_requirements_blocks(work_id: str, card_id: str) -> tuple[str, str]:
+    """读本卡（需求文档正稿, 草稿）。正稿的骨架占位符当空——与注入口径一致。
+
+    同步出口（``build_*`` 都是同步的）⇒ 直接走 ``card_db.read_sync``。
+    草稿列是本卡私有（不进 read_card），只有注入口需要它。
+    """
+    from .card_draft import _is_placeholder  # noqa: PLC0415 延迟 import 破环
+    from ..storage import card_db  # noqa: PLC0415 延迟 import（只本函数用）
+
+    def _fn(conn: Any) -> Any:
+        row = conn.execute(
+            "SELECT requirements, requirements_draft FROM cards WHERE card_id = ?",
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return (str(row["requirements"] or ""),
+                str(row["requirements_draft"] or ""))
+
+    got = card_db.read_sync(work_id, _fn, None)
+    if not got:
+        return "", ""
+    req, draft = got
+    return ("" if _is_placeholder(req) else req), draft
+
+
+def build_requirements_task_event(work_id: str, card_id: str, *,
+                                  final: bool) -> dict[str, Any]:
+    """【需求确定】专用回合的轮首任务注入（含当前正稿／草稿全文）。
+
+    ``final=True``（根卡）⇒ 这一轮直接改**正稿**（模板 REQUIREMENTS_FINAL_TASK）；
+    ``final=False``（其他卡）⇒ 这一轮拟**草稿**、拟完开评审（REQUIREMENTS_DRAFT_TASK）。
+    两段的差别是用户 2026-10-29 的裁定：根卡开不出评审、也不需要评审。
+    """
+    req, draft = read_requirements_blocks(work_id, card_id)
+    tpl = (_prompts.REQUIREMENTS_FINAL_TASK if final
+           else _prompts.REQUIREMENTS_DRAFT_TASK)
+    # 用 replace 而非 format——模板里含 {{THIRD}}，format 会把它吃成 {THIRD}。
+    body = tpl.replace(
+        "{current_requirements}",
+        req if req.strip() else "（正稿还是空的，从零写）")
+    body = body.replace(
+        "{current_draft}",
+        draft if draft.strip() else "（还没有草稿，从零拟）")
+    body = _prompts.render_for_tree(body, _root_project_class(work_id))
+    kind = "requirements_final_task" if final else "requirements_draft_task"
+    return {"type": (TYPE_REQUIREMENTS_FINAL_TASK if final
+                     else TYPE_REQUIREMENTS_DRAFT_TASK),
+            "data": {"source_kind": kind, "content": body}}
+
+
+def project_requirements_task_message(data: dict[str, Any]) -> dict[str, Any]:
+    """需求确定事件 → 模型可见消息（role＝INJECTION_ROLE，正文＝第一人称自述）。"""
+    return {"role": INJECTION_ROLE,
+            "content": f"{REQUIREMENTS_MARK}\n{str(data.get('content') or '')}"}
 
 
 def build_injection_events(work_id: str, card_id: str) -> list[dict[str, Any]]:

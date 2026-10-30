@@ -141,7 +141,7 @@ async def test_toolface_coder_vs_main(coder_registry, work):
     # [v12 2026-10-22] send_card_message **放开**：中途要能问主卡（父子关系即通道）。
     assert not ({"create_card", "delete_card",
                  "run_tool_card", "create_coder_card"} & coder_face), coder_face
-    assert "send_card_message" in coder_face, "coder 必须能向父卡发信（v12）"
+    assert "sync" in coder_face, "coder 必须能向父卡发信（v12）"
 
     main_face = {t["name"] for t in card_tools.build_tool_schemas(
         a, work_id=wid, cards=cards)}

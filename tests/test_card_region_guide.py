@@ -33,7 +33,7 @@ async def _make_work():
 # ---------------------------------------------------------------------------
 
 
-def test_rd_card_shows_requirements_and_never_mentions_rulings():
+def test_rd_card_shows_requirements_and_never_mentions_requirements():
     t = _GUIDE("sub_project", "rd_project")
     assert "需求文档" in t
     assert "定论" not in t, "研发树文案不得出现「定论」（用户 22:04 ①）"

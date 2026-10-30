@@ -10,11 +10,11 @@
  * （store.state.canvasState 由 canvas.js 注册）。
  */
 import { store } from "./store.js?v=30";
-import { API } from "./api.js?v=46";
+import { API } from "./api.js?v=55";
 import "./util.js?v=30";
-import { reloadCanvas } from "../canvas.js?v=96";
-import { createNavSystem } from "./nav_system.js?v=59";
-import { loadRulePanel } from "./rule_panel.js?v=37";
+import { reloadCanvas } from "../canvas.js?v=113";
+import { createNavSystem } from "./nav_system.js?v=74";
+import { loadRulePanel } from "./rule_panel.js?v=47";
 
 const WORK_ID = window.__WORK_ID__;
 const navTree = document.getElementById("navTree");
@@ -53,5 +53,5 @@ const navSystem = createNavSystem({
 
 navSystem.startNav();
 
-// 规则卡＝吸附右侧的常驻面板，画布页同样在场
+// 项目规则＝吸附右侧的常驻面板（规则是本项目的一个文件，不是卡），画布页同样在场
 loadRulePanel();

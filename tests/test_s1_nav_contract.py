@@ -79,7 +79,10 @@ async def test_v1_v2_v4_contract_new_card(sandbox, work, monkeypatch):
     # V4-② 落库：新建卡 state 列非空、读侧 meta 可见（[卡片存储迁移 SQLite] 原断言 md 行）
     from src.storage import card_store
     metas = card_store.iter_card_metas(wid)
-    new_ids = [cid for cid in metas if cid != root]
+    # [伴生评审卡 2026-10-27] 建 sub_project/topic 会**自动派生**一张离树评审卡；
+    # 本用例数的是"用户新建的卡"，评审卡是系统派生件，不算在内。
+    new_ids = [cid for cid, m in metas.items()
+               if cid != root and str(m.get("card_type") or "") != "review"]
     assert len(new_ids) == 2
     for cid in new_ids:
         assert metas[cid]["state"] == "active", cid

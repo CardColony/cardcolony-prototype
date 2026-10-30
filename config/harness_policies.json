@@ -1,0 +1,84 @@
+{
+ "_meta": {
+  "title": "harness 条件集（值班员）",
+  "version": 1,
+  "updated": "2026-10-28",
+  "desc": "每条策略＝一个值班员。他不翻台账：事情一发生就送到他手上，他往自己的小本子上记一笔；账凑够条件就喊人，喊完把本子撕了重记。",
+  "schema": {
+   "id": "策略名，唯一",
+   "active": "是否激活。只有激活的才挂本子、才被喂事件；停用就摘掉，零成本",
+   "desc": "人话说明（触发记录里会带上）",
+   "scope.kind": "本子挂在谁身上：card=一张卡｜relation=一对父子｜work=整个 work",
+   "watch": "只关心哪几类事件。**绝不要把 `done` 当任务完成**——done 是每轮的收口（说一句话也算一轮），拿它当锚点等于要求模型每轮都汇报。至于「阶段完成」到底以什么为准，**尚未定论**，定下来再往这里填。",
+   "window": "时间窗：24h / 7d / 90m / none。超窗的老账在下次记账时惰性划掉",
+   "when": "条件树：all/any/not/event/count/field/after，可任意嵌套。after＝「最近一次 anchor 之后没有 expect」，用来表达先后关系（「干完了没汇报」必须用它——用「窗口内没有汇报」会让上一轮的汇报把这一轮盖住）",
+   "then": "触发后做什么：target=发到谁（self/parent/ancestors/links/card:<id>）、message=说什么、wake=要不要叫醒"
+  },
+  "semantics": {
+   "why_scope_matters": "「父卡对子卡做了什么」的状态不挂在某一张卡上，而是挂在每一对 (父, 子) 上。新子卡建出来自动多一本空本子。",
+   "why_clear_after_fire": "触发后该作用域的本子归零、窗口重置到此刻。只撕那一本，别的本子不动；清零本身防了重复触发，所以原来的防重表退役。",
+   "why_no_timer": "超窗的账在下次记账时顺手划掉。没有事件时本子不动也不需要动——这就是零墙钟要的样子。",
+   "why_seed": "新建/激活一条策略时，从数据集回溯它的窗口把本子补记好；补完若已满足就立刻触发，不用等下一个事件。"
+  }
+ },
+ "policies": [
+  {
+   "id": "review_step_not_finished",
+   "active": true,
+   "desc": "评审这一步自己说「还有活」（continued=true）⇒ 接着跑下一步。「模型不可用」这类到站（continued=false）不续，免得无限重试挂掉的模型。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_round_done"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "review_round_done"
+     ],
+     "where": {
+      "continued": true
+     },
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）评审还没结束，继续跑下一步。"
+   }
+  },
+  {
+   "id": "review_all_passed_need_promote",
+   "active": true,
+   "desc": "评审已全员通过但正稿没写 ⇒ 叫它调 promote_draft 定稿（写正稿必须是模型调工具）",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_all_passed"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "review_all_passed"
+     ],
+     "where": {
+      "need_promote": true
+     },
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）评审已全员通过，但正稿还没写。请调 promote_draft 把草稿转成正稿。"
+   }
+  }
+ ]
+}

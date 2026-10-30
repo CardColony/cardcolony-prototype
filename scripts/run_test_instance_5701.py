@@ -28,6 +28,12 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(BASE_DIR / ".env")   # 与 main.py 同款：先加载 .env 再导入路由
 
+# [编码 2026-10-25] 与 main.py 同款：Windows stdout 是 GBK+strict ⇒ 含「⇒」的
+# print() 会炸（会把真实异常吃掉）。本脚本**故意不 import main** ⇒ 这里单独调。
+from src.infra.console_io import ensure_utf8_console  # noqa: E402
+
+ensure_utf8_console()
+
 from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402

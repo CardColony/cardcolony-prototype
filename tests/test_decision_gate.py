@@ -69,7 +69,7 @@ async def test_complete_passes_after_decision_appended(typed_registry, work, no_
     await card_store.update_card(
         wid, cid,
         {"status_block": "## 现状\n做了一半，卡在选型上。",
-         "rulings": "D01【收敛】选 A 方案，因为并发量低（2026-10-19·实测）"},
+         "requirements": "D01【收敛】选 A 方案，因为并发量低（2026-10-19·实测）"},
         "补定论")
 
     cards = card_tools._collect_card_meta(wid)
@@ -90,7 +90,7 @@ async def test_skeleton_placeholder_is_not_a_decision(typed_registry, work, no_k
     await card_store.update_card(
         wid, cid, {"status_block": "## 现状\n做了一半，卡在选型上。"}, "写现状")
     _cur = await card_store.read_card(wid, cid)
-    _full = (_cur["body"]["status_block"] or "") + (_cur["body"]["rulings"] or "")
+    _full = (_cur["body"]["status_block"] or "") + (_cur["body"]["requirements"] or "")
     assert "本卡全部需求的确定版" in _full, f"骨架里应有占位行：{_cur['body']}"
 
     cards = card_tools._collect_card_meta(wid)

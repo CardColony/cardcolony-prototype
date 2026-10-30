@@ -15,8 +15,13 @@
  */
 import { parseCardHeader, stripCardHeader, escapeHtml } from "../cardmsg.js?v=30";
 
-const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知" };
-const CARD_MSG_CLS = { msg_ask: "ask", msg_answer: "answer", msg_notify: "notify" };
+// [2026-10-26] 补齐新增卡间消息类型；样式类沿用 notify（不新造视觉）
+const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知",
+                           msg_sync: "同步", msg_report: "汇报",
+                           msg_directive: "指令", coder_done: "完工回报" };
+const CARD_MSG_CLS = { msg_ask: "ask", msg_answer: "answer", msg_notify: "notify",
+                       msg_sync: "notify", msg_report: "notify",
+                       msg_directive: "notify", coder_done: "notify" };
 const CARD_MSG_MUST = { msg_ask: true };
 
 /**

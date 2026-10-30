@@ -1878,6 +1878,48 @@ body.page-chat .rule-panel { display: none; }
 .auto-hint { font-size: 11px; color: var(--dim); }
 .auto-toggle { font-size: 12px; padding: 2px 10px; }
 .auto-toggle:disabled { opacity: .55; cursor: default; }
+/* [wb_exec 2026-10-23] coder 卡的执行体选择块（谁干活）。
+   状态行：未开工显示提示；开工后显示实际路由到的（版本, 模型）。
+   **用 ui.css 的新令牌并回落旧令牌**——5715 的 P8 教训：老令牌在浅色主题
+   不自适应（对话页浅色下仍是深色值）。 */
+.exec-row { margin: 4px 0 6px; }
+/* [wb_exec 2026-10-23 16:20] 执行体**总开关**（开⇒走 WorkBuddy / 关⇒走系统模型） */
+.exec-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ui-text-2, var(--text-soft));
+  cursor: pointer;
+  user-select: none;
+}
+.exec-switch input { cursor: pointer; margin: 0; }
+.exec-switch input:disabled { cursor: not-allowed; opacity: 0.5; }
+.exec-sel {
+  width: 100%;
+  font-size: 12px;
+  padding: 4px 8px;
+  background: var(--ui-surface-1, var(--panel));
+  color: var(--ui-text, var(--text));
+  border: 1px solid var(--ui-line-2, var(--border));
+  border-radius: var(--ui-r-xs, 4px);
+}
+.exec-sel:focus-visible {
+  outline: 2px solid var(--ui-accent, #7d88ee);
+  outline-offset: 1px;
+}
+.exec-status {
+  font-size: 12px;
+  color: var(--ui-text-2, var(--text-soft));
+  background: var(--ui-surface-1, var(--panel));
+  border: 1px solid var(--ui-line-2, var(--border));
+  border-left: 3px solid var(--ui-accent, #7d88ee);
+  border-radius: var(--ui-r-xs, 4px);
+  padding: 5px 8px;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+.exec-hint { font-size: 11px; color: var(--ui-text-3, var(--dim)); }
 /* [回灌 5700 块0.5 · 用户令「放在底边栏」] 输入条里的 自动/手动 切换。
    手动＝中性；自动＝amber（与 .auto-badge 同语义色，一眼看出这卡是自动的）。 */
 .auto-switch { font-size: 12px; padding: 3px 10px; }
@@ -2007,3 +2049,15 @@ body.page-chat .rule-panel { display: none; }
 }
 .fn-node:hover { background: rgba(110, 168, 201, 0.22); }
 .fn-node.off { opacity: 0.4; }
+
+/* [总裁制卡面定制 2026-10-24] 职能台账面(抽屉) */
+.fn-panel .fn-sec { margin: 6px 0 10px; }
+.fn-panel .fn-sec-t {
+  font-size: 11px; font-weight: 600; color: var(--ui-dim, var(--dim, #8a93a5));
+  letter-spacing: .04em; margin: 4px 0 3px;
+  border-bottom: 1px dashed var(--ui-border, var(--border, #2a2f3a)); padding-bottom: 2px;
+}
+.fn-panel .fn-li {
+  font-size: 12px; line-height: 1.5; color: var(--ui-text2, var(--text, #cfd4dd));
+  padding: 1px 0 1px 10px; text-indent: -10px; word-break: break-word;
+}

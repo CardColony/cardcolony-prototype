@@ -1,0 +1,428 @@
+{
+  "/ (home html)": [
+    {
+      "url": "/ (home html)",
+      "t_ms": 40.17,
+      "status": 200,
+      "bytes": 4692
+    },
+    {
+      "url": "/ (home html)",
+      "t_ms": 6.14,
+      "status": 200,
+      "bytes": 4692
+    },
+    {
+      "url": "/ (home html)",
+      "t_ms": 25.72,
+      "status": 200,
+      "bytes": 4692
+    },
+    {
+      "url": "/ (home html)",
+      "t_ms": 6.01,
+      "status": 200,
+      "bytes": 4692
+    },
+    {
+      "url": "/ (home html)",
+      "t_ms": 155.11,
+      "status": 200,
+      "bytes": 4692
+    },
+    {
+      "url": "/ (home html)",
+      "t_ms": 20.61,
+      "status": 200,
+      "bytes": 4692
+    },
+    {
+      "url": "/ (home html)",
+      "t_ms": 6.6,
+      "status": 200,
+      "bytes": 4692
+    }
+  ],
+  "/work/work_024 (canvas html)": [
+    {
+      "url": "/work/work_024 (canvas html)",
+      "t_ms": 5.01,
+      "status": 200,
+      "bytes": 15018
+    },
+    {
+      "url": "/work/work_024 (canvas html)",
+      "t_ms": 25.83,
+      "status": 200,
+      "bytes": 15018
+    },
+    {
+      "url": "/work/work_024 (canvas html)",
+      "t_ms": 4.11,
+      "status": 200,
+      "bytes": 15018
+    },
+    {
+      "url": "/work/work_024 (canvas html)",
+      "t_ms": 4.06,
+      "status": 200,
+      "bytes": 15018
+    },
+    {
+      "url": "/work/work_024 (canvas html)",
+      "t_ms": 5.45,
+      "status": 200,
+      "bytes": 15018
+    },
+    {
+      "url": "/work/work_024 (canvas html)",
+      "t_ms": 5.26,
+      "status": 200,
+      "bytes": 15018
+    },
+    {
+      "url": "/work/work_024 (canvas html)",
+      "t_ms": 4.76,
+      "status": 200,
+      "bytes": 15018
+    }
+  ],
+  "GET /static/canvas.js": [
+    {
+      "url": "GET /static/canvas.js",
+      "t_ms": 27.05,
+      "status": 200,
+      "bytes": 392967
+    },
+    {
+      "url": "GET /static/canvas.js",
+      "t_ms": 276.02,
+      "status": 200,
+      "bytes": 392967
+    },
+    {
+      "url": "GET /static/canvas.js",
+      "t_ms": 8.23,
+      "status": 200,
+      "bytes": 392967
+    },
+    {
+      "url": "GET /static/canvas.js",
+      "t_ms": 7.36,
+      "status": 200,
+      "bytes": 392967
+    },
+    {
+      "url": "GET /static/canvas.js",
+      "t_ms": 8.62,
+      "status": 200,
+      "bytes": 392967
+    },
+    {
+      "url": "GET /static/canvas.js",
+      "t_ms": 203.99,
+      "status": 200,
+      "bytes": 392967
+    },
+    {
+      "url": "GET /static/canvas.js",
+      "t_ms": 8.36,
+      "status": 200,
+      "bytes": 392967
+    }
+  ],
+  "GET /static/esm/main.js": [
+    {
+      "url": "GET /static/esm/main.js",
+      "t_ms": 7.66,
+      "status": 200,
+      "bytes": 2938
+    },
+    {
+      "url": "GET /static/esm/main.js",
+      "t_ms": 6.33,
+      "status": 200,
+      "bytes": 2938
+    },
+    {
+      "url": "GET /static/esm/main.js",
+      "t_ms": 4.75,
+      "status": 200,
+      "bytes": 2938
+    },
+    {
+      "url": "GET /static/esm/main.js",
+      "t_ms": 4.73,
+      "status": 200,
+      "bytes": 2938
+    },
+    {
+      "url": "GET /static/esm/main.js",
+      "t_ms": 5.0,
+      "status": 200,
+      "bytes": 2938
+    },
+    {
+      "url": "GET /static/esm/main.js",
+      "t_ms": 4.37,
+      "status": 200,
+      "bytes": 2938
+    },
+    {
+      "url": "GET /static/esm/main.js",
+      "t_ms": 5.55,
+      "status": 200,
+      "bytes": 2938
+    }
+  ],
+  "GET /static/style.css": [
+    {
+      "url": "GET /static/style.css",
+      "t_ms": 5.41,
+      "status": 200,
+      "bytes": 76129
+    },
+    {
+      "url": "GET /static/style.css",
+      "t_ms": 6.35,
+      "status": 200,
+      "bytes": 76129
+    },
+    {
+      "url": "GET /static/style.css",
+      "t_ms": 5.34,
+      "status": 200,
+      "bytes": 76129
+    },
+    {
+      "url": "GET /static/style.css",
+      "t_ms": 67.17,
+      "status": 200,
+      "bytes": 76129
+    },
+    {
+      "url": "GET /static/style.css",
+      "t_ms": 5.63,
+      "status": 200,
+      "bytes": 76129
+    },
+    {
+      "url": "GET /static/style.css",
+      "t_ms": 6.02,
+      "status": 200,
+      "bytes": 76129
+    },
+    {
+      "url": "GET /static/style.css",
+      "t_ms": 4.92,
+      "status": 200,
+      "bytes": 76129
+    }
+  ],
+  "GET /api/works": [
+    {
+      "url": "GET /api/works",
+      "t_ms": 101.01,
+      "status": 200,
+      "bytes": 3603
+    },
+    {
+      "url": "GET /api/works",
+      "t_ms": 93.05,
+      "status": 200,
+      "bytes": 3603
+    },
+    {
+      "url": "GET /api/works",
+      "t_ms": 96.79,
+      "status": 200,
+      "bytes": 3603
+    },
+    {
+      "url": "GET /api/works",
+      "t_ms": 88.56,
+      "status": 200,
+      "bytes": 3603
+    },
+    {
+      "url": "GET /api/works",
+      "t_ms": 410.41,
+      "status": 200,
+      "bytes": 3603
+    },
+    {
+      "url": "GET /api/works",
+      "t_ms": 90.59,
+      "status": 200,
+      "bytes": 3603
+    },
+    {
+      "url": "GET /api/works",
+      "t_ms": 97.24,
+      "status": 200,
+      "bytes": 3603
+    }
+  ],
+  "GET /api/works/work_024/canvas": [
+    {
+      "url": "GET /api/works/work_024/canvas",
+      "t_ms": 7.06,
+      "status": 200,
+      "bytes": 23347
+    },
+    {
+      "url": "GET /api/works/work_024/canvas",
+      "t_ms": 11.03,
+      "status": 200,
+      "bytes": 23347
+    },
+    {
+      "url": "GET /api/works/work_024/canvas",
+      "t_ms": 451.54,
+      "status": 200,
+      "bytes": 23347
+    },
+    {
+      "url": "GET /api/works/work_024/canvas",
+      "t_ms": 12.12,
+      "status": 200,
+      "bytes": 23347
+    },
+    {
+      "url": "GET /api/works/work_024/canvas",
+      "t_ms": 11.48,
+      "status": 200,
+      "bytes": 23347
+    },
+    {
+      "url": "GET /api/works/work_024/canvas",
+      "t_ms": 375.36,
+      "status": 200,
+      "bytes": 23347
+    },
+    {
+      "url": "GET /api/works/work_024/canvas",
+      "t_ms": 555.43,
+      "status": 200,
+      "bytes": 23347
+    }
+  ],
+  "GET /api/nav": [
+    {
+      "url": "GET /api/nav",
+      "t_ms": 265.44,
+      "status": 200,
+      "bytes": 43360
+    },
+    {
+      "url": "GET /api/nav",
+      "t_ms": 301.4,
+      "status": 200,
+      "bytes": 43360
+    },
+    {
+      "url": "GET /api/nav",
+      "t_ms": 217.53,
+      "status": 200,
+      "bytes": 43360
+    },
+    {
+      "url": "GET /api/nav",
+      "t_ms": 209.38,
+      "status": 200,
+      "bytes": 43360
+    },
+    {
+      "url": "GET /api/nav",
+      "t_ms": 322.04,
+      "status": 200,
+      "bytes": 43360
+    },
+    {
+      "url": "GET /api/nav",
+      "t_ms": 251.9,
+      "status": 200,
+      "bytes": 43360
+    },
+    {
+      "url": "GET /api/nav",
+      "t_ms": 808.63,
+      "status": 200,
+      "bytes": 43360
+    }
+  ],
+  "GET /api/works/work_024/cards/card_024/stream": [
+    {
+      "url": "GET /api/works/work_024/cards/card_024/stream",
+      "first_byte_ms": 5.31,
+      "hold_ms": 5.32,
+      "status": 200,
+      "first_chunk_type": "empty"
+    },
+    {
+      "url": "GET /api/works/work_024/cards/card_024/stream",
+      "first_byte_ms": 6.44,
+      "hold_ms": 6.45,
+      "status": 200,
+      "first_chunk_type": "empty"
+    },
+    {
+      "url": "GET /api/works/work_024/cards/card_024/stream",
+      "first_byte_ms": 179.24,
+      "hold_ms": 179.26,
+      "status": 200,
+      "first_chunk_type": "empty"
+    },
+    {
+      "url": "GET /api/works/work_024/cards/card_024/stream",
+      "first_byte_ms": 6.42,
+      "hold_ms": 6.44,
+      "status": 200,
+      "first_chunk_type": "empty"
+    },
+    {
+      "url": "GET /api/works/work_024/cards/card_024/stream",
+      "first_byte_ms": 7.21,
+      "hold_ms": 7.24,
+      "status": 200,
+      "first_chunk_type": "empty"
+    }
+  ],
+  "GET /api/works/work_024/cards/card_024/tokens": [
+    {
+      "url": "GET /api/works/work_024/cards/card_024/tokens",
+      "first_byte_ms": 9.81,
+      "hold_ms": 9.82,
+      "status": 200,
+      "first_chunk_type": "empty"
+    },
+    {
+      "url": "GET /api/works/work_024/cards/card_024/tokens",
+      "first_byte_ms": 396.47,
+      "hold_ms": 396.49,
+      "status": 200,
+      "first_chunk_type": "empty"
+    },
+    {
+      "url": "GET /api/works/work_024/cards/card_024/tokens",
+      "first_byte_ms": 5.23,
+      "hold_ms": 5.26,
+      "status": 200,
+      "first_chunk_type": "empty"
+    },
+    {
+      "url": "GET /api/works/work_024/cards/card_024/tokens",
+      "first_byte_ms": 25.94,
+      "hold_ms": 25.95,
+      "status": 200,
+      "first_chunk_type": "empty"
+    },
+    {
+      "url": "GET /api/works/work_024/cards/card_024/tokens",
+      "first_byte_ms": 4.54,
+      "hold_ms": 4.56,
+      "status": 200,
+      "first_chunk_type": "empty"
+    }
+  ]
+}

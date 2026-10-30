@@ -57,14 +57,14 @@ def test_version_and_ontology():
     [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     auto 卡工具面件数变化）。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"  # [G2] tc-9→tc-10（+通信两件进 auto 面）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-17"  # [需求确定 2026-10-29] tc-16→tc-17（+write_requirements_final）
     assert "propose_status" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_REGISTRY["propose_status"].readonly is True
     assert "propose_status" in card_tools.TOOL_SWITCH
     assert "propose_status" in card_tools.OP_ONLY_TOOLS
     assert "status_update_task" in event_stream.EVENT_TYPES
     # 本轮没动 system 提示词 ⇒ 版本号不动（版本纪律：只动 BASE_PROMPT 才升）
-    assert prompts.BASE_PROMPT_VERSION == "t22-1"
+    assert prompts.BASE_PROMPT_VERSION == "t27-2"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -404,4 +404,23 @@ async def test_op_turn_end_to_end_through_route(sandbox, monkeypatch):
     assert "propose_status" not in c1["tools"], "普通回合不该看见专用工具"
     assert not any(str(m.get("content") or "").startswith("〔现状更新〕")
                    for m in c1["turn_tail"]), "普通回合不该注入专用任务"
+
+
+# ════════════════════════════════════════════════════════════════════
+# 空块首次写入（2026-10-29）
+# ════════════════════════════════════════════════════════════════════
+
+async def test_edit_status_first_write_on_new_card(sandbox):
+    """新建卡的现状块是骨架占位符（「（当前状况快照：…」）。
+
+    old_string 给空串＝首次写入：占位符当空，直接落第一笔。
+    """
+    wid, cid = await _mk_work_with_card()
+    cards = card_store.iter_card_metas(wid)
+    out = await card_tools._h_edit_status(
+        wid, cid, {"old_string": "", "new_string": "接口已定稿，能跑"}, cards)
+    assert out.get("ok"), out
+    card = await card_store.read_card(wid, cid)
+    body = str((card.get("body") or {}).get("status_block") or "")
+    assert "接口已定稿，能跑" in body, body
 

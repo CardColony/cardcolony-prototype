@@ -11,9 +11,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import asyncio
+import inspect
+
 import pytest
 
-from src.api import card_msg
+from src.api import (card_msg, card_tools, event_stream, message_runner,
+                     model_service)
+from src.api import routes
+from src.api import routes
+from src.storage import work_store
 
 REPO = Path(__file__).resolve().parents[1]
 REGISTRY = REPO / "config" / "message_type_registry.json"
@@ -24,24 +31,37 @@ REGISTRY = REPO / "config" / "message_type_registry.json"
 def test_registry_json_shape():
     data = json.loads(REGISTRY.read_text(encoding="utf-8"))
     # [编程卡 2026-10-15 · C1 指纹随版本推进] v1 → v2（新增 coder_done 完工回报）
-    assert data["version"] == 3
+    # [2026-10-26 · 系统消息] v3 → v4：＋msg_sync（同步）/ msg_report（汇报）——
+    # 「同步过」与「汇报过」必须是不同事件，否则判据分不清（用户令：判断要准确）
+    assert data["version"] == 4
     assert set(data["types"].keys()) == {"msg_ask", "msg_answer", "msg_notify",
-                                         "coder_done", "msg_directive"}
+                                         "coder_done", "msg_directive",
+                                         "msg_sync", "msg_report"}
     for code, entry in data["types"].items():
         # [迭代五 S1] 键集由 {display, note} 扩为五键（when_to_use/reply_expected/
         # reply_type 为应对规则字段，S1 步骤①②③ 加键的镜像断言）。
-        assert set(entry.keys()) == {"display", "note", "when_to_use",
-                                     "reply_expected", "reply_type"}, code
+        # [通信收拢 2026-10-28] 允许可选 `deprecated` 键（退役类型保留在册，
+        # 历史消息还要渲染；清退≠删行，与 card_type_registry 的 legacy 同手法）。
+        _base = {"display", "note", "when_to_use", "reply_expected", "reply_type"}
+        assert set(entry.keys()) in (_base, _base | {"deprecated"}), code
         assert "judge" not in entry
     assert "judge" not in data
 
 
 # ══════════════ 函数断言 ══════════════
+# [通信收拢 2026-10-28] 本文件删掉 11 个用例（t4/t6/live_fire/k3×2/k4×4/s3×2）：
+# 它们钉的是 **收件箱账本 + send_card_message 工具**这条已退役的链路
+# （用户裁定「inbox 直接取消」「接口只有两个」）。新链路的钉子见
+# `tests/test_comm_surface.py`（注册表 / direct 必带判据 / report 只到父卡）。
+# 另删 k4 前端契约与 SSE 帧两条：它们钉的是 `/card-messages` 未读面——
+# 该接口读消息账本，而账本自「inbox 取消」后不再有新行（空结果）。
 
 def test_type_codes_is_triple():
     # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done），断言语义不变
+    # [2026-10-26] 再加 msg_sync / msg_report（同步与汇报必须是不同事件）
     assert card_msg.type_codes() == ("msg_ask", "msg_answer", "msg_notify",
-                                     "coder_done", "msg_directive")
+                                     "coder_done", "msg_directive",
+                                     "msg_sync", "msg_report")
 
 
 def test_display_of_hit_and_miss():
@@ -318,18 +338,20 @@ async def test_t1_tool_registered():
     # [v12 2026-10-22 · 用户裁定] send_card_message **已移出 AUTO_ONLY_TOOLS**，
     # 改由 TOOL_SWITCH 常规过滤——卡上有该开关就可见。原因：coder 干到一半
     # 卡住（需求不清/要主卡拍板/发现做错）时不能说话，只能硬做完或干等。
-    assert "send_card_message" in card_tools.TOOL_REGISTRY
+    assert "sync" in card_tools.TOOL_REGISTRY
     assert "send_card_message" not in card_tools.AUTO_ONLY_TOOLS, (
         "发信已改为按开关过滤，不再靠 auto 面追加")
     full = list(card_tools.policy.SWITCHES)
     normal = _face("c_norm", {"card_type": "sub_project", "auto_mode": 0,
                               "perms": full, "perms_version": 5, "parent": ""})
-    assert "send_card_message" in normal, (
-        "全权限常规卡面现在**有**发信（按开关过滤）")
+    assert "sync" in normal, (
+        "全权限常规卡面现在**无**发信(send_card_message 已退役,场景件 sync 替代)")
     assert "read_inbox" not in normal, "常规卡面必须不含 read_inbox"
     auto = _face("c_auto", {"card_type": "sub_project", "auto_mode": 1,
                             "perms": full, "perms_version": -1, "parent": ""})
-    assert {"send_card_message", "read_inbox"} <= set(auto), "auto 面须有自主通信能力"
+    # [通信收拢 2026-10-28] read_inbox 已退役（收件箱取消）：auto 面只剩 sync。
+    assert "sync" in auto, "auto 面须有自主通信能力(场景件)"
+    assert "read_inbox" not in card_tools.TOOL_REGISTRY, "read_inbox 必须已从注册表退役"
     # 薄壳内部接口存在且可调（流程代码的发信入口）
     assert callable(getattr(card_tools, "send_card_message", None))
 
@@ -342,11 +364,12 @@ def test_t2_schema_enum_reads_registry():
     full = list(card_tools.policy.SWITCHES)
     normal = _face("c_norm2", {"card_type": "sub_project", "auto_mode": 0,
                                "perms": full, "perms_version": 5, "parent": ""})
-    assert "send_card_message" in normal
+    assert "sync" in normal
     # 类型可拓展（11:44）：注册表现读、函数体校验层每次现读（type_codes）
     # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done）
     assert list(card_msg.type_codes()) == ["msg_ask", "msg_answer", "msg_notify",
-                                           "coder_done", "msg_directive"]
+                                           "coder_done", "msg_directive",
+                                           "msg_sync", "msg_report"]
 
 
 def test_t3_add_type_zero_code(monkeypatch, tmp_path):
@@ -361,339 +384,8 @@ def test_t3_add_type_zero_code(monkeypatch, tmp_path):
     # 仓库最终态类型集（monkeypatch 只动内存指针，不落盘）
     # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done），断言语义不变
     assert set(json.loads(REGISTRY.read_text(encoding="utf-8"))["types"].keys()) == {
-        "msg_ask", "msg_answer", "msg_notify", "coder_done", "msg_directive"}
-
-
-async def test_t4_eight_positive_negative_cases(sandbox):
-    """T-4 八种正负例；失败时收件方**收件箱**零新增、**对话块**零新增。
-
-    [卡片底座第一步 2026-10-14] 落点已从「塞对话块」改为「进待处理收件箱」——
-    本用例的落档判据随之改为查收件箱。
-    """
-    wid = (await work_store.create_work("K2发信剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    h = card_tools._h_send_card_message
-
-    async def pending_count(cid):
-        return len(await card_db.list_pending(wid, cid))
-
-    # 1 合法通过（a→a1，**已有通信线**；线由 _make_tree 夹具铺好）
-    r = await h(wid, "card_002", {"target_card_id": "card_003",
-                                  "msg_type": "msg_ask", "content": "三号位情况如何？"}, cards)
-    assert "msg_id" in r
-    n3 = await pending_count("card_003")
-    assert n3 == 1
-    # 收件方**对话块**零新增（消息进收件箱，不进对话块）
-    assert await session_facade.read(wid, "card_003") == []
-    # 2 不存在 → not_found
-    r = await h(wid, "card_002", {"target_card_id": "card_999",
-                                  "msg_type": "msg_ask", "content": "x"}, cards)
-    assert r["error"]["code"] == "not_found"
-    # 3 给自己 → invalid
-    r = await h(wid, "card_002", {"target_card_id": "card_002",
-                                  "msg_type": "msg_ask", "content": "x"}, cards)
-    assert r["error"]["code"] == "invalid"
-    # 4 类型非法 → invalid（错误文案列出合法值）
-    r = await h(wid, "card_002", {"target_card_id": "card_003",
-                                  "msg_type": "msg_yolo", "content": "x"}, cards)
-    assert r["error"]["code"] == "invalid" and "msg_ask" in r["error"]["message"]
-    # 5 应答缺 reply_to → invalid
-    r = await h(wid, "card_002", {"target_card_id": "card_003",
-                                  "msg_type": "msg_answer", "content": "x"}, cards)
-    assert r["error"]["code"] == "invalid"
-    # 6 非应答带 reply_to → invalid
-    r = await h(wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_ask",
-                                  "content": "x", "reply_to": "card_002-12345678"}, cards)
-    assert r["error"]["code"] == "invalid"
-    # 7 空正文 → invalid
-    r = await h(wid, "card_002", {"target_card_id": "card_003",
-                                  "msg_type": "msg_ask", "content": "   "}, cards)
-    assert r["error"]["code"] == "invalid"
-    # 8 越权（与本卡之间没有通信线）→ denied
-    r = await h(wid, "card_002", {"target_card_id": "card_004",
-                                  "msg_type": "msg_ask", "content": "x"}, cards)
-    assert r["error"]["code"] == "denied"
-    # 8b [5713] 线的边界取代树的边界：**子树内**但没线的也拒（card_003 → 无线的卡）
-    r8b = await h(wid, "card_003", {"target_card_id": "card_004",
-                                    "msg_type": "msg_ask", "content": "x"}, cards)
-    assert r8b["error"]["code"] == "denied", r8b
-    assert "通信线" in r8b["error"]["message"]      # 错误文案要指路（先建线）
-    # 失败例全部不落档：card_004 收件箱零条；card_003 仍只有第 1 步那一条
-    assert await pending_count("card_004") == 0
-    assert await pending_count("card_003") == n3
-    # ops 出现 card_msg_send
-    assert "card_msg_send" in session_ops.ops_path().read_text(encoding="utf-8")
-
-
-async def test_t6_inbox_record_shape(sandbox):
-    """T-6 落信形状：收件箱记录含 msg_id/from_card/type/content/status；首行可解析；
-    事件流照旧留痕 msg_*。"""
-    wid = (await work_store.create_work("K2块形状剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    r = await card_tools._h_send_card_message(
-        wid, "card_001", {"target_card_id": "card_002", "msg_type": "msg_notify",
-                          "content": "第一号结论已入库"}, cards)
-    msg_id = r["msg_id"]
-    pending = await card_db.list_pending(wid, "card_002")
-    assert len(pending) == 1
-    rec = pending[0]
-    assert rec["msg_id"] == msg_id
-    assert rec["from_card"] == "card_001"
-    assert rec["target_card_id"] == "card_002"
-    assert rec["type"] == "msg_notify"
-    # [取消 inbox 状态机 2026-10-22 · D25] 不再有 status 状态位。
-    # 「这条是新消息」由读取水位算：该卡水位仍是 -1，所以它出现在 list_pending 里。
-    assert rec.get("status") is None, "messages 表没有 status 列，应为 None"
-    assert await card_db.get_seen_seq(wid, "card_002") == -1
-    parsed = card_msg.parse_header(rec["content"])
-    assert parsed is not None
-    assert parsed["id"] == msg_id and parsed["type"] == "msg_notify"
-    assert parsed["from"] == "card_001"
-    assert card_msg.strip_header(rec["content"]) == "第一号结论已入库"
-    # 收件方**对话块**零新增（消息只进收件箱）
-    assert await session_facade.read(wid, "card_002") == []
-    # 事件流留痕照旧：收件方键上有 msg_notify 事件，载荷含正文与 msg_id
-    evs = [e for e in event_log.read(wid, "card_002") if e.get("type") == "msg_notify"]
-    assert evs, "事件流应照旧留痕 msg_*"
-    blob = json.dumps(evs[-1], ensure_ascii=False)
-    assert msg_id in blob and "第一号结论已入库" in blob
-    # TRIGGERS 已记调起意图（K3 消费）
-    assert msg_id in card_msg.TRIGGERS[(wid, "card_002")]
-
-
-async def test_live_fire_send_once(sandbox):
-    """真跑一次：A→B 发信 → B 收件箱多一条 pending ＋ ops 出 card_msg_send；
-    对话块不动。"""
-    wid = (await work_store.create_work("K2真跑剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    before = len(await card_db.list_pending(wid, "card_003"))
-    r = await card_tools._h_send_card_message(
-        wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_ask",
-                          "content": "请核对第二节的数字"}, cards)
-    assert "msg_id" in r
-    pending = await card_db.list_pending(wid, "card_003")
-    assert len(pending) == before + 1
-    assert pending[-1]["from_card"] == "card_002"
-    # [D25] 无状态位；未处理由水位判断
-    assert pending[-1].get("status") is None
-    assert await card_db.get_seen_seq(wid, "card_003") == -1
-    # 对话块零新增（B 自己的话之外不落档）
-    assert await session_facade.read(wid, "card_003") == []
-    assert "card_msg_send" in session_ops.ops_path().read_text(encoding="utf-8")
-
-
-# ══════════════ K4 · 通知端点与通知帧 ══════════════
-
-from fastapi import FastAPI  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
-from src.api import event_stream, routes as api_routes  # noqa: E402
-
-
-async def test_k4_endpoint_items_and_unread(sandbox):
-    """端点每项恰含十键；type_display 后端取；format_ok=false 仍在 items。
-
-    [卡片端点改读收件箱 2026-10-15] 数据源改 inbox，但**两源合流**（旧信不能
-    消失）。本用例同时喂两份数据：旧档案块（含头行非法的一条，存量历史形态）
-    ＋ 一条经真实发信接口落 inbox 的新信。
-    unread_by_card 则**只**由 inbox pending 决定——此例旧档案两信之后没有
-    assistant 块，旧机制会判 pending；该推导在本批退役，故不出现在 unread 里。
-    """
-    wid = (await work_store.create_work("K4端点剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    # 旧源①：正常信（可解析）
-    await session_facade.append(wid, "card_003", {
-        "actor": "card:card_002", "from": "card_002",
-        "content": card_msg.build_header("card_002-aaaa1111", "msg_ask", "card_002")
-                   + "\n请核对第二节数字", "behavior": "", "end": ""})
-    # 旧源②：格式异常信（直写档案——头行非法）
-    await session_facade.append(wid, "card_003", {
-        "actor": "card:card_002", "from": "card_002",
-        "content": "[[card-msg id=坏头行 type=msg_ask from=card_002 reply_to=]]\n正文",
-        "behavior": "", "end": ""})
-    # 新源：经真实发信接口落 inbox
-    r = await card_tools._h_send_card_message(
-        wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_notify",
-                          "content": "第一节已定稿"}, cards)
-
-    app = FastAPI()
-    app.include_router(api_routes.router)
-    with TestClient(app) as client:
-        resp = client.get(f"/api/works/{wid}/card-messages")
-        assert resp.status_code == 200
-        data = resp.json()
-    items = data["items"]
-    assert len(items) == 3
-    expected_keys = {"id", "ts", "seq", "from_card", "from_title", "to_card",
-                     "msg_type", "type_display", "summary", "format_ok"}
-    for it in items:
-        assert set(it.keys()) == expected_keys
-    by_id = {it["id"]: it for it in items}
-    # 旧源仍在（合流，V3）；解析失败不静默丢弃
-    ok_items = [it for it in items if it["format_ok"]]
-    bad_items = [it for it in items if not it["format_ok"]]
-    assert len(ok_items) == 2 and len(bad_items) == 1
-    old_ok = by_id["card_002-aaaa1111"]
-    assert old_ok["type_display"] == "询问"
-    assert old_ok["msg_type"] == "msg_ask"
-    assert old_ok["from_card"] == "card_002"
-    assert old_ok["from_title"] == "子卡A"
-    assert old_ok["to_card"] == "card_003"
-    assert old_ok["summary"] == "请核对第二节数字"
-    assert bad_items[0]["msg_type"] == "" and bad_items[0]["to_card"] == "card_003"
-    # 新源同形态（V1）；inbox 行恒 format_ok=true
-    new = by_id[r["msg_id"]]
-    assert new["format_ok"] is True
-    assert new["summary"] == "第一节已定稿"
-    assert new["msg_type"] == "msg_notify"
-    # unread：旧机制的 pending 推导已退役 → 只有 inbox pending 说话。
-    # 本例 inbox 那条尚未被处理，故 card_003 计入 1（不由旧档案推导）
-    assert data["unread_by_card"] == {"card_003": 1}
-
-
-async def test_k4_unread_from_inbox_pending_and_consumed_stays_visible(sandbox):
-    """inbox pending 决定 unread；消费后 unread 消失但消息**仍在** items。
-
-    [卡片端点改读收件箱 2026-10-15] 替掉原「档案 pending → 端点打 consumed 点」
-    的用例：consumed 事实已由回合收口落库（card_db.mark_consumed），端点不再推断、
-    也不再打 `card_msg_consumed` 点（本次是删写，纯读端点更纯）。
-    """
-    wid = (await work_store.create_work("K4已读剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    r = await card_tools._h_send_card_message(
-        wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_ask",
-                          "content": "在吗"}, cards)
-    app = FastAPI()
-    app.include_router(api_routes.router)
-    with TestClient(app) as client:
-        data = client.get(f"/api/works/{wid}/card-messages").json()
-        assert data["unread_by_card"] == {"card_003": 1}
-    # B 处理完 → 回合收口置 consumed（此处直接调底层原语，同 message_runner 路径）
-    assert await card_db.mark_consumed(wid, r["msg_id"]) == 1
-    with TestClient(app) as client:
-        data = client.get(f"/api/works/{wid}/card-messages").json()
-        # consumed ⇒ 不再计入未读（V2/V4）
-        assert data["unread_by_card"] == {}
-        # 但历史不丢（V2：仍在 items，看得见）
-        assert [it["id"] for it in data["items"]] == [r["msg_id"]]
-        assert data["items"][0]["summary"] == "在吗"
-    # 端点不再打 consumed 点（本批移除的打点）
-    ops_file = session_ops.ops_path()
-    ops_text = ops_file.read_text(encoding="utf-8") if ops_file.exists() else ""
-    assert "card_msg_consumed" not in ops_text
-
-
-async def test_k4_unread_only_counts_cards_with_pending(sandbox):
-    """unread_by_card 逐卡聚合 inbox pending；无 pending 的卡**不出现在字典里**。
-
-    三封信投到两张卡：card_003 消费掉、card_004 未处理 ⇒ 字典只剩 card_004。
-    """
-    wid = (await work_store.create_work("K4聚合剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    r3 = await card_tools._h_send_card_message(
-        wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_ask",
-                          "content": "给三号"}, cards)
-    # 兄弟卡互发被树作用域关口挡死（card_002 ↔ card_004）——第二封信走根卡发
-    r4 = await card_tools._h_send_card_message(
-        wid, "card_001", {"target_card_id": "card_004", "msg_type": "msg_notify",
-                          "content": "给四号"}, cards)
-    assert "msg_id" in r3 and "msg_id" in r4, f"发信被关口挡下：{r3} / {r4}"
-    await card_db.mark_consumed(wid, r3["msg_id"])
-    app = FastAPI()
-    app.include_router(api_routes.router)
-    with TestClient(app) as client:
-        data = client.get(f"/api/works/{wid}/card-messages").json()
-    assert data["unread_by_card"] == {"card_004": 1}
-    assert len(data["items"]) == 2
-
-
-async def test_k4_frontend_contract_snapshot(sandbox):
-    """前端零改动的契约快照（V5）：顶层两键、items 十键、unread 二值形态。
-
-    依据＝前端只消费这几个键：canvas.js `refreshUnread` 读 `d.items` 的
-    `it.id`/`it.to_card` 与 `d.unread_by_card`（角标刷新），workspace.js 用
-    `${to_card}:${id}` 拼已读键。字段形态变 → 前端必坏，故把它钉成测试。
-    """
-    wid = (await work_store.create_work("K4契约剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    await card_tools._h_send_card_message(
-        wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_ask",
-                          "content": "契约快照"}, cards)
-    app = FastAPI()
-    app.include_router(api_routes.router)
-    with TestClient(app) as client:
-        data = client.get(f"/api/works/{wid}/card-messages").json()
-    assert set(data.keys()) == {"items", "unread_by_card"}
-    assert isinstance(data["items"], list) and isinstance(data["unread_by_card"], dict)
-    for it in data["items"]:
-        assert set(it.keys()) == {"id", "ts", "seq", "from_card", "from_title",
-                                  "to_card", "msg_type", "type_display", "summary",
-                                  "format_ok"}
-        assert isinstance(it["id"], str) and it["id"]
-        assert isinstance(it["to_card"], str)
-    for cid, n in data["unread_by_card"].items():
-        assert isinstance(cid, str) and n == 1, "unread 须保持二值形态（前端只判 >0）"
-
-
-async def test_k4_sorted_desc_and_limit(sandbox):
-    """ts 倒序与 limit 截断，且跨两源合流后仍然有序（旧源＋新源交错）。"""
-    import asyncio as _asyncio
-    wid = (await work_store.create_work("K4排序剧本"))["work_id"]
-    cards = await _make_tree(wid)
-
-    async def _write(summary, mid):
-        await session_facade.append(wid, "card_003", {
-            "actor": "card:card_002", "from": "card_002",
-            "content": card_msg.build_header(mid, "msg_notify", "card_002")
-                       + "\n" + summary, "behavior": "", "end": ""})
-
-    await _write("第一封", "card_002-cccc0001")
-    await _asyncio.sleep(0.02)  # 保证 ts 有序
-    await card_tools._h_send_card_message(
-        wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_notify",
-                          "content": "第二封"}, cards)
-    await _asyncio.sleep(0.02)
-    await _write("第三封", "card_002-cccc0003")
-
-    app = FastAPI()
-    app.include_router(api_routes.router)
-    with TestClient(app) as client:
-        data = client.get(f"/api/works/{wid}/card-messages").json()
-        items = data["items"]
-        assert [it["summary"] for it in items] == ["第三封", "第二封", "第一封"]
-        one = client.get(f"/api/works/{wid}/card-messages?limit=1").json()
-        assert len(one["items"]) == 1 and one["items"][0]["summary"] == "第三封"
-
-
-async def test_k4_sse_frame_on_receiver_key(sandbox):
-    """通知帧落在**收件方自己的键**（A21 分键，不跨键），事件名 card_message。"""
-    wid = (await work_store.create_work("K4帧剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    r = await card_tools._h_send_card_message(
-        wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_notify",
-                          "content": "帧测试"}, cards)
-    # 收件方键上有 card_message 帧，载荷含 msg_id/from/type
-    recv = [e for e in event_stream.journal_of(wid, "card_003")
-            if e.get("type") == "card_message"]
-    assert recv, "收件方键应有 card_message 帧"
-    assert recv[-1]["data"]["msg_id"] == r["msg_id"]
-    assert recv[-1]["data"]["from"] == "card_002"
-    assert recv[-1]["data"]["type"] == "msg_notify"
-    # 分键隔离：本帧（按 msg_id）没有落到发件方键
-    # （journal 是进程级、work_id 在沙箱下跨用例重号，故按 msg_id 判不按零帧判）
-    sender_frames = [e for e in event_stream.journal_of(wid, "card_002")
-                     if e.get("type") == "card_message"
-                     and e.get("data", {}).get("msg_id") == r["msg_id"]]
-    assert not sender_frames, "本帧不应落在发件方键（不跨键）"
-
-
-# ══════════════ K3 · 来信调起 ══════════════
-
-import asyncio  # noqa: E402
-import inspect  # noqa: E402
-
-import async_settle  # noqa: E402
-from src.api import message_runner, model_service, routes  # noqa: E402
+        "msg_ask", "msg_answer", "msg_notify", "coder_done", "msg_directive",
+        "msg_sync", "msg_report"}
 
 
 def test_append_user_default_true_regression():
@@ -702,137 +394,6 @@ def test_append_user_default_true_regression():
     assert sig.parameters["append_user"].default is True
     sig_inner = inspect.signature(routes._run_message_inner)
     assert sig_inner.parameters["append_user"].default is True
-
-
-async def test_k3_live_a_to_b_invokes_receiver(sandbox, monkeypatch):
-    """真跑 A→B：[12:34] 流程侧调内部接口发信 → 收口 schedule → B 被调起；激励文不落 B 档案。"""
-    from src.storage import work_store
-    wid = (await work_store.create_work("K3真跑剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    assert "card_002" in cards and "card_003" in cards
-
-    a_reply = "已向孙卡A1发出询问。"
-    b_reply = "收到询问：第二节数字为 42，已复核。"
-
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
-        # B 回合判定＝激励文 user_prompt（K3 唯一改写 user_prompt 的路径，锚点可靠；
-        # 动态激励文仍以「请阅读这些消息并处理」收尾——模板末句保留）
-        if "请阅读这些消息并处理" in str(user_prompt):
-            return ({"content": b_reply, "tool_calls": []}, "fake")
-        # A 回合：模型不再调发信工具（12:34 已摘出工具面）；只产内容
-        return ({"content": a_reply, "tool_calls": []}, "fake")
-
-    monkeypatch.setattr(model_service, "call_main", fake_call_main)
-    monkeypatch.setenv("MOCK_LLM", "1")
-
-    # A 回合：模型只产内容（不碰发信工具——它已不在模型可见清单里）
-    await routes._run_message(wid, "card_002", "请向孙卡A1核对数字")
-    # 流程代码调用内部接口发信（基础设施唯一入口；模型不可见、参数由流程语义决定）
-    # [发信即投递 2026-10-22 · D20/D24] 这条消息会**立即**给 card_003 起一轮，
-    # 所以先记快照，发完等那一轮跑完，再断言落库与水位。
-    _pre_send = async_settle.snapshot()
-    r = await card_tools.send_card_message(
-        wid, "card_002", target_id="card_003", msg_type="msg_ask",
-        content="第二轮问题是什么？")
-    assert "msg_id" in r
-    sent_msg_id = r["msg_id"]
-
-    # 落库（messages 表；"待处理队列"这个概念已取消，未处理由水位算）
-    _rec = await card_db.run_read(
-        wid, lambda c: [dict(x) for x in c.execute(
-            "SELECT * FROM messages WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
-    assert _rec, "消息应已落库"
-
-    # 等"发信即投递"起的那一轮跑完（Windows 文件锁偶发抖动时补投一次）
-    try:
-        await async_settle.settle(since=_pre_send)
-    except AssertionError:
-        pass
-    from src.api import message_runner as _mr0
-    await _mr0.deliver_now(wid, "card_003")
-    await async_settle.settle(since=_pre_send)
-    # A 再跑一个回合：收口 schedule 发现 TRIGGERS 有信 → 异步调起 B
-    _pre = async_settle.snapshot()
-    await routes._run_message(wid, "card_002", "继续")
-    # [5713 · M2] 等这批异步调起自己收口（等待期间**不读**会话文件：读句柄会让
-    # 收口落块的 tmp→os.replace 撞 WinError 5），收口后读一次。
-    await async_settle.settle(since=_pre)
-    blocks_b = await session_facade.read(wid, "card_003")
-    actors = [b.get("actor") for b in blocks_b]
-    # [卡片底座第一步 2026-10-14] 新消息**不进对话块**——B 档案无 card: 块
-    assert "card:card_002" not in actors, f"新消息不进对话块，实 {actors}"
-    assistants = [b for b in blocks_b if b.get("actor") == "assistant"]
-    assert assistants, "B 应被调起产出 assistant 块"
-    assert b_reply in assistants[-1]["content"]
-    # 激励文不落档：B 档案无承载激励文的 user 块
-    for b in blocks_b:
-        assert b.get("actor") != "human", "激励文不得落成 user/human 块"
-        assert "请阅读这些消息并处理" not in str(b.get("content", ""))
-    # 回合收口：该信在收件箱里置 consumed（**不删行**）
-    # [5713 · M2] 「assistant 块已出现」≠「收口已把信置 consumed」——旧写法等到
-    # 前者就断言后者（典型「轮询谓词≠断言目标」）。现改为**等断言本身的不变量**
-    # 成立：纯查库、不碰会话文件，故不会再造出上面那种文件争用。
-    # [取消 inbox 状态机 2026-10-22 · D25] 不再等 status='consumed'，
-    # 改为等「读取水位推进到这条消息的 seq」——这是真实处理进度的唯一凭据。
-    async def _seq_of_msg():
-        _r = await card_db.run_read(
-            wid, lambda c: [dict(x) for x in c.execute(
-                "SELECT seq FROM messages WHERE msg_id = ?", (sent_msg_id,)).fetchall()], [])
-        return _r[0]["seq"] if _r else None
-
-    _want_seq = await async_settle.wait_until(_seq_of_msg, what="消息落库")
-    assert _want_seq is not None
-
-    async def _seen_reached():
-        _s = await card_db.get_seen_seq(wid, "card_003")
-        return _s if _s >= int(_want_seq) else None
-
-    # [取消 inbox 状态机 2026-10-22 · D25] 依赖「发消息即投递」把这条消息消费掉。
-    # Windows 上会话文件偶发 WinError 5（本章程已有的抖动，见 test 上方 M2 注释），
-    # 那一轮若整体失败，水位就不会推进。故这里容忍一次抖动：先等，超时后再
-    # 显式调一次 deliver_now 补投，然后继续等水位——这与真实链路的兜底一致
-    # （真实链路上由「回合收口自查续轮」承担同一职责）。
-    try:
-        _seen = await async_settle.wait_until(_seen_reached, what="读取水位推进到该消息")
-    except AssertionError:
-        from src.api import message_runner as _mr
-        _retried = await _mr.deliver_now(wid, "card_003")
-        assert _retried or True  # 若对方仍在跑则不会再起，属正常
-        _seen = await async_settle.wait_until(_seen_reached, what="补投后水位推进")
-    assert _seen is not None and _seen >= int(_want_seq)
-    # A 的档案：assistant 回执正常（A 链路本身无恙）
-    blocks_a = await session_facade.read(wid, "card_002")
-    assert any(a_reply in str(b.get("content", "")) for b in blocks_a)
-    # ops 四动作链路出现（send/deliver 至少在案；pending/consumed 各有专测）
-    ops_text = session_ops.ops_path().read_text(encoding="utf-8")
-    assert "card_msg_send" in ops_text and "card_msg_deliver" in ops_text
-
-
-async def test_k3_busy_receiver_keeps_letter(sandbox, monkeypatch):
-    """B 忙时不丢信：占住 B 的回合 → 发信 → schedule → 信已落 + ops card_msg_pending。"""
-    from src.storage import work_store
-    wid = (await work_store.create_work("K3忙时剧本"))["work_id"]
-    cards = await _make_tree(wid)
-    # 人为占住 card_003 的回合互斥体
-    holder = "turn:fakeholder"
-    assert session_facade.turn_try_acquire(wid, "card_003", holder)
-    try:
-        await card_tools._h_send_card_message(
-            wid, "card_002", {"target_card_id": "card_003", "msg_type": "msg_ask",
-                              "content": "忙时也要收到"}, cards)
-        state = message_runner.RunState(work_id=wid, card_id="card_002", content="x")
-        await message_runner.schedule_card_message_triggers(state)
-        # 让 watch/delivery 任务跑完
-        for _ in range(20):
-            await asyncio.sleep(0.05)
-        # [卡片底座第一步 2026-10-14] 信落**收件箱**（B 忙 → 仍是 pending，不丢）
-        pending = await card_db.list_pending(wid, "card_003")
-        assert any("忙时也要收到" in str(p.get("content", "")) for p in pending), \
-            "信必须已在收件箱（不排队不丢弃）"
-    finally:
-        session_facade.turn_release(wid, "card_003", holder)
-    ops_text = session_ops.ops_path().read_text(encoding="utf-8")
-    assert "card_msg_pending" in ops_text
 
 
 async def test_k3_pending_recovery_on_next_close(sandbox, monkeypatch):
@@ -869,74 +430,3 @@ async def test_k3_pending_recovery_on_next_close(sandbox, monkeypatch):
 
 # ══════════════ [迭代五 S3] 激励文随消息提供应对说明 ══════════════
 
-async def test_s3_prompt_carries_display_and_note(sandbox, monkeypatch):
-    """E4：激励文含 display 与 note 关键词（类型说明随消息提供）。"""
-    from src.storage import work_store
-    wid = (await work_store.create_work("S3激励文剧本"))["work_id"]
-    await _make_tree(wid)
-    captured: list[str] = []
-
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
-        if "请阅读这些消息并处理" in str(user_prompt):
-            captured.append(str(user_prompt))
-            return ({"content": "收到，已处理。", "tool_calls": []}, "fake")
-        return ({"content": "A 侧正常回复。", "tool_calls": []}, "fake")
-
-    monkeypatch.setattr(model_service, "call_main", fake_call_main)
-    monkeypatch.setenv("MOCK_LLM", "1")
-    await card_tools.send_card_message(
-        wid, "card_002", target_id="card_003", msg_type="msg_ask",
-        content="S3：现状一句话？")
-    state = message_runner.RunState(work_id=wid, card_id="card_002", content="x")
-    await message_runner.schedule_card_message_triggers(state)
-    for _ in range(60):
-        await asyncio.sleep(0.05)
-        if captured:
-            break
-    assert captured, "B 应被调起且激励文被捕获"
-    p = captured[0]
-    assert "询问" in p, f"display 关键词缺失：{p[:120]}"
-    assert "不许沉默" in p, f"note 应对半句缺失：{p[:200]}"
-    assert "card_002" in p and "（类型：询问）" in p
-
-
-async def test_s3_prompt_fallback_on_read_failure(sandbox, monkeypatch):
-    """E4：读卡失败 → 回落默认文 _CARD_MSG_PROMPT、调起不阻断。"""
-    from src.storage import work_store
-    wid = (await work_store.create_work("S3回落剧本"))["work_id"]
-    await _make_tree(wid)
-    captured: list[str] = []
-
-    async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
-        if "请阅读这些消息并处理" in str(user_prompt):
-            captured.append(str(user_prompt))
-            return ({"content": "回落路径已处理。", "tool_calls": []}, "fake")
-        return ({"content": "ok", "tool_calls": []}, "fake")
-
-    async def boom(*a, **kw):
-        raise RuntimeError("read_card exploded")
-
-    # 只让激励文构造里的读卡（读发件卡 card_002 元数据）失败；
-    # B 回合自身链路（读 card_003）照常——否则 B 回合 502、激励文无从捕获。
-    real_read_card = card_store.read_card
-
-    async def selective(work_id, card_id, *a, **kw):
-        if card_id == "card_002":
-            raise RuntimeError("read_card exploded")
-        return await real_read_card(work_id, card_id, *a, **kw)
-
-    monkeypatch.setattr(model_service, "call_main", fake_call_main)
-    monkeypatch.setattr(card_store, "read_card", selective)
-    monkeypatch.setenv("MOCK_LLM", "1")
-    await card_tools.send_card_message(
-        wid, "card_002", target_id="card_003", msg_type="msg_ask",
-        content="S3回落：内容任意。")
-    state = message_runner.RunState(work_id=wid, card_id="card_002", content="x")
-    await message_runner.schedule_card_message_triggers(state)  # 不抛出＝不阻断
-    for _ in range(60):
-        await asyncio.sleep(0.05)
-        if captured:
-            break
-    # [卡片底座第一步 2026-10-14] 兜底激励文＝默认前缀 ＋ 消息正文（正文必达——V4）
-    assert captured and captured[0].startswith(message_runner._CARD_MSG_PROMPT)
-    assert "S3回落：内容任意。" in captured[0]

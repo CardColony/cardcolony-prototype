@@ -90,19 +90,23 @@ def test_single_model_layer_has_no_fallbacks(gw, ws, monkeypatch):
 
 
 def test_layer_fallbacks_stays_inside_layer(gw, ws, depth0):
+    """[2026-10-26 用户令「不要兜底」] 兜底整体取消 ⇒ 恒返回空。
+
+    改前断言 `== ["m2"]`（层内另一个模型进兜底链）；现在选了哪个就只跑哪个。
+    用户原话：「我网页选哪个模型就是哪个模型，不需要兜底，何况兜底还不是我选的」。
+    """
     model_override.put_row("work_100", "card_001",
                            {"model": "m1", "fallbacks": ["m2"]}, src="default")
     assert model_config.layer_fallbacks("m1", work_id="work_100",
-                                        card_id="card_001") == ["m2"]
+                                        card_id="card_001") == []
 
 
 def test_layer_fallbacks_never_crosses_layer(gw, ws, depth0):
-    """depth_0 的卡挂了，只换 depth_0 里另一个——不会拿 depth_2 的 m4 来顶。"""
+    """兜底取消后，**任何**模型都不会被自动带进来（层内层外一视同仁）。"""
     model_override.put_row("work_100", "card_001",
                            {"model": "m1", "fallbacks": ["m2"]}, src="default")
     got = model_config.layer_fallbacks("m1", work_id="work_100", card_id="card_001")
-    assert "m4" not in got and "m3" not in got
-    assert got == ["m2"]
+    assert got == [], f"兜底已取消，不该返回任何兜底模型：{got}"
 
 
 def test_fallback_chain_primary_first(gw, ws, depth0):

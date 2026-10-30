@@ -33,8 +33,11 @@ __all__ = [
     "AnthropicMessagesAdapter",
 ]
 
-#: 一次流式读挂起时允许的最大空闲间隔（与 openai 包同口径）。
-DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
+#: 一次流式读挂起时允许的最大空闲间隔——**已废用**（2026-10-23 用户令：取消墙钟）。
+#: 与 openai 包同口径：断连由 socket 异常立刻暴露（TRANSPORT），
+#: 「活着但很慢」是正常状态（本地模型排队/重思考可达 12 分钟），不该被杀。
+#: None ⇒ 不设读超时；连接超时也交给 TCP 协议自己的握手超时。
+DEFAULT_STREAM_IDLE_TIMEOUT_MS: Optional[int] = None
 
 #: 协议必填 max_tokens 的缺省值（Anthropic 不接受缺失；可经 models.yaml 每模型覆盖）。
 DEFAULT_MAX_TOKENS = 8192
@@ -109,8 +112,11 @@ class AnthropicMessagesAdapter(LlmAdapter):
             headers.update({str(k): str(v) for k, v in connection.extra_headers.items()})
 
         timeout = httpx.Timeout(
-            connect=30.0,
-            read=connection.stream_idle_timeout_ms / 1000.0,
+            # [取消墙钟 2026-10-23] 远程等待不设墙钟：read/connect 均交给协议与异常；
+            # write/pool 是本地资源等待，保留。
+            connect=None,
+            read=(None if connection.stream_idle_timeout_ms is None
+                  else connection.stream_idle_timeout_ms / 1000.0),
             write=30.0,
             pool=30.0,
         )
@@ -132,7 +138,8 @@ class AnthropicMessagesAdapter(LlmAdapter):
                     yield chunk
             except httpx.TimeoutException as exc:
                 raise LlmError(
-                    f"stream idle timeout after {connection.stream_idle_timeout_ms}ms",
+                    f"transport timeout to {connection.base_url} "
+                    f"(connect/write/pool, no idle wall clock)",
                     "TIMEOUT",
                     cause=exc,
                 ) from exc

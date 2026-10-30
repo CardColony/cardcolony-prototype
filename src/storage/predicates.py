@@ -50,6 +50,13 @@ MESSAGE_TYPES: frozenset[str] = frozenset({
     "assistant_text",     # ← assistant/message
     "tool_call",          # ← assistant/message（带 tool_calls 的 assistant 块）
     "tool_result",        # ← tool/result
+    # [卡间消息进凝练 2026-10-27 · 用户令「消息会留在上下文里直到被凝练掉，
+    # 所以你需要确保这东西会被计算进记忆凝练」] 消息块（actor=card:xxx）的事件型
+    # 是 msg_*，改前不在本集合里 ⇒ `is_original_event` 判 false ⇒ **消息永远不进
+    # 凝练**，落在上下文里就再也去不掉，只增不减。
+    # 加进来后它们与 human/assistant 同级：进凝练、可被折叠成条目。
+    "msg_ask", "msg_answer", "msg_notify",
+    "msg_directive", "msg_sync", "msg_report", "coder_done",
 })
 
 #: 凝练侧额外排除的型（工具结果正文不录凝练）

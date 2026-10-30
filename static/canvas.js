@@ -19,13 +19,13 @@
  *   V10 重绘入口唯一——改 state 后必经 renderAll（全量）/reflowAll（不重建）/
  *      applyViewState（视图变换），不存在改 state 后自行重绘或漏重绘的路径。
  */
-import { API } from "./esm/api.js?v=46";
+import { API } from "./esm/api.js?v=55";
 import { escapeHtml } from "./esm/util.js?v=30";
 // 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=59";
-import { notify } from "./esm/api.js?v=46";
+import { RenderNav } from "./esm/nav_system.js?v=74";
+import { notify } from "./esm/api.js?v=55";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
 // 卡片 → 最近一条活动事件（renderCanvas 每轮重建，供 createNode 查）
@@ -1919,7 +1919,7 @@ const WORK_ID = window.__WORK_ID__;
     // 到底显示什么吧。何况，现在已经没有结论了，哪来的结论字段？」
     //
     // 查库确认他说得对：卡片里只有一个正文块 status_block（中位 **2316 字**，
-    // 37/39 张有内容）；mission 几乎全空、rulings 只有 3 张且中位 4 字。
+    // 37/39 张有内容）；mission 几乎全空、requirements 只有 3 张且中位 4 字。
     // 所谓"结论"是我用正则从这 2316 字里抠 `结论:` 行抠出来的，39 张里只抠到 5 张。
     // 280px 宽的卡片对 2316 字——不管截几行都是残句，露出来只是让人误以为读到了什么。
     //
@@ -1997,6 +1997,7 @@ const WORK_ID = window.__WORK_ID__;
       ${runState ? '<div class="cv-runbar"></div>' : ""}
       <div class="cv-card-row">
         ${wsBadge}
+        ${card.card_type === "coder" ? '<span class="cv-tchip coder" title="编程卡：执行体，一张卡一件开发任务">编程</span>' : ""}
         <div class="tname">${escapeHtml(card.title)}</div>
         ${runChip}
         ${Number(card.decision_count || 0) > 0 ? `<span class="cv-dec" title="已形成 ${card.decision_count} 条定论（D01…）——这条线已经收敛过 ${card.decision_count} 次">定${card.decision_count}</span>` : ""}
@@ -5067,73 +5068,20 @@ const WORK_ID = window.__WORK_ID__;
     return best || { x, y: maxBottom + GAP };
   }
 
-  // ==================== positions 持久化（防抖） ====================
-  const pendingPatches = {};
-  let patchTimer = null;
-  function persistCardPos(cid, x, y) {
-    // [card_045 E5] 只写**用户松手的原始坐标**（L1：人的位置只由人给）；
-    // 避让算出的位置只用于显示，绝不写坐标记录。
-    // [card_045 E7 · L6 位置不承担状态表达] 将来若想「把做完的卡挪到一边」表达
-    // 进度——不许：位置只表达人在空间里的摆放意志，进度/状态走卡片自身字段。
-    // [card_045 E7 · L7 钉住的坐标是绝对锚点] 布局算法换代（换树/换网格/换排布）
-    // 只影响派生位置，钉住卡的存储坐标原样保留、人的相对空间关系不因换代被重排。
-    // [画布 2026-10-18 · 修设计错误] 拖拽**不再钉住**（原来 pinned:true）。
-    //
-    // 为什么改：拖一下就永久钉住，多次拖拽后存储坐标累积偏移，布局被拉散
-    // （实测 work_001：根卡和子卡间距拉到 1180px，7 张卡只有 2 张在视口内）。
-    // 现在拖拽表达的是**顺序**：y 作为同级排序依据（见 layoutTree 的 kidsOf），
-    // 位置仍由布局算——用户拖完不弹回，布局也永远整齐。
-    // "钉住"保留给明确的右键菜单动作（锁定不被自动布局移动）。
-    const keepPinned = !!(state.data.positions[cid] && state.data.positions[cid].pinned);
-    state.data.positions[cid] = { x, y, pinned: keepPinned };
-    pendingPatches[cid] = { x, y, pinned: keepPinned };
-    if (patchTimer) clearTimeout(patchTimer);
-    patchTimer = setTimeout(flushPatches, 500);
-  }
+  // ==================== positions 持久化 ====================
+  //
+  // [画布 5711 · 撤] 原「拖拽写坐标」这一整套（persistCardPos / pendingPatches /
+  // patchTimer / flushPatches）**已删除**：拖拽语义在 2026-10-20 改成「换父」
+  // （拖到谁下面就挂到谁下面；落在空白就回弹），坐标**不再由拖拽写入**
+  // ⇒ 这一整块只剩彼此调用、没有外部入口（死代码，死件不留）。
+  //
+  // ⇒ 同批删掉的还有原 normalizeSiblingOrder（同层顺序归一化）：
+  //   「拖拽调同层顺序」这条旧语义在新契约下不存在了。
+  //
+  // ⚠ positions 写入能力**仍在**（不是整体退役）：「整理画布」按钮解除钉住那条路径
+  //   直接调 API.patchPositions（见下），那条是活的。
+  //   （保留这一段说明，免得后人以为"钉住"功能被删了。）
 
-  // [画布 5711 · P1 修] **同层顺序归一化**：让"落点"真正表达"排第几"。
-  //
-  // 病根（实测复现）：布局的同层排序是"按存储的 y 排；**没存过 y 的排在有 y 的后面**"
-  // （见 layoutTree 的 kidsOf）。⇒ **同层里第一次拖某张卡时，它会被提到该层最前面**，
-  // 用户的落点被完全忽略。实测：把 card_017 拖到 card_010 下面（落点 y=50，介于
-  // card_010 的 20 与 card_016 的 108 之间），结果它跑到第 3 位 —— 想插在中间，
-  // 却插到了最前面。只有"以前拖过的卡"之间才比得公平。
-  //
-  // 修法（不碰布局纯函数、不改存储格式）：落子那一刻，把**同层所有卡**的 y 统一
-  // 写成"它们当前占的位置"（被拖的那张写成落点 y）——一层人的顺序于是被显式记下，
-  // 布局按 y 排序即可原样复现用户的意图。
-  // 为什么不写进布局：布局是纯函数（card_045 E1 纪律），不该读 DOM；而"同层当前
-  // 次序"是**运行时**信息，只有落子那一刻才确定。
-  // 为什么不新增字段：positions 的 {x,y,pinned} 结构是前后端共用的（存储语义
-  // 见 card_045 E7），复用 y 作排序键最省事，也不牵动后端。
-  function normalizeSiblingOrder(draggedIds) {
-    const moved = new Set(draggedIds);
-    const groups = new Map();          // 父卡 → 本次被拖的卡
-    for (const cid of moved) {
-      const c = state.index.cardMap[cid];
-      if (!c) continue;
-      const p = c.parent || "";
-      if (!groups.has(p)) groups.set(p, []);
-      groups.get(p).push(cid);
-    }
-    for (const parent of groups.keys()) {
-      const sibs = state.index.childMap[parent] || [];
-      for (const s of sibs) {
-        if (moved.has(s.card_id)) continue;      // 被拖的那几张保留自己的落点 y
-        const n = nodeMap.get(s.card_id);
-        if (!n) continue;                         // 不在场 ⇒ 不参与这一层的排序
-        persistCardPos(s.card_id, parseFloat(n.style.left) || 0, parseFloat(n.style.top) || 0);
-      }
-    }
-  }
-  async function flushPatches() {
-    const patch = { ...pendingPatches };
-    for (const k in pendingPatches) delete pendingPatches[k];
-    if (Object.keys(patch).length === 0) return;
-    try {
-      await API.patchPositions(WORK_ID, patch);
-    } catch (e) { notify("坐标保存失败", "error"); }   // [F3④] 原静默
-  }
 
   // ==================== 整理画布 ====================
   if (reorganizeBtn) reorganizeBtn.onclick = async () => {
@@ -6180,8 +6128,12 @@ const WORK_ID = window.__WORK_ID__;
     collapsed: new Set(),
     items: new Map(),     // cid -> [{seq,type,...}]
     lastSeq: new Map(),   // cid -> 已渲染到的落盘 seq
-    es: new Map(),        // cid -> EventSource（每卡一条实时流）
-    esDead: new Set(),    // SSE 断掉的卡 → 退回轮询
+    /* [P28 · 连接预算 2026-10-26] **不再每卡一条 EventSource**。
+       原来这里有 `es: Map<cid, EventSource>`（每张被盯的卡一条）+ `esDead`：
+       10 张卡并行 ⇒ 10 条长连接 ⇒ 必然打满浏览器同源 **6 条**上限 ⇒ 普通请求
+       排队 ⇒ 报「网络错误」、切卡卡死。而那条流**不承载内容**（内容是 3 秒轮询
+       拉的，SSE 只当「有变化了，去重拉」的触发器）⇒ 白占连接。
+       ⇒ 现在：**一条**工作级 SSE（?cards=1）带全部卡的卡级帧 ⇒ 连接数与卡数解耦。 */
     full: new Set(),      // 处于"读全文"模式的卡
     fullHtml: new Map(),  // cid -> 已渲染的正文 HTML（避免反复请求）
     // [画布 2026-10-19] 已读游标：cid -> 用户最后一次"看过"的 seq。
@@ -6215,13 +6167,14 @@ const WORK_ID = window.__WORK_ID__;
     watch.open = true;
     syncWatchBtn();
     renderWatchLayer();
-    // 先拉历史（把已有进程铺出来），历史到位后再挂实时流——
-    // 顺序反了会丢中间那段：SSE 只送"从现在起"的帧。
+    // 先拉历史（把已有进程铺出来），历史到位后再刷新一次标记。
+    // [P28 · 连接预算 2026-10-26] 这里**不再挂实时流**：实时触发改由**工作级**
+    // SSE（?cards=1）带卡级帧统一送 ⇒ 盯 10 张卡也只占 1 条连接（原来 10 条，
+    // 必然打满浏览器同源 6 条上限 ⇒ 报「网络错误」）。
     loadWatch(cid).then(() => {
       // 首次铺历史不算"新内容"——那是这张卡的既有进程，不是刚发生的。
       watch.seen.set(cid, watch.lastSeq.get(cid) || 0);
       markWatchFresh(cid, false);
-      watchStream(cid);
     });
     startWatchPoll();
   }
@@ -6231,10 +6184,6 @@ const WORK_ID = window.__WORK_ID__;
     watch.collapsed.delete(cid);
     watch.items.delete(cid);
     watch.lastSeq.delete(cid);
-    const es = watch.es.get(cid);
-    if (es) { try { es.close(); } catch (e) { /* 已关 */ } }
-    watch.es.delete(cid);
-    watch.esDead.delete(cid);
     watch.full.delete(cid);
     watch.fullHtml.delete(cid);
     renderWatchLayer();
@@ -6423,7 +6372,6 @@ const WORK_ID = window.__WORK_ID__;
           watch.lastSeq.set(cid, 0);
           watch.items.set(cid, []);
           await loadWatch(cid);
-          watchStream(cid);
         } catch (err) {
           notify("发送失败：" + (err && err.message ? err.message : err), "error");
           input.value = text;   // 失败不吞用户输入
@@ -6481,34 +6429,24 @@ const WORK_ID = window.__WORK_ID__;
     updateWatchBodies();   // 只刷进程区，不动输入框
   }
 
-  // ── 每卡一条 SSE：只当"有新进展"的**触发器**，不承载内容 ──
+  // ── 实时触发：改由**工作级** SSE 统一送（P28 · 连接预算 2026-10-26）──
   //
-  // 实测（抓原始帧）：`/cards/{id}/stream` 只发生命周期帧
-  //   run_start / context / round_start / deliver / proposal / done
-  // **没有** user_message / assistant_text / tool_call —— 内容只在时间线里。
-  // 所以第一版"把帧直接塞进窗口"是错的：它什么都显示不出来，还把轮询关掉了。
+  // 改前：这里给**每张被盯的卡**各开一条 `/cards/{id}/stream`（"有新进展"的
+  // **触发器**，不承载内容）。分工是：轮询负责**内容**（3 秒一次，可靠），
+  // SSE 负责**及时性**（一收到帧就立刻重拉这张卡的时间线，250ms 防抖）。
   //
-  // 现在的分工：轮询负责**内容**（3 秒一次，可靠），SSE 负责**及时性**——
-  // 一收到帧就立刻重拉这张卡的时间线（250ms 防抖），阶段推进（开始/交付/收口）
-  // 都能在毫秒级反映到窗口上，而不用等下一个 3 秒。
-  function watchStream(cid) {
-    if (!watch.ids.includes(cid)) return;
-    const old = watch.es.get(cid);
-    if (old) { try { old.close(); } catch (e) { /* 已关 */ } }
-    try {
-      const es = new EventSource(`/api/works/${WORK_ID}/cards/${cid}/stream?from=0`);
-      watch.es.set(cid, es);
-      es.onopen = () => { watch.esDead.delete(cid); };
-      es.onmessage = () => { scheduleWatchReload(cid); };
-      es.onerror = () => {
-        // 断了就不重连（断网时狂重连只会更糟）；轮询本来就一直在跑，内容不会停。
-        watch.esDead.add(cid);
-        try { es.close(); } catch (e) { /* 已关 */ }
-        watch.es.delete(cid);
-      };
-    } catch (e) { watch.esDead.add(cid); }
-  }
-
+  // 为什么改（实测，不是推测）：
+  //   浏览器同源 HTTP/1.1 只有 **6 条**并发连接，而「并行层」最多盯 10 张卡
+  //   ⇒ 10 条长连接 ⇒ **必然打满** ⇒ 普通请求（timeline / card / nav）排队
+  //   拿不到连接 ⇒ fetch 抛 TypeError ⇒ 弹「网络错误」、切卡卡死。
+  //   而这条流**不承载内容**——它换来的信息量等于工作级流里多带几个字节。
+  // ⇒ 现在：工作级 SSE 用 `?cards=1` 带上**全部卡**的卡级帧 ⇒ **一条连接带
+  //   全部卡**（连接数与卡数解耦）；收到哪张卡的帧就重拉哪张卡，语义一字不变。
+  //
+  // （保留原始实测记录：那条每卡流只发生命周期帧 run_start / context /
+  //  round_start / deliver / proposal / done，**没有** user_message /
+  //  assistant_text / tool_call —— 内容只在时间线里。）
+  //
   const _watchReloadTimers = new Map();
   function scheduleWatchReload(cid) {
     const t = _watchReloadTimers.get(cid);
@@ -6528,7 +6466,9 @@ const WORK_ID = window.__WORK_ID__;
       if (document.hidden) return;                 // 后台标签页不空转
       for (const cid of watch.ids) {
         loadWatch(cid);
-        if (watch.esDead.has(cid)) watchStream(cid);   // SSE 断了的顺手重连
+        // [P28] 原来这里还有「SSE 断了的顺手重连」——每卡一条流的遗留。
+        // 现在实时触发走**工作级** SSE（一条，断线由它自己的 onerror/重连兜底），
+        // 这里只留内容轮询。
       }
     }, 3000);
   }
@@ -6928,7 +6868,12 @@ const WORK_ID = window.__WORK_ID__;
   }
   async function refreshUnread() {
     try {
-      const r = await fetch(`/api/works/${WORK_ID}/card-messages?limit=200`);
+      // 〔P25 · 2026-10-26 · 「页面的内容存进内存态」〕**scope=recent**：
+      // 不扫旧档案（每张卡的整份会话文件）⇒ 首屏从实测 **4417ms** 降到毫秒级。
+      // 为什么可以不要旧档案：通信线**只画 30 分钟内的信**（见 renderEdges），
+      // 旧档案是历史遗留的消息机制（本就不在 30 分钟窗口内）；
+      // 未读角标本来就只看 inbox（端点口径不变）⇒ 画面零变化。
+      const r = await fetch(`/api/works/${WORK_ID}/card-messages?limit=200&scope=recent`);
       if (!r.ok) return;
       const d = await r.json();
       // [画布 2026-10-19] 同一份响应顺手喂给第二层「通信线」——不再单独请求。
@@ -7182,7 +7127,7 @@ const WORK_ID = window.__WORK_ID__;
   function subscribeWorkEvents() {
     if (_workEs) return;
     try {
-      const es = new EventSource(`/api/works/${WORK_ID}/events`);
+      const es = new EventSource(`/api/works/${WORK_ID}/events?cards=1`);
       _workEs = es;
       es.onopen = () => {
         _workEsHealthy = true;
@@ -7209,6 +7154,17 @@ const WORK_ID = window.__WORK_ID__;
         try { evt = JSON.parse(m.data); } catch (e) { return; }
         if (!evt) return;
         const d = evt.data || {};
+        /* [P28 · 连接预算 2026-10-26] **卡级帧**（顶层有 ``card``）＝某张卡
+           刚发生了事（过程事件）。⇒ 立刻重拉那张卡的增量（250ms 防抖），
+           内容仍旧由 3 秒轮询兜底——这里只负责**及时性**。
+
+           ⚠ 判据顺序必须是「先判 card、再判 type」：卡级帧**也可能有**
+           type="card_message"（落卡间信走的是卡级 emit）⇒ 若先判 type，
+           卡级卡间信会被当成工作级帧吃掉（丢掉那张卡的刷新触发）。 */
+        if (evt.card) {
+          if (watch.ids.includes(evt.card)) scheduleWatchReload(evt.card);
+          return;
+        }
         // [画布 5711 · P0 修] 卡间信帧：工作级通道顺带带过来（后端落信时多广播一帧）
         // ⇒ 未读角标与通信线能及时刷新。原来这条走的是一条**监听了错键**的独立
         // SSE（card_id 位置传的是 work_id）⇒ 从来没触发过，只有 60s 轮询在扛。

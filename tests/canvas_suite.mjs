@@ -723,28 +723,97 @@ await load();
 G("T10 交互面");
 await load();
 {
-  // T10.1 拖拽 ⇒ 同层顺序按落点变化（画布口径：拖拽＝调顺序）
+  // T10.1 拖到**另一张卡**上 ⇒ **改父子归属**
   //
-  // ⚠ 口径修正（此前本用例是**假红**）：原来断言"拖完坐标变了"。但画布的产品口径
-  //   是"拖拽＝调顺序，绝对坐标仍由布局算"——只要同层顺序没变，落点后坐标就回到
-  //   同一个槽位（坐标不变是**设计**，不是没生效）。而且原用例选中的第一张非根卡
-  //   常常没有同层兄弟，拖了也不可能改顺序。
-  // ⇒ 现在断言真正该成立的那件事：**拖过同层卡之后，它排到了落点指定的那一位**。
-  const grp = await siblingGroups(WID);
-  if (!grp) {
-    T("T10.1 找得到同层多卡的分组", false, "没有 ≥3 张且都在场的同层卡");
+  // ⚠ 口径再修正（用户 2026-10-20 裁定）：拖拽现在**只表达一件事**——
+  //   "把这张卡挂到谁下面"（落在合法卡上 ⇒ 改父子归属，整棵子树跟着走）；
+  //   落在空白／非法目标 ⇒ **回弹**，不写坐标、不改归属。
+  // ⇒ 于是"拖过同层卡 ⇒ 顺序按落点变化"这条旧断言**整条作废**（旧语义不存在了）：
+  //   拖到两张同层卡**之间**＝落在空白 ⇒ 回弹 ⇒ 顺序当然不变。
+  // ⇒ 现在断言新契约真正成立的那件事：**落点那张成为新父卡**。
+  //
+  // ⚠ 选对必须按**服务端同一套口径**挑，否则断言必红（三个坑都踩过）：
+  //   ① 落点是拖动卡的**后代** ⇒ 前端直接拒（会成环）；
+  //   ② 落点卡类型**不能有子卡**（tool/coder/rule/role）⇒ 服务端回 400；
+  //   ③ 落点卡是拖动卡的**现有父卡** ⇒ 改完等于没改（断言会"假通过"）。
+  //   （可当父卡的类型＝注册表 can_have_children=true 的那些：sub_project/topic/project/function）
+  const pair = await ev(`(() => {
+    const cv = window.GetCanvasState && window.GetCanvasState();
+    const cm = cv ? cv.cardMap : {};
+    const kids = cv ? cv.childMap : {};
+    const CAN_PARENT = new Set(["sub_project", "topic", "project", "function"]);
+    const desc = (id) => {
+      const out = new Set(); const st = [id];
+      while (st.length) { const c = st.pop();
+        for (const k of (kids[c] || [])) { if (out.has(k.card_id)) continue; out.add(k.card_id); st.push(k.card_id); } }
+      return out;
+    };
+    const ns = [...document.querySelectorAll('.card-node')];
+    for (const a of ns) {
+      if (a.classList.contains('is-root')) continue;          // 拖根卡＝平移，不进拖拽分支
+      const am = cm[a.dataset.id] || {};
+      if (!am.parent) continue;                              // 根卡不可改归属
+      if (am.card_type === "role") continue;                 // 角色卡离树，服务端会拒
+      const dA = desc(a.dataset.id);
+      for (const b of ns) {
+        if (b.dataset.id === a.dataset.id) continue;
+        const bm = cm[b.dataset.id] || {};
+        if (!CAN_PARENT.has(bm.card_type)) continue;         // ② 落点必须能当父卡
+        if (dA.has(b.dataset.id)) continue;                  // ① 落点不能是自己的后代
+        if (String(bm.parent || '') === a.dataset.id) continue;  // b 已是 a 的子卡
+        if (String(am.parent || '') === b.dataset.id) continue;  // ③ b 是 a 的现有父卡
+        const r = b.getBoundingClientRect();
+        return { aId: a.dataset.id, bId: b.dataset.id, aParent: am.parent || '',
+                 bx: r.x, by: r.y, bw: r.width, bh: r.height };
+      }
+    }
+    return null;
+  })()`);
+  if (!pair) {
+    T("T10.1 拖到另一张卡上 ⇒ 改父子归属", false, "找不到可用的拖放对");
   } else {
-    const last = grp.ids[grp.ids.length - 1];
-    const mid = (grp.tops[0] + grp.tops[1]) / 2;    // 落点＝第一、二张之间的中点
-    const dr = await dragToWorldY(last, mid);
-    await sleep(900);
-    const after = await groupOrder(grp.parent, WID);
-    T("T10.1 拖过同层卡 ⇒ 顺序按落点变化（落到第 2 位）",
-      after.ids[1] === last, JSON.stringify({ before: grp.ids, after: after.ids, dr }));
-    // 落库：坐标写进了 /canvas 的 positions
+    // 拖**前**先记下坐标记录（沙箱里存量卡可能已带 positions 记录，
+    // 所以只能"拖前 vs 拖后"对比，不能断言"没有记录"）
+    const posBefore = await (await fetch(`${BASE}/api/works/${WID}/canvas`)).json()
+      .then(d => JSON.stringify((d.positions || {})[pair.aId] || null));
+    await ev(`(() => {
+      const a = document.querySelector('.card-node[data-id="${pair.aId}"]');
+      const b = document.querySelector('.card-node[data-id="${pair.bId}"]');
+      if (!a || !b) return false;
+      const ar = a.getBoundingClientRect();
+      const sx = ar.x + 30, sy = ar.y + 12;
+      const tx = ${pair.bx} + ${pair.bw} / 2, ty = ${pair.by} + ${pair.bh} / 2;
+      a.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: sx, clientY: sy }));
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: tx, clientY: ty }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, buttons: 0, clientX: tx, clientY: ty }));
+      return true;
+    })()`);
+    await sleep(1800);
+    const afterParent = await ev(`(() => {
+      const cv = window.GetCanvasState && window.GetCanvasState();
+      const c = cv && cv.cardMap ? cv.cardMap["${pair.aId}"] : null;
+      return c ? (c.parent || '') : null;
+    })()`);
+    T("T10.1 拖到另一张卡上 ⇒ 落点那张成为新父卡",
+      afterParent === pair.bId, `before=${pair.aParent} after=${afterParent} 期望=${pair.bId}`);
+    // 服务端才是权威（前端 cardMap 只是投影）⇒ 直接读 /canvas 看 parent 是否真落库
     const api2 = await (await fetch(`${BASE}/api/works/${WID}/canvas`)).json();
-    const pos = (api2.positions || {})[last];
-    T("T10.1 拖拽后坐标已落库", !!pos, JSON.stringify(pos || null));
+    const srvParent = ((api2.cards || []).find(c => c.card_id === pair.aId) || {}).parent || '';
+    T("T10.1 改归属已落库（服务端 parent 变了）", srvParent === pair.bId,
+      `服务端 parent=${srvParent} 期望=${pair.bId}`);
+    // 新契约：**只改归属，不写坐标**（拖拽路径已撤除 persistCardPos）
+    // ⚠ 判据是"拖前 vs 拖后没变"，不是"没有记录"——存量卡本就可能带 positions。
+    const posA = (api2.positions || {})[pair.aId];
+    const posAfter = JSON.stringify(posA || null);
+    T("T10.1 改归属时不写坐标（新契约：只换父）", posBefore === posAfter,
+      `before=${posBefore} after=${posAfter}`);
+    // 复原：把卡挂回原父，别让这条用例的副作用留给后面的用例
+    await fetch(`${BASE}/api/works/${WID}/cards/${pair.aId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates: { parent: pair.aParent },
+        history_note: "画布套件 T10.1 复原：拖放改归属验收后挂回原父" }),
+    });
+    await sleep(600);
   }
   // T10.2 拖拽后布局不变量（零重叠）
   const ov2 = await ev(`(() => {
@@ -1084,14 +1153,18 @@ await load();
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   T11.4 拖拽落点＝同层次序（用户意图不被忽略）
+   T11.4 拖到空白 ⇒ 回弹（新契约：拖拽只表达"挂到谁下面"）
    ══════════════════════════════════════════════════════════════════════ */
 {
+  // ⚠ 口径随用户 2026-10-20 的裁定改了：拖拽**只表达一件事**——
+  //   "把这张卡挂到谁下面"。落在合法卡上 ⇒ 改父子归属（T10.1 验这条）；
+  //   落在空白／非法目标 ⇒ **回弹**（不写坐标、不改归属、不改顺序）。
+  // ⇒ 旧断言"拖到第一张卡下面 ⇒ 它排到第 2 位（落点被尊重）"**整条作废**：
+  //   那属于"拖拽＝调同层顺序"的旧语义，新语义下不存在。
+  // ⇒ 本条现在验的是新契约的**另一半**：拖到空白 ⇒ 什么都不发生。
+  //
   // 用一个一次性脚手架工程（根卡 + 3 张子卡，**都没有坐标记录**）——
-  // 这正是 bug 的高发场景：同层里第一次拖某张卡时，旧实现会把它提到该层最前面，
-  // 用户的落点被完全忽略（实测：把 card_017 拖到 card_010 下面，它却跑到第 3 位）。
-  // 子卡每次重建（删了再建 ⇒ 坐标记录随卡一起消失），
-  // 所以这条用例每次跑都在"同层从没拖过"的干净前提下验，不受上一轮残留影响。
+  // 干净前提，不受上一轮残留影响。
   const jpost = async (url, body) => (await fetch(url, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   })).json();
@@ -1123,12 +1196,37 @@ await load();
       T("T11.4 脚手架里找得到同层 3 张卡", false, "没有");
     } else {
       const last = g0.ids[g0.ids.length - 1];
-      const mid = (g0.tops[0] + g0.tops[1]) / 2;    // 落点＝第一、二张之间的中点
-      await dragToWorldY(last, mid);
-      await sleep(1000);
+      // 落点＝**空白**：排在所有卡下面 300px（同列往下 ⇒ 那里没有任何卡）
+      const blankWorldY = Math.max(...g0.tops) + 300;
+      const topBefore = await ev(`(() => {
+        const n = document.querySelector('.card-node[data-id="${last}"]');
+        return n ? n.style.top : null; })()`);
+      const posBefore = await (await fetch(`${BASE}/api/works/${swid}/canvas`)).json()
+        .then(d => JSON.stringify((d.positions || {})[last] || null));
+      const parentBefore = ((await (await fetch(`${BASE}/api/works/${swid}/canvas`)).json())
+        .cards || []).find(c => c.card_id === last)?.parent || '';
+
+      await dragToWorldY(last, blankWorldY);
+      await sleep(1200);
+
+      const after = await (await fetch(`${BASE}/api/works/${swid}/canvas`)).json();
+      const parentAfter = (after.cards || []).find(c => c.card_id === last)?.parent || '';
+      const posAfter = JSON.stringify((after.positions || {})[last] || null);
+      const topAfter = await ev(`(() => {
+        const n = document.querySelector('.card-node[data-id="${last}"]');
+        return n ? n.style.top : null; })()`);
+
+      T("T11.4 拖到空白 ⇒ 归属不变（不挂到任何人下面）",
+        parentAfter === parentBefore && parentAfter === rootId,
+        `before=${parentBefore} after=${parentAfter} 期望=${rootId}`);
+      T("T11.4 拖到空白 ⇒ 不写坐标（回弹不留副作用）", posBefore === posAfter,
+        `before=${posBefore} after=${posAfter}`);
+      T("T11.4 拖到空白 ⇒ 卡片弹回布局位置（没留在落点）",
+        topAfter === topBefore, `before=${topBefore} after=${topAfter}`);
+      // 同层顺序也不该变（新契约下"拖拽调顺序"不存在）
       const g1 = await groupOrder(g0.parent, swid);
-      T("T11.4 拖到第一张卡下面 ⇒ 它排到第 2 位（落点被尊重）",
-        g1.ids[1] === last, JSON.stringify({ before: g0.ids, after: g1.ids }));
+      T("T11.4 拖到空白 ⇒ 同层顺序不变", JSON.stringify(g1.ids) === JSON.stringify(g0.ids),
+        `before=${JSON.stringify(g0.ids)} after=${JSON.stringify(g1.ids)}`);
     }
     for (const k of kids) await jdel(`${BASE}/api/works/${swid}/cards/${k}`);   // 清理
   }
@@ -1336,6 +1434,62 @@ G("T12 加载鲁棒性");
     if (inject && inject.result && inject.result.identifier) {
       await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: inject.result.identifier });
     }
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   T13 连接预算：画布页的 SSE 条数与卡数**解耦**
+   ══════════════════════════════════════════════════════════════════════ */
+G("T13 连接预算");
+{
+  // 病根（实测）：浏览器同源 HTTP/1.1 只有 **6 条**并发连接，而画布「监控态」
+  // 原来给**每张被盯的卡**各开一条 SSE ⇒ 10 张卡并行 ⇒ 10 条长连接 ⇒ 必然打满
+  // ⇒ 普通请求（timeline / card / nav）排队拿不到连接 ⇒ fetch 抛 TypeError ⇒
+  // 弹「网络错误」、切卡卡死。
+  // ⇒ 现在：工作级 SSE（?cards=1）一条连接带全部卡的帧 ⇒ 连接数与卡数解耦。
+  //
+  // 怎么数：资源计时**不记 EventSource** ⇒ 只能"页面脚本之前"注入一个计数包装。
+  const inject = await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const Real = window.EventSource;
+      window.__sseLog = [];
+      window.EventSource = function (url, opts) {
+        window.__sseLog.push(String(url));
+        return new Real(url, opts);
+      };
+      window.EventSource.prototype = Real.prototype;
+    })();`,
+  });
+  const sseNow = () => ev(`(() => {
+    const urls = (window.__sseLog || []).map(u => u.replace(/^https?:\\/\\/[^/]+/, ''));
+    return { n: urls.length, urls };
+  })()`);
+  await load();
+  const s0 = await sseNow();
+  T("T13.1 画布页只开 1 条 SSE（不是每卡一条）", s0.n === 1, JSON.stringify(s0));
+  T("T13.2 那一条是工作级流（带 cards=1）",
+    s0.n === 1 && s0.urls[0].includes("/events") && s0.urls[0].includes("cards=1"), JSON.stringify(s0.urls));
+  // 盯 3 张卡 ⇒ 连接数**不许**跟着长
+  const watched = await ev(`(async () => {
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const ids = [];
+    for (const n of [...document.querySelectorAll('.card-node')].slice(1, 4)) {
+      const r = n.getBoundingClientRect();
+      n.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true,
+        clientX: Math.round(r.x + r.width/2), clientY: Math.round(r.y + r.height/2) }));
+      await sleep(320);
+      const item = [...document.querySelectorAll('.cv-menu .cv-mi')].find(x => (x.textContent||'').includes('盯这张卡'));
+      if (item) { item.click(); ids.push(n.dataset.id); }
+      await sleep(420);
+    }
+    return ids;
+  })()`);
+  await sleep(1500);
+  const s1 = await sseNow();
+  T("T13.3 盯 N 张卡后 SSE 条数不变（连接数与卡数解耦）",
+    watched.length >= 1 && s1.n === 1, `盯了 ${watched.length} 张，sse=${JSON.stringify(s1)}`);
+  if (inject && inject.result && inject.result.identifier) {
+    await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: inject.result.identifier });
   }
 }
 

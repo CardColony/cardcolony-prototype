@@ -428,17 +428,24 @@ def test_block3_no_gate_in_chain():
         assert not hits, f"{f.name} 出现闸类关键词: {hits}"
 
 
+# [通信收拢 2026-10-28] 删掉 6 条钉「收件箱账本 + ask/answer 义务」的用例
+# （g2×2 / g4×3 / g4 提示词×1）：用户裁定 inbox 取消、接口只有两个，
+# 这批量与义务不再存在。新面见 tests/test_comm_surface.py。
+# [通信收拢 2026-10-28] 删掉 6 条钉「收件箱账本 + ask/answer 义务」的用例
+# （g2×2 / g4×3 / g4 提示词×1）：用户裁定 inbox 取消、接口只有两个，
+# 这批量与义务不再存在。新面见 tests/test_comm_surface.py。
 # ============================================================
 # 块 0.4 · 目标工具 ＋ 上下文区 ＋ 提示词（TC5 口径：保留计划六件）
 # ============================================================
 
-#: 施工前记录的 t22-1 BASE_PROMPT sha256（红线 10 判据：片段化后拼装结果
-#: 必须逐字节一致）。
-T22_1_BASE_PROMPT_SHA256 = "9657ae2f422c461d21cb9b9fc5e21f527155d4317ba9ef5ae89f2226801afec5"
+#: [需求确定按钮改造 2026-10-29] 写入说明段重写（删掉早已不存在的「点确认写入」、
+#: 改成草稿→评审→正稿与【需求确定】按钮的真实流程）⇒ BASE_PROMPT 文本变更，
+#: 指纹随之更新。**这条断言的意义是「片段拼装 == 整体渲染」**，不是"文本永不改"。
+T22_1_BASE_PROMPT_SHA256 = "e2227d336d3247b3465caaf91b2d6a98765f79744f026fd4e0c39156abb0e0e5"
 
 #: auto 版工具清单必须**逐件在册**（块0.4 硬判据 4）。
 _AUTO_ONLY_TOOL_LINES = (
-    "edit_card(card_id, content)",
+    "edit_card(card_id, block, old_string, new_string",
     "update_shadow(content)",
     "read_linked(target_id, part)",
     "run_tool_card(script_name",
@@ -458,6 +465,11 @@ async def test_block4_normal_toolface_unchanged(typed_registry, work):
     """硬判据1：非 auto 卡工具面无 update_goal；create_card 参数＝三参＋mission（2026-10-21 加）。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk(wid, "甲", root)
+    # [需求文档生命周期 2026-10-28] 子卡要有正稿才拿得到派工三件；本用例要验
+    # create_card 的参数形状，故先把它标成已定稿。
+    await card_store.update_card(wid, a,
+                                 {"requirements": "R1 需求",
+                                  "requirements_state": "approved"}, "测试：定稿")
     cards = card_tools._collect_card_meta(wid)
     tools = card_tools.build_tool_schemas(card_id=a, work_id=wid, cards=cards)
     names = [t["name"] for t in tools]
@@ -593,8 +605,8 @@ def test_block4_prompt_version_and_section():
     [回灌 5700 §十 版本号推进表] auto-t1＝块0.4 初版；auto-t2＝G2（自主通信
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
-    assert prompts.BASE_PROMPT_VERSION == "t26-5"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t13"
+    assert prompts.BASE_PROMPT_VERSION == "t27-2"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t19"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
@@ -604,13 +616,21 @@ def test_block4_tool_table_and_registry():
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
-    # G2：自主通信两件注册＋映射＋条件下发
-    assert "send_card_message" in card_tools.TOOL_REGISTRY
-    assert "read_inbox" in card_tools.TOOL_REGISTRY
-    assert card_tools.TOOL_SWITCH["send_card_message"] == policy.SWITCH_SEND_MESSAGE
-    assert card_tools.TOOL_SWITCH["read_inbox"] == policy.SWITCH_READ
-    assert card_tools.AUTO_ONLY_TOOLS == {"update_goal", "send_card_message",
-                                          "read_inbox"}
+    # [通信收拢 2026-10-28] 自主通信只剩 sync/direct/report_up：
+    # send_card_message / read_inbox 已退役（接口只有两个，且 inbox 取消）。
+    assert "sync" in card_tools.TOOL_REGISTRY
+    assert "direct" in card_tools.TOOL_REGISTRY
+    assert "report_up" in card_tools.TOOL_REGISTRY
+    for _gone in ("send_card_message", "read_inbox", "wake_card",
+                  "scene_report", "issue_directive", "verify_directive"):
+        assert _gone not in card_tools.TOOL_REGISTRY, _gone
+    assert card_tools.AUTO_ONLY_TOOLS == {"update_goal", "get_goal",
+                                          "create_goal", "resume_child",
+                                          "edit_requirements"}
+    # [去全量更新 2026-10-28] update_status/update_shadow 已退役；现状走 edit_status
+    for _gone2 in ("update_status", "update_shadow"):
+        assert _gone2 not in card_tools.TOOL_REGISTRY, _gone2
+    assert "edit_status" in card_tools.TOOL_REGISTRY
 
 
 # ============================================================
@@ -632,7 +652,7 @@ def test_rework_1_base_prompt_byte_identical_to_t22_1():
 
 def test_rework_2_versions():
     """BASE_PROMPT_VERSION 不动；AUTO_BASE_PROMPT_VERSION 存在且非空。"""
-    assert prompts.BASE_PROMPT_VERSION == "t26-5"
+    assert prompts.BASE_PROMPT_VERSION == "t27-2"
     assert isinstance(prompts.AUTO_BASE_PROMPT_VERSION, str)
     assert prompts.AUTO_BASE_PROMPT_VERSION.strip()
 
@@ -917,199 +937,9 @@ async def test_g2_normal_toolface_has_no_comm_tools(typed_registry, work):
     cards = card_tools._collect_card_meta(wid)
     names = [t["name"] for t in
              card_tools.build_tool_schemas(card_id=a, work_id=wid, cards=cards)]
-    assert "send_card_message" in names, (
+    assert "sync" in names, (
         "发信已按开关过滤，测试卡全权限 ⇒ 应当可见")
     assert "read_inbox" not in names, "read_inbox 仍只在 auto 面"
-
-
-async def test_g2_read_inbox_outgoing_view(typed_registry, work, no_kick):
-    """硬判据3（出向视图，8eaf33e 同源实现）：发问方读 outgoing 看得见
-    answered/unanswered_sent——没人答时不得默默接受。"""
-    wid, root = work["work_id"], work["work_card_id"]
-    a = await _mk(wid, "甲", root)
-    # 乙建成**甲的子卡**：同树闸（2026-10-09 口径）只放行父子/祖先链互发，
-    # 兄弟挡死——自动模式的协作形态正是父派子、子报父。
-    b = await _mk(wid, "乙", a)
-    # 甲问乙一条 msg_ask（经流程薄壳落信，不走模型工具）
-    r = await card_tools.send_card_message(
-        wid, a, target_id=b, msg_type="msg_ask", content="乙，这事怎么看？")
-    assert "error" not in r, r
-    ask_id = r["msg_id"]
-    # 乙还没答 ⇒ 甲的 outgoing 视图：answered=False ＋ unanswered_sent 含该信
-    cards = card_tools._collect_card_meta(wid)
-    out = await card_tools.execute_tool(
-        wid, a, "read_inbox", {"direction": "outgoing"}, cards)
-    assert out["ok"] is True, out
-    assert out["data"]["unanswered_sent"] == [ask_id], out
-    mine = [m for m in out["data"]["messages"] if m["msg_id"] == ask_id][0]
-    assert mine["answered"] is False
-    # 乙答了（msg_answer 带 reply_to）⇒ answered 翻真、unanswered_sent 清空
-    r2 = await card_tools.send_card_message(
-        wid, b, target_id=a, msg_type="msg_answer",
-        content="我认为应该先做甲。", reply_to=ask_id)
-    assert "error" not in r2, r2
-    out2 = await card_tools.execute_tool(
-        wid, a, "read_inbox", {"direction": "outgoing"}, cards)
-    assert out2["ok"] is True, out2
-    assert out2["data"]["unanswered_sent"] == [], out2
-    mine2 = [m for m in out2["data"]["messages"] if m["msg_id"] == ask_id][0]
-    assert mine2["answered"] is True
-
-
-async def test_g2_auto_cards_can_talk_end_to_end(typed_registry, work, monkeypatch):
-    """硬判据3（主链）：auto 卡模型可调 send_card_message 发消息；收件方可调
-    read_inbox 读——K3 调起/S4 回发现有链对 auto 卡正常工作。"""
-    wid, root = work["work_id"], work["work_card_id"]
-    wid, a = await _mk_auto(work, goal="问乙一件事")   # _mk_auto 返 (wid, card_id)
-    # [5713 通道试走 2026-10-20] 「卡间通信走专门的通信线」——**先建线才发得出去**，
-    # 光同树不够（父子也一样）。故乙虽是甲的子卡，仍要甲自己先 link_cards 建线。
-    b = await _mk(wid, "乙", a)
-    await card_store.update_card(wid, b, {"auto_mode": 1}, "开自动")
-
-    seen: dict[str, list] = {"a_tools": [], "b_tools": []}
-
-    async def fake(system_prompt, user_prompt, prior_messages=None, tools=None, **_):
-        # 按 user_prompt 识别是哪张卡（两卡都是 auto 面，工具面无法区分）：
-        # 乙的调起激励文带甲发出的消息正文；甲的起轮带目标/开始语。
-        names = [t["name"] for t in (tools or [])]
-        cid = b if "乙，报告一下现状" in str(user_prompt) else a
-        seen.setdefault(cid, []).append(names)
-        n = len(seen[cid])
-        if cid == a:
-            # 甲：第 1 轮**先建线再发问**（5713：卡间通信须沿通信线，没线发不出去）；
-            # 第 2 轮声明完成；此后空手交付（收敛，防无闸循环）
-            if n == 1:
-                return ({"content": "", "tool_calls": [{
-                    "name": "link_cards",
-                    "arguments": {"target_id": b, "type": "关联",
-                                  "note": "auto 卡自主建线（5713）"},
-                }, {
-                    "name": "send_card_message",
-                    "arguments": {"target_card_id": b, "msg_type": "msg_ask",
-                                  "content": "乙，报告一下现状"},
-                }]}, "fake")
-            if n == 2:
-                return ({"content": "", "tool_calls": [{
-                    "name": "update_goal", "arguments": {"action": "complete"},
-                }]}, "fake")
-            return ({"content": "甲已完成。", "tool_calls": []}, "fake")
-        # 乙：第 1 轮读收件箱（看见问话）；第 2 轮应答；此后空手交付
-        if n == 1:
-            return ({"content": "", "tool_calls": [{
-                "name": "read_inbox", "arguments": {},
-            }]}, "fake")
-        if n == 2:
-            return ({"content": "", "tool_calls": [{
-                "name": "send_card_message",
-                "arguments": {"target_card_id": a, "msg_type": "msg_answer",
-                              "content": "乙的现状：一切正常。", "reply_to": "ask"},
-            }]}, "fake")
-        return ({"content": "乙已应答。", "tool_calls": []}, "fake")
-
-    monkeypatch.setattr(model_service, "call_main", fake)
-    monkeypatch.setenv("MOCK_LLM", "1")
-
-    await routes._run_message(wid, a, "开始问乙")
-    await _drain_trigger_tasks()
-    # 甲的工具面见过 send_card_message（auto 面下发），乙也被调起过
-    assert any("send_card_message" in ns for ns in seen.get(a, [])), \
-        f"甲的 auto 工具面未见 send_card_message：{seen.get(a)}"
-    # [5713] 线是**甲自己**建的，且建线在前、发信在后——否则上面那条 msg_ask 会被
-    # 「无线即拒」挡掉、乙根本不会被调起。
-    meta_a = card_store.iter_card_metas(wid).get(a) or {}
-    assert any(str(x.get("target")) == b for x in (meta_a.get("links") or [])), \
-        f"甲没有建出到乙的通信线：{meta_a.get('links')}"
-    assert seen.get(b), "乙未被调起（K3 链对 auto 卡失效）"
-
-
-# ============================================================
-# 阶段 1 · G4 悬空兜底（8eaf33e + aa335ca + 61b83fb + b6e339a）
-#
-# 三条判据的机械面：
-#   · 问出去的信必有回音或明确 blocked（不存在永久悬空）
-#   · 判据用**实质事实**（answer 落库即算回应），不用会陈旧的 status——
-#     否则双卡死锁（移交件已踩过 work_027）
-#   · blocked 自动通知发问方
-# ============================================================
-
-async def test_g4_complete_blocked_by_unanswered_ask(typed_registry, work, no_kick):
-    """硬判据1：带着未回应的 msg_ask 调 update_goal(complete) ⇒ 拒绝＋给出路。"""
-    wid, root = work["work_id"], work["work_card_id"]
-    wid, a = await _mk_auto(work, goal="做完这件事")
-    b = await _mk(wid, "乙", a)   # 乙是 a 的子卡（父子可互发）
-    # 乙向甲发一条 msg_ask（甲收件箱里有未回应询问）
-    r = await card_tools.send_card_message(
-        wid, b, target_id=a, msg_type="msg_ask", content="甲，这个数是多少？")
-    assert "error" not in r, r
-    cards = card_tools._collect_card_meta(wid)
-    res = await card_tools.execute_tool(
-        wid, a, "update_goal", {"action": "complete"}, cards)
-    assert res["ok"] is False and res["error"]["code"] == "validation", res
-    assert "未回应" in res["error"]["message"]
-    assert "msg_answer" in res["error"]["message"], "拒绝必须自带出路（验收纪律4）"
-    # 卡面零改动（被拒时 goal_state 仍是 active）
-    assert card_store._meta_of(wid, a)["goal_state"] == "active"
-
-
-async def test_g4_complete_passes_after_answer(typed_registry, work, no_kick):
-    """硬判据1+3：答了（answer 落库）即可 complete——实质判据，不依赖
-    会陈旧的 pending/consumed 状态（防双卡死锁）。"""
-    wid, root = work["work_id"], work["work_card_id"]
-    wid, a = await _mk_auto(work, goal="做完这件事")
-    b = await _mk(wid, "乙", a)
-    r = await card_tools.send_card_message(
-        wid, b, target_id=a, msg_type="msg_ask", content="甲，这个数是多少？")
-    ask_id = r["msg_id"]
-    # 甲回应（msg_answer 带 reply_to）——注意**不做 consumed 置位**：
-    # 判据若依赖 consumed 就会在此刻仍判「未回应」（陈旧窗）；实质判据应放行。
-    r2 = await card_tools.send_card_message(
-        wid, a, target_id=b, msg_type="msg_answer", content="是 42。",
-        reply_to=ask_id)
-    assert "error" not in r2, r2
-    cards = card_tools._collect_card_meta(wid)
-    res = await card_tools.execute_tool(
-        wid, a, "update_goal", {"action": "complete"}, cards)
-    assert res["ok"] is True, res
-    assert card_store._meta_of(wid, a)["goal_state"] == "complete"
-
-
-async def test_g4_blocked_notifies_sender(typed_registry, work, no_kick):
-    """硬判据4：blocked ⇒ 系统自动给未获回答的发问方发 msg_notify（无回信义务）。"""
-    wid, root = work["work_id"], work["work_card_id"]
-    wid, a = await _mk_auto(work, goal="做完这件事")
-    b = await _mk(wid, "乙", a)
-    r = await card_tools.send_card_message(
-        wid, b, target_id=a, msg_type="msg_ask", content="甲，这个数是多少？")
-    ask_id = r["msg_id"]
-    cards = card_tools._collect_card_meta(wid)
-    res = await card_tools.execute_tool(
-        wid, a, "update_goal",
-        {"action": "blocked", "reason": "缺上游数据，做不下去"}, cards)
-    assert res["ok"] is True, res
-    assert card_store._meta_of(wid, a)["goal_state"] == "blocked"
-    # 乙的收件箱收到一条 msg_notify（来自甲），且内容带 reason/原 ask msg_id
-    rows = await card_db.list_inbox(wid, b)
-    notes = [x for x in rows
-             if str(x.get("from_card")) == a and str(x.get("type")) == "msg_notify"]
-    assert len(notes) == 1, f"应有一条 blocked 通知，实得 {len(notes)}"
-    assert "blocked" in str(notes[0].get("content"))
-    assert ask_id in str(notes[0].get("content"))
-    assert "缺上游数据" in str(notes[0].get("content"))
-    # msg_notify 无回信义务（reply_expected=false）⇒ 不会造新义务/无循环
-    assert card_msg.reply_expected_of("msg_notify") is False
-
-
-def test_g4_auto_prompt_has_two_obligation_rules():
-    """硬判据（aa335ca）：auto 版含两条义务式规则；普通版零泄漏；auto-t3。"""
-    auto = prompts.AUTO_BASE_PROMPT
-    assert "问出去的信必须有回音" in auto
-    assert "没收到回复前不要认为任务完成" in auto
-    assert "收到 ask 必须回应" in auto
-    assert "不能无视" in auto
-    assert "unanswered_sent" in auto
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t13"
-    assert "问出去的信必须有回音" not in prompts.BASE_PROMPT
-    assert "收到 ask 必须回应" not in prompts.BASE_PROMPT
 
 
 def test_g4_respawn_guard_named_as_cycle_guard():
@@ -1251,8 +1081,8 @@ def test_idle_stop_still_counts_without_children(monkeypatch):
 def test_auto_prompt_version_after_p7():
     """[6702 移植 P7] 版本号：普通版不动，自动版到 auto-t7。"""
     from src.api import prompts
-    assert prompts.BASE_PROMPT_VERSION == "t26-5"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t13"
+    assert prompts.BASE_PROMPT_VERSION == "t27-2"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t19"
 
 
 async def _async_noop(*a, **kw):

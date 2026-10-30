@@ -1,0 +1,368 @@
+.........FFFFFFFFFFFFFF..F.FFFFF...FFFF..FFFFF....FF..F.......FFF.F..... [  3%]
+...F.....FFFF....FF.FFF.FF.F.........F.......F....................F..... [  6%]
+F.F.F...........F.............F..F............F...............F......... [ 10%]
+........................................................F............... [ 13%]
+........................FF......F....s.................................. [ 16%]
+..............F.F..................................................F.... [ 20%]
+.......sssssssssssssssssssssssssss.........................F............ [ 23%]
+..FF...........................ssssssssssssssssssssss.......FFF........F [ 26%]
+F...FF.F...FFF.......................................................... [ 30%]
+................F....................................................... [ 33%]
+.............................ssssFF.F..F............F................... [ 36%]
+........................................................................ [ 40%]
+............................sssssssssssssssss........................... [ 43%]
+......................................................................FF [ 46%]
+........................................................................ [ 50%]
+........................................................................ [ 53%]
+.....sss..............ssssssssssss.............FF.F..F....F....FFFFFF.F. [ 56%]
+F......F...........F..FFFFF...FFFF..FFFFFFF.......F.FF..........FFF..sss [ 60%]
+sssssssssssss........................................................... [ 63%]
+........................................................................ [ 66%]
+.....F...........F.F.................................................... [ 70%]
+.............................FFF.....FFFFFFF....................FF.FFF.. [ 73%]
+.......FFF.......................................F....FF..FFssssssssssss [ 76%]
+....sssssssssssFFFFFFF.F................................................ [ 80%]
+.................................F.......FF........F..F................. [ 83%]
+.........F..........F................................................... [ 86%]
+F...........FFF.F.F............F......F....F............FFFFFFFFFF.FFFFF [ 90%]
+FFFF..............F..............F....F.F..FF............F...........F.. [ 93%]
+...F...............FFFF........F.......................F................ [ 96%]
+......................................................F..........        [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_cardperm_live.py:51: 真模型实弹须显式 CARDPERM_LIVE=1
+SKIPPED [1] tests\test_context_registry.py:48: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:68: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:82: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:105: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:121: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:141: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:153: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:179: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:190: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:201: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:237: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:250: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:264: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:288: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:311: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:329: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:343: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:353: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:364: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:396: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:411: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:421: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:431: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:440: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:468: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:485: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_context_registry.py:498: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:155: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:186: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:234: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:284: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:319: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:338: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:376: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:403: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:424: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:432: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:450: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:459: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:474: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:494: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:526: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:548: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:556: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:570: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:585: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:596: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:605: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_current_turn_injection.py:642: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_finalize_flow.py:59: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_finalize_flow.py:86: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_finalize_flow.py:98: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_finalize_flow.py:104: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:71: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:82: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:92: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:101: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:115: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:130: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:153: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:173: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:189: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:198: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:204: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:232: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:254: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:285: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:318: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:343: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_iter3_type_contract.py:369: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_model_process_events.py:111: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_model_process_events.py:191: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_model_process_events.py:214: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:137: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:154: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:172: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:192: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:215: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:249: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:262: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:284: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:318: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:347: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:370: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_msg_base_events.py:393: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:89: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:105: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:117: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:136: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:148: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:180: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:189: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:210: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:218: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:232: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:241: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:257: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:268: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:288: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:300: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_plan_tools.py:317: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:151: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:166: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:188: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:233: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:252: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:312: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:347: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:367: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s4_seams.py:374: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s5_verdicts.py:59: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s5_verdicts.py:94: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_s5_verdicts.py:128: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:150: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:167: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:183: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:194: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:213: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:230: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:248: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:257: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:272: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:285: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+SKIPPED [1] tests\test_seat_identity_injection.py:297: 纯单模型模式（2026-10-17 用户令）：思维链已拆出生产链路
+FAILED tests/test_auto_await_explicit.py::test_a_explicit_flag_and_resume_after_child_done
+FAILED tests/test_auto_await_explicit.py::test_a2_explicit_works_without_any_child
+FAILED tests/test_auto_await_explicit.py::test_b_work015_children_already_complete_still_resumes
+FAILED tests/test_auto_await_explicit.py::test_b2_work015_old_inference_would_have_hung
+FAILED tests/test_auto_await_explicit.py::test_c_implicit_inference_no_regression
+FAILED tests/test_auto_await_explicit.py::test_c2_implicit_and_explicit_agree_when_child_active
+FAILED tests/test_auto_await_explicit.py::test_d_plain_pause_without_children_semantics_unchanged
+FAILED tests/test_auto_await_explicit.py::test_d2_false_await_children_behaves_like_plain_pause
+FAILED tests/test_auto_await_explicit.py::test_e_no_livelock_second_plause_is_not_rewoken
+FAILED tests/test_auto_await_explicit.py::test_e2_livelock_needs_explicit_redeclaration
+FAILED tests/test_auto_await_explicit.py::test_e3_user_stop_still_wins_over_explicit_flag
+FAILED tests/test_auto_await_explicit.py::test_f_non_auto_card_untouched - As...
+FAILED tests/test_auto_await_explicit.py::test_f2_schema_surface_and_untouched_invariants
+FAILED tests/test_auto_await_livelock.py::test_a_resume_prompt_carries_wake_facts
+FAILED tests/test_auto_await_livelock.py::test_b_work017_third_phantom_hang_stops_being_woken
+FAILED tests/test_auto_await_livelock.py::test_c_real_wait_resets_counter_and_normal_loop_unblocked
+FAILED tests/test_auto_await_livelock.py::test_c2_new_goal_lifecycle_resets_counter
+FAILED tests/test_auto_await_livelock.py::test_d_user_stop_still_wins - Asser...
+FAILED tests/test_auto_await_livelock.py::test_d2_stop_then_redeclare_is_a_new_explicit_wait
+FAILED tests/test_auto_await_livelock.py::test_e_non_auto_card_untouched - As...
+FAILED tests/test_auto_await_livelock.py::test_f3_prompt_surface_auto_t8 - As...
+FAILED tests/test_auto_await_livelock.py::test_f4_complete_gate_and_await_flag_semantics_untouched
+FAILED tests/test_auto_await_resume.py::test_a_pause_with_active_child_sets_await_flag
+FAILED tests/test_auto_await_resume.py::test_a2_pause_sets_flag_via_auto_driver_verdict
+FAILED tests/test_auto_await_resume.py::test_b3_paused_parent_not_woken_while_child_still_active
+FAILED tests/test_auto_await_resume.py::test_c_pause_without_active_child_does_not_wake
+FAILED tests/test_auto_await_resume.py::test_c2_pause_with_no_child_at_all - ...
+FAILED tests/test_auto_await_resume.py::test_c3_blocked_and_complete_never_set_flag
+FAILED tests/test_auto_await_resume.py::test_d_user_stop_clears_await_flag - ...
+FAILED tests/test_auto_await_resume.py::test_e_non_auto_card_untouched_end_to_end
+FAILED tests/test_auto_await_resume.py::test_e2_non_auto_parent_chain_not_woken_by_child
+FAILED tests/test_auto_await_resume.py::test_f3_will_continue_semantics_unchanged
+FAILED tests/test_auto_mode.py::test_block2_auto_switches_excludes_delete - A...
+FAILED tests/test_auto_mode.py::test_block2_toggle_on_off_recomputes_perms - ...
+FAILED tests/test_auto_mode.py::test_block2_child_inherits_auto_and_all_open
+FAILED tests/test_auto_mode.py::test_block2_refresh_perms_skips_auto - assert...
+FAILED tests/test_auto_mode.py::test_block3_shipped_default_is_serial - Asser...
+FAILED tests/test_auto_mode.py::test_block4_auto_toolface_is_normal_plus_update_goal
+FAILED tests/test_auto_mode.py::test_block4_update_goal_complete_sets_state
+FAILED tests/test_auto_mode.py::test_block4_update_goal_denied_on_non_auto - ...
+FAILED tests/test_auto_mode.py::test_block4_update_goal_rejects_bad_action - ...
+FAILED tests/test_auto_mode.py::test_block4_tool_table_and_registry - Asserti...
+FAILED tests/test_auto_mode.py::test_rework_1_base_prompt_byte_identical_to_t22_1
+FAILED tests/test_auto_mode.py::test_rework_3_instruction_region_selects_by_auto_mode
+FAILED tests/test_auto_mode.py::test_rework_4_auto_prompt_has_full_toolset_and_no_false_sentence
+FAILED tests/test_auto_mode.py::test_rework_5_normal_prompt_has_no_auto_text
+FAILED tests/test_auto_mode.py::test_block3_create_child_with_goal_kicks - As...
+FAILED tests/test_auto_mode.py::test_block3_driver_runs_after_mutex_release
+FAILED tests/test_auto_mode.py::test_block5_auto_mark_in_source - assert 'mai...
+FAILED tests/test_auto_mode.py::test_stage2_patch_auto_mode_lands_and_reverts
+FAILED tests/test_auto_stop_authority.py::test_stop_auto_noop_for_non_auto_card
+FAILED tests/test_board.py::test_step_brief_template_verbatim - assert '【步...
+FAILED tests/test_board_wiring.py::test_t4_stop_is_card_scoped - AssertionErr...
+FAILED tests/test_board_wiring.py::test_t5_get_timeline_opens_from_param - As...
+FAILED tests/test_board_wiring.py::test_t5_fetch_timeline_tracks_disk_seq - A...
+FAILED tests/test_canvas_work_events.py::test_four_write_paths_each_emit_card_changed
+FAILED tests/test_card_base_linked.py::test_v1_read_via_three_parts_and_unlink
+FAILED tests/test_card_base_linked.py::test_v3_v4_v5_loop_end_to_end - assert...
+FAILED tests/test_card_draft.py::test_base_prompt_version_is_t20_1 - Assertio...
+FAILED tests/test_card_duty_region.py::test_v7_fail_open_missing_registry - a...
+FAILED tests/test_card_region_guide.py::test_five_cross_card_categories_present
+FAILED tests/test_card_share.py::test_update_status_returns_landed_content - ...
+FAILED tests/test_card_share.py::test_edit_requirements_returns_landed_content
+FAILED tests/test_card_tree.py::test_delete_guards_and_cascade - Failed: DID ...
+FAILED tests/test_coder_card.py::test_toolset_fingerprints_and_switch_bindings
+FAILED tests/test_coder_card.py::test_toolface_coder_vs_main - AssertionError...
+FAILED tests/test_condfold.py::test_v3_condense_call_targets_glm_flash - Asse...
+FAILED tests/test_conversation_edges.py::test_symbol_only_button_has_aria_label
+FAILED tests/test_create_card_tool.py::test_tool_table_version_bumped - Asser...
+FAILED tests/test_create_card_tool.py::test_base_prompt_declares_tool_and_drops_text_protocol
+FAILED tests/test_decision_gate.py::test_complete_rejected_without_decision
+FAILED tests/test_decision_gate.py::test_complete_passes_after_decision_appended
+FAILED tests/test_decision_gate.py::test_skeleton_placeholder_is_not_a_decision
+FAILED tests/test_dep_relations.py::test_b2_tool_table_and_versions - assert ...
+FAILED tests/test_dep_relations.py::test_b2_link_rel_writes_relations_only - ...
+FAILED tests/test_dep_relations.py::test_b2_link_rel_no_tree_scope_limit - As...
+FAILED tests/test_dep_relations.py::test_b2_tool_face_gated_by_link_switch - ...
+FAILED tests/test_dep_relations.py::test_b3_region_table_16_regions_with_250
+FAILED tests/test_dep_relations.py::test_b3_injection_two_directions - Assert...
+FAILED tests/test_dep_relations.py::test_b3_no_relations_region_absent - Asse...
+FAILED tests/test_dep_relations.py::test_b3_order_between_memory_and_history
+FAILED tests/test_event_catalog_coverage.py::test_every_type_declares_field_contract
+FAILED tests/test_flowlane.py::test_vt4_ontology_23_types - AssertionError: a...
+FAILED tests/test_flowlane.py::test_vt1_direct_tool_reply_real_landing_and_events
+FAILED tests/test_flowlane.py::test_vt3_sse_endpoint_and_ring - TypeError: '>...
+FAILED tests/test_frontend_readability.py::test_u1_font_sizes_within_allowed_set
+FAILED tests/test_function_http.py::test_create_function_returns_fn_id_and_stays_out_of_cards
+FAILED tests/test_llm_openai_compat_sse.py::test_unterminated_tail_at_eof_is_truncation_not_payload
+FAILED tests/test_llm_openai_compat_sse.py::test_missing_done_raises_stream_closed
+FAILED tests/test_must_round.py::test_c_has_function_untouched - AssertionErr...
+FAILED tests/test_must_round.py::test_d_non_root_untouched - AssertionError: ...
+FAILED tests/test_must_round.py::test_f_org_tools_stay_in_must_round - Assert...
+FAILED tests/test_must_round.py::test_fail_open_when_list_profiles_raises - A...
+FAILED tests/test_mutex.py::test_condense_skips_when_turn_held - AssertionErr...
+FAILED tests/test_no_truncation.py::test_read_linked_parts_have_no_duihua - A...
+FAILED tests/test_no_truncation.py::test_injection_path_has_no_truncator - As...
+FAILED tests/test_offline_e2e.py::test_mock_llm_round_trip - AssertionError: ...
+FAILED tests/test_offline_e2e.py::test_offline_round_trip - AssertionError: {...
+FAILED tests/test_offline_e2e.py::test_tool_loop_closes_with_tool_result - As...
+FAILED tests/test_offline_e2e.py::test_card_proposal_creates_children - KeyEr...
+FAILED tests/test_offline_e2e.py::test_delete_root_card_is_403 - assert 200 =...
+FAILED tests/test_org_scope_and_wake.py::test_wake_card_registered - Assertio...
+FAILED tests/test_org_scope_and_wake.py::test_role_can_reparent_any_card_in_tree
+FAILED tests/test_parent_status_notice.py::test_t1_status_change_notifies_parent
+FAILED tests/test_patch_card.py::test_edit_changes_only_target_spot - Asserti...
+FAILED tests/test_patch_card.py::test_edit_missing_old_refuses_and_touches_nothing
+FAILED tests/test_patch_card.py::test_edit_ambiguous_refuses - AssertionError...
+FAILED tests/test_patch_card.py::test_edit_replace_all - AssertionError: {'ok...
+FAILED tests/test_patch_card.py::test_edit_can_delete_exactly_one_spot - Asse...
+FAILED tests/test_patch_card.py::test_edit_by_line_replaces_one_line - Assert...
+FAILED tests/test_patch_card.py::test_edit_by_line_range - AssertionError: {'...
+FAILED tests/test_patch_card.py::test_edit_by_line_deletes_lines - AssertionE...
+FAILED tests/test_patch_card.py::test_edit_insert_after_line - AssertionError...
+FAILED tests/test_patch_card.py::test_normalized_match_when_punctuation_differs
+FAILED tests/test_patch_card.py::test_normalized_match_fullwidth_space - Asse...
+FAILED tests/test_patch_card.py::test_exact_match_not_flagged - AssertionErro...
+FAILED tests/test_patch_card.py::test_normalized_still_refuses_when_not_found
+FAILED tests/test_patch_card.py::test_normalized_ambiguous_still_refused - As...
+FAILED tests/test_patch_card.py::test_normalized_fullwidth_colon - AssertionE...
+FAILED tests/test_patch_card.py::test_normalized_does_not_map_cjk_brackets - ...
+FAILED tests/test_perm_gateway_acceptance.py::test_every_card_type_can_look_up_materials_but_still_cannot_act
+FAILED tests/test_perm_gateway_acceptance.py::test_v4_tool_class_card_has_no_file_tools
+FAILED tests/test_perm_gateway_acceptance.py::test_v4_positive_control_registered_types_see_all
+FAILED tests/test_perms_backfill.py::test_apply_recomputes_perms_and_preserves_other_fields
+FAILED tests/test_perms_backfill.py::test_coder_keeps_execution_switches - as...
+FAILED tests/test_perms_backfill.py::test_apply_is_idempotent - assert 2 == 1
+FAILED tests/test_report_up_contract.py::test_report_up_three_requirements - ...
+FAILED tests/test_requirements_lifecycle.py::test_all_approved_promotes_draft_to_final
+FAILED tests/test_requirements_write_modes.py::test_precise_edit_replaces_only_that_span
+FAILED tests/test_role_cards.py::test_create_role_has_independent_structure_and_is_off_tree
+FAILED tests/test_role_cards.py::test_role_toolface_is_narrow_and_lifecycle_is_root_only
+FAILED tests/test_role_cards.py::test_verdict_alarm_correction_and_linked_message
+FAILED tests/test_role_cards.py::test_role_turn_can_advise_and_alarm - assert...
+FAILED tests/test_role_cards.py::test_role_cannot_write_other_cards_even_by_direct_tool_call
+FAILED tests/test_role_cards.py::test_directive_is_mandatory_and_verifiable
+FAILED tests/test_role_cards.py::test_directive_blocks_completion_and_reject_auto_rework
+FAILED tests/test_role_cards.py::test_overdue_directive_blocks_completion - a...
+FAILED tests/test_role_cards.py::test_root_prompt_has_no_role_guidance - Asse...
+FAILED tests/test_role_cards.py::test_role_info_lives_in_tools_not_root_prompt
+FAILED tests/test_role_multi_watch.py::test_two_roles_same_watch_each_gets_own_sync_row
+FAILED tests/test_role_multi_watch.py::test_role_state_key_is_per_role_no_swallow
+FAILED tests/test_role_multi_watch.py::test_duty_and_sync_isolated_per_role
+FAILED tests/test_role_multi_watch.py::test_ten_rapid_status_changes_merge_to_one_sync
+FAILED tests/test_role_multi_watch.py::test_suspended_twenty_changes_queue_stays_bounded
+FAILED tests/test_role_sync_on_edit.py::test_status_block_edit_queues_once_per_change
+FAILED tests/test_role_sync_on_edit.py::test_requirements_edit_queues_decision_signal_only
+FAILED tests/test_role_sync_on_edit.py::test_suspended_still_queues_but_does_not_spawn
+FAILED tests/test_s4_auto_reply.py::test_s4_ask_auto_reply_end_to_end - Asser...
+FAILED tests/test_s4_auto_reply.py::test_s4_notify_no_reply - AssertionError:...
+FAILED tests/test_s4_auto_reply.py::test_s7_fake_type_zero_code - AssertionEr...
+FAILED tests/test_s4_auto_reply.py::test_g3_model_already_answered_no_duplicate_reply
+FAILED tests/test_s4_auto_reply.py::test_g3_model_not_answered_auto_reply_still_works
+FAILED tests/test_seats_lifecycle.py::test_seats_not_triggered_without_plan
+FAILED tests/test_seats_lifecycle.py::test_seats_triggered_after_chain_done
+FAILED tests/test_seats_lifecycle.py::test_seats_get_no_tools_and_history_only_prior
+FAILED tests/test_seats_lifecycle.py::test_seat_prompt_carries_chain_material
+FAILED tests/test_seats_lifecycle.py::test_synthesizer_gets_anonymous_seat_sections
+FAILED tests/test_seats_lifecycle.py::test_seat_content_never_enters_session
+FAILED tests/test_seats_lifecycle.py::test_seat_events_order_and_shape - Asse...
+FAILED tests/test_seats_lifecycle.py::test_chain_summary_written_back_to_card
+FAILED tests/test_silence.py::test_silenced_card_not_delivered - AssertionErr...
+FAILED tests/test_slots_control.py::test_midflight_stop_closes_turn_human_stop
+FAILED tests/test_slots_control.py::test_no_tool_round_discards_stale_stop_and_next_turn_clean
+FAILED tests/test_snapshot_mechanism.py::test_process_batch_keeps_state_only_not_append_only_logs
+FAILED tests/test_snapshot_mechanism.py::test_append_only_log_change_does_not_create_new_batch
+FAILED tests/test_status_update.py::test_status_task_event_carries_three_kinds_and_current_status
+FAILED tests/test_status_update.py::test_op_turn_end_to_end_through_route - A...
+FAILED tests/test_system_claims.py::test_all_verifiable_claims_hold - Asserti...
+FAILED tests/test_system_claims.py::test_coverage_catches_unbound_kind - Asse...
+FAILED tests/test_system_claims.py::test_coverage_catches_stale_region - Asse...
+FAILED tests/test_t11_regions.py::test_region_table_six_regions_no_current_turn_region
+FAILED tests/test_t11_regions.py::test_v1_byte_equal_current_card_missing - a...
+FAILED tests/test_t11_regions.py::test_v1_context_regions_join_equals_neutral_context
+FAILED tests/test_t11_tool_fold.py::test_t10_readonly_whitelist - AssertionEr...
+FAILED tests/test_t11_tool_fold.py::test_e2e_tool_loop_with_slot - TypeError:...
+FAILED tests/test_t12_memory.py::test_v6_switch_default_off_and_toggle - asse...
+FAILED tests/test_t12_memory.py::test_tool_table_has_read_memory_and_version
+FAILED tests/test_t14_delivery.py::test_v1_analysis_and_reply_delivered - Typ...
+FAILED tests/test_t14_delivery.py::test_v2_reply_equals_session_message - ass...
+FAILED tests/test_t14_delivery.py::test_v3_pairing_and_resend - IndexError: l...
+FAILED tests/test_t14_delivery.py::test_v4_pure_dialogue_unchanged - TypeErro...
+FAILED tests/test_t14_delivery.py::test_v5_proposal_in_analysis_parsed - Type...
+FAILED tests/test_t14_delivery.py::test_v5_no_false_proposal_from_plain_analysis
+FAILED tests/test_t14_delivery.py::test_v6_analysis_only_when_final_empty - T...
+FAILED tests/test_t14_delivery.py::test_v6_all_empty_no_crash_no_extra_message
+FAILED tests/test_t14_delivery.py::test_v6_failure_path_no_delivery_and_response_none
+FAILED tests/test_t15_pipeline.py::test_v1_mock_full_chain - assert 0 == 6
+FAILED tests/test_t15_pipeline.py::test_v1_switch_off_no_slice_no_region - as...
+FAILED tests/test_t15_pipeline.py::test_v2_idempotent_same_window - assert (0...
+FAILED tests/test_t15_pipeline.py::test_v2_idempotent_repair_mark - assert (0...
+FAILED tests/test_t15_pipeline.py::test_v3_parse_failure_watermark_untouched[-\u4ea7\u51fa\u89e3\u6790]
+FAILED tests/test_t15_pipeline.py::test_v3_parse_failure_watermark_untouched[\u6a21\u578b\u80e1\u8a00\u4e71\u8bed\u6ca1\u6709\u4efb\u4f55\u6807\u8bb0-\u4ea7\u51fa\u89e3\u6790]
+FAILED tests/test_t15_pipeline.py::test_v3_call_exception_watermark_untouched
+FAILED tests/test_t15_pipeline.py::test_v5_slice_on_and_off - TypeError: argu...
+FAILED tests/test_t15_pipeline.py::test_v7_mutex_second_trigger_skips - asser...
+FAILED tests/test_token_stream_isolation.py::test_event_ontology_is_23_types
+FAILED tests/test_token_stream_isolation.py::test_boundary_marker_reuses_existing_ontology_type
+FAILED tests/test_tool_capability_boost.py::test_seven_new_tools_registered
+FAILED tests/test_tool_capability_boost.py::test_seven_are_wired_to_tools_file
+FAILED tests/test_tool_capability_boost.py::test_run_subprocess_has_no_wall_clock_gate
+FAILED tests/test_tool_capability_boost.py::test_run_subprocess_returns_full_output_without_truncation
+FAILED tests/test_tool_capability_boost.py::test_glob_files_returns_all_matches_no_cap
+FAILED tests/test_tool_capability_boost.py::test_edit_file_version_and_switch
+FAILED tests/test_tool_doc_facts.py::test_no_new_undocumented_tool - Assertio...
+FAILED tests/test_tool_envelope.py::test_tool_call_ids_unique_and_paired - As...
+FAILED tests/test_tool_envelope.py::test_tool_call_id_carries_run_tag - Asser...
+FAILED tests/test_tool_envelope.py::test_text_channel_create_count_written - ...
+FAILED tests/test_tool_envelope.py::test_text_channel_count_absent_when_zero
+FAILED tests/test_tool_result_in_session.py::test_v6_mark_advances_over_tool_blocks
+FAILED tests/test_uiopt_e2e.py::test_message_roundtrip_session_count - Assert...
+FAILED tests/test_wire_no_target_consent.py::test_wire_does_not_grant_messaging
+211 failed, 1817 passed, 125 skipped in 516.93s (0:08:36)

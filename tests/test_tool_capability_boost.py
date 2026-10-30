@@ -65,7 +65,7 @@ def test_seven_new_tools_registered():
     # ★ 本条在 5718 之前就已陈旧（断言 50、实际 51）——一并对齐，恢复指纹作用。
     # [职能实体化 2026-10-21] role 五件改名+新增 set_child_mission ⇒ 52 → 53
     # [统一唤醒 2026-10-22] 新增 wake_card ⇒ 53 → 54
-    assert len(card_tools.TOOL_REGISTRY) == 54
+    assert len(card_tools.TOOL_REGISTRY) == 70  # 四场景通信 +4(实际 70)  # +submit_review(评审回程)  # 合并后实测 65
 
 
 def test_seven_schemas_have_required_params():
@@ -530,7 +530,7 @@ async def test_edit_file_missing_file_and_dir(sandbox):
 def test_edit_file_version_and_switch():
     """版本 tc-9 / t23-1；edit_file 与 write_file 同开关（tools_file）、写工具。"""
     assert card_tools.TOOL_TABLE_VERSION == "tools-tc-17"
-    assert prompts.BASE_PROMPT_VERSION == "t26-6"
+    assert prompts.BASE_PROMPT_VERSION == "t27-1"
     assert card_tools.TOOL_SWITCH["edit_file"] == policy.SWITCH_TOOLS_FILE
     assert card_tools.TOOL_SWITCH["edit_file"] == \
         card_tools.TOOL_SWITCH["write_file"]

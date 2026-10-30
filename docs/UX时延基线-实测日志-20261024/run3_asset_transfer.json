@@ -1,0 +1,41 @@
+{
+  "/static/style.css?v=49": {
+    "status": 200,
+    "bytes": 76129,
+    "content-encoding": "",
+    "content-length": "76129"
+  },
+  "/static/nav.css?v=16": {
+    "status": 200,
+    "bytes": 26611,
+    "content-encoding": "",
+    "content-length": "26611"
+  },
+  "/static/canvas.css?v=23": {
+    "status": 200,
+    "bytes": 137034,
+    "content-encoding": "",
+    "content-length": "137034"
+  },
+  "/static/esm/main.js?v=78.11": {
+    "status": 200,
+    "bytes": 2938,
+    "content-encoding": "",
+    "content-length": "2938"
+  },
+  "/static/canvas.js?v=89": {
+    "status": 200,
+    "bytes": 392967,
+    "content-encoding": "",
+    "content-length": "392967"
+  },
+  "/static/favicon.svg": {
+    "status": 200,
+    "bytes": 534,
+    "content-encoding": "",
+    "content-length": "534"
+  },
+  "home:/static/style.css?v=49": 76129,
+  "home:/static/nav.css?v=16": 26611,
+  "home:/static/home.css?v=1.1": 2260
+}

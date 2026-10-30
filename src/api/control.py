@@ -35,6 +35,44 @@ DEFER_HUMAN = "DEFER_HUMAN"
 # 人停置位（consume-once：check 返回 STOP 即清除，不影响下一回合）
 _stop_requests: set[tuple[str, str]] = set()
 
+#: [强制停止 2026-10-24 · 用户令「我需要的停止是强制性的」] 停止标记
+#: (key=(work_id, card_id) → {reason, by, ts})。置位后该卡**拒绝一切内部唤醒**
+#: (goal 续轮/收件箱调起/观点回合),只有两条路解除:用户直接发话、resume_child。
+#: 与 goal pause 的分工:pause 治「自动续轮」(持久,事件日志权威);本标记治
+#: 「被信件/汇聚再次叫醒」(进程内,goal pause 已持久兜底自动路径)。
+_HALTED: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def halt(work_id: str, card_id: str, reason: str = "", by: str = "") -> dict[str, Any]:
+    """强制停止:置标记 + 杀当轮(request_stop 的全部机制:流内信号赛跑保字/
+    流外直接取消协程)。goal pause 由调用方按需叠加(control.stop_auto)。"""
+    from datetime import datetime, timezone, timedelta
+    _HALTED[(work_id, card_id)] = {
+        "reason": str(reason or "")[:300],
+        "by": str(by or "")[:80],
+        "ts": datetime.now(timezone(timedelta(hours=8))).isoformat(),
+    }
+    return request_stop(work_id, card_id)
+
+
+def unhalt(work_id: str, card_id: str) -> bool:
+    """解除停止标记(用户直接发话/resume_child 时)。返回是否原本在停。"""
+    return _HALTED.pop((work_id, card_id), None) is not None
+
+
+def is_halted(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
+    """该卡是否处于强制停止态(返回标记详情;None=未停)。"""
+    return _HALTED.get((work_id, card_id))
+
+#: 停止信号的**可等待**形态（key=(work_id, card_id)）。
+#:
+#: [取消墙钟 2026-10-23 · 用户令「整个机制全部通过信息反馈」]
+#: 原来停止靠两条腿：置位（在下一帧边界消费）＋ `_hard_cancel_after` 的 1.5 秒
+#: 硬取消兜底。那个 1.5 秒就是墙钟——而它要解决的「软停等不到边界」其实有
+#: 直接的信息通道：**把停止做成一个 event，和「下一个 chunk」一起等，谁先到算谁**。
+#: ⇒ 停止立即生效（不等帧、不等钟），已产出的字照旧保住（走同一 `_stopped` 收口）。
+_stop_events: dict[tuple[str, str], asyncio.Event] = {}
+
 #: 在途回合的协程任务（key=(work_id, card_id)）。
 #:
 #: [立刻停止 2026-10-21 · 用户令] 改前「停止」只往 `_stop_requests` 放个标记，
@@ -77,53 +115,48 @@ def cancel_turn(work_id: str, card_id: str) -> bool:
     return True
 
 
-#: 软停等不到边界时，多久之后硬取消（秒）。
-#: 软停是「下一个 chunk / 步边界就断」，正常吐字时毫秒级生效、还能保住已产出的字；
-#: 但模型**一个字都不吐**卡在那里时，边界永远不会来 —— 这时候必须硬掐。
-STOP_HARD_CANCEL_DELAY = 1.5
-
-
-async def _hard_cancel_after(work_id: str, card_id: str, holder: str,
-                             delay: float | None = None) -> None:
-    """软停兜底：``delay`` 秒后这一轮还没收口 ⇒ 直接 cancel 协程。
-
-    比对 ``holder`` 再动手：期间若已换了一轮（或已释放），绝不误杀。
-    ``delay`` 缺省时**现读**模块常量（测试可 monkeypatch 缩短）。
-    """
-    delay = STOP_HARD_CANCEL_DELAY if delay is None else float(delay)
-    await asyncio.sleep(delay)
-    if session_facade.turn_holder(work_id, card_id) != holder:
-        return
-    if cancel_turn(work_id, card_id):
-        logger.warning("[control] 软停 %.1fs 未收口 ⇒ 硬取消 work=%s card=%s",
-                       delay, work_id, card_id)
-
-
 def request_stop(work_id: str, card_id: str) -> dict[str, Any]:
     """人停（stop 端点唯一入口）。
 
-    [立刻停止 2026-10-21 · 用户令] 两条腿并行，不再只靠那条等不到的：
-      ① **软停**：置位，下一个 chunk / 步边界即断（毫秒级，且保住已产出的字——
-         2026-10-15 裁定「不丢已产出的字」不推翻）；
-      ② **硬停兜底**：1.5 秒还没收口 ⇒ cancel 协程。模型一个字都不吐、卡在
-         流里时，软停永远等不到边界（实测 card_031 卡 9 分钟，停止无效、409 发不出）。
+    按**状态**分两条路，都不靠时间：
+
+      ① **在模型流里**（``model_service.in_stream`` 为真）：置停止信号。
+         流把它和「下一个 chunk」一起 await，谁先到算谁 ⇒ 立刻收口，
+         且已产出的字保住（2026-10-15 裁定「不丢已产出的字」不推翻）。
+      ② **不在流里**（卡在工具执行 / 上下文装配）：信号没人等 ⇒ 直接 cancel
+         回合协程，否则回合永不收口、互斥体永不释放（实测 card_031 卡 9 分钟、
+         再发消息 409）。
+
+    [取消墙钟 2026-10-23] 原文档写的「② 硬停兜底：1.5 秒还没收口 ⇒ cancel」
+    已废——那个 1.5 秒是墙钟，已删除；现在的判据是**在不在流里**这个状态。
     """
     holder = session_facade.turn_holder(work_id, card_id)
     if not holder:
         return {"stopped": False, "reason": "no_inflight_turn",
                 "idempotent": True, "holder": ""}
     _stop_requests.add((work_id, card_id))
+    # 停止＝把信号直接交给在等的流（它和「下一个 chunk」赛跑，谁先到算谁）：
+    # 流里立刻收口、保住已产出的字，**不需要任何定时兜底**。
+    stop_event_for(work_id, card_id).set()
+    # 但若这张卡此刻**不在**模型流里（卡在工具执行/上下文装配），信号没人等，
+    # 回合就永远不会收口、互斥体永不释放（实测 card_031 卡 9 分钟、再发消息 409）。
+    # ⇒ 这种情况直接 cancel 协程。判据是**状态**（在不在流里），不是时间。
     try:
-        asyncio.get_running_loop().create_task(
-            _hard_cancel_after(work_id, card_id, holder))
-    except RuntimeError:
-        # 没有事件循环（同步上下文调用）⇒ 只能立刻硬取消
+        from . import model_service as _ms
+        _waiting_on_stream = _ms.in_stream(work_id, card_id)
+    except Exception:  # noqa: BLE001 判不出来按「不在流里」处理：宁可立刻停
+        _waiting_on_stream = False
+    if not _waiting_on_stream:
         cancel_turn(work_id, card_id)
     session_ops.ops_log("human_stop", work_id, card_id,
-                        {"action": "requested", "holder": holder})
-    logger.info("[control] 人停 work=%s card=%s holder=%s（软停＋1.5s 硬停兜底）",
-                work_id, card_id, holder)
-    return {"stopped": True, "reason": "stop_requested", "holder": holder}
+                        {"action": "requested", "holder": holder,
+                         "path": "signal" if _waiting_on_stream else "cancel"})
+    logger.info("[control] 人停 work=%s card=%s holder=%s 路径=%s",
+                work_id, card_id, holder,
+                "信号（在流里，立刻收口）" if _waiting_on_stream
+                else "取消协程（不在流里，信号没人等）")
+    return {"stopped": True, "reason": "stop_requested", "holder": holder,
+            "path": "signal" if _waiting_on_stream else "cancel"}
 
 
 def check(work_id: str, card_id: str) -> str:
@@ -148,11 +181,44 @@ def discard_stop(work_id: str, card_id: str) -> None:
     统一清扫：置位在回合窗口内有效、回合结束即作废。
     """
     _stop_requests.discard((work_id, card_id))
+    # 信号也一起清：否则下一回合的流一上来就看见「已置位」，立刻自我收口。
+    ev = _stop_events.pop((work_id, card_id), None)
+    if ev is not None:
+        ev.clear()
 
 
 def pending_stop(work_id: str, card_id: str) -> bool:
     """诊断用：当前是否有未消费的停止置位（不改状态）。"""
     return (work_id, card_id) in _stop_requests
+
+
+def stop_event_for(work_id: str, card_id: str) -> asyncio.Event:
+    """取该卡的停止信号，**没有就建**——模型流启动时必须调它。
+
+    [停止失效修复 2026-10-23] 改前流启动用的是 ``stop_event()``（只取不建）：
+    而事件只在**点停止时**才被创建 ⇒ 流启动时永远是 None ⇒ 流根本不和停止
+    信号赛跑 ⇒ 点停止时 ``request_stop`` 又因 ``in_stream()`` 为真而不 cancel
+    ⇒ **停止彻底无效**（用户实测「说停就停不下来」）。
+    事件生命周期由回合界定：流里建、``discard_stop`` 在回合收口时清。
+    """
+    ev = _stop_events.get((work_id, card_id))
+    if ev is None:
+        ev = asyncio.Event()
+        _stop_events[(work_id, card_id)] = ev
+    return ev
+
+
+def has_stop_signal(work_id: str, card_id: str) -> bool:
+    """诊断用：该卡此刻是否有**已置位**的停止信号（不新建、不暴露事件对象）。
+
+    [接口收敛 2026-10-23] 原来这里还有一个 ``stop_event()``（只取不建、取不到返回
+    None），和 ``stop_event_for()``（取不到就建）**同名不同行为**——流启动时选错
+    那个就返回 None，于是流不与信号赛跑、停止彻底失效（用户实测「停不下来」）。
+    两个入口留着，下一个人还会选错。故**只保留一个「取用」入口**
+    （``stop_event_for``，恒有返回值），诊断需求走本函数返回 bool。
+    """
+    ev = _stop_events.get((work_id, card_id))
+    return ev is not None and ev.is_set()
 
 
 # ===========================================================================
@@ -195,22 +261,67 @@ def _auto_subtree(work_id: str, card_id: str) -> list[str]:
 
 
 async def stop_auto(work_id: str, card_id: str) -> dict[str, Any]:
-    """自动模式停止的 ②③ 两件 ＋ 释放执行锁。**幂等**（无 auto 卡 ⇒ 全 no-op）。
+    """停止：**暂停目标** ＋ 清「等子卡」意图 ＋ 释放执行锁。**幂等**（无目标 ⇒ 全 no-op）。
 
-    - ② 本卡（若 auto）``goal_state → paused``；
-    - ③ 子树内**自动子卡**一并 ``goal_state → paused``（级联）；
+    - ② 本卡目标 ``active → paused``（**经 goal 服务**，权威在事件日志）；
+    - ③ 子树内自动卡一并停（级联）；
     - 释放该 work 的执行锁（串行模式下队列不饿死）。
+
+    [停止不看模式 2026-10-29 · 用户令「停止为什么要分自动还是手动」]
+    改前循环第一行是 ``if not auto_mode: continue`` —— **手动卡按下停止时，它的
+    目标根本不会被暂停**。实测 work_027/card_061（auto_mode=0）连按三次停止，
+    goal 域**零 pause 事件**，``goal_state`` 仍是 active，界面一直显示「推进中」，
+    用户感受就是「不论如何也停不下来」。
+    ⇒ ``auto_mode`` 只该决定「要不要自动续轮」，**不该决定「能不能被停」**。
+      停止是用户的强制动作，对自动卡与手动卡一视同仁。
+
+    [停止失效修复 2026-10-24 · 用户实测「开了自动模式就停不下来」]
+    改前这里直接 ``update_card({"goal_state": "paused"})``——写的是**投影列**，
+    而权威是事件日志 fold 出来的 ``goal.phase``。运行中的进程缓存仍是 active，
+    ``goal.driver.drive`` 照旧续轮，下一轮 ``_project`` 又把 ``goal_state`` 写回
+    active ⇒ **点了停止也停不下来**（实测 work_001/card_001：停一次立刻又起一轮，
+    571 字符的续轮 prompt 一模一样，连停 5 次停不住）。
+
+    现在走 ``goal.service.pause()``：写 goal/change 事件 + 重投影，**跨重启有效**，
+    且不会被下一次投影覆盖。
     """
     from ..storage import card_store
     from . import serial_gate
 
     paused: list[str] = []
     cleared_await: list[str] = []
+    goal_error: list[str] = []
     for cid in _auto_subtree(work_id, card_id):
         m = card_store._meta_of(work_id, cid) or {}
-        if not bool(m.get("auto_mode")):
-            continue
         was_active = str(m.get("goal_state") or "") == "active"
+        # ② 目标暂停走 **goal 服务的正规命令**（写事件 + 重投影），不是写投影列。
+        # ★ 判据取 **goal 域自己的 phase**，不看 auto_mode，也不只看投影列
+        #   （投影可能落后于事件日志：卡停在 paused 但权威仍是 active 的情形，
+        #    正是「停不下来」的一半成因）。
+        paused_here = False
+        try:
+            from ..goal import service as goal_service
+            gs = goal_service.get_service()
+            goal = await gs.get(work_id, cid)
+            if goal is not None and goal.phase == "active":
+                await gs.pause(work_id, cid, goal.ref())
+                paused.append(cid)
+                paused_here = True
+        except Exception as exc:  # noqa: BLE001 停不动不抛（停止路径必须走完）
+            goal_error.append(f"{cid}:{exc}")
+            logger.warning("[control] 目标暂停失败 work=%s card=%s: %s",
+                           work_id, cid, exc)
+        if not paused_here and was_active:
+            # 没有 goal 事件（纯 legacy 卡）⇒ 退回写投影列，保持旧行为可用
+            try:
+                await card_store.update_card(
+                    work_id, cid, {"goal_state": "paused"},
+                    "[自动模式] 停止：关自动继续")
+                paused.append(cid)
+            except Exception as exc:  # noqa: BLE001
+                goal_error.append(f"{cid}:{exc}")
+                logger.warning("[control] 关自动继续失败 work=%s card=%s: %s",
+                               work_id, cid, exc)
         raw_await = m.get("goal_await_children")
         try:
             has_await = int(raw_await or 0) != 0
@@ -225,26 +336,26 @@ async def stop_auto(work_id: str, card_id: str) -> dict[str, Any]:
         #   就永远留着，子卡一完工便复活——那才是真红线破口。
         fields: dict[str, Any] = {}
         note = ""
-        if was_active:
-            fields["goal_state"] = "paused"
-            note = "[自动模式] 停止：关自动继续"
         if has_await:
             fields["goal_await_children"] = 0
-            note = (note + " ｜ " if note else "") + "取消「等子卡」等待意图（用户按停优先）"
+            note = "取消「等子卡」等待意图（用户按停优先）"
+        if not fields:
+            continue
         try:
             await card_store.update_card(work_id, cid, fields, note)
-            if was_active:
-                paused.append(cid)
             if has_await:
                 cleared_await.append(cid)      # 成功后才记（失败不谎报已清）
         except Exception as exc:  # noqa: BLE001 停不动不抛（停止路径必须走完）
             logger.warning("[control] 关自动继续失败 work=%s card=%s: %s",
                            work_id, cid, exc)
     released = serial_gate.release_work(work_id)
-    if paused or cleared_await or released:
+    if paused or cleared_await or released or goal_error:
         session_ops.ops_log("auto_stop", work_id, card_id,
                             {"paused": paused, "lock_released": released,
-                             "cleared_await": cleared_await})
+                             "cleared_await": cleared_await,
+                             "goal_errors": goal_error})
     logger.info("[control] 自动模式停止 work=%s card=%s paused=%s released=%s cleared_await=%s",
                 work_id, card_id, paused, released, cleared_await)
+    # ★ 返回形状**逐字不变**（``{"paused", "lock_released"}`` 是既有调用方与
+    #   测试的契约）。目标暂停的失败只进 ops 留痕，不往返回值里加键。
     return {"paused": paused, "lock_released": released}

@@ -1,0 +1,32 @@
+{
+  "canvas_page_total_bytes": 801122,
+  "canvas_html": 15018,
+  "canvas_css": 239774,
+  "canvas_js": 545796,
+  "icon": 534,
+  "canvas_js_files": {
+    "/static/esm/main.js?v=78.11": 2938,
+    "/static/esm/store.js?v=30": 773,
+    "/static/esm/api.js?v=46": 13590,
+    "/static/esm/util.js?v=30": 470,
+    "/static/canvas.js?v=89": 392967,
+    "/static/esm/nav_system.js?v=53": 31503,
+    "/static/esm/rule_panel.js?v=37": 7892,
+    "/static/esm/nav_render.js": 38943,
+    "/static/esm/md.js": 16997,
+    "/static/esm/state_layers.js": 12555,
+    "/static/esm/nav_breadcrumb.js": 6018,
+    "/static/esm/nav_find.js": 5131,
+    "/static/esm/nav_virtual.js": 4845,
+    "/static/esm/nav_geo.js": 3112,
+    "/static/esm/row_model.js": 3425,
+    "/static/esm/nav_badge.js": 2662,
+    "/static/esm/nav_async.js": 1975
+  },
+  "canvas_css_files": {
+    "/static/style.css?v=49": 76129,
+    "/static/nav.css?v=16": 26611,
+    "/static/canvas.css?v=23": 137034
+  },
+  "home_total": 117591
+}

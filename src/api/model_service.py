@@ -13,6 +13,7 @@ Phase 7：call_main 增加 tools 参数透传给 gateway.call。
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Optional
 
@@ -43,6 +44,100 @@ def reload_gateway():
     global _gateway
     _gateway = build_gateway(model_config.reload())
     return _gateway
+
+
+#: 此刻正在模型流里的卡（key=(work_id, card_id)）。
+#:
+#: 停止路径要用它做**信息判定**（不是时间判定）：在流里 ⇒ 停止信号立刻让流收口
+#: （已产出的字保住），不需要 cancel；不在流里（卡在工具/装配）⇒ 信号没人等，
+#: 必须直接 cancel，否则回合永不收口、互斥体永不释放（实测 card_031 卡 9 分钟）。
+_IN_STREAM: dict[tuple[str, str], int] = {}
+
+
+def in_stream(work_id: str, card_id: str) -> bool:
+    """该卡此刻是否正在模型流里（停止路径的判据）。"""
+    return _IN_STREAM.get((str(work_id), str(card_id)), 0) > 0
+
+
+async def _stop_raced(agen: Any, stop_ev: Optional[asyncio.Event],
+                      stream_key: Optional[tuple[str, str]] = None):
+    """把「下一个 chunk」和「停止信号」一起等，谁先到算谁（无墙钟）。
+
+    [取消墙钟 2026-10-23 · 用户令「整个机制全部通过信息反馈」]
+    原来停止只在**帧边界**生效：模型一个字都不吐时边界永远不来，只能靠
+    `_hard_cancel_after` 的 1.5 秒定时去猜「软停是不是没生效」。那是墙钟。
+    现在停止本身是可 await 的信号 ⇒ 停止先到就直接收口（**已产出的字保留**，
+    走调用方同一 `_stopped` 收口路径），不需要任何定时兜底。
+
+    ``stop_ev`` 为 None（没有在途回合/非卡内调用）⇒ 退化为原样透传。
+    """
+    if stream_key is not None:
+        _IN_STREAM[stream_key] = _IN_STREAM.get(stream_key, 0) + 1
+    it = agen.__aiter__()
+    nxt: Optional[asyncio.Future] = None
+    try:
+      while True:
+        if nxt is None:
+            nxt = asyncio.ensure_future(it.__anext__())
+        if stop_ev is None:
+            try:
+                yield nxt.result() if nxt.done() else await nxt
+            except StopAsyncIteration:
+                return
+            nxt = None
+            continue
+        stopper = asyncio.ensure_future(stop_ev.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {nxt, stopper}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not stopper.done():
+                stopper.cancel()
+        if nxt in done:
+            try:
+                chunk = nxt.result()
+            except StopAsyncIteration:
+                return
+            nxt = None
+            yield chunk
+            continue
+        # 停止信号先到：取消挂起的取帧，交还调用方（它会把已产出的字收口）
+        nxt.cancel()
+        nxt = None
+        return
+    finally:
+        if stream_key is not None:
+            _left = _IN_STREAM.get(stream_key, 0) - 1
+            if _left > 0:
+                _IN_STREAM[stream_key] = _left
+            else:
+                _IN_STREAM.pop(stream_key, None)
+
+
+def _parse_text_tool_calls(text: str) -> list[dict[str, Any]]:
+    """从正文里解析 `<tool_call>{"name":..,"arguments":..}</tool_call>` 块。
+
+    [2026-10-29] 纯兼容层：只把**文本形态的调用**还原成结构化 tool_calls，
+    不改变任何模型行为。名字/参数原样取，不做猜测性修补。
+    """
+    import json as _json
+    import re as _re
+
+    out: list[dict[str, Any]] = []
+    for m in _re.finditer(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, _re.S):
+        try:
+            obj = _json.loads(m.group(1))
+        except Exception:  # noqa: BLE001 不是合法 JSON 就当正文
+            continue
+        if not isinstance(obj, dict):
+            continue
+        name = str(obj.get("name") or "").strip()
+        if not name:
+            continue
+        args = obj.get("arguments")
+        out.append({"name": name,
+                    "arguments": args if isinstance(args, dict) else {}})
+    return out
 
 
 async def call_main(
@@ -97,45 +192,67 @@ async def call_main(
     _content_parts: list[str] = []
     _stopped = False
     from . import control as _ctl
-    async for ev in gw.stream_call(
-        model_name,
-        system_prompt,
-        user_prompt,
-        temperature=float(cfg.get("temperature", 0.5)),
-        max_tokens=cfg.get("max_tokens"),
-        timeout=cfg.get("timeout"),
-        on_status=events.append,
-        tools=tools,
-        prior_messages=prior_messages or None,
-        # [当前轮注入消息事件 2026-10-14] 本轮注入消息（context_preamble/
-        # context_injection 的投影）——追加在用户消息之后。默认 None ⇒ 既有
-        # 全部调用方（三席/凝练/起草/卡间调起）消息构造逐字不变。
-        turn_tail=turn_tail or None,
-        # [判断协议改注入 2026-10-14] 「仅本次」下发消息（判断协议投影）——
-        # 追加在用户消息之后，**不进轮槽、不固化**；默认 None ⇒ 逐字同旧。
-        turn_once=turn_once or None,
-        # [层内兜底 2026-10-21 · 用户令] 首选重试耗尽就换**同一层**的下一个；
-        # 层内全挂才如实失败，不跨层、不落到全局兜底。
-        fallbacks=fallbacks or None,
-    ):
-        if "chunk_type" in ev:
-            # 逐字流增量：进独立通道，不进 content
-            if ev["chunk_type"] == "reasoning":
-                _reasoning_parts.append(ev.get("text") or "")   # 攒起来供回传
-            else:
-                _content_parts.append(ev.get("text") or "")     # 断流时合成终帧用
-            if ctx:
-                _es.emit_token(ctx[0], ctx[1],
-                               "reasoning_chunk" if ev["chunk_type"] == "reasoning"
-                               else "content_chunk",
-                               ev.get("text") or "")
-        elif "content" in ev:
-            result = ev
-        # [直接停止 2026-10-15] 停位检查放在**本帧处理之后**：这一帧已经收到、
-        # 已经累计/已发流，就照收；从**下一帧**起不再接收 ⇒ 既立刻停、又不丢已产出的字。
-        if ctx and _ctl.pending_stop(ctx[0], ctx[1]):
-            _stopped = True
-            break
+
+    # [取消墙钟 2026-10-23 · 用户令「整个机制全部通过信息反馈」]
+    # 停止**不再**靠「等下一帧边界 + 1.5 秒硬取消兜底」：那是用钟去猜
+    # 「软停有没有生效」。改成把停止做成信号，和「下一个 chunk」一起 await，
+    # 谁先到算谁 —— 停止立即生效、已产出的字照旧保住（走下面同一 `_stopped` 收口）。
+    # [停止失效修复 2026-10-23] 必须 stop_event_for（没有就建）：改前用 stop_event
+    # （只取不建），而事件只在点停止时才创建 ⇒ 流启动时恒为 None ⇒ 不与信号赛跑
+    # ⇒ 点停止后流照跑到底（用户实测「根本停不下来」）。
+    _stop_ev = _ctl.stop_event_for(ctx[0], ctx[1]) if ctx else None
+    _stream_key = (str(ctx[0]), str(ctx[1])) if ctx else None
+
+    _stream = _stop_raced(
+            gw.stream_call(
+                model_name,
+                system_prompt,
+                user_prompt,
+                temperature=float(cfg.get("temperature", 0.5)),
+                max_tokens=cfg.get("max_tokens"),
+                timeout=cfg.get("timeout"),
+                on_status=events.append,
+                tools=tools,
+                prior_messages=prior_messages or None,
+                # [当前轮注入消息事件 2026-10-14] 本轮注入消息（context_preamble/
+                # context_injection 的投影）——追加在用户消息之后。默认 None ⇒ 既有
+                # 全部调用方（三席/凝练/起草/卡间调起）消息构造逐字不变。
+                turn_tail=turn_tail or None,
+                # [判断协议改注入 2026-10-14] 「仅本次」下发消息（判断协议投影）——
+                # 追加在用户消息之后，**不进轮槽、不固化**；默认 None ⇒ 逐字同旧。
+                turn_once=turn_once or None,
+                # [层内兜底 2026-10-21 · 用户令] 首选重试耗尽就换**同一层**的下一个；
+                # 层内全挂才如实失败，不跨层、不落到全局兜底。
+                fallbacks=fallbacks or None,
+            ),
+            _stop_ev, _stream_key)
+    try:
+        async for ev in _stream:
+            if "chunk_type" in ev:
+                # 逐字流增量：进独立通道，不进 content
+                if ev["chunk_type"] == "reasoning":
+                    _reasoning_parts.append(ev.get("text") or "")   # 攒起来供回传
+                else:
+                    _content_parts.append(ev.get("text") or "")     # 断流时合成终帧用
+                if ctx:
+                    _es.emit_token(ctx[0], ctx[1],
+                                   "reasoning_chunk" if ev["chunk_type"] == "reasoning"
+                                   else "content_chunk",
+                                   ev.get("text") or "")
+            elif "content" in ev:
+                result = ev
+            # [直接停止 2026-10-15] 停位检查放在**本帧处理之后**：这一帧已经收到、
+            # 已经累计/已发流，就照收；从**下一帧**起不再接收 ⇒ 既立刻停、又不丢已产出的字。
+            if ctx and _ctl.pending_stop(ctx[0], ctx[1]):
+                _stopped = True
+                break
+    finally:
+        # 消费者 break 出循环时生成器不会自动关闭 ⇒ 显式 aclose，
+        # 否则 _stop_raced 的 finally 不跑、在流登记泄漏（停止判据永远为真）。
+        await _stream.aclose()
+    if _stop_ev is not None and _stop_ev.is_set() and not result:
+        # 停止信号先到（流还没吐终帧）⇒ 与「帧边界停止」同一收口路径
+        _stopped = True
     if not result and _stopped:
         # 人停断流：把已产出的正文照常交付（工具轮未走完 ⇒ 不产生 tool_calls）。
         result = {"content": "".join(_content_parts), "tool_calls": [],
@@ -148,6 +265,20 @@ async def call_main(
     # 字段名用协议名 reasoning_content；无思考时为空串（与旧行为逐字兼容——
     # 旧 result 无此键，新增键不改变既有读取）。
     result["reasoning_content"] = "".join(_reasoning_parts)
+    # [2026-10-29 文本工具调用兼容] 有些模型（实弹：deepseek-v4-1-flash-economy）
+    # 不用结构化 `tool_calls`，而是把调用写成正文：
+    #     <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    # 网关只认 delta.tool_calls ⇒ 这些调用**一个都不执行**，模型却以为改了，
+    # 下一轮又挑同样问题（实弹里因此跑到第 23 版）。
+    # 这里做兼容：结构化 tool_calls 为空时，把正文里的 tool_call 块解析出来，
+    # 只接受**本回合确实给了的工具名**（不在 tools 里的当正文，不当调用）。
+    if not (result.get("tool_calls") or []):
+        parsed = _parse_text_tool_calls(str(result.get("content") or ""))
+        allowed = {str(((t or {}).get("function") or t).get("name") or "")
+                   for t in (tools or [])}
+        parsed = [c for c in parsed if not allowed or c["name"] in allowed]
+        if parsed:
+            result["tool_calls"] = parsed
     if is_mock():
         model_used = "mock"
     else:

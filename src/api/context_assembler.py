@@ -80,12 +80,14 @@ def _dep_relations_for(cards: list[dict[str, Any]], current_id: str,
 
 
 def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, Any]]:
-    """只取当前卡的**直接子卡** id/title/status_block。
+    """只取当前卡的**直接子卡** id/title/status_block/mission。
 
     **SQL 不递归**（`WHERE work_id=? AND parent=?`，只一层）⇒ 孙级在结构上取不到
     ——「父卡只看直接子级」不靠过滤逻辑保证，靠查询本身。
-    只取所需三列：不读子卡的 mission/rulings/history，更不碰影子（减污染）。
-    空 status_block 保留到纯 renderer，由区的「空内容不出现」规则统一过滤。
+    [2026-10-27 用户裁定] 加 `mission`：父卡的判断是「三块填没填」（原文：
+    「我核对一下两张卡的使命、现状和需求文档，分别确认哪些已填」），只给现状
+    等于答非所问 ⇒ 实测父卡每轮还去 read_card 135 次。**需求文档仍不给**（太长）。
+    仍不读子卡的 history、不碰影子。
     """
     if not parent_id:
         return []
@@ -93,9 +95,10 @@ def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, An
     def _fn(conn: Any) -> list[dict[str, Any]]:
         return [
             {"card_id": r["card_id"], "title": r["title"] or "",
+             "mission": r["mission"] or "",
              "status_block": r["status_block"] or ""}
             for r in conn.execute(
-                "SELECT card_id, title, status_block FROM cards "
+                "SELECT card_id, title, mission, status_block FROM cards "
                 "WHERE work_id = ? AND parent = ? ORDER BY card_id",
                 (work_id, parent_id),
             )
@@ -114,7 +117,7 @@ def _load_current_card_state(work_id: str, card_id: str
     """
     def _fn(conn: Any) -> tuple[dict[str, Any], dict[str, str]]:
         row = conn.execute(
-            "SELECT mission, status_block, rulings FROM cards WHERE card_id = ?",
+            "SELECT mission, status_block, requirements FROM cards WHERE card_id = ?",
             (card_id,),
         ).fetchone()
         if row is None:
@@ -122,11 +125,12 @@ def _load_current_card_state(work_id: str, card_id: str
         body = {
             "mission": row["mission"] or "",
             "status_block": row["status_block"] or "",
-            "rulings": row["rulings"] or "",
+            "requirements": row["requirements"] or "",
         }
         sh = conn.execute(
-            "SELECT progress, coordination, artifacts, iterations FROM shadows "
-            "WHERE owner_card_id = ?",
+            # [卡片笔记 2026-10-27] 带上 note：笔记常驻 150 区（本卡私有）。
+            "SELECT progress, coordination, artifacts, iterations, note "
+            "FROM shadows WHERE owner_card_id = ?",
             (card_id,),
         ).fetchone()
         shadow = (
@@ -135,6 +139,7 @@ def _load_current_card_state(work_id: str, card_id: str
                 "coordination": sh["coordination"] or "",
                 "artifacts": sh["artifacts"] or "",
                 "iterations": sh["iterations"] or "",
+                "note": (sh["note"] if "note" in sh.keys() else "") or "",
             }
             if sh is not None else {}
         )
@@ -209,26 +214,21 @@ def load_control() -> dict[str, Any]:
 
 
 def _load_rule_sections(work_id: str) -> dict[str, str]:
-    """扫本 work 第一张 card_type=rule 的卡，正文（mission 列）按 `## ` 切区。
+    """读本项目的规则分区（区名→正文），只保留有内容的区。
 
-    一次 IO；多张 rule 卡取首张 + ops 留痕（Open Item 2）。无规则卡／读失败
-    → 空 dict（「没有来源就不出现这个区」，不阻断装配）。
+    [规则节点 2026-10-28 · 用户令「一个项目一个文件」] 规则是本项目的基建文件
+    ``works/<work_id>/rules.md``：不占 card_id、不进 cards 表、不上列表/画布。
+    ``work_store.get_rules`` 已转发到 ``rule_store``（含 work.json 旧形态的惰性
+    迁移），所以这里不再需要「扫规则卡」那段 legacy 兜底——那次迁移发生在
+    ``rule_store.read_sections`` 内部，只做一次。
     """
-    def _fn(conn: Any) -> str:
-        row = conn.execute(
-            "SELECT mission FROM cards WHERE card_type='rule' "
-            "ORDER BY card_id LIMIT 1").fetchone()
-        return (row["mission"] or "") if row else ""
-
     try:
-        body = card_db.read_sync(work_id, _fn, "") or ""
-    except Exception:  # noqa: BLE001 取不到＝无来源，不阻断装配
+        from ..storage import work_store as _ws
+        rules = _ws.get_rules(work_id)
+    except Exception:  # noqa: BLE001 读不到＝无来源，不阻断装配
         return {}
-    if not body.strip():
-        return {}
-    sections = context_regions.split_rule_sections(body)
-    sections.pop("", None)  # 区头前游离正文不进注入面（只留存储完整性）
-    return sections
+    return {str(k): str(v or "").strip() for k, v in (rules or {}).items()
+            if str(v or "").strip() and str(k).strip()}
 
 
 def _load_role_cabinet(work_id: str, current_id: str,
@@ -366,11 +366,18 @@ def build_ctx(work_id: str, current_id: str,
         type_registry=card_store.load_type_registry(),
         type_texts=load_type_texts(),
         memory_state=state,
-        memory_entries=(state or {}).get("entries") or [],
+        # [记忆编号体系 2026-10-29] 记忆区改吃 `memory_nodes`（条目级事实源）：
+        # 每行一个节点、自带编号与时间戳。不再读 `chain` 里的 entries——
+        # 装配与渲染各读一份不同结构，正是上次「92 行 [块?]」的根因。
+        memory_entries=memory_store.load_nodes(work_id, current_id),
         controls=load_control(),
         rule_sections=_load_rule_sections(work_id),
         history_source=history_source or [],
         history_mark=int((state or {}).get("mark", 0) or 0),
+        # [harness 提示词注入 2026-10-28 · 第三道接口] 取走并清空注入队列。
+        # 一次装配取一次 ⇒ 这些提示只出现在**这一轮**的 system 里：
+        # 整轮共用（system 每轮只组一次）、不进会话历史、下一轮不再出现。
+        pending_inject=card_store.take_pending_inject_sync(work_id, current_id),
     )
 
 

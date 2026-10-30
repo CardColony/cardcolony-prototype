@@ -323,7 +323,7 @@ async def test_direct_child_status_shows_direct_children_only(sandbox):
     assert "孙卡现状正文" not in region, "孙级现状不得进入父卡上下文"
     assert "孙卡有现状" not in region, "孙级标题也不得出现"
     assert empty not in region, "空现状的子卡不占位"
-    assert region.startswith("## 直接子卡现状")
+    assert region.startswith("## 直接子卡（使命·现状）")
 
 
 async def test_grandchild_context_shows_its_own_children(sandbox):

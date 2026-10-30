@@ -78,10 +78,7 @@
         "list_memory",
         "send_card_message"
       ],
-      "rule": [
-        "read",
-        "tools_web"
-      ],
+      "rule": [],
       "role": [
         "read",
         "edit",
@@ -142,10 +139,7 @@
         "send_card_message",
         "tools_web"
       ],
-      "rule": [
-        "read",
-        "tools_web"
-      ],
+      "rule": [],
       "role": [
         "read",
         "edit",

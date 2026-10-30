@@ -242,6 +242,24 @@ class GoalService:
         cache.activation = "disarmed"
         return self._view(cache)
 
+    async def arm(self, work_id: str, card_id: str) -> Optional[GoalView]:
+        """重新授予续轮权（**重启恢复用**）。
+
+        [goal 重启恢复 2026-10-28 · 用户实测「goal 明明没完成却停下了」]
+        ``activation`` 按原版设计**永不落盘**，进程一重启全部 disarmed——
+        数据库里 goal 还是 active、界面上看着在跑，驱动却再也不认它。
+        这个方法就是"重启后把 active 的目标重新授上权"的唯一入口。
+
+        只在 ``phase == "active"`` 时生效：paused/blocked/complete 不给权
+        （它们本来就不该自动跑，要跑得显式 resume）。
+        """
+        cache = await self._prepare(work_id, card_id)
+        goal = cache.state.goal
+        if goal is None or goal.phase != "active":
+            return None
+        cache.activation = "armed"
+        return self._view(cache)
+
     # ------------------------------------------------------------ 写
     async def create(self, work_id: str, card_id: str, request: CreateGoalRequest) -> GoalView:
         async with self._mutex:

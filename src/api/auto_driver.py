@@ -521,6 +521,24 @@ def kick(work_id: str, card_id: str) -> Optional["Any"]:
     goal = str(meta.get("goal") or "").strip()
     if not goal:
         return None
+    # [两套权限·激活闸 2026-10-24 · 用户令「自动子卡没写需求前不能被激活,
+    # 激活就得提示它没有需求文档」] 首次点火(goal_rounds==0)的自动
+    # sub_project/topic 卡:**没有正稿**(需求没评审通过)⇒ 拒绝点火,并给上级卡投信提示。
+    # [2026-10-28 用户令] 判据从「总裁策展过」换成「有没有正稿」——子卡自己写草稿、
+    # 评审通过，同样可以点火。coder 不在此列(任务在使命块,另有通道,且不走评审)。
+    if int(meta.get("goal_rounds") or 0) == 0 and str(
+            meta.get("card_type") or "") in ("sub_project", "topic"):
+        try:
+            from . import function_room as _fr
+            if _fr.load().get("enabled") and not _fr.requirements_approved(
+                    work_id, card_id):
+                _notify_activation_blocked(work_id, card_id, meta)
+                session_ops.ops_log("auto_ignition_blocked", work_id, card_id,
+                                    {"reason": "requirements_not_approved"})
+                return None
+        except Exception as exc:  # noqa: BLE001 判不出 ⇒ 放行(宁可放过)
+            logger.warning("[auto] 激活闸判定失败(放行) card=%s: %s",
+                           card_id, exc)
     try:
         if session_facade.turn_holder(work_id, card_id):
             logger.info("[auto] 已有在途回合、不起轮 work=%s card=%s", work_id, card_id)

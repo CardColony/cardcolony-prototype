@@ -55,7 +55,12 @@ _PLACEHOLDER = "（暂无记录）"
 # 节标题 → 库列名（与 card_db.SHADOW_SECTIONS 同源，此处按序取用）
 # [卡片区域语义 2026-10-14] 新增「## 待协作事项」——方案 §4.2 影子的四节顺序。
 # 只**插入**这一节，既有三节的相对次序（进度 → 产物清单 → 迭代历史）一字未动。
-_SECTION_ORDER = ("## 进度", "## 待协作事项", "## 产物清单", "## 迭代历史")
+#: [卡片笔记 2026-10-27 · 用户令] 第五区「## 笔记」放在「迭代历史」之前——
+#: 笔记是内容，迭代历史是系统机械留痕，内容在前。
+#: `_PRIVATE_SECTIONS` 里的节**只给本卡自己看**：常驻 150 区，但
+#: `read_via`（别的卡沿线路读影子）会剥掉它们。
+_SECTION_ORDER = ("## 进度", "## 待协作事项", "## 产物清单", "## 笔记", "## 迭代历史")
+_PRIVATE_SECTIONS: frozenset[str] = frozenset({"## 笔记"})
 
 
 def _now_iso() -> str:
@@ -127,14 +132,20 @@ def split_shadow_sections(body: str) -> dict[str, str]:
     return out
 
 
-def _render_shadow_body(row: Any) -> str:
+def _render_shadow_body(row: Any, include_private: bool = True) -> str:
     """库行 → 各节正文文本。
 
     [卡片区域语义 2026-10-14] 按 ``_SECTION_ORDER``（含新增的「## 待协作事项」）
-    渲染四节。比 ``SHADOW_BODY_TEMPLATE`` 多一节——模板刻意未改，见该常量说明。
+    渲染五节。比 ``SHADOW_BODY_TEMPLATE`` 多两节——模板刻意未改，见该常量说明。
+
+    ``include_private=False`` ⇒ 跳过 ``_PRIVATE_SECTIONS``（笔记）。
+    **别的卡读影子时用这个**：上下文里写着「本卡私有，别的卡读不到」，
+    工具就不能开后门。
     """
+    heads = (_SECTION_ORDER if include_private
+             else tuple(h for h in _SECTION_ORDER if h not in _PRIVATE_SECTIONS))
     return "\n".join(
-        f"{h}\n\n{row[card_db.SHADOW_SECTIONS[h]] or ''}\n" for h in _SECTION_ORDER
+        f"{h}\n\n{row[card_db.SHADOW_SECTIONS[h]] or ''}\n" for h in heads
     )
 
 
@@ -209,17 +220,21 @@ def iter_shadow_metas(work_id: str) -> dict[str, dict[str, Any]]:
     return card_db.read_sync(work_id, _fn, {}) or {}
 
 
-async def read_shadow_raw(work_id: str, owner_card_id: str) -> Optional[str]:
+async def read_shadow_raw(work_id: str, owner_card_id: str,
+                          include_private: bool = True) -> Optional[str]:
     """读影子**可读全文**（纯读：不写回）。影子不存在返回 None。
 
     全文＝front matter ＋ 各节正文；各节由库列现渲染（读什么查什么）。
+
+    ``include_private=False`` ⇒ **剥掉笔记**。本卡自己读（``read_shadow``）用默认 True；
+    别的卡沿线路读（``read_via``）必须传 False。
     """
     def _fn(conn: Any) -> Optional[str]:
         row = card_db.get_shadow_row(conn, owner_card_id)
         if row is None:
             return None
         return render_shadow(
-            owner_card_id, _render_shadow_body(row),
+            owner_card_id, _render_shadow_body(row, include_private),
             str(row["created_at"] or ""), str(row["updated_at"] or ""),
         )
 
@@ -229,6 +244,68 @@ async def read_shadow_raw(work_id: str, owner_card_id: str) -> Optional[str]:
 # ===========================================================================
 # 写
 # ===========================================================================
+
+async def read_section(work_id: str, owner_card_id: str,
+                       heading: str) -> str:
+    """读影子的**某一节**（heading 形如 "## 进度"）。没有返回空串。
+
+    [影子精准编辑 2026-10-27 · 用户令「把影子卡编辑也全部改成精准编辑」]
+    整块覆盖（`update_shadow`）一次手滑就能清空四节，与 card_067「45,935→351」同源。
+    """
+    col = card_db.SHADOW_SECTIONS.get(heading)
+    if not col:
+        return ""
+
+    def _fn(conn: Any) -> str:
+        row = card_db.get_shadow_row(conn, owner_card_id)
+        return str((row[col] if row is not None else "") or "")
+
+    return str(await card_db.run_read(work_id, _fn, "") or "")
+
+
+async def write_section(work_id: str, owner_card_id: str,
+                        heading: str, text: str) -> None:
+    """写影子的**某一节**（只动那一列，其余四节/笔记一个字不碰）。"""
+    col = card_db.SHADOW_SECTIONS.get(heading)
+    if not col:
+        raise ValueError(f"未知影子节：{heading}")
+
+    def _fn(conn: Any) -> None:
+        conn.execute(
+            f"UPDATE shadows SET {col}=?, updated_at=? WHERE owner_card_id=?",
+            (text, _now_iso(), owner_card_id),
+        )
+
+    await card_db.run_write(work_id, _fn)
+
+
+async def read_note(work_id: str, owner_card_id: str) -> str:
+    """读本卡**笔记**（影子 `note` 列）。没有返回空串。
+
+    [卡片笔记 2026-10-27 · 用户令] 只读一列——笔记是自由文本，不参与四节那套
+    模板/占位符规则。
+    """
+    def _fn(conn: Any) -> str:
+        row = card_db.get_shadow_row(conn, owner_card_id)
+        return str((row["note"] if row is not None else "") or "")
+
+    return str(await card_db.run_read(work_id, _fn, "") or "")
+
+
+async def write_note(work_id: str, owner_card_id: str, text: str) -> None:
+    """写本卡**笔记**（只动 `note` 列，不碰其他四节）。
+
+    调用方负责算出最终文本（精准编辑在 `card_tools._h_edit_note` 里做）——
+    本层只落盘，不做内容判断。
+    """
+    def _fn(conn: Any) -> None:
+        conn.execute(
+            "UPDATE shadows SET note=?, updated_at=? WHERE owner_card_id=?",
+            (text, _now_iso(), owner_card_id),
+        )
+
+    await card_db.run_write(work_id, _fn)
+
 
 def _upsert_sections_sync(conn: Any, work_id: str, owner_card_id: str,
                           sections: dict[str, str], now: str) -> bool:

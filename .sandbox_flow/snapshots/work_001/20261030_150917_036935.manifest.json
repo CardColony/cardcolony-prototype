@@ -1,0 +1,20 @@
+{
+  "mode": "state-only",
+  "created": "20261030_150917_036935",
+  "reason": "[snapshot][work_001] create: card_001",
+  "state_files": [
+    "works/work_001/canvas.json",
+    "works/work_001/cards.db",
+    "works/work_001/cards.db-shm",
+    "works/work_001/cards.db-wal",
+    "works/work_001/rules.md",
+    "works/work_001/work.json"
+  ],
+  "omitted_log_files": [
+    "works/work_001/events/card_001.jsonl",
+    "works/work_001/events/shadow_card_001.jsonl",
+    "works/work_001/events/_work.jsonl",
+    "works/work_001/sessions/session_001.md"
+  ],
+  "log_files_note": "只追加留痕未入本批；完整留痕见日备 daily_<日期>"
+}

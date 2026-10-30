@@ -1,0 +1,34 @@
+[15:43:17] work=work_001 card=card_002 review=card_003 开跑
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[15:43:21] 5 → 评审员1 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[15:43:37] 10 工具 reject by fn_001
+[15:43:37] 12 ← 评审员1 0字 approve=False
+[15:43:37] 13 → 评审员2 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[15:43:53] 14 工具 reject by fn_002
+[15:43:53] 16 ← 评审员2 0字 approve=False
+[15:43:53] 17 → 评审员3 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[15:44:21] 22 工具 reject by fn_003
+[15:44:21] 24 ← 评审员3 0字 approve=False
+[15:44:21] 25 → card_002 发言
+[15:44:49] 26 工具 edit_requirements by card_002
+[15:47:26] 34 工具 edit_requirements by card_002
+[15:48:22] 40 工具 edit_requirements by card_002
+[15:49:14] 42 工具 edit_requirements by card_002
+[15:50:18] 48 工具 edit_requirements by card_002
+[15:51:42] 52 工具 edit_requirements by card_002
+[15:52:15] 58 工具 edit_requirements by card_002
+[15:52:47] 62 工具 edit_requirements by card_002
+[15:53:31] 68 工具 edit_requirements by card_002
+[15:54:36] 70 工具 edit_requirements by card_002
+[15:55:05] 72 工具 edit_requirements by card_002
+[15:55:41] 76 工具 edit_requirements by card_002
+[15:56:13] 78 工具 edit_requirements by card_002
+[15:57:22] 82 工具 edit_requirements by card_002
+[15:58:02] 86 工具 edit_requirements by card_002
+[15:58:39] 90 工具 edit_requirements by card_002
+[15:59:51] 92 工具 edit_requirements by card_002
+[16:03:23] ⏱ 20 分钟没跑完
+最终: {'batch': 'rv_1f5f018ee3', 'draft': 8, 'criteria': 1, 'members': ['fn_001', 'fn_002', 'fn_003'], 'passed': [], 'pending': ['fn_001', 'fn_002', 'fn_003'], 'draft_changed': False, 'all_passed': False}

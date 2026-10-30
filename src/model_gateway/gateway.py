@@ -95,26 +95,97 @@ def _vendor_of(model_config: dict[str, Any]) -> str:
     return str(model_config.get("vendor") or model_config.get("provider") or "")
 
 
-def _is_deepseek_like(model_name: str, model_config: dict[str, Any]) -> bool:
-    """是否 DeepSeek 系（决定要不要补空 reasoning_content）。"""
-    vendor = _vendor_of(model_config)
-    return (
-        "deepseek" in model_name.lower()
-        or "deepseek" in str(model_config.get("model") or "").lower()
-        or vendor in ("opencode", "deepseek")
-        or str(model_config.get("base_url") or "").startswith(_OPENCODE_URL_PREFIXES)
-    )
+def _echo_fill_kind(model_config: dict[str, Any]) -> str:
+    """该端点「无思考可回传」时补什么 —— **判据只来自配置**（models.yaml 的
+    ``reasoning_echo_fill``），**不看模型名**。
+
+    三态：
+
+      * ``"placeholder"`` —— 补**非空**占位（commandcode 的 ``reflection/beam:free``：
+        字段必须存在且非空，实测空串照样 400）；
+      * ``"empty"``       —— 补**空串**（DeepSeek 系官方 API 生产实测口径：字段必须
+        存在，空串即可）；
+      * ``""``（缺省）     —— **不补**（该端点不要求回传）。
+
+    〔5715 · 模型名收口〕改前是「模型名含 deepseek / vendor ∈ {opencode,deepseek} /
+    base_url 前缀」这种**名字启发式**——模型一换代或改名，判据就悄悄失效（要嘛
+    不补字段→400，要嘛乱补）。现改为**逐档显式登记**：models.yaml 里每个需要的档
+    写明 ``reasoning_echo_fill``，行为逐字不变，但**判据不再依赖模型名**。
+    旧字段 ``echo_reasoning: true`` 仍被认（等价于 placeholder），兼容旧配置。
+    """
+    v = model_config.get("reasoning_echo_fill")
+    if v is None:
+        # 兼容旧配置：echo_reasoning: true ⇒ 非空占位
+        return "placeholder" if model_config.get("echo_reasoning") else ""
+    s = str(v).strip().lower()
+    if s in ("placeholder", "true", "1"):
+        return "placeholder"
+    if s in ("empty", "false", "0"):
+        return "empty"
+    if s == "":
+        return "empty"
+    return ""
+
+
+def reasoning_echo_fill(model_name: str, model_config: dict[str, Any]) -> Optional[str]:
+    """该端点「无思考可回传」时，assistant 消息的 reasoning_content 该填什么。
+
+    返回三态，调用方按返回值决定加不加字段：
+
+      * ``None``  —— 这个端点不要求回传 ⇒ **别加字段**（既有行为逐字不变）；
+      * ``""``    —— DeepSeek 系：字段必须存在，空串即可（官方 API 生产实测口径）；
+      * 非空占位  —— 其他 ``echo_reasoning`` 端点（commandcode 的
+        ``reflection/beam:free``）：字段必须存在**且非空**（实测空串照样 400
+        "Missing required parameter: 'messages[N].reasoning_content'"）。
+
+    [多轮思考回传 2026-10-23] 单一判据源：gateway 的注入消息（``_ds_norm``）与
+    api 层本轮 assistant 消息（message_runner）都调它，避免两处各写一套。
+
+    〔5715 · 模型名收口〕判据改读**配置显式标记**（``reasoning_echo_fill``），
+    不再按模型名/vendor 猜——见 ``_echo_fill_kind``。
+    """
+    kind = _echo_fill_kind(model_config)
+    if kind == "placeholder":
+        return REASONING_PLACEHOLDER
+    if kind == "empty":
+        return ""
+    return None
+
+
+#: 注入的 assistant 消息（判断协议等）无模型思考时可补的占位思考。
+#: [多轮思考回传 2026-10-23] 只对 ``echo_reasoning`` 登记的端点用——它们要求
+#: reasoning_content **非空**（实测空串照样 400 "Missing required parameter"）。
+#: 写明是系统注入，不冒充模型思考。
+#: 公开名：api 层（message_runner 构造本轮 assistant 消息）要引同一个值，
+#: 免得两层各写一份字面量日后漂移。
+REASONING_PLACEHOLDER = "(系统注入的消息，无模型思考记录)"
 
 
 def _needs_ds_norm(model_name: str, model_config: dict[str, Any]) -> bool:
-    """是否要给注入的 assistant 消息补空 reasoning_content（DeepSeek 系）。"""
-    return _is_deepseek_like(model_name, model_config)
+    """是否要给注入的 assistant 消息补 reasoning_content。
+
+    〔5715 · 模型名收口〕判据**只来自配置**（models.yaml 的 ``reasoning_echo_fill``
+    显式标记，兼容旧字段 ``echo_reasoning``）——改前是「模型名含 deepseek / vendor
+    ∈ {opencode,deepseek} / base_url 前缀」这种**名字启发式**：模型换代或改名，
+    判据就悄悄失效（要嘛不补字段→400，要嘛乱补）。
+
+    两类端点要求「**每一条** assistant 消息都带 reasoning_content」，缺一条就 400：
+    DeepSeek 系（官方 API 生产实测：不补 ⇒ 400 "reasoning_content ... must be
+    passed back"）与 commandcode 的 ``reflection/beam:free``（实测空串照样 400
+    "This model needs the reasoning of every earlier assistant message"）。
+    """
+    return _echo_fill_kind(model_config) != ""
 
 
-def _ds_norm(msgs: Optional[list[dict[str, Any]]]) -> Optional[list[dict[str, Any]]]:
-    """[DeepSeek 思考回传 2026-10-15] 给无 reasoning_content 的 assistant 消息补空串。
+def _ds_norm(msgs: Optional[list[dict[str, Any]]],
+             placeholder: str = "") -> Optional[list[dict[str, Any]]]:
+    """[DeepSeek 思考回传 2026-10-15] 给无 reasoning_content 的 assistant 消息补占位。
 
     语义原样承自旧单体（生产实测：不补 → 400 "reasoning_content ... must be passed back"）。
+
+    [多轮思考回传 2026-10-23] ``placeholder`` 可调：DeepSeek 系补**空串**（官方
+    生产实测口径，逐字不变）；``echo_reasoning`` 登记的端点（beam）空串照样 400，
+    必须补**非空**占位（实测：任意非空串均被接受）。
     """
     if not msgs:
         return msgs
@@ -122,7 +193,7 @@ def _ds_norm(msgs: Optional[list[dict[str, Any]]]) -> Optional[list[dict[str, An
     for m in msgs:
         if m.get("role") == "assistant" and "reasoning_content" not in m:
             m = dict(m)
-            m["reasoning_content"] = ""
+            m["reasoning_content"] = placeholder
         out.append(m)
     return out
 
@@ -433,9 +504,10 @@ class ModelGateway:
         turn_once: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         mc = self.config["models"][model_name]
-        if _needs_ds_norm(model_name, mc):
-            turn_tail = _ds_norm(turn_tail)
-            turn_once = _ds_norm(turn_once)
+        _fill = reasoning_echo_fill(model_name, mc)
+        if _fill is not None:
+            turn_tail = _ds_norm(turn_tail, _fill)
+            turn_once = _ds_norm(turn_once, _fill)
         max_attempts, backoff = self._retry_params(model_name)
         rg_enabled, rg_budget, rg_caps = self._retry_grading()
         loop_start = time.monotonic()
@@ -613,9 +685,10 @@ class ModelGateway:
         turn_once: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         mc = self.config["models"][model_name]
-        if _needs_ds_norm(model_name, mc):
-            turn_tail = _ds_norm(turn_tail)
-            turn_once = _ds_norm(turn_once)
+        _fill = reasoning_echo_fill(model_name, mc)
+        if _fill is not None:
+            turn_tail = _ds_norm(turn_tail, _fill)
+            turn_once = _ds_norm(turn_once, _fill)
         max_attempts, backoff = self._retry_params(model_name)
 
         def _emit(phase: str, attempt: int, **kw: Any) -> None:
@@ -706,12 +779,21 @@ class ModelCallFailure(Exception):
 #   正常推理每秒几十个 chunk（card_009 实测连续推理 40 分钟、11 万条事件），
 #   10 分钟一个字都没有，只可能是连接挂起（用户裁定：至少 10 分钟）。
 #   这与被否掉的"墙钟闸"是两回事。
+#
+# [2026-10-23 用户令：取消墙钟，改由信息反馈判定] 上面那段自我辩解站不住：
+#   「10 分钟没有 chunk 就只可能是连接挂起」——本地模型排队/重思考阶段本来就可能
+#   长时间不出字（用户实测单请求 12.5 分钟），它会把**正常的慢**判成挂起。
+#   而真断连根本不用等：socket 会立刻抛异常（TRANSPORT），那是信息反馈。
+#   ⇒ 值改 **None**（`asyncio.wait_for(timeout=None)` = 不设超时）。
+#   ★ 这是一处**常量取值**的改动，不动本模块任何接口/签名（「禁改」指的是接口）。
+#   代价如实写在这里：真挂死的连接会一直挂着，直到人手动停止——
+#   要根治得做「按状态探活」（查端点进度/连接状态），不是再换个数字。
 # ============================================================
-STREAM_IDLE_TIMEOUT = 600.0
+STREAM_IDLE_TIMEOUT: Optional[float] = None
 
 
 async def _stream_with_idle_timeout(agen: Any,
-                                    idle: float = STREAM_IDLE_TIMEOUT):
+                                    idle: Optional[float] = STREAM_IDLE_TIMEOUT):
     """包一层流：相邻 chunk 间隔超过 ``idle`` 秒 ⇒ 判流挂起（抛 ModelCallFailure）。"""
     it = agen.__aiter__()
     while True:

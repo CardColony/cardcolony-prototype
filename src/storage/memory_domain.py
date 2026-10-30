@@ -315,6 +315,43 @@ def covered_seqs_of(chain: list[dict[str, Any]]) -> list[int]:
 # 扁平条目 → 单层链（过渡形态：模型还没产出 upper/lower 时的合法退化）
 # ---------------------------------------------------------------------------
 
+def attach_descriptions(nodes: list[dict[str, Any]], descs: list[dict[str, Any]],
+                        session_id: str) -> tuple[list[dict[str, Any]], int]:
+    """把 L2 子题挂成 **level=2 的 gist 子节点**（dsh `condense.ts:3278-3289` 口径）。
+
+    [三步凝练 2026-10-29] 与 `make_description_child`（archive 物化那套：anchor 与父
+    同、role=description）**不是一回事**——这里：
+
+    - `anchor` 取子题**自己区间的首块**（不是父的）⇒ 与父天然不同、全链不重复；
+    - `coveredSeqs` 由 `condense_two_layer.assemble` 机械切分 ⇒ 同父下互不重叠（I3）；
+    - `upper=[父 anchor]` ＋ 父的 `lower` 回填 ⇒ I1 互链成立、I2 层级差恰为 1。
+
+    这正是「锚点由构造保证唯一」的落点：原单次凝练让模型自己填 `anchor.seq`，
+    340 条只占 287 个块号，物化 L2 时撞 I1 被整批拒写，L2 一条都落不成。
+
+    返回 `(节点列表, 挂上的条数)`；`nodes` 里的父对象会被就地回填 `lower`。
+    """
+    by_seq = {int((n.get("anchor") or {}).get("seq", 0) or 0): n for n in nodes}
+    out = list(nodes)
+    added = 0
+    for d in descs or []:
+        p = by_seq.get(int(d.get("parent_seq") or 0))
+        if p is None:
+            continue
+        child = new_node(session_id, int(d.get("seq") or 0),
+                         str(d.get("process") or ""), kind="fact", status="done")
+        child["level"] = 2
+        child["role"] = "gist"
+        child["upper"] = [dict(p.get("anchor") or {})]
+        child["coveredSeqs"] = list(d.get("coveredSeqs") or [])
+        if d.get("title"):
+            child["title"] = str(d["title"])
+        out.append(child)
+        p["lower"] = list(p.get("lower") or []) + [dict(child["anchor"])]
+        added += 1
+    return out, added
+
+
 def chain_from_entries(entries: list[dict[str, Any]],
                        session_id: str,
                        folded_fingerprints: set[str] | None = None) -> list[dict[str, Any]]:
@@ -335,8 +372,23 @@ def chain_from_entries(entries: list[dict[str, Any]],
     folded = folded_fingerprints or set()
     chain: list[dict[str, Any]] = []
     for e in entries or []:
-        seq = int(e.get("seq", 0) or 0)
-        # coveredSeqs 优先用条目自带的（模型产出）；否则用追溯范围；再否则 [seq]
+        # [三步凝练 2026-10-29] 条目现在就是 CausalNode（`anchor`/`gist`/`level`/
+        # `upper`/`lower`）。原实现只读旧字段 `seq`/`conclusion` 并强制 `level=1`：
+        # 链里 gist 全空、锚点全 0、L2 子节点被拍平——与「记忆区 92 行 [块?]」同源。
+        a = e.get("anchor")
+        if isinstance(a, dict):
+            try:
+                seq = int(a.get("seq", 0) or 0)
+            except (TypeError, ValueError):
+                seq = 0
+        else:
+            seq = int(e.get("seq", 0) or 0)
+        gist = str(e.get("gist") or e.get("conclusion") or "")
+        status = str(e.get("status") or "ongoing")
+        kind = str(e.get("kind") or "fact")
+        node = new_node(session_id, seq, gist,
+                        kind=kind if kind in KINDS else "fact",
+                        status=status if status in STATUSES else "ongoing")
         covered = e.get("coveredSeqs")
         if not (isinstance(covered, list) and covered):
             lo = e.get("seq_from")
@@ -345,13 +397,14 @@ def chain_from_entries(entries: list[dict[str, Any]],
                 covered = list(range(int(lo), int(hi) + 1))
             else:
                 covered = [seq]
-        kind = str(e.get("kind") or "fact")
-        node = new_node(session_id, seq, str(e.get("conclusion") or ""),
-                        kind=kind if kind in KINDS else "fact")
         node["coveredSeqs"] = [int(x) for x in covered]
-        node["level"] = 1
-        node["upper"] = []
-        node["lower"] = []
+        # 层级与父子边**原样保留**：L2 子节点靠 `upper` 挂在 L1 下、父靠 `lower`
+        # 反向持有（I1 互链）。强制 level=1 会把两层链拍平成单层。
+        node["level"] = int(e.get("level", 1) or 1)
+        node["upper"] = [dict(u) for u in (e.get("upper") or []) if isinstance(u, dict)]
+        node["lower"] = [dict(l) for l in (e.get("lower") or []) if isinstance(l, dict)]
+        if str(e.get("role") or "gist") != "gist":
+            node["role"] = str(e.get("role") or "gist")
         # 过程/教训/起因/结果（模型有写就带，没写就不出键——dsh 同口径：optional 新增）
         for src, dst in (("process", "process"), ("evidence", "process"),
                          ("lesson", "lesson"), ("start", "start"), ("result", "result")):

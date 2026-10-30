@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """不变量一：卡片 CRUD ＋ 权限由树机械算出（card_012 工作项 2）。
 
 权限是产品的第一不变量：谁能读、谁能写、谁能删，全部由 parent 树与
@@ -119,12 +119,14 @@ async def test_edit_own_subtree_and_shadow_backdoor(work):
     b = await _mk_child(wid, "乙", a)
     cards = card_tools._collect_card_meta(wid)
 
-    r = await card_tools.execute_tool(wid, a, "edit_card",
-                                      {"card_id": b, "content": "乙的新正文"}, cards)
+    # [2026-10-27 用户裁定] edit_card 改成**精准编辑**（block + old_string/new_string）：
+    # 先写一块做底，再精准改一处——顺带钉住"只动目标块"。
+    await card_store.update_card(wid, b, {"status_block": "乙的旧正文"}, "造底")
+    # [2026-10-28] 现状改走 edit_status（edit_card 只留使命）
+    r = await card_tools.execute_tool(
+        wid, a, "edit_status",
+        {"card_id": b, "old_string": "乙的旧正文", "new_string": "乙的新正文"}, cards)
     assert r.get("ok") is True
-    # [销红 2026-10-12] C.2（S2-5 新四键 + edit_card 落点实读核实）：正文「乙的新正文」
-    # 无 "## " 区头 ⇒ _h_edit_card 走 card_tools.py:370-371 的 else 分支
-    # `updates = {"status_block": content}`，故落在 status_block，不是旧键 conclusion。
     assert (await card_store.read_card(wid, b))["body"]["status_block"] == "乙的新正文"
 
     # 影子进同一 meta 字典，但只能由对应正卡经 update_shadow 写
@@ -133,8 +135,10 @@ async def test_edit_own_subtree_and_shadow_backdoor(work):
     assert cards[sid]["card_type"] == "shadow"
     assert cards[sid]["parent"] == b
 
-    r = await card_tools.execute_tool(wid, a, "edit_card",
-                                      {"card_id": sid, "content": "黑入影子"}, cards)
+    r = await card_tools.execute_tool(
+        wid, a, "edit_card",
+        {"card_id": sid, "block": "现状",
+         "old_string": "x", "new_string": "黑入影子"}, cards)
     # [销红 2026-10-12] B.4（信封结构 + 影子后门文案实读核实）：_h_edit_card 对影子目标
     # 返回 card_tools.py:327 `err("denied", "影子卡只能由对应正卡经 update_shadow 修改")`
     # ⇒ 信封 r["ok"] is False，message 含 "update_shadow"。
@@ -151,7 +155,7 @@ async def test_update_shadow_is_silent_for_canvas(work):
     before = canvas.read_bytes()
 
     body = ("## 进度\n- 已建网\n\n## 产物清单\n- tests/\n\n## 迭代历史\n- v1\n")
-    r = await card_tools.execute_tool(wid, a, "update_shadow", {"content": body}, cards)
+    r = await card_tools._h_update_shadow(wid, a, {"content": body}, cards)
     assert r.get("ok") is True
     # 影子写入不得扰动画布缓存（影子不进画布）
     assert canvas.read_bytes() == before

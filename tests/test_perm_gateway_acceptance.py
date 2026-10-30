@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """权限底座重做（2026-10-12）验收：统一关口＋工具面过滤＋文件锁＋打点。
 
 锁的内容（用户裁定 1-7 的机械证据）：
@@ -177,8 +177,11 @@ def test_v4_tool_class_card_has_no_file_tools():
     # tool 没有 create_child（它是被调用的执行体，不组织别人）⇒ 看不见 wake_card。
     # 依据 D04「执行权与组织权分离」：组织权只在 project/sub_project/role 手上。
     expect = {"read_card", "read_memory", "edit_card",
-              "delete_card", "update_shadow", "read_shadow", "read_linked",
-              "send_card_message", "web_search", "fetch_web"}
+              "delete_card", "edit_shadow", "read_shadow", "read_linked",
+              "send_card_message", "web_search", "fetch_web",
+              # [归档 2026-10-25] archive/unarchive 挂 delete（tool 有 delete）
+              # [2026-10-26] read_archive / stage_open 挂 read（tool 有 read）
+              "archive_card", "unarchive_card", "read_archive", "stage_open"}
     # [口径解耦 2026-10-17] 计划六件随 thinkchain 开关（纯单模型模式下不注册）
     if __import__("src.thinkchain", fromlist=["enabled"]).enabled():
         expect |= {"create_plan", "plan_reorder", "plan_insert",
@@ -228,6 +231,15 @@ def test_v4_positive_control_registered_types_see_all():
     # TOOL_SWITCH 里若仍有其开关映射（历史遗留），不能算进期望件数。
     expected_all = len((set(card_tools.TOOL_SWITCH) - coder_only - root_only
                         - op_only - auto_only - role_only) & set(card_tools.TOOL_REGISTRY))
+    # [强制停止 2026-10-24] stop_card 在基础池被排除(同职能件),但按类型闸
+    # **追加**给 project/sub_project/topic(治理权,通用不挂目录)——合成卡
+    # 是 sub_project ⇒ 期望 +1。
+    _synth_type = str(_full_meta().get("card_type") or "")
+    if _synth_type in ("project", "sub_project", "topic"):
+        # stop_card+silence_card(治理权)无条件按类型闸追加;
+        # report_up(汇报权)仅目录启用时追加(目录关 = 旧世界)。
+        # stop_card+silence_card+continue_task(治理与延续,无条件按类型闸追加)
+        expected_all += 3
     n_all = len(card_tools.build_tool_schemas(
         "card_x", cards={"card_x": _full_meta()}))
     assert n_all == expected_all, (
@@ -310,10 +322,7 @@ def test_v5_no_file_permission_type_denied():
 async def test_v6_shadow_write_unconfigured_type_denied():
     """V6：未配置类型写影子 → 关口 shadow_write 拒（真实 execute_tool 通道）。"""
     cards = {"card_m": {"card_type": "神秘分类"}}
-    r = await card_tools.execute_tool(
-        "work_999", "card_m", "update_shadow",
-        {"content": "## 进度\n- x\n\n## 产物清单\n- 无\n\n## 迭代历史\n- v1\n"},
-        cards)
+    r = await card_tools._h_update_shadow("work_999", "card_m", {"content": "## 进度\n- x\n\n## 产物清单\n- 无\n\n## 迭代历史\n- v1\n"}, cards)
     assert r["ok"] is False
     assert "越权" in r["error"]["message"]
 
@@ -325,7 +334,7 @@ async def test_v6_positive_registered_type_shadow_ok(typed_registry, work):
     a = r["meta"]["card_id"]
     cards = card_tools._collect_card_meta(wid)
     body = "## 进度\n- 定夺1影子\n\n## 产物清单\n- 无\n\n## 迭代历史\n- v1\n"
-    r = await card_tools.execute_tool(wid, a, "update_shadow", {"content": body}, cards)
+    r = await card_tools._h_update_shadow(wid, a, {"content": body}, cards)
     assert r.get("ok") is True
     raw = await shadow_store.read_shadow_raw(wid, a)
     assert raw is not None and "定夺1影子" in raw

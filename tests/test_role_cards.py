@@ -420,7 +420,7 @@ async def test_role_cannot_write_other_cards_even_by_direct_tool_call(work):
     }, cards)
     assert r["ok"] is False and r["error"]["code"] == "denied"
 
-    r = await card_tools.execute_tool(wid, rid, "append_ruling", {
+    r = await card_tools.execute_tool(wid, rid, "edit_requirements", {
         "card_id": a, "text": "角色越权给别人立定论",
     }, cards)
     assert r["ok"] is False and r["error"]["code"] == "denied"

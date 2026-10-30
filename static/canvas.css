@@ -2628,6 +2628,41 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ============================================================
+   [编程卡区分 2026-10-23 · 用户令「现在分不清」]
+   画布上三类卡一眼分开：
+     项目/子项目＝默认深底细描边（组织节点，数量最多，保持安静）
+     角色卡    ＝金色左缘（盯梢的观察者）
+     编程卡    ＝橙色左缘 + 橙色标题 + 等宽字（干活的执行体，叶子）
+   颜色与左栏、调色板同源（--cv-t-coder），三处一致。
+   ============================================================ */
+.page-canvas .card-node[data-type="coder"] {
+  border-left: 3px solid var(--cv-t-coder);
+  background: linear-gradient(
+    90deg, rgba(245, 166, 91, 0.10) 0, rgba(28, 34, 43, 1) 42px);
+}
+.page-canvas .card-node[data-type="coder"] .tname {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  color: #ffc48a;
+}
+.page-canvas .card-node[data-type="role"] {
+  border-left: 3px solid #c9a227;
+}
+.page-canvas .cv-tchip {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 16px;
+  letter-spacing: 0.2px;
+}
+.page-canvas .cv-tchip.coder {
+  color: #f5a65b;
+  background: rgba(245, 166, 91, 0.16);
+  border: 1px solid rgba(245, 166, 91, 0.4);
+}
+
 .page-canvas .card-tooltip .tt-decs {
   display: flex;
   flex-direction: column;

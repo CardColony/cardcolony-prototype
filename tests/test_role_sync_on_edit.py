@@ -101,7 +101,7 @@ async def test_status_block_edit_queues_once_per_change(work):
     assert len(rows) == 1, rows
 
 
-async def test_rulings_edit_queues_decision_signal_only(work):
+async def test_requirements_edit_queues_decision_signal_only(work):
     """定论块被改 ⇒ decision_appended 入队；只订了 status_changed 的角色不收。"""
     wid, root = work["work_id"], work["work_card_id"]
     c = await _mk_child(wid, root, "定论卡")
@@ -110,7 +110,7 @@ async def test_rulings_edit_queues_decision_signal_only(work):
     rid_status = await _mk_role(wid, root, [c], signals=["status_changed"],
                                domain="status_only")
 
-    await card_store.update_card(wid, c, {"rulings": "D01【裁定】一律带时区。"}, "用例：追加定论")
+    await card_store.update_card(wid, c, {"requirements": "D01【裁定】一律带时区。"}, "用例：追加定论")
 
     rows = await _pending(wid, rid_third)
     assert len(rows) == 1, rows

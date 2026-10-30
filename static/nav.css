@@ -476,6 +476,23 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
   margin-right: 4px; border-radius: 4px; color: #c9a227;
   border: 1px solid rgba(201, 162, 39, 0.45);
 }
+/* ============================================================
+   [编程卡区分 2026-10-23 · 用户令「现在分不清」]
+   左栏三类卡一眼分开：
+     项目卡＝默认（蓝灰文档图标）／角色卡＝金色人形＋斜体／编程卡＝橙色尖括号＋等宽标题
+   颜色与画布类型色同源（--cv-t-coder: #f5a65b），左右两处不打架。
+   ============================================================ */
+.nav-card.nav-coder .nav-ico.coder { color: #f5a65b; }
+.nav-card.nav-coder .nav-ctitle {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+}
+.nav-coder-badge {
+  flex: none; font-size: 9px; line-height: 14px; padding: 0 4px;
+  margin-right: 4px; border-radius: 4px; color: #f5a65b;
+  border: 1px solid rgba(245, 166, 91, 0.5);
+  background: rgba(245, 166, 91, 0.10);
+}
 .nav-phead.has-alarm .nav-pname::after {
   content: ""; display: inline-block; width: 7px; height: 7px;
   margin-left: 6px; border-radius: 50%; background: #d05656;
@@ -560,3 +577,37 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
 .nav-fn-msg.u { background: rgba(110, 168, 201, 0.14); }
 .nav-fn-msg.a { background: rgba(255, 255, 255, 0.05); }
 .nav-fn-msg i { font-style: normal; font-size: 10px; opacity: 0.6; margin-right: 5px; }
+
+/* ============================================================
+   [评审入口 2026-10-29 · 用户令「左侧列表页临时出入口」]
+   有进行中批次的评审卡在左栏占一行；收口即消失（数据源只给 active 的）。
+   与职能行同构（都离树、不可展开、无 ⋯ 菜单），配色区分：职能＝蓝，评审＝紫。
+   ============================================================ */
+.nav-rvrow {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  box-sizing: border-box;
+  height: 30px;                 /* ＝ NAV_ROW_HEIGHT，与卡行同高 */
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding-right: 10px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  background: var(--panel);
+}
+.nav-rvrow:hover { box-shadow: inset 0 0 0 999px var(--panel-hover); }
+.nav-rvrow .nav-ico.rv { color: #a78bfa; }
+.nav-rv-badge {
+  flex: none; font-size: 9px; line-height: 14px; padding: 0 4px;
+  margin-right: 4px; border-radius: 4px; color: #a78bfa;
+  border: 1px solid rgba(167, 139, 250, 0.45);
+}
+.nav-rv-count {
+  flex: none; margin-left: auto; padding-left: 8px;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+  color: var(--text-dim, rgba(160, 168, 180, 0.9));
+}

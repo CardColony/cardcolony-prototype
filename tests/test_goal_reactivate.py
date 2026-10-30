@@ -152,3 +152,104 @@ async def test_goal_edit_does_not_touch_non_auto_card(work, client, kicks):
                           json={"input": "edit 随便改"})
     assert r.status_code == 200
     assert not kicks, "非 auto 卡不许被点火"
+
+
+def test_round_prompt_uses_card_goal_not_stale_copy():
+    """续轮念的是**卡面那段文字**，不是 goal 域里 fold 出来的旧副本。
+
+    用户 2026-10-28：「不以我发给它对话框的文字为goal，而以goal区域内的文字为goal」。
+    两份并存（卡面 / goal 域）时以卡面为准，否则「改了卡面，续轮还在念旧目标」。
+    """
+    from src.goal.prompt import render_goal_round_prompt
+    from src.goal.types import GoalView
+
+    stale = GoalView(id="g1", revision=1, objective="旧目标：已经过时",
+                     phase="active", max_goal_rounds=10, rounds_started=0,
+                     created_at=0.0, updated_at=0.0, activation="armed")
+    text = render_goal_round_prompt(stale, 1, objective="新目标：按这个干")
+    assert "新目标：按这个干" in text
+    assert "旧目标" not in text
+    # 不给 objective ⇒ 退回 goal 域（旧行为不变）
+    assert "旧目标" in render_goal_round_prompt(stale, 1)
+
+
+# ---------------------------------------------------------------- 5：重启恢复
+
+
+async def test_arm_restores_activation_for_active_goal(work, kicks):
+    """重启后重新授权：`phase=active` 的目标能被重新 arm 回来。
+
+    守的是用户实测的那句「goal 明明没完成，但模型却停下来了」——
+    `activation` 永不落盘，不重新 arm 的话重启一次就静默挂死。
+    """
+    from src.goal.service import get_service
+
+    wid, cid = await _mk_coder(work, state="active", goal="目标X", auto=True)
+    svc = get_service()
+    await svc.disarm(wid, cid)
+    assert svc.is_armed(wid, cid) is False
+
+    view = await svc.arm(wid, cid)
+    assert view is not None
+    assert svc.is_armed(wid, cid) is True
+
+
+async def test_arm_refuses_non_active_goal(work):
+    """`complete` / `paused` 不给权——它们本来就不该自动跑。"""
+    from src.goal.service import get_service
+
+    wid, cid = await _mk_coder(work, state="complete", goal="X", auto=True)
+    svc = get_service()
+    assert await svc.arm(wid, cid) is None
+    assert svc.is_armed(wid, cid) is False
+
+
+async def test_rearm_skips_card_without_goal_text(work):
+    """卡面 goal 为空 ⇒ 不恢复（目标已经搬成卡面一块，空着就是没目标）。"""
+    from src.goal import driver as goal_driver
+    from src.goal.service import get_service
+
+    wid, cid = await _mk_coder(work, state="active", goal="", auto=True)
+    await goal_driver.rearm_active_goals()
+    assert get_service().is_armed(wid, cid) is False
+
+
+# ---------------------------------------------------------------- 5：重启恢复
+
+
+async def test_arm_restores_activation_for_active_goal(work, kicks):
+    """重启后重新授权：`phase=active` 的目标能被重新 arm 回来。
+
+    守的是用户实测的那句「goal 明明没完成，但模型却停下来了」——
+    `activation` 永不落盘，不重新 arm 的话重启一次就静默挂死。
+    """
+    from src.goal.service import get_service
+
+    wid, cid = await _mk_coder(work, state="active", goal="目标X", auto=True)
+    svc = get_service()
+    await svc.disarm(wid, cid)
+    assert svc.is_armed(wid, cid) is False
+
+    view = await svc.arm(wid, cid)
+    assert view is not None
+    assert svc.is_armed(wid, cid) is True
+
+
+async def test_arm_refuses_non_active_goal(work):
+    """`complete` / `paused` 不给权——它们本来就不该自动跑。"""
+    from src.goal.service import get_service
+
+    wid, cid = await _mk_coder(work, state="complete", goal="X", auto=True)
+    svc = get_service()
+    assert await svc.arm(wid, cid) is None
+    assert svc.is_armed(wid, cid) is False
+
+
+async def test_rearm_skips_card_without_goal_text(work):
+    """卡面 goal 为空 ⇒ 不恢复（目标已经搬成卡面一块，空着就是没目标）。"""
+    from src.goal import driver as goal_driver
+    from src.goal.service import get_service
+
+    wid, cid = await _mk_coder(work, state="active", goal="", auto=True)
+    await goal_driver.rearm_active_goals()
+    assert get_service().is_armed(wid, cid) is False

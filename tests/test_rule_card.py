@@ -58,26 +58,15 @@ async def _mk_rd_work():
     return wdata["work_id"]
 
 
-async def _mk_rule_card(wid: str) -> str:
-    root = work_store.work_card_id_of(wid)
-    r = await card_store.create_card(
-        wid, "规则卡", "用户直接创建", card_type="rule", parent=root)
-    assert "error" not in r, r
-    return r["meta"]["card_id"]
+async def _seed_sections(wid: str, sections: dict[str, str]) -> str:
+    """把规则写进本项目的规则文件（``works/<w>/rules.md``），返回文件正文。
 
-
-async def _seed_sections(wid: str, card_id: str, sections: dict[str, str]) -> str:
-    """把六区写进 mission（含 ## 区头），返回拼好的 mission 串。"""
-    names = context_regions.rule_section_names(card_store.load_type_registry())
-    parts = []
-    for n in names:
-        parts.append(f"## {n}")
-        if n in sections:
-            parts.append(sections[n])
-    mission = "\n".join(parts)
-    r = await card_store.update_card(wid, card_id, {"mission": mission}, "seed rule sections")
-    assert "error" not in r, r
-    return mission
+    [规则节点 2026-10-28 · 用户令「一个项目一个文件」] 改前这里往规则卡的
+    mission 里播种——规则不是卡之后，播种对象就是规则文件本身。
+    """
+    from src.storage import rule_store
+    rule_store.write_sections(wid, sections)
+    return rule_store.rules_path(wid).read_text(encoding="utf-8")
 
 
 async def _mk_typed(wid: str, root: str, card_type: str, title: str) -> str:
@@ -101,32 +90,58 @@ def test_rule_region_is_order_85():
     assert by_key["rule"]["name"] == "规则注入"
 
 
-def test_rule_section_names_six_sections():
-    names = context_regions.rule_section_names(card_store.load_type_registry())
-    assert names == ["project", "sub_project", "tool", "coder", "rule", "topic"]
+def test_rule_section_names_all_plus_type_codes():
+    """分区＝**总规则 all ＋ 注册表全部 card_type code**（用户令：总规则进所有卡）。
 
-
-def test_rule_perms_read_only():
-    """〔v14 · 2026-10-24〕规则卡模型侧**只读**——但「只读」不等于「不能查资料」：
-    tools_web（web_search/fetch_web）是只读检索，仍归所有卡型。
+    类型注册表长出新类型（function / review），分区就跟着长——这是设计：
+    每类卡都有自己的附加规则档，空着也是合法状态。
     """
-    assert set(perms_for("rd_project", "rule")) == {"read", "tools_web"}
-    assert set(perms_for("research_project", "rule")) == {"read", "tools_web"}
+    names = context_regions.rule_section_names(card_store.load_type_registry())
+    assert names[0] == "all", "总规则必须排第一"
+    assert names == ["all", "project", "function", "sub_project",
+                     "tool", "coder", "rule", "review", "topic"]
+    # 词表缺失 ⇒ 至少保留总规则（总规则与词表无关）
+    assert context_regions.rule_section_names({}) == ["all"]
 
 
-def test_render_rule_region_three_states():
+def test_rule_type_has_no_perms():
+    """[2026-10-28 用户令「规则卡不挂模型和对话，不需要工具」]
+
+    改前 rule 类型挂 `read`＋`tools_web`（于是它有 read_card/web_search 等 7 件）。
+    规则节点没有模型、没有对话 ⇒ 一件工具都不该有。权限空＝工具面空。
+    """
+    assert perms_for("rd_project", "rule") == []
+    assert perms_for("research_project", "rule") == []
+
+
+def test_render_rule_region_states():
+    """注入渲染四态：都空／只有本类／只有总规则／两段都有。"""
     assert context_regions.render_rule_region({}, "sub_project") == ""
     assert context_regions.render_rule_region({"sub_project": "A"}, "sub_project") == "## 规则\nA"
-    # 缺区（rule_sections 里没有该 card_type）→ 空串
+    # 缺区（没有该 card_type 也没有总规则）→ 空串
     assert context_regions.render_rule_region({"tool": "T"}, "sub_project") == ""
+    # 只有总规则 → 所有卡都拿得到（用户令：总规则进所有卡的上下文）
+    assert context_regions.render_rule_region({"all": "总则"}, "sub_project") == "## 规则\n总则"
+    assert context_regions.render_rule_region({"all": "总则"}, "coder") == "## 规则\n总则"
+    # 两段都有 → 总规则在前、本类卡在后
+    both = context_regions.render_rule_region({"all": "总则", "sub_project": "本类"}, "sub_project")
+    assert both.startswith("## 规则\n")
+    assert both.index("总则") < both.index("本类")
+    assert "总规则（所有卡）" in both and "子项目卡" in both
 
 
-async def test_rule_region_absent_when_control_disabled(sandbox):
-    # controls enabled:false → rule 区不出现（fail-closed 注入、fail-open 读控件）
+async def test_rule_region_absent_when_all_sections_empty(sandbox):
+    """规则区是「没有来源就不出现」：全部分区为空 ⇒ 85 区不 join。
+
+    [规则节点 2026-10-28] 改前这条断言的是「没有规则卡」；规则随项目自带之后，
+    「空」的判据变成「每个区都没内容」——用户令「规则可以不用」，不用就是空。
+    """
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
+    from src.storage import rule_store
+    rule_store.write_sections(wid, {})          # 全空
     regions = context_assembler.build_context_regions(wid, root)
-    assert 85 not in [r["order"] for r in regions]   # 无规则卡 → 空 → 不 join
+    assert 85 not in [r["order"] for r in regions]
 
 
 async def test_load_control_fail_open(sandbox):
@@ -144,24 +159,23 @@ async def test_get_rule_six_sections_and_hashes(client, sandbox):
     r = await client.get(f"/api/works/{wid}/rule")
     assert r.status_code == 200
     d = r.json()
-    # 无规则卡 → exists False 但六区齐全（含空区）
-    assert d["exists"] is False
+    # [规则=项目基建 2026-10-25] exists 恒 True(随项目自带),默认内容在位
+    assert d["exists"] is True
     names = context_regions.rule_section_names(card_store.load_type_registry())
     assert set(d["sections"].keys()) == set(names)
     assert set(d["hashes"].keys()) == set(names)
     for n in names:
-        assert d["sections"][n] == ""
-        assert d["hashes"][n] == _h("")
+        assert d["hashes"][n] == _h(d["sections"][n])
+    assert "拆解用户意图" in d["sections"]["project"]      # 工作流默认值
 
 
 async def test_get_rule_reads_seeded_sections(client, sandbox):
     wid = await _mk_rd_work()
-    cid = await _mk_rule_card(wid)
-    await _seed_sections(wid, cid, {"sub_project": "子项目规则A", "tool": "工具规则B"})
+    from src.storage import work_store as _ws
+    _ws.set_rules(wid, {"sub_project": "子项目规则A", "tool": "工具规则B"})
     r = await client.get(f"/api/works/{wid}/rule")
     d = r.json()
     assert d["exists"] is True
-    assert d["card_id"] == cid
     assert d["sections"]["sub_project"] == "子项目规则A"
     assert d["sections"]["tool"] == "工具规则B"
     assert d["hashes"]["sub_project"] == _h("子项目规则A")
@@ -174,8 +188,7 @@ async def test_get_rule_reads_seeded_sections(client, sandbox):
 
 async def test_patch_rule_section_replaces_only_target(client, sandbox):
     wid = await _mk_rd_work()
-    cid = await _mk_rule_card(wid)
-    await _seed_sections(wid, cid, {"sub_project": "旧内容", "tool": "工具内容", "coder": "编码内容"})
+    await _seed_sections(wid, {"sub_project": "旧内容", "tool": "工具内容", "coder": "编码内容"})
     r = await client.get(f"/api/works/{wid}/rule")
     base = r.json()["hashes"]["sub_project"]
 
@@ -195,8 +208,7 @@ async def test_patch_rule_section_replaces_only_target(client, sandbox):
 
 async def test_patch_rule_section_hash_mismatch_409(client, sandbox):
     wid = await _mk_rd_work()
-    cid = await _mk_rule_card(wid)
-    await _seed_sections(wid, cid, {"sub_project": "旧内容"})
+    await _seed_sections(wid, {"sub_project": "旧内容"})
     r2 = await client.patch(
         f"/api/works/{wid}/rule/sections/sub_project",
         json={"content": "改", "base_hash": "wrong_hash"})
@@ -208,38 +220,59 @@ async def test_patch_rule_section_hash_mismatch_409(client, sandbox):
 
 async def test_patch_rule_section_illegal_name_400(client, sandbox):
     wid = await _mk_rd_work()
-    await _mk_rule_card(wid)
     r = await client.patch(
         f"/api/works/{wid}/rule/sections/unknown_section",
         json={"content": "x", "base_hash": ""})
     assert r.status_code == 400
 
 
-async def test_patch_rule_section_missing_card_404(client, sandbox):
+async def test_patch_rule_section_missing_card_autocreates(client, sandbox):
+    """[规则卡自带 2026-10-25 · 用户令「根本没有建的入口」] 面板保存即合法
+    建卡入口:规则卡不存在 ⇒ 按默认模板自动建(不再 404 死路),用户内容写入。"""
     wid = await _mk_rd_work()
-    r = await client.patch(
+    # 第一次 PATCH:触发自动建卡;base_hash="" 对不上默认内容 ⇒ 409
+    # (防并发覆盖机制在正常工作,同时卡已建成)。
+    r1 = await client.patch(
         f"/api/works/{wid}/rule/sections/sub_project",
         json={"content": "x", "base_hash": ""})
-    assert r.status_code == 404
+    assert r1.status_code == 409
+    # 真实客户端流:GET 拿当前区 hash,再 PATCH 写入。
+    g = await client.get(f"/api/works/{wid}/rule")
+    h = g.json()["hashes"]["sub_project"]
+    r = await client.patch(
+        f"/api/works/{wid}/rule/sections/sub_project",
+        json={"content": "自定义工作流规则", "base_hash": h})
+    assert r.status_code == 200, r.text
+    # 再读:卡已在,用户内容落在 sub_project 区,其他区是默认内容
+    g = await client.get(f"/api/works/{wid}/rule")
+    data = g.json()
+    assert data["exists"] is True
+    assert "自定义工作流规则" in data["sections"]["sub_project"]
+    assert "拆解用户意图" in data["sections"]["project"]   # 默认内容在位
 
 
-async def test_create_work_card_rule_seeds_template(client, sandbox):
+async def test_create_rule_card_is_rejected(client, sandbox):
+    """[2026-10-28 用户令「手动不能建，所有项目都带一张规则卡」]
+
+    规则随项目自带（rules.md），不能手动建卡：建出来会是一张不挂模型、
+    不挂对话、没有工具的死卡，只会让人以为规则存在。
+    """
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
     r = await client.post(
         f"/api/works/{wid}/cards",
         json={"title": "规则卡", "source": "用户直接创建",
               "card_type": "rule", "parent": root})
-    assert r.status_code == 201
-    cid = r.json()["meta"]["card_id"]
-    # mission 已播种六区空模板
-    meta = card_store._meta_of(wid, cid)
-    assert meta["card_type"] == "rule"
-    body = await card_store.read_card(wid, cid)
-    mission = body["body"]["mission"]
-    names = context_regions.rule_section_names(card_store.load_type_registry())
-    for n in names:
-        assert f"## {n}" in mission
+    assert r.status_code == 400, r.text
+    assert "rules.md" in r.text, "拒绝时要指出去处"
+    # 零落卡
+    n = card_store._meta_of(wid, root)  # 根卡还在
+    assert n is not None
+    from src.storage import card_db
+    cnt = card_db.read_sync(
+        wid, lambda c: c.execute(
+            "SELECT count(*) AS n FROM cards WHERE card_type='rule'").fetchone()["n"], -1)
+    assert cnt == 0
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +289,7 @@ async def test_inject_section_by_card_type(sandbox):
     """各类型卡注入规则卡对应区；order 85 位于 instruction(0) 与 card_duty(90) 之间。"""
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
-    rc = await _mk_rule_card(wid)
-    await _seed_sections(wid, rc, _SECTIONS_ALL)
+    await _seed_sections(wid, _SECTIONS_ALL)
 
     # ① sub_project 卡 → sub_project 区（硬判据5 主场景：顺序断言）
     sub = await _mk_typed(wid, root, "sub_project", "子项目")
@@ -268,9 +300,11 @@ async def test_inject_section_by_card_type(sandbox):
     assert regs[i_rule]["order"] == 85
     assert i_rule < names.index("卡片职责"), "order 85 须在卡片职责(90)之前"
     assert regs[i_rule]["text"] == "## 规则\n子项目规则A"
-    # compose 结果断言 instruction < 规则 < 卡片职责 的文本顺序
+    # compose 结果断言：提示词在前 < 规则注入 < 卡片职责
+    # （锚点用真实标题：提示词开头是「## 系统结构」，注入区是「## 规则」，
+    #  卡片职责区紧随其后——order 85 < 90）
     sp = main["system_prompt"]
-    assert sp.index("你在一个卡片系统内工作") < sp.index("## 规则\n子项目规则A") < sp.index("## 卡片职责")
+    assert sp.index("## 系统结构") < sp.index("## 规则\n子项目规则A") < sp.index("## 卡片职责")
 
     # ② coder 卡 → coder 区；tool 卡 → tool 区；rule 卡自身 → rule 区；根卡 → project 区
     for ct, sec in (("coder", "编码规则C"), ("tool", "工具规则T"),
@@ -283,14 +317,32 @@ async def test_inject_section_by_card_type(sandbox):
         assert f"## 规则\n{sec}" in m["system_prompt"], ct
 
 
-async def test_inject_without_rule_card_zero_error(sandbox):
-    """无规则卡：装配零报错、规则区不出现（fail-closed 注入）。"""
+async def test_inject_with_empty_rules_zero_error(sandbox):
+    """规则为空：装配零报错、规则区不出现（fail-closed 注入）。"""
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
     sub = await _mk_typed(wid, root, "sub_project", "子项目")
+    from src.storage import rule_store
+    rule_store.write_sections(wid, {})
     main = context_assembler.build_context_bundle(wid, sub)["main"]
     assert "规则注入" not in [r["name"] for r in main["system_regions"]]
     assert "## 规则\n" not in main["system_prompt"]
+
+
+async def test_inject_all_section_reaches_every_card_type(sandbox):
+    """总规则进**所有**卡的上下文；本类区只进本类卡。"""
+    wid = await _mk_rd_work()
+    root = work_store.work_card_id_of(wid)
+    await _seed_sections(wid, {"all": "总则Z", "sub_project": "子项S", "coder": "编码C"})
+    for ct, expect, forbid in (("sub_project", "子项S", "编码C"),
+                               ("coder", "编码C", "子项S")):
+        cid = await _mk_typed(wid, root, ct, f"{ct}卡")
+        main = context_assembler.build_context_bundle(wid, cid)["main"]
+        regs = [r for r in main["system_regions"] if r["name"] == "规则注入"]
+        assert regs, f"{ct} 应注入规则区"
+        assert "总则Z" in regs[0]["text"], "总规则必须进所有卡"
+        assert expect in regs[0]["text"], ct
+        assert forbid not in regs[0]["text"], f"{ct} 不该拿到别类卡的规则"
 
 
 # ---------------------------------------------------------------------------
@@ -298,14 +350,17 @@ async def test_inject_without_rule_card_zero_error(sandbox):
 # ---------------------------------------------------------------------------
 
 
-def test_base_prompt_rule_section_t21_1():
-    """硬判据1：BASE_PROMPT_VERSION==t21-1，且含「## 规则卡」使用说明节。"""
+def test_base_prompt_rule_section():
+    """提示词里要有「## 规则」节，且讲的是**流程**（规则是项目基建，不是卡）。"""
     from src.api import prompts
-    # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t22-1"
-    assert "## 规则卡" in prompts.BASE_PROMPT
-    assert "draft_rule_edit" in prompts.BASE_PROMPT
-    assert "你不能直接改规则" in prompts.BASE_PROMPT
+    t = prompts.BASE_PROMPT
+    assert "## 项目规则" in t, "提示词要有「项目规则」节（与注入区「## 规则」区分开）"
+    assert "draft_rule_edit" in t
+    # [规则节点 2026-10-28] 规则＝一个项目一个文件；总规则进所有卡
+    assert "rules.md" in t, "要写明载体（项目文件夹里的 rules.md）"
+    assert "总规则" in t, "要写明总规则进所有卡"
+    # 只讲流程，不讲「你不能」——流程式表述见 test_prompt_workflow_only
+    assert "改规则的流程" in t
 
 
 async def test_draft_rule_edit_toolface_root_only(sandbox):
@@ -325,22 +380,23 @@ async def test_draft_rule_edit_toolface_root_only(sandbox):
         assert "draft_rule_edit" not in face, f"{ct} 卡不得见 draft_rule_edit"
 
 
-async def test_rule_card_toolface_no_write_tools(sandbox):
-    """rule 卡模型面只有 read 挂钩三件 ＋ **查资料两件**（v14），无任何写工具、无 draft_rule_edit。
+async def test_rule_card_has_no_toolface(sandbox):
+    """[2026-10-28 用户令「规则卡不挂模型和对话，不需要工具」]
 
-    〔v14 · 2026-10-24 · 用户裁定「查资料≠动手」〕规则卡也拿到 tools_web
-    ⇒ 工具面多 web_search/fetch_web；**写工具仍然一件没有**（下面的 writable 断言守住）。
+    规则节点不挂模型 ⇒ 一件工具都没有。即使历史库里残留一张 card_type=rule 的卡
+    （存量数据），它也不该拿到任何工具面（perms 空 ⇒ 默认关门）。
     """
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
-    rc = await _mk_rule_card(wid)
+    # 绕过 API 直接落一张（模拟存量），验证工具面仍然为空
+    legacy = await card_store.create_card(
+        wid, "历史规则卡", "用户直接创建", card_type="rule", parent=root)
+    assert "error" not in legacy, legacy
+    rc = legacy["meta"]["card_id"]
     cards = card_tools._collect_card_meta(wid)
-    face = {t["name"] for t in
-            card_tools.build_tool_schemas(rc, work_id=wid, cards=cards)}
-    assert face == {"read_card", "read_memory", "read_shadow",
-                    "web_search", "fetch_web"}, face
-    writable = {n for n in face if not card_tools.TOOL_REGISTRY[n].readonly}
-    assert not writable, writable
+    face = [t["name"] for t in
+            card_tools.build_tool_schemas(rc, work_id=wid, cards=cards)]
+    assert face == [], f"规则节点不该有任何工具：{face}"
 
 
 async def test_draft_rule_edit_execution_gates(sandbox):
@@ -352,12 +408,11 @@ async def test_draft_rule_edit_execution_gates(sandbox):
     r = await card_tools.execute_tool(wid, sub, "draft_rule_edit",
                                       {"section": "sub_project", "content": "x"}, cards)
     assert r["ok"] is False and r["error"]["code"] == "denied", r
-    # 无规则卡
+    # [规则=基建 2026-10-25] 规则随项目自带,根卡随时可起草(不再有 not_found)
     r = await card_tools.execute_tool(wid, root, "draft_rule_edit",
                                       {"section": "sub_project", "content": "x"}, cards)
-    assert r["ok"] is False and r["error"]["code"] == "not_found", r
+    assert r["ok"] is True, r
     # 非法区名
-    await _mk_rule_card(wid)
     r = await card_tools.execute_tool(wid, root, "draft_rule_edit",
                                       {"section": "unknown_section", "content": "x"}, cards)
     assert r["ok"] is False and r["error"]["code"] == "validation", r
@@ -367,9 +422,8 @@ async def test_draft_rule_edit_returns_payload_zero_write(sandbox):
     """硬判据3：返回 {draft, base_hash, section, old}，mission 逐字节零改动。"""
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
-    rc = await _mk_rule_card(wid)
-    mission_before = await _seed_sections(
-        wid, rc, {"sub_project": "旧规则", "tool": "工具规则T"})
+    from src.storage import work_store as _ws
+    _ws.set_rules(wid, {"sub_project": "旧规则", "tool": "工具规则T"})
     cards = card_tools._collect_card_meta(wid)
     r = await card_tools.execute_tool(wid, root, "draft_rule_edit",
                                       {"section": "sub_project",
@@ -380,18 +434,17 @@ async def test_draft_rule_edit_returns_payload_zero_write(sandbox):
     assert d["draft"] == "新提议"
     assert d["old"] == "旧规则"
     assert d["base_hash"] == _h("旧规则")
-    assert d["rule_card_id"] == rc
-    body = await card_store.read_card(wid, rc)
-    assert body["body"]["mission"] == mission_before, "起草必须盘上零改动"
+    # 起草零落盘:work.json rules 未变
+    assert _ws.get_rules(wid)["sub_project"] == "旧规则"
 
 
 async def test_rule_commit_approval_flow(client, sandbox):
     """硬判据4：draft → 用户「同意」→ commit 落盘＋影子行；其它区字节不变。"""
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
-    rc = await _mk_rule_card(wid)
-    mission_before = await _seed_sections(
-        wid, rc, {"sub_project": "旧规则", "tool": "工具规则T", "coder": "编码规则C"})
+    from src.storage import work_store as _ws
+    _ws.set_rules(wid, {"sub_project": "旧规则", "tool": "工具规则T",
+                        "coder": "编码规则C"})
     cards = card_tools._collect_card_meta(wid)
     draft = await card_tools.execute_tool(
         wid, root, "draft_rule_edit",
@@ -410,38 +463,31 @@ async def test_rule_commit_approval_flow(client, sandbox):
     assert g["sections"]["sub_project"] == "审批后规则"
     assert g["sections"]["tool"] == "工具规则T"
     assert g["sections"]["coder"] == "编码规则C"
-    # mission 全文字节级：只换目标区那一段
-    body = await card_store.read_card(wid, rc)
-    expected = mission_before.replace(
-        "## sub_project\n旧规则", "## sub_project\n审批后规则")
-    assert body["body"]["mission"] == expected, "其它区必须逐字节不变"
-    # 影子 ## 迭代历史 记一行（时间+section+旧/新hash+来源=根卡审批）
-    raw = await shadow_store.read_shadow_raw(wid, rc)
-    assert "规则审批 sub_project" in raw, raw
-    assert "来源=根卡审批" in raw, raw
+    # 其它区逐字节不变(work.json rules)
+    rules = _ws.get_rules(wid)
+    assert rules["tool"] == "工具规则T" and rules["coder"] == "编码规则C"
 
 
 async def test_rule_commit_hash_conflict_409(client, sandbox):
     """硬判据4：base_hash 不符 → 409，卡面零改动。"""
     wid = await _mk_rd_work()
-    rc = await _mk_rule_card(wid)
-    mission_before = await _seed_sections(wid, rc, {"sub_project": "旧规则"})
+    from src.storage import work_store as _ws
+    _ws.set_rules(wid, {"sub_project": "旧规则"})
     r = await client.post(
         f"/api/works/{wid}/rule/commit",
         json={"section": "sub_project", "content": "x", "base_hash": "bad_hash"})
     assert r.status_code == 409, r.status_code
-    body = await card_store.read_card(wid, rc)
-    assert body["body"]["mission"] == mission_before
+    assert _ws.get_rules(wid)["sub_project"] == "旧规则"
 
 
 async def test_rule_commit_gates_404_400(client, sandbox):
     """无规则卡 → 404；非法区名 → 400。"""
     wid = await _mk_rd_work()
+    # [规则=基建 2026-10-25] 无"不存在"状态:hash 不符 → 409
     r = await client.post(
         f"/api/works/{wid}/rule/commit",
         json={"section": "sub_project", "content": "x", "base_hash": ""})
-    assert r.status_code == 404, r.status_code
-    await _mk_rule_card(wid)
+    assert r.status_code == 409, r.status_code
     r = await client.post(
         f"/api/works/{wid}/rule/commit",
         json={"section": "unknown_section", "content": "x", "base_hash": ""})
@@ -452,16 +498,15 @@ async def test_draft_then_reject_zero_write(client, sandbox):
     """拒绝/关闭路径：不发 commit 请求即零落盘（后端侧实证：draft 后无人 commit）。"""
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
-    rc = await _mk_rule_card(wid)
-    mission_before = await _seed_sections(wid, rc, {"sub_project": "旧规则"})
+    rules_before = await _seed_sections(wid, {"sub_project": "旧规则"})
     cards = card_tools._collect_card_meta(wid)
     draft = await card_tools.execute_tool(
         wid, root, "draft_rule_edit",
         {"section": "sub_project", "content": "被拒绝的提议"}, cards)
     assert draft["ok"] is True
-    # 只起草、不 commit（用户拒绝）→ 卡面零改动
-    body = await card_store.read_card(wid, rc)
-    assert body["body"]["mission"] == mission_before
+    # 只起草、不 commit（用户拒绝）→ 规则文件逐字节零改动
+    from src.storage import rule_store
+    assert rule_store.rules_path(wid).read_text(encoding="utf-8") == rules_before
     g = (await client.get(f"/api/works/{wid}/rule")).json()
     assert g["sections"]["sub_project"] == "旧规则"
 
@@ -493,3 +538,151 @@ def test_frontend_rule_approval_modal_wiring():
     assert 'd.tool !== "draft_rule_edit"' in dbl
     assert "ruleSeen" in body
     assert body.count("window.__maybeOpenRuleEditModal(cardId)") >= 3, "send/resend/tryRecover 三处收口后调用"
+
+
+# ---------------------------------------------------------------------------
+# 块4 · [规则节点 2026-10-28 · 用户令「一个项目一个文件」「项目创建的同时建起来」]
+# ---------------------------------------------------------------------------
+
+
+async def test_create_work_creates_rules_file(sandbox):
+    """建项目 ⇒ 规则文件就在项目文件夹里（结构事实，不靠调用方记得）。
+
+    用户原话：「规则卡应该是跟项目一起建立的，项目创建的同时，规则就被同步
+    建起来了」「它应该进的是项目文件夹」。
+    """
+    from src.storage import rule_store
+    w = await work_store.create_work("规则随项目", project_class="rd_project")
+    wid = w["work_id"]
+    p = rule_store.rules_path(wid)
+    assert p.exists(), "建项目必须同时建出 rules.md"
+    assert p.parent.name == wid, "规则文件必须在项目文件夹里"
+    assert p.name == "rules.md"
+    sections = rule_store.read_sections(wid)
+    assert "all" in sections and sections["all"].strip(), "总规则要有默认内容"
+    # 默认值里不许再出现已废的旧口径
+    blob = "\n".join(sections.values())
+    assert "总裁策展" not in blob, "默认规则不能写已废的「总裁策展」"
+    assert "只追加不改" not in blob, "默认规则不能写「只追加不改」（块是快照）"
+
+
+async def test_rules_file_is_project_folder_not_card(sandbox):
+    """规则不占 card_id、不进 cards 表——它是文件，不是卡。"""
+    from src.storage import card_db, rule_store
+    w = await work_store.create_work("规则不是卡", project_class="rd_project")
+    wid = w["work_id"]
+    assert rule_store.rules_path(wid).exists()
+    n_rule_cards = card_db.read_sync(
+        wid, lambda c: c.execute(
+            "SELECT count(*) AS n FROM cards WHERE card_type='rule'").fetchone()["n"], -1)
+    assert n_rule_cards == 0, "规则文件不该产生 rule 卡"
+
+
+async def test_legacy_work_json_rules_migrated_once(sandbox):
+    """work.json 里的旧 rules（2026-10-25 ～ 10-28 的形态）首次读到就搬进文件。"""
+    from src.storage import rule_store
+    w = await work_store.create_work("旧规则迁移", project_class="rd_project")
+    wid = w["work_id"]
+    rule_store.rules_path(wid).unlink()          # 造出「只有 work.json 有规则」的旧状态
+    data = work_store.read_work(wid) or {}
+    data["rules"] = {"sub_project": "旧形态规则X"}
+    work_store.write_work(wid, data)
+
+    got = rule_store.read_sections(wid)
+    assert got.get("sub_project") == "旧形态规则X", "旧内容不能丢"
+    # 迁移后：再次 ensure 会把它落成文件
+    assert rule_store.ensure(wid) is True
+    assert rule_store.rules_path(wid).exists()
+    assert "旧形态规则X" in rule_store.rules_path(wid).read_text(encoding="utf-8")
+
+
+def test_frontend_draft_sections_mirror_matches_backend():
+    """草稿态分区镜像必须与后端一致（前端硬编码，靠这条防漂移）。"""
+    src = (_ROOT / "static" / "esm" / "rule_panel.js").read_text(encoding="utf-8")
+    m = re.search(r"DRAFT_RULE_SECTIONS\s*=\s*\[(.*?)\]", src, re.S)
+    assert m, "找不到 DRAFT_RULE_SECTIONS"
+    mirror = re.findall(r'"([a-z_]+)"', m.group(1))
+    backend = context_regions.rule_section_names(card_store.load_type_registry())
+    assert mirror == backend, f"前端镜像 {mirror} ≠ 后端 {backend}"
+
+
+def test_rule_store_labels_cover_all_sections():
+    """分区显示名要覆盖全部合法分区（面板靠它显示中文名）。"""
+    from src.storage import rule_store
+    names = context_regions.rule_section_names(card_store.load_type_registry())
+    missing = [n for n in names if n not in rule_store.SECTION_LABELS]
+    assert not missing, f"缺显示名：{missing}"
+
+
+# ---------------------------------------------------------------------------
+# 块4 · [规则节点 2026-10-28 · 用户令「一个项目一个文件」「项目创建的同时建起来」]
+# ---------------------------------------------------------------------------
+
+
+async def test_create_work_creates_rules_file(sandbox):
+    """建项目 ⇒ 规则文件就在项目文件夹里（结构事实，不靠调用方记得）。
+
+    用户原话：「规则卡应该是跟项目一起建立的，项目创建的同时，规则就被同步
+    建起来了」「它应该进的是项目文件夹」。
+    """
+    from src.storage import rule_store
+    w = await work_store.create_work("规则随项目", project_class="rd_project")
+    wid = w["work_id"]
+    p = rule_store.rules_path(wid)
+    assert p.exists(), "建项目必须同时建出 rules.md"
+    assert p.parent.name == wid, "规则文件必须在项目文件夹里"
+    assert p.name == "rules.md"
+    sections = rule_store.read_sections(wid)
+    assert "all" in sections and sections["all"].strip(), "总规则要有默认内容"
+    # 默认值里不许再出现已废的旧口径
+    blob = "\n".join(sections.values())
+    assert "总裁策展" not in blob, "默认规则不能写已废的「总裁策展」"
+    assert "只追加不改" not in blob, "默认规则不能写「只追加不改」（块是快照）"
+
+
+async def test_rules_file_is_project_folder_not_card(sandbox):
+    """规则不占 card_id、不进 cards 表——它是文件，不是卡。"""
+    from src.storage import card_db, rule_store
+    w = await work_store.create_work("规则不是卡", project_class="rd_project")
+    wid = w["work_id"]
+    assert rule_store.rules_path(wid).exists()
+    n_rule_cards = card_db.read_sync(
+        wid, lambda c: c.execute(
+            "SELECT count(*) AS n FROM cards WHERE card_type='rule'").fetchone()["n"], -1)
+    assert n_rule_cards == 0, "规则文件不该产生 rule 卡"
+
+
+async def test_legacy_work_json_rules_migrated_once(sandbox):
+    """work.json 里的旧 rules（2026-10-25 ～ 10-28 的形态）首次读到就搬进文件。"""
+    from src.storage import rule_store
+    w = await work_store.create_work("旧规则迁移", project_class="rd_project")
+    wid = w["work_id"]
+    rule_store.rules_path(wid).unlink()          # 造出「只有 work.json 有规则」的旧状态
+    data = work_store.read_work(wid) or {}
+    data["rules"] = {"sub_project": "旧形态规则X"}
+    work_store.write_work(wid, data)
+
+    got = rule_store.read_sections(wid)
+    assert got.get("sub_project") == "旧形态规则X", "旧内容不能丢"
+    # 迁移后：再次 ensure 会把它落成文件
+    assert rule_store.ensure(wid) is True
+    assert rule_store.rules_path(wid).exists()
+    assert "旧形态规则X" in rule_store.rules_path(wid).read_text(encoding="utf-8")
+
+
+def test_frontend_draft_sections_mirror_matches_backend():
+    """草稿态分区镜像必须与后端一致（前端硬编码，靠这条防漂移）。"""
+    src = (_ROOT / "static" / "esm" / "rule_panel.js").read_text(encoding="utf-8")
+    m = re.search(r"DRAFT_RULE_SECTIONS\s*=\s*\[(.*?)\]", src, re.S)
+    assert m, "找不到 DRAFT_RULE_SECTIONS"
+    mirror = re.findall(r'"([a-z_]+)"', m.group(1))
+    backend = context_regions.rule_section_names(card_store.load_type_registry())
+    assert mirror == backend, f"前端镜像 {mirror} ≠ 后端 {backend}"
+
+
+def test_rule_store_labels_cover_all_sections():
+    """分区显示名要覆盖全部合法分区（面板靠它显示中文名）。"""
+    from src.storage import rule_store
+    names = context_regions.rule_section_names(card_store.load_type_registry())
+    missing = [n for n in names if n not in rule_store.SECTION_LABELS]
+    assert not missing, f"缺显示名：{missing}"

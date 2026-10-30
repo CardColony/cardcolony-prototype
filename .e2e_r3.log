@@ -1,0 +1,19 @@
+[16:25:26] work=work_001 card=card_002 review=card_003 开跑
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:25:30] 5 → 评审员1 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:26:06] 14 工具 reject by fn_001
+[16:26:06] 16 ← 评审员1 0字 approve=False
+[16:26:06] 17 → 评审员2 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:26:46] 22 工具 reject by fn_002
+[16:26:46] 24 ← 评审员2 0字 approve=False
+[16:26:46] 25 → 评审员3 发言
+[memory_nodes] 查询失败（未回填？）work=work_001 card=card_002: no such table: memory_nodes
+[16:26:54] 26 工具 reject by fn_003
+[16:26:54] 28 ← 评审员3 0字 approve=False
+[16:26:54] 29 → card_002 发言
+[16:27:18] 30 工具 edit_requirements by card_002
+[16:28:38] 40 工具 edit_requirements by card_002
+[16:28:54] 44 工具 edit_requirements by card_002
+[16:29:47] 46 工具 edit_requirements by card_002

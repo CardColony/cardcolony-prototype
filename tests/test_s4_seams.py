@@ -295,7 +295,7 @@ async def test_submit_round_seats_after_chain_done(work, monkeypatch):
     _card = await card_store.read_card(wid, cid)
     _b = _card["body"]
     card_text = "\n".join([
-        _b.get("mission", ""), _b.get("status_block", ""), _b.get("rulings", ""),
+        _b.get("mission", ""), _b.get("status_block", ""), _b.get("requirements", ""),
         *(_b.get("history") or []),
     ])
     assert "【思维链收口】" in card_text

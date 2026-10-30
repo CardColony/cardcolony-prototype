@@ -65,7 +65,7 @@ def _make_legacy_db(db_path: Path, rel_json: str) -> None:
                 toolcard_script TEXT, toolcard_step TEXT, toolcard_round INTEGER,
                 toolcard_final TEXT, thinkchain_final TEXT, perms TEXT,
                 perms_version INTEGER, created_at TEXT, updated_at TEXT,
-                mission TEXT, status_block TEXT, rulings TEXT);
+                mission TEXT, status_block TEXT, requirements TEXT);
         """)
         conn.execute(
             "INSERT INTO cards (card_id, work_id, title, relations)"
