@@ -22,9 +22,16 @@ async def _setup(n: int = 2):
     wdata = await work_store.create_work("评审改稿测试")
     wid = str(wdata["work_id"])
     fids = []
+    # [2026-10-31 对齐] 评审邀请集已收紧成**总裁／产品经理／技术总监**三个职能目录
+    # code（card_tools._h_open_review，2026-10-30 23:07 改）⇒ 夹具必须按这三个 code
+    # 造职能，否则开批次直接被判「没有在职的总裁、产品经理或技术总监可参与评审」，
+    # 本文件 10 条用例全在 _setup 里炸（TypeError: 'NoneType'）。
+    # 与 tests/test_review_tools.py::_make_work_with_functions 同一口径。
+    review_codes = ("ceo", "pm", "cto")
     for i in range(n):
+        code = review_codes[i] if i < len(review_codes) else f"f{i}"
         prof = await function_store.create_function(
-            wid, f"职能{i}", {"jurisdiction": {"catalog_code": f"f{i}"}})
+            wid, f"职能{i}", {"jurisdiction": {"catalog_code": code}})
         fids.append(str(prof.get("function_id") or ""))
     r = await card_store.create_card(wid, "子项目甲", "用户直接创建",
                                      card_type="sub_project")
@@ -46,7 +53,7 @@ async def test_revise_edits_own_draft_and_leaves_final_untouched(sandbox, monkey
 
     calls = {"n": 0}
 
-    async def fake_call(sys_p, user_p, convo, tools, model):
+    async def fake_call(sys_p, user_p, convo, tools, model, **_):
         calls["n"] += 1
         if calls["n"] == 1:
             return ({"content": "", "tool_calls": [{
@@ -72,7 +79,7 @@ async def test_revise_edits_own_draft_and_leaves_final_untouched(sandbox, monkey
     assert st["draft"] == 2, st
 
     # 发言落在**评审卡**会话里（现场共享，后面发言的人看得到）
-    blocks = await session_facade.read(wid, rid) or []
+    blocks = await session_facade.read(wid, review_runner._sid(rid, str((await review_store.state_of(wid, rid)).get('batch') or ''))) or []
     assert any("已改" in str(b.get("content") or "") for b in blocks), blocks
 
 
@@ -80,7 +87,7 @@ async def test_revise_cannot_approve(sandbox, monkeypatch):
     """子卡不是评审成员：approve 必须被拒，票不能变。"""
     wid, cid, fids, rid = await _setup()
 
-    async def fake_call(sys_p, user_p, convo, tools, model):
+    async def fake_call(sys_p, user_p, convo, tools, model, **_):
         return ({"content": "", "tool_calls": [{
             "name": "approve",
             "arguments": {"review_card_id": rid}}]}, "fake-model")
@@ -102,7 +109,7 @@ async def test_revise_prompt_carries_pending_opinions_only(sandbox, monkeypatch)
     async def say(sys_p, user_p, convo, tools, model):
         # [2026-10-29] 发言必须有终态（approve / reject），否则会被再调起
         return ({"content": "第三条不满足：没有证据",
-                 "tool_calls": [{"name": "reject", "arguments": {"reason": "测试：判据没落点"}}]}, "fake-model")
+                 "tool_calls": [{"name": "reject", "arguments": {}}]}, "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", say)
     await review_runner.speak(wid, rid, fids[0])
@@ -110,11 +117,16 @@ async def test_revise_prompt_carries_pending_opinions_only(sandbox, monkeypatch)
     captured: dict[str, str] = {}
 
     async def capture(sys_p, user_p, convo, tools, model):
-        captured["user"] = user_p
-        captured["sys"] = sys_p
-        captured["tools"] = [
-            (t.get("function") or {}).get("name") or t.get("name") or ""
-            for t in (tools or [])]
+        # [2026-10-31 对齐] 只记**第一圈**的工具面：改稿轮从第 2 圈起收敛成只剩终态
+        # 工具 submit_revision（与 speak 第 2 圈收敛成 approve/reject 同一手法，
+        # 2026-10-30 设计）⇒ 「子卡能不能改草稿」这条断言必须看第一圈的面，
+        # 看最后一圈会误判成"它只有 submit_revision、拿不到 edit_requirements"。
+        if "tools" not in captured:
+            captured["user"] = user_p
+            captured["sys"] = sys_p
+            captured["tools"] = [
+                (t.get("function") or {}).get("name") or t.get("name") or ""
+                for t in (tools or [])]
         return ({"content": "（不改）", "tool_calls": []}, "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", capture)
@@ -132,7 +144,7 @@ async def test_revise_no_change_reports_false(sandbox, monkeypatch):
     """模型说了话但没动草稿 ⇒ changed=False（调用方据此停止循环）。"""
     wid, cid, fids, rid = await _setup()
 
-    async def fake_call(sys_p, user_p, convo, tools, model):
+    async def fake_call(sys_p, user_p, convo, tools, model, **_):
         return ({"content": "我认为不用改，理由如下……", "tool_calls": []},
                 "fake-model")
 
@@ -224,7 +236,7 @@ async def test_member_sees_the_draft_not_the_final(sandbox, monkeypatch):
     async def cap(sys_p, user_p, convo, tools, model):
         captured["user"] = user_p
         return ({"content": "看完了",
-                 "tool_calls": [{"name": "reject", "arguments": {"reason": "测试：判据没落点"}}]}, "fake-model")
+                 "tool_calls": [{"name": "reject", "arguments": {}}]}, "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", cap)
     await review_runner.speak(wid, rid, fids[0])
@@ -337,40 +349,11 @@ async def test_speak_requires_a_terminal_tool(sandbox, monkeypatch):
     monkeypatch.setattr(model_service, "call_main", model)
     await review_runner.speak(wid, rid, fids[0])
 
-    assert len(calls) == 2, "只说话不表态 ⇒ 必须再调起它"
-    assert "read_card" in calls[0], "第一次给完整工具面（可查阅）"
-    assert set(calls[1]) <= {"approve", "reject"}, "再调起时工具面只剩二选一"
+    # [2026-10-31 用户令] 不做内部重试、不收敛工具面：
+    # 「模型不可能无限查下去」。不调工具 ⇒ 这一步结束，交 harness。
+    assert len(calls) == 1, "只说话不表态 ⇒ 结束，由 harness 决定下一步"
+    assert "read_card" in calls[0], "给完整工具面（可查阅）"
 
-
-async def test_speak_requires_a_terminal_tool(sandbox, monkeypatch):
-    """发言必须以 approve / reject 收尾。
-
-    [2026-10-29 用户令]「你让它每一次必须调工具，要么不通过要么通过，否则就再调起它」
-    实弹里产品经理在文字里写「结论：通过」但没调 approve ⇒ 系统只认工具 ⇒ 它永远
-    pending ⇒ 子卡被反复叫去改稿，跑到第 23 版还没收口。
-
-    钉两件事：① 只说话不表态 ⇒ 再调起一次；② 再调起时**工具面收敛成二选一**
-    （只剩 approve / reject，不给查阅工具）——这是结构，不是次数上限。
-    """
-    wid, cid, fids, rid = await _setup()
-    calls: list[list[str]] = []
-
-    async def model(sys_p, user_p, convo, tools, model_name):
-        names = [str((t.get("function") or t).get("name") or "") for t in (tools or [])]
-        calls.append(names)
-        if len(calls) == 1:
-            # 第一次：只在文字里说通过，不调工具
-            return ({"content": "结论：通过。", "tool_calls": []}, "fake")
-        return ({"content": "通过",
-                 "tool_calls": [{"name": "approve",
-                                 "arguments": {"review_card_id": rid}}]}, "fake")
-
-    monkeypatch.setattr(model_service, "call_main", model)
-    await review_runner.speak(wid, rid, fids[0])
-
-    assert len(calls) == 2, "只说话不表态 ⇒ 必须再调起它"
-    assert "read_card" in calls[0], "第一次给完整工具面（可查阅）"
-    assert set(calls[1]) <= {"approve", "reject"}, "再调起时工具面只剩二选一"
 
 
 def test_text_tool_tag_detects_misformatted_calls():
@@ -416,7 +399,7 @@ async def test_promote_turn_tells_child_to_write_final(sandbox, monkeypatch):
     wid, cid, fids, rid = await _setup()
     captured: dict = {}
 
-    async def fake_call(sys_p, user_p, convo, tools, model):
+    async def fake_call(sys_p, user_p, convo, tools, model, **_):
         captured["user"] = user_p
         captured["tools"] = [str((t.get("function") or t).get("name") or "") for t in tools]
         return ({"content": "好", "tool_calls": []}, "fake-model")
@@ -438,7 +421,7 @@ async def test_promote_turn_tells_child_to_write_final(sandbox, monkeypatch):
     wid, cid, fids, rid = await _setup()
     captured: dict = {}
 
-    async def fake_call(sys_p, user_p, convo, tools, model):
+    async def fake_call(sys_p, user_p, convo, tools, model, **_):
         captured["user"] = user_p
         captured["tools"] = [str((t.get("function") or t).get("name") or "") for t in tools]
         return ({"content": "好", "tool_calls": []}, "fake-model")

@@ -124,18 +124,35 @@ def test_expand_squeezes_body_but_inspector_never_does():
 
 
 # ---------------------------------------------------------------- 3. 收缩只留最近一条
-def test_compact_shows_only_the_latest_event():
-    """用户：「收缩状态不需要显示那么多信息，显示最近的一条就足够了，永远显示最近的一条」"""
+def test_compact_shows_scrolling_event_list():
+    """[2026-10-31 用户令]「为什么所有动作、思考、事件都不显示在界面上？」
+
+    这条**取代**了 2026-10-29 的旧口径「收缩状态…永远显示最近的一条」——
+    旧实现每条新事件把上一行**覆盖**掉，用户看不到过程。
+    现在：已完成事件**追加**进滚动列表（rvEvents），底部一行显示正在逐字输出的内容。
+    """
     html = _read("templates/card.html")
-    assert 'id="rvLast"' in html and 'id="rvLastText"' in html
-    assert 'id="rvEvents"' not in html, "收缩态不再铺事件列表"
+    assert 'id="rvEvents"' in html, "收缩态要有滚动事件列表"
+    assert 'id="rvLastText"' in html, "底部实时行仍在（逐字流）"
     js = _read("static/workspace.js")
-    assert "function rvSetLast(" in js
-    assert "rvRow(" not in js, "旧的追加式事件行必须撤掉"
-    # 逐字流也写进同一条（不另起行）
-    assert "function rvTyping(" in js and "rvSetLast(" in js
+    assert "function rvPush(" in js, "事件要追加进列表"
+    # [2026-10-31 用户令] 不许为了性能**删数据**；只能限制渲染条数／分页。
+    assert "removeChild(box.firstChild)" not in js, "不许删事件（数据只增不删）"
+    assert "RV_PAGE" in js, "渲染按页来"
+    assert "RV.events.push" in js, "全部事件要留在内存数组里"
+    assert "rvRenderTail" in js, "只渲染尾部 RV.shown 条"
+    assert "RV.shown += RV_PAGE" in js, "滚到顶要能加载更多（分页）"
+    assert "上面还有" in js, "要提示上方还有多少条"
+    assert "box.scrollTop = box.scrollHeight" in js, "新事件要自动滚到最新"
+    assert "function rvSetLast(" in js and "function rvTyping(" in js, "实时行仍走 rvSetLast"
+    # rvPaint 必须走 rvPush（追加），不能只写实时行
+    i = js.index("function rvPaint(")
+    seg = js[i:i + 2600]
+    assert "rvPush(html, ts, _cls)" in seg, "rvPaint 要追加进列表"
     css = _read("static/ui.css")
-    assert "body.page-chat .fwin-last {" in css
+    assert "body.page-chat .fwin-events {" in css, "列表容器要有自己的样式"
+    assert "overflow-y: auto" in css, "列表要能滚"
+    assert "body.page-chat .fwin-live {" in css
 
 
 def test_latest_line_covers_all_event_kinds():

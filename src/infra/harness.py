@@ -304,8 +304,12 @@ async def _deliver_continue(work_id: str, target: str, text: str, *,
         # context→round_start→…→turn_end），评审一步都没推进，批次就此停住。
         from ..api import review_runner
         r = await review_runner.run_once(work_id, target)
+        # [2026-10-31] 到站原因补两个：**stopped**（用户点了停止）与
+        # **review_busy**（评审卡被别的回合占着，本步让路）——都不是"这一步干成了"，
+        # 不该报成 continue 成功（否则前端会显示"已续跑"，实际一步没走）。
         ok = bool(isinstance(r, dict) and r.get("reason") not in
-                  ("no_batch", "already_running", "speak_failed"))
+                  ("no_batch", "already_running", "speak_failed",
+                   "stopped", "review_busy"))
         try:
             event_stream.emit(work_id, target, EV_TYPE, {
                 "rule_id": rule_id, "to": str(target), "wake": ok,

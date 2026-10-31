@@ -912,8 +912,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
           <!-- [诸葛 2026-10-04 21:54] 与后端对齐：后端 MODEL_REL_TYPES 已收窄为「先后／关联」
                （T07 关闭了类型退役入口）。原下拉仍列「锚定／兑现」——用户能手动加模型被禁的关系。
                删这两项。 -->
-          <option value="先后">先后</option>
-          <option value="关联">关联</option>
+          <option value="依赖">依赖</option>
+          <option value="影响">影响</option>
         </select>
         <button class="btn" id="relAddBtn">确定</button>
       </div>`;
@@ -3001,6 +3001,8 @@ const RV = {
   rid: "", es: null, mode: "compact", target: "",
   batch: "", closedBatch: "", needCatchup: false,
   who: "", buf: "", at: 0,
+  // [2026-10-31 用户令] 事件**全部保留**（只增不删）；shown 只是"当前渲染了多少条"。
+  events: [], shown: 60,
 };
 
 function rv$(id) { return document.getElementById(id); }
@@ -3023,6 +3025,8 @@ function rvReset() {
   RV.rid = ""; RV.batch = ""; RV.who = ""; RV.buf = "";
   const t = rv$("rvLastTime"); if (t) t.textContent = "";
   const s = rv$("rvLastText"); if (s) s.textContent = "等待事件…";
+  RV.events = []; RV.shown = 60;                          // 换批次/换卡：数组与渲染一起归零
+  const ev = rv$("rvEvents"); if (ev) ev.innerHTML = "";
   const cnt = rv$("rvCount"); if (cnt) cnt.textContent = "0/0";
   const el = rv$("rvWin"); if (el) el.classList.remove("done");
   rvSetMode("compact");
@@ -3098,10 +3102,77 @@ function rvSetMode(mode) {
 }
 
 /** 收缩态的唯一一行：**永远只显示最近一条**（逐字流也写进这一条）。 */
+/** [2026-10-31 用户令「所有动作、思考、事件都要看得见」]
+ *  改前这个函数**替换**唯一那一行 ⇒ 每条新事件把上一条覆盖掉，用户看不到过程。
+ *  现在拆成两个：
+ *    rvSetLast(...) → 只写底部「实时行」（正在逐字输出的思考/正文）
+ *    rvPush(...)    → 把一条已完成事件**追加**进滚动列表（rvEvents），自动滚到底
+ */
+
 function rvSetLast(html, ts, live) {
   const t = rv$("rvLastTime"); if (t) t.textContent = rvTime(ts);
   const s = rv$("rvLastText"); if (s) s.innerHTML = html;
-  const box = rv$("rvLast"); if (box) box.classList.toggle("live", !!live);
+  const box = rv$("rvLive"); if (box) box.classList.toggle("live", !!live);
+}
+
+/** [2026-10-31 用户令] 事件**一条不删**，只限制**渲染**条数，向上滚自动翻页。
+ *
+ *  改前我写的是 `while (children.length > 60) removeChild(firstChild)`
+ *  —— 为了性能**删数据**，这是错的：删掉就再也看不到了。
+ *  现在：
+ *    · `RV.events` 保存**全部**事件（只增不删，不裁数据）
+ *    · DOM 只渲染最近 `RV.shown` 条（默认一页 = RV_PAGE）
+ *    · 滚到顶再往上滑 ⇒ 多铺一页（分页加载），滚动位置保持不动
+ */
+const RV_PAGE = 60;          // 一页展示多少条（**只影响渲染**，不删数据）
+
+function rvRow(ev) {
+  const row = document.createElement("div");
+  row.className = "fwin-ev" + (ev.cls ? " is-" + ev.cls : "");
+  const tm = document.createElement("time");
+  tm.textContent = rvTime(ev.ts);
+  const sp = document.createElement("span");
+  sp.className = "t";
+  sp.innerHTML = ev.html;
+  row.appendChild(tm); row.appendChild(sp);
+  return row;
+}
+
+/** 只渲染尾部 RV.shown 条。keepScroll=true 时保持当前滚动位置（翻页用）。 */
+function rvRenderTail(keepScroll) {
+  const box = rv$("rvEvents"); if (!box) return;
+  const from = Math.max(0, RV.events.length - RV.shown);
+  const prevH = box.scrollHeight, prevTop = box.scrollTop;
+  box.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  for (let i = from; i < RV.events.length; i++) frag.appendChild(rvRow(RV.events[i]));
+  // 顶部提示：上面还有多少条没铺（点/滚上去加载）
+  if (from > 0) {
+    const more = document.createElement("div");
+    more.className = "fwin-more";
+    more.textContent = `↑ 上面还有 ${from} 条（上滑加载）`;
+    frag.insertBefore(more, frag.firstChild);
+  }
+  box.appendChild(frag);
+  if (keepScroll) box.scrollTop = prevTop + (box.scrollHeight - prevH);
+  return from;
+}
+
+function rvPush(html, ts, cls) {
+  RV.events.push({ html: html, ts: ts, cls: cls || "" });   // 数据只增不删
+  const box = rv$("rvEvents");
+  if (!box) return;
+  // 用户停在底部 ⇒ 跟着最新走；正在往上翻旧记录 ⇒ 不动他的位置
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+  if (atBottom) {
+    RV.shown = RV_PAGE;
+    rvRenderTail(false);
+    box.scrollTop = box.scrollHeight;
+  } else {
+    rvRenderTail(true);
+  }
+  // 新事件进来 ⇒ 底部实时行清空（它已经进列表了）
+  const lt = rv$("rvLastText"); if (lt) lt.textContent = "";
 }
 
 /** 参数/摘要可能是字符串（本模块发）也可能是对象（message_runner 发），两种都认。 */
@@ -3155,10 +3226,14 @@ function rvPaint(t, d, ts) {
       html = rvEsc(t);          // 用户要"所有事件"：没单独排版的照示类型名
       break;
   }
-  rvSetLast(html, ts, false);
+  // [2026-10-31] 追加进滚动列表（改前是 rvSetLast 覆盖唯一那一行）
+  const _cls = (t === "tool_call" || t === "tool_result") ? "tool"
+             : (t === "review_spoke" || t === "review_revise") ? "speak"
+             : (t === "error") ? "error" : "";
+  rvPush(html, ts, _cls);
 }
 
-/** 逐字流：不另起一行，就地刷"最近一条"。 */
+/** 逐字流：只刷底部实时行（不进历史列表，避免一秒几十行）。 */
 function rvTyping(kind, d) {
   const txt = String(d.text || "");
   if (!txt) return;
@@ -3190,14 +3265,20 @@ async function rvLoadHistory() {
     tl = await API.getTimeline(WORK_ID, RV.rid, undefined, { tail: 40 });
   } catch (e) { return; }
   const items = (tl && tl.items) || [];
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
+  // [2026-10-31 用户令「所有动作、思考、事件都要看得见」] 改前只回放**最近一条**；
+  // 现在把最近一段流程整段铺进滚动列表（逐字流帧丢掉，避免一屏碎片）。
+  const rows = [];
+  for (const it of items) {
     if (!it || !it.type) continue;
     const t = String(it.type);
     if (t === "reasoning_chunk" || t === "content_chunk") continue;
-    rvPaint(t, it.data || {}, it.ts);
-    return;                     // 只要最近一条
+    rows.push(it);
   }
+  RV.events = []; RV.shown = 60;
+  const box = rv$("rvEvents");
+  if (box) box.innerHTML = "";            // 重放前清空，避免重复
+  for (const it of rows) rvPaint(String(it.type), it.data || {}, it.ts);
+  if (box) box.scrollTop = box.scrollHeight;
 }
 
 function rvSubscribe() {
@@ -3263,6 +3344,15 @@ async function rvRefresh(cid) {
     toggle();
   });
   if (last) last.addEventListener("click", toggle);
+
+  // [2026-10-31 用户令] 向上滚到顶 ⇒ 多铺一页（分页，不删数据）
+  const evBox = rv$("rvEvents");
+  if (evBox) evBox.addEventListener("scroll", () => {
+    if (evBox.scrollTop > 0) return;
+    if (RV.shown >= RV.events.length) return;
+    RV.shown += RV_PAGE;
+    rvRenderTail(true);
+  });
 
   const exp = rv$("rvExpandBtn");
   if (exp) exp.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });

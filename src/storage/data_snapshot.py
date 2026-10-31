@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import threading
 import time  # noqa: F401  (历史遗留，勿删)
 from datetime import datetime, timezone, timedelta
@@ -164,8 +165,36 @@ def _iter_protected_files() -> list[Path]:
 
     ⚠️ 日备（全量恢复点）**必须**含留痕 ⇒ 它走 `_iter_work_log_files`，
     不是这个函数。
+
+    〔2026-10-31 · 治「全项目扫描」〕**作用域**：`_scan_scope` 里的 work_id 给了
+    就**只扫那一个 work**（不再每次写操作都把整个 works/ 树扫一遍——实测 65 个
+    work / 2209 个文件，扫完只留 1 个）。
     """
-    return _iter_state_files(None)
+    return _iter_state_files(_SCAN_SCOPE[0])
+
+
+#: 当前扫描作用域（work_id）。None＝全项目（兼容「总备份/首次使用」）。
+_SCAN_SCOPE: list[str | None] = [None]
+
+
+class _scan_scope:
+    """上下文：把「这次扫描只看哪个 work」设进模块级作用域。
+
+    为什么用模块级作用域而不是给 `_iter_protected_files` 加参数：
+    那个**零参签名是既有契约**（旧调用点与测试都按零参 mock 它）⇒ 加参数会把
+    那些调用点全打断（实测 tests 里有 2 处 monkeypatch 零参版本）。
+    """
+
+    def __init__(self, work_id: str | None) -> None:
+        self.work_id = work_id
+
+    def __enter__(self) -> None:
+        self._old = _SCAN_SCOPE[0]
+        _SCAN_SCOPE[0] = self.work_id
+
+    def __exit__(self, *exc) -> bool:
+        _SCAN_SCOPE[0] = self._old
+        return False
 
 
 def _iter_state_files(work_id: str | None = None) -> list[Path]:
@@ -237,12 +266,30 @@ def _batch_dir(work_id: str, stamp: str) -> Path:
     return SNAPSHOT_ROOT / work_id / stamp
 
 
+#: 〔2026-10-30 · 治「每改一次就全项目备份」〕
+#: **只追加的历史**与**垃圾**不进**过程批次**——它们「不会被轻易编辑或删除」，
+#: 逐次备份纯属浪费（用户口径：「稳定存储本来就不需要备份」）。
+#: 日备（每天一次）里仍有完整的一份 ⇒ 恢复点不丢。
+#: 实测 ``cards.db`` 777.1MB 的构成：
+#:   session_blocks  311.4MB /  25761 行  只追加的会话原文块（权威源，但只增不改）
+#:   work_events     131.3MB / 295040 行  只追加的事件流
+#:   trash            26.0MB /     31 行  回收站残留（删掉的东西）
+#:   facts            52.6MB / 258414 行  只追加的抽取事实（派生数据）
+#:   其余（状态）      12.0MB              cards / card_revisions / messages / memory / …
+#:   索引+页开销     296.4MB              新建紧凑库后自然消失
+#: ⇒ 过程批次的库 **855MB → ~12MB**（71×）。
+_STATE_EXCLUDE_TABLES = ("session_blocks", "work_events", "trash", "facts")
+
+
 def _vacuum_into(src_db: Path, dst: Path) -> None:
     """SQLite 一致副本：``VACUUM INTO``。
 
     [卡片存储迁移 SQLite 2026-10-14] WAL 模式下**不能直接复制** ``cards.db``
     ——拿到的是不含最新提交的快照（最新写入还在 ``-wal`` 里，方案 §7.1.2a）。
     ``VACUUM INTO`` 从库里读出一致的完整副本（目标文件须不存在）。
+
+    〔2026-10-30〕**只给日备用**（完整复盘点）；过程批次走 `_export_state_db`
+    （只导状态表 ⇒ 855MB → 12MB）。
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
@@ -254,11 +301,77 @@ def _vacuum_into(src_db: Path, dst: Path) -> None:
         con.close()
 
 
+def _export_state_db(src_db: Path, dst: Path) -> dict:
+    """把库里**会变的表**导出一份紧凑副本（不含只追加历史与垃圾）。
+
+    〔2026-10-30 · 治「每改一次就全项目备份」〕
+    为什么不用 ``VACUUM INTO``（整库）：它会把 777MB 全拷一遍 ⇒ 每写一次就写
+    855MB（实测 10.5s，占着 ``asyncio.to_thread`` 的线程 ⇒ 写一多就堵服务），
+    而**真正会变的表只有 12MB**。
+
+    ⇒ 这里 ``ATTACH`` 源库 + ``CREATE TABLE … AS SELECT`` **只导状态表**：
+      · 读源库（同一连接内 ``BEGIN`` ⇒ 单一读快照 ⇒ 一致）
+      · 写一个新库（**不带索引、不带页膨胀** ⇒ 体积≈表内容）
+      · 过程批次由此从 855MB 降到 ~12MB（**71×**）
+
+    返回 ``{"tables": [...], "rows": n}``；失败**抛异常**（由调用方记账），
+    绝不产出半个库假装成功。
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+    con = sqlite3.connect(str(src_db), timeout=30.0)
+    try:
+        con.execute("ATTACH DATABASE ? AS snap", (str(dst),))
+        tabs = [r[0] for r in con.execute(
+            "SELECT name FROM main.sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'")]
+        keep = [t for t in tabs if t not in _STATE_EXCLUDE_TABLES]
+        con.execute("BEGIN")          # 单一读快照：多张表来自同一时刻
+        rows = 0
+        for t in keep:
+            con.execute(f'CREATE TABLE snap."{t}" AS SELECT * FROM main."{t}"')
+            rows += con.execute(f'SELECT count(*) FROM snap."{t}"').fetchone()[0]
+        con.execute("COMMIT")
+        con.execute("DETACH DATABASE snap")
+        con.commit()
+        return {"tables": keep, "rows": rows}
+    finally:
+        con.close()
+
+
+#: 当前这轮拷贝要不要「只导状态表」（过程批次＝True；日备＝False）。
+#:
+#: 为什么用**模块级开关**而不是给 `_copy_protected_file` 加参数：那个两参签名
+#: （``_copy_protected_file(p, dst)``）是**既有契约**——测试与外部替换都按两参来，
+#: 加参数会把那些调用点全打断（实测 tests 里有 4 处 monkeypatch 两参版本）。
+_copy_mode_state_only = False
+
+
+class _state_only_copies:
+    """上下文：这段拷贝里 ``*.db`` **只导状态表**（过程批次用）。
+
+    〔2026-10-30 · 治「每改一次就全项目备份」〕过程批次不该再整库拷贝
+    （855MB/次）；日备仍要整库（完整复盘点）⇒ 用上下文把两种模式分开。
+    """
+
+    def __enter__(self) -> None:
+        global _copy_mode_state_only
+        self._old = _copy_mode_state_only
+        _copy_mode_state_only = True
+
+    def __exit__(self, *exc) -> bool:
+        global _copy_mode_state_only
+        _copy_mode_state_only = self._old
+        return False
+
+
 def _copy_protected_file(p: Path, dst: Path) -> None:
     """把一个受保护文件复制进快照批次。
 
-    - ``*.db``（卡片库）→ ``VACUUM INTO`` 产出一致副本；
-    - ``*.db-wal`` / ``*.db-shm``（瞬态旁挂）→ 跳过（内容已由 VACUUM INTO 纳入；
+    - ``*.db``（卡片库）→ **过程批次：只导状态表**（`_export_state_db`，
+      855MB → 12MB）／**日备：整库一致副本**（`_vacuum_into`）；
+    - ``*.db-wal`` / ``*.db-shm``（瞬态旁挂）→ 跳过（内容已由库副本纳入；
       但它们仍参与 ``_fingerprint``，这样 WAL 下的写入也能被探测到）；
     - 〔2026-10-30〕保留设备名（``nul``/…）与备份副本（``*.bak*``）→ 跳过
       （枚举层已挡，这里兜底：``nul`` 一拷就 SameFileError ⇒ 整批被打成
@@ -268,7 +381,10 @@ def _copy_protected_file(p: Path, dst: Path) -> None:
     if _skip_snapshot_file(p):
         return
     if p.suffix == ".db":
-        _vacuum_into(p, dst)
+        if _copy_mode_state_only:
+            _export_state_db(p, dst)
+        else:
+            _vacuum_into(p, dst)
         return
     if p.name.endswith(".db-wal") or p.name.endswith(".db-shm"):
         return
@@ -348,6 +464,24 @@ def _drop_partial(dst: Path) -> None:
                        dst, type(exc).__name__, exc)
 
 
+def _rmtree_force(func, path, exc_info) -> None:
+    """``shutil.rmtree`` 的 onerror 回调：把只读/占用清掉再试一次。
+
+    〔2026-10-30 · 治「保留闸删了等于没删」〕
+    批次里可能含 **``.git`` 对象**（git 对象文件是只读 444）⇒ Windows 上
+    ``unlink`` 直接 ``WinError 5 拒绝访问`` ⇒ 原来用 ``ignore_errors=True``
+    会**把错误吞掉** ⇒ 目录删不掉 ⇒ 份数闸「删了等于没删」（实测：
+    work_027 拍完一份仍是 11 份，删不掉的那批含 ``.git``）。
+
+    ⇒ 改成 onerror：失败就把权限放开再删一次；再失败才放弃（并如实记失败）。
+    """
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except (Exception, SystemExit):  # noqa: BLE001 SystemExit＝沙箱删除守卫
+        pass
+
+
 def _safe_rmtree(p: Path) -> bool:
     """删一个旧批次；失败只记日志返回 False，**绝不外抛**。
 
@@ -361,9 +495,15 @@ def _safe_rmtree(p: Path) -> bool:
     事件、无 traceback（12:36/13:22 两次 create_card 后 500 实测正是此路径）。
     保留修剪是尽力而为的维护动作：一批删不动（撞闸/权限/占用）就跳过它，
     绝不许反噬主链路。
+
+    〔2026-10-30〕**如实报告删没删掉**：删不掉就返回 False（别让调用方以为
+    「删了」而放松保留策略）。只读文件由 `_rmtree_force` 先放开再删。
     """
     try:
-        shutil.rmtree(p, ignore_errors=True)
+        shutil.rmtree(p, onerror=_rmtree_force)
+        if p.exists():
+            logger.warning("旧批次删除不彻底（目录仍在，可能有占用文件）: %s", p)
+            return False
         return True
     except (Exception, SystemExit) as exc:  # noqa: BLE001 SystemExit＝沙箱删除守卫
         logger.warning("旧批次删除失败（跳过，不阻断）: %s (%s: %s)",
@@ -633,7 +773,16 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
         # （几万次 stat）⇒ 而它们本来就不参与指纹也不被拷 ⇒ 白枚举。
         # 留痕（manifest 的 omitted_log_files ＋ 日备全量）改为**只在真要拍这个 work
         # 时**才取（见下面 `_iter_work_log_files`）⇒ 结果逐字相同、IO 大幅下降。
-        files = _iter_protected_files()
+        #
+        # 〔2026-10-31 · 治「全项目扫描」〕**只扫被改的那一个 work**。
+        # 原来这里无条件走 `_iter_protected_files()`（＝`_iter_state_files(None)`）
+        # ⇒ **每次写操作都把整个 works/ 树扫一遍**（实测 65 个 work / 2209 个文件，
+        # 枚举 35ms），然后只留被改的那一个（其余 98% 白扫）。
+        # P26 的注释早就写着「现在只扫被改的那一个 work」——**代码没跟上**。
+        # ⇒ 作用域（work_id）交给 `_iter_protected_files` 内部处理：
+        #   **入口名与零参签名必须保持**（旧调用点与测试都 mock 它）。
+        with _scan_scope(work_id):
+            files = _iter_protected_files()
         if not files:
             result["ok"] = True
             return result
@@ -681,19 +830,22 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
             # 不必再遍历文件（实测全库 4499 批遍历要几分钟）。
             copied_bytes = 0
             # 〔5715 · 机制改造〕**过程批次只拷可变状态**（留痕交给日备）
-            for p in state_paths:
-                rel = p.relative_to(BASE_DIR)
-                err = _copy_with_lock_retry(p, bdir / rel, wid)
-                if err is None:
-                    total += 1
-                    try:
-                        copied_bytes += (bdir / rel).stat().st_size
-                    except OSError:
-                        pass
-                else:
-                    failed.append(
-                        {"work": wid, "file": str(rel), "stage": "batch",
-                         "error": err})
+            # 〔2026-10-30 · 治「每改一次就全项目备份」〕**只导状态表**：
+            # 整库拷贝是 855MB/次（实测 10.5s）⇒ 而真正会变的表只有 12MB。
+            with _state_only_copies():
+                for p in state_paths:
+                    rel = p.relative_to(BASE_DIR)
+                    err = _copy_with_lock_retry(p, bdir / rel, wid)
+                    if err is None:
+                        total += 1
+                        try:
+                            copied_bytes += (bdir / rel).stat().st_size
+                        except OSError:
+                            pass
+                    else:
+                        failed.append(
+                            {"work": wid, "file": str(rel), "stage": "batch",
+                             "error": err})
             # 写 manifest：说清这批是什么、留痕在哪（可恢复性的凭据）
             # 〔P26〕留痕清单**现在才取**（只有真要拍这个 work 时才需要 ⇒ 不白扫）。
             log_paths = _iter_work_log_files(wid)
@@ -711,6 +863,8 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
             if not daily.exists():
                 daily_failed = []
                 # 日备＝**全量**（含留痕 ⇒ 完整复盘点）⇒ 文件集＝可变状态 ＋ 留痕
+                # 〔2026-10-30〕日备**仍是整库**（``_copy_mode_state_only`` 在过程批次
+                # 那段上下文里已复原）⇒ 日备是唯一的「完整恢复点」，历史也在里面。
                 for p in list(state_paths) + list(log_paths):
                     rel = p.relative_to(BASE_DIR)
                     err = _copy_with_lock_retry(p, daily / rel, wid)
@@ -950,11 +1104,74 @@ def _restore_sqlite_content(src: Path, dst: Path) -> str | None:
                 pass
 
 
+def _is_state_only_db(p: Path) -> bool:
+    """这个库是不是「只含状态表」的**过程批次**库（不是日备的整库）？
+
+    判据：库里**没有**任何一张被排除的历史/垃圾表 ⇒ 它就是状态库。
+    （不看 manifest：日备目录没有 manifest，且 manifest 的 mode 字段对
+    批次与日备是同一个值，不足以区分。）
+    """
+    try:
+        con = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
+        try:
+            names = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 读不了就当它是整库（走老路径，最保守）
+        return False
+    return not (names & set(_STATE_EXCLUDE_TABLES))
+
+
+def _restore_state_db(src: Path, dst: Path) -> str | None:
+    """把「状态库」**合并**回 live 库：只覆盖状态表，**历史表不动**。
+
+    〔2026-10-30 · 治「每改一次就全项目备份」〕过程批次的库只含状态表 ⇒
+    恢复**不能整文件替换**（那会把 live 库的会话原文块/事件流一起抹掉）
+    ⇒ 改成逐表 ``DELETE + INSERT``（单事务 ⇒ 要么全成要么全不成）。
+
+    列名按**两边都有**的列对齐（旧快照遇上新列不至于整表插不进去）。
+    返回 ``None``＝成功；返回错误串＝失败（**不静默装成功**）。
+    """
+    con = sqlite3.connect(str(dst), timeout=30.0)
+    try:
+        con.execute("ATTACH DATABASE ? AS snap", (str(src),))
+        tabs = [r[0] for r in con.execute(
+            "SELECT name FROM snap.sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'")]
+        con.execute("BEGIN IMMEDIATE")
+        restored = 0
+        for t in tabs:
+            live_cols = [r[1] for r in con.execute(f'PRAGMA main.table_info("{t}")')]
+            snap_cols = [r[1] for r in con.execute(f'PRAGMA snap.table_info("{t}")')]
+            common = [c for c in live_cols if c in snap_cols]
+            if not common:
+                continue
+            collist = ", ".join(f'"{c}"' for c in common)
+            con.execute(f'DELETE FROM main."{t}"')
+            con.execute(f'INSERT INTO main."{t}" ({collist}) '
+                        f'SELECT {collist} FROM snap."{t}"')
+            restored += 1
+        con.execute("COMMIT")
+        con.execute("DETACH DATABASE snap")
+        con.commit()
+        logger.info("状态库合并恢复完成: %s（%d 张表）", dst, restored)
+        return None
+    except Exception as exc:  # noqa: BLE001 失败要如实报
+        return f"{type(exc).__name__}: {exc}"
+    finally:
+        con.close()
+
+
 def restore_from_snapshot(work_id: str, stamp: str, rel_path: str, target: Path | None = None) -> dict:
     """从指定批次恢复单个文件（工具函数，供人工/脚本使用）。
 
     [卡片存储迁移 SQLite] 恢复 ``*.db`` 时**用 backup API 回写内容**（不靠删
     ``-wal``）：旧 WAL 删不掉时会把旧数据复活 ⇒ 恢复看着成功、实际没回滚。
+
+    〔2026-10-30〕**过程批次的库只含状态表** ⇒ 恢复走**逐表合并**
+    （`_restore_state_db`）：整文件替换会把 live 库的会话原文块/事件流一起抹掉。
+    日备（整库）仍走原来的整文件替换路径。
     """
     src = SNAPSHOT_ROOT / work_id / stamp / rel_path
     if not src.exists():
@@ -968,6 +1185,14 @@ def restore_from_snapshot(work_id: str, stamp: str, rel_path: str, target: Path 
             card_db.close_work(work_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("恢复前关闭库连接失败（不阻断）%s: %s", work_id, exc)
+    if dst.suffix == ".db" and _is_state_only_db(src):
+        # 过程批次＝状态库 ⇒ 合并恢复（历史表不动）
+        err = _restore_state_db(src, dst)
+        if err:
+            return {"ok": False, "error": f"恢复库内容失败（live 库内容未回滚）: {err}",
+                    "from": str(src), "to": str(dst)}
+        return {"ok": True, "from": str(src), "to": str(dst),
+                "size": dst.stat().st_size, "mode": "state-merge"}
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     if dst.suffix == ".db":

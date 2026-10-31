@@ -65,7 +65,7 @@ _CARD_COLUMNS: tuple[str, ...] = (
     "card_id", "work_id", "title", "source", "card_type", "parent",
     "project_class", "owner_card_id", "state", "tags", "links", "relations",
     "session_ref", "toolcard_script", "toolcard_step", "toolcard_round",
-    "toolcard_final", "thinkchain_final", "perms", "perms_version",
+    "toolcard_final", "thinkchain_final",
     # [能力底座 2026-10-30] 模式 code（manual / auto / 未来第三种）＋ 这张卡挂了
     # 哪些能力（能力清单的 code 数组）。工具面从此按 mode→能力上限 ∩ abilities 算。
     "mode", "abilities",
@@ -90,7 +90,7 @@ _CARD_COLUMNS: tuple[str, ...] = (
 
 # 以小 JSON 文本存的列（短列表 / 小字典，不拆表——方案 §1.3.4）
 _JSON_COLUMNS: frozenset[str] = frozenset(
-    {"tags", "links", "relations", "toolcard_final", "thinkchain_final", "perms",
+    {"tags", "links", "relations", "toolcard_final", "thinkchain_final",
      # [能力底座 2026-10-30] 挂载的能力 code 数组
      "abilities"}
 )
@@ -333,9 +333,8 @@ _MESSAGES_DDL: tuple[str, ...] = (
 # ===========================================================================
 # 评审通过记录（[伴生评审卡 2026-10-27]）
 #
-# 一行＝某角色在某批次上的一次 `approve`。**版本绑定**（P3）：通过只对
-# (draft_ver, criteria_ver) 有效；草稿或判据一变，旧行即失效——判据不删行，
-# 查时比对版本，这样"谁在什么版本上通过过"永久可查（可翻案）。
+# 一行＝某角色在某批次上的一次 `approve`。有效票只看 `revoked=0`。
+# [2026-10-31 用户令] 评审不再有判据 ⇒ `criteria_ver` 列已删。
 #
 # 撤销＝`revoked=1`（软删，不删行）。一个角色一个批次一行：重评即覆盖本行。
 # ===========================================================================
@@ -345,7 +344,6 @@ _REVIEW_DDL: tuple[str, ...] = (
     batch_id     TEXT NOT NULL,
     role_id      TEXT NOT NULL,
     draft_ver    INTEGER NOT NULL DEFAULT 0,
-    criteria_ver INTEGER NOT NULL DEFAULT 0,
     ts           TEXT DEFAULT '',
     revoked      INTEGER DEFAULT 0,
     PRIMARY KEY (work_id, batch_id, role_id)
@@ -2138,6 +2136,7 @@ def _ensure_link_rel_perm(conn: sqlite3.Connection) -> None:
             "SELECT card_id, perms FROM cards "
             "WHERE perms IS NOT NULL AND perms <> ''"))
     except sqlite3.Error:
+        # [能力底座 2026-10-30] perms 列已删 ⇒ 这条 perms 时代的搬迁到此为止。
         return
     for r in rows:
         try:

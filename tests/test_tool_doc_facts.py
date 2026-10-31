@@ -26,7 +26,7 @@ PENDING: frozenset[str] = frozenset({
     "bash",
     "confirm_with_user",
     "continue_task",
-    "correct_alarm",
+    
     "create_card",
     "create_coder_card",
     "create_function",
@@ -50,14 +50,14 @@ PENDING: frozenset[str] = frozenset({
     "open_review",
     "propose_status",
     "python",
-    "raise_alarm",
+    
     "read_archive",
     "read_file",
     "read_linked",
     "read_manuscript",
     "read_memory",
     "read_shadow",
-    "record_verdict",
+    
     "rename_file",
     "reparent_card",
     "report_done",

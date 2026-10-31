@@ -354,6 +354,7 @@ class ModelGateway:
         turn_once: Optional[list[dict[str, Any]]],
         *,
         stream: bool,
+        reasoning_effort: Optional[str] = None,
     ) -> GenerateOptions:
         mc = self.config["models"][model_name]
         messages: list[dict[str, Any]] = []
@@ -389,6 +390,7 @@ class ModelGateway:
             temperature=temperature,
             max_tokens=max_tokens,
             stream=stream,
+            reasoning_effort=reasoning_effort,
         )
 
     def _retry_params(self, model_name: str) -> tuple[int, int]:
@@ -412,26 +414,42 @@ class ModelGateway:
     # 结果装配
     # ------------------------------------------------------------------
     @staticmethod
-    def _result_from(assembler: BlockAssembler, model_name: str, started: float) -> dict[str, Any]:
+    def _result_from(assembler: BlockAssembler, model_name: str, started: float,
+                     tools: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
         blocks = assembler.blocks()
         content = "".join(b.text for b in blocks if isinstance(b, TextBlock))
         tool_calls: list[dict[str, Any]] = []
         truncated_tool_call: Optional[dict[str, Any]] = None
         finish_reason = _legacy_finish(assembler.finish)
+        # [单工具补名 2026-10-30 · 实测 glm-5.3-flash @ open.bigmodel.cn/coding]
+        # 该端点的工具调用分片长这样：
+        #   {"index":0,"type":"function","function":{"arguments":"{}"}}
+        # **既无 id 也无 function.name**——工具名被写进正文（AntML 形态
+        # `<tool_call><hash></tool_call>`）。原实现 `if not b.name: continue`
+        # 把整个调用丢弃 ⇒ 端点报 finish_reason=tool_calls，我们拿到 tool_calls=[]，
+        # 归拢第三步永远提交不了。
+        # 机械判据：本轮只登记了一个工具 ⇒ 缺名的分片只可能是它（不是猜内容）。
+        # 多工具轮次无法机械归属，保持原样丢弃（宁可如实空，不瞎配名字）。
+        single_tool_name = ""
+        if tools and len(tools) == 1:
+            _t = tools[0] or {}
+            _fn = _t.get("function") if isinstance(_t.get("function"), dict) else _t
+            single_tool_name = str((_fn or {}).get("name") or "")
         for b in blocks:
             if not isinstance(b, ToolCallBlock):
                 continue
-            if not b.name:
+            name = b.name or single_tool_name
+            if not name:
                 continue
             raw_args = b.arguments
             try:
                 parsed = json.loads(raw_args) if raw_args else {}
                 if not isinstance(parsed, dict):
                     raise ValueError("arguments 不是对象")
-                tool_calls.append({"name": b.name, "arguments": parsed})
+                tool_calls.append({"name": name, "arguments": parsed})
             except Exception:  # noqa: BLE001 JSON 截断 → 交续写器
                 truncated_tool_call = {
-                    "name": b.name,
+                    "name": name,
                     "raw_arguments": raw_args,
                     "finish_reason": finish_reason or "length",
                 }
@@ -502,8 +520,24 @@ class ModelGateway:
         prior_messages: list[dict[str, Any]] | None = None,
         turn_tail: list[dict[str, Any]] | None = None,
         turn_once: list[dict[str, Any]] | None = None,
+        *,
+        trace_id: Optional[str] = None,
+        caller: str = "",
+        work_id: str = "",
+        card_id: str = "",
     ) -> dict[str, Any]:
+        # [F22 · 2026-10-31 观测重建] 新增**可选** keyword-only 形参 trace_id/caller：
+        # 只加不改——既有调用方零感知（不传＝自动生成 trace_id、caller 空）。
+        # 每次真实模型调用（含重试的每次 attempt）落一条 model_call JSONL，
+        # prompt/completion token 取流式 usage 真值（端点报了才有，否则 None 如实留空）。
+        # [2026-10-31 · 二轮审计] 补 work_id/card_id（在途台账与 model_call 行的
+        # 「卡」位）＋在途台账接线（call_begin/每帧 call_chunk/call_end）——
+        # 「是不是停了，看状态就知道」的字面落实；台账纯事实，不参与任何裁决。
         mc = self.config["models"][model_name]
+        from ..infra import observe as _obs
+        _trace = trace_id or _obs.new_trace_id()
+        _obs.call_begin(_trace, caller=caller, work_id=work_id, card_id=card_id,
+                        seat=model_name, model=model_name)
         _fill = reasoning_echo_fill(model_name, mc)
         if _fill is not None:
             turn_tail = _ds_norm(turn_tail, _fill)
@@ -536,6 +570,7 @@ class ModelGateway:
                 assembler = BlockAssembler()
                 emitted: list[str] = []
                 async for chunk in _guarded_stream(self._sem_for(model_name), self._runtime.stream(options)):
+                    _obs.call_chunk(_trace)
                     if chunk.type == "text-delta":
                         emitted.append(chunk.text)
                         if stream and on_chunk:
@@ -557,7 +592,7 @@ class ModelGateway:
                         }
                     raise ModelCallFailure(failure.message, _classify(failure))
 
-                result = self._result_from(assembler, model_name, started)
+                result = self._result_from(assembler, model_name, started, tools)
                 content = result["content"]
                 # DeepSeek 等推理模型返回 reasoning_content 而非 content 的兜底
                 if not content:
@@ -581,6 +616,22 @@ class ModelGateway:
                 self.stats.record(model_name, result["tokens_used"], result["latency_ms"], True)
                 _emit("success", attempt)
                 result["truncated_reply"] = self._truncated_reply(result, max_tokens)
+                # [F22] 因果链回执：trace/caller/usage 真值随 result 回传 + JSONL 落账
+                usage = assembler.usage
+                result["trace_id"] = _trace
+                result["caller"] = caller
+                result["usage_in"] = getattr(usage, "input_tokens", None) if usage else None
+                result["usage_out"] = getattr(usage, "output_tokens", None) if usage else None
+                _obs.log_model_call(
+                    trace_id=_trace, caller=caller, model=model_name,
+                    work_id=work_id, card_id=card_id, seat=model_name,
+                    prompt_tokens=result["usage_in"], completion_tokens=result["usage_out"],
+                    tokens_used=result["tokens_used"], latency_ms=result["latency_ms"],
+                    finish_reason=str(result.get("finish_reason") or ""),
+                    text_len=len(result.get("content") or ""),
+                    tool_calls=len(result.get("tool_calls") or []),
+                    reasoning_chars=sum(len(b.text) for b in blocks if isinstance(b, ReasoningBlock)))
+                _obs.call_end(_trace)
                 return result
 
             except ModelCallFailure as exc:
@@ -590,6 +641,7 @@ class ModelGateway:
                 _emit("retry", attempt, reason=reason)
                 if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
                     # [模型设置 2026-10-19 产品裁定] 无降级模型：重试耗尽即如实失败。
+                    _obs.call_end(_trace)
                     raise ModelError(ErrorCode.MODEL_CALL_FAILED,
                                      f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {exc.message}")
                 await asyncio.sleep(
@@ -600,12 +652,19 @@ class ModelGateway:
                 _emit("retry", attempt, reason=reason)
                 if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
                     # [模型设置 2026-10-19 产品裁定] 无降级模型：重试耗尽即如实失败。
+                    _obs.call_end(_trace)
                     raise ModelError(ErrorCode.MODEL_CALL_FAILED,
                                      f"模型 {model_name} 重试 {max_attempts} 次后仍失败: {exc}")
                 await asyncio.sleep(
                     min(backoff * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS) if rg_enabled else backoff
                 )
 
+        # [F22] 终败也落账（对账时"调用过但没成功"必须可见）
+        _obs.log_model_call(trace_id=_trace, caller=caller, model=model_name,
+                            work_id=work_id, card_id=card_id, seat=model_name,
+                            latency_ms=int((time.monotonic() - loop_start) * 1000),
+                            error=f"重试 {max_attempts} 次后仍失败")
+        _obs.call_end(_trace)
         raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 重试 {max_attempts} 次后仍失败")
 
     @staticmethod
@@ -640,6 +699,8 @@ class ModelGateway:
         model_name: str,
         *args: Any,
         fallbacks: list[str] | None = None,
+        work_id: str = "",
+        card_id: str = "",
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式调用；``fallbacks`` = **同层**兜底链。
@@ -653,7 +714,9 @@ class ModelGateway:
         for idx, mname in enumerate(chain):
             emitted = False
             try:
-                async for ev in self._stream_once(mname, *args, **kwargs):
+                async for ev in self._stream_once(mname, *args,
+                                                  work_id=work_id, card_id=card_id,
+                                                  **kwargs):
                     if "chunk_type" in ev:
                         emitted = True
                     elif isinstance(ev, dict):
@@ -683,8 +746,22 @@ class ModelGateway:
         prior_messages: list[dict[str, Any]] | None = None,
         turn_tail: list[dict[str, Any]] | None = None,
         turn_once: list[dict[str, Any]] | None = None,
+        reasoning_effort: str | None = None,
+        *,
+        on_chunk: Any = None,
+        trace_id: Optional[str] = None,
+        caller: str = "",
+        work_id: str = "",
+        card_id: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
+        # [F22 · 2026-10-31] 新增**可选** on_chunk/trace_id/caller（只加不改）：
+        # on_chunk ＝ 每个 chunk 事件旁路（凝练 F8 静默判死的计数依据）；
+        # trace/caller ＝ 因果链；每次真实调用落一条 model_call JSONL。
         mc = self.config["models"][model_name]
+        from ..infra import observe as _obs
+        _trace = trace_id or _obs.new_trace_id()
+        _obs.call_begin(_trace, caller=caller, work_id=work_id, card_id=card_id,
+                        seat=model_name, model=model_name)
         _fill = reasoning_echo_fill(model_name, mc)
         if _fill is not None:
             turn_tail = _ds_norm(turn_tail, _fill)
@@ -708,10 +785,17 @@ class ModelGateway:
             options = self._build_options(
                 model_name, system_prompt, user_prompt, temperature, max_tokens,
                 tools, prior_messages, turn_tail, turn_once, stream=True,
+                reasoning_effort=reasoning_effort,
             )
             assembler = BlockAssembler()
             try:
                 async for chunk in _guarded_stream(self._sem_for(model_name), self._runtime.stream(options)):
+                    _obs.call_chunk(_trace)
+                    if on_chunk:
+                        try:
+                            on_chunk(chunk.text if hasattr(chunk, "text") else "")
+                        except Exception:  # noqa: BLE001 旁路不伤主路
+                            pass
                     if chunk.type == "reasoning-delta":
                         if on_reasoning:
                             try:
@@ -725,16 +809,32 @@ class ModelGateway:
                 failure = _failure_of(assembler)
                 if failure is not None:
                     raise ModelCallFailure(failure.message, _classify(failure))
-                result = self._result_from(assembler, model_name, started)
+                result = self._result_from(assembler, model_name, started, tools)
                 self.stats.record(model_name, result["tokens_used"], result["latency_ms"], True)
                 _emit("success", attempt)
+                # [F22] 因果链回执 + JSONL 落账（usage 真值随行）
+                usage = assembler.usage
+                result["trace_id"] = _trace
+                result["caller"] = caller
+                result["usage_in"] = getattr(usage, "input_tokens", None) if usage else None
+                result["usage_out"] = getattr(usage, "output_tokens", None) if usage else None
+                _obs.log_model_call(
+                    trace_id=_trace, caller=caller, model=model_name,
+                    work_id=work_id, card_id=card_id, seat=model_name,
+                    prompt_tokens=result["usage_in"], completion_tokens=result["usage_out"],
+                    tokens_used=result["tokens_used"], latency_ms=result["latency_ms"],
+                    finish_reason=str(result.get("finish_reason") or ""),
+                    text_len=len(result.get("content") or ""),
+                    tool_calls=len(result.get("tool_calls") or []))
                 yield result
+                _obs.call_end(_trace)
                 return
             except ModelCallFailure as exc:
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(backoff)
                     continue
                 # [模型设置 2026-10-19 产品裁定] 无降级模型：流式重试耗尽即如实失败。
+                _obs.call_end(_trace)
                 raise ModelError(
                     ErrorCode.MODEL_CALL_FAILED,
                     f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc.message}",
@@ -743,6 +843,7 @@ class ModelGateway:
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(backoff)
                     continue
+                _obs.call_end(_trace)
                 raise ModelError(
                     ErrorCode.MODEL_CALL_FAILED,
                     f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc}",

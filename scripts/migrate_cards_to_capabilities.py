@@ -65,7 +65,9 @@ def _abilities_of(meta: dict, mode: str) -> list[str] | None:
 
 def main(argv: list[str]) -> int:
     apply = "--apply" in argv
-    works = [w.get("work_id") for w in work_store.list_works() if w.get("work_id")]
+    # 扫**全部** works 目录：work_store.list_works() 只返回登记过的项目，
+    # 实测漏掉 183 张卡（那些卡 abilities 一直为空 ⇒ 一直走旧路径）。
+    works = sorted(p.parent.name for p in (BASE / "works").glob("*/cards.db"))
     if not cap.load().get("enabled"):
         print("[migrate] 能力清单不可用，退出")
         return 2

@@ -78,19 +78,18 @@ def test_region_table_six_regions_no_current_turn_region():
     # 读过角色卡仍不改档/不撤岗 ⇒ 调阁触发必须外置成机制（见 test_role_cabinet_region.py）。
     orders = [r["order"] for r in context_regions.REGION_TABLE]
     names = {r["name"] for r in context_regions.REGION_TABLE}
-    # [2026-10-22] 配置演进：18 区 → 22 区，新增 91 组建职能 / 92 卡片能力 /
-    # 93 现有职能 / 145 你的职能。按 REGION_TABLE 实际值同步（不是照抄别处）。
-    assert orders == [0, 85, 90, 91, 92, 93, 95, 100, 145, 150, 152, 155,
+    # [2026-10-31] 配置演进：22 区 → 23 区——新增 88「本轮提示」（动态注入通道，
+    # 表序在 85 规则之前）。按 REGION_TABLE 实际值同步（不是照抄别处）。
+    assert orders == [0, 88, 85, 90, 91, 92, 93, 95, 100, 145, 150, 152, 155,
                       170, 175, 200, 250, 300, 900, 999, 1000, 1010, 1020]
     assert names == {
-        "使用说明", "规则注入", "卡片职责", "卡片思维", "卡片清单", "当前卡",
+        "使用说明", "规则注入", "本轮提示", "卡片职责", "卡片思维", "卡片清单", "当前卡",
         "自动模式·目标",
         "卡片区域说明", "直接子卡（使命·现状）", "第二层·职能角色",
         "记忆（condense_fold）", "依赖关联",
         "对话历史",
         "本轮工具轮",
         "用户消息", "判断协议注入", "工作规范与流程注入", "三席身份注入",
-        # [2026-10-22] 新增四区
         "组建职能", "卡片能力", "现有职能", "你的职能",
     }
     # 不再把动态上下文泛称为独立「当前轮」内容区。
@@ -167,8 +166,9 @@ async def test_v1_byte_equal_current_card_missing(sandbox):
     assert new.strip(), "装配结果不应为空"
     # 没有来源就不出现这个区：150 区缺席（90/100 在）
     regions = context_assembler.build_context_regions(wid, "card_999")
-    # [2026-10-22] 新增 92 卡片能力 区（即使卡不存在，装配层仍会产出该区占位判定）
-    assert [r["order"] for r in regions] == [90, 92, 100]
+    # [2026-10-22] 新增 92 卡片能力 区；[2026-10-31] 85 规则区对无规则 work 也出
+    # （缺省规则文案有来源）⇒ 按实际渲染同步
+    assert [r["order"] for r in regions] == [85, 90, 92, 100]
 
 
 async def test_v1_empty_and_rstrip_paths_of_build_system_prompt():
@@ -199,8 +199,8 @@ async def test_v1_context_regions_join_equals_neutral_context(sandbox):
     assert joined == context_assembler.build_neutral_context(wid, "card_001")
     # 无规则卡 → order 85 渲染空串，「没有来源就不出现这个区」，join 不含它。
     # [第二层区 2026-10-20 · card_004] 多卡树的根卡 ⇒ 175 有来源（≥2 张工作卡、无角色）。
-    # [2026-10-22] 新增 92 卡片能力 区（有内容才出现）
-    assert [r["order"] for r in regions] == [90, 92, 100, 150, 155, 175]
+    # [2026-10-22] 新增 92 卡片能力 区（有内容才出现）；[2026-10-31] 85 规则区入列
+    assert [r["order"] for r in regions] == [85, 90, 92, 100, 150, 155, 175]
     # regions 条目只带指针性元数据，不带正文复制字段以外的意外大字段
     for r in regions:
         assert set(r) == {"order", "name", "channel", "seats", "text", "entries"}

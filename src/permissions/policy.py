@@ -429,8 +429,10 @@ def can(actor_id: str, target_id: str, switch: str,
     target = cards.get(target_id)
     if target is None:
         return False
-    if not has_perm(target, switch):
-        return False
+    # [perms 退役 2026-10-30] 原第②条「目标卡须持有该开关」已删：
+    # 权限是**关系**，不是对象属性——同一张卡对不同的人本来就该不同答案。
+    # 「这个岗位能不能做这件事」由卡上挂的能力判（card_tools._abilities_of），
+    # 这里只管「能不能对这张卡做」（子树 / 连线 / 组织权）。
     actor = str(actor_id or "")
     if not actor:
         return False
@@ -486,14 +488,10 @@ def check(actor_id: str, target_id: str, switch: str,
       - ``any``：不判作用域（建线/解线用）。
     """
     cards = cards or {}
-    target = cards.get(target_id)
-    allowed = has_perm(target, switch)
-    if not allowed and switch == SWITCH_READ \
-            and str((target or {}).get("card_type") or "") == "review":
-        # [2026-10-30 实跑抓到] 评审卡的 perms 是空的 ⇒ 连「读」都被拒，成员和子卡
-        # 都读不到评审卡（判据、意见全在那张卡上）。评审卡是这张子卡共同的评审现场，
-        # 读它不该要开关。
-        allowed = True
+    # [perms 退役 2026-10-30] 原「目标卡须持有该开关」那半已删（与 ``can`` 同源）：
+    # 权限是关系不是对象属性；岗位能不能做这件事由卡上挂的能力判。
+    # 连带评审卡「读不要开关」的特例也失去意义——它本来就是为了绕开目标卡 perms。
+    allowed = True
     prompt_log.append_perm_log({
         "fn": "check",
         "actor_id": actor_id,

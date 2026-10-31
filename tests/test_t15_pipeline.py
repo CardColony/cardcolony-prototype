@@ -50,27 +50,22 @@ async def test_v1_mock_full_chain(sandbox, monkeypatch, caplog):
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 3)
 
-    scripted = "\n".join([
-        _entry_text(0, "【结论】占位甲"),
-        _entry_text(0, "首条：用户与助手确立了问题定义。"),
-        _entry_text(2, "末条：助手给出收束回复。"),
-    ])
-
-    async def fake_condense_call(user_prompt: str) -> str:
-        return scripted
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake_condense_call)
+    # [2026-10-31 对齐三步协议] 凝练已是 S2a→L1→L2 三段；替身出「整窗一组、
+    # 一条三栏 L1、零子题」。（旧脚本化【结论】产出过不了 S2a 的 G-1 闸。）
+    from _condense_stub import three_stage_stub
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="首条：用户与助手确立了收束结论。"))
     await memory_store.condense_turn_end(wid, cid)
 
-    # 落 entries（五字段恰齐 ＋ [原文入库 2026-10-20] 追溯两键 seq_from/seq_to）
+    # 落 entries（CausalNode 形态 ＋ [原文入库 2026-10-20] 追溯两键 seq_from/seq_to）
     st = memory_store.load_memory(wid, cid)
     assert st["mark"] == 6  # 6 块（3 轮 u/a），末块 seq=5，mark=末块+1
-    assert len(st["entries"]) == 3
-    for e in st["entries"]:
-        assert set(e) == {"seq", "conclusion", "evidence", "occurred_at", "fingerprint",
-                          "seq_from", "seq_to"}, "条目须带压自哪段原文（追溯链）"
-        # 追溯范围＝本批窗口（0..5 闭区间），不是反推
-        assert (e["seq_from"], e["seq_to"]) == (0, 5)
+    assert len(st["entries"]) == 1
+    e = st["entries"][0]
+    assert e["gist"] == "首条：用户与助手确立了收束结论。"
+    assert e["anchor"]["seq"] == 0 and e["coveredSeqs"] == [0, 1, 2, 3, 4, 5], \
+        "覆盖区间由 assemble 机械算（整窗一组）"
+    assert e["seq_from"] == 0 and e["seq_to"] == 5, "追溯两键＝本批窗口"
     # fingerprint 可复算＝凝练输入（块前缀未凝段全文）sha256 前 16
     # [工具结果落会话 2026-10-17] 改用统一读入门面（带 actor）：_build_condense_user_prompt
     # 现按 actor∈{human,assistant} 过滤，旧读函数 session_store.read_session 不产出
@@ -78,24 +73,19 @@ async def test_v1_mock_full_chain(sandbox, monkeypatch, caplog):
     prior = await session_facade.read(wid, cid)
     expect_fp = hashlib.sha256(
         memory_store._build_condense_user_prompt(prior).encode("utf-8")).hexdigest()[:16]
-    assert all(e["fingerprint"] == expect_fp for e in st["entries"])
-    # seq＝该条依据引用的起始块号；不带块号的条目**按窗口内可送块逐条分配**（不重复）
-    # [seq 身份修复 2026-10-22] 旧期望 [0, 0, 2] 是 bug 的固化：两条都落窗口首块，
-    # 触发「I1 gist 身份重复」⇒ 记忆链拒绝物化。现在第一条用其块号 0，第二条分配 1。
-    assert [e["seq"] for e in st["entries"]] == [0, 1, 2]
+    assert e["fingerprint"] == expect_fp
 
     # 200 区出现条目（渲染走 render_memory_region 真代码）
     regions = context_assembler.build_context_regions(wid, cid)
     r200 = next(r for r in regions if r["order"] == 200)
-    assert r200["entries"] == 3
-    assert "首条：用户与助手确立了问题定义。" in r200["text"]
-    assert "[块2" in r200["text"]
+    assert r200["entries"] == 1
+    assert "首条：用户与助手确立了收束结论。" in r200["text"]
 
     # 打点对账（任务 8）：触发＋完成两条在案，完成条含输入块数/产出条数/mark 前后
     msgs = [r.getMessage() for r in caplog.records if "condense_fold" in r.getMessage()]
     assert any("已到线" in m and "未凝token=" in m for m in msgs)
     done = [m for m in msgs if "凝练完成" in m]
-    assert len(done) == 1 and "输入块数=6" in done[0] and "产出条数=3" in done[0] \
+    assert len(done) == 1 and "输入块数=6" in done[0] and "产出条数=1" in done[0] \
         and "mark 0→6" in done[0]
 
     # 开关缺省关＝装配与现状逐字一致（V1 后半；真字节级基准见 T12 套件）
@@ -109,13 +99,14 @@ async def test_v1_switch_off_no_slice_no_region(sandbox, monkeypatch):
     # 预置 entries（开关关也不该出现在装配里）
     await memory_store.save_memory(wid, cid, {
         "card_id": cid, "mark": 2,
-        "entries": [{"seq": 0, "conclusion": "【结论】关闸不得出现", "evidence": "【依据】块0",
-                     "occurred_at": "t", "fingerprint": "fp"}]})
+        "entries": [{"anchor": {"sessionId": cid, "seq": 0}, "gist": "关闸不得出现",
+                     "status": "done", "kind": "fact", "level": 1, "role": "gist",
+                     "coveredSeqs": [0], "occurred_at": "t", "fingerprint": "fp"}]})
     regions = context_assembler.build_context_regions(wid, cid)
-    # [卡片职责区 2026-10-14] 迭代新增 order 90（卡片职责）
-    # [2026-10-21] 配置演进至 v9 新增 order 92（card_ability）；测试构造的
-    # 真实 work/card 会渲染出 92 区，按实测渲染结果同步期望（非照抄 22 区）
-    assert [r["order"] for r in regions] == [90, 92, 100, 150, 155]
+    # [2026-10-31] 区注册表随迭代演进（85 规则/152 goal/170 子卡…陆续入表），
+    # 全表清单不再钉死——本测试钉的是「开关关 ⇒ 200 记忆区不出现」。
+    orders = [r["order"] for r in regions]
+    assert 200 not in orders, "开关关 ⇒ 无 200 记忆区"
     assert all("关闸不得出现" not in r["text"] for r in regions)
 
 
@@ -125,7 +116,7 @@ async def test_v1_switch_off_no_slice_no_region(sandbox, monkeypatch):
 
 
 async def _run_once(wid, cid, monkeypatch, scripted):
-    async def fake(user_prompt: str) -> str:
+    async def fake(user_prompt: str, *args, **_) -> str:
         return scripted
     monkeypatch.setattr(memory_store, "_condense_call", fake)
     await memory_store.condense_turn_end(wid, cid)
@@ -139,10 +130,10 @@ async def test_v2_idempotent_same_window(sandbox, monkeypatch, caplog):
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
 
-    async def fake_condense_call(user_prompt: str) -> str:
-        return _entry_text(0, "唯一结论。")
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake_condense_call)
+    # [2026-10-31 对齐三步协议] 整窗一组、一条结论
+    from _condense_stub import three_stage_stub
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="唯一结论。"))
     await memory_store.condense_turn_end(wid, cid)
     st1 = memory_store.load_memory(wid, cid)
     assert st1["mark"] == 4 and len(st1["entries"]) == 1  # 2 轮=4 块
@@ -168,20 +159,21 @@ async def test_v2_idempotent_repair_mark(sandbox, monkeypatch, caplog):
     prior = await session_facade.read(wid, cid)
     fp = hashlib.sha256(
         memory_store._build_condense_user_prompt(prior).encode("utf-8")).hexdigest()[:16]
-    # 手工置成「条目已在、mark 落后」形态
+    # 手工置成「条目已在、mark 落后」形态（CausalNode 形态——渲染/同步都吃它）
     await memory_store.save_memory(wid, cid, {
         "card_id": cid, "mark": 0,
-        "entries": [{"seq": 0, "conclusion": "已在条目", "evidence": "【依据】块0",
-                     "occurred_at": "t", "fingerprint": fp}]})
+        "entries": [{"anchor": {"sessionId": cid, "seq": 0}, "gist": "已在条目",
+                     "status": "done", "kind": "fact", "level": 1, "role": "gist",
+                     "coveredSeqs": [0], "occurred_at": "t", "fingerprint": fp}]})
 
-    async def fake_condense_call(user_prompt: str) -> str:
-        return _entry_text(0, "不该新增的条目。")
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake_condense_call)
+    # [2026-10-31 对齐三步协议]
+    from _condense_stub import three_stage_stub
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="不该新增的条目。"))
     await memory_store.condense_turn_end(wid, cid)
     st = memory_store.load_memory(wid, cid)
     assert st["mark"] == 4 and len(st["entries"]) == 1
-    assert st["entries"][0]["conclusion"] == "已在条目"
+    assert st["entries"][0]["gist"] == "已在条目"
     msgs = [r.getMessage() for r in caplog.records]
     assert any("幂等补推" in m for m in msgs)
     assert not any("凝练完成" in m for m in msgs)
@@ -192,35 +184,42 @@ async def test_v2_idempotent_repair_mark(sandbox, monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad_return,stage", [
-    ("", "产出解析"),                 # 空产出
-    ("模型胡言乱语没有任何标记", "产出解析"),  # 无【结论】标记
+@pytest.mark.parametrize("seg,bad_return,stage", [
+    ("s2a", "模型胡言乱语没有任何格式", "s2a"),      # [F3] S2a 两次都过不了 G-1 闸 ⇒ abort
+    ("s2a", "", "s2a"),                              # 空产出同上
+    ("l1", "垃圾产出", "l1"),                        # [F7] L1 重试超限 ⇒ 整批作废
 ])
-async def test_v3_parse_failure_watermark_untouched(sandbox, monkeypatch, caplog, bad_return, stage):
+async def test_v3_parse_failure_watermark_untouched(sandbox, monkeypatch, caplog, seg, bad_return, stage):
     caplog.set_level(logging.WARNING, logger="storage.memory")
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
     monkeypatch.setenv("CONDENSE_TRIGGER_TOKENS", "1")
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
 
-    async def fake_condense_call(user_prompt: str) -> str:
-        return bad_return
+    # [2026-10-31 对齐三步协议] 指定段产出垃圾，其余段正常——失败段决定 stage
+    from _condense_stub import three_stage_stub
+    stub = three_stage_stub(gist="恢复用结论。")
+    stub.l1_raw = None
+
+    async def fake_condense_call(user_prompt: str, system: str = "", *args, **kwargs) -> str:
+        st_ = seg if (system and (("分块器" in system) == (seg == "s2a"))
+                      and (("L1 层" in system) == (seg == "l1"))) else ""
+        if st_ == seg:
+            return bad_return
+        return await stub(user_prompt, system, *args, **kwargs)
 
     monkeypatch.setattr(memory_store, "_condense_call", fake_condense_call)
     await memory_store.condense_turn_end(wid, cid)  # 不抛——零阻断
     st = memory_store.load_memory(wid, cid)
     assert st["mark"] == 0 and st["entries"] == []
     warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
-             and "凝练失败" in r.getMessage()]
-    assert len(warns) == 1 and f"阶段={stage}" in warns[0] and "水位一分不动" in warns[0]
+             and "水位不动" in r.getMessage()]
+    assert len(warns) == 1 and f"阶段={stage}" in warns[0], warns
 
     # 后续正常调用不受影响
     caplog.clear()
-
-    async def good_condense_call(user_prompt: str) -> str:
-        return _entry_text(0, "恢复后的结论。")
-
-    monkeypatch.setattr(memory_store, "_condense_call", good_condense_call)
+    monkeypatch.setattr(memory_store, "_condense_call",
+                        three_stage_stub(gist="恢复后的结论。"))
     await memory_store.condense_turn_end(wid, cid)
     st2 = memory_store.load_memory(wid, cid)
     assert st2["mark"] == 4 and len(st2["entries"]) == 1
@@ -233,16 +232,19 @@ async def test_v3_call_exception_watermark_untouched(sandbox, monkeypatch, caplo
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
 
-    async def boom(user_prompt: str) -> str:
+    async def boom(user_prompt: str, *args, **_) -> str:
         raise RuntimeError("模拟网关异常")
 
     monkeypatch.setattr(memory_store, "_condense_call", boom)
     await memory_store.condense_turn_end(wid, cid)
     st = memory_store.load_memory(wid, cid)
     assert st["mark"] == 0 and st["entries"] == []
+    # [2026-10-31 · 处置口径] 「模拟网关异常」不匹配重试类 ⇒ 失效类：run_two_layer
+    # 不再吞（fatal 直接上抛）⇒ 留痕＝「凝练失败——水位一分不动 阶段=模型调用」，
+    # 且**报错给用户**（事件面）——不再吞在日志里。
     warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
-             and "凝练失败" in r.getMessage()]
-    assert len(warns) == 1 and "阶段=模型调用" in warns[0] and "模拟网关异常" in warns[0]
+             and "水位" in r.getMessage()]
+    assert len(warns) == 1 and "阶段=模型调用" in warns[0] and "模拟网关异常" in warns[0], warns
 
 
 # ---------------------------------------------------------------------------
@@ -269,11 +271,12 @@ async def _e2e_capture(wid: str, cid: str, monkeypatch, reply: str = "收束回�
 async def test_v5_slice_on_and_off(sandbox, monkeypatch):
     wid, cid = await _make_work_with_card()
     await _append_conversation(wid, cid, 2)
-    # 预置水位：块 0、1 已凝，块 2、3 未凝
+    # 预置水位：块 0、1 已凝，块 2、3 未凝（CausalNode 形态——渲染吃 nodes 表）
     await memory_store.save_memory(wid, cid, {
         "card_id": cid, "mark": 2,
-        "entries": [{"seq": 0, "conclusion": "【结论】甲卡已凝要点", "evidence": "【依据】块0",
-                     "occurred_at": "t", "fingerprint": "seedfp"}]})
+        "entries": [{"anchor": {"sessionId": cid, "seq": 0}, "gist": "甲卡已凝要点",
+                     "status": "done", "kind": "fact", "level": 1, "role": "gist",
+                     "coveredSeqs": [0], "occurred_at": "t", "fingerprint": "seedfp"}]})
 
     # 开关开：历史只含 mark 后未凝段（2 条），system 含 200 区条目
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
@@ -290,8 +293,9 @@ async def test_v5_slice_on_and_off(sandbox, monkeypatch):
     await _append_conversation(wid2, cid2, 2)
     await memory_store.save_memory(wid2, cid2, {
         "card_id": cid2, "mark": 2,
-        "entries": [{"seq": 0, "conclusion": "【结论】关闸不得出现", "evidence": "【依据】块0",
-                     "occurred_at": "t", "fingerprint": "seedfp"}]})
+        "entries": [{"anchor": {"sessionId": cid2, "seq": 0}, "gist": "关闸不得出现",
+                     "status": "done", "kind": "fact", "level": 1, "role": "gist",
+                     "coveredSeqs": [0], "occurred_at": "t", "fingerprint": "seedfp"}]})
     monkeypatch.delenv("CONDENSE_ENABLED", raising=False)
     captured_off = await _e2e_capture(wid2, cid2, monkeypatch)
     wires_off = [c for c in captured_off if c["prior"]]
@@ -313,9 +317,14 @@ async def test_v7_mutex_second_trigger_skips(sandbox, monkeypatch, caplog):
 
     release = asyncio.Event()
 
-    async def slow_condense_call(user_prompt: str) -> str:
-        await release.wait()
-        return _entry_text(0, "慢凝练唯一结论。")
+    # [2026-10-31 对齐三步协议] 三段替身，L1 段阻塞到 release
+    from _condense_stub import three_stage_stub, stage_of
+    base = three_stage_stub(gist="慢凝练唯一结论。")
+
+    async def slow_condense_call(user_prompt: str, system: str = "", *args, **_) -> str:
+        if stage_of(system) == "s2a":
+            await release.wait()
+        return await base(user_prompt, system)
 
     monkeypatch.setattr(memory_store, "_condense_call", slow_condense_call)
     first = asyncio.create_task(memory_store.condense_turn_end(wid, cid))

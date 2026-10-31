@@ -202,6 +202,17 @@ class RuleCommitRequest(BaseModel):
 # Works 路由
 # ============================================================
 
+@router.get("/observe/calls")
+async def observe_calls():
+    """[2026-10-31 · 用户问「模型调用的状态有监控吗」] 在途模型调用台账（只读）。
+
+    纯事实查询面：此刻哪些调用在跑、谁（caller/卡/席）、多老、多久没吐帧。
+    「是不是停了，看状态就知道」——状态在这里。台账不做任何裁决。
+    """
+    from ..infra import observe as _obs
+    return {"inflight": _obs.inflight(), "pid": os.getpid()}
+
+
 @router.get("/works")
 async def list_works():
     return {"works": work_store.list_works()}
@@ -719,6 +730,15 @@ _ARCHIVE_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _ARCHIVE_TTL = 120.0
 _ARCHIVE_LOCKS: dict[str, asyncio.Lock] = {}
 
+#: 〔2026-10-31 · 治「疯狂占内存」〕旧档案扫描的**投影字段**。
+#:
+#: 病根：这个扫描把该 work **每张卡的整份会话**都解析出来并常驻
+#: （work_027 实测：12 张卡 = 2.96GB 常驻；单张 117MB 的会话峰值 909MB
+#: ⇒ 撑穿整机 commit ⇒ dwm 被挤掉 ⇒ 桌面黑 ＋ 服务 MemoryError 崩溃）。
+#: 而它真正要的只是「有没有 ``card:`` 块 ＋ 头几行 ＋ 摘要前 80 字」⇒
+#: 投影读（``content`` 截断到 8KB）后同一扫描 ≈ 30MB。
+_ARCHIVE_PROJECT = ("actor", "content", "seq", "ts", "from")
+
 
 async def _old_archive_items(work_id: str, cards: dict) -> list[dict[str, Any]]:
     """旧档案里的 card: 块（**带按 work 的 TTL 缓存 ＋ 串行闸**）。"""
@@ -733,8 +753,10 @@ async def _old_archive_items(work_id: str, cards: dict) -> list[dict[str, Any]]:
         if hit is not None and (time.monotonic() - hit[0]) < _ARCHIVE_TTL:
             return list(hit[1])
         out: list[dict[str, Any]] = []
+        # 〔2026-10-31〕**投影读**：只要摘要与头行，别整份解析并常驻每张卡的会话。
         _all_blocks = await asyncio.gather(
-            *(session_facade.read(work_id, cid) for cid in cards))
+            *(session_facade.read(work_id, cid, project=_ARCHIVE_PROJECT)
+              for cid in cards))
         for cid, blocks in zip(cards.keys(), _all_blocks):
             for b in blocks:
                 if not str(b.get("actor") or "").startswith("card:"):
@@ -1062,7 +1084,9 @@ async def get_review_status(work_id: str, card_id: str):
         from ..storage import session_facade as _sf
         _batch = str(st.get("batch") or "")
         _mark = f"· {_batch}〕" if _batch else ""
-        _blocks = await _sf.read(work_id, rid) or []
+        # [2026-10-31] 评审会话按批次独立（一个批次一个文件）
+        _sid = f"{rid}-{_batch}" if _batch else rid
+        _blocks = await _sf.read(work_id, _sid) or []
         if isinstance(_blocks, dict):
             _blocks = _blocks.get("blocks") or []
         for _b in _blocks:
@@ -1091,7 +1115,6 @@ async def get_review_status(work_id: str, card_id: str):
         "target_title": target_title,
         "batch": str(st.get("batch") or ""),
         "draft": int(st.get("draft") or 1),
-        "criteria": int(st.get("criteria") or 1),
         "members": list(st.get("members") or []),
         "passed": list(st.get("passed") or []),
         "pending": list(st.get("pending") or []),
@@ -1939,9 +1962,26 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     finally:
         if _revive_owner:
             session_facade.turn_release(work_id, card_id, _revive_owner)
-    return await _run_message(work_id, card_id, req.content, req.pair_id,
+    _res = await _run_message(work_id, card_id, req.content, req.pair_id,
                               op=req.op or "",
                               source_kind="human")
+    # [2026-10-31 用户令]「插话不打断流程；停止状态下说话，就继续跑」
+    # 只做一件事：这张评审卡有进行中的批次、且**当前没有轮次在跑**（＝停着的），
+    # 就把批次续上。正在跑 ⇒ 什么都不做（不打断、不抢占）。
+    # 不解释用户说了什么、不判断是不是"裁定"、不写任何状态。
+    try:
+        _m = (await card_store.read_card(work_id, card_id)).get("meta") or {}
+        if str(_m.get("card_type") or "") == "review":
+            from ..storage import review_store as _rv
+            _st = await _rv.state_of(work_id, card_id)
+            if str(_st.get("batch") or "") and not session_facade.turn_holder(
+                    work_id, card_id):
+                from . import review_runner as _rr
+                if await _rr.rerun_if_pending(work_id, card_id):
+                    logger.info("[review] 停着的批次已续上 review=%s", card_id)
+    except Exception as exc:  # noqa: BLE001 续不上不影响用户这一轮
+        logger.warning("[review] 续轮失败 review=%s: %s", card_id, exc)
+    return _res
 
 
 # ============================================================
@@ -2915,13 +2955,13 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # b. 先取历史（此时不含本条）
     # [2026-10-27 · 用户令「我要的结果是上下文读 sqlite，否则一定是混乱的源头」
     #  + 「凝练之后，读取的历史上下文，要只读未凝练的部分」]
-    # 读**原文库**，且**从凝练水位起读**：已凝练的块不进历史区——
-    # 它们的结论已经由 200 区（记忆）承载，再进历史区就是同一份事实出现两次。
-    # 前提已补：`session_store.append_message` 也委托门面 ⇒ 所有写入都进库。
+    # 读**原文库**。已凝块不进历史区由**投影层**承担（project_history_messages 按
+    # history_mark 切片——历史的凝练水位切片只有一个 owner）。
+    # [2026-10-31 · 修双重切片] 改前这里先按 mark 切一次（read_blocks(from_seq=mark)），
+    # 投影层又按同一 mark 切一次 ⇒ mark>0 后历史区恒空（同一把尺用了两遍）。
+    # 现在读全量、切片只归投影一层。
     from ..storage import origin_store as _origin
-    _mark = int((memory_store.load_memory(work_id, card_id) or {})
-                .get("mark", 0) or 0)
-    prior = _origin.read_blocks(work_id, card_id, _mark)
+    prior = _origin.read_blocks(work_id, card_id, 0)
     state.prior = prior
 
     # c. 追加用户消息

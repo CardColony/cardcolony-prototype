@@ -174,9 +174,9 @@ def test_b2_tool_table_and_versions():
     列 OP_ONLY_TOOLS、不进常规工具面）；TOOL_TABLE_VERSION tools-tc-7 → tools-tc-8。
     """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    assert src.count('": ToolDef(') == 32  # [角色机制 5710] 28→32（+create_role/role_watch_cards/record_verdict/raise_alarm）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
-    assert prompts.BASE_PROMPT_VERSION == "t22-1"
+    assert src.count('": ToolDef(') == 33  # [2026-10-31 F19] 32→33（+memory_expand）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-18"  # [2026-10-31 F19] tc-17→tc-18（+memory_expand）
+    assert prompts.BASE_PROMPT_VERSION == "t27-2"  # [2026-10-31] 随现配置对齐（t22-1 → t27-2 演进）
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY
     # 权限开关复用 link / unlink（不新开）
@@ -367,7 +367,7 @@ def test_b3_region_table_16_regions_with_250():
                       170, 175, 200, 250, 300, 900, 999, 1000, 1010, 1020]
     by_key = {r["key"]: r for r in context_regions.REGION_TABLE}
     assert by_key["goal"]["name"] == "自动模式·目标"
-    assert by_key["relations"]["name"] == "依赖关联"
+    assert by_key["relations"]["name"] == "关系线"
     assert by_key["relations"]["seats"] == ("main",)
     # ★ 真正的消费者闸门是 profiles（seats 不参与过滤）——取 main only 才能
     #   真做到「三席零变化」（任务书字面写三席，与硬判据4 冲突，按硬判据4 取）。
@@ -395,11 +395,11 @@ def test_b3_render_both_directions():
     """硬判据2：正向「我依赖/关联：B」＋反向「依赖/关联我的：A」。"""
     out = context_regions.render_dep_relations_region(
         [{"target": "card_003", "kind": "依赖", "detail": "它的接口"}], [])
-    assert out.startswith("## 依赖关联")
-    assert "我依赖/关联：card_003" in out and "它的接口" in out
+    assert out.startswith("## 关系线")
+    assert "**我依赖**" in out and "card_003" in out and "它的接口" in out
     inn = context_regions.render_dep_relations_region(
         [], [{"source": "card_001", "kind": "关联", "detail": "同模块"}])
-    assert "依赖/关联我的：card_001" in inn and "同模块" in inn
+    assert "**依赖我的**" in inn and "card_001" in inn and "同模块" in inn
 
 
 async def test_b3_injection_two_directions(sandbox):
@@ -414,14 +414,14 @@ async def test_b3_injection_two_directions(sandbox):
     ctx_b = context_assembler.build_ctx(wid, "card_003")
     main_a = context_regions.compose_model_context(ctx_a, profile="main")
     main_b = context_regions.compose_model_context(ctx_b, profile="main")
-    assert "我依赖/关联：card_003" in main_a["system_prompt"]
-    assert "依赖/关联我的：card_002" in main_b["system_prompt"]
+    assert "**我依赖**" in main_a["system_prompt"] and "card_003" in main_a["system_prompt"]
+    assert "**依赖我的**" in main_b["system_prompt"] and "card_002" in main_b["system_prompt"]
     # A 的上下文不该出现「依赖/关联我的：…」（A 没被指）
-    assert "依赖/关联我的：" not in main_a["system_prompt"]
+    assert "**依赖我的**" not in main_a["system_prompt"]
 
     # 三席（viewpoint）零变化：即便有依赖线，新区不进三席（按区头判，别撞 BASE_PROMPT 文案）
     vp_a = context_regions.compose_model_context(ctx_a, profile="viewpoint")
-    assert "## 依赖关联" not in vp_a["system_prompt"]
+    assert "## 关系线" not in vp_a["system_prompt"]
     assert "## 依赖关联" not in vp_a["neutral_context"]
 
 

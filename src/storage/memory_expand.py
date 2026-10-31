@@ -79,15 +79,39 @@ def expand(work_id: str, card_id: str, seq: int, role: str = "gist",
     row = arc.get((int(seq), role))
     if row:
         result["process"] = str(row.get("process") or "")
+    # [F17/F19 补口 · 2026-10-31 审计发现] archive 已冻结（F17：新链不再写行），
+    # 新节点的「经过」直接活在节点/条目上——archive 查不到时**回退节点自带字段**，
+    # 否则 L1 展开回执丢「经过」栏（实测：节点带 process、archive 空 ⇒ process=''）。
+    if not result["process"]:
+        result["process"] = str(node.get("process") or "")
 
     # 已沉底 ⇒ 复活（sunk=false，父链 lastUsedAt 刷新）
     if result["sunk"]:
-        now = int(now_ms) if now_ms is not None else 0
+        # [F19 · 修] now 缺省用**当前时刻**（原缺省 0 ⇒ lastUsedAt=0，
+        # 复活即重新进入回收线，等于白复活）。
+        import time as _time
+        now = int(now_ms) if now_ms is not None else int(_time.time() * 1000)
         revived_chain = lc.revive_update(chain, int(seq), now)
         md.save_chain(work_id, card_id, revived_chain)
         result["revived"] = True
         result["sunk"] = False
         result["note"] = "该条目此前已沉底（从渲染剔除），本次展开已复活。"
+
+    # [F19 · 整组展开] 该锚点名下的 L2 子条（upper 回指本锚）随组给出：
+    # 结论 → 细节一次看全，不必逐条再展开。
+    children: list[dict[str, Any]] = []
+    for n in chain or []:
+        if n is node:
+            continue
+        ups = n.get("upper") or []
+        if any(int((u or {}).get("seq", -2)) == int(seq) for u in ups if isinstance(u, dict)):
+            children.append({
+                "seq": int((n.get("anchor") or {}).get("seq", 0) or 0),
+                "gist": str(n.get("gist") or ""),
+                "process": str(n.get("process") or ""),
+                "sunk": bool(n.get("sunk")),
+            })
+    result["children"] = children
 
     # 降级 ⇒ 标记"需再描述"（本模块不调模型，见模块头注）
     if result["degraded"]:
@@ -117,11 +141,23 @@ def render(result: dict[str, Any]) -> str:
     """把展开结果渲染成给模型看的文本（dsh 工具回执同风格：先结论、再描述、再原文）。"""
     if not result.get("found"):
         return f"未找到：{result.get('reason', '')}"
-    parts = [f"【结论】{result.get('gist') or ''}"]
+    # [F23 · 2026-10-31 残留清理] 回执不再用【结论】/【依据】形态——工具回执是
+    # 模型面文本，那对标记会教模型在正文里模仿假工具调用（与轮槽折叠同病的根）。
+    parts = [f"【记忆】{result.get('gist') or ''}"]
     if result.get("note"):
         parts.append(f"【说明】{result['note']}")
     if result.get("process"):
         parts.append(f"【描述】{result['process']}")
+    # [F19 · 整组] 细节子条随组渲染
+    children = result.get("children") or []
+    if children:
+        lines = []
+        for c in children:
+            line = f"  ◇ [seq {c.get('seq')}] {c.get('gist') or ''}".rstrip()
+            if c.get("process"):
+                line += f"\n    {c['process']}"
+            lines.append(line)
+        parts.append("【细节组】\n" + "\n".join(lines))
     blocks = result.get("blocks") or []
     if blocks:
         body = "\n".join(f"[块{b['seq']}] {b['content']}" for b in blocks)

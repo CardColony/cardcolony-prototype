@@ -224,11 +224,11 @@ async def test_face_blocks_drive_per_function_face(sandbox, monkeypatch):
     s_ceo = function_room.summary(wid, root_id)
     for sec in ("决策簿", "汇报簿", "分歧待裁"):
         assert f"## {sec}" in s_ceo["text"], sec
-    # 非目录存量:默认五节
+    # 非目录存量:默认三节（观点簿/警报簿 2026-10-31 退役）
     prof = await function_store.create_function(
         wid, "存量职能", {"charter": {"version": 1, "text": "旧职责"}})
     s_old = function_room.summary(wid, prof["function_id"])
-    for sec in ("职责书", "管辖", "观点簿", "警报簿", "指令簿"):
+    for sec in ("职责书", "管辖", "指令簿"):
         assert f"## {sec}" in s_old["text"]
     assert "前提台账" not in s_old["text"]
 

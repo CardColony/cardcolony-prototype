@@ -57,7 +57,7 @@ async def test_expand_returns_gist_process_and_verbatim_blocks(sandbox):
     assert r["process"] == "描述层正文"
     assert [b["content"] for b in r["blocks"]] == ["问0", "答0", "问1", "答1"], "逐字原文"
     text = me.render(r)
-    assert "【结论】" in text and "【描述】" in text and "【原文】" in text
+    assert "【记忆】" in text and "【描述】" in text and "【原文】" in text  # [F23] 回执不再用【结论】形态
 
 
 # ---------------------------------------------------------------- X3

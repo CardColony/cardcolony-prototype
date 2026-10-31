@@ -9,7 +9,7 @@
 T1 目录加载与 fail-open(读不到 ⇒ disabled,旧世界行为)
 T2 播种幂等(总裁档案落根卡 id,其余建 fn 卡;二次播种全跳过)
 T3 145 区身份按角色分界(总裁统筹执笔 vs 普通职能只盯不干;scope 盯线显示)
-T4 职能卡面=台账动态拼装(职责书/观点簿/警报簿/指令簿)
+T4 职能卡面=台账动态拼装(职责书/管辖/指令簿；观点簿/警报簿 2026-10-31 退役)
 T5 生产链路接线(build_context_bundle 带 function_meta ⇒ 145 区真渲染;
    POST /works 路由播种;存量 work 手动播种端点)
 
@@ -162,20 +162,14 @@ async def test_function_summary_from_ledgers(sandbox):
          "jurisdiction": {"domain": "测试域", "scope": "all"},
          "watch": {"scope": "all", "cards": [], "signals": []}})
     fid = prof["function_id"]
-    await function_store.add_verdict(
-        wid, fid, "speak", "验收判据缺失,不许等着做完再说",
-        sources=[], targets=["card_003"], evidence=["判据台账"])
-    await function_store.add_alarm(
-        wid, fid, "warn", "无判据开工", "详情",
-        question="要不要补判据?", default_action="继续盯")
     s = function_room.summary(wid, fid)
     assert s["function_name"] == "测试职能"
-    for sec in ("职责书", "管辖", "观点簿", "警报簿", "指令簿"):
+    for sec in ("职责书", "管辖", "指令簿"):
         assert f"## {sec}" in s["text"]
     assert "测试职责书" in s["text"]
-    assert "验收判据缺失" in s["text"]          # 观点簿带最新判词
-    assert "无判据开工" in s["text"]             # 警报簿带 open 警报
-    assert s["counts"]["open_alarms"] == 1
+    # [2026-10-31] 观点簿/警报簿随 record_verdict / raise_alarm 退役：面里不再有这两节
+    assert "## 观点簿" not in s["text"] and "## 警报簿" not in s["text"]
+    assert "open_alarms" not in s["counts"]
 
 
 # ---------------------------------------------------------------- T5 接线
@@ -242,7 +236,7 @@ async def test_read_function_card_returns_ledger_face(sandbox, monkeypatch):
     r = await card_tools._h_read_card(wid, root_id, {"card_id": fid}, cards)
     assert r.get("card_type") == "function"
     assert "function" in r and "职责书" in r["text"]
-    assert "观点簿" in r["text"]
+    assert "观点簿" not in r["text"]        # 2026-10-31 判断簿退役
 
 
 # ---------------------------------------------------------------- P-A 工具面
@@ -257,7 +251,7 @@ async def _seeded_work(monkeypatch, title: str = "工具面") -> tuple[str, dict
 
 async def test_function_toolface_catalog_deny(sandbox, monkeypatch):
     """目录 deny 生效:预设职能不发信不派工(send_card_message/create_card 摘除),
-    基础职能件(record_verdict/raise_alarm/read_inbox)保留。"""
+    基础职能件(sync/approve/write_ledger)保留；判断/警报三件已退役。"""
     wid, cards = await _seeded_work(monkeypatch)
     fn_ids = [cid for cid, m in cards.items()
               if str(m.get("card_type") or "") == "function"]
@@ -272,7 +266,9 @@ async def test_function_toolface_catalog_deny(sandbox, monkeypatch):
     # [伴生评审卡 2026-10-27] 评审换代：review_request/submit_review 下线，
     # 职能改为在评审卡上调 approve 表态。
     assert "review_request" not in names and "submit_review" not in names
-    assert {"record_verdict", "raise_alarm", "sync", "approve"} <= names
+    # [2026-10-31 用户令] 判断/警报退役：三件不再进任何工具面
+    assert {"sync", "approve"} <= names
+    assert not ({"record_verdict", "raise_alarm", "correct_alarm"} & names)
 
 
 async def test_legacy_function_keeps_old_toolface(sandbox):
@@ -303,7 +299,7 @@ async def test_root_can_create_function_beyond_presets(sandbox, monkeypatch, tmp
     assert "create_function" in names, "根卡要能建预设之外的职能"
     assert "list_functions" in names
 
-    # 假目录验证总裁追加机制:ceo allow 一件已注册工具(record_verdict)⇒ 根卡面出现
+    # 假目录验证总裁追加机制:ceo allow 一件已注册工具(approve)⇒ 根卡面出现
     fake = tmp_path / "fake_catalog.json"
     fake.write_text(__import__("json").dumps({
         "_meta": {"version": 1, "seed_on_create": True,
@@ -312,7 +308,7 @@ async def test_root_can_create_function_beyond_presets(sandbox, monkeypatch, tmp
             {"code": "ceo", "name": "总裁", "lands_on": "root",
              "charter": "统筹", "jurisdiction": {"scope": "all"},
              "watch": {"scope": "all", "cards": []},
-             "toolface": {"allow": ["record_verdict"], "deny": []}},
+             "toolface": {"allow": ["approve"], "deny": []}},
         ]}, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setenv(function_room.ENV_CATALOG_PATH, str(fake))
     function_room.reset_cache()
@@ -320,7 +316,7 @@ async def test_root_can_create_function_beyond_presets(sandbox, monkeypatch, tmp
     tools2 = card_tools.build_tool_schemas(card_id=root_id, work_id=wid,
                                            cards=cards)
     names2 = {str(t.get("name")) for t in tools2}
-    assert "record_verdict" in names2             # ceo allow 追加生效
+    assert "approve" in names2                    # ceo allow 追加生效
 
 
 def test_team_function_region_retired_when_catalog_on(sandbox, monkeypatch, tmp_path):
@@ -363,7 +359,7 @@ def test_child_status_full_and_coder_skipped(sandbox):
 def test_region_guide_function_branch(sandbox):
     """职能卡的 155 区讲台账面,不再讲三块;作业卡三块语义不变。"""
     g = context_regions.render_card_region_guide("function", "rd_project")
-    assert "职能卡" in g and "观点簿" in g and "三个块" not in g
+    assert "职能卡" in g and "指令簿" in g and "三个块" not in g
     g2 = context_regions.render_card_region_guide("sub_project", "rd_project")
     assert "三个块" in g2                        # 作业卡照旧
 

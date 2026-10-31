@@ -73,11 +73,37 @@ _PLACEHOLDER_MARKERS = (
 
 
 def _is_placeholder(text: str) -> bool:
-    """是否占位符（模板示例）或空。命中＝当前块视为未写。"""
+    """是否占位符（模板示例）或空。命中＝当前块视为未写。
+
+    [2026-10-31 修·整块正文被静默抹掉] 改前是**子串命中**：
+    ``any(m in t for m in _PLACEHOLDER_MARKERS)``。而标记 ``（本卡全部需求的确定版``
+    是模板句的**前缀**，真实正稿只要沿用这句起头就整块被判成"没写过"——
+    实测 work_027/card_001（根卡·总裁）的需求正稿 **6,961 字 / 111 行**，首行是
+    「（本卡全部需求的确定版，覆盖写·单一最新。技术条款的唯一确定源＝card_021…）」
+    ⇒ `_is_placeholder` 返回 True ⇒ 150 区把整份正稿丢弃、只留模板说明。
+    后果是全项目最权威的那份文档对**它自己和所有读者**都不在场：总裁在评审批次里
+    只能从 prior 的消息碎片里"记得"v1.0／打包版／G04，其余凭空补全
+    （实测那一轮它写出的「六条功能线已对齐」「用户当场裁定的分工是…」两条，
+      对 365,151 字上下文全文核验均 0 命中）。
+
+    判据改成**按行**：块里只要还有一行实质内容，就不是占位符。
+    「实质内容行」＝既不含占位标记、也不是"整行就是一句括号说明"。
+    这样纯骨架（NEW_CARD_SKELETON 每块正好一行括号说明）仍然判空，
+    沿用模板句起头再写真内容的块不再被抹掉。
+    """
     t = (text or "").strip()
     if not t:
         return True
-    return any(m in t for m in _PLACEHOLDER_MARKERS)
+    for line in t.split("\n"):
+        ln = line.strip()
+        if not ln:
+            continue
+        if any(m in ln for m in _PLACEHOLDER_MARKERS):
+            continue                      # 模板说明行
+        if ln.startswith("（") and ln.endswith("）"):
+            continue                      # 整行就是一句括号说明
+        return False                      # 有一行真内容 ⇒ 这一块写过
+    return True
 
 
 def _get_current_block(result: dict, kind: str) -> str:

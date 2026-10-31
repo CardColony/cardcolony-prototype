@@ -86,3 +86,23 @@ node_modules/
 # 例外：证据目录下的 `_*` 一律可入册（htmx/临时草稿不在这些目录里，不受影响）。
 !verify/5713/**/_*
 !_flake_ev/_*
+
+# ── 2026-10-31 · 入库前甄别：这几类不进仓库 ─────────────────────────
+# agent 工作区（各会话的中间产物：探针、补丁、证据摘抄）——1171 个文件，
+#   `_*` 只能挡下 `_*.py/_*.json/...` 这几种扩展名，其余（无扩展名、.patch、
+#   子目录里的 .txt/.log）会漏网 ⇒ 显式挡整个目录。
+_mywork/
+# 沙箱/测试实例的独立数据根（.sandbox_dbg / .sandbox_e2e / .sandbox_flow / .sbx_r1）
+.sandbox_*/
+.sbx_r1/
+# 恢复残留与一次性补丁
+_recover/
+_p20_wip.patch
+# 根目录零字节事故文件 / 一次性提取物 / 工具状态目录
+/cards.db
+/taskbook_extracted.txt
+/.failed_now.txt
+/.zcode/
+# 运行日志（logs/ 已挡；data/ 是同一类）
+data/*.log
+data/*.log.err

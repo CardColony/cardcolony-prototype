@@ -11,7 +11,7 @@
   function_meta_for() 145 区取数——职能/总裁回合的身份来源,补上装配层缺的那一针
                       (context_assembler.build_ctx 的 docstring 预告过
                        「由 function_room 回合执行器显式传进来」,本模块即它)
-  summary()           职能卡面=台账动态拼装(职责书/观点簿/警报簿/指令簿,
+  summary()           职能卡面=台账动态拼装(职责书/管辖/指令簿,
                       照 role_room.role_summary 先例,不用通用三块冒充)
 
 后续汇聚协议(观点→统合→统筹)同样落在本模块(见 docs/ 设计文档)。
@@ -265,15 +265,15 @@ def _render_ledger_block(lines: list[str], title: str,
     lines.append("")
 
 
-def summary(work_id: str, function_id: str,
-            verdicts_limit: int = 8) -> dict[str, Any]:
+def summary(work_id: str, function_id: str) -> dict[str, Any]:
     """职能的「卡面」:**按目录 face_blocks 装配**(卡面定制 2026-10-24)。
 
-    - 目录职能:职责书/管辖/观点簿/警报簿/指令簿按 face_blocks 顺序出;
+    - 目录职能:职责书/管辖/指令簿按 face_blocks 顺序出;
       专业台账(PM 前提台账/CTO 技术裁定簿/QA 判据验收/涌现守门体检/
       总裁 决策簿·汇报簿·分歧待裁)从 function_ledgers 现拼——每职能的面
       结构由目录定义,这正是「按职能量身定制」的落点。
-    - 非目录职能(work_025 存量):默认五节,与旧形态逐字一致。
+    - 非目录职能(work_025 存量):默认三节(职责书/管辖/指令簿)。
+    - [2026-10-31] 观点簿/警报簿已随 record_verdict / raise_alarm 退役。
     只读、不落库——职能卡 cards 行的三块只是身份占位,真相在台账里。
     """
     prof = function_store.get_profile(work_id, function_id) or {}
@@ -284,19 +284,9 @@ def summary(work_id: str, function_id: str,
     scope = str(watch.get("scope") or jur.get("scope") or "")
     watch_cards = [str(c) for c in (watch.get("cards") or [])]
 
-    verdicts: list[dict[str, Any]] = []
-    alarms: list[dict[str, Any]] = []
+    # [2026-10-31 用户令「判断、警报我明确不需要，拆掉」] 观点簿/警报簿随
+    # record_verdict / raise_alarm 一起退役——这两本账不再取数、不再渲染。
     directives: list[dict[str, Any]] = []
-    try:
-        verdicts = function_store.list_verdicts(work_id, function_id,
-                                                limit=verdicts_limit) or []
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        alarms = function_store.list_alarms(work_id, status="open",
-                                            function_id=function_id) or []
-    except Exception:  # noqa: BLE001
-        pass
     try:
         directives = function_store.list_directives(work_id, function_id,
                                                     status="issued") or []
@@ -304,12 +294,10 @@ def summary(work_id: str, function_id: str,
         pass
 
     entry_e, face_blocks, lmap = _entry_face(work_id, function_id, prof)
-    blocks = face_blocks or ["职责书", "管辖", "观点簿", "警报簿", "指令簿"]
+    blocks = face_blocks or ["职责书", "管辖", "指令簿"]
 
     ledger_cache: dict[str, list[dict[str, Any]]] = {}
-    counts: dict[str, int] = {"verdicts": len(verdicts),
-                              "open_alarms": len(alarms),
-                              "issued_directives": len(directives)}
+    counts: dict[str, int] = {"issued_directives": len(directives)}
     lines: list[str] = []
     sections_out: list[str] = []
 
@@ -323,27 +311,6 @@ def summary(work_id: str, function_id: str,
                       f"｜范围:{scope or '—'}"
                       f"｜盯:{'、'.join(watch_cards) if watch_cards else '（按范围）'}",
                       ""]
-        elif title == "观点簿":
-            lines.append(f"## 观点簿(最近 {verdicts_limit} 条)")
-            if verdicts:
-                for v in verdicts:
-                    dec = str(v.get("decision") or "")
-                    reason = str(v.get("reason") or "").replace("\n", " ")[:160]
-                    tg = "、".join(str(t) for t in (v.get("targets") or [])[:4])
-                    lines.append(f"- [{_fmt_ts(v.get('ts', ''))}] {dec}"
-                                 f"{' → ' + tg if tg else ''}:{reason}")
-            else:
-                lines.append("- （尚无观点记录)")
-            lines.append("")
-        elif title == "警报簿":
-            lines.append("## 警报簿(open)")
-            if alarms:
-                for a in alarms:
-                    lines.append(f"- [{a.get('severity')}] {a.get('title')}"
-                                 f"({_fmt_ts(a.get('ts', ''))})")
-            else:
-                lines.append("- （无未决警报)")
-            lines.append("")
         elif title == "指令簿":
             lines.append("## 指令簿(issued)")
             if directives:
@@ -410,12 +377,16 @@ def summary(work_id: str, function_id: str,
 # 机械形态(role_room 的 sync+spawn 同构模板):
 #   notify_event()      事件源:任何卡发生「应到的」事件(汇报到达/面变/收口申请)
 #                       → 全部目录职能(总裁必达)进 function_sync 队列;
-#   spawn()             观点回合:职能读事件批次 → record_verdict(观点簿),
+#   spawn()             观点回合:职能读事件批次 → 落观点(观点簿),
 #                       沉默也落账(机械补记);总裁的观点回合同法。
-#   统合与统筹(父卡读观点簿摘要→统合文;总裁读统合文→决策)不设独立回合
-#   ——它们发生在父卡/总裁的下一个自然回合:观点簿摘要以区块注入(P-B 后续批)。
+#   统合与统筹(父卡读观点摘要→统合文;总裁读统合文→决策)不设独立回合
+#   ——它们发生在父卡/总裁的下一个自然回合:观点摘要以区块注入(P-B 后续批)。
 #   本文件先落「事件→观点」这半条回路:它是「职能引导者」的机械前提——
 #   没有事件驱动唤醒,职能永远是被戳才说话的应答机。
+#
+# [2026-10-31 现状] 上面这条回路**从未实现**(notify_event / spawn 两个函数
+# 不存在),且观点簿已随 record_verdict 退役——「事件→观点」这半条不再有
+# 落点。此段仅作设计留档,不要据此以为职能有自动唤醒。
 # ===========================================================================
 
 def requirements_approved(work_id: str, card_id: str) -> bool:

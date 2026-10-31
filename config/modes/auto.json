@@ -1,32 +1,23 @@
 {
  "_meta": {
-  "version": 1,
+  "version": 4,
   "created_at": "2026-10-30",
+  "updated_at": "2026-10-30 按拆包后的 41 项重算（全 work 采样）",
   "purpose": "一个模式一张能力配置清单：这个模式下，各类卡**最多**能挂哪些能力（上限）。",
   "carrier": "config/modes/<mode>.json，一个文件一个模式。新增模式＝新增一个文件，代码零改动。",
   "semantics": {
    "cards": "卡型 → 能力 code 列表（上限）。卡上实际挂的能力必须落在这个范围内，超出直接拒、不静默截断。",
    "upper_bound_only": "本文件只给上限。轮次/状态类的闸（正稿才给派工、必须轮、无板）不在这里，仍在代码里按状态判。",
-   "derivation": "按 2026-10-30 各卡型的实际工具面反推：有实例的取并集（work_027），无实例的用同类型合成卡走同一条装配路径。"
+   "derivation": "按 2026-10-30 各卡型实际工具面反推：全部 work 的实例取并集；无实例的用同类型合成卡走同一条装配路径。"
   },
-  "uncovered_tools": {
-   "function": [
-    "update_status"
-   ],
-   "role": [
-    "update_status"
-   ]
-  },
-  "diff_from_manual": "只多一项「目标推进」（goal）。自动模式收权的那几道（governance face / 必须轮 / 无板 / 需求闸）是轮次闸，不写在这里。"
+  "diff_from_manual": "只多一项「目标推进」（goal）。自动模式收权那几道是轮次闸，不写在这里。"
  },
  "code": "auto",
  "name": "自动",
  "cards": {
   "project": [
-   "alarm",
    "create_child",
    "curate",
-   "dispose_card",
    "edit_other_face",
    "finalize",
    "goal",
@@ -34,6 +25,8 @@
    "interrupt",
    "ledger",
    "link",
+   "link_rel",
+   "list_functions",
    "manuscript",
    "notify",
    "open_review",
@@ -41,16 +34,22 @@
    "project_rules",
    "read_card",
    "read_files",
+   "read_linked",
    "read_own_process",
+   "reparent",
    "report_to_human",
+   "revoke_vote",
    "set_child_mission",
    "set_criteria",
    "staff",
-   "verdict",
+   "unlink",
+   "unlink_rel",
    "vote",
+   "watch_functions",
    "watch_policy",
    "web",
-   "write_own_face"
+   "write_own_face",
+   "write_process"
   ],
   "sub_project": [
    "create_child",
@@ -61,19 +60,25 @@
    "instruct",
    "interrupt",
    "link",
+   "link_rel",
    "manuscript",
    "notify",
    "open_review",
    "open_stage",
    "read_card",
    "read_files",
+   "read_linked",
    "read_own_process",
+   "reparent",
    "report_up_chain",
    "set_child_mission",
    "set_criteria",
+   "unlink",
+   "unlink_rel",
    "vote",
    "web",
-   "write_own_face"
+   "write_own_face",
+   "write_process"
   ],
   "coder": [
    "edit_other_face",
@@ -82,75 +87,49 @@
    "open_stage",
    "read_card",
    "read_files",
+   "read_linked",
    "read_own_process",
-   "report_up_chain",
+   "report_done",
    "run_code",
    "vote",
    "web",
    "write_files",
-   "write_own_face"
+   "write_own_face",
+   "write_process"
   ],
   "review": [
    "goal",
    "open_stage",
    "read_card",
    "read_files",
+   "read_linked",
    "read_own_process",
    "vote"
   ],
   "function": [
-   "alarm",
    "create_child",
-   "dispose_card",
    "finalize",
    "goal",
    "instruct",
    "ledger",
    "link",
+   "link_rel",
    "manuscript",
    "notify",
    "open_review",
    "open_stage",
    "read_card",
    "read_files",
+   "read_linked",
    "read_own_process",
+   "reparent",
    "set_child_mission",
-   "verdict",
+   "unlink",
+   "unlink_rel",
    "vote",
    "web",
-   "write_own_face"
-  ],
-  "tool": [
-   "dispose_card",
-   "edit_other_face",
-   "finalize",
-   "goal",
-   "open_stage",
-   "read_card",
-   "read_own_process",
-   "vote",
-   "web",
-   "write_own_face"
-  ],
-  "rule": [
-   "goal"
-  ],
-  "role": [
-   "alarm",
-   "create_child",
-   "finalize",
-   "goal",
-   "link",
-   "open_review",
-   "open_stage",
-   "read_card",
-   "read_files",
-   "read_own_process",
-   "set_child_mission",
-   "verdict",
-   "vote",
-   "web",
-   "write_own_face"
+   "write_own_face",
+   "write_process"
   ],
   "topic": [
    "create_child",
@@ -161,19 +140,62 @@
    "instruct",
    "interrupt",
    "link",
+   "link_rel",
    "manuscript",
    "notify",
    "open_review",
    "open_stage",
    "read_card",
    "read_files",
+   "read_linked",
    "read_own_process",
+   "reparent",
    "report_up_chain",
    "set_child_mission",
    "set_criteria",
+   "unlink",
+   "unlink_rel",
    "vote",
    "web",
-   "write_own_face"
+   "write_own_face",
+   "write_process"
+  ],
+  "role": [
+   "create_child",
+   "finalize",
+   "goal",
+   "link",
+   "link_rel",
+   "open_review",
+   "open_stage",
+   "read_card",
+   "read_files",
+   "read_linked",
+   "read_own_process",
+   "set_child_mission",
+   "unlink",
+   "unlink_rel",
+   "vote",
+   "web",
+   "write_own_face",
+   "write_process"
+  ],
+  "tool": [
+   "dispose_card",
+   "edit_other_face",
+   "finalize",
+   "goal",
+   "open_stage",
+   "read_card",
+   "read_linked",
+   "read_own_process",
+   "vote",
+   "web",
+   "write_own_face",
+   "write_process"
+  ],
+  "rule": [
+   "goal"
   ]
  }
 }

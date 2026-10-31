@@ -31,15 +31,15 @@ from src.infra import capability_registry as cap
 #: 往 pending 里塞新工具等于把"漏掉"伪装成"待办"，本测试会红。
 _PENDING_BASELINE_20261030: frozenset[str] = frozenset({
     "approve", "archive_card", "bash", "confirm_with_user", "continue_task",
-    "correct_alarm", "create_card", "create_coder_card", "create_function",
+     "create_card", "create_coder_card", "create_function",
     "create_goal", "curate_face", "decide", "delete_card", "delete_file",
     "design_policy", "direct", "draft_rule_edit", "edit_card", "edit_file",
     "edit_note", "edit_requirements", "edit_shadow", "edit_status", "fetch_web",
     "function_watch_cards", "get_goal", "glob_files", "link_cards", "link_rel",
     "list_files", "list_functions", "list_manuscript", "move_file",
-    "open_review", "promote_draft", "propose_status", "python", "raise_alarm",
+    "open_review", "promote_draft", "propose_status", "python", 
     "read_archive", "read_card", "read_file", "read_linked", "read_manuscript",
-    "read_memory", "read_shadow", "record_verdict", "reject", "rename_file",
+    "read_memory", "read_shadow",  "reject", "rename_file",
     "reparent_card", "report_done", "report_to_user", "report_up",
     "resume_child", "revoke_approve", "search_files", "search_manuscript",
     "set_child_mission", "set_criteria", "set_function_duty", "silence_card",
@@ -195,3 +195,67 @@ def test_tools_of_and_filter_mounts(registry):
 def test_empty_mount_means_no_tools(registry):
     registry(_ok_registry(capabilities=[_cap_item("link", ["link_cards"])]))
     assert cap.tools_of([]) == set()
+
+def test_each_capability_has_one_switch():
+    """一项能力只能对应一个权限类别（拆包后的不变量）。
+
+    混两个开关的能力无法被"授予"——挂上就等于把另一半权限也带出去了
+    （实测踩过：根卡因为「处置卡」里的换父归 edit，把 delete_card 也放了出来）。
+    所以这条必须在清单层面钉死，而不是靠生成脚本的临时断言。
+    """
+    from src.api import card_tools
+
+    bad = []
+    for c in cap.capabilities():
+        sw = str((c.get("impl") or {}).get("switch") or "")
+        real = {card_tools.TOOL_SWITCH.get(t) for t in (c["impl"].get("tools") or [])}
+        real = {x for x in real if x}
+        if len(real) != 1:
+            bad.append((c["code"], sorted(real)))
+        elif sw != next(iter(real)):
+            bad.append((c["code"], f"声明 {sw!r} ≠ 工具 {next(iter(real))!r}"))
+    assert not bad, f"能力跨开关或声明不符：{bad}"
+
+
+def test_abilities_for_respects_perms():
+    """建卡挂载＝模式上限 ∩ perms 覆盖到的能力；perms 少给的不能自己挂上。"""
+    from src.permissions import policy
+
+    perms, _ = policy.compute_perms("rd_project", "coder")
+    got = set(cap.abilities_for(perms, "manual", "coder"))
+    assert "read_files" in got, "tools_file ⇒ tools_read_file 的隐含没生效"
+    assert "dispose_card" not in got, "coder 没有 delete，不该挂删卡"
+    assert "goal" not in got, "手动模式不该有目标推进"
+    assert "goal" in set(cap.abilities_for(perms, "auto", "coder"))
+
+def test_each_capability_has_one_switch():
+    """一项能力只能对应一个权限类别（拆包后的不变量）。
+
+    混两个开关的能力无法被"授予"——挂上就等于把另一半权限也带出去了
+    （实测踩过：根卡因为「处置卡」里的换父归 edit，把 delete_card 也放了出来）。
+    所以这条必须在清单层面钉死，而不是靠生成脚本的临时断言。
+    """
+    from src.api import card_tools
+
+    bad = []
+    for c in cap.capabilities():
+        sw = str((c.get("impl") or {}).get("switch") or "")
+        real = {card_tools.TOOL_SWITCH.get(t) for t in (c["impl"].get("tools") or [])}
+        real = {x for x in real if x}
+        if len(real) != 1:
+            bad.append((c["code"], sorted(real)))
+        elif sw != next(iter(real)):
+            bad.append((c["code"], f"声明 {sw!r} ≠ 工具 {next(iter(real))!r}"))
+    assert not bad, f"能力跨开关或声明不符：{bad}"
+
+
+def test_abilities_for_respects_perms():
+    """建卡挂载＝模式上限 ∩ perms 覆盖到的能力；perms 少给的不能自己挂上。"""
+    from src.permissions import policy
+
+    perms, _ = policy.compute_perms("rd_project", "coder")
+    got = set(cap.abilities_for(perms, "manual", "coder"))
+    assert "read_files" in got, "tools_file ⇒ tools_read_file 的隐含没生效"
+    assert "dispose_card" not in got, "coder 没有 delete，不该挂删卡"
+    assert "goal" not in got, "手动模式不该有目标推进"
+    assert "goal" in set(cap.abilities_for(perms, "auto", "coder"))

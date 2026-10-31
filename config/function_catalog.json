@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "version": 10,
-    "doc": "预设职能目录(唯一事实源)。[2026-10-24 用户裁定] 职能从「根卡自由组建」改为「目录预设」:总裁(根卡兼职能卡)/产品经理/技术总监/测试验收总监/涌现守门。每个职能的职责书/管辖/盯线/唤醒事件/工具面/权限/卡面区块全部由本目录定义;建 work 时自动播种(seed_on_create)。一切文本是通用契约,不含任何具体任务事实。free_form_enabled=false:早期版本 create_function 从模型工具面收起,自由组阁是后期愿景。 [2026-10-27 v9] 评审工具换代：review_request/submit_review 下线（评审改在伴生评审卡上开批次、用 approve 表态）；非总裁职能 allow 加 approve。 [2026-10-27 v10] 总裁也是评审成员：allow 加 approve（否则它永远不通过、批次永远收不了口）＋ set_criteria/revoke_approve/decide（甲方代行的三件）。",
+    "version": 11,
+    "doc": "预设职能目录(唯一事实源)。[2026-10-24 用户裁定] 职能从「根卡自由组建」改为「目录预设」:总裁(根卡兼职能卡)/产品经理/技术总监/测试验收总监/涌现守门。每个职能的职责书/管辖/盯线/唤醒事件/工具面/权限/卡面区块全部由本目录定义;建 work 时自动播种(seed_on_create)。一切文本是通用契约,不含任何具体任务事实。free_form_enabled=false:早期版本 create_function 从模型工具面收起,自由组阁是后期愿景。 [2026-10-27 v9] 评审工具换代：review_request/submit_review 下线（评审改在伴生评审卡上开批次、用 approve 表态）；非总裁职能 allow 加 approve。 [2026-10-27 v10] 总裁也是评审成员：allow 加 approve（否则它永远不通过、批次永远收不了口）＋ set_criteria/revoke_approve/decide（甲方代行的三件）。 [2026-10-31 v11] 判断/警报退役：record_verdict / raise_alarm / correct_alarm 下线；观点簿、警报簿从卡面区块与 allow 清单里删除。",
     "seed_on_create": true,
     "free_form_enabled": true,
     "role_model": {
@@ -46,12 +46,10 @@
       "face_blocks": [
         "职责书",
         "管辖",
-        "观点簿",
         "决策簿",
         "指令簿",
         "汇报簿",
-        "分歧待裁",
-        "警报簿"
+        "分歧待裁"
       ],
       "toolface": {
         "allow": [
@@ -59,8 +57,6 @@
           "continue_task",
           "curate_face",
           "direct",
-          "raise_alarm",
-          "record_verdict",
           "report_to_user",
           "silence_card",
           "stop_card",
@@ -128,14 +124,10 @@
       "face_blocks": [
         "职责书",
         "管辖",
-        "观点簿",
-        "前提台账",
-        "警报簿"
+        "前提台账"
       ],
       "toolface": {
         "allow": [
-          "raise_alarm",
-          "record_verdict",
           "sync",
           "direct",
           "write_ledger",
@@ -187,14 +179,10 @@
       "face_blocks": [
         "职责书",
         "管辖",
-        "观点簿",
-        "技术裁定簿",
-        "警报簿"
+        "技术裁定簿"
       ],
       "toolface": {
         "allow": [
-          "raise_alarm",
-          "record_verdict",
           "sync",
           "direct",
           "write_ledger",
@@ -246,14 +234,10 @@
       "face_blocks": [
         "职责书",
         "管辖",
-        "观点簿",
-        "判据与验收台账",
-        "警报簿"
+        "判据与验收台账"
       ],
       "toolface": {
         "allow": [
-          "raise_alarm",
-          "record_verdict",
           "sync",
           "direct",
           "write_ledger",
@@ -306,14 +290,10 @@
       "face_blocks": [
         "职责书",
         "管辖",
-        "观点簿",
-        "判据登记与体检",
-        "警报簿"
+        "判据登记与体检"
       ],
       "toolface": {
         "allow": [
-          "raise_alarm",
-          "record_verdict",
           "sync",
           "direct",
           "write_ledger",

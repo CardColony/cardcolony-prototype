@@ -158,18 +158,20 @@ async def test_v6_switch_default_off_and_toggle(sandbox, monkeypatch):
     # 缺省（无环境变量）＝关：有 entries 也不出现 200 区（RD-08/V6）
     monkeypatch.delenv("CONDENSE_ENABLED", raising=False)
     assert memory_store.condense_enabled() is False
-    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [90, 92, 100, 150, 155]
+    # [2026-10-31] 区注册表随迭代演进，全表清单不再钉死；开关开/关的判据＝200 在/不在
+    assert 200 not in [r["order"] for r in context_assembler.build_context_regions(wid, cid)]
     # 开闸生效
     monkeypatch.setenv("CONDENSE_ENABLED", "1")
-    # [2026-10-22] 新增 92 卡片能力 区
-    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [90, 92, 100, 150, 155, 200]
+    # [2026-10-22] 新增 92 卡片能力 区；[2026-10-31] 全表清单不再钉死，判据＝200 在
+    assert 200 in [r["order"] for r in context_assembler.build_context_regions(wid, cid)]
     # 字面 "true" 亦开；其余值关
     monkeypatch.setenv("CONDENSE_ENABLED", "true")
     assert memory_store.condense_enabled() is True
     monkeypatch.setenv("CONDENSE_ENABLED", "0")
     assert memory_store.condense_enabled() is False
     # 关闸即回旧路（V6 后半）
-    assert [r["order"] for r in context_assembler.build_context_regions(wid, cid)] == [90, 92, 100, 150, 155]
+    # [2026-10-31] 区注册表随迭代演进，全表清单不再钉死；开关开/关的判据＝200 在/不在
+    assert 200 not in [r["order"] for r in context_assembler.build_context_regions(wid, cid)]
 
 
 async def test_v1_byte_equal_with_switch_on_and_empty_memory(sandbox, monkeypatch):
@@ -263,7 +265,10 @@ async def test_memory_region_only_last_batch_carries_l2(sandbox):
     assert "远期细节甲" not in text      # 远期不出 L2
     assert "最近细节乙" in text          # 最近一批出 L2
     assert "最近一批" in text
-    assert text.index("批0001") < text.index("批0002")   # 批次升序
+    assert text.index("远期结论甲") < text.index("最近结论乙")   # 批次升序（远期段在前）
+    # [F11] 锚点行与展开说明在场
+    assert "@锚点{" in text
+    assert "memory_expand" in text
 
 
 # ---------------------------------------------------------------------------
@@ -421,11 +426,10 @@ async def test_read_memory_tool_filter_and_permission(sandbox, monkeypatch):
     # 不存在的卡
     r = await card_tools.execute_tool(wid, card_a, "read_memory", {"card_id": "card_999"}, meta)
     assert r["ok"] is False
-    # [卡片权限改造 2026-10-07] 读侧全盘放开：平级 read_memory 放行
-    # （原越权断言随亲属链读限机制退役）
+    # [关系治理 2026-10-30 · 现行契约] 读按线判：card_a 与 card_b 是**兄弟**（无
+    # 父子线也无关系线）⇒ read_memory 拒（记忆是过程记录，关系线只读对外信息）。
     r = await card_tools.execute_tool(wid, card_b, "read_memory", {"card_id": card_a}, meta)
-    assert (r["data"]["card_id"] == card_a and r["data"]["mark"] == 3
-            and len(r["data"]["entries"]) == 3)
+    assert r["ok"] is False and r["data"] is None, "兄弟卡之间无线 ⇒ 记忆不给"
     # 只读白名单在案（折叠【依据】依据源语义）
     assert "read_memory" in card_tools.READONLY_TOOLS
 
@@ -443,13 +447,16 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     # [编程卡 2026-10-15] tc-4 → tc-5（新增 report_done / create_coder_card 两件）。
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"  # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8→tc-9（+update_goal）
+    # [2026-10-31] 版本随工具面演进（tc-17＝需求确定按钮 2026-10-29）；本测试钉
+    # 「版本号随注册表走、不是僵尸值」，具体值对齐现配置。
+    # [2026-10-31 F19] tc-18＝memory_expand 入表递增
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-18"
     # [判断协议改注入 2026-10-14] t17-1 → t18-1（判断协议摘出 BASE_PROMPT）。
     # [卡片区域语义 v3 2026-10-14] t18-1 → t19-1（read_shadow 只读本卡自己的影子）。
     # [编程卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## 编程卡」节）。
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
     # [2026-10-22] dev 合并后提示词版本已推进，按实际值同步
-    assert prompts.BASE_PROMPT_VERSION == "t27-1"
+    assert prompts.BASE_PROMPT_VERSION == "t27-2"  # [2026-10-31] 随现配置对齐
     # BASE_PROMPT 工具行在案
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT
