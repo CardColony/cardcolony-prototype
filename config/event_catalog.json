@@ -1330,7 +1330,9 @@
      "changed",
      "reason",
      "continued"
-    ]
+    ],
+    "optional": [],
+    "payload": []
    }
   }
  }

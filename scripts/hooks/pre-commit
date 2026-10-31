@@ -17,30 +17,38 @@
 # ---- ① 数据守卫 ----
 STAGED=$(git diff --cached --name-only | grep -E '^works/' || true)
 if [ -n "$STAGED" ]; then
-  echo '[pre-commit 拒绝] 检测到 works/ 下的运行数据被暂存，不允许提交：'
-  echo "$STAGED" | head -20
-  echo '数据留痕走独立快照目录（推演agent_data_snapshots），不进 git。'
-  echo '确需提交请用 git commit --no-verify（仅限明确知情时）。'
-  exit 1
+    echo '[pre-commit 拒绝] 检测到 works/ 下的运行数据被暂存，不允许提交：'
+    echo "$STAGED" | head -20
+    echo '数据留痕走独立快照目录（推演agent_data_snapshots），不进 git。'
+    echo '确需提交请用 git commit --no-verify（仅限明确知情时）。'
+    exit 1
 fi
 
 # ---- ② 事件契约闸 ----
 # 只在「源码或事件登记表被暂存」时跑，避免每次提交都付测试开销。
 TOUCHED=$(git diff --cached --name-only | grep -E '^(src/|config/event_catalog\.json|config/card_type_registry\.json)' || true)
 if [ -n "$TOUCHED" ]; then
-  PY=".venv/Scripts/python.exe"
-  [ -x "$PY" ] || PY="python"
-  echo '[pre-commit] 事件契约校验中…'
-  "$PY" -m pytest tests/test_event_catalog_coverage.py tests/test_event_field_contract.py \
-      -q --no-header -p no:cacheprovider 2>&1 | tail -15
-  if [ $? -ne 0 ]; then
-    echo '[pre-commit 拒绝] 事件契约不通过：'
-    echo '  · 新增事件类型必须在 config/event_catalog.json 报备（类型＋fields 契约）'
-    echo '  · 产生点必须带齐 fields.part 里声明的零件'
-    echo '  · 清退要成对标 deprecated + write_blocked（不删行）'
-    echo '确需绕过请用 git commit --no-verify（仅限明确知情时）。'
-    exit 1
-  fi
+    PY=".venv/Scripts/python.exe"
+    [ -x "$PY" ] || PY="python"
+    echo '[pre-commit] 事件契约校验中…'
+    # [2026-10-31 修闸] 原来写的是 `"$PY" -m pytest … | tail -15` 然后判 `$?` ——
+    # 管道的 `$?` 是**最后一段（tail）**的退出码，恒为 0 ⇒ 这道闸**从来没拦过任何提交**
+    # （实证：2026-10-31 事件契约测试红了、失败信息照打，提交照样落）。
+    # 改法：pytest 的输出**不经过管道**，直接重定向到临时文件，单独取它的退出码。
+    OUT="$(mktemp 2>/dev/null || echo ./.pre-commit-out.$$)"
+    "$PY" -m pytest tests/test_event_catalog_coverage.py tests/test_event_field_contract.py \
+        -q --no-header -p no:cacheprovider >"$OUT" 2>&1
+    RC=$?
+    tail -15 "$OUT"
+    rm -f "$OUT"
+    if [ "$RC" -ne 0 ]; then
+        echo '[pre-commit 拒绝] 事件契约不通过：'
+        echo '  · 新增事件类型必须在 config/event_catalog.json 报备（类型＋fields 契约）'
+        echo '  · 产生点必须带齐 fields.part 里声明的零件'
+        echo '  · 清退要成对标 deprecated + write_blocked（不删行）'
+        echo '确需绕过请用 git commit --no-verify（仅限明确知情时）。'
+        exit 1
+    fi
 fi
 
 exit 0
