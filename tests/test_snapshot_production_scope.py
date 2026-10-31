@@ -272,3 +272,153 @@ def test_s8_global_cap_prunes_oldest_across_works(sandbox, monkeypatch):
     left = sorted(p.name for p in (root / "work_a").iterdir() if p.is_dir())
     assert "20260101_000000_000001" not in left, f"最旧的应先被删：{left}"
     assert (root / "work_c" / "20260103_000000_000003").is_dir(), "最新的必须留着"
+
+
+# ------------------------------------------------------------------ S9
+
+def test_s9_readonly_files_do_not_block_prune(sandbox, monkeypatch):
+    """S9：批次里的**只读文件**不许挡住删除。
+
+    实测：旧批次里含 ``.git`` 对象（git 对象是只读 444）⇒ Windows 上
+    ``unlink`` 直接 ``WinError 5 拒绝访问`` ⇒ 原来的
+    ``shutil.rmtree(..., ignore_errors=True)`` **把错误吞掉** ⇒ 目录删不掉
+    ⇒ 份数闸「删了等于没删」（实测 work_027 拍完一份仍是 11 份）。
+
+    ⇒ 修剪必须能删掉含只读文件的批次（旧批次有 .git 副本，新批次不再拷 .git）。
+    """
+    import os
+    import stat
+
+    root = data_snapshot.SNAPSHOT_ROOT / WORK
+    root.mkdir(parents=True, exist_ok=True)
+    for name in ("20260101_000000_000001", "20260102_000000_000002"):
+        d = root / name / "works" / WORK / "sub" / ".git" / "objects"
+        d.mkdir(parents=True, exist_ok=True)
+        obj = d / "e69b39f95ed45d2b669cac66b14fdeb8390c07"
+        obj.write_text("blob", encoding="utf-8")
+        os.chmod(obj, stat.S_IREAD)          # 只读（= git 对象那种）
+    monkeypatch.setattr(data_snapshot, "KEEP_BATCHES", 1)
+
+    removed = data_snapshot._prune_batches(WORK, force=True)
+    assert removed == 1, removed
+    left = sorted(p.name for p in root.iterdir() if p.is_dir())
+    assert left == ["20260102_000000_000002"], f"含只读文件的旧批次必须删得掉：{left}"
+
+
+def test_s9_prune_reports_failure_instead_of_faking_success(sandbox, monkeypatch):
+    """S9'：真删不掉时必须**如实返回 False**（别让调用方以为删了）。"""
+    root = data_snapshot.SNAPSHOT_ROOT / WORK
+    d = root / "20260103_000000_000003"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "keep.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(data_snapshot, "KEEP_BATCHES", 0)
+    monkeypatch.setattr(data_snapshot, "_safe_rmtree", lambda p: False)
+    removed = data_snapshot._prune_batches(WORK, force=True)
+    assert removed == 0, "删不掉就不许计数为「已删」"
+    assert d.exists(), "删不掉时目录应还在（没丢东西）"
+
+
+# ================================================================ S10 备份粒度
+
+def _rich_db(path: Path) -> None:
+    """造一张「有状态、有历史、有垃圾」的库（照线上 cards.db 的形状）。"""
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path))
+    try:
+        con.execute("CREATE TABLE cards (card_id TEXT PRIMARY KEY, body TEXT)")
+        con.execute("CREATE TABLE session_blocks (card_id TEXT, seq INT, content TEXT)")
+        con.execute("CREATE TABLE work_events (seq INT, data TEXT)")
+        con.execute("CREATE TABLE trash (card_id TEXT, payload TEXT)")
+        con.execute("INSERT INTO cards VALUES ('card_001', '第一版')")
+        con.execute("INSERT INTO session_blocks VALUES ('card_001', 1, '历史块')")
+        con.execute("INSERT INTO work_events VALUES (1, '事件')")
+        con.execute("INSERT INTO trash VALUES ('card_009', '删掉的东西')")
+        con.commit()
+    finally:
+        con.close()
+
+
+def _tables_of(db: Path) -> set[str]:
+    import sqlite3
+
+    con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    try:
+        return {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'")}
+    finally:
+        con.close()
+
+
+def test_s10_process_batch_excludes_append_only_history(sandbox):
+    """S10：过程批次**只含会变的表**——只追加的历史与垃圾不进。
+
+    〔2026-10-30 · 治「每改一次就全项目备份」〕线上 cards.db 777MB 里：
+    session_blocks 311MB ＋ work_events 131MB ＋ trash 26MB 都是**只追加/垃圾**
+    ⇒ 每写一次就整库拷 855MB（实测 10.5s），而真正会变的表只有 12MB。
+    """
+    w = sandbox.works / WORK
+    w.mkdir(parents=True, exist_ok=True)
+    _rich_db(w / "cards.db")
+
+    data_snapshot.snapshot_sync("scope-s10", work_id=WORK)
+    batch = _batches(data_snapshot.SNAPSHOT_ROOT)[0]
+    got = _tables_of(batch / "works" / WORK / "cards.db")
+    assert "cards" in got, f"状态表必须在批次里：{got}"
+    for excluded in ("session_blocks", "work_events", "trash"):
+        assert excluded not in got, f"只追加/垃圾表不该进过程批次：{got}"
+
+
+def test_s10_daily_backup_still_keeps_every_table(sandbox):
+    """S10'：**日备仍是整库**（完整恢复点）——历史表在里面。"""
+    w = sandbox.works / WORK
+    w.mkdir(parents=True, exist_ok=True)
+    _rich_db(w / "cards.db")
+
+    data_snapshot.snapshot_sync("scope-s10b", work_id=WORK)
+    daily = _daily(data_snapshot.SNAPSHOT_ROOT)
+    assert daily is not None, "应产生日备"
+    got = _tables_of(daily / "works" / WORK / "cards.db")
+    for t in ("cards", "session_blocks", "work_events", "trash"):
+        assert t in got, f"日备必须是整库（{t} 不在里面）：{got}"
+
+
+def test_s10_restore_rolls_back_state_and_keeps_history(sandbox):
+    """S10''：恢复＝**状态回滚、历史不动**（关键不变量）。
+
+    过程批次的库只含状态表 ⇒ 若恢复走整文件替换，live 库的会话原文块/
+    事件流会被一起抹掉 ⇒ 必须走逐表合并。
+    """
+    import sqlite3
+
+    w = sandbox.works / WORK
+    w.mkdir(parents=True, exist_ok=True)
+    _rich_db(w / "cards.db")
+
+    data_snapshot.snapshot_sync("scope-s10c", work_id=WORK)
+    batch = _batches(data_snapshot.SNAPSHOT_ROOT)[0]
+    stamp = batch.name
+
+    # 快照之后：改了状态、又追加了一条历史
+    con = sqlite3.connect(str(w / "cards.db"))
+    try:
+        con.execute("UPDATE cards SET body='第二版' WHERE card_id='card_001'")
+        con.execute("INSERT INTO session_blocks VALUES ('card_001', 2, '快照之后的新块')")
+        con.commit()
+    finally:
+        con.close()
+
+    res = data_snapshot.restore_from_snapshot(WORK, stamp, f"works/{WORK}/cards.db")
+    assert res["ok"] is True, res
+
+    con = sqlite3.connect(str(w / "cards.db"))
+    try:
+        body = con.execute("SELECT body FROM cards WHERE card_id='card_001'").fetchone()[0]
+        blocks = con.execute(
+            "SELECT count(*) FROM session_blocks WHERE card_id='card_001'").fetchone()[0]
+    finally:
+        con.close()
+    assert body == "第一版", f"状态必须回到快照态：{body}"
+    assert blocks == 2, f"历史表**不许**被回滚（它只追加）：{blocks}"

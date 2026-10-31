@@ -13,6 +13,10 @@ Phase 7：call_main 增加 tools 参数透传给 gateway.call。
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import asyncio
 import os
 from typing import Any, Optional
@@ -149,6 +153,13 @@ async def call_main(
     turn_tail: Optional[list[dict[str, Any]]] = None,
     turn_once: Optional[list[dict[str, Any]]] = None,
     fallbacks: Optional[list[str]] = None,
+    *,
+    on_chunk: Optional[Any] = None,
+    trace_id: Optional[str] = None,
+    caller: str = "",
+    work_id: str = "",
+    card_id: str = "",
+    max_tokens: Optional[int] = None,
 ) -> tuple[dict[str, Any], str]:
     """以指定模型名发起调用，返回 (gateway结果, 实际使用的模型名)。
 
@@ -164,6 +175,13 @@ async def call_main(
       2. 思考增量**不进** content（只作逐字流事件），故正文判定与续写不受污染（无降级，见 2026-10-19 裁定）。
     逐字流经 event_stream.emit_token 落到**独立** SSE（/tokens），
     归属卡经 contextvar 传入；无卡上下文时（凝练/归拢调用）自动不落逐字流。
+
+    [F8b/F22 · 2026-10-31 只加不改的五个形参]：
+    - ``on_chunk``：每个 chunk 事件旁路（凝练 F8 静默判死的 chunk 计数依据）；
+    - ``trace_id``/``caller``/``work_id``/``card_id``：观测因果链（observe JSONL 的
+      model_call 行）——不传时网关自动生成 trace、caller 留空；
+    - ``max_tokens``：显式输出帽（F8 computeOutputTokenCap 用）；None ⇒ 沿用模型配置
+      （拆闸铁律不变：缺省不注入）。
     """
     model_name = model_name or model_config.default_model()
     gw = get_gateway()
@@ -209,7 +227,8 @@ async def call_main(
                 system_prompt,
                 user_prompt,
                 temperature=float(cfg.get("temperature", 0.5)),
-                max_tokens=cfg.get("max_tokens"),
+                # [F8b] 显式输出帽优先（凝练 computeOutputTokenCap）；None ⇒ 沿用配置
+                max_tokens=max_tokens if max_tokens is not None else cfg.get("max_tokens"),
                 timeout=cfg.get("timeout"),
                 on_status=events.append,
                 tools=tools,
@@ -224,6 +243,13 @@ async def call_main(
                 # [层内兜底 2026-10-21 · 用户令] 首选重试耗尽就换**同一层**的下一个；
                 # 层内全挂才如实失败，不跨层、不落到全局兜底。
                 fallbacks=fallbacks or None,
+                # [F8b/F22 · 2026-10-31] chunk 旁路＋观测因果链
+                # [二轮审计] 卡位透给网关（在途台账与 model_call 行的「卡」位）
+                on_chunk=on_chunk,
+                trace_id=trace_id,
+                caller=caller or (f"card:{work_id}/{card_id}" if (work_id or card_id) else ""),
+                work_id=work_id,
+                card_id=card_id,
             ),
             _stop_ev, _stream_key)
     try:
@@ -261,6 +287,14 @@ async def call_main(
     if not result:
         result = {"content": "", "tool_calls": [], "truncated_tool_call": None,
                   "finish_reason": "stop", "tokens_used": 0, "latency_ms": 0}
+    # result：正文片段明明已经攒进 `_content_parts`，终帧 content 为空时就被覆盖成空串
+    # ⇒ 上层读到 chars=0，误判"模型没发言"（实测真模型：正文有、reasoning 也有，
+    #   content 却是空的）。这里用**已经收到的正文片段**补回，不拿思考当回复。
+    if not str(result.get("content") or "") and _content_parts:
+        result = dict(result)
+        result["content"] = "".join(_content_parts)
+        logger.info("[model] 终帧 content 为空 ⇒ 用已收到的正文片段补回 %d 字",
+                    len(result["content"]))
     # [DeepSeek 思考回传 2026-10-15] 本轮思考随 result 返回（调用方决定是否回传）。
     # 字段名用协议名 reasoning_content；无思考时为空串（与旧行为逐字兼容——
     # 旧 result 无此键，新增键不改变既有读取）。

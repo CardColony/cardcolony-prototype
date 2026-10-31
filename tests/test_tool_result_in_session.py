@@ -180,10 +180,10 @@ async def test_v6_mark_advances_over_tool_blocks(sandbox, work, monkeypatch):
     await _append_tool_round(wid, cid, results=("r0", "r1"))
     blocks = await session_facade.read(wid, cid)   # human, A, B, B
 
-    async def fake_call(_p):
-        return "【结论】做了事【依据】块0"
-
-    monkeypatch.setattr(memory_store, "_condense_call", fake_call)
+    # [2026-10-31] 凝练已是三步（S2a→L1→L2）；替身按当前协议出三段——
+    # 单段旧格式产出过不了 S2a 的 G-1 闸（F3，整批作废）。
+    from _condense_stub import three_stage_stub as _tss
+    monkeypatch.setattr(memory_store, "_condense_call", _tss(gist="做了事"))
     ok = await memory_store._condense_one_batch(wid, cid, blocks, 0)
     assert ok is True
     state = memory_store.load_memory(wid, cid)
@@ -201,7 +201,7 @@ async def test_v6b_all_tool_window_sells_account_without_model_call(sandbox, wor
 
     called = {"n": 0}
 
-    async def fake_call(_p):
+    async def fake_call(_p, *args, **_):
         called["n"] += 1
         return "不应被调用"
 
@@ -377,13 +377,21 @@ async def test_last_block_still_final_reply_after_tool_round(sandbox, work):
 
 
 # ================================================================
-# N7：不得动 tool_fold 开关/行为
+# N7：tool_fold 只剩轮槽（折叠已移除 2026-10-31 · 用户裁定）
 # ================================================================
 
 def test_n7_tool_fold_untouched(sandbox):
+    """折叠（【结论】/【依据】两件套）已整体移除：开关/窗口不复存在，
+    wire_messages 恒零加工。工具结果只在当前轮展示、更早回合不进上下文
+    （由 predicates.enters_context 承担，与本模块其余用例互证）。"""
     from src.api import tool_fold
-    assert tool_fold.KEEP_WINDOW == 2
-    assert tool_fold.fold_enabled() is False, "TOOL_FOLD_ENABLED 缺省关"
+    assert not hasattr(tool_fold, "fold_enabled"), "折叠开关应已移除"
+    assert not hasattr(tool_fold, "KEEP_WINDOW"), "保留窗口应已移除"
+    slot = tool_fold.ToolTurnSlot([{"role": "user", "content": "原文"}])
+    import asyncio
+    wire = asyncio.run(slot.wire_messages())
+    assert wire is slot._messages or wire == [{"role": "user", "content": "原文"}]
+    assert slot.fold_ops == []
 
 
 # ================================================================

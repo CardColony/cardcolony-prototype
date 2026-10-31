@@ -15,6 +15,9 @@
   - **例外**：``.db``（卡片库）走 SQLite **backup API** 回写内容，不走 copy2——
     WAL 模式下 live 库旁的 ``cards.db-wal`` 常被进程占着删不掉，而**删不掉的旧 WAL
     会把旧数据复活**（文件换成快照内容、一读却是旧值 ⇒ 恢复看着成功、实际没回滚）。
+  - 〔2026-10-30〕**过程批次的库只含「会变的表」**（只追加的会话原文块/事件流/
+    回收站不进过程批次，只在日备里）⇒ 恢复它**必须逐表合并**（历史表不动），
+    整文件替换会一次抹掉 live 库几百 MB 的会话历史。判据：库里没有那几张历史表。
   - 全程不碰 git（正是为了摆脱 git 分支操作的连带伤害）
 """
 from __future__ import annotations
@@ -32,6 +35,14 @@ SNAPSHOT_ROOT = BASE_DIR.parent / "推演agent_data_snapshots"
 BACKUP_ROOT = BASE_DIR.parent / "推演agent_backups"
 _CST = timezone(timedelta(hours=8))
 
+# 〔2026-10-30〕**过程批次的库只含状态表**（只追加的会话原文块/事件流/回收站
+# 不进过程批次）⇒ 整文件替换会把 live 库的会话历史一起抹掉 ⇒ 状态库必须
+# **逐表合并**恢复（历史表不动）。判据与合并逻辑复用模块里的那一份，避免两处实现。
+from src.storage.data_snapshot import (  # noqa: E402
+    _is_state_only_db,
+    _restore_state_db,
+)
+
 
 def _restore_db(src: Path, dst: Path) -> str | None:
     """把快照里的 SQLite 库回写进 live 库。
@@ -40,6 +51,10 @@ def _restore_db(src: Path, dst: Path) -> str | None:
     ⇒ 恢复返回成功、内容却没回滚（静默失败，实测踩过）。
     返回 ``None``＝成功；返回错误串＝失败（**如实报，不装成功**）。
     """
+    if _is_state_only_db(src):
+        # 〔2026-10-30〕状态库（过程批次）⇒ **合并**恢复：只覆盖状态表，
+        # 历史表（session_blocks/work_events）不动 ⇒ 否则恢复一次抹掉 440MB 历史。
+        return _restore_state_db(src, dst)
     scon = dcon = None
     try:
         scon = sqlite3.connect(str(src))

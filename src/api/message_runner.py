@@ -791,6 +791,10 @@ async def step(state: RunState) -> StepOutcome:
                 _seat, work_id=state.work_id, card_id=state.card_id),
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
+            # [F22 · 2026-10-31 审计补口] 观测因果链：model_call JSONL 的
+            # caller/卡位来自这里（改前主链路不传 ⇒ 生产打点恒空）。
+            work_id=state.work_id, card_id=state.card_id,
+            caller=f"turn:{state.pair_id}:r{state.rounds}",
         )
         # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
         state.turn_reasoning = result.get("reasoning_content") or ""
@@ -825,6 +829,9 @@ async def step(state: RunState) -> StepOutcome:
                 _seat, work_id=state.work_id, card_id=state.card_id),
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
+            # [F22 · 2026-10-31 审计补口] 同上：工具轮观测因果链
+            work_id=state.work_id, card_id=state.card_id,
+            caller=f"turn:{state.pair_id}:r{state.rounds}:tools",
         )
     # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
     state.turn_reasoning = result.get("reasoning_content") or ""
@@ -1287,6 +1294,9 @@ async def run_seats(state: RunState) -> StepOutcome:
             _synth_seat, work_id=state.work_id, card_id=state.card_id),
         turn_tail=synth_request["turn_tail"],
         turn_once=synth_request["turn_once"],
+        # [F22 · 2026-10-31 审计补口] 统合官观测因果链
+        work_id=state.work_id, card_id=state.card_id,
+        caller=f"turn:{state.pair_id}:synthesize",
     )
     tool_calls = result.get("tool_calls") or []
     assistant_content = result.get("content") or ""
@@ -1546,6 +1556,11 @@ async def finish(state: RunState) -> dict[str, Any]:
     # 不阻塞对话（异步是工程手段非闸，RD-04）。开关缺省关（RD-08）＝零动作；
     # 开时三期管线仍挂起待路线裁定，触发只量测＋留痕（memory_store.condense_turn_end）。
     memory_store.maybe_schedule_turn_end(state.work_id, state.card_id)
+    # [F15 · 2026-10-31 时效回收接线（dsh maybeReclaim 挂 turn/end 同位）]：
+    # 深层超 7d 未触达整子树沉没、顶层 done 超 3d 退常驻（标 sunk）。sunk 只影响
+    # 凝练全景体积（render_condense_memory），上下文基线渲染照常（零误伤口径）。
+    # 纯机械（无 LLM）、异常自吞（memory_store.reclaim_turn_end 内部零阻断）。
+    memory_store.maybe_schedule_reclaim(state.work_id, state.card_id)
     progress.set_stage(state.work_id, state.card_id, "done", "完成")
     # [信息流 Task3/打点 A96] done 事件
     # [系统消息 2026-10-26 · 用户令「系统消息只允许跟事件挂钩」] 事件**自带**

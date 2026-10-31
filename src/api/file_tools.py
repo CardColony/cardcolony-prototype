@@ -178,8 +178,25 @@ def check_file_access(path: str, card_meta: Any = None, *,
     ``card_meta`` 缺省/为 None ⇒ False（认不出卡 ⇒ 默认关门）。
     """
     card_type = str((card_meta or {}).get("card_type", "") or "")
-    has_write = policy.has_perm(card_meta, policy.SWITCH_TOOLS_FILE)
-    has_read = has_write or policy.has_perm(card_meta, policy.SWITCH_TOOLS_READ_FILE)
+    # [2026-10-31 修·看得见、一调就拒] perms 已退役（2026-10-30）：卡的能力由
+    # **abilities 能力清单**决定，`policy.has_perm` 读的是已不存在的 meta["perms"]
+    # ⇒ 恒 False ⇒ read_file/list_files/search_files 对**所有卡**都拒（实测
+    # card_074 / card_001 / card_061 / fn_004 全部「越权：无权访问」）。
+    # 而工具面是按 abilities 下发的 ⇒ 两套口径打架。
+    # ⇒ 这里与工具面同源：先按能力清单判（`_actor_can_switch`），
+    #   能力清单不可用时才回落老路径（未迁移卡的兜底）。
+    has_write = None
+    try:
+        from . import card_tools as _ct
+        has_write = _ct._actor_can_switch(card_meta, policy.SWITCH_TOOLS_FILE)
+        has_read = has_write or _ct._actor_can_switch(
+            card_meta, policy.SWITCH_TOOLS_READ_FILE)
+    except Exception as exc:  # noqa: BLE001 能力清单不可用 ⇒ 回落老路径
+        has_write = None
+        logger.warning("[file] 能力清单判定失败，回落 perms: %s", exc)
+    if has_write is None:
+        has_write = policy.has_perm(card_meta, policy.SWITCH_TOOLS_FILE)
+        has_read = has_write or policy.has_perm(card_meta, policy.SWITCH_TOOLS_READ_FILE)
     allowed = has_write if write else has_read
     raw = str(path or "").strip()
 

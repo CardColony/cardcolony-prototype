@@ -411,6 +411,24 @@ def chain_from_entries(entries: list[dict[str, Any]],
             val = e.get(src)
             if val and not node.get(dst):
                 node[dst] = str(val)
+        # [F9/F10 · 2026-10-31] docPaths/docRefs/timeline/title 随链透传——archive
+        # 已冻结（F17），这些字段只活在条目/节点行上；展开与渲染要从链上拿到。
+        if isinstance(e.get("docPaths"), list) and e["docPaths"]:
+            node["docPaths"] = [str(p) for p in e["docPaths"]]
+        if isinstance(e.get("docRefs"), list) and e["docRefs"]:
+            node["docRefs"] = [dict(r) for r in e["docRefs"] if isinstance(r, dict)]
+        if isinstance(e.get("timeline"), dict) and (e["timeline"].get("from") or e["timeline"].get("to")):
+            node["timeline"] = {"from": str(e["timeline"].get("from") or ""),
+                                "to": str(e["timeline"].get("to") or "")}
+        if e.get("title"):
+            node["title"] = str(e["title"])
+        # [2026-10-31 · 修「链覆写丢件」] 批级簿记键随链透传：`memory` 表一行两用
+        # （entries 经 _save_to_db 写、链经 save_chain 写），save_chain 后写 ⇒ 载荷
+        # 必须无损承载 entries，否则 load_memory 读回的 entries 丢 seq_from/
+        # seq_to/occurred_at/fingerprint（幂等判定与追溯链随之失效）。
+        for _k in ("fingerprint", "occurred_at", "seq_from", "seq_to"):
+            if e.get(_k) is not None:
+                node[_k] = e[_k]
         # 已被低频归拢吸收的成员：标 supersededBy（节点不删，渲染时过滤）
         if folded and str(e.get("fingerprint") or "") in folded:
             node["supersededBy"] = "folded"

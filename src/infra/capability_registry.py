@@ -307,5 +307,34 @@ def mode_upper(code: str, card_type: str) -> Optional[list[str]]:
     return [str(x) for x in row]
 
 
+def abilities_for(perms: Iterable[str], mode: str, card_type: str) -> list[str]:
+    """建卡时算这张卡默认挂哪些能力＝**模式上限 ∩ 这张卡的 perms 覆盖到的能力**。
+
+    为什么还要跟 perms 取交集：能力是岗位配置，权限是这张卡**最多**能碰什么。
+    建卡那一刻 perms 已经算好（`policy.compute_perms`），所以挂载不能超过它——
+    否则等于"建卡就自授了权限"。
+
+    perms 的判定走 ``policy.has_perm``（同一套隐含规则，``tools_file`` ⇒ 具备
+    ``tools_read_file``）；裸查列表会让 coder 卡漏掉「看文件」。
+
+    清单/模式读不到 ⇒ 空列表（调用方据此保持未迁移，走旧路径）。
+    """
+    from ..permissions import policy
+
+    upper = mode_upper(mode, card_type)
+    if not upper:
+        return []
+    meta = {policy.PERM_KEY: list(perms or [])}
+    out: list[str] = []
+    for code in upper:
+        cap = entry(code)
+        if cap is None:
+            continue
+        sw = str((cap.get("impl") or {}).get("switch") or "")
+        if not sw or policy.has_perm(meta, sw):
+            out.append(code)
+    return out
+
+
 def reset_mode_cache() -> None:
     _mode_cache.clear()

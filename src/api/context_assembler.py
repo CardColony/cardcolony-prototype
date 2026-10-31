@@ -369,7 +369,11 @@ def build_ctx(work_id: str, current_id: str,
         # [记忆编号体系 2026-10-29] 记忆区改吃 `memory_nodes`（条目级事实源）：
         # 每行一个节点、自带编号与时间戳。不再读 `chain` 里的 entries——
         # 装配与渲染各读一份不同结构，正是上次「92 行 [块?]」的根因。
-        memory_entries=memory_store.load_nodes(work_id, current_id),
+        # [2026-10-31 · 修 V6 开关契约] 改前 load_nodes 无条件执行 ⇒ 开关关
+        # （V6：关＝装配逐字旧路）记忆区照样出——RD-08 契约破。
+        # 现在与 memory_state 同闸：开关关且调用方未显式喂记忆态 ⇒ 零取数、区不出。
+        memory_entries=(memory_store.load_nodes(work_id, current_id)
+                        if (memory_store.condense_enabled() or state is not None) else []),
         controls=load_control(),
         rule_sections=_load_rule_sections(work_id),
         history_source=history_source or [],

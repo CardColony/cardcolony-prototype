@@ -178,6 +178,30 @@ def _perm_fields(project_class: str, card_type: str) -> dict[str, Any]:
     return {policy.PERM_KEY: perms, policy.PERM_VERSION_KEY: version}
 
 
+def _mount_fields(project_class: str, card_type: str, is_auto: bool) -> dict[str, Any]:
+    """建卡期的**能力挂载**字段（[能力底座 2026-10-30]）。
+
+    ``mode``＝这张卡属于哪个模式（手动/自动，将来可能有第三种，只换 code）；
+    ``abilities``＝这个岗位默认挂哪些能力＝**模式上限 ∩ perms 覆盖到的能力**。
+
+    为什么建卡就落：挂载是岗位配置，不该等到有人手动勾。不落的话新卡
+    ``abilities`` 是空的 ⇒ 走旧路径（按 perms 开关下发），这套能力底座就只覆盖存量。
+
+    perms 读不到 / 清单不可用 ⇒ 空列表（＝未迁移，保持旧路径），不阻断建卡。
+    """
+    from ..infra import capability_registry as caps
+    from ..permissions import policy
+
+    mode = "auto" if is_auto else "manual"
+    try:
+        # [perms 退役 2026-10-30] 卡上不再存 perms——它只在**建卡这一刻**用来算挂载上限：
+        # 「这张卡最多能碰什么」由卡型决定，「实际挂什么」由模式清单 ∩ 这个上限决定。
+        perms, _ = policy.compute_perms(project_class, card_type)
+        return {"mode": mode, "abilities": caps.abilities_for(perms, mode, card_type)}
+    except Exception:  # noqa: BLE001 清单坏了不能挡住建卡
+        return {"mode": mode, "abilities": []}
+
+
 def _auto_perm_fields() -> dict[str, Any]:
     """[自动模式 2026-10-17 · 回灌 5700 块0.1/0.2] 自动模式卡的权限固化字段。
 
@@ -388,8 +412,8 @@ def _render_card(meta: dict[str, Any], mission: str, status_block: str,
         # toolcard 三字段同一手法：meta 里有才写行，存量老卡不受影响；
         # perms_version 用 `is not None` 判（0 是合法值＝配置不可用，
         # 不是「没写过」）。
-        *([f"perms: {json.dumps(list(meta['perms']), ensure_ascii=False)}"]
-          if meta.get("perms") is not None else []),
+        *([f"abilities: {json.dumps(list(meta['abilities']), ensure_ascii=False)}"]
+          if meta.get("abilities") is not None else []),
         *([f"perms_version: {int(meta['perms_version'])}"]
           if meta.get("perms_version") is not None else []),
         # [S4-1/S4-2] methodology_refs / pending_sync 的 FM 行同步删除。
@@ -1018,8 +1042,9 @@ async def create_card(
                 # [2026-10-19 实验 permexp] 自动模式不再全开权限：与普通卡同一份
                 # 类型分权（compute_perms）。auto_mode 只保留「自动续轮」语义，
                 # 不再改写 perms——原「绕过类型分权」口径已由本次实验撤除。
-                **(_perm_fields(
-                    project_class or _root_project_class(work_id), resolved_type)),
+                # [perms 退役 2026-10-30] 卡上只落 mode ＋ abilities；perms 不再入 meta。
+                **(_mount_fields(
+                    project_class or _root_project_class(work_id), resolved_type, is_auto)),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -1375,12 +1400,13 @@ async def update_card(
         new_auto = 1 if bool(updates.get("auto_mode")) else 0
         updates["auto_mode"] = new_auto
         if new_auto != (1 if bool(cur_meta.get("auto_mode")) else 0):
-            # [2026-10-19 实验 permexp] 0/1 一律按类型分权重算——auto_mode 不再
-            # 授予全开权限，只影响轮次驱动器。原 auto_perms() 分支已撤除。
+            # [能力底座 2026-10-30 · perms 退役] 模式变了 ⇒ **重算能力挂载**：
+            # 自动模式清单比手动多「目标推进」，切过去就该拿到、切回来就该收回。
+            # 原来这里写的是 perms（列已删），切一次就报错。
             pc = str(cur_meta.get("project_class") or "") or _root_project_class(work_id)
-            perms, ver = policy.compute_perms(pc, cur_type)
-            updates[policy.PERM_KEY] = perms
-            updates[policy.PERM_VERSION_KEY] = ver
+            _mf = _mount_fields(pc, cur_type, bool(new_auto))
+            updates["mode"] = _mf["mode"]
+            updates["abilities"] = _mf["abilities"]
 
     # [T-0007 补丁] 写路径唯一门·update 闸位（no-op 放行）。
     # 插在写盘前、全部参数校验（含根卡保护/card_type 降级/parent 防环）之后——
@@ -1398,7 +1424,8 @@ async def update_card(
         "title", "tags", "links", "relations", "session_ref",
         "card_type", "parent",
         "project_class", "owner_card_id", "state",
-        "perms", "perms_version",
+        # [能力底座 2026-10-30] perms/perms_version 已随列退役；模式与挂载进白名单
+        "mode", "abilities",
         "toolcard_script", "toolcard_step", "toolcard_round", "toolcard_final",
         "thinkchain_final",
         # [自动模式 2026-10-17 · 回灌 5700 块0.1] 四列。auto_mode＝用户侧开关

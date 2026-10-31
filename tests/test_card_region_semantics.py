@@ -248,9 +248,9 @@ async def test_read_card_tool_returns_three_blocks(sandbox):
         {"mission": "M", "status_block": "S", "requirements": "R"},
         "测试",
     )
-    reader = await _mk_child(wid, "读者卡", root)
+    # [关系治理 2026-10-30] 读按线判：旁支读不到，改由父卡（根卡）读子卡
     out = await card_tools._h_read_card(
-        wid, reader, {"card_id": cid}, card_tools._collect_card_meta(wid)
+        wid, root, {"card_id": cid}, card_tools._collect_card_meta(wid)
     )
     assert "error" not in out
     assert out["使命"] == "M"
@@ -268,9 +268,9 @@ async def test_read_card_tool_third_block_named_requirements_on_rd_tree(sandbox)
     wid, root = w["work_id"], w["work_card_id"]
     cid = await _mk_child(wid, "子卡", root)
     await card_store.update_card(wid, cid, {"requirements": "REQ"}, "测试")
-    reader = await _mk_child(wid, "读者卡", root)
+    # [关系治理 2026-10-30] 同上：改由父卡读子卡
     out = await card_tools._h_read_card(
-        wid, reader, {"card_id": cid}, card_tools._collect_card_meta(wid)
+        wid, root, {"card_id": cid}, card_tools._collect_card_meta(wid)
     )
     # [正名 2026-10-28] 键名统一中文；旧键 requirements/rulings 都不外露
     assert out["需求文档"] == "REQ"

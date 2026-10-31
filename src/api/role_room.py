@@ -989,18 +989,14 @@ def build_prompt(work_id: str, role_id: str,
         "",
         "## 本轮必须做的事",
         "1. 判断：这些新增内容里，有没有落在你的管辖域、且触发发言契约的事？",
-        "2. **无论发言还是沉默，必须调用 record_verdict(decision, reason, evidence)**：",
-        "   - decision=\"speak\"：你决定发言（建议或警报）；",
-        "   - decision=\"silent\"：你判断无需干预。",
-        "   reason 一句话写清依据；evidence 填你实际看过的文件/行/卡（可空，但建议填）。"
-        "沉默也是判断，必须落账。",
-        "3. 若发言：只是让最相关的工作卡**知道**一件事 → sync(content)（沿通信线、不叫醒它）；"
-        "要它**现在就改** → direct(target_card_id, instruction, acceptance)（带验收判据，会把它叫起来）；"
-        "严重风险用 raise_alarm；若在纠正自己此前的警报，raise_alarm 时传 "
-        "supersedes=<旧 alarm_id>（系统会把旧警报置为 corrected）。",
-        "4. 只能写**你自己**的档案/职责书（edit_status/edit_requirements）；"
+        "2. 若发言：只是让最相关的工作卡**知道**一件事 → sync(content)（沿通信线、不叫醒它）；"
+        "要它**现在就改** → direct(target_card_id, instruction, acceptance)（带验收判据，会把它叫起来）。",
+        "3. 只能写**你自己**的档案/职责书（edit_status/edit_requirements）；"
         "不得修改别人的卡、不得建卡、不得调文件或命令。",
-        "5. 没有新增风险就沉默，不要为了说话而说话。",
+        "4. 没有新增风险就沉默，不要为了说话而说话。",
+        # [2026-10-31 用户令「判断、警报我明确不需要，拆掉」] 原来第 2 条是
+        # 「无论发言还是沉默都必须调 record_verdict 落账」——工具已删，这条
+        # 指令会直接指向一个不存在的工具，故整条移除；警报同理。
     ]
     return "\n".join(parts)
 
@@ -1021,16 +1017,12 @@ async def _finalize(work_id: str, role_id: str,
         await role_store.consume_syncs(work_id, ids)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[role] 同步队列收口失败 role=%s: %s", role_id, exc)
-    verdicts = role_store.list_verdicts(work_id, role_id, 1000)
-    if len(verdicts) <= before:
-        await record_verdict(
-            work_id, role_id, "silent",
-            "（机械补记：本轮未调用 record_verdict，按沉默处理）",
-            batch=batch, auto=True)
-        verdicts = role_store.list_verdicts(work_id, role_id, 1000)
-    last = verdicts[0] if verdicts else {}
-    decision = str(last.get("decision") or "silent")
-    reason = str(last.get("reason") or "")
+    # [2026-10-31 用户令「判断、警报我明确不需要，拆掉」] 判断簿随
+    # record_verdict 一起退役 ⇒ 不再「本轮没落账就机械补记一条 silent」。
+    # 那条补记的唯一作用是逼模型调 record_verdict；工具已删，补记只会往
+    # 退役的表里灌噪音。收口只记「巡检了几源」，不再产出判词。
+    decision = "silent"
+    reason = ""
     try:
         # [role-sync 2026-10-20 · card_007] 只合并记账字段，不整字典写回：
         # 旧写法拿旧 duty 快照整体覆盖，与 set_duty 并发时把刚改的 state
@@ -1051,7 +1043,7 @@ async def _finalize(work_id: str, role_id: str,
         event_stream.emit(work_id, role_id, "role_judged", {
             "decision": decision, "reason": reason[:300],
             "sources": [i["source"] for i in batch],
-            "auto": bool(last.get("auto")),
+            "auto": False,
         })
     except Exception:  # noqa: BLE001
         pass

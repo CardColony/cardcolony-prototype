@@ -5,7 +5,7 @@
 
 上下文边界（用户 2026-10-27 硬要求）：
 - **进**：子卡三块（使命／现状／需求文档，原样）＋ 发起方填写的 brief（原样）
-  ＋ 判据 ＋ 上一批次正稿 ＋ 本批次已有发言
+  ＋ 上一批次正稿 ＋ 本批次已有发言（含用户自己说的每一句）
 - **不进**：职能卡自己的会话——**评审内容不污染职能卡的日常上下文**
 
 不另造投递/存储（第 1 步「融合机制」）：
@@ -15,15 +15,17 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import uuid
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 from ..storage import card_store, function_store, review_store, session_facade
-from . import event_stream, model_service, prompt_log
+from . import control, event_stream, model_service, prompt_log
 
 #: 评审职责书（每个角色**在评审席上**的职责；与日常职责 function_profiles.charter 分开）
 REVIEW_CHARTERS = Path(__file__).resolve().parents[2] / "config" / "review_charters.json"
@@ -37,16 +39,6 @@ ENV_NO_AUTO = "ECO_NO_AUTO_REVIEW"
 #: 上一批次的发言不带——它们只以"上一批次正稿"的形式进（换上下文，不是压缩）。
 #: 靠发言首行的 `· {batch}` 标记区分批次，不靠条数截断。
 
-RULES = """## 评审规则
-
-- 判据在下方「判据」一节。
-- **通过＝调 `approve`**：调了就是通过，之后本批次你不再参与讨论。
-  `approve` 的 `review_card_id` 填**评审卡 id**（下面「评审卡」一节给的就是它），
-  **不是批次号**（`rv_xxx` 那个是批次，不是卡）。
-- **不调 `approve` ＝ 不通过**，在发言里写明理由。
-- 你可以调的工具：`read_card` / `read_file` / `list_files` / `search_files` / `read_shadow`。
-  你调阅的结果会留在评审现场，后面发言的人直接看得到。
-- 没有核实过的事实，按「未核实」处理。"""
 
 #: 评审现场可用的查阅工具（用户 2026-10-27：每个角色都能调查阅工具，结果留在现场）
 READ_TOOLS: tuple[str, ...] = (
@@ -59,6 +51,16 @@ READ_TOOLS: tuple[str, ...] = (
 # 评审回合里的工具调用**不走 message_runner**（那里才是 tool_call/tool_result 的常规
 # 产出点），所以窗口里看不到"它在调什么"。这里补两个小事件，格式与 message_runner
 # 同族（tool / ok / 摘要），前端一套渲染吃两边。
+def _sid(review_id: str, batch: str) -> str:
+    """评审会话的卡号：**一个批次一个独立会话**。
+
+    [2026-10-31 用户令]「每一个批次都是独立的 session 就好了，新批次就是新 session，
+    那就不需要那么多判断逻辑了」⇒ 会话文件名按 (评审卡, 批次) 分开，
+    旧批次的东西物理上进不来 ⇒ 不再需要"批次守卫"那种判断。
+    """
+    return f"{review_id}-{batch}" if batch else review_id
+
+
 def _brief(value: Any) -> str:
     """工具调用的**参数摘要**：只挑几个定位用的键，不砍长度。
 
@@ -83,7 +85,7 @@ REVISE_DENY: tuple[str, ...] = (
     "create_card", "reparent_card", "archive_card", "unarchive_card",
     "report_up", "report_to_user", "sync", "direct",
     "stop_card", "silence_card", "continue_task",
-    "open_review", "approve", "reject", "set_criteria",
+    "open_review", "approve", "reject",
     "revoke_approve", "decide", "promote_draft",
 )
 
@@ -128,24 +130,81 @@ def _revise_tools(work_id: str, target: str,
     return [n for n in out if n and n not in REVISE_DENY]
 
 
-def _review_read_tools(work_id: str, target: str,
-                       cards: dict[str, dict[str, Any]]) -> list[str]:
-    """评审能用的**查询类工具**：取子卡工具面里的只读项。
+def _prepare_review_actor(work_id: str, role_id: str,
+                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """将受邀角色作为当前评审身份装入工具判定上下文。
 
-    [2026-10-30 用户裁定]「评审和子卡一样，知道事情的来龙去脉，可以调用所有查询的
-    工具，进一步了解事实」——不是固定那 5 个，是**子卡能查的它都能查**。
-    只读＝`ToolDef.readonly`，不按名字硬编码（新增查询工具自动跟上）。
+    函数/职能身份来自职能表，不保证有普通卡行。无卡行时以 function 卡型和该类
+    能力挂载构造本轮临时 meta；不写入数据库、不改职能资料。真实职能卡已有挂载则沿用。
+    ``_review_seat`` 标记只声明这是评审场景，用于读范围判定。
+    """
+    from ..permissions import policy
+    from ..storage import work_store
+
+    actor = dict(cards.get(role_id) or {})
+    is_function = False
+    try:
+        is_function = function_store.function_exists(work_id, role_id)
+    except Exception:  # noqa: BLE001 身份不能确认时不合成职能卡
+        pass
+
+    if is_function and str(actor.get("card_type") or "") != "function":
+        root_id = work_store.work_card_id_of(work_id) or ""
+        root = cards.get(root_id) or {}
+        project_class = str(root.get("project_class") or "")
+        try:
+            perms, _perm_ver = policy.compute_perms(project_class or "rd_project", "function")
+            from ..infra import capability_registry
+
+            abilities = capability_registry.abilities_for(perms, "manual", "function")
+        except Exception as exc:  # noqa: BLE001 无法算能力时明确空挂载，执行端关门
+            logger.warning("[review] 职能能力挂载生成失败 role=%s: %s", role_id, exc)
+            abilities, perms, _perm_ver = [], [], 0
+        actor.update({
+            "card_id": role_id,
+            "card_type": "function",
+            "project_class": project_class,
+            "mode": "manual",
+            "abilities": abilities,
+        })
+
+    actor["_review_seat"] = True
+    cards[role_id] = actor
+    return actor
+
+
+def _review_read_tools(work_id: str, role_id: str,
+                       cards: dict[str, dict[str, Any]]) -> list[str]:
+    """评审场景的工具面＝**当前评审角色自己的能力工具面 ∩ 只读工具**。
+
+    场景由调用点 ``speak`` 明确进入：正在进行的评审批次正在召集 ``role_id`` 发言。
+    所以工具面以这个角色为当前卡调用 ``build_tool_schemas``，再由评审机制筛成只读；
+    不从被评审子卡继承工具。成员能力不同，得到的只读工具也可以不同。
+
+    二次核对能力清单中的工具归属，避免职能目录的附加工具越过该角色的能力挂载。
+    读取工具以 ``ToolDef.readonly`` 标记判定，不按工具名硬编码。
+    工具面生成失败时不给查询工具，不回退到共享固定名单。
     """
     from . import card_tools          # 延迟 import：card_tools 体量大且反向引用
     try:
-        schemas = card_tools.build_tool_schemas(target, work_id, cards)
-    except Exception as exc:  # noqa: BLE001 取不到就回落到基础几个
-        logger.warning("[review] 取子卡工具面失败 %s: %s", target, exc)
-        return list(READ_TOOLS)
-    ro = {n for n, d in card_tools.TOOL_REGISTRY.items()
-          if getattr(d, "readonly", False)}
-    out = [str(x.get("name") or "") for x in schemas]
-    return [n for n in out if n in ro]
+        abilities = card_tools._abilities_of(cards.get(role_id), cards)
+        if abilities is None:
+            return []
+        allowed_by_capability = {
+            str(tool)
+            for cap in card_tools._cap_capabilities()
+            if str(cap.get("code") or "") in abilities
+            for tool in ((cap.get("impl") or {}).get("tools") or [])
+        }
+        schemas = card_tools.build_tool_schemas(role_id, work_id, cards)
+    except Exception as exc:  # noqa: BLE001 评审工具面不可判定 ⇒ 不给查询工具
+        logger.warning("[review] 按角色生成只读工具面失败 role=%s: %s", role_id, exc)
+        return []
+    readonly = {name for name, definition in card_tools.TOOL_REGISTRY.items()
+                if getattr(definition, "readonly", False)}
+    visible = [str(schema.get("name") or "") for schema in schemas]
+    return [name for name in visible
+            if name and name in readonly and name in allowed_by_capability]
 
 
 def _emit_tool_call(work_id: str, review_id: str, actor: str,
@@ -184,11 +243,25 @@ async def run_round(work_id: str, review_id: str) -> list[dict[str, Any]]:
         return []
     if review_id in _INFLIGHT:
         return []
+    # [2026-10-31] 与 run_once 同一口径：占住评审卡回合锁，停止才停得下来、
+    # 用户消息轮与评审轮才不会交错。抢不到 ⇒ 有人在跑，本次触发让路（不排队、
+    # 不设墙钟）；丢掉的工作由 _round_loop 收尾时的版本自检兜住。
+    _owner = f"review_round:{review_id}"
+    if not session_facade.turn_try_acquire(work_id, review_id, _owner):
+        return []
     _INFLIGHT.add(review_id)
+    # [2026-10-31] 与 run_once 同口径登记 turn task：模型调用停在半路时，
+    # 停止端点的 `cancel_turn` 才有目标可 cancel（否则只能等下一个圈边界消费停止位）。
+    _task = asyncio.current_task()
+    if _task is not None:
+        control.bind_turn_task(work_id, review_id, _task)
     try:
         return await _round_loop(work_id, review_id)
     finally:
         _INFLIGHT.discard(review_id)
+        control.unbind_turn_task(work_id, review_id, _task)
+        control.discard_stop(work_id, review_id)
+        session_facade.turn_release(work_id, review_id, _owner)
 
 
 async def _is_promoted(work_id: str, target: str) -> bool:
@@ -223,11 +296,31 @@ async def run_once(work_id: str, review_id: str) -> dict[str, Any]:
     key = f"{work_id}/{review_id}"
     if key in _RUNNING:
         return {"continued": False, "reason": "already_running"}
+    # [2026-10-31 修·用户实测「不能停止」] 评审轮必须**占住评审卡的回合锁**。
+    # `control.request_stop` 的第一道判据是 `session_facade.turn_holder(...)`：
+    # 拿不到 holder 就直接 return no_inflight_turn ⇒ 停止位根本不置、cancel 也不发
+    # ⇒ 改前用户在评审卡上点停止是**彻底的 no-op**（只登记 task 也没用）。
+    # 占锁顺带解决第二件事：同一张评审卡上「用户消息轮」与「评审步」不再并发
+    # （实测 card_124 事件流 23:01:16 宣布 fn_004 发言、23:02:33 落账却是 card_001，
+    #   就是两步交错的产物）。
+    _owner = f"review_step:{review_id}"
+    if not session_facade.turn_try_acquire(work_id, review_id, _owner):
+        logger.info("[review] 评审卡 %s 上有别的回合在跑，本步让路", review_id)
+        return {"continued": False, "reason": "review_busy"}
     _RUNNING.add(key)
+    # [2026-10-31 修·用户实测「不能停止」] 登记回合 task ⇒ 停止端点
+    # （control.halt → request_stop → cancel_turn）找得到目标、能真 cancel。
+    # 改前评审轮由 _spawn_tracked(run_once(...)) 起，从不登记 ⇒ cancel 恒 no-op。
+    _task = asyncio.current_task()
+    if _task is not None:
+        control.bind_turn_task(work_id, review_id, _task)
     try:
         return await _run_step(work_id, review_id)
     finally:
         _RUNNING.discard(key)
+        control.unbind_turn_task(work_id, review_id, _task)
+        control.discard_stop(work_id, review_id)
+        session_facade.turn_release(work_id, review_id, _owner)
 
 
 async def _run_step(work_id: str, review_id: str) -> dict[str, Any]:
@@ -304,6 +397,9 @@ async def _step_promote(work_id: str, review_id: str, st: dict[str, Any],
     target = str(st.get("target") or "")
     if target and not await _is_promoted(work_id, target):
         rev = await revise(work_id, review_id, st, ask_promote=True)
+        if isinstance(rev, dict) and rev.get("stopped"):
+            _emit_round_done(work_id, review_id, batch, st_now, changed=False,
+                             reason="stopped", continued=False)
         if isinstance(rev, dict) and rev.get("busy"):
             _emit_round_done(work_id, review_id, batch, st_now, changed=False,
                              reason="child_busy", continued=False)
@@ -364,7 +460,7 @@ async def _round_loop(work_id: str, review_id: str) -> list[dict[str, Any]]:
         子卡在评审卡现场改草稿
           ↓ 改了 → 下一轮；没改 → 停（它认为不用改，等人介入）
 
-    「已通过的不再被叫」由 `status()` 保证：票只在**判据变了**或**被撤销**时失效，
+    「已通过的不再被叫」由 `status()` 保证：票只在**被撤销**时失效，
     草稿版本推进不再让票作废（见 `review_store.status` 的 docstring）。
     """
     out: list[dict[str, Any]] = []
@@ -383,8 +479,7 @@ async def _round_loop(work_id: str, review_id: str) -> list[dict[str, Any]]:
             event_stream.emit(work_id, review_id, "review_round_start", {
                 "batch": batch,
                 "draft": int(st.get("draft") or 1),
-                "criteria": int(st.get("criteria") or 1),
-                "pending": pending,
+                            "pending": pending,
             })
         except Exception:  # noqa: BLE001 事件失败不影响评审
             pass
@@ -435,7 +530,7 @@ async def revise(work_id: str, review_id: str,
     用户原话：「子卡直接在评审卡内，对草稿进行修改」。
 
     「在评审卡内」的意思不是把子卡搬进评审卡，而是**这一轮跑的现场是评审卡**：
-    它读到的是评审现场（判据 ＋ 未通过成员的原话），它写的是自己的草稿列。
+    它读到的是评审现场（未通过成员的原话），它写的是自己的草稿列。
     所以上下文取评审卡，写入口是自己的 `edit_requirements`。
 
     与 `speak` 的区别：
@@ -531,16 +626,24 @@ async def _revise_inner(work_id: str, review_id: str, st: dict[str, Any],
     _allowed = {str(n) for n in names}
     terminal = "promote_draft" if ask_promote else "submit_revision"
     submitted = False
-    rounds = 0
+    # [2026-10-31 修·评审发言不进对话界面] 评审轮没有 human 块 ⇒
+    # `session_facade._assign_block` 的 pair 取不到 ⇒ pair_id="unknown"
+    # ⇒ 前端拿不到真实 run_id ⇒ 发言落不进任何一轮，界面只剩工具行
+    #（实测 card_124 的 assistant_text run_id 全是 "unknown"，正常卡是 UUID）。
+    # ⇒ 每轮给一个真实 turn id，工具块与发言块共用它。
+    _turn_id = uuid.uuid4().hex
+    name_of_terminal = False
+    # [2026-10-31 用户令] **一个席位/一次回应＝一轮**；但**轮内可以连续调工具直到它完成**
+    # （改草稿 → 拿结果 → 交回，这是同一个人的一次工作，不是换视角）。
+    # 只有它没按当轮要求做完（没表态/没交回）时，才由 harness 再叫一轮。
     while True:
-        rounds += 1
-        # [2026-10-30 实跑抓到] 这里原来抄了 speak 的「再调起时收敛成 approve/reject」——
-        # 改稿回合根本不许投那两票，于是**第 2 轮起工具面只剩两个它不能用的工具**，
-        # 它拿不到 edit_requirements，只能空手回一句 ⇒ changed=False ⇒ 判「子卡不改」。
-        # 第 1 轮给全；之后收敛成**只剩终态工具**——和 speak 收敛成 approve/reject
-        # 一个做法：它要么交回来，要么继续用工具改。
-        tools_now = tools if rounds == 1 else [
-            t for t in tools if str((t.get("function") or t).get("name") or "") == terminal]
+        # 停止＝直接把正在跑的这个任务掐掉（control.cancel_turn 取消本任务），
+        # 不在循环里查标志位。
+        # [2026-10-31 用户令] 工具面**永远完整**：改稿轮同样不做收敛。
+        # 「模型不可能无限查下去，没有模型会无限查下去」。
+        # 改前第 2 轮起只剩 submit_revision ⇒ 它拿不到 edit_requirements，
+        # 想改也改不动，只能空手回一句 ⇒ changed=False ⇒ 判「子卡不改」。
+        tools_now = tools
         res, used = await model_service.call_main(
             sys_p, user_p, convo, tools_now, model)
         text = str(res.get("content") or "")
@@ -553,22 +656,10 @@ async def _revise_inner(work_id: str, review_id: str, st: dict[str, Any],
 
         tcs = list(res.get("tool_calls") or [])
         if not tcs:
-            # [2026-10-29 用户令] 工具调用写成标签（格式错）⇒ 不算终态，再调起它重试。
-            # 只有"没有工具、也没有像工具标签的正文"才算它表态"不用改"。
-            bad = _text_tool_tag(text, tools)
-            if bad:
-                convo.append({"role": "assistant", "content": text or "（本轮没有输出）"})
-                convo.append({"role": "user", "content":
-                              f"（你上面写的 `<{bad}>` 是正文标签，不是工具调用，"
-                              f"**没有执行**。要用工具调用接口提交，参数按工具清单里的定义填。）"})
-                continue
-            # [2026-10-30 用户令] 出口是工具，不是"它不说话了"。
-            convo.append({"role": "assistant", "content": text or "（本轮没有输出）"})
-            convo.append({"role": "user", "content":
-                          f"（这一轮还没结束。改完了就调 `{terminal}` 交回；"
-                          f"没改完就继续用工具改。）"})
-            continue
-        follow = False
+            # 没有工具调用 ⇒ 模型认为做完了（或选择不做），自然结束。
+            # 不再"再调起它重试"——那是 harness 层的事（review_round_done 的事件策略）。
+            # changed 由草稿指纹判定，不依赖模型自述。
+            break
         for tc in tcs:
             fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
             name = str(fn.get("name") or "")
@@ -613,38 +704,32 @@ async def _revise_inner(work_id: str, review_id: str, st: dict[str, Any],
                 # 改完要再问一次：让它把"改了哪几处"说出来，落进评审卡会话
                 # （后面的成员要看到改了什么）。说完不再调工具就自然退出。
                 # 失败同理——工具失败＝没改成，必须再调起它重试。
-                follow = True
                 continue
 
             if name in READ_TOOLS:
-                key = name + "|" + json.dumps(args, ensure_ascii=False, sort_keys=True)
-                if key in seen:
-                    payload = "（同一个目标你已经查过了，结果同上；不要重复查）"
-                    called.append({"tool": name, "ok": True, "cached": True})
-                else:
-                    _emit_tool_call(work_id, review_id, target, name, args)
-                    try:
-                        r = await card_tools.execute_tool(
-                            work_id, target, name, args, cards)
-                        payload = json.dumps(r, ensure_ascii=False)
-                        called.append({"tool": name, "ok": bool(r.get("ok"))})
-                    except Exception as exc:  # noqa: BLE001
-                        payload = f"工具异常：{exc}"
-                        r = {"ok": False, "error": str(exc)}
-                        called.append({"tool": name, "ok": False, "error": str(exc)})
-                    _emit_tool_result(work_id, review_id, target, name, r)
-                    seen[key] = payload
-                    try:
-                        await session_facade.append(work_id, review_id, {
-                            "actor": "tool",
-                            "content": f"〔{name} · {batch}〕\n{payload}",
-                            "model": used,
-                        })
-                    except Exception:  # noqa: BLE001
-                        pass
+                # [2026-10-31 用户令] 不做重复查询拦截（同评审轮）。
+                _emit_tool_call(work_id, review_id, target, name, args)
+                try:
+                    r = await card_tools.execute_tool(
+                        work_id, target, name, args, cards)
+                    payload = json.dumps(r, ensure_ascii=False)
+                    called.append({"tool": name, "ok": bool(r.get("ok"))})
+                except Exception as exc:  # noqa: BLE001
+                    payload = f"工具异常：{exc}"
+                    r = {"ok": False, "error": str(exc)}
+                    called.append({"tool": name, "ok": False, "error": str(exc)})
+                _emit_tool_result(work_id, review_id, target, name, r)
+                try:
+                    await session_facade.append(work_id, _sid(review_id, batch), {
+                        "actor": "tool",
+                        "content": f"〔{name} · {batch}〕\n{payload}",
+                        "model": used,
+                        "pair_id": _turn_id,
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
                 convo.append({"role": "user",
                               "content": f"【工具结果 {name}】\n{payload}"})
-                follow = True
                 continue
 
             # [2026-10-30 实跑抓到] 工具面给了 27 个，执行器只认 edit_requirements
@@ -664,13 +749,11 @@ async def _revise_inner(work_id: str, review_id: str, st: dict[str, Any],
                 _emit_tool_result(work_id, review_id, target, name, r)
                 convo.append({"role": "user",
                               "content": f"【工具结果 {name}】\n{payload}"})
-                follow = True
                 continue
             called.append({"tool": name, "ok": False,
                            "error": f"工具面里没有 {name}（改稿回合不投通过/不通过）"})
-        if submitted:
-            break
-        if not follow:
+        # 轮内全交给模型：调了工具就继续，没调就是它给出的回应。
+        if not tcs:
             break
 
     text = "\n".join(texts)
@@ -687,13 +770,15 @@ async def _revise_inner(work_id: str, review_id: str, st: dict[str, Any],
 
     if text.strip():
         try:
-            await session_facade.append(work_id, review_id, {
+            await session_facade.append(work_id, _sid(review_id, batch), {
                 "actor": "assistant",
                 "content": f"〔{await _name_of(work_id, target)} · {batch}〕\n{text}",
                 "model": used,
+                "pair_id": _turn_id,
             })
         except Exception as exc:  # noqa: BLE001
             logger.warning("[review] revise 落块失败 review=%s: %s", review_id, exc)
+
 
     h1 = await review_store._card_hash(work_id, target)
     changed = bool(h1) and h1 != h0
@@ -733,7 +818,7 @@ async def maybe_rerun(work_id: str, child_id: str) -> bool:
 
 
 async def rerun_if_pending(work_id: str, review_id: str) -> bool:
-    """版本已被别处推进（改判据／撤销通过）后，起一轮重评。"""
+    """版本已被别处推进（撤销通过等）后，起一轮重评。"""
     try:
         st = await review_store.status(work_id, review_id)
         if not st.get("batch") or st.get("all_passed"):
@@ -756,6 +841,33 @@ def spawn_round(work_id: str, review_id: str) -> Any:
     from . import message_runner as _mr
     return _mr._spawn_tracked(run_once(work_id, review_id))
 
+
+
+async def _run_card_turn(work_id: str, card_id: str, *,
+                          system_prompt: str, user_prompt: str,
+                          prior: list[dict[str, Any]],
+                          tools: list[dict[str, Any]]) -> str:
+    """**完整复用普通卡的对话回合**：构造 RunState → 驱动 message_runner.step 到交付。
+
+    轮内怎么调模型、怎么执行工具、什么时候算完，全在 `message_runner.step` 里
+    （和每一张普通卡走的是同一套），这里没有任何自写循环判断。
+    返回本轮的最终回复正文。
+    """
+    from . import message_runner as _mr
+
+    state = _mr.RunState(work_id=work_id, card_id=card_id, content=user_prompt)
+    state.system_prompt = system_prompt
+    state.vp_system_prompt = system_prompt
+    state.user_prompt = user_prompt
+    state.prior = list(prior)
+    state.prior_for_gateway = list(prior)
+    state.history_len = len(state.prior_for_gateway)
+    state.tools = list(tools)
+    while True:
+        outcome = await _mr.step(state)
+        if getattr(outcome, "kind", "") in ("deliver", "error"):
+            break
+    return str(state.final_reply or "")
 
 
 async def speak(work_id: str, review_id: str, role_id: str,
@@ -786,162 +898,40 @@ async def speak(work_id: str, review_id: str, role_id: str,
     sys_p, convo, user_p = await _speak_context(work_id, role_id, review_id, st)
     # 再叠**本批次评审现场**的发言（子卡历史里没有这些）
     convo = convo + await _prior_messages(work_id, review_id, batch)
-    # cards 要先取（工具面按它的权限算），打标记在后面
+    # 评审是明确的卡内场景：以**当前受邀角色自己的能力身份**生成基础工具面，
+    # 然后只留只读工具；approve/reject 由评审机制单独提供。
     cards = card_store.iter_card_metas(work_id)
-    names = ("approve", "reject") + tuple(_review_read_tools(work_id, target, cards))
+    _prepare_review_actor(work_id, role_id, cards)
+    review_read_names = _review_read_tools(work_id, role_id, cards)
+    names = ("approve", "reject") + tuple(review_read_names)
     tools = [_schema_of(card_tools, n) for n in names if n in card_tools.TOOL_REGISTRY]
     # [2026-10-29 用户令「哪个 agent 不讲明白」] 工具清单写进提示词：
     # 名字／干什么／参数怎么填，全部从 schema 生成（不手写，不会与工具定义脱节）。
     sys_p = sys_p + "\n\n" + _tools_block(tools)
     model = _model_of(work_id, role_id)
-    # [2026-10-29 用户令「评审卡应该能读所有卡的卡面，卡面才是唯一事实源」]
-    # 评审席上的人（card_001 / fn_004 / fn_005）读全树：给本人打标记，
-    # policy 见到标记就放开读作用域（只放开读，写仍走原规则）。
-    _me = dict(cards.get(role_id) or {})
-    _me["_review_seat"] = True
-    cards[role_id] = _me
-    # [实弹 2026-10-27] 评审角色是**职能**，职能不一定有 cards 行 ⇒ `cards.get(role)`
-    # 为空 ⇒ `check_file_access(card_meta=None)` 恒 False ⇒ 查阅工具一调就
-    # 「越权：无权访问 xxx」（实弹里模型连查 57 次全是被拒，才一直重试）。
-    # 按职能的权限行补一份 meta 给它，让「看得见就调得动」。
-    if role_id not in cards:
-        try:
-            from ..permissions import policy as _pol
-            from ..storage import work_store as _ws
-            root_id = _ws.work_card_id_of(work_id) or ""
-            pc = str((cards.get(root_id) or {}).get("project_class") or "")
-            if not pc and root_id:
-                pc = str(((await card_store.read_card(work_id, root_id))
-                          .get("meta") or {}).get("project_class") or "")
-            cards[role_id] = {
-                "card_id": role_id, "card_type": "function",
-                "project_class": pc,
-                "perms": _pol.perms_for(pc or "rd_project", "function"),
-            }
-        except Exception as exc:  # noqa: BLE001 补不上就退回原样（工具会报越权）
-            logger.warning("[review] 职能权限补齐失败 role=%s: %s", role_id, exc)
 
     texts: list[str] = []
     thinks: list[str] = []
     called: list[dict[str, Any]] = []
     used = model
-    seen: dict[str, str] = {}   # (工具名+参数) → 上次结果：同一目标不重复真查
 
-    rounds = 0
-    while True:
-        rounds += 1
-        # [2026-10-29 用户令] 「每一次必须调工具，要么不通过要么通过，否则就再调起它」
-        # 再调起时**把工具面收敛成二选一**：只剩 approve / reject，不给查阅工具。
-        # 这是结构（把可选动作收敛到终态），不是次数上限。
-        tools_now = tools if rounds == 1 else [
-            t for t in tools
-            if str((t.get("function") or t).get("name") or "")
-            in ("approve", "reject")]
-        res, used = await model_service.call_main(
-            sys_p, user_p, convo, tools_now, model)
-        text = str(res.get("content") or "")
-        think = str(res.get("reasoning_content") or "")
-        if text.strip():
-            # 只留**最后一轮**有内容的发言：无限重试时不再累积（测试里曾因此 MemoryError）
-            texts = [text]
-        if think:
-            thinks.append(think)
-
-        tcs = list(res.get("tool_calls") or [])
-        follow = False          # 有没有「查证类」工具 ⇒ 要不要再问一轮
-        terminal = False        # 有没有终态（approve / reject）⇒ 这轮发言才算完
-        for tc in tcs:
-            # [2026-10-27 修·实弹抓到的死结] 网关返回的 tool_call 是**扁平**结构：
-            #   {"name": "approve", "arguments": {...}}
-            # 原实现按 OpenAI 嵌套形态取 `tc["function"]["name"]` ⇒ 恒为空串 ⇒
-            # 每一次正确的 approve 都被判成"只允许 approve"而拒掉 ⇒ **全员通过
-            # 永远不可能发生**。两种形态都认，arguments 也接受 dict 或 JSON 串。
-            fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
-            name = str(fn.get("name") or "")
-            raw = fn.get("arguments")
-            if isinstance(raw, dict):
-                args = dict(raw)
-            else:
-                try:
-                    args = json.loads(raw) if raw else {}
-                except Exception:  # noqa: BLE001
-                    args = {}
-
-            if name == "approve":
-                args.setdefault("review_card_id", review_id)
-                _emit_tool_call(work_id, review_id, role_id, name, args)
-                try:
-                    r = await card_tools._h_approve(work_id, role_id, args, cards)
-                    called.append({"tool": name, "ok": bool(r.get("ok")),
-                                   "error": str(r.get("error") or "")})
-                except Exception as exc:  # noqa: BLE001
-                    r = {"ok": False, "error": str(exc)}
-                    called.append({"tool": name, "ok": False, "error": str(exc)})
-                _emit_tool_result(work_id, review_id, role_id, name, r)
-                terminal = True
-                continue
-
-            if name == "reject":
-                _emit_tool_call(work_id, review_id, role_id, name, args)
-                try:
-                    r = await card_tools._h_reject(work_id, role_id, args, cards)
-                    called.append({"tool": name, "ok": bool(r.get("ok")),
-                                   "error": str(r.get("error") or "")})
-                except Exception as exc:  # noqa: BLE001
-                    r = {"ok": False, "error": str(exc)}
-                    called.append({"tool": name, "ok": False, "error": str(exc)})
-                _emit_tool_result(work_id, review_id, role_id, name, r)
-                terminal = True
-                continue
-
-            if name in READ_TOOLS:
-                # [实弹② 2026-10-27] 同一个 (工具, 参数) 只真查一次：实弹里一个角色
-                # 连查 57 次（read_card 17 / list_files 17 / read_file 11 …），
-                # 全是同一批目标反复读。重复调用直接回放上次结果，不再烧一次工具。
-                key = name + "|" + json.dumps(args, ensure_ascii=False, sort_keys=True)
-                if key in seen:
-                    payload = "（同一个目标你已经查过了，结果同上；不要重复查，够了就表态）"
-                    called.append({"tool": name, "ok": True, "cached": True})
-                else:
-                    _emit_tool_call(work_id, review_id, role_id, name, args)
-                    try:
-                        r = await card_tools.execute_tool(
-                            work_id, role_id, name, args, cards)
-                        payload = json.dumps(r, ensure_ascii=False)
-                        called.append({"tool": name, "ok": bool(r.get("ok"))})
-                    except Exception as exc:  # noqa: BLE001
-                        payload = f"工具异常：{exc}"
-                        r = {"ok": False, "error": str(exc)}
-                        called.append({"tool": name, "ok": False, "error": str(exc)})
-                    _emit_tool_result(work_id, review_id, role_id, name, r)
-                    seen[key] = payload
-                    # 结果留在现场（后续角色直接看到，不用各自重查）
-                    try:
-                        await session_facade.append(work_id, review_id, {
-                            "actor": "tool",
-                            "content": f"〔{name} · {batch}〕\n{payload}",
-                            "model": used,
-                        })
-                    except Exception:  # noqa: BLE001
-                        pass
-                convo.append({"role": "user",
-                              "content": f"【工具结果 {name}】\n{payload}"})
-                follow = True
-                continue
-
-            called.append({"tool": name, "ok": False,
-                           "error": "只允许 approve / reject 与查阅工具"})
-        if terminal:
-            break
-        if follow:
-            continue
-        # [2026-10-29 用户令] 「每一次必须调工具，要么不通过要么通过，否则就再调起它」
-        # 只说了话、既没表态也没查证 ⇒ 这一轮不算完：把它的发言和事实塞回去，再调一次。
-        convo.append({"role": "assistant", "content": text or "（本轮没有输出）"})
-        convo.append({"role": "user", "content":
-                      "（本批次还没有你的表态：approve 和 reject 都没调；"
-                      "接下来只接受这两个动作）"})
-
+    # [2026-10-31 用户令] 工具面**永远完整**，不做任何收敛：
+    # 「模型不可能无限查下去，没有模型会无限查下去」。
+    # 改前每轮把工具砍成 approve/reject（实测第 2 轮只收到 2 件）⇒ 模型查一次
+    # 就没工具可用了。现在给多少就是多少，查多久由模型自己决定。
+    # [2026-10-31 修·评审发言不进对话界面] 没有 human 块 ⇒ pair_id="unknown"
+    # ⇒ 前端拿不到真实 run_id ⇒ 发言落不进任何一轮。每轮给真实 turn id。
+    _turn_id = uuid.uuid4().hex
+    # [2026-10-31 用户令] **一个席位/一次回应＝一轮**；但**轮内可以连续调工具直到它完成**
+    # （改草稿 → 拿结果 → 交回，这是同一个人的一次工作，不是换视角）。
+    # 只有它没按当轮要求做完（没表态/没交回）时，才由 harness 再叫一轮。
+    # [2026-10-31 用户令] **轮内全交给普通卡那套回合**：不再自写模型调用与工具循环。
+    text = await _run_card_turn(
+        work_id, review_id,
+        system_prompt=sys_p, user_prompt=user_p,
+        prior=convo, tools=tools)
+    think = ""
+    texts = [text] if text.strip() else []
     text = "\n".join(texts)
     think = "\n".join(thinks)
 
@@ -959,14 +949,16 @@ async def speak(work_id: str, review_id: str, role_id: str,
 
     if text.strip():
         try:
-            await session_facade.append(work_id, review_id, {
+            await session_facade.append(work_id, _sid(review_id, batch), {
                 "actor": "assistant",
                 # 首行带批次标记：`_prior_messages` 靠它只取本批次发言（P6）
                 "content": f"〔{await _name_of(work_id, role_id)} · {batch}〕\n{text}",
                 "model": used,
+                "pair_id": _turn_id,
             })
         except Exception as exc:  # noqa: BLE001 落块失败不影响工具执行
             logger.warning("[review] 发言落块失败 review=%s: %s", review_id, exc)
+
 
     # [评审可观测 2026-10-27] 每次发言落一条事件：谁、什么模型、说了多少字、
     # 有没有调 approve。改前评审回合在事件流里**一条记录都没有**——"为什么又跑了
@@ -1067,7 +1059,14 @@ async def _speak_context(work_id: str, role_id: str, review_id: str,
 
     所以这里不手拼历史、不手拼区域：`build_ctx(子卡)` ＋ `history_source=子卡 prior`
     ＋ `function_meta=评审身份` ＋ `profile="viewpoint"`，由装配层一次给出
-    system / prior / user 三件。评审**只是把 user 换成评审专用块**。
+    system / prior / user 三件。评审**只换身份职责区（145）＋把 user 换成评审专用块**。
+
+    [2026-10-31 用户裁定·第三次纠正，逐字]
+    > 「评审席拿到的应该是……和子卡的上下文基本一致，只有身份职责区要替换」
+    > 「它不需要根卡或者职能卡自己的任何信息，那些信息全部都只是污染」
+
+    ⇒ 锚点必须是**子卡**；评审席自己那张卡（根卡／职能卡）的卡面、记忆、直接子卡、
+    影子一律不进。
 
     返回 `(system_prompt, prior_messages, user_prompt)`。
     """
@@ -1096,6 +1095,15 @@ async def _speak_context(work_id: str, role_id: str, review_id: str,
         except Exception as exc:  # noqa: BLE001
             logger.warning("[review] 读子卡历史失败 %s: %s", target, exc)
 
+    # [2026-10-31 用户裁定 · 撤销同日早先的锚点漂移]
+    # 锚点＝**被评子卡**。评审席拿到的上下文与子卡**基本一致**，唯一被替换的是
+    # 身份职责区（145，由 function_meta 承载评审职责书）。
+    # 根卡／职能卡自己的卡面、记忆、直接子卡、影子**一律不进评审席**——用户原话：
+    # 「它不需要根卡或者职能卡自己的任何信息，那些信息全部都只是污染」。
+    # （同日早先我把锚点换成评审席自己，导致根卡 139,802 字记忆＋19,881 字直接子卡
+    #   全部灌进评审席；那是一次推理跳步：从「总裁编造了一次对根卡正稿的引用」
+    #   直接推成「把根卡正稿塞给它」，而正确的修法是出处纪律＋要引用就自己 read_card。
+    #   已撤销。）
     ctx = _ca.build_ctx(
         work_id, target or role_id,
         history_source=prior_src,
@@ -1105,9 +1113,44 @@ async def _speak_context(work_id: str, role_id: str, review_id: str,
     msg = _cr.compose_model_context(ctx, profile="viewpoint",
                                     user_content=user_content)
     sys_p = str(msg.get("system_prompt") or "").strip()
-    sys_p = f"{sys_p}\n\n## 评审卡\nid = {review_id or '（未知）'}\n\n{RULES}"
+    # [2026-10-31 用户令] 代码里**不许写规则**：RULES 整块已删。
+    # 只保留一条**事实**：评审卡 id（approve/reject 的参数要填它）。
+    sys_p = f"{sys_p}\n\n## 评审卡\nid = {review_id or '（未知）'}"
+
+    # [2026-10-31 用户令] 提示词结构重排：
+    #   · 前面全部是**背景资料**（被评卡的卡面与历史），必须显式标明归属，
+    #     否则模型会把「你是 card_074」读成自己，把上一轮历史当成自己说过的话；
+    #   · **身份、评审职责、当轮任务压在最下方**（当轮输入任务口），
+    #     让模型最后读到的是"我是谁、这一轮做什么"。
+    _duty = _review_charter(role_id) or ""
+    _tgt_title = ""
+    try:
+        _tgt_title = str((await card_store.read_card(
+            work_id, target)).get("meta", {}).get("title") or "")
+    except Exception:  # noqa: BLE001
+        _tgt_title = ""
+    _task = "\n\n".join([
+        "## 资料归属（先说清：上面不是你的）\n"
+        f"以上全部是**被评卡 {target}"
+        + (f"（{_tgt_title}）" if _tgt_title else "")
+        + "**的卡面与历史，不是你的。\n"
+        f"那些区域里出现的「你」指的是 {target}，指的是它。\n"
+        f"你自己那张卡（{role_id}）的卡面、记忆、子卡不在上面。",
+        f"## 你是谁\n你是这次评审的**评审席之一**：{await _name_of(work_id, role_id)}"
+        f"（{role_id}）。\n本批次的评审卡 id = {review_id or '（未知）'}。",
+        ("## 你的评审职责\n" + _duty) if _duty else "",
+        f"## 这一轮的任务\n评审**{target}"
+        + (f"（{_tgt_title}）" if _tgt_title else "")
+        + "**的需求文档草稿——就在上面「待评审的需求文档草稿」一节，正文原样未截断。\n"
+        "通过就调 approve；不通过就调 reject。\n"
+        "**理由写在你的发言里**（哪一条不满足、要改成什么）——reject 只是投票，不带理由。",
+    ]).strip()
+    # [2026-10-31 用户令] 身份/职责/当轮任务压在最下方（当轮输入任务口）
+    _up = str(msg.get("user_prompt") or "")
+    if _task:
+        _up = _up + "\n\n" + _task
     prior = list(msg.get("prior_messages") or [])
-    return sys_p, prior, str(msg.get("user_prompt") or "")
+    return sys_p, prior, _up
 
 
 async def _system_prompt(work_id: str, role_id: str,
@@ -1144,14 +1187,14 @@ async def _system_prompt(work_id: str, role_id: str,
                        "charter": {"text": duty}})
     msg = _cr.compose_model_context(ctx, profile="viewpoint")
     base = str(msg.get("system_prompt") or "").strip()
+    # [2026-10-31 用户令] 代码里不许写规则；只留评审卡 id 这条事实。
     return (f"{base}\n\n"
-            f"## 评审卡\nid = {review_id or '（未知）'}\n\n"
-            f"{RULES}")
+            f"## 评审卡\nid = {review_id or '（未知）'}")
 
 
 async def _user_prompt(work_id: str, review_id: str,
                        st: dict[str, Any]) -> str:
-    """发起方填写（原样）＋子卡使命/现状 ＋ **待评审的草稿** ＋ 判据 ＋ 上一批次正稿。
+    """发起方填写（原样）＋子卡使命/现状 ＋ **待评审的草稿** ＋ 上一批次正稿。
 
     [2026-10-29 修·用户抓到] 原来给的是 `body["requirements"]`（**正稿**）——
     评审成员一直在拿正稿评，而评审对象是 `requirements_draft`（草稿）。
@@ -1169,12 +1212,6 @@ async def _user_prompt(work_id: str, review_id: str,
             logger.warning("[review] 读子卡失败 %s: %s", target, exc)
     # 草稿在 meta 列，不在 body 三块里
     draft = await _draft_of(work_id, target) if target else ""
-    criteria = ""
-    try:
-        criteria = str((await card_store.read_card(
-            work_id, review_id)).get("body", {}).get("requirements") or "")
-    except Exception:  # noqa: BLE001
-        pass
     brief = str(st.get("brief") or "").strip()
     if not brief:
         brief = f"（发起方未填写，仅有焦点：{st.get('focus') or '无'}）"
@@ -1187,7 +1224,6 @@ async def _user_prompt(work_id: str, review_id: str,
         "## 子卡现状（原样，供你对齐信息）\n" + str(body.get("status_block") or ""),
         "## 待评审的需求文档草稿（**评审对象就是这一份**）\n"
         + (draft or "（草稿为空）"),
-        "## 判据（评审卡第三块）\n" + (criteria or "（未写判据）"),
         "## 上一批次正稿（对比基准，不是评审对象）\n" + (prev or "（本卡第一次评审）"),
     ])
 
@@ -1219,7 +1255,7 @@ async def _revise_system_prompt(work_id: str, target: str,
     else:
         prefix = (f"## 你现在在哪\n"
                   f"评审现场（评审卡 {review_id}）。你的需求文档草稿正在被评审，"
-                  f"现在轮到你按意见修改。下面有判据、你的草稿、还没通过的成员说的话。\n\n"
+                  f"现在轮到你按意见修改。下面有你的草稿、还没通过的成员说的话。\n\n"
                   f"## 你能做什么\n"
                   f"- 改**你自己的**草稿／现状块；查证据；做你在正式对话里能做的绝大部分事。\n"
                   f"- 正稿由评审通过后产生，你改不动它。\n")
@@ -1237,7 +1273,7 @@ async def _revise_system_prompt(work_id: str, target: str,
 
 async def _revise_user_prompt(work_id: str, review_id: str, st: dict[str, Any],
                               target: str, pending: list[str]) -> str:
-    """改稿现场的上下文：判据 ＋ 当前草稿 ＋ **未通过成员的原话** ＋ 子卡三块。
+    """改稿现场的上下文：当前草稿 ＋ **未通过成员的原话** ＋ 子卡三块。
 
     与 `_user_prompt` 的差别：评审成员看的是「子卡三块（原样）」，
     子卡看的是「自己现在的草稿 ＋ 别人到底要求改什么」——后者才是它动手的依据。
@@ -1247,26 +1283,19 @@ async def _revise_user_prompt(work_id: str, review_id: str, st: dict[str, Any],
         body = (await card_store.read_card(work_id, target)).get("body") or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("[review] revise 读子卡失败 %s: %s", target, exc)
-    criteria = ""
-    try:
-        criteria = str((await card_store.read_card(
-            work_id, review_id)).get("body", {}).get("requirements") or "")
-    except Exception:  # noqa: BLE001
-        pass
-    said = await _pending_said(work_id, review_id,
-                               str(st.get("batch") or ""), pending)
+    said = await _batch_transcript(work_id, review_id,
+                                   str(st.get("batch") or ""))
     draft = str((await _draft_of(work_id, target)) or "")
     return "\n\n".join([
-        # [2026-10-30 实跑] 这一轮的**边界**：改稿是「一轮」，改完就交回评审，
-        # 不是一直润色。改前没说，它 20 分钟改了 8 版还在改，三个成员一次都没
-        # 重新评过。说的是"这一轮什么时候算完"，不是限制它用几次工具。
-        "## 这一轮的范围\n"
-        "你这一轮只做一件事：把上面这些还没通过的人提的意见改进去，改完就回一句"
-        "「改了哪几处」交回评审。下一轮改不改、还要改什么，由他们重新评了再说。\n"
-        "（工具用几次、先查什么后改什么，你自己定，不用报告过程。）",
-        "## 判据\n" + (criteria or "（未写判据）"),
         "## 你现在的草稿（要改的就是这一份）\n" + (draft or "（草稿为空）"),
-        "## 还没通过的成员说了什么（原话）\n" + said,
+        "## 本批次评审现场全部发言（按顺序原样）\n" + said,
+        # [2026-10-31 用户令] 这是**当轮的任务口**：说清这一轮怎么算完成。
+        "## 这一轮你要做的\n"
+        "把上面这些发言里、你认为该改的改掉（用 `edit_requirements`）；\n"
+        "改完（或者你决定不改）之后，**调 `submit_revision` 交回本轮结论**——"
+        "不交回，这一轮就不算完成，系统会再来问一次。\n"
+        "如果你不同意某条意见，可以不改，但要在**你的发言里**说明理由（不是塞进工具参数）。\n"
+        "（要查证据就用查阅工具，查几次、先查什么由你定。）",
         "## 你的使命（原样）\n" + str(body.get("mission") or ""),
         "## 你的现状（原样）\n" + str(body.get("status_block") or ""),
     ])
@@ -1281,44 +1310,32 @@ async def _draft_of(work_id: str, card_id: str) -> str:
         return ""
 
 
-async def _pending_said(work_id: str, review_id: str, batch: str,
-                        pending: list[str]) -> str:
-    """本批次里**未通过成员**的发言原话（不含工具结果）。
+async def _batch_transcript(work_id: str, review_id: str,
+                           batch: str) -> str:
+    """本批次评审现场的**全部发言，按会话里的原始顺序排列**。
 
-    为什么不把全批次发言都给：已通过的人说的话是"当时为什么没过"，
-    对子卡改稿是噪音；子卡要的是**还没点头的人**要求什么。
+    [2026-10-31 用户令] 「上下文按顺序排不就好了吗？做你妈的乱七八糟逻辑」
+    ⇒ 不做"取未通过成员的意见"这种抽取：谁说的、按什么顺序说的，原样排下来。
+    子卡自己读得懂顺序，不需要我替它挑。
     """
     try:
-        blocks = await session_facade.read(work_id, review_id) or []
+        blocks = await session_facade.read(work_id, _sid(review_id, batch)) or []
         if isinstance(blocks, dict):          # 兼容旧形态
             blocks = blocks.get("blocks") or []
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[review] revise 读会话失败 review=%s: %s", review_id, exc)
-        return "（读不到意见，按判据自行核对）"
-
-    names: list[tuple[str, str]] = []
-    for p in pending:
-        try:
-            names.append((p, await _name_of(work_id, p)))
-        except Exception:  # noqa: BLE001
-            names.append((p, p))
-
+        logger.warning("[review] 读评审会话失败 review=%s: %s", review_id, exc)
+        return "（评审会话读不到）"
     mark = f"· {batch}〕" if batch else ""
     out: list[str] = []
     for b in blocks:
-        if str(b.get("actor") or "") != "assistant":
-            continue                      # 只要成员发言，不要工具结果
         content = str(b.get("content") or "")
         if not content.strip():
             continue
-        head, _, rest = content.partition("\n")
+        head = content.split("\n", 1)[0]
         if mark and mark not in head:
-            continue                      # 上一批次的发言
-        for pid, nm in names:
-            if nm and nm in head:
-                out.append(f"【{nm}】\n{rest.strip() or content}")
-                break
-    return "\n\n".join(out) or "（成员还没有留下书面意见，按判据自行核对）"
+            continue                      # 只取本批次
+        out.append(content.strip())
+    return "\n\n".join(out) or "（本批次还没有发言）"
 
 
 async def _prior_messages(work_id: str, review_id: str,
@@ -1332,7 +1349,7 @@ async def _prior_messages(work_id: str, review_id: str,
     进过上下文**（"共用现场"这条是空的）。实弹跑时抓到的。
     """
     try:
-        blocks = await session_facade.read(work_id, review_id) or []
+        blocks = await session_facade.read(work_id, _sid(review_id, batch)) or []
         if isinstance(blocks, dict):          # 兼容旧形态
             blocks = blocks.get("blocks") or []
     except Exception as exc:  # noqa: BLE001
@@ -1353,10 +1370,14 @@ async def _prior_messages(work_id: str, review_id: str,
         content = str(b.get("content") or "")
         if not content.strip():
             continue
-        if mark:
+        # [2026-10-31 用户令]「我说话，它们看不见，那我为什么要说话」
+        # ⇒ 用户（actor="human"）说的每一句都进评审现场，不受批次标记限制。
+        # 用户发言没有 `· rv_xxx〕` 标记，改前被下面这行过滤掉 ⇒ 成员从来看不到。
+        # 这里只认 actor 一个字段，不解释内容、不写任何状态。
+        if mark and str(b.get("actor") or "") != "human":
             head = content.split("\n", 1)[0]
             if mark not in head:
-                continue      # 上一批次的发言不带进来（只带它的正稿）
+                continue      # 上一批次的成员发言不带进来（只带它的正稿）
         role = "assistant" if str(b.get("actor") or "") == "assistant" else "user"
         out.append({"role": role, "content": content})
     return out

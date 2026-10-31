@@ -66,8 +66,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
@@ -283,10 +285,14 @@ def _parse_kv_lines(lines: list[str], whitelist: tuple[str, ...]) -> tuple[dict,
     return kv, unknown
 
 
-def _parse_v2(text: str) -> dict[str, Any]:
+def _parse_v2(text: str, content_limit: int = 0) -> dict[str, Any]:
     """V2 解析器。返回 {"header": dict, "blocks": [输出形态块]}。
 
     damaged 块以占位条目存在、不吞并（T117 承重语义）。
+
+    〔2026-10-31〕``content_limit``：每个块的正文**只保留前 N 字符**
+    （投影读用；0＝全保留＝旧行为）。目的是**别先造出整份正文再丢**——
+    card_021 的 117MB 正文先 join 出来＝瞬时多占 900MB。
     """
     lines = text.split("\n")
     n = len(lines)
@@ -337,6 +343,8 @@ def _parse_v2(text: str) -> dict[str, Any]:
             # 在撕裂时仍会落盘；语义沿用旧解析 :135-136 的尾空行剥离）
             if content_lines and content_lines[-1] == "":
                 content_lines.pop()
+        if content_limit > 0:
+            content_lines = _truncate_content_lines(content_lines, content_limit)
         blocks.append(_materialize_v2_block(kv, content_lines, header_closed, closed, unknown_fields))
     return {"header": header, "blocks": blocks}
 
@@ -479,6 +487,264 @@ _PARSE_CACHE: dict[str, tuple[tuple[int, int], list[dict[str, Any]]]] = {}
 #: 缓存条目上限（超出按插入顺序丢最旧）——内存封顶，不是时间闸。
 _PARSE_CACHE_MAX = 512
 
+#: 〔2026-10-31 · 治「疯狂占内存」〕缓存的**字节预算**（进程内驻留上限）。
+#:
+#: 病根：原来只有**条数**上限（512 条）⇒ 而**单条**体积随会话线性增长。
+#: 实测（work_027）：``session_021.md`` 117MB → 解析后 **909MB** Python 对象
+#: （raw→dict 放大 **6.8~7.7×**）；前 12 张卡合计 **2.96GB** ⇒
+#: 512 条最坏 **123GB** 常驻 ⇒ 进程 commit 被打穿 ⇒ 整机「低虚拟内存」。
+#: 实证（Windows 事件 Resource-Exhaustion-Detector/2004）：7 天内 **28 次**
+#: 「low virtual memory condition」，每次的榜首都是 python.exe（**16~42.8GB**），
+#: **dwm.exe 每次都在前三**（2.5~3.7GB）⇒ dwm 被挤掉 ⇒ **桌面黑、鼠标失灵**；
+#: 服务随后 `MemoryError` 崩溃（logs/server_errors.jsonl：10-24 00:07 的
+#: `/card-messages`、10-30 00:20 的 `/timeline`）⇒ watchdog 重启（新 PID）。
+#:
+#: ⇒ 封顶必须按**字节**（= 用户口径的「容量」），不是「张数」。
+_PARSE_CACHE_MAX_BYTES = int(
+    os.environ.get("ECO_PARSE_CACHE_MB") or 512) * 1024 * 1024
+
+#: 单条超过预算的这个占比就**不入缓存**——否则它一条吃光预算、把其余全挤掉
+#: （每次都重解析 ⇒ 更慢）。超大会话本来就得重解析，不如老实不缓存。
+_PARSE_CACHE_ENTRY_MAX_RATIO = 0.25
+
+#: 「解析后**常驻**字节 / 源文件字节」的实测系数（1.09~2.75×，取 3.0 留余量）。
+#: ⚠ 别用峰值系数（2.8~7.7×）——那是**解析过程中**的瞬时副本
+#: （text ＋ split 行表 ＋ content 行表 ＋ join 出的正文），解析完就释放了；
+#: **缓存里留下的是常驻那份** ⇒ 封顶按常驻算才准。
+_PARSE_RETAINED_FACTOR = 3.0
+
+#: 每条缓存的估算字节数（key → 估算值）。与 `_PARSE_CACHE` 同生命周期。
+_PARSE_CACHE_BYTES: dict[str, int] = {}
+
+#: 投影读：只保留这些字段（＋ `content` 截断到 `_PROJECT_CONTENT_CHARS`）。
+#: 给「旧档案扫描」用——它只要 ``actor``/``content`` 头几行/``seq``/``ts``/``from``，
+#: 却整份解析并**常驻**每张卡的全部会话（work_027 一次 = 3GB）。
+_PROJECT_CONTENT_CHARS = 8192
+
+#: 投影读时，V2 文件的正文**按字节**截断（源字节，不是解码后的字符）。
+#: 为何按字节：正文解码成 str 要 3~4 倍空间（UCS-4），按字节计才拦得住内存；
+#: 字符数必然 ≤ 字节数 ⇒ 截出来的字符数也 ≤ 这个值。
+_PROJECT_CONTENT_BYTES = 8192
+
+
+def _estimate_block_bytes(blocks: list[dict[str, Any]]) -> int:
+    """估算一组块**常驻**的字节数（字符串净长 × 实测系数 ＋ 每块固定开销）。
+
+    不做 ``sys.getsizeof`` 递归（对 4000+ 块的会话太慢）；用实测系数
+    （常驻/文件 = 1.09~2.75×，取 3.0）估算 ⇒ 宁可略微高估（宁可早淘汰，不可超预算）。
+    """
+    text_len = 0
+    for b in blocks:
+        for v in b.values():
+            if isinstance(v, str):
+                text_len += len(v)
+    return int(text_len * _PARSE_RETAINED_FACTOR) + len(blocks) * 512
+
+
+def _project_blocks(blocks: list[dict[str, Any]], keys: tuple[str, ...],
+                    content_chars: int = _PROJECT_CONTENT_CHARS
+                    ) -> list[dict[str, Any]]:
+    """**投影**：只保留需要的字段（＋ ``content`` 截断）。
+
+    给「只要摘要/头行」的扫描用——旧档案扫描要的只是 ``actor``/``content`` 的
+    头几行/``seq``/``ts``/``from``，却整份解析并**常驻**每张卡的全部会话
+    （work_027 一次 = 3GB ⇒ 撑穿整机 commit ⇒ 桌面黑）。
+    """
+    keep = tuple(dict.fromkeys(("seq", "actor", "turn") + tuple(keys)))
+    out: list[dict[str, Any]] = []
+    for b in blocks:
+        nb = {k: b[k] for k in keep if k in b}
+        c = nb.get("content")
+        if isinstance(c, str) and content_chars > 0 and len(c) > content_chars:
+            nb["content"] = c[:content_chars]
+        out.append(nb)
+    return out
+
+
+def _truncate_content_lines(lines: list[str], limit: int) -> list[str]:
+    """只保留前 ``limit`` 个字符的行——**解析期**截断（别先造整份正文再丢）。"""
+    if limit <= 0:
+        return lines
+    kept: list[str] = []
+    total = 0
+    for ln in lines:
+        if total >= limit:
+            break
+        kept.append(ln)
+        total += len(ln) + 1
+    return kept
+
+
+#: 通用换行（与文本模式读 `newline=None` 一致）：\r\n／\r／\n 都算换行。
+_LINE_SPLIT = re.compile(b"\r\n|\r|\n")
+
+
+class _ByteLineReader:
+    """按**字节**行迭代 ＋ 一行回看。
+
+    为什么要字节：V2 会话文件动辄上百 MB（work_027 的 ``session_021.md`` 117MB），
+    ``text.split("\\n")`` 会额外造一份**行表**（实测 +320MB），而正文解码成
+    UCS-4 又要 +396MB ⇒ 峰值 ~900MB。字节流式扫：标记行全是 ASCII（直接比字节），
+    只在真的要留的行上解码 ⇒ 峰值 O(保留内容)。
+
+    ⚠ 换行语义必须与**文本模式读**逐字一致（通用换行转换）：``\\r\\n``／``\\r``／
+    ``\\n`` 都算换行。实测 work_027 有 2 个会话文件里混着**孤立 ``\\r``**
+    ⇒ 只按 ``\\n`` 切会在内容里留下 ``\\r``，与整读版不一致。
+    """
+
+    def __init__(self, fh, chunk: int = 1 << 20) -> None:
+        self._fh = fh
+        self._chunk = chunk
+        self._pending = b""
+        self._queue: deque[bytes] = deque()
+        self._eof = False
+        self._buf: bytes | None = None
+
+    def _next_raw(self) -> bytes | None:
+        while not self._queue:
+            if self._eof:
+                if self._pending:
+                    out = self._pending
+                    self._pending = b""
+                    if out.endswith(b"\r"):     # 文件末尾的孤立 \r 也是换行
+                        out = out[:-1]
+                    return out
+                return None
+            data = self._fh.read(self._chunk)
+            if not data:
+                self._eof = True
+                continue
+            data = self._pending + data
+            tail = b""
+            if data.endswith(b"\r"):
+                # 末尾的 \r 可能是 \r\n 的一半 ⇒ 留到下一块再判
+                data, tail = data[:-1], b"\r"
+            parts = _LINE_SPLIT.split(data)
+            rest = parts.pop() if parts else b""
+            self._pending = rest + tail
+            self._queue.extend(parts)
+        return self._queue.popleft()
+
+    def peek(self) -> bytes | None:
+        if self._buf is None:
+            self._buf = self._next_raw()
+        return self._buf
+
+    def next(self) -> bytes | None:
+        v = self.peek()
+        self._buf = None
+        return v
+
+
+def _detect_format_stream(path: Path) -> int:
+    """首个非空行是不是 ``---SESSION---``（＝`_detect_format` 的流式版，判据逐字一致）。"""
+    with open(path, "rb") as fh:
+        it = _ByteLineReader(fh)
+        while True:
+            line = it.peek()
+            if line is None:
+                break
+            it.next()
+            s = line.decode("utf-8", "replace")
+            if s.strip() == "":
+                continue
+            return 2 if s == HEAD_MARKER else 1
+    return 1  # 空文件按 V1（与 `_detect_format` 一致）
+
+
+def _project_v2_lines(lines: list[bytes], content_limit: int) -> list[dict[str, Any]]:
+    """按**字节行**解析 V2（投影口径）：每块只留「头字段 ＋ 正文前 N 字节」。
+
+    与 `_parse_v2` **逐字同构**（同一状态机、同一个 `_materialize_v2_block`），
+    差别只在于不把整文件解码成 str ⇒ 峰值从 ~900MB 降到 ~250MB。
+    超出截断长度的行**连解码都省了**（只跳过）⇒ CPU 也省。
+    """
+    b_msg = BLOCK_MARKER.encode("utf-8")
+    b_sep = BLOCK_BODY_SEP.encode("utf-8")
+    b_end = BLOCK_END_MARKER.encode("utf-8")
+    b_head = HEAD_MARKER.encode("utf-8")
+    blocks: list[dict[str, Any]] = []
+    n = len(lines)
+    i = 0
+    # 文件头（HEAD_MARKER → 独立 --- 行）：投影用不上，只跳过
+    if n and lines[i] == b_head:
+        i += 1
+        while i < n and lines[i] != b_sep:
+            i += 1
+        if i < n:
+            i += 1
+    while i < n:
+        if lines[i] != b_msg:
+            i += 1
+            continue
+        i += 1                      # 吃掉 ---MSG---
+        head_lines: list[str] = []
+        while i < n and lines[i] != b_sep:
+            head_lines.append(lines[i].decode("utf-8", "replace"))
+            i += 1
+        header_closed = i < n
+        if header_closed:
+            i += 1                  # 跳过 ---
+        kv, unknown_fields = _parse_kv_lines(head_lines, BLOCK_FIELDS)
+        content_lines: list[str] = []
+        kept_bytes = 0
+        while i < n and lines[i] != b_end:
+            raw = lines[i]
+            room = content_limit - kept_bytes
+            if room > 0:
+                s = raw.decode("utf-8", "replace")
+                if len(raw) + 1 > room:
+                    # ⚠ **单行超长**（实测会话里一整块正文常在**一行**里）：
+                    # 只按行截断会把它整条留下 ⇒ 必须在**行内**再切一刀。
+                    s = s[:max(room - 1, 0)]
+                    kept_bytes = content_limit
+                else:
+                    kept_bytes += len(raw) + 1
+                content_lines.append(s)
+            i += 1
+        closed = i < n
+        if closed:
+            i += 1                  # 跳过 ---END---
+        else:
+            # 未闭合块：剥掉一个尾部空行（与 `_parse_v2` 同语义）
+            if content_lines and content_lines[-1] == "":
+                content_lines.pop()
+        blocks.append(_materialize_v2_block(
+            kv, content_lines, header_closed, closed, unknown_fields))
+    return blocks
+
+
+def _project_v2_stream(path: Path, content_limit: int) -> list[dict[str, Any]]:
+    """**流式**读 V2 会话文件并做投影解析。
+
+    为什么按字节读：``text = f.read()`` 会把 117MB 的文件解码成 **UCS-4** 字符串
+    （文件里有非 BMP 字符 ⇒ 每字 4 字节）＝ **396MB**，再 ``split("\\n")`` 又要
+    **320MB** 行表 ⇒ 峰值 ~900MB。按字节读 + ``splitlines()`` ⇒ 只 ~240MB，
+    而且**只解码要留的那些行** ⇒ CPU 也省。
+    """
+    raw = path.read_bytes()
+    lines = raw.splitlines()      # bytes 行（通用换行语义与文本模式读一致）
+    del raw
+    return _project_v2_lines(lines, content_limit)
+
+
+def _evict_parse_cache() -> int:
+    """按**字节**预算淘汰（插入序丢最旧）——**不按时间**（用户明令：只按容量封顶）。
+
+    返回被淘汰的条数。
+    """
+    total = sum(_PARSE_CACHE_BYTES.values())
+    if total <= _PARSE_CACHE_MAX_BYTES:
+        return 0
+    dropped = 0
+    for key in list(_PARSE_CACHE.keys()):
+        if total <= _PARSE_CACHE_MAX_BYTES:
+            break
+        _PARSE_CACHE.pop(key, None)
+        total -= _PARSE_CACHE_BYTES.pop(key, 0)
+        dropped += 1
+    return dropped
+
 
 def reset_cache() -> None:
     """清解析缓存。
@@ -488,6 +754,7 @@ def reset_cache() -> None:
     上一个沙箱的块。conftest 的 sandbox fixture 里调本函数清掉。
     """
     _PARSE_CACHE.clear()
+    _PARSE_CACHE_BYTES.clear()
 
 
 def _file_stamp(path: Path) -> tuple[int, int]:
@@ -499,41 +766,89 @@ def _file_stamp(path: Path) -> tuple[int, int]:
         return (0, 0)
 
 
-async def _read_parsed(work_id: str, card_id: str) -> list[dict[str, Any]]:
-    """读＋解析会话文件（**带内存缓存**：文件没变就不读不解析）。"""
+async def _read_projected(work_id: str, card_id: str, path: Path,
+                           project: tuple[str, ...]) -> list[dict[str, Any]]:
+    """投影读：V2 文件走**流式**解析；V1（会话库）走旧解析再投影。"""
+    if _detect_format_stream(path) == 2:
+        blocks = _project_v2_stream(path, _PROJECT_CONTENT_BYTES)
+    else:
+        blocks = _project_blocks(
+            _enrich_v1(await session_store.read_session(work_id, card_id)), project)
+        return blocks
+    return _project_blocks(blocks, project)
+
+
+async def _read_parsed(work_id: str, card_id: str,
+                       project: Optional[tuple[str, ...]] = None
+                       ) -> list[dict[str, Any]]:
+    """读＋解析会话文件（**带内存缓存**：文件没变就不读不解析）。
+
+    〔2026-10-31 · 治「疯狂占内存」〕``project``：只要其中几个字段（＋ ``content``
+    截断）。旧档案扫描用它——那个扫描**整份解析并常驻**每张卡的全部会话
+    （work_027 一次 = 3GB ⇒ 撑穿整机 commit ⇒ dwm 被挤掉 ⇒ 桌面黑）。
+    投影在**解析期**就生效（``content`` 在 ``_parse_v2`` 内截断）⇒
+    峰值与常驻都按投影后的小体积算。
+    """
     path = _session_path(work_id, card_id)
     if not path.exists():
         return []
     stamp = _file_stamp(path)
     key = f"{work_id}/{card_id}"
+    if project:
+        key += "|p:" + ",".join(project)
     hit = _PARSE_CACHE.get(key)
     if hit is not None and hit[0] == stamp:
         return hit[1]
-    async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
-        text = await f.read()
-    if _detect_format(text) == 1:
-        blocks = _enrich_v1(await session_store.read_session(work_id, card_id))
+    if project:
+        # 〔2026-10-31〕投影读走**流式**路径：只留要的头字段 ＋ 正文前 N 字符。
+        # 为什么不整读：`_parse_v2` 把整个文件读成 str 再 split 成行表
+        # （实测 117MB 文件 ⇒ 文本 396MB ＋ 行表 320MB ⇒ 峰值 909MB），
+        # 而投影要的只是「每块的头几行」⇒ 边读边丢，内存 O(块数 × 截断长度)。
+        blocks = await _read_projected(work_id, card_id, path, project)
     else:
-        blocks = _parse_v2(text)["blocks"]
+        async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
+            text = await f.read()
+        if _detect_format(text) == 1:
+            blocks = _enrich_v1(await session_store.read_session(work_id, card_id))
+        else:
+            blocks = _parse_v2(text)["blocks"]
     if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
         # 丢最旧的（插入序）——内存封顶
         for old in list(_PARSE_CACHE.keys())[:len(_PARSE_CACHE) - _PARSE_CACHE_MAX + 1]:
             _PARSE_CACHE.pop(old, None)
-    _PARSE_CACHE[key] = (stamp, blocks)
+            _PARSE_CACHE_BYTES.pop(old, None)
+    # 〔2026-10-31〕**按字节**记账与封顶（不是条数；**不按时间**）
+    est = _estimate_block_bytes(blocks)
+    if est <= _PARSE_CACHE_MAX_BYTES * _PARSE_CACHE_ENTRY_MAX_RATIO:
+        _PARSE_CACHE[key] = (stamp, blocks)
+        _PARSE_CACHE_BYTES[key] = est
+        _evict_parse_cache()
+    else:
+        # 单条就超份额 ⇒ **不入缓存**（否则它把其余全挤掉 ⇒ 反复重解析更慢）
+        _PARSE_CACHE.pop(key, None)
+        _PARSE_CACHE_BYTES.pop(key, None)
     return blocks
 
 
 async def read(work_id: str, card_id: str, *, from_seq: Optional[int] = None,
                to_seq: Optional[int] = None, actor: Optional[str] = None,
-               turn: Optional[int] = None, limit: Optional[int] = None) -> list[dict[str, Any]]:
+               turn: Optional[int] = None, limit: Optional[int] = None,
+               project: Optional[tuple[str, ...]] = None) -> list[dict[str, Any]]:
     """统一读入口。V1 委托旧解析＋补派生；V2 走 V2 解析器。
 
     damaged 占位条目（seq 缺失者）在任何 seq 过滤下都保留——位次对齐承重语义
     （T117）；显式 actor/turn 过滤按块字段正常生效。
 
     〔2026-10-26〕解析结果走**内存缓存**（见 `_read_parsed`）：文件没变就不重解析。
+
+    〔2026-10-31 · 治「疯狂占内存」〕``project``：**投影读**——只要列出的几个字段
+    （＋ ``content`` 截断到 8KB）。给「旧档案扫描」用：它只看摘要与头行，
+    却整份解析并常驻每张卡的全部会话（work_027 一次 ≈ 3GB ⇒ 撑穿整机 commit
+    ⇒ dwm 被挤掉 ⇒ 桌面黑）。投影后同一扫描 ≈ 30MB。
+    ⚠ 投影块**不含**正文全文 ⇒ 只用于「只看摘要/头行」的扫描；
+      需要正文全文的调用点**不要**传 project。
     """
-    blocks = await _read_parsed(work_id, card_id)
+    blocks = await _read_parsed(work_id, card_id, project=project)
     if not blocks:
         return []
 

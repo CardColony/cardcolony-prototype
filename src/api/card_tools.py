@@ -68,7 +68,7 @@ MODEL_REL_TYPES = ("先后", "关联")
 
 # [依赖关联线 2026-10-16] 模型可建的**依赖关联线** kind（第三种线 relations）。
 # 与通信线的 type 是两个字段上的概念，重名不影响（任务书 §二.12）。
-MODEL_DEP_KINDS = ("依赖", "关联")
+MODEL_DEP_KINDS = ("依赖", "影响")
 
 # [更新现状按钮改造 2026-10-16] 「更新现状」专用操作回合的操作标记
 # （POST …/messages 请求体的 op 字段）。它不是权限开关，是**本轮操作类型**：
@@ -126,7 +126,9 @@ AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
 # 角色卡不是作业卡：它只判断、记录判断、必要时发言/警报。
 # ============================================================
 FUNCTION_ONLY_TOOLS: frozenset[str] = frozenset({
-    "record_verdict", "raise_alarm", "correct_alarm",
+    # [2026-10-31 用户令「判断、警报我明确不需要，拆掉」] record_verdict /
+    # raise_alarm / correct_alarm 已从注册表删除，名字同步从本集移除，
+    # 不留「集合里有、注册表没有」的悬空项。
     # [通信收拢 2026-10-28] issue_directive / verify_directive 退役（并进 direct），
     # 不再进任何集合；名字从本表删掉，避免「集合里有、注册表没有」的悬空项。
     # [总裁制 P4/P5 2026-10-24] 四件新工具不进基础池(report_up 由类型闸按
@@ -143,11 +145,10 @@ FUNCTION_ONLY_TOOLS: frozenset[str] = frozenset({
     # 二段 perms 闸（read 开关）漏给所有有 read 的卡——子卡也会看得见"通过"，
     # 而它根本不是评审成员。由 _apply_function_toolface 追加。
     "approve",
-    # [伴生评审卡 2026-10-27] 判据／撤销／裁决同样不进基础池：它们挂的是
+    # [伴生评审卡 2026-10-27] 撤销／裁决同样不进基础池：它们挂的是
     # read/edit 开关，而 `tool` 卡也有 edit ⇒ 实测漏给了 tool 卡（
-    # test_cardperm_readopen 抓到）。发起方（子项目/课题卡）的 set_criteria
-    # 由 build_tool_schemas 末段按类型追加；总裁三件走目录 allow。
-    "set_criteria", "revoke_approve", "decide",
+    # test_cardperm_readopen 抓到）。总裁三件走目录 allow。
+    "revoke_approve", "decide",
 })
 
 #: [card_031] 旧名保留别名——旧 role 路径的代码/用例仍按 ROLE_ONLY_TOOLS 取值，
@@ -259,11 +260,6 @@ TOOL_SWITCH: dict[str, str] = {
     # 本工具在 OP_ONLY_TOOLS 里，被 build_tool_schemas 从常规工具面摘除，
     # 只在 op=requirements_final 且本卡是根卡时追加（见该函数）。
     "write_requirements_final": policy.SWITCH_EDIT,
-    # [职能机制 card_031] 职能专用工具：只为「注册表每件工具都有开关映射」的完备性。
-    # 实际下发不走这些开关（FUNCTION_ONLY_TOOLS 从常规池排除，职能回合末段追加）。
-    "record_verdict": policy.SWITCH_READ,
-    "raise_alarm": policy.SWITCH_READ,
-    "correct_alarm": policy.SWITCH_READ,
     # [通信收拢 2026-10-28] issue_directive / verify_directive 已退役并进 direct，
     # 开关映射一并删除（映射表与注册表必须一一对应，悬空项会被 test_no_new_ghost_tool 抓）。
     # 组阁权挂 create_child（根卡才有），关注管理挂 link；两件都只对根卡下发。
@@ -338,7 +334,7 @@ TOOL_SWITCH: dict[str, str] = {
 #   write_requirements_final（根卡【需求确定】那一轮写需求文档**正稿**的口子）。
 #   同样不进常规工具面（OP_ONLY_TOOLS），只在 op==OP_REQUIREMENTS_FINAL 且本卡
 #   是根卡（project）时追加 ⇒ 常规卡片工具面逐字不变。
-TOOL_TABLE_VERSION = "tools-tc-17"
+TOOL_TABLE_VERSION = "tools-tc-18"
 
 
 # ============================================================
@@ -528,6 +524,177 @@ def _card_activity(work_id: str, card_id: str, meta: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
+def _cap_capabilities() -> list[dict[str, Any]]:
+    """能力清单全表（读不到 ⇒ 空表）。只给 switch→能力 反查用。"""
+    try:
+        from ..infra import capability_registry as _cap
+        return _cap.capabilities()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _abilities_of(card: dict[str, Any] | None,
+                  cards: dict[str, dict[str, Any]] | None = None) -> set[str] | None:
+    """这张卡挂的能力集合。**库里有就用库里的；没有就按卡型现算（不落库）**。
+
+    [perms 退役 2026-10-30] perms 列删掉后，"缺挂载"不能再回退到 perms 判据。
+    但"缺"有两种：真卡没落（异常）与手工构造的卡面（测试/合成卡）。两者都不该
+    直接关门——按卡型＋模式现算一次，结果与建卡时算的完全同源（同一个
+    ``abilities_for``），所以不会放宽。
+
+    算不出来（卡型不认识 / 清单不可用）⇒ None，调用方按"没有任何能力"处理。
+    """
+    if not isinstance(card, dict):
+        return None
+    ab = card.get("abilities")
+    if isinstance(ab, list):
+        return {str(x) for x in ab}
+    # [兼容层 2026-10-30] 卡上没有挂载、但**声明了开关**（老数据 / 手工构造的卡面）
+    # ⇒ 按它给的开关反推能力：开关→能力是 1:1（拆包后每项能力只对应一个开关），
+    # 所以这层不会放宽也不会收紧。真卡都有 abilities，走不到这里。
+    perms = card.get("perms")
+    if isinstance(perms, list):
+        granted = set(str(x) for x in perms)
+        try:
+            from ..permissions import policy as _pol
+
+            granted |= {s2 for s2 in granted
+                        for s2 in _pol.SWITCH_IMPLIES.get(s2, ())}
+        except Exception:  # noqa: BLE001
+            pass
+        return {str(c.get("code")) for c in _cap_capabilities()
+                if str((c.get("impl") or {}).get("switch") or "") in granted}
+    ctype = str(card.get("card_type") or "")
+    if not ctype:
+        return None
+    mode = "auto" if bool(card.get("auto_mode")) else str(card.get("mode") or "manual")
+    project_class = str(card.get("project_class") or "")
+    if not project_class:
+        for m in (cards or {}).values():
+            if str((m or {}).get("card_type") or "") == "project":
+                project_class = str((m or {}).get("project_class") or "")
+                break
+    try:
+        from ..infra import capability_registry as _cap
+        from ..permissions import policy
+
+        perms, _ = policy.compute_perms(project_class, ctype)
+        return set(_cap.abilities_for(perms, mode, ctype))
+    except Exception as exc:  # noqa: BLE001 算不出来 ⇒ 当没有能力
+        logger.warning("[capability] 现算挂载失败 card_type=%s: %s", ctype, exc)
+        return None
+
+
+def _actor_can_switch(card: dict[str, Any] | None, switch: str) -> bool:
+    """操作者能不能做这个 switch：**已迁移看能力，未迁移看 perms**。
+
+    与 ``_cap_gate`` 的分工：这里只回答"岗位能不能做这类事"，不管作用域；
+    作用域另由 ``policy.can`` 判。``switch`` 到能力的对应关系直接读清单里的
+    ``impl.switch``（拆包后一项能力只对应一个权限类别）。
+    """
+    if not isinstance(card, dict):
+        return False
+    mounted = _abilities_of(card, None)
+    if mounted is None:
+        return policy.has_perm(card, switch)       # 算不出来 ⇒ 老路
+    codes = {str(c.get("code")) for c in _cap_capabilities()
+             if str((c.get("impl") or {}).get("switch") or "") == switch}
+    if not codes:
+        return policy.has_perm(card, switch)
+    return bool(mounted & codes)
+
+
+def _cap_gate(actor_id: str, cap_code: str, switch: str, target_id: str,
+              cards: dict[str, dict[str, Any]] | None, what: str) -> dict[str, Any] | None:
+    """写侧判据：**能力（岗位）＋ 作用域（按线）**。返回 None＝放行，否则 denied 信封。
+
+    [能力底座 2026-10-30] 把 handler 里"查目标卡 perms"换成两件该查的事：
+
+    - **能力**：操作者挂没挂这项能力（岗位能不能做这件事）；缺挂载时按卡型、模式同源现算。
+    - **作用域**：树类开关（edit/delete/link/unlink/create_child）仍判操作者能不能对目标做。
+    为什么不再查目标卡 perms：目标卡的 perms 是"这张卡能不能被这样动"，但同一张卡
+    对不同的人本来就该不同答案——权限是关系，不是对象属性。
+    """
+    card = (cards or {}).get(actor_id)
+    mounted = _abilities_of(card, cards)
+    if mounted is None:
+        return err("denied", f"本卡能力挂载不可用，不能{what}。")
+    if cap_code not in mounted:
+        return err("denied", f"本卡没挂「{cap_code}」这项能力，不能{what}。")
+    if switch in policy.TREE_SWITCHES and not policy.can(actor_id, target_id, switch, cards):
+        return err("denied", f"越权：{target_id} 不在你的范围内，不能{what}")
+    return None
+
+
+def _line_between(work_id: str, current_id: str, target_id: str,
+                  cards: dict[str, dict[str, Any]]) -> str:
+    """两张卡之间是什么线：``parent``（父子线）/ ``relation``（关系线）/ ``""``（没有线）。
+
+    [关系治理 2026-10-30 · 用户令「没关系的卡不该出现在清单里，这是污染」＋
+     「权限应该按三种线来判断」] 读卡的门槛从"目标卡有没有 read 开关"改成
+    **两卡之间有没有线**——权限是关系，不是对象属性。
+
+    - 父子线：祖先链 ∪ 子树（双向），读**全部**卡面
+    - 关系线：依赖/影响（双向），只读**需求文档**那类对外信息
+    - 通信线：不算（它只管发消息）
+
+    关系线双向查边表（`card_relations` 出边＋入边）；查不到 ⇒ 当作没有线。
+    """
+    cid = str(current_id or "")
+    tid = str(target_id or "")
+    if not cid or not tid:
+        return ""
+    if cid == tid:
+        return "parent"
+    # 两类**离树例外**（与 policy.can() 的规则④⑤同源，不另造一套）：
+    #   · 根卡＝项目本体，对任何卡通过；
+    #   · 职能/角色＝离树观察者，被裁定过「能读全树」。
+    # 它们没有父子线，若不加这两条，连自己组建的职能卡都读不到。
+    actor_meta = (cards or {}).get(cid) or {}
+    actor_type = str(actor_meta.get("card_type") or "")
+    if actor_type == "project" and not str(actor_meta.get("parent") or ""):
+        return "parent"
+    if actor_type in ("function", "role"):
+        return "parent"
+    # 父子线：沿 parent 上溯（祖先）与下溯（子树）
+    parent = {str(k): str((v or {}).get("parent") or "") for k, v in (cards or {}).items()}
+    cur = cid
+    while parent.get(cur):
+        cur = parent[cur]
+        if cur == tid:
+            return "parent"
+    cur = tid                                  # 反向：target 是不是我的祖先
+    while parent.get(cur):
+        cur = parent[cur]
+        if cur == cid:
+            return "parent"
+    stack, seen = [cid], {cid}
+    while stack:
+        x = stack.pop()
+        for k, p in parent.items():
+            if p == x and k not in seen:
+                seen.add(k)
+                if k == tid:
+                    return "parent"
+                stack.append(k)
+    # 关系线：出边 + 入边
+    try:
+        from ..storage import card_db
+
+        def _fn(conn):  # type: ignore[no-untyped-def]
+            row = conn.execute(
+                "SELECT 1 FROM card_relations WHERE (from_card=? AND to_card=?)"
+                " OR (from_card=? AND to_card=?) LIMIT 1",
+                (cid, tid, tid, cid)).fetchone()
+            return row is not None
+
+        if card_db.read_sync(work_id, _fn, False):
+            return "relation"
+    except Exception as exc:  # noqa: BLE001 查不到线表 ⇒ 当作没有线（fail-closed）
+        logger.warning("[read_card] 关系线查询失败 %s→%s: %s", cid, tid, exc)
+    return ""
+
+
 async def _h_read_card(work_id: str, current_id: str,
                        arguments: dict[str, Any],
                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -549,14 +716,16 @@ async def _h_read_card(work_id: str, current_id: str,
         return err("not_found", f"卡片不存在: {target_id}")
     # [权限收口 2026-10-09] 统一关口（读）：拒绝转既有 denied 信封；
     # 不存在已在上面走 not_found，关口不再见到缺卡
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_READ, cards)
-    except PermissionError:
-        return err("denied", f"越权：无权读取 {target_id}")
+    # [关系治理 2026-10-30] 读的门槛＝**两卡之间有没有线**（父子线/关系线），
+    # 不再看目标卡的 perms：权限是关系，不是对象属性。
+    line = _line_between(work_id, current_id, target_id, cards)
+    if not line:
+        return err("denied",
+                   f"越权：{target_id} 与你之间没有父子线也没有关系线，读不到。")
     result = await card_store.read_card(work_id, target_id)
     body = result["body"] or {}
     # [角色机制 5710 v2] 角色卡返回**独立结构**（管辖/关注/发言契约/升级线/
-    # 值班/判断簿/警报簿/职责书），不再拿普通卡三块冒充。
+    # 值班/职责书），不再拿普通卡三块冒充。
     if str(result["meta"].get("card_type") or "") == role_room.ROLE_TYPE:
         summary = await role_room.role_summary(work_id, target_id)
         return {
@@ -568,7 +737,7 @@ async def _h_read_card(work_id: str, current_id: str,
             "text": summary.get("text", ""),
         }
     # [预设职能 2026-10-24] 职能卡同样返回**独立结构**:职责书/管辖/观点簿/
-    # 警报簿/指令簿从台账动态拼装(function_room.summary),不用通用三块冒充。
+    # 指令簿与专业台账从 function_room.summary 动态拼装,不用通用三块冒充。
     if str(result["meta"].get("card_type") or "") == "function":
         from . import function_room as _function_room
         try:
@@ -592,6 +761,18 @@ async def _h_read_card(work_id: str, current_id: str,
     # ⇒ 分叉是死代码，删掉。另外键名原来给英文（使命/现状却是中文），
     # 模型读卡看到 `requirements` 会与「需求文档」对不上，故统一成中文键。
     third_key = "需求文档"
+    # [关系治理 2026-10-30] 关系线只给**对外信息**（需求文档；接口/文档信息将来并入这里）。
+    # 使命＝"它为什么存在"、现状＝"它现在什么样"，那是父子线才给的——
+    # 关系线只说明"我消费它的什么 / 我动会波及它什么"。
+    if line == "relation":
+        return {
+            "card_id": target_id,
+            "title": result["meta"].get("title", ""),
+            "关系": "关系线（依赖/影响）· 只读对外信息，使命与现状不给",
+            "links": result["meta"].get("links") or [],
+            "relations": result["meta"].get("relations") or [],
+            third_key: body.get("requirements", ""),
+        }
     return {
         "card_id": target_id,
         "title": result["meta"].get("title", ""),
@@ -620,12 +801,15 @@ async def _h_read_memory(work_id: str, current_id: str,
     target_id = arguments.get("card_id") or current_id
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    # [权限收口 2026-10-09] 统一关口（读）：拒绝转既有 denied 信封；
-    # 不存在已在上面走 not_found，关口不再见到缺卡
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_READ, cards)
-    except PermissionError:
-        return err("denied", f"越权：无权读取 {target_id}")
+    # [关系治理 2026-10-30] 读按线判，与 read_card 同一条规则（父子线/关系线）。
+    # 关系线只读对外信息，记忆是过程记录 ⇒ 只有父子线才给。
+    _line = _line_between(work_id, current_id, target_id, cards)
+    if not _line:
+        return err("denied",
+                   f"越权：{target_id} 与你之间没有父子线也没有关系线，读不到。")
+    if _line == "relation":
+        return err("denied",
+                   f"{target_id} 与你是关系线：只读对外信息（需求文档），记忆不给。")
     state = memory_store.load_memory(work_id, target_id)
     entries = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
 
@@ -652,6 +836,36 @@ async def _h_read_memory(work_id: str, current_id: str,
         entries = [e for e in entries
                    if (s := _seq_of(e)) is not None and s <= hi]
     return {"card_id": target_id, "mark": state.get("mark", 0), "entries": entries}
+
+
+async def _h_memory_expand(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    # [F19 · 2026-10-31] memory_expand（dsh applyMemoryExpandTool 的移植注册）：
+    # 沿锚点展开整组——结论 → 细节层 → 逐字原文；sunk 命中复活（revive_update）。
+    # 权限同 read_memory（父子线才给，关系线不给——记忆是过程记录）。
+    target_id = arguments.get("card_id") or current_id
+    if target_id not in cards:
+        return err("not_found", f"卡片不存在: {target_id}")
+    _line = _line_between(work_id, current_id, target_id, cards)
+    if not _line:
+        return err("denied",
+                   f"越权：{target_id} 与你之间没有父子线也没有关系线，读不到。")
+    if _line == "relation":
+        return err("denied",
+                   f"{target_id} 与你是关系线：只读对外信息（需求文档），记忆不给。")
+    seq = arguments.get("seq")
+    if not isinstance(seq, int) or isinstance(seq, bool):
+        return err("validation",
+                   "seq 必须是整数——取记忆区锚点行 @锚点{card,seq} 里的 seq")
+    page = arguments.get("page")
+    from ..storage import memory_expand as _mx
+    result = _mx.expand(work_id, target_id, int(seq),
+                        page=int(page) if isinstance(page, int) and not isinstance(page, bool) else 0)
+    return ok_({"card_id": target_id, "seq": int(seq),
+                "found": bool(result.get("found")),
+                "revived": bool(result.get("revived")),
+                "text": _mx.render(result)})
 
 
 async def _h_create_card(work_id: str, current_id: str,
@@ -844,8 +1058,14 @@ async def _h_update_goal(work_id: str, current_id: str,
         #     流程里几乎不存在，只能按"是否还是模板"来判。
         # [2026-10-22 用户裁定] 需求文档**不是只追加**——它是覆盖写·单一最新的需求确定源。
         # 闸的判据随之改为「需求文档块有实质内容」（非空、非骨架占位），不再要求 D{nn} 条目。
-        _unwritten = "（当前状况快照：" in _body or "（本卡全部需求的确定版" in _body
         _req = str(((_cur or {}).get("body") or {}).get("requirements") or "")
+        # [2026-10-31 修] 判据改成**按块**，并与上下文层共用同一个 `_is_placeholder`
+        # （单一口径）。改前是「现状块＋需求块拼一起，含标记子串就算没写」⇒ 两类误拒：
+        #   ① 现状块还是骨架、需求块已写真内容 ⇒ 被拒「需求文档还停在骨架占位行」；
+        #   ② 需求块沿用模板句起头再写真内容（card_001 正稿正是这么写的）⇒ 子串命中
+        #      ⇒ 同样被误拒，且提示语指向一个不存在的状态。
+        from .card_draft import _is_placeholder as _is_ph
+        _unwritten = _is_ph(_req)
         if (_req.strip() and not _unwritten):
             pass   # 有实质内容 ⇒ 放行
         elif _req.strip() and _unwritten:
@@ -1417,12 +1637,11 @@ async def _h_edit_card(work_id: str, current_id: str,
     # 此守卫封死该后门：影子只能由对应正卡经 update_shadow 修改（R-06/R-09 写侧）
     if cards[target_id].get("card_type") == "shadow":
         return err("denied", "影子卡只能由对应正卡经 update_shadow 修改")
-    # [权限底座重做 2026-10-12] 关口 EDIT：目标卡 perms 须授 edit；树类开关再
-    # 收紧为「操作者须在目标上游」
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_EDIT, cards)
-    except PermissionError:
-        return err("denied", f"越权：无权编辑 {target_id}")
+    # [能力底座 2026-10-30] 改判据：能力「改别人的卡面」＋ 作用域（子树）
+    _bad = _cap_gate(current_id, "edit_other_face", policy.SWITCH_EDIT,
+                     target_id, cards, "编辑")
+    if _bad is not None:
+        return _bad
     # [卡面版本 2026-10-24] 版本查看 / 回退——与正文写入互斥，且**先于写入闸**：
     # 回退是回到已知正确状态，不该被「使命锁 / 需求文档」那套写入闸拦。
     list_only = bool(arguments.get("list_versions"))
@@ -1691,11 +1910,11 @@ async def _h_set_child_mission(work_id: str, current_id: str,
         return err("denied", "影子卡没有使命块，不能设")
     if target_id == current_id:
         return err("denied", "不能给自己设使命：本卡使命由上级或用户设定")
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_CREATE_CHILD, cards)
-    except PermissionError:
-        return err("denied",
-                   f"越权：{target_id} 不在你的子树内，或你无权给它立使命")
+    # [能力底座 2026-10-30] 能力「立子卡使命」＋ 作用域
+    _bad = _cap_gate(current_id, "set_child_mission", policy.SWITCH_CREATE_CHILD,
+                     target_id, cards, "给它立使命")
+    if _bad is not None:
+        return _bad
     result = await card_store.update_card(
         work_id, target_id, {"mission": mission},
         f"{current_id} 设定其使命（父卡立使命）",
@@ -1785,12 +2004,11 @@ async def _h_delete_card(work_id: str, current_id: str,
     # 拒绝文案逐字不变——配置里根行无 delete 位，护栏后置会被通用越权文案盖掉
     if target_id == work_store.work_card_id_of(work_id):
         return err("denied", f"剧本根卡不可删除: {target_id}")
-    # [权限底座重做 2026-10-12] 关口 DELETE：目标卡 perms 须授 delete；树类开关
-    # 再收紧为「操作者须在目标上游」
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_DELETE, cards)
-    except PermissionError:
-        return err("denied", f"越权：无权删除 {target_id}")
+    # [能力底座 2026-10-30] 能力「删卡与归档」＋ 作用域
+    _bad = _cap_gate(current_id, "dispose_card", policy.SWITCH_DELETE,
+                     target_id, cards, "删除")
+    if _bad is not None:
+        return _bad
     try:
         result = await card_store.delete_card(work_id, target_id)
     except card_store.CardDeleteDeniedError as exc:
@@ -1869,10 +2087,11 @@ async def _h_update_shadow(work_id: str, current_id: str,
     # [T5 补漏检口 2026-10-09][权限底座重做 2026-10-12] 关口判定：当前卡分类
     # 须授 shadow_write（配置里注册类型全授＝照写；未配置类型拒）。
     # 拒绝转既有 denied 信封。
-    try:
-        policy.check(current_id, current_id, policy.SWITCH_SHADOW_WRITE, cards)
-    except PermissionError:
-        return err("denied", f"越权：无权写影子（当前卡 {current_id}）")
+    # [能力底座 2026-10-30] 能力「写过程记录」（自检，无作用域）
+    _bad = _cap_gate(current_id, "write_process", policy.SWITCH_SHADOW_WRITE,
+                     current_id, cards, "写影子")
+    if _bad is not None:
+        return _bad
     content = arguments.get("content", "")
     return await shadow_store.update_shadow(work_id, current_id, content)
 
@@ -1887,10 +2106,14 @@ async def _h_read_shadow(work_id: str, current_id: str,
         target_id = target_id[len("shadow_"):]
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    try:
-        policy.check(current_id, target_id, policy.SWITCH_READ, cards)
-    except PermissionError:
-        return err("denied", f"越权：无权读取 {target_id} 的影子")
+    # [关系治理 2026-10-30] 同上：按线判；影子是过程记录，关系线不给。
+    _line = _line_between(work_id, current_id, target_id, cards)
+    if not _line:
+        return err("denied",
+                   f"越权：{target_id} 与你之间没有父子线也没有关系线，读不到。")
+    if _line == "relation":
+        return err("denied",
+                   f"{target_id} 与你是关系线：只读对外信息（需求文档），影子不给。")
     raw = await shadow_store.read_shadow_raw(work_id, target_id)
     if raw is None:
         return err("not_found", f"影子卡不存在: {target_id}")
@@ -2096,7 +2319,7 @@ async def _h_list_manuscript(work_id: str, current_id: str,
                              cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     # [工具面补齐 2026-10-12] manuscript 开关的执行层关口（原先只有工具面会挡，
     # 直接调 handler 是裸奔）。非树类开关 ⇒ 只判当前卡自己的类型分权，不叠子树。
-    if not policy.has_perm(cards.get(current_id), policy.SWITCH_MANUSCRIPT):
+    if not _actor_can_switch(cards.get(current_id), policy.SWITCH_MANUSCRIPT):
         return err("denied", "无权查阅本项目原始资料（manuscript 开关未授权）")
     chapters = manuscript_store.list_chapters(work_id)
     if not chapters:
@@ -2107,7 +2330,7 @@ async def _h_list_manuscript(work_id: str, current_id: str,
 async def _h_read_manuscript(work_id: str, current_id: str,
                              arguments: dict[str, Any],
                              cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if not policy.has_perm(cards.get(current_id), policy.SWITCH_MANUSCRIPT):
+    if not _actor_can_switch(cards.get(current_id), policy.SWITCH_MANUSCRIPT):
         return err("denied", "无权查阅本项目原始资料（manuscript 开关未授权）")
     if not manuscript_store.list_chapters(work_id):
         return err("not_found", "本项目尚无原文")
@@ -2158,14 +2381,14 @@ def _org_scope_allows(current_id: str, target_id: str, switch: str,
     # ⇒ 根卡改不了自己组建的职能卡面（update_status(fn_001) 直接 denied）。
     # 权限面不变：仍要求**根卡自身**持有该开关（has_perm），只是作用域放到全项目。
     if current_id and current_id == _root_id_of(cards) and target_id != current_id:
-        return bool(target_id) and target_id in cards and policy.has_perm(
+        return bool(target_id) and target_id in cards and _actor_can_switch(
             cards.get(current_id), switch)
     if _is_offtree_role(current_id, cards):
         if not target_id or target_id not in cards:
             return False
         # 写自己：照旧放行（自己算自己作用域内——原 policy.check 同口径）
         if target_id == current_id:
-            return policy.has_perm(cards.get(current_id), switch)
+            return _actor_can_switch(cards.get(current_id), switch)
         if target_id == _root_id_of(cards):
             return False          # 不许动根卡
         # [角色不改别人卡面 2026-10-22] 编辑权对离树卡**一律拒**：角色/职能的职责是
@@ -2173,13 +2396,11 @@ def _org_scope_allows(current_id: str, target_id: str, switch: str,
         # 靠子树判定天然拒；改用组织权后作用域放到全树，必须显式挡回来）。
         if switch == policy.SWITCH_EDIT:
             return False
-        # 离树卡自身仍须持有该开关（权限面不因作用域扩大而变大）
-        return policy.has_perm(cards.get(current_id), switch)
-    try:
-        policy.check(current_id, target_id, switch, cards)
-        return True
-    except PermissionError:
+        # 离树卡自身仍须挂了这项能力（权限面不因作用域扩大而变大）
+        return _actor_can_switch(cards.get(current_id), switch)
+    if not _actor_can_switch(cards.get(current_id), switch):
         return False
+    return policy.can(current_id, target_id, switch, cards)
 
 
 def _require_wire_switch(current_id: str, switch: str,
@@ -2198,7 +2419,9 @@ def _require_wire_switch(current_id: str, switch: str,
     与 perms 无关。
     ⇒ 门槛只判发起方有没有这个开关。打点照旧（fn="check" 同口径）。
     """
-    ok = policy.has_perm(cards.get(current_id), switch)
+    # [能力底座 2026-10-30] 判据改走能力（与工具面/执行层同源）；未挂载的卡按它
+    # 声明的开关反推（见 _abilities_of 的兼容层）。
+    ok = _actor_can_switch(cards.get(current_id), switch)
     prompt_log.append_perm_log({
         "fn": "check",
         "actor_id": current_id,
@@ -2220,7 +2443,7 @@ async def _h_link_cards(work_id: str, current_id: str,
     rel_type = arguments.get("type", "")
     note = (arguments.get("note") or "").strip()
     if rel_type not in MODEL_REL_TYPES:
-        return err("validation", f"关系类型非法: {rel_type}，只允许 先后/关联")
+        return err("validation", f"通信线类型非法: {rel_type}，只允许 先后/关联")
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
     if target_id == current_id:
@@ -2503,7 +2726,7 @@ async def _h_unlink_rel(work_id: str, current_id: str,
 async def _h_search_manuscript(work_id: str, current_id: str,
                                arguments: dict[str, Any],
                                cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if not policy.has_perm(cards.get(current_id), policy.SWITCH_MANUSCRIPT):
+    if not _actor_can_switch(cards.get(current_id), policy.SWITCH_MANUSCRIPT):
         return err("denied", "无权检索本项目原始资料（manuscript 开关未授权）")
     if not manuscript_store.list_chapters(work_id):
         return err("not_found", "本项目尚无原文")
@@ -3115,7 +3338,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "read_memory": ToolDef(
         schema={
             "name": "read_memory",
-            "description": "下探指定卡的凝练记忆（condense_fold：已凝练历史经归拢的条目，含【结论】/【依据】）。可用块序号区间按锚点取回。记忆条目不是卡片内容——三个块请用 read_card。",
+            "description": "下探指定卡的凝练记忆（condense_fold：已凝练历史经归拢的条目，带锚点行可下探）。可用块序号区间按锚点取回。记忆条目不是卡片内容——三个块请用 read_card。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3127,6 +3350,30 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
             },
         },
         handler=_h_read_memory,
+        readonly=True,
+    ),
+    # [F19 · 2026-10-31] memory_expand（展开工具，dsh applyMemoryExpandTool）：
+    # 记忆区渲染带锚点行（@锚点{card,seq}）＋展开说明 ⇒ 模型沿锚点下探：
+    # 结论 → 描述层 → 逐字原文；sunk 命中即复活。只读。
+    "memory_expand": ToolDef(
+        schema={
+            "name": "memory_expand",
+            "description": (
+                "展开一条凝练记忆：给记忆区锚点行里的 seq（@锚点{card,seq}），"
+                "返回该条的结论、描述层与逐字原文。该条此前若已沉没（时效回收），"
+                "本次展开会自动复活。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string", "description": "目标卡 id；缺省＝当前卡"},
+                    "seq": {"type": "integer", "description": "锚点块号（记忆区 @锚点{card,seq} 里的 seq）"},
+                    "page": {"type": "integer", "description": "分页页码（原文过长时翻页，从 0 起）；缺省 0"},
+                },
+                "required": ["seq"],
+            },
+        },
+        handler=_h_memory_expand,
         readonly=True,
     ),
     # [建卡工具化 2026-10-08] 标准工具通道建卡。权限＝关口 CREATE_CHILD 判定
@@ -3470,8 +3717,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     # 追加在既有 18 件字面量之后 ⇒ 前 18 件工具面顺序逐字不变。下发面：TOOL_SWITCH
     # 挂 read ＋ build_tool_schemas 第四段 ROOT_ONLY_TOOLS（只对剧本根卡下发）；
     # 执行层 handler 再校验 current_id==work_card_id_of（双保险，同 report_done 手法）。
-    # readonly=True：全程零写入（落盘走用户审批 /rule/commit，不经过本工具），
-    # 折叠【依据】按「可按原参数重取」口径成立。
+    # readonly=True：全程零写入（落盘走用户审批 /rule/commit，不经过本工具）。
     "draft_rule_edit": ToolDef(
         schema={
             "name": "draft_rule_edit",
@@ -3506,8 +3752,10 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "link_rel",
             "description": (
-                "在当前卡与目标卡之间建立一条**依赖/关联**关系线（第三种线：记录"
-                "依赖什么、关联什么；**不用于通信**）。source 固定为当前对话卡。"
+                "在当前卡与目标卡之间建立一条**关系线**（第三种线，不用于通信）。"
+                "kind 二选一：**依赖**＝我消费它的什么（它的接口/文档我要读）；"
+                "**影响**＝我动什么会波及它（它的接口/文档它要读）。"
+                "source 固定为当前对话卡。"
             ),
             "parameters": {
                 "type": "object",
@@ -3515,12 +3763,12 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                     "target_id": {"type": "string", "description": "目标卡 id，如 card_003"},
                     "kind": {
                         "type": "string",
-                        "enum": ["依赖", "关联"],
-                        "description": "关系种类：依赖／关联",
+                        "enum": ["依赖", "影响"],
+                        "description": "依赖＝我消费它的什么；影响＝我动会波及它",
                     },
                     "detail": {
                         "type": "string",
-                        "description": "写清依赖什么／关联什么（必填，自由文本）",
+                        "description": ("写清**依赖它的什么**／**影响它的什么**（必填）。这条会常驻双方上下文——被依赖/被影响的那张卡也看得到，所以写具体：哪个接口、哪份文档、哪块行为。"),
                     },
                 },
                 "required": ["target_id", "kind", "detail"],
@@ -3878,7 +4126,7 @@ TOOL_SWITCH["wake_card"] = policy.SWITCH_CREATE_CHILD
 #
 # 设计要点（全部来自需求与决策原则）：
 # · 通过＝工具（P3）：调 approve 即通过，不调即未通过，没有"通过但两处要改"这个第三态
-# · 通过绑 (草稿版本 ＋ 判据版本)（P3）：任一变化即失效
+# · 通过只认「没被撤销」：不再有判据版本
 # · 现状块由系统渲染（P2）：模型写的现状会说"各方基本认可"，系统渲染的只会是
 #   「通过 2/4 · 未过：fn_006」
 # · 评审不写别人的卡面（P1）：只出结论，子卡自己改
@@ -3899,7 +4147,7 @@ async def _render_review_status(work_id: str, review_id: str) -> str:
             text += "\n\n" + verdict
     else:
         lines = [
-            f"批次 {st['batch']} · 草稿 v{st['draft']} · 判据 v{st['criteria']}",
+            f"批次 {st['batch']} · 草稿 v{st['draft']}",
             f"通过 {len(st['passed'])}/{len(st['members'])}",
         ]
         lines += [f"● {m} 通过" for m in st["passed"]]
@@ -3924,10 +4172,11 @@ def _is_review_card(work_id: str, card_id: str,
 async def _h_open_review(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """在目标卡的**伴生评审卡**上开一个批次，并邀请全部在职职能。"""
+    """在目标卡的**伴生评审卡**上开一个批次，邀请 CEO、PM、CTO 三个职能。"""
     from ..storage import card_store as _cs
     from ..storage import function_store as _fs
     from ..storage import review_store as _rv
+    from . import function_room as _fr
 
     target = str(arguments.get("card_id") or "").strip() or current_id
     focus = str(arguments.get("focus") or "").strip()
@@ -3948,21 +4197,22 @@ async def _h_open_review(work_id: str, current_id: str,
     if not rid:
         return err("internal", "伴生评审卡不可用（建卡失败）")
 
-    # 成员＝**全部在职职能（含总裁）**——用户 2026-10-27 明确要求「包括 CEO」。
-    # 总裁既是收口方也是评审视角，两者不冲突：它调 approve 就是表态，不调就是没过。
+    # [评审邀请 2026-10-30] 用户指定评审角色：总裁、产品经理、技术总监。
+    # 用职能目录 code 识别，不按当前有多少在职职能全量邀请；其它职能不参与。
+    invited_codes = {"ceo", "pm", "cto"}
     members: list[str] = []
     try:
         for p in _fs.list_profiles(work_id):
             fid = str(p.get("function_id") or "")
-            if not fid:
+            if not fid or str((p.get("duty") or {}).get("state") or "active") != "active":
                 continue
-            if str((p.get("duty") or {}).get("state") or "active") != "active":
+            if _fr.catalog_code_of(p) not in invited_codes:
                 continue
             members.append(fid)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[review] 读在职职能失败: %s", exc)
+        logger.warning("[review] 读取指定评审职能失败: %s", exc)
     if not members:
-        return err("validation", "没有在职职能可参与评审")
+        return err("validation", "没有在职的总裁、产品经理或技术总监可参与评审")
 
     st = await _rv.open_batch(work_id, rid, focus, members=members,
                               target=target, brief=brief)
@@ -3983,7 +4233,7 @@ async def _h_open_review(work_id: str, current_id: str,
         logger.warning("[review] 评审回合起不来 review=%s: %s", rid, exc)
     return ok_({"review_card_id": rid, "batch": st["batch"],
                 "target": target, "members": members,
-                "note": "批次已开：成员各自读评审卡判据后调 approve"})
+                "note": "批次已开：成员各自按自己职能评审后调 approve"})
 
 
 # ============================================================
@@ -4315,20 +4565,19 @@ async def _promote_requirements(work_id: str, target: str) -> dict[str, Any]:
 
 
 async def _h_reject(work_id: str, current_id: str,
-                    arguments: dict[str, Any],
-                    cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """**不通过**（附理由）。
+                     arguments: dict[str, Any],
+                     cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """不通过＝只投票，不带理由（理由写在发言里）。"""
+    from ..storage import review_store as _rv
 
-    [2026-10-29 用户令] 「你让它每一次必须调工具，要么不通过要么通过，否则就再调起它」
-    ⇒ 一次发言的**终态**必须是 `approve` 或 `reject` 之一，光在文字里说"通过/不通过"
-    不算。不通过不写审批表（不通过就是没有 approve 记录），理由原样回给调用方——
-    子卡改稿时按它改。
-    """
-    reason = str(arguments.get("reason") or "").strip()
-    if not reason:
-        return err("validation", "reason 不能为空（写清哪一条不满足、要改成什么）")
-    return {"ok": True, "data": {
-        "role": current_id, "verdict": "reject", "reason": reason}}
+    rid = str(arguments.get("review_card_id") or "").strip()
+    if not rid:
+        return err("validation", "review_card_id 不能为空")
+    st = await _rv.state_of(work_id, rid)
+    if not str(st.get("batch") or ""):
+        return err("validation", "当前没有进行中的批次")
+    await _render_review_status(work_id, rid)
+    return ok_({"review_card_id": rid, "role": current_id, "verdict": "reject"})
 
 
 async def _h_approve(work_id: str, current_id: str,
@@ -4378,53 +4627,10 @@ async def _h_approve(work_id: str, current_id: str,
     await _render_review_status(work_id, rid)
     return ok_({"review_card_id": rid, "role": current_id,
                 "batch": r.get("batch"), "draft": r.get("draft"),
-                "criteria": r.get("criteria"),
                 "all_passed": bool(st.get("all_passed")),
                 "closed": bool(fin),
                 "pending": st.get("pending") or [],
                 "draft_changed": bool(st.get("draft_changed"))})
-
-
-async def _h_set_criteria(work_id: str, current_id: str,
-                          arguments: dict[str, Any],
-                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """改判据：写评审卡第三块 ＋ 判据版本 +1 ⇒ 所有已通过的作废（P3）。"""
-    from ..storage import card_store as _cs
-    from ..storage import review_store as _rv
-
-    rid = str(arguments.get("review_card_id") or "").strip()
-    text = str(arguments.get("text") or "").strip()
-    if not rid or not text:
-        return err("validation", "review_card_id 与 text 都不能为空")
-    if not card_store.card_exists(work_id, rid):
-        return err("not_found", f"评审卡不存在: {rid}")
-    await _cs.update_card(work_id, rid, {"requirements": text},
-                          "改判据（判据版本 +1，已通过的作废）")
-
-    def _bump(conn: Any) -> None:
-        import json as _j
-        row = conn.execute("SELECT review_state FROM cards WHERE card_id=?",
-                           (rid,)).fetchone()
-        try:
-            st = _j.loads((row["review_state"] if row else "") or "{}")
-        except Exception:  # noqa: BLE001
-            st = {}
-        if not isinstance(st, dict):
-            st = {}
-        st["criteria"] = int(st.get("criteria") or 1) + 1
-        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
-                     (_j.dumps(st, ensure_ascii=False), rid))
-
-    await card_db.run_write(work_id, _bump)
-    await _render_review_status(work_id, rid)
-    # 判据版本变了 ⇒ 已通过的作废 ⇒ 起一轮重评（否则要等到下一次卡面变更）
-    try:
-        from . import review_runner as _rr
-        await _rr.rerun_if_pending(work_id, rid)
-    except Exception as exc:  # noqa: BLE001 起轮失败不影响判据已改
-        logger.warning("[review] 改判据后重评起不来 review=%s: %s", rid, exc)
-    return ok_({"review_card_id": rid, "criteria_bumped": True,
-                "note": "判据已改，全部已通过的作废，成员需按新判据重评"})
 
 
 async def _h_revoke_approve(work_id: str, current_id: str,
@@ -4475,6 +4681,7 @@ async def _h_decide(work_id: str, current_id: str,
         import json as _j
         st2 = dict(st)
         st2["batch"] = ""
+        st2["members"] = []             # 本批邀请到此结束，不留下成员关系
         st2["closed_at"] = ""
         st2["closed_batch"] = str(st.get("batch") or "")
         conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
@@ -4490,12 +4697,11 @@ TOOL_REGISTRY["open_review"] = ToolDef(
         "name": "open_review",
         "description": (
             "**给本卡自己**开一个需求评审批次（评审发生在它的伴生评审卡上，"
-            "每张子卡自带一张，你不用建）。开批次后在职职能各自读评审卡的判据，"
+            "每张子卡自带一张，你不用建）。开批次后在职职能各自按自己的职能评审，"
             "调 approve 表态；**全员通过** ⇒ 系统把草稿转成正稿。\n"
             "· **只能给本卡开**：草稿谁都能写（自己／父卡／根卡），但评审是这张卡对外的"
             "承诺，只能它自己发起——代开等于替它答应。\n"
             "· 前提：本卡的需求文档草稿非空（没有草稿就没有可评审的内容）\n"
-            "· 判据写在评审卡第三块（先用 set_criteria 写好，没有判据就别开）\n"
             "· 批次开在评审卡上，不影响子卡自己的对话"
         ),
         "parameters": {
@@ -4528,7 +4734,7 @@ TOOL_REGISTRY["approve"] = ToolDef(
         "description": (
             "**通过**这个评审批次。调了就是通过，不调就是未通过——没有『通过但要改两处』"
             "这种中间态。通过之后本批次你不再参与讨论。\n"
-            "· 通过绑定当前草稿版本与判据版本：任一变，你的通过自动作废，需重评\n"
+            "· 你的通过在本批次内一直有效，直到被撤销\n"
             "· 你必须是这个评审的成员，否则会被拒"
         ),
         "parameters": {
@@ -4571,20 +4777,19 @@ TOOL_SWITCH["promote_draft"] = policy.SWITCH_EDIT
 TOOL_REGISTRY["reject"] = ToolDef(
     schema={
         "name": "reject",
+        # [2026-10-31 用户令] 工具只是**投票**：只说"不通过"，不带理由。
+        # 理由写在你的发言里——对话界面和后续成员要看的是你的话，不是参数。
         "description": (
-            "**不通过**这个评审批次，并写清要改成什么。\n"
-            "· 不通过＝本批次没有你的 approve 记录；子卡按你写的理由改草稿，改完再评\n"
+            "**不通过**这个评审批次。\n"
+            "· 这里只投票，不带理由：为什么不通过、要改成什么，写在你自己的发言里\n"
             "· 你必须是这个评审的成员，否则会被拒"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "reason": {"type": "string",
-                           "description": "不通过的理由：哪一条不满足、要改成什么"},
-                "review_card_id": {"type": "string",
-                                   "description": "评审卡 id（评审发生的那张卡）"},
+                "review_card_id": {"type": "string", "description": "评审卡 id（评审发生的那张卡）"},
             },
-            "required": ["reason"],
+            "required": ["review_card_id"],
         },
     },
     handler=_h_reject,
@@ -4592,28 +4797,6 @@ TOOL_REGISTRY["reject"] = ToolDef(
 )
 TOOL_SWITCH["reject"] = policy.SWITCH_READ
 
-TOOL_REGISTRY["set_criteria"] = ToolDef(
-    schema={
-        "name": "set_criteria",
-        "description": (
-            "写／改评审卡的**判据**（第三块）。判据是「做到哪些事算通过」的清单。\n"
-            "· 判据版本会 +1，**所有已通过的作废**，成员按新判据重评\n"
-            "· 判据一变，之前基于旧判据的通过就不算数了——这是故意的"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "review_card_id": {"type": "string", "description": "评审卡 id"},
-                "text": {"type": "string",
-                         "description": "判据全文（覆盖写）。逐条写清「什么算通过」"},
-            },
-            "required": ["review_card_id", "text"],
-        },
-    },
-    handler=_h_set_criteria,
-    readonly=False,
-)
-TOOL_SWITCH["set_criteria"] = policy.SWITCH_EDIT
 
 TOOL_REGISTRY["revoke_approve"] = ToolDef(
     schema={
@@ -6484,7 +6667,7 @@ def _function_actor(work_id: str, card_id: str,
 
     **旧 role 卡的判定必须与旧路径逐字同一口径**：`role_room.is_role()`
     自己查卡面 meta，**不依赖调用方传进来的 cards 字典**（实测踩坑：判据⑧ 里
-    用一份过期的 cards 快照调 record_verdict，本函数因拿不到 card_type 而判
+    用一份过期的 cards 快照调 write_ledger，本函数因拿不到 card_type 而判
     非职能回合，把旧 role 卡错误地拒了——那是旧路径行为的回归）。
     故：cards 已给时先走它作快捷路径；**没给或没命中时仍回库自查一次**，
     与 role_room.is_role 同源同结果。
@@ -6525,7 +6708,7 @@ async def ensure_function_card(work_id: str, function_id: str,
     角色卡不是这么建的——`role_room` 建卡时显式拼 body：
 
         ## 使命    ← 职责书全文
-        ## 现状    ← 值班中（判词与警报见角色档案）
+        ## 现状    ← 值班中（职责与台账见职能档案）
         ## 需求文档 ← 空
 
     职能卡照同一形态拼：使命＝档案里的职责书（charter.text），现状＝待命，
@@ -6761,128 +6944,6 @@ async def _h_list_functions(work_id: str, current_id: str,
     return {"functions": out}
 
 
-async def _h_record_verdict(work_id: str, current_id: str,
-                            arguments: dict[str, Any],
-                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """职能记录本次巡检判断（发言或沉默）——沉默也必须落账。写 function_verdicts。"""
-    actor = _function_actor(work_id, current_id, cards)
-    if not actor:
-        return err("denied", "只有职能（或角色卡）需要记录判词")
-    decision = str(arguments.get("decision") or "").strip().lower()
-    if decision not in ("speak", "silent"):
-        return err("validation", f"decision 非法: {decision!r}（只允许 speak/silent）")
-    reason = str(arguments.get("reason") or "").strip()
-    if not reason:
-        return err("validation", "reason 不能为空（写清判断依据）")
-    targets = arguments.get("targets") or []
-    if isinstance(targets, str):
-        targets = [targets]
-    evidence = arguments.get("evidence") or []
-    if isinstance(evidence, str):
-        evidence = [evidence]
-    if actor.startswith("fn_"):
-        rec = await function_store.add_verdict(
-            work_id, actor, decision, reason,
-            [], [str(t) for t in targets], [str(e) for e in evidence])
-        if arguments.get("supersedes"):
-            await function_store.supersede_verdict(
-                work_id, str(arguments["supersedes"]), rec["id"])
-        return {"recorded": True, "id": rec["id"], "decision": decision,
-                "function_id": actor}
-    # 旧 role 卡路径：逐字不变
-    rec = await role_room.record_verdict(
-        work_id, actor, decision, reason,
-        targets=[str(t) for t in targets],
-        evidence=[str(e) for e in evidence],
-        supersedes=str(arguments.get("supersedes") or ""))
-    return {"recorded": True, "id": rec["id"], "decision": decision}
-
-
-async def _h_raise_alarm(work_id: str, current_id: str,
-                         arguments: dict[str, Any],
-                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """职能把「只有用户能决定的事」直通用户——写 function_alarms。"""
-    actor = _function_actor(work_id, current_id, cards)
-    if not actor:
-        return err("denied", "只有职能（或角色卡）可以发警报")
-    title = str(arguments.get("title") or "").strip()
-    if not title:
-        return err("validation", "title 不能为空")
-    question = str(arguments.get("question") or "").strip()
-    if not question:
-        return err("validation",
-                   "报警必须是决策请求：question 写清『用户要决定什么』；技术问题请下指令")
-    default_action = str(arguments.get("default_action") or "").strip()
-    if not default_action:
-        return err("validation",
-                   "报警必须带 default_action：用户不回复时你按什么默认动作执行")
-    severity = str(arguments.get("severity") or "warn").strip().lower()
-    if severity not in ("info", "warn", "critical"):
-        severity = "warn"
-    raw_opts = arguments.get("options") or []
-    if isinstance(raw_opts, str):
-        raw_opts = [raw_opts]
-    supersedes = str(arguments.get("supersedes") or "")
-    if actor.startswith("fn_"):
-        rec = await function_store.add_alarm(
-            work_id, actor, severity, title,
-            str(arguments.get("detail") or "").strip(),
-            supersedes=supersedes, question=question,
-            options=[str(x) for x in raw_opts],
-            recommendation=str(arguments.get("recommendation") or ""),
-            default_action=default_action,
-            deadline=str(arguments.get("deadline") or ""))
-        return {"alarm_id": rec["id"], "severity": rec["severity"],
-                "title": rec["title"], "supersedes": supersedes,
-                "question": question, "default_action": default_action,
-                "function_id": actor}
-    rec = await role_room.raise_alarm(
-        work_id, actor, severity, title, str(arguments.get("detail") or "").strip(),
-        supersedes=supersedes, question=question,
-        options=[str(x) for x in raw_opts],
-        recommendation=str(arguments.get("recommendation") or ""),
-        default_action=default_action,
-        deadline=str(arguments.get("deadline") or ""))
-    if rec.get("error"):
-        return err("validation", str(rec["error"]))
-    return {"alarm_id": rec["id"], "severity": rec["severity"],
-            "title": rec["title"], "supersedes": supersedes,
-            "question": question, "default_action": default_action}
-
-
-async def _h_correct_alarm(work_id: str, current_id: str,
-                           arguments: dict[str, Any],
-                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """职能更正自己的一条警报（置 corrected，不新发）。"""
-    actor = _function_actor(work_id, current_id, cards)
-    if not actor:
-        return err("denied", "只有职能（或角色卡）可以更正警报")
-    alarm_id = str(arguments.get("alarm_id") or "").strip()
-    if not alarm_id:
-        return err("validation", "alarm_id 不能为空")
-    if actor.startswith("fn_"):
-        own = [a for a in function_store.list_alarms(work_id, status="", function_id=actor)
-               if str(a.get("id")) == alarm_id]
-        if not own:
-            return err("not_found", f"你的警报里没有 {alarm_id}")
-        ok = await function_store.correct_alarm(work_id, alarm_id, actor)
-    else:
-        own = [a for a in role_room.list_alarms(work_id, status="", role_id=actor)
-               if str(a.get("id")) == alarm_id]
-        if not own:
-            return err("not_found", f"你的警报里没有 {alarm_id}")
-        ok = await role_room.correct_alarm(work_id, alarm_id, actor)
-    if not ok:
-        return err("invalid", f"警报 {alarm_id} 已不可更正（可能已更正/撤岗）")
-    return {"ok": True, "alarm_id": alarm_id, "status": "corrected"}
-
-
-_NO_FUNCTION_DIRECTIVE_LEDGER = (
-    "职能的指令台账还没建（function_directives 表尚不存在，本步只做工具层与上下文层）。"
-    "所以职能这一回合不能下指令——请改用 raise_alarm 把决策请求直通用户，"
-    "或用 send_card_message 给相关的工作卡发建议（普通建议不受影响）。")
-
-
 def _function_watches(work_id: str, function_id: str, target_id: str) -> bool:
     """该职能是否关注这张卡（指令只能下给自己盯的卡）。读不到＝False（fail-closed）。"""
     try:
@@ -6967,7 +7028,7 @@ async def _h_verify_directive(work_id: str, current_id: str,
 
 
 # ============================================================
-# [角色机制 5710] 组阁 / 关注管理 / 判词 / 警报
+# [角色机制 5710] 组阁 / 关注管理（判词/警报 2026-10-31 退役）
 # ============================================================
 
 async def _h_create_role(work_id: str, current_id: str,
@@ -7089,83 +7150,6 @@ async def _h_set_role_duty(work_id: str, current_id: str,
     if res.get("error"):
         return err("validation", str(res["error"]))
     return res
-
-
-async def _h_record_verdict_legacy(work_id: str, current_id: str,
-                            arguments: dict[str, Any],
-                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """角色卡记录本次判断（发言/沉默）。这是「沉默落账」的执行体。"""
-    if not role_room.is_role(work_id, current_id):
-        return err("denied", "只有角色卡需要记录判词")
-    decision = str(arguments.get("decision") or "").strip().lower()
-    if decision not in ("speak", "silent"):
-        return err("validation", f"decision 非法: {decision!r}（只允许 speak/silent）")
-    reason = str(arguments.get("reason") or "").strip()
-    if not reason:
-        return err("validation", "reason 不能为空（写清判断依据）")
-    targets = arguments.get("targets") or []
-    if isinstance(targets, str):
-        targets = [targets]
-    evidence = arguments.get("evidence") or []
-    if isinstance(evidence, str):
-        evidence = [evidence]
-    rec = await role_room.record_verdict(
-        work_id, current_id, decision, reason,
-        targets=[str(t) for t in targets],
-        evidence=[str(e) for e in evidence],
-        supersedes=str(arguments.get("supersedes") or ""),
-    )
-    return {"recorded": True, "id": rec["id"], "decision": decision}
-
-
-async def _h_raise_alarm_legacy(work_id: str, current_id: str,
-                         arguments: dict[str, Any],
-                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """角色卡把严重风险直通用户；可传 supersedes 更正自己此前的警报。"""
-    if not role_room.is_role(work_id, current_id):
-        return err("denied", "只有角色卡可以发警报")
-    title = str(arguments.get("title") or "").strip()
-    detail = str(arguments.get("detail") or "").strip()
-    if not title:
-        return err("validation", "title 不能为空")
-    severity = str(arguments.get("severity") or "warn").strip().lower()
-    raw_opts = arguments.get("options") or []
-    if isinstance(raw_opts, str):
-        raw_opts = [raw_opts]
-    rec = await role_room.raise_alarm(
-        work_id, current_id, severity, title, detail,
-        supersedes=str(arguments.get("supersedes") or ""),
-        question=str(arguments.get("question") or ""),
-        options=[str(x) for x in raw_opts],
-        recommendation=str(arguments.get("recommendation") or ""),
-        default_action=str(arguments.get("default_action") or ""),
-        deadline=str(arguments.get("deadline") or ""))
-    if rec.get("error"):
-        return err("validation", str(rec["error"]))
-    return {"alarm_id": rec["id"], "severity": rec["severity"],
-            "title": rec["title"], "supersedes": rec.get("supersedes", ""),
-            "question": rec.get("question", ""),
-            "default_action": rec.get("default_action", "")}
-
-
-async def _h_correct_alarm_legacy(work_id: str, current_id: str,
-                           arguments: dict[str, Any],
-                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """角色卡更正自己的一条警报（不新发警报，只把它置为 corrected）。"""
-    if not role_room.is_role(work_id, current_id):
-        return err("denied", "只有角色卡可以更正警报")
-    alarm_id = str(arguments.get("alarm_id") or "").strip()
-    if not alarm_id:
-        return err("validation", "alarm_id 不能为空")
-    own = [a for a in role_room.list_alarms(work_id, status="",
-                                            role_id=current_id)
-           if str(a.get("id")) == alarm_id]
-    if not own:
-        return err("not_found", f"你的警报里没有 {alarm_id}")
-    ok = await role_room.correct_alarm(work_id, alarm_id, current_id)
-    if not ok:
-        return err("invalid", f"警报 {alarm_id} 已不可更正（可能已更正/撤岗）")
-    return {"ok": True, "alarm_id": alarm_id, "status": "corrected"}
 
 
 async def _h_issue_directive_legacy(work_id: str, current_id: str,
@@ -7323,7 +7307,7 @@ TOOL_REGISTRY["create_function"] = ToolDef(
         "description": (
             "（根卡专用）**组建一个职能岗**（如「质量管理」），写它的职责书与管辖。\n"
             "职能是**专家岗**：不占卡片号、不进卡片树、不干具体的活；它有自己的一本账"
-            "（判断/警报），只在**需求评审**时被叫来评，其余时候不自动醒。"
+            "（专业台账），只在**需求评审**时被叫来评，其余时候不自动醒。"
             "用户也可以直接找它对话。\n"
             "职能名按事情本身判断，系统不做白名单校验——人类团队里找不到这个岗位就别建。"
         ),
@@ -7436,75 +7420,8 @@ TOOL_REGISTRY["set_function_duty"] = ToolDef(
     readonly=False,
 )
 
-TOOL_REGISTRY["record_verdict"] = ToolDef(
-    schema={
-        "name": "record_verdict",
-        "description": (
-            "（角色卡专用）记录本次巡检判断。每次被调起都必须调用："
-            "decision=speak/silent；reason 一句话依据；evidence 填实际看过的"
-            "文件/行/卡（可空）。沉默不落账＝没有判断。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "decision": {"type": "string", "enum": ["speak", "silent"]},
-                "reason": {"type": "string"},
-                "targets": {"type": "array", "items": {"type": "string"}},
-                "evidence": {"type": "array", "items": {"type": "string"}},
-                "supersedes": {"type": "string", "description": "被本判词取代的旧判词 id（可空）"},
-            },
-            "required": ["decision", "reason"],
-        },
-    },
-    handler=_h_record_verdict,
-    readonly=False,
-)
-
-TOOL_REGISTRY["raise_alarm"] = ToolDef(
-    schema={
-        "name": "raise_alarm",
-        "description": (
-            "（角色卡专用）把严重风险直通用户。普通建议用 send_card_message；"
-            "只有用户需要立刻知道的风险才用警报。severity：info/warn/critical。"
-            "更正自己此前的警报时传 supersedes=<旧 alarm_id>。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "severity": {"type": "string", "enum": ["info", "warn", "critical"]},
-                "title": {"type": "string"},
-                "detail": {"type": "string"},
-                "question": {"type": "string", "description": "要用户决定什么（不是技术问题复述）"},
-                "options": {"type": "array", "items": {"type": "string"},
-                            "description": "可选项（用户能理解的取舍）"},
-                "recommendation": {"type": "string", "description": "角色推荐哪个选项及理由"},
-                "default_action": {"type": "string", "description": "用户不回复时角色按什么默认动作执行"},
-                "deadline": {"type": "string", "description": "默认动作生效时间（可选）"},
-                "supersedes": {"type": "string"},
-            },
-            "required": ["severity", "title", "question", "default_action"],
-        },
-    },
-    handler=_h_raise_alarm,
-    readonly=False,
-)
-
-TOOL_REGISTRY["correct_alarm"] = ToolDef(
-    schema={
-        "name": "correct_alarm",
-        "description": "（角色卡专用）更正自己的一条警报（置为 corrected，不新发警报）。",
-        "parameters": {
-            "type": "object",
-            "properties": {"alarm_id": {"type": "string"}},
-            "required": ["alarm_id"],
-        },
-    },
-    handler=_h_correct_alarm,
-    readonly=False,
-)
-
-
-# [T11-T10] 只读工具白名单（折叠【依据】「可按原参数重取」语义的依据源）。
+# [T11-T10] 只读工具白名单（2026-10-31 起折叠已整体移除，白名单只剩
+# 「只读工具」这层语义本身：能力提升/权限判定仍消费它）。
 # 白名单是「工具的属性」，属性跟工具住一起（方案自拍 #15）；落点＝工具定义处。
 # [B-09 2026-10-08] 改为**从注册表派生**——改前是手工 frozenset 字面量，
 # T12 增 read_memory 时需手工补，是漂移源；现 readonly 标志与 schema/handler
@@ -7647,12 +7564,12 @@ def _filter_by_category(
         })
         return []
 
-    # [能力底座 2026-10-30 · 第二刀 批次1 撤回] 这里原本让"已迁移的卡跳过按开关过滤"，
-    # 实测把根卡的 delete_card/archive_card/unarchive_card 放了出来——
-    # 因为「处置卡」这一项能力混了两个开关（delete ×3 + create_child ×1），
-    # 按"任一工具覆盖"挂上，delete 就跟着漏了。
-    # ⇒ 前提是「一项能力只能有一个权限类别」，能力清单得先按开关重切，本步才能撤。
-    # 在那之前保持两层（perms 逐工具 ∩ 能力）。
+    # [能力底座 2026-10-30 · 第二刀 批次1] 这张卡已迁移到能力挂载 ⇒ 本步不再按开关过滤，
+    # 工具面交给紧随其后的 `_filter_by_capability`。
+    # 前提（已满足）：一项能力只对应一个权限类别，且迁移时逐卡比对过工具面等价。
+    # 未迁移（abilities 为 None / 缺列）⇒ 旧路径逐字不变。
+    if "abilities" in card and card.get("abilities") is not None:
+        return tools
 
     visible: list[dict[str, Any]] = []
     filtered: dict[str, str] = {}
@@ -7689,6 +7606,22 @@ def _filter_by_category(
 CODER_ONLY_TOOLS: frozenset[str] = frozenset({"report_done"})
 
 
+def _tool_capability(tool_name: str) -> str | None:
+    """工具 → 能力 code。不归任何能力管（回合口子 / 系统自用）⇒ None。
+
+    与工具面读的是**同一份清单**（`config/capabilities.json`），所以不会出现
+    「面上有、闸上判不出」的分叉。清单不可用 ⇒ None（调用方按"不归能力管"放行）。
+    """
+    try:
+        from ..infra import capability_registry as _cap
+        for c in _cap.capabilities():
+            if tool_name in (c["impl"].get("tools") or []):
+                return str(c["code"])
+    except Exception:  # noqa: BLE001 清单读不到 ⇒ 当作不归能力管
+        return None
+    return None
+
+
 def _filter_by_capability(
     tools: list[dict[str, Any]],
     card_id: str,
@@ -7705,11 +7638,11 @@ def _filter_by_capability(
     工具面清空——那等于全站瘫痪，比"多给几件工具"糟得多。
     """
     card = (cards or {}).get(card_id)
-    if not isinstance(card, dict) or "abilities" not in card:
+    if not isinstance(card, dict):
         return tools
-    mounted = card.get("abilities")
+    mounted = _abilities_of(card, cards)
     if mounted is None:
-        return tools
+        return tools          # 算不出来 ⇒ 不拦（清单坏了不能把工具面清空）
     try:
         from ..infra import capability_registry as _cap
         if not _cap.load().get("enabled"):
@@ -8127,17 +8060,6 @@ def build_tool_schemas(
     if op == OP_SPLIT:
         tools = _apply_split_face(tools)
         tools = _apply_split_face(tools)
-    # ---- 末段⑤：[伴生评审卡 2026-10-27] 发起方（子项目/课题卡）改判据 ----
-    # 判据在评审卡第三块，但**谁定判据**是发起方的事（用户 2026-10-27：
-    # 判据由模型写、甲方可改）。set_criteria 不在基础池（见 FUNCTION_ONLY_TOOLS），
-    # 这里按卡类型追加；其余卡型拿不到。
-    # ★ 必须排在 OP_UPDATE_STATUS 之前：propose_status 的不变量是「末位」
-    #   （test_status_update 钉着），追加在它后面会破坏那条断言。
-    if card_id and cards is not None:
-        _rt = str((cards.get(card_id) or {}).get("card_type") or "")
-        if _rt in ("sub_project", "topic") and "set_criteria" in TOOL_REGISTRY:
-            if all(str(t.get("name")) != "set_criteria" for t in tools):
-                tools.append(_schema_of(TOOL_REGISTRY["set_criteria"]))
     if op == OP_UPDATE_STATUS:
         tools.append(_schema_of(TOOL_REGISTRY["propose_status"]))
     # [需求确定按钮改造 2026-10-29 · 用户令] 根卡【需求确定】那一轮才有的口子：
@@ -8317,7 +8239,7 @@ def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # [角色机制 5710] 角色卡工具面（非卡片内挂）
 #
 # 角色卡不是作业卡：摘掉 edit_card（不许改别人/整篇正文），只留
-# 读、沿连线读、影子、发建议、读收件箱、记录判词、发警报、写自己的
+# 读、沿连线读、影子、发建议、写自己的台账、
 # 现状/需求文档。全部在四段过滤之后追加，常规卡工具面逐字不变。
 # ============================================================
 # [职能实体化 A 案 2026-10-22 · 用户裁定] 职能是**管理者**（人类团队里的岗位），
@@ -8392,9 +8314,7 @@ def _apply_function_toolface(tools: list[dict[str, Any]],
     # [2026-10-30 删] update_status / append_requirements 两件已不在注册表——
     # 前者是整块覆盖现状（10-27 退役），后者早被 edit_requirements 取代。
     # 留着名字只会让这段清单看起来比实际多两件。
-    for name in ("record_verdict",
-                 "raise_alarm", "correct_alarm",
-                 "approve"):
+    for name in ("approve",):
         if name in TOOL_REGISTRY:
             out.append(_schema_of(TOOL_REGISTRY[name]))
     # [预设职能 P-A 2026-10-24] 目录条目覆盖:deny 摘除(如 send_card_message/
@@ -8576,6 +8496,41 @@ def _exec_perm_gate(
     if card is None:
         return err("denied",
                    f"认不出当前卡（{current_id}）⇒ 按默认关门，本轮不执行任何工具。")
+    # [能力底座 2026-10-30 · 第二刀 批次2] 已迁移的卡按**能力**判，与工具面同源。
+    # 不归能力管的工具（回合口子，如 propose_status / write_requirements_final）
+    # 一律放行——它们由工具面与轮次闸管，不参与授予。
+    mounted = _abilities_of(card, cards)
+    if mounted is None:
+        # 算不出来（清单坏/卡型不认识）⇒ 老路：按开关判
+        switch0 = TOOL_SWITCH.get(tool_name)
+        if switch0 is None:
+            return err("denied", f"工具 {tool_name} 未配置权限开关（unmapped）⇒ 按默认关门不执行。")
+        return None if policy.has_perm(card, switch0) else err(
+            "denied", f"本卡未被授予工具 {tool_name}（需要开关「{switch0}」，本卡没有）。")
+    if mounted is not None:
+        code = _tool_capability(tool_name)
+        if code is None:
+            return None
+        if code in {str(x) for x in mounted}:
+            return None
+        logger.warning("[perm-gate] 执行层拒绝：card=%s tool=%s cap=%s（卡上没挂这项能力）",
+                       current_id, tool_name, code)
+        try:
+            prompt_log.append_perm_log({
+                "fn": "execute_tool",
+                "card_id": current_id,
+                "card_type": str(card.get("card_type") or ""),
+                "granted_tools": [],
+                "filtered_tools": {tool_name: code},
+                "reason": "exec_capability_gate",
+            })
+        except Exception:  # noqa: BLE001 打点失败不阻断拒绝
+            pass
+        return err("denied", (
+            f"本卡没挂「{code}」这项能力，所以不能调 {tool_name}。"
+            "换写法、换参数或重复调用都不会通过。"
+            "若确实需要，请让上级卡或用户在卡详情里给本卡挂上这项能力。"
+        ))
     switch = TOOL_SWITCH.get(tool_name)
     if switch is None:
         return err("denied",

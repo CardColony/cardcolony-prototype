@@ -30,24 +30,30 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
     return r["meta"]["card_id"]
 
 
-async def test_v1_full_open_read_nonkin(typed_registry, work):
-    """V1 读放开：非亲属/非连线/非锚定的旁支卡可读（注册分类全授 READ）。"""
+async def test_v1_read_requires_a_line(typed_registry, work):
+    """[关系治理 2026-10-30] 读按线判，**推翻**旧的「V1 读放开」。
+
+    用户令：「read 不是全局都能读，权限应该是按三种线来判断的」——
+    两张旁支卡之间既无父子线也无关系线 ⇒ 读不到（旧口径是"注册类型全授 read 就能读"）。
+    父卡读子卡仍在（父子线）。
+    """
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk_child(wid, "甲", root)
-    b = await _mk_child(wid, "乙", root)   # 与甲互为旁支
+    b = await _mk_child(wid, "乙", root)   # 与甲互为旁支，没有任何线
     cards = card_tools._collect_card_meta(wid)
 
-    # 关口层：注册类型全授 read → 不抛即放行；缺卡在关口抛
-    # （工具层有存在性先判，走 not_found，关口见不到缺卡）
-    policy.check(a, b, policy.SWITCH_READ, cards)
-    policy.check(b, a, policy.SWITCH_READ, cards)
-    with pytest.raises(PermissionError):
-        policy.check(a, "card_999", policy.SWITCH_READ, cards)
-
-    # 工具层：真实走 execute_tool → card_store（T-0010 信封：载荷在 data）
+    # 工具层：旁支之间读不到（denied 信封，文案指出"没有线"）
     r = await card_tools.execute_tool(wid, a, "read_card", {"card_id": b}, cards)
-    assert r["ok"] is True and r["error"] is None
-    assert r["data"]["card_id"] == b and r["data"]["title"] == "乙"
+    assert r["ok"] is False and r["error"]["code"] == "denied"
+    assert "没有父子线也没有关系线" in r["error"]["message"]
+
+    # 父子线：父读子仍然通
+    r2 = await card_tools.execute_tool(wid, root, "read_card", {"card_id": b}, cards)
+    assert r2["ok"] is True and r2["data"]["card_id"] == b
+
+    # 不存在的卡仍走 not_found（不是越权）
+    r3 = await card_tools.execute_tool(wid, a, "read_card", {"card_id": "card_999"}, cards)
+    assert r3["ok"] is False and r3["error"]["code"] == "not_found"
 
 
 async def test_v2_write_still_restricted(typed_registry, work):
@@ -102,7 +108,7 @@ async def test_v3_guards_intact(typed_registry, work):
 
 
 async def test_v4_shadow_and_memory_read_open(typed_registry, work):
-    """V4 影子/记忆读随读放开一并放行；影子写对注册分类放行（定夺 1 偏离位）。"""
+    """V4 影子/记忆读**按线判**（2026-10-30 推翻旧「读放开」）；影子写对注册分类放行。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk_child(wid, "甲", root)
     b = await _mk_child(wid, "乙", root)
@@ -112,12 +118,13 @@ async def test_v4_shadow_and_memory_read_open(typed_registry, work):
     r = await card_tools._h_update_shadow(wid, a, {"content": body}, cards)
     assert r.get("ok") is True
 
-    # 旁支读影子：放行
+    # [关系治理 2026-10-30] 影子/记忆同 read_card：**按线判**，旁支读不到。
     r = await card_tools.execute_tool(wid, b, "read_shadow", {"card_id": a}, cards)
-    assert r["ok"] is True
-    assert r["data"]["owner_card_id"] == a and "甲的影子正文" in r["data"]["content"]
+    assert r["ok"] is False and r["error"]["code"] == "denied"
+    r = await card_tools.execute_tool(wid, a, "read_shadow", {"card_id": a}, cards)
+    assert r["ok"] is True and "甲的影子正文" in r["data"]["content"]
 
-    # 旁支读记忆：放行
+    # 旁支读记忆：同样拒
     await memory_store.save_memory(wid, a, {
         "card_id": a, "mark": 1,
         "entries": [{"seq": 0, "conclusion": "【结论】甲结论",
@@ -125,36 +132,27 @@ async def test_v4_shadow_and_memory_read_open(typed_registry, work):
                      "occurred_at": "2026-10-07T12:00:00+08:00",
                      "fingerprint": "sha256:ff"}]})
     r = await card_tools.execute_tool(wid, b, "read_memory", {"card_id": a}, cards)
-    assert r["ok"] is True
-    assert r["data"]["card_id"] == a
-    assert r["data"]["entries"][0]["conclusion"] == "【结论】甲结论"
+    assert r["ok"] is False and r["error"]["code"] == "denied"
+    r = await card_tools.execute_tool(wid, root, "read_memory", {"card_id": a}, cards)
+    assert r["ok"] is True and r["data"]["card_id"] == a
 
 
 # ---------------------------------------------------------------- 重做后的新钉子
 
-async def test_perms_are_frozen_on_card_surface(typed_registry, work):
-    """加固化（裁定 4）：建卡即落 perms ＋ perms_version，值＝配置，卡面可读。
+async def test_capabilities_are_frozen_on_card_surface(typed_registry, work):
+    """建卡即落 mode ＋ abilities（[perms 退役 2026-10-30] 取代原「perms 冻结」）。
 
-    两级定位：根卡 project_class ＋ card_type="project"；子卡从本树继承
-    project_class ＋ card_type="sub_project"（工牌只挂根卡）。
+    卡上不再有 perms——「这张卡最多能碰什么」只在建卡那一刻用来算挂载上限，
+    落库的是算出来的能力清单。
     """
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk_child(wid, "甲", root)
     metas = card_tools._collect_card_meta(wid)
-    expect = {
-        root: ("rd_project", "project"),
-        a: ("rd_project", "sub_project"),
-    }
-    version = policy.config_version()
-    assert version >= 1
-    for cid, (pc, ct) in expect.items():
-        assert metas[cid]["card_type"] == ct, cid
-        assert metas[cid][policy.PERM_KEY] == policy.perms_for(pc, ct), cid
-        assert metas[cid][policy.PERM_VERSION_KEY] == version, cid
-        # [卡片存储迁移 SQLite] 固化字段在库行/读侧 meta 里（不再有 md front matter）
-        assert metas[cid].get(policy.PERM_KEY) is not None, cid
-        assert metas[cid].get(policy.PERM_VERSION_KEY) is not None, cid
-
+    for cid in (root, a):
+        m = metas[cid]
+        assert "perms" not in m, f"{cid} 不该再有 perms"
+        assert m.get("mode") == "manual", m.get("mode")
+        assert isinstance(m.get("abilities"), list) and m["abilities"], cid
 
 async def test_card_type_is_immutable(work):
     """类型不可变（裁定 2）：update_card 改 card_type / project_class 一律拒，
@@ -173,17 +171,16 @@ async def test_card_type_is_immutable(work):
     assert card_db.read_rev(wid) == rev_before, "拒改类型不得动库版本号"
 
 
-async def test_unconfigured_type_is_denied_everything(work):
-    """默认关门（裁定 5）：卡上没有（或空）perms ⇒ 一项权限都没有。"""
-    ghost = {"card_id": "card_ghost", "card_type": "tool"}
-    for switch in policy.SWITCHES:
-        assert policy.has_perm(ghost, switch) is False, switch
-    with pytest.raises(PermissionError):
-        policy.check("card_ghost", "card_ghost", policy.SWITCH_READ,
-                     {"card_ghost": ghost})
-    # 未知开关同样拒（不存在的开关谈不上授权）
-    assert policy.has_perm({"perms": ["read"]}, "read_everything") is False
+async def test_unconfigured_type_has_no_capabilities(work):
+    """默认关门（原裁定 5 的能力版）：卡型没配 ⇒ 算不出任何能力 ⇒ 空工具面。
 
+    [perms 退役 2026-10-30] 原判据是「卡上没有 perms ⇒ 一项权限都没有」；
+    现在 perms 没了，同一条「默认关门」落在能力上：算不出能力 ⇒ 什么都不下发。
+    """
+    ghost = {"card_id": "card_ghost", "card_type": "no_such_type"}
+    assert card_tools._abilities_of(ghost, {}) == set()
+    assert card_tools.build_tool_schemas(
+        "card_ghost", cards={"card_ghost": ghost}) == []
 
 async def test_refresh_then_root_card_still_cannot_delete(work):
     """验收第 4 项：根卡（配置无 delete 开关）经关口 DELETE 必拒。"""
@@ -377,8 +374,9 @@ async def test_manuscript_and_invoke_tool_have_exec_gate():
 
     工具面挡的是「看不见」，执行层挡的是「真被调到」——两层都要有。
     """
+    # [perms 退役 2026-10-30] 用「明确挂了 0 项能力」表达"未授权"
     cards = {"card_x": {"card_id": "card_x", "card_type": "sub_project",
-                        "perms": []}}
+                        "abilities": []}}
     wid, cid = "work_999", "card_x"
     args = {"chapter": "ch_1", "keyword": "x", "script_name": "s"}
     probes = ((card_tools._h_list_manuscript, "list_manuscript"),
@@ -390,9 +388,10 @@ async def test_manuscript_and_invoke_tool_have_exec_gate():
         assert r.get("ok") is False, f"{name} 无权限时竟未被拒: {r}"
         assert r["error"]["code"] == "denied", f"{name} 拒绝码不对: {r}"
 
-    # 有 plan/manuscript/invoke_tool 开关时，manuscript 三件应放行到业务层
+    # 挂了「查资料」能力时，manuscript 三件应放行到业务层
+    # [perms 退役 2026-10-30] 授权载体从 perms 开关换成能力 code
     ok_cards = {"card_x": {"card_id": "card_x", "card_type": "sub_project",
-                           "perms": ["read", "manuscript"]}}
+                           "abilities": ["manuscript"]}}
     r = await card_tools._h_list_manuscript(wid, cid, args, ok_cards)
     assert r.get("ok") is not False or r["error"]["code"] != "denied", \
         f"授了 manuscript 仍被拒: {r}"

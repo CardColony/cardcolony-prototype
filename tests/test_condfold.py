@@ -67,75 +67,113 @@ async def test_v3_condense_call_targets_glm_flash(sandbox, monkeypatch):
     seen: dict = {}
 
     async def fake_call_main(system_prompt, user_prompt, prior_messages=None, tools=None,
-                             model_name=None):
+                             model_name=None, **_):
         seen["model_name"] = model_name
         return ({"content": "【结论】x【依据】块1"}, "glm-5.3-flash")
 
     from src.api import model_service
     monkeypatch.setattr(model_service, "call_main", fake_call_main)
     await memory_store._condense_call("hello")
-    assert seen["model_name"] == "glm-flash"
-    await memory_store._fold_call("world")
-    assert seen["model_name"] == "glm-flash"
+    # [2026-10-31 对齐现配置] 凝练位＝bindings.condense 绑定的当前值（glm-53-flash）；
+    # 断言「两条调用都走 condense 绑定」这一意图，不再钉具体模型名。
+    from src.api import model_config
+    _bound = model_config.pick_one("condense")
+    assert seen["model_name"] == _bound
+    await memory_store._fold_call("sys", "world")
+    assert seen["model_name"] == _bound
 
 
-# ---------------------------------------------------------------- V4 归拢游标
+# ---------------------------------------------------------------- V4 归拢游标（三步 + 降层建边）
 
-def _state_with(count: int, last: int, n_entries: int = 4) -> dict:
+def _state_with(count: int, last: int, n_entries: int = 4,
+                card_id: str = "card_001") -> dict:
+    """可归拢态：n_entries 条**顶层 done gist**（CausalNode 形态，level=1、upper 空）。"""
     return {
-        "card_id": "card_001", "mark": 10,
+        "card_id": card_id, "mark": 10,
         "batch_count": count, "last_fold_check": last, "folded": [],
-        "entries": [{"seq": i, "conclusion": f"条目{i}", "evidence": f"【依据】块{i}",
+        "entries": [{"anchor": {"sessionId": card_id, "seq": i}, "gist": f"条目{i}",
+                     "status": "done", "kind": "fact", "level": 1, "role": "gist",
+                     "upper": [], "lower": [], "coveredSeqs": [i],
                      "occurred_at": "t", "fingerprint": f"fp{i}"} for i in range(n_entries)],
     }
+
+
+def _fold_stub(record: list[str], merges: list[dict] | None = None,
+               judge: str = "有合并"):
+    """三步归拢替身：step1 判「结论：有/无合并」→ step2 自由文本 → step3 转填 merges。"""
+    async def fake_fold(system: str, user: str, tools=None, **_):
+        # 段判据用互斥关键词（第二步 prompt 正文里含「第一步产出」字样，
+        # contains("第一步") 会把它误判成 step1——实测踩过）。
+        if "只转填" in system:
+            record.append("step3")
+            return {"tool_calls": [{"name": "apply_folds",
+                                    "arguments": {"merges": merges or []}}]}
+        if "凝练合并" in system:
+            record.append("step2")
+            return {"content": "合并 [seq 0][seq 2] 为一件事：起因…经过…结果…"}
+        record.append("step1")
+        return {"content": f"建议合并 [seq 0] 与 [seq 2]。\n结论：{judge}"}
+    return fake_fold
 
 
 async def test_v4_fold_triggers_at_cursor_and_failure_holds(sandbox, work, monkeypatch):
     wid, cid = work["work_id"], work["work_card_id"]
     calls: list[str] = []
 
-    async def fake_fold(user_prompt: str) -> str:
-        calls.append(user_prompt)
-        return json.dumps({"merges": [{"covers": [1, 3],
-                                       "conclusion": "【结论】合并条",
-                                       "evidence": "【依据】块0、块2"}]}, ensure_ascii=False)
-
-    monkeypatch.setattr(memory_store, "_fold_call", fake_fold)
     # 游标差 < 5 → 零触发
-    await memory_store.save_memory(wid, cid, _state_with(count=4, last=0))
+    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls))
+    await memory_store.save_memory(wid, cid, _state_with(count=4, last=0, card_id=cid))
     await memory_store._maybe_fold(wid, cid)
     assert calls == []
-    # 差 ≥ 5 → 触发一次：committed → 推游标、成员入 folded 账、归拢条入列、mark 不动
-    await memory_store.save_memory(wid, cid, _state_with(count=5, last=0))
+    # 差 ≥ 5 → 触发一次：committed → 三步各一次、推游标、降层建边、mark 不动
+    merges = [{"covers": [{"sessionId": cid, "seq": 0}, {"sessionId": cid, "seq": 2}],
+               "start": "起因X", "process": "经过Y", "result": "结果Z", "kind": "decision"}]
+    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls, merges=merges))
+    await memory_store.save_memory(wid, cid, _state_with(count=5, last=0, card_id=cid))
     await memory_store._maybe_fold(wid, cid)
-    assert len(calls) == 1
-    st = await memory_store.load_memory(wid, cid) if False else memory_store.load_memory(wid, cid)
+    assert calls == ["step1", "step2", "step3"]
+    st = memory_store.load_memory(wid, cid)
     assert st["last_fold_check"] == 5
     assert st["mark"] == 10                                    # 提交不动 mark（源侧语义）
-    assert len(st["folded"]) == 2
+    # [F1] 合成锚点取 1e9 保留段（绝不取 covers 最旧 seq=0——必撞成员锚点）
     merged = st["entries"][-1]
-    assert merged["seq"] == 0 and merged["conclusion"] == "【结论】合并条"
-    assert set(st["folded"]) == {"fp0", "fp2"}
+    assert merged["anchor"]["seq"] >= memory_store.SYNTH_SEQ_BASE
+    # [F2] 新节点 gist＝start+result、lower＝成员锚点；成员 upper 指回新锚点、level 降到 2
+    assert merged["level"] == 1 and merged["role"] == "gist"
+    assert "起因X" in merged["gist"] and "结果Z" in merged["gist"]
+    assert {l["seq"] for l in merged["lower"]} == {0, 2}
+    by_seq = {int(e["anchor"]["seq"]): e for e in st["entries"]}
+    for mseq in (0, 2):
+        mem = by_seq[mseq]
+        assert mem["level"] == 2 and mem["upper"] == [dict(merged["anchor"])]
+        assert mem.get("sunk") is not True, "降层建边后成员不打 sunk（F2 弃 sunk 标记法）"
+    # 结构不变量过闸（I1–I5）
+    from src.storage import memory_domain as md
+    assert md.check_invariants(st["entries"]) == []
     # 同值防重：游标已推 → 不再触发
     await memory_store._maybe_fold(wid, cid)
-    assert len(calls) == 1
+    assert calls == ["step1", "step2", "step3"]
     # abort（调用异常）→ 游标不动，账保留下轮重试
-    async def boom(user_prompt: str) -> str:
+    async def boom(system: str, user: str, tools=None, **_):
         raise RuntimeError("model down")
 
     monkeypatch.setattr(memory_store, "_fold_call", boom)
-    await memory_store.save_memory(wid, cid, _state_with(count=10, last=5))
+    await memory_store.save_memory(wid, cid, _state_with(count=10, last=5, card_id=cid))
     await memory_store._maybe_fold(wid, cid)
     st2 = memory_store.load_memory(wid, cid)
     assert st2["last_fold_check"] == 5                          # 失败不推进游标
     # judge-empty（模型说无合并）→ 合法终态，推游标零落库
-    async def empty(user_prompt: str) -> str:
-        return '{"merges":[]}'
-
-    monkeypatch.setattr(memory_store, "_fold_call", empty)
+    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls, judge="无合并"))
     await memory_store._maybe_fold(wid, cid)
     st3 = memory_store.load_memory(wid, cid)
-    assert st3["last_fold_check"] == 10 and len(st3["entries"]) == 4
+    assert st3["last_fold_check"] == 10
+    assert len(st3["entries"]) == 4, "judge-empty 不落新节点"
+    # step3 merges=0 → 同为合法终态
+    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls, merges=[]))
+    await memory_store.save_memory(wid, cid, _state_with(count=20, last=10, card_id=cid))
+    await memory_store._maybe_fold(wid, cid)
+    st4 = memory_store.load_memory(wid, cid)
+    assert st4["last_fold_check"] == 20 and len(st4["entries"]) == 4
 
 
 # ---------------------------------------------------------------- V5 同口径铁律
@@ -170,7 +208,7 @@ async def test_batch_loop_multi_batch_and_fail_stop(sandbox, work, monkeypatch):
     pending = [_mk_msg(i, "六六六六六六") for i in range(30)]
     _n = {"l1": 0}
 
-    async def fake(user_prompt: str, system: str = "") -> str:
+    async def fake(user_prompt: str, system: str = "", **_) -> str:
         """三步替身：S2a 整窗一组 / L1 每批一条三栏 / L2 无子题。"""
         st_ = stage_of(system)
         n = count_blocks(user_prompt)
@@ -196,7 +234,7 @@ async def test_batch_loop_multi_batch_and_fail_stop(sandbox, work, monkeypatch):
                                               "batch_count": 0, "last_fold_check": 0, "folded": []})
     _c = {"l1": 0}
 
-    async def fake2(user_prompt: str, system: str = "") -> str:
+    async def fake2(user_prompt: str, system: str = "", **_) -> str:
         st_ = stage_of(system)
         n = count_blocks(user_prompt)
         if st_ == "s2a":
@@ -248,18 +286,30 @@ async def test_one_trigger_condenses_only_one_batch(sandbox, work, monkeypatch):
     assert calls == ["s2a", "l1", "l2"], f"一批只跑三段，实际 {calls}"
 
 
-# ---------------------------------------------------------------- 重凝去重（水位回退后不许重复）
+# ---------------------------------------------------------------- 重凝幂等（F16 · 不删旧）
 
-def test_drop_overlapping_helper():
-    """覆盖区间相交 ⇒ 摘掉；不相交 ⇒ 原样保留。"""
+def test_merge_recondensed_idempotent_not_delete():
+    """[F16] 同 anchor.seq ⇒ 原位替换 + coveredSeqs 并集（不删）；不同 seq 不动。"""
     ents = [
-        {"seq": 0, "seq_from": 0, "seq_to": 9, "conclusion": "老结论"},
-        {"seq": 20, "seq_from": 20, "seq_to": 29, "conclusion": "另一段"},
-        {"seq": 40, "conclusion": "无区间"},          # 退化单点 40
+        {"anchor": {"sessionId": "s", "seq": 0}, "gist": "老结论",
+         "coveredSeqs": [0, 1, 2], "occurred_at": "t0"},
+        {"anchor": {"sessionId": "s", "seq": 20}, "gist": "另一段",
+         "coveredSeqs": [20], "occurred_at": "t0"},
     ]
-    kept = memory_store._drop_overlapping(ents, 0, 5)
-    assert [e["conclusion"] for e in kept] == ["另一段", "无区间"]
-    assert len(memory_store._drop_overlapping(ents, 10, 19)) == 3, "不相交一条不动"
+    fresh = [{"anchor": {"sessionId": "s", "seq": 0}, "gist": "新结论",
+              "coveredSeqs": [0, 1, 2, 3]}]
+    merged, replaced = memory_store._merge_recondensed(ents, fresh)
+    assert replaced == 1
+    gists = [e["gist"] for e in merged]
+    assert "老结论" not in gists and "新结论" in gists and "另一段" in gists, \
+        "同锚原位替换；异锚原样保留"
+    assert merged[0]["coveredSeqs"] == [0, 1, 2, 3], "coveredSeqs 并集"
+    assert merged[0]["occurred_at"] == "t0", "出生时刻不改写"
+    # 异锚新条目 → 追加在尾
+    merged2, replaced2 = memory_store._merge_recondensed(
+        ents, [{"anchor": {"sessionId": "s", "seq": 9}, "gist": "新增", "coveredSeqs": [9]}])
+    assert replaced2 == 0 and merged2[-1]["gist"] == "新增" and len(merged2) == 3
+    assert all(g != "新增" for g in (e["gist"] for e in ents)), "入参不被就地改"
 
 
 async def test_recondense_same_window_no_duplicate(sandbox, work, monkeypatch):
@@ -296,3 +346,118 @@ async def test_recondense_same_window_no_duplicate(sandbox, work, monkeypatch):
     _inv = md.check_invariants(chain)
     if _inv:
         pytest.xfail(f"解析器既有缺陷（依据被当独立条目）：{_inv}")
+
+
+# ---------------------------------------------------------------- F1/F4/F8/F9/F10 机械件（2026-10-31）
+
+def test_fresh_synthetic_seq_reserved_range():
+    """[F1] 合成锚点＝1e9 保留段起取、撞号顺延，绝不取 covers 最旧 seq。"""
+    ents = [{"anchor": {"sessionId": "s", "seq": 5}}, {"anchor": {"sessionId": "s", "seq": 9}}]
+    s1 = memory_store._fresh_synthetic_seq(ents)
+    assert s1 >= memory_store.SYNTH_SEQ_BASE
+    ents2 = ents + [{"anchor": {"sessionId": "s", "seq": s1}}]
+    s2 = memory_store._fresh_synthetic_seq(ents2)
+    assert s2 > s1, "已占号顺延"
+
+
+def test_merge_timeline_and_insert():
+    """[F2] 成员 timeline 的 min/max 合并；insertByTimeline 时间序插入。"""
+    tl1 = memory_store._merge_timeline([
+        {"from": "2026-10-01T10:00:00", "to": "2026-10-01T11:00:00"},
+        {"from": "2026-10-01T09:00:00", "to": "2026-10-01T12:00:00"},
+        None])
+    assert tl1 == {"from": "2026-10-01T09:00:00", "to": "2026-10-01T12:00:00"}
+    assert memory_store._merge_timeline([None, None]) is None
+    a = {"anchor": {"sessionId": "s", "seq": 1}, "level": 1, "role": "gist",
+         "timeline": {"from": "2026-10-05T00:00:00", "to": "2026-10-05T01:00:00"}}
+    new = {"anchor": {"sessionId": "s", "seq": 10**9}, "level": 1, "role": "gist",
+           "timeline": {"from": "2026-10-02T00:00:00", "to": "2026-10-02T01:00:00"}}
+    out = memory_store._insert_by_timeline([a], new)
+    assert [e["anchor"]["seq"] for e in out] == [10**9, 1], "按 timeline.from 插到更早位"
+
+
+def test_demote_subtree_levels():
+    """[F2] 成员挂 upper 后沿 lower 子树整体 level+=1。"""
+    top = {"anchor": {"sessionId": "s", "seq": 1}, "level": 1, "role": "gist",
+           "lower": [{"sessionId": "s", "seq": 2}]}
+    child = {"anchor": {"sessionId": "s", "seq": 2}, "level": 2, "role": "gist",
+             "upper": [{"sessionId": "s", "seq": 1}], "lower": []}
+    ents = [top, child]
+    memory_store._demote_subtree(ents, 1)
+    assert top["level"] == 2 and child["level"] == 3, "整子树降一层"
+
+
+def test_render_condense_memory_panorama():
+    """[F4] 全景判据 level==1 ∧ !sunk ∧ role==gist；sunk 条目不进；L2 出最近一批。"""
+    ents = [
+        {"anchor": {"sessionId": "s", "seq": 0}, "gist": "甲", "level": 1,
+         "role": "gist", "status": "done", "occurred_at": "t1"},
+        {"anchor": {"sessionId": "s", "seq": 3}, "gist": "乙（已沉）", "level": 1,
+         "role": "gist", "status": "done", "sunk": True, "occurred_at": "t1"},
+        {"anchor": {"sessionId": "s", "seq": 1}, "gist": "细节1", "level": 2,
+         "role": "gist", "occurred_at": "t1"},
+        {"anchor": {"sessionId": "s", "seq": 2}, "gist": "细节0（旧批）", "level": 2,
+         "role": "gist", "occurred_at": "t0"},
+    ]
+    text = memory_store.render_condense_memory(ents)
+    assert "[seq 0]" in text and "甲" in text
+    assert "乙（已沉）" not in text, "sunk 不进凝练全景（F15 口径）"
+    assert "细节1" in text and "细节0（旧批）" not in text, "L2 只出最近一批"
+    assert memory_store.render_condense_memory([]) == ""
+
+
+def test_extract_and_attach_doc_paths():
+    """[F9] 工具入参机械提路径 → 按 coveredSeqs 归属 docPaths/docRefs（首现 seq）。"""
+    window = [
+        {"seq": 5, "actor": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "write_file",
+                          "arguments": '{"path": "docs/a.md", "content": "xx"}'}}]},
+        {"seq": 6, "actor": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "write_file",
+                          "arguments": '{"path": "docs/a.md", "content": "yy"}'}}]},
+    ]
+    arts = memory_store.extract_tool_use_artifacts(window)
+    assert arts == {5: ["docs/a.md"], 6: ["docs/a.md"]}
+    nodes = [{"anchor": {"sessionId": "s", "seq": 5}, "coveredSeqs": [5, 6]},
+             {"anchor": {"sessionId": "s", "seq": 9}, "coveredSeqs": [9]}]
+    n = memory_store.attach_doc_paths(nodes, arts)
+    assert n == 1
+    assert nodes[0]["docPaths"] == ["docs/a.md"]
+    assert nodes[0]["docRefs"] == [{"path": "docs/a.md", "seq": 5}], "首现 seq 成 docRef"
+    assert "docPaths" not in nodes[1]
+
+
+def test_compute_output_token_cap(monkeypatch):
+    """[F8] 输出帽：缺省不设（拆闸铁律）、auto 按窗口预算、数字直取。"""
+    monkeypatch.delenv("CONDENSE_OUTPUT_TOKEN_CAP", raising=False)
+    assert memory_store.compute_output_token_cap() == 0
+    monkeypatch.setenv("CONDENSE_OUTPUT_TOKEN_CAP", "auto")
+    cap = memory_store.compute_output_token_cap()
+    assert cap == min(memory_store.window_budget_tokens() // 4, 32768)
+    monkeypatch.setenv("CONDENSE_OUTPUT_TOKEN_CAP", "4096")
+    assert memory_store.compute_output_token_cap() == 4096
+
+
+def test_truncation_signal_class():
+    """[F8a] CondenseTruncated 是 RuntimeError 子类（调用方按整批作废处理）。"""
+    assert issubclass(memory_store.CondenseTruncated, RuntimeError)
+
+
+def test_backfill_timeline_from_origin(work, monkeypatch):
+    """[F10] coveredSeqs → 事件时间 MIN/MAX → timeline{from,to}。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    from src.storage import origin_store
+    rows = [
+        {"seq": 1, "type": "user_message", "content": "u1", "ts": "2026-10-30T09:00:00"},
+        {"seq": 2, "type": "assistant_text", "content": "a1", "ts": "2026-10-30T09:05:00"},
+    ]
+    monkeypatch.setattr(origin_store, "read_origin_span",
+                        lambda w, c, lo, hi=None: {"events": [
+                            {"seq": r["seq"], "type": r["type"],
+                             "data": {"ts": r["ts"]}} for r in rows],
+                            "from": lo, "throughSeq": 2})
+    nodes = [{"anchor": {"sessionId": cid, "seq": 1}, "coveredSeqs": [1, 2]}]
+    n = memory_store._backfill_timeline(wid, cid, nodes)
+    assert n == 1
+    assert nodes[0]["timeline"] == {"from": "2026-10-30T09:00:00",
+                                    "to": "2026-10-30T09:05:00"}

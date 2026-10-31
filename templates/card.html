@@ -220,9 +220,16 @@
     <button class="fwin-btn" id="rvExpandBtn" title="展开评审卡对话">⤢</button>
     <button class="fwin-btn" id="rvCloseBtn" title="关闭">×</button>
   </div>
+  <!-- [2026-10-31 用户令「所有动作、思考、事件都要看得见」]
+       收缩态从「只显示最近一条」改成**滚动事件列表**：
+         · rvEvents：已完成的事件逐条追加（自动滚到底，最多保留 60 条）
+         · rvLastText：当前正在逐字输出的那一行（思考/正文），不算历史 -->
   <div class="fwin-last" id="rvLast">
-    <time id="rvLastTime"></time>
-    <span class="t" id="rvLastText">等待事件…</span>
+    <div class="fwin-events" id="rvEvents"></div>
+    <div class="fwin-live" id="rvLive">
+      <time id="rvLastTime"></time>
+      <span class="t" id="rvLastText">等待事件…</span>
+    </div>
   </div>
   <iframe id="rvFrame" class="fwin-frame" src="about:blank" title="评审卡对话"></iframe>
 </div>

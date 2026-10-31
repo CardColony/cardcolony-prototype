@@ -27,9 +27,10 @@ async def _work_with_review(n: int = 2):
     wdata = await work_store.create_work("评审浮窗测试")
     wid = str(wdata["work_id"])
     fids = []
+    review_codes = ("ceo", "pm", "cto")
     for i in range(n):
         prof = await function_store.create_function(
-            wid, f"职能{i}", {"jurisdiction": {"catalog_code": f"f{i}"}})
+            wid, f"职能{i}", {"jurisdiction": {"catalog_code": review_codes[i]}})
         fids.append(str(prof.get("function_id") or ""))
     r = await card_store.create_card(wid, "子项目甲", "用户直接创建",
                                      card_type="sub_project")
@@ -123,7 +124,7 @@ async def test_status_carries_each_members_last_opinion(sandbox, app, monkeypatc
 
     async def say(sys_p, user_p, convo, tools, model):
         return ({"content": "第三条不满足：没有证据",
-                 "tool_calls": [{"name": "reject", "arguments": {"reason": "测试：判据没落点"}}]}, "fake-model")
+                 "tool_calls": [{"name": "reject", "arguments": {}}]}, "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", say)
     await review_runner.speak(wid, rid, fids[0])

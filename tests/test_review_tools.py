@@ -20,9 +20,11 @@ async def _make_work_with_functions(n: int = 2):
     wdata = await work_store.create_work("评审工具测试")
     wid = str(wdata["work_id"])
     fids = []
+    review_codes = ("ceo", "pm", "cto")
     for i in range(n):
+        code = review_codes[i] if i < len(review_codes) else f"f{i}"
         prof = await function_store.create_function(
-            wid, f"职能{i}", {"jurisdiction": {"catalog_code": f"f{i}"}})
+            wid, f"职能{i}", {"jurisdiction": {"catalog_code": code}})
         fids.append(str(prof.get("function_id") or ""))
     r = await card_store.create_card(wid, "子项目甲", "用户直接创建",
                                      card_type="sub_project")
@@ -47,6 +49,83 @@ async def test_open_review_creates_batch_with_members(sandbox):
     st = await review_store.status(wid, rid)
     assert st["batch"].startswith("rv_")
     assert set(st["pending"]) == set(fids), "默认全员未通过"
+
+
+async def test_review_read_tools_follow_each_function_abilities(sandbox):
+    """评审场景按当前角色能力工具面再收窄为只读，不借用被评子卡的工具面。"""
+    from src.api import review_runner
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    normal_face_before = {t["name"] for t in card_tools.build_tool_schemas(cid, wid, cards)}
+    # 模拟两个受邀职能各自不同的能力挂载。
+    cards[fids[0]] = {"card_id": fids[0], "card_type": "function",
+                      "mode": "manual", "abilities": ["read_card"]}
+    cards[fids[1]] = {"card_id": fids[1], "card_type": "function",
+                      "mode": "manual", "abilities": ["read_files"]}
+
+    first = set(review_runner._review_read_tools(wid, fids[0], cards))
+    second = set(review_runner._review_read_tools(wid, fids[1], cards))
+    assert "read_card" in first
+    assert not ({"read_file", "list_files", "search_files", "glob_files"} & first)
+    assert {"read_file", "list_files", "search_files", "glob_files"} <= second
+    assert "read_card" not in second
+    assert all(card_tools.TOOL_REGISTRY[name].readonly for name in first | second)
+    normal_face_after = {t["name"] for t in card_tools.build_tool_schemas(cid, wid, cards)}
+    assert normal_face_after == normal_face_before, "评审场景筛选不得改变被评子卡的常规工具面"
+
+
+async def test_speak_uses_current_reviewers_readonly_capability_face(sandbox, monkeypatch):
+    """评审场景识别当前受邀角色，以该角色自己的能力工具面收窄为只读。"""
+    from copy import deepcopy
+
+    from src.api import model_service, review_runner
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    rid = await review_store.ensure_review_card(wid, cid, "子项目甲")
+    await review_store.open_batch(wid, rid, "判据", members=fids, target=cid)
+    base_cards = card_store.iter_card_metas(wid)
+    base_cards[fids[0]] = {"card_id": fids[0], "card_type": "function",
+                            "mode": "manual", "abilities": ["read_card"]}
+    base_cards[fids[1]] = {"card_id": fids[1], "card_type": "function",
+                            "mode": "manual", "abilities": ["read_files"]}
+    monkeypatch.setattr(review_runner.card_store, "iter_card_metas",
+                        lambda _wid: deepcopy(base_cards))
+    async def fake_context(*_args):
+        return "review-system", [], "review-user"
+    monkeypatch.setattr(review_runner, "_speak_context", fake_context)
+    monkeypatch.setattr(review_runner, "_model_of", lambda *_args: "fake-model")
+
+    faces = []
+    async def fake_call(_system, _user, _prior, tools, _model, *args, **_):
+        face = {str((t.get("function") or t).get("name") or "") for t in tools}
+        faces.append(face)
+        rid = await review_store.review_card_of(wid, cid)
+        return ({"content": "", "tool_calls": [
+            {"name": "approve", "arguments": {"review_card_id": rid}}]}, "fake-model")
+    monkeypatch.setattr(model_service, "call_main", fake_call)
+
+    await review_runner.speak(wid, rid, fids[0])
+    await review_runner.speak(wid, rid, fids[1])
+
+    assert {"approve", "reject", "read_card"} <= faces[0]
+    assert not ({"read_file", "list_files", "search_files", "glob_files"} & faces[0])
+    assert {"approve", "reject", "read_file", "list_files", "search_files", "glob_files"} <= faces[1]
+    assert "read_card" not in faces[1]
+    assert all(name in ("approve", "reject") or
+               card_tools.TOOL_REGISTRY[name].readonly
+               for face in faces for name in face)
+
+
+async def test_open_review_invites_only_ceo_pm_cto(sandbox):
+    """固定邀请集只有总裁、产品经理、技术总监；其他在职职能不进名单。"""
+    wid, cid, fids = await _make_work_with_functions(4)
+    cards = card_store.iter_card_metas(wid)
+    out = await card_tools._h_open_review(
+        wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
+    assert out.get("ok") is True, out
+    assert out["data"]["members"] == fids[:3]
+    assert fids[3] not in out["data"]["members"]
 
 
 async def test_approve_rejects_non_member(sandbox):
@@ -75,22 +154,6 @@ async def test_all_approve_closes_only_when_everyone_passed(sandbox):
     assert last["data"]["all_passed"] is True and last["data"]["pending"] == []
 
 
-async def test_set_criteria_invalidates_approvals(sandbox):
-    wid, cid, fids = await _make_work_with_functions(2)
-    cards = card_store.iter_card_metas(wid)
-    out = await card_tools._h_open_review(wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
-    rid = out["data"]["review_card_id"]
-    # 只让一人通过（批次仍开着，未收口）
-    await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
-    st0 = await review_store.status(wid, rid)
-    assert fids[0] in st0["passed"] and st0["all_passed"] is False
-
-    await card_tools._h_set_criteria(
-        wid, cid, {"review_card_id": rid, "text": "C-1 状态行一致\nC-2 有证据"}, cards)
-    st = await review_store.status(wid, rid)
-    assert fids[0] not in st["passed"], "判据变了，旧通过必须作废"
-    assert st["criteria"] == 2
-
 
 async def test_status_block_is_rendered_by_system(sandbox):
     wid, cid, fids = await _make_work_with_functions(2)
@@ -106,7 +169,7 @@ async def test_status_block_is_rendered_by_system(sandbox):
 
 async def test_review_context_is_verbatim_and_untruncated(sandbox):
     """评审上下文构造（用户 2026-10-27 硬要求）：
-    brief 原样、子卡三块原样、判据在、上一批次正稿在——**一律不截断**。"""
+    brief 原样、子卡三块原样、上一批次正稿在——**一律不截断**。"""
     from src.api import review_runner
 
     wid, cid, fids = await _make_work_with_functions(1)
@@ -115,8 +178,6 @@ async def test_review_context_is_verbatim_and_untruncated(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": long_brief}, cards)
     rid = out["data"]["review_card_id"]
-    await card_tools._h_set_criteria(
-        wid, cid, {"review_card_id": rid, "text": "C-1 状态行三处一致"}, cards)
 
     st = await review_store.state_of(wid, rid)
     text = await review_runner._user_prompt(wid, rid, st)
@@ -130,7 +191,8 @@ async def test_review_context_is_verbatim_and_untruncated(sandbox):
     assert str(meta.get("requirements_draft") or "") in text, "待评审的草稿必须原样进上下文"
     assert str(body.get("requirements") or "") not in text, \
         "正稿（卡面模板说明）不该当评审对象塞进来"
-    assert "C-1 状态行三处一致" in text, "判据进上下文"
+    # [2026-10-31 用户令] 评审不再有判据：卡面第三块（requirements）不进评审上下文
+    assert "判据" not in text, "评审上下文里不许再出现判据"
 
 
 async def test_review_card_not_in_canvas_or_nav(sandbox):
@@ -396,7 +458,7 @@ async def test_card_write_only_bumps_draft_never_spawns(sandbox, monkeypatch):
 def test_review_tools_scoped_to_right_roles():
     """评审五件各自归谁（P5：结构上不让它漏给不相干的卡）。
 
-    - `approve` / `set_criteria` / `revoke_approve` / `decide` 不进基础池
+    - `approve` / `revoke_approve` / `decide` 不进基础池
       （否则 `tool` 卡也有 edit，会漏——test_cardperm_readopen 抓过）
     - `open_review` 挂建子卡开关（只有能拆活的卡才发起评审）
     - 总裁是评审成员 ⇒ 目录 allow 必须有 `approve`，否则它永远不通过、批次永远收不了口
@@ -406,8 +468,10 @@ def test_review_tools_scoped_to_right_roles():
 
     from src.permissions import policy
 
-    assert {"approve", "set_criteria", "revoke_approve", "decide"} \
-        <= card_tools.FUNCTION_ONLY_TOOLS
+    assert {"approve", "revoke_approve", "decide"} <= card_tools.FUNCTION_ONLY_TOOLS
+    assert "set_criteria" not in card_tools.FUNCTION_ONLY_TOOLS, \
+        "set_criteria 已删除（用户：不要判据）"
+    assert "set_criteria" not in card_tools.TOOL_REGISTRY, "工具本身必须已摘除"
     assert card_tools.TOOL_SWITCH["open_review"] == policy.SWITCH_CREATE_CHILD
 
     root = Path(__file__).resolve().parents[1]
@@ -415,7 +479,7 @@ def test_review_tools_scoped_to_right_roles():
                      .read_text(encoding="utf-8"))
     ceo = [f for f in cat["functions"] if f["code"] == "ceo"][0]
     allow = set((ceo.get("toolface") or {}).get("allow") or [])
-    assert {"approve", "set_criteria", "revoke_approve", "decide"} <= allow, allow
+    assert {"approve", "revoke_approve", "decide"} <= allow, allow
 
 
 async def test_speak_accepts_flat_tool_calls(sandbox, monkeypatch):

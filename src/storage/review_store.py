@@ -6,12 +6,12 @@
 全员 `approve` 才收口。
 
 存储分工（P1：卡面是唯一权威事实源）
-- **卡面**：判据在第三块（`requirements`）；当前批次与通过状态在现状块（系统渲染）
+- **卡面**：当前批次与通过状态在现状块（系统渲染）
 - **cards 列**：`review_of`（配对的子卡）、`review_state`（当前批次 JSON）
-- **review_approvals 表**：每次 approve 一行，绑 `(draft_ver, criteria_ver)`
+- **review_approvals 表**：每次 approve 一行
 - **事件流**：`review_batch_opened` / `review_batch_closed` 留痕
 
-**不建 members 表**：成员＝用 `relations` 连到评审卡的卡（P7／P5）。
+**成员只属于一次批次邀请**：从职能表取出的邀请名单保存在当前 `review_state` 批次里；不写入 `relations`，批次关闭时清空。
 """
 from __future__ import annotations
 
@@ -28,16 +28,9 @@ logger = logging.getLogger("storage.review")
 #: 评审卡类型码（注册表已登记：off_tree / 不可有子卡 / 无模板）
 REVIEW_TYPE = "review"
 
-#: relations 的 kind 值域沿用现有两种（依赖／关联）——不新增线类型（P1）
-REL_KIND = "关联"
-
-#: 关系说明前缀（用于认"参与评审"这条边）
-REL_PARTICIPATE = "评审·参与"
-REL_TARGET = "评审·被评"
-
 MISSION_TPL = (
     "对 {title}（{cid}）的阶段成果做验收。"
-    "判据在本卡第三块；批次与通过状态在本卡现状块。"
+    "批次与通过状态在本卡现状块。"
 )
 
 
@@ -77,7 +70,7 @@ async def ensure_review_card(work_id: str, child_id: str,
         if not rid:
             logger.warning("[review] 伴生卡建卡失败 child=%s: %s", child_id, r)
             return ""
-        # 配对列 + 双向 relations（子卡 ←→ 评审卡）
+        # 专用 review_of 配对；评审邀请不构成卡间关系线。
         await _write_pair(work_id, rid, child_id)
         return rid
     except Exception as exc:  # noqa: BLE001
@@ -86,27 +79,11 @@ async def ensure_review_card(work_id: str, child_id: str,
 
 
 async def _write_pair(work_id: str, review_id: str, child_id: str) -> None:
-    """写 review_of 与两侧 relations（幂等：已存在则不重复加）。"""
+    """写专用 review_of 配对列；评审关系不是依赖/影响线。"""
 
     def _fn(conn: Any) -> None:
         conn.execute("UPDATE cards SET review_of=? WHERE card_id=?",
                      (child_id, review_id))
-        for me, other, detail in ((review_id, child_id, REL_TARGET),
-                                  (child_id, review_id, REL_PARTICIPATE)):
-            row = conn.execute("SELECT relations FROM cards WHERE card_id=?",
-                               (me,)).fetchone()
-            try:
-                rels = json.loads((row["relations"] if row else "") or "[]")
-            except (TypeError, ValueError):
-                rels = []
-            if not isinstance(rels, list):
-                rels = []
-            if any(isinstance(x, dict) and x.get("target") == other
-                   for x in rels):
-                continue
-            rels.append({"target": other, "kind": REL_KIND, "detail": detail})
-            conn.execute("UPDATE cards SET relations=? WHERE card_id=?",
-                         (json.dumps(rels, ensure_ascii=False), me))
 
     try:
         await card_db.run_write(work_id, _fn)
@@ -115,33 +92,13 @@ async def _write_pair(work_id: str, review_id: str, child_id: str) -> None:
                        review_id, child_id, exc)
 
 
-# ---------------------------------------------------------------- 成员
+# ---------------------------------------------------------------- 临时邀请成员
 async def members_of(work_id: str, review_id: str) -> list[str]:
-    """评审成员＝relations 里标了「评审·参与」的卡（不含被评卡本身）。"""
-
-    def _fn(conn: Any) -> list[str]:
-        row = conn.execute("SELECT relations FROM cards WHERE card_id=?",
-                           (review_id,)).fetchone()
-        try:
-            rels = json.loads((row["relations"] if row else "") or "[]")
-        except (TypeError, ValueError):
-            return []
-        out: list[str] = []
-        for x in rels if isinstance(rels, list) else []:
-            if not isinstance(x, dict):
-                continue
-            if str(x.get("detail") or "") != REL_PARTICIPATE:
-                continue
-            t = str(x.get("target") or "")
-            if t:
-                out.append(t)
-        return out
-
-    try:
-        return list(await card_db.run_read(work_id, _fn, []) or [])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[review] 读成员失败 review=%s: %s", review_id, exc)
+    """当前批次被邀请的职能名单；无进行中批次时为空，不代表持久关系。"""
+    st = await state_of(work_id, review_id)
+    if not str(st.get("batch") or ""):
         return []
+    return [str(x) for x in (st.get("members") or []) if str(x)]
 
 
 # ---------------------------------------------------------------- 批次
@@ -173,7 +130,6 @@ async def list_active(work_id: str) -> list[dict[str, Any]]:
                 "target": str(r["review_of"] or ""),
                 "batch": str(st.get("batch") or ""),
                 "draft": int(st.get("draft") or 1),
-                "criteria": int(st.get("criteria") or 1),
             })
         return out
 
@@ -206,7 +162,7 @@ async def state_of(work_id: str, review_id: str) -> dict[str, Any]:
 async def open_batch(work_id: str, review_id: str, focus: str,
                      members: Optional[list[str]] = None,
                      target: str = "", brief: str = "") -> dict[str, Any]:
-    """开一个批次：写 review_state（批次号 + 版本 1/1）＋把成员连进来。
+    """开一个批次：写 review_state（含本批临时邀请名单），不建立卡间关系线。
 
     [P6 换上下文不压缩] 上一批次的正稿**原文**带进来（`prev_verdict`），
     过程（发言、工具结果）不带——它们留在会话里归档。
@@ -220,20 +176,58 @@ async def open_batch(work_id: str, review_id: str, focus: str,
     old = await state_of(work_id, review_id)
     prev = str(old.get("verdict") or old.get("prev_verdict") or "")
     tgt = str(target or old.get("target") or "")
-    st = {"batch": _new_batch_id(), "draft": 1, "criteria": 1,
+    invited = list(dict.fromkeys(str(m) for m in (members or []) if str(m)))
+    st = {"batch": _new_batch_id(), "draft": 1,
           "focus": str(focus or "")[:2000], "opened_at": _now(),
           "prev_verdict": prev, "target": tgt,
           "brief": str(brief or ""),
-          "draft_hash": await _card_hash(work_id, tgt)}
-    for m in members or []:
-        await _add_member(work_id, review_id, m)
+          "draft_hash": await _card_hash(work_id, tgt),
+          # 邀请名单只在这次进行中的批次有效；它不是 relations，也不是职能的永久成员关系。
+          "members": invited}
 
     def _fn(conn: Any) -> None:
         conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
                      (json.dumps(st, ensure_ascii=False), review_id))
+        # [2026-10-31 用户裁定「每一次调新批次，旧批次的所有内容，都应该清干净，
+        #  每一次评审都是全新的开始」]
+        # 只删**本评审卡**旧批次的审批票（review_approvals 没有 card_id 列 ⇒
+        # 从旧 state 取 batch/closed_batch，精确限定范围，不误伤同 work 其他评审卡）。
+        _old_batches = {str(old.get("batch") or ""), str(old.get("closed_batch") or "")}
+        _old_batches.discard("")
+        for _ob in _old_batches:
+            conn.execute("DELETE FROM review_approvals WHERE work_id=? AND batch_id=?",
+                         (work_id, _ob))
 
     await card_db.run_write(work_id, _fn)
+
+    # [2026-10-31 用户裁定] 旧批次的会话内容也清干净。
+    # 上一批次的过程（发言、工具结果）不该带进新批次的上下文——用户原话：
+    # 「每一次评审都是全新的开始」。
+    # 上一批次的**正稿**通过 review_state.prev_verdict 带过来（P6：换上下文不压缩），
+    # 那是唯一要带的东西。
+    await _clear_review_session(work_id, review_id)
+
     return st
+
+
+async def _clear_review_session(work_id: str, review_id: str) -> None:
+    """把评审卡的会话文件清空，只留文件头。
+
+    为什么不删文件：文件路径被 session_facade 缓存、事件流引用，
+    删掉可能导致后续 append 重建时序号从 0 起而事件流已在高序号——
+    用"重写为空文件"的方式，路径不变、缓存失效、序号自然从 0 重计。
+    """
+    from . import session_facade as _sf
+    try:
+        path = _sf._session_path(work_id, review_id)
+        if path.exists():
+            path.write_text(
+                _sf._render_v2_header(_sf._default_header(review_id)),
+                encoding="utf-8")
+            logger.info("[review] 开新批次 ⇒ 旧会话已清空 review=%s", review_id)
+    except Exception as exc:  # noqa: BLE001 清不掉不阻断开批次
+        logger.warning("[review] 旧会话清空失败（不阻断新批次）review=%s: %s",
+                       review_id, exc)
 
 
 async def sync_draft(work_id: str, review_id: str) -> bool:
@@ -308,6 +302,8 @@ async def close_batch(work_id: str, review_id: str,
         return {}
     st2 = dict(st)
     st2["batch"] = ""
+    # 邀请只在当前批次有效；收口后成员资格结束。
+    st2["members"] = []
     st2["closed_batch"] = batch
     st2["closed_at"] = _now()
     st2["verdict"] = str(verdict or "")
@@ -356,34 +352,11 @@ async def spoken_round(work_id: str, review_id: str) -> list[str]:
     return [str(x) for x in (sp.get("roles") or [])]
 
 
-async def _add_member(work_id: str, review_id: str, member_id: str) -> None:
-    def _fn(conn: Any) -> None:
-        row = conn.execute("SELECT relations FROM cards WHERE card_id=?",
-                           (review_id,)).fetchone()
-        try:
-            rels = json.loads((row["relations"] if row else "") or "[]")
-        except (TypeError, ValueError):
-            rels = []
-        if not isinstance(rels, list):
-            rels = []
-        if any(isinstance(x, dict) and x.get("target") == member_id
-               and x.get("detail") == REL_PARTICIPATE for x in rels):
-            return
-        rels.append({"target": member_id, "kind": REL_KIND,
-                     "detail": REL_PARTICIPATE})
-        conn.execute("UPDATE cards SET relations=? WHERE card_id=?",
-                     (json.dumps(rels, ensure_ascii=False), review_id))
-
-    try:
-        await card_db.run_write(work_id, _fn)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[review] 加成员失败 review=%s m=%s: %s",
-                       review_id, member_id, exc)
 
 
 # ---------------------------------------------------------------- 通过
 async def approve(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
-    """记录一次通过：绑定当前 (draft, criteria) 版本。"""
+    """记录一次通过。"""
     st = await state_of(work_id, review_id)
     batch = str(st.get("batch") or "")
     if not batch:
@@ -392,17 +365,16 @@ async def approve(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
     def _fn(conn: Any) -> None:
         conn.execute(
             "INSERT INTO review_approvals"
-            " (work_id,batch_id,role_id,draft_ver,criteria_ver,ts,revoked)"
-            " VALUES (?,?,?,?,?,?,0)"
+            " (work_id,batch_id,role_id,draft_ver,ts,revoked)"
+            " VALUES (?,?,?,?,?,0)"
             " ON CONFLICT(work_id,batch_id,role_id) DO UPDATE SET"
-            " draft_ver=excluded.draft_ver, criteria_ver=excluded.criteria_ver,"
+            " draft_ver=excluded.draft_ver,"
             " ts=excluded.ts, revoked=0",
-            (work_id, batch, role_id, int(st.get("draft") or 1),
-             int(st.get("criteria") or 1), _now()))
+            (work_id, batch, role_id, int(st.get("draft") or 1), _now()))
 
     await card_db.run_write(work_id, _fn)
     return {"ok": True, "batch": batch, "role": role_id,
-            "draft": st.get("draft"), "criteria": st.get("criteria")}
+            "draft": st.get("draft")}
 
 
 async def revoke(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
@@ -423,18 +395,11 @@ async def revoke(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
 async def status(work_id: str, review_id: str) -> dict[str, Any]:
     """批次状态：谁有效通过、谁没有、是否全员通过。
 
-    有效＝`revoked=0` 且 **判据版本**与当前一致。
+    有效＝`revoked=0`（没被撤销）。
 
     [2026-10-29 用户口径「通过之后它就不再被唤起进行后续的评审」]
     **草稿版本变了不再让票失效**：一次评审里 A 通过之后，其他人还会继续提意见、
     子卡继续改草稿、继续评，但 A 不再被叫回来重投。
-    改前是「票绑 (draft, criteria) 双版本」，草稿一改全员票作废 ⇒ 每轮都全员
-    重跑（work_027 实跑：总裁被叫了三次）。这与「通过就不再唤起」直接冲突：
-    票作废了却不叫回来投，批次永远收不了口；叫回来投，又违反用户口径。
-
-    **判据变了仍然全失效**（`criteria_ver != crit`）：判据是评审依据，
-    依据换了，之前的判断不成立——这条不受本次改动影响。
-
     `draft_changed` 仍然照算，但它现在只是**展示用的事实**（"草稿在本批次内
     改过几版"），不参与票的有效性判定。
     """
@@ -448,14 +413,13 @@ async def status(work_id: str, review_id: str) -> dict[str, Any]:
         closed = str(st.get("closed_batch") or "")
         return {"batch": "", "closed_batch": closed,
                 "draft": int(st.get("draft") or 1),
-                "criteria": int(st.get("criteria") or 1),
                 "members": await members_of(work_id, review_id),
                 "passed": [], "pending": [], "draft_changed": False,
                 "closed": bool(closed),
                 "verdict": str(st.get("verdict") or ""),
                 "all_passed": bool(closed) and bool(st.get("verdict"))}
     members = await members_of(work_id, review_id)
-    draft, crit = int(st.get("draft") or 1), int(st.get("criteria") or 1)
+    draft = int(st.get("draft") or 1)
     # 草稿是否已变（展示用，不影响票）
     draft_changed = False
     tgt = str(st.get("target") or "")
@@ -466,7 +430,7 @@ async def status(work_id: str, review_id: str) -> dict[str, Any]:
 
     def _fn(conn: Any) -> dict[str, dict[str, Any]]:
         rows = conn.execute(
-            "SELECT role_id,draft_ver,criteria_ver,revoked,ts FROM review_approvals"
+            "SELECT role_id,draft_ver,revoked,ts FROM review_approvals"
             " WHERE work_id=? AND batch_id=?", (work_id, batch)).fetchall()
         return {str(r["role_id"]): dict(r) for r in rows}
 
@@ -479,14 +443,12 @@ async def status(work_id: str, review_id: str) -> dict[str, Any]:
     pending: list[str] = []
     for m in members:
         r = rows.get(m)
-        # 有效票只看两件事：没被撤销 ＋ 判据版本仍是投票那一版。
+        # 有效票只看一件事：没被撤销。
         # 草稿版本**不参与**（见 docstring）。
-        ok = bool(r) \
-            and not int(r.get("revoked") or 0) \
-            and int(r.get("criteria_ver") or 0) == crit
+        ok = bool(r) and not int(r.get("revoked") or 0)
         (passed if ok else pending).append(m)
 
-    return {"batch": batch, "draft": draft, "criteria": crit,
+    return {"batch": batch, "draft": draft,
             "members": members, "passed": passed, "pending": pending,
             "draft_changed": draft_changed,
             "all_passed": bool(members) and not pending}
@@ -531,7 +493,7 @@ def _render_verdict(st: dict[str, Any]) -> str:
         f"批次 {st.get('batch')} · 全员通过（{_now()}）",
         f"通过 {len(st.get('passed') or [])}/{len(st.get('members') or [])}："
         f"{', '.join(st.get('passed') or [])}",
-        "本批次判据全部满足。下一批次以本正稿 ＋ 子卡最新卡面为输入。",
+        "本批次全员通过。下一批次以本正稿 ＋ 子卡最新卡面为输入。",
     ])
 
 

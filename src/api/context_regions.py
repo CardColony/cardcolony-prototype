@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """上下文装配线 · 区表定义（THINK-ECO-T11 · 移植对应总表 #1/#2/#3 直接搬）。
 
 dsh 的区表组织方式照搬、内容换皮（dsh 八区 → 推演六区，移植对应总表 #1）：
@@ -21,12 +21,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any, Optional
 
 from ..storage import rule_store
 from . import prompts
 from .prompts import BASE_PROMPT, THIRD_BLOCK_NAME_BY_TREE as _THIRD_BLOCK_NAME_BY_TREE
+
+logger = logging.getLogger("api.context_regions")
 
 
 @dataclass
@@ -484,7 +488,14 @@ REGION_TABLE: list[dict[str, Any]] = [
         "delivery": "system",
         "profiles": ("main", "viewpoint", "draft"),
         "source": "context_assembler._load_cards_index（查库，每卡一行 id·标题·父卡）",
-        "render": lambda ctx: render_card_list_region(ctx.cards, ctx.work_card_id),
+        "render": lambda ctx: render_card_list_region(
+            ctx.cards, ctx.work_card_id, ctx.card_id,
+            [{"card_id": str(r.get("target") or ""), "dir": "out",
+              "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
+             for r in (ctx.dep_relations_out or [])]
+            + [{"card_id": str(r.get("source") or ""), "dir": "in",
+                "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
+               for r in (ctx.dep_relations_in or [])]),
         "count": lambda ctx, text: len(ctx.cards),
     },
     {
@@ -807,7 +818,11 @@ def project_history_messages(
         if not _pred.enters_context(m):
             continue
         item = {
-            "role": role,
+            # [F13 · 2026-10-31 卡间消息 system 化（对齐 dsh renderHistory 区头升格）]
+            # 改前卡间块换头后仍 role=user——**机器生成的消息冒充用户发言**，模型会
+            # 把别的卡的话当成人的指令。原版明令「不得裸 user 冒充用户发言」：区头
+            # 升格 role=system。内容仍带 card_msg 的固定头标记（〔来自卡X〕语义）。
+            "role": ("system" if actor.startswith("card:") else role),
             "content": (card_msg.render_for_context(m["content"])
                         if actor.startswith("card:")
                         else m["content"]),
@@ -864,7 +879,16 @@ def render_registered_regions(
         order = spec["order"]
         if isinstance(ctl, dict) and isinstance(ctl.get("order"), int):
             order = ctl["order"]
-        payload = spec["render"](ctx)
+        # [F12 · 2026-10-31 区级异常隔离（对齐 dsh projection-assembler:247-258）]
+        # 单区渲染炸了 ⇒ 记日志、跳过该区、**不中断整轮装配**——改前一个区抛异常
+        # 整个 render_registered_regions 陪葬，模型一个字都收不到。
+        try:
+            payload = spec["render"](ctx)
+        except Exception as exc:  # noqa: BLE001 单区失败不炸整轮
+            logger.error(
+                "[region] 区渲染异常（跳过该区、其余照常）key=%s order=%s name=%s: "
+                "%s: %s", spec["key"], order, spec["name"], type(exc).__name__, exc)
+            continue
         # user prompt 允许空文本（它仍是一个消息位）；其他空 payload 表示无来源。
         if not payload and spec.get("delivery") != "user":
             continue
@@ -910,6 +934,14 @@ def compose_model_context(
     rendered = render_registered_regions(
         request_ctx, profile=profile,
         deliveries={"system", "prior", "user", "once", "tail"})
+    # [F22 · 2026-10-31] 区装配体积打点：每区 key/order/bytes/entries 落 JSONL——
+    # 记忆区/历史区占多大、哪天开始膨胀，数字说话。打点失败不阻断（observe 内吞）。
+    try:
+        from ..infra import observe as _obs
+        _obs.log_regions(work_id=str(ctx.work_id or ""), card_id=str(ctx.card_id or ""),
+                         regions=rendered)
+    except Exception:  # noqa: BLE001 观测永不阻断装配
+        pass
     system_regions = [r for r in rendered if r["delivery"] == "system"]
     instruction = next((r["payload"] for r in system_regions if r["key"] == "instruction"), "")
     content_regions = [r for r in system_regions if r["key"] != "instruction"]
@@ -964,6 +996,11 @@ def render_card_duty_region(registry: dict[str, Any]) -> str:
     # root 作用域在前，其余按注册表声明序（root 是独立 scope，非 project_class）
     scopes = (["root"] if "root" in vocabs else []) + [k for k in vocabs if k != "root"]
     lines: list[str] = ["## 卡片职责"]
+    # [2026-10-31 修·职责区重复] 三套词表（root / rd_project / research_project）里
+    # function、rule、role、review 是**同一个 code 重复声明** ⇒ 原来逐词表平铺，
+    # 同一类型出现 2–3 行（实测评审席 system 里「职能卡」3 行、「规则卡」2 行、
+    # 「角色卡」2 行）。按 code 去重，保留首次出现的那份描述。
+    seen: set[str] = set()
     for scope in scopes:
         vocab = vocabs.get(scope)
         if not isinstance(vocab, dict):
@@ -974,6 +1011,10 @@ def render_card_duty_region(registry: dict[str, Any]) -> str:
             label = str(t.get("label") or "")
             code = str(t.get("code") or "")
             desc = str(t.get("description") or "")
+            if code and code in seen:
+                continue                      # 同一类型在别的词表里已渲染过
+            if code:
+                seen.add(code)
             lines.append(f"- {label}（{code}）：{desc}")
     if len(lines) == 1:  # 注册表里没有任何类型 → 空区
         return ""
@@ -1063,17 +1104,21 @@ def render_team_function_instruction_region(ctx: RegionCtx) -> str:
 #   90 讲「这类卡在系统里是什么」（类型级职责，来自注册表）；
 #   本区讲「**你这张卡**手上有什么、动手前该先想什么」（实例级能力，来自 perms）。
 # 空来源（读不到 perms）→ 只出纪律那一段，不编造能力。
+# [能力底座 2026-10-30] 键从"权限开关"换成"能力 code"——92 区要说的是
+# 「你手上有什么」，能力才是这个问题的单位；perms 已退役。
 _ABILITY_SWITCH_LINES: tuple[tuple[str, str], ...] = (
     ("create_child", "建自己的子卡"),
-    ("edit", "改自己的正文、写自己的需求文档"),
+    ("write_own_face", "改自己的正文、写自己的需求文档"),
     ("read_linked", "沿通信线读对方卡"),
-    ("link", "建通信线/解通信线"),
-    ("plan", "建计划并推进步骤"),
-    ("tools_file", "读写文件、跑命令"),
-    ("tools_web", "联网查证"),
+    ("link", "建通信线"),
+    ("unlink", "解通信线"),
+    ("link_rel", "记依赖/影响关系"),
+    ("read_files", "看文件"),
+    ("write_files", "写文件"),
+    ("run_code", "跑命令"),
+    ("web", "联网查证"),
     ("manuscript", "查本项目存档资料"),
-    ("invoke_tool", "调用工具卡"),
-    ("delete", "删卡"),
+    ("dispose_card", "删卡与归档"),
 )
 
 _RULE_TAIL = (
@@ -1097,20 +1142,22 @@ _NOT_SPLIT_HINT = (
 
 
 def render_card_ability_region(ctx: RegionCtx) -> str:
-    """92 区渲染（卡片能力）：把「这张卡手上有什么」按**它自己的 perms** 渲染。
+    """92 区渲染（卡片能力）：把「这张卡手上有什么」按**它自己挂的能力**渲染。
 
     三条硬规矩（改这个区时不要破坏）：
-    1. **来源是卡自己的 perms**（建卡时按 permissions.json 算一次写死在卡上），
+    1. **来源是卡自己的 abilities**（建卡时按模式清单 ∩ 卡型上限算好写在卡上），
        不是卡类型猜的、不是上级任务书里写的 ⇒ 上级传不传都不影响。
     2. 能力必须**照实**：没有 create_child 就明说没有（执行体不该被暗示能组织），
        有就明说可以、并明说「不必等上级替你想好怎么分」。
-    3. perms 读不到（旧卡/坏数据）→ 不编造能力，只出纪律段（fail-open 不阻断装配）。
+    3. 挂载读不到（旧卡/坏数据）→ 不编造能力，只出纪律段（fail-open 不阻断装配）。
     """
     meta = ctx.cur_meta or {}
     card_type = str(meta.get("card_type") or "")
     card_id = str(meta.get("card_id") or ctx.card_id or "")
-    perms = meta.get("perms")
-    has = set(perms) if isinstance(perms, list) else None
+    # [能力底座 2026-10-30] 来源改成**卡上挂的能力**（perms 已退役）。
+    # 读不到 ⇒ None ⇒ 只出纪律段（不编造能力，也不阻断装配）。
+    _ab = meta.get("abilities")
+    has = {str(x) for x in _ab} if isinstance(_ab, list) else None
 
     head = ["## 你的能力（系统按卡类型授予，与上级怎么写你的任务书无关）"]
     if card_type or card_id:
@@ -1141,8 +1188,12 @@ def render_card_ability_region(ctx: RegionCtx) -> str:
         _no_children = not (ctx.direct_child_status or [])
         if _has_child_perms and _no_children and bool(meta.get("auto_mode")):
             lines.append(_NOT_SPLIT_HINT)
-
-        else:
+        elif not _has_child_perms:
+            # [2026-10-31 修·能力区自相矛盾] 原来这里是裸 `else`：**有**建卡权、
+            # 但「已有子卡」或「非自动模式」时也掉进来 ⇒ 同一份「你的能力」里同时
+            # 出现「建自己的子卡：可以」与「没有这个能力」两条互相矛盾的行
+            # （实测 work_027/card_124 评审席 system prompt 里两条并列）。
+            # 判据改成只看**有没有这个能力**；有权限但这一轮不提示拆分的，什么都不说。
             why = ("你是执行体：一次一件事、做完即完工、不长树"
                    if card_type == "coder" else "本卡类型不长树")
             lines.append(
@@ -1158,7 +1209,7 @@ def render_card_ability_region(ctx: RegionCtx) -> str:
         if missing:
             lines.append(f"- 没有：{'、'.join(missing)}。")
     else:
-        lines.append("- （系统未读到本卡的权限表，能力以系统提示为准。）")
+        lines.append("- （系统未读到本卡的能力挂载，能力以系统提示为准。）")
 
     lines.append(_DISCIPLINE)
     # [通信收拢 2026-10-28 · 用户裁定「接口只有两个，且只能沿连线」]
@@ -1220,21 +1271,93 @@ def render_type_thinking_region(card_type: str, type_texts: dict[str, dict[str, 
     return "## 卡片思维\n" + text
 
 
-def render_card_list_region(cards: list[dict[str, Any]], work_card_id: str) -> str:
-    """100 区渲染：每卡一行（id · 标题 · 父卡）。行文案与改造前逐字一致。
+def render_card_list_region(
+    cards: list[dict[str, Any]],
+    work_card_id: str,
+    current_id: str = "",
+    related: list[dict[str, Any]] | None = None,
+) -> str:
+    """100 区渲染：**只列与当前卡有关系的卡**——父子线（祖先链＋子树）∪ 关系线对方。
 
-    [清理 2026-10-24] 职能卡/角色卡**不进清单**——它们不是协作对象(无寻址权,
-    93/145 区才是它们的家),以「（根）」行混进每张卡的上下文是老污染。
-    旧数据(自由组建时代的 fn_*)与新目录职能一并不出。
+    [关系治理 2026-10-30 · 用户令「没关系的卡不应出现在清单里，这是污染」]
+    改前列的是**全树每卡一行**：模型看得见一张卡、却和它毫无关系，只会在无关上下文
+    上浪费注意力，还容易误以为可以操作它。可见即有关系。
+
+    [2026-10-30 修正] 关系线对方**不进这个区**——那是 250 区的事。本区只列
+    父子线上的卡（祖先＋子树）；线上的卡（依赖/影响）由 250 区带方向与内容列出。
+
+    - **父子线**：我的祖先链 ＋ 我的子树（双向）
+    - **关系线**：与我之间有依赖/影响关系的卡（双向，内容由装配层取好传进来）
+    - **通信线不进清单**：它只管发消息，不代表这棵树上有它
+    - 职能卡 / 角色卡仍然排除（不是协作对象，无寻址权）
+
+    ``related`` 每项：``{"card_id","dir","kind","detail"}``，dir ∈ ``out``（我指向它）
+    / ``in``（它指向我）。``current_id`` 缺省 ⇒ 退回旧行为（全树），不静默清空。
+
+    纯函数：不做 IO，父子关系从 ``cards`` 的 parent 字段现算。
     """
+    parent: dict[str, str] = {}
+    children: dict[str, list[str]] = {}
+    for c in cards or []:
+        cid = str(c.get("card_id") or "")
+        if not cid:
+            continue
+        pid = str(c.get("parent") or "")
+        parent[cid] = pid
+        if pid:
+            children.setdefault(pid, []).append(cid)
+
+    rel_lines: dict[str, list[str]] = {}
+    for r in related or []:
+        if not isinstance(r, dict):
+            continue
+        rid = str(r.get("card_id") or "")
+        if not rid:
+            continue
+        kind = str(r.get("kind") or "")
+        detail = str(r.get("detail") or "").strip()
+        if str(r.get("dir") or "") == "out":
+            head = "我依赖它" if kind == "依赖" else ("我影响它" if kind == "影响" else f"我{kind}它")
+        else:
+            head = "它依赖我" if kind == "依赖" else ("它影响我" if kind == "影响" else f"它{kind}我")
+        rel_lines.setdefault(rid, []).append(f"{head}：{detail}" if detail else head)
+
+    if current_id and current_id in parent:
+        visible: set[str] = {current_id}
+        cur = current_id                       # 祖先链
+        while parent.get(cur):
+            cur = parent[cur]
+            if cur in visible:
+                break
+            visible.add(cur)
+        stack = list(children.get(current_id, []))   # 子树
+        while stack:
+            x = stack.pop()
+            if x in visible:
+                continue
+            visible.add(x)
+            stack.extend(children.get(x, []))
+        # [2026-10-30 修正] **不把关系线对方并进来**：100 区列的是"树上的卡"
+        # （父子线：祖先＋子树），线上的卡由 250 区列。两种关系不同，混在一处
+        # 会让同一张卡在两区各出现一次，且看不出它是"树上的"还是"线上的"。
+    else:
+        visible = set(parent)                  # 旧行为：全树
+
     lines: list[str] = ["## 卡片清单"]
-    for c in cards:
+    for c in cards or []:
+        cid = str(c.get("card_id") or "")
+        if cid not in visible:
+            continue
         if str(c.get("card_type") or "") in ("function", "role"):
             continue
-        if c["card_id"] == work_card_id or not c["parent"]:
-            lines.append(f"{c['card_id']} · {c['title']}（根）")
+        if cid == work_card_id or not c.get("parent"):
+            head = f"{cid} · {c.get('title')}（根）"
         else:
-            lines.append(f"{c['card_id']} · {c['title']}（父：{c['parent']}）")
+            head = f"{cid} · {c.get('title')}（父：{c.get('parent')}）"
+        rels = rel_lines.get(cid)
+        if rels:
+            head += "｜" + "；".join(rels)
+        lines.append(head)
     return "\n".join(lines)
 
 
@@ -1355,11 +1478,19 @@ def render_current_card_region(ctx: "RegionCtx") -> str:
         _label = name
         _draft = ""
         if key == "requirements":
-            _state = str((ctx.cur or {}).get("requirements_state") or "")
+            # [2026-10-31 修] 状态与草稿必须读 **cur_meta**：`ctx.cur` 是卡片索引行，
+            # 只有 6 个键（card_id/title/parent/relations/created_at/card_type），
+            # 根本没有 requirements_state / requirements_draft ⇒ 改前本区
+            #   ① 标签恒判「尚无正稿」（连 requirements_state=approved 的卡也这么说）；
+            #   ② 卡自己的草稿**永远不渲染**——而本区说明还写着「需求文档的号：
+            #      有草稿时按草稿数」，等于指着一份不在场的东西给行号。
+            # cur_meta 由 `card_store._meta_of` 取，两列都在（实测 card_074 草稿 60,028 字）。
+            _src = {**(ctx.cur or {}), **(ctx.cur_meta or {})}
+            _state = str(_src.get("requirements_state") or "")
             _label = name + ("（正稿）" if _state == "approved"
                              else "（尚无正稿）" if _state in ("", "draft")
                              else "（评审中）")
-            _draft = str((ctx.cur or {}).get("requirements_draft") or "").strip()
+            _draft = str(_src.get("requirements_draft") or "").strip()
             if _is_placeholder(_draft):
                 _draft = ""
         lines += ["", f"### {_label}", _BLOCK_DEF[key]]
@@ -1559,20 +1690,19 @@ def render_card_region_guide(card_type: str, project_class: str) -> str:
     if not card_type:
         return ""
     # [预设职能 P-B 2026-10-24] 职能卡不是三块卡:它的「面」是台账动态拼装
-    # (职责书/观点簿/警报簿/指令簿,见 function_room.summary),写通道是
-    # record_verdict/raise_alarm/issue_directive 这些台账件,不是 update_status/
-    # append_requirements 那套。给职能卡讲三块语义是教错课本。
+    # (职责书/管辖/指令簿,见 function_room.summary),写通道是 direct/write_ledger
+    # 这些台账件,不是 update_status/append_requirements 那套。给职能卡讲三块
+    # 语义是教错课本。
+    # [2026-10-31 用户令「判断、警报我明确不需要，拆掉」] 观点簿/警报簿两节
+    # 已随 record_verdict / raise_alarm 一起删除,本节不再提。
     if card_type in ("function", "role"):
         return (
             "〔卡片区域说明〕你是职能卡,不是作业卡——你的「卡面」不是三块正文,"
             "而是由你的台账动态拼成:\n\n"
             "职责书——你是谁、对什么负责、什么时候开口。建卡时定,"
             "经版本化修订(总裁/用户裁定才动)。\n"
-            "观点簿——你对每份汇报的判断记录(record_verdict 落账;"
-            "沉默也必须落账,沉默不落账等于没有判断)。\n"
-            "警报簿——需要用户/总裁裁决的事(raise_alarm,必须带问题与默认动作)。\n"
             "指令簿——你下达的指令及核销(仅总裁条目有指令权)。\n\n"
-            "你不干活、不建卡、不发普通消息;你的影响力经观点进入汇聚,"
+            "你不干活、不建卡、不发普通消息;你的影响力经指令与台账进入协作,"
             "由总裁执笔落面。"
         )
     is_root = (card_type == "project")
@@ -1682,21 +1812,69 @@ def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
     return "## 直接子卡（使命·现状）\n" + "\n\n".join(sections)
 
 
+#: [F11 · 展开说明] 区头下挂——教模型沿锚点展开（依赖 memory_expand 工具，F19）
+_MEMORY_EXPAND_HOWTO = (
+    "- 要看某条结论的**细节与原文**：调 `memory_expand` 工具，`seq` 取锚点行里的"
+    " seq（如 @锚点{card_001,12} → seq=12）；它会给出该条的描述层与逐字原文。"
+)
+
+
+def _mem_dt_prefix(row: dict[str, Any]) -> str:
+    """首栏日期前缀（原版 （MM-DD HH:mm） 形态）：timeline_from 优先、occurred_at 兜底。"""
+    ts = str(row.get("timeline_from") or "") or str(row.get("occurred_at") or "")
+    if not ts:
+        return ""
+    try:
+        # ISO 串取「MM-DD HH:mm」；解析不动就原样截 16 位
+        dt = datetime.fromisoformat(ts)
+        return f"（{dt:%m-%d %H:%M}）"
+    except ValueError:
+        return f"（{ts[:16].replace('T', ' ')}）"
+
+
+def _render_memory_l1(row: dict[str, Any], *, with_columns: bool) -> list[str]:
+    """一条 L1 的渲染行（projectMyMemory 同位）：日期前缀＋gist＋逐栏＋锚点＋文档行。"""
+    lines = [f"- {_mem_dt_prefix(row)}{str(row.get('gist') or '')}".rstrip()]
+    if with_columns:
+        for label, key in (("起因", "start_text"), ("经过", "process"),
+                           ("结果", "result"), ("教训", "lesson")):
+            v = str(row.get(key) or "").strip()
+            if v:
+                lines.append(f"  {label}：{v}")
+    # 锚点行（原版 @锚点{session,seq}——memory_expand 的寻址依据）
+    sid = str(row.get("card_id") or "")
+    lines.append(f"  @锚点{{{sid},{int(row.get('anchor_seq') or 0)}}}".rstrip())
+    # 文档行（原版 `文档：path @seq N`——F9 机械归属的 docPaths/docRefs）
+    docs: list[str] = []
+    try:
+        dp = json.loads(row.get("doc_paths") or "[]")
+    except (ValueError, TypeError):
+        dp = []
+    try:
+        dr = json.loads(row.get("doc_refs") or "[]")
+    except (ValueError, TypeError):
+        dr = []
+    for p in (dp or []):
+        first_seq = next((int(r.get("seq") or 0) for r in (dr or [])
+                          if isinstance(r, dict) and str(r.get("path") or "") == p), 0)
+        docs.append(f"  文档：{p} @seq {first_seq}" if first_seq else f"  文档：{p}")
+    lines.extend(docs)
+    return lines
+
+
 def render_memory_region(entries: list[dict[str, Any]]) -> str:
-    """200 区渲染：凝练记忆按「批」分组；批内按批内序、批间按批次号升序。
+    """200 区渲染（F11 · 2026-10-31 对齐 dsh `projectMyMemory`）。
 
-    [记忆编号体系 2026-10-29] 条目来自 `memory_nodes` 表（每行一个节点），
-    自带编号 `{项目}/{卡}/B{批次}/{批内序}`（L2 细节节点＝父编号 + `/d`）与
-    `occurred_at`。批次号按时间升序发 ⇒ **编号序 == 时间序**，
-    「最近一批」＝批次号最大者，不需要另查任何状态。
+    **顶层判据 ＝ level==1 ∧ role==gist**（与归拢降层 F2 配套；★ 不过滤 sunk——
+    F15 口径：sunk 只影响凝练全景的体积，不淘汰上下文基线）。L2 靠 upper 挂父。
 
-    展示口径（用户 2026-10-29 裁定）：
-    - **远期**：只出 L1 结论层；
-    - **最近一批**：L1 ＋ 其 L2 细节层（`/d` 子节点）。
-    批次 0 ＝ 时间未知（无备份可还原），一律按远期处理、不出 L2——不猜。
+    逐项对照原版 provider.ts：起因/经过/结果/教训逐栏 ✓ 首栏日期前缀 ✓
+    锚点行 @锚点{session,seq} ✓ 文档行 文档：path @seq N ✓ 展开说明 ✓
+    孤儿 L2 挂段末照出 ✓ L2 出 gist+process 全文 ✓ 近期/远期分段 ✓
 
-    不截断、不设预算（RD-05 无长度限制）。空条目 → 空串。
-    entries 由调用方完成 IO 后传入（本模块纯函数不做 IO——模块头 L17 硬约束）。
+    分段口径（沿用 2026-10-29 裁定）：**远期**只出 L1；**最近一批** L1＋L2 全文。
+    批次 0 ＝ 时间未知，按远期处理。不截断、不设预算（RD-05）。
+    空条目 → 空串。entries 由调用方完成 IO 后传入（纯函数不做 IO）。
     """
     if not entries:
         return ""
@@ -1704,69 +1882,70 @@ def render_memory_region(entries: list[dict[str, Any]]) -> str:
     if not rows:
         return ""
 
-    groups: dict[int, list[dict[str, Any]]] = {}
-    for e in rows:
-        try:
-            b = int(e.get("batch") or 0)
-        except (TypeError, ValueError):
-            b = 0
-        groups.setdefault(b, []).append(e)
-    last_batch = max(groups)
+    tops = [r for r in rows
+            if int(r.get("level") or 1) <= 1 and str(r.get("role") or "gist") == "gist"]
+    if not tops and not any(int(r.get("level") or 1) > 1 for r in rows):
+        return ""
 
-    first = rows[0]
-    prefix = (f"{first.get('work_id')}/{first.get('card_id')}"
-              if first.get("work_id") and first.get("card_id") else "")
+    # L2 按 upper_id 挂父；挂不上父的＝孤儿（段末照出——数据在，不静默丢）
+    top_ids = {str(r.get("id") or "") for r in tops}
+    children_by_parent: dict[str, list[dict[str, Any]]] = {}
+    orphans: list[dict[str, Any]] = []
+    for r in rows:
+        if int(r.get("level") or 1) <= 1:
+            continue
+        up = str(r.get("upper_id") or "")
+        if up and up in top_ids:
+            children_by_parent.setdefault(up, []).append(r)
+        else:
+            orphans.append(r)
 
     lines = ["## 记忆（凝练归拢）",
-             "- 编号＝{项目}/{卡}/B{批次}/{批内序}；同批共享一个凝练时刻，批次越大越新。",
-             "- 平时只列结论层；最近一批另附细节层（编号后缀 /d）。"]
-    if prefix:
-        lines.append(f"- 本卡记忆前缀：{prefix}")
+             "- 结论层给「谁-因-事-果」；细节层只在最近一批展开。",
+             _MEMORY_EXPAND_HOWTO]
 
-    def _short(node_id: str) -> str:
-        """`work/card/B0001/0002` → `B0001/0002`（组头已给前缀，条目内不重复）。"""
-        return "B" + node_id.split("/B", 1)[1] if "/B" in node_id else node_id
-
-    for b in sorted(groups):
-        batch_rows = groups[b]
-        l1 = [r for r in batch_rows if int(r.get("level") or 1) <= 1]
-        l1.sort(key=lambda r: int(r.get("ordinal") or 0))
-        l2_by_parent: dict[str, list[dict[str, Any]]] = {}
-        for r in batch_rows:
-            if int(r.get("level") or 1) > 1:
-                l2_by_parent.setdefault(str(r.get("upper_id") or ""), []).append(r)
-
-        t = next((str(r.get("occurred_at") or "") for r in batch_rows
-                  if r.get("occurred_at")), "")
-        # 只有最近一批附细节层（用户 2026-10-29 裁定）；批次 0＝时间未知，不认最近。
-        show_l2 = (b == last_batch and b > 0)
-        head = f"### 批{b:04d} · " + (t[:16].replace("T", " ") if t else "时间未知")
-        head += f" · {len(l1)} 条"
-        if show_l2:
-            head += "（最近一批，附细节层）"
-        lines.append("")
-        lines.append(head)
-        for r in l1:
-            rid = str(r.get("id") or "")
-            gist = str(r.get("gist") or "")
-            start = str(r.get("start_text") or "").strip()
-            proc = str(r.get("process") or "").strip()
-            lesson = str(r.get("lesson") or "").strip()
-            lines.append(f"- {_short(rid)} {gist}".rstrip())
-            # [L1 三栏 2026-10-29] 原实现只出 `gist`（完成栏）——开始（因）与经过
-            # （过程）虽已由模型产出、也落在库里，却没进上下文 ⇒ 因果链只剩「果」，
-            # 等于把 L1 的定位（因果节点）废掉。三栏都出才是 L1。
-            if start:
-                lines.append(f"  开始：{start}")
+    def _emit_l1(r: dict[str, Any], *, with_children: bool) -> None:
+        lines.extend(_render_memory_l1(r, with_columns=True))
+        if not with_children:
+            return
+        for c in children_by_parent.get(str(r.get("id") or ""), []):
+            gist = str(c.get("gist") or "")
+            proc = str(c.get("process") or "").strip()
+            lines.append(f"  ◇ {gist}".rstrip())
             if proc:
-                lines.append(f"  经过：{proc}")
-            if lesson:
-                lines.append(f"  教训：{lesson}")
-            if not show_l2:
-                continue
-            for c in l2_by_parent.get(rid, []):
-                cid = str(c.get("id") or "")
-                lines.append(f"  └ {_short(cid)} {str(c.get('gist') or '')}".rstrip())
+                lines.append(f"    {proc}")
+
+    # 近期/远期分段：批次号升序＝时间序；最后一批＝近期（L1＋L2 全文）
+    def _batch(r: dict[str, Any]) -> int:
+        try:
+            return int(r.get("batch") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    batches = sorted({_batch(r) for r in tops})
+    last_batch = batches[-1] if batches else 0
+    recent = [r for r in tops if _batch(r) == last_batch and last_batch > 0]
+    older = [r for r in tops if not (_batch(r) == last_batch and last_batch > 0)]
+
+    if older:
+        lines.append("")
+        lines.append("### 远期")
+        for r in sorted(older, key=lambda x: (_batch(x), int(x.get("ordinal") or 0))):
+            _emit_l1(r, with_children=False)
+    if recent:
+        lines.append("")
+        lines.append(f"### 近期（批{last_batch:04d}，最近一批，附细节层）")
+        for r in sorted(recent, key=lambda x: int(x.get("ordinal") or 0)):
+            _emit_l1(r, with_children=True)
+    if orphans:
+        lines.append("")
+        lines.append("### 未挂父的细节（父结论不在链上，照出备查）")
+        for r in sorted(orphans, key=lambda x: int(x.get("ordinal") or 0)):
+            gist = str(r.get("gist") or "")
+            proc = str(r.get("process") or "").strip()
+            lines.append(f"  ◇ {gist}".rstrip())
+            if proc:
+                lines.append(f"    {proc}")
     return "\n".join(lines)
 
 

@@ -27,8 +27,19 @@ def _registry_types(registry: dict) -> list[dict]:
     vocabs = registry.get("l1_vocabularies") or {}
     scopes = (["root"] if "root" in vocabs else []) + [k for k in vocabs if k != "root"]
     out: list[dict] = []
+    # [2026-10-31 对齐渲染器] 三套词表里 function / rule / role / review 是**同一个
+    # code 重复声明**的。渲染器原来逐词表平铺 ⇒ 同一类型在一份 system 里出现 2–3 行
+    # （实测评审席上下文里「职能卡」3 行、「规则卡」2 行、「角色卡」2 行），
+    # 现已按 code 去重（保留首次出现的那份描述）。本函数是断言基准，必须同口径，
+    # 否则就是把"重复渲染"这个缺陷钉成规格。
+    seen: set[str] = set()
     for s in scopes:
         for t in ((vocabs.get(s) or {}).get("types") or []):
+            code = str((t or {}).get("code") or "")
+            if code and code in seen:
+                continue
+            if code:
+                seen.add(code)
             out.append(t)
     return out
 

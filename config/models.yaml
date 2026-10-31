@@ -342,7 +342,7 @@ bindings:
   execute: glm-53-flash
   think: glm-53-flash
   synthesize: glm-53-flash
-  condense: glm-53-flash
+  condense: deepseek-v41-flash
   compress: glm-53-flash
   draft: glm-53
   viewpoint:
