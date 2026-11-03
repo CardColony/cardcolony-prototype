@@ -7,7 +7,8 @@
 1. 笔记只动 `shadows.note` 一列，不碰四节
 2. `edit_note` 是精准编辑（找不到拒／多处拒／归一化命中）
 3. 笔记常驻 150 区（【笔记】节）
-4. **别的卡读不到**：`read_linked(part=影子)` 剥掉笔记；本卡 `read_shadow` 仍拿得到
+4. **别的卡读不到**：`read_linked(part=影子)` 剥掉笔记；`read_shadow` 跨卡同样剥
+   （[2026-11-01 泄漏修复]）；本卡 `read_shadow` 仍拿得到
 """
 
 from __future__ import annotations
@@ -157,3 +158,34 @@ async def test_own_card_still_reads_own_note(sandbox):
     await shadow_store.write_note(wid, bid, "只有我能看")
     raw = await shadow_store.read_shadow_raw(wid, bid)
     assert "只有我能看" in raw and "## 笔记" in raw
+
+
+async def test_other_card_cannot_read_note_via_read_shadow(sandbox):
+    """[笔记泄漏修复 2026-11-01] `read_shadow` 跨卡路径同样剥笔记：
+
+    父卡沿父子线读子卡影子拿不到「## 笔记」节（修前 include_private 恒 True，
+    与 read_via 口径不一、父卡能读到子卡笔记）；本卡自读仍是全文。
+    """
+    w = await work_store.create_work("笔记测试")
+    wid = str(w["work_id"])
+    p = await card_store.create_card(wid, "父卡P", "用户直接创建",
+                                     card_type="sub_project")
+    pid = str(p["meta"]["card_id"])
+    c = await card_store.create_card(wid, "子卡C", "用户直接创建",
+                                     card_type="sub_project", parent=pid)
+    cid = str(c["meta"]["card_id"])
+    await shadow_store.update_shadow(
+        wid, cid, "## 进度\n\n做到第二步\n\n## 待协作事项\n\n无\n\n"
+                  "## 产物清单\n\n无\n\n## 迭代历史\n\n无\n")
+    await shadow_store.write_note(wid, cid, "C 的私密笔记：父卡也不给")
+
+    cards = card_tools._collect_card_meta(wid)
+    out = await card_tools._h_read_shadow(wid, pid, {"card_id": cid}, cards)
+    assert "error" not in out, out
+    assert "C 的私密笔记" not in out["content"], "笔记被父卡读到了"
+    assert "## 笔记" not in out["content"], "笔记节被父卡看到了"
+    assert "做到第二步" in out["content"], "非私密节应该照常可读"
+
+    own = await card_tools._h_read_shadow(wid, cid, {"card_id": cid}, cards)
+    assert "error" not in own, own
+    assert "C 的私密笔记" in own["content"], "本卡自读应含笔记"

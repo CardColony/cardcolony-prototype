@@ -156,23 +156,31 @@ def test_compact_shows_scrolling_event_list():
 
 
 def test_latest_line_covers_all_event_kinds():
-    """「所有事件」：调模型/调工具/工具返回/开始发言/改稿/收口都要有文案。"""
+    """「所有事件」：调模型/调工具/工具返回/开始发言/派活/一步收口/全员通过
+    /批次收口都要有文案。[venue] 死事件 review_round_start/review_revise 已摘。"""
     js = _read("static/workspace.js")
-    for t in ("review_round_start", "review_speaking", "tool_call", "tool_result",
-              "review_spoke", "review_revise", "review_all_passed",
-              "review_batch_closed", "error"):
+    for t in ("review_speaking", "tool_call", "tool_result",
+              "review_spoke", "review_dispatch", "review_round_done",
+              "review_all_passed", "review_batch_closed", "error"):
         assert t in js, t
     assert "default:" in js and "rvEsc(t)" in js, "没单独排版的事件照示类型名"
 
 
 def test_backend_emits_tool_roundtrip_in_review():
-    runner = _read("src/api/review_runner.py")
-    assert "_emit_tool_call" in runner and "_emit_tool_result" in runner
-    assert runner.count("_emit_tool_call(") >= 4, "speak/revise 两处工具分支都要发"
+    """席位回合＝普通回合 ⇒ tool_call/tool_result 由 message_runner 统一发，
+    review_runner 只发场自己的事（speaking/spoke/dispatch/round_done）。"""
+    runner = _read("src/api/message_runner.py")
+    assert '"tool_call"' in runner and '"tool_result"' in runner, \
+        "工具往返事件是普通回合的既有产出"
+    review = _read("src/api/review_runner.py")
+    assert '"review_speaking"' in review and '"review_spoke"' in review
+    assert '"review_round_done"' in review
+    assert "review_dispatch" in review, "派活给正卡要发事件（页面看得见来路）"
     routes = _read("src/api/routes.py")
     assert '"target_title": target_title' in routes
     catalog = _read("config/event_catalog.json")
-    assert '"review_speaking"' in catalog
+    assert '"review_speaking"' in catalog and '"review_dispatch"' in catalog
+    assert '"review_deadlock"' not in catalog, "僵局事件已摘（用户令：不设机械检测）"
 
 
 # ---------------------------------------------------------------- 4. 打开先补最近一条

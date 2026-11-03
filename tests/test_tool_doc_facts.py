@@ -35,6 +35,7 @@ PENDING: frozenset[str] = frozenset({
     "decide",
     "delete_card",
     "delete_file",
+    "design_policy",
     "draft_rule_edit",
     "edit_card",
     "edit_file",
@@ -43,15 +44,19 @@ PENDING: frozenset[str] = frozenset({
     "get_goal",
     "glob_files",
     "link_cards",
+    "link_rel",
     "list_files",
     "list_functions",
     "list_manuscript",
+    "memory_expand",
     "move_file",
     "open_review",
+    "promote_draft",
     "propose_status",
     "python",
     
     "read_archive",
+    "read_card",
     "read_file",
     "read_linked",
     "read_manuscript",
@@ -62,6 +67,7 @@ PENDING: frozenset[str] = frozenset({
     "reparent_card",
     "report_done",
     "report_to_user",
+    "reject",
     "resume_child",
     "revoke_approve",
     "search_files",
@@ -79,7 +85,6 @@ PENDING: frozenset[str] = frozenset({
     "update_goal",
     "web_search",
     "write_file",
-    "write_ledger",
 })
 
 

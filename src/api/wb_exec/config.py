@@ -94,13 +94,69 @@ class Executor:
     oc_base_url: str = ""
     #: 上游 key 的环境变量名（**不写明文**）。
     oc_api_key_env: str = ""
+    #: ★ **多个 key 的环境变量名**（2026-11-03 加）。
+    #: ⇒ **一个 key 一个工位** ⇒ 免费额度 ×N（每个 worker 用自己的 key）。
+    oc_api_key_envs: tuple[str, ...] = ()
     #: **自定义 provider 的 id**（写进 opencode.json；用它调模型）。
     oc_provider_id: str = "wb-direct"
+    #: ★ **用 opencode 的「内置 provider」**（2026-11-01 加）。
+    #: ⇒ **不写**自定义 provider 配置（写了就会把内置的同名 provider 顶掉）
+    #: ⇒ 直接用 opencode 自带的 provider id（如 ``opencode``）＋
+    #:    serve 进程环境里的 key（如 ``OPENCODE_API_KEY``）。
+    #: **为什么需要它**：Zen 的**免费档**（``deepseek-v4.1-flash-free`` 等）
+    #: **只允许从 opencode 内部调** —— 裸 HTTP 直连按量端点会被拒
+    #: （实测 429「Free usage limit reached. Free models work in OpenCode」）
+    #: ⇒ 走自定义 provider（直连）**拿不到免费档** ⇒ 只能走内置 provider。
+    oc_use_builtin_provider: bool = False
     #: 可用模型清单（写进 opencode.json 的 models）。
     oc_models: tuple[str, ...] = ()
     #: **必须带浏览器 UA**（2026-10-25 实测：opencode 自己的 fetch 被 Cloudflare
     #: 拦 ⇒ 403「error code: 1010」⇒ 连已付费订阅内的模型也一起挂）。
     oc_user_agent: str = ""
+    # ---------------------------------------------------------- Devin（2026-11-03）
+    #: **Devin CLI 的可执行文件**（``%LOCALAPPDATA%\\devin\\cli\\bin\\devin.exe``）。
+    devin_cli_exe: str = ""
+    #: **模型**（模糊短名：``swe-2``/``swe``/``opus``/``sonnet``/``codex``/``gemini``）。
+    #: ★ **SWE-2 在用户套餐里是免费的**（用户 2026-11-03）⇒ 默认用它。
+    devin_model: str = "swe-2"
+    #: **权限模式**：``bypass``（=dangerous/yolo）——不给的话 agent 会停下来等审批 ⇒ 卡死。
+    devin_permission_mode: str = "bypass"
+    #: **走云端会话**（用账号额度；False = 本地 agent 跑）。
+    devin_cloud: bool = True
+    #: **同时跑几个 Devin 会话**（远端 ⇒ 上限取决于 org 额度池）。
+    devin_max_concurrent: int = 2
+    #: 单轮任务的墙钟上限（秒）——**兜底**（正常由 CLI 自己收口）。
+    devin_timeout_sec: float = 3600.0
+    #: Devin 的组织 ID 的环境变量名（设置 → Devin API 页面顶部）。
+    devin_org_id_env: str = ""
+    #: Devin 的 **服务用户 API key** 的环境变量名（``cog_`` 开头）。
+    #: ★ **不是** webapp 会话令牌（``apk_user_…``）——那个打 /v3 全 403。
+    devin_api_key_env: str = ""
+    #: Devin API 基址（走 CLI 时用不上，留着做诊断）。
+    devin_base_url: str = "https://api.devin.ai/v3"
+    # -------------------------------------------------- Command Code（第五路）
+    #: **Command Code 的入口脚本**（npm 全局装的 ``dist/index.mjs``）。
+    #: 填了 ⇒ 这个执行体走 command-code（2026-11-04 加）。
+    cc_cli_entry: str = ""
+    #: **node 可执行文件**（默认 ``node``）。
+    cc_node_exe: str = "node"
+    #: **key 的环境变量名**（``COMMAND_CODE_API_KEY``；**只写名字，不写明文**）。
+    cc_api_key_env: str = "COMMAND_CODE_API_KEY"
+    #: **可用模型**（候选表里指定具体档位；这里是兜底默认）。
+    cc_models: tuple[str, ...] = ()
+    #: **同时跑几个**（一个进程 = 一个槽）。
+    cc_max_concurrent: int = 2
+    #: **单轮墙钟上限**（秒）。
+    cc_timeout_sec: float = 3600.0
+    #: **一轮最多几个 turn**（agent 自己停；超了 CLI 会 exit 8）。
+    cc_max_turns: int = 8
+    # ------------------------------------------------------------ 会话清理
+    #: ★ **用完在"这个客户端"里清掉我们自己那条会话**（2026-11-04 用户令：
+    #:   「各自做完的任务，在各自客户端内做一个清理机制」）。
+    #: ★★ **红线**：「千万别删除对话」「千万别删错对话」
+    #:   ⇒ **默认关**；只有我们自己起的 CLI 执行体（wb-devin / wb-oc）显式开；
+    #:   **桌面端会话库（用户的对话）永远不碰**（见 cleanup.py 的六条纪律）。
+    cleanup_after_run: bool = False
 
     def node_path(self) -> str:
         """node 可执行文件：配置显式给 > 该版本自带的 binaries > 系统 node。"""
@@ -119,11 +175,21 @@ class Executor:
 
 @dataclass(frozen=True)
 class Candidate:
-    """配比表的一行：(执行器, 模型, 权重)。"""
+    """候选表的一行：(执行器, 模型, 权重, 优先级)。
+
+    ★ **2026-11-04 用户令：不再是"配比"，改成"优先级瀑布"**——
+    原话：「先全部排 devin，你得测它并发，它排满了或额度用完了，就落 opencode，
+    opencode 不行，再落 workbuddy」。
+    ⇒ **``priority`` 越小越优先**；表里没写 ``priority`` 时**按行序**（0,1,2…），
+    也就是**表的第一行就是最高优先级**。
+    ⇒ ``weight`` 保留：老的"平滑加权轮询"模式仍可用（``Picker``），
+      但**优先级模式下不再用它分流**（它只用来标记"备用端点"的老语义）。
+    """
 
     executor: str
     model: str
     weight: int
+    priority: int = 0
 
 
 @dataclass(frozen=True)
@@ -161,6 +227,18 @@ class Watchdog:
     """
 
     connect_timeout_sec: float = 30.0
+    #: **普通 RPC 的超时**（session/new、session/load、set_config_option 这些快操作）。
+    #: ★ **prompt 那条长任务不再有读超时**（2026-11-03 改）⇒ 判死活只靠
+    #: **状态与连接事件**（agentPhase / 在途工具 / 吐字 / SSE 结束 / httpx 异常）。
+    #: **为什么**：ACP 的 ``session/prompt`` 响应本身就是 **SSE 流**，httpx 的
+    #: read timeout 判的是「**两帧之间**多久没数据」——而 agent 跑一个大 bash 时
+    #: **本来就不发帧**（连 keepalive 都没有）⇒ 旧的 600s 超时把**正在干活的长任务**
+    #: 误判成「连接断了」⇒ 续跑（重发整段 prompt）⇒ 又超时 ⇒ 最多 max_resume 次
+    #: ⇒ **30 分钟没动静**（观感＝卡死）。实测（work_027 全量轮次）：wb-cn/hy3
+    #: 总耗时**中位 373.8s、最大 3351s**、wb-intl/hy3 中位 901.4s ⇒ hy3 的活儿
+    #: 天然超过 600s（换 hy3 之前主流 deepseek、中位 429s ⇒ 触发率低
+    #: ⇒ 换完立刻「卡死变多」）。⇒ **process 死了连接一定断** ⇒ httpx 抛异常
+    #: ⇒ 那才是真死。
     read_timeout_sec: float = 600.0
     max_resume: int = 3
     #: 一个网关**忙**时的等待上限（秒）——**按 busy 状态排队等**，
@@ -193,6 +271,16 @@ class WbExecConfig:
     candidates: tuple[Candidate, ...] = ()
     fallback_models: tuple[str, ...] = ("hy3",)
     prefer_same_executor: bool = True
+    #: ★★ **哪些卡型走这套路由**（2026-11-04 用户令：「验收卡、pm卡，本质上应该和
+    #: coder卡用一套路由机制，而不是分开的」）。
+    #: ⇒ **白名单进配置**（``wb_exec.json`` 的 ``delegable_card_types``）⇒
+    #:   后端判定、接口返回、**前端渲染门控**共用**同一份** ⇒ 不再各写一套卡型。
+    #: 默认 = coder（编程卡）＋ qa_card（验收卡）＋ pm_card（执笔卡）。
+    delegable_card_types: tuple[str, ...] = ("coder", "qa_card", "pm_card")
+    #: **备用端点**（候选表里 ``weight == 0`` 的那些）——
+    #: ★ 2026-11-03 用户令：「hy3 free 额度用完 ⇒ 全部换收费的两端 glm-5.3-flash」。
+    #: ⇒ 语义：**平时不吃流量**（权重 0）；等原候选的额度用完时，
+    #:   **份额转移**给它（`picker.set_weight`）⇒ 后续所有卡自动走它。
     guards: Guards = field(default_factory=Guards)
     watchdog: Watchdog = field(default_factory=Watchdog)
     on_unavailable: str = "fallback_system"
@@ -288,9 +376,35 @@ def _parse(raw: dict[str, Any]) -> WbExecConfig:
             oc_pool_size=max(0, int(e.get("oc_pool_size") or 0)),
             oc_base_url=str(e.get("oc_base_url") or ""),
             oc_api_key_env=str(e.get("oc_api_key_env") or ""),
+            oc_api_key_envs=tuple(
+                str(x) for x in (e.get("oc_api_key_envs") or ()) if str(x)),
             oc_provider_id=str(e.get("oc_provider_id") or "wb-direct"),
+            oc_use_builtin_provider=bool(e.get("oc_use_builtin_provider") or False),
             oc_models=tuple(str(m) for m in (e.get("oc_models") or ()) if str(m)),
             oc_user_agent=str(e.get("oc_user_agent") or ""),
+            # -------------------------------------------------------- Devin
+            devin_cli_exe=str(e.get("devin_cli_exe") or ""),
+            devin_model=str(e.get("devin_model") or "swe-2"),
+            devin_permission_mode=str(e.get("devin_permission_mode")
+                                     or "bypass"),
+            devin_cloud=bool(e.get("devin_cloud", True)),
+            devin_max_concurrent=max(0, int(e.get("devin_max_concurrent") or 0)),
+            devin_timeout_sec=float(e.get("devin_timeout_sec") or 3600.0),
+            devin_org_id_env=str(e.get("devin_org_id_env") or ""),
+            devin_api_key_env=str(e.get("devin_api_key_env") or ""),
+            devin_base_url=str(e.get("devin_base_url")
+                              or "https://api.devin.ai/v3"),
+            # ★ 会话清理：默认关 ⇒ **只有显式开的执行体才清**（红线）。
+            cleanup_after_run=bool(e.get("cleanup_after_run") or False),
+            # ------------------------------------------- Command Code（第五路）
+            cc_cli_entry=str(e.get("cc_cli_entry") or ""),
+            cc_node_exe=str(e.get("cc_node_exe") or "node"),
+            cc_api_key_env=str(e.get("cc_api_key_env")
+                               or "COMMAND_CODE_API_KEY"),
+            cc_models=tuple(str(m) for m in (e.get("cc_models") or ()) if str(m)),
+            cc_max_concurrent=max(0, int(e.get("cc_max_concurrent") or 0)),
+            cc_timeout_sec=float(e.get("cc_timeout_sec") or 3600.0),
+            cc_max_turns=max(1, int(e.get("cc_max_turns") or 8)),
         )
         for e in (raw.get("executors") or [])
         if isinstance(e, dict) and str(e.get("id") or "")
@@ -300,10 +414,13 @@ def _parse(raw: dict[str, Any]) -> WbExecConfig:
             executor=str(c.get("executor") or ""),
             model=str(c.get("model") or ""),
             weight=int(c.get("weight") or 0),
+            # ★ **优先级**：写了就用写的；没写就按**表里的行序**（行序＝优先级序）。
+            priority=int(c["priority"]) if str(c.get("priority") or "") != ""
+            else _idx,
         )
-        for c in (raw.get("candidates") or [])
+        for _idx, c in enumerate(raw.get("candidates") or [])
         if isinstance(c, dict) and str(c.get("executor") or "")
-        and str(c.get("model") or "") and int(c.get("weight") or 0) > 0
+        and str(c.get("model") or "") and int(c.get("weight") or 0) >= 0
     )
     fb = raw.get("fallback") or {}
     guards = raw.get("guards") or {}
@@ -317,6 +434,10 @@ def _parse(raw: dict[str, Any]) -> WbExecConfig:
         candidates=candidates,
         fallback_models=tuple(str(m) for m in (fb.get("models") or ["hy3"]) if str(m)),
         prefer_same_executor=bool(fb.get("prefer_same_executor", True)),
+        # ★ 可委派卡型白名单（配置化 ⇒ 前后端同一份事实源）。
+        delegable_card_types=tuple(
+            str(t) for t in (raw.get("delegable_card_types")
+                             or ("coder", "qa_card", "pm_card")) if str(t)),
         guards=Guards(
             permission_mode=str(guards.get("permission_mode") or "dontAsk"),
             cli_permission_mode=str(guards.get("cli_permission_mode")

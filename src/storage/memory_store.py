@@ -1032,6 +1032,7 @@ def _merge_recondensed(existing: list[dict[str, Any]],
     返回 `(合并后列表, 原位替换数)`；旧条目顺序保持，新条目按序追加在尾部。
     """
     out = [dict(e) if isinstance(e, dict) else e for e in (existing or [])]
+    _existing_len = len(out)
     by_seq: dict[int, int] = {}
     for i, e in enumerate(out):
         if isinstance(e, dict):
@@ -1046,6 +1047,15 @@ def _merge_recondensed(existing: list[dict[str, Any]],
         if s is not None and s in by_seq:
             i = by_seq[s]
             old = out[i]
+            # [2026-11-01 · card_fn_005 批内同锚实证] 被替换槽位本身来自**本批**（索引
+            # 越过存量段）⇒ 同一凝练批产出了两条同 anchor.seq 的不同节点，后者把
+            # 前者的 gist 静默顶掉——重凝幂等（换旧条）是正当的，批内互顶是产出
+            # 质量信号，必须可见而不是无声丢条目。
+            if i >= _existing_len:
+                logger.warning(
+                    "[condense_fold] 批内同锚静默覆盖 seq=%s：本条 gist=%r 顶掉同批前条 gist=%r",
+                    s, str(n.get("gist") or "")[:80],
+                    str(old.get("gist") or old.get("conclusion") or "")[:80])
             cov = set(old.get("coveredSeqs") or []) | set(n.get("coveredSeqs") or [])
             merged = dict(n)
             merged["coveredSeqs"] = sorted(int(x) for x in cov)
@@ -1213,6 +1223,18 @@ CONDENSE_BREAKER_THRESHOLD = 3
 #: 观测日志间隔（纯状态汇报：已等待/帧数/无帧时长；不参与任何裁决）。
 CONDENSE_OBSERVE_LOG_SEC = 60.0
 
+
+def _stall_sec() -> float:
+    """流静默判死阈值（秒）。**判的是「无帧」不是「慢」**：帧还在流、再久也不
+    动；零帧超阈 ⇒ socket 假活（连接开着但上游不再产帧——真断网 socket 会抛、
+    假活永远不抛，2026-11-01 card_074 实测挂死 17min+）。处置＝取消挂起的调用、
+    按可重试失败进既有重试梯（重发换新连接）。env CONDENSE_STALL_SEC 调，
+    0＝回到纯观测旧语义。"""
+    try:
+        return float(os.environ.get("CONDENSE_STALL_SEC", "300") or 300)
+    except (TypeError, ValueError):
+        return 300.0
+
 #: 可重试的失败类别（**端点/socket 的真实失败反馈**按消息机械归类；auth/配置类
 #: 不进梯——网关自己已重试过，再挂 30×10s 只会白等）
 _RETRYABLE_PAT = re.compile(r"timeout|timed out|超时|connection|503|rate|429|overload", re.I)
@@ -1286,59 +1308,101 @@ async def _guarded_model_call(make_call, *, work_id: str, card_id: str,
     - **熔断**：连续 3 次真实失败 ⇒ 放弃本批；
     - **观测日志**（纯状态、不裁决）：每分钟一行「已等待/帧数/无帧时长」——
       是不是停了，看状态就知道。慢（长思考/排队）不是故障，绝不按钟杀；
-      任务断了靠续跑（步骤产出缓存）接着付，不靠杀进程"止损"。
+      任务断了靠续跑（步骤产出缓存）接着付，不靠杀进程"止损"；
+    - **无帧判死**（`_stall_sec`，默认 300s）：帧还在流、再久也不动——这是
+      「按钟杀」与「判死」的分界；零帧超阈 ⇒ socket 假活（连接未断但上游不产
+      帧，真断网才会抛错），取消挂起调用、计一次可重试失败进梯重发。
     """
     from ..infra import observe as _obs
+    from ..api import event_stream as _es
 
     _trace = trace_id or _obs.new_trace_id()
-    consecutive_fail = 0
-    last_err: BaseException | None = None
-    for attempt in range(1, CONDENSE_CALL_MAX_ATTEMPTS + 1):
-        chunk_state = {"last": time.monotonic(), "n": 0}
-
-        def _on_chunk(_t: str) -> None:      # 流式 chunk 计数（观测数据源）
-            chunk_state["n"] += 1
-            chunk_state["last"] = time.monotonic()
-
-        call_task = asyncio.ensure_future(make_call(_on_chunk, _trace))
-        # 观测循环：只汇报状态，不做任何裁决（无帧再久也不杀——真断了 socket 会抛）
-        t0 = time.monotonic()
-        while True:
-            _done, _pending = await asyncio.wait({call_task},
-                                                 timeout=CONDENSE_OBSERVE_LOG_SEC)
-            if call_task in _done:
-                break
-            logger.info(
-                "[condense_fold] 调用观测 work=%s card=%s stage=%s 已等待=%.0fs "
-                "帧=%d 无帧=%.0fs（纯观测，不裁决）",
-                work_id, card_id, stage, time.monotonic() - t0,
-                chunk_state["n"], time.monotonic() - chunk_state["last"])
-        try:
-            result, _model = call_task.result()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            if not _retryable_error(exc):
-                raise                        # auth/配置类：网关已重试过，如实上抛
-            consecutive_fail += 1
-            logger.warning("[condense_fold] 模型调用失败反馈（可重试，attempt=%d/%d，"
-                           "连续失败=%d，%.0fs 后重试）work=%s card=%s: %s",
-                           attempt, CONDENSE_CALL_MAX_ATTEMPTS, consecutive_fail,
-                           CONDENSE_CALL_BACKOFF_SEC, work_id, card_id, exc)
-            if consecutive_fail >= CONDENSE_BREAKER_THRESHOLD:
-                raise RuntimeError(
-                    f"连续 {consecutive_fail} 次真实失败反馈（超时/连接类），熔断本批") from exc
-            await asyncio.sleep(CONDENSE_CALL_BACKOFF_SEC)
-            continue
-        # F8a：截断识别（finish_reason=length ＝ max-tokens 掐断——端点反馈）
-        if (result or {}).get("finish_reason") == "length" or (result or {}).get("truncated_tool_call"):
-            raise CondenseTruncated(
-                f"产出被 max-tokens 截断（finish_reason={(result or {}).get('finish_reason')}）"
-                "——整批作废、游标不动")
+    # [2026-11-01 逐字流脱钩] 本壳服务的全是管线内部调用（凝练批/归拢组）——
+    # 它们不该出现在任何卡的对话流。但回合末 create_task 会继承卡回合的
+    # stream_ctx，其模型帧被归到那张卡名下：reasoning 落对话流、content 帧
+    # 进实时 token 流（card_104 实案：L2 子题生成过程混进了用户可见的推理区）。
+    # 全程脱钩；进出本壳即还原，不污染调用方上下文。
+    _stream_tok = _es.clear_stream_context()
+    try:
         consecutive_fail = 0
-        return result or {}
-    raise RuntimeError(f"模型调用重试 {CONDENSE_CALL_MAX_ATTEMPTS} 次仍失败: {last_err}")
+        last_err: BaseException | None = None
+        for attempt in range(1, CONDENSE_CALL_MAX_ATTEMPTS + 1):
+            chunk_state = {"last": time.monotonic(), "n": 0}
+
+            def _on_chunk(_t: str) -> None:      # 流式 chunk 计数（观测数据源）
+                chunk_state["n"] += 1
+                chunk_state["last"] = time.monotonic()
+
+            call_task = asyncio.ensure_future(make_call(_on_chunk, _trace))
+            # 观测循环：每分钟一行状态；另加**无帧判死**——帧还在走永不触发，
+            # 零帧超阈 ⇒ socket 假活，取消挂起的调用当可重试失败进梯（重发换新连接）。
+            t0 = time.monotonic()
+            _stall_exc: BaseException | None = None
+            while True:
+                _done, _pending = await asyncio.wait({call_task},
+                                                     timeout=CONDENSE_OBSERVE_LOG_SEC)
+                if call_task in _done:
+                    break
+                _no_chunk = time.monotonic() - chunk_state["last"]
+                logger.info(
+                    "[condense_fold] 调用观测 work=%s card=%s stage=%s 已等待=%.0fs "
+                    "帧=%d 无帧=%.0fs（纯观测，不裁决）",
+                    work_id, card_id, stage, time.monotonic() - t0,
+                    chunk_state["n"], _no_chunk)
+                _stall = _stall_sec()
+                if _stall > 0 and _no_chunk > _stall:
+                    _stall_exc = TimeoutError(
+                        f"流式调用疑似超时（{_no_chunk:.0f}s 零响应帧——socket 假活，"
+                        "连接未断但上游不再产出），判死重发")
+                    call_task.cancel()
+                    break
+            if _stall_exc is not None:
+                # 等取消落地最多 5s——任务若吞了取消继续跑，不等它（结果已不需要，
+                # 让它自己在后台凉），随后照常进重试梯换新连接。
+                _wd, _wp = await asyncio.wait({call_task}, timeout=5.0)
+                if _wp:
+                    logger.warning("[condense_fold] 挂死任务取消后 5s 未落地，弃置后台 "
+                                   "work=%s card=%s", work_id, card_id)
+                    call_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                last_err = _stall_exc
+                consecutive_fail += 1
+                logger.warning("[condense_fold] 模型调用假活判死（attempt=%d/%d，连续失败=%d，"
+                               "%.0fs 后重试换新连接）work=%s card=%s: %s",
+                               attempt, CONDENSE_CALL_MAX_ATTEMPTS, consecutive_fail,
+                               CONDENSE_CALL_BACKOFF_SEC, work_id, card_id, _stall_exc)
+                if consecutive_fail >= CONDENSE_BREAKER_THRESHOLD:
+                    raise RuntimeError(
+                        f"连续 {consecutive_fail} 次真实失败反馈（超时/连接类），熔断本批") from _stall_exc
+                await asyncio.sleep(CONDENSE_CALL_BACKOFF_SEC)
+                continue
+            try:
+                result, _model = call_task.result()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                if not _retryable_error(exc):
+                    raise                        # auth/配置类：网关已重试过，如实上抛
+                consecutive_fail += 1
+                logger.warning("[condense_fold] 模型调用失败反馈（可重试，attempt=%d/%d，"
+                               "连续失败=%d，%.0fs 后重试）work=%s card=%s: %s",
+                               attempt, CONDENSE_CALL_MAX_ATTEMPTS, consecutive_fail,
+                               CONDENSE_CALL_BACKOFF_SEC, work_id, card_id, exc)
+                if consecutive_fail >= CONDENSE_BREAKER_THRESHOLD:
+                    raise RuntimeError(
+                        f"连续 {consecutive_fail} 次真实失败反馈（超时/连接类），熔断本批") from exc
+                await asyncio.sleep(CONDENSE_CALL_BACKOFF_SEC)
+                continue
+            # F8a：截断识别（finish_reason=length ＝ max-tokens 掐断——端点反馈）
+            if (result or {}).get("finish_reason") == "length" or (result or {}).get("truncated_tool_call"):
+                raise CondenseTruncated(
+                    f"产出被 max-tokens 截断（finish_reason={(result or {}).get('finish_reason')}）"
+                    "——整批作废、游标不动")
+            consecutive_fail = 0
+            return result or {}
+        raise RuntimeError(f"模型调用重试 {CONDENSE_CALL_MAX_ATTEMPTS} 次仍失败: {last_err}")
+    finally:
+        _es.reset_stream_context(_stream_tok)
 
 
 async def _condense_call(user_prompt: str, system: str | None = None, *,
@@ -1526,7 +1590,7 @@ async def _condense_one_batch(work_id: str, card_id: str,
                 domain_full=domain_full,
                 )
             if not _res.get("ok"):
-                logger.warning("[condense_fold] 分片 %d/%d 整批作废 work=%s card=%s 阶段=%s",
+                logger.warning("[condense_fold] 分片 %d/%d 整批作废——水位不动 work=%s card=%s 阶段=%s",
                                _si + 1, len(_slices), work_id, card_id, _res.get("stage"))
                 return False
             if _si == 0:
@@ -1727,95 +1791,241 @@ async def _run_condense_pipeline(work_id: str, card_id: str,
                        work_id, card_id, exc)
 
 
-# ── [凝练折叠开启 2026-10-07·任务6] fold-l1 归拢线（源侧 fold-l1.ts runFoldJob 三阶段
-#    照抄适配）──
-# ①判断＝模型一次、无果零落库（judge-empty 合法终态，守「不能为了凝练而凝练」）；
-# ②机械校验＝被归拢成员须为未折叠的已凝条（源侧 validateConvergeBatch 入口 A 平铺适配）；
-# ③提交＝mark 不动、旧成员降层保留（源侧「挂 upper」平铺适配为 state.folded 指纹账：
-#   被归拢成员物理保留在 entries、消费侧按账过滤＝不再作为顶层散条；entry 五字段契约不变）。
-# 触发游标（源侧流程 C）：batch_count − last_fold_check ≥ FOLD_EVERY_BATCHES；
-# 三态语义：committed/judge-empty → 推游标；abort（调用异常）→ 游标不动（失败不消费触发线）。
-# [归拢三步 2026-10-30 · 照抄 dsh `fold-l1.ts`] 原版是**三步**，移植版曾压成一步
-# （判断+写三栏+输出 JSON 一次做完）⇒ reasoning 模型在 443 条上穷举 20 分钟不返回。
-# 三步各司其职：
-#   step1 只判断：输入＝全部顶层 L1 行 + 其子条 gist 行（**不含 process 长正文**），
-#          输出纯文本，**末行「结论：有合并/无合并」是代码分支的唯一信号**；
-#   step2 只合并：输入＝step1 产出 + 被点名成员的完整材料（含子条 process 全文），输出纯文本三栏；
-#   step3 只转填：输入只有 step2 产出，输出 apply_folds 工具参数，零新增零改写。
+# ── [凝练折叠重构 2026-11-01 · 活线维护] fold-l1 归拢线 ──
+# 判据改口径（用户裁定）：归拢合的是「同一件事/同一条线的重复呈现」，**不问事件是否
+# 收尾**——治理线程的宿命是不结束，「只合已收尾」让活跃线的逐批新顶层永不降层。
+# 管线两步半：s1 分组裁决（自由推理＋JSON 尾机械解析）→ s2' **每组一次**线程综合
+# （带界产出）→ 机械提交（降层建边，原有件全复用）。s3 转填步退役：s2' 直接产带界
+# 文本，代码机械解析——省一次调用、消掉工具流不发 [DONE] 的降级坑，「转填失败被记
+# 成判断无果」的静默丢活也不再有。
+# 机械骨架（代码钉死、不靠模型判）：
+#   ①成员时序＝_group_order_key：真覆盖 seq 末端＞timeline.to＞按最老——合成锚点
+#     （≥1e9 保留段）绝不当时序，否则旧 digest 会假装成最新态；
+#   ②digest 身份＝全景里锚点≥1e9 的行标 [digest]，s1 知道它是可吸收同线增量的
+#     既有归拢产物，不当普通增量拆；
+#   ③最新态保护＝组内时序最末成员的「结果」是当前态，钉标写进 s2' 输入。
+# 游标四态：committed(≥1组落库)/judge-empty → 推；pipeline-failure/abort → 不动。
+# 触发双闸：批间隔 FOLD_EVERY_BATCHES 或顶层水位 ≥ fold_top_trigger()（自调节）。
 FOLD_STEP1_PROMPT = (
-    "你是记忆归拢器（fold-l1·第一步：只判断）。下方是某会话的「memory 全景」——"
+    "你是记忆归拢器（fold-l1·第一步：分组裁决）。下方是某会话的「memory 全景」——"
     "全部可归拢顶层 L1 行与 L2 gist 行（不含 process 长正文）。\n\n"
-    "# 任务（只判断 + 给建议）\n"
-    "通读全部顶层 L1 及 L2 gist 行，只判断一件事：哪些 L1 属于同一件事、且这件事已收尾完成。\n"
-    "- 「已收尾完成」必须依据内容判断（gist 所述经过与结果），不得依据任何字段值；\n"
-    "- 有需要合并的 → 给出合并建议：哪几条可能是一件事、为什么；引用成员时用渲染行同款 seq 标识（如 [seq N]）；\n"
-    "- 没有需要合并的 → 不要硬凑、绝不为相近而硬收敛。\n\n"
+    "# 任务\n"
+    "通读全部顶层行，把「同一件事/同一条线」的条目分组——**无论这件事是否已收尾**。\n"
+    "- 同一条活跃线的逐批增量也是同一件事，一样要合——这是归拢的主要工作；"
+    "「已收尾」只是「最新态＝终态」的特例，不是合并前提；\n"
+    "- 行上标 [digest] 的是既有归拢产物（合成的线程摘要）：它可以作为成员继续"
+    "吸收同线的新增量再合并，不要把它当普通增量去拆；\n"
+    "- 拿不准的不合：宁可散着留顶层，不为相近硬收敛；\n"
+    "- 每组 ≥2 条；成员一律用渲染行上的 seq 标识（[seq N] 里的整数）。\n\n"
     "# 输出格式（硬性）\n"
-    "- 纯自由文本（判断 + 可选建议），零工具、零 JSON；\n"
-    "- **末行必须固定写**「结论：无合并」或「结论：有合并」之一——这是后续代码分支的唯一信号。\n\n"
+    "- 先自由推理（分组依据、为什么这些是同一件事）；\n"
+    "- **末两行固定**：倒数第二行写「结论：有合并」或「结论：无合并」；\n"
+    "- 结论为「有合并」时，最后一行只输出一个 JSON 对象（无代码块、无解释），形如：\n"
+    '  {"groups":[{"label":"一句话线程名","members":[seq整数,...]},...]}\n\n'
     "# 硬约束\n"
-    "- 本步不写新 L1 三栏、不构造任何工具参数；只判断与建议。"
+    "- 本步不写新 L1、不做综合；只裁决分组。"
 )
 
-FOLD_STEP2_PROMPT = (
-    "你是记忆归拢器（fold-l1·第二步：凝练合并）。输入 = 第一步产出原文 + 建议涉及成员的完整材料"
-    "（成员 L1 含 start/result/lesson 有则带上 + 成员全部 L2 含 process 正文）。\n\n"
+FOLD_STEP2_GROUP_PROMPT = (
+    "你是记忆归拢器（fold-l1·第二步：线程综合）。输入 = 一组被裁决为「同一件事」的"
+    "记忆条目：成员 L1 各栏 + 各成员名下 L2 子条（gist+process 全文）。\n"
+    "**成员已按真实时间排好序，首尾已钉标——不要自行改判哪条更早、哪条更新。**\n\n"
     "# 任务\n"
-    "给出具体合并哪几条（可修正第一步建议）+ 写出合并后的新 L1：几块写几个，每块起因/经过/结果三栏完整。\n"
-    "- 只依据所给材料，不臆造、不补全因果、不添加材料没有的内容；\n"
-    "- 每个成员的结果/结论都必须在对应新 L1 有落点；\n"
-    "- 细看材料后认为**无可合并** = 合法判断结果（建议不成立即可直接说明），不必强行产出分组。\n\n"
-    "# 输出格式\n"
-    "- 纯自由文本写作（具体分组 + 各新 L1 三栏）；零工具、零 JSON。"
+    "把这组成员综合成**一条**新 L1（线程 digest），栏位：\n"
+    "- 起因：以标记为【最早成员】的起因/动机为准；\n"
+    "- 经过：**全局因果重整**——不是成员经过的拼接。允许并鼓励重排因果线："
+    "哪条增量其实是另条的因、哪条是被推翻的旧决定、哪里是弯路与回退；\n"
+    "- 结果：**以标记为【最新成员】的结果/状态为准**——它是这条线的当前态。"
+    "可润色表述，不得改立场、不得把更早成员的旧态当现状；\n"
+    "- 教训：跨成员提取的模式（没有可省略）。\n\n"
+    "# 权限与约束\n"
+    "- 只依据所给材料，不臆造；细看后认为**本组不构成同一件事**＝合法判断，"
+    "输出「【不合并】理由」即可；\n"
+    "- 成员可以只取所给集合的**子集**（确有混进别线的条目时剔除即可），"
+    "但不许点名材料里没有的 seq；\n"
+    "- 材料仍不足以综合时，可请求展开：输出「【需展开：seq N,M】」（≤3 个、"
+    "只点本组成员的 seq），系统回灌更深材料后让你重写一次——全程最多一次；\n"
+    "- digest 是给人读的**当前视图**：写清这条线现在到哪一步，不要写成流水账。\n\n"
+    "# 输出格式（硬性，带界产出）\n"
+    "【成员】seq A, B, C（本组实际入 digest 的成员）\n"
+    "【标题】一句话（这条线是什么）\n"
+    "【起因】…\n"
+    "【经过】…\n"
+    "【结果】…\n"
+    "【教训】…（可选）\n"
+    "【kind】fact/decision/todo/exclusion/assumption 之一（可选）"
 )
 
-FOLD_STEP3_PROMPT = (
-    "你是记忆归拢器（fold-l1·第三步：只转填）。输入 = 仅有第二步的产出文本（无任何库内容）。\n\n"
-    "# 任务\n"
-    "把第二步产出**原样**填入折叠工具（apply_folds）参数：\n"
-    "- 分组成员 seq（covers[]）+ 各新 L1 三栏（start/process/result/kind）；\n"
-    "- **不新增、不改写、不省略**任何第二步已写出的内容；\n"
-    "- 若第二步产出表明无可合并 → 调用工具提交空 merges 数组（merges: []）。\n"
-    "- 只操作、不产出任意额外内容。"
-)
 
-#: 第三步的工具 schema（照抄 dsh `APPLY_FOLDS_TOOL`）
-APPLY_FOLDS_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "apply_folds",
-        "description": "转填第二步产出，不新增内容。无可合并时提交空 merges 数组。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "merges": {
-                    "type": "array",
-                    "description": "归拢分组列表；每条 = 把若干已收尾的顶层 L1 整合成一条新 L1",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "covers": {
-                                "type": "array",
-                                "items": {"type": "object",
-                                          "properties": {"sessionId": {"type": "string"},
-                                                         "seq": {"type": "integer"}},
-                                          "required": ["sessionId", "seq"]},
-                                "minItems": 2, "maxItems": 20,
-                            },
-                            "start": {"type": "string", "minLength": 1},
-                            "process": {"type": "string", "minLength": 1},
-                            "result": {"type": "string", "minLength": 1},
-                            "kind": {"type": "string",
-                                     "enum": ["fact", "decision", "todo", "exclusion", "assumption"]},
-                        },
-                        "required": ["covers", "start", "process", "result", "kind"],
-                    },
-                },
-            },
-            "required": ["merges"],
-        },
-    },
-}
+def fold_top_trigger() -> int:
+    """顶层水位触发闸（自调节）：可归拢顶层 ≥N 即触发归拢，不等批间隔。
+    归拢有效 ⇒ tops 压住 ⇒ 归拢变懒；积压失控 ⇒ 每轮凝练批后自动连发。"""
+    try:
+        return max(2, int(os.environ.get("CONDENSE_FOLD_TOP_TRIGGER", "40") or 40))
+    except ValueError:
+        return 40
+
+
+def fold_group_cap() -> int:
+    """单组综合的成员上限：超长线先合最老 N 条，最新增量留顶层、下轮自然续上。"""
+    try:
+        return max(2, int(os.environ.get("CONDENSE_FOLD_GROUP_CAP", "25") or 25))
+    except ValueError:
+        return 25
+
+
+_FOLD_VERDICT_RE = re.compile(r"结论：\s*(有|无)\s*合并")
+
+
+def _last_json_obj(text: str, want_key: str) -> dict[str, Any] | None:
+    """从文本里捞最后一个含 `want_key` 的平衡花括号 JSON 对象。
+
+    代码/散文里的 { } 干扰靠**括号配平**（含字符串转义感知）滤掉——
+    s1 的 JSON 尾是自由推理后的最后一个对象，取「最后一个能解出且含键的」。
+    """
+    raw = str(text or "")
+    best: dict[str, Any] | None = None
+    i = 0
+    while True:
+        i = raw.find("{", i)
+        if i < 0:
+            break
+        depth, in_str, esc, j = 0, False, False, i
+        while j < len(raw):
+            ch = raw[j]
+            if esc:
+                esc = False
+            elif ch == "\\" and in_str:
+                esc = True
+            elif ch == '"':
+                in_str = not in_str
+            elif not in_str:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            j += 1
+        if j < len(raw) and depth == 0:
+            try:
+                obj = json.loads(raw[i:j + 1])
+                if isinstance(obj, dict) and want_key in obj:
+                    best = obj
+            except (ValueError, TypeError):
+                pass
+            i = j + 1
+        else:
+            i += 1
+    return best
+
+
+def _parse_fold_groups(text: str, top_seqs: set[int]) -> tuple[str, list[dict[str, Any]]]:
+    """s1 产出机械解析 → (verdict, groups)。
+
+    verdict ∈ {"merge", "empty", "broken"}：
+    - "empty"：明说无合并；或给了组表但**有效组为零**（模型建议确实弱，
+      与「无可合」同等处置＝诚实空转）；
+    - "broken"：说了「有合并」却拿不出可解析组表、或连结论行都没有
+      ——这是**管线失败不是判断无果**，调用方不许推游标。
+    groups：members ⊆ top_seqs（点到不存在/不可归拢的 seq 剔除）、
+    跨组先到先得去重（与提交侧 `_claimed` 同语义）、≥2 成员才留。
+    """
+    raw = str(text or "")
+    m_last = None
+    for m in _FOLD_VERDICT_RE.finditer(raw):
+        m_last = m
+    if m_last is None:
+        return "broken", []
+    if m_last.group(1) == "无":
+        return "empty", []
+    obj = _last_json_obj(raw, "groups")
+    if not isinstance(obj, dict) or not isinstance(obj.get("groups"), list):
+        return "broken", []
+    claimed: set[int] = set()
+    groups: list[dict[str, Any]] = []
+    for g in obj["groups"]:
+        if not isinstance(g, dict):
+            continue
+        members: list[int] = []
+        for s in (g.get("members") or []):
+            try:
+                si = int(s)
+            except (TypeError, ValueError):
+                continue
+            if si in top_seqs and si not in claimed:
+                claimed.add(si)
+                members.append(si)
+        if len(members) >= 2:
+            groups.append({"label": str(g.get("label") or ""), "members": members})
+    if not groups:
+        return "empty", []
+    return "merge", groups
+
+
+#: s2' 带界产出的栏目标记：【成员】【标题】【起因】…【需展开：seq N,M】——
+#: 冒号可能在括号内（【需展开：…】），两种形态都认。
+_FOLD_SEC_RE = re.compile(r"【(成员|标题|起因|经过|结果|教训|kind|不合并|需展开)\s*[：:】]")
+
+
+def _parse_fold_digest(text: str, allowed: set[int],
+                       card_id: str) -> tuple[str, Any]:
+    """s2' 带界产出机械解析 → (kind, payload)：
+
+    - ("merge", merge_dict)：covers 用 `allowed` 子集合成（≥2 才成组）；
+    - ("bail", reason)：模型细看后诚实弃权（【不合并】）；
+    - ("expand", [seqs])：请求更深材料（【需展开】，≤5、限本组成员锚点）；
+    - ("bad", reason)：格式不可解析＝管线失败（调用方计 fail，不推游标）。
+    """
+    raw = str(text or "")
+    secs: dict[str, str] = {}
+    marks = list(_FOLD_SEC_RE.finditer(raw))
+    for k, mk in enumerate(marks):
+        end = marks[k + 1].start() if k + 1 < len(marks) else len(raw)
+        secs[mk.group(1)] = raw[mk.end():end].strip()
+    if "需展开" in secs and "结果" not in secs:
+        seqs = [int(x) for x in re.findall(r"\d+", secs["需展开"])][:5]
+        return "expand", [s for s in seqs if s in allowed]
+    if "不合并" in secs:
+        return "bail", secs["不合并"][:200] or "细看后认为本组不构成同一件事"
+    seen: set[int] = set()
+    mems = [s for s in (int(x) for x in re.findall(r"\d+", secs.get("成员") or ""))
+            if s in allowed and not (s in seen or seen.add(s))]
+    if len(mems) < 2:
+        return "bad", f"成员不足两条（{len(mems)}）"
+    if not (secs.get("结果") or "").strip():
+        return "bad", "缺【结果】栏"
+    if not ((secs.get("起因") or "").strip() or (secs.get("经过") or "").strip()):
+        return "bad", "缺【起因】/【经过】栏"
+    kind = (secs.get("kind") or "").strip()
+    return "merge", {
+        "covers": [{"sessionId": card_id, "seq": s} for s in mems],
+        "title": (secs.get("标题") or "").strip(),
+        "start": (secs.get("起因") or "").strip(),
+        "process": (secs.get("经过") or "").strip(),
+        "result": secs["结果"].strip(),
+        "lesson": (secs.get("教训") or "").strip(),
+        "kind": kind if kind in memory_domain.KINDS else "fact",
+    }
+
+
+def _expand_for_fold(work_id: str, card_id: str, seqs: list[int],
+                     page_chars: int = 6000) -> str:
+    """s2' 展开钩子的回灌文本：沿锚点展开描述层＋有界原文（至多 3 条、各有界分页）。
+
+    这是「归拢线有权限做进一步分析」的深材料出口：s2' 点名成员锚点，
+    `memory_expand` 沿 coveredSeqs 拉回描述层/原文。有界往返（一轮一次），
+    不是无限工具循环。
+    """
+    from . import memory_expand
+    parts: list[str] = []
+    for s in seqs[:3]:
+        try:
+            parts.append(memory_expand.render(
+                memory_expand.expand(work_id, card_id, int(s), page_chars=page_chars)))
+        except Exception as exc:  # noqa: BLE001 单条展开失败不阻断归拢
+            parts.append(f"[seq {s}] 展开失败：{str(exc)[:120]}")
+    return "\n\n".join(parts)
 
 
 async def _fold_call(system: str, user: str,
@@ -1823,7 +2033,7 @@ async def _fold_call(system: str, user: str,
                      *, work_id: str = "", card_id: str = "",
                      stage: str = "", trace_id: str = "") -> dict[str, Any]:
     """归拢模型调用（与凝练同走 bindings.condense 绑定）；返回**完整 result**
-    （step1/2 取 content，step3 取 tool_calls）。
+    （s1/s2' 一律产纯文本、取 content；tools 参数留作兼容形参）。
 
     [2026-10-31 · F8 接入] 上次归拢 step3 的两个死法（死等 1412s+ 无任何保护、
     烧 145k token 被 max-tokens 截断且正文 0）都源于这条裸调用——现在与凝练共用
@@ -1848,12 +2058,11 @@ async def _fold_call(system: str, user: str,
 
 
 def _foldable_tops(state: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
-    """可归拢顶层条（dsh `foldableTop` 同款判据）：
-    `role=gist ∧ level=1 ∧ upper 空 ∧ status=done ∧ sunk≠true`。
+    """可归拢顶层条：`role=gist ∧ level=1 ∧ upper 空 ∧ sunk≠true`。
 
-    [2026-10-30] 原实现按 `folded` 指纹账过滤，但条目是 CausalNode、没有 per-条
-    fingerprint（凝练时写的是**批级**指纹）⇒ 整批会被一起排除。改用 dsh 的 `sunk`
-    标记：归拢后把成员标 `sunk=True`（物理保留、不再作顶层散条）。
+    [2026-11-01 · 判据放开] 去掉 `status=done` 闸——同一条活跃线的逐批增量
+    也是「同一件事的重复呈现」，一样是归拢对象；「已收尾」不再是合并前提
+    （治理卡的线程大多永不收尾，旧闸让活跃线顶层只增不降）。
     """
     out: list[tuple[int, dict[str, Any]]] = []
     for i, e in enumerate(state.get("entries") or []):
@@ -1864,8 +2073,6 @@ def _foldable_tops(state: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
         if int(e.get("level", 1) or 1) != 1:
             continue
         if e.get("upper"):
-            continue
-        if str(e.get("status") or "") != "done":
             continue
         if e.get("sunk") is True:
             continue
@@ -1901,55 +2108,49 @@ def _render_fold_step1(state: dict[str, Any]) -> str:
     lines: list[str] = []
     for _i, t in _foldable_tops(state):
         seq = int((t.get("anchor") or {}).get("seq") or 0)
-        lines.append(f"[seq {seq}][{t.get('status') or 'done'}][{t.get('kind') or 'fact'}] "
+        tag = "digest" if seq >= SYNTH_SEQ_BASE else str(t.get("status") or "done")
+        lines.append(f"[seq {seq}][{tag}][{t.get('kind') or 'fact'}] "
                      f"{t.get('gist') or ''}")
         for c in _fold_children(entries, t):
             lines.append(f"  ∟ 子条（不可点名）: {c.get('gist') or ''}")
     return "【因果链】\n" + "\n".join(lines)
 
 
-def _render_fold_step2(state: dict[str, Any], member_seqs: set[int]) -> str:
-    """第二步输入（dsh `renderFoldStep2`）：仅被点名成员，含 start/result/lesson
-    + 子条 `process` **全文**（写新三栏需要材料）。"""
+def _render_fold_group(state: dict[str, Any],
+                       members: list[dict[str, Any]]) -> str:
+    """s2' 单组输入：成员按 `_group_order_key` **已排好序**传入，本函数只渲染。
+
+    - 首/末机械钉标（【最早成员】/【最新成员】）——「哪条最新」是代码算的
+      事实，不许模型自行改判（这是「结果栏＝最新态」的锚）；
+    - 成员带全部栏位（起因/经过/结果/教训，含 L1 自己的 process）＋子条
+      gist/process 全文——全局因果重整需要完整材料；
+    - [digest] 标既有归拢产物（合成锚点 ≥1e9）——它是线程摘要不是普通增量。
+    """
     entries = state.get("entries") or []
-    lines: list[str] = []
-    for _i, t in _foldable_tops(state):
+    n = len(members)
+    lines = ["【成员材料】（已按真实时间排好序：首条最早、末条最新——顺序由系统钉死）"]
+    for idx, t in enumerate(members):
         seq = int((t.get("anchor") or {}).get("seq") or 0)
-        if seq not in member_seqs:
-            continue
-        lines.append(f"[seq {seq}][{t.get('status') or 'done'}][{t.get('kind') or 'fact'}] "
+        tag = "digest" if seq >= SYNTH_SEQ_BASE else str(t.get("status") or "done")
+        pin = ""
+        if idx == 0:
+            pin = "【最早成员·「起因」以此为准】"
+        elif idx == n - 1:
+            pin = "【最新成员·「结果」以此为准】"
+        lines.append(f"[seq {seq}][{tag}][{t.get('kind') or 'fact'}]{pin} "
                      f"{t.get('gist') or ''}")
-        for k, label in (("start", "起因"), ("result", "结果"), ("lesson", "教训")):
+        for k, label in (("start", "起因"), ("process", "经过"),
+                         ("result", "结果"), ("lesson", "教训")):
             v = str(t.get(k) or "").strip()
             if v:
                 lines.append(f"  {label}：{v}")
         for c in _fold_children(entries, t):
             cseq = int((c.get("anchor") or {}).get("seq") or 0)
-            lines.append(f"  [seq {cseq}][{c.get('status') or 'done'}]"
-                         f"[{c.get('kind') or 'fact'}] {c.get('gist') or ''}")
+            lines.append(f"  [seq {cseq}] 子条：{c.get('gist') or ''}")
             p = str(c.get("process") or "").strip()
             if p:
                 lines.append(f"    {p}")
-    return "【成员材料】\n" + "\n".join(lines)
-
-
-def _fold_merges_from_tool_calls(result: dict[str, Any]) -> list[dict[str, Any]]:
-    """从 step3 的 `apply_folds` 工具调用里取 merges（照抄 dsh：解析失败跳过该次调用，
-    不 abort 整批）。"""
-    merges: list[dict[str, Any]] = []
-    for call in (result.get("tool_calls") or []):
-        if not isinstance(call, dict) or call.get("name") != "apply_folds":
-            continue
-        args = call.get("arguments")
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except ValueError:
-                logger.warning("[condense_fold] apply_folds 参数解析失败，跳过该次调用")
-                continue
-        if isinstance(args, dict) and isinstance(args.get("merges"), list):
-            merges.extend(m for m in args["merges"] if isinstance(m, dict))
-    return merges
+    return "\n".join(lines)
 
 
 # ── [F1/F2 · 2026-10-31 对齐 dsh applyFoldToChain/freshSyntheticSeq] 归拢提交的
@@ -2065,11 +2266,31 @@ def _insert_by_timeline(entries: list[dict[str, Any]], node: dict[str, Any]) -> 
     return out
 
 
-async def _maybe_fold(work_id: str, card_id: str) -> None:
-    """归拢触发与执行（游标式：batch_count − last_fold_check ≥ FOLD_EVERY_BATCHES）。
+def _group_order_key(node: dict[str, Any]) -> tuple:
+    """组内**真时序**键（排序＋钉首尾的机械事实）：
 
-    三步照抄 dsh `runFoldJob`：**判断 → 合并 → 转填**。
-    三态：committed / judge-empty → 推游标；abort（调用异常）→ 游标不动。
+    - 有真实覆盖 seq（<1e9）⇒ 按覆盖末端排（最硬的时序信号）；
+    - 只有 timeline ⇒ 按 timeline.to 排在真实覆盖之前（不可全信的按偏老）；
+    - 都不可断代 ⇒ 排最老——**宁可钉成最早成员，绝不把来路不明的当成最新态**。
+
+    合成锚点（≥1e9 保留段）绝不当时序信号：fold digest 的锚点天生「最大」，
+    拿它排时序会让旧 digest 每次都假装成最新态、「结果」栏写歪。
+    """
+    seqs = [s for s in _covered_or_anchor(node) if int(s) < SYNTH_SEQ_BASE]
+    if seqs:
+        return (2, max(seqs), "")
+    tl = _node_timeline(node)
+    if tl and tl.get("to"):
+        return (1, 0, tl["to"])
+    return (0, 0, "")
+
+
+async def _maybe_fold(work_id: str, card_id: str) -> None:
+    """归拢触发与执行（双闸：批间隔 ≥FOLD_EVERY_BATCHES 或顶层水位 ≥fold_top_trigger）。
+
+    管线：**s1 分组裁决 → s2' 每组一次线程综合（带界产出）→ 机械提交**。
+    游标四态：committed(≥1组落库)/judge-empty → 推；pipeline-failure/abort → 不动
+    （s1 说可合却拿不出组表、或全组机械失败零提交——管线失败不许记成判断无果）。
     """
     # [F17] 归拢入口挂 archive 一次性迁移（幂等；违例被门控拒绝时仅留痕）
     try:
@@ -2080,9 +2301,9 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
     state = load_memory(work_id, card_id)
     count = int(state.get("batch_count", 0) or 0)
     last = int(state.get("last_fold_check", 0) or 0)
-    if count - last < FOLD_EVERY_BATCHES:
-        return
     tops = _foldable_tops(state)
+    if (count - last < FOLD_EVERY_BATCHES) and (len(tops) < fold_top_trigger()):
+        return
     if len(tops) < 2:
         state["last_fold_check"] = count
         await save_memory(work_id, card_id, state)
@@ -2124,7 +2345,7 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
             logger.warning("[condense_fold] 步骤缓存写失败（不阻断）%s: %s",
                            _cache_path(step), exc)
 
-    # ── step1 只判断（tools=None，纯文本）────────────────────────────────
+    # ── s1 分组裁决（自由推理＋JSON尾）───────────────────────────────────
     text1 = _cache_read("s1")
     if not text1:
         try:
@@ -2132,7 +2353,7 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                                   _build_fold_messages(_render_fold_step1(state)),
                                   work_id=work_id, card_id=card_id, stage="s1")
         except Exception as exc:  # noqa: BLE001 abort：游标不动（失败不消费触发线）
-            logger.warning("[condense_fold] 归拢失败——游标不动（abort，step1）work=%s card=%s 原因=%s",
+            logger.warning("[condense_fold] 归拢失败——游标不动（abort，s1）work=%s card=%s 原因=%s",
                            work_id, card_id, exc)
             if _model_error_disposition(exc) == "fatal":
                 _report_to_user(work_id, card_id,
@@ -2140,70 +2361,109 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
             return
         text1 = str(r1.get("content") or "")
         _cache_write("s1", text1)
-        logger.info("[condense_fold] 归拢 step1 完成 work=%s card=%s 产出=%d 字 思考帧=%s",
+        logger.info("[condense_fold] 归拢 s1 分组完成 work=%s card=%s 产出=%d 字 思考帧=%s",
                     work_id, card_id, len(text1), r1.get("tokens_used"))
-    lines1 = [s.strip() for s in text1.splitlines() if s.strip()]
-    last_line = lines1[-1] if lines1 else ""
-    if "结论：无合并" in last_line:
-        state["last_fold_check"] = count
-        await save_memory(work_id, card_id, state)
-        logger.info("[condense_fold] 归拢判断无果（fold-l1.judge-empty step1-empty）work=%s card=%s 批数=%d",
-                    work_id, card_id, count)
-        return
-
-    # 提取建议点名的成员 seq（机械正则；只认确实是顶层可归拢的）
     top_seqs = {int((t.get("anchor") or {}).get("seq") or 0) for _i, t in tops}
-    hits = {int(h) for h in re.findall(r"\[seq\s+(\d+)\]", text1)}
-    member_seqs = {s for s in hits if s in top_seqs}
-
-    # ── step2 只合并（tools=None，自由文本）──────────────────────────────
-    text2 = _cache_read("s2")
-    if not text2:
-        step2_in = f"【第一步产出】\n{text1}\n\n{_render_fold_step2(state, member_seqs)}"
-        try:
-            r2 = await _fold_call(FOLD_STEP2_PROMPT, step2_in,
-                                  work_id=work_id, card_id=card_id, stage="s2")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[condense_fold] 归拢失败——游标不动（abort，step2）work=%s card=%s 原因=%s",
-                           work_id, card_id, exc)
-            if _model_error_disposition(exc) == "fatal":
-                _report_to_user(work_id, card_id,
-                                f"归拢模型无法继续使用（{str(exc)[:120]}）——请检查模型配置/key/额度。")
-            return
-        text2 = str(r2.get("content") or "")
-        _cache_write("s2", text2)
-    logger.info("[condense_fold] 归拢 step2 完成 work=%s card=%s 产出=%d 字%s",
-                work_id, card_id, len(text2),
-                "" if text2 else "（空产出）")
-
-    # ── step3 只转填（tools=[APPLY_FOLDS_TOOL]）──────────────────────────
-    try:
-        r3 = await _fold_call(FOLD_STEP3_PROMPT, text2, tools=[APPLY_FOLDS_TOOL],
-                          work_id=work_id, card_id=card_id, stage="s3")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[condense_fold] 归拢失败——游标不动（abort，step3）work=%s card=%s 原因=%s",
-                       work_id, card_id, exc)
-        if _model_error_disposition(exc) == "fatal":
-            _report_to_user(work_id, card_id,
-                            f"归拢模型无法继续使用（{str(exc)[:120]}）——请检查模型配置/key/额度。")
-        return
-    merges = _fold_merges_from_tool_calls(r3)
-    # [续跑基建] step3 的工具原始参数落盘——merges=0 时能分辨「显式判无合并」
-    # 还是「又交了空参数 {}」（上次断点的歧义就是它，证据链不再断）。
-    try:
-        (_cache_dir / f"s3-args-{_fp}.json").write_text(
-            json.dumps(r3.get("tool_calls") or [], ensure_ascii=False, indent=1),
-            encoding="utf-8")
-    except OSError:
-        pass
-    logger.info("[condense_fold] 归拢 step3 完成 work=%s card=%s tool_calls=%d merges=%d tokens=%s",
-                work_id, card_id, len(r3.get("tool_calls") or []), len(merges), r3.get("tokens_used"))
-    if not merges:
+    verdict, groups = _parse_fold_groups(text1, top_seqs)
+    if verdict == "empty":
         state["last_fold_check"] = count
         await save_memory(work_id, card_id, state)
-        logger.info("[condense_fold] 归拢判断无果（fold-l1.judge-empty step3 merges=0）work=%s card=%s 批数=%d",
+        logger.info("[condense_fold] 归拢判断无果（fold-l1.judge-empty）work=%s card=%s 批数=%d",
                     work_id, card_id, count)
         return
+    if verdict == "broken":
+        # 管线失败 ≠ 判断无果：s1 说可合却拿不出可解析组表（或连结论行都没写）——
+        # 不许推游标；s1 产出已缓存，下轮同指纹直接复用、只重付后续步骤。
+        logger.warning("[condense_fold] 归拢 s1 产出不可解析（pipeline-failure，游标不动）"
+                       "work=%s card=%s 产出=%d 字", work_id, card_id, len(text1))
+        return
+    by_seq = {int((t.get("anchor") or {}).get("seq") or 0): t for _i, t in tops}
+    cap = fold_group_cap()
+
+    # ── s2' 每组一次线程综合（并行，信号量 3）─────────────────────────────
+    # 每组独占一次调用的注意力：输入＝按 _group_order_key 排好的成员材料
+    # （首尾钉标），产出＝带界文本或【不合并】/【需展开：seq N,M】（有界往返一次）。
+    # 组产出按成员指纹落盘缓存（g{idx}-{成员哈希}[-{fp}].txt），重跑免重付。
+    sem = asyncio.Semaphore(3)
+
+    async def _one_group(idx: int, g: dict[str, Any]) -> tuple[str, Any]:
+        async with sem:
+            mems = sorted((by_seq[s] for s in g["members"] if s in by_seq),
+                          key=_group_order_key)
+            if len(mems) > cap:
+                mems = mems[:cap]   # 超长线先合最老段；最新增量留顶层下轮自然续上
+            allowed = {int((m.get("anchor") or {}).get("seq") or 0) for m in mems}
+            gfp = hashlib.sha256(
+                ",".join(str(s) for s in sorted(allowed)).encode("utf-8")).hexdigest()[:12]
+            tag = f"g{idx}-{gfp}"
+            step2_in = (f"【线程】{g.get('label') or ''}\n\n"
+                        + _render_fold_group(state, mems))
+            text2 = _cache_read(tag + "x")
+            if not text2:
+                text2 = _cache_read(tag)
+                if not text2:
+                    try:
+                        r2 = await _fold_call(FOLD_STEP2_GROUP_PROMPT, step2_in,
+                                              work_id=work_id, card_id=card_id,
+                                              stage=tag)
+                    except Exception as exc:  # noqa: BLE001 组调用失败＝fail（游标见尾态）
+                        if _model_error_disposition(exc) == "fatal":
+                            _report_to_user(work_id, card_id,
+                                            f"归拢模型无法继续使用（{str(exc)[:120]}）"
+                                            "——请检查模型配置/key/额度。")
+                        return "fail", f"组{idx} 调用失败：{str(exc)[:120]}"
+                    text2 = str(r2.get("content") or "")
+                    _cache_write(tag, text2)
+                k0, p0 = _parse_fold_digest(text2, allowed, card_id)
+                if k0 == "expand" and p0:
+                    # 展开钩子（有界往返一次）：点名成员锚点 → 深材料回灌 → 重写一次。
+                    # 缓存在 tag"x" 名下——首产与往返产物分开，续跑不重付。
+                    exp_in = (step2_in
+                              + "\n\n【展开材料】（按你的【需展开】请求回灌）\n"
+                              + _expand_for_fold(work_id, card_id, p0)
+                              + "\n\n——已回灌；请按原格式输出 digest 或【不合并】。")
+                    try:
+                        r2b = await _fold_call(FOLD_STEP2_GROUP_PROMPT, exp_in,
+                                               work_id=work_id, card_id=card_id,
+                                               stage=tag + "x")
+                    except Exception as exc:  # noqa: BLE001
+                        if _model_error_disposition(exc) == "fatal":
+                            _report_to_user(work_id, card_id,
+                                            f"归拢模型无法继续使用（{str(exc)[:120]}）"
+                                            "——请检查模型配置/key/额度。")
+                        return "fail", f"组{idx} 展开往返失败：{str(exc)[:120]}"
+                    text2 = str(r2b.get("content") or "")
+                    _cache_write(tag + "x", text2)
+            kind_, payload = _parse_fold_digest(text2, allowed, card_id)
+            if kind_ == "merge":
+                return "merge", payload
+            if kind_ == "bail":
+                return "bail", f"组{idx} 弃权：{payload}"
+            if kind_ == "expand":
+                return "fail", (f"组{idx} 展开请求未成立：seq 全越界（不在本组）"
+                                "或往返配额已用完（每组限一次）")
+            return "fail", f"组{idx} 产出不可解析：{payload}"
+
+    results = await asyncio.gather(
+        *[_one_group(i, g) for i, g in enumerate(groups)], return_exceptions=True)
+    merges: list[dict[str, Any]] = []
+    n_fail = 0
+    for i, res in enumerate(results):
+        if isinstance(res, Exception):
+            n_fail += 1
+            logger.warning("[condense_fold] 组%d 综合异常 work=%s card=%s: %s",
+                           i, work_id, card_id, res)
+            continue
+        st_, payload = res
+        if st_ == "merge":
+            merges.append(payload)
+        else:
+            if st_ == "fail":
+                n_fail += 1
+            logger.info("[condense_fold] %s work=%s card=%s", payload, work_id, card_id)
+    logger.info("[condense_fold] s2' 组综合完成 work=%s card=%s 组=%d 成=%d 弃权=%d 失败=%d",
+                work_id, card_id, len(groups), len(merges),
+                len(groups) - len(merges) - n_fail, n_fail)
 
     # ── 提交：照抄 dsh `applyFoldToChain`（F2 归拢＝**降层建边**，弃 sunk 标记法）
     #    代码不裁判模型产出（2026-09-24 裁定「所有代码校验都拆掉」）：字段缺省补空、
@@ -2214,22 +2474,33 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
     #    ② 新锚点取 **1e9 保留段**（dsh `freshSyntheticSeq` 同款）——取 covers 最旧 seq
     #       必与成员锚点撞号（I1 gist 身份重复），原版注释点名禁止；
     #    ③ 新节点按 timeline **insertByTimeline**（时间序插入，不 append 末尾）。
-    by_seq = {int((t.get("anchor") or {}).get("seq") or 0): t for _i, t in tops}
+    #    ④ [2026-11-01] 认领后成员 <2 ⇒ 跳过（不产空壳 digest）；新节点 gist 取
+    #       【标题】（s2' 给的一句话线程名），无标题才退回 起因+结果 拼接。
     entries = state.get("entries") or []
     n_merged_nodes = 0
     n_members = 0
+    # [2026-11-01 · 修重叠认领] 模型的多组 merge 可能 covers 重叠（实测 card_076：
+    # 6 个成员被两组同时认领）⇒ 顺序提交时后组改写成员 upper、先组 lower 全悬空。
+    # 处置：**先认领者得**——已被前面 merge 认领的成员从后面各组剔除（lower 同步
+    # 剔除，fold 节点的 lower 只含它真正降层的成员），I1 不再悬空。
+    _claimed: set[int] = set()
     for m in merges:
         seqs = [int(c["seq"]) for c in (m.get("covers") or [])
                 if isinstance(c, dict) and isinstance(c.get("seq"), int)]
-        members = [by_seq[s] for s in seqs if s in by_seq]
+        members = [by_seq[s] for s in seqs if s in by_seq and s not in _claimed]
+        if len(members) < 2:
+            continue   # 认领后不足两条 ⇒ 不产空壳 digest（成员已被别组认领/不存在）
+        _claimed.update(int((mem.get("anchor") or {}).get("seq") or 0) for mem in members)
         anchor_seq = _fresh_synthetic_seq(entries)
         kind = str(m.get("kind") or "fact")
         start = str(m.get("start") or "")
         result = str(m.get("result") or "")
-        node = memory_domain.new_node(card_id, anchor_seq,
-                                      "\n".join(p for p in (start, result) if p),
-                                      kind=kind if kind in memory_domain.KINDS else "fact",
-                                      status="done")
+        node = memory_domain.new_node(
+            card_id, anchor_seq,
+            str(m.get("title") or "").strip()
+            or "\n".join(p for p in (start, result) if p),
+            kind=kind if kind in memory_domain.KINDS else "fact",
+            status="done")
         node["level"] = 1
         node["role"] = "gist"
         node["upper"] = []
@@ -2238,26 +2509,66 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
         node["start"] = start
         node["process"] = str(m.get("process") or "")
         node["result"] = result
+        node["lesson"] = str(m.get("lesson") or "")
         node["coveredSeqs"] = sorted({s for mem in members
                                       for s in _covered_or_anchor(mem)})
         _tl = _merge_timeline([_node_timeline(mem) for mem in members])
         if _tl is not None:
             node["timeline"] = _tl
+        # [2026-11-01 · 补齐] 文档追溯并集：旧 fold 节点 docPaths/docRefs 全空，
+        # 文档行在归拢处断链——成员字段并集是免费的，补上。
+        _dps = sorted({p for mem in members for p in (mem.get("docPaths") or [])})
+        _drs: list[dict[str, Any]] = []
+        _dseen: set[tuple[str, int]] = set()
+        for mem in members:
+            for r in (mem.get("docRefs") or []):
+                if isinstance(r, dict):
+                    k = (str(r.get("path") or ""), int(r.get("seq") or 0))
+                    if k not in _dseen:
+                        _dseen.add(k)
+                        _drs.append(r)
+        if _dps:
+            node["docPaths"] = _dps
+        if _drs:
+            node["docRefs"] = _drs
         node["fingerprint"] = hashlib.sha256(
             ("fold|" + "|".join(sorted(str((mem.get("anchor") or {}).get("seq")) for mem in members))
              ).encode("utf-8")).hexdigest()[:16]
         # 成员挂 upper=[新锚点] 并沿 lower 子树整体降一层（level+=1）
         for mem in members:
+            _ma = mem.get("anchor") or {}
             mem["upper"] = [dict(node["anchor"])]
-            _demote_subtree(entries, int((mem.get("anchor") or {}).get("seq") or 0))
+            # [2026-11-01 · 脏链修 card_fn_005/007 实测] 同锚复本＝同一逻辑条目
+            # 的重复行（凝练存量病，同 seq 多条 gist）——认领按 seq 只解到一份，
+            # 但 _demote_subtree 会把所有复本一起降层；不给复本挂 upper 就造出
+            # 无父深条（I4）。同锚即同一身份：顶层复本随成员一起归到本 digest。
+            for _sib in entries:
+                if _sib is mem or not isinstance(_sib, dict):
+                    continue
+                _sa = _sib.get("anchor") or {}
+                if (int(_sa.get("seq") or 0) == int(_ma.get("seq") or 0)
+                        and str(_sa.get("sessionId") or "")
+                        == str(_ma.get("sessionId") or "")
+                        and int(_sib.get("level") or 1) <= 1
+                        and not _sib.get("upper")):
+                    _sib["upper"] = [dict(node["anchor"])]
+            _demote_subtree(entries, int(_ma.get("seq") or 0))
             n_members += 1
         entries = _insert_by_timeline(entries, node)
         n_merged_nodes += 1
     if not n_merged_nodes:
-        state["last_fold_check"] = count
-        await save_memory(work_id, card_id, state)
-        logger.info("[condense_fold] 归拢校验全拒（accepted=0）work=%s card=%s 批数=%d",
-                    work_id, card_id, count)
+        if n_fail == 0:
+            # 全部组诚实弃权 / 产出有效但认领后无成组 → judge-empty → 推游标
+            state["last_fold_check"] = count
+            await save_memory(work_id, card_id, state)
+            logger.info("[condense_fold] 归拢判断无果（fold-l1.judge-empty 全组弃权）"
+                        "work=%s card=%s 批数=%d", work_id, card_id, count)
+        else:
+            # pipeline-failure：有组机械失败且零提交 → 游标不动，
+            # 组产出已缓存（成功组免重付），下轮只续付失败组。
+            logger.warning("[condense_fold] 归拢管线失败（%d 组失败、零提交）"
+                           "——游标不动、下轮续跑 work=%s card=%s",
+                           n_fail, work_id, card_id)
         return
     state["entries"] = entries
     state["last_fold_check"] = count
@@ -2294,18 +2605,40 @@ def _read_origin(work_id: str, card_id: str, mark: int = 0) -> list[dict[str, An
     - **来源**：改前读 md 文件（解析脆弱、可被清空），现在读 `session_blocks`；
     - **切片**：改前 `blocks[mark:]` 把 `mark`（seq 水位）当**列表下标**用，
       seq 有空洞就错位；现在按 `seq >= mark` 过滤。
+    - **评审流量**：[2026-11-02 · 用户裁定] 评审过程消息不需要记忆——
+      触发计量、凝练窗口、排水都看不到它（keep=0 全蒸发）；
+      评审型卡整卡恒空。原文在 origin_store 可审计，此层只管凝练池。
     """
     from . import origin_store  # 延迟：避免 storage 内部循环
-    return origin_store.read_blocks(work_id, card_id, from_seq=int(mark or 0))
+    from . import review_scope
+    blocks = origin_store.read_blocks(work_id, card_id, from_seq=int(mark or 0))
+    return review_scope.drop_stale_review(work_id, card_id, blocks, keep=0)
 
 
 # [F14 · 2026-10-31 触发调度（对齐 dsh maybeCondense+pumpCondenseQueue）]
-#: 全进程单飞（dsh `globalFlying` 同款）：同一时刻**全机**只跑一个凝练 job——
-#: 多卡同时到线时串行（后到者本轮跳过，等下一次自然触发），不再多卡并发抢模型。
-_GLOBAL_FLYING = False
-#: [2026-10-31 · 二轮审计] 单飞持有者账（谁、何时起、trace）——跳过告警与自愈的状态源。
+#: 全局并发闸（dsh `globalFlying`=1 的放宽）。
+#: [2026-11-02 · card_154 实案] 单飞（N=1）在密集触发下**饿死**：card_154 触发
+#: 16 次、每次都撞上别卡持位，70 分钟未凝量从 14 万涨到 142 万 token、最终
+#: 撞穿 1M 窗口——串行化在多卡同时到线时不是排队，是永久跳过。改**有界并发**：
+#: 同刻最多 ``_condense_parallel()`` 个凝练 job（默认 3，CONDENSE_PARALLEL 调）；
+#: per-card 互斥（_CONDENSING）照旧——同卡永不并发，不同卡放行到 N。
+_FLYING: dict[tuple[str, str], float] = {}
+#: [2026-10-31 · 二轮审计] 持有者账（谁、何时起）——跳过告警与自愈的状态源。
 #: 纯事实记录；「挂死」的判定与处置见 _flying_release_if_stale（默认关）。
-_FLYING_HOLDER: dict[str, Any] = {}
+#: [2026-11-02] 随有界并发改为 key→since 映射（每位持有者一条）。
+
+
+def _condense_parallel() -> int:
+    """全局凝练并发上限：CONDENSE_PARALLEL 覆盖，缺省 3。"""
+    raw = os.environ.get("CONDENSE_PARALLEL", "").strip()
+    if not raw:
+        return 3
+    try:
+        v = int(raw)
+        return v if v > 0 else 3
+    except ValueError:
+        logger.warning("[condense_fold] CONDENSE_PARALLEL 非法（%r），用缺省 3", raw)
+        return 3
 
 
 def _flying_release_sec() -> float:
@@ -2320,31 +2653,35 @@ def _flying_release_sec() -> float:
         return 900.0
 
 
-def _flying_release_if_stale() -> bool:
-    """检查持有者在途调用的新鲜度；超阈 ⇒ 放锁并如实告警。返回是否放了锁。
+def _flying_release_if_stale() -> int:
+    """逐持有者检查在途调用新鲜度；超阈 ⇒ 放位并如实告警。返回放了多少位。
     判定只吃**台账状态**（observe.inflight 的 no_chunk_for）；持有者不在途
-    （两段调用之间的间隙）⇒ 判不了，不放（间隙挂死看 /observe/calls 由人处置）。"""
-    import time as _t
-    if not _GLOBAL_FLYING or not _FLYING_HOLDER:
-        return False
+    （两段调用之间的间隙）⇒ 判不了，不放（间隙挂死看 /observe/calls 由人处置）。
+    [2026-11-02] 单飞→有界并发后按持有者逐条生效。"""
+    if not _FLYING:
+        return 0
     threshold = _flying_release_sec()
     if threshold <= 0:
-        return False
-    hw, hc = str(_FLYING_HOLDER.get("work") or ""), str(_FLYING_HOLDER.get("card") or "")
-    for rec in _obs.inflight():
-        if str(rec.get("work_id") or "") == hw and str(rec.get("card_id") or "") == hc                 and rec.get("no_chunk_for", 0) > threshold:
-            logger.warning(
-                "[condense_fold] 单飞持有者疑似挂死（trace=%s 卡=%s/%s 在途 %.0fs 无帧 %.0fs）"
-                "——只放锁不杀任务（CONDENSE_FLYING_RELEASE_SEC=%.0f）",
-                rec.get("trace_id"), _FLYING_HOLDER.get("work"), _FLYING_HOLDER.get("card"),
-                rec.get("age", 0), rec.get("no_chunk_for", 0), threshold)
-            # [处置 · 用户令] 挂死＝不可能再运转的状态 ⇒ 报错给用户（该卡 UI 可见）
-            _report_to_user(str(_FLYING_HOLDER.get("work") or ""),
-                            str(_FLYING_HOLDER.get("card") or ""),
-                            f"凝练调用疑似挂死（{rec.get('no_chunk_for', 0):.0f}s 无任何响应帧），"
-                            "已让路给其他卡；挂住的任务未杀，长期挂着请检查模型服务或重启进程。")
-            return True
-    return False
+        return 0
+    released = 0
+    for (hw, hc), _since in list(_FLYING.items()):
+        for rec in _obs.inflight():
+            if (str(rec.get("work_id") or "") == hw
+                    and str(rec.get("card_id") or "") == hc
+                    and rec.get("no_chunk_for", 0) > threshold):
+                logger.warning(
+                    "[condense_fold] 凝练持有者疑似挂死（trace=%s 卡=%s/%s 在途 %.0fs "
+                    "无帧 %.0fs）——只放位不杀任务（CONDENSE_FLYING_RELEASE_SEC=%.0f）",
+                    rec.get("trace_id"), hw, hc,
+                    rec.get("age", 0), rec.get("no_chunk_for", 0), threshold)
+                # [处置 · 用户令] 挂死＝不可能再运转的状态 ⇒ 报错给用户（该卡 UI 可见）
+                _report_to_user(hw, hc,
+                                f"凝练调用疑似挂死（{rec.get('no_chunk_for', 0):.0f}s 无任何响应帧），"
+                                "已让路给其他卡；挂住的任务未杀，长期挂着请检查模型服务或重启进程。")
+                _FLYING.pop((hw, hc), None)
+                released += 1
+                break
+    return released
 #: 失败记账退避（dsh `pendingCondenseAt` 账本 ＋ 30min 退避同口径，缺省 30min）。
 CONDENSE_FAIL_BACKOFF_SEC = float(os.environ.get("CONDENSE_FAIL_BACKOFF_SEC", "1800") or 1800)
 
@@ -2382,9 +2719,9 @@ async def condense_turn_end(work_id: str, card_id: str,
     即启动凝练管线本体。失败路径：异常 catch 留痕零阻断、水位不动（V5/RD-04）；
     [F14] 失败**记账**（condense_debt 落 state，30min 退避，失败不丢账必重试）、
     成功清账。同卡互斥（任务 7）：上一轮未完成→本轮跳过留痕，不排队不设闸；
-    [F14] 再加**全局单飞**：任何卡在凝时，其他卡到线本轮跳过（串行化）。
+    [2026-11-02 · card_154 实案] 全局改为**有界并发**（_FLYING 位满才跳过；
+    原"全局单飞"在多卡同时到线时把 card_154 饿死 70 分钟、142 万 token 撞窗）。
     """
-    global _GLOBAL_FLYING
     from ..infra import observe as _obs
     try:
         await ensure_watermark(work_id, card_id)
@@ -2447,28 +2784,19 @@ async def condense_turn_end(work_id: str, card_id: str,
         if _key in _CONDENSING:
             logger.info("[condense_fold] 跳过（进程内已在凝）work=%s card=%s", work_id, card_id)
             return
-        # [F14a 全局单飞] 其他卡正在凝 ⇒ 本轮跳过（多卡到线时串行化，dsh globalFlying）
-        if _GLOBAL_FLYING:
-            # [2026-10-31 · 二轮审计] 单飞跳过不许静默：WARNING ＋ 持有者状态
-            # （谁、持有多久、在途调用多久没吐帧）——全机哑火必须看得见。
-            _h = dict(_FLYING_HOLDER)
-            _r = next((r for r in _obs.inflight()
-                       if str(r.get("work_id") or "") == str(_h.get("work") or "")
-                       and str(r.get("card_id") or "") == str(_h.get("card") or "")), None)
+        # [2026-11-02 · card_154 实案] 全局并发闸：先清疑似挂死的持有者，
+        # 仍满才跳过——满位不许静默，持有者明细全在告警里。
+        if len(_FLYING) >= _condense_parallel():
+            _flying_release_if_stale()
+        if len(_FLYING) >= _condense_parallel():
+            _holders = "、".join(
+                f"{w}/{c}({time.time() - s:.0f}s)" for (w, c), s in _FLYING.items())
             logger.warning(
-                "[condense_fold] 跳过（全局单飞）work=%s card=%s 持有者=%s/%s 持有=%.0fs "
-                "在途=%s", work_id, card_id, _h.get("work"), _h.get("card"),
-                time.time() - float(_h.get("since") or time.time()),
-                (f"无帧 {_r['no_chunk_for']:.0f}s" if _r else "间隙（看 /observe/calls）"))
-            if _flying_release_if_stale():
-                _GLOBAL_FLYING = False
-                _FLYING_HOLDER.clear()
-            else:
-                return
+                "[condense_fold] 跳过（并发位满 %d/%d）work=%s card=%s 持有者=%s",
+                len(_FLYING), _condense_parallel(), work_id, card_id, _holders)
+            return
         _CONDENSING.add(_key)
-        _GLOBAL_FLYING = True
-        _FLYING_HOLDER.clear()
-        _FLYING_HOLDER.update({"work": work_id, "card": card_id, "since": time.time()})
+        _FLYING[_key] = time.time()
         logger.info("[condense_fold] 触发线 K 已到线，启动凝练 work=%s card=%s 未凝token=%d K=%d mark=%d 未凝块数=%d",
                     work_id, card_id, size, k, mark, len(pending))
         try:
@@ -2486,8 +2814,7 @@ async def condense_turn_end(work_id: str, card_id: str,
                 await save_memory(work_id, card_id, state)
         finally:
             _CONDENSING.discard(_key)
-            _GLOBAL_FLYING = False
-            _FLYING_HOLDER.clear()
+            _FLYING.pop(_key, None)
     except Exception as exc:  # noqa: BLE001 触发面零阻断（V5 哲学）
         logger.warning("[condense_fold] 回合末触发失败（不阻断、留痕、水位不动）work=%s card=%s: %s",
                        work_id, card_id, exc)
@@ -2592,11 +2919,11 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
     work_025/card_005：134 万 > 1M 窗口，每轮 502 死锁）。预检把自救提前到
     发请求之前，不再依赖"先失败一次"。
 
-    [F14 口径 · 2026-10-31 审计订正] 本路径**同样吃全局单飞**（condense_turn_end
-    内统一判）——方案 F14a 是无差别的「同一时刻全机只一个凝练跑」，不设豁免。
-    502 自救场景的影响：他卡在凝时本轮预检跳过，请求可能仍超窗失败；他卡凝完后
-    下一轮预检即接管，**不构成永久死锁**（死锁的根因「只在成功回合末触发」已被
-    预检本身修掉）。同卡互斥（_CONDENSING）照旧生效。
+    [F14 口径 · 2026-10-31 审计订正] 本路径**同样吃全局并发闸**（condense_turn_end
+    内统一判）——不设豁免。[2026-11-02] 原"全局单飞"已放宽为有界并发
+    （_condense_parallel，默认 3）：并发位满时本轮预检跳过，请求可能仍超窗
+    失败；有位即接管，**不构成永久死锁**（死锁的根因「只在成功回合末触发」
+    已被预检本身修掉）。同卡互斥（_CONDENSING）照旧生效。
 
     返回是否真的跑了凝练。开关关 / 未到线 / 异常 ⇒ 一律返回 False，不阻断回合。
     """

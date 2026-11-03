@@ -202,7 +202,9 @@ def test_block2_auto_switches_excludes_delete():
     兜底（半可逆）、rule_edit 走 ROOT_ONLY＋用户审批本就不可直达。
     """
     assert policy.AUTO_SWITCHES == policy.SWITCHES - {"delete"}
-    assert len(policy.AUTO_SWITCHES) == 15
+    # [2026-11-01] 词汇表 16→19 码（link_rel/unlink_rel/manuscript/list_memory/
+    # search/tools_web/tools_read_file 等入册），排除 delete 后 15→18。
+    assert len(policy.AUTO_SWITCHES) == 18
     assert "delete" not in policy.AUTO_SWITCHES
     assert "read" in policy.AUTO_SWITCHES
     assert "tools_file" in policy.AUTO_SWITCHES
@@ -438,20 +440,28 @@ def test_block3_no_gate_in_chain():
 # 块 0.4 · 目标工具 ＋ 上下文区 ＋ 提示词（TC5 口径：保留计划六件）
 # ============================================================
 
-#: [需求确定按钮改造 2026-10-29] 写入说明段重写（删掉早已不存在的「点确认写入」、
-#: 改成草稿→评审→正稿与【需求确定】按钮的真实流程）⇒ BASE_PROMPT 文本变更，
+#: [事实分层 2026-11-01 · t27-3] _SEC_CARDMSG 语义修正 ⇒ BASE_PROMPT 文本变更，
 #: 指纹随之更新。**这条断言的意义是「片段拼装 == 整体渲染」**，不是"文本永不改"。
-T22_1_BASE_PROMPT_SHA256 = "e2227d336d3247b3465caaf91b2d6a98765f79744f026fd4e0c39156abb0e0e5"
+#: （常量沿用原名 T22_1_* 属历史遗留；基线就是当前版本，每次升版本同步换指纹。）
+BASE_PROMPT_SHA256 = "beaed39b8d2e28fbdeac7b2592885f97c5cfd55da48e4cd7b70162f166ca5e3e"
 
 #: auto 版工具清单必须**逐件在册**（块0.4 硬判据 4）。
+#: [事实分层 2026-11-01] 清单与现行 _SEC_TOOLS_AUTO 实读对齐：
+#: update_shadow/send_card_message/read_inbox/旧签名 update_goal 均已退役，
+#: 换成 edit_shadow/edit_note、sync/direct/report_up 与 get/create/update/resume_goal。
 _AUTO_ONLY_TOOL_LINES = (
-    "edit_card(card_id, block, old_string, new_string",
-    "update_shadow(content)",
+    "edit_card(card_id, block, old_string|lines|insert_after, new_string)",
+    "edit_shadow(section, old_string, new_string)",
+    "edit_note(old_string, new_string)",
     "read_linked(target_id, part)",
-    "run_tool_card(script_name",
-    "update_goal(action, reason?, await_children?)",
-    "send_card_message(target_card_id, msg_type, content, reply_to?)",
-    "read_inbox(pending_only?, direction?)",
+    "run_tool_card(script_name, instruction?)",
+    "get_goal()",
+    "create_goal(objective, max_goal_rounds?)",
+    "update_goal(goal_id, revision, action",
+    "resume_child(card_id)",
+    "sync(content, card_ids?)",
+    "direct(card_id, instruction, acceptance)",
+    "report_up(content)",
     "create_card(title, parent?, content?, goal?)",
 )
 
@@ -605,14 +615,14 @@ def test_block4_prompt_version_and_section():
     [回灌 5700 §十 版本号推进表] auto-t1＝块0.4 初版；auto-t2＝G2（自主通信
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
-    assert prompts.BASE_PROMPT_VERSION == "t27-2"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t19"
+    assert prompts.BASE_PROMPT_VERSION == "t27-5"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t22"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-16"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-21"  # [2026-11-02] +browser/+create_ui_card
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
@@ -624,9 +634,10 @@ def test_block4_tool_table_and_registry():
     for _gone in ("send_card_message", "read_inbox", "wake_card",
                   "scene_report", "issue_directive", "verify_directive"):
         assert _gone not in card_tools.TOOL_REGISTRY, _gone
+    # [2026-11-01] edit_requirements 已转常规工具面（草稿→评审→正稿流程），
+    # auto-only 剩目标生命周期四件。
     assert card_tools.AUTO_ONLY_TOOLS == {"update_goal", "get_goal",
-                                          "create_goal", "resume_child",
-                                          "edit_requirements"}
+                                          "create_goal", "resume_child"}
     # [去全量更新 2026-10-28] update_status/update_shadow 已退役；现状走 edit_status
     for _gone2 in ("update_status", "update_shadow"):
         assert _gone2 not in card_tools.TOOL_REGISTRY, _gone2
@@ -637,48 +648,68 @@ def test_block4_tool_table_and_registry():
 # 块 0.4 返工判据 · 两套 instruction（任务书 §块0.4 硬判据 5-7）
 # ============================================================
 
-def test_rework_1_base_prompt_byte_identical_to_t22_1():
-    """硬判据（红线 10）：片段化后拼装结果与 t22-1 逐字节一致（sha256）。"""
+def test_rework_1_base_prompt_byte_identical_to_baseline():
+    """硬判据（红线 10）：片段化后拼装结果与登记基线逐字节一致（sha256）。
+
+    [2026-11-01] 指纹基线随版本走（每次改 BASE_PROMPT 文本须同步更新
+    ``BASE_PROMPT_SHA256``）——断言的意义是拼装等价，不是文本冻结。
+    """
     import hashlib
     base = prompts.BASE_PROMPT
-    assert hashlib.sha256(base.encode("utf-8")).hexdigest() == T22_1_BASE_PROMPT_SHA256, \
-        "BASE_PROMPT 与记录的 t22-1 sha256 不符"
+    assert hashlib.sha256(base.encode("utf-8")).hexdigest() == BASE_PROMPT_SHA256, \
+        "BASE_PROMPT 与登记的基线 sha256 不符"
     assert base == prompts._join_sections(
-        prompts._SEC_HEAD, prompts._SEC_TOOLS, prompts._SEC_WRITE,
-        prompts._SEC_CODER, prompts._SEC_RULE, prompts._SEC_ERR,
-        prompts._SEC_CARDMSG,
+        prompts._SEC_HEAD, prompts._SEC_ROLE, prompts._SEC_TOOLS,
+        prompts._SEC_WRITE, prompts._SEC_CODER, prompts._SEC_RULE,
+        prompts._SEC_ERR, prompts._SEC_CARDMSG,
     )
 
 
 def test_rework_2_versions():
     """BASE_PROMPT_VERSION 不动；AUTO_BASE_PROMPT_VERSION 存在且非空。"""
-    assert prompts.BASE_PROMPT_VERSION == "t27-2"
+    assert prompts.BASE_PROMPT_VERSION == "t27-5"
     assert isinstance(prompts.AUTO_BASE_PROMPT_VERSION, str)
     assert prompts.AUTO_BASE_PROMPT_VERSION.strip()
 
 
 async def test_rework_3_instruction_region_selects_by_auto_mode(
         typed_registry, work, no_kick):
-    """硬判据（V9）：非 auto 卡拿 BASE_PROMPT；auto 卡拿 AUTO_BASE_PROMPT。"""
+    """硬判据（V9）：非 auto 卡拿普通版；auto 卡拿 AUTO_BASE_PROMPT。
+
+    [2026-11-01] 取用口径更新：instruction 区渲染＝``select_base_prompt``——
+    按树渲染第三块名，且非「自动模式子卡」会摘掉 _SEC_ROLE（做事的方法与
+    顺序）。所以断言基准是 select_base_prompt 的输出，不是裸 BASE_PROMPT。
+    """
     from src.api import context_regions as cr
 
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk(wid, "甲", root)
     spec = cr._spec_by_key("instruction")
     assert spec is not None
+    pc = card_store._root_project_class(wid)
 
-    ctx0 = cr.RegionCtx(cur_meta={"auto_mode": 0})
-    assert spec["render"](ctx0) == prompts.BASE_PROMPT
+    ctx0 = cr.RegionCtx(cur_meta={"auto_mode": 0}, project_class=pc)
+    out0 = spec["render"](ctx0)
+    assert out0 == prompts.select_base_prompt({"auto_mode": 0}, pc)
+    assert "## 自动模式" not in out0
 
-    ctx1 = cr.RegionCtx(cur_meta={"auto_mode": 1})
-    assert spec["render"](ctx1) == prompts.AUTO_BASE_PROMPT
+    ctx1 = cr.RegionCtx(cur_meta={"auto_mode": 1, "card_type": "sub_project"},
+                        project_class=pc)
+    out1 = spec["render"](ctx1)
+    assert out1 == prompts.select_base_prompt(
+        {"auto_mode": 1, "card_type": "sub_project"}, pc)
+    assert "## 自动模式" in out1
 
-    # 真实装配链（非合成 ctx）：非 auto ⇒ 区文本 == BASE_PROMPT
+    # 真实装配链（非合成 ctx）：区文本 == select_base_prompt 输出
+    meta0 = card_store._meta_of(wid, a)
     bundle0 = context_assembler.build_context_bundle(wid, a)
-    assert bundle0["main"]["system_prompt"].startswith(prompts.BASE_PROMPT)
+    assert bundle0["main"]["system_prompt"].startswith(
+        prompts.select_base_prompt(meta0, pc))
     await card_store.update_card(wid, a, {"auto_mode": 1}, "开自动")
+    meta1 = card_store._meta_of(wid, a)
     bundle1 = context_assembler.build_context_bundle(wid, a)
-    assert bundle1["main"]["system_prompt"].startswith(prompts.AUTO_BASE_PROMPT)
+    assert bundle1["main"]["system_prompt"].startswith(
+        prompts.select_base_prompt(meta1, pc))
 
 
 def test_rework_4_auto_prompt_has_full_toolset_and_no_false_sentence():
@@ -687,7 +718,7 @@ def test_rework_4_auto_prompt_has_full_toolset_and_no_false_sentence():
     for line in _AUTO_ONLY_TOOL_LINES:
         assert line in auto, f"auto 版工具清单缺：{line}"
     assert "工具已收回" not in auto, "auto 版仍写着「工具已收回」（对全权卡是假话）"
-    assert "你可以直接改写卡片正文" in auto, "auto 版内容写入节应为全权口径"
+    assert "各有各的写入口" in auto, "auto 版内容写入节应为全权口径"
     # ★ [2026-10-17 口径同步] 计划六件在提示词里的有无**必须与开关一致**：
     # 开关开 ⇒ 提示词可声称（工具确实下发）；开关关 ⇒ 不得声称（否则是假话）。
     _tc_on = _thinkchain_enabled()
@@ -698,10 +729,16 @@ def test_rework_4_auto_prompt_has_full_toolset_and_no_false_sentence():
 
 
 def test_rework_5_normal_prompt_has_no_auto_text():
-    """硬判据 5（红线 10）：非 auto 卡提示词不含自动版任何新增文本。"""
+    """硬判据 5（红线 10）：非 auto 卡提示词不含自动版任何新增文本。
+
+    [2026-11-01] 「update_goal」字样已从自动版泄进共用段 _SEC_CODER
+    （编程卡后续派活的指引），不再能当 auto-only 标记；auto-only 词改钉
+    目标生命周期三件（create_goal/get_goal）与 await_children。
+    """
     base = prompts.BASE_PROMPT
     assert "## 自动模式" not in base
-    assert "update_goal" not in base
+    for _auto_only in ("create_goal(", "get_goal(", "await_children"):
+        assert _auto_only not in base
     assert "你拥有全部工具与全部权限" not in base
     assert "本卡处于自动模式" not in base
     # 自动版新增的三段（TOOLS_AUTO / WRITE_AUTO / AUTO）的字句不得泄进普通版
@@ -1079,10 +1116,13 @@ def test_idle_stop_still_counts_without_children(monkeypatch):
 
 
 def test_auto_prompt_version_after_p7():
-    """[6702 移植 P7] 版本号：普通版不动，自动版到 auto-t7。"""
+    """[6702 移植 P7] 版本号：普通版不动，自动版到 auto-t7。
+
+    [事实分层 2026-11-01] 两版同批推进 ⇒ t27-3 / auto-t20。
+    """
     from src.api import prompts
-    assert prompts.BASE_PROMPT_VERSION == "t27-2"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t19"
+    assert prompts.BASE_PROMPT_VERSION == "t27-5"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t22"
 
 
 async def _async_noop(*a, **kw):

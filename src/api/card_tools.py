@@ -137,7 +137,7 @@ FUNCTION_ONLY_TOOLS: frozenset[str] = frozenset({
     # ★ 只用于基础池排除:_apply_function_toolface 的追加清单是独立元组,
     #   职能回合不会因此拿到这四件。
     "report_up", "curate_face", "confirm_with_user", "report_to_user",
-    "write_ledger", "stop_card", "silence_card", "continue_task",
+    "stop_card", "silence_card", "continue_task",
     # [四场景 2026-10-25] 评审/汇报/同步/指令五件不进基础池:
     # sync 由类型闸追加、direct 由类型闸与总裁目录追加。
     "sync", "direct",
@@ -182,7 +182,7 @@ _WEB_GROUP_TOOLS = ("web_search", "fetch_web")
 #   delete_card                            → delete（L337）
 #   create_card                            → create_child（L227）
 #   link_cards / unlink_cards              → link / unlink（L430/L474）
-#   link_rel / unlink_rel                  → link / unlink（依赖关联线，复用同款开关）
+#   link_rel / unlink_rel                  → link_rel / unlink_rel（依赖线独立开关，10-27 裁定）
 #   update_shadow                          → shadow_write（L361）
 #   list_manuscript/read_manuscript/search_manuscript → manuscript（新增开关，原无）
 #   run_tool_card                          → invoke_tool（新增开关，原无）
@@ -197,6 +197,10 @@ _WEB_GROUP_TOOLS = ("web_search", "fetch_web")
 TOOL_SWITCH: dict[str, str] = {
     "read_card": policy.SWITCH_READ,
     "read_memory": policy.SWITCH_READ,
+    # [memory_expand 接线 2026-11-01 · 用户令「给所有卡挂上」] 与 read_memory
+    # 同开关：它是记忆条目沿锚点展开到逐字原文的下探件，读性质——read 门槛
+    # 一致的卡都该有（此前注册了但漏配开关 ⇒ 全卡不可见，死件）。
+    "memory_expand": policy.SWITCH_READ,
     "read_shadow": policy.SWITCH_READ,
     # [卡片底座第一步 2026-10-14] 沿通信线读——独立开关（沿连线读比直接读更敏感）
     "read_linked": policy.SWITCH_READ_LINKED,
@@ -240,6 +244,12 @@ TOOL_SWITCH: dict[str, str] = {
     # coder 子卡走同一建卡关口）：无 create_child 的类型（tool/coder）压根看不见
     # 它，有 create_child 的（project/sub_project）按下发面规则可见。
     "create_coder_card": policy.SWITCH_CREATE_CHILD,
+    # [差事卡 2026-11-01] 建差事卡＝召唤职能：建的是子卡 ⇒ create_child 同关口。
+    "create_deploy_card": policy.SWITCH_CREATE_CHILD,
+    # [UI 卡 2026-11-02] 建 UI 卡＝派 UI 执行卡：建的是子卡 ⇒ create_child 同关口。
+    "create_ui_card": policy.SWITCH_CREATE_CHILD,
+    # 差事回执：只写派遣方会话＋唤醒，无面写 ⇒ read 开关（发信类同口径）。
+    "report": policy.SWITCH_READ,
     "link_cards": policy.SWITCH_LINK,
     "unlink_cards": policy.SWITCH_UNLINK,
     # [依赖关联线 2026-10-16] 第三种线（依赖关联线）的建/解线工具——复用 link/unlink
@@ -276,6 +286,10 @@ TOOL_SWITCH: dict[str, str] = {
     "search_manuscript": policy.SWITCH_MANUSCRIPT,
     "web_search": policy.SWITCH_TOOLS_WEB,
     "fetch_web": policy.SWITCH_TOOLS_WEB,
+    # [浏览器能力 2026-11-02] browser 单件挂 tools_web——联网类动作同类别
+    # （开页面、读页面、操作页面）。实际下发再受能力挂载闸
+    # （_filter_by_capability：卡上 abilities 须有 browser）。
+    "browser": policy.SWITCH_TOOLS_WEB,
     # [基础工具找回 2026-10-18 · Cardlo 搬运] 七件全挂 tools_file
     "bash": policy.SWITCH_TOOLS_FILE,
     "python": policy.SWITCH_TOOLS_FILE,
@@ -334,7 +348,11 @@ TOOL_SWITCH: dict[str, str] = {
 #   write_requirements_final（根卡【需求确定】那一轮写需求文档**正稿**的口子）。
 #   同样不进常规工具面（OP_ONLY_TOOLS），只在 op==OP_REQUIREMENTS_FINAL 且本卡
 #   是根卡（project）时追加 ⇒ 常规卡片工具面逐字不变。
-TOOL_TABLE_VERSION = "tools-tc-18"
+# tools-tc-18：见上行（tc-18 现行值）。
+# tools-tc-19：[事实分层 2026-11-01] **schema 文案变更 ⇒ 递增**：sync 的
+#   content 参数描述「要同步的事实」→「要同步的事(常是你卡面的变化)」——
+#   消息是送达信息，不把消息教成第二条事实源；read_shadow 跨卡剥笔记随批修。
+TOOL_TABLE_VERSION = "tools-tc-21"
 
 
 # ============================================================
@@ -459,59 +477,139 @@ _EVENT_LABEL = {
     "card_message": "最后收到卡间消息",
     "done": "已收回合",
     "error": "最后出错",
+    "card_block_edited": "最后卡面被改",
+    "card_created": "刚被建出来",
+}
+
+#: 回合边界事件——「最后一条信息的状态」只认这些，过程事件（tool_call 等）
+#: 不回答"它停在哪"。turn_end 是权威终止帧（finally 无条件发）；done/error
+#: 是内容层收口；card_stopped 是被停。
+_TURN_BOUNDARY_TYPES = {"turn_end", "done", "error",
+                        "card_stopped", "card_stopped_self"}
+
+#: turn_end.outcome / done.end_reason → 上级看得懂的落态
+_TURN_END_OUTCOME = {
+    "ok": "回合正常收口",
+    "error": "回合出错",
+    "aborted": "回合被中止",
+}
+_DONE_END_REASON = {
+    "model_done": "回合正常收口",
+    "human_stop": "被人为停止",
+    "policy_stop": "被策略停止",
 }
 
 
+def _activity_ago(ts_text: str) -> str:
+    """ISO 时间戳 → 距今说法；坏了就回空。"""
+    try:
+        ts = datetime.fromisoformat(str(ts_text or ""))
+        secs = (datetime.now().astimezone() - ts).total_seconds()
+        if secs < 60:
+            return "刚刚"
+        if secs < 3600:
+            return f"{int(secs // 60)} 分钟前"
+        if secs < 86400:
+            return f"{int(secs // 3600)} 小时前"
+        return f"{int(secs // 86400)} 天前"
+    except Exception:  # noqa: BLE001 时间戳坏了就不报距今
+        return ""
+
+
 def _card_activity(work_id: str, card_id: str, meta: dict[str, Any]) -> str:
-    """给上级看的一行活性：**运行态 · 最近活动（多久前）· 已跑轮次**。
+    """给上级看的一行活性：**在不在跑 · 最后一条信息的状态 · 已跑轮次**。
 
     [上级可见性 2026-10-19 · permexp] 用户裁定：上级看不见下属在干什么 ⇒ 只能看
-    文件大小 ⇒ 误判"零产出" ⇒ 换人。本函数把活性放进 read_card 的返回里（它本来
-    就会读子卡），不占常驻上下文、也不需要模型多学一个工具。
+    文件大小 ⇒ 误判"零产出" ⇒ 换人。
 
-    ★ 最近活动必须认 **reasoning**：实测 card_009 连续推理 40 分钟没有一次工具调用，
-      只看 tool_call 会判成"没动"。
+    [活性口径 2026-11-01] 用户裁定「活性＝此刻在不在运行＋最后一条信息的状态」：
+    · 在不在跑只看 ``turn_holder``（在途回合唯一登记处，auto_driver 判忙同用它），
+      progress stage 作旁证（带阶段名）——不用内存 stage 单判（崩了没清会谎报）；
+    · 停了看**回合边界事件**的落态（turn_end.outcome / done.end_reason /
+      error / card_stopped），run_start 后无边界＝上一回合没收口（崩/重启）；
+    · goal_state 降为**目标位标签**（已收口/卡住了/已暂停/已沉默），
+      「active」不再反推"待推进"——目标开着不等于有人在跑。
     """
     parts: list[str] = []
 
-    # ① 运行态：内存里的 stage 优先（正在跑），否则看目标态
-    stage = None
+    # ① 在不在跑：turn_holder 为准，progress.active 旁证
+    holder = ""
+    try:
+        holder = session_facade.turn_holder(work_id, card_id)
+    except Exception:  # noqa: BLE001 读不到＝不占坑
+        holder = ""
+    stage_name = ""
     try:
         from . import progress
-        stage = (progress.get_stage(work_id, card_id) or {}).get("stage")
-    except Exception:  # noqa: BLE001 读不到＝按目标态判
-        stage = None
-    if stage and str(stage) not in ("", "done"):
-        parts.append("运行中")
-    else:
-        gs = str((meta or {}).get("goal_state") or "")
-        if gs == "complete":
-            parts.append("已收口")
-        elif gs == "blocked":
-            parts.append("卡住了")
-        elif gs == "paused":
-            parts.append("已暂停")
-        elif gs == "active":
-            # active 只表示「目标还没终止」，不代表此刻在跑——说"空闲"会被读成
-            # "它没事干"，说"待推进"才准确（等下一轮/等唤醒）。
-            parts.append("待推进")
-        else:
-            parts.append("空闲")
+        rec = progress.get_stage(work_id, card_id) or {}
+        if rec.get("active"):
+            stage_name = str(rec.get("stage") or "")
+    except Exception:  # noqa: BLE001 旁证坏了不挡
+        stage_name = ""
+    running = bool(holder) or bool(stage_name)
 
-    # ② 最近活动（类型 + 距今）
+    if running:
+        parts.append(f"运行中（{stage_name}）" if stage_name else "运行中")
+    else:
+        # 不在跑：先问有没有被沉默，再报目标位
+        silenced = False
+        try:
+            from ..storage import governance_store
+            silenced = governance_store.is_silenced(work_id, card_id)
+        except Exception:  # noqa: BLE001 治理表读不到＝没沉默
+            silenced = False
+        if silenced:
+            parts.append("已沉默")
+        else:
+            parts.append({
+                "complete": "已收口",
+                "blocked": "卡住了",
+                "paused": "已暂停",
+            }.get(str((meta or {}).get("goal_state") or ""), "已停止"))
+
+    # ② 最后一条信息的状态：尾部窗口找最近的回合边界事件
     try:
         from ..storage import event_log
-        line = _last_event_line(event_log.event_path(work_id, card_id))
-        if line:
-            rec = json.loads(line)
-            label = _EVENT_LABEL.get(str(rec.get("type") or ""), str(rec.get("type") or ""))
-            ago = ""
-            try:
-                ts = datetime.fromisoformat(str(rec.get("ts") or ""))
-                mins = int((datetime.now().astimezone() - ts).total_seconds() // 60)
-                ago = "刚刚" if mins < 1 else f"{mins} 分钟前"
-            except Exception:  # noqa: BLE001 时间戳坏了就不报距今
-                ago = ""
+        tail = event_log.timeline(work_id, card_id, tail=40)
+        last_run_start = None
+        boundary = None
+        for rec in tail:
+            t = str(rec.get("type") or "")
+            if t == "run_start":
+                last_run_start = rec
+            elif t in _TURN_BOUNDARY_TYPES:
+                boundary = rec
+        label = ""
+        ts_text = ""
+        if boundary is not None:
+            t = str(boundary.get("type") or "")
+            data = boundary.get("data") or {}
+            if t == "turn_end":
+                label = _TURN_END_OUTCOME.get(str(data.get("outcome") or ""),
+                                             "回合结束")
+            elif t == "done":
+                label = _DONE_END_REASON.get(str(data.get("end_reason") or ""),
+                                           "回合正常收口")
+            elif t == "error":
+                label = f"回合出错（{data.get('error_type') or '?'}）" \
+                    if data.get("error_type") else "回合出错"
+            else:
+                label = "被停止" if t == "card_stopped" else "自行停止"
+            ts_text = str(boundary.get("ts") or "")
+        elif last_run_start is not None and not running:
+            # run_start 之后没有任何收口帧，且此刻不占坑 ⇒ 中途停了（崩/重启）
+            label = "上一回合没收口"
+            ts_text = str(last_run_start.get("ts") or "")
+        elif tail:
+            # 无回合史但有事件（建卡/写卡面留痕）——报最新一条活动兜底
+            rec = tail[-1]
+            label = _EVENT_LABEL.get(str(rec.get("type") or ""),
+                                     str(rec.get("type") or ""))
+            ts_text = str(rec.get("ts") or "")
+        else:
+            label = "未跑过回合" if not running else ""
+        if label:
+            ago = _activity_ago(ts_text)
             parts.append(f"{label}（{ago}）" if ago else label)
     except Exception:  # noqa: BLE001 活性是增益信息，读不到不阻断 read_card
         pass
@@ -604,8 +702,51 @@ def _actor_can_switch(card: dict[str, Any] | None, switch: str) -> bool:
     return bool(mounted & codes)
 
 
+def _function_extra_mounts(work_id: str, actor_id: str) -> list[str]:
+    """actor 是职能档案 ⇒ 目录条目 ``extra_abilities``（岗位挂载，如 PM 的
+    edit_other_face）；非职能/查不到 ⇒ 空。"""
+    try:
+        from ..storage import function_store as _fs
+        from . import function_room
+        prof = _fs.get_profile(work_id, actor_id) or {}
+        if not prof:
+            return []
+        e = function_room.entry(function_room.catalog_code_of(prof)) or {}
+        return [str(a) for a in (e.get("extra_abilities") or []) if str(a)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _deployment_scope(work_id: str, actor_id: str, target_id: str,
+                      cap_code: str) -> bool:
+    """差事即作用域：actor 有覆盖 ``target_id`` 的**在派差事**，且该差事
+    实发面（dep.tools）含 ``cap_code`` 展开的工具 ⇒ 视同「在范围内」。
+
+    职能不进卡树，子树判据对它恒假——但差事授面本来就是「这次派活发的
+    钥匙」，作用域与授面同源：差事覆盖哪张卡、发了什么工具，都在
+    ``function_deployments`` 账上。只有发过的工具才放行——差事不会
+    让 actor 拿到账外能力（dispose 之类没发就是没发）。
+    """
+    try:
+        from ..storage import function_store as _fs
+        from ..infra import capability_registry as _cap
+        want = set(_cap.tools_of([cap_code]) or [])
+        if not want:
+            return False
+        for dep in _fs.active_for_function(work_id, actor_id):
+            if str(target_id) not in (str(dep.get("venue_ref") or ""),
+                                      str(dep.get("target_card") or "")):
+                continue
+            if want & set(dep.get("tools") or []):
+                return True
+    except Exception:  # noqa: BLE001 差事账查不了不放宽
+        pass
+    return False
+
+
 def _cap_gate(actor_id: str, cap_code: str, switch: str, target_id: str,
-              cards: dict[str, dict[str, Any]] | None, what: str) -> dict[str, Any] | None:
+              cards: dict[str, dict[str, Any]] | None, what: str,
+              *, work_id: str = "") -> dict[str, Any] | None:
     """写侧判据：**能力（岗位）＋ 作用域（按线）**。返回 None＝放行，否则 denied 信封。
 
     [能力底座 2026-10-30] 把 handler 里"查目标卡 perms"换成两件该查的事：
@@ -619,10 +760,18 @@ def _cap_gate(actor_id: str, cap_code: str, switch: str, target_id: str,
     mounted = _abilities_of(card, cards)
     if mounted is None:
         return err("denied", f"本卡能力挂载不可用，不能{what}。")
+    if cap_code not in mounted and work_id:
+        # [执笔挂载 2026-11-01] 职能席位的卡面是合成面，目录 ``extra_abilities``
+        #（PM 的 edit_other_face 这类岗位挂载）合成路径看不见——并进来再判。
+        mounted = set(mounted) | set(
+            _function_extra_mounts(work_id, actor_id))
     if cap_code not in mounted:
         return err("denied", f"本卡没挂「{cap_code}」这项能力，不能{what}。")
     if switch in policy.TREE_SWITCHES and not policy.can(actor_id, target_id, switch, cards):
-        return err("denied", f"越权：{target_id} 不在你的范围内，不能{what}")
+        # 树闸不过 ⇒ 最后查差事：在派差事覆盖目标且实发面含此能力的
+        # 工具，差事授权即临时作用域（职能无子树，这是它执笔的唯一通道）。
+        if not _deployment_scope(work_id, actor_id, target_id, cap_code):
+            return err("denied", f"越权：{target_id} 不在你的范围内，不能{what}")
     return None
 
 
@@ -695,6 +844,88 @@ def _line_between(work_id: str, current_id: str, target_id: str,
     return ""
 
 
+# [2026-11-02 · card_021 实案续] 分段读：块名 → 存储字段。模型侧中文名为主，
+# 英文别名照收（模型常拿存储字段名直接填）。
+_BLOCK_READ_ALIASES = {
+    "使命": "mission", "mission": "mission",
+    "现状": "status_block", "status": "status_block", "body": "status_block",
+    "需求文档": "requirements", "requirements": "requirements",
+    "需求文档·草稿": "requirements_draft", "草稿": "requirements_draft",
+    "requirements_draft": "requirements_draft",
+}
+
+_BLOCK_READ_LABELS = {
+    "mission": "使命", "status_block": "现状",
+    "requirements": "需求文档", "requirements_draft": "需求文档·草稿",
+}
+
+
+def _read_card_cap() -> int:
+    """单块回显上限（字符）：READ_CARD_BLOCK_CAP 覆盖，缺省 24000。
+
+    8 万 token 的需求文档（card_021 实案）整块回读一次就上 8 万 token 的
+    线；封顶＋续读指引让「读卡」自身不再能一次吞掉上下文。惰性读 env
+    （先例：memory_store 的 CONDENSE_TRIGGER_TOKENS）。
+    """
+    raw = os.environ.get("READ_CARD_BLOCK_CAP", "").strip()
+    if not raw:
+        return 24000
+    try:
+        v = int(raw)
+        return v if v > 0 else 24000
+    except ValueError:
+        return 24000
+
+
+def _cap_block_text(text: str, label: str, target_id: str) -> str:
+    """块内容封顶：超限截到行边界＋尾部续读指引（非静默——明示行数与怎么续）。"""
+    t = str(text or "")
+    cap = _read_card_cap()
+    if len(t) <= cap:
+        return t
+    head = t[:cap]
+    cut = head.rfind("\n")
+    if cut > cap // 2:
+        head = head[:cut]
+    shown = head.count("\n") + (1 if head else 0)
+    total_lines = t.count("\n") + (1 if t else 0)
+    return (head + f"\n…（本块共 {total_lines} 行/{len(t)} 字，以上为前 "
+            f"{shown} 行——续读：read_card 带 block=\"{label}\" "
+            f"para_start={shown + 1}）")
+
+
+def _ranged_block_reply(target_id: str, title: str, label: str,
+                        text: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """单块按行区间回读：``block``＋``para_start``/``para_end``（与 read_file
+    的 para_* 同口径：1 起、闭区间、越端收敛）。区间本身超 cap 也封顶。"""
+    rows = str(text or "").split("\n") if text else []
+    total = len(rows)
+    try:
+        start = max(1, int(arguments.get("para_start") or 1))
+        end = int(arguments.get("para_end") or 0) or total
+    except (TypeError, ValueError):
+        return err("validation", "para_start/para_end 必须是整数行号")
+    if total and start > total:
+        return err("validation", f"para_start={start} 超出范围：该块共 {total} 行")
+    end = max(start, min(end, total)) if total else 0
+    content = "\n".join(rows[start - 1:end]) if total else ""
+    shown_end = end
+    cap = _read_card_cap()
+    if len(content) > cap:
+        head = content[:cap]
+        cut = head.rfind("\n")
+        if cut > cap // 2:
+            head = head[:cut]
+        shown_end = start + head.count("\n")
+        content = (head + f"\n…（区间 {start}-{end} 共 {len(content)} 字，"
+                   f"仅返回前 {shown_end - start + 1} 行——"
+                   "用更小的 para 区间续读）")
+    return {"card_id": target_id, "title": title, "block": label,
+            "total_lines": total,
+            "read_lines": f"{start}-{shown_end}" if total else "0-0",
+            "content": content}
+
+
 async def _h_read_card(work_id: str, current_id: str,
                        arguments: dict[str, Any],
                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -720,8 +951,18 @@ async def _h_read_card(work_id: str, current_id: str,
     # 不再看目标卡的 perms：权限是关系，不是对象属性。
     line = _line_between(work_id, current_id, target_id, cards)
     if not line:
-        return err("denied",
-                   f"越权：{target_id} 与你之间没有父子线也没有关系线，读不到。")
+        # [差事卡 2026-11-01] 无线最后查差事：在派差事覆盖 target_card 且实发
+        # 面含 read_card ⇒ 差事授权即临时读权（职能不进树，对线恒无线；QA 在
+        # 验收卡上读 sibling 被验卡的唯一通道）。
+        if not _deployment_scope(work_id, current_id, target_id, "read_card"):
+            return err(
+                "denied",
+                f"越权：{target_id} 与你之间没有父子线也没有关系线，读不到。")
+        line = "deployment"
+    if line == "deployment":
+        # 差事读权给全卡面（验收要拿需求文档＋现状当判据），但不算父子线——
+        # 只放 reading，不放组织权。
+        pass
     result = await card_store.read_card(work_id, target_id)
     body = result["body"] or {}
     # [角色机制 5710 v2] 角色卡返回**独立结构**（管辖/关注/发言契约/升级线/
@@ -755,6 +996,29 @@ async def _h_read_card(work_id: str, current_id: str,
                 "function": fsum,
                 "text": fsum.get("text", ""),
             }
+    # [2026-11-02 · card_021 实案续] 分段读：block=块名 ＋ para_start/para_end
+    # 按行区间只回一段。整块回在 8 万 token 文档上是「一次调用上 8 万 token
+    # 的线」——编辑器报错已给行号，这里给按行取文的通道。
+    want_block = str(arguments.get("block") or "").strip()
+    if want_block:
+        field = _BLOCK_READ_ALIASES.get(want_block)
+        if field is None:
+            return err("validation",
+                       "block 只认：" + "、".join(dict.fromkeys(
+                           _BLOCK_READ_LABELS.values()))
+                       + f"（收到 {want_block!r}）")
+        # 角色/职能卡是结构化卡面（上面已早返），走到这里必是普通三区块卡。
+        if line == "relation" and field != "requirements":
+            return err("denied", "关系线只读对外信息：block 只可取「需求文档」。")
+        if field == "requirements_draft":
+            if target_id != current_id:
+                return err("denied", "「需求文档·草稿」只能读自己的卡。")
+            text = str(result["meta"].get("requirements_draft") or "")
+        else:
+            text = str(body.get(field) or "")
+        return _ranged_block_reply(
+            target_id, str(result["meta"].get("title", "")),
+            _BLOCK_READ_LABELS[field], text, arguments)
     # 第三块在库内恒为 requirements 一列，**模型侧统一叫「需求文档」**。
     # [需求文档正名 2026-10-28] 改前按 project_class 分叉（rd_project→requirements／
     # 其他树→rulings），而 workspace.js 早在 2026-10-22 就统一成「需求文档、不分树」
@@ -771,8 +1035,14 @@ async def _h_read_card(work_id: str, current_id: str,
             "关系": "关系线（依赖/影响）· 只读对外信息，使命与现状不给",
             "links": result["meta"].get("links") or [],
             "relations": result["meta"].get("relations") or [],
-            third_key: body.get("requirements", ""),
+            # [relations_in 2026-11-01 · 用户令「谁依赖我应该在对方卡面上，
+            # 需要知道的不只是它自己」] 入边也是对外信息的一部分。
+            "relations_in": result["meta"].get("relations_in") or [],
+            third_key: _cap_block_text(body.get("requirements", ""),
+                                       "需求文档", target_id),
         }
+    _status_capped = _cap_block_text(body.get("status_block", ""),
+                                     "现状", target_id)
     return {
         "card_id": target_id,
         "title": result["meta"].get("title", ""),
@@ -783,12 +1053,24 @@ async def _h_read_card(work_id: str, current_id: str,
         # [依赖关联线 2026-10-16] 两线并列返回：
         #   links     ＝通信线（原 relations 改名，read_linked 沿它寻址）
         #   relations ＝依赖关联线（新线，不参与通信）
+        # [relations_in 2026-11-01] ＋入边投影「谁依赖我」（属卡面事实）。
         "links": result["meta"].get("links") or [],
         "relations": result["meta"].get("relations") or [],
-        "body": body.get("status_block", ""),
-        "使命": body.get("mission", ""),
-        "现状": body.get("status_block", ""),
-        third_key: body.get("requirements", ""),
+        "relations_in": result["meta"].get("relations_in") or [],
+        "body": _status_capped,
+        "使命": _cap_block_text(body.get("mission", ""), "使命", target_id),
+        "现状": _status_capped,
+        third_key: _cap_block_text(body.get("requirements", ""),
+                                   "需求文档", target_id),
+        # [2026-11-01 · 用户令「草稿不进上下文，只有正稿常驻」] 草稿仍可
+        # 按需自读（改它的入口是 edit_requirements，评审材料另走评审通道）：
+        # 仅当自己读自己且有草稿时附，读别人的卡不给。
+        **({"需求文档·草稿": _cap_block_text(
+            result["meta"].get("requirements_draft") or "",
+            "需求文档·草稿", target_id)}
+           if target_id == current_id
+           and str(result["meta"].get("requirements_draft") or "").strip()
+           else {}),
     }
 
 
@@ -1197,6 +1479,64 @@ def _count_write_file_calls(work_id: str, card_id: str) -> int:
     return n
 
 
+#: [完工必达 2026-11-03] 最近一次 coder_done 回执的发送时刻（card_id → ts）。
+#: 兜底网（card_store._coder_done_net）按「回执时刻 ≥ 完工时刻」判重——
+#: report_done 链是先标完工再发信，它的回执必然晚于完工写入。
+_CODER_DONE_SENT_AT: dict[str, float] = {}
+
+
+def _collect_deliverables(work_id: str, card_id: str,
+                          limit: int = 8) -> tuple[list[str], str]:
+    """[验收指引 2026-11-03] 收 work 目录顶层与本卡同名的产物落点。
+
+    命名约定实测多形：``receipt_card_187.md``／``card_181_receipt.md``／
+    ``evidence_card_181``／``card_170/``（含回执＋证据）／``*_rework`` 改版
+    后缀——统一用「文件名含 card_id（数字边界）」捞。返回 (落点行列表,
+    回执摘录)：行按修改时间倒序、带类型与体积；摘录取最像回执的 .md 的
+    开头一段（父卡不先找文件也有内容可看）。产物本体可能已被清理或本就
+    没有——找不到返回空，不报错。
+    """
+    root = work_store._work_dir(work_id)
+    pat = re.compile(re.escape(card_id) + r"(?!\d)")
+    try:
+        entries = []
+        for e in os.scandir(root):
+            if not pat.search(e.name):
+                continue
+            try:
+                st = e.stat()
+            except OSError:
+                continue
+            entries.append((st.st_mtime, e.name,
+                            e.is_dir(follow_symlinks=False), st.st_size))
+    except OSError:
+        return [], ""
+    entries.sort(reverse=True)
+    lines = []
+    for _mt, name, is_dir, size in entries[:limit]:
+        kind = "目录" if is_dir else f"{size / 1024:.1f}KB"
+        lines.append(f"· works/{work_id}/{name}（{kind}）")
+    receipt_md = ""
+    for _mt, name, is_dir, _s in entries:
+        if is_dir or not name.lower().endswith(".md"):
+            continue
+        if "receipt" in name.lower() or "回执" in name:
+            receipt_md = name
+            break
+        if not receipt_md:
+            receipt_md = name
+    excerpt = ""
+    if receipt_md:
+        try:
+            head = (root / receipt_md).read_text(encoding="utf-8",
+                                               errors="replace")[:600].strip()
+            if head:
+                excerpt = f"（{receipt_md} 开头）\n{head}"
+        except OSError:
+            pass
+    return lines, excerpt
+
+
 async def _h_report_done(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1301,15 +1641,32 @@ async def _h_report_done(work_id: str, current_id: str,
     )
 
     # ④ 系统发信（回执由系统发，模型全程不碰发信工具）
+    # [差事卡 2026-11-01] 回执尾部带验收提示：coding 完工不等于阶段验收过——
+    # 要不要召 QA 由主卡裁，口子给在回执里。
+    # [验收指引 2026-11-03 · 用户令「完工没汇报，父卡不知道验收内容在哪」]
+    # 回执机械附上本卡产物落点＋回执摘录——父卡拿到路径直接读，不再上
+    # 盘面搜文件；摘录让汇报内容即达，不用先找到文件才有东西看。
+    _content = str(summary)
+    _arts, _excerpt = _collect_deliverables(work_id, current_id)
+    if _arts:
+        _content += "\n\n——【验收指引】产物落点：\n" + "\n".join(_arts)
+    if _excerpt:
+        _content += f"\n\n——【回执摘录】{_excerpt}"
+    _content += (f"\n\n——【可验收】如需验收本卡产物："
+                 f"create_deploy_card(function=\"qa\", "
+                 f"target=\"{current_id}\", task=\"验收本卡产物\")")
     sent = await send_card_message(
         work_id, current_id, target_id=owner,
-        msg_type="coder_done", content=summary,
+        msg_type="coder_done",
+        content=_content,
     )
     if isinstance(sent, dict) and sent.get("error"):
         # 落信失败：卡已完工、影子已留痕——错误如实回给模型（不回滚终态）
         logger.error("report_done 回执发信失败 card=%s owner=%s: %s",
                      current_id, owner, sent)
         return err("internal", f"完工回执发送失败: {sent.get('error')}")
+    # [完工必达] 登记本次回执时刻——update_card 的兜底网据此判重。
+    _CODER_DONE_SENT_AT[current_id] = datetime.now().timestamp()
     return {
         "ok": True,
         "card_id": current_id,
@@ -1414,6 +1771,267 @@ async def _h_create_coder_card(work_id: str, current_id: str,
     }
 
 
+async def _h_create_ui_card(work_id: str, current_id: str,
+                            arguments: dict[str, Any],
+                            cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """[UI 卡 2026-11-02] 派生 UI 卡并**建卡即首跑**（同 create_coder_card 手法）。
+
+    与 coder 卡同构、两点不同：
+      ① card_type="ui"——不在 wb_exec 委派名单里 ⇒ 跑系统内模型回合
+        （message_runner 内循环），手里有平台工具面；
+      ② 汇报通道走 report_up（作业卡口径），不走 coder 的 report_done。
+    任务落 ``## 使命`` 块＋goal；首跑经 _spawn_tracked 直调，唯一入口。
+    """
+    title = str(arguments.get("title", "") or "").strip()
+    if not title:
+        return err("validation", "title 不能为空")
+    task = str(arguments.get("task", "") or "").strip()
+    if not task:
+        return err("validation", "task 不能为空")
+    if current_id not in cards:
+        return err("not_found", f"卡片不存在: {current_id}")
+    _ui_parent = str(arguments.get("parent", "") or "").strip() or current_id
+    if _ui_parent not in cards:
+        return err("not_found", f"父卡不存在: {_ui_parent}")
+    if not _org_scope_allows(current_id, _ui_parent,
+                             policy.SWITCH_CREATE_CHILD, cards):
+        return err(
+            "denied",
+            f"越权：不能把执行卡建到 {_ui_parent} 之下"
+            f"（当前卡 {current_id}）",
+        )
+    result = await card_store.create_card(
+        work_id, title, "模型生成",
+        card_type="ui", parent=_ui_parent,
+        charter=f"## 使命\n{task}",
+        goal=task,
+        skip_kick=True,
+        created_by=current_id,
+    )
+    if "error" in result:
+        return result
+    new_id = result["meta"]["card_id"]
+    cards[new_id] = {**result["meta"], "card_id": new_id}
+    started = False
+    try:
+        from . import message_runner as _message_runner
+        from . import routes as _routes
+        owner_title = str(
+            (await card_store.read_card(work_id, current_id))["meta"].get("title")
+            or current_id
+        )
+        prompt = (
+            f"卡 {current_id}（《{owner_title}》）给你发来 UI 任务。\n"
+            f"任务内容：\n{task}"
+        )
+        first_run = _message_runner._spawn_tracked(
+            _routes._run_message(work_id, new_id, prompt, None, append_user=False)
+        )
+        first_run._card_msg_target = new_id  # type: ignore[attr-defined]
+        started = True
+    except Exception as exc:  # noqa: BLE001 首跑拉起失败不吞——如实回报 started=False
+        logger.error("create_ui_card 首跑拉起失败 card=%s: %s", new_id, exc)
+        started = False
+    return {
+        "ok": True,
+        "card_id": new_id,
+        "title": title,
+        "parent": current_id,
+        "card_type": "ui",
+        "started": started,
+        "shadow": "已派生影子卡（过程记录，你不用管）",
+    }
+
+
+# [差事卡 2026-11-01 · 用户令「建卡即召唤」] 职能 → 差事卡型：场卡挂在
+# 召唤方树下（看得见），会话装职能的差事过程；卡自身不跑日常回合。
+_DEPLOY_VENUE_TYPES: dict[str, str] = {"qa": "qa_card", "pm": "pm_card"}
+
+
+async def _h_create_deploy_card(work_id: str, current_id: str,
+                                arguments: dict[str, Any],
+                                cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """建一张差事卡＝把职能部署进场干活，一次调用到底。
+
+    流程（与 create_coder_card 同构）：
+      ① 资格闸：职能存在且有 ``charters.deploy``（目录第一级——现在只有
+        qa/pm 有；无派驻职责书的职能不接差事，召唤方和它的职责书互不欠债）；
+      ② 对象闸：``target`` 缺省＝本卡；只许本卡或直接子卡（阶段验收验自己、
+        替子卡执笔/验收，都出不了这一层）；
+      ③ 建卡：``_DEPLOY_VENUE_TYPES`` 映射卡型，parent＝本卡，使命＝task，
+        skip_kick（卡不自跑，唯一回合是差事回合）；
+      ④ 落账：``create_deployment``（delegator＝本卡、target_card＝对象卡、
+        exit_spec＝目录条目 ``deploy_exit``、tools＝``grant_for(,'deploy')``）
+        并激活——**建账先于唤起**（幂等，重演不双开）；
+      ⑤ 唤起：``_spawn_tracked`` 背景跑 ``routes._run_message(act_as=职能)``
+        ——差事卡是新卡恒闲，不等谁的锁；办完的判定交给差事判据。
+    """
+    fn_key = str(arguments.get("function") or "").strip()
+    task = str(arguments.get("task") or "").strip()
+    if not fn_key:
+        return err("validation", "function 必填：召哪个职能（目录 code，如 qa/pm）")
+    if not task or len(task) < 8:
+        return err("validation",
+                   "task 必填且要真职责：召它来干什么、干到什么程度算完")
+    target = str(arguments.get("target") or "").strip() or current_id
+    if target not in cards:
+        return err("not_found", f"对象卡不存在: {target}")
+    if target != current_id and str(
+            (cards.get(target) or {}).get("parent") or "") != current_id:
+        return err("denied",
+                   f"越权：差事只能对着本卡或直接子卡派（{target} 不是你的子卡）")
+
+    # ① 职能解析＋资格闸（无派驻职责书 ⇒ 它不接差事）
+    from . import function_room as _fr
+    from ..storage import function_store as _fs
+    prof, fid = _fr._profile_for(work_id, fn_key)
+    code = _fr.catalog_code_of(prof) or fn_key
+    if not fid or not _fs.function_exists(work_id, fid):
+        return err("not_found", f"职能不存在: {fn_key}")
+    if _fr.entries() and not _fr.venue_charter_for(code, "deploy"):
+        return err("denied",
+                   f"{code} 没有派驻职责书——它不接差事，派了也干不好")
+    card_type = _DEPLOY_VENUE_TYPES.get(code)
+    if not card_type:
+        return err("denied",
+                   f"{code} 没有差事卡型——现在只有 qa(验收)/pm(执笔) 接差事")
+
+    # ② 建差事卡（挂本卡树下；使命＝task，不自跑）
+    tgt_title = str((cards.get(target) or {}).get("title") or target)
+    label = "验收" if code == "qa" else ("执笔" if code == "pm" else code)
+    title = str(arguments.get("title") or "").strip() or f"{label}·{tgt_title}"
+    mission = task if target == current_id else f"{task}（对象卡：{target}）"
+    result = await card_store.create_card(
+        work_id, title, "模型生成",
+        card_type=card_type, parent=current_id,
+        charter=f"## 使命\n{mission}",
+        skip_kick=True, created_by=current_id)
+    if "error" in result:
+        return result
+    new_id = result["meta"]["card_id"]
+    cards[new_id] = {**result["meta"], "card_id": new_id}
+
+    # ③ 落差事账＋激活
+    try:
+        entry = _fr.entry(code) or {}
+        exit_spec = str(entry.get("deploy_exit") or "report")
+        tools = sorted(set(_fr.grant_for(work_id, fid, "deploy") or []))
+        ident = _fr.identity_for(work_id, fid, "deploy")
+        # kick 正文＝职责书＋对象卡事实＋交差说明。两条执行路径共用：
+        # 系统模型走 act_meta 身份＋工具；wb 执行体只有这段文本＋工作目录
+        # 文件——所以对象卡的事实（验收的尺、执笔的据）必须落进正文。
+        charter = str(_fr.venue_charter_for(code, "deploy") or "")
+        try:
+            _tc = await card_store.read_card(work_id, target)
+            _tb = _tc.get("body") or {}
+            _tm = _tc.get("meta") or {}
+        except Exception:  # noqa: BLE001 读不到对象卡就裸差事
+            _tb, _tm = {}, {}
+        _facts = [
+            f"对象卡：{target}（{tgt_title}）",
+            f"使命：{str(_tb.get('mission') or '（空）')[:800]}",
+        ]
+        _req = str(_tb.get("requirements") or _tm.get("requirements_draft")
+                   or "").strip()
+        _facts.append(f"需求文档：{(_req[:1500] if _req else '（还没有）')}")
+        if code == "qa":
+            _how = ("这是阶段验收：对照需求文档逐条判产物现状。"
+                    "办完用 report 工具把结论回给派遣方；若你在执行体里干活，"
+                    "把完整验收结论写在最终回复正文（逐条过/不过＋证据＋总结论）。")
+        elif code == "pm":
+            _how = ("这是执笔：为对象卡写需求文档。"
+                    "办完用 edit_requirements 工具把草稿写到对象卡；若你在执行体"
+                    "里干活，把完整需求文档正文写在最终回复正文。")
+        else:
+            _how = "办完用 report 工具回执派遣方。"
+        text = (f"{charter}\n\n" if charter else "") + \
+               f"【差事】{task}\n派遣方：{current_id}\n" + \
+               "\n".join(_facts) + f"\n\n{_how}"
+        dep = await _fs.create_deployment(
+            work_id, fid, venue_kind="deploy", venue_ref=new_id,
+            venue_label=title, mandate=text, delegator=current_id,
+            target_card=target, tools=tools,
+            exit_kind="deliverable", exit_spec=exit_spec,
+            meta={"deploy_card": True})
+        did = int(dep.get("id") or 0)
+        await _fs.activate_deployment(work_id, did)
+    except Exception as exc:  # noqa: BLE001 落差事失败：卡已建——如实回报不吞
+        logger.error("create_deploy_card 落差事失败 card=%s fn=%s: %s",
+                     new_id, fid, exc)
+        return err("internal", f"差事卡已建({new_id})但差事落账失败: {exc}")
+
+    # ④ 唤起职能进场（背景任务；差事卡恒闲不等锁）
+    started = False
+    try:
+        from . import message_runner as _message_runner
+        from . import routes as _routes
+        run = _message_runner._spawn_tracked(_routes._run_message(
+            work_id, new_id, text, append_user=False,
+            source={"kind": "deploy", "deployment_id": did,
+                    "delegator": current_id},
+            act_as=fid, act_meta=ident, ctx_card=new_id,
+            tool_allow=set(dep.get("tools") or [])))
+        run._card_msg_target = new_id  # type: ignore[attr-defined]
+        started = True
+    except Exception as exc:  # noqa: BLE001 唤起失败如实回报——差事账在可重唤
+        logger.error("create_deploy_card 唤起失败 card=%s dep=%s: %s",
+                     new_id, did, exc)
+    return {
+        "ok": True,
+        "card_id": new_id,
+        "card_type": card_type,
+        "title": title,
+        "parent": current_id,
+        "function": code,
+        "function_id": fid,
+        "deployment_id": did,
+        "target_card": target,
+        "started": started,
+        "note": "差事已落账、职能进场中；它办完会自动收工，结论回执到本卡。",
+    }
+
+
+async def _h_report_deploy(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """[差事卡 2026-11-01] 差事回执：向**派遣方**汇报结论——正文落派遣方
+    会话（``msg_report``）＋唤醒。收件人由差事账算（``delegator``），
+    汇报人不能选——你在哪张差事卡上干活、结论就回给谁派的活。
+
+    与 report_up 的区别：report_up 认父子线（卡→父卡）；report 认差事账
+    （职能→派遣方）——职能不在树里没有父卡，差事账就是它唯一的上行线。
+    """
+    content = str(arguments.get("content") or "").strip()
+    if not content:
+        return err("validation", "content 不能为空")
+    from ..storage import function_store as _fs
+    deps = _fs.active_for_function(work_id, current_id)
+    if not deps:
+        return err("denied",
+                   "你没有在派的差事——report 是差事回执；对卡汇报用 report_up")
+    dep = deps[0]
+    to = str(dep.get("delegator") or "") or str(dep.get("target_card") or "")
+    if not to or to not in cards:
+        return err("internal", f"差事 {dep.get('id')} 没有可汇报的派遣方")
+    title = str(dep.get("venue_label") or dep.get("venue_ref") or "")
+    text = f"【差事回执·{title}({current_id})】\n{content}"
+    from . import message_runner as _mr
+    try:
+        _rec = await session_facade.append_card_message(
+            work_id, to, from_card=current_id, text=text,
+            msg_type="msg_report")
+        _mid = str((_rec or {}).get("msg_id") or "")
+        _mr._spawn_tracked(_mr.deliver_now(
+            work_id, to,
+            text=f"你收到一条来自 {current_id} 的差事回执，正文已在上文。",
+            source={"kind": "card_msg", "from": current_id}))
+    except Exception as exc:  # noqa: BLE001 投递失败要如实回给模型
+        logger.warning("[report] 投递失败 to=%s: %s", to, exc)
+        return err("internal", f"差事回执投递失败: {exc}")
+    return {"ok": True, "delivered": [{"to": to, "msg_id": _mid}],
+            "deployment_id": int(dep.get("id") or 0)}
+
+
 async def _h_draft_rule_edit(work_id: str, current_id: str,
                              arguments: dict[str, Any],
                              cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1421,11 +2039,16 @@ async def _h_draft_rule_edit(work_id: str, current_id: str,
 
     机械四步：
       ① 根卡闸：current_id 必须是剧本根卡（work_card_id_of），否则 denied；
-      ② 区名校验：合法区名＝注册表全词表 codes（rule_section_names，恰六区）；
-      ③ 读本项目规则文件里该区的当前内容（纯读零写）；
-      ④ 返回 ``{draft, base_hash, section, old, rule_card_id}``——draft 即提议
-         新内容、old 即盘上现文、base_hash＝sha256(old)（供 /rule/commit 乐观
-         比对）。**全程零写入**：落盘只能由用户在弹窗点「同意」后走
+      ② 归一参数：``sections=[{section,content}…]`` 多区一次起草，或
+         ``section``+``content`` 单区简形（等价单元素数组）——**写哪个区是
+         模型自己选的**，一篇治理文档该拆几个区就拆几个区，不必硬塞进一个区；
+      ③ 区名校验＋内容闸：区名必须在合法名单；**内容不得含 `## ` 行**——
+         文件按 `## ` 切区，内容里的 `## ` 行下次读取会被切成无人消费的幻影区
+         （2026-11-01 work_027 实案：整篇带 `## 一、`…`## 七、` 的文档落进
+         project 区后被切碎，规则静默零注入）；
+      ④ 返回 ``{sections: [{section, old, draft, base_hash}…]}``——draft 即
+         提议新文、old 即盘上现文、base_hash＝sha256(old)（供 /rule/commit
+         逐区乐观比对）。**全程零写入**：落盘只能由用户在弹窗点「同意」后走
          ``POST /works/{w}/rule/commit``。
 
     权限：TOOL_SWITCH 挂 SWITCH_READ；工具面由第四段 ROOT_ONLY_TOOLS 收敛到
@@ -1433,25 +2056,59 @@ async def _h_draft_rule_edit(work_id: str, current_id: str,
     """
     if current_id != work_store.work_card_id_of(work_id):
         return err("denied", "draft_rule_edit 仅限剧本根卡调用")
-    section = str(arguments.get("section", "") or "")
-    names = context_regions.rule_section_names(card_store.load_type_registry())
-    if section not in names:
-        return err("validation", f"非法区名: {section}（只允许 {names}）")
-    draft = str(arguments.get("content", "") or "")
-
+    from ..storage import rule_store as _rule_store
+    raw_sections = arguments.get("sections")
+    pairs: list[tuple[str, str]] = []
+    if raw_sections is not None:
+        if not isinstance(raw_sections, list):
+            return err("validation",
+                       "sections 须为 [{section, content}, …] 数组")
+        for i, it in enumerate(raw_sections):
+            if not isinstance(it, dict):
+                return err("validation",
+                           f"sections[{i}] 须为 {{section, content}} 对象")
+            pairs.append((str(it.get("section") or "").strip(),
+                          str(it.get("content") or "")))
+    else:
+        pairs = [(str(arguments.get("section") or "").strip(),
+                  str(arguments.get("content") or ""))]
+    if not pairs or not any(sec or content for sec, content in pairs):
+        return err("validation", "sections 不能为空：至少一个 {section, content}")
+    from . import function_room as _fr
+    names = context_regions.rule_section_names(
+        card_store.load_type_registry(),
+        fn_codes=[str(e.get("code") or "")
+                  for e in (_fr.entries() or [])])
+    seen: set[str] = set()
+    for sec, content in pairs:
+        if sec not in names:
+            return err("validation", f"非法区名: {sec}（只允许 {names}）")
+        if sec in seen:
+            return err("validation", f"同一草案里区 {sec!r} 出现多次")
+        seen.add(sec)
+        bad = _rule_store.find_section_header_lines(content)
+        if bad:
+            return err(
+                "validation",
+                f"区 {sec} 内容不得含 `## ` 行（会被切成幻影区，规则静默不进"
+                f"上下文）：{bad[0]}。区内子标题用 `### ` 或更深；要进不同的区"
+                "请拆成多个 section 条目")
     # [规则节点 2026-10-28 · 用户令「一个项目一个文件」] 规则读
     # ``works/<work_id>/rules.md``（``work_store.get_rules`` 已转发到 rule_store，
     # 内含 work.json 旧形态的惰性迁移）。不再有「扫规则卡 mission」的兜底：
     # 规则不是卡，没有卡可扫。
     from ..storage import work_store as _ws
     _rules = _ws.get_rules(work_id)
-    old = str(_rules.get(section, "") or "")
-    return {
-        "draft": draft,
-        "base_hash": hashlib.sha256(old.encode("utf-8")).hexdigest(),
-        "section": section,
-        "old": old,
-    }
+    out = []
+    for sec, content in pairs:
+        old = str(_rules.get(sec, "") or "")
+        out.append({
+            "section": sec,
+            "old": old,
+            "draft": content,
+            "base_hash": hashlib.sha256(old.encode("utf-8")).hexdigest(),
+        })
+    return {"sections": out}
 
 
 async def _h_propose_status(work_id: str, current_id: str,
@@ -1531,6 +2188,41 @@ async def _landed_payload(work_id: str, card_id: str,
 #: 块名 → 库列。块名用卡面上看得见的中文，不用 D1/D2 那套遗留编号。
 #: [2026-10-27] edit_card 改成精准编辑后，这是「改哪一块」的唯一入口表。
 _BLOCK_FIELD = {"使命": "mission", "现状": "status_block", "需求文档": "requirements"}
+
+# ---------------------------------------------------------------------------
+# [错放提醒 2026-11-02 · 用户令] 模型常把历史/备忘写进现状或需求文档——
+# 这两块只放「现在成立」的东西（台账正是因同一理由退役）。写工具的
+# new_string 扫一遍历史形态，命中只在落面回执附一句软提醒——**不拒**：
+# 误报的代价是丢事实，比污染更糟。
+# ---------------------------------------------------------------------------
+_HIST_HEAD_RE = re.compile(r"历史|日志|记录|裁定|变更|更新")
+_DATE_LINE_RE = re.compile(
+    r"(?:^|\n)\s*[-•·*＊>＞]?\s*[【\[（(]?\s*(?:19|20)\d{2}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}")
+
+
+def _history_like_note(new_text: str) -> str:
+    """``new_string`` 长得像「历史/备忘」⇒ 一句软提醒文案；否则空串。
+
+    判据刻意保守（宁漏勿报）：
+    - 有区头/标题行含 历史/日志/记录/裁定/变更/更新；
+    - 或 ≥2 行以日期开头（流水账形态）；
+    - 或出现 「旧：」「已过期」「已作废」「（原：」并列标记（新旧并存的账本写法）。
+    """
+    t = str(new_text or "")
+    if not t.strip():
+        return ""
+    head = any(
+        _HIST_HEAD_RE.search(ln)
+        for ln in t.splitlines()
+        if ln.strip().startswith(("#", "【", "＊", "*", "=", "—"))
+    )
+    dated = len(_DATE_LINE_RE.findall(t)) >= 2
+    marked = any(m in t for m in ("旧：", "已过期", "已作废", "（原：", "(原:"))
+    if not (head or dated or marked):
+        return ""
+    return ("提醒：刚写入的内容像历史/备忘（区头、日期堆叠或新旧并列）。"
+            "过程与判断依据该写影子「笔记」（edit_note）；「改过什么」不用记，"
+            "系统自动留痕——本次已落面，放错的话请移过去。")
 
 #: [影子精准编辑 2026-10-27] 模型侧节名 → 库内节头。四节固定，不许新增
 #: （笔记是第五区，但它走 `edit_note`，不在这里）。
@@ -1639,7 +2331,7 @@ async def _h_edit_card(work_id: str, current_id: str,
         return err("denied", "影子卡只能由对应正卡经 update_shadow 修改")
     # [能力底座 2026-10-30] 改判据：能力「改别人的卡面」＋ 作用域（子树）
     _bad = _cap_gate(current_id, "edit_other_face", policy.SWITCH_EDIT,
-                     target_id, cards, "编辑")
+                     target_id, cards, "编辑", work_id=work_id)
     if _bad is not None:
         return _bad
     # [卡面版本 2026-10-24] 版本查看 / 回退——与正文写入互斥，且**先于写入闸**：
@@ -1781,16 +2473,26 @@ async def _h_edit_card(work_id: str, current_id: str,
         if hits == 0:
             # [2026-10-30 实跑] 只回一句"找不到"不够：模型手里是**过期原文**
             # （它自己刚改过），于是拿同一段旧文本反复重试——实测 21 次里 19 次
-            # 这么废掉，一轮改稿卡十几分钟。把**当前全文**直接还给它，它就不用猜。
-            _cur = text if len(text) <= 3000 else text[:3000] + "\n…（后略）"
+            # 这么废掉，一轮改稿卡十几分钟。
+            # [2026-11-02 · card_021 实案·二次修正] 头 3000 字符在大块上等于
+            # 没给——目标在深处时模型只能整块重读（8 万 token 文档重读 12 轮
+            # 撞穿窗口）。改回**近似原文窗＋行号**：窗内逐字原文直接修锚点，
+            # 或拿行号走 lines= 行定位，都不必重读。
+            hint = file_tools.format_not_found_hint(
+                text, old,
+                fix_hint="或改用 lines=\"起-止\" 按行定位；要回读一段用 "
+                         "read_card 的 block+para_start，不必整块重读；")
             return err("not_found",
-                       f"「{block}」块里找不到 old_string，**卡面未改动**。"
-                       f"下面这一块**现在的全文**（你要替换的原文必须在里面逐字出现）：\n"
-                       f"----\n{_cur}\n----")
+                       f"「{block}」块里找不到 old_string，**卡面未改动**。{hint}")
         if hits > 1 and not replace_all:
+            spots = file_tools.match_positions(text, old)
+            listing = "；".join(f"第 {p['line']} 行：{p['head']}" for p in spots)
             return err("ambiguous",
-                       f"old_string 在「{block}」块里出现 {hits} 次，无法确定改哪一处，"
-                       f"**卡面未改动**。请带上更多上下文让它唯一，或 replace_all=true。")
+                       f"old_string 在「{block}」块里出现 {hits} 次（{listing}"
+                       + (f"等共 {hits} 处" if hits > len(spots) else "") +
+                       f"），无法确定改哪一处，**卡面未改动**。"
+                       f"请带上更多上下文让它唯一、用 lines= 行范围指定位次，"
+                       f"或 replace_all=true。")
 
         if matched == "exact":
             new_text = (text.replace(old, new) if replace_all
@@ -1837,8 +2539,17 @@ async def _h_edit_card(work_id: str, current_id: str,
     _how = {"insert": "在第 %d 行后插入" % (at_line - 1),
             "lines": "按行编辑（起于第 %d 行）" % at_line,
             "content": "精准替换一处"}[mode]
+    _write = {field: new_text}
+    if field_override == "requirements_draft":
+        # [需求文档生命周期 2026-10-28] 写草稿 ⇒ 状态到 draft；**只在原状态为空
+        # 或本就是 draft 时落**：已在审（in_review）的修订不打断评审，已有正稿
+        # （approved）上挂新草稿也不降格——正稿仍然有效。
+        _cur_state = str((_before_card.get("meta") or {}).get(
+            "requirements_state") or "")
+        if _cur_state in ("", "draft"):
+            _write["requirements_state"] = "draft"
     result = await card_store.update_card(
-        work_id, target_id, {field: new_text},
+        work_id, target_id, _write,
         f"由「{cur_title}」编辑「{block}」块：{_how}",
     )
     if "error" in result:
@@ -1855,6 +2566,13 @@ async def _h_edit_card(work_id: str, current_id: str,
         out["note"] = ("按「标点归一化」命中：你给的 old_string 与卡面原文在标点编码上不同，"
                        "上面 before 是**卡面上的真实原文**，写回用的也是它。"
                        "以后引用卡面请以 before / blocks 里的字面为准。")
+    # [错放提醒 2026-11-02] 现状/需求文档两块只放「现在成立」的东西——
+    # 写入内容像历史/备忘时，回执附一句软提醒（edit_card/edit_status/
+    # edit_requirements 全走这一个回执点）。
+    _hint = (_history_like_note(str(new or ""))
+             if block in ("现状", "需求文档") else "")
+    if _hint:
+        out["note"] = (str(out.get("note") or "") + "\n" + _hint).strip()
     return out
 
 
@@ -1883,7 +2601,11 @@ def _guard_edit(work_id: str, current_id: str, target_id: str,
     # parent 恒空，永远不在任何人的子树里 ⇒ 根卡改不了自己组建的职能卡面。
     # 改用 _org_scope_allows（与建卡/换父同源）：树内卡行为逐字不变，根卡对全项目有效。
     if not _org_scope_allows(current_id, target_id, policy.SWITCH_EDIT, cards):
-        return err("denied", f"越权：无权编辑 {target_id}")
+        # 树闸不过 ⇒ 最后查差事：在派差事覆盖目标且实发面含"改别人卡面"
+        # 的工具（PM 执笔写对象卡草稿的唯一通道，与 _cap_gate 同一把闸）。
+        if not _deployment_scope(work_id, current_id, target_id,
+                                 "edit_other_face"):
+            return err("denied", f"越权：无权编辑 {target_id}")
     return None
 
 
@@ -1912,7 +2634,7 @@ async def _h_set_child_mission(work_id: str, current_id: str,
         return err("denied", "不能给自己设使命：本卡使命由上级或用户设定")
     # [能力底座 2026-10-30] 能力「立子卡使命」＋ 作用域
     _bad = _cap_gate(current_id, "set_child_mission", policy.SWITCH_CREATE_CHILD,
-                     target_id, cards, "给它立使命")
+                     target_id, cards, "给它立使命", work_id=work_id)
     if _bad is not None:
         return _bad
     result = await card_store.update_card(
@@ -2006,7 +2728,7 @@ async def _h_delete_card(work_id: str, current_id: str,
         return err("denied", f"剧本根卡不可删除: {target_id}")
     # [能力底座 2026-10-30] 能力「删卡与归档」＋ 作用域
     _bad = _cap_gate(current_id, "dispose_card", policy.SWITCH_DELETE,
-                     target_id, cards, "删除")
+                     target_id, cards, "删除", work_id=work_id)
     if _bad is not None:
         return _bad
     try:
@@ -2089,7 +2811,7 @@ async def _h_update_shadow(work_id: str, current_id: str,
     # 拒绝转既有 denied 信封。
     # [能力底座 2026-10-30] 能力「写过程记录」（自检，无作用域）
     _bad = _cap_gate(current_id, "write_process", policy.SWITCH_SHADOW_WRITE,
-                     current_id, cards, "写影子")
+                     current_id, cards, "写影子", work_id=work_id)
     if _bad is not None:
         return _bad
     content = arguments.get("content", "")
@@ -2114,7 +2836,11 @@ async def _h_read_shadow(work_id: str, current_id: str,
     if _line == "relation":
         return err("denied",
                    f"{target_id} 与你是关系线：只读对外信息（需求文档），影子不给。")
-    raw = await shadow_store.read_shadow_raw(work_id, target_id)
+    # [笔记泄漏修复 2026-11-01] 笔记是本卡私有：别的卡沿父子线读影子同样要剥掉，
+    # 与 read_via（影子分支 include_private=False）同口径。改前这里恒取全文，
+    # 父卡经 read_shadow 能读到子卡的「## 笔记」。
+    raw = await shadow_store.read_shadow_raw(
+        work_id, target_id, include_private=(target_id == current_id))
     if raw is None:
         return err("not_found", f"影子卡不存在: {target_id}")
     meta, _ = parse_front_matter(raw)
@@ -2264,7 +2990,13 @@ async def read_via(work_id: str, source_id: str, target_id: str,
             "title": meta.get("title", ""),
             "mission": body.get("mission", ""),
             "status_block": body.get("status_block", ""),
-            "rulings": body.get("rulings", ""),
+            # [2026-11-01 修] 库内第三块恒为 requirements 列（rulings 是
+            # 改名前的化石键，恒读回 ""——通信线读不到对方的需求文档）。
+            "requirements": body.get("requirements", ""),
+            # [relations_in 2026-11-01] 卡面关系位置随正文一起给：
+            # 出边（它依赖谁）＋ 入边（谁依赖它）。
+            "relations": meta.get("relations") or [],
+            "relations_in": meta.get("relations_in") or [],
         }}
     if part == "影子":
         # [笔记 2026-10-27] 笔记是**本卡私有**：沿通信线读别人的影子必须剥掉
@@ -2621,9 +3353,10 @@ async def _h_link_rel(work_id: str, current_id: str,
     """建一条依赖关联线：在当前卡 ``relations`` 上追加 ``{target, kind, detail}``。
 
     校验：target 存在、≠自身、kind ∈ ``MODEL_DEP_KINDS``、detail 非空（必填）。
-    权限：只判**发起方**有 ``SWITCH_LINK``——不看目标卡、不叠树作用域
-    （[连线不看对方 2026-10-22]；原来 docstring 写的「树类收紧：只能连自己子树内」
-    是 2026-10-20 就已撤销的化石，实现与注释不符，这次一并对齐）。
+    权限：只判**发起方**有 ``SWITCH_LINK_REL``——不看目标卡、不叠树作用域
+    （[连线不看对方 2026-10-22]；[三线拆开关 2026-10-27] 依赖线是独立开关，
+    不复用 ``SWITCH_LINK``——工具面按 ``TOOL_SWITCH["link_rel"]`` 下发，
+    执行层必须同一把闸，否则"看得见用不动/用得动看不见"）。
     幂等：同 ``(target, kind)`` 已存在则不重复追加——detail 变化则**更新** detail。
     """
     target_id = str(arguments.get("target_id", "") or "")
@@ -2641,7 +3374,7 @@ async def _h_link_rel(work_id: str, current_id: str,
     if target_id == current_id:
         return err("validation", "不能与自身建立关系")
     # 权限只判发起方（[连线不看对方 2026-10-22]）：不看目标卡 perms、不叠树作用域。
-    bad = _require_wire_switch(current_id, policy.SWITCH_LINK, cards, "建线")
+    bad = _require_wire_switch(current_id, policy.SWITCH_LINK_REL, cards, "建依赖线")
     if bad is not None:
         return bad
     current = await card_store.read_card(work_id, current_id)
@@ -2679,7 +3412,8 @@ async def _h_unlink_rel(work_id: str, current_id: str,
     """解除依赖关联线：从当前卡 ``relations`` 移除指向 target 的条目。
 
     ``kind`` 缺省＝移除**全部**指向该 target 的条目；给了 kind 只移除对应条目。
-    权限：只判**发起方**有 ``SWITCH_UNLINK``（[连线不看对方 2026-10-22]）；
+    权限：只判**发起方**有 ``SWITCH_UNLINK_REL``（[三线拆开关 2026-10-27]，
+    与 ``link_rel`` 同门独立开关，不再复用 ``SWITCH_UNLINK``）；
     目标卡已删的悬空条目仍可清理（目标不存在则无卡可查，直接放行）。
     """
     target_id = str(arguments.get("target_id", "") or "")
@@ -2691,7 +3425,7 @@ async def _h_unlink_rel(work_id: str, current_id: str,
                    f"kind 非法: {kind}，只允许 {'/'.join(MODEL_DEP_KINDS)}")
     if target_id in cards:
         # [连线不看对方 2026-10-22] 只判发起方（原来查目标卡 perms）。
-        bad = _require_wire_switch(current_id, policy.SWITCH_UNLINK, cards, "解线")
+        bad = _require_wire_switch(current_id, policy.SWITCH_UNLINK_REL, cards, "解依赖线")
         if bad is not None:
             return bad
     current = await card_store.read_card(work_id, current_id)
@@ -3319,12 +4053,20 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                 "读取指定卡（标题、父卡、连线、三个内容块）。返回三个块：使命／现状／第三块"
                 "（第三块在本树的名字与用途见上下文「卡片区域说明」）。"
                 "只能读取你有权访问的卡。"
+                "大块默认只回前段（截到行边界并给出共多少行）；要看其中一块的指定行段："
+                "带 block=块名＋para_start/para_end（1 起、闭区间），不必整块回读。"
             ),
 
             "parameters": {
                 "type": "object",
                 "properties": {
                     "card_id": {"type": "string", "description": "目标卡 id，如 card_002"},
+                    "block": {"type": "string",
+                              "description": "只读某一块时给块名：使命／现状／需求文档／需求文档·草稿（缺省回全卡面）"},
+                    "para_start": {"type": "integer",
+                                   "description": "块内起始行号（1 起，需带 block），缺省 1"},
+                    "para_end": {"type": "integer",
+                                 "description": "块内结束行号（闭区间，需带 block），缺省到块末"},
                 },
                 "required": ["card_id"],
             },
@@ -3713,6 +4455,95 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_create_coder_card,
         readonly=False,
     ),
+    # [UI 卡 2026-11-02] 建 UI 卡＝派 UI 执行卡：卡挂在你的树下、跑系统内
+    # 模型（内循环，不走 wb_exec 委派），手里有 browser＋读文件＋影子写等
+    # 能力，能开真实浏览器看自己写的页面、验证交互。建卡即首跑，完工经
+    # report_up 回报。挂 create_child 同关口（建的是子卡）。
+    "create_ui_card": ToolDef(
+        schema={
+            "name": "create_ui_card",
+            "description": (
+                "建一张 UI 卡干界面活：写 HTML/前端代码、开浏览器看渲染结果、"
+                "点按钮验交互、看 console 报错——跑系统内模型，一张卡一个任务，"
+                "建卡即开工，完工向你汇报。target 缺省＝本卡。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "UI 卡卡名，如「卡面详情页原型」"},
+                    "task": {"type": "string", "description": "UI 任务内容（原样落进新卡的使命块）"},
+                    "parent": {
+                        "type": "string",
+                        "description": "挂在哪张卡下（缺省＝本卡；只可指自己或自己子树内的卡）",
+                    },
+                },
+                "required": ["title", "task"],
+            },
+        },
+        handler=_h_create_ui_card,
+        readonly=False,
+        doc=ToolDoc(
+            group="组织",
+            scene="需要做界面/验界面时派一张：写前端代码、开浏览器渲染、"
+                  "点页面验证交互。与 coder 卡的分工——coder 管后端/逻辑"
+                  "（走 wb_exec 执行体），ui 管看得见的东西（跑系统内模型、"
+                  "手里有浏览器）。",
+            usage="title 给卡名；task 写清做什么界面、要验什么（验收口径越"
+                  "具体，它 inspect/click 的循环越有目标）。完工经 report_up "
+                  "异步回来。",
+            effect=ToolEffect(sink="card", wake=True, targets="child"),
+        ),
+    ),
+    # [差事卡 2026-11-01 · 用户令「建卡即召唤」] 建差事卡＝部署职能进场：
+    # qa→验收卡、pm→执笔卡（挂本卡树下看得见），建卡即落差事账并把职能
+    # 唤起；职能办完自动收工，结论经 report 回执到本卡。挂 create_child
+    # 同关口（建的是子卡）；资格闸看 charters.deploy——无派驻职责书的
+    # 职能不接差事。
+    "create_deploy_card": ToolDef(
+        schema={
+            "name": "create_deploy_card",
+            "description": (
+                "建一张差事卡把职能召进场干活：qa→验收卡（阶段验收产物）、"
+                "pm→执笔卡（写需求文档）。卡挂在你的树下、会话装职能的干活过程；"
+                "建卡即派差事并唤起职能，它办完自动收工、结论回执到你这里。"
+                "target 缺省＝本卡（验收/执笔你自己）；只可指直接子卡。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "function": {
+                        "type": "string",
+                        "description": "召哪个职能（目录 code）：qa＝验收、pm＝执笔需求文档",
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "差事指令：干什么、干到什么程度算完（落进差事卡使命块）",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "对象卡 id：被验收/被写文档的卡；缺省＝本卡，只可指直接子卡",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "差事卡卡名（缺省自动命名，如「验收·xxx」）",
+                    },
+                },
+                "required": ["function", "task"],
+            },
+        },
+        handler=_h_create_deploy_card,
+        readonly=False,
+        doc=ToolDoc(
+            group="组织",
+            scene="需要职能进场干活时：阶段验收召 qa（验产物 vs 需求文档）、"
+                  "写需求文档召 pm。建的是一张看得见的差事卡——职能的过程留在"
+                  "那里，不脏你的会话。",
+            usage="function 给目录 code（qa/pm）；task 写清干什么、干到什么"
+                  "程度算完；target 只在自己或直接子卡上生效。结论是异步回来的"
+                  "——办完经 report 回执进你的会话。",
+            effect=ToolEffect(sink="card", wake=True, targets="child"),
+        ),
+    ),
     # [规则卡 2026-10-15 · 块3] 第 19 件工具：根卡起草规则区修改（只起草不落盘）。
     # 追加在既有 18 件字面量之后 ⇒ 前 18 件工具面顺序逐字不变。下发面：TOOL_SWITCH
     # 挂 read ＋ build_tool_schemas 第四段 ROOT_ONLY_TOOLS（只对剧本根卡下发）；
@@ -3722,23 +4553,44 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "draft_rule_edit",
             "description": (
-                "起草规则卡某一分区的修改提议（仅剧本根卡可用；只起草、不落盘）。"
-                "返回提议内容与盘上现文、指纹——你不能直接改规则，本工具只出草案；"
-                "调用后修改将弹窗交用户审批，用户点「同意」才写入规则卡生效。"
+                "起草规则分区的修改提议（仅剧本根卡可用；只起草、不落盘）。"
+                "sections 里每项 {section, content}：把不同内容块各自写进对应区——"
+                "写哪个区由你选（all 进所有卡；project/sub_project/coder 等按卡类型"
+                "注入；function.<职能code> 只进对应职能）。一次调用可覆盖多个区，"
+                "一次审批一次落盘。注意：content 里不得出现 `## ` 行（文件按 `## ` 切区，"
+                "含 `## ` 的内容会被切成不进任何上下文的幻影区）；区内子标题用 `### `。"
+                "返回每区提议+盘上现文+指纹——用户点「同意」才写入生效。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "sections": {
+                        "type": "array",
+                        "description": "一次起草的区修改清单：[{section, content}, …]",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "section": {
+                                    "type": "string",
+                                    "description": "目标分区名（all/project/sub_project/…，或 function.<code>）",
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "该区提议新内容（整区替换草案；不得含 `## ` 行）",
+                                },
+                            },
+                            "required": ["section", "content"],
+                        },
+                    },
                     "section": {
                         "type": "string",
-                        "description": "规则卡分区名（六区之一：project/sub_project/tool/coder/rule/topic，对应各卡类型的注入区）",
+                        "description": "单区简形：与 content 配对（等价 sections=[{section,content}]）",
                     },
                     "content": {
                         "type": "string",
-                        "description": "该分区的提议新内容（整区替换草案）",
+                        "description": "单区简形的内容",
                     },
                 },
-                "required": ["section", "content"],
             },
         },
         handler=_h_draft_rule_edit,
@@ -3981,8 +4833,8 @@ async def _h_wake_card(work_id: str, current_id: str,
 
     [统一唤醒 2026-10-22 · 用户裁定「根卡逻辑上应该能唤醒所有卡」]
 
-    旧通道 `resume_child` 只能恢复「auto + 有 goal + 未完成 + 子树内」的卡，
-    所以非 auto 卡、无 goal 卡、已完成卡、离树角色卡全都唤不醒。
+    旧通道 `resume_child` 只恢复「有 goal + 未完成 + 子树内」的卡（
+    [2026-11-01] 已不再要求 auto），所以无 goal 卡、离树角色卡唤不醒。
     本工具补上这个缺口：它不关心目标处于什么状态，只做一件事——起一轮。
 
     作用域（`_org_scope_allows`，与建卡/换父同源）：
@@ -4015,6 +4867,15 @@ async def _h_wake_card(work_id: str, current_id: str,
             f"（当前卡 {current_id}；根卡可唤醒本项目任何卡，"
             f"其他卡只能唤醒自己作用域内的卡）",
         )
+
+    # [唤醒即解除停止 2026-11-01 · 用户令「唤醒子卡不需要自动」]
+    # 被强制停止(halt)的卡连内部唤醒都拒——不叫停就叫不醒，本工具会报
+    # started:true 的空话。上级唤醒与 resume_child 同级：先把停止标记摘掉。
+    try:
+        from . import control as _control
+        _control.unhalt(work_id, target_id, by=current_id, via="wake_card")
+    except Exception:  # noqa: BLE001
+        pass
 
     target = cards.get(target_id) or {}
     is_role = str(target.get("card_type") or "") == "role"
@@ -4151,7 +5012,12 @@ async def _render_review_status(work_id: str, review_id: str) -> str:
             f"通过 {len(st['passed'])}/{len(st['members'])}",
         ]
         lines += [f"● {m} 通过" for m in st["passed"]]
-        lines += [f"○ {m} 未通过" for m in st["pending"]]
+        # [投影分账 2026-11-02] rejected 与未表态**不许归并**——三票否决落账
+        # 后全渲染成「未通过」，卡面跟没投过一样（实案：续跑完「还差三人」，
+        # 用户看不出票已经记了）。否决是已落的真票，单列。
+        rejected = set(st.get("rejected") or [])
+        lines += [f"✗ {m} 否决" for m in st.get("rejected") or []]
+        lines += [f"○ {m} 未表态" for m in st["pending"] if m not in rejected]
         if st.get("all_passed"):
             lines.append("—— 全员通过 ——")
         text = "\n".join(lines)
@@ -4169,10 +5035,27 @@ def _is_review_card(work_id: str, card_id: str,
     return str(meta.get("card_type") or "") == "review"
 
 
+def _venue_default_codes(batch_type: str) -> list[str]:
+    """场默认席位集：读职能目录 `_meta.venue_defaults[<场型>]`，读不到回落
+    到需求场旧默认三席（与 [评审邀请 2026-10-30] 口径一致）。
+
+    默认名单是**场的属性**，挂在目录 _meta 下按场型取——
+    acceptance 场的默认集（["qa","ceo"]）将来加在这里。
+    """
+    try:
+        from . import function_room as _fr  # noqa: PLC0415
+        got = (_fr.load().get("venue_defaults") or {}).get(str(batch_type or ""))
+        if isinstance(got, list) and got:
+            return [str(x) for x in got if str(x)]
+    except Exception:  # noqa: BLE001 目录读不到走旧默认
+        pass
+    return ["ceo", "pm", "cto"]
+
+
 async def _h_open_review(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """在目标卡的**伴生评审卡**上开一个批次，邀请 CEO、PM、CTO 三个职能。"""
+    """在目标卡的**伴生评审卡**上开一个批次（席位＝场点名＋场默认建议）。"""
     from ..storage import card_store as _cs
     from ..storage import function_store as _fs
     from ..storage import review_store as _rv
@@ -4181,6 +5064,8 @@ async def _h_open_review(work_id: str, current_id: str,
     target = str(arguments.get("card_id") or "").strip() or current_id
     focus = str(arguments.get("focus") or "").strip()
     brief = str(arguments.get("brief") or "").strip()
+    batch_type = str(arguments.get("type") or "requirements").strip() \
+        or "requirements"
     if not brief:
         return err("validation",
                    "brief 必填：写清任务背景／当前状况／要评审的内容"
@@ -4192,43 +5077,121 @@ async def _h_open_review(work_id: str, current_id: str,
         return err("validation",
                    f"只有子项目卡／课题卡有伴生评审卡（{target} 是 "
                    f"{meta.get('card_type')}）")
+    # [2026-10-28 用户令「必须经过子卡发起评审」] 草稿谁都能写（自己／父卡／
+    # 根卡），但开评审只能这张卡自己——代开等于替它答应。想让别的卡开评，
+    # 用 direct 通知它来开。
+    if target != current_id:
+        return err("denied",
+                   "评审只能由这张卡自己发起（card_id 必须是本卡）——"
+                   "代开等于替它答应；想让它开评，用 direct 通知它。")
+    # [2026-10-28] 没有草稿就没有可评审的内容。
+    if not str(meta.get("requirements_draft") or "").strip():
+        return err("validation",
+                   "本卡的需求文档草稿是空的——先用 edit_requirements 写草稿，"
+                   "再开评审。")
     rid = await _rv.ensure_review_card(work_id, target,
                                        str(meta.get("title") or target))
     if not rid:
         return err("internal", "伴生评审卡不可用（建卡失败）")
 
-    # [评审邀请 2026-10-30] 用户指定评审角色：总裁、产品经理、技术总监。
-    # 用职能目录 code 识别，不按当前有多少在职职能全量邀请；其它职能不参与。
-    invited_codes = {"ceo", "pm", "cto"}
+    # [venue 席位泛化 2026-10-31] 席位＝人格＋mandate，不再硬编码：
+    # 发起方点名（members 参数：fn id 或目录 code 皆可）＞目录
+    # `_meta.venue_defaults[type]`（场默认建议）＞旧默认三席。
+    # 「默认名单是场的属性」——验收场的默认集跟需求场不一样，
+    # 由各职能自报家门是错的。
+    invited = list(arguments.get("members") or [])
+    if not invited:
+        invited = _venue_default_codes(batch_type)
     members: list[str] = []
     try:
-        for p in _fs.list_profiles(work_id):
+        profiles = _fs.list_profiles(work_id)
+        wanted = {str(x) for x in invited if str(x)}
+        for p in profiles:
             fid = str(p.get("function_id") or "")
             if not fid or str((p.get("duty") or {}).get("state") or "active") != "active":
                 continue
-            if _fr.catalog_code_of(p) not in invited_codes:
+            # 点名可以写 fn id 也可以写目录 code——两个命名空间都认。
+            if fid not in wanted and _fr.catalog_code_of(p) not in wanted:
                 continue
             members.append(fid)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[review] 读取指定评审职能失败: %s", exc)
     if not members:
-        return err("validation", "没有在职的总裁、产品经理或技术总监可参与评审")
+        return err("validation",
+                   f"没有在职的评审席可用（点名：{invited}）")
+    # [评审席资格 2026-11-01 · 用户令「守门员评审席没有场景」] 席位资格＝
+    # 有评审职责书（条目 charters.review 或 review_charters.json 命中）。
+    # 没有的职能只能穿日常帽子进场——没有【评审范围】边界，点名也剔；
+    # 哪天写了职责书自动解禁（数据驱动，不硬编码名单）。
+    # 只在目录有条目时查：目录关着（无条目）就没有「谁是观察岗」可甄别，
+    # 闸随目录一起失效——资格数据整个出自目录体制，目录缺席无从判起。
+    try:
+        if _fr.entries():
+            code_of = {str(p.get("function_id") or ""): _fr.catalog_code_of(p)
+                       for p in profiles}
+            members = [f for f in members
+                       if _fr.venue_charter_for(code_of.get(f, ""), "review")]
+    except Exception as exc:  # noqa: BLE001 核查失败放行（不误伤）
+        logger.warning("[review] 职责书核查失败（放行）: %s", exc)
+    if not members:
+        return err("validation",
+                   "点名的席位都没有评审职责书——没有职责书的职能不进评审席")
+    # [职能底座 2026-10-31] 「作者不评自己」：在本目标卡上有过执笔/作者差事
+    # 的职能只能当答辩人，不能当评委——点名也不例外（差事账直接判，
+    # 不另立状态）。台账查不到 ⇒ 不剔除（不误伤）。
+    try:
+        members = [f for f in members
+                   if not _fs.has_prior(work_id, f, target,
+                                        venue_kinds=("deploy", "author"))]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[review] 作者排除核查失败（放行）: %s", exc)
+    if not members:
+        return err("validation",
+                   "点名/默认席位全是本稿作者——作者只能答辩，不能当评委")
 
     st = await _rv.open_batch(work_id, rid, focus, members=members,
-                              target=target, brief=brief)
+                              target=target, brief=brief,
+                              batch_type=batch_type)
+    # [需求文档生命周期 2026-10-28] 开评审 ⇒ 目标卡状态到 in_review；
+    # 评审收口（promote_draft 写正稿）时回 approved。
+    try:
+        await _cs.update_card(work_id, target,
+                              {"requirements_state": "in_review"},
+                              f"评审批次 {st['batch']} 开启")
+    except Exception as exc:  # 状态位落不上不阻断已开的批次
+        logger.warning("[review] 目标卡 requirements_state 落不上 %s: %s",
+                       target, exc)
+    # [职能底座 2026-10-31] 每席位一条差事：部署账与评审生命周期绑死。
+    # exit=verdict：本批次投出一张立着的票（revoked=0）即算办完；
+    # revoke 撤票 ⇒ 惰性核对自动让它回到在派。单席建账失败不卡开门。
+    for _f in members:
+        try:
+            await _fs.create_deployment(
+                work_id, _f, venue_kind="review", venue_ref=rid,
+                venue_label=f"{batch_type} 评审 · {target} 批次 {st['batch']}",
+                mandate=_fr.render_mandate(
+                    "review", function=_f, review_card_id=rid,
+                    batch=str(st["batch"]), target=target)
+                or f"本批次 {st['batch']} 评审席（{target}）",
+                delegator=current_id, batch_id=str(st["batch"]),
+                target_card=target, exit_kind="verdict",
+                tools=_fr.grant_for(work_id, _f, "review"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[差事] 评审席位建账失败 seat=%s: %s", _f, exc)
     await _render_review_status(work_id, rid)
     try:
         event_stream.emit(work_id, rid, "review_batch_opened",
                           {"batch": st["batch"], "target": target,
-                           "members": members, "focus": focus[:200]})
+                           "members": members, "focus": focus[:200],
+                           "type": batch_type})
     except Exception:  # noqa: BLE001 展示层零阻断
         pass
-    # 召集后**后台**起一轮：每个成员以自己身份发言一次（不阻塞发起方）。
-    # 测试环境由 ECO_NO_AUTO_REVIEW 关掉（run_round 内判，conftest 已设）。
+    # 召集后**后台**点第一席（一步）：其后流程存续全交 harness 的
+    # review_round_done → continue 接力，不再起进程内循环。
+    # 测试环境由 ECO_NO_AUTO_REVIEW 关掉（run_once 内判，conftest 已设）。
     try:
-        from . import message_runner as _mr
         from . import review_runner as _rr
-        _mr._spawn_tracked(_rr.run_round(work_id, rid))
+        _rr.spawn_round(work_id, rid)
     except Exception as exc:  # noqa: BLE001 起不来不影响批次已开
         logger.warning("[review] 评审回合起不来 review=%s: %s", rid, exc)
     return ok_({"review_card_id": rid, "batch": st["batch"],
@@ -4291,13 +5254,20 @@ def _patch_locate(text: str, old: Any, new: str) -> tuple[str, int, str]:
         matched = "normalized" if hits else "none"
         idx = n_text.find(n_old) if hits else -1
     if hits == 0:
+        # [2026-11-02 · card_021 实案] 只叫模型「read_card 核对」＝叫它整块
+        # 重读——8 万 token 文档的重读循环就是这么死的。回近似原文窗＋行号，
+        # 它拿逐字原文改 old_string，不必重读。
+        hint = file_tools.format_not_found_hint(text, old)
         raise _PatchErr("not_found",
-                        "这一块里找不到 old_string，**内容未改动**。"
-                        "请先 read_card 核对原文（可能已被别人改过）。")
+                        f"这一块里找不到 old_string，**内容未改动**。{hint}")
     if hits > 1:
+        spots = file_tools.match_positions(text, old)
+        listing = "；".join(f"第 {p['line']} 行：{p['head']}" for p in spots)
         raise _PatchErr("ambiguous",
-                        f"old_string 在这一块里出现 {hits} 次，无法确定改哪一处，"
-                        f"**内容未改动**。请带上更多上下文让它唯一。")
+                        f"old_string 在这一块里出现 {hits} 次（{listing}"
+                        + (f"等共 {hits} 处" if hits > len(spots) else "") +
+                        f"），无法确定改哪一处，**内容未改动**。"
+                        f"请带上更多上下文让它唯一。")
     at_line = text[:idx].count("\n") + 1
     return text[:idx] + new + text[idx + len(old):], at_line, matched
 
@@ -4337,6 +5307,10 @@ async def _h_edit_requirements(work_id: str, current_id: str,
         card = await card_store.read_card(work_id, args["card_id"])
         draft = str((card.get("meta") or {}).get("requirements_draft") or "")
         out.setdefault("blocks", {})["需求文档"] = draft
+        # [2026-11-01 · 用户令「草稿不进上下文，只有正稿常驻」] 草稿的唯一
+        # 在场形态就是这个回执：lines/insert_after 定位用的行号按草稿标，
+        # 与 _h_edit_card 的行模式（split("\n")）同口径。
+        out["需求文档·草稿（行号）"] = context_regions._number_lines(draft)
     return out
 
 
@@ -4497,6 +5471,33 @@ async def _h_promote_draft(work_id: str, current_id: str,
             if not st.get("all_passed"):
                 return err("validation",
                            f"评审还没全员通过（未过：{st.get('pending')}），不能转正稿")
+            # [venue 版本闸 · 已签收窄口径 2026-10-31]
+            # 「全员批准的那个版本，才配叫正稿」：收口瞬间比对每票的 draft_ver
+            # 与当前草稿——有人批的是旧版 ⇒ 不收口，发 review_draft_drift，
+            # 只对 stale 席位补「只评增量」确认轮（不重投全文、不打扰已批新版者）。
+            stale = [m for m in (st.get("stale") or [])]
+            if stale:
+                # 机械状态挂上：drift_pending=下一步该叫 stale 席补确认；
+                # promote_asked 清掉=确认补完后允许重新派定稿。
+                try:
+                    await _rv.set_drift_pending(work_id, rid, stale)
+                except Exception:  # noqa: BLE001 状态写不上不挡拒收
+                    pass
+                try:
+                    event_stream.emit(work_id, rid, "review_draft_drift", {
+                        "batch": st.get("batch"), "target": target,
+                        "draft": int(st.get("draft") or 1),
+                        "stale": stale,
+                        "approvals": {m: int((st.get("votes") or {})
+                                             .get(m, {}).get("draft_ver") or 0)
+                                      for m in stale},
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
+                return err("validation",
+                           f"草稿在全员通过后又改过（现第 {st.get('draft')} 版；"
+                           f"{stale} 批的是旧版）。已请相关席位确认增量——"
+                           f"等它补投完成后，再调一次 promote_draft。")
     except Exception as exc:  # noqa: BLE001 判不出评审状态就不放行
         return err("validation", f"读评审状态失败：{exc}")
     r = await _promote_requirements(work_id, target)
@@ -4510,6 +5511,10 @@ async def _h_promote_draft(work_id: str, current_id: str,
             if rid:
                 _fin = await _rv.finalize(work_id, rid)
                 _verdict = str((_fin or {}).get("verdict") or "")
+                if _fin:
+                    event_stream.emit(work_id, rid, "review_batch_closed",
+                                      {"batch": _fin.get("closed_batch"),
+                                       "verdict": _verdict[:400]})
         except Exception:  # noqa: BLE001
             pass
         _lines = [
@@ -4564,20 +5569,51 @@ async def _promote_requirements(work_id: str, target: str) -> dict[str, Any]:
         return {"promoted": False, "reason": str(exc)}
 
 
+async def _vote_gate(work_id: str, rid: str, current_id: str) -> dict[str, Any] | None:
+    """投票闸（机械，对称 approve/reject）：批次在跑 ∧ 是成员。
+
+    [2026-10-31 用户令]「我不限制它是不是先发言还是先投票，从来不需要限制」
+    ——成员在本批次内随时可投、可改投（后票覆盖前票）；先不先发言是
+    席位自己的分寸，机制不闸。
+    """
+    from ..storage import review_store as _rv
+
+    st = await _rv.state_of(work_id, rid)
+    if not str(st.get("batch") or ""):
+        return err("validation", "当前没有进行中的批次")
+    members = await _rv.members_of(work_id, rid)
+    if current_id not in members:
+        return err("denied",
+                   f"{current_id} 不在这个评审的成员里（成员：{members}）")
+    return None
+
+
 async def _h_reject(work_id: str, current_id: str,
                      arguments: dict[str, Any],
                      cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """不通过＝只投票，不带理由（理由写在发言里）。"""
+    """不通过＝只投票，不带理由（理由写在发言里）。
+
+    [venue 真票 2026-10-31] 这是**真票**：与 approve 同一个 upsert 键，
+    先通过又不通过＝不通过（后票覆盖前票）。[用户令] 不设机械僵局检测——
+    上下文给到位，席位与正卡自然收敛；多次否决是正常迭代，不是结局。
+    """
     from ..storage import review_store as _rv
 
     rid = str(arguments.get("review_card_id") or "").strip()
     if not rid:
         return err("validation", "review_card_id 不能为空")
-    st = await _rv.state_of(work_id, rid)
-    if not str(st.get("batch") or ""):
-        return err("validation", "当前没有进行中的批次")
+    if not card_store.card_exists(work_id, rid):
+        return err("not_found", f"评审卡不存在: {rid}")
+    gate = await _vote_gate(work_id, rid, current_id)
+    if gate is not None:
+        return gate
+    r = await _rv.reject(work_id, rid, current_id)
+    if not r.get("ok"):
+        return err("validation", str(r.get("error") or "reject 失败"))
     await _render_review_status(work_id, rid)
-    return ok_({"review_card_id": rid, "role": current_id, "verdict": "reject"})
+    return ok_({"review_card_id": rid, "role": current_id,
+                "verdict": "reject", "batch": r.get("batch"),
+                "draft": r.get("draft")})
 
 
 async def _h_approve(work_id: str, current_id: str,
@@ -4591,10 +5627,11 @@ async def _h_approve(work_id: str, current_id: str,
         return err("validation", "review_card_id 不能为空")
     if not card_store.card_exists(work_id, rid):
         return err("not_found", f"评审卡不存在: {rid}")
-    members = await _rv.members_of(work_id, rid)
-    if current_id not in members:
-        return err("denied",
-                   f"{current_id} 不在这个评审的成员里（成员：{members}）")
+    # [venue 投票闸] 批次在跑 ∧ 是成员——与 reject 同一道闸（投票零限制，
+    # 先不先发言是席位自己的分寸，机制不查）。
+    gate = await _vote_gate(work_id, rid, current_id)
+    if gate is not None:
+        return gate
     r = await _rv.approve(work_id, rid, current_id)
     if not r.get("ok"):
         return err("validation", str(r.get("error") or "approve 失败"))
@@ -4719,6 +5756,16 @@ TOOL_REGISTRY["open_review"] = ToolDef(
                 },
                 "focus": {"type": "string",
                           "description": "（可选）一句话焦点，只作标题用；正式内容写 brief"},
+                "members": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "（可选）点名评审席：fn id 或目录 code 皆可"
+                                   "（如 [\"ceo\",\"pm\",\"qa\"]）。"
+                                   "缺省＝场默认建议名单（按场型挂在职能目录里）",
+                },
+                "type": {"type": "string",
+                         "description": "（可选）评审场型，默认 requirements"
+                                        "（需求评审）；验收场等将来按场型挂默认席位"},
             },
             "required": ["card_id", "brief"],
         },
@@ -4773,6 +5820,83 @@ TOOL_REGISTRY["promote_draft"] = ToolDef(
     readonly=False,
 )
 TOOL_SWITCH["promote_draft"] = policy.SWITCH_EDIT
+
+async def _h_submit_revision(work_id: str, current_id: str,
+                             arguments: dict[str, Any],
+                             cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """**交回本轮改稿**（被评卡的终态工具）：调了才算这轮回应结束。
+
+    [venue 2026-10-31] 这是「和 approve/reject 同一种做法」的出口——
+    正卡在自己的正常回合里改完（或决定不改），调它交回评审。
+    机械动作只有两件：`responded_seq` 加一（否决席位据此知道有新回应可评）、
+    `review_target_responded` 事件（harness 接力回评审卡的依据）。
+    """
+    from ..storage import review_store as _rv
+
+    rid = str(arguments.get("review_card_id") or "").strip()
+    if not rid:
+        rid = await _rv.review_card_of(work_id, current_id)
+    if not rid:
+        return err("validation", "本卡没有进行中的评审批次")
+    st = await _rv.state_of(work_id, rid)
+    if not str(st.get("batch") or ""):
+        return err("validation", "当前没有进行中的批次")
+    if current_id != str(st.get("target") or ""):
+        return err("denied",
+                   f"只有被评卡（{st.get('target')}）能交回本轮改稿，你是 {current_id}")
+    summary = str(arguments.get("summary") or "").strip()
+    if not summary:
+        return err("validation",
+                   "summary 必填：改了哪几处（一条一行，写能核对的事实）；"
+                   "决定不改也要写明理由")
+    seq = await _rv.mark_responded(work_id, rid)
+    try:
+        event_stream.emit(work_id, rid, "review_target_responded", {
+            "batch": st.get("batch"), "target": current_id,
+            "summary": summary[:2000], "responded_seq": seq,
+            "draft": int(st.get("draft") or 1),
+        })
+    except Exception:  # noqa: BLE001
+        pass
+    return ok_({"review_card_id": rid, "responded_seq": seq})
+
+
+TOOL_REGISTRY["submit_revision"] = ToolDef(
+    schema={
+        "name": "submit_revision",
+        "description": (
+            "**交回本轮改稿/回应**：评审把意见交给你之后，这一轮该改的都改完了"
+            "（或你决定不改并说了理由），就调它交回评审。\n"
+            "· 调了才算这一轮结束；只回一段文字不算\n"
+            "· 只有被评卡能调（评审成员/别的卡调会被拒）\n"
+            "· 下一轮要不要再改，由评审重新评了再说"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string",
+                            "description": "改了哪几处（一条一行，写能核对的事实）；"
+                                           "决定不改也要写明理由"},
+                "review_card_id": {"type": "string",
+                                   "description": "评审卡 id（缺省＝本卡的伴生评审卡）"},
+            },
+            "required": ["summary"],
+        },
+    },
+    handler=_h_submit_revision,
+    readonly=False,
+    doc=ToolDoc(
+        group="评审",
+        scene="评审把意见交给你之后，这一轮该改的都改完了（或你决定不改"
+              "并写明理由）——**本轮回应的收口**：调了评审才算收到你的回应，"
+              "否决你的席位才会被叫回来复评。只发消息不调它，评审会一直等你。",
+        usage="summary 必填：改了哪几处，一条一行写能核对的事实；"
+              "决定不改也写明理由。只有被评卡能调（席位/别的卡调会被拒）。",
+        effect=ToolEffect(),
+    ),
+)
+TOOL_SWITCH["submit_revision"] = policy.SWITCH_EDIT
+
 
 TOOL_REGISTRY["reject"] = ToolDef(
     schema={
@@ -4875,6 +5999,35 @@ def _register_file_tools() -> None:
 
 
 _register_file_tools()
+
+
+def _register_browser_tool() -> None:
+    """把 ``browser`` 单件登记进同一注册表（[浏览器能力 2026-11-02]）。
+
+    机制移植自 MiniMax Code 的 in-agent browser：单工具紧凑形态
+    （action+input）、会话级隔离 profile、语义树＋快照域 ref、显式
+    效果校验。schema 延迟求值（ACTIONS 清单在 src/infra/browser/session
+    现取），handler 在 browser_tool.py（to_thread 隔离 Chrome 阻塞）。
+    """
+    from . import browser_tool
+    TOOL_REGISTRY["browser"] = ToolDef(
+        schema=lambda: browser_tool.build_browser_tool_schemas()[0],
+        handler=browser_tool.h_browser,
+        readonly=False,
+        doc=ToolDoc(
+            group="联网",
+            scene="需要看真实渲染出来的页面时：验 UI 长什么样、点页面上的东西、"
+                  "填表单、读控制台报错。只抓文本用 fetch_web，不用开浏览器。",
+            usage="循环：navigate 打开 → inspect 拿语义地图（元素带 ref，如 "
+                  "e2.7）→ 用 ref 调动作 → inspect/query 验证。ref 导航后作废；"
+                  "click 只证明输入已派发，效果要自己验证；预期导航的点击用 "
+                  "click_and_wait_for_navigation；完事 close 放会话。",
+            effect=ToolEffect(sink="none"),
+        ),
+    )
+
+
+_register_browser_tool()
 
 # [迭代二 S2] 思维链七工具单点接入（任务书 S2 步骤 5，照本文件 :707 注册法）：
 # create_plan / plan_reorder / plan_insert / plan_remove / plan_modify /
@@ -5350,11 +6503,43 @@ async def _h_continue_task(work_id: str, current_id: str,
     # 复位 + 新生命周期(照 _revive_coder_card 的机械序列)
     from ..goal.service import get_service
     from ..goal.types import CreateGoalRequest
-    cur_state = str(meta.get("state") or "")
+    svc = get_service()
+    # [机制判断归harness 第3步] 生命周期分支判据走派生视图——事件流最后
+    # 一条 state 变更说了算（无覆盖回落列），不再读手写 state 列。
+    from ..infra import card_status as _cs
+    cur_state = _cs.derive(work_id, target)["delivery"]
     if cur_state == "active":
-        return err("validation",
-                   f"{target} 正在干活(state=active)——等它完工再续派;"
-                   "要打断用 stop_card")
+        # [停在中途可续派 2026-11-01 · 用户令「唤醒子卡不需要自动」]
+        # 「在干活」的判据不是 state 列：stop_card(halt) 只停 goal＋置停止
+        # 标记，**不复位 state**——被停住的 coder 永远停在 active（实测
+        # work_027/card_140：父卡更正任务下发无路）。真正表示「它在干活」
+        # 的只有两种：
+        #   ① 有在途回合（turn 互斥体被持——含等串行闸的排队回合）；
+        #   ② auto 卡且目标 active+armed（驱动随时给它续轮，续派会撞车）。
+        # 两者都不占 ⇒ 没在跑，可续派；顺手解除 halt 标记
+        # （halt 卡的内部唤醒会被拒，点火走 _run_message 会先查它）。
+        from ..storage import session_facade as _sf
+        from . import control as _control
+        try:
+            _running = bool(_sf.turn_holder(work_id, target))
+        except Exception:  # noqa: BLE001 判不出来按在跑处理（宁可不派不误抢）
+            _running = True
+        _driven = False
+        if not _running and bool(meta.get("auto_mode")):
+            try:
+                _g = await svc.get(work_id, target)
+                _driven = bool(_g is not None and _g.phase == "active"
+                               and _g.activation == "armed")
+            except Exception:  # noqa: BLE001 判不出来按在跑处理
+                _driven = True
+        if _running or _driven:
+            return err("validation",
+                       f"{target} 正在干活(state=active)——等它完工再续派;"
+                       "要打断用 stop_card")
+        if _control.unhalt(work_id, target, by=current_id,
+                           via="continue_task"):
+            logger.info("[continue_task] 解除强制停止并续派 card=%s by=%s",
+                        target, current_id)
     upd = await card_store.update_card(
         work_id, target, {"state": "active",
                           "toolcard_final": ""},
@@ -5365,7 +6550,6 @@ async def _h_continue_task(work_id: str, current_id: str,
 
     goal_started = "resumed"
     try:
-        svc = get_service()
         goal = await svc.get(work_id, target)
         text = task
         if goal is None:
@@ -5378,8 +6562,29 @@ async def _h_continue_task(work_id: str, current_id: str,
                              CreateGoalRequest(objective=text))
             goal_started = "created"
         elif goal.phase in ("paused", "blocked"):
+            # [停在中途可续派 2026-11-01] 续派文本＝新目标——先改目标内容再
+            # 恢复相位；只 resume 不改文本，跑的还是旧目标（实测父卡更正任务
+            # 时旧 goal 纹丝不动，等于更正没发出去）。卡面 goal 区是真值，
+            # svc.edit 只管相位域的事件投影，两处都写。
+            if text:
+                await card_store.update_card(
+                    work_id, target, {"goal": text},
+                    f"[continue_task] {current_id} 续派任务改目标")
+                from ..goal.types import EditGoalRequest
+                await svc.edit(work_id, target, goal.ref(),
+                               EditGoalRequest(objective=text))
+                goal = await svc.get(work_id, target)
             await svc.resume(work_id, target, goal.ref())
-        # active 理论上不可达(上面已拒);complete/paused/blocked 已处理
+        elif goal.phase == "active" and text:
+            # 空闲的 active 卡（没在跑、没被驱动）：续派文本同样要成为新目标，
+            # 相位已是 active 无需 resume。
+            await card_store.update_card(
+                work_id, target, {"goal": text},
+                f"[continue_task] {current_id} 续派任务改目标")
+            from ..goal.types import EditGoalRequest
+            await svc.edit(work_id, target, goal.ref(),
+                           EditGoalRequest(objective=text))
+            goal_started = "edited"
     except Exception as exc:  # noqa: BLE001 goal 层失败如实报
         return err("internal", f"目标续期失败: {exc}")
 
@@ -5421,13 +6626,14 @@ async def _h_scene_report(work_id: str, current_id: str,
 async def _h_scene_sync(work_id: str, current_id: str,
                         arguments: dict[str, Any],
                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """[场景·同步] 通知相关卡一个事实/变更——不期待回音,**不唤醒**,
-    只入收件箱(对方下次自然回合看到)。收件人=显式指定或沿连线。"""
+    """[场景·同步] 通知相关卡一件事/变更——不期待回音,**不唤醒**,
+    只入收件箱(对方下次自然回合看到)。收件人=显式指定或沿连线。
+    [事实分层 2026-11-01] 同步是**送达信息**不是搬运事实——对方的判断依据在它自己的卡面。"""
     import uuid as _uuid
     from ..storage import card_db as _cdb
     content = str(arguments.get("content") or "").strip()
     if not content:
-        return err("validation", "content 不能为空(你要同步的事实是什么)")
+        return err("validation", "content 不能为空(你要同步的事是什么)")
     targets = [str(x).strip() for x in (arguments.get("card_ids") or [])
                if str(x).strip()]
     if not targets:
@@ -5446,11 +6652,15 @@ async def _h_scene_sync(work_id: str, current_id: str,
             continue
         # [2026-10-27 · 统一用通信线] 收件人必须与自己有通信线——
         # 显式指定 card_ids 也不再是绕过线的通道。
+        # [差事即发话权 2026-11-01] 例外一条：职能被**差事**派到这张卡时，
+        # 差事本身就是线（它被叫来就是干这场上的活）——验收结论发回场卡
+        # 不需要另建通信线。判据与 _cap_gate 的差事作用域同源。
         try:
             policy.check_linked(current_id, t, cards)
         except PermissionError:
-            refused.append({"to": t, "why": "与你之间没有通信线"})
-            continue
+            if not _deployment_scope(work_id, current_id, t, "notify"):
+                refused.append({"to": t, "why": "与你之间没有通信线"})
+                continue
         try:
             # [2026-10-26 · 用户裁定「同步/通知类消息不该用 inbox，也不该只在
             # 当轮可见」] 直接落成**会话块**：它是历史的一部分，下次任何回合的
@@ -5501,6 +6711,15 @@ async def _h_scene_direct(work_id: str, current_id: str,
                    "「做完了没有」。写清：做到哪些事算完成。")
     if not card_store.card_exists(work_id, target):
         return err("not_found", f"卡片不存在: {target}")
+    # [两源模型 2026-11-01 · 用户令「不需要 direct 到职能，会诊删了」]
+    # 职能不是干活的卡：它不驻场、不接指令、不私答——它的判断依据只有
+    # 场卡需求文档＋rules.md 准则，私问只会产「没人裁过的主张」。
+    # 会诊差事（consult venue）与之一并退役。
+    _tmeta0 = card_store._meta_of(work_id, target) or {}
+    if str(_tmeta0.get("card_type") or "") == "function":
+        return err("denied",
+                   f"越权:{target} 是职能卡，不收指令——职能只经差事"
+                   "（评审/派驻）被叫到，不私下问答")
     root_id = ""
     try:
         root_id = work_store.work_card_id_of(work_id) or ""
@@ -5639,9 +6858,12 @@ async def _h_silence_card(work_id: str, current_id: str,
         except Exception as exc:  # noqa: BLE001 判定失败一律拒
             return err("denied", f"子树判定失败,已拒绝: {exc}")
     meta = (cards or {}).get(target) or card_store._meta_of(work_id, target) or {}
-    if str(meta.get("state") or "") != "completed":
+    # [机制判断归harness 第3步] 完工判定走派生视图（事件权威＋列回落）。
+    from ..infra import card_status as _cs
+    _dstate = _cs.derive(work_id, target)["delivery"]
+    if _dstate != "completed":
         return err("validation",
-                   f"{target} 尚未完工(state={meta.get('state') or '?'})——"
+                   f"{target} 尚未完工(state={_dstate or '?'})——"
                    "沉默只用于完工卡;在跑的卡要停用 stop_card")
     from ..storage import governance_store as _gov
     # [2026-10-25 · 用户裁定「coder 不能自动归档,应可续派」] coder 与其他
@@ -5734,48 +6956,6 @@ async def _h_stop_card(work_id: str, current_id: str,
     return out
 
 
-async def _h_write_ledger(work_id: str, current_id: str,
-                          arguments: dict[str, Any],
-                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """[卡面定制 2026-10-24] 职能写**自己的**专业台账(前提/技术裁定/判据/
-    体检/决策/汇报);任何职能可写 divergence(分歧待裁,总裁面上可见)——
-    「职能与父卡判断相左时分歧可见」的写入通道。判据三道:
-    ① 必须是职能回合;② ledger 必须属于**本职能**目录条目的 ledgers,
-    或="divergence";③ text 非空。"""
-    fid = _function_actor(work_id, current_id, cards)
-    if not fid:
-        return err("denied", "只有职能(或总裁)能写自己的台账")
-    ledger = str(arguments.get("ledger") or "").strip()
-    text = str(arguments.get("text") or "").strip()
-    if not ledger or not text:
-        return err("validation", "ledger 与 text 必填")
-    allowed: set[str] = {"divergence"}
-    try:
-        from . import function_room as _fr
-        prof = _fr.function_meta_for(work_id, current_id) or {}
-        e = _fr.entry(_fr.catalog_code_of(prof)) or {}
-        for l in (e.get("ledgers") or []):
-            allowed.add(str(l.get("code") or ""))
-    except Exception:  # noqa: BLE001 目录判不出 ⇒ 只剩 divergence
-        pass
-    if ledger not in allowed:
-        return err("validation",
-                   f"台账 {ledger} 不属于你的职责面(可用: {sorted(allowed)})")
-    note = str(arguments.get("note") or "").strip()
-    rec = await function_store.add_ledger_entry(
-        work_id, fid, ledger, text,
-        meta={"note": note} if note else None,
-        supersedes=str(arguments.get("supersedes") or ""))
-    try:
-        from . import event_stream
-        event_stream.emit(work_id, current_id, "function_ledger", {
-            "ledger": ledger, "id": rec["id"], "chars": len(text),
-        })
-    except Exception:  # noqa: BLE001
-        pass
-    return {"ok": True, "ledger": ledger, "id": rec["id"], "chars": len(text)}
-
-
 async def _h_curate_face(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -5830,7 +7010,7 @@ async def _h_curate_face(work_id: str, current_id: str,
         + mode_label + "需求文档")
     if isinstance(upd, dict) and upd.get("error"):
         return err("internal", str(upd["error"]))
-    # 决策簿留痕:verdicts(观点簿可见)+ decisions 台账(决策簿正本)
+    # 决策簿留痕:verdicts(判词簿)
     try:
         await function_store.add_verdict(
             work_id, current_id, "speak",
@@ -5839,14 +7019,6 @@ async def _h_curate_face(work_id: str, current_id: str,
             sources=[], targets=[target_id],
             evidence=[(new_requirements[:200])], auto=False)
     except Exception:  # noqa: BLE001 留痕失败不挡执笔
-        pass
-    try:
-        await function_store.add_ledger_entry(
-            work_id, current_id, "decisions",
-            f"策展 {target_id} 需求文档{mode_label}"
-            + (f"·{note}" if note else "") + f"·{len(new_requirements)}B",
-            meta={"card_id": target_id, "mode": mode})
-    except Exception:  # noqa: BLE001
         pass
     # [头尾介入 2026-10-25] 头事件**不在本 handler 发**——挂在底层写入路径
     # (card_store.update_card 的 requirements 首次有实质内容),任何执笔者/任何层
@@ -5908,11 +7080,6 @@ async def _h_report_to_user(work_id: str, current_id: str,
             sources=[], targets=["user"], evidence=[], auto=False)
     except Exception:  # noqa: BLE001
         pass
-    try:
-        await function_store.add_ledger_entry(
-            work_id, current_id, "reports", content[:2000])
-    except Exception:  # noqa: BLE001
-        pass
     from . import event_stream
     # [harness 第 1 步 2026-10-28] 本条**没有** kind 可补：`report_to_user` 的入参
     # 只有 content（总裁对用户的中间汇报不分 done/phase/blocked）。
@@ -5962,6 +7129,36 @@ TOOL_REGISTRY["report_up"] = ToolDef(
         # [2026-10-27 改] 已补落会话块：正文进上下文、可被凝练。
         # 声明跟着实现走（这是「对照事实」的意义——改完声明自动变，不用改文字）。
         effect=ToolEffect(sink="session_block", wake=True, targets="parent"),
+    ),
+)
+
+# [差事卡 2026-11-01] 差事回执：职能向派遣方交差——收件人由差事账算
+# （delegator），不在树里的职能唯一上行线；report_up 认父子线、它认差事账。
+TOOL_REGISTRY["report"] = ToolDef(
+    schema={
+        "name": "report",
+        "description": (
+            "（差事交差）向这次差事的**派遣方**汇报结论——正文落它的会话并唤醒。"
+            "收件人由差事账算，你不能选；写结论与证据（逐条判了什么、证据在哪），"
+            "不写过程自述。只有在派差事的职能能用。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string",
+                            "description": "回执正文（非空：结论＋证据）"},
+            },
+            "required": ["content"],
+        },
+    },
+    handler=_h_report_deploy,
+    readonly=False,
+    doc=ToolDoc(
+        group="通信",
+        scene="差事办完交差时：把结论打回派遣方——它是你这场差事唯一的上行线。",
+        usage="正文写结论＋证据（逐条过了没有、证据在哪、差什么）。交差即完，"
+              "差事自动关账；怎么改归派遣方裁，不归你。",
+        effect=ToolEffect(sink="session_block", wake=True, targets="delegator"),
     ),
 )
 
@@ -6050,7 +7247,7 @@ TOOL_REGISTRY["sync"] = ToolDef(
         "parameters": {
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "要同步的事实(非空)"},
+                "content": {"type": "string", "description": "要同步的事(常是你卡面的变化；非空)"},
                 "card_ids": {"type": "array", "items": {"type": "string"},
                              "description": "收件人(缺省＝沿你的通信线全部送达)"},
             },
@@ -6065,7 +7262,7 @@ TOOL_REGISTRY["sync"] = ToolDef(
               "要它立刻做，用 direct，不要用这个。",
         usage="收件人缺省沿通信线算，也可显式给 card_ids（每个都须有线，否则进 refused）。"
               "落进对方上下文（永久可读），**不叫醒它**——它下次回合自然看到。"
-              "正文写事实，不写要求它做的事（那是 direct 的事）。",
+              "正文写事（发生了什么/变了什么），不写要求它做的事（那是 direct 的事）。",
         effect=ToolEffect(sink="session_block", wake=False,
                           targets="explicit|links"),
     ),
@@ -6116,7 +7313,6 @@ TOOL_SWITCH["direct"] = policy.SWITCH_READ
 TOOL_SWITCH["curate_face"] = policy.SWITCH_EDIT
 TOOL_SWITCH["confirm_with_user"] = policy.SWITCH_READ
 TOOL_SWITCH["report_to_user"] = policy.SWITCH_READ
-TOOL_SWITCH["write_ledger"] = policy.SWITCH_READ
 
 # [强制停止 2026-10-24] 根卡/父卡的打断与停止工具(权限=祖先,handler 双保险)
 TOOL_REGISTRY["stop_card"] = ToolDef(
@@ -6332,7 +7528,7 @@ TOOL_REGISTRY["edit_status"] = ToolDef(
                         '2100–3400 字）。正确做法是**改旧的那一句**（替换成最新读数）或**删掉作废的那条**，不是新起一段。\n'
                         '## 写什么\n'
                         '能核实的事实：已经做成了什么（交付物在哪、能跑的命令、跑出什么结果）、对外接口是什么、现在卡在哪。不写计划、不写「我打算怎么做」、不写需求（需求走 '
-                        'edit_requirements）。\n'
+                        'edit_requirements）；过程、备忘、判断依据也不写——那些写影子的「笔记」节（edit_note）。\n'
                         '## 作废的**删掉**，不要留着标「已过期」\n'
                         '现状块只放**现在成立**的东西。一条读数过时了 ⇒ 直接换成新的；一条作废了 ⇒ `new_string` '
                         '给空串删掉。**不要写成「旧：X（已过期）／新：Y」并列**——那样块会越滚越长，读卡的人还得自己判断哪条算数。\n'
@@ -6382,8 +7578,8 @@ TOOL_REGISTRY["edit_requirements"] = ToolDef(
         {'name': 'edit_requirements',
          'description': '**精准编辑「需求文档」块**——只改这一处，现状与使命一个字不碰。\n'
                         '## 这块写什么\n'
-                        '**要什么 + 怎么算做到**：一条需求一条验收标准。不写设想、不写「我打算怎么做」、不写过程（过程进影子）、不写现状（现状是事实，用 '
-                        'edit_status）。\n'
+                        '**要什么 + 怎么算做到**：一条需求一条验收标准。不写设想、不写「我打算怎么做」、不写现状（现状是事实，用 '
+                        'edit_status）；过程、备忘、「为什么定/何时定」也不写——判断依据写影子的「笔记」节（edit_note），改动本身自动留痕；对别人成立的决定落成条文本身，不写「某日裁定」。\n'
                         '## **只有「确定的需求」可以写进来**\n'
                         '这块是**验收判据**——写进来一条，就等于宣布「做不到这条就是没完成」。所以：\n'
                         '- **确定**＝已经定了、要按它验收：用户明示过／上级下达过／从使命与既有需求直接推得、不需要再问。\n'
@@ -6482,7 +7678,7 @@ TOOL_SWITCH["edit_shadow"] = policy.SWITCH_SHADOW_WRITE
 TOOL_REGISTRY["edit_note"] = ToolDef(
     schema=
         {'name': 'edit_note',
-         'description': '**精准编辑你自己（当前卡）的笔记**——影子第五区，只有你看得到，别的卡读不到。给出 old_string（要替换的原文）与 '
+         'description': '**精准编辑你自己（当前卡）的笔记**——影子第五区，只有你看得到，别的卡读不到。它记**判断、备忘、待验证的猜想**——写给自己的，常驻你的上下文，下一轮还读得到。给出 old_string（要替换的原文）与 '
                         'new_string（换成什么），**只动这一处**，其余字节原样保留。\n'
                         '· 找不到 ⇒ 拒，笔记零改动；出现多次 ⇒ 拒（带上更多上下文让它唯一，或 replace_all=true）。\n'
                         '· 要删掉这一处就给 new_string=""。\n'
@@ -6620,36 +7816,10 @@ TOOL_REGISTRY["design_policy"] = ToolDef(
 TOOL_SWITCH["design_policy"] = policy.SWITCH_PLAN
 
 
-# [卡面定制 2026-10-24] write_ledger:职能写自己的专业台账(前提/技术裁定/判据/
-# 体检/决策/汇报);divergence 人人可写(分歧待裁,总裁面上可见)。
-TOOL_REGISTRY["write_ledger"] = ToolDef(
-    schema={
-        "name": "write_ledger",
-        "description": (
-            "(职能专用)写你**自己的**专业台账——你的卡面正本。"
-            "台账由你的职责定(目录):产品经理=前提台账(每条前提标来源:"
-            "用户明示/物理约束/推定待确认);技术总监=技术裁定簿(结论+理由,可引);"
-            "测试验收总监=判据与验收台账;涌现守门=判据登记与体检(度量读数);"
-            "总裁=决策簿/汇报簿。任何职能都可写 divergence(分歧待裁)——"
-            "你与父卡统合判断相左时写一条,总裁面上可见。\n"
-            "supersedes:可选——修订旧条目时传旧条目 id,旧条目被标记取代。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ledger": {"type": "string",
-                           "description": "台账 code(你职责面内的,或 divergence)"},
-                "text": {"type": "string", "description": "条目正文"},
-                "note": {"type": "string", "description": "一句话备注(可选)"},
-                "supersedes": {"type": "string",
-                               "description": "被取代的旧条目 id(可选)"},
-            },
-            "required": ["ledger", "text"],
-        },
-    },
-    handler=_h_write_ledger,
-    readonly=False,
-)
+# [两源模型 2026-11-01 · 用户令「卡面是唯一权威事实源，不需要台账」]
+# write_ledger 整体退役：职能的专业准则写在 rules.md 的「## function.<code>」
+# 区（人改的基建文件），不私记台账；产出落在场卡面（票/写件/回信），
+# 不进第二事实源。
 
 
 # ============================================================
@@ -6667,7 +7837,7 @@ def _function_actor(work_id: str, card_id: str,
 
     **旧 role 卡的判定必须与旧路径逐字同一口径**：`role_room.is_role()`
     自己查卡面 meta，**不依赖调用方传进来的 cards 字典**（实测踩坑：判据⑧ 里
-    用一份过期的 cards 快照调 write_ledger，本函数因拿不到 card_type 而判
+    用一份过期的 cards 快照调职能专用工具，本函数因拿不到 card_type 而判
     非职能回合，把旧 role 卡错误地拒了——那是旧路径行为的回归）。
     故：cards 已给时先走它作快捷路径；**没给或没命中时仍回库自查一次**，
     与 role_room.is_role 同源同结果。
@@ -7702,20 +8872,23 @@ def _filter_by_card_type(
             tools = tools + [_schema_of(TOOL_REGISTRY["continue_task"])]
     # [通信收拢 2026-10-28] 作业卡(sub_project/topic,非根)的通信件只剩 `sync`：
     # review_request / scene_report 已退役（评审改走伴生评审卡，汇报走 report_up）。
-    if (_self_type in ("sub_project", "topic") and card_id != _root_id):
+    if (_self_type in ("sub_project", "topic", "ui") and card_id != _root_id):
         for _extra in ("sync",):
             if (_extra in TOOL_REGISTRY
                     and not any(str(t.get("name", "")) == _extra for t in tools)):
                 tools = tools + [_schema_of(TOOL_REGISTRY[_extra])]
-    if (_cat_ok and _self_type in ("sub_project", "topic")
+    # [UI 卡 2026-11-02] ui 也拿 report_up（内循环执行卡的收口通道）；direct
+    # 只给能有子卡的作业卡——ui 无子卡、没有指令对象。
+    if (_cat_ok and _self_type in ("sub_project", "topic", "ui")
             and card_id != _root_id and "report_up" in TOOL_REGISTRY):
         if not any(str(t.get("name", "")) == "report_up" for t in tools):
             tools = tools + [_schema_of(TOOL_REGISTRY["report_up"])]
         # direct＝指令/下达任务（沿连线 + 子树，执行层兜底），随目录走
-        for _extra in ("direct",):
-            if (_extra in TOOL_REGISTRY
-                    and not any(str(t.get("name", "")) == _extra for t in tools)):
-                tools = tools + [_schema_of(TOOL_REGISTRY[_extra])]
+        if _self_type != "ui":
+            for _extra in ("direct",):
+                if (_extra in TOOL_REGISTRY
+                        and not any(str(t.get("name", "")) == _extra for t in tools)):
+                    tools = tools + [_schema_of(TOOL_REGISTRY[_extra])]
     # [通信收拢 2026-10-28] 原「摘横向发信权(lateral_enabled)」整段删除：
         # send_card_message 已退役（注册表里没有了），这个开关失去对象。
         # 横向通信现在只有 `sync`（沿连线、不唤醒），不再需要机制层收权。
@@ -7842,6 +9015,9 @@ _MUST_ROUND_DROP: frozenset[str] = frozenset({
     "write_file", "edit_file", "move_file", "rename_file", "delete_file",
     "bash", "python", "run_tool_card", "report_done",
     "link_cards", "link_rel",
+    # [差事卡 2026-11-01] create_deploy_card **不摘**：契约轮的本意是「先
+    # 立需求再动手」——PM 差事恰好是立需求的那只手（召它来写草稿正当其用）；
+    # QA 差事此时没有产物可验，滥召只是报「没东西可验」的空差事，无害。
 })
 
 
@@ -7857,6 +9033,9 @@ _MUST_ROUND_DROP: frozenset[str] = frozenset({
 _AUTO_LADDER_DROP: frozenset[str] = frozenset({"edit_card"})
 
 #: 派工三件：让别人干活的动作。非正稿的子卡拿不到这三件。
+#: [差事卡 2026-11-01] create_deploy_card 有意**不在**此列：正稿闸拦的是
+#: 「没合同就开工」——而 PM 差事本身就是立合同的动作（staff_pm 递话叫它
+#: 召 PM 写草稿，闸了这条链就断了）；QA 差事没合同验无可验，无害。
 _REQUIREMENTS_GATED_TOOLS: frozenset[str] = frozenset(
     {"create_card", "create_coder_card", "direct"})
 
@@ -8605,7 +9784,19 @@ async def execute_tool(
         # 为全量。接替启用时，工具面清单（第一道）与本处执行层拦（第二道）
         # 必须同批启用，不得只启一道（否则要么看得见调不动、要么绕过清单硬发）。
         # 权限表查表、非内容判定（R-A）这一性质不变，留待接替时复用。
-        result = await def_.handler(work_id, current_id, arguments, cards)
+        # [差事·事实归属 2026-11-01] 行动者绑进上下文：handler 里任何
+        # update_card 的卡面写事件都带上 by=current_id——「谁改的」从此
+        # 可查（差事交活判据、观测面都靠它）。
+        with card_store.actor_ctx(current_id):
+            result = await def_.handler(work_id, current_id, arguments, cards)
+        # [差事 2026-11-01] 工具落完顺手扫场：deliverable 差事的交活事实
+        # （场卡上的写件/回执）可能就此翻完——持久关账+发关账事件。
+        # 单点覆盖所有产出通道，不往每个写路径里散钩子。扫不动不拦。
+        try:
+            from ..storage import function_store as _fs
+            await _fs.sweep_deployments(work_id)
+        except Exception:  # noqa: BLE001
+            pass
         if _is_envelope(result):
             return result
         if isinstance(result, dict) and "error" in result:

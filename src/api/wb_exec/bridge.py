@@ -33,8 +33,8 @@ from typing import Any, Optional
 
 from . import acp_client, picker as picker_mod
 from . import switch
-from .acp_client import (AcpClient, AcpNotification, WbAcpError,
-                         WbExecutorUnavailable, WbModelUnavailable)
+from .acp_client import (AcpClient, AcpNotification, CATEGORY_QUOTA,
+                         WbAcpError, WbExecutorUnavailable, WbModelUnavailable)
 from .config import Candidate, WbExecConfig, load as load_config
 from .picker import Picker  # noqa: F401  （保留直引：类型标注与外部调用方用）
 from .registry import get_registry
@@ -76,6 +76,39 @@ class _Exec:
 
 
 # ===================================================================== 判定
+# [差事卡委派 2026-11-01 · 用户令「差事卡和编程卡一样走 wb 执行体」]
+# qa_card/pm_card 的差事回合同样交给 WorkBuddy——执行体干活（读文件、跑
+# 检查、写正文），收口时由桥接层机械完成差事语义（report 回派遣方 /
+# cardwrite 落对象卡），因为执行体没有 card_tools。
+#: **默认**可委派卡型（**兜底**；真值在配置 ``delegable_card_types`` 里）。
+DEFAULT_DELEGABLE_CARD_TYPES = ("coder", "qa_card", "pm_card")
+#: 兼容旧引用（外部/历史代码按这个名字取）。
+DELEGABLE_CARD_TYPES = set(DEFAULT_DELEGABLE_CARD_TYPES)
+DEPLOY_CARD_TYPES = {"qa_card", "pm_card"}
+
+
+async def is_delegable_card(work_id: str, card_id: str,
+                            cfg: Optional[WbExecConfig] = None) -> bool:
+    """这张卡**能不能走执行体**？（= 卡型白名单，**配置化**）
+
+    ★★ **2026-11-04 用户令**：「验收卡、pm卡，本质上应该和coder卡用一套路由机制，
+    而不是分开的」⇒ 白名单放进配置（``wb_exec.json`` 的
+    ``delegable_card_types``）⇒ **后端判定、接口返回、前端渲染门控共用同一份**
+    ⇒ 以后加卡型只改配置一处。
+
+    **读不到卡 ⇒ 不委派**（安全默认）。
+    """
+    if cfg is None:
+        cfg = load_config()
+    types = cfg.delegable_card_types or DEFAULT_DELEGABLE_CARD_TYPES
+    try:
+        from ...storage import card_store
+        card = await card_store.read_card(work_id, card_id)
+        return str((card.get("meta") or {}).get("card_type") or "") in types
+    except Exception:  # noqa: BLE001 读不到 ⇒ 不委派（安全默认）
+        return False
+
+
 async def is_coder_card(work_id: str, card_id: str) -> bool:
     try:
         from ...storage import card_store
@@ -151,9 +184,9 @@ async def maybe_delegate(state: Any) -> Optional[Any]:
     if not cfg.candidates:
         logger.info("[wb_exec] 配比表为空 ⇒ 不委派")
         return None
-    # 判定顺序：**先看是不是 coder 卡**（库读），再看它的执行体选择（覆盖表文件读）
-    # ——非 coder 卡不付 model_override 的文件 IO。
-    if not await is_coder_card(state.work_id, state.card_id):
+    # 判定顺序：**先看是不是可委派卡**（库读），再看它的执行体选择（覆盖表文件读）
+    # ——不可委派的卡不付 model_override 的文件 IO。
+    if not await is_delegable_card(state.work_id, state.card_id, cfg):
         return None
     raw = exec_backend_raw_of(state.work_id, state.card_id)
     backend = raw or BACKEND_AUTO
@@ -201,46 +234,42 @@ async def run_delegated(state: Any, cfg: WbExecConfig, backend: str) -> Any:
     state.rounds = 1
     pinned = _parse_pinned(backend)
     cand: Optional[Candidate] = None
+    cwd = _work_dir(state.work_id)
     if pinned:
         executor_id, model = pinned
         cand = Candidate(executor=executor_id, model=model, weight=1)
         ex.executor_id, ex.model = executor_id, model
     else:
-        # **预过滤**：某个候选的模型在这个版本上**确定不存在** ⇒ 直接跳过，
-        # 不去建会话才发现（那会在卡面上留一条假 fallback）。
-        # **也跳过被熔断的执行体**（2026-10-23 实跑：熔断期间每轮都白试一次
-        # 委派 ⇒ 事件流里全是"未登录"噪音，而卡其实在跑回落路径）。
-        # **只跳过、不换表外模型**——表外全是付费的。
-        reg = get_registry()
-        for _ in range(len(cfg.candidates) + 1):
-            c = ex.picker.pick()
-            if c is None:
-                break
-            # **★ 只跳"实测过用不了"的模型**（2026-10-23 20:45 更正）：
-            #   早先拿 ``session/load`` 返回的 ``availableModels`` 当"该版本的模型
-            #   目录" ⇒ **那是被过滤过的本地列表**（国版只返回 5 个，
-            #   可 hy3 / step-5-preview 实测都能调）⇒ **害得国版那 30% 权重全被跳过**。
-            #   ⇒ 现在只认**实测证据**：真调失败报 "Model unavailable" 才记下来。
-            if reg.model_unavailable(c.executor, c.model):
-                logger.info(
-                    "[wb_exec] 执行体 %s 实测没有模型 %s ⇒ 跳过该候选"
-                    "（不换表外付费模型）", c.executor, c.model)
-                continue
-            if reg.is_unauthenticated(c.executor):
-                logger.info("[wb_exec] 执行体 %s 正在熔断中 ⇒ 跳过该候选",
-                            c.executor)
-                continue
-            cand = c
-            break
+        # ★ **优先级瀑布**（2026-11-04 用户令）：
+        #   「先全部排 devin，你得测它并发，它排满了或额度用完了，就落 opencode，
+        #     opencode 不行，再落 workbuddy」
+        #   ⇒ **不再按权重分流**（配比会让还空着的 devin 只吃 40% ⇒ 浪费）。
+        #   ⇒ 每一级都过三道**状态**闸：额度耗尽 / 实测没这模型 / 槽排满。
+        #   ⇒ **占不到槽就立刻往下一级溢流**（不干等、不回落系统模型＝花钱）。
+        cand, skips = await _select_candidate(cfg, state, cwd)
+        for s in skips:
+            if s.get("kind") == "saturated":
+                # ★ **排满溢流**＝换了执行体 ⇒ 用 `wb_exec_fallback`（看得见
+                #   "从谁落到谁"），不是 `unavailable`（那表示"这一路彻底不行"）。
+                _emit(state, "wb_exec_fallback", {
+                    "from": f"{s.get('executor')}:{s.get('model')}",
+                    "to": (f"{cand.executor}:{cand.model}" if cand else ""),
+                    "reason": s.get("reason") or "并发槽已排满",
+                })
+            else:
+                _emit(state, "wb_exec_unavailable", {
+                    "executor": s.get("executor"), "model": s.get("model"),
+                    "reason": s.get("reason") or "不可用",
+                })
         if cand is not None:
             ex.executor_id, ex.model = cand.executor, cand.model
         else:
-            # 所有候选都不可用（模型不存在 / 执行体暂时不可用）⇒ **安静地不委派**
-            # （回落系统模型，但**不**在事件流里刷"未登录"噪音）
+            # 所有候选都**确定不可用**（额度耗尽 / 实测没有这模型）⇒
+            # **安静地不委派**（回落系统模型，但**不**在事件流里刷噪音）
             logger.info("[wb_exec] 没有可用的执行体候选 ⇒ 本轮走系统自己的模型")
             # **如实记账**（卡面不能显示成"在 WorkBuddy 上跑"）
             await _record_fallback(
-                state, "配比表里的候选当前都不可用（该版本没有这个模型 / 网关不可用）")
+                state, "优先级表里的候选当前都不可用（额度耗尽 / 该执行体没有这个模型）")
             state.rounds = _orig_rounds
             return None
 
@@ -251,13 +280,15 @@ async def run_delegated(state: Any, cfg: WbExecConfig, backend: str) -> Any:
         "backend": backend,
     })
 
-    cwd = _work_dir(state.work_id)
-
+    holder = _holder_id(state)
     try:
         await _run_with_fallback(state, cfg, ex, cand, cwd)
-        # 记下**实际**路由到的（配比器选的 / fallback 换过的）⇒
+        # 记下**实际**路由到的（优先级瀑布选的 / 降级换过的）⇒
         # 卡面 UI 开工后显示的就是它。
         await _record_routed(state, ex)
+        # ★ **真调成功 ⇒ 额度状态清掉 + 份额还回去**（状态驱动，不是时间到期）
+        #   ⇒ 手动钉死一个"额度耗尽"的模型跑一轮成功 ⇒ 自动恢复全份额。
+        _restore_quota(cfg, ex, ex.executor_id, ex.model)
     except WbAcpError as exc:
         logger.error("[wb_exec] 委派最终失败 card=%s: %s", state.card_id, exc)
         _emit(state, "wb_exec_error", {"error": str(exc)[:400],
@@ -275,6 +306,10 @@ async def run_delegated(state: Any, cfg: WbExecConfig, backend: str) -> Any:
         # 我在这里写 0 ⇒ 每轮都被重置回 1 ⇒ 卡面"满屏 round 1"。
         state.rounds = _orig_rounds
         return None
+    finally:
+        # ★ **释放槽位预留**（幂等）：这一轮结束（或换候选）后，
+        #   这个执行体的占用数要降下来 ⇒ 后面的卡才不会被误判成"排满"。
+        get_registry().release_reserve(ex.executor_id, holder)
 
     # 成功：把执行体产出落成"这一轮的回复"
     final_text = "".join(ex.text_parts).strip()
@@ -301,6 +336,67 @@ async def run_delegated(state: Any, cfg: WbExecConfig, backend: str) -> Any:
     return StepOutcome("deliver", "wb_exec")
 
 
+async def _select_candidate(cfg: WbExecConfig, state: Any,
+                             cwd: str) -> tuple[Optional[Candidate], list[dict]]:
+    """**优先级瀑布**：按优先级从高到低，挑一个**现在就能接下**的候选。
+
+    ★ **用户令（2026-11-04）**：「先全部排 devin，你得测它并发，它排满了或额度用完了，
+    就落 opencode，opencode 不行，再落 workbuddy」
+    ⇒ **不再按权重分流**：配比会让还空着的 devin 只吃 40% ⇒ 浪费。
+
+    **每一级过三道闸（全部是状态判定，不是时间闸）**：
+      ① **额度耗尽**（上游明确报的 quota / free_tier_limit）⇒ 跳过；
+      ② **实测没有这个模型**（真调失败报 Model unavailable）⇒ 跳过；
+      ③ **槽排满了**（占不到预留）⇒ **立刻溢流到下一级**（不干等）。
+
+    **全部排满怎么办**：**不回落系统模型**（＝花钱）⇒ 在**最高优先级那一路排队**
+    （强制预留 ⇒ 占用数照样算得对 ⇒ 后面的卡会正确地溢流到下一级）。
+
+    返回 ``(候选, 跳过的原因列表)``；候选为 ``None`` ⇒ 全部候选都**确定不可用**
+    （这时才回落系统模型，并如实记账）。
+    """
+    reg = get_registry()
+    holder = _holder_id(state)
+    order = picker_mod.priority_order(cfg.candidates)
+    notes: list[dict] = []
+    wait_target: Optional[Candidate] = None
+    for c in order:
+        if reg.is_exhausted(c.executor, c.model):
+            why = reg.exhausted_reason(c.executor, c.model) or "额度耗尽"
+            logger.info("[wb_exec] %s/%s 额度耗尽（%s）⇒ 跳到下一优先级",
+                        c.executor, c.model, why)
+            notes.append({"executor": c.executor, "model": c.model,
+                          "kind": "quota",
+                          "reason": f"额度耗尽（{why}）"})
+            continue
+        if reg.model_unavailable(c.executor, c.model):
+            logger.info("[wb_exec] %s 实测没有模型 %s ⇒ 跳到下一优先级",
+                        c.executor, c.model)
+            notes.append({"executor": c.executor, "model": c.model,
+                          "kind": "unavailable",
+                          "reason": "该执行体实测没有这个模型"})
+            continue
+        if await reg.try_reserve(c.executor, c.model, cwd, holder):
+            logger.info("[wb_exec] 选中候选 %s/%s（优先级 %d）",
+                        c.executor, c.model, c.priority)
+            return c, notes
+        # **槽排满 ⇒ 立刻溢流**（用户令：「它排满了…就落 opencode」）
+        notes.append({"executor": c.executor, "model": c.model,
+                      "kind": "saturated",
+                      "reason": "并发槽已排满"})
+        if wait_target is None:
+            wait_target = c
+    if wait_target is not None:
+        # **全都排满 ⇒ 在最高优先级那一路排队**（不回落系统模型＝不花钱）。
+        # 强制预留（即使超编）⇒ 占用数算得对 ⇒ 后来的卡会正确地溢流到下一级。
+        await reg.try_reserve(wait_target.executor, wait_target.model, cwd,
+                              holder, force=True)
+        logger.info("[wb_exec] 所有执行体都排满 ⇒ 在 %s/%s 排队等槽",
+                    wait_target.executor, wait_target.model)
+        return wait_target, notes
+    return None, notes
+
+
 async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                              cand: Optional[Candidate], cwd: str) -> None:
     """跑任务；quota ⇒ 切 hy3 重试；连接类失败 ⇒ 重连续跑（上限 ``max_resume``）。
@@ -312,13 +408,37 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
       恢复不了才新建会话重跑。
     """
     registry = get_registry()
-    chain = picker_mod.fallback_chain(
-        cand, cfg.candidates, cfg.fallback_models, cfg.prefer_same_executor
-    ) if cand else []
+    # ★ **降级链 = 优先级顺序**（2026-11-04 用户令：「opencode 不行，再落 workbuddy」）
+    #   ⇒ devin → opencode → workbuddy(glm) → … → hy3（表内最后一级）。
+    #   ⇒ **不是**老的"只跳 fallback.models"（那个只会在 hy3 之间跳）。
+    chain = picker_mod.cascade_chain(cfg.candidates, cand) if cand else []
     chain_idx = 0
     current = cand
     attempt = 0
     tried: set[tuple[str, str]] = set()
+    holder = _holder_id(state)
+
+    async def _advance(failed: Candidate) -> Optional[Candidate]:
+        """**往下一优先级走**（跳过排满 / 额度尽 / 没这模型的候选）。
+
+        ★ 每一级都要**先占到位**（:meth:`try_reserve`）⇒ 排满了就**继续往下**，
+        而不是停在这一级干等。
+        """
+        nonlocal chain_idx
+        while chain_idx < len(chain):
+            nxt = chain[chain_idx]
+            chain_idx += 1
+            if (nxt.executor, nxt.model) in tried:
+                continue
+            if registry.is_exhausted(nxt.executor, nxt.model):
+                continue
+            if registry.model_unavailable(nxt.executor, nxt.model):
+                continue
+            if await registry.try_reserve(nxt.executor, nxt.model, cwd, holder):
+                return nxt
+            logger.info("[wb_exec] %s/%s 排满 ⇒ 继续往下一优先级",
+                        nxt.executor, nxt.model)
+        return None
     while True:
         if current is None:
             raise WbAcpError("没有可用候选（配比表为空）")
@@ -342,6 +462,14 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                 # **opencode 走另一条传输**（HTTP + SSE，不是 ACP）
                 await _run_opencode(state, cfg, ex, current, cwd, registry)
                 return
+            if _is_devin_executor(cfg, current.executor):
+                # **Devin 走 CLI 进程**（本地 agent ⇒ 能写本机工作目录）
+                await _run_devin(state, cfg, ex, current, cwd, registry)
+                return
+            if _is_cc_executor(cfg, current.executor):
+                # **Command Code 走 node 起的 CLI**（NDJSON 流式事件）
+                await _run_cc(state, cfg, ex, current, cwd, registry)
+                return
             gw = await registry.acquire(current.executor, cwd, current.model)
             gw = await registry.ensure_connection(gw)
             client = AcpClient(
@@ -361,14 +489,26 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
             #     「**自动批准权限请求**」，不在这里。
             holder = _holder_id(state)
             sem = registry.semaphore_for(gw.base_url)
-            if sem.locked():
-                _emit(state, "wb_exec_queued", {
-                    "executor": current.executor,
-                    "model": current.model,
-                    "waiting_for": registry.slot_holder(gw.base_url),
-                })
-            await sem.acquire()
+            # ★ **先登记等待者再判断**（2026-11-03 修竞态）：
+            #   早先只看 ``sem.locked()`` ⇒ 两张卡都可能在对方 acquire **之前**
+            #   检查到"没锁" ⇒ 实际排了队（串行跑完）但**没人发过"排队中"**
+            #   ⇒ 卡面上看不见它在等（看着像"卡住"）。
+            # ⇒ 现在：「槽被占」**或**「已经有人在等」⇒ 我就得排队 ⇒ 发"排队中"。
+            _n_wait = registry.note_waiter(gw.base_url)
+            try:
+                if sem.locked() or _n_wait > 1:
+                    _emit(state, "wb_exec_queued", {
+                        "executor": current.executor,
+                        "model": current.model,
+                        "waiting_for": registry.slot_holder(gw.base_url),
+                    })
+                await sem.acquire()
+            finally:
+                registry.clear_waiter(gw.base_url)
             registry.mark_slot(gw.base_url, holder)
+            # ★ **运行时已经占上槽了** ⇒ **释放选择期的预留**
+            #   （否则占用数被算两遍 ⇒ 这个执行体会被误判成"排满"一倍）。
+            registry.release_reserve(current.executor, holder)
             try:
                 async with client:
                     # **复用连接**（ACP 连接没有 disconnect 端点，maxConnections=32
@@ -411,7 +551,15 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                     })
                     result = await client.prompt(
                         sid, task_text,
-                        timeout=float(cfg.watchdog.read_timeout_sec),
+                        # ★ **不设读超时**（2026-11-03）：ACP 的 prompt 响应是
+                        #   **SSE 流**，httpx 的 read timeout 判的是「两帧之间多久
+                        #   没数据」——agent 跑大 bash 时**本来就不发帧** ⇒ 有限读
+                        #   超时会把**正在干活的长任务**误判成「连接断了」⇒ 续跑
+                        #   （重发整段 prompt）⇒ 又超时 ⇒ 30 分钟没动静。
+                        #   实测 wb-cn/hy3 总耗时中位 373.8s、最大 3351s ⇒ 必然踩。
+                        # ⇒ **判死活只靠状态与连接事件**（agentPhase / 在途工具 /
+                        #   吐字 / SSE 结束 / httpx 异常）。
+                        read_timeout=None,
                     )
                     # ★ **失败藏在返回体里**（2026-10-23 18:10 实测）：
                     #   WorkBuddy 把鉴权失败**不抛异常**，而是返回
@@ -421,6 +569,15 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                     #   ⇒ 不检查的话，这张卡会**假装成功**（0 工具 0 正文），
                     #   卡面显示"已完成"、实际啥也没干。必须当失败处理。
                     _raise_if_prompt_failed(result)
+                    # ★ **空结果守卫**（2026-11-01 加）：0 工具 + 0 正文 ⇒ **一定没干成活**
+                    #   （现场 card_143 **首轮**：wb-intl/deepseek-v4.1-flash 交回空回执
+                    #     ——工具调用 0 次、无正文、无产物 ⇒ 系统却发了 ``done``
+                    #     且 ``model_calls=0`` ⇒ **这张卡「假装成功」**，父卡只能靠
+                    #     人工读事件流才发现"未开工"）。
+                    # ⇒ 现在**判定失败** ⇒ 换候选/如实报错，不许当成功。
+                    if ex.tool_calls == 0 and not "".join(ex.text_parts).strip():
+                        raise WbAcpError(
+                            "WorkBuddy 执行体返回空结果（0 工具 0 正文）⇒ 判定失败，不当成功")
             finally:
                 # **★ 槽位一定要还回去**（异常/取消/成功都还）——
                 #   不还 ⇒ 这个槽**永远**占着 ⇒ 后面的卡全被挡 ⇒ 又变回"卡死"。
@@ -428,40 +585,42 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                 sem.release()
             return
         except WbModelUnavailable as exc:
-            # 该版本没这个模型（**实测出来的**）⇒ 换一个**别的候选**
-            # （同配比表里的其它组合 ⇒ 不换表外付费模型）。
+            # 该版本没这个模型（**实测出来的**）⇒ **往下一优先级**走
+            # （只在优先级表内跳 ⇒ 不换表外付费模型）。
             registry.note_model_unavailable(current.executor, current.model)
-            nxt = _next_candidate(cfg.candidates, current, tried)
+            tried.add((current.executor, current.model))
+            registry.release_reserve(current.executor, holder)
+            nxt = await _advance(current)
             if nxt is None:
                 raise WbAcpError(
-                    f"配比表里的模型在本机都不存在: {exc}") from exc
-            tried.add((current.executor, current.model))
+                    f"优先级表里的模型在本机都不存在: {exc}") from exc
             ex.fallback_used.append(f"{nxt.executor}:{nxt.model}")
             _emit(state, "wb_exec_fallback", {
                 "from": f"{current.executor}:{current.model}",
                 "to": f"{nxt.executor}:{nxt.model}",
                 "reason": str(exc)[:300],
             })
-            logger.warning("[wb_exec] 模型不存在 ⇒ 换候选：%s → %s（%s）",
+            logger.warning("[wb_exec] 模型不存在 ⇒ 换下一优先级：%s → %s（%s）",
                            f"{current.executor}:{current.model}",
                            f"{nxt.executor}:{nxt.model}", exc)
             current = nxt
             continue
         except WbExecutorUnavailable as exc:
-            # **这个执行体现在用不了**（网关没了/没登录）⇒ 换另一个候选
+            # **这个执行体现在用不了**（网关没了/没登录）⇒ **往下一优先级**走
             # （实测 2026-10-23 20:50：桌面端托管的网关会自己消失）。
-            nxt = _next_candidate(cfg.candidates, current, tried)
+            tried.add((current.executor, current.model))
+            registry.release_reserve(current.executor, holder)
+            nxt = await _advance(current)
             if nxt is None:
                 raise WbAcpError(
-                    f"配比表里的执行体都暂时用不了: {exc}") from exc
-            tried.add((current.executor, current.model))
+                    f"优先级表里的执行体都暂时用不了: {exc}") from exc
             ex.fallback_used.append(f"{nxt.executor}:{nxt.model}")
             _emit(state, "wb_exec_fallback", {
                 "from": f"{current.executor}:{current.model}",
                 "to": f"{nxt.executor}:{nxt.model}",
                 "reason": str(exc)[:300],
             })
-            logger.warning("[wb_exec] 执行体不可用 ⇒ 换候选：%s → %s（%s）",
+            logger.warning("[wb_exec] 执行体不可用 ⇒ 换下一优先级：%s → %s（%s）",
                            f"{current.executor}:{current.model}",
                            f"{nxt.executor}:{nxt.model}", exc)
             current = nxt
@@ -481,11 +640,27 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                     "error": str(exc)[:300],
                 })
                 raise
-            if exc.is_quota and chain_idx < len(chain):
-                nxt = chain[chain_idx]
-                chain_idx += 1
+            if exc.is_quota:
+                # ★ **上游明确说额度用完了**（ACP 的
+                #   ``_meta['codebuddy.ai/errorMessage'].category == "quota"``）
+                #   ⇒ 记进额度状态表 ⇒ **这个候选之后让路**（跳到下一优先级）
+                #   ⇒ 不用每次都先失败一轮才换（那会白花一次请求 + 一段时间）。
+                registry.mark_exhausted(current.executor, current.model, "quota")
+                _emit(state, "wb_exec_unavailable", {
+                    "executor": current.executor, "model": current.model,
+                    "reason": "额度耗尽，已让路给下一优先级",
+                    "error": str(exc)[:300],
+                })
+            if exc.is_quota:
+                # ★ **额度尽 ⇒ 立刻往下一优先级走**（用户令：「额度用完了，就落 opencode」）
+                tried.add((current.executor, current.model))
+                registry.release_reserve(current.executor, holder)
+                nxt = await _advance(current)
+                if nxt is None:
+                    raise WbAcpError(
+                        f"候选全部额度耗尽（{ex.fallback_used}）: {exc}") from exc
                 ex.fallback_used.append(f"{nxt.executor}:{nxt.model}")
-                logger.warning("[wb_exec] 额度/过载 ⇒ fallback：%s → %s（%s）",
+                logger.warning("[wb_exec] 额度/过载 ⇒ 落下一优先级：%s → %s（%s）",
                                f"{current.executor}:{current.model}",
                                f"{nxt.executor}:{nxt.model}", exc)
                 _emit(state, "wb_exec_fallback", {
@@ -495,40 +670,39 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                 })
                 current = nxt
                 continue
-            if exc.is_quota:
-                raise WbAcpError(
-                    f"候选全部额度耗尽（{ex.fallback_used}）: {exc}") from exc
-            # 连接/传输类 ⇒ 重连续跑
+            # 连接/传输类 ⇒ **重试同一个执行体**（★ 2026-11-04 改）
+            #   原来这里是"换一次候选"⇒ **每失败一次就换一个执行体从头干**
+            #   ⇒ 现场表现：反反复复失败、反反复复换人接手（card_211 白跑 4 轮）。
+            #   ⇒ "排满"是**容量**问题（该溢流到下一优先级）；
+            #   "传输失败"是**这一路自身**的问题（该重试它，别换人）。
             attempt += 1
             if attempt > cfg.watchdog.max_resume:
                 raise WbAcpError(
                     f"续跑 {attempt} 次仍未成功: {exc}") from exc
             ex.resumed = attempt
-            logger.warning("[wb_exec] 第 %s 次续跑：%s", attempt, exc)
+            logger.warning("[wb_exec] 第 %s 次续跑（同一执行体 %s/%s）：%s",
+                           attempt, current.executor, current.model, exc)
             _emit(state, "wb_exec_resume", {
                 "attempt": attempt, "error": str(exc)[:300],
             })
-            # 换一次候选（避免在同一个坏端点上死磕）
-            if chain_idx < len(chain):
-                current = chain[chain_idx]
-                chain_idx += 1
             continue
         except RuntimeError as exc:
             # **普通 RuntimeError**（不是 ACP 错误）⇒ 多半是"发现网关失败"
-            # （桌面端网关被回收 / 没起）⇒ 当成"这个执行体不可用"⇒ **换候选**。
+            # （桌面端网关被回收 / 没起）⇒ 当成"这个执行体不可用"⇒ **换下一优先级**。
             # （**必须放在 WbAcpError 之后**：WbAcpError 是 RuntimeError 的子类。）
-            nxt = _next_candidate(cfg.candidates, current, tried)
+            tried.add((current.executor, current.model))
+            registry.release_reserve(current.executor, holder)
+            nxt = await _advance(current)
             if nxt is None:
                 raise WbExecutorUnavailable(
-                    f"配比表里的执行体都暂时用不了: {exc}") from exc
-            tried.add((current.executor, current.model))
+                    f"优先级表里的执行体都暂时用不了: {exc}") from exc
             ex.fallback_used.append(f"{nxt.executor}:{nxt.model}")
             _emit(state, "wb_exec_fallback", {
                 "from": f"{current.executor}:{current.model}",
                 "to": f"{nxt.executor}:{nxt.model}",
                 "reason": str(exc)[:300],
             })
-            logger.warning("[wb_exec] 执行体不可用（%s）⇒ 换候选：%s → %s",
+            logger.warning("[wb_exec] 执行体不可用（%s）⇒ 换下一优先级：%s → %s",
                            exc, f"{current.executor}:{current.model}",
                            f"{nxt.executor}:{nxt.model}")
             current = nxt
@@ -582,18 +756,6 @@ def _raise_if_prompt_failed(result: Any) -> None:
     raise WbAcpError(f"WorkBuddy 执行体返回失败: {raw[:300]}", code=-32000)
 
 
-def _next_candidate(candidates: list[Candidate], current: Candidate,
-                     tried: set[tuple[str, str]]) -> Optional[Candidate]:
-    """找一个**还没试过**的候选（模型不存在时换着用）。"""
-    for c in candidates:
-        if (c.executor, c.model) == (current.executor, current.model):
-            continue
-        if (c.executor, c.model) in tried:
-            continue
-        return c
-    return None
-
-
 def _holder_id(state: Any) -> str:
     """槽位占用者标识（谁占着这个 agent 槽）。
 
@@ -603,10 +765,287 @@ def _holder_id(state: Any) -> str:
     return f"{getattr(state, 'work_id', '?')}/{getattr(state, 'card_id', '?')}/{id(state)}"
 
 
+async def _cleanup_session(cfg: WbExecConfig, state: Any, ex: "_Exec",
+                            current: Candidate, cwd: str, *,
+                            session_id: str = "", client: Any = None,
+                            atif: Any = None) -> None:
+    """★ **卡片做完后 ⇒ 在这个执行体自己的客户端里清掉残留**。
+
+    **红线（用户令：「千万别删除对话」「千万别删错对话」）**——
+    只删**我们自己刚建的那一条**（精确 id ＋ 删前验身份），
+    桌面端客户端与用户自己的会话**一律不碰**。
+    详细纪律见 :mod:`src.api.wb_exec.cleanup`。
+
+    ★ **清理失败只记日志，不影响卡片结果**。
+    """
+    ex_cfg = cfg.executor(current.executor)
+    if ex_cfg is None or not getattr(ex_cfg, "cleanup_after_run", False):
+        return
+    from . import cleanup as cleanup_mod
+    try:
+        rep = await cleanup_mod.cleanup_after_run(
+            current.executor, session_id=session_id, work_dir=cwd,
+            client=client, cli_exe=str(getattr(ex_cfg, "devin_cli_exe", "") or ""),
+            card_id=str(getattr(state, "card_id", "") or ""), atif=atif)
+    except Exception as exc:  # noqa: BLE001 清理永远不能拖垮主流程
+        logger.warning("[wb_exec] 清理会话异常（已忽略）：%s", exc)
+        return
+    if rep.get("deleted"):
+        logger.info("[wb_exec] 客户端清理完成 %s：%s", current.executor,
+                    {k: v for k, v in rep.items() if k != "executor"})
+    elif rep.get("skipped"):
+        logger.info("[wb_exec] 未清理（%s）：%s", current.executor, rep["skipped"])
+
+
 def _is_oc_executor(cfg: WbExecConfig, executor_id: str) -> bool:
     """这个执行体是不是走 **opencode**（HTTP + SSE 传输，不是 ACP）。"""
     ex = cfg.executor(executor_id)
     return bool(ex and ex.oc_serve_exe and ex.oc_pool_size > 0)
+
+
+def _is_devin_executor(cfg: WbExecConfig, executor_id: str) -> bool:
+    """这个执行体是不是走 **Devin**（CLI 进程：本地 agent ⇒ 能写本机目录）。"""
+    ex = cfg.executor(executor_id)
+    return bool(ex and ex.devin_cli_exe)
+
+
+def _is_cc_executor(cfg: WbExecConfig, executor_id: str) -> bool:
+    """这个执行体是不是走 **Command Code**（node 起的 CLI + NDJSON 事件流）。"""
+    ex = cfg.executor(executor_id)
+    return bool(ex and getattr(ex, "cc_cli_entry", ""))
+
+
+async def _run_cc(state: Any, cfg: WbExecConfig, ex: "_Exec",
+                  current: Candidate, cwd: str, registry: Any) -> None:
+    """跑一轮 **Command Code**（2026-11-04 加，第五路候选）。
+
+    **事件是流式的**（NDJSON）：工具调用/正文/思考**边跑边出** ⇒
+    卡面上能实时看到它在干什么（比 Devin 的 ATIF 事后解析强）。
+
+    **★ 实测出来的三个坑**（见 :mod:`src.api.wb_exec.cc_client` 的文件头）：
+    ``--yolo`` 必须给旗标（``--permission-mode yolo`` 不够）；
+    ``--tools-all`` 必须给（print 模式默认扣工具）；
+    目录里的 FREE 标签会过期 ⇒ **只认真调出来的**。
+    """
+    runner = registry.cc_runner(current.executor)
+    if runner is None:
+        raise WbExecutorUnavailable(
+            f"执行体 {current.executor} 没有配 Command Code 入口")
+    sem = registry.cc_sem(current.executor)
+    task_text = await _build_task_text(state, cfg, ex, cwd)
+    ex.executor_id, ex.model = current.executor, current.model
+
+    def _on_event(kind: str, payload: dict) -> None:
+        """**边跑边映射**成我们已有的事件（前端零改动）。"""
+        if kind == "tool_call":
+            ex.tool_calls += 1
+            _emit(state, "tool_call", {
+                "tool": str(payload.get("name") or ""), "target": "",
+                "arguments": payload.get("input") or {}, "round": state.rounds,
+            })
+        elif kind == "tool_result":
+            ex.tool_ok += 1
+            _emit(state, "tool_result", {
+                "tool": str(payload.get("name") or ""), "ok": True,
+                "status": str(payload.get("status") or "completed"),
+                "summary": str(payload.get("output") or "")[:2000],
+                "round": state.rounds,
+            })
+        elif kind == "thinking":
+            _emit(state, "reasoning_chunk", {
+                "text": str(payload.get("text") or "")[:2000],
+                "round": state.rounds,
+            })
+
+    async with sem:
+        _emit(state, "wb_exec_model", {
+            "executor": current.executor, "model": current.model,
+            "session_id": "", "transport": "command-code",
+        })
+        res = await runner.run(task_text, cwd, model=current.model,
+                               on_event=_on_event)
+
+    text = str(res.get("text") or "")
+    if text:
+        ex.text_parts.append(text)
+        _emit(state, "assistant_text", {"content": text, "round": state.rounds})
+    errs = [str(e) for e in (res.get("errors") or [])]
+    # ★ **额度耗尽要能认出来**（与 Devin 同一条纪律）⇒ 记额度状态 ⇒ 下一优先级接管。
+    for e in errs:
+        if _looks_exhausted(e):
+            registry.mark_exhausted(current.executor, current.model,
+                                    "command-code 报额度/配额用完")
+            break
+    if not res.get("ok"):
+        raise WbAcpError(
+            f"Command Code 执行失败（rc={res.get('rc')}）："
+            f"{(' | '.join(errs) or '无正文')[:300]}")
+    # ★ **空结果守卫**（同 Devin）：0 工具 + 0 正文 ⇒ 一定没干成活 ⇒ 判失败。
+    if ex.tool_calls == 0 and not text.strip():
+        raise WbAcpError(
+            "Command Code 执行体返回空结果（0 工具 0 正文）⇒ 判定失败，不当成功")
+
+
+async def _run_devin(state: Any, cfg: WbExecConfig, ex: "_Exec",
+                     current: Candidate, cwd: str, registry: Any) -> None:
+    """跑一轮 **Devin**（2026-11-03 加、2026-11-04 改本地模式）。
+
+    **形态**（本地 agent，**不是** ``--cloud``）::
+
+        devin -p --prompt-file F --export O --permission-mode bypass
+              --model swe-2-max --respect-workspace-trust false
+
+    ★ **为什么不能走云端**（2026-11-04 实测）：``--cloud`` 跑在 **Devin 的 VM** 里
+    ⇒ **看不到本机的 ``works\\<work>`` 目录** ⇒ agent 只会回一句
+    「这是你本机的路径，请批准本地访问」⇒ **工具调用 0 次** ⇒ **这张卡假装成功**
+    （现场 card_010：tool_calls=0、22.3s、实际啥也没干）。
+    ⇒ 本地 agent 跑在**本机** ⇒ 能直接读写卡的工作目录（实测：ATIF 11 步、
+      文件真写出）。
+
+    ★ **模型用候选表里的**（候选表是唯一事实源）：``current.model``
+    （如 ``swe-2-max``）⇒ **别写家族名**（``swe-2`` 会落到家族默认档，
+    实测解析成 ``swe-2-high``）。
+
+    **事件映射**：ATIF 里的工具调用 → ``tool_call`` / ``tool_result``；
+    最终正文 → ``assistant_text`` ⇒ 前端零改动。
+    """
+    runner = registry.devin_runner(current.executor)
+    if runner is None:
+        raise WbExecutorUnavailable(f"执行体 {current.executor} 没有配 Devin CLI")
+    sem = registry.devin_sem(current.executor)
+    task_text = await _build_task_text(state, cfg, ex, cwd)
+    ex.executor_id, ex.model = current.executor, current.model
+    # ★ **实时事件**（2026-11-04）：Devin 的 ATIF 要等**进程退出**才写出来
+    #   ⇒ 卡面在跑的这几分钟**一片空白**（用户现场：「页面上没有任何回应的？」）
+    #   ⇒ 这里并行轮询 Devin 的会话库 ⇒ **边跑边**把工具调用/结果/思考发到卡面。
+    live: dict = {"tools": 0, "text": "", "texts": []}
+
+    def _on_event(kind: str, payload: dict) -> None:
+        if kind == "tool_call":
+            live["tools"] += 1
+            ex.tool_calls += 1
+            _emit(state, "tool_call", {
+                "tool": str(payload.get("name") or ""), "target": "",
+                "arguments": payload.get("input") or {}, "round": state.rounds,
+                # ★ `live="log"` ⇒ 这条是**日志尾随**来的（只有工具名，
+                #   参数/结果等收工的 ATIF）⇒ 卡面上标出来，不假装有明细。
+                "live": str(payload.get("live") or ""),
+            })
+        elif kind == "tool_result":
+            ex.tool_ok += 1
+            _emit(state, "tool_result", {
+                "tool": str(payload.get("name") or ""), "ok": True,
+                "status": "completed",
+                "summary": str(payload.get("summary") or "")[:2000],
+                "round": state.rounds,
+            })
+        elif kind == "thinking":
+            _emit(state, "reasoning_chunk", {
+                "text": str(payload.get("text") or "")[:2000],
+                "round": state.rounds,
+            })
+        elif kind == "text":
+            live["text"] = str(payload.get("text") or "")
+            live["texts"].append(_norm_text(live["text"]))
+            _emit(state, "assistant_text", {
+                "content": live["text"], "round": state.rounds,
+            })
+
+    async with sem:
+        _emit(state, "wb_exec_model", {
+            "executor": current.executor, "model": current.model,
+            "session_id": "", "transport": "devin-cli",
+        })
+        res = await runner.run(task_text, cwd, model=current.model,
+                               marker=_segment_marker(cfg, state, ex),
+                               on_event=_on_event)
+    # ★ **ATIF 兜底**：只有实时流没出事件时（老路径/没落库）才用它补
+    #   ⇒ **不重复**发同一批工具调用。
+    if not live["tools"]:
+        _tools = (res.get("atif") or {}).get("tools") or []
+        for t in _tools:
+            st = str(t.get("status") or "").lower()
+            ok = st in ("completed", "success", "ok", "done", "")
+            _emit(state, "tool_call", {
+                "tool": str(t.get("name") or ""), "target": "",
+                "arguments": t.get("input") or {}, "round": state.rounds,
+            })
+            _emit(state, "tool_result", {
+                "tool": str(t.get("name") or ""), "ok": ok,
+                "status": st or "completed",
+                "summary": str(t.get("output") or "")[:2000], "round": state.rounds,
+            })
+            ex.tool_calls += 1
+            if ok:
+                ex.tool_ok += 1
+    text = str(res.get("text") or "")
+    if text:
+        ex.text_parts.append(text)
+        # ★ **实时发过正文 ⇒ 收口不再发**（实时那条就是最终正文；
+        #   重发一遍 ⇒ 卡面上同一段话出现两次）。
+        #   实时没发过（老路径/没落库）⇒ 用 ATIF 兜底，保证卡面至少有正文。
+        if not (live.get("texts") or []):
+            _emit(state, "assistant_text", {"content": text, "round": state.rounds})
+    # ★ **额度耗尽要能认出来**（2026-11-04）：Devin 报额度用完时，
+    #   文本里会带上游自己的措辞 ⇒ 记进额度状态表 ⇒ **这个候选之后让路**
+    #   ⇒ 流量自动溢到下一优先级（用户令：「额度用完了，就落 opencode」）。
+    _err_text = f"{res.get('stderr') or ''}\n{res.get('stdout') or ''}\n{text}"
+    if _looks_exhausted(_err_text):
+        registry.mark_exhausted(current.executor, current.model,
+                                "devin 报额度/配额用完")
+    # ★ **用完就清**：在 **Devin 自己的客户端**里删掉**我们这一条**会话
+    #   （红线：只按精确 id 删我们自己刚建的那一条；用户自己的对话一个不碰
+    #   —— 见 cleanup.py 的六条纪律）。**清理失败不影响卡片结果**。
+    ex.session_id = str(res.get("session_id") or "")
+    await _cleanup_session(cfg, state, ex, current, cwd,
+                           session_id=ex.session_id, atif=res.get("atif"))
+    if not res.get("ok"):
+        raise WbAcpError(
+            f"Devin 执行失败（rc={res.get('rc')}）："
+            f"{str(res.get('stderr') or res.get('stdout') or '')[:300]}")
+    # ★ **空结果守卫**（与 ACP 那边同一条纪律，2026-11-04 加）：
+    #   **0 工具 + 0 正文 ⇒ 一定没干成活** ⇒ 判失败、往下一优先级走，
+    #   **不许当成功**（否则卡面显示"已完成"，实际啥也没干）。
+    if ex.tool_calls == 0 and not text.strip():
+        raise WbAcpError(
+            "Devin 执行体返回空结果（0 工具 0 正文）⇒ 判定失败，不当成功")
+
+
+#: 上游"额度/配额用完了"的各种说法（**上游自己的措辞**，实测收集）。
+#: ⇒ 命中任一个 ⇒ 记进额度状态表 ⇒ 该候选**让路**（不是每次都先失败一轮）。
+_QUOTA_WORDS = (
+    "free usage", "free usage limit", "free limit", "free_tier_limit",
+    "quota", "rate limit", "exceeded your current quota",
+    "insufficient_quota", "额度", "配额",
+)
+
+
+def _looks_exhausted(msg: str) -> bool:
+    """这段上游报错**说的是额度/配额用完了**吗？（按**上游自己的措辞**判定）
+
+    ⇒ 只认明确提到额度/配额的措辞；其它错（500/超时/鉴权）**不**当额度耗尽
+    ⇒ 避免把一次偶发故障误判成"永久没额度"（误判会让那一档永久让路）。
+    """
+    low = str(msg or "").lower()
+    return any(w in low for w in _QUOTA_WORDS)
+
+
+def _restore_quota(cfg: WbExecConfig, ex: Any, executor_id: str,
+                   model: str) -> None:
+    """**真调成功 ⇒ 额度回来了** ⇒ 清状态（**状态驱动**，不是时间到期）。
+
+    ⇒ 恢复路径 = **手动钉一次这个模型跑成功**（钉死那条路**不走**候选预过滤
+    ⇒ 它会被真调 ⇒ 成功即恢复 ⇒ 重新参与优先级瀑布的第一优先级）。
+
+    ★ 2026-11-04：优先级模式下**不再需要"把权重还回去"**（份额转移是配比时代的
+    机制）⇒ 这里只清额度状态。
+    """
+    reg = get_registry()
+    if not reg.is_exhausted(executor_id, model):
+        return
+    reg.clear_exhausted(executor_id, model)
+    logger.info("[wb_exec] %s/%s 真调成功 ⇒ 额度状态已清（重回优先级瀑布）",
+                executor_id, model)
 
 
 def _emit_oc_part(state: Any, ex: "_Exec", pt: dict) -> None:
@@ -675,9 +1114,23 @@ async def _run_opencode(state: Any, cfg: WbExecConfig, ex: "_Exec",
     ex.session_id = sid          # 外层 wb_exec_done 事件要用
     server = gw.cli_worker
     registry.mark_slot(gw.base_url, holder)
+    # ★ **运行时已经占上槽了**（busy_session 已设）⇒ **释放选择期的预留**
+    #   ⇒ 占用数不被重复计算（否则这个执行体会被误判成"排满"一倍）。
+    registry.release_reserve(current.executor, holder)
     try:
         task_text = await _build_task_text(state, cfg, ex, cwd)
         done = asyncio.Event()
+        #: **opencode 报出来的错**（2026-11-01 加）。
+        #: ★ `prompt_async` 是 **204 立即返回** ⇒ 上游的错误（如 403 地区限制）
+        #: 发生在**之后**、由 opencode 内部产生 ⇒ **HTTP 层完全看不出来**
+        #:   ⇒ 早先不接 `session.error` 事件 ⇒ 错误被**静默丢弃**
+        #:   ⇒ 后面只读到「0 工具 0 正文」⇒ **这张卡会「假装成功」**
+        #:   （与 WorkBuddy 那边同一个坑：失败塞在返回体里，不检查就当成功）。
+        #: ⇒ 这里把 `session.error` 收下来，收口时**抛出去** ⇒ 上层换候选/回落。
+        #: 每条是 ``{"msg": str, "exhausted": bool, "reason": str}``：
+        #: ``exhausted=True`` ⇒ 上游**明确说这是配额/额度问题** ⇒ 记进额度状态表
+        #: ⇒ 之后这个候选**让路**（见 :func:`run_delegated` 的预过滤）。
+        oc_error: list[dict] = []
 
         async def _watch() -> None:
             try:
@@ -700,10 +1153,61 @@ async def _run_opencode(state: Any, cfg: WbExecConfig, ex: "_Exec",
                                 "text": str(props.get("delta") or ""),
                                 "round": state.rounds,
                             })
+                    elif etype == "session.error":
+                        # ★ 真实错误（实测 2026-11-01：APIError 403
+                        #   「This model is not available in your country」）
+                        err = props.get("error") or {}
+                        data = err.get("data") or {} if isinstance(err, dict) else {}
+                        msg = str(data.get("message") or err.get("name") or "未知错误")
+                        code = data.get("statusCode")
+                        text = (f"{err.get('name') or 'Error'}: {msg}"
+                                + (f"（HTTP {code}）" if code else ""))
+                        oc_error.append({"msg": text,
+                                         "exhausted": _looks_exhausted(msg),
+                                         "reason": "api_error"})
+                        logger.error("[wb_exec] opencode 报错：%s", text)
+                        _emit(state, "wb_exec_error", {
+                            "executor": current.executor, "model": model,
+                            "error": text[:300],
+                        })
+                        done.set()
                     elif etype == "session.status":
-                        stt = (props.get("status") or {}).get("type")
+                        st = props.get("status") or {}
+                        stt = str(st.get("type") or "")
                         if stt == "idle":
                             done.set()
+                        elif stt == "retry":
+                            # ★ **opencode 的「重试」事件**（2026-11-01 实测撞到）
+                            #   {"type":"retry","attempt":1,
+                            #    "message":"Free usage exceeded, subscribe to Go",
+                            #    "action":{"reason":"free_tier_limit",
+                            #               "title":"Free limit reached", …}}
+                            #   ⇒ **它不是 `session.error`，而且后面没有 `session.idle`**
+                            #   ⇒ 不接它 ⇒ `done` 永远不被 set
+                            #   ⇒ 干等 `read_timeout_sec`（600 秒 = 10 分钟）
+                            #   ⇒ **卡片表现为「卡住」**（现场 card_143）。
+                            action = st.get("action") or {}
+                            msg = str(st.get("message") or action.get("message") or "")
+                            reason = str(action.get("reason") or "")
+                            if action:
+                                # **带 `action` ⇒ opencode 要「用户去做点什么」**
+                                #   （订阅/额度/授权）⇒ **重试无意义**
+                                #   ⇒ 立刻判失败 ⇒ 上层换候选
+                                #   （不空等、不假装成功——空等就是这次的卡死）
+                                text = (f"opencode 拒绝执行"
+                                        f"（{reason or '需要用户动作'}）：{msg}")
+                                oc_error.append({"msg": text, "exhausted": True,
+                                                 "reason": reason or "需要用户动作"})
+                                logger.error("[wb_exec] opencode 重试但需用户动作：%s",
+                                             text)
+                                _emit(state, "wb_exec_error", {
+                                    "executor": current.executor, "model": model,
+                                    "error": text[:300],
+                                })
+                                done.set()
+                            else:
+                                logger.info("[wb_exec] opencode 正在重试 attempt=%s %s",
+                                            st.get("attempt"), msg)
                     elif etype == "session.idle":
                         done.set()
             except Exception as exc:  # noqa: BLE001 事件流断了不致命
@@ -721,11 +1225,42 @@ async def _run_opencode(state: Any, cfg: WbExecConfig, ex: "_Exec",
                 done.wait(), timeout=float(cfg.watchdog.read_timeout_sec))
         finally:
             watcher.cancel()
+        # ★ **opencode 报出来的错 ⇒ 抛出去**（2026-11-01 加）。
+        #   不抛的话，上层会当成「跑完了」⇒ 0 工具 0 正文 ⇒ **假装成功**。
+        if oc_error:
+            # ★ **上游明确说"额度/配额用完了" ⇒ 记进额度状态表**
+            #   ⇒ 之后这个候选**让路**（份额自动分给其它候选）⇒ 不再每次都去打它。
+            for e in oc_error:
+                if e.get("exhausted"):
+                    registry.mark_exhausted(current.executor, model,
+                                            str(e.get("reason") or "额度耗尽"))
+            # ★ **带上 category="quota"** ⇒ 上层按「额度/过载」处理
+            #   ⇒ 走**换候选**那条路（emit ``wb_exec_fallback``）
+            #   而不是「续跑」那条（语义不对：不是断线续跑，是额度没了换人）。
+            _first = oc_error[0]
+            raise WbAcpError(
+                f"opencode 执行体报错：{_first['msg']}",
+                category=(CATEGORY_QUOTA if _first.get("exhausted") else ""))
         # **正文在 messages 里**（`POST .../message` 的响应体 parts 可能是空的）
         msgs = await client.messages(sid, cwd)
         text = oc_mod.session_text(msgs)
         if text:
             ex.text_parts.append(text)
+        # ★ **真调成功 ⇒ 额度状态清掉 + 份额还回去**（状态驱动，不是时间到期）
+        #   ⇒ 这也是**恢复探针**：手动钉死这个模型跑一轮，成功了就自动恢复全份额。
+        _restore_quota(cfg, ex, current.executor, model)
+        # ★ **空结果守卫**（2026-11-01 加）：0 工具 + 0 正文 ⇒ **一定没干成活**
+        #   （实测：beam-free 被 403 地区限制时就是这个样子）⇒ 不许当成功。
+        _tools = 0
+        for _m in msgs:
+            if not isinstance(_m, dict):
+                continue
+            for _p in (_m.get("parts") or []):
+                if isinstance(_p, dict) and _p.get("type") == "tool":
+                    _tools += 1
+        if not text.strip() and _tools == 0 and ex.tool_calls == 0:
+            raise WbAcpError(
+                "opencode 执行体返回空结果（0 工具 0 正文）⇒ 判定失败，不当成功")
         # 收口事件由外层统一 emit（避免重复两遍）
     finally:
         registry.release_slot(gw.base_url, holder)
@@ -734,6 +1269,11 @@ async def _run_opencode(state: Any, cfg: WbExecConfig, ex: "_Exec",
                 server.busy_session = ""
             except Exception:  # noqa: BLE001
                 pass
+        # ★ **用完就清**：在 **opencode 自己的存储**里删掉**我们这一轮那个**会话
+        #   （只按精确 id 删自己建的；用户的会话一个不碰 —— 见 cleanup.py）。
+        #   ★ 放在 `client.close()` **之前** ⇒ 连接还在 ⇒ 才能删。
+        await _cleanup_session(cfg, state, ex, current, cwd,
+                               session_id=sid, client=client)
         try:
             await client.close()
         except Exception:  # noqa: BLE001
@@ -986,7 +1526,22 @@ def _work_dir(work_id: str) -> str:
         return ""
 
 
-async def _build_task_text(state: Any, cfg: WbExecConfig, ex: _Exec,
+def _norm_text(s: str) -> str:
+    """正文归一化（去所有空白）⇒ 用来判"实时发过没有"（避免重复发同一段）。"""
+    return "".join(str(s or "").split())
+
+
+def _segment_marker(cfg: WbExecConfig, state: Any, ex: _Exec) -> str:
+    """**分段标记**（幂等续跑的判据）。
+
+    ★ 也被 Devin 的**实时会话认领**用（``role=user`` 消息里带这个标记
+    ⇒ 那条会话就是这张卡的 ⇒ 同 work 目录里别人的会话不会被算进来）。
+    """
+    return cfg.task.segment_marker.format(
+        card_id=state.card_id, seg=1, total=1, run_id=ex.session_id or "pending")
+
+
+async def _build_task_text(state: Any, cfg: WbExecConfig, ex: "_Exec",
                             cwd: str) -> str:
     """任务文本 ＝ 分段标记 ＋ **卡上事实** ＋ 原任务 ＋ 工作目录说明。
 
@@ -997,8 +1552,7 @@ async def _build_task_text(state: Any, cfg: WbExecConfig, ex: _Exec,
     使命（要干什么）＋ 现状（做到哪）＋ 影子产物清单（已经产出了什么文件）。
     不喂 ⇒ WorkBuddy 从零开始 ⇒ 重做、覆盖已有产物。
     """
-    marker = cfg.task.segment_marker.format(
-        card_id=state.card_id, seg=1, total=1, run_id=ex.session_id or "pending")
+    marker = _segment_marker(cfg, state, ex)
     lines = [marker]
     if cwd:
         # **给绝对路径**（2026-10-23 实测）：桌面端网关的 ``session/load`` **不转发
@@ -1166,12 +1720,20 @@ async def _finish_card(state: Any, ex: _Exec, final_text: str) -> None:
     · 父卡拿结果本来就靠 `report_done` 的 summary ＋ `coder_done` 回执，已在跑；
     · 那种写法是 `old + 新` 纯追加、无上限，而 `_card_facts` 每轮又会把它拼进
       执行体 prompt ⇒ 自激放大（card_076 实测 24 轮滚到 86 万字）。
+
+    [差事卡 2026-11-01] qa_card/pm_card 收口走差事语义——执行体没有
+    card_tools，桥接层机械完成：report 判据 ⇒ 正文作差事回执发派遣方；
+    cardwrite 判据 ⇒ 正文作草稿写到对象卡面。最后差事卡置 completed。
     """
     try:
-        from .. import card_tools
         from ...storage import card_store
         card = await card_store.read_card(state.work_id, state.card_id)
-        cards_meta = {state.card_id: card.get("meta") or {}}
+        meta = card.get("meta") or {}
+        if str(meta.get("card_type") or "") in DEPLOY_CARD_TYPES:
+            await _finish_deploy_card(state, ex, final_text, meta)
+            return
+        from .. import card_tools
+        cards_meta = {state.card_id: meta}
         summary = (f"WorkBuddy 执行体完成（{ex.executor_id}/{ex.model}，"
                    f"工具调用 {ex.tool_calls} 次）\n{final_text[:1500]}")
         res = await card_tools._h_report_done(
@@ -1184,5 +1746,85 @@ async def _finish_card(state: Any, ex: _Exec, final_text: str) -> None:
                     state.card_id, res.get("owner") if isinstance(res, dict) else "")
     except Exception as exc:  # noqa: BLE001 收口失败不阻断本轮交付
         logger.error("[wb_exec] 完工收口异常 card=%s: %s", state.card_id, exc)
+
+
+async def _finish_deploy_card(state: Any, ex: _Exec, final_text: str,
+                              meta: dict) -> None:
+    """差事卡的 wb 收口——**执行体干活、桥接层交差**。
+
+    执行体（WorkBuddy agent）没有 card_tools，它在文件系统里把活干完、
+    把结论写进最终回复正文；差事的"回执/落稿"由这里机械完成：
+
+      · ``report`` 判据（QA）：正文作 ``msg_report`` 落派遣方会话＋唤醒；
+      · ``cardwrite:<块>`` 判据（PM）：正文作草稿写到对象卡的草稿列
+        （走现成的 ``_h_edit_requirements``，差事作用域放行对象卡）。
+
+    之后 ``sweep_deployments`` 惰性判完持久关账，差事卡置
+    ``state=completed``——差事卡是一次性场，办完即完工。
+    """
+    from .. import card_tools
+    from ..message_runner import _synth_seat_meta
+    from ...storage import card_store, session_facade
+    from ...storage import function_store as _fs
+    wid, cid = state.work_id, state.card_id
+    deps = _fs.active_for_venue(wid, cid, "deploy")
+    if not deps:
+        logger.info("[wb_exec] 差事卡 %s 没有在派差事，仅置完工", cid)
+        await card_store.update_card(wid, cid, {"state": "completed"},
+                                     "差事卡完工（无在派差事）")
+        return
+    dep = deps[0]
+    fn = str(dep.get("function_id") or "")
+    delegator = str(dep.get("delegator") or "")
+    target = str(dep.get("target_card") or "")
+    exit_spec = str(dep.get("exit_spec") or "")
+    # cards 映射：真卡 meta + 职能席位的合成面（能力闸/回执投递都要查它）
+    cards: dict[str, dict[str, Any]] = {cid: dict(meta)}
+    for other in (delegator, target):
+        if other and other not in cards and ":" not in other:
+            try:
+                oc = await card_store.read_card(wid, other)
+                cards[other] = dict(oc.get("meta") or {})
+            except Exception:  # noqa: BLE001
+                pass
+    cards[fn] = _synth_seat_meta(wid, fn, cards)
+
+    async def _receipt(body: str) -> None:
+        """差事回执——用**场解析出的 dep** 发（同职能多差事也不发错派遣方）。"""
+        if not delegator or ":" in delegator or delegator not in cards:
+            return
+        title = str(dep.get("venue_label") or cid)
+        text = f"【差事回执·{title}({fn})】\n{body}"
+        from .. import message_runner as _mr
+        rec = await session_facade.append_card_message(
+            wid, delegator, from_card=fn, text=text, msg_type="msg_report")
+        _mr._spawn_tracked(_mr.deliver_now(
+            wid, delegator,
+            text=f"你收到一条来自 {fn} 的差事回执，正文已在上文。",
+            source={"kind": "card_msg", "from": fn}))
+        return rec
+
+    if exit_spec.startswith("cardwrite:"):
+        # PM：执行体的产出文本＝需求文档草稿 → 写到对象卡草稿列（全量替换）。
+        # 顺序：先回执后落稿——cardwrite 一落账差事即惰性判完，回执必须先发。
+        await _receipt(f"需求文档草稿已写入 {target}（{len(final_text)} 字）")
+        cur = str((cards.get(target) or {}).get("requirements_draft") or "")
+        # actor_ctx：card_block_edited 的 by 归因来自这里——判据比 by==职能，
+        # 不包一层会落成 by=system ⇒ 差事永远判不完。
+        with card_store.actor_ctx(fn):
+            res = await card_tools._h_edit_requirements(
+                wid, fn, {"card_id": target, "old_string": cur,
+                          "new_string": final_text}, cards)
+        if isinstance(res, dict) and res.get("error"):
+            logger.error("[wb_exec] PM 落稿失败 card=%s: %s", cid,
+                         res.get("error"))
+        else:
+            logger.info("[wb_exec] PM 草稿已写对象卡 %s card=%s", target, cid)
+    else:
+        await _receipt(final_text[:3000])
+        logger.info("[wb_exec] QA 结论已回派遣方 %s card=%s", delegator, cid)
+    await _fs.sweep_deployments(wid)
+    await card_store.update_card(wid, cid, {"state": "completed"},
+                                 "差事卡完工（执行体交付）")
 
 

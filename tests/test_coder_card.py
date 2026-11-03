@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import async_settle  # 测试侧等待原语（同目录模块）
+import tests.async_settle  # 测试侧等待原语（同目录模块）
 
 import httpx
 import pytest
@@ -90,14 +90,14 @@ def test_toolset_fingerprints_and_switch_bindings():
     # [规则卡 2026-10-15] 18 → 19（第 19 件 draft_rule_edit，§六块3 硬判据 1）。
     # [依赖关联线 2026-10-16] 19 → 21（第 20/21 件 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] 21 → 22（第 22 件 propose_status，列 OP_ONLY_TOOLS）。
-    assert src.count('": ToolDef(') == 32  # [角色机制 5710] 28→32（+create_role/role_watch_cards/record_verdict/raise_alarm）
+    assert src.count('": ToolDef(') == 35  # [2026-11-02 UI卡] 34→35（+create_ui_card）
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-17"  # [去对话 2026-10-25]  # [自动模式块0.4] tc-8→tc-9
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-21"  # [2026-11-02] +browser/+create_ui_card
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t22-1"
+    assert prompts.BASE_PROMPT_VERSION == "t27-5"          # [2026-11-01] 随现配置对齐
     # 挂接（§六块2 · v1.1 修订：report_done 挂 tools_file，不设新开关；
     # 挂 edit 会让 readopen:287/:252 零翻新下无法同时成立——见 card_tools 注释）
     assert card_tools.TOOL_SWITCH["report_done"] == policy.SWITCH_TOOLS_FILE
@@ -138,11 +138,21 @@ async def test_toolface_coder_vs_main(coder_registry, work):
               "fetch_web"):
         assert n in coder_face, f"coder 应见 {n}"
     # 编程卡不长树、不删卡、不调工具卡（也不见派生工具）。
-    # [v12 2026-10-22] send_card_message **放开**：中途要能问主卡（父子关系即通道）。
     assert not ({"create_card", "delete_card",
                  "run_tool_card", "create_coder_card"} & coder_face), coder_face
-    assert "sync" in coder_face, "coder 必须能向父卡发信（v12）"
+    # [通信收拢 2026-10-31] sync 只追加给 sub_project/topic，coder 没有任何
+    # 发信通道（report_done 是系统回执不算模型发信）。
+    # ⚠️ 悬而未决：v12「coder 至少能向父卡发信（卡住时能问）」当前无通道承载。
+    #   复核已把此事列为待用户裁定项——恢复与否是产品决定，此处先钉现状。
+    assert "sync" not in coder_face, "通信收拢现状：coder 无发信通道（v12 问题待裁定）"
 
+    # [需求文档生命周期 2026-10-28 · 用户令] 子卡**没有正稿 ⇒ 摘派工三件**
+    # （create_card/create_coder_card/direct）。要验派工工具可见，先给 A
+    # 一份 approved 正稿——这才符合闸的设计语义（而不是把闸当 bug）。
+    await card_store.update_card(
+        wid, a, {"requirements": "交付 X", "requirements_state": "approved"},
+        "测试：转正稿")
+    cards = card_tools._collect_card_meta(wid)
     main_face = {t["name"] for t in card_tools.build_tool_schemas(
         a, work_id=wid, cards=cards)}
     assert "create_coder_card" in main_face

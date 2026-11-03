@@ -45,7 +45,7 @@ _PENDING_BASELINE_20261030: frozenset[str] = frozenset({
     "set_child_mission", "set_criteria", "set_function_duty", "silence_card",
     "stage_open", "stop_card", "sync", "unarchive_card", "unlink_cards",
     "unlink_rel", "update_function_profile", "update_goal", "update_status",
-    "web_search", "write_file", "write_ledger", "write_requirements_final",
+    "web_search", "write_file", "write_requirements_final",
 })
 
 

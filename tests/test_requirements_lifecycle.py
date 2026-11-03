@@ -79,11 +79,9 @@ async def test_draft_is_private_and_does_not_touch_approved(sandbox, monkeypatch
     assert str(meta.get("requirements_draft") or "").strip() == "正稿：R1 导出（改）"
     assert str(body.get("requirements") or "").strip() == "正稿：R1 导出", "正稿不该被草稿改动带跑"
 
-    # 别的卡读它：只有正稿，看不到草稿
-    reader = (await card_store.create_card(wid, "读者", "模型生成",
-                                           parent=root))["meta"]["card_id"]
+    # 别的卡读它：只有正稿，看不到草稿（父卡读子卡＝关系线内允许读）
     cards = card_tools._collect_card_meta(wid)
-    out = await card_tools.execute_tool(wid, reader, "read_card",
+    out = await card_tools.execute_tool(wid, root, "read_card",
                                         {"card_id": sub}, cards)
     body = out["data"]
     assert "R1 导出（改）" not in str(body), "草稿不该进别人的读卡结果"
@@ -156,12 +154,19 @@ async def test_all_approved_promotes_draft_to_final(sandbox, monkeypatch):
     members = await review_store.members_of(wid, rid)
     assert members, "评审要有在职职能成员"
 
-    # 全员逐个 approve，最后一个触发收口 + 转正
+    # 全员逐个 approve——全员通过只是「可以写正稿了」（事件 need_promote），
+    # [2026-10-29 用户口径] 收口＝子卡自己调 promote_draft 写完正稿。
     for i, m in enumerate(members):
         cards = card_tools._collect_card_meta(wid)
         r = await card_tools.execute_tool(wid, m, "approve",
                                           {"review_card_id": rid}, cards)
         assert r.get("ok") is not False, (i, m, r)
+    assert card_store._meta_of(wid, sub).get("requirements_state") == "in_review"
+
+    cards = card_tools._collect_card_meta(wid)
+    promoted = await card_tools.execute_tool(
+        wid, sub, "promote_draft", {"card_id": sub}, cards)
+    assert promoted.get("ok") is not False, promoted
 
     meta = card_store._meta_of(wid, sub)
     body = (await card_store.read_card(wid, sub))["body"]

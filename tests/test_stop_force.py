@@ -25,10 +25,12 @@ def _clear_control_state():
     """control 的停止状态是模块级(sandbox 只搬数据根)——跨用例必须清,
     否则上一用例的 halt 标记/停止置位污染下一用例(实测批量挂、单跑过)。"""
     control._HALTED.clear()
+    control._HALTED_LOADED.clear()
     control._stop_requests.clear()
     control._stop_events.clear()
     yield
     control._HALTED.clear()
+    control._HALTED_LOADED.clear()
     control._stop_requests.clear()
     control._stop_events.clear()
 
@@ -174,3 +176,56 @@ async def test_http_stop_is_forced(sandbox):
     m = card_store._meta_of(wid, leaf) or {}
     assert str(m.get("goal_state") or "") == "paused"
     control.unhalt(wid, leaf)                             # 清理,人类可再启
+
+
+# ---------------------------------------------------------------- T7
+# [halt 事件化 2026-11-01 · 裁定《机制判断归harness》第一刀]
+# 钉三件事：
+#   ① halt/unhalt 各落一条事件进目标卡事件日志（append_sync，含归因）；
+#   ② 内存标记清空后按 work 惰性重放重建（重启语义：磁盘补内存）；
+#   ③ 对本来没停的卡 unhalt 不造「解除」假象（无事件、返回 False）。
+
+async def test_halt_writes_durable_events(sandbox):
+    from src.storage import event_log
+    wid, root, mid, leaf = await _tree()
+    control.halt(wid, leaf, reason="测试停", by=mid)
+    control.unhalt(wid, leaf, by=mid, via="resume_child")
+    evs = [e for e in event_log.read(wid, leaf)
+           if e.get("type") in ("card_halted", "card_unhalted")]
+    assert [e["type"] for e in evs] == ["card_halted", "card_unhalted"]
+    assert evs[0]["data"]["by"] == mid and evs[0]["data"]["reason"] == "测试停"
+    assert evs[1]["data"]["via"] == "resume_child" \
+        and evs[1]["data"]["was_by"] == mid
+
+
+async def test_halted_marker_rebuilds_from_events(sandbox):
+    wid, root, mid, leaf = await _tree()
+    control.halt(wid, leaf, reason="重启前按停", by="user")
+    # 模拟进程重启：内存标记与「已扫过」登记双清，磁盘事件仍在
+    control._HALTED.clear()
+    control._HALTED_LOADED.clear()
+    h = control.is_halted(wid, leaf)
+    assert h is not None and h["by"] == "user" and "重启前" in h["reason"]
+
+
+async def test_rebuild_respects_last_unhalt(sandbox):
+    wid, root, mid, leaf = await _tree()
+    control.halt(wid, leaf, reason="按停", by=mid)
+    control.unhalt(wid, leaf, by="user", via="human_message")
+    control._HALTED.clear()
+    control._HALTED_LOADED.clear()
+    assert control.is_halted(wid, leaf) is None      # 最后一条是 unhalted ⇒ 未停
+    # 再停一次 ⇒ 重建后仍是停
+    control.halt(wid, leaf, reason="又停", by=mid)
+    control._HALTED.clear()
+    control._HALTED_LOADED.clear()
+    assert control.is_halted(wid, leaf) is not None
+
+
+async def test_unhalt_on_calm_card_writes_nothing(sandbox):
+    from src.storage import event_log
+    wid, root, mid, leaf = await _tree()
+    assert control.unhalt(wid, leaf) is False        # 本来没停
+    evs = [e for e in event_log.read(wid, leaf)
+           if e.get("type") in ("card_halted", "card_unhalted")]
+    assert evs == []                                 # 无「解除」假象

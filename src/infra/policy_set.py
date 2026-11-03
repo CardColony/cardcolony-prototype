@@ -228,6 +228,9 @@ class PolicySet:
         self._parents: dict[str, dict[str, str]] = {}
         self._now = now_fn
         self._fired = 0
+        #: 最近一次 ``load`` 的校验错误清单（dispatcher() 丢弃返回值，
+        #: 留在对象上供错误台账收集）。
+        self.load_errors: list[str] = []
 
     # ------------------------------------------------------------ 加载
     def load(self, policies: Iterable[dict[str, Any]]) -> list[str]:
@@ -259,6 +262,7 @@ class PolicySet:
             self._policies[pid] = p
             if p.active:
                 self._index(p)
+        self.load_errors = errs
         return errs
 
     def _build(self, raw: dict[str, Any]) -> tuple[Policy, list[str]]:
@@ -431,10 +435,15 @@ class PolicySet:
 
     # ------------------------------------------------------------ 求值
     def _ctx(self, p: Policy, work_id: str, key: tuple[str, ...],
-             st: State) -> dict[str, Any]:
+             st: State, *, trigger: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """把本子包成求值上下文（条件树原样复用，写法不变）。
 
         ``harness_cond`` 期望 ``events`` 是**新→旧**，本子里是升序，这里反转。
+        ``trigger_data``＝触发这次求值的那条事实（零件已拍平为顶层键），
+        ``when`` 里可用 ``{"field": "trigger_data.x"}`` 读它。
+        **故意不放 ``trigger_type``**：``_turn_window`` 看到它会拿首条比类型、
+        把本子首条（＝触发事实）跳过去——现有 ``within:"turn"`` 策略全靠
+        "首条就是触发事实"成立，放了会把它们全部打死。
         """
         card_id = key[-1] if p.scope_kind != "work" else ""
         parent = self._parent_of(work_id, card_id) if card_id else ""
@@ -443,27 +452,38 @@ class PolicySet:
             "card_id": card_id,
             "parent": parent,
             "scope": list(key),
+            "trigger_data": dict(trigger or {}),
             "events": list(reversed(st.entries)),
         }
 
     def _brief_ctx(self, p: Policy, work_id: str,
-                   key: tuple[str, ...]) -> dict[str, Any]:
-        """触发记录里带的上下文（不含 entries——那可能几百条，不能塞进结果）。"""
+                   key: tuple[str, ...],
+                   *, trigger: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """触发记录里带的上下文（不含 entries——那可能几百条，不能塞进结果）。
+
+        投递侧需要触发事实本体（``event:<路径>`` 目标、``{event.*}`` 占位符），
+        放 ``trigger_data``；``trigger_type`` 这里给全无害——``_turn_window``
+        只在求值侧（``_ctx``）用。
+        """
         card_id = key[-1] if p.scope_kind != "work" else ""
         return {
             "work_id": work_id,
             "card_id": card_id,
             "parent": (self._parent_of(work_id, card_id) if card_id else ""),
             "scope": list(key),
+            "trigger_type": str((trigger or {}).get("type") or ""),
+            "trigger_data": dict(trigger or {}),
         }
 
     def _satisfied(self, p: Policy, work_id: str,
-                   key: tuple[str, ...], st: State) -> bool:
+                   key: tuple[str, ...], st: State,
+                   *, trigger: Optional[dict[str, Any]] = None) -> bool:
         if p.when is None:
             return False
         from . import harness_cond
         try:
-            return bool(harness_cond.eval_cond(p.when, self._ctx(p, work_id, key, st)))
+            return bool(harness_cond.eval_cond(
+                p.when, self._ctx(p, work_id, key, st, trigger=trigger)))
         except Exception as exc:  # noqa: BLE001 判不了 ⇒ 不触发（宁可少发）
             logger.warning("[policy_set] 条件求值异常 %s: %s", p.id, exc)
             return False
@@ -494,7 +514,7 @@ class PolicySet:
             for key in self._scope_keys(p, work_id, fact):
                 st = self._state(work_id, p, key, now)
                 st.add(fact, win, now)
-                if self._satisfied(p, work_id, key, st):
+                if self._satisfied(p, work_id, key, st, trigger=fact):
                     self._fired += 1
                     fired.append({
                         "policy": p.id,
@@ -502,7 +522,12 @@ class PolicySet:
                         "desc": p.desc,
                         "then": dict(p.then),
                         "counters": dict(st.counters),
-                        "ctx": self._brief_ctx(p, work_id, key),
+                        "ctx": self._brief_ctx(p, work_id, key, trigger=fact),
+                        # [干预台账] 触发事实身份＝fire_key 的原料：
+                        # 重启重演同一触发 ⇒ 同一 fire_key ⇒ 动作去重。
+                        "basis": {"card": str(fact.get("card") or ""),
+                                  "seq": int(fact.get("seq") or 0),
+                                  "type": ev_type},
                     })
                     st.clear(now)      # 撕本子重记：只清这一本
         return fired
@@ -548,10 +573,20 @@ class PolicySet:
                 continue
             if self._satisfied(p, work_id, key, st):
                 self._fired += 1
+                # [干预台账] check_all 无单条触发事实 ⇒ 用本子里最新一条当
+                # basis：与 dispatch 侧同源（触发事件即最新事实），跨路径
+                # 去重一致。
+                _basis = {}
+                if st.entries:
+                    _e = st.entries[-1]   # entries 升序 ⇒ 尾＝最新（同 dispatch 触发位）
+                    _basis = {"card": str(_e.get("card") or ""),
+                              "seq": int(_e.get("seq") or 0),
+                              "type": str(_e.get("type") or "")}
                 out.append({"policy": pid, "scope": list(key),
                             "desc": p.desc, "then": dict(p.then),
                             "counters": dict(st.counters),
-                            "ctx": self._brief_ctx(p, work_id, key)})
+                            "ctx": self._brief_ctx(p, work_id, key),
+                            "basis": _basis})
                 st.clear(now)
         return out
 

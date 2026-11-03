@@ -18,9 +18,11 @@ goal（哪怕是 complete 状态），并重新激活这张 coder 卡，否则�
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from src.api import card_tools, routes
+from src.api import card_tools, control, routes
 from src.goal import authority
 from src.goal import tools as goal_tools
 from src.goal.service import get_service
@@ -174,3 +176,150 @@ async def test_resume_child_accepts_completed_child(work):
     goal = await get_service().get(wid, ccid)
     assert goal.phase == "active"
     assert goal.objective == "子目标"
+
+
+# ---------------------------------------------------------------- 唤醒不看模式
+# [2026-11-01 · 用户令「唤醒子卡不需要自动」] 实测 work_027/card_140：
+# 手动 coder 被 stop_card(halt) 停在中途后，state 恒为 active、halt 标记在位，
+# 父卡的续派/唤醒全部无路（continue_task 嫌 state=active、resume_child 嫌
+# auto_mode=0、内部消息被 halt 拒掉）。以下钉住这条链已经通了。
+
+
+async def test_resume_child_works_on_manual_halted_child(work, monkeypatch):
+    """手动子卡被强制停止后：resume_child 解除停止标记＋恢复目标相位＋亲手点一轮。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
+    pcid = parent["meta"]["card_id"]
+    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
+                                         card_type="coder")
+    ccid = child["meta"]["card_id"]
+    await card_store.update_card(
+        wid, ccid, {"auto_mode": 0, "goal": "子目标", "goal_state": "paused",
+                    "state": "active"}, "测试置态：手动卡被停在中途")
+    control.halt(wid, ccid, reason="测试：强制停止", by=pcid)
+    assert control.is_halted(wid, ccid) is not None
+
+    calls = []
+
+    async def fake_run(*a, **kw):
+        calls.append({"a": a, "kw": kw})
+        return {"ok": True}
+
+    monkeypatch.setattr(routes, "_run_message", fake_run)
+
+    cards = card_tools._collect_card_meta(wid)
+    r = await goal_tools.h_resume_child(wid, pcid, {"card_id": ccid}, cards)
+    assert r["ok"] is True, r
+    assert control.is_halted(wid, ccid) is None, "resume 必须解除停止标记"
+    goal = await get_service().get(wid, ccid)
+    assert goal.phase == "active"
+    assert r["data"]["ignited"] is True, "手动卡没有续轮驱动，必须亲手点火"
+    await asyncio.sleep(0.05)
+    assert calls, "手动卡 resume 后必须真起一轮，不能只摆相位"
+
+
+async def test_resume_child_manual_busy_does_not_double_fire(work):
+    """手动子卡正在跑：resume 摆正相位但不重复点火（不打断在途回合）。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
+    pcid = parent["meta"]["card_id"]
+    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
+                                         card_type="coder")
+    ccid = child["meta"]["card_id"]
+    await card_store.update_card(
+        wid, ccid, {"auto_mode": 0, "goal": "子目标", "goal_state": "paused",
+                    "state": "active"}, "测试置态")
+
+    from src.storage import session_facade
+    assert session_facade.turn_try_acquire(wid, ccid, "turn:test")
+    try:
+        cards = card_tools._collect_card_meta(wid)
+        r = await goal_tools.h_resume_child(wid, pcid, {"card_id": ccid}, cards)
+        assert r["ok"] is True, r
+        assert r["data"]["resumed"] is True
+        assert r["data"]["ignited"] is False, "在途回合不该被再点一轮"
+    finally:
+        session_facade.turn_release(wid, ccid, "turn:test")
+
+
+async def test_continue_task_on_halted_active_coder(work, monkeypatch):
+    """被 halt 停在中途的 coder（state 恒为 active）也能续派：
+    解除停止标记、新任务写进目标（不是只 resume 旧文本）、点火。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
+    pcid = parent["meta"]["card_id"]
+    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
+                                         card_type="coder")
+    ccid = child["meta"]["card_id"]
+    await card_store.update_card(
+        wid, ccid, {"auto_mode": 0, "goal": "旧任务", "goal_state": "paused",
+                    "state": "active"}, "测试置态：halt 后 state 仍是 active")
+    control.halt(wid, ccid, reason="测试：父卡叫停", by=pcid)
+
+    calls = []
+
+    async def fake_run(*a, **kw):
+        calls.append(a)
+        return {"ok": True}
+
+    monkeypatch.setattr(routes, "_run_message", fake_run)
+
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools._h_continue_task(
+        wid, pcid, {"card_id": ccid, "task": "更正后的新任务全文"}, cards)
+    assert r["ok"] is True, r
+    assert control.is_halted(wid, ccid) is None, "续派必须解除停止标记"
+    goal = await get_service().get(wid, ccid)
+    assert goal.phase == "active"
+    assert goal.objective == "更正后的新任务全文", (
+        "续派文本必须写成新目标——只 resume 不改文本，跑的还是旧任务")
+    await asyncio.sleep(0.05)
+    assert calls, "续派必须点火"
+
+
+async def test_continue_task_still_rejects_card_with_inflight_turn(work):
+    """反证：有在途回合的卡仍拒续派——「防双派」闸保留，判据改成「真在跑」。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
+    pcid = parent["meta"]["card_id"]
+    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
+                                         card_type="coder")
+    ccid = child["meta"]["card_id"]
+    await card_store.update_card(
+        wid, ccid, {"auto_mode": 0, "goal": "在跑的任务", "goal_state": "active",
+                    "state": "active"}, "测试置态：真在跑")
+
+    from src.storage import session_facade
+    assert session_facade.turn_try_acquire(wid, ccid, "turn:test")
+    try:
+        cards = card_tools._collect_card_meta(wid)
+        r = await card_tools._h_continue_task(
+            wid, pcid, {"card_id": ccid, "task": "抢派"}, cards)
+        assert r["ok"] is False, f"在途回合中的卡续派应被拒: {r}"
+        assert r["error"]["code"] == "validation", r
+    finally:
+        session_facade.turn_release(wid, ccid, "turn:test")
+
+
+async def test_continue_task_rejects_driven_auto_coder(work):
+    """反证：auto 卡目标 active+armed＝驱动随时续轮——也算在跑，续派会撞车。"""
+    wid, root = work["work_id"], work["work_card_id"]
+    parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
+    pcid = parent["meta"]["card_id"]
+    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
+                                         card_type="coder")
+    ccid = child["meta"]["card_id"]
+    await card_store.update_card(
+        wid, ccid, {"auto_mode": 1, "goal": "在跑的任务", "goal_state": "active",
+                    "state": "active"}, "测试置态：auto 卡被驱动")
+
+    svc = get_service()
+    await svc.arm(wid, ccid)  # 授续轮权（activation 是进程态，不落盘）
+    goal = await svc.get(wid, ccid)
+    assert goal is not None and goal.phase == "active" \
+        and goal.activation == "armed", "夹具应造成「被驱动的 auto 卡」"
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools._h_continue_task(
+        wid, pcid, {"card_id": ccid, "task": "抢派"}, cards)
+    assert r["ok"] is False, f"auto 卡被驱动中续派应被拒: {r}"
+    assert r["error"]["code"] == "validation", r

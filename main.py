@@ -279,6 +279,36 @@ async def _resume_reviews() -> None:
         print(f"[startup] 评审续跑装载失败（不阻断）: {exc}", flush=True)
 
 
+@app.on_event("startup")
+async def _resume_interventions() -> None:
+    """[干预台账 2026-10-31] 重启接责：复核开着的干预事项，重投没送成的动作。
+
+    与上面的 ``_resume_reviews`` 互补：它兜"评审批还在、但没留下动作账"的
+    老状态；本函数接管新链路——凡经台账登记的 pending/failed 动作，重启后
+    按原文重投（投前查重 + 事项复核，不复活已解决的问题）。fail-open。
+    """
+    try:
+        import asyncio as _asyncio
+        from src.storage import work_store as _ws
+        from src.infra import intervention_runner as _ir
+
+        async def _run() -> None:
+            for w in _ws.list_works():
+                wid = str(w.get("work_id") or "")
+                if not wid:
+                    continue
+                try:
+                    stats = await _ir.resume(wid)
+                    if stats.get("matters") or stats.get("actions"):
+                        print(f"[startup] 干预接责 {wid}: {stats}", flush=True)
+                except Exception as exc:  # noqa: BLE001 单项目失败不影响别的
+                    print(f"[startup] 干预接责失败 {wid}: {exc}", flush=True)
+
+        _asyncio.create_task(_run())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] 干预接责装载失败（不阻断）: {exc}", flush=True)
+
+
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)
 # [模型设置第二步 2026-10-12] 设置接口（供应商/模型/角色绑定 + 密钥 + 备份还原）
 from src.api.settings_api import router as settings_router  # noqa: E402

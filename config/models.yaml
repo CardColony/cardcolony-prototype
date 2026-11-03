@@ -101,6 +101,18 @@ providers:
       且**必须带浏览器 UA**，否则 Cloudflare 1010 把订阅内的模型一起拦掉。
       免费档现状（2026-10-25 实测 38 个模型）：只剩 beam-free、iceman-contributor-free；
       minimax-m3.1-flash-free 已 410 ModelDeprecated、deepseek-v4.1-flash-free 已 400 不可用。
+  opencode2:
+    protocol: openai
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: OPENCODE2_API_KEY
+    extra_headers:
+      # 独立 session id：与第一份 opencode 账号的会话/额度互不混淆
+      x-opencode-session: zhuge-3080-b
+      # 同第一份：Cloudflare 前必须带浏览器 UA，否则 1010 全拦（2026-10-25 实测）
+      User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
+    note: >-
+      第二份 opencode **Go 订阅**（2026-11-03 用户令增加；key 与第一份独立）。
+      同端点同纪律：x-opencode-session 必带（MissingSessionID 拒单）、必须浏览器 UA。
   commandcode:
     protocol: openai
     base_url: https://api.commandcode.ai/provider/v1
@@ -277,6 +289,20 @@ models:
     - high
     - max
     default_effort: high
+  ds-v41-flash-oc2:
+    provider: opencode2
+    # 同第一份 opencode 席位纪律：assistant 带 tool_calls 必须回传 reasoning_content。
+    echo_reasoning: true
+    model: deepseek-v4.1-flash
+    reasoning_echo_fill: ""
+    temperature: 0.7
+    thinking: 'on'
+    note: 第二份 opencode Go · deepseek v4.1 flash（2026-11-03 用户令增加，只此一把）
+    reasoning_efforts:
+    - low
+    - high
+    - max
+    default_effort: high
   deepseek-v4-flash:
     provider: opencode
     # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
@@ -342,7 +368,7 @@ bindings:
   execute: glm-53-flash
   think: glm-53-flash
   synthesize: glm-53-flash
-  condense: deepseek-v41-flash
+  condense: glm-53-flash
   compress: glm-53-flash
   draft: glm-53
   viewpoint:

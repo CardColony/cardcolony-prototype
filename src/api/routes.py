@@ -189,10 +189,29 @@ class PatchRuleSectionRequest(BaseModel):
     base_hash: str = Field(min_length=0, default="")
 
 
-class RuleCommitRequest(BaseModel):
+class RuleCommitSection(BaseModel):
     section: str = Field(min_length=1)
     content: str = ""
     base_hash: str = Field(min_length=0, default="")
+
+
+class RuleCommitRequest(BaseModel):
+    # [2026-11-01 多区起草] sections 数组为规范形（draft_rule_edit 多区草案
+    # 一次审批一次落盘）；section/content/base_hash 单区简形保留兼容。
+    section: str = ""
+    content: str = ""
+    base_hash: str = Field(min_length=0, default="")
+    sections: list[RuleCommitSection] | None = None
+
+
+class RuleDismissRequest(BaseModel):
+    # [2026-11-03 草案驳回落痕] 用户在审批弹窗「拒绝/关闭」一条草案——该草案
+    # 的 card_id:seq 记进 rule_dismissals.json，从此不再被重扫成「待审批」。
+    # notify=true ⇒ 给起草卡留一封驳回回执（**只落信不唤起**，用户令「通知不唤起」）。
+    card_id: str = Field(min_length=1)
+    seq: int = 0
+    notify: bool = True
+    sections: list[str] | None = None
 
 
 # [无内容预设改造 2026-10-02] PatchMethodologyRequest 已删除（方法论库停用）
@@ -883,7 +902,9 @@ async def get_work_canvas(work_id: str):
     # 只出派生数据——响应结构逐键不变（V5），前端零改动（L5）。
     # [画布重构 2026-10-15] 用户坐标的真相来源从 layout.json 换成 cards 表的
     # 坐标列，**本行的键名、类型、嵌套形状一字未动**。
-    data = canvas_store.load(work_id)
+    # [重建重做 2026-11-03] load 命中脏标记会**全量重建**——挪进线程，
+    # 不在事件循环里跑（脏时重建是秒级库读＋会话尾扫）。
+    data = await asyncio.to_thread(canvas_store.load, work_id)
     data["positions"] = await canvas_store.load_positions(work_id)
     # [职能实体化 A 案 2026-10-22] 职能不进交付树：画布卡列表里滤掉它们
     # （它们走下面单独附的 functions，画成顶部一排的观察者节点）。
@@ -1078,31 +1099,25 @@ async def get_review_status(work_id: str, card_id: str):
     # [评审窗口 2026-10-29 · 用户令「你的信息显示根本没有优化」]
     # 前端要的不是"某某发言 2269 字"这种流水账，而是**每个人现在什么态度、
     # 要求改什么**。所以这里把本批次每人**最后一条发言原话**带出去。
-    # 一次读会话（评审卡一个文件），按首行的「〔名字 · 批次〕」分人。
+    # [venue] 场会话＝评审卡主会话（开批时已物理清空，全是本批的）；
+    # 席位回复块带 `from=席位`——按它分人，不再靠首行名字标记猜。
     opinions: dict[str, dict[str, str]] = {}
     try:
         from ..storage import session_facade as _sf
-        _batch = str(st.get("batch") or "")
-        _mark = f"· {_batch}〕" if _batch else ""
-        # [2026-10-31] 评审会话按批次独立（一个批次一个文件）
-        _sid = f"{rid}-{_batch}" if _batch else rid
-        _blocks = await _sf.read(work_id, _sid) or []
+        _blocks = await _sf.read(work_id, rid) or []
         if isinstance(_blocks, dict):
             _blocks = _blocks.get("blocks") or []
         for _b in _blocks:
             if str(_b.get("actor") or "") != "assistant":
                 continue
+            _fid = str(_b.get("from") or "")
+            if _fid not in names:
+                continue
             _content = str(_b.get("content") or "")
             if not _content.strip():
                 continue
-            _head, _, _rest = _content.partition("\n")
-            if _mark and _mark not in _head:
-                continue
-            for _fid, _nm in names.items():
-                if _nm and _nm in _head:
-                    opinions[_fid] = {"text": _rest.strip()[:800],
-                                      "ts": str(_b.get("ts") or "")}
-                    break
+            opinions[_fid] = {"text": _content.strip()[:800],
+                              "ts": str(_b.get("ts") or "")}
     except Exception as exc:  # noqa: BLE001 取不到意见就只给状态
         logger.warning("[review-status] 读意见失败 rid=%s: %s", rid, exc)
 
@@ -1158,10 +1173,18 @@ async def get_exec_backend(work_id: str, card_id: str):
     routed = row.get("last_routed")
     if not isinstance(routed, dict):
         routed = None
+    # ★★ **"这张卡能不能走执行体"由后端说了算**（2026-11-04 用户令：
+    #   「验收卡、pm卡，本质上应该和coder卡用一套路由机制」⇒ 卡型白名单配置化
+    #   ⇒ **前端不再自己判卡型**（以前是 `card_type === "coder"` 硬编码 ⇒
+    #   验收卡/执笔卡看不到入口 ⇒ 看起来像"分开的路由")）。
+    card_type = str((card.get("meta") or {}).get("card_type") or "")
+    delegable_types = cfg.delegable_card_types or ("coder", "qa_card", "pm_card")
     return {
         "ok": True,
         "card_id": card_id,
-        "card_type": str((card.get("meta") or {}).get("card_type") or ""),
+        "card_type": card_type,
+        "delegable": card_type in delegable_types,
+        "delegable_card_types": list(delegable_types),
         "enabled": bool(cfg.enabled),
         "backend": backend,
         "routed": routed,
@@ -1402,8 +1425,17 @@ async def post_work_commit(work_id: str, card_id: str, req: CommitRequest):
 # 提议、用户弹窗确认后走 /rule/commit 落盘；面板直改走 PATCH，即改即存。
 
 def _rule_section_names() -> list[str]:
-    """合法分区名＝词表 codes（root 在前、去重、声明序）。"""
-    return context_regions.rule_section_names(card_store.load_type_registry())
+    """合法分区名＝词表 codes ＋ 按职能区 ``function.<code>``（root 在前、声明序）。
+
+    [两源模型 2026-11-01] 职能 code 从职能目录取（function_catalog）——目录
+    里没有的 code 不开区，免得面板长出一堆没人认领的空区。
+    """
+    from . import function_room as _function_room
+    codes = [str(e.get("code") or "")
+             for e in (_function_room.entries() or [])
+             if str(e.get("code") or "").strip()]
+    return context_regions.rule_section_names(
+        card_store.load_type_registry(), fn_codes=codes)
 
 
 def _rule_section_hash(content: str) -> str:
@@ -1464,15 +1496,25 @@ async def get_work_rule(work_id: str):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     names = _rule_section_names()
-    counts = context_regions.rule_inject_counts(card_store.load_type_registry())
+    counts = context_regions.rule_inject_counts(
+        card_store.load_type_registry(),
+        fn_codes=[n.split(".", 1)[1] for n in names if n.startswith("function.")])
     await ensure_rules(work_id)
     sections = work_store.get_rules(work_id)
     out_sections = {n: str(sections.get(n, "") or "") for n in names}
     hashes = {n: _rule_section_hash(out_sections[n]) for n in names}
+    # [2026-11-01 幻影区可见化] 契约名单外且非空的区＝内容写了但不进任何
+    # 上下文、面板也看不见的孤儿区——必须摆到台面上（名字＋长度）。
+    orphans = {n: len(str(c or "")) for n, c in sections.items()
+               if n not in names and str(c or "").strip()}
     return {"exists": True,
             "path": f"works/{work_id}/{rule_store.RULES_FILENAME}",
             "sections": out_sections, "hashes": hashes,
-            "labels": {n: rule_store.SECTION_LABELS.get(n, n) for n in names},
+            "orphan_sections": orphans,
+            "labels": {n: rule_store.section_label(n) for n in names},
+            # [2026-11-03 草案驳回落痕] 已驳回草案的 card_id:seq 列表——前端扫
+            # timeline 时用它过滤，被驳回的历史 tool_result 不再弹审批窗。
+            "dismissed": rule_store.list_dismissals(work_id),
             "inject_type_counts": {n: counts.get(n, 0) for n in names}}
 
 
@@ -1485,6 +1527,10 @@ async def patch_work_rule_section(work_id: str, section: str,
     names = _rule_section_names()
     if section not in names:
         return _err(400, f"非法区名: {section}（只允许 {names}）")
+    bad = rule_store.find_section_header_lines(req.content)
+    if bad:
+        return _err(400, f"区内容不得含 `## ` 行（会被切成幻影区）：{bad[0]}。"
+                         "区内子标题用 `### ` 或更深")
     await ensure_rules(work_id)
     rules = work_store.get_rules(work_id)
     cur = rules.get(section, "")
@@ -1497,6 +1543,40 @@ async def patch_work_rule_section(work_id: str, section: str,
             "old_hash": old_hash, "new_hash": new_hash}
 
 
+async def _notify_rule_draft_rejected(work_id: str, reason: str) -> bool:
+    """落盘闸拒绝了已批准的规则草案 ⇒ 通知根卡，让死流程闭合。
+
+    [2026-11-01 死流程实案] commit 拒绝只回到审批弹窗——模型不在环：
+    人看到「写入失败」只能关窗，根卡永远不知道自己的草案为什么落不了
+    （常见情形：验证上线前的旧草案还躺在弹窗里，或绕过起草关的调用）。
+    这里把同一条拒绝原因落成根卡会话块＋唤醒一轮——它按原因重新起草，
+    新弹窗再走审批，死环变自愈环。best-effort：通知失败不改 400 语义。
+    """
+    root_id = work_store.work_card_id_of(work_id)
+    if not root_id:
+        return False
+    try:
+        await session_facade.append_card_message(
+            work_id, root_id, from_card="system",
+            text=(f"你起草的规则区修改在用户同意后未能落盘——提交闸拒绝了它："
+                  f"{reason}。请用 draft_rule_edit 按此原因修正后重新起草"
+                  f"（区内容里不得出现以 `## ` 开头的行，区内子标题一律用 "
+                  f"`### ` 或更深；区名只能用契约名单里的名字），再交用户审批。"),
+            msg_type="msg_notify")
+    except Exception as exc:  # noqa: BLE001 落信失败不挡 400 返回
+        logger.warning("[rule] 落盘拒绝通知落信失败 work=%s: %s", work_id, exc)
+        return False
+    try:
+        await message_runner.deliver_now(
+            work_id, root_id,
+            text="你的规则草案被提交闸拒绝，原因与修正要求已在上文（系统通知）。"
+                 "请修正后重新起草。",
+            source={"kind": "rule_commit_rejected", "from": "system"})
+    except Exception as exc:  # noqa: BLE001 唤醒失败信仍在会话块里，下轮可见
+        logger.warning("[rule] 落盘拒绝通知唤醒失败 work=%s: %s", work_id, exc)
+    return True
+
+
 @router.post("/works/{work_id}/rule/commit")
 async def post_work_rule_commit(work_id: str, req: RuleCommitRequest):
     """根卡提议审批落盘：draft_rule_edit 产物经用户「同意」后写进 rules.md
@@ -1504,18 +1584,94 @@ async def post_work_rule_commit(work_id: str, req: RuleCommitRequest):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     names = _rule_section_names()
-    if req.section not in names:
-        return _err(400, f"非法区名: {req.section}（只允许 {names}）")
+    if req.sections:
+        items = [{"section": s.section, "content": s.content,
+                  "base_hash": s.base_hash} for s in req.sections]
+    elif req.section:
+        items = [{"section": req.section, "content": req.content,
+                  "base_hash": req.base_hash}]
+    else:
+        return _err(400, "缺 section 或 sections")
+    for it in items:
+        if it["section"] not in names:
+            _reason = f"非法区名: {it['section']}（只允许 {names}）"
+            _notified = await _notify_rule_draft_rejected(work_id, _reason)
+            return _err(400, _reason + ("——已通知根卡重新起草" if _notified else ""))
+        bad = rule_store.find_section_header_lines(it["content"])
+        if bad:
+            _reason = (f"区 {it['section']} 内容不得含 `## ` 行"
+                       f"（会被切成幻影区）：{bad[0]}。区内子标题用 `### `")
+            _notified = await _notify_rule_draft_rejected(work_id, _reason)
+            return _err(400, _reason + ("——已通知根卡重新起草" if _notified else ""))
     await ensure_rules(work_id)
     rules = work_store.get_rules(work_id)
-    cur = rules.get(req.section, "")
-    old_hash = _rule_section_hash(cur)
-    if req.base_hash != old_hash:
-        return _err(409, f"hash 不符（当前区 hash={old_hash[:16]}），请重新提议")
-    work_store.set_rules(work_id, {**rules, req.section: req.content})
-    new_hash = _rule_section_hash(req.content)
-    return {"ok": True, "section": req.section,
-            "old_hash": old_hash, "new_hash": new_hash}
+    new_rules = dict(rules)
+    results = []
+    for it in items:
+        cur = rules.get(it["section"], "")
+        old_hash = _rule_section_hash(cur)
+        if it["base_hash"] != old_hash:
+            _reason = (f"区 {it['section']} hash 不符"
+                       f"（当前区 hash={old_hash[:16]}），请重新提议")
+            _notified = await _notify_rule_draft_rejected(work_id, _reason)
+            return _err(409, _reason + ("——已通知根卡重新起草" if _notified else ""))
+        new_rules[it["section"]] = it["content"]
+        results.append({"section": it["section"], "old_hash": old_hash,
+                        "new_hash": _rule_section_hash(it["content"])})
+    work_store.set_rules(work_id, new_rules)
+    out = {"ok": True, "sections": results}
+    if len(results) == 1:
+        out.update(results[0])
+    return out
+
+
+async def _notify_rule_draft_dismissed(work_id: str, card_id: str,
+                                       sections: list[str]) -> bool:
+    """用户在审批弹窗拒绝了草案 ⇒ 给起草卡留一封驳回回执。
+
+    用户令「通知不唤起」（2026-11-03）：只落会话块、**不 deliver_now 不唤起**——
+    它下次自然运行时自行看到，不因此起新回合。和 _notify_rule_draft_rejected
+    （落盘闸拒绝→唤醒重起草）是两码事：那是流程死结需要它立刻修，这是
+    人的决策回执，不该打断它。best-effort：落信失败不挡 dismiss 返回。
+    """
+    if not card_id:
+        return False
+    sec_names = "、".join(s for s in sections if str(s).strip())
+    try:
+        await session_facade.append_card_message(
+            work_id, card_id, from_card="system",
+            text=(f"你起草的规则区修改{f'（区：{sec_names}）' if sec_names else ''}"
+                  "已被用户拒绝，未落盘；这条草案不再弹窗。"
+                  "若确有必要，请按用户意图调整方案后用 draft_rule_edit 重新起草，"
+                  "再交用户审批。"),
+            msg_type="msg_notify")
+    except Exception as exc:  # noqa: BLE001 落信失败不挡驳回返回
+        logger.warning("[rule] 草案驳回通知落信失败 work=%s: %s", work_id, exc)
+        return False
+    return True
+
+
+@router.post("/works/{work_id}/rule/dismiss")
+async def post_work_rule_dismiss(work_id: str, req: RuleDismissRequest):
+    """审批弹窗「拒绝/关闭」的落痕口：草案 card_id:seq 记进驳回表（持久化，
+    前端重扫不再把它当「待审批」），notify=true 时给起草卡留回执（不唤起）。
+
+    [2026-11-03 反复弹出修复] 此前驳回只存在页面内存 Set 里，刷新即丢——
+    同一条历史 tool_result 在每次收口重扫、每次刷新后反复弹审批窗。
+    幂等：同 key 重复驳回只记一次、不重复落信。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    key = f"{req.card_id}:{int(req.seq)}"
+    already = rule_store.is_dismissed(work_id, req.card_id, req.seq)
+    if not rule_store.add_dismissal(work_id, req.card_id, req.seq,
+                                    sections=req.sections):
+        return _err(500, "驳回表写入失败")
+    notified = False
+    if req.notify and not already:
+        notified = await _notify_rule_draft_dismissed(
+            work_id, req.card_id, [str(s) for s in (req.sections or [])])
+    return {"ok": True, "key": key, "notified": notified}
 
 
 @router.get("/works/{work_id}/cards/{card_id}/timeline")
@@ -1934,8 +2090,12 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
                 except Exception:  # noqa: BLE001
                     _meta = {}
     _revive_owner = ""
+    # [机制判断归harness 第3步] 完工判定走派生视图（事件流最后一条 state
+    # 变更说了算；无事件覆盖回落列）——不再直接读手写 state 列。
+    from ..infra import card_status as _cs
+    _derived_delivery = _cs.derive(work_id, card_id)["delivery"]
     if str(_meta.get("card_type") or "") == "coder" \
-            and str(_meta.get("state") or "") == "completed":
+            and _derived_delivery == "completed":
         # [重新派活竞态 2026-10-21] 改目标会 emit goal/changed ⇒ 驱动器立刻
         # request_drive 抢一轮，把互斥体占掉 ⇒ 用户这条消息反而撞 409。
         # 所以在改目标期间**先占住互斥体**（临时 owner），让驱动器这一跳被跳过；
@@ -1962,9 +2122,15 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     finally:
         if _revive_owner:
             session_facade.turn_release(work_id, card_id, _revive_owner)
-    _res = await _run_message(work_id, card_id, req.content, req.pair_id,
-                              op=req.op or "",
-                              source_kind="human")
+    _res = await _run_message(
+        work_id, card_id, req.content, req.pair_id,
+        op=req.op or "",
+        # [venue_clerk 2026-10-31] 用户在评审卡上发言＝跟**场**说话：
+        # 接话的是场务人格（不占席位、不产出评审事件、无表态权），
+        # source 标记让事件流/R 规则能把它跟席位回合（review_step）区分开。
+        source=({"kind": "venue_clerk"}
+                if str(_meta.get("card_type") or "") == "review" else None),
+        source_kind="human")
     # [2026-10-31 用户令]「插话不打断流程；停止状态下说话，就继续跑」
     # 只做一件事：这张评审卡有进行中的批次、且**当前没有轮次在跑**（＝停着的），
     # 就把批次续上。正在跑 ⇒ 什么都不做（不打断、不抢占）。
@@ -2608,7 +2774,8 @@ async def get_canvas_compat():
     # [画布第二步 D2] 兼容端点随主端点一并合并 positions（RD-06：不许留死角——
     # load() 返回里不再有 positions，不改这里会静默丢键）。
     # [画布重构 2026-10-15] 同主端点改走 cards 表坐标列，响应结构不变。
-    return {**canvas_store.load(DEFAULT_WORK_ID),
+    _data = await asyncio.to_thread(canvas_store.load, DEFAULT_WORK_ID)
+    return {**_data,
             "positions": await canvas_store.load_positions(DEFAULT_WORK_ID)}
 
 
@@ -2687,7 +2854,13 @@ async def _run_message(work_id: str, card_id: str, content: str,
                        append_user: bool = True,
                        op: str = "",
                        source: Optional[dict[str, Any]] = None,
-                       source_kind: str = "internal") -> Any:
+                       source_kind: str = "internal",
+                       act_as: str = "",
+                       act_meta: Optional[dict[str, Any]] = None,
+                       ctx_card: str = "",
+                       tool_allow: Optional[set] = None,
+                       profile: str = "",
+                       prior_extra: Optional[list] = None) -> Any:
     """完整 messages 链路，新旧路由共用。
 
     顺序：读卡 → 取历史 → 追加用户消息 → context_assembler 组装 →
@@ -2706,7 +2879,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
     _halt = control.is_halted(work_id, card_id)
     if _halt is not None:
         if source_kind == "human":
-            control.unhalt(work_id, card_id)
+            control.unhalt(work_id, card_id, by="user", via="human_message")
             logger.info("[control] 用户直接发话,解除强制停止 card=%s", card_id)
         else:
             session_ops.ops_log("card_halted_reject", work_id, card_id,
@@ -2782,7 +2955,10 @@ async def _run_message(work_id: str, card_id: str, content: str,
     try:
         result = await _run_message_inner(work_id, card_id, content, client_pair_id,
                                           append_user=append_user, op=op,
-                                          source=turn_source, stats=_stats)
+                                          source=turn_source, stats=_stats,
+                                          act_as=act_as, act_meta=act_meta,
+                                          ctx_card=ctx_card, tool_allow=tool_allow,
+                                          profile=profile, prior_extra=prior_extra)
     except asyncio.CancelledError:
         # 取消 ⇒ 已预留/已接纳的那一轮必须 pause 目标，绝不能自动重启（原版
         # turn/end reason=aborted 的 idle 检查点语义）。
@@ -2795,6 +2971,16 @@ async def _run_message(work_id: str, card_id: str, content: str,
         outcome = "error"
         failed = True
         raise
+    else:
+        # [turn_end 事实修正 2026-11-02] 模型失败被 `handle_error` 吞进
+        # `state.error`、以 ``_err(5xx)`` **正常返回**——不抛异常 ⇒ 上面的
+        # except 永远抓不到它。返回体的 status_code 才是结局：5xx ⇒ error
+        # 且按失败回合放执行闸（work_027 实证：card_021 上下文超限重试耗
+        # 尽，error 事件已落，turn_end 却报 outcome="ok"——失败回合在事实
+        # 层被记成成功，评审/harness 拿假账点火又开了一席）。
+        if getattr(result, "status_code", 200) >= 500:
+            outcome = "error"
+            failed = True
     finally:
         # [5715 · 性能] 回合结束**必落盘**缓冲里的思考：思考是按轮累积、到轮界
         # 才合并落一条的；万一这一轮**没走到任何轮界事件**（异常/中断/直退），
@@ -2821,6 +3007,19 @@ async def _run_message(work_id: str, card_id: str, content: str,
             })
         except Exception as exc:  # noqa: BLE001 帧发不出去不影响回合返回
             logger.warning("[flow] turn_end 帧发送失败 card=%s: %s", card_id, exc)
+        # [评审活性 · ask 消费 2026-11-01] 若这卡是某评审批次的正卡且还挂着
+        # 未了 ask，回合结束这个事实要报给**评审卡**——否则它停在
+        # awaiting_*：正卡干了别的没调 promote_draft/submit_revision 时，
+        # 没有任何评审事件会自己来点火（work_027 实测 card_074 定稿指令
+        # 落地、回合 6 轮正常收尾没调 promote_draft，批次就此停尸）。
+        # outcome 如实带过去（含 error/aborted）——事实全量交，「失败不是
+        # done」由策略的 where 挑，不在代码里归并（work_027 实证：outcome=ok
+        # 的假账曾把失败回合当 done 点着评审场）。
+        try:
+            from . import review_runner as _rr
+            await _rr.report_target_turn_end(work_id, card_id, outcome)
+        except Exception:  # noqa: BLE001 上报失败不阻断回合收口
+            pass
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
         control.discard_stop(work_id, card_id)
@@ -2894,7 +3093,13 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
                              append_user: bool = True,
                              op: str = "",
                              source: Optional[dict[str, Any]] = None,
-                             stats: Optional[dict[str, Any]] = None) -> Any:
+                             stats: Optional[dict[str, Any]] = None,
+                             act_as: str = "",
+                             act_meta: Optional[dict[str, Any]] = None,
+                             ctx_card: str = "",
+                             tool_allow: Optional[set] = None,
+                             profile: str = "",
+                             prior_extra: Optional[list] = None) -> Any:
     """_run_message 的实际链路体（外层只负责逐字流 contextvar 的设/还原）。
 
     [T-0009 拆分] 本函数**只做三件事**：① 装配（读卡/pair 去重/上下文）
@@ -2913,6 +3118,15 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # [更新现状按钮改造 2026-10-16] 本轮操作标记：op 回合触发专用注入与专用工具，
     # 缺省空串 ⇒ 普通回合逐字不变。
     state.op = op
+    # [场/席位回合 2026-10-31 · venue] 三向锚点：执行锚＝card_id（锁/事件/会话/停止），
+    # 身份锚＝act_as（145区/工具面/模型/工具调用者/回复块 from），上下文锚＝ctx_card
+    # （bundle/历史/记忆）。全缺省 ⇒ 普通回合行为逐字不变。
+    state.act_as = str(act_as or "")
+    state.act_meta = act_meta
+    state.ctx_card = str(ctx_card or "")
+    state.tool_allow = tool_allow
+    state.profile = str(profile or "")
+    state.prior_extra = list(prior_extra or [])
 
     # a. 确认卡片存在
     try:
@@ -2961,7 +3175,10 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 投影层又按同一 mark 切一次 ⇒ mark>0 后历史区恒空（同一把尺用了两遍）。
     # 现在读全量、切片只归投影一层。
     from ..storage import origin_store as _origin
-    prior = _origin.read_blocks(work_id, card_id, 0)
+    # [venue] 历史按**上下文锚**取（评审席拿的是被评子卡的历史），追加块排在其后。
+    prior = _origin.read_blocks(work_id, state.ctx_card or card_id, 0)
+    if state.prior_extra:
+        prior = list(prior) + list(state.prior_extra)
     state.prior = prior
 
     # c. 追加用户消息

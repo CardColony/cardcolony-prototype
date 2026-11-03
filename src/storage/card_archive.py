@@ -58,6 +58,16 @@ def _now() -> str:
 def _ensure(conn: sqlite3.Connection) -> None:
     for ddl in _ARCHIVE_DDL:
         conn.execute(ddl)
+    # [库结构升级 2026-11-02] 老库第三块列名还是 rulings——
+    # ``CREATE TABLE IF NOT EXISTS`` 对既有表不改结构，须显式迁移：
+    # 有旧列无新列 → RENAME（数据原样保住）；两列皆无 → ADD。
+    # 判据与 card_db._rename_columns 同口径，幂等。
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(card_archive)")}
+    if "rulings" in cols and "requirements" not in cols:
+        conn.execute("ALTER TABLE card_archive RENAME COLUMN rulings TO requirements")
+    elif "requirements" not in cols:
+        conn.execute(
+            "ALTER TABLE card_archive ADD COLUMN requirements TEXT DEFAULT ''")
 
 
 def _row_to_rec(row: sqlite3.Row) -> dict[str, Any]:
@@ -67,6 +77,10 @@ def _row_to_rec(row: sqlite3.Row) -> dict[str, Any]:
         except (TypeError, ValueError):
             return default
 
+    # 未迁移老表第三块还叫 rulings（读路径容错）：按 requirements 语义返回。
+    names = set(row.keys())
+    third = (row["requirements"] if "requirements" in names
+             else row["rulings"] if "rulings" in names else "")
     return {
         "card_id": row["card_id"],
         "card_type": row["card_type"] or "",
@@ -74,7 +88,7 @@ def _row_to_rec(row: sqlite3.Row) -> dict[str, Any]:
         "parent": row["parent"] or "",
         "mission": row["mission"] or "",
         "status_block": row["status_block"] or "",
-        "requirements": row["requirements"] or "",
+        "requirements": third or "",
         "shadow": _load(row["shadow"], {}),
         "history": _load(row["history"], []),
         "session_ref": row["session_ref"] or "",

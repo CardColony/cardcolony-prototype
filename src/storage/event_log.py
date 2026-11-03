@@ -230,23 +230,16 @@ def _append_locked(work_id: str, card_id: str, record: dict[str, Any]) -> dict[s
 
 
 def _notify_harness(work_id: str, card_id: str, rec: dict[str, Any]) -> None:
-    """事件落盘后交给 harness（异步路径与同步路径共用）。
+    """事件落盘后交给条件集（异步路径与同步路径共用）。
 
-    [2026-10-28 · 换成条件集] 默认走**新路径** ``policy_runner.feed``：
-    写数据集 → 喂值班员 → 谁凑够了就投递。旧路径（规则表 + ``harness.fire``）
-    保留在 ``ECO_HARNESS_LEGACY=1`` 后面，便于出问题时一键回退。
+    [2026-10-28 · 换成条件集] ``policy_runner.feed``：写数据集 → 喂值班员 →
+    谁凑够了就投递。
+    [2026-10-31 · 两代并轨] 第一代「规则表 + ``harness.fire``」退役，
+    ``ECO_HARNESS_LEGACY`` 回退开关一并拆除——条件集是**唯一**接线。
 
-    两条路径都零阻断：接线失败绝不影响事件本身。
+    零阻断：接线失败绝不影响事件本身。
     """
     try:
-        import os as _os
-        if _os.environ.get("ECO_HARNESS_LEGACY") == "1":
-            from ..infra import harness
-            _t = str(rec.get("type") or "")
-            if _t and harness.interested(_t):
-                harness.fire_async(work_id, _t, card_id, rec.get("data"),
-                                   trigger_seq=int(rec.get("seq") or 0))
-            return
         from ..infra import policy_runner
         policy_runner.feed(work_id, rec)
     except Exception as exc:  # noqa: BLE001 接线失败不影响事件
@@ -285,8 +278,8 @@ def append_sync(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str,
     """同步追加（无事件循环的调用点使用；与异步路径共用字节写互斥）。
 
     [系统消息 2026-10-26] **也接线**：``goal/change`` 走的就是这条路径
-    （``goal/service._commit`` 用 append_sync 写盘）。若当前上下文有事件循环，
-    harness 会在后台评估；没有则 ``fire_async`` 自行返回（不阻断写盘）。
+    （``goal/service._commit`` 用 append_sync 写盘）。落盘后照常喂条件集；
+    投递是否起得来看 ``policy_runner``（无事件循环时只记账不投递，不阻断写盘）。
     """
     try:
         with _write_lock:

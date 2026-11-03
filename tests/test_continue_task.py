@@ -4,7 +4,7 @@
 钉六件事:
 T1 自动归档已撤:coder 完工后保持活卡(不再有收口即折叠)
 T2 continue_task:完工卡续派 ⇒ 复位 active+目标新生命周期+点火
-T3 护栏:active 卡拒续派(在跑);非 coder 拒;非祖先拒;给自己拒
+T3 护栏:真在跑的卡拒续派(在途回合判据,非 state 列);非 coder 拒;非祖先拒;给自己拒
 T4 沉默语义统一:coder 沉默=治理标记(不折叠)
 T5 工具面:父卡/根卡有 continue_task;治理段说明在
 T6 上下文延续:续派不删会话/回执(toolcard_final 清空=新任务起跑,但历史在)
@@ -84,14 +84,20 @@ async def test_continue_task_guards(sandbox):
     d3 = await card_tools._h_continue_task(
         wid, root_id, {"card_id": root_id, "task": "x"}, cards)
     assert d3.get("ok") is False
-    # 在跑的(active)拒——等完工
+    # 真在跑的拒（[停在中途可续派 2026-11-01] 判据=在途回合，不是 state 列：
+    # state=active 但无回合的卡是被停中途的，**可以**续派——card_140 病根）
     r = await card_store.create_card(wid, "在跑卡", "模型生成",
                                      parent=parent, card_type="coder")
     active = r["meta"]["card_id"]
-    cards = _cards(wid)
-    d4 = await card_tools._h_continue_task(
-        wid, parent, {"card_id": active, "task": "x"}, cards)
-    assert d4.get("ok") is False and "active" in d4["error"]["message"]
+    from src.storage import session_facade
+    assert session_facade.turn_try_acquire(wid, active, "turn:test")
+    try:
+        cards = _cards(wid)
+        d4 = await card_tools._h_continue_task(
+            wid, parent, {"card_id": active, "task": "x"}, cards)
+        assert d4.get("ok") is False and "active" in d4["error"]["message"]
+    finally:
+        session_facade.turn_release(wid, active, "turn:test")
 
 
 async def test_silence_coder_is_marker_not_archive(sandbox):

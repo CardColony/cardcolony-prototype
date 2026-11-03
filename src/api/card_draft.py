@@ -202,8 +202,12 @@ async def draft(
         blocks = await session_facade.read(work_id, card_id)
     except Exception:  # noqa: BLE001
         blocks = []
+    # [评审流量治理 2026-11-02] 同 _render_prior_for 口径：评审过程消息
+    # 只留最新数条——起草投影不吃过期派单快照。
+    from ..storage import review_scope as _rs
     prior = context_regions.project_history_messages(
-        blocks, allowed_roles={"user", "assistant"})
+        _rs.drop_stale_review(work_id, card_id, blocks),
+        allowed_roles={"user", "assistant"})
 
     # 区块上下文从统一注册表取；起草助手的任务说明作为 system_prefix 注入同一帧。
     context_ctx = context_assembler.build_ctx(

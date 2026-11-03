@@ -440,32 +440,71 @@ def test_repo_config_shape_is_valid(monkeypatch):
     cfg = wb_config.load()
     # 2026-10-23 用户令：执行体已开闸（enabled=true）
     assert cfg.enabled is True
-    assert len(cfg.candidates) == 4
+    assert len(cfg.candidates) == 9
     weights = {f"{c.executor}:{c.model}": c.weight for c in cfg.candidates}
-    # ★ **用户指定的配比，原样**（2026-10-23 用户令 + 10-25 加档 + **10-26 删 step-5**）：
-    #   deepseek-v4.1-flash 40 / **wb-oc/beam-free 20** / hy3 10×2
-    #   ⇒ 合计 80（**配比器按相对权重分配**，见 picker 的 sum(weight)）
-    # **不许替他换模型**（换到火山方舟/GLM 那些付费端点＝替他花钱）。
-    assert weights["wb-intl:deepseek-v4.1-flash"] == 40
-    # ★ 2026-10-25 用户令：opencode 只用 beam-free（端点上唯一**真免费**的档）
-    assert weights["wb-oc:beam-free"] == 20
-    assert weights["wb-cn:hy3"] == 10
-    assert weights["wb-intl:hy3"] == 10
-    assert sum(weights.values()) == 80
-    # ★ 2026-10-26 用户令：两个 WorkBuddy 的 step-5-preview **已不免费** ⇒ 移出候选表
-    assert "wb-cn:step-5-preview" not in weights
-    assert "wb-intl:step-5-preview" not in weights
-    # **表里不许出现付费/自定义端点**（用户明确：那些一样要花钱）
+    prios = {f"{c.executor}:{c.model}": c.priority for c in cfg.candidates}
+    # ★★ **2026-11-04 用户令：不再是「配比」，改成「优先级瀑布」**
+    #   原话：「先全部排 devin，它排满了或额度用完了，就落 opencode，
+    #   opencode 不行，再落 workbuddy」⇒ **priority 就是选路顺序**（越小越优先）。
+    assert prios["wb-devin:swe-2-max"] == 10
+    assert prios["wb-oc:flint-40b-free"] == 20
+    assert prios["wb-cn:glm-5.3-flash"] == 30
+    assert prios["wb-intl:glm-5.3-flash"] == 31
+    # ★ **Command Code 的三个免费档**（2026-11-04：逐个真调验过的）
+    assert prios["wb-cc:inclusionai/ling-3.1-flash-1019:free"] == 25
+    assert prios["wb-cc:reflection/beam:free"] == 26
+    assert prios["wb-cc:stealth/glyph-cluster:free"] == 27
+    # ★ **hy3 降为最后一级兜底**（优先级最低 ⇒ 只有前面全排满/额度尽才轮到它）
+    assert prios["wb-cn:hy3"] == 90
+    assert prios["wb-intl:hy3"] == 91
+    # ★ **优先级必须严格递增**（表序＝优先级序 ⇒ 不会漏读）
+    order = sorted(prios.items(), key=lambda kv: kv[1])
+    assert [k for k, _ in order] == [
+        "wb-devin:swe-2-max", "wb-oc:flint-40b-free",
+        "wb-cc:inclusionai/ling-3.1-flash-1019:free",
+        "wb-cc:reflection/beam:free",
+        "wb-cc:stealth/glyph-cluster:free",
+        "wb-cn:glm-5.3-flash", "wb-intl:glm-5.3-flash",
+        "wb-cn:hy3", "wb-intl:hy3",
+    ]
+    # ★ **表里不许出现付费/自定义端点**（用户明确：那些一样要花钱）
     for key in weights:
         model = key.split(":", 1)[1]
         assert not model.startswith("custom-local:"), f"表里不许有付费端点: {key}"
         assert model not in ("fast-model", "balanced-model", "deep-model"), key
-    # ★ opencode 执行体只留 beam-free（2026-10-25 用户令）⇒ 别的模型钉进来
-    #   会被静默换成 beam-free（**不是**换成收费档）
+    # ★ 已下架 / 已不免费 / 已不可用的档，一律不许再在表里
+    assert "wb-intl:deepseek-v4.1-flash" not in weights   # 已不免费（客户端实测扣 1462）
+    assert "wb-cn:step-5-preview" not in weights          # 已不免费
+    assert "wb-intl:step-5-preview" not in weights       # 已下架
+    assert "wb-oc:beam-free" not in weights               # 403 地区限制
+    assert "wb-oc:deepseek-v4.1-flash-free" not in weights  # 免费档超时零产出
+    # ★ 备用端点必须在 fallback.models 里（否则降级链找不到它）
+    assert cfg.fallback_models == ("hy3",)
+    # ★ opencode 执行体：**多 key ⇒ 多工位**（2026-11-03 用户给了第二个 key）
     oc = cfg.executor("wb-oc")
     assert oc is not None
-    assert list(oc.oc_models) == ["beam-free"]
-    assert cfg.fallback_models == ("hy3",)
+    assert oc.oc_use_builtin_provider is True
+    assert oc.oc_provider_id == "opencode"
+    assert list(oc.oc_models) == ["flint-40b-free"]
+    assert list(oc.oc_api_key_envs) == ["OPENCODE_API_KEY", "OPENCODE2_API_KEY"]
+    assert oc.oc_pool_size == 2
+    # ★ Devin 执行体：CLI + SWE-2 Max（用户套餐里免费）
+    dv = cfg.executor("wb-devin")
+    assert dv is not None
+    assert dv.devin_cli_exe.endswith("devin.exe")
+    assert dv.devin_model == "swe-2-max"
+    assert dv.devin_permission_mode == "bypass"
+    assert dv.devin_max_concurrent >= 1
+    # ★★ **2026-11-04：Devin 必须走「本地 agent」**（`devin_cloud=false`）
+    #   —— `--cloud` 跑在 Devin 的 VM 里 ⇒ **看不到本机的工作目录**
+    #   ⇒ agent 只回「请批准本地访问」⇒ **0 工具调用 ⇒ 卡片假装成功**（card_010）。
+    assert dv.devin_cloud is False
+    oc = cfg.executor("wb-oc")
+    assert oc is not None
+    assert oc.oc_use_builtin_provider is True
+    assert oc.oc_provider_id == "opencode"
+    assert "deepseek-v4.1-flash-free" not in list(oc.oc_models)
+
     assert cfg.guards.permission_mode != "fullAccess"
     wb_config.reset_cache()
 
@@ -936,6 +975,95 @@ async def test_bridge_delegates_and_finishes_card(work, wb_cfg, fake_gw,
 
 
 @pytest.mark.asyncio
+async def test_quota_exhausted_spills_to_next_priority(work, tmp_path, fake_gw,
+                                                       monkeypatch):
+    """★ **2026-11-04 用户令**：额度用完 ⇒ **落到下一优先级**（不是回落系统模型）。
+
+    原 2026-11-03 的机制是"**份额转移**"（hy3 权重→0、同侧 glm 拿那份权重）——
+    那是**配比**时代的做法；现在改成**优先级瀑布** ⇒ 语义变成
+    **「这一级出局 ⇒ 流量落到表里排它后面的那一级」**。
+
+    判据（三条都要）：
+      ① 上游报 quota ⇒ 记进额度状态表 + **同一轮换到下一优先级**；
+      ② **后续所有卡都跳过这一级**（状态驱动 ⇒ 不用每次先失败一轮才换）；
+      ③ 事件可见：``wb_exec_fallback`` ＋ ``wb_exec_unavailable``。
+    """
+    from src.api.wb_exec import picker as _picker
+
+    p = _wb_cfg_payload(
+        tmp_path,
+        candidates=[
+            {"executor": "wb-cn", "model": "hy3", "weight": 0, "priority": 10},
+            {"executor": "wb-cn", "model": "glm-5.3-flash", "weight": 0,
+             "priority": 20},
+            {"executor": "wb-intl", "model": "hy3", "weight": 0, "priority": 30},
+        ],
+        fallback={"models": ["hy3"], "prefer_same_executor": True},
+    )
+    monkeypatch.setenv(wb_config.ENV_CONFIG_PATH, str(p))
+    wb_config.reset_cache()
+    _sw = tmp_path / "sw_on.json"
+    _sw.write_text(json.dumps({"enabled": True}), encoding="utf-8")
+    monkeypatch.setattr(wb_switch, "SWITCH_PATH", _sw)
+    _picker.reset_pickers()
+
+    reg = bridge.get_registry()
+    from src.api.wb_exec.registry import GatewayProcess
+    from src.api.wb_exec.config import Executor
+    _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
+    monkeypatch.setattr(bridge, "get_registry", lambda: reg)
+
+    card_id = await _make_coder_card(work["work_id"])
+    st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
+                                 content="干活")
+    st.pair_id = "pair-quota"
+
+    # 第一次 prompt 报 quota，第二次（换模型后）成功
+    calls = {"n": 0}
+    orig = FakeAcpGateway._stream
+
+    async def patched(self, body):
+        if str(body.get("method")) == "session/prompt":
+            calls["n"] += 1
+            self.prompt_mode = "quota" if calls["n"] == 1 else "ok"
+        async for chunk in orig(self, body):
+            yield chunk
+
+    monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
+
+    try:
+        outcome = await bridge.maybe_delegate(st)
+        assert outcome is not None, "quota 后应换下一优先级继续干，而不是回落"
+        # ① 换到**下一优先级**的 glm-5.3-flash
+        models = [v for _, c, v in fake_gw.set_config if c == "model"]
+        assert "glm-5.3-flash" in models, models
+        # ③ 事件可见
+        types = [e.get("type") for e in
+                 event_stream.journal_of(work["work_id"], card_id)]
+        assert "wb_exec_fallback" in types, types
+        assert "wb_exec_unavailable" in types, types
+        # ① 额度状态登记了
+        assert reg.is_exhausted("wb-cn", "hy3"), reg.exhausted_snapshot()
+
+        # ② **后续所有卡都跳过这一级**（状态驱动）：第二张卡**直接**走 glm
+        n_before = len([1 for _, c, _ in fake_gw.set_config if c == "model"])
+        card2 = await _make_coder_card(work["work_id"])
+        st2 = message_runner.RunState(work_id=work["work_id"], card_id=card2,
+                                      content="再干活")
+        st2.pair_id = "pair-quota-2"
+        outcome2 = await bridge.maybe_delegate(st2)
+        assert outcome2 is not None
+        models2 = [v for _, c, v in fake_gw.set_config if c == "model"]
+        later = models2[n_before:]
+        assert later, models2
+        assert all(m == "glm-5.3-flash" for m in later), \
+            f"额度耗尽的那一级不该再被选中：{later}"
+    finally:
+        wb_config.reset_cache()
+        _picker.reset_pickers()
+
+
+@pytest.mark.asyncio
 async def test_bridge_quota_falls_back_to_hy3(work, wb_cfg, fake_gw,
                                               monkeypatch):
     """上游额度耗尽 ⇒ fallback 到 hy3（先同侧）。"""
@@ -1177,9 +1305,13 @@ async def test_sequential_delegations_share_one_connection_and_get_own_sessions(
     # ② 两张卡各自的会话
     sids = {p["session_id"] for p in fake_gw.prompt_calls}
     assert len(sids) == 2, fake_gw.prompt_calls
-    # ③ 配比器推进 ⇒ 两次挑的模型不同
+    # ③ ★ **2026-11-04 优先级瀑布**：两次都挑**最高优先级**那一档
+    #   （老断言是"配比器推进 ⇒ 两次挑的模型不同"——那是**配比**语义；
+    #   现在用户令是「**先全部排 devin**」⇒ 最高优先级那一档**一直吃流量**，
+    #   只有它排满/额度尽了才往下溢流）。
     models = [v for _, c, v in fake_gw.set_config if c == "model"]
-    assert len(set(models)) == 2, models
+    top = wb_config.load().candidates[0].model      # 表里第一行＝最高优先级
+    assert models and all(m == top for m in models), models
     # ④ 两张卡各拿到自己的正文（没串）
     assert st_a.final_reply == "做完了：已改 a.py"
     assert st_b.final_reply == "做完了：已改 a.py"
@@ -1701,7 +1833,12 @@ async def test_slot_full_queues_instead_of_falling_back(work, wb_cfg, fake_gw,
     (s1, e1), (s2, e2) = sorted(spans)
     assert e1 <= s2 + 0.05, f"同槽两段不该重叠: {spans}"
     # **排队是可见的** ⇒ 卡面能看见它在等（不是"卡死"）
-    evs = event_stream.journal_of(work["work_id"], card_b)
-    types = [e.get("type") for e in evs]
-    assert "wb_exec_queued" in types, types
+    # ⚠ **哪张卡先抢到槽是不确定的**（并发调度）⇒ 断言「**两张里至少一张**」
+    #   发出过"排队中"，而不是钉死某一张（钉死就是顺序依赖 ⇒ 偶发红）。
+    types_a = [e.get("type") for e in
+               event_stream.journal_of(work["work_id"], card_a)]
+    types_b = [e.get("type") for e in
+               event_stream.journal_of(work["work_id"], card_b)]
+    assert ("wb_exec_queued" in types_a) or ("wb_exec_queued" in types_b), \
+        f"排队必须可见（{types_a} / {types_b}）"
 

@@ -493,6 +493,19 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
   border: 1px solid rgba(245, 166, 91, 0.5);
   background: rgba(245, 166, 91, 0.10);
 }
+/* [UI 卡 2026-11-02] ui 卡＝内循环执行卡（浏览器验界面）：青色浏览器图标＋
+   「UI」徽标——与编程卡（橙）/角色卡（金）三色分开；颜色与画布 --cv-t-ui 同源。 */
+.nav-card.nav-ui .nav-ico.ui { color: #56c8d8; }
+.nav-card.nav-ui .nav-ctitle {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+}
+.nav-ui-badge {
+  flex: none; font-size: 9px; line-height: 14px; padding: 0 4px;
+  margin-right: 4px; border-radius: 4px; color: #56c8d8;
+  border: 1px solid rgba(86, 200, 216, 0.5);
+  background: rgba(86, 200, 216, 0.10);
+}
 .nav-phead.has-alarm .nav-pname::after {
   content: ""; display: inline-block; width: 7px; height: 7px;
   margin-left: 6px; border-radius: 50%; background: #d05656;

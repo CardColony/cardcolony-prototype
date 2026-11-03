@@ -77,6 +77,17 @@ def reset_stream_context(token: Any) -> None:
         _stream_ctx.set(None)
 
 
+def clear_stream_context():
+    """把本协程上下文的逐字流归属清空（返回 token 供还原）。
+
+    [2026-11-01 凝练流泄露实案] ``create_task`` 复制 contextvar 上下文——
+    回合末异步调度的凝练/归拢任务继承了卡回合的 stream_ctx，管线调用的
+    reasoning/content 帧被归到该卡名下落进对话流（card_104 的 reasoning
+    事件里出现 L2 子题生成过程）。管线内部模型调用一律经本函数脱钩。
+    """
+    return _stream_ctx.set(None)
+
+
 def current_stream_context():
     return _stream_ctx.get()
 

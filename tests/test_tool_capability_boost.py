@@ -65,7 +65,7 @@ def test_seven_new_tools_registered():
     # ★ 本条在 5718 之前就已陈旧（断言 50、实际 51）——一并对齐，恢复指纹作用。
     # [职能实体化 2026-10-21] role 五件改名+新增 set_child_mission ⇒ 52 → 53
     # [统一唤醒 2026-10-22] 新增 wake_card ⇒ 53 → 54
-    assert len(card_tools.TOOL_REGISTRY) == 70  # 四场景通信 +4(实际 70)  # +submit_review(评审回程)  # 合并后实测 65
+    assert len(card_tools.TOOL_REGISTRY) == 73  # [UI 卡 2026-11-02] +browser +create_ui_card
 
 
 def test_seven_schemas_have_required_params():
@@ -83,24 +83,45 @@ def test_seven_schemas_have_required_params():
     assert set(sp["properties"]) == {"keyword", "pattern", "path", "limit"}
 
 
-def test_seven_are_wired_to_tools_file():
-    """裁定 1：七件全挂现有 SWITCH_TOOLS_FILE——授 tools_file 的卡即得全套。"""
+def test_seven_are_wired_to_file_switches():
+    """裁定 1：七件挂文件开关组——授文件开关的卡即得全套。
+
+    [开关词汇表扩列 2026-10-31] 文件读写拆成两个开关：只读类（list_files/
+    read_file/search_files/glob_files）挂 ``tools_read_file``，写入/执行类
+    （write_file/edit_file/delete_file/move_file/rename_file/bash/python）
+    挂 ``tools_file``。七件里只有 glob_files 是只读。
+    """
+    read_only = {"glob_files"}
     for name in SEVEN:
-        assert card_tools.TOOL_SWITCH[name] == policy.SWITCH_TOOLS_FILE, name
+        want = policy.SWITCH_TOOLS_READ_FILE if name in read_only \
+            else policy.SWITCH_TOOLS_FILE
+        assert card_tools.TOOL_SWITCH[name] == want, name
         assert card_tools.TOOL_SWITCH[name] in policy.SWITCHES, name
 
-    full = policy.perms_for("rd_project", "sub_project")
-    card = {"card_id": "c1", "card_type": "sub_project", "perms": full}
+    # [读写拆闸 2026-10-31] 文件写入/执行成了 coder 专属：工作卡型（sub_project/
+    # project/topic/function）只授 tools_read_file（只读档），perms 表里没有
+    # tools_file 了。⇒ sub_project 只能看见七件里的只读成员 glob_files；
+    # coder 有 tools_file，且 tools_file ⇒ tools_read_file（能写就能读的蕴含
+    # 表），七件全可见。
     tools = [{"name": n} for n in card_tools.TOOL_REGISTRY]
-    visible = {t["name"] for t in
-               card_tools._filter_by_category(tools, "c1", "", {"c1": card})}
-    assert SEVEN <= visible, visible - SEVEN
 
-    # 无 tools_file 的卡（tool 类型）⇒ 七件一件不可见
-    tool_card = {"card_id": "c2", "card_type": "tool",
+    sub = {"card_id": "c1", "card_type": "sub_project",
+           "perms": policy.perms_for("rd_project", "sub_project")}
+    visible_sub = {t["name"] for t in
+                   card_tools._filter_by_category(tools, "c1", "", {"c1": sub})}
+    assert SEVEN & visible_sub == read_only, SEVEN & visible_sub
+
+    coder = {"card_id": "c2", "card_type": "coder",
+             "perms": policy.perms_for("rd_project", "coder")}
+    visible_coder = {t["name"] for t in
+                     card_tools._filter_by_category(tools, "c2", "", {"c2": coder})}
+    assert SEVEN <= visible_coder, SEVEN - visible_coder
+
+    # 无文件开关的卡（tool 类型）⇒ 七件一件不可见
+    tool_card = {"card_id": "c3", "card_type": "tool",
                  "perms": policy.perms_for("rd_project", "tool")}
     hidden = {t["name"] for t in
-              card_tools._filter_by_category(tools, "c2", "", {"c2": tool_card})}
+              card_tools._filter_by_category(tools, "c3", "", {"c3": tool_card})}
     assert not (SEVEN & hidden), SEVEN & hidden
 
 
@@ -458,7 +479,7 @@ async def test_edit_file_zero_matches_leaves_file_untouched(sandbox):
     r = await card_tools._h_edit_file(
         "w", "c1", {"path": "trading-workspace/cfg.txt",
                     "old_string": "不存在的串", "new_string": "x"}, PERM_CARDS)
-    assert "error" in r and r["error"] == "old_string 未在文件中找到", r
+    assert "error" in r and "old_string 未在文件中找到" in r["error"], r
     assert f.read_bytes() == before
 
 
@@ -473,6 +494,44 @@ async def test_edit_file_multiple_matches_reports_count(sandbox):
         "w", "c1", {"path": "trading-workspace/cfg.txt",
                     "old_string": "foo", "new_string": "FOO"}, PERM_CARDS)
     assert "error" in r and "出现 2 次" in r["error"], r
+    assert f.read_bytes() == before
+
+
+async def test_edit_file_not_found_returns_nearest_window(sandbox):
+    """[2026-11-02 · card_021 实案] 找不到时回近似原文窗＋行号——
+    模型拿逐字原文修锚点，不必整块重读（当年 8 万文档连读 12 轮炸窗）。"""
+    ws = sandbox.base / "trading-workspace"
+    f = ws / "doc.md"
+    original = ("第一段开头\n" + "填充行\n" * 20 +
+                "目标段落甲：旧阈值 0.8\n目标段落乙：沿用旧制\n" +
+                "填充行\n" * 20 + "尾段\n")
+    f.write_bytes(original.encode("utf-8"))
+    before = f.read_bytes()
+
+    r = await card_tools._h_edit_file(
+        "w", "c1", {"path": "trading-workspace/doc.md",
+                    "old_string": "目标段落甲：旧阈值 0.9\n目标段落乙：沿用旧制",
+                    "new_string": "x"}, PERM_CARDS)
+    assert "error" in r, r
+    # 近似窗把目标所在区域带行号还给模型，且文件零改动
+    assert "第 22 行起" in r["error"] or "目标段落甲：旧阈值 0.8" in r["error"], r["error"]
+    assert "不必重读" in r["error"], r["error"]
+    assert f.read_bytes() == before
+
+
+async def test_edit_file_ambiguous_lists_positions(sandbox):
+    """多次命中给各命中行号＋行首片段——消歧也不用重读。"""
+    ws = sandbox.base / "trading-workspace"
+    f = ws / "cfg.txt"
+    original = "alpha\n目标行\nbeta\ngamma\n目标行\n尾行\n"
+    f.write_bytes(original.encode("utf-8"))
+    before = f.read_bytes()
+
+    r = await card_tools._h_edit_file(
+        "w", "c1", {"path": "trading-workspace/cfg.txt",
+                    "old_string": "目标行\n", "new_string": "x\n"}, PERM_CARDS)
+    assert "error" in r and "出现 2 次" in r["error"], r
+    assert "第 2 行" in r["error"] and "第 5 行" in r["error"], r["error"]
     assert f.read_bytes() == before
 
 
@@ -529,8 +588,8 @@ async def test_edit_file_missing_file_and_dir(sandbox):
 
 def test_edit_file_version_and_switch():
     """版本 tc-9 / t23-1；edit_file 与 write_file 同开关（tools_file）、写工具。"""
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-17"
-    assert prompts.BASE_PROMPT_VERSION == "t27-1"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-20"  # [2026-11-02] read_card 分段读入参
+    assert prompts.BASE_PROMPT_VERSION == "t27-5"          # [2026-11-01] 随现配置对齐
     assert card_tools.TOOL_SWITCH["edit_file"] == policy.SWITCH_TOOLS_FILE
     assert card_tools.TOOL_SWITCH["edit_file"] == \
         card_tools.TOOL_SWITCH["write_file"]

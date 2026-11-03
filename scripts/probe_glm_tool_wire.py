@@ -29,9 +29,21 @@ logging.disable(logging.CRITICAL)
 
 import src.model_gateway.llm_openai_compat.adapter as ad  # noqa: E402
 from src.api import model_config, model_service  # noqa: E402
-from src.storage import memory_store as m  # noqa: E402
 
 OUT = os.path.join(BASE, "logs", "glm_wire_raw.jsonl")
+
+#: 探针用的最小工具 schema（apply_folds 已随 s3 转填步退役；
+#: 本脚本只测工具调用通道本身，任意合法 schema 都行）
+_PROBE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "apply_folds",
+        "description": "探针占位工具。",
+        "parameters": {"type": "object",
+                       "properties": {"merges": {"type": "array", "items": {}}},
+                       "required": ["merges"]},
+    },
+}
 
 
 async def main() -> int:
@@ -56,7 +68,7 @@ async def main() -> int:
         r, _used = await model_service.call_main(
             "你是工具调用器。只调用 apply_folds，参数 merges 为空数组。不要输出任何解释文字。",
             "执行。",
-            prior_messages=[], tools=[m.APPLY_FOLDS_TOOL], model_name=model)
+            prior_messages=[], tools=[_PROBE_TOOL], model_name=model)
         print("结果字段:", {k: (len(v) if isinstance(v, (list, str)) else v)
                             for k, v in r.items() if k != "reasoning_content"}, flush=True)
         print("tool_calls:", json.dumps(r.get("tool_calls"), ensure_ascii=False)[:600], flush=True)

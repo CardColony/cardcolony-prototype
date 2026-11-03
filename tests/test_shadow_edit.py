@@ -53,3 +53,25 @@ async def test_write_one_section_leaves_others(sandbox):
         wid, cid, {"section": "进度", "old_string": "", "new_string": "开工"}, cards)
     assert out.get("ok"), out
     assert await shadow_store.read_section(wid, cid, "## 产物清单") == "a.py"
+
+
+async def test_not_found_returns_nearest_window_not_reread_advice(sandbox):
+    """[2026-11-02 · card_021 实案] not_found 回近似原文窗＋行号，
+    不再叫模型「read_card 核对」（那句就是重读循环的教唆）。"""
+    wid, cid = await _card()
+    await shadow_store.write_section(
+        wid, cid, "## 进度",
+        "填充行\n" * 10 + "已部署 v2：端口 8080\n已联调通过\n" + "填充行\n" * 10)
+    cards = card_store.iter_card_metas(wid)
+    out = await card_tools._h_edit_shadow(
+        wid, cid, {"section": "进度",
+                   "old_string": "已部署 v3：端口 9090\n已联调通过",
+                   "new_string": "x"}, cards)
+    assert out.get("ok") is False
+    assert out["error"]["code"] == "not_found", out
+    msg = out["error"]["message"]
+    assert "read_card 核对" not in msg, msg
+    assert "已部署 v2：端口 8080" in msg and "第 " in msg and "行起" in msg, msg
+    # 零改动
+    assert "已部署 v2：端口 8080" in await shadow_store.read_section(
+        wid, cid, "## 进度")

@@ -12,7 +12,7 @@ import pytest
 
 from src.storage import memory_store
 
-from _condense_stub import count_blocks, stage_of, three_stage_stub
+from tests._condense_stub import count_blocks, stage_of, three_stage_stub
 
 
 def _mk_msg(seq: int, text: str) -> dict:
@@ -86,33 +86,49 @@ async def test_v3_condense_call_targets_glm_flash(sandbox, monkeypatch):
 # ---------------------------------------------------------------- V4 归拢游标（三步 + 降层建边）
 
 def _state_with(count: int, last: int, n_entries: int = 4,
-                card_id: str = "card_001") -> dict:
-    """可归拢态：n_entries 条**顶层 done gist**（CausalNode 形态，level=1、upper 空）。"""
+                card_id: str = "card_001", tag: str = "") -> dict:
+    """可归拢态：n_entries 条**顶层 gist**（CausalNode 形态，level=1、upper 空）。
+
+    `tag` 渗进 gist —— 链指纹（seq+gist 哈希）随之变化，s1/组缓存不命中；
+    归拢步骤产物按指纹落盘缓存，同指纹的用例阶段会直接续跑缓存（=零调用提交）。
+    """
     return {
         "card_id": card_id, "mark": 10,
         "batch_count": count, "last_fold_check": last, "folded": [],
-        "entries": [{"anchor": {"sessionId": card_id, "seq": i}, "gist": f"条目{i}",
+        "entries": [{"anchor": {"sessionId": card_id, "seq": i}, "gist": f"条目{i}{tag}",
                      "status": "done", "kind": "fact", "level": 1, "role": "gist",
                      "upper": [], "lower": [], "coveredSeqs": [i],
                      "occurred_at": "t", "fingerprint": f"fp{i}"} for i in range(n_entries)],
     }
 
 
-def _fold_stub(record: list[str], merges: list[dict] | None = None,
-               judge: str = "有合并"):
-    """三步归拢替身：step1 判「结论：有/无合并」→ step2 自由文本 → step3 转填 merges。"""
+def _fold_stub(record: list[str], digest: str | None = None,
+               judge: str = "有合并", groups: list[dict] | None = None):
+    """两步半归拢替身：s1「分组裁决」（JSON尾）→ s2' 每组「线程综合」（带界产出）。
+
+    - judge="有合并"：s1 末行产 {"groups":[...]}（缺省 [{0,2}]）；
+    - digest=None 时组综合产缺省 digest（成员 seq 0,2、四栏+教训+kind）；
+    - digest="bail" → 组综合产「【不合并】」；digest="bad" → 产不可解析文本。
+    """
+    default_digest = ("【成员】seq 0, 2\n【标题】合并线A\n【起因】起因X\n"
+                      "【经过】经过Y\n【结果】结果Z\n【教训】教训L\n【kind】decision")
+
     async def fake_fold(system: str, user: str, tools=None, **_):
-        # 段判据用互斥关键词（第二步 prompt 正文里含「第一步产出」字样，
-        # contains("第一步") 会把它误判成 step1——实测踩过）。
-        if "只转填" in system:
-            record.append("step3")
-            return {"tool_calls": [{"name": "apply_folds",
-                                    "arguments": {"merges": merges or []}}]}
-        if "凝练合并" in system:
-            record.append("step2")
-            return {"content": "合并 [seq 0][seq 2] 为一件事：起因…经过…结果…"}
-        record.append("step1")
-        return {"content": f"建议合并 [seq 0] 与 [seq 2]。\n结论：{judge}"}
+        if "线程综合" in system:
+            record.append("group")
+            if digest == "bail":
+                return {"content": "【不合并】细看后两条不相干"}
+            if digest == "bad":
+                return {"content": "无法解析的自由文本，什么标记都没有"}
+            return {"content": digest or default_digest}
+        record.append("s1")
+        if judge == "有合并":
+            g = groups or [{"label": "线A", "members": [0, 2]}]
+            tail = json.dumps({"groups": g}, ensure_ascii=False)
+            return {"content": f"看了看，同线。\n结论：有合并\n{tail}"}
+        if judge == "broken":
+            return {"content": "看了看，有可合的。\n结论：有合并\n（忘了写组表）"}
+        return {"content": "看了看。\n结论：无合并"}
     return fake_fold
 
 
@@ -120,27 +136,28 @@ async def test_v4_fold_triggers_at_cursor_and_failure_holds(sandbox, work, monke
     wid, cid = work["work_id"], work["work_card_id"]
     calls: list[str] = []
 
-    # 游标差 < 5 → 零触发
+    # 游标差 < 5 且顶层数 < 40 → 零触发
     monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls))
     await memory_store.save_memory(wid, cid, _state_with(count=4, last=0, card_id=cid))
     await memory_store._maybe_fold(wid, cid)
     assert calls == []
-    # 差 ≥ 5 → 触发一次：committed → 三步各一次、推游标、降层建边、mark 不动
-    merges = [{"covers": [{"sessionId": cid, "seq": 0}, {"sessionId": cid, "seq": 2}],
-               "start": "起因X", "process": "经过Y", "result": "结果Z", "kind": "decision"}]
-    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls, merges=merges))
-    await memory_store.save_memory(wid, cid, _state_with(count=5, last=0, card_id=cid))
+    # 差 ≥ 5 → 触发一次：committed → s1+组综合各一次、推游标、降层建边、mark 不动
+    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls))
+    await memory_store.save_memory(wid, cid,
+                                   _state_with(count=5, last=0, card_id=cid, tag="A"))
     await memory_store._maybe_fold(wid, cid)
-    assert calls == ["step1", "step2", "step3"]
+    assert calls == ["s1", "group"]
     st = memory_store.load_memory(wid, cid)
     assert st["last_fold_check"] == 5
     assert st["mark"] == 10                                    # 提交不动 mark（源侧语义）
     # [F1] 合成锚点取 1e9 保留段（绝不取 covers 最旧 seq=0——必撞成员锚点）
     merged = st["entries"][-1]
     assert merged["anchor"]["seq"] >= memory_store.SYNTH_SEQ_BASE
-    # [F2] 新节点 gist＝start+result、lower＝成员锚点；成员 upper 指回新锚点、level 降到 2
+    # [F2] 新节点 gist＝【标题】、lower＝成员锚点；成员 upper 指回新锚点、level 降到 2
     assert merged["level"] == 1 and merged["role"] == "gist"
-    assert "起因X" in merged["gist"] and "结果Z" in merged["gist"]
+    assert merged["gist"] == "合并线A"
+    assert merged["start"] == "起因X" and merged["result"] == "结果Z"
+    assert merged["lesson"] == "教训L", "s2' 教训栏要落到节点上"
     assert {l["seq"] for l in merged["lower"]} == {0, 2}
     by_seq = {int(e["anchor"]["seq"]): e for e in st["entries"]}
     for mseq in (0, 2):
@@ -152,13 +169,15 @@ async def test_v4_fold_triggers_at_cursor_and_failure_holds(sandbox, work, monke
     assert md.check_invariants(st["entries"]) == []
     # 同值防重：游标已推 → 不再触发
     await memory_store._maybe_fold(wid, cid)
-    assert calls == ["step1", "step2", "step3"]
+    assert calls == ["s1", "group"]
     # abort（调用异常）→ 游标不动，账保留下轮重试
+    # （换 tag ⇒ 链指纹变 ⇒ s1 缓存不命中 ⇒ boom 真的打到调用上）
     async def boom(system: str, user: str, tools=None, **_):
         raise RuntimeError("model down")
 
     monkeypatch.setattr(memory_store, "_fold_call", boom)
-    await memory_store.save_memory(wid, cid, _state_with(count=10, last=5, card_id=cid))
+    await memory_store.save_memory(wid, cid,
+                                   _state_with(count=10, last=5, card_id=cid, tag="B"))
     await memory_store._maybe_fold(wid, cid)
     st2 = memory_store.load_memory(wid, cid)
     assert st2["last_fold_check"] == 5                          # 失败不推进游标
@@ -168,12 +187,27 @@ async def test_v4_fold_triggers_at_cursor_and_failure_holds(sandbox, work, monke
     st3 = memory_store.load_memory(wid, cid)
     assert st3["last_fold_check"] == 10
     assert len(st3["entries"]) == 4, "judge-empty 不落新节点"
-    # step3 merges=0 → 同为合法终态
-    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls, merges=[]))
-    await memory_store.save_memory(wid, cid, _state_with(count=20, last=10, card_id=cid))
+    # s1 有合并但组综合全部诚实弃权（【不合并】）→ judge-empty → 推游标
+    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls, digest="bail"))
+    await memory_store.save_memory(wid, cid,
+                                   _state_with(count=20, last=10, card_id=cid, tag="D"))
     await memory_store._maybe_fold(wid, cid)
     st4 = memory_store.load_memory(wid, cid)
     assert st4["last_fold_check"] == 20 and len(st4["entries"]) == 4
+    # s1 有合并但组综合产出全部不可解析 → pipeline-failure → 游标不动
+    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls, digest="bad"))
+    await memory_store.save_memory(wid, cid,
+                                   _state_with(count=30, last=20, card_id=cid, tag="E"))
+    await memory_store._maybe_fold(wid, cid)
+    st5 = memory_store.load_memory(wid, cid)
+    assert st5["last_fold_check"] == 20, "全组机械失败零提交＝管线失败，游标不许动"
+    # s1 说有合并却拿不出组表 → pipeline-failure → 游标不动
+    monkeypatch.setattr(memory_store, "_fold_call", _fold_stub(calls, judge="broken"))
+    await memory_store.save_memory(wid, cid,
+                                   _state_with(count=30, last=20, card_id=cid, tag="F"))
+    await memory_store._maybe_fold(wid, cid)
+    st6 = memory_store.load_memory(wid, cid)
+    assert st6["last_fold_check"] == 20
 
 
 # ---------------------------------------------------------------- V5 同口径铁律
@@ -461,3 +495,142 @@ def test_backfill_timeline_from_origin(work, monkeypatch):
     assert n == 1
     assert nodes[0]["timeline"] == {"from": "2026-10-30T09:00:00",
                                     "to": "2026-10-30T09:05:00"}
+
+
+# ---------------------------------------------------------------- 活线归拢机械件（2026-11-01）
+
+def test_parse_fold_groups_verdicts():
+    """s1 组表机械解析：merge/empty/broken 三态 + 成员过滤 + 跨组去重 + ≥2 门槛。"""
+    tops = {0, 1, 2, 3, 10**9}
+    # 无合并
+    v, g = memory_store._parse_fold_groups("看了看。\n结论：无合并", tops)
+    assert (v, g) == ("empty", [])
+    # 有合并 + 有效组表
+    txt = ('分析若干。\n结论：有合并\n'
+           '{"groups":[{"label":"A","members":[0,2,999]},'
+           '{"label":"B","members":[1,2,3]},'          # 2 被 A 先认领 → B 只剩 {1,3}
+           '{"label":"C","members":[999]}]}')          # 999 不在 tops + 不足两条 → 弃
+    v, g = memory_store._parse_fold_groups(txt, tops)
+    assert v == "merge"
+    assert g == [{"label": "A", "members": [0, 2]}, {"label": "B", "members": [1, 3]}]
+    # 有合并但组表全被过滤 → empty（建议确实弱）
+    v, g = memory_store._parse_fold_groups(
+        '结论：有合并\n{"groups":[{"members":[999,998]}]}', tops)
+    assert v == "empty"
+    # 有合并但无组表 / 连结论都没有 → broken（管线失败）
+    assert memory_store._parse_fold_groups("结论：有合并\n（忘写）", tops) == ("broken", [])
+    assert memory_store._parse_fold_groups("毫无格式", tops) == ("broken", [])
+    # digest 成员（≥1e9 合成锚点）在 tops 里即可被点名
+    v, g = memory_store._parse_fold_groups(
+        '结论：有合并\n{"groups":[{"members":[0,%d]}]}' % (10**9,), tops)
+    assert v == "merge" and g[0]["members"] == [0, 10**9]
+
+
+def test_group_order_key_synth_never_latest():
+    """真时序键：真覆盖 seq 优先；合成锚点(≥1e9)绝不当时序；不可断代按最老。"""
+    native = {"anchor": {"seq": 50}, "coveredSeqs": [40, 50]}
+    digest = {"anchor": {"seq": 10**9}, "coveredSeqs": [10, 20, 30]}  # 真末端 30
+    tl_only = {"anchor": {"seq": 10**9 + 1},
+               "timeline": {"from": "a", "to": "2026-11-01"}}
+    unknown = {"anchor": {"seq": 10**9 + 2}}
+    ordered = sorted([unknown, native, digest, tl_only],
+                     key=memory_store._group_order_key)
+    assert ordered[0] is unknown          # 不可断代 → 最老
+    assert ordered[1] is tl_only          # timeline 兜底次之
+    assert ordered[2] is digest           # digest 真末端 30
+    assert ordered[3] is native           # native 末端 50 → 最新
+
+
+def test_parse_fold_digest_contract():
+    """s2' 带界产出解析：merge/bail/expand/bad 四态 + 成员⊆allowed + 必填栏。"""
+    cid = "card_001"
+    ok = ("【成员】seq 0, 2, 7\n【标题】线A\n【起因】起\n【经过】过\n"
+          "【结果】果\n【教训】训\n【kind】decision")
+    k, m = memory_store._parse_fold_digest(ok, {0, 2, 7}, cid)
+    assert k == "merge"
+    assert [c["seq"] for c in m["covers"]] == [0, 2, 7]
+    assert m["title"] == "线A" and m["lesson"] == "训" and m["kind"] == "decision"
+    # 成员收窄到 allowed 子集；收窄后不足两条 → bad
+    k, _ = memory_store._parse_fold_digest("【成员】seq 0, 9\n【结果】x\n【经过】y",
+                                           {0, 2}, cid)
+    assert k == "bad"
+    # 诚实弃权
+    k, why = memory_store._parse_fold_digest("【不合并】不相干", {0}, cid)
+    assert k == "bail" and "不相干" in why
+    # 展开请求（无【结果】栏才算）→ 限 allowed、≤5
+    k, seqs = memory_store._parse_fold_digest("【需展开：seq 0, 2, 99】", {0, 2}, cid)
+    assert k == "expand" and seqs == [0, 2]
+    # 必填栏缺失 → bad
+    assert memory_store._parse_fold_digest("【成员】seq 0, 2\n【起因】x", {0, 2}, cid)[0] == "bad"
+
+
+async def test_fold_digest_member_reabsorbs(sandbox, work, monkeypatch):
+    """digest 作为成员再合：合成锚点可点名、coveredSeqs 并集、排序按真覆盖。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    synth = memory_store.SYNTH_SEQ_BASE
+    entries = [
+        {"anchor": {"sessionId": cid, "seq": synth}, "gist": "旧digest",
+         "status": "done", "kind": "fact", "level": 1, "role": "gist",
+         "upper": [], "lower": [{"sessionId": cid, "seq": 0}],
+         "coveredSeqs": [0, 1, 2]},
+        {"anchor": {"sessionId": cid, "seq": 0}, "gist": "成员0",
+         "status": "done", "kind": "fact", "level": 2, "role": "gist",
+         "upper": [{"sessionId": cid, "seq": synth}], "lower": [],
+         "coveredSeqs": [0]},
+        {"anchor": {"sessionId": cid, "seq": 50}, "gist": "新增量",
+         "status": "ongoing", "kind": "fact", "level": 1, "role": "gist",
+         "upper": [], "lower": [], "coveredSeqs": [50]},
+    ]
+    await memory_store.save_memory(wid, cid, {
+        "card_id": cid, "mark": 60, "batch_count": 6, "last_fold_check": 0,
+        "entries": entries})
+
+    async def fake_fold(system, user, tools=None, **_):
+        if "线程综合" in system:
+            # digest(锚点1e9) 必须可被点名；排序键：digest真末端2 < 新增量50
+            assert "【最早成员" in user and "【最新成员" in user
+            return {"content": ("【成员】seq %d, 50\n【标题】续接线\n"
+                                "【起因】旧起\n【经过】重整\n【结果】新态"
+                                "\n【kind】fact") % synth}
+        assert "[digest]" in user, "全景要把合成锚点标成既有归拢产物"
+        return {"content": '结论：有合并\n{"groups":[{"label":"线","members":[%d,50]}]}'
+                           % synth}
+
+    monkeypatch.setattr(memory_store, "_fold_call", fake_fold)
+    await memory_store._maybe_fold(wid, cid)
+    st = memory_store.load_memory(wid, cid)
+    news = [e for e in st["entries"]
+            if int(e["anchor"]["seq"]) >= synth and e["gist"] == "续接线"]
+    assert len(news) == 1
+    node = news[0]
+    assert node["coveredSeqs"] == [0, 1, 2, 50], "digest 覆盖并集 ∪ 新增量"
+    # 旧 digest 降为 L2 挂新锚；其原成员跟着再降一层（子树整体 level+1）
+    by_seq = {int(e["anchor"]["seq"]): e for e in st["entries"]}
+    assert by_seq[synth]["level"] == 2
+    assert by_seq[0]["level"] == 3, "旧 digest 的原成员沿子树再降一层"
+    assert by_seq[50]["level"] == 2
+    from src.storage import memory_domain as md
+    assert md.check_invariants(st["entries"]) == []
+
+
+async def test_fold_dup_seq_siblings_get_upper(sandbox, work, monkeypatch):
+    """[脏链修 2026-11-01 · card_fn_005/007 实测] 同 seq 复本（凝练存量病，
+    多条 gist 共享同一锚点）：认领按 seq 解到一份，但 _demote_subtree 会把
+    所有复本一起降层——复本也必须挂 upper，否则造出无父深条（I4）。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    st = _state_with(count=5, last=0, card_id=cid, tag="dup")
+    # 造脏：seq=0 的第二个复本（不同 gist、同一锚点）
+    dup = dict(st["entries"][0])
+    dup["gist"] = "seq0的重复副本"
+    st["entries"].append(dup)
+    await memory_store.save_memory(wid, cid, st)
+    monkeypatch.setattr(
+        memory_store, "_fold_call",
+        _fold_stub([], groups=[{"label": "线", "members": [0, 2]}]))
+    await memory_store._maybe_fold(wid, cid)
+    st = memory_store.load_memory(wid, cid)
+    copies = [e for e in st["entries"]
+              if (e.get("anchor") or {}).get("seq") == 0]
+    assert len(copies) == 2
+    assert all(e.get("upper") for e in copies),         "同 seq 复本必须随成员一起挂 upper——只降层不挂父会造 I4 孤条"
+    assert all(int(e.get("level") or 1) == 2 for e in copies)

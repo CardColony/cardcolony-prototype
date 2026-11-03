@@ -346,6 +346,8 @@ _REVIEW_DDL: tuple[str, ...] = (
     draft_ver    INTEGER NOT NULL DEFAULT 0,
     ts           TEXT DEFAULT '',
     revoked      INTEGER DEFAULT 0,
+    verdict      TEXT,
+    draft_snapshot TEXT,
     PRIMARY KEY (work_id, batch_id, role_id)
 )""",
     "CREATE INDEX IF NOT EXISTS idx_review_appr_batch"
@@ -958,6 +960,13 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     # ⇒ 读侧归一成空串 ⇒ 非评审卡）。评审卡不设 parent，靠本列与子卡一对一配对。
     ("cards", "review_of", "review_of TEXT"),
     ("cards", "review_state", "review_state TEXT"),
+    # [评审真票 2026-10-31 · venue 对齐] verdict=票型（approve/reject，upsert 后票
+    # 覆盖前票——先通过又不通过＝不通过）；draft_snapshot=批准时草稿原文
+    # （promote 版本闸的 stale 判据与「只评增量」diff 的原料）。
+    # 老库补列不带 DEFAULT：存量票 verdict=NULL ⇒ 读侧按 approve 归一（历史上
+    # 有票即通过），行为与改前一致。
+    ("review_approvals", "verdict", "verdict TEXT"),
+    ("review_approvals", "draft_snapshot", "draft_snapshot TEXT"),
     # [卡片笔记 2026-10-27] 影子第五列：卡自己的私密笔记。
     ("shadows", "note", "note TEXT"),
 )
@@ -1100,6 +1109,9 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     _migrate_edges_from_cards(conn)
     # [三线拆开关 2026-10-27] 存量卡补 link_rel/unlink_rel（只加不减）
     _ensure_link_rel_perm(conn)
+    # [评审出口 2026-11-01] 存量卡补 respond_review（被评卡交回回应的能力；
+    # 该能力晚于一批卡的建卡时刻注册，它们的显式 abilities 清单里没有）
+    _ensure_respond_review_perm(conn)
     _migrate_inbox_to_messages(conn)
     _ensure_role_columns(conn)
     _ensure_function_columns(conn)
@@ -1983,6 +1995,11 @@ def edges_index(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             "SELECT from_card,to_card,kind,detail FROM card_relations ORDER BY rowid"):
         out.setdefault(r["from_card"], {}).setdefault("relations", []).append(
             {"target": r["to_card"], "kind": r["kind"], "detail": r["detail"]})
+        # [relations_in 2026-11-01 · 用户裁定「谁依赖我应该在 B 的卡面上，
+        # 需要知道的不只是 B」] 同一条边反向投影到目标卡：写入只有一份
+        # （声明方出边），读侧双向投影，不复制存储。
+        out.setdefault(r["to_card"], {}).setdefault("relations_in", []).append(
+            {"source": r["from_card"], "kind": r["kind"], "detail": r["detail"]})
     return out
 
 
@@ -2005,6 +2022,14 @@ def edges_of(conn: sqlite3.Connection, card_id: str) -> dict[str, Any]:
                 "ORDER BY rowid", (card_id,))]
     if rels:
         out["relations"] = rels
+    # [relations_in 2026-11-01] 反向投影「谁依赖我」——入边随卡面读侧走，
+    # 存储仍只有声明方出边一份。
+    rels_in = [{"source": x["from_card"], "kind": x["kind"], "detail": x["detail"]}
+               for x in conn.execute(
+                   "SELECT from_card,kind,detail FROM card_relations WHERE to_card=? "
+                   "ORDER BY rowid", (card_id,))]
+    if rels_in:
+        out["relations_in"] = rels_in
     return out
 
 
@@ -2124,33 +2149,80 @@ def clear_edges_of(conn: sqlite3.Connection, card_id: str) -> None:
 
 
 def _ensure_link_rel_perm(conn: sqlite3.Connection) -> None:
-    """存量卡补 `link_rel` / `unlink_rel`（2026-10-27 三条线拆开关）。
+    """存量卡补 `link_rel` / `unlink_rel` 能力（2026-10-27 三条线拆开关）。
 
-    改前 `link_rel`/`unlink_rel` 挂的是 `link`/`unlink`，有连线权的卡本来就能建
-    依赖线。拆成独立开关后要给它们补上，否则**功能倒退**（能建通信线却不能建依赖线）。
+    [能力底座 2026-11-01 重写] 原来搬的是 ``cards.perms`` 列——该列已随
+    perms 退役删除，此函数一度成了早退的死代码；而 ``permissions.json``
+    的卡型模板也没有补这两个开关 ⇒ ``abilities_for`` 挂载时被 perms 上限
+    滤掉 ⇒ **没有任何卡挂得上 link_rel 能力**。现在搬的是 ``abilities``
+    列（能力挂载的真实存处）。
 
-    **只加不减**：已有这两个开关的不动；没有 `link` 的也不加（它本来就不能连线）。
+    **只加不减**：abilities 里有 ``link`` 的卡补 ``link_rel`` + ``unlink_rel``
+    （有连线权的卡本来就能建依赖线，拆开不该让它失去这条能力）；没有的
+    不动。``function_profiles.abilities`` 同口径。
+    """
+    for table, key_col in (("cards", "card_id"),
+                           ("function_profiles", "function_id")):
+        try:
+            cols = {r["name"] for r in conn.execute(
+                f"PRAGMA table_info({table})")}
+            if "abilities" not in cols:
+                continue
+            rows = list(conn.execute(
+                f"SELECT {key_col}, abilities FROM {table} "
+                "WHERE abilities IS NOT NULL AND abilities <> ''"))
+        except sqlite3.Error:
+            continue
+        for r in rows:
+            try:
+                ab = json.loads(r["abilities"])
+            except Exception:  # noqa: BLE001 坏 abilities 跳过，不动它
+                continue
+            if not isinstance(ab, list) or "link" not in ab:
+                continue
+            changed = False
+            for code in ("link_rel", "unlink_rel"):
+                if code not in ab:
+                    ab.append(code)
+                    changed = True
+            if changed:
+                conn.execute(
+                    f"UPDATE {table} SET abilities=? WHERE {key_col}=?",
+                    (json.dumps(ab, ensure_ascii=False), r[key_col]))
+
+
+def _ensure_respond_review_perm(conn: sqlite3.Connection) -> None:
+    """存量卡补 `respond_review` 能力（评审出口工具 submit_revision 的挂载件）。
+
+    [2026-11-01] `respond_review` 注册时 modes 表的 sub_project/topic 上限
+    已带它——**新卡**由 ``abilities_for`` 正常挂载；但一批存量卡的
+    ``abilities`` 列是建卡时刻的显式清单，早于该能力注册 ⇒
+    ``_abilities_of`` 照清单原样返回 ⇒ 被评卡永远看不见 submit_revision，
+    只能干瞪着评审场指令「改完调 submit_revision」。
+
+    **只加不减**：abilities 里有 ``open_review`` 的卡补 ``respond_review``
+    （能开评的卡就是会被评的卡——开评闸限自开，target==opener）；职能档案
+    是评审席不是被评对象，不补。
     """
     try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(cards)")}
+        if "abilities" not in cols:
+            return
         rows = list(conn.execute(
-            "SELECT card_id, perms FROM cards "
-            "WHERE perms IS NOT NULL AND perms <> ''"))
+            "SELECT card_id, abilities FROM cards "
+            "WHERE abilities IS NOT NULL AND abilities <> ''"))
     except sqlite3.Error:
-        # [能力底座 2026-10-30] perms 列已删 ⇒ 这条 perms 时代的搬迁到此为止。
         return
     for r in rows:
         try:
-            perms = json.loads(r["perms"])
-        except Exception:  # noqa: BLE001 坏 perms 跳过，不动它
+            ab = json.loads(r["abilities"])
+        except Exception:  # noqa: BLE001 坏 abilities 跳过，不动它
             continue
-        if not isinstance(perms, list) or "link" not in perms:
+        if not isinstance(ab, list) or "open_review" not in ab:
             continue
-        changed = False
-        for sw in ("link_rel", "unlink_rel"):
-            if sw not in perms:
-                perms.append(sw)
-                changed = True
-        if changed:
-            conn.execute(
-                "UPDATE cards SET perms=? WHERE card_id=?",
-                (json.dumps(perms, ensure_ascii=False), r["card_id"]))
+        if "respond_review" in ab:
+            continue
+        ab.append("respond_review")
+        conn.execute(
+            "UPDATE cards SET abilities=? WHERE card_id=?",
+            (json.dumps(ab, ensure_ascii=False), r["card_id"]))

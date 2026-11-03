@@ -227,4 +227,96 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     prior_dump = json.dumps(payload["prior_messages"], ensure_ascii=False)
     assert "影子正文" * 50 in prior_dump
     # big 内容经 JSON 转义（\n→\\n）入账，按无换行的行内容计数（T1 原文 1.2 万行＋T4 两行）
+    # prompt 日志吃**原列表**（投影不改写，日志记真身）⇒ 全量在场。
     assert prior_dump.count("行内容一二三四五六七八九十") >= 12000
+    # [2026-11-02 · card_021 实案] 但**发给模型的 wire** 是投影：330KB 单条
+    # 结果超硬顶 60000 字符 ⇒ 只带头段＋截断提示（该形态即撞穿窗口的原型）。
+    wire_dump = json.dumps(captured_wires[-1], ensure_ascii=False)
+    _line_hits = wire_dump.count("行内容一二三四五六七八九十")
+    assert 3000 <= _line_hits < 12000, _line_hits
+    assert "仅展示前" in wire_dump
+
+
+# ---------------------------------------------------------------------------
+# 回合内 wire 顶（2026-11-02 · card_021 实案）
+# ---------------------------------------------------------------------------
+
+
+def _big_round(slot, call_id: str, content: str):
+    """开一轮带一个大工具结果的轮。"""
+    slot.begin_round({"role": "assistant", "content": "",
+                      "tool_calls": [{"id": call_id, "type": "function",
+                                      "function": {"name": "read_card",
+                                                   "arguments": "{}"}}]})
+    slot.append_tool_result({"role": "tool", "tool_call_id": call_id,
+                             "content": content})
+
+
+def test_wire_dedup_identical_large_results():
+    """同回合逐字节相同的大结果：仅最新一份留全文，旧位换成一行指引。"""
+    messages: list[dict] = []
+    slot = ToolTurnSlot(messages)
+    big = "需求文档全文" * 5000                    # 3.5 万字符 > dedup_min
+    _big_round(slot, "call_a", big)
+    _big_round(slot, "call_b", big)               # 与 call_a 逐字节相同
+    _big_round(slot, "call_c", "另一份" * 3000)
+    wire = _sync_wire(slot)
+    assert wire is not messages                   # 投影生效 ⇒ 副本
+    tool_msgs = [m for m in wire if m["role"] == "tool"]
+    assert len(tool_msgs) == 3                    # 条数不动（配对不破）
+    # 旧出现位变指引、指向最新一份的 tool_call_id
+    assert "完全相同" in tool_msgs[0]["content"]
+    assert "call_b" in tool_msgs[0]["content"]
+    assert tool_msgs[0]["content"].startswith("[")
+    # 最新一份仍是全文
+    assert tool_msgs[1]["content"] == big
+    assert tool_msgs[2]["content"] == "另一份" * 3000
+    # tool_call_id 配对保留；原列表零改写
+    assert tool_msgs[0]["tool_call_id"] == "call_a"
+    assert messages[1]["content"] == big         # call_a 的结果（原样）
+    assert messages[3]["content"] == big         # call_b 的结果（原样）
+
+
+def test_wire_single_result_hard_cap():
+    """单条怪物结果（>60000 字符）只带头上 wire——一次就够撞窗。"""
+    messages: list[dict] = []
+    slot = ToolTurnSlot(messages)
+    huge = "x" * 200000
+    _big_round(slot, "call_h", huge)
+    wire = _sync_wire(slot)
+    assert wire is not messages
+    content = wire[1]["content"]
+    assert content.startswith("x" * 100)
+    assert "仅展示前" in content
+    assert len(content) < 70000
+    assert messages[1]["content"] == huge         # 原文不动
+
+
+def test_wire_budget_omits_old_rounds(monkeypatch):
+    """累计超预算：旧轮先截头、仍超整段省略；最新轮最后才动。"""
+    monkeypatch.setenv("WIRE_BUDGET_CHARS", "6000")
+    monkeypatch.setenv("WIRE_OLD_RESULT_CHARS", "800")
+    messages: list[dict] = []
+    slot = ToolTurnSlot(messages)
+    _big_round(slot, "call_1", "甲" * 4000)       # 旧轮：先截 800
+    _big_round(slot, "call_2", "乙" * 4000)       # 旧轮：预算不足 ⇒ 省略
+    _big_round(slot, "call_3", "丙" * 4000)       # 最新轮：保持全文
+    wire = _sync_wire(slot)
+    t = [m["content"] for m in wire if m["role"] == "tool"]
+    assert t[2] == "丙" * 4000                    # 最新轮完整
+    assert t[0] != "甲" * 4000 and "需要原文" in t[0] or "已省略" in t[0]
+    assert ("仅保留前" in t[0]) or ("已省略" in t[0])
+    assert ("仅保留前" in t[1]) or ("已省略" in t[1])
+    total = sum(len(c) for c in t)
+    assert total <= 6000 + 4000                   # 预算约束生效（最新轮可超额豁免）
+    assert messages[1]["content"] == "甲" * 4000  # 原列表零改写
+
+
+def test_wire_small_identical_results_not_deduped():
+    """小的相同结果不去重——指引比原文还长，无意义。"""
+    messages: list[dict] = []
+    slot = ToolTurnSlot(messages)
+    tiny = '{"ok": true}'
+    _big_round(slot, "call_a", tiny)
+    _big_round(slot, "call_b", tiny)
+    assert _sync_wire(slot) is messages           # 零加工 ⇒ 同对象

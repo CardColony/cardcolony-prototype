@@ -1,31 +1,32 @@
 {
  "_meta": {
   "title": "harness 条件集（值班员）",
-  "version": 1,
-  "updated": "2026-10-28",
-  "desc": "每条策略＝一个值班员。他不翻台账：事情一发生就送到他手上，他往自己的小本子上记一笔；账凑够条件就喊人，喊完把本子撕了重记。",
+  "version": 3,
+  "updated": "2026-11-01",
+  "desc": "每条策略＝一个值班员。他不翻台账：事情一发生就送到他手上，他往自己的小本子上记一笔；账凑够条件就喊人，喊完把本子撕了重记。[2026-10-31 两代并轨] 旧规则表（harness_rules.json）退役，本表是唯一的策略配置。",
   "schema": {
    "id": "策略名，唯一",
    "active": "是否激活。只有激活的才挂本子、才被喂事件；停用就摘掉，零成本",
    "desc": "人话说明（触发记录里会带上）",
    "scope.kind": "本子挂在谁身上：card=一张卡｜relation=一对父子｜work=整个 work",
-   "watch": "只关心哪几类事件。**绝不要把 `done` 当任务完成**——done 是每轮的收口（说一句话也算一轮），拿它当锚点等于要求模型每轮都汇报。至于「阶段完成」到底以什么为准，**尚未定论**，定下来再往这里填。",
+   "watch": "本子只收 watch 列的类型——when 里要查的类型（含锚点/期望/否定）都得列进来；triggerable=false 的类型（tool_result、run_start、harness_message…）也能 watch。注意：绝不要把 done 当任务完成——done 是每轮的收口，拿它当锚点等于要求模型每轮都汇报。",
    "window": "时间窗：24h / 7d / 90m / none。超窗的老账在下次记账时惰性划掉",
-   "when": "条件树：all/any/not/event/count/field/after，可任意嵌套。after＝「最近一次 anchor 之后没有 expect」，用来表达先后关系（「干完了没汇报」必须用它——用「窗口内没有汇报」会让上一轮的汇报把这一轮盖住）",
-   "then": "触发后做什么：target=发到谁（self/parent/ancestors/links/card:<id>）、message=说什么、wake=要不要叫醒"
+   "when": "条件树：all/any/not/event/count/field/after，可任意嵌套。after＝「最近一次 anchor 之后没有 expect」，表达先后关系（「干完了没汇报」必须用它——用「窗口内没有汇报」会让上一轮的汇报把这一轮盖住）。触发事实本体在 ctx.trigger_data（零件已拍平为顶层键），when 里可用 {\"field\":\"trigger_data.x\"} 读；where 值里 $card/$parent 代入本卡字段。",
+   "then": "触发后做什么：target=发到谁（self/parent/ancestors/links/card:<id>/event:<路径>——event: 从触发事实取卡号，如 event:target）；message=说什么，占位符 {card_id}/{card_title}/{card_type}/{parent}/{trigger_type} 与 {event.<路径>}（取触发事实字段）；wake=要不要叫醒；mode=message(默认，写会话历史)｜inject(塞进下一轮提示词，一次性)｜continue(叫醒评审卡跑下一步——暂时只对评审卡开放)；或 deploy={function=职能code或fn号(可用event:路径),venue=场(event:路径),venue_kind=场型(deploy/…),mandate=差事文(同message占位符),wake=落账后要不要叫进场,exit_kind=退出规格}——部署差事：落差事账＋职能带mandate进该场跑一轮，不送话"
   },
   "semantics": {
    "why_scope_matters": "「父卡对子卡做了什么」的状态不挂在某一张卡上，而是挂在每一对 (父, 子) 上。新子卡建出来自动多一本空本子。",
    "why_clear_after_fire": "触发后该作用域的本子归零、窗口重置到此刻。只撕那一本，别的本子不动；清零本身防了重复触发，所以原来的防重表退役。",
    "why_no_timer": "超窗的账在下次记账时顺手划掉。没有事件时本子不动也不需要动——这就是零墙钟要的样子。",
-   "why_seed": "新建/激活一条策略时，从数据集回溯它的窗口把本子补记好；补完若已满足就立刻触发，不用等下一个事件。"
+   "why_seed": "新建/激活一条策略时，从数据集回溯它的窗口把本子补记好；补完若已满足就立刻触发，不用等下一个事件。",
+   "why_trigger_data": "触发这次求值的那条事实整体透传进 ctx.trigger_data：投递侧靠它解析 event: 目标与 {event.*} 占位符；求值侧靠 {\"field\":\"trigger_data.x\"} 做字段判据（与 event 节点的 where 等价，选顺手的写）。求值 ctx 故意不放 trigger_type——放了会让 within:\"turn\" 的窗口把触发事实本身跳过去。"
   }
  },
  "policies": [
   {
    "id": "review_step_not_finished",
    "active": true,
-   "desc": "评审这一步自己说「还有活」（continued=true）⇒ 接着跑下一步。「模型不可用」这类到站（continued=false）不续，免得无限重试挂掉的模型。",
+   "desc": "评审说「还有活」⇒ 接着跑下一步。两个事实任一即活：本步自己报 continued=true（席位回合跑成）；或状态侧仍有下一步（has_next=true，如票齐了待派活——席位回合崩了也照派，派活不依赖模型）。两路都不到才到站。",
    "scope": {
     "kind": "card"
    },
@@ -34,12 +35,83 @@
    ],
    "window": "none",
    "when": {
+    "any": [
+     {
+      "event": {
+       "types": [
+        "review_round_done"
+       ],
+       "where": {
+        "continued": true
+       },
+       "within": "turn"
+      }
+     },
+     {
+      "event": {
+       "types": [
+        "review_round_done"
+       ],
+       "where": {
+        "has_next": true
+       },
+       "within": "turn"
+      }
+     }
+    ]
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）评审还没结束，继续跑下一步。"
+   }
+  },
+  {
+   "id": "review_target_responded",
+   "active": true,
+   "desc": "正卡调了 submit_revision 交回本轮 ⇒ 叫评审场跑下一步（responded_seq 已涨，否决席可被重叫）。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_target_responded"
+   ],
+   "window": "none",
+   "when": {
     "event": {
      "types": [
-      "review_round_done"
+      "review_target_responded"
+     ],
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）正卡已交回本轮回应，评审继续。"
+   }
+  },
+  {
+   "id": "review_target_turn_end_continue",
+   "active": true,
+   "desc": "正卡回合【正常收口】且 ask 未清（干了别的没调 promote_draft/submit_revision——ask 被消费但没成果）⇒ 叫评审场跑下一步，classify 的消费检测决定补唤醒还是到站。失败/取消的回合不点火：崩掉的回合不是「正卡的回应」，ask 继续挂账等真回应（work_027 card_021 实证：outcome=ok 假账曾把上下文超限的败仗当 done 点着评审场）。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_target_turn_end"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "review_target_turn_end"
      ],
      "where": {
-      "continued": true
+      "pending_ask": true,
+      "outcome": "ok"
      },
      "within": "turn"
     }
@@ -48,7 +120,33 @@
     "target": "self",
     "mode": "continue",
     "wake": true,
-    "message": "（续接）评审还没结束，继续跑下一步。"
+    "message": "（续接）正卡回合已正常结束且评审 ask 未清，评审继续。"
+   }
+  },
+  {
+   "id": "review_draft_drift_continue",
+   "active": true,
+   "desc": "promote_draft 撞版本闸（有席位批的是旧版）⇒ 叫评审场跑下一步——只给 stale 批准席补「只评增量」确认轮。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_draft_drift"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "review_draft_drift"
+     ],
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）有席位批准的是旧版草稿，请他们只评增量确认。"
    }
   },
   {
@@ -77,7 +175,179 @@
     "target": "self",
     "mode": "continue",
     "wake": true,
-    "message": "（续接）评审已全员通过，但正稿还没写。请调 promote_draft 把草稿转成正稿。"
+    "message": "（续接）评审已全员通过，但正稿还没写。请调 promote_draft 把草稿转成正稿。",
+    "matter": {
+     "kind": "review_promote",
+     "key": "event:batch",
+     "check_on": [
+      "card_block_edited",
+      "review_batch_closed",
+      "tool_result"
+     ]
+    }
+   }
+  },
+  {
+   "id": "turn_end_without_report",
+   "active": false,
+   "desc": "（S0 校正停用·2026-10-31）done 是每轮收口不是任务完成——拿它当锚点等于要求模型每轮都汇报，与用户裁定冲突。业务交付检查等「明确的交付协议」落地后再接管；本策略保留备查。原语义：一轮 done 收口但没调 report_up ⇒ 提醒汇报。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "run_start",
+    "done",
+    "tool_result",
+    "msg_directive",
+    "harness_message"
+   ],
+   "window": "none",
+   "when": {
+    "all": [
+     {
+      "event": {
+       "types": [
+        "done"
+       ],
+       "where": {
+        "card_type": {
+         "in": [
+          "coder",
+          "sub_project",
+          "topic"
+         ]
+        }
+       },
+       "within": "turn"
+      }
+     },
+     {
+      "not": {
+       "event": {
+        "types": [
+         "tool_result"
+        ],
+        "where": {
+         "tool": "report_up",
+         "ok": true
+        },
+        "within": "turn"
+       }
+      }
+     },
+     {
+      "any": [
+       {
+        "event": {
+         "types": [
+          "msg_directive"
+         ],
+         "where": {
+          "from": "$parent"
+         }
+        }
+       },
+       {
+        "event": {
+         "types": [
+          "harness_message"
+         ],
+         "where": {
+          "rule_id": "turn_end_without_report"
+         }
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "self",
+    "mode": "message",
+    "wake": true,
+    "message": "你这一轮正常完成了所有动作，但没有向上汇报。父卡看不到你写在对话里的内容——请调 report_up(kind=done)，把结果、证据与遗留交给父卡。"
+   }
+  },
+  {
+   "id": "child_created_needs_mission",
+   "active": false,
+   "desc": "（示例，默认停用）新子卡建出来后还没写过卡块 ⇒ 提醒父卡给它写目标与要求。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "card_created",
+    "card_block_edited"
+   ],
+   "window": "none",
+   "when": {
+    "all": [
+     {
+      "event": {
+       "types": [
+        "card_created"
+       ],
+       "where": {
+        "card_type": {
+         "in": [
+          "sub_project",
+          "topic",
+          "coder"
+         ]
+        }
+       },
+       "within": "turn"
+      }
+     },
+     {
+      "not": {
+       "event": {
+        "types": [
+         "card_block_edited"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "then": {
+    "target": "parent",
+    "mode": "message",
+    "wake": true,
+    "message": "新子卡 {card_id} 建出来了，卡面还是空的——给它写上目标与要求。"
+   }
+  },
+  {
+   "id": "staff_pm_draft_on_card_created",
+   "active": false,
+   "desc": "新子卡建出 ⇒ 注入指令让**模型自己**召 PM 执笔：harness 只管时机（建卡后缺需求文档），召唤动作归卡——它调 create_deploy_card(function=pm) 建执笔卡，PM 进场写需求文档草稿；落笔自动收工、结论回执到本卡。差事卡挂树下可见、过程隔离在执笔卡会话。[2026-11-01 改：harness 递话不派活——卡自己召唤]",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "card_created"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "card_created"
+     ],
+     "where": {
+      "card_type": {
+       "in": [
+        "sub_project"
+       ]
+      }
+     },
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "message",
+    "wake": true,
+    "message": "（指令）本卡还没有需求文档。召产品经理来写：调 create_deploy_card(function=\"pm\", task=\"为这张卡写需求文档——按本卡使命把功能按愿景定义成可验收的需求：每条判得出做到没做到、边界与异常写清、拿不准的前提标【待确认】\")——它会建一张执笔卡进场写，写完自动收工，草稿落本卡面。"
    }
   }
  ]

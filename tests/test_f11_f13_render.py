@@ -65,19 +65,59 @@ def test_f11_orphan_l2_rendered_at_tail():
     assert "未挂父的细节" in text
 
 
-def test_f11_folded_member_renders_as_l2_under_fold_node():
-    """F2 归拢降层后：成员（level=2）作为新锚点的细节在近期段照出。"""
+def test_f11_folded_member_hidden_when_digest_not_recent():
+    """[2026-11-01 · 修批号污染] fold digest（合成锚点 ≥1e9）永不属「近期批」——
+    否则它降下去的成员会以 L2 细节层弹回基线，归拢刚减的体积立刻回涨。
+    降层成员只在链上保追溯（memory_expand 可达），不进常驻基线。"""
     rows = [
         _row("w/c/B0002/0001", 2, 1, "归拢新结论", anchor_seq=1000000000),
         _row("w/c/B0001/0001", 1, 2, "旧结论甲", level=2,
              upper_id="w/c/B0002/0001", anchor_seq=1, process="旧经过"),
     ]
     text = context_regions.render_memory_region(rows)
-    assert "归拢新结论" in text
-    assert "旧结论甲" in text, "降层成员仍可见（挂在归拢锚点下）"
-    assert "旧经过" in text
-    # 顶层判据＝level==1：旧结论不再作顶层散条
-    assert text.count("旧结论甲") == 1
+    assert "归拢新结论" in text, "digest 本体仍是顶层 L1，出远期"
+    assert "旧结论甲" not in text and "旧经过" not in text, \
+        "digest 非近期 ⇒ 降层成员不弹回细节层"
+    assert "近期" not in text
+
+
+def test_f11_digest_batch_does_not_steal_recent_from_native():
+    """[2026-11-01] 「最近一批」只算原生凝练批：digest 批号更高也不许抢——
+    原生最新批的 L2 细节照常出，digest 沉到远期。"""
+    rows = [
+        _row("w/c/B0009/0001", 9, 1, "线程摘要", anchor_seq=1000000000,
+             timeline_from="2026-10-01T00:00:00"),
+        _row("w/c/B0010/0001", 10, 1, "最新批结论", anchor_seq=50),
+        _row("w/c/B0010/0001/d", 10, 2, "最新批细节", level=2,
+             upper_id="w/c/B0010/0001", process="细节正文"),
+    ]
+    text = context_regions.render_memory_region(rows)
+    assert "### 近期（批0010" in text
+    assert "最新批细节" in text and "细节正文" in text, "原生最新批 L2 照常"
+    assert "线程摘要" in text, "digest 出远期段"
+    assert text.index("线程摘要") < text.index("近期"), \
+        "digest 在远期段（按 timeline_from 排，不回近期）"
+
+
+def test_f11_older_sorted_by_timeline_from():
+    """[2026-11-01] 远期排序看内容年代（timeline_from）而非流水批号——
+    digest 讲的是它吸收的那段历史，插回对应年代；无 timeline 沉底。"""
+    rows = [
+        _row("w/c/B0005/0001", 5, 1, "digest述史", anchor_seq=1000000000,
+             timeline_from="2026-10-01T00:00:00"),
+        _row("w/c/B0001/0001", 1, 1, "十月旧结论", anchor_seq=1,
+             timeline_from="2026-10-02T00:00:00"),
+        _row("w/c/B0002/0001", 2, 1, "无时间结论", anchor_seq=7),
+        _row("w/c/B0003/0001", 3, 1, "近期批结论", anchor_seq=9),
+    ]
+    text = context_regions.render_memory_region(rows)
+    # 批3 为最近原生批 → 远期＝{digest(10-01), 十月旧结论(10-02), 无时间结论(沉底)}
+    i_dg = text.index("digest述史")
+    i_old = text.index("十月旧结论")
+    i_nt = text.index("无时间结论")
+    i_recent = text.index("近期批结论")
+    assert i_dg < i_old < i_nt < i_recent, \
+        "远期段按 timeline_from 排：digest 回内容年代、无 timeline 沉底"
 
 
 def test_f11_sunk_still_renders_in_baseline():
@@ -261,16 +301,89 @@ async def test_f8_breaker_on_consecutive_real_failures(sandbox, monkeypatch):
 
 
 def test_f8_no_wallclock_no_kill():
-    """[防回魂 · 用户令「根本不需要墙钟」「杀进程任务就完成了？」] 容错层里
-    不许再出现判死钟/杀任务——慢不是故障，真断连 socket 会抛（反馈）。"""
+    """[防回魂 · 用户令「根本不需要墙钟」] 容错层不许按**已等待时长**杀
+    任务/加总时长墙钟——慢不是故障。
+    [2026-11-01 · card_074 实证订正] 「真断连 socket 会抛」的前提被证伪：
+    上游哑掉但 TCP 假活时永远等不到异常（实测 17min+）。判死依据改成
+    **零帧信号本身**（无帧时长=信息反馈，不是计时猜测）：帧还在流永不触发，
+    零帧超阈才取消调用、走重试梯——慢与死的分界是帧，不是钟。"""
     import inspect
     from src.storage import memory_store as ms
-    src = open(ms.__file__, encoding="utf-8").read()
-    assert "CONDENSE_SILENCE_DEATH" not in src, "静默判死钟不得回魂"
-    assert "call_task.cancel" not in src, "机械杀任务不得回魂"
     body = inspect.getsource(ms._guarded_model_call)
-    assert ".cancel()" not in body
+    assert "asyncio.wait_for" not in body, "总时长墙钟不许回魂"
     assert "asyncio.wait" in body, "观测循环在场（纯状态汇报）"
+    assert "_stall_sec()" in body and "call_task.cancel()" in body, \
+        "无帧判死在场（零帧超阈才取消——不是按时长）"
+
+
+async def test_f8_stall_judged_dead_and_retried(sandbox, monkeypatch):
+    """[card_074 实证] socket 假活：调用开始后零帧 ⇒ 判死、取消挂起调用、
+    计可重试失败进梯重发；连续熔断阈值 ⇒ 熔断本批。"""
+    import asyncio as _aio
+    from src.storage import memory_store as ms
+    monkeypatch.setenv("CONDENSE_STALL_SEC", "0.05")
+    monkeypatch.setattr(ms, "CONDENSE_OBSERVE_LOG_SEC", 0.01)
+    monkeypatch.setattr(ms, "CONDENSE_CALL_BACKOFF_SEC", 0)
+    calls = {"n": 0}
+    cancelled = {"n": 0}
+
+    async def hang(on_chunk, trace_id):
+        calls["n"] += 1
+        try:
+            await _aio.Event().wait()          # 永不产帧——socket 假活模拟
+        except _aio.CancelledError:
+            cancelled["n"] += 1
+            raise
+        return ({"content": "x"}, "m")
+
+    with pytest.raises(RuntimeError, match="熔断"):
+        await ms._guarded_model_call(hang, work_id="w", card_id="c", stage="t")
+    assert calls["n"] == ms.CONDENSE_BREAKER_THRESHOLD
+    assert cancelled["n"] == ms.CONDENSE_BREAKER_THRESHOLD
+
+
+async def test_f8_frames_flowing_never_killed(sandbox, monkeypatch):
+    """慢≠死：每帧间隔低于阈值、但**一直在产帧** ⇒ 总耗时已超阈也不触发
+    判死，调用正常返回。"""
+    import asyncio as _aio
+    from src.storage import memory_store as ms
+    monkeypatch.setenv("CONDENSE_STALL_SEC", "0.05")
+    monkeypatch.setattr(ms, "CONDENSE_OBSERVE_LOG_SEC", 0.01)
+
+    async def slow_ok(on_chunk, trace_id):
+        for _ in range(10):
+            await _aio.sleep(0.02)              # 总 0.2s > 阈 0.05s
+            on_chunk("x")                       # 但帧一直在流
+        return ({"content": "ok", "tool_calls": []}, "m")
+
+    out = await ms._guarded_model_call(slow_ok, work_id="w", card_id="c", stage="t")
+    assert out.get("content") == "ok"
+
+
+async def test_f8_pipeline_calls_detach_stream_ctx(sandbox):
+    """[2026-11-01 凝练流泄露实案] 管线调用不许继承卡回合的逐字流归属——
+    回合末 create_task 会复制 contextvar，凝练/归拢的模型帧曾被归到该卡
+    名下：reasoning 落对话流（card_104 的 L2 生成过程混进推理区）、
+    content 帧进实时 token 流。判据：调用内 current_stream_context()==None；
+    出壳后调用方上下文原样还原。"""
+    from src.api import event_stream as _es
+    from src.storage import memory_store as ms
+    seen: list = []
+    tok = _es.set_stream_context("w_outer", "card_x")   # 模拟卡回合在途
+
+    async def probe(on_chunk, trace_id):
+        seen.append(_es.current_stream_context())
+        return ({"content": "ok", "tool_calls": []}, "m")
+
+    try:
+        out = await ms._guarded_model_call(probe, work_id="w", card_id="c", stage="t")
+        restored = _es.current_stream_context()           # 出壳即还原
+    finally:
+        _es.reset_stream_context(tok)
+    assert out.get("content") == "ok"
+    assert seen == [None], f"管线调用必须脱钩，实际拿到 {seen}"
+    assert restored == ("w_outer", "card_x"), f"调用方上下文未还原: {restored}"
+    assert _es.current_stream_context() is None          # 外层已随 reset 还原
 
 
 async def test_f8_truncation_raises_signal(sandbox, monkeypatch):
@@ -319,12 +432,9 @@ async def test_fold_step_cache_resume_pays_no_twice(sandbox, work, monkeypatch):
 
     async def fake_fold(system, user, tools=None, **_):
         calls["n"] += 1
-        if "只转填" in system:
-            return {"tool_calls": [{"name": "apply_folds",
-                                    "arguments": {"merges": []}}]}
-        if "凝练合并" in system:
-            return {"content": "细看材料：无可合并。"}
-        return {"content": "看了看，结论：无合并"}
+        if "线程综合" in system:
+            return {"content": "【不合并】细看材料：无可合并。"}
+        return {"content": "看了看。\n结论：无合并"}
 
     monkeypatch.setattr(memory_store, "_fold_call", fake_fold)
     await memory_store._maybe_fold(wid, cid)
@@ -383,17 +493,17 @@ def tl_L2():
     return tl.L2_PROMPT
 
 
-async def test_singleflight_release_knob(sandbox, work, monkeypatch):
-    """[自愈旋钮 · 二轮审计] 持有者在途调用超阈值无帧 ⇒ **只放锁不杀任务**；
-    默认关（0）＝纯观测。"""
+async def test_flying_release_knob(sandbox, work, monkeypatch):
+    """[自愈旋钮 · 二轮审计] 持有者在途调用超阈值无帧 ⇒ **只放位不杀任务**；
+    默认关（0）＝纯观测。[2026-11-02] 单飞→有界并发：按持有者逐位生效。"""
     import asyncio as _aio
     from src.storage import memory_store as ms
 
     wid, cid = work["work_id"], work["work_card_id"]
-    # 占住单飞＋伪造持有者账
-    monkeypatch.setattr(ms, "_GLOBAL_FLYING", True)
-    monkeypatch.setattr(ms, "_FLYING_HOLDER",
-                        {"work": wid, "card": cid, "since": __import__("time").time() - 999})
+    # 并发位钳 1＋占住＋伪造持有者账（超阈无帧 999s）
+    monkeypatch.setenv("CONDENSE_PARALLEL", "1")
+    ms._FLYING.clear()
+    ms._FLYING[(wid, cid)] = __import__("time").time() - 999
     # 台账里塞一条挂死的在途调用（无帧 999s）
     from src.infra import observe as _obs
     _obs.call_begin("tr-stuck", caller="condense:batch1", work_id=wid,
@@ -402,29 +512,72 @@ async def test_singleflight_release_knob(sandbox, work, monkeypatch):
     _obs._INFLIGHT["tr-stuck"]["started"] = __import__("time").time() - 999
 
     await memory_store.save_memory(wid, cid, {"card_id": cid, "mark": 0, "entries": []})
-    # 空卡过不了触发线 ⇒ 钳 K=0 强制走到单飞分支
+    # 空卡过不了触发线 ⇒ 钳 K=0 强制走到并发位分支
     monkeypatch.setattr(ms, "trigger_k_tokens", lambda: 0)
     events = []
     monkeypatch.setattr("src.api.event_stream.emit",
                         lambda w, c, t, d=None: events.append((w, c, t, d)) or {"seq": 1})
-    # [处置 · 默认 900s] 挂死 999s > 900 ⇒ 放锁 + 报错给用户
+    # [处置 · 默认 900s] 挂死 999s > 900 ⇒ 放位 + 报错给用户
     await ms.condense_turn_end(wid, cid)
-    assert ms._GLOBAL_FLYING is False, "超阈值 ⇒ 只放锁"
+    assert (wid, cid) not in ms._FLYING or ms._FLYING[(wid, cid)] > \
+        __import__("time").time() - 60, "超阈值 ⇒ 旧位已放"
     assert "tr-stuck" in _obs._INFLIGHT, "挂住的任务本体不被杀"
     assert any(t == "error" and "挂死" in str(d.get("error")) for _w, _c, t, d in events),         "挂死处置必须报错给用户（事件面）"
     _obs.call_end("tr-stuck")
 
-    # 阈值调 0＝关（纯观测）：不放锁
-    ms._GLOBAL_FLYING = True
-    ms._FLYING_HOLDER.update({"work": wid, "card": cid, "since": __import__("time").time()})
+    # 阈值调 0＝关（纯观测）：不放位——再来一张卡到线，位满且判不了 ⇒ 跳过
+    ms._FLYING.clear()
+    ms._FLYING[(wid, cid)] = __import__("time").time()
     _obs.call_begin("tr-stuck2", caller="condense:batch1", work_id=wid,
                     card_id=cid, seat="m", model="m")
     _obs._INFLIGHT["tr-stuck2"]["last_chunk"] = __import__("time").time() - 999
     _obs._INFLIGHT["tr-stuck2"]["started"] = __import__("time").time() - 999
     monkeypatch.setenv("CONDENSE_FLYING_RELEASE_SEC", "0")
-    await ms.condense_turn_end(wid, cid)
-    assert ms._GLOBAL_FLYING is True, "阈值 0 ⇒ 纯观测不放锁"
+    await ms.condense_turn_end(wid, "card_other_9")
+    assert (wid, cid) in ms._FLYING, "阈值 0 ⇒ 纯观测不放位"
     _obs.call_end("tr-stuck2")
+    ms._FLYING.clear()
+
+
+async def test_condense_parallel_allows_other_card(sandbox, work, monkeypatch):
+    """[2026-11-02 · card_154 实案] 有界并发：一个持有者不占满全部位——
+    第二张卡到线照常进管线（单飞时代这会饿死 16 次触发）。"""
+    from src.storage import memory_store as ms
+    wid = work["work_id"]
+    monkeypatch.setenv("CONDENSE_PARALLEL", "2")
+    ms._FLYING.clear()
+    ms._FLYING[("w_other", "card_busy")] = __import__("time").time()
+    cid = work["work_card_id"]
+    await memory_store.save_memory(wid, cid, {"card_id": cid, "mark": 0, "entries": []})
+    monkeypatch.setattr(ms, "trigger_k_tokens", lambda: 0)
+    ran = []
+    async def fake_pipeline(w, c, pending, mark):
+        ran.append((w, c))
+    monkeypatch.setattr(ms, "_run_condense_pipeline", fake_pipeline)
+    await ms.condense_turn_end(wid, cid)
+    assert ran == [(wid, cid)], "并发位未满 ⇒ 别卡持位不挡本卡"
+    assert (wid, cid) not in ms._FLYING, "跑完必须放位"
+    assert ("w_other", "card_busy") in ms._FLYING, "别人的持有位不动"
+    ms._FLYING.clear()
+
+
+async def test_condense_parallel_full_skips(sandbox, work, monkeypatch):
+    """[2026-11-02] 并发位真满（且无可放挂死位）⇒ 跳过留痕，不排队。"""
+    from src.storage import memory_store as ms
+    wid = work["work_id"]
+    monkeypatch.setenv("CONDENSE_PARALLEL", "1")
+    ms._FLYING.clear()
+    ms._FLYING[("w_other", "card_busy")] = __import__("time").time()
+    cid = work["work_card_id"]
+    await memory_store.save_memory(wid, cid, {"card_id": cid, "mark": 0, "entries": []})
+    monkeypatch.setattr(ms, "trigger_k_tokens", lambda: 0)
+    ran = []
+    async def fake_pipeline(w, c, pending, mark):
+        ran.append((w, c))
+    monkeypatch.setattr(ms, "_run_condense_pipeline", fake_pipeline)
+    await ms.condense_turn_end(wid, cid)
+    assert ran == [], "位满 ⇒ 跳过（N=1 时与原单飞同构）"
+    ms._FLYING.clear()
 
 
 async def test_fatal_model_error_reports_to_user(sandbox, work, monkeypatch):
@@ -472,7 +625,7 @@ async def test_fatal_model_error_reports_to_user(sandbox, work, monkeypatch):
 async def test_oversized_block_chunk_condensed(work, monkeypatch):
     """[超大单块处置 · 二版] 巨块**分块凝**：切段各走三段管线，锚点取 2e9 合成段、
     coveredSeqs 回填原块号、水位越过、不变量零违例——不再有"上块牌子不凝"的出口。"""
-    from _condense_stub import three_stage_stub
+    from tests._condense_stub import three_stage_stub
     wid, cid = work["work_id"], work["work_card_id"]
     giant = "巨块内容第×段。" * (memory_store.window_budget_tokens() * 2)   # 远超窗口
     window = [{"seq": 1, "actor": "assistant", "content": giant, "ts": "t"}]

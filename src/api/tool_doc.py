@@ -189,7 +189,8 @@ def render_section(names: list[str], docs: dict[str, ToolDoc]) -> str:
 _EVIDENCE: dict[tuple[str, str], tuple[str, ...]] = {
     ("sink", "session_block"): ("append_card_message", "session_facade.append"),
     ("sink", "inbox"): ("append_inbox",),
-    ("sink", "card"): ("update_card",),
+    # [差事卡 2026-11-01] 建卡也是写卡面事实：create_card 与 update_card 同属。
+    ("sink", "card"): ("update_card", "create_card"),
     # [影子精准编辑 2026-10-27] 影子的写入走 shadow_store，不经 card_store.update_card
     ("sink", "shadow"): ("write_section", "write_note"),
     ("wake", "True"): ("deliver_now", "_spawn_tracked"),

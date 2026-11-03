@@ -17,11 +17,11 @@
   "project": [
    "create_child",
    "curate",
+   "deploy_function",
    "edit_other_face",
    "finalize",
    "instruct",
    "interrupt",
-   "ledger",
    "link",
    "link_rel",
    "list_functions",
@@ -51,6 +51,7 @@
   ],
   "sub_project": [
    "create_child",
+   "deploy_function",
    "dispose_card",
    "edit_other_face",
    "finalize",
@@ -68,6 +69,7 @@
    "read_own_process",
    "reparent",
    "report_up_chain",
+   "respond_review",
    "set_child_mission",
    "set_criteria",
    "unlink",
@@ -105,7 +107,6 @@
    "create_child",
    "finalize",
    "instruct",
-   "ledger",
    "link",
    "link_rel",
    "manuscript",
@@ -127,6 +128,7 @@
   ],
   "topic": [
    "create_child",
+   "deploy_function",
    "dispose_card",
    "edit_other_face",
    "finalize",
@@ -144,6 +146,7 @@
    "read_own_process",
    "reparent",
    "report_up_chain",
+   "respond_review",
    "set_child_mission",
    "set_criteria",
    "unlink",
@@ -185,6 +188,33 @@
    "write_own_face",
    "write_process"
   ],
-  "rule": []
+  "rule": [],
+  "qa_card": [
+   "open_stage",
+   "read_card",
+   "read_linked",
+   "read_own_process"
+  ],
+  "pm_card": [
+   "open_stage",
+   "read_card",
+   "read_linked",
+   "read_own_process"
+  ],
+  "ui": [
+   "browser",
+   "finalize",
+   "notify",
+   "read_card",
+   "read_files",
+   "read_linked",
+   "read_own_process",
+   "report_up_chain",
+   "run_code",
+   "web",
+   "write_files",
+   "write_own_face",
+   "write_process"
+  ]
  }
 }

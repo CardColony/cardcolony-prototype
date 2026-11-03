@@ -57,14 +57,14 @@ def test_version_and_ontology():
     [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     auto 卡工具面件数变化）。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-18"  # [2026-10-31 F19] tc-17→tc-18（+memory_expand）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-19"  # [2026-11-01] tc-18→tc-19（sync schema 文案）
     assert "propose_status" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_REGISTRY["propose_status"].readonly is True
     assert "propose_status" in card_tools.TOOL_SWITCH
     assert "propose_status" in card_tools.OP_ONLY_TOOLS
     assert "status_update_task" in event_stream.EVENT_TYPES
-    # 本轮没动 system 提示词 ⇒ 版本号不动（版本纪律：只动 BASE_PROMPT 才升）
-    assert prompts.BASE_PROMPT_VERSION == "t27-2"
+    # 版本纪律：只动 BASE_PROMPT 才升。[事实分层 2026-11-01] 现值 t27-3
+    assert prompts.BASE_PROMPT_VERSION == "t27-5"
 
 
 # ════════════════════════════════════════════════════════════════════

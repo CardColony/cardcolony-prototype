@@ -11,7 +11,7 @@ import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=55";
 // [wb_exec 2026-10-23] 执行体块（纯函数，单独成模块以便单测）
-import { buildExecBackendHtml as buildExecBackendHtmlPure } from "./esm/exec_backend.js?v=3";
+import { buildExecBackendHtml as buildExecBackendHtmlPure } from "./esm/exec_backend.js?v=4";
 // [5715 · 抽模块] 卡间信的解析/剥头行与呈现都搬进 esm/flow/card-msg-node.js
 //   （原先在装配闭包里 ⇒ 不可单测）；此处不再需要 cardmsg.js 的解析件。
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
@@ -856,17 +856,22 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     if (isRoleCard && m.card_id && m.card_id !== "draft") {
       try { roleInfo = await API.getRole(WORK_ID, m.card_id); } catch (e) { roleInfo = null; }
     }
-    // [wb_exec 2026-10-23] coder 卡的**执行体选择**（谁干活）。
+    // [wb_exec 2026-10-23] **可委派卡**的**执行体选择**（谁干活）。
     // 未开工 ⇒ 显示 auto；开工后 ⇒ 显示实际路由到的（版本, 模型）。
-    const isCoderCard = m.card_type === "coder";
+    // ★★ 2026-11-04 用户令：「验收卡、pm卡，本质上应该和coder卡用一套路由机制，
+    //   而不是分开的」⇒ **卡型白名单放在后端**（exec-backend 接口回 `delegable`）
+    //   ⇒ 前端**不再硬编码 card_type === "coder"** ⇒ 验收卡/执笔卡
+    //   与 coder 卡**用同一个入口、同一个候选表、同一套路由**。
     let execInfo = null;
     let execSwitch = null;
-    if (isCoderCard && m.card_id && m.card_id !== "draft") {
+    if (m.card_id && m.card_id !== "draft") {
       try { execInfo = await API.getExecBackend(WORK_ID, m.card_id); } catch (e) { execInfo = null; }
-      // [总开关 2026-10-23 16:20] 全局手动开关（运行时生效，不用重启）
-      try { execSwitch = await API.getWbExecSwitch(); } catch (e) { execSwitch = null; }
+      if (execInfo && execInfo.delegable) {
+        // [总开关 2026-10-23 16:20] 全局手动开关（运行时生效，不用重启）
+        try { execSwitch = await API.getWbExecSwitch(); } catch (e) { execSwitch = null; }
+      }
     }
-    const execBackendHtml = (isCoderCard && execInfo)
+    const execBackendHtml = (execInfo && execInfo.delegable)
       ? buildExecBackendHtml(execInfo, execSwitch) : "";
 
     // [总裁制卡面定制 2026-10-24] 职能卡/职能化根卡 ⇒ 台账动态面(GET 响应的
@@ -2887,7 +2892,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const dmRuleFeedback = document.getElementById("draftFeedbackBtn");
     const dmRuleClose = document.getElementById("draftCloseBtn");
     const dmRuleX = document.getElementById("draftModalX");
-    let dmRule = null;   // { section, old, draft, baseHash, ruleCardId, busy }
+    // cardId+seq＝这条草案在时间线里的身份（驳回落痕要用）；commitAttempted/
+    // committed 区分关窗语义：拒绝＝驳回通知起草卡；落盘成功/已试过＝不再通知。
+    let dmRule = null;   // { sections: [{section, old, draft, baseHash}], busy, cardId, seq, commitAttempted, committed }
 
     function setRuleModalError(msg) {
       if (!dmRuleErr) return;
@@ -2895,19 +2902,30 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       else { dmRuleErr.textContent = ""; dmRuleErr.style.display = "none"; }
     }
 
-    function openRuleEditModal(payload) {
+    function openRuleEditModal(payload, cardId, seq) {
+      // [2026-11-01 多区起草] 规范形 payload.sections=[{section,old,draft,base_hash}]；
+      // 兼容旧单区形 {section, old, draft, base_hash}。
+      const secs = payload.sections ||
+        (payload.section !== undefined ? [payload] : []);
       dmRule = {
-        section: payload.section || "",
-        old: payload.old || "",
-        draft: payload.draft || "",
-        baseHash: payload.base_hash || "",
-        ruleCardId: payload.rule_card_id || getRuleCardId(),
+        sections: secs.map(s => ({
+          section: s.section || "",
+          old: s.old || "",
+          draft: s.draft || "",
+          baseHash: s.base_hash || "",
+        })),
         busy: false,
+        cardId: cardId || "",
+        seq: seq || 0,
+        commitAttempted: false,
+        committed: false,
       };
-      dmRuleTitle.textContent = `规则修改审批 · ${dmRule.section}`;
-      dmRuleArea.innerHTML =
-        `<div class="rule-old-block"><div class="rule-sec-name">当前内容</div><pre>${escapeHtml(dmRule.old)}</pre></div>` +
-        `<div class="rule-new-block"><div class="rule-sec-name">提议修改为</div><pre>${escapeHtml(dmRule.draft)}</pre></div>`;
+      dmRuleTitle.textContent =
+        `规则修改审批 · ${dmRule.sections.map(s => s.section).join("、")}`;
+      dmRuleArea.innerHTML = dmRule.sections.map(s =>
+        `<div class="rule-sec-title">分区「${escapeHtml(s.section)}」</div>` +
+        `<div class="rule-old-block"><div class="rule-sec-name">当前内容</div><pre>${escapeHtml(s.old)}</pre></div>` +
+        `<div class="rule-new-block"><div class="rule-sec-name">提议修改为</div><pre>${escapeHtml(s.draft)}</pre></div>`).join("");
       dmRuleArea.classList.remove("loading");
       dmRuleFbBox.classList.remove("open");
       dmRuleFbInput.value = "";
@@ -2922,26 +2940,50 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       if (!dmRule || dmRule.busy) return;
       dmRule.busy = true;
       dmRuleConfirm.disabled = true;
+      dmRule.commitAttempted = true;   // 试过落盘：提交闸已把原因通知根卡，关窗不再通知
       try {
         await ensurePersisted();   // [D3] 规则落盘即数据动作（草稿态先建项目）
         await API.call("POST", `/api/works/${WORK_ID}/rule/commit`, {
-          section: dmRule.section,
-          content: dmRule.draft,
-          base_hash: dmRule.baseHash,
+          sections: dmRule.sections.map(s => ({
+            section: s.section, content: s.draft, base_hash: s.baseHash,
+          })),
         });
         API.toast("规则已写入", "success");
+        if (dmRule) dmRule.committed = true;   // 已落盘：关窗不再记驳回（在途时用户可能已关窗，dmRule 为 null）
         closeRuleModal();
         loadRulePanel();   // [2026-10-16] 吸附卡常驻，落盘后即时重渲分区
       } catch (e) {
         const msg = String(e.message || "");
-        setRuleModalError(msg.indexOf("hash 不符") >= 0 ? "内容已被改，请重新提议" : ("写入失败：" + msg));
+        setRuleModalError(msg.indexOf("hash 不符") >= 0
+          ? (msg.indexOf("已通知根卡") >= 0
+             ? "内容已被改——已通知根卡重新起草，新草案会再来审批"
+             : "内容已被改，请重新提议")
+          : ("写入失败：" + msg));
         dmRuleConfirm.disabled = false;
       } finally {
-        dmRule.busy = false;
+        if (dmRule) dmRule.busy = false;   // 在途时用户可能已关窗
       }
     }
 
+    // [2026-11-03 草案驳回落痕] 驳回＝把该草案 card_id:seq 记进服务端驳回表
+    // （rule_dismissals.json）——此前驳回只活在页面内存 Set 里，刷新即丢，
+    // 同一条历史 tool_result 在每次收口重扫、每次刷新后反复弹审批窗。
+    // notify=false＝静默落痕：落盘失败（提交闸已通知根卡）或已落盘的关窗
+    // 不再重复打扰起草卡。失败静默：记不上最多下次再弹一次，不拦关窗。
+    function dismissRuleDraft(notify) {
+      const r = dmRule;
+      if (!r || !r.cardId || !r.seq) return;
+      API.call("POST", `/api/works/${WORK_ID}/rule/dismiss`, {
+        card_id: r.cardId, seq: r.seq, notify: !!notify,
+        sections: r.sections.map(s => s.section),
+      }).catch(() => {});
+    }
+
     function closeRuleModal() {
+      if (dmRule && !dmRule.committed) {
+        // commitAttempted=true ⇒ 提交闸已把原因通知根卡，关窗静默落痕即可
+        dismissRuleDraft(!dmRule.commitAttempted);
+      }
       dmRule = null;
       dmRuleModal.classList.remove("open");
       dmRuleArea.textContent = "";
@@ -2955,12 +2997,18 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     if (dmRuleX) dmRuleX.onclick = closeRuleModal;
     if (dmRuleOverlay) dmRuleOverlay.onclick = closeRuleModal;
 
-    // 回合收口（send/resend/tryRecover 的 resync 之后）扫 timeline 开审批弹窗
+    // 回合收口（send/resend/tryRecover 的 resync 之后）扫 timeline 开审批弹窗。
+    // [2026-11-03 反复弹出修复] 扫到候选后先拉一次 /rule 快照做三重过滤：
+    //   ① 驳回表命中（card_id:seq 已被用户拒绝/处置）→ 不再弹；
+    //   ② 已落盘（所有提议区现状==草案，同意写入或面板手改成一致）→ 不再弹；
+    //   ③ 基底过期（任一区 base_hash≠现状 hash，commit 必 409 的死草案）→ 不再弹。
+    // 只有"还在等审批"的草案才开弹窗——历史拒绝过/处理过的不再反复弹。
     async function maybeOpenRuleEditModal(cardId) {
       if (dmRule) return;   // 已有审批弹窗在，不叠开
       try {
         const tl = await API.getTimeline(WORK_ID, cardId, undefined, { tail: 400 });
         const items = (tl && tl.items) || [];
+        let ruleSnap = null;   // 惰性：扫到候选才拉快照（含 sections/hashes/dismissed）
         for (let i = items.length - 1; i >= 0; i--) {
           const it = items[i];
           if (!it || it.type !== "tool_result") continue;
@@ -2968,9 +3016,25 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           if (d.tool !== "draft_rule_edit" || !d.ok) continue;
           const seq = it.seq || 0;
           if (ruleSeen.has(seq)) continue;
-          ruleSeen.add(seq);
           const res = (d.result && d.result.data) || {};
-          if (res.section !== undefined) openRuleEditModal(res);
+          const secs = res.sections ||
+            (res.section !== undefined ? [res] : []);
+          if (!secs.length) continue;
+          if (ruleSnap === null) {
+            try { ruleSnap = await API.call("GET", `/api/works/${WORK_ID}/rule`); }
+            catch (e) { ruleSnap = {}; }
+          }
+          const key = cardId + ":" + seq;
+          if ((ruleSnap.dismissed || []).indexOf(key) >= 0) { ruleSeen.add(seq); continue; }
+          const curSecs = ruleSnap.sections || {};
+          const curHash = ruleSnap.hashes || {};
+          const landed = secs.every(
+            s => String(curSecs[s.section] || "") === String(s.draft || ""));
+          const stale = secs.some(
+            s => String(curHash[s.section] || "") !== String(s.base_hash || ""));
+          if (landed || stale) { ruleSeen.add(seq); continue; }
+          ruleSeen.add(seq);
+          openRuleEditModal(res, cardId, seq);
           return;   // 每次收口最多开一个
         }
       } catch (e) { /* 零阻断 */ }
@@ -3188,9 +3252,9 @@ function rvArgs(v) {
 function rvPaint(t, d, ts) {
   let html;
   switch (t) {
-    case "review_round_start":
+    case "review_round_done":
       RV.who = ""; RV.buf = "";
-      html = `开始一轮 · 第 ${d.draft || 1} 版 · 还差 ${(d.pending || []).length} 人`;
+      html = `一步收口 · 第 ${d.draft || 1} 版 · 还差 ${(d.pending || []).length} 人${d.seat ? ` · ${rvEsc(d.seat)}` : ""}`;
       break;
     case "review_speaking":
       RV.who = String(d.name || d.role || ""); RV.buf = "";
@@ -3204,11 +3268,11 @@ function rvPaint(t, d, ts) {
       break;
     case "review_spoke":
       RV.who = "";
-      html = `<b>${rvEsc(d.name || d.role || "")}</b> 发言完成 ${d.chars || 0} 字${d.approve ? " · 通过" : ""}`;
+      html = `<b>${rvEsc(d.name || d.role || "")}</b> ${d.kind === "confirm" ? "复核完成" : "发言完成"}${d.voted ? ` · 投了 ${rvEsc(d.vote)}` : ""}`;
       break;
-    case "review_revise":
+    case "review_dispatch":
       RV.who = "";
-      html = `<b>${rvEsc(d.name || d.target || "")}</b> ${d.changed ? "改了草稿" : "没改草稿"}`;
+      html = `评审场派活给正卡 · ${rvEsc(d.kind === "promote" ? "请它定稿" : "请它按意见回应")}`;
       break;
     case "review_all_passed":
       html = "全员通过";
@@ -3228,7 +3292,7 @@ function rvPaint(t, d, ts) {
   }
   // [2026-10-31] 追加进滚动列表（改前是 rvSetLast 覆盖唯一那一行）
   const _cls = (t === "tool_call" || t === "tool_result") ? "tool"
-             : (t === "review_spoke" || t === "review_revise") ? "speak"
+             : (t === "review_spoke" || t === "review_dispatch") ? "speak"
              : (t === "error") ? "error" : "";
   rvPush(html, ts, _cls);
 }
@@ -3252,8 +3316,9 @@ function rvOnFrame(f) {
   const d = f.data || {};
   if (t === "reasoning_chunk" || t === "content_chunk") { rvTyping(t, d); return; }
   rvPaint(t, d, f.ts);
-  if (t === "review_spoke" || t === "review_revise"
-      || t === "review_round_start" || t === "review_batch_closed") {
+  if (t === "review_spoke" || t === "review_dispatch"
+      || t === "review_round_done" || t === "review_batch_closed"
+      || t === "review_all_passed") {
     rvRefresh(RV.target);      // 通过数/还差谁变了，重拉头部
   }
 }

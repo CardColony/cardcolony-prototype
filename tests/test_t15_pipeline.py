@@ -52,7 +52,7 @@ async def test_v1_mock_full_chain(sandbox, monkeypatch, caplog):
 
     # [2026-10-31 对齐三步协议] 凝练已是 S2a→L1→L2 三段；替身出「整窗一组、
     # 一条三栏 L1、零子题」。（旧脚本化【结论】产出过不了 S2a 的 G-1 闸。）
-    from _condense_stub import three_stage_stub
+    from tests._condense_stub import three_stage_stub
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="首条：用户与助手确立了收束结论。"))
     await memory_store.condense_turn_end(wid, cid)
@@ -131,7 +131,7 @@ async def test_v2_idempotent_same_window(sandbox, monkeypatch, caplog):
     await _append_conversation(wid, cid, 2)
 
     # [2026-10-31 对齐三步协议] 整窗一组、一条结论
-    from _condense_stub import three_stage_stub
+    from tests._condense_stub import three_stage_stub
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="唯一结论。"))
     await memory_store.condense_turn_end(wid, cid)
@@ -167,7 +167,7 @@ async def test_v2_idempotent_repair_mark(sandbox, monkeypatch, caplog):
                      "coveredSeqs": [0], "occurred_at": "t", "fingerprint": fp}]})
 
     # [2026-10-31 对齐三步协议]
-    from _condense_stub import three_stage_stub
+    from tests._condense_stub import three_stage_stub
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="不该新增的条目。"))
     await memory_store.condense_turn_end(wid, cid)
@@ -197,7 +197,7 @@ async def test_v3_parse_failure_watermark_untouched(sandbox, monkeypatch, caplog
     await _append_conversation(wid, cid, 2)
 
     # [2026-10-31 对齐三步协议] 指定段产出垃圾，其余段正常——失败段决定 stage
-    from _condense_stub import three_stage_stub
+    from tests._condense_stub import three_stage_stub
     stub = three_stage_stub(gist="恢复用结论。")
     stub.l1_raw = None
 
@@ -318,7 +318,7 @@ async def test_v7_mutex_second_trigger_skips(sandbox, monkeypatch, caplog):
     release = asyncio.Event()
 
     # [2026-10-31 对齐三步协议] 三段替身，L1 段阻塞到 release
-    from _condense_stub import three_stage_stub, stage_of
+    from tests._condense_stub import three_stage_stub, stage_of
     base = three_stage_stub(gist="慢凝练唯一结论。")
 
     async def slow_condense_call(user_prompt: str, system: str = "", *args, **_) -> str:

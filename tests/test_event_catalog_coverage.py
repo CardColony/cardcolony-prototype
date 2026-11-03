@@ -96,7 +96,9 @@ def _writable_card_types() -> list[str]:
 
 
 #: 走 card_store.create_card 直建的卡类型（project 用根卡本身、tool 需 owner）
-_CARD_STORE_TYPES = ("sub_project", "coder", "rule")
+#: [差事卡 2026-11-01] qa_card/pm_card 是差事场卡——注册表里的可写类型，
+#: 直建＋写一块同样要产 card_block_edited。
+_CARD_STORE_TYPES = ("sub_project", "coder", "rule", "qa_card", "pm_card", "ui")
 
 #: 卡类型 → 豁免理由（不直建、由别的模块派生）。
 #: **双向约束**：这里登记了但测试其实覆盖到 ⇒ 也要红（豁免不能长期挂着）。

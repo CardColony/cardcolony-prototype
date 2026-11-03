@@ -197,6 +197,24 @@ class RunState:
     # [需求确定按钮改造 2026-10-29] 【需求确定】两种专用回合（根卡改正稿／其他卡拟草稿
     # 后开评审）的任务注入幂等闸——与 status_task_emitted 同款，本 run 只发一次。
     requirements_task_emitted: bool = False
+    # [场/席位回合 2026-10-31 · venue] 一张卡当"场"，借**另一张卡的身份**跑一轮。
+    # 三向锚点分离：执行锚＝card_id（会话/锁/事件流/停止都在它），身份锚＝act_as
+    # （145区职能档案、工具面、模型绑定、工具调用者、回复块 from），上下文锚＝
+    # ctx_card（bundle/历史/记忆按它取——评审席拿的是被评子卡的语境，用户令
+    # 「评审席拿到的应该和子卡的上下文基本一致」）。
+    #   · act_as     —— 席位卡 id；空＝普通回合，下面各键全不生效；
+    #   · act_meta   —— 145区身份覆盖（评审职责书≠日常 charter，由调用方给；
+    #                  None＝function_meta_for(act_as) 现查）；
+    #   · ctx_card   —— 上下文锚卡；空＝card_id；
+    #   · tool_allow —— 场授面（∩席位能力上限）：非 None 时工具面再收窄到该名单；
+    #   · profile    —— compose_model_request 的 profile（席位＝viewpoint）；
+    #   · prior_extra—— 追加进历史区的额外块（评审现场发言），由调用方组装。
+    act_as: str = ""
+    act_meta: Optional[dict[str, Any]] = None
+    ctx_card: str = ""
+    tool_allow: Optional[set] = None
+    profile: str = ""
+    prior_extra: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -249,22 +267,30 @@ def check_control(state: RunState) -> Optional[str]:
 # 编排逻辑产出原始数据，再交 context base 按注册通道编入请求。
 def build_context(state: RunState) -> None:
     """统一 context base 构建 system、对话历史投影、工具列与轮槽。"""
+    # [场/席位回合 2026-10-31 · venue] 三向锚点：执行锚仍是 state.card_id（它决定
+    # 会话/锁/事件流），身份锚 act_as（145区/工具面），上下文锚 ctx_card
+    # （bundle/历史/记忆——评审席拿的是被评子卡的语境）。普通回合三者同为 card_id。
+    _actor_id = str(state.act_as or "") or state.card_id
+    _ctx_id = str(state.ctx_card or "") or state.card_id
     state.condense_state = (
-        memory_store.load_memory(state.work_id, state.card_id)
+        memory_store.load_memory(state.work_id, _ctx_id)
         if memory_store.condense_enabled() else None
     )
     # [预设职能 2026-10-24] 145 区(你的职能)取数:独立职能卡(fn_NNN)或职能化的
     # 根卡(总裁)——此前 build_context_bundle 的 function_meta 参数在生产链路
     # 无人传 ⇒ 145 区从不渲染(职能不知道自己是谁)。fail-open:查不到传 None。
-    _function_meta = None
-    try:
-        from . import function_room
-        _function_meta = function_room.function_meta_for(state.work_id,
-                                                         state.card_id)
-    except Exception:  # noqa: BLE001 身份取不到 ⇒ 不出 145 区,不挡回合
-        _function_meta = None
+    # [venue] act_meta 非 None ⇒ 调用方给了身份覆盖（评审职责书），直接用它；
+    # 否则按**身份锚**(act_as 或本卡)现查职能档案。
+    _function_meta = state.act_meta
+    if _function_meta is None:
+        try:
+            from . import function_room
+            _function_meta = function_room.function_meta_for(state.work_id,
+                                                             _actor_id)
+        except Exception:  # noqa: BLE001 身份取不到 ⇒ 不出 145 区,不挡回合
+            _function_meta = None
     bundle = context_assembler.build_context_bundle(
-        state.work_id, state.card_id,
+        state.work_id, _ctx_id,
         memory_state=state.condense_state,
         history_source=state.prior,
         function_meta=_function_meta,
@@ -280,14 +306,61 @@ def build_context(state: RunState) -> None:
         "bytes": len(state.neutral_context.encode("utf-8")),
     })
     state.slot = tool_fold.ToolTurnSlot(state.prior_for_gateway)
+    _cards_for_tools = card_tools._collect_card_meta(state.work_id)
+    if _actor_id != state.card_id and _actor_id not in _cards_for_tools:
+        # [venue] 席位不在 cards 表（职能档案在 function_store）⇒ 合成卡面再
+        # 建工具面，否则分类闸"认不出卡"把基础面清空、只剩末段追加的 approve。
+        _cards_for_tools[_actor_id] = _synth_seat_meta(
+            state.work_id, _actor_id, _cards_for_tools)
     state.tools = card_tools.build_tool_schemas(
-        card_id=state.card_id,
+        card_id=_actor_id,     # [venue] 工具面按身份锚（席位自己的能力清单）下发
         work_id=state.work_id,
-        cards=card_tools._collect_card_meta(state.work_id),
+        cards=_cards_for_tools,
         op=state.op,   # [更新现状按钮改造] op 回合才追加专用工具（其余回合逐字不变）
     )
+    # [venue] 场授面再收窄：席位能力 ∩ 场允许（评审＝只读＋投票＋台账）。
+    # 两级过滤语义不变：先能力后场地，'在场'不等于'全能'。
+    if state.tool_allow is not None:
+        _allow = {str(n) for n in state.tool_allow}
+        state.tools = [
+            t for t in state.tools
+            if str((t.get("function") or {}).get("name") or t.get("name") or "")
+            in _allow
+        ]
     # history_len 是注册表统一投影出来的历史条数快照；轮槽之后会就地追加。
     state.history_len = len(state.prior_for_gateway)
+
+
+def _synth_seat_meta(work_id: str, seat_id: str,
+                     cards: dict[str, Any]) -> dict[str, Any]:
+    """给不在 cards 表里的**职能席位**合成卡面（card_type=function）。
+
+    职能档案在 function_store 不在 cards 表——能力闸/工具面查 `cards[seat]`
+    会把席位当"认不出的卡"全拒。合成面与建卡同源：profile 实挂 abilities
+    优先；空 ⇒ 按卡型现算（`_abilities_of`/`function_room._mounted_abilities`
+    的同一条回退路，不是放宽——`abilities_for` 本身∩卡型模式上限∩perms）。
+    """
+    meta: dict[str, Any] = {"card_id": seat_id, "card_type": "function"}
+    try:
+        from ..storage import function_store as _fs
+        prof = _fs.get_profile(work_id, seat_id) or {}
+    except Exception:  # noqa: BLE001
+        prof = {}
+    ab = prof.get("abilities")
+    if isinstance(ab, list) and ab:
+        meta["abilities"] = [str(x) for x in ab]
+        return meta
+    try:
+        from ..permissions import policy as _pol
+        from ..infra import capability_registry as _cap
+        pc = next((str((m or {}).get("project_class") or "")
+                   for m in (cards or {}).values()
+                   if str((m or {}).get("card_type") or "") == "project"), "")
+        perms, _n = _pol.compute_perms(pc, "function")
+        meta["abilities"] = list(_cap.abilities_for(perms, "manual", "function"))
+    except Exception:  # noqa: BLE001 算不出来 ⇒ 交下游判（认不出＝拒，不放宽）
+        pass
+    return meta
 
 
 def compose_model_request(
@@ -344,8 +417,11 @@ def _pick_step_model(state: RunState) -> str:
     [模型设置按项目/卡片覆盖 2026-10-19] 带 work/card 作用域解析——
     card > work > global（model_pick.pick_model 内完成）。
     """
+    # [venue] 模型绑定按**身份锚**（席位自己的模型配置），板快照仍按执行锚
+    # （板是场的工作面，不是席位的）。
+    _actor = str(state.act_as or "") or state.card_id
     if not thinkchain_enabled():   # [纯单模型 2026-10-17] 无步类型，直接 default 席
-        return _pick_model("default", work_id=state.work_id, card_id=state.card_id)
+        return _pick_model("default", work_id=state.work_id, card_id=_actor)
     snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
     role = "default"
     if snap is not None:
@@ -353,7 +429,7 @@ def _pick_step_model(state: RunState) -> str:
         cur = snap.get("current", 0)
         if 0 <= cur < len(steps):
             role = steps[cur].get("type") or "default"
-    seat = _pick_model(role, work_id=state.work_id, card_id=state.card_id)
+    seat = _pick_model(role, work_id=state.work_id, card_id=_actor)
     models_cfg = model_service.get_gateway().config.get("models") or {}
     if seat not in models_cfg:
         raise RuntimeError(
@@ -711,6 +787,36 @@ async def _call_model_resumable(state: "RunState | None" = None, **kwargs: Any):
     raise last
 
 
+def _norm_tool_calls(raw: Any) -> list[dict[str, Any]]:
+    """tool_calls 归一化成平铺 ``{"name","arguments"}``。
+
+    网关/适配器可能给两种形态：平铺 ``{name, arguments}`` 或 OpenAI 线格式
+    ``{"function": {"name","arguments"}, "id","type"}``——下游全部按平铺消费，
+    嵌套形态原先会在装配 assistant 消息时 `tc["name"]` 直接崩。
+    ``arguments`` 给 JSON 字符串时解析成 dict（解析失败按空 dict，把
+    原文留在 ``__raw`` 便于日志定位）。
+    """
+    out: list[dict[str, Any]] = []
+    for tc in (raw or []):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function")
+        if isinstance(fn, dict) and not tc.get("name"):
+            name = str(fn.get("name") or "")
+            args = fn.get("arguments")
+        else:
+            name = str(tc.get("name") or "")
+            args = tc.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:  # noqa: BLE001 坏 JSON 不当参数喂，留原文
+                args = {"__raw": args}
+        out.append({"name": name,
+                    "arguments": args if isinstance(args, dict) else {}})
+    return out
+
+
 async def step(state: RunState) -> StepOutcome:
     """一次状态推进＝工具循环的一个显式状态点。
 
@@ -752,7 +858,9 @@ async def step(state: RunState) -> StepOutcome:
     # [判断协议改注入 2026-10-14] 判断协议注入（仅轮首、且本卡无活板）——先于
     # 注入事件，使事件序＝user_message → judgment_protocol →（有板时）preamble/
     # injection → round_start。两者互斥（有板无判断、无板无注入来源），不会同现。
-    _sync_judgment(state)
+    # [venue] 席位回合不注判断协议——拆解上板是场自己的活，不是借身份的席位的。
+    if not state.act_as:
+        _sync_judgment(state)
     # [更新现状按钮改造 2026-10-16] 「更新现状」专用回合的轮首任务注入（仅 op 回合）。
     # 放在 _sync_injection 之前 ⇒ turn_tail 里专用任务先于工作规范/流程注入。
     _sync_status_task(state)
@@ -771,13 +879,16 @@ async def step(state: RunState) -> StepOutcome:
         state.model_calls += 1
         # [迭代三 S5] 首轮接线：按当前步 type 查表取模型（无活板回落 default）
         request = compose_model_request(
-            state, profile="main", prior_messages=state.prior_for_gateway,
+            state, profile=state.profile or "main",
+            prior_messages=state.prior_for_gateway,
             prior_key="history", user_content=state.user_prompt,
             turn_tail=state.turn_tail, turn_once=state.judgment_tail,
         )
         # [模型选择底座 2026-10-21] 座位只算一次，请求与日志同源
         _seat = _pick_step_model(state)
         state.model_requested = _seat
+        # [venue] 层内兜底按**身份锚**查模型层——座位与兜底同源（席位自己的层）。
+        _actor = str(state.act_as or "") or state.card_id
         # [模型中断续跑 2026-10-23] 经续跑包装：断连在同一位置重发，不判死整轮
         result, state.model_used = await _call_model_resumable(
             state,
@@ -788,7 +899,7 @@ async def step(state: RunState) -> StepOutcome:
             model_name=_seat,
             # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
             fallbacks=model_config.layer_fallbacks(
-                _seat, work_id=state.work_id, card_id=state.card_id),
+                _seat, work_id=state.work_id, card_id=_actor),
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
             # [F22 · 2026-10-31 审计补口] 观测因果链：model_call JSONL 的
@@ -811,11 +922,14 @@ async def step(state: RunState) -> StepOutcome:
         # [迭代三 S5] 续跳轮接线：同首轮（步中途 type 不变的板是常态；
         # 改板插步后以 current 步 type 为准）
         request = compose_model_request(
-            state, profile="main", prior_messages=wire_messages,
+            state, profile=state.profile or "main",
+            prior_messages=wire_messages,
             prior_key="tool_turn", user_content=state.user_prompt,
         )
         _seat = _pick_step_model(state)
         state.model_requested = _seat
+        # [venue] 续跳轮同首轮：兜底按身份锚（与首轮同一 _actor 口径）。
+        _actor = str(state.act_as or "") or state.card_id
         # [模型中断续跑 2026-10-23] 续跳轮同样经续跑包装
         result, state.model_used = await _call_model_resumable(
             state,
@@ -826,7 +940,7 @@ async def step(state: RunState) -> StepOutcome:
             model_name=_seat,
             # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
             fallbacks=model_config.layer_fallbacks(
-                _seat, work_id=state.work_id, card_id=state.card_id),
+                _seat, work_id=state.work_id, card_id=_actor),
             turn_tail=request["turn_tail"],
             turn_once=request["turn_once"],
             # [F22 · 2026-10-31 审计补口] 同上：工具轮观测因果链
@@ -835,7 +949,7 @@ async def step(state: RunState) -> StepOutcome:
         )
     # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
     state.turn_reasoning = result.get("reasoning_content") or ""
-    tool_calls = result.get("tool_calls") or []
+    tool_calls = _norm_tool_calls(result.get("tool_calls") or [])
     assistant_content = result.get("content") or ""
 
     # [等待黑洞修复 2026-10-02] 标准字段为空时，抢救正文中
@@ -881,7 +995,8 @@ async def step(state: RunState) -> StepOutcome:
     # 轮照常执行）→ 按附录 C 步执行提示词催促交作业续跳，不设上限。两道
     # 天然刹车：每圈入口 check_control（人停即刹）＋用户新消息＝新回合。
     # 空手正文不入槽（同 :316 抢救先例——催促文自带本步要求原文，信息自足）。
-    if (thinkchain_enabled() and not tool_calls
+    # [venue] 板催化也不对席位回合发——板是场的工作面，催席位干活越界。
+    if (not state.act_as and thinkchain_enabled() and not tool_calls
             and thinkchain_board.has_live_board(state.work_id, state.card_id)):
         _snap = thinkchain_board.snapshot_sync(state.work_id, state.card_id)
         _step = None
@@ -1002,6 +1117,18 @@ async def step(state: RunState) -> StepOutcome:
 
     # 收集卡片 meta 用于权限判定
     cards_meta = card_tools._collect_card_meta(state.work_id)
+    # [venue] 席位在评审场内获得全树**读**权（[2026-10-29 用户令]「卡面才是唯一
+    # 事实源」）：瞬时快照上给席位 meta 打 _review_seat，写仍走原规则表。
+    _seat_id = str(state.act_as or "")
+    if _seat_id and _seat_id != state.card_id:
+        _seat_meta = dict(cards_meta.get(_seat_id) or {})
+        if not _seat_meta:
+            # [venue] 职能不进 cards 表（function_store）⇒ 快照里没有它，
+            # 执行闸会把席位当「认不出的卡」全拒。合成卡面与 build_context
+            # 工具面同源（profile 实挂优先，空则按卡型现算）。
+            _seat_meta = _synth_seat_meta(state.work_id, _seat_id, cards_meta)
+        _seat_meta["_review_seat"] = True
+        cards_meta[_seat_id] = _seat_meta
 
     # [工具结果落会话 2026-10-17] 本工具轮的会话块 B（工具结果）在内存收齐，
     # 循环后与块 A（assistant+tool_calls）一次性落盘（§0.1 疑问3：原子落盘，
@@ -1053,10 +1180,13 @@ async def step(state: RunState) -> StepOutcome:
                             and isinstance(_pre_steps[_pre_cur], dict)):
                         _done_step_id = str(_pre_steps[_pre_cur].get("id") or "")
             tool_result = await card_tools.execute_tool(
-                state.work_id, state.card_id, name, args, cards_meta,
+                state.work_id, str(state.act_as or "") or state.card_id,
+                name, args, cards_meta,
                 # [执行层权限闸 2026-10-25] 工具面只是「看不看得见」，不是执行
                 # 授权：模型硬调一个没下发给它的工具（提示词里写着 bash/python），
                 # 原先会直接跑到 handler 真执行。此处置 True ⇒ 无开关即拒。
+                # [venue] 席位回合里工具眼中的"当前卡"＝席位（approve 的
+                # 投票人就是它）。
                 perm_gate=True)
             # [T-0010 §1.5] 成败读信封 ok 字段（改前是「结果里没有 error 键即算成功」）
             ok = tool_result.get("ok") is True
@@ -1161,10 +1291,12 @@ async def step(state: RunState) -> StepOutcome:
         # 三尺永远对不齐。放进 finally 保证必落；落盘失败只记日志、不吞原异常。
         if _round_tool_blocks:
             try:
+                # [venue] 场回合 append_user=False ⇒ 会话里没有 human 块，
+                # pair 兜底会落成 'unknown'；回合 uuid 显式带上（前端按它归轮）。
                 await session_facade.append_many(state.work_id, state.card_id, [
-                    {"actor": "assistant", "content": "",
+                    {"actor": "assistant", "content": "", "pair_id": state.pair_id,
                      "tool_calls": _asst_msg["tool_calls"]},
-                    *_round_tool_blocks,
+                    *[{"pair_id": state.pair_id, **b} for b in _round_tool_blocks],
                 ])
             except Exception as _exc:  # noqa: BLE001
                 logger.error("[工具块落盘] 失败 card=%s: %s", state.card_id, _exc)
@@ -1298,7 +1430,7 @@ async def run_seats(state: RunState) -> StepOutcome:
         work_id=state.work_id, card_id=state.card_id,
         caller=f"turn:{state.pair_id}:synthesize",
     )
-    tool_calls = result.get("tool_calls") or []
+    tool_calls = _norm_tool_calls(result.get("tool_calls") or [])
     assistant_content = result.get("content") or ""
     if not tool_calls:
         state.final_reply = assistant_content
@@ -1535,11 +1667,17 @@ async def finish(state: RunState) -> dict[str, Any]:
     # 这里再落一遍 clean_text 拼接全文＝同一段话出现两遍）。
     # **会话块 content 仍是 clean_text，一字未改** ⇒ 模型上下文零变化
     # （clean_text 的作用是把各轮正文补进会话文件供下一回合读——那部分完全保留）。
-    await session_facade.append(state.work_id, state.card_id, {
+    _reply_blk: dict[str, Any] = {
         "role": "assistant", "content": state.clean_text,
         "model": state.model_used, "pair_id": state.pair_id,
         "end": state.end_reason or "model_done",
-    }, emit_event=False)
+    }
+    # [venue] 席位回合的回复块带 from：页面/审计能认出"这句话是谁说的"，
+    # 普通回合不带（行为逐字不变）。
+    if state.act_as:
+        _reply_blk["from"] = str(state.act_as)
+    await session_facade.append(state.work_id, state.card_id, _reply_blk,
+                                emit_event=False)
     logger.info("[T10] 回复落盘 pair_id=%s card=%s end=%s",
                 state.pair_id, state.card_id, state.end_reason or "model_done")
     # [手动停止板清理 2026-10-14] 中止态（human_stop/policy_stop）清理残留板：
@@ -1900,7 +2038,9 @@ async def deliver_now(work_id: str, card_id: str, *,
         # [2026-10-26 · 记录补全] 带上**唤醒源**：这一轮是被哪张卡的消息叫起来的。
         _src = (dict(source) if source else
                 {"kind": "card_msg",
-                 "from": str((pending[0] or {}).get("from_card") or "")})
+                 # text 模式 pending 恒空——实跑踩过 list index out of range
+                 "from": str(((pending[0] if pending else {}) or {})
+                             .get("from_card") or "")})
         task = _spawn_tracked(
             _routes._run_message(work_id, card_id, prompt, None,
                                  append_user=False, source=_src))
@@ -1968,8 +2108,10 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         # msg_ask 给一张完工 coder，就是「这条线还有后续」——先复位（state=active
         # ＋目标重开）再正常调起，而不是另建一张卡。纯回执类（coder_done 等）
         # 仍然跳过：否则完工回执会把它自己再叫起来一遍。
+        # [机制判断归harness 第3步] 完工判定走派生视图（事件权威＋列回落）。
+        from ..infra import card_status as _cs
         if str(_tmeta.get("card_type") or "") == "coder" \
-                and str(_tmeta.get("state") or "") == "completed":
+                and _cs.derive(work_id, target_id)["delivery"] == "completed":
             _is_dispatch = any(
                 str((m or {}).get("type") or "") == "msg_ask" for m in pending)
             if not _is_dispatch:

@@ -9,9 +9,9 @@
 cards 行只是「卡面/权限/位置/goal」这些活体属性。归档=把 cards 行搬进
 档案表(活体属性消失),会话/事件**原位不动**——它们就是剩下的记录。
 
-DDL 放本模块(function_ledgers/governance_store 先例——card_db 是禁改文件,
-独立表归各自存储模块)。影子行随归档提取产物清单后删除(影子是本卡私有
-过程区,归档后不再是卡,无影子可言)。
+DDL 放本模块(card_db 是禁改文件,独立表归各自存储模块——
+function_directives/governance_store 先例)。影子行随归档提取产物清单后
+删除(影子是本卡私有过程区,归档后不再是卡,无影子可言)。
 """
 from __future__ import annotations
 

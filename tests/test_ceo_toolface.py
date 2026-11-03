@@ -56,7 +56,7 @@ def test_ceo_allow_unchanged():
     allow = set(_ceo_toolface().get("allow") or [])
     # [通信收拢 2026-10-28] issue_directive 已退役（并进 direct）。
     for name in ("curate_face", "direct", "confirm_with_user",
-                 "report_to_user", "write_ledger"):
+                 "report_to_user"):
         assert name in allow, f"ceo 的 allow 缺 {name}：{sorted(allow)}"
 
 

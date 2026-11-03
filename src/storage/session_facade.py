@@ -1432,6 +1432,71 @@ def scan_tail(work_id: str, card_id: str) -> dict[str, Any]:
         return {"ts": "", "seq": None, "format": None}
 
 
+#: ``last_message`` 的尾扫上限——窗口到此还没找到对话块就放弃。
+#: 会话块可以很大（工具帧动辄几十 KB），但一张卡 8MB 的尾部全是工具帧时，
+#: "最后一句人话"早已没有时效性，按 None 处理比全文读划算。
+_LAST_MSG_START = 256 * 1024
+_LAST_MSG_CAP = 8 * 1024 * 1024
+
+
+def last_message(work_id: str, card_id: str,
+                 text_limit: int = 220) -> dict[str, str] | None:
+    """这张卡会话里的**最后一条对话消息**（谁说的、说了什么、什么时候）。
+
+    尾部扩窗反扫（机制同 ``scan_tail``）：256KB 起步、×4 扩到 8MB 封顶，
+    只解析窗口内的块——**不读整个会话文件**（投影场景的会话可以到几十 MB，
+    全量读+全量解析是画布重建的主要成本来源）。
+
+    过滤口径与画布原口径一致：跳过工具帧（内容是参数 JSON）与空消息，
+    只看 ``human``/``assistant``。窗口封顶内没找到 ⇒ ``None``。
+    """
+    path = _session_path(work_id, card_id)
+    try:
+        if not path.exists():
+            return None
+        size = path.stat().st_size
+        if size <= 0:
+            return None
+        window = _LAST_MSG_START
+        with open(path, "rb") as f:
+            while True:
+                read_len = min(size, window)
+                f.seek(size - read_len)
+                chunk = f.read(read_len).decode(
+                    "utf-8", errors="replace").replace("\r\n", "\n")
+                if read_len < size:
+                    # 切掉第一行残行——窗口起点可能落在行中间。
+                    nl = chunk.find("\n")
+                    if nl < 0:
+                        if window >= size or window >= _LAST_MSG_CAP:
+                            return None
+                        window *= 4
+                        continue
+                    chunk = chunk[nl + 1:]
+                # 残缺块头由 _parse_v2 吸收：非 ---MSG--- 行一律跳过，
+                # 窗口里找到的块都是完整块（结构行在正文里有转义，不会误中）。
+                for b in reversed(_parse_v2(chunk)["blocks"]):
+                    actor = str(b.get("actor") or "")
+                    content = str(b.get("content") or "").strip()
+                    if not content or actor not in (ACTOR_HUMAN, ACTOR_ASSISTANT):
+                        continue
+                    if content.startswith("{") and content.rstrip().endswith("}"):
+                        continue          # 参数 JSON，不是人话
+                    return {
+                        "actor": actor,
+                        "text": content[:text_limit],
+                        "ts": str(b.get("ts") or ""),
+                        "seq": str(b.get("seq") if b.get("seq") is not None else ""),
+                    }
+                if window >= size or window >= _LAST_MSG_CAP:
+                    return None
+                window *= 4
+    except Exception as exc:  # noqa: BLE001 投影失败不阻断
+        logger.warning("last_message 尾扫失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        return None
+
+
 # ---------------------------------------------------------------- 投影（T026/T074-T076）
 def rebuild(work_id: str) -> dict[str, Any]:
     """从真相（各卡会话文件）全量重建投影并落盘（T075）。

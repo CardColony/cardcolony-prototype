@@ -267,10 +267,17 @@ def test_seed_respects_window():
 
 # ---------------------------------------------------------------- 配置
 def test_config_file_loads_and_is_valid():
-    """仓库里的配置本身必须是合法的（改坏了测试就红）。"""
+    """仓库里的配置本身必须是合法的（改坏了测试就红）。
+
+    直接读 ``DEFAULT_PATH`` 的仓库文件——conftest 沙箱把
+    ``ECO_POLICIES_PATH`` 指向空策略表（防用例真点火），本用例验的
+    恰是仓库真配置，不能走 env 指向。"""
+    import json
+    from src.infra import policy_config
+    raw = json.loads(policy_config.DEFAULT_PATH.read_text(encoding="utf-8"))
+    items = raw.get("policies") if isinstance(raw, dict) else raw
     st = ps.PolicySet()
-    errs = st.load(ps.__dict__ and __import__(
-        "src.infra.policy_config", fromlist=["load_raw"]).load_raw())
+    errs = st.load([x for x in (items or []) if isinstance(x, dict)])
     assert errs == [], f"配置有错: {errs}"
     assert st.policies(), "配置里一条策略都没有"
 

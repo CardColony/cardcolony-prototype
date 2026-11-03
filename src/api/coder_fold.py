@@ -24,9 +24,12 @@ async def archive_coder(work_id: str, card_id: str) -> dict[str, Any]:
     if str(meta.get("card_type") or "") != "coder":
         return {"ok": False, "error": "only_coder",
                 "message": "归档只作用于编程卡"}
-    if str(meta.get("state") or "") != "completed":
+    # [机制判断归harness 第3步] 完工判定走派生视图（事件权威＋列回落）。
+    from ..infra import card_status as _cs
+    _dstate = _cs.derive(work_id, card_id)["delivery"]
+    if _dstate != "completed":
         return {"ok": False, "error": "not_completed",
-                "message": f"编程卡尚未完工(state={meta.get('state') or '?'})"}
+                "message": f"编程卡尚未完工(state={_dstate or '?'})"}
 
     # 产物清单从影子提取(路径指针);影子随卡行一起退役
     artifacts: list[str] = []

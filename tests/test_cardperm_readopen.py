@@ -357,10 +357,19 @@ def test_tool_card_toolface_matches_its_perms():
                               # reject 与 approve 同挂 read（评审表态，分类层可见）；
                               # update_status 挂 edit（改自己的现状块）。
                               # 真实下发面仍由末段按卡类型收口（tool 卡走不到评审流程）。
-                              "reject", "update_status",
+                              "reject",
+                              # [2026-11-02 翻新] update_status 已退役（注册表移除）；
+                              # 同期漂移补记：report 挂 read（差事回执）、
+                              # memory_expand 挂 read（记忆下探）、
+                              # submit_revision 挂 edit（评审修订）⇒ 分类层均可见。
+                              "report", "memory_expand", "submit_revision",
                               # promote_draft 挂 edit ⇒ 分类层可见；它自己判
                               # 「有草稿 + 评审全员通过」，没草稿的卡调了必被拒。
                               "promote_draft",
+                              # [浏览器能力 2026-11-02] browser 挂 tools_web ⇒
+                              # 分类层镜头里可见（tool 有 tools_web）；真实下发面
+                              # 再被能力挂载闸收窄（tool 卡默认不挂 browser）。
+                              "browser",
                               "web_search", "fetch_web"}
     # [编程卡 2026-10-15 · C2 裁定] search 回归词表＝**预留机关**（coder 行占位码；
     # 仍无独立 search 工具、搜索由 web_search/fetch_web 承担，暂无消费方——

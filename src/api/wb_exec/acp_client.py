@@ -39,6 +39,9 @@ CATEGORY_QUOTA = "quota"
 #: 用户主动中断（"Task was interrupted by user"）⇒ **不自动续**。
 INTERRUPTED_MARK = "interrupted by user"
 
+#: 哨兵：区分「没传 read_timeout」（⇒ 用默认）和「**显式传 None**」（⇒ 读不设超时）。
+_UNSET = object()
+
 
 class WbAcpError(RuntimeError):
     """ACP 调用失败。
@@ -290,12 +293,23 @@ class AcpClient:
 
     async def rpc(self, method: str, params: Optional[dict[str, Any]] = None,
                   *, timeout: Optional[float] = None,
+                  read_timeout: Any = _UNSET,
                   on_result: Optional[Callable[[dict[str, Any]], None]] = None,
                   ) -> dict[str, Any]:
         """发一个 JSON-RPC 请求，等它的 result/error。
 
         期间的 ``session/update`` 通知走 ``self._on_notification`` 回调；
         SSE 注释帧（``: heartbeat``）走 ``self._on_keepalive`` 回调。
+
+        ★ ``read_timeout``（2026-11-03）：**读超时可以显式关掉**（传 ``None``）
+        ⇒ ``httpx.Timeout(read=None)`` ⇒ **只在连接真的断时抛**（httpx 异常）。
+        **为什么 prompt 要关掉**：``session/prompt`` 的响应本身就是 **SSE 流**，
+        httpx 的 read timeout 判的是「**两帧之间**多久没数据」——而 agent 跑一个大
+        bash 时**本来就不发帧**（连 keepalive 都没有）⇒ 有限读超时会把**正在干活的
+        长任务**误判成「连接断了」⇒ 续跑（重发整段 prompt）⇒ 又超时 ⇒
+        最多 3 次 ⇒ **30 分钟没动静**（实测：wb-cn/hy3 总耗时中位 373.8s、最大 3351s）。
+        ⇒ **判死活只靠状态**：``agentPhase`` / 在途工具 / 吐字 / **SSE 结束** /
+        **httpx 异常**（连接真断 ⇒ 进程死了 ⇒ 连接一定断）。
         """
         rpc_id = self._next_id()
         payload: dict[str, Any] = {
@@ -306,8 +320,11 @@ class AcpClient:
         client = self._http()
         rt = timeout if timeout is not None else self.timeout
         # 建连与读分开：**读超时是传输层兜底**（> keepalive 间隔），
-        # 建连失败才是真问题。
-        tmo = httpx.Timeout(rt, connect=self.connect_timeout)
+        # 建连失败才是真问题。★ ``read_timeout=None`` ⇒ **读不设超时**
+        #   （长任务不误杀；只有连接真断才抛）。
+        rd = rt if read_timeout is _UNSET else read_timeout
+        tmo = httpx.Timeout(connect=self.connect_timeout, read=rd,
+                             write=rt, pool=rt)
         try:
             async with client.stream(
                 "POST", f"{self.base_url}/api/v1/acp",
@@ -462,16 +479,21 @@ class AcpClient:
 
     async def prompt(self, session_id: str, text: str, *,
                      timeout: Optional[float] = None,
+                     read_timeout: Any = _UNSET,
                      on_update: Optional[Callable[[AcpNotification], None]] = None,
                      ) -> dict[str, Any]:
-        """发起一次任务。**响应在任务结束后才到**，期间全是 session/update 通知。"""
+        """发起一次任务。**响应在任务结束后才到**，期间全是 session/update 通知。
+
+        ★ 默认**不设读超时**（``read_timeout=None``）⇒ 长任务不会被误杀；
+        判「死了」只靠**连接事件**（SSE 结束 / httpx 异常）——见 :meth:`rpc` 的说明。
+        """
         if on_update is not None:
             self._on_notification = on_update
         try:
             return await self.rpc("session/prompt", {
                 "sessionId": session_id,
                 "prompt": [{"type": "text", "text": text}],
-            }, timeout=timeout)
+            }, timeout=timeout, read_timeout=read_timeout)
         finally:
             self._on_notification = None
 

@@ -212,64 +212,33 @@ async def test_org_section_injected_when_catalog_on(sandbox, monkeypatch, tmp_pa
 
 # ------------------------------------------------------------- 卡面定制
 
-async def test_face_blocks_drive_per_function_face(sandbox, monkeypatch):
-    """各职能的面按目录 face_blocks 分叉:PM 有前提台账无指令簿;
-    总裁有决策簿/汇报簿/分歧待裁;非目录存量职能保持默认五节。"""
+async def test_function_face_renders_uniform_blocks(sandbox, monkeypatch):
+    """[两源模型 2026-11-01 改写] 职能面统一四节：职责书/管辖/在派任务/参与记录；
+    一切台账块（前提/决策/汇报/分歧/指令簿）不再上面——卡面权威化。"""
     wid, cards = await _seeded(monkeypatch)
     root_id = work_store.work_card_id_of(wid)
     pm = next(p for p in function_store.list_profiles(wid)
               if function_room.catalog_code_of(p) == "pm")
     s_pm = function_room.summary(wid, pm["function_id"])
-    assert "## 前提台账" in s_pm["text"] and "## 指令簿" not in s_pm["text"]
     s_ceo = function_room.summary(wid, root_id)
-    for sec in ("决策簿", "汇报簿", "分歧待裁"):
-        assert f"## {sec}" in s_ceo["text"], sec
-    # 非目录存量:默认三节（观点簿/警报簿 2026-10-31 退役）
     prof = await function_store.create_function(
         wid, "存量职能", {"charter": {"version": 1, "text": "旧职责"}})
     s_old = function_room.summary(wid, prof["function_id"])
-    for sec in ("职责书", "管辖", "指令簿"):
-        assert f"## {sec}" in s_old["text"]
-    assert "前提台账" not in s_old["text"]
+    for s in (s_pm, s_ceo, s_old):
+        for sec in ("职责书", "管辖"):
+            assert f"## {sec}" in s["text"], (sec, s["text"][:400])
+        for dead in ("前提台账", "决策簿", "汇报簿",
+                     "分歧待裁", "观点簿", "警报簿"):
+            assert dead not in s["text"], (dead, s["text"][:400])
+    # 目录职能：差事账块上脸；指令簿（function_directives 派工留痕）只有 CEO 配
+    for sec in ("在派任务", "参与记录"):
+        assert f"## {sec}" in s_pm["text"] and f"## {sec}" in s_ceo["text"], sec
+    assert "指令簿" not in s_pm["text"]
 
 
-async def test_write_ledger_own_codes_and_divergence(sandbox, monkeypatch):
-    """write_ledger 三道闸:职能回合限定/只写自己职责面(或 divergence)/text 必填。"""
-    wid, cards = await _seeded(monkeypatch)
-    root_id = work_store.work_card_id_of(wid)
-    pm = next(p for p in function_store.list_profiles(wid)
-              if function_room.catalog_code_of(p) == "pm")
-    cto = next(p for p in function_store.list_profiles(wid)
-               if function_room.catalog_code_of(p) == "cto")
-    ok = await card_tools._h_write_ledger(
-        wid, pm["function_id"],
-        {"ledger": "premises",
-         "text": "P1 并发100〔推定待确认〕;P2 TPM 是物理约束〔物理〕"},
-        cards)
-    assert ok.get("ok") is True, ok
-    # PM 不能写 CTO 的台账
-    bad = await card_tools._h_write_ledger(
-        wid, pm["function_id"], {"ledger": "tech_requirements", "text": "越权"}, cards)
-    assert bad.get("ok") is False
-    # 任何职能可写 divergence(总裁面上可见)
-    dv = await card_tools._h_write_ledger(
-        wid, cto["function_id"],
-        {"ledger": "divergence",
-         "text": "与父卡统合相左:统合判「通过」,我判「B2 未过」,依据…"}, cards)
-    assert dv.get("ok") is True
-    # 非职能回合被拒
-    den = await card_tools._h_write_ledger(
-        wid, root_id, {"ledger": "premises", "text": "x"}, cards)
-    assert den.get("ok") is False
-    # PM 面上出现前提台账条目;总裁面上出现分歧条目
-    s_pm = function_room.summary(wid, pm["function_id"])
-    assert "P1 并发100" in s_pm["text"]
-    s_ceo = function_room.summary(wid, root_id)
-    assert "与父卡统合相左" in s_ceo["text"]
-
-
-async def test_ceo_ledgers_populated_by_actions(sandbox, monkeypatch):
-    """总裁的决策簿/汇报簿由 curate_face/report_to_user 自动落账。"""
+async def test_ceo_actions_leave_verdict_traces(sandbox, monkeypatch):
+    """[两源模型 2026-11-01 改写] 总裁的 curate_face/report_to_user 留判词簿
+    （审计留痕，不是现行事实）；面上不再渲染台账块。"""
     wid, cards = await _seeded(monkeypatch)
     root_id = work_store.work_card_id_of(wid)
     r = await card_store.create_card(wid, "执笔对象", "模型生成", parent=root_id)
@@ -283,11 +252,14 @@ async def test_ceo_ledgers_populated_by_actions(sandbox, monkeypatch):
                        "new_string": "R1 总裁定稿", "note": "汇聚"},
         cards)
     await card_tools._h_report_to_user(wid, root_id, {"content": "进展汇报正文"}, cards)
+    # 台账块全退役——面上不留任何私账区块
     s = function_room.summary(wid, root_id)
-    assert "策展" in s["text"] and "进展汇报正文" in s["text"]
-    dec = function_store.list_ledger(wid, root_id, "decisions", 5)
-    rep = function_store.list_ledger(wid, root_id, "reports", 5)
-    assert dec and rep
+    for dead in ("决策簿", "汇报簿", "分歧台账"):
+        assert dead not in s["text"]
+    # 判词簿留痕（审计性质）：策展一笔 + 汇报一笔（正文在 reason 位）
+    vs = function_store.list_verdicts(wid, root_id, 10)
+    assert any("策展" in str(v.get("reason") or "") for v in vs), vs
+    assert any("向用户汇报" in str(v.get("reason") or "") for v in vs), vs
 
 
 # ------------------------------------------------------------- 介入点重构

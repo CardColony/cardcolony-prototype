@@ -31,10 +31,15 @@ ROOT = Path(__file__).resolve().parents[1]
 # ════════════════════════════════════════════════════════════════════
 
 async def _tree(wid: str) -> dict:
-    """根卡 card_001（create_work 自带）→ 002=子卡A（父001）→ 003=孙卡A1（父002）。
+    """根卡 card_001（create_work 自带）→ 002=子卡A（父001）→ 004=孙卡A1（父002）。
+
+    ★ 号位注意：sub_project/topic 建卡即派生**伴生评审卡**（card_store.create_card
+    尾部，离树、占一个 card_id）⇒ 子卡A 是 card_002、它的评审卡是 card_003、
+    孙卡A1 实为 **card_004**（伴生评审卡 card_005）。旧版断言里的 card_003
+    指的是孙卡，全部顺移为 card_004。
 
     perms 由建卡时按 config/permissions.json 固化（rd_project/sub_project 含
-    link/unlink/read_linked），无需注册表夹具。
+    link/unlink/read_linked/link_rel/unlink_rel），无需注册表夹具。
     """
     await card_store.create_card(wid, "子卡A", "用户直接创建",
                                  card_type="sub_project", parent="card_001")
@@ -174,14 +179,15 @@ def test_b2_tool_table_and_versions():
     列 OP_ONLY_TOOLS、不进常规工具面）；TOOL_TABLE_VERSION tools-tc-7 → tools-tc-8。
     """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    assert src.count('": ToolDef(') == 33  # [2026-10-31 F19] 32→33（+memory_expand）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-18"  # [2026-10-31 F19] tc-17→tc-18（+memory_expand）
-    assert prompts.BASE_PROMPT_VERSION == "t27-2"  # [2026-10-31] 随现配置对齐（t22-1 → t27-2 演进）
+    assert src.count('": ToolDef(') == 34  # [2026-11-01 差事] 33→34（+差事工具）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-19"  # [2026-11-01] tc-18→tc-19（sync schema 文案）
+    assert prompts.BASE_PROMPT_VERSION == "t27-5"  # [2026-11-01] 随现配置对齐（事实分层 t27-2→t27-3）
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY
-    # 权限开关复用 link / unlink（不新开）
-    assert card_tools.TOOL_SWITCH["link_rel"] == "link"
-    assert card_tools.TOOL_SWITCH["unlink_rel"] == "unlink"
+    # [2026-11-01] 开关词汇表扩列后 link_rel/unlink_rel 已是独立开关
+    # （不再复用 link/unlink——SWITCHES 里真有这两个码）。
+    assert card_tools.TOOL_SWITCH["link_rel"] == "link_rel"
+    assert card_tools.TOOL_SWITCH["unlink_rel"] == "unlink_rel"
     # 写工具（不进只读白名单）
     assert "link_rel" not in card_tools.READONLY_TOOLS
     assert "unlink_rel" not in card_tools.READONLY_TOOLS
@@ -192,36 +198,42 @@ async def test_b2_link_rel_writes_relations_only(sandbox):
     wid = (await work_store.create_work("link_rel 剧本"))["work_id"]
     cards = await _tree(wid)
     r = await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "依赖",
+        wid, "card_002", {"target_id": "card_004", "kind": "依赖",
                           "detail": "依赖它的接口设计"}, cards)
     assert "error" not in r, r
     meta = (await card_store.read_card(wid, "card_002"))["meta"]
     assert meta["relations"] == [
-        {"target": "card_003", "kind": "依赖", "detail": "依赖它的接口设计"}]
-    assert meta["links"] == []          # 通信线零变化
+        {"target": "card_004", "kind": "依赖", "detail": "依赖它的接口设计"}]
+    # 通信线零变化：仍只有建卡自带的父子默认线（002→001），link_rel 不碰 links
+    assert [l["target"] for l in meta["links"]] == ["card_001"]
 
     # 幂等：同 (target, kind) 不重复追加
     r2 = await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "依赖",
+        wid, "card_002", {"target_id": "card_004", "kind": "依赖",
                           "detail": "依赖它的接口设计"}, cards)
     assert r2.get("existed") is True
     meta2 = (await card_store.read_card(wid, "card_002"))["meta"]
-    assert len(meta2["relations"]) == 1
+    assert len(meta2["relations"])== 1
     # detail 变化 → 就地更新（不重复追加）
     r3 = await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "依赖",
+        wid, "card_002", {"target_id": "card_004", "kind": "依赖",
                           "detail": "改为依赖它的数据口径"}, cards)
     assert r3.get("updated") is True
     meta3 = (await card_store.read_card(wid, "card_002"))["meta"]
     assert len(meta3["relations"]) == 1
     assert meta3["relations"][0]["detail"] == "改为依赖它的数据口径"
 
-    # 另一 kind 同 target：两条并存
+    # 另一 kind 同 target：两条并存（kind 词汇表＝依赖/影响）
     await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "关联",
+        wid, "card_002", {"target_id": "card_004", "kind": "影响",
                           "detail": "同属一个模块"}, cards)
     meta4 = (await card_store.read_card(wid, "card_002"))["meta"]
     assert len(meta4["relations"]) == 2
+
+    # [relations_in 2026-11-01 · 用户令「谁依赖我应该在对方卡面上」]
+    # 被指的卡读自己的 meta 能反查到入边（存一处、读侧投影，不写第二份）。
+    meta_b = (await card_store.read_card(wid, "card_004"))["meta"]
+    assert {x["source"] for x in meta_b["relations_in"]} == {"card_002"}
 
 
 async def test_b2_isolation_read_linked_ignores_relations(sandbox):
@@ -229,13 +241,13 @@ async def test_b2_isolation_read_linked_ignores_relations(sandbox):
     wid = (await work_store.create_work("隔离·read_linked"))["work_id"]
     cards = await _tree(wid)
     await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "依赖",
+        wid, "card_002", {"target_id": "card_004", "kind": "依赖",
                           "detail": "依赖它"}, cards)
     # 依赖线确实建上了
     assert (await card_store.read_card(wid, "card_002"))["meta"]["relations"]
     # 但沿它 read_linked 不可达（只认 links）
     r = await card_tools._h_read_linked(
-        wid, "card_002", {"target_id": "card_003", "part": "正文"}, cards)
+        wid, "card_002", {"target_id": "card_004", "part": "正文"}, cards)
     assert r["ok"] is False
     assert "无通信线" in r["error"]["message"]
 
@@ -248,19 +260,19 @@ async def test_b2_isolation_send_card_message_not_reached_by_relations(sandbox):
     实测仍 denied（发信只看树，不读任何线）。
     """
     wid = (await work_store.create_work("隔离·发信"))["work_id"]
-    # 根卡 001 → 002(A)、003(B) 两兄弟
+    # 根卡 001 → 002(A)、004(B) 两兄弟（003/005 是各自的伴生评审卡）
     await card_store.create_card(wid, "A", "用户直接创建",
                                  card_type="sub_project", parent="card_001")
     await card_store.create_card(wid, "B", "用户直接创建",
                                  card_type="sub_project", parent="card_001")
     await card_store.update_card(
         wid, "card_002",
-        {"relations": [{"target": "card_003", "kind": "关联", "detail": "手写依赖线"}]},
+        {"relations": [{"target": "card_004", "kind": "影响", "detail": "手写依赖线"}]},
         "测试：手写依赖线")
     cards = card_store.iter_card_metas(wid)
     r = await card_tools._h_send_card_message(
         wid, "card_002",
-        {"target_card_id": "card_003", "msg_type": "msg_ask", "content": "hi"}, cards)
+        {"target_card_id": "card_004", "msg_type": "msg_ask", "content": "hi"}, cards)
     assert r["error"]["code"] == "denied", r
     # 机械佐证：[5713] 改口径——发信执行体**不读依赖线**（relations 不构成通行证），
     # 通信线的判定单点收在 policy.check_linked（执行体只调这一个关口）。
@@ -274,21 +286,21 @@ async def test_b2_unlink_rel_default_and_by_kind(sandbox):
     wid = (await work_store.create_work("unlink_rel 剧本"))["work_id"]
     cards = await _tree(wid)
     await card_tools._h_link_rel(wid, "card_002",
-                                 {"target_id": "card_003", "kind": "依赖", "detail": "a"}, cards)
+                                 {"target_id": "card_004", "kind": "依赖", "detail": "a"}, cards)
     await card_tools._h_link_rel(wid, "card_002",
-                                 {"target_id": "card_003", "kind": "关联", "detail": "b"}, cards)
+                                 {"target_id": "card_004", "kind": "影响", "detail": "b"}, cards)
     # 指定 kind 只解一条
     r = await card_tools._h_unlink_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "依赖"}, cards)
+        wid, "card_002", {"target_id": "card_004", "kind": "依赖"}, cards)
     assert r.get("removed") == 1
     rels = (await card_store.read_card(wid, "card_002"))["meta"]["relations"]
-    assert [x["kind"] for x in rels] == ["关联"]
+    assert [x["kind"] for x in rels] == ["影响"]
     # 缺省解全部
-    r2 = await card_tools._h_unlink_rel(wid, "card_002", {"target_id": "card_003"}, cards)
+    r2 = await card_tools._h_unlink_rel(wid, "card_002", {"target_id": "card_004"}, cards)
     assert r2.get("removed") == 1
     assert (await card_store.read_card(wid, "card_002"))["meta"]["relations"] == []
     # 已无 → not_found
-    r3 = await card_tools._h_unlink_rel(wid, "card_002", {"target_id": "card_003"}, cards)
+    r3 = await card_tools._h_unlink_rel(wid, "card_002", {"target_id": "card_004"}, cards)
     assert r3["error"]["code"] == "not_found"
 
 
@@ -302,32 +314,37 @@ async def test_b2_link_rel_no_tree_scope_limit(sandbox):
     target/kind/detail 的校验一律不变（仍是 validation）。
     """
     wid = (await work_store.create_work("越权剧本"))["work_id"]
-    # 根 001 → A(002)、B(003) 兄弟；A 连 B（不在 A 子树内）→ denied
+    # 根 001 → A(002)、B(004) 兄弟（003/005 是伴生评审卡）；A 连 B（不在 A 子树内）放行
     await card_store.create_card(wid, "A", "用户直接创建",
                                  card_type="sub_project", parent="card_001")
     await card_store.create_card(wid, "B", "用户直接创建",
                                  card_type="sub_project", parent="card_001")
     cards = card_store.iter_card_metas(wid)
     r = await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "依赖", "detail": "x"}, cards)
+        wid, "card_002", {"target_id": "card_004", "kind": "依赖", "detail": "x"}, cards)
     assert r.get("ok") is True, r          # [5713] 平级卡建线放行
     _m = (await card_store.read_card(wid, "card_002"))["meta"]
-    assert [x["target"] for x in _m["relations"]] == ["card_003"]
+    assert [x["target"] for x in _m["relations"]] == ["card_004"]
     # 自身 → validation
     r2 = await card_tools._h_link_rel(
         wid, "card_002", {"target_id": "card_002", "kind": "依赖", "detail": "x"}, cards)
     assert r2["error"]["code"] == "validation"
     # kind 非法 → validation；detail 空 → validation
     r3 = await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "耦合", "detail": "x"}, cards)
+        wid, "card_002", {"target_id": "card_004", "kind": "耦合", "detail": "x"}, cards)
     assert r3["error"]["code"] == "validation"
     r4 = await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "依赖", "detail": "  "}, cards)
+        wid, "card_002", {"target_id": "card_004", "kind": "依赖", "detail": "  "}, cards)
     assert r4["error"]["code"] == "validation"
 
 
-def test_b2_tool_face_gated_by_link_switch():
-    """硬判据5（续）：未授 link/unlink 的卡工具面看不到 link_rel/unlink_rel。"""
+def test_b2_tool_face_gated_by_link_rel_switch():
+    """硬判据5（续）：link_rel/unlink_rel 是**独立开关**，不复用 link/unlink。
+
+    [三线拆开关 2026-10-27 · 用户裁定] 依赖线的开关与通信线分开授：只有
+    link/unlink（通信线权）没有 link_rel/unlink_rel 的卡，工具面看不到
+    依赖线工具；反过来也成立。
+    """
     def _visible(perms):
         tools = [{"name": n} for n in card_tools.TOOL_SWITCH]
         cards = {"card_x": {"card_id": "card_x", "card_type": "sub_project",
@@ -335,18 +352,56 @@ def test_b2_tool_face_gated_by_link_switch():
         return {t["name"] for t in
                 card_tools._filter_by_category(tools, "card_x", "", cards)}
 
-    with_link = _visible(["read", "link", "unlink"])
-    assert "link_rel" in with_link and "unlink_rel" in with_link
-    no_link = _visible(["read", "edit"])
-    assert "link_rel" not in no_link and "unlink_rel" not in no_link
+    with_rel = _visible(["read", "link_rel", "unlink_rel"])
+    assert "link_rel" in with_rel and "unlink_rel" in with_rel
+    # 只有通信线开关、没有依赖线开关 ⇒ 依赖线工具不可见（不复用）
+    comm_only = _visible(["read", "link", "unlink", "edit"])
+    assert "link_rel" not in comm_only and "unlink_rel" not in comm_only
+    neither = _visible(["read", "edit"])
+    assert "link_rel" not in neither and "unlink_rel" not in neither
 
 
 async def test_b2_read_card_returns_both_keys(sandbox):
-    """硬判据6：read_card（工具）返回同时含 links 与 relations 两键。"""
+    """硬判据6：read_card（工具）返回同时含 links/relations/relations_in 三键。"""
     wid = (await work_store.create_work("read_card 两键"))["work_id"]
     cards = await _tree(wid)
-    r = await card_tools._h_read_card(wid, "card_002", {"card_id": "card_003"}, cards)
-    assert "links" in r and "relations" in r
+    r = await card_tools._h_read_card(wid, "card_002", {"card_id": "card_004"}, cards)
+    assert "links" in r and "relations" in r and "relations_in" in r
+
+
+async def test_b2_read_via_body_carries_relations_position(sandbox):
+    """[relations_in 2026-11-01] 沿通信线读正文，关系位置（出边＋入边）随卡面给。"""
+    wid = (await work_store.create_work("沿读关系位置"))["work_id"]
+    cards = await _tree(wid)
+    # 孙卡 004 声明依赖子卡 002 → 002 读 004 时应看到入边投影
+    await card_tools._h_link_rel(
+        wid, "card_004", {"target_id": "card_002", "kind": "依赖",
+                          "detail": "依赖它的任务分派"}, cards)
+    # 002→004 有父子默认通信线？默认线是子→父方向（004→002），002 出边无 004。
+    # 显式建一条 002→004 通信线让 read_via 可达。
+    r = await card_tools._h_link_cards(
+        wid, "card_002", {"target_id": "card_004", "type": "关联"}, cards)
+    assert "error" not in r, r
+    out = await card_tools.read_via(wid, "card_002", "card_004", "正文")
+    assert out["ok"] is True, out
+    val = out["value"]
+    assert "requirements" in val, "正文必须带需求文档（rulings 化石键已修）"
+    assert [x["target"] for x in val["relations"]] == ["card_002"]
+    assert val["relations_in"] == []
+
+
+async def test_b2_link_rel_on_real_toolface(sandbox):
+    """[能力底座补齐 2026-11-01] 真建出来的卡工具面带 link_rel/unlink_rel。
+
+    回归网：此前 permissions.json 漏补这两个开关 ⇒ abilities_for 挂载时
+    link_rel 能力全被滤掉 ⇒ 依赖线工具全网不可见（见 v15 注释）。
+    """
+    wid = (await work_store.create_work("依赖线工具面"))["work_id"]
+    await _tree(wid)
+    names = {t["name"] for t in card_tools.build_tool_schemas(
+        card_id="card_002", work_id=wid,
+        cards=card_store.iter_card_metas(wid))}
+    assert "link_rel" in names and "unlink_rel" in names, sorted(names)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -360,18 +415,19 @@ def test_b3_region_table_16_regions_with_250():
     （150 当前卡之后、155 区域说明之前；只对 auto 卡有内容）。
     """
     orders = [r["order"] for r in context_regions.REGION_TABLE]
-    # [2026-10-21] 配置演进至 v9：新增 91 team_function_instruction / 92 card_ability /
-    # 93 function_roster / 145 function_self / 175 role_cabinet 五区，17→22 同步快照
-    assert len(context_regions.REGION_TABLE) == 22
-    assert orders == [0, 85, 90, 91, 92, 93, 95, 100, 145, 150, 152, 155,
+    # [2026-10-21] 配置演进至 v9：新增 91/92/93/145/175 五区，17→22 同步快照。
+    # [2026-11-01] 22→23：新增 order 88 区（类型思考等），快照随行。
+    assert len(context_regions.REGION_TABLE) == 23
+    assert orders == [0, 88, 85, 90, 91, 92, 93, 95, 100, 145, 150, 152, 155,
                       170, 175, 200, 250, 300, 900, 999, 1000, 1010, 1020]
     by_key = {r["key"]: r for r in context_regions.REGION_TABLE}
     assert by_key["goal"]["name"] == "自动模式·目标"
-    assert by_key["relations"]["name"] == "关系线"
-    assert by_key["relations"]["seats"] == ("main",)
-    # ★ 真正的消费者闸门是 profiles（seats 不参与过滤）——取 main only 才能
-    #   真做到「三席零变化」（任务书字面写三席，与硬判据4 冲突，按硬判据4 取）。
-    assert by_key["relations"]["profiles"] == ("main",)
+    assert by_key["relations"]["name"] == "依赖关联"
+    # [2026-11-01 · 用户令「谁依赖我应该在对端可见，需要知道的不只是它自己」]
+    # 关系位置是卡面事实，三席做判断都要看得到 ⇒ seats/profiles 放开为三席
+    # （profiles 才是真正的消费者闸门）。
+    assert by_key["relations"]["seats"] == ("main", "viewpoint", "draft")
+    assert by_key["relations"]["profiles"] == ("main", "viewpoint", "draft")
 
 
 def test_b3_config_v5_has_relations_region():
@@ -392,37 +448,53 @@ def test_b3_render_empty_is_blank():
 
 
 def test_b3_render_both_directions():
-    """硬判据2：正向「我依赖/关联：B」＋反向「依赖/关联我的：A」。"""
+    """硬判据2：正向「我依赖/关联：B」＋反向「依赖/关联我的：A」；出边带目标需求文档。"""
     out = context_regions.render_dep_relations_region(
-        [{"target": "card_003", "kind": "依赖", "detail": "它的接口"}], [])
-    assert out.startswith("## 关系线")
-    assert "**我依赖**" in out and "card_003" in out and "它的接口" in out
+        [{"target": "card_003", "kind": "依赖", "detail": "它的接口",
+          "requirements": "接口要支持批量"}], [])
+    assert out.startswith("## 依赖关联")
+    assert "- 我依赖/关联：card_003（依赖·它的接口）" in out
+    # [2026-11-01] 出边投影目标当前需求文档——接口改了经关系线自动更新
+    assert "card_003 的需求文档（随它卡面更新）：" in out
+    assert "接口要支持批量" in out
     inn = context_regions.render_dep_relations_region(
-        [], [{"source": "card_001", "kind": "关联", "detail": "同模块"}])
-    assert "**依赖我的**" in inn and "card_001" in inn and "同模块" in inn
+        [], [{"source": "card_001", "kind": "影响", "detail": "同模块"}])
+    assert "- 依赖/关联我的：card_001（影响·同模块）" in inn
 
 
 async def test_b3_injection_two_directions(sandbox):
-    """硬判据2（端到端）：A 建线指向 B → A/B 的上下文各见对应方向；三席零变化。"""
+    """硬判据2（端到端）：A 建线指向 B → A/B 上下文各见对应方向；出边带目标需求文档。
+
+    [2026-11-01 · 用户两条裁定] ①入边「谁依赖我」属于对方卡面事实，三席都可见；
+    ②接口变更经关系线自动更新——出边条目投影目标**当前**需求文档，不靠通知。
+    """
     wid = (await work_store.create_work("双向注入"))["work_id"]
     cards = await _tree(wid)
     await card_tools._h_link_rel(
-        wid, "card_002", {"target_id": "card_003", "kind": "依赖",
+        wid, "card_002", {"target_id": "card_004", "kind": "依赖",
                           "detail": "依赖它的接口设计"}, cards)
+    # 目标卡写下对外信息（需求文档正稿）
+    await card_store.update_card(
+        wid, "card_004", {"requirements": "接口 v2：必填字段 repo/branch"},
+        "测试：写需求文档")
 
     ctx_a = context_assembler.build_ctx(wid, "card_002")
-    ctx_b = context_assembler.build_ctx(wid, "card_003")
+    ctx_b = context_assembler.build_ctx(wid, "card_004")
     main_a = context_regions.compose_model_context(ctx_a, profile="main")
     main_b = context_regions.compose_model_context(ctx_b, profile="main")
-    assert "**我依赖**" in main_a["system_prompt"] and "card_003" in main_a["system_prompt"]
-    assert "**依赖我的**" in main_b["system_prompt"] and "card_002" in main_b["system_prompt"]
+    assert "- 我依赖/关联：card_004" in main_a["system_prompt"]
+    assert "- 依赖/关联我的：card_002" in main_b["system_prompt"]
     # A 的上下文不该出现「依赖/关联我的：…」（A 没被指）
-    assert "**依赖我的**" not in main_a["system_prompt"]
+    assert "依赖/关联我的：" not in main_a["system_prompt"]
 
-    # 三席（viewpoint）零变化：即便有依赖线，新区不进三席（按区头判，别撞 BASE_PROMPT 文案）
+    # 出边投影：A 的上下文里就是 B 的当前需求文档——它改卡面，下一轮自动新
+    assert "card_004 的需求文档（随它卡面更新）：" in main_a["system_prompt"]
+    assert "接口 v2：必填字段 repo/branch" in main_a["system_prompt"]
+
+    # [2026-11-01] 关系位置是卡面事实 ⇒ 三席（viewpoint）也看得到这个区
     vp_a = context_regions.compose_model_context(ctx_a, profile="viewpoint")
-    assert "## 关系线" not in vp_a["system_prompt"]
-    assert "## 依赖关联" not in vp_a["neutral_context"]
+    assert "## 依赖关联" in (vp_a.get("neutral_context") or ""
+                            or vp_a.get("system_prompt") or "")
 
 
 async def test_b3_no_relations_region_absent(sandbox):
@@ -441,9 +513,12 @@ async def test_b3_order_between_memory_and_history(sandbox):
     """硬判据3：order 250 位于 200（记忆）之后、300（对话历史）之前。"""
     wid = (await work_store.create_work("顺序"))["work_id"]
     await _tree(wid)
-    ctx = context_assembler.build_ctx(
-        wid, "card_002", memory_state={"entries": [{"seq": 1, "conclusion": "旧结论"}]})
-    ctx.dep_relations_out = [{"target": "card_003", "kind": "依赖", "detail": "d"}]
+    ctx = context_assembler.build_ctx(wid, "card_002")
+    # [2026-11-01] 记忆区数据源已迁 memory_nodes（ctx.memory_entries）；
+    # memory_state 入口退役 ⇒ 直接喂装配产物。
+    ctx.memory_entries = [{"id": "n1", "level": 1, "role": "gist",
+                           "gist": "旧结论", "batch": 1}]
+    ctx.dep_relations_out = [{"target": "card_004", "kind": "依赖", "detail": "d"}]
     main = context_regions.compose_model_context(ctx, profile="main")
     sp = main["system_prompt"]
     i_mem = sp.index("## 记忆")
@@ -471,8 +546,8 @@ async def test_b3_canvas_store_projection_key_is_links(sandbox):
     wid = (await work_store.create_work("画布投影"))["work_id"]
     cards = await _tree(wid)
     await card_tools._h_link_cards(
-        wid, "card_002", {"target_id": "card_003", "type": "关联"}, cards)
+        wid, "card_002", {"target_id": "card_004", "type": "关联"}, cards)
     data = await canvas_store.update_cache(wid)
     assert "links" in data and "relations" not in data
-    assert any(l["source"] == "card_002" and l["target"] == "card_003"
+    assert any(l["source"] == "card_002" and l["target"] == "card_004"
                for l in data["links"])
