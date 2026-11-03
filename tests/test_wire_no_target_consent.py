@@ -31,10 +31,23 @@ async def _work_with_pair(title: str) -> tuple[str, dict]:
 
 
 def _strip(cards: dict, cid: str, *switches: str) -> dict:
-    """**只在内存里**把某张卡的指定开关抹掉（不动库）——模拟「该类型没配这个开关」。"""
+    """**只在内存里**把某张卡的指定开关抹掉（不动库）——模拟「该类型没配这个开关」。
+
+    [能力底座 2026-11-01] 判权已迁到 ``abilities``（perms 只是回退）：抹开关
+    要连对应**能力码**一起抹。能力码与开关名多数字面相同（link/unlink/
+    read_linked/link_rel…），按 impl.switch 反查一遍更稳——找不到就按同名抹。
+    """
     meta = dict(cards.get(cid) or {})
-    perms = [s for s in (meta.get("perms") or []) if s not in switches]
-    meta["perms"] = perms
+    meta["perms"] = [s for s in (meta.get("perms") or []) if s not in switches]
+    try:
+        from src.infra import capability_registry as _cap
+        codes = {str(c.get("code")) for c in _cap.load().get("capabilities", [])
+                 if str((c.get("impl") or {}).get("switch") or "") in switches}
+    except Exception:  # noqa: BLE001 清单读不出 ⇒ 按同名抹
+        codes = set()
+    codes |= set(switches)
+    meta["abilities"] = [a for a in (meta.get("abilities") or [])
+                         if a not in codes]
     cards[cid] = meta
     return cards
 
@@ -60,7 +73,7 @@ async def test_link_rel_works_when_target_has_no_link_switch(sandbox):
 
     r = await card_tools._h_link_rel(
         wid, "card_001",
-        {"target_id": "card_002", "kind": "关联", "detail": "测试依赖"}, cards)
+        {"target_id": "card_002", "kind": "依赖", "detail": "测试依赖"}, cards)
     assert r.get("ok") is True, r
 
 
@@ -100,8 +113,15 @@ async def test_wire_does_not_grant_messaging(sandbox):
     from src.permissions import policy
 
     wid, cards = await _work_with_pair("连线不看对方·通信边界")
+    # [2026-11-01] 「无线」前提改用**两张兄弟卡**：父子现在自带默认通信线
+    # （child→parent），check_linked 任一侧有边即成立 ⇒ 001↔002 恒有线。
+    # 兄弟卡各自只有指向父卡的默认线、彼此无边 ⇒ check_linked 仍拒。
+    r0 = await card_store.create_card(wid, "兄弟卡", "用户直接创建",
+                                      card_type="sub_project", parent="card_001")
+    sib = r0["meta"]["card_id"]
+    cards = card_store.iter_card_metas(wid)
     with pytest.raises(PermissionError):
-        policy.check_linked("card_001", "card_002", cards)
+        policy.check_linked("card_002", sib, cards)
 
     await card_tools._h_link_cards(
         wid, "card_001", {"target_id": "card_002", "type": "关联"}, cards)
@@ -122,10 +142,14 @@ async def test_send_message_does_not_check_target_read(sandbox):
     cards = card_store.iter_card_metas(wid)
     _strip(cards, "card_002", "read")          # 目标卡连 read 都没有
 
+    # [能力底座 2026-11-01] send_card_message 已退役出模型工具面，能力清单里
+    # 没有 switch=send_card_message 的能力码 ⇒ 模型路径的发信开关关恒拒。
+    # 本用例钉的是「发信不查**目标卡** read」⇒ 保留通信线闸、跳过发起方
+    # 开关关（与系统薄壳同形），语义不减。
     r = await card_tools._h_send_card_message(
         wid, "card_001",
         {"target_card_id": "card_002", "msg_type": "msg_notify", "content": "测试"},
-        cards)
+        cards, require_switch=False)
     assert r.get("msg_id"), r          # 成功返回 msg_id（没有 ok 字段）
 
 
@@ -141,5 +165,5 @@ async def test_read_linked_does_not_check_target_read_linked(sandbox):
     _strip(cards, "card_002", "read_linked")
 
     r = await card_tools._h_read_linked(
-        wid, "card_001", {"target_id": "card_002", "part": "body"}, cards)
+        wid, "card_001", {"target_id": "card_002", "part": "正文"}, cards)
     assert r.get("ok") is not False or r.get("error", {}).get("code") != "denied", r

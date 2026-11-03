@@ -14,7 +14,7 @@ import pytest
 from src.storage import condense_two_layer as tl
 from src.storage import memory_domain as md
 
-from _condense_stub import as_llm, three_stage_stub
+from tests._condense_stub import as_llm, three_stage_stub
 
 
 def _blocks(n: int) -> list[dict]:

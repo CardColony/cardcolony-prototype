@@ -12,7 +12,7 @@
 - 停职/失能者在判定时被剔除(duty 状态);全部失能 ⇒ 批次立刻作废并
   回执发起方——这是当次判定的结果,不是超时。
 
-DDL 放本模块(function_ledgers 先例)。
+DDL 放本模块(card_db 是禁改文件,独立表归各自存储模块)。
 """
 from __future__ import annotations
 

@@ -20,7 +20,7 @@ import os
 
 import pytest
 
-import async_settle
+from tests import async_settle
 from src.storage import card_store, session_store, work_store  # noqa: F401
 from src.thinkchain import board
 from src.thinkchain.board import (

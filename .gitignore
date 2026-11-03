@@ -22,6 +22,10 @@ _*.err
 _verify/
 _shots/
 _pytest_tmp/
+# 浏览器会话 profile/截图产物（2026-11-02，src/infra/browser）
+_browser_sessions/
+browser_sessions/
+_browser_runtime/
 # 其他工具的状态目录（非本仓库资产）
 .workbuddy-ai/
 # 零字节事故文件（重定向笔误产物）

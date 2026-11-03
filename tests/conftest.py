@@ -72,9 +72,12 @@ def sandbox(tmp_path, monkeypatch):
     # [2026-10-27] 门面的解析缓存也按 work_id 索引，跨用例会串味 ⇒ 一并清。
     from src.storage import session_facade as _sf_clear
     _sf_clear.reset_cache()
-    # [2026-10-27] 门面的解析缓存也按 work_id 索引，跨用例会串味 ⇒ 一并清。
-    from src.storage import session_facade as _sf_clear
-    _sf_clear.reset_cache()
+    # [干预台账 2026-10-31] harness.db 连接按 (works_dir, work_id) 索引：
+    # 单例还指着上个沙箱目录时，同样的 work_id/card_id/seq 会让动作去重
+    # 键撞上旧库已投递的记录 ⇒ 新用例的投递被吞（批量红、单跑绿）。
+    # 与上面 card_db 同一先例：沙箱建好后就把单例绑到本沙箱的 works。
+    from src.infra import intervention_store as _ist_clear
+    _ist_clear.reset(_ist_clear.InterventionStore(works_dir=works))
 
     # 快照根：BASE_DIR 用于 _iter_protected_files 与相对路径计算
     monkeypatch.setattr(data_snapshot, "BASE_DIR", base)
@@ -128,6 +131,20 @@ def sandbox(tmp_path, monkeypatch):
     _wb_picker.reset_pickers()
     _wb_registry.reset_registry()
 
+    # [差事策略 2026-11-01] **harness 策略集隔离**：仓库
+    # config/harness_policies.json 里 staff_* deploy 策略是真点火——
+    # 建差事＋起模型回合（`_run_message`）。任何发 card_created /
+    # card_goal_completed 事件的用例都会经 event_log→feed 真去调模型。
+    # ⇒ 全部用例指向空策略表（feed 机制照跑、零命中），并清 _SET 单例
+    #   防用例间串味；要测真策略的用例自己把 ECO_POLICIES_PATH 指向目标
+    #   文件并 ``policy_set.reset_set(自建集)``（照 wb_exec 同一先例）。
+    _pol_off = base / "policies_off.json"
+    _pol_off.write_text(_json.dumps({"policies": []}, ensure_ascii=False),
+                        encoding="utf-8")
+    monkeypatch.setenv("ECO_POLICIES_PATH", str(_pol_off))
+    from src.infra import policy_set as _ps
+    _ps.reset_set()
+
     # [预设职能 2026-10-24] **职能目录隔离**：仓库里的 config/function_catalog.json
     # 是开闸态(seed_on_create=true)——若测试直接用它,任何建 work 的用例会真播种
     # 五个职能(总裁+四职能卡),改变卡数/收口闸/上下文断言 ⇒ 基线漂移。
@@ -153,6 +170,8 @@ def sandbox(tmp_path, monkeypatch):
     # cards.db / -wal / -shm 句柄会让 pytest 的 tmp 目录清理在 Windows 上卡死
     # （实测：测试跑完到 100% 却挂十几分钟不退出）。
     card_db.reset_caches()
+    # [干预台账] harness.db 同型问题：关连接再还单例，tmp 目录不被句柄拖住。
+    _ist_clear.reset()
 
     # [自动停止权威性 2026-10-24] goal 服务是**进程单例**，缓存里存的是按事件
     # fold 出来的目标状态。`control.stop_auto` 现在走 `service.pause()`（权威命令），
@@ -164,6 +183,10 @@ def sandbox(tmp_path, monkeypatch):
         _get_goal_service()._caches.clear()
     except Exception:  # noqa: BLE001 goal 包未装/未初始化 ⇒ 无需清
         pass
+
+    # [差事策略 2026-11-01] 策略单例也清：用例自建的集不能漏给下一个用例
+    # （下一个用例的 dispatcher() 会懒加载——env 已回到空表）。
+    _ps.reset_set()
 
     # [wb_exec 2026-10-23] 执行体的进程级状态也要清（配比器／未登录记忆／
     # 网关注册表），否则会跨用例串。
@@ -259,3 +282,20 @@ def typed_registry(monkeypatch):
         card_store, "TYPE_REGISTRY_PATH",
         ROOT / "tests" / "_fixtures" / "card_type_registry.json",
     )
+
+
+@pytest.fixture(autouse=True)
+def _wb_exec_quota_state_to_tmp(tmp_path_factory, monkeypatch):
+    """wb_exec 的**额度状态文件不许写进仓库**（2026-11-04）。
+
+    背景：``registry.mark_exhausted`` 现在会**同时落盘**
+    （跨重启生效 ⇒ 生产重启后仍记得某个端点额度用完）。
+    ⇒ 用例里触发 quota ⇒ 会把 ``config/wb_exec_quota.json`` 写脏
+    ⇒ **污染真实配置**（实测：一次测试跑完，wb-cn 的两个档被标成"额度耗尽"）。
+
+    ⇒ 这里把状态文件重定向到临时目录（**只影响测试**）。
+    """
+    from src.api.wb_exec import quota_state
+    path = tmp_path_factory.mktemp("wb_exec_quota") / "quota.json"
+    monkeypatch.setattr(quota_state, "STATE_PATH", path)
+    yield

@@ -119,3 +119,101 @@ def test_schema_has_no_whole_write_param():
     assert "text" not in props, props
     for k in ("old_string", "new_string"):
         assert k in props, k
+
+
+# ---------------------------------------------------------------- 定位诊断 2026-11-02
+
+@pytest.mark.asyncio
+async def test_not_found_returns_nearest_window_with_lines(work):
+    """[card_021 实案] 找不到时回近似原文窗＋行号（不是头 3000 字、
+    也不是「去 read_card 核对」）——模型拿逐字原文修锚点，不必重读。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    before = ("头部条目\n" + "填充行\n" * 20 +
+              "目标条款：上限 500 条\n目标条款：沿用旧制\n" +
+              "填充行\n" * 20 + "收尾\n")
+    await card_store.update_card(wid, cid, {"requirements": before}, "预置")
+    res = await card_tools.execute_tool(
+        wid, cid, "edit_requirements",
+        {"old_string": "目标条款：上限 900 条\n目标条款：沿用旧制",
+         "new_string": "X"}, await _cards(wid))
+    assert res.get("ok") is False, res
+    msg = res["error"]["message"]
+    assert "目标条款：上限 500 条" in msg, msg          # 近似窗里是逐字原文
+    assert "行起" in msg and "lines=" in msg, msg      # 给了行号与行定位出口
+    assert await _req(wid, cid) == before, "拒了就不能动块"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_lists_match_positions(work):
+    """多次命中给各命中行号＋行首——消歧也不用回读全文。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    before = "R1 相同句\n间隔行\nR2 相同句\n"
+    await card_store.update_card(wid, cid, {"requirements": before}, "预置")
+    res = await card_tools.execute_tool(
+        wid, cid, "edit_requirements",
+        {"old_string": "相同句", "new_string": "不同句"}, await _cards(wid))
+    assert res.get("ok") is False, res
+    msg = res["error"]["message"]
+    assert "2 次" in msg and "第 1 行" in msg and "第 3 行" in msg, msg
+    assert await _req(wid, cid) == before, "拒了就不能动块"
+
+
+# ---------------------------------------------------------------------------
+# read_card 分段读＋大块封顶（2026-11-02 · card_021 实案续）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_card_block_range_returns_lines(work):
+    """block=需求文档＋para_start/para_end：按行区间只回一段，带总行数。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    doc = "\n".join(f"第{i}条需求" for i in range(1, 51))
+    await card_store.update_card(wid, cid, {"requirements": doc}, "预置")
+    res = await card_tools.execute_tool(
+        wid, cid, "read_card",
+        {"card_id": cid, "block": "需求文档", "para_start": 10, "para_end": 12},
+        await _cards(wid))
+    assert res.get("ok") is True, res
+    data = res["data"]
+    assert data["total_lines"] == 50
+    assert data["read_lines"] == "10-12"
+    assert data["content"] == "第10条需求\n第11条需求\n第12条需求"
+
+
+@pytest.mark.asyncio
+async def test_read_card_big_block_is_capped_with_continuation(work, monkeypatch):
+    """大块不带区间也封顶：回头段＋续读指引——不再整块回（8万token实案）。"""
+    monkeypatch.setenv("READ_CARD_BLOCK_CAP", "400")
+    wid, cid = work["work_id"], work["work_card_id"]
+    doc = "\n".join(f"第{i:03d}条需求内容" for i in range(1, 201))
+    await card_store.update_card(wid, cid, {"requirements": doc}, "预置")
+    res = await card_tools.execute_tool(
+        wid, cid, "read_card", {"card_id": cid}, await _cards(wid))
+    assert res.get("ok") is True, res
+    text = res["data"]["需求文档"]
+    assert len(text) < 800                      # 封顶生效
+    assert "本块共 200 行" in text                # 明示总行数
+    assert "para_start=" in text                  # 给出续读入口
+    # 续读真能拿到后段
+    res2 = await card_tools.execute_tool(
+        wid, cid, "read_card",
+        {"card_id": cid, "block": "需求文档", "para_start": 199},
+        await _cards(wid))
+    assert res2["data"]["read_lines"] == "199-200"
+    assert "第200条需求内容" in res2["data"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_read_card_block_range_out_of_bounds(work):
+    """para_start 超界报 validation（不静默回空），块名非法报 validation。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    await card_store.update_card(wid, cid, {"requirements": "三行\n文档\n内容"}, "预置")
+    res = await card_tools.execute_tool(
+        wid, cid, "read_card",
+        {"card_id": cid, "block": "需求文档", "para_start": 99},
+        await _cards(wid))
+    assert res.get("ok") is False
+    assert "共 3 行" in str(res.get("error"))
+    res2 = await card_tools.execute_tool(
+        wid, cid, "read_card", {"card_id": cid, "block": "不存在的块"},
+        await _cards(wid))
+    assert res2.get("ok") is False

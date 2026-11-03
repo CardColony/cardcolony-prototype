@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from src.api import card_tools, message_runner, model_service, routes
-from src.infra import event_hub, harness, harness_rules
+from src.infra import event_hub, harness
 from src.storage import card_db, card_store, event_log, session_facade, work_store
 
 

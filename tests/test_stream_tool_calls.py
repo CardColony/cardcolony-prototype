@@ -18,7 +18,7 @@ import pytest
 from src.model_gateway.gateway import ModelGateway
 from src.model_gateway.llm.types import ToolCallDelta
 
-from fake_llm import finish, install_fake_llm, reasoning_delta, text_delta
+from tests.fake_llm import finish, install_fake_llm, reasoning_delta, text_delta
 
 
 def _tc_delta(index, tc_id=None, name=None, arguments=None):

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""开新批次 ⇒ 旧批次的所有内容清干净（2026-10-31 用户裁定）。
+"""开新批次 ⇒ 新开会话，旧内容归档不删（2026-10-31 用户令修正）。
 
-用户原话：「每一次调新批次，旧批次的所有内容，都应该清干净，
-每一次评审都是全新的开始」
+用户原话：「新建评审批次，是新建 session，而不是删掉旧对话内容」
 
 钉三件事：
-1. 旧会话清空（发言、工具结果全走，新批次从零开始）
+1. 旧会话归档成 `{rid}-{旧批次}`（发言、工具结果一块不丢，
+   可审计可回溯）；场会话空白重起
 2. 旧审批票删除（review_approvals 里本评审卡旧批次的行清掉）
 3. prev_verdict 是**唯一**带过来的东西（换上下文，不是带过程）
 """
@@ -16,34 +16,44 @@ import sqlite3
 from src.storage import review_store, session_facade
 
 
+def _sid(rid: str, batch: str) -> str:
+    """归档会话 id：`{rid}-{批次}`。"""
+    return f"{rid}-{batch}"
+
+
 async def _make(sandbox, n: int = 2):
     from tests.test_review_user_intervention import _setup as _base
     return await _base(n)
 
 
-async def test_new_batch_clears_old_session(sandbox):
-    """开新批次 ⇒ 旧会话文件清空（发言/工具结果全走，只留文件头）。"""
+async def test_new_batch_archives_old_session(sandbox):
+    """开新批次 ⇒ 旧会话整块归档到 `{rid}-{旧批次}`，场会话空白重起。"""
     wid, cid, fids, rid = await _make(sandbox)
+    old_batch = str((await review_store.state_of(wid, rid)).get("batch"))
 
     # 造旧批次的会话内容
     await session_facade.append(wid, rid, {
-        "actor": "assistant",
-        "content": f"〔总裁 · rv_OLD〕旧批次的发言，不应该出现在新批次里",
+        "actor": "assistant", "from": fids[0],
+        "content": "旧批次的发言，不应该出现在新批次里",
     })
     await session_facade.append(wid, rid, {
         "actor": "tool",
-        "content": "〔read_card · rv_OLD〕 旧批次的工具结果",
+        "content": "旧批次的工具结果",
     })
     blocks = await session_facade.read(wid, rid) or []
     assert len(blocks) >= 2, "前置：旧批次有会话内容"
 
     # 开新批次
-    st = await review_store.open_batch(wid, rid, "新焦点",
-                                        members=fids, target=cid, brief="新背景")
+    await review_store.open_batch(wid, rid, "新焦点",
+                                  members=fids, target=cid, brief="新背景")
 
-    # 会话应该被清空
+    # 场会话是新的；旧块全在归档里，一块不丢
     blocks2 = await session_facade.read(wid, rid) or []
-    assert blocks2 == [], f"新批次开会后旧会话应清空，实际还有 {len(blocks2)} 块"
+    assert blocks2 == [], f"新批次的场会话应从空白起，实际还有 {len(blocks2)} 块"
+    arch = await session_facade.read(wid, _sid(rid, old_batch)) or []
+    joined = str(arch)
+    assert len(arch) >= 2, f"旧批次会话必须归档保留，实际归档 {len(arch)} 块"
+    assert "旧批次的发言" in joined and "旧批次的工具结果" in joined
 
 
 async def test_new_batch_deletes_old_approvals(sandbox):
@@ -104,10 +114,12 @@ async def test_prev_verdict_is_the_only_thing_carried(sandbox):
     assert st.get("draft") == 1
     assert "criteria" not in st, "评审不再有判据概念"
     assert st.get("brief") == "新brief"
-    assert st.get("spoken", {}).get("roles") in ([], None)  # 新批次没人说过话
-    # 会话为空
+    assert not (st.get("seats") or {}), "新批次席位机械状态（发言水位）清零"
+    # 场会话为空；旧内容归档在 `{rid}-{旧批次}`，不是删了
     blocks = await session_facade.read(wid, rid) or []
-    assert blocks == [], "新批次应该没有旧发言"
+    assert blocks == [], "新批次的场会话应从空白起"
+    arch = await session_facade.read(wid, _sid(rid, old_batch)) or []
+    assert any("旧发言" in str(b) for b in arch), "旧发言必须归档保留"
 
 
 async def test_concurrent_review_cards_not_affected(sandbox):

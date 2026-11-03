@@ -523,6 +523,107 @@ def _backup_existing(target: Path, old: bytes) -> tuple[str, dict[str, Any] | No
     return str(bfile), None
 
 
+def closest_match_windows(text: str, needle: str, *, limit: int = 2,
+                          ctx: int = 2) -> list[dict[str, Any]]:
+    """old_string 找不到时：返回与 ``needle`` 最相似的原文窗（带行号）。
+
+    [2026-11-02 · card_021 实案] 编辑失败只回「找不到」时，模型唯一的自救是
+    整块重读原文——一张 8 万 token 的块被连读 12 轮、当轮上线体积 109 万
+    撞穿模型窗口。修法不是回全文，是回**最像的窗**：needle 各行在全文里粗筛
+    候选行，再以其为窗心评相似度，取 top-``limit`` 个互不重叠的窗。模型拿
+    窗内逐字原文改 old_string（或拿行号走行定位/分段读），不必重读。
+    """
+    import difflib
+
+    rows = str(text or "").split("\n")
+    nrows = [r.strip() for r in str(needle or "").split("\n") if r.strip()]
+    if not rows or not nrows:
+        return []
+    win = min(max(len(nrows) + ctx * 2, 4), 16)
+
+    # 粗筛候选行：needle 各非空行在全文的 top-3 相似行（get_close_matches
+    # 内部自带 real_quick_ratio 预筛，长文档也不慢）。重复行取全部索引。
+    cand: set[int] = set()
+    for nr in nrows[:10]:
+        for m in difflib.get_close_matches(nr, rows, n=3, cutoff=0.55):
+            for j, r in enumerate(rows):
+                if r is m or r == m:
+                    cand.add(j)
+    if not cand:
+        return []
+
+    # 精评：候选行为窗心取 win 窗；needle 各非空行的最好行相似度取均值。
+    half = win // 2
+    scored: list[tuple[float, int]] = []
+    for c in cand:
+        lo = max(0, c - half)
+        hi = min(len(rows), lo + win)
+        lo = max(0, hi - win)
+        seg = rows[lo:hi]
+        tot = 0.0
+        for nr in nrows:
+            best = 0.0
+            for r in seg:
+                rs = r.strip()
+                if not rs:
+                    continue
+                s = difflib.SequenceMatcher(None, nr, rs).ratio()
+                if s > best:
+                    best = s
+            tot += best
+        scored.append((tot / len(nrows), lo))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+
+    out: list[dict[str, Any]] = []
+    spans: list[tuple[int, int]] = []
+    for s, lo in scored:
+        if s < 0.45:
+            break
+        if any(lo < b and lo + win > a for a, b in spans):
+            continue
+        spans.append((lo, lo + win))
+        snippet = "\n".join(rows[lo:lo + win])
+        if len(snippet) > 1800:
+            snippet = snippet[:1800] + "\n…（窗截断）"
+        out.append({"line": lo + 1, "similarity": round(s, 2), "text": snippet})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def format_not_found_hint(text: str, needle: str, *, limit: int = 2,
+                          fix_hint: str = "") -> str:
+    """「找不到」回执的定位段：近似窗（带行号）或行数索引兜底。
+
+    设计意图见 ``closest_match_windows``：把「改对锚点所需的信息」直接放在
+    报错里，消灭「报错→整块重读→再报错」的死循环。
+    """
+    wins = closest_match_windows(text, needle, limit=limit)
+    if wins:
+        body = "\n".join(
+            f"---- 第 {w['line']} 行起 ----\n{w['text']}" for w in wins)
+        return (f"下面是与你要找的原文最接近的段落：\n{body}\n"
+                f"修法：old_string 填上面窗内的**逐字原文**；{fix_hint}不必重读全文。")
+    lines = str(text or "").count("\n") + (1 if str(text or "") else 0)
+    return (f"也没有足够近似的段落可指。内容共 {lines} 行；{fix_hint}")
+
+
+def match_positions(text: str, needle: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """多次命中时：各命中点的行号＋该行首 80 字（消歧不靠重读）。"""
+    out: list[dict[str, Any]] = []
+    pos = 0
+    while len(out) < limit:
+        i = text.find(needle, pos)
+        if i < 0:
+            break
+        line = text.count("\n", 0, i) + 1
+        row_end = text.find("\n", i)
+        out.append({"line": line,
+                    "head": text[i:(row_end if row_end >= 0 else len(text))][:80]})
+        pos = i + 1
+    return out
+
+
 def edit_file(path: str, old_string: str, new_string: str) -> dict[str, Any]:
     """精准编辑：把文件中的 ``old_string`` 换成 ``new_string``（只改那一处）。
 
@@ -567,9 +668,20 @@ def edit_file(path: str, old_string: str, new_string: str) -> dict[str, Any]:
 
     n = text.count(old_s)
     if n == 0:
-        return {"error": "old_string 未在文件中找到"}
+        # [2026-11-02 · card_021 实案] 光报「找不到」⇒ 模型整块重读自救，
+        # 8 万 token 的文档重读 12 轮撞穿模型窗口。回近似原文窗＋行号：
+        # 模型直接修 old_string，或 read_file 按行只回读那一段。
+        hint = format_not_found_hint(
+            text, old_s,
+            fix_hint="或 read_file(path, 起, 止) 按行只回读那一段；")
+        return {"error": f"old_string 未在文件中找到，文件未改动。{hint}"}
     if n > 1:
-        return {"error": f"old_string 出现 {n} 次，请提供更精确的上下文以唯一定位"}
+        spots = match_positions(text, old_s)
+        listing = "；".join(f"第 {p['line']} 行：{p['head']}" for p in spots)
+        return {"error": (f"old_string 出现 {n} 次（{listing}"
+                          + (f"等共 {n} 处" if n > len(spots) else "") +
+                          f"），文件未改动。请带上更多上下文让它唯一，"
+                          f"或 read_file 按行回读后再改。")}
 
     backup_path, berr = _backup_existing(target, raw)
     if berr:

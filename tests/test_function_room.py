@@ -120,8 +120,6 @@ def test_self_region_ceo_boundary_differs(sandbox):
         "charter": {"text": "统筹决策与对用户汇报"},
         "jurisdiction": {"catalog_code": "ceo", "domain": "全局统筹",
                          "scope": "all"},
-        "watch": {"scope": "all", "cards": []},
-        "speak_contract": {"advice_when": ["统合文到达"]},
     }
     txt = context_regions.render_function_self_region(_ctx_with(ceo_meta))
     assert "你的职能" in txt and "总裁" in txt
@@ -132,16 +130,37 @@ def test_self_region_ceo_boundary_differs(sandbox):
         "function_id": "fn_002", "function_name": "产品经理",
         "charter": {"text": "需求与前提的持有者"},
         "jurisdiction": {"catalog_code": "pm", "scope": "all"},
-        "watch": {"scope": "all", "cards": []},
-        "speak_contract": {},
     }
     txt2 = context_regions.render_function_self_region(_ctx_with(pm_meta))
-    # [职能唤醒收口 2026-10-28] 普通职能的边界句改了：不再写「只盯、该开口才开口」
-    # （那是事件唤醒时代的说法），改成「只在需求评审 + 用户找它时被用到」。
+    # [两源模型 2026-11-01] 边界句＝三种在场通道；watch/speak_contract
+    # 字段是自动唤醒时代的死档案，不再渲染。
     assert "不干具体的活" in txt2
-    assert "需求评审叫你来评" in txt2 and "用户直接找你聊" in txt2
-    assert "只盯" not in txt2
-    assert "按范围:all" in txt2                    # scope 盯线的显示
+    assert "差事派你" in txt2 and "评审叫你" in txt2 and "用户直接找你" in txt2
+    assert "只盯" not in txt2 and "发言契约" not in txt2 and "按范围" not in txt2
+
+
+def test_self_region_injects_function_rules_sections(sandbox):
+    """[两源模型 2026-11-01] QA 的两个事实源之一：rules.md 的
+    `## function`（全体）＋`## function.<code>`（只对它）注入 145 区。"""
+    qa_meta = {
+        "function_id": "fn_qa", "function_name": "验收",
+        "charter": {"text": "验产物"},
+        "jurisdiction": {"catalog_code": "qa", "scope": "all"},
+    }
+    ctx = _ctx_with(qa_meta)
+    ctx.rule_sections = {
+        "function": "通用纪律：结论落场卡面",
+        "function.qa": "验收准则：按需求文档逐条量",
+        "function.pm": "PM 的前提纪律",
+    }
+    txt = context_regions.render_function_self_region(ctx)
+    assert "你的规则" in txt
+    assert "通用纪律" in txt                       # function 共享区
+    assert "验收准则" in txt                       # function.qa 专属区
+    assert "PM 的前提纪律" not in txt              # 别家职能的区不灌进来
+    # 没挂规则的职能不出「你的规则」块
+    ctx2 = _ctx_with(qa_meta)
+    assert "你的规则" not in context_regions.render_function_self_region(ctx2)
 
 
 def test_self_region_empty_meta_no_region(sandbox):
@@ -151,24 +170,25 @@ def test_self_region_empty_meta_no_region(sandbox):
         context_regions.RegionCtx()) == ""
 
 
-# ---------------------------------------------------------------- T4 卡面台账
+# ---------------------------------------------------------------- T4 卡面块
 
-async def test_function_summary_from_ledgers(sandbox):
-    wdata = await work_store.create_work("台账卡面")
+async def test_function_summary_blocks(sandbox):
+    """[两源模型 2026-11-01 改写] 职能面＝身份块+差事账，一切私记台账区块退役。
+    「指令簿」是 function_directives 派工留痕（机械工作记录，非事实源），保留。"""
+    wdata = await work_store.create_work("职能卡面")
     wid = wdata["work_id"]
     prof = await function_store.create_function(
         wid, "测试职能",
         {"charter": {"version": 1, "text": "对什么负责:测试职责书"},
-         "jurisdiction": {"domain": "测试域", "scope": "all"},
-         "watch": {"scope": "all", "cards": [], "signals": []}})
+         "jurisdiction": {"domain": "测试域", "scope": "all"}})
     fid = prof["function_id"]
     s = function_room.summary(wid, fid)
     assert s["function_name"] == "测试职能"
     for sec in ("职责书", "管辖", "指令簿"):
-        assert f"## {sec}" in s["text"]
+        assert f"## {sec}" in s["text"], sec   # 非目录职能：旧默认块
     assert "测试职责书" in s["text"]
-    # [2026-10-31] 观点簿/警报簿随 record_verdict / raise_alarm 退役：面里不再有这两节
-    assert "## 观点簿" not in s["text"] and "## 警报簿" not in s["text"]
+    for dead in ("观点簿", "警报簿", "决策簿", "汇报簿", "前提台账"):
+        assert dead not in s["text"], dead
     assert "open_alarms" not in s["counts"]
 
 
@@ -223,7 +243,8 @@ async def test_seed_endpoint_for_existing_work(sandbox, monkeypatch):
     assert out2["seeded"] == [] and len(out2["skipped"]) == 5
 
 
-async def test_read_function_card_returns_ledger_face(sandbox, monkeypatch):
+async def test_read_function_card_returns_identity_face(sandbox, monkeypatch):
+    """[两源模型 2026-11-01 改写] 读职能卡＝身份面（职责书/管辖/差事块），无台账。"""
     _use_repo_catalog(monkeypatch)
     wdata = await work_store.create_work("职能读卡")
     wid = wdata["work_id"]
@@ -236,7 +257,8 @@ async def test_read_function_card_returns_ledger_face(sandbox, monkeypatch):
     r = await card_tools._h_read_card(wid, root_id, {"card_id": fid}, cards)
     assert r.get("card_type") == "function"
     assert "function" in r and "职责书" in r["text"]
-    assert "观点簿" not in r["text"]        # 2026-10-31 判断簿退役
+    for dead in ("观点簿", "决策簿", "汇报簿", "台账"):
+        assert dead not in r["text"]
 
 
 # ---------------------------------------------------------------- P-A 工具面
@@ -251,7 +273,7 @@ async def _seeded_work(monkeypatch, title: str = "工具面") -> tuple[str, dict
 
 async def test_function_toolface_catalog_deny(sandbox, monkeypatch):
     """目录 deny 生效:预设职能不发信不派工(send_card_message/create_card 摘除),
-    基础职能件(sync/approve/write_ledger)保留；判断/警报三件已退役。"""
+    基础职能件(sync/approve)保留；判断/警报三件、write_ledger 均已退役。"""
     wid, cards = await _seeded_work(monkeypatch)
     fn_ids = [cid for cid, m in cards.items()
               if str(m.get("card_type") or "") == "function"]
@@ -267,8 +289,10 @@ async def test_function_toolface_catalog_deny(sandbox, monkeypatch):
     # 职能改为在评审卡上调 approve 表态。
     assert "review_request" not in names and "submit_review" not in names
     # [2026-10-31 用户令] 判断/警报退役：三件不再进任何工具面
+    # [2026-11-01 两源模型] write_ledger 退役：私账不再进任何工具面
     assert {"sync", "approve"} <= names
-    assert not ({"record_verdict", "raise_alarm", "correct_alarm"} & names)
+    assert not ({"record_verdict", "raise_alarm", "correct_alarm",
+                "write_ledger"} & names)
 
 
 async def test_legacy_function_keeps_old_toolface(sandbox):
@@ -350,16 +374,23 @@ def test_child_status_full_and_coder_skipped(sandbox):
                "status_block": long_status}])
     assert out.count("x") == 5000                # 全文,一个字不砍
     assert "截断" not in out
-    # coder 子卡跳过
+    # coder 子卡：不给「现状」（它没有现状块），但活性与使命照给——
+    # [2026-11-02 用户令] 父卡要知道编程卡跑没跑。
     out2 = mk([{"card_id": "card_009", "title": "编程卡",
-                "status_block": "有东西也不注入", "card_type": "coder"}])
-    assert out2 == ""
+                "status_block": "有东西也不注入", "card_type": "coder",
+                "mission": "写排序模块", "activity": "运行中 · 已跑 3 轮"}])
+    assert "### card_009 · 编程卡" in out2 and "运行中 · 已跑 3 轮" in out2
+    assert "写排序模块" in out2
+    assert "有东西也不注入" not in out2, "coder 的现状块不注入（用户令）"
+    # 连活性/使命都没有（手工构造的空卡面）⇒ 不出现
+    assert mk([{"card_id": "card_010", "title": "空卡", "card_type": "coder"}]) == ""
 
 
 def test_region_guide_function_branch(sandbox):
-    """职能卡的 155 区讲台账面,不再讲三块;作业卡三块语义不变。"""
+    """职能卡的 155 区讲职责书+差事记录,不再讲三块;作业卡三块语义不变。"""
     g = context_regions.render_card_region_guide("function", "rd_project")
-    assert "职能卡" in g and "指令簿" in g and "三个块" not in g
+    assert "职能卡" in g and "职责书" in g and "差事" in g
+    assert "三个块" not in g and "台账" not in g
     g2 = context_regions.render_card_region_guide("sub_project", "rd_project")
     assert "三个块" in g2                        # 作业卡照旧
 

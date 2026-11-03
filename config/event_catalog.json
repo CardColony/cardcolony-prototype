@@ -2,8 +2,8 @@
  "_meta": {
   "title": "事件类型登记表",
   "desc": "系统内所有事件类型的唯一登记处。新增事件类型必须在此登记，否则 event_hub.record 会报 UnknownEventType（开发期抛错、生产期 ERROR 日志）。tests/test_event_catalog_coverage.py 会扫源码所有事件产生点与本源对账，未登记即红。",
-  "version": 2,
-  "updated": "2026-10-28",
+  "version": 3,
+  "updated": "2026-11-01",
   "fields": {
    "label": "中文名（前端显示 / 日志可读）",
    "group": "分组，仅用于展示归类",
@@ -572,7 +572,8 @@
     ],
     "optional": [
      "msg_id",
-     "reply_to"
+     "reply_to",
+     "kind"
     ],
     "payload": [
      "content"
@@ -723,6 +724,43 @@
     ]
    }
   },
+  "card_halted": {
+   "label": "强制停止置位",
+   "group": "卡",
+   "source": "api/control",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "by"
+    ],
+    "optional": [
+     "ts"
+    ],
+    "payload": [
+     "reason"
+    ]
+   }
+  },
+  "card_unhalted": {
+   "label": "强制停止解除",
+   "group": "卡",
+   "source": "api/control",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "by",
+     "via"
+    ],
+    "optional": [
+     "was_by"
+    ],
+    "payload": [
+     "was_reason"
+    ]
+   }
+  },
   "card_created": {
    "label": "卡片创建",
    "group": "状态",
@@ -850,11 +888,82 @@
     ],
     "optional": [
      "wake",
-     "seq"
+     "seq",
+     "mode",
+     "action_id",
+     "queue_len",
+     "started",
+     "reason",
+     "deployment_id",
+     "error"
     ],
     "payload": [
      "text"
     ]
+   }
+  },
+  "card_goal_completed": {
+   "label": "目标完工",
+   "group": "状态",
+   "source": "card_store",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "card_type",
+     "by",
+     "cause"
+    ],
+    "optional": [
+     "goal"
+    ],
+    "payload": []
+   }
+  },
+  "deployment_created": {
+   "label": "差事开账",
+   "group": "职能",
+   "source": "function_store",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "deployment",
+     "function_id",
+     "venue_kind",
+     "venue_ref"
+    ],
+    "optional": [
+     "delegator",
+     "batch_id",
+     "target_card",
+     "status",
+     "result"
+    ],
+    "payload": []
+   }
+  },
+  "deployment_closed": {
+   "label": "差事关账",
+   "group": "职能",
+   "source": "function_store",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "deployment",
+     "function_id",
+     "venue_kind",
+     "venue_ref"
+    ],
+    "optional": [
+     "delegator",
+     "batch_id",
+     "target_card",
+     "status",
+     "result"
+    ],
+    "payload": []
    }
   },
   "function_opinion": {
@@ -873,22 +982,6 @@
     "payload": [
      "reason"
     ]
-   }
-  },
-  "function_ledger": {
-   "label": "职能台账",
-   "group": "职能",
-   "source": "card_tools",
-   "channel": "card",
-   "triggerable": false,
-   "fields": {
-    "part": [
-     "ledger",
-     "id",
-     "chars"
-    ],
-    "optional": [],
-    "payload": []
    }
   },
   "role_alarm": {
@@ -1209,7 +1302,8 @@
     ],
     "optional": [
      "members",
-     "focus"
+     "focus",
+     "type"
     ],
     "payload": []
    }
@@ -1225,7 +1319,9 @@
      "batch"
     ],
     "optional": [
-     "members"
+     "members",
+     "target",
+     "need_promote"
     ],
     "payload": []
    }
@@ -1245,22 +1341,6 @@
     "payload": []
    }
   },
-  "review_round_start": {
-   "label": "评审回合开始",
-   "group": "评审",
-   "source": "api/review_runner",
-   "channel": "card",
-   "triggerable": false,
-   "fields": {
-    "part": [
-     "batch"
-    ],
-    "optional": [
-     "round"
-    ],
-    "payload": []
-   }
-  },
   "review_spoke": {
    "label": "评审角色发言",
    "group": "评审",
@@ -1270,16 +1350,21 @@
    "fields": {
     "part": [
      "batch",
-     "role"
+     "role",
+     "voted"
     ],
     "optional": [
-     "decision"
+     "name",
+     "kind",
+     "vote",
+     "draft",
+     "error"
     ],
     "payload": []
    }
   },
-  "review_revise": {
-   "label": "评审中被评卡改草稿",
+  "review_dispatch": {
+   "label": "评审给被评卡派活",
    "group": "评审",
    "source": "api/review_runner",
    "channel": "card",
@@ -1287,11 +1372,66 @@
    "fields": {
     "part": [
      "batch",
-     "target"
+     "target",
+     "kind"
     ],
     "optional": [
-     "name",
-     "changed"
+     "draft"
+    ],
+    "payload": []
+   }
+  },
+  "review_target_responded": {
+   "label": "被评卡交回本轮回应",
+   "group": "评审",
+   "source": "api/card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "target",
+     "responded_seq"
+    ],
+    "optional": [
+     "summary",
+     "draft"
+    ],
+    "payload": []
+   }
+  },
+  "review_target_turn_end": {
+   "label": "被评卡回合结束（带结局与挂账）",
+   "group": "评审",
+   "source": "api/review_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "target",
+     "pending_ask",
+     "outcome"
+    ],
+    "optional": [],
+    "payload": []
+   }
+  },
+  "review_draft_drift": {
+   "label": "收口稿与已批版本漂移",
+   "group": "评审",
+   "source": "api/card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "target",
+     "draft",
+     "stale"
+    ],
+    "optional": [
+     "approvals"
     ],
     "payload": []
    }
@@ -1327,9 +1467,12 @@
      "all_passed",
      "passed",
      "pending",
-     "changed",
+     "seat",
+     "voted",
      "reason",
-     "continued"
+     "continued",
+     "has_next",
+     "error"
     ],
     "optional": [],
     "payload": []

@@ -14,7 +14,10 @@
      /rule/commit 比对过 → 落盘＋影子 ## 迭代历史 行，hash 冲突 → 409 零写；
      注入按当前卡 card_type 择区（order 85 位于 instruction 与 card_duty 之间）；
      无规则卡零报错；rule 卡模型面无写工具；面板分区保存其它区字节不变；
-     前端审批弹窗源码级守卫（同意→commit、拒绝/关闭零请求）。
+     前端审批弹窗源码级守卫（同意→commit、拒绝/关闭→/rule/dismiss 驳回落痕）；
+     [2026-11-03 驳回落痕] /rule/dismiss 记 card_id:seq 进 rule_dismissals.json、
+     GET /rule 下发 dismissed、起草卡收驳回回执（落信不唤起）、重复驳回幂等、
+     扫描三重过滤（已驳回/已落盘/基底过期）防历史草案反复弹窗。
 """
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api import card_tools, context_assembler, context_regions, routes
 from src.permissions.policy import perms_for
-from src.storage import card_store, shadow_store, work_store
+from src.storage import card_store, session_facade, shadow_store, work_store
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,7 +102,8 @@ def test_rule_section_names_all_plus_type_codes():
     names = context_regions.rule_section_names(card_store.load_type_registry())
     assert names[0] == "all", "总规则必须排第一"
     assert names == ["all", "project", "function", "sub_project",
-                     "tool", "coder", "rule", "review", "topic"]
+                     "tool", "coder", "ui", "qa_card", "pm_card",
+                     "rule", "review", "topic"]
     # 词表缺失 ⇒ 至少保留总规则（总规则与词表无关）
     assert context_regions.rule_section_names({}) == ["all"]
 
@@ -430,10 +434,12 @@ async def test_draft_rule_edit_returns_payload_zero_write(sandbox):
                                        "content": "新提议"}, cards)
     assert r["ok"] is True, r
     d = r["data"]
-    assert d["section"] == "sub_project"
-    assert d["draft"] == "新提议"
-    assert d["old"] == "旧规则"
-    assert d["base_hash"] == _h("旧规则")
+    # [2026-11-01 多区起草] 返回形统一为 sections 数组（单区＝单元素）
+    s0 = d["sections"][0]
+    assert s0["section"] == "sub_project"
+    assert s0["draft"] == "新提议"
+    assert s0["old"] == "旧规则"
+    assert s0["base_hash"] == _h("旧规则")
     # 起草零落盘:work.json rules 未变
     assert _ws.get_rules(wid)["sub_project"] == "旧规则"
 
@@ -450,7 +456,7 @@ async def test_rule_commit_approval_flow(client, sandbox):
         wid, root, "draft_rule_edit",
         {"section": "sub_project", "content": "审批后规则"}, cards)
     assert draft["ok"] is True, draft
-    d = draft["data"]
+    d = draft["data"]["sections"][0]
 
     r = await client.post(
         f"/api/works/{wid}/rule/commit",
@@ -494,6 +500,30 @@ async def test_rule_commit_gates_404_400(client, sandbox):
     assert r.status_code == 400, r.status_code
 
 
+async def test_rule_commit_reject_notifies_root(client, sandbox):
+    """[2026-11-01 死流程修复] commit 闸拒绝已批准草案时，不能只把错误
+    留在审批弹窗——模型不在环永远不知道错因。判据：拒绝后根卡会话里
+    有一条 actor=card:system 的会话块，带同一条拒绝原因与重起草指引；
+    错误文本里带「已通知根卡重新起草」。"""
+    wid = await _mk_rd_work()
+    root = work_store.work_card_id_of(wid)
+    r = await client.post(
+        f"/api/works/{wid}/rule/commit",
+        json={"section": "project", "content": "# 总规则\n## 一、根卡职责边界\nx",
+              "base_hash": ""})
+    assert r.status_code == 400, r.text
+    body = r.json()
+    _msg = body.get("detail") or body.get("error") or str(body)
+    assert "已通知根卡重新起草" in _msg, _msg
+    blocks = await session_facade.read(wid, root)
+    sys_msgs = [b for b in blocks
+                if str(b.get("actor") or "") == "card:system"
+                and "提交闸拒绝" in str(b.get("content") or "")]
+    assert len(sys_msgs) == 1, f"根卡应收到一条系统通知，实际 {len(sys_msgs)}"
+    text = sys_msgs[0]["content"]
+    assert "## 一、根卡职责边界" in text and "### " in text, text
+
+
 async def test_draft_then_reject_zero_write(client, sandbox):
     """拒绝/关闭路径：不发 commit 请求即零落盘（后端侧实证：draft 后无人 commit）。"""
     wid = await _mk_rd_work()
@@ -513,31 +543,138 @@ async def test_draft_then_reject_zero_write(client, sandbox):
 
 def test_frontend_rule_approval_modal_wiring():
     """块3前端守卫（源码级，照 test_msg_baseclose_frontend 先例）：
-    同意 → POST /rule/commit；拒绝/关闭 → closeRuleModal 零请求；
+    同意 → POST /rule/commit；拒绝/关闭 → POST /rule/dismiss 驳回落痕；
     弹窗数据取 draft_rule_edit 成功 tool_result 的 {section, old, draft, base_hash}；
-    回合收口经 window.__maybeOpenRuleEditModal 扫 timeline 开弹窗（去重）。"""
+    回合收口经 window.__maybeOpenRuleEditModal 扫 timeline 开弹窗，
+    且按驳回表/已落盘/基底过期三重过滤（[2026-11-03 反复弹出修复]）。"""
     ws = (_ROOT / "static" / "workspace.js").read_text(encoding="utf-8")
     body = _strip_js_comments(ws)
     dbl = body.replace("'", '"')
     # 同意 → commit
     assert "/rule/commit" in body and "submitRuleCommit" in body
-    # 关闭/拒绝路径零请求：closeRuleModal 函数体内无任何网络调用
+    # [2026-11-03 驳回落痕] 拒绝/关闭＝POST /rule/dismiss（持久化，防刷新重扫重弹），
+    # 但绝不打 commit（不写规则）。dismiss 请求在 closeRuleModal 的 dismissRuleDraft 里。
+    assert "/rule/dismiss" in body and "dismissRuleDraft" in body
     i = body.index("function closeRuleModal()")
     j = body.index("dmRuleConfirm.onclick", i)
     close_body = body[i:j]
-    assert "API.call" not in close_body, "关闭必须零请求"
-    assert "fetch(" not in close_body, "关闭必须零请求"
+    assert "dismissRuleDraft" in close_body, "关窗须走驳回落痕"
+    assert "/rule/commit" not in close_body, "关闭不得落盘规则"
+    # 驳回要通知起草卡但不唤起；已试过落盘的关窗静默（commitAttempted→notify=false），
+    # 落盘成功的关窗（committed）不得再记驳回
+    assert "dismissRuleDraft(!dmRule.commitAttempted)" in close_body
+    assert "notify" in body and "dmRule.committed" in body
     # 审批弹窗只留 同意/拒绝（无反馈重起草），标题为规则修改审批
     assert 'dmRuleFeedback.style.display = "none"' in dbl
     assert "规则修改审批" in body
-    # 弹窗四键数据源
-    for k in ("payload.section", "payload.old", "payload.draft", "payload.base_hash"):
+    # 弹窗数据源：[2026-11-01 多区起草] 规范形 payload.sections（旧单区形兼容兜底）
+    for k in ("payload.sections", "s.section", "s.old", "s.draft", "s.base_hash"):
         assert k in body, f"缺 {k}"
     # timeline 扫描（tool=="draft_rule_edit" 成功结果）＋ seq 去重＋收口后调用点
     assert '__maybeOpenRuleEditModal' in body
     assert 'd.tool !== "draft_rule_edit"' in dbl
     assert "ruleSeen" in body
     assert body.count("window.__maybeOpenRuleEditModal(cardId)") >= 3, "send/resend/tryRecover 三处收口后调用"
+    # [2026-11-03] 扫描三重过滤：拉 /rule 快照 → dismissed 表 / 已落盘 / 基底过期
+    assert "/rule" in body and "dismissed" in body and "cardId + \":\" + seq" in body
+    assert "landed" in body and "stale" in body and "base_hash" in body
+
+
+async def test_rule_dismiss_records_and_notifies(client, sandbox, monkeypatch):
+    """[2026-11-03 反复弹出修复] 用户「拒绝」⇒
+    ① 驳回表记 card_id:seq（GET /rule 的 dismissed 下发给扫描过滤）；
+    ② 起草卡会话收一封 actor=card:system 的驳回回执（落信）；
+    ③ **不唤起**：deliver_now 一次都不被调（用户令「通知不唤起」）；
+    ④ rules.md 逐字节零改动；⑤ 重复驳回幂等（不重复落信）。"""
+    wid = await _mk_rd_work()
+    root = work_store.work_card_id_of(wid)
+    rules_before = await _seed_sections(wid, {"sub_project": "旧规则"})
+    wakes: list = []
+    async def _spy(*a, **kw):
+        wakes.append((a, kw))
+    monkeypatch.setattr(routes.message_runner, "deliver_now", _spy)
+
+    r = await client.post(
+        f"/api/works/{wid}/rule/dismiss",
+        json={"card_id": root, "seq": 183, "sections": ["sub_project"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["key"] == f"{root}:183" and r.json()["notified"] is True
+
+    g = (await client.get(f"/api/works/{wid}/rule")).json()
+    assert f"{root}:183" in g["dismissed"]
+
+    blocks = await session_facade.read(wid, root)
+    msgs = [b for b in blocks
+            if str(b.get("actor") or "") == "card:system"
+            and "已被用户拒绝" in str(b.get("content") or "")]
+    assert len(msgs) == 1, f"应有一封驳回回执，实际 {len(msgs)}"
+    assert "sub_project" in msgs[0]["content"], msgs[0]["content"]
+
+    assert wakes == [], "驳回通知只落信不唤起，deliver_now 不得被调"
+
+    from src.storage import rule_store
+    assert rule_store.rules_path(wid).read_text(encoding="utf-8") == rules_before
+
+    r2 = await client.post(
+        f"/api/works/{wid}/rule/dismiss",
+        json={"card_id": root, "seq": 183, "sections": ["sub_project"]})
+    assert r2.status_code == 200 and r2.json()["notified"] is False
+    blocks2 = await session_facade.read(wid, root)
+    msgs2 = [b for b in blocks2
+             if str(b.get("actor") or "") == "card:system"
+             and "已被用户拒绝" in str(b.get("content") or "")]
+    assert len(msgs2) == 1, "重复驳回不得重复落信"
+
+
+async def test_rule_dismiss_silent_and_gates(client, sandbox, monkeypatch):
+    """notify=false ⇒ 只落痕不落信（落盘失败后的关窗走这条）；
+    坏 work → 404；缺 card_id → 422。"""
+    wid = await _mk_rd_work()
+    root = work_store.work_card_id_of(wid)
+    wakes: list = []
+    async def _spy(*a, **kw):
+        wakes.append((a, kw))
+    monkeypatch.setattr(routes.message_runner, "deliver_now", _spy)
+
+    r = await client.post(
+        f"/api/works/{wid}/rule/dismiss",
+        json={"card_id": root, "seq": 7, "notify": False})
+    assert r.status_code == 200 and r.json()["notified"] is False
+    blocks = await session_facade.read(wid, root)
+    assert not [b for b in blocks
+                if "已被用户拒绝" in str(b.get("content") or "")], "静默驳回不得落信"
+    assert wakes == []
+    g = (await client.get(f"/api/works/{wid}/rule")).json()
+    assert f"{root}:7" in g["dismissed"]
+
+    r = await client.post("/api/works/nope/rule/dismiss",
+                          json={"card_id": root, "seq": 1})
+    assert r.status_code == 404
+    r = await client.post(f"/api/works/{wid}/rule/dismiss",
+                          json={"seq": 1})
+    assert r.status_code == 422
+
+
+async def test_rule_dismissal_store_roundtrip(sandbox):
+    """驳回表单元级：add→list/is_dismissed 回环、幂等不改 ts、损坏文件拒覆写。"""
+    from src.storage import rule_store
+
+    wid = await _mk_rd_work()
+    assert rule_store.list_dismissals(wid) == []
+    assert rule_store.add_dismissal(wid, "card_x", 42, ["project"]) is True
+    assert rule_store.add_dismissal(wid, "card_y", 9) is True
+    got = rule_store.list_dismissals(wid)
+    assert got == ["card_x:42", "card_y:9"]
+    assert rule_store.is_dismissed(wid, "card_x", 42) is True
+    assert rule_store.is_dismissed(wid, "card_x", 43) is False
+    p = rule_store.dismissals_path(wid)
+    first = p.read_text(encoding="utf-8")
+    assert rule_store.add_dismissal(wid, "card_x", 42, ["other"]) is True
+    assert p.read_text(encoding="utf-8") == first, "重复 key 不得改记录"
+    # 损坏文件：不覆写别人的记录（返回 False）
+    p.write_text("{不是json", encoding="utf-8")
+    assert rule_store.add_dismissal(wid, "card_z", 1) is False
+    assert rule_store.list_dismissals(wid) == []
 
 
 # ---------------------------------------------------------------------------

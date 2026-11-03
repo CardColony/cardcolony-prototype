@@ -131,6 +131,15 @@ class OcClient:
         except Exception as exc:  # noqa: BLE001 中止失败不阻断
             logger.warning("[wb_exec] opencode abort 失败: %s", exc)
 
+    async def delete_session(self, session_id: str) -> tuple[int, Any]:
+        """**删掉这个会话**（2026-11-04 加：卡片做完后在 opencode 里清残留）。
+
+        实测：``DELETE /session/{id}`` ⇒ **HTTP 200**、库里会话数 156→155。
+
+        ★ **只删我们自己 create_session 拿到的那个 id** ⇒ 用户的会话不受影响。
+        """
+        return await self._json(f"/session/{session_id}", "DELETE", timeout=60.0)
+
     async def events(self, directory: str) -> AsyncIterator[dict]:
         """订阅 **全局事件流** ``GET /event``（SSE）。
 

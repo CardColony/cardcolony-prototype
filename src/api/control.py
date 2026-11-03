@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -42,26 +43,103 @@ _stop_requests: set[tuple[str, str]] = set()
 #: 「被信件/汇聚再次叫醒」(进程内,goal pause 已持久兜底自动路径)。
 _HALTED: dict[tuple[str, str], dict[str, Any]] = {}
 
+#: [halt 事件化 2026-11-01 · 裁定《机制判断归harness》第一刀]
+#: 「被停」此前只活在 _HALTED 进程内字典——重启即失忆，事件日志里查无
+#: 此事（card_140/141 复盘的病根之一：停止意图不可持久、不可审计、
+#: 不可派生）。现在 ``halt``/``unhalt`` 在置/摘标记的同时各落一条事件
+#: （``card_halted``/``card_unhalted``，写目标卡事件日志），``_HALTED``
+#: 降为它的进程内缓存——每条调用路径先 ``_rebuild_halted`` 按 work 惰性
+#: 重放重建。「这卡是不是被停了」从此是一条可重放、可溯源的派生事实。
+_HALTED_LOADED: set[str] = set()
+
+
+def _emit_halt(work_id: str, card_id: str, ev_type: str,
+               data: dict[str, Any]) -> None:
+    """停止状态变更落事件（零阻断：落盘失败不拦停止/解除本身）。"""
+    try:
+        from ..storage import event_log as _ev
+        _ev.append_sync(work_id, card_id, {"type": ev_type, "data": data})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[control] 停止事件落盘失败(不阻断) card=%s: %s",
+                       card_id, exc)
+
+
+def _rebuild_halted(work_id: str) -> None:
+    """按 work 重放事件日志恢复停止标记（每 work 每进程一次）。
+
+    判据：每张卡**最后**一条 ``card_halted``/``card_unhalted``——halted
+    收尾即被停。逐行扫、只解析含 'halted' 的行（事件文件可上 MB，
+    全量 json.loads 不值）。进程内已有的标记不清——重启语义是
+    「磁盘补内存」，不是「磁盘覆盖内存」。
+    """
+    if work_id in _HALTED_LOADED:
+        return
+    _HALTED_LOADED.add(work_id)
+    try:
+        from ..storage import event_log as _ev
+        evdir = _ev.events_dir(work_id)
+        if not evdir.is_dir():
+            return
+        for f in evdir.glob("*.jsonl"):
+            cid = f.stem
+            last: dict[str, Any] | None = None
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    for ln in fh:
+                        if "halted" not in ln:
+                            continue
+                        try:
+                            rec = json.loads(ln)
+                        except (ValueError, TypeError):
+                            continue
+                        if rec.get("type") in ("card_halted", "card_unhalted"):
+                            last = rec
+            except OSError:
+                continue
+            if last is None or last.get("type") != "card_halted":
+                continue
+            d = last.get("data") or {}
+            _HALTED[(work_id, cid)] = {
+                "reason": str(d.get("reason") or "")[:300],
+                "by": str(d.get("by") or "")[:80],
+                "ts": str(d.get("ts") or last.get("ts") or ""),
+            }
+    except Exception as exc:  # noqa: BLE001 重建失败不阻断（标记集可能不全）
+        logger.warning("[control] 停止标记重建失败 work=%s: %s", work_id, exc)
+
 
 def halt(work_id: str, card_id: str, reason: str = "", by: str = "") -> dict[str, Any]:
-    """强制停止:置标记 + 杀当轮(request_stop 的全部机制:流内信号赛跑保字/
-    流外直接取消协程)。goal pause 由调用方按需叠加(control.stop_auto)。"""
+    """强制停止:置标记 + 落 card_halted 事件 + 杀当轮(request_stop 的全部
+    机制:流内信号赛跑保字/流外直接取消协程)。goal pause 由调用方按需叠加
+    (control.stop_auto)。"""
     from datetime import datetime, timezone, timedelta
+    _rebuild_halted(work_id)
     _HALTED[(work_id, card_id)] = {
         "reason": str(reason or "")[:300],
         "by": str(by or "")[:80],
         "ts": datetime.now(timezone(timedelta(hours=8))).isoformat(),
     }
+    _emit_halt(work_id, card_id, "card_halted", dict(_HALTED[(work_id, card_id)]))
     return request_stop(work_id, card_id)
 
 
-def unhalt(work_id: str, card_id: str) -> bool:
-    """解除停止标记(用户直接发话/resume_child 时)。返回是否原本在停。"""
-    return _HALTED.pop((work_id, card_id), None) is not None
+def unhalt(work_id: str, card_id: str, by: str = "", via: str = "") -> bool:
+    """解除停止标记(用户直接发话/resume_child/续派时)。返回是否原本在停。
+    真在停才落 card_unhalted——对本来没停的卡不造「解除」假象。"""
+    _rebuild_halted(work_id)
+    entry = _HALTED.pop((work_id, card_id), None)
+    if entry is not None:
+        _emit_halt(work_id, card_id, "card_unhalted", {
+            "by": str(by or "")[:80], "via": str(via or "")[:80],
+            "was_by": str(entry.get("by") or "")[:80],
+            "was_reason": str(entry.get("reason") or "")[:300],
+        })
+    return entry is not None
 
 
 def is_halted(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
     """该卡是否处于强制停止态(返回标记详情;None=未停)。"""
+    _rebuild_halted(work_id)
     return _HALTED.get((work_id, card_id))
 
 #: 停止信号的**可等待**形态（key=(work_id, card_id)）。

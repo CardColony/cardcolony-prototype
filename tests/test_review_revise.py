@@ -1,19 +1,24 @@
 # -*- coding: utf-8 -*-
-"""评审循环里「子卡在评审卡现场改草稿」这一环（[2026-10-29 用户口径]）。
+"""评审场里「子卡回应」这一环（[venue 2026-10-31]）。
 
-用户原话：
-> 「评审链路是一个一边评审一边修改草稿的链路，所以，一次评审全员发言，
->   子卡直接在评审卡内，对草稿进行修改，然后再全员评审，直到所有成员通过为止」
+旧形态：评审侧手搓一个 `revise()` 回合叫子卡改稿。新形态（用户裁定
+「对齐卡本体」）：评审场只做一件事——**给正卡发一条正经消息**
+（`_dispatch_child`），子卡在**自己的普通回合**里改稿、调
+`submit_revision` 交回。页面同步、工具执行、会话、锁、停止全部是
+它自己的回合自带的。
 
 钉四件事：
-1. 子卡能用 `edit_requirements` 改**自己的草稿**，改完 `changed=True`；
-2. 正稿（`requirements`）一个字都不动——正稿只有评审通过才产生；
+1. 派活＝往正卡会话落一条带批次号的消息（from=评审卡），然后唤醒它；
+2. 子卡在自己回合里能改**自己的草稿**，改完调 `submit_revision` ⇒
+   `responded_seq` 推进（否决席位据此知道有新回应可评）；
 3. 子卡**不能 approve**（它是被评方，不是评审成员）；
-4. 它拿到的上下文里有**未通过成员的原话**（不是全批次流水账）。
+4. 全员通过后派的活是「调 promote_draft」，不是「改草稿」。
 """
 from __future__ import annotations
 
-from src.api import card_tools, model_service, review_runner
+import json
+
+from src.api import card_tools, model_service, review_runner, routes
 from src.storage import (card_store, function_store, review_store, session_facade,
                          work_store)
 
@@ -22,11 +27,8 @@ async def _setup(n: int = 2):
     wdata = await work_store.create_work("评审改稿测试")
     wid = str(wdata["work_id"])
     fids = []
-    # [2026-10-31 对齐] 评审邀请集已收紧成**总裁／产品经理／技术总监**三个职能目录
-    # code（card_tools._h_open_review，2026-10-30 23:07 改）⇒ 夹具必须按这三个 code
-    # 造职能，否则开批次直接被判「没有在职的总裁、产品经理或技术总监可参与评审」，
-    # 本文件 10 条用例全在 _setup 里炸（TypeError: 'NoneType'）。
-    # 与 tests/test_review_tools.py::_make_work_with_functions 同一口径。
+    # 评审默认席位集＝总裁／产品经理／技术总监三个目录 code
+    # （`_meta.venue_defaults["requirements"]`；沙箱目录是空文件时回落旧默认）。
     review_codes = ("ceo", "pm", "cto")
     for i in range(n):
         code = review_codes[i] if i < len(review_codes) else f"f{i}"
@@ -47,13 +49,49 @@ async def _setup(n: int = 2):
     return wid, cid, fids, str(out["data"]["review_card_id"])
 
 
-async def test_revise_edits_own_draft_and_leaves_final_untouched(sandbox, monkeypatch):
-    """子卡按意见改草稿 ⇒ changed=True；正稿不动。"""
+async def _child_turn(wid: str, cid: str) -> dict:
+    """模拟 deliver_now 唤醒：子卡跑**它自己的普通回合**。"""
+    return await routes._run_message(
+        wid, cid, "你收到评审场的一条指令（见上一条消息），请按它执行。")
+
+
+async def _rejecting_seat(wid: str, rid: str, seat: str) -> None:
+    """机械落一席否决（不跑回合：投票闸要的是落座事实，不是回合）。"""
+    await review_store.mark_spoken(wid, rid, seat)
+    await review_store.mark_seen(wid, rid, seat)
+    await review_store.reject(wid, rid, seat)
+
+
+async def test_dispatch_revise_leaves_directive_in_child_session(sandbox):
+    """派活＝正卡会话里多一条带批次号的指令消息（可审计对号）。"""
     wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
+
+    ok = await review_runner._dispatch_child(wid, rid, st, kind="revise")
+    # 测试环境 ECO_NO_AUTO_DELIVER=1 ⇒ 只落消息不真唤醒（真实链路才投递）
+    assert ok is False
+
+    blocks = await session_facade.read(wid, cid) or []
+    text = "\n".join(str(b.get("content") or "") for b in blocks)
+    assert rid in text and st.get("batch") in text, "消息带评审卡 id 与批次号"
+    assert "submit_revision" in text, "指令要指明交回工具"
+    assert "edit_requirements" in text
+    # 机械事实：已请过一次回应，下一步不重复派
+    st2 = await review_store.state_of(wid, rid)
+    assert int(st2.get("asked_seq") or 0) == 1
+
+
+async def test_child_edits_own_draft_in_its_own_turn(sandbox, monkeypatch):
+    """子卡按意见改草稿（它自己的普通回合）⇒ 正稿不动；调 submit_revision 交回。"""
+    wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="revise")
 
     calls = {"n": 0}
 
-    async def fake_call(sys_p, user_p, convo, tools, model, **_):
+    async def fake_call(**kw):
+        # call_main 是 kwargs 调用；工具循环无轮次封顶——工具调用只发一次，
+        # 之后回纯文本收尾（每轮都发同一件＝死循环）。
         calls["n"] += 1
         if calls["n"] == 1:
             return ({"content": "", "tool_calls": [{
@@ -61,105 +99,147 @@ async def test_revise_edits_own_draft_and_leaves_final_untouched(sandbox, monkey
                 "arguments": {"card_id": cid,
                               "old_string": "R1 草稿（测试用）",
                               "new_string": "R1 改过（按意见补了证据）"}}]},
-                "fake-model")
-        return ({"content": "已改：补了证据", "tool_calls": []}, "fake-model")
+                    "fake-model")
+        if calls["n"] == 2:
+            return ({"content": "已改：补了证据", "tool_calls": [{
+                "name": "submit_revision",
+                "arguments": {"summary": "补了证据", "review_card_id": rid}}]},
+                    "fake-model")
+        return ({"content": "改完了", "tool_calls": []}, "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", fake_call)
-    out = await review_runner.revise(wid, rid)
+    await _child_turn(wid, cid)
 
-    assert out["changed"] is True, out
     card = await card_store.read_card(wid, cid)
     meta, body = card.get("meta") or {}, card.get("body") or {}
     assert "R1 改过" in str(meta.get("requirements_draft") or "")
     assert str(body.get("requirements") or "") == "R0 正稿（不该被改）", \
         "子卡只能改草稿，正稿由评审通过产生"
 
-    # 改稿要推进草稿版本（下一轮据此记录"第几版"；票不因它失效）
-    st = await review_store.status(wid, rid)
-    assert st["draft"] == 2, st
-
-    # 发言落在**评审卡**会话里（现场共享，后面发言的人看得到）
-    blocks = await session_facade.read(wid, review_runner._sid(rid, str((await review_store.state_of(wid, rid)).get('batch') or ''))) or []
-    assert any("已改" in str(b.get("content") or "") for b in blocks), blocks
+    # 改稿推进草稿版本；交回推进 responded_seq（否决席位的「有新回应」判据）。
+    st2 = await review_store.state_of(wid, rid)
+    assert int(st2.get("draft") or 1) == 2
+    assert int(st2.get("responded_seq") or 0) == 1
 
 
-async def test_revise_cannot_approve(sandbox, monkeypatch):
+async def test_child_cannot_approve_itself(sandbox, monkeypatch):
     """子卡不是评审成员：approve 必须被拒，票不能变。"""
     wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="revise")
 
-    async def fake_call(sys_p, user_p, convo, tools, model, **_):
-        return ({"content": "", "tool_calls": [{
-            "name": "approve",
-            "arguments": {"review_card_id": rid}}]}, "fake-model")
+    calls = {"n": 0}
 
-    monkeypatch.setattr(model_service, "call_main", fake_call)
-    out = await review_runner.revise(wid, rid)
-
-    assert out["changed"] is False
-    assert any(t.get("tool") == "approve" and not t.get("ok")
-               for t in (out.get("tools") or [])), out
-    st = await review_store.status(wid, rid)
-    assert cid not in st["passed"], "被评卡不能给自己投票"
-
-
-async def test_revise_prompt_carries_pending_opinions_only(sandbox, monkeypatch):
-    """上下文里要有**未通过成员的原话**，而不是全批次流水账。"""
-    wid, cid, fids, rid = await _setup()
-
-    async def say(sys_p, user_p, convo, tools, model):
-        # [2026-10-29] 发言必须有终态（approve / reject），否则会被再调起
-        return ({"content": "第三条不满足：没有证据",
-                 "tool_calls": [{"name": "reject", "arguments": {}}]}, "fake-model")
-
-    monkeypatch.setattr(model_service, "call_main", say)
-    await review_runner.speak(wid, rid, fids[0])
-
-    captured: dict[str, str] = {}
-
-    async def capture(sys_p, user_p, convo, tools, model):
-        # [2026-10-31 对齐] 只记**第一圈**的工具面：改稿轮从第 2 圈起收敛成只剩终态
-        # 工具 submit_revision（与 speak 第 2 圈收敛成 approve/reject 同一手法，
-        # 2026-10-30 设计）⇒ 「子卡能不能改草稿」这条断言必须看第一圈的面，
-        # 看最后一圈会误判成"它只有 submit_revision、拿不到 edit_requirements"。
-        if "tools" not in captured:
-            captured["user"] = user_p
-            captured["sys"] = sys_p
-            captured["tools"] = [
-                (t.get("function") or {}).get("name") or t.get("name") or ""
-                for t in (tools or [])]
+    async def fake_call(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ({"content": "", "tool_calls": [
+                {"name": "approve", "arguments": {"review_card_id": rid}}]},
+                    "fake-model")
         return ({"content": "（不改）", "tool_calls": []}, "fake-model")
 
-    monkeypatch.setattr(model_service, "call_main", capture)
-    await review_runner.revise(wid, rid)
+    monkeypatch.setattr(model_service, "call_main", fake_call)
+    await _child_turn(wid, cid)
 
-    assert "第三条不满足" in captured["user"], "未通过成员的原话必须进上下文"
-    assert "R1 草稿（测试用）" in captured["user"], "当前草稿必须在上下文里"
-    # [2026-10-29 用户令] 子卡拿不到 approve 是**工具面**的事，不靠提示词说一句
-    # 「你不能 approve」——那是教它做事。这里钉工具面本身。
+    st2 = await review_store.status(wid, rid)
+    assert cid not in st2["passed"], "被评卡不能给自己投票"
+    # 没调 submit_revision ⇒ 回应水位不动
+    st3 = await review_store.state_of(wid, rid)
+    assert int(st3.get("responded_seq") or 0) == 0
+
+
+async def test_dispatch_carries_seat_speeches_verbatim(sandbox, monkeypatch):
+    """派给正卡的指令带**评审现场的原话**（含未通过成员的发言，不截断）。"""
+    wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
+
+    # 一席先发言＋否掉（真实席位回合：发言落评审卡会话，from=席位）
+    n = {"c": 0}
+
+    async def say(**kw):
+        n["c"] += 1
+        if n["c"] == 1:
+            return ({"content": "第三条不满足：没有证据",
+                     "tool_calls": [{"name": "reject",
+                                     "arguments": {"review_card_id": rid}}]},
+                    "fake-model")
+        return ({"content": "说完了", "tool_calls": []}, "fake-model")
+
+    monkeypatch.setattr(model_service, "call_main", say)
+    await review_runner._seat_turn(wid, rid, fids[0], st, kind="speak")
+
+    st2 = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st2, kind="revise")
+
+    # 指令落在子卡自己的会话里——发言原文在其中
+    blocks = await session_facade.read(wid, cid) or []
+    text = "\n".join(str(b.get("content") or "") for b in blocks)
+    assert "第三条不满足" in text, "否决席位的原话必须随指令带到子卡"
+
+
+async def test_child_toolface_has_no_approve(sandbox, monkeypatch):
+    """子卡回合的工具面：没有 approve（它不是成员），有 edit_requirements
+    与 submit_revision（回应评审批次的出口能力）。"""
+    wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="revise")
+
+    captured: dict = {}
+
+    async def cap(**kw):
+        if "tools" not in captured:
+            captured["tools"] = [
+                str((t.get("function") or t).get("name") or "")
+                for t in (kw.get("tools") or [])]
+        return ({"content": "（不改）", "tool_calls": []}, "fake-model")
+
+    monkeypatch.setattr(model_service, "call_main", cap)
+    await _child_turn(wid, cid)
+
+    # approve 是 function-only（不进基础池）；reject 对非成员由投票闸拒——
+    # 闸在 handler，不靠工具面（席位本来就允许是任意卡）。
     assert "approve" not in captured["tools"], captured["tools"]
     assert "edit_requirements" in captured["tools"]
+    assert "submit_revision" in captured["tools"], captured["tools"]
 
 
-async def test_revise_no_change_reports_false(sandbox, monkeypatch):
-    """模型说了话但没动草稿 ⇒ changed=False（调用方据此停止循环）。"""
+async def test_no_submit_revision_means_still_waiting(sandbox, monkeypatch):
+    """子卡回了文字但没调 submit_revision ⇒ 机械上回应没交回。ask 已被
+    回合**消费**（指令落点之后会话长了新块）⇒ 补**纯唤醒**而不是再派活
+    （信不重复落）或空等死。沙箱里 ECO_NO_AUTO_DELIVER=1 ⇒ 唤醒发不出，
+    落 wake_failed＋dispatch_fails 计数。"""
     wid, cid, fids, rid = await _setup()
+    for f in fids:
+        await _rejecting_seat(wid, rid, f)
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="revise")
 
-    async def fake_call(sys_p, user_p, convo, tools, model, **_):
+    async def fake_call(**kw):
         return ({"content": "我认为不用改，理由如下……", "tool_calls": []},
                 "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", fake_call)
-    out = await review_runner.revise(wid, rid)
-    assert out["changed"] is False
+    await _child_turn(wid, cid)
+
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+
+    async def never_dispatch(*a, **k):
+        raise AssertionError("等回应期间不该再派活")
+
+    monkeypatch.setattr(review_runner, "_dispatch_child", never_dispatch)
+    r = await review_runner.run_once(wid, rid)
+    assert r["reason"] == "wake_failed" and r["continued"] is False, r
+    st2 = await review_store.state_of(wid, rid)
+    assert int(st2.get("asked_seq") or 0) == 1, "没再派活 ⇒ asked_seq 不涨"
 
 
-async def test_revise_skips_when_child_turn_is_running(sandbox, monkeypatch):
-    """子卡自己的回合在跑（open_review 就在它那一轮里）⇒ 不抢它的互斥体。
-
-    抢不到就本轮跳过：等它这一轮结束，改了草稿会自己触发下一轮，
-    没改就等同"子卡不改"，评审停在原地。绝不并发跑两个模型去改同一张卡。
-    """
+async def test_dispatch_does_not_interrupt_running_child(sandbox, monkeypatch):
+    """正卡自己的回合在跑 ⇒ 不打断（deliver_now 忙判定），消息落会话等它
+    本轮收口接上——信不丢，也绝不并发跑两个模型改同一张卡。"""
     wid, cid, fids, rid = await _setup()
+    for f in fids:
+        await _rejecting_seat(wid, rid, f)
+    st = await review_store.state_of(wid, rid)
 
     called = {"n": 0}
 
@@ -168,56 +248,74 @@ async def test_revise_skips_when_child_turn_is_running(sandbox, monkeypatch):
         return ({"content": "不该被调到", "tool_calls": []}, "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", fake_call)
+    monkeypatch.delenv("ECO_NO_AUTO_DELIVER", raising=False)
+
     session_facade.turn_try_acquire(wid, cid, "user-turn")
     try:
-        out = await review_runner.revise(wid, rid)
+        ok = await review_runner._dispatch_child(wid, rid, st, kind="revise")
     finally:
         session_facade.turn_release(wid, cid, "user-turn")
 
-    assert out.get("busy") is True and out["changed"] is False
+    assert ok is False, "对方在跑 ⇒ 不起新回合（不打断、信留在会话里）"
     assert called["n"] == 0, "抢不到互斥体就不该调模型"
+    # 消息与 mark_asked 仍落了：它本轮收口的自查续轮会接上
+    blocks = await session_facade.read(wid, cid) or []
+    assert any("submit_revision" in str(b.get("content") or "") for b in blocks)
+    st2 = await review_store.state_of(wid, rid)
+    assert int(st2.get("asked_seq") or 0) == 1
 
 
-async def test_full_loop_revise_then_pass_promotes_draft(sandbox, monkeypatch):
-    """端到端：开批次 → 一轮全员不过 → 子卡改稿 → 二轮全员通过 → **草稿转正稿**。
-
-    这条是整条链路的收口验证：用户要的「一边评审一边改草稿，直到所有人通过」
-    最终必须落到「正稿产生」——不是停在"全员通过"这个状态上。
-    """
+async def test_full_loop_via_steps_then_promote(sandbox, monkeypatch):
+    """端到端：开批 → 席位否 → 派活改稿 → 子卡自己回合改＋交回 →
+    席位重评过 → 派活定稿 → promote_draft 转正稿。"""
     wid, cid, fids, rid = await _setup()
 
-    spoken: list[str] = []
+    calls: list = []
 
-    async def fake_speak(work_id, review_id, role, st=None):
-        spoken.append(role)
-        if len(spoken) > len(fids):      # 第二轮起全部通过
-            cards = card_store.iter_card_metas(work_id)
-            await card_tools._h_approve(
-                work_id, role, {"review_card_id": review_id}, cards)
-        return {"role": role}
+    async def fake_seat(work_id, review_id, seat, st, *, kind, hint=""):
+        calls.append((seat, kind))
+        await review_store.mark_spoken(work_id, review_id, seat)
+        await review_store.mark_seen(work_id, review_id, seat)
+        if int(st.get("draft") or 1) == 1:
+            await review_store.reject(work_id, review_id, seat)
+        else:
+            await review_store.approve(work_id, review_id, seat)
+        return {"seat": seat, "kind": kind, "voted": True}
 
-    async def fake_revise(work_id, review_id, st=None):
-        await card_store.update_card(
-            wid, cid, {"requirements_draft": "R2 最终稿（按意见改完）"},
-            "子卡改草稿")
-        return {"role": cid, "changed": True}
+    async def fake_dispatch(work_id, review_id, st, *, kind):
+        if kind == "revise":
+            await review_store.mark_asked(work_id, review_id)
+            # 模拟正卡自己回合的产物：改稿＋交回
+            await card_store.update_card(
+                wid, cid, {"requirements_draft": "R2 最终稿（按意见改完）"},
+                "子卡改草稿")
+            await review_store.mark_responded(work_id, review_id)
+        else:
+            await review_store.mark_promote_asked(work_id, review_id)
+        return True
 
-    monkeypatch.setattr(review_runner, "speak", fake_speak)
-    monkeypatch.setattr(review_runner, "revise", fake_revise)
-    await review_runner._round_loop(wid, rid)
+    monkeypatch.setattr(review_runner, "_seat_turn", fake_seat)
+    monkeypatch.setattr(review_runner, "_dispatch_child", fake_dispatch)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
 
-    # [2026-10-29 用户口径「最后也一定是调工具写正稿为结束」]
-    # 全员通过不再自动转稿；收口要子卡自己调 promote_draft。
-    mid = await card_store.read_card(wid, cid)
-    assert str((mid.get("meta") or {}).get("requirements_state") or "") != "approved"
-    await card_tools._h_promote_draft(
+    # [harness 驱动 2026-11-01] round_done{has_next} 让策略真续跑——
+    # 撞 _RUNNING 的迭代让出轮转给派生步跑完。
+    import asyncio as _aio
+    for _ in range(120):
+        await review_runner.run_once(wid, rid)
+        if (await review_store.status(wid, rid)).get("all_passed"):
+            break
+        await _aio.sleep(0)
+
+    # 收口＝子卡自己调 promote_draft（系统不代劳）
+    pr = await card_tools._h_promote_draft(
         wid, cid, {"card_id": cid}, card_store.iter_card_metas(wid))
+    assert pr.get("ok"), pr
 
     card = await card_store.read_card(wid, cid)
     body, meta = card.get("body") or {}, card.get("meta") or {}
-    assert str(body.get("requirements") or "") == "R2 最终稿（按意见改完）", \
-        "调 promote_draft 之后 ⇒ 草稿必须转成正稿"
-    assert str(meta.get("requirements_draft") or "") == "", "转正后草稿列清空"
+    assert str(body.get("requirements") or "") == "R2 最终稿（按意见改完）"
+    assert str(meta.get("requirements_draft") or "") == ""
     assert str(meta.get("requirements_state") or "") == "approved"
     st = await review_store.status(wid, rid)
     assert st["all_passed"] is True and st["batch"] == "", "批次应已收口"
@@ -226,209 +324,320 @@ async def test_full_loop_revise_then_pass_promotes_draft(sandbox, monkeypatch):
 async def test_member_sees_the_draft_not_the_final(sandbox, monkeypatch):
     """评审成员看的必须是**草稿**，不是正稿（[2026-10-29 用户抓到]）。
 
-    `_user_prompt` 原来取 `body["requirements"]`（正稿）⇒ 整条评审一直在评
-    一份已经定稿的东西，"改草稿"链路从未被真正评过。
+    mandate 的「待评审的草稿」一节装 `requirements_draft`；
+    正稿只在「上一批次正稿」一节出现（那是上一批的结论，不是评审对象）。
     """
     wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
 
     captured: dict[str, str] = {}
+    n = {"c": 0}
 
-    async def cap(sys_p, user_p, convo, tools, model):
-        captured["user"] = user_p
-        return ({"content": "看完了",
-                 "tool_calls": [{"name": "reject", "arguments": {}}]}, "fake-model")
+    async def cap(**kw):
+        n["c"] += 1
+        if "user" not in captured:
+            # 只抓首轮——工具续跳轮 user_prompt 故意清空（去假 user）。
+            captured["user"] = str(kw.get("user_prompt") or "")
+        if n["c"] == 1:
+            return ({"content": "看完了",
+                     "tool_calls": [{"name": "reject",
+                                     "arguments": {"review_card_id": rid}}]},
+                    "fake-model")
+        return ({"content": "说完了", "tool_calls": []}, "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", cap)
-    await review_runner.speak(wid, rid, fids[0])
+    await review_runner._seat_turn(wid, rid, fids[0], st, kind="speak")
 
     assert "R1 草稿（测试用）" in captured["user"], "评审对象必须是草稿"
     assert "R0 正稿" not in captured["user"], "正稿不能混进评审对象"
 
 
-async def test_system_prompt_reads_review_charter_not_daily_one(sandbox):
-    """评审席上读的是**评审职责书**，不是日常职责（[2026-10-29 用户令]）。
+async def test_seat_identity_reads_review_charter(sandbox, monkeypatch, tmp_path):
+    """席位身份区读**评审职责书**，不是日常职责（[2026-10-29 用户令]）。
 
-    「它的日常职责和它的评审职责，是两个职责，评审职责是专门写的」
-    ⇒ `config/review_charters.json` 里有这个角色 ⇒ 用那一份；
-       没有 ⇒ 回落日常职责，并且标题上标明"还没写评审职责"（能看出缺哪几份）。
+    职责书按**席位 id**查、查不到再按**目录 code**查（评审职责按职能写）；
+    都没有 ⇒ 回落日常 charter。走 `act_meta` 注入普通回合的 145 区。
     """
+    from src.api import review_runner as rr
+
     wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
 
-    # [2026-10-30 同构改造] 身份不再单独手写，而是走「你的职能」区：
-    # `function_meta` 里塞的就是评审职责书 ⇒ 断言职责书**正文**出现即可。
-    sys_p = await review_runner._system_prompt(wid, "card_001", rid)
-    assert "核心价值和利益" in sys_p, "总裁有评审职责书，必须用它（正文）"
-    assert "## 你的职能" in sys_p, "身份走「你的职能」区（与子卡同构）"
+    # ① 按席位 id 查中
+    charter_file = tmp_path / "review_charters.json"
+    charter_file.write_text(json.dumps(
+        {fids[0]: {"text": "评审职责书·按席位"}, "ceo": {"text": "评审职责书·按code"}},
+         ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(rr, "REVIEW_CHARTERS", charter_file)
 
-    # 没写评审职责的角色 ⇒ 回落日常职责（内容不同，但仍是同一区）
-    sys_p2 = await review_runner._system_prompt(wid, fids[0], rid)
-    assert "## 你的职能" in sys_p2
+    captured: list[dict] = []
 
+    async def fake_run(work_id, card_id, content, **kw):
+        captured.append(kw)
+        return {"reply": "ok"}
 
-async def test_system_prompt_reads_review_charter_not_daily_one(sandbox):
-    """评审席上读的是**评审职责书**，不是日常职责（[2026-10-29 用户令]）。
+    monkeypatch.setattr(routes, "_run_message", fake_run)
+    await rr._seat_turn(wid, rid, fids[0], st, kind="speak")
+    meta0 = (captured[-1].get("act_meta") or {}).get("charter") or {}
+    assert meta0.get("text") == "评审职责书·按席位", meta0
 
-    「它的日常职责和它的评审职责，是两个职责，评审职责是专门写的」
-    ⇒ `config/review_charters.json` 里有这个角色 ⇒ 用那一份；
-       没有 ⇒ 回落日常职责，并且标题上标明"还没写评审职责"（能看出缺哪几份）。
-    """
-    wid, cid, fids, rid = await _setup()
-
-    # [2026-10-30 同构改造] 身份不再单独手写，而是走「你的职能」区：
-    # `function_meta` 里塞的就是评审职责书 ⇒ 断言职责书**正文**出现即可。
-    sys_p = await review_runner._system_prompt(wid, "card_001", rid)
-    assert "核心价值和利益" in sys_p, "总裁有评审职责书，必须用它（正文）"
-    assert "## 你的职能" in sys_p, "身份走「你的职能」区（与子卡同构）"
-
-    # 没写评审职责的角色 ⇒ 回落日常职责（内容不同，但仍是同一区）
-    sys_p2 = await review_runner._system_prompt(wid, fids[0], rid)
-    assert "## 你的职能" in sys_p2
+    # ② 席位 id 查不到 ⇒ 按目录 code（fn_001 的 catalog_code=ceo）
+    charter_file.write_text(json.dumps(
+        {"ceo": {"text": "评审职责书·按code"}}, ensure_ascii=False),
+        encoding="utf-8")
+    await rr._seat_turn(wid, rid, fids[0], st, kind="speak")
+    meta1 = (captured[-1].get("act_meta") or {}).get("charter") or {}
+    assert meta1.get("text") == "评审职责书·按code", meta1
 
 
 def test_tool_results_are_not_truncated():
-    """工具结果不许硬截断。
+    """工具结果不许硬截断（单一投影 `render_tool_result`）。
 
-    [2026-10-29 实弹] `read_card card_075` 的返回 JSON 总长 20375 字符，
-    其中 `requirements` 字段从第 **12217** 字符处才开始；review_runner 当时写的是
-    `json.dumps(r)[:12000]` ⇒ 需求块**整块被砍掉**。技术总监据此在发言里写
-    「card_075 需求块正文我读不到，下面按「未核实」处理」，评审结论因此偏了。
-
-    口径同 `_user_prompt` 的 [P6]：**事实源一律不截断**。
+    [2026-10-29 实弹] 旧评审循环把 `json.dumps(r)[:12000]` 砍掉了需求块。
+    现在工具结果走普通回合的 `render_tool_result`——**唯一来源**，
+    不许再出现 `[:N]` 截断。
     """
-    from pathlib import Path
-
-    src = (Path(__file__).resolve().parents[1]
-           / "src" / "api" / "review_runner.py").read_text(encoding="utf-8")
-    assert "[:12000]" not in src, "工具结果不许砍到 12000"
-    assert "[:4000]" not in src, "改稿回合的工具结果同样不许砍"
-    assert src.count("payload = json.dumps(r, ensure_ascii=False)") >= 3
-
-
-def test_tool_results_are_not_truncated():
-    """工具结果不许硬截断。
-
-    [2026-10-29 实弹] `read_card card_075` 的返回 JSON 总长 20375 字符，
-    其中 `requirements` 字段从第 **12217** 字符处才开始；review_runner 当时写的是
-    `json.dumps(r)[:12000]` ⇒ 需求块**整块被砍掉**。技术总监据此在发言里写
-    「card_075 需求块正文我读不到，下面按「未核实」处理」，评审结论因此偏了。
-
-    口径同 `_user_prompt` 的 [P6]：**事实源一律不截断**。
-    """
-    from pathlib import Path
-
-    src = (Path(__file__).resolve().parents[1]
-           / "src" / "api" / "review_runner.py").read_text(encoding="utf-8")
-    assert "[:12000]" not in src, "工具结果不许砍到 12000"
-    assert "[:4000]" not in src, "改稿回合的工具结果同样不许砍"
-    assert src.count("payload = json.dumps(r, ensure_ascii=False)") >= 3
+    big = {"content": "X" * 20000 + "需求块在这里"}
+    rendered = card_tools.render_tool_result({"ok": True, "data": big})
+    assert "需求块在这里" in rendered, "工具结果不许砍"
+    assert len(rendered) > 20000
+    # 错误结果也走同一投影：信封化，不当数据喂给模型
+    err = card_tools.render_tool_result(
+        {"ok": False, "error": {"code": "denied", "message": "没权限"}})
+    assert "denied" in err and "没权限" in err
 
 
-async def test_speak_requires_a_terminal_tool(sandbox, monkeypatch):
-    """发言必须以 approve / reject 收尾。
+async def test_spoke_without_vote_gets_nudge_not_loop(sandbox, monkeypatch):
+    """只说话不表态 ⇒ 这一步结束；**下一步**机械派「补表态」回合。
 
-    [2026-10-29 用户令]「你让它每一次必须调工具，要么不通过要么通过，否则就再调起它」
-    实弹里产品经理在文字里写「结论：通过」但没调 approve ⇒ 系统只认工具 ⇒ 它永远
-    pending ⇒ 子卡被反复叫去改稿，跑到第 23 版还没收口。
-
-    钉两件事：① 只说话不表态 ⇒ 再调起一次；② 再调起时**工具面收敛成二选一**
-    （只剩 approve / reject，不给查阅工具）——这是结构，不是次数上限。
+    [2026-10-31 用户令] 不做内部重试、不收敛工具面：每个席位回合都是
+    普通回合，重投是 harness 按事件接力的**下一次唤醒**，不是进程内循环。
     """
     wid, cid, fids, rid = await _setup()
-    calls: list[list[str]] = []
+    st = await review_store.state_of(wid, rid)
+    calls: list[dict] = []
 
-    async def model(sys_p, user_p, convo, tools, model_name):
-        names = [str((t.get("function") or t).get("name") or "") for t in (tools or [])]
-        calls.append(names)
+    async def model(**kw):
+        calls.append({"user": str(kw.get("user_prompt") or "")})
         if len(calls) == 1:
-            # 第一次：只在文字里说通过，不调工具
             return ({"content": "结论：通过。", "tool_calls": []}, "fake")
-        return ({"content": "通过",
-                 "tool_calls": [{"name": "approve",
-                                 "arguments": {"review_card_id": rid}}]}, "fake")
+        if len(calls) == 2:
+            return ({"content": "通过",
+                     "tool_calls": [{"name": "approve",
+                                     "arguments": {"review_card_id": rid}}]},
+                    "fake")
+        return ({"content": "说完了", "tool_calls": []}, "fake")
 
     monkeypatch.setattr(model_service, "call_main", model)
-    await review_runner.speak(wid, rid, fids[0])
+    await review_runner._seat_turn(wid, rid, fids[0], st, kind="speak")
 
-    # [2026-10-31 用户令] 不做内部重试、不收敛工具面：
-    # 「模型不可能无限查下去」。不调工具 ⇒ 这一步结束，交 harness。
     assert len(calls) == 1, "只说话不表态 ⇒ 结束，由 harness 决定下一步"
-    assert "read_card" in calls[0], "给完整工具面（可查阅）"
+    st1 = await review_store.status(wid, rid)
+    assert fids[0] in st1["pending"], "没投票就还是 pending"
+
+    # 下一步：同一席位被叫回来补投（说了没投 → vote_nudge）
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    r = await review_runner.run_once(wid, rid)
+    assert r["reason"] == "seat_done" and r.get("kind") == "vote_nudge", r
+    # 补投轮的首轮调用带差事文本（续跳轮 user_prompt 故意为空）。
+    assert "补表态" in calls[1]["user"], "差事文本要说清是补表态"
+    st2 = await review_store.status(wid, rid)
+    assert fids[0] in st2["passed"], "补投的 approve 要落成真票"
 
 
+async def test_dispatch_promote_tells_child_to_write_final(sandbox):
+    """全过后派的活是「调 promote_draft 写正稿」，不是「改草稿」。"""
+    wid, cid, fids, rid = await _setup()
+    for f in fids:
+        await review_store.mark_spoken(wid, rid, f)
+        await review_store.approve(wid, rid, f)
+    st = await review_store.state_of(wid, rid)
 
-def test_text_tool_tag_detects_misformatted_calls():
-    """工具调用写成标签 ⇒ 要能被认出来（[2026-10-29 用户令]）。
+    await review_runner._dispatch_child(wid, rid, st, kind="promote")
 
-    「工具调错，你应该继续调起模型，让它继续尝试，怎么会卡住？」
-    实弹：card_038 改稿时输出 `<read_file">\\n<path>..</path>`，既不是结构化调用、
-    也不是"不用改"的表态，旧流程直接 break ⇒ 批次停在 pending。
-    """
-    from src.api.review_runner import _text_tool_tag
-
-    tools = [{"function": {"name": "read_file"}},
-             {"function": {"name": "edit_requirements"}}]
-    assert _text_tool_tag('<read_file">\n<path>x</path>', tools) == "read_file"
-    assert _text_tool_tag("<edit_requirements>", tools) == "edit_requirements"
-    assert _text_tool_tag("我认为不用改，判据都过了", tools) == ""
-    assert _text_tool_tag("<div>hi</div>", tools) == ""      # 不是工具名的标签不算
-
-
-def test_text_tool_tag_detects_misformatted_calls():
-    """工具调用写成标签 ⇒ 要能被认出来（[2026-10-29 用户令]）。
-
-    「工具调错，你应该继续调起模型，让它继续尝试，怎么会卡住？」
-    实弹：card_038 改稿时输出 `<read_file">\n<path>..</path>`，既不是结构化调用、
-    也不是"不用改"的表态，旧流程直接 break ⇒ 批次停在 pending。
-    """
-    from src.api.review_runner import _text_tool_tag
-
-    tools = [{"function": {"name": "read_file"}},
-             {"function": {"name": "edit_requirements"}}]
-    assert _text_tool_tag('<read_file">\n<path>x</path>', tools) == "read_file"
-    assert _text_tool_tag("<edit_requirements>", tools) == "edit_requirements"
-    assert _text_tool_tag("我认为不用改，判据都过了", tools) == ""
-    assert _text_tool_tag("<div>hi</div>", tools) == ""      # 不是工具名的标签不算
+    blocks = await session_facade.read(wid, cid) or []
+    text = "\n".join(str(b.get("content") or "") for b in blocks)
+    assert "promote_draft" in text, "话里要指明调哪个工具"
+    assert "已全员通过" in text
+    st2 = await review_store.state_of(wid, rid)
+    assert st2.get("promote_asked"), "已请定稿要落成机械事实"
 
 
-async def test_promote_turn_tells_child_to_write_final(sandbox, monkeypatch):
-    """全员通过后叫子卡，话必须说「写正稿」，不能还是「改草稿」。
-
-    [2026-10-29] 不给这句话的话，它看到"按意见改草稿"就会去改草稿，
-    永远不写正稿，批次转不出去。
+async def test_revision_after_promote_asked_re_asks(sandbox):
+    """[实跑回放 2026-11-01 · work_027 card_128] 请定稿后正卡答的是
+    `submit_revision`（不是 promote_draft）⇒ promote_asked 被这次回应
+    **消费**——清位，下一次唤醒自然重派，批次不停尸在 awaiting_promote。
     """
     wid, cid, fids, rid = await _setup()
-    captured: dict = {}
+    for f in fids:
+        await review_store.mark_spoken(wid, rid, f)
+        await review_store.approve(wid, rid, f)
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="promote")
+    assert (await review_store.state_of(wid, rid)).get("promote_asked")
 
-    async def fake_call(sys_p, user_p, convo, tools, model, **_):
-        captured["user"] = user_p
-        captured["tools"] = [str((t.get("function") or t).get("name") or "") for t in tools]
-        return ({"content": "好", "tool_calls": []}, "fake-model")
+    # 正卡交回（没转正）⇒ 那次请定稿被消费：promote_asked 清位
+    await review_store.mark_responded(wid, rid)
+    st2 = await review_store.state_of(wid, rid)
+    assert int(st2.get("responded_seq") or 0) == 1
+    assert not st2.get("promote_asked"), \
+        "交回不是转正 ⇒ 请定稿作消费论，下一次唤醒要重派"
 
-    monkeypatch.setattr(model_service, "call_main", fake_call)
-    await review_runner.revise(wid, rid, ask_promote=True)
+    # classify 口径复核：all_passed ∧ !promote_asked ⇒ 再派 promote
+    nxt, _why = review_runner._classify(
+        st2, await review_store.status(wid, rid),
+        set((st2.get("spoken") or {}).get("roles") or []),
+        promoted=False)
+    assert nxt == ("dispatch", "promote"), nxt
 
-    assert "promote_draft" in captured["user"], "话里要指明调哪个工具"
-    assert "已全员通过" in captured["user"]
-    assert "promote_draft" in captured["tools"], "工具面要给 promote_draft"
 
+async def test_promote_ask_consumed_by_turn_wakes_again(sandbox):
+    """[实跑回放 2026-11-01 · work_027 card_124→card_074] 请定稿后正卡回合
+    **正常结束但没调 promote_draft**（也没交回——mark_responded 清位碰不到）
+    ⇒ ask 被回合**消费**但没成果。
 
-async def test_promote_turn_tells_child_to_write_final(sandbox, monkeypatch):
-    """全员通过后叫子卡，话必须说「写正稿」，不能还是「改草稿」。
-
-    [2026-10-29] 不给这句话的话，它看到"按意见改草稿"就会去改草稿，
-    永远不写正稿，批次转不出去。
+    机械判据：指令落点（promote_asked_seq）之后正卡会话长了新块 ⇒ 它起过
+    回合读到指令 ⇒ classify 补**纯唤醒**（不重复落信）；nudge 封顶后到站。
+    点火入口是正卡 turn_end ⇒ report_target_turn_end 往评审卡报事实。
     """
     wid, cid, fids, rid = await _setup()
-    captured: dict = {}
+    for f in fids:
+        await review_store.mark_spoken(wid, rid, f)
+        await review_store.approve(wid, rid, f)
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="promote")
 
-    async def fake_call(sys_p, user_p, convo, tools, model, **_):
-        captured["user"] = user_p
-        captured["tools"] = [str((t.get("function") or t).get("name") or "") for t in tools]
-        return ({"content": "好", "tool_calls": []}, "fake-model")
+    st1 = await review_store.state_of(wid, rid)
+    assert st1.get("promote_asked") and st1.get("promote_asked_seq") is not None
 
-    monkeypatch.setattr(model_service, "call_main", fake_call)
-    await review_runner.revise(wid, rid, ask_promote=True)
+    # 正卡起了一个回合（指令落点之后会话长新块）但没调 promote_draft。
+    await session_facade.append(
+        wid, cid, {"actor": "assistant",
+                   "content": "（自述：先看下批次现状……回合收尾）"})
+    spoken = set((st1.get("spoken") or {}).get("roles") or [])
+    nxt, _why = review_runner._classify(
+        st1, await review_store.status(wid, rid), spoken,
+        promoted=False, tail_seq=review_runner._tail_seq(wid, cid))
+    assert nxt == ("wake", "promote", "consumed"), nxt
 
-    assert "promote_draft" in captured["user"], "话里要指明调哪个工具"
-    assert "已全员通过" in captured["user"]
-    assert "promote_draft" in captured["tools"], "工具面要给 promote_draft"
+    # 唤醒文按状况点破：consumed ⇒ 「你上一轮读过了但没调」。
+    kickoff = review_runner._wake_kickoff("promote", "consumed", st1)
+    assert "promote_draft" in kickoff and "上一轮" in kickoff
+
+    # 正卡 turn_end ⇒ 事实报给评审卡（harness 的点火入口），不发=没人再叫。
+    assert await review_runner.report_target_turn_end(wid, cid) is True
+
+    # 消费口径不误伤：指令落地后正卡**一直没起回合**（会话没长块）
+    # ⇒ 不算消费 ⇒ 到站等它（deliver_now 的唤醒可能还在路上）。
+    await review_store.mark_wake_nudge(wid, rid, "promote",
+                                       at_seq=review_runner._tail_seq(wid, cid))
+    st_quiet = await review_store.state_of(wid, rid)
+    nxt_q, why_q = review_runner._classify(
+        st_quiet, await review_store.status(wid, rid), spoken,
+        promoted=False, tail_seq=review_runner._tail_seq(wid, cid))
+    assert nxt_q is None and why_q == "awaiting_promote", (nxt_q, why_q)
+
+    # 又有新回合但仍没转正 ⇒ 再消费一次；nudge 封顶 ⇒ 到站不空烧。
+    await session_facade.append(
+        wid, cid, {"actor": "assistant", "content": "（还是没转正）"})
+    for _ in range(review_runner._WAKE_NUDGE_CAP):
+        await review_store.mark_wake_nudge(
+            wid, rid, "promote", at_seq=review_runner._tail_seq(wid, cid))
+    st2 = await review_store.state_of(wid, rid)
+    nxt2, why2 = review_runner._classify(
+        st2, await review_store.status(wid, rid), spoken,
+        promoted=False, tail_seq=review_runner._tail_seq(wid, cid))
+    assert nxt2 is None and why2 == "awaiting_promote", (nxt2, why2)
+
+
+async def test_revise_ask_consumed_by_turn_wakes_again(sandbox):
+    """同款消费检测在 revise 侧：请回应后正卡回合结束但没调 submit_revision
+    ⇒ asked_at_seq 之后有新块 ⇒ 补纯唤醒。"""
+    wid, cid, fids, rid = await _setup()
+    for f in fids:
+        await _rejecting_seat(wid, rid, f)
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="revise")
+
+    st1 = await review_store.state_of(wid, rid)
+    assert int(st1.get("asked_seq") or 0) > int(st1.get("responded_seq") or 0)
+    assert st1.get("asked_at_seq") is not None
+
+    # 正卡回合跑过了指令（没交回）⇒ 消费 ⇒ 补唤醒而不是永久 awaiting_target。
+    await session_facade.append(
+        wid, cid, {"actor": "assistant", "content": "（干了别的，没交回）"})
+    spoken = set((st1.get("spoken") or {}).get("roles") or [])
+    nxt, _why = review_runner._classify(
+        st1, await review_store.status(wid, rid), spoken,
+        promoted=False, tail_seq=review_runner._tail_seq(wid, cid))
+    assert nxt == ("wake", "revise", "consumed"), nxt
+
+
+async def test_dispatch_never_leaks_venue_internals(sandbox, monkeypatch):
+    """[场内外边界 2026-11-02 · 用户裁定「评审卡上下文不进子卡上下文」]
+    派活指令只带**席位发言**（actor=assistant 且 from=席位）：投票信封
+    JSON、席位 read_card 读出的正卡卡面等工具块是场内内务，不得进
+    子卡会话。"""
+    wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
+
+    # 真席位回合落发言（from=席位）＋手工塞两条内务块进评审会话。
+    async def say(**kw):
+        return ({"content": "接口约束缺验收口径", "tool_calls": []}, "fake-model")
+    monkeypatch.setattr(model_service, "call_main", say)
+    await review_runner._seat_turn(wid, rid, fids[0], st, kind="speak")
+    await session_facade.append(wid, rid, {
+        "actor": "tool", "tool_call_id": "call_x",
+        "content": '{"review_card_id": "card_117", "verdict": "reject"}'})
+    await session_facade.append(wid, rid, {
+        "actor": "tool", "tool_call_id": "call_y",
+        "content": '{"card_id": "card_021", "title": "被评卡", "requirements": "内部读出的卡面"}'})
+    await session_facade.append(wid, rid, {
+        "actor": "assistant", "content": "（无 from 的信封块，不该去）"})
+
+    st2 = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st2, kind="revise")
+
+    blocks = await session_facade.read(wid, cid) or []
+    text = "\n".join(str(b.get("content") or "") for b in blocks)
+    assert "接口约束缺验收口径" in text, "席位发言必须随指令带到"
+    assert "verdict" not in text and "card_117\", \"verdict" not in text
+    assert "内部读出的卡面" not in text, "工具块内容不得漏进子卡会话"
+    assert "不该去" not in text
+
+
+async def test_failed_target_turn_reports_fact_policy_gates(sandbox, monkeypatch):
+    """[实跑回放 2026-11-02 · work_027 card_117→card_021] 正卡回合**模型
+    失败**（上下文超限重试耗尽）⇒ 事件层必须**照发完整事实**（outcome
+    进负载——细粒度事实不归并）；「失败≠done」由真实策略的 where 拒掉，
+    不是 reporter 代码悄悄不报。
+    """
+    from src.infra import harness_cond
+    emitted = []
+    monkeypatch.setattr(review_runner.event_stream, "emit",
+                        lambda wid_, rid_, t, d: emitted.append((t, d)) or {})
+
+    wid, cid, fids, rid = await _setup()
+    for f in fids:
+        await _rejecting_seat(wid, rid, f)
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="revise")
+
+    # 真实策略的 where（生产同一份，不是抄进测试的副本）。
+    import json
+    from pathlib import Path
+    pols = json.loads((Path(__file__).resolve().parents[1]
+                       / "config" / "harness_policies.json")
+                      .read_text(encoding="utf-8"))
+    pol = next(p for p in pols.get("policies", pols)
+               if p.get("id") == "review_target_turn_end_continue")
+    where = pol["when"]["event"]["where"]
+
+    # 每种结局都照发事实；只有正常收口 + 挂账过策略闸。
+    for oc, fires in (("error", False), ("aborted", False),
+                      ("max-tokens", False), ("ok", True)):
+        emitted.clear()
+        assert await review_runner.report_target_turn_end(wid, cid, oc) is True
+        ev = next(d for t, d in emitted if t == "review_target_turn_end")
+        assert ev["outcome"] == oc and ev["pending_ask"] is True
+        assert harness_cond.match_where(ev, where, {}) is fires, (oc, ev)

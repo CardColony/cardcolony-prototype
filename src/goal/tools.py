@@ -389,14 +389,18 @@ async def h_resume_child(work_id: str, current_id: str,
     为什么需要：goal 域里 ``update_goal`` 只能改**自己的**目标（原版 dsh 同此），
     于是父卡看见子卡 paused/blocked 时只能发 msg_ask 把它叫醒一次，叫醒之后它
     目标仍是 paused，驱动不会再续 —— 「叫得醒、续不上」。这条工具补的就是那一步：
-    把子卡的目标 resume（写 goal/change + arm）并立刻 request_drive。
+    把子卡的目标 resume（写 goal/change + arm）并立刻点火。
 
     边界（都是硬判据，不靠模型自觉）：
       · 只能是自己**子树内**的卡（``policy._is_in_subtree``）；
-      · 目标卡必须是 ``auto_mode=1``；
+      · [唤醒不看模式 2026-11-01 · 用户令「唤醒子卡不需要自动」] **不再要求**
+        ``auto_mode=1``——「把它拉起来干活」与「它要不要自动续轮」是两回事：
+        自动卡 resume 后走续轮驱动（request_drive）；手动卡没有驱动，恢复
+        相位后亲手点一轮（在跑则不打断，它本轮收口会自查）。
       · ``complete`` 也能恢复：用同一目标开**新生命周期**（轮次归零），
         不再要求父卡新建子卡（[2026-10-21 · 用户令]）；
-      · 已在 active+armed ⇒ 幂等返回，不重复点火。
+      · 自动卡已在 active+armed ⇒ 幂等返回，不重复点火；手动卡的忙闲看
+        「有没有在途回合」，不看 goal 相位（它没有驱动，相位与实跑解耦）。
     """
     from ..permissions import policy
 
@@ -409,17 +413,16 @@ async def h_resume_child(work_id: str, current_id: str,
     # [强制停止 2026-10-24] 恢复 = 同时解除停止标记(否则解了 goal 也进不了回合)
     try:
         from ..api import control as _control
-        _control.unhalt(work_id, target)
+        _control.unhalt(work_id, target, by=current_id, via="resume_child")
     except Exception:  # noqa: BLE001
         pass
-    if not bool(meta.get("auto_mode")):
-        return _err("denied", f"{target} 不是自动模式卡，没有目标可恢复")
     try:
         if not policy._is_in_subtree(current_id, target, cards):
             return _err("denied", f"越权：{target} 不在你的子树内，不能替它恢复目标")
     except Exception as exc:  # noqa: BLE001 判定失败一律拒（宁可不动）
         return _err("denied", f"子树判定失败，已拒绝：{exc}")
 
+    is_auto = bool(meta.get("auto_mode"))
     service = get_service()
     try:
         goal = await service.get(work_id, target)
@@ -431,23 +434,61 @@ async def h_resume_child(work_id: str, current_id: str,
             # 唯一合法入口），上下文/留痕都留在原来那张卡上。
             view = await service.create(
                 work_id, target, CreateGoalRequest(objective=goal.objective))
-        elif goal.phase == "active" and goal.activation == "armed":
+        elif goal.phase == "active" and goal.activation == "armed" and is_auto:
             return _ok({"resumed": False, "reason": "已在推进中", **_goal_value(goal)})
+        elif goal.phase == "active":
+            # 手动卡的相位与实跑解耦（没有驱动），active 无需再动相位，
+            # 直接到下面点火；resume(active+armed) 反而会被状态机拒掉。
+            view = goal
         else:
             view = await service.resume(work_id, target, goal.ref())
     except GoalError as exc:
         return _err(exc.code, exc.message)
 
-    # 立刻评估点火（不等下一轮 idle）——resume 本身也会触发 goal/changed 监听，
-    # 这里再叫一次是幂等的（request_drive 有 requested 合并）。
-    try:
-        from . import driver as _driver
-        _driver.request_drive(work_id, target)
-    except Exception as exc:  # noqa: BLE001 点火失败不回滚 resume，只记日志
-        logger.warning("[goal] resume_child 点火失败 card=%s: %s", target, exc)
+    ignited = False
+    if is_auto:
+        # 自动卡：resume 本身会触发 goal/changed 监听，这里再叫一次是幂等的
+        # （request_drive 有 requested 合并）——驱动器接管后续续轮。
+        try:
+            from . import driver as _driver
+            _driver.request_drive(work_id, target)
+            ignited = True
+        except Exception as exc:  # noqa: BLE001 点火失败不回滚 resume，只记日志
+            logger.warning("[goal] resume_child 点火失败 card=%s: %s", target, exc)
+    else:
+        # 手动卡没有续轮驱动：resume 只把目标相位摆正，还得亲手点一轮。
+        try:
+            from ..storage import session_facade as _sf
+            busy = bool(_sf.turn_holder(work_id, target))
+        except Exception:  # noqa: BLE001 判不出来按空闲处理（点火撞互斥也如实回落）
+            busy = False
+        if busy:
+            data = _goal_value(view)
+            data["resumed"] = True
+            data["ignited"] = False
+            data["reason"] = "目标已恢复；它正在跑，不打断，本轮收口后会自查"
+            return _ok(data)
+        try:
+            from ..api import message_runner as _mr
+            from ..api import routes as _routes
+            prompt = (
+                "## 上级唤醒\n\n"
+                f"你的目标已由 `{current_id}` 恢复推进（此前停在暂停/卡住/完工）。"
+                "请接着这个目标继续干活；觉得做完了就按卡的完工/收口通道声明，"
+                "这轮也可以选择不做事直接结束。"
+            )
+            task = _mr._spawn_tracked(_routes._run_message(
+                work_id, target, prompt, None, append_user=False,
+                source={"kind": "resume_child", "from": current_id}))
+            task._card_msg_target = target  # type: ignore[attr-defined]
+            ignited = True
+        except Exception as exc:  # noqa: BLE001 点火失败不回滚 resume，只记日志
+            logger.warning("[goal] resume_child 手动卡点火失败 card=%s: %s",
+                           target, exc)
 
     data = _goal_value(view)
     data["resumed"] = True
+    data["ignited"] = ignited
     return _ok(data)
 
 
@@ -511,9 +552,11 @@ UPDATE_GOAL_SCHEMA: dict[str, Any] = {
 RESUME_CHILD_SCHEMA: dict[str, Any] = {
     "name": "resume_child",
     "description": (
-        "让一张**停下的子卡重新开始自主推进**：把它的目标从 paused/blocked 恢复成 active，"
-        "并立刻点火让它接着跑（不用你再发消息催）。只能用于自己子树内、自动模式卡；"
-        "已完成（complete）的卡也能恢复：用同一目标开新生命周期，不必新建子卡。"
+        "让一张**停下的子卡重新开始自主推进**：解除它的停止标记、把目标从 "
+        "paused/blocked 恢复成 active，并立刻点火让它接着跑（不用你再发消息催）。"
+        "只能用于自己子树内的卡；自动卡恢复后走自动续轮，手动卡点一轮让它干活——"
+        "不看 auto_mode。已完成（complete）的卡也能恢复：用同一目标开新生命周期，"
+        "不必新建子卡。"
     ),
     "parameters": {
         "type": "object",

@@ -322,8 +322,11 @@ async def test_direct_child_status_shows_direct_children_only(sandbox):
     assert "子卡现状正文" in region
     assert "孙卡现状正文" not in region, "孙级现状不得进入父卡上下文"
     assert "孙卡有现状" not in region, "孙级标题也不得出现"
-    assert empty not in region, "空现状的子卡不占位"
-    assert region.startswith("## 直接子卡（使命·现状）")
+    # [2026-11-02 用户令「父卡需要看到子卡的实时状态」] 空现状的子卡不再不占位：
+    # 活性行（运行中/待推进/已暂停…）恒在，父卡要看的就是它活没活着。
+    assert f"### {empty} · 子卡无现状" in region, "空现状的子卡也该露面——活性行是它的价值"
+    assert "**活性**：" in region
+    assert region.startswith("## 直接子卡（活性·使命·现状）")
 
 
 async def test_grandchild_context_shows_its_own_children(sandbox):
@@ -340,14 +343,18 @@ async def test_grandchild_context_shows_its_own_children(sandbox):
     assert "中间现状" not in region, "自己的现状不属于「子卡现状」"
 
 
-async def test_direct_child_status_region_absent_when_all_empty(sandbox):
+async def test_direct_child_status_region_absent_when_no_children(sandbox):
+    """[2026-11-02 活性行入区后] 判据更新：「两块都空」不再让区消失——
+    活性行恒在（运行中/待推进/已暂停…），父卡要靠它看子卡活没活着。
+    现在整个区不出现的唯一条件是**没有直接子卡**（叶子卡那一条另测）。"""
     wid, root = await _make_work()
     await _mk_child(wid, "子卡甲", root)
     await _mk_child(wid, "子卡乙", root)
     ctx = context_assembler.build_ctx(wid, root)
-    assert context_regions.render_direct_child_status_region(ctx.direct_child_status) == ""
+    region = context_regions.render_direct_child_status_region(ctx.direct_child_status)
+    assert "**活性**：" in region, "两块都空也露面——活性行正是给父卡看的"
     orders = [r["order"] for r in context_assembler.build_context_regions(wid, root)]
-    assert 170 not in orders, "全空 ⇒ 整个区不出现"
+    assert 170 in orders
 
 
 async def test_direct_child_status_region_present_in_context(sandbox):

@@ -57,11 +57,12 @@ def test_event_ontology_is_23_types():
     # [更新现状按钮改造 2026-10-16] 主通道再 +1 类（status_update_task）
     # → 26 原 + 2 逐字流 = 28。
     # [运行态单一真相源 2026-10-21] 主通道再 +1 类（turn_end）→ 27 原 + 2 逐字流 = 29。
-    assert len(es.EVENT_TYPES) == 29, len(es.EVENT_TYPES)
+    # [需求文档任务事件 2026-11-01] 主通道再 +2（requirements_final_task/requirements_draft_task）→ 29 原 + 2 = 31。
+    assert len(es.EVENT_TYPES) == 31, len(es.EVENT_TYPES)
     assert len(es.TOKEN_EVENT_TYPES) == 2
     assert set(es.TOKEN_EVENT_TYPES) <= set(es.EVENT_TYPES)
     legacy = [t for t in es.EVENT_TYPES if t not in es.TOKEN_EVENT_TYPES]
-    assert len(legacy) == 27, len(legacy)
+    assert len(legacy) == 29, len(legacy)
 
 
 # ---------- 2/3：seq 不混合 + 双向隔离 ----------

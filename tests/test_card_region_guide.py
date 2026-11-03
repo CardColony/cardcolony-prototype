@@ -79,15 +79,50 @@ def test_every_block_has_howto():
 
 
 # ---------------------------------------------------------------------------
-# V4：五类跨卡信息各有落点（对账方案 §五）
+# V4：跨卡信息各有落点（[2026-11-01] 对账方案 §五 的旧五类名已随 155 区重写
+#     退役——现口径：对外声称全在现状，台账指针在产物清单，等待明细在待协作
+#     事项，判断基准在「事实以卡面为准」段）
 # ---------------------------------------------------------------------------
 
 
-def test_five_cross_card_categories_present():
+def test_cross_card_info_has_landing():
     t = _GUIDE("sub_project", "rd_project")
-    for k in ("当前确定状态", "接口与约定", "依赖与影响范围",
-              "交接物与权威位置", "待协作事项"):
-        assert k in t, f"缺跨卡信息类别：{k}"
+    for k in ("对外接口", "依赖哪些卡、变更会波及谁",
+              "产物清单", "待协作事项", "〔事实以卡面为准〕"):
+        assert k in t, f"缺跨卡信息落点：{k}"
+
+
+def test_fact_authority_block_present():
+    """[事实分层 2026-11-01] 「事实以卡面为准」段常驻 155 区尾部——
+    钉语义骨架不钉逐字稿：基准＝卡面三块；消息/历史/记忆/影子都不是依据；
+    历史版本不可引用；不落面等于没发生；冲突以卡面为准。"""
+    t = _GUIDE("sub_project", "rd_project")
+    for frag in ("〔事实以卡面为准〕",
+                 "参照的对象只有一个——卡面",
+                 "做到什么算完成",
+                 "不是依据",
+                 "历史版本只是留痕，不能拿来引用",
+                 "不落面",
+                 "以卡面为准",
+                 "能查证就查证"):
+        assert frag in t, frag
+
+
+def test_fact_authority_function_branch():
+    """职能/角色卡分支同样带权威段（你的卡面＝你的台账）。"""
+    for ct in ("function", "role"):
+        t = _GUIDE(ct, "rd_project")
+        assert "〔事实以卡面为准〕" in t, ct
+        assert "不是依据" in t, ct
+        assert "不能拿来引用" in t, ct
+
+
+def test_guide_region_reaches_all_profiles():
+    """权威说明必须到 viewpoint/draft 席——profiles 才是真实过滤闸
+    （render_registered_regions 按 profiles 过滤，seats 不参与）。"""
+    spec = next(s for s in context_regions.REGION_TABLE
+                if s["key"] == "region_guide")
+    assert set(spec["profiles"]) == {"main", "viewpoint", "draft"}
 
 
 # ---------------------------------------------------------------------------

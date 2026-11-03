@@ -1,191 +1,67 @@
 # -*- coding: utf-8 -*-
-"""系统消息投递层（harness 投递）：规则命中后，把提醒沿节点网络送到目标卡。
+"""harness 投递层：策略命中后，把提醒送到目标卡。
 
-[基础设施 2026-10-26 · 用户裁定「那就做投递层吧」]
+[基础设施 2026-10-26 · 用户裁定「先做投递层吧」]
+[2026-10-31 · 两代并轨 · 用户令「整合进一代，以二代为准，二代缺陷的就补足」]
+  第一代「规则表 + 逐条现场查」路径（``harness_rules`` / ``fire`` /
+  ``harness_fired`` 去重表）退役——条件集是**唯一**引擎：
+  判断归 ``policy_set``（值班员+小本子），求值归 ``harness_cond``，
+  接线归 ``policy_runner.feed``，**本模块只做投递**：解析目标、渲染
+  消息、按手段送达。
 
-## 它做什么
+## 投递手段（``then.mode``）
 
-输入＝一条触发事件；输出＝若干条**系统提醒**，落在目标卡的收件箱与消息流里。
+- ``message``（默认）：落一条**永久会话消息**；``wake=true`` 时同时唤醒一轮
+  （多数系统提醒只想让对方知道 ⇒ 策略里默认 ``wake=False``）；
+- ``inject``：把 ``then.message`` 塞进目标卡**下一轮**的提示词区
+  （``cards.pending_inject``，一次性、仅提示词，不进历史）；
+- ``continue``：唤醒**评审卡**走 ``review_runner.run_once``（一醒=一步）。
+  [2026-10-29 · 用户裁定「暂时只对评审卡开放」] 非评审卡直接跳过；
+  ``then.message`` 通过 ``run_once(hint=...)`` 进这一步的用户提示词——
+  评审回合不读 ``pending_inject``，只能显式传参。
 
-```
-fire(work_id, ev_type, card_id, data)
-  ├ 取候选规则（harness_rules.rules_for）
-  ├ 逐条求值 guard（只看状态，不用墙钟）
-  ├ 解析目标（self / parent / ancestors / links / card:<id>）
-  ├ 渲染模板（{card_id} {card_title} {card_type} {parent} {trigger_type}）
-  ├ 防重（同规则 × 同卡 × 同触发事件只发一次，落 harness_fired）
-  └ 投递：收件箱 + 消息块 + 事件流 + 后台唤醒
-```
+## 目标解析（``then.target``）
 
-## 为什么消息要"走既有通道"
+``self``/``parent``/``ancestors``/``links``/``card:<id>``/``event:<路径>``
+——``event:`` 从触发事实里取卡号（``ctx.trigger_data``，如 ``event:target``）。
 
-用户口径：「消息也是通过节点网络连线通信，是智能网里的其中一个节点，而不是完全
-自造一套体系」。故投递不做第二套：落信走 ``card_db.append_inbox``、消息块走
-``session_facade.emit_message_event``、唤醒走 ``message_runner.deliver_now``——
-与卡间通信同一条路，消息天然挂在两卡的连线上、可被 ``read_inbox`` 与事件流追溯。
+## 占位符（``then.message``）
 
-## 零阻断
-
-投递是旁路能力：任何一步失败只记 warning，绝不影响触发它的主流程。
+``{card_id}``/``{card_title}``/``{card_type}``/``{parent}``/``{trigger_type}``
+与 ``{event.<路径>}``（取触发事实的字段，如 ``{event.batch}``）。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
+import re
 from typing import Any, Optional
 
-from . import harness_rules
+from .harness_cond import get_path
 
 logger = logging.getLogger("infra.harness")
 
-#: 后台评估任务的强引用（防 GC 中途回收，同 message_runner._spawn_tracked 手法）
-_PENDING: set[Any] = set()
-
-#: 系统消息的发送者标识（不是真实卡；消息头 from 会显示它）
+#: harness 发出的系统提醒在会话里的发件人（与用户口径一致：普通卡间通信的同一条路）
 SYSTEM_SENDER = "system"
 
-#: 消息块/事件类型
+#: 投递留痕的事件类型
 EV_TYPE = "harness_message"
 
-#: 判据求值时回看的事件条数上限（够覆盖一轮；不追求全历史）
-_LOOKBACK = 200
-
-_FIRED_DDL = """CREATE TABLE IF NOT EXISTS harness_fired (
-    work_id     TEXT NOT NULL,
-    rule_id     TEXT NOT NULL,
-    card_id     TEXT NOT NULL,
-    trigger_seq INTEGER NOT NULL,
-    ts          TEXT DEFAULT '',
-    PRIMARY KEY (work_id, rule_id, card_id, trigger_seq)
-)"""
-
-
-# ---------------------------------------------------------------- 上下文
-async def build_ctx(work_id: str, card_id: str, trigger_type: str,
-                    trigger_data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """收集判据需要的事实（卡 meta + 正文三块 + 最近事件）。失败字段留空。"""
-    from ..storage import card_store
-
-    ctx: dict[str, Any] = {
-        "work_id": work_id, "card_id": card_id,
-        "card_type": "", "card_title": "", "parent": "", "state": "",
-        "mission": "", "status_block": "", "requirements": "",
-        "trigger_type": trigger_type, "trigger_data": trigger_data or {},
-        "events": [],
-    }
-    try:
-        cur = await card_store.read_card(work_id, card_id)
-        meta = cur.get("meta") or {}
-        body = cur.get("body") or {}
-    except Exception as exc:  # noqa: BLE001 读不到卡 ⇒ 判据按空值走（宁可少发）
-        logger.warning("[harness] 读卡失败 card=%s: %s", card_id, exc)
-        meta, body = {}, {}
-    ctx["card_type"] = str(meta.get("card_type") or "")
-    ctx["card_title"] = str(meta.get("title") or "")
-    ctx["parent"] = str(meta.get("parent") or "")
-    ctx["state"] = str(meta.get("state") or "")
-    ctx["mission"] = str(body.get("mission") or "")
-    ctx["status_block"] = str(body.get("status_block") or "")
-    ctx["requirements"] = str(body.get("requirements") or "")
-    try:
-        # [判据只认事件 2026-10-26 · 用户令「明明做了事件机制，为什么还拿卡的状态
-        # 来定义」] 事件源必须是**实时的 jsonl 时序**，不是汇总表 work_events——
-        # 汇总表是缓冲批量落（阈值 40 条 / 1.5s），触发事件自己很可能还在缓冲里，
-        # 读汇总表会漏掉"刚刚发生的这一条"。timeline(tail=N) 走文件尾字节扫描，
-        # 几十毫秒，且是后台任务，不堵主链。返回旧→新，这里转成新→旧。
-        from ..storage import event_log
-        recs = event_log.timeline(work_id, card_id, tail=_LOOKBACK) or []
-        ctx["events"] = list(reversed(recs))
-    except Exception as exc:  # noqa: BLE001 事件读不到 ⇒ no_event/has_event 判不了
-        logger.warning("[harness] 读事件失败 card=%s: %s", card_id, exc)
-        ctx["events"] = []
-    return ctx
-
-
-def _is_blank(text: str) -> bool:
-    """块是否"空"：空串或只有模板占位（如「（本卡全部需求的确定版…）」这种说明行）。"""
-    t = (text or "").strip()
-    if not t:
-        return True
-    # 只有说明性占位（无实质内容）：全是括号说明、或长度极短且无换行
-    if t.startswith("（") and t.endswith("）") and "\n" not in t:
-        return True
-    return False
-
-
-# ---------------------------------------------------------------- 判据
-def evaluate_guard(guard: Any, ctx: dict[str, Any]) -> bool:
-    """全部判据满足才 True（空/None＝恒真）。
-
-    [harness 第 2 步 2026-10-28] **换成通用求值器**（`infra/harness_cond.py`）。
-
-    改前只有两种判据（`no_event` / `has_event`），而且只支持"某类事件在本轮/
-    本卡有没有发生过、某个**顶层**字段**等于**某个值"——问不了嵌套、数值、
-    次数、先后。用户口径：「条件的组合要更灵活机动，不能有太多限制，这样才能
-    组合出丰富且智能的控制机制。」
-
-    现在三种输入都接受（语义向后兼容）：
-      · ``None`` / ``[]``                ⇒ 恒真
-      · list（旧写法，或混写）            ⇒ 逐项 AND
-      · dict（条件树：all/any/not/event/count/field）
-
-    认不出的形状一律 **False**（宁可少发，不误发）——这条纪律不变。
-    """
-    from . import harness_cond
-    try:
-        return harness_cond.eval_cond(harness_cond.normalize_guard(guard), ctx)
-    except Exception as exc:  # noqa: BLE001 求值异常⇒不成立（宁可少发）
-        logger.warning("[harness] 条件求值异常 ⇒ 不触发: %s", exc)
-        return False
-
-
-def _eq(a: Any, b: Any) -> bool:
-    """宽松相等（True/true/"true" 视为同值）。保留给外部旧引用，判据已走 harness_cond。"""
-    if a == b:
-        return True
-    return str(a).strip().lower() == str(b).strip().lower()
-
-
-def _match_data(data: Any, where: dict[str, Any],
-                ctx: Optional[dict[str, Any]] = None) -> bool:
-    """事件的 data 是否满足字段条件。**已改为委托**（[harness 第 2 步 2026-10-28]）。
-
-    新实现支持点号路径、比较器、``$ctx`` 取值，见 `infra/harness_cond.match_where`。
-    保留本函数只为不打断既有外部引用。
-    """
-    from . import harness_cond
-    return harness_cond.match_where(data, where, ctx or {})
-
-
-def _has_event(ctx: dict[str, Any], guard: dict[str, Any]) -> bool:
-    """在 scope 范围内有没有 types 里的事件。**已改为委托**（[harness 第 2 步]）。
-
-    旧的 scope=turn 窗口算法（跳过触发事件自身、跳过本轮自己的 turn_end、
-    遇到第二个 turn_end 即上一轮边界）已**逐字搬进** `harness_cond._turn_window`，
-    语义不变。保留本函数只为不打断既有外部引用。
-    """
-    from . import harness_cond
-    spec: dict[str, Any] = {"types": list(guard.get("types") or []),
-                            "within": str(guard.get("scope") or "turn")}
-    if guard.get("where"):
-        spec["where"] = dict(guard.get("where") or {})
-    return bool(harness_cond.select_events(spec, ctx))
-
-
-def _child_count(ctx: dict[str, Any]) -> int:
-    """已废弃：判据只允许事件。保留函数体仅为兼容旧引用，不再被 evaluate_guard 调用。"""
-    return 0
-
-
-def _cmp(a: int, op: str, b: int) -> bool:
-    return {"<": a < b, "<=": a <= b, "==": a == b,
-            ">=": a >= b, ">": a > b}.get(op, False)
+#: ``{event.<路径>}`` 占位符
+_EVENT_PH_RE = re.compile(r"\{event\.([A-Za-z_][\w.]*)\}")
 
 
 # ---------------------------------------------------------------- 目标
-def resolve_targets(target: str, ctx: dict[str, Any]) -> list[str]:
-    """解析目标卡号列表（去重、排除自身）。"""
+def resolve_targets(target: str, ctx: dict[str, Any],
+                    allow_self: bool = False) -> list[str]:
+    """解析目标卡号列表（去重、排除自身）。
+
+    ``event:<路径>`` 从 ``ctx["trigger_data"]``（触发事实）取字段值——
+    取不到 / 不是卡号 ⇒ 解析为空（宁可不发，不误发）。
+
+    ``allow_self``：deploy 的场（venue）可以就是触发卡本身——QA 就在
+    报完工的那张卡上跑验收；"不发给自己"是给送话路径的规矩。
+    """
     from ..storage import card_store
 
     wid = ctx["work_id"]
@@ -212,6 +88,11 @@ def resolve_targets(target: str, ctx: dict[str, Any]) -> list[str]:
                if l.get("target")]
     elif target.startswith("card:"):
         out = [target.split(":", 1)[1].strip()]
+    elif target.startswith("event:"):
+        # 从触发事实取卡号：`event:target` ⇒ ctx.trigger_data["target"]
+        path = target.split(":", 1)[1].strip()
+        v = get_path(ctx.get("trigger_data") or {}, path) if path else None
+        out = [str(v)] if isinstance(v, str) and v.strip() else []
     else:
         logger.warning("[harness] 未知 target=%r", target)
         return []
@@ -223,7 +104,7 @@ def resolve_targets(target: str, ctx: dict[str, Any]) -> list[str]:
         if not t or t in seen:
             continue
         # self 就是要发给自己；其余目标里出现自己才排除（父卡链/连线可能绕回自己）
-        if t == me and target != "self":
+        if t == me and target != "self" and not allow_self:
             continue
         seen.add(t)
         final.append(t)
@@ -232,7 +113,21 @@ def resolve_targets(target: str, ctx: dict[str, Any]) -> list[str]:
 
 # ---------------------------------------------------------------- 渲染
 def render_message(rule: dict[str, Any], ctx: dict[str, Any]) -> str:
+    """渲染消息模板。
+
+    先替 ``{event.<路径>}``（触发事实字段），再走 ``.format`` 的普通占位符——
+    顺序不能反：``{event.x}`` 不是合法 format 字段，会被 format 吃掉成异常。
+    """
     tpl = str(rule.get("message") or "")
+    trigger = ctx.get("trigger_data") or {}
+
+    def _ev_sub(m: "re.Match[str]") -> str:
+        v = get_path(trigger, m.group(1))
+        return "" if v is None else str(v)
+
+    if isinstance(trigger, dict):
+        tpl = _EVENT_PH_RE.sub(_ev_sub, tpl)
+
     vals = {
         "card_id": ctx.get("card_id", ""),
         "card_title": ctx.get("card_title", ""),
@@ -247,89 +142,10 @@ def render_message(rule: dict[str, Any], ctx: dict[str, Any]) -> str:
         return tpl
 
 
-# ---------------------------------------------------------------- 防重
-async def _claim(work_id: str, rule_id: str, card_id: str, trigger_seq: int) -> bool:
-    """占位：同一 (规则, 卡, 触发事件) 只允许投递一次。"""
-    from ..storage import card_db
-
-    def _fn(conn: Any) -> bool:
-        conn.execute(_FIRED_DDL)
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO harness_fired"
-            " (work_id, rule_id, card_id, trigger_seq, ts)"
-            " VALUES (?,?,?,?,datetime('now'))",
-            (work_id, rule_id, card_id, int(trigger_seq)))
-        return bool(cur.rowcount)
-
-    try:
-        return bool(await card_db.run_write(work_id, _fn))
-    except Exception as exc:  # noqa: BLE001 判不了就当首次（宁可多发一次，不吞提醒）
-        logger.warning("[harness] 防重判定失败 rule=%s: %s", rule_id, exc)
-        return True
-
-
-async def _deliver_continue(work_id: str, target: str, text: str, *,
-                             rule_id: str = "") -> Optional[str]:
-    """续接：**原状态再调起一次**，并塞一句说明为什么叫它。
-
-    [2026-10-29 用户口径]「停下来时的最后一次调用是什么状态，就原状态再次调起，
-    并根据情况不同，塞不同的提示词」——两种情况：①没有通过/不通过 ②全部通过了
-    但没有写正稿。
-
-    与 ``inject`` 的唯一差别：inject 只排队等下一次自然跑，continue **立刻叫醒**。
-    与 ``message`` 的差别：message 把话写进**会话历史**（永久），continue 只给
-    **这一轮**（一次性提示，不落历史）。
-    """
-    from ..api import event_stream, message_runner
-    from ..storage import card_store
-
-    # [2026-10-29 用户令]「continue 和 message 本质上很像，所以 continue 你需要标注，
-    # 暂时只对评审卡开放」——不是评审卡就直接不续接，等语义定下来再放开。
-    # 标注在代码里，不靠调用方自觉：规则写错了也不会误叫普通卡。
-    try:
-        _card = await card_store.read_card(work_id, target)
-        _ctype = str((_card.get("meta") or {}).get("card_type") or "")
-    except Exception as exc:  # noqa: BLE001 读不到卡就不续接
-        logger.warning("[harness] continue 读卡失败 work=%s card=%s: %s",
-                       work_id, target, exc)
-        return None
-    if _ctype != "review":
-        logger.info("[harness] continue 暂时只对评审卡开放，跳过 card=%s type=%s",
-                    target, _ctype or "(空)")
-        return None
-
-    try:
-        # [2026-10-30 实弹修正]「原状态再调起」对评审卡＝**接着跑评审**，不是起一轮对话。
-        # 改前走 `deliver_now` ⇒ 评审卡被叫醒后跑的是普通对话（实弹 card_123 事件流：
-        # context→round_start→…→turn_end），评审一步都没推进，批次就此停住。
-        from ..api import review_runner
-        r = await review_runner.run_once(work_id, target)
-        # [2026-10-31] 到站原因补两个：**stopped**（用户点了停止）与
-        # **review_busy**（评审卡被别的回合占着，本步让路）——都不是"这一步干成了"，
-        # 不该报成 continue 成功（否则前端会显示"已续跑"，实际一步没走）。
-        ok = bool(isinstance(r, dict) and r.get("reason") not in
-                  ("no_batch", "already_running", "speak_failed",
-                   "stopped", "review_busy"))
-        try:
-            event_stream.emit(work_id, target, EV_TYPE, {
-                "rule_id": rule_id, "to": str(target), "wake": ok,
-                "mode": "continue", "started": ok,
-                "reason": str((r or {}).get("reason") or ""),
-                "text": text[:300],
-            })
-        except Exception:  # noqa: BLE001
-            pass
-        return f"continue:{int(ok)}"
-    except Exception as exc:  # noqa: BLE001 投递失败不影响触发它的主流程
-        logger.warning("[harness] 续接失败 work=%s to=%s rule=%s: %s",
-                       work_id, target, rule_id, exc)
-        return None
-
-
 # ---------------------------------------------------------------- 投递
 async def deliver(work_id: str, target: str, text: str, *,
                   rule_id: str = "", wake: bool = True,
-                  mode: str = "message") -> Optional[str]:
+                  mode: str = "message", action_id: str = "") -> Optional[str]:
     """把一条系统提醒送到目标卡。
 
     [harness 三手段 2026-10-28 · 用户定义] `mode` 决定用哪种手段：
@@ -344,11 +160,13 @@ async def deliver(work_id: str, target: str, text: str, *,
     """
     if mode == "inject":
         return await _deliver_inject(work_id, target, text,
-                                     rule_id=rule_id, wake=wake)
+                                     rule_id=rule_id, wake=wake,
+                                     action_id=action_id)
     if mode == "continue":
         # [2026-10-29 用户裁定] 固定能力，与 message / inject 并列：
         # 按卡停下来的状态原样再调起一次，塞不同的提示词。
-        return await _deliver_continue(work_id, target, text, rule_id=rule_id)
+        return await _deliver_continue(work_id, target, text, rule_id=rule_id,
+                                       action_id=action_id)
     try:
         from ..api import event_stream, message_runner
         from ..storage import session_facade
@@ -371,6 +189,8 @@ async def deliver(work_id: str, target: str, text: str, *,
                               {"rule_id": rule_id, "to": str(target),
                                "wake": bool(wake),
                                "seq": msg_id,
+                               "mode": "message",
+                               "action_id": str(action_id or ""),
                                "text": text[:300]})
         except Exception:  # noqa: BLE001 展示层零阻断
             pass
@@ -388,7 +208,8 @@ async def deliver(work_id: str, target: str, text: str, *,
 
 
 async def _deliver_inject(work_id: str, target: str, text: str, *,
-                          rule_id: str = "", wake: bool = True) -> Optional[str]:
+                          rule_id: str = "", wake: bool = True,
+                          action_id: str = "") -> Optional[str]:
     """注入模式：**只排队、不唤醒**。
 
     [2026-10-28 用户口径]「不是那次调用，是那一整轮都留着，而且不会唤醒，
@@ -406,7 +227,9 @@ async def _deliver_inject(work_id: str, target: str, text: str, *,
             event_stream.emit(work_id, target, EV_TYPE,
                               {"rule_id": rule_id, "to": str(target),
                                "wake": False, "mode": "inject",
-                               "queue_len": n, "text": text[:300]})
+                               "queue_len": n,
+                               "action_id": str(action_id or ""),
+                               "text": text[:300]})
         except Exception:  # noqa: BLE001
             pass
         return f"inject:{n}"
@@ -416,94 +239,65 @@ async def _deliver_inject(work_id: str, target: str, text: str, *,
         return None
 
 
-# ---------------------------------------------------------------- 主入口
-async def fire(work_id: str, ev_type: str, card_id: str,
-               data: Optional[dict[str, Any]] = None,
-               *, trigger_seq: int = 0) -> list[dict[str, Any]]:
-    """一条事件发生后评估所有候选规则并投递。返回投递记录（诊断/测试用）。
+async def _deliver_continue(work_id: str, target: str, text: str, *,
+                            rule_id: str = "",
+                            action_id: str = "") -> Optional[str]:
+    """续接：**原状态再调起一次**，并塞一句说明为什么叫它。
 
-    ``trigger_seq`` 用于防重（同一条事件重复评估不会重复发）。
+    [2026-10-29 用户口径]「停下来时的最后一次调用是什么状态，就原状态再次调起，
+    并根据情况不同，塞不同的提示词」——两种情况：①没有通过/不通过 ②全部通过了
+    但没有写正稿。
+
+    与 ``inject`` 的唯一差别：inject 只排队等下一次自然跑，continue **立刻叫醒**。
+    与 ``message`` 的差别：message 把话写进**会话历史**（永久），continue 只给
+    **这一轮**（一次性提示，不落历史）。
+
+    [2026-10-31 · 两代并轨] ``text`` 改走 ``run_once(hint=...)`` 显式传参——
+    评审回合的用户提示词是直组的（不走 context_assembler），
+    ``pending_inject`` 塞进去也递不到席位手里。
     """
-    out: list[dict[str, Any]] = []
-    rules = harness_rules.rules_for(ev_type)
-    if not rules:
-        return out
+    from ..api import event_stream
+    from ..storage import card_store
 
-    ctx: Optional[dict[str, Any]] = None
-    for rule in rules:
-        rid = str(rule.get("id") or "")
-        if ctx is None:
-            ctx = await build_ctx(work_id, card_id, ev_type, data)
-        # 卡类型过滤：**取事件自带字段**，不读卡（事件没带 ⇒ 不在白名单 ⇒ 不发）
-        cts = (rule.get("trigger") or {}).get("card_types") or []
-        if cts:
-            _ev_ct = str((data or {}).get("card_type") or "")
-            if _ev_ct not in cts:
-                continue
-
-        if not evaluate_guard(rule.get("guard") or [], ctx):
-            continue
-
-        targets = resolve_targets(str(rule.get("target") or ""), ctx)
-        if not targets:
-            continue
-        text = render_message(rule, ctx)
-        for t in targets:
-            if not await _claim(work_id, rid, t, trigger_seq):
-                continue
-            # [2026-10-29] 规则可以指定投递手段：message（默认）/ inject / continue
-            msg_id = await deliver(work_id, t, text, rule_id=rid,
-                                   mode=str(rule.get("mode") or "message"))
-            if msg_id:
-                out.append({"rule_id": rid, "to": t, "msg_id": msg_id})
-    return out
-
-
-def interested(ev_type: str) -> bool:
-    """有没有规则监听这个事件类型。
-
-    接线用：事件是高频通道（tool_call / reasoning 每秒数十条），没有规则
-    监听时不该白起一次评估任务。规则表改了就即时生效（现读）。
-    """
+    # [2026-10-29 用户令]「continue 和 message 本质上很像，所以 continue 你需要标注，
+    # 暂时只对评审卡开放」——不是评审卡就直接不续接，等语义定下来再放开。
+    # 标注在代码里，不靠调用方自觉：规则写错了也不会误叫普通卡。
     try:
-        return bool(harness_rules.rules_for(str(ev_type)))
-    except Exception:  # noqa: BLE001 判不出 ⇒ 当作不关心（不白跑）
-        return False
+        _card = await card_store.read_card(work_id, target)
+        _ctype = str((_card.get("meta") or {}).get("card_type") or "")
+    except Exception as exc:  # noqa: BLE001 读不到卡就不续接
+        logger.warning("[harness] continue 读卡失败 work=%s card=%s: %s",
+                       work_id, target, exc)
+        return None
+    if _ctype != "review":
+        logger.info("[harness] continue 暂时只对评审卡开放，跳过 card=%s type=%s",
+                    target, _ctype or "(空)")
+        return None
 
-
-def fire_async(work_id: str, ev_type: str, card_id: str,
-               data: Optional[dict[str, Any]] = None,
-               *, trigger_seq: int = 0) -> None:
-    """**后台**评估（不阻塞事件落盘）。异常只记日志，绝不影响主流程。
-
-    接线点：``event_log.append`` 落盘成功后调用（此时 rec 已有 seq，
-    可作防重键）。只有 ``interested(ev_type)`` 为真才会被调用。
-    """
-    if not card_id:
-        return
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return          # 无事件循环（同步写路径）⇒ 不评估，等下次异步落盘
-
-    async def _run() -> None:
+        # [2026-10-30 实弹修正]「原状态再调起」对评审卡＝**接着跑评审**，不是起一轮对话。
+        # 改前走 `deliver_now` ⇒ 评审卡被叫醒后跑的是普通对话（实弹 card_123 事件流：
+        # context→round_start→…→turn_end），评审一步都没推进，批次就此停住。
+        from ..api import review_runner
+        r = await review_runner.run_once(work_id, target, hint=text)
+        # [2026-10-31] 到站原因补两个：**stopped**（用户点了停止）与
+        # **review_busy**（评审卡被别的回合占着，本步让路）——都不是"这一步干成了"，
+        # 不该报成 continue 成功（否则前端会显示"已续跑"，实际一步没走）。
+        ok = bool(isinstance(r, dict) and r.get("reason") not in
+                  ("no_batch", "already_running", "speak_failed",
+                   "stopped", "review_busy"))
         try:
-            await fire(work_id, ev_type, card_id, data, trigger_seq=trigger_seq)
-        except Exception as exc:  # noqa: BLE001 评估失败不阻断
-            logger.warning("[harness] 评估失败 work=%s type=%s card=%s: %s",
-                           work_id, ev_type, card_id, exc)
-
-    t = loop.create_task(_run())
-    _PENDING.add(t)
-    t.add_done_callback(_PENDING.discard)
-
-
-async def drain() -> int:
-    """等待在途评估任务（测试确定性用）。"""
-    tasks = list(_PENDING)
-    for t in tasks:
-        try:
-            await t
+            event_stream.emit(work_id, target, EV_TYPE, {
+                "rule_id": rule_id, "to": str(target), "wake": ok,
+                "mode": "continue", "started": ok,
+                "reason": str((r or {}).get("reason") or ""),
+                "action_id": str(action_id or ""),
+                "text": text[:300],
+            })
         except Exception:  # noqa: BLE001
             pass
-    return len(tasks)
+        return f"continue:{int(ok)}"
+    except Exception as exc:  # noqa: BLE001 投递失败不影响触发它的主流程
+        logger.warning("[harness] 续接失败 work=%s to=%s rule=%s: %s",
+                       work_id, target, rule_id, exc)
+        return None

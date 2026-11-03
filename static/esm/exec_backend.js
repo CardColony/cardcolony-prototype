@@ -31,7 +31,7 @@ export function routedLabel(info) {
   // ★[回落 2026-10-23 19:55] 委派失败**静默回落**系统模型时，卡面必须**如实显示**，
   //   不能还显示成"走 WorkBuddy"（那是假信号 ⇒ 人会以为在 WorkBuddy 上跑）。
   if (r.fallback === "system") {
-    const why = String(r.reason || "WorkBuddy 执行体不可用");
+    const why = String(r.reason || "执行体不可用");
     return `系统自己的模型（${why}）`;
   }
   const ex = String(r.executor || "");
@@ -68,11 +68,11 @@ export function buildExecBackendHtml(info, sw) {
   const swChecked = swOn ? " checked" : "";
   const swDisabled = cfgOn ? "" : " disabled";
   return `
-      <div class="blocktitle">执行体<span class="note">谁干活：WorkBuddy 还是系统自己的模型</span></div>
+      <div class="blocktitle">执行体<span class="note">谁干活：外部执行体（Devin / opencode / WorkBuddy）还是系统自己的模型</span></div>
       <div class="exec-row">
         <label class="exec-switch">
           <input type="checkbox" id="execBackendSwitch"${swChecked}${swDisabled}>
-          <span>走 WorkBuddy 执行体${swOn ? "" : "（已关闭）"}</span>
+          <span>走外部执行体${swOn ? "" : "（已关闭）"}</span>
         </label>
       </div>
       <div class="exec-row">

@@ -250,6 +250,15 @@ class ExecutorRegistry:
         #: （现场取证：``card_019.jsonl`` 只有 ``wb_exec_start``，后续事件永不到）。
         #: ⇒ 现在改成**占/不占两种状态**：占不到 ⇒ 立刻换候选，**不排队**。
         self._slots: dict[str, str] = {}
+        #: **Devin 的 runner 缓存**（``{executor_id: DevinRunner}``）与**并发闸**。
+        self._devin_runners: dict[str, Any] = {}
+        self._devin_sems: dict[str, tuple] = {}
+        #: **command-code 的 runner 缓存**与**并发闸**（2026-11-04 加，第五路）。
+        self._cc_runners: dict[str, Any] = {}
+        self._cc_sems: dict[str, tuple] = {}
+        #: **每个槽上正在排队的人数**（``{slot_key: n}``）——
+        #: 用来关掉「排队中」事件的**竞态窗口**（见 :meth:`note_waiter`）。
+        self._waiters: dict[str, int] = {}
         #: **opencode server 进程池**（``{pool_key: [OcServer, …]}``）——
         #: **一进程一槽**（与 WorkBuddy 的 CLI 池同构 ⇒ 进程级隔离：一个卡卡死
         #: 不影响别的卡）。
@@ -277,6 +286,17 @@ class ExecutorRegistry:
         #: **"这个执行体的 CLI 用不了"**（没登录/起不来）⇒ 不再反复起进程探。
         #: **按状态失效**（用户登录后调 :meth:`note_cli_state_changed`），不用时间闸。
         self._cli_unusable: set[str] = set()
+        #: **额度耗尽的 (执行体, 模型)**（``{(executor, model): 原因}``）——
+        #: 2026-11-01 加：**上游明确报出来的**配额状态 ⇒ 之后不让它吃流量。
+        #: **没有时间窗**（不是"熔断 60 秒"）⇒ 恢复只靠"真调成功一次"。
+        self._exhausted: dict[tuple[str, str], str] = {}
+        #: **槽位预留**（``{executor_id: {holder: 模型}}``）——
+        #: **优先级瀑布的核心**（2026-11-04 用户令：「先全部排 devin，它排满了或
+        #: 额度用完了，就落 opencode」）。
+        #: ⇒ 选候选时**先占位**；**占不到 ⇒ 立刻往下一级溢流**（不是干等）。
+        #: ⇒ 传输层真正接上（opencode 的 busy_session / WorkBuddy 的 slot /
+        #:   Devin 的整段运行期）之后**释放预留** ⇒ 占用数不被重复计算。
+        self._reservations: dict[str, dict[str, str]] = {}
 
     def remember_models(self, executor_id: str, models: Any) -> None:
         """记下某执行体的模型目录（``models`` 是 modelId 列表）。
@@ -308,7 +328,104 @@ class ExecutorRegistry:
         """
         return str(model) in self._model_unavailable.get(executor_id, set())
 
+    # ---------------------------------------------------------------- 额度态
+    def mark_exhausted(self, executor_id: str, model: str, reason: str) -> None:
+        """**实测**这个执行体的这个模型额度/配额用完了 ⇒ 记下来（之后不让它再吃流量）。
+
+        **按状态判定**（不是猜、不是时间闸）：只有**上游明确报出来**才记。
+        上游的"额度没了"是**好几家各自不同的说法**，都归到这儿：
+          - opencode：``session.status{type:"retry", action.reason:"free_tier_limit"}``
+            ⇒ 也就是 "Free usage limit reached"（实测 2026-11-01 22:16，card_143 就是这个）
+          - WorkBuddy ACP：``_meta['codebuddy.ai/errorMessage'].category == "quota"``
+
+        **★ 没有时间窗**：不会"过 X 分钟自动恢复" ⇒ 恢复只靠**真调成功一次**
+        （:meth:`clear_exhausted`）⇒ 纯状态驱动。
+        """
+        key = (str(executor_id), str(model))
+        if key in self._exhausted:
+            return
+        self._exhausted[key] = str(reason or "额度耗尽")
+        logger.warning("[wb_exec] 执行体 %s 的模型 %s 额度耗尽（%s）⇒ 记下"
+                       "（之后不让它吃流量，直到真调成功一次）",
+                       executor_id, model, self._exhausted[key])
+        # ★ **同时落盘**（2026-11-04）：原来只记进程内存 ⇒ **重启就忘了**
+        #   （实测 opencode 免费档用完后重启 ⇒ 又去试它 ⇒ 白跑一轮）。
+        try:
+            from . import quota_state
+            quota_state.mark_exhausted(str(executor_id), str(model),
+                                       self._exhausted[key])
+        except Exception as exc:  # noqa: BLE001 落盘失败不阻断（内存态仍生效）
+            logger.warning("[wb_exec] 额度状态落盘失败（不影响本进程）：%s", exc)
+
+    def is_exhausted(self, executor_id: str, model: str) -> bool:
+        """这个执行体的这个模型**实测**额度用完了吗？（**没实测过 ⇒ False**，不猜）
+
+        **两个来源**（2026-11-03）：
+        ① **进程内**：本进程**调用失败并回报** quota/free_tier_limit 时登记的；
+        ② **状态文件** ``config/wb_exec_quota.json``：**定期探测**写进来的
+           ⇒ **不等它失败就知道**，而且**跨进程、跨重启**都还在。
+           支持**模型级**（``executor:model``）与**端点级**（``executor``）两种。
+        """
+        if (str(executor_id), str(model)) in self._exhausted:
+            return True
+        try:
+            from . import quota_state
+            return quota_state.is_exhausted(executor_id, model)
+        except Exception:  # noqa: BLE001 读不到状态文件＝没状态，不阻断
+            return False
+
+    def exhausted_reason(self, executor_id: str, model: str) -> str:
+        """额度用完的原因（进程内优先，其次状态文件）。"""
+        r = self._exhausted.get((str(executor_id), str(model)))
+        if r:
+            return str(r)
+        try:
+            from . import quota_state
+            return quota_state.reason_of(executor_id, model)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def clear_exhausted(self, executor_id: str, model: str) -> None:
+        """**真调成功一次** ⇒ 额度回来了 ⇒ 清掉标记（**状态驱动，不是时间到期**）。
+
+        ⇒ 这也是天然的**恢复探针**：手动把卡钉死到这个模型跑一轮，
+        成功了就自动恢复全份额（钉死那条路**不走**候选预过滤）。
+        """
+        key = (str(executor_id), str(model))
+        if key in self._exhausted:
+            self._exhausted.pop(key, None)
+            logger.info("[wb_exec] 执行体 %s 的模型 %s 真调成功 ⇒ 额度状态已清",
+                        executor_id, model)
+
+    def exhausted_snapshot(self) -> dict[str, str]:
+        """当前所有"额度耗尽"的 (执行体, 模型) ⇒ 原因（给卡面/诊断看）。"""
+        return {f"{e}:{m}": r for (e, m), r in self._exhausted.items()}
+
     # ---------------------------------------------------------------- 槽位
+    def note_waiter(self, base_url: str) -> int:
+        """登记"我在这个槽上排队"，返回**当前等待者数**。
+
+        **★ 为什么需要它**（2026-11-03 修）：早先 bridge 是
+        ``if sem.locked(): emit("排队中")`` ⇒ **有竞态**：两张卡都可能在对方
+        ``await sem.acquire()`` **之前**检查到"没锁" ⇒ 实际排了队（串行跑完），
+        但**没人发过"排队中"** ⇒ 卡面上看不见它在等（看着像"卡住"）。
+        ⇒ 改成：**先登记等待者**，再判断
+        ——「槽被占」**或**「已经有人在等」⇒ 我就得排队 ⇒ 发"排队中"。
+        """
+        key = self._slot_key(base_url)
+        n = self._waiters.get(key, 0) + 1
+        self._waiters[key] = n
+        return n
+
+    def clear_waiter(self, base_url: str) -> None:
+        """我拿到槽了（或放弃了）⇒ 注销等待者。"""
+        key = self._slot_key(base_url)
+        n = self._waiters.get(key, 0)
+        if n <= 1:
+            self._waiters.pop(key, None)
+        else:
+            self._waiters[key] = n - 1
+
     def semaphore_for(self, base_url: str) -> asyncio.Semaphore:
         """这个网关（= CLI 池进程）的**并发闸**：一个 agent 槽一次只放行一个。
 
@@ -512,15 +629,37 @@ class ExecutorRegistry:
             return lock
         return ent[1]
 
-    def _oc_config_path(self, ex: Executor) -> str:
-        """opencode 的自定义 provider 配置（**含 apiKey ⇒ 临时目录，不进仓库**）。"""
-        key = (ex.oc_base_url, ex.oc_api_key_env)
+    def _oc_key_envs(self, ex: Executor) -> list[str]:
+        """这个执行体的 **key 环境变量名列表**（2026-11-03 加多 key）。
+
+        ★ **多个 key ⇒ 多个工位 ⇒ 免费额度 ×N**（每个 worker 用自己的 key）：
+        每个 worker 要有自己的 **配置文件**（key 写里面）**和** **环境变量**
+        （内置 provider 认的就是 ``OPENCODE_API_KEY`` 这个名字）。
+        """
+        envs = [str(x) for x in (getattr(ex, "oc_api_key_envs", ()) or ()) if str(x)]
+        if not envs and ex.oc_api_key_env:
+            envs = [ex.oc_api_key_env]
+        return envs
+
+    def _oc_config_path(self, ex: Executor, key_env: str = "") -> str:
+        """opencode 的自定义 provider 配置（**含 apiKey ⇒ 临时目录，不进仓库**）。
+
+        ★ **内置 provider 模式（2026-11-01）**：``oc_use_builtin_provider=True``
+        ⇒ **不写任何自定义配置**（返回空串）⇒ opencode 用它**自带的** provider
+        （如 ``opencode``）⇒ **免费档才拿得到**
+        （Zen 的免费档只允许从 opencode 内部调，裸 HTTP 直连会被拒）。
+        """
+        if ex.oc_use_builtin_provider:
+            return ""
+        if not key_env:
+            key_env = (self._oc_key_envs(ex) or [""])[0]
+        key = (ex.oc_base_url, key_env)
         path = self._oc_cfg_paths.get(key)
         if path and os.path.exists(path):
             return path
         api_key = ""
-        if ex.oc_api_key_env:
-            api_key = os.environ.get(ex.oc_api_key_env, "")
+        if key_env:
+            api_key = os.environ.get(key_env, "")
         import hashlib
 
         base = (Path(tempfile.gettempdir()) / "wb_exec_oc_cfg"
@@ -543,11 +682,24 @@ class ExecutorRegistry:
             alive = [s for s in pool if s.alive()]
             self._oc_pool[key] = alive
             if len(alive) < ex.oc_pool_size:
-                cfg_path = self._oc_config_path(ex)
+                # ★ **一个 key 一个工位**（2026-11-03）⇒ 每个 worker 用自己的 key：
+                #   ① 配置文件按 key 分（key 写在里面）；② 内置 provider 认的就是
+                #      `OPENCODE_API_KEY` 这个**名字** ⇒ 每个 worker 的进程环境里
+                #      放**它自己那个** key ⇒ 额度 ×N。
+                key_envs = self._oc_key_envs(ex)
                 while len(alive) < ex.oc_pool_size:
+                    _i = len(alive)
+                    _kenv = key_envs[_i % len(key_envs)] if key_envs else ""
+                    cfg_path = self._oc_config_path(ex, _kenv)
+                    env_extra: dict[str, str] = {}
+                    if ex.oc_use_builtin_provider and _kenv:
+                        _k = os.environ.get(_kenv, "")
+                        if _k:
+                            env_extra["OPENCODE_API_KEY"] = _k
                     try:
                         srv = await oc_pool.start_oc_server(
-                            ex.oc_serve_exe, cwd=work_dir, config_path=cfg_path)
+                            ex.oc_serve_exe, cwd=work_dir, config_path=cfg_path,
+                            env_extra=env_extra or None)
                     except Exception as exc:  # noqa: BLE001 起不来就少几个槽
                         logger.warning("[wb_exec] 起 opencode server 失败: %s", exc)
                         break
@@ -607,6 +759,73 @@ class ExecutorRegistry:
                         sid, target.base_url)
             return gw
 
+    # ------------------------------------------------------- Command Code
+    def cc_runner(self, executor_id: str):
+        """取（或建）这个执行体的 **command-code runner**（进程级缓存）。"""
+        cfg = load_config()
+        ex = cfg.executor(executor_id)
+        if ex is None or not ex.cc_cli_entry:
+            return None
+        r = self._cc_runners.get(executor_id)
+        if r is None:
+            from . import cc_client
+            r = cc_client.CcRunner(
+                ex.cc_cli_entry, node_exe=ex.cc_node_exe,
+                api_key_env=ex.cc_api_key_env,
+                model=(list(ex.cc_models) or [cc_client.DEFAULT_MODEL])[0],
+                max_turns=ex.cc_max_turns, timeout=ex.cc_timeout_sec)
+            self._cc_runners[executor_id] = r
+        return r
+
+    def cc_sem(self, executor_id: str) -> asyncio.Semaphore:
+        """command-code 的**并发闸**（一进程一槽）。"""
+        cfg = load_config()
+        ex = cfg.executor(executor_id)
+        n = max(1, int(getattr(ex, "cc_max_concurrent", 0) or 1))
+        key = f"cc:{executor_id}"
+        loop = asyncio.get_running_loop()
+        ent = self._cc_sems.get(key)
+        if ent is None or ent[0] is not loop:
+            sem = asyncio.Semaphore(n)
+            self._cc_sems[key] = (loop, sem)
+            return sem
+        return ent[1]
+
+    # ---------------------------------------------------------------- Devin
+    def devin_runner(self, executor_id: str):
+        """取（或建）这个执行体的 **Devin runner**（进程级缓存）。
+
+        ★ Devin 走 **CLI**（不是 REST）：REST 要服务用户 key（``cog_``），
+        用户手里只有 webapp 会话令牌 ⇒ /v3 全 403；CLI 自带账号态。
+        """
+        cfg = load_config()
+        ex = cfg.executor(executor_id)
+        if ex is None or not ex.devin_cli_exe:
+            return None
+        r = self._devin_runners.get(executor_id)
+        if r is None:
+            from . import devin_client
+            r = devin_client.DevinRunner(
+                ex.devin_cli_exe, model=ex.devin_model,
+                permission_mode=ex.devin_permission_mode,
+                cloud=ex.devin_cloud, timeout=ex.devin_timeout_sec)
+            self._devin_runners[executor_id] = r
+        return r
+
+    def devin_sem(self, executor_id: str) -> asyncio.Semaphore:
+        """Devin 的**并发闸**（远端会话 ⇒ 实际上限是 org 的额度池 ⇒ 我们先自己限住）。"""
+        cfg = load_config()
+        ex = cfg.executor(executor_id)
+        n = max(1, int(getattr(ex, "devin_max_concurrent", 0) or 1))
+        key = f"devin:{executor_id}"
+        loop = asyncio.get_running_loop()
+        ent = self._devin_sems.get(key)
+        if ent is None or ent[0] is not loop:
+            sem = asyncio.Semaphore(n)
+            self._devin_sems[key] = (loop, sem)
+            return sem
+        return ent[1]
+
     # ---------------------------------------------------------------- CLI 池
     async def _acquire_cli(self, executor_id: str, work_dir: str,
                             model: str = "") -> Optional[GatewayProcess]:
@@ -624,6 +843,16 @@ class ExecutorRegistry:
         pool = self._cli_pool.get(key) or []
         alive = [g for g in pool
                  if g.cli_worker is not None and g.cli_worker.alive()]
+        # ★ **池要补足满编**（2026-11-03 修）。
+        #   早先这里是「只要还有 ≥1 个活的就直接用」⇒ **池只减不增**：
+        #   CLI 进程自己退出后**没人补** ⇒ 实测 wb-cn 池从 **3 个掉到 1 个**
+        #   ⇒ 那一侧的并发从 3 变 1 ⇒ 后面全排队
+        #   （用户 11-03 当场指出：「现在根本就没有 6 个槽并发」）。
+        # ⇒ 现在：**活着的数量 < cli_pool_size ⇒ 补到满编**。
+        #   **状态驱动**（看"活着几个 vs 配置要几个"），**不是时间闸**。
+        if alive and len(alive) < max(1, int(ex.cli_pool_size)):
+            grown = await self._grow_cli_pool(cfg, ex, key, work_dir)
+            alive = grown or alive
         if alive:
             self._cli_pool[key] = alive
             # **★ 不再看"这个模型在 CLI 里免费吗"**（2026-10-24 用户令：
@@ -685,6 +914,85 @@ class ExecutorRegistry:
                 if not self.slot_holder(g.base_url):
                     return True
         return False
+
+    # -------------------------------------------------- 优先级瀑布：槽位预留
+    def _executor_capacity(self, ex: Executor,
+                            work_dir: str = "") -> tuple[int, int]:
+        """这个执行体的 **（总容量, 当前被占用的槽数）**。
+
+        **占用数一律用状态算**（不是时间闸）：
+        - **Devin**：运行时没有"忙"标记 ⇒ 占用数＝**预留数**（预留覆盖整段运行期）；
+        - **opencode**：占用＝**已建会话的 serve 进程数**（``busy_session`` 非空）；
+        - **WorkBuddy CLI**：占用＝**活着的进程里已被占的槽**（``slot_holder`` 非空）。
+        """
+        if ex.devin_cli_exe:
+            return max(1, int(getattr(ex, "devin_max_concurrent", 0) or 1)), 0
+        if getattr(ex, "cc_cli_entry", ""):
+            # ★ command-code：进程即槽 ⇒ 占用数＝**预留数**（运行期由预留覆盖）
+            return max(1, int(getattr(ex, "cc_max_concurrent", 0) or 1)), 0
+        if ex.oc_serve_exe and ex.oc_pool_size > 0:
+            key = (ex.oc_serve_exe.lower(), ex.oc_provider_id, ex.oc_base_url)
+            servers = [s for s in (self._oc_pool.get(key) or []) if s.alive()]
+            busy = sum(1 for s in servers if getattr(s, "busy_session", ""))
+            return max(1, int(ex.oc_pool_size)), busy
+        if ex.cli_exe and ex.cli_pool_size > 0:
+            key = _pool_key(ex.cli_exe, ex.cli_config_dir or ex.config_dir, work_dir)
+            pool = self._cli_pool.get(key) or []
+            alive = [g for g in pool
+                     if g.cli_worker is not None and g.cli_worker.alive()]
+            busy = sum(1 for g in alive if self.slot_holder(g.base_url))
+            return max(1, int(ex.cli_pool_size)), busy
+        return 0, 0
+
+    async def try_reserve(self, executor_id: str, model: str = "",
+                          work_dir: str = "", holder: str = "",
+                          force: bool = False) -> bool:
+        """这个执行体**现在能不能立刻接下这张卡**？
+
+        **★ 这就是"排满了没有"的判据**（用户令 2026-11-04：「它排满了或额度用完了，
+        就落 opencode」）⇒ **占不到就返回 False**，由上层**立刻往下一级溢流**
+        （不是干等、不是回落系统模型）。
+
+        **状态驱动**：占用数＝运行时占用 ＋ 本进程内的预留数
+        （传输层接上之后会释放预留 ⇒ 不重复计算）。
+
+        ``force=True`` ⇒ **无视容量直接预留**（用于"全都排满 ⇒ 在最高优先级那一路
+        排队"的场景：超编排队是**用户要的**，不是 bug）。
+        """
+        cfg = load_config()
+        ex = cfg.executor(executor_id)
+        if ex is None:
+            return False
+        cap, busy = self._executor_capacity(ex, work_dir)
+        if cap <= 0:
+            # **容量测不出来**（这个执行体既不是 devin/opencode/CLI 池）
+            # ⇒ **不拦**（老规矩：能不能干活由传输层自己判，槽满就在那儿排队）
+            return True
+        holder = str(holder or "")
+        reserved = self._reservations.get(executor_id) or {}
+        mine = 1 if holder and holder in reserved else 0
+        if not force and busy + len(reserved) - mine >= cap:
+            logger.info("[wb_exec] 执行体 %s 槽已满（占用 %d/%d）⇒ 往下一级溢流",
+                        executor_id, busy + len(reserved) - mine, cap)
+            return False
+        if holder:
+            self._reservations.setdefault(executor_id, {})[holder] = str(model or "")
+        return True
+
+    def release_reserve(self, executor_id: str, holder: str = "") -> None:
+        """释放预留（**幂等**）。传输层接上槽位、或这一轮结束时调用。"""
+        if not holder:
+            return
+        reserved = self._reservations.get(executor_id)
+        if not reserved:
+            return
+        reserved.pop(holder, None)
+        if not reserved:
+            self._reservations.pop(executor_id, None)
+
+    def reservations_snapshot(self) -> dict[str, dict[str, str]]:
+        """当前所有预留（诊断用）。"""
+        return {k: dict(v) for k, v in self._reservations.items()}
 
     def pick_free_candidate(self, candidates: Any, tried: set[tuple[str, str]],
                              work_dir: str = "") -> Optional[Any]:

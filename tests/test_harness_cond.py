@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.infra import harness, harness_cond as hc, harness_rules
+from src.infra import harness_cond as hc, policy_set as ps
 
 
 def _ev(t: str, data: dict | None = None, seq: int = 0) -> dict:
@@ -160,8 +160,8 @@ def test_legacy_guard_translates_identically():
     legacy_no = [{"kind": "no_event", "types": ["tool_result"],
                   "where": {"tool": "report_up", "ok": True}, "scope": "turn"}]
     legacy_has = [{"kind": "has_event", "types": ["tool_result"], "scope": "card"}]
-    assert harness.evaluate_guard(legacy_no, ctx) is False
-    assert harness.evaluate_guard(legacy_has, ctx) is True
+    assert hc.eval_cond(hc.normalize_guard(legacy_no), ctx) is False
+    assert hc.eval_cond(hc.normalize_guard(legacy_has), ctx) is True
     # 新写法等价
     assert hc.eval_cond({"not": {"event": {"types": ["tool_result"],
                                           "where": {"tool": "report_up", "ok": True},
@@ -193,45 +193,47 @@ def test_turn_window_survives_done_before_turn_end():
 
 def test_empty_guard_is_true():
     ctx = _ctx([])
-    assert harness.evaluate_guard(None, ctx) is True
-    assert harness.evaluate_guard([], ctx) is True
+    assert hc.eval_cond(hc.normalize_guard(None), ctx) is True
+    assert hc.eval_cond(hc.normalize_guard([]), ctx) is True
 
 
 def test_unknown_node_is_false():
     """认不出的形状 ⇒ 不成立（宁可少发，不误发）。"""
     ctx = _ctx([])
     assert hc.eval_cond({"nonsense": 1}, ctx) is False
-    assert harness.evaluate_guard([{"kind": "card_state", "value": "x"}], ctx) is False
+    assert hc.eval_cond(hc.normalize_guard(
+        [{"kind": "card_state", "value": "x"}]), ctx) is False
 
 
 # ---------------------------------------------------------------- 校验
 def test_validate_accepts_both_styles():
-    assert harness_rules.validate_rule({
-        "id": "a", "message": "m", "trigger": {"types": ["done"]},
-        "target": "self",
-        "guard": [{"kind": "no_event", "types": ["error"], "scope": "turn"}],
-    }) == []
-    assert harness_rules.validate_rule({
-        "id": "b", "message": "m", "trigger": {"types": ["done"]},
-        "target": "self",
-        "guard": {"all": [
+    """合法 when 不报错（校验走 PolicySet.load → harness_cond.validate_cond）。"""
+    assert ps.PolicySet().load([{
+        "id": "a", "watch": ["done"],
+        "when": {"not": {"event": {"types": ["error"], "within": "turn"}}},
+        "then": {"target": "self", "message": "m"},
+    }]) == []
+    assert ps.PolicySet().load([{
+        "id": "b", "watch": ["done"],
+        "when": {"all": [
             {"not": {"event": {"types": ["tool_result"],
                                "where": {"tool": "report_up", "ok": True},
                                "within": "turn"}}},
             {"count": {"types": ["tool_result"]}, "cmp": "ge", "value": 1},
         ]},
-    }) == []
+        "then": {"target": "self", "message": "m"},
+    }]) == []
 
 
 def test_validate_rejects_bad_shapes():
-    errs = harness_rules.validate_rule({
-        "id": "c", "message": "m", "trigger": {"types": ["done"]},
-        "target": "self", "guard": {"nope": 1}})
+    errs = ps.PolicySet().load([{
+        "id": "c", "watch": ["done"], "when": {"nope": 1},
+        "then": {"target": "self", "message": "m"}}])
     assert any("认不出的条件节点" in e for e in errs)
-    errs2 = harness_rules.validate_rule({
-        "id": "d", "message": "m", "trigger": {"types": ["done"]},
-        "target": "self",
-        "guard": {"event": {"types": ["x"], "within": "forever"}}})
+    errs2 = ps.PolicySet().load([{
+        "id": "d", "watch": ["done"],
+        "when": {"event": {"types": ["x"], "within": "forever"}},
+        "then": {"target": "self", "message": "m"}}])
     assert any("within 非法" in e for e in errs2)
 
 

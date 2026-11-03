@@ -38,18 +38,35 @@ def _load_cards_index(work_id: str) -> list[dict[str, Any]]:
         # 多带一列不影响它。
         # [第二层区 2026-10-20] 多带 created_at：供「组阁之后又新增了卡」这条机械信号
         # （清单渲染仍只用 id/title/parent，多带的列不进上下文）。
+        # [2026-11-01] ① relations 权威源是 card_relations 边表（cards.relations
+        #   列只是双写回退）——此前这里只读旧列，绕开 update_card 写的边会丢；
+        #   ② 多带 requirements：250 区要把被依赖卡的**当前**对外信息投影给
+        #   依赖方（「接口改了经关系线自动更新」，不需要通知推送）。
+        edge_rels: dict[str, list[dict[str, Any]]] = {}
+        try:
+            for e in conn.execute(
+                    "SELECT from_card,to_card,kind,detail FROM card_relations "
+                    "ORDER BY rowid"):
+                edge_rels.setdefault(e["from_card"], []).append(
+                    {"target": e["to_card"], "kind": e["kind"],
+                     "detail": e["detail"]})
+        except Exception:  # noqa: BLE001 边表不在 ⇒ 全靠列回退
+            edge_rels = {}
         for r in conn.execute(
-                "SELECT card_id, title, parent, relations, created_at, card_type"
-                " FROM cards ORDER BY card_id"):
+                "SELECT card_id, title, parent, relations, created_at, card_type,"
+                " requirements FROM cards ORDER BY card_id"):
             try:
                 rels = _json.loads(r["relations"] or "[]")
             except (TypeError, ValueError):
                 rels = []
-            out.append({"card_id": r["card_id"], "title": r["title"] or "",
+            cid = r["card_id"]
+            out.append({"card_id": cid, "title": r["title"] or "",
                         "parent": r["parent"] or "",
-                        "relations": rels if isinstance(rels, list) else [],
+                        "relations": (edge_rels[cid] if cid in edge_rels
+                                      else (rels if isinstance(rels, list) else [])),
                         "created_at": r["created_at"] or "",
-                        "card_type": r["card_type"] or ""})
+                        "card_type": r["card_type"] or "",
+                        "requirements": r["requirements"] or ""})
         return out
 
     return card_db.read_sync(work_id, _fn, []) or []
@@ -69,6 +86,8 @@ def _dep_relations_for(cards: list[dict[str, Any]], current_id: str,
     out_entries = ([r for r in raw_out if isinstance(r, dict)]
                    if isinstance(raw_out, list) else [])
     in_entries: list[dict[str, Any]] = []
+    req_of = {str(c.get("card_id") or ""): str(c.get("requirements") or "")
+              for c in cards or []}
     for c in cards or []:
         cid = c.get("card_id")
         if cid == current_id:
@@ -76,11 +95,16 @@ def _dep_relations_for(cards: list[dict[str, Any]], current_id: str,
         for r in (c.get("relations") or []):
             if isinstance(r, dict) and str(r.get("target") or "") == current_id:
                 in_entries.append({"source": cid, **r})
+    # [2026-11-01 · 用户令「接口改了经关系线自动更新，不需要通知」] 出边条目
+    # 带上目标的**当前**需求文档（对外信息）：依赖方的上下文每轮装配即最新，
+    # 卡面是唯一事实源——读侧投影永不过期。
+    out_entries = [{**r, "requirements": req_of.get(str(r.get("target") or ""), "")}
+                   for r in out_entries]
     return out_entries, in_entries
 
 
 def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, Any]]:
-    """只取当前卡的**直接子卡** id/title/status_block/mission。
+    """只取当前卡的**直接子卡** id/title/status_block/mission/card_type＋活性。
 
     **SQL 不递归**（`WHERE work_id=? AND parent=?`，只一层）⇒ 孙级在结构上取不到
     ——「父卡只看直接子级」不靠过滤逻辑保证，靠查询本身。
@@ -88,6 +112,13 @@ def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, An
     「我核对一下两张卡的使命、现状和需求文档，分别确认哪些已填」），只给现状
     等于答非所问 ⇒ 实测父卡每轮还去 read_card 135 次。**需求文档仍不给**（太长）。
     仍不读子卡的 history、不碰影子。
+
+    [2026-11-02 · 用户令「父卡需要看到子卡的实时状态」] 每个子卡带一行
+    **活性**（运行中/待推进/已暂停/卡住了/已收口 · 最近活动 · 已跑轮次），
+    与 read_card 的「活性」字段同一出处（card_tools._card_activity）——
+    同一个口径，装配即最新，不需要模型再逐卡 read_card 查活没活着。
+    card_type 一并选出：渲染层跳过 coder 的「现状」要靠它（此前 SQL 没选，
+    那个分支一直是死的）。
     """
     if not parent_id:
         return []
@@ -95,16 +126,28 @@ def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, An
     def _fn(conn: Any) -> list[dict[str, Any]]:
         return [
             {"card_id": r["card_id"], "title": r["title"] or "",
+             "card_type": r["card_type"] or "",
              "mission": r["mission"] or "",
-             "status_block": r["status_block"] or ""}
+             "status_block": r["status_block"] or "",
+             "goal_state": r["goal_state"] or "",
+             "goal_rounds": r["goal_rounds"] or 0}
             for r in conn.execute(
-                "SELECT card_id, title, mission, status_block FROM cards "
+                "SELECT card_id, title, card_type, mission, status_block,"
+                " goal_state, goal_rounds FROM cards "
                 "WHERE work_id = ? AND parent = ? ORDER BY card_id",
                 (work_id, parent_id),
             )
         ]
 
-    return card_db.read_sync(work_id, _fn, []) or []
+    rows = card_db.read_sync(work_id, _fn, []) or []
+    try:
+        from . import card_tools as _ct  # 延迟 import：card_tools 反向依赖本包
+        for row in rows:
+            row["activity"] = _ct._card_activity(work_id, row["card_id"], row)
+    except Exception:  # noqa: BLE001 活性算不出不挡上下文装配
+        for row in rows:
+            row.setdefault("activity", "")
+    return rows
 
 
 def _load_current_card_state(work_id: str, card_id: str
@@ -213,6 +256,10 @@ def load_control() -> dict[str, Any]:
     return regs if isinstance(regs, dict) else {}
 
 
+# [2026-11-01 幻影区告警去重] （work_id, 孤儿区名集合）已告警过的组合不重复打。
+_ORPHAN_RULE_WARNED: set[tuple[str, tuple[str, ...]]] = set()
+
+
 def _load_rule_sections(work_id: str) -> dict[str, str]:
     """读本项目的规则分区（区名→正文），只保留有内容的区。
 
@@ -227,8 +274,30 @@ def _load_rule_sections(work_id: str) -> dict[str, str]:
         rules = _ws.get_rules(work_id)
     except Exception:  # noqa: BLE001 读不到＝无来源，不阻断装配
         return {}
-    return {str(k): str(v or "").strip() for k, v in (rules or {}).items()
-            if str(v or "").strip() and str(k).strip()}
+    out = {str(k): str(v or "").strip() for k, v in (rules or {}).items()
+           if str(v or "").strip() and str(k).strip()}
+    # [2026-11-01 幻影区告警] 契约名单外且非空的区＝写了但任何卡都读不到的
+    # 孤儿区（实案：一篇带 `## 一、`…`## 七、` 的文档落进 project 区后被切
+    # 碎，规则静默零注入）。装配是沉默发生的地方——在这里留痕，去重防刷屏。
+    try:
+        from . import context_regions as _cr, function_room as _fr
+        from ..storage import card_store as _cs
+        known = set(_cr.rule_section_names(
+            _cs.load_type_registry(),
+            fn_codes=[str(e.get("code") or "")
+                      for e in (_fr.entries() or [])]))
+        orphans = sorted(k for k in out if k not in known)
+        if orphans:
+            key = (work_id, tuple(orphans))
+            if key not in _ORPHAN_RULE_WARNED:
+                _ORPHAN_RULE_WARNED.add(key)
+                logger.warning(
+                    "[rule] %s 存在 %d 个非契约分区（内容不进任何卡的上下文）："
+                    "%s——归位到契约区或从文件移除", work_id, len(orphans),
+                    "、".join(orphans))
+    except Exception:  # noqa: BLE001 告警失败不阻断装配
+        pass
+    return out
 
 
 def _load_role_cabinet(work_id: str, current_id: str,

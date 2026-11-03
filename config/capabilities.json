@@ -1,670 +1,734 @@
 {
-  "_meta": {
-    "version": 8,
-    "created_at": "2026-10-30",
-    "updated_at": "2026-10-31 判断/警报退役（用户令「我明确不需要，拆掉」）",
-    "purpose": "系统能力清单（唯一事实源）：系统里有哪些能力、每项能力由什么实现、能挂到哪类对象上。",
-    "carrier": "独立 JSON，不进 DB（与 card_type_registry / permissions / context_regions 同级）。",
-    "semantics": {
-      "capability": "一项能力＝能被授予/收回的一类动作。粒度按动作分，不按工具分。实现方式不一定是工具（impl.kind 目前只有 tools）。",
-      "applies_to": "谁能挂这项能力。值域见 src/infra/capability_registry.py 的 OBJECT_KINDS。",
-      "mount": "对象上挂的是一组能力 code（function_profiles.abilities）。下发面＝挂载 ∩ 执行层判据；执行层判据在 handler 里，不在这里——挂载是允许它做，不是保证做成。",
-      "not_capabilities": "是工具但不是能力（回合口子 / 中间态 / 卡自身的状态机 / 系统自用）。每条必须写 reason。",
-      "pending": "尚未归类的工具（迁移用）。只减不增。",
-      "impl_switch": "impl.switch＝这项能力对应的权限类别。拆包后一项能力只对应一个，所以它可以直接写进声明——建卡时据此算挂载，不必再反查 TOOL_SWITCH。"
-    },
-    "invariants": [
-      "每件已注册工具，必须恰好属于三者之一：某项能力的 impl.tools / not_capabilities / pending。",
-      "同一件工具不得出现在两项能力里（否则勾选语义有歧义）。",
-      "能力的 impl.tools 必须都是注册表里真实存在的工具。",
-      "not_capabilities 每条必须有 reason，且工具必须存在。",
-      "pending 只减不增（基线由 tests/test_capability_registry.py 冻结）。"
-    ],
-    "inventory_note": "2026-10-31 第七版：删 verdict / alarm 两项能力（连同 record_verdict / raise_alarm / correct_alarm 三件工具）⇒ 38 项 / 65 件工具 / 2 件 not_capabilities。"
+ "_meta": {
+  "version": 10,
+  "created_at": "2026-10-30",
+  "updated_at": "2026-11-02 浏览器能力（MiniMax 机制移植）",
+  "purpose": "系统能力清单（唯一事实源）：系统里有哪些能力、每项能力由什么实现、能挂到哪类对象上。",
+  "carrier": "独立 JSON，不进 DB（与 card_type_registry / permissions / context_regions 同级）。",
+  "semantics": {
+   "capability": "一项能力＝能被授予/收回的一类动作。粒度按动作分，不按工具分。实现方式不一定是工具（impl.kind 目前只有 tools）。",
+   "applies_to": "谁能挂这项能力。值域见 src/infra/capability_registry.py 的 OBJECT_KINDS。",
+   "mount": "对象上挂的是一组能力 code（function_profiles.abilities）。下发面＝挂载 ∩ 执行层判据；执行层判据在 handler 里，不在这里——挂载是允许它做，不是保证做成。",
+   "not_capabilities": "是工具但不是能力（回合口子 / 中间态 / 卡自身的状态机 / 系统自用）。每条必须写 reason。",
+   "pending": "尚未归类的工具（迁移用）。只减不增。",
+   "impl_switch": "impl.switch＝这项能力对应的权限类别。拆包后一项能力只对应一个，所以它可以直接写进声明——建卡时据此算挂载，不必再反查 TOOL_SWITCH。"
   },
-  "capabilities": [
-    {
-      "code": "read_card",
-      "name": "看卡",
-      "desc": "读任意一张卡的标题、父卡和正文三块；含读已归档的卡。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "read_card",
-          "read_archive"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "read_linked",
-      "name": "沿通信线读",
-      "desc": "沿着通信线读对方卡（没有连线读不到）。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "read_linked"
-        ],
-        "switch": "read_linked"
-      }
-    },
-    {
-      "code": "read_own_process",
-      "name": "看自己的过程",
-      "desc": "读自己影子卡的四节过程记录，以及已凝练的历史条目。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "read_shadow",
-          "read_memory"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "write_own_face",
-      "name": "写自己的卡面",
-      "desc": "改自己的现状块与需求草稿。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "edit_status",
-          "edit_requirements"
-        ],
-        "switch": "edit"
-      }
-    },
-    {
-      "code": "write_process",
-      "name": "写过程记录",
-      "desc": "改自己影子卡的四节过程记录和私有笔记。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "edit_shadow",
-          "edit_note"
-        ],
-        "switch": "shadow_write"
-      }
-    },
-    {
-      "code": "edit_other_face",
-      "name": "改别人的卡面",
-      "desc": "精准改自己子树内某张卡的一块正文，只改一处、其余字节不动。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "edit_card"
-        ],
-        "switch": "edit"
-      }
-    },
-    {
-      "code": "create_child",
-      "name": "建子卡",
-      "desc": "在自己的子树里建新卡、派编程卡。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "create_card",
-          "create_coder_card"
-        ],
-        "switch": "create_child"
-      }
-    },
-    {
-      "code": "open_stage",
-      "name": "开阶段",
-      "desc": "标记一张子卡从这一刻起进入执行阶段（它的需求文档定稿之后）。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "stage_open"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "set_child_mission",
-      "name": "立子卡使命",
-      "desc": "给子卡写使命块（它为什么存在）。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "set_child_mission"
-        ],
-        "switch": "create_child"
-      }
-    },
-    {
-      "code": "dispose_card",
-      "name": "删卡与归档",
-      "desc": "删卡、归档、从归档恢复。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "delete_card",
-          "archive_card",
-          "unarchive_card"
-        ],
-        "switch": "delete"
-      }
-    },
-    {
-      "code": "reparent",
-      "name": "换父",
-      "desc": "把一张卡挂到另一个父卡下。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "reparent_card"
-        ],
-        "switch": "edit"
-      }
-    },
-    {
-      "code": "link",
-      "name": "建通信线",
-      "desc": "在两卡之间建一条通信线（建了才能互相通信、沿它读对方）。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "link_cards"
-        ],
-        "switch": "link"
-      }
-    },
-    {
-      "code": "unlink",
-      "name": "拆通信线",
-      "desc": "解除两卡之间的通信线。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "unlink_cards"
-        ],
-        "switch": "unlink"
-      }
-    },
-    {
-      "code": "link_rel",
-      "name": "建依赖线",
-      "desc": "记一条依赖/关联关系（只记关系，不用于通信）。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "link_rel"
-        ],
-        "switch": "link_rel"
-      }
-    },
-    {
-      "code": "unlink_rel",
-      "name": "拆依赖线",
-      "desc": "解除两卡之间的依赖/关联关系。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "unlink_rel"
-        ],
-        "switch": "unlink_rel"
-      }
-    },
-    {
-      "code": "notify",
-      "name": "发消息",
-      "desc": "沿通信线告诉别的卡一件事，进它上下文，不叫醒它。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "sync"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "instruct",
-      "name": "下指令",
-      "desc": "沿通信线叫别的卡现在就做一件事，必须带验收判据。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "direct"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "report_up_chain",
-      "name": "向上汇报",
-      "desc": "把结果交给上一级（收件人由系统按父卡算）。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "report_up"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "report_done",
-      "name": "完工回执",
-      "desc": "编程卡完工：本卡静默，系统自动向主卡发回执。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "report_done"
-        ],
-        "switch": "tools_file"
-      }
-    },
-    {
-      "code": "report_to_human",
-      "name": "向用户汇报与确认",
-      "desc": "主动向用户做中间汇报；把没有来源的推定前提摆给用户确认。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "report_to_user",
-          "confirm_with_user"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "interrupt",
-      "name": "打断与静音",
-      "desc": "停掉别的卡正在跑的一轮、把它静音、或让停下的继续跑。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "stop_card",
-          "silence_card",
-          "continue_task"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "staff",
-      "name": "组建与调岗",
-      "desc": "建职能、调它的值班态、改它的职责书。",
-      "applies_to": [
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "create_function",
-          "set_function_duty",
-          "update_function_profile"
-        ],
-        "switch": "create_child"
-      }
-    },
-    {
-      "code": "watch_functions",
-      "name": "设职能盯卡",
-      "desc": "改某个职能盯哪些卡。",
-      "applies_to": [
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "function_watch_cards"
-        ],
-        "switch": "link"
-      }
-    },
-    {
-      "code": "list_functions",
-      "name": "看职能清单",
-      "desc": "列出本项目已有的职能（组阁前先看，避免重复设岗）。",
-      "applies_to": [
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "list_functions"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "open_review",
-      "name": "发起评审",
-      "desc": "在自己的伴生评审卡上开一个批次，请在职职能来评。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "open_review"
-        ],
-        "switch": "create_child"
-      }
-    },
-    {
-      "code": "vote",
-      "name": "评审表态",
-      "desc": "通过、不通过。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "approve",
-          "reject"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "revoke_vote",
-      "name": "撤回通过",
-      "desc": "撤回自己之前投的通过。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "revoke_approve"
-        ],
-        "switch": "edit"
-      }
-    },
-    {
-      "code": "finalize",
-      "name": "定正稿",
-      "desc": "评审全员通过后，把自己的需求草稿转成正稿。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "promote_draft"
-        ],
-        "switch": "edit"
-      }
-    },
-    {
-      "code": "read_files",
-      "name": "看文件",
-      "desc": "列目录、读文件、按内容搜、按名字找。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "list_files",
-          "read_file",
-          "search_files",
-          "glob_files"
-        ],
-        "switch": "tools_read_file"
-      }
-    },
-    {
-      "code": "write_files",
-      "name": "改文件",
-      "desc": "写文件、精准编辑文件、移动、改名、删文件。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "write_file",
-          "edit_file",
-          "move_file",
-          "rename_file",
-          "delete_file"
-        ],
-        "switch": "tools_file"
-      }
-    },
-    {
-      "code": "run_code",
-      "name": "跑命令",
-      "desc": "执行一条 shell 命令或一段 Python 代码，拿回输出和退出码。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "bash",
-          "python"
-        ],
-        "switch": "tools_file"
-      }
-    },
-    {
-      "code": "web",
-      "name": "联网",
-      "desc": "网页搜索、抓取网页正文。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "web_search",
-          "fetch_web"
-        ],
-        "switch": "tools_web"
-      }
-    },
-    {
-      "code": "manuscript",
-      "name": "查资料",
-      "desc": "列、读、搜本项目存档的原始资料。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "list_manuscript",
-          "read_manuscript",
-          "search_manuscript"
-        ],
-        "switch": "manuscript"
-      }
-    },
-    {
-      "code": "ledger",
-      "name": "写专业台账",
-      "desc": "往自己的专业台账里记一条（前提、技术裁定、判据、决策、汇报等）。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "write_ledger"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "project_rules",
-      "name": "改项目规则",
-      "desc": "起草项目规则的修改，落盘要用户确认。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "draft_rule_edit"
-        ],
-        "switch": "read"
-      }
-    },
-    {
-      "code": "watch_policy",
-      "name": "定盯梢策略",
-      "desc": "建和改触发策略：什么事件凑够什么条件时提醒谁。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "design_policy"
-        ],
-        "switch": "plan"
-      }
-    },
-    {
-      "code": "curate",
-      "name": "策展",
-      "desc": "执笔任意卡的需求文档（统筹决策落在这里）。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "curate_face"
-        ],
-        "switch": "edit"
-      }
-    },
-    {
-      "code": "goal",
-      "name": "目标推进",
-      "desc": "读、建、改一张卡的目标，把停下的子卡拉回自主推进。由模式授予，不由卡型授予。",
-      "applies_to": [
-        "function",
-        "card"
-      ],
-      "impl": {
-        "kind": "tools",
-        "tools": [
-          "get_goal",
-          "create_goal",
-          "update_goal",
-          "resume_child"
-        ],
-        "switch": "plan"
-      }
-    }
+  "invariants": [
+   "每件已注册工具，必须恰好属于三者之一：某项能力的 impl.tools / not_capabilities / pending。",
+   "同一件工具不得出现在两项能力里（否则勾选语义有歧义）。",
+   "能力的 impl.tools 必须都是注册表里真实存在的工具。",
+   "not_capabilities 每条必须有 reason，且工具必须存在。",
+   "pending 只减不增（基线由 tests/test_capability_registry.py 冻结）。"
   ],
-  "not_capabilities": [
-    {
-      "tool": "propose_status",
-      "reason": "只提议不落盘，是「更新现状按钮」的中间态；常态写法是 edit_status。"
-    },
-    {
-      "tool": "write_requirements_final",
-      "reason": "只在【需求确定】那一轮由系统临时下发，是回合口子，不是岗位属性。"
-    }
-  ],
-  "pending": []
+  "inventory_note": "2026-11-02 第八版：加 browser 一项能力（单件 browser 工具）；create_child 增 create_ui_card ⇒ 42 项 / 71 件工具 / 2 件 not_capabilities。"
+ },
+ "capabilities": [
+  {
+   "code": "read_card",
+   "name": "看卡",
+   "desc": "读任意一张卡的标题、父卡和正文三块；含读已归档的卡。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "read_card",
+     "read_archive"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "read_linked",
+   "name": "沿通信线读",
+   "desc": "沿着通信线读对方卡（没有连线读不到）。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "read_linked"
+    ],
+    "switch": "read_linked"
+   }
+  },
+  {
+   "code": "read_own_process",
+   "name": "看自己的过程",
+   "desc": "读自己影子卡的四节过程记录、已凝练的历史条目，以及沿锚点把一条记忆展开到逐字原文。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "read_shadow",
+     "read_memory",
+     "memory_expand"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "write_own_face",
+   "name": "写自己的卡面",
+   "desc": "改自己的现状块与需求草稿。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "edit_status",
+     "edit_requirements"
+    ],
+    "switch": "edit"
+   }
+  },
+  {
+   "code": "write_process",
+   "name": "写过程记录",
+   "desc": "改自己影子卡的四节过程记录和私有笔记。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "edit_shadow",
+     "edit_note"
+    ],
+    "switch": "shadow_write"
+   }
+  },
+  {
+   "code": "edit_other_face",
+   "name": "改别人的卡面",
+   "desc": "精准改自己子树内某张卡的一块正文，只改一处、其余字节不动。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "edit_card"
+    ],
+    "switch": "edit"
+   }
+  },
+  {
+   "code": "create_child",
+   "name": "建子卡",
+   "desc": "在自己的子树里建新卡、派编程卡/ UI 卡。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "create_card",
+     "create_coder_card",
+     "create_ui_card"
+    ],
+    "switch": "create_child"
+   }
+  },
+  {
+   "code": "open_stage",
+   "name": "开阶段",
+   "desc": "标记一张子卡从这一刻起进入执行阶段（它的需求文档定稿之后）。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "stage_open"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "set_child_mission",
+   "name": "立子卡使命",
+   "desc": "给子卡写使命块（它为什么存在）。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "set_child_mission"
+    ],
+    "switch": "create_child"
+   }
+  },
+  {
+   "code": "dispose_card",
+   "name": "删卡与归档",
+   "desc": "删卡、归档、从归档恢复。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "delete_card",
+     "archive_card",
+     "unarchive_card"
+    ],
+    "switch": "delete"
+   }
+  },
+  {
+   "code": "reparent",
+   "name": "换父",
+   "desc": "把一张卡挂到另一个父卡下。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "reparent_card"
+    ],
+    "switch": "edit"
+   }
+  },
+  {
+   "code": "link",
+   "name": "建通信线",
+   "desc": "在两卡之间建一条通信线（建了才能互相通信、沿它读对方）。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "link_cards"
+    ],
+    "switch": "link"
+   }
+  },
+  {
+   "code": "unlink",
+   "name": "拆通信线",
+   "desc": "解除两卡之间的通信线。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "unlink_cards"
+    ],
+    "switch": "unlink"
+   }
+  },
+  {
+   "code": "link_rel",
+   "name": "建依赖线",
+   "desc": "记一条依赖/关联关系（只记关系，不用于通信）。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "link_rel"
+    ],
+    "switch": "link_rel"
+   }
+  },
+  {
+   "code": "unlink_rel",
+   "name": "拆依赖线",
+   "desc": "解除两卡之间的依赖/关联关系。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "unlink_rel"
+    ],
+    "switch": "unlink_rel"
+   }
+  },
+  {
+   "code": "notify",
+   "name": "发消息",
+   "desc": "沿通信线告诉别的卡一件事，进它上下文，不叫醒它。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "sync"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "instruct",
+   "name": "下指令",
+   "desc": "沿通信线叫别的卡现在就做一件事，必须带验收判据。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "direct"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "report_up_chain",
+   "name": "向上汇报",
+   "desc": "把结果交给上一级（收件人由系统按父卡算）。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "report_up"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "report_done",
+   "name": "完工回执",
+   "desc": "编程卡完工：本卡静默，系统自动向主卡发回执。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "report_done"
+    ],
+    "switch": "tools_file"
+   }
+  },
+  {
+   "code": "report_to_human",
+   "name": "向用户汇报与确认",
+   "desc": "主动向用户做中间汇报；把没有来源的推定前提摆给用户确认。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "report_to_user",
+     "confirm_with_user"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "interrupt",
+   "name": "打断与静音",
+   "desc": "停掉别的卡正在跑的一轮、把它静音、或让停下的继续跑。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "stop_card",
+     "silence_card",
+     "continue_task"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "staff",
+   "name": "组建与调岗",
+   "desc": "建职能、调它的值班态、改它的职责书。",
+   "applies_to": [
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "create_function",
+     "set_function_duty",
+     "update_function_profile"
+    ],
+    "switch": "create_child"
+   }
+  },
+  {
+   "code": "watch_functions",
+   "name": "设职能盯卡",
+   "desc": "改某个职能盯哪些卡。",
+   "applies_to": [
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "function_watch_cards"
+    ],
+    "switch": "link"
+   }
+  },
+  {
+   "code": "list_functions",
+   "name": "看职能清单",
+   "desc": "列出本项目已有的职能（组阁前先看，避免重复设岗）。",
+   "applies_to": [
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "list_functions"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "open_review",
+   "name": "发起评审",
+   "desc": "在自己的伴生评审卡上开一个批次，请在职职能来评。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "open_review"
+    ],
+    "switch": "create_child"
+   }
+  },
+  {
+   "code": "vote",
+   "name": "评审表态",
+   "desc": "通过、不通过。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "approve",
+     "reject"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "revoke_vote",
+   "name": "撤回通过",
+   "desc": "撤回自己之前投的通过。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "revoke_approve"
+    ],
+    "switch": "edit"
+   }
+  },
+  {
+   "code": "finalize",
+   "name": "定正稿",
+   "desc": "评审全员通过后，把自己的需求草稿转成正稿。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "promote_draft"
+    ],
+    "switch": "edit"
+   }
+  },
+  {
+   "code": "respond_review",
+   "name": "回应评审批次",
+   "desc": "在自己被评的批次里交回本轮改稿/回应（评审回合的出口）。",
+   "applies_to": [
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "submit_revision"
+    ],
+    "switch": "edit"
+   }
+  },
+  {
+   "code": "decide_review",
+   "name": "裁决评审批次",
+   "desc": "裁决评审批次：pass＝一票通过（全员记为通过，用于某个角色卡死时），close＝解散本批次。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "decide"
+    ],
+    "switch": "edit"
+   }
+  },
+  {
+   "code": "read_files",
+   "name": "看文件",
+   "desc": "列目录、读文件、按内容搜、按名字找。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "list_files",
+     "read_file",
+     "search_files",
+     "glob_files"
+    ],
+    "switch": "tools_read_file"
+   }
+  },
+  {
+   "code": "write_files",
+   "name": "改文件",
+   "desc": "写文件、精准编辑文件、移动、改名、删文件。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "write_file",
+     "edit_file",
+     "move_file",
+     "rename_file",
+     "delete_file"
+    ],
+    "switch": "tools_file"
+   }
+  },
+  {
+   "code": "run_code",
+   "name": "跑命令",
+   "desc": "执行一条 shell 命令或一段 Python 代码，拿回输出和退出码。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "bash",
+     "python"
+    ],
+    "switch": "tools_file"
+   }
+  },
+  {
+   "code": "web",
+   "name": "联网",
+   "desc": "网页搜索、抓取网页正文。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "web_search",
+     "fetch_web"
+    ],
+    "switch": "tools_web"
+   }
+  },
+  {
+   "code": "browser",
+   "name": "开浏览器",
+   "desc": "起一个会话级隔离的真实浏览器：看页面语义地图（inspect）、点/填/滚/截图、读控制台与网络诊断。给模型的是语义树＋ref，不是截图坐标。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "browser"
+    ],
+    "switch": "tools_web"
+   }
+  },
+  {
+   "code": "manuscript",
+   "name": "查资料",
+   "desc": "列、读、搜本项目存档的原始资料。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "list_manuscript",
+     "read_manuscript",
+     "search_manuscript"
+    ],
+    "switch": "manuscript"
+   }
+  },
+  {
+   "code": "project_rules",
+   "name": "改项目规则",
+   "desc": "起草项目规则的修改，落盘要用户确认。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "draft_rule_edit"
+    ],
+    "switch": "read"
+   }
+  },
+  {
+   "code": "watch_policy",
+   "name": "定盯梢策略",
+   "desc": "建和改触发策略：什么事件凑够什么条件时提醒谁。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "design_policy"
+    ],
+    "switch": "plan"
+   }
+  },
+  {
+   "code": "curate",
+   "name": "策展",
+   "desc": "执笔任意卡的需求文档（统筹决策落在这里）。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "curate_face"
+    ],
+    "switch": "edit"
+   }
+  },
+  {
+   "code": "goal",
+   "name": "目标推进",
+   "desc": "读、建、改一张卡的目标，把停下的子卡拉回自主推进。由模式授予，不由卡型授予。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "get_goal",
+     "create_goal",
+     "update_goal",
+     "resume_child"
+    ],
+    "switch": "plan"
+   }
+  },
+  {
+   "code": "deploy_function",
+   "name": "部署职能",
+   "desc": "建一张差事卡（qa→验收卡、pm→执笔卡，挂本卡树下）把职能部署进场干活；差事落账，职能办完自动收工、结论回执到本卡。",
+   "applies_to": [
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "create_deploy_card"
+    ],
+    "switch": "create_child"
+   }
+  },
+  {
+   "code": "report",
+   "name": "差事回执",
+   "desc": "向差事的派遣方汇报结论：正文落派遣方会话（msg_report）并唤醒——派驻差事的交差口。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "report"
+    ],
+    "switch": "read"
+   }
+  }
+ ],
+ "not_capabilities": [
+  {
+   "tool": "propose_status",
+   "reason": "只提议不落盘，是「更新现状按钮」的中间态；常态写法是 edit_status。"
+  },
+  {
+   "tool": "write_requirements_final",
+   "reason": "只在【需求确定】那一轮由系统临时下发，是回合口子，不是岗位属性。"
+  }
+ ],
+ "pending": []
 }

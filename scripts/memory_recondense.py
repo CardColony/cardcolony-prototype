@@ -193,6 +193,12 @@ async def _drain_card(wid: str, cid: str, *, fold_every: int, max_batches: int) 
             print(f"[drain] {wid}/{cid} 批{batches + 1} 失败——停（失败账在，重跑续）", flush=True)
             break
         batches += 1
+        # [2026-11-01 · 修账] drain 直调 _condense_one_batch 绕过了
+        # _run_condense_pipeline 的 batch_count 累加 ⇒ 归拢游标永不欠账、
+        # 归拢线从未触发。每批如实 +1（游标语义与生产一致）。
+        _st = m.load_memory(wid, cid)
+        _st["batch_count"] = int(_st.get("batch_count", 0) or 0) + 1
+        await m.save_memory(wid, cid, _st)
         mark = int(m.load_memory(wid, cid).get("mark", 0) or 0)
         if fold_every > 0 and batches % fold_every == 0:
             try:

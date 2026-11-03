@@ -42,6 +42,7 @@ def _region(wid, cid) -> str:
     body, shadow = context_assembler._load_current_card_state(wid, cid)
     ctx = context_regions.RegionCtx(
         work_id=wid, card_id=cid, cur=meta.get(cid),
+        cur_meta=card_store._meta_of(wid, cid),
         cur_body=body, cur_shadow=shadow)
     return context_regions.render_current_card_region(ctx)
 
@@ -71,14 +72,15 @@ async def test_status_block_numbered_and_line_mode_hits(sandbox):
 # ---------------------------------------------------------------- T3
 
 async def test_requirements_numbers_follow_draft(sandbox):
-    """有草稿时只标草稿：正稿那份不标号，避免模型拿正稿的号去改草稿。"""
+    """[2026-11-01 用户令「草稿不进上下文」] 需求文档恒标正稿；草稿不在场，
+    只有一行「另有一份草稿在改」的说明。改草稿的行号在 edit_requirements
+    回执里（lines 定位依旧打草稿的行）。"""
     wid, cid = await _card(requirements="正稿甲\n正稿乙", draft="草稿甲\n草稿乙")
     region = _region(wid, cid)
     seg = _block_text(region, "### 需求文档")
-    # 正稿原文在，但不带行号
-    assert "正稿甲" in seg
-    assert "│ 正稿甲" not in seg, "有草稿时正稿不该标号（工具改的是草稿）"
-    assert "│ 草稿甲" in seg, "草稿要标号"
+    assert "│ 正稿甲" in seg, "需求文档恒标正稿"
+    assert "草稿甲" not in seg, "草稿不进上下文"
+    assert "草稿" in seg, "有草稿时要留一行状态说明"
 
     cards = card_tools._collect_card_meta(wid)
     out = await card_tools._h_edit_requirements(

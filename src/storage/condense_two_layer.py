@@ -59,8 +59,13 @@ _FATAL_PAT = re.compile(
     r"401|403|api ?key|unauthorized|forbidden|invalid[_ ]?model|model[_ ]?not[_ ]?found"
     r"|不存在|未注册|credit|balance|欠费|余额|quota", re.I)
 
-#: 可重试类（断连/超时/限流——梯子重试）
-_RETRYABLE_PAT = re.compile(r"timeout|timed out|超时|connection|503|rate|429|overload", re.I)
+#: 可重试类（断连/超时/限流/流中断——梯子重试）。[2026-11-01 补] "SSE stream
+#: ended without [DONE]" 与 "API request failed" 是端点瞬断的传输类反馈——
+#: 实测归拢 step3 三卡被误判成 fatal、错报"模型无法继续使用"给用户（端点瞬断
+#: 十几分钟后自愈）。传输/流完整性类一律归重试。
+_RETRYABLE_PAT = re.compile(
+    r"timeout|timed out|超时|connection|503|rate|429|overload"
+    r"|sse stream|api request|without \[done\]|finish_reason", re.I)
 
 
 def model_error_disposition(exc: BaseException) -> str:

@@ -795,103 +795,521 @@ async def verify_directive(work_id: str, function_id: str, directive_id: str,
 # DDL 落本层(function_directives 同法)——card_db 是禁改文件。
 # ============================================================
 
-_LEDGER_DDL = """CREATE TABLE IF NOT EXISTS function_ledgers (
-    id             TEXT PRIMARY KEY,
-    work_id        TEXT NOT NULL,
-    function_id    TEXT NOT NULL,
-    ledger_code    TEXT NOT NULL,
-    ts             TEXT NOT NULL,
-    text           TEXT NOT NULL,
-    meta           TEXT DEFAULT '{}',
-    superseded_by  TEXT DEFAULT ''
+# [两源模型 2026-11-01 · 用户令「卡面是唯一权威事实源，不需要台账」]
+# function_ledgers 读写全退役：台账是「没人裁过的主张」，正是本系统要
+# 消灭的第二事实源——准则归 rules.md（人改）、产出归场卡面、分歧归
+# 票+sync。存量库的表留着（历史数据不删），代码不再碰它。
+
+
+# ============================================================
+# [差事对象 2026-10-31] function_deployments —— 「哪里需要去哪里」的账本
+#
+# 一次差事＝一个职能被派进一个场（评审席/派驻/执笔）：
+# 谁派的（delegator）、干什么（mandate）、授了什么工具（tools）、
+# 怎么算完（exit 判据）、结果（result）。
+#
+# 「何时派」由调用方/harness 决定——本层只负责：记账、幂等、
+# 惰性核退出、显式关账。**没有核对器的 exit_kind 只能显式关**；
+# 核对器只做读判定不改写 DB（effective_status 是读出来的）。
+# DDL 落本层（function_ledgers 同法）——card_db 是禁改文件。
+# ============================================================
+
+_DEPLOY_DDL = """CREATE TABLE IF NOT EXISTS function_deployments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_id TEXT NOT NULL,
+    function_id TEXT NOT NULL,
+    venue_kind TEXT NOT NULL,
+    venue_ref TEXT NOT NULL,
+    venue_label TEXT NOT NULL DEFAULT '',
+    mandate TEXT NOT NULL DEFAULT '',
+    delegator TEXT NOT NULL DEFAULT '',
+    batch_id TEXT NOT NULL DEFAULT '',
+    target_card TEXT NOT NULL DEFAULT '',
+    tools TEXT NOT NULL DEFAULT '[]',
+    exit_kind TEXT NOT NULL DEFAULT 'explicit',
+    exit_spec TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'created',
+    result TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT NOT NULL DEFAULT ''
 )"""
 
-_LEDGER_INDEX = (
-    "CREATE INDEX IF NOT EXISTS idx_function_ledgers_fn "
-    "ON function_ledgers(function_id, ledger_code, ts)")
+_DEPLOY_IDX = (
+    "CREATE INDEX IF NOT EXISTS idx_fn_deploy_fn "
+    "ON function_deployments(work_id, function_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_fn_deploy_venue "
+    "ON function_deployments(work_id, venue_kind, venue_ref)")
+
+# [两源模型 2026-11-01 · 用户令「会诊/治理都删了，需要时再设计再加」]
+# consult 场退役：私问职能产的是没人裁过的主张，与「卡面是唯一权威事实源」
+# 冲突；governance 场退役：零生产者的哑件，授面最宽（curate/instruct/
+# report_to_human）却没有判据管收口，留着只会被当「已支持」拖进重构。
+# 要叫职能只走评审/派驻；将来真出管理类差事场景，按当时的语义重新设计。
+VENUE_KINDS = ("review", "deploy", "author")
+DEPLOY_STATUSES = ("created", "active", "done", "withdrawn", "escalated")
+DEPLOY_ACTIVE = ("created", "active")
+EXIT_KINDS = ("verdict", "answer", "deliverable", "signoff", "explicit")
 
 
-def _ensure_ledgers(conn: sqlite3.Connection) -> None:
-    conn.execute(_LEDGER_DDL)
-    conn.execute(_LEDGER_INDEX)
+def _ensure_deployments(conn: sqlite3.Connection) -> None:
+    # 注意：不能用 executescript——它隐式提交事务，会把 run_write 的
+    # BEGIN IMMEDIATE 提前 COMMIT（「no transaction is active」坑）。
+    conn.execute(_DEPLOY_DDL)
+    for idx in _DEPLOY_IDX:
+        conn.execute(idx)
 
 
-def _ledger_row(r: sqlite3.Row) -> dict[str, Any]:
+def _dep_row(row: sqlite3.Row) -> dict[str, Any]:
     return {
-        "id": r["id"],
-        "work_id": r["work_id"],
-        "function_id": r["function_id"],
-        "ledger_code": r["ledger_code"] or "",
-        "ts": r["ts"] or "",
-        "text": r["text"] or "",
-        "meta": _loads(r["meta"], {}),
-        "superseded_by": r["superseded_by"] or "",
+        "id": int(row["id"]),
+        "work_id": row["work_id"],
+        "function_id": row["function_id"] or "",
+        "venue_kind": row["venue_kind"] or "",
+        "venue_ref": row["venue_ref"] or "",
+        "venue_label": row["venue_label"] or "",
+        "mandate": row["mandate"] or "",
+        "delegator": row["delegator"] or "",
+        "batch_id": row["batch_id"] or "",
+        "target_card": row["target_card"] or "",
+        "tools": _loads(row["tools"], []),
+        "exit_kind": row["exit_kind"] or "explicit",
+        "exit_spec": row["exit_spec"] or "",
+        "status": row["status"] or "",
+        "result": row["result"] or "",
+        "meta": _loads(row["meta"], {}),
+        "created_at": row["created_at"] or "",
+        "updated_at": row["updated_at"] or "",
+        "closed_at": row["closed_at"] or "",
     }
 
 
-async def add_ledger_entry(work_id: str, function_id: str, ledger_code: str,
-                           text: str, meta: dict[str, Any] | None = None,
-                           supersedes: str = "") -> dict[str, Any]:
-    """写一条专业台账条目(职能写**自己的**面;code 合法性由调用方闸)。"""
-    rec = {
-        "id": uuid.uuid4().hex[:12],
-        "ts": _now(),
-        "ledger_code": str(ledger_code or ""),
-        "text": str(text or ""),
-        "meta": dict(meta or {}),
-        "superseded_by": "",
-    }
+def _contains_from(obj: Any, want: str, _depth: int = 0) -> bool:
+    """事件记录里递归找 from==want（记录形状不钉死，宽容扫）。"""
+    if _depth > 4 or not want:
+        return False
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if str(k) == "from" and str(v) == want:
+                return True
+            if isinstance(v, (dict, list)) and _contains_from(v, want, _depth + 1):
+                return True
+    elif isinstance(obj, list):
+        return any(_contains_from(x, want, _depth + 1) for x in obj)
+    return False
 
-    def _fn(conn: sqlite3.Connection) -> None:
-        _ensure_ledgers(conn)
+
+def _verdict_exit(work_id: str, dep: dict[str, Any]) -> bool:
+    """评审差事的退出：该席位在本批次有一张**立着的票**（revoked=0）。
+
+    approve/reject 都算——票立起来＝差事办完；revoke 把票撤回 ⇒
+    差事在惰性核对里自动回到在派（判据是读出来的，不改写）。
+    """
+    bid = str(dep.get("batch_id") or "")
+    if not bid:
+        return False
+
+    def _fn(conn: sqlite3.Connection) -> bool:
+        try:
+            return conn.execute(
+                "SELECT 1 FROM review_approvals"
+                " WHERE work_id=? AND batch_id=? AND role_id=?"
+                " AND revoked=0 LIMIT 1",
+                (work_id, bid, str(dep.get("function_id") or ""))
+            ).fetchone() is not None
+        except sqlite3.OperationalError:  # 老库还没有 review_approvals
+            return False
+
+    try:
+        return bool(card_db.read_sync(work_id, _fn, False))
+    except Exception:  # noqa: BLE001 核对失败一律当没办完
+        return False
+
+
+def _answer_exit(work_id: str, dep: dict[str, Any]) -> bool:
+    """answer 判据的退出：职能把答案**送回了派遣方**——派遣方（venue_ref）
+    的卡事件流里出现一条 from=该职能的消息事件（msg_sync 等）。
+    """
+    venue = str(dep.get("venue_ref") or "")
+    fn = str(dep.get("function_id") or "")
+    if not venue or not fn:
+        return False
+    try:
+        from . import event_log
+        recs = event_log.read(work_id, venue) or []
+    except Exception:  # noqa: BLE001 事件流读不到 ⇒ 当没办完
+        return False
+    created = str(dep.get("created_at") or "")
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("type") or "") not in (
+                "msg_sync", "msg_answer", "msg_directive", "msg_report"):
+            continue
+        ts = str(rec.get("ts") or "")
+        if created and ts and ts < created:
+            continue
+        if _contains_from(rec, fn):
+            return True
+    return False
+
+
+def _deliverable_exit(work_id: str, dep: dict[str, Any]) -> bool:
+    """派驻/执笔差事的退出：职能**把产出落到了卡的面上**——差事创建后，
+    承载事实的那张卡的事件流里出现一条它名下的产出事实。
+
+    [两源模型 2026-11-01 · 用户令「卡面是唯一权威事实源，不需要台账」]
+    [差事卡 2026-11-01 · 落点修正] 场卡（``venue_ref``）是职能干活的
+    **场**（验收卡/执笔卡），事实落在别处：
+
+    - ``msg`` / ``report`` ：结论发给**派遣方**（``delegator``）——它的事件
+                           流里出现 from=该职能的消息（``report`` 只看
+                           msg_report；``msg`` 四种消息类型都算）。派遣方不是
+                           卡时回落 target_card → venue（旧场即对象模型）。
+    - ``cardwrite[:<块>]`` ：草稿写在**对象卡**（``target_card``）面上——
+                           它的事件流里出现 ``card_block_edited`` 且
+                           ``by=该职能``。无对象卡时回落 venue。
+    """
+    spec = str(dep.get("exit_spec") or "")
+    venue = str(dep.get("venue_ref") or "")
+    fn = str(dep.get("function_id") or "")
+    created = str(dep.get("created_at") or "")
+    if not fn:
+        return False
+
+    def _stream(card_id: str) -> list[dict[str, Any]]:
+        if not card_id:
+            return []
+        try:
+            from . import event_log
+            return event_log.read(work_id, card_id) or []
+        except Exception:  # noqa: BLE001 事件流读不到 ⇒ 当没办完
+            return []
+
+    if spec in ("msg", "report"):
+        want_types = (("msg_report",) if spec == "report"
+                      else ("msg_sync", "msg_answer", "msg_directive",
+                            "msg_report"))
+        # 回执落派遣方流；派遣方不是卡（harness:xxx）时回落对象卡→场卡。
+        streams = [str(dep.get("delegator") or ""),
+                   str(dep.get("target_card") or ""), venue]
+        seen: set[str] = set()
+        for cid in streams:
+            if not cid or cid in seen or ":" in cid:
+                continue
+            seen.add(cid)
+            for rec in _stream(cid):
+                if not isinstance(rec, dict):
+                    continue
+                if str(rec.get("type") or "") not in want_types:
+                    continue
+                if created and str(rec.get("ts") or "") < created:
+                    continue
+                if _contains_from(rec, fn):
+                    return True
+        return False
+    block = (spec.split(":", 1)[1].strip()
+             if spec.startswith("cardwrite:") else "")
+    recs = _stream(str(dep.get("target_card") or "") or venue)
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("type") or "") != "card_block_edited":
+            continue
+        if created and str(rec.get("ts") or "") < created:
+            continue
+        # by/block 在 data 载荷里（record_state_change 的落盘形状），不在顶层。
+        payload = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+        if str(payload.get("by") or "") != fn:
+            continue
+        if block and str(payload.get("block") or "") != block:
+            continue
+        return True
+    return False
+
+
+# 退出判据 → 惰性核对器。读层凭它给出「这张差事实际办完没有」，
+# 不写库；持久关账仍走 close_deployment（显式）或事件通道。
+# **没有核对器的判据（signoff/explicit）只能靠显式关**——signoff 是
+# 派遣方/用户的事后确认，机器没有可判的事实。
+exit_checkers: dict[str, Any] = {
+    "verdict": _verdict_exit,
+    "answer": _answer_exit,
+    "deliverable": _deliverable_exit,
+}
+
+
+def effective_status(work_id: str, dep: dict[str, Any]) -> str:
+    """有效状态＝库状态 ⊕ 惰性核对。终态行直接返回库状态。"""
+    st = str(dep.get("status") or "")
+    if st not in DEPLOY_ACTIVE:
+        return st
+    chk = exit_checkers.get(str(dep.get("exit_kind") or ""))
+    if chk is None:
+        return st
+    try:
+        return "done" if chk(work_id, dep) else st
+    except Exception:  # noqa: BLE001 核对器坏 ⇒ 不信它
+        return st
+
+
+def _with_effective(work_id: str, dep: dict[str, Any]) -> dict[str, Any]:
+    d = dict(dep)
+    d["effective_status"] = effective_status(work_id, dep)
+    return d
+
+
+def _emit_deploy(work_id: str, dep: dict[str, Any], etype: str) -> None:
+    """差事生命周期事件（发在职能自己的卡键上）。"""
+    try:
+        from ..api import event_stream
+        event_stream.emit(work_id, str(dep.get("function_id") or ""), etype, {
+            "deployment": int(dep.get("id") or 0),
+            "function_id": str(dep.get("function_id") or ""),
+            "venue_kind": str(dep.get("venue_kind") or ""),
+            "venue_ref": str(dep.get("venue_ref") or ""),
+            "delegator": str(dep.get("delegator") or ""),
+            "batch_id": str(dep.get("batch_id") or ""),
+            "target_card": str(dep.get("target_card") or ""),
+            "status": str(dep.get("status") or ""),
+            "result": str(dep.get("result") or ""),
+        })
+    except Exception as exc:  # noqa: BLE001 事件失败不影响建账
+        logger.warning("[function_store] 差事事件失败（不阻断）dep=%s: %s",
+                       dep.get("id"), exc)
+
+
+async def create_deployment(work_id: str, function_id: str,
+                            *, venue_kind: str, venue_ref: str,
+                            mandate: str = "", delegator: str = "",
+                            batch_id: str = "", target_card: str = "",
+                            tools: Optional[list[str]] = None,
+                            exit_kind: str = "explicit",
+                            exit_spec: str = "", venue_label: str = "",
+                            status: str = "created",
+                            meta: Optional[dict[str, Any]] = None
+                            ) -> dict[str, Any]:
+    """开一张差事。**幂等**：同 (function, venue_kind, venue_ref, batch_id)
+    同 mandate 的在派差事已存在 ⇒ 返回既有行（补种/重放不双开）。"""
+    venue_kind = str(venue_kind or "").strip()
+    if venue_kind not in VENUE_KINDS:
+        raise ValueError(f"venue_kind 非法: {venue_kind!r}（{VENUE_KINDS}）")
+    status = str(status or "created").strip()
+    if status not in DEPLOY_STATUSES:
+        raise ValueError(f"status 非法: {status!r}（{DEPLOY_STATUSES}）")
+    exit_kind = str(exit_kind or "explicit").strip()
+    if exit_kind not in EXIT_KINDS:
+        raise ValueError(f"exit_kind 非法: {exit_kind!r}（{EXIT_KINDS}）")
+    function_id = str(function_id or "").strip()
+    venue_ref = str(venue_ref or "").strip()
+    if not function_id or not venue_ref:
+        raise ValueError("function_id / venue_ref 不能为空")
+    mandate = str(mandate or "").strip()
+    tools = [str(t) for t in (tools or [])]
+    now = _now()
+
+    def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
+        _ensure_deployments(conn)
+        row = conn.execute(
+            "SELECT * FROM function_deployments"
+            " WHERE work_id=? AND function_id=? AND venue_kind=?"
+            " AND venue_ref=? AND batch_id=? AND mandate=?"
+            " AND status IN ('created','active') LIMIT 1",
+            (work_id, function_id, venue_kind, venue_ref,
+             str(batch_id or ""), mandate)).fetchone()
+        if row is not None:
+            return _dep_row(row)
+        cur = conn.execute(
+            "INSERT INTO function_deployments"
+            " (work_id,function_id,venue_kind,venue_ref,venue_label,"
+            "  mandate,delegator,batch_id,target_card,tools,"
+            "  exit_kind,exit_spec,status,meta,created_at,updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (work_id, function_id, venue_kind, venue_ref,
+             str(venue_label or ""), mandate, str(delegator or ""),
+             str(batch_id or ""), str(target_card or ""), _dumps(tools),
+             exit_kind, str(exit_spec or ""), status,
+             _dumps(meta or {}), now, now))
+        return _dep_row(conn.execute(
+            "SELECT * FROM function_deployments WHERE id=?",
+            (cur.lastrowid,)).fetchone())
+
+    dep = await card_db.run_write(work_id, _fn)
+    _emit_deploy(work_id, dep, "deployment_created")
+    try:
+        # 顺手一扫：票/台账先于差事就位（重演、补建）的态直接判完，
+        # 不留"开出来就已过期"的假在派。
+        await sweep_deployments(work_id)
+    except Exception as exc:  # noqa: BLE001 扫不动不拦建账
+        logger.warning("[function_store] 建账后扫场失败: %s", exc)
+    return dep
+
+
+def get_deployment(work_id: str, deployment_id: int) -> Optional[dict[str, Any]]:
+    def _fn(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
+        try:
+            row = conn.execute(
+                "SELECT * FROM function_deployments"
+                " WHERE work_id=? AND id=?",
+                (work_id, int(deployment_id))).fetchone()
+        except sqlite3.OperationalError:
+            # 只读连接上不能做 DDL——表还没建（尚无差事）就当不存在，
+            # 与 _query_deployments/has_prior 同一口径。
+            return None
+        return _dep_row(row) if row is not None else None
+
+    return card_db.read_sync(work_id, _fn, None)
+
+
+async def _set_status(work_id: str, deployment_id: int, status: str,
+                      *, result: str = "") -> Optional[dict[str, Any]]:
+    if status not in DEPLOY_STATUSES:
+        raise ValueError(f"status 非法: {status!r}（{DEPLOY_STATUSES}）")
+    now = _now()
+    terminal = status in ("done", "withdrawn", "escalated")
+
+    def _fn(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
+        _ensure_deployments(conn)
         conn.execute(
-            "INSERT INTO function_ledgers"
-            " (id, work_id, function_id, ledger_code, ts, text, meta, superseded_by)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (rec["id"], work_id, function_id, rec["ledger_code"], rec["ts"],
-             rec["text"], _dumps(rec["meta"]), supersedes))
-        if supersedes:
-            conn.execute(
-                "UPDATE function_ledgers SET superseded_by=? WHERE id=?",
-                (rec["id"], supersedes))
+            "UPDATE function_deployments SET status=?, result=?,"
+            " updated_at=?, closed_at=?"
+            " WHERE work_id=? AND id=?",
+            (status, str(result or "") if terminal else "", now,
+             now if terminal else "",
+             work_id, int(deployment_id)))
+        row = conn.execute(
+            "SELECT * FROM function_deployments"
+            " WHERE work_id=? AND id=?",
+            (work_id, int(deployment_id))).fetchone()
+        return _dep_row(row) if row is not None else None
 
-    await card_db.run_write(work_id, _fn)
-    return rec
+    return await card_db.run_write(work_id, _fn)
 
 
-def list_ledger(work_id: str, function_id: str, ledger_code: str,
-                limit: int = 20) -> list[dict[str, Any]]:
-    """列某本台账(按时间倒序;含已被取代条目,展示层自行过滤)。"""
+async def activate_deployment(work_id: str, deployment_id: int) -> dict[str, Any]:
+    return await _set_status(work_id, deployment_id, "active") or {}
 
+
+async def close_deployment(work_id: str, deployment_id: int, *,
+                           status: str = "done",
+                           result: str = "") -> dict[str, Any]:
+    """显式关账（派遣方撤回/升级/确认完成）。终态才带 closed_at。"""
+    if status not in ("done", "withdrawn", "escalated"):
+        raise ValueError("close 只接受 done/withdrawn/escalated")
+    dep = await _set_status(work_id, deployment_id, status, result=result) or {}
+    if dep:
+        _emit_deploy(work_id, dep, "deployment_closed")
+    return dep
+
+
+async def sweep_deployments(work_id: str) -> int:
+    """扫在派差事：惰性核对判完的**持久关账**——status=done + closed_at +
+    `deployment_closed` 事件（策略可监听）。返回关掉的条数。
+
+    调用点（本线的写路径，幂等随便跑）：
+      · `create_deployment` 落账后顺手一扫（票/台账先于差事就位的态）；
+      · `card_tools.execute_tool` 工具落完后（deliverable 的场卡产出
+        事实可能就此翻完——单点覆盖所有写通道）；
+      · harness 若要主动收口，可在策略触发后调它——判据全在库内。
+    """
+    rows = _query_deployments(
+        work_id, "AND status IN ('created','active')", (), limit=500)
+    closed = 0
+    for r in rows:
+        if effective_status(work_id, r) != "done":
+            continue
+        dep = await _set_status(work_id, int(r["id"]), "done",
+                                result=r.get("result") or "")
+        if dep:
+            _emit_deploy(work_id, dep, "deployment_closed")
+            closed += 1
+    return closed
+
+
+def _query_deployments(work_id: str, where: str, args: tuple,
+                       *, limit: int = 200) -> list[dict[str, Any]]:
     def _fn(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-        # 表未建过(还没写过任何台账)⇒ 空表——建表只在写路径;read_sync 是
-        # 只读连接,里面跑 DDL 会被拒(与 governance_store.get_state 同坑)。
         try:
             rows = conn.execute(
-                "SELECT * FROM function_ledgers"
-                " WHERE work_id=? AND function_id=? AND ledger_code=?"
-                " ORDER BY ts DESC LIMIT ?",
-                (work_id, function_id, ledger_code, int(limit))).fetchall()
-        except sqlite3.OperationalError:
+                "SELECT * FROM function_deployments WHERE work_id=? "
+                + where + " ORDER BY id DESC LIMIT ?",
+                (work_id,) + args + (int(limit),)).fetchall()
+        except sqlite3.OperationalError:  # 老库还没这张表
             return []
-        return [_ledger_row(r) for r in rows]
+        return [_dep_row(r) for r in rows]
 
     return card_db.read_sync(work_id, _fn, []) or []
 
 
-def list_ledger_work(work_id: str, ledger_code: str,
-                     limit: int = 20) -> list[dict[str, Any]]:
-    """跨职能列某本台账(分歧待裁用:任何职能写的分歧都要在总裁面上可见)。"""
+def active_for_function(work_id: str, function_id: str,
+                        venue_kind: str = "") -> list[dict[str, Any]]:
+    """该职能**当前有效在派**的差事（惰性核对后仍 active 才算）。"""
+    where = "AND function_id=? AND status IN ('created','active')"
+    args: tuple = (str(function_id),)
+    if venue_kind:
+        where += " AND venue_kind=?"
+        args += (str(venue_kind),)
+    rows = _query_deployments(work_id, where, args)
+    return [d for d in (_with_effective(work_id, r) for r in rows)
+            if d["effective_status"] in DEPLOY_ACTIVE]
 
-    def _fn(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+
+def active_for_venue(work_id: str, venue_ref: str,
+                     venue_kind: str = "") -> list[dict[str, Any]]:
+    """这个场里现在挂着哪些职能的差事。"""
+    where = "AND venue_ref=? AND status IN ('created','active')"
+    args: tuple = (str(venue_ref),)
+    if venue_kind:
+        where += " AND venue_kind=?"
+        args += (str(venue_kind),)
+    rows = _query_deployments(work_id, where, args)
+    return [d for d in (_with_effective(work_id, r) for r in rows)
+            if d["effective_status"] in DEPLOY_ACTIVE]
+
+
+def deployments_for_function(work_id: str, function_id: str,
+                             limit: int = 200) -> list[dict[str, Any]]:
+    """该职能的全部差事（含终态），带 effective_status。"""
+    rows = _query_deployments(
+        work_id, "AND function_id=?", (str(function_id),), limit=limit)
+    return [_with_effective(work_id, r) for r in rows]
+
+
+def deployment_history(work_id: str, function_id: str = "",
+                       limit: int = 50) -> list[dict[str, Any]]:
+    """参与记录＝**有效状态已终**的差事（库终态或惰性核对判终）。"""
+    if function_id:
+        rows = _query_deployments(
+            work_id, "AND function_id=?", (str(function_id),), limit=500)
+    else:
+        rows = _query_deployments(work_id, "", (), limit=500)
+    done = [d for d in (_with_effective(work_id, r) for r in rows)
+            if d["effective_status"] not in DEPLOY_ACTIVE]
+    return done[:int(limit)]
+
+
+def has_prior(work_id: str, function_id: str, venue_ref: str,
+              venue_kinds: tuple = ("deploy", "author")) -> bool:
+    """该职能在 venue_ref（通常一张目标卡）上有过某类差事——
+    「作者不评自己」的判据：写过稿的职能只能答辩不能当评委。
+    withdrawn 不算（差事撤了＝没真执笔过）。
+    """
+    kinds = tuple(str(k) for k in venue_kinds if str(k).strip())
+    if not kinds:
+        return False
+    ph = ",".join("?" for _ in kinds)
+
+    def _fn(conn: sqlite3.Connection) -> bool:
         try:
-            rows = conn.execute(
-                "SELECT * FROM function_ledgers"
-                " WHERE work_id=? AND ledger_code=?"
-                " ORDER BY ts DESC LIMIT ?",
-                (work_id, ledger_code, int(limit))).fetchall()
+            return conn.execute(
+                "SELECT 1 FROM function_deployments"
+                " WHERE work_id=? AND function_id=? AND venue_ref=?"
+                f" AND venue_kind IN ({ph})"
+                " AND status != 'withdrawn' LIMIT 1",
+                (work_id, str(function_id), str(venue_ref), *kinds)
+            ).fetchone() is not None
         except sqlite3.OperationalError:
-            return []
-        return [_ledger_row(r) for r in rows]
+            return False
 
-    return card_db.read_sync(work_id, _fn, []) or []
+    return bool(card_db.read_sync(work_id, _fn, False))

@@ -41,6 +41,8 @@ const SVG_ROLE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" str
 // [编程卡区分 2026-10-23 · 用户令「现在分不清」] 编程卡图标：代码尖括号。
 // 编程卡是**执行体**（干活的叶子），和项目卡（组织）、角色卡（盯梢）一眼要能分开。
 const SVG_CODER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4.5 2 8l3.5 3.5"/><path d="M10.5 4.5 14 8l-3.5 3.5"/></svg>';
+// [UI 卡 2026-11-02] 浏览器窗口图标（执行卡家族、与 coder 尖括号区分）
+const SVG_UI = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M1.5 5.5h13"/><circle cx="4" cy="4" r="0.6" fill="currentColor"/><circle cx="6.2" cy="4" r="0.6" fill="currentColor"/></svg>';
 const SVG_DOTS = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>';
 // [用户 2026-10-15 ①] 新建子卡从 ⋯ 菜单取出，单列一个 ＋ 入口（悬停时 ⋯ 左移一位、＋ 落原位）
 const SVG_PLUS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.6v8.8"/><path d="M3.6 8h8.8"/></svg>';
@@ -63,7 +65,8 @@ function fmtRel(iso) {
 function cardTip(c) {
   // [B4/E2 既有口径] 活跃/分支活跃走 tooltip 三分列（行内不堆文字，定稿第 2 条）
   return (c.card_type === "role" ? "〔角色〕"
-          : c.card_type === "coder" ? "〔编程〕" : "")
+          : c.card_type === "coder" ? "〔编程〕"
+          : c.card_type === "ui" ? "〔UI〕" : "")
     + escapeHtml(c.title)
     + (c.last_active_at ? `｜本卡活跃 ${fmtRel(c.last_active_at)}` : "｜无对话")
     + (c.branch_active_at ? `｜分支活跃 ${fmtRel(c.branch_active_at)}` : "");
@@ -282,6 +285,17 @@ export function createNavRenderer(deps) {
       const badge = document.createElement("span");
       badge.className = "nav-coder-badge";
       badge.textContent = "编程";
+      el.appendChild(ico);
+      el.appendChild(badge);
+    } else if (c.card_type === "ui") {
+      // [UI 卡 2026-11-02] UI 卡＝内循环执行卡（浏览器验界面）：
+      // 青色浏览器图标 + 「UI」徽标，与编程卡（橙）/角色卡（金）分开。
+      el.classList.add("nav-ui");
+      ico.classList.add("ui");
+      ico.innerHTML = SVG_UI;
+      const badge = document.createElement("span");
+      badge.className = "nav-ui-badge";
+      badge.textContent = "UI";
       el.appendChild(ico);
       el.appendChild(badge);
     } else {

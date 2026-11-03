@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.model_gateway.gateway import ModelGateway
-from fake_llm import install_fake_llm, reasoning_delta, text_delta
+from tests.fake_llm import install_fake_llm, reasoning_delta, text_delta
 
 
 def _delta(content=None, reasoning=None, alias=None):

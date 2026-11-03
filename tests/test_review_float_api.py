@@ -121,13 +121,21 @@ async def test_status_carries_each_members_last_opinion(sandbox, app, monkeypatc
     from src.api import model_service, review_runner
 
     wid, cid, fids, rid = await _work_with_review(2)
+    calls = {"n": 0}
 
-    async def say(sys_p, user_p, convo, tools, model):
-        return ({"content": "第三条不满足：没有证据",
-                 "tool_calls": [{"name": "reject", "arguments": {}}]}, "fake-model")
+    async def say(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ({"content": "第三条不满足：没有证据",
+                     "tool_calls": [{"name": "reject",
+                                     "arguments": {"review_card_id": rid}}]},
+                    "fake-model")
+        return ({"content": "第三条不满足：没有证据", "tool_calls": []},
+                "fake-model")
 
     monkeypatch.setattr(model_service, "call_main", say)
-    await review_runner.speak(wid, rid, fids[0])
+    st = await review_store.state_of(wid, rid)
+    await review_runner._seat_turn(wid, rid, fids[0], st, kind="speak")
 
     async with _client(app) as client:
         r = await client.get(f"/api/works/{wid}/cards/{cid}/review-status")

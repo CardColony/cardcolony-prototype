@@ -11,7 +11,8 @@
   function_meta_for() 145 区取数——职能/总裁回合的身份来源,补上装配层缺的那一针
                       (context_assembler.build_ctx 的 docstring 预告过
                        「由 function_room 回合执行器显式传进来」,本模块即它)
-  summary()           职能卡面=台账动态拼装(职责书/管辖/指令簿,
+  summary()           职能卡面=身份+差事账拼装(职责书/管辖/在派任务/参与记录
+                      ——[两源模型 2026-11-01] 台账块已退役,
                       照 role_room.role_summary 先例,不用通用三块冒充)
 
 后续汇聚协议(观点→统合→统筹)同样落在本模块(见 docs/ 设计文档)。
@@ -87,6 +88,13 @@ def load(force: bool = False) -> dict[str, Any]:
         "lateral_enabled": _flag("lateral_enabled"),
         "functions": entries,
         "version": meta.get("version"),
+        # [venue 默认席位 2026-10-31] 场默认建议名单按**场型**挂在 _meta 下
+        # （requirements→[ceo,pm,cto]；将来 acceptance→[qa,ceo]）。
+        "venue_defaults": meta.get("venue_defaults") or {},
+        # [差事装配 2026-10-31] 场授面（venue_kind→能力 code 清单）与
+        # 差事文模板（venue_kind→mandate 模板，占位符 {xx}）。
+        "venue_grants": meta.get("venue_grants") or {},
+        "mandate_templates": meta.get("mandate_templates") or {},
     }
     _cache["at"], _cache["data"] = at, data
     return data
@@ -212,69 +220,197 @@ def function_meta_for(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# 职能卡面:台账动态拼装(照 role_room.role_summary 先例;不用通用三块冒充)
+# [差事装配 2026-10-31] act_as 三参数的供给侧：人格（act_meta）、授面
+#（toolface）、差事文（mandate）、台账 schema。「何时叫」由调用方/harness
+# 决定——这边只管「叫来的是谁、穿什么职责书、发什么钥匙、记什么账」。
+# ---------------------------------------------------------------------------
+
+def venue_defaults() -> dict[str, list[str]]:
+    """场型 → 默认席位目录 code 集（_meta.venue_defaults）。"""
+    return {k: [str(x) for x in (v or [])]
+            for k, v in (load().get("venue_defaults") or {}).items()}
+
+
+def venue_grants() -> dict[str, list[str]]:
+    """场型 → 默认授面（能力 code 清单，_meta.venue_grants）。
+    条目级 venue_grants[场型] 可覆盖——catalog 条目优先。"""
+    return {k: [str(x) for x in (v or [])]
+            for k, v in (load().get("venue_grants") or {}).items()}
+
+
+def mandate_templates() -> dict[str, str]:
+    """场型 → mandate 模板（_meta.mandate_templates，占位符 {xx}）。"""
+    return {str(k): str(v)
+            for k, v in (load().get("mandate_templates") or {}).items()}
+
+
+def render_mandate(venue_kind: str, **fields: Any) -> str:
+    """占位符展开。没有模板 ⇒ 空串（调用方自己写 mandate）；
+    占位符缺值 ⇒ 原样保留（不误炸）。"""
+    tpl = str(mandate_templates().get(str(venue_kind or "")) or "")
+    if not tpl:
+        return ""
+
+    class _Safe(dict):
+        def __missing__(self, k: Any) -> str:
+            return "{" + str(k) + "}"
+
+    try:
+        return tpl.format_map(_Safe({k: str(v) for k, v in fields.items()}))
+    except Exception:  # noqa: BLE001 模板坏了给原文，总好过半成品
+        return tpl
+
+
+def _profile_for(work_id: str, fn_or_code: str) -> tuple[dict[str, Any], str]:
+    """fn_NNN 或目录 code 都收 ⇒ (profile, function_id)。查不到 ⇒ ({}, '')。"""
+    ident = str(fn_or_code or "").strip()
+    if not ident:
+        return {}, ""
+    prof = function_store.get_profile(work_id, ident)
+    if prof:
+        return prof, str(prof.get("function_id") or ident)
+    try:
+        for p in function_store.list_profiles(work_id):
+            if catalog_code_of(p) == ident:
+                return p, str(p.get("function_id") or "")
+    except Exception:  # noqa: BLE001
+        pass
+    return {}, ""
+
+
+def venue_charter_for(code: str, venue_kind: str) -> str:
+    """某职能在某种场穿的职责书：**目录条目 charters[场型]** ⇒
+    （评审场特判）config/review_charters.json 按目录 code ⇒ ''。
+    日常职责书不在这回——回落在 identity_for 里做。"""
+    e = entry(code) or {}
+    ch = e.get("charters") or {}
+    txt = str(ch.get(str(venue_kind or "")) or "").strip()
+    if txt or str(venue_kind or "") != "review":
+        return txt
+    try:
+        path = _catalog_path().parent / "review_charters.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        node = data.get(str(code or "")) or {}
+        return str((node.get("text") if isinstance(node, dict) else node)
+                   or "").strip()
+    except Exception:  # noqa: BLE001 查不到 ⇒ ''，交给 identity_for 回落
+        return ""
+
+
+def identity_for(work_id: str, fn_or_code: str,
+                 venue_kind: str = "") -> dict[str, Any]:
+    """act_as/act_meta 的供给侧：这个人格进场穿什么。
+
+    职责书解析链：目录条目 charters[场型] →（评审场）review_charters.json
+    按目录 code → 档案日常职责书。模型不在 act_meta 里——RunState 按
+    act_as 卡自己的 profile 取（与评审席位同构）。
+    输出形状与评审线 act_meta 契约对齐：{function_id, function_name,
+    catalog_code, charter:{text}}，另带 kind/venue_kind 元信息。
+    ``resolved``：档案真查到了没有——function_id 兜底回显输入串，判
+    「解没解出来」看这个位，或再调 ``function_exists``（幽灵职能坑）。
+    """
+    prof, fid = _profile_for(work_id, fn_or_code)
+    code = catalog_code_of(prof) or str(fn_or_code or "")
+    e = entry(code) or {}
+    name = str(prof.get("function_name") or e.get("name") or code)
+    duty = venue_charter_for(code, venue_kind)
+    if not duty:
+        ch = prof.get("charter") or {}
+        duty = str(ch.get("text") if isinstance(ch, dict) else ch or "")
+    return {"function_id": fid or str(fn_or_code or ""),
+            "function_name": name, "catalog_code": code,
+            "kind": str(e.get("kind") or ""),
+            "venue_kind": str(venue_kind or ""),
+            # 档案查没查到：function_id 永远非空（回显输入串），判「解没
+            # 解出来」必须看这一位——幽灵职能会"解析成功"。
+            "resolved": bool(prof),
+            "charter": {"text": duty}}
+
+
+def _mounted_abilities(work_id: str, function_id: str,
+                       prof: dict[str, Any]) -> set[str]:
+    """这张职能实挂的能力集：档案 abilities 列优先；空 ⇒ 按卡面元数据走
+    ``card_tools._abilities_of`` 同一条回退路（卡型/模式现算，与建卡同源）。"""
+    ab = [str(a) for a in (prof.get("abilities") or [])]
+    base: set[str] = set()
+    if ab:
+        base = set(ab)
+    else:
+        try:
+            from ..storage import card_store
+            from . import card_tools
+            meta = card_store._meta_of(work_id, function_id) or {}
+            got = card_tools._abilities_of(
+                meta, card_store.iter_card_metas(work_id))
+            base = set(got or set())
+        except Exception:  # noqa: BLE001
+            base = set()
+    # [执笔挂载 2026-11-01] 目录条目 ``extra_abilities``：标准回退路给不出的
+    # 岗位能力（PM 的 edit_other_face——差事作用域替它把住边界），
+    # 以目录为准额外挂载；档案实挂 abilities 时同样叠加。
+    try:
+        e = entry(catalog_code_of(prof)) or {}
+        base |= {str(a) for a in (e.get("extra_abilities") or []) if str(a)}
+    except Exception:  # noqa: BLE001 目录坏了不额外挂
+        pass
+    return base
+
+
+def grant_for(work_id: str, fn_or_code: str,
+              venue_kind: str = "") -> list[str]:
+    """本场该发哪些工具（函数侧上限）＝挂载 abilities ∩ 场授面 → 展开工具名。
+
+    场授面查法：条目 ``venue_grants[场型]`` → 目录 ``_meta.venue_grants[场型]``。
+    两方都没配 ⇒ 空授权（宁缺勿滥——场不授就不发）。
+    """
+    prof, fid = _profile_for(work_id, fn_or_code)
+    code = catalog_code_of(prof)
+    e = entry(code) or {}
+    grants = list((e.get("venue_grants") or {}).get(str(venue_kind or "")) or []) \
+        or list(venue_grants().get(str(venue_kind or "")) or [])
+    mounted = _mounted_abilities(work_id, fid or str(fn_or_code or ""), prof)
+    eff = [a for a in mounted if a in set(grants)]
+    try:
+        from ..infra import capability_registry as _cap
+        return sorted(_cap.tools_of(eff))
+    except Exception:  # noqa: BLE001 清单坏 ⇒ 退回能力 code 本身
+        return sorted(set(eff))
+
+
+# ---------------------------------------------------------------------------
+# 职能卡面:按目录 face_blocks 拼装(照 role_room.role_summary 先例;
+# 不用通用三块冒充)。
 # ---------------------------------------------------------------------------
 
 def _fmt_ts(ts: str) -> str:
     return str(ts or "")[:16].replace("T", " ")
 
 
-#: [卡面定制 2026-10-24] 台账 code → 面区块标题(function_ledgers 的展示名)。
-#: 目录条目自带 ledgers([{code,title}]),这里只是**非目录职能**回不到目录时的
-#: 兜底标题表;渲染一律以目录 face_blocks 为准。
-LEDGER_TITLES = {
-    "premises": "前提台账",
-    "tech_requirements": "技术裁定簿",
-    "criteria": "判据与验收台账",
-    "health": "判据登记与体检",
-    "decisions": "决策簿",
-    "reports": "汇报簿",
-    "divergence": "分歧待裁",
-}
-
-
 def _entry_face(work_id: str, function_id: str,
                 prof: dict[str, Any]) -> tuple[dict[str, Any] | None,
-                                               list[str],
-                                               dict[str, str]]:
-    """取该职能的目录条目 ⇒ (entry, face_blocks, title→ledger_code 映射)。
+                                               list[str]]:
+    """取该职能的目录条目 ⇒ (entry, face_blocks)。
 
-    非目录职能(work_025 存量)⇒ (None, 默认五节, {})——旧形态逐字保留。
+    非目录职能(work_025 存量)⇒ (None, 默认三节)——旧形态逐字保留。
     """
     code = catalog_code_of(prof)
     if not code:
-        return None, [], {}
+        return None, []
     e = entry(code) or {}
     blocks = [str(b) for b in (e.get("face_blocks") or [])]
-    lmap = {str(l.get("title")): str(l.get("code"))
-            for l in (e.get("ledgers") or []) if l.get("code")}
-    return e, blocks, lmap
-
-
-def _render_ledger_block(lines: list[str], title: str,
-                         entries: list[dict[str, Any]], limit: int) -> None:
-    lines.append(f"## {title}(最近 {limit} 条)")
-    if entries:
-        for it in entries:
-            if it.get("superseded_by"):
-                continue                     # 被取代条目不占面(台账里可回溯)
-            body = str(it.get("text") or "").replace("\n", " ")[:200]
-            lines.append(f"- [{_fmt_ts(it.get('ts', ''))}] {body}")
-    else:
-        lines.append("- （暂无记录)")
-    lines.append("")
+    return e, blocks
 
 
 def summary(work_id: str, function_id: str) -> dict[str, Any]:
     """职能的「卡面」:**按目录 face_blocks 装配**(卡面定制 2026-10-24)。
 
-    - 目录职能:职责书/管辖/指令簿按 face_blocks 顺序出;
-      专业台账(PM 前提台账/CTO 技术裁定簿/QA 判据验收/涌现守门体检/
-      总裁 决策簿·汇报簿·分歧待裁)从 function_ledgers 现拼——每职能的面
-      结构由目录定义,这正是「按职能量身定制」的落点。
+    - 目录职能:职责书/管辖/指令簿/在派任务/参与记录按 face_blocks 顺序出;
+      [两源模型 2026-11-01 · 用户令「卡面是唯一权威事实源，不需要台账」]
+      台账区块整体退役——专业准则写在 rules.md（人改的基建文件），
+      产出落在场卡面上，面不再渲染任何台账内容。
     - 非目录职能(work_025 存量):默认三节(职责书/管辖/指令簿)。
     - [2026-10-31] 观点簿/警报簿已随 record_verdict / raise_alarm 退役。
-    只读、不落库——职能卡 cards 行的三块只是身份占位,真相在台账里。
+    只读、不落库——职能卡 cards 行的三块只是身份占位。
     """
     prof = function_store.get_profile(work_id, function_id) or {}
     name = str(prof.get("function_name") or function_id)
@@ -293,10 +429,21 @@ def summary(work_id: str, function_id: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
 
-    entry_e, face_blocks, lmap = _entry_face(work_id, function_id, prof)
+    # [差事面 2026-10-31] 「在派任务」「参与记录」两块从 deployments 账本
+    # 现拼——它此刻在哪、去过哪，脸上一眼看完（face_blocks 里有才渲）。
+    deploy_active: list[dict[str, Any]] = []
+    deploy_hist: list[dict[str, Any]] = []
+    try:
+        deploy_active = function_store.active_for_function(
+            work_id, function_id) or []
+        deploy_hist = function_store.deployment_history(
+            work_id, function_id, limit=10) or []
+    except Exception:  # noqa: BLE001
+        pass
+
+    entry_e, face_blocks = _entry_face(work_id, function_id, prof)
     blocks = face_blocks or ["职责书", "管辖", "指令簿"]
 
-    ledger_cache: dict[str, list[dict[str, Any]]] = {}
     counts: dict[str, int] = {"issued_directives": len(directives)}
     lines: list[str] = []
     sections_out: list[str] = []
@@ -321,40 +468,35 @@ def summary(work_id: str, function_id: str) -> dict[str, Any]:
             else:
                 lines.append("- （无在途指令)")
             lines.append("")
+        elif title == "在派任务":
+            lines.append("## 在派任务")
+            if deploy_active:
+                for d in deploy_active:
+                    lines.append(
+                        f"- [{d.get('venue_kind')}] "
+                        f"{d.get('venue_label') or d.get('venue_ref')}"
+                        f"｜{d.get('delegator') or '?'} 派"
+                        f"｜退出:{d.get('exit_kind')}"
+                        f"｜{str(d.get('mandate') or '')[:80]}")
+            else:
+                lines.append("- （没有在派差事）")
+            lines.append("")
+        elif title == "参与记录":
+            lines.append("## 参与记录(最近 10)")
+            if deploy_hist:
+                for d in deploy_hist:
+                    lines.append(
+                        f"- [{d.get('effective_status') or d.get('status')}] "
+                        f"{d.get('venue_label') or d.get('venue_ref')}"
+                        f"｜{str(d.get('result') or '—')[:60]}"
+                        f"｜{_fmt_ts(d.get('closed_at') or d.get('updated_at'))}")
+            else:
+                lines.append("- （暂无参与记录)")
+            lines.append("")
         sections_out.append(title)
 
     for title in blocks:
-        lcode = lmap.get(title)
-        if lcode == "divergence":
-            # 分歧待裁是**跨职能**的:任何职能写的分歧都聚到总裁面上
-            # (按 work 聚合,带写入方名)。本职能名下的单查没意义。
-            if "divergence" not in ledger_cache:
-                try:
-                    _rows = function_store.list_ledger_work(
-                        work_id, "divergence", limit=10) or []
-                except Exception:  # noqa: BLE001
-                    _rows = []
-                _names = {p["function_id"]: p.get("function_name") or p["function_id"]
-                          for p in function_store.list_profiles(work_id)}
-                for _r in _rows:
-                    _r["text"] = (f"[{_names.get(_r['function_id'], _r['function_id'])}] "
-                                  + str(_r.get("text") or ""))
-                ledger_cache["divergence"] = _rows
-                counts["ledger_divergence"] = len(_rows)
-            _render_ledger_block(lines, title, ledger_cache["divergence"], 10)
-            sections_out.append(title)
-        elif lcode:
-            if lcode not in ledger_cache:
-                try:
-                    ledger_cache[lcode] = function_store.list_ledger(
-                        work_id, function_id, lcode, limit=10) or []
-                except Exception:  # noqa: BLE001
-                    ledger_cache[lcode] = []
-                counts[f"ledger_{lcode}"] = len(ledger_cache[lcode])
-            _render_ledger_block(lines, title, ledger_cache[lcode], 10)
-            sections_out.append(title)
-        else:
-            _std_block(title)
+        _std_block(title)
 
     return {
         "function_id": function_id,

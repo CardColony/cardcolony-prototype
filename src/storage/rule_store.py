@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -31,6 +32,11 @@ from typing import Any
 logger = logging.getLogger("storage.rule")
 
 RULES_FILENAME = "rules.md"
+
+#: [2026-11-03 草案驳回落痕] 用户在审批弹窗「拒绝/关闭」一条 draft_rule_edit
+#: 草案时，前端把该草案在会话时间线里的 `card_id:seq` 记入本文件——否则驳回
+#: 只活在页面内存里，刷新后同一条历史 tool_result 又被重扫成「待审批」反复弹。
+DISMISSALS_FILENAME = "rule_dismissals.json"
 
 #: 总规则的分区名。与 card_type code 同构（全小写英文），排在所有类型区之前。
 ALL_SECTION = "all"
@@ -42,11 +48,23 @@ SECTION_LABELS: dict[str, str] = {
     "sub_project": "子项目卡",
     "tool": "工具卡",
     "coder": "编程卡",
-    "function": "职能卡",
+    "ui": "UI卡",
+    "qa_card": "验收卡",
+    "pm_card": "执笔卡",
+    "function": "全体职能",
     "review": "评审卡",
     "rule": "规则节点自身",
     "topic": "课题卡",
 }
+
+
+def section_label(name: str) -> str:
+    """分区显示名。``function.<code>`` 是按职能区（[两源模型 2026-11-01]
+    QA 的验收准则这类——只进对应职能的上下文），标签动态拼。"""
+    n = str(name or "")
+    if n.startswith("function."):
+        return f"职能·{n.split('.', 1)[1]}"
+    return SECTION_LABELS.get(n, n)
 
 #: 新建项目的默认规则（通用工作流，不含任何任务事实）。
 #: [2026-10-28] 两处旧口径已修：①「总裁策展」→ 需求走评审+正稿（curate_face 时代已结束）
@@ -65,20 +83,37 @@ DEFAULT_SECTIONS: dict[str, str] = {
         "3. 派工后等职能评审观点；分歧未消带上分歧问用户。\n"
         "4. 阶段完成向用户汇报（report_to_user），不等被问。"),
     "function": (
-        "1. 职责书定义你是谁、什么情况开口；本区是本项目对你的附加规则。\n"
-        "2. 你只在阶段收口被叫醒——对整个阶段表态（speak），沉默不落账等于失职。\n"
-        "3. 与父卡统合判断相左，写分歧（write_ledger, ledger=divergence）。"),
+        "1. 职责书定义你是谁；本区是本项目对**全体职能**的附加规则。\n"
+        "2. 你只在被叫到时在场：差事派你、评审叫你、用户找你——没有自动唤醒。\n"
+        "3. 按职能加码：`## function.<职能 code>` 区只进对应职能的上下文"
+        "（例 `## function.qa` 写验收准则）。\n"
+        "4. 你的产出落在被叫到的场：评审投你的票、结论写在场卡面、答案发回"
+        "问询方——不私记台账（卡面是唯一事实源）。"),
     "sub_project": (
         "1. 开工前先读自己的需求文档；**没有正稿**就 report_up(kind=ask) 请示。\n"
         "2. **阶段任务=新建子卡**：一件阶段性的活建一张子卡（需求+验收判据写清），"
         "不自己在当前卡上直接干；你的卡是管理者——拆阶段、建子卡、等完工。\n"
         "3. 工作细节你域内自决，不上报待裁；现状块只写能核实的事实。\n"
         "4. 完工调 update_goal(complete) 收口——这一刻职能会来做阶段验收。\n"
-        "5. 阶段完工才向上汇报（report_up, kind=phase），日常不打扰上级。"),
+        "5. 阶段完工才向上汇报（report_up, kind=phase），日常不打扰上级。\n"
+        "6. coder／差事卡子卡没有现状块——验收看 coder_done 回执与代码提交"
+        "（差事看 report 回执）；不要派它「写现状块」——委派执行体没有写卡面"
+        "工具，edit_status 对 coder 也直接拒。要把结论落到它卡面，用 "
+        "edit_other_face 自己代写。"),
     "tool": "按剧本执行；产物与用途落清单。",
     "coder": (
         "1. 任务在使命块里；产出＝代码＋report_done 回执。\n"
         "2. 你没有现状块——进展由回执与代码承载。"),
+    # [UI 卡 2026-11-02] ui＝内循环执行卡（系统内模型，不走 wb_exec）：
+    # 手里有平台工具面（含 browser），产出＝界面代码＋浏览器验证结论。
+    "ui": (
+        "1. 任务在使命块里；产出＝界面代码＋**你在浏览器里亲眼核到的结论**，"
+        "完工走 report_up 汇报。\n"
+        "2. 浏览器循环：navigate 打开 → inspect 看语义地图 → 用 ref 操作 → "
+        "再 inspect/query 验证效果。ref 在页面跳转后全部作废，click 只证明"
+        "输入已派发——效果必须亲眼验证。\n"
+        "3. 结论只写你在页面里核到的事实（可见文字、console 报错、截图资产）；"
+        "没核到的不许写进汇报。"),
     # [规则节点 2026-10-28 · 用户令「规则卡不挂模型和对话，不需要工具」]
     # 规则节点没有模型、没有对话、没有工具面 ⇒ 没有"它自己该怎么做事"可言。
     # 分区保留（分区＝卡类型列表，跟着注册表长），内容留空。
@@ -130,6 +165,19 @@ def join_sections(sections: dict[str, str]) -> str:
             continue
         parts.append(f"## {name}\n{str(content or '').rstrip()}")
     return "\n\n".join(parts) + ("\n" if parts else "")
+
+
+def find_section_header_lines(content: str) -> list[str]:
+    """内容里以 `## ` 开头的行——**下次读取会被 split_sections 切成幻影区**。
+
+    [2026-11-01 幻影区事故] work_027 的根卡把一篇带 `## 一、`…`## 七、` 标题
+    的整篇文档起草进 ``project`` 区：区名合法、落盘逐字节正确，但下一次
+    ``split_sections`` 把文档内部标题切成七个无人消费的区名——规则静默孤儿化。
+    入口（draft_rule_edit/commit/PATCH）用本函数拦内容里的 `## ` 行并给出
+    具体行号；`write_sections` 对绕过入口的写入打 WARNING（不拦，存储层不判）。
+    """
+    return [ln.strip() for ln in (content or "").splitlines()
+            if ln.startswith("## ")]
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -188,6 +236,15 @@ def read_sections(work_id: str) -> dict[str, str]:
 
 def write_sections(work_id: str, sections: dict[str, str]) -> None:
     """整份覆盖写（面板/审批通道落盘用）。"""
+    # [2026-11-01 幻影区兜底告警] 入口已拦 `## ` 行；这里再验一遍——绕过入口的
+    # 内部调用/迁移写入若带 `## ` 行，落盘即幻影区化。不拦（存储层不判内容），
+    # 但必须留痕，否则又是静默孤儿。
+    for name, content in (sections or {}).items():
+        bad = find_section_header_lines(str(content or ""))
+        if bad:
+            logger.warning(
+                "[rule] %s 区 %r 内容含 %d 行 `## `（将被切成幻影区）：%s",
+                work_id, name, len(bad), " / ".join(bad[:3]))
     _atomic_write(rules_path(work_id),
                   join_sections({str(k): str(v or "") for k, v in (sections or {}).items()}))
 
@@ -213,4 +270,68 @@ def ensure(work_id: str, defaults: dict[str, str] | None = None) -> bool:
     base = dict(defaults if defaults is not None else DEFAULT_SECTIONS)
     cur = _migrate_from_work_json(work_id)
     write_sections(work_id, {**base, **cur})   # 旧内容优先于默认值
+    return True
+
+
+# ---------------------------------------------------------------------------
+# [2026-11-03 草案驳回落痕] rule_dismissals.json：被驳回草案的 card_id:seq 表
+# ---------------------------------------------------------------------------
+
+def dismissals_path(work_id: str) -> Path:
+    """本项目的草案驳回表路径。与 rules.md 同目录——同为项目基建件。"""
+    from . import work_store  # noqa: PLC0415 局部 import 取当前 WORKS_DIR
+
+    return Path(work_store.WORKS_DIR) / work_id / DISMISSALS_FILENAME
+
+
+def _read_dismissals(work_id: str) -> dict[str, dict[str, Any]]:
+    """读驳回表 → {key: meta}。文件缺失/坏掉 ⇒ {}（驳回态丢失只多弹窗，不丢数据）。"""
+    p = dismissals_path(work_id)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 读坏了当作没有
+        logger.warning("读规则草案驳回表失败 %s: %s", p, exc)
+        return {}
+    dismissed = data.get("dismissed") if isinstance(data, dict) else None
+    return {str(k): (v if isinstance(v, dict) else {})
+            for k, v in dismissed.items()} if isinstance(dismissed, dict) else {}
+
+
+def list_dismissals(work_id: str) -> list[str]:
+    """已驳回草案的 key 列表（``"card_id:seq"``），供 GET /rule 下发给前端过滤。"""
+    return sorted(_read_dismissals(work_id).keys())
+
+
+def is_dismissed(work_id: str, card_id: str, seq: int) -> bool:
+    return f"{card_id}:{int(seq)}" in _read_dismissals(work_id)
+
+
+def add_dismissal(work_id: str, card_id: str, seq: int,
+                  sections: list[str] | None = None) -> bool:
+    """把一条草案记为已驳回。**幂等**：同 key 已在表内直接成功，不改 ts。
+    返回 False＝文件坏到无法安全合并（宁可不覆写别人的驳回记录）。
+    """
+    p = dismissals_path(work_id)
+    data: dict[str, Any] = {"dismissed": {}}
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8")) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("规则草案驳回表损坏，拒绝覆写 %s: %s", p, exc)
+            return False
+        if not isinstance(data, dict):
+            data = {"dismissed": {}}
+    dismissed = data.get("dismissed")
+    if not isinstance(dismissed, dict):
+        dismissed = {}
+    key = f"{card_id}:{int(seq)}"
+    if key not in dismissed:
+        dismissed[key] = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "sections": [str(s) for s in (sections or []) if str(s).strip()],
+        }
+    data["dismissed"] = dismissed
+    _atomic_write(p, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     return True

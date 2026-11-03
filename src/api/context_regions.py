@@ -245,8 +245,8 @@ def render_function_self_region(ctx: RegionCtx) -> str:
     职能不是卡 ⇒ 没有 cards 行、没有正卡三块、没有影子、也不出现在卡片清单里。
     以前角色卡靠「自己是张卡」天然看到自己的身份；职能把这层皮剥掉之后，
     **必须由机制显式把档案摊给它**，否则它不知道自己是谁、也接不到活。
-    本区就是那个机制：只讲事实（我是谁／职责书／盯谁／什么时候开口），
-    末尾一句把它的行为边界说死——不干活、只盯、该开口才开口。
+    本区就是那个机制：只讲事实（我是谁／职责书／我的专业准则／在派差事），
+    末尾一句把它的行为边界说死——不干活、只在被叫到时在场。
 
     ``ctx.function_meta`` 为空（缺省／取数失败）⇒ 输出空串，**fail-open 不抛**
     （「没有来源就不出现这个区」）。
@@ -265,38 +265,32 @@ def render_function_self_region(ctx: RegionCtx) -> str:
     if charter:
         lines += ["", "**职责书**", charter]
 
-    watch = (meta.get("watch") or {})
-    watch_cards = [str(c) for c in (watch.get("cards") or [])]
-    scope = str(watch.get("scope") or "").strip()
-    lines += ["", "**你盯的卡**"]
-    if watch_cards:
-        lines += [f"- {c}" for c in watch_cards]
-    elif scope:
-        # [预设职能 2026-10-24] 目录播种的盯线是「范围」不是点名(all/tech_cards)
-        lines += [f"- （按范围:{scope}——范围内的卡都在你眼里）"]
-    else:
-        lines += ["- （空：你还没有盯任何卡）"]
+    # [两源模型 2026-11-01] 职能的判断依据只有两件：被验卡的需求文档（场卡的面，
+    # 在上下文别处）＋自己的专业准则（rules.md 的 `## function`/「## function.
+    # <code>」区，在这里注入）。准则写进**规则文件**——它是项目基建、人（用户/
+    # 根卡提议+用户确认）才能改，不是职能私记的台账：准则要被裁定过才算数。
+    code = str(meta.get("catalog_code")
+               or (meta.get("jurisdiction") or {}).get("catalog_code") or "")
+    shared = str(ctx.rule_sections.get("function") or "").strip()
+    own = (str(ctx.rule_sections.get(f"function.{code}") or "").strip()
+           if code else "")
+    if shared or own:
+        lines += ["", "**你的规则**（rules.md——你只有读的份；要加要改说给"
+                  "叫你/找你的人，由人去改）"]
+        if shared:
+            lines += ["### 全体职能", shared]
+        if own:
+            lines += [f"### 只对你（function.{code}）", own]
 
-    sc = meta.get("speak_contract") or {}
-    advice = [str(x) for x in (sc.get("advice_when") or [])]
-    alarm = [str(x) for x in (sc.get("alarm_when") or [])]
-    # [职能唤醒收口 2026-10-28] 边界句改口径：改前写的是「只盯、该开口才开口、否则沉默」
-    # ——那是"被事件叫醒"时代的说法。现在没有自动唤醒了：你是专家岗，只在这两种情况
-    # 下被用到：① 需求评审叫你来评 ② 用户直接找你聊。其余时候你不在场。
-    _is_ceo = str((meta.get("jurisdiction") or {}).get("catalog_code")
-                  or "") == "ceo"
+    # [职能唤醒收口 2026-10-28 → 2026-11-01] watch/speak_contract 两段是自动
+    # 唤醒时代的档案字段——现在不存在「盯到信号自动醒」，渲染它们只会教错
+    # 在场方式。被用到的通道：① 差事派你 ② 评审叫你 ③ 用户直接找你。
+    _is_ceo = code == "ceo"
     boundary = ("你是总裁：统筹决策、跨卡引导块执笔、对用户汇报与确认；"
                 "不执行具体工作——执行下树。") if _is_ceo else (
-        "你不在任务树里，不干具体的活。你只在这两种情况下被用到："
-        "需求评审叫你来评、用户直接找你聊；其余时候你不在场。")
-    lines += [
-        "",
-        "**你会为什么事表态**",
-        f"- 提建议：{'；'.join(advice) if advice else '（未设）'}",
-        f"- 拉警报：{'；'.join(alarm) if alarm else '（未设）'}",
-        "",
-        boundary,
-    ]
+        "你不在任务树里，不干具体的活。你只在被叫到时在场："
+        "差事派你、评审叫你、用户直接找你；其余时候你不在场。")
+    lines += ["", boundary]
     return "\n".join(lines)
 
 
@@ -579,7 +573,7 @@ REGION_TABLE: list[dict[str, Any]] = [
         # 来源＝直接子卡的 status_block（**只一层，不含孙级**；SQL 不递归）。
         "key": "child_status",
         "order": 170,
-        "name": "直接子卡（使命·现状）",
+        "name": "直接子卡（活性·使命·现状）",
         "channel": "system",
         "seats": ("main", "viewpoints"),
         "owner": "context",
@@ -633,21 +627,21 @@ REGION_TABLE: list[dict[str, Any]] = [
         # （用户裁定 6「位置不能太靠上」）。渲染当前卡的**双向**依赖关联线：
         # 正向（我依赖/关联谁）＋反向（谁依赖/关联我）；无线 → 空串（沿用
         # 「没有来源就不出现这个区」）。
-        # ★ seats 取 main only，且 **profiles 也只取 main**——本项目真正的消费者
-        #   闸门是 profiles（seats 不参与过滤，实测「记忆区」标 seats=main 但
-        #   profiles 三席，照样进 viewpoint）。要真做到「三席零变化」，必须
-        #   profiles=("main",)。（见施工回报：任务书字面写三席，与硬判据4 冲突，
-        #   本处按硬判据4 取 main-only。）
+        # [2026-11-01 · 用户两条裁定] ①「谁依赖我应该在对方卡面上，需要知道的
+        #   不只是它自己」——关系位置是**卡面事实**，三席做判断都要看得到，
+        #   profiles 由 main-only 放开为三席；②「接口改了经关系线自动更新，
+        #   不需要通知」——出边条目带上目标**当前**需求文档（对外信息），
+        #   装配即最新，取代推送式通知。
         "key": "relations",
         "order": 250,
         "name": "依赖关联",
         "channel": "system",
-        "seats": ("main",),
+        "seats": ("main", "viewpoint", "draft"),
         "owner": "context",
         "source_owner": "assembler",
         "delivery": "system",
-        "profiles": ("main",),
-        "source": "当前卡的依赖关联线（relations）：正向＝本卡自己的条目；反向＝全库卡索引扫 target==本卡（零额外 IO）",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": "当前卡的依赖关联线（relations）：正向＝本卡自己的条目（带目标当前需求文档）；反向＝全库卡索引扫 target==本卡（零额外 IO）",
         "render": lambda ctx: render_dep_relations_region(
             ctx.dep_relations_out, ctx.dep_relations_in),
         "count": lambda ctx, text: len(ctx.dep_relations_out) + len(ctx.dep_relations_in),
@@ -846,7 +840,12 @@ def _render_prior_for(ctx: RegionCtx, key: str) -> list[dict[str, Any]]:
     if ctx.request_prior is not None:
         return ctx.request_prior if ctx.request_prior_key == key else []
     if key == "history":
-        return project_history_messages(ctx.history_source, ctx.history_mark)
+        # [评审流量治理 2026-11-02 · 用户裁定] 评审过程消息只留最新数条在场，
+        # 更早的蒸发——评审持久记录归 review_store，会话流量不需要记忆。
+        from ..storage import review_scope as _rs
+        return project_history_messages(
+            _rs.drop_stale_review(ctx.work_id, ctx.card_id, ctx.history_source),
+            ctx.history_mark)
     return []
 
 
@@ -1372,8 +1371,9 @@ def _number_lines(text: str) -> str:
 
     口径：行号＝``text.split("\\n")`` 的下标 +1，与 ``_h_edit_card`` 的行模式
     **逐字对齐**（那边也是 split("\\n")，空行照样占一个号）。所以这里的 ``text``
-    必须是**工具端会拿到的那一份**（现状块＝status_block；需求文档＝草稿，草稿空
-    时才是正稿），否则标出来的号跟工具对不上，比不给还坏。
+    必须是**工具端会拿到的那一份**（现状块＝status_block；需求文档＝**正稿**——
+    [2026-11-01 用户令] 草稿不进上下文，改草稿的行号见 edit_requirements 回执），
+    否则标出来的号跟工具对不上，比不给还坏。
     """
     rows = str(text or "").split("\n")
     width = max(2, len(str(len(rows))))
@@ -1440,8 +1440,9 @@ def render_current_card_region(ctx: "RegionCtx") -> str:
             "*★ **只写「确定的需求」**：确定＝经过评审、已经定下来要按它验收。"
             "猜测的、待确认的、可选的不要写——写进来就成了判据，会把这张卡逼进「永远差一条」的死局。"
             "不确定的放到：现状的「现在卡在哪」／影子的「待协作事项」／直接问上级。*\n"
-            "*★ **两版**：edit_requirements 写的是**草稿**（只有你自己看得到）；草稿经需求评审"
-            "全员通过后，系统把它转成**正稿**（所有人读到的、验收对照的都是正稿）。"
+            "*★ **两版**：edit_requirements 写的是**草稿**——草稿不进上下文"
+            "（只在回执与评审材料里看得到），它唯一的用途是评审：经需求评审全员"
+            "通过后转成**正稿**（所有人读到的、验收对照的都是正稿）。"
             "正稿要改：改草稿 → 再走一遍评审 → 通过才替换。*"
         ),
         "status_block": (
@@ -1467,8 +1468,8 @@ def render_current_card_region(ctx: "RegionCtx") -> str:
         "**行号是给你用的**：现状与需求文档的内容逐行标了号（形如 `12│ 内容`）。"
         "要改某几行 ⇒ lines 填 12 或 12-15（1 起算、含两端），代码按行替换，"
         "**不用抄原文**。行号只是给你看的，不要写进 new_string。"
-        "需求文档的号：有草稿时按**草稿**数（edit_requirements 改的就是草稿）；"
-        "没有草稿时按**正稿**数。",
+        "需求文档的号按**正稿**标（上下文只给正稿）；改草稿的行号在 "
+        "edit_requirements 的回执里——它带草稿全文的标号。",
     ]
 
     for name, key in (("使命", "mission"), ("现状", "status_block"), (third, "requirements")):
@@ -1476,34 +1477,34 @@ def render_current_card_region(ctx: "RegionCtx") -> str:
         # 骨架模板（「（本卡作用/目标…）」这类）不是内容：常驻进去会让模型
         # 把模板当既有事实照抄（实测 system prompt 里整段模板原样出现）。
         _label = name
-        _draft = ""
+        _draft_note = ""
         if key == "requirements":
-            # [2026-10-31 修] 状态与草稿必须读 **cur_meta**：`ctx.cur` 是卡片索引行，
+            # [2026-10-31 修] 状态必须读 **cur_meta**：`ctx.cur` 是卡片索引行，
             # 只有 6 个键（card_id/title/parent/relations/created_at/card_type），
-            # 根本没有 requirements_state / requirements_draft ⇒ 改前本区
-            #   ① 标签恒判「尚无正稿」（连 requirements_state=approved 的卡也这么说）；
-            #   ② 卡自己的草稿**永远不渲染**——而本区说明还写着「需求文档的号：
-            #      有草稿时按草稿数」，等于指着一份不在场的东西给行号。
-            # cur_meta 由 `card_store._meta_of` 取，两列都在（实测 card_074 草稿 60,028 字）。
+            # 没有 requirements_state ⇒ 改前标签恒判「尚无正稿」。
+            # cur_meta 由 `card_store._meta_of` 取，两列都在。
             _src = {**(ctx.cur or {}), **(ctx.cur_meta or {})}
             _state = str(_src.get("requirements_state") or "")
             _label = name + ("（正稿）" if _state == "approved"
                              else "（尚无正稿）" if _state in ("", "draft")
                              else "（评审中）")
-            _draft = str(_src.get("requirements_draft") or "").strip()
-            if _is_placeholder(_draft):
-                _draft = ""
+            # [2026-11-01 · 用户令「草稿和正稿不该同时出现在上下文里——
+            # 只有正稿始终出现，草稿的出现是污染；草稿只有一个用途：修改
+            # 正稿前用来评审」] 草稿正文**不渲染**：它在 edit_requirements
+            # 的回执和评审材料里，不在这。这里只留一行状态说明。
+            _has_draft = bool(str(_src.get("requirements_draft") or "").strip())
+            if _has_draft:
+                _draft_note = ("*另有一份草稿在改/在评（它不进上下文；"
+                               "edit_requirements 的回执带草稿全文行号）。*")
         lines += ["", f"### {_label}", _BLOCK_DEF[key]]
+        if _draft_note:
+            lines.append(_draft_note)
         if text and not _is_placeholder(text):
             # [行号定位 2026-10-29 · 用户令「为什么需要它自己复制黏贴」]
             # 使命没有写通道 ⇒ 不给行号（给了等于暗示能改）。
-            # 需求文档**只标一份**：有草稿时标草稿（edit_requirements 改的就是它），
-            # 正稿那份不标——两份都标号，模型会拿正稿的号去改草稿，比不给还坏。
-            _num = key != "mission" and not (key == "requirements" and _draft)
-            lines += ["", _number_lines(text) if _num else text]
-        if key == "requirements" and _draft:
-            lines += ["", "**需求文档 · 草稿（未评审，只有你看得到）**",
-                      _number_lines(_draft)]
+            # [2026-11-01] 需求文档恒标正稿——草稿不在场，不存在「两份标号
+            # 拿错去改」的问题了。
+            lines += ["", text if key == "mission" else _number_lines(text)]
 
     shadow = ctx.cur_shadow or {}
     sh_lines: list[str] = []
@@ -1511,7 +1512,7 @@ def render_current_card_region(ctx: "RegionCtx") -> str:
     # 改前影子只有【节名】＋内容，没有一句"这节放什么"——而 update_shadow 退役时
     # 把原来写在它 description 里的四节定义一起带走了（语义缺口）。
     _SHADOW_DEF = {
-        "笔记": "*只给自己：判断、备忘、待验证的猜想。*",
+        "笔记": "*只给自己：判断、备忘、待验证的猜想——写完它还在你上下文里，下轮也读得到。*",
         "产物清单": "*产生的文件/文档：路径＋一句话用途，一行一个；只写指针。*",
         "待协作事项": "*要别人给什么、卡在哪、等谁；不放产物位置、不放改动记录。*",
         "进度": "*时间线：什么时候做到哪一步、现在什么状态；不写结论与杂事。*",
@@ -1608,8 +1609,9 @@ def render_rule_region(rule_sections: dict[str, str], card_type: str) -> str:
     return "## 规则\n" + body
 
 
-def rule_section_names(registry: dict[str, Any]) -> list[str]:
-    """规则合法分区名＝**总规则区 + 注册表全词表 codes**（总规则最前、去重、声明序）。
+def rule_section_names(registry: dict[str, Any],
+                       fn_codes: list[str] | None = None) -> list[str]:
+    """规则合法分区名＝**总规则区 + 注册表全词表 codes + 按职能区**（声明序）。
 
     纯函数（不做 IO）：调用方传入类型注册表（``card_store`` 的
     ``load_type_registry`` 返回值）。
@@ -1619,35 +1621,51 @@ def rule_section_names(registry: dict[str, Any]) -> list[str]:
     [规则节点 2026-10-28 · 用户令「还有一个总规则，则会进入所有卡的上下文」]
     ``all`` 不是 card_type，是「所有卡」这一档，固定排第一。注册表缺失/无词表
     ⇒ 只剩 ``["all"]``（总规则与词表无关，不该跟着注册表一起消失）。
+
+    [两源模型 2026-11-01 · 用户令「QA 的验收准则写在规则卡内」] 职能的准则
+    按 ``function.<目录 code>`` 分区（例 ``function.qa``）：``function`` 区
+    全体职能共享，``function.qa`` 只进 QA 的上下文。``fn_codes``＝职能目录
+    的 code 清单（调用方从 function_catalog 取）；这些区紧跟 ``function``。
     """
     out: list[str] = [rule_store.ALL_SECTION]
     vocabs = registry.get("l1_vocabularies") if isinstance(registry, dict) else None
-    if not isinstance(vocabs, dict) or not vocabs:
-        return out
-    scopes = (["root"] if "root" in vocabs else []) + [k for k in vocabs if k != "root"]
-    for scope in scopes:
-        vocab = vocabs.get(scope)
-        if not isinstance(vocab, dict):
-            continue
-        for t in (vocab.get("types") or []):
-            code = str((t or {}).get("code") or "")
-            # [角色机制 5710] 角色卡不在规则卡分区体系内（行为由根卡写的职责书
-            # 约束，走专用 ROLE_CARD_BASE_PROMPT），不计入规则六区。
-            if code and code != "role" and code not in out:
-                out.append(code)
+    if isinstance(vocabs, dict) and vocabs:
+        scopes = (["root"] if "root" in vocabs else []) + \
+                 [k for k in vocabs if k != "root"]
+        for scope in scopes:
+            vocab = vocabs.get(scope)
+            if not isinstance(vocab, dict):
+                continue
+            for t in (vocab.get("types") or []):
+                code = str((t or {}).get("code") or "")
+                # [角色机制 5710] 角色卡不在规则卡分区体系内（行为由根卡写的职责书
+                # 约束，走专用 ROLE_CARD_BASE_PROMPT），不计入规则六区。
+                if code and code != "role" and code not in out:
+                    out.append(code)
+    fn_names = [f"function.{str(c).strip()}"
+                for c in (fn_codes or []) if str(c or "").strip()]
+    if fn_names:
+        pos = out.index("function") + 1 if "function" in out else len(out)
+        out[pos:pos] = fn_names
     return out
 
 
-def rule_inject_counts(registry: dict[str, Any]) -> dict[str, int]:
+def rule_inject_counts(registry: dict[str, Any],
+                       fn_codes: list[str] | None = None) -> dict[str, int]:
     """每分区「正被 N 类卡注入」的静态口径：注册表内 code 出现次数。
 
-    纯函数。例：rule 出现在 rd/research 两词表 ⇒ 2；sub_project ⇒ 1。
+    纯函数。例：rule 出现在 rd/research 两词表 ⇒ 2；sub_project ⇒ 1；
+    ``function.qa`` ⇒ 1（只进 QA 这一个职能的上下文）。
     """
     out: dict[str, int] = {}
-    for name in rule_section_names(registry):
-        out[name] = 0
+    for name in rule_section_names(registry, fn_codes):
+        # 按职能区不随卡类型计数——它只进「那一位职能」的上下文。
+        out[name] = 1 if name.startswith("function.") else 0
     # [规则节点 2026-10-28] 总规则进所有卡 ⇒ 计数＝本树类型总数
-    out[rule_store.ALL_SECTION] = len([n for n in out if n != rule_store.ALL_SECTION])
+    #（按职能区不是类型区，不计入）。
+    out[rule_store.ALL_SECTION] = len(
+        [n for n in out if n != rule_store.ALL_SECTION
+         and not n.startswith("function.")])
     vocabs = registry.get("l1_vocabularies") if isinstance(registry, dict) else None
     if not isinstance(vocabs, dict):
         return out
@@ -1673,9 +1691,58 @@ _THIRD_BLOCK_HOWTO = {
     "需求文档": (
         "需求文档——本卡全部需求的确定版详细描述，是本卡需求的唯一确定源。\n"
         "      写法：按需求逐条写清“要什么、验收标准是什么”；只写确定版；\n"
-        "            讨论、备选、过程不写这里。"
+        "            讨论、备选、过程不写这里——判断与「为什么定」写影子·笔记，\n"
+        "            何时改的不用记（自动留痕）；对别人成立的决定落成条文本身，\n"
+        "            不写「某日裁定」。"
     ),
 }
+
+
+# ===========================================================================
+# [事实分层 2026-11-01] 「卡面是唯一权威事实源」的**常驻说明**。
+#
+# 核心语义是【基准】（用户 2026-11-01 裁定）：不是「消息说了要去核实」的仪式——
+# 消息忠实转达卡面变化，和去读卡面等价；真正的问题是**模型做判断、做工作时
+# 参照的对象是什么**。它看到的信息太多（用户发言、文档、对话历史、别的卡的
+# 消息、记忆条目），都是干扰项；卡面给它唯一的决策依据。
+#
+# 为什么在这里：这条原则原来只在 _SEC_ORG_TEXT 末尾有一句话（prompts.py），
+# 三个缺陷——①只进 AUTO_BASE_PROMPT（手动卡看不到）；②随职能目录开关一起消失；
+# ③埋在组织汇报段末尾。三席/评审席按设计零指令、拿不到任何使用说明，
+# 但它们恰恰是「判断事实」的席位——所以放在 155 区（中性上下文，三席都发），
+# 跟着卡面内容一起给，不写进 BASE_PROMPT（也不动版本号）。
+#
+# 用户同批裁定（不落笔的两条）：
+#   · 卡面历史版本只是留痕/回退用，**不能拿来引用**——否则多一个污染源；
+#   · 使命修订是**上级操作**，不增卡片自己的修订通道。
+# ===========================================================================
+_FACT_AUTHORITY_FUNCTION = (
+    "〔事实以卡面为准〕你做判断、做工作时参照的对象只有两个——"
+    "被验卡的需求文档（场卡的面）与你的专业准则（rules.md 里你的区，"
+    "见「你的职能」一节）。"
+    "其余一切都是信息输入，不是依据：用户发言、文档、对话历史、"
+    "别的卡发来的消息、记忆条目——它们告诉你「有什么」，不给你「按什么判」；"
+    "卡面的历史版本只是留痕，不能拿来引用。"
+    "判断依据从卡面与事件里自己取，不靠对方口述；"
+    "卡面对交付物的声称，能查证就查证（读文件/跑命令）。"
+)
+
+
+def _fact_authority_workcard(third: str) -> str:
+    """三块卡的「事实以卡面为准」收尾段（155 区最后一块）。``third``＝第三块名。"""
+    return "\n".join([
+        "〔事实以卡面为准〕你做判断、做工作时参照的对象只有一个——卡面：",
+        "      · 使命＝这卡为什么存在；"
+        f"{third}正稿＝做到什么算完成（验收的判据）；",
+        "        现状＝现在实际什么样（别人按它验收/对接）。",
+        "      · 其余一切都是信息输入，不是依据：用户的发言、文档、对话历史、",
+        "        别的卡发来的消息、记忆条目——它们告诉你「有什么」，不给你「按什么判」；",
+        "        卡面的历史版本只是留痕，不能拿来引用。",
+        "      · 要采纳一个输入，先落成卡面（自己的、或请对方落它的）——",
+        "        不落面不能当依据；不落面的事也等于没发生（别的卡读不到对话）。",
+        "      · 卡面与任何输入冲突时以卡面为准；",
+        "        卡面对交付物的声称，能查证就查证（读文件/跑命令）。",
+    ])
 
 
 def render_card_region_guide(card_type: str, project_class: str) -> str:
@@ -1689,21 +1756,21 @@ def render_card_region_guide(card_type: str, project_class: str) -> str:
     """
     if not card_type:
         return ""
-    # [预设职能 P-B 2026-10-24] 职能卡不是三块卡:它的「面」是台账动态拼装
-    # (职责书/管辖/指令簿,见 function_room.summary),写通道是 direct/write_ledger
-    # 这些台账件,不是 update_status/append_requirements 那套。给职能卡讲三块
-    # 语义是教错课本。
+    # [预设职能 P-B 2026-10-24 → 两源模型 2026-11-01] 职能卡不是三块卡:它的
+    # 「面」是职责书＋差事账（function_room.summary）,不是台账动态拼装——
+    # 台账概念已随用户「卡面是唯一权威事实源,不要第二事实源」退役。
     # [2026-10-31 用户令「判断、警报我明确不需要，拆掉」] 观点簿/警报簿两节
     # 已随 record_verdict / raise_alarm 一起删除,本节不再提。
     if card_type in ("function", "role"):
         return (
             "〔卡片区域说明〕你是职能卡,不是作业卡——你的「卡面」不是三块正文,"
-            "而是由你的台账动态拼成:\n\n"
-            "职责书——你是谁、对什么负责、什么时候开口。建卡时定,"
+            "是你的职责书与差事记录:\n\n"
+            "职责书——你是谁、对什么负责。建卡时定,"
             "经版本化修订(总裁/用户裁定才动)。\n"
-            "指令簿——你下达的指令及核销(仅总裁条目有指令权)。\n\n"
-            "你不干活、不建卡、不发普通消息;你的影响力经指令与台账进入协作,"
-            "由总裁执笔落面。"
+            "差事——你被派去哪、去干什么、办完没有(差事账,机器记)。\n\n"
+            "你不干活、不建卡、不私记结论;你的专业产出落在被叫到的场:"
+            "评审投你的票、验收/执笔把结论写进场卡。\n\n"
+            + _FACT_AUTHORITY_FUNCTION
         )
     is_root = (card_type == "project")
     third = _THIRD_BLOCK_NAME_BY_TREE.get(project_class or "", "需求文档")
@@ -1735,25 +1802,53 @@ def render_card_region_guide(card_type: str, project_class: str) -> str:
         "",
         "〔影子卡区域说明〕影子是本卡自己的过程记录，别的卡读不到，只有你能读写：",
         "",
-        "产物清单——交接物与权威位置：完成的结果在哪里，哪份文档/代码/数据是准的。",
-        "      写法：一行一条指针（路径＋用途），只写指针，不搬内容。",
+        # [错放纠正 2026-11-02] 笔记此前只在 150 区有一行小字，这里从未正式
+        # 介绍——它是「过程/备忘/判断依据」的唯一合法去处，模型不知有它，
+        # 才会往现状与需求文档里倒。
+        "笔记——你自己的备忘与判断：为什么这么做、验证中的猜想、要提醒自己的事。",
+        "      写给自己看的，别的卡读不到；它常驻你的上下文，下一轮还读得到。",
+        "      写法：一条一事；这是给你自己攒的线索，不是对外文档。",
         "",
-        "待协作事项——需要谁提供什么、卡在什么外部条件上。",
+        # [事实分层 2026-11-01] 产物清单从「权威位置」降格为「本卡台账」：
+        # 对外声称的权威在**现状**块（卡面），影子是私有过程稿——
+        # 否则交付物位置有两个权威（tc-2「指针唯一家」与现状「交付物在哪」并立）。
+        "产物清单——本卡的产物台账：完成的结果在哪里、哪份文档/代码/数据是准的"
+        "（工具卡完工时系统也会自动登记指针）。",
+        "      写法：一行一条指针（路径＋用途），只写指针，不搬内容。",
+        "      它是台账不是对外声明——沿通信线的卡能读到它；",
+        "      「现在交付了什么」的权威声称在**现状**块（别人验收/对接读的是现状）。",
+        "",
+        "待协作事项——你自己盯的等待账：需要谁提供什么、卡在什么外部条件、进展到哪。",
         "      写法：一条一项，写清“等谁确认什么、确认后本卡才能继续”。",
+        "      与现状的分工：**对外要别人知道的卡点写现状**；这里记你自己跟踪的等待明细。",
         "",
         "迭代历史——系统自动记的改动留痕，你不用写。",
         "",
         "进度——不重要，不必特意维护。",
         "",
+        # [错放纠正 2026-11-02 · 用户令] 只写禁令不给出路，内容就往最近的块倒。
+        # 这张表把「想写的东西 → 该去哪」一次说清。
+        "〔写什么该去哪〕想落笔时先对一下：",
+        "      · 过程、备忘、为什么这么做、待验证的猜想 → 影子·笔记（edit_note）；",
+        "      · 等谁确认什么、卡在外部条件 → 现状「现在卡在哪」（对外）／影子·待协作事项（自己盯）；",
+        "      · 文件/文档/代码在哪、哪份是准的 → 影子·产物清单（台账）＋ 现状（对外声明）；",
+        "      · 改过什么、什么时候改的、谁改的 → 不写——版本与事件自动留痕，写出来就是噪音；",
+        f"      · 对别人成立的决定/约束 → 落成{third}条文本身，不写「某日裁定」。",
+        "",
         # [2026-10-27 用户裁定] 「它需要知道的信息，应该出现在上下文里」——
         # 光把子卡内容推上来不够，还得说清这个区是什么，否则模型当它是自己
         # 刚读到的东西，或者干脆当成本卡的一部分。
-        "〔直接子卡区〕上下文里有一段「直接子卡（使命·现状）」，那是**系统推给你的**：",
+        "〔直接子卡区〕上下文里有一段「直接子卡（活性·使命·现状）」，那是**系统推给你的**：",
         "      · 只有你的**直接**子卡（一层，不含孙级）；",
-        "      · 只有**使命与现状**两块——需求文档不在里面，要看得自己 read_card；",
-        "      · 原文照给、不截断；谁没写就谁不出现。",
+        "      · 每卡先有一行**活性**——它此刻在跑（运行中+阶段）还是停了，",
+        "        停了再带最后一条信息的落态（正常收口/出错/被中止/被停），",
+        "        实时算的，不用为查「活没活着」再去 read_card；",
+        "      · 再给**使命与现状**两块——需求文档不在里面，要看得自己 read_card；",
+        "      · 原文照给、不截断；有活性的子卡就算两块还空也会出现。",
         "      它和 read_card 读到的是**同一份事实**，不用为了「确认」再读一遍；",
         "      要需求文档、要看孙级，才需要 read_card。",
+        "",
+        _fact_authority_workcard(third),
     ])
 
 
@@ -1776,32 +1871,40 @@ def _child_mission_body(child: dict[str, Any]) -> str:
 
 
 def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
-    """直接子卡区（order 170）：呈现当前卡**直接**子卡的**使命 ＋ 现状**。
+    """直接子卡区（order 170）：呈现当前卡**直接**子卡的**活性 ＋ 使命 ＋ 现状**。
 
     - 上游 SQL 只按 `parent=?` 取一层 ⇒ **结构上不可能含孙级**；
+    - [2026-11-02 · 用户令「父卡需要看到子卡的实时状态，是在运行中，还是停止了」]
+      每个子卡头部一行 **活性**，与 read_card 的「活性」同一出处（装配层算好带来）。
+      [2026-11-02 · 活性口径裁定] 活性＝此刻在不在跑（turn_holder）＋最后一条
+      信息的落态（回合边界事件）；goal_state 只作目标位标签（已收口/卡住了/
+      已暂停），「active」不再冒充"待推进"。
     - [2026-10-27 用户裁定] 使命也进来。依据是实跑复盘：父卡 367 次读直接子卡，
       原文是「我核对一下两张卡的**使命、现状和需求文档**，分别确认哪些已填、
       哪些还空着」——只给现状等于答非所问，它只好自己再读一遍。
     - **需求文档仍不给**（用户裁定：太长）。孙级仍不给（只一层）。
     - 不带修改历史、不碰影子。
-    - 空/纯空白/**占位符**（新建卡骨架）都没有信息 ⇒ 该块不出现；使命与现状都空
-      ⇒ 整个子卡不出现；全空 ⇒ 整个区不出现。
+    - 空/纯空白/**占位符**（新建卡骨架）都没有信息 ⇒ 该块不出现；
+      活性行总在 ⇒ 有活性的子卡即使两块都空也会出现（父卡要知道它活着与否）；
+      没有直接子卡 ⇒ 整个区不出现。
     - 子卡顺序由上游按 card_id 固定排序。
     - [2026-10-24 · 用户令「不允许截断,截断不如不发」] **全文注入,不截断**。
     """
     sections: list[str] = []
     for child in children or []:
-        status = _child_status_body(child)
-        mission = _child_mission_body(child)
-        if not status and not mission:
-            continue
         card_id = str(child.get("card_id") or "")
         title = str(child.get("title") or "")
+        ctype = str(child.get("card_type") or "")
+        activity = str(child.get("activity") or "").strip()
         # [coder 无现状块 2026-10-24 · 用户令] coder 的产出=代码+report_done
-        # 回执,现状块对它不存在(历史存量不再注入)。
-        if str(child.get("card_type") or "") == "coder":
+        # 回执,现状块对它不存在——活性与使命照给（父卡照样要知道它跑没跑）。
+        status = "" if ctype == "coder" else _child_status_body(child)
+        mission = _child_mission_body(child)
+        if not activity and not status and not mission:
             continue
         parts = [f"### {card_id} · {title}"]
+        if activity:
+            parts.append(f"**活性**：{activity}")
         if mission:
             parts.append(f"**使命**：{mission}")
         if status:
@@ -1809,7 +1912,7 @@ def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
         sections.append("\n".join(parts))
     if not sections:
         return ""
-    return "## 直接子卡（使命·现状）\n" + "\n\n".join(sections)
+    return "## 直接子卡（活性·使命·现状）\n" + "\n\n".join(sections)
 
 
 #: [F11 · 展开说明] 区头下挂——教模型沿锚点展开（依赖 memory_expand 工具，F19）
@@ -1820,16 +1923,37 @@ _MEMORY_EXPAND_HOWTO = (
 
 
 def _mem_dt_prefix(row: dict[str, Any]) -> str:
-    """首栏日期前缀（原版 （MM-DD HH:mm） 形态）：timeline_from 优先、occurred_at 兜底。"""
-    ts = str(row.get("timeline_from") or "") or str(row.get("occurred_at") or "")
-    if not ts:
-        return ""
+    """首栏日期前缀：``（MM-DD HH:MM）`` 单点事件；``（MM-DD HH:MM→MM-DD HH:MM）``
+    覆盖窗口（同日省略重复日期）。
+
+    [2026-11-01 · 记忆/当下可分辨] 归拢 digest 的「结果/当前」是它**覆盖末端**
+    时点的快照——只渲起点会让「冻结未宣布（截至 09:06）」与「BD45 签发
+    （09:44）」看起来平权，模型分辨不出哪句更新。窗口末端就是它认知的边界。
+    """
+
+    def _fmt(ts: str, *, with_date: bool) -> str:
+        try:
+            dt = datetime.fromisoformat(ts)
+            return f"{dt:%m-%d %H:%M}" if with_date else f"{dt:%H:%M}"
+        except ValueError:
+            return ts[:16].replace("T", " ")
+
+    t_from = str(row.get("timeline_from") or "") or str(row.get("occurred_at") or "")
+    t_to = str(row.get("timeline_to") or "")
+    if not t_from:
+        return f"（→{_fmt(t_to, with_date=True)}）" if t_to else ""
+    head = _fmt(t_from, with_date=True)
+    if not t_to or t_to == t_from:
+        return f"（{head}）"
     try:
-        # ISO 串取「MM-DD HH:mm」；解析不动就原样截 16 位
-        dt = datetime.fromisoformat(ts)
-        return f"（{dt:%m-%d %H:%M}）"
+        same_day = (datetime.fromisoformat(t_from).date()
+                    == datetime.fromisoformat(t_to).date())
     except ValueError:
-        return f"（{ts[:16].replace('T', ' ')}）"
+        same_day = False
+    tail = _fmt(t_to, with_date=not same_day)
+    if tail == head:
+        return f"（{head}）"
+    return f"（{head}→{tail}）"
 
 
 def _render_memory_l1(row: dict[str, Any], *, with_columns: bool) -> list[str]:
@@ -1887,8 +2011,28 @@ def render_memory_region(entries: list[dict[str, Any]]) -> str:
     if not tops and not any(int(r.get("level") or 1) > 1 for r in rows):
         return ""
 
-    # L2 按 upper_id 挂父；挂不上父的＝孤儿（段末照出——数据在，不静默丢）
+    # L2 按 upper_id 挂父。归属是沿 upper 链的**传递关系**：折叠递进产生
+    # L3+ 深层条目（父是 L2 成员、祖父才是顶层），它们永远有归属，只是不在
+    # 顶层——沿链爬得到顶层＝树内材料（随顶层可见性，不进基线）；upper_id
+    # 空 / 指向不存在的行 / 链中途断掉或成环＝真孤儿（数据违例，段末照出
+    # 备查不静默吞）。
     top_ids = {str(r.get("id") or "") for r in tops}
+    by_id = {str(r.get("id") or ""): r for r in rows}
+
+    def _climbs_to_top(node: dict[str, Any]) -> bool:
+        cur, seen = node, {str(node.get("id") or "")}
+        while True:
+            up = str(cur.get("upper_id") or "")
+            if not up or up in seen:
+                return False
+            seen.add(up)
+            parent = by_id.get(up)
+            if parent is None:
+                return False
+            if int(parent.get("level") or 1) <= 1:
+                return True
+            cur = parent
+
     children_by_parent: dict[str, list[dict[str, Any]]] = {}
     orphans: list[dict[str, Any]] = []
     for r in rows:
@@ -1897,10 +2041,16 @@ def render_memory_region(entries: list[dict[str, Any]]) -> str:
         up = str(r.get("upper_id") or "")
         if up and up in top_ids:
             children_by_parent.setdefault(up, []).append(r)
-        else:
+        elif not _climbs_to_top(r):
             orphans.append(r)
 
     lines = ["## 记忆（凝练归拢）",
+             # [2026-11-01 · 记忆/当下可分辨] 用户令：割裂靠「日期+记忆/当下」
+             # 让模型自己分辨，不靠合并消灭——条内「结果/当前」是它时戳窗口
+             # 末端的快照，未必是此刻；时戳较新的条目优先，当下以卡面为准。
+             "- 本区是**记忆——历史记录，不是当下**：条内「结果/最新/当前」指"
+             "它时戳窗口末端那个时点；多条并读时时戳较新者为准，判断现状以"
+             "卡面为最终依据。",
              "- 结论层给「谁-因-事-果」；细节层只在最近一批展开。",
              _MEMORY_EXPAND_HOWTO]
 
@@ -1922,15 +2072,27 @@ def render_memory_region(entries: list[dict[str, Any]]) -> str:
         except (TypeError, ValueError):
             return 0
 
-    batches = sorted({_batch(r) for r in tops})
+    # [2026-11-01 · 修批号污染] 「最近一批」只算**原生凝练批**——fold digest 节点
+    # 拿的是 sync_nodes 派的流水批号（锚点 ≥1e9 合成段），它若成了"最新批"，
+    # 被它降层的成员会以 L2 细节层**全文弹回**，归拢刚减掉的体积立刻回涨。
+    _SYNTH = 1_000_000_000
+    batches = sorted({_batch(r) for r in tops
+                      if int(r.get("anchor_seq") or 0) < _SYNTH})
     last_batch = batches[-1] if batches else 0
-    recent = [r for r in tops if _batch(r) == last_batch and last_batch > 0]
-    older = [r for r in tops if not (_batch(r) == last_batch and last_batch > 0)]
+    recent = [r for r in tops
+              if _batch(r) == last_batch and last_batch > 0
+              and int(r.get("anchor_seq") or 0) < _SYNTH]
+    older = [r for r in tops
+             if not (_batch(r) == last_batch and last_batch > 0
+                     and int(r.get("anchor_seq") or 0) < _SYNTH)]
 
     if older:
         lines.append("")
         lines.append("### 远期")
-        for r in sorted(older, key=lambda x: (_batch(x), int(x.get("ordinal") or 0))):
+        # 远期按 timeline_from 排（内容年代优先于流水批号——digest 讲的是它
+        # 吸收的那段历史，该插回对应年代而不是堆在尾部）；无 timeline 沉底。
+        for r in sorted(older, key=lambda x: (str(x.get("timeline_from") or "\uffff"),
+                                              _batch(x), int(x.get("ordinal") or 0))):
             _emit_l1(r, with_children=False)
     if recent:
         lines.append("")
@@ -1960,10 +2122,12 @@ def render_dep_relations_region(
 ) -> str:
     """250 区渲染（依赖关联）：当前卡的**双向**依赖关联线。
 
-    - 正向：本卡自己的 ``relations`` → 「我依赖/关联：{target}（{kind}·{detail}）」；
+    - 正向：本卡自己的 ``relations`` → 「我依赖/关联：{target}（{kind}·{detail}）」
+      ＋目标的**当前**需求文档（对外信息，装配层随边投影——接口改了经关系线
+      自动更新，不依赖通知）；
     - 反向：全库扫出的 ``target == 本卡`` 条目 → 「依赖/关联我的：{source}（…）」；
     - 两向都无 → 空串（「没有来源就不出现这个区」）；
-    - 条目原样呈现（kind/detail 不加工、不截断；渲染零加工）。
+    - 条目原样呈现（kind/detail/需求文档不加工、不截断；渲染零加工）。
 
     纯函数：不做 IO（模块头硬约束）。双向取数由 ``context_assembler.build_ctx``
     在已加载的全库卡索引上算好（零额外 IO）后传入。
@@ -1977,6 +2141,13 @@ def render_dep_relations_region(
             continue
         lines.append(
             f"- 我依赖/关联：{target}（{_rel_suffix(str(r.get('kind') or ''), str(r.get('detail') or ''))}）")
+        # [2026-11-01] 依赖线的意义＝我消费它的对外信息。把目标**当前**需求
+        # 文档投影进来：它改了卡面，我这里下一轮就是新的——关系线本身即更新
+        # 通道，不需要「告诉你变了再自己去读」的通知。
+        req = str(r.get("requirements") or "").strip()
+        if req:
+            lines.append(f"  {target} 的需求文档（随它卡面更新）：")
+            lines.extend(f"  {ln}" for ln in req.split("\n"))
     for r in in_entries or []:
         if not isinstance(r, dict):
             continue

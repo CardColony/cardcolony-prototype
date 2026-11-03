@@ -105,8 +105,17 @@ async def test_final_requirements_reach_the_context(sandbox):
     assert "card_021 需求块 BD1" in text, "沿用模板句起头的那一行也要在场（不能被当占位符抹掉）"
 
 
-async def test_own_draft_is_rendered_with_line_numbers(sandbox):
-    """卡自己的草稿要渲染、且**只有草稿标行号**（edit_requirements 的 lines 靠它）。"""
+async def test_draft_stays_out_of_context_final_numbered(sandbox):
+    """[2026-11-01 用户令「草稿和正稿不该同时出现在上下文里——只有正稿
+    始终出现，草稿是污染，唯一用途是改正稿前的评审」]
+
+    - 上下文里**只有正稿**（恒标行号）；草稿正文不进上下文，只留一行
+      「另有一份草稿在改/在评」的状态说明；
+    - 草稿的在场形态＝edit_requirements 的**回执**（带草稿全文的标号），
+      lines 定位打的就是这份草稿的行。
+    """
+    from src.api import card_tools
+
     wid, cid = await _make(sandbox)
     await card_store.update_card(
         wid, cid, {"requirements": "R0 正稿一行",
@@ -114,13 +123,21 @@ async def test_own_draft_is_rendered_with_line_numbers(sandbox):
                    "requirements_state": "draft"}, "写草稿")
 
     text = _render_current_card(wid, cid)
-    assert "需求文档 · 草稿（未评审，只有你看得到）" in text, "草稿小节必须在场"
-    assert "D1 草稿第一行" in text and "D2 草稿第二行" in text
-    # 草稿带行号、正稿不带（两份都标号，模型会拿正稿的号去改草稿）
-    i = text.index("需求文档 · 草稿")
-    assert "1│" in text[i:] or "1│ " in text[i:], "草稿要标行号"
-    assert "R0 正稿一行" in text[:i], "正稿在草稿小节之前"
-    assert "1│ R0 正稿一行" not in text, "正稿不该标行号"
+    assert "D1 草稿第一行" not in text and "D2 草稿第二行" not in text, \
+        "草稿正文不进上下文"
+    assert "草稿" in text, "有草稿时要留一行状态说明"
+    assert "1│ R0 正稿一行" in text, "需求文档恒标正稿的行号"
+
+    # 草稿的行号在 edit_requirements 回执里（这是它唯一的在场形态）
+    cards = card_tools._collect_card_meta(wid)
+    out = await card_tools._h_edit_requirements(
+        wid, cid, {"lines": "1", "new_string": "D1 草稿第一行（改）"}, cards)
+    assert out.get("ok"), out
+    numbered = out.get("需求文档·草稿（行号）") or ""
+    assert "1│" in numbered and "草稿" in numbered, "回执要带标号草稿"
+    card = await card_store.read_card(wid, cid)
+    assert "D1 草稿第一行（改）" in str(
+        card["meta"]["requirements_draft"]), "lines=1 命中的是草稿第 1 行"
 
 
 async def test_skeleton_block_still_renders_nothing_but_the_guide(sandbox):

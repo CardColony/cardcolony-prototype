@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import logging
 import math
@@ -311,39 +312,12 @@ def _last_message(work_id: str, card_id: str) -> dict[str, str] | None:
     卡片本身就是对话单元（每张卡自带 session），所以卡面最该显示的不是正文，
     而是**这张卡刚刚在说什么**——那是唯一会实时变、且能让人立刻判断"要不要插手"的东西。
 
-    直接读 session 文件取最后一块，不走 session_facade.read（它是 async，
-    而投影在同步读事务里跑）。v1 老会话跳过（本仓已无存量）。
+    [重建重做 2026-11-03] 实现委托给 ``session_facade.last_message``——
+    尾部扩窗反扫、不读全文。改前这里 ``path.read_text()`` 整读+全解析：
+    实测一个 work 的会话总量 900MB，每次重建把它们挨个吞一遍。
     """
-    try:
-        from . import session_facade as _sf
-        path = _sf._session_path(work_id, card_id)
-        if not path.exists():
-            return None
-        text = path.read_text(encoding="utf-8")
-        if _sf._detect_format(text) == 1:
-            return None
-        blocks = _sf._parse_v2(text)["blocks"]
-        if not blocks:
-            return None
-        # 从后往前找**第一条真正的对话消息**：跳过工具帧（内容是参数 JSON，
-        # 卡面上显示出来就是 `tool {"card_id": "card_006", ...}` 这种噪音）
-        # 和空消息。卡面要的是"这张卡刚说了什么"，不是"它刚调了什么工具"。
-        for b in reversed(blocks):
-            actor = str(b.get("actor") or "")
-            content = str(b.get("content") or "").strip()
-            if not content or actor not in ("human", "assistant"):
-                continue
-            if content.startswith("{") and content.rstrip().endswith("}"):
-                continue          # 参数 JSON，不是人话
-            return {
-                "actor": actor,
-                "text": content[:220],
-                "ts": str(b.get("ts") or ""),
-                "seq": str(b.get("seq") if b.get("seq") is not None else ""),
-            }
-        return None
-    except Exception:  # noqa: BLE001
-        return None
+    from . import session_facade as _sf
+    return _sf.last_message(work_id, card_id)
 
 
 #: 活动流噪音过滤（实测 381 行历史里两类占 182 条）：
@@ -475,6 +449,10 @@ def rebuild(work_id: str) -> dict[str, Any]:
     （canvas.json 本身仍为文件——画布线，不在迁移范围）。
     """
     canvas_path = _canvas_path(work_id)
+    # [重建重做 2026-11-03] 脏标记在**开读前**清掉，不是写完后：
+    # 重建期间落的新写会重新置脏 ⇒ 下一次 load 再补一次；
+    # 反过来（写完才清）会把重建期间的新标记吞掉，缓存停在旧代。
+    _dirty_path(work_id).unlink(missing_ok=True)
     created_at = _now_iso()
     try:
         old = json.loads(canvas_path.read_text(encoding="utf-8"))
@@ -529,45 +507,8 @@ def rebuild(work_id: str) -> dict[str, Any]:
         # 新卡走三列模型，需求文档在独立的 requirements 列。两处都扫，否则换一种写法就看不见。
         _decisions = _parse_decisions(
             (row["status_block"] or "") + "\n" + (row["requirements"] or ""))
-        cards.append({
-            "card_id": card_id,
-            "title": row["title"] or "",
-            "card_type": row["card_type"] or "线索",
-            "parent": row["parent"] or "",
-            "created_at": row["created_at"] or "",
-            # [画布商业化 2026-10-17] 状态与更新时间随画布一次到手：
-            #   状态用于卡片视觉分层（已完成/进行中），更新时间用于卡面底部元信息。
-            #   两者都是纯增量字段——旧前端不读即不受影响。
-            "state": row["state"] or "",
-            "updated_at": row["updated_at"] or "",
-            # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
-            # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
-            "conclusion_summary": _conclusion_summary(row["status_block"] or "", row["title"] or ""),
-            # [画布 2026-10-18 · 工作台] 工作状态三件套：状态 / 待裁定数 / 结论。
-            # 卡片按 work_state 上色与排序，顶栏据此算项目概览。
-            **dict(zip(("work_state", "pending_count", "conclusion", "conclusion_kind"),
-                       _card_work_state(row["status_block"] or "", row["title"] or ""))),
-            # [画布 2026-10-19] 需求文档：系统规范里的"决定"条目。
-            # 卡面只显示**条数**（一个完整、可比较的事实：9 条＝这条线已经收敛，
-            # 0 条＝还在打转），条目正文给浮层——那里有空间把它读完。
-            # 最后一条对话消息：卡面实时显示"这张卡刚在说什么"
-            "last_msg": _last_message(work_id, card_id),
-            "decision_count": len(_decisions),
-            "last_decision": (_decisions[-1] if _decisions else None),
-            # 被引用次数：这个项目里"谁被最多卡引用"＝谁是地基
-            "ref_count": _ref_counter.get(card_id, 0),
-            # 待裁定**条目**（不是数字）：卡片上直接列出"在等你的那几件事"
-            "pending_items": _extract_pending_items(row["status_block"] or ""),
-            # 规模：现状块字数。3000 字和 40000 字的工作量差一个数量级，
-            # 它决定"这张卡要不要现在碰"，是用户排优先级的关键输入。
-            "content_len": len(row["status_block"] or ""),
-            # ── 自动模式活动（画布上"AI 正在干活"的唯一表达）──
-            "auto_mode": bool(row.get("auto_mode")),
-            "goal_state": row.get("goal_state") or "",
-            "goal_rounds": int(row.get("goal_rounds") or 0),
-            "toolcard_step": row.get("toolcard_step") or "",
-            "toolcard_round": int(row.get("toolcard_round") or 0),
-        })
+        cards.append(_card_entry(work_id, row, _decisions,
+                                 _ref_counter.get(card_id, 0)))
         try:
             rels = json.loads(row["links"] or "[]")
         except (TypeError, ValueError):
@@ -595,21 +536,112 @@ def rebuild(work_id: str) -> dict[str, Any]:
     }
     try:
         canvas_path.parent.mkdir(parents=True, exist_ok=True)
-        canvas_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        # [重建重做 2026-11-03] 原子写：tmp＋os.replace——读方不再可能
+        # 读到写了一半的 canvas.json（旧路径 write_text 直覆，读到一半
+        # 会触发调用方再重建一次的浪费）。写完才清脏标记：写失败
+        # canvas.dirty 留着，下一次 load 重试。
+        _tmp = canvas_path.with_name("canvas.tmp")
+        _tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        os.replace(_tmp, canvas_path)
     except Exception as exc:
         logger.warning("canvas.json 写入失败（不中断）: %s", exc)
     return result
 
 
+def _card_entry(work_id: str, row: dict[str, Any],
+                decisions: list[dict[str, Any]],
+                ref_count: int) -> dict[str, Any]:
+    """一卡行的投影条目——``rebuild``（全量）与 ``card_projection``（单卡现算）
+    的**唯一构造口**：两条路径产出同一形状，事件载荷与 /canvas 首屏不可能分叉。
+    """
+    card_id = row["card_id"]
+    _decisions = decisions
+    return {
+        "card_id": card_id,
+        "title": row["title"] or "",
+        "card_type": row["card_type"] or "线索",
+        "parent": row["parent"] or "",
+        "created_at": row["created_at"] or "",
+        # [画布商业化 2026-10-17] 状态与更新时间随画布一次到手：
+        #   状态用于卡片视觉分层（已完成/进行中），更新时间用于卡面底部元信息。
+        #   两者都是纯增量字段——旧前端不读即不受影响。
+        "state": row["state"] or "",
+        "updated_at": row["updated_at"] or "",
+        # [R4] 结论摘要随画布一次到手——前端 getSummary 优先读本字段，
+        # 免去首屏对每张可见卡各发一次 getCard 请求（N+1）。
+        "conclusion_summary": _conclusion_summary(row["status_block"] or "", row["title"] or ""),
+        # [画布 2026-10-18 · 工作台] 工作状态三件套：状态 / 待裁定数 / 结论。
+        # 卡片按 work_state 上色与排序，顶栏据此算项目概览。
+        **dict(zip(("work_state", "pending_count", "conclusion", "conclusion_kind"),
+                   _card_work_state(row["status_block"] or "", row["title"] or ""))),
+        # [画布 2026-10-19] 需求文档：系统规范里的"决定"条目。
+        # 卡面只显示**条数**（一个完整、可比较的事实：9 条＝这条线已经收敛，
+        # 0 条＝还在打转），条目正文给浮层——那里有空间把它读完。
+        # 最后一条对话消息：卡面实时显示"这张卡刚在说什么"
+        "last_msg": _last_message(work_id, card_id),
+        "decision_count": len(_decisions),
+        "last_decision": (_decisions[-1] if _decisions else None),
+        # 被引用次数：这个项目里"谁被最多卡引用"＝谁是地基
+        "ref_count": ref_count,
+        # 待裁定**条目**（不是数字）：卡片上直接列出"在等你的那几件事"
+        "pending_items": _extract_pending_items(row["status_block"] or ""),
+        # 规模：现状块字数。3000 字和 40000 字的工作量差一个数量级，
+        # 它决定"这张卡要不要现在碰"，是用户排优先级的关键输入。
+        "content_len": len(row["status_block"] or ""),
+        # ── 自动模式活动（画布上"AI 正在干活"的唯一表达）──
+        "auto_mode": bool(row.get("auto_mode")),
+        "goal_state": row.get("goal_state") or "",
+        "goal_rounds": int(row.get("goal_rounds") or 0),
+        "toolcard_step": row.get("toolcard_step") or "",
+        "toolcard_round": int(row.get("toolcard_round") or 0),
+    }
+
+
+def _ref_count_of(work_id: str, status_blocks: list[str],
+                  card_id: str) -> int:
+    """``card_id`` 被其它卡现状块点名的次数（``rebuild`` 与 ``card_projection``
+    共用口径：全库 status_block 正则扫）。"""
+    n = 0
+    for text in status_blocks:
+        for m in set(re.findall(r"card_\d{3}", text or "")):
+            if m != card_id:
+                n += 1
+    return n
+
+
 async def update_cache(work_id: str) -> dict[str, Any]:
-    """v1 用全量重建代替增量维护（线程内跑，避免库读阻塞事件循环）。"""
+    """全量重建（线程内跑，避免库读阻塞事件循环）。
+
+    [重建重做 2026-11-03] **写卡路径不再调用它**——见 ``mark_dirty``。
+    保留本函数供测试/脚本与「立即要新鲜投影」的少数路径使用。
+    """
     return await asyncio.to_thread(rebuild, work_id)
 
 
+def _dirty_path(work_id: str) -> Path:
+    return _canvas_path(work_id).with_name("canvas.dirty")
+
+
+def mark_dirty(work_id: str) -> None:
+    """写卡后置脏：下一次 ``load()`` 会重建一次。
+
+    [重建重做 2026-11-03] 旧设计＝写卡即 ``await update_cache`` 全量重建
+    （100 卡 × 会话全文读 ≈ 1GB IO，还挂在写卡路径上同步等）。现在写卡
+    只 touch 这个标记文件（约 0.1ms），canvas.json 推迟到**真有人打开
+    画布**时才重建——页面加载是稀有事件，重建发生在那里才对。
+    标记落盘而不是内存位：进程重启/崩溃后标记还在，不错过重建。
+    """
+    try:
+        p = _dirty_path(work_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch(exist_ok=True)
+    except OSError as exc:
+        logger.warning("canvas 脏标记失败（不阻断）work=%s: %s", work_id, exc)
+
+
 def load(work_id: str) -> dict[str, Any]:
-    """读 work 的 canvas.json；不存在或解析失败则自动重建。"""
+    """读 work 的 canvas.json；不存在、解析失败、结构过期或**被写脏**则重建。"""
     canvas_path = _canvas_path(work_id)
     try:
         data = json.loads(canvas_path.read_text(encoding="utf-8"))
@@ -619,6 +651,9 @@ def load(work_id: str) -> dict[str, Any]:
             if int(data.get("schema_version") or 0) != CANVAS_SCHEMA_VERSION:
                 logger.info("canvas.json 结构版本过期（%s≠%s），触发重建 work=%s",
                             data.get("schema_version"), CANVAS_SCHEMA_VERSION, work_id)
+                return rebuild(work_id)
+            # 写卡后留的脏标记 ⇒ 缓存过期，重建一次（重建成功自清标记）。
+            if _dirty_path(work_id).exists():
                 return rebuild(work_id)
             return data
         logger.warning("canvas.json 内容非法，触发重建 work=%s", work_id)
@@ -635,20 +670,36 @@ def load(work_id: str) -> dict[str, Any]:
 # 为什么要有它：画布要"实时更新"，后端就得能把**一张卡**的最新投影推给前端；
 # 推整份投影（300 卡 = 24KB）不现实，也不该——前端只需要变更的那一张。
 #
-# 为什么从 canvas.json 取而不是重算：canvas.json 是**刚刚重建过**的派生缓存
-# （每次写卡都会 update_cache → rebuild），字段与 /canvas 端点返回的**完全同源**
-# ——前端拿到的 card 对象与首屏拿到的 card 对象形状一致，不会出现"事件里的字段
-# 少一个"导致卡面缺零件。
+# [重建重做 2026-11-03] **现算**，不再借道 canvas.json。旧实现＝
+# 写卡 → 全量 rebuild → 读回文件摘一条 ⇒ 推一条 card_changed 要吞近 1GB
+# 会话读＋一次 100 卡全扫。现算＝一行卡片＋全库引用计数＋会话尾读，毫秒级；
+# 字段与 /canvas **完全同源**——同一个 ``_card_entry`` 构造口，形状不可能分叉。
 #
 # 零阻断：读不到就返回 None，调用方按"没有摘要"处理（前端保留旧值）。
 
 def card_projection(work_id: str, card_id: str) -> dict[str, Any] | None:
-    """取一张卡在当前投影里的条目；卡不存在（已删）或读不到 ⇒ None。"""
+    """现算一张卡的投影条目；卡不存在（已删）或读不到 ⇒ None。"""
     try:
-        data = load(work_id)
-        for c in data.get("cards") or []:
-            if c.get("card_id") == card_id:
-                return c
+        def _fn(conn: Any) -> tuple[Any, list[str]]:
+            row = conn.execute(
+                "SELECT card_id, title, card_type, parent, created_at, updated_at,"
+                " state, links, status_block, requirements,"
+                " auto_mode, goal_state, goal_rounds, toolcard_step, toolcard_round"
+                " FROM cards WHERE card_id=?", (card_id,)).fetchone()
+            # 引用计数与 rebuild 同口径：全库 status_block 扫一遍。
+            blocks = [r["status_block"] or "" for r in
+                      conn.execute("SELECT status_block FROM cards")]
+            return row, blocks
+        row, status_blocks = card_db.read_sync(work_id, _fn, (None, []))
+        if row is None:
+            return None
+        # 角色卡不进画布投影（rebuild 同口径跳过）。
+        if str(row["card_type"] or "") == "role":
+            return None
+        decisions = _parse_decisions(
+            (row["status_block"] or "") + "\n" + (row["requirements"] or ""))
+        return _card_entry(work_id, dict(row), decisions,
+                           _ref_count_of(work_id, status_blocks, card_id))
     except Exception as exc:  # noqa: BLE001 零阻断
         logger.warning("单卡投影读取失败（不阻断）work=%s card=%s: %s",
                        work_id, card_id, exc)

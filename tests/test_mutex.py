@@ -88,7 +88,10 @@ async def test_post_message_409_when_condense_holds(sandbox, work, client):
     session_facade.turn_release(wid, cid, "condense")
 
 
-async def test_condense_skips_when_turn_held(sandbox, work, monkeypatch):
+async def test_condense_runs_when_turn_held(sandbox, work, monkeypatch):
+    """[去锁裁定 2026-10-22] 凝练是后台任务：主线回合持锁**照常凝**——
+    T086 旧语义「主线持有→凝练跳过」已被裁定反转（原实现永远抢不到锁，
+    fn_002 六小时没凝过）。同卡互斥只剩 _CONDENSING（防两个凝练并发）。"""
     from src.storage import memory_store
 
     wid, cid = work["work_id"], "card_001"
@@ -106,14 +109,16 @@ async def test_condense_skips_when_turn_held(sandbox, work, monkeypatch):
     monkeypatch.setattr(memory_store, "_run_condense_pipeline", fake_pipeline)
     assert not hasattr(memory_store, "_condensing_cards"), "旧集合必须退役（T086）"
 
-    # 主线持有 → 凝练触发跳过、不启动管线
+    # 主线持有 → 凝练照常启动（不抢、不动主线登记）
     assert session_facade.turn_try_acquire(wid, cid, "turn:abc") is True
     await memory_store.condense_turn_end(wid, cid)
-    assert seen.get("called") is None, "同卡在途时凝练必须跳过"
-    assert session_facade.turn_holder(wid, cid) == "turn:abc", "跳过不得动主线登记"
+    assert seen.get("called") is True, "去锁裁定：凝练不碰回合锁，主线持锁照凝"
+    assert session_facade.turn_holder(wid, cid) == "turn:abc", "凝练不得动主线登记"
     session_facade.turn_release(wid, cid, "turn:abc")
 
-    # 无在途 → 凝练正常启动并在结束后释放自己的登记
+    # 同卡并发凝练互斥仍在（_CONDENSING）：占位时第二触发跳过
+    memory_store._CONDENSING.add((wid, cid))
+    seen.clear()
     await memory_store.condense_turn_end(wid, cid)
-    assert seen.get("called") is True
-    assert session_facade.turn_holder(wid, cid) == "", "凝练结束必须释放登记（finally）"
+    assert seen.get("called") is None, "同卡已在凝 ⇒ 第二触发必须跳过"
+    memory_store._CONDENSING.discard((wid, cid))

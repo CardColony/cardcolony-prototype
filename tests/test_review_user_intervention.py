@@ -30,7 +30,8 @@ import asyncio
 
 import pytest
 
-from src.api import card_tools, context_regions, control, model_service, review_runner
+from src.api import (card_tools, context_regions, control, model_service,
+                     review_runner, routes)
 from src.storage import (card_store, function_store, review_store, session_facade,
                          work_store)
 
@@ -62,15 +63,15 @@ async def _setup(n: int = 3):
 
 
 def _mute_background_round(monkeypatch):
-    """掐掉 `_h_open_review` 后台 spawn 的 `run_round`（本文件里锁敏感的用例都要先调它）。
+    """掐掉 `_h_open_review` 后台 spawn 的第一步（本文件里锁敏感的用例都要先调它）。
 
     它是 `_spawn_tracked` 起的 task，**要等下一次 await 才真正执行** ⇒ 那时用例往往
     已经 `delenv(ECO_NO_AUTO_REVIEW)`，于是它跑起来、先占住评审卡的回合锁，把本测的
-    `run_once` 挤成 `review_busy`（实测就是这么红的：holder = `review_round:card_003`）。
+    `run_once` 挤成 `already_running`。
     """
-    async def _no_round(*_a, **_kw):
-        return []
-    monkeypatch.setattr(review_runner, "run_round", _no_round)
+    def _no_round(*_a, **_kw):
+        return None
+    monkeypatch.setattr(review_runner, "spawn_round", _no_round)
 
 
 # ============================================================
@@ -82,23 +83,37 @@ def _mute_background_round(monkeypatch):
 
 
 
-async def test_seat_gets_the_childs_context_not_its_own(sandbox):
-    """子卡的卡面原样进；**评审席自己那张卡**（这里用根卡）一个字都不许进。
+async def test_seat_gets_the_childs_context_not_its_own(sandbox, monkeypatch):
+    """上下文的**上下文锚＝子卡**（ctx_card）；席位自己的卡不是上下文锚。
 
-    用根卡当评审席：它是唯一保证有 cards 行的评审身份（沙箱里职能不落卡，
-    `update_card(fn_001)` 会 CardNotFoundError），而"根卡自己的信息是污染"
-    正是本条要钉的原话。
+    [venue] 三锚分离：执行锚＝评审卡（会话/锁/事件流）、身份锚＝席位（act_as）、
+    上下文锚＝被评子卡（ctx_card——[2026-10-30 用户裁定]「取子卡的上下文，
+    直接接入」）。这里钉的是：传给普通回合的 ctx_card 是被评子卡——
+    子卡卡面**由它的 bundle 供给**，mandate 只留差事＋草稿（[2026-11 去重令]，
+    不再复抄卡面）；**席位自己的卡面不出现**。
     """
     wid, cid, fids, rid = await _setup()
     root = work_store.work_card_id_of(wid)
     await card_store.update_card(wid, cid, {"status_block": "子卡现状标记CHILDMARK"}, "测试")
     await card_store.update_card(wid, root, {"status_block": "根卡现状标记SEATMARK"}, "测试")
 
-    st = await review_store.state_of(wid, rid)
-    sys_p, prior, user_p = await review_runner._speak_context(wid, root, rid, st)
+    captured: list[dict] = []
 
-    assert "CHILDMARK" in sys_p, "子卡的上下文必须原样接给评审席（伴生卡的定义）"
-    assert "SEATMARK" not in sys_p, \
+    async def fake_run(work_id, card_id, content, **kw):
+        captured.append({"content": content, **kw})
+        return {"reply": "ok"}
+
+    monkeypatch.setattr(routes, "_run_message", fake_run)
+    st = await review_store.state_of(wid, rid)
+    await review_runner._seat_turn(wid, rid, fids[0], st, kind="speak")
+
+    assert captured, "席位回合要走普通回合"
+    got = captured[-1]
+    assert got.get("act_as") == fids[0], "身份锚＝席位"
+    assert got.get("ctx_card") == cid, "上下文锚＝被评子卡"
+    assert "CHILDMARK" not in got["content"], \
+        "子卡现状由 ctx_card 的 bundle 供给，mandate 不再复抄（去重令）"
+    assert "SEATMARK" not in got["content"], \
         "评审席自己那张卡的信息不许进——用户裁定：那些全都只是污染"
 
 
@@ -116,7 +131,7 @@ async def test_stop_cancels_the_inflight_review_round(sandbox, monkeypatch):
     wid, cid, fids, rid = await _setup()
     gate = asyncio.Event()
 
-    async def parked(sys_p, user_p, convo, tools, model):
+    async def parked(**kw):
         await gate.wait()
         return ({"content": "看完了", "tool_calls": []}, "fake")
 
@@ -124,12 +139,13 @@ async def test_stop_cancels_the_inflight_review_round(sandbox, monkeypatch):
     monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
 
     task = asyncio.create_task(review_runner.run_once(wid, rid))
-    # 等它真的占到回合锁（状态判据，不靠固定睡眠、不设墙钟）
+    # 等它真的占到回合锁（状态判据，不靠固定睡眠、不设墙钟）。
+    # [venue] 席位回合＝普通回合 ⇒ 锁 owner 与普通回合同形（"turn:<id>"）。
     for _ in range(300):
-        if str(session_facade.turn_holder(wid, rid) or "").startswith("review_step:"):
+        if str(session_facade.turn_holder(wid, rid) or "").startswith("turn:"):
             break
         await asyncio.sleep(0.01)
-    assert str(session_facade.turn_holder(wid, rid) or "").startswith("review_step:"), \
+    assert str(session_facade.turn_holder(wid, rid) or "").startswith("turn:"), \
         "评审轮必须占回合锁，否则停止端点判它「无在途回合」直接 no-op"
 
     res = control.request_stop(wid, rid)
@@ -148,22 +164,30 @@ async def test_stop_cancels_the_inflight_review_round(sandbox, monkeypatch):
 
 
 async def test_run_once_registers_a_cancellable_turn(sandbox, monkeypatch):
-    """评审轮要登记成可 cancel 的回合 task，否则停止端点找不到目标。"""
+    """评审轮的席位回合＝普通回合：在途期间 `_turn_tasks` 里必须能查到
+    （登记点在 _run_message 内部）；收口后解登记。"""
     _mute_background_round(monkeypatch)
     wid, cid, fids, rid = await _setup()
-    seen = {}
+    gate = asyncio.Event()
 
-    async def fake_step(work_id, review_id):
-        seen["bound"] = control.cancel_turn.__module__ is not None
-        from src.api import control as _c
-        seen["has_task"] = (work_id, review_id) in _c._turn_tasks
-        return {"continued": False}
+    async def parked(**kw):
+        await gate.wait()
+        return ({"content": "看完了", "tool_calls": []}, "fake")
 
-    monkeypatch.setattr(review_runner, "_run_step", fake_step)
+    monkeypatch.setattr(model_service, "call_main", parked)
     monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
-    await review_runner.run_once(wid, rid)
-    assert seen.get("has_task") is True, "run_once 期间必须登记 turn task"
+
+    task = asyncio.create_task(review_runner.run_once(wid, rid))
+    for _ in range(300):
+        if str(session_facade.turn_holder(wid, rid) or "").startswith("turn:"):
+            break
+        await asyncio.sleep(0.01)
+    assert str(session_facade.turn_holder(wid, rid) or "").startswith("turn:"), \
+        "席位回合在途必须占回合锁"
     from src.api import control as _c
+    assert (wid, rid) in _c._turn_tasks, "在途评审轮必须登记 turn task，否则停止端点找不到目标"
+    gate.set()
+    await task
     assert (wid, rid) not in _c._turn_tasks, "收口要解登记，否则会误杀后续回合"
     assert not session_facade.turn_holder(wid, rid), "收口要释放评审卡的回合锁"
 

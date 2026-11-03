@@ -29,8 +29,11 @@ logger = logging.getLogger("storage.review")
 REVIEW_TYPE = "review"
 
 MISSION_TPL = (
-    "对 {title}（{cid}）的阶段成果做验收。"
-    "批次与通过状态在本卡现状块。"
+    "你是「{title}（{cid}）」评审场的**场务**："
+    "评审席在这里评它的需求文档草稿，批次与各席位的票在本卡现状块。\n"
+    "用户在这里说话时，你答**流程问题**——评审到哪一步、谁说过什么、"
+    "还差谁表态。你**不占席位、不评内容、无表态权**："
+    "内容意见留在现场给评审席看，别替他们评。"
 )
 
 
@@ -72,6 +75,13 @@ async def ensure_review_card(work_id: str, child_id: str,
             return ""
         # 专用 review_of 配对；评审邀请不构成卡间关系线。
         await _write_pair(work_id, rid, child_id)
+        # [评审流量治理 2026-11-02] 新评审卡入场：流量判据集合立即失效重建，
+        # 否则 60s 缓存窗口内它的消息会被当普通卡间流量。
+        try:
+            from . import review_scope
+            review_scope.invalidate_cache(work_id)
+        except Exception:  # noqa: BLE001
+            pass
         return rid
     except Exception as exc:  # noqa: BLE001
         logger.warning("[review] 伴生卡派生异常 child=%s: %s", child_id, exc)
@@ -161,7 +171,8 @@ async def state_of(work_id: str, review_id: str) -> dict[str, Any]:
 
 async def open_batch(work_id: str, review_id: str, focus: str,
                      members: Optional[list[str]] = None,
-                     target: str = "", brief: str = "") -> dict[str, Any]:
+                     target: str = "", brief: str = "",
+                     batch_type: str = "requirements") -> dict[str, Any]:
     """开一个批次：写 review_state（含本批临时邀请名单），不建立卡间关系线。
 
     [P6 换上下文不压缩] 上一批次的正稿**原文**带进来（`prev_verdict`），
@@ -182,6 +193,15 @@ async def open_batch(work_id: str, review_id: str, focus: str,
           "prev_verdict": prev, "target": tgt,
           "brief": str(brief or ""),
           "draft_hash": await _card_hash(work_id, tgt),
+          # [venue] 场型：本批是哪种场（需求评审 requirements／将来的验收 acceptance）。
+          # 只留字段不建分派表——第二种场出现时按它分发席位集/mandate。
+          "type": str(batch_type or "requirements"),
+          # [venue] 流程计数器：asked_seq=已向正卡要过第几次回应；
+          # responded_seq=正卡已交回几次（submit_revision）。相等＝无未收回应。
+          "asked_seq": 0, "responded_seq": 0,
+          # [venue] 席位机械状态：{role: {"response_seen": n}}——
+          # 否决席被叫时看到的正卡回应水位，re_eval 只在有新回应时才重叫。
+          "seats": {},
           # 邀请名单只在这次进行中的批次有效；它不是 relations，也不是职能的永久成员关系。
           "members": invited}
 
@@ -200,22 +220,73 @@ async def open_batch(work_id: str, review_id: str, focus: str,
 
     await card_db.run_write(work_id, _fn)
 
-    # [2026-10-31 用户裁定] 旧批次的会话内容也清干净。
-    # 上一批次的过程（发言、工具结果）不该带进新批次的上下文——用户原话：
-    # 「每一次评审都是全新的开始」。
-    # 上一批次的**正稿**通过 review_state.prev_verdict 带过来（P6：换上下文不压缩），
-    # 那是唯一要带的东西。
-    await _clear_review_session(work_id, review_id)
+    # [2026-10-31 用户裁定] 新批次＝**新开会话**，旧内容不删——
+    # 归档成「评审卡-旧批次」的独立会话文件留在磁盘（可审计、可回溯），
+    # 场会话从空白重新起。上一批次的**正稿**通过 review_state.prev_verdict
+    # 带过来（P6：换上下文不压缩），那是唯一要带的东西。
+    # [venue 批次守卫] 在途旧批回合先作废再归档：席位回合=评审卡上的普通
+    # 回合（占回合锁）。跨协程直接 cancel——停不掉的是"同协程"（调用方自己
+    # 就在这个回合里），那种由 _seat_turn 收尾时发现批次已换、再清一次场。
+    try:
+        from . import session_facade as _sf
+        if _sf.turn_holder(work_id, review_id):
+            from ..api import control as _ctl
+            _ctl.cancel_turn(work_id, review_id)
+    except Exception as exc:  # noqa: BLE001 停不掉不阻断开批
+        logger.warning("[review] 在途旧批回合作废失败（不阻断开批）review=%s: %s",
+                       review_id, exc)
+    await _archive_review_session(
+        work_id, review_id,
+        str(old.get("batch") or old.get("closed_batch") or ""))
 
     return st
+
+
+async def _archive_review_session(work_id: str, review_id: str,
+                                  old_batch: str) -> None:
+    """把场会话**改名归档**成 ``{评审卡}-{旧批次}``，再在原地起一份空白会话。
+
+    [2026-10-31 用户令]「新建评审批次，是新建 session，而不是删掉旧对话内容」
+    ——旧批次的发言/工具结果全部保留在归档文件里（审计可回溯），新批次的
+    评审现场从空白开始。归档名按批次 id 唯一；撞名时补序号防覆盖。
+    """
+    from . import session_facade as _sf
+    try:
+        path = _sf._session_path(work_id, review_id)
+        if not path.exists():
+            return
+        # 只有文件头（没内容）就不归档——直接重置，不留空壳档案。
+        blocks = await _sf.read(work_id, review_id) or []
+        if isinstance(blocks, dict):
+            blocks = blocks.get("blocks") or []
+        if not blocks:
+            path.write_text(
+                _sf._render_v2_header(_sf._default_header(review_id)),
+                encoding="utf-8")
+            return
+        stem = old_batch or "pre"
+        arch = _sf._session_path(work_id, f"{review_id}-{stem}")
+        n = 2
+        while arch.exists():
+            arch = _sf._session_path(work_id, f"{review_id}-{stem}-{n}")
+            n += 1
+        path.replace(arch)
+        path.write_text(
+            _sf._render_v2_header(_sf._default_header(review_id)),
+            encoding="utf-8")
+        logger.info("[review] 开新批次 ⇒ 旧会话已归档 %s review=%s",
+                    arch.name, review_id)
+    except Exception as exc:  # noqa: BLE001 归档失败不阻断开批次
+        logger.warning("[review] 旧会话归档失败（不阻断新批次）review=%s: %s",
+                       review_id, exc)
 
 
 async def _clear_review_session(work_id: str, review_id: str) -> None:
     """把评审卡的会话文件清空，只留文件头。
 
-    为什么不删文件：文件路径被 session_facade 缓存、事件流引用，
-    删掉可能导致后续 append 重建时序号从 0 起而事件流已在高序号——
-    用"重写为空文件"的方式，路径不变、缓存失效、序号自然从 0 重计。
+    用于**在途旧批回合**的残块清理（批次在回合中换了：这一轮回合写进新会话的
+    都是旧批残块，清掉）。正常开批走 `_archive_review_session`——旧内容归档，
+    不删。
     """
     from . import session_facade as _sf
     try:
@@ -224,10 +295,8 @@ async def _clear_review_session(work_id: str, review_id: str) -> None:
             path.write_text(
                 _sf._render_v2_header(_sf._default_header(review_id)),
                 encoding="utf-8")
-            logger.info("[review] 开新批次 ⇒ 旧会话已清空 review=%s", review_id)
-    except Exception as exc:  # noqa: BLE001 清不掉不阻断开批次
-        logger.warning("[review] 旧会话清空失败（不阻断新批次）review=%s: %s",
-                       review_id, exc)
+    except Exception as exc:  # noqa: BLE001 清不掉不阻断
+        logger.warning("[review] 会话清空失败 review=%s: %s", review_id, exc)
 
 
 async def sync_draft(work_id: str, review_id: str) -> bool:
@@ -354,27 +423,252 @@ async def spoken_round(work_id: str, review_id: str) -> list[str]:
 
 
 
-# ---------------------------------------------------------------- 通过
-async def approve(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
-    """记录一次通过。"""
+# ---------------------------------------------------------------- 票
+async def _draft_text(work_id: str, card_id: str) -> str:
+    """子卡当前 `requirements_draft` 原文（票的 draft_snapshot 原料）。"""
+    if not card_id:
+        return ""
+
+    def _fn(conn: Any) -> str:
+        row = conn.execute(
+            "SELECT requirements_draft FROM cards WHERE card_id=?",
+            (card_id,)).fetchone()
+        return str(row["requirements_draft"] or "") if row else ""
+
+    try:
+        return str(await card_db.run_read(work_id, _fn, "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def _vote(work_id: str, review_id: str, role_id: str,
+                verdict: str) -> dict[str, Any]:
+    """落一票：同席位同批次**最近一票为准**（upsert 覆盖 verdict/版本/快照/时间，
+    撤销位清 0——投新票自然复活，不用单独先撤销）。
+
+    [venue 真票 2026-10-31] reject 是真票：先通过又不通过＝不通过；
+    改主意＝再投一次，不是撤销。
+    `draft_snapshot`＝这一票所批的草稿原文：stale 判据与 drift「只评增量」
+    diff 全靠它（机器比对的是文本，不是版本号）。
+    """
     st = await state_of(work_id, review_id)
     batch = str(st.get("batch") or "")
     if not batch:
         return {"ok": False, "error": "当前没有进行中的批次"}
+    draft_ver = int(st.get("draft") or 1)
+    snapshot = await _draft_text(work_id, str(st.get("target") or ""))
 
     def _fn(conn: Any) -> None:
         conn.execute(
             "INSERT INTO review_approvals"
-            " (work_id,batch_id,role_id,draft_ver,ts,revoked)"
-            " VALUES (?,?,?,?,?,0)"
+            " (work_id,batch_id,role_id,draft_ver,ts,revoked,verdict,draft_snapshot)"
+            " VALUES (?,?,?,?,?,0,?,?)"
             " ON CONFLICT(work_id,batch_id,role_id) DO UPDATE SET"
             " draft_ver=excluded.draft_ver,"
-            " ts=excluded.ts, revoked=0",
-            (work_id, batch, role_id, int(st.get("draft") or 1), _now()))
+            " ts=excluded.ts, revoked=0,"
+            " verdict=excluded.verdict,"
+            " draft_snapshot=excluded.draft_snapshot",
+            (work_id, batch, role_id, draft_ver, _now(), verdict, snapshot))
 
     await card_db.run_write(work_id, _fn)
     return {"ok": True, "batch": batch, "role": role_id,
-            "draft": st.get("draft")}
+            "draft": draft_ver, "verdict": verdict}
+
+
+async def approve(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
+    """记录一次通过。"""
+    return await _vote(work_id, review_id, role_id, "approve")
+
+
+async def reject(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
+    """记录一次不通过（真票，与 approve 同一个 upsert 键）。
+
+    [2026-10-31 用户裁定] 不设机械僵局检测——上下文（评审现场发言＋正卡
+    回应）给到位，席位与正卡自然收敛；收敛与否是模型的判断，不归机制数。
+    """
+    return await _vote(work_id, review_id, role_id, "reject")
+
+
+# ---------------------------------------------------------------- 回应计数器
+async def mark_asked(work_id: str, review_id: str,
+                     at_seq: Any = None) -> int:
+    """评审**已向正卡要过一次回应**：asked_seq = responded_seq + 1（期望的下一次）。
+
+    未收回应＝`responded_seq < asked_seq`。机械计数，不看内容。
+
+    ``at_seq``＝指令块在**正卡会话**里的落点——「ask 被消费」的锚：
+    正卡会话此后有新块（seq 推进过它）⇒ 它起过回合读到指令。
+    新一次派活同时把 ``wake_nudges`` 归零（新指令＝新唤醒预算）。
+
+    ``asked_draft``＝派活时的草稿版——这张 ask **业务上覆盖到 vN 的否决**
+    （指令携带的发言就是那批）。此后出现 ``draft_ver > asked_draft`` 的
+    否决票 ⇒ 新否决它没覆盖 ⇒ ask 过期，该重派而不是 nudge
+    （2026-11-02 实案：draft-14 的 ask 挂账，三席在 draft-30 新否决，
+    意见从没进过正卡会话，classify 却把旧 ask 当"信还在途"空戳）。
+    """
+    st = await state_of(work_id, review_id)
+    st2 = dict(st)
+    asked = int(st.get("responded_seq") or 0) + 1
+    st2["asked_seq"] = asked
+    st2["asked_at_seq"] = at_seq
+    st2["asked_draft"] = int(st.get("draft") or 0)
+    st2["wake_nudges"] = 0
+
+    def _fn(conn: Any) -> None:
+        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                     (json.dumps(st2, ensure_ascii=False), review_id))
+
+    await card_db.run_write(work_id, _fn)
+    return asked
+
+
+async def mark_responded(work_id: str, review_id: str) -> int:
+    """正卡交回一次（`submit_revision`）：`responded_seq` 加一。
+
+    [promote 对账 2026-11-01] 交回落在 ``promote_asked`` 上 ⇒ 那次请定稿
+    **被回复消费掉了但没成**（正卡答了别的，没调 promote_draft）——清位，
+    下一唤醒 classify 自然重派（与 ``set_drift_pending`` 清位同一条规矩：
+    ask 落了但没拿到要的结果就清掉）。不清的话 `promote_asked` 恒真挡在
+    `awaiting_promote`——work_027 实测：正卡按过期上下文交回应而未转正，
+    批次就此停尸。正卡答完顺手也转了正的：批次已关，清位无害。"""
+    st = await state_of(work_id, review_id)
+    st2 = dict(st)
+    seq = int(st.get("responded_seq") or 0) + 1
+    st2["responded_seq"] = seq
+    st2["promote_asked"] = False
+
+    def _fn(conn: Any) -> None:
+        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                     (json.dumps(st2, ensure_ascii=False), review_id))
+
+    await card_db.run_write(work_id, _fn)
+    return seq
+
+
+async def mark_promote_asked(work_id: str, review_id: str,
+                             at_seq: Any = None) -> None:
+    """记「已向正卡请过定稿」（`promote_asked`）：下一步不重复派活。
+
+    正卡调 `promote_draft` 收口后批次自清；它若撞上 drift 闸，
+    `set_drift_pending` 会把这位清掉，确认轮补完后才再派。
+
+    ``at_seq``＝指令块在正卡会话里的落点（同 ``mark_asked`` 的锚语义）；
+    新一次请定稿把 ``wake_nudges`` 归零。
+
+    [drift 残留清账 2026-11-01] 能再派 ⇒ stale 席的确认轮已补完（classify
+    收口区先判 drift∧stale）⇒ `drift_pending` 一并摘掉——它是**一次性
+    触发标记**，不清会永远留在状态面上当假象。
+    """
+    st = await state_of(work_id, review_id)
+    st2 = dict(st)
+    st2["promote_asked"] = True
+    st2["promote_asked_seq"] = at_seq
+    st2["wake_nudges"] = 0
+    st2["drift_pending"] = {}
+
+    def _fn(conn: Any) -> None:
+        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                     (json.dumps(st2, ensure_ascii=False), review_id))
+
+    await card_db.run_write(work_id, _fn)
+
+
+async def mark_wake_nudge(work_id: str, review_id: str,
+                          kind: str, at_seq: Any = None) -> int:
+    """一次**纯唤醒已发出**（ask 被回合消费但没拿到结果）：`wake_nudges` 加一
+    并把对应 ask 的锚**重锚到当前会话尾**——下一次唤醒只在「这之后又起过
+    回合」时才再发（一次唤醒对应一段新活动，不重复轰炸同一段静默）。
+    """
+    st = await state_of(work_id, review_id)
+    st2 = dict(st)
+    n = int(st.get("wake_nudges") or 0) + 1
+    st2["wake_nudges"] = n
+    if kind == "promote":
+        st2["promote_asked_seq"] = at_seq
+    else:
+        st2["asked_at_seq"] = at_seq
+
+    def _fn(conn: Any) -> None:
+        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                     (json.dumps(st2, ensure_ascii=False), review_id))
+
+    await card_db.run_write(work_id, _fn)
+    return n
+
+
+async def mark_dispatch_failed(work_id: str, review_id: str) -> int:
+    """派活**没落成**（消息没进正卡会话）：`dispatch_fails` 加一。
+
+    机械计数：封顶判断在挑活的一侧（`_classify`），这里只如实记。
+    """
+    st = await state_of(work_id, review_id)
+    st2 = dict(st)
+    n = int(st.get("dispatch_fails") or 0) + 1
+    st2["dispatch_fails"] = n
+
+    def _fn(conn: Any) -> None:
+        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                     (json.dumps(st2, ensure_ascii=False), review_id))
+
+    await card_db.run_write(work_id, _fn)
+    return n
+
+
+async def clear_dispatch_fails(work_id: str, review_id: str) -> None:
+    """派活落成 ⇒ `dispatch_fails` 清零（新批次天然无此键＝0）。"""
+    st = await state_of(work_id, review_id)
+    if not int(st.get("dispatch_fails") or 0):
+        return
+    st2 = dict(st)
+    st2["dispatch_fails"] = 0
+
+    def _fn(conn: Any) -> None:
+        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                     (json.dumps(st2, ensure_ascii=False), review_id))
+
+    await card_db.run_write(work_id, _fn)
+
+
+async def set_drift_pending(work_id: str, review_id: str,
+                            stale: list[str]) -> None:
+    """promote_draft 撞版本闸 ⇒ 挂 `drift_pending`＋**清掉 `promote_asked`**。
+
+    [drift 收窄口径 2026-10-31] stale 席位的「只评增量」确认轮由这一步
+    触发：pending 挂上后 `run_once` 才会叫它们；确认补完（票面不再是旧版）
+    后 promote_asked 已清 ⇒ 下一步自然重新派定稿。
+    """
+    st = await state_of(work_id, review_id)
+    st2 = dict(st)
+    st2["drift_pending"] = {"at": _now(),
+                           "stale": [str(x) for x in stale]}
+    st2["promote_asked"] = False
+
+    def _fn(conn: Any) -> None:
+        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                     (json.dumps(st2, ensure_ascii=False), review_id))
+
+    await card_db.run_write(work_id, _fn)
+
+
+async def mark_seen(work_id: str, review_id: str, role_id: str) -> None:
+    """记"该席位最近一次被叫时看到的回应序号"（response_seen=responded_seq）。
+
+    reject 席位只在**有新回应**时才重叫：被叫当下把已到的回应序号记给它，
+    下次只有当 responded_seq 再涨它才又可被叫。
+    """
+    st = await state_of(work_id, review_id)
+    seats = dict(st.get("seats") or {})
+    seat = dict(seats.get(role_id) or {})
+    seat["response_seen"] = int(st.get("responded_seq") or 0)
+    seats[role_id] = seat
+    st2 = dict(st)
+    st2["seats"] = seats
+
+    def _fn(conn: Any) -> None:
+        conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                     (json.dumps(st2, ensure_ascii=False), review_id))
+
+    await card_db.run_write(work_id, _fn)
 
 
 async def revoke(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
@@ -414,7 +708,8 @@ async def status(work_id: str, review_id: str) -> dict[str, Any]:
         return {"batch": "", "closed_batch": closed,
                 "draft": int(st.get("draft") or 1),
                 "members": await members_of(work_id, review_id),
-                "passed": [], "pending": [], "draft_changed": False,
+                "passed": [], "pending": [], "rejected": [],
+                "votes": {}, "stale": [], "draft_changed": False,
                 "closed": bool(closed),
                 "verdict": str(st.get("verdict") or ""),
                 "all_passed": bool(closed) and bool(st.get("verdict"))}
@@ -430,7 +725,8 @@ async def status(work_id: str, review_id: str) -> dict[str, Any]:
 
     def _fn(conn: Any) -> dict[str, dict[str, Any]]:
         rows = conn.execute(
-            "SELECT role_id,draft_ver,revoked,ts FROM review_approvals"
+            "SELECT role_id,draft_ver,revoked,ts,verdict,draft_snapshot"
+            " FROM review_approvals"
             " WHERE work_id=? AND batch_id=?", (work_id, batch)).fetchall()
         return {str(r["role_id"]): dict(r) for r in rows}
 
@@ -440,16 +736,39 @@ async def status(work_id: str, review_id: str) -> dict[str, Any]:
         rows = {}
 
     passed: list[str] = []
+    rejected: list[str] = []
     pending: list[str] = []
+    votes: dict[str, dict[str, Any]] = {}
+    stale: list[str] = []
     for m in members:
         r = rows.get(m)
-        # 有效票只看一件事：没被撤销。
-        # 草稿版本**不参与**（见 docstring）。
-        ok = bool(r) and not int(r.get("revoked") or 0)
-        (passed if ok else pending).append(m)
+        revoked = bool(r) and int(r.get("revoked") or 0)
+        # [venue 真票] verdict 列：approve/reject；存量票 verdict=NULL 按 approve
+        # 归一（历史上有票即通过）。被撤销的票＝回待定，不计任何阵营。
+        verdict = ""
+        if r and not revoked:
+            verdict = str(r.get("verdict") or "") or "approve"
+        if verdict:
+            votes[m] = {"verdict": verdict,
+                        "draft_ver": int(r.get("draft_ver") or 0),
+                        "snapshot": str(r.get("draft_snapshot") or "")}
+        if verdict == "approve":
+            passed.append(m)
+            # [venue 版本闸] 批准版早于当前草稿 ⇒ stale：promote 时不收口、
+            # 只对它补「只评增量」确认轮。
+            if int(r.get("draft_ver") or 0) < draft:
+                stale.append(m)
+        elif verdict == "reject":
+            rejected.append(m)
+            pending.append(m)
+        else:
+            pending.append(m)
 
     return {"batch": batch, "draft": draft,
+            # [venue] 收口校验要拿目标卡（finalize 读它判「正稿写了没」）
+            "target": tgt,
             "members": members, "passed": passed, "pending": pending,
+            "rejected": rejected, "votes": votes, "stale": stale,
             "draft_changed": draft_changed,
             "all_passed": bool(members) and not pending}
 

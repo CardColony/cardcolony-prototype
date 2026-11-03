@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
-"""归拢三步的单次驱动（诊断 + 执行两用）。
+"""归拢管线（s1 分组裁决 → s2' 每组线程综合）的单次干跑驱动（诊断用）。
 
 ## 为什么要这个脚本
 
 `_maybe_fold` 内部调模型时，如果连接静默关闭，`STREAM_IDLE_TIMEOUT=None`
 会让它无限等，而日志里只有「批开始」，看不出卡在哪一步。
 
-本脚本把三步拆开单独跑，并且：
-1. **每步产出落盘**（`logs/fold_s1.txt` / `fold_s2.txt` / `fold_s3.txt`）——
-   重试某一步时不必重跑前面的 17 分钟；
+本脚本把各步拆开单独跑（**干跑：解析报告、不落库、不推游标**），并且：
+1. **每步产出落盘**（`logs/fold_s1.txt` / `logs/fold_g{i}.txt`＋`fold_g{i}_in.txt`）——
+   重试某一步时不必重跑前面的几十分钟；
 2. **每 30 秒打一次无帧心跳**——能区分「在等」和「已死」；
 3. 心跳里带上**本进程的 TCP 连接状态**——连接没了就说明请求根本不在路上。
 
 用法：
-    python scripts/fold_run.py <card_id> [--skip-s1] [--skip-s2]
+    python scripts/fold_run.py <card_id> [--skip-s1] [--group N]
 """
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import sys
 import time
 
@@ -130,60 +129,58 @@ async def main() -> int:
     ap.add_argument("card_id")
     ap.add_argument("--work", default="work_027")
     ap.add_argument("--skip-s1", action="store_true", help="复用 logs/fold_s1.txt")
-    ap.add_argument("--skip-s2", action="store_true", help="复用 logs/fold_s2.txt")
+    ap.add_argument("--group", type=int, default=None, help="只跑第 N 组（0 起）")
     ap.add_argument("--model", help="指定本次归拢模型；缺省使用 condense 绑定")
-    ap.add_argument("--s3-system", help="仅 step3 覆盖 system prompt 文件；转填续调时使用")
-    ap.add_argument("--s3-effort", help="step3 思考档位（off=关闭；转填是机械任务）")
     a = ap.parse_args()
     model = a.model or model_config.pick_one("condense")
     print(f"归拢模型: {model}", flush=True)
 
     p1 = os.path.join(LOGDIR, "fold_s1.txt")
-    p2 = os.path.join(LOGDIR, "fold_s2.txt")
-    p3 = os.path.join(LOGDIR, "fold_s3.txt")
 
     st = m.load_memory(a.work, a.card_id)
     tops = m._foldable_tops(st)
     top_seqs = {int((t.get("anchor") or {}).get("seq") or 0) for _i, t in tops}
+    by_seq = {int((t.get("anchor") or {}).get("seq") or 0): t for _i, t in tops}
     print(f"卡 {a.card_id}  可归拢顶层 {len(tops)} 条", flush=True)
 
-    # ── step1 只判断 ──
+    # ── s1 分组裁决（自由推理＋JSON尾）──
     if a.skip_s1 and os.path.exists(p1):
         t1 = open(p1, encoding="utf-8").read()
-        print(f">>> step1 复用 {p1}（{len(t1)} 字）", flush=True)
+        print(f">>> s1 复用 {p1}（{len(t1)} 字）", flush=True)
     else:
-        r1 = await run("step1", m.FOLD_STEP1_PROMPT, m._render_fold_step1(st), p1, model)
+        r1 = await run("s1", m.FOLD_STEP1_PROMPT,
+                       m._build_fold_messages(m._render_fold_step1(st)), p1, model)
         t1 = str(r1.get("content") or "")
-    lines = [x.strip() for x in t1.splitlines() if x.strip()]
-    last_line = lines[-1] if lines else ""
-    print("step1 末行:", last_line or "(空)", flush=True)
-    if "结论：无合并" in last_line:
-        print("=== judge-empty（模型判定无可合并）===", flush=True)
+    verdict, groups = m._parse_fold_groups(t1, top_seqs)
+    print(f"s1 裁决: {verdict}  组数: {len(groups)}", flush=True)
+    if verdict != "merge":
+        print("=== 无合并可执行 / 产出不可解析（干跑不提交）===", flush=True)
         return 0
+    for i, g in enumerate(groups):
+        print(f"  组{i}: {g['label'] or '(无名)'}  成员 {g['members']}", flush=True)
 
-    members = {int(h) for h in re.findall(r"\[seq\s+(\d+)\]", t1)} & top_seqs
-    print(f"step1 点名成员 {len(members)} 个", flush=True)
-
-    # ── step2 只合并 ──
-    if a.skip_s2 and os.path.exists(p2):
-        t2 = open(p2, encoding="utf-8").read()
-        print(f">>> step2 复用 {p2}（{len(t2)} 字）", flush=True)
-    else:
-        s2in = f"【第一步产出】\n{t1}\n\n{m._render_fold_step2(st, members)}"
-        with open(os.path.join(LOGDIR, "fold_s2_in.txt"), "w", encoding="utf-8") as f:
+    # ── s2' 每组一次线程综合（干跑：解析报告，不落库）──
+    cap = m.fold_group_cap()
+    for i, g in enumerate(groups):
+        if a.group is not None and i != a.group:
+            continue
+        mems = sorted((by_seq[s] for s in g["members"] if s in by_seq),
+                      key=m._group_order_key)[:cap]
+        allowed = {int((x.get("anchor") or {}).get("seq") or 0) for x in mems}
+        s2in = (f"【线程】{g.get('label') or ''}\n\n"
+                + m._render_fold_group(st, mems))
+        pin = os.path.join(LOGDIR, f"fold_g{i}_in.txt")
+        with open(pin, "w", encoding="utf-8") as f:
             f.write(s2in)
-        r2 = await run("step2", m.FOLD_STEP2_PROMPT, s2in, p2, model)
-        t2 = str(r2.get("content") or "")
-
-    # ── step3 只转填 ──
-    s3_system = (open(a.s3_system, encoding="utf-8").read()
-                 if a.s3_system else m.FOLD_STEP3_PROMPT)
-    if a.s3_system:
-        print(f"step3 system 覆盖自 {a.s3_system}", flush=True)
-    r3 = await run("step3", s3_system, t2, p3, model, tools=[m.APPLY_FOLDS_TOOL],
-                   effort=a.s3_effort)
-    calls = r3.get("tool_calls") or []
-    print("step3 tool_calls:", json.dumps(calls, ensure_ascii=False)[:800], flush=True)
+        pout = os.path.join(LOGDIR, f"fold_g{i}.txt")
+        r2 = await run(f"group{i}", m.FOLD_STEP2_GROUP_PROMPT, s2in, pout, model)
+        kind, payload = m._parse_fold_digest(str(r2.get("content") or ""),
+                                             allowed, a.card_id)
+        if kind == "merge":
+            print(f"  组{i} → merge  covers={[c['seq'] for c in payload['covers']]} "
+                  f"标题={payload['title'][:40]}", flush=True)
+        else:
+            print(f"  组{i} → {kind}  {str(payload)[:200]}", flush=True)
     return 0
 
 

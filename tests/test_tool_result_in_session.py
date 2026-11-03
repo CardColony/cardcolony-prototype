@@ -182,7 +182,7 @@ async def test_v6_mark_advances_over_tool_blocks(sandbox, work, monkeypatch):
 
     # [2026-10-31] 凝练已是三步（S2a→L1→L2）；替身按当前协议出三段——
     # 单段旧格式产出过不了 S2a 的 G-1 闸（F3，整批作废）。
-    from _condense_stub import three_stage_stub as _tss
+    from tests._condense_stub import three_stage_stub as _tss
     monkeypatch.setattr(memory_store, "_condense_call", _tss(gist="做了事"))
     ok = await memory_store._condense_one_batch(wid, cid, blocks, 0)
     assert ok is True

@@ -16,7 +16,7 @@ import pytest
 
 from src.storage import memory_store
 
-from _condense_stub import three_stage_stub
+from tests._condense_stub import three_stage_stub
 
 
 def _mk(seq: int, actor: str, content: str) -> dict:
