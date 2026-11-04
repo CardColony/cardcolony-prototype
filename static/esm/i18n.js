@@ -5,7 +5,7 @@
  *   2. 文本替换：整节点文本命中 i18n_dict.js 词条才换（按钮/标签/空态这类整体文案）；
  *      title / placeholder / aria-label / input[value] 四个属性同样按词条换。
  *   3. MutationObserver：JS 后续渲染出的节点自动过一遍——业务代码不用改一行。
- *   4. 右下语言钮：中|EN 切换，写回 localStorage 后 reload（最省心的全量重渲）。
+ *   4. 右上语言钮：中|EN 切换，写回 localStorage 后 reload（最省心的全量重渲）。
  *
  * 边界（如实写）：
  *   - 只翻"整节点文案"，不做句内替换；卡面正文/用户内容若整段恰好与某词条逐字
@@ -13,10 +13,10 @@
  *   - <script>/<style>/<textarea>/[data-no-i18n] 子树跳过；
  *   - 词条表是唯一真相：往 i18n_dict.js 加一行，全站自动生效。
  *
- * 接线：四个模板各挂一行 <script type="module" src="/static/esm/i18n.js?v=1">。
+ * 接线：四个模板各挂一行 <script type="module" src="/static/esm/i18n.js?v=2">。
  * 改本文件或词典：升下面 import 的 ?v=（浏览器按 URL 缓存模块）。
  */
-import { ZH_EN } from "./i18n_dict.js?v=1";
+import { ZH_EN } from "./i18n_dict.js?v=2";
 
 const LS_KEY = "ui.lang";
 const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "TEXTAREA", "NOSCRIPT"]);
@@ -33,10 +33,20 @@ function resolveLang() {
 const LANG = resolveLang();
 const ENABLED = LANG === "en" && ZH_EN && Object.keys(ZH_EN).length > 0;
 
+/* "xxx：" 结尾的词条允许前缀命中：'发送失败：xxx' → 'Send failed: xxx'（后半保留原文） */
+const PREFIX_KEYS = Object.keys(ZH_EN)
+  .filter((k) => k.endsWith("："))
+  .sort((a, b) => b.length - a.length);
+
 function translateText(text) {
   if (!text) return text;
-  const hit = ZH_EN[text.trim()];
-  return hit !== undefined ? hit : text;
+  const t = text.trim();
+  const hit = ZH_EN[t];
+  if (hit !== undefined) return hit;
+  for (const k of PREFIX_KEYS) {
+    if (t.startsWith(k)) return ZH_EN[k] + " " + t.slice(k.length).trimStart();
+  }
+  return text;
 }
 
 /* 一个元素/节点子树：文本节点整换 + 四个属性逐字换 */
@@ -86,14 +96,14 @@ function translateTitle() {
   if (hit !== undefined) document.title = hit;
 }
 
-/* 右下语言切换钮：固定角落，不依赖任何页面结构 */
+/* 右上语言切换钮：固定角落，不依赖任何页面结构 */
 function mountToggle() {
   if (document.getElementById("i18nToggle")) return;
   const box = document.createElement("div");
   box.id = "i18nToggle";
   box.title = ZH_EN["切换语言 / Switch language"] || "Switch language";
   box.style.cssText =
-    "position:fixed;right:12px;bottom:12px;z-index:99999;display:flex;" +
+    "position:fixed;right:12px;top:12px;z-index:99999;display:flex;" +
     "font:12px/1.4 system-ui,sans-serif;border:1px solid rgba(128,128,128,.45);" +
     "border-radius:14px;overflow:hidden;user-select:none;cursor:pointer;" +
     "background:var(--i18n-bg,rgba(30,30,34,.85));backdrop-filter:blur(4px);";

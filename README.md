@@ -1,4 +1,110 @@
-# 推演agent
+# 推演agent · CardColony Prototype
+
+A **general-purpose agent for complex projects**. Decompose work into a tree of cards, advance it layer by layer, let multiple models converge on conclusions — every step leaves an auditable trail.
+
+> **Status note**: this repository is the pre-launch prototype exploration record of the CardColony project, preserving the full evolution from "single-playbook reasoning" to "general complex-project handling". Early commit authors in history (e.g. `zhuge`) are development placeholder identities, not real authors. The production product is being rewritten on a separate Go base — not in this repository.
+>
+> The name 推演agent ("reasoning agent") is kept, but the scope has generalized: what it handles depends on the card tree you build and the tasks you assign — the system itself binds no domain.
+
+*中文版见文末 · Chinese version below.*
+
+## What it solves
+
+Complex projects usually fail not on single-turn capability, but on **conclusions lost mid-flight, errors that resurrect, and judgments that get swallowed**. Four mechanisms guard against that:
+
+1. **Conclusions are the only interface between cards** — reasoning stays inside each card's private conversation; only settled conclusions flow across cards. History doesn't drown process, and rejected directions don't come back.
+2. **Permissions are mechanically decided by the card tree** — read side is fully open (existence grants access); write side is strictly limited to your own subtree; **a card can only create children inside its own subtree** (parent must fall within it, default = itself). Overreach is rejected in code — the same rule as edit/delete.
+3. **Full audit trail, three-way reconciliation** — every model call's complete input/output lands in `logs/`; every card change enters git; every tool call records a `tool_event`. "Said it did" vs "actually did" is settled against three independent sources.
+4. **Mechanical fallbacks catch model defects** — tool calls leaked as plain text (five known forms), log/parse anomalies, and similar failures are all caught at the code layer, never relying on the model's goodwill.
+
+## Capability surface
+
+| Layer | Contents |
+|---|---|
+| Card tree | create / edit body / link / unlink / delete (user-side buttons + model-side tools; guardrails: root card and cards with children refuse deletion) |
+| Chain-of-thought | entry triage — direct (answer now) / plan (decompose onto a board); multi-step execution, board edits, write-back on close |
+| Multi-model collab | three thinking seats (MiniMax-M3 / qwen3.8-max / glm-5.3) analyze in parallel → an integrator converges to one conclusion; seats hold no tool access |
+| Tool layer (25 · single registry) | cards ×9: create_card / read_card / read_memory / edit_card / delete_card / read_shadow / update_shadow / link_cards / unlink_cards; manuscripts ×3: list_manuscript / read_manuscript / search_manuscript; local files ×4: list_files / read_file / search_files / write_file; web ×2 (**conditional**): web_search / fetch_web; tool cards ×1: run_tool_card |
+| Thought-chain tools (6) | create_plan / plan_reorder / plan_insert / plan_remove / plan_modify / step_complete (`escalate_to_plan` retired) |
+| Condensed memory | condense_fold: long conversations fold into 【Conclusion】/【Basis】 entries, retrievable by block index |
+| Inter-card messaging | cards message each other (extensible type registry); recipients get automatic responses |
+| Local file capability | boundary = the whole `D:\AI_station` tree (not limited to a few subdirectories — verified); credential-class files (`.env` and variants / `.netrc` / `.npmrc` / `.pypirc` / `credentials.json` / `id_rsa` / `id_ed25519` / `kubeconfig` / `secrets.yaml` — 14 exact names) are **unreadable, unwritable, unsearchable, and invisible in listings**; four fallbacks: mandatory original backup to `_backups/` before overwrite, binary writes refused, 5 MB write cap, dependency-dir pruning (.venv/site-packages/__pycache__ etc.) |
+| Web capability | **optional plugin**: `web_search`/`fetch_web` are only registered when requests is available **and** `SEARXNG_URL` or `ALIYUN_TOKEN_PLAN_API_KEY` is configured; unconfigured → the tools simply don't exist. `SEARCH_CHANNEL=searxng\|aliyun` pins a channel; a pinned channel's failure raises a **named error — never a silent failover** |
+| Text-leak rescue | when a model writes a tool call as text (DeepSeek-family marker leaks), it is mechanically parsed and actually executed; if unparseable, "unrecognized, not executed" is injected back |
+| Live feedback | after sending a message you see: triage / seat analysis progress / integrator reasoning / tool-loop rounds / card creation — reported stage by stage |
+
+## Start & stop
+
+```bat
+start.bat          :: start the service (backend :5700)
+stop.bat           :: stop the service
+```
+
+**Reload after code changes goes through `restart_safe.py` only** — the single sanctioned restart path: it first judges whether any call is in flight (progress liveness + connection-signal double-check); if so it refuses — it never kills a running call.
+
+```bat
+python restart_safe.py --check   :: check only, no restart
+python restart_safe.py           :: restart after the check passes
+```
+
+Open: **http://127.0.0.1:5700/**
+
+## Where the data lives
+
+| Path | Contents |
+|---|---|
+| `works/<work_id>/cards.db` | **Cards and shadows — the single source of truth** (SQLite: face fields + 3 body blocks + edit history + 3 shadow sections) |
+| `works/<work_id>/sessions/*.md` | full record of each card's private conversation |
+| `works/<work_id>/canvas.json` | **derived cache** of the canvas (card summaries and links, rebuildable at any time); coordinates are not here — they live in the cards table |
+| `logs/prompt_*.json` | **complete input/output of every model call** (system_prompt / user_prompt / response / tool_events / error) |
+| `_backups/<original path>/<timestamp>/` | pre-overwrite originals saved by file tools (a safety net independent of git) |
+| `methodology/` | methodology documents |
+
+> [2026-10-14 card-storage migration] cards and shadows **moved into SQLite** (`works/<work_id>/cards.db`) — `works/<work_id>/cards/*.md` and `works/<work_id>/shadows/*.md` no longer exist; each region is its own column. `sessions/` and `canvas.json` remain files.
+>
+> [2026-10-15 canvas rebuild] card coordinates on the canvas (`pos_x`/`pos_y`/`pinned`) also moved into the cards table — **position is a property of the card itself**; `layout.json` retired entirely, no storage point remains.
+
+## Version line
+
+```bat
+git log --oneline          :: full history (card add/edit/delete auto-committed with [auto][work_xxx] prefixes)
+git tag                    :: milestones
+git checkout <commit> -- <file>   :: retrieve any historical version
+python restore_card.py     :: restore a card to any git version
+```
+
+## Layout
+
+```
+main.py                 service entry (FastAPI, port 5700)
+src/api/                routes, prompts, tool layer, context assembly, parsers, progress reporting
+  ├ routes.py           all HTTP endpoints (prefix=/api) + six-stage message chain
+  ├ message_runner.py   single-step orchestration core (RunState, step loop + abort seams)
+  ├ card_tools.py       standard tool registry (18) schema & dispatch
+  ├ file_tools.py       local file tools (4 + boundary + four fallbacks)
+  ├ context_regions.py  six-region context assembly (usage/card list/current card/memory/dialogue/tool rounds)
+  ├ text_tool_rescue.py text-form tool-call rescuer
+  ├ card_proposal.py    card-proposal parser (text-channel fallback)
+  ├ prompts.py          system usage notes (BASE_PROMPT, versioned)
+  └ simple_service.py   three-seat analysis + integration
+src/thinkchain/         chain-of-thought (entry triage + plan board + seven tools)
+src/toolcard/           tool-card base (code executes/stores/renders; judgment belongs to the model)
+src/model_gateway/      model gateway (litellm wrapper, multi-endpoint, retry, logging)
+src/storage/            card/session/memory/canvas storage, snapshots, git auto-commit
+src/permissions/        unified permission gate
+config/models.yaml      model-seat configuration (change models here only)
+```
+
+## Boundaries & known limits
+
+- **It is slow**: one complex turn takes 1–8 minutes (three seats + integration + tool loop). Built for "think it through", not "finish fast".
+- **Output quality = the models' analysis quality**: cards, permissions, and audit trails guarantee errors don't spread and everything is traceable — they don't guarantee correct reasoning.
+- **No file deletion for the model**: there is no delete-file tool (deletion is irreversible); unneeded files are cleaned up by humans or systems outside.
+- **A model's self-report is not state**: every "done X" claim is settled by reconciling `logs/`, disk, and git.
+
+---
+
+# 推演agent（中文版）
 
 一个**处理复杂项目的通用型 agent**。把一件复杂的事拆成一张张卡片，沿卡片树一层层推进，
 多模型协作收敛成结论，每一步都留痕、可对账、可翻案。
