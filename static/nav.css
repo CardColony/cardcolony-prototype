@@ -416,7 +416,10 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
   justify-content: flex-end; min-width: 46px; margin-left: 8px;
 }
 .nav-time { flex: none; font-size: 11px; color: var(--dim); white-space: nowrap; }
-.nav-run { flex: none; display: flex; align-items: center; margin-right: 44px; }
+.nav-run { flex: none; display: flex; align-items: center; }
+/* [用户令 2026-11-04] 转圈占时间原位（右缘）；悬停/菜单打开时按钮现身、
+   转圈隐去——与 .nav-time 同款出让行为（同一位置二者只显其一）。 */
+.nav-card:hover .nav-run, .nav-card.menu-open .nav-run { opacity: 0; }
 .nav-spinner {
   width: 11px; height: 11px; border-radius: 50%;
   border: 2px solid rgba(35,134,54,0.35); border-top-color: var(--green);
@@ -624,3 +627,27 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
   font-size: 11px; font-variant-numeric: tabular-nums;
   color: var(--text-dim, rgba(160, 168, 180, 0.9));
 }
+
+/* ============================================================
+   [静默执行卡折叠 2026-11-04 · 用户令「静默不动的编程卡、qa卡、
+   产品经理卡，都折叠显示」]
+   折叠头行＝每个兄弟段末尾的「静默执行卡 ×N」伪卡行。
+   结构复用 .nav-card（虚拟滚动/箭头/线段同套），整行弱化一等：
+   图标灰蓝、标题暗一档、徽标灰——一眼认出「这里头都是歇着的」。
+   ============================================================ */
+.nav-card.nav-qfold { height: 22px; opacity: .6; color: var(--text-dim, rgba(160, 168, 180, 0.9)); }
+.nav-card.nav-qfold .nav-ico.quiet { color: #8a93a5; }
+/* [样式三版·用户令] ... N ...：全 ASCII 字符、暗一档——它是「省略号」
+   不是「标题」，视觉权重压在普通卡行之下。 */
+.nav-card.nav-qfold .nav-ctitle.nav-qfold-dots {
+  font-size: 11.5px;
+  letter-spacing: 2px;
+  color: var(--text-dim, rgba(160, 168, 180, 0.75));
+}
+
+/* [样式三版·用户令] 折叠组内的成员卡：置灰＋小一号（26px vs 正常 30px、
+   字号 11.5 vs 13、图标 12 vs 14）——层级一眼可辨：正常卡全彩满高，
+   折叠成员灰而矮。opacity 统压行内所有元素（图标/标题/徽标/时间一起灰）。 */
+.nav-card.nav-quiet { height: 26px; opacity: .55; }
+.nav-card.nav-quiet .nav-ctitle { font-size: 11.5px; }
+.nav-card.nav-quiet .nav-ico svg { width: 12px; height: 12px; }

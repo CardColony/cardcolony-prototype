@@ -1734,25 +1734,17 @@ async def finish(state: RunState) -> dict[str, Any]:
 # ============================================================
 
 def handle_error(state: RunState, exc: Exception) -> None:
-    """工具循环异常收口（checkpoint ＋ error 埋点，不阻断错误返回）。
+    """工具循环异常收口（error 埋点，不阻断错误返回）。
 
-    [信息流 Task2·A93] 确须结束型的（上下文超限等）：checkpoint 落
-    data_snapshot 定格现状，下条消息从现状续走而非全链重跑。
+    [信息流 Task2·A93] 原在此落 data_snapshot checkpoint 供续走——
+    [2026-11-04 裁定撤销]：checkpoint 按**模型失败次数**点火（429/限额
+    是高频事件），实测一轮拷 62911 个文件跑 6 分钟、把双 loop 全冻死；
+    而续跑读的是活库/会话、根本不消费快照。快照改为只留每日两次定时
+    全备（见 main._scheduled_snapshots），错误路径不再碰盘。
     """
     state.error = str(exc)
     progress.set_stage(state.work_id, state.card_id, "error", str(exc)[:120])
     logger.error("模型调用/工具循环失败 card=%s: %s", state.card_id, exc)
-    if state.rounds > 0:
-        try:
-            from ..storage import data_snapshot
-            snap = data_snapshot.snapshot_sync(
-                reason=f"checkpoint:{type(exc).__name__}", work_id=state.work_id)
-            logger.info("[flow] checkpoint 落位 type=%s work=%s batch=%s",
-                        type(exc).__name__, state.work_id,
-                        (snap or {}).get("dir", "") if isinstance(snap, dict)
-                        else str(snap)[:80])
-        except Exception as snap_exc:  # noqa: BLE001 checkpoint 失败不阻断
-            logger.warning("[flow] checkpoint 落位失败（不阻断）: %s", snap_exc)
     event_stream.emit(state.work_id, state.card_id, "error",
                       # [harness 第 1 步 2026-10-28] 补 error_type：异常类名是
                       # "能当判断依据"的零件（区分断连/超限/权限），整段 error 文本
@@ -1847,6 +1839,34 @@ _RESPAWN_MAX = 3
 
 def _spawn_tracked(coro) -> "asyncio.Task":
     """create_task ＋ 强引用登记（完成即自动移除）。"""
+    # [双循环事故 2026-11-04] 跑卡域任务只能落在主循环 A 上——
+    # 若被意外在服务循环 B 上 spawn（实测一次 run_once 出现在 B、
+    # 里面 GB 级 snapshot 把 B 冻死），create_task 绑定的是**当前**
+    # running loop，错了零痕迹。⇒ 跨 loop 即打 warning＋落栈留痕。
+    try:
+        from ..infra import loops as _loops
+        _ml = _loops.main_loop()
+        _running = asyncio.get_running_loop()
+        if _ml is not None and _running is not _ml:
+            import traceback as _tb, threading as _th, time as _time
+            _stack = "".join(_tb.format_stack())
+            logger.warning(
+                "[loops] _spawn_tracked 在非主循环上 spawn！coro=%s\n%s",
+                getattr(coro, "__qualname__", coro), _stack)
+            try:  # 全栈落盘（报警行可能被截断，入口帧在最外层）
+                import os as _os
+                with open(_os.path.join("logs", "spawn_forensics.log"),
+                          "a", encoding="utf-8") as _f:
+                    _f.write(f"===== {_time.strftime('%H:%M:%S')} "
+                             f"coro={getattr(coro, '__qualname__', coro)} "
+                             f"thread={_th.current_thread().name} =====\n"
+                             f"{_stack}\n")
+            except OSError:
+                pass
+    except RuntimeError:  # noqa: BLE001 无运行环
+        pass
+    except Exception:  # noqa: BLE001 报警自身绝不阻断 spawn
+        pass
     t = asyncio.create_task(coro)
     _TRIGGER_TASKS.add(t)
     t.add_done_callback(_TRIGGER_TASKS.discard)

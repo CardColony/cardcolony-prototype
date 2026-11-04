@@ -148,16 +148,34 @@ def _spawn(work_id: str, fired: list[dict[str, Any]]) -> None:
     """投递丢后台（无事件循环时放弃——同步上下文里不硬起线程）。
 
     [干预台账] 放弃投递不再丢义务：动作行已先一步落 ``harness.db``，
-    重启 ``intervention_runner.resume`` 会复核后重投。"""
+    重启 ``intervention_runner.resume`` 会复核后重投。
+
+    [双循环 2026-11-04] 本函数经 ``emit → event_log.append → feed`` 链
+    可能被**服务循环 B** 上的白名单读/SSE/订阅回调调到——原来
+    ``get_running_loop().create_task`` 会把 ``deliver_fired``（→
+    ``deliver_now``/``_run_message`` 整条跑卡链）生到 B 上：11-04 实测
+    B 被跑卡域任务污染、快照把 B 冻死。⇒ 投递任务固定生到主循环 A。"""
     try:
-        loop = asyncio.get_running_loop()
+        running = asyncio.get_running_loop()
     except RuntimeError:
         logger.debug("[policy_runner] 无事件循环 ⇒ 本次不投递（%d 条，"
                      "动作已落台账，重启接责）", len(fired))
         return
-    task = loop.create_task(deliver_fired(work_id, fired))
-    _PENDING.add(task)
-    task.add_done_callback(_PENDING.discard)
+
+    def _mk() -> None:
+        task = asyncio.get_running_loop().create_task(
+            deliver_fired(work_id, fired))
+        _PENDING.add(task)
+        task.add_done_callback(_PENDING.discard)
+
+    try:
+        from . import loops as _loops
+        if _loops.main_loop() is not None and running is not _loops.main_loop():
+            _loops.run_sync_on_main(_mk)
+            return
+    except Exception:  # noqa: BLE001 桥自身不投递路径之外失败不拦
+        pass
+    _mk()
 
 
 async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:

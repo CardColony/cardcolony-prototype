@@ -2608,11 +2608,16 @@ def _read_origin(work_id: str, card_id: str, mark: int = 0) -> list[dict[str, An
     - **评审流量**：[2026-11-02 · 用户裁定] 评审过程消息不需要记忆——
       触发计量、凝练窗口、排水都看不到它（keep=0 全蒸发）；
       评审型卡整卡恒空。原文在 origin_store 可审计，此层只管凝练池。
+    - **工具面**：[2026-11-03 · 用户令「从来都是两边都不要工具结果」]
+      凝练池与上下文同口径（``enters_context``）：tool_result、assistant
+      调用壳（content 恒空）、behavior 留痕一律不进——全是过程噪音，
+      原文在 origin 可审计。此前窗口把工具结果原文送凝是漏改点。
     """
     from . import origin_store  # 延迟：避免 storage 内部循环
-    from . import review_scope
+    from . import predicates, review_scope
     blocks = origin_store.read_blocks(work_id, card_id, from_seq=int(mark or 0))
-    return review_scope.drop_stale_review(work_id, card_id, blocks, keep=0)
+    blocks = review_scope.drop_stale_review(work_id, card_id, blocks, keep=0)
+    return [b for b in blocks if predicates.enters_context(b)]
 
 
 # [F14 · 2026-10-31 触发调度（对齐 dsh maybeCondense+pumpCondenseQueue）]
@@ -2912,12 +2917,15 @@ def start_condense_sweeper(interval_sec: float | None = None) -> "asyncio.Task |
 
 
 async def condense_before_send(work_id: str, card_id: str) -> bool:
-    """[发送前预检 2026-10-22] 未凝量已到触发线 ⇒ **先凝一批再发请求**。
+    """**后台排水 worker**（函数名是历史遗留）。未凝量到线 ⇒ 分批凝到窗口 90% 以下。
 
-    为什么要它：凝练原本只在「回合成功收口」时触发；一旦请求本身超窗失败，
-    回合永远不成功收口 ⇒ 凝练永远不触发 ⇒ 上下文永远降不下来（实测
-    work_025/card_005：134 万 > 1M 窗口，每轮 502 死锁）。预检把自救提前到
-    发请求之前，不再依赖"先失败一次"。
+    [2026-10-22 裁定演变] 本函数最初是**发送路径上的同步预检**（card_005 死锁案：
+    请求超窗→回合永不收口→凝练永不触发）；同日 commit 61a03a9 用户裁定
+    「凝练就是纯后台记账，不跟前台行为挂钩」⇒ 发送路径调用点**已撤**。
+    现在唯一调用方是 ``condense_sweep_once``——它是扫盘器的排水循环，
+    **没有任何发送被它阻塞**。条件式触发仍在 ``condense_turn_end``
+    （回合末异步）；扫盘兜底的是「回合开不了/被动积压」这类条件式
+    够不着的卡。日志文案同步改「后台排水」——旧文「发送前预检」是误导。
 
     [F14 口径 · 2026-10-31 审计订正] 本路径**同样吃全局并发闸**（condense_turn_end
     内统一判）——不设豁免。[2026-11-02] 原"全局单飞"已放宽为有界并发
@@ -2934,7 +2942,13 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
         state = load_memory(work_id, card_id)
         mark = int(state.get("mark", 0) or 0)
         pending = _read_origin(work_id, card_id, mark)
-        size = _meter_sum(pending)
+        # [计量口径 2026-11-03 修] 判据统一用 ``_context_meter``（触发线/扫盘
+        # gate/销账同尺）：tool_result 与调用壳不进上下文，不该算"未凝急症"。
+        # 此前误用 ``_meter_sum``（含工具尺，10-22 先于 10-23 裁定写的漏改点）
+        # ⇒ 工具重的卡虚量 20~130 倍（card_021 实量 9,970,835 / 上下文口径
+        # ~7.5 万），且被当 request_tokens 喂给 turn_end 污染三尺对账。
+        # 工具账照常在到线批次里随窗口被凝进记忆——只是不再充当"超线"证据。
+        size = _context_meter(pending)
         if size < trigger_k_tokens():
             return False
         # [连跑多批 2026-10-22] 一批只压 30 万；超窗的卡（实测 fn_002 196%）一批压完
@@ -2945,16 +2959,16 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
         ran = 0
         cur = size
         while ran < 8 and cur >= min(trigger_k_tokens(), _target):
-            logger.warning("[condense_fold] 发送前预检：未凝 %d token（线 %d / 窗口目标 %d）"
+            logger.warning("[condense_fold] 后台排水：未凝 %d token（线 %d / 窗口目标 %d）"
                            "—— 第 %d 批 work=%s card=%s",
                            cur, trigger_k_tokens(), _target, ran + 1, work_id, card_id)
             before = int(load_memory(work_id, card_id).get("mark", 0) or 0)
-            await condense_turn_end(work_id, card_id, request_tokens=cur)
+            await condense_turn_end(work_id, card_id)
             after = int(load_memory(work_id, card_id).get("mark", 0) or 0)
             ran += 1
             if after <= before:      # 没推进（失败/无内容）⇒ 停，别空转
                 break
-            cur = _meter_sum(_read_origin(work_id, card_id, after))
+            cur = _context_meter(_read_origin(work_id, card_id, after))
         return ran > 0
     except Exception as exc:  # noqa: BLE001 预检失败不阻断回合
         logger.warning("[condense_fold] 发送前预检失败（不阻断）work=%s card=%s: %s",

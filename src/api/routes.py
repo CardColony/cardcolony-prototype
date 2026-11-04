@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..storage import (
@@ -301,8 +301,45 @@ def _card_obj(m: dict, act: dict, child_count: int, wid: str) -> dict:
     }
 
 
+#: [nav 缓存 2026-11-04] /api/nav 全量构建 ≈2~13s（每 work 逐卡会话尾扫），
+#: 且**每次切页/轮询都重算**——实测连续几发 nav 把服务 loop 独占几十秒，
+#: 整页切卡 20~26s。⇒ TTL 5s ＋ single-flight：窗口内直接回缓存（左栏
+#: 活跃/未读徽章滞后 ≤5s 可接受——前端本来就 60s 才探一次版本），并发
+#: miss 共享同一次构建。env: ECO_NAV_TTL_S。
+_NAV_TTL_S = float(os.environ.get("ECO_NAV_TTL_S") or 5)
+_nav_cache: dict = {"at": 0.0, "payload": None}
+_nav_locks: dict = {}
+
+
+def _nav_lock() -> "asyncio.Lock":
+    """按**当前 running loop** 取锁——asyncio.Lock 绑定首个 acquire 的 loop，
+    双循环架构下 B（服务）与 A（跑卡）各要一把；测试的临时 loop 同理。"""
+    lp = asyncio.get_running_loop()
+    lk = _nav_locks.get(lp)
+    if lk is None:
+        lk = _nav_locks[lp] = asyncio.Lock()
+    return lk
+
+
 @router.get("/nav")
 async def get_nav():
+    import time as _t
+    now = _t.monotonic()
+    hit = _nav_cache["payload"]
+    if hit is not None and now - _nav_cache["at"] < _NAV_TTL_S:
+        return hit
+    async with _nav_lock():
+        now = _t.monotonic()
+        hit = _nav_cache["payload"]
+        if hit is not None and now - _nav_cache["at"] < _NAV_TTL_S:
+            return hit
+        payload = await _build_nav()
+        _nav_cache["at"] = _t.monotonic()
+        _nav_cache["payload"] = payload
+        return payload
+
+
+async def _build_nav():
     """返回 {"projects": [...]}，供工作区左栏对话导航渲染。
 
     排序契约（方案 §4.3，服务端负责、前端不重排）：
@@ -315,7 +352,9 @@ async def get_nav():
     既有端点返回结构零改动；/api/works 仅按 B-3 附 last_active_at 并改排序。
     """
     projects = []
-    for w in work_store.list_works():
+    # 〔2026-11-04〕list_works 内部每项目跑 work_last_active（逐卡会话尾扫），
+    # 同步 IO 在事件循环上 ≈ 全库卡数 × ms——nav 高频轮询下是主堵点之一。
+    for w in await asyncio.to_thread(work_store.list_works):
         wid = w.get("work_id", "")
         metas = list(activity.iter_card_metas(wid))
         child_count: dict[str, int] = {}
@@ -326,7 +365,10 @@ async def get_nav():
         root_id = w.get("work_card_id", "")
         # [主界面优化 E2] 同源一次现算每卡 own/branch 活跃（activity.compute_card_activity）；
         # 端点现算增列、不写任何真身文件（RD-02 数据层零写）。
-        act = activity.compute_card_activity(wid)
+        # 〔2026-11-04〕挪线程池：内部是「每卡一次会话尾扫」（scan_tail 同步
+        # IO，work_027 ≈ 240 卡），跑在事件循环上时前端的高频 nav 轮询把
+        # 循环占满 ⇒ 实测 /api/nav 21s、一切接口排队。语义不变（现算）。
+        act = await asyncio.to_thread(activity.compute_card_activity, wid)
         cards = []
         for m in metas:
             cid = m.get("card_id", "")
@@ -442,7 +484,7 @@ async def get_nav_children(work_id: str = "", parent: str = ""):
         p = m.get("parent", "")
         if p:
             child_count[p] = child_count.get(p, 0) + 1
-    act = activity.compute_card_activity(work_id)
+    act = await asyncio.to_thread(activity.compute_card_activity, work_id)  # 同 /api/nav：挪线程池
     eff_parent = parent or root_id
     cards = [
         _card_obj(m, act, child_count.get(m.get("card_id", ""), 0), work_id)
@@ -489,11 +531,18 @@ async def get_health(request: Request):
             n_access = sum(1 for _ in p.open("r", encoding="utf-8"))
     except Exception:  # noqa: BLE001
         pass
+    lag = None
+    try:
+        from ..infra import loops as _loops
+        lag = round(_loops.loop_lag_ms(), 1)
+    except Exception:  # noqa: BLE001 仪表没装就如实缺省
+        lag = None
     return {
         "ok": True,
         "build": stamp,
         "logs_dir": str(logs),
         "access_log_lines": n_access,
+        "loop_lag_ms": lag,
         "now": time.time(),
     }
 
@@ -1382,7 +1431,15 @@ async def get_work_session(work_id: str, card_id: str):
     except CardLockedError:
         return _err(423, "卡片被占用，请稍后重试")
     # [A6a/T069-T072] 读切换：统一读入门面（V1 委托旧解析，输出五键契约不变）
-    return await session_facade.read(work_id, card_id)
+    payload = await session_facade.read(work_id, card_id)
+    # [双循环 2026-11-04] card_021 会话响应实测 **294MB**——FastAPI 的
+    # jsonable_encoder＋dumps 对巨结构是同步 CPU ~15s，跑在服务循环 B 上
+    # ＝全站冻结（实测一波 4 请求齐卡 15s、整页 57s）。⇒ dumps 挪线程池、
+    # 直接回预编码字节——响应契约逐字节不变（同 dumps 默认参数）。
+    body = await asyncio.to_thread(
+        json.dumps, payload, ensure_ascii=False, allow_nan=False,
+        indent=None, separators=(",", ":"))
+    return Response(content=body.encode("utf-8"), media_type="application/json")
 
 
 # [卡片编辑机制改造 2026-10-12 · 块2] 起草/确认写入两路由。
@@ -1713,7 +1770,7 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
     except (TypeError, ValueError):
         _tail_n = 0
     has_earlier = bool(_tail_n) and len(items) >= _tail_n
-    return {
+    payload = {
         "work_id": work_id,
         "card_id": card_id,
         "items": items,
@@ -1721,6 +1778,12 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
         "first_seq": items[0]["seq"] if items else 0,
         "has_earlier": has_earlier,
     }
+    # [双循环 2026-11-04] 大卡 timeline 响应实测 190MB——dumps 在服务
+    # 循环 B 上＝秒级冻结。⇒ 预编码挪线程池（契约与 JSONResponse 逐字节同）。
+    body = await asyncio.to_thread(
+        json.dumps, payload, ensure_ascii=False, allow_nan=False,
+        indent=None, separators=(",", ":"))
+    return Response(content=body.encode("utf-8"), media_type="application/json")
 
 
 # [消息底座能力对齐 · 件4] 任务书字面的卡级入口（无 work 路径段）：work_id 由

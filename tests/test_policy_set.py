@@ -354,3 +354,54 @@ def test_out_of_order_events_keep_entries_sorted():
     # 内部顺序：_t 升序
     ts = [e["_t"] for e in st._states[("w", "p1", ("c1",))].entries]
     assert ts == sorted(ts), f"entries 不是升序: {ts}"
+
+# ------------------------------------------------- 现状超长提醒（仓库真配置）
+def _real_policies() -> list[dict]:
+    """直读仓库配置——绕 conftest 的 ``ECO_POLICIES_PATH`` 空表
+    （这组用例钉的是真策略本身）。"""
+    import json
+    from src.infra import policy_config
+    raw = json.loads(policy_config.DEFAULT_PATH.read_text(encoding="utf-8"))
+    items = raw.get("policies") if isinstance(raw, dict) else raw
+    return [x for x in (items or []) if isinstance(x, dict)]
+
+
+def test_status_oversize_reminder_fires_every_time():
+    """status_block_oversize_reminder：status_block 且 new_len>=1 万 ⇒ 命中；
+    不节流——超阈值期间每次编辑现状都再提醒一次（注意力会漂，催到底）。"""
+    st = ps.PolicySet()
+    assert st.load(_real_policies()) == []
+
+    fired = st.dispatch("w1", _fact(
+        "card_block_edited", "c1", block="status_block",
+        new_len=12000, by="c1", cause="self"))
+    hits = [f["policy"] for f in fired]
+    assert "status_block_oversize_reminder" in hits
+    f = next(f for f in fired
+             if f["policy"] == "status_block_oversize_reminder")
+    assert f["then"]["wake"] is True and f["then"]["target"] == "self"
+
+    fired2 = st.dispatch("w1", _fact(
+        "card_block_edited", "c2", block="status_block", new_len=500))
+    assert "status_block_oversize_reminder" not in \
+        [f["policy"] for f in fired2]
+
+    # c3 已被提醒过、又写了一次超阈值的现状 ⇒ 再提醒一次（不节流）
+    st.dispatch("w1", _fact(
+        "harness_message", "c3",
+        rule_id="status_block_oversize_reminder", to="c3"))
+    fired3 = st.dispatch("w1", _fact(
+        "card_block_edited", "c3", block="status_block", new_len=12000))
+    assert "status_block_oversize_reminder" in \
+        [f["policy"] for f in fired3]
+
+
+def test_status_oversize_ignores_other_blocks():
+    """使命/需求块写再长也不管——只盯 status_block。"""
+    st = ps.PolicySet()
+    st.load(_real_policies())
+    fired = st.dispatch("w1", _fact(
+        "card_block_edited", "c4", block="mission", new_len=30000))
+    assert "status_block_oversize_reminder" not in \
+        [f["policy"] for f in fired]
+

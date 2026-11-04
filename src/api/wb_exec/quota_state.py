@@ -151,3 +151,29 @@ def mark_exhausted(executor_id: str, model: str, reason: str) -> str:
 def _now_iso() -> str:
     from datetime import datetime, timezone, timedelta
     return datetime.now(timezone(timedelta(hours=8))).isoformat()
+
+
+def clear_exhausted(executor_id: str, model: str = "") -> bool:
+    """**清掉状态文件里的这一条**（真调成功 ⇒ 额度回来了 ⇒ 恢复参与路由）。
+
+    ★ 2026-11-04：原来只清进程内存 ⇒ 重启后又被旧标记挡住
+    ⇒ 一条误判会变成"永久让路"（现场：Devin 被误判成额度耗尽 ⇒ 全路由到别的）。
+    """
+    key = f"{executor_id}:{model}" if model else str(executor_id)
+    current = dict(exhausted_map())
+    if key not in current:
+        return False
+    current.pop(key, None)
+    extra: dict[str, Any] = {}
+    path = Path(STATE_PATH)
+    if path.exists():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(old, dict):
+                for k in ("free_models", "reports", "note"):
+                    if k in old:
+                        extra[k] = old[k]
+        except Exception:  # noqa: BLE001 读坏了就只写 exhausted
+            pass
+    write_state(current, extra=extra or None)
+    return True

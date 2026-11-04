@@ -24,7 +24,7 @@
  */
 import { escapeHtml } from "./util.js?v=30";
 import { notify } from "./api.js?v=55";
-import { createRowModel } from "./row_model.js?v=34";
+import { createRowModel } from "./row_model.js?v=36";
 import { createVirtualList } from "./nav_virtual.js?v=32";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=32";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
@@ -119,6 +119,8 @@ export function createNavRenderer(deps) {
     if (row.kind === "function") return buildFunctionEl(row);
     // [评审入口 2026-10-29] 评审卡也不是卡（离树、不进 cards 表）。
     if (row.kind === "review") return buildReviewEl(row);
+    // [静默执行卡折叠 2026-11-04] 折叠头也不是卡（伪卡 id __quiet__*）。
+    if (row.kind === "quietfold") return buildQuietfoldEl(row);
     return buildCardEl(row);
   }
 
@@ -349,6 +351,60 @@ export function createNavRenderer(deps) {
     return el;
   }
 
+  /* [静默执行卡折叠 2026-11-04 · 用户令「左侧列表，静默不动的编程卡、qa卡、
+     产品经理卡，都折叠显示」] 折叠头行：挂在每个兄弟段的末尾，伪卡
+     card_id="__quiet__<父id>"——展开态照常走 prefs.getExpanded/toggleCard
+     （伪 id 在 prefs 里独立成键，不污染任何真卡）；
+     child_count=0 ⇒ toggleCard 展开分支的 loadChildren 走「叶：零网络」；
+     它不是卡没有对话页，整行点击在委托层被 data-qfold 拦成开合开关。 */
+  function buildQuietfoldEl(row) {
+    const el = document.createElement("div");
+    el.className = "nav-card nav-qfold";
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.dataset.qfold = row.card.card_id;
+    el.style.paddingLeft = indentOf(row.depth) + "px";
+    const segs = document.createElement("div");
+    segs.className = "nav-segs";
+    el.__segs = segs;
+    el.appendChild(segs);
+    // [2026-11-04 · 用户令] 不要可展开箭头——但**箭头列 24px 要占位**
+    // （leaf＝不可见但仍占宽）：删了图标会左偏 24px、和上下卡行图标对不齐，
+    // 树线锚点也断。整行就是开关（data-qfold 委托成开合）。
+    const chev = document.createElement("span");
+    chev.className = "nav-chev leaf";
+    el.appendChild(chev);
+    const ico = document.createElement("span");
+    ico.className = "nav-ico quiet";
+    ico.innerHTML = SVG_DOC;
+    el.appendChild(ico);
+    // [2026-11-04 · 用户令] 样式二版：不要「静默」「静默执行卡」文字——
+    // 灰度图标 + ··· N ··· 就够（信息降噪）；类型明细只留 tooltip。
+    const title = document.createElement("span");
+    title.className = "nav-ctitle nav-qfold-dots";
+    el.__title = title;
+    el.appendChild(title);
+    patchQuietfoldContent(el, row);
+    return el;
+  }
+
+  function patchQuietfoldContent(el, row) {
+    const pr = row.props(store);
+    renderSegs(el.__segs, rowSegs({
+      depth: row.depth, guides: row.guides, first: row.first, last: row.last,
+      openKids: pr.expanded, H: row.rowHeight(),
+    }));
+    const qs = row.card.__quiet || [];
+    const cnt = { coder: 0, qa_card: 0, pm_card: 0 };
+    for (const c of qs) if (cnt[c.card_type] != null) cnt[c.card_type]++;
+    el.__title.textContent = `- ${qs.length} -`;
+    const parts = [];
+    if (cnt.coder) parts.push(`coder ${cnt.coder}`);
+    if (cnt.qa_card) parts.push(`QA ${cnt.qa_card}`);
+    if (cnt.pm_card) parts.push(`PM ${cnt.pm_card}`);
+    el.title = `quiet cards: ${qs.length} (${parts.join(", ")}) - click to expand/collapse`;
+  }
+
   /* ---------- 树线段（每行只画自己高度内的线段；patch 时整层重建，行其余不动） ---------- */
 
   function hasVisibleKids(row) {
@@ -399,6 +455,14 @@ export function createNavRenderer(deps) {
       el.classList.toggle("nav-last", !!row.lastInProject);
       return true;
     }
+    // [静默执行卡折叠 2026-11-04] 折叠头同评审/职能：自有结构（无 __tail），
+    // 但计数/开合是活的 ⇒ 用自己的 patch 而不是跳过。
+    if (row.kind === "quietfold") {
+      patchQuietfoldContent(el, row);
+      el.classList.toggle("current", false);
+      el.classList.toggle("nav-last", !!row.lastInProject);
+      return true;
+    }
     // [R-19] 交互集守卫（规则定义见模块顶部 shouldSkipPatch，唯一处）
     if (shouldSkipPatch(store, row)) return false;
     if (row.kind === "project") patchProjectContent(el, row);
@@ -441,6 +505,9 @@ export function createNavRenderer(deps) {
   function patchCardContent(el, row) {
     const c = row.card;
     const pr = row.props(store);
+    // [静默执行卡折叠] 折叠组成员降级显示（用户令：置灰＋小一号）——
+    // .nav-quiet 随投影实时挂/摘：卡一起跑出折叠组，类也跟着掉。
+    el.classList.toggle("nav-quiet", !!row.quiet);
     // [定稿] 搜索态下「有没有子」看的是**剪枝后**还有没有可显示的命中子行（row.searchKids），
     // 不是真实 child_count——否则会出现「箭头说能展开、点开却是空的」这种骗人的行。
     // 镜片期间一律不出箭头：投影已把命中与路径全摊开，没有可收放的东西。
@@ -596,21 +663,63 @@ export function createNavRenderer(deps) {
     return rows;
   }
 
+  // [静默执行卡折叠 2026-11-04 · 用户令] 这三类执行卡「不在跑」时折起来。
+  const FOLD_QUIET_TYPES = { coder: "编程", qa_card: "QA", pm_card: "PM" };
+
   function pushSegment(rows, wid, parentCid, depth, visited, guides) {
     const cards = store.snapshot.getChildren(wid, parentCid);
     if (!cards) return;   // 段未加载：父行由 props 投影出 loading 态
     const visible = cards.filter(c => !isToolCard(c));   // [定稿] 工具卡不进侧栏
-    visible.forEach((c, i) => {
+    /* [静默执行卡折叠] 分区：静默（不在 running 集）的 coder/qa_card/pm_card
+       不进主流，折到段尾一行「静默执行卡 ×N」；在跑的、当前打开的保持原位。
+       判据用 store.temp.isRunning（与行尾转圈同一份数据）⇒ 卡一起跑就自己
+       出折，跑完回落——不靠用户手动归位。 */
+    const curCid = (getCardId && getCardId()) || "";
+    const normal = [], quiet = [];
+    for (const c of visible) {
+      if (FOLD_QUIET_TYPES[c.card_type] && c.card_id !== curCid
+          && !store.temp.isRunning(wid, c.card_id)) quiet.push(c);
+      else normal.push(c);
+    }
+    const pushOne = (c, i, arr, dep, gds, inQuiet) => {
       if (visited.has(c.card_id)) return;   // 数据环防护
       visited.add(c.card_id);
-      const first = i === 0;
-      const last = i === visible.length - 1;
-      const row = createRowModel(c, store, { depth, wid, guides, first, last });
+      // [静默执行卡折叠] normal 末位后面还挂着折叠行 ⇒ 它不是「最后可见
+      // 兄弟」，last 必须 false——rowSegs 只在 !last 时画下行线，否则树线
+      // 断在它中线、折叠行像悬空的（用户报「折叠行与上间距太宽」的根因）。
+      const isLast = i === arr.length - 1 && (inQuiet || !quiet.length);
+      const row = createRowModel(c, store, {
+        depth: dep, wid, guides: gds,
+        first: i === 0, last: isLast,
+        // [静默执行卡折叠] 折叠组成员带 quiet 标记 → 置灰＋26px 小行
+        // （用户令：静默的卡片置灰、缩小一号，层级清楚）。
+        quiet: !!inQuiet,
+      });
       rows.push(row);
       if (store.prefs.getExpanded(wid, c.card_id)) {
-        pushSegment(rows, wid, c.card_id, depth + 1, visited, childGuides({ depth, last, guides }));
+        pushSegment(rows, wid, c.card_id, dep + 1, visited,
+                    childGuides({ depth: dep, last: isLast, guides: gds }));
       }
-    });
+    };
+    normal.forEach((c, i) => pushOne(c, i, normal, depth, guides));
+    if (!quiet.length) return;
+    // 折叠头：伪卡（不是真卡），展开态走 prefs 常规键位。
+    const foldId = "__quiet__" + (parentCid || "");
+    const pseudo = { card_id: foldId, child_count: 0, work_id: wid };
+    pseudo.__quiet = quiet;   // patchQuietfoldContent 现算计数
+    rows.push(createRowModel(pseudo, store, {
+      kind: "quietfold", depth, wid, guides,
+      // [用户令] 折叠行不画「行顶横肘」（first=false）——那条横线像上边框，
+      // 视觉上把折叠行和上一行隔开=「间距宽」；它只靠竖线挂上，不留横边。
+      first: false, last: true,
+      // [用户令] 折叠行自身也缩到 26px——和成员行同高，与上方行的
+      // 间距窄一档，视觉上是「一条分隔线」不是一张卡。
+      quiet: true,
+    }));
+    if (store.prefs.getExpanded(wid, foldId)) {
+      const qGuides = childGuides({ depth, last: true, guides });
+      quiet.forEach((c, i) => pushOne(c, i, quiet, depth + 1, qGuides, true));
+    }
   }
 
   /* ---------- 快照灌段（系统展开/探测重灌共用，零网络） ---------- */

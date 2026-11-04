@@ -114,6 +114,24 @@ def serialize_request(options: GenerateOptions, defaults: Optional[RequestDefaul
         messages.append({"role": "system", "content": options.system})
     messages.extend(serialize_messages(tuple(options.messages)))
 
+    # [2026-11-04 实测修复] 带 tool_calls 的 assistant 消息**必须回传非空推理
+    # 字段**：commandcode 的 reflection/beam:free、stealth/glyph-cluster:free
+    # 实测缺字段 / 空串 → 400 "Invalid request"（AI_APICallError），补非空
+    # reasoning_content 或 reasoning → 200。字段在投影链上会丢：
+    #   · context_regions 只在 `m.get("reasoning_content")` 非空时保留；
+    #   · 旧会话消息、系统注入消息本就没有该字段；
+    #   · _serialize_assistant 只在有 reasoning 块时写。
+    # 故在 wire 出口统一兜底（只补缺失，绝不改写已有内容）——与 runner 的
+    # REASONING_PLACEHOLDER 同文案，非新机制。
+    _NO_REASONING = "(系统注入的消息，无模型思考记录)"
+    for msg in messages:
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            continue
+        if any(str(msg.get(k) or "").strip()
+               for k in ("reasoning_content", "reasoning")):
+            continue
+        msg["reasoning_content"] = _NO_REASONING
+
     body: dict[str, Any] = {
         "model": options.model,
         "messages": messages,

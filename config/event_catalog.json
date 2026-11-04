@@ -852,7 +852,10 @@
      "by",
      "cause"
     ],
-    "optional": [],
+    "optional": [
+     "old_len",
+     "new_len"
+    ],
     "payload": [
      "old",
      "new"
@@ -1411,6 +1414,7 @@
      "batch",
      "target",
      "pending_ask",
+     "progress",
      "outcome"
     ],
     "optional": [],

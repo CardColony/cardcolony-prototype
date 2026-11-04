@@ -39,6 +39,10 @@ from src.infra.console_io import ensure_utf8_console
 
 ensure_utf8_console()
 
+# [双循环隔离 2026-11-05] 服务循环 B（独立线程）上的一切写/emit/孵化动作
+# 经 on_main 委托回主循环 A——startup 钩子与端点共用同一套边界。
+from src.infra.loops import install_main_dispatch, on_main
+
 
 def init_directories() -> None:
     """a. 创建数据目录（不存在则创建）。
@@ -153,6 +157,7 @@ except Exception as _exc:  # noqa: BLE001 日志装不上也不阻断启动
 
 
 @app.on_event("startup")
+@on_main
 async def _start_goal_driver() -> None:
     """[goal 重启恢复 2026-10-28] 装载续轮驱动 + 把还在跑的目标重新授上权。
 
@@ -174,6 +179,7 @@ async def _start_goal_driver() -> None:
 
 
 @app.on_event("startup")
+@on_main
 async def _start_auto_scheduler() -> None:
     """[调度改造 2026-10-19 · 5704 承载力] 启动建卡点火调度器。
 
@@ -216,6 +222,7 @@ async def _start_auto_scheduler() -> None:
 
 
 @app.on_event("startup")
+@on_main
 async def _start_goal_driver() -> None:
     """[goal 域 2026-10-20 · 照抄 dsh-goal] 装载续轮驱动。
 
@@ -230,6 +237,7 @@ async def _start_goal_driver() -> None:
         print(f"[startup] goal 驱动装载失败（不阻断）: {exc}", flush=True)
 
 @app.on_event("startup")
+@on_main
 async def _resume_reviews() -> None:
     """[2026-10-29 用户裁定「用 harness 接管评审卡的流程存续」] 重启续跑。
 
@@ -280,6 +288,7 @@ async def _resume_reviews() -> None:
 
 
 @app.on_event("startup")
+@on_main
 async def _resume_interventions() -> None:
     """[干预台账 2026-10-31] 重启接责：复核开着的干预事项，重投没送成的动作。
 
@@ -307,6 +316,41 @@ async def _resume_interventions() -> None:
         _asyncio.create_task(_run())
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] 干预接责装载失败（不阻断）: {exc}", flush=True)
+
+
+@app.on_event("startup")
+@on_main
+async def _scheduled_snapshots() -> None:
+    """[2026-11-04 用户裁定] 快照只留**每日两次定时全备**。
+
+    裁定背景：写路径逐写快照（schedule 30s 合并窗）＋错误路径 checkpoint
+    已被撤（data_snapshot.SNAPSHOT_ON_WRITE 默认关、handle_error 不再拍）——
+    「正常情况数据根本不会丢，唯一防的是模型瞎改」。⇒ 唯一的点火源是
+    这里：每 ``ECO_SNAPSHOT_PERIOD_HOURS``（默认 12h）全量拍一轮
+    （``work_id=None``＝全部 work）；开机后 ``ECO_SNAPSHOT_FIRST_DELAY_S``
+    （默认 600s）先补一份基线（重启即丢全部留痕窗口）。fail-open。
+    """
+    try:
+        import asyncio as _asyncio
+        import os as _os
+        from src.storage import data_snapshot as _ds
+
+        period_h = float(_os.environ.get("ECO_SNAPSHOT_PERIOD_HOURS") or 12)
+        first_delay = float(_os.environ.get("ECO_SNAPSHOT_FIRST_DELAY_S") or 600)
+
+        async def _loop() -> None:
+            await _asyncio.sleep(first_delay)
+            while True:
+                try:
+                    ok = await _ds.snapshot(reason="scheduled:daily", work_id=None)
+                    print(f"[snapshot] 定时全备 ok={ok}", flush=True)
+                except Exception as exc:  # noqa: BLE001 尽力而为
+                    print(f"[snapshot] 定时全备失败（下轮照跑）: {exc}", flush=True)
+                await _asyncio.sleep(period_h * 3600)
+
+        _asyncio.create_task(_loop())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] 定时快照装载失败（不阻断）: {exc}", flush=True)
 
 
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)
@@ -396,6 +440,12 @@ async def settings_page() -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
+# [双循环隔离 2026-11-05] 路由分发：白名单（无锁读/SSE 流）留在服务循环 B
+# 原生跑；其余端点（写/emit/孵化/取锁）一律委托回主循环 A——跑卡域单写者
+# 语义与单循环时代逐字一致。_MAIN_LOOP 未注册（测试）时原地执行、零差异。
+install_main_dispatch(app)
+
+
 @app.exception_handler(Exception)
 async def _capture_unhandled(request, exc):
     """[2026-10-12] 未捕获异常留痕：此前 500 只进服务控制台，磁盘零记录，
@@ -483,8 +533,115 @@ class _BaseExceptionCapture:
 app.add_middleware(_BaseExceptionCapture)
 
 
+def _install_listener_autopsy():
+    """[死因取证 2026-11-04] 5700 监听插座已两次「凭空消失」（netstat 无
+    LISTENING、进程与事件循环俱在）——插座是内核对象不会自己死，必有代码
+    主动 close。给 socket.close 挂探针：SO_ACCEPTCONN 只在 LISTENING 插座
+    上为真，谁关它（Server.close／传输拆解／GC 收尸）都落 traceback 到
+    logs/listener_autopsy.log——下次死亡即现场。"""
+    import socket as _s
+    import time as _t
+    import traceback as _tb
+    _real_close = _s.socket.close
+
+    def _traced_close(self):
+        try:
+            if self.getsockopt(_s.SOL_SOCKET, _s.SO_ACCEPTCONN):
+                try:
+                    laddr = self.getsockname()   # 5700＝真杀；临时口＝socketpair 噪音
+                except OSError:
+                    laddr = "?"
+                with open(BASE_DIR / "logs" / "listener_autopsy.log",
+                          "a", encoding="utf-8") as f:
+                    f.write(f"\n===== {_t.strftime('%Y-%m-%d %H:%M:%S')} "
+                            f"LISTEN 插座被 close laddr={laddr} =====\n")
+                    _tb.print_stack(file=f)
+        except OSError:
+            pass
+        return _real_close(self)
+
+    _s.socket.close = _traced_close
+
+
+def _autopsy_note(text: str) -> None:
+    """给尸检日志写一行（容错，绝不抛）。"""
+    try:
+        import time as _t
+        p = BASE_DIR / "logs" / "listener_autopsy.log"
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(f"[{_t.strftime('%Y-%m-%d %H:%M:%S')}] {text}\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _persistent_accept(real_accept, proactor, sock):
+    """accept 瞬发 OSError 的内部重试体（模块级便于单测）。
+
+    ``real_accept(proactor, sock)`` 每次调用返回一个 awaitable〔完成值
+    ``(conn, addr)``〕。瞬发 OSError 且插座还活着 ⇒ 退避重发；
+    CancelledError（关停）与插座真死（fileno==-1）原样上抛。
+    """
+    import asyncio as _a
+    attempt = 0
+    inner = None
+    while True:
+        try:
+            inner = real_accept(proactor, sock)
+            return await inner
+        except _a.CancelledError:
+            try:
+                if inner is not None:
+                    inner.cancel()              # 清掉没人消费的内层 accept
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        except OSError as exc:
+            if sock.fileno() == -1:
+                raise                           # 插座真没了：交回原逻辑
+            attempt += 1
+            _autopsy_note(
+                f"accept 瞬发失败 #{attempt} "
+                f"winerror={getattr(exc, 'winerror', None)}：未关插座，退避重发")
+            await _a.sleep(min(1.0, 0.05 * attempt))
+
+
+def _install_accept_resilience() -> None:
+    """[死因实锤 2026-11-04] 监听插座「凭空消失」的真凶：CPython 自身。
+
+    ``proactor_events.py`` 的 accept 循环（``BaseProactorEventLoop._accept2``
+    内的 ``loop`` 闭包）：只要 AcceptEx 的完成值是一次 **OSError**——
+    例如 WinError 64（NETNAME_DELETED）、995（OPERATION_ABORTED）这类
+    **瞬发**网络异常（本机有虚拟显示/网络过滤驱动时会偶发）——它的处理是
+    记一条 "Accept failed" 然后 ``sock.close()`` **直接关掉监听插座**：
+    零重试、零自愈，进程照跑、LISTENING 消失、只能重启。
+    （尸检日志 15:50:13 抓到的关闭栈即此。）
+
+    补丁：包住 ``IocpProactor.accept``——完成值为 OSError 且**插座还活着**
+    时，不把异常交回 loop（那必走 close 分支），而是内部重新发出一次
+    accept（退避递增、封顶 1s）；插座真关或 CancelledError 才原样上抛
+    （关停路径语义不变）。返回契约仍是 ``(conn, addr)`` 的 awaitable，
+    ``loop`` 闭包零感知。
+    """
+    import asyncio as _a  # noqa: F401
+    try:
+        from asyncio import windows_events as _we
+    except ImportError:  # 非 Windows 无此路径
+        return
+    _real_accept = _we.IocpProactor.accept
+
+    def _accept(self, sock):
+        return self._loop.create_task(
+            _persistent_accept(_real_accept, self, sock))
+
+    _we.IocpProactor.accept = _accept
+    _autopsy_note("accept 韧性补丁已装载（IocpProactor.accept 瞬发错误→重试，不再关插座）")
+
+
 if __name__ == "__main__":
     import uvicorn
+
+    _install_listener_autopsy()
+    _install_accept_resilience()
 
     # [keep-alive 断连 2026-10-25] timeout_keep_alive 5 → 30：
     # uvicorn 默认**空闲 5 秒就关掉** keep-alive 连接。浏览器把连接池里的连接留着复用，
@@ -495,4 +652,49 @@ if __name__ == "__main__":
     # 浏览器自身通常会重试，但我们的 fetch 封装**故意不重试非超时错误**
     # （见 static/esm/api.js）⇒ 这类瞬时竞态直接变成用户可见的「网络错误」。
     # 两头一起治：服务端别在浏览器脚下断连接 ＋ 前端对连接层失败重试一次。
-    uvicorn.run(app, host="127.0.0.1", port=5700, timeout_keep_alive=30)
+    # [双循环隔离 2026-11-05] 实测满载时 /api/nav/version 9.34s——不是插座死，
+    # 是 runner 的同步 CPU 段把协作式循环饿死、所有请求排队。
+    #   主循环 A（本线程）：runner/scheduler/harness + 一切写与 emit；
+    #   服务循环 B（serving-loop 线程）：uvicorn + 静态 + 白名单读 + SSE。
+    # 线程间由 OS 抢占调度 ⇒ HTTP 永不被跑卡域的同步段饿死。
+    import asyncio as _asyncio
+    import threading as _threading
+
+    from src.infra import loops as _loops
+
+    _main_loop = _asyncio.new_event_loop()
+    _asyncio.set_event_loop(_main_loop)
+    _loops.set_main_loop(_main_loop)
+    _loops.start_lag_monitor(_main_loop)
+
+    _holder: dict = {}
+
+    def _serve() -> None:
+        loop_b = _asyncio.new_event_loop()
+        _asyncio.set_event_loop(loop_b)
+        _loops.set_serving_loop(loop_b)
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=5700, timeout_keep_alive=30,
+            loop="asyncio",
+        )
+        server = uvicorn.Server(config)
+        _holder["server"] = server
+        try:
+            loop_b.run_until_complete(server.serve())
+        finally:
+            loop_b.close()
+
+    _serve_thread = _threading.Thread(
+        target=_serve, name="serving-loop", daemon=True)
+    _serve_thread.start()
+
+    try:
+        _main_loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _srv = _holder.get("server")
+        if _srv is not None:
+            _srv.should_exit = True
+            _serve_thread.join(timeout=5)
+        _main_loop.close()

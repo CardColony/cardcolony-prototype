@@ -50,9 +50,34 @@ DEFAULT_MODEL = "inclusionai/ling-3.1-flash-1019:free"
 #: **一轮最多几个 turn**（＝ command-code CLI 自己的默认值 100）。
 #: ★ 2026-11-04：曾设 8 ⇒ 复杂开发任务**只够"摸清代码"** ⇒ 撞上限 rc=8
 #:   ⇒ 被判"失败·无正文" ⇒ 白跑一轮。⇒ 用户令改回 **100**。
-DEFAULT_MAX_TURNS = 100
+#: **0 ＝ 不传 `--max-turns` ⇒ CLI 不设轮数上限**（2026-11-04）。
+#: ★ 教训：`--max-turns` 是**我们自己传进去的**（CLI 默认 100）⇒ 我们自己把活儿
+#:   卡在 100 轮上 ⇒ 复杂开发任务"根本完不成"（rc=8）。
+#:   实测 CLI 的实现 `runTurn({...void 0===a?{}:{maxTurns:a}})` ⇒ **不传就不限**。
+DEFAULT_MAX_TURNS = 0
 #: Windows 命令行上限 32767 ⇒ 给 prompt 留余量（**尾部**的回显指令不能丢）。
 MAX_PROMPT_CHARS = 28000
+
+#: ★ command-code 自己的退出码表（实测自它的 bundle 里的 `Qx`）。
+#: ⇒ **按码分类处理**，别把所有非 0 都当"传输失败"（那会让同一路反复白跑）。
+CC_EXIT_KINDS: dict[int, str] = {
+    0: "ok",
+    1: "error",
+    3: "auth",                   # AUTH_ERROR
+    4: "permission",             # PERMISSION_DENIED
+    5: "rate_limit",             # RATE_LIMITED（429）
+    6: "connection",             # CONNECTION_ERROR
+    7: "server",                 # SERVER_ERROR
+    8: "max_turns",              # MAX_TURNS_REACHED（**干了活但没收尾**）
+    9: "no_response",            # NO_RESPONSE（真没正文）
+    10: "insufficient_credits",  # INSUFFICIENT_CREDITS
+    130: "interrupted",
+}
+
+
+def exit_kind(rc: int) -> str:
+    """退出码 ⇒ 语义分类（未知码按 ``error``）。"""
+    return CC_EXIT_KINDS.get(int(rc), "error")
 
 
 def _clip_prompt(text: str) -> str:
@@ -82,11 +107,14 @@ class CcRunner:
         self.node_exe = str(node_exe or "node")
         self.api_key_env = str(api_key_env or "COMMAND_CODE_API_KEY")
         self.model = str(model or DEFAULT_MODEL)
-        self.max_turns = int(max_turns or 8)
+        # ★ 0 ＝ **不限轮数**（原来 `or 8` 会把 0 变成 8 ⇒ 表达不了"不限"）
+        self.max_turns = int(max_turns or 0)
         self.timeout = float(timeout)
 
     # ---------------------------------------------------------------- 命令
-    def build_argv(self, prompt: str, model: str = "") -> list[str]:
+    def build_argv(self, prompt: str, model: str = "",
+                   max_turns: int = 0) -> list[str]:
+        budget = int(max_turns or self.max_turns or 0)
         return [
             self.node_exe, self.entry,
             "-p", _clip_prompt(prompt),
@@ -98,13 +126,16 @@ class CcRunner:
             "--no-session",         # ★ 不落盘 ⇒ 客户端里不留对话（红线）
             "--tools-all",          # ★ print 模式默认扣工具 ⇒ 卡要写文件/跑命令
             "--output-format", "json",
-            "--max-turns", str(self.max_turns),
+            # ★ **不传 `--max-turns` ⇒ CLI 不设轮数上限**
+            #   （实测其实现：`runTurn({...void 0===a?{}:{maxTurns:a}})`）
+            #   ⇒ 轮数不再是我们自己给自己设的假瓶颈；真边界＝**我们的超时**。
+            *([] if budget <= 0 else ["--max-turns", str(budget)]),
         ]
 
     # ---------------------------------------------------------------- 跑
     async def run(self, prompt: str, work_dir: str, model: str = "",
-                  on_event: Optional[Callable[[str, dict], None]] = None
-                  ) -> dict[str, Any]:
+                  on_event: Optional[Callable[[str, dict], None]] = None,
+                  max_turns: int = 0) -> dict[str, Any]:
         """跑一轮 ⇒ ``{ok, text, tools, session_id, usage, errors, rc, …}``。
 
         ``on_event(kind, payload)``：**边跑边回调**（工具调用/正文/思考）
@@ -119,7 +150,7 @@ class CcRunner:
             return {"ok": False, "text": "", "tools": [], "errors": [
                 f"没有 {self.api_key_env}（.env 或环境变量都没有）"],
                 "rc": -1, "session_id": "", "usage": {}}
-        argv = self.build_argv(prompt, model)
+        argv = self.build_argv(prompt, model, max_turns)
         env = dict(os.environ)
         env[self.api_key_env] = key
         env["NO_COLOR"] = "1"
@@ -199,10 +230,17 @@ class CcRunner:
             stdout_task.cancel()
             stderr_task.cancel()
 
-        ok = (rc == 0) and bool(final_text or "".join(texts)) and not errors
-        return {"ok": ok, "text": final_text or "".join(texts), "tools": tools,
-                "errors": errors, "rc": rc, "session_id": session_id,
-                "usage": usage}
+        text_all = final_text or "".join(texts)
+        kind = exit_kind(rc)
+        # ★ **rc≠0 时 stdout 仍可能带着正文**（rc=8＝轮数用尽，agent 干了活
+        #   但没收尾）⇒ **不许因为 rc≠0 就说"无正文"**。
+        ok = (rc == 0) and bool(text_all) and not errors
+        return {"ok": ok, "text": text_all, "tools": tools,
+                "errors": errors, "rc": rc, "kind": kind,
+                "session_id": session_id, "usage": usage,
+                # ★ 把 stdout/stderr 片段带回去 ⇒ 出错时能一眼看出原因
+                "stdout_tail": (stdout or "")[-4000:],
+                "stderr_tail": (stderr or "")[-2000:]}
 
 
 # ===================================================================== 事件解析

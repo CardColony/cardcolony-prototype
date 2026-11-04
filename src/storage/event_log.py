@@ -305,19 +305,32 @@ def append_bg(work_id: str, card_id: str, record: dict[str, Any]) -> None:
     故无论走哪条路时序与取号都一致。
     """
     try:
-        loop = asyncio.get_running_loop()
+        running = asyncio.get_running_loop()
     except RuntimeError:
-        loop = None
-    if loop is None:
+        running = None
+    if running is None:
         append_sync(work_id, card_id, record)
         return
 
-    async def _run() -> None:
-        await append(work_id, card_id, record)
+    def _mk() -> None:
+        async def _run() -> None:
+            await append(work_id, card_id, record)
+        task = asyncio.get_running_loop().create_task(_run())
+        _pending.add(task)
+        task.add_done_callback(_pending.discard)
 
-    task = loop.create_task(_run())
-    _pending.add(task)
-    task.add_done_callback(_pending.discard)
+    # [双循环 2026-11-04] emit 是同步函数，可能被服务循环 B 上的白名单
+    # 读/SSE 路径调到——直接把 append 协程生在 B 上会去抢 A 绑定的
+    # asyncio 写锁（"bound to a different event loop"⇒ 事件静默丢）。
+    # ⇒ 落盘任务固定生到主循环 A（无注册主循环＝单循环场景，原地跑）。
+    try:
+        from ..infra import loops as _loops
+        if _loops.main_loop() is not None and running is not _loops.main_loop():
+            _loops.run_sync_on_main(_mk)
+            return
+    except Exception:  # noqa: BLE001 桥失败不阻断——退回调用方 loop
+        pass
+    _mk()
 
 
 async def drain() -> int:

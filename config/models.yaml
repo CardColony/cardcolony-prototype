@@ -99,8 +99,15 @@ providers:
       按量计费。opencode.ai/zen 的**按量计费**是另一条路，本项目不用）。
       OpenAI 兼容；需 x-opencode-session 头（MissingSessionID 拒单），
       且**必须带浏览器 UA**，否则 Cloudflare 1010 把订阅内的模型一起拦掉。
-      免费档现状（2026-10-25 实测 38 个模型）：只剩 beam-free、iceman-contributor-free；
-      minimax-m3.1-flash-free 已 410 ModelDeprecated、deepseek-v4.1-flash-free 已 400 不可用。
+      [2026-11-04 复核] /models 共 28 个，带 cost 字段：**cost=0 只有 2 个**
+      （beam-free、iceman-contributor-free），其余最低 0.1 起。
+      但两个免费档当前都调不通：beam-free → 403 RegionError（地区不可用）；
+      iceman-contributor-free → 400 需在工作区 Privacy settings 开启
+      「Allow paid endpoints that train on request data」（且该模型会拿请求数据训练）。
+      另：本 provider 的 OPENCODE_API_KEY 实测 chat 调用返回 429
+      GoUsageLimitError「Go usage limit exceeded」（limitName: weekly）——
+      **周额度用尽，不是 key 失效**（/models 会回 401 Invalid credential，别误判）。
+      已下架：minimax-m3.1-flash-free（410）、deepseek-v4.1-flash-free（400）。
   opencode2:
     protocol: openai
     base_url: https://opencode.ai/zen/go/v1
@@ -120,8 +127,13 @@ providers:
     note: >-
       Command Code Provider API（OpenAI 兼容）。模型 id 带厂商前缀，如
       deepseek/deepseek-v4.1-flash；官方清单见 GET /provider/v1/models（带 context_length，
-      其中 deepseek-v4.1-flash = 1,000,000）。免费档：reflection/beam:free、
-      minimax/minimax-m3.1-flash:free、poolside/laguna-s-2.1-free、stealth/glyph-cluster:free。
+      其中 deepseek-v4.1-flash = 1,000,000）。
+      [2026-11-04 实测] 免费档以**实测能调通**为准（清单/定价页说免费不等于能调）：
+        · 可用：reflection/beam:free、stealth/glyph-cluster:free
+        · 名义免费但调不通：poolside/laguna-s-2.1-free（404）、stealth/crouton-alpha（403）
+        · minimax/minimax-m3.1-flash:free 已下架（现只有付费档）
+      本端点某些模型把思考放在 `reasoning` 字段（非 reasoning_content），
+      translate.py 已双形态兼容。
 models:
   # [局域网 Flash-Next 2026-10-23] qwen3.8-flash-next-iq3_s（引擎不校验名字，照文档取全名）。
   # thinking: none —— 端点 reasoning_effort 档位 none/low/medium/high，重活建议 none 提速。
@@ -303,6 +315,9 @@ models:
     - high
     - max
     default_effort: high
+  glm-53-flash-oc2:
+    provider: opencode2
+    model: glm-5.3-flash
   deepseek-v4-flash:
     provider: opencode
     # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
@@ -318,21 +333,18 @@ models:
     - high
     - max
     default_effort: high
-  minimax-m31-flash-free:
-    provider: opencode
-    model: minimax-m3.1-flash-free
-    reasoning_echo_fill: ""
-    temperature: 1
-    note: >-
-      ⚠ **已废弃**（2026-10-25 实调：Go 端点返回 410 ModelDeprecated
-      「has been deprecated」）⇒ 已从所有 fallback 链里移除；
-      同族的免费档只剩 `beam-free`。
   beam-free:
     provider: opencode
     model: beam-free
     reasoning_echo_fill: ""
     temperature: 0.7
-    note: 免费（Reflection Beam，带 reasoning；2026-10-22 实调通过）
+    note: >-
+      cost=0 名义免费（2026-11-04 /models 复核）；但 ⚠ 实测 403 RegionError
+      「This model is not available in your country」，且该账号 Go 周额度已用尽
+      （429 GoUsageLimitError）⇒ 当前实际调不通。保留座椅（仍免费，未删除）待额度/地区处理。
+  glm-53-flash-oc1:
+    provider: opencode
+    model: glm-5.3-flash
   # [2026-10-22 · Command Code Provider API] 厂商前缀是官方 id 的一部分，不可省
   cmd-ds-v41-flash:
     provider: commandcode
@@ -352,6 +364,18 @@ models:
     reasoning_echo_fill: placeholder
     temperature: 0.7
     note: Command Code · Beam 1.0 免费（context_length=1,048,576，带 reasoning；2026-10-22 实调 200）
+  cmd-glyph-free:
+    provider: commandcode
+    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
+    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
+    echo_reasoning: true
+    model: stealth/glyph-cluster:free
+    reasoning_echo_fill: placeholder
+    temperature: 0.7
+    note: >-
+      Command Code · Glyph Cluster 免费（context_length=256,000；2026-11-04 实调 200）。
+      思考字段为 `reasoning`（非 reasoning_content），translate.py 已兼容。
+      ⚠ 重思考模型：两字回答实测烧 154 个 reasoning token，工具/长链路上很贵（不扣额度但吃上下文）。
   # [2026-10-23 实测] 原 `minimax/minimax-m3.1-flash:free` 免费档已关闭：
   #   端点 GET /models 的 92 条清单里已无该 id；调用返回 403
   #   「The free MiniMax M3.1 Flash window has ended」。
@@ -364,6 +388,25 @@ models:
     note: >-
       Command Code · MiniMax M3.1 Flash（付费档；原 :free 免费窗口 2026-10-23 已结束，
       context_length=1,000,000）
+  cmd-ds-v4-flash:
+    provider: commandcode
+    # 同端点纪律：assistant 带 tool_calls 必须回传 reasoning_content。
+    echo_reasoning: true
+    model: deepseek/deepseek-v4-flash
+    reasoning_echo_fill: ""
+    temperature: 1
+    note: >-
+      Command Code · DeepSeek V4 Flash（context_length=1,000,000；2026-11-04 实调 200）。
+      与已有 cmd-ds-v41-flash 是**不同型号**（v4-flash vs v4.1-flash）。
+  cmd-glm-53-flash:
+    provider: commandcode
+    echo_reasoning: true
+    model: z-ai/glm-5.3-flash
+    reasoning_echo_fill: ""
+    temperature: 1
+    note: >-
+      Command Code · GLM 5.3 Flash（context_length=1,000,000；2026-11-04 实调 200）。
+      ⚠ 推理型：64 token 上限时正文为空（全被 reasoning 吃掉），工具链路上注意配额。
 bindings:
   execute: glm-53-flash
   think: glm-53-flash

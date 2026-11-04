@@ -7,7 +7,7 @@ import { escapeHtml } from "./util.js?v=30";
 import { notify, request } from "./api.js?v=55";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=58";
+import { createNavRenderer } from "./nav_render.js?v=65";
 import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -543,6 +543,14 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       const rid = rvRow.dataset.review || "";
       const rwid = rvRow.dataset.rwid || WID();
       if (rid) gotoCard(rid, rwid, false);
+      return;
+    }
+    /* [静默执行卡折叠 2026-11-04] 折叠头不是卡——整行点击＝开合（不能落到
+       .nav-card 分支去 gotoCard("__quiet__*")）。箭头热区走上面 data-twist
+       同一条 toggleCard 路径。 */
+    const qfold = e.target.closest("[data-qfold]");
+    if (qfold) {
+      if (qfold.__navRow) navRenderer.toggleCard(qfold.__navRow);
       return;
     }
     const row = e.target.closest(".nav-card");

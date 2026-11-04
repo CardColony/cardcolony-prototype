@@ -284,6 +284,7 @@ async def test_background_schedule_coalesces_writes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(data_snapshot, "snapshot", fake_snapshot)
     monkeypatch.setattr(data_snapshot, "SNAPSHOT_COALESCE_SECONDS", 30)
+    monkeypatch.setattr(data_snapshot, "SNAPSHOT_ON_WRITE", True)
     _reset_sched_state()
     try:
         await data_snapshot.schedule("w1", work_id="work_001")
@@ -313,6 +314,7 @@ async def test_background_schedule_force_reason_snapshots_now(tmp_path, monkeypa
 
     monkeypatch.setattr(data_snapshot, "snapshot", fake_snapshot)
     monkeypatch.setattr(data_snapshot, "SNAPSHOT_COALESCE_SECONDS", 300)
+    monkeypatch.setattr(data_snapshot, "SNAPSHOT_ON_WRITE", True)
     _reset_sched_state()
     try:
         await data_snapshot.schedule("w1", work_id="work_001")
