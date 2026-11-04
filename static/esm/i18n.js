@@ -13,7 +13,7 @@
  *   - <script>/<style>/<textarea>/[data-no-i18n] 子树跳过；
  *   - 词条表是唯一真相：往 i18n_dict.js 加一行，全站自动生效。
  *
- * 接线：四个模板各挂一行 <script type="module" src="/static/esm/i18n.js?v=2">。
+ * 接线：四个模板各挂一行 <script type="module" src="/static/esm/i18n.js?v=3">。
  * 改本文件或词典：升下面 import 的 ?v=（浏览器按 URL 缓存模块）。
  */
 import { ZH_EN } from "./i18n_dict.js?v=2";
@@ -96,14 +96,14 @@ function translateTitle() {
   if (hit !== undefined) document.title = hit;
 }
 
-/* 右上语言切换钮：固定角落，不依赖任何页面结构 */
+/* 右上语言切换钮：top:52px 让开各页 44px 顶栏及其右侧动作区 */
 function mountToggle() {
   if (document.getElementById("i18nToggle")) return;
   const box = document.createElement("div");
   box.id = "i18nToggle";
   box.title = ZH_EN["切换语言 / Switch language"] || "Switch language";
   box.style.cssText =
-    "position:fixed;right:12px;top:12px;z-index:99999;display:flex;" +
+    "position:fixed;right:12px;top:52px;z-index:99999;display:flex;" +
     "font:12px/1.4 system-ui,sans-serif;border:1px solid rgba(128,128,128,.45);" +
     "border-radius:14px;overflow:hidden;user-select:none;cursor:pointer;" +
     "background:var(--i18n-bg,rgba(30,30,34,.85));backdrop-filter:blur(4px);";
