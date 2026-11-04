@@ -5,7 +5,9 @@
  *   2. 文本替换：整节点文本命中 i18n_dict.js 词条才换（按钮/标签/空态这类整体文案）；
  *      title / placeholder / aria-label / input[value] 四个属性同样按词条换。
  *   3. MutationObserver：JS 后续渲染出的节点自动过一遍——业务代码不用改一行。
- *   4. 右上语言钮：中|EN 切换，写回 localStorage 后 reload（最省心的全量重渲）。
+ *   4. 语言钮：各页模板埋 <span data-i18n-mount></span> 挂点，本层只在挂点内放一个
+ *      文字钮（当前 zh 显示 EN / 当前 en 显示 CN），点击写回 localStorage 后 reload。
+ *      没有挂点的页不创建任何浮件——绝不遮挡页面自身按钮。
  *
  * 边界（如实写）：
  *   - 只翻"整节点文案"，不做句内替换；卡面正文/用户内容若整段恰好与某词条逐字
@@ -13,7 +15,7 @@
  *   - <script>/<style>/<textarea>/[data-no-i18n] 子树跳过；
  *   - 词条表是唯一真相：往 i18n_dict.js 加一行，全站自动生效。
  *
- * 接线：四个模板各挂一行 <script type="module" src="/static/esm/i18n.js?v=3">。
+ * 接线：四个模板各挂一行 <script type="module" src="/static/esm/i18n.js?v=4">。
  * 改本文件或词典：升下面 import 的 ?v=（浏览器按 URL 缓存模块）。
  */
 import { ZH_EN } from "./i18n_dict.js?v=2";
@@ -96,35 +98,30 @@ function translateTitle() {
   if (hit !== undefined) document.title = hit;
 }
 
-/* 右上语言切换钮：top:52px 让开各页 44px 顶栏及其右侧动作区 */
+/* 语言钮：各页模板埋 <span data-i18n-mount></span> 挂点（顶栏动作区/页角），
+   只在挂点内放一个文字钮——当前 zh 显示 EN、当前 en 显示 CN，点击切换后 reload。
+   没有挂点的页静默跳过，不创建任何浮件。 */
 function mountToggle() {
-  if (document.getElementById("i18nToggle")) return;
-  const box = document.createElement("div");
-  box.id = "i18nToggle";
-  box.title = ZH_EN["切换语言 / Switch language"] || "Switch language";
-  box.style.cssText =
-    "position:fixed;right:12px;top:52px;z-index:99999;display:flex;" +
-    "font:12px/1.4 system-ui,sans-serif;border:1px solid rgba(128,128,128,.45);" +
-    "border-radius:14px;overflow:hidden;user-select:none;cursor:pointer;" +
-    "background:var(--i18n-bg,rgba(30,30,34,.85));backdrop-filter:blur(4px);";
-  const mk = (code, label) => {
-    const s = document.createElement("span");
-    s.textContent = label;
-    s.dataset.lang = code;
-    s.style.cssText =
-      "padding:4px 9px;" +
-      (code === LANG
-        ? "background:rgba(90,140,255,.85);color:#fff;font-weight:600;"
-        : "color:inherit;opacity:.65;");
-    s.onclick = () => {
-      try { localStorage.setItem(LS_KEY, code); } catch (e) {}
-      location.reload();
-    };
-    return s;
+  const slot = document.querySelector("[data-i18n-mount]");
+  if (!slot || slot.dataset.done) return;
+  slot.dataset.done = "1";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "i18nToggle";
+  btn.textContent = LANG === "zh" ? "EN" : "CN";
+  const tip = "切换语言 / Switch language";
+  btn.title = tip;
+  btn.setAttribute("aria-label", tip);
+  btn.style.cssText =
+    "background:none;border:0;color:inherit;cursor:pointer;" +
+    "font:600 12.5px/1 system-ui,sans-serif;padding:6px 7px;opacity:.75;";
+  btn.onmouseenter = () => { btn.style.opacity = "1"; };
+  btn.onmouseleave = () => { btn.style.opacity = ".75"; };
+  btn.onclick = () => {
+    try { localStorage.setItem(LS_KEY, LANG === "zh" ? "en" : "zh"); } catch (e) {}
+    location.reload();
   };
-  box.appendChild(mk("zh", "中"));
-  box.appendChild(mk("en", "EN"));
-  document.body.appendChild(box);
+  slot.appendChild(btn);
 }
 
 function boot() {
