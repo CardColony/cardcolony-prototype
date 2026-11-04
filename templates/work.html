@@ -17,7 +17,7 @@
      为什么拆：左栏行结构按定稿重写，样式改动量大；留在 style.css 会与另一条施工线
      撞同一文件。拆出后左栏样式改动的冲突面缩到本行一处。
      版本号：nav.css 改动必须升这里的 ?v=，否则浏览器吃旧缓存、新样式不生效。 -->
-<link rel="stylesheet" href="/static/nav.css?v=20">
+<link rel="stylesheet" href="/static/nav.css?v=28">
 <!-- [画布商业化重做 2026-10-17] 画布页专属视觉体系独立成 canvas.css（只在 .page-canvas
      作用域内生效，不污染对话页）。必须在本行之后引入：同特异性后者胜，用它覆盖 style.css
      里的旧画布段；改动本文件必须升 ?v=。 -->
@@ -193,5 +193,7 @@
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
 <script type="module" src="/static/esm/main.js?v=78.33"></script>
+<!-- [双语自适应 2026-11-03] 中英双语层：独立于业务模块，改词条升 ?v= -->
+<script type="module" src="/static/esm/i18n.js?v=1"></script>
 </body>
 </html>
