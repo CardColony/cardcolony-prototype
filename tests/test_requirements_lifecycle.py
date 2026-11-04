@@ -9,10 +9,12 @@
 
 钉住：
 T1 草稿只有本卡看得到（不进 read_card / 不进别的卡上下文），正稿才是公共读
-T2 没有正稿 ⇒ 派工三件（create_card / create_coder_card / direct）不在工具面
+T2 没有正稿 ⇒ 派工两件（create_card / create_coder_card）不在工具面；
+   direct 不在闸内（2026-11-04 用户令：指挥已有子树不算开新工，
+   且没正稿的卡本就不会有子卡可指）
 T3 评审对象是草稿：没有草稿 ⇒ 拒绝开评审
 T4 全员通过 ⇒ 草稿转正稿、草稿清空、状态 approved
-T5 有正稿 ⇒ 派工三件回到工具面
+T5 有正稿 ⇒ 派工两件回到工具面
 T6 coder 卡不在这条流程里（没有需求文档、不评审）
 """
 from __future__ import annotations
@@ -22,7 +24,7 @@ import pytest
 from src.api import card_tools, function_room
 from src.storage import card_store, function_store, review_store, work_store
 
-GATED = ("create_card", "create_coder_card", "direct")
+GATED = ("create_card", "create_coder_card")
 
 
 def _use_repo_catalog(monkeypatch) -> None:
@@ -56,8 +58,8 @@ async def test_no_approved_requirements_means_no_dispatch(sandbox, monkeypatch):
     names = _face(wid, sub)
     for t in GATED:
         assert t not in names, f"没有正稿却拿到了派工工具 {t}"
-    # 汇报与同步不受影响
-    assert "report_up" in names and "sync" in names
+    # 汇报、同步与「指挥已有子树」不受影响（direct 2026-11-04 移出闸）
+    assert "report_up" in names and "sync" in names and "direct" in names
 
 
 # ---------------------------------------------------------------- T1

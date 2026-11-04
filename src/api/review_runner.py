@@ -30,7 +30,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ..storage import card_store, function_store, review_store, session_facade
+from ..storage import card_db, card_store, function_store, review_store, session_facade
 from . import event_stream
 
 #: 评审职责书（每个角色**在评审席上**的职责；与日常职责 function_profiles.charter 分开）
@@ -813,12 +813,33 @@ async def report_target_turn_end(work_id: str, child_id: str,
             return False             # 场卡换过目标 ⇒ 这卡不再是本批正卡
         pending = bool(st.get("promote_asked")) or \
             int(st.get("asked_seq") or 0) > int(st.get("responded_seq") or 0)
+        # [turn_end 激活 2026-11-04 · 用户令「修改草稿的那一轮结束再激活评审卡」]
+        # progress=刚结束这轮里正卡有没有实质推进：草稿版本涨了（改过稿）
+        # 或 responded_seq 涨了（调过 submit_revision）。点火移到这个字段上——
+        # 没推进的回合结束不该去叫评审场。
+        cur_draft = int(st.get("draft") or 0)
+        cur_resp = int(st.get("responded_seq") or 0)
+        progress = cur_draft > int(st.get("turn_end_draft") or 0) or \
+            cur_resp > int(st.get("turn_end_responded") or 0)
         event_stream.emit(work_id, rid, "review_target_turn_end", {
             "batch": str(st.get("batch") or ""),
             "target": child_id,
             "pending_ask": pending,
+            "progress": progress,
             "outcome": outcome,
         })
+        # 回写水位——下一轮再比。写失败不阻断：无非是 progress 多记一轮旧账。
+        try:
+            st2 = dict(st)
+            st2["turn_end_draft"] = cur_draft
+            st2["turn_end_responded"] = cur_resp
+
+            def _fn(conn: Any) -> None:
+                conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                             (json.dumps(st2, ensure_ascii=False), rid))
+            await card_db.run_write(work_id, _fn)
+        except Exception:  # noqa: BLE001
+            pass
         return True
     except Exception as exc:  # noqa: BLE001 上报失败不影响正卡回合收口
         logger.warning("[review] 回合结束上报失败 child=%s: %s", child_id, exc)

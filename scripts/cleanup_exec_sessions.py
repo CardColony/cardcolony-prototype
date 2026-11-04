@@ -58,6 +58,9 @@ async def main() -> int:
     ap.add_argument("--delete", action="store_true", help="真删（默认只报告）")
     ap.add_argument("--root", action="append", default=[],
                     help="额外的白名单根（可重复）；默认用仓库的 works/")
+    ap.add_argument("--min-age", type=float, default=30.0,
+                    help="只清「最后活动超过 N 分钟前」的会话（默认 30）"
+                         "⇒ 正在跑的卡不受影响")
     args = ap.parse_args()
 
     from src.api.wb_exec import cleanup as cl
@@ -85,7 +88,8 @@ async def main() -> int:
 
     # ---- Devin
     print("\n--- Devin ---")
-    dv = await cl.sweep_devin_sessions(devin_exe, roots, dry_run=dry)
+    dv = await cl.sweep_devin_sessions(devin_exe, roots, dry_run=dry,
+                                       min_age_min=args.min_age)
     report["wb-devin"] = dv
     print(f"  全库会话 {dv.get('scanned')} 条；**我们的** {len(dv.get('ours') or [])} 条")
     for r in (dv.get("ours") or [])[:20]:
@@ -99,7 +103,8 @@ async def main() -> int:
 
     # ---- opencode
     print("\n--- opencode ---")
-    oc = await cl.sweep_opencode_sessions(oc_exe, load_key(), roots, dry_run=dry)
+    oc = await cl.sweep_opencode_sessions(oc_exe, load_key(), roots, dry_run=dry,
+                                         min_age_min=args.min_age)
     report["wb-oc"] = oc
     print(f"  全库会话 {oc.get('scanned')} 条；**我们的** {len(oc.get('ours') or [])} 条")
     for r in (oc.get("ours") or [])[:20]:

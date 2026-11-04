@@ -396,6 +396,90 @@ def load_key_cc() -> str:
 
 
 
+
+# ------------------------------------------------------------------ Devin
+def probe_devin() -> dict:
+    """**真调一次 Devin 的免费档**（看额度/可用性）。
+
+    ★ 只调**表里那档**（``swe-2-max``）—— 候选表是唯一事实源，不擅自换模型。
+    ★ 用**独立临时目录**⇒ 不碰任何工作目录/生产数据。
+    """
+    import subprocess
+    import tempfile
+
+    out: dict = {"endpoint": "wb-devin", "ok": True, "models": {}}
+    try:
+        from src.api.wb_exec import config as wb_cfg
+        cfg = wb_cfg.load()
+    except Exception as exc:  # noqa: BLE001
+        return {"endpoint": "wb-devin", "ok": False,
+                "error": f"读配置失败：{exc}"[:200], "models": {}}
+    dev = cfg.executor("wb-devin")
+    if dev is None or not getattr(dev, "devin_cli_exe", ""):
+        return {"endpoint": "wb-devin", "ok": True, "models": {},
+                "note": "没配 wb-devin 执行体"}
+    model = ""
+    for c in cfg.candidates:
+        if c.executor == "wb-devin":
+            model = c.model
+            break
+    model = model or dev.devin_model
+    work = tempfile.mkdtemp(prefix="devin_quota_probe_")
+    prompt = os.path.join(work, "prompt.md")
+    with open(prompt, "w", encoding="utf-8") as fh:
+        fh.write("在当前工作目录下创建文件 probe.txt，内容写 devin-ok，"
+                 "然后读回确认。只做这一件事。")
+    argv = [dev.devin_cli_exe, "-p", "--prompt-file", prompt,
+            "--export", os.path.join(work, "session.json"),
+            "--permission-mode", "bypass", "--model", model,
+            "--respect-workspace-trust", "false", "--verbosity", "1"]
+    t0 = time.time()
+    try:
+        r = subprocess.run(argv, cwd=work, capture_output=True, text=True,
+                           timeout=300, encoding="utf-8", errors="replace")
+        rc, so, se = r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired:
+        rc, so, se = -1, "", "超时(300s)"
+    dt = int((time.time() - t0) * 1000)
+    blob = f"{se}\n{so}"
+    low = blob.lower()
+    quota = any(w in low for w in ("quota exceeded", "exceeded your quota",
+                                   "insufficient credits", "free usage limit",
+                                   "rate limit exceeded", "额度用完", "配额用完"))
+    # ★ **Devin 的 `-p` 默认输出是纯文本**（不是 NDJSON！）⇒ 正文就是 stdout 原文。
+    text = (so or "").strip()
+    # ★ 成没成：rc==0 且（stdout 有正文 或 ATIF 有正文 或 产物文件落地）
+    atif_ok = False
+    try:
+        atif = json.loads(open(os.path.join(work, "session.json"),
+                               encoding="utf-8", errors="replace").read())
+        atif_ok = bool(str(atif.get("final_metrics") or "") != "" or
+                       bool(atif.get("steps")))
+    except Exception:  # noqa: BLE001
+        atif_ok = False
+    produced = os.path.exists(os.path.join(work, "probe.txt"))
+    ok = (rc == 0) and bool(text or atif_ok or produced)
+    out["models"][model] = {
+        "kind": "quota" if quota else ("ok" if ok else "failed"),
+        "ms": dt, "rc": rc,
+        "msg": (se[-160:] if se else text[:160]).strip(),
+        "produced": produced,
+    }
+    # ★ **探完自清理**：把这次探测自己留下的 Devin 会话删掉
+    #   （否则临时目录不在清理白名单里 ⇒ 定时任务扫不到 ⇒ 越攒越多）。
+    try:
+        sid = ""
+        with open(os.path.join(work, "session.json"), encoding="utf-8",
+                  errors="replace") as fh:
+            sid = str((json.loads(fh.read()) or {}).get("session_id") or "")
+        if sid:
+            subprocess.run([dev.devin_cli_exe, "rm", sid, "--force"], cwd=work,
+                           capture_output=True, text=True, timeout=120)
+            out["models"][model]["session_cleaned"] = sid
+    except Exception as exc:  # noqa: BLE001 清不掉不影响结论
+        out["models"][model]["cleanup_error"] = str(exc)[:80]
+    return out
+
 # ---------------------------------------------------------------------- 主流程
 def main() -> int:
     print(f"=== 探测各执行体的免费模型 / 额度状态（{now_iso()}）===")
@@ -473,6 +557,20 @@ def main() -> int:
                 "at": now_iso(), "kind": "free_tier_limit"}
     free_models["wb-cc"] = sorted(
         m for m, v in (cc.get("models") or {}).items() if v.get("kind") == "ok")
+
+    # ---- Devin（真调一次）
+    print("\n--- wb-devin（真调一次免费档）---")
+    dv = probe_devin()
+    reports["wb-devin"] = dv
+    for m, v in (dv.get("models") or {}).items():
+        print(f"  {m:<24} {v.get('kind','?'):<7} {v.get('ms',0):>6}ms  "
+              f"{str(v.get('msg'))[:70]}")
+        if v.get("kind") == "quota":
+            exhausted[f"wb-devin:{m}"] = {
+                "reason": f"上游报额度用完：{str(v.get('msg'))[:120]}",
+                "at": now_iso(), "kind": "free_tier_limit"}
+    if not dv.get("models"):
+        print(f"  （未探测：{dv.get('error') or dv.get('note') or '无模型'}）")
 
     path = quota_state.write_state(exhausted, extra={
         "free_models": free_models,

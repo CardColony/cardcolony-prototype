@@ -9032,12 +9032,17 @@ _MUST_ROUND_DROP: frozenset[str] = frozenset({
 #: 还原到旧版——那能绕过「需求文档只写确定需求」这条，所以不给自动子卡。
 _AUTO_LADDER_DROP: frozenset[str] = frozenset({"edit_card"})
 
-#: 派工三件：让别人干活的动作。非正稿的子卡拿不到这三件。
+#: 派工两件：**开干活的子卡**。非正稿的子卡拿不到这两件。
 #: [差事卡 2026-11-01] create_deploy_card 有意**不在**此列：正稿闸拦的是
 #: 「没合同就开工」——而 PM 差事本身就是立合同的动作（staff_pm 递话叫它
 #: 召 PM 写草稿，闸了这条链就断了）；QA 差事没合同验无可验，无害。
+#: [2026-11-04 · 用户令「没有需求文档不需要卡死不许派工，不许开干活的子卡
+#: 就可以了」] `direct` 移出本闸——它指挥的是**已有**子树，不是开新工；
+#: 且闸它自相矛盾：①子卡只能靠被闸的 create_* 造出来，没正稿的卡根本
+#: 没有 direct 对象可指；②continue_task/sync 等更狠的指挥通道从不入闸；
+#: ③需求修订期（in_review）恰好是最需要指挥在跑子树的时机。
 _REQUIREMENTS_GATED_TOOLS: frozenset[str] = frozenset(
-    {"create_card", "create_coder_card", "direct"})
+    {"create_card", "create_coder_card"})
 
 
 def _apply_requirements_gate(tools: list[dict[str, Any]], card_id: str,
@@ -9046,8 +9051,9 @@ def _apply_requirements_gate(tools: list[dict[str, Any]], card_id: str,
     """[需求文档生命周期 2026-10-28 · 用户令] **没有正稿 ⇒ 不许派工**。
 
     流程：使命 → 写需求草稿 → 评审 → 通过成**正稿** → 才派工/执行。
-    所以「不是正稿」时，这张卡只能：读、写自己的草稿与现状、汇报、同步。
-    派工三件（建卡/派编程卡/下指令）摘掉——**看不见＝不该做**，不靠提示词劝。
+    所以「不是正稿」时，这张卡只能：读、写自己的草稿与现状、汇报、同步、
+    指挥已有子树（direct 不在闸内——2026-11-04 用户令）。
+    派工两件（建卡/派编程卡）摘掉——**看不见＝不该做**，不靠提示词劝。
 
     只对 sub_project / topic 生效：根卡（项目）与职能/角色卡不在这条流程里，
     coder 卡没有需求文档也不需要评审（用户令：coder 不走评审）。

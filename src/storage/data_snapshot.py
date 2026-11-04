@@ -977,8 +977,22 @@ def _coalesce_wait(key: str) -> float:
     return max(0.0, SNAPSHOT_COALESCE_SECONDS - (time.monotonic() - last))
 
 
+#: [2026-11-04 裁定] 写路径自动快照**默认关闭**——
+#: 用户裁定「正常情况数据根本不会丢，唯一防的是模型瞎改，每天定时备
+#: 两次就够了」：每次写都排快照（30s 合并窗）＋错误 checkpoint 是磁盘
+#: 常驻负载，11-04 实测单批 62911 文件跑 6 分钟把双 loop 全冻死。
+#: ⇒ ``schedule()`` 默认空转；要回到逐写快照旧态设
+#:   ``ECO_SNAPSHOT_ON_WRITE=1``。``snapshot()``/``snapshot_sync`` 显式
+#:   API 不受影响（定时备份走的就是它）。
+SNAPSHOT_ON_WRITE = bool(
+    int(os.environ.get("ECO_SNAPSHOT_ON_WRITE") or 0))
+
+
 async def schedule(reason: str = "", work_id: str | None = None) -> None:
     """后台拍快照：**不阻塞调用方**，同 work 合并。
+
+    [2026-11-04 裁定] 默认关闭（``SNAPSHOT_ON_WRITE``）：逐写快照已被
+    「每日两次定时全备」取代，见模块头常量注释。置 env 恢复旧行为。
 
     [画布 2026-10-19 · 性能] 原来每个写操作都 `await snapshot(...)`——实测
     单次快照 **430~450ms**（要复制 cards.db 等整批文件），于是建卡 1.1s、
@@ -994,6 +1008,8 @@ async def schedule(reason: str = "", work_id: str | None = None) -> None:
         （trailing edge ⇒ 不丢恢复点）；删卡/恢复/收口**不等窗口，当场拍**；
       · 无运行中的事件循环（同步脚本/测试）⇒ 退回阻塞式，行为可预期。
     """
+    if not SNAPSHOT_ON_WRITE:
+        return
     try:
         asyncio.get_running_loop()
     except RuntimeError:

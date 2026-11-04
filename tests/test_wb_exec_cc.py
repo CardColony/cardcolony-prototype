@@ -115,3 +115,54 @@ async def test_quota_wording_is_recognised():
               "free_tier_limit", "quota exceeded"):
         assert _looks_exhausted(s) is True, s
     assert _looks_exhausted("connection reset") is False
+    # ★★ **回归钉**（2026-11-04 生产现场）：**裸词不算**额度耗尽 ⇒
+    #    我们的卡片任务就叫 ``quota_probe.txt`` ⇒ agent 正文里出现 "quota"
+    #    曾被误判成"额度用完" ⇒ **Devin 被永久跳过** ⇒ 全路由到别的档。
+    for s in ("创建 quota_probe.txt 并读回确认",
+              "额度探针任务已完成，quota-ok 已写入",
+              "the quota of this card is 100 requests",
+              "we should check the rate limit policy"):
+        assert _looks_exhausted(s) is False, s
+
+
+@pytest.mark.asyncio
+async def test_quota_wording_covers_daily_free_allowance():
+    """★ **2026-11-04：WorkBuddy「每日赠送免费额度」用完时上游报中文**。
+
+    背景：``hy4free`` 是「限时免费 · **每日赠送免费额度**」的档（促销到 11-16）
+    ⇒ 当天赠送额度用完时上游的文案是**中文** ⇒ 旧判定只认 ``category=="quota"``
+    或英文裸词 ``quota`` ⇒ **漏判** ⇒ 这一档不会立刻让路（每张卡先白跑一轮失败）。
+
+    ⇒ 现在**明确的中文措辞**也认（且**仍然只在报错里判**）。
+    """
+    from src.api.wb_exec.bridge import _looks_exhausted
+    for s in ("每日免费额度已用完",
+              "今日免费额度已用完",
+              "免费额度已达上限",
+              "额度已用尽",
+              "每日额度已用完",
+              "daily limit reached"):
+        assert _looks_exhausted(s) is True, s
+    # ★ 仍然是**明确措辞**，不是裸词 ⇒ 正文里聊额度不算耗尽
+    for s in ("今天额度还剩 100 次",
+              "我会检查额度的使用情况",
+              "quota_probe.txt 已写好"):
+        assert _looks_exhausted(s) is False, s
+
+
+@pytest.mark.asyncio
+async def test_prompt_result_chinese_quota_error_is_classified_as_quota():
+    """★ 返回体里的**中文额度错误**也要归到 ``category="quota"`` ⇒ 立刻让路。
+
+    WorkBuddy 的失败**不抛异常**，而是塞进 ``_meta["codebuddy.ai/errorMessage"]``
+    ⇒ 这条路径以前只认 ``category=="quota"`` / 英文 ``quota`` ⇒ 中文措辞会漏。
+    """
+    from src.api.wb_exec import bridge, acp_client
+    raw = ('{"code":-32000,"message":"Request failed","data":'
+           '{"category":"limit","details":"每日免费额度已用完"}}')
+    with pytest.raises(acp_client.WbAcpError) as ei:
+        bridge._raise_if_prompt_failed({
+            "stopReason": "refusal",
+            "_meta": {"codebuddy.ai/errorMessage": raw},
+        })
+    assert ei.value.is_quota is True, raw

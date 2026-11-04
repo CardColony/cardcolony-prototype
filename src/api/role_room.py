@@ -611,12 +611,23 @@ def schedule_card_changed(work_id: str, card_id: str, updates: dict[str, Any]) -
     影响写卡结果。
     """
     try:
-        loop = asyncio.get_running_loop()
+        running = asyncio.get_running_loop()
     except RuntimeError:
         return
+    coro = _notify_card_changed(work_id, card_id, dict(updates or {}))
     try:
-        loop.create_task(_notify_card_changed(work_id, card_id, dict(updates or {})))
+        # [双循环 2026-11-04] 本函数挂在写卡链上，可能经 B 侧 emit/读路径
+        # 调到——get_running_loop().create_task 会把角色回合生到服务循环
+        # B 上（与 policy_runner._spawn 同款污染）。⇒ 固定生到主循环 A。
+        from ..infra import loops as _loops
+        if _loops.main_loop() is not None and running is not _loops.main_loop():
+            def _mk() -> None:
+                asyncio.get_running_loop().create_task(coro)
+            _loops.run_sync_on_main(_mk)
+            return
+        running.create_task(coro)
     except Exception as exc:  # noqa: BLE001
+        coro.close()          # 路由失败别让协程泄漏告警
         logger.warning("[role] 排卡片变更通知失败 card=%s: %s", card_id, exc)
 
 

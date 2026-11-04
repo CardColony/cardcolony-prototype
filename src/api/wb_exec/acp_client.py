@@ -39,6 +39,71 @@ CATEGORY_QUOTA = "quota"
 #: 用户主动中断（"Task was interrupted by user"）⇒ **不自动续**。
 INTERRUPTED_MARK = "interrupted by user"
 
+#: ★★ 上游"额度/配额用完了"的**明确措辞**（2026-11-04 收紧过一次、11-04 晚再补）。
+#:
+#: ★ **为什么不能认裸词**（生产现场教训）：早先这里有裸词 ``quota`` / ``limit`` /
+#:   ``额度`` / ``配额`` ⇒ 而我们的卡片任务**本身叫 ``quota_probe.txt``**
+#:   ⇒ **agent 的正常正文里出现 "quota"** ⇒ 被判成"额度耗尽"
+#:   ⇒ **Devin 被永久跳过** ⇒ 全路由到 command-code ⇒ 它也因同一原因被标记
+#:   ⇒ **级联全崩**（现场：状态文件里 ``wb-devin:swe-2-max`` = "devin 报额度/配额用完"，
+#:   而那次 Devin **跑得好好的**）。
+#: ⇒ 现在**只认上游报错里的明确短语**，裸词一律不算；**且只在报错里判**（不拿正文判）。
+#:
+#: ★ **为什么放在这儿**（而不是只留在 bridge）：WorkBuddy 的失败**有两种来路**
+#:   —— ① JSON-RPC ``error``（抛异常）；② 返回体 ``_meta["codebuddy.ai/errorMessage"]``
+#:   （**不抛异常**）。两处都要能认出"额度用完"⇒ 短语表放在**被两边共用**的
+#:   本模块里，bridge 再从这儿引。
+#:
+#: ★ **2026-11-04 补的措辞**：``hy4free`` 是「**每日赠送免费额度**」的限时免费档
+#:   （促销到 2026-11-16）⇒ 当天赠送额度用完时上游报的是**中文**
+#:   （"每日免费额度已用完" / "免费额度已达上限" 之类）⇒ 只认 ``category=="quota"``
+#:   或英文 ``quota`` **会漏判** ⇒ 那一档不会立刻让路（每张卡先白等一轮失败）。
+QUOTA_PHRASES = (
+    "free usage limit",
+    "free usage exceeded",
+    "free tier limit",
+    "free_tier_limit",
+    "quota exceeded",
+    "exceeded your quota",
+    "exceeded your current quota",
+    "insufficient quota",
+    "insufficient_credits",
+    "insufficient credits",
+    "rate limit exceeded",
+    "rate_limit_exceeded",
+    "you've used all",
+    "used all of your",
+    "额度用完",
+    "额度耗尽",
+    "额度不足",
+    "配额用完",
+    "配额不足",
+    "免费额度已用完",
+    # ★ 2026-11-04 补：「每日赠送免费额度」用完时的几种中文说法
+    "额度已用完",
+    "额度已用尽",
+    "额度已达上限",
+    "免费额度已达上限",
+    "每日额度",
+    "今日额度",
+    "daily limit reached",
+    "daily usage limit reached",
+    "daily free limit",
+)
+
+
+def looks_quota_exhausted(msg: str) -> bool:
+    """这段**上游报错**说的是额度/配额用完了吗？（只认明确短语）
+
+    ★ **只在上游报错里调**（不拿 agent 正文调）⇒ agent 正文里聊到 "quota/额度"
+      不会被当成"额度用完"（2026-11-04 生产教训）。
+
+    ⇒ 只认明确提到额度/配额的措辞；其它错（500/超时/鉴权）**不**当额度耗尽
+    ⇒ 避免把一次偶发故障误判成"永久没额度"（误判会让那一档永久让路）。
+    """
+    low = str(msg or "").lower()
+    return any(w in low for w in QUOTA_PHRASES)
+
 #: 哨兵：区分「没传 read_timeout」（⇒ 用默认）和「**显式传 None**」（⇒ 读不设超时）。
 _UNSET = object()
 
@@ -355,8 +420,23 @@ class AcpClient:
                             if isinstance(data, dict):
                                 category = str(data.get("category") or "")
                             msg = str((err or {}).get("message") or "ACP 调用失败")
-                            if not category and "quota" in msg.lower():
-                                category = CATEGORY_QUOTA
+                            if not category:
+                                # ★ **额度判定**：英文裸词 "quota" ＋ **明确措辞**
+                                #   （中文的"每日免费额度已用完"之类 ⇒ 只认 category
+                                #   会漏判 ⇒ 那一档不立刻让路 ⇒ 每张卡先白等一轮失败）。
+                                # ⇒ 干草堆 = 消息 + details + displayMsg（文案常在后者里）。
+                                #   ⚠ ``data`` **不一定是 dict**（JSON-RPC 允许任意值）
+                                #   ⇒ 一律先夹成 dict 再取字段。
+                                _dd = data if isinstance(data, dict) else {}
+                                _dm = _dd.get("displayMsg")
+                                _hay = " ".join([
+                                    msg,
+                                    str(_dd.get("details") or ""),
+                                    (str(_dm.get("zh") or "") if isinstance(_dm, dict)
+                                     else str(_dm or "")),
+                                ])
+                                if "quota" in msg.lower() or looks_quota_exhausted(_hay):
+                                    category = CATEGORY_QUOTA
                             raise WbAcpError(msg, code=err.get("code"),
                                              category=category, data=data)
                         result = obj.get("result")

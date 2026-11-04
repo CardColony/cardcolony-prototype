@@ -206,9 +206,15 @@ class ModelGateway:
         self.stats = stats if stats is not None else RuntimeStats()
         # [并发调度 2026-10-19] 每个模型一把信号量：同时最多 N 个调用在跑，
         # 其余排队等（不失败、不丢活）。N 见 config.models.yaml 的 concurrency 段。
-        self._sems: dict[str, asyncio.Semaphore] = {}
+        # [双循环 2026-11-04] 按 (model, loop) 分槽：asyncio.Semaphore 首次
+        # acquire 时绑定所在 loop——单键共享时，一个跑错 loop 的调用会把闸
+        # 永久绑死到 B，A 侧此后全部 "bound to a different event loop"
+        # （事故实证：post_work_message 整场跑在 B ⇒ cmd-ds-v41-flash 闸被
+        # 绑 B ⇒ A 侧所有调用 ModelError）。分槽后流浪调用只锁自己那条 loop
+        # 的闸；正常全 A 调用共享同一把，语义不变。
+        self._sems: dict[tuple[str, Any], asyncio.Semaphore] = {}
         # [智能路由 2026-10-20] 每个模型的总容量，供 load_of() 算占用率
-        self._sem_limits: dict[str, int] = {}
+        self._sem_limits: dict[tuple[str, Any], int] = {}
         self._models: dict[str, dict[str, Any]] = {
             k: v for k, v in (config.get("models") or {}).items() if isinstance(v, dict)
         }
@@ -217,13 +223,23 @@ class ModelGateway:
             self._by_vendor.setdefault(_vendor_of(mc), []).append(name)
         self._runtime = self._build_runtime(config)
 
+    @staticmethod
+    def _sem_key(model_name: str) -> tuple[str, Any]:
+        """闸的键＝(模型, 当前 loop)。无线程本地运行环（同步/线程上下文
+        直接调 load_of 之类）⇒ loop=None 单列，语义仍收敛。"""
+        try:
+            return (model_name, asyncio.get_running_loop())
+        except RuntimeError:  # noqa: BLE001
+            return (model_name, None)
+
     def _sem_for(self, model_name: str) -> asyncio.Semaphore:
         """该模型的并发闸（懒建，进程内单例）。
 
         上限取 ``concurrency.per_model[model]``，缺省回 ``concurrency.default``（3）。
         **这是排队不是拒绝**：拿不到就 await，不抛错、不丢活。
         """
-        sem = self._sems.get(model_name)
+        key = self._sem_key(model_name)
+        sem = self._sems.get(key)
         if sem is None:
             cfg = self.config.get("concurrency") or {}
             per = cfg.get("per_model") or {}
@@ -233,14 +249,15 @@ class ModelGateway:
                 n = 3
             n = max(1, n)
             sem = asyncio.Semaphore(n)
-            self._sems[model_name] = sem
-            self._sem_limits[model_name] = n
+            self._sems[key] = sem
+            self._sem_limits[key] = n
         return sem
 
     def load_of(self, model_name: str) -> float:
         """该模型当前占用率（0＝空闲，1＝满）。没建过闸 ⇒ 0。"""
-        sem = self._sems.get(model_name)
-        total = self._sem_limits.get(model_name) or 0
+        key = self._sem_key(model_name)
+        sem = self._sems.get(key)
+        total = self._sem_limits.get(key) or 0
         if sem is None or total <= 0:
             return 0.0
         used = total - sem._value
@@ -630,7 +647,9 @@ class ModelGateway:
                     finish_reason=str(result.get("finish_reason") or ""),
                     text_len=len(result.get("content") or ""),
                     tool_calls=len(result.get("tool_calls") or []),
-                    reasoning_chars=sum(len(b.text) for b in blocks if isinstance(b, ReasoningBlock)))
+                    reasoning_chars=sum(
+                        len(b.text) for b in assembler.blocks()
+                        if isinstance(b, ReasoningBlock)))
                 _obs.call_end(_trace)
                 return result
 

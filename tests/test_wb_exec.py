@@ -440,7 +440,7 @@ def test_repo_config_shape_is_valid(monkeypatch):
     cfg = wb_config.load()
     # 2026-10-23 用户令：执行体已开闸（enabled=true）
     assert cfg.enabled is True
-    assert len(cfg.candidates) == 9
+    assert len(cfg.candidates) == 10
     weights = {f"{c.executor}:{c.model}": c.weight for c in cfg.candidates}
     prios = {f"{c.executor}:{c.model}": c.priority for c in cfg.candidates}
     # ★★ **2026-11-04 用户令：不再是「配比」，改成「优先级瀑布」**
@@ -454,6 +454,9 @@ def test_repo_config_shape_is_valid(monkeypatch):
     assert prios["wb-cc:inclusionai/ling-3.1-flash-1019:free"] == 25
     assert prios["wb-cc:reflection/beam:free"] == 26
     assert prios["wb-cc:stealth/glyph-cluster:free"] == 27
+    # ★ **HY4 限时免费档**（2026-11-04 实测：cn 账号 `hy4free` x0.00、真调 13.8s 出活）
+    #   ⇒ 排在 command-code 之后、**付费的 wb-cn/glm(x0.08) 之前** ⇒ 只顶付费档。
+    assert prios["wb-cn:hy4free"] == 28
     # ★ **hy3 降为最后一级兜底**（优先级最低 ⇒ 只有前面全排满/额度尽才轮到它）
     assert prios["wb-cn:hy3"] == 90
     assert prios["wb-intl:hy3"] == 91
@@ -464,6 +467,7 @@ def test_repo_config_shape_is_valid(monkeypatch):
         "wb-cc:inclusionai/ling-3.1-flash-1019:free",
         "wb-cc:reflection/beam:free",
         "wb-cc:stealth/glyph-cluster:free",
+        "wb-cn:hy4free",
         "wb-cn:glm-5.3-flash", "wb-intl:glm-5.3-flash",
         "wb-cn:hy3", "wb-intl:hy3",
     ]
@@ -762,13 +766,25 @@ async def test_bridge_feeds_recent_tool_calls_to_workbuddy(work, wb_cfg,
 @pytest.mark.asyncio
 async def test_bridge_auth_required_falls_back_without_retrying(work, wb_cfg,
                                                               fake_gw, monkeypatch):
-    """**账号未登录** ⇒ 不可重试、且记住该执行体（后续秒级回落）。"""
+    """**账号未登录** ⇒ 不重试同一路、**让路下一优先级**、且**故障局部化**。
+
+    ★★ **2026-11-04 语义变更**（生产现场：Devin 服务端短暂拒会话 ⇒ 每张卡
+    被派过去、7 秒后失败 ⇒ **整卡直接死** ⇒ 白等 + 拿不到活）：
+
+    - **旧语义**（11-03）：鉴权失败 ⇒ 不重试 ⇒ **回落系统模型**（＝花钱）；
+    - **新语义**（11-04 优先级瀑布）：鉴权失败 ⇒ 跟「额度尽」**同一条纪律**
+      ⇒ **让路表里排它后面的那一级** ⇒ **整条链都用尽才回落系统模型**。
+
+    ★ 下面三条护栏是 10-23 实跑教训，**一个字都没变**：
+      ① 同一个候选**只试一次**（不走 3 次重连）；
+      ② **不许全局熔断**（一次瞬时故障不许瘫掉整条通道）；
+      ③ 别的卡**照常委派**（不许被连坐）。
+    """
     reg = bridge.get_registry()
     from src.api.wb_exec.registry import GatewayProcess
     from src.api.wb_exec.config import Executor
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
-    reg.clear_unauthenticated()
 
     # 假网关的 prompt 报「账号未登录」
     orig = FakeAcpGateway._stream
@@ -791,15 +807,22 @@ async def test_bridge_auth_required_falls_back_without_retrying(work, wb_cfg,
                                  content="干活")
     st.pair_id = "pair-auth"
     outcome = await bridge.maybe_delegate(st)
-    # 回落系统模型（on_unavailable=fallback_system）⇒ 返回 None
-    assert outcome is None
-    # **只试了一次**（没走 3 次重连）
-    assert len(fake_gw.prompt_calls) == 1
+    # ★★ **11-04 新语义**：鉴权失败 ⇒ **让路下一优先级** ⇒ 这张卡**没死**
+    #   （表里还有 hy3 ⇒ 接着干 ⇒ 整条链都用尽才回落系统模型＝花钱）
+    assert outcome is not None, "鉴权失败后应让路下一优先级接着干，不是整卡回落系统模型"
+    models = [v for _, c, v in fake_gw.set_config if c == "model"]
+    # ① **同一个候选只试一次**（没走 3 次重连）
+    assert models.count("custom-local:deepseek-v4-pro") == 1, models
+    # ①' 让路后落在**表里的下一级**（hy3），不是表外付费模型
+    assert "hy3" in models, models
     # [故障局部化 2026-10-23 实跑教训] 鉴权失败**只影响这一张卡**：
     #   早先做成"整个执行体永久熔断"⇒ 一次瞬时故障（网关进程被回收重建的窗口期）
     #   就把**所有**卡都挡住 ⇒ 整条通道瘫痪。
     #   ⇒ 现在只记一个诊断计数，**别的卡照常委派**。
-    assert reg.is_unauthenticated("wb-cn") is False, "不许全局熔断"
+    # ★★ **2026-11-04：整套"熔断/未登录"闸门已删除**（用户当面问「熔断到底能防什么」
+    #   ⇒ 防不了什么、只会挡住干活）⇒ 这里钉住"**不许再有这道闸**"。
+    assert not hasattr(reg, "is_unauthenticated"), "不许有全局熔断闸"
+    assert not hasattr(reg, "clear_unauthenticated"), "不许有全局熔断闸"
     assert reg.auth_failures("wb-cn") == 1
     card2 = await _make_coder_card(work["work_id"], "另一张卡")
     st2 = message_runner.RunState(work_id=work["work_id"], card_id=card2,
@@ -807,8 +830,6 @@ async def test_bridge_auth_required_falls_back_without_retrying(work, wb_cfg,
     st2.pair_id = "pair-auth2"
     out2 = await bridge.maybe_delegate(st2)
     assert out2 is not None, "别的卡必须照常委派（不许被连坐）"
-    assert len(fake_gw.prompt_calls) == 2
-    reg.clear_unauthenticated()
 
 
 @pytest.mark.asyncio
@@ -1058,6 +1079,75 @@ async def test_quota_exhausted_spills_to_next_priority(work, tmp_path, fake_gw,
         assert later, models2
         assert all(m == "glm-5.3-flash" for m in later), \
             f"额度耗尽的那一级不该再被选中：{later}"
+    finally:
+        wb_config.reset_cache()
+        _picker.reset_pickers()
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_spills_to_next_priority(work, tmp_path, fake_gw,
+                                                    monkeypatch):
+    """★★ **2026-11-04 生产现场**：鉴权失败 ⇒ **让路下一优先级**，不是整卡失败。
+
+    现场：Devin 服务端短暂拒会话（CLI 报 ``Not logged in``）⇒ 每张卡被派给
+    Devin ⇒ 每次 7 秒后失败 ⇒ **整张卡直接死**（18:00-18:02 连续 28 次）
+    ⇒ 白等 + 拿不到活。
+
+    ⇒ 纪律跟「额度尽」**同一条**：**这一级出局 ⇒ 流量落下一级**，
+      整条链都用尽才回落系统模型（＝花钱）。
+    ⇒ 同时**仍然不做全局熔断**（10-23 教训：一次鉴权失败不许瘫掉整条通道）
+      ⇒ 下一张卡还会再试它（能自愈）。
+    """
+    from src.api.wb_exec import picker as _picker
+
+    p = _wb_cfg_payload(
+        tmp_path,
+        candidates=[
+            {"executor": "wb-cn", "model": "hy3", "weight": 0, "priority": 10},
+            {"executor": "wb-cn", "model": "glm-5.3-flash", "weight": 0,
+             "priority": 20},
+        ],
+        fallback={"models": ["hy3"], "prefer_same_executor": True},
+    )
+    monkeypatch.setenv(wb_config.ENV_CONFIG_PATH, str(p))
+    wb_config.reset_cache()
+    _sw = tmp_path / "sw_on.json"
+    _sw.write_text(json.dumps({"enabled": True}), encoding="utf-8")
+    monkeypatch.setattr(wb_switch, "SWITCH_PATH", _sw)
+    _picker.reset_pickers()
+
+    reg = bridge.get_registry()
+    _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
+    monkeypatch.setattr(bridge, "get_registry", lambda: reg)
+
+    card_id = await _make_coder_card(work["work_id"])
+    st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
+                                 content="干活")
+    st.pair_id = "pair-auth"
+
+    # 第一次 prompt 报鉴权失败，第二次（换模型后）成功
+    calls = {"n": 0}
+    orig = FakeAcpGateway._stream
+
+    async def patched(self, body):
+        if str(body.get("method")) == "session/prompt":
+            calls["n"] += 1
+            self.prompt_mode = "auth" if calls["n"] == 1 else "ok"
+        async for chunk in orig(self, body):
+            yield chunk
+
+    monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
+
+    try:
+        outcome = await bridge.maybe_delegate(st)
+        # ★ 核心判据：**这张卡没死**（鉴权失败 ⇒ 让路 ⇒ 换下一优先级接着干）
+        assert outcome is not None, "鉴权失败后应换下一优先级继续干，而不是整卡失败"
+        models = [v for _, c, v in fake_gw.set_config if c == "model"]
+        assert "glm-5.3-flash" in models, models
+        types = [e.get("type") for e in
+                 event_stream.journal_of(work["work_id"], card_id)]
+        assert "wb_exec_fallback" in types, types
+        assert "wb_exec_unavailable" in types, types
     finally:
         wb_config.reset_cache()
         _picker.reset_pickers()

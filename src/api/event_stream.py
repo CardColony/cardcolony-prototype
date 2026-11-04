@@ -344,6 +344,28 @@ def _seq_of(item: Any) -> Any:
     return item.get("seq") if isinstance(item, dict) else None
 
 
+def _put_evt(q: Any, evt: dict[str, Any], work_id: str, card_id: str, channel: str) -> None:
+    """单订阅队列投递（含满队列丢旧保新）——**必须在队列所属 loop 上调用**。"""
+    try:
+        q.put_nowait(evt)
+    except asyncio.QueueFull:
+        dropped = None
+        try:
+            dropped = q.get_nowait()          # 丢最旧中间帧，腾位
+        except Exception:  # noqa: BLE001 取空队列竞态：忽略
+            dropped = None
+        try:
+            q.put_nowait(evt)                 # 保最新帧
+        except Exception:  # noqa: BLE001
+            pass
+        logger.warning(
+            "[flow] %s 订阅队列满：丢最旧中间帧(seq=%s) 保最新(seq=%s) work=%s card=%s",
+            channel, _seq_of(dropped), evt.get("seq"), work_id, card_id,
+        )
+    except Exception:  # noqa: BLE001 单订阅者失效不拖累其他
+        pass
+
+
 def _fanout(subs: Any, evt: dict[str, Any], work_id: str, card_id: str, channel: str) -> None:
     """SSE 订阅 fanout：队列满**不静默丢**（[对话流渲染 T4]）。
 
@@ -355,24 +377,27 @@ def _fanout(subs: Any, evt: dict[str, Any], work_id: str, card_id: str, channel:
     - 丢「最旧中间帧」＝只损失已排队但未送达的旧帧，这些帧仍在 journal 里，
       前端 from=0 重放可补齐；
     - 后端**不补任何补丁帧**（seq 空洞为正常态，接口契约不变）。
+
+    [双循环隔离 2026-11-05] 订阅队列活在**服务循环 B**（SSE 消费方），而 emit
+    跑在**主循环 A**（跑卡域）——asyncio.Queue 跨 loop ``put_nowait`` 唤不醒
+    属主 loop 上的 ``queue.get()``（唤醒走属主 loop 的 call_soon，非线程安全）。
+    ⇒ 每个队列创建时烙 ``_es_owner_loop``；fanout 逐队列判属主：同 loop 直接
+    put，跨 loop 走 ``call_soon_threadsafe`` 回属主 loop 上 put。
+    未烙印（旧订阅者/测试）退化为原地 put——单循环语义不变。
     """
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:  # 无线程本地运行环（后台线程 emit）
+        running = None
     for q in list(subs):
+        owner = getattr(q, "_es_owner_loop", None)
+        if owner is None or owner is running:
+            _put_evt(q, evt, work_id, card_id, channel)
+            continue
         try:
-            q.put_nowait(evt)
-        except asyncio.QueueFull:
-            dropped = None
-            try:
-                dropped = q.get_nowait()          # 丢最旧中间帧，腾位
-            except Exception:  # noqa: BLE001 取空队列竞态：忽略
-                dropped = None
-            try:
-                q.put_nowait(evt)                 # 保最新帧
-            except Exception:  # noqa: BLE001
-                pass
-            logger.warning(
-                "[flow] %s 订阅队列满：丢最旧中间帧(seq=%s) 保最新(seq=%s) work=%s card=%s",
-                channel, _seq_of(dropped), evt.get("seq"), work_id, card_id,
-            )
+            owner.call_soon_threadsafe(_put_evt, q, evt, work_id, card_id, channel)
+        except RuntimeError:  # noqa: BLE001 属主 loop 已关闭：该订阅者随连接死
+            pass
         except Exception:  # noqa: BLE001 单订阅者失效不拖累其他
             pass
 
@@ -541,6 +566,7 @@ async def subscribe(work_id: str, card_id: str, from_seq: int = 0) -> AsyncItera
     """
     key = _key(work_id, card_id)
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    queue._es_owner_loop = asyncio.get_running_loop()  # [双循环] 烙印属主
     _subscribers.setdefault(key, set()).add(queue)
     try:
         for evt in journal_of(work_id, card_id):
@@ -652,6 +678,7 @@ async def subscribe_work(work_id: str) -> AsyncIterator[dict[str, Any]]:
     断连自动清理订阅者队列。
     """
     queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    queue._es_owner_loop = asyncio.get_running_loop()  # [双循环] 烙印属主
     _work_subscribers.setdefault(work_id, set()).add(queue)
     try:
         while True:
@@ -720,6 +747,7 @@ async def subscribe_work_cards(work_id: str) -> AsyncIterator[dict[str, Any]]:
     重放旧变化会让前端以为卡刚变过（画布会白刷一轮）。
     """
     queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    queue._es_owner_loop = asyncio.get_running_loop()  # [双循环] 烙印属主
     _work_card_subscribers.setdefault(work_id, set()).add(queue)
     try:
         while True:
@@ -847,6 +875,7 @@ async def subscribe_tokens(work_id: str, card_id: str, from_seq: int = 0) -> Asy
     """
     key = _key(work_id, card_id)
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    queue._es_owner_loop = asyncio.get_running_loop()  # [双循环] 烙印属主
     _token_subscribers.setdefault(key, set()).add(queue)
     try:
         for evt in token_journal_of(work_id, card_id):

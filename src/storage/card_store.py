@@ -1550,6 +1550,10 @@ async def update_card(
                 block=_b,
                 old=_old_val[:2000], new=_new_val[:2000],
                 by=_ev_by, cause=_ev_cause or "system",
+                # [现状超长提醒 2026-11-04] new/old 截 2000 进 payload，
+                # 量真实长度要用 *_len 零件（optional，条件面可用）。
+                extra={"old_len": len(_old_val),
+                       "new_len": len(_new_val)},
             )
         # [2026-10-26 · 记录补全] **meta 字段变更也要记**。改前只记正文三块，
         # 改名（title）/改父（parent）/改状态（state/goal_state）/改连线
@@ -1574,6 +1578,8 @@ async def update_card(
                 block=_k,
                 old=str(_old_m)[:2000], new=str(_new_m)[:2000],
                 by=_ev_by, cause=_ev_cause or "system",
+                extra={"old_len": len(str(_old_m or "")),
+                       "new_len": len(str(_new_m or ""))},
             )
             # [差事底座 2026-11-01] goal_state→complete 是「子卡完工」的卡面
             # 事实，发专用事件 card_goal_completed——msg_report 无 kind（汇报

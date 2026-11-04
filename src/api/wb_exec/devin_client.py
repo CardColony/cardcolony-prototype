@@ -50,6 +50,42 @@ class DevinError(RuntimeError):
     """Devin CLI 调用失败。"""
 
 
+#: ★★ **起 Devin CLI 时必须从环境里剔掉的变量**（2026-11-04 实测定案）。
+#:
+#: **现场**：推演agent 的服务是**从 Devin 桌面版（Windsurf IDE）的内置终端**起的
+#:   （Git Bash ``nohup.exe ./.venv/Scripts/python.exe main.py``）⇒ 那个终端的环境里
+#:   带着一整套 IDE 变量，其中最要命的是：:
+#:
+#:       ACP_BACKEND = windsurf
+#:
+#:   ⇒ 我们起的 ``devin.exe`` 子进程**继承了它** ⇒ CLI **改走 IDE 的凭据后端**
+#:   ⇒ 那条路没有效会话 ⇒ 每次都回：:
+#:
+#:       Error: Not logged in. Run `devin.exe auth login` to authenticate.
+#:
+#:   ⇒ 表现：Devin 优先级最高 ⇒ **每张卡都被派给它** ⇒ 每张卡 7 秒后失败
+#:   ⇒ 旧代码把"鉴权失败"当成整卡失败 ⇒ **卡全死**（现场 18:00-18:06 连死 28 次）。
+#:
+#: ★ **A/B 实测矩阵**（2026-11-04，用生产进程环境的真实值）：
+#:   - 干净环境 ⇒ **rc=0**（出活）；
+#:   - 只加 ``ACP_BACKEND=windsurf`` ⇒ **rc=1 Not logged in**；
+#:   - 全套 IDE 变量（含 ACP_BACKEND）⇒ rc=1；
+#:   - 全套 IDE 变量**但去掉 ACP_BACKEND** ⇒ **rc=0**（出活）。
+#:   ⇒ **就这一个变量的事** ⇒ 其余 IDE 变量（WINDSURF_*/VSCODE_*）留着无害。
+#:
+#: ⇒ 所以：**这里把 ``ACP_BACKEND`` 剔掉**，不论服务是从哪个终端起的都能干活
+#:   （而不是去要求"必须从干净的 shell 启动服务"——那种要求靠人记��住）。
+_DEVIN_ENV_DROP = ("ACP_BACKEND",)
+
+
+def _child_env() -> dict:
+    """起 Devin CLI 用的环境：**继承父进程，但剔掉 IDE 污染变量**。"""
+    env = dict(os.environ)
+    for k in _DEVIN_ENV_DROP:
+        env.pop(k, None)
+    return env
+
+
 class DevinRunner:
     """起一个 ``devin --cloud -p`` 进程跑一轮（**一个进程 = 一个槽**）。"""
 
@@ -112,7 +148,7 @@ class DevinRunner:
             logger.info("[devin] 起进程 model=%s cloud=%s cwd=%s",
                         model or self.model, self.cloud, work_dir)
             proc = await asyncio.create_subprocess_exec(
-                *argv, cwd=work_dir,
+                *argv, cwd=work_dir, env=_child_env(),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 limit=8 * 1024 * 1024)
             poller = (asyncio.create_task(_poll_live_events(marker, on_event))

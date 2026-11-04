@@ -225,11 +225,7 @@ class ExecutorRegistry:
 
     def __init__(self) -> None:
         self._gateways: dict[str, GatewayProcess] = {}
-        #: **账号未登录**的执行体（进程内记忆）。
-        #: 桌面端登录态失效时，重连多少次都没用 ⇒ 第一次发现就记下来，
-        #: 之后该执行体的卡**直接秒级回落**，不再发 prompt。
-        self._unauthenticated: set[str] = set()
-        #: 鉴权失败计数（**只做诊断**；不做全局熔断——故障要局部化）。
+        #: 鉴权失败计数（**只做诊断**：只往日志里记，不拦任何卡、不熔断、不设时间窗）。
         self._auth_failures: dict[str, int] = {}
         #: **建连接的锁**（每执行体一把）——
         #: 并发派发时两个任务同时进来会各建一条连接（ACP 连接上限 32，
@@ -390,12 +386,22 @@ class ExecutorRegistry:
 
         ⇒ 这也是天然的**恢复探针**：手动把卡钉死到这个模型跑一轮，
         成功了就自动恢复全份额（钉死那条路**不走**候选预过滤）。
+
+        ★ **2026-11-04：连状态文件一起清** —— 原来只清进程内存 ⇒
+        **重启后又被文件里的旧标记挡住** ⇒ 一条误判就变成"永久让路"。
         """
         key = (str(executor_id), str(model))
         if key in self._exhausted:
             self._exhausted.pop(key, None)
             logger.info("[wb_exec] 执行体 %s 的模型 %s 真调成功 ⇒ 额度状态已清",
                         executor_id, model)
+        try:
+            from . import quota_state
+            if quota_state.clear_exhausted(str(executor_id), str(model)):
+                logger.info("[wb_exec] 额度状态文件里的标记也已清（%s/%s）",
+                            executor_id, model)
+        except Exception as exc:  # noqa: BLE001 清文件失败不阻断
+            logger.warning("[wb_exec] 清额度状态文件失败（不影响本进程）：%s", exc)
 
     def exhausted_snapshot(self) -> dict[str, str]:
         """当前所有"额度耗尽"的 (执行体, 模型) ⇒ 原因（给卡面/诊断看）。"""
@@ -504,38 +510,27 @@ class ExecutorRegistry:
         return ent[1]
 
     # ---------------------------------------------------------------- 账号态
-    def mark_unauthenticated(self, executor_id: str) -> None:
-        """记录一次鉴权失败（**只做诊断，不熔断**）。
+    def note_auth_failure(self, executor_id: str) -> int:
+        """记一次鉴权失败（**只计数，不拦任何卡**）。
 
-        **为什么没有熔断**（2026-10-23 实跑的教训）：
-        早先这里是"**整个执行体永久标死**"⇒
-        ① 国际版 prewarm 进程被桌面端**回收重建**的窗口期发了一次 prompt ⇒
-        一次真鉴权失败 ⇒ **之后所有卡全回落** ⇒ 整条 WorkBuddy 通道瘫痪，
-        用户看着像"突然全都不干活了"；
-        ② 再叠上"``-32000`` 就当鉴权失败"的误判 ⇒ 放大成整条通道死。
+        ★ **这里没有任何"熔断"**（2026-11-04 用户当面问「熔断到底能防什么」
+          ⇒ 答：**防不了什么，只会挡住干活**，整套删除）：
+        - **不标死执行体**（早先那样做过 ⇒ 一次瞬时故障把整条通道打瘫）；
+        - **不设时间窗**；
+        - **不改选路** ⇒ 真正决定"换不换人"的是 bridge：鉴权失败 ⇒
+          **让路下一优先级**（跟额度尽同一条纪律），这一轮换人、下一张卡照常再试它。
 
-        ⇒ 正确的粒度是**故障局部化**：**这一张卡**回落，**别的卡照常**。
-        这里只留一个计数，供诊断。
+        ⇒ 这里只留一个计数，方便事后看日志（"这个执行体今天鉴权失败了几次"）。
         """
         n = self._auth_failures.get(executor_id, 0) + 1
         self._auth_failures[executor_id] = n
         logger.warning("[wb_exec] 执行体 %s 鉴权失败（累计 %d 次）"
-                       "——只影响这一张卡，不影响其它卡", executor_id, n)
-
-    def is_unauthenticated(self, executor_id: str) -> bool:
-        """**永远 False** —— 不做全局熔断（理由见 :meth:`mark_unauthenticated`）。"""
-        return False
+                       "——只记数，不拦卡；这一轮已让路给下一优先级", executor_id, n)
+        return n
 
     def auth_failures(self, executor_id: str) -> int:
-        """某执行体累计的鉴权失败次数（诊断用）。"""
+        """某执行体累计的鉴权失败次数（**纯诊断**）。"""
         return int(self._auth_failures.get(executor_id, 0))
-
-    def clear_unauthenticated(self, executor_id: str = "") -> None:
-        """清掉标记（用户重新登录桌面端后可用这里手动清）。"""
-        if executor_id:
-            self._unauthenticated.discard(executor_id)
-        else:
-            self._unauthenticated.clear()
 
     # ---------------------------------------------------------------- 访问
     def gateway(self, executor_id: str) -> Optional[GatewayProcess]:

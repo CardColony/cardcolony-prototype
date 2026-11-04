@@ -631,13 +631,84 @@ async def test_failed_target_turn_reports_fact_policy_gates(sandbox, monkeypatch
                       .read_text(encoding="utf-8"))
     pol = next(p for p in pols.get("policies", pols)
                if p.get("id") == "review_target_turn_end_continue")
-    where = pol["when"]["event"]["where"]
 
-    # 每种结局都照发事实；只有正常收口 + 挂账过策略闸。
+    # 每种结局都照发事实；无推进时只有正常收口 + 挂账过策略闸
+    # （progress=false 的回合走 stall 兜底那半支）。
     for oc, fires in (("error", False), ("aborted", False),
                       ("max-tokens", False), ("ok", True)):
         emitted.clear()
         assert await review_runner.report_target_turn_end(wid, cid, oc) is True
         ev = next(d for t, d in emitted if t == "review_target_turn_end")
-        assert ev["outcome"] == oc and ev["pending_ask"] is True
-        assert harness_cond.match_where(ev, where, {}) is fires, (oc, ev)
+        assert ev["outcome"] == oc and ev["pending_ask"] is True \
+            and ev["progress"] is False
+        ctx = {"trigger_data": ev, "events": [ev]}
+        assert harness_cond.eval_cond(pol["when"], ctx) is fires, (oc, ev)
+
+
+async def test_turn_end_progress_marks_revision_and_draft(sandbox, monkeypatch):
+    """[turn_end 激活 2026-11-04] ``progress``＝刚结束这轮正卡有实质推进：
+    草稿版本涨（改稿）或 responded_seq 涨（交回）。交回后回合崩了也照点——
+    回应是既成事实。没推进的回合 progress=false，点火交给 pending_ask 半支。"""
+    from src.infra import harness_cond
+    emitted = []
+    monkeypatch.setattr(review_runner.event_stream, "emit",
+                        lambda wid_, rid_, t, d: emitted.append((t, d)) or {})
+    import json
+    from pathlib import Path
+    pols = json.loads((Path(__file__).resolve().parents[1]
+                       / "config" / "harness_policies.json")
+                      .read_text(encoding="utf-8"))
+    pol = next(p for p in pols.get("policies", pols)
+               if p.get("id") == "review_target_turn_end_continue")
+
+    wid, cid, fids, rid = await _setup()
+    for f in fids:
+        await _rejecting_seat(wid, rid, f)
+    st = await review_store.state_of(wid, rid)
+    await review_runner._dispatch_child(wid, rid, st, kind="revise")
+
+    # 改稿一轮：草稿指纹真变 ⇒ sync_draft 推版本 ⇒ turn_end 报 progress。
+    meta = (await card_store.read_card(wid, cid)).get("meta") or {}
+    draft = str(meta.get("requirements_draft") or "")
+    await card_store.update_card(
+        wid, cid, {"requirements_draft": draft + "\n新增一条验收标准"}, "测试改稿")
+    assert await review_runner.report_target_turn_end(wid, cid, "ok") is True
+    ev = next(d for t, d in emitted if t == "review_target_turn_end")
+    assert ev["progress"] is True
+    assert harness_cond.eval_cond(pol["when"],
+                                  {"trigger_data": ev, "events": [ev]}) is True
+
+    # 第二轮没动草稿 ⇒ progress 回落 false（水位已回写，只吃增量）。
+    emitted.clear()
+    assert await review_runner.report_target_turn_end(wid, cid, "ok") is True
+    ev2 = next(d for t, d in emitted if t == "review_target_turn_end")
+    assert ev2["progress"] is False
+
+    # 第三轮没改稿但交回了（submit_revision ⇒ responded_seq 涨）⇒ progress。
+    emitted.clear()
+    await review_store.mark_responded(wid, rid)
+    assert await review_runner.report_target_turn_end(wid, cid, "ok") is True
+    ev3 = next(d for t, d in emitted if t == "review_target_turn_end")
+    assert ev3["progress"] is True and ev3["pending_ask"] is False
+
+    # 交回后回合崩了（error）⇒ progress 仍是既成事实，策略照点。
+    emitted.clear()
+    await review_store.mark_responded(wid, rid)
+    assert await review_runner.report_target_turn_end(wid, cid, "error") is True
+    ev4 = next(d for t, d in emitted if t == "review_target_turn_end")
+    assert ev4["progress"] is True and ev4["outcome"] == "error"
+    assert harness_cond.eval_cond(pol["when"],
+                                  {"trigger_data": ev4, "events": [ev4]}) is True
+
+
+async def test_review_target_responded_policy_retired(sandbox):
+    """submit_revision 的中途点火并入 turn_end.progress——策略停用但
+    事件/事实照发（水位判定靠它）。真实配置里它必须是 inactive。"""
+    import json
+    from pathlib import Path
+    pols = json.loads((Path(__file__).resolve().parents[1]
+                       / "config" / "harness_policies.json")
+                      .read_text(encoding="utf-8"))
+    pol = next(p for p in pols.get("policies", pols)
+               if p.get("id") == "review_target_responded")
+    assert pol.get("active") is False

@@ -217,6 +217,24 @@ async def maybe_delegate(state: Any) -> Optional[Any]:
 
 
 # ===================================================================== 主流程
+#: ★ **同一张卡的"跳过/让路"事件去重**（2026-11-04）。
+#: 每轮都要重新选路（槽可能释放了）⇒ 但"这个候选被跳过"是**同一个事实** ⇒
+#: 只报第一次 ⇒ 卡面不再被同一条消息刷满。
+#: key = card_id，value = 已报过的 (executor, model) 集合。
+_skip_notified: dict[str, set[tuple[str, str]]] = {}
+
+
+def _skip_already_notified(card_id: str, executor: str, model: str) -> bool:
+    """这个跳过**是不是已经报过**？（报过 ⇒ True ⇒ 不再发事件）"""
+    key = str(card_id or "")
+    seen = _skip_notified.setdefault(key, set())
+    pair = (str(executor), str(model))
+    if pair in seen:
+        return True
+    seen.add(pair)
+    return False
+
+
 async def run_delegated(state: Any, cfg: WbExecConfig, backend: str) -> Any:
     """跑一次 WorkBuddy 委派回合。返回 ``StepOutcome("deliver", …)``。"""
     from ..message_runner import StepOutcome, _land_round_reply
@@ -248,6 +266,11 @@ async def run_delegated(state: Any, cfg: WbExecConfig, backend: str) -> Any:
         #   ⇒ **占不到槽就立刻往下一级溢流**（不干等、不回落系统模型＝花钱）。
         cand, skips = await _select_candidate(cfg, state, cwd)
         for s in skips:
+            # ★ **同一张卡里，同一个候选的"跳过/让路"只报一次**
+            #   （每轮都会重新选路 ⇒ 不去重的话卡面被同一条消息刷满）
+            if _skip_already_notified(state.card_id, s.get("executor"),
+                                     s.get("model")):
+                continue
             if s.get("kind") == "saturated":
                 # ★ **排满溢流**＝换了执行体 ⇒ 用 `wb_exec_fallback`（看得见
                 #   "从谁落到谁"），不是 `unavailable`（那表示"这一路彻底不行"）。
@@ -443,15 +466,6 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
         if current is None:
             raise WbAcpError("没有可用候选（配比表为空）")
         ex.executor_id, ex.model = current.executor, current.model
-        # **账号未登录的执行体直接跳过**（进程内记忆）——
-        # 没登录时重连多少次都没用，别浪费一张 coder 卡 3 次重连。
-        if registry.is_unauthenticated(current.executor):
-            # **文案要说实话**（2026-10-23 实跑教训）：这里的"未登录"其实是
-            # **执行体被熔断**（上一次撞到过鉴权失败）——桌面端登录态可能好好的。
-            # 早先写"请重新登录 WorkBuddy 桌面端"⇒ 把人引到错误的方向。
-            raise WbAcpError(
-                f"执行体 {current.executor} 暂时不可用"
-                f"（上次鉴权失败，已熔断；稍后自动恢复）")
         try:
             # ★ acquire：优先 **CLI 进程池**（一进程一 agent 槽 ⇒ 真并行）；
             #   没有 ⇒ 桌面端主进程自己监听的那个网关（并发 1）。
@@ -630,16 +644,40 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                 _emit(state, "wb_exec_interrupted", {"error": str(exc)[:300]})
                 raise
             if exc.is_auth_required:
-                # **不可重试**：这次确实是鉴权失败（文本命中）。
-                # 标记该执行体**暂时**不可用（熔断 60 秒，不永久）⇒
-                # 之后它的卡秒级回落，但**到期自动恢复**（一次误判不会瘫掉通道）。
-                registry.mark_unauthenticated(current.executor)
+                # ★ **鉴权失败 = 这个执行体现在用不了**（**不是这张卡的问题**）
+                #   ⇒ **让路下一优先级**（2026-11-04 生产现场：Devin 服务端短暂
+                #   拒会话 ⇒ CLI 报 "Not logged in" ⇒ 每张卡被派过去、7 秒后
+                #   失败 ⇒ **整卡直接死** ⇒ 白等还拿不到活；18:00-18:06 连续 28 次）。
+                #   ⇒ 跟「额度尽」**同一纪律**：这一级出局 ⇒ 流量落下一级，
+                #     **整条链都用尽才回落系统模型**（＝花钱）。
+                # ★ **没有任何"熔断"**：不标死执行体、不设时间窗、不改选路
+                #   （用户 2026-11-04 当面问「熔断到底能防什么」⇒ 防不了什么，
+                #     只会挡住干活 ⇒ 整套删掉）⇒ 只是这一轮换人，**下一张卡还会
+                #   再试它**（能自愈）。
+                registry.note_auth_failure(current.executor)
                 _emit(state, "wb_exec_unavailable", {
-                    "executor": current.executor,
-                    "reason": "鉴权失败（桌面端登录态失效），已熔断，稍后自动恢复",
+                    "executor": current.executor, "model": current.model,
+                    "reason": "上游报鉴权失败（登录态失效）⇒ 已让路给下一优先级",
                     "error": str(exc)[:300],
                 })
-                raise
+                tried.add((current.executor, current.model))
+                registry.release_reserve(current.executor, holder)
+                nxt = await _advance(current)
+                if nxt is None:
+                    raise WbAcpError(
+                        f"优先级表里的执行体都鉴权失败（{ex.fallback_used}）: {exc}") from exc
+                ex.fallback_used.append(f"{nxt.executor}:{nxt.model}")
+                logger.warning("[wb_exec] 鉴权失败 ⇒ 落下一优先级：%s → %s（%s）",
+                               f"{current.executor}:{current.model}",
+                               f"{nxt.executor}:{nxt.model}", exc)
+                _emit(state, "wb_exec_fallback", {
+                    "from": f"{current.executor}:{current.model}",
+                    "to": f"{nxt.executor}:{nxt.model}",
+                    "reason": str(exc)[:300],
+                })
+                current = nxt
+                attempt = 0          # ★ 换人 ⇒ 重试预算重新算
+                continue
             if exc.is_quota:
                 # ★ **上游明确说额度用完了**（ACP 的
                 #   ``_meta['codebuddy.ai/errorMessage'].category == "quota"``）
@@ -675,8 +713,33 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
             #   ⇒ 现场表现：反反复复失败、反反复复换人接手（card_211 白跑 4 轮）。
             #   ⇒ "排满"是**容量**问题（该溢流到下一优先级）；
             #   "传输失败"是**这一路自身**的问题（该重试它，别换人）。
+            # ★ 明确标了"重试没用"的失败（如 rc=8 轮数用尽）⇒ **不重试同一路，
+            #   但要继续让路**（2026-11-04 用户现场指出：不该在这里就回落系统模型）
+            if getattr(exc, "no_retry", False):
+                nxt = await _advance(current)
+                if nxt is not None:
+                    registry.release_reserve(current.executor, holder)
+                    current = nxt
+                    attempt = 0          # ★ 换人 ⇒ 重试预算重新算
+                    continue
+                raise exc
             attempt += 1
             if attempt > cfg.watchdog.max_resume:
+                # ★ **续跑用尽 ⇒ 让路下一优先级**（不是直接抛 ⇒ 落系统模型＝花钱）
+                nxt = await _advance(current)
+                if nxt is not None:
+                    registry.release_reserve(current.executor, holder)
+                    current = nxt
+                    attempt = 0          # ★ 换人 ⇒ 重试预算重新算
+                    logger.warning("[wb_exec] %s/%s 续跑用尽 ⇒ 让路 %s/%s",
+                                   current.executor, current.model,
+                                   nxt.executor, nxt.model)
+                    _emit(state, "wb_exec_fallback", {
+                        "from": f"{current.executor}:{current.model}",
+                        "to": f"{nxt.executor}:{nxt.model}",
+                        "reason": f"续跑 {attempt - 1} 次仍未成功：{str(exc)[:120]}",
+                    })
+                    continue
                 raise WbAcpError(
                     f"续跑 {attempt} 次仍未成功: {exc}") from exc
             ex.resumed = attempt
@@ -749,7 +812,11 @@ def _raise_if_prompt_failed(result: Any) -> None:
             or "not logged in" in low or "please use /login" in low):
         raise WbAcpError(f"鉴权失败（桌面端登录态失效）: {raw[:300]}",
                          code=-32000, category="auth")
-    if '"category":"quota"' in low or "quota" in low:
+    if '"category":"quota"' in low or "quota" in low or _looks_exhausted(raw):
+        # ★ **中文措辞也认**（2026-11-04）：``hy4free`` 是「每日赠送免费额度」的限时档
+        #   ⇒ 当天赠送额度用完时上游报中文（"每日免费额度已用完"之类）
+        #   ⇒ 只认 ``category=="quota"`` 会漏判 ⇒ 这一档不会立刻让路
+        #   ⇒ 每张卡先白跑一轮失败才换人 ⇒ 改认明确措辞。
         raise WbAcpError(f"额度/过载: {raw[:300]}", code=-32000,
                          category=acp_client.CATEGORY_QUOTA)
     # 其它失败（如 FAILED_MODEL_REQUEST 的别的原因）⇒ 如实抛，别静默
@@ -870,16 +937,39 @@ async def _run_cc(state: Any, cfg: WbExecConfig, ex: "_Exec",
         ex.text_parts.append(text)
         _emit(state, "assistant_text", {"content": text, "round": state.rounds})
     errs = [str(e) for e in (res.get("errors") or [])]
-    # ★ **额度耗尽要能认出来**（与 Devin 同一条纪律）⇒ 记额度状态 ⇒ 下一优先级接管。
+    kind = str(res.get("kind") or "error")
+    rc = res.get("rc")
+    stderr_tail = str(res.get("stderr_tail") or "").strip()
+    # ★ **按退出码分流**（2026-11-04 · command-code 自己的码表）：
+    #   5 RATE_LIMITED / 10 INSUFFICIENT_CREDITS ⇒ **额度/限流**
+    #     ⇒ 记额度状态 ⇒ **立刻让路下一优先级**（原来当普通失败 ⇒ 同一路重试 4 次全白跑）
+    #   3 AUTH_ERROR ⇒ 鉴权失败 ⇒ 标记该执行体不可用
+    #   8 MAX_TURNS_REACHED ⇒ **agent 干了活但没在轮数内收尾**
+    #     ⇒ 如实报"达到轮数上限"，但**不重复重试**（重试只能从头再来）
+    if kind in ("rate_limit", "insufficient_credits"):
+        why = "限流" if kind == "rate_limit" else "额度不足"
+        registry.mark_exhausted(current.executor, current.model,
+                                f"command-code 报{why}（rc={rc}）")
+        raise WbAcpError(
+            f"Command Code {why}（rc={rc}）："
+            f"{(stderr_tail or ' | '.join(errs) or '上游未给原文')[:300]}",
+            category=acp_client.CATEGORY_QUOTA)
     for e in errs:
         if _looks_exhausted(e):
             registry.mark_exhausted(current.executor, current.model,
                                     "command-code 报额度/配额用完")
             break
     if not res.get("ok"):
+        detail = (stderr_tail or " | ".join(errs) or "无正文")
+        if kind == "max_turns":
+            # ★ 轮数用尽：agent **干了活**（可能已写文件）⇒ 如实报，
+            #   但**不重复重试**（重试只能从头再来 ⇒ 又是白跑）
+            exc = WbAcpError(
+                f"Command Code 达到轮数上限（rc={rc}，可能未收尾）：{detail[:300]}")
+            exc.no_retry = True          # noqa: B010 运行时打标
+            raise exc
         raise WbAcpError(
-            f"Command Code 执行失败（rc={res.get('rc')}）："
-            f"{(' | '.join(errs) or '无正文')[:300]}")
+            f"Command Code 执行失败（rc={rc}，{kind}）：{detail[:300]}")
     # ★ **空结果守卫**（同 Devin）：0 工具 + 0 正文 ⇒ 一定没干成活 ⇒ 判失败。
     if ex.tool_calls == 0 and not text.strip():
         raise WbAcpError(
@@ -989,7 +1079,9 @@ async def _run_devin(state: Any, cfg: WbExecConfig, ex: "_Exec",
     # ★ **额度耗尽要能认出来**（2026-11-04）：Devin 报额度用完时，
     #   文本里会带上游自己的措辞 ⇒ 记进额度状态表 ⇒ **这个候选之后让路**
     #   ⇒ 流量自动溢到下一优先级（用户令：「额度用完了，就落 opencode」）。
-    _err_text = f"{res.get('stderr') or ''}\n{res.get('stdout') or ''}\n{text}"
+    # ★ **只用 stderr 判额度**（**不喂 agent 正文**）：正文里聊到 "quota/额度"
+    #   只是它在谈这件事，不是"额度用完"（2026-11-04 生产教训）。
+    _err_text = str(res.get("stderr") or "")
     if _looks_exhausted(_err_text):
         registry.mark_exhausted(current.executor, current.model,
                                 "devin 报额度/配额用完")
@@ -1011,23 +1103,32 @@ async def _run_devin(state: Any, cfg: WbExecConfig, ex: "_Exec",
             "Devin 执行体返回空结果（0 工具 0 正文）⇒ 判定失败，不当成功")
 
 
-#: 上游"额度/配额用完了"的各种说法（**上游自己的措辞**，实测收集）。
-#: ⇒ 命中任一个 ⇒ 记进额度状态表 ⇒ 该候选**让路**（不是每次都先失败一轮）。
-_QUOTA_WORDS = (
-    "free usage", "free usage limit", "free limit", "free_tier_limit",
-    "quota", "rate limit", "exceeded your current quota",
-    "insufficient_quota", "额度", "配额",
-)
+#: ★★ 上游"额度/配额用完了"的**明确措辞**（2026-11-04 收紧过、11-04 晚再补）。
+#:
+#: ★ **为什么不能认裸词**（生产现场教训）：早先这里有裸词 ``quota`` / ``limit`` /
+#:   ``额度`` / ``配额`` ⇒ 而我们的卡片任务**本身叫 ``quota_probe.txt``**
+#:   ⇒ **agent 的正常正文里出现 "quota"** ⇒ 被判成"额度耗尽"
+#:   ⇒ **Devin 被永久跳过** ⇒ 全路由到 command-code ⇒ 它也因同一原因被标记
+#:   ⇒ **级联全崩**（现场：状态文件里 `wb-devin:swe-2-max` = "devin 报额度/配额用完"，
+#:   而那次 Devin **跑得好好的**）。
+#: ⇒ 现在**只认上游报错里的明确短语**，裸词一律不算。
+#:
+#: ★ **短语表放在 acp_client**（2026-11-04）：WorkBuddy 的失败有两条来路
+#:   （JSON-RPC error / 返回体 _meta.errorMessage）⇒ 两条路都要能认出额度耗尽
+#:   ⇒ 放**被两边共用**的地方，bridge 从那儿引（免得两处各写一份、越改越不一致）。
+_QUOTA_PHRASES = acp_client.QUOTA_PHRASES
 
 
 def _looks_exhausted(msg: str) -> bool:
-    """这段上游报错**说的是额度/配额用完了**吗？（按**上游自己的措辞**判定）
+    """这段**上游报错**说的是额度/配额用完了吗？（只认明确短语）
+
+    ★ **只在上游报错里判**（见调用点：Devin 侧只喂 stderr，**不喂 agent 正文**）
+    ⇒ agent 正文里聊到 "quota/额度" 不会再被当成"额度用完"。
 
     ⇒ 只认明确提到额度/配额的措辞；其它错（500/超时/鉴权）**不**当额度耗尽
     ⇒ 避免把一次偶发故障误判成"永久没额度"（误判会让那一档永久让路）。
     """
-    low = str(msg or "").lower()
-    return any(w in low for w in _QUOTA_WORDS)
+    return acp_client.looks_quota_exhausted(msg)
 
 
 def _restore_quota(cfg: WbExecConfig, ex: Any, executor_id: str,

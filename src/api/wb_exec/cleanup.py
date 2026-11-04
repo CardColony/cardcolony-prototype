@@ -252,7 +252,10 @@ def _devin_sessions_db() -> Path:
 
 
 def list_devin_sessions() -> list[dict]:
-    """列出 Devin 的全部会话（**只读**）：``[{id, working_directory, title}]``。"""
+    """列出 Devin 的全部会话（**只读**）。
+
+    ⇒ 带 ``last_activity_at``（epoch 秒）⇒ 用来判断"是不是还在跑"。
+    """
     import sqlite3
     db = _devin_sessions_db()
     if not db.exists():
@@ -260,18 +263,42 @@ def list_devin_sessions() -> list[dict]:
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         cur = con.cursor()
-        rows = cur.execute(
-            "SELECT id, working_directory, title FROM sessions").fetchall()
+        try:
+            rows = cur.execute(
+                "SELECT id, working_directory, title, last_activity_at "
+                "FROM sessions").fetchall()
+        except sqlite3.OperationalError:
+            rows = [(r[0], r[1], r[2], 0) for r in cur.execute(
+                "SELECT id, working_directory, title FROM sessions").fetchall()]
         con.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[wb_exec] 读 Devin 会话库失败（跳过扫描）：%s", exc)
         return []
     return [{"id": str(r[0]), "working_directory": str(r[1] or ""),
-             "title": str(r[2] or "")} for r in rows]
+             "title": str(r[2] or ""),
+             "last_activity_at": float(r[3] or 0.0)} for r in rows]
+
+
+
+def _too_recent(last_activity_at: float, min_age_min: float) -> bool:
+    """这个会话**最近还在动**吗？（⇒ 正在跑 ⇒ **跳过，别删**）。
+
+    ★ 2026-11-04：清理必须在跑之前有这道闸 ——
+      opencode 侧 ``DELETE /session/{id}`` 会**打断正在跑的卡**。
+    """
+    if not min_age_min or min_age_min <= 0:
+        return False
+    ts = float(last_activity_at or 0.0)
+    if ts <= 0:
+        return False
+    import time as _t
+    age_min = (_t.time() - ts) / 60.0
+    return age_min < float(min_age_min)
 
 
 async def sweep_devin_sessions(cli_exe: str, roots: list[str],
-                               dry_run: bool = False) -> dict:
+                               dry_run: bool = False,
+                               min_age_min: float = 30.0) -> dict:
     """把**我们卡片跑出来的** Devin 会话清掉（**白名单根下的那些**）。
 
     ★ **绝不碰用户自己的对话**：白名单根之外的会话**一个都不动**
@@ -286,6 +313,10 @@ async def sweep_devin_sessions(cli_exe: str, roots: list[str],
     out["scanned"] = len(rows)
     for r in rows:
         if not _is_ours(r.get("working_directory") or "", roots):
+            continue
+        # ★ **正在跑的 ⇒ 跳过**（别删正在干活的那条）
+        if _too_recent(r.get("last_activity_at") or 0.0, min_age_min):
+            out.setdefault("skipped_recent", []).append(r["id"])
             continue
         out["ours"].append(r)
     if dry_run:
@@ -302,7 +333,8 @@ async def sweep_devin_sessions(cli_exe: str, roots: list[str],
 
 
 async def sweep_opencode_sessions(exe: str, key: str, roots: list[str],
-                                  dry_run: bool = False) -> dict:
+                                  dry_run: bool = False,
+                                  min_age_min: float = 30.0) -> dict:
     """把**我们卡片跑出来的** opencode 会话清掉（白名单根下的那些）。
 
     ⇒ 走 opencode 自己的 API（``DELETE /session/{id}``）⇒ **不直接改它的库**。
@@ -320,14 +352,26 @@ async def sweep_opencode_sessions(exe: str, key: str, roots: list[str],
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         cur = con.cursor()
-        rows = cur.execute("SELECT id, directory, title FROM session").fetchall()
+        try:
+            rows = cur.execute(
+                "SELECT id, directory, title, time_updated FROM session").fetchall()
+        except sqlite3.OperationalError:
+            rows = [(r[0], r[1], r[2], 0) for r in cur.execute(
+                "SELECT id, directory, title FROM session").fetchall()]
         con.close()
     except Exception as exc:  # noqa: BLE001
         out["error"] = f"读 opencode 会话库失败：{exc}"
         return out
     out["scanned"] = len(rows)
-    for sid, directory, title in rows:
+    for sid, directory, title, upd in rows:
         if not _is_ours(str(directory or ""), roots):
+            continue
+        # ★ **正在跑的 ⇒ 跳过**（DELETE 会打断正在跑的卡！）
+        ts = float(upd or 0.0)
+        if ts > 1e11:      # 毫秒
+            ts = ts / 1000.0
+        if _too_recent(ts, min_age_min):
+            out.setdefault("skipped_recent", []).append(str(sid))
             continue
         out["ours"].append({"id": str(sid), "directory": str(directory or ""),
                             "title": str(title or "")})

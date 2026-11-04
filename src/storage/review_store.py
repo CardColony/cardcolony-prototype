@@ -199,6 +199,10 @@ async def open_batch(work_id: str, review_id: str, focus: str,
           # [venue] 流程计数器：asked_seq=已向正卡要过第几次回应；
           # responded_seq=正卡已交回几次（submit_revision）。相等＝无未收回应。
           "asked_seq": 0, "responded_seq": 0,
+          # [turn_end 激活 2026-11-04] 「这轮干了活没有」的水位基线：
+          # report_target_turn_end 拿 draft/responded_seq 跟这两个值比——
+          # 涨了＝刚结束的这轮有实质推进（草稿改过或交回过）。
+          "turn_end_draft": 1, "turn_end_responded": 0,
           # [venue] 席位机械状态：{role: {"response_seen": n}}——
           # 否决席被叫时看到的正卡回应水位，re_eval 只在有新回应时才重叫。
           "seats": {},

@@ -63,6 +63,7 @@ rebuild() 从真相（会话文件）全量重建；写路径（append/scan_tail
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -468,6 +469,15 @@ def _enrich_v1(msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _read_v1_sync(work_id: str, card_id: str) -> list[dict[str, Any]]:
+    """V1 会话整读＋解析的**同步门面**——给 ``asyncio.to_thread`` 用。
+
+    〔2026-11-04〕``session_store.read_session`` 是协程，to_thread 只能吃同步
+    函数；worker 线程里没有运行中的循环 ⇒ ``asyncio.run`` 起一个把它跑完。
+    """
+    return asyncio.run(session_store.read_session(work_id, card_id))
+
+
 # ---------------------------------------------------------------- 读（T023）
 # 〔2026-10-26 · 「页面的内容存进内存态」〕**会话解析结果的内存缓存**。
 #
@@ -770,10 +780,11 @@ async def _read_projected(work_id: str, card_id: str, path: Path,
                            project: tuple[str, ...]) -> list[dict[str, Any]]:
     """投影读：V2 文件走**流式**解析；V1（会话库）走旧解析再投影。"""
     if _detect_format_stream(path) == 2:
-        blocks = _project_v2_stream(path, _PROJECT_CONTENT_BYTES)
+        # 〔2026-11-04〕流式投影内部同样是整文件 read_bytes＋解析，挪线程池。
+        blocks = await asyncio.to_thread(_project_v2_stream, path, _PROJECT_CONTENT_BYTES)
     else:
         blocks = _project_blocks(
-            _enrich_v1(await session_store.read_session(work_id, card_id)), project)
+            _enrich_v1(await asyncio.to_thread(_read_v1_sync, work_id, card_id)), project)
         return blocks
     return _project_blocks(blocks, project)
 
@@ -809,9 +820,17 @@ async def _read_parsed(work_id: str, card_id: str,
         async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
             text = await f.read()
         if _detect_format(text) == 1:
-            blocks = _enrich_v1(await session_store.read_session(work_id, card_id))
+            # 同下：V1 逐行解析同样是同步 CPU，挪线程池（协程函数用 asyncio.run
+            # 在 worker 线程内起独立循环跑掉）。
+            blocks = _enrich_v1(await asyncio.to_thread(_read_v1_sync, work_id, card_id))
         else:
-            blocks = _parse_v2(text)["blocks"]
+            # 〔2026-11-04 · 治「一切接口一起慢」〕``_parse_v2`` 是**同步纯 CPU**：
+            # card_021 的 239MB 会话解析一次约 4~8s，而超大条目按
+            # ``_PARSE_CACHE_ENTRY_MAX_RATIO`` 永不入缓存 ⇒ 在跑卡**每回合**
+            # 都在事件循环上重解析一次 ⇒ 循环被掐死 ⇒ /api/nav 实测 21s、
+            # getCard 5.7s、切卡/刷新全部排队转圈。挪到线程池：CPU 照烧，
+            # 但 GIL 切换让事件循环保持调度，其它请求不再饿死。
+            blocks = (await asyncio.to_thread(_parse_v2, text))["blocks"]
     if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
         # 丢最旧的（插入序）——内存封顶
         for old in list(_PARSE_CACHE.keys())[:len(_PARSE_CACHE) - _PARSE_CACHE_MAX + 1]:
@@ -878,7 +897,7 @@ async def read_header(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
         text = await f.read()
     if _detect_format(text) != 2:
         return None
-    return _parse_v2(text)["header"]
+    return (await asyncio.to_thread(_parse_v2, text))["header"]
 
 
 # ---------------------------------------------------------------- 写（T024 ＋ 4.8 现场升格）
@@ -1179,9 +1198,11 @@ async def _read_existing_locked(work_id: str, card_id: str,
         text = ""
     fmt = _detect_format(text)
     if fmt == 2:
-        existing = _parse_v2(text)["blocks"]
+        # 〔2026-11-04〕与 _read_parsed 同因挪线程池：append 每块都要走这里，
+        # 大会话的同步全量解析会把事件循环掐死在**会话锁内**（比读路径更糟）。
+        existing = (await asyncio.to_thread(_parse_v2, text))["blocks"]
     else:
-        existing = _enrich_v1(await session_store.read_session(work_id, card_id))
+        existing = _enrich_v1(await asyncio.to_thread(_read_v1_sync, work_id, card_id))
     return text, fmt, existing
 
 

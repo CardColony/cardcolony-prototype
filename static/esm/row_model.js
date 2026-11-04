@@ -25,7 +25,10 @@ export function createRowModel(card, store, ctx = {}) {
     searching: !!ctx.searching,
     matched: !!ctx.matched,
     searchKids: !!ctx.searchKids,
-    rowHeight() { return this.kind === "project" ? NAV_PHEAD_HEIGHT : NAV_ROW_HEIGHT; },
+    // [静默执行卡折叠 2026-11-04] 折叠组内的成员卡：视觉降级标记——
+    // patchCardContent 据此挂 .nav-quiet（置灰＋小一号），rowHeight 给 26px。
+    quiet: !!ctx.quiet,
+    rowHeight() { return this.kind === "project" ? NAV_PHEAD_HEIGHT : (this.kind === "quietfold" ? 22 : (this.quiet ? 26 : NAV_ROW_HEIGHT)); },
 
     key() {
       if (this.kind === "project") return "p:" + this.card.work_id;
