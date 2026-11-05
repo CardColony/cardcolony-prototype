@@ -1,0 +1,2 @@
+$cut = (Get-Date).AddMinutes(-30)
+Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('conhost.exe','cmd.exe','powershell.exe','wsl.exe','go.exe','compile.exe','link.exe','asm.exe','git.exe','python.exe','cardlod_fresh.exe','judgerunFS.exe','judgerunFT.exe','judgerunFU.exe') -and $_.CreationDate -gt $cut } | Sort-Object CreationDate | Select-Object CreationDate, ProcessId, ParentProcessId, Name, @{n='Cmd';e={ if ($_.CommandLine) { $_.CommandLine.Substring(0,[Math]::Min(140,$_.CommandLine.Length)) } else {''} }} | Format-List

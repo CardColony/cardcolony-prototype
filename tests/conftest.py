@@ -104,7 +104,7 @@ def sandbox(tmp_path, monkeypatch):
 
     # [wb_exec 2026-10-23] **执行体（WorkBuddy）隔离**：
     # 仓库里的 config/wb_exec.json 是**开闸态**（enabled=true）——
-    # 若测试直接用它，任何跑 coder 卡回合的用例会**真去起 WorkBuddy 网关**
+    # 若测试直接用它，任何跑 worker 卡回合的用例会**真去起 WorkBuddy 网关**
     # （spawn cbc --serve、等健康 90 秒、可能联网）⇒ 慢且不确定。
     # ⇒ 全部用例强制指向一份**关着**的临时配置。
     # （要测开闸态的行为，用例自己 monkeypatch WB_EXEC_CONFIG_PATH 指向真配置。）

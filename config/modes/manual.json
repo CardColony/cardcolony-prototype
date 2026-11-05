@@ -79,22 +79,6 @@
    "write_own_face",
    "write_process"
   ],
-  "coder": [
-   "edit_other_face",
-   "finalize",
-   "open_stage",
-   "read_card",
-   "read_files",
-   "read_linked",
-   "read_own_process",
-   "report_done",
-   "run_code",
-   "vote",
-   "web",
-   "write_files",
-   "write_own_face",
-   "write_process"
-  ],
   "review": [
    "open_stage",
    "read_card",
@@ -209,12 +193,28 @@
    "read_files",
    "read_linked",
    "read_own_process",
+   "write_files",
    "report_up_chain",
+   "web",
+   "write_own_face",
+   "write_process"
+  ],
+  "worker": [
+   "edit_other_face",
+   "finalize",
+   "open_stage",
+   "read_card",
+   "read_files",
+   "read_linked",
+   "read_own_process",
+   "report_done",
    "run_code",
+   "vote",
    "web",
    "write_files",
    "write_own_face",
-   "write_process"
+   "write_process",
+   "manuscript"
   ]
  }
 }

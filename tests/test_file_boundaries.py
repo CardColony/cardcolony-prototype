@@ -164,7 +164,7 @@ def test_write_switch_allows_both():
     """有 `tools_file` 的卡：读写都放行（行为逐字不变）。"""
     from src.api import file_tools
 
-    meta = {"card_type": "coder", "perms": ["tools_file"]}
+    meta = {"card_type": "worker", "perms": ["tools_file"]}
     target = str(file_tools.BASE_DIR / "推演agent")
     assert file_tools.check_file_access(target, meta) is True
     assert file_tools.check_file_access(target, meta, write=True) is True
@@ -203,7 +203,7 @@ def test_write_switch_allows_both():
     """有 `tools_file` 的卡：读写都放行（行为逐字不变）。"""
     from src.api import file_tools
 
-    meta = {"card_type": "coder", "perms": ["tools_file"]}
+    meta = {"card_type": "worker", "perms": ["tools_file"]}
     target = str(file_tools.BASE_DIR / "推演agent")
     assert file_tools.check_file_access(target, meta) is True
     assert file_tools.check_file_access(target, meta, write=True) is True

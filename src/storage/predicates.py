@@ -56,7 +56,7 @@ MESSAGE_TYPES: frozenset[str] = frozenset({
     # 凝练**，落在上下文里就再也去不掉，只增不减。
     # 加进来后它们与 human/assistant 同级：进凝练、可被折叠成条目。
     "msg_ask", "msg_answer", "msg_notify",
-    "msg_directive", "msg_sync", "msg_report", "coder_done",
+    "msg_directive", "msg_sync", "msg_report", "coder_done", "worker_done",
 })
 
 #: 凝练侧额外排除的型（工具结果正文不录凝练）

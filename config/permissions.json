@@ -20,10 +20,11 @@
    "[v12 · 2026-10-22 · 用户裁定「coder 至少能给自己的父卡发信，这根本不合理」] coder 补 send_card_message。v4 的原意是「完工回执不要模型自己发」（由 report_done 系统发），执行成了「整类卡不给发信」——于是 coder 干到一半卡住（需求不清、要主卡拍板、发现做错）时**说不了话**，只能硬做完或干等。回执仍走 report_done 系统通道（require_switch=False），本条只补「中途能问」这一条路。",
    "[v13 · 2026-10-22 · 用户裁定 A：职能＝cards 表里有一行、但呈现层不露面的实体] 新增 function 类型行，权限同 project（职能是管理者：读卡/沿连线读/发信/建卡派活/连线/调工具/查资料/计划/写自己影子）。为什么必须有一行：perms 分权、build_ctx 上下文装配、_run_message 回合、create_card、spawn 巡检全部按 card_id 焊死；把职能踢出 cards 表＝一次性踢出这一切（实测 fn 只能看 146 字、跑不了回合）。呈现层（画布/卡树/统计）按 card_type='function' 过滤，不进交付树。",
    "[v14 · 2026-10-24 · 用户裁定「根卡和子卡只是不能动手，为啥不能查资料，给所有可以查资料的工具」] **所有卡型一律开 tools_web**（web_search/fetch_web＝查外部资料）。「查资料」与「动手」是**两码事**：tools_web 只管这两件只读检索工具，不含任何执行面（tools_file 的读写文件、bash/python、write_file、invoke_tool 一概不动）——所以「不让他动手」不该顺带「不让他查资料」。v2 那句「tool 卡…不联网」与 v4 只给 coder 开 tools_web 的旧口径，在「查资料≠动手」这个区分下不再成立，故全开。改动后须跑 scripts/refresh_perms.py 把 perms_version 落后的卡刷齐（否则存量卡看不到新工具）。",
-   "[v15 · 2026-11-01 · 三线拆开关补完] 2026-10-27 裁定把 link_rel/unlink_rel 拆成独立开关（不复用 link/unlink），配套要补本表——当时漏了 ⇒ abilities_for 按 perms 上限过滤时 link_rel 能力全被扔掉 ⇒ 依赖线工具全网不可见。现给每个有 link+unlink 的卡型补 link_rel/unlink_rel（8 个位置：rd/research 的 project、sub_project/topic、role、function）；coder/tool/rule 本来就没有 link，不补。存量卡由 card_db._ensure_link_rel_perm 迁移 abilities 列。"
+   "[v15 · 2026-11-01 · 三线拆开关补完] 2026-10-27 裁定把 link_rel/unlink_rel 拆成独立开关（不复用 link/unlink），配套要补本表——当时漏了 ⇒ abilities_for 按 perms 上限过滤时 link_rel 能力全被扔掉 ⇒ 依赖线工具全网不可见。现给每个有 link+unlink 的卡型补 link_rel/unlink_rel（8 个位置：rd/research 的 project、sub_project/topic、role、function）；coder/tool/rule 本来就没有 link，不补。存量卡由 card_db._ensure_link_rel_perm 迁移 abilities 列。",
+   "【v16 · 2026-11-05 worker 改名】rd_project/coder 行改名 rd_project/worker（编程卡→worker 卡，扩域「除 UI 外一切执行」）；补 manuscript——原 v4 刻意不给无任何理由记录（查档三件套全只读，执行体对照存档底稿是正经需求）；存量卡由 card_db 迁移 abilities。"
   ]
  },
- "version": 16,
+ "version": 17,
  "permissions": {
   "rd_project": {
    "project": [
@@ -71,18 +72,6 @@
     "send_card_message",
     "tools_web"
    ],
-   "coder": [
-    "read",
-    "edit",
-    "tools_file",
-    "tools_web",
-    "search",
-    "plan",
-    "shadow_write",
-    "read_linked",
-    "list_memory",
-    "send_card_message"
-   ],
    "rule": [],
    "role": [
     "read",
@@ -127,6 +116,19 @@
     "list_memory",
     "send_card_message",
     "tools_read_file"
+   ],
+   "worker": [
+    "read",
+    "edit",
+    "tools_file",
+    "tools_web",
+    "search",
+    "plan",
+    "shadow_write",
+    "read_linked",
+    "list_memory",
+    "send_card_message",
+    "manuscript"
    ]
   },
   "research_project": {

@@ -28,7 +28,7 @@ PENDING: frozenset[str] = frozenset({
     "continue_task",
     
     "create_card",
-    "create_coder_card",
+    "create_worker_card",
     "create_function",
     "create_goal",
     "curate_face",

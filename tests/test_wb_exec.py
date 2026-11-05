@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""[wb_exec 2026-10-23] WorkBuddy 执行体（coder 卡委派）的测试。
+"""[wb_exec 2026-10-23] WorkBuddy 执行体（worker 卡委派）的测试。
 
 **不碰真实 WorkBuddy**：本文件自带一个**假 ACP 网关**（FastAPI + uvicorn 线程），
 复刻实测到的 WorkBuddy 网关契约：
@@ -411,7 +411,7 @@ def wb_cfg_opt_in(tmp_path, monkeypatch):
 
 # ===================================================================== 配置
 def test_config_missing_is_disabled(tmp_path, monkeypatch):
-    """fail-open：配置读不到 ⇒ 全链路旁路，绝不把 coder 卡搞挂。"""
+    """fail-open：配置读不到 ⇒ 全链路旁路，绝不把 worker 卡搞挂。"""
     monkeypatch.setenv(wb_config.ENV_CONFIG_PATH, str(tmp_path / "nope.json"))
     wb_config.reset_cache()
     cfg = wb_config.load()
@@ -693,9 +693,9 @@ async def test_acp_client_missing_header_rejected(fake_gw):
 
 
 # ===================================================================== 桥接层
-async def _make_coder_card(work_id: str, title: str = "编程卡") -> str:
+async def _make_worker_card(work_id: str, title: str = "worker 卡") -> str:
     card = await card_store.create_card(
-        work_id, title, "模型生成", card_type="coder",
+        work_id, title, "模型生成", card_type="worker",
         charter="## 使命\n把 a.py 改好",
         goal="把 a.py 改好", skip_kick=True)
     assert "error" not in card, card
@@ -710,7 +710,7 @@ async def test_bridge_not_delegate_when_disabled(work, tmp_path, monkeypatch):
     wb_config.reset_cache()
     picker.reset_pickers()
     assert wb_config.load().enabled is False
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     assert await bridge.maybe_delegate(st) is None
@@ -722,7 +722,7 @@ async def test_bridge_not_delegate_when_disabled(work, tmp_path, monkeypatch):
 async def test_bridge_system_backend_not_delegated(work, wb_cfg, monkeypatch):
     """``exec_backend="system"`` ⇒ 走系统自己的模型（用户在卡上手动切回来的落点）。"""
     from src.storage import model_override
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     model_override.put_row(work["work_id"], card_id,
                            {"exec_backend": "system"}, src="manual")
     assert bridge.exec_backend_of(work["work_id"], card_id) == "system"
@@ -742,7 +742,7 @@ async def test_bridge_feeds_recent_tool_calls_to_workbuddy(work, wb_cfg,
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     # 造一段"之前跑过"的历史：assistant 带 tool_calls
     await session_facade.append(work["work_id"], card_id, {
         "role": "assistant", "content": "我先装依赖",
@@ -802,7 +802,7 @@ async def test_bridge_auth_required_falls_back_without_retrying(work, wb_cfg,
 
     monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-auth"
@@ -824,7 +824,7 @@ async def test_bridge_auth_required_falls_back_without_retrying(work, wb_cfg,
     assert not hasattr(reg, "is_unauthenticated"), "不许有全局熔断闸"
     assert not hasattr(reg, "clear_unauthenticated"), "不许有全局熔断闸"
     assert reg.auth_failures("wb-cn") == 1
-    card2 = await _make_coder_card(work["work_id"], "另一张卡")
+    card2 = await _make_worker_card(work["work_id"], "另一张卡")
     st2 = message_runner.RunState(work_id=work["work_id"], card_id=card2,
                                    content="再干")
     st2.pair_id = "pair-auth2"
@@ -850,7 +850,7 @@ async def test_fallback_is_recorded_so_card_face_is_not_a_fake_signal(
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
     fake_gw.prompt_mode = "auth"          # ⇒ 鉴权失败 ⇒ 回落
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-fb"
@@ -868,7 +868,7 @@ async def test_fallback_is_recorded_so_card_face_is_not_a_fake_signal(
 async def test_bridge_opt_in_scope_leaves_existing_cards_alone(work, wb_cfg_opt_in,
                                                               monkeypatch):
     """``scope.mode="opt_in"`` ⇒ **存量卡默认不接管**（开闸零冲击，逐张接管）。"""
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     # 没设过 exec_backend ⇒ 存量卡 ⇒ 不委派
     assert bridge.exec_backend_raw_of(work["work_id"], card_id) is None
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
@@ -896,7 +896,7 @@ async def test_bridge_delegates_and_finishes_card(work, wb_cfg, fake_gw,
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     model_override.put_row(work["work_id"], card_id,
                            {"exec_backend": "auto"}, src="manual")
 
@@ -948,16 +948,16 @@ async def test_bridge_delegates_and_finishes_card(work, wb_cfg, fake_gw,
     assert row and row[0] and "WorkBuddy 执行体完成" in str(row[0])
 
     # ③ 回执给父卡（父卡＝根卡）
-    # [harness 第 1 步 2026-10-28] 改前断言"收件箱里有 coder_done"，但 10-27 起
+    # [harness 第 1 步 2026-10-28] 改前断言"收件箱里有 worker_done"，但 10-27 起
     # 消息落点已从 inbox 改成**会话块 + 事件流**（用户裁定「消息会留在上下文里
     # 直到被凝练掉」）⇒ list_pending 恒空，这条断言早已不成立。
-    # 现在按新落点验：父卡的会话里有块、事件流里有 coder_done。
+    # 现在按新落点验：父卡的会话里有块、事件流里有 worker_done。
     from src.storage import event_log as _elog2, session_facade
     root = work_store.work_card_id_of(work["work_id"])
     await _elog2.drain()
     root_evs = [e for e in (_elog2.read(work["work_id"], root) or [])
-                if e.get("type") == "coder_done"]
-    assert root_evs, "父卡事件流里没有 coder_done 回执"
+                if e.get("type") == "worker_done"]
+    assert root_evs, "父卡事件流里没有 worker_done 回执"
     d0 = root_evs[-1].get("data") or {}
     assert d0.get("from") == card_id, f"回执发件人丢了: {d0}"
     blocks = await session_facade.read(work["work_id"], root) or []
@@ -982,17 +982,17 @@ async def test_bridge_delegates_and_finishes_card(work, wb_cfg, fake_gw,
     assert "使命" in sent, sent
 
     # ⑦ **产出不再写进现状块**（[2026-10-28 用户令「这个动作不合理」]）
-    # 编程卡按设计没有现状块；结果由 report_done 的 summary ＋ coder_done 回执给父卡。
+    # worker 卡按设计没有现状块；结果由 report_done 的 summary ＋ worker_done 回执给父卡。
     # 改前这里是 append 执行体原文，24 轮滚到 86 万字（card_076 实证）。
     card2 = await card_store.read_card(work["work_id"], card_id)
     sb = str(card2["body"].get("status_block") or "")
-    assert sb == "", f"编程卡的现状块必须保持空：{sb[:200]}"
-    # 结果走回执：父卡侧应有 coder_done 消息
+    assert sb == "", f"worker 卡的现状块必须保持空：{sb[:200]}"
+    # 结果走回执：父卡侧应有 worker_done 消息
     from src.storage import session_facade
     parent = str((card2["meta"] or {}).get("parent") or "")
     msgs = await session_facade.read(work["work_id"], parent) or []
     assert any("做完了：已改 a.py" in str(m.get("content") or "") for m in msgs), \
-        "完工结果必须经 coder_done 回执送到父卡"
+        "完工结果必须经 worker_done 回执送到父卡"
 
 
 @pytest.mark.asyncio
@@ -1034,7 +1034,7 @@ async def test_quota_exhausted_spills_to_next_priority(work, tmp_path, fake_gw,
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-quota"
@@ -1068,7 +1068,7 @@ async def test_quota_exhausted_spills_to_next_priority(work, tmp_path, fake_gw,
 
         # ② **后续所有卡都跳过这一级**（状态驱动）：第二张卡**直接**走 glm
         n_before = len([1 for _, c, _ in fake_gw.set_config if c == "model"])
-        card2 = await _make_coder_card(work["work_id"])
+        card2 = await _make_worker_card(work["work_id"])
         st2 = message_runner.RunState(work_id=work["work_id"], card_id=card2,
                                       content="再干活")
         st2.pair_id = "pair-quota-2"
@@ -1120,7 +1120,7 @@ async def test_auth_failure_spills_to_next_priority(work, tmp_path, fake_gw,
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-auth"
@@ -1163,7 +1163,7 @@ async def test_bridge_quota_falls_back_to_hy3(work, wb_cfg, fake_gw,
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-002"
@@ -1222,7 +1222,7 @@ async def test_model_unavailable_switches_candidate(work, wb_cfg, fake_gw,
 
     monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-model"
@@ -1262,7 +1262,7 @@ async def test_other_session_events_are_filtered(work, wb_cfg, fake_gw,
 
     monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-filter"
@@ -1326,7 +1326,7 @@ async def test_resume_reuses_session_after_transport_failure(
 
     monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-resume"
@@ -1377,8 +1377,8 @@ async def test_sequential_delegations_share_one_connection_and_get_own_sessions(
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
-    card_a = await _make_coder_card(work["work_id"], "并行A")
-    card_b = await _make_coder_card(work["work_id"], "并行B")
+    card_a = await _make_worker_card(work["work_id"], "并行A")
+    card_b = await _make_worker_card(work["work_id"], "并行B")
     st_a = message_runner.RunState(work_id=work["work_id"], card_id=card_a,
                                    content="A 干活")
     st_a.pair_id = "par-a"
@@ -1435,7 +1435,7 @@ async def test_parallel_delegations_do_not_cross_events(work, wb_cfg, fake_gw,
 
     monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
 
-    card_a = await _make_coder_card(work["work_id"], "并行A")
+    card_a = await _make_worker_card(work["work_id"], "并行A")
     st_a = message_runner.RunState(work_id=work["work_id"], card_id=card_a,
                                    content="A 干活")
     st_a.pair_id = "par-x"
@@ -1483,8 +1483,8 @@ async def test_cross_executor_delegations_run_in_parallel(work, wb_cfg, fake_gw,
 
     monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
 
-    card_a = await _make_coder_card(work["work_id"], "并A")
-    card_b = await _make_coder_card(work["work_id"], "并B")
+    card_a = await _make_worker_card(work["work_id"], "并A")
+    card_b = await _make_worker_card(work["work_id"], "并B")
     st_a = message_runner.RunState(work_id=work["work_id"], card_id=card_a,
                                    content="A")
     st_a.pair_id = "cross-a"
@@ -1644,7 +1644,7 @@ def test_pinned_backend_parse():
 async def test_exec_backend_endpoint_get_and_put(work, client, wb_cfg):
     """执行体端点：读得到选项、改得动、且**不抹掉该卡原有的模型覆盖**。"""
     from src.storage import model_override
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     wid = work["work_id"]
     # 该卡原本有模型覆盖（model + fallbacks + bindings）——PUT 只能改 exec_backend
     model_override.put_row(wid, card_id, {
@@ -1697,7 +1697,7 @@ async def test_exec_backend_endpoint_shows_routed_after_work(work, client,
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     wid = work["work_id"]
     st = message_runner.RunState(work_id=wid, card_id=card_id, content="干活")
     st.pair_id = "pair-004"
@@ -1727,7 +1727,7 @@ async def test_master_switch_gates_delegation(work, wb_cfg, fake_gw,
     _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
     monkeypatch.setattr(bridge, "get_registry", lambda: reg)
 
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-sw-on"
@@ -1776,7 +1776,7 @@ async def test_round_number_advances_per_tool_call(work, wb_cfg):
     · ``step`` ＝ **WorkBuddy 的内部步**（另放一个字段，供诊断看它推进到哪）。
     """
     from src.api.wb_exec.acp_client import AcpNotification
-    card_id = await _make_coder_card(work["work_id"])
+    card_id = await _make_worker_card(work["work_id"])
     st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
                                  content="干活")
     st.pair_id = "pair-round"
@@ -1904,8 +1904,8 @@ async def test_slot_full_queues_instead_of_falling_back(work, wb_cfg, fake_gw,
 
     monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
 
-    card_a = await _make_coder_card(work["work_id"], "排A")
-    card_b = await _make_coder_card(work["work_id"], "排B")
+    card_a = await _make_worker_card(work["work_id"], "排A")
+    card_b = await _make_worker_card(work["work_id"], "排B")
     st_a = message_runner.RunState(work_id=work["work_id"], card_id=card_a,
                                    content="A")
     st_a.pair_id = "q-a"

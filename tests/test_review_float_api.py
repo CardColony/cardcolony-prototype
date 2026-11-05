@@ -78,11 +78,11 @@ async def test_closed_batch_means_float_disappears(sandbox, app):
 
 
 async def test_card_without_review_card_reports_no_review(sandbox, app):
-    """coder 卡没有伴生评审卡 ⇒ has_review=False（界面上什么都不多）。"""
+    """worker 卡没有伴生评审卡 ⇒ has_review=False（界面上什么都不多）。"""
     wdata = await work_store.create_work("无评审卡")
     wid = str(wdata["work_id"])
     r0 = await card_store.create_card(wid, "编程甲", "用户直接创建",
-                                      card_type="coder")
+                                      card_type="worker")
     cid = str(r0["meta"]["card_id"])
     async with _client(app) as client:
         r = await client.get(f"/api/works/{wid}/cards/{cid}/review-status")

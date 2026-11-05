@@ -200,7 +200,7 @@ def test_rebuild_skips_token_frames_without_parsing(tmp_path):
                                  "type": "reasoning_chunk",
                                  "data": {"text": "x" * 500}, "card_id": "c"}))
     lines.append(json.dumps({"seq": 99, "ts": now, "type": "done",
-                             "data": {"card_type": "coder"}, "card_id": "c"}))
+                             "data": {"card_type": "worker"}, "card_id": "c"}))
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     st = fs.FactStore(works_dir=tmp_path / "works")

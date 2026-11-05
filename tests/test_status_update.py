@@ -57,14 +57,14 @@ def test_version_and_ontology():
     [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     auto 卡工具面件数变化）。
     """
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-19"  # [2026-11-01] tc-18→tc-19（sync schema 文案）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] 新增 create_ui_card
     assert "propose_status" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_REGISTRY["propose_status"].readonly is True
     assert "propose_status" in card_tools.TOOL_SWITCH
     assert "propose_status" in card_tools.OP_ONLY_TOOLS
     assert "status_update_task" in event_stream.EVENT_TYPES
     # 版本纪律：只动 BASE_PROMPT 才升。[事实分层 2026-11-01] 现值 t27-3
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -152,7 +152,7 @@ async def test_status_task_event_carries_three_kinds_and_current_status(sandbox)
     assert ev["type"] == "status_update_task"
     assert ev["data"]["source_kind"] == "status_update_task"
     body = ev["data"]["content"]
-    for token in ("当前确定状态", "接口与约定", "依赖与影响范围",
+    for token in ("当前确定状态", "对外接口", "变更会波及谁",
                   "整块覆盖", "不写过程", "propose_status"):
         assert token in body, token
     assert cur in body, "必须带上当前现状全文（供模型对照修订）"

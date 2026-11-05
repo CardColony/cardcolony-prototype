@@ -1,4 +1,4 @@
-/* static/esm/exec_backend.js —— coder 卡的**执行体选择**块（纯函数，零 DOM）
+/* static/esm/exec_backend.js —— worker 卡的**执行体选择**块（纯函数，零 DOM）
  *
  * [wb_exec 2026-10-23] 从 workspace.js 抽出来：5715 那轮的纪律
  * 「锁在渲染闭包里的东西不可单测」——抽成独立模块才有测试缝。

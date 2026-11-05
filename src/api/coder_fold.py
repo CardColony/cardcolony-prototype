@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""coder 归档编排:卡行⇄档案行的搬运(卡片世界与记录世界之间唯一的门)。
+"""worker 卡归档编排（模块名沿用 coder_fold）:卡行⇄档案行的搬运(卡片世界与记录世界之间唯一的门)。
 
 归档 = 档案行写 + cards 行/影子行删 + 会话与事件文件原位不动。
 解档 = cards 行重建(使命还原/状态复位) + 档案行删(会话延续)。
-触发(见 routes/message_runner 接线):coder 回合收口后自动;silence_card 同一动作。
+触发(见 routes/message_runner 接线):worker 回合收口后自动;silence_card 同一动作。
 """
 from __future__ import annotations
 
@@ -15,21 +15,21 @@ from ..storage import card_db, card_store, coder_archive, shadow_store
 logger = logging.getLogger(__name__)
 
 
-async def archive_coder(work_id: str, card_id: str) -> dict[str, Any]:
-    """完工 coder 卡折叠成归档记录。幂等(已归档 ⇒ 原样返回);非 coder/未完工 ⇒ 拒。
+async def archive_worker(work_id: str, card_id: str) -> dict[str, Any]:
+    """完工 worker 卡折叠成归档记录。幂等(已归档 ⇒ 原样返回);非 worker/未完工 ⇒ 拒。
 
     会话/事件文件不动——它们就是剩下的记录(timeline 按卡号照常可查)。
     """
     meta = card_store._meta_of(work_id, card_id) or {}
-    if str(meta.get("card_type") or "") != "coder":
-        return {"ok": False, "error": "only_coder",
-                "message": "归档只作用于编程卡"}
+    if str(meta.get("card_type") or "") != "worker":
+        return {"ok": False, "error": "only_worker",
+                "message": "归档只作用于worker 卡"}
     # [机制判断归harness 第3步] 完工判定走派生视图（事件权威＋列回落）。
     from ..infra import card_status as _cs
     _dstate = _cs.derive(work_id, card_id)["delivery"]
     if _dstate != "completed":
         return {"ok": False, "error": "not_completed",
-                "message": f"编程卡尚未完工(state={_dstate or '?'})"}
+                "message": f"worker 卡尚未完工(state={_dstate or '?'})"}
 
     # 产物清单从影子提取(路径指针);影子随卡行一起退役
     artifacts: list[str] = []
@@ -86,7 +86,7 @@ async def archive_coder(work_id: str, card_id: str) -> dict[str, Any]:
         # 修改历史按卡号保留——它本来就是记录形态,不占卡面
 
     await card_db.run_write(work_id, _drop)
-    logger.info("[archive] coder 归档 work=%s card=%s (产物 %d 条)",
+    logger.info("[archive] worker 归档 work=%s card=%s (产物 %d 条)",
                 work_id, card_id, len(artifacts))
     return {"ok": True, "card_id": card_id, "artifacts": len(artifacts)}
 
@@ -106,10 +106,10 @@ async def unarchive_coder(work_id: str, card_id: str) -> dict[str, Any]:
     body = f"## 使命\n{rec['task'] or rec['title']}"
     r = await card_store.create_card(
         work_id, rec["title"] or card_id, "系统派生",
-        card_type="coder", parent=rec["parent"], card_id=card_id,
+        card_type="worker", parent=rec["parent"], card_id=card_id,
         charter=body, skip_kick=True)
     if "error" in r:
         return {"ok": False, "error": str(r["error"])[:200]}
     await coder_archive.remove(work_id, card_id)
-    logger.info("[archive] coder 解档 work=%s card=%s", work_id, card_id)
+    logger.info("[archive] worker 解档 work=%s card=%s", work_id, card_id)
     return {"ok": True, "card_id": card_id, "note": "已复活为活卡,可重新派活"}

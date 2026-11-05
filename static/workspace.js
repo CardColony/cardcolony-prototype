@@ -606,7 +606,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     }
   }
 
-  /* [coder 卡可改目标 2026-10-21 · 用户令] 右栏目标行的「改」：
+  /* [worker 卡可改目标 2026-10-21 · 用户令] 右栏目标行的「改」：
      走既有 /goal 命令（edit <新目标>）；后端改完会立刻按新目标起跑
      （create 新 goal 或 resume），所以这里只负责提交与刷新。 */
   async function editGoal(btn) {
@@ -845,7 +845,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       </div>`;
   }
 
-  /* [wb_exec 2026-10-23] coder 卡的执行体块 → 抽到 esm/exec_backend.js（可单测）。 */
+  /* [wb_exec 2026-10-23] worker 卡的执行体块 → 抽到 esm/exec_backend.js（可单测）。 */
   function buildExecBackendHtml(info) { return buildExecBackendHtmlPure(info); }
 
   async function renderInspector() {
@@ -860,8 +860,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // 未开工 ⇒ 显示 auto；开工后 ⇒ 显示实际路由到的（版本, 模型）。
     // ★★ 2026-11-04 用户令：「验收卡、pm卡，本质上应该和coder卡用一套路由机制，
     //   而不是分开的」⇒ **卡型白名单放在后端**（exec-backend 接口回 `delegable`）
-    //   ⇒ 前端**不再硬编码 card_type === "coder"** ⇒ 验收卡/执笔卡
-    //   与 coder 卡**用同一个入口、同一个候选表、同一套路由**。
+    //   ⇒ 前端**不再硬编码 card_type === "worker"** ⇒ 验收卡/执笔卡
+    //   与 worker 卡**用同一个入口、同一个候选表、同一套路由**。
     let execInfo = null;
     let execSwitch = null;
     if (m.card_id && m.card_id !== "draft") {
@@ -945,7 +945,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const isAutoCard = Number(m.auto_mode || 0) === 1;
     // [6702 移植 P8] 停在 paused/blocked 的卡给一条人工恢复入口：
     // 死锁兜底与空转兜底都会把卡停在 paused，而没有这条按钮就只能手改数据库。
-    // [coder 卡可重新激活 2026-10-21 · 用户令] complete 也纳入：跑完的卡想接着干，
+    // [worker 卡可重新激活 2026-10-21 · 用户令] complete 也纳入：跑完的卡想接着干，
     // 改前只能新建一张卡（后端 /auto/resume 直接 400、发消息也不动）。
     const goalState = String(m.goal_state || "").trim();
     const canResume = isAutoCard && ["paused", "blocked", "complete"].includes(goalState);
@@ -1136,8 +1136,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         execSwitch.disabled = true;
         try {
           await API.setWbExecSwitch(want);
-          notify(want ? "已开启：coder 卡走 WorkBuddy 执行体"
-                      : "已关闭：coder 卡全部走系统自己的模型", "success");
+          notify(want ? "已开启：worker 卡走 WorkBuddy 执行体"
+                      : "已关闭：worker 卡全部走系统自己的模型", "success");
         } catch (e) {
           notify("切换失败：" + (e && e.message ? e.message : e), "error");
         } finally {
@@ -1802,8 +1802,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       desc: "这是一张工具卡，按剧本分步执行。可以直接说明这次要它做什么。",
       hints: ["这次要处理什么、产出什么？", "按剧本从头走一遍"],
     },
-    coder: {
-      desc: "这是一张编程卡，承接一个开发任务，自报完工即终态。",
+    worker: {
+      desc: "这是一张 worker 卡，承接一个执行任务（除 UI 外一切执行），自报完工即终态。",
       hints: ["要改什么、验收标准是什么？", "先读代码再给方案"],
     },
     rule: {
@@ -1907,7 +1907,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   // [2026-10-26] 补齐新增的卡间消息类型（与 stream.js 同表）
   const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知",
                              msg_sync: "同步", msg_report: "汇报",
-                             msg_directive: "指令", coder_done: "完工回报" };
+                             msg_directive: "指令", coder_done: "完工回报", worker_done: "完工回报" };
 
   /** 卡间消息节点（注入 stream.js）：返回元素，**不自行 append**——
       位置由快照决定（C2）。role 形如 "card:card_007"（前 5 字符是来源前缀）。
@@ -2630,7 +2630,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       const ct = String((currentCard.meta || {}).card_type || "");
       if (ct === "project") send("requirements_final");
       else if (ct === "sub_project" || ct === "topic") send("requirements_draft");
-      // 其他卡型（coder / tool / …）没有需求文档这条流程，保持原起草通道。
+      // 其他卡型（worker / tool / …）没有需求文档这条流程，保持原起草通道。
       else openDraft("requirements");
     };
     // [更新现状按钮改造 2026-10-16] 「更新现状」不再走 /draft 起草通道，改发起一次
@@ -2865,7 +2865,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
   // ═══ [规则卡 2026-10-15 · 2026-10-16 二次归位] 规则卡＝吸附屏幕右侧的常驻卡片 ═══
   // （用户明令：不是画布节点、不是可展开边栏——就是一张固定吸附右侧、始终完整
-  // 显示的卡）。正文按 ## {区名} 分六区（project/sub_project/tool/coder/topic/
+  // 显示的卡）。正文按 ## {区名} 分六区（project/sub_project/tool/worker/topic/
   // rule＝card_type code），存 mission 列。直改即存：textarea blur → PATCH
   // /rule/sections/{section}（带 base_hash，不符→409 提示刷新）。
   // 审批：仅根卡可调 draft_rule_edit 提议（工具自身不落盘）；回合后扫 timeline 的

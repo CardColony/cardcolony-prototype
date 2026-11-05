@@ -1049,7 +1049,7 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
             data["end"] = str(end)
         # [harness 第 1 步] 卡间消息的收件方与类型：`to` 就是本条事件所在的卡
         # （消息落在收件方自己的键上）；`msg_type` 直接取事件型，两者同源不另算。
-        if str(ev_type).startswith("msg_") or str(ev_type) == "coder_done":
+        if str(ev_type).startswith("msg_") or str(ev_type) in ("coder_done", "worker_done"):
             data["to"] = str(card_id or "")
             data["msg_type"] = str(ev_type)
             if msg_id:
@@ -1310,7 +1310,7 @@ async def append_card_message(work_id: str, card_id: str, *,
         pass
     label = {"msg_notify": "通知", "msg_sync": "同步", "msg_report": "汇报",
              "msg_ask": "询问", "msg_answer": "应答",
-             "msg_directive": "指令", "coder_done": "完工回执"}.get(msg_type, "消息")
+             "msg_directive": "指令", "coder_done": "完工回执", "worker_done": "完工回执"}.get(msg_type, "消息")
     # [2026-10-26 · 用户令「上下文里用用户消息塞，但不要污染客户端样式」]
     # 必须用 **`card:` actor**，不能用 role="user"：
     #   · ``_block_event_type`` 对 actor=human **直接返回 user_message、忽略

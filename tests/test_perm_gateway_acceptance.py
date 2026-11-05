@@ -203,9 +203,9 @@ def test_v4_positive_control_registered_types_see_all():
     变成假红或假绿——这正是「魔法数字＝漂移源」的又一次复现，故改为派生。
     断言的**意图**（注册类型见全量、根卡少 delete）一字未改。
 
-    [编程卡 C3 2026-10-15] **全量口径随类型闸改派生**：``report_done`` 挂进
-    ``CODER_ONLY_TOOLS`` 后只对 coder 下发——注册类型（非 coder）的「全量」
-    ＝ ``TOOL_SWITCH − CODER_ONLY_TOOLS``（判据6 字面口径），根卡再减 delete。
+    [worker 卡 C3 2026-10-15] **全量口径随类型闸改派生**：``report_done`` 挂进
+    ``WORKER_ONLY_TOOLS`` 后只对 worker 下发——注册类型（非 worker）的「全量」
+    ＝ ``TOOL_SWITCH − WORKER_ONLY_TOOLS``（判据6 字面口径），根卡再减 delete。
     意图不变：注册类型见它该见的全量、根卡少 delete。
 
     [规则卡 2026-10-15 · 块3] **全量口径再随根卡闸改派生**：``draft_rule_edit``
@@ -217,7 +217,7 @@ def test_v4_positive_control_registered_types_see_all():
     ``propose_status`` 列 ``OP_ONLY_TOOLS``（**非卡片内挂**，只在 op 回合追加）
     ⇒ 无 op 的常规工具面里它不出现，基线再减 ``OP_ONLY_TOOLS``。意图不变。
     """
-    coder_only = set(card_tools.CODER_ONLY_TOOLS)
+    coder_only = set(card_tools.WORKER_ONLY_TOOLS)
     root_only = set(card_tools.ROOT_ONLY_TOOLS)
     op_only = set(card_tools.OP_ONLY_TOOLS)
     # [v1.1 · 判据6 字面口径] 基线集合＝TOOL_SWITCH − CODER_ONLY − ROOT_ONLY − OP_ONLY
@@ -245,7 +245,7 @@ def test_v4_positive_control_registered_types_see_all():
     assert n_all == expected_all, (
         f"工作单元型卡应见 {expected_all} 件"
         f"（TOOL_SWITCH {len(card_tools.TOOL_SWITCH)} 件减 "
-        f"CODER_ONLY_TOOLS {sorted(coder_only)} 减 "
+        f"WORKER_ONLY_TOOLS {sorted(coder_only)} 减 "
         f"ROOT_ONLY_TOOLS {sorted(root_only)} 减 "
         f"OP_ONLY_TOOLS {sorted(op_only)} 减 "
         f"AUTO_ONLY_TOOLS {sorted(auto_only)}），实 {n_all} 件"
@@ -298,13 +298,13 @@ def test_v5_no_file_permission_type_denied():
     assert file_tools.check_file_access("docs/notes.md", {"card_type": "tool"}) is False
     # 未配置类型（空 perms）经文件工具通道同样拒绝
     assert file_tools.check_file_access("docs/notes.md", _meta("no_such_type")) is False
-    # [执行权集中 2026-10-21] 执行权在 coder 手上：它能读写文件。
+    # [执行权集中 2026-10-21] 执行权在 worker 手上：它能读写文件。
     # [只读档 2026-10-22 · 用户令「把查找文件、读文件也屏蔽了，这显然不行」]
     # 管理卡（sub_project）没有 tools_file ⇒ **写**仍然拒；但它有 tools_read_file
     # ⇒ **读**必须放行。原来这条断言把「读」也一并锁死，等于让 10-21 配的只读开关
     # 形同虚设（工具面看得见 read_file、一调就被执行层拒）。
     assert file_tools.check_file_access("trading-workspace/notes.md",
-                                        _meta("coder")) is True
+                                        _meta("worker")) is True
     assert file_tools.check_file_access("trading-workspace/notes.md",
                                         _meta("sub_project")) is True
     assert file_tools.check_file_access("trading-workspace/notes.md",

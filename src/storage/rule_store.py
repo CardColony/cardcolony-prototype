@@ -8,7 +8,7 @@
     ## all            总规则 → 进**所有**卡的上下文
     ## project        根卡
     ## sub_project    子项目卡
-    ## tool / coder / function / review / rule / topic
+    ## tool / worker / function / review / rule / topic
                       → 只进对应 card_type 的卡的上下文
 
 分区名跟类型注册表走（``context_regions.rule_section_names``）；某区空着就是
@@ -47,7 +47,7 @@ SECTION_LABELS: dict[str, str] = {
     "project": "根卡",
     "sub_project": "子项目卡",
     "tool": "工具卡",
-    "coder": "编程卡",
+    "worker": "worker 卡",
     "ui": "UI卡",
     "qa_card": "验收卡",
     "pm_card": "执笔卡",
@@ -96,24 +96,30 @@ DEFAULT_SECTIONS: dict[str, str] = {
         "3. 工作细节你域内自决，不上报待裁；现状块只写能核实的事实。\n"
         "4. 完工调 update_goal(complete) 收口——这一刻职能会来做阶段验收。\n"
         "5. 阶段完工才向上汇报（report_up, kind=phase），日常不打扰上级。\n"
-        "6. coder／差事卡子卡没有现状块——验收看 coder_done 回执与代码提交"
+        "6. 派活分流：判据是「要不要跑命令」——要跑命令/通用编程（后端、脚本、"
+        "测试、起服务）派 create_worker_card；界面活（写前端页面＋浏览器里看"
+        "效果）派 create_ui_card——UI 卡没有 bash/python，跑不了命令。\n"
+        "7. worker／差事卡子卡没有现状块——验收看 worker_done 回执与代码提交"
         "（差事看 report 回执）；不要派它「写现状块」——委派执行体没有写卡面"
-        "工具，edit_status 对 coder 也直接拒。要把结论落到它卡面，用 "
+        "工具，edit_status 对 worker 也直接拒。要把结论落到它卡面，用 "
         "edit_other_face 自己代写。"),
     "tool": "按剧本执行；产物与用途落清单。",
-    "coder": (
-        "1. 任务在使命块里；产出＝代码＋report_done 回执。\n"
-        "2. 你没有现状块——进展由回执与代码承载。"),
+    "worker": (
+        "1. 任务在使命块里；产出＝代码/文档/命令结果＋report_done 回执。\n"
+        "2. 你没有现状块——进展由回执与产物承载。\n"
+        "3. 除 UI 外的执行活都归你：编程、写改文档、跑命令、起服务、构建测试、"
+        "脚本、查档（manuscript 三件套只读）。"),
     # [UI 卡 2026-11-02] ui＝内循环执行卡（系统内模型，不走 wb_exec）：
     # 手里有平台工具面（含 browser），产出＝界面代码＋浏览器验证结论。
     "ui": (
-        "1. 任务在使命块里；产出＝界面代码＋**你在浏览器里亲眼核到的结论**，"
-        "完工走 report_up 汇报。\n"
+        "1. 你干**界面活**：写前端页面（HTML/CSS/JS）、开浏览器看自己写的"
+        "页面验效果。**你没有 bash/python——跑不了命令、起不了服务、写不了"
+        "后端**；任务里这类需求不是你的活，report_up 写明「此部分需worker 卡」。\n"
         "2. 浏览器循环：navigate 打开 → inspect 看语义地图 → 用 ref 操作 → "
         "再 inspect/query 验证效果。ref 在页面跳转后全部作废，click 只证明"
         "输入已派发——效果必须亲眼验证。\n"
         "3. 结论只写你在页面里核到的事实（可见文字、console 报错、截图资产）；"
-        "没核到的不许写进汇报。"),
+        "没核到的不许写进汇报。完工走 report_up。"),
     # [规则节点 2026-10-28 · 用户令「规则卡不挂模型和对话，不需要工具」]
     # 规则节点没有模型、没有对话、没有工具面 ⇒ 没有"它自己该怎么做事"可言。
     # 分区保留（分区＝卡类型列表，跟着注册表长），内容留空。
@@ -227,7 +233,13 @@ def read_sections(work_id: str) -> dict[str, str]:
     p = rules_path(work_id)
     if p.exists():
         try:
-            return split_sections(p.read_text(encoding="utf-8"))
+            secs = split_sections(p.read_text(encoding="utf-8"))
+            # [worker 改名 2026-11-05] 存量 rules.md 的 `## coder` 区读时改名为
+            # `## worker`（worker 卡按新区名取区；下次 write_sections 落盘自愈）。
+            # 两区并存时不动（内容取舍由人裁定，不静默合并）。
+            if "coder" in secs and "worker" not in secs:
+                secs["worker"] = secs.pop("coder")
+            return secs
         except Exception as exc:  # noqa: BLE001 读坏了当作没有，不阻断装配
             logger.warning("读规则文件失败 %s: %s", p, exc)
             return {}

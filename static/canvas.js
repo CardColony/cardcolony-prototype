@@ -1689,7 +1689,7 @@ const WORK_ID = window.__WORK_ID__;
   // [画布商业化 2026-10-17] 卡类型 → 展示名：画布上给人看的是中文，不暴露 code。
   const TYPE_LABEL = {
     project: "项目", sub_project: "子项目", topic: "课题",
-    tool: "工具卡", coder: "编程卡", rule: "规则卡",
+    tool: "工具卡", worker: "worker 卡", rule: "规则卡",
   };
 
   function updateExpandBadge(node, childCount, isExpanded) {
@@ -1997,7 +1997,7 @@ const WORK_ID = window.__WORK_ID__;
       ${runState ? '<div class="cv-runbar"></div>' : ""}
       <div class="cv-card-row">
         ${wsBadge}
-        ${card.card_type === "coder" ? '<span class="cv-tchip coder" title="编程卡：执行体，一张卡一件开发任务">编程</span>' : ""}
+        ${card.card_type === "worker" ? '<span class="cv-tchip coder" title="worker 卡：执行体，一张卡一件执行任务">worker</span>' : ""}
         <div class="tname">${escapeHtml(card.title)}</div>
         ${runChip}
         ${Number(card.decision_count || 0) > 0 ? `<span class="cv-dec" title="已形成 ${card.decision_count} 条定论（D01…）——这条线已经收敛过 ${card.decision_count} 次">定${card.decision_count}</span>` : ""}

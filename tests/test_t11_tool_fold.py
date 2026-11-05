@@ -145,7 +145,7 @@ async def test_e2e_tool_loop_with_slot(work, sandbox, monkeypatch):
     monkeypatch.setenv("MOCK_LLM", "1")
     wid = work["work_id"]
     # [执行权集中 2026-10-22 · D04] 本测试验「工具轮槽」机制，需要卡能**读大文件**。
-    # project 卡（管理卡）现在没有 tools_file（执行权只在 coder 手上）。
+    # project 卡（管理卡）现在没有 tools_file（执行权只在 worker 手上）。
     # [2026-10-31 修夹具] 权限在**建卡期固化**（裁定 4），update_card 不吃 perms、
     # 能力底座 2026-10-30 后库里也没有 perms 列可改——改前夹具两次尝试
     # （update_card / 直改列）都静默无效 ⇒ read_file 恒 denied、

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""coder 卡：可以改目标，可以重新激活任务。
+"""worker 卡：可以改目标，可以重新激活任务。
 
-[2026-10-21 · 用户令]「再改一个，coder 卡，可以更新目标，可以重新激活任务」。
+[2026-10-21 · 用户令]「再改一个，worker 卡，可以更新目标，可以重新激活任务」。
 
-改前是两条死胡同（实测 work_018 里 7 张 coder 卡全是 ``goal_state=complete``）：
+改前是两条死胡同（实测 work_018 里 7 张 worker 卡全是 ``goal_state=complete``）：
   · ``POST /auto/resume`` 对 ``complete`` 直接 400「已完成的目标不能恢复」；
   · ``ensure_goal_from_message`` 在 ``goal`` 非空时早退 ⇒ 再发消息也不会动；
   · 右栏「恢复自动推进」按钮只在 paused/blocked 显示，目标只读不可改。
@@ -50,8 +50,8 @@ def kicks(monkeypatch):
 async def _mk_coder(work, *, state: str = "complete", goal: str = "把 X 做完",
                     auto: bool = True) -> tuple[str, str]:
     wid, root = work["work_id"], work["work_card_id"]
-    r = await card_store.create_card(wid, "coder 卡", "模型生成", parent=root,
-                                     card_type="coder")
+    r = await card_store.create_card(wid, "worker 卡", "模型生成", parent=root,
+                                     card_type="worker")
     assert "error" not in r, r
     cid = r["meta"]["card_id"]
     await card_store.update_card(

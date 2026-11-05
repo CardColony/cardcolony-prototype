@@ -147,28 +147,28 @@ async def test_archive_does_not_touch_session_file(work):
     assert sp.exists(), "归档不该删会话文件"
 
 
-async def test_parent_archives_own_coder_child_via_tool(work):
-    """[2026-10-25 实测事故] 父卡归档自己的 **coder 子卡**不许被拒。
+async def test_parent_archives_own_worker_child_via_tool(work):
+    """[2026-10-25 实测事故] 父卡归档自己的 **worker 子卡**不许被拒。
 
     原判据用 `policy.check(..., SWITCH_DELETE)` ⇒ 查的是**被归档卡自己的 perms**，
-    而 coder 卡的 perms 里没有 delete ⇒ 父卡永远归档不了自己的子卡
+    而 worker 卡的 perms 里没有 delete ⇒ 父卡永远归档不了自己的子卡
     （实测 card_021 归档 card_023 报 `越权：无权归档`）。
     正确判据：操作者在目标子树上游（与 silence_card / stop_card 同款）。
     """
     wid, root = work["work_id"], work["work_card_id"]
     parent = await _mk_child(wid, "父卡", root)
     r0 = await card_store.create_card(
-        wid, "coder 子卡", "模型生成", card_type="coder", parent=parent,
+        wid, "worker 子卡", "模型生成", card_type="worker", parent=parent,
         skip_kick=True)
     assert "error" not in r0, r0
     child = r0["meta"]["card_id"]
-    # 前提确认：coder 卡自己的 perms 里确实没有 delete
+    # 前提确认：worker 卡自己的 perms 里确实没有 delete
     assert "delete" not in (r0["meta"].get("perms") or [])
 
     cards = card_tools._collect_card_meta(wid)
     r = await card_tools.execute_tool(
         wid, parent, "archive_card",
-        {"card_id": child, "reason": "测父归档 coder 子卡"}, cards)
+        {"card_id": child, "reason": "测父归档 worker 子卡"}, cards)
 
     assert r.get("ok") is True, r
     assert card_store.card_exists(wid, child) is False

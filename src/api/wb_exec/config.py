@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """WorkBuddy 执行体配置（读 config/wb_exec.json）。
 
-**fail-open 纪律**：配置读不到 / 解析失败 ⇒ 全链路旁路（coder 卡仍走系统自己的模型），
-绝不因为配置问题把 coder 卡搞挂。
+**fail-open 纪律**：配置读不到 / 解析失败 ⇒ 全链路旁路（worker 卡仍走系统自己的模型），
+绝不因为配置问题把 worker 卡搞挂。
 
 配置项语义见 config/wb_exec.json 的 ``_meta`` 与各段 ``_doc``。
 """
@@ -256,7 +256,7 @@ class TaskSpec:
 class ScopeSpec:
     """开闸范围（爆炸半径控制）。
 
-    ``all``     —— 所有 coder 卡走 WorkBuddy（缺省即委派）
+    ``all``     —— 所有 worker 卡走 WorkBuddy（缺省即委派）
     ``opt_in``  —— **只有显式把该卡 ``exec_backend`` 设成 ``auto`` 的卡**才走 WorkBuddy；
                     存量卡默认留在系统自己的模型上，**逐张接管**（开闸零冲击）
     """
@@ -272,11 +272,11 @@ class WbExecConfig:
     fallback_models: tuple[str, ...] = ("hy3",)
     prefer_same_executor: bool = True
     #: ★★ **哪些卡型走这套路由**（2026-11-04 用户令：「验收卡、pm卡，本质上应该和
-    #: coder卡用一套路由机制，而不是分开的」）。
+    #: worker 卡用一套路由机制，而不是分开的」）。
     #: ⇒ **白名单进配置**（``wb_exec.json`` 的 ``delegable_card_types``）⇒
     #:   后端判定、接口返回、**前端渲染门控**共用**同一份** ⇒ 不再各写一套卡型。
-    #: 默认 = coder（编程卡）＋ qa_card（验收卡）＋ pm_card（执笔卡）。
-    delegable_card_types: tuple[str, ...] = ("coder", "qa_card", "pm_card")
+    #: 默认 = worker（worker 卡）＋ qa_card（验收卡）＋ pm_card（执笔卡）。
+    delegable_card_types: tuple[str, ...] = ("worker", "qa_card", "pm_card")
     #: **备用端点**（候选表里 ``weight == 0`` 的那些）——
     #: ★ 2026-11-03 用户令：「hy3 free 额度用完 ⇒ 全部换收费的两端 glm-5.3-flash」。
     #: ⇒ 语义：**平时不吃流量**（权重 0）；等原候选的额度用完时，
@@ -437,7 +437,7 @@ def _parse(raw: dict[str, Any]) -> WbExecConfig:
         # ★ 可委派卡型白名单（配置化 ⇒ 前后端同一份事实源）。
         delegable_card_types=tuple(
             str(t) for t in (raw.get("delegable_card_types")
-                             or ("coder", "qa_card", "pm_card")) if str(t)),
+                             or ("worker", "qa_card", "pm_card")) if str(t)),
         guards=Guards(
             permission_mode=str(guards.get("permission_mode") or "dontAsk"),
             cli_permission_mode=str(guards.get("cli_permission_mode")

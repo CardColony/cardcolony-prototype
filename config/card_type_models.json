@@ -1,16 +1,16 @@
 {
-  "_meta": {
-    "version": 1,
-    "purpose": "按卡片类型设置默认模型（全局模板）。新建项目时把它整体拷贝进该项目的模型配置表；之后项目内改卡片模型以卡片为准，不再回写全局。",
-    "semantics": "types 为空（未配置该类型）= 该类型卡片回落到系统默认模型。值必须是 config/models.yaml 里的模型键。",
-    "editable_via": "/api/settings/card-type-models"
-  },
-  "types": {
-    "project": "",
-    "sub_project": "",
-    "tool": "",
-    "coder": "",
-    "rule": "",
-    "topic": ""
-  }
+ "_meta": {
+  "version": 1,
+  "purpose": "按卡片类型设置默认模型（全局模板）。新建项目时把它整体拷贝进该项目的模型配置表；之后项目内改卡片模型以卡片为准，不再回写全局。",
+  "semantics": "types 为空（未配置该类型）= 该类型卡片回落到系统默认模型。值必须是 config/models.yaml 里的模型键。",
+  "editable_via": "/api/settings/card-type-models"
+ },
+ "types": {
+  "project": "",
+  "sub_project": "",
+  "tool": "",
+  "rule": "",
+  "topic": "",
+  "worker": ""
+ }
 }

@@ -1190,7 +1190,7 @@ async def get_review_status(work_id: str, card_id: str):
 
 
 # ============================================================
-# [wb_exec 2026-10-23] coder 卡的**执行体选择**（谁干活：WorkBuddy 还是系统自己的模型）
+# [wb_exec 2026-10-23] worker 卡的**执行体选择**（谁干活：WorkBuddy 还是系统自己的模型）
 #
 # 为什么不复用 `PUT /api/settings/model-overrides/{wid}/card/{cid}`：
 # 那个端点是**整行替换**（`model_override.put_row` 覆盖 cards[card_id]），
@@ -1223,11 +1223,11 @@ async def get_exec_backend(work_id: str, card_id: str):
     if not isinstance(routed, dict):
         routed = None
     # ★★ **"这张卡能不能走执行体"由后端说了算**（2026-11-04 用户令：
-    #   「验收卡、pm卡，本质上应该和coder卡用一套路由机制」⇒ 卡型白名单配置化
-    #   ⇒ **前端不再自己判卡型**（以前是 `card_type === "coder"` 硬编码 ⇒
+    #   「验收卡、pm卡，本质上应该和 worker 卡用一套路由机制」⇒ 卡型白名单配置化
+    #   ⇒ **前端不再自己判卡型**（以前是 `card_type === "worker"` 硬编码 ⇒
     #   验收卡/执笔卡看不到入口 ⇒ 看起来像"分开的路由")）。
     card_type = str((card.get("meta") or {}).get("card_type") or "")
-    delegable_types = cfg.delegable_card_types or ("coder", "qa_card", "pm_card")
+    delegable_types = cfg.delegable_card_types or ("worker", "qa_card", "pm_card")
     return {
         "ok": True,
         "card_id": card_id,
@@ -1275,8 +1275,8 @@ async def put_exec_backend(work_id: str, card_id: str, req: SetExecBackendReques
 # 用户令：*"再做一个手动开关，开启走workbuddy，关闭走系统模型"*
 #
 # **运行时生效**（写 config/wb_exec_switch.json，**不用重启 5700**）：
-#   开 ⇒ coder 卡走 WorkBuddy 执行体（按配比选模型）
-#   关 ⇒ coder 卡全部走**系统自己的模型**（WorkBuddy 一点不碰）
+#   开 ⇒ worker 卡走 WorkBuddy 执行体（按配比选模型）
+#   关 ⇒ worker 卡全部走**系统自己的模型**（WorkBuddy 一点不碰）
 #
 # 优先级：运行时开关 > config/wb_exec.json 的 enabled（文件坏了退回配置）。
 # ============================================================
@@ -1296,8 +1296,8 @@ async def put_wb_exec_switch(req: SetWbExecSwitchRequest):
     st = _wb_switch.state()
     logger.info("[wb_exec] 执行体总开关切换 ⇒ %s", on)
     return {"ok": True, **st,
-            "note": ("已开启：coder 卡走 WorkBuddy 执行体" if on
-                     else "已关闭：coder 卡全部走系统自己的模型")}
+            "note": ("已开启：worker 卡走 WorkBuddy 执行体" if on
+                     else "已关闭：worker 卡全部走系统自己的模型")}
 
 
 def _wb_exec_options(cfg) -> list[dict]:
@@ -2086,11 +2086,11 @@ async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, ali
     )
 
 
-async def _revive_coder_card(work_id: str, card_id: str, content: str) -> None:
-    """完工的编程卡**重新派活**：卡复位 active ＋ 目标重新激活。
+async def _revive_worker_card(work_id: str, card_id: str, content: str) -> None:
+    """完工的worker 卡**重新派活**：卡复位 active ＋ 目标重新激活。
 
-    [coder 卡可继续派活 2026-10-21 · 用户令] 改前完工卡收到消息直接 400
-    「不再激活；新任务请新建编程卡」⇒ 同一件事的后续、同一处返工，只能另开
+    [worker 卡可继续派活 2026-10-21 · 用户令] 改前完工卡收到消息直接 400
+    「不再激活；新任务请新建worker 卡」⇒ 同一件事的后续、同一处返工，只能另开
     一张卡，上下文与留痕全断（用户原话：「明明是继续的任务，它也只能新开卡执行」）。
     现在把「再发一条消息」当作**重新派活**：
       · ``state: completed → active``（否则 report_done 判态、K3 调起都会拦）；
@@ -2099,7 +2099,7 @@ async def _revive_coder_card(work_id: str, card_id: str, content: str) -> None:
       · paused/blocked ⇒ resume（清等待位与活锁计数）。
     """
     await card_store.update_card(
-        work_id, card_id, {"state": "active"}, "重新派活：完工编程卡复位为 active")
+        work_id, card_id, {"state": "active"}, "重新派活：完工worker 卡复位为 active")
     meta = card_store._meta_of(work_id, card_id) or {}
     if not bool(meta.get("auto_mode")):
         return
@@ -2123,7 +2123,7 @@ async def _revive_coder_card(work_id: str, card_id: str, content: str) -> None:
     try:
         await svc.disarm(work_id, card_id)
     except Exception as exc:  # noqa: BLE001 撤销 arm 失败不阻断（最坏是多起一轮）
-        logger.warning("[coder] 重新派活后撤销 arm 失败 card=%s: %s", card_id, exc)
+        logger.warning("[worker] 重新派活后撤销 arm 失败 card=%s: %s", card_id, exc)
 
 
 @router.post("/works/{work_id}/cards/{card_id}/messages")
@@ -2131,16 +2131,16 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     """对话主链路（模块 H2）。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    # [编程卡 2026-10-15 · §六块3 静默判定①] 完工编程卡不再被激活。
-    # [coder 卡可继续派活 2026-10-21 · 用户令] 这条**改了**：不再 400 拒绝，
+    # [worker 卡 2026-10-15 · §六块3 静默判定①] 完工worker 卡不再被激活。
+    # [worker 卡可继续派活 2026-10-21 · 用户令] 这条**改了**：不再 400 拒绝，
     # 而是把「再发一条消息」当成重新派活（卡复位 + 目标重新激活）——否则同一件
     # 事的后续只能另开一张卡。读卡失败仍走 _run_message 既有口径。
     try:
         _meta = (await card_store.read_card(work_id, card_id)).get("meta") or {}
     except Exception:  # noqa: BLE001
         _meta = {}
-    # [coder 归档复活 2026-10-25] 归档卡不是活卡(read_card 查不到)——
-    # 对归档 coder 发消息 = 解档复活,再走下面的重派活分支(同规则)。
+    # [worker 归档复活 2026-11-05 改名前为 coder 归档复活] 归档卡不是活卡(read_card 查不到)——
+    # 对归档 worker 发消息 = 解档复活,再走下面的重派活分支(同规则)。
     if not _meta:
         from ..storage import coder_archive as _ca
         if _ca.get_record(work_id, card_id) is not None:
@@ -2157,7 +2157,7 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     # 变更说了算；无事件覆盖回落列）——不再直接读手写 state 列。
     from ..infra import card_status as _cs
     _derived_delivery = _cs.derive(work_id, card_id)["delivery"]
-    if str(_meta.get("card_type") or "") == "coder" \
+    if str(_meta.get("card_type") or "") == "worker" \
             and _derived_delivery == "completed":
         # [重新派活竞态 2026-10-21] 改目标会 emit goal/changed ⇒ 驱动器立刻
         # request_drive 抢一轮，把互斥体占掉 ⇒ 用户这条消息反而撞 409。
@@ -2166,13 +2166,13 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
         _revive_owner = f"revive:{uuid.uuid4().hex[:8]}"
         session_facade.turn_try_acquire(work_id, card_id, _revive_owner)
         try:
-            await _revive_coder_card(work_id, card_id, req.content)
+            await _revive_worker_card(work_id, card_id, req.content)
         except Exception as exc:  # noqa: BLE001 复位失败才如实拒绝
-            logger.error("[coder] 重新派活失败 work=%s card=%s: %s",
+            logger.error("[worker] 重新派活失败 work=%s card=%s: %s",
                          work_id, card_id, exc)
             if _revive_owner:
                 session_facade.turn_release(work_id, card_id, _revive_owner)
-            return _err(500, f"编程卡重新派活失败：{exc}")
+            return _err(500, f"worker 卡重新派活失败：{exc}")
     # [自动模式 2026-10-17 · 回灌 5700 块0.3 · D2] auto 卡收到**首条消息** ⇒
     # 该消息成为 goal、goal_state=active（起跑条件齐备；本轮跑完后驱动器自动
     # 续轮）。已有目标 ⇒ 不动（中途引导，目标不变——方案 §3.4）。非 auto 卡
@@ -2395,7 +2395,7 @@ async def post_card_auto_resume(work_id: str, card_id: str):
       · ``goal_state == active``     ⇒ 200 ``{"resumed": False}``（幂等，不重复起轮）
       · ``paused`` / ``blocked``     ⇒ 落三字段 ＋ kick ⇒ 200 ``{"resumed": True}``
       · ``complete``                 ⇒ 用同一 objective 新建 goal（轮次归零）＋ kick
-        [coder 卡可重新激活 2026-10-21 · 用户令] 改前这里 400「已完成不能恢复」，
+        [worker 卡可重新激活 2026-10-21 · 用户令] 改前这里 400「已完成不能恢复」，
         而发消息也不会动（goal 非空即早退）⇒ 跑完的卡只能新建一张卡才能接着干。
     """
     from . import auto_driver
@@ -2429,7 +2429,7 @@ async def post_goal_command(work_id: str, card_id: str, req: dict):
     from ..goal import command as goal_command
     raw = str((req or {}).get("input") or "")
     result = await goal_command.execute_command(work_id, card_id, raw)
-    # [coder 卡可改目标 2026-10-21 · 用户令] 建/改目标之后，auto 卡应当**立刻**按新
+    # [worker 卡可改目标 2026-10-21 · 用户令] 建/改目标之后，auto 卡应当**立刻**按新
     # 目标跑——否则用户改完目标看着卡一动不动，以为又坏了。
     # 只对 create/edit 生效：pause/clear/resume 各自语义已在命令里落地，别插手。
     try:
@@ -3119,8 +3119,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                                 card_id)
             except Exception as exc:  # noqa: BLE001 接续失败不影响本回合返回
                 logger.warning("[排队] 摘牌后接续队列失败 card=%s: %s", card_id, exc)
-        # [2026-10-25 · 用户裁定「coder 不能自动归档,应可续派任务延续」]
-        # 自动归档撤除:完工 coder 保持活卡形态(上下文连续,天然可续派)。
+        # [2026-10-25 · 用户裁定「worker 不能自动归档,应可续派任务延续」]
+        # 自动归档撤除:完工 worker 保持活卡形态(上下文连续,天然可续派)。
         # 折叠只走显式通道:silence_card(silence)由上级决定。
     # ---- [自动模式 2026-10-17 · 回灌 5700 块0.3 · 红线 5] 驱动检查排在
     # **互斥体释放之后** ----

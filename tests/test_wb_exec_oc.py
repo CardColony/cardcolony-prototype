@@ -313,7 +313,7 @@ async def test_opencode_session_error_must_raise_not_fake_success(monkeypatch, t
     403 ⇒ 但 ``prompt_async`` 是 **204 立即返回** ⇒ 错误发生在**之后**
     ⇒ 早先 bridge **不接 `session.error`** ⇒ 错误被静默丢弃
     ⇒ 收口时只读到「0 工具 0 正文」⇒ **这张卡显示"完成"但什么都没干**
-    （线上当时有 25% 的 coder 流量正踩着这个）。
+    （线上当时有 25% 的 worker 流量正踩着这个）。
     """
     cfg = wb_config.load()
     monkeypatch.setattr(bridge, "_build_task_text",

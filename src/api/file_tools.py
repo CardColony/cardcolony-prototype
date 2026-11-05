@@ -109,7 +109,7 @@ FILE_SCOPE: dict[str, list[str]] = {
     "project": [""],      # 项目根卡（root scope）——10-15 补回，此前漏抄致根卡全被拒
     "sub_project": [""],
     "topic": [""],
-    "coder": [""],        # 编程卡——10-15 补（同因漏抄）
+    "worker": [""],        # worker 卡——10-15 补（同因漏抄）
     "tool": [""],
     # [只读档 2026-10-22] role 补进来：2026-10-21 给职能角色配了 tools_read_file
     # （「能核实交付物，但不给它写权和执行权」），但本表没有 role 键 ⇒
@@ -118,7 +118,7 @@ FILE_SCOPE: dict[str, list[str]] = {
     # [2026-10-26] function 补进来——**同一 bug 第三次**：职能卡（fn_NNN）的
     # perms 里配了 tools_read_file，工具面也下发了 read_file/list_files/
     # search_files/glob_files，但本表无 "function" 键 ⇒ 一调就 denied。
-    # 沿革：10-15 补 project/coder、10-22 补 role、10-26 补 function。
+    # 沿革：10-15 补 project/worker、10-22 补 role、10-26 补 function。
     # 护栏见 tests/test_file_scope_coverage.py（配了文件权限就必须有键）。
     "function": [""],
     # [2026-10-27] review 补进来——评审卡是 sub_project/topic 的伴生卡，

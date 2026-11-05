@@ -98,7 +98,7 @@ def _writable_card_types() -> list[str]:
 #: 走 card_store.create_card 直建的卡类型（project 用根卡本身、tool 需 owner）
 #: [差事卡 2026-11-01] qa_card/pm_card 是差事场卡——注册表里的可写类型，
 #: 直建＋写一块同样要产 card_block_edited。
-_CARD_STORE_TYPES = ("sub_project", "coder", "rule", "qa_card", "pm_card", "ui")
+_CARD_STORE_TYPES = ("sub_project", "worker", "rule", "qa_card", "pm_card", "ui")
 
 #: 卡类型 → 豁免理由（不直建、由别的模块派生）。
 #: **双向约束**：这里登记了但测试其实覆盖到 ⇒ 也要红（豁免不能长期挂着）。
@@ -118,7 +118,7 @@ async def test_every_card_type_records_events(sandbox):
 
     各类型的建立方式不同（这是卡类型注册表本身的约束，不是本测试的豁免）：
       project     → 根卡本身就是 project，直接 update 它
-      sub_project/coder/rule → 直建
+      sub_project/worker/rule → 直建
       tool        → 必须带 owner_card_id
       topic       → 只属于 research_project 词表，单独建一个该类的 work
       function/role → 档案 store

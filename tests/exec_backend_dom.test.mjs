@@ -1,4 +1,4 @@
-/* tests/exec_backend_dom.test.mjs —— coder 卡**执行体块**的渲染网（[wb_exec 2026-10-23]）
+/* tests/exec_backend_dom.test.mjs —— worker 卡**执行体块**的渲染网（[wb_exec 2026-10-23]）
  *
  * 跑法：node --test tests/exec_backend_dom.test.mjs
  *

@@ -734,7 +734,7 @@ await load();
   //
   // ⚠ 选对必须按**服务端同一套口径**挑，否则断言必红（三个坑都踩过）：
   //   ① 落点是拖动卡的**后代** ⇒ 前端直接拒（会成环）；
-  //   ② 落点卡类型**不能有子卡**（tool/coder/rule/role）⇒ 服务端回 400；
+  //   ② 落点卡类型**不能有子卡**（tool/worker/rule/role）⇒ 服务端回 400；
   //   ③ 落点卡是拖动卡的**现有父卡** ⇒ 改完等于没改（断言会"假通过"）。
   //   （可当父卡的类型＝注册表 can_have_children=true 的那些：sub_project/topic/project/function）
   const pair = await ev(`(() => {

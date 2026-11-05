@@ -223,7 +223,7 @@
               "where": {
                 "card_type": {
                   "in": [
-                    "coder",
+                    "worker",
                     "sub_project",
                     "topic"
                   ]
@@ -303,7 +303,7 @@
                   "in": [
                     "sub_project",
                     "topic",
-                    "coder"
+                    "worker"
                   ]
                 }
               },

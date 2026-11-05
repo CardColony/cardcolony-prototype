@@ -112,4 +112,5 @@ data/*.log
 data/*.log.err
 
 # Devin/工具侧误落的 D:/Temp 输出文件（全角冒号文件名）
-D?Temp*
+D*Temp*.txt
+_devin_install.ps1

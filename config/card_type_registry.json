@@ -67,12 +67,12 @@
      ]
     },
     {
-     "code": "coder",
-     "label": "编程卡",
-     "description": "承接上级卡开发任务的执行体。一次一个任务；自报完工即终态；终态后静默、不可删、永久留档。",
+     "code": "worker",
+     "label": "worker 卡",
+     "description": "承接上级卡执行任务的执行体——除 UI 外的一切执行活归它：编程、文档编辑、跑命令、起服务、构建测试、脚本。一次一个任务；自报完工即终态；终态后静默、不可删、永久留档。",
      "can_have_children": false,
      "requires_owner": false,
-     "default_template": "coder",
+     "default_template": "worker",
      "allowed_transitions": [
       "active",
       "completed"
@@ -265,6 +265,13 @@
    "write_blocked": true,
    "used_by": null,
    "migration_hint": "小说 agent 遗留，存量无实例；写路径拦截，读路径宽容。"
+  },
+  {
+   "code": "coder",
+   "deprecated": true,
+   "write_blocked": true,
+   "used_by": "migrated: 存量 card_type=coder 全部由 card_db 启动迁移改 worker（2026-11-05 worker 改名）",
+   "migration_hint": "编程卡改名 worker 卡并扩域（除 UI 外一切执行：编程/文档/命令）。旧值写路径拦截，读路径宽容；存量行由 card_db 迁移重写。"
   }
  ],
  "state_machine": {

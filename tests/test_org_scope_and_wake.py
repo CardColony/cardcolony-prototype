@@ -66,7 +66,7 @@ def test_wake_card_registered():
 
     为什么不挂 EDIT：唤醒是**组织动作**（叫别人干活），按 D04「执行权与组织权
     分离」，它应该和 create_child 同档——这样只有 project/sub_project/role
-    能唤醒，而 coder/tool（执行体）拿不到。挂 EDIT 会让 coder/tool 也能叫醒别人，
+    能唤醒，而 worker/tool（执行体）拿不到。挂 EDIT 会让 worker/tool 也能叫醒别人，
     等于执行体获得了组织权。
     """
     assert "wake_card" in card_tools.TOOL_REGISTRY
@@ -220,7 +220,7 @@ async def test_role_can_create_card_anywhere_in_tree(work):
     assert str(m.get("parent")) == host_id, f"新卡应挂在 {host_id} 下: {m.get('parent')}"
 
 
-async def test_role_can_create_coder_with_parent(work):
+async def test_role_can_create_worker_with_parent(work):
     """需求 3：角色卡能建**执行卡**并指定挂点（否则它建的执行卡无处可挂）。"""
     wid = work["work_id"]
     root = work["work_card_id"]
@@ -231,7 +231,7 @@ async def test_role_can_create_coder_with_parent(work):
     host_id = host["meta"]["card_id"]
 
     cards = card_tools._collect_card_meta(wid)
-    res = await card_tools._h_create_coder_card(
+    res = await card_tools._h_create_worker_card(
         wid, rid,
         {"title": "执行单元", "task": "完成架构师交代的一件事。",
          "parent": host_id},
@@ -239,7 +239,7 @@ async def test_role_can_create_coder_with_parent(work):
     assert res.get("ok") is True, f"角色卡应能建执行卡到指定位置: {res}"
     new_id = res.get("card_id")
     m = card_store._meta_of(wid, new_id) or {}
-    assert str(m.get("card_type")) == "coder"
+    assert str(m.get("card_type")) == "worker"
     assert str(m.get("parent")) == host_id
 
 

@@ -271,8 +271,11 @@ def _flush_reasoning(work_id: str, card_id: str) -> None:
     by_bucket = _reason_buf.pop(key, None)
     if not by_bucket:
         return
+    # [占位思考过滤 2026-11-05] echo_fill 端点的 wire 兜底占位串可能被端点/模型
+    # 原样回吐成"思考"——它是格式件不是思考，不落盘（懒导入防环：gateway→api）。
+    from ..model_gateway.gateway import REASONING_PLACEHOLDER as _RP
     for (model, run_id, round_), buf in by_bucket.items():
-        text = buf.get("text") or ""
+        text = (buf.get("text") or "").replace(_RP, "")
         if not text.strip():
             continue
         try:

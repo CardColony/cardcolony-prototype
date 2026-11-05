@@ -229,7 +229,7 @@ async def test_tool_loop_closes_with_tool_result(client, sandbox):
     # 工具面：卡片工具 ＋ 文件工具都在首轮手里（判断+行动合一，全量工具面）
     assert "read_card" in main_calls[0]["tools"]
     # [执行权集中 2026-10-22 · 用户裁定 D04] project 卡属管理卡，**不再有执行权**
-    # （tools_file 已从 project/sub_project/topic 三行摘除，执行只在 coder 手上）。
+    # （tools_file 已从 project/sub_project/topic 三行摘除，执行只在 worker 手上）。
     # 这条断言随之反转：管理卡看得见只读件，但看不见写文件。
     assert "write_file" not in main_calls[0]["tools"], (
         "管理卡不应有 write_file（执行权只在执行卡手上）")

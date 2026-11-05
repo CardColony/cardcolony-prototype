@@ -8,7 +8,7 @@ T2 首轮需求闸:自动子卡 rounds=0+需求未策展 ⇒ 动手工具摘除,
 T3 两段式收口·首段:自动子卡 complete 被拒(COMPLETE_TWO_PHASE)+
    closure_requested 事件进 QA/总裁队列
 T4 两段式收口·放行:总裁策展(decisions ledger)+QA 判词落账 ⇒ complete 通过
-T5 两套:手动子卡 complete 不进两段闸;coder 不进;根卡不进
+T5 两套:手动子卡 complete 不进两段闸;worker 不进;根卡不进
 T6 fail-open:治理数据读不出 ⇒ 放行
 T7 提示词:AUTO 版讲两段式;BASE(手动)不出现
 """

@@ -7,13 +7,13 @@
   tools_read_file）——配置演进真正回填；
 - apply 后该卡其它字段（title/parent/auto_mode/goal/goal_rounds/使命正文）
   一行不变——只写 perms/perms_version 两字段；
-- coder 卡跑同一函数不丢执行权（tools_file/tools_web 保留，与真实 v9 配置
-  coder 行一致）——不自己发明规则；
+- worker 卡跑同一函数不丢执行权（tools_file/tools_web 保留，与真实 v9 配置
+  worker 行一致）——不自己发明规则；
 - apply 幂等：复跑 applied=0。
 
 沙箱：conftest autouse 把 WORKS_DIR 指到 tmp；本套件自指真实
-config/card_type_registry.json（建 sub_project / coder 卡需要，与
-test_coder_card.py 同一手法）。**不碰任何真实 work。**
+config/card_type_registry.json（建 sub_project / worker 卡需要，与
+test_worker_card.py 同一手法）。**不碰任何真实 work。**
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def perm_registry(monkeypatch):
-    """建 sub_project / coder 卡需真实注册表（conftest 沙箱默认无注册表降级）。"""
+    """建 sub_project / worker 卡需真实注册表（conftest 沙箱默认无注册表降级）。"""
     monkeypatch.setattr(
         card_store, "TYPE_REGISTRY_PATH",
         REPO / "config" / "card_type_registry.json",
@@ -175,19 +175,19 @@ async def test_apply_recomputes_perms_and_preserves_other_fields(perm_registry):
 
 
 @pytest.mark.asyncio
-async def test_coder_keeps_execution_switches(perm_registry):
-    """验收④④：coder 卡跑同一函数，tools_file/tools_web 执行权不被削——
-    与真实 v9 配置 coder 行一致（不自己发明规则）。"""
+async def test_worker_keeps_execution_switches(perm_registry):
+    """验收④④：worker 卡跑同一函数，tools_file/tools_web 执行权不被削——
+    与真实 v9 配置 worker 行一致（不自己发明规则）。"""
     wid, root_id = await _make_work()
-    cod_id = await _make_card(wid, root_id, "coder", "旧快照编程卡", "使命正文B")
-    # 旧快照：coder 卡也握着执行权，但缺了当前 coder 行的 read/edit 等
+    cod_id = await _make_card(wid, root_id, "worker", "旧快照worker 卡", "使命正文B")
+    # 旧快照：worker 卡也握着执行权，但缺了当前 worker 行的 read/edit 等
     _seed_old_snapshot(wid, cod_id, ["tools_file", "tools_web", "shadow_write"],
                        auto_mode=0)
 
     report = backfill.recompute_perms_for_work(wid, dry_run=False)
     assert report["applied"] == 1
 
-    target = set(policy.compute_perms("rd_project", "coder")[0])
+    target = set(policy.compute_perms("rd_project", "worker")[0])
     after_perms = json.loads(_read_perms_raw(wid, cod_id))
     assert set(after_perms) == target
     assert "tools_file" in after_perms

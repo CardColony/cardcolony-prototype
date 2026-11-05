@@ -129,22 +129,22 @@ async def test_deploy_scope_grants_target_read(sandbox, monkeypatch):
     wid, cards, fids = await _seeded_work(monkeypatch, "sibling 验收")
     _stub_wake(monkeypatch)
     parent = await _mk_card(wid, "父卡")
-    coder = await _mk_card(wid, "编程卡", parent=parent, card_type="coder")
+    worker = await _mk_card(wid, "worker 卡", parent=parent, card_type="worker")
     stray = await _mk_card(wid, "不相干的卡", parent=parent)
     cards = card_store.iter_card_metas(wid)
 
     out = await card_tools._h_create_deploy_card(
         wid, parent,
-        {"function": "qa", "task": "验收这张编程卡的产物", "target": coder}, cards)
+        {"function": "qa", "task": "验收这张worker 卡的产物", "target": worker}, cards)
     assert out.get("ok"), out
     dep = function_store.get_deployment(wid, out["deployment_id"])
-    assert dep["delegator"] == parent and dep["target_card"] == coder
+    assert dep["delegator"] == parent and dep["target_card"] == worker
 
     qa = fids["qa"]
     # 职能是离树观察者（_line_between 裁定「能读全树」）：对象卡随便读，
     # 差事读权其实不顶闸——验收要的需求文档/产物天然拿得到。
     got = await card_tools._h_read_card(
-        wid, qa, {"card_id": coder}, cards)
+        wid, qa, {"card_id": worker}, cards)
     assert "error" not in got, got
     got2 = await card_tools._h_read_card(
         wid, qa, {"card_id": stray}, cards)

@@ -30,12 +30,12 @@ REGISTRY = REPO / "config" / "message_type_registry.json"
 
 def test_registry_json_shape():
     data = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    # [编程卡 2026-10-15 · C1 指纹随版本推进] v1 → v2（新增 coder_done 完工回报）
+    # [worker 卡 2026-10-15 · C1 指纹随版本推进] v1 → v2（新增 worker_done 完工回报）
     # [2026-10-26 · 系统消息] v3 → v4：＋msg_sync（同步）/ msg_report（汇报）——
     # 「同步过」与「汇报过」必须是不同事件，否则判据分不清（用户令：判断要准确）
     assert data["version"] == 4
     assert set(data["types"].keys()) == {"msg_ask", "msg_answer", "msg_notify",
-                                         "coder_done", "msg_directive",
+                                         "worker_done", "msg_directive",
                                          "msg_sync", "msg_report"}
     for code, entry in data["types"].items():
         # [迭代五 S1] 键集由 {display, note} 扩为五键（when_to_use/reply_expected/
@@ -57,10 +57,10 @@ def test_registry_json_shape():
 # 该接口读消息账本，而账本自「inbox 取消」后不再有新行（空结果）。
 
 def test_type_codes_is_triple():
-    # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done），断言语义不变
+    # [worker 卡 2026-10-15 · C1 指纹] 三型 → 四型（＋worker_done），断言语义不变
     # [2026-10-26] 再加 msg_sync / msg_report（同步与汇报必须是不同事件）
     assert card_msg.type_codes() == ("msg_ask", "msg_answer", "msg_notify",
-                                     "coder_done", "msg_directive",
+                                     "worker_done", "msg_directive",
                                      "msg_sync", "msg_report")
 
 
@@ -336,7 +336,7 @@ async def test_t1_tool_registered():
     # ⇒ 判据从「不在注册表」改为「不在常规面／只在 auto 面」，钉的是同一条
     #   不变量：**非自动模式的模型无权发信**；同时新增钉住 auto 面确有此能力。
     # [v12 2026-10-22 · 用户裁定] send_card_message **已移出 AUTO_ONLY_TOOLS**，
-    # 改由 TOOL_SWITCH 常规过滤——卡上有该开关就可见。原因：coder 干到一半
+    # 改由 TOOL_SWITCH 常规过滤——卡上有该开关就可见。原因：worker 干到一半
     # 卡住（需求不清/要主卡拍板/发现做错）时不能说话，只能硬做完或干等。
     assert "sync" in card_tools.TOOL_REGISTRY
     assert "send_card_message" not in card_tools.AUTO_ONLY_TOOLS, (
@@ -366,9 +366,9 @@ def test_t2_schema_enum_reads_registry():
                                "perms": full, "perms_version": 5, "parent": ""})
     assert "sync" in normal
     # 类型可拓展（11:44）：注册表现读、函数体校验层每次现读（type_codes）
-    # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done）
+    # [worker 卡 2026-10-15 · C1 指纹] 三型 → 四型（＋worker_done）
     assert list(card_msg.type_codes()) == ["msg_ask", "msg_answer", "msg_notify",
-                                           "coder_done", "msg_directive",
+                                           "worker_done", "msg_directive",
                                            "msg_sync", "msg_report"]
 
 
@@ -382,9 +382,9 @@ def test_t3_add_type_zero_code(monkeypatch, tmp_path):
     # 加类型零代码的语义保留在函数体校验层：新增类型直接可发
     assert "msg_test" in card_msg.type_codes()
     # 仓库最终态类型集（monkeypatch 只动内存指针，不落盘）
-    # [编程卡 2026-10-15 · C1 指纹] 三型 → 四型（＋coder_done），断言语义不变
+    # [worker 卡 2026-10-15 · C1 指纹] 三型 → 四型（＋worker_done），断言语义不变
     assert set(json.loads(REGISTRY.read_text(encoding="utf-8"))["types"].keys()) == {
-        "msg_ask", "msg_answer", "msg_notify", "coder_done", "msg_directive",
+        "msg_ask", "msg_answer", "msg_notify", "worker_done", "msg_directive",
         "msg_sync", "msg_report"}
 
 

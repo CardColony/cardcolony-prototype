@@ -1481,6 +1481,27 @@
     "optional": [],
     "payload": []
    }
+  },
+  "worker_done": {
+   "label": "worker 卡回执",
+   "group": "消息",
+   "source": "card_msg",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "from",
+     "to",
+     "msg_type"
+    ],
+    "optional": [
+     "msg_id",
+     "reply_to"
+    ],
+    "payload": [
+     "content"
+    ]
+   }
   }
  }
 }

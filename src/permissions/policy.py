@@ -85,7 +85,7 @@ SWITCH_TOOLS_FILE = "tools_file"        # 能读写文件
 # 等于同时给它写盘权和 shell 执行权，与「第二层只说话不动手」直接冲突。
 # ⇒ 拆一个弱化开关，只解锁四件只读工具。
 # 包含关系见 _SWITCH_IMPLIES：有 tools_file 者自动具备 tools_read_file，
-# 故编程卡/根卡行为逐字不变、无需改配置；反向不成立（只读 ≠ 可写）。
+# 故worker 卡/根卡行为逐字不变、无需改配置；反向不成立（只读 ≠ 可写）。
 SWITCH_TOOLS_READ_FILE = "tools_read_file"   # 只读文件/列目录/检索，不能写、不能执行
 SWITCH_TOOLS_WEB = "tools_web"          # 能联网
 SWITCH_SHADOW_WRITE = "shadow_write"    # 能写自己的影子卡
@@ -101,15 +101,15 @@ SWITCH_PLAN = "plan"                    # 能建计划、改计划、推进步�
 SWITCH_READ_LINKED = "read_linked"          # 沿通信线读对方卡（read_via）
 SWITCH_SEND_MESSAGE = "send_card_message"   # 沿关系向对方卡发消息
 
-# [编程卡 2026-10-15 · C2 裁定] search 与 list_memory 回归为**预留机关**：
+# [worker 卡 2026-10-15 · C2 裁定] search 与 list_memory 回归为**预留机关**：
 #   · SWITCH_SEARCH="search"——全系统仍**没有独立的 search 工具**，搜索能力由
-#     web_search/fetch_web 承担（归 SWITCH_TOOLS_WEB）；在册只为给 coder 行与
+#     web_search/fetch_web 承担（归 SWITCH_TOOLS_WEB）；在册只为给 worker 行与
 #     后续拆分留位，**当前无任何工具消费**（配了不等于能用）。
 #   · SWITCH_LIST_MEMORY="list_memory"——记忆开关预留位，待后续把 read_memory
 #     从 SWITCH_READ 拆出时启用；**read_memory 仍挂 SWITCH_READ、不改挂**
 #     （改挂＝未授权的 read 侧收窄，已随本裁定否决）。
 #   沿革：2026-10-12 工具面补齐曾删死开关 search（当时同样无消费方）；
-#   2026-10-15 随编程卡行（rd_project/coder 含 search/list_memory 两预留码）
+#   2026-10-15 随worker 卡行（rd_project/worker 含 search/list_memory 两预留码）
 #   按用户裁定恢复为预留机关。_filter_by_category 不因 search 新增过滤组。
 SWITCH_SEARCH = "search"              # 预留：无独立工具，暂无消费方
 SWITCH_LIST_MEMORY = "list_memory"    # 预留：暂无消费方，read_memory 仍挂 SWITCH_READ
@@ -143,7 +143,7 @@ SWITCHES: frozenset[str] = frozenset({
 #:
 #: 只用于「宽权隐含窄权」这一个方向——有写权限的卡当然能读，
 #: 但只读卡**不会**因此获得写权（方向单向，不可逆）。
-#: 落地目的：给职能角色加 tools_read_file 后，编程卡/根卡不必改配置也不会掉能力。
+#: 落地目的：给职能角色加 tools_read_file 后，worker 卡/根卡不必改配置也不会掉能力。
 _SWITCH_IMPLIES: dict[str, tuple[str, ...]] = {
     SWITCH_TOOLS_FILE: (SWITCH_TOOLS_READ_FILE,),
 }
@@ -267,7 +267,7 @@ def compute_perms(project_class: str, card_type: str) -> tuple[list[str], int]:
 #: [执行权集中 2026-10-21 · 用户裁定] 追加排除 tools_file / tools_web：
 #: 自动模式 ＝ 复杂任务场景，管理卡（project/sub_project）「做事」就是组织
 #: （建卡/立使命/连线/发信/写卡面）；执行（写文件/跑命令/联网抓取）全部
-#: 在执行卡（coder）手上——它走类型分权那一行，手里有执行权。
+#: 在执行卡（worker）手上——它走类型分权那一行，手里有执行权。
 #: 注意：read_file/search_files/list_files 是只读件，不挂 tools_file 开关，
 #: 不受本排除影响——管理卡仍能「看」，只是不能「动手」。
 #: 自动模式排除开关（红线级 TC1 · 决策停）：占用安全、不可逆、防误改三类。

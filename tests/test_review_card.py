@@ -44,10 +44,10 @@ async def test_derivation_is_idempotent(sandbox):
     assert first and again == first, "重复派生不得建出第二张"
 
 
-async def test_coder_card_has_no_review_card(sandbox):
+async def test_worker_card_has_no_review_card(sandbox):
     wid = await _make_work()
-    r = await card_store.create_card(wid, "编程卡甲", "用户直接创建",
-                                     card_type="coder")
+    r = await card_store.create_card(wid, "worker 卡甲", "用户直接创建",
+                                     card_type="worker")
     cid = str(r["meta"]["card_id"])
     assert await review_store.review_card_of(wid, cid) == "", "只有 sub_project/topic 有伴生卡"
 

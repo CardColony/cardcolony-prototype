@@ -117,7 +117,7 @@ def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, An
     **活性**（运行中/待推进/已暂停/卡住了/已收口 · 最近活动 · 已跑轮次），
     与 read_card 的「活性」字段同一出处（card_tools._card_activity）——
     同一个口径，装配即最新，不需要模型再逐卡 read_card 查活没活着。
-    card_type 一并选出：渲染层跳过 coder 的「现状」要靠它（此前 SQL 没选，
+    card_type 一并选出：渲染层跳过 worker 的「现状」要靠它（此前 SQL 没选，
     那个分支一直是死的）。
     """
     if not parent_id:

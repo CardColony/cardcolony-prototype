@@ -55,13 +55,13 @@ async def _mk_child(wid: str, title: str, parent: str) -> str:
 # 使用说明正文其余部分不变——文本变了，版本号随升（回归基准对账）。
 # [卡片区域语义 v3 2026-10-14] t18-1 → t19-1：read_shadow 工具行去掉「上级卡查看子卡
 # 影子」，改为「只读本卡自己的影子」。
-# [编程卡 2026-10-15] t19-1 → t20-1：工具节增 create_coder_card / report_done 两行，
-# 新增「## 编程卡」使用说明节。
+# [worker 卡 2026-10-15] t19-1 → t20-1：工具节增 create_worker_card / report_done 两行，
+# 新增「## worker 卡」使用说明节。
 # [规则卡 2026-10-15] t20-1 → t21-1：新增「## 规则卡」使用说明节（根卡
 # draft_rule_edit 起草＋用户审批落盘）。
 def test_base_prompt_version_is_t20_1():
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"  # [2026-11-01] 随现配置对齐
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"  # [2026-11-01] 随现配置对齐
 
 
 # ---------------------------------------------------------------- 判据1：draft

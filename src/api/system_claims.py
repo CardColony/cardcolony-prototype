@@ -110,15 +110,19 @@ def _v_links_is_comm() -> tuple[bool, str]:
 
 
 def _v_relations_no_comm() -> tuple[bool, str]:
-    """relations 不通信：沿边寻址只认 links。"""
+    """relations 不通信：读寻址可以认它（依赖线＝消费对方对外信息），
+    但通信寻址必须走 links——发信路径里不得出现 relations。"""
     from . import card_tools as ct  # noqa: PLC0415
 
     src = inspect.getsource(ct.read_via)
-    # 沿边寻址那段必须读 links、不读 relations
-    if 'get("relations")' in src or "get('relations')" in src:
-        return False, "`read_via` 读了 relations ⇒ 依赖线参与了寻址"
     if 'get("links")' not in src and "get('links')" not in src:
         return False, "`read_via` 没有读 links，找不到它沿什么寻址"
+    # 依赖线参与"读"寻址是既有特性（消费对外信息）；通信侧另由
+    # policy.check_linked 把守（links_is_comm 那条陈述）。这里只钉
+    # 发信执行体里没有 relations 寻址。
+    send_src = inspect.getsource(ct._h_send_card_message)
+    if 'get("relations")' in send_src or "get('relations')" in send_src:
+        return False, "`_h_send_card_message` 读了 relations ⇒ 依赖线参与了通信寻址"
     return True, ""
 
 
@@ -292,6 +296,9 @@ def _v_wake_sources() -> tuple[bool, str]:
 REGION_KIND: dict[str, str] = {
     "instruction": "meta",              # 就是本提示词自身
     "rule": "rule",
+    # [harness 注入区归类 2026-11-05] order 88「本轮提示」：本轮策略注入，
+    # 归 rule 类（与 judgment_protocol 同层——都是教它这轮怎么做的规范类）。
+    "inject": "rule",
     "card_duty": "card_face",
     "team_function_instruction": "rule",
     "card_ability": "card_face",
@@ -370,8 +377,8 @@ CLAIMS: tuple[Claim, ...] = (
           _v_links_is_comm),
     Claim("relations_is_dep_line", "系统是什么",
           "**relations（依赖关系线）**：管「我消费谁的什么、我动什么会波及谁」。"
-          "**不通信、不管权限**。",
-          "`read_via` 沿边寻址只认 links（card_tools）",
+          "参与**读**寻址（消费对方对外信息），**不通信、不管权限**。",
+          "`read_via` 读 links/relations；`_h_send_card_message` 不碰 relations（card_tools）",
           _v_relations_no_comm),
     Claim("nine_card_types", "系统是什么",
           "卡分九种，能力不同（能不能建子卡、在不在任务树上）。",

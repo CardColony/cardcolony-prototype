@@ -1,0 +1,1 @@
+Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'chrome|edge|python|powershell|cmd|node|wscript|cscript|mshta|hh\.exe|rundll' } | Sort-Object CreationDate -Descending | Select-Object ProcessId, Name, CreationDate, @{n='CmdLine';e={ if ($_.CommandLine) { $_.CommandLine.Substring(0,[Math]::Min(200,$_.CommandLine.Length)) } else { '' } }} | Format-List
