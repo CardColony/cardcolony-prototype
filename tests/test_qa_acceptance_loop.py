@@ -6,7 +6,7 @@
     让模型自己调 `create_deploy_card(function="pm")` 建执笔卡。harness 管时机
     （建卡后缺需求文档），召唤动作归卡。
   · `staff_qa_on_stage_done` 已删：验收是卡的自主判断（它知道几轮编程算一
-    阶段），不需要 harness 替它掐点；coder 完工回执里带召唤提示。
+    阶段），不需要 harness 替它掐点；worker 完工回执里带召唤提示。
   · 卡侧召唤链（建差事卡→差事账→report 回执→自动关账）的钉子在
     `test_deploy_card.py`。
 """

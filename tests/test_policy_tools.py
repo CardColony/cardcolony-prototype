@@ -43,7 +43,7 @@ def _args(**kw):
 
 
 ROOT = {"card_001": {"card_type": "project"}}
-CHILD = {"card_002": {"card_type": "coder"}}
+CHILD = {"card_002": {"card_type": "worker"}}
 
 
 async def test_non_root_is_denied(cfg):

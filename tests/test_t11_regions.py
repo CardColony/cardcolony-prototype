@@ -200,7 +200,7 @@ async def test_v1_context_regions_join_equals_neutral_context(sandbox):
     # 无规则卡 → order 85 渲染空串，「没有来源就不出现这个区」，join 不含它。
     # [第二层区 2026-10-20 · card_004] 多卡树的根卡 ⇒ 175 有来源（≥2 张工作卡、无角色）。
     # [2026-10-22] 新增 92 卡片能力 区（有内容才出现）；[2026-10-31] 85 规则区入列
-    assert [r["order"] for r in regions] == [85, 90, 92, 100, 150, 155, 175]
+    assert [r["order"] for r in regions] == [85, 90, 92, 100, 150, 155, 170, 175]  # [钉翻新] 170 child_status 2026-10-15 即有
     # regions 条目只带指针性元数据，不带正文复制字段以外的意外大字段
     for r in regions:
         assert set(r) == {"order", "name", "channel", "seats", "text", "entries"}

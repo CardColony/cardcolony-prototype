@@ -179,9 +179,9 @@ def test_b2_tool_table_and_versions():
     列 OP_ONLY_TOOLS、不进常规工具面）；TOOL_TABLE_VERSION tools-tc-7 → tools-tc-8。
     """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    assert src.count('": ToolDef(') == 34  # [2026-11-01 差事] 33→34（+差事工具）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-19"  # [2026-11-01] tc-18→tc-19（sync schema 文案）
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"  # [2026-11-01] 随现配置对齐（事实分层 t27-2→t27-3）
+    assert src.count('": ToolDef(') == 35  # [2026-11-02 UI 卡] 34→35（+create_ui_card）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] 新增 create_ui_card
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"  # [2026-11-01] 随现配置对齐（事实分层 t27-2→t27-3）
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY
     # [2026-11-01] 开关词汇表扩列后 link_rel/unlink_rel 已是独立开关

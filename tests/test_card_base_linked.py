@@ -209,8 +209,8 @@ def test_read_linked_tool_registered_and_readonly():
     assert "read_linked" in card_tools.TOOL_REGISTRY
     assert "read_linked" in card_tools.READONLY_TOOLS
     assert card_tools.TOOL_SWITCH["read_linked"] == "read_linked"
-    # [编程卡 2026-10-15] tc-4 → tc-5（新增 report_done / create_coder_card 两件）。
+    # [worker 卡 2026-10-15] tc-4 → tc-5（新增 report_done / create_worker_card 两件）。
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel 两件，
     # 依赖关联线；通信线 relations→links 改名）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-19"  # [2026-11-01] 随现配置对齐
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-01] 随现配置对齐

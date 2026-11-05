@@ -7,12 +7,12 @@
 不是「删除」，也不是「状态」。
 
 与 coder_archive 的关系：
-- `coder_archive` 是 2026-10-25 早先为**编程卡**做的折叠（字段是 task/final_report）；
+- `coder_archive` 是 2026-10-25 早先为**worker 卡**做的折叠（字段是 task/final_report）；
 - 本表是**通用**归档：保留三块正文（使命／现状／第三块）、修改历史、影子三节、
   会话引用——即"过程价值"的完整快照，而不只是回执。
-- 两者并存：老 coder 归档记录仍可读（`read_archive` 先查本表、再回落 coder_archive）。
+- 两者并存：老 worker 归档记录仍可读（`read_archive` 先查本表、再回落 coder_archive）。
 
-物理事实（与 coder 归档同口径）：会话（`sessions/*.md`）与事件流
+物理事实（与 worker 归档同口径）：会话（`sessions/*.md`）与事件流
 （`events/*.jsonl`）是**按卡号寻址的独立文件**，归档**不动它们**——它们就是
 剩下的过程记录；本表存的是卡面快照，让卡能被读懂、能被恢复。
 """

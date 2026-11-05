@@ -29,7 +29,7 @@ def test_vt4_ontology_23_types():
     # [三席身份注入 2026-10-14] 再 +1：context_seat_identity → 25 原 + 2 逐字流 = 27。
     # [更新现状按钮改造 2026-10-16] 再 +1：status_update_task → 26 原 + 2 逐字流 = 28。
     # [运行态单一真相源 2026-10-21] 再 +1：turn_end → 27 原 + 2 逐字流 = 29。
-    assert len(event_stream.EVENT_TYPES) == 29
+    assert len(event_stream.EVENT_TYPES) == 31  # [钉翻新 2026-11-05] +plan_created/step_advanced 两类未翻钉漂移
     for t in ("triage_verdict", "plan_created", "step_advanced",
               "judgment", "step_start",
               "card_op", "run_start", "deliver", "ping"):

@@ -36,7 +36,7 @@ export const REGISTRY = {
   // [2026-10-26] 补齐新增卡间消息类型（不补会落到 sys 兜底 ⇒ 样式全丢）
   msg_ask: { kind: "cardmsg" }, msg_answer: { kind: "cardmsg" }, msg_notify: { kind: "cardmsg" },
   msg_sync: { kind: "cardmsg" }, msg_report: { kind: "cardmsg" },
-  msg_directive: { kind: "cardmsg" }, coder_done: { kind: "cardmsg" },
+  msg_directive: { kind: "cardmsg" }, coder_done: { kind: "cardmsg" }, worker_done: { kind: "cardmsg" },
 
   tool_call:     { kind: "tool", merge: "call" },   // 同 key 合体
   tool_result:   { kind: "tool", merge: "result" },
@@ -74,6 +74,11 @@ export const REGISTRY = {
 
 /** revoke 是控制位记录：不渲染成节点，只驱动软删。 */
 const CONTROL_TYPE = "revoke";
+
+/* [占位思考过滤 2026-11-05] echo_fill 端点的 wire 兜底占位串（后端
+   REASONING_PLACEHOLDER 同文案）可能被端点/模型回吐成"思考"并进事件流——
+   它是格式件不是思考，归位时剥掉；存量脏数据一并遮蔽。 */
+const REASONING_PLACEHOLDER = "(系统注入的消息，无模型思考记录)";
 
 function kindOf(type) {
   const hit = REGISTRY[type];
@@ -498,7 +503,7 @@ export function createAssembler() {
 
     if (kind === "reasoning") {
       const model = modelOf(rec, data);
-      const text = String(data.text || "");
+      const text = String(data.text || "").split(REASONING_PLACEHOLDER).join("");
       if (model) {                              // 三席思考 → 席卡
         const node = seatsOf(runId, rec);
         const m = memberOf(node, model);

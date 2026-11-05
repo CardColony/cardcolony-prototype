@@ -5,8 +5,10 @@
 T1  注册：create_ui_card 在 TOOL_REGISTRY / TOOL_SWITCH(create_child) / ToolDoc
 T2  建卡：card_type=ui、使命块落任务、goal=task、parent=当前卡、建卡即首跑
 T3  关口：空 title/task 拒；父卡不存在拒；越权挂外树拒
-T4  能力：ui 卡 abilities 有 browser/run_code/report_up_chain，无 report_done
-T5  工具面：ui 卡面见 browser+report_up+写文件件；不见 report_done/direct/stop_card
+T4  能力：ui 卡 abilities 有 browser/write_files/report_up_chain，
+    **无 run_code**（不编程——没有 bash/python）无 report_done
+T5  工具面：ui 卡面见 browser+report_up+write_file；
+    **不见 bash/python**（执行通道已物理摘除）、report_done/direct/stop_card
 T6  路由：ui 不在 wb_exec 委派白名单 ⇒ 走系统内模型（内循环）
 """
 from __future__ import annotations
@@ -106,10 +108,11 @@ async def test_ui_card_abilities(sandbox, monkeypatch):
     assert out.get("ok"), out
     meta = (await card_store.read_card(wid, out["card_id"])).get("meta") or {}
     abilities = set(meta.get("abilities") or [])
-    # 浏览器＋读写文件＋跑命令＋汇报——内循环执行卡的配置
-    assert {"browser", "read_files", "write_files", "run_code",
+    # 浏览器＋读写文件＋汇报——界面写手＋眼睛的配置
+    assert {"browser", "read_files", "write_files",
             "report_up_chain"} <= abilities, abilities
-    # 不给 report_done（那是 coder 的收口件）
+    # 不给 run_code（没有 bash/python——不编程）、report_done（worker 收口件）
+    assert "run_code" not in abilities
     assert "report_done" not in abilities
 
 
@@ -128,11 +131,14 @@ async def test_ui_card_toolface(sandbox, monkeypatch):
         card_id=nid, work_id=wid, cards=cards)}
     assert "browser" in names, names          # 眼睛
     assert "report_up" in names, names        # 收口通道（作业卡口径）
-    assert "write_file" in names, names       # 写界面代码
-    assert "bash" in names, names             # 起服务/跑构建
+    assert "write_file" in names, names       # 写页面文件（产出 UI 的本职）
+    assert "edit_file" in names, names
+    assert "read_file" in names, names        # 读源码对照渲染结果
     assert "sync" in names, names
     # 不给的东西
-    assert "report_done" not in names         # coder 专属
+    assert "bash" not in names                # 没有 bash/python——不编程
+    assert "python" not in names
+    assert "report_done" not in names         # worker 专属
     assert "direct" not in names              # 无子卡，没有指令对象
     assert "stop_card" not in names           # 父权治理件
 

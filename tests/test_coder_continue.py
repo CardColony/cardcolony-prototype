@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""coder 卡在**自动模式**里能改目标、能重新激活（不是靠人点按钮）。
+"""worker 卡在**自动模式**里能改目标、能重新激活（不是靠人点按钮）。
 
 [2026-10-21 · 用户令]「我说的不是给我按钮，我说的是在自动模式下，让模型能更新
-goal（哪怕是 complete 状态），并重新激活这张 coder 卡，否则明明是继续的任务，
+goal（哪怕是 complete 状态），并重新激活这张 worker 卡，否则明明是继续的任务，
 它也只能新开卡执行」。
 
 改前的三处硬拦（都在代码里，不是模型不愿意）：
@@ -10,8 +10,8 @@ goal（哪怕是 complete 状态），并重新激活这张 coder 卡，否则�
    **直接人类回合**，自动续轮里模型改不了自己的目标；
 2. ``GoalService.resume`` 的允许集合不含 ``complete``；``resume_child`` 明写
    「已完成不能恢复，要新任务请新建子卡」；
-3. ``post_work_message`` 对 ``state=completed`` 的 coder 直接 400「不再激活；
-   新任务请新建编程卡」，K3 调起也跳过它。
+3. ``post_work_message`` 对 ``state=completed`` 的 worker 直接 400「不再激活；
+   新任务请新建worker 卡」，K3 调起也跳过它。
 
 本文件钉住：自动续轮里 edit/resume 可用、complete 能重新激活、完工卡收到消息
 即重新派活。
@@ -56,8 +56,8 @@ def auto_round():
 async def _mk_coder(work, *, goal: str = "旧目标", phase: str = "active",
                     state: str = "active") -> tuple[str, str]:
     wid, root = work["work_id"], work["work_card_id"]
-    r = await card_store.create_card(wid, "coder 卡", "模型生成", parent=root,
-                                     card_type="coder")
+    r = await card_store.create_card(wid, "worker 卡", "模型生成", parent=root,
+                                     card_type="worker")
     assert "error" not in r, r
     cid = r["meta"]["card_id"]
     await card_store.update_card(
@@ -138,8 +138,8 @@ async def test_pause_still_requires_human_round(work, auto_round):
 # ---------------------------------------------------------------- 完工卡重新派活
 
 
-async def test_message_to_completed_coder_revives_it(work, client, monkeypatch):
-    """给完工 coder 发消息＝重新派活：不再 400，卡复位、目标重开。"""
+async def test_message_to_completed_worker_revives_it(work, client, monkeypatch):
+    """给完工 worker 发消息＝重新派活：不再 400，卡复位、目标重开。"""
     wid, cid = await _mk_coder(work, goal="旧目标", phase="complete", state="completed")
 
     async def _fake_run(*a, **kw):
@@ -163,8 +163,8 @@ async def test_resume_child_accepts_completed_child(work):
     wid, root = work["work_id"], work["work_card_id"]
     parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
     pcid = parent["meta"]["card_id"]
-    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
-                                         card_type="coder")
+    child = await card_store.create_card(wid, "子 worker", "模型生成", parent=pcid,
+                                         card_type="worker")
     ccid = child["meta"]["card_id"]
     await card_store.update_card(
         wid, ccid, {"auto_mode": 1, "goal": "子目标", "goal_state": "complete",
@@ -180,7 +180,7 @@ async def test_resume_child_accepts_completed_child(work):
 
 # ---------------------------------------------------------------- 唤醒不看模式
 # [2026-11-01 · 用户令「唤醒子卡不需要自动」] 实测 work_027/card_140：
-# 手动 coder 被 stop_card(halt) 停在中途后，state 恒为 active、halt 标记在位，
+# 手动 worker 被 stop_card(halt) 停在中途后，state 恒为 active、halt 标记在位，
 # 父卡的续派/唤醒全部无路（continue_task 嫌 state=active、resume_child 嫌
 # auto_mode=0、内部消息被 halt 拒掉）。以下钉住这条链已经通了。
 
@@ -190,8 +190,8 @@ async def test_resume_child_works_on_manual_halted_child(work, monkeypatch):
     wid, root = work["work_id"], work["work_card_id"]
     parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
     pcid = parent["meta"]["card_id"]
-    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
-                                         card_type="coder")
+    child = await card_store.create_card(wid, "子 worker", "模型生成", parent=pcid,
+                                         card_type="worker")
     ccid = child["meta"]["card_id"]
     await card_store.update_card(
         wid, ccid, {"auto_mode": 0, "goal": "子目标", "goal_state": "paused",
@@ -223,8 +223,8 @@ async def test_resume_child_manual_busy_does_not_double_fire(work):
     wid, root = work["work_id"], work["work_card_id"]
     parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
     pcid = parent["meta"]["card_id"]
-    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
-                                         card_type="coder")
+    child = await card_store.create_card(wid, "子 worker", "模型生成", parent=pcid,
+                                         card_type="worker")
     ccid = child["meta"]["card_id"]
     await card_store.update_card(
         wid, ccid, {"auto_mode": 0, "goal": "子目标", "goal_state": "paused",
@@ -243,13 +243,13 @@ async def test_resume_child_manual_busy_does_not_double_fire(work):
 
 
 async def test_continue_task_on_halted_active_coder(work, monkeypatch):
-    """被 halt 停在中途的 coder（state 恒为 active）也能续派：
+    """被 halt 停在中途的 worker（state 恒为 active）也能续派：
     解除停止标记、新任务写进目标（不是只 resume 旧文本）、点火。"""
     wid, root = work["work_id"], work["work_card_id"]
     parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
     pcid = parent["meta"]["card_id"]
-    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
-                                         card_type="coder")
+    child = await card_store.create_card(wid, "子 worker", "模型生成", parent=pcid,
+                                         card_type="worker")
     ccid = child["meta"]["card_id"]
     await card_store.update_card(
         wid, ccid, {"auto_mode": 0, "goal": "旧任务", "goal_state": "paused",
@@ -282,8 +282,8 @@ async def test_continue_task_still_rejects_card_with_inflight_turn(work):
     wid, root = work["work_id"], work["work_card_id"]
     parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
     pcid = parent["meta"]["card_id"]
-    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
-                                         card_type="coder")
+    child = await card_store.create_card(wid, "子 worker", "模型生成", parent=pcid,
+                                         card_type="worker")
     ccid = child["meta"]["card_id"]
     await card_store.update_card(
         wid, ccid, {"auto_mode": 0, "goal": "在跑的任务", "goal_state": "active",
@@ -306,8 +306,8 @@ async def test_continue_task_rejects_driven_auto_coder(work):
     wid, root = work["work_id"], work["work_card_id"]
     parent = await card_store.create_card(wid, "父卡", "模型生成", parent=root)
     pcid = parent["meta"]["card_id"]
-    child = await card_store.create_card(wid, "子 coder", "模型生成", parent=pcid,
-                                         card_type="coder")
+    child = await card_store.create_card(wid, "子 worker", "模型生成", parent=pcid,
+                                         card_type="worker")
     ccid = child["meta"]["card_id"]
     await card_store.update_card(
         wid, ccid, {"auto_mode": 1, "goal": "在跑的任务", "goal_state": "active",

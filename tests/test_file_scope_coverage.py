@@ -2,7 +2,7 @@
 
 **为什么有这个测试**：同一个 bug 已经犯过三次——
 
-  · 2026-10-15 补 `project` / `coder`（漏抄致根卡与编程卡全被拒）
+  · 2026-10-15 补 `project` / `worker`（漏抄致根卡与worker 卡全被拒）
   · 2026-10-22 补 `role`（配了 tools_read_file，FILE_SCOPE 无键 ⇒ 权限等于没给）
   · 2026-10-26 补 `function`（职能卡 fn_NNN 同上，一调 read_file 就 denied）
 
@@ -84,7 +84,7 @@ def test_function_type_is_covered():
     )
 
 
-@pytest.mark.parametrize("card_type", ["project", "sub_project", "topic", "coder",
+@pytest.mark.parametrize("card_type", ["project", "sub_project", "topic", "worker",
                                        "tool", "role", "function"])
 def test_all_known_card_types_present(card_type):
     """已知卡类型逐个在位（类型词表扩容时这条会红，提醒同步 FILE_SCOPE）。"""

@@ -199,7 +199,7 @@ export const ZH_EN = {
   /* ===== 卡类型 / 职能 ===== */
   "职能": "Function",
   "编程": "Coding",
-  "编程卡": "Coder Card",
+  "worker 卡": "Worker Card",
   "工具卡": "Tool Card",
   "〔角色〕": "[Role]",
   "已撤岗": "Stood down",
@@ -300,8 +300,8 @@ export const ZH_EN = {
   "新目标（改完立刻按新目标继续跑）：": "New goal (runs on it right after edit):",
   "删除该关系": "Delete this relation",
   "当前状况快照（做到哪、什么状态、卡在哪）": "Snapshot (progress, status, what's stuck)",
-  "已开启：coder 卡走 WorkBuddy 执行体": "On: coder cards run via the WorkBuddy executor",
-  "已关闭：coder 卡全部走系统自己的模型": "Off: coder cards use the system model",
+  "已开启：worker 卡走 WorkBuddy 执行体": "On: worker cards run via the WorkBuddy executor",
+  "已关闭：worker 卡全部走系统自己的模型": "Off: worker cards use the system model",
   "切换失败：": "Switch failed:",
   "已保存，下一回合生效": "Saved; applies next turn",
   "改执行体失败：": "Failed to change executor:",
@@ -363,8 +363,8 @@ export const ZH_EN = {
   "这是一张工具卡，按剧本分步执行。可以直接说明这次要它做什么。":
     "A tool card that runs a scripted sequence. Tell it what to do this run.",
   "这次要处理什么、产出什么？": "What should it process and produce?",
-  "这是一张编程卡，承接一个开发任务，自报完工即终态。":
-    "A coder card taking a dev task; self-reported completion ends it.",
+  "这是一张 worker 卡，承接一个执行任务，自报完工即终态。":
+    "A worker card taking an execution task; self-reported completion ends it.",
   "要改什么、验收标准是什么？": "What to change, and what's the acceptance bar?",
   "先读代码再给方案": "Read the code first, then propose",
   "这是一张规则卡，正文按卡类型分区注入上下文。模型侧只读，改动走根卡提议＋审批。":

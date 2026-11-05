@@ -16,7 +16,7 @@ from src.storage import card_store, work_store
 
 def _ctx(**kw) -> dict:
     base = {"work_id": "w", "card_id": "c1", "card_title": "子卡",
-            "card_type": "coder", "parent": "p1",
+            "card_type": "worker", "parent": "p1",
             "trigger_type": "done", "trigger_data": {}, "events": []}
     base.update(kw)
     return base
@@ -39,7 +39,7 @@ async def test_resolve_targets_ancestors(sandbox):
         wid, "子项目", "模型生成", card_type="sub_project",
         parent=root))["meta"]["card_id"]
     grand = (await card_store.create_card(
-        wid, "孙卡", "模型生成", card_type="coder",
+        wid, "孙卡", "模型生成", card_type="worker",
         parent=sub))["meta"]["card_id"]
     ctx = _ctx(work_id=wid, card_id=grand, parent=sub)
     assert harness.resolve_targets("ancestors", ctx) == [sub, root]
@@ -82,7 +82,7 @@ def test_render_message_bad_template_no_raise():
 async def test_continue_is_review_card_only(monkeypatch):
     """continue 只放评审卡——别的卡来了直接不续接。"""
     async def _read(work_id, card_id):
-        return {"meta": {"card_type": "coder"}}
+        return {"meta": {"card_type": "worker"}}
 
     monkeypatch.setattr(card_store, "read_card", _read)
     assert await harness._deliver_continue("w", "card_x", "接着跑") is None

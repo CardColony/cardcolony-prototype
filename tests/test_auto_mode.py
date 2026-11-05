@@ -59,7 +59,7 @@ def _clean_process_state():
     跨用例不清会把上一例的痕迹算到本例头上：
       · `serial_gate._locks/_holder`（且 asyncio.Lock 不可跨事件循环复用）；
       · `message_runner._TRIGGER_TASKS`（调起任务强引用表）；
-      · `card_msg.TRIGGERS` / `event_stream._journals`（与 test_coder_card 同因）。
+      · `card_msg.TRIGGERS` / `event_stream._journals`（与 test_worker_card 同因）。
     """
     from src.api import card_msg, event_stream
 
@@ -443,7 +443,7 @@ def test_block3_no_gate_in_chain():
 #: [事实分层 2026-11-01 · t27-3] _SEC_CARDMSG 语义修正 ⇒ BASE_PROMPT 文本变更，
 #: 指纹随之更新。**这条断言的意义是「片段拼装 == 整体渲染」**，不是"文本永不改"。
 #: （常量沿用原名 T22_1_* 属历史遗留；基线就是当前版本，每次升版本同步换指纹。）
-BASE_PROMPT_SHA256 = "beaed39b8d2e28fbdeac7b2592885f97c5cfd55da48e4cd7b70162f166ca5e3e"
+BASE_PROMPT_SHA256 = "7917deb4939987d34d21a6be5c0955ad40e6172301b94e5eb62dfe279aa5a138"
 
 #: auto 版工具清单必须**逐件在册**（块0.4 硬判据 4）。
 #: [事实分层 2026-11-01] 清单与现行 _SEC_TOOLS_AUTO 实读对齐：
@@ -615,14 +615,14 @@ def test_block4_prompt_version_and_section():
     [回灌 5700 §十 版本号推进表] auto-t1＝块0.4 初版；auto-t2＝G2（自主通信
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t22"
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t28"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-21"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] +browser/+create_ui_card
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
@@ -667,7 +667,7 @@ def test_rework_1_base_prompt_byte_identical_to_baseline():
 
 def test_rework_2_versions():
     """BASE_PROMPT_VERSION 不动；AUTO_BASE_PROMPT_VERSION 存在且非空。"""
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"
     assert isinstance(prompts.AUTO_BASE_PROMPT_VERSION, str)
     assert prompts.AUTO_BASE_PROMPT_VERSION.strip()
 
@@ -732,7 +732,7 @@ def test_rework_5_normal_prompt_has_no_auto_text():
     """硬判据 5（红线 10）：非 auto 卡提示词不含自动版任何新增文本。
 
     [2026-11-01] 「update_goal」字样已从自动版泄进共用段 _SEC_CODER
-    （编程卡后续派活的指引），不再能当 auto-only 标记；auto-only 词改钉
+    （worker 卡后续派活的指引），不再能当 auto-only 标记；auto-only 词改钉
     目标生命周期三件（create_goal/get_goal）与 await_children。
     """
     base = prompts.BASE_PROMPT
@@ -750,7 +750,7 @@ def test_rework_5_normal_prompt_has_no_auto_text():
 
 
 def test_rework_6_shared_sections_identical_in_both():
-    """拼装表：HEAD/CODER/RULE/ERR/CARDMSG 两版**共用、逐字不动**。"""
+    """拼装表：HEAD/WORKER/RULE/ERR/CARDMSG 两版**共用、逐字不动**。"""
     base = prompts.BASE_PROMPT
     auto = prompts.AUTO_BASE_PROMPT
     for frag in (prompts._SEC_HEAD, prompts._SEC_CODER, prompts._SEC_RULE,
@@ -966,7 +966,7 @@ async def test_g2_normal_toolface_has_no_comm_tools(typed_registry, work):
 
     [v12 2026-10-22 · 用户裁定] `send_card_message` **已移出 AUTO_ONLY_TOOLS**，
     改由 TOOL_SWITCH 常规过滤：卡上给了该开关就能发信。
-    起因是「coder 干到一半卡住时说不话」——那是不合理的。
+    起因是「worker 干到一半卡住时说不话」——那是不合理的。
     `read_inbox` 仍限 auto（读收件箱带上下文成本，不是发信那种必需动作）。
     """
     wid, root = work["work_id"], work["work_card_id"]
@@ -1121,8 +1121,8 @@ def test_auto_prompt_version_after_p7():
     [事实分层 2026-11-01] 两版同批推进 ⇒ t27-3 / auto-t20。
     """
     from src.api import prompts
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t22"
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t28"
 
 
 async def _async_noop(*a, **kw):

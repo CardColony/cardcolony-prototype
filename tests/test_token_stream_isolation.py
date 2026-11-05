@@ -299,7 +299,7 @@ def test_boundary_marker_reuses_existing_ontology_type():
     # [当前轮注入消息事件 2026-10-14] 本体论已长到 25 类（+2 注入事件）
     # [更新现状按钮改造 2026-10-16] 再 +1（status_update_task）→ 28 类
     # [运行态单一真相源 2026-10-21] 再 +1（turn_end）→ 29 类
-    assert len(es.EVENT_TYPES) == 29, "本体论仍须为 29 类"
+    assert len(es.EVENT_TYPES) == 31, "本体论仍须为 31 类"  # [钉翻新 2026-11-05] +plan_created/step_advanced
 
 
 def test_seq_counter_never_resets_across_rounds():

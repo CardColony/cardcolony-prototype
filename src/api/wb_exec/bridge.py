@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""桥接层：coder 卡的回合交给 WorkBuddy 执行体。
+"""桥接层：worker 卡的回合交给 WorkBuddy 执行体。
 
 **接线点**：`src/api/message_runner.py` 的 ``step()`` 顶部（中止缝之后、``rounds += 1`` 之前）。
 命中委派 ⇒ 本函数跑完外部执行体并**直接返回** ``StepOutcome("deliver", …)``，
@@ -10,8 +10,8 @@
   与推演agent 的模型网关毫无关系。
 - 不给 ``cards`` 表加列（``card_db`` 是禁改文件）——"选哪个执行体"落在
   ``model_override`` 的**每卡一行**里（``exec_backend`` 字段，JSON 文件，不在库里）。
-- 不新造完工闸——完工复用现成的 ``card_tools._h_report_done``（判态→coder_final→
-  completed→影子留痕→发 ``coder_done`` 回执给父卡）。
+- 不新造完工闸——完工复用现成的 ``card_tools._h_report_done``（判态→完工字段→
+  completed→影子留痕→发 ``worker_done`` 回执给父卡）。
 
 **失败语义**（用户令 2026-10-23 09:56）：
 - 上游额度耗尽（``category=="quota"``）或重连失败 ⇒ **fallback 到 hy3**
@@ -76,12 +76,12 @@ class _Exec:
 
 
 # ===================================================================== 判定
-# [差事卡委派 2026-11-01 · 用户令「差事卡和编程卡一样走 wb 执行体」]
+# [差事卡委派 2026-11-01 · 用户令「差事卡和worker 卡一样走 wb 执行体」]
 # qa_card/pm_card 的差事回合同样交给 WorkBuddy——执行体干活（读文件、跑
 # 检查、写正文），收口时由桥接层机械完成差事语义（report 回派遣方 /
 # cardwrite 落对象卡），因为执行体没有 card_tools。
 #: **默认**可委派卡型（**兜底**；真值在配置 ``delegable_card_types`` 里）。
-DEFAULT_DELEGABLE_CARD_TYPES = ("coder", "qa_card", "pm_card")
+DEFAULT_DELEGABLE_CARD_TYPES = ("worker", "qa_card", "pm_card")
 #: 兼容旧引用（外部/历史代码按这个名字取）。
 DELEGABLE_CARD_TYPES = set(DEFAULT_DELEGABLE_CARD_TYPES)
 DEPLOY_CARD_TYPES = {"qa_card", "pm_card"}
@@ -91,7 +91,7 @@ async def is_delegable_card(work_id: str, card_id: str,
                             cfg: Optional[WbExecConfig] = None) -> bool:
     """这张卡**能不能走执行体**？（= 卡型白名单，**配置化**）
 
-    ★★ **2026-11-04 用户令**：「验收卡、pm卡，本质上应该和coder卡用一套路由机制，
+    ★★ **2026-11-04 用户令**：「验收卡、pm卡，本质上应该和 worker 卡用一套路由机制，
     而不是分开的」⇒ 白名单放进配置（``wb_exec.json`` 的
     ``delegable_card_types``）⇒ **后端判定、接口返回、前端渲染门控共用同一份**
     ⇒ 以后加卡型只改配置一处。
@@ -109,11 +109,11 @@ async def is_delegable_card(work_id: str, card_id: str,
         return False
 
 
-async def is_coder_card(work_id: str, card_id: str) -> bool:
+async def is_worker_card(work_id: str, card_id: str) -> bool:
     try:
         from ...storage import card_store
         card = await card_store.read_card(work_id, card_id)
-        return str((card.get("meta") or {}).get("card_type") or "") == "coder"
+        return str((card.get("meta") or {}).get("card_type") or "") == "worker"
     except Exception:  # noqa: BLE001 读不到 ⇒ 不委派（安全默认）
         return False
 
@@ -1647,7 +1647,7 @@ async def _build_task_text(state: Any, cfg: WbExecConfig, ex: "_Exec",
     """任务文本 ＝ 分段标记 ＋ **卡上事实** ＋ 原任务 ＋ 工作目录说明。
 
     **卡上事实是必需的**（2026-10-23 实测发现的洞）：
-    存量未完工的 coder 卡被 WorkBuddy 接手时，**ACP 侧是全新会话**
+    存量未完工的 worker 卡被 WorkBuddy 接手时，**ACP 侧是全新会话**
     （`session/new` ⇒ WorkBuddy 不知道这张卡之前做到哪）。
     ⇒ 必须把**卡是事实来源**（任务书 §四③）落进 prompt：
     使命（要干什么）＋ 现状（做到哪）＋ 影子产物清单（已经产出了什么文件）。
@@ -1681,7 +1681,7 @@ async def _card_facts(state: Any) -> str:
     """读卡上已有的事实（使命／现状／影子产物／**最近跑过的工具**）。
 
     **四层都必要**（2026-10-23 实测发现的洞）：
-    存量未完工的 coder 卡被 WorkBuddy 接手时，**ACP 侧是全新会话**
+    存量未完工的 worker 卡被 WorkBuddy 接手时，**ACP 侧是全新会话**
     ⇒ WorkBuddy 不知道这卡之前做到哪。逐层说明：
 
     | 层 | 给什么 | 少了会怎样 |
@@ -1700,7 +1700,7 @@ async def _card_facts(state: Any) -> str:
         body = card.get("body") or {}
         meta = card.get("meta") or {}
         mission = str(body.get("mission") or "").strip()
-        # [2026-10-28] 不再读 status_block：编程卡按设计没有现状块，这一层只会
+        # [2026-10-28] 不再读 status_block：worker 卡按设计没有现状块，这一层只会
         # 读到桥接层自己 append 的执行体原文（card_076 曾 86 万字）。
         # 续跑要的"做到哪了"由下面两层给：影子产物 + 最近工具调用（一手事实）。
         if mission:
@@ -1814,11 +1814,11 @@ async def _finish_card(state: Any, ex: _Exec, final_text: str) -> None:
     """完工收口：**复用现成的** ``card_tools._h_report_done``（不新造闸）。
 
     [2026-10-28 用户令「这个动作不合理」] 改前这里还会把执行体产出**追加**进卡的
-    现状块（`_write_status_block`，理由：父卡读 coder 卡时先看现状块）。已删除：
+    现状块（`_write_status_block`，理由：父卡读 worker 卡时先看现状块）。已删除：
 
-    · **编程卡按设计没有现状块**（`edit_status` 对 coder 直接拒），桥接层直接写库
+    · **worker 卡按设计没有现状块**（`edit_status` 对 worker 直接拒），桥接层直接写库
       是在绕过那道闸——同一件事两套口径；
-    · 父卡拿结果本来就靠 `report_done` 的 summary ＋ `coder_done` 回执，已在跑；
+    · 父卡拿结果本来就靠 `report_done` 的 summary ＋ `worker_done` 回执，已在跑；
     · 那种写法是 `old + 新` 纯追加、无上限，而 `_card_facts` 每轮又会把它拼进
       执行体 prompt ⇒ 自激放大（card_076 实测 24 轮滚到 86 万字）。
 

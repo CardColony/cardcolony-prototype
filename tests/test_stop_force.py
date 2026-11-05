@@ -7,7 +7,7 @@ T2 入口闸:halted 卡拒绝内部唤醒(_run_message source_kind=internal ⇒ 
    不起回合);人类消息(source_kind=human)解除并继续
 T3 stop_card 工具·halt 档:goal 级联暂停 + 标记置位 + 留痕
 T4 stop_card 工具·interrupt 档:只杀轮,不动 goal、不置标记
-T5 权限:非祖先拒;总裁(根卡)可停全树;根卡自己不可被停;coder 卡无此工具
+T5 权限:非祖先拒;总裁(根卡)可停全树;根卡自己不可被停;worker 卡无此工具
 T6 HTTP stop:置标记(强制),用户再发消息可解除
 """
 from __future__ import annotations
@@ -151,12 +151,12 @@ async def test_stop_card_interrupt_only_kills_round(sandbox):
 
 async def test_stop_card_toolface_for_parents_not_coder(sandbox):
     wid, root, mid, leaf = await _tree()
-    coder = (await card_store.create_card(wid, "编程卡", "模型生成",
+    worker = (await card_store.create_card(wid, "worker 卡", "模型生成",
                                           parent=mid,
-                                          card_type="coder"))["meta"]["card_id"]
+                                          card_type="worker"))["meta"]["card_id"]
     cards = _cards(wid)
     for cid, expect in ((root, True), (mid, True), (leaf, True),
-                        (coder, False)):
+                        (worker, False)):
         tools = card_tools.build_tool_schemas(card_id=cid, work_id=wid,
                                               cards=cards)
         names = {str(t.get("name")) for t in tools}

@@ -494,7 +494,7 @@ def test_v5_load_type_texts_keeps_only_nonempty(monkeypatch, tmp_path):
     p = tmp_path / "tt.json"
     p.write_text(json.dumps({
         "_meta": {"version": "x"},
-        "thinking": {"sub_project": "有字", "tool": "", "coder": "   ", "topic": "T"},
+        "thinking": {"sub_project": "有字", "tool": "", "worker": "   ", "topic": "T"},
     }, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(context_assembler, "_type_texts_path", lambda: p)
     got = context_assembler.load_type_texts()

@@ -834,7 +834,7 @@ async def step(state: RunState) -> StepOutcome:
     if verdict == control.DEFER_HUMAN:
         return StepOutcome("deliver", "policy_stop")
 
-    # [wb_exec 2026-10-23] **委派分支**：coder 卡的回合交给 WorkBuddy 执行体
+    # [wb_exec 2026-10-23] **委派分支**：worker 卡的回合交给 WorkBuddy 执行体
     # （见 src/api/wb_exec/）。命中时本函数跑完外部执行体并直接返回
     # StepOutcome("deliver", …)，让既有交付路径（write_logs → compose_delivery
     # → create_cards → finish）原样跑完。
@@ -1115,6 +1115,14 @@ async def step(state: RunState) -> StepOutcome:
     if assistant_content:
         state.analysis_parts.append(assistant_content)
 
+    # [5715 · 修2 2026-11-05] 本轮 assistant_text 在**工具循环之前**落盘：
+    # 节点位置＝模型产出处（思考→正文→工具调用），与 live 路径（流节点先于
+    # 工具创建）同序。原先在循环尾落 ⇒ 无思考的轮（没有 reasoning 事件抢先
+    # 建 stream:{run}:{round} 节点）把 assistant 节点钉到工具之后 ⇒ 刷新
+    # 前后两套顺序、工具轮节点倒挂。每轮一条的语义不变（disk 与 live 同构
+    # 的前提；正文为空也落 ⇒ 思考-only 的一步有归处）。
+    await _land_round_reply(state, assistant_content)
+
     # 收集卡片 meta 用于权限判定
     cards_meta = card_tools._collect_card_meta(state.work_id)
     # [venue] 席位在评审场内获得全树**读**权（[2026-10-29 用户令]「卡面才是唯一
@@ -1300,19 +1308,9 @@ async def step(state: RunState) -> StepOutcome:
                 ])
             except Exception as _exc:  # noqa: BLE001
                 logger.error("[工具块落盘] 失败 card=%s: %s", state.card_id, _exc)
-    # [5715 · 修] 本轮**单独**落一条 assistant_text 事件（只进事件日志，不写会话块）。
-    #
-    # 病根（用户亲报「长程调用链之后刷新，工具归工具、内容给内容、信息顺序全乱」）：
-    # 带工具轮的正文只进 state.analysis_parts，收口时与末轮回执**合并成一条**落盘
-    # ⇒ 该块必然排在**该 run 全部工具之后**；而**每轮各自的思考**在落盘路径下
-    # 只能「并进最近一条 assistant」⇒ 同 run 内跨轮串、跨 run 更串。
-    # 根子在：**disk 路径没有「每轮一个 assistant 节点」的概念**，而 live 路径有
-    # （stream:{run}:{round}）⇒ 刷新前后两套归组规则不同源。
-    #
-    # 修法：让 disk 路径与 live 路径同构——**每轮一条 assistant_text 事件**
-    # （round＝轮号）。收口那条（clean_text 合并全文）**不再落事件**（会话块照落
+    # [5715] 本轮的 assistant_text 事件已在工具循环之前落盘（修2：节点位置
+    # ＝模型产出处）。收口那条（clean_text 合并全文）不落事件（会话块照落
     # ⇒ 模型上下文零变化），免得与各轮正文重复。
-    await _land_round_reply(state, assistant_content)
     # [工具轮去假 user 2026-10-21] 原来这里塞占位符「工具结果已返回。」填用户位——
     # 模型会把这句话当成**用户说的话**（实测每轮思考都在念它）。工具轮的 prior 末尾
     # 已是 role=tool 的工具结果，模型据此直接续写；用户位**留空**，不再编造发言。
@@ -2096,12 +2094,12 @@ async def schedule_card_message_triggers(state: RunState) -> None:
     from . import routes as _routes
 
     for (work_id, target_id), msg_ids in triggers.items():
-        # [编程卡 2026-10-15 · §六块3 静默判定②] 完工编程卡不被 K3 调起：
+        # [worker 卡 2026-10-15 · §六块3 静默判定②] 完工worker 卡不被 K3 调起：
         # 只读 card_type/state 两字段的机械判定（红线 2），continue 且**不打
         # ops**；信留在收件箱 pending 作验收留档（下次收口重新判，仍跳过）。
         try:
             # [沉默 2026-10-24] 沉默的收件卡跳过(信留 pending,不唤醒);
-            # 完工编程卡的既有静默判定在下一行,语义独立(那是天然状态,
+            # 完工worker 卡的既有静默判定在下一行,语义独立(那是天然状态,
             # 这是管理动作)。
             try:
                 from ..storage import governance_store as _gov
@@ -2123,29 +2121,29 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         if not pending:
             # 信已被先前某次收口调起并处理完（收件箱里已无 pending）——不再重复调起。
             continue
-        # [编程卡 2026-10-15 · §六块3 静默判定②] 完工编程卡不被 K3 调起。
-        # [coder 卡可继续派活 2026-10-21 · 用户令] 但**派活**要放行：主卡/人发
-        # msg_ask 给一张完工 coder，就是「这条线还有后续」——先复位（state=active
-        # ＋目标重开）再正常调起，而不是另建一张卡。纯回执类（coder_done 等）
+        # [worker 卡 2026-10-15 · §六块3 静默判定②] 完工worker 卡不被 K3 调起。
+        # [worker 卡可继续派活 2026-10-21 · 用户令] 但**派活**要放行：主卡/人发
+        # msg_ask 给一张完工 worker，就是「这条线还有后续」——先复位（state=active
+        # ＋目标重开）再正常调起，而不是另建一张卡。纯回执类（worker_done 等）
         # 仍然跳过：否则完工回执会把它自己再叫起来一遍。
         # [机制判断归harness 第3步] 完工判定走派生视图（事件权威＋列回落）。
         from ..infra import card_status as _cs
-        if str(_tmeta.get("card_type") or "") == "coder" \
+        if str(_tmeta.get("card_type") or "") == "worker" \
                 and _cs.derive(work_id, target_id)["delivery"] == "completed":
             _is_dispatch = any(
                 str((m or {}).get("type") or "") == "msg_ask" for m in pending)
             if not _is_dispatch:
                 continue
             try:
-                await _routes._revive_coder_card(work_id, target_id, "")
+                await _routes._revive_worker_card(work_id, target_id, "")
             except Exception as exc:  # noqa: BLE001 复位失败就不调起，信留 pending
-                logger.error("[K3] 完工编程卡复位失败 target=%s: %s", target_id, exc)
+                logger.error("[K3] 完工worker 卡复位失败 target=%s: %s", target_id, exc)
                 continue
         session_ops.ops_log("card_msg_deliver", work_id, target_id,
                             {"msg_id": str(pending[-1].get("msg_id") or ""),
                              "msg_ids": list(msg_ids)})
         # [增量投递 2026-10-23 · 用户令「读过的信息就从 box 里清掉」]
-        # 判定用 list_pending（上面编程卡静默判定要「信留在 pending 作验收留档」），
+        # 判定用 list_pending（上面worker 卡静默判定要「信留在 pending 作验收留档」），
         # **真正要投递时才 take**：读 + 推水位同一事务 ⇒ 这批消息立刻移出收件箱，
         # 下次只投递新的。改前只读不消费 ⇒ 同一批被反复投递。
         # [忙判定前置 2026-10-25] 收件卡在跑 ⇒ 先不取件(取走=承诺投递,

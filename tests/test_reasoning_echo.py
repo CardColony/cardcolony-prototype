@@ -112,7 +112,7 @@ def test_no_name_substring_guessing_left():
 # ---------------------------------------------------------------- 配置登记
 
 
-#: 期望登记 echo_reasoning 的模型集合（deepseek 全系 8 个 + beam 1 个）。
+#: 期望登记 echo_reasoning 的模型集合（deepseek 全系 + beam + 各家镜像席位）。
 #: 改这个集合＝改「哪些端点强制要求回传思考」，必须是实测过的决定。
 EXPECTED = {
     "ds-v4-flash-volc", "ds-flash-official",
@@ -121,6 +121,12 @@ EXPECTED = {
     "cmd-ds-v41-flash", "cmd-beam-free",
     # [2026-10-25 用户令] 方舟 coding 端点新增两席（同端点同纪律）
     "ds-v41-flash-eco-volc", "kimi-k31-pro-volc",
+    # 镜像/扩展席位同端点同纪律：cmd→cmd2、volc→volc2、glm/glyph、oc2
+    "cmd-ds-v4-flash", "cmd-glm-53-flash", "cmd-glyph-free",
+    "cmd2-beam-free", "cmd2-ds-v4-flash", "cmd2-ds-v41-flash",
+    "cmd2-glm-53-flash", "cmd2-glyph-free",
+    "ds-v4-flash-volc2", "ds-v41-flash-eco-volc2",
+    "ds-v41-flash-oc2", "kimi-k31-pro-volc2",
 }
 
 

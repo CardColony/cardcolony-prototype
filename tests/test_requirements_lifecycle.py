@@ -2,20 +2,20 @@
 """需求文档生命周期：草稿 → 评审 → 正稿 → 才能派工。
 
 [2026-10-28 用户令 · 第一手]
-- 「coder 卡，不需要走评审；只有子卡的需求文档需要评审」
+- 「worker 卡，不需要走评审；只有子卡的需求文档需要评审」
 - 「子卡的需求文档不是正稿的情况下，取消它的派工权限」
 - 「需求文档可以分成草稿和正稿两版，草稿随便改，不对外暴露，正稿必须经过评审」
 - 流程：使命 → 写草稿 → 评审 → 正稿 → 按正稿执行 → 冲突改草稿 → 再评审
 
 钉住：
 T1 草稿只有本卡看得到（不进 read_card / 不进别的卡上下文），正稿才是公共读
-T2 没有正稿 ⇒ 派工两件（create_card / create_coder_card）不在工具面；
+T2 没有正稿 ⇒ 派工两件（create_card / create_worker_card）不在工具面；
    direct 不在闸内（2026-11-04 用户令：指挥已有子树不算开新工，
    且没正稿的卡本就不会有子卡可指）
 T3 评审对象是草稿：没有草稿 ⇒ 拒绝开评审
 T4 全员通过 ⇒ 草稿转正稿、草稿清空、状态 approved
 T5 有正稿 ⇒ 派工两件回到工具面
-T6 coder 卡不在这条流程里（没有需求文档、不评审）
+T6 worker 卡不在这条流程里（没有需求文档、不评审）
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import pytest
 from src.api import card_tools, function_room
 from src.storage import card_store, function_store, review_store, work_store
 
-GATED = ("create_card", "create_coder_card")
+GATED = ("create_card", "create_worker_card")
 
 
 def _use_repo_catalog(monkeypatch) -> None:
@@ -185,11 +185,11 @@ async def test_all_approved_promotes_draft_to_final(sandbox, monkeypatch):
 # ---------------------------------------------------------------- T6
 
 @pytest.mark.asyncio
-async def test_coder_card_not_in_lifecycle(sandbox, monkeypatch):
+async def test_worker_card_not_in_lifecycle(sandbox, monkeypatch):
     wid, root, sub = await _seed(monkeypatch)
-    coder = (await card_store.create_card(wid, "编程卡", "模型生成", parent=root,
-                                          card_type="coder"))["meta"]["card_id"]
-    names = _face(wid, coder)
-    assert "edit_requirements" not in names, "编程卡没有需求文档"
-    # 编程卡本来就没有派工三件（无子树），这里只钉"它不受需求评审限制"
-    assert card_store._meta_of(wid, coder).get("requirements_state") in (None, "")
+    worker = (await card_store.create_card(wid, "worker 卡", "模型生成", parent=root,
+                                          card_type="worker"))["meta"]["card_id"]
+    names = _face(wid, worker)
+    assert "edit_requirements" not in names, "worker 卡没有需求文档"
+    # worker 卡本来就没有派工三件（无子树），这里只钉"它不受需求评审限制"
+    assert card_store._meta_of(wid, worker).get("requirements_state") in (None, "")

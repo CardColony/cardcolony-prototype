@@ -87,7 +87,7 @@ REQUIREMENTS_OPS: frozenset[str] = frozenset(
     {OP_REQUIREMENTS_FINAL, OP_REQUIREMENTS_DRAFT})
 
 # [更新现状按钮改造 2026-10-16] **非卡片内挂**的专用工具集。
-# 与 CODER_ONLY_TOOLS（按卡类型收敛）/ ROOT_ONLY_TOOLS（按卡 id 收敛）不同——那两类
+# 与 WORKER_ONLY_TOOLS（按卡类型收敛）/ ROOT_ONLY_TOOLS（按卡 id 收敛）不同——那两类
 # 仍是「卡片内挂、按条件收窄」；本类**压根不进常规工具面**（不进四段过滤），只在
 # 对应 op 回合由 build_tool_schemas 在过滤之后追加。用户 2026-10-16 口径：
 # 「这个工具不是卡片内挂的，我不点按钮，模型是无法看到这个工具并调用这个工具的」。
@@ -98,7 +98,7 @@ OP_ONLY_TOOLS: frozenset[str] = frozenset(
 # ============================================================
 # [自动模式 2026-10-17 · 回灌 5700 块0.4] 末段追加 · 自动模式专用工具（非卡片内挂）
 #
-# 与 CODER_ONLY_TOOLS（按卡类型收敛）/ ROOT_ONLY_TOOLS（按卡 id 收敛）/ 
+# 与 WORKER_ONLY_TOOLS（按卡类型收敛）/ ROOT_ONLY_TOOLS（按卡 id 收敛）/ 
 # OP_ONLY_TOOLS（按 op 收敛）不同——本类**压根不进常规工具面**（不进四段过滤），
 # 只在 ``auto_mode=1`` 的卡上由 build_tool_schemas 在四段之后追加。
 # ⇒ 常规卡片工具面**逐字不变**（红线 2 / 块0.4 硬判据 1）。
@@ -112,8 +112,8 @@ OP_ONLY_TOOLS: frozenset[str] = frozenset(
 #: 而「草稿 → 评审 → 正稿」这条流程对**所有**子卡都成立（2026-10-28 用户裁定
 #: 「需求文档它可以自己改，这个权限交还给它」），不是自动模式的特权。
 AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
-    # [v12 2026-10-22 · 用户裁定「coder 至少能给自己的父卡发信」] send_card_message
-    # **移出本集**：它原来只随 auto_mode=1 下发，于是非自动卡（含 coder）压根看不见
+    # [v12 2026-10-22 · 用户裁定「worker 至少能给自己的父卡发信」] send_card_message
+    # **移出本集**：它原来只随 auto_mode=1 下发，于是非自动卡（含 worker）压根看不见
     # 发信工具——即使 perms 里给了开关。现在改由 TOOL_SWITCH 常规过滤
     # （有 send_card_message 开关就可见），与其它工具同一条规则。
     {"update_goal", "get_goal", "create_goal", "resume_child"})
@@ -211,11 +211,11 @@ TOOL_SWITCH: dict[str, str] = {
     "edit_card": policy.SWITCH_EDIT,
     # [分块写入 2026-10-19 · permexp] 与 edit_card 同开关：写正文就是写正文。
     "edit_requirements": policy.SWITCH_EDIT,
-    # [编程卡 2026-10-15 · §六块2 · **v1.1 修订**] report_done 挂 tools_file——
+    # [worker 卡 2026-10-15 · §六块2 · **v1.1 修订**] report_done 挂 tools_file——
     # 原挂 SWITCH_EDIT 系派发方笔误：tool 卡有 edit 无 tools_file，挂 edit 会让
     # readopen:287 与 :252 在「零翻新」下数学上不可能同时成立。挂 tools_file 后：
     # tool 卡第二段即滤（:287 绿）、sub_project 绕第三段闸可见恰为全量（:252 绿）、
-    # coder 有 tools_file 正常可见（判据1 绿）。判定权在第三段闸＋执行层
+    # worker 有 tools_file 正常可见（判据1 绿）。判定权在第三段闸＋执行层
     # card_type 校验双保险，开关只决定「有没有资格进闸」。
     "report_done": policy.SWITCH_TOOLS_FILE,
     "delete_card": policy.SWITCH_DELETE,
@@ -240,10 +240,10 @@ TOOL_SWITCH: dict[str, str] = {
     # `_filter_by_category` 静默拦下——模型压根看不见这个工具（「有工具但永远
     # 看不见」）。实际可见范围再由 ROOT_ONLY_TOOLS 收到根卡。
     "design_policy": policy.SWITCH_PLAN,
-    # [编程卡 2026-10-15 · §六块2] create_coder_card 挂既有 create_child（建
-    # coder 子卡走同一建卡关口）：无 create_child 的类型（tool/coder）压根看不见
+    # [worker 卡 2026-10-15 · §六块2] create_worker_card 挂既有 create_child（建
+    # worker 子卡走同一建卡关口）：无 create_child 的类型（tool/worker）压根看不见
     # 它，有 create_child 的（project/sub_project）按下发面规则可见。
-    "create_coder_card": policy.SWITCH_CREATE_CHILD,
+    "create_worker_card": policy.SWITCH_CREATE_CHILD,
     # [差事卡 2026-11-01] 建差事卡＝召唤职能：建的是子卡 ⇒ create_child 同关口。
     "create_deploy_card": policy.SWITCH_CREATE_CHILD,
     # [UI 卡 2026-11-02] 建 UI 卡＝派 UI 执行卡：建的是子卡 ⇒ create_child 同关口。
@@ -325,10 +325,10 @@ TOOL_SWITCH: dict[str, str] = {
 # B-09 的「版本不动」只成立于「工具面零变化」；本次工具面确有变化，故递增。
 # tools-tc-4：[卡片底座第一步 2026-10-14] 新增第 20 件工具 read_linked（沿通信线
 #   读对方卡的正文／影子／对话）。工具集变更 ⇒ 递增（承 T12-R3 纪律）。
-# tools-tc-5：[编程卡 2026-10-15] **工具集变更 ⇒ 递增**：新增第 17 件 report_done
-#   （编程卡完工回报）与第 18 件 create_coder_card（主卡派生编程卡并首跑）；
-#   build_tool_schemas 增第三段 card_type 闸（CODER_ONLY_TOOLS，report_done 只对
-#   coder 下发）。TOOL_REGISTRY 字面量条目数 由 16 → 18（验收 grep 口径见任务书
+# tools-tc-5：[worker 卡 2026-10-15] **工具集变更 ⇒ 递增**：新增第 17 件 report_done
+#   （worker 卡完工回报）与第 18 件 create_worker_card（主卡派生worker 卡并首跑）；
+#   build_tool_schemas 增第三段 card_type 闸（WORKER_ONLY_TOOLS，report_done 只对
+#   worker 下发）。TOOL_REGISTRY 字面量条目数 由 16 → 18（验收 grep 口径见任务书
 #   §六块2 判据 5）。
 # tools-tc-6：[规则卡 2026-10-15 · 块3] **工具集变更 ⇒ 递增**：新增第 19 件
 #   draft_rule_edit（根卡起草规则区修改，只起草不落盘）；build_tool_schemas 增
@@ -352,7 +352,12 @@ TOOL_SWITCH: dict[str, str] = {
 # tools-tc-19：[事实分层 2026-11-01] **schema 文案变更 ⇒ 递增**：sync 的
 #   content 参数描述「要同步的事实」→「要同步的事(常是你卡面的变化)」——
 #   消息是送达信息，不把消息教成第二条事实源；read_shadow 跨卡剥笔记随批修。
-TOOL_TABLE_VERSION = "tools-tc-21"
+# tools-tc-22：[UI 卡不编程 2026-11-05 · 用户令] create_ui_card/create_worker_card
+#   描述改写：判据＝要不要跑命令；UI 卡写页面但没有 bash/python。
+# tools-tc-25：[coder→worker 改名 2026-11-05 · 用户令] 工具集变更 ⇒ 递增：
+#   create_coder_card → create_worker_card（除 UI 外一切执行：编程/文档/命令/
+#   构建测试/查档）；完工消息类型 coder_done → worker_done；卡型值 worker。
+TOOL_TABLE_VERSION = "tools-tc-25"
 
 
 # ============================================================
@@ -1448,9 +1453,9 @@ async def _h_update_goal(work_id: str, current_id: str,
 
 
 # ============================================================
-# [编程卡 2026-10-15 · §六块2] 编程卡两件工具的 handler
+# [worker 卡 2026-10-15 · §六块2] worker 卡两件工具的 handler
 #
-# report_done（第 17 件·完工收口）与 create_coder_card（第 18 件·派生即调起）。
+# report_done（第 17 件·完工收口）与 create_worker_card（第 18 件·派生即调起）。
 # report_done 照单执行：不验产物、不判真假、不查轮数；只做机械动作——判态、
 # 落 state/coder_final、影子留痕、系统发回执（模型无发信工具，coder perms 不含）。
 # ============================================================
@@ -1479,8 +1484,8 @@ def _count_write_file_calls(work_id: str, card_id: str) -> int:
     return n
 
 
-#: [完工必达 2026-11-03] 最近一次 coder_done 回执的发送时刻（card_id → ts）。
-#: 兜底网（card_store._coder_done_net）按「回执时刻 ≥ 完工时刻」判重——
+#: [完工必达 2026-11-03] 最近一次 worker_done 回执的发送时刻（card_id → ts）。
+#: 兜底网（card_store._worker_done_net）按「回执时刻 ≥ 完工时刻」判重——
 #: report_done 链是先标完工再发信，它的回执必然晚于完工写入。
 _CODER_DONE_SENT_AT: dict[str, float] = {}
 
@@ -1540,35 +1545,35 @@ def _collect_deliverables(work_id: str, card_id: str,
 async def _h_report_done(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """[编程卡 2026-10-15] 完工回报（系统收口件，模型只报不判）。
+    """[worker 卡 2026-10-15] 完工回报（系统收口件，模型只报不判）。
 
     四步机械动作（§六块2）：
-      ① 判态：当前卡 card_type=="coder" 且 state=="active"，否则 denied；
+      ① 判态：当前卡 card_type=="worker" 且 state=="active"，否则 denied；
       ② 落盘：state=completed（闸4：active→completed 在册）＋ front matter
          ``coder_final`` 原样收下 summary；
       ③ 影子 ``## 迭代历史`` 追加完工行（时间＋summary＋write_file 调用数，
          机械统计、不判好坏）；
       ④ 系统发信：经流程专用薄壳 send_card_message（六道门槛一条不减；头部
          由 build_header 生成，content 只给 summary）向 owner＝parent 卡发
-         coder_done —— 落信即记 TRIGGERS，编程卡回合收口时 K3 调起主卡验收
+         worker_done —— 落信即记 TRIGGERS，worker 卡回合收口时 K3 调起主卡验收
          （现有链，零改）。
 
-    权限：不设新开关——工具面由 build_tool_schemas 第三段 CODER_ONLY_TOOLS
-    收敛到 coder；执行层本函数再校验 card_type（双保险）。
+    权限：不设新开关——工具面由 build_tool_schemas 第三段 WORKER_ONLY_TOOLS
+    收敛到 worker；执行层本函数再校验 card_type（双保险）。
     """
     # ① 判态（先用本轮 cards 字面快照，再读库内实况——state 是库内事实）
     card = (cards or {}).get(current_id) or {}
-    if str(card.get("card_type", "") or "") != "coder":
-        return err("denied", "report_done 仅限编程卡调用")
+    if str(card.get("card_type", "") or "") != "worker":
+        return err("denied", "report_done 仅限worker 卡调用")
     current = await card_store.read_card(work_id, current_id)
     meta = current["meta"]
     state = str(meta.get("state", "") or "")
     if state != "active":
-        return err("denied", f"编程卡当前状态为 {state or '未知'}，不可完工")
+        return err("denied", f"worker 卡当前状态为 {state or '未知'}，不可完工")
     summary = str(arguments.get("summary", "") or "").strip()
     if not summary:
         return err("validation", "summary 不能为空")
-    # [角色机制 5710 v3] 编程卡同样受指令闸约束：有未验收的角色指令不许完工。
+    # [角色机制 5710 v3] worker 卡同样受指令闸约束：有未验收的角色指令不许完工。
     try:
         _blockers = role_room.open_directives_for(work_id, current_id)
     except Exception:  # noqa: BLE001
@@ -1607,7 +1612,7 @@ async def _h_report_done(work_id: str, current_id: str,
         # card_029 因此出现「DB 说 complete、事件流说 active」，驱动照着事件流
         # 一直续轮（跑到 43 轮才被人叫停）。目标相位只能由 GoalService 写。
         {"state": "completed"},
-        f"编程卡完工收口（report_done）：{summary[:80]}",
+        f"worker 卡完工收口（report_done）：{summary[:80]}",
     )
     if isinstance(upd, dict) and upd.get("error"):
         return err("internal", str(upd["error"]))
@@ -1657,7 +1662,7 @@ async def _h_report_done(work_id: str, current_id: str,
                  f"target=\"{current_id}\", task=\"验收本卡产物\")")
     sent = await send_card_message(
         work_id, current_id, target_id=owner,
-        msg_type="coder_done",
+        msg_type="worker_done",
         content=_content,
     )
     if isinstance(sent, dict) and sent.get("error"):
@@ -1679,14 +1684,14 @@ async def _h_report_done(work_id: str, current_id: str,
     }
 
 
-async def _h_create_coder_card(work_id: str, current_id: str,
+async def _h_create_worker_card(work_id: str, current_id: str,
                                arguments: dict[str, Any],
                                cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """[编程卡 2026-10-15] 派生编程卡并**建卡即首跑**（派生即调起）。
+    """[worker 卡 2026-10-15] 派生worker 卡并**建卡即首跑**（派生即调起）。
 
     §六块2：
       ① 建卡关口＝CREATE_CHILD（照 _h_create_card 同口径，parent＝当前卡自身）；
-      ② card_store.create_card(card_type="coder", parent=当前卡,
+      ② card_store.create_card(card_type="worker", parent=当前卡,
          charter=带 ``## 使命`` 区头的 task) ⇒ 任务落使命块；
       ③ asyncio.create_task(_routes._run_message(…, append_user=False))
          用 message_runner._spawn_tracked 包（强引用防 GC，照 K3 手法）。
@@ -1709,30 +1714,30 @@ async def _h_create_coder_card(work_id: str, current_id: str,
     #            离树角色卡可挂本项目树内任意位置（不含根卡）
     # 为什么角色卡需要：它要「挂载需要的卡片来执行它布置的任务」，
     # 而它自己不在树里——不让它指定 parent，它建出来的执行卡无处可挂。
-    _coder_parent = str(arguments.get("parent", "") or "").strip() or current_id
-    if _coder_parent not in cards:
-        return err("not_found", f"父卡不存在: {_coder_parent}")
-    if not _org_scope_allows(current_id, _coder_parent,
+    _worker_parent = str(arguments.get("parent", "") or "").strip() or current_id
+    if _worker_parent not in cards:
+        return err("not_found", f"父卡不存在: {_worker_parent}")
+    if not _org_scope_allows(current_id, _worker_parent,
                              policy.SWITCH_CREATE_CHILD, cards):
         return err(
             "denied",
-            f"越权：不能把执行卡建到 {_coder_parent} 之下"
+            f"越权：不能把执行卡建到 {_worker_parent} 之下"
             f"（当前卡 {current_id}）",
         )
-    # ② 建 coder 卡：charter 带 ## 使命 区头 ⇒ 区头检测后原样入正文，任务落使命块
-    # [2026-10-19 实验 permexp] **补 goal**：原先不传 goal ⇒ 自动模式下 coder 卡
+    # ② 建 worker 卡：charter 带 ## 使命 区头 ⇒ 区头检测后原样入正文，任务落使命块
+    # [2026-10-19 实验 permexp] **补 goal**：原先不传 goal ⇒ 自动模式下 worker 卡
     # goal 空、goal_state 不落 ⇒ auto_driver.will_continue 恒 False ⇒ 只有下面
     # ③ 的首跑一次，「一轮做不完就停在那里」。任务原文即目标文本（使命块同源）。
     result = await card_store.create_card(
         work_id, title, "模型生成",
-        card_type="coder", parent=_coder_parent,
+        card_type="worker", parent=_worker_parent,
         charter=f"## 使命\n{task}",
         goal=task,
         # [调度改造 2026-10-19] 本工具**自己负责首跑**（下面 ③ `_spawn_tracked`
         # 带任务正文）。若建卡也点一次，会起一个没有任务正文的空回合，把正式首跑
-        # 挡在互斥体外面 ⇒ coder 卡零产出（实测 test_coder_card 两条都挂）。
+        # 挡在互斥体外面 ⇒ worker 卡零产出（实测 test_worker_card 两条都挂）。
         skip_kick=True,
-        # [2026-10-26 · 记录补全] 记下派发者（派生编程卡 = 父卡派活）
+        # [2026-10-26 · 记录补全] 记下派发者（派生worker 卡 = 父卡派活）
         created_by=current_id,
     )
     if "error" in result:
@@ -1758,28 +1763,34 @@ async def _h_create_coder_card(work_id: str, current_id: str,
         first_run._card_msg_target = new_id  # type: ignore[attr-defined]
         started = True
     except Exception as exc:  # noqa: BLE001 首跑拉起失败不吞——如实回报 started=False
-        logger.error("create_coder_card 首跑拉起失败 card=%s: %s", new_id, exc)
+        logger.error("create_worker_card 首跑拉起失败 card=%s: %s", new_id, exc)
         started = False
     return {
         "ok": True,
         "card_id": new_id,
         "title": title,
         "parent": current_id,
-        "card_type": "coder",
+        "card_type": "worker",
         "started": started,
         "shadow": "已派生影子卡（过程记录，你不用管）",
     }
 
 
+# [UI 卡不编程 2026-11-05 · 用户令] UI 卡的分流不做文本闸——把编程能力物理
+# 拿掉：ui 在 permissions.json 没有 tools_file（write/edit/bash/python 全断），
+# 模式能力清单里也没有 write_files/run_code。错派进来的编码活它**干不了**
+# （没工具），只能如实 report_up 说明——错误显形而不是静默执行。
+
+
 async def _h_create_ui_card(work_id: str, current_id: str,
                             arguments: dict[str, Any],
                             cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """[UI 卡 2026-11-02] 派生 UI 卡并**建卡即首跑**（同 create_coder_card 手法）。
+    """[UI 卡 2026-11-02] 派生 UI 卡并**建卡即首跑**（同 create_worker_card 手法）。
 
-    与 coder 卡同构、两点不同：
+    与 worker 卡同构、两点不同：
       ① card_type="ui"——不在 wb_exec 委派名单里 ⇒ 跑系统内模型回合
         （message_runner 内循环），手里有平台工具面；
-      ② 汇报通道走 report_up（作业卡口径），不走 coder 的 report_done。
+      ② 汇报通道走 report_up（作业卡口径），不走 worker 的 report_done。
     任务落 ``## 使命`` 块＋goal；首跑经 _spawn_tracked 直调，唯一入口。
     """
     title = str(arguments.get("title", "") or "").strip()
@@ -1836,7 +1847,7 @@ async def _h_create_ui_card(work_id: str, current_id: str,
         "ok": True,
         "card_id": new_id,
         "title": title,
-        "parent": current_id,
+        "parent": _ui_parent,
         "card_type": "ui",
         "started": started,
         "shadow": "已派生影子卡（过程记录，你不用管）",
@@ -1853,7 +1864,7 @@ async def _h_create_deploy_card(work_id: str, current_id: str,
                                 cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """建一张差事卡＝把职能部署进场干活，一次调用到底。
 
-    流程（与 create_coder_card 同构）：
+    流程（与 create_worker_card 同构）：
       ① 资格闸：职能存在且有 ``charters.deploy``（目录第一级——现在只有
         qa/pm 有；无派驻职责书的职能不接差事，召唤方和它的职责书互不欠债）；
       ② 对象闸：``target`` 缺省＝本卡；只许本卡或直接子卡（阶段验收验自己、
@@ -2617,7 +2628,7 @@ async def _h_set_child_mission(work_id: str, current_id: str,
     三条不变量（改这个 handler 时不要破）：
     1. 只能改**子树内**的卡，且目标不是自己——自己的使命由上级或用户定；
     2. 关口与 create_card 同一把（SWITCH_CREATE_CHILD）：能建子卡者才能立使命，
-       执行体（coder）没有该开关 ⇒ 既不能改自己也不能改别人；
+       执行体（worker）没有该开关 ⇒ 既不能改自己也不能改别人；
     3. 每次写入都留痕（history_note），使命可追溯——它不是随手可改的备注。
     """
     target_id = str(arguments.get("card_id", "") or "").strip()
@@ -2760,7 +2771,7 @@ async def _h_archive_card(work_id: str, current_id: str,
     # [归档权限 2026-10-25] **不查目标卡自己的 perms**——归档是"上级处置下级"，
     # 判据只有一条：操作者在目标子树上游（根卡管全树），与 silence_card/stop_card 同款。
     # 原用 policy.check(..., SWITCH_DELETE) 会去查**被归档卡**有没有 delete 位，
-    # 而 coder 卡的 perms 里没有 delete ⇒ 父卡永远归档不了自己的子卡（实测 card_021→card_023）。
+    # 而 worker 卡的 perms 里没有 delete ⇒ 父卡永远归档不了自己的子卡（实测 card_021→card_023）。
     root_id = ""
     try:
         root_id = work_store.work_card_id_of(work_id) or ""
@@ -3024,7 +3035,7 @@ async def _h_read_linked(work_id: str, current_id: str,
     权限＝只判**发起方**有 ``SWITCH_READ_LINKED``（与 read 分开授权——沿连线读比
     直接读更敏感）。[通信不看对方 2026-10-22 · 用户令] 原来走 ``policy.check``，
     会连**目标卡**有没有 read_linked 一起查——那等于「对方同意被读」，而 perms 是
-    建卡时抄的静态值、没有任何同意动作（coder/tool/rule 因此读不了）。线本身就
+    建卡时抄的静态值、没有任何同意动作（worker/tool/rule 因此读不了）。线本身就
     是「谁连了谁」的凭据，不需要第二道许可。
     源＝当前卡（工具签名里没有 source，写不出别的源）。
     越权回既有 denied 信封；无连线／目标不存在回 not_found（文案含「无通信线」）。
@@ -3145,7 +3156,7 @@ def _require_wire_switch(current_id: str, switch: str,
     被连方也要能回话」。这个「同意」是假的：
       · 目标卡的 perms 是建卡时从类型模板抄下来的静态值，没有任何「同意」动作，
         用户也没有任何地方能表示同意／拒绝；
-      · 实际效果只是「role / coder / tool / rule 四类永远连不上」（它们没有 link）。
+      · 实际效果只是「role / worker / tool / rule 四类永远连不上」（它们没有 link）。
     线的记录写在**发起方**卡上（``links`` / ``relations`` 字段），被连方不需要同意；
     真正需要双方的是**发信**，那一关由 ``check_linked``（两卡之间已有线）把着，
     与 perms 无关。
@@ -3282,7 +3293,7 @@ async def _h_reparent_card(work_id: str, current_id: str,
       1. 被移动卡 ∈ 本卡**严格**子树（不能改自己的归属）；
       2. 新父卡 ∈ 本卡子树（**含本卡自身**——子卡可以直接挂到自己名下）；
       3. 新父卡不是被移动卡自身或其后代（防环；存储层再判一次，双保险）；
-      4. 新父卡类型须允许有子卡（工具卡/角色卡/编程卡/规则卡不可）——由存储层读
+      4. 新父卡类型须允许有子卡（工具卡/角色卡/worker 卡/规则卡不可）——由存储层读
          注册表 can_have_children 判，本函数不重复硬编码；
       5. 已是该父卡 ⇒ 幂等返回，不重复写（不留无谓历史）。
     权限：关口 ``EDIT``（树类开关 ⇒ 被移动卡必须在自己子树内），与 edit_card 同一
@@ -4203,7 +4214,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     #   edit_card 拒改使命是对的（防模型覆盖**自己的**立项）；但那条锁把
     #   「上级给下级立使命」一起锁死了。实测 v11 样本2：六张子卡使命块 6/6
     #   全是占位符，根卡只能把职责塞进 goal（goal 随轮次漂移，跑完什么都不剩）。
-    # 权限＝create_child ＋ 树作用域：能建子卡者才能立使命；coder 没有该开关
+    # 权限＝create_child ＋ 树作用域：能建子卡者才能立使命；worker 没有该开关
     # ⇒ 既不能改自己也不能改别人，权限面不扩大。
     "set_child_mission": ToolDef(
         schema={
@@ -4407,15 +4418,15 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_read_linked,
         readonly=True,
     ),
-    # [编程卡 2026-10-15 · §六块2] 第 17 件工具：完工回报。追加在既有 16 件字面量
+    # [worker 卡 2026-10-15 · §六块2] 第 17 件工具：完工回报。追加在既有 16 件字面量
     # 之后 ⇒ 前 16 件的工具面顺序逐字不变。下发面：TOOL_SWITCH 挂 edit ＋
-    # build_tool_schemas 第三段 CODER_ONLY_TOOLS（只对 coder 卡下发）；执行层
-    # handler 再校验 card_type=="coder" 且 state=="active"（双保险）。
+    # build_tool_schemas 第三段 WORKER_ONLY_TOOLS（只对 worker 卡下发）；执行层
+    # handler 再校验 card_type=="worker" 且 state=="active"（双保险）。
     "report_done": ToolDef(
         schema={
             "name": "report_done",
             "description": (
-                "任务做完时调用，调完即完工、本卡静默（编程卡专用）。"
+                "任务做完时调用，调完即完工、本卡静默（worker 卡专用）。"
                 "完工回执由系统自动发给主卡并调起验收，你不需要也不能发信；"
                 "完工后本卡不再被激活、不可删除、永久留档。"
             ),
@@ -4433,26 +4444,28 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_report_done,
         readonly=False,
     ),
-    # [编程卡 2026-10-15 · §六块2] 第 18 件工具：派生编程卡并建卡即首跑（派生
+    # [worker 卡 2026-10-15 · §六块2] 第 18 件工具：派生worker 卡并建卡即首跑（派生
     # 即调起）。挂 create_child（无该开关的类型压根看不见）；执行层关口与
     # create_card 同口径（只能建自己的子卡片）。
-    "create_coder_card": ToolDef(
+    "create_worker_card": ToolDef(
         schema={
-            "name": "create_coder_card",
+            "name": "create_worker_card",
             "description": (
-                "把一件开发任务交给新建的编程卡执行：建一张编程卡（任务原样落进"
-                "它的使命块）并立即自动开跑。一次派一张；只能建自己的子卡片。"
+                "把一件**要跑命令才能干完**的开发任务交给新建的worker 卡：建一张"
+                "worker 卡（任务原样落进它的使命块）并立即自动开跑——跑委派执行体"
+                "（WorkBuddy），手里有完整 shell：能跑命令、起服务、跑构建和"
+                "测试、装依赖。一次派一张；只能建自己的子卡片。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "编程卡卡名，如「修复监听器泄漏」"},
+                    "title": {"type": "string", "description": "worker 卡卡名，如「修复监听器泄漏」"},
                     "task": {"type": "string", "description": "开发任务内容（原样落进新卡的使命块）"},
                 },
                 "required": ["title", "task"],
             },
         },
-        handler=_h_create_coder_card,
+        handler=_h_create_worker_card,
         readonly=False,
     ),
     # [UI 卡 2026-11-02] 建 UI 卡＝派 UI 执行卡：卡挂在你的树下、跑系统内
@@ -4463,9 +4476,15 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "create_ui_card",
             "description": (
-                "建一张 UI 卡干界面活：写 HTML/前端代码、开浏览器看渲染结果、"
-                "点按钮验交互、看 console 报错——跑系统内模型，一张卡一个任务，"
-                "建卡即开工，完工向你汇报。target 缺省＝本卡。"
+                "建一张 UI 卡并立即开工。它干的是界面活：自己写前端页面文件"
+                "（HTML/CSS/JS），再开真实浏览器把页面打开亲眼看——看渲染对不对、"
+                "点按钮/填表单验交互、读 console 和网络诊断、截图取证。\n"
+                "它手里有：写/改文件件（write_file、edit_file——写页面文件）、"
+                "browser 工具（看页面、操作页面）、只读文件件（读源码对照渲染）。\n"
+                "它手里没有：bash/python——**跑不了任何命令**：起不了服务、"
+                "跑不了构建、跑不了测试、写不了要执行的后端逻辑。\n"
+                "一张卡一个任务，建卡即开工，完工经 report_up 回报。"
+                "parent 缺省＝本卡，只可挂自己子树内。"
             ),
             "parameters": {
                 "type": "object",
@@ -4484,10 +4503,10 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         readonly=False,
         doc=ToolDoc(
             group="组织",
-            scene="需要做界面/验界面时派一张：写前端代码、开浏览器渲染、"
-                  "点页面验证交互。与 coder 卡的分工——coder 管后端/逻辑"
-                  "（走 wb_exec 执行体），ui 管看得见的东西（跑系统内模型、"
-                  "手里有浏览器）。",
+            scene="需要做界面/验界面时派一张：它自己写前端页面文件"
+                  "（HTML/CSS/JS），再开真实浏览器亲眼验——渲染、交互、"
+                  "console。跑系统内模型，手里有浏览器＋写文件件、"
+                  "没有 bash/python。",
             usage="title 给卡名；task 写清做什么界面、要验什么（验收口径越"
                   "具体，它 inspect/click 的循环越有目标）。完工经 report_up "
                   "异步回来。",
@@ -4555,7 +4574,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
             "description": (
                 "起草规则分区的修改提议（仅剧本根卡可用；只起草、不落盘）。"
                 "sections 里每项 {section, content}：把不同内容块各自写进对应区——"
-                "写哪个区由你选（all 进所有卡；project/sub_project/coder 等按卡类型"
+                "写哪个区由你选（all 进所有卡；project/sub_project/worker 等按卡类型"
                 "注入；function.<职能code> 只进对应职能）。一次调用可覆盖多个区，"
                 "一次审批一次落盘。注意：content 里不得出现 `## ` 行（文件按 `## ` 切区，"
                 "含 `## ` 的内容会被切成不进任何上下文的幻影区）；区内子标题用 `### `。"
@@ -4954,7 +4973,7 @@ TOOL_REGISTRY["reparent_card"] = ToolDef(
             "把自己子树内的一张卡挂到另一张卡下（改父子归属），它的整棵子树随之迁移。"
             "只能在自己子树内调整：被移动的卡、新的父卡都必须在你的子树内；"
             "不能改自己的归属、不能把卡挪出子树、不能成环。"
-            "新父卡的类型必须允许有子卡（工具卡/角色卡/编程卡/规则卡不行）。"
+            "新父卡的类型必须允许有子卡（工具卡/角色卡/worker 卡/规则卡不行）。"
             "只改树形归属，不动卡片内容，也不动通信线。"
         ),
         "parameters": {
@@ -6059,7 +6078,7 @@ async def _h_send_card_message(work_id: str, current_id: str,
     回发）传 False：它们不是模型自主通信，不受"先建线"约束。
 
     ``require_switch``＝是否要求**发起方**有 ``send_card_message`` 开关。
-    模型侧 True（它本来就是"这张卡能不能发信"）；系统侧 False——coder 卡刻意
+    模型侧 True（它本来就是"这张卡能不能发信"）；系统侧 False——worker 卡刻意
     没有这个开关（v4：完工回执由系统发，不归模型），系统通道查它会自断回执。
     """
     target_id = arguments.get("target_card_id", "")
@@ -6215,7 +6234,7 @@ async def send_card_message(
     参数由流程语义决定（不吃模型风格参数包）；本函数只做参数翻译并
     取卡表，随后把真实行为委托给 _h_send_card_message（门槛一条不减）。
 
-    [5713] 本薄壳的调用方全部是**系统/流程**路径（编程卡完工回执、blocked 通知、
+    [5713] 本薄壳的调用方全部是**系统/流程**路径（worker 卡完工回执、blocked 通知、
     S4 自动回发）——它们不是"模型自主发起通信"，故传 require_link=False，
     不受"两卡之间须有通信线"约束（否则完工回执到主卡会被自己的新闸挡死）。
     """
@@ -6228,7 +6247,7 @@ async def send_card_message(
     }
     return await _h_send_card_message(work_id, from_id, arguments, cards,
                                       require_link=False,
-                                      # 系统通道不查发起方开关：coder 卡刻意没有
+                                      # 系统通道不查发起方开关：worker 卡刻意没有
                                       # send_card_message（v4），查它会自断完工回执。
                                       require_switch=False)
 
@@ -6353,7 +6372,7 @@ async def _h_read_inbox(work_id: str, current_id: str,
 #   · `send_card_message` —— 通用发信。它的三种语义已分别落到：
 #       msg_notify → `sync`（告知，不唤醒）
 #       msg_ask / msg_answer → `direct`（要对方做事）与 `sync`（答回去）
-#     **内部薄壳 `send_card_message()`（模块级函数）保留**：编程卡完工回执、
+#     **内部薄壳 `send_card_message()`（模块级函数）保留**：worker 卡完工回执、
 #     blocked 通知等系统路径仍走它，且它不受连线校验（系统通道）。
 #   · `read_inbox` —— 收件箱取消（消息落会话块，历史里天然可见），
 #     账本水位不再作为模型可见面。
@@ -6436,7 +6455,7 @@ async def _h_read_archive(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """[归档 2026-10-25] 读归档记录——**先查通用归档（card_archive，任何卡），
-    再回落老的 coder 归档（coder_archive，只有编程卡）**。归档卡不是活卡，
+    再回落老的 worker 归档（coder_archive，只有worker 卡）**。归档卡不是活卡，
     read_card 查不到它们，本工具是唯一入口。"""
     from ..storage import card_archive as _ca_new
     from ..storage import coder_archive as _ca
@@ -6459,14 +6478,14 @@ async def _h_read_archive(work_id: str, current_id: str,
 async def _h_continue_task(work_id: str, current_id: str,
                           arguments: dict[str, Any],
                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """[任务延续 2026-10-25 · 用户裁定「coder 完工后应可续派任务,做任务延续」]
+    """[任务延续 2026-10-25 · 用户裁定「worker 完工后应可续派任务,做任务延续」]
 
-    给完工/空闲的编程卡**续派下一件任务**——同一张卡接着干,之前交付的
+    给完工/空闲的worker 卡**续派下一件任务**——同一张卡接着干,之前交付的
     代码、回执、会话上下文全部延续(这是续派相对新建的全部价值)。
 
     机械动作(复用既有重派活链):
       ① 权限:祖先(父卡限子树,总裁全树);
-      ② 目标必须 card_type=coder(其他卡型走建卡/消息通道);
+      ② 目标必须 card_type=worker（其他卡型走建卡/消息通道）;
       ③ state: completed → active 复位;goal complete ⇒ 用新任务开新生命周期;
          paused/blocked ⇒ resume;
       ④ 新任务文本落 goal,随后系统按既有链点火(本 handler 不直接起回合——
@@ -6495,12 +6514,12 @@ async def _h_continue_task(work_id: str, current_id: str,
         except Exception as exc:  # noqa: BLE001 判定失败一律拒
             return err("denied", f"子树判定失败,已拒绝: {exc}")
     meta = (cards or {}).get(target) or card_store._meta_of(work_id, target) or {}
-    if str(meta.get("card_type") or "") != "coder":
+    if str(meta.get("card_type") or "") != "worker":
         return err("validation",
-                   f"{target} 不是编程卡——续派只对 coder(其他卡型的任务延续"
+                   f"{target} 不是worker 卡——续派只对 worker(其他卡型的任务延续"
                    "走普通消息/目标管理)")
 
-    # 复位 + 新生命周期(照 _revive_coder_card 的机械序列)
+    # 复位 + 新生命周期(照 _revive_worker_card 的机械序列)
     from ..goal.service import get_service
     from ..goal.types import CreateGoalRequest
     svc = get_service()
@@ -6511,7 +6530,7 @@ async def _h_continue_task(work_id: str, current_id: str,
     if cur_state == "active":
         # [停在中途可续派 2026-11-01 · 用户令「唤醒子卡不需要自动」]
         # 「在干活」的判据不是 state 列：stop_card(halt) 只停 goal＋置停止
-        # 标记，**不复位 state**——被停住的 coder 永远停在 active（实测
+        # 标记，**不复位 state**——被停住的 worker 永远停在 active（实测
         # work_027/card_140：父卡更正任务下发无路）。真正表示「它在干活」
         # 的只有两种：
         #   ① 有在途回合（turn 互斥体被持——含等串行闸的排队回合）；
@@ -6598,7 +6617,7 @@ async def _h_continue_task(work_id: str, current_id: str,
     except Exception as exc:  # noqa: BLE001 点火失败不撤续派(目标已在,下轮会跑)
         logger.warning("[continue_task] 点火失败 card=%s: %s", target, exc)
         fired = False
-    session_ops.ops_log("coder_continue_task", work_id, target,
+    session_ops.ops_log("worker_continue_task", work_id, target,
                         {"by": current_id, "task": task[:200],
                          "goal": goal_started})
     return {"ok": True, "card_id": target, "goal": goal_started,
@@ -6866,7 +6885,7 @@ async def _h_silence_card(work_id: str, current_id: str,
                    f"{target} 尚未完工(state={_dstate or '?'})——"
                    "沉默只用于完工卡;在跑的卡要停用 stop_card")
     from ..storage import governance_store as _gov
-    # [2026-10-25 · 用户裁定「coder 不能自动归档,应可续派」] coder 与其他
+    # [2026-10-25 · 用户裁定「worker 不能自动归档,应可续派」] worker 与其他
     # 完工卡同语义:沉默=治理标记(不折叠)。续派走 continue_task 工具。
     if action == "silence":
         rec = await _gov.set_state(work_id, target, _gov.STATE_SILENCED,
@@ -7354,7 +7373,7 @@ TOOL_REGISTRY["silence_card"] = ToolDef(
             "后续消息搅扰;持久生效,重启不失效。\n"
             "action=activate(激活):解除沉默,恢复接收(积压的信会按增量"
             "投递补上)。\n"
-            "编程卡完工后**不折叠**:它的上下文是延续资产——续派任务用 "
+            "worker 卡完工后**不折叠**:它的上下文是延续资产——续派任务用 "
             "continue_task。\n"
             "只对 state=completed 的卡生效——在跑的卡要停用 stop_card。\n"
             "reason 必写:为什么沉默/激活(留痕)。"
@@ -7375,13 +7394,13 @@ TOOL_REGISTRY["silence_card"] = ToolDef(
 )
 TOOL_SWITCH["silence_card"] = policy.SWITCH_READ
 
-# [任务延续 2026-10-25 · 用户裁定] 编程卡完工后不折叠——续派下一件任务,
+# [任务延续 2026-10-25 · 用户裁定] worker 卡完工后不折叠——续派下一件任务,
 # 上下文延续(代码/回执/会话全保留)。根卡/父卡下发。
 TOOL_REGISTRY["continue_task"] = ToolDef(
     schema={
         "name": "continue_task",
         "description": (
-            "(根卡/父卡专用)给完工或暂停的编程卡**续派下一件任务**——"
+            "(根卡/父卡专用)给完工或暂停的worker 卡**续派下一件任务**——"
             "同一张卡接着干。\n"
             "为什么续派而不是新建:该卡之前交付的代码、完工回执、会话上下文"
             "**全部延续**——后续任务与已交付物相关时(返工/迭代/同域下一件),"
@@ -7392,7 +7411,7 @@ TOOL_REGISTRY["continue_task"] = ToolDef(
         "parameters": {
             "type": "object",
             "properties": {
-                "card_id": {"type": "string", "description": "目标编程卡 id"},
+                "card_id": {"type": "string", "description": "目标worker 卡 id"},
                 "task": {"type": "string",
                          "description": "下一件任务(写清做什么、验收判据)"},
                 "note": {"type": "string", "description": "备注(可选,留痕)"},
@@ -7485,17 +7504,17 @@ TOOL_REGISTRY["unarchive_card"] = ToolDef(
 )
 TOOL_SWITCH["unarchive_card"] = policy.SWITCH_DELETE
 
-# [coder 归档 2026-10-25] 归档记录读口(记录全局可读——与 read_card 读侧同口径)
+# [worker 归档 2026-11-05 改名前为 coder 归档] 归档记录读口(记录全局可读——与 read_card 读侧同口径)
 TOOL_REGISTRY["read_archive"] = ToolDef(
     schema={
         "name": "read_archive",
         "description": (
-            "读**归档记录**（任何卡的归档，以及更早的编程卡归档）。归档卡不再是"
+            "读**归档记录**（任何卡的归档，以及更早的worker 卡归档）。归档卡不再是"
             "活卡——read_card 查不到它们，这里是唯一查口。\n"
             "card_id=指定卡号 ⇒ 返回单条；parent=指定父卡 ⇒ 列其名下全部；"
             "都不给 ⇒ 列本 work 全部。\n"
             "记录含：三块正文（mission／status_block／requirements）、修改历史、影子三节、"
-            "card_type、archived_at、reason；更早的编程卡记录是 task／final_report／"
+            "card_type、archived_at、reason；更早的worker 卡记录是 task／final_report／"
             "artifacts 形态。要回溯更细的过程，用时间线（事件文件仍在）。"
         ),
         "parameters": {
@@ -8766,14 +8785,14 @@ def _filter_by_category(
 
 
 # ============================================================
-# [编程卡 2026-10-15 · C3] 第三段过滤 · card_type 闸
+# [worker 卡 2026-10-15 · C3] 第三段过滤 · card_type 闸
 #
-# coder 专属工具只对 card_type=="coder" 的当前卡下发，其余类型一律不出现。
+# worker 专属工具只对 card_type=="worker" 的当前卡下发，其余类型一律不出现。
 # 与现两段（_filter_by_role 恒等 / _filter_by_category 按卡上 perms）互不触碰
 # ——三段各管一线、只查表不判内容（同两线 R-D 纪律）：前两段按「卡有什么权限」
 # 下发，本段按「卡是什么类型」收敛。
 # ============================================================
-CODER_ONLY_TOOLS: frozenset[str] = frozenset({"report_done"})
+WORKER_ONLY_TOOLS: frozenset[str] = frozenset({"report_done"})
 
 
 def _tool_capability(tool_name: str) -> str | None:
@@ -8828,9 +8847,9 @@ def _filter_by_card_type(
     tools: list[dict[str, Any]], card_id: str, work_id: str = "",
     cards: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """**第三段过滤 · 类型闸**（编程卡 2026-10-15 · C3）。
+    """**第三段过滤 · 类型闸**（worker 卡 2026-10-15 · C3）。
 
-    ``CODER_ONLY_TOOLS`` 内的工具只对 ``card_type=="coder"`` 的当前卡下发；
+    ``WORKER_ONLY_TOOLS`` 内的工具只对 ``card_type=="worker"`` 的当前卡下发；
     其余工具原样穿过。认不出卡（card_id 空 / cards 缺省 / 卡不在表里）⇒ 原样
     返回——第二段已默认关门返回空列表，此处不重复拦（也绝不放宽）。
 
@@ -8847,10 +8866,10 @@ def _filter_by_card_type(
     except Exception:  # noqa: BLE001
         _root_id = ""
     # [总裁制 P4 2026-10-24] report_up 只给**作业卡**(sub_project/topic)——
-    # 汇报权是干活卡的配置;rule(只读)/tool(工具卡)不进,coder 保持 report_done
+    # 汇报权是干活卡的配置;rule(只读)/tool(工具卡)不进,worker 保持 report_done
     # 既有通道不变。根卡(总裁)走 report_to_user,不进。
     # [总裁制 P4 2026-10-24] report_up 只给**作业卡**(sub_project/topic)——
-    # 汇报权是干活卡的配置;rule(只读)/tool(工具卡)不进,coder 保持 report_done
+    # 汇报权是干活卡的配置;rule(只读)/tool(工具卡)不进,worker 保持 report_done
     # 既有通道不变。根卡(总裁)走 report_to_user,不进。
     # ★ 整段挂「目录启用」下:目录关着 ⇒ 旧世界工具面逐字不变(红线)。
     _self_type = str(card.get("card_type") or "")
@@ -8892,13 +8911,13 @@ def _filter_by_card_type(
     # [通信收拢 2026-10-28] 原「摘横向发信权(lateral_enabled)」整段删除：
         # send_card_message 已退役（注册表里没有了），这个开关失去对象。
         # 横向通信现在只有 `sync`（沿连线、不唤醒），不再需要机制层收权。
-    is_coder = str(card.get("card_type", "") or "") == "coder"
+    is_worker = str(card.get("card_type", "") or "") == "worker"
     keep: list[dict[str, Any]] = []
     dropped: dict[str, str] = {}
     for t in tools:
         name = str(t.get("name", ""))
-        if name in CODER_ONLY_TOOLS and not is_coder:
-            # coder 例外:report_done 就是它的完工通道(其余卡摘除)
+        if name in WORKER_ONLY_TOOLS and not is_worker:
+            # worker 例外:report_done 就是它的完工通道(其余卡摘除)
             dropped[name] = f"card_type:{card.get('card_type', '')}"
             continue
         keep.append(t)
@@ -8909,7 +8928,7 @@ def _filter_by_card_type(
             "card_type": card.get("card_type", ""),
             "granted_tools": [t.get("name") for t in keep],
             "filtered_tools": dropped,
-            "reason": "coder_only_card_type_gate",
+            "reason": "worker_only_card_type_gate",
         })
     return keep
 
@@ -9006,12 +9025,12 @@ def _filter_root_only(
 
 #: 契约轮里**必须摘掉**的工具——一切"动手"的东西。只留读 + 写需求（append_requirements）。
 #  [使用律法 2026-10-22 · 用户令「自动模式下卡片的第一轮的工作，就是固定的写需求文档」]
-#  原来只摘 create_card / create_coder_card（"先建职能"），实际制造了死锁：
+#  原来只摘 create_card / create_worker_card（"先建职能"），实际制造了死锁：
 #  建职能要 watch 的卡还不存在 ⇒ 建不出来 ⇒ 闸永远命中 ⇒ 卡永远出不去
 #  （work_024 实测 blocked）。现在改成"第一轮写需求文档"：需求是唯一事实源，
 #  没有它，后面派活/执行/验收全都没有判据。
 _MUST_ROUND_DROP: frozenset[str] = frozenset({
-    "create_card", "create_coder_card", "delete_card",
+    "create_card", "create_worker_card", "delete_card",
     "write_file", "edit_file", "move_file", "rename_file", "delete_file",
     "bash", "python", "run_tool_card", "report_done",
     "link_cards", "link_rel",
@@ -9042,7 +9061,7 @@ _AUTO_LADDER_DROP: frozenset[str] = frozenset({"edit_card"})
 #: 没有 direct 对象可指；②continue_task/sync 等更狠的指挥通道从不入闸；
 #: ③需求修订期（in_review）恰好是最需要指挥在跑子树的时机。
 _REQUIREMENTS_GATED_TOOLS: frozenset[str] = frozenset(
-    {"create_card", "create_coder_card"})
+    {"create_card", "create_worker_card"})
 
 
 def _apply_requirements_gate(tools: list[dict[str, Any]], card_id: str,
@@ -9053,10 +9072,10 @@ def _apply_requirements_gate(tools: list[dict[str, Any]], card_id: str,
     流程：使命 → 写需求草稿 → 评审 → 通过成**正稿** → 才派工/执行。
     所以「不是正稿」时，这张卡只能：读、写自己的草稿与现状、汇报、同步、
     指挥已有子树（direct 不在闸内——2026-11-04 用户令）。
-    派工两件（建卡/派编程卡）摘掉——**看不见＝不该做**，不靠提示词劝。
+    派工两件（建卡/派worker 卡）摘掉——**看不见＝不该做**，不靠提示词劝。
 
     只对 sub_project / topic 生效：根卡（项目）与职能/角色卡不在这条流程里，
-    coder 卡没有需求文档也不需要评审（用户令：coder 不走评审）。
+    worker 卡没有需求文档也不需要评审（用户令：worker 不走评审）。
     """
     if not card_id or cards is None:
         return tools
@@ -9088,7 +9107,7 @@ def _auto_governance_face(tools: list[dict[str, Any]], card_id: str,
     if not bool(card.get("auto_mode")):
         return tools                              # 手动模式:两套之外
     if str(card.get("card_type") or "") not in ("sub_project", "topic"):
-        return tools                              # 根卡=总裁,coder 另有通道
+        return tools                              # 根卡=总裁,worker 另有通道
     try:
         from . import function_room as _fr
         if not _fr.load().get("enabled"):
@@ -9142,7 +9161,7 @@ def _is_must_round(
 
 
 def _apply_must_round_face(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """必须轮工具面：摘掉搭交付树的 create_card / create_coder_card，其余原样。"""
+    """必须轮工具面：摘掉搭交付树的 create_card / create_worker_card，其余原样。"""
     if not any(str(t.get("name", "")) in _MUST_ROUND_DROP for t in tools):
         return tools
     return [t for t in tools if str(t.get("name", "")) not in _MUST_ROUND_DROP]
@@ -9164,8 +9183,8 @@ def build_tool_schemas(
 
         一级 ``_filter_by_role``     ← 角色过滤（工具卡底座 T9）
         二级 ``_filter_by_category`` ← 分类过滤（权限线 T4）
-        三级 ``_filter_by_card_type``← 类型闸（编程卡 2026-10-15 · C3：
-                                        CODER_ONLY_TOOLS 只对 coder 卡下发）
+        三级 ``_filter_by_card_type``← 类型闸（worker 卡 2026-10-15 · C3：
+                                        WORKER_ONLY_TOOLS 只对 worker 卡下发）
         四级 ``_filter_root_only``   ← 根卡闸（规则卡 2026-10-15 · 块3：
                                         ROOT_ONLY_TOOLS 只对剧本根卡下发）
 
@@ -9198,12 +9217,12 @@ def build_tool_schemas(
     # 与上一步并存：perms 仍是上限，能力是岗位配置，两者同时成立才下发。
     # 卡上没有 abilities（未迁移 / NULL）⇒ 本步原样返回，行为与改前逐字一致。
     tools = _filter_by_capability(tools, card_id, cards)
-    # ---- 三级：card_type 闸（编程卡 2026-10-15 · C3）----
+    # ---- 三级：card_type 闸（worker 卡 2026-10-15 · C3）----
     tools = _filter_by_card_type(tools, card_id, work_id, cards)
     # ---- 四级：根卡闸（规则卡 2026-10-15 · 块3）----
     tools = _filter_root_only(tools, card_id, work_id, cards)
     # ---- 五级：[换父 2026-10-20] 不能有子卡的卡不下发换父工具 ----
-    # 工具卡/编程卡/规则卡自己没有子树可调（角色卡的整个工具面在末段③被替换，
+    # 工具卡/worker 卡/规则卡自己没有子树可调（角色卡的整个工具面在末段③被替换，
     # 走不到这里也无妨）。执行层同样会拒，但「工具面与执行层同源」的意思是
     # **看不见＝不该做**：给它一个永远调不通的工具，只会白烧一次模型调用。
     # 判据读注册表 can_have_children，不硬编码类型名。
@@ -9222,7 +9241,7 @@ def build_tool_schemas(
         # ＋ 首轮需求闸(未策展 ⇒ 只留读/汇报)。手动卡不进。
         tools = _auto_governance_face(tools, card_id, work_id, cards)
         # [card_040 · 2026-10-21] 自动模式启动「必须轮」：根卡 auto 首轮且本 work
-        # 一个职能都没有 ⇒ 只许组建职能、不许搭交付树（摘 create_card/create_coder_
+        # 一个职能都没有 ⇒ 只许组建职能、不许搭交付树（摘 create_card/create_worker_
         # card）。判据全取卡面事实，不看 op（驱动器回合不带 op）。
         if _is_must_round(card_id, work_id, cards):
             tools = _apply_must_round_face(tools)
@@ -9293,7 +9312,7 @@ def build_tool_schemas(
                          if str(t.get("name", "")) not in _ceo_deny]
     # ---- 末段⑥：[需求文档生命周期 2026-10-28 · 用户令] 非正稿 ⇒ 摘派工 ----
     # 用户原话：「子卡的需求文档不是正稿的情况下，取消它的派工权限」。
-    # 派工＝让别人干活的三件：建卡（create_card）、派编程卡（create_coder_card）、
+    # 派工＝让别人干活的三件：建卡（create_card）、派worker 卡（create_worker_card）、
     # 给下级下指令（direct）。汇报（report_up）、同步（sync）、读、写自己的草稿都不摘。
     # 判据取卡面事实（requirements_state），不看 op；只有 sub_project/topic 受此限。
     tools = _apply_requirements_gate(tools, card_id, cards)
@@ -9304,7 +9323,7 @@ def build_tool_schemas(
     # 「草稿 → 评审 → 正稿」这条流程：
     #   · 根卡（project）平时不给——它开不出评审，写草稿没人能转正；点【需求确定】
     #     那一轮才拿到写**正稿**的口子（write_requirements_final）。
-    #   · coder / tool / 职能卡没有这条流程（用户 2026-10-28：coder 不走评审），
+    #   · worker / tool / 职能卡没有这条流程（用户 2026-10-28：worker 不走评审），
     #     给了只会写出一份没人评审、也没人读的草稿。
     if card_id and cards is not None:
         _req_rt = str((cards.get(card_id) or {}).get("card_type") or "")
@@ -9338,13 +9357,13 @@ def _create_card_schema_with_goal(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 #: [规划驱动 2026-10-19 · permexp **测试闸**] 无活板时**不给**的工具：
-#: 建结构（create_card / create_coder_card / delete_card / 连线）与写产物
+#: 建结构（create_card / create_worker_card / delete_card / 连线）与写产物
 #: （write_file / edit_file / move_file / rename_file / delete_file）。
 #: 保留：只读类 ＋ bash/python/glob_files/list_files/search_files（允许"看一眼再规划"）
 #:      ＋ create_plan（唯一出口）＋ update_status/append_requirements/update_shadow（记录）。
 #: ★ 仅实验期使用；落地形态见「第二轮起要求有板」。
 _PLAN_GATE_BLOCKED: frozenset[str] = frozenset({
-    "create_card", "create_coder_card", "delete_card",
+    "create_card", "create_worker_card", "delete_card",
     "link_cards", "unlink_cards", "link_rel", "unlink_rel",
     # [换父 2026-10-20] 改父子边＝改结构，与建卡/连线同档：无活板时不给
     "reparent_card",
@@ -9428,9 +9447,9 @@ def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # 现状/需求文档。全部在四段过滤之后追加，常规卡工具面逐字不变。
 # ============================================================
 # [职能实体化 A 案 2026-10-22 · 用户裁定] 职能是**管理者**（人类团队里的岗位），
-# 要能派活（create_card / create_coder_card）和建立通信（link/unlink）。
+# 要能派活（create_card / create_worker_card）和建立通信（link/unlink）。
 # 只留 delete_card 在摘除集里——职能不删别人的卡。
-# 原集合把 create_card/create_coder_card/link_* 全摘掉，等于"职能不能派活、
+# 原集合把 create_card/create_worker_card/link_* 全摘掉，等于"职能不能派活、
 # 不能连线"，与"职能盯卡、必要时要求返工"的职责直接矛盾。
 _ROLE_FACE_DROP = frozenset({"edit_card", "delete_card",
                              # [send_card_message 退役 2026-10-25] 职能/总裁面

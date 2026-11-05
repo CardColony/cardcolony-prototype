@@ -25,7 +25,9 @@ PENDING_CODES: frozenset[str] = frozenset({"invalid", "ambiguous"})
 #: 提示词还没写到的消息类型（只能减）。
 #: [通信收拢 2026-10-28] 四种消息类型已写进 `_SEC_CARDMSG`（按类型给了应对），
 #: 从待补清单清空。空集＝以后新增类型必须同时写提示词，否则这条会红。
-PENDING_MSG_TYPES: frozenset[str] = frozenset()
+#: [worker 改名 2026-11-05] ``coder_done`` 是 worker_done 的历史别名——注册表
+#: 留着兜存量消息，提示词只教规范名（教旧名＝鼓励模型发旧类型）。
+PENDING_MSG_TYPES: frozenset[str] = frozenset({"coder_done"})
 
 #: 提示词里提到、但注册表里没有的工具（幽灵，只能减）。
 PENDING_GHOSTS: frozenset[str] = frozenset({"run_tool_card"})

@@ -135,12 +135,12 @@ def test_can_have_children_reads_registry():
     """can_have_children 是**注册表字段**，不是第二份硬编码类型表。
 
     [换父 2026-10-20] 这个字段此前代码零消费（工具卡/角色卡各自硬编码）——
-    本用例钉住「读注册表」这条口径：真注册表里 tool/role/coder/rule 为 false，
+    本用例钉住「读注册表」这条口径：真注册表里 tool/role/worker/rule 为 false，
     sub_project/topic/project 为 true，查不到的类型放行（降级不阻断写路径）。
     """
     assert card_store._type_can_have_children("tool") is False
     assert card_store._type_can_have_children("role") is False
-    assert card_store._type_can_have_children("coder") is False
+    assert card_store._type_can_have_children("worker") is False
     assert card_store._type_can_have_children("rule") is False
     assert card_store._type_can_have_children("sub_project") is True
     assert card_store._type_can_have_children("topic") is True

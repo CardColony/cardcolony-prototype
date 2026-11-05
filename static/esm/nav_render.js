@@ -38,8 +38,8 @@ const SVG_FOLDER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" s
 const SVG_DOC = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 2.5h7L12.5 5v8A1.5 1.5 0 0 1 11 14.5H3A1.5 1.5 0 0 1 1.5 13v-9A1.5 1.5 0 0 1 3 2.5z"/><path d="M10 2.5V5h2.5"/></svg>';
 // [角色机制 5710] 角色卡图标：离树的观察者（人形），与作业卡区分。
 const SVG_ROLE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="5.2" r="2.4"/><path d="M3.2 13.6c.5-2.7 2.2-4 4.8-4s4.3 1.3 4.8 4"/></svg>';
-// [编程卡区分 2026-10-23 · 用户令「现在分不清」] 编程卡图标：代码尖括号。
-// 编程卡是**执行体**（干活的叶子），和项目卡（组织）、角色卡（盯梢）一眼要能分开。
+// [编程卡区分 2026-10-23 · 用户令「现在分不清」] worker 卡图标：代码尖括号。
+// worker 卡是**执行体**（干活的叶子），和项目卡（组织）、角色卡（盯梢）一眼要能分开。
 const SVG_CODER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4.5 2 8l3.5 3.5"/><path d="M10.5 4.5 14 8l-3.5 3.5"/></svg>';
 // [UI 卡 2026-11-02] 浏览器窗口图标（执行卡家族、与 coder 尖括号区分）
 const SVG_UI = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M1.5 5.5h13"/><circle cx="4" cy="4" r="0.6" fill="currentColor"/><circle cx="6.2" cy="4" r="0.6" fill="currentColor"/></svg>';
@@ -65,7 +65,7 @@ function fmtRel(iso) {
 function cardTip(c) {
   // [B4/E2 既有口径] 活跃/分支活跃走 tooltip 三分列（行内不堆文字，定稿第 2 条）
   return (c.card_type === "role" ? "〔角色〕"
-          : c.card_type === "coder" ? "〔编程〕"
+          : c.card_type === "worker" ? "〔worker〕"
           : c.card_type === "ui" ? "〔UI〕" : "")
     + escapeHtml(c.title)
     + (c.last_active_at ? `｜本卡活跃 ${fmtRel(c.last_active_at)}` : "｜无对话")
@@ -152,7 +152,10 @@ export function createNavRenderer(deps) {
     el.appendChild(badge);
     const title = document.createElement("span");
     title.className = "nav-ctitle";
-    title.textContent = f.function_name || f.function_id || "";
+    const _fnum = String(f.function_id || "");
+    title.innerHTML = (_fnum
+        ? `<span class="nav-cnum">${escapeHtml(_fnum)}</span>` : "")
+      + escapeHtml(f.function_name || f.function_id || "");
     el.appendChild(title);
     if (String(f.duty || "") === "archived") {
       el.classList.add("nav-fn-archived");
@@ -278,8 +281,8 @@ export function createNavRenderer(deps) {
       badge.textContent = "角色";
       el.appendChild(ico);
       el.appendChild(badge);
-    } else if (c.card_type === "coder") {
-      // [编程卡区分 2026-10-23] 编程卡＝执行体（干活的叶子）：代码图标 + 橙色行 + 「编程」徽标。
+    } else if (c.card_type === "worker") {
+      // [编程卡区分 2026-10-23] worker 卡＝执行体（干活的叶子）：代码图标 + 橙色行 + 「编程」徽标。
       // 与项目卡（组织、蓝色文档图标）、角色卡（盯梢、金色人形）三色三分，扫一眼就分开。
       el.classList.add("nav-coder");
       ico.classList.add("coder");
@@ -291,7 +294,7 @@ export function createNavRenderer(deps) {
       el.appendChild(badge);
     } else if (c.card_type === "ui") {
       // [UI 卡 2026-11-02] UI 卡＝内循环执行卡（浏览器验界面）：
-      // 青色浏览器图标 + 「UI」徽标，与编程卡（橙）/角色卡（金）分开。
+      // 青色浏览器图标 + 「UI」徽标，与 worker 卡（橙）/角色卡（金）分开。
       el.classList.add("nav-ui");
       ico.classList.add("ui");
       ico.innerHTML = SVG_UI;
@@ -351,7 +354,7 @@ export function createNavRenderer(deps) {
     return el;
   }
 
-  /* [静默执行卡折叠 2026-11-04 · 用户令「左侧列表，静默不动的编程卡、qa卡、
+  /* [静默执行卡折叠 2026-11-04 · 用户令「左侧列表，静默不动的 worker 卡、qa卡、
      产品经理卡，都折叠显示」] 折叠头行：挂在每个兄弟段的末尾，伪卡
      card_id="__quiet__<父id>"——展开态照常走 prefs.getExpanded/toggleCard
      （伪 id 在 prefs 里独立成键，不污染任何真卡）；
@@ -395,11 +398,12 @@ export function createNavRenderer(deps) {
       openKids: pr.expanded, H: row.rowHeight(),
     }));
     const qs = row.card.__quiet || [];
-    const cnt = { coder: 0, qa_card: 0, pm_card: 0 };
+    const cnt = { worker: 0, ui: 0, qa_card: 0, pm_card: 0 };
     for (const c of qs) if (cnt[c.card_type] != null) cnt[c.card_type]++;
     el.__title.textContent = `- ${qs.length} -`;
     const parts = [];
-    if (cnt.coder) parts.push(`coder ${cnt.coder}`);
+    if (cnt.worker) parts.push(`worker ${cnt.worker}`);
+    if (cnt.ui) parts.push(`UI ${cnt.ui}`);
     if (cnt.qa_card) parts.push(`QA ${cnt.qa_card}`);
     if (cnt.pm_card) parts.push(`PM ${cnt.pm_card}`);
     el.title = `quiet cards: ${qs.length} (${parts.join(", ")}) - click to expand/collapse`;
@@ -525,9 +529,14 @@ export function createNavRenderer(deps) {
     if (row.searching) delete el.__chev.dataset.twist;
     else if (hasKids) el.__chev.dataset.twist = c.card_id;
     // [定稿] 搜索镜片：命中的那一行标黄；只是路径的行不着色（它负责定位，不负责提示命中）
-    el.__title.innerHTML = row.matched
-      ? highlight(c.title || "", store.temp.getQuery ? store.temp.getQuery() : "")
-      : escapeHtml(c.title || "");
+    // [卡编号 2026-11-04 用户令] 名前小号编号：card_021 → 021，fn_001 原样，new-N 原样；
+    // 不进 highlight——编号不是标题，搜索命中只应标黄标题段。
+    const _cnum = String(c.card_id || "").replace(/^card_/i, "");
+    el.__title.innerHTML = (_cnum
+        ? `<span class="nav-cnum">${escapeHtml(_cnum)}</span>` : "")
+      + (row.matched
+        ? highlight(c.title || "", store.temp.getQuery ? store.temp.getQuery() : "")
+        : escapeHtml(c.title || ""));
     el.title = cardTip(c);
     // [S3/R-21] 已删灰态权威投影：行在快照缺失（多标签删除/快照缝隙兜底）→ .deleted；
     // 快照恢复则自动褪灰（与 S2 零状态投影同哲学：类名随快照实时重导）
@@ -663,14 +672,15 @@ export function createNavRenderer(deps) {
     return rows;
   }
 
-  // [静默执行卡折叠 2026-11-04 · 用户令] 这三类执行卡「不在跑」时折起来。
-  const FOLD_QUIET_TYPES = { coder: "编程", qa_card: "QA", pm_card: "PM" };
+  // [静默执行卡折叠 2026-11-04 · 用户令] 这四类执行卡「不在跑」时折起来
+  // （2026-11-05 加 ui——同属执行卡家族，和 worker/QA/PM 同等待遇）。
+  const FOLD_QUIET_TYPES = { worker: "worker", ui: "UI", qa_card: "QA", pm_card: "PM" };
 
   function pushSegment(rows, wid, parentCid, depth, visited, guides) {
     const cards = store.snapshot.getChildren(wid, parentCid);
     if (!cards) return;   // 段未加载：父行由 props 投影出 loading 态
     const visible = cards.filter(c => !isToolCard(c));   // [定稿] 工具卡不进侧栏
-    /* [静默执行卡折叠] 分区：静默（不在 running 集）的 coder/qa_card/pm_card
+    /* [静默执行卡折叠] 分区：静默（不在 running 集）的 worker/ui/qa_card/pm_card
        不进主流，折到段尾一行「静默执行卡 ×N」；在跑的、当前打开的保持原位。
        判据用 store.temp.isRunning（与行尾转圈同一份数据）⇒ 卡一起跑就自己
        出折，跑完回落——不靠用户手动归位。 */

@@ -21,7 +21,7 @@ import asyncio
 import os
 from typing import Any, Optional
 
-from ..model_gateway.gateway import build_gateway
+from ..model_gateway.gateway import build_gateway, REASONING_PLACEHOLDER
 from . import model_config
 
 _gateway = None
@@ -298,7 +298,11 @@ async def call_main(
     # [DeepSeek 思考回传 2026-10-15] 本轮思考随 result 返回（调用方决定是否回传）。
     # 字段名用协议名 reasoning_content；无思考时为空串（与旧行为逐字兼容——
     # 旧 result 无此键，新增键不改变既有读取）。
-    result["reasoning_content"] = "".join(_reasoning_parts)
+    # [占位思考过滤 2026-11-05] echo_fill 端点的 wire 兜底占位串可能被端点/模型
+    # 原样回吐成"思考"（历史里每条 assistant 都挂着它 ⇒ 模仿）。它是格式件不是
+    # 思考——剥掉，否则它当真思考存进卡面、又当作真思考回注下一轮。
+    result["reasoning_content"] = "".join(_reasoning_parts).replace(
+        REASONING_PLACEHOLDER, "")
     # [2026-10-29 文本工具调用兼容] 有些模型（实弹：deepseek-v4-1-flash-economy）
     # 不用结构化 `tool_calls`，而是把调用写成正文：
     #     <tool_call>{"name": "...", "arguments": {...}}</tool_call>

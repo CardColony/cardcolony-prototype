@@ -37,11 +37,25 @@ providers:
     base_url: https://ark.cn-beijing.volces.com/api/plan/v3
     api_key_env: VOLCENGINE_TOKEN_PLAN_API_KEY
     note: 火山方舟 token plan 端点（ark-code-latest）
+  volcengine-coding2:
+    protocol: openai
+    base_url: https://ark.cn-beijing.volces.com/api/coding/v3
+    api_key_env: VOLCENGINE_CODING2_API_KEY
+    note: 第二组火山方舟 coding（2026-11-05 用户令）· 端点与第一组相同、key 独立；座椅按第一组逐字照抄。
   volcengine-coding:
     protocol: openai
     base_url: https://ark.cn-beijing.volces.com/api/coding/v3
     api_key_env: VOLCENGINE_CODING_API_KEY
     note: 火山方舟 coding 端点（OpenAI 兼容）
+  tencent-token-plan:
+    protocol: openai
+    base_url: https://tokenhub.tencentmaas.com/plan/v3
+    api_key_env: TENCENT_TOKEN_PLAN_API_KEY
+    note: >-
+      腾讯云 Token Plan（TokenHub 个人订阅）· OpenAI 兼容 /plan/v3 端点。
+      2026-11-05 实测：key sk-tp- 开头；hy4 非流式/流式/带工具多轮均 200。
+      国际域名 tokenhub-intl.tencentcloudmaas.com 用这把 key 会 401（不通）。
+      /models 端点不存在（404），模型清单以官方文档为准（hy4 / hy4-preview 等）。
   kimi:
     protocol: openai
     base_url: https://api.kimi.com/coding/v1
@@ -120,6 +134,11 @@ providers:
     note: >-
       第二份 opencode **Go 订阅**（2026-11-03 用户令增加；key 与第一份独立）。
       同端点同纪律：x-opencode-session 必带（MissingSessionID 拒单）、必须浏览器 UA。
+  commandcode2:
+    protocol: openai
+    base_url: https://api.commandcode.ai/provider/v1
+    api_key_env: COMMAND_CODE2_API_KEY
+    note: 第二份 Command Code 套餐（2026-11-05 用户令）· 端点与第一份相同、key 独立；座椅按第一份逐字照抄。
   commandcode:
     protocol: openai
     base_url: https://api.commandcode.ai/provider/v1
@@ -407,6 +426,83 @@ models:
     note: >-
       Command Code · GLM 5.3 Flash（context_length=1,000,000；2026-11-04 实调 200）。
       ⚠ 推理型：64 token 上限时正文为空（全被 reasoning 吃掉），工具链路上注意配额。
+  glm-53-flash-volc:
+    provider: volcengine-coding
+    model: glm-5-3-flash-260828
+  hy4:
+    provider: tencent-token-plan
+    model: hy4
+  cmd2-ds-v41-flash:
+    provider: commandcode2
+    echo_reasoning: true
+    model: deepseek/deepseek-v4.1-flash
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第二份套餐] Command Code · DeepSeek V4.1 Flash（context_length=1,000,000；2026-10-22
+      实调 200）'
+  cmd2-beam-free:
+    provider: commandcode2
+    echo_reasoning: true
+    model: reflection/beam:free
+    reasoning_echo_fill: placeholder
+    temperature: 0.7
+    note: '[第二份套餐] Command Code · Beam 1.0 免费（context_length=1,048,576，带 reasoning；2026-10-22
+      实调 200）'
+  cmd2-glyph-free:
+    provider: commandcode2
+    echo_reasoning: true
+    model: stealth/glyph-cluster:free
+    reasoning_echo_fill: placeholder
+    temperature: 0.7
+    note: '[第二份套餐] Command Code · Glyph Cluster 免费（context_length=256,000；2026-11-04
+      实调 200）。 思考字段为 `reasoning`（非 reasoning_content），translate.py 已兼容。 ⚠ 重思考模型：两字回答实测烧
+      154 个 reasoning token，工具/长链路上很贵（不扣额度但吃上下文）。'
+  cmd2-minimax-flash:
+    provider: commandcode2
+    model: minimax/minimax-m3.1-flash
+    temperature: 1
+    note: '[第二份套餐] Command Code · MiniMax M3.1 Flash（付费档；原 :free 免费窗口 2026-10-23 已结束，
+      context_length=1,000,000）'
+  cmd2-ds-v4-flash:
+    provider: commandcode2
+    echo_reasoning: true
+    model: deepseek/deepseek-v4-flash
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第二份套餐] Command Code · DeepSeek V4 Flash（context_length=1,000,000；2026-11-04
+      实调 200）。 与已有 cmd-ds-v41-flash 是**不同型号**（v4-flash vs v4.1-flash）。'
+  cmd2-glm-53-flash:
+    provider: commandcode2
+    echo_reasoning: true
+    model: z-ai/glm-5.3-flash
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第二份套餐] Command Code · GLM 5.3 Flash（context_length=1,000,000；2026-11-04
+      实调 200）。 ⚠ 推理型：64 token 上限时正文为空（全被 reasoning 吃掉），工具链路上注意配额。'
+  ds-v4-flash-volc2:
+    provider: volcengine-coding2
+    echo_reasoning: true
+    model: deepseek-v4-flash
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第二组] 火山方舟 coding · deepseek v4 flash'
+  ds-v41-flash-eco-volc2:
+    provider: volcengine-coding2
+    echo_reasoning: true
+    model: deepseek-v4-1-flash-economy-261017
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第二组] 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）'
+  kimi-k31-pro-volc2:
+    provider: volcengine-coding2
+    echo_reasoning: true
+    model: kimi-k3-1-pro-261024
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第二组] 火山方舟 coding · kimi k3.1 pro（2026-10-25 用户令增加；方舟清单 261024 版）'
+  glm-53-flash-volc2:
+    provider: volcengine-coding2
+    model: glm-5-3-flash-260828
 bindings:
   execute: glm-53-flash
   think: glm-53-flash

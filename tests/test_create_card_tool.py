@@ -73,7 +73,7 @@ def test_tool_table_version_bumped():
     工具卡底座的保留件；T9「主卡写工具收回」已按用户 2026-10-09 17:38 令回滚，
     故此处只记工具集本身的变更，不涉角色口径）。
     [卡片底座第一步 2026-10-14] 推进到 tc-4：新增第 20 件工具 read_linked（沿通信线读）。
-    [编程卡 2026-10-15] 推进到 tc-5：新增 report_done / create_coder_card 两件，
+    [worker 卡 2026-10-15] 推进到 tc-5：新增 report_done / create_worker_card 两件，
     build_tool_schemas 增第三段 card_type 闸。
     [规则卡 2026-10-15] 推进到 tc-6：新增 draft_rule_edit（第 19 件，根卡起草
     规则区修改），build_tool_schemas 增第四段根卡闸。
@@ -82,7 +82,7 @@ def test_tool_table_version_bumped():
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status，op 专用）。
     # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     # auto 卡工具面件数变化；常规面仍不含它——AUTO_ONLY_TOOLS 机制）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-21"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] +browser/+create_ui_card
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():
@@ -97,13 +97,13 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     # [判断协议改注入 2026-10-14] 推进到 t18-1：判断协议从 BASE_PROMPT 摘出（改注入）。
     # [卡片区域语义 v3 2026-10-14] 推进到 t19-1：read_shadow 工具行改为「只读本卡自己的
     # 影子」（去掉「上级卡查看子卡影子」）。
-    # [编程卡 2026-10-15] 推进到 t20-1：增 create_coder_card / report_done 两工具行＋
-    # 「## 编程卡」节。
+    # [worker 卡 2026-10-15] 推进到 t20-1：增 create_worker_card / report_done 两工具行＋
+    # 「## worker 卡」节。
     # [规则卡 2026-10-15] 推进到 t21-1：增「## 规则卡」使用说明节（根卡
     # draft_rule_edit 起草＋用户审批落盘）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1（通信线 relations→links；新增
     # 依赖关联线工具两行）。
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"  # [2026-11-01] 随现配置对齐
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"  # [2026-11-01] 随现配置对齐
     assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT

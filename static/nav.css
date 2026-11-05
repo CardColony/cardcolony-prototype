@@ -24,7 +24,7 @@
    卡片内边距 6px×2＋时间列＋标题，320 下标题常常先被 ellipsis 吃掉。 */
 .app-nav {
   position: relative;
-  width: 360px;
+  width: 420px;
   flex: none;
   background: var(--bg-deep);
   border-right: 1px solid var(--border);
@@ -111,7 +111,7 @@
   position: absolute;
   top: 0;
   left: 44px;
-  width: 360px;                 /* 与 .app-nav 同宽（改一处必须同步另一处，否则浮层比栏窄） */
+  width: 420px;                 /* 与 .app-nav 同宽（改一处必须同步另一处，否则浮层比栏窄） */
   max-height: 100%;
   background: var(--bg-deep);
   border: 1px solid var(--border);
@@ -178,7 +178,7 @@
   position: absolute;
   top: 0;
   left: 44px;
-  width: 360px;
+  width: 420px;
   height: var(--nav-rail-search-h);
   box-sizing: border-box;
   z-index: 202;
@@ -404,6 +404,10 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
 /* ---- 标题：定稿第 2 条，行上唯一的文字。点它＝打开这张卡（与有没有子卡无关） ---- */
 .nav-ctitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding-left: 6px; }
 
+/* [卡编号 2026-11-04 用户令] 卡名前的编号：小一号、淡色、不参与命中标黄（在 __title
+   的 innerHTML 里前置——命中高亮只包标题段）。card_021 → 021；fn_001 原样显示。 */
+.nav-cnum { font-size: 10px; color: var(--dim); margin-right: 4px; }
+
 /* ---- 行尾槽（tail）：时间／运行中转圈 ＋ 两枚操作图标（⋯、＋）
    [用户 2026-10-15 ①] ⋯ 与 ＋ 固定占行尾右侧两个身位（各 22px）：⋯ 在左身位、＋ 在右身位。
    默认两枚都不可见（不污染你的视线），悬停时一起浮出——即「⋯ 左移一个身位、＋ 补在它原来的位置」。
@@ -581,7 +585,7 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
 .nav-fn-prow span { white-space: pre-wrap; word-break: break-word; }
 
 /* [职能对话 2026-10-22] 档案浮层加宽 + 对话区 */
-.nav-fn-panel { width: 420px; max-height: 70vh; }
+.nav-fn-panel { width: 360px; max-height: 70vh; }
 .nav-fn-talk {
   max-height: 38vh; overflow: auto; margin-top: 2px;
   padding: 4px 0; border-top: 1px solid var(--panel-border, rgba(255,255,255,0.1));

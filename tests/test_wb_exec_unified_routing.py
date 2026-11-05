@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""★ **验收卡 / 执笔卡 / coder 卡用同一套路由**（2026-11-04 用户令）。
+"""★ **验收卡 / 执笔卡 / worker 卡用同一套路由**（2026-11-04 用户令）。
 
 用户令原话：「**验收卡、pm卡，本质上应该和coder卡用一套路由机制，而不是分开的**」。
 
@@ -8,7 +8,7 @@
      ⇒ 判定不再按卡型分叉；
   ② **单一事实源**：**卡型白名单在配置里**（``delegable_card_types``）⇒
      后端判定、接口返回、**前端渲染门控**共用同一份 ⇒ 前端不再硬编码
-     ``card_type === "coder"``（那正是"看起来分成两套"的可见面）；
+     ``card_type === "worker"``（那正是"看起来分成两套"的可见面）；
   ③ **前端机械守卫**：源码级断言，锁住"前端不自己判卡型"这条契约
      （前端没有 jsdom 载体，机械断言是既有做法，见 test_msg_baseclose_frontend.py）。
 """
@@ -39,11 +39,11 @@ async def _make_card(work_id: str, card_type: str, title: str = "卡") -> str:
 
 @pytest.fixture
 def cfg_all_types(tmp_path, monkeypatch):
-    """白名单 = coder + qa_card + pm_card（**配置化**）。"""
+    """白名单 = worker + qa_card + pm_card（**配置化**）。"""
     p = tmp_path / "wb_exec.json"
     p.write_text(json.dumps({
         "enabled": True,
-        "delegable_card_types": ["coder", "qa_card", "pm_card"],
+        "delegable_card_types": ["worker", "qa_card", "pm_card"],
         "executors": [{"id": "wb-cn", "label": "CN", "install_root": "",
                        "cli_pool_size": 1}],
         "candidates": [{"executor": "wb-cn", "model": "hy3", "weight": 0,
@@ -61,9 +61,9 @@ def cfg_all_types(tmp_path, monkeypatch):
 # ===================================================================== ① 同一套路由
 @pytest.mark.asyncio
 async def test_three_card_types_share_one_routing(work, cfg_all_types):
-    """★ **验收卡 / 执笔卡 / coder 卡都能走执行体**（同一套路由，不是分开）。"""
+    """★ **验收卡 / 执笔卡 / worker 卡都能走执行体**（同一套路由，不是分开）。"""
     cfg = wb_config.load()
-    for ct in ("coder", "qa_card", "pm_card"):
+    for ct in ("worker", "qa_card", "pm_card"):
         cid = await _make_card(work["work_id"], ct, f"{ct} 卡")
         assert await bridge.is_delegable_card(
             work["work_id"], cid, cfg) is True, ct
@@ -83,7 +83,7 @@ async def test_whitelist_is_configurable(tmp_path, monkeypatch, work):
     p = tmp_path / "wb_exec.json"
     p.write_text(json.dumps({
         "enabled": True,
-        "delegable_card_types": ["coder", "function"],
+        "delegable_card_types": ["worker", "function"],
         "executors": [{"id": "wb-cn", "label": "CN", "install_root": "",
                        "cli_pool_size": 1}],
         "candidates": [{"executor": "wb-cn", "model": "hy3", "weight": 0,
@@ -93,7 +93,7 @@ async def test_whitelist_is_configurable(tmp_path, monkeypatch, work):
     wb_config.reset_cache()
     try:
         cfg = wb_config.load()
-        assert cfg.delegable_card_types == ("coder", "function")
+        assert cfg.delegable_card_types == ("worker", "function")
         fn_card = await _make_card(work["work_id"], "function", "职能卡")
         qa_card = await _make_card(work["work_id"], "qa_card", "验收卡")
         assert await bridge.is_delegable_card(work["work_id"], fn_card, cfg) is True
@@ -105,7 +105,7 @@ async def test_whitelist_is_configurable(tmp_path, monkeypatch, work):
 @pytest.mark.asyncio
 async def test_exec_backend_endpoint_reports_delegable(work, client, cfg_all_types):
     """★ **接口明说这张卡能不能走执行体**（前端照它渲染，不再自己判卡型）。"""
-    for ct, want in (("coder", True), ("qa_card", True), ("pm_card", True),
+    for ct, want in (("worker", True), ("qa_card", True), ("pm_card", True),
                       ("review", False)):
         cid = await _make_card(work["work_id"], ct, f"{ct} 卡")
         r = await client.get(f"/api/works/{work['work_id']}/cards/{cid}/exec-backend")
@@ -118,17 +118,17 @@ async def test_exec_backend_endpoint_reports_delegable(work, client, cfg_all_typ
 
 
 # ===================================================================== ③ 前端机械守卫
-def test_frontend_does_not_gate_on_coder_card_type():
-    """★ **前端不再硬编码 ``card_type === "coder"`` 门控执行体块**。
+def test_frontend_does_not_gate_on_worker_card_type():
+    """★ **前端不再硬编码 ``card_type === "worker"`` 门控执行体块**。
 
     那是"看起来分成两套路由"的**可见面**：验收卡/执笔卡卡面上根本没有入口。
     ⇒ 现在门控由**后端**的 ``delegable`` 决定。
     """
     text = WORKSPACE_JS.read_text(encoding="utf-8")
     assert "execInfo.delegable" in text, "前端没按后端的 delegable 渲染执行体块"
-    # ★ 不许再出现按 coder 卡型硬编码的执行体门控
-    bad = re.findall(r"card_type\s*===\s*[\"']coder[\"'][^\n]*exec", text)
-    assert not bad, f"前端又按 coder 卡型门控执行体块了: {bad}"
+    # ★ 不许再出现按 worker 卡型硬编码的执行体门控
+    bad = re.findall(r"card_type\s*===\s*[\"']worker[\"'][^\n]*exec", text)
+    assert not bad, f"前端又按 worker 卡型门控执行体块了: {bad}"
 
 
 def test_frontend_copy_is_not_workbuddy_only():

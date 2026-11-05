@@ -1,0 +1,1408 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>画布页 · 高保真交互原型 v2</title>
+<style>
+/* =====================================================================
+   画布页 · 高保真交互原型 v2
+   本稿不追求美观：视觉只做到「可读、可分辨状态」，预算全部放在
+   信息呈现与交互语言上。每个区域带编号锚点，右面板是可对照的交互规格。
+   大框架不动：左栏 44 窄条 / 顶栏 44 / 画布 / 右面板 / 覆盖层
+   ===================================================================== */
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;overflow:hidden}
+:root{
+  --font:"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",-apple-system,system-ui,sans-serif;
+  --mono:"Cascadia Code",Consolas,Menlo,monospace;
+  --r:4px; --t:120ms;
+}
+html[data-theme="light"]{
+  --bg:#EFEFEF; --panel:#FFFFFF; --panel2:#F6F6F6; --panel3:#EAEAEA;
+  --ink:#1B1B1B; --ink2:#5A5A5A; --ink3:#8C8C8C;
+  --line:#D6D6D6; --line2:#B9B9B9;
+  --acc:#1F5FD1; --acc-bg:#E8EEFB;
+  --ok:#1D6B3C; --warn:#8A5A00; --bad:#A3231E; --info:#1F5FD1;
+  --node:#FFFFFF; --node2:#FBFBFB; --grid:#DCDCDC;
+}
+html[data-theme="dark"]{
+  --bg:#161616; --panel:#1E1E1E; --panel2:#252525; --panel3:#2C2C2C;
+  --ink:#E6E6E6; --ink2:#A8A8A8; --ink3:#7C7C7C;
+  --line:#343434; --line2:#4A4A4A;
+  --acc:#5B9BFF; --acc-bg:#1E2A3D;
+  --ok:#5FBF80; --warn:#D8A94A; --bad:#E8786C; --info:#5B9BFF;
+  --node:#232323; --node2:#1F1F1F; --grid:#2C2C2C;
+}
+body{font-family:var(--font);font-size:13px;line-height:1.5;color:var(--ink);background:var(--bg)}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+
+/* ---------- 基础控件（只求可辨状态，不做装饰） ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;height:26px;padding:0 10px;
+  border:1px solid var(--line2);border-radius:var(--r);background:var(--panel);font-size:12px;
+  transition:background var(--t)}
+.btn:hover{background:var(--panel2)}
+.btn:active{background:var(--panel3)}
+.btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.ico{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r);
+  color:var(--ink2);border:1px solid transparent}
+.ico:hover{background:var(--panel2);border-color:var(--line)}
+.ico svg{width:14px;height:14px}
+.ico.on{background:var(--acc-bg);border-color:var(--acc);color:var(--acc)}
+.grow{flex:1}
+.sep{width:1px;height:16px;background:var(--line);margin:0 3px;flex:none}
+kbd{font-family:var(--mono);font-size:10px;border:1px solid var(--line2);border-bottom-width:2px;
+  border-radius:3px;padding:0 4px;color:var(--ink2);background:var(--panel2)}
+
+.app{position:fixed;inset:0;display:flex;background:var(--bg)}
+
+/* ---------- 左栏 44 ---------- */
+.rail{position:relative;z-index:40;flex:none;width:44px;background:var(--panel);border-right:1px solid var(--line);
+  overflow:hidden;transition:width var(--t)}
+.rail:hover,.rail.pinned{width:256px}
+.rstrip{display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 0;height:100%}
+.rail.pinned .rstrip{display:none}
+.rbtn{width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:var(--r);color:var(--ink2);position:relative}
+.rbtn:hover{background:var(--panel2);color:var(--ink)}
+.rbtn svg{width:15px;height:15px}
+.rbadge{position:absolute;right:0;top:0;min-width:13px;height:13px;border-radius:7px;background:var(--bad);color:#fff;
+  font-size:9px;line-height:13px;text-align:center;font-weight:700;padding:0 3px}
+.rfull{display:none;width:256px;height:100%;flex-direction:column;padding:8px;gap:6px}
+.rail:hover .rfull,.rail.pinned .rfull{display:flex}
+.rfind{display:flex;align-items:center;gap:5px;height:26px;padding:0 6px;border:1px solid var(--line);
+  border-radius:var(--r);background:var(--panel2)}
+.rfind input{flex:1;min-width:0;border:0;background:none;outline:none;font-size:12px}
+.tree{flex:1;overflow:auto;display:flex;flex-direction:column;gap:1px}
+.trow{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:var(--r);font-size:12px;color:var(--ink2)}
+.trow:hover{background:var(--panel2);color:var(--ink)}
+.trow.on{background:var(--acc-bg);color:var(--ink)}
+.trow i{width:6px;height:6px;border:1px solid var(--ink3);flex:none;border-radius:1px}
+.trow i.run{background:var(--acc);border-color:var(--acc)}
+.trow i.done{background:var(--ok);border-color:var(--ok)}
+.trow i.wait{background:var(--warn);border-color:var(--warn)}
+.trow i.off{background:transparent;border-style:dashed}
+.trow span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow em{font-style:normal;font-size:10px;color:var(--ink3);font-family:var(--mono)}
+.rfoot{border-top:1px solid var(--line);padding-top:6px;display:flex;font-size:11px;color:var(--ink3)}
+
+/* ---------- 顶栏 44 ---------- */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+.bar{flex:none;height:44px;display:flex;align-items:center;gap:5px;padding:0 8px 0 12px;
+  background:var(--panel);border-bottom:1px solid var(--line);position:relative;z-index:30}
+.path{display:flex;align-items:center;gap:1px;font-size:12.5px;color:var(--ink2);min-width:0}
+.path button{padding:2px 5px;border-radius:3px;color:var(--ink2);max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.path button:hover{background:var(--panel2);color:var(--ink)}
+.path button.cur{color:var(--ink);font-weight:600}
+.path .sl{color:var(--ink3);font-size:11px}
+.stats{display:flex;align-items:center;font-size:11.5px;color:var(--ink3);margin-left:4px}
+.stats span{padding:0 8px;border-left:1px solid var(--line);line-height:1}
+.stats span:first-child{border-left:0;padding-left:0}
+.stats b{font-family:var(--mono);color:var(--ink);margin-right:3px}
+.stats .w b{color:var(--warn)} .stats .r b{color:var(--acc)}
+.stamp{font-family:var(--mono);font-size:10px;color:var(--ink3);border:1px solid var(--line);border-radius:3px;padding:0 4px}
+.zoom{display:flex;align-items:center;gap:1px;border:1px solid var(--line);border-radius:var(--r);padding:0 1px}
+.zoom .ico{width:22px;height:22px;border:0}
+.zoom input[type=range]{width:84px;height:14px;-webkit-appearance:none;appearance:none;background:none}
+.zoom input[type=range]::-webkit-slider-runnable-track{height:2px;background:var(--line2)}
+.zoom input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:10px;height:10px;border-radius:50%;
+  background:var(--acc);margin-top:-4px;border:0}
+.zoom input[type=range]::-moz-range-track{height:2px;background:var(--line2)}
+.zoom input[type=range]::-moz-range-thumb{width:8px;height:8px;border:0;border-radius:50%;background:var(--acc)}
+.zoom .pct{min-width:44px;font-family:var(--mono);font-size:11px;color:var(--ink2);padding:2px;border-radius:3px}
+.zoom .pct:hover{background:var(--panel2)}
+.mh{position:relative}
+.menu{position:absolute;top:32px;right:0;min-width:190px;background:var(--panel);border:1px solid var(--line2);
+  border-radius:var(--r);padding:3px;z-index:70;display:none;box-shadow:0 6px 18px rgba(0,0,0,.14)}
+.mh.open .menu{display:block}
+.menu button{display:flex;width:100%;align-items:center;gap:8px;height:26px;padding:0 8px;border-radius:3px;font-size:12px;text-align:left}
+.menu button:hover{background:var(--panel2)}
+.menu button .k{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--ink3)}
+.menu button.on .k{color:var(--acc)}
+.menu .ms{height:1px;background:var(--line);margin:3px 1px}
+
+/* ---------- 画布 ---------- */
+.canvas{position:relative;flex:1;min-height:0;overflow:hidden;background:var(--bg);
+  background-image:radial-gradient(var(--grid) 1px,transparent 1px);background-size:20px 20px}
+.plane{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0}
+.wires{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+.wires path{fill:none;stroke:var(--line2);stroke-width:1.2}
+.wires.comm path{stroke:var(--acc);stroke-dasharray:2 4;stroke-width:1.4;animation:flow 1.4s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-12}}
+
+/* 卡片：信息项分区用发丝线标出，只有交互态给颜色 */
+.sheet{position:absolute;width:296px;background:var(--node);border:1px solid var(--line2);border-radius:var(--r);
+  padding:9px 11px 9px 13px;cursor:default}
+.sheet::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:3px 0 0 3px;background:var(--ink3)}
+.sheet[data-state="running"]::before{background:var(--acc)}
+.sheet[data-state="done"]::before{background:var(--ok)}
+.sheet[data-state="blocked"]::before{background:var(--bad)}
+.sheet[data-arch="1"]::before{background:var(--ink3);opacity:.5}
+.sheet:hover{border-color:var(--ink3)}
+.sheet.is-sel{border-color:var(--acc);outline:1px solid var(--acc)}
+.sheet[data-type="project"]{width:336px;background:var(--node2);border-color:var(--line2)}
+.sheet[data-arch="1"]{opacity:.6}
+.sheet[data-arch="1"] .ttl{text-decoration:line-through;text-decoration-color:var(--ink3)}
+.srow1{display:flex;align-items:center;gap:6px}
+.tt{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3)}
+.st{margin-left:auto;font-size:10.5px;color:var(--ink2);white-space:nowrap}
+.st::before{content:"";display:inline-block;width:5px;height:5px;margin-right:4px;border-radius:1px;background:var(--ink3);
+  vertical-align:1px}
+.st[data-s="run"]{color:var(--acc)} .st[data-s="run"]::before{background:var(--acc)}
+.st[data-s="wait"]{color:var(--warn)} .st[data-s="wait"]::before{background:var(--warn)}
+.st[data-s="done"]{color:var(--ok)} .st[data-s="done"]::before{background:var(--ok)}
+.st[data-s="block"]{color:var(--bad)} .st[data-s="block"]::before{background:var(--bad)}
+.ttl{margin:3px 0 0;font-size:14px;font-weight:600;line-height:1.35;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sheet[data-type="project"] .ttl{font-size:16px}
+.ttl[contenteditable="true"]{display:block;-webkit-line-clamp:unset;outline:2px solid var(--acc);border-radius:2px;background:var(--panel2)}
+.facts{display:flex;flex-wrap:wrap;gap:0 10px;margin-top:7px;padding-top:6px;border-top:1px solid var(--line);
+  font-size:10.5px;color:var(--ink3);font-family:var(--mono)}
+.facts b{color:var(--ink2);font-weight:600}
+.acts{position:absolute;right:6px;bottom:6px;display:flex;gap:2px;opacity:0}
+.sheet:hover .acts,.sheet.is-sel .acts{opacity:1}
+.acts button{width:20px;height:20px;border:1px solid var(--line);border-radius:3px;background:var(--panel);
+  font-size:10px;color:var(--ink2);display:flex;align-items:center;justify-content:center}
+.acts button:hover{border-color:var(--acc);color:var(--acc)}
+.archcode{margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--bad);border:1px dashed var(--line2);
+  border-radius:3px;padding:1px 5px;display:inline-block}
+
+/* 标注层：每个信息项旁边挂一个编号小牌 */
+body.annot .anno{display:inline-block}
+.anno{display:none;font-size:9px;line-height:13px;background:var(--acc-bg);color:var(--acc);border:1px solid var(--acc);
+  border-radius:7px;padding:0 4px;margin-left:4px;font-family:var(--mono);vertical-align:1px}
+
+/* 画布浮件 */
+.marquee{position:absolute;border:1px solid var(--acc);background:rgba(31,95,209,.08);z-index:12;pointer-events:none}
+.selbar{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:22;display:flex;align-items:center;gap:6px;
+  background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);padding:5px 7px;box-shadow:0 4px 14px rgba(0,0,0,.12)}
+.selbar b{font-size:12px}
+.selbar .btn{height:24px;padding:0 8px;font-size:11.5px}
+.lodtag{position:absolute;left:10px;bottom:10px;z-index:14;font-family:var(--mono);font-size:10px;color:var(--ink3);
+  background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:1px 6px}
+
+/* 四态 */
+.veil{position:absolute;inset:0;z-index:18;display:flex;align-items:center;justify-content:center;background:var(--bg);opacity:.97}
+.card-state{width:430px;max-width:88%;background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);padding:18px 20px;
+  box-shadow:0 8px 24px rgba(0,0,0,.12)}
+.card-state .h{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:650}
+.card-state .h .ic{width:22px;height:22px;border:1px solid var(--line2);border-radius:3px;display:flex;align-items:center;
+  justify-content:center;font-size:11px;color:var(--ink2)}
+.card-state p{margin:7px 0 0;font-size:12px;color:var(--ink2);line-height:1.6}
+.card-state .row{display:flex;gap:6px;margin-top:12px}
+.card-state .code{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-family:var(--mono);font-size:10.5px;color:var(--ink3)}
+.skel{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.skel i{height:9px;background:var(--panel3);border-radius:2px;animation:sk 1s linear infinite alternate}
+.skel i:nth-child(1){width:62%} .skel i:nth-child(2){width:88%} .skel i:nth-child(3){width:74%}
+@keyframes sk{from{opacity:.45}to{opacity:1}}
+
+/* 演示坞 */
+.dock{position:absolute;left:10px;top:10px;z-index:26;background:var(--panel);border:1px solid var(--line2);
+  border-radius:var(--r);padding:7px 8px;max-width:268px;box-shadow:0 4px 14px rgba(0,0,0,.10)}
+.dock h6{margin:0 0 4px;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:700}
+.dock .row{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px}
+.dock .row:last-child{margin-bottom:0}
+.dock button{height:21px;padding:0 6px;border:1px solid var(--line);border-radius:3px;background:var(--panel2);font-size:11px;color:var(--ink2)}
+.dock button:hover{border-color:var(--acc);color:var(--acc)}
+.dock button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.dock .tog{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink2);margin-bottom:5px}
+
+/* 右面板：交互规格 */
+.side{position:relative;flex:none;width:330px;background:var(--panel);border-left:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden;transition:width var(--t)}
+.side.closed{width:30px}
+.side-h{position:absolute;top:6px;right:5px;z-index:3;width:20px;height:20px;border:1px solid var(--line);border-radius:3px;
+  background:var(--panel2);color:var(--ink2);font-size:11px;line-height:1}
+.side.closed .side-h{transform:rotate(180deg)}
+.side-tabs{display:flex;gap:1px;padding:6px 28px 0 8px;border-bottom:1px solid var(--line);flex:none}
+.side-tabs button{height:24px;padding:0 8px;font-size:11.5px;color:var(--ink3);border-bottom:2px solid transparent}
+.side-tabs button.on{color:var(--ink);border-bottom-color:var(--acc);font-weight:600}
+.side.closed .side-tabs,.side.closed .side-body{display:none}
+.side-body{flex:1;overflow:auto;padding:10px 12px;font-size:12px}
+.side-body h4{margin:0 0 4px;font-size:12.5px;font-weight:650;display:flex;align-items:center;gap:6px}
+.side-body h4 em{font-style:normal;font-family:var(--mono);font-size:9.5px;background:var(--acc-bg);color:var(--acc);
+  border-radius:3px;padding:0 4px}
+.side-body .sub{color:var(--ink3);font-size:11px;margin-bottom:8px}
+.blk{margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.blk:last-child{border-bottom:0}
+.blk .t{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:700;margin-bottom:4px}
+.blk ul{margin:0;padding-left:14px}
+.blk li{margin:2px 0;line-height:1.55;color:var(--ink2)}
+.blk li b{color:var(--ink);font-weight:600}
+.blk li code{font-family:var(--mono);font-size:10.5px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:2px;padding:0 3px;color:var(--ink)}
+.tbl{width:100%;border-collapse:collapse;font-size:11px}
+.tbl th,.tbl td{text-align:left;padding:3px 4px;border-bottom:1px solid var(--line);vertical-align:top}
+.tbl th{color:var(--ink3);font-weight:600;font-size:10px;letter-spacing:.04em}
+.tbl td b{font-weight:600}
+.tbl td.mono{font-family:var(--mono);font-size:10.5px;color:var(--ink2)}
+.fields{display:flex;flex-direction:column;gap:3px}
+.fld{display:flex;gap:6px;font-size:11px}
+.fld .n{font-family:var(--mono);color:var(--acc);flex:none;width:16px}
+.fld .d{color:var(--ink2)}
+.fld .d b{color:var(--ink)}
+
+/* ---------- 覆盖层 ---------- */
+.sheet-r{position:fixed;top:0;right:0;bottom:0;width:392px;z-index:60;visibility:hidden;background:var(--panel);
+  border-left:1px solid var(--line2);display:flex;flex-direction:column;transform:translateX(101%);
+  transition:transform var(--t);box-shadow:-8px 0 24px rgba(0,0,0,.10)}
+.sheet-r.open{transform:none;visibility:visible}
+.sr-h{flex:none;display:flex;gap:8px;padding:12px 12px 9px;border-bottom:1px solid var(--line)}
+.sr-h .t{flex:1;min-width:0}
+.sr-h b{display:block;font-size:13px;font-weight:650}
+.sr-h span{font-size:11px;color:var(--ink3)}
+.sr-b{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:9px}
+.sr-f{flex:none;border-top:1px solid var(--line);padding:8px 10px;display:flex;gap:6px}
+.sr-f input{flex:1;height:28px;border:1px solid var(--line2);border-radius:var(--r);background:var(--panel2);padding:0 8px;outline:none;font-size:12px}
+.sr-f input:focus{border-color:var(--acc)}
+.msg{display:flex;gap:7px;font-size:12px;line-height:1.6}
+.msg .who{flex:none;width:38px;text-align:right;font-size:10px;color:var(--ink3);padding-top:2px}
+.msg .b{flex:1;color:var(--ink2)}
+.msg.me .b{color:var(--ink)}
+.day{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3);font-weight:700;margin-top:2px}
+
+.pop{position:fixed;top:48px;left:50px;width:326px;z-index:65;visibility:hidden;background:var(--panel);border:1px solid var(--line2);
+  border-radius:var(--r);opacity:0;transform:translateY(-4px);pointer-events:none;transition:opacity var(--t),transform var(--t);
+  box-shadow:0 8px 22px rgba(0,0,0,.14)}
+.pop.open{opacity:1;transform:none;pointer-events:auto;visibility:visible}
+.pop .ph{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--line);font-size:12px;font-weight:650}
+.pop .ph em{font-style:normal;font-size:9.5px;background:var(--bad);color:#fff;border-radius:6px;padding:0 4px;margin-left:4px}
+.pop .list{max-height:330px;overflow:auto;padding:4px}
+.nrow{display:flex;gap:8px;padding:7px;border-radius:3px;font-size:11.5px;line-height:1.5}
+.nrow:hover{background:var(--panel2)}
+.nrow i{width:5px;height:5px;border:1px solid var(--ink3);margin-top:6px;flex:none;border-radius:1px}
+.nrow.unread i{background:var(--acc);border-color:var(--acc)}
+.nrow b{font-weight:600}
+.nrow span{color:var(--ink2)}
+.nrow time{display:block;font-size:10px;color:var(--ink3);margin-top:1px}
+
+.cmdk{position:fixed;inset:0;z-index:90;display:none;justify-content:center;align-items:flex-start;padding-top:10vh;
+  background:rgba(0,0,0,.28)}
+.cmdk.open{display:flex}
+.cmdk-box{width:536px;max-width:92%;background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);overflow:hidden;
+  box-shadow:0 12px 32px rgba(0,0,0,.22)}
+.cmdk-in{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.cmdk-in input{flex:1;border:0;background:none;outline:none;font-size:14px}
+.cmdk-list{max-height:340px;overflow:auto;padding:4px}
+.cm{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:3px;font-size:12.5px}
+.cm .ty{font-size:9.5px;color:var(--ink3);border:1px solid var(--line);border-radius:2px;padding:0 3px}
+.cm .kk{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--ink3)}
+.cm.on{background:var(--acc-bg)}
+.cm-none{padding:18px;text-align:center;color:var(--ink3);font-size:12px}
+
+.ctx{position:fixed;z-index:92;min-width:170px;background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);
+  padding:3px;display:none;box-shadow:0 8px 22px rgba(0,0,0,.16)}
+.ctx.open{display:block}
+.ctx button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:14px;height:26px;padding:0 8px;
+  border-radius:3px;font-size:12px;text-align:left}
+.ctx button:hover{background:var(--panel2)}
+.ctx button .k{font-family:var(--mono);font-size:10px;color:var(--ink3)}
+.ctx button.bad{color:var(--bad)}
+.ctx .ms{height:1px;background:var(--line);margin:3px 1px}
+
+.modal{position:fixed;inset:0;z-index:95;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.34)}
+.modal.open{display:flex}
+.mbox{width:440px;max-width:92%;background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);
+  box-shadow:0 14px 36px rgba(0,0,0,.24)}
+.mh2{padding:13px 15px 4px;font-size:13.5px;font-weight:650}
+.mh2 span{display:block;font-size:11px;font-weight:400;color:var(--ink3);margin-top:2px}
+.mb{padding:6px 15px 10px;display:flex;flex-direction:column;gap:9px}
+.mb label{display:block;font-size:11px;color:var(--ink2);margin-bottom:3px}
+.mb input,.mb select{width:100%;height:28px;border:1px solid var(--line2);border-radius:var(--r);background:var(--panel2);
+  padding:0 8px;outline:none;font-size:12.5px}
+.mb input:focus,.mb select:focus{border-color:var(--acc)}
+.mf{display:flex;justify-content:flex-end;gap:6px;padding:9px 15px 13px}
+
+.toasts{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:120;display:flex;flex-direction:column;
+  gap:6px;align-items:center;pointer-events:none}
+.toast{display:flex;align-items:center;gap:9px;background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);
+  padding:6px 8px 6px 11px;font-size:12px;box-shadow:0 6px 18px rgba(0,0,0,.16);opacity:0;transform:translateY(5px);
+  transition:opacity var(--t),transform var(--t);pointer-events:auto}
+.toast.show{opacity:1;transform:none}
+.toast button{height:22px;padding:0 7px;border:1px solid var(--line2);border-radius:3px;font-size:11.5px}
+
+/* 改动对照 */
+.diff{position:fixed;right:342px;bottom:10px;width:372px;z-index:50;background:var(--panel);border:1px solid var(--line2);
+  border-radius:var(--r);box-shadow:0 8px 22px rgba(0,0,0,.14)}
+.dh{display:flex;align-items:center;gap:6px;padding:7px 9px;border-bottom:1px solid var(--line);font-size:12px;font-weight:650}
+.dh em{font-style:normal;font-family:var(--mono);font-size:9.5px;color:var(--acc);background:var(--acc-bg);border-radius:3px;padding:0 4px}
+.dh .a{margin-left:auto;display:flex;gap:3px}
+.dh .a button{height:20px;padding:0 6px;border:1px solid var(--line);border-radius:3px;font-size:10.5px;color:var(--ink2)}
+.dh .a button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.db{max-height:42vh;overflow:auto;padding:4px 6px 8px}
+.diff.closed .db{display:none}
+.di{padding:6px 5px;border-bottom:1px solid var(--line)}
+.di:last-child{border-bottom:0}
+.di b{display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:650}
+.di b i{font-style:normal;font-family:var(--mono);width:15px;height:15px;border:1px solid var(--line2);border-radius:2px;
+  font-size:9px;line-height:14px;text-align:center;color:var(--ink3);font-weight:600}
+.di b i.m{background:var(--acc);border-color:var(--acc);color:#fff}
+.di .r{display:flex;gap:5px;font-size:11px;line-height:1.55;margin-top:2px}
+.di .r span:first-child{flex:none;width:24px;color:var(--ink3);font-size:9.5px;padding-top:1px}
+.di .r .o{color:var(--ink3)}
+.di .r .w{color:var(--ink2)}
+body.hl [data-chg]{outline:2px dashed var(--acc);outline-offset:2px}
+body.annot .rail::after,body.annot .bar::after,body.annot .canvas::after,body.annot .side::after{
+  position:absolute;z-index:45;font-family:var(--mono);font-size:9px;line-height:13px;
+  background:var(--acc);color:#fff;border-radius:7px;padding:0 5px;pointer-events:none}
+body.annot .rail::after{content:"2";right:5px;top:40px}
+body.annot .bar::after{content:"1 顶栏";right:8px;bottom:-22px;opacity:.9}
+body.annot .canvas::after{content:"3 卡片 · 4 连线 · 7 四态";right:10px;top:10px}
+body.annot .side::after{content:"5";left:4px;top:6px}
+</style>
+</head>
+<body class="annot">
+
+<div class="app">
+
+  <!-- ========== 左栏 ========== -->
+  <nav class="rail" id="rail" aria-label="全局导航">
+    <div class="rstrip">
+      <button class="rbtn" id="railPin" title="钉住/取消钉住（Ctrl+B）" aria-label="钉住导航">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg>
+      </button>
+      <div class="rbtn" style="pointer-events:none"><span style="width:10px;height:10px;border:1px solid var(--acc);background:var(--acc-bg)"></span></div>
+      <div class="grow"></div>
+      <button class="rbtn" id="railBell" title="消息" aria-label="消息">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 6.6a4 4 0 1 1 8 0v2.6l1 1.6H3l1-1.6V6.6Z"/><path d="M6.4 12.6a1.6 1.6 0 0 0 3.2 0"/></svg>
+        <span class="rbadge" id="railBadge">3</span>
+      </button>
+      <button class="rbtn" id="railGear" title="设置" aria-label="设置">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2"/><path d="M8 2v1.3M8 12.7V14M2 8h1.3M12.7 8H14M3.8 3.8l.9.9M11.3 11.3l.9.9M12.2 3.8l-.9.9M4.7 11.3l-.9.9"/></svg>
+      </button>
+    </div>
+    <div class="rfull">
+      <div style="display:flex;gap:5px"><button class="btn primary" style="flex:1">＋ 新项目</button><button class="btn" id="railFold">折叠</button></div>
+      <label class="rfind">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 14 14"/></svg>
+        <input id="railFind" placeholder="搜卡片">
+      </label>
+      <div class="tree" id="tree"></div>
+      <div class="rfoot"><span id="treeCount">8 张卡</span><span class="grow"></span><span>v2·proto</span></div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <!-- ========== 顶栏 ========== -->
+    <header class="bar">
+      <div class="path" id="path"></div>
+      <div class="stats" id="stats"></div>
+      <span class="stamp" title="构建戳：数字不变＝浏览器用了旧缓存">v2</span>
+      <div class="grow"></div>
+      <button class="ico" id="themeBtn" data-chg="①" title="深浅主题（Ctrl+J）" aria-label="切换主题">
+        <svg class="ic-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 9.6A5.3 5.3 0 0 1 6.4 3 5.3 5.3 0 1 0 13 9.6Z"/></svg>
+        <svg class="ic-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="2.8"/><path d="M8 2v1.3M8 12.7V14M2 8h1.3M12.7 8H14M3.9 3.9l.9.9M11.2 11.2l.9.9M12.1 3.9l-.9.9M4.8 11.2l-.9.9"/></svg>
+      </button>
+      <div class="zoom">
+        <button class="ico" id="zoomOut" title="缩小 25%">−</button>
+        <input id="zoomRange" type="range" min="25" max="200" step="1" value="100" aria-label="缩放">
+        <button class="ico" id="zoomIn" title="放大 25%">＋</button>
+        <button class="pct" id="zoomPct" title="回到 100%">100%</button>
+      </div>
+      <button class="ico" id="fitBtn" title="整幅适配（Ctrl+0）" aria-label="适配">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
+      </button>
+      <button class="ico" id="searchBtn" title="命令面板（Ctrl+K）" aria-label="搜索">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 14 14"/></svg>
+      </button>
+      <div class="mh" id="moreHost">
+        <button class="ico" id="moreBtn" title="更多" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.4" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12.6" cy="8" r="1.2"/></svg>
+        </button>
+        <div class="menu" id="moreMenu" role="menu">
+          <button data-act="expand">全部展开</button>
+          <button data-act="fold">全部折叠</button>
+          <button data-act="tidy">整理布局</button>
+          <div class="ms"></div>
+          <button data-act="side">检视面板 <span class="k">⇧I</span></button>
+          <button data-act="comm" class="on">通信线 <span class="k">⇧C</span></button>
+          <button data-act="annot" class="on">标注层 <span class="k">⇧A</span></button>
+          <button data-act="hl">改动高亮 <span class="k">⇧H</span></button>
+          <div class="ms"></div>
+          <button data-act="toast">来一条 toast</button>
+        </div>
+      </div>
+      <button class="ico" id="actBtn" title="项目动态" aria-label="项目动态">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 9h3l2-5 2 8 2-5h3"/></svg>
+      </button>
+      <span class="sep"></span>
+      <button class="btn primary" id="newBtn">＋ 新建卡</button>
+    </header>
+
+    <!-- ========== 画布 ========== -->
+    <main class="canvas" id="canvas">
+      <div class="plane" id="plane" data-lod="full">
+        <svg class="wires" id="wires" width="2800" height="1800"></svg>
+        <svg class="wires comm" id="commWires" width="2800" height="1800"></svg>
+      </div>
+
+      <div class="dock" id="dock">
+        <div class="tog"><input type="checkbox" id="annotChk" checked><label for="annotChk">标注层</label></div>
+        <h6>交互演示</h6>
+        <div class="row" id="demoRow">
+          <button data-demo="drill">下潜</button>
+          <button data-demo="back">返回</button>
+          <button data-demo="rename">就地改名</button>
+          <button data-demo="conv">对话抽屉</button>
+          <button data-demo="multi">批量选择</button>
+          <button data-demo="danger">归档＋撤销</button>
+          <button data-demo="cmdk">命令面板</button>
+        </div>
+        <h6>取数四态</h6>
+        <div class="row" id="stateRow">
+          <button data-state="normal" class="on">正常</button>
+          <button data-state="loading">加载</button>
+          <button data-state="empty">空</button>
+          <button data-state="error">错误</button>
+          <button data-state="noperm">无权限</button>
+        </div>
+      </div>
+
+      <div class="marquee" id="marquee" hidden></div>
+      <div class="selbar" id="selbar" hidden></div>
+      <div class="veil" id="veil" hidden></div>
+      <div class="lodtag" id="lodTag">100%</div>
+    </main>
+  </div>
+
+  <!-- ========== 右面板 ========== -->
+  <aside class="side" id="side">
+    <button class="side-h" id="sideHandle" title="收起/展开（⇧I）" aria-label="收起面板">›</button>
+    <div class="side-tabs">
+      <button data-tab="spec" class="on">交互规格</button>
+      <button data-tab="rules">规则</button>
+    </div>
+    <div class="side-body" id="sideBody"></div>
+  </aside>
+</div>
+
+<!-- 对话抽屉 -->
+<div class="sheet-r" id="convSheet" aria-label="卡片对话">
+  <div class="sr-h">
+    <div class="t"><b id="convTitle">—</b><span id="convMeta">—</span></div>
+    <button class="ico" id="convClose" aria-label="关闭">×</button>
+  </div>
+  <div class="sr-b" id="convBody"></div>
+  <div class="sr-f"><input id="convInput" placeholder="回复…（Enter 发送）"><button class="btn primary" id="convSend">发送</button></div>
+</div>
+
+<!-- 动态抽屉 -->
+<div class="sheet-r" id="actSheet" aria-label="项目动态">
+  <div class="sr-h"><div class="t"><b>项目动态</b><span>按日分组，正在运行的置顶</span></div><button class="ico" id="actClose" aria-label="关闭">×</button></div>
+  <div class="sr-b" id="actBody"></div>
+</div>
+
+<!-- 消息浮层 -->
+<div class="pop" id="bellPop" aria-label="消息">
+  <div class="ph"><span>消息 <em id="bellCount">3</em></span><button class="ico" id="bellClose" aria-label="关闭">×</button></div>
+  <div class="list" id="bellList"></div>
+</div>
+
+<!-- 命令面板 -->
+<div class="cmdk" id="cmdk">
+  <div class="cmdk-box" role="dialog" aria-modal="true" aria-label="命令面板">
+    <div class="cmdk-in">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="15" height="15"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 14 14"/></svg>
+      <input id="cmdkInput" placeholder="搜卡片 / 执行命令…" autocomplete="off">
+      <kbd>esc</kbd>
+    </div>
+    <div class="cmdk-list" id="cmdkList"></div>
+  </div>
+</div>
+
+<div class="ctx" id="ctx" role="menu"></div>
+
+<div class="modal" id="newModal">
+  <div class="mbox" role="dialog" aria-modal="true" aria-label="新建卡">
+    <div class="mh2">新建卡<span>挂在当前层：<b id="newParent">—</b>（Esc 取消 / Enter 创建）</span></div>
+    <div class="mb">
+      <div><label>标题</label><input id="newTitle" placeholder="例如：功能线 3 · 检索与过滤"></div>
+      <div><label>类型</label>
+        <select id="newType">
+          <option value="sub">子项目卡 sub_project</option>
+          <option value="ide">执行卡 coder / ui</option>
+          <option value="topic">课题卡 topic</option>
+        </select>
+      </div>
+    </div>
+    <div class="mf"><button class="btn" id="newCancel">取消</button><button class="btn primary" id="newOk">创建</button></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<div class="diff closed" id="diff">
+  <div class="dh"><span>改动对照（旧画布 → 本稿）</span><em id="diffN">10</em>
+    <div class="a"><button id="hlBtn" title="高亮页面上对应位置">高亮</button><button id="diffBtn">展开</button></div>
+  </div>
+  <div class="db" id="diffBody"></div>
+</div>
+
+<script>
+
+"use strict";
+(function(){
+/* =========================================================
+   数据：示意内容，字段即「卡片在画布上要呈现的信息项」
+   ========================================================= */
+const NODES = [
+  {id:"root", parent:null, title:"推演agent · 底层重构", type:"project", state:"wait",
+   pending:3, refs:12,
+   conv:[["我","本阶段锁定画布页样张，其余功能线待排期。"],["AI","收到。画布页先出交互原型，视觉不并入本轮。"]]},
+
+  {id:"c74", parent:"root", title:"产品与交互需求 · 总负责人", type:"sub", state:"run", round:3, step:"校对 PRD 骨架",
+   conv:[["我","把验收判据再收一格。"],["AI","已改为可判定的条目，附证据指针。"]]},
+  {id:"c257", parent:"root", title:"功能线 1 · 页面架构及 UI/UE", type:"sub", state:"run", round:2, step:"画布页交互原型", refs:6,
+   conv:[["上级","原型先出交互稿，逐处对照再调。"],["我","按信息项与交互语言重做，不复用旧 UI。"]]},
+  {id:"c197", parent:"root", title:"前端对接契约 · 数据面", type:"sub", state:"done", refs:9,
+   conv:[["结论","§2–§5 已冻结，字段不再动。"]]},
+  {id:"c251", parent:"root", title:"并行开工指南 v3", type:"sub", state:"done", refs:4,
+   conv:[["结论","三席评审通过，六条准则并入总规则。"]]},
+  {id:"c230", parent:"root", title:"旧画布重做（草稿分支）", type:"sub", state:"arch", arch:"ARCH-04", archBy:"card_322",
+   conv:[["归档","已被 card_322 取代，保留取证。"]]},
+  {id:"c268", parent:"root", title:"功能线 2 · 页面业务内容", type:"sub", state:"wait",
+   conv:[["我","对齐待办 / 在等人的呈现位。"]]},
+
+  {id:"c75", parent:"c74", title:"页面清单与权限矩阵", type:"sub", state:"run", round:1, step:"核对四页的只读/可写", refs:3, conv:[["我","把四页的权限列出来。"]]},
+  {id:"c76", parent:"c74", title:"交互走查清单", type:"sub", state:"wait", refs:1, conv:[["我","按四态逐条走查。"]]},
+  {id:"c269", parent:"c268", title:"待办 / 在等人 呈现位", type:"sub", state:"run", round:1, step:"排布摘要字段", conv:[["我","先定字段，不画样式。"]]},
+  {id:"c319", parent:"c257", title:"高保真原型 · 对话页", type:"ide", state:"wait", refs:2,
+   conv:[["我","对话页排在画布页之后。"]]},
+  {id:"c322", parent:"c257", title:"高保真原型 · 画布页（首张样张）", type:"ide", state:"run",
+   conv:[["上级","给你发 UI 任务：画布页交互原型。"],["我","先定信息项与交互语言，再谈视觉。"]]}
+];
+const COMM = [["c257","c322"],["c74","c257"],["c197","c257"]];
+const STATE_WORD = {wait:"待裁定", run:"运行中", done:"已完成", blocked:"受阻", arch:"已归档"};
+const STATE_KEY = {wait:"wait", run:"run", done:"done", blocked:"block", arch:"off"};
+const TYPE_WORD = {project:"根项目", sub:"子项目卡", ide:"执行卡"};
+
+const NOTIFS = [
+  {from:"card_257", to:"card_322", kind:"指令", text:"给你发来 UI 任务：画布页交互原型。", time:"刚刚", unread:true},
+  {from:"card_074", to:"card_257", kind:"同步", text:"验收判据再收一格，别写成愿望清单。", time:"8 分钟前", unread:true},
+  {from:"card_197", to:"card_257", kind:"同步", text:"契约 §2–§5 已冻结，字段不再动。", time:"1 小时前", unread:true},
+  {from:"card_251", to:"card_257", kind:"通知", text:"评审通过，六条验收准则已并入总规则。", time:"昨天", unread:false}
+];
+
+const ACTS = [
+  {g:"正在运行 · 2", live:true, rows:[
+    ["功能线 1 · 页面架构及 UI/UE","第 2 轮 · 正在生成画布页交互原型","刚刚"],
+    ["产品与交互需求 · 总负责人","第 3 轮 · 校对 PRD 骨架","1 分钟前"]]},
+  {g:"今天", rows:[
+    ["高保真原型 · 画布页（首张样张）","我被派活：出画布页样张","09:12"],
+    ["前端对接契约 · 数据面","结论：§2–§5 冻结","08:40"],
+    ["旧画布重做（草稿分支）","已归档 · ARCH-04 已被取代","昨天"]]},
+  {g:"昨天", rows:[
+    ["并行开工指南 v3","三席评审通过，六条准则并入总规则","昨天 17:20"],
+    ["功能线 2 · 页面业务内容","对齐待办 / 在等人的呈现位","昨天 15:03"]]}
+];
+
+/* 交互规格（右面板「交互规格」页的全部内容） */
+const SPEC = [
+  {id:"topbar", name:"顶栏", no:"1", sub:"常驻 44px；只放全局级信息与全局动作，不放当前卡片级动作",
+   fields:["<b>路径</b>：项目 / 当前层，可点回上层（点击＝返回，不是新窗口）",
+           "<b>计数</b>：待裁定 / 运行中 / 已完成，点击＝按该状态过滤画布",
+           "<b>构建戳</b>：v2，数字不变说明浏览器用旧缓存——排障用，不承担信息展示",
+           "<b>缩放组</b>：−/滑条/＋/百分比，四者共用一个真值；点百分比＝回 100%"],
+   acts:["主题切换：只换令牌，不重排布局、不丢画布位置",
+         "更多：展开/折叠/整理布局、检视面板、通信线、标注层、改动高亮",
+         "新建卡：在当前层下建卡（不是项目根）"],
+   states:["缩放到底（25%/200%）时按钮置灰而非消失","命令面板打开时顶栏仍可见但不可点（遮罩压住）"]},
+
+  {id:"rail", name:"左栏导航", no:"2", sub:"44px 窄条常驻；悬停或钉住展开 256px",
+   fields:["层级树：一层缩进，每行＝状态块 + 标题 + 计数",
+           "<b>状态块</b>用形状与填充区分（实心=运行/完成，空心=待裁定，虚线=归档），不只靠颜色",
+           "消息角标：只显示未读数，读完即消失"],
+   acts:["点行＝选中该卡并把画布居中到它（不切换页面）",
+         "钉住（Ctrl+B）：展开后不随鼠标移开收起；收起不改变画布视口位置"],
+   states:["悬停展开与钉住展开视觉一致，避免两种展开态","展开时画布不重排，只覆盖在上层"]},
+
+  {id:"card", name:"画布卡片", no:"3", sub:"一张卡＝一个工作单元；承载「我是谁、什么状态、下一步能做什么」",
+   fields:["<b>类型</b>：根项目 / 子项目卡 / 执行卡（决定左侧色条与标题字号层级）",
+           "<b>状态词</b>：待裁定 / 运行中 / 已完成 / 受阻 / 已归档——文字优先，色块辅助",
+           "<b>标题</b>：最多 2 行，超出截断；就地改名时改这一项",
+           "<b>事实行</b>：轮次·当前步骤（运行中）／子卡数／被引用数（等宽数字，便于纵向扫读）",
+           "<b>归档码</b>：ARCH-xx + 被谁取代，只在归档卡出现"],
+   acts:["单击＝选中；Shift/Ctrl+单击＝加选；框选＝批量",
+         "双击标题＝就地改名（Enter 提交 / Esc 撤销 / 失焦提交）",
+         "双击卡片或 Enter＝下潜（画布切到该卡的子层，面包屑加一级）",
+         "悬停出三个动作：对话、下潜、更多（右键菜单同集）"],
+   states:["选中：描边高亮，不改尺寸","运行中：左侧色条呼吸，事实行显示轮次与步骤",
+           "归档：整卡降透明 + 标题删除线 + 归档码；不可下潜、不可对话（点了给原因）"]},
+
+  {id:"wire", name:"连线", no:"4", sub:"两种线＝两种关系，视觉必须可分，不靠图例",
+   fields:["<b>父子线</b>：实线，从父卡右缘到子卡左缘；层级靠位置与线形表达",
+           "<b>通信线</b>：虚线流动，表示两端有消息；可在「更多」里整层关闭"],
+   acts:["悬停线＝高亮两端卡片（说明这条线连的是谁）","线不承接任何点击动作（避免误触）"],
+   states:["线不在卡片上层，不遮挡卡片点击","缩放时线宽不随比例变粗（保持 1px 读感）"]},
+
+  {id:"side", name:"右侧面板", no:"5", sub:"常驻 330px，可收成 30px；只放「关于当前这张卡/这套规则」的解释性信息",
+   fields:["交互规格页：本稿每个区域的信息项、动作、状态（就是你在读的这份）",
+           "规则页：项目总规则 + 本类卡行为准则（只读）"],
+   acts:["收起/展开（⇧I）：画布宽度随之变化，不遮挡画布内容"],
+   states:["未选中任何卡时给全局规格；选中单卡后追加「这张卡」的字段表"]},
+
+  {id:"ov", name:"覆盖层族", no:"6", sub:"按「打断强度」分三级，同级只允许一个",
+   fields:["L1 浮层（不抢焦点）：消息浮层、更多菜单、右键菜单",
+           "L2 抽屉（占位但可继续看画布）：对话抽屉、动态抽屉",
+           "L3 模态（锁住其余操作）：命令面板、新建卡、确认归档"],
+   acts:["Esc 逐级关闭：模态 → 抽屉 → 浮层 → 取消选中 → 返回上层",
+         "点遮罩＝关闭（模态与命令面板）；点浮层外＝关闭"],
+   states:["同级不叠加：打开动态抽屉会自动关掉对话抽屉","模态打开时背景可滚但不响应点击"]},
+
+  {id:"state", name:"取数四态", no:"7", sub:"「还没取到」与「真的没有」必须在视觉与文案上分开",
+   fields:["加载：骨架条 + 明确「正在取哪一层」，不显示 0 也不显示空态文案",
+           "空：确知没有 → 说清为什么空 + 给下一步动作",
+           "错误：说清哪一步失败 + 就地重试 + 错误码",
+           "无权限：说清缺什么权限 + 原因码 + 申请入口（不是「操作失败」）"],
+   acts:["错误：重试＝原地重取，不清空画布","无权限：申请＝发一条消息给卡主（示意）"],
+   states:["四态互斥；加载中不出现「空空如也」这类否定文案"]},
+
+  {id:"lod", name:"LOD 与缩放", no:"8", sub:"缩放只减信息，不改结构",
+   fields:["≥80%：全量（类型/状态/标题/事实行）","55–80%：去掉事实行","&lt;55%：再去掉状态词，只留类型条 + 标题"],
+   acts:["缩放四入口同源：按钮 / 滑条 / 百分比 / 快捷键；框选与下潜在任意缩放档可用"],
+   states:["节点宽度不随缩放档次变化（宽度本身表达层级）"]},
+
+  {id:"kbd", name:"键盘", no:"9", sub:"不依赖鼠标也能完成主流程",
+   fields:["<code>Ctrl+K</code> 命令面板 · <code>Ctrl+0</code> 适配 · <code>Ctrl+J</code> 主题",
+           "<code>↑↓←→</code> 在卡片间移动焦点 · <code>Enter</code> 下潜 · <code>Esc</code> 逐级返回",
+           "<code>Shift+Click</code> 加选 · <code>Ctrl+B</code> 钉住左栏",
+           "<code>N</code> 新建卡 · <code>Del</code> 归档选中（需确认，可撤销）"],
+   acts:["焦点始终可见（2px 描边），焦点≠选中：焦点是键盘位置，选中是操作对象"],
+   states:["输入框内不触发单键快捷键"]}
+];
+
+/* 改动对照：旧画布 → 本稿（只谈信息与交互，不谈美观） */
+const DIFF = [
+  {n:"①", t:"顶栏补主题切换", o:"旧画布页没有主题切换，只有对话页有", nw:"顶栏新增主题按钮，两页共用同一套令牌", w:"深浅是全局能力，不该按页面割裂", mark:true},
+  {n:"②", t:"悬停浮层与 dock 二选一", o:"旧画布同时有悬停浮层与 dock 浮窗，能力重叠", nw:"只保留「点开对话抽屉」一条路径，悬停不弹交互层", w:"同一件事两个入口＝两套维护与两种行为", mark:true},
+  {n:"③", t:"四态统一口径", o:"旧画布没有区分加载/空/错误/无权限", nw:"四态各有文案、动作与错误码，互不兜底", w:"「还没取到」与「真的没有」混淆会让信号失效", mark:true},
+  {n:"④", t:"状态词取代色点", o:"旧画布靠小圆点颜色表示状态", nw:"状态写成词（待裁定/运行中/已完成/受阻/已归档），色只做辅助", w:"颜色不可枚举、不可搜索、色弱不可读"},
+  {n:"⑤", t:"卡片信息项分层", o:"旧卡一行里混放类型、标题、徽标、摘要、消息", nw:"四段固定：类型行 / 标题 / 事实行 / 动作；每段只回答一个问题", w:"信息不分区，扫读只能靠运气"},
+  {n:"⑥", t:"层级导航", o:"旧画布平铺所有层级，只能靠缩放找", nw:"双击下潜、Esc 返回、面包屑给位置", w:"画布越大，平铺越不可用"},
+  {n:"⑦", t:"就地改名", o:"旧卡只能在对话里改标题", nw:"双击标题就地编辑，Enter 提交、Esc 撤销", w:"改名是最轻的动作，不该走重流程"},
+  {n:"⑧", t:"危险动作有退路", o:"旧画布归档无确认、无撤销", nw:"归档可撤销 toast，支持多点批量", w:"不可逆动作必须给退路"},
+  {n:"⑨", t:"批量操作", o:"旧画布只能单卡操作", nw:"框选/加选出多选条：打开对话、归档、清空", w:"真实工作是成批的"},
+  {n:"⑩", t:"标注层", o:"旧画布没有规格标注", nw:"每个信息项挂编号牌，右面板给出释义与边界", w:"交互原型要能被评审，不只是被看"}
+];
+
+/* =========================================================
+   状态
+   ========================================================= */
+const S = {
+  zoom:1, pan:{x:60,y:60}, focus:"root", sel:new Set(), annot:true, comm:true,
+  sideOpen:true, sideTab:"spec", demo:"normal", editing:null
+};
+const $ = s=>document.querySelector(s);
+const $$ = s=>[...document.querySelectorAll(s)];
+const NS = "http://www.w3.org/2000/svg";
+const node = id=>NODES.find(n=>n.id===id);
+const kidsOf = id=>NODES.filter(n=>n.parent===id);
+
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+/* =========================================================
+   渲染：画布
+   ========================================================= */
+const plane=$("#plane"), wires=$("#wires"), commWires=$("#commWires"), canvas=$("#canvas");
+
+function sheetHTML(n){
+  const w = STATE_WORD[n.state]||"—";
+  const facts=[];
+  if(n.state==="run") facts.push("<span>第 <b>"+(n.round||1)+"</b> 轮 · "+esc(n.step||"")+"</span>");
+  const nk = kidsOf(n.id).length;
+  if(nk) facts.push("<span>子卡 <b>"+nk+"</b></span>");
+  if(n.refs) facts.push("<span>引用 <b>"+n.refs+"</b></span>");
+  if(n.pending) facts.push("<span>待裁定 <b>"+n.pending+"</b></span>");
+  return '<div class="srow1">'
+    + '<span class="tt">'+TYPE_WORD[n.type]+'<span class="anno">类型</span></span>'
+    + '<span class="st" data-s="'+(STATE_KEY[n.state]||"off")+'">'+w+'<span class="anno">状态</span></span></div>'
+    + '<h3 class="ttl" data-edit="'+n.id+'">'+esc(n.title)+'<span class="anno">标题</span></h3>'
+    + (facts.length? '<div class="facts">'+facts.join("")+'<span class="anno">事实行</span></div>' : "")
+    + (n.arch? '<div class="archcode">'+esc(n.arch)+' · 已归档'+(n.archBy?' · 由 '+esc(n.archBy)+' 取代':'')+'<span class="anno">归档码</span></div>' : "")
+    + '<div class="acts">'
+    + '<button data-act="conv" title="打开对话（抽屉）">对话</button>'
+    + '<button data-act="drill" title="下潜到这一层">下潜</button>'
+    + '<button data-act="more" title="更多">⋯</button></div>';
+}
+
+function render(){
+  [...plane.querySelectorAll(".sheet")].forEach(e=>e.remove());
+  const f = node(S.focus) || node("root");
+  const kids = kidsOf(f.id);
+  const X1=40, X2=560, GAP=26;
+
+  const fEl = mkSheet(f, true); plane.appendChild(fEl);
+  const kEls = kids.map(k=>{ const e=mkSheet(k); plane.appendChild(e); return e; });
+
+  const hF = fEl.offsetHeight, hK = kEls.map(e=>e.offsetHeight);
+  const totalK = hK.reduce((a,b)=>a+b,0) + GAP*Math.max(0,kEls.length-1);
+  let acc = 0;
+  kEls.forEach((e,i)=>{ e.style.left=X2+"px"; e.style.top=acc+"px"; acc += hK[i]+GAP; });
+  fEl.style.left=X1+"px"; fEl.style.top=Math.max(0,(totalK-hF)/2)+"px";
+
+  drawWires(fEl, kEls);
+  applyTransform();
+  renderTree(); renderPath(); renderStats(); renderSide();
+}
+
+function mkSheet(n, isFocus){
+  const el=document.createElement("div");
+  el.className="sheet"+(isFocus?" is-focus":"");
+  el.dataset.id=n.id;
+  el.dataset.type=n.type;
+  el.dataset.state=n.state;
+  el.dataset.arch=n.arch?"1":"0";
+  if(S.sel.has(n.id)) el.classList.add("is-sel");
+  el.tabIndex=0;
+  el.innerHTML=sheetHTML(n);
+  el.addEventListener("pointerdown", e=>{ if(e.button===0 && !e.target.closest("button")) select(n.id, e.shiftKey||e.ctrlKey||e.metaKey); });
+  el.addEventListener("dblclick", e=>{ if(e.target.closest(".ttl")) return; drill(n.id); });
+  el.querySelector(".ttl").addEventListener("dblclick", e=>{ e.stopPropagation(); startRename(n.id); });
+  el.querySelectorAll(".acts button").forEach(b=>{
+    b.addEventListener("click", e=>{
+      e.stopPropagation();
+      const a=b.dataset.act;
+      if(a==="conv") openConv(n.id);
+      if(a==="drill") drill(n.id);
+      if(a==="more") openCtx(e.clientX, e.clientY, n);
+    });
+  });
+  el.addEventListener("contextmenu", e=>{ e.preventDefault(); e.stopPropagation(); openCtx(e.clientX,e.clientY,n); });
+  el.addEventListener("keydown", e=>{ if(e["key"]==="Enter" && document.activeElement===el){ e.preventDefault(); drill(n.id); } });
+  return el;
+}
+
+function drawWires(fEl, kEls){
+  wires.innerHTML=""; commWires.innerHTML="";
+  const fr = {x:parseFloat(fEl.style.left), y:parseFloat(fEl.style.top), w:fEl.offsetWidth, h:fEl.offsetHeight};
+  kEls.forEach(e=>{
+    const k={x:parseFloat(e.style.left), y:parseFloat(e.style.top), w:e.offsetWidth, h:e.offsetHeight};
+    const sx=fr.x+fr.w, sy=fr.y+fr.h/2, tx=k.x, ty=k.y+k.h/2, dx=Math.max(40,(tx-sx)/2);
+    const pa=document.createElementNS(NS,"path");
+    pa.setAttribute("d","M "+sx+" "+sy+" C "+(sx+dx)+" "+sy+", "+(tx-dx)+" "+ty+", "+tx+" "+ty);
+    wires.appendChild(pa);
+  });
+  const vis = new Set([S.focus, ...kidsOf(S.focus).map(k=>k.id)]);
+  COMM.forEach(([a,b])=>{
+    if(!vis.has(a)||!vis.has(b)) return;
+    const ea=plane.querySelector('.sheet[data-id="'+a+'"]'), eb=plane.querySelector('.sheet[data-id="'+b+'"]');
+    if(!ea||!eb) return;
+    const A={x:parseFloat(ea.style.left),y:parseFloat(ea.style.top),w:ea.offsetWidth,h:ea.offsetHeight};
+    const B={x:parseFloat(eb.style.left),y:parseFloat(eb.style.top),w:eb.offsetWidth,h:eb.offsetHeight};
+    const sy=A.y+A.h/2, ty=B.y+B.h/2, sx=A.x+A.w, tx=B.x, mid=(sx+tx)/2;
+    const p=document.createElementNS(NS,"path");
+    p.setAttribute("d","M "+sx+" "+sy+" C "+mid+" "+(sy-26)+", "+mid+" "+(ty-26)+", "+tx+" "+ty);
+    commWires.appendChild(p);
+  });
+  commWires.style.display = S.comm ? "" : "none";
+}
+
+/* =========================================================
+   变换 / 缩放 / 适配 / LOD
+   ========================================================= */
+function applyTransform(){
+  plane.style.transform="translate("+S.pan.x+"px,"+S.pan.y+"px) scale("+S.zoom+")";
+  const pct=Math.round(S.zoom*100);
+  $("#zoomPct").textContent=pct+"%";
+  const r=$("#zoomRange"); if(r) r.value=Math.min(200,Math.max(25,pct));
+  $("#lodTag").textContent="LOD "+lodName()+" · "+pct+"%";
+  plane.dataset.lod = lodName();
+  $("#zoomOut").disabled = S.zoom<=0.25;
+  $("#zoomIn").disabled = S.zoom>=2;
+}
+function lodName(){ return S.zoom<0.55 ? "far" : S.zoom<0.8 ? "near" : "full"; }
+
+function setZoom(z, anchor){
+  z=Math.max(0.25,Math.min(2,z));
+  const r=canvas.getBoundingClientRect();
+  const cx=anchor?anchor.x:r.width/2, cy=anchor?anchor.y:r.height/2;
+  const wx=(cx-S.pan.x)/S.zoom, wy=(cy-S.pan.y)/S.zoom;
+  S.zoom=z; S.pan.x=cx-wx*z; S.pan.y=cy-wy*z;
+  applyTransform();
+}
+function bbox(){
+  const els=[...plane.querySelectorAll(".sheet")];
+  if(!els.length) return {x:0,y:0,w:100,h:100};
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  els.forEach(e=>{
+    const x=parseFloat(e.style.left),y=parseFloat(e.style.top);
+    x0=Math.min(x0,x); y0=Math.min(y0,y); x1=Math.max(x1,x+e.offsetWidth); y1=Math.max(y1,y+e.offsetHeight);
+  });
+  return {x:x0,y:y0,w:x1-x0,h:y1-y0};
+}
+function fit(){
+  const b=bbox(), r=canvas.getBoundingClientRect(), pad=58;
+  const z=Math.max(0.25,Math.min(1.2,Math.min((r.width-pad*2)/b.w,(r.height-pad*2)/b.h)));
+  S.zoom=z;
+  S.pan.x=(r.width-b.w*z)/2-b.x*z;
+  S.pan.y=(r.height-b.h*z)/2-b.y*z;
+  applyTransform();
+}
+
+/* =========================================================
+   选择 / 多选 / 下潜 / 改名
+   ========================================================= */
+function select(id, add){
+  if(!add) S.sel.clear();
+  if(S.sel.has(id) && add) S.sel.delete(id); else S.sel.add(id);
+  $$(".sheet").forEach(e=> e.classList.toggle("is-sel", S.sel.has(e.dataset.id)));
+  renderSelbar(); renderSide();
+}
+function clearSel(){
+  S.sel.clear(); $$(".sheet").forEach(e=>e.classList.remove("is-sel")); renderSelbar(); renderSide();
+}
+function renderSelbar(){
+  const bar=$("#selbar");
+  if(S.sel.size===0){ bar.hidden=true; return; }
+  bar.hidden=false;
+  bar.innerHTML='<b>已选 '+S.sel.size+' 张</b>'
+    + '<button class="btn" data-mb="conv">打开对话</button>'
+    + '<button class="btn" data-mb="arch">归档</button>'
+    + '<button class="btn" data-mb="clear">清空</button>';
+  bar.querySelectorAll("[data-mb]").forEach(b=>b.addEventListener("click",()=>{
+    const a=b.dataset.mb;
+    if(a==="clear") clearSel();
+    if(a==="conv") openConv([...S.sel][0]);
+    if(a==="arch") archiveSelected();
+  }));
+}
+function drill(id){
+  const n=node(id); if(!n) return;
+  if(n.arch){ toast("该卡已归档（"+n.arch+"），不能下潜"); return; }
+  if(!kidsOf(id).length){ toast("「"+n.title+"」没有子卡，已是最底层"); return; }
+  S.focus=id; S.sel.clear(); render(); fit();
+  toast("已下潜到「"+n.title+"」");
+}
+function back(){
+  const f=node(S.focus);
+  if(!f || f.parent===null){ toast("已在项目根层"); return; }
+  S.focus=f.parent; S.sel.clear(); render(); fit();
+}
+function startRename(id){
+  const el=plane.querySelector('.sheet[data-id="'+id+'"]'); if(!el) return;
+  const n=node(id); const h=el.querySelector(".ttl");
+  const old=n.title;
+  h.contentEditable="true"; h.focus();
+  try{ document.execCommand("selectAll",false,null); }catch(err){}
+  let done=false;
+  h.addEventListener("keydown", ev=>{
+    if(ev["key"]==="Enter"){ ev.preventDefault(); commit(); }
+    if(ev["key"]==="Escape"){ ev.preventDefault(); h.textContent=old; cancel(); }
+  });
+  h.addEventListener("blur", commit);
+  function commit(){
+    if(done) return; done=true;
+    const t=h.textContent.trim();
+    h.contentEditable="false";
+    if(!t || t===old){ render(); return; }
+    n.title=t; render();
+    toast("已改名："+t, "撤销", ()=>{ n.title=old; render(); });
+  }
+  function cancel(){ done=true; h.contentEditable="false"; render(); }
+}
+
+/* =========================================================
+   覆盖层
+   ========================================================= */
+let convId=null;
+function openConv(id){
+  const n=node(id); if(!n) return;
+  if(n.arch){ toast("该卡已归档（"+n.arch+"），只能从归档入口查看"); return; }
+  $("#actSheet").classList.remove("open");
+  convId=id;
+  $("#convTitle").textContent=n.title;
+  $("#convMeta").textContent=TYPE_WORD[n.type]+" · "+(STATE_WORD[n.state]||"")+(n.round?" · 第 "+n.round+" 轮":"")+" · "+n.id;
+  const body=$("#convBody"); body.innerHTML="";
+  (n.conv||[]).forEach(([who,text])=>{
+    const d=document.createElement("div"); d.className="msg"+(who==="我"?" me":"");
+    d.innerHTML='<div class="who">'+esc(who)+'</div><div class="b">'+esc(text)+'</div>';
+    body.appendChild(d);
+  });
+  $("#convSheet").classList.add("open");
+  setTimeout(()=>$("#convInput").focus(),60);
+}
+function sendConv(){
+  const v=$("#convInput").value.trim(); if(!v||!convId) return;
+  const n=node(convId); n.conv=n.conv||[]; n.conv.push(["我",v]);
+  $("#convInput").value=""; openConv(convId);
+  toast("已发送（示意，不落库）");
+}
+function openAct(){
+  $("#convSheet").classList.remove("open");
+  const b=$("#actBody"); b.innerHTML="";
+  ACTS.forEach(g=>{
+    const d=document.createElement("div"); d.className="day"; d.textContent=g.g; b.appendChild(d);
+    g.rows.forEach(([name,line,time])=>{
+      const r=document.createElement("div"); r.className="msg";
+      r.innerHTML='<div class="who">'+(g.live?"运行":"记录")+'</div><div class="b"><b>'+esc(name)+'</b><br>'+esc(line)
+        +'<div style="font-size:10px;color:var(--ink3);margin-top:1px">'+esc(time)+'</div></div>';
+      b.appendChild(r);
+    });
+  });
+  $("#actSheet").classList.add("open");
+}
+function renderBell(){
+  const b=$("#bellList"); b.innerHTML="";
+  NOTIFS.forEach(m=>{
+    const d=document.createElement("div");
+    d.className="nrow"+(m.unread?" unread":"");
+    d.innerHTML='<i></i><div><b>'+esc(m.from)+'</b> → '+esc(m.to)+' · '+esc(m.kind)+'：'+esc(m.text)
+      +'<time>'+esc(m.time)+'</time></div>';
+    d.addEventListener("click",()=>{ m.unread=false; renderBell(); });
+    b.appendChild(d);
+  });
+  const un=NOTIFS.filter(m=>m.unread).length;
+  $("#bellCount").textContent=un;
+  $("#railBadge").textContent=un;
+  $("#railBadge").style.display=un?"":"none";
+}
+
+const CMDS=[
+  {t:"新建卡",ty:"命令",k:"N",run:()=>openNew()},
+  {t:"整幅适配",ty:"命令",k:"Ctrl+0",run:()=>fit()},
+  {t:"回到上一层",ty:"命令",k:"Esc",run:()=>back()},
+  {t:"切换主题",ty:"命令",k:"Ctrl+J",run:()=>toggleTheme()},
+  {t:"切换标注层",ty:"命令",k:"Shift+A",run:()=>toggleAnnot()},
+  {t:"切换通信线",ty:"命令",k:"Shift+C",run:()=>toggleComm()}
+];
+let cmIdx=0, cmItems=[];
+function openCmdk(){
+  $("#cmdk").classList.add("open");
+  $("#cmdkInput").value=""; cmIdx=0; renderCmdk();
+  setTimeout(()=>$("#cmdkInput").focus(),40);
+}
+function closeCmdk(){ $("#cmdk").classList.remove("open"); }
+function renderCmdk(){
+  const q=$("#cmdkInput").value.trim().toLowerCase();
+  const cards=NODES.map(n=>({t:n.title,ty:"卡片",k:n.id,run:()=>{ select(n.id,false); closeCmdk();
+    const el=plane.querySelector('.sheet[data-id="'+n.id+'"]'); if(el) el.focus(); }}));
+  cmItems=[...CMDS,...cards].filter(i=> !q || i.t.toLowerCase().includes(q) || i.ty.includes(q));
+  const list=$("#cmdkList"); list.innerHTML="";
+  if(!cmItems.length){ list.innerHTML='<div class="cm-none">没有匹配项</div>'; return; }
+  cmItems.forEach((it,i)=>{
+    const d=document.createElement("div"); d.className="cm"+(i===cmIdx?" on":"");
+    d.innerHTML='<span class="ty">'+it.ty+'</span><span>'+esc(it.t)+'</span><span class="kk">'+esc(it.k||"")+'</span>';
+    d.addEventListener("click",()=>it.run());
+    list.appendChild(d);
+  });
+}
+
+function openCtx(x,y,n){
+  const ctx=$("#ctx");
+  const items = n ? [
+    ["打开对话","Enter",()=>openConv(n.id)],
+    ["下潜到这一层","↓",()=>drill(n.id)],
+    ["就地改名","F2",()=>startRename(n.id)],
+    ["sep"],
+    ["归档（可撤销）","Del",()=>archiveOne(n.id),true]
+  ] : [
+    ["新建卡","N",()=>openNew()],
+    ["整幅适配","Ctrl+0",()=>fit()],
+    ["整理布局","Shift+L",()=>{render();fit();toast("已整理布局");}],
+    ["sep"],
+    ["返回上层","Esc",()=>back()]
+  ];
+  ctx.innerHTML="";
+  items.forEach(it=>{
+    if(it[0]==="sep"){ const d=document.createElement("div"); d.className="ms"; ctx.appendChild(d); return; }
+    const b=document.createElement("button");
+    if(it[3]) b.className="bad";
+    b.innerHTML="<span>"+esc(it[0])+"</span><span class='k'>"+esc(it[1])+"</span>";
+    b.addEventListener("click",()=>{ ctx.classList.remove("open"); it[2](); });
+    ctx.appendChild(b);
+  });
+  ctx.style.left=Math.min(x, innerWidth-190)+"px";
+  ctx.style.top=Math.min(y, innerHeight-160)+"px";
+  ctx.classList.add("open");
+}
+
+function archiveOne(id){
+  const n=node(id); if(!n) return;
+  const prev=n.state, prevArch=n.arch;
+  n.state="arch"; n.arch=n.arch||"ARCH-04";
+  render();
+  toast("已归档「"+n.title+"」","撤销",()=>{ n.state=prev; n.arch=prevArch; render(); });
+}
+function archiveSelected(){
+  if(!S.sel.size){ toast("先选中卡片"); return; }
+  const ids=[...S.sel];
+  const snap=ids.map(id=>({id,state:node(id).state,arch:node(id).arch}));
+  ids.forEach(id=>{ const n=node(id); n.state="arch"; n.arch=n.arch||"ARCH-04"; });
+  clearSel(); render();
+  toast("已归档 "+ids.length+" 张卡","撤销",()=>{ snap.forEach(o=>{const n=node(o.id); n.state=o.state; n.arch=o.arch;}); render(); });
+}
+
+let newOpenedAt=0;
+function openNew(){
+  newOpenedAt=Date.now();
+  $("#newParent").textContent=(node(S.focus)||node("root")).title;
+  $("#newModal").classList.add("open");
+  $("#newTitle").value="";
+  setTimeout(()=>$("#newTitle").focus(),40);
+}
+function closeNew(){ $("#newModal").classList.remove("open"); }
+function createCard(){
+  const t=$("#newTitle").value.trim(); if(!t){ $("#newTitle").focus(); return; }
+  const id="new_"+Date.now();
+  NODES.push({id, parent:S.focus, title:t, type:$("#newType").value, state:"wait", conv:[]});
+  closeNew(); render(); fit();
+  toast("已创建「"+t+"」","撤销",()=>{ const i=NODES.findIndex(n=>n.id===id); if(i>=0) NODES.splice(i,1); render(); });
+}
+
+function toast(msg, actionText, action){
+  const host=$("#toasts");
+  const el=document.createElement("div"); el.className="toast";
+  el.innerHTML="<span>"+esc(msg)+"</span>";
+  if(actionText){
+    const b=document.createElement("button"); b.textContent=actionText;
+    b.addEventListener("click",()=>{ if(action) action(); el.remove(); });
+    el.appendChild(b);
+  }
+  host.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add("show"));
+  setTimeout(()=>{ el.classList.remove("show"); setTimeout(()=>el.remove(),200); }, actionText?6000:2400);
+}
+
+/* =========================================================
+   四态
+   ========================================================= */
+function setDemo(kind, btn){
+  S.demo=kind;
+  $$("#stateRow button").forEach(b=>b.classList.toggle("on", b===btn || b.dataset.state===kind));
+  const veil=$("#veil");
+  if(kind==="normal"){ veil.hidden=true; return; }
+  veil.hidden=false;
+  const map={
+    loading:{t:"正在取数", ic:"…", p:"正在加载「"+((node(S.focus)||{}).title||"")+"」这一层（只取本层，不预取子层）。",
+      body:'<div class="skel"><i></i><i></i><i></i></div>', act:"", code:"GET /api/cards?parent="+S.focus+" · pending"},
+    empty:{t:"这一层还没有卡", ic:"0", p:"该层确实为 0 张（不是没取到）。可以新建一张，或从上层拖入。",
+      body:"", act:'<button class="btn primary" data-v="new">新建第一张卡</button>', code:"200 · items=[] · total=0"},
+    error:{t:"这一层没取到", ic:"!", p:"请求失败，画布内容未更新；已保留上一次成功的视口位置。",
+      body:"", act:'<button class="btn primary" data-v="retry">重试</button><button class="btn" data-v="diag">看诊断</button>', code:"502 BAD_GATEWAY · retry 1/3"},
+    noperm:{t:"没有权限看这一层", ic:"锁", p:"你的账号对该项目是只读；读取子卡需要 read 权限。",
+      body:"", act:'<button class="btn primary" data-v="ask">向卡主申请</button><button class="btn" data-v="why">为什么</button>', code:"E403 · missing scope: card.read"}
+  };
+  const m=map[kind];
+  veil.innerHTML='<div class="card-state" role="status">'
+    + '<div class="h"><span class="ic">'+m.ic+'</span>'+m.t+'</div>'
+    + '<p>'+esc(m.p)+'</p>'+m.body
+    + '<div class="row">'+m.act+'</div>'
+    + '<div class="code">'+esc(m.code)+'</div></div>';
+  veil.querySelectorAll("[data-v]").forEach(b=>b.addEventListener("click",()=>{
+    const v=b.dataset.v;
+    if(v==="retry"){ toast("重试中…（示意）"); setDemo("normal"); }
+    if(v==="diag") toast("诊断：网关 502，上游 3s 超时（示意）");
+    if(v==="ask") toast("已向卡主发申请（示意）");
+    if(v==="why") toast("原因：项目级只读角色");
+    if(v==="new"){ setDemo("normal"); openNew(); }
+  }));
+}
+
+/* =========================================================
+   主题 / 标注 / 通信线 / 面板
+   ========================================================= */
+function toggleTheme(){
+  const cur=document.documentElement.dataset.theme;
+  const next=cur==="light"?"dark":"light";
+  document.documentElement.dataset.theme=next;
+  $("#themeBtn").classList.toggle("on", next==="dark");
+  toast("已切到"+(next==="dark"?"深色":"浅色"));
+}
+function toggleAnnot(){
+  S.annot=!S.annot;
+  document.body.classList.toggle("annot", S.annot);
+  $("#annotChk").checked=S.annot;
+  $$("#moreMenu [data-act=annot]").forEach(b=>b.classList.toggle("on",S.annot));
+}
+function toggleComm(){
+  S.comm=!S.comm;
+  commWires.style.display=S.comm?"":"none";
+  $$("#moreMenu [data-act=comm]").forEach(b=>b.classList.toggle("on",S.comm));
+  toast(S.comm?"通信线已显示":"通信线已隐藏");
+}
+
+/* =========================================================
+   右面板
+   ========================================================= */
+function renderSide(){
+  const body=$("#sideBody");
+  if(S.sideTab==="rules"){
+    body.innerHTML='<h4>项目规则</h4><div class="sub">总规则 + 本类卡行为准则（只读）</div>'
+      +'<div class="blk"><div class="t">总规则 all</div><ul>'
+      +'<li>根卡只管范围、验收与裁定收口</li><li>各域在已批准范围内自主拆解推进</li>'
+      +'<li>同一事实只由一处维护，其他位置留指针</li></ul></div>'
+      +'<div class="blk"><div class="t">本类卡 sub_project</div><ul>'
+      +'<li>产出＝交付物 + 可复核的验收证据</li><li>阶段完成汇报一次，过程不回执</li></ul></div>'
+      +'<div class="blk"><div class="t">状态口径</div><ul>'
+      +'<li>加载＝骨架；空＝已确知无数据</li><li>错误＝就地重试；无权限＝原因码</li></ul></div>';
+    return;
+  }
+  let html='<h4>交互规格<em>本稿</em></h4><div class="sub">与页面上的编号锚点一一对应；关掉标注层后这张表仍然完整。</div>';
+  if(S.sel.size===1){
+    const n=node([...S.sel][0]);
+    if(n){
+      html+='<div class="blk"><h4>选中的卡<em>'+n.id+'</em></h4>'
+        + '<table class="tbl"><tr><th>字段</th><th>值</th></tr>'
+        + '<tr><td>类型</td><td class="mono">'+TYPE_WORD[n.type]+'</td></tr>'
+        + '<tr><td>状态</td><td><b>'+STATE_WORD[n.state]+'</b></td></tr>'
+        + '<tr><td>父卡</td><td class="mono">'+(n.parent||"—")+'</td></tr>'
+        + '<tr><td>子卡</td><td class="mono">'+kidsOf(n.id).length+'</td></tr>'
+        + '<tr><td>引用</td><td class="mono">'+(n.refs||0)+'</td></tr>'
+        + (n.round?'<tr><td>轮次</td><td class="mono">第 '+n.round+' 轮 · '+esc(n.step||"")+'</td></tr>':"")
+        + (n.arch?'<tr><td>归档码</td><td class="mono">'+n.arch+'</td></tr>':"")
+        + '</table></div>';
+    }
+  }
+  SPEC.forEach(sp=>{
+    html+='<div class="blk">'
+      + '<h4><span style="font-family:var(--mono);font-size:10px;border:1px solid var(--line2);border-radius:2px;padding:0 3px;color:var(--ink3)">'+sp.no+'</span>'+esc(sp.name)+'</h4>'
+      + '<div class="sub">'+esc(sp.sub)+'</div>'
+      + '<div class="t">信息项</div><ul>'+sp.fields.map(f=>'<li>'+f+'</li>').join("")+'</ul>'
+      + '<div class="t">动作</div><ul>'+sp.acts.map(f=>'<li>'+f+'</li>').join("")+'</ul>'
+      + '<div class="t">状态与边界</div><ul>'+sp.states.map(f=>'<li>'+f+'</li>').join("")+'</ul>'
+      + '</div>';
+  });
+  body.innerHTML=html;
+}
+
+function renderTree(){
+  const t=$("#tree"); t.innerHTML="";
+  const walk=(id,depth)=>{
+    NODES.filter(n=>n.parent===id).forEach(n=>{
+      const d=document.createElement("div");
+      d.className="trow"+(n.id===S.focus?" on":"");
+      d.style.paddingLeft=(6+depth*12)+"px";
+      const cls=n.state==="run"?"run":n.state==="done"?"done":n.state==="wait"?"wait":"off";
+      const kn=kidsOf(n.id).length;
+      d.innerHTML='<i class="'+cls+'"></i><span>'+esc(n.title)+'</span>'+(kn?'<em>'+kn+'</em>':"");
+      d.addEventListener("click",()=>{ S.focus=n.parent||"root"; render(); fit(); select(n.id,false); });
+      t.appendChild(d);
+      walk(n.id, depth+1);
+    });
+  };
+  walk(null,0);
+  $("#treeCount").textContent=NODES.length+" 张卡";
+}
+function renderPath(){
+  const p=$("#path"); p.innerHTML="";
+  const chain=[]; let cur=node(S.focus);
+  while(cur){ chain.unshift(cur); cur=cur.parent?node(cur.parent):null; }
+  chain.forEach((n,i)=>{
+    const b=document.createElement("button");
+    b.textContent=n.title; b.title=n.title;
+    if(i===chain.length-1) b.className="cur";
+    b.addEventListener("click",()=>{ S.focus=n.id; S.sel.clear(); render(); fit(); });
+    p.appendChild(b);
+    if(i<chain.length-1){ const s=document.createElement("span"); s.className="sl"; s.textContent="/"; p.appendChild(s); }
+  });
+}
+function renderStats(){
+  const kids=kidsOf(S.focus);
+  const wait=kids.filter(n=>n.state==="wait").length;
+  const run=kids.filter(n=>n.state==="run").length;
+  const done=kids.filter(n=>n.state==="done").length;
+  $("#stats").innerHTML='<span class="w"><b>'+wait+'</b>待裁定</span><span class="r"><b>'+run+'</b>运行中</span><span><b>'+done+'</b>已完成</span>';
+}
+function renderDiff(){
+  $("#diffN").textContent=DIFF.length;
+  $("#diffBody").innerHTML=DIFF.map(d=>
+    '<div class="di"><b><i class="'+(d.mark?"m":"")+'">'+d.n+'</i>'+esc(d.t)+'</b>'
+    +'<div class="r"><span>旧</span><span class="o">'+esc(d.o)+'</span></div>'
+    +'<div class="r"><span>本稿</span><span>'+esc(d.nw)+'</span></div>'
+    +'<div class="r"><span>为什么</span><span class="w">'+esc(d.w)+'</span></div></div>').join("");
+}
+
+/* =========================================================
+   指针：框选 / 平移 / 缩放
+   ========================================================= */
+let drag=null;
+canvas.addEventListener("pointerdown", e=>{
+  if(e.target.closest(".sheet")) return;
+  if(e.target.closest(".dock,.selbar,.veil,.lodtag")) return;
+  const r=canvas.getBoundingClientRect();
+  if(e.button===1 || e.altKey){
+    drag={mode:"pan", sx:e.clientX, sy:e.clientY, px:S.pan.x, py:S.pan.y};
+    canvas.setPointerCapture(e.pointerId); return;
+  }
+  if(e.button===0){
+    drag={mode:"marquee", sx:e.clientX-r.left, sy:e.clientY-r.top, rect:null};
+    canvas.setPointerCapture(e.pointerId);
+    if(!(e.shiftKey||e.ctrlKey||e.metaKey)) clearSel();
+  }
+});
+canvas.addEventListener("pointermove", e=>{
+  if(!drag) return;
+  if(drag.mode==="pan"){
+    S.pan.x=drag.px+(e.clientX-drag.sx); S.pan.y=drag.py+(e.clientY-drag.sy); applyTransform();
+  } else {
+    const r=canvas.getBoundingClientRect();
+    const x=e.clientX-r.left, y=e.clientY-r.top;
+    const left=Math.min(x,drag.sx), top=Math.min(y,drag.sy);
+    const w=Math.abs(x-drag.sx), h=Math.abs(y-drag.sy);
+    const m=$("#marquee"); m.hidden=false;
+    m.style.left=left+"px"; m.style.top=top+"px"; m.style.width=w+"px"; m.style.height=h+"px";
+    drag.rect={left,top,w,h};
+  }
+});
+canvas.addEventListener("pointerup", ()=>{
+  if(!drag) return;
+  if(drag.mode==="marquee" && drag.rect && drag.rect.w>6 && drag.rect.h>6){
+    const r=canvas.getBoundingClientRect(), R=drag.rect;
+    $$(".sheet").forEach(el=>{
+      const b=el.getBoundingClientRect();
+      const bx=b.left-r.left, by=b.top-r.top;
+      if(bx < R.left+R.w && bx+b.width > R.left && by < R.top+R.h && by+b.height > R.top){
+        S.sel.add(el.dataset.id); el.classList.add("is-sel");
+      }
+    });
+    renderSelbar(); renderSide();
+  }
+  drag=null; $("#marquee").hidden=true;
+});
+canvas.addEventListener("wheel", e=>{
+  e.preventDefault();
+  if(e.ctrlKey||e.metaKey){
+    const r=canvas.getBoundingClientRect();
+    setZoom(S.zoom + (e.deltaY>0?-0.08:0.08), {x:e.clientX-r.left, y:e.clientY-r.top});
+  } else { S.pan.x-=e.deltaX; S.pan.y-=e.deltaY; applyTransform(); }
+}, {passive:false});
+canvas.addEventListener("contextmenu", e=>{
+  if(e.target.closest(".sheet")) return;
+  e.preventDefault(); openCtx(e.clientX,e.clientY,null);
+});
+
+/* =========================================================
+   键盘
+   ========================================================= */
+document.addEventListener("keydown", e=>{
+  const ae=document.activeElement;
+  const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable;
+  const mod = e.ctrlKey||e.metaKey;
+  const K = e["key"];
+  if(mod && K.toLowerCase()==="k"){ e.preventDefault(); if($("#cmdk").classList.contains("open")) closeCmdk(); else openCmdk(); return; }
+  if(mod && K==="0"){ e.preventDefault(); fit(); return; }
+  if(mod && K.toLowerCase()==="j"){ e.preventDefault(); toggleTheme(); return; }
+  if(mod && K.toLowerCase()==="b"){ e.preventDefault(); $("#rail").classList.toggle("pinned"); return; }
+  if(K==="Escape"){
+    if($("#cmdk").classList.contains("open")){ closeCmdk(); return; }
+    if($("#newModal").classList.contains("open")){ closeNew(); return; }
+    if($("#ctx").classList.contains("open")){ $("#ctx").classList.remove("open"); return; }
+    if($("#convSheet").classList.contains("open")){ $("#convSheet").classList.remove("open"); return; }
+    if($("#actSheet").classList.contains("open")){ $("#actSheet").classList.remove("open"); return; }
+    if($("#bellPop").classList.contains("open")){ $("#bellPop").classList.remove("open"); return; }
+    if(S.demo!=="normal"){ setDemo("normal"); return; }
+    if(S.sel.size){ clearSel(); return; }
+    if(S.focus!=="root"){ back(); return; }
+    return;
+  }
+  if(inField) return;
+  if(K==="Enter" && S.sel.size){ e.preventDefault(); drill([...S.sel][0]); return; }
+  if(K==="Delete" && S.sel.size){ e.preventDefault(); archiveSelected(); return; }
+  if(K.toLowerCase()==="n" && !mod){ e.preventDefault(); openNew(); return; }
+  if(K.toLowerCase()==="a" && e.shiftKey){ toggleAnnot(); return; }
+  if(K.toLowerCase()==="c" && e.shiftKey){ toggleComm(); return; }
+  if(K.toLowerCase()==="i" && e.shiftKey){ toggleSide(); return; }
+  if(K.indexOf("Arrow")===0){
+    e.preventDefault();
+    const ids=[S.focus, ...kidsOf(S.focus).map(n=>n.id)];
+    const cur=[...S.sel][0]||ids[0];
+    let i=ids.indexOf(cur); if(i<0) i=0;
+    if(K==="ArrowDown"||K==="ArrowRight") i=(i+1)%ids.length;
+    if(K==="ArrowUp"||K==="ArrowLeft") i=(i-1+ids.length)%ids.length;
+    select(ids[i], false);
+    const el=plane.querySelector('.sheet[data-id="'+ids[i]+'"]'); if(el) el.focus();
+  }
+});
+
+/* =========================================================
+   绑定
+   ========================================================= */
+function toggleSide(){ S.sideOpen=!S.sideOpen; $("#side").classList.toggle("closed",!S.sideOpen); setTimeout(fit,200); }
+$("#sideHandle").addEventListener("click", toggleSide);
+$$(".side-tabs button").forEach(b=>b.addEventListener("click",()=>{
+  S.sideTab=b.dataset.tab;
+  $$(".side-tabs button").forEach(x=>x.classList.toggle("on",x===b));
+  renderSide();
+}));
+$("#railPin").addEventListener("click",()=>$("#rail").classList.toggle("pinned"));
+$("#railBell").addEventListener("click", e=>{ e.stopPropagation(); $("#bellPop").classList.toggle("open"); });
+$("#railGear").addEventListener("click", ()=>toast("设置（示意）"));
+$("#railFold").addEventListener("click", ()=>$("#rail").classList.remove("pinned"));
+$("#railFind").addEventListener("input", e=>{
+  const q=e.target.value.trim();
+  $$("#tree .trow").forEach(r=>{ r.style.display = (!q || r.textContent.includes(q)) ? "" : "none"; });
+});
+$("#themeBtn").addEventListener("click", toggleTheme);
+$("#zoomIn").addEventListener("click", ()=>setZoom(S.zoom+0.25));
+$("#zoomOut").addEventListener("click", ()=>setZoom(S.zoom-0.25));
+$("#zoomRange").addEventListener("input", e=>setZoom(parseInt(e.target.value,10)/100));
+$("#zoomPct").addEventListener("click", ()=>setZoom(1));
+$("#fitBtn").addEventListener("click", ()=>{ fit(); toast("已整幅适配"); });
+$("#searchBtn").addEventListener("click", openCmdk);
+$("#newBtn").addEventListener("click", openNew);
+$("#actBtn").addEventListener("click", openAct);
+$("#actClose").addEventListener("click", ()=>$("#actSheet").classList.remove("open"));
+$("#convClose").addEventListener("click", ()=>$("#convSheet").classList.remove("open"));
+$("#convSend").addEventListener("click", sendConv);
+$("#convInput").addEventListener("keydown", e=>{ if(e["key"]==="Enter") sendConv(); });
+$("#bellClose").addEventListener("click", ()=>$("#bellPop").classList.remove("open"));
+$("#cmdkInput").addEventListener("input", ()=>{ cmIdx=0; renderCmdk(); });
+$("#cmdkInput").addEventListener("keydown", e=>{
+  if(e["key"]==="ArrowDown"){ e.preventDefault(); cmIdx=Math.min(cmIdx+1,cmItems.length-1); renderCmdk(); }
+  if(e["key"]==="ArrowUp"){ e.preventDefault(); cmIdx=Math.max(cmIdx-1,0); renderCmdk(); }
+  if(e["key"]==="Enter"){ e.preventDefault(); if(cmItems[cmIdx]) cmItems[cmIdx].run(); }
+});
+$("#cmdk").addEventListener("click", e=>{ if(e.target.id==="cmdk") closeCmdk(); });
+$("#newCancel").addEventListener("click", closeNew);
+$("#newOk").addEventListener("click", createCard);
+$("#newModal").addEventListener("click", e=>{ if(e.target.id==="newModal" && Date.now()-newOpenedAt>280) closeNew(); });
+$("#newTitle").addEventListener("keydown", e=>{ if(e["key"]==="Enter") createCard(); });
+$("#moreBtn").addEventListener("click", e=>{
+  e.stopPropagation();
+  const h=$("#moreHost"), on=h.classList.toggle("open");
+  $("#moreBtn").setAttribute("aria-expanded", on?"true":"false");
+});
+document.addEventListener("click", e=>{ if(!e.target.closest("#moreHost")) $("#moreHost").classList.remove("open"); });
+$$("#moreMenu button").forEach(b=>b.addEventListener("click",()=>{
+  const a=b.dataset.act;
+  if(a==="expand"||a==="fold") toast(a==="expand"?"全部展开（示意）":"全部折叠（示意）");
+  if(a==="tidy"){ render(); fit(); toast("已整理布局"); }
+  if(a==="side"){ toggleSide(); b.classList.toggle("on", S.sideOpen); }
+  if(a==="comm") toggleComm();
+  if(a==="annot") toggleAnnot();
+  if(a==="hl"){ const on=document.body.classList.toggle("hl"); b.classList.toggle("on", on); toast("改动高亮："+(on?"开":"关")); }
+  if(a==="toast") toast("这是一条 toast（示意）");
+}));
+$("#annotChk").addEventListener("change", e=>{ if(e.target.checked!==S.annot) toggleAnnot(); });
+$$("#demoRow button").forEach(b=>b.addEventListener("click",()=>{
+  const d=b.dataset.demo;
+  if(d==="drill"){ const k=kidsOf(S.focus)[0]; if(k) drill(k.id); else toast("这一层没有子卡"); }
+  if(d==="back") back();
+  if(d==="rename"){ const el=$(".sheet:not(.is-focus)")||$(".sheet"); if(el) startRename(el.dataset.id); }
+  if(d==="conv"){ const el=$(".sheet"); if(el) openConv(el.dataset.id); }
+  if(d==="multi"){ S.sel.clear(); kidsOf(S.focus).slice(0,3).forEach(n=>S.sel.add(n.id));
+    $$(".sheet").forEach(e=>e.classList.toggle("is-sel",S.sel.has(e.dataset.id))); renderSelbar(); renderSide(); }
+  if(d==="danger"){ const el=$(".sheet:not(.is-focus)")||$(".sheet"); if(el) archiveOne(el.dataset.id); }
+  if(d==="cmdk") openCmdk();
+}));
+$$("#stateRow button").forEach(b=>b.addEventListener("click",()=>setDemo(b.dataset.state, b)));
+$("#hlBtn").addEventListener("click",()=>{ const on=document.body.classList.toggle("hl"); $("#hlBtn").classList.toggle("on", on); });
+$("#diffBtn").addEventListener("click",()=>{
+  const d=$("#diff"); d.classList.toggle("closed");
+  $("#diffBtn").textContent = d.classList.contains("closed") ? "展开" : "收起";
+});
+
+/* 启动 */
+renderDiff(); renderBell(); render(); fit();
+setTimeout(()=>{ render(); fit(); }, 60);
+window.addEventListener("resize", ()=>fit());
+})();
+
+</script>
+</body>
+</html>

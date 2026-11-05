@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
-"""[编程卡 2026-10-15 · §六块2/块3] 编程卡全部新测试（任务书 §四 白名单件）。
+"""[worker 卡 2026-10-15 · §六块2/块3] worker 卡全部新测试（任务书 §四 白名单件）。
 
 覆盖：
 - 判据5/块1 硬判据：工具集指纹（grep 19 / tools-tc-6 / t21-1）、开关挂接、
-  coder perms 恰 9、search/list_memory 预留机关在册；
-- 判据1/2：工具面分化（coder 见 report_done 不见 create_card 族；主卡见
-  create_coder_card 不见 report_done——第三段 card_type 闸）；
-- 判据3：report_done 双保险（非 coder 拒）＋完工三件套（completed/coder_final
-  落库/影子完工行/owner 收件箱 coder_done/回执 msg_id）；
-- 判据4：create_coder_card 派生即调起（卡面/使命块/perms=4 值/首跑 run_start）；
-- 块3：完工回执调起主卡验收 → S4 自动回发 answer 落编程卡收件箱留档、
-  编程卡**无新回合**（K3 跳过＋信仍 pending）；completed coder POST /messages
-  → 400；编程卡不可删。
+  worker perms 恰 9、search/list_memory 预留机关在册；
+- 判据1/2：工具面分化（worker 见 report_done 不见 create_card 族；主卡见
+  create_worker_card 不见 report_done——第三段 card_type 闸）；
+- 判据3：report_done 双保险（非 worker 拒）＋完工三件套（completed/coder_final
+  落库/影子完工行/owner 收件箱 worker_done/回执 msg_id）；
+- 判据4：create_worker_card 派生即调起（卡面/使命块/perms=4 值/首跑 run_start）；
+- 块3：完工回执调起主卡验收 → S4 自动回发 answer 落worker 卡收件箱留档、
+  worker 卡**无新回合**（K3 跳过＋信仍 pending）；completed worker POST /messages
+  → 400；worker 卡不可删。
 
-注册表：本套件**自指真实** config/card_type_registry.json（含 coder）——
+注册表：本套件**自指真实** config/card_type_registry.json（含 worker）——
 tests/_fixtures 副本属 §四 白名单外文件，零触碰。
 """
 from __future__ import annotations
@@ -37,8 +37,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def coder_registry(monkeypatch):
-    """编程卡词表走真实配置（config/card_type_registry.json 含 coder）。"""
+def worker_registry(monkeypatch):
+    """worker 卡词表走真实配置（config/card_type_registry.json 含 worker）。"""
     monkeypatch.setattr(
         card_store, "TYPE_REGISTRY_PATH",
         REPO / "config" / "card_type_registry.json",
@@ -68,11 +68,11 @@ async def _mk(wid: str, title: str, parent: str, **kw) -> str:
     return r["meta"]["card_id"]
 
 
-async def _tree(coder_registry, work):
-    """root → 子项目 A → 编程卡 C。"""
+async def _tree(worker_registry, work):
+    """root → 子项目 A → worker 卡 C。"""
     wid, root = work["work_id"], work["work_card_id"]
     a = await _mk(wid, "子项目A", root)
-    c = await _mk(wid, "编程卡C", a, card_type="coder")
+    c = await _mk(wid, "worker 卡C", a, card_type="worker")
     return wid, a, c
 
 
@@ -86,7 +86,7 @@ def _app() -> FastAPI:
 
 def test_toolset_fingerprints_and_switch_bindings():
     src = (REPO / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    # [编程卡 判据5] 字面量口径（任务书 §六 grep 口径）
+    # [worker 卡 判据5] 字面量口径（任务书 §六 grep 口径）
     # [规则卡 2026-10-15] 18 → 19（第 19 件 draft_rule_edit，§六块3 硬判据 1）。
     # [依赖关联线 2026-10-16] 19 → 21（第 20/21 件 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] 21 → 22（第 22 件 propose_status，列 OP_ONLY_TOOLS）。
@@ -94,60 +94,63 @@ def test_toolset_fingerprints_and_switch_bindings():
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-21"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] +browser/+create_ui_card
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"          # [2026-11-01] 随现配置对齐
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"          # [2026-11-01] 随现配置对齐
     # 挂接（§六块2 · v1.1 修订：report_done 挂 tools_file，不设新开关；
     # 挂 edit 会让 readopen:287/:252 零翻新下无法同时成立——见 card_tools 注释）
     assert card_tools.TOOL_SWITCH["report_done"] == policy.SWITCH_TOOLS_FILE
-    assert card_tools.TOOL_SWITCH["create_coder_card"] == policy.SWITCH_CREATE_CHILD
+    assert card_tools.TOOL_SWITCH["create_worker_card"] == policy.SWITCH_CREATE_CHILD
     # [C2 裁定A] read_memory 仍挂 SWITCH_READ，一动不动
     assert card_tools.TOOL_SWITCH["read_memory"] == policy.SWITCH_READ
-    # 第三段闸的表内常量：report_done 是唯一 coder 专属工具
-    assert set(card_tools.CODER_ONLY_TOOLS) == {"report_done"}
+    # 第三段闸的表内常量：report_done 是唯一 worker 专属工具
+    assert set(card_tools.WORKER_ONLY_TOOLS) == {"report_done"}
 
 
-def test_coder_perms_v4_exactly_nine_and_reserved_switches():
+def test_worker_perms_v4_exactly_nine_and_reserved_switches():
     # [块1 硬判据2/3] v4 口径：9 项（search/list_memory 为预留位）
-    # [v12 2026-10-22 · 用户裁定「coder 至少能给自己的父卡发信」] 追加
+    # [v12 2026-10-22 · 用户裁定「worker 至少能给自己的父卡发信」] 追加
     # send_card_message —— v4 的原意是「完工回执不要模型自己发」（由 report_done
-    # 系统发），执行成了「整类卡不给发信」，于是 coder 干到一半卡住时**说不了话**。
-    assert set(policy.perms_for("rd_project", "coder")) == {
+    # 系统发），执行成了「整类卡不给发信」，于是 worker 干到一半卡住时**说不了话**。
+    # [worker 改名 2026-11-05 · 用户裁定「编程卡读档有什么问题」] 追加
+    # manuscript——执行体做后端/文档活时对照存档底稿是本职需求。
+    assert set(policy.perms_for("rd_project", "worker")) == {
         "read", "edit", "tools_file", "tools_web", "search", "plan",
         "shadow_write", "read_linked", "list_memory", "send_card_message",
+        "manuscript",
     }
     assert "search" in policy.SWITCHES and hasattr(policy, "SWITCH_SEARCH")
     assert "list_memory" in policy.SWITCHES and hasattr(policy, "SWITCH_LIST_MEMORY")
-    # 仍不含建树/删卡/调工具/手稿（发信已在 v12 放开，见上）
-    for banned in ("create_child", "delete", "invoke_tool", "manuscript"):
-        assert banned not in policy.perms_for("rd_project", "coder")
+    # 仍不含建树/删卡/调工具（发信已在 v12 放开，手稿在 worker 改名时放开，见上）
+    for banned in ("create_child", "delete", "invoke_tool"):
+        assert banned not in policy.perms_for("rd_project", "worker")
 
 
 # ══════════════ 判据1/2 · 工具面分化（第三段 card_type 闸） ══════════════
 
-async def test_toolface_coder_vs_main(coder_registry, work):
-    wid, a, c = await _tree(coder_registry, work)
+async def test_toolface_worker_vs_main(worker_registry, work):
+    wid, a, c = await _tree(worker_registry, work)
     cards = card_tools._collect_card_meta(wid)
 
-    coder_face = {t["name"] for t in card_tools.build_tool_schemas(
+    worker_face = {t["name"] for t in card_tools.build_tool_schemas(
         c, work_id=wid, cards=cards)}
-    assert "report_done" in coder_face
+    assert "report_done" in worker_face
     for n in ("read_card", "read_memory", "read_shadow", "list_files",
               "read_file", "search_files", "write_file", "web_search",
               "fetch_web"):
-        assert n in coder_face, f"coder 应见 {n}"
-    # 编程卡不长树、不删卡、不调工具卡（也不见派生工具）。
+        assert n in worker_face, f"worker 应见 {n}"
+    # worker 卡不长树、不删卡、不调工具卡（也不见派生工具）。
     assert not ({"create_card", "delete_card",
-                 "run_tool_card", "create_coder_card"} & coder_face), coder_face
-    # [通信收拢 2026-10-31] sync 只追加给 sub_project/topic，coder 没有任何
+                 "run_tool_card", "create_worker_card"} & worker_face), worker_face
+    # [通信收拢 2026-10-31] sync 只追加给 sub_project/topic，worker 没有任何
     # 发信通道（report_done 是系统回执不算模型发信）。
-    # ⚠️ 悬而未决：v12「coder 至少能向父卡发信（卡住时能问）」当前无通道承载。
+    # ⚠️ 悬而未决：v12「worker 至少能向父卡发信（卡住时能问）」当前无通道承载。
     #   复核已把此事列为待用户裁定项——恢复与否是产品决定，此处先钉现状。
-    assert "sync" not in coder_face, "通信收拢现状：coder 无发信通道（v12 问题待裁定）"
+    assert "sync" not in worker_face, "通信收拢现状：worker 无发信通道（v12 问题待裁定）"
 
     # [需求文档生命周期 2026-10-28 · 用户令] 子卡**没有正稿 ⇒ 摘派工三件**
-    # （create_card/create_coder_card/direct）。要验派工工具可见，先给 A
+    # （create_card/create_worker_card/direct）。要验派工工具可见，先给 A
     # 一份 approved 正稿——这才符合闸的设计语义（而不是把闸当 bug）。
     await card_store.update_card(
         wid, a, {"requirements": "交付 X", "requirements_state": "approved"},
@@ -155,26 +158,26 @@ async def test_toolface_coder_vs_main(coder_registry, work):
     cards = card_tools._collect_card_meta(wid)
     main_face = {t["name"] for t in card_tools.build_tool_schemas(
         a, work_id=wid, cards=cards)}
-    assert "create_coder_card" in main_face
+    assert "create_worker_card" in main_face
     assert "report_done" not in main_face, "第三段闸：主卡不得见 report_done"
 
 
 # ══════════════ 判据2/3 · report_done 双保险与完工三件套 ══════════════
 
-async def test_report_done_denied_for_non_coder(coder_registry, work):
-    """执行层双保险：非 coder 卡调 report_done → err denied（挂 edit 也白挂）。"""
-    wid, a, _c = await _tree(coder_registry, work)
+async def test_report_done_denied_for_non_worker(worker_registry, work):
+    """执行层双保险：非 worker 卡调 report_done → err denied（挂 edit 也白挂）。"""
+    wid, a, _c = await _tree(worker_registry, work)
     cards = card_tools._collect_card_meta(wid)
     r = await card_tools.execute_tool(wid, a, "report_done",
                                       {"summary": "x"}, cards)
     assert r["ok"] is False and r["error"]["code"] == "denied", r
 
 
-async def test_report_done_active_coder_finishes(coder_registry, work, monkeypatch):
+async def test_report_done_active_worker_finishes(worker_registry, work, monkeypatch):
     """判据3：真跑一轮 write_file（tool_call 事件落账）→ 完工三件套全绿。"""
     from src.storage import event_log
 
-    wid, a, c = await _tree(coder_registry, work)
+    wid, a, c = await _tree(worker_registry, work)
     cards = card_tools._collect_card_meta(wid)
 
     # 首轮：模型带一次 write_file 工具调用（真实回合才会 emit tool_call——
@@ -183,9 +186,9 @@ async def test_report_done_active_coder_finishes(coder_registry, work, monkeypat
 
     
 
-async def test_coder_cannot_delete(coder_registry, work):
-    """留档判据：coder 无 delete 开关 → 删自己（或任何卡）denied，卡仍在。"""
-    wid, _a, c = await _tree(coder_registry, work)
+async def test_worker_cannot_delete(worker_registry, work):
+    """留档判据：worker 无 delete 开关 → 删自己（或任何卡）denied，卡仍在。"""
+    wid, _a, c = await _tree(worker_registry, work)
     cards = card_tools._collect_card_meta(wid)
     r = await card_tools.execute_tool(wid, c, "delete_card",
                                       {"card_id": c}, cards)

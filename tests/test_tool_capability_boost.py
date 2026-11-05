@@ -98,10 +98,10 @@ def test_seven_are_wired_to_file_switches():
         assert card_tools.TOOL_SWITCH[name] == want, name
         assert card_tools.TOOL_SWITCH[name] in policy.SWITCHES, name
 
-    # [读写拆闸 2026-10-31] 文件写入/执行成了 coder 专属：工作卡型（sub_project/
+    # [读写拆闸 2026-10-31] 文件写入/执行成了 worker 专属：工作卡型（sub_project/
     # project/topic/function）只授 tools_read_file（只读档），perms 表里没有
     # tools_file 了。⇒ sub_project 只能看见七件里的只读成员 glob_files；
-    # coder 有 tools_file，且 tools_file ⇒ tools_read_file（能写就能读的蕴含
+    # worker 有 tools_file，且 tools_file ⇒ tools_read_file（能写就能读的蕴含
     # 表），七件全可见。
     tools = [{"name": n} for n in card_tools.TOOL_REGISTRY]
 
@@ -111,10 +111,10 @@ def test_seven_are_wired_to_file_switches():
                    card_tools._filter_by_category(tools, "c1", "", {"c1": sub})}
     assert SEVEN & visible_sub == read_only, SEVEN & visible_sub
 
-    coder = {"card_id": "c2", "card_type": "coder",
-             "perms": policy.perms_for("rd_project", "coder")}
+    worker = {"card_id": "c2", "card_type": "worker",
+             "perms": policy.perms_for("rd_project", "worker")}
     visible_coder = {t["name"] for t in
-                     card_tools._filter_by_category(tools, "c2", "", {"c2": coder})}
+                     card_tools._filter_by_category(tools, "c2", "", {"c2": worker})}
     assert SEVEN <= visible_coder, SEVEN - visible_coder
 
     # 无文件开关的卡（tool 类型）⇒ 七件一件不可见
@@ -588,8 +588,8 @@ async def test_edit_file_missing_file_and_dir(sandbox):
 
 def test_edit_file_version_and_switch():
     """版本 tc-9 / t23-1；edit_file 与 write_file 同开关（tools_file）、写工具。"""
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-20"  # [2026-11-02] read_card 分段读入参
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"          # [2026-11-01] 随现配置对齐
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] 新增 create_ui_card
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"          # [2026-11-01] 随现配置对齐
     assert card_tools.TOOL_SWITCH["edit_file"] == policy.SWITCH_TOOLS_FILE
     assert card_tools.TOOL_SWITCH["edit_file"] == \
         card_tools.TOOL_SWITCH["write_file"]

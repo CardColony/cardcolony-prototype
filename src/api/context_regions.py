@@ -1180,6 +1180,20 @@ def render_card_ability_region(ctx: RegionCtx) -> str:
                 "- **建自己的子卡：可以。** 你负责的这一块如果还能再分"
                 "（几个可独立推进的部件、几条互不依赖的活），就自己建子卡，"
                 "**不必等上级替你想好怎么分**；建出来的卡同样拿到这份能力说明。")
+            # [派卡权明说 2026-11-05 · card_167 病灶] 能力表只写「建子卡」时，
+            # 模型把「我没有写文件/跑命令」误推成「这活不归我」往上推——
+            # 它不知道建卡权里就含着派执行卡。把三种卡各自干什么点破：
+            # **不能亲手做 ≠ 不能办成**。
+            lines.append(
+                "- **派执行卡干活：可以。** `create_worker_card`（worker 卡："
+                "除 UI 外一切执行——编程/写改文档/跑命令/起服务/构建测试/查档）、"
+                "`create_ui_card`（UI 卡：写页面＋浏览器验收，没有 bash/python）。"
+                "**能力表里没有的活（写文件、跑命令）不等于办不了——"
+                "派执行卡替你干，照样是你办。**")
+        if "deploy_function" in has:
+            lines.append(
+                "- **召职能差事：可以。** `create_deploy_card`——qa＝验收卡、"
+                "pm＝执笔卡，召进场干专项活，办完自动收工、结论回执给你。")
         # [2026-10-21 修正] 还没拆过 ⇒ 把事实说出来，让它自己判断这一轮要不要拆。
         # 不做工具面闸门（那会挡住「第一轮其实是讨论」的正常回合）。
         # 判据：有建卡权（能拆）＋ 系统里还没有它的直接子卡（没拆过）＋ 自动模式卡。
@@ -1194,7 +1208,7 @@ def render_card_ability_region(ctx: RegionCtx) -> str:
             # （实测 work_027/card_124 评审席 system prompt 里两条并列）。
             # 判据改成只看**有没有这个能力**；有权限但这一轮不提示拆分的，什么都不说。
             why = ("你是执行体：一次一件事、做完即完工、不长树"
-                   if card_type == "coder" else "本卡类型不长树")
+                   if card_type == "worker" else "本卡类型不长树")
             lines.append(
                 f"- **建自己的子卡：没有这个能力**（{why}）。"
                 "这一块如果需要再分，是派你活的上级该解决的问题——把你看到的"
@@ -1240,9 +1254,9 @@ def render_card_ability_region(ctx: RegionCtx) -> str:
             "- **silence_card(card_id, action, reason)**——让**完工的卡**沉默"
             "或重新激活：沉默后它不再接收任何内部消息（信留存但不投递），"
             "持久生效直到 activate；只对 state=completed 的卡生效。",
-            "- **continue_task(card_id, task, note)**——给完工/暂停的**编程卡**"
+            "- **continue_task(card_id, task, note)**——给完工/暂停的**worker 卡**"
             "续派下一件任务：同一张卡接着干，之前交付的代码、回执、会话上下文"
-            "全部延续。返工/迭代/同域下一件用续派；全新领域才新开编程卡。",
+            "全部延续。返工/迭代/同域下一件用续派；全新领域才新开worker 卡。",
             "- **stage_open(card_id)**——开启子卡的阶段任务：子卡需求填写完整"
             "后调用，职能卡做立项评审。**开启子卡任务必须先走这一步**。"
             "子卡完工经 report_up(kind=done) 汇报——职能做阶段验收。",
@@ -1616,7 +1630,7 @@ def rule_section_names(registry: dict[str, Any],
     纯函数（不做 IO）：调用方传入类型注册表（``card_store`` 的
     ``load_type_registry`` 返回值）。
     例：rd_project＋research_project ⇒ ["all","project","function","sub_project",
-    "tool","coder","rule","review","topic"]。
+    "tool","worker","rule","review","topic"]。
 
     [规则节点 2026-10-28 · 用户令「还有一个总规则，则会进入所有卡的上下文」]
     ``all`` 不是 card_type，是「所有卡」这一档，固定排第一。注册表缺失/无词表
@@ -1896,9 +1910,9 @@ def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
         title = str(child.get("title") or "")
         ctype = str(child.get("card_type") or "")
         activity = str(child.get("activity") or "").strip()
-        # [coder 无现状块 2026-10-24 · 用户令] coder 的产出=代码+report_done
+        # [worker 无现状块 2026-11-05 改名前为 coder 无现状块 · 用户令] worker 的产出=代码+report_done
         # 回执,现状块对它不存在——活性与使命照给（父卡照样要知道它跑没跑）。
-        status = "" if ctype == "coder" else _child_status_body(child)
+        status = "" if ctype == "worker" else _child_status_body(child)
         mission = _child_mission_body(child)
         if not activity and not status and not mission:
             continue

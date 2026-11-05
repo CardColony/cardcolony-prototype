@@ -444,7 +444,7 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     # T12 时代旧值，其后 tools-tc-1→tc-3（card_tools.py:122-134）、t14-1→t17-1（prompts.py
     # 沿革注释）共 7 次推进一次未跟；git show bbe0e00 --name-only 无本文件 ⇒ 纯漏更新，非工具线擅动。
     # [卡片底座第一步 2026-10-14] tc-3 → tc-4（新增第 20 件工具 read_linked）。
-    # [编程卡 2026-10-15] tc-4 → tc-5（新增 report_done / create_coder_card 两件）。
+    # [worker 卡 2026-10-15] tc-4 → tc-5（新增 report_done / create_worker_card 两件）。
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
     # [2026-10-31] 版本随工具面演进（tc-17＝需求确定按钮 2026-10-29）；本测试钉
@@ -452,13 +452,13 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     # [2026-10-31 F19] tc-18＝memory_expand 入表递增
     # [2026-11-01] tc-19＝sync schema 文案（事实分层）
     # [2026-11-02] tc-20＝read_card 分段读入参（block/para_start/para_end）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-20"
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [钉翻新 2026-11-05] 历史漂移
     # [判断协议改注入 2026-10-14] t17-1 → t18-1（判断协议摘出 BASE_PROMPT）。
     # [卡片区域语义 v3 2026-10-14] t18-1 → t19-1（read_shadow 只读本卡自己的影子）。
-    # [编程卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## 编程卡」节）。
+    # [worker 卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## worker 卡」节）。
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
     # [2026-10-22] dev 合并后提示词版本已推进，按实际值同步
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"  # [2026-11-01] 随现配置对齐
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"  # [2026-11-01] 随现配置对齐
     # BASE_PROMPT 工具行在案
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT

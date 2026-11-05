@@ -432,8 +432,8 @@ def test_no_parent_reads_child_shadow_in_tool_schema():
 
 
 def test_base_prompt_version_bumped():
-    # [编程卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## 编程卡」节）。
+    # [worker 卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## worker 卡」节）。
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
     # [事实分层 2026-11-01] t27-2 → t27-3（_SEC_CARDMSG 语义修正）。
-    assert prompts.BASE_PROMPT_VERSION == "t27-5"
+    assert prompts.BASE_PROMPT_VERSION == "t27-11"

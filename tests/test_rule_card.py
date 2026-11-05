@@ -102,7 +102,7 @@ def test_rule_section_names_all_plus_type_codes():
     names = context_regions.rule_section_names(card_store.load_type_registry())
     assert names[0] == "all", "总规则必须排第一"
     assert names == ["all", "project", "function", "sub_project",
-                     "tool", "coder", "ui", "qa_card", "pm_card",
+                     "tool", "worker", "ui", "qa_card", "pm_card",
                      "rule", "review", "topic"]
     # 词表缺失 ⇒ 至少保留总规则（总规则与词表无关）
     assert context_regions.rule_section_names({}) == ["all"]
@@ -126,7 +126,7 @@ def test_render_rule_region_states():
     assert context_regions.render_rule_region({"tool": "T"}, "sub_project") == ""
     # 只有总规则 → 所有卡都拿得到（用户令：总规则进所有卡的上下文）
     assert context_regions.render_rule_region({"all": "总则"}, "sub_project") == "## 规则\n总则"
-    assert context_regions.render_rule_region({"all": "总则"}, "coder") == "## 规则\n总则"
+    assert context_regions.render_rule_region({"all": "总则"}, "worker") == "## 规则\n总则"
     # 两段都有 → 总规则在前、本类卡在后
     both = context_regions.render_rule_region({"all": "总则", "sub_project": "本类"}, "sub_project")
     assert both.startswith("## 规则\n")
@@ -192,7 +192,7 @@ async def test_get_rule_reads_seeded_sections(client, sandbox):
 
 async def test_patch_rule_section_replaces_only_target(client, sandbox):
     wid = await _mk_rd_work()
-    await _seed_sections(wid, {"sub_project": "旧内容", "tool": "工具内容", "coder": "编码内容"})
+    await _seed_sections(wid, {"sub_project": "旧内容", "tool": "工具内容", "worker": "编码内容"})
     r = await client.get(f"/api/works/{wid}/rule")
     base = r.json()["hashes"]["sub_project"]
 
@@ -207,7 +207,7 @@ async def test_patch_rule_section_replaces_only_target(client, sandbox):
     assert d3["sections"]["sub_project"] == "新内容"
     # 其它区字节不变
     assert d3["sections"]["tool"] == "工具内容"
-    assert d3["sections"]["coder"] == "编码内容"
+    assert d3["sections"]["worker"] == "编码内容"
 
 
 async def test_patch_rule_section_hash_mismatch_409(client, sandbox):
@@ -285,7 +285,7 @@ async def test_create_rule_card_is_rejected(client, sandbox):
 
 _SECTIONS_ALL = {
     "project": "根卡规则P", "sub_project": "子项目规则A", "tool": "工具规则T",
-    "coder": "编码规则C", "rule": "规则卡规则R", "topic": "课题规则Q",
+    "worker": "编码规则C", "rule": "规则卡规则R", "topic": "课题规则Q",
 }
 
 
@@ -310,8 +310,8 @@ async def test_inject_section_by_card_type(sandbox):
     sp = main["system_prompt"]
     assert sp.index("## 系统结构") < sp.index("## 规则\n子项目规则A") < sp.index("## 卡片职责")
 
-    # ② coder 卡 → coder 区；tool 卡 → tool 区；rule 卡自身 → rule 区；根卡 → project 区
-    for ct, sec in (("coder", "编码规则C"), ("tool", "工具规则T"),
+    # ② worker 卡 → worker 区；tool 卡 → tool 区；rule 卡自身 → rule 区；根卡 → project 区
+    for ct, sec in (("worker", "编码规则C"), ("tool", "工具规则T"),
                     ("rule", "规则卡规则R"), ("project", "根卡规则P")):
         cid = root if ct == "project" else await _mk_typed(wid, root, ct, f"{ct}卡")
         m = context_assembler.build_context_bundle(wid, cid)["main"]
@@ -337,9 +337,9 @@ async def test_inject_all_section_reaches_every_card_type(sandbox):
     """总规则进**所有**卡的上下文；本类区只进本类卡。"""
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
-    await _seed_sections(wid, {"all": "总则Z", "sub_project": "子项S", "coder": "编码C"})
+    await _seed_sections(wid, {"all": "总则Z", "sub_project": "子项S", "worker": "编码C"})
     for ct, expect, forbid in (("sub_project", "子项S", "编码C"),
-                               ("coder", "编码C", "子项S")):
+                               ("worker", "编码C", "子项S")):
         cid = await _mk_typed(wid, root, ct, f"{ct}卡")
         main = context_assembler.build_context_bundle(wid, cid)["main"]
         regs = [r for r in main["system_regions"] if r["name"] == "规则注入"]
@@ -376,7 +376,7 @@ async def test_draft_rule_edit_toolface_root_only(sandbox):
                  card_tools.build_tool_schemas(root, work_id=wid, cards=cards)}
     assert "draft_rule_edit" in root_face, "根卡应见 draft_rule_edit"
     # rd 词表类型全覆盖（topic 属 research 词表，rd work 建不出——六区覆盖见注入测试）
-    for ct in ("sub_project", "coder", "tool", "rule"):
+    for ct in ("sub_project", "worker", "tool", "rule"):
         cid = await _mk_typed(wid, root, ct, f"{ct}卡")
         cards = card_tools._collect_card_meta(wid)
         face = {t["name"] for t in
@@ -450,7 +450,7 @@ async def test_rule_commit_approval_flow(client, sandbox):
     root = work_store.work_card_id_of(wid)
     from src.storage import work_store as _ws
     _ws.set_rules(wid, {"sub_project": "旧规则", "tool": "工具规则T",
-                        "coder": "编码规则C"})
+                        "worker": "编码规则C"})
     cards = card_tools._collect_card_meta(wid)
     draft = await card_tools.execute_tool(
         wid, root, "draft_rule_edit",
@@ -468,10 +468,10 @@ async def test_rule_commit_approval_flow(client, sandbox):
     g = (await client.get(f"/api/works/{wid}/rule")).json()
     assert g["sections"]["sub_project"] == "审批后规则"
     assert g["sections"]["tool"] == "工具规则T"
-    assert g["sections"]["coder"] == "编码规则C"
+    assert g["sections"]["worker"] == "编码规则C"
     # 其它区逐字节不变(work.json rules)
     rules = _ws.get_rules(wid)
-    assert rules["tool"] == "工具规则T" and rules["coder"] == "编码规则C"
+    assert rules["tool"] == "工具规则T" and rules["worker"] == "编码规则C"
 
 
 async def test_rule_commit_hash_conflict_409(client, sandbox):

@@ -17,7 +17,7 @@ role 类型的 perms 原本是：
 
 **离树的卡必须有 link**，否则它没有任何通信路径。
    · project / sub_project：在树内，祖先链兜底 ⇒ link 是"能主动连别人"
-   · coder / tool：在树内，主卡底下 ⇒ 祖先链兜底，不需要 link
+   · worker / tool：在树内，主卡底下 ⇒ 祖先链兜底，不需要 link
    · role：离树，**只有线** ⇒ 必须给 link
 
 ## 同时守住的反面
@@ -165,7 +165,7 @@ async def test_target_card_needs_no_link(work):
     """对齐语义：目标卡**不需要** link —— 剥掉目标卡的 link，建线仍应成功。
 
     这条锁住「门槛只在发起方」这个契约，防止有人日后又把判定改回
-    「查目标卡 perms」——那会让 role/coder/tool/rule 全部变成连不上的死卡。
+    「查目标卡 perms」——那会让 role/worker/tool/rule 全部变成连不上的死卡。
     """
     wid = work["work_id"]
     root = work["work_card_id"]

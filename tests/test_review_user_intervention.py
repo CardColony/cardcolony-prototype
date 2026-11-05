@@ -230,7 +230,7 @@ def test_ability_region_never_contradicts_itself():
     assert "没有这个能力" not in t1, "改前裸 else 会让两条矛盾行并列"
 
     denied = RegionCtx(**{**base, "direct_child_status": [],
-                          "cur_meta": {"card_id": "c2", "card_type": "coder",
+                          "cur_meta": {"card_id": "c2", "card_type": "worker",
                                        "mission": "干活", "auto_mode": 0,
                                        "abilities": ["write_own_face"]}})
     t2 = render_card_ability_region(denied)

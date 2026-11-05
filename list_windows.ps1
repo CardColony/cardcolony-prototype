@@ -1,0 +1,1 @@
+Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | Select-Object Id, ProcessName, StartTime, MainWindowTitle | Sort-Object StartTime -Descending | Format-Table -AutoSize | Out-String -Width 300

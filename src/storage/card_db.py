@@ -1112,9 +1112,61 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     # [评审出口 2026-11-01] 存量卡补 respond_review（被评卡交回回应的能力；
     # 该能力晚于一批卡的建卡时刻注册，它们的显式 abilities 清单里没有）
     _ensure_respond_review_perm(conn)
+    # [worker 改名 2026-11-05] 存量卡 card_type coder→worker＋abilities 补
+    # manuscript（worker 新权限行带查档三件套）
+    _ensure_worker_card_type(conn)
     _migrate_inbox_to_messages(conn)
     _ensure_role_columns(conn)
     _ensure_function_columns(conn)
+
+
+def _ensure_worker_card_type(conn: sqlite3.Connection) -> None:
+    """存量卡 card_type coder→worker（2026-11-05 编程卡改名 worker 卡并扩域）。
+
+    ① ``cards.card_type`` 'coder'→'worker'——改名是类型码级；legacy_types 的
+       coder 条（write_blocked）只兜未迁库的读路径，迁完应零残留。
+    ② 被迁卡 ``abilities`` 补 ``manuscript``——worker 新权限行带查档三件套，
+       而 abilities 是建卡时刻的显式清单，不补则老 worker 卡永远看不到
+       list/read/search_manuscript。
+    ③ ``card_archive.card_type`` 与 ``trash.payload``（删卡快照 JSON）同口径
+       改写——归档/回收站里的卡复原时不能把旧类型码带回活表。
+    幂等：重跑 UPDATE 零行、能力已存在跳过。
+    """
+    try:
+        rows = list(conn.execute(
+            "SELECT card_id, abilities FROM cards WHERE card_type='coder'"))
+    except sqlite3.Error:
+        return
+    if rows:
+        conn.execute("UPDATE cards SET card_type='worker' WHERE card_type='coder'")
+        for r in rows:
+            try:
+                ab = json.loads(r["abilities"] or "[]")
+            except Exception:  # noqa: BLE001 坏 abilities 跳过
+                continue
+            if not isinstance(ab, list) or "manuscript" in ab:
+                continue
+            ab.append("manuscript")
+            conn.execute("UPDATE cards SET abilities=? WHERE card_id=?",
+                         (json.dumps(ab, ensure_ascii=False), r["card_id"]))
+    try:
+        conn.execute(
+            "UPDATE card_archive SET card_type='worker' WHERE card_type='coder'")
+    except sqlite3.Error:
+        pass
+    try:
+        for r in conn.execute("SELECT card_id, payload FROM trash").fetchall():
+            try:
+                pl = json.loads(r["payload"] or "{}")
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(pl, dict) or pl.get("card_type") != "coder":
+                continue
+            pl["card_type"] = "worker"
+            conn.execute("UPDATE trash SET payload=? WHERE card_id=?",
+                         (json.dumps(pl, ensure_ascii=False), r["card_id"]))
+    except sqlite3.Error:
+        pass
 
 
 def _ensure_role_columns(conn: sqlite3.Connection) -> None:
@@ -1634,11 +1686,20 @@ def next_seq(conn: sqlite3.Connection) -> int:
         base = int(raw)
     except (TypeError, ValueError):
         base = 0
-    row = conn.execute(
-        "SELECT MAX(CAST(SUBSTR(card_id, 6) AS INTEGER)) AS m FROM cards "
-        "WHERE card_id LIKE 'card_%'"
-    ).fetchone()
-    top = int((row["m"] if row is not None else 0) or 0)
+    # [发号兜底 2026-11-05] 扫描面从活表扩到 trash／card_archive／coder_archive：
+    # 已删/已归档卡的号同样**永久占号**（重发会让新卡继承旧影子/旧事件史——
+    # Face-as-Truth 被污染）。meta.seq 万一被 restore 回退到它们之下，
+    # 三表兜底仍把号顶上去。表可能不存在（老库）⇒ 逐表 try，缺席跳过。
+    top = 0
+    for table in ("cards", "trash", "card_archive", "coder_archive"):
+        try:
+            row = conn.execute(
+                f"SELECT MAX(CAST(SUBSTR(card_id, 6) AS INTEGER)) AS m "
+                f"FROM {table} WHERE card_id LIKE 'card_%'"
+            ).fetchone()
+            top = max(top, int((row["m"] if row is not None else 0) or 0))
+        except sqlite3.Error:
+            continue
     return max(base, top) + 1
 
 

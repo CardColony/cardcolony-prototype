@@ -135,10 +135,10 @@ async def test_role_toolface_is_narrow_and_lifecycle_is_root_only(work):
             "send_card_message", "read_card", "read_linked"} <= role_tools
     assert "edit_card" not in role_tools
     # [职能实体化 A 案 2026-10-22 · 用户裁定「用任务卡底层，但本质要和任务卡区分开」]
-    # 职能是**管理者**：要能派活（create_card / create_coder_card）和建通信线。
+    # 职能是**管理者**：要能派活（create_card / create_worker_card）和建通信线。
     # 旧断言把这两件一起摘掉，等于"职能不能要求返工、不能派人干活"——与职责矛盾。
     assert "create_card" in role_tools
-    assert "create_coder_card" in role_tools
+    assert "create_worker_card" in role_tools
     assert "link_cards" in role_tools
     # 仍然不给：改别人正文、删卡（职能判、说、派人，但不替人改稿、不毁档）
     assert "delete_card" not in role_tools

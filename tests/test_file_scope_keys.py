@@ -2,8 +2,8 @@
 """[FILE_SCOPE 键位修复 2026-10-15] 路径锁键集与 card_type 全集对齐（红测转绿）。
 
 **为什么有这份测试**：FILE_SCOPE 原表误抄权限表的五键，其中两个是 project_class
-工牌码（永不可能作为 card_type 查到），而根卡真实 card_type=`project` 与编程卡
-`coder` 都不在表内 → `FILE_SCOPE.get("project", [])` 返空列表 → `any([])` 恒 False
+工牌码（永不可能作为 card_type 查到），而根卡真实 card_type=`project` 与worker 卡
+`worker` 都不在表内 → `FILE_SCOPE.get("project", [])` 返空列表 → `any([])` 恒 False
 → **11 张 project 根卡 tools_file 开关明明已授却被路径锁第三段拒死**（用户 2026-10-15
 17:20 报 work_009/card_001 list_files「越权：无权访问 D:\AI_station\推演agent」）。
 该错在 10-08 已被预判上报（THINK-ECO-permgmt-p1 调研纪要 T2「project 根卡不在表内、

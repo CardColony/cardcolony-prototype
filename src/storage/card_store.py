@@ -598,7 +598,7 @@ def _type_can_have_children(card_type: str) -> bool:
     [换父 2026-10-20] 为什么现在才读它：这个字段从卡片分类基座起就在注册表里，
     但**代码零消费**——「工具卡不可有子卡」「角色卡不可有子卡」是两处各自硬编码
     的（见 _write_gate 闸内）。换父把「谁能当父卡」从**建卡时的固定事实**变成
-    **运行时可变的判定**，硬编码两处不够用（coder/rule 同样是 false），且每加一种
+    **运行时可变的判定**，硬编码两处不够用（worker/rule 同样是 false），且每加一种
     类型就要再补一处。改为读注册表，与「注册表是校验源」同口径。
 
     降级：注册表缺失 / 类型查不到 ⇒ 放行（不因校验源缺失阻断写路径，与
@@ -950,8 +950,8 @@ async def create_card(
     """创建卡片 + 对应会话文件，更新 canvas 缓存。
 
     ``skip_kick=True``：**建卡不点火**——给「建卡方自己负责首跑」的调用路径用
-    （`create_coder_card` 用 `_spawn_tracked` 带任务正文起跑；若这里也点一次，
-    会起一个没有任务正文的空回合，把正式首跑挡在互斥体外面，实测 coder 卡
+    （`create_worker_card` 用 `_spawn_tracked` 带任务正文起跑；若这里也点一次，
+    会起一个没有任务正文的空回合，把正式首跑挡在互斥体外面，实测 worker 卡
     因此零产出）。
 
     [底座收口 T5.a · 建卡入口适配] card_type 缺省从"线索"改为 ""：
@@ -1394,7 +1394,7 @@ async def update_card(
         parent_type = str((_meta_of(work_id, new_parent) or {}).get("card_type") or "")
         if not _type_can_have_children(parent_type):
             return {"error": f"「{parent_type}」类型不可有子卡，不能作为父卡"}
-        # [换父 2026-10-20 · 数据从属] 带 owner 的卡（工具卡/编程卡）换父后，若原
+        # [换父 2026-10-20 · 数据从属] 带 owner 的卡（工具卡/worker 卡）换父后，若原
         # owner 已不在**新祖先链**上，owner 跟着改到新父链上最近的合法 owner 卡。
         #
         # 为什么必须改：owner 的语义是「谁调用它、产物归谁」（注册表闸3），它与
@@ -1631,18 +1631,18 @@ async def update_card(
     # 目标卡改为创建剧本时即派生（见 derive_ending / work_store.create_work）。
 
     # [完工必达 2026-11-03 · 用户令「好几次完工没汇报」]
-    # 「coder 完工 ⇒ 父卡收到汇报」应是系统不变量，不是 report_done 一条
-    # 路径的自觉——父卡直接标完/机械扫账/修库完成的 coder 卡历史上静默
+    # 「worker 完工 ⇒ 父卡收到汇报」应是系统不变量，不是 report_done 一条
+    # 路径的自觉——父卡直接标完/机械扫账/修库完成的 worker 卡历史上静默
     # 无回执（work_027 实测 11-01/02 约 30 次完工零汇报）。
     # 挂唯一写入口之后：真实完工翻转即起一张 4s 后复查的兜底网——
     # report_done 链是先标完工再发信，它的回执时刻必然晚于本次写入
-    # ⇒ 到时已发则跳过；没有则补一封 coder_done（含产物落点）并唤起父卡。
+    # ⇒ 到时已发则跳过；没有则补一封 worker_done（含产物落点）并唤起父卡。
     try:
         if (updates.get("state") == "completed"
                 and str(cur_meta.get("state") or "") != "completed"
-                and str(cur_meta.get("card_type") or "") == "coder"):
+                and str(cur_meta.get("card_type") or "") == "worker"):
             from ..api import message_runner as _mr
-            _mr._spawn_tracked(_coder_done_net(
+            _mr._spawn_tracked(_worker_done_net(
                 work_id, card_id,
                 str(cur_meta.get("parent") or ""), datetime.now().timestamp()))
     except Exception as exc:  # noqa: BLE001 兜底网挂接失败不影响写卡
@@ -1652,9 +1652,9 @@ async def update_card(
     return await read_card(work_id, card_id)
 
 
-async def _coder_done_net(work_id: str, card_id: str, owner: str,
+async def _worker_done_net(work_id: str, card_id: str, owner: str,
                           completed_ts: float) -> None:
-    """完工兜底网：coder 卡 state→completed 后 4s 复查回执是否已发。
+    """完工兜底网：worker 卡 state→completed 后 4s 复查回执是否已发。
 
     判重口径：``card_tools._CODER_DONE_SENT_AT[card_id] >= completed_ts``
     ——report_done 在 update_card 之后才发信，它的回执时刻必然覆盖本次
@@ -1678,10 +1678,10 @@ async def _coder_done_net(work_id: str, card_id: str, owner: str,
             content += f"\n\n——【回执摘录】{_excerpt}"
         sent = await _ct.send_card_message(
             work_id, card_id, target_id=owner,
-            msg_type="coder_done", content=content)
+            msg_type="worker_done", content=content)
         if isinstance(sent, dict) and not sent.get("error"):
             _ct._CODER_DONE_SENT_AT[card_id] = datetime.now().timestamp()
-            logger.info("[完工兜底] coder 完工未走 report_done，"
+            logger.info("[完工兜底] worker 完工未走 report_done，"
                         "已补发回执并唤起 card=%s owner=%s", card_id, owner)
     except Exception as exc:  # noqa: BLE001 兜底尽力而为，不外抛
         logger.warning("[完工兜底] 失败 card=%s: %s", card_id, exc)

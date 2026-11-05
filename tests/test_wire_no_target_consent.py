@@ -7,7 +7,7 @@
 理由是「线是双向的，被连方也要能回话」。这个「同意」是伪命题：
   · 目标卡的 perms 是建卡时从类型模板抄下来的静态值，没有任何「同意」动作；
   · 用户也没有任何地方能表示同意／拒绝；
-  · 实际效果只是「role / coder / tool / rule 四类永远连不上」（配置里它们没有 link）。
+  · 实际效果只是「role / worker / tool / rule 四类永远连不上」（配置里它们没有 link）。
 实测：work_022 的根卡连自己的角色卡 card_003/card_004，四次全 denied。
 
 线的记录写在**发起方**卡的 ``links`` / ``relations`` 字段上，被连方不需要同意；
@@ -156,7 +156,7 @@ async def test_send_message_does_not_check_target_read(sandbox):
 async def test_read_linked_does_not_check_target_read_linked(sandbox):
     """沿线读不查目标卡的 `read_linked`——线本身就是凭据，不需要第二道许可。
 
-    改前查目标卡 ⇒ coder / tool / rule 三类（没有 read_linked）永远读不了。
+    改前查目标卡 ⇒ worker / tool / rule 三类（没有 read_linked）永远读不了。
     """
     wid, cards = await _work_with_pair("连线不看对方·沿线读")
     await card_tools._h_link_cards(

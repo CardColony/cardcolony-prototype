@@ -20,7 +20,7 @@
    "not_capabilities 每条必须有 reason，且工具必须存在。",
    "pending 只减不增（基线由 tests/test_capability_registry.py 冻结）。"
   ],
-  "inventory_note": "2026-11-02 第八版：加 browser 一项能力（单件 browser 工具）；create_child 增 create_ui_card ⇒ 42 项 / 71 件工具 / 2 件 not_capabilities。"
+  "inventory_note": "2026-11-02 第八版：加 browser 一项能力（单件 browser 工具）；create_child 增 create_ui_card/create_worker_card ⇒ 42 项 / 71 件工具 / 2 件 not_capabilities。"
  },
  "capabilities": [
   {
@@ -136,7 +136,7 @@
     "kind": "tools",
     "tools": [
      "create_card",
-     "create_coder_card",
+     "create_worker_card",
      "create_ui_card"
     ],
     "switch": "create_child"

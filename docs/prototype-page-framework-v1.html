@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardColony web 端 · 页面框架 v1 · HTML 结构图</title>
+<style>
+/* ============================================================
+   页面框架 v1 · 结构图（不是视觉设计稿）
+   灰阶 / 低饱和；内容一律占位；每个区域带名称标注
+   ============================================================ */
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font:13px/1.45 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  color:#2f2f2f;background:#e9e9e9;padding:10px 12px 28px;
+}
+
+/* ---------- 演示控件条（不属页面结构） ---------- */
+.demo-bar{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;
+  background:#fff;border:1px solid #b8b8b8;border-radius:4px;padding:8px 12px;margin-bottom:10px}
+.demo-bar .dt{font-weight:600;font-size:13px;color:#1f1f1f}
+.dc{display:flex;align-items:center;gap:6px}
+.dc>span{color:#777;font-size:11px}
+.seg{display:flex;border:1px solid #b0b0b0;border-radius:3px;overflow:hidden}
+.seg button{font:inherit;font-size:12px;background:#f4f4f4;border:0;border-right:1px solid #d5d5d5;
+  padding:4px 9px;cursor:pointer;color:#444;white-space:nowrap}
+.seg button:last-child{border-right:0}
+.seg button.on{background:#585858;color:#fff}
+.dnote{font-size:11px;color:#888;flex-basis:100%;border-top:1px dotted #d8d8d8;padding-top:6px}
+
+/* ---------- 区域框与区域名 ---------- */
+.rg{position:relative;border:1.5px solid #9d9d9d;border-radius:3px;background:#fff;
+  padding:17px 6px 6px;min-height:0;min-width:0}
+.rg>.rgl{position:absolute;top:0;left:0;font-size:10px;line-height:15px;padding:0 6px;
+  background:#565656;color:#fff;border-radius:0 0 3px 0;white-space:nowrap;
+  max-width:calc(100% - 4px);overflow:hidden;text-overflow:ellipsis;z-index:6}
+.rg.s{border:1px dashed #c2c2c2;background:#fafafa}
+.rg.s>.rgl{background:#e4e4e4;color:#4a4a4a}
+
+/* 占位内容 */
+.ph{display:block;color:#b0b0b0;font-size:11px;background:#f0f0f0;border-radius:2px;
+  padding:3px 6px;margin:3px 0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ph.line{background:repeating-linear-gradient(90deg,#ececec 0 24px,#e3e3e3 24px 42px);color:transparent;height:9px;padding:0}
+.chip{display:inline-block;font-size:11px;color:#666;background:#ededed;border:1px solid #d2d2d2;
+  border-radius:10px;padding:1px 8px;white-space:nowrap}
+.badge{display:inline-block;min-width:15px;text-align:center;font-size:10px;background:#666;
+  color:#fff;border-radius:8px;padding:0 4px;margin-left:3px}
+.ann{font-size:10px;color:#7a7a7a;background:#f3f3f3;border-left:2px solid #a9a9a9;
+  padding:3px 7px;margin:4px 0;line-height:1.4}
+
+/* ---------- 舞台 / 视口 ---------- */
+.stage{display:flex;flex-direction:column;gap:8px}
+.viewport{display:flex;position:relative;height:calc(100vh - 250px);min-height:560px;
+  background:#fbfbfb;border:2px solid #7d7d7d;border-radius:4px;overflow:hidden}
+
+/* ---------- 常驻左栏 ---------- */
+.leftnav{display:flex;flex-direction:column;gap:6px;background:#efefef;
+  border-right:1.5px solid #b0b0b0;padding:17px 6px 6px;overflow:hidden}
+.ln-brand{font-size:11px;color:#555;font-weight:600;padding:2px 3px;border-bottom:1px dotted #ccc;margin-bottom:2px}
+.ln-item,.tn{display:flex;align-items:center;gap:6px;font-size:12px;color:#4a4a4a;
+  padding:4px 5px;border-radius:3px;background:#f7f7f7;border:1px solid #e0e0e0;margin-bottom:3px}
+.ln-item.on{background:#e2e2e2;border-color:#c4c4c4;font-weight:600}
+.li{font-size:11px;color:#888;flex:0 0 auto}
+.lt{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ln-tree{flex:1;overflow:auto;min-height:0}
+.tn.lv2{padding-left:16px}
+.ln-note{font-size:10px;color:#8f8f8f;border-top:1px dotted #c8c8c8;padding-top:4px;line-height:1.4}
+.ln-note-p4{display:none}
+/* P4：左栏容器保留但无项目树（含窄档整页抽屉内的那份） */
+.stage[data-page="p4"] .ln-tree{display:none}
+.stage[data-page="p4"] .ln-note-p4{display:block}
+
+/* ---------- 主列 / 通用顶栏 ---------- */
+.maincol{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+.topbar{display:flex;align-items:center;gap:7px;flex-wrap:nowrap;overflow:hidden;
+  background:#f7f7f7;border:0;border-bottom:1.5px solid #b0b0b0;border-radius:0;
+  padding:16px 8px 5px;min-height:50px}
+.tb-btn{font:inherit;font-size:12px;background:#fff;border:1px solid #c4c4c4;border-radius:3px;
+  padding:3px 8px;cursor:pointer;color:#3a3a3a;white-space:nowrap}
+.tb-btn:hover{background:#f0f0f0}
+.tb-btn.strong{background:#5a5a5a;color:#fff;border-color:#4a4a4a}
+.tb-title{font-size:12px;color:#555;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tb-spacer{flex:1 1 auto}
+.tbslot{display:none;align-items:center;gap:6px}
+.tb-burger,.tb-drawerbtn{display:none}
+
+/* ---------- 页面容器 ---------- */
+.pagehost{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}
+.page{display:none;flex:1;min-height:0;flex-direction:column;position:relative}
+.stage[data-page="p1"] .page[data-p="p1"],
+.stage[data-page="p2"] .page[data-p="p2"],
+.stage[data-page="p3"] .page[data-p="p3"],
+.stage[data-page="p4"] .page[data-p="p4"]{display:flex}
+
+/* 顶栏按页显示的槽位 */
+.stage[data-page="p1"] .tbslot[data-for="p1"],
+.stage[data-page="p2"] .tbslot[data-for="p2"],
+.stage[data-page="p3"] .tbslot[data-for="p3"],
+.stage[data-page="p4"] .tbslot[data-for="p4"]{display:flex}
+.stage[data-page="p1"] .tb-right,.stage[data-page="p4"] .tb-right{display:none!important}
+
+/* ================= P1 续作入口页 ================= */
+.p1-body{flex:1;display:flex;flex-direction:column;gap:8px;padding:8px;min-height:0}
+.p1-grid{flex:1;display:flex;gap:8px;min-height:0}
+.p1-col{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto}
+.p1-toast{flex:0 0 auto}
+
+/* ================= P2 项目工作台页 ================= */
+.p2-row{flex:1;display:flex;min-height:0}
+.p2-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+.viewtoolbar{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;overflow:hidden;
+  padding:16px 8px 5px;background:#f5f5f5;border-bottom:1px solid #d0d0d0;min-height:46px;flex:0 0 auto}
+.vt-sep{width:1px;height:16px;background:#d0d0d0;margin:0 3px}
+.viewhost{flex:1;position:relative;min-height:0;display:flex;flex-direction:column;padding:17px 6px 6px}
+.vpane{display:none;flex:1;min-height:0;overflow:auto;gap:4px;flex-direction:column}
+.viewhost[data-view="todo"] .vp-todo,
+.viewhost[data-view="timeline"] .vp-timeline,
+.viewhost[data-view="canvas"] .vp-canvas{display:flex}
+.vp-todo .ph{height:26px;line-height:20px}
+.tl-row{display:flex;align-items:center;gap:6px;margin:5px 0}
+.tl-label{flex:0 0 78px;font-size:11px;color:#a8a8a8;overflow:hidden;white-space:nowrap}
+.tl-bar{height:14px;background:#e6e6e6;border:1px solid #d6d6d6;border-radius:2px}
+.canvas-surface{flex:1;min-height:120px;border:1px dashed #c0c0c0;background:#f7f7f7;
+  border-radius:3px;position:relative;padding:8px;display:flex;flex-wrap:wrap;gap:10px;align-content:flex-start}
+.cnode{width:104px;height:56px;border:1px dashed #b3b3b3;border-radius:3px;background:#fff;
+  font-size:10px;color:#a5a5a5;display:flex;align-items:center;justify-content:center;text-align:center}
+.canvas-tree{display:none;flex:1;min-height:120px;border:1px dashed #c0c0c0;background:#fafafa;
+  border-radius:3px;padding:8px;overflow:auto}
+.statestrip{position:absolute;left:6px;right:6px;bottom:6px;display:flex;gap:5px;
+  background:rgba(255,255,255,.93);border:1px dashed #c6c6c6;border-radius:3px;padding:3px 5px}
+.statetile{flex:1;min-width:0;border:1px solid #dcdcdc;border-radius:2px;background:#f4f4f4;
+  font-size:10px;color:#8d8d8d;text-align:center;padding:2px 0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.statetile b{display:block;font-weight:600;color:#6e6e6e;font-size:10px}
+
+/* 右侧区（P2 / P3 共用容器样式） */
+.sidepanel{display:flex;flex-direction:column;gap:5px;background:#f2f2f2;
+  min-height:0;overflow:hidden;position:relative;padding:17px 6px 6px}
+.stage[data-tier="wide"] .sidepanel{border:0;border-left:1.5px solid #b0b0b0;border-radius:0}
+.rc-body{flex:1;min-height:0;overflow:auto}
+.stage[data-tier="wide"] .p2right{width:250px;flex:0 0 250px}
+.stage[data-tier="wide"].p2right-collapsed .p2right{width:30px;flex:0 0 30px;padding-left:2px;padding-right:2px}
+.stage[data-tier="wide"].p2right-collapsed .p2right .rc-body,
+.stage[data-tier="wide"].p2right-collapsed .p2right .rc-toggle{display:none}
+.stage[data-tier="wide"].p2right-collapsed .p2right .rc-collapsed-label{display:block}
+.rc-collapsed-label{display:none;font-size:10px;color:#888;writing-mode:vertical-rl;letter-spacing:2px;margin:0 auto;cursor:pointer;border:1px dashed #bbb;border-radius:2px;padding:3px 1px}
+.rc-collapsed-label:hover{background:#e8e8e8}
+
+/* ================= P3 节点工作页 ================= */
+.p3-row{flex:1;display:flex;min-height:0}
+.p3-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+.chatflow{flex:1;min-height:0;overflow:auto;padding:17px 8px 6px}
+.msg{border:1px solid #e0e0e0;background:#fafafa;border-radius:3px;padding:5px 7px;margin:5px 0}
+.msg .who{font-size:10px;color:#9a9a9a;margin-bottom:2px}
+.statestrip-inline{display:flex;gap:5px;border:1px dashed #c6c6c6;border-radius:3px;padding:3px 5px;background:#fafafa;margin-top:5px;flex-wrap:wrap}
+.strip-cap{flex:0 0 auto;font-size:10px;color:#8d8d8d;align-self:center;padding:0 4px}
+/* P3 覆盖层：确认弹层示意（模态占位，不参与主区布局） */
+.p3-overlay{position:absolute;right:14px;bottom:74px;width:196px;z-index:20;background:rgba(255,255,255,.96);border-style:solid;box-shadow:0 3px 10px rgba(0,0,0,.16)}
+.stage[data-tier="narrow"] .p3-overlay{right:8px;bottom:66px;width:170px}
+.reviewdock{flex:0 0 auto;margin:0 8px 6px}
+.inputdock{flex:0 0 auto;display:flex;gap:6px;align-items:center;
+  padding:16px 8px 7px;background:#f5f5f5;border-top:1.5px solid #b0b0b0;position:relative}
+.inputbox{flex:1;border:1px solid #c8c8c8;background:#fff;border-radius:3px;padding:6px 8px;
+  font-size:11px;color:#b0b0b0;min-height:34px}
+
+/* 双右列：同一右侧列容器内两个读面 */
+.p3right{display:flex;flex-direction:row;gap:0}
+.face{display:flex;flex-direction:column;min-width:0;overflow:hidden;
+  background:#f4f4f4;border-left:1px dashed #c9c9c9;position:relative;padding:17px 5px 5px}
+.face .rgl{background:#6e6e6e}
+.face-outer{background:#efefef}
+.stage[data-tier="wide"] .face-inner{width:172px;flex:0 0 172px}
+.stage[data-tier="wide"] .face-outer{width:216px;flex:0 0 216px}
+.stage[data-tier="wide"] .face.collapsed{width:28px;flex:0 0 28px;padding-left:1px;padding-right:1px}
+.stage[data-tier="wide"] .face.collapsed .fc-body,
+.stage[data-tier="wide"] .face.collapsed>.tb-btn{display:none}
+.stage[data-tier="wide"] .face.collapsed .fc-vlabel{display:block}
+.fc-vlabel{display:none;font-size:10px;color:#888;writing-mode:vertical-rl;letter-spacing:2px;margin:0 auto;cursor:pointer;border:1px dashed #bbb;border-radius:2px;padding:3px 1px}
+.fc-vlabel:hover{background:#e6e6e6}
+.fc-body{flex:1;min-height:0;overflow:auto}
+.p3tabs{display:none;gap:4px;margin-bottom:4px}
+.p3tabs .tb-btn{flex:1;text-align:center;font-size:11px;padding:3px 4px}
+.p3tabs .tb-btn.on{background:#5a5a5a;color:#fff;border-color:#4a4a4a}
+/* 中/窄档：两读面在同一抽屉内互斥切换 */
+.stage[data-tier="mid"] .p3tabs,.stage[data-tier="narrow"] .p3tabs{display:flex}
+.stage[data-tier="mid"] .p3right .face,
+.stage[data-tier="narrow"] .p3right .face{display:none;width:auto;flex:1 1 auto;border-left:0}
+.stage[data-tier="mid"] .p3right .face.active,
+.stage[data-tier="narrow"] .p3right .face.active{display:flex}
+
+/* ================= P4 设置页 ================= */
+.p4-topbar{display:flex;align-items:center;gap:7px;flex:0 0 auto;
+  padding:16px 8px 6px;background:#f5f5f5;border-bottom:1.5px solid #c0c0c0;min-height:48px}
+.p4-row{flex:1;display:flex;gap:8px;padding:8px;min-height:0}
+.p4-nav{flex:0 0 172px;display:flex;flex-direction:column;gap:3px;overflow:auto}
+.p4-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto}
+.p4-pop{flex:0 0 auto;margin:0 8px 8px}
+
+/* ---------- 窄档整页抽屉（左栏） ---------- */
+.leftdrawer{display:none;position:absolute;inset:0;z-index:60;background:#efefef;
+  flex-direction:column;gap:6px;padding:17px 8px 8px;overflow:auto}
+.stage[data-tier="narrow"].left-open .leftdrawer{display:flex}
+
+/* ---------- 三档形态 ---------- */
+.stage[data-tier="wide"] .leftnav{width:206px;flex:0 0 206px}
+.stage[data-tier="mid"] .leftnav{width:55px;flex:0 0 55px;padding:17px 3px 6px;align-items:center}
+.stage[data-tier="mid"] .leftnav .lt{display:none}
+.stage[data-tier="mid"] .leftnav .ln-note{display:none}
+.stage[data-tier="mid"] .leftnav .ln-brand{font-size:9px}
+.stage[data-tier="mid"] .leftnav .ln-item,
+.stage[data-tier="mid"] .leftnav .tn{justify-content:center;padding:5px 2px}
+.stage[data-tier="mid"] .tb-drawerbtn{display:inline-flex}
+.stage[data-tier="mid"] .sidepanel{position:absolute;top:0;right:0;bottom:0;width:330px;
+  z-index:40;display:none;border-left:2px solid #8d8d8d;box-shadow:-6px 0 16px rgba(0,0,0,.14);
+  border-radius:0;padding:17px 8px 8px}
+.stage[data-tier="mid"].right-open .sidepanel{display:flex}
+.stage[data-tier="narrow"] .leftnav{display:none}
+.stage[data-tier="narrow"] .tb-burger{display:inline-flex}
+.stage[data-tier="narrow"] .tb-drawerbtn{display:inline-flex}
+.stage[data-tier="narrow"] .tb-title{display:none}
+.stage[data-tier="narrow"] .tb-btn{font-size:11px;padding:3px 6px}
+.stage[data-tier="narrow"] .sidepanel{position:absolute;inset:0;width:auto!important;z-index:50;
+  display:none;border-left:0;border-radius:0;padding:17px 8px 8px}
+.stage[data-tier="narrow"].right-open .sidepanel{display:flex}
+.stage[data-tier="narrow"] .canvas-surface{display:none}
+.stage[data-tier="narrow"] .canvas-tree{display:block}
+.stage[data-tier="narrow"] .p1-grid{flex-direction:column}
+
+/* 抽屉里的关闭条 */
+.drawer-close{display:none;justify-content:space-between;align-items:center;gap:6px;margin-bottom:2px}
+.stage[data-tier="mid"] .drawer-close,
+.stage[data-tier="narrow"] .drawer-close{display:flex}
+
+/* ---------- 覆盖层图例（视口下方，不遮挡页面） ---------- */
+.ovl{flex:0 0 auto}
+.ovl-grid{display:flex;flex-wrap:wrap;gap:6px}
+.ovl-item{flex:1 1 150px;min-width:140px;padding:15px 5px 5px;font-size:11px;color:#8a8a8a}
+
+/* ---------- 底部说明 ---------- */
+.footnote{margin-top:10px;font-size:11px;color:#8a8a8a;line-height:1.6}
+.footnote b{color:#666}
+</style>
+</head>
+<body>
+
+<!-- ============ 演示控件条（不属页面结构） ============ -->
+<header class="demo-bar" id="demoBar">
+  <div class="dt">CardColony web 端 · 页面框架 v1 · HTML 结构图</div>
+
+  <div class="dc">
+    <span>页面</span>
+    <div class="seg" data-seg="page">
+      <button data-v="p1" class="on">P1 续作入口页</button>
+      <button data-v="p2">P2 项目工作台页</button>
+      <button data-v="p3">P3 节点工作页</button>
+      <button data-v="p4">P4 设置页</button>
+    </div>
+  </div>
+
+  <div class="dc">
+    <span>布局档</span>
+    <div class="seg" data-seg="tier">
+      <button data-v="wide" class="on">宽 · 桌面/Pad横屏/外接屏</button>
+      <button data-v="mid">中 · Pad竖屏/分屏</button>
+      <button data-v="narrow">窄 · 手机</button>
+    </div>
+  </div>
+
+  <div class="dnote">
+    ※ 以上切换器是<b>演示控件，不属页面结构</b>。
+    切换页面 / 切换档位<b>均不重新取数</b>（纯前端形态迁移，已加载内容不丢）。
+    本图为结构图：灰色块＝占位内容，不是真实业务数据。
+  </div>
+</header>
+
+<!-- ============ 舞台 ============ -->
+<div class="stage" id="stage" data-page="p1" data-tier="wide">
+
+  <div class="viewport" id="viewport">
+
+    <!-- ---------- 常驻左栏 · 全局导航 ---------- -->
+    <aside class="leftnav rg" id="leftnav">
+      <span class="rgl">常驻左栏 · 全局导航</span>
+      <div class="ln-brand"><span class="lt">CardColony</span></div>
+      <div class="ln-nav">
+        <div class="ln-item on"><span class="li">▤</span><span class="lt">项目</span></div>
+        <div class="ln-item"><span class="li">☑</span><span class="lt">待办</span></div>
+        <div class="ln-item"><span class="li">⚙</span><span class="lt">设置</span></div>
+      </div>
+      <div class="ln-tree rg s">
+        <span class="rgl">项目树</span>
+        <div class="tn"><span class="li">▸</span><span class="lt">项目占位 A</span></div>
+        <div class="tn lv2"><span class="li">·</span><span class="lt">节点占位 A-1</span></div>
+        <div class="tn lv2"><span class="li">·</span><span class="lt">节点占位 A-2</span></div>
+        <div class="tn"><span class="li">▸</span><span class="lt">项目占位 B</span></div>
+      </div>
+      <div class="ln-note">宽档＝展开侧栏｜中档＝收为窄图标条｜窄档＝收为整页抽屉（汉堡按钮唤出）</div>
+      <div class="ln-note ln-note-p4"><b>P4：左栏容器保留，但无项目树</b>（设置页不承载项目上下文）。</div>
+    </aside>
+
+    <!-- ---------- 主列 ---------- -->
+    <div class="maincol">
+
+      <!-- 通用顶栏（四页共用） -->
+      <header class="topbar rg" id="topbar">
+        <span class="rgl">通用顶栏 · 全局入口（返回/查找/设置）＋全局状态指示＋待办入口角标</span>
+        <button class="tb-btn tb-burger" data-act="toggle" data-cls="left-open" title="唤出左栏整页抽屉">☰</button>
+        <button class="tb-btn">← 返回</button>
+        <span class="tb-title">页面标题 · 占位</span>
+        <span class="tb-spacer"></span>
+        <button class="tb-btn">查找</button>
+        <button class="tb-btn">设置</button>
+        <span class="chip">全局状态指示 · 占位</span>
+        <button class="tb-btn">待办<b class="badge">3</b></button>
+
+        <span class="tbslot" data-for="p3">
+          <button class="tb-btn strong">← 返回项目（一步入口）</button>
+        </span>
+        <span class="tbslot" data-for="p2">
+          <button class="tb-btn" title="事件层次级入口（诊断/审计视角 · 默认不展开）">事件层级</button>
+          <button class="tb-btn">⋯ 更多</button>
+        </span>
+
+        <button class="tb-btn tb-right tb-drawerbtn" data-act="toggle" data-cls="right-open" title="唤出右侧区抽屉 / 下潜">右侧区</button>
+      </header>
+
+      <div class="pagehost">
+
+        <!-- ============ P1 续作入口页 ============ -->
+        <section class="page" data-p="p1">
+          <div class="p1-body">
+
+            <div class="rg s">
+              <span class="rgl">页面出现条件（说明）</span>
+              <div class="ann">本页<b>仅在无续作目标时</b>出现：无未完成项目 / 无上次停留点 → 落到认领面。存在续作目标时直接进入 P2 项目工作台页。</div>
+            </div>
+
+            <div class="p1-grid">
+              <div class="p1-col rg">
+                <span class="rgl">主区 · 认领面（A）续作已有项目 · 列表</span>
+                <span class="ph">项目占位 A ｜ 最近更新占位 ｜ 进度占位</span>
+                <span class="ph">项目占位 B ｜ 最近更新占位 ｜ 进度占位</span>
+                <span class="ph">项目占位 C ｜ 最近更新占位 ｜ 进度占位</span>
+                <span class="ph">项目占位 D ｜ 最近更新占位 ｜ 进度占位</span>
+                <div class="ann">列表为空时在此位置呈现空态占位。</div>
+              </div>
+              <div class="p1-col rg">
+                <span class="rgl">主区 · 认领面（B）新建项目</span>
+                <span class="ph">项目名称占位</span>
+                <span class="ph">项目类型 / 模板占位</span>
+                <span class="ph">描述占位（多行）</span>
+                <span class="ph line" style="height:34px"></span>
+                <span class="ph">［ 创建 ］占位按钮</span>
+                <div class="ann">与左侧「续作已有项目」并列，同属认领面。</div>
+              </div>
+            </div>
+
+            <div class="p1-toast rg s">
+              <span class="rgl">toast 容器（全局共用 · 浮于主区之上）</span>
+              <span class="ph">占位提示消息行 —— 例：操作结果占位</span>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ============ P2 项目工作台页 ============ -->
+        <section class="page" data-p="p2">
+          <div class="p2-row">
+
+            <div class="p2-main">
+
+              <div class="viewtoolbar rg">
+                <span class="rgl">视图工具条（页内工具，作用于当前主视图）</span>
+                <button class="tb-btn">缩放 −</button>
+                <button class="tb-btn">缩放 ＋</button>
+                <span class="vt-sep"></span>
+                <button class="tb-btn">适配</button>
+                <button class="tb-btn">整理</button>
+                <span class="vt-sep"></span>
+                <span class="chip">当前视图：<span id="p2viewName">待办视图</span></span>
+              </div>
+
+              <div class="viewhost rg" id="viewhost" data-view="todo">
+                <span class="rgl">主区 · 项目层视图宿主（三个平级视图，可切换）</span>
+
+                <div style="display:flex;gap:5px;margin-bottom:5px;flex-wrap:wrap">
+                  <button class="tb-btn vsw on" data-act="p2view" data-view="todo">待办视图</button>
+                  <button class="tb-btn vsw" data-act="p2view" data-view="timeline">时间线视图</button>
+                  <button class="tb-btn vsw" data-act="p2view" data-view="canvas">组织结构（画布）视图</button>
+                </div>
+
+                <div class="vpane vp-todo">
+                  <span class="ph">待办项占位 · 标题 ｜ 责任人 ｜ 截止占位</span>
+                  <span class="ph">待办项占位 · 标题 ｜ 责任人 ｜ 截止占位</span>
+                  <span class="ph">待办项占位 · 标题 ｜ 责任人 ｜ 截止占位</span>
+                  <span class="ph">待办项占位 · 标题 ｜ 责任人 ｜ 截止占位</span>
+                </div>
+
+                <div class="vpane vp-timeline">
+                  <div class="tl-row"><span class="tl-label">泳道占位 1</span><span class="tl-bar" style="flex:0 0 18%"></span><span class="tl-bar" style="flex:0 0 30%;margin-left:4%"></span></div>
+                  <div class="tl-row"><span class="tl-label">泳道占位 2</span><span class="tl-bar" style="flex:0 0 26%;margin-left:12%"></span><span class="tl-bar" style="flex:0 0 22%;margin-left:4%"></span></div>
+                  <div class="tl-row"><span class="tl-label">泳道占位 3</span><span class="tl-bar" style="flex:0 0 40%;margin-left:6%"></span></div>
+                  <div class="tl-row"><span class="tl-label">时间刻度</span><span style="font-size:10px;color:#b0b0b0">刻度占位 ─────────────────────</span></div>
+                </div>
+
+                <div class="vpane vp-canvas">
+                  <div class="canvas-surface">
+                    <div class="cnode">节点占位<br>卡 A</div>
+                    <div class="cnode">节点占位<br>卡 B</div>
+                    <div class="cnode">节点占位<br>卡 C</div>
+                    <div class="cnode">节点占位<br>卡 D</div>
+                    <div class="cnode">节点占位<br>卡 E</div>
+                    <div class="ann" style="flex-basis:100%">画布区域：中档下仍占主区完整宽高（右侧区收为抽屉后画布不被挤压）。</div>
+                  </div>
+                  <div class="canvas-tree">
+                    <div class="ann">窄档：画布退为列表 / 树（同一份项目层结构，换呈现形态，不重新取数）。</div>
+                    <div class="tn"><span class="li">▸</span><span class="lt">节点占位 卡 A</span></div>
+                    <div class="tn lv2"><span class="li">·</span><span class="lt">节点占位 卡 B</span></div>
+                    <div class="tn lv2"><span class="li">·</span><span class="lt">节点占位 卡 C</span></div>
+                    <div class="tn"><span class="li">▸</span><span class="lt">节点占位 卡 D</span></div>
+                    <div class="tn lv2"><span class="li">·</span><span class="lt">节点占位 卡 E</span></div>
+                  </div>
+                </div>
+
+                <div class="statestrip">
+                  <div class="statetile"><b>加载</b>骨架占位</div>
+                  <div class="statetile"><b>空</b>空态占位</div>
+                  <div class="statetile"><b>错误</b>错误占位</div>
+                  <div class="statetile"><b>无权限</b>无权限占位</div>
+                  <span style="flex:0 0 auto;font-size:10px;color:#8d8d8d;align-self:center;padding:0 4px">视图内状态区（就地·四态示意）</span>
+                </div>
+              </div>
+
+              <div class="ann" style="margin:5px 8px 6px">
+                <b>事件层次级入口</b>＝顶栏图标「事件层级」／「⋯ 更多」菜单内条目。
+                <b>不与主视图平级</b>（待办 / 时间线 / 画布才是主视图平级切换）；
+                其定位为<b>诊断 / 审计视角 · 默认不展开</b>。
+              </div>
+            </div>
+
+            <aside class="sidepanel p2right rg" id="p2right">
+              <span class="rgl">可折叠右侧区 · 上下文 / 规则读面</span>
+              <div class="drawer-close">
+                <span style="font-size:10px;color:#888">中/窄档下为抽屉/下潜</span>
+                <button class="tb-btn" data-act="close" data-cls="right-open">✕ 关闭</button>
+              </div>
+              <div class="rc-toggle" style="display:flex;gap:4px">
+                <button class="tb-btn" data-act="toggle" data-cls="p2right-collapsed">收起</button>
+              </div>
+              <div class="rc-body">
+                <div class="ph">读面标题占位</div>
+                <span class="ph">上下文条目占位</span>
+                <span class="ph">上下文条目占位</span>
+                <span class="ph">规则条目占位</span>
+                <span class="ph">规则条目占位</span>
+                <span class="ph line"></span>
+                <span class="ph line"></span>
+              </div>
+              <div class="rc-collapsed-label" data-act="toggle" data-cls="p2right-collapsed" title="展开右侧区">上下文/规则</div>
+            </aside>
+
+          </div>
+        </section>
+
+        <!-- ============ P3 节点工作页 ============ -->
+        <section class="page" data-p="p3">
+          <div class="p3-row">
+
+            <div class="p3-main">
+              <div class="chatflow rg">
+                <span class="rgl">主区 · session 视图宿主（对话流）</span>
+                <div class="msg"><div class="who">角色占位 · 轮次占位</div><span class="ph">对话内容占位 —— 单行/多行示意</span></div>
+                <div class="msg"><div class="who">角色占位 · 轮次占位</div><span class="ph">对话内容占位</span><span class="ph">对话内容占位</span></div>
+                <div class="msg"><div class="who">工具 / 事件占位</div><span class="ph">工具卡片占位</span></div>
+                <div class="msg"><div class="who">角色占位 · 轮次占位</div><span class="ph">对话内容占位</span></div>
+                <div class="statestrip-inline">
+                  <div class="statetile"><b>加载</b>骨架占位</div>
+                  <div class="statetile"><b>空</b>空态占位</div>
+                  <div class="statetile"><b>错误</b>错误占位</div>
+                  <div class="statetile"><b>无权限</b>无权限占位</div>
+                  <span class="strip-cap">就地状态区（就地·四态示意，不跳页、不阻断输入）</span>
+                </div>
+              </div>
+
+              <div class="reviewdock rg s">
+                <span class="rgl">评审下潜区（页面私有 · 非模态）</span>
+                <div class="ann"><b>非模态、不阻断主区输入、可与主区并存</b>：展开时对话流与输入停靠区照常可用。</div>
+                <span class="ph">评审条目占位 ｜ 意见占位</span>
+              </div>
+
+              <div class="inputdock rg">
+                <span class="rgl">底部固定输入停靠区（发送 / 停止）</span>
+                <div class="inputbox">输入占位……</div>
+                <button class="tb-btn strong">发送</button>
+                <button class="tb-btn">停止</button>
+              </div>
+            </div>
+
+            <!-- P3 覆盖层：确认弹层示意 -->
+            <div class="p3-overlay rg" id="p3overlay">
+              <span class="rgl">覆盖层 · 确认弹层示意（模态 · 同一时刻至多一个）</span>
+              <span class="ph">确认文案占位</span>
+              <span class="ph">［ 确认 ］［ 取消 ］占位</span>
+            </div>
+
+            <aside class="sidepanel p3right rg" id="p3right">
+              <span class="rgl">同一右侧列容器 · 双右列（两个读面）</span>
+              <div class="drawer-close">
+                <span style="font-size:10px;color:#888">中/窄档：本容器为抽屉/下潜，两读面互斥切换</span>
+                <button class="tb-btn" data-act="close" data-cls="right-open">✕ 关闭</button>
+              </div>
+              <div class="p3tabs">
+                <button class="tb-btn" data-act="p3tab" data-tab="inner">内侧 · 上下文/规则</button>
+                <button class="tb-btn on" data-act="p3tab" data-tab="outer">外侧 · 本节点明细（默认）</button>
+              </div>
+
+              <div class="face face-inner" data-face="inner">
+                <span class="rgl">内侧读面 · 上下文/规则（次）</span>
+                <button class="tb-btn" data-act="face" data-face="inner" style="align-self:flex-start;margin-bottom:3px">收起</button>
+                <div class="fc-body">
+                  <span class="ph">上下文条目占位</span>
+                  <span class="ph">上下文条目占位</span>
+                  <span class="ph">规则条目占位</span>
+                </div>
+                <div class="fc-vlabel" data-act="face" data-face="inner" title="展开内侧读面">上下文/规则（次）</div>
+              </div>
+
+              <div class="face face-outer active" data-face="outer">
+                <span class="rgl">外侧读面 · 本节点明细（主）</span>
+                <button class="tb-btn" data-act="face" data-face="outer" style="align-self:flex-start;margin-bottom:3px">收起</button>
+                <div class="fc-body">
+                  <div class="ann">验收 / 介入的首要读面。</div>
+                  <span class="ph">节点标题占位</span>
+                  <span class="ph">负责 / 状态 / 阶段占位</span>
+                  <span class="ph">现状摘要占位</span>
+                  <span class="ph line"></span>
+                  <span class="ph line"></span>
+                  <span class="ph">［ 介入 ］［ 验收 ］占位操作</span>
+                </div>
+                <div class="fc-vlabel" data-act="face" data-face="outer" title="展开外侧读面">本节点明细（主）</div>
+              </div>
+            </aside>
+
+          </div>
+        </section>
+
+        <!-- ============ P4 设置页 ============ -->
+        <section class="page" data-p="p4">
+
+          <div class="p4-topbar rg">
+            <span class="rgl">页内顶栏（返回来源 ＋ 保存态）</span>
+            <button class="tb-btn">← 返回来源</button>
+            <span class="tb-spacer"></span>
+            <span class="chip">保存态：已保存 / 保存中 / 未保存（占位）</span>
+          </div>
+
+          <div class="p4-row">
+            <div class="p4-nav rg s">
+              <span class="rgl">左侧固定分区导航（本页固定，不随项目树变化）</span>
+              <div class="ln-item on"><span class="lt">分区占位 · 常规</span></div>
+              <div class="ln-item"><span class="lt">分区占位 · 模型</span></div>
+              <div class="ln-item"><span class="lt">分区占位 · 权限</span></div>
+              <div class="ln-item"><span class="lt">分区占位 · 通知</span></div>
+              <div class="ln-item"><span class="lt">分区占位 · 其它</span></div>
+            </div>
+
+            <div class="p4-main rg">
+              <span class="rgl">主区 · 当前设置分区（内容占位）</span>
+              <div class="ann">本页<b>左栏容器保留但无项目树</b>（见左栏内标注）；设置页与项目上下文解耦。</div>
+              <span class="ph">设置项占位 · 标签 + 控件</span>
+              <span class="ph">设置项占位 · 标签 + 控件</span>
+              <span class="ph">设置项占位 · 标签 + 控件</span>
+              <span class="ph">设置项占位 · 标签 + 控件</span>
+              <span class="ph line"></span>
+              <span class="ph line"></span>
+            </div>
+          </div>
+
+          <div class="p4-pop rg s">
+            <span class="rgl">本页弹层容器（仅本页生效）</span>
+            <span class="ph">弹层占位 —— 仅在本页生命周期内有效，离开设置页即销毁</span>
+          </div>
+        </section>
+
+      </div><!-- /pagehost -->
+    </div><!-- /maincol -->
+
+    <!-- ---------- 窄档：左栏整页抽屉 ---------- -->
+    <div class="leftdrawer rg" id="leftdrawer">
+      <span class="rgl">左栏（窄档形态）· 整页抽屉 · 汉堡按钮唤出</span>
+      <div class="drawer-close">
+        <span style="font-size:10px;color:#888">整页抽屉：覆盖主区，同一时刻只有一个</span>
+        <button class="tb-btn" data-act="close" data-cls="left-open">✕ 关闭</button>
+      </div>
+      <div class="ln-item on"><span class="li">▤</span><span class="lt">项目</span></div>
+      <div class="ln-item"><span class="li">☑</span><span class="lt">待办</span></div>
+      <div class="ln-item"><span class="li">⚙</span><span class="lt">设置</span></div>
+      <div class="ln-tree rg s" style="flex:1;min-height:0">
+        <span class="rgl">项目树（随左栏一起收进抽屉）</span>
+        <div class="tn"><span class="li">▸</span><span class="lt">项目占位 A</span></div>
+        <div class="tn lv2"><span class="li">·</span><span class="lt">节点占位 A-1</span></div>
+        <div class="tn lv2"><span class="li">·</span><span class="lt">节点占位 A-2</span></div>
+        <div class="tn"><span class="li">▸</span><span class="lt">项目占位 B</span></div>
+      </div>
+      <div class="ln-note ln-note-p4"><b>P4：左栏容器保留，但无项目树</b>（设置页不承载项目上下文）。</div>
+    </div>
+
+  </div><!-- /viewport -->
+
+  <!-- ---------- 覆盖层图例 ---------- -->
+  <div class="ovl rg">
+    <span class="rgl">覆盖层（浮于页面之上）· 全局共用：toast / 通知面板 ｜ 页面私有：模态 / 抽屉（同一时刻至多一个模态）</span>
+    <div class="ovl-grid">
+      <div class="rg s ovl-item"><span class="rgl">toast（全局共用）</span>浮现于当前页，不占布局</div>
+      <div class="rg s ovl-item"><span class="rgl">通知面板（全局共用）</span>四页共用同一面板</div>
+      <div class="rg s ovl-item"><span class="rgl">模态（页面私有）</span>同一时刻至多一个</div>
+      <div class="rg s ovl-item"><span class="rgl">抽屉（页面私有）</span>中/窄档的右侧区即此形态</div>
+      <div class="rg s ovl-item"><span class="rgl">P3 · 确认弹层示意</span>页面私有模态示例</div>
+      <div class="rg s ovl-item"><span class="rgl">P4 · 本页弹层容器</span>仅本页生效</div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <b>说明：</b>本页是<b>结构图</b>，不是产品设计稿／高保真视觉稿；配色与字号不在此决定（视觉规范另立一项工作）。
+    灰色块一律为<b>占位内容</b>，不含任何真实业务数据。
+    <br><b>三档形态：</b>宽档＝左栏展开＋主区＋右侧区并排（P3 双右列并排、各自可独立收起）；
+    中档＝左栏收为图标条＋右侧区收为抽屉（P3 两读面在同一抽屉内互斥切换，默认呈现本节点明细）＋画布仍占主区完整宽高；
+    窄档＝左栏收为整页抽屉（汉堡唤出）＋右侧区下潜＋画布可退为列表/树。
+  </div>
+
+</div><!-- /stage -->
+
+<script>
+(function(){
+  var stage = document.getElementById('stage');
+  var viewhost = document.getElementById('viewhost');
+  var viewName = document.getElementById('p2viewName');
+
+  function qa(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s));}
+  function on(sel, el, root){
+    qa(sel, root).forEach(function(x){x.classList.remove('on');});
+    if(el) el.classList.add('on');
+  }
+
+  /* 演示控件：页面 / 档位 */
+  qa('.seg').forEach(function(seg){
+    seg.addEventListener('click', function(e){
+      var b = e.target.closest('button');
+      if(!b || !seg.contains(b)) return;
+      qa('button', seg).forEach(function(x){x.classList.remove('on');});
+      b.classList.add('on');
+      if(seg.dataset.seg === 'page'){
+        stage.dataset.page = b.dataset.v;
+      } else {
+        stage.dataset.tier = b.dataset.v;
+        stage.classList.remove('left-open','right-open');
+      }
+    });
+  });
+
+  /* 页内动作 */
+  document.addEventListener('click', function(e){
+    var t = e.target.closest('[data-act]');
+    if(!t) return;
+    var act = t.dataset.act;
+
+    if(act === 'toggle'){ stage.classList.toggle(t.dataset.cls); return; }
+    if(act === 'close'){ stage.classList.remove(t.dataset.cls); return; }
+
+    if(act === 'p2view'){
+      var v = t.dataset.view;
+      viewhost.dataset.view = v;
+      on('.vsw', t, viewhost);
+      var names = {todo:'待办视图', timeline:'时间线视图', canvas:'组织结构（画布）视图'};
+      viewName.textContent = names[v];
+      return;
+    }
+
+    if(act === 'p3tab'){
+      var face = t.dataset.tab;
+      on('[data-act="p3tab"]', t, document.getElementById('p3right'));
+      qa('.p3right .face').forEach(function(f){
+        f.classList.toggle('active', f.dataset.face === face);
+      });
+      return;
+    }
+
+    if(act === 'face'){
+      var el = document.querySelector('.face[data-face="' + t.dataset.face + '"]');
+      if(el) el.classList.toggle('collapsed');
+      return;
+    }
+  });
+})();
+</script>
+</body>
+</html>

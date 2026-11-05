@@ -34,7 +34,7 @@ def test_is_ours_only_under_whitelist_roots():
 
 
 def test_whitelist_default_root_is_repo_works():
-    """>> 白名单默认根 = 仓库的 works/（每张 coder 卡的工作目录都在这儿）。"""
+    """>> 白名单默认根 = 仓库的 works/（每张 worker 卡的工作目录都在这儿）。"""
     roots = [str(p) for p in cl.DEFAULT_WORK_ROOTS]
     assert roots and roots[0].lower().endswith("works"), roots
 

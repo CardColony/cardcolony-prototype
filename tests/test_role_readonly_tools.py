@@ -69,14 +69,14 @@ def test_role_perms_in_config_include_readonly_but_not_tools_file():
             f"{cls}.role 不该有 tools_file——那会连写盘与 shell 一起开给离树角色"
 
 
-def test_coder_keeps_full_file_rights():
-    """回归保护：拆开关不能削弱编程卡（它原来就有 tools_file，必须仍然全权）。"""
+def test_worker_keeps_full_file_rights():
+    """回归保护：拆开关不能削弱worker 卡（它原来就有 tools_file，必须仍然全权）。"""
     import pathlib
 
     cfg = json.loads(
         (pathlib.Path(__file__).resolve().parents[1]
          / "config" / "permissions.json").read_text(encoding="utf-8"))
-    coder_perms = cfg["permissions"]["rd_project"]["coder"]
+    coder_perms = cfg["permissions"]["rd_project"]["worker"]
     assert "tools_file" in coder_perms
     assert policy.has_perm({"perms": coder_perms}, policy.SWITCH_TOOLS_FILE) is True
     assert policy.has_perm({"perms": coder_perms}, policy.SWITCH_TOOLS_READ_FILE) is True

@@ -35,7 +35,7 @@ _TURN_END_POLICY = {
     "when": {"all": [
         {"event": {"types": ["done"], "within": "turn",
                    "where": {"card_type": {
-                       "in": ["coder", "sub_project", "topic"]}}}},
+                       "in": ["worker", "sub_project", "topic"]}}}},
         {"not": {"event": {"types": ["tool_result"], "within": "turn",
                            "where": {"tool": "report_up", "ok": True}}}},
         {"any": [

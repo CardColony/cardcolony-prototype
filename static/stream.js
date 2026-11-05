@@ -124,10 +124,10 @@ const BOARD_CFG = Object.assign(
 
   /** 卡间消息类型（Ⅰ：config/message_type_registry.json）→ 中文显示名 */
   // [2026-10-26] 补齐新增的卡间消息类型（原来只有 ask/answer/notify，
-  // 导致 msg_sync / msg_report / msg_directive / coder_done 显示成原始类型码）
+  // 导致 msg_sync / msg_report / msg_directive / worker_done 显示成原始类型码）
   const CARD_MSG_DISPLAY = { msg_ask: "询问", msg_answer: "应答", msg_notify: "通知",
                              msg_sync: "同步", msg_report: "汇报",
-                             msg_directive: "指令", coder_done: "完工回报" };
+                             msg_directive: "指令", coder_done: "完工回报", worker_done: "完工回报" };
 
   function chatEl() {
     return document.getElementById("chatArea");

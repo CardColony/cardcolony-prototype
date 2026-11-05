@@ -361,9 +361,9 @@ def test_team_function_region_retired_when_catalog_on(sandbox, monkeypatch, tmp_
 
 # ---------------------------------------------------------------- P-B 上下文
 
-def test_child_status_full_and_coder_skipped(sandbox):
+def test_child_status_full_and_worker_skipped(sandbox):
     """[用户令] 现状块全文注入不截断(覆盖写·单一最新,块本身有界);
-    coder 子卡没有现状块,不进本区。"""
+    worker 子卡没有现状块,不进本区。"""
     mk = context_regions.render_direct_child_status_region
     short = mk([{"card_id": "card_002", "title": "短卡",
                  "status_block": "已交付 A,等验收"}])
@@ -374,16 +374,16 @@ def test_child_status_full_and_coder_skipped(sandbox):
                "status_block": long_status}])
     assert out.count("x") == 5000                # 全文,一个字不砍
     assert "截断" not in out
-    # coder 子卡：不给「现状」（它没有现状块），但活性与使命照给——
-    # [2026-11-02 用户令] 父卡要知道编程卡跑没跑。
-    out2 = mk([{"card_id": "card_009", "title": "编程卡",
-                "status_block": "有东西也不注入", "card_type": "coder",
+    # worker 子卡：不给「现状」（它没有现状块），但活性与使命照给——
+    # [2026-11-02 用户令] 父卡要知道worker 卡跑没跑。
+    out2 = mk([{"card_id": "card_009", "title": "worker 卡",
+                "status_block": "有东西也不注入", "card_type": "worker",
                 "mission": "写排序模块", "activity": "运行中 · 已跑 3 轮"}])
-    assert "### card_009 · 编程卡" in out2 and "运行中 · 已跑 3 轮" in out2
+    assert "### card_009 · worker 卡" in out2 and "运行中 · 已跑 3 轮" in out2
     assert "写排序模块" in out2
-    assert "有东西也不注入" not in out2, "coder 的现状块不注入（用户令）"
+    assert "有东西也不注入" not in out2, "worker 的现状块不注入（用户令）"
     # 连活性/使命都没有（手工构造的空卡面）⇒ 不出现
-    assert mk([{"card_id": "card_010", "title": "空卡", "card_type": "coder"}]) == ""
+    assert mk([{"card_id": "card_010", "title": "空卡", "card_type": "worker"}]) == ""
 
 
 def test_region_guide_function_branch(sandbox):
