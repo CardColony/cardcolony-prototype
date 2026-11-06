@@ -17,8 +17,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
@@ -274,7 +276,137 @@ async def seed_work_functions(work_id: str):
 # [T17-B4] 跨项目导航树（一次请求拿全，避免 N+1）
 # ============================================================
 
-def _card_obj(m: dict, act: dict, child_count: int, wid: str) -> dict:
+#: [左栏标记 2026-11-05 · 用户令] 执行卡家族——静默折叠与「完工未上报」
+#: 蓝点的共同适用范围（与 nav_render.js 的 FOLD_QUIET_TYPES 同一份名单）。
+_EXEC_CARD_TYPES = frozenset({"worker", "ui", "qa_card", "pm_card"})
+#: 「已上报」的判定源＝**事件流**里的回执事件：worker 自动回执 worker_done
+#: （历史名 coder_done）、report_up／差事回执 → msg_report。
+#: ⚠ 不能读 messages 表——inbox 2026-10-27 已停用（card_tools.py:6148
+#: 注释），之后一切卡间消息落成「收件卡的会话事件」（works/{wid}/events/
+#: {收件卡}.jsonl，from= 写在 data.content 的 [[card-msg …]] 头里）。
+_REPORT_EVENT_TYPES = frozenset({"worker_done", "coder_done", "msg_report"})
+_REPORT_FROM_RE = re.compile(r"\bfrom=([^\s\]]+)")
+#: 回执与「完工/末次活跃」的时序宽限：自动回执在完工翻转后毫秒级发出、
+#: report_up 本身就是卡的最后动作——回执落在活跃前 N 秒内算「本轮已报」。
+#: 这个窗也给「续跑刷新」留了机械口：续跑重完工⇒完工时戳翻新，旧回执
+#: 落在窗之前 ⇒ 重新亮点（用户令「续跑的卡也要刷新状态」）。
+_REPORT_GRACE_MS = 120_000
+#: [左栏标记·存量豁免 2026-11-05 · 用户令「存量的卡不要生效，只对未来的卡」]
+#: 特征上线时刻＝分界线：**此前**已完工/已被堵的存量卡不亮（用户自己心里有数，
+#: 亮一片只会增加管理成本）。统一按 epoch 毫秒比较（_to_ms 归一）。
+_MARK_SINCE_ISO = "2026-11-05T16:30:00"
+_MARK_SINCE_MS = 1793867400000  # = 2026-11-05T16:30:00+08:00
+
+
+def _ts_ms(v) -> int:
+    """epoch 毫秒容错解析（nav 是关键路径，一个坏值不许炸全表）。"""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _to_ms(v) -> float:
+    """统一时戳→epoch 毫秒：ISO 串／epoch 秒浮点串／epoch 毫秒整数。失败 0。"""
+    try:
+        if v is None or v == "":
+            return 0.0
+        if isinstance(v, (int, float)):
+            f = float(v)
+            return f if f > 1e12 else f * 1000
+        s = str(v).strip()
+        if not s:
+            return 0.0
+        try:
+            f = float(s)
+            return f if f > 1e12 else f * 1000
+        except ValueError:
+            pass
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return dt.timestamp() * 1000
+    except Exception:
+        return 0.0
+
+
+#: 事件流增量扫的状态：每文件一个字节偏移量（事件只 append），只读
+#: 「上次扫后新追加」的部分。首扫尾取 64MB——覆盖分界线以来的全部追加；
+#: 更早的回执对 post-cutoff 完工没有抵扣力，不值得全量扫（最大文件 365MB）。
+_REPORT_TAIL_BYTES = 64 * 1024 * 1024
+_report_offsets: dict[str, int] = {}
+_report_latest: dict[str, dict[str, float]] = {}   # wid → {from_card: 最新回执ms}
+
+
+def _scan_report_events(work_id: str) -> dict[str, float]:
+    """扫 works/{wid}/events/*.jsonl 新追加字节里的回执事件，
+    返回 {from_card: 最新回执时刻(ms)}（进程内累计，nav 每次构建增量续扫）。"""
+    latest = _report_latest.setdefault(work_id, {})
+    ev_dir = card_store.WORKS_DIR / work_id / "events"
+    if not ev_dir.is_dir():
+        return latest
+    for p in ev_dir.glob("*.jsonl"):
+        try:
+            st = p.stat()
+            size = st.st_size
+        except OSError:
+            continue
+        key = str(p)
+        if key not in _report_offsets and st.st_mtime * 1000 < _MARK_SINCE_MS:
+            # mtime 早于分界线 ⇒ 不可能有抵扣得动的回执，记满偏移永不再扫
+            _report_offsets[key] = size
+            continue
+        off = _report_offsets.get(key)
+        if off is None or size < off:     # 首扫／文件被截断重建 ⇒ 尾取窗口
+            off = max(0, size - _REPORT_TAIL_BYTES)
+        if size == off:
+            continue
+        try:
+            with open(p, "rb") as f:
+                f.seek(off)
+                chunk = f.read(size - off)
+        except OSError:
+            continue
+        _report_offsets[key] = size
+        for raw in chunk.split(b"\n"):    # 半行首条 json.loads 会失败，自然丢弃
+            if (b"msg_report" not in raw and b"worker_done" not in raw
+                    and b"coder_done" not in raw):
+                continue
+            try:
+                ev = json.loads(raw.decode("utf-8", "replace"))
+            except Exception:
+                continue
+            if str(ev.get("type") or "") not in _REPORT_EVENT_TYPES:
+                continue
+            ts_ms = _to_ms(ev.get("ts") or ev.get("timestamp"))
+            frm = _REPORT_FROM_RE.search(
+                str((ev.get("data") or {}).get("content") or ""))
+            if not frm or not ts_ms:
+                continue
+            who = frm.group(1)
+            if ts_ms > float(latest.get(who) or 0):
+                latest[who] = ts_ms
+    return latest
+
+
+def _deploy_done_map(work_id: str) -> dict[str, bool]:
+    """场卡→差事已正常关账。收口顺序是「先回执后关账」⇒ done 账即报过；
+    无账（「无在派差事直置完工」那条路）＝没人报过。"""
+    out: dict[str, bool] = {}
+    try:
+        for d in function_store.deployment_history(work_id, limit=500):
+            if str(d.get("venue_kind") or "") == "deploy":
+                out[str(d.get("venue_ref") or "")] = True
+    except Exception:
+        pass
+    return out
+
+
+def _card_obj(m: dict, act: dict, child_count: int, wid: str,
+              rep_ms: dict | None = None,
+              dep_done: dict | None = None) -> dict:
     """[S1·R-05] 卡对象构造（/api/nav 与 /api/nav/children 共用，一套防漂移）。
 
     字段集合定格 9 项（S1·R-02 原 8 项 + [左栏接线 步1] card_type）：
@@ -287,6 +419,32 @@ def _card_obj(m: dict, act: dict, child_count: int, wid: str) -> dict:
     前端无从过滤；存量卡无此字段同样返回空串，前端按未知类型容错）。
     """
     cid = m.get("card_id", "")
+    ct = str(m.get("card_type") or "")
+    state_s = str(m.get("state") or "")
+    rts = float((rep_ms or {}).get(cid) or 0)
+    upd_ms = _to_ms(m.get("updated_at"))
+    goal_ms = _to_ms(m.get("goal_updated_at"))
+    own_ms = _to_ms(act.get(cid, {}).get("own", ""))
+    # [左栏标记·蓝点 2026-11-05 · 用户令] 完工/干过活但没向上交差 ⇒ 转圈位
+    # 蓝点＋不折叠＋点开即消。三类各一条判据：
+    #   worker：completed 且完工时戳≥分界线，且没有晚于完工的回执事件
+    #           （续跑重完工⇒完工时戳翻新，旧回执落在宽限窗外 ⇒ 重亮）；
+    #   ui    ：无完工态——「会话活跃晚于卡面更新」＝真跑过活，活跃≥分界
+    #           线且没交差（report_up 是它的完工宣告）；
+    #   qa/pm ：场卡完工必经「先回执后关账」⇒ 有 done 差事账即报过；
+    #           完工但没 done 账（无在派差事直置完工）＝没人报过。
+    if ct in ("qa_card", "pm_card"):
+        unrep = (state_s == "completed" and upd_ms >= _MARK_SINCE_MS
+                 and not (dep_done or {}).get(cid))
+    elif ct == "worker":
+        comp = goal_ms or upd_ms
+        unrep = (state_s == "completed" and comp >= _MARK_SINCE_MS
+                 and rts < comp - _REPORT_GRACE_MS)
+    elif ct == "ui":
+        unrep = (own_ms >= _MARK_SINCE_MS and own_ms > upd_ms
+                 and rts < own_ms - _REPORT_GRACE_MS)
+    else:
+        unrep = False
     return {
         "card_id": cid,
         "title": m.get("title", ""),
@@ -298,6 +456,14 @@ def _card_obj(m: dict, act: dict, child_count: int, wid: str) -> dict:
         "work_id": wid,
         "state": m.get("state", ""),
         "card_type": m.get("card_type", ""),
+        "unreported_done": unrep,
+        # [左栏标记·橘红点 2026-11-05 · 用户令] 断连/失败任务＝goal_state
+        # =blocked（驱动器放弃位，断连/跑挂都收敛到这；原因在
+        # goal_blocked_code/message）。同机制：亮橘红点＋不折叠＋点开即消。
+        # 存量豁免：goal_updated_at 在 _MARK_SINCE 之前的 blocked 不亮。
+        "goal_blocked": (
+            str(m.get("goal_state") or "") == "blocked"
+            and _ts_ms(m.get("goal_updated_at")) >= _MARK_SINCE_MS),
     }
 
 
@@ -369,6 +535,11 @@ async def _build_nav():
         # IO，work_027 ≈ 240 卡），跑在事件循环上时前端的高频 nav 轮询把
         # 循环占满 ⇒ 实测 /api/nav 21s、一切接口排队。语义不变（现算）。
         act = await asyncio.to_thread(activity.compute_card_activity, wid)
+        # [左栏标记·蓝点 2026-11-05] 「已上报」判定源＝事件流增量扫（回执
+        # 事件落在收件卡会话文件，inbox 表已停用）＋场卡差事账。两处都挪
+        # 线程池：首扫尾取 64MB×N 文件是同步 IO，不能堵事件循环。
+        rep_ms = await asyncio.to_thread(_scan_report_events, wid)
+        dep_done = await asyncio.to_thread(_deploy_done_map, wid)
         cards = []
         for m in metas:
             cid = m.get("card_id", "")
@@ -379,7 +550,8 @@ async def _build_nav():
             # [伴生评审卡 2026-10-27] 评审卡同样不进卡列表（离树、靠 review_of 配对）
             if str(m.get("card_type") or "") in ("function", "review"):
                 continue
-            cards.append(_card_obj(m, act, child_count.get(cid, 0), wid))
+            cards.append(_card_obj(m, act, child_count.get(cid, 0), wid,
+                                   rep_ms, dep_done))
         # 两段稳定排序：先并列收尾键 card_id 升序，再按活跃降序（空串排末位）
         cards.sort(key=lambda c: c["card_id"])
         cards.sort(key=lambda c: c["last_active_at"] or "", reverse=True)
@@ -485,9 +657,13 @@ async def get_nav_children(work_id: str = "", parent: str = ""):
         if p:
             child_count[p] = child_count.get(p, 0) + 1
     act = await asyncio.to_thread(activity.compute_card_activity, work_id)  # 同 /api/nav：挪线程池
+    # [左栏标记·蓝点 2026-11-05] 与 /api/nav 同口径：事件流扫＋差事账。
+    rep_ms = await asyncio.to_thread(_scan_report_events, work_id)
+    dep_done = await asyncio.to_thread(_deploy_done_map, work_id)
     eff_parent = parent or root_id
     cards = [
-        _card_obj(m, act, child_count.get(m.get("card_id", ""), 0), work_id)
+        _card_obj(m, act, child_count.get(m.get("card_id", ""), 0), work_id,
+                  rep_ms, dep_done)
         for m in metas
         if m.get("parent", "") == eff_parent
         # [职能实体化 A 案 2026-10-22] 职能不进卡树（它们走 functions 段）
@@ -497,7 +673,7 @@ async def get_nav_children(work_id: str = "", parent: str = ""):
     # 一并带上（排最后），否则异步灌段会把左栏的角色行冲掉。
     if not parent:
         cards.extend(
-            _card_obj(m, act, 0, work_id) for m in metas
+            _card_obj(m, act, 0, work_id, rep_ms, dep_done) for m in metas
             if str(m.get("card_type") or "") == "role"
         )
     # 与 /api/nav 同款两段稳定排序（card_id 升序收尾→活跃降序，刷新不跳序）

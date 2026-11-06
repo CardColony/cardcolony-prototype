@@ -430,6 +430,13 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
   animation: navspin 0.8s linear infinite;
 }
 @keyframes navspin { to { transform: rotate(360deg); } }
+/* [左栏标记 2026-11-05 · 用户令] 「该看一眼」点——与 .nav-run 同槽：
+   蓝点＝完工未上报；橘红点＝断连/失败（goal_state=blocked）。 */
+.nav-marks { flex: none; display: flex; align-items: center; gap: 3px; }
+.nav-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.nav-dot-done { background: #4c8dff; box-shadow: 0 0 4px rgba(76,141,255,.55); }
+.nav-dot-bad  { background: #ff6a3d; box-shadow: 0 0 4px rgba(255,106,61,.55); }
+.nav-card:hover .nav-marks, .nav-card.menu-open .nav-marks { opacity: 0; }
 /* [用户指正 2026-10-12] ⋯ 此前被渲染成 <button>，而这里漏了重置浏览器默认的边框与底色
    → 行尾浮出一个"莫名其妙的框"。样稿里它是 div 所以没暴露。此处补全重置，与样稿同观感。 */
 .nav-more, .nav-plus {
@@ -512,6 +519,31 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
   margin-right: 4px; border-radius: 4px; color: #56c8d8;
   border: 1px solid rgba(86, 200, 216, 0.5);
   background: rgba(86, 200, 216, 0.10);
+}
+/* [QA/PM 场卡图标 2026-11-05 · 用户令「各自设计icon，像UI卡和worker卡一样各自区别」]
+   QA 验收卡＝绿色对勾圆（验收＝过不过）；PM 执笔卡＝玫红铅笔（执笔＝写需求文档）。
+   颜色与画布 --cv-t-qa/--cv-t-pm 同源，三处一致。 */
+.nav-card.nav-qa .nav-ico.qa { color: #7ec97e; }
+.nav-card.nav-qa .nav-ctitle {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+}
+.nav-qa-badge {
+  flex: none; font-size: 9px; line-height: 14px; padding: 0 4px;
+  margin-right: 4px; border-radius: 4px; color: #7ec97e;
+  border: 1px solid rgba(126, 201, 126, 0.5);
+  background: rgba(126, 201, 126, 0.10);
+}
+.nav-card.nav-pm .nav-ico.pm { color: #dd8ab4; }
+.nav-card.nav-pm .nav-ctitle {
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 12.5px;
+}
+.nav-pm-badge {
+  flex: none; font-size: 9px; line-height: 14px; padding: 0 4px;
+  margin-right: 4px; border-radius: 4px; color: #dd8ab4;
+  border: 1px solid rgba(221, 138, 180, 0.5);
+  background: rgba(221, 138, 180, 0.10);
 }
 .nav-phead.has-alarm .nav-pname::after {
   content: ""; display: inline-block; width: 7px; height: 7px;
