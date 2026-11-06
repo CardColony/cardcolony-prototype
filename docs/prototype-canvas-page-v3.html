@@ -108,7 +108,17 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;heigh
 .world{position:absolute;left:0;top:0;width:2600px;height:1800px;transform-origin:0 0;will-change:transform}
 #wires{position:absolute;left:0;top:0;width:2600px;height:1800px;pointer-events:none;overflow:visible}
 .wire-p{stroke:var(--line3);stroke-width:1.4;fill:none}
-.wire-c{stroke:var(--accent);stroke-width:1.3;fill:none;stroke-dasharray:5 4;opacity:.62}
+/* 通信线＝**信息传递的那一下**，不常驻。旧系统原话（canvas.js:3940）：「这样画布上出现的
+   每一条通信线都意味着『刚刚发生了信息流动』」，只画 30 分钟窗口内发生过的传递；线用曲线
+   （穿过中间的卡时不会被误读成父子线），收件方一个实心点表示「信落到这里」。
+   这里的表达分三段：信号头沿曲线走过去（走过的地方才留下线）→ 到站停一下 → 整条渐隐消失。
+   全部按性能时钟逐帧算，不用 CSS 动画：SVG 每次重画都会把 CSS 动画重置到第一帧。 */
+.comm-tail{stroke:var(--accent);fill:none;stroke-linecap:round}
+.comm-head{fill:var(--accent)}
+.comm-head-glow{fill:var(--accent);opacity:.2}
+.comm-dot{fill:var(--accent)}
+.comm-dot-ring{fill:none;stroke:var(--accent);stroke-width:1.4}
+.comm-tag{font:10px var(--mono);fill:var(--accent)}
 .node{position:absolute;width:290px;min-height:84px;background:var(--surface);border:1px solid var(--line2);
   border-radius:5px;padding:0;display:flex;flex-direction:column;
   transform-origin:50% 50%;user-select:none;
@@ -155,16 +165,35 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;heigh
 .node[data-state="run"] .n-state{color:var(--run)}
 .node[data-state="done"] .sd{background:var(--done)}
 .node[data-state="done"] .n-state{color:var(--done)}
-.node[data-state="wait"] .sd{background:var(--wait)}
-.node[data-state="wait"] .n-state{color:var(--wait)}
+.node[data-state="paused"] .sd{background:var(--wait)}
+.node[data-state="paused"] .n-state{color:var(--wait)}
 .node[data-state="blocked"] .sd{background:var(--blocked)}
 .node[data-state="blocked"] .n-state{color:var(--blocked)}
-.node[data-state="archived"] .sd{background:var(--arch)}
-.node[data-state="archived"] .n-state{color:var(--arch)}
-.node[data-state="archived"]{opacity:.55;background:var(--surface2)}
-.node[data-state="archived"] .n-title .t{text-decoration:line-through;color:var(--text3)}
+/* 已归档不是卡片状态——归档＝cards 行被删、进 card_archive 表（card_store.py:1882-1890），
+   画布上不会再有它的节点。归档只在父卡旁留一个计数入口，样式见 .arch-tag。 */
 .archcode{font:10px var(--mono);color:var(--blocked);border:1px dashed rgba(224,101,92,.45);
   padding:0 4px;border-radius:3px;margin-left:4px;text-decoration:none!important}
+/* 归档入口：一个计数，不占画布格子。归档＝活卡表里已经没有这张卡了（card_store.py:1882-1890）。 */
+.ps-arch{display:inline-flex;align-items:center;gap:4px;background:none;border:1px solid var(--line2);
+  color:var(--text2);font:12px var(--ui);padding:2px 8px;border-radius:999px;cursor:pointer}
+.ps-arch:hover{background:var(--surface2);color:var(--text)}
+.arch-pop{position:fixed;top:52px;right:16px;width:352px;max-height:60vh;overflow:auto;z-index:70;
+  background:var(--surface);border:1px solid var(--line2);border-radius:10px;
+  box-shadow:0 12px 32px rgba(20,24,30,.18);display:none}
+.arch-pop.open{display:block}
+.ap-hd{padding:10px 12px;border-bottom:1px solid var(--line);font:600 12px var(--ui);color:var(--text)}
+.ap-hd span{font-weight:400;color:var(--text3)}
+.ap-row{padding:10px 12px;border-bottom:1px solid var(--line)}
+.ap-row:last-child{border-bottom:0}
+.ap-t{display:flex;align-items:baseline;gap:6px;font:13px var(--ui);color:var(--text)}
+.ap-code{font:10px var(--mono);color:var(--text3)}
+.ap-m{font:11px var(--mono);color:var(--text3);margin-top:3px}
+.ap-w{font:12px var(--ui);color:var(--text2);margin:5px 0 7px;line-height:1.5}
+.ap-empty{padding:14px 12px;color:var(--text3);font:12px var(--ui)}
+.rp-head{padding:10px 12px 8px;border-bottom:1px solid var(--line)}
+.rp-k{font:600 12px var(--ui);color:var(--text);display:flex;align-items:center;gap:6px}
+.rp-k::before{content:"";width:6px;height:6px;border-radius:2px;background:var(--accent)}
+.rp-v{font:11px var(--ui);color:var(--text3);margin-top:3px;line-height:1.5}
 .rule-panel{position:absolute;top:0;right:0;bottom:0;width:300px;background:var(--surface);
   border-left:1px solid var(--line);z-index:40;display:flex;flex-direction:column;
   transform:translateX(0);transition:transform .2s cubic-bezier(.4,0,.2,1);box-shadow:var(--shadow)}
@@ -178,6 +207,34 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;heigh
   background:var(--surface);border:1px solid var(--line);border-right:0;border-radius:6px 0 0 6px;
   display:grid;place-items:center;color:var(--text3);cursor:pointer;z-index:41;font-size:13px}
 .rp-handle:hover{color:var(--accent);background:var(--surface3)}
+/* 规则卡入口：贴在画布右缘的竖排小标签。**它是入口，不是面板**——
+   点开才出现规则卡本身（一张卡：看内容、可直接改）。 */
+.rule-entry{position:absolute;right:calc(var(--rp) + 10px);top:32%;transform:translateY(-50%);
+  display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 6px;z-index:44;
+  background:var(--surface);border:1px solid var(--line2);border-right:0;border-radius:6px 0 0 6px;
+  color:var(--text3);cursor:pointer;
+  transition:right .2s cubic-bezier(.4,0,.2,1),color .15s,background .15s}
+.rule-entry:hover,.rule-entry.on{color:var(--accent);background:var(--surface3)}
+/* 右缘浮窗（对话 392 / 规则卡 404）打开时，入口贴到浮窗左缘：
+   入口若留在原位就被压在浮窗下面，点上去落到浮窗上，开关就失灵了（实测过）。 */
+.stage.sheetOpen .rule-entry{right:calc(var(--rp) + 414px)}
+.rule-entry .re-ic{font-size:13px;line-height:1}
+.rule-entry .re-tx{font-size:10.5px;writing-mode:vertical-rl;letter-spacing:.14em;line-height:1}
+.rule-entry .re-n{font:9.5px var(--mono);color:var(--text3)}
+.rule-sheet{width:404px}
+.rc-meta{font:11px/1.7 var(--mono);color:var(--text3);padding:9px 12px;border-bottom:1px solid var(--line)}
+.rc-sec{padding:11px 12px;border-bottom:1px solid var(--line)}
+.rc-sec:last-child{border-bottom:0}
+.rc-sec.on{background:var(--surface2)}
+.rc-hd{display:flex;align-items:center;gap:6px;font:600 12px var(--ui);color:var(--text)}
+.rc-hd .rc-k{font:10px var(--mono);color:var(--text3);font-weight:400}
+.rc-hd .rc-badge{font:9.5px var(--mono);color:var(--accent);background:var(--accent-weak);padding:1px 5px;border-radius:4px}
+.rc-hd .rc-edit{margin-left:auto;height:22px;padding:0 8px;font-size:11px}
+.rc-tx{font:12px/1.75 var(--ui);color:var(--text2);margin-top:6px;white-space:pre-wrap}
+.rc-ta{width:100%;min-height:140px;margin-top:6px;padding:8px 9px;border:1px solid var(--accent);
+  border-radius:4px;background:var(--surface);color:var(--text);font:12px/1.75 var(--ui);resize:vertical;outline:none}
+.rc-acts{display:flex;align-items:center;gap:6px;margin-top:7px}
+.rc-hint{font:11px var(--ui);color:var(--text3)}
 .spec-sec{margin-bottom:14px}
 .spec-sec h4{margin:0 0 5px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);font-weight:600}
 .spec-sec p,.spec-sec li{font-size:12px;line-height:1.65;color:var(--text2);margin:0 0 3px}
@@ -363,7 +420,8 @@ body.anno .anno{display:grid}
 .world[data-lod="ultra"] .n-last{display:block}
 .world[data-lod="ultra"] .n-facts{display:none}
 .world[data-lod="far"] .node[data-state="blocked"]{box-shadow:inset 3px 0 0 var(--blocked)}
-.world[data-lod="far"] .node[data-state="wait"]{box-shadow:inset 3px 0 0 var(--wait)}
+.world[data-lod="far"] .node[data-state="paused"]{box-shadow:inset 3px 0 0 var(--wait)}
+.world[data-lod="far"] .node[data-state="queued"]{box-shadow:inset 3px 0 0 var(--run)}
 .node.flash{animation:nFlash 1.3s ease}
 @keyframes nFlash{0%,100%{outline:3px solid transparent;outline-offset:1px}25%,60%{outline:3px solid var(--accent);outline-offset:1px}}
 .node.collapsed{border-style:dashed}
@@ -438,7 +496,8 @@ body.anno .anno{display:grid}
           <div class="ctx-item" data-more="collapseAll">全部折叠</div>
           <div class="ctx-item" data-more="tidy">整理布局</div>
           <div class="ctx-sep"></div>
-          <div class="ctx-item" data-more="rulePanel">规则面板</div>
+          <div class="ctx-item" data-more="ruleCard">规则卡 · 查看编辑</div>
+          <div class="ctx-item" data-more="rulePanel">交互规格面板</div>
           <div class="ctx-item" data-more="commLines">关系线</div>
           <div class="ctx-item" data-more="parallel">并行对话层</div>
         </div>
@@ -457,8 +516,32 @@ body.anno .anno{display:grid}
       </div>
       <div class="states" id="states"></div>
 
+      <!-- 规则卡入口：在画布右侧。它是「进去看/改规则」的门，不是规则本身 -->
+      <button class="rule-entry" id="ruleEntry" title="规则卡：点开看内容，可直接编辑">
+        <span class="re-ic">▤</span><span class="re-tx">规则卡</span><span class="re-n" id="ruleEntryN">5</span>
+      </button>
+
+      <aside class="drawer rule-sheet" id="ruleCard" aria-label="规则卡">
+        <div class="dr-head">
+          <div style="min-width:0">
+            <div class="dr-title">规则卡</div>
+            <div class="dr-sub" id="ruleCardSub">规则 · 对本项目每一张卡都成立</div>
+          </div>
+          <button class="icon" data-close-drawer="ruleCard" style="margin-left:auto" title="关闭">✕</button>
+        </div>
+        <div class="dr-body" id="ruleCardBody"></div>
+        <div class="dr-foot">
+          <span class="rc-hint" id="ruleCardFoot">改动只在本页生效（演示），未落盘</span>
+          <button class="btn" id="ruleBackBtn" style="margin-left:auto">回画布</button>
+        </div>
+      </aside>
+
       <aside class="rule-panel" id="rulePanel" aria-label="规则面板">
         <button class="rp-handle" id="rpHandle" title="开合规则面板">›</button>
+        <div class="rp-head">
+          <div class="rp-k">交互规格</div>
+          <div class="rp-v">这块是原型的交互规格说明（信息项／动作／状态／边界）。<b>规则卡本体点画布右缘的「▤ 规则卡」入口</b>——它是一张卡，能看内容、能直接改。</div>
+        </div>
         <div class="rp-tabs">
           <button class="rp-tab on" data-rp="spec">交互规格</button>
           <button class="rp-tab" data-rp="key">键盘路径</button>
@@ -564,17 +647,28 @@ body.anno .anno{display:grid}
     </div>
   </div>
 </div>
+<div class="arch-pop" id="archPop">
+  <div class="ap-hd">已归档 <span id="archPopN"></span></div>
+  <div id="archPopBody"></div>
+</div>
 <script>
 const $=(s,r)=>(r||document).querySelector(s);
 const $$=(s,r)=>[...(r||document).querySelectorAll(s)];
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const NW=290, NH=84, ROWH=96;   // 节点世界尺寸；ROWH＝布局行距（LOD 改高度也不动摇，避免缩放反复）
 
-const STATE_LABEL={run:"运行中",wait:"待裁定",done:"已完成",blocked:"受阻",archived:"已归档"};
+/* 状态词＝后端真实取值，不是我编的。三层，互不替代：
+   ① 生命周期 state（config/card_type_registry.json → state_machine）：active / completed
+   ② 自动推进 goal_state（auto_driver.py，只有 auto_mode=true 才谈得上）：
+        active→running / paused→paused / complete→done / blocked→blocked（canvas.js:1843-1862）
+   ③ 实时推送 live（/api/nav/running 流）：running＝正在跑 / queued＝排队中（canvas.js:6648）
+   关键区别（旧系统原话）：running 是**动的**（呼吸），done/blocked/paused 是**静的**。
+   「待裁定」不是任何 state 字段的取值——它是卡面内容里的一条待办，不进状态词。 */
+const STATE_LABEL={run:"运行中",queued:"排队中",done:"已完成",blocked:"受阻",paused:"已暂停"};
 
 const NODES={
   root:{title:"底层重构",type:"项目根卡",code:"card_001",state:"run",parent:null,
-    facts:[["轮次",14],["步骤","收口"],["子卡",6],["引用",3]],
+    facts:[["轮次",14],["步骤","收口"],["子卡",5],["引用",3]],
     meta:"更新 10:31 · 6 张子卡",last:{who:"card_001",text:"画布页样张先定交互语言，视觉不进入本轮验收。",time:"10:31"},
     pos:{x:0,y:0}},
   prod:{title:"产品与交互需求",type:"子项目卡",code:"card_074",state:"run",parent:"root",
@@ -593,23 +687,19 @@ const NODES={
     facts:[["阻塞",3],["等谁","采购"],["引用",2]],
     meta:"停在 08:50 · 等外部确认",last:{who:"card_118",text:"三项依赖未回，缺签字不能往下排期。",time:"08:50"},
     pos:{x:0,y:0}},
-  base:{title:"术语与口径表",type:"工具卡",code:"card_132",state:"wait",parent:"root",
-    facts:[["待裁",2],["引用",6]],
-    meta:"停在 08:31 · 待裁定",last:{who:"card_132",text:"「受阻」和「待裁定」两词要不要合并，等你定。",time:"08:31"},
-    pos:{x:0,y:0}},
-  ops:{title:"构建与发布",type:"子项目卡",code:"card_021",state:"archived",parent:"root",arch:"ARCH-04",
-    facts:[["归档","11-03"],["引用",0]],
-    meta:"归档 11-03 · ARCH-04 并入 card_257",last:{who:"card_021",text:"发布线并入页面架构，本卡归档留痕。",time:"11-03"},
+  base:{title:"术语与口径表",type:"工具卡",code:"card_132",state:"paused",parent:"root",
+    facts:[["待定",2],["引用",6]],
+    meta:"停在 08:31 · 已暂停 · 等一个决定",last:{who:"card_132",text:"「受阻」和「待裁定」两词要不要合并，等你定。",time:"08:31"},
     pos:{x:0,y:0}},
   protoA:{title:"高保真原型 · 画布页",type:"UI 卡",code:"card_322",state:"run",parent:"prod",
     facts:[["版本","v3"],["缺陷","7 修"],["引用",3]],
     meta:"更新 10:41 · 本卡",last:{who:"card_322",text:"7 条已修，逐条浏览器复验中。",time:"10:41"},
     live:"正在写改动对照第 33 条：悬停摘要改成随内容自适应，流式输出时只留一行加光标……",
     pos:{x:0,y:0}},
-  protoB:{title:"高保真原型 · 对话页",type:"UI 卡",code:"card_319",state:"wait",parent:"prod",
+  protoB:{title:"高保真原型 · 对话页",type:"UI 卡",code:"card_319",state:"paused",parent:"prod",
     facts:[["版本","v1"],["待裁",1]],
     meta:"停在 09:58 · 等 token 定稿",last:{who:"card_319",text:"等画布页的组件表定稿再对齐。",time:"09:58"},
-    pos:{x:1040,y:220}},
+    pos:{x:0,y:0}},
   tokens:{title:"设计令牌与组件表",type:"工具卡",code:"card_305",state:"done",parent:"prod",
     facts:[["令牌",24],["组件",11]],
     meta:"收口 09:40 · 已冻结",last:{who:"card_305",text:"深浅两套令牌已冻结，组件表 11 项。",time:"09:40"},
@@ -626,14 +716,31 @@ const NODES={
     facts:[["用例",12],["证据",12]],
     meta:"收口 09:12 · 12/12",last:{who:"card_096",text:"命令与原始输出都在包内，第三方可独立复跑。",time:"09:12"},
     pos:{x:0,y:0}},
-  trace:{title:"手势轨迹留档",type:"工具卡",code:"card_331",state:"wait",parent:"protoA",
+  trace:{title:"手势轨迹留档",type:"工具卡",code:"card_331",state:"paused",parent:"protoA",
     facts:[["录制",4],["等",1]],
     meta:"停在 10:48 · 等真机复测",last:{who:"card_331",text:"合成事件能过，真滚轮与真手指要人工试一次。",time:"10:48"},
     pos:{x:0,y:0}}
 };
 
 Object.keys(NODES).forEach((k,i)=>{ if(NODES[k].ord==null) NODES[k].ord=i; });
-const COMM=[["prod","ext"],["arch","qa"],["protoA","protoB"]];
+/* 归档卡不进画布、不占槽位——后端 archive_card 把 cards 那一行**删掉**、整行 meta 存进
+   card_archive 表（card_store.py:1882-1890）。它已经不是活卡，画布上不可能有它的格子。
+   所以归档收成父卡旁的一个计数入口，点开才列出记录（可恢复）。 */
+const ARCHIVED=[{code:"card_021",title:"构建与发布",type:"子项目卡",parent:"root",
+  at:"11-03 14:20",reason:"ARCH-04",why:"发布线并入「页面架构及 UI/UE」，本卡留存过程"}];
+
+/* 通信线记录：每条＝一次真实发生过的消息传递，ago＝几秒前（演示窗口 12 秒，过期线自动消失）。
+   txt 只给悬停读，画布上不铺字——线表达的是「有东西过去了」，不是「过去的是什么」。 */
+const COMMS=[{a:"prod",b:"ext",ago:0.3,n:1,txt:"card_074 → card_118：依赖清单补齐三项，请重排期"},
+             {a:"arch",b:"qa",ago:1.1,n:1,txt:"card_257 → card_091：三条交互口径已提升，请按新判据复核"},
+             {a:"protoA",b:"protoB",ago:26,n:1,txt:"card_322 → card_319：组件表定稿，可对齐"}];
+/* 一次传递在画布上的三段：信号沿曲线走过去 → 到站停一下 → 整条渐隐消失。
+   时长按性能时钟逐帧算（不用 CSS 动画）：SVG 每重画一次，CSS 动画就被重置到第一帧。 */
+const COMM_TRAVEL=0.62;   // 秒：信号头从发件端走到收件端
+const COMM_HOLD=1.35;     // 秒：到站后停一下（收件端一点亮）
+const COMM_FADE=0.85;     // 秒：整条渐隐
+const PULSE_LIFE=COMM_TRAVEL+COMM_HOLD+COMM_FADE;   // ≈2.8 秒后这条线不在画布上
+COMMS.forEach(m=>{ m.born=performance.now()-m.ago*1000; });
 
 const S={zoom:100,tx:60,ty:20,convId:null,hint:true,demo:"normal",
   lod:"full",anno:false,sideOpen:false,commOn:true,theme:"light",collapsed:new Set()};
@@ -755,6 +862,91 @@ function curve(a,b,cls){
   const dx=Math.max(40,(b.x-a.x)*0.5);
   return '<path class="'+cls+'" d="M '+a.x+' '+a.y+' C '+(a.x+dx)+' '+a.y+', '+(b.x-dx)+' '+b.y+', '+b.x+' '+b.y+'"/>';
 }
+/* 通信线＝「刚刚有信息过去」那一瞬的表达，不是拓扑。所以它有三条硬规矩：
+   ① 不常驻：一条线只在传递发生后的 PULSE_LIFE 秒内存在，过期即消失（旧系统是 30 分钟窗口）；
+   ② 画成曲线：直线穿过中间的卡会被误读成父子线（canvas.js:3954）；
+   ③ 收件端一个实心点：表示「信落到这里」，配一圈扩散环表示「刚刚到」。
+   画布上如果一条通信线都没有，那是**如实的**——这一刻确实没有信息在传。 */
+function qpt(p0,p1,p2,u){
+  const v=1-u;
+  return {x:v*v*p0.x+2*v*u*p1.x+u*u*p2.x, y:v*v*p0.y+2*v*u*p1.y+u*u*p2.y};
+}
+/* 传递＝一颗流星沿着曲线飞过去：头亮、拖尾渐隐、到站后再整体消失。
+   不是「先画一条线，再让光跑」——线上什么都没有留下，留下的只有那一下的经过。
+   拖尾不按比例而是按**弧长**取：短线上尾巴不会糊成一团，长线上也不会断成一截。 */
+const COMM_SEG=40;         // 曲线的采样段数（算弧长用）
+const COMM_TAIL_MIN=70;    // 拖尾最短（世界坐标 px）
+const COMM_TAIL_MAX=240;   // 拖尾最长
+function commMarkup(geo){
+  if(!S.commOn) return "";
+  const now=performance.now();
+  let h="";
+  COMMS.forEach(m=>{
+    const age=(now-(m.born||0))/1000;
+    if(age<0||age>PULSE_LIFE) return;
+    const g1=geo(m.a), g2=geo(m.b);
+    if(!g1||!g2) return;
+    const x1=g1.x+NW, y1=g1.y+g1.h/2, x2=g2.x, y2=g2.y+g2.h/2;
+    const lift=Math.min(90,Math.abs(x2-x1)*0.22+30);
+    const P0={x:x1,y:y1}, P1={x:(x1+x2)/2,y:(y1+y2)/2-lift}, P2={x:x2,y:y2};
+    /* 采样一次曲线，拿累计弧长：头的位置、尾的起点都用「离起点多少像素」说话 */
+    const pts=[], cum=[0];
+    for(let i=0;i<=COMM_SEG;i++) pts.push(qpt(P0,P1,P2,i/COMM_SEG));
+    for(let i=1;i<=COMM_SEG;i++) cum.push(cum[i-1]+Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y));
+    const total=cum[COMM_SEG]||1;
+    const p=Math.max(0,Math.min(1,age/COMM_TRAVEL));
+    const headD=total*p;                                   // 头已经飞了多远
+    const tail=Math.min(COMM_TAIL_MAX,Math.max(COMM_TAIL_MIN,total*0.55));
+    const tailD=Math.max(0,headD-tail);                    // 尾尖在哪
+    /* 把「离起点距离」换算成采样下标 */
+    const idxAt=d=>{ let k=0; while(k<COMM_SEG&&cum[k+1]<d) k++; return k; };
+    const hi=idxAt(headD), ti=idxAt(tailD);
+    const fade=age>PULSE_LIFE-COMM_FADE?Math.max(0,(PULSE_LIFE-age)/COMM_FADE):1;
+    const arrived=(age>=COMM_TRAVEL);
+    h+='<g class="comm-g" opacity="'+fade.toFixed(2)+'">';
+    /* 拖尾：从头往后一段段画，越靠后越淡越细（流星尾巴） */
+    const span=Math.max(1,hi-ti);
+    for(let k=ti;k<=hi;k++){
+      const u=(k-ti)/span;                                 // 0=尾尖 1=头
+      const op=(0.04+0.72*Math.pow(u,1.7)).toFixed(3);
+      const w=(0.9+2.6*Math.pow(u,1.5)).toFixed(2);
+      const a=pts[k], b=pts[Math.min(hi,k+1)];
+      h+='<path class="comm-tail" d="M '+a.x.toFixed(1)+' '+a.y.toFixed(1)+' L '+b.x.toFixed(1)+' '+b.y.toFixed(1)+
+         '" stroke-opacity="'+op+'" stroke-width="'+w+'"/>';
+    }
+    const head=pts[hi];
+    if(!arrived){
+      h+='<circle class="comm-head-glow" cx="'+head.x.toFixed(1)+'" cy="'+head.y.toFixed(1)+'" r="10"/>'+
+         '<circle class="comm-head" cx="'+head.x.toFixed(1)+'" cy="'+head.y.toFixed(1)+'" r="3.4"/>';
+    }else{
+      const rt=Math.min(1,(age-COMM_TRAVEL)/0.9);
+      h+='<circle class="comm-head" cx="'+x2.toFixed(1)+'" cy="'+y2.toFixed(1)+'" r="3.2" opacity="'+Math.max(0,1-rt).toFixed(2)+'"/>'+
+         '<circle class="comm-dot-ring" cx="'+x2.toFixed(1)+'" cy="'+y2.toFixed(1)+'" r="'+(4+rt*9).toFixed(1)+'" opacity="'+(0.6*(1-rt)).toFixed(2)+'"/>';
+    }
+    h+='<title>'+esc(m.txt||"")+'</title></g>';
+  });
+  return h;
+}
+/* 一次传递发生：从 a 到 b 拉一条线，信号走过去，到站后再渐渐消失。 */
+function pulse(a,b,txt){
+  if(!NODES[a]||!NODES[b]) return;
+  COMMS.push({a:a,b:b,txt:txt||"",born:performance.now()});
+  if(COMMS.length>8) COMMS.shift();
+  drawWires(); kickComm();
+}
+/* 有线在画就逐帧重画（信号头在走路）；一条线都没有时自己停，不空转 */
+let commRAF=null;
+function kickComm(){
+  if(commRAF) return;
+  const step=()=>{
+    drawWires();
+    const now=performance.now();
+    const alive=COMMS.some(m=>{const a=(now-(m.born||0))/1000; return a>=0&&a<PULSE_LIFE;});
+    if(alive) commRAF=requestAnimationFrame(step);
+    else { commRAF=null; drawWires(); }
+  };
+  commRAF=requestAnimationFrame(step);
+}
 /* 位移/重排过程中，连线要跟着卡走——否则卡在动、线还钉在老位置。
    读 computed left/top（过渡中的实时值）逐帧重画，过渡结束回落到 drawWires()。 */
 let wireRAF=null;
@@ -776,7 +968,7 @@ function drawWiresLive(ms){
       if(!g||!n) return;
       if(n.parent&&geo[n.parent]) h+=curve(aR(geo[n.parent]),aL(g),"wire-p");
     });
-    if(S.commOn) COMM.forEach(([a,b])=>{ if(live.has(a)&&live.has(b)&&geo[a]&&geo[b]) h+=curve(aR(geo[a]),aL(geo[b]),"wire-c"); });
+    h+=commMarkup(id=>{const g=geo[id]; return (g&&live.has(id))?g:null;});
     $("#wires").innerHTML=h;
     if(performance.now()-t0<dur) wireRAF=requestAnimationFrame(step);
     else drawWires();
@@ -789,9 +981,7 @@ function drawWires(){
     const n=NODES[id];
     if(n.parent&&ids.has(n.parent)) h+=curve(anchorR(NODES[n.parent]),anchorL(n),"wire-p");
   });
-  if(S.commOn) COMM.forEach(([a,b])=>{
-    if(ids.has(a)&&ids.has(b)) h+=curve(anchorR(NODES[a]),anchorL(NODES[b]),"wire-c");
-  });
+  h+=commMarkup(id=>{const n=NODES[id]; return (n&&ids.has(id))?{x:n.pos.x,y:n.pos.y,h:(n._h||NH)}:null;});
   $("#wires").innerHTML=h;
 }
 
@@ -924,7 +1114,7 @@ function collapseAll(v){
    动效要让人看清三件事：从哪长出来的、其余卡怎么让位、画布怎么跟上。
    做法：新卡先出现在父卡右下方，再走 380ms 到自己的列位；其余卡同时被推开；
    画布重新适配也是过渡。一步只加一张——推流是一张一张到的，不是整片刷新。 */
-function addCardTree(spec,animate){
+function addCardTree(spec,animate,noFit){
   const id=spec.id, pid=spec.parent||"root";
   if(NODES[id]) return id;
   const pn=NODES[pid]||NODES.root;
@@ -939,7 +1129,8 @@ function addCardTree(spec,animate){
   if(el) void el.offsetWidth;                     // 让「父卡旁」这一帧落定，下一步才有起点可过渡
   refreshNode(pid);                               // 父卡的子卡数徽标跟着变
   renderRail(); renderStat();
-  layoutTidy(true,animate);                       // 走到自己的列位 + 重新适配
+  layoutTidy(true,animate,noFit);                 // 走到自己的列位（noFit 时不动画布比例）
+  ensureVisible([id],animate);                    // 新卡不许出画：装得下就平移、装不下才缩放
   return id;
 }
 function removeCardTree(id,animate){
@@ -978,18 +1169,27 @@ function playGrowth(){
   S.collapsed.clear();
   snap.forEach(x=>{ delete NODES[x.spec.id]; });
   renderNodes(true); renderRail(); renderStat(); renderCrumb();
-  layoutTidy(true,true);
-  /* ② 逐张长回来：深度序保证父卡先到。 */
-  const T0=620, STEP=260;
-  snap.forEach((x,k)=>{
-    playTimers.push(setTimeout(()=>{
-      addCardTree(x.spec,true);
-      if(k===snap.length-1){
-        playTimers.push(setTimeout(()=>fit(null,true),520));   // 收尾再适配一次，消掉多段过渡的残差
-        playTimers.push(setTimeout(stopAll,900));
-      }
-    },T0+k*STEP));
+  /* 适配延到退场（280ms）之后：退场卡还在 DOM 里淡出，这时把画布放大到「只剩根卡」的
+     比例，它们会被瞬间甩到视野外——看着像一屋子卡被弹飞。等它们收了再放大。 */
+  layoutTidy(true,true,true);                      // 只重排，不动画布比例
+  playTimers.push(setTimeout(()=>{ fit(null,true); },300));
+  /* ② 按层长回去：同一深度的卡一张张出现（父卡必定已在位），
+        一层长完停一拍、才适配一次——于是看到的是「一层层往外长」，
+        而不是每张卡都让画布缩一下（那样整幅画面一直在抖，层级反而看不清）。
+        层内 noFit：卡在自己的列里排队，画布不动。 */
+  const byD={}; snap.forEach(x=>{ (byD[x.depth]=byD[x.depth]||[]).push(x); });
+  const ds=Object.keys(byD).map(Number).sort((a,b)=>a-b);
+  let t=640;
+  ds.forEach(d=>{
+    byD[d].forEach((x,k)=>{
+      playTimers.push(setTimeout(()=>{ addCardTree(x.spec,true,true); },t));
+      if(k<byD[d].length-1) t+=300;
+    });
+    t+=520;                                                 // 这一层长完，停一拍
+    playTimers.push(setTimeout(()=>{ fit(null,true); },t-280));
   });
+  playTimers.push(setTimeout(()=>{ fit(null,true); },t+40));    // 收尾再适配一次，消掉多段残差
+  playTimers.push(setTimeout(stopAll,t+560));
 }
 function visKids(id){ return kidsOf(id).filter(k=>!NODES[k]._hidden&&!S.collapsed.has(id)); }
 function leafCount(id){ const k=visKids(id); return k.length? k.reduce((a,b)=>a+leafCount(b),0) : 1; }
@@ -999,7 +1199,7 @@ function subDepth(id){ const k=visKids(id); return k.length? 1+Math.max(...k.map
    这条规矩是硬约束——上一稿为了让画布「填满」把互不相交的子树并排放，
    于是某支的子卡跑到了别支孙卡的右边，看上去像它更深一层，层级读不出来。
    折叠＝该支从画布上消失、其余支重新紧凑堆叠 → 总高变小 → 适配放大 → 信息升档。 */
-function layoutTidy(quiet,animate){
+function computeLayout(){
   const GAPX=76, PAD=48;
   const pos={};
   let row=0;
@@ -1011,9 +1211,45 @@ function layoutTidy(quiet,animate){
     pos[id]={x:x, y:Math.round((Math.min.apply(null,ys)+Math.max.apply(null,ys))/2)};
   })("root",0);
   Object.keys(pos).forEach(id=>{ if(NODES[id]) NODES[id].pos=pos[id]; });
+}
+/* 新卡不许出画：生长时树在变大，画布必须跟上，否则「变化的那一点」正好在屏幕外。
+   但也不能每张都全树适配——那样整幅一直在缩，层级反而看不清。
+   所以分两步：① 装得下就只平移（把新卡拉回视野，画面不缩放）；② 真装不下才重新适配。 */
+function ensureVisible(focusIds,animate){
+  const r=$("#canvas").getBoundingClientRect();
+  const pad=56, z=S.zoom/100;
+  const box=ids=>{
+    let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+    ids.forEach(id=>{const n=NODES[id]; if(!n)return;
+      x0=Math.min(x0,n.pos.x); y0=Math.min(y0,n.pos.y);
+      x1=Math.max(x1,n.pos.x+NW); y1=Math.max(y1,n.pos.y+ROWH);});
+    return x0>x1?null:{x0:x0,y0:y0,x1:x1,y1:y1};
+  };
+  const bAll=box(visibleIds()); if(!bAll) return false;
+  const inView=b=>{
+    const sx0=b.x0*z+S.tx, sx1=b.x1*z+S.tx, sy0=b.y0*z+S.ty, sy1=b.y1*z+S.ty;
+    return sx0>=pad&&sy0>=pad&&sx1<=r.width-pad&&sy1<=r.height-pad;
+  };
+  if(inView(bAll)) return false;
+  const bF=box(focusIds||visibleIds())||bAll;
+  const availW=r.width-pad*2, availH=r.height-pad*2;
+  if((bAll.x1-bAll.x0)*z<=availW && (bAll.y1-bAll.y0)*z<=availH){
+    let dx=0,dy=0;
+    const sx0=bF.x0*z+S.tx, sx1=bF.x1*z+S.tx, sy0=bF.y0*z+S.ty, sy1=bF.y1*z+S.ty;
+    if(sx1>r.width-pad) dx=r.width-pad-sx1;
+    if(sx0+dx<pad) dx=pad-sx0;
+    if(sy1>r.height-pad) dy=r.height-pad-sy1;
+    if(sy0+dy<pad) dy=pad-sy0;
+    if(dx||dy){ S.tx+=dx; S.ty+=dy; applyTransform(animate); return true; }
+  }
+  fit(null,animate); return true;
+}
+/* noFit=true：只重排、不动画布比例（推流分层生长时用——层内不动画布，层末才适配一次） */
+function layoutTidy(quiet,animate,noFit){
+  computeLayout();
   renderNodes(!!animate); drawWires();
   if(animate) drawWiresLive(470);
-  setTimeout(()=>{ fit(null,!!animate); },30);
+  if(!noFit) setTimeout(()=>{ fit(null,!!animate); },30);
 }
 function renderRail(){
   let h="";
@@ -1034,8 +1270,36 @@ function renderStat(){
   const run=all.filter(k=>NODES[k].state==="run").length;
   const blk=all.filter(k=>NODES[k].state==="blocked").length;
   $("#projectStat").innerHTML='<span><b>'+all.length+'</b> 卡</span><span><b>'+run+'</b> 运行中</span>'+
-    (blk?'<span style="color:var(--blocked)"><b style="color:var(--blocked)">'+blk+'</b> 受阻</span>':'');
+    (blk?'<span style="color:var(--blocked)"><b style="color:var(--blocked)">'+blk+'</b> 受阻</span>':'')+
+    (ARCHIVED.length?'<button class="ps-arch" id="archBtn" title="归档卡不在画布上（归档即从活卡表移除），点开看记录">已归档 <b>'+ARCHIVED.length+'</b></button>':'');
+  const ab=$("#archBtn");
+  if(ab) ab.addEventListener("click",ev=>{ ev.stopPropagation(); toggleArchPop(); });
 }
+/* 归档浮层：归档卡不在活卡表里（cards 行已删，记录在 card_archive 表），所以只能从记录里
+   列出来。恢复＝把记录写回成一张活卡 —— 它会作为新节点长回画布（走自增长的同一套动效）。 */
+function renderArchPop(){
+  $("#archPopN").textContent=ARCHIVED.length?("· "+ARCHIVED.length+" 张"):"· 无";
+  $("#archPopBody").innerHTML=ARCHIVED.length?ARCHIVED.map(a=>
+    '<div class="ap-row"><div class="ap-t"><b>'+esc(a.title)+'</b><span class="ap-code">'+esc(a.code)+'</span></div>'+
+    '<div class="ap-m">'+esc(a.type)+' · '+esc(a.at)+' · '+esc(a.reason)+'</div>'+
+    '<div class="ap-w">'+esc(a.why)+'</div>'+
+    '<button class="btn" data-restore="'+esc(a.code)+'">恢复成卡</button></div>').join("")
+    :'<div class="ap-empty">还没有归档记录</div>';
+}
+function toggleArchPop(force){
+  const w=$("#archPop");
+  const on=force==null?!w.classList.contains("open"):!!force;
+  if(on){ renderArchPop(); w.classList.add("open"); } else w.classList.remove("open");
+}
+$("#archPop").addEventListener("click",ev=>{
+  const b=ev.target.closest("[data-restore]"); if(!b) return;
+  const code=b.dataset.restore, i=ARCHIVED.findIndex(a=>a.code===code); if(i<0) return;
+  const a=ARCHIVED.splice(i,1)[0];
+  addCardTree({id:"restored_"+code,title:a.title,type:a.type,code:a.code,state:"run",
+    parent:a.parent||"root",facts:[["恢复",a.at.slice(0,5)],["引用",0]],
+    meta:"已恢复 · 曾于 "+a.at+" 归档",last:{who:a.code,text:"从归档恢复成活卡，重新进入画布。",time:"刚刚"}},true);
+  renderStat(); renderArchPop(); toggleArchPop(false);   // 记录已减少，浮层内容跟着刷，别留旧行
+});
 function renderAll(){renderNodes();drawWires();renderCrumb();renderRail();renderStat();}
 let renaming=null;
 function startRename(id){
@@ -1235,15 +1499,23 @@ $("#nodes").addEventListener("mouseout",e=>{
   hideTipSoon();
 });
 
-const DRAWERS=["convSheet"];
+/* 贴右缘的浮窗目前两个：卡片对话、规则卡。同级互斥（同时只开一个），
+   因为两者都占同一条右缘——叠着开就会互相盖住。 */
+const DRAWERS=["convSheet","ruleCard"];
 function openDrawer(id){
   DRAWERS.forEach(d=>$("#"+d).classList.toggle("open",d===id));
   if(id!=="convSheet") S.convId=null;
+  if(id!=="ruleCard") rcEditing=null;
+  $("#ruleEntry").classList.toggle("on",id==="ruleCard");
+  $("#viewport").classList.add("sheetOpen");
   renderCrumb();
 }
 function closeDrawers(){
   DRAWERS.forEach(d=>$("#"+d).classList.remove("open"));
-  S.convId=null; renderCrumb();
+  S.convId=null; rcEditing=null;
+  $("#ruleEntry").classList.remove("on");
+  $("#viewport").classList.remove("sheetOpen");
+  renderCrumb();
 }
 
 const CONV={
@@ -1271,6 +1543,9 @@ $("#convSend").addEventListener("click",()=>{
   b.insertAdjacentHTML("beforeend",'<div class="msg mine"><div class="av">我</div><div class="bd">'+
     '<div class="hd"><b>me</b><span>刚刚</span></div><div class="tx">'+esc(v)+'</div></div></div>');
   $("#convInput").value=""; b.scrollTop=b.scrollHeight;
+  /* 发出一条消息＝画布上真的有一次传递：从父卡到这张卡拉一条线、流一下、12 秒后消失。
+     这就是「信息传递只在那一下用线表达」——不常驻、不留痕。 */
+  if(S.convId&&NODES[S.convId]&&NODES[S.convId].parent) pulse(NODES[S.convId].parent,S.convId,"我 → "+NODES[S.convId].code+"：发了一条消息");
   toast("已发送");
 });
 
@@ -1293,8 +1568,6 @@ function runCmd(name,id){
   if(name==="rename") return startRename(id);
   if(name==="focus") return revealCard(id);
   if(name==="fold") return toggleCollapse(id);
-  if(name==="archive") return archiveOne(id);
-  if(name==="del") return delOne(id);
   if(name==="new") return openNew();
   if(name==="fit") return fitForFocus();
   if(name==="tidy") return layoutTidy();
@@ -1303,20 +1576,6 @@ function runCmd(name,id){
   if(name==="collapseAll") return collapseAll(true);
 }
 
-function archiveOne(id){
-  const n=NODES[id];
-  if(n.state==="archived"){ toast("已经是已归档状态"); return; }
-  const old=n.state; n.state="archived"; n.arch="ARCH-04"; n.archivedFrom=old;
-  renderNodes(); renderRail();
-  toast("已归档 · "+n.title,"撤销",()=>{
-    n.state=n.archivedFrom||old; delete n.arch;
-    renderNodes(); renderRail();
-  });
-}
-function delOne(id){
-  const el=$('#nodes .node[data-id="'+id+'"]'); if(!el) return;
-  el.remove(); NODES[id]._hidden=true; toast("已删除（可撤销）","撤销",()=>{ NODES[id]._hidden=false; renderAll(); });
-}
 
 function openNew(){
   const sel=$("#newParent");
@@ -1331,7 +1590,7 @@ function createCard(){
   const t=$("#newTitle").value.trim()||"未命名卡";
   const pid=$("#newParent").value;
   const id="new_"+Date.now();
-  NODES[id]={title:t,type:"子项目卡",code:"card_"+(900+Math.floor(Math.random()*99)),state:"wait",parent:pid,
+  NODES[id]={title:t,type:"子项目卡",code:"card_"+(900+Math.floor(Math.random()*99)),state:"paused",parent:pid,
     facts:[["轮次",0],["引用",0]],meta:"刚创建 · 待派活",
     last:{who:"me",text:"新建了这张卡",time:"刚刚"},
     pos:{x:NODES[pid].pos.x+NW+74,y:NODES[pid].pos.y+ROWH}};
@@ -1379,6 +1638,23 @@ function toggleTheme(){
   toast(S.theme==="dark"?"已切到深色主题":"已切到浅色主题");
 }
 const DIFF=[
+ ["规则卡：从「一块面板就叫它规则卡」改成「画布右缘入口 + 能看能改」","上一稿把右侧那块规格面板直接叫作规则卡，并写「规则卡不上画布——规则面板即其呈现」。结果是规则卡既没有身份，也没有可编辑的地方：看不到它的分区，改一个字都做不到。","画布右缘一个竖排入口「▤ 规则卡」（不是面板常驻，是入口）；点开是规则卡本体：类型／适用范围／版本，按 ## 分区列内容，每区「编辑」就地把内容改成文本域，保存后标「已改」。改动在本页生效（演示），并明说真实改动要经用户同意才落盘。","规则是产品里唯一「对每一张卡都成立」的对象，它必须有入口、能看、能改。把一块说明面板说成规则卡，等于让人只能看说明、永远碰不到规则本身。"],
+ ["通信线：一颗流星飞过（头亮、拖尾渐隐），不留线","上一稿一条线一出现就是整条亮着，再配一层 CSS 流光循环，12 秒后整体消失——读起来是「一条线一直在闪」，看不出方向、速度、什么时候到的。","像流星：头是一个亮点，后面拖着一段渐隐渐细的尾巴沿曲线飞过（拖尾按弧长取 70–240px，短线不糊、长线不断），0.62s 飞到；到站后收件端点亮并扩散一圈，整个拖尾再渐隐消失（0.85s）。线上不留任何东西。","人读「有东西正在过去」靠的是方向和速度，而速度只能由「头领先、尾在后」读出来。整条线亮着＝没有前后；只留一个点＝没有经过。头加拖尾，两样都有。"],
+ ["生长时画面自己跟上——新卡不许长在屏幕外","上一稿分层生长时「层内不动画布」，于是一层里连长几张，最后几张已经跑到视野外，得等这层长完才适配一次。",
+  "每长出一张就核一次：整棵树装得下就只平移把新卡拉回视野（画面不缩放）；真装不下才重新适配。新卡从出现到落位始终在屏幕内。",
+  "自增长要能看见「从哪长出来的」——新卡在视野外，等于这次生长没发生。平移优于缩放：缩放会让整片跟着抖，层级反而看不清。"],
+ ["状态词改成后端真实取值，删掉「待裁定」这个我编的","上一稿状态词是待裁定/运行中/已完成/受阻/已归档，五个里有一个半不是字段。",
+  "按后端三层重写：① 生命周期 state（active↔completed）② 自动推进 goal_state（active/paused/complete/blocked → 运行中/已暂停/已完成/受阻）③ 实时推送 live（运行中/排队中）。「待裁定」降为卡面内容里的一条待办，不再是状态词。",
+  "状态词要对得上数据，否则用户看到一个后端永远发不出的词。受阻＝auto_mode 且 goal_state=blocked（自动推进卡住了），不等于「有外部依赖」。"],
+ ["已归档不占画布槽位，收成顶栏一个计数","上一稿有一张「已归档」的卡，置灰、加删除线、占一个格子。",
+  "归档卡从画布上消失：顶栏留「已归档 N」入口，点开列记录（标题/归档时间/原因/并入哪里），可以「恢复成卡」——恢复时它作为新节点长回画布。",
+  "归档在后端是把 cards 那一行删掉、整行 meta 存进 card_archive 表（可恢复）。它已经不是活卡，画布给它留格子等于画一个不存在的节点，也白占一块视野。"],
+ ["规则卡：不上画布，右侧那块面板就是它","上一稿把规则塞进右侧面板，但面板标题只写「交互规格/键盘路径/状态与边界」，读者不知道这就是规则卡。",
+  "面板头明确标「规则卡」，并注明依据：canvas.js:1468「规则卡不上画布——它是吸附屏幕右侧的常驻卡（规则面板即其呈现）」。",
+  "规则对每张卡都成立。放进画布、挂在某一支下面，会被读成「只有那一支受它管」——位置即语义。"],
+ ["通信线只在传递的那一下出现","上一稿画了三条常驻虚线，永远挂在那儿——看图的人会以为那代表「这两张卡有关系」，而那件事该由依赖/关联线表达。",
+  "改成传递脉冲：发一条消息＝从父卡到收件卡拉一条曲线，带一道流光与收件端扩散点，12 秒后自己消失。一条线都没有时，那是如实的——此刻没有信息在传。",
+  "旧系统原话（canvas.js:3940）：「画布上出现的每一条通信线都意味着『刚刚发生了信息流动』」，只画 30 分钟窗口内的传递，曲线是为了穿过中间的卡时不被误读成父子线。"],
  ["单击折叠、双击对话——为什么单击要等 200ms","单击与双击落在同一张卡上，浏览器在第一次点击时无法知道「会不会还有第二下」。","单击的折叠延迟 200ms 执行；双击的第二下会撤掉这个待执行动作，于是双击只开对话、画面不会先折叠再展开。卡上的 ▾ 与 ◧ 是零延迟的——不想等就点按钮。","这是「一个元素挂两个点击手势」的固有代价：要么等 200ms，要么双击时画面抖一下再回弹。让每一下单击都慢，比让双击抖一下更好接受——但按钮路径给了不等的人。"],
  ["卡片放大、列距收紧","原型节点 250×104、列距 400（节点间空出 150px 全给了连线）；11 张卡适配上来只有 47%，字缩到 6px 看不清。"
 ,"节点 302×132，标题 15px、事实行 12.5px、状态 12px；列距收到 74，行距 164——连线变短，画布几乎被卡片填满。"
@@ -1456,9 +1732,14 @@ const RP={
  <p><b>手势永不过渡</b>：拖画布、滚轮、触屏双指都是 <code>animate=false</code>——过渡会让画面「追不上手」。</p>
  <p><b>退场</b>：被折叠的卡缩回并淡出 280ms 再移出 DOM；同 280ms 内展开回来会撤掉退场，不留残影。</p>
  <p><b>自增长</b>（顶栏 <code>▶ 从根生长</code>）：卡片树由后端推流而来，新卡先出现在父卡旁、再走到自己的列位，其余卡同时让位、连线逐帧跟随、画布重新适配——一次只到一张。演示从「只剩根卡」起，按深度逐张长到底：先看得见一张卡时画布多大，再看得见每长一支画布怎么退让。</p>
+ <p><b>通信线</b>（信息传递那一下的表达）：像一颗流星沿曲线飞过去：<b>头亮、拖尾在后渐隐渐细</b>（拖尾按弧长取，短线不糊、长线不断），0.62s 飞到 → 收件端一点亮并扩散（1.35s）→ 整个拖尾渐隐消失（0.85s）。线上不留下任何东西——留下来的只有「刚刚有东西飞过」这一下。逐帧按性能时钟算，不用 CSS 动画：SVG 每次重画都会把动画重置到第一帧。</p>
  <p><b>边界</b>：<code>prefers-reduced-motion</code> 下全部关掉。动效不改变任何状态与判据。</p></div>
- <div class="spec-sec"><h4>⑥ 覆盖层分级</h4><p>L1 tooltip/菜单 → L2 贴边浮窗（只剩卡片对话，活动已并入其中，同级互斥，<b>不盖遮罩、不锁画布</b>：开着也能拖、能缩放、能点别的卡；浮窗贴右缘、被展开的规则面板一起推着左移，不压在画布上）→ L3 模态（⌘K/新建，仅这两个会短暂接管点击）。每个都有可见的关闭入口（✕／点外部／再点开关），Esc 只是快捷键，不是唯一出路。</p>
-  <p><b>对话浮窗的开合</b>：双击某张卡＝开它的对话；<b>再双击同一张＝收起</b>；<b>双击另一张＝换成那张</b>（浮窗只有一个，旧的自动让位）；<b>点浮窗以外的任何地方＝收起</b>；✕ 同效。卡片本身与悬停摘要不算「外部」——卡上的单击是折叠/展开、双击是开合对话，不能被「浮窗正开着」改写。</p></div>`,
+ <div class="spec-sec"><h4>⑥ 覆盖层分级</h4><p>L1 tooltip/菜单 → L2 贴边浮窗（卡片对话、规则卡，同级互斥、同时只开一个，活动已并入卡片对话，<b>不盖遮罩、不锁画布</b>：开着也能拖、能缩放、能点别的卡；浮窗贴右缘、被展开的规则面板一起推着左移，不压在画布上）→ L3 模态（⌘K/新建，仅这两个会短暂接管点击）。每个都有可见的关闭入口（✕／点外部／再点开关），Esc 只是快捷键，不是唯一出路。</p>
+ <p><b>对话浮窗的开合</b>：双击某张卡＝开它的对话；<b>再双击同一张＝收起</b>；<b>双击另一张＝换成那张</b>（浮窗只有一个，旧的自动让位）；<b>点浮窗以外的任何地方＝收起</b>；✕ 同效。卡片本身与悬停摘要不算「外部」——卡上的单击是折叠/展开、双击是开合对话，不能被「浮窗正开着」改写。</p></div>
+  <div class="spec-sec"><h4>⑦ 规则卡（右缘入口）</h4>
+ <p><b>信息项</b>：类型 · 适用范围 · 版本与策展人；按分区列规则内容（分区名即规则文件里的 <code>##</code> 区）。</p>
+ <p><b>动作</b>：点右缘入口打开/收起（同一个按钮两用）；每区「编辑」→ 就地变文本框 → 保存/取消；「回画布」关掉；点外部、✕ 同效。改过的区标「已改」。</p>
+ <p><b>边界</b>：规则卡与卡片对话共用同一条右缘，所以同级互斥——开一个就收起另一个（否则互相压住）。编辑中按 Esc 只取消这一次编辑，不关整张卡（否则改的东西丢了）。</p></div>`,
  key:`<div class="spec-sec"><h4>键盘只留一个</h4><ul>
  <li><code>Ctrl/⌘+K</code> 搜索定位（顶栏 <code>⌕</code> 同功能，不是唯一入口）</li></ul>
  <p>上一稿还挂了 <code>F/T/N/?</code>、<code>⇧R/E/C/L/K</code>、<code>F2</code> 一整套——它们是只有读过文档的人才知道的隐藏知识，而每件事都有可见按钮。已全删。</p></div>
@@ -1466,12 +1747,19 @@ const RP={
  <li>平移：滚轮／左键拖空白／触屏双指拖动　缩放：Ctrl+滚轮／<code>−</code><code>＋</code>／百分比／适配</li>
  <li>折叠：单击卡片或点 ▾　对话：双击卡片或点 ◧　改名：hover 出 ✎</li>
  <li>关浮层：✕／点外部／再点开关（Esc 只是加速，故意不做成唯一出路）</li></ul></div>`,
- state:`<div class="spec-sec"><h4>卡片状态（词为准）</h4><ul>
- <li><b>待裁定</b> 等一个决定，别人不能替它推进</li>
- <li><b>运行中</b> 正在跑，有轮次在推进</li>
- <li><b>已完成</b> 交付物在、可复核</li>
- <li><b>受阻</b> 缺外部条件，附阻塞原因</li>
- <li><b>已归档</b> 置灰＋删除线＋归档码（并入哪里）</li></ul></div>
+ state:`<div class="spec-sec"><h4>状态有三层，互不替代</h4>
+ <p>词全部来自后端字段，不是画布自己编的：<code>config/card_type_registry.json → state_machine</code>、<code>static/canvas.js:1843-1862 / 6648</code>。</p><ul>
+ <li><b>① 生命周期 state</b> —— <code>active</code> ↔ <code>completed</code>（可回退：同一张卡重新派活回 active）。它决定这张卡还在不在任务里，画布上不单独出词。</li>
+ <li><b>② 自动推进 goal_state</b> —— 只有 <code>auto_mode=true</code> 才谈得上。取值 <code>active / paused / complete / blocked</code>，映射成画布词：<b>运行中 / 已暂停 / 已完成 / 受阻</b>。</li>
+ <li><b>③ 实时推送 live</b> —— 来自 <code>/api/nav/running</code> 流：<b>运行中</b>（带「第 N 轮 · 当前步骤」）与 <b>排队中</b>（串行排队；10 分钟没轮上就撤标记，不骗人）。这层是「此刻」，跑完即消失。</li></ul>
+ <p><b>受阻 blocked 到底是什么</b>：<code>auto_mode &amp;&amp; goal_state==='blocked'</code> —— 自动推进卡住了、需要人来处理（旧系统原话「自动任务受阻，需要处理」）。它<b>不等于</b>「有外部依赖」「在等答复」：欠一个决定、等外部确认是卡面内容里的事实，不是 state 字段。上一稿我编了个「待裁定」当状态词，那是错的，已删。</p>
+ <p><b>关键区别</b>：运行中是<b>动的</b>（呼吸），已完成/受阻/已暂停是<b>静的</b>。一眼扫过去——还在动的就是还要等的，不动的就是可以去处理结果的。</p></div>
+ <div class="spec-sec"><h4>哪些卡上画布，哪些不上</h4>
+ <p>按类型定义与实际过滤：</p><ul>
+ <li><b>上画布</b>：项目根卡 project · 子项目卡 sub_project · 课题卡 topic · 工具卡 tool · worker · UI 卡 ui · 验收卡 qa_card · 执笔卡 pm_card</li>
+ <li><b>不上</b>：<b>职能卡</b> function（定义即「不进任务树、不出现在画布/卡树/统计」）· <b>角色卡</b> role（离树观察者，<code>off_tree</code>）· <b>评审卡</b> review（子项目卡的伴生，不进画布与统计）· <b>影子卡</b> shadow（本卡私有，只有自己能读）</li>
+ <li><b>规则卡 rule</b> —— 作为<b>节点</b>不上画布（它不属于任何一支，挂到谁下面就等于说「只有这一支受它管」），但<b>必须在画布上有一个入口</b>：右缘竖排的「▤ 规则卡」。点开就是规则卡本体——一张能看、能改的卡：类型／适用范围／版本，按 <code>##</code> 分区列出内容（all 进所有卡，其余只进对应类型），每区「编辑」就地改。改动在本页生效（演示），真实改动要经用户同意才落盘（draft → 同意 → 写入）。</li>
+ <li><b>已归档</b> —— 不是一种卡片状态，是这张卡已经不在活卡表里：归档把 <code>cards</code> 那一行删掉、整行 meta 存进 <code>card_archive</code> 表（<code>card_store.py:1882-1890</code>），可恢复。所以画布上给它留格子是错的——只在顶栏留一个计数入口。</li></ul></div>
  <div class="spec-sec"><h4>数据四态（画布层）</h4><ul>
  <li><b>加载</b> 骨架＋正在取第几层（≠空）</li>
  <li><b>空</b> 确知为 0＋下一步动作</li>
@@ -1479,6 +1767,77 @@ const RP={
  <li><b>无权限</b> 缺哪个权限＋申请入口＋E403</li></ul></div>
  <div class="spec-sec"><h4>边界</h4><p>状态与数据态是两件事：卡「有」但取卡片树失败＝错误，不是空。</p></div>`
 };
+/* ===================== 规则卡 =====================
+   它是一张卡（card_type=rule），不是「一块面板就叫它规则卡」。
+   画布右缘给入口；点开是它本身：类型/范围/版本 + 按分区的内容，每区能就地改。
+   规则文件按 ## 分区、按卡类型注入（all 进所有卡，其余只进对应类型），
+   所以这里也按分区列——分区本身就是规则的结构，不是排版。 */
+const RULECARD={
+  meta:{type:"规则卡 rule", scope:"本项目 · 全部卡", ver:"v3 · 2026-11-05", by:"card_001 策展"},
+  secs:[
+   {k:"all",t:"总规则（所有卡）",b:`分域自治，阶段收口。
+根卡只管范围边界、阶段验收与放行；域内拆解、实现选择、返工与域内验收由各域自主。
+只有六类事项跨域上报：改项目范围／改已冻结协议与公共接口／一个域的决定迫使另一个域返工／阶段验收不通过或证据不足／域内无法解除的真实阻塞／须用户授权的外部动作。
+过程不汇报：不报每次工具调用，不报「已读·已改·已同步」，不发「收到·感谢·已阅」。`},
+   {k:"sub_project",t:"子项目卡",b:`在自己的使命与已批准需求范围内自主决定任务拆解、建卡派工、实现方案、执行顺序、域内返工与验收。
+不得以「等上级确认」为由停滞域内可推进事项；也不得把上级未回复解释为扩大授权。
+需求走「草稿 → 评审 → 正稿」；正稿才是验收判据。`},
+   {k:"ui",t:"UI 卡",b:`写前端页面（HTML/CSS/JS），再开真实浏览器把页面打开亲眼看：渲染对不对、点按钮填表单验交互、读 console。
+手里没有 bash/python——跑不了命令、起不了服务、写不了后端：这类需求 report_up 写明「此部分需 worker 卡」。
+结论只写页面里核到的事实（可见文字、console 报错、截图资产）；没核到的不许写进汇报。`},
+   {k:"worker",t:"worker 卡",b:`一张卡一件任务，任务内容落使命块；建卡即自动开跑。
+做完调 report_done 收工；同一件事的后续与同一处返工留在这一张卡上，不另起新卡。
+自己发现还有下一步（不是返工）时改目标继续跑，不先收工再另开。`},
+   {k:"function.qa",t:"职能 · 验收（qa）",b:`验收只对照已批准需求与阶段判据，不临时增加格式、副本数量或汇报轮次要求。
+证据要让第三方能独立复核：交付物指针、必要命令与原始输出、失败反例或明确的不适用理由。
+失败、跳过、未覆盖必须如实写明；不得以局部通过代替整阶段通过。`}
+  ]
+};
+let rcEditing=null;
+const rcDirty=new Set();
+function renderRuleCard(){
+  $("#ruleEntryN").textContent=RULECARD.secs.length;
+  $("#ruleCardSub").textContent="规则 · 对每一张卡都成立 · "+RULECARD.secs.length+" 个分区";
+  let h='<div class="rc-meta">'+esc(RULECARD.meta.type)+' · '+esc(RULECARD.meta.scope)+
+        '<br>'+esc(RULECARD.meta.ver)+' · '+esc(RULECARD.meta.by)+'</div>';
+  RULECARD.secs.forEach(s=>{
+    const ed=(rcEditing===s.k);
+    h+='<div class="rc-sec'+(ed?" on":"")+'" data-rc="'+s.k+'">'+
+       '<div class="rc-hd"><span>'+esc(s.t)+'</span><span class="rc-k">## '+esc(s.k)+'</span>'+
+       (rcDirty.has(s.k)?'<span class="rc-badge">已改</span>':'')+
+       (ed?'':'<button class="btn rc-edit" data-rcedit="'+s.k+'">编辑</button>')+'</div>'+
+       (ed? '<textarea class="rc-ta" id="rcTa" data-rcta="'+s.k+'">'+esc(s.b)+'</textarea>'+
+            '<div class="rc-acts"><button class="btn primary" data-rcsave="'+s.k+'">保存</button>'+
+            '<button class="btn" data-rccancel="'+s.k+'">取消</button>'+
+            '<span class="rc-hint">真实改动要经用户同意才落盘</span></div>'
+          : '<div class="rc-tx">'+esc(s.b)+'</div>')+
+       '</div>';
+  });
+  $("#ruleCardBody").innerHTML=h;
+}
+function openRuleCard(){
+  renderRuleCard();
+  openDrawer("ruleCard");
+  setTimeout(()=>{ const b=$("#ruleCardBody"); if(b) b.scrollTop=0; },30);
+}
+$("#ruleCardBody").addEventListener("click",ev=>{
+  const e1=ev.target.closest("[data-rcedit]");
+  if(e1){ rcEditing=e1.dataset.rcedit; renderRuleCard();
+    const ta=$("#rcTa"); if(ta){ ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length); } return; }
+  const s1=ev.target.closest("[data-rcsave]");
+  if(s1){
+    const k=s1.dataset.rcsave, ta=$("#rcTa"), sec=RULECARD.secs.find(x=>x.k===k);
+    if(ta&&sec){ const v=ta.value.replace(/\s+$/,""); if(v!==sec.b){ sec.b=v; rcDirty.add(k); } }
+    rcEditing=null; renderRuleCard(); return;
+  }
+  const c1=ev.target.closest("[data-rccancel]");
+  if(c1){ rcEditing=null; renderRuleCard(); return; }
+});
+/* 编辑中按 Esc＝取消这一处编辑，不要顺手把整张卡关掉（编辑的内容会丢） */
+$("#ruleCardBody").addEventListener("keydown",ev=>{
+  if(ev[K]==="Escape"&&rcEditing){ ev.stopPropagation(); rcEditing=null; renderRuleCard(); }
+});
+
 function renderRp(tab){
   $("#rpBody").innerHTML=RP[tab];
   $$(".rp-tab").forEach(b=>b.classList.toggle("on",b.dataset.rp===tab));
@@ -1513,12 +1872,18 @@ $("#moreMenu").addEventListener("click",ev=>{
   if(v==="expandAll") collapseAll(false);
   else if(v==="collapseAll") collapseAll(true);
   else if(v==="tidy") layoutTidy();
+  else if(v==="ruleCard") openRuleCard();
   else if(v==="rulePanel") toggleRule();
   else if(v==="commLines"){ S.commOn=!S.commOn; drawWires(); toast(S.commOn?"已显示通信线":"已隐藏通信线"); }
   else if(v==="parallel") toast("并行对话层：本稿只留入口，下一版承接");
 });
 
 /* --- 规则面板 --- */
+$("#ruleEntry").addEventListener("click",ev=>{
+  ev.stopPropagation();
+  if($("#ruleCard").classList.contains("open")) closeDrawers(); else openRuleCard();
+});
+$("#ruleBackBtn").addEventListener("click",closeDrawers);
 $("#rpHandle").addEventListener("click",toggleRule);
 $$(".rp-tab").forEach(b=>b.addEventListener("click",()=>renderRp(b.dataset.rp)));
 
@@ -1593,12 +1958,19 @@ document.addEventListener("click",ev=>{
   if($("#cmdk").classList.contains("open")&&!ev.target.closest("#cmdk")&&!ev.target.closest("#searchBtn")){
     closeCmdk();
   }
-  /* 对话浮窗：点浮窗以外的地方即收起。卡片本身与 tooltip 不算「外部」——
-     卡上的单击是折叠/展开、双击是开合对话，不能被「浮窗开着」这件事改写。 */
-  if(S.convId&&!ev.target.closest("#convSheet")&&!ev.target.closest(".node")&&!ev.target.closest("#tip")){
-    closeDrawers();
-  }
+  if(!ev.target.closest("#archPop")&&!ev.target.closest("#archBtn")) toggleArchPop(false);
 });
+/* 对话浮窗的「点外部收起」挂在捕获阶段：冒泡会被各按钮自己的 stopPropagation 掐断
+   —— 实测点「更多 ⋯」时浮窗没关，就是被掐掉的。捕获先于一切目标处理器执行，谁也拦不住它。
+   例外两处：浮窗自身、卡片本身（卡上单击＝折叠/展开、双击＝开合对话，不能被「浮窗开着」改写）。 */
+document.addEventListener("click",ev=>{
+  const anyOpen=$("#convSheet").classList.contains("open")||$("#ruleCard").classList.contains("open");
+  if(!anyOpen) return;
+  if(ev.target.closest("#convSheet")||ev.target.closest("#ruleCard")||ev.target.closest("#tip")) return;
+  if(ev.target.closest("#ruleEntry")) return;          // 入口自己是开关，不能被「点外部」先关掉
+  if(ev.target.closest(".node")&&S.convId) return;      // 卡上的单击/双击是折叠与开合对话，不改写它们
+  closeDrawers();
+},true);
 
 /* --- tooltip：悬停摘要 + 就地回复 --- */
 $("#tip").addEventListener("mouseenter",()=>{ clearTimeout(tipHide); });
@@ -1628,14 +2000,31 @@ document.addEventListener("keydown",ev=>{
 /* ===================== 启动 ===================== */
 function boot(){
   renderCmdk(""); renderRp("spec"); renderDiff();
-  renderNodes(); drawWires(); renderCrumb(); renderRail(); renderStat();
   $("#rulePanel").classList.toggle("closed",!S.sideOpen);
   $("#viewport").classList.toggle("side",S.sideOpen);
   $("#rpHandle").textContent=S.sideOpen?"›":"‹";
-  applyTransform();
-  layoutTidy(true);                 // 先按层级排一遍，保证全树可读
-  setTimeout(()=>{ fit(); },80);
-  setTimeout(()=>{ drawWires(); },200);
+  /* 顺序要紧：先算列位 → 再首渲 → 同帧适配。
+     反过来的话，首帧所有卡都还在初始坐标上（深层的会落在视野外），
+     适配再把它拉回来——那就是刷新时「个别卡从边上闪进来」的来历。
+     现在只有一次绘制，卡一出现就在它该在的地方。 */
+  computeLayout();
+  renderNodes(); drawWires(); renderCrumb(); renderRail(); renderStat();
+/* 画布自己的尺寸会变（窗口缩放、右面板开合、工具窗高度抖动）——变了就得重新保证
+   内容在视野内，否则一缩窗口就有卡留在画布外面。只做最小位移，不悄悄改用户手动缩过的比例。 */
+let rsT=null;
+try{
+  new ResizeObserver(()=>{ clearTimeout(rsT); rsT=setTimeout(()=>ensureVisible(null,true),180); }).observe($("#canvas"));
+}catch(e){ window.addEventListener("resize",()=>{ clearTimeout(rsT); rsT=setTimeout(()=>ensureVisible(null,true),180); }); }
+/* 通信线会过期：每秒数一次「还在的线」，数量变了才重画。
+   不能无脑重画——重建 SVG 会把流光的 CSS 动画重置成第一帧，看起来像一直在重启。 */
+let lastCommN=-1;
+setInterval(()=>{
+  const now=performance.now();
+  const n=COMMS.filter(m=>{const age=(now-(m.born||0))/1000; return age>=0&&age<=PULSE_LIFE;}).length;
+  if(n!==lastCommN){ lastCommN=n; drawWires(); }
+},700);
+  fit(false);
+  requestAnimationFrame(()=>{ drawWires(); kickComm(); });
 }
 boot();
 </script>

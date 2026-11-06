@@ -43,6 +43,10 @@ const SVG_ROLE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" str
 const SVG_CODER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4.5 2 8l3.5 3.5"/><path d="M10.5 4.5 14 8l-3.5 3.5"/></svg>';
 // [UI 卡 2026-11-02] 浏览器窗口图标（执行卡家族、与 coder 尖括号区分）
 const SVG_UI = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M1.5 5.5h13"/><circle cx="4" cy="4" r="0.6" fill="currentColor"/><circle cx="6.2" cy="4" r="0.6" fill="currentColor"/></svg>';
+// [QA/PM 场卡图标 2026-11-05 · 用户令「QA卡和PM卡各自设计icon，像UI卡和worker卡一样各自区别」]
+// QA＝圈内对勾（验收＝过不过），PM＝铅笔（执笔＝写需求文档）。
+const SVG_QA = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M5.3 8.3l1.7 1.7 3.8-4.2"/></svg>';
+const SVG_PM = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 2.9a1.5 1.5 0 0 1 2.1 0l.7.7a1.5 1.5 0 0 1 0 2.1L5.8 13l-3.1.8.8-3.1z"/><path d="M9.6 3.6l2.8 2.8"/></svg>';
 const SVG_DOTS = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>';
 // [用户 2026-10-15 ①] 新建子卡从 ⋯ 菜单取出，单列一个 ＋ 入口（悬停时 ⋯ 左移一位、＋ 落原位）
 const SVG_PLUS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.6v8.8"/><path d="M3.6 8h8.8"/></svg>';
@@ -303,6 +307,27 @@ export function createNavRenderer(deps) {
       badge.textContent = "UI";
       el.appendChild(ico);
       el.appendChild(badge);
+    } else if (c.card_type === "qa_card") {
+      // [QA 验收场卡 2026-11-05] 绿色对勾图标 + 「QA」徽标——
+      // 与 worker（橙）/UI（青）/角色（金）分开。
+      el.classList.add("nav-qa");
+      ico.classList.add("qa");
+      ico.innerHTML = SVG_QA;
+      const badge = document.createElement("span");
+      badge.className = "nav-qa-badge";
+      badge.textContent = "QA";
+      el.appendChild(ico);
+      el.appendChild(badge);
+    } else if (c.card_type === "pm_card") {
+      // [PM 执笔场卡 2026-11-05] 玫红铅笔图标 + 「PM」徽标。
+      el.classList.add("nav-pm");
+      ico.classList.add("pm");
+      ico.innerHTML = SVG_PM;
+      const badge = document.createElement("span");
+      badge.className = "nav-pm-badge";
+      badge.textContent = "PM";
+      el.appendChild(ico);
+      el.appendChild(badge);
     } else {
       el.appendChild(ico);
     }
@@ -544,9 +569,15 @@ export function createNavRenderer(deps) {
     // [定稿] 行尾槽：运行中→转圈（时间让位）；否则→时间。⋯ 恒在（CSS 落时间原位）
     // [修·运行中假阳性 2026-10-13] 判据用 (wid, cid) 复合键——card_id 跨项目不唯一
     const running = store.temp.isRunning(row.wid, c.card_id);
+    // [左栏标记 2026-11-05 · 用户令] 蓝点/橘红点与转圈**同机制**：占同一个槽、
+    // 时间同样让位。当前打开的卡＝看过 ⇒ 先记 seen 再算亮点，点开即消。
+    if (c.card_id === ((getCardId && getCardId()) || "")) {
+      _markSeenCard(row.wid, c.card_id);
+    }
+    const _marks = _liveMarks(c, row.wid);
     el.__tail.classList.toggle("has-run", running);
-    el.__tail.classList.toggle("has-time", !running && !!c.last_active_at);
-    el.__tail.__time.textContent = running ? "" : fmtRel(c.last_active_at);
+    el.__tail.classList.toggle("has-time", !running && !_marks.any && !!c.last_active_at);
+    el.__tail.__time.textContent = (running || _marks.any) ? "" : fmtRel(c.last_active_at);
     // [步2 收尾·补缺] 运行中＝行尾转圈。此前只挂了 has-run 类、**元素从未创建**——
     // nav.css 的 .nav-run/.nav-spinner 写在给不存在的元素上，运行中的卡毫无提示。
     // 插在 time 之前：运行时 time 空（让位）、转圈占其位、⋯ 在右（CSS has-run 分支）。
@@ -560,6 +591,22 @@ export function createNavRenderer(deps) {
     } else if (!running && run) {
       run.remove();
       el.__tail.__run = null;
+    }
+    // [左栏标记] 点元素与 .nav-run 同槽位同手法：插 time 之前、
+    // 条件消失即摘除（转圈优先——在跑的卡亮转圈不亮点）。
+    let mk = el.__tail.__marks;
+    if (!running && _marks.any) {
+      if (!mk) {
+        mk = document.createElement("span");
+        mk.className = "nav-marks";
+        el.__tail.insertBefore(mk, el.__tail.__time);
+        el.__tail.__marks = mk;
+      }
+      mk.innerHTML = (_marks.done ? '<i class="nav-dot nav-dot-done" title="完工未上报"></i>' : "")
+                   + (_marks.bad ? '<i class="nav-dot nav-dot-bad" title="断连/失败"></i>' : "");
+    } else if (mk && (running || !_marks.any)) {
+      mk.remove();
+      el.__tail.__marks = null;
     }
     // [R-22] 三态就地：加载中＝行内转圈；失败＝行内「加载失败·点此重试」
     const state = el.__tail.__state;
@@ -672,6 +719,34 @@ export function createNavRenderer(deps) {
     return rows;
   }
 
+  /* [左栏标记 2026-11-05 · 用户令] 「该看一眼」点：
+     蓝点＝执行卡完工但**没向上发过回执**（worker_done/coder_done/msg_report
+     一条都没有）；橘红点＝断连/失败（goal_state=blocked，驱动器放弃位）。
+     两种点同一机制：在转圈位亮、**有点的卡不折叠**、用户点开该卡即消。
+     看过记录存 localStorage（视图偏好不是卡真相）；条件消失时自清——
+     卡再次被完工/被 blocked 会重新亮点。 */
+  const _MARK_KEY = "nav.marks.seen.v1";
+  const _markSeen = (() => {
+    try { return new Set(JSON.parse(localStorage.getItem(_MARK_KEY) || "[]")); }
+    catch { return new Set(); }
+  })();
+  const _mkKey = (wid, cid, kind) => `${wid}:${cid}:${kind}`;
+  function _seenSave() {
+    try { localStorage.setItem(_MARK_KEY, JSON.stringify([..._markSeen])); } catch {}
+  }
+  function _markSeenCard(wid, cid) {           // 点开该卡 ⇒ 两种点都算看过
+    if (_markSeen.add(_mkKey(wid, cid, "done")) ||
+        _markSeen.add(_mkKey(wid, cid, "bad"))) _seenSave();
+  }
+  function _liveMarks(c, wid) {
+    // 自愈：条件没了 ⇒ 看过的记录作废（下次再出会重新亮点）
+    if (!c.unreported_done) _markSeen.delete(_mkKey(wid, c.card_id, "done"));
+    if (!c.goal_blocked) _markSeen.delete(_mkKey(wid, c.card_id, "bad"));
+    const done = !!c.unreported_done && !_markSeen.has(_mkKey(wid, c.card_id, "done"));
+    const bad = !!c.goal_blocked && !_markSeen.has(_mkKey(wid, c.card_id, "bad"));
+    return { done, bad, any: done || bad };
+  }
+
   // [静默执行卡折叠 2026-11-04 · 用户令] 这四类执行卡「不在跑」时折起来
   // （2026-11-05 加 ui——同属执行卡家族，和 worker/QA/PM 同等待遇）。
   const FOLD_QUIET_TYPES = { worker: "worker", ui: "UI", qa_card: "QA", pm_card: "PM" };
@@ -688,7 +763,8 @@ export function createNavRenderer(deps) {
     const normal = [], quiet = [];
     for (const c of visible) {
       if (FOLD_QUIET_TYPES[c.card_type] && c.card_id !== curCid
-          && !store.temp.isRunning(wid, c.card_id)) quiet.push(c);
+          && !store.temp.isRunning(wid, c.card_id)
+          && !_liveMarks(c, wid).any) quiet.push(c);
       else normal.push(c);
     }
     const pushOne = (c, i, arr, dep, gds, inQuiet) => {
