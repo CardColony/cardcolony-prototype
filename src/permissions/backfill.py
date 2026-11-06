@@ -75,13 +75,18 @@ def resolve_work_id(work_id_or_path: str) -> str:
     if p.name.startswith("work_"):
         work_id = p.name
         if p.is_dir():
-            # 传的是路径：直接校验该路径（不要求等于 WORKS_DIR 下）
-            if not p.is_dir() or not (p / card_db._DB_NAME).exists():
+            # 传的是路径：直接校验该路径（不要求等于 WORKS_DIR 下）。
+            # [库搬出施工目录 2026-11-07] cards.db 可能在 data/{wid}/（新位）
+            # 也可能还没搬（旧位）——两处都算「有库」。
+            if not ((p / card_db._DB_NAME).exists()
+                    or card_db.db_path(work_id).exists()):
                 raise ValueError(f"work 目录不存在或缺少 cards.db: {p}")
             return work_id
-        # 传的是纯 work_id：校验 WORKS_DIR 下存在
+        # 传的是纯 work_id：校验库在（新位 data/ 或旧位 works/ 皆可）
         work_dir = card_store.WORKS_DIR / work_id
-        if not work_dir.is_dir() or not (work_dir / card_db._DB_NAME).exists():
+        if not work_dir.is_dir() or not (
+                (work_dir / card_db._DB_NAME).exists()
+                or card_db.db_path(work_id).exists()):
             raise ValueError(
                 f"work {work_id} 不存在或缺少 cards.db: {work_dir}"
             )

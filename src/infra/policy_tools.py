@@ -174,7 +174,7 @@ async def handle(work_id: str, current_id: str, arguments: dict[str, Any],
             "validation",
             "watch 里有未登记的事件类型：" + "、".join(bad_types)
             + "。拼错一个字母这条策略就永远不会触发。"
-              "可用的事件类型：" + "、".join(known[:40])
+              "可用的事件类型：" + "、".join(known)
             + (f"（共 {len(known)} 个，其余见 config/event_catalog.json）"
                if len(known) > 40 else ""))
 

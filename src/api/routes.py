@@ -151,6 +151,34 @@ class PatchCardRequest(BaseModel):
     history_note: str
 
 
+# [多进程拆分 2026-11-06] runner 间执行转发入口——卡不归本片时
+# _run_message/deliver_now 自查后 POST 到这里，属主进程替调用方跑。
+# 只经 runner 直连（runner→runner 打属主端口），不经 web（web 无卡路径
+# 会转 0 号，0 号收到后再自查转发也收敛）。
+class CtlRunMessageRequest(BaseModel):
+    work_id: str
+    card_id: str
+    content: str = ""
+    client_pair_id: Optional[str] = None
+    append_user: bool = True
+    op: str = ""
+    source: Optional[dict[str, Any]] = None
+    source_kind: str = "internal"
+    act_as: str = ""
+    act_meta: Optional[dict[str, Any]] = None
+    ctx_card: str = ""
+    tool_allow: Optional[list] = None
+    profile: str = ""
+    prior_extra: Optional[list] = None
+
+
+class CtlDeliverRequest(BaseModel):
+    work_id: str
+    card_id: str
+    text: str = ""
+    source: Optional[dict[str, Any]] = None
+
+
 class PostMessageRequest(BaseModel):
     content: str = Field(min_length=1)
     # [T10-3-3] 重发去重：前端重发时携带被重发那条提问的原 pair_id；正常提问缺省 None。
@@ -948,11 +976,11 @@ async def report_client_error(req: ClientErrorRequest):
     # （P20 治的病）；共用默认线程池又会被业务占满（实测被拖到 6333ms）。
     await access_log.write_client_error({
         "where": req.where,
-        "url": req.url[:500],
+        "url": req.url,
         "name": req.name,
-        "message": req.message[:500],
-        "href": req.href[:300],
-        "ua": req.ua[:160],
+        "message": req.message,
+        "href": req.href,
+        "ua": req.ua,
     })
     return {"ok": True}
 
@@ -1019,7 +1047,7 @@ async def _old_archive_items(work_id: str, cards: dict) -> list[dict[str, Any]]:
                     "to_card": cid,
                     "msg_type": (hdr or {}).get("type", ""),
                     "type_display": card_msg.display_of((hdr or {}).get("type", "")) if fmt_ok else "",
-                    "summary": card_msg.strip_header(content)[:80],
+                    "summary": card_msg.strip_header(content),
                     "format_ok": fmt_ok,
                 })
         _ARCHIVE_CACHE[work_id] = (time.monotonic(), list(out))
@@ -1075,7 +1103,7 @@ async def list_card_messages(work_id: str, limit: int = 200, scope: str = "all")
         target = str(row.get("target_card_id") or "")
         msg_type = str(row.get("type") or "")
         # 正文＝剥掉首行机器头行（与旧档案源同语义：summary 不含 [[card-msg …]]）
-        summary = card_msg.strip_header(str(row.get("content") or ""))[:80]
+        summary = card_msg.strip_header(str(row.get("content") or ""))
         items.append({
             "id": msg_id,
             "ts": row.get("created_at") or "",
@@ -1341,7 +1369,7 @@ async def get_review_status(work_id: str, card_id: str):
             _content = str(_b.get("content") or "")
             if not _content.strip():
                 continue
-            opinions[_fid] = {"text": _content.strip()[:800],
+            opinions[_fid] = {"text": _content.strip(),
                               "ts": str(_b.get("ts") or "")}
     except Exception as exc:  # noqa: BLE001 取不到意见就只给状态
         logger.warning("[review-status] 读意见失败 rid=%s: %s", rid, exc)
@@ -2361,7 +2389,8 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     finally:
         if _revive_owner:
             session_facade.turn_release(work_id, card_id, _revive_owner)
-    _res = await _run_message(
+    _res = await message_runner.await_spawned(message_runner._spawn_tracked(
+        _run_message(
         work_id, card_id, req.content, req.pair_id,
         op=req.op or "",
         # [venue_clerk 2026-10-31] 用户在评审卡上发言＝跟**场**说话：
@@ -2369,7 +2398,8 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
         # source 标记让事件流/R 规则能把它跟席位回合（review_step）区分开。
         source=({"kind": "venue_clerk"}
                 if str(_meta.get("card_type") or "") == "review" else None),
-        source_kind="human")
+        source_kind="human"),
+        work_id=work_id, card_id=card_id))
     # [2026-10-31 用户令]「插话不打断流程；停止状态下说话，就继续跑」
     # 只做一件事：这张评审卡有进行中的批次、且**当前没有轮次在跑**（＝停着的），
     # 就把批次续上。正在跑 ⇒ 什么都不做（不打断、不抢占）。
@@ -2474,8 +2504,10 @@ async def edit_work_message(work_id: str, card_id: str, seq: int, req: EditMessa
                         {"seq": seq, "run_id": str(rec.get("run_id") or "")})
     logger.info("[件5] 编辑重生成 work=%s card=%s seq=%s（旧 run_id=%s 已作废）",
                 work_id, card_id, seq, rec.get("run_id") or "")
-    return await _run_message(work_id, card_id, req.content, None,
-                               source_kind="human")
+    return await message_runner.await_spawned(message_runner._spawn_tracked(
+        _run_message(work_id, card_id, req.content, None,
+                     source_kind="human"),
+        work_id=work_id, card_id=card_id))
 
 
 @router.post("/works/{work_id}/cards/{card_id}/messages/{seq}/resend")
@@ -2506,8 +2538,10 @@ async def resend_work_message(work_id: str, card_id: str, seq: int):
     session_ops.ops_log("message_resend", work_id, card_id, {"seq": seq, "run_id": run_id})
     logger.info("[件5] 重发重生成 work=%s card=%s seq=%s（复用 run_id=%s）",
                 work_id, card_id, seq, run_id)
-    return await _run_message(work_id, card_id, content, run_id or None,
-                               source_kind="human")
+    return await message_runner.await_spawned(message_runner._spawn_tracked(
+        _run_message(work_id, card_id, content, run_id or None,
+                     source_kind="human"),
+        work_id=work_id, card_id=card_id))
 
 
 # [A8/R3-T119-T123] 人停端点：置位控制面（consume-once，接口被消费才算数）；
@@ -3078,10 +3112,35 @@ async def get_session_compat(card_id: str):
     return await session_facade.read(DEFAULT_WORK_ID, card_id)
 
 
+@router.post("/ctl/run_message")
+async def ctl_run_message(req: CtlRunMessageRequest):
+    """[多进程拆分] 属主 runner 入口：替调用方在本进程跑该卡回合。"""
+    return await message_runner.await_spawned(message_runner._spawn_tracked(
+        _run_message(req.work_id, req.card_id, req.content,
+                     req.client_pair_id, append_user=req.append_user,
+                     op=req.op, source=req.source,
+                     source_kind=req.source_kind, act_as=req.act_as,
+                     act_meta=req.act_meta, ctx_card=req.ctx_card,
+                     tool_allow=(set(req.tool_allow)
+                                 if req.tool_allow else None),
+                     profile=req.profile, prior_extra=req.prior_extra),
+        work_id=req.work_id, card_id=req.card_id))
+
+
+@router.post("/ctl/deliver")
+async def ctl_deliver(req: CtlDeliverRequest):
+    """[多进程拆分] 属主 runner 入口：替调用方在本进程判 pending/起回合。"""
+    delivered = await message_runner.deliver_now(
+        req.work_id, req.card_id, text=req.text, source=req.source)
+    return {"delivered": bool(delivered)}
+
+
 @router.post("/cards/{card_id}/messages")
 async def post_message_compat(card_id: str, req: PostMessageRequest):
-    return await _run_message(DEFAULT_WORK_ID, card_id, req.content, req.pair_id,
-                               source_kind="human")
+    return await message_runner.await_spawned(message_runner._spawn_tracked(
+        _run_message(DEFAULT_WORK_ID, card_id, req.content, req.pair_id,
+                     source_kind="human"),
+        work_id=DEFAULT_WORK_ID, card_id=card_id))
 
 
 # ============================================================
@@ -3100,6 +3159,18 @@ async def _run_message(work_id: str, card_id: str, content: str,
                        tool_allow: Optional[set] = None,
                        profile: str = "",
                        prior_extra: Optional[list] = None) -> Any:
+    from ..infra import procs as _procs
+    if (_procs.is_runner()
+            and _procs.owner_index_of(work_id, card_id)
+            != _procs.runner_index()):
+        # [多进程拆分] 卡不归本片——透明转发到属主 runner，调用方零感知。
+        return await _procs.forward_run(work_id, card_id, {
+            "work_id": work_id, "card_id": card_id, "content": content,
+            "client_pair_id": client_pair_id, "append_user": append_user,
+            "op": op, "source": source, "source_kind": source_kind,
+            "act_as": act_as, "act_meta": act_meta, "ctx_card": ctx_card,
+            "tool_allow": sorted(tool_allow) if tool_allow else None,
+            "profile": profile, "prior_extra": prior_extra})
     """完整 messages 链路，新旧路由共用。
 
     顺序：读卡 → 取历史 → 追加用户消息 → context_assembler 组装 →
@@ -3128,7 +3199,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
                         source_kind, card_id)
             return {"error": {"code": "halted",
                               "message": "该卡已被强制停止:"
-                                         + str(_halt.get("reason") or "")[:120]}}
+                                         + str(_halt.get("reason") or "")}}
     # [沉默 2026-10-24] 沉默的卡拒内部唤醒(信留收件箱);用户直接发话可达
     # (人是最高权威)但**不解除沉默**——解除唯一口=silence_card(activate)。
     try:
@@ -3288,6 +3359,25 @@ async def _run_message(work_id: str, card_id: str, content: str,
         #   · 只在**本轮成功收口**时接续——回合失败时自动续跑会变成失败打转，
         #     队列留着，等下一次真实触发（人发消息 / 卡间消息 / 目标续轮）。
         if outcome == "ok":
+            # [差事回执兜底 2026-11-06] 差事卡（qa_card/pm_card）本轮正常
+            # 收口但差事还挂着 ⇒ 模型把结论写在回合回复里、没调 report——
+            # wb 执行体路径有机械回执（bridge._finish_deploy_card），
+            # 系统模型路径同权：本轮回复文本作 msg_report 发派遣方。
+            # 只判读卡型+查差事账，非差事卡零开销（一次 meta 读）。
+            try:
+                _dm = (await card_store.read_card(work_id, card_id)).get("meta") or {}
+                if str(_dm.get("card_type") or "") in card_tools.DEPLOY_CARD_TYPES:
+                    _dst = _stats.get("state")
+                    # 回执载荷＝本会话块的那份（clean_text：分析段＋末轮回执
+                    # 拼接全文、剥协议块）；读不到退末轮原文。QA 的逐条结论
+                    # 常写在带工具轮的分析里，只取末轮会把收据发薄。
+                    _dtext = str(getattr(_dst, "clean_text", "") or
+                                 getattr(_dst, "final_only", "") or "")
+                    await card_tools.deploy_unreported_fallback(
+                        work_id, card_id, _dtext, meta=_dm)
+            except Exception as exc:  # noqa: BLE001 兜底失败不阻断本回合
+                logger.warning("[deploy] 收口兜底回执失败 card=%s: %s",
+                               card_id, exc)
             try:
                 _picked = await message_runner.deliver_now(work_id, card_id)
                 if _picked:

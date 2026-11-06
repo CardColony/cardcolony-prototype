@@ -435,7 +435,7 @@ def search_files(keyword: str, path: str = "", limit: int = 50,
                 hits.append({
                     "file": _rel(f),
                     "line": i,
-                    "text": line.strip()[:300],
+                    "text": line.strip(),
                 })
                 if len(hits) >= cap:
                     truncated = True
@@ -544,7 +544,7 @@ def closest_match_windows(text: str, needle: str, *, limit: int = 2,
     # 粗筛候选行：needle 各非空行在全文的 top-3 相似行（get_close_matches
     # 内部自带 real_quick_ratio 预筛，长文档也不慢）。重复行取全部索引。
     cand: set[int] = set()
-    for nr in nrows[:10]:
+    for nr in nrows:
         for m in difflib.get_close_matches(nr, rows, n=3, cutoff=0.55):
             for j, r in enumerate(rows):
                 if r is m or r == m:
@@ -583,8 +583,6 @@ def closest_match_windows(text: str, needle: str, *, limit: int = 2,
             continue
         spans.append((lo, lo + win))
         snippet = "\n".join(rows[lo:lo + win])
-        if len(snippet) > 1800:
-            snippet = snippet[:1800] + "\n…（窗截断）"
         out.append({"line": lo + 1, "similarity": round(s, 2), "text": snippet})
         if len(out) >= limit:
             break
@@ -619,7 +617,7 @@ def match_positions(text: str, needle: str, *, limit: int = 5) -> list[dict[str,
         line = text.count("\n", 0, i) + 1
         row_end = text.find("\n", i)
         out.append({"line": line,
-                    "head": text[i:(row_end if row_end >= 0 else len(text))][:80]})
+                    "head": text[i:(row_end if row_end >= 0 else len(text))]})
         pos = i + 1
     return out
 
@@ -705,19 +703,24 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
     return [
         {
             "name": "list_files",
-            "description": f"列出一个目录下的条目（一层）。范围：{'、'.join(str(r) for r in ALLOWED_ROOTS)}。",
+            "description": (
+                f"列出一个目录下的条目（一层，不进子目录）。范围：{'、'.join(str(r) for r in ALLOWED_ROOTS)}。"
+                "按文件名找文件请用 glob_files（不读内容、不受条数上限）；"
+                "按内容找行用 search_files。返回 truncated=true 表示目录没列完——"
+                "换检索工具按模式取，不要盲目调大 limit。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "目录路径（相对 D:\\AI_station 或绝对）；缺省列 trading-workspace"},
-                    "limit": {"type": "integer", "description": "最多返回条目数，缺省 200"},
+                    "limit": {"type": "integer", "description": "最多返回条目数，缺省 200（上限 1000）"},
                 },
                 "required": [],
             },
         },
         {
             "name": "read_file",
-            "description": "读取一个文本文件的内容，可按行区间分段。二进制文件与凭证类文件不可读。",
+            "description": "读取一个文本文件的内容，可按行区间分段。二进制文件与凭证类文件不可读。单次返回区间超 2MB 会被拒——大文件按行区间分段取，不要整文件回读。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -730,14 +733,21 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
         },
         {
             "name": "search_files",
-            "description": "在指定目录下逐文件检索关键词（不区分大小写），返回命中的文件、行号与该行内容。",
+            "description": (
+                "按**文件内容**逐文件检索（keyword 子串或 pattern 正则，忽略大小写），"
+                "返回命中的文件、行号与该行内容。**按文件名找文件请用 glob_files**"
+                "（本工具逐文件读内容，大目录慢且有扫描上限）。"
+                "硬上限：命中 limit 条（顶 200）、最多扫 20000 个文件、单文件 >2MB 跳过——"
+                "大目录可能没扫完就截断，返回里有 scanned_files/truncated："
+                "截断时先用 path 收窄目录或换 glob_files，不要把「没搜到」当「不存在」。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "keyword": {"type": "string", "description": "检索关键词"},
+                    "keyword": {"type": "string", "description": "检索关键词（子串）"},
                     "pattern": {"type": "string", "description": "正则表达式；非空时按正则匹配每行（忽略大小写），与 keyword 二选一，pattern 优先"},
                     "path": {"type": "string", "description": "起始目录或文件；缺省搜索 trading-workspace"},
-                    "limit": {"type": "integer", "description": "最多返回命中条数，缺省 50"},
+                    "limit": {"type": "integer", "description": "最多返回命中条数，缺省 50（上限 200）"},
                 },
                 "required": [],
             },

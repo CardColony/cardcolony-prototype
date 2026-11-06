@@ -158,6 +158,11 @@ _PROGRESS_STAGE = {
     "proposal": "cards",
     "done": "done",
     "error": "error",
+    # [幻影转圈修复 2026-11-06] turn_end 是 _run_message finally 无条件发的
+    # 权威终止帧（turn 死在 handle_error 之前时 done/error 都不发）——
+    # 漏了它 ⇒ 死 turn 的 progress.active 永真 ⇒ 左栏永久转圈。映射 done
+    # 即终态（outcome ok/error/aborted 一律收口）。
+    "turn_end": "done",
 }
 
 _journals: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -544,13 +549,13 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
         if stage:
             try:
                 from . import progress
-                progress.set_stage(work_id, card_id, stage, str((data or {}).get("detail") or ev_type)[:120])
+                progress.set_stage(work_id, card_id, stage, str((data or {}).get("detail") or ev_type))
             except Exception:  # noqa: BLE001
                 pass
         # 审计打点（与事件分离的日志通道；只写不判）
         logger.info("[flow] type=%s work=%s card=%s seq=%s data=%s",
                     ev_type, work_id, card_id, evt["seq"],
-                    json.dumps(evt["data"], ensure_ascii=False)[:300])
+                    json.dumps(evt["data"], ensure_ascii=False))
         return evt
     except Exception as exc:  # noqa: BLE001 展示层零阻断
         logger.warning("[flow] emit 失败（不阻断主流程）type=%s card=%s: %s", ev_type, card_id, exc)
@@ -665,7 +670,7 @@ def emit_work(work_id: str, ev_type: str, data: dict[str, Any] | None = None) ->
                            ev_type, work_id, exc)
         logger.info("[flow] work-event type=%s work=%s seq=%s data=%s",
                     ev_type, work_id, evt["seq"],
-                    json.dumps(evt["data"], ensure_ascii=False)[:300])
+                    json.dumps(evt["data"], ensure_ascii=False))
         return evt
     except Exception as exc:  # noqa: BLE001 展示层零阻断
         logger.warning("[flow] emit_work 失败（不阻断主流程）type=%s work=%s: %s",

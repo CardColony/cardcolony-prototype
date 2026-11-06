@@ -42,6 +42,12 @@ providers:
     base_url: https://ark.cn-beijing.volces.com/api/coding/v3
     api_key_env: VOLCENGINE_CODING2_API_KEY
     note: 第二组火山方舟 coding（2026-11-05 用户令）· 端点与第一组相同、key 独立；座椅按第一组逐字照抄。
+  longcat:
+    protocol: openai
+    base_url: https://api.longcat.chat/openai/v1
+    api_key_env: LONGCAT_API_KEY
+    note: 美团 LongCat 开放平台（OpenAI 兼容）。2026-11-06 实测 /v1/models 共 3 个模型：LongCat-2.5 /
+      LongCat-2.5-Preview / LongCat-2.0。文档口径：温度开思考锁 1.0、关思考锁 0.7，传别的值会被覆盖（实测不报错）。
   volcengine-coding:
     protocol: openai
     base_url: https://ark.cn-beijing.volces.com/api/coding/v3
@@ -503,11 +509,14 @@ models:
   glm-53-flash-volc2:
     provider: volcengine-coding2
     model: glm-5-3-flash-260828
+  longcat-25:
+    provider: longcat
+    model: LongCat-2.5
 bindings:
   execute: glm-53-flash
   think: glm-53-flash
   synthesize: glm-53-flash
-  condense: glm-53-flash-volc
+  condense: glm-53-flash
   compress: glm-53-flash
   draft: glm-53
   viewpoint:

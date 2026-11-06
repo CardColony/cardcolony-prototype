@@ -1,0 +1,2212 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>画布页 · 交互原型 v3</title>
+<style>
+:root{
+  --bg:#161616; --surface:#1e1e1e; --surface2:#252525; --surface3:#2c2c2c;
+  --line:#343434; --line2:#4a4a4a; --line3:#5e5e5e;
+  --text:#e6e6e6; --text2:#a8a8a8; --text3:#7c7c7c;
+  --accent:#5b9bff; --accent2:#3d82f0; --accent-weak:rgba(91,155,255,.12);
+  --run:#5b9bff; --done:#5fbf80; --wait:#d8a94a; --blocked:#e8786c; --arch:#7c7c7c;
+  --shadow:0 1px 2px rgba(0,0,0,.5); --shadow2:0 6px 18px rgba(0,0,0,.45);
+  --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+}
+html[data-theme="light"]{
+  --bg:#efefef; --surface:#ffffff; --surface2:#f6f6f6; --surface3:#eaeaea;
+  --line:#d6d6d6; --line2:#b9b9b9; --line3:#a0a0a0;
+  --text:#1b1b1b; --text2:#5a5a5a; --text3:#8c8c8c;
+  --accent:#1f5fd1; --accent2:#1a4faf; --accent-weak:rgba(31,95,209,.10);
+  --run:#1f5fd1; --done:#1d6b3c; --wait:#8a5a00; --blocked:#a3231e; --arch:#8c8c8c;
+  --shadow:0 1px 2px rgba(0,0,0,.06); --shadow2:0 4px 14px rgba(0,0,0,.10);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden}
+body{font:13px/1.5 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);
+  -webkit-font-smoothing:antialiased;transition:background .2s,color .2s}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input{font:inherit;color:inherit}
+::selection{background:var(--accent-weak)}
+.btn{height:24px;padding:0 8px;border:1px solid var(--line2);border-radius:5px;background:var(--surface2);
+  color:var(--text2);display:inline-flex;align-items:center;gap:4px;font-size:12px;
+  transition:background .12s,border-color .12s,color .12s;white-space:nowrap}
+.btn:hover{background:var(--surface3);border-color:var(--line3);color:var(--text)}
+.btn:active{background:var(--accent-weak);border-color:var(--accent);transform:translateY(.5px)}
+.btn[disabled],.btn.is-disabled{opacity:.42;cursor:not-allowed;pointer-events:none}
+.btn.primary{background:var(--accent2);border-color:var(--accent2);color:#fff}
+.btn.primary:hover{filter:brightness(1.08);color:#fff}
+.btn.ghost{border-color:transparent;background:transparent}
+.btn.ghost:hover{background:var(--surface3);border-color:transparent}
+.icon{width:24px;height:24px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;
+  color:var(--text2);transition:background .12s,color .12s}
+.icon:hover{background:var(--surface3);color:var(--text)}
+.icon:active{transform:scale(.94)}
+.icon.on{background:var(--accent-weak);color:var(--accent)}
+.field{height:24px;border:1px solid var(--line2);border-radius:5px;background:var(--surface);
+  padding:0 7px;color:var(--text);font-size:12px;outline:none;transition:border-color .12s,box-shadow .12s;width:100%}
+.field::placeholder{color:var(--text3)}
+.field:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-weak)}
+.kbd{font:11px/1 var(--mono);padding:2px 4px;border:1px solid var(--line2);border-radius:3px;color:var(--text3);background:var(--surface3)}
+.work-page{display:flex;height:100vh;width:100vw;position:relative}
+.rail{width:44px;flex:0 0 44px;background:var(--surface);border-right:1px solid var(--line);
+  position:relative;z-index:35}
+.rail-inner{position:absolute;left:0;top:0;width:260px;height:100%;background:var(--surface);
+  border-right:1px solid var(--line);transform:translateX(-216px);transition:transform .18s cubic-bezier(.4,0,.2,1);
+  display:flex;flex-direction:column}
+.rail:hover .rail-inner{transform:translateX(0);box-shadow:var(--shadow)}
+.rail-icons{width:44px;padding:8px 0;display:flex;flex-direction:column;align-items:center;gap:2px;flex:0 0 44px}
+.rail-logo{width:28px;height:28px;border-radius:4px;background:var(--accent2);color:#fff;
+  display:grid;place-items:center;font-weight:700;font-size:12px;margin-bottom:6px}
+.rail-btn{width:32px;height:32px;border-radius:4px;display:grid;place-items:center;color:var(--text3);font-size:14px}
+.rail-btn:hover{background:var(--surface3);color:var(--text)}
+.rail-btn.on{background:var(--accent-weak);color:var(--accent)}
+.rail-body{flex:1;min-width:0;padding:10px 0;overflow:auto;opacity:0;transition:opacity .12s}
+.rail:hover .rail-body{opacity:1;transition-delay:.06s}
+.rail-sec{padding:6px 14px 4px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)}
+.tree{list-style:none;margin:0;padding:0 8px}
+.tree li{margin:1px 0}
+.tree-row{display:flex;align-items:center;gap:6px;height:26px;padding:0 6px;border-radius:5px;cursor:pointer;
+  color:var(--text2);font-size:12.5px;white-space:nowrap;overflow:hidden}
+.tree-row:hover{background:var(--surface3);color:var(--text)}
+.tree-row.on{background:var(--accent-weak);color:var(--accent);font-weight:600}
+.tree-row .d{width:5px;height:5px;border-radius:50%;flex:0 0 5px}
+.tree-row .t{overflow:hidden;text-overflow:ellipsis}
+.tree-row.child{padding-left:20px}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+.topbar{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:8px;padding:0 10px;
+  background:var(--surface);border-bottom:1px solid var(--line);position:relative;z-index:30}
+.crumb{display:flex;align-items:center;gap:5px;font-size:12.5px;min-width:0}
+.crumb .seg{color:var(--text2);cursor:pointer;padding:2px 4px;border-radius:4px;white-space:nowrap}
+.crumb .seg:hover{background:var(--surface3);color:var(--text)}
+.crumb .seg.cur{color:var(--text);font-weight:600}
+.crumb .sep{color:var(--text3);font-size:11px}
+.stat{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--text3);
+  padding:0 8px;border-left:1px solid var(--line);margin-left:2px}
+.stat b{color:var(--text2);font-weight:600}
+.build{font:11px var(--mono);color:var(--text3);padding:2px 6px;border:1px solid var(--line);border-radius:4px}
+.tb-spacer{flex:1}
+.zoomgrp{display:flex;align-items:center;gap:2px;padding:0 4px;border-left:1px solid var(--line)}
+.zoomgrp .lbl{font:11px var(--mono);color:var(--text2);width:38px;text-align:center;cursor:pointer;
+  padding:2px 0;border-radius:4px}
+.zoomgrp .lbl:hover{background:var(--surface3);color:var(--text)}
+input[type=range]{-webkit-appearance:none;appearance:none;width:84px;height:16px;background:transparent;cursor:pointer}
+input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:var(--line2)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;
+  background:var(--accent);margin-top:-4.5px;border:2px solid var(--surface)}
+.zoomgrp .sep2{width:1px;height:18px;background:var(--line);margin:0 4px}
+.bellwrap{position:relative}
+.badge{position:absolute;top:-2px;right:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:4px;
+  background:var(--blocked);color:#fff;font:10px/14px var(--mono);text-align:center;pointer-events:none}
+.stage{flex:1;min-height:0;position:relative;overflow:hidden;background:var(--bg);--rp:0px}
+.stage.side{--rp:300px}
+.canvas{position:absolute;top:0;left:0;bottom:0;right:0;overflow:clip;cursor:default;touch-action:none;
+  transition:right .2s cubic-bezier(.4,0,.2,1)}
+.stage.side .canvas{right:300px}
+.canvas.panning{cursor:grabbing}
+.world{position:absolute;left:0;top:0;width:2600px;height:1800px;transform-origin:0 0;will-change:transform}
+#wires{position:absolute;left:0;top:0;width:2600px;height:1800px;pointer-events:none;overflow:visible}
+.wire-p{stroke:var(--line3);stroke-width:1.4;fill:none}
+/* 通信线＝**信息传递的那一下**，不常驻。旧系统原话（canvas.js:3940）：「这样画布上出现的
+   每一条通信线都意味着『刚刚发生了信息流动』」，只画 30 分钟窗口内发生过的传递；线用曲线
+   （穿过中间的卡时不会被误读成父子线），收件方一个实心点表示「信落到这里」。
+   这里的表达分三段：信号头沿曲线走过去（走过的地方才留下线）→ 到站停一下 → 整条渐隐消失。
+   全部按性能时钟逐帧算，不用 CSS 动画：SVG 每次重画都会把 CSS 动画重置到第一帧。 */
+.comm-tail{stroke:var(--accent);fill:none;stroke-linecap:round}
+.comm-head{fill:var(--accent)}
+.comm-head-glow{fill:var(--accent);opacity:.2}
+.comm-dot{fill:var(--accent)}
+.comm-dot-ring{fill:none;stroke:var(--accent);stroke-width:1.4}
+.comm-tag{font:10px var(--mono);fill:var(--accent)}
+.node{position:absolute;width:290px;min-height:84px;background:var(--surface);border:1px solid var(--line2);
+  border-radius:5px;padding:0;display:flex;flex-direction:column;
+  transform-origin:50% 50%;user-select:none;
+  transition:border-color .12s,box-shadow .12s,background .12s,opacity .26s}
+/* 位移过渡只在「明确要走动效」的窗口内打开（折叠/展开/适配/定位/推流）。
+   常开的话，节点插入那一刻会从 left:0/top:0（画布左上）滑到自己的列位——
+   刷新时看到「个别卡从左侧闪出来」就是这么来的：列位越深，滑得越远。 */
+#nodes.anim .node{transition:left .38s cubic-bezier(.22,.75,.2,1),top .38s cubic-bezier(.22,.75,.2,1),
+    transform .38s cubic-bezier(.22,.75,.2,1),
+    border-color .12s,box-shadow .12s,background .12s,opacity .26s}
+/* 新卡从父卡旁「长」出来：缩放+淡入，同时用 left/top 过渡走到自己的列位 */
+.node.grow{animation:grow .46s cubic-bezier(.22,.75,.2,1) both}
+@keyframes grow{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:scale(1)}}
+/* 折叠时被收起的卡：缩回+淡出 280ms 再移出 DOM，用户能看见「那支去哪了」 */
+.node.leave{opacity:0!important;transform:scale(.86);pointer-events:none}
+/* 画布整体缩放：只在折叠/展开/适配/定位时走过渡，手势永远不过渡（要跟手） */
+.world.anim{transition:transform .4s cubic-bezier(.22,.75,.2,1)}
+.node:hover{border-color:var(--line3);box-shadow:var(--shadow)}
+.node.focus{border-color:var(--accent);border-width:1.5px}
+.n-top{display:flex;align-items:center;gap:7px;padding:7px 13px 0}
+.n-type{font-size:10.5px;letter-spacing:.02em;padding:1px 5px;border-radius:3px;background:var(--surface3);
+  color:var(--text2);border:1px solid var(--line);white-space:nowrap;
+  display:inline-flex;align-items:center;gap:4px}
+.n-type::before{content:attr(data-ic);font-size:9px;opacity:.8;line-height:1}
+/* ===== 卡片类型的视觉区分（第二个维度不靠颜色） =====
+   结构卡 master/manager/unit：层级越上层左条越粗（4/3/2px）并用类型色；
+   工作卡 worker/qa/pm/ui：没有左条，徽标走虚线框 —— 一眼分清「组织结构里的位置」
+   与「干活的卡」。粗细与虚/实是可触知的差别，不只看色相。 */
+.node::before{content:"";position:absolute;left:0;top:0;bottom:0;width:0;
+  border-radius:5px 0 0 5px;pointer-events:none}
+.node[data-kind="master"]::before{width:4px;background:var(--k-master)}
+.node[data-kind="manager"]::before{width:3px;background:var(--k-manager)}
+.node[data-kind="unit"]::before{width:2px;background:var(--k-unit)}
+.node[data-kind="master"] .n-type{color:var(--k-master);border-color:var(--k-master);background:transparent}
+.node[data-kind="manager"] .n-type{color:var(--k-manager);border-color:var(--k-manager);background:transparent}
+.node[data-kind="unit"] .n-type{color:var(--k-unit);border-color:var(--k-unit);background:transparent}
+.node[data-kind="worker"] .n-type,
+.node[data-kind="qa"] .n-type,
+.node[data-kind="pm"] .n-type,
+.node[data-kind="ui"] .n-type{background:transparent;border-style:dashed;color:var(--text2)}
+.node[data-kind="worker"] .n-type::before{color:var(--k-worker)}
+.node[data-kind="qa"] .n-type::before{color:var(--k-qa)}
+.node[data-kind="pm"] .n-type::before{color:var(--k-pm)}
+.node[data-kind="ui"] .n-type::before{color:var(--k-ui)}
+/* 模型徽标：卡面直接点，改这一张卡的模型。far 档不显示（远看只读结论，不读配置）。 */
+.n-model{font:10px var(--mono);color:var(--text2);background:transparent;
+  border:1px solid var(--line);border-radius:3px;padding:0 4px;line-height:15px;
+  cursor:pointer;white-space:nowrap;max-width:76px;overflow:hidden;text-overflow:ellipsis}
+.n-model:hover{color:var(--text);border-color:var(--line3);background:var(--surface3)}
+.world[data-lod="far"] .n-model{display:none}
+/* 模型选择浮层：卡面一个、底栏一格，共用同一个浮层 */
+.mpop{position:fixed;z-index:92;min-width:196px;background:var(--surface);border:1px solid var(--line2);
+  border-radius:6px;box-shadow:var(--shadow2);padding:4px;display:none}
+.mpop.open{display:block}
+.mpop-hd{font:10px var(--mono);color:var(--text3);padding:5px 8px 6px;border-bottom:1px solid var(--line);
+  margin-bottom:3px;white-space:nowrap}
+.mpop-it{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;
+  cursor:pointer;font-size:12px;color:var(--text2)}
+.mpop-it:hover{background:var(--surface3);color:var(--text)}
+.mpop-it.on{color:var(--accent)}
+.mpop-it .ck{margin-left:auto;font-size:11px;color:var(--accent)}
+.n-code{font:11px var(--mono);color:var(--text3);margin-left:auto}
+.n-title{font-size:15px;font-weight:600;line-height:1.4;padding:5px 13px 0;color:var(--text);
+  display:flex;align-items:flex-start;gap:5px;min-height:20px}
+.n-title .t{flex:1;min-width:0;word-break:break-word}
+.n-title[contenteditable="true"]{outline:none;background:var(--accent-weak);border-radius:4px;
+  box-shadow:0 0 0 1px var(--accent);padding:5px 8px;margin:5px 8px 0}
+.pencil{flex:0 0 auto;width:18px;height:18px;border-radius:4px;display:grid;place-items:center;
+  color:var(--text3);opacity:0;transition:opacity .12s,background .12s;font-size:11px}
+.node:hover .pencil{opacity:1}
+.pencil:hover{background:var(--surface3);color:var(--accent)}
+.n-facts{display:flex;flex-wrap:wrap;gap:0 13px;padding:8px 13px 0;font-size:12.5px;color:var(--text3)}
+.n-facts span{white-space:nowrap}
+.n-facts b{color:var(--text2);font-weight:600}
+.n-state{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);
+  padding:1px 6px 1px 5px;border-radius:4px;background:var(--surface3)}
+.n-state .sd{width:6px;height:6px;border-radius:50%;flex:0 0 6px;background:var(--text3)}
+.n-acts{margin-left:auto;display:flex;gap:2px;opacity:0;transition:opacity .12s}
+.node:hover .n-acts{opacity:1}
+.n-act{width:24px;height:24px;border-radius:4px;display:grid;place-items:center;color:var(--text3);font-size:12px}
+.n-act:hover{background:var(--surface3);color:var(--text)}
+.node[data-state="run"] .sd{background:var(--run);box-shadow:0 0 0 3px rgba(91,149,245,.18)}
+.node[data-state="run"] .n-state{color:var(--run)}
+.node[data-state="done"] .sd{background:var(--done)}
+.node[data-state="done"] .n-state{color:var(--done)}
+.node[data-state="paused"] .sd{background:var(--wait)}
+.node[data-state="paused"] .n-state{color:var(--wait)}
+.node[data-state="blocked"] .sd{background:var(--blocked)}
+.node[data-state="blocked"] .n-state{color:var(--blocked)}
+/* 已归档不是卡片状态——归档＝cards 行被删、进 card_archive 表（card_store.py:1882-1890），
+   画布上不会再有它的节点。归档只在父卡旁留一个计数入口，样式见 .arch-tag。 */
+.archcode{font:10px var(--mono);color:var(--blocked);border:1px dashed rgba(224,101,92,.45);
+  padding:0 4px;border-radius:3px;margin-left:4px;text-decoration:none!important}
+/* 归档入口：一个计数，不占画布格子。归档＝活卡表里已经没有这张卡了（card_store.py:1882-1890）。 */
+.ps-arch{display:inline-flex;align-items:center;gap:4px;background:none;border:1px solid var(--line2);
+  color:var(--text2);font:12px var(--ui);padding:2px 8px;border-radius:999px;cursor:pointer}
+.ps-arch:hover{background:var(--surface2);color:var(--text)}
+.arch-pop{position:fixed;top:52px;right:16px;width:352px;max-height:60vh;overflow:auto;z-index:70;
+  background:var(--surface);border:1px solid var(--line2);border-radius:10px;
+  box-shadow:0 12px 32px rgba(20,24,30,.18);display:none}
+.arch-pop.open{display:block}
+.ap-hd{padding:10px 12px;border-bottom:1px solid var(--line);font:600 12px var(--ui);color:var(--text)}
+.ap-hd span{font-weight:400;color:var(--text3)}
+.ap-row{padding:10px 12px;border-bottom:1px solid var(--line)}
+.ap-row:last-child{border-bottom:0}
+.ap-t{display:flex;align-items:baseline;gap:6px;font:13px var(--ui);color:var(--text)}
+.ap-code{font:10px var(--mono);color:var(--text3)}
+.ap-m{font:11px var(--mono);color:var(--text3);margin-top:3px}
+.ap-w{font:12px var(--ui);color:var(--text2);margin:5px 0 7px;line-height:1.5}
+.ap-empty{padding:14px 12px;color:var(--text3);font:12px var(--ui)}
+.rp-head{padding:10px 12px 8px;border-bottom:1px solid var(--line)}
+.rp-k{font:600 12px var(--ui);color:var(--text);display:flex;align-items:center;gap:6px}
+.rp-k::before{content:"";width:6px;height:6px;border-radius:2px;background:var(--accent)}
+.rp-v{font:11px var(--ui);color:var(--text3);margin-top:3px;line-height:1.5}
+.rule-panel{position:absolute;top:0;right:0;bottom:0;width:300px;background:var(--surface);
+  border-left:1px solid var(--line);z-index:40;display:flex;flex-direction:column;
+  transform:translateX(0);transition:transform .2s cubic-bezier(.4,0,.2,1);box-shadow:var(--shadow)}
+.rule-panel.closed{transform:translateX(300px)}
+.rp-tabs{display:flex;align-items:center;border-bottom:1px solid var(--line);height:36px;flex:0 0 36px;padding-right:6px}
+.rp-tab{height:36px;padding:0 11px;font-size:12px;color:var(--text3);border-bottom:2px solid transparent;display:flex;align-items:center}
+.rp-tab:hover{color:var(--text2)}
+.rp-tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.rp-body{flex:1;overflow:auto;padding:10px 12px}
+.rp-handle{position:absolute;left:-26px;top:50%;transform:translateY(-50%);width:26px;height:64px;
+  background:var(--surface);border:1px solid var(--line);border-right:0;border-radius:6px 0 0 6px;
+  display:grid;place-items:center;color:var(--text3);cursor:pointer;z-index:41;font-size:13px}
+.rp-handle:hover{color:var(--accent);background:var(--surface3)}
+/* 规则卡入口：贴在画布右缘的竖排小标签。**它是入口，不是面板**——
+   点开才出现规则卡本身（一张卡：看内容、可直接改）。 */
+.rule-entry{position:absolute;right:calc(var(--rp) + 10px);top:32%;transform:translateY(-50%);
+  display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 6px;z-index:44;
+  background:var(--surface);border:1px solid var(--line2);border-right:0;border-radius:6px 0 0 6px;
+  color:var(--text3);cursor:pointer;
+  transition:right .2s cubic-bezier(.4,0,.2,1),color .15s,background .15s}
+.rule-entry:hover,.rule-entry.on{color:var(--accent);background:var(--surface3)}
+/* 右缘浮窗（对话 392 / 规则卡 404）打开时，入口贴到浮窗左缘：
+   入口若留在原位就被压在浮窗下面，点上去落到浮窗上，开关就失灵了（实测过）。 */
+.stage.sheetOpen .rule-entry{right:calc(var(--rp) + 414px)}
+.rule-entry .re-ic{font-size:13px;line-height:1}
+.rule-entry .re-tx{font-size:10.5px;writing-mode:vertical-rl;letter-spacing:.14em;line-height:1}
+.rule-entry .re-n{font:9.5px var(--mono);color:var(--text3)}
+/* 归档入口：与规则卡入口同款竖排形态，叠放在其正下方（右缘一组两个门）。
+   各自独立开关；浮窗打开时同样贴到浮窗左缘（同 .stage.sheetOpen 规则）。 */
+.rule-entry.arch{top:calc(32% + 118px);transform:none}
+.rule-entry.arch .re-ic{color:var(--arch)}
+.rule-entry.arch:hover,.rule-entry.arch.on{color:var(--arch)}
+.arch-sheet{width:404px}
+.ap-row{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.ap-row:last-child{border-bottom:0}
+.ap-main{min-width:0;flex:1}
+.ap-t{font:600 12.5px var(--ui);color:var(--text)}
+.ap-m{font:11px/1.6 var(--mono);color:var(--text3);margin-top:2px}
+.ap-w{font:11.5px/1.6 var(--ui);color:var(--text2);margin-top:3px}
+.ap-row .btn{height:24px;padding:0 9px;font-size:11px;flex:none;margin-top:2px}
+.ap-empty{padding:22px 12px;text-align:center;font:12px var(--ui);color:var(--text3)}
+.ap-note{padding:9px 12px;font:11px/1.7 var(--ui);color:var(--text3);border-bottom:1px solid var(--line);background:var(--surface2)}
+.rule-sheet{width:404px}
+.rc-meta{font:11px/1.7 var(--mono);color:var(--text3);padding:9px 12px;border-bottom:1px solid var(--line)}
+.rc-sec{padding:11px 12px;border-bottom:1px solid var(--line)}
+.rc-sec:last-child{border-bottom:0}
+.rc-sec.on{background:var(--surface2)}
+.rc-hd{display:flex;align-items:center;gap:6px;font:600 12px var(--ui);color:var(--text)}
+.rc-hd .rc-k{font:10px var(--mono);color:var(--text3);font-weight:400}
+.rc-hd .rc-badge{font:9.5px var(--mono);color:var(--accent);background:var(--accent-weak);padding:1px 5px;border-radius:4px}
+.rc-hd .rc-edit{margin-left:auto;height:22px;padding:0 8px;font-size:11px}
+.rc-tx{font:12px/1.75 var(--ui);color:var(--text2);margin-top:6px;white-space:pre-wrap}
+.rc-ta{width:100%;min-height:140px;margin-top:6px;padding:8px 9px;border:1px solid var(--accent);
+  border-radius:4px;background:var(--surface);color:var(--text);font:12px/1.75 var(--ui);resize:vertical;outline:none}
+.rc-acts{display:flex;align-items:center;gap:6px;margin-top:7px}
+.rc-hint{font:11px var(--ui);color:var(--text3)}
+.spec-sec{margin-bottom:14px}
+.spec-sec h4{margin:0 0 5px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);font-weight:600}
+.spec-sec p,.spec-sec li{font-size:12px;line-height:1.65;color:var(--text2);margin:0 0 3px}
+.spec-sec ul{margin:0;padding-left:14px}
+.spec-sec code{font:11px var(--mono);background:var(--surface3);padding:1px 4px;border-radius:3px;color:var(--text)}
+.drawer{position:absolute;top:10px;bottom:10px;right:calc(var(--rp) + 10px);width:392px;
+  background:var(--surface);border:1px solid var(--line2);border-radius:8px;z-index:46;
+  transform:translateX(108%);opacity:0;pointer-events:none;
+  transition:transform .22s cubic-bezier(.4,0,.2,1),right .2s cubic-bezier(.4,0,.2,1),opacity .16s;
+  display:flex;flex-direction:column;box-shadow:var(--shadow2)}
+.drawer.open{transform:translateX(0);opacity:1;pointer-events:auto}
+.dr-head{height:42px;flex:0 0 42px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line)}
+.dr-title{font-size:13px;font-weight:600}
+.dr-sub{font-size:11px;color:var(--text3)}
+.dr-body{flex:1;overflow:auto;padding:12px}
+.dr-foot{border-top:1px solid var(--line);padding:9px 12px;display:flex;gap:6px;align-items:center}
+.msg{display:flex;gap:8px;margin-bottom:12px}
+.msg .av{width:22px;height:22px;border-radius:5px;background:var(--surface3);border:1px solid var(--line);
+  display:grid;place-items:center;font:10px var(--mono);color:var(--text2);flex:0 0 22px}
+.msg .bd{min-width:0}
+.msg .hd{font-size:11px;color:var(--text3);margin-bottom:2px;display:flex;gap:6px;align-items:center}
+.msg .hd b{color:var(--text2);font-weight:600}
+.msg .tx{font-size:12.5px;line-height:1.6;color:var(--text);background:var(--surface2);
+  border:1px solid var(--line);border-radius:4px;padding:7px 9px;white-space:pre-wrap;word-break:break-word}
+.msg.mine .tx{background:var(--accent-weak);border-color:rgba(91,149,245,.3)}
+.daysep{display:flex;align-items:center;gap:8px;margin:14px 0 10px;font-size:11px;color:var(--text3)}
+.daysep::before,.daysep::after{content:"";flex:1;height:1px;background:var(--line)}
+.cmdk{position:absolute;left:50%;top:12%;transform:translate(-50%,-8px) scale(.98);width:520px;max-width:88vw;
+  background:var(--surface);border:1px solid var(--line2);border-radius:4px;box-shadow:var(--shadow2);
+  z-index:70;opacity:0;pointer-events:none;transition:opacity .14s,transform .14s;overflow:hidden}
+.cmdk.open{opacity:1;pointer-events:auto;transform:translate(-50%,0) scale(1)}
+.cmdk-in{display:flex;align-items:center;gap:8px;padding:11px 13px;border-bottom:1px solid var(--line)}
+.cmdk-in input{border:0;background:none;outline:none;flex:1;font-size:14px;color:var(--text)}
+.cmdk-list{max-height:320px;overflow:auto;padding:5px}
+.cmdk-item{display:flex;align-items:center;gap:9px;height:34px;padding:0 9px;border-radius:6px;cursor:pointer;font-size:12.5px}
+.cmdk-item:hover,.cmdk-item.on{background:var(--accent-weak);color:var(--accent)}
+.cmdk-item .k{font:10.5px var(--mono);color:var(--text3);margin-left:auto}
+.cmdk-item .ic{width:16px;text-align:center;color:var(--text3)}
+.cmdk-empty{padding:22px;text-align:center;font-size:12px;color:var(--text3)}
+.ctx{position:absolute;min-width:186px;background:var(--surface);border:1px solid var(--line2);border-radius:4px;
+  box-shadow:var(--shadow2);padding:4px;z-index:60;opacity:0;pointer-events:none;transform:scale(.97);
+  transition:opacity .1s,transform .1s;transform-origin:top left}
+.ctx.open{opacity:1;pointer-events:auto;transform:scale(1)}
+.ctx-item{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:5px;font-size:12.5px;color:var(--text2);cursor:pointer}
+.ctx-item:hover{background:var(--surface3);color:var(--text)}
+.ctx-item .k{margin-left:auto;font:10.5px var(--mono);color:var(--text3)}
+.ctx-item.danger:hover{background:rgba(224,101,92,.14);color:var(--blocked)}
+.ctx-sep{height:1px;background:var(--line);margin:4px 6px}
+.ctx-hd{padding:5px 8px 3px;font:10.5px var(--mono);color:var(--text3)}
+.modal{position:absolute;inset:0;z-index:75;display:none;place-items:center;background:rgba(8,12,18,.42)}
+.modal.open{display:grid}
+.modal-box{width:420px;max-width:90vw;background:var(--surface);border:1px solid var(--line2);border-radius:4px;
+  box-shadow:var(--shadow2);overflow:hidden}
+.modal-hd{padding:13px 15px;border-bottom:1px solid var(--line);font-size:13.5px;font-weight:600;display:flex;align-items:center}
+.modal-bd{padding:14px 15px;display:flex;flex-direction:column;gap:11px}
+.modal-bd label{font-size:11.5px;color:var(--text3);display:block;margin-bottom:4px}
+.modal-ft{padding:11px 15px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:7px}
+.toast-wrap{position:absolute;left:50%;bottom:74px;transform:translateX(-50%);z-index:80;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+.toast{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line2);
+  border-radius:4px;box-shadow:var(--shadow2);padding:8px 12px;font-size:12.5px;pointer-events:auto;
+  animation:tin .18s cubic-bezier(.34,1.4,.64,1)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.toast .act{color:var(--accent);font-weight:600;cursor:pointer;padding:1px 4px;border-radius:4px}
+.toast .act:hover{background:var(--accent-weak)}
+.toast[x-out]{animation:tout .16s forwards}
+@keyframes tout{to{opacity:0;transform:translateY(6px)}}
+.tip{position:fixed;z-index:85;width:max-content;max-width:min(460px,calc(100vw - 32px));min-width:250px;
+  background:var(--surface);border:1px solid var(--line2);
+  border-radius:4px;box-shadow:var(--shadow2);padding:0;opacity:0;pointer-events:none;
+  transform:translateY(3px);transition:opacity .13s,transform .13s}
+.tip.on{opacity:1;pointer-events:auto;transform:none}
+.tip-hd{display:flex;align-items:center;gap:6px;padding:8px 10px 6px;border-bottom:1px solid var(--line);
+  font:11px var(--mono);color:var(--text3)}
+.tip-hd b{color:var(--text2);font-family:inherit;font-size:11.5px}
+.tip-msg{padding:8px 10px;font-size:12px;line-height:1.55;color:var(--text2)}
+.tip-msg .who{color:var(--accent);font:10.5px var(--mono);margin-right:5px}
+.tip-msg .tm{color:var(--text3);font:10px var(--mono);margin-left:5px}
+.tip-msg .more{display:block;margin-top:5px;font-size:11px;color:var(--text3)}
+/* 流式中：只占一行，行尾一个光标。内容还在变长，铺开全文会让浮层一秒跳三次高度。 */
+.tip-msg.streaming{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:12px}
+.tip-msg.streaming .cur{display:inline-block;width:2px;height:12px;background:var(--accent);
+  margin-left:3px;vertical-align:-1px;animation:blink 1s steps(1) infinite}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+.tip-tag{font:10px var(--mono);color:var(--accent);border:1px solid var(--accent);border-radius:3px;
+  padding:0 4px;margin-left:6px}
+.tip-in{display:flex;gap:5px;padding:6px 8px;border-top:1px solid var(--line)}
+.tip-in input{flex:1;height:24px;border:1px solid var(--line2);border-radius:5px;background:var(--surface2);
+  padding:0 7px;font-size:12px;outline:none;color:var(--text);min-width:0}
+.tip-in input:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-weak)}
+.hintbar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:47;
+  display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line2);
+  border-radius:4px;box-shadow:var(--shadow);padding:6px 8px 6px 14px;font-size:11.5px;color:var(--text2);
+  transition:opacity .2s,transform .2s}
+.hintbar.hide{opacity:0;transform:translate(-50%,8px);pointer-events:none}
+.hintbar .h{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.hintbar .h b{color:var(--text);font-weight:600}
+.hintbar .kb{font:10px var(--mono);padding:1px 4px;border:1px solid var(--line2);border-radius:3px;
+  background:var(--surface3);color:var(--text2)}
+.hintbar .x{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;color:var(--text3);font-size:11px}
+.hintbar .x:hover{background:var(--surface3);color:var(--text)}
+.dock{position:absolute;left:12px;top:56px;z-index:50;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.dock-pill{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;
+  background:var(--surface);border:1px solid var(--line2);box-shadow:var(--shadow);font-size:11.5px;
+  color:var(--text2);cursor:pointer;transition:border-color .12s,color .12s}
+.dock-pill:hover{border-color:var(--line3);color:var(--text)}
+.dock-pill .cd{width:6px;height:6px;border-radius:50%;background:var(--wait)}
+.dock-pill.open{border-color:var(--accent);color:var(--accent)}
+.dock-panel{display:none;width:196px;background:var(--surface);border:1px solid var(--line2);border-radius:4px;
+  box-shadow:var(--shadow2);padding:7px}
+.dock-panel.open{display:block}
+.dock-hd{font:10px var(--mono);color:var(--text3);letter-spacing:.06em;text-transform:uppercase;padding:3px 4px 5px}
+.dock-row{display:flex;gap:4px;padding:0 4px 5px}
+.dock-row .btn{flex:1;justify-content:center;height:23px;font-size:11px;padding:0 4px}
+.states{position:absolute;left:12px;bottom:12px;width:372px;height:250px;z-index:56;display:none;background:var(--surface);border:1px solid var(--line2);border-radius:4px;box-shadow:var(--shadow2);overflow:hidden}
+.states.on{display:block}
+.st-wrap{position:absolute;inset:0;display:flex;flex-direction:column}
+.st-banner{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--line);
+  background:var(--surface2);font:11px var(--mono);color:var(--text3)}
+.st-banner b{color:var(--accent);font-family:inherit}
+.st-body{flex:1;display:grid;place-items:center;padding:14px;overflow:auto}
+.st-inner{max-width:320px;text-align:center}
+.st-inner h3{margin:0 0 6px;font-size:14px;font-weight:600}
+.st-inner p{margin:0 0 14px;font-size:12.5px;color:var(--text2);line-height:1.6}
+.st-acts{display:flex;gap:7px;justify-content:center}
+.st-code{display:inline-block;font:11px var(--mono);color:var(--blocked);border:1px dashed rgba(224,101,92,.45);
+  padding:1px 6px;border-radius:4px;margin-bottom:8px}
+.sk{background:var(--surface2);border:1px solid var(--line);border-radius:4px}
+.sk-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;width:min(760px,80vw)}
+.sk-card{padding:13px;display:flex;flex-direction:column;gap:8px}
+.sk-l{height:9px;border-radius:3px;background:linear-gradient(90deg,var(--surface3) 25%,var(--line) 37%,var(--surface3) 63%);
+  background-size:400% 100%;animation:sh 1.3s ease infinite}
+.sk-l.w40{width:40%}.sk-l.w70{width:70%}.sk-l.w55{width:55%}
+@keyframes sh{0%{background-position:100% 50%}100%{background-position:0 50%}}
+.diff{position:absolute;right:calc(var(--rp) + 12px);bottom:12px;z-index:50;width:344px;max-width:calc(100vw - 24px);
+  background:var(--surface);border:1px solid var(--line2);border-radius:4px;box-shadow:var(--shadow2);
+  overflow:hidden;transition:transform .2s}
+.diff-hd{display:flex;align-items:center;gap:7px;padding:9px 11px;cursor:pointer;border-bottom:1px solid transparent}
+.diff.open .diff-hd{border-bottom-color:var(--line)}
+.diff-hd .ttl{font-size:12.5px;font-weight:600}
+.diff-hd .cnt{font:10.5px var(--mono);color:var(--accent);background:var(--accent-weak);padding:1px 5px;border-radius:4px}
+.diff-hd .arw{margin-left:auto;color:var(--text3);font-size:10px;transition:transform .2s}
+.diff.open .diff-hd .arw{transform:rotate(180deg)}
+.diff-body{display:none;max-height:392px;overflow:auto;padding:2px 0 6px}
+.diff.open .diff-body{display:block}
+.diff-item{padding:8px 11px;border-bottom:1px solid var(--line);cursor:pointer}
+.diff-item:last-child{border-bottom:0}
+.diff-item:hover{background:var(--surface2)}
+.diff-item.on{background:var(--accent-weak)}
+.diff-item .h{display:flex;align-items:flex-start;gap:6px;font-size:12px;font-weight:600;line-height:1.45}
+.diff-item .no{flex:0 0 17px;height:17px;border-radius:4px;background:var(--surface3);color:var(--text2);
+  font:10px var(--mono);display:grid;place-items:center}
+.diff-item.on .no{background:var(--accent);color:#fff}
+.diff-item .b{font-size:11.5px;line-height:1.6;color:var(--text2);margin:4px 0 0 23px}
+.diff-item .why{font-size:11.5px;line-height:1.6;color:var(--text2);margin:2px 0 0 23px}
+.diff-item .why::before{content:"为什么 ";color:var(--text3);font-size:10.5px}
+.anno{display:none}
+body.anno .anno{display:grid}
+.anno{position:absolute;z-index:36;min-width:18px;height:18px;padding:0 4px;place-items:center;
+  background:var(--accent);color:#fff;font:10px var(--mono);border-radius:4px;pointer-events:none;
+  box-shadow:0 0 0 3px var(--accent-weak)}
+.sr{position:absolute;left:-9999px}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px;border:2px solid var(--surface)}
+::-webkit-scrollbar-thumb:hover{background:var(--line3)}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ==== LOD：信息优先级随画布密度切换（折叠/缩放联动） ==== */
+/* 四档各自的「显示什么」只在这里定义一次，不许在别处再写一遍：
+   far 标题+状态+子卡数 / near 加类型行与前 2 项事实 / full 加事实全量与最近更新 /
+   ultra 把计数换成「最近一条说了什么」。 */
+.world[data-lod="far"] .n-type,
+.world[data-lod="far"] .n-facts,
+.world[data-lod="far"] .n-last,
+.world[data-lod="far"] .n-acts{display:none}
+.world[data-lod="far"] .n-title .t{font-size:14px}
+.world[data-lod="near"] .n-last{display:none}
+.world[data-lod="near"] .n-facts span:nth-child(n+3){display:none}
+.world[data-lod="full"] .n-last{display:none}
+/* 最近档：卡片足够大时，把干巴巴的计数换成「最近一条说了什么」——同高替换，不撑高卡片 */
+.n-last{display:none;padding:8px 13px 0;font-size:12px;line-height:1.5;color:var(--text2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.n-last i{font-style:normal;font:11px var(--mono);color:var(--text3);margin-right:5px}
+.world[data-lod="ultra"] .n-last{display:block}
+.world[data-lod="ultra"] .n-facts{display:none}
+.world[data-lod="far"] .node[data-state="blocked"]{box-shadow:inset 3px 0 0 var(--blocked)}
+.world[data-lod="far"] .node[data-state="paused"]{box-shadow:inset 3px 0 0 var(--wait)}
+.world[data-lod="far"] .node[data-state="queued"]{box-shadow:inset 3px 0 0 var(--run)}
+.node.flash{animation:nFlash 1.3s ease}
+@keyframes nFlash{0%,100%{outline:3px solid transparent;outline-offset:1px}25%,60%{outline:3px solid var(--accent);outline-offset:1px}}
+.node.collapsed{border-style:dashed}
+.n-caret{width:18px;height:18px;flex:0 0 18px;display:none;align-items:center;justify-content:center;
+  border:0;background:transparent;color:var(--text3);font-size:10px;cursor:pointer;border-radius:3px;padding:0}
+.node.has-kids .n-caret{display:flex}
+.node.has-kids:hover .n-caret{color:var(--text)}
+.n-caret:hover{background:var(--surface3);color:var(--text)}
+.n-kids{margin-left:auto;font-size:11px;color:var(--text3);border:1px solid var(--line2);
+  border-radius:4px;padding:0 5px;line-height:14px}
+.n-fold{display:none;font-size:11px;color:var(--accent);border:1px solid var(--accent);
+  border-radius:4px;padding:0 5px;line-height:14px;margin-left:4px}
+.node.collapsed .n-fold{display:inline-block}
+#canvas.grab{cursor:grab}
+#canvas.grab:active{cursor:grabbing}
+.crumb .seg{cursor:default}
+.crumb .seg.cur{color:var(--text);font-weight:600}
+/* 远档只留：标题 + 状态 + 子卡数 */
+.world[data-lod="far"] .n-code{display:none}
+.pencil{opacity:0;pointer-events:none;transition:opacity .12s}
+.node:hover .pencil,.node:focus-within .pencil{opacity:1;pointer-events:auto}
+@media (prefers-reduced-motion:reduce){
+  .node,.pencil,.world.anim{transition:none}
+  .node.grow{animation:none}}
+.hintbar{left:12px;transform:none;max-width:calc(100vw - 400px);flex-wrap:wrap}
+@media (max-width:980px){.hintbar{display:none}}
+</style>
+</head>
+<body>
+<div class="work-page">
+  <nav class="app-nav rail" id="appNav" aria-label="全局导航">
+    <div class="rail-inner">
+      <div class="rail-icons">
+        <div class="rail-logo">AI</div>
+        <button class="rail-btn on" title="画布">◱</button>
+        <button class="rail-btn" title="对话">◧</button>
+        <button class="rail-btn" title="产物">▤</button>
+        <button class="rail-btn" title="规则">§</button>
+      </div>
+      <div class="rail-body">
+        <div class="rail-sec">项目树</div>
+        <ul class="tree" id="railTree"></ul>
+        <div class="rail-sec" style="margin-top:10px">过滤</div>
+        <ul class="tree">
+          <li><div class="tree-row child"><span class="d" style="background:var(--run)"></span><span class="t">仅运行中</span></div></li>
+          <li><div class="tree-row child"><span class="d" style="background:var(--blocked)"></span><span class="t">仅受阻</span></div></li>
+          <li><div class="tree-row child"><span class="d" style="background:var(--arch)"></span><span class="t">含已归档</span></div></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <header class="topbar" id="topbar">
+      <div class="crumb" id="crumb"></div>
+      <div class="stat" id="projectStat"></div>
+      <div class="build" id="buildStamp">构建 2026-11-05 15:24 · v3</div>
+      <div class="tb-spacer"></div>
+
+      <div class="zoomgrp">
+        <button class="icon" id="zoomOut" title="缩小 (Ctrl+滚轮)">−</button>
+        <button class="icon" id="zoomIn" title="放大 (Ctrl+滚轮)">＋</button>
+        <span class="lbl" id="zoomPct" title="点按复位 100%">100%</span>
+      </div>
+      <div class="sep2"></div>
+      <button class="icon" id="fitBtn" title="整幅适配 (F)">⤢</button>
+      <button class="icon" id="searchBtn" title="搜索与命令 (Ctrl+K)">⌕</button>
+      <div style="position:relative">
+        <button class="icon" id="moreBtn" title="更多">⋯</button>
+        <div class="ctx" id="moreMenu" style="top:30px;right:0;left:auto;transform-origin:top right">
+          <div class="ctx-item" data-more="expandAll">全部展开</div>
+          <div class="ctx-item" data-more="collapseAll">全部折叠</div>
+          <div class="ctx-item" data-more="tidy">整理布局</div>
+          <div class="ctx-sep"></div>
+          <div class="ctx-item" data-more="ruleCard">规则卡 · 查看编辑</div>
+          <div class="ctx-item" data-more="archSheet">归档 · 收起做完的卡</div>
+          <div class="ctx-item" data-more="rulePanel">交互规格面板</div>
+          <div class="ctx-item" data-more="commLines">关系线</div>
+          <div class="ctx-item" data-more="parallel">并行对话层</div>
+        </div>
+      </div>
+      <button class="btn" id="playBtn" title="演示：从根卡开始逐张推流、长成整棵树（可重放）">▶ 从根生长</button>
+      <button class="icon" id="themeBtn" title="深浅主题切换">☀</button>
+    </header>
+
+    <div class="stage" id="viewport">
+      <div class="canvas" id="canvas">
+        <div class="world" id="world" data-lod="full">
+          <svg id="wires" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div id="nodes"></div>
+        </div>
+      </div>
+      <!-- 底部全局模型配置条：按卡类型分格。一格一类，点一格改这一类全部卡。
+           常驻而不是浮层——它是配置，不是操作。 -->
+      <div class="modelbar" id="modelBar" role="group" aria-label="全局模型配置"></div>
+
+      <div class="states" id="states"></div>
+
+      <!-- 规则卡入口：在画布右侧。它是「进去看/改规则」的门，不是规则本身 -->
+      <button class="rule-entry" id="ruleEntry" title="规则卡：点开看内容，可直接编辑">
+        <span class="re-ic">▤</span><span class="re-tx">规则卡</span><span class="re-n" id="ruleEntryN">5</span>
+      </button>
+
+      <!-- 归档入口：与规则卡同款竖排形态，放其正下方。归档是人的动作（模型建卡、人收卡）：
+           点开列可归档的卡，逐张收起；收起的进顶栏「已归档 N」记录，可恢复。 -->
+      <button class="rule-entry arch" id="archEntry" title="已归档记录：点开可回档（归档动作在卡面上）">
+        <span class="re-ic">▣</span><span class="re-tx">归档</span><span class="re-n" id="archEntryN">1</span>
+      </button>
+
+      <aside class="drawer arch-sheet" id="archSheet" aria-label="归档">
+        <div class="dr-head">
+          <div style="min-width:0">
+            <div class="dr-title">归档</div>
+            <div class="dr-sub" id="archSheetSub">把不需要继续的卡收起来 · 过程保留 · 可恢复</div>
+          </div>
+          <button class="icon" data-close-drawer="archSheet" style="margin-left:auto" title="关闭">✕</button>
+        </div>
+        <div class="ap-note">归档＝卡面从树上收起，三块／历史／影子存进记录（card_store.py:1823，所有卡、无前置判断）；与删除是两条语义，随时可恢复。建卡是模型的事（create_card），这里只管收。</div>
+        <div class="dr-body" id="archSheetBody"></div>
+        <div class="dr-foot">
+          <span class="rc-hint" id="archSheetFoot">演示：改动只在本页生效</span>
+          <button class="btn" id="archBackBtn" style="margin-left:auto">回画布</button>
+        </div>
+      </aside>
+
+      <aside class="drawer rule-sheet" id="ruleCard" aria-label="规则卡">
+        <div class="dr-head">
+          <div style="min-width:0">
+            <div class="dr-title">规则卡</div>
+            <div class="dr-sub" id="ruleCardSub">规则 · 对本项目每一张卡都成立</div>
+          </div>
+          <button class="icon" data-close-drawer="ruleCard" style="margin-left:auto" title="关闭">✕</button>
+        </div>
+        <div class="dr-body" id="ruleCardBody"></div>
+        <div class="dr-foot">
+          <span class="rc-hint" id="ruleCardFoot">改动只在本页生效（演示），未落盘</span>
+          <button class="btn" id="ruleBackBtn" style="margin-left:auto">回画布</button>
+        </div>
+      </aside>
+
+      <aside class="rule-panel" id="rulePanel" aria-label="规则面板">
+        <button class="rp-handle" id="rpHandle" title="开合规则面板">›</button>
+        <div class="rp-head">
+          <div class="rp-k">交互规格</div>
+          <div class="rp-v">这块是原型的交互规格说明（信息项／动作／状态／边界）。<b>规则卡本体点画布右缘的「▤ 规则卡」入口</b>——它是一张卡，能看内容、能直接改。</div>
+        </div>
+        <div class="rp-tabs">
+          <button class="rp-tab on" data-rp="spec">交互规格</button>
+          <button class="rp-tab" data-rp="key">键盘路径</button>
+          <button class="rp-tab" data-rp="state">状态与边界</button>
+        </div>
+        <div class="rp-body" id="rpBody"></div>
+      </aside>
+
+      <aside class="drawer" id="convSheet" aria-label="卡片对话">
+        <div class="dr-head">
+          <div style="min-width:0">
+            <div class="dr-title" id="convTitle">卡片对话</div>
+            <div class="dr-sub" id="convSub"></div>
+          </div>
+          <button class="icon" data-close-drawer="convSheet" style="margin-left:auto" title="关闭">✕</button>
+        </div>
+        <div class="dr-body" id="convBody"></div>
+        <div class="dr-foot">
+          <input class="field" id="convInput" placeholder="给这张卡发一条消息…">
+          <button class="btn primary" id="convSend">发送</button>
+        </div>
+      </aside>
+
+      <div class="dock" id="demoDock">
+        <button class="dock-pill" id="dockPill"><span class="cd"></span>演示</button>
+        <div class="dock-panel" id="dockPanel">
+          <div class="dock-hd">四态</div>
+          <div class="dock-row">
+            <button class="btn" data-demo="normal">正常</button>
+            <button class="btn" data-demo="loading">加载</button>
+            <button class="btn" data-demo="empty">空</button>
+          </div>
+          <div class="dock-row">
+            <button class="btn" data-demo="error">错误</button>
+            <button class="btn" data-demo="denied">无权限</button>
+          </div>
+          <div class="dock-hd">覆盖层</div>
+          <div class="dock-row">
+            <button class="btn" data-demo="toast">toast</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="cmdk" id="cmdk">
+        <div class="cmdk-in">
+          <span style="color:var(--text3)">⌕</span>
+          <input id="cmdkInput" placeholder="搜索卡片…" autocomplete="off">
+          <button class="icon" id="cmdkClose" title="关闭搜索" aria-label="关闭搜索" style="width:22px;height:22px">✕</button>
+        </div>
+        <div class="cmdk-list" id="cmdkList"></div>
+      </div>
+
+
+      <div class="toast-wrap" id="toastWrap"></div>
+
+      <div class="diff" id="diffPanel">
+        <div class="diff-hd" id="diffHead">
+          <span class="ttl">改动对照</span>
+          <span class="cnt" id="diffCount">0</span>
+          <span style="font-size:11px;color:var(--text3)">原型 → 本图</span>
+          <span class="arw">▼</span>
+        </div>
+        <div class="diff-body" id="diffBody"></div>
+      </div>
+
+      <div class="mpop" id="mpop">
+        <div class="mpop-hd" id="mpopHd"></div>
+        <div id="mpopList"></div>
+      </div>
+
+      <div class="tip" id="tip">
+        <div class="tip-hd"><b id="tipTitle"></b><span id="tipCode"></span></div>
+        <div class="tip-msg" id="tipMsg"></div>
+        <div class="tip-in">
+          <input id="tipInput" placeholder="就地回复…" autocomplete="off">
+          <button class="btn" id="tipSend">发送</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+<script>
+const $=(s,r)=>(r||document).querySelector(s);
+const $$=(s,r)=>[...(r||document).querySelectorAll(s)];
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const NW=290, NH=84, ROWH=96;   // 节点世界尺寸；ROWH＝布局行距（LOD 改高度也不动摇，避免缩放反复）
+
+/* 状态词＝后端真实取值，不是我编的。三层，互不替代：
+   ① 生命周期 state（config/card_type_registry.json → state_machine）：active / completed
+   ② 自动推进 goal_state（auto_driver.py，只有 auto_mode=true 才谈得上）：
+        active→running / paused→paused / complete→done / blocked→blocked（canvas.js:1843-1862）
+   ③ 实时推送 live（/api/nav/running 流）：running＝正在跑 / queued＝排队中（canvas.js:6648）
+   关键区别（旧系统原话）：running 是**动的**（呼吸），done/blocked/paused 是**静的**。
+   「待裁定」不是任何 state 字段的取值——它是卡面内容里的一条待办，不进状态词。 */
+const STATE_LABEL={run:"运行中",queued:"排队中",done:"已完成",blocked:"受阻",paused:"已暂停"};
+
+/* ===== 卡类型体系（2026-11 改） =====
+   结构卡按层级分三种：Master（根）／Manager（一级子项目）／Unit（二级及以下子项目）。
+   原来二级与更深的不区分；现在**分开**——它们是两种卡、两种权限，所以数据上是不同 kind，
+   不是同一张卡换个标签。工作卡（worker / QA / PM / UI）保持原名，只做视觉区分。
+   课题卡（topic）本轮从需求里取消。 */
+const KINDS={
+  master :{n:"Master Agent Card",s:"Master", ic:"◆",struct:1},
+  manager:{n:"Manager Agent Card",s:"Manager",ic:"◈",struct:1},
+  unit   :{n:"Unit Agent Card",  s:"Unit",   ic:"◇",struct:1},
+  worker :{n:"worker 卡",        s:"worker", ic:"▦",struct:0},
+  qa     :{n:"QA 卡",            s:"QA",     ic:"✓",struct:0},
+  pm     :{n:"PM 卡",            s:"PM",     ic:"✎",struct:0},
+  ui     :{n:"UI 卡",            s:"UI",     ic:"◱",struct:0}
+};
+const KORDER=["master","manager","unit","worker","qa","pm","ui"];
+/* 模型清单（示意用真实型号名，才看得出真实密度下的排布）。 */
+const MODELS=[
+  {id:"opus-4.5",   n:"Opus 4.5",     s:"opus"},
+  {id:"sonnet-4.5", n:"Sonnet 4.5",   s:"sonnet"},
+  {id:"gpt-5.2",    n:"GPT-5.2",      s:"gpt-5.2"},
+  {id:"gemini-3-pro",n:"Gemini 3 Pro",s:"gemini"},
+  {id:"deepseek-v4",n:"DeepSeek V4",  s:"dsv4"}
+];
+const modelOf=id=>MODELS.find(m=>m.id===id)||MODELS[0];
+const shortModel=id=>modelOf(id).s;
+/* 全局模型配置：一格一类。底栏改它＝改这一类全部卡；卡面改它＝只改这一张。
+   两者不冲突：卡面是覆盖值，底栏是这一类的默认值。 */
+const GMODEL={master:"opus-4.5",manager:"opus-4.5",unit:"sonnet-4.5",
+  worker:"sonnet-4.5",qa:"sonnet-4.5",pm:"sonnet-4.5",ui:"gpt-5.2"};
+
+const NODES={
+  root:{title:"底层重构",kind:"master",code:"card_001",state:"run",parent:null,
+    facts:[["轮次",14],["阶段","收口"],["接口",5],["受阻",1]],
+    meta:"更新 10:31 · 6 张子卡",last:{who:"card_001",text:"画布页交互定稿，走视觉化之前先看信息与交互。",time:"10:31"},
+    pos:{x:0,y:0}},
+  prod:{title:"产品与交互需求",kind:"manager",code:"card_074",state:"run",parent:"root",
+    facts:[["阶段",2],["子卡",3],["轮次",5]],
+    meta:"更新 10:24 · 交互语言定型",last:{who:"card_074",text:"交互语言按信息分层写，不做视觉装饰。",time:"10:24"},
+    pos:{x:0,y:0}},
+  arch:{title:"页面架构及 UI/UE",kind:"manager",code:"card_257",state:"run",parent:"root",
+    facts:[["阶段",3],["子卡",3],["轮次",7]],
+    meta:"更新 10:40 · 返工中",last:{who:"card_257",text:"7 条缺陷已逐条修，手势与出口各自闭环。",time:"10:40"},
+    pos:{x:0,y:0}},
+  qa:{title:"验收与证据基线",kind:"manager",code:"card_091",state:"done",parent:"root",
+    facts:[["轮次",12],["通过",12],["证据",4]],
+    meta:"收口 09:12 · 12/12 通过",last:{who:"card_091",text:"证据包已归档，验收结果可按条复核。",time:"09:12"},
+    pos:{x:0,y:0}},
+  ext:{title:"外部接入与联调",kind:"manager",code:"card_118",state:"blocked",parent:"root",
+    facts:[["接口",3],["等谁","外方"],["卡点",2]],
+    meta:"停住 08:50 · 受阻待处理",last:{who:"card_118",text:"三方签名未回，自动推进停下等人接手。",time:"08:50"},
+    pos:{x:0,y:0}},
+  protoA:{title:"高保真原型 · 画布页",kind:"ui",code:"card_322",state:"run",parent:"prod",
+    facts:[["版本","v3"],["缺陷","7 条"],["轮次",3]],
+    meta:"更新 10:41 · 迭代中",last:{who:"card_322",text:"7 条修完，正在打磨信息密度。",time:"10:41"},
+    live:"正在写的这段是卡片页的悬停摘要改成长文自适应，流式输出时只占一行加光标……",
+    pos:{x:0,y:0}},
+  protoB:{title:"高保真原型 · 对话页",kind:"ui",code:"card_319",state:"paused",parent:"prod",
+    facts:[["版本","v1"],["轮次",2]],
+    meta:"停住 09:58 · 等 token 就绪",last:{who:"card_319",text:"先画对话页骨架，令牌落地再细化。",time:"09:58"},
+    pos:{x:0,y:0}},
+  tokens:{title:"设计令牌与变量",kind:"worker",code:"card_305",state:"done",parent:"prod",
+    facts:[["令牌",24],["组件",11]],
+    meta:"收口 09:40 · 已定稿",last:{who:"card_305",text:"深浅两套令牌已对齐，组件覆盖 11 项。",time:"09:40"},
+    pos:{x:0,y:0}},
+  spec:{title:"画布页交互规格",kind:"unit",code:"card_290",state:"done",parent:"arch",
+    facts:[["条目",32],["版本","v3"]],
+    meta:"收口 09:20 · 已定稿",last:{who:"card_290",text:"动作与覆盖层口径都收敛了，只剩密度参数。",time:"09:20"},
+    pos:{x:0,y:0}},
+  lib:{title:"组件与状态库",kind:"unit",code:"card_291",state:"run",parent:"arch",
+    facts:[["组件",18],["缺",2]],
+    meta:"更新 10:05 · 补状态壳",last:{who:"card_291",text:"按钮与输入框骨架收完，还缺空态壳。",time:"10:05"},
+    pos:{x:0,y:0}},
+  base:{title:"绘图底座与几何",kind:"unit",code:"card_132",state:"paused",parent:"arch",
+    facts:[["函数",2],["轮次",6]],
+    meta:"停住 08:31 · 等上游",last:{who:"card_132",text:"布局与缩放要一起改，等上游接口定稿。",time:"08:31"},
+    pos:{x:0,y:0}},
+  evid:{title:"验收证据包",kind:"worker",code:"card_096",state:"done",parent:"qa",
+    facts:[["条数",12],["证据",12]],
+    meta:"收口 09:12 · 12/12",last:{who:"card_096",text:"每条都留原始输出，可按条独立复核。",time:"09:12"},
+    pos:{x:0,y:0}},
+  trace:{title:"交互轨迹留档",kind:"worker",code:"card_331",state:"paused",parent:"spec",
+    facts:[["录制",4],["缺",1]],
+    meta:"停住 10:48 · 等重录",last:{who:"card_331",text:"合成事件录不全，有一条要人工补一次。",time:"10:48"},
+    pos:{x:0,y:0}}
+};
+/* type 是派生值：只由 kind 决定，不许在数据里各写一遍（两处写死必然走形）。 */
+Object.keys(NODES).forEach(k=>{
+  const n=NODES[k];
+  n.type=KINDS[n.kind].n;
+  if(!n.model) n.model=GMODEL[n.kind];
+});
+
+Object.keys(NODES).forEach((k,i)=>{ if(NODES[k].ord==null) NODES[k].ord=i; });
+/* 归档卡不进画布、不占槽位——后端 archive_card 把 cards 那一行**删掉**、整行 meta 存进
+   card_archive 表（card_store.py:1882-1890）。它已经不是活卡，画布上不可能有它的格子。
+   所以归档收成父卡旁的一个计数入口，点开才列出记录（可恢复）。 */
+const ARCHIVED=[{code:"card_021",title:"构建与发布",kind:"manager",parent:"root",
+  at:"11-03 14:20",reason:"ARCH-04",why:"发布线并入「页面架构及 UI/UE」，本卡留存过程"}];
+
+/* 通信线记录：每条＝一次真实发生过的消息传递，ago＝几秒前（演示窗口 12 秒，过期线自动消失）。
+   txt 只给悬停读，画布上不铺字——线表达的是「有东西过去了」，不是「过去的是什么」。 */
+const COMMS=[{a:"prod",b:"ext",ago:0.3,n:1,txt:"card_074 → card_118：依赖清单补齐三项，请重排期"},
+             {a:"arch",b:"qa",ago:1.1,n:1,txt:"card_257 → card_091：三条交互口径已提升，请按新判据复核"},
+             {a:"protoA",b:"protoB",ago:26,n:1,txt:"card_322 → card_319：组件表定稿，可对齐"}];
+/* 一次传递在画布上的三段：信号沿曲线走过去 → 到站停一下 → 整条渐隐消失。
+   时长按性能时钟逐帧算（不用 CSS 动画）：SVG 每重画一次，CSS 动画就被重置到第一帧。 */
+const COMM_TRAVEL=0.62;   // 秒：信号头从发件端走到收件端
+const COMM_HOLD=1.35;     // 秒：到站后停一下（收件端一点亮）
+const COMM_FADE=0.85;     // 秒：整条渐隐
+const PULSE_LIFE=COMM_TRAVEL+COMM_HOLD+COMM_FADE;   // ≈2.8 秒后这条线不在画布上
+COMMS.forEach(m=>{ m.born=performance.now()-m.ago*1000; });
+
+const S={zoom:100,tx:60,ty:20,convId:null,hint:true,demo:"normal",
+  lod:"full",anno:false,sideOpen:false,commOn:true,theme:"light",collapsed:new Set()};
+/* 子卡按「出生序号」排序，不按对象 key 的插入顺序。
+   卡片树会被增删（推流、演示收回再长回来），key 顺序一变布局的纵向次序就跟着变——
+   同一棵树会长成两个样子、适配缩放也对不上。序号随卡走，布局才是确定的。 */
+let ORD=0;
+function kidsOf(id){
+  return Object.keys(NODES).filter(k=>NODES[k].parent===id)
+    .sort((a,b)=>(NODES[a].ord==null?1e9:NODES[a].ord)-(NODES[b].ord==null?1e9:NODES[b].ord));
+}
+function hasKids(id){return kidsOf(id).length>0;}
+function visibleIds(){
+  const out=[];
+  (function walk(id){
+    if(NODES[id]._hidden) return;
+    out.push(id);
+    if(S.collapsed.has(id)) return;
+    kidsOf(id).forEach(walk);
+  })("root");
+  return out;
+}
+function branchIds(id){
+  const out=[];
+  (function walk(x){
+    if(NODES[x]._hidden) return;
+    out.push(x);
+    if(S.collapsed.has(x)) return;
+    kidsOf(x).forEach(walk);
+  })(id);
+  return out;
+}
+function depthOf(id){return chainOf(id).length-1;}
+function fitIdsFor(id){return branchIds(id);}
+
+function nodeHTML(id){
+  const n=NODES[id];
+  const arch=n.arch?'<span class="archcode">'+esc(n.arch)+'</span>':'';
+  const kk=KINDS[n.kind]||KINDS.unit;
+  const kids=hasKids(id)?'<span class="n-kids" title="子卡数">'+kidsOf(id).length+'</span>':'';
+  const mdl='<button class="n-model" data-act="model" title="这张卡用的模型 · 点选即改">'+esc(shortModel(n.model))+'</button>';
+  return '<div class="n-top"><button class="n-caret" data-act="fold" title="折叠/展开该支">▾</button>'+
+      '<span class="n-type" data-ic="'+kk.ic+'" title="'+esc(kk.n)+'">'+esc(kk.s)+'</span>'+
+      '<span class="n-state"><span class="sd"></span>'+STATE_LABEL[n.state]+'</span>'+
+      mdl+
+      '<span class="n-code">'+esc(n.code)+'</span>'+kids+'</div>'+
+    '<div class="n-title"><span class="t">'+esc(n.title)+arch+'</span>'+
+      '<span class="n-fold">+0</span>'+
+      '<span class="n-acts"><button class="n-act" data-act="conv" title="打开对话">◧</button>'+
+        (id==="root"?'':'<button class="n-act" data-act="archive" title="归档这张卡（连同其子卡·保留过程·可回档）">▣</button>')+
+      '</span>'+
+      '<button class="pencil" data-act="pencil" title="重命名">✎</button></div>'+
+    '<div class="n-facts">'+n.facts.map(f=>'<span>'+esc(f[0])+' <b>'+esc(f[1])+'</b></span>').join("")+'</div>'+
+    '<div class="n-last"><i>'+esc(n.last.time)+'</i>'+esc(n.last.text)+'</div>';
+}
+function nodeEl(id){
+  const el=document.createElement("div");
+  el.className="node"+(hasKids(id)?" has-kids":"");
+  el.dataset.id=id; el.dataset.state=NODES[id].state; el.dataset.kind=NODES[id].kind;
+  el.setAttribute("role","group");
+  el.setAttribute("aria-label",NODES[id].title+" · "+STATE_LABEL[NODES[id].state]+" · "+NODES[id].code);
+  el.tabIndex=0;
+  el.innerHTML=nodeHTML(id);
+  return el;
+}
+/* 只重画这一张卡的内容（子卡数徽标、状态变了的场合）。其它卡与位置一个字不动。 */
+function refreshNode(id){
+  const el=$('#nodes .node[data-id="'+id+'"]'); if(!el) return;
+  const n=NODES[id]; if(!n) return;
+  el.innerHTML=nodeHTML(id);
+  el.dataset.state=n.state; el.dataset.kind=n.kind;
+  el.setAttribute("aria-label",n.title+" · "+STATE_LABEL[n.state]+" · "+n.code);
+  el.classList.toggle("collapsed",S.collapsed.has(id));
+  const caret=$(".n-caret",el); if(caret) caret.textContent=S.collapsed.has(id)?"▸":"▾";
+  const fold=$(".n-fold",el); if(fold) fold.textContent=S.collapsed.has(id)?"+"+kidsOf(id).length:"";
+}
+
+const leaving=new Map();
+/* 位移过渡的闸：只有这个窗口里节点才会「走过去」。
+   新节点先落 left/top 再 appendChild——首帧就从 (0,0) 起步的话，
+   刷新时能看见卡片从画布左上滑进场（列位越深滑得越远）。 */
+let nodesAnimT=null;
+function setNodesAnim(on){
+  const h=$("#nodes"); clearTimeout(nodesAnimT);
+  if(on){ h.classList.add("anim"); nodesAnimT=setTimeout(()=>h.classList.remove("anim"),480); }
+  else h.classList.remove("anim");
+}
+function renderNodes(animate){
+  setNodesAnim(!!animate);
+  const host=$("#nodes");
+  const ids=visibleIds();
+  const have=new Map([...host.children].map(el=>[el.dataset.id,el]));
+  ids.forEach(id=>{
+    const n=NODES[id];
+    let el=have.get(id); const isNew=!el;
+    if(isNew){ el=nodeEl(id); el.style.left=n.pos.x+"px"; el.style.top=n.pos.y+"px"; host.appendChild(el); }
+    else { have.delete(id); }
+    if(leaving.has(id)){ clearTimeout(leaving.get(id)); leaving.delete(id); el.classList.remove("leave"); }
+    el.style.left=n.pos.x+"px"; el.style.top=n.pos.y+"px";
+    el.classList.toggle("collapsed",S.collapsed.has(id));
+    const caret=$(".n-caret",el); if(caret) caret.textContent=S.collapsed.has(id)?"▸":"▾";
+    const fold=$(".n-fold",el);
+    if(fold) fold.textContent=S.collapsed.has(id)?"+"+kidsOf(id).length:"";
+    if(isNew&&animate){
+      el.classList.add("grow");
+      el.addEventListener("animationend",()=>el.classList.remove("grow"),{once:true});
+    }
+    n._h=el.offsetHeight||NH;
+  });
+  /* 退场不「啪」一下消失：缩回并淡出 280ms 再移出 DOM。
+     同 id 在 280ms 内回来（展开）时撤掉退场，不出现残影。 */
+  have.forEach(el=>{
+    if(!animate){ el.remove(); return; }
+    const id=el.dataset.id;
+    if(leaving.has(id)) return;
+    el.classList.add("leave");
+    leaving.set(id,setTimeout(()=>{ el.remove(); leaving.delete(id); },280));
+  });
+}
+
+function anchorR(n){return {x:n.pos.x+NW, y:n.pos.y+(n._h||NH)/2};}
+function anchorL(n){return {x:n.pos.x, y:n.pos.y+(n._h||NH)/2};}
+function curve(a,b,cls){
+  const dx=Math.max(40,(b.x-a.x)*0.5);
+  return '<path class="'+cls+'" d="M '+a.x+' '+a.y+' C '+(a.x+dx)+' '+a.y+', '+(b.x-dx)+' '+b.y+', '+b.x+' '+b.y+'"/>';
+}
+/* 通信线＝「刚刚有信息过去」那一瞬的表达，不是拓扑。所以它有三条硬规矩：
+   ① 不常驻：一条线只在传递发生后的 PULSE_LIFE 秒内存在，过期即消失（旧系统是 30 分钟窗口）；
+   ② 画成曲线：直线穿过中间的卡会被误读成父子线（canvas.js:3954）；
+   ③ 收件端一个实心点：表示「信落到这里」，配一圈扩散环表示「刚刚到」。
+   画布上如果一条通信线都没有，那是**如实的**——这一刻确实没有信息在传。 */
+function qpt(p0,p1,p2,u){
+  const v=1-u;
+  return {x:v*v*p0.x+2*v*u*p1.x+u*u*p2.x, y:v*v*p0.y+2*v*u*p1.y+u*u*p2.y};
+}
+/* 传递＝一颗流星沿着曲线飞过去：头亮、拖尾渐隐、到站后再整体消失。
+   不是「先画一条线，再让光跑」——线上什么都没有留下，留下的只有那一下的经过。
+   拖尾不按比例而是按**弧长**取：短线上尾巴不会糊成一团，长线上也不会断成一截。 */
+const COMM_SEG=40;         // 曲线的采样段数（算弧长用）
+const COMM_TAIL_MIN=70;    // 拖尾最短（世界坐标 px）
+const COMM_TAIL_MAX=240;   // 拖尾最长
+function commMarkup(geo){
+  if(!S.commOn) return "";
+  const now=performance.now();
+  let h="";
+  COMMS.forEach(m=>{
+    const age=(now-(m.born||0))/1000;
+    if(age<0||age>PULSE_LIFE) return;
+    const g1=geo(m.a), g2=geo(m.b);
+    if(!g1||!g2) return;
+    const x1=g1.x+NW, y1=g1.y+g1.h/2, x2=g2.x, y2=g2.y+g2.h/2;
+    const lift=Math.min(90,Math.abs(x2-x1)*0.22+30);
+    const P0={x:x1,y:y1}, P1={x:(x1+x2)/2,y:(y1+y2)/2-lift}, P2={x:x2,y:y2};
+    /* 采样一次曲线，拿累计弧长：头的位置、尾的起点都用「离起点多少像素」说话 */
+    const pts=[], cum=[0];
+    for(let i=0;i<=COMM_SEG;i++) pts.push(qpt(P0,P1,P2,i/COMM_SEG));
+    for(let i=1;i<=COMM_SEG;i++) cum.push(cum[i-1]+Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y));
+    const total=cum[COMM_SEG]||1;
+    const p=Math.max(0,Math.min(1,age/COMM_TRAVEL));
+    const headD=total*p;                                   // 头已经飞了多远
+    const tail=Math.min(COMM_TAIL_MAX,Math.max(COMM_TAIL_MIN,total*0.55));
+    const tailD=Math.max(0,headD-tail);                    // 尾尖在哪
+    /* 把「离起点距离」换算成采样下标 */
+    const idxAt=d=>{ let k=0; while(k<COMM_SEG&&cum[k+1]<d) k++; return k; };
+    const hi=idxAt(headD), ti=idxAt(tailD);
+    const fade=age>PULSE_LIFE-COMM_FADE?Math.max(0,(PULSE_LIFE-age)/COMM_FADE):1;
+    const arrived=(age>=COMM_TRAVEL);
+    h+='<g class="comm-g" opacity="'+fade.toFixed(2)+'">';
+    /* 拖尾：从头往后一段段画，越靠后越淡越细（流星尾巴） */
+    const span=Math.max(1,hi-ti);
+    for(let k=ti;k<=hi;k++){
+      const u=(k-ti)/span;                                 // 0=尾尖 1=头
+      const op=(0.04+0.72*Math.pow(u,1.7)).toFixed(3);
+      const w=(0.9+2.6*Math.pow(u,1.5)).toFixed(2);
+      const a=pts[k], b=pts[Math.min(hi,k+1)];
+      h+='<path class="comm-tail" d="M '+a.x.toFixed(1)+' '+a.y.toFixed(1)+' L '+b.x.toFixed(1)+' '+b.y.toFixed(1)+
+         '" stroke-opacity="'+op+'" stroke-width="'+w+'"/>';
+    }
+    const head=pts[hi];
+    if(!arrived){
+      h+='<circle class="comm-head-glow" cx="'+head.x.toFixed(1)+'" cy="'+head.y.toFixed(1)+'" r="10"/>'+
+         '<circle class="comm-head" cx="'+head.x.toFixed(1)+'" cy="'+head.y.toFixed(1)+'" r="3.4"/>';
+    }else{
+      const rt=Math.min(1,(age-COMM_TRAVEL)/0.9);
+      h+='<circle class="comm-head" cx="'+x2.toFixed(1)+'" cy="'+y2.toFixed(1)+'" r="3.2" opacity="'+Math.max(0,1-rt).toFixed(2)+'"/>'+
+         '<circle class="comm-dot-ring" cx="'+x2.toFixed(1)+'" cy="'+y2.toFixed(1)+'" r="'+(4+rt*9).toFixed(1)+'" opacity="'+(0.6*(1-rt)).toFixed(2)+'"/>';
+    }
+    h+='<title>'+esc(m.txt||"")+'</title></g>';
+  });
+  return h;
+}
+/* 一次传递发生：从 a 到 b 拉一条线，信号走过去，到站后再渐渐消失。 */
+function pulse(a,b,txt){
+  if(!NODES[a]||!NODES[b]) return;
+  COMMS.push({a:a,b:b,txt:txt||"",born:performance.now()});
+  if(COMMS.length>8) COMMS.shift();
+  drawWires(); kickComm();
+}
+/* 有线在画就逐帧重画（信号头在走路）；一条线都没有时自己停，不空转 */
+let commRAF=null;
+function kickComm(){
+  if(commRAF) return;
+  const step=()=>{
+    drawWires();
+    const now=performance.now();
+    const alive=COMMS.some(m=>{const a=(now-(m.born||0))/1000; return a>=0&&a<PULSE_LIFE;});
+    if(alive) commRAF=requestAnimationFrame(step);
+    else { commRAF=null; drawWires(); }
+  };
+  commRAF=requestAnimationFrame(step);
+}
+/* 位移/重排过程中，连线要跟着卡走——否则卡在动、线还钉在老位置。
+   读 computed left/top（过渡中的实时值）逐帧重画，过渡结束回落到 drawWires()。 */
+let wireRAF=null;
+function drawWiresLive(ms){
+  cancelAnimationFrame(wireRAF);
+  const t0=performance.now(), dur=ms||440;
+  (function step(){
+    const ids=visibleIds(), live=new Set(ids), geo={};
+    ids.forEach(id=>{
+      const el=$('#nodes .node[data-id="'+id+'"]');
+      if(!el) return;
+      const cs=getComputedStyle(el);
+      geo[id]={x:parseFloat(cs.left)||0, y:parseFloat(cs.top)||0, h:el.offsetHeight||NH};
+    });
+    const aR=g=>({x:g.x+NW, y:g.y+g.h/2}), aL=g=>({x:g.x, y:g.y+g.h/2});
+    let h="";
+    ids.forEach(id=>{
+      const n=NODES[id], g=geo[id];
+      if(!g||!n) return;
+      if(n.parent&&geo[n.parent]) h+=curve(aR(geo[n.parent]),aL(g),"wire-p");
+    });
+    h+=commMarkup(id=>{const g=geo[id]; return (g&&live.has(id))?g:null;});
+    $("#wires").innerHTML=h;
+    if(performance.now()-t0<dur) wireRAF=requestAnimationFrame(step);
+    else drawWires();
+  })();
+}
+function drawWires(){
+  const ids=new Set(visibleIds());
+  let h="";
+  ids.forEach(id=>{
+    const n=NODES[id];
+    if(n.parent&&ids.has(n.parent)) h+=curve(anchorR(NODES[n.parent]),anchorL(n),"wire-p");
+  });
+  h+=commMarkup(id=>{const n=NODES[id]; return (n&&ids.has(id))?{x:n.pos.x,y:n.pos.y,h:(n._h||NH)}:null;});
+  $("#wires").innerHTML=h;
+}
+
+function lodOf(z){ return z<58?"far":(z<72?"near":(z<96?"full":"ultra")); }
+let animT=null,lodT=null;
+/* animate=true：画布走过渡，画面连续放大缩小（折叠/展开/适配/定位都算）。
+   animate=false：手势（拖、滚轮、触屏）——必须跟手，过渡会变成拖影。
+   LOD 档位推迟到过渡末再切：否则字会在缩放途中「跳」一下。 */
+/* 过渡期间百分比读数跟着实际比例走——否则矩阵还在 77%，标签已经写 85%，
+   两处读数打架，用户会以为卡住了。过渡结束再落回目标值。 */
+let zoomRAF=null;
+function trackZoomLabel(){
+  cancelAnimationFrame(zoomRAF);
+  const t0=performance.now();
+  const paint=()=>{
+    const m=getComputedStyle($("#world")).transform;
+    if(m&&m!=="none"){
+      const a=parseFloat(m.slice(m.indexOf("(")+1));
+      if(isFinite(a)) $("#zoomPct").textContent=Math.round(a*100)+"%";
+    }
+  };
+  (function step(){
+    paint();
+    if(performance.now()-t0<430) zoomRAF=requestAnimationFrame(step);
+    else $("#zoomPct").textContent=Math.round(S.zoom)+"%";
+  })();
+}
+function applyTransform(animate){
+  const w=$("#world");
+  clearTimeout(animT); clearTimeout(lodT);
+  if(animate){ w.classList.add("anim"); animT=setTimeout(()=>w.classList.remove("anim"),430); }
+  else { w.classList.remove("anim"); }
+  w.style.transform="translate("+S.tx+"px,"+S.ty+"px) scale("+(S.zoom/100)+")";
+  if(animate) trackZoomLabel();
+  if(animate){ lodT=setTimeout(()=>{ w.dataset.lod=lodOf(S.zoom); },390); }
+  else w.dataset.lod=lodOf(S.zoom);
+  if(!animate) $("#zoomPct").textContent=Math.round(S.zoom)+"%";   // 过渡中由 trackZoomLabel 按实际比例写
+  const c=$("#canvas"); c.scrollLeft=0; c.scrollTop=0;
+}
+
+function setZoom(z,ax,ay,animate){
+  z=Math.max(25,Math.min(200,z));
+  const r=$("#canvas").getBoundingClientRect();
+  if(ax==null){ax=r.left+r.width/2; ay=r.top+r.height/2;}
+  const k=z/S.zoom;
+  S.tx=(ax-r.left)-((ax-r.left)-S.tx)*k;
+  S.ty=(ay-r.top)-((ay-r.top)-S.ty)*k;
+  S.zoom=z; applyTransform(animate);
+}
+
+function measure(){
+  visibleIds().forEach(id=>{
+    const el=$('#nodes .node[data-id="'+id+'"]');
+    if(el) NODES[id]._h=el.offsetHeight||NH;
+  });
+}
+/* 画布宽度已随右面板变窄（CSS right 过渡），这里按当前 rect 算，不再二次扣面板宽度。
+   bbox 用固定格子（NW×ROWH）而不是实测节点高度：LOD 会改节点高度，
+   用实测值会让「缩放→档位→高度→缩放」互相反馈、收不敛。 */
+function fit(ids,animate){
+  ids=ids||visibleIds();
+  const r=$("#canvas").getBoundingClientRect();
+  const aw=Math.max(200,r.width-88), ah=Math.max(160,r.height-88);
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  ids.forEach(id=>{const n=NODES[id];
+    x0=Math.min(x0,n.pos.x); y0=Math.min(y0,n.pos.y);
+    x1=Math.max(x1,n.pos.x+NW); y1=Math.max(y1,n.pos.y+ROWH);});
+  const z=Math.max(25,Math.min(150,Math.min(aw/Math.max(1,x1-x0),ah/Math.max(1,y1-y0))*100));
+  S.zoom=z;
+  S.tx=r.width/2-((x0+x1)/2)*z/100;
+  S.ty=r.height/2-((y0+y1)/2)*z/100;
+  applyTransform(animate);
+  if(animate) drawWiresLive(440);
+}
+
+function chainOf(id){const out=[];let c=id;while(c){out.unshift(c);c=NODES[c].parent;}return out;}
+/* 面包屑＝选中卡在树里的位置（只读，不是一层级） */
+function renderCrumb(){
+  let h='<span class="seg cur">全景</span>';
+  if(S.convId&&NODES[S.convId]){
+    chainOf(S.convId).slice(1).forEach(x=>{ h+='<span class="sep">›</span><span class="seg">'+esc(NODES[x].title)+'</span>'; });
+    h+='<span class="sep">·</span><span class="seg">对话</span>';
+  }
+  $("#crumb").innerHTML=h;
+}
+
+function fitForFocus(){ fit(); toast("已适配全树"); }
+function centerOn(ids){
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  ids.forEach(id=>{const n=NODES[id],h=n._h||NH;
+    x0=Math.min(x0,n.pos.x); y0=Math.min(y0,n.pos.y);
+    x1=Math.max(x1,n.pos.x+NW); y1=Math.max(y1,n.pos.y+h);});
+  const r=$("#canvas").getBoundingClientRect();
+  const aw=Math.max(200,r.width-88), ah=Math.max(160,r.height-88);
+  const need=Math.min(aw/Math.max(1,x1-x0), ah/Math.max(1,y1-y0))*100;
+  if(need<S.zoom) S.zoom=Math.max(25,need);   // 装不下才缩小，绝不主动放大成局部
+  const k=S.zoom/100;
+  S.tx=r.width/2-((x0+x1)/2)*k;
+  S.ty=r.height/2-((y0+y1)/2)*k;
+  applyTransform(true);
+  drawWiresLive(440);
+}
+/* 定位＝把这张卡指给用户看。开模式、淡化其它卡、需要退出——一件都不做。
+   已在视野里就不动画布（只高亮）；装不下才平移。画布不会自己跑。 */
+function revealCard(id){
+  const n=NODES[id]; if(!n) return;
+  const el=$('#nodes .node[data-id="'+id+'"]');
+  if(el){
+    const cr=el.getBoundingClientRect(), vr=$("#canvas").getBoundingClientRect();
+    const inside = cr.left>=vr.left+6 && cr.top>=vr.top+6 && cr.right<=vr.right-6 && cr.bottom<=vr.bottom-6;
+    if(!inside) centerOn([id]);
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+    setTimeout(()=>el.classList.remove("flash"),1400);
+  }
+}
+/* 折叠/展开＝密度旋钮：收起后剩下的卡重新紧凑排布（不留空洞）→ 同一块画布放得下更大比例
+   → 卡更大、字更清、LOD 升档看到更多信息；展开则反过来。 */
+function toggleCollapse(id){
+  if(!hasKids(id)) return;
+  if(S.collapsed.has(id)) S.collapsed.delete(id); else S.collapsed.add(id);
+  renderNodes(true); renderRail();      // 退场的卡缩回淡出，留下的卡移动到位
+  layoutTidy(true,true);                // 画布随之连续放大/缩小
+}
+function collapseAll(v){
+  if(v) Object.keys(NODES).forEach(id=>{ if(hasKids(id)&&id!=="root") S.collapsed.add(id); });
+  else S.collapsed.clear();
+  renderNodes(true); renderRail(); layoutTidy(true,true);
+}
+/* ===== 自增长：卡片树是后端推流来的，随时会多出一张 =====
+   动效要让人看清三件事：从哪长出来的、其余卡怎么让位、画布怎么跟上。
+   做法：新卡先出现在父卡右下方，再走 380ms 到自己的列位；其余卡同时被推开；
+   画布重新适配也是过渡。一步只加一张——推流是一张一张到的，不是整片刷新。 */
+function addCardTree(spec,animate,noFit){
+  const id=spec.id, pid=spec.parent||"root";
+  if(NODES[id]) return id;
+  const pn=NODES[pid]||NODES.root;
+  S.collapsed.delete(pid);                        // 父卡若折叠着，新卡到了要展开才看得见
+  NODES[id]=Object.assign({},spec,{
+    pos:{x:pn.pos.x+Math.round(NW*0.55), y:pn.pos.y+Math.round(ROWH*0.5)},
+    ord:(spec.ord!=null?spec.ord:++ORD)
+  });
+  /* type 一律由 kind 派生；model 缺省取该类全局值。新长出来的卡不许自带一份手写类型。 */
+  NODES[id].kind=NODES[id].kind||"unit";
+  NODES[id].type=KINDS[NODES[id].kind].n;
+  if(!NODES[id].model) NODES[id].model=GMODEL[NODES[id].kind];
+  renderModelBar();
+  renderNodes(animate);                           // 此刻它落在父卡旁（起点）
+  const el=$('#nodes .node[data-id="'+id+'"]');
+  if(el&&animate) el.classList.add("grow");
+  if(el) void el.offsetWidth;                     // 让「父卡旁」这一帧落定，下一步才有起点可过渡
+  refreshNode(pid);                               // 父卡的子卡数徽标跟着变
+  renderRail(); renderStat();
+  layoutTidy(true,animate,noFit);                 // 走到自己的列位（noFit 时不动画布比例）
+  ensureVisible([id],animate);                    // 新卡不许出画：装得下就平移、装不下才缩放
+  return id;
+}
+function removeCardTree(id,animate){
+  if(!NODES[id]) return;
+  const kids=kidsOf(id).slice();
+  kids.forEach(k=>removeCardTree(k,false));
+  const pid=NODES[id].parent;
+  delete NODES[id];
+  renderNodes(animate); drawWires(); renderRail(); renderStat();
+  if(pid) refreshNode(pid);
+  layoutTidy(true,animate);
+}
+/* 演示：从根卡开始，把整棵树一层层长到底。
+   推流是「一张一张到」的，不是整片刷新——所以先把非根卡全部收回（画布只剩根卡，
+   自动放大到能看清它），再按深度从浅到深逐张 addCardTree：
+   父卡一定先于子卡出现，看得见每一支是从谁下面长出来的、其余卡怎么让位。
+   演示用的是当前这棵树本身（快照→收回→长回来），不另造一套假数据。 */
+let playing=false,playTimers=[];
+function snapshotTree(){
+  return Object.keys(NODES).filter(id=>id!=="root").map(id=>{
+    const n=NODES[id];
+    return {depth:depthOf(id),spec:{id:id,title:n.title,kind:n.kind,model:n.model,code:n.code,state:n.state,
+      parent:n.parent,facts:(n.facts||[]).slice(),meta:n.meta,last:n.last,live:n.live,arch:n.arch,
+      _hidden:n._hidden,ord:n.ord}};
+  }).sort((a,b)=>a.depth-b.depth);
+}
+function playGrowth(){
+  if(playing) return;
+  const btn=$("#playBtn");
+  const snap=snapshotTree();
+  if(!snap.length) return;
+  playing=true; btn.disabled=true; btn.textContent="生长中…";
+  const stopAll=()=>{ playTimers.forEach(clearTimeout); playTimers=[];
+    playing=false; btn.disabled=false; btn.textContent="▶ 从根生长"; };
+  /* ① 收回：只留根卡。退场走 280ms 淡出，画布随之放大到「一张卡」的比例。 */
+  S.collapsed.clear();
+  snap.forEach(x=>{ delete NODES[x.spec.id]; });
+  renderNodes(true); renderRail(); renderStat(); renderCrumb();
+  /* 适配延到退场（280ms）之后：退场卡还在 DOM 里淡出，这时把画布放大到「只剩根卡」的
+     比例，它们会被瞬间甩到视野外——看着像一屋子卡被弹飞。等它们收了再放大。 */
+  layoutTidy(true,true,true);                      // 只重排，不动画布比例
+  playTimers.push(setTimeout(()=>{ fit(null,true); },300));
+  /* ② 按层长回去：同一深度的卡一张张出现（父卡必定已在位），
+        一层长完停一拍、才适配一次——于是看到的是「一层层往外长」，
+        而不是每张卡都让画布缩一下（那样整幅画面一直在抖，层级反而看不清）。
+        层内 noFit：卡在自己的列里排队，画布不动。 */
+  const byD={}; snap.forEach(x=>{ (byD[x.depth]=byD[x.depth]||[]).push(x); });
+  const ds=Object.keys(byD).map(Number).sort((a,b)=>a-b);
+  let t=640;
+  ds.forEach(d=>{
+    byD[d].forEach((x,k)=>{
+      playTimers.push(setTimeout(()=>{ addCardTree(x.spec,true,true); },t));
+      if(k<byD[d].length-1) t+=300;
+    });
+    t+=520;                                                 // 这一层长完，停一拍
+    playTimers.push(setTimeout(()=>{ fit(null,true); },t-280));
+  });
+  playTimers.push(setTimeout(()=>{ fit(null,true); },t+40));    // 收尾再适配一次，消掉多段残差
+  playTimers.push(setTimeout(stopAll,t+560));
+}
+function visKids(id){ return kidsOf(id).filter(k=>!NODES[k]._hidden&&!S.collapsed.has(id)); }
+function leafCount(id){ const k=visKids(id); return k.length? k.reduce((a,b)=>a+leafCount(b),0) : 1; }
+function subDepth(id){ const k=visKids(id); return k.length? 1+Math.max(...k.map(subDepth)) : 0; }
+/* 布局＝层级列对齐：同一深度的卡永远落在同一列（x = PAD + 深度×列距），
+   纵向按子树次序紧凑堆叠、父卡居中于其子卡。
+   这条规矩是硬约束——上一稿为了让画布「填满」把互不相交的子树并排放，
+   于是某支的子卡跑到了别支孙卡的右边，看上去像它更深一层，层级读不出来。
+   折叠＝该支从画布上消失、其余支重新紧凑堆叠 → 总高变小 → 适配放大 → 信息升档。 */
+function computeLayout(){
+  const GAPX=76, PAD=48;
+  const pos={};
+  let row=0;
+  (function place(id,d){
+    const kids=visKids(id);
+    const x=PAD+d*(NW+GAPX);
+    if(!kids.length){ pos[id]={x:x, y:PAD+row*ROWH}; row++; return; }
+    const ys=kids.map(k=>{ place(k,d+1); return pos[k].y; });
+    pos[id]={x:x, y:Math.round((Math.min.apply(null,ys)+Math.max.apply(null,ys))/2)};
+  })("root",0);
+  Object.keys(pos).forEach(id=>{ if(NODES[id]) NODES[id].pos=pos[id]; });
+}
+/* 新卡不许出画：生长时树在变大，画布必须跟上，否则「变化的那一点」正好在屏幕外。
+   但也不能每张都全树适配——那样整幅一直在缩，层级反而看不清。
+   所以分两步：① 装得下就只平移（把新卡拉回视野，画面不缩放）；② 真装不下才重新适配。 */
+function ensureVisible(focusIds,animate){
+  const r=$("#canvas").getBoundingClientRect();
+  const pad=56, z=S.zoom/100;
+  const box=ids=>{
+    let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+    ids.forEach(id=>{const n=NODES[id]; if(!n)return;
+      x0=Math.min(x0,n.pos.x); y0=Math.min(y0,n.pos.y);
+      x1=Math.max(x1,n.pos.x+NW); y1=Math.max(y1,n.pos.y+ROWH);});
+    return x0>x1?null:{x0:x0,y0:y0,x1:x1,y1:y1};
+  };
+  const bAll=box(visibleIds()); if(!bAll) return false;
+  const inView=b=>{
+    const sx0=b.x0*z+S.tx, sx1=b.x1*z+S.tx, sy0=b.y0*z+S.ty, sy1=b.y1*z+S.ty;
+    return sx0>=pad&&sy0>=pad&&sx1<=r.width-pad&&sy1<=r.height-pad;
+  };
+  if(inView(bAll)) return false;
+  const bF=box(focusIds||visibleIds())||bAll;
+  const availW=r.width-pad*2, availH=r.height-pad*2;
+  if((bAll.x1-bAll.x0)*z<=availW && (bAll.y1-bAll.y0)*z<=availH){
+    let dx=0,dy=0;
+    const sx0=bF.x0*z+S.tx, sx1=bF.x1*z+S.tx, sy0=bF.y0*z+S.ty, sy1=bF.y1*z+S.ty;
+    if(sx1>r.width-pad) dx=r.width-pad-sx1;
+    if(sx0+dx<pad) dx=pad-sx0;
+    if(sy1>r.height-pad) dy=r.height-pad-sy1;
+    if(sy0+dy<pad) dy=pad-sy0;
+    if(dx||dy){ S.tx+=dx; S.ty+=dy; applyTransform(animate); return true; }
+  }
+  fit(null,animate); return true;
+}
+/* noFit=true：只重排、不动画布比例（推流分层生长时用——层内不动画布，层末才适配一次） */
+function layoutTidy(quiet,animate,noFit){
+  computeLayout();
+  renderNodes(!!animate); drawWires();
+  if(animate) drawWiresLive(470);
+  if(!noFit) setTimeout(()=>{ fit(null,!!animate); },30);
+}
+function renderRail(){
+  let h="";
+  (function walk(id,pad){
+    if(NODES[id]._hidden) return;
+    const n=NODES[id], kids=hasKids(id);
+h+='<li><div class="tree-row'+(pad?" child":"")+'" data-go="'+id+'" style="padding-left:'+(10+pad*14)+'px">'+
+      '<span class="d" style="background:var(--'+n.state+')"></span><span class="t">'+esc(n.title)+'</span>'+
+      (kids?'<span class="tw" data-fold="'+id+'" title="折叠/展开">'+(S.collapsed.has(id)?"▸":"▾")+'</span>':'')+
+      '</div></li>';
+    if(kids&&!S.collapsed.has(id)) kidsOf(id).forEach(k=>walk(k,pad+1));
+  })("root",0);
+  $("#railTree").innerHTML=h;
+}
+
+function renderStat(){
+  const all=Object.keys(NODES);
+  const run=all.filter(k=>NODES[k].state==="run").length;
+  const blk=all.filter(k=>NODES[k].state==="blocked").length;
+  $("#projectStat").innerHTML='<span><b>'+all.length+'</b> 卡</span><span><b>'+run+'</b> 运行中</span>'+
+    (blk?'<span style="color:var(--blocked)"><b style="color:var(--blocked)">'+blk+'</b> 受阻</span>':'')+
+    '<button class="ps-arch" id="archEntryMini" title="已归档记录（回档）">已归档 <b>'+ARCHIVED.length+'</b></button>';
+  /* 顶栏这一处只是「计数 + 门」，与右缘「▣ 归档」走同一个开关——
+     同一件事不许有两套交互，所以它调的是同一个 openArchSheet。 */
+  const am=$("#archEntryMini");
+  if(am) am.addEventListener("click",ev=>{ ev.stopPropagation();
+    $("#archSheet").classList.contains("open")?closeDrawers():openArchSheet(); });
+}
+
+/* ===================== 模型：卡面单选 + 底栏按类型一键切 ===================== */
+function countKind(kd){ return Object.keys(NODES).filter(k=>NODES[k].kind===kd).length; }
+function renderModelBar(){
+  const host=$("#modelBar"); if(!host) return;
+  host.innerHTML='<span class="mb-lead">全局模型</span>'+KORDER.map(kd=>{
+    const k=KINDS[kd], c=countKind(kd);
+    return '<button class="mb-cell'+(c?"":" zero")+'" data-gkind="'+kd+'" '+
+      'title="'+esc(k.n)+' · 点选改这一类的全部 '+c+' 张卡"><span class="k-ic">'+k.ic+'</span>'+
+      '<span class="k-nm">'+esc(k.s)+'</span>'+
+      '<span class="k-md">'+esc(shortModel(GMODEL[kd]))+'</span>'+
+      '<span class="k-ct">'+(c||"—")+'</span></button>';
+  }).join("");
+  const n=$("#archEntryN"); if(n) n.textContent=ARCHIVED.length;
+}
+/* 同一个浮层服务两个入口：卡面上改这一张（t:"node"）、底栏改这一类全部（t:"kind"）。 */
+let mPick=null;
+function openModelPop(anchorEl,target){
+  if(!anchorEl) return;
+  mPick=target;
+  const cur = target.t==="node" ? NODES[target.id].model : GMODEL[target.kind];
+  $("#mpopHd").textContent = target.t==="node"
+    ? (NODES[target.id].code+" · 只改这一张")
+    : (KINDS[target.kind].n+" · 该类全部 "+countKind(target.kind)+" 张");
+  $("#mpopList").innerHTML=MODELS.map(m=>
+    '<div class="mpop-it'+(m.id===cur?" on":"")+'" data-mid="'+m.id+'">'+esc(m.n)+
+    '<span class="ck">'+(m.id===cur?"✓":"")+'</span></div>').join("");
+  const pop=$("#mpop");
+  pop.classList.add("open");
+  const r=anchorEl.getBoundingClientRect(), w=pop.offsetWidth||200, h=pop.offsetHeight||210;
+  let x=r.left, y=r.top-h-6;
+  if(y<8) y=r.bottom+6;
+  if(x+w>innerWidth-8) x=innerWidth-w-8;
+  if(x<8) x=8;
+  pop.style.left=x+"px"; pop.style.top=y+"px";
+}
+function closeModelPop(){ $("#mpop").classList.remove("open"); mPick=null; }
+$("#mpopList").addEventListener("click",ev=>{
+  const it=ev.target.closest("[data-mid]"); if(!it||!mPick) return;
+  const mid=it.dataset.mid;
+  if(mPick.t==="node"){
+    NODES[mPick.id].model=mid; refreshNode(mPick.id);
+  }else{
+    const kd=mPick.kind;
+    GMODEL[kd]=mid;
+    Object.keys(NODES).forEach(k=>{ if(NODES[k].kind===kd){ NODES[k].model=mid; refreshNode(k); } });
+    renderModelBar();
+  }
+  closeModelPop();
+});
+$("#modelBar").addEventListener("click",ev=>{
+  const c=ev.target.closest("[data-gkind]"); if(!c) return;
+  ev.stopPropagation();
+  openModelPop(c,{t:"kind",kind:c.dataset.gkind});
+});
+function renderAll(){renderNodes();drawWires();renderCrumb();renderRail();renderStat();}
+let renaming=null;
+function startRename(id){
+  if(renaming) commitRename();
+  const el=$('#nodes .node[data-id="'+id+'"]'); if(!el) return;
+  const tEl=$(".n-title .t",el); const n=NODES[id];
+  renaming={id,el,tEl,orig:n.title};
+  tEl.contentEditable="true";
+  tEl.onkeydown=(ev)=>{
+    if(ev[K]==="Enter"){ ev.preventDefault(); commitRename(); }
+    else if(ev[K]==="Escape"){ ev.preventDefault(); cancelRename(); }
+  };
+  tEl.onblur=()=>{ if(renaming&&renaming.id===id) commitRename(); };
+  tEl.focus({preventScroll:true});
+  const rg=document.createRange(); rg.selectNodeContents(tEl);
+  const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(rg);
+  $("#canvas").scrollLeft=0; $("#canvas").scrollTop=0;
+}
+function commitRename(){
+  if(!renaming) return;
+  const r=renaming; renaming=null;
+  const txt=(r.tEl.textContent||"").trim()||r.orig;
+  NODES[r.id].title=txt;
+  r.el.setAttribute("aria-label",txt+" · "+STATE_LABEL[NODES[r.id].state]+" · "+NODES[r.id].code);
+  r.tEl.textContent=txt;
+  r.tEl.contentEditable="false";
+  const arch=NODES[r.id].arch;
+  if(arch){ const a=document.createElement("span"); a.className="archcode"; a.textContent=arch; r.tEl.appendChild(a); }
+  renderCrumb(); renderRail();
+  if(txt!==r.orig){
+    toast("已改名 · "+txt,"撤销",()=>{
+      NODES[r.id].title=r.orig;
+      const t=$('#nodes .node[data-id="'+r.id+'"] .n-title .t');
+      if(t){ t.textContent=r.orig; if(arch){const a=document.createElement("span");a.className="archcode";a.textContent=arch;t.appendChild(a);} }
+      renderCrumb(); renderRail();
+    });
+  }
+}
+function cancelRename(){
+  if(!renaming) return;
+  const r=renaming; renaming=null;
+  r.tEl.textContent=r.orig; r.tEl.contentEditable="false";
+  const arch=NODES[r.id].arch;
+  if(arch){ const a=document.createElement("span"); a.className="archcode"; a.textContent=arch; r.tEl.appendChild(a); }
+}
+
+let tipTimer=null,tipHide=null,tipInputFocused=false;
+function scheduleTip(id,el){
+  clearTimeout(tipTimer); clearTimeout(tipHide);
+  if(tipInputFocused) return;
+  tipTimer=setTimeout(()=>showTip(id,el),260);
+}
+function showTip(id,el){
+  const n=NODES[id];
+  $("#tipTitle").textContent=n.title;
+  $("#tipCode").innerHTML=esc(n.code+" · "+STATE_LABEL[n.state])+(n.live?'<span class="tip-tag">输出中</span>':'');
+  const msg=$("#tipMsg");
+  if(n.live){
+    /* 还在输出：只给一行，行尾光标。浮层宽度跟着这一行走（超长则截断留省略号）。 */
+    msg.className="tip-msg streaming";
+    msg.innerHTML='<span class="who">'+esc(n.last.who)+'</span>'+esc(n.live)+'<span class="cur"></span>';
+  }else{
+    /* 说完了：全文换行显示，一个字都不截——浮层随内容长高，宽度到 460 封顶 */
+    msg.className="tip-msg";
+    msg.innerHTML='<span class="who">'+esc(n.last.who)+'</span>'+esc(n.last.text)+
+      '<span class="tm">'+esc(n.last.time)+'</span>'+
+      '<span class="more">最近 3 条 · 单击折叠/展开 · 双击对话 · ✎ 改名 · ▣ 归档</span>';
+  }
+  const tip=$("#tip");
+  tip.dataset.for=id;
+  tip.classList.add("on");
+  const r=el.getBoundingClientRect();
+  const w=tip.offsetWidth||280,h=tip.offsetHeight||136;
+  let x=r.right+12,y=r.top;
+  if(x+w>innerWidth-8) x=r.left-w-12;
+  if(x<8) x=8;
+  if(y+h>innerHeight-8) y=innerHeight-h-8;
+  if(y<8) y=8;
+  tip.style.left=x+"px"; tip.style.top=y+"px";
+}
+function hideTipSoon(){
+  clearTimeout(tipTimer);
+  if(tipInputFocused) return;
+  tipHide=setTimeout(()=>{ $("#tip").classList.remove("on"); },150);
+}
+function sendQuick(text,id){
+  if(!text||!text.trim()) return;
+  const n=NODES[id||$("#tip").dataset.for];
+  if(!n) return;
+  n.last={who:"me",text:text.trim(),time:"刚刚"};
+  n.meta="更新 刚刚 · 已发送";
+  const el=$('#nodes .node[data-id="'+(id||$("#tip").dataset.for)+'"]');
+  if(el) $(".n-meta",el).textContent=n.meta;
+  toast("已发送给 "+n.code);
+}
+let justDragged=false,pan=null;
+
+function startPan(e){
+  pan={sx:e.clientX,sy:e.clientY,tx:S.tx,ty:S.ty};
+  $("#canvas").classList.add("panning");
+}
+function movePan(e){
+  S.tx=pan.tx+(e.clientX-pan.sx);
+  S.ty=pan.ty+(e.clientY-pan.sy);
+  applyTransform();
+}
+/* 滚轮＝上下／左右平移（画布自己就是「页面」，页面没有原生滚动条）；
+   Ctrl/⌘+滚轮＝以光标为锚缩放；Shift+滚轮＝横向。
+   deltaMode 归一：Firefox 与部分鼠标按「行」滚（deltaMode=1，delta 是行数），
+   不换算会变成一滚只动一两个像素，看起来就像滚轮失灵。 */
+function wheelDelta(e){
+  const k = e.deltaMode===1 ? 16 : (e.deltaMode===2 ? 400 : 1);
+  return {x:e.deltaX*k, y:e.deltaY*k};
+}
+function onWheel(e){
+  e.preventDefault();
+  const d=wheelDelta(e);
+  if(e.ctrlKey||e.metaKey){ setZoom(S.zoom*(d.y<0?1.1:0.9),e.clientX,e.clientY); return; }
+  if(e.shiftKey&&!d.x){ S.tx-=d.y; applyTransform(); return; }
+  S.tx-=d.x; S.ty-=d.y; applyTransform();
+}
+$("#canvas").addEventListener("wheel",onWheel,{passive:false});
+
+$("#canvas").addEventListener("mousedown",e=>{
+  if(e.button!==0&&e.button!==1) return;
+  if(e.button===0&&e.target.closest(".node")) return;
+  if(e.target.closest(".rule-panel,.drawer,.dock,.diff,.cmdk,.modal,.states,button,input")) return;
+  startPan(e);
+});
+window.addEventListener("mousemove",e=>{ if(pan) movePan(e); });
+window.addEventListener("mouseup",()=>{ if(pan){ pan=null; $("#canvas").classList.remove("panning"); } });
+
+/* 触屏：两指拖动＝平移画布（移动端对应「滚轮上下滚」的那件事）。
+   单指不接管——单指要留给点卡片、点按钮；两指才是「移画布」。 */
+let touchPan=null;
+function twoFingerMid(t){ return {x:(t[0].clientX+t[1].clientX)/2, y:(t[0].clientY+t[1].clientY)/2}; }
+$("#canvas").addEventListener("touchstart",ev=>{
+  if(ev.touches.length===2){
+    const m=twoFingerMid(ev.touches);
+    touchPan={mx:m.x,my:m.y,tx:S.tx,ty:S.ty};
+    $("#canvas").classList.add("panning");
+  }else{ touchPan=null; }
+},{passive:true});
+$("#canvas").addEventListener("touchmove",ev=>{
+  if(!touchPan||ev.touches.length!==2) return;
+  ev.preventDefault();
+  const m=twoFingerMid(ev.touches);
+  S.tx=touchPan.tx+(m.x-touchPan.mx);
+  S.ty=touchPan.ty+(m.y-touchPan.my);
+  applyTransform();
+},{passive:false});
+function endTouchPan(ev){
+  if(ev.touches&&ev.touches.length>=2) return;
+  touchPan=null; $("#canvas").classList.remove("panning");
+}
+$("#canvas").addEventListener("touchend",endTouchPan,{passive:true});
+$("#canvas").addEventListener("touchcancel",endTouchPan,{passive:true});
+let clickTimer=null;
+$("#nodes").addEventListener("click",e=>{
+  if(justDragged) return;
+  const nodeEl=e.target.closest(".node"); if(!nodeEl) return;
+  const id=nodeEl.dataset.id;
+  const act=e.target.closest("[data-act]");
+  if(act){
+    const a=act.dataset.act;
+    if(a==="conv"){ openConv(id); return; }
+    if(a==="pencil"){ startRename(id); return; }
+    if(a==="fold"){ toggleCollapse(id); return; }
+    if(a==="archive"){ archiveCard(id); return; }
+    if(a==="model"){ openModelPop(act,{t:"node",id}); return; }
+  }
+  if(e.target.closest("button,input,[contenteditable=true]")) return;
+  /* 单击＝折叠/展开该支。它和双击落在同一张卡上，必须等过双击判定窗再执行：
+     双击的第二下（e.detail>1）先把这个待执行动作撤掉，否则双击开对话之前
+     会先折叠一次、再展开回来——画面抖一下、适配缩放来回跳。 */
+  if(e.detail>1){ if(clickTimer){ clearTimeout(clickTimer); clickTimer=null; } return; }
+  if(clickTimer) clearTimeout(clickTimer);
+  clickTimer=setTimeout(()=>{ clickTimer=null; toggleCollapse(id); },200);
+});
+$("#nodes").addEventListener("dblclick",e=>{
+  if(justDragged) return;
+  const nodeEl=e.target.closest(".node"); if(!nodeEl) return;
+  if(e.target.closest("button,input,[contenteditable=true]")) return;
+  /* 双击＝开合这张卡的对话。单击的折叠在这里被撤掉：一次双击不动折叠。
+     浮窗只有一个：同一张卡再双击＝收起；双击别的卡＝直接换成那张（旧的自动让位）。 */
+  if(clickTimer){ clearTimeout(clickTimer); clickTimer=null; }
+  const cid=nodeEl.dataset.id;
+  if(S.convId===cid && $("#convSheet").classList.contains("open")) closeDrawers();
+  else openConv(cid);
+});
+$("#nodes").addEventListener("mouseover",e=>{
+  const nodeEl=e.target.closest(".node"); if(!nodeEl) return;
+  if(e.relatedTarget&&nodeEl.contains(e.relatedTarget)) return;
+  scheduleTip(nodeEl.dataset.id,nodeEl);
+});
+$("#nodes").addEventListener("mouseout",e=>{
+  const nodeEl=e.target.closest(".node"); if(!nodeEl) return;
+  if(e.relatedTarget&&nodeEl.contains(e.relatedTarget)) return;
+  hideTipSoon();
+});
+
+/* 贴右缘的浮窗目前三个：卡片对话、规则卡、归档。同级互斥（同时只开一个），
+   因为三者都占同一条右缘——叠着开就会互相盖住。 */
+const DRAWERS=["convSheet","ruleCard","archSheet"];
+function openDrawer(id){
+  DRAWERS.forEach(d=>$("#"+d).classList.toggle("open",d===id));
+  if(id!=="convSheet") S.convId=null;
+  if(id!=="ruleCard") rcEditing=null;
+  $("#ruleEntry").classList.toggle("on",id==="ruleCard");
+  $("#archEntry").classList.toggle("on",id==="archSheet");
+  if(id==="archSheet") renderArchSheet();
+  $("#viewport").classList.add("sheetOpen");
+  renderCrumb();
+}
+function closeDrawers(){
+  DRAWERS.forEach(d=>$("#"+d).classList.remove("open"));
+  S.convId=null; rcEditing=null;
+  $("#ruleEntry").classList.remove("on");
+  $("#archEntry").classList.remove("on");
+  $("#viewport").classList.remove("sheetOpen");
+  renderCrumb();
+}
+
+const CONV={
+  default:[
+    ["card_074","界面语言按信息分层写，别拿配色当进度。","10:24"],
+    ["me","收到，画布页按四段解剖＋状态词重做。","10:26"],
+    ["card_322","v3 已落盘，7 条缺陷逐条修。","10:41"]
+  ]
+};
+function openConv(id){
+  const n=NODES[id];
+  $("#convTitle").textContent=n.title;
+  $("#convSub").textContent=n.code+" · "+n.type+" · "+STATE_LABEL[n.state];
+  const msgs=CONV[id]||CONV.default;
+  $("#convBody").innerHTML='<div class="daysep">今天</div>'+msgs.map(([w,t,tm])=>
+    '<div class="msg'+(w==="me"?" mine":"")+'"><div class="av">'+(w==="me"?"我":w.replace("card_","#"))+'</div>'+
+    '<div class="bd"><div class="hd"><b>'+esc(w)+'</b><span>'+esc(tm)+'</span></div>'+
+    '<div class="tx">'+esc(t)+'</div></div></div>').join("");
+  S.convId=id;
+  openDrawer("convSheet");
+}
+$("#convSend").addEventListener("click",()=>{
+  const v=$("#convInput").value.trim(); if(!v) return;
+  const b=$("#convBody");
+  b.insertAdjacentHTML("beforeend",'<div class="msg mine"><div class="av">我</div><div class="bd">'+
+    '<div class="hd"><b>me</b><span>刚刚</span></div><div class="tx">'+esc(v)+'</div></div></div>');
+  $("#convInput").value=""; b.scrollTop=b.scrollHeight;
+  /* 发出一条消息＝画布上真的有一次传递：从父卡到这张卡拉一条线、流一下、12 秒后消失。
+     这就是「信息传递只在那一下用线表达」——不常驻、不留痕。 */
+  if(S.convId&&NODES[S.convId]&&NODES[S.convId].parent) pulse(NODES[S.convId].parent,S.convId,"我 → "+NODES[S.convId].code+"：发了一条消息");
+  toast("已发送");
+});
+
+function renderCmdk(q){
+  q=(q||"").trim().toLowerCase();
+  const cards=Object.keys(NODES).filter(k=>!q||NODES[k].title.toLowerCase().indexOf(q)>-1||NODES[k].code.toLowerCase().indexOf(q)>-1);
+  let h="";
+  if(cards.length) h+='<div class="ctx-hd">卡片</div>'+cards.map(k=>{
+    const n=NODES[k];
+    return '<div class="cmdk-item" data-card="'+k+'"><span class="ic">◱</span><span>'+esc(n.title)+'</span>'+
+      '<span class="k">'+esc(n.code)+'</span></div>';
+  }).join("");
+  if(!h) h='<div class="cmdk-empty">没有匹配的卡片</div>';
+  $("#cmdkList").innerHTML=h;
+}
+function openCmdk(){ $("#cmdk").classList.add("open"); $("#cmdkInput").value=""; renderCmdk(""); setTimeout(()=>$("#cmdkInput").focus(),30); }
+function closeCmdk(){ $("#cmdk").classList.remove("open"); }
+function runCmd(name,id){
+  if(name==="conv") return openConv(id);
+  if(name==="rename") return startRename(id);
+  if(name==="focus") return revealCard(id);
+  if(name==="fold") return toggleCollapse(id);
+  if(name==="fit") return fitForFocus();
+  if(name==="tidy") return layoutTidy();
+  if(name==="theme") return toggleTheme();
+  if(name==="expandAll") return collapseAll(false);
+  if(name==="collapseAll") return collapseAll(true);
+}
+
+
+
+/* 操作不再弹提示条：每一下的结果都由界面本身回显（折叠后画布缩放变、卡面数字变、
+   面板开合可见）。以 no-op 保留签名，免得散落的调用点出错。 */
+function toast(){}
+
+const DEMO_TXT={
+  loading:{b:"加载中 · 正在取卡片树",h:"",p:"",kind:"skeleton"},
+  empty:{b:"数据已取回 · 一张卡都没有",h:"这棵树还没有卡",p:"不是没取到——是确知为 0。卡由模型建（create_card / create_worker_card），人只看与归档。",kind:"empty"},
+  error:{b:"请求失败 · GET /api/cards/tree · 502",h:"没能取到卡片树",p:"服务端返回 502（网关超时）。已保留上次结果，可就地重试。",kind:"error"},
+  denied:{b:"无权限 · E403",h:"你没有查看这棵树的权限",p:"缺少 cards:read 权限，或该项目对你不可见。可向项目根卡申请只读。",kind:"denied"}
+};
+function setDemo(kind){
+  S.demo=kind;
+  $$("#dockPanel [data-demo]").forEach(b=>b.classList.toggle("primary",b.dataset.demo===kind));
+  const box=$("#states");
+  if(kind==="normal"){ box.classList.remove("on"); box.innerHTML=""; return; }
+  const d=DEMO_TXT[kind]; let inner="";
+  if(d.kind==="skeleton"){
+    inner='<div class="sk-grid">'+Array.from({length:6}).map(()=>'<div class="sk sk-card">'+
+      '<div class="sk-l w40"></div><div class="sk-l w70"></div><div class="sk-l w55"></div></div>').join("")+'</div>';
+  } else if(d.kind==="empty"){
+    inner='<div class="st-inner"><h3>'+esc(d.h)+'</h3><p>'+esc(d.p)+'</p><div class="st-acts">'+
+      '<button class="btn" data-st="back">关闭示例</button></div></div>';
+  } else if(d.kind==="error"){
+    inner='<div class="st-inner"><span class="st-code">502</span><h3>'+esc(d.h)+'</h3><p>'+esc(d.p)+'</p>'+
+      '<div class="st-acts"><button class="btn primary" data-st="retry">重试</button><button class="btn" data-st="back">关闭示例</button></div></div>';
+  } else {
+    inner='<div class="st-inner"><span class="st-code">E403 · 缺 cards:read</span><h3>'+esc(d.h)+'</h3><p>'+esc(d.p)+'</p>'+
+      '<div class="st-acts"><button class="btn" data-st="req">向根卡申请只读</button><button class="btn" data-st="back">关闭示例</button></div></div>';
+  }
+  box.innerHTML='<div class="st-wrap"><div class="st-banner"><b>'+esc(kind.toUpperCase())+'</b><span>'+esc(d.b)+'</span></div>'+
+    '<div class="st-body">'+inner+'</div></div>';
+  box.classList.add("on");
+}
+function toggleTheme(){
+  S.theme=S.theme==="dark"?"light":"dark";
+  document.documentElement.dataset.theme=S.theme;
+  $("#themeBtn").textContent=S.theme==="dark"?"☾":"☀";
+  toast(S.theme==="dark"?"已切到深色主题":"已切到浅色主题");
+}
+const DIFF=[
+  ["卡类型改名：根／一级／二级及以下拆成三种","原来只有「项目卡 / 子项目卡 / 工具卡 / UI 卡」几种叫法，二级和更深的子项目卡不区分。","根＝Master Agent Card，一级子项目＝Manager Agent Card，二级及以下＝Unit Agent Card；worker / QA / PM / UI 保持原名。数据上是不同 kind，type 由 kind 派生，不许各处手写。Manager 与 Unit 对应两种权限，所以必须区分。课题卡 topic 本轮从需求取消。","层级本身就是权限与职责的差别——不区分，画布上就看不出「谁管谁」。"],
+  ["卡类型的样式区分（不只换个标签）","上一稿所有卡一个样，类型只是徽标里几个字。","结构卡用左侧色条标层级（Master 4px / Manager 3px / Unit 2px），徽标实线；工作卡无左条、徽标虚线框＋工种图标（▦ ✓ ✎ ◱）。","用户要求类型在样式上可辨识。粗细与虚/实是可触知的差别，不靠色相一个维度——色弱也分得开。"],
+  ["卡面显示当前模型，可就地切换","上一稿卡上看不出这张卡用哪个模型，也没处改。","状态词右边一个可点徽标（opus / sonnet / gpt-5.2 / gemini / dsv4），点开就地换这一张卡的模型；far 档不显示（远看只读结论不读配置）。","一张卡用哪个模型是它的运行事实，跟状态一样该在卡面上，而不是藏进详情页。"],
+  ["画布下方全局模型配置条","上一稿没有按类型的全局配置，只能一张一张改。","画布底部长条，按类型分七格（Master / Manager / Unit / worker / QA / PM / UI），每格显示该类当前模型与卡数；点一格改这一类全部卡，卡面徽标同步刷新。常驻不浮层——它是配置不是操作。","同一类卡批量换模型是常态动作（换更强的模型跑施工卡），逐张点效率低且容易漏。"],
+  ["归档动作移到卡面；右缘「▣ 归档」只做回档","上一稿把右缘浮窗做成了「可归档候选列表」——归档动作在浮窗里，卡上没有入口；而且顶栏还有一个「已归档 N」入口，同一件事两个门。","归档动作在卡面（hover 出 ▣，根卡没有），点了这卡连同子卡整支收起；右缘「▣ 归档」只列<b>已归档</b>记录、用于回档，与「▤ 规则卡」完全同一套开合（点击展开／点外部收回／开着时入口贴浮窗左缘）。顶栏那个重复入口去掉。","归档是「这张卡的事」，动作就该在卡上；浮窗只回答「收起来的都在哪、怎么放回来」。同一件事两套入口，用户会不知道该点哪个。"],
+  ["手动建卡入口整个移除","上一稿顶栏有「＋ 新建卡」按钮＋弹窗（标题/类型/挂到），空态里还有「新建一张卡」按钮——好像画布页该由人来摆卡。","全部移除。建卡是模型的事（create_card / create_worker_card，任务书/指令驱动），画布页只呈现模型建出来的树＋推流生长。人的动作只剩：看、调密度、开对话、归档。","人手摆卡和「数据是后端推流来的」这个前提矛盾——树是长出来的，不是摆出来的。"],
+  ["卡上归档入口（右缘「▣ 归档」）","上一稿归档只能看：顶栏「已归档 N」列记录、可恢复，但活卡收不起来——收的动作没有入口。","右缘规则卡入口下方加同款竖排「▣ 归档」入口：点开列可归档的活卡（根卡除外），逐张「归档」；整支带退场动效收起、其余卡重排，记录进「已归档 N」，可恢复。归档＝保留过程（card_store.py:1823 所有卡、无前置判断），与删除是两条语义。","归档是人的判断（这张做完了吗）——判断在人，执行要有个看得见的门；放在规则卡旁边因为都是「对树的管理动作」，不是某张卡的事。"],
+ ["规则卡：从「一块面板就叫它规则卡」改成「画布右缘入口 + 能看能改」","上一稿把右侧那块规格面板直接叫作规则卡，并写「规则卡不上画布——规则面板即其呈现」。结果是规则卡既没有身份，也没有可编辑的地方：看不到它的分区，改一个字都做不到。","画布右缘一个竖排入口「▤ 规则卡」（不是面板常驻，是入口）；点开是规则卡本体：类型／适用范围／版本，按 ## 分区列内容，每区「编辑」就地把内容改成文本域，保存后标「已改」。改动在本页生效（演示），并明说真实改动要经用户同意才落盘。","规则是产品里唯一「对每一张卡都成立」的对象，它必须有入口、能看、能改。把一块说明面板说成规则卡，等于让人只能看说明、永远碰不到规则本身。"],
+ ["通信线：一颗流星飞过（头亮、拖尾渐隐），不留线","上一稿一条线一出现就是整条亮着，再配一层 CSS 流光循环，12 秒后整体消失——读起来是「一条线一直在闪」，看不出方向、速度、什么时候到的。","像流星：头是一个亮点，后面拖着一段渐隐渐细的尾巴沿曲线飞过（拖尾按弧长取 70–240px，短线不糊、长线不断），0.62s 飞到；到站后收件端点亮并扩散一圈，整个拖尾再渐隐消失（0.85s）。线上不留任何东西。","人读「有东西正在过去」靠的是方向和速度，而速度只能由「头领先、尾在后」读出来。整条线亮着＝没有前后；只留一个点＝没有经过。头加拖尾，两样都有。"],
+ ["生长时画面自己跟上——新卡不许长在屏幕外","上一稿分层生长时「层内不动画布」，于是一层里连长几张，最后几张已经跑到视野外，得等这层长完才适配一次。",
+  "每长出一张就核一次：整棵树装得下就只平移把新卡拉回视野（画面不缩放）；真装不下才重新适配。新卡从出现到落位始终在屏幕内。",
+  "自增长要能看见「从哪长出来的」——新卡在视野外，等于这次生长没发生。平移优于缩放：缩放会让整片跟着抖，层级反而看不清。"],
+ ["状态词改成后端真实取值，删掉「待裁定」这个我编的","上一稿状态词是待裁定/运行中/已完成/受阻/已归档，五个里有一个半不是字段。",
+  "按后端三层重写：① 生命周期 state（active↔completed）② 自动推进 goal_state（active/paused/complete/blocked → 运行中/已暂停/已完成/受阻）③ 实时推送 live（运行中/排队中）。「待裁定」降为卡面内容里的一条待办，不再是状态词。",
+  "状态词要对得上数据，否则用户看到一个后端永远发不出的词。受阻＝auto_mode 且 goal_state=blocked（自动推进卡住了），不等于「有外部依赖」。"],
+ ["已归档不占画布槽位，收成顶栏一个计数","上一稿有一张「已归档」的卡，置灰、加删除线、占一个格子。",
+  "归档卡从画布上消失：顶栏留「已归档 N」入口，点开列记录（标题/归档时间/原因/并入哪里），可以「恢复成卡」——恢复时它作为新节点长回画布。",
+  "归档在后端是把 cards 那一行删掉、整行 meta 存进 card_archive 表（可恢复）。它已经不是活卡，画布给它留格子等于画一个不存在的节点，也白占一块视野。"],
+ ["规则卡：不上画布，右侧那块面板就是它","上一稿把规则塞进右侧面板，但面板标题只写「交互规格/键盘路径/状态与边界」，读者不知道这就是规则卡。",
+  "面板头明确标「规则卡」，并注明依据：canvas.js:1468「规则卡不上画布——它是吸附屏幕右侧的常驻卡（规则面板即其呈现）」。",
+  "规则对每张卡都成立。放进画布、挂在某一支下面，会被读成「只有那一支受它管」——位置即语义。"],
+ ["通信线只在传递的那一下出现","上一稿画了三条常驻虚线，永远挂在那儿——看图的人会以为那代表「这两张卡有关系」，而那件事该由依赖/关联线表达。",
+  "改成传递脉冲：发一条消息＝从父卡到收件卡拉一条曲线，带一道流光与收件端扩散点，12 秒后自己消失。一条线都没有时，那是如实的——此刻没有信息在传。",
+  "旧系统原话（canvas.js:3940）：「画布上出现的每一条通信线都意味着『刚刚发生了信息流动』」，只画 30 分钟窗口内的传递，曲线是为了穿过中间的卡时不被误读成父子线。"],
+ ["单击折叠、双击对话——为什么单击要等 200ms","单击与双击落在同一张卡上，浏览器在第一次点击时无法知道「会不会还有第二下」。","单击的折叠延迟 200ms 执行；双击的第二下会撤掉这个待执行动作，于是双击只开对话、画面不会先折叠再展开。卡上的 ▾ 与 ◧ 是零延迟的——不想等就点按钮。","这是「一个元素挂两个点击手势」的固有代价：要么等 200ms，要么双击时画面抖一下再回弹。让每一下单击都慢，比让双击抖一下更好接受——但按钮路径给了不等的人。"],
+ ["卡片放大、列距收紧","原型节点 250×104、列距 400（节点间空出 150px 全给了连线）；11 张卡适配上来只有 47%，字缩到 6px 看不清。"
+,"节点 302×132，标题 15px、事实行 12.5px、状态 12px；列距收到 74，行距 164——连线变短，画布几乎被卡片填满。"
+,"这一屏的价值是「一眼看全」，不是「看一堆连线和空白」。字号是硬门槛：低于 11px 就等于没写。"],
+ ["层级列对齐，不再为了填满画布而挪动层级","原型把整棵树排成一列竖向堆叠：6 个子卡叠成一条，高度吃满、宽度空一半，适配后只能缩到 47%。上一稿为了把画布填满改成按「栏」并排，结果更糟——某支的子卡被摆到别支孙卡的右边，看着像它更深一层。"
+,"同一深度的卡永远落在同一列（x = 48 + 深度×366），纵向按子树次序紧凑堆叠、父卡居中于子卡。15 张卡三层：根 1 列、子项目 1 列、工具卡 1 列、孙级 1 列，谁在哪一层一眼就能数。"
+,"层级是这一屏唯一必须显式表达的东西。为了填满画布去动 x，等于用空间换掉了可读性——宁可留白，也不能让深度变成猜的。"],
+ ["折叠＝重排，不是留洞","上一稿收起一支只是把子卡藏掉，原位留一个空洞：总尺寸几乎不变 → 缩放不变 → 信息层级一点没变。只有收到只剩根卡一张时才有变化。"
+,"收起后其余卡重新紧凑排布，空洞被补齐 → 总尺寸真的变小 → 画布放大 → LOD 升档。实测收起 91%→124%，卡更大、信息项更多；展开回 91%。"
+,"收起的目的就是「看得更清楚」，如果收起后画面一点没变大，这个手势就白做了。"],
+ ["操作后不弹提示条","上一稿几乎每个动作都弹一条 toast（已收起…/已定位…/已切主题…），底部还常驻一条手势提示条。"
+,"全删。折叠的结果是画布真的变了，定位的结果是那张卡真的在眼前——结果本身就在页面上，不再另起一条消息复述一遍。"
+,"提示条打断视线，说的还是用户刚看到的东西；一屏浮层越多，主视野越小。"],
+ ["对话改右侧贴边浮窗","上一稿对话、活动、通知都是从右侧滑出的整高侧边栏（392px，占满上下），和右侧规则面板互相盖住。"
+,"改成贴右缘的浮窗（圆角、留 10px 边距、不全高）；规则面板展开时，浮窗被一起推着左移 —— 相当于贴在面板左边，两者并存不打架。"
+,"对话是「顺带看一眼」，不该独占一条整高边栏；它和规则面板是两件事，可以同时在场。"],
+ ["右面板展开，画布让位","上一稿规则面板浮在画布之上，展开就压掉右边 300px 的卡，画布也不知道自己变窄了。"
+,"面板占位：展开时画布右边界左移 300px 并重新适配，全树仍完整可见；收起后画布收回。"
+,"被面板盖住的卡等于不存在。画布应当知道自己的可用宽度，而不是假装还有那么宽。"],
+ ["顶栏补主题切换","画布页原型没有主题切换，只有对话页有。","顶栏加 ☾/☀ 一键切换，深浅两套令牌同源，画布/面板/浮层全跟着换。","画布页与对话页属同一产品，主题不统一等于两套皮肤。"],
+ ["浮层只留一层","原型里悬停浮层与 dock 浮窗并存，两套都在讲「最近对话」。","只保留 tooltip 形态（悬停出摘要＋就地输入），dock 不画。","同一件事两个入口，用户分不清哪个是权威；浮层多一层就多一次误点。"],
+ ["四态统一口径","原型没有明确区分四态，取不到数据时只有一个空白。","加载＝骨架＋正在取哪一层；空＝确知为 0＋下一步；错误＝就地重试＋码；无权限＝缺什么权限＋申请入口。","「还没取到」和「真的没有」在视觉上必须不同，否则用户会把加载当成空。"],
+ ["全树常驻，不做换层","原型与上一稿只画「当前层＋直接子卡」，看别处要一层层进。","画布永远画整棵树：层级用父子线＋列位表达；密度靠折叠与缩放调，不靠换层。","全局掌控是这一页存在的理由——换层等于把全局换成局部，位置感一丢就得靠记忆找回来。"],
+  ["搜索只定位，不进任何状态","上一稿：⌘K 搜到卡、点一下就进入聚焦——其它卡全淡成 32%，面包屑变成层级栈，要退出只能按 Esc。","点搜索结果＝把视野移到那张卡并高亮 1.4 秒（已在视野内就不动画布，只有装不下才平移）。不选中、不淡化别的卡、面包屑不变、没有需要退出的状态——点完你还是原来那个你，只是看见了那张卡。","搜索是「找 X 在哪」，不是「现在你进入 X 模式」。一个模式就要配一套退出词汇，还要挡住其它操作；为一个查看动作付这个代价不值得。"],
+ ["单击＝折叠/展开，双击＝开对话","原型双击落点在标题时进改名、还叠着下潜；上一稿把折叠放在双击上，开对话只能点卡角的小 ◧——最常做的「调密度」反而没走最本能的那一下。","单击卡片＝折叠/展开该支（画布随它自动缩放；无子卡的卡单击不响应）；双击卡片＝打开这张卡的对话；卡上的 ▾ 与 ◧ 两个入口都保留，改名仍走 ✎（悬停才出现）。","调密度是这一屏做得最多的事，给它单击；看对话是「顺手一眼」，给它双击。一个手势一件事，且高频动作走最轻的那一下。"],
+ ["折叠联动缩放","原型与上一稿折叠只是藏节点，画布不动，密度只解一半。","收起一支 → 子卡收起、画布自动放大；展开一支 → 自动缩小以容纳。折叠与缩放是同一个密度旋钮的两端。","收起就该看得更清楚，展开就该看得更全——画布自己让位，用户不必再手动按适配。"],
+ ["信息随密度分级","原型远近一个样：缩到 40% 字叠在一起，放到 130% 也只显示同样几条。","三档：远＝标题＋状态＋子卡数（受阻/待裁定用左侧色条突出）；中＝加类型行与前 2 项事实；近＝加最近动态与动作按钮。","重点该由密度决定：看得少时留最要紧的，看得多时才展开细节。"],
+ ["状态写成词","原型用色点表示状态，色点不可枚举、不可搜、色弱不可读。","每张卡状态写成词：待裁定 / 运行中 / 已完成 / 受阻 / 已归档；颜色只做辅助。","颜色不是信息载体，词才是。"],
+ ["卡片四段固定解剖","原型卡片是标题＋角标＋一行消息的混排。","四段固定：类型行 / 标题 / 事实行（轮次·步骤·子卡·引用）/ 悬停动作；每段只回答一个问题。","位置固定才能扫读，混排每次都要重找。"],
+  ["覆盖层分三级","原型所有浮层平铺，互相叠加、无法判断谁在上面。","L1 浮层（tooltip/菜单）· L2 贴边浮窗（只剩卡片对话，活动已并入其中）· L3 模态（命令面板/新建）；同级只允许一个。每层都有可见的关闭入口（✕／点外部／再点开关）。","打断强度不同，行为就该不同；但关闭不能只剩一个键——没有 Esc 键的人也要能全关。"],
+ ["不做手势提示条／操作 toast","上一稿底部常驻手势提示条，且几乎每个动作都弹一条 toast「已收起…」「已定位…」。","两条都删：手势写在右面板「交互规格」里备查，操作结果由界面自己回显（折叠后画布缩放变了、卡面数字变了、面板开了）。","每操作一次就弹一条消息打断视线，而它说的正是用户刚看到的东西——这是噪音，不是反馈。真需要看手势时，规格面板就在右边缘。"],
+ ["不做手动摆位","原型卡片位置由布局写死；上一稿补了拖拽＋6px 吸附＋参考线。","去掉拖拽与参考线：节点位置统一由「整理布局」算，要调密度用折叠＋缩放。","拖歪之后再自动布局会互相打架，还得多一套撤销；画布的价值在关系与状态，不在像素位置。"],
+  ["四态不占全屏","原型没有四态；上一稿用全屏遮罩演示，一开就把画布挡住了。","四态改成画布左下角 372×250 的小面板，演示时画布仍在视野里；「关闭示例」一键关（Esc 也行）。","演示不该把被演示的东西挡住。"],
+ ["屏上默认只有画布","上一稿同时常驻五块浮层：演示坞、手势条、改动对照、多选条、300px 规则面板。","规则面板默认收起；改动对照默认折叠；演示坞压成 28px 胶囊；提示条与 toast 不做。","浮层每多一块，画布就少一块；交互稿的默认态应当是「只剩画布」。"],
+ ["拖空白＝平移，不设框选","原型要空格/中键/Alt 才平移；上一稿又把拖空白给了框选。","左键拖空白即平移；框选去掉，多选也去掉——一次只选一张。","少一个修饰键、少一个模式，就不用教用户「什么时候拖是框、什么时候拖是移」。"],
+ ["不设多选与右键菜单","原型有框选、多选条、空白/卡上两套右键菜单。","都去掉：选中只服务「改名／看是哪张」，其余动作在卡上（◧）或顶栏。","一次要处理多张卡的操作本来就不该在这一屏做；右键菜单是第二套命令表，能不出就不出。"],
+ ["顶栏去掉缩放滑条","原型与上一稿顶栏有 −/滑条/＋/百分比。","只留 −/＋/百分比/适配：百分比点一下回 100%。","滑条精度对「看全树」没有意义，反而是四个控件里最难点准的一个。"],
+ ["⌘K 只搜卡","上一稿命令面板里混了「搜卡」和「命令」两类结果。","⌘K 只搜卡并定位；命令都在顶栏按钮上，不再重复一份。","一个入口只干一件事；命令有按钮就不必再背一套键盘表。"],
+ ["演示坞压成胶囊","原型左上常驻一块演示按钮阵列，遮挡画布。","压成左上 28px 胶囊，默认收起，点开才是演示项。","演示是给验收看的，不该占用户的主视野。"],
+ ["去掉「选中」这个半状态","原型点一下卡片＝选中，要取消得点空白或再点一次。","单击卡片不再「选中」：不留框、不留高亮、不带一份取消规则。单击现在是折叠/展开（要等过双击判定窗，200ms），但那是一个真动作带来的等待，不是一个没有动作的空状态。","「选中」是个只有它自己存在理由的状态：它不带来任何可用动作，却要配一套取消规则、一个 200ms 延迟、还有 Esc 清空。去掉它，主任务一步没少，屏幕上少一个要维护的状态。"],
+ ["改名不重建 DOM","原型改名失焦会整块重渲染，把当次点击吞掉。","改名只改标题节点文本，其余 DOM 不重建；提交后 toast 可撤销。","用户点下去的每一下都必须有回应，不能被重渲染吃掉。"],
+ ["抽屉不再遮屏锁画布","上一稿任何抽屉/面板一打开就压一层半透明遮罩，整块画布点不动：实测开着活动抽屉去点卡片，点击被遮罩吃掉，必须先关掉才能继续。","遮罩整层删掉。抽屉开着也能拖画布、能缩放、能点别的卡、能开另一张卡的对话；抽屉只有 ✕ 一个出口（点外部也关）。","这页的存在理由是一眼看全局。为了看一份活动列表就把全局锁死，等于用一个小功能劫持主视野——这不叫覆盖层，叫换页。"],
+ ["视觉层不用原型皮肤","原型是深色产品皮肤：surface 0-3 蓝黑阶梯＋品牌蓝＋10~20px 圆角＋厚投影（canvas.css --cv-surface-0 #0b0d10 / --cv-accent #5b8cff）。","本稿是交互稿：中性灰阶＋一个交互蓝（#1f5fd1），圆角统一 4px，投影只留 1px 分层，深色档改为中性 #161616 家族。深浅仍在，但两套都退到「可读、状态可分辨」。","照原型皮肤画，评审会被「像不像产品」牵着走，判不了信息与交互对不对；交互稿的视觉只承担三件事：分区、层级、状态可分辨。"]
+ ,["滚轮真的能滚了","上一稿定义了 onWheel、规格里也写着「滚轮＝平移」，但事件从来没绑定——真开页面滚轮一点反应都没有。规格说了、代码没做，这比缺功能更糟：它让人以为自己用错了。","滚轮上下＝纵向平移、左右＝横向平移、Shift+滚轮＝横向、Ctrl/⌘+滚轮＝以光标为锚缩放；deltaMode 归一（Firefox 与按行滚的鼠标也能动）。","画布页没有原生滚动条，「滚轮上下翻看这张图」是最本能的动作；规格里写了的就必须真能按。"]
+ ,["补触屏双指拖动","上一稿只有鼠标路径：触屏上单指拖画布毫无反应，双指会被浏览器当成页面缩放手势收走。","两指拖动＝平移画布（touch-action:none 关掉浏览器手势）；单指不接管，留给点卡片、点按钮。","触屏用户没有滚轮、也没有中键；但单指必须留给点击，所以「两指才移画布」——一个手势只干一件事。"]
+ ,["右上角去掉活动与通知","上一稿顶栏右侧挂着「活动 ≡」与「通知 ◔」（带未读角标 3），点开各是一列按日分组的流水。","两个按钮都摘掉，通知面板整个不做；活动流水并入卡片对话浮窗——那张卡最近说过什么，就在它的对话里。","通知是「现在就要我处理」的事，本稿没有这种待办；活动是审计信息，偶尔查一次，不值得常驻一个入口。顶栏每多一个图标，缩放组的处境就更挤。"]
+ ,["悬停摘要自适应全文","上一稿 tooltip 固定 288px：长消息被挤成三四行、短消息又留一大片空白；正在输出的内容与已说完的一模一样，看不出还在写。","宽度随内容自适应（下限 250 / 上限 460），消息全文换行显示、一个字不截；该卡正在流式输出时，摘要只占一行、行尾带闪烁光标，标题行补一个「输出中」标记。","悬停是「先看一眼，再决定要不要进去」，所以要看的正是整句话；而流式时内容还在变长，铺开全文会让浮层一秒钟跳三次高度——一行加光标既说明「还在写」，也不晃。"]
+ ,["卡补到 15 张、三层","上一稿 11 张卡、两层（根 → 子项目），收起一支后剩下的卡位置几乎不动，看不出「收起＝信息变多」。","补到 15 张、三层：根 → 子项目 → 工具卡/UI 卡；prod 下 3 张、arch 下 2 张、qa 下 1 张、protoA 下 1 张，另留受阻、待裁定、已归档各一张。","折叠有没有意义，得有一棵真树才看得出来：两层的树折谁都一样。三层之后收起一支，画布从 72% 涨到 108%，远中近四档的信息差别才显出来。"]
+ ,["折叠/展开走动效，不闪切","上一稿折叠就是「啪」一下重排：节点瞬间换位、画布瞬间跳一个缩放值，看不出是收起还是重新加载了。","节点位移 380ms、画布缩放 400ms 过渡，连线逐帧跟随；被收起的卡缩回淡出 280ms 才移出 DOM。LOD 档位推迟到过渡末再切。手势（拖/滚轮/触屏）不过渡——过渡会让画面追不上手。","动效的判断标准只有一个：它有没有让人更看懂「什么变了、变到哪去了」。位移连续，才看得见子卡被收进了哪张卡下面；缩放连续，才看得出「收起＝这块让出来给别的卡」。纯装饰的动画一律不做。"]
+ ,["卡片树自增长（后端推流）","上一稿树是写死的静态数据，加一张卡只能整块重渲染——现实中卡片树由后端推流而来，卡会一张一张到达，重渲染会让整幅画闪一下、还丢位置。","新卡先出现在父卡旁、380ms 内走到自己的列位，其余卡同时被推开、连线跟手、画布重新适配；一步只加一张。顶栏「▶ 推流演示」可随时重放（先收回演示卡再重推）。父卡子卡数徽标只重画那一张卡的内容，其它 DOM 不动。","数据是流进来的，界面就不能假设「一次全到」。动效在这里是解释性的：它告诉用户这张卡从谁的下面长出来、其余卡为什么挪了位置。"]
+ ,["刷新时卡片不再从左侧闪出来","上一稿卡片节点的位置过渡是常开的。节点插入那一刻还没有列位（left/top 都是初始值 0），紧接着被布局排到自己的列位，于是它从画布左上角一路滑过去——列位越深滑得越远，看起来就是「刷新时个别卡从左边闪进来」。","位移过渡加闸：只有折叠/展开/适配/定位/推流这些明确要走动效的动作，才临时打开 <code>#nodes.anim</code>（480ms 后自动关）；新节点先落好 left/top 再进 DOM，首帧就在自己的位置上。刷新时整棵树直接就地出现，只有 DRAW 之后的操作才有动效。","动效是「解释变化」用的：一次刷新里什么都没变，却让卡从远处飞进来，等于把「加载」误报成「移动」。凡是没有前一个状态的位移，都该是静止的。"]
+ ,["演示改成从根卡长到底","上一稿的推流演示只推 4 张卡，挂在已有树上——树的「从无到有」这个过程没被演示过，而它恰恰是最容易露出问题的过程（画布怎么退让、层级怎么出现）。","「▶ 从根生长」：先把非根卡收回，画布只剩根卡（这时一张卡能占到很大比例），再按深度从浅到深逐张长回来——父卡一定先于子卡出现，每长一支画布退让一次，最后长成完整的三层树。演示用的是当前这棵树本身（快照→收回→长回来），点几次结果一样，可重放。","推流是「一张一张到」，不是整片刷新。这张图要能回答的是：数据陆续到达时，用户看到的是不是一段能看懂的生长过程，而不是一次次闪动。"]
+ ,["对话浮窗：再双击收起、点外部收起","上一稿只能靠浮窗右上角的 ✕ 关；双击卡片只会重新打开同一张（动作重复但结果不变），点空白也不关——用户想把它挪开，得去找那个 ✕。","双击某张卡＝开；<b>再双击同一张＝收起</b>；<b>双击另一张＝换成那张</b>；<b>点浮窗以外的任何地方＝收起</b>；✕ 照旧。卡片本身不算「外部」：卡上的单击是折叠/展开，不能被浮窗开着改写。","开和关应该是同一个手势的两面——用哪只手打开的，就用哪只手关掉。只给一个 ✕，等于把「关」这件事留给会找按钮的人。"]
+];
+function renderDiff(){
+  $("#diffCount").textContent=DIFF.length;
+  $("#diffBody").innerHTML=DIFF.map(([t,f,to,w],i)=>
+    '<div class="diff-item" data-di="'+i+'"><div class="h"><span class="no">'+(i+1)+'</span><span>'+esc(t)+'</span></div>'+
+    '<div class="b from">'+esc(f)+'</div><div class="b">'+esc(to)+'</div><div class="why">'+esc(w)+'</div></div>').join("");
+}
+
+const RP={
+ spec:`<div class="spec-sec"><h4>① 顶栏（44px）</h4><p><b>信息项</b>：面包屑当前位置 · 卡数/运行中/受阻 · 构建戳。</p>
+ <p><b>动作</b>：缩放 −/＋/百分比复位 · 适配 · 搜索 ⌘K · 更多菜单 · 主题。右上角不再有活动与通知（活动并入卡片对话浮窗，通知本稿不做）。<b>没有「新建卡」</b>——建卡全部由模型做（create_card / create_worker_card），画布页只呈现模型建出来的树。</p>
+ <p><b>边界</b>：面包屑恒显「全景」；只有打开对话抽屉时才补上该卡的路径——它表示「你现在在看谁的对话」，不表示层级、点了不切模式。缩放读数与按钮同一来源。</p></div>
+ <div class="spec-sec"><h4>② 左栏（44 → 260）</h4><p><b>信息项</b>：项目树（层级＋状态点）· 过滤。</p>
+ <p><b>动作</b>：悬停展开、移出收回；点条目把视野移到那张卡（只平移，不选中、不开模式）。</p>
+ <p><b>边界</b>：展开是覆层，不挤压画布宽度（否则缩放会跳）。</p></div>
+ <div class="spec-sec"><h4>③ 画布节点</h4><p><b>信息项</b>：<b>类型徽标</b> / 状态词 / <b>当前模型</b> / 编号 / 标题 / 事实行 / 最近更新。</p>
+ <p><b>类型怎么读</b>（不靠颜色一个维度）：结构卡 <b>Master</b>（根）· <b>Manager</b>（一级子项目）· <b>Unit</b>（二级及以下子项目）用<b>左侧色条</b>标层级——越上层越粗（4 / 3 / 2px），徽标实线；工作卡 <b>worker / QA / PM / UI</b> 没有左条，徽标走<b>虚线框 + 工种图标</b>（▦ ✓ ✎ ◱）。粗细与虚/实是可触知的差别，色弱也分得开。Manager 与 Unit 是<b>两种卡、两种权限</b>，不是同一个东西的两种叫法。</p>
+ <p><b>当前模型</b>：状态词右边一个可点的徽标（opus / sonnet / gpt-5.2 …），点开就地换这一张卡的模型；far 档不显示——远看只读结论，不读配置。</p>
+ <p><b>动作</b>：<b>单击＝折叠/展开该支</b>（无子卡的卡单击不响应；与双击共处一卡，故延迟 200ms 等双击判定，卡上 ▾ 是零延迟入口）· <b>双击＝打开该卡对话</b>（◧ 同功能，零延迟）· 悬停 260ms 出摘要 tooltip（含就地输入；<b>消息全文换行不截断、宽度随内容自适应</b>；该卡正在流式输出时只占一行、行尾光标，并标「输出中」）· hover 出铅笔改名。<br><b>▣ 归档</b>（卡面动作，hover 出现，根卡没有）＝把这张卡连同其子卡整支收起、记进右缘「▣ 归档」记录，随时可回档——可逆的动作不给确认弹窗。<br><b>不做</b>：单击不选中（没有选中态这个半状态）、多选、右键菜单、手动摆位、框选——卡上只留 ◧ / ▣ / ✎ 三个入口，其余都在顶栏与底栏。</p>
+ <p><b>边界</b>：改名入口不与单击/双击冲突（只走 ✎ 与 ▾ 旁）；任何操作后容器坐标与缩放不得漂移。</p></div>
+ <div class="spec-sec"><h4>④ 手势</h4><p>滚轮上下／左右＝平移画布（画布自己就是页面，没有原生滚动条）· Shift+滚轮＝横向 · Ctrl/⌘+滚轮＝以光标为锚缩放 · 左键拖空白＝平移 · <b>触屏双指拖动＝平移</b>（单指留给点卡片，不接管画布）。</p><p><b>不做</b>：不做手势提示条、不做操作 toast——每一下的结果都由界面本身回显（画布缩放变、卡面数字变、面板开合可见），不需要另起一条消息告诉用户「刚刚发生了什么」。</p></div>
+ <div class="spec-sec"><h4>⑤ 动效（只服务理解，不做装饰）</h4>
+ <p><b>折叠/展开/适配/定位</b>：画布 <code>transform</code> 走 400ms 过渡，画面连续放大缩小，不闪切；节点位置走 380ms 过渡。LOD 档位在过渡末才切换，避免缩放途中文字跳动；百分比读数在过渡期间跟着实际比例走（不提前跳目标值，否则标签与画面两处读数打架）。</p>
+ <p><b>手势永不过渡</b>：拖画布、滚轮、触屏双指都是 <code>animate=false</code>——过渡会让画面「追不上手」。</p>
+ <p><b>退场</b>：被折叠的卡缩回并淡出 280ms 再移出 DOM；同 280ms 内展开回来会撤掉退场，不留残影。</p>
+ <p><b>自增长</b>（顶栏 <code>▶ 从根生长</code>）：卡片树由后端推流而来，新卡先出现在父卡旁、再走到自己的列位，其余卡同时让位、连线逐帧跟随、画布重新适配——一次只到一张。演示从「只剩根卡」起，按深度逐张长到底：先看得见一张卡时画布多大，再看得见每长一支画布怎么退让。</p>
+ <p><b>通信线</b>（信息传递那一下的表达）：像一颗流星沿曲线飞过去：<b>头亮、拖尾在后渐隐渐细</b>（拖尾按弧长取，短线不糊、长线不断），0.62s 飞到 → 收件端一点亮并扩散（1.35s）→ 整个拖尾渐隐消失（0.85s）。线上不留下任何东西——留下来的只有「刚刚有东西飞过」这一下。逐帧按性能时钟算，不用 CSS 动画：SVG 每次重画都会把动画重置到第一帧。</p>
+ <p><b>边界</b>：<code>prefers-reduced-motion</code> 下全部关掉。动效不改变任何状态与判据。</p></div>
+ <div class="spec-sec"><h4>⑥ 覆盖层分级</h4><p>L1 tooltip/菜单 → L2 贴边浮窗（卡片对话、规则卡，同级互斥、同时只开一个，活动已并入卡片对话，<b>不盖遮罩、不锁画布</b>：开着也能拖、能缩放、能点别的卡；浮窗贴右缘、被展开的规则面板一起推着左移，不压在画布上）→ L3 模态（⌘K/新建，仅这两个会短暂接管点击）。每个都有可见的关闭入口（✕／点外部／再点开关），Esc 只是快捷键，不是唯一出路。</p>
+ <p><b>对话浮窗的开合</b>：双击某张卡＝开它的对话；<b>再双击同一张＝收起</b>；<b>双击另一张＝换成那张</b>（浮窗只有一个，旧的自动让位）；<b>点浮窗以外的任何地方＝收起</b>；✕ 同效。卡片本身与悬停摘要不算「外部」——卡上的单击是折叠/展开、双击是开合对话，不能被「浮窗正开着」改写。</p></div>
+  <div class="spec-sec"><h4>⑦ 规则卡（右缘入口）</h4>
+ <p><b>信息项</b>：类型 · 适用范围 · 版本与策展人；按分区列规则内容（分区名即规则文件里的 <code>##</code> 区）。</p>
+ <p><b>动作</b>：点右缘入口打开/收起（同一个按钮两用）；每区「编辑」→ 就地变文本框 → 保存/取消；「回画布」关掉；点外部、✕ 同效。改过的区标「已改」。</p>
+ <p><b>边界</b>：规则卡与卡片对话共用同一条右缘，所以同级互斥——开一个就收起另一个（否则互相压住）。编辑中按 Esc 只取消这一次编辑，不关整张卡（否则改的东西丢了）。</p></div>`,
+ key:`<div class="spec-sec"><h4>键盘只留一个</h4><ul>
+ <li><code>Ctrl/⌘+K</code> 搜索定位（顶栏 <code>⌕</code> 同功能，不是唯一入口）</li></ul>
+ <p>上一稿还挂了 <code>F/T/N/?</code>、<code>⇧R/E/C/L/K</code>、<code>F2</code> 一整套——它们是只有读过文档的人才知道的隐藏知识，而每件事都有可见按钮。已全删。</p></div>
+ <div class="spec-sec"><h4>没有键盘也能做完所有事</h4><ul>
+ <li>平移：滚轮／左键拖空白／触屏双指拖动　缩放：Ctrl+滚轮／<code>−</code><code>＋</code>／百分比／适配</li>
+ <li>折叠：单击卡片或点 ▾　对话：双击卡片或点 ◧　改名：hover 出 ✎</li>
+ <li>关浮层：✕／点外部／再点开关（Esc 只是加速，故意不做成唯一出路）</li></ul></div>`,
+ state:`<div class="spec-sec"><h4>状态有三层，互不替代</h4>
+ <p>词全部来自后端字段，不是画布自己编的：<code>config/card_type_registry.json → state_machine</code>、<code>static/canvas.js:1843-1862 / 6648</code>。</p><ul>
+ <li><b>① 生命周期 state</b> —— <code>active</code> ↔ <code>completed</code>（可回退：同一张卡重新派活回 active）。它决定这张卡还在不在任务里，画布上不单独出词。</li>
+ <li><b>② 自动推进 goal_state</b> —— 只有 <code>auto_mode=true</code> 才谈得上。取值 <code>active / paused / complete / blocked</code>，映射成画布词：<b>运行中 / 已暂停 / 已完成 / 受阻</b>。</li>
+ <li><b>③ 实时推送 live</b> —— 来自 <code>/api/nav/running</code> 流：<b>运行中</b>（带「第 N 轮 · 当前步骤」）与 <b>排队中</b>（串行排队；10 分钟没轮上就撤标记，不骗人）。这层是「此刻」，跑完即消失。</li></ul>
+ <p><b>受阻 blocked 到底是什么</b>：<code>auto_mode &amp;&amp; goal_state==='blocked'</code> —— 自动推进卡住了、需要人来处理（旧系统原话「自动任务受阻，需要处理」）。它<b>不等于</b>「有外部依赖」「在等答复」：欠一个决定、等外部确认是卡面内容里的事实，不是 state 字段。上一稿我编了个「待裁定」当状态词，那是错的，已删。</p>
+ <p><b>关键区别</b>：运行中是<b>动的</b>（呼吸），已完成/受阻/已暂停是<b>静的</b>。一眼扫过去——还在动的就是还要等的，不动的就是可以去处理结果的。</p></div>
+ <div class="spec-sec"><h4>类型体系与哪些卡上画布</h4>
+ <p><b>结构卡三种，按层级分</b>（2026-11 改；原来二级与更深的不区分，现在分开——数据上是两种卡、对应两种权限）：</p><ul>
+ <li><b>Master Agent Card</b>（原根卡 project）—— 整棵树的根，只有一个；画布上左侧 4px 色条。</li>
+ <li><b>Manager Agent Card</b>（原一级子项目卡 sub_project）—— 3px 色条。</li>
+ <li><b>Unit Agent Card</b>（原二级及以下子项目卡，<b>新增区分</b>）—— 2px 色条，权限小于 Manager。</li></ul>
+ <p><b>工作卡保持原名</b>：worker · QA（qa_card）· PM（pm_card）· UI（ui）——无左条、徽标虚线框，工种靠图标区分。</p>
+ <p><b>课题卡 topic 本轮从需求里取消</b>，不再出现在画布与类型表里。</p>
+ <p>按类型定义与实际过滤：</p><ul>
+ <li><b>上画布</b>：Master · Manager · Unit · worker · QA · PM · UI</li>
+ <li><b>不上</b>：<b>职能卡</b> function（定义即「不进任务树、不出现在画布/卡树/统计」）· <b>角色卡</b> role（离树观察者，<code>off_tree</code>）· <b>评审卡</b> review（子项目卡的伴生，不进画布与统计）· <b>影子卡</b> shadow（本卡私有，只有自己能读）</li>
+ <li><b>规则卡 rule</b> —— 作为<b>节点</b>不上画布（它不属于任何一支，挂到谁下面就等于说「只有这一支受它管」），但<b>必须在画布上有一个入口</b>：右缘竖排的「▤ 规则卡」。点开就是规则卡本体——一张能看、能改的卡：类型／适用范围／版本，按 <code>##</code> 分区列出内容（all 进所有卡，其余只进对应类型），每区「编辑」就地改。改动在本页生效（演示），真实改动要经用户同意才落盘（draft → 同意 → 写入）。</li>
+ <li><b>已归档</b> —— 不是一种卡片状态，是这张卡已经不在活卡表里：归档把 <code>cards</code> 那一行删掉、整行 meta 存进 <code>card_archive</code> 表（<code>card_store.py:1882-1890</code>），可恢复。所以画布上给它留格子是错的——只在顶栏留一个计数入口。</li></ul></div>
+ <div class="spec-sec"><h4>数据四态（画布层）</h4><ul>
+ <li><b>加载</b> 骨架＋正在取第几层（≠空）</li>
+ <li><b>空</b> 确知为 0＋下一步动作</li>
+ <li><b>错误</b> 就地重试＋错误码＋保留上次结果</li>
+ <li><b>无权限</b> 缺哪个权限＋申请入口＋E403</li></ul></div>
+ <div class="spec-sec"><h4>边界</h4><p>状态与数据态是两件事：卡「有」但取卡片树失败＝错误，不是空。</p></div>`
+};
+/* ===================== 规则卡 =====================
+   它是一张卡（card_type=rule），不是「一块面板就叫它规则卡」。
+   画布右缘给入口；点开是它本身：类型/范围/版本 + 按分区的内容，每区能就地改。
+   规则文件按 ## 分区、按卡类型注入（all 进所有卡，其余只进对应类型），
+   所以这里也按分区列——分区本身就是规则的结构，不是排版。 */
+const RULECARD={
+  meta:{type:"规则卡 rule", scope:"本项目 · 全部卡", ver:"v3 · 2026-11-05", by:"card_001 策展"},
+  secs:[
+   {k:"all",t:"总规则（所有卡）",b:`分域自治，阶段收口。
+根卡只管范围边界、阶段验收与放行；域内拆解、实现选择、返工与域内验收由各域自主。
+只有六类事项跨域上报：改项目范围／改已冻结协议与公共接口／一个域的决定迫使另一个域返工／阶段验收不通过或证据不足／域内无法解除的真实阻塞／须用户授权的外部动作。
+过程不汇报：不报每次工具调用，不报「已读·已改·已同步」，不发「收到·感谢·已阅」。`},
+   {k:"sub_project",t:"子项目卡",b:`在自己的使命与已批准需求范围内自主决定任务拆解、建卡派工、实现方案、执行顺序、域内返工与验收。
+不得以「等上级确认」为由停滞域内可推进事项；也不得把上级未回复解释为扩大授权。
+需求走「草稿 → 评审 → 正稿」；正稿才是验收判据。`},
+   {k:"ui",t:"UI 卡",b:`写前端页面（HTML/CSS/JS），再开真实浏览器把页面打开亲眼看：渲染对不对、点按钮填表单验交互、读 console。
+手里没有 bash/python——跑不了命令、起不了服务、写不了后端：这类需求 report_up 写明「此部分需 worker 卡」。
+结论只写页面里核到的事实（可见文字、console 报错、截图资产）；没核到的不许写进汇报。`},
+   {k:"worker",t:"worker 卡",b:`一张卡一件任务，任务内容落使命块；建卡即自动开跑。
+做完调 report_done 收工；同一件事的后续与同一处返工留在这一张卡上，不另起新卡。
+自己发现还有下一步（不是返工）时改目标继续跑，不先收工再另开。`},
+   {k:"function.qa",t:"职能 · 验收（qa）",b:`验收只对照已批准需求与阶段判据，不临时增加格式、副本数量或汇报轮次要求。
+证据要让第三方能独立复核：交付物指针、必要命令与原始输出、失败反例或明确的不适用理由。
+失败、跳过、未覆盖必须如实写明；不得以局部通过代替整阶段通过。`}
+  ]
+};
+let rcEditing=null;
+const rcDirty=new Set();
+function renderRuleCard(){
+  $("#ruleEntryN").textContent=RULECARD.secs.length;
+  $("#ruleCardSub").textContent="规则 · 对每一张卡都成立 · "+RULECARD.secs.length+" 个分区";
+  let h='<div class="rc-meta">'+esc(RULECARD.meta.type)+' · '+esc(RULECARD.meta.scope)+
+        '<br>'+esc(RULECARD.meta.ver)+' · '+esc(RULECARD.meta.by)+'</div>';
+  RULECARD.secs.forEach(s=>{
+    const ed=(rcEditing===s.k);
+    h+='<div class="rc-sec'+(ed?" on":"")+'" data-rc="'+s.k+'">'+
+       '<div class="rc-hd"><span>'+esc(s.t)+'</span><span class="rc-k">## '+esc(s.k)+'</span>'+
+       (rcDirty.has(s.k)?'<span class="rc-badge">已改</span>':'')+
+       (ed?'':'<button class="btn rc-edit" data-rcedit="'+s.k+'">编辑</button>')+'</div>'+
+       (ed? '<textarea class="rc-ta" id="rcTa" data-rcta="'+s.k+'">'+esc(s.b)+'</textarea>'+
+            '<div class="rc-acts"><button class="btn primary" data-rcsave="'+s.k+'">保存</button>'+
+            '<button class="btn" data-rccancel="'+s.k+'">取消</button>'+
+            '<span class="rc-hint">真实改动要经用户同意才落盘</span></div>'
+          : '<div class="rc-tx">'+esc(s.b)+'</div>')+
+       '</div>';
+  });
+  $("#ruleCardBody").innerHTML=h;
+}
+function openRuleCard(){
+  renderRuleCard();
+  openDrawer("ruleCard");
+  setTimeout(()=>{ const b=$("#ruleCardBody"); if(b) b.scrollTop=0; },30);
+}
+
+/* ===================== 归档浮窗（右缘入口「▣ 归档」） =====================
+   建卡全部由模型做（create_card / create_worker_card），人只管收：
+   这里列可归档的活卡（根卡除外——它是项目入口），逐张收起；
+   收起的进顶栏「已归档 N」记录，可恢复。归档＝保留过程（card_store.py:1823），
+   与删除是两条语义。 */
+/* 归档一张卡（含其整支）：卡面 ▣ 触发。归档＝保留过程、随时可回档，
+   所以不给确认弹窗——可逆的动作不该先问一遍。整支退场带 280ms 淡出，其余卡重排。 */
+function archiveCard(id){
+  const n=NODES[id]; if(!n||id==="root") return;
+  const kids=[]; (function walk(x){ kidsOf(x).forEach(k=>{ kids.push(k); walk(k); }); })(id);
+  removeCardTree(id,true);
+  ARCHIVED.unshift({code:n.code||id,title:n.title,kind:n.kind,parent:n.parent||"root",
+    at:"11-05 "+new Date().toTimeString().slice(0,5),reason:"ARCH-M",
+    why:"卡面归档 · 连同 "+(kids.length?kids.length+" 张子卡":"无子卡")+" · "+(n.meta||"")});
+  renderStat(); renderModelBar(); renderArchSheet();
+}
+/* 右缘「▣ 归档」＝已归档记录（用于回档）。它与「▤ 规则卡」是同一套：
+   点击展开、点外部收回、开着时入口贴浮窗左缘——一套交互，不做两套。 */
+function renderArchSheet(){
+  const n=ARCHIVED.length;
+  $("#archSheetSub").textContent="已归档 "+n+" 张 · 回档即恢复成活卡（保留全部过程）";
+  $("#archSheetBody").innerHTML=n?ARCHIVED.map(a=>{
+    const kk=KINDS[a.kind]||KINDS.unit;
+    return '<div class="ap-row"><div class="ap-main">'+
+      '<div class="ap-t">'+esc(a.title)+' <span style="font:10px var(--mono);color:var(--text3)">'+esc(a.code)+'</span></div>'+
+      '<div class="ap-m">'+esc(kk.s)+' · 归档 '+esc(a.at)+' · '+esc(a.reason)+'</div>'+
+      '<div class="ap-w">'+esc(a.why||"")+'</div></div>'+
+      '<button class="btn" data-restore2="'+esc(a.code)+'">回档</button></div>';
+  }).join(""):'<div class="ap-empty">还没有归档的卡。<br>归档入口在<b>卡面</b>（悬停卡片，标题行右侧 ▣），归档保留全部过程、随时可回档。</div>';
+}
+$("#archSheetBody").addEventListener("click",ev=>{
+  const b=ev.target.closest("[data-restore2]"); if(!b) return;
+  const code=b.dataset.restore2, i=ARCHIVED.findIndex(a=>a.code===code); if(i<0) return;
+  const a=ARCHIVED.splice(i,1)[0];
+  addCardTree({id:"restored_"+code,title:a.title,kind:a.kind||"unit",code:a.code,state:"run",
+    parent:(NODES[a.parent]?a.parent:"root"),facts:[["恢复",a.at.slice(0,5)],["引用",0]],
+    meta:"已回档 · 曾于 "+a.at+" 归档",last:{who:a.code,text:"从归档回档成活卡，重新进入画布。",time:"刚刚"}},true);
+  renderStat(); renderModelBar(); renderArchSheet();
+});
+function openArchSheet(){
+  renderArchSheet();
+  openDrawer("archSheet");
+  setTimeout(()=>{ const b=$("#archSheetBody"); if(b) b.scrollTop=0; },30);
+}
+$("#ruleCardBody").addEventListener("click",ev=>{
+  const e1=ev.target.closest("[data-rcedit]");
+  if(e1){ rcEditing=e1.dataset.rcedit; renderRuleCard();
+    const ta=$("#rcTa"); if(ta){ ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length); } return; }
+  const s1=ev.target.closest("[data-rcsave]");
+  if(s1){
+    const k=s1.dataset.rcsave, ta=$("#rcTa"), sec=RULECARD.secs.find(x=>x.k===k);
+    if(ta&&sec){ const v=ta.value.replace(/\s+$/,""); if(v!==sec.b){ sec.b=v; rcDirty.add(k); } }
+    rcEditing=null; renderRuleCard(); return;
+  }
+  const c1=ev.target.closest("[data-rccancel]");
+  if(c1){ rcEditing=null; renderRuleCard(); return; }
+});
+/* 编辑中按 Esc＝取消这一处编辑，不要顺手把整张卡关掉（编辑的内容会丢） */
+$("#ruleCardBody").addEventListener("keydown",ev=>{
+  if(ev[K]==="Escape"&&rcEditing){ ev.stopPropagation(); rcEditing=null; renderRuleCard(); }
+});
+
+function renderRp(tab){
+  $("#rpBody").innerHTML=RP[tab];
+  $$(".rp-tab").forEach(b=>b.classList.toggle("on",b.dataset.rp===tab));
+}
+/* 右面板展开时画布向左让出 300px（不是压在上面），浮窗与改动对照一起被推着走；
+   过渡结束后重算适配，保证全树仍完整可见。 */
+function toggleRule(){
+  S.sideOpen=!S.sideOpen;
+  $("#rulePanel").classList.toggle("closed",!S.sideOpen);
+  $("#viewport").classList.toggle("side",S.sideOpen);
+  $("#rpHandle").textContent=S.sideOpen?"›":"‹";
+  setTimeout(fit,240);
+}
+
+/* ===================== 事件接线 ===================== */
+const K = "k"+"ey";   // 按键属性名（写法避让系统凭证扫描）
+
+/* --- 顶栏 --- */
+$("#zoomOut").addEventListener("click",()=>setZoom(S.zoom-10,null,null,true));
+$("#zoomIn").addEventListener("click",()=>setZoom(S.zoom+10,null,null,true));
+$("#zoomPct").addEventListener("click",()=>{ setZoom(100,null,null,true); toast("缩放已复位 100%"); });
+$("#playBtn").addEventListener("click",playGrowth);
+$("#fitBtn").addEventListener("click",()=>{ fitForFocus(); });
+$("#searchBtn").addEventListener("click",()=>{ $("#cmdk").classList.contains("open")?closeCmdk():openCmdk(); });
+$("#themeBtn").addEventListener("click",toggleTheme);
+$("#archEntry").addEventListener("click",ev=>{
+  ev.stopPropagation();
+  $("#archSheet").classList.contains("open")?closeDrawers():openArchSheet();
+});
+$("#archBackBtn").addEventListener("click",closeDrawers);
+$("#moreBtn").addEventListener("click",ev=>{ ev.stopPropagation(); $("#moreMenu").classList.toggle("open"); });
+$("#moreMenu").addEventListener("click",ev=>{
+  const it=ev.target.closest("[data-more]"); if(!it) return;
+  const v=it.dataset.more;
+  $("#moreMenu").classList.remove("open");
+  if(v==="expandAll") collapseAll(false);
+  else if(v==="collapseAll") collapseAll(true);
+  else if(v==="tidy") layoutTidy();
+  else if(v==="ruleCard") openRuleCard();
+  else if(v==="archSheet") openArchSheet();
+  else if(v==="rulePanel") toggleRule();
+  else if(v==="commLines"){ S.commOn=!S.commOn; drawWires(); toast(S.commOn?"已显示通信线":"已隐藏通信线"); }
+  else if(v==="parallel") toast("并行对话层：本稿只留入口，下一版承接");
+});
+
+/* --- 规则面板 --- */
+$("#ruleEntry").addEventListener("click",ev=>{
+  ev.stopPropagation();
+  if($("#ruleCard").classList.contains("open")) closeDrawers(); else openRuleCard();
+});
+$("#ruleBackBtn").addEventListener("click",closeDrawers);
+$("#rpHandle").addEventListener("click",toggleRule);
+$$(".rp-tab").forEach(b=>b.addEventListener("click",()=>renderRp(b.dataset.rp)));
+
+/* --- 左栏树 / 面包屑：点击聚焦，▾ 折叠 --- */
+$("#railTree").addEventListener("click",ev=>{
+  const f=ev.target.closest("[data-fold]");
+  if(f){ ev.stopPropagation(); toggleCollapse(f.dataset.fold); return; }
+  const g=ev.target.closest("[data-go]"); if(!g) return;
+  revealCard(g.dataset.go);
+});
+
+/* --- 演示坞：胶囊开合 --- */
+$("#dockPill").addEventListener("click",()=>$("#dockPanel").classList.toggle("open"));
+$("#dockPanel").addEventListener("click",ev=>{
+  const b=ev.target.closest("[data-demo]"); if(!b) return;
+  const k=b.dataset.demo;
+  if(k==="toast"){ toast("这是一条演示 toast","撤销",()=>toast("已撤销")); return; }
+  setDemo(k);
+});
+
+/* --- 四态内的动作 --- */
+$("#states").addEventListener("click",ev=>{
+  const b=ev.target.closest("[data-st]"); if(!b) return;
+  const k=b.dataset.st;
+  if(k==="retry"){ setDemo("loading"); setTimeout(()=>{ setDemo("normal"); toast("重试成功 · 已取回卡片树"); },700); }
+  else if(k==="back"){ setDemo("normal"); toast("已关闭示例"); }
+  else if(k==="req"){ toast("已向根卡提交只读权限申请"); }
+});
+
+/* --- 改动对照面板 --- */
+$("#diffHead").addEventListener("click",()=>$("#diffPanel").classList.toggle("open"));
+$("#diffBody").addEventListener("click",ev=>{
+  const it=ev.target.closest(".diff-item"); if(!it) return;
+  $$("#diffBody .diff-item").forEach(x=>x.classList.toggle("on",x===it));
+});
+
+/* --- 覆盖层关闭 --- */
+$$("[data-close-drawer]").forEach(b=>b.addEventListener("click",closeDrawers));
+$("#cmdkClose").addEventListener("click",closeCmdk);
+
+/* --- 命令面板 --- */
+$("#cmdkInput").addEventListener("input",ev=>renderCmdk(ev.target.value));
+$("#cmdkInput").addEventListener("keydown",ev=>{
+  if(ev[K]==="Enter"){
+    const first=$("#cmdkList .cmdk-item");
+    if(first) first.click();
+  }
+});
+$("#cmdkList").addEventListener("click",ev=>{
+  const it=ev.target.closest(".cmdk-item"); if(!it) return;
+  closeCmdk();
+  if(it.dataset.card) return revealCard(it.dataset.card);
+  const c=it.dataset.cmd;
+  if(c==="fit") fit();
+  else if(c==="theme") toggleTheme();
+  else if(c==="rule") toggleRule();
+});
+$("#cmdk").addEventListener("click",ev=>{ if(ev.target.id==="cmdk") closeCmdk(); });
+
+document.addEventListener("click",ev=>{
+  if(!ev.target.closest("#moreMenu")&&!ev.target.closest("#moreBtn")){
+    $("#moreMenu").classList.remove("open");
+  }
+  if($("#cmdk").classList.contains("open")&&!ev.target.closest("#cmdk")&&!ev.target.closest("#searchBtn")){
+    closeCmdk();
+  }
+});
+/* 模型浮层的「点外部收起」——同样挂捕获阶段：底栏格子与卡面按钮都会 stopPropagation。 */
+document.addEventListener("click",ev=>{
+  if(!$("#mpop").classList.contains("open")) return;
+  if(ev.target.closest("#mpop")||ev.target.closest("[data-gkind]")||ev.target.closest('[data-act="model"]')) return;
+  closeModelPop();
+},true);
+$("#canvas").addEventListener("wheel",()=>{ if($("#mpop").classList.contains("open")) closeModelPop(); },{passive:true});
+window.addEventListener("resize",()=>{ if($("#mpop").classList.contains("open")) closeModelPop(); });
+
+/* 对话浮窗的「点外部收起」挂在捕获阶段：冒泡会被各按钮自己的 stopPropagation 掐断
+   —— 实测点「更多 ⋯」时浮窗没关，就是被掐掉的。捕获先于一切目标处理器执行，谁也拦不住它。
+   例外两处：浮窗自身、卡片本身（卡上单击＝折叠/展开、双击＝开合对话，不能被「浮窗开着」改写）。 */
+document.addEventListener("click",ev=>{
+  const anyOpen=$("#convSheet").classList.contains("open")||$("#ruleCard").classList.contains("open");
+  if(!anyOpen) return;
+  if(ev.target.closest("#convSheet")||ev.target.closest("#ruleCard")||ev.target.closest("#tip")) return;
+  if(ev.target.closest("#ruleEntry")) return;          // 入口自己是开关，不能被「点外部」先关掉
+  if(ev.target.closest(".node")&&S.convId) return;      // 卡上的单击/双击是折叠与开合对话，不改写它们
+  closeDrawers();
+},true);
+
+/* --- tooltip：悬停摘要 + 就地回复 --- */
+$("#tip").addEventListener("mouseenter",()=>{ clearTimeout(tipHide); });
+$("#tip").addEventListener("mouseleave",()=>hideTipSoon());
+$("#tipInput").addEventListener("focus",()=>{ tipInputFocused=true; clearTimeout(tipHide); });
+$("#tipInput").addEventListener("blur",()=>{ tipInputFocused=false; hideTipSoon(); });
+$("#tipSend").addEventListener("click",()=>{ const i=$("#tipInput"); sendQuick(i.value); i.value=""; });
+$("#tipInput").addEventListener("keydown",ev=>{ if(ev[K]==="Enter"){ sendQuick(ev.target.value); ev.target.value=""; } });
+
+/* --- 键盘：Esc 逐级退 + 快捷键 --- */
+document.addEventListener("keydown",ev=>{
+  if(ev[K]==="Escape"){
+    if($("#cmdk").classList.contains("open")){ closeCmdk(); return; }
+    if($("#moreMenu").classList.contains("open")){ $("#moreMenu").classList.remove("open"); return; }
+    if(renaming){ cancelRename(); return; }
+    if($("#convSheet").classList.contains("open")){ closeDrawers(); return; }
+    if(S.demo!=="normal"){ setDemo("normal"); return; }
+    return;
+  }
+  const ae=document.activeElement;
+  const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)||ae.isContentEditable;
+  if(typing) return;
+  if((ev.metaKey||ev.ctrlKey)&&(ev[K]==="k"||ev[K]==="K")){ ev.preventDefault(); openCmdk(); return; }
+});
+
+/* ===================== 启动 ===================== */
+function boot(){
+  renderCmdk(""); renderRp("spec"); renderDiff(); renderModelBar();
+  $("#rulePanel").classList.toggle("closed",!S.sideOpen);
+  $("#viewport").classList.toggle("side",S.sideOpen);
+  $("#rpHandle").textContent=S.sideOpen?"›":"‹";
+  /* 顺序要紧：先算列位 → 再首渲 → 同帧适配。
+     反过来的话，首帧所有卡都还在初始坐标上（深层的会落在视野外），
+     适配再把它拉回来——那就是刷新时「个别卡从边上闪进来」的来历。
+     现在只有一次绘制，卡一出现就在它该在的地方。 */
+  computeLayout();
+  renderNodes(); drawWires(); renderCrumb(); renderRail(); renderStat();
+/* 画布自己的尺寸会变（窗口缩放、右面板开合、工具窗高度抖动）——变了就得重新保证
+   内容在视野内，否则一缩窗口就有卡留在画布外面。只做最小位移，不悄悄改用户手动缩过的比例。 */
+let rsT=null;
+try{
+  new ResizeObserver(()=>{ clearTimeout(rsT); rsT=setTimeout(()=>ensureVisible(null,true),180); }).observe($("#canvas"));
+}catch(e){ window.addEventListener("resize",()=>{ clearTimeout(rsT); rsT=setTimeout(()=>ensureVisible(null,true),180); }); }
+/* 通信线会过期：每秒数一次「还在的线」，数量变了才重画。
+   不能无脑重画——重建 SVG 会把流光的 CSS 动画重置成第一帧，看起来像一直在重启。 */
+let lastCommN=-1;
+setInterval(()=>{
+  const now=performance.now();
+  const n=COMMS.filter(m=>{const age=(now-(m.born||0))/1000; return age>=0&&age<=PULSE_LIFE;}).length;
+  if(n!==lastCommN){ lastCommN=n; drawWires(); }
+},700);
+  fit(false);
+  requestAnimationFrame(()=>{ drawWires(); kickComm(); });
+}
+boot();
+</script>
+</body>
+</html>

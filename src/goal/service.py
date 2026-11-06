@@ -96,8 +96,19 @@ class GoalService:
     def __init__(self, default_max_rounds: int = DEFAULT_MAX_GOAL_ROUNDS) -> None:
         self.default_max_rounds = _resolve_max_rounds(default_max_rounds, DEFAULT_MAX_GOAL_ROUNDS)
         self._caches: dict[tuple[str, str], _GoalCache] = {}
-        self._mutex = asyncio.Lock()
+        # [runner 分槽环 2026-11-05] asyncio.Lock 跨环首绑即死锁；而本锁的
+        # 冲突域是 (work,card) 键——同卡操作天然在同一槽环串行、跨环碰的
+        # 永远是不同键 ⇒ 按环分槽既安全又必须。
+        self._mutexes: dict[int, asyncio.Lock] = {}
         self._listeners = _Listeners()
+
+    def _mutex(self) -> asyncio.Lock:
+        lp = asyncio.get_running_loop()
+        m = self._mutexes.get(id(lp))
+        if m is None:
+            m = asyncio.Lock()
+            self._mutexes[id(lp)] = m
+        return m
 
     # ------------------------------------------------------------ 监听
     def on_changed(self, cb: Callable[[str, str, GoalChanged], None]) -> None:
@@ -262,7 +273,7 @@ class GoalService:
 
     # ------------------------------------------------------------ 写
     async def create(self, work_id: str, card_id: str, request: CreateGoalRequest) -> GoalView:
-        async with self._mutex:
+        async with self._mutex():
             cache = await self._prepare(work_id, card_id)
             current = cache.state.goal
             if current is not None and current.phase != "complete":
@@ -287,7 +298,7 @@ class GoalService:
 
     async def edit(self, work_id: str, card_id: str, ref: GoalRef,
                    request: EditGoalRequest) -> GoalView:
-        async with self._mutex:
+        async with self._mutex():
             cache = await self._prepare(work_id, card_id)
             current = self._expect_current(cache, ref)
             if request.objective is None and request.max_goal_rounds is None:
@@ -308,7 +319,7 @@ class GoalService:
         return await self._transition(work_id, card_id, ref, "pause", ("active",), "paused", "disarmed")
 
     async def resume(self, work_id: str, card_id: str, ref: GoalRef) -> GoalView:
-        async with self._mutex:
+        async with self._mutex():
             cache = await self._prepare(work_id, card_id)
             current = self._expect_current(cache, ref)
             if current.phase not in ("active", "paused", "blocked"):
@@ -332,7 +343,7 @@ class GoalService:
 
     async def block(self, work_id: str, card_id: str, ref: GoalRef,
                     code: str, message: str) -> GoalView:
-        async with self._mutex:
+        async with self._mutex():
             cache = await self._prepare(work_id, card_id)
             current = self._expect_current(cache, ref)
             if current.phase != "active":
@@ -343,7 +354,7 @@ class GoalService:
             return self._require_view(cache)
 
     async def clear(self, work_id: str, card_id: str, ref: GoalRef) -> GoalRef:
-        async with self._mutex:
+        async with self._mutex():
             cache = await self._prepare(work_id, card_id)
             current = self._expect_current(cache, ref)
             tombstone = GoalRef(current.id, current.revision + 1)
@@ -356,7 +367,7 @@ class GoalService:
 
     async def _transition(self, work_id: str, card_id: str, ref: GoalRef, operation: str,
                           allowed: tuple[str, ...], phase: str, activation: str) -> GoalView:
-        async with self._mutex:
+        async with self._mutex():
             cache = await self._prepare(work_id, card_id)
             current = self._expect_current(cache, ref)
             if current.phase not in allowed:

@@ -112,7 +112,7 @@ def _is_token_frame(raw: bytes) -> bool:
     事件记录的键序固定（seq/card_id/run_id/round/type/data/…），``type`` 必在
     正文之前，前 300 字节足够命中——跳过 122 万条时不必解析那 274 MB。
     """
-    head = raw[:300]
+    head = raw
     return b'"reasoning_chunk"' in head or b'"content_chunk"' in head
 
 
@@ -162,14 +162,21 @@ class FactStore:
 
     # ------------------------------------------------------------ 连接
     def db_path(self, work_id: str) -> Path:
-        return self._root / str(work_id) / DB_NAME
+        # [库搬出施工目录 2026-11-07] facts.db 也放 data/{wid}/（与 works/
+        # 平级）——works/ 是卡的 exec 工作区，生产库不该躺在里面。
+        return self._data_dir(work_id) / DB_NAME
+
+    def _data_dir(self, work_id: str) -> Path:
+        return self._root.parent / "data" / str(work_id)
 
     def _conn(self, work_id: str) -> sqlite3.Connection:
         wid = str(work_id)
         c = self._conns.get(wid)
         if c is not None:
             return c
-        path = self.db_path(wid)
+        # 旧位置还在 ⇒ 原子搬进 data/（_conns 单例串行，无并发搬迁）
+        from ..storage import card_store as _cs
+        path = _cs.migrate_db_file(self._root / wid / DB_NAME, self.db_path(wid))
         path.parent.mkdir(parents=True, exist_ok=True)
         c = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False)
         c.execute("PRAGMA journal_mode=WAL")

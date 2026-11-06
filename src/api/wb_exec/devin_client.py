@@ -182,7 +182,7 @@ class DevinRunner:
             ok = rc == 0 and bool(text)
             if not ok:
                 logger.warning("[devin] 进程 rc=%s 无正文；stderr=%s",
-                               rc, stderr.strip()[:300])
+                               rc, stderr.strip())
             return {"ok": ok, "text": text, "export_path": export_file,
                     "stdout": stdout, "stderr": stderr, "rc": rc,
                     "atif": parsed,
@@ -323,7 +323,7 @@ async def _poll_live_events(marker: str,
                         th = msg.get("thinking") or {}
                         if isinstance(th, dict) and th.get("thinking"):
                             _fire(on_event, "thinking",
-                                  {"text": str(th["thinking"])[:2000]})
+                                  {"text": str(th["thinking"])})
                         if content.strip():
                             _fire(on_event, "text", {"text": content})
                         for tc in (msg.get("tool_calls") or []):
@@ -340,7 +340,7 @@ async def _poll_live_events(marker: str,
                             "id": str(msg.get("tool_call_id") or ""),
                             "name": "",
                             "ok": True,
-                            "summary": content[:2000],
+                            "summary": content,
                         })
                         emitted += 1
             except Exception as exc:  # noqa: BLE001 轮询失败不许拖垮执行

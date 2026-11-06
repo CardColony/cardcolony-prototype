@@ -317,7 +317,7 @@ class AcpClient:
             raise WbAcpError(f"连接网关失败: {exc}") from exc
         if resp.status_code != 200:
             raise WbAcpError(
-                f"acp/connect HTTP {resp.status_code}: {resp.text[:200]}")
+                f"acp/connect HTTP {resp.status_code}: {resp.text}")
         try:
             payload = resp.json()
         except Exception as exc:  # noqa: BLE001
@@ -331,7 +331,7 @@ class AcpClient:
         self.connection_id = str(data.get("connectionId") or "")
         self.session_token = str(data.get("sessionToken") or "")
         if not self.connection_id or not self.session_token:
-            raise WbAcpError(f"acp/connect 响应缺 id/token: {str(payload)[:200]}")
+            raise WbAcpError(f"acp/connect 响应缺 id/token: {str(payload)}")
 
     # ---------------------------------------------------------------- JSON-RPC
     def _next_id(self) -> int:
@@ -398,7 +398,7 @@ class AcpClient:
                 if resp.status_code != 200:
                     body = (await resp.aread()).decode("utf-8", "replace")
                     raise WbAcpError(
-                        f"{method} HTTP {resp.status_code}: {body[:200]}")
+                        f"{method} HTTP {resp.status_code}: {body}")
                 async for kind, val in self._sse(resp):
                     if kind == "comment":
                         if self._on_keepalive is not None:

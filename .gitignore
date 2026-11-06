@@ -107,9 +107,8 @@ _p20_wip.patch
 /taskbook_extracted.txt
 /.failed_now.txt
 /.zcode/
-# 运行日志（logs/ 已挡；data/ 是同一类）
-data/*.log
-data/*.log.err
+# 生产库目录（cards.db/facts.db/harness.db 运行期状态，含 db_quarantine/）
+data/
 
 # Devin/工具侧误落的 D:/Temp 输出文件（全角冒号文件名）
 D*Temp*.txt

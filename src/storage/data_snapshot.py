@@ -43,7 +43,10 @@ SNAPSHOT_ROOT = (Path(_env_root) if _env_root
                  else BASE_DIR.parent / f"{BASE_DIR.name}_data_snapshots")
 
 # 受保护的数据目录（相对 BASE_DIR）
-PROTECTED_DIRS = ("works",)
+# [库搬出施工目录 2026-11-07] 生产库（cards.db/facts.db/harness.db）已搬到
+# ``data/{wid}/``（与 works/ 平级）——快照/指纹必须连它一起保护，否则
+# 搬完库快照就再也拍不到库。
+PROTECTED_DIRS = ("works", "data")
 
 # ---------------------------------------- 快照**不拷**的东西（产出机制收窄）
 #: 〔2026-10-30 · 治「D 盘一周吃近 1T」〕
@@ -118,7 +121,7 @@ _CST = timezone(timedelta(hours=8))
 
 
 def _now_stamp() -> str:
-    return datetime.now(_CST).strftime("%Y%m%d_%H%M%S_%f")[:22]
+    return datetime.now(_CST).strftime("%Y%m%d_%H%M%S_%f")
 
 
 def _day_stamp() -> str:
@@ -887,7 +890,7 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
                 logger.warning(
                     "快照部分文件失败: %s (%d/%d): %s", wid, len(missing), len(paths),
                     "; ".join(f"{f['stage']}:{f['file']}({f['error']})"
-                              for f in failed)[:800])
+                              for f in failed))
             else:
                 # 只有**整批完整**才置指纹：缺文件的批次不许被当成完整批次
                 # 而永久跳过（下次照常重试这批）。
@@ -1190,9 +1193,26 @@ def restore_from_snapshot(work_id: str, stamp: str, rel_path: str, target: Path 
     日备（整库）仍走原来的整文件替换路径。
     """
     src = SNAPSHOT_ROOT / work_id / stamp / rel_path
+    # [库搬出施工目录 2026-11-07] *.db 的位置两朝各异：旧批次的库在
+    # ``works/{wid}/`` 下、新批次在 ``data/{wid}/`` 下。调用方按哪侧
+    # rel_path 问都要认得，且**落点恒为当前库位**（data/），不是照抄
+    # 批次里的相对路径（否则旧批次会把库复活回施工目录）。
+    import re as _re
+    _m = _re.match(r"^(works|data)/([^/]+)/(.+\.db)$", str(rel_path))
+    if not src.exists() and _m:
+        _alt = "data" if _m.group(1) == "works" else "works"
+        _alt_src = SNAPSHOT_ROOT / work_id / stamp / f"{_alt}/{_m.group(2)}/{_m.group(3)}"
+        if _alt_src.exists():
+            src = _alt_src
     if not src.exists():
         return {"ok": False, "error": f"快照不存在: {src}"}
-    dst = target or (BASE_DIR / rel_path)
+    if target is not None:
+        dst = target
+    elif _m:
+        from . import card_store as _cs
+        dst = _cs.db_dir(_m.group(2)) / _m.group(3)
+    else:
+        dst = BASE_DIR / rel_path
     # [卡片存储迁移 SQLite] 库文件被外部替换前，先关掉 card_db 的长活连接
     # （否则它仍握着旧的 -wal/-shm，恢复不生效）。
     if dst.suffix == ".db":

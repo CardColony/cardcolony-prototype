@@ -262,7 +262,7 @@ def _giveup_await_resume(work_id: str, card_id: str, meta: dict[str, Any]) -> No
     ops 档案里等人处置。**不改 goal_state、不改计数、不清 await 标志**。
     """
     wakes = _await_wakes(meta)
-    reason = str(meta.get("goal") or "")[:200]
+    reason = str(meta.get("goal") or "")
     logger.warning(
         "[auto] 等子卡唤醒死锁兜底：不再恢复 work=%s card=%s wakes=%d >= %d 且此刻无未终止子卡"
         "（模型恢复后重复挂起、来回打转；卡片保持 paused，请人工处置）",
@@ -551,8 +551,9 @@ def kick(work_id: str, card_id: str) -> Optional["Any"]:
 
     content = goal_prompt(meta, goal, resume_note=resume_note)
     task = message_runner._spawn_tracked(
-        _routes._run_message(work_id, card_id, content, None, append_user=False)
-    )
+        _routes._run_message(work_id, card_id, content, None, append_user=False),
+        work_id=work_id, card_id=card_id)
+    
     logger.info("[auto] 起轮 work=%s card=%s goal_rounds=%s",
                 work_id, card_id, meta.get("goal_rounds"))
     return task

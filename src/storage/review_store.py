@@ -189,7 +189,7 @@ async def open_batch(work_id: str, review_id: str, focus: str,
     tgt = str(target or old.get("target") or "")
     invited = list(dict.fromkeys(str(m) for m in (members or []) if str(m)))
     st = {"batch": _new_batch_id(), "draft": 1,
-          "focus": str(focus or "")[:2000], "opened_at": _now(),
+          "focus": str(focus or ""), "opened_at": _now(),
           "prev_verdict": prev, "target": tgt,
           "brief": str(brief or ""),
           "draft_hash": await _card_hash(work_id, tgt),

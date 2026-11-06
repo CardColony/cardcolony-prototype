@@ -591,14 +591,20 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   function startNav() {
   // [S2/M3] 版本探测 60s 周期：version 未变零开销（连 diff 都不跑）；变了才全量重拉
   // 并只 diff 变化 work 子树。相对时间重算随真实数据变更触发（旧「60s 整树重渲」退役）。
-  setInterval(() => { if (needFallbackProbe()) navRenderer.probeVersion(); }, 60000);
+  // [丢帧不永久错 2026-11-06] 轮询从「SSE 断了才有」改为**常驻真值网**：
+  // 推送帧是发即忘（丢一帧翻转＝状态永久停在旧值），SSE 健康与否都必须
+  // 周期对真值；推送只负责「快」，轮询负责「对」。只留可达性闩（后端死了
+  // 不空打刷失败日志）。
+  setInterval(() => { if (reachable()) navRenderer.probeVersion(); }, 60000);
   // [左栏接线 步2] 运行中总览 10s 周期：/api/nav/running 纯内存读、开销极小；
   // 一轮长活的起止比卡片数据变更快得多，故不与 60s 版本探测同频。
   // 集合无变化时 probeRunning 内部短路不重渲——状态变化不动用户视野。
-  // [推送优先 2026-10-25] SSE 健康时不做（运行态变化由 card_running 帧推送）。
-  setInterval(() => { if (needFallbackProbe()) navRenderer.probeRunning(); }, 10000);
+  setInterval(() => { if (reachable()) navRenderer.probeRunning(); }, 10000);
   // 初始导航渲染（画布态窄条悬停浮层也有树）
-  renderNav().then(() => navRenderer.probeRunning());   // 快照就绪后再标「谁在跑」，避免空态闪烁
+  // [首屏快亮 2026-11-06] probeRunning 与 renderNav **并行**发：运行集先到
+  // 则首渲就带转圈，不必等 nav 全量（冷启 ~13s）回来再补一次。
+  renderNav();
+  navRenderer.probeRunning();
   }
 
   // ═══ [迭代四 F4①②③] 通知按钮＋面板：拉 K4 端点、渲染列表、点击跳卡、已读推进 ═══
@@ -714,10 +720,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     if (npClose) npClose.onclick = () => panel.classList.remove("open");
 
     refreshBadge();
-    // [推送优先 2026-10-25] 角标 60s 轮询降级为**兜底**（SSE 健康时不做）：
-    // 新的卡间信由工作级 SSE 的 card_message 帧带过来（秒级），
-    // 周期轮询只在 SSE 不健康**且**后端可达时接管（后端都挂了，探测只会制造错误）。
-    setInterval(() => { if (needFallbackProbe()) refreshBadge(); }, 60000);
+    // [推送优先 2026-10-25] 新的卡间信由工作级 SSE 的 card_message 帧带过来
+    // （秒级）；60s 轮询是**常驻真值网**（2026-11-06：推送丢一帧＝角标永久旧，
+    // 不能只在 SSE 不健康时才对真值），只留可达性闩。
+    setInterval(() => { if (reachable()) refreshBadge(); }, 60000);
   }
 
   _renderNavImpl = renderNav;   // 静态导出 RenderNav 的实现注入

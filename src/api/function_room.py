@@ -383,7 +383,7 @@ def grant_for(work_id: str, fn_or_code: str,
 # ---------------------------------------------------------------------------
 
 def _fmt_ts(ts: str) -> str:
-    return str(ts or "")[:16].replace("T", " ")
+    return str(ts or "").replace("T", " ")
 
 
 def _entry_face(work_id: str, function_id: str,
@@ -463,7 +463,7 @@ def summary(work_id: str, function_id: str) -> dict[str, Any]:
             if directives:
                 for d in directives:
                     lines.append(f"- → {d.get('target_card_id')}:"
-                                 f"{str(d.get('instruction') or '')[:120]}"
+                                 f"{str(d.get('instruction') or '')}"
                                  f"({_fmt_ts(d.get('created_at', ''))})")
             else:
                 lines.append("- （无在途指令)")
@@ -477,7 +477,7 @@ def summary(work_id: str, function_id: str) -> dict[str, Any]:
                         f"{d.get('venue_label') or d.get('venue_ref')}"
                         f"｜{d.get('delegator') or '?'} 派"
                         f"｜退出:{d.get('exit_kind')}"
-                        f"｜{str(d.get('mandate') or '')[:80]}")
+                        f"｜{str(d.get('mandate') or '')}")
             else:
                 lines.append("- （没有在派差事）")
             lines.append("")
@@ -488,7 +488,7 @@ def summary(work_id: str, function_id: str) -> dict[str, Any]:
                     lines.append(
                         f"- [{d.get('effective_status') or d.get('status')}] "
                         f"{d.get('venue_label') or d.get('venue_ref')}"
-                        f"｜{str(d.get('result') or '—')[:60]}"
+                        f"｜{str(d.get('result') or '—')}"
                         f"｜{_fmt_ts(d.get('closed_at') or d.get('updated_at'))}")
             else:
                 lines.append("- （暂无参与记录)")
@@ -575,6 +575,6 @@ def _notify_activation_blocked(work_id: str, card_id: str,
 
     try:
         from . import message_runner as _mr
-        _mr._spawn_tracked(_deliver())
+        _mr._spawn_tracked(_deliver(), work_id=work_id, card_id=parent)
     except Exception as exc:  # noqa: BLE001 提示失败不挡闸本身
         logger.warning("[auto] 激活提示投递失败 card=%s: %s", card_id, exc)

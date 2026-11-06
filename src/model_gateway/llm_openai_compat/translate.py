@@ -146,7 +146,7 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
         try:
             chunk = json.loads(payload)
         except Exception as exc:  # noqa: BLE001
-            raise LlmError(f"malformed SSE payload: {payload[:120]}", "MALFORMED_RESPONSE") from exc
+            raise LlmError(f"malformed SSE payload: {payload}", "MALFORMED_RESPONSE") from exc
 
         # [端点反馈 2026-10-30] OpenAI 兼容流在出错时会发一帧 ``{"error": {...}}``，
         # 然后**可能不关连接**。原实现只读 ``choices`` ⇒ 这帧被当空帧跳过 ⇒ 上层
@@ -162,7 +162,7 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
                     code = QUOTA_EXCEEDED_CODE
                 elif is_context_window_exceeded_error(detail):
                     code = CONTEXT_WINDOW_EXCEEDED_CODE
-                raise LlmError(f"provider stream error: {detail[:200]}", code)
+                raise LlmError(f"provider stream error: {detail}", code)
 
         for choice in chunk.get("choices") or []:
             delta = choice.get("delta") or {}

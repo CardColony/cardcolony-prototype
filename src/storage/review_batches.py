@@ -239,8 +239,8 @@ def compose_summary(work_id: str, batch_id: str) -> str:
         fid = str(s.get("function_id"))
         flag = "〔分歧·优先看〕" if s.get("divergence") else ""
         lines.append(f"- {names.get(fid, fid)}{flag}:"
-                     f"{str(s.get('verdict') or '')[:500]}")
+                     f"{str(s.get('verdict') or '')}")
         c = str(s.get("concerns") or "").strip()
         if c:
-            lines.append(f"  关注点:{c[:300]}")
+            lines.append(f"  关注点:{c}")
     return "\n".join(lines)

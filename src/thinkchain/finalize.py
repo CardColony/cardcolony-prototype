@@ -69,7 +69,7 @@ async def run_finalize(work_id: str, card_id: str, conclusion: str = "") -> str:
             "content": (
                 f"收口终态: 已收口\n"
                 f"计划名: {plan_name}\n"
-                f"末步结论: {conclusion[:1000]}\n"
+                f"末步结论: {conclusion}\n"
                 f"步成果×判据:\n{digest}"),
             "actor": "tool",
             "end": "",

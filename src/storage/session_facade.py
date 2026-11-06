@@ -389,7 +389,7 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
                 tool_calls = _parsed_tc
         except (ValueError, TypeError):
             logger.warning("[facade] tool_calls 字段解析失败（视同无）seq=%s: %r",
-                           kv.get("seq", "?"), tool_calls_raw[:80])
+                           kv.get("seq", "?"), tool_calls_raw)
     legacy_pair_id = kv.get("pair_id", "")  # V1 uuid 经前向兼容通道保留（见模块头 S6b 衔接桥）
     pair_id_out = legacy_pair_id if legacy_pair_id != "" else (str(pair_raw) if pair_raw != "" else "")
     blk: dict[str, Any] = {

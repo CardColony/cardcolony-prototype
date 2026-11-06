@@ -172,8 +172,8 @@ def render_role_cabinet_region(ctx: RegionCtx) -> str:
         created = str(c.get("created_at") or "")
         if roles and born_min and created and created > born_min:
             sig.append(f"**组阁之后新增的卡、没有角色在看**：{cid}「{c.get('title')}」"
-                       f"（本卡 {created[:16].replace('T', ' ')} 建立，"
-                       f"全部角色 {born_min[:16].replace('T', ' ')} 之前建立）")
+                       f"（本卡 {created.replace('T', ' ')} 建立，"
+                       f"全部角色 {born_min.replace('T', ' ')} 之前建立）")
         elif roles:
             sig.append(f"没有角色在看：{cid}「{c.get('title')}」")
     for r in active:
@@ -1950,7 +1950,7 @@ def _mem_dt_prefix(row: dict[str, Any]) -> str:
             dt = datetime.fromisoformat(ts)
             return f"{dt:%m-%d %H:%M}" if with_date else f"{dt:%H:%M}"
         except ValueError:
-            return ts[:16].replace("T", " ")
+            return ts.replace("T", " ")
 
     t_from = str(row.get("timeline_from") or "") or str(row.get("occurred_at") or "")
     t_to = str(row.get("timeline_to") or "")

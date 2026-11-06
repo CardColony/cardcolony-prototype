@@ -173,11 +173,22 @@ class MavisLeaseClient:
         self._token: Optional[str] = None
         self._expires_at_ms: float = 0.0
         self._generation: int = 0
-        self._lock = asyncio.Lock()
+        # [runner 分槽环 2026-11-05] asyncio.Lock 跨环首绑即死锁 ⇒ 按环分槽。
+        # 锁的唯一目的是防同环惊群并发铸令；跨环偶发双铸（各自环上一把锁）
+        # 无害——mint 是幂等签发。
+        self._locks: dict[int, asyncio.Lock] = {}
+
+    def _lock(self) -> asyncio.Lock:
+        lp = asyncio.get_running_loop()
+        m = self._locks.get(id(lp))
+        if m is None:
+            m = asyncio.Lock()
+            self._locks[id(lp)] = m
+        return m
 
     async def get_token(self) -> str:
         """取一个必然在有效期内（≥ ``_REFRESH_MARGIN_MS``）的令牌。"""
-        async with self._lock:
+        async with self._lock():
             now_ms = time.time() * 1000
             if self._token and now_ms + _REFRESH_MARGIN_MS < self._expires_at_ms:
                 return self._token

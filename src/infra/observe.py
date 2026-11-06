@@ -81,7 +81,7 @@ def log_model_call(*, trace_id: str = "", caller: str = "",
             "completion_tokens": completion_tokens, "tokens_used": tokens_used,
             "reasoning_chars": reasoning_chars, "latency_ms": latency_ms,
             "finish_reason": str(finish_reason or ""), "text_len": text_len,
-            "tool_calls": tool_calls, "error": str(error or "")[:300]})
+            "tool_calls": tool_calls, "error": str(error or "")})
 
 
 def log_condense_trigger(*, work_id: str, card_id: str, block_tokens: int = 0,

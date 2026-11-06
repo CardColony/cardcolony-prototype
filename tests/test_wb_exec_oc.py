@@ -432,6 +432,55 @@ async def test_opencode_real_result_passes(monkeypatch):
     assert "干完了" in "".join(ex.text_parts)
 
 
+@pytest.mark.asyncio
+async def test_opencode_stream_timeout_raises_into_fallback_not_through(
+        monkeypatch):
+    """★ 2026-11-06 修：事件流超时 ⇒ **必须转成 WbAcpError 走失败分流**。
+
+    **线上事故**：``await asyncio.wait_for(done.wait(), …)`` 只有 ``finally``
+    没有 ``except`` ⇒ ``TimeoutError`` **穿透**整条换人/续跑/让路分流
+    ⇒ 一路抛到 maybe_delegate 的兜底 ``except Exception`` ⇒ **回落系统模型**
+    （＝花钱；现场 card_156/129/160/197 就是这么漏下去的）。
+
+    修后：超时 ⇒ ``WbAcpError``（不带 quota category）⇒ 与传输类失败同一条
+    分流（续跑同一路 → 用尽让路），不再穿透。
+    """
+    import asyncio as _asyncio
+    import dataclasses
+    cfg = wb_config.load()
+    # Watchdog 是 frozen dataclass ⇒ 用 replace 造短超时副本（不污染缓存）
+    cfg = dataclasses.replace(
+        cfg, watchdog=dataclasses.replace(cfg.watchdog, read_timeout_sec=0.2))
+    monkeypatch.setattr(bridge, "_build_task_text",
+                        lambda *a, **k: _async_val("干活"))
+
+    class _HangingClient(_FakeClient):
+        """events 挂住不发任何事件 ⇒ ``done`` 永不被 set ⇒ 必超时。"""
+
+        def __init__(self) -> None:
+            super().__init__([], [])
+
+        async def events(self, directory):  # noqa: ANN001
+            await _asyncio.sleep(3600)
+            yield {}
+
+    from src.api.wb_exec.bridge import _Exec
+    from src.api.wb_exec.config import Candidate
+    from src.api.wb_exec.picker import Picker
+
+    state = _FakeState()
+    ex = _Exec(state=state, cfg=cfg, picker=Picker(()))
+    ex.executor_id, ex.model = "wb-oc", "beam-free"
+    cfg_cand = Candidate(executor="wb-oc", model="beam-free", weight=20)
+    reg = _FakeRegistry(_HangingClient())
+    with pytest.raises(bridge.WbAcpError) as ei:
+        await bridge._run_opencode(state, cfg, ex, cfg_cand, "D:/x", reg)
+    # ★ 是「事件流超时」这条失败，不是裸 TimeoutError（裸的超时会穿透）
+    assert "超时" in str(ei.value), str(ei.value)
+    # ★ 不带 quota 语义 ⇒ 上层走「续跑同一路 → 用尽让路」那条正规分流
+    assert ei.value.is_quota is False
+
+
 async def _async_val(v):
     return v
 

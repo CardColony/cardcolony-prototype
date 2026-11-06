@@ -52,7 +52,7 @@ async def set_state(work_id: str, card_id: str, state: str, reason: str = "",
     if state not in (STATE_SILENCED, STATE_ACTIVE):
         raise ValueError(f"非法治理状态: {state}")
     rec = {"work_id": work_id, "card_id": card_id, "state": state,
-           "reason": str(reason or "")[:300], "by": str(by or "")[:80],
+           "reason": str(reason or ""), "by": str(by or ""),
            "ts": _now()}
 
     def _fn(conn: sqlite3.Connection) -> None:
