@@ -346,7 +346,7 @@ async def write_shadow_raw(
         event_hub.record_state_change(
             work_id, shadow_id_of(owner_card_id), "card_block_edited",
             card_type="shadow", block="body",
-            new=body[:2000], by=owner_card_id, cause="self",
+            new=body, by=owner_card_id, cause="self",
             extra={"reason": reason},
         )
     except Exception as exc:  # noqa: BLE001 事件失败不影响写影子

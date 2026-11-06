@@ -227,7 +227,7 @@ def _extract_pending_items(status_block: str, limit: int = 99) -> list[dict[str,
         # 兜底闸：任何以日期开头的追记/表格行都不算待办（实测它们会从多条路径漏进来）
         if re.match(r"^\d{4}-\d{2}-\d{2}", t) or t.startswith("|"):
             return False
-        key = t[:24]
+        key = t
         if key in seen:
             return False
         seen.add(key)
@@ -355,7 +355,7 @@ def recent_activity(work_id: str, limit: int = 40) -> list[dict[str, str]]:
             "card_id": e.get("card_id") or "",
             "title": e.get("title") or e.get("card_id") or "",
             "ts": e.get("ts") or "",
-            "detail": detail[:80],
+            "detail": detail,
         })
     return out
 

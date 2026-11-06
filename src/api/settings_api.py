@@ -469,7 +469,7 @@ async def fetch_models(request: Request) -> JSONResponse:
             return JSONResponse(status_code=502, content={
                 "ok": False,
                 "error": f"拉取失败 HTTP {resp.status_code}",
-                "detail": resp.text[:300],
+                "detail": resp.text,
             })
         data = resp.json()
     except httpx.TimeoutException:
@@ -584,7 +584,7 @@ async def test_model(request: Request) -> JSONResponse:
         if resp.status_code >= 400:
             return JSONResponse(status_code=200, content={
                 "ok": False, "latency_ms": latency,
-                "error": f"HTTP {resp.status_code}", "detail": resp.text[:300]})
+                "error": f"HTTP {resp.status_code}", "detail": resp.text})
         data = resp.json()
         reply = ""
         try:

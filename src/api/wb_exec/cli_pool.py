@@ -300,7 +300,7 @@ async def probe_can_work(base_url: str, model: str,
             return False, catalog
         stop = str((res or {}).get("stopReason") or "")
         meta = (res or {}).get("_meta") or {}
-        err = str(meta.get("codebuddy.ai/errorMessage") or "")[:200]
+        err = str(meta.get("codebuddy.ai/errorMessage") or "")
         ok = stop == "end_turn"
         logger.info("[wb_exec] CLI 探针 %s：stop=%s %s", base_url, stop, err)
         return ok, catalog

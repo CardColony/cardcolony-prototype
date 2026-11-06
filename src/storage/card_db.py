@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """卡片 SQLite 库（卡片存储迁移 SQLite · 第一步地基）。
 
-每 work 一个库：``works/{work_id}/cards.db``。**库是卡片与影子的唯一真相**，
+每 work 一个库：``data/{work_id}/cards.db``（2026-11-07 起，原 ``works/``
+下由 ``_ensure_db_location`` 惰性搬迁——库搬出卡的 exec 施工目录）。
+**库是卡片与影子的唯一真相**，
 不再有卡片/影子 md（方案 §0 裁定 1/2）。
 
 三条纪律：
@@ -758,9 +760,23 @@ _locks: dict[str, threading.RLock] = {}
 
 
 def db_path(work_id: str) -> Path:
-    """库文件路径。**调用时**从 card_store.WORKS_DIR 派生（不缓存、不设常量）。"""
+    """库文件路径。**调用时**从 card_store.WORKS_DIR 派生（不缓存、不设常量）。
+
+    [库搬出施工目录 2026-11-07] 生产库放 ``data/{wid}/cards.db``（与 works/
+    平级）；旧位置 ``works/{wid}/cards.db`` 由 ``_ensure_db_location`` 在
+    建连接前惰性搬走（只搬不判存——纯路径函数保持零副作用）。
+    """
     from . import card_store  # 延迟 import：避免 storage 包内循环
-    return card_store.WORKS_DIR / work_id / _DB_NAME
+    return card_store.db_dir(work_id) / _DB_NAME
+
+
+def _ensure_db_location(work_id: str) -> Path:
+    """建连接前过一遍：旧位置 ``works/{wid}/cards.db`` 还在 ⇒ 原子搬进 ``data/``。
+
+    由 ``_get_conn`` 在持 ``_lock_for`` 期间调用（串行 ⇒ 两连接不会抢着搬）。
+    """
+    from . import card_store
+    return card_store.migrate_db_to_data_dir(work_id, _DB_NAME)
 
 
 def _lock_for(key: str) -> threading.RLock:
@@ -794,7 +810,9 @@ _read_conns: dict[tuple[str, int], sqlite3.Connection] = {}
 
 def _read_conn(work_id: str) -> Optional[sqlite3.Connection]:
     """取该 work 的**只读**连接（每线程一条，懒建）。库不存在 ⇒ None。"""
-    db = db_path(work_id)
+    # 先过搬迁判存：旧位置还在 ⇒ 搬进 data/ 再判（os.replace 原子，
+    # 与 _get_conn 锁内迁移竞跑也安全——后到者见旧文件已失即用新路径）。
+    db = _ensure_db_location(work_id)
     if not db.exists():
         # 与 `_get_conn` 同口径：有 md 无库 ⇒ 明确报错，绝不静默返空
         _guard_migration(work_id, db)
@@ -868,7 +886,10 @@ def _guard_migration(work_id: str, db: Path) -> None:
     """有 cards/*.md 但无 cards.db → 明确报错（见模块 docstring 纪律 3）。"""
     if db.exists():
         return
-    cards_dir = db.parent / "cards"
+    # [库搬出施工目录 2026-11-07] cards/*.md 恒在 works/{wid}/ 下，
+    # 不能再用 db.parent（库已搬到 data/{wid}/）。
+    from . import card_store
+    cards_dir = card_store.WORKS_DIR / str(work_id) / "cards"
     try:
         has_md = cards_dir.is_dir() and next(cards_dir.glob("card_*.md"), None) is not None
     except OSError:
@@ -1270,11 +1291,13 @@ def _get_conn(work_id: str, *, create: bool, force: bool = False) -> Optional[sq
     ``force=True`` **只给迁移脚本**用：正常读写路径经 ``_guard_migration`` 拦
     「有 md 无库」，而迁移正是要把有 md 的 work 建成库——放行必须显式传参。
     """
-    key = str(db_path(work_id))
+    # [库搬出施工目录 2026-11-07] 先把旧位置的库搬进 data/ 再取路径——
+    # 在锁内做 ⇒ 迁移只发生一次，之后的连接全走新路径。
+    db = _ensure_db_location(work_id)
+    key = str(db)
     conn = _conns.get(key)
     if conn is not None:
         return conn
-    db = db_path(work_id)
     if not db.exists():
         if not force:
             _guard_migration(work_id, db)

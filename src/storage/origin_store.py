@@ -144,7 +144,7 @@ def write_blocks_sync(work_id: str, card_id: str,
         # 仍然不抛——md 已落盘，库可由 backfill 补回；抛了会让一轮对话因副本失败而失败。
         _DB_WRITE_FAILS += 1
         _LAST_WRITE_FAIL[0] = {"work": work_id, "card": card_id,
-                               "n": len(rows), "err": str(exc)[:200]}
+                               "n": len(rows), "err": str(exc)}
         logger.error(
             "[origin] 原文写库失败（凝练将漏掉这批块，需 backfill）"
             "work=%s card=%s n=%d 累计失败=%d: %s",

@@ -36,7 +36,6 @@ LINK_TYPE_ROLE = "角色"    # 工作卡 -> 角色卡
 LINK_TYPE_WATCH = "关注"   # 角色卡 -> 工作卡
 
 MAX_BATCH_CHARS = 24000
-MAX_BLOCK_CHARS = 4000
 SPAWN_COOLDOWN = 2.0
 
 DEFAULT_SIGNALS = ("turn_completed",)
@@ -98,7 +97,7 @@ async def _last_seq(work_id: str, card_id: str) -> int:
 
 def _slug(text: str) -> str:
     s = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (text or ""))
-    return s.strip("_")[:48] or "role"
+    return s.strip("_") or "role"
 
 
 # ============================================================
@@ -785,19 +784,18 @@ async def build_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
             if "status_changed" in (item.get("signals") or []):
                 st = str(cb.get("status_block") or "").strip()
                 if st:
-                    lines.append("【当前现状】" + st[:MAX_BLOCK_CHARS])
+                    lines.append("【当前现状】" + st)
             if "decision_appended" in (item.get("signals") or []):
                 third = str(cb.get("requirements") or cb.get("requirements") or "").strip()
                 if third:
-                    lines.append("【当前第三块】" + third[:MAX_BLOCK_CHARS])
+                    lines.append("【当前第三块】" + third)
         except Exception:  # noqa: BLE001
             pass
         length = 0
         for b in picked:
             actor = str(b.get("actor") or b.get("role") or "?")
             text = str(b.get("content") or "").strip()
-            if len(text) > MAX_BLOCK_CHARS:
-                text = text[:MAX_BLOCK_CHARS] + "……（截断）"
+
             piece = f"[{actor}] {text}" if text else f"[{actor}]（空正文）"
             if total + length + len(piece) > MAX_BATCH_CHARS:
                 lines.append("……（本批材料超长，已截断；完整内容见源卡会话）")
@@ -810,7 +808,7 @@ async def build_batch(work_id: str, role_id: str) -> list[dict[str, Any]]:
                 card = await card_store.read_card(work_id, src)
                 st = str((card.get("body") or {}).get("status_block") or "").strip()
                 if st:
-                    lines.append("【当前现状】" + st[:MAX_BLOCK_CHARS])
+                    lines.append("【当前现状】" + st)
             except Exception:  # noqa: BLE001
                 pass
         out.append({**item, "title": str(meta.get("title") or ""),
@@ -848,7 +846,7 @@ async def record_verdict(work_id: str, role_id: str, decision: str, reason: str,
         await role_store.supersede_verdict(work_id, supersedes, rec["id"])
         rec["supersedes"] = supersedes
     session_ops.ops_log("role_verdict", work_id, role_id, {
-        "decision": decision, "reason": rec["reason"][:160],
+        "decision": decision, "reason": rec["reason"],
         "targets": rec["targets"], "auto": rec["auto"],
     })
     return rec
@@ -887,14 +885,14 @@ async def raise_alarm(work_id: str, role_id: str, severity: str, title: str,
         default_action=default, deadline=str(deadline or "").strip())
     rec["role_title"] = str(_meta_of(work_id, role_id).get("title") or "")
     session_ops.ops_log("role_alarm", work_id, role_id, {
-        "severity": severity, "title": rec["title"][:120],
+        "severity": severity, "title": rec["title"],
         "supersedes": supersedes,
     })
     try:
         from . import event_stream
         event_stream.emit(work_id, role_id, "role_alarm", {
             "id": rec["id"], "severity": severity,
-            "title": rec["title"], "detail": rec["detail"][:500],
+            "title": rec["title"], "detail": rec["detail"],
             "supersedes": supersedes,
         })
     except Exception:  # noqa: BLE001 展示层零阻断
@@ -956,18 +954,18 @@ def _render_sections(prof: dict[str, Any],
         f"状态: {duty.get('state','active')}；最后巡检: {duty.get('last_wake_at','') or '（无）'}；"
         f"待同步: {len(pending)} 源",
         "## 判断簿\n" + ("\n".join(
-            f"- {v['ts'][:16]} {v['decision']} · {v['reason'][:160]}"
+            f"- {v['ts']} {v['decision']} · {v['reason']}"
             + (f" → 被 {v['superseded_by']} 取代" if v.get("superseded_by") else "")
-            for v in verdicts[:10]) or "（暂无）"),
+            for v in verdicts) or "（暂无）"),
         "## 指令簿\n" + ("\n".join(
-            f"- {d['created_at'][:16]} [{d['status']}] → {d['target_card_id']}："
-            f"{d['instruction'][:120]}"
-            + (f"（验收：{d['acceptance'][:80]}）" if d.get("acceptance") else "")
-            for d in (directives or [])[:10]) or "（暂无）"),
+            f"- {d['created_at']} [{d['status']}] → {d['target_card_id']}："
+            f"{d['instruction']}"
+            + (f"（验收：{d['acceptance']}）" if d.get("acceptance") else "")
+            for d in (directives or [])) or "（暂无）"),
         "## 警报簿\n" + ("\n".join(
-            f"- {a['ts'][:16]} [{a['severity']}/{a['status']}] {a['title']}"
+            f"- {a['ts']} [{a['severity']}/{a['status']}] {a['title']}"
             + (f"（更正→{a['corrected_by']}）" if a.get("corrected_by") else "")
-            for a in alarms[:10]) or "（暂无）"),
+            for a in alarms) or "（暂无）"),
         f"## 职责书（v{charter.get('version', 1)}）\n{charter.get('text','')}",
     ]
     return "\n\n".join(lines)
@@ -1046,13 +1044,13 @@ async def _finalize(work_id: str, role_id: str,
     try:
         await shadow_store.append_to_section(
             work_id, role_id, "## 进度",
-            [f"- [{_now()}] 巡检 {len(batch)} 源 · {decision} · {reason[:160]}"])
+            [f"- [{_now()}] 巡检 {len(batch)} 源 · {decision} · {reason}"])
     except Exception:  # noqa: BLE001
         pass
     try:
         from . import event_stream
         event_stream.emit(work_id, role_id, "role_judged", {
-            "decision": decision, "reason": reason[:300],
+            "decision": decision, "reason": reason,
             "sources": [i["source"] for i in batch],
             "auto": False,
         })
@@ -1066,7 +1064,7 @@ async def _finalize(work_id: str, role_id: str,
                 await asyncio.sleep(SPAWN_COOLDOWN + 0.1)
                 spawn(work_id, role_id)
 
-            _mr._spawn_tracked(_followup())
+            _mr._spawn_tracked(_followup(), work_id=work_id, card_id=role_id)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1111,9 +1109,9 @@ def spawn(work_id: str, role_id: str) -> bool:
                 _ACTIVE.pop(key, None)
                 logger.error("[role] 巡检回合异常 role=%s: %s", role_id, exc)
                 session_ops.ops_log("role_turn_error", work_id, role_id,
-                                    {"error": str(exc)[:200]})
+                                    {"error": str(exc)})
 
-        _mr._spawn_tracked(_run())
+        _mr._spawn_tracked(_run(), work_id=work_id, card_id=role_id)
         return True
     except Exception as exc:  # noqa: BLE001
         _ACTIVE.pop(key, None)
@@ -1166,7 +1164,7 @@ async def record_directive(work_id: str, role_id: str, target_card_id: str,
         due_at, parent_id=parent_id, attempt=attempt)
     session_ops.ops_log("role_directive", work_id, role_id, {
         "directive_id": rec["id"], "target": target_card_id,
-        "instruction": instruction[:160],
+        "instruction": instruction,
     })
     return rec
 
@@ -1266,7 +1264,7 @@ async def startup_sweep_all(limit: int = 20) -> int:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[role] 启动续跑取 work 列表失败: %s", exc)
         return 0
-    for w in works[:50]:
+    for w in works:
         wid = str(w.get("work_id") or "")
         if not wid:
             continue

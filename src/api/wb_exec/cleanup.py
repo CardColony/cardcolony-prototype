@@ -148,7 +148,7 @@ async def cleanup_devin(cli_exe: str, session_id: str, work_dir: str,
             if attempt + 1 < max(1, int(list_retries)):
                 await asyncio.sleep(retry_gap)
                 continue
-            res["skipped"] = f"列不出该目录的会话 ⇒ 跳过（{listing['stderr'][:80]}）"
+            res["skipped"] = f"列不出该目录的会话 ⇒ 跳过（{listing['stderr']}）"
             return res
         try:
             rows = json.loads(listing["stdout"])
@@ -192,9 +192,9 @@ async def cleanup_devin(cli_exe: str, session_id: str, work_dir: str,
     if rm["ok"]:
         logger.info("[wb_exec] 已清理 Devin 会话 %s（工作目录 %s）", session_id, work_dir)
     else:
-        res["skipped"] = f"devin rm 失败：{rm['stderr'][:120]}"
+        res["skipped"] = f"devin rm 失败：{rm['stderr']}"
         logger.warning("[wb_exec] 清理 Devin 会话 %s 失败：%s",
-                       session_id, rm["stderr"][:120])
+                       session_id, rm["stderr"])
     return res
 
 
@@ -220,7 +220,7 @@ async def cleanup_opencode(client: Any, session_id: str) -> dict:
     if res["deleted"]:
         logger.info("[wb_exec] 已清理 opencode 会话 %s", session_id)
     else:
-        res["skipped"] = f"HTTP {st} ⇒ 未删（{str(data)[:80]}）"
+        res["skipped"] = f"HTTP {st} ⇒ 未删（{str(data)}）"
     return res
 
 

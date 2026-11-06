@@ -163,6 +163,11 @@ def sandbox(tmp_path, monkeypatch):
     from src.storage import event_log
     monkeypatch.setattr(event_log, "_seq_cursor", {})
     event_log._pending.clear()
+    # [2026-11-06] 卡级事件流的进程内 journal 也是**全局 dict**，按
+    # (work_id, card_id) 索引；每个用例沙箱都用 work_001/card_002 ⇒ 不清会
+    # 把上一个用例的事件（如 wb_exec_resume）串进本用例的断言里。
+    from src.api import event_stream as _event_stream
+    monkeypatch.setattr(_event_stream, "_journals", {})
 
     yield SimpleNamespace(base=base, works=works, logs=logs, tmp=tmp_path)
 
@@ -299,3 +304,20 @@ def _wb_exec_quota_state_to_tmp(tmp_path_factory, monkeypatch):
     path = tmp_path_factory.mktemp("wb_exec_quota") / "quota.json"
     monkeypatch.setattr(quota_state, "STATE_PATH", path)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _wb_exec_scores_to_tmp(tmp_path_factory, monkeypatch):
+    """wb_exec 的**表现分/除名状态不许写进仓库**（2026-11-06）。
+
+    派活失败会扣分、分低会永久除名，落在 ``config/wb_exec_scores.json``；
+    测试绝不能把生产候选真的除名。
+    """
+    from src.api.wb_exec import scoring
+    path = tmp_path_factory.mktemp("wb_exec_scores") / "scores.json"
+    monkeypatch.setattr(scoring, "STATE_PATH", path)
+    scoring._cache = {}
+    scoring._cache_stamp = (0.0, -1)
+    yield
+    scoring._cache = {}
+    scoring._cache_stamp = (0.0, -1)

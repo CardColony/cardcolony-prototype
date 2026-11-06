@@ -275,5 +275,5 @@ def injection_key(ev_type: str, data: dict[str, Any]) -> str:
                        "completed_steps": data.get("completed_steps")}
     ver = hashlib.sha1(
         json.dumps(ver_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()[:16]
+    ).hexdigest()
     return f"{ev_type}|{kind}|{identity}|{ver}"

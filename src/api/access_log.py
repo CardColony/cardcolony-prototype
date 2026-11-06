@@ -159,12 +159,12 @@ def install_access_log(app: FastAPI) -> None:
                 "st": status,
                 "ms": ms,
                 "sse": sse,
-                "ua": str(request.headers.get("user-agent") or "")[:160],
+                "ua": str(request.headers.get("user-agent") or ""),
                 "client": (request.client.host if request.client else ""),
-                "ref": str(request.headers.get("referer") or "")[:200],
+                "ref": str(request.headers.get("referer") or ""),
             }
             if err:
-                rec["err"] = err[:400]
+                rec["err"] = err
             # 走**专用**写线程（不用默认池：默认池会被业务占满 ⇒ 日志排队 ⇒
             # 实测一次客户端错误上报被拖到 6333ms）
             await write_log("access_log.jsonl", rec)

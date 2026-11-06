@@ -49,7 +49,7 @@ def _record_error(work_id: str, *, stage: str, exc: Exception | None = None,
         from . import intervention_store
         d = dict(detail or {})
         if exc is not None:
-            d.setdefault("error", str(exc)[:300])
+            d.setdefault("error", str(exc))
         intervention_store.store().record_error(
             work_id, stage=stage,
             kind=kind or (type(exc).__name__ if exc is not None else "fault"),
@@ -78,11 +78,11 @@ def _record_load_errors(work_id: str) -> None:
             return
         _CFG_ERR_DONE[work_id] = fp
         st = intervention_store.store()
-        for e in errs[:50]:
+        for e in errs:
             pid = e.split(":", 1)[0].strip() if ":" in e else ""
             st.record_error(work_id, stage="config", kind="load_error",
-                            policy_id=pid[:80], key=e[:120],
-                            detail={"error": e[:400]})
+                            policy_id=pid, key=e,
+                            detail={"error": e})
     except Exception:  # noqa: BLE001
         pass
 

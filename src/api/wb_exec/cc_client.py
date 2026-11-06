@@ -37,6 +37,7 @@ import logging
 import os
 import shutil
 import tempfile
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -172,6 +173,11 @@ class CcRunner:
         session_id = ""
         usage: dict[str, Any] = {}
         done = asyncio.Event()
+        # ★ 2026-11-06 修 NameError：原 return 处引用了从未赋值的 `stdout`/
+        #   `stderr` ⇒ **每轮收尾必 NameError**（整条 command-code 路都跑不通）。
+        #   ⇒ 真正把两路管道**各自留一份尾部**（deque 只留尾部若干行，防长跑爆内存）。
+        stdout_parts: deque = deque(maxlen=400)   # 尾部 400 行 ⇒ 拼 tail 足够
+        stderr_parts: deque = deque(maxlen=200)
 
         async def _drain_stderr() -> None:
             """★ stderr **必须一直抽干**（否则子进程写日志时阻塞 ⇒ 回包发不出来）。"""
@@ -182,14 +188,21 @@ class CcRunner:
                     if not line:
                         break
                     s = line.decode("utf-8", "replace").strip()
+                    if s:
+                        stderr_parts.append(s)
                     if s and ("error" in s.lower() or "warn" in s.lower()):
-                        logger.debug("[cc] stderr: %s", s[:200])
+                        logger.debug("[cc] stderr: %s", s)
             except Exception:  # noqa: BLE001
                 pass
 
         async def _read_stdout() -> None:
             assert proc.stdout is not None
             state: dict[str, Any] = {}
+            # ★ 2026-11-06 修（探针实测抓到的第二块骨牌）：不加 nonlocal ⇒
+            #   下面三个赋值全是**本函数自己的局部变量** ⇒ run() 收尾读到的
+            #   final_text/session_id/usage **永远是初值空** ⇒ 就算 NameError
+            #   修了，command-code 也永远"0 正文"判失败。
+            nonlocal final_text, session_id, usage
             try:
                 while True:
                     line = await proc.stdout.readline()
@@ -198,6 +211,7 @@ class CcRunner:
                     s = line.decode("utf-8", "replace").strip().lstrip("\ufeff")
                     if not s:
                         continue
+                    stdout_parts.append(s)
                     try:
                         obj = json.loads(s)
                     except Exception:
@@ -239,8 +253,8 @@ class CcRunner:
                 "errors": errors, "rc": rc, "kind": kind,
                 "session_id": session_id, "usage": usage,
                 # ★ 把 stdout/stderr 片段带回去 ⇒ 出错时能一眼看出原因
-                "stdout_tail": (stdout or "")[-4000:],
-                "stderr_tail": (stderr or "")[-2000:]}
+                "stdout_tail": "".join(stdout_parts)[-4000:],
+                "stderr_tail": "".join(stderr_parts)[-2000:]}
 
 
 # ===================================================================== 事件解析
@@ -264,7 +278,7 @@ async def _handle_event(obj: dict, tools: list, errors: list, texts: list,
         state["session_id"] = str(obj.get("sessionId") or "")
         state["usage"] = obj.get("usage") or {}
         if str(obj.get("subtype") or "") == "error":
-            errors.append(str(obj.get("error") or "command-code 报错")[:300])
+            errors.append(str(obj.get("error") or "command-code 报错"))
         _fire(on_event, "final", {"text": state["final_text"],
                                   "session_id": state["session_id"]})
         return
@@ -300,15 +314,15 @@ async def _handle_event(obj: dict, tools: list, errors: list, texts: list,
                    "input": {}, "status": "completed", "output": ""}
             tools.append(rec)
         rec["status"] = "completed"
-        rec["output"] = out[:2000]
+        rec["output"] = out
         _fire(on_event, "tool_result", rec)
         return
     if sub == "tool_hook_blocked":
-        errors.append(str(ev.get("hookOutput") or "工具被拦截")[:300])
+        errors.append(str(ev.get("hookOutput") or "工具被拦截"))
         return
     if sub == "run_error":
         err = ev.get("error") or {}
-        errors.append(str(err.get("message") or ev.get("type") or "run_error")[:300])
+        errors.append(str(err.get("message") or ev.get("type") or "run_error"))
         return
     if sub == "text_delta":
         d = str(ev.get("delta") or "")
@@ -319,7 +333,7 @@ async def _handle_event(obj: dict, tools: list, errors: list, texts: list,
     if sub == "thinking_end":
         t = str(ev.get("text") or "")
         if t:
-            _fire(on_event, "thinking", {"text": t[:2000]})
+            _fire(on_event, "thinking", {"text": t})
         return
     if sub == "run_end":
         res = ev.get("result") or {}

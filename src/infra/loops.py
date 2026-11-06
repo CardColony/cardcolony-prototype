@@ -198,6 +198,14 @@ _NATIVE_GET_TPLS: frozenset[str] = frozenset({
     "/api/works/{}/cards/{}/session",
     "/api/works/{}/cards/{}/progress",
     "/api/works/{}/card-messages/unread",
+    # 开页必发的只读 GET——漏进 A 会在 runner 满载时排队 14s（2026-11-05 实证：
+    # 15 卡同跑 A_lag=13.9s，这五条正好是探测里"齐刷 15s"的那批）；
+    # 全部无锁读/只读文件，经核实不碰 emit/写路径/共享锁。
+    "/api/works/{}/cards/{}/exec-backend",   # 读卡执行体配置（sqlite 池+文件）
+    "/api/works/{}/cards/{}/review-status",  # 评审态读取（review_store 无锁无 emit）
+    "/api/works/{}/rule",                    # 规则面板读口（ensure 对已有项目是 stat no-op）
+    "/api/settings/model-overrides/{}",      # 覆盖表读取（json 文件）
+    "/api/settings/models",                  # 模型目录读取（config+env 文件）
     # SSE 流——订阅队列的**消费方**，必须在 B（生产方经 _fanout 桥过来）
     "/api/works/{}/cards/{}/stream",
     "/api/works/{}/events",
@@ -267,3 +275,119 @@ def install_main_dispatch(app: Any) -> int:
     if n:
         logger.info("[loops] 主循环委托已安装：%s 个非白名单端点 → A", n)
     return n
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# [runner 分槽环 2026-11-05] 卡亲和 runner 环：lane0＝主环 A，1..K-1＝独立
+# 线程环。亲和键＝**子树根**（根卡的直系子卡）：send_card_message/评审场
+# 通信绝大多数是 parent↔child ⇒ 同子树落同环 ⇒ 跨环交接边最少。
+#
+# 共享原语审计（2026-11-05 全库盘点）：
+#   · card_store/session_store/event_log 锁按 (wid,cid) 分键 → 卡定环即锁定环
+#   · card_db 写连接：一切访问包在 threading.RLock 内 → 跨线程已串行
+#   · GoalService._mutex / mavis_lease._lock：全局 asyncio.Lock → 已按环分槽
+#   · serial_gate per-work Lock：串行模式 ⇒ runner_lane_for 恒归 lane0
+#   · emit 扇出→B：本就 call_soon_threadsafe 桥接，与 runner 环无涉
+# 生效开关：ECO_RUNNER_LOOPS（缺省 1＝全部留 A，行为与分槽前逐字一致）。
+# ═══════════════════════════════════════════════════════════════════════════
+_runner_lanes: list = []
+_lane_threads: list = []
+_branch_cache: dict = {}
+_branch_lock = __import__("threading").RLock()
+
+
+def runner_lanes() -> list:
+    """已启动的 runner 环列表（lane0＝主环）。诊断用。"""
+    return list(_runner_lanes)
+
+
+def runner_lane_index(loop: Any) -> int:
+    try:
+        return _runner_lanes.index(loop)
+    except ValueError:
+        return -1
+
+
+def start_runner_lanes(n: int) -> int:
+    """主线程启动期调：lane0 固定为主环 A；n>1 再开 n-1 条守护线程环。
+
+    守护线程＝进程退即随灭，无需 join；优雅关停走 stop_runner_lanes。
+    """
+    _runner_lanes.clear()
+    if _MAIN_LOOP is not None:
+        _runner_lanes.append(_MAIN_LOOP)
+    import threading as _th
+    for i in range(max(0, int(n) - 1)):
+        lp = asyncio.new_event_loop()
+
+        def _run(l: Any = lp) -> None:
+            asyncio.set_event_loop(l)
+            l.run_forever()
+
+        t = _th.Thread(target=_run, name=f"runner-lane-{i + 1}", daemon=True)
+        t.start()
+        _runner_lanes.append(lp)
+        _lane_threads.append(t)
+    if len(_runner_lanes) > 1:
+        logger.info("[loops] runner 分槽环 ×%d（lane0＝主环 A）", len(_runner_lanes))
+    return len(_runner_lanes)
+
+
+def stop_runner_lanes() -> None:
+    for lp in _runner_lanes[1:]:
+        try:
+            lp.call_soon_threadsafe(lp.stop)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _branch_key(work_id: str, card_id: str) -> str:
+    """卡所属子树的根（＝根卡的直系子卡 id）。根卡自身/无父 ⇒ ""。
+
+    meta["parent"] 链创建后不可变 ⇒ 结果按 (work_id, card_id) 永久缓存。
+    """
+    key = (work_id, card_id)
+    with _branch_lock:
+        hit = _branch_cache.get(key)
+        if hit is not None:
+            return hit
+    branch = ""
+    try:
+        from ..storage import card_store as _cs
+        from ..storage import work_store as _ws
+        root = str(_ws.work_card_id_of(work_id) or "")
+        prev, cur, seen = "", str(card_id), set()
+        for _ in range(64):
+            if not cur or cur == root:
+                branch = prev
+                break
+            if cur in seen:                     # 环链兜底：取最深已知祖先
+                branch = prev or cur
+                break
+            seen.add(cur)
+            meta = _cs._meta_of(work_id, cur) or {}
+            prev, cur = cur, str(meta.get("parent") or "")
+        else:
+            branch = str(card_id)               # 64 层未到头：自根散列
+    except Exception:  # noqa: BLE001 读不到 meta：按卡自身散列，各归各的环
+        branch = str(card_id)
+    with _branch_lock:
+        _branch_cache[key] = branch
+    return branch
+
+
+def runner_lane_for(work_id: str, card_id: str) -> Any:
+    """卡的亲和 runner 环。单环/无卡上下文/根卡/串行执行模式 ⇒ 主环 A。"""
+    lanes = _runner_lanes or ([_MAIN_LOOP] if _MAIN_LOOP is not None else [])
+    if not lanes or len(lanes) == 1 or not card_id:
+        return lanes[0] if lanes else None
+    try:
+        from ..api import serial_gate as _sg
+        if _sg.is_serial():                     # 串行模式语义＝一次一卡 ⇒ 单环
+            return lanes[0]
+    except Exception:  # noqa: BLE001
+        pass
+    bk = _branch_key(work_id, card_id)
+    if not bk:
+        return lanes[0]
+    return lanes[hash(bk) % len(lanes)]

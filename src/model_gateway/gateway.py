@@ -198,6 +198,72 @@ def _ds_norm(msgs: Optional[list[dict[str, Any]]],
     return out
 
 
+class _LaneSemaphore:
+    """[runner 分槽环 2026-11-05] 跨环共享的进程级并发预算。
+
+    为什么不用 asyncio.Semaphore：它首绑即死锁（bound to a different
+    event loop）；按 (model,loop) 分槽又让每环各成一额度 ⇒ 总并发＝
+    环数×上限，限流名存实亡。本实现把**额度做成一份**：threading.Lock
+    保护计数与 FIFO 等待队列，等待者拿自己环上的 asyncio.Event，放号
+    经 call_soon_threadsafe 回其属主环 set——跨环安全且额度全局唯一。
+    ``_value`` 暴露剩余额度，兼容 load_of 的读取口径。
+    """
+
+    def __init__(self, n: int) -> None:
+        import threading
+        self._n = int(n)
+        self._mu = threading.Lock()
+        from collections import deque
+        self._waiters = deque()          # (loop, asyncio.Event)
+
+    @property
+    def _value(self) -> int:
+        return self._n
+
+    def _handoff_locked(self) -> None:
+        if self._waiters:
+            lp, ev = self._waiters.popleft()
+            lp.call_soon_threadsafe(ev.set)
+        else:
+            self._n += 1
+
+    async def acquire(self) -> bool:
+        loop = asyncio.get_running_loop()
+        with self._mu:
+            if self._n > 0 and not self._waiters:
+                self._n -= 1
+                return True
+            ev = asyncio.Event()         # 绑**当前**环
+            self._waiters.append((loop, ev))
+        try:
+            await ev.wait()
+        except BaseException:            # 取消/超时：摘队或回吐已得额度
+            with self._mu:
+                for i, (_lp, e) in enumerate(self._waiters):
+                    if e is ev:
+                        del self._waiters[i]
+                        break
+                else:
+                    self._handoff_locked()   # 额度已发给我 ⇒ 转交下家
+            raise
+        return True
+
+    def release(self) -> None:
+        with self._mu:
+            self._handoff_locked()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *exc):
+        self.release()
+        return False
+
+    def locked(self) -> bool:
+        return self._n <= 0
+
+
 class ModelGateway:
     """统一模型调用入口（兼容壳）。对外契约与旧单体逐字一致。"""
 
@@ -206,15 +272,12 @@ class ModelGateway:
         self.stats = stats if stats is not None else RuntimeStats()
         # [并发调度 2026-10-19] 每个模型一把信号量：同时最多 N 个调用在跑，
         # 其余排队等（不失败、不丢活）。N 见 config.models.yaml 的 concurrency 段。
-        # [双循环 2026-11-04] 按 (model, loop) 分槽：asyncio.Semaphore 首次
-        # acquire 时绑定所在 loop——单键共享时，一个跑错 loop 的调用会把闸
-        # 永久绑死到 B，A 侧此后全部 "bound to a different event loop"
-        # （事故实证：post_work_message 整场跑在 B ⇒ cmd-ds-v41-flash 闸被
-        # 绑 B ⇒ A 侧所有调用 ModelError）。分槽后流浪调用只锁自己那条 loop
-        # 的闸；正常全 A 调用共享同一把，语义不变。
-        self._sems: dict[tuple[str, Any], asyncio.Semaphore] = {}
+        # [双循环 2026-11-04 → runner 分槽环 11-05] 曾按 (model,loop) 分槽
+        # 防跨环绑定；分槽环引入后该键会让每环各成一额度（总并发＝环数×
+        # 上限）⇒ 换 _LaneSemaphore：单键一份全局预算，等待者绑各自环。
+        self._sems: dict[str, _LaneSemaphore] = {}
         # [智能路由 2026-10-20] 每个模型的总容量，供 load_of() 算占用率
-        self._sem_limits: dict[tuple[str, Any], int] = {}
+        self._sem_limits: dict[str, int] = {}
         self._models: dict[str, dict[str, Any]] = {
             k: v for k, v in (config.get("models") or {}).items() if isinstance(v, dict)
         }
@@ -238,8 +301,7 @@ class ModelGateway:
         上限取 ``concurrency.per_model[model]``，缺省回 ``concurrency.default``（3）。
         **这是排队不是拒绝**：拿不到就 await，不抛错、不丢活。
         """
-        key = self._sem_key(model_name)
-        sem = self._sems.get(key)
+        sem = self._sems.get(model_name)
         if sem is None:
             cfg = self.config.get("concurrency") or {}
             per = cfg.get("per_model") or {}
@@ -248,16 +310,15 @@ class ModelGateway:
             except (TypeError, ValueError):
                 n = 3
             n = max(1, n)
-            sem = asyncio.Semaphore(n)
-            self._sems[key] = sem
-            self._sem_limits[key] = n
+            sem = _LaneSemaphore(n)
+            self._sems[model_name] = sem
+            self._sem_limits[model_name] = n
         return sem
 
     def load_of(self, model_name: str) -> float:
         """该模型当前占用率（0＝空闲，1＝满）。没建过闸 ⇒ 0。"""
-        key = self._sem_key(model_name)
-        sem = self._sems.get(key)
-        total = self._sem_limits.get(key) or 0
+        sem = self._sems.get(model_name)
+        total = self._sem_limits.get(model_name) or 0
         if sem is None or total <= 0:
             return 0.0
         used = total - sem._value
@@ -517,7 +578,7 @@ class ModelGateway:
                 if idx + 1 >= len(chain):
                     break
                 logger.warning("[model] 层内兜底：%s 失败 ⇒ 换 %s（%s）",
-                               mname, chain[idx + 1], str(exc)[:160])
+                               mname, chain[idx + 1], str(exc))
         raise last if last is not None else ModelError(
             ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 调用失败")
 
@@ -747,7 +808,7 @@ class ModelGateway:
                 if emitted or idx + 1 >= len(chain):
                     break
                 logger.warning("[model] 层内兜底（流式）：%s 失败 ⇒ 换 %s（%s）",
-                               mname, chain[idx + 1], str(exc)[:160])
+                               mname, chain[idx + 1], str(exc))
         raise last if last is not None else ModelError(
             ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 流式调用失败")
 
@@ -957,7 +1018,7 @@ class MockAdapter(LlmAdapter):
                 user_prompt = str(m.get("content") or "")
         # 旧 MockGateway 用**配置键**作模型名（`f"[mock:{model_name}] ..."`），此处还原。
         label = self._key_by_wire.get(options.model, options.model)
-        content = f"[mock:{label}] {user_prompt[:120]}"
+        content = f"[mock:{label}] {user_prompt}"
         for seg in re.findall(r".{1,8}", content):
             if seg:
                 yield TextDelta(index=0, text=seg)

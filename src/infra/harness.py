@@ -191,7 +191,7 @@ async def deliver(work_id: str, target: str, text: str, *,
                                "seq": msg_id,
                                "mode": "message",
                                "action_id": str(action_id or ""),
-                               "text": text[:300]})
+                               "text": text})
         except Exception:  # noqa: BLE001 展示层零阻断
             pass
         if wake:
@@ -229,7 +229,7 @@ async def _deliver_inject(work_id: str, target: str, text: str, *,
                                "wake": False, "mode": "inject",
                                "queue_len": n,
                                "action_id": str(action_id or ""),
-                               "text": text[:300]})
+                               "text": text})
         except Exception:  # noqa: BLE001
             pass
         return f"inject:{n}"
@@ -292,7 +292,7 @@ async def _deliver_continue(work_id: str, target: str, text: str, *,
                 "mode": "continue", "started": ok,
                 "reason": str((r or {}).get("reason") or ""),
                 "action_id": str(action_id or ""),
-                "text": text[:300],
+                "text": text,
             })
         except Exception:  # noqa: BLE001
             pass

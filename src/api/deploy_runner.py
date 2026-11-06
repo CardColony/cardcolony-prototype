@@ -141,11 +141,11 @@ async def execute(work_id: str, *, spec: dict[str, Any], venue: str,
     ok = isinstance(result, dict) and not result.get("error")
     if isinstance(result, dict) and result.get("error"):
         err = str((result.get("error") or {}).get("message")
-                  or result.get("error"))[:200]
+                  or result.get("error"))
     receipt["ok"] = ok
     receipt["reason"] = "woken" if ok else "wake_failed"
     if err:
-        receipt["error"] = err[:200]
+        receipt["error"] = err
     _emit_receipt(work_id, venue, policy_id, action_id, did, receipt)
     return receipt
 
@@ -162,7 +162,7 @@ def _emit_receipt(work_id: str, venue: str, policy_id: str,
             "action_id": str(action_id or ""), "mode": "deploy",
             "deployment_id": int(deployment_id or 0),
             "reason": str(receipt.get("reason") or ""),
-            "error": str(receipt.get("error") or "")[:200],
+            "error": str(receipt.get("error") or ""),
         })
     except Exception as exc:  # noqa: BLE001 回执事件失败不吞主结果
         logger.warning("[deploy] 回执事件失败 dep=%s: %s",

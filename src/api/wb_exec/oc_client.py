@@ -74,7 +74,7 @@ class OcClient:
         raw = resp.read()
         if resp.status_code >= 400:
             raise OcError(f"{method} {path} → HTTP {resp.status_code}: "
-                          f"{raw[:300].decode('utf-8', 'replace')}")
+                          f"{raw.decode('utf-8', 'replace')}")
         try:
             return resp.status_code, json.loads(raw) if raw else {}
         except Exception:
@@ -93,7 +93,7 @@ class OcClient:
         if isinstance(data, dict):
             sid = str(data.get("id") or "")
         if not sid:
-            raise OcError(f"建 session 失败：HTTP {st} {str(data)[:200]}")
+            raise OcError(f"建 session 失败：HTTP {st} {str(data)}")
         logger.info("[wb_exec] opencode session 建好 id=%s dir=%s", sid, directory)
         return sid
 

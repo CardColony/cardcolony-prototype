@@ -226,7 +226,17 @@ class FakeAcpGateway:
                 yield self._err(body.get("id"), -32000, "Task was interrupted by user")
                 return
             if self.prompt_mode == "transport":
-                # 连接/传输类失败（既不是 quota 也不是 auth ⇒ 触发续跑）
+                # 连接/传输类失败（既不是 quota 也不是 auth）：本轮 0 产出
+                # ⇒ 按 2026-11-06 用户令属于「没连上」⇒ 当场换下一家
+                yield self._err(body.get("id"), -32603, "socket hang up (transport)")
+                return
+            if self.prompt_mode == "transport_after_progress":
+                # 已经干了一点活才断 ⇒ 该续跑同一路（保住已完成的工作）
+                yield self._notify("session/update", {
+                    "sessionId": sid,
+                    "update": {"sessionUpdate": "agent_message_chunk",
+                               "content": {"type": "text", "text": "开始了"}},
+                })
                 yield self._err(body.get("id"), -32603, "socket hang up (transport)")
                 return
             if self.prompt_mode == "model_unavailable":
@@ -941,7 +951,8 @@ async def test_bridge_delegates_and_finishes_card(work, wb_cfg, fake_gw,
     # coder_final 是 report_done 直写 SQL 的列（不在 read_card 的 meta 投影里），
     # 这里直接查库确认它落到位了。
     import sqlite3
-    dbp = Path(card_store.WORKS_DIR) / work["work_id"] / "cards.db"
+    from src.storage import card_db as _cdb
+    dbp = _cdb.db_path(work["work_id"])
     with sqlite3.connect(dbp) as conn:
         row = conn.execute("SELECT coder_final FROM cards WHERE card_id=?",
                            (card_id,)).fetchone()
@@ -1320,7 +1331,8 @@ async def test_resume_reuses_session_after_transport_failure(
     async def patched(self, body):
         if str(body.get("method")) == "session/prompt":
             calls["n"] += 1
-            self.prompt_mode = "transport" if calls["n"] == 1 else "ok"
+            # 第一次「干到一半才断」⇒ 测的是续跑同一路，不是「没连上」
+            self.prompt_mode = "transport_after_progress" if calls["n"] == 1 else "ok"
         async for chunk in orig(self, body):
             yield chunk
 
@@ -1340,6 +1352,87 @@ async def test_resume_reuses_session_after_transport_failure(
     assert len(sids) == 2 and sids[0] == sids[1], sids
     journal = event_stream.journal_of(work["work_id"], card_id)
     assert "wb_exec_resume" in [e.get("type") for e in journal]
+
+
+@pytest.mark.asyncio
+async def test_resume_exhausted_must_switch_and_not_end(
+        work, wb_cfg, fake_gw, monkeypatch):
+    """★ 2026-11-06 用户令：「重试三次不是问题，是你重试三次后就结束了，不换人」。
+
+    同一路续跑 3 次仍不成 ⇒ **必须换下一家继续干**，不许抛异常回落系统模型。
+    """
+    reg = bridge.get_registry()
+    _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
+    monkeypatch.setattr(bridge, "get_registry", lambda: reg)
+
+    calls = {"n": 0}
+    orig = FakeAcpGateway._stream
+
+    async def patched(self, body):
+        if str(body.get("method")) == "session/prompt":
+            calls["n"] += 1
+            # 第 1 次 + 续跑 3 次都连不上；第 5 次是换人后的那一家
+            self.prompt_mode = "transport" if calls["n"] <= 4 else "ok"
+        async for chunk in orig(self, body):
+            yield chunk
+
+    monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
+    card_id = await _make_worker_card(work["work_id"])
+    st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
+                                 content="干活")
+    st.pair_id = "pair-resume-exhausted"
+    outcome = await bridge.maybe_delegate(st)
+    assert outcome is not None                       # 没有「就结束了」
+    journal = event_stream.journal_of(work["work_id"], card_id)
+    kinds = [e.get("type") for e in journal]
+    assert kinds.count("wb_exec_resume") == 3, kinds  # 三次重试保留了
+    assert "wb_exec_fallback" in kinds, kinds          # 用完必须换人
+    assert calls["n"] == 5                            # 换人后一次干成
+    # ★ 记账回归钉（2026-11-06 修）：早先先赋值后 emit ⇒ 事件里
+    #   from==to、reason 是「续跑 -1 次」⇒ 留痕全错。
+    fb = [e for e in journal if e.get("type") == "wb_exec_fallback"]
+    assert fb, kinds
+    for e in fb:
+        d = e.get("data") or {}
+        assert d.get("from") and d.get("from") != d.get("to"), d
+        assert "-1 次" not in str(d.get("reason")), d
+        assert "3 次" in str(d.get("reason")), d      # max_resume=3 ⇒ 实跑 3 次
+
+
+@pytest.mark.asyncio
+async def test_chain_rewinds_instead_of_ending(
+        work, wb_cfg, fake_gw, monkeypatch):
+    """★ 链**不是一次性的**：一轮扫完回到链头再扫，一直换到能干成为止。
+
+    病根：``chain_idx`` 只前进不回头 ⇒ 槽满/额度尽这些会变的状态也会把一格
+    永久吃掉 ⇒ 链耗光后 ``_advance`` 必然 None ⇒ 整卡结束。
+    """
+    reg = bridge.get_registry()
+    _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
+    monkeypatch.setattr(bridge, "get_registry", lambda: reg)
+
+    calls = {"n": 0}
+    orig = FakeAcpGateway._stream
+
+    async def patched(self, body):
+        if str(body.get("method")) == "session/prompt":
+            calls["n"] += 1
+            # 第一档 4 次（1+续跑3）、第二档 4 次 ⇒ 链扫完一轮；
+            # 第 9 次是「回到链头重扫」后才有的机会
+            self.prompt_mode = "transport" if calls["n"] <= 8 else "ok"
+        async for chunk in orig(self, body):
+            yield chunk
+
+    monkeypatch.setattr(FakeAcpGateway, "_stream", patched)
+    card_id = await _make_worker_card(work["work_id"])
+    st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
+                                 content="干活")
+    st.pair_id = "pair-chain-rewind"
+    outcome = await bridge.maybe_delegate(st)
+    assert outcome is not None                       # 链扫完也没有结束
+    kinds = [e.get("type") for e in event_stream.journal_of(work["work_id"], card_id)]
+    assert "wb_exec_fallback" in kinds, kinds
+    assert calls["n"] == 9                            # 回头重扫那一轮干成了
 
 
 # ===================================================================== 并行派发

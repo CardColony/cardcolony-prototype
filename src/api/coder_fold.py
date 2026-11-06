@@ -42,7 +42,7 @@ async def archive_worker(work_id: str, card_id: str) -> dict[str, Any]:
                 # 粗提取:产物清单节里带路径样式的行(路径 + 用途)
                 if any(ch in s for ch in ("/", "\\", ".md", ".py", ".json",
                                           ".txt", ".go", ".js")):
-                    artifacts.append(s[:200])
+                    artifacts.append(s)
     except Exception as exc:  # noqa: BLE001 提取失败不挡归档
         logger.warning("[archive] 影子产物提取失败 card=%s: %s", card_id, exc)
 
@@ -78,7 +78,7 @@ async def archive_worker(work_id: str, card_id: str) -> dict[str, Any]:
         parent=str(meta.get("parent") or ""),
         task=str(body.get("mission") or ""),
         final_report=final_report,
-        artifacts=artifacts[:20])
+        artifacts=artifacts)
 
     def _drop(conn) -> None:
         card_db.delete_card_row(conn, card_id)
@@ -109,7 +109,7 @@ async def unarchive_coder(work_id: str, card_id: str) -> dict[str, Any]:
         card_type="worker", parent=rec["parent"], card_id=card_id,
         charter=body, skip_kick=True)
     if "error" in r:
-        return {"ok": False, "error": str(r["error"])[:200]}
+        return {"ok": False, "error": str(r["error"])}
     await coder_archive.remove(work_id, card_id)
     logger.info("[archive] worker 解档 work=%s card=%s", work_id, card_id)
     return {"ok": True, "card_id": card_id, "note": "已复活为活卡,可重新派活"}

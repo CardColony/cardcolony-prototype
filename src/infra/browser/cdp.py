@@ -91,7 +91,7 @@ class CDPConnection:
             buf = self._browser_events
         buf.append(entry)
         if len(buf) > 2000:  # 防失控上界
-            del buf[:1000]
+            del buf
 
     def drain_events(self, session_id: str = "") -> list[dict[str, Any]]:
         """取走并清空某会话（或浏览器级）的事件缓冲。"""
@@ -170,7 +170,7 @@ class CDPConnection:
         if exc:
             text = ((exc.get("exception") or {}).get("description")
                     or exc.get("text") or "页面脚本异常")
-            raise CDPError(str(text)[:800])
+            raise CDPError(str(text))
         return (res.get("result") or {}).get("value")
 
     def enable_session_domains(self, session_id: str) -> None:

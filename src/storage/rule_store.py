@@ -256,7 +256,7 @@ def write_sections(work_id: str, sections: dict[str, str]) -> None:
         if bad:
             logger.warning(
                 "[rule] %s 区 %r 内容含 %d 行 `## `（将被切成幻影区）：%s",
-                work_id, name, len(bad), " / ".join(bad[:3]))
+                work_id, name, len(bad), " / ".join(bad))
     _atomic_write(rules_path(work_id),
                   join_sections({str(k): str(v or "") for k, v in (sections or {}).items()}))
 

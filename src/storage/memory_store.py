@@ -951,7 +951,7 @@ async def migrate_archive_if_needed(work_id: str, card_id: str) -> None:
     if report.get("violations"):
         logger.warning("[condense_fold] archive 迁移被不变量门控拒绝（不写、下轮再试）"
                        "work=%s card=%s 违例=%d: %s",
-                       work_id, card_id, len(report["violations"]), report["violations"][:3])
+                       work_id, card_id, len(report["violations"]), report["violations"])
         return
     if report.get("created"):
         memory_domain.save_chain(work_id, card_id, new_chain)
@@ -1054,8 +1054,8 @@ def _merge_recondensed(existing: list[dict[str, Any]],
             if i >= _existing_len:
                 logger.warning(
                     "[condense_fold] 批内同锚静默覆盖 seq=%s：本条 gist=%r 顶掉同批前条 gist=%r",
-                    s, str(n.get("gist") or "")[:80],
-                    str(old.get("gist") or old.get("conclusion") or "")[:80])
+                    s, str(n.get("gist") or ""),
+                    str(old.get("gist") or old.get("conclusion") or ""))
             cov = set(old.get("coveredSeqs") or []) | set(n.get("coveredSeqs") or [])
             merged = dict(n)
             merged["coveredSeqs"] = sorted(int(x) for x in cov)
@@ -1285,7 +1285,7 @@ def _report_to_user(work_id: str, card_id: str, what: str) -> None:
     try:
         from ..api import event_stream
         event_stream.emit(work_id, card_id, "error",
-                          {"error": f"[记忆凝练] {what}"[:200],
+                          {"error": f"[记忆凝练] {what}",
                            "error_type": "CondenseFatal",
                            "source": "condense_fold"})
     except Exception as exc:  # noqa: BLE001 报错通道坏了也不阻断
@@ -1616,7 +1616,7 @@ async def _condense_one_batch(work_id: str, card_id: str,
         # [处置 2026-10-31 · 用户令] 断连类＝留给重试梯/下轮；失效类＝报错给用户。
         if _model_error_disposition(exc) == "fatal":
             _report_to_user(work_id, card_id,
-                            f"凝练模型无法继续使用（{str(exc)[:120]}）——请检查模型配置/key/额度；"
+                            f"凝练模型无法继续使用（{str(exc)}）——请检查模型配置/key/额度；"
                             "修复前本卡凝练暂停。")
         return False
     if not _res.get("ok"):
@@ -1723,7 +1723,7 @@ async def _condense_one_batch(work_id: str, card_id: str,
         viol = memory_domain.check_invariants(chain)
         if viol:
             logger.warning("[memory_domain] 条目不变量违例 %d 条 card=%s: %s",
-                           len(viol), card_id, viol[:3])
+                           len(viol), card_id, viol)
         memory_domain.save_chain(work_id, card_id, chain, condense_mark=target_mark)
         # [F17 · archive 冻结 2026-10-31] 不再每批写 memory_archive——L2 已随批直接
         # 落链/落 nodes 表，archive 只承载历史存量；存量经 migrate_archive_if_needed
@@ -1987,7 +1987,7 @@ def _parse_fold_digest(text: str, allowed: set[int],
         seqs = [int(x) for x in re.findall(r"\d+", secs["需展开"])][:5]
         return "expand", [s for s in seqs if s in allowed]
     if "不合并" in secs:
-        return "bail", secs["不合并"][:200] or "细看后认为本组不构成同一件事"
+        return "bail", secs["不合并"] or "细看后认为本组不构成同一件事"
     seen: set[int] = set()
     mems = [s for s in (int(x) for x in re.findall(r"\d+", secs.get("成员") or ""))
             if s in allowed and not (s in seen or seen.add(s))]
@@ -2024,7 +2024,7 @@ def _expand_for_fold(work_id: str, card_id: str, seqs: list[int],
             parts.append(memory_expand.render(
                 memory_expand.expand(work_id, card_id, int(s), page_chars=page_chars)))
         except Exception as exc:  # noqa: BLE001 单条展开失败不阻断归拢
-            parts.append(f"[seq {s}] 展开失败：{str(exc)[:120]}")
+            parts.append(f"[seq {s}] 展开失败：{str(exc)}")
     return "\n\n".join(parts)
 
 
@@ -2317,7 +2317,7 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
     # 旧缓存自动失效，不会拿旧判断污染新链。step3 是转填、便宜，不缓存。
     _fp = hashlib.sha256("\n".join(
         f"{int((t.get('anchor') or {}).get('seq') or 0)}:{t.get('gist') or ''}"
-        for _i, t in tops).encode("utf-8")).hexdigest()[:16]
+        for _i, t in tops).encode("utf-8")).hexdigest()
     _cache_dir = session_store.WORKS_DIR.parent / "logs" / "fold_cache" / work_id / card_id
     try:
         _cache_dir.mkdir(parents=True, exist_ok=True)
@@ -2357,7 +2357,7 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                            work_id, card_id, exc)
             if _model_error_disposition(exc) == "fatal":
                 _report_to_user(work_id, card_id,
-                                f"归拢模型无法继续使用（{str(exc)[:120]}）——请检查模型配置/key/额度。")
+                                f"归拢模型无法继续使用（{str(exc)}）——请检查模型配置/key/额度。")
             return
         text1 = str(r1.get("content") or "")
         _cache_write("s1", text1)
@@ -2394,7 +2394,7 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                 mems = mems[:cap]   # 超长线先合最老段；最新增量留顶层下轮自然续上
             allowed = {int((m.get("anchor") or {}).get("seq") or 0) for m in mems}
             gfp = hashlib.sha256(
-                ",".join(str(s) for s in sorted(allowed)).encode("utf-8")).hexdigest()[:12]
+                ",".join(str(s) for s in sorted(allowed)).encode("utf-8")).hexdigest()
             tag = f"g{idx}-{gfp}"
             step2_in = (f"【线程】{g.get('label') or ''}\n\n"
                         + _render_fold_group(state, mems))
@@ -2409,9 +2409,9 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                     except Exception as exc:  # noqa: BLE001 组调用失败＝fail（游标见尾态）
                         if _model_error_disposition(exc) == "fatal":
                             _report_to_user(work_id, card_id,
-                                            f"归拢模型无法继续使用（{str(exc)[:120]}）"
+                                            f"归拢模型无法继续使用（{str(exc)}）"
                                             "——请检查模型配置/key/额度。")
-                        return "fail", f"组{idx} 调用失败：{str(exc)[:120]}"
+                        return "fail", f"组{idx} 调用失败：{str(exc)}"
                     text2 = str(r2.get("content") or "")
                     _cache_write(tag, text2)
                 k0, p0 = _parse_fold_digest(text2, allowed, card_id)
@@ -2429,9 +2429,9 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                     except Exception as exc:  # noqa: BLE001
                         if _model_error_disposition(exc) == "fatal":
                             _report_to_user(work_id, card_id,
-                                            f"归拢模型无法继续使用（{str(exc)[:120]}）"
+                                            f"归拢模型无法继续使用（{str(exc)}）"
                                             "——请检查模型配置/key/额度。")
-                        return "fail", f"组{idx} 展开往返失败：{str(exc)[:120]}"
+                        return "fail", f"组{idx} 展开往返失败：{str(exc)}"
                     text2 = str(r2b.get("content") or "")
                     _cache_write(tag + "x", text2)
             kind_, payload = _parse_fold_digest(text2, allowed, card_id)
@@ -2533,7 +2533,7 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
             node["docRefs"] = _drs
         node["fingerprint"] = hashlib.sha256(
             ("fold|" + "|".join(sorted(str((mem.get("anchor") or {}).get("seq")) for mem in members))
-             ).encode("utf-8")).hexdigest()[:16]
+             ).encode("utf-8")).hexdigest()
         # 成员挂 upper=[新锚点] 并沿 lower 子树整体降一层（level+=1）
         for mem in members:
             _ma = mem.get("anchor") or {}
@@ -2580,7 +2580,7 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
         _viol = []
     if _viol:
         logger.warning("[memory_domain] 归拢后链不变量违例 %d 条 card=%s: %s",
-                       len(_viol), card_id, _viol[:3])
+                       len(_viol), card_id, _viol)
     _obs.log_fold(work_id=work_id, card_id=card_id, merges=n_merged_nodes,
                   members=n_members, mark=int(state.get("mark", 0) or 0),
                   batch_count=count, violations=len(_viol))
@@ -2826,13 +2826,13 @@ async def condense_turn_end(work_id: str, card_id: str,
         # [处置 2026-10-31 · 用户令] 失效类（不可再运转）报错给用户；断连类走账退避。
         if _model_error_disposition(exc) == "fatal":
             _report_to_user(work_id, card_id,
-                            f"凝练触发失败且无法自行恢复（{str(exc)[:120]}）。")
+                            f"凝练触发失败且无法自行恢复（{str(exc)}）。")
         else:
             try:
                 from ..api import event_stream
                 event_stream.emit(work_id, card_id, "error",
                                   {"error": "[记忆凝练] 本轮凝练失败（断连/超时类），"
-                                   "已记账稍后自动重试。"[:200],
+                                   "已记账稍后自动重试。",
                                    "error_type": "CondenseRetryable",
                                    "source": "condense_fold"})
             except Exception:  # noqa: BLE001
@@ -2843,7 +2843,7 @@ async def condense_turn_end(work_id: str, card_id: str,
             state["condense_debt"] = {
                 "failed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "next_retry_ts": time.time() + CONDENSE_FAIL_BACKOFF_SEC,
-                "reason": str(exc)[:300],
+                "reason": str(exc),
             }
             await save_memory(work_id, card_id, state)
         except Exception:  # noqa: BLE001

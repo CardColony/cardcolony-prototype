@@ -40,8 +40,8 @@ def _emit_state(work_id: str, role_id: str, block: str, *,
         event_hub.record_state_change(
             work_id, role_id, "card_block_edited",
             card_type="role", block=block,
-            old=(str(old)[:2000] if old is not None else None),
-            new=(str(new)[:2000] if new is not None else None),
+            old=(str(old) if old is not None else None),
+            new=(str(new) if new is not None else None),
             by=by, cause=cause)
     except Exception as exc:  # noqa: BLE001 事件失败不影响写档案
         logger.warning("[role_store] 状态事件失败（不阻断）card=%s: %s", role_id, exc)

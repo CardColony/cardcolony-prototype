@@ -42,6 +42,7 @@ ensure_utf8_console()
 # [双循环隔离 2026-11-05] 服务循环 B（独立线程）上的一切写/emit/孵化动作
 # 经 on_main 委托回主循环 A——startup 钩子与端点共用同一套边界。
 from src.infra.loops import install_main_dispatch, on_main
+from src.infra import procs as _procs
 
 
 def init_directories() -> None:
@@ -118,6 +119,10 @@ def startup_init() -> None:
 
 
 app = FastAPI(title="推演agent画布 v1")
+
+# [多进程拆分 2026-11-06 · 用户令] web 角色＝纯服务进程：白名单只读 GET
+# 本地答，其余一切透明反代 runner（ECO_RUNNER_URL）。
+_procs.install_web_proxy(app)
 
 startup_init()
 
@@ -351,6 +356,22 @@ async def _scheduled_snapshots() -> None:
         _asyncio.create_task(_loop())
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] 定时快照装载失败（不阻断）: {exc}", flush=True)
+
+
+@app.on_event("startup")
+@on_main
+async def _start_db_watchdog() -> None:
+    """[库看门狗 2026-11-07 · work_027 cards.db 原地清零事故] stat 哨兵＋异常隔离。
+
+    每 ECO_DB_WATCH_S（默认 5s）盯各库尺寸突变（归零/腰斩/连 WAL 消失），
+    命中即把三件套拷进 db_quarantine/ 并 critical 告警；每 ECO_DB_CHECK_S
+    （默认 3600s）抽副本跑 quick_check。fail-open：起不来不阻断主服务。
+    """
+    try:
+        from src.storage import db_watchdog as _dw
+        _dw.start()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] 库看门狗启动失败（不阻断）: {exc}", flush=True)
 
 
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)
@@ -666,6 +687,27 @@ if __name__ == "__main__":
     _asyncio.set_event_loop(_main_loop)
     _loops.set_main_loop(_main_loop)
     _loops.start_lag_monitor(_main_loop)
+    # [runner 分槽环 2026-11-05] 卡按子树根亲和散到 K 条环（lane0＝A）。
+    # 默认 1＝行为与分槽前逐字一致；ECO_RUNNER_LOOPS=2+ 生效。
+    # [多进程拆分 2026-11-06] web 角色没有跑卡域——不起槽环；
+    # 驱动器/调度器/续跑全部 startup 钩子是跑卡域的活：web 一个都不跑，
+    # 非 0 号 runner 只留 goal install（goal/changed 是本进程内监听，
+    # 每张卡在自己的属主进程里改 goal ⇒ 监听必须每个 runner 都有）；
+    # 全库一份的续跑/调度只跑在 0 号，恢复出来的回合经 _run_message
+    # 分片自查自动转去属主。
+    if _procs.is_web():
+        app.router.on_startup.clear()
+    elif _procs.is_runner() and not _procs.is_primary_runner():
+        async def _runner_local_startup() -> None:
+            try:
+                from src.goal import driver as goal_driver
+                goal_driver.install()
+            except Exception:  # noqa: BLE001
+                pass
+        app.router.on_startup[:] = [_runner_local_startup]
+    if _procs.runner_side():
+        _loops.start_runner_lanes(
+            int(os.environ.get("ECO_RUNNER_LOOPS", "1") or "1"))
 
     _holder: dict = {}
 
@@ -673,8 +715,15 @@ if __name__ == "__main__":
         loop_b = _asyncio.new_event_loop()
         _asyncio.set_event_loop(loop_b)
         _loops.set_serving_loop(loop_b)
+        # [多进程拆分 2026-11-06] web 守 5700（对外）；runner-i 守
+        # ECO_RUNNER_BASE_PORT+i（缺省 5701+i，回环只接 web 反代与
+        # runner 间转发）；all＝旧行为单进程 5700。
+        _base = int(os.environ.get("ECO_RUNNER_BASE_PORT") or 5701)
+        _port = int(os.environ.get("ECO_PORT")
+                    or (_base + _procs.runner_index()
+                        if _procs.is_runner() else 5700))
         config = uvicorn.Config(
-            app, host="127.0.0.1", port=5700, timeout_keep_alive=30,
+            app, host="127.0.0.1", port=_port, timeout_keep_alive=30,
             loop="asyncio",
         )
         server = uvicorn.Server(config)
@@ -697,4 +746,5 @@ if __name__ == "__main__":
         if _srv is not None:
             _srv.should_exit = True
             _serve_thread.join(timeout=5)
+        _loops.stop_runner_lanes()
         _main_loop.close()

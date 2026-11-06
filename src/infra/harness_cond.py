@@ -332,7 +332,7 @@ def eval_cond(cond: Any, ctx: dict[str, Any]) -> bool:
     if str(cond.get("kind") or "") in ("no_event", "has_event"):
         return eval_cond(legacy_to_cond(cond), ctx)
 
-    logger.warning("[harness_cond] 认不出的条件节点 ⇒ 不成立: %s", list(cond)[:6])
+    logger.warning("[harness_cond] 认不出的条件节点 ⇒ 不成立: %s", list(cond))
     return False
 
 

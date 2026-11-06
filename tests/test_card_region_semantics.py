@@ -144,7 +144,7 @@ async def test_schema_does_not_create_duty(sandbox):
 async def test_duty_column_dropped_on_first_access(sandbox):
     """库里有 duty（v2 建过）⇒ 首次访问即 DROP COLUMN。"""
     wid = "work_001"
-    db_file = card_store.WORKS_DIR / wid / "cards.db"
+    db_file = card_db.db_path(wid)
     _make_legacy_db(db_file)
     # 先把 duty 造出来（模拟 v2 建过列的库）
     conn = sqlite3.connect(str(db_file))
@@ -167,7 +167,7 @@ async def test_duty_column_dropped_on_first_access(sandbox):
 async def test_drop_refuses_when_column_has_content(sandbox):
     """★ 非空则拒删、绝不默默销毁数据（保真优先）。"""
     wid = "work_001"
-    db_file = card_store.WORKS_DIR / wid / "cards.db"
+    db_file = card_db.db_path(wid)
     _make_legacy_db(db_file)
     conn = sqlite3.connect(str(db_file))
     conn.execute("ALTER TABLE cards ADD COLUMN duty TEXT")
@@ -191,7 +191,7 @@ async def test_drop_refuses_when_column_has_content(sandbox):
 async def test_schema_changes_are_idempotent_both_ways(sandbox):
     """升（补 coordination）与降（删 duty）反复跑都无异常、内容不变。"""
     wid = "work_001"
-    db_file = card_store.WORKS_DIR / wid / "cards.db"
+    db_file = card_db.db_path(wid)
     _make_legacy_db(db_file)
     conn = sqlite3.connect(str(db_file))
     conn.execute("ALTER TABLE cards ADD COLUMN duty TEXT")

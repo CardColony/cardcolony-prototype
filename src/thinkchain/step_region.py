@@ -34,7 +34,7 @@ PREAMBLE_SOURCE_REF = "board.STEP_BRIEF_TEMPLATE"
 
 # 已完成步 result 的**展示**长度口径——沿用改造前 165 区（800 字符）。
 # 事件 data 里存**全文**（忠实记录），只在 render_injection 的模型可见投影里截断。
-RESULT_DISPLAY_LIMIT = 800
+RESULT_DISPLAY_LIMIT = None  # 已废弃（用户 2026-11 令：所有内容截断一律取消）
 
 # [当前轮注入改assistant自述 2026-10-14] 固定总领的**自述投影**（第一人称「工作规范」）。
 # 规则实质仍来自 board.STEP_BRIEF_TEMPLATE（唯一来源）；本常量是它在投影层的自述改写，
@@ -150,7 +150,7 @@ def render_injection(data: dict[str, Any]) -> str:
         lines.append("我已经完成：")
         for s in done_steps:
             result = (s.get("result") or "").strip()
-            shown = result[:RESULT_DISPLAY_LIMIT] if result else "（无成果记录）"
+            shown = result if result else "（无成果记录）"
             lines.append(f"- 步 {s.get('step_id', '')}：{s.get('prompt', '')}"
                          f" → 成果：{shown}")
     lines.append(board_mod.step_brief_dynamic(data.get("current_step") or {}))

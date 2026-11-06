@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -771,19 +772,19 @@ async def _call_model_resumable(state: "RunState | None" = None, **kwargs: Any):
                 break
             logger.warning(
                 "[resume] 模型调用中断，同一位置立即重发 %d/%d card=%s round=%d 原因=%s",
-                attempt, _RESUME_MAX_ATTEMPTS - 1, _cid, _rnd, str(exc)[:200])
+                attempt, _RESUME_MAX_ATTEMPTS - 1, _cid, _rnd, str(exc))
             try:
                 event_stream.emit(_wid, _cid, "model_resume", {
                     "attempt": attempt,
                     "max": _RESUME_MAX_ATTEMPTS - 1,
                     "round": _rnd,
-                    "reason": str(exc)[:300],
+                    "reason": str(exc),
                 })
             except Exception:  # noqa: BLE001 事件发不出去不影响续跑
                 pass
     assert last is not None
     logger.error("[resume] 中断重发耗尽（%d 次）card=%s round=%d 原因=%s",
-                 _RESUME_MAX_ATTEMPTS, _cid, _rnd, str(last)[:300])
+                 _RESUME_MAX_ATTEMPTS, _cid, _rnd, str(last))
     raise last
 
 
@@ -1455,13 +1456,13 @@ async def _write_chain_summary(state: RunState) -> None:
                 f"- 步 {s.get('id', '')} [{s.get('status', '')}] "
                 f"{s.get('prompt', '')}\n"
                 f"  判据: {s.get('criteria', '')}\n"
-                f"  成果: {(s.get('result') or '').strip()[:500]}")
+                f"  成果: {(s.get('result') or '').strip()}")
         conclusion = (state.final_reply or "").strip()
         status_text = (
             f"【思维链收口】\n"
             f"计划名: {state.chain_plan_name}\n"
             f"终态: 已收口（提交轮三席统合）\n"
-            f"结论: {conclusion[:2000] if conclusion else '（统合稿为空）'}\n"
+            f"结论: {conclusion if conclusion else '（统合稿为空）'}\n"
             f"步成果:\n" + ("\n".join(lines) if lines else "（无步记录）")
         )
         result = await card_store.update_card(
@@ -1741,13 +1742,13 @@ def handle_error(state: RunState, exc: Exception) -> None:
     全备（见 main._scheduled_snapshots），错误路径不再碰盘。
     """
     state.error = str(exc)
-    progress.set_stage(state.work_id, state.card_id, "error", str(exc)[:120])
+    progress.set_stage(state.work_id, state.card_id, "error", str(exc))
     logger.error("模型调用/工具循环失败 card=%s: %s", state.card_id, exc)
     event_stream.emit(state.work_id, state.card_id, "error",
                       # [harness 第 1 步 2026-10-28] 补 error_type：异常类名是
                       # "能当判断依据"的零件（区分断连/超限/权限），整段 error 文本
                       # 只是载荷。改前两者混在一个字段里，条件面只能做子串匹配。
-                      {"error": state.error[:200],
+                      {"error": state.error,
                        "error_type": type(exc).__name__,
                        "rounds": state.rounds})
 
@@ -1835,40 +1836,84 @@ _TRIGGER_TASKS: set["asyncio.Task"] = set()
 _RESPAWN_MAX = 3
 
 
-def _spawn_tracked(coro) -> "asyncio.Task":
-    """create_task ＋ 强引用登记（完成即自动移除）。"""
-    # [双循环事故 2026-11-04] 跑卡域任务只能落在主循环 A 上——
-    # 若被意外在服务循环 B 上 spawn（实测一次 run_once 出现在 B、
-    # 里面 GB 级 snapshot 把 B 冻死），create_task 绑定的是**当前**
-    # running loop，错了零痕迹。⇒ 跨 loop 即打 warning＋落栈留痕。
+_LANE_SEEN: set = set()
+
+
+def _log_lane_assignment(work_id: str, card_id: str, lane) -> None:
+    """每卡首投记一行：实测分布可验（子树根哈希 → 槽环号）。"""
+    key = (work_id, card_id)
+    if key in _LANE_SEEN:
+        return
+    _LANE_SEEN.add(key)
     try:
         from ..infra import loops as _loops
-        _ml = _loops.main_loop()
-        _running = asyncio.get_running_loop()
-        if _ml is not None and _running is not _ml:
-            import traceback as _tb, threading as _th, time as _time
-            _stack = "".join(_tb.format_stack())
-            logger.warning(
-                "[loops] _spawn_tracked 在非主循环上 spawn！coro=%s\n%s",
-                getattr(coro, "__qualname__", coro), _stack)
-            try:  # 全栈落盘（报警行可能被截断，入口帧在最外层）
-                import os as _os
-                with open(_os.path.join("logs", "spawn_forensics.log"),
-                          "a", encoding="utf-8") as _f:
-                    _f.write(f"===== {_time.strftime('%H:%M:%S')} "
-                             f"coro={getattr(coro, '__qualname__', coro)} "
-                             f"thread={_th.current_thread().name} =====\n"
-                             f"{_stack}\n")
-            except OSError:
-                pass
-    except RuntimeError:  # noqa: BLE001 无运行环
+        logger.info("[lanes] card=%s → runner lane %d",
+                    card_id, _loops.runner_lane_index(lane))
+    except Exception:  # noqa: BLE001
         pass
-    except Exception:  # noqa: BLE001 报警自身绝不阻断 spawn
-        pass
-    t = asyncio.create_task(coro)
+
+
+def _spawn_tracked(coro, *, work_id: str = "", card_id: str = ""):
+    """任务起活 ＋ 强引用登记（完成即自动移除）。
+
+    [runner 分槽环 2026-11-05] 带 ``card_id`` 的任务按**子树根亲和**投到
+    对应槽环；无卡上下文投主环 A。跨环经 ``run_coroutine_threadsafe`` ⇒
+    返回 ``concurrent.futures.Future``——``._card_msg_target`` 属性、
+    ``add_done_callback``、``cancel`` 全兼容；**要 await 必须走
+    ``await_spawned``**（CF Future 不能裸 await，需在调用方环上
+    ``wrap_future``）。
+
+    [双循环事故 2026-11-04] 若 spawn 的**发起方**落在服务环 B（emit 链
+    污染），照旧落栈留痕——协程本身仍会被正确路由走，报警只为抓入口。
+    """
+    from ..infra import loops as _loops
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    lane = (_loops.runner_lane_for(work_id, card_id)
+            if card_id else _loops.main_loop())
+    if lane is None:
+        lane = _loops.main_loop()
+    if running is not None and running is _loops.serving_loop():
+        _forensic_spawn_on_serving(coro)
+    if lane is not None and running is not lane:
+        t = asyncio.run_coroutine_threadsafe(coro, lane)
+        if card_id:
+            _log_lane_assignment(work_id, card_id, lane)
+    else:
+        t = asyncio.create_task(coro)
     _TRIGGER_TASKS.add(t)
     t.add_done_callback(_TRIGGER_TASKS.discard)
     return t
+
+
+async def await_spawned(t):
+    """await 一个 _spawn_tracked 返回值：CF Future ⇒ 绑当前环；Task ⇒ 直接等。"""
+    if isinstance(t, concurrent.futures.Future):
+        return await asyncio.wrap_future(t)
+    return await t
+
+
+def _forensic_spawn_on_serving(coro) -> None:
+    try:
+        import traceback as _tb, threading as _th, time as _time
+        _stack = "".join(_tb.format_stack())
+        logger.warning(
+            "[loops] _spawn_tracked 发起于服务循环！coro=%s\n%s",
+            getattr(coro, "__qualname__", coro), _stack)
+        try:
+            import os as _os
+            with open(_os.path.join("logs", "spawn_forensics.log"),
+                      "a", encoding="utf-8") as _f:
+                _f.write(f"===== {_time.strftime('%H:%M:%S')} "
+                         f"coro={getattr(coro, '__qualname__', coro)} "
+                         f"thread={_th.current_thread().name} =====\n"
+                         f"{_stack}\n")
+        except OSError:
+            pass
+    except Exception:  # noqa: BLE001 报警自身绝不阻断 spawn
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1966,12 +2011,12 @@ async def _auto_reply_pending_letters(work_id: str, card_id: str,
                          work_id, card_id, msg_id, exc)
             session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
                                 {"reason": "send_failed", "msg_id": msg_id,
-                                 "error": str(exc)[:120]})
+                                 "error": str(exc)})
             continue
         if isinstance(result, dict) and result.get("error"):
             session_ops.ops_log("card_msg_answer_failed", work_id, card_id,
                                 {"reason": "send_failed", "msg_id": msg_id,
-                                 "error": str(result.get("error"))[:120]})
+                                 "error": str(result.get("error"))})
             continue
         session_ops.ops_log("card_msg_answer_sent", work_id, card_id,
                             {"msg_id": str((result or {}).get("msg_id", "")),
@@ -2004,6 +2049,15 @@ async def deliver_now(work_id: str, card_id: str, *,
     # 开关由 tests/conftest.py 设置，显式且只影响这一处。
     if os.environ.get("ECO_NO_AUTO_DELIVER") == "1":
         return False
+    # [多进程拆分 2026-11-06] 卡不归本片——让属主 runner 自己判 pending/起回合。
+    from ..infra import procs as _procs
+    if (_procs.is_runner()
+            and _procs.owner_index_of(work_id, card_id)
+            != _procs.runner_index()):
+        _r = await _procs.forward_ctl(work_id, card_id, "/ctl/deliver", {
+            "work_id": work_id, "card_id": card_id,
+            "text": text, "source": source})
+        return bool(_r.get("delivered"))
     # [增量投递 2026-10-23 · 用户令「读过的信息就从 box 里清掉」]
     # 用 **take_pending**（读 + 推水位同一事务）而不是 list_pending：投递即消费。
     # 改前只读不消费 ⇒ 水位永不前进 ⇒ 同一批消息被反复拼进 prompt（实测
@@ -2061,7 +2115,8 @@ async def deliver_now(work_id: str, card_id: str, *,
                              .get("from_card") or "")})
         task = _spawn_tracked(
             _routes._run_message(work_id, card_id, prompt, None,
-                                 append_user=False, source=_src))
+                                 append_user=False, source=_src),
+            work_id=work_id, card_id=card_id)
         task._card_msg_target = card_id  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)
         session_ops.ops_log("card_msg_deliver_now", work_id, card_id,
@@ -2172,7 +2227,8 @@ async def schedule_card_message_triggers(state: RunState) -> None:
             prompt = _fallback_card_msg_prompt(pending)
         task = _spawn_tracked(
             _routes._run_message(work_id, target_id, prompt,
-                                 None, append_user=True))
+                                 None, append_user=True),
+            work_id=work_id, card_id=target_id)
         task._card_msg_target = target_id  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)
 
@@ -2186,7 +2242,7 @@ async def schedule_card_message_triggers(state: RunState) -> None:
                                  _tid: str = target_id,
                                  _pending: list = list(pending)) -> None:
             try:
-                resp = await t
+                resp = await await_spawned(t)
             except Exception as exc:  # noqa: BLE001 已由 done_callback 记日志
                 logger.error("[K3] 调起任务异常（watch）target=%s: %s", _tid, exc)
                 return
@@ -2252,7 +2308,8 @@ async def schedule_card_message_triggers(state: RunState) -> None:
             else:
                 logger.warning("[K3] 调起回合返回形态未知 target=%s: %r", _tid, resp)
 
-        _spawn_tracked(_watch_pending(task, work_id, target_id))
+        _spawn_tracked(_watch_pending(task, work_id, target_id),
+                       work_id=work_id, card_id=target_id)
 
     # ============================================================
     # [排队语义 2026-10-23 · 用户令] 本轮**不在回合内**起下一回合。

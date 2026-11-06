@@ -100,8 +100,8 @@ def _rebuild_halted(work_id: str) -> None:
                 continue
             d = last.get("data") or {}
             _HALTED[(work_id, cid)] = {
-                "reason": str(d.get("reason") or "")[:300],
-                "by": str(d.get("by") or "")[:80],
+                "reason": str(d.get("reason") or ""),
+                "by": str(d.get("by") or ""),
                 "ts": str(d.get("ts") or last.get("ts") or ""),
             }
     except Exception as exc:  # noqa: BLE001 重建失败不阻断（标记集可能不全）
@@ -115,8 +115,8 @@ def halt(work_id: str, card_id: str, reason: str = "", by: str = "") -> dict[str
     from datetime import datetime, timezone, timedelta
     _rebuild_halted(work_id)
     _HALTED[(work_id, card_id)] = {
-        "reason": str(reason or "")[:300],
-        "by": str(by or "")[:80],
+        "reason": str(reason or ""),
+        "by": str(by or ""),
         "ts": datetime.now(timezone(timedelta(hours=8))).isoformat(),
     }
     _emit_halt(work_id, card_id, "card_halted", dict(_HALTED[(work_id, card_id)]))
@@ -130,9 +130,9 @@ def unhalt(work_id: str, card_id: str, by: str = "", via: str = "") -> bool:
     entry = _HALTED.pop((work_id, card_id), None)
     if entry is not None:
         _emit_halt(work_id, card_id, "card_unhalted", {
-            "by": str(by or "")[:80], "via": str(via or "")[:80],
-            "was_by": str(entry.get("by") or "")[:80],
-            "was_reason": str(entry.get("reason") or "")[:300],
+            "by": str(by or ""), "via": str(via or ""),
+            "was_by": str(entry.get("by") or ""),
+            "was_reason": str(entry.get("reason") or ""),
         })
     return entry is not None
 

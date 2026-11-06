@@ -115,7 +115,7 @@ def _normalize_row(raw: dict) -> dict:
         fb = lr.get("fallback")
         if isinstance(fb, str) and fb.strip():
             out["last_routed"]["fallback"] = fb.strip()
-            out["last_routed"]["reason"] = str(lr.get("reason") or "")[:200]
+            out["last_routed"]["reason"] = str(lr.get("reason") or "")
     src = raw.get("src")
     out["src"] = "manual" if src == "manual" else "default"
     return out

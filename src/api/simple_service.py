@@ -461,7 +461,7 @@ async def _call_viewpoint(
         return meta
     except Exception as exc:
         meta["latency_ms"] = int((time.monotonic() - t0) * 1000)
-        meta["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        meta["error"] = f"{type(exc).__name__}: {str(exc)}"
         if on_done:
             try:
                 on_done(meta)
@@ -471,7 +471,7 @@ async def _call_viewpoint(
             try:
                 on_seat("seat_end", {"model": label, "ok": False,
                                      "latency_ms": meta["latency_ms"],
-                                     "error": meta.get("error", "")[:160]})
+                                     "error": meta.get("error", "")})
             except Exception:
                 pass
         return meta

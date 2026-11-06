@@ -17,6 +17,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,57 @@ logger = logging.getLogger("storage.card")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 WORKS_DIR = BASE_DIR / "works"
+
+
+# [库搬出施工目录 2026-11-07 · work_027 cards.db 被原地清零事故]
+# 生产库（cards.db/facts.db/harness.db）不再放 works/{wid}/ 里——那是卡的 exec
+# 工作区，任意命令/外来二进制都可能误碰。库统一放 **data/{wid}/**（与 works/
+# 平级）：卡在自己的 cwd 里摸不到，路径越界才碰得着（那是恶意，另当别论）。
+# 派生原则与 WORKS_DIR 同纪律：调用时派生、不设路径缓存——tests/conftest.py
+# patch WORKS_DIR 后这里自动跟随沙箱（app_home/data）。**不要给 env 出口**：
+# data/ 必须在 BASE_DIR 内，data_snapshot 靠 relative_to(BASE_DIR) 拍它；
+# 指到仓外＝快照静默不拍库＝备份瞎了。
+def db_root() -> Path:
+    """生产库根目录（``data/``，与 works/ 平级，必须在 BASE_DIR 内）。"""
+    return WORKS_DIR.parent / "data"
+
+
+def db_dir(work_id: str) -> Path:
+    """某个 work 的库目录（``data/{wid}/``）。"""
+    return db_root() / str(work_id)
+
+
+def migrate_db_file(old: Path, new: Path) -> Path:
+    """``old → new`` 原子搬库（含 ``-wal``/``-shm`` 旁挂），返回生效路径。
+
+    只在「新位置没有、旧位置还在」时动手；``os.replace`` 同卷原子改名。
+    两边都在 ⇒ 旧文件原地留（记 warning，绝不覆盖新库——它可能已经在用）。
+    调用方应在外层持锁（card_db 用 ``_lock_for``；其余 store 各自单例
+    天然串行）。
+    """
+    if new.exists() or not old.exists():
+        return new
+    new.parent.mkdir(parents=True, exist_ok=True)
+    moved = False
+    for suffix in ("", "-wal", "-shm"):
+        src = old.with_name(old.name + suffix)
+        dst = new.with_name(new.name + suffix)
+        try:
+            if src.exists():
+                os.replace(src, dst)
+                moved = moved or suffix == ""
+        except OSError as exc:  # noqa: BLE001 搬不动就留原地（宁可双份不丢数据）
+            logger.warning(
+                "[db] 库搬迁失败 %s → %s: %s（旧文件保留原样）", src, dst, exc)
+    if moved:
+        logger.warning("[db] 库已搬出施工目录: %s → %s", old, new)
+    return new if new.exists() else old
+
+
+def migrate_db_to_data_dir(work_id: str, db_name: str) -> Path:
+    """把 ``works/{wid}/{db_name}`` 惰性搬到 ``data/{wid}/{db_name}``，返回新路径。"""
+    return migrate_db_file(WORKS_DIR / str(work_id) / db_name,
+                           db_dir(work_id) / db_name)
 
 # [差事·事实归属 2026-11-01] 回合行动者：工具执行层（card_tools.execute_tool）
 # 绑定的「这一手是谁动的」。update_card 给卡面写事件填 ``by``——改前 ``_by``
@@ -1548,7 +1600,7 @@ async def update_card(
                 work_id, card_id, "card_block_edited",
                 card_type=str(cur_meta.get("card_type") or ""),
                 block=_b,
-                old=_old_val[:2000], new=_new_val[:2000],
+                old=_old_val, new=_new_val,
                 by=_ev_by, cause=_ev_cause or "system",
                 # [现状超长提醒 2026-11-04] new/old 截 2000 进 payload，
                 # 量真实长度要用 *_len 零件（optional，条件面可用）。
@@ -1576,7 +1628,7 @@ async def update_card(
                 work_id, card_id, "card_block_edited",
                 card_type=str(cur_meta.get("card_type") or ""),
                 block=_k,
-                old=str(_old_m)[:2000], new=str(_new_m)[:2000],
+                old=str(_old_m), new=str(_new_m),
                 by=_ev_by, cause=_ev_cause or "system",
                 extra={"old_len": len(str(_old_m or "")),
                        "new_len": len(str(_new_m or ""))},
@@ -1591,7 +1643,7 @@ async def update_card(
                     by=_ev_by, cause=_ev_cause or "system",
                     extra={"goal": str(
                         updates.get("goal") or cur_meta.get("goal") or ""
-                    )[:500]})
+                    )})
     except Exception as exc:  # noqa: BLE001 事件失败不影响写卡
         logger.warning("[card_store] 状态变更事件失败（不阻断）card=%s: %s",
                        card_id, exc)

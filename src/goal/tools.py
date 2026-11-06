@@ -138,8 +138,7 @@ async def _zero_role_close_gate_block(work_id: str, current_id: str,
         return _err("validation",
                     "收口被拒：本 work 有 "
                     f"{len(_work_cards)} 张工作卡"
-                    f"（{', '.join(_work_cards[:5])}"
-                    f"{'…' if len(_work_cards) > 5 else ''}），当前零个职能角色在盯"
+                    f"（{', '.join(_work_cards)}），当前零个职能角色在盯"
                     "（active 职能数为 0，或均为空壳——空壳等于没人盯）。"
                     "出路：用 create_function 组建职能（设几个、设什么域、盯哪些卡，"
                     "由你判断；建好后需 duty.state=active 且职责书非空）；"
@@ -258,7 +257,7 @@ async def h_update_goal(work_id: str, current_id: str,
             _blockers = []
         if _blockers:
             _desc = "；".join(
-                f"{d.get('id')}: {str(d.get('instruction') or '')[:60]}"
+                f"{d.get('id')}: {str(d.get('instruction') or '')}"
                 for d in _blockers[:3])
             return _err("ROLE_DIRECTIVE_BLOCKING",
                         f"收口被拒：本卡还有 {len(_blockers)} 条未验收的角色指令"

@@ -166,3 +166,70 @@ async def test_prompt_result_chinese_quota_error_is_classified_as_quota():
             "_meta": {"codebuddy.ai/errorMessage": raw},
         })
     assert ei.value.is_quota is True, raw
+
+
+# ============================================ ③ 2026-11-06：run() 端到端回归钉
+class _FakeReader:
+    """按行吐字节的最小 reader（内存管道，不真起进程）。"""
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = list(lines)
+        self._i = 0
+
+    async def readline(self) -> bytes:
+        if self._i >= len(self._lines):
+            return b""
+        b = self._lines[self._i]
+        self._i += 1
+        return b
+
+
+class _FakeProc:
+    """最小子进程：stdout/stderr 各一个 reader + wait/kill。"""
+
+    def __init__(self, out_lines: list[bytes], err_lines: list[bytes],
+                 rc: int = 0) -> None:
+        self.stdout = _FakeReader(out_lines)
+        self.stderr = _FakeReader(err_lines)
+        self._rc = rc
+        self.killed = False
+
+    async def wait(self) -> int:
+        return self._rc
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+@pytest.mark.asyncio
+async def test_run_collects_tails_and_never_raises_nameerror(
+        tmp_path, monkeypatch):
+    """★ run() 必须跑完收尾、带回 stdout/stderr 尾巴——不许 NameError。
+
+    **回归背景（2026-11-06 线上）**：``run()`` 收尾处引用了从未赋值的
+    ``stdout`` / ``stderr`` ⇒ **每轮必 NameError** ⇒ 整条 command-code 路
+    一次都没跑通过。旧测试只测纯函数，从不进 ``run()`` 的进程循环 ⇒
+    109 个测试全绿也抓不到它（假信号）。⇒ 本条**真走一遍进程循环**。
+    """
+    proc = _FakeProc(
+        [b'{"type":"event","event":{"type":"run_start","sessionId":"s-1"}}\n',
+         b'{"type":"result","subtype":"success","finalText":"done",'
+         b'"sessionId":"s-1"}\n'],
+        [b"some warning line\n", b"boom detail\n"])
+    captured: dict = {}
+
+    async def fake_exec(*argv, **kwargs):  # noqa: ANN002, ANN003
+        captured["argv"] = argv
+        return proc
+
+    monkeypatch.setattr(cc_client.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setenv("COMMAND_CODE_API_KEY", "k-test")
+    r = cc_client.CcRunner("C:/x/index.mjs", model="m1", timeout=10)
+    res = await r.run("干活的正文", str(tmp_path))
+    assert res["ok"] is True, res
+    assert res["text"] == "done"
+    assert res["rc"] == 0
+    # ★ 修复前：这两行引用未定义变量 ⇒ NameError ⇒ run() 直接炸
+    assert "result" in res["stdout_tail"], res["stdout_tail"]
+    assert "boom detail" in res["stderr_tail"], res["stderr_tail"]
+    assert "warning" in res["stderr_tail"]

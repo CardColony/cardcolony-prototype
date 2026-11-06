@@ -865,44 +865,16 @@ _BLOCK_READ_LABELS = {
 }
 
 
-def _read_card_cap() -> int:
-    """单块回显上限（字符）：READ_CARD_BLOCK_CAP 覆盖，缺省 24000。
-
-    8 万 token 的需求文档（card_021 实案）整块回读一次就上 8 万 token 的
-    线；封顶＋续读指引让「读卡」自身不再能一次吞掉上下文。惰性读 env
-    （先例：memory_store 的 CONDENSE_TRIGGER_TOKENS）。
-    """
-    raw = os.environ.get("READ_CARD_BLOCK_CAP", "").strip()
-    if not raw:
-        return 24000
-    try:
-        v = int(raw)
-        return v if v > 0 else 24000
-    except ValueError:
-        return 24000
-
-
 def _cap_block_text(text: str, label: str, target_id: str) -> str:
-    """块内容封顶：超限截到行边界＋尾部续读指引（非静默——明示行数与怎么续）。"""
-    t = str(text or "")
-    cap = _read_card_cap()
-    if len(t) <= cap:
-        return t
-    head = t[:cap]
-    cut = head.rfind("\n")
-    if cut > cap // 2:
-        head = head[:cut]
-    shown = head.count("\n") + (1 if head else 0)
-    total_lines = t.count("\n") + (1 if t else 0)
-    return (head + f"\n…（本块共 {total_lines} 行/{len(t)} 字，以上为前 "
-            f"{shown} 行——续读：read_card 带 block=\"{label}\" "
-            f"para_start={shown + 1}）")
+    """单块回显：全文返回（不截断——截断制造沟通断层，治不了上下文膨胀）。"""
+    return str(text or "")
 
 
 def _ranged_block_reply(target_id: str, title: str, label: str,
                         text: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """单块按行区间回读：``block``＋``para_start``/``para_end``（与 read_file
-    的 para_* 同口径：1 起、闭区间、越端收敛）。区间本身超 cap 也封顶。"""
+    的 para_* 同口径：1 起、闭区间、越端收敛）。区间是模型自选的导航参数，
+    不是系统强加的截断——不带 para 参数即给全文。"""
     rows = str(text or "").split("\n") if text else []
     total = len(rows)
     try:
@@ -914,20 +886,9 @@ def _ranged_block_reply(target_id: str, title: str, label: str,
         return err("validation", f"para_start={start} 超出范围：该块共 {total} 行")
     end = max(start, min(end, total)) if total else 0
     content = "\n".join(rows[start - 1:end]) if total else ""
-    shown_end = end
-    cap = _read_card_cap()
-    if len(content) > cap:
-        head = content[:cap]
-        cut = head.rfind("\n")
-        if cut > cap // 2:
-            head = head[:cut]
-        shown_end = start + head.count("\n")
-        content = (head + f"\n…（区间 {start}-{end} 共 {len(content)} 字，"
-                   f"仅返回前 {shown_end - start + 1} 行——"
-                   "用更小的 para 区间续读）")
     return {"card_id": target_id, "title": title, "block": label,
             "total_lines": total,
-            "read_lines": f"{start}-{shown_end}" if total else "0-0",
+            "read_lines": f"{start}-{end}" if total else "0-0",
             "content": content}
 
 
@@ -1312,7 +1273,7 @@ async def _h_update_goal(work_id: str, current_id: str,
         if _blockers:
             _desc = "；".join(
                 f"{d.get('id')}→{d.get('target_card_id')}: "
-                f"{str(d.get('instruction') or '')[:60]}"
+                f"{str(d.get('instruction') or '')}"
                 for d in _blockers[:3])
             return err("validation",
                        f"收口被拒：本卡还有 {len(_blockers)} 条未验收的角色指令"
@@ -1534,7 +1495,7 @@ def _collect_deliverables(work_id: str, card_id: str,
     if receipt_md:
         try:
             head = (root / receipt_md).read_text(encoding="utf-8",
-                                               errors="replace")[:600].strip()
+                                               errors="replace").strip()
             if head:
                 excerpt = f"（{receipt_md} 开头）\n{head}"
         except OSError:
@@ -1579,7 +1540,7 @@ async def _h_report_done(work_id: str, current_id: str,
     except Exception:  # noqa: BLE001
         _blockers = []
     if _blockers:
-        _desc = "；".join(f"{d.get('id')}: {str(d.get('instruction') or '')[:60]}"
+        _desc = "；".join(f"{d.get('id')}: {str(d.get('instruction') or '')}"
                           for d in _blockers[:3])
         return err("validation",
                    f"完工被拒：本卡还有 {len(_blockers)} 条未验收的角色指令"
@@ -1612,7 +1573,7 @@ async def _h_report_done(work_id: str, current_id: str,
         # card_029 因此出现「DB 说 complete、事件流说 active」，驱动照着事件流
         # 一直续轮（跑到 43 轮才被人叫停）。目标相位只能由 GoalService 写。
         {"state": "completed"},
-        f"worker 卡完工收口（report_done）：{summary[:80]}",
+        f"worker 卡完工收口（report_done）：{summary}",
     )
     if isinstance(upd, dict) and upd.get("error"):
         return err("internal", str(upd["error"]))
@@ -1758,8 +1719,9 @@ async def _h_create_worker_card(work_id: str, current_id: str,
             f"任务内容：\n{task}"
         )
         first_run = _message_runner._spawn_tracked(
-            _routes._run_message(work_id, new_id, prompt, None, append_user=False)
-        )
+            _routes._run_message(work_id, new_id, prompt, None, append_user=False),
+            work_id=work_id, card_id=new_id)
+        
         first_run._card_msg_target = new_id  # type: ignore[attr-defined]
         started = True
     except Exception as exc:  # noqa: BLE001 首跑拉起失败不吞——如实回报 started=False
@@ -1836,8 +1798,9 @@ async def _h_create_ui_card(work_id: str, current_id: str,
             f"任务内容：\n{task}"
         )
         first_run = _message_runner._spawn_tracked(
-            _routes._run_message(work_id, new_id, prompt, None, append_user=False)
-        )
+            _routes._run_message(work_id, new_id, prompt, None, append_user=False),
+            work_id=work_id, card_id=new_id)
+        
         first_run._card_msg_target = new_id  # type: ignore[attr-defined]
         started = True
     except Exception as exc:  # noqa: BLE001 首跑拉起失败不吞——如实回报 started=False
@@ -1940,11 +1903,13 @@ async def _h_create_deploy_card(work_id: str, current_id: str,
             _tb, _tm = {}, {}
         _facts = [
             f"对象卡：{target}（{tgt_title}）",
-            f"使命：{str(_tb.get('mission') or '（空）')[:800]}",
+            f"使命：{str(_tb.get('mission') or '（空）')}",
         ]
         _req = str(_tb.get("requirements") or _tm.get("requirements_draft")
                    or "").strip()
-        _facts.append(f"需求文档：{(_req[:1500] if _req else '（还没有）')}")
+        # 不截断：需求文档**就是** QA 的验收尺——截 1500 字＝让它拿残本判卷，
+        # 截掉的需求条目永远不会被验到（机械闸审计 2026-11-06 同款病）。
+        _facts.append(f"需求文档：{(_req if _req else '（还没有）')}")
         if code == "qa":
             _how = ("这是阶段验收：对照需求文档逐条判产物现状。"
                     "办完用 report 工具把结论回给派遣方；若你在执行体里干活，"
@@ -1981,7 +1946,8 @@ async def _h_create_deploy_card(work_id: str, current_id: str,
             source={"kind": "deploy", "deployment_id": did,
                     "delegator": current_id},
             act_as=fid, act_meta=ident, ctx_card=new_id,
-            tool_allow=set(dep.get("tools") or [])))
+            tool_allow=set(dep.get("tools") or [])),
+            work_id=work_id, card_id=new_id)
         run._card_msg_target = new_id  # type: ignore[attr-defined]
         started = True
     except Exception as exc:  # noqa: BLE001 唤起失败如实回报——差事账在可重唤
@@ -2035,12 +2001,78 @@ async def _h_report_deploy(work_id: str, current_id: str,
         _mr._spawn_tracked(_mr.deliver_now(
             work_id, to,
             text=f"你收到一条来自 {current_id} 的差事回执，正文已在上文。",
-            source={"kind": "card_msg", "from": current_id}))
+            source={"kind": "card_msg", "from": current_id}),
+            work_id=work_id, card_id=to)
     except Exception as exc:  # noqa: BLE001 投递失败要如实回给模型
         logger.warning("[report] 投递失败 to=%s: %s", to, exc)
         return err("internal", f"差事回执投递失败: {exc}")
     return {"ok": True, "delivered": [{"to": to, "msg_id": _mid}],
             "deployment_id": int(dep.get("id") or 0)}
+
+
+#: 差事卡卡型——收口兜底只对它生效（worker/普通卡走 report_up，不管）。
+DEPLOY_CARD_TYPES = {"qa_card", "pm_card"}
+
+
+async def deploy_unreported_fallback(work_id: str, card_id: str,
+                                     final_text: str,
+                                     meta: Optional[dict[str, Any]] = None
+                                     ) -> None:
+    """[差事回执兜底 2026-11-06] 系统模型差事卡回合正常收口、差事仍
+    effective-active ⇒ 模型把结论写在回合回复里但没调 ``report``——
+    差事会永远挂 active、派遣方永远不知道（线上实证：QA 验收结论躺在
+    会话里，差事账纹丝不动）。wb 执行体路径早就有机械回执
+    （``wb_exec.bridge._finish_deploy_card``），系统模型路径同权：
+    本轮回复文本（clean_text，分析段＋末轮回执全文）作 ``msg_report``
+    发派遣方＋唤醒＋判完＋置完工。
+
+    - 无在派差事 ⇒ 差事已了（模型正常回过）或从没落账——差事卡是
+      一次性场，同样置 completed 退役（wb 收口同口径）；
+    - ``spec=cardwrite`` 不代写——草稿是写操作，不拿对话文本冒充稿件；
+    - 本轮回复为空不发——空回执是噪音，差事挂在 active 列表里如实可见；
+    - 模型已正常调过 report ⇒ 差事已判完不在 active 列 ⇒ 天然跳过，
+      绝不双发。
+    """
+    from ..storage import function_store as _fs
+    deps = _fs.active_for_venue(work_id, card_id, "deploy")
+    if not deps:
+        if str((meta or {}).get("state") or "") != "completed":
+            await card_store.update_card(
+                work_id, card_id, {"state": "completed"},
+                "差事卡完工（差事已了）")
+        return
+    dep = deps[0]
+    spec = str(dep.get("exit_spec") or "report")
+    if spec.startswith("cardwrite"):
+        return
+    body = str(final_text or "").strip()
+    if not body:
+        return
+    fn = str(dep.get("function_id") or "")
+    delegator = str(dep.get("delegator") or "")
+    if not fn or not delegator or ":" in delegator:
+        return
+    title = str(dep.get("venue_label") or card_id)
+    # 不截断：回执内容**就是**交付物——QA 结论的总结论在末尾，截断＝损坏
+    # 交付物（wb 侧 3000 界是防执行体整段输出倒灌，对结论不适用）。
+    # 单轮模型输出天然有界，派遣方会话装得下。
+    text = f"【差事回执·{title}({fn})】\n{body}"
+    from . import message_runner as _mr
+    rec = await session_facade.append_card_message(
+        work_id, delegator, from_card=fn, text=text, msg_type="msg_report")
+    _mr._spawn_tracked(_mr.deliver_now(
+        work_id, delegator,
+        text=f"你收到一条来自 {fn} 的差事回执，正文已在上文。",
+        source={"kind": "card_msg", "from": fn}),
+        work_id=work_id, card_id=delegator)
+    session_ops.ops_log("deploy_fallback_receipt", work_id, card_id,
+                        {"dep": int(dep.get("id") or 0), "to": delegator,
+                         "spec": spec})
+    logger.info("[deploy] 收口兜底回执 card=%s 差事 #%s → %s",
+                card_id, dep.get("id"), delegator)
+    await _fs.sweep_deployments(work_id)
+    await card_store.update_card(
+        work_id, card_id, {"state": "completed"}, "差事卡完工（收口兜底回执）")
 
 
 async def _h_draft_rule_edit(work_id: str, current_id: str,
@@ -2570,7 +2602,7 @@ async def _h_edit_card(work_id: str, current_id: str,
            "matched": matched,
            "occurrences": hits, "replaced": hits if replace_all else 1,
            "at_line": at_line,
-           "before": before_snip[:400], "after": str(new)[:400], **payload}
+           "before": before_snip, "after": str(new), **payload}
     if matched == "normalized":
         # 归一化命中：old_string 与卡面原文**并不相等**（标点编码不同）。
         # 必须说清，否则模型会以为卡面写的就是它抄的那一版，以后引用就错。
@@ -2704,7 +2736,7 @@ async def _h_append_ruling(work_id: str, current_id: str,
         if n == 0:
             return err("validation",
                        "old_string 在需求文档块里找不到，未作任何修改。当前块前 200 字："
-                       + rulings[:200])
+                       + rulings)
         if n > 1:
             return err("validation",
                        f"old_string 出现了 {n} 次，必须唯一才能改；请把前后文带上以缩小范围")
@@ -3725,7 +3757,7 @@ def _log_exec_guard(action: str, *, hits: int = 0, names: list[str] | None = Non
         "action": action,
         "hits": int(hits),
         "names": list(names or []),
-        "cmd_head": (shell_cmd or " ".join(argv or []))[:200],
+        "cmd_head": (shell_cmd or " ".join(argv or [])),
     })
 
 
@@ -4317,7 +4349,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "web_search": ToolDef(
         schema={
             "name": "web_search",
-            "description": "查询网页搜索服务，返回结果列表（标题、链接、摘要、来源、日期）。",
+            "description": "查询网页搜索服务，返回结果列表（标题、链接、摘要、来源、日期）。只给摘要——要正文用 fetch_web 取链接全文。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -4333,7 +4365,7 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "fetch_web": ToolDef(
         schema={
             "name": "fetch_web",
-            "description": "获取指定网页的文本内容。",
+            "description": "获取指定网页的正文文本（JS 渲染页面可能取不全）。web_search 拿到链接后用本工具取全文。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -4762,7 +4794,10 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "glob_files": ToolDef(
         schema={
             "name": "glob_files",
-            "description": "按文件名模式（glob）查找文件，如 '**/*.py'、'*.md'。返回匹配的文件路径列表。",
+            "description": ("按**文件名**模式（glob）找文件，如 '**/*.py'、'ACCEPT_card_41*'。"
+                            "**找文件用它**——只匹配文件名、不读内容、快，不受内容扫描量上限；"
+                            "按内容找行才用 search_files。最多返回 200 条匹配，"
+                            "超出时收窄 pattern 或起始目录。"),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -4956,7 +4991,8 @@ async def _h_wake_card(work_id: str, current_id: str,
             from . import routes as _routes
             task = _mr._spawn_tracked(
                 _routes._run_message(work_id, target_id, prompt,
-                                     None, append_user=False))
+                                     None, append_user=False),
+                work_id=work_id, card_id=target_id)
             started = True
             via = "wake_prompt"
         except Exception as exc:  # noqa: BLE001
@@ -5201,7 +5237,7 @@ async def _h_open_review(work_id: str, current_id: str,
     try:
         event_stream.emit(work_id, rid, "review_batch_opened",
                           {"batch": st["batch"], "target": target,
-                           "members": members, "focus": focus[:200],
+                           "members": members, "focus": focus,
                            "type": batch_type})
     except Exception:  # noqa: BLE001 展示层零阻断
         pass
@@ -5431,7 +5467,7 @@ async def _h_edit_shadow(work_id: str, current_id: str,
     await shadow_store.write_section(work_id, target_id, head, new_text)
     return {"card_id": target_id, "ok": True, "section": section,
             "at_line": at_line, "matched": matched,
-            "value": new_text[:2000]}
+            "value": new_text}
 
 
 async def _h_edit_note(work_id: str, current_id: str,
@@ -5461,7 +5497,7 @@ async def _h_edit_note(work_id: str, current_id: str,
         return err("validation", "替换后内容没有变化（old 与 new 相同？）")
     await shadow_store.write_note(work_id, target_id, new_text)
     return {"card_id": target_id, "ok": True, "at_line": at_line,
-            "matched": matched, "note": new_text[:2000]}
+            "matched": matched, "note": new_text}
 
 
 async def _h_promote_draft(work_id: str, current_id: str,
@@ -5533,7 +5569,7 @@ async def _h_promote_draft(work_id: str, current_id: str,
                 if _fin:
                     event_stream.emit(work_id, rid, "review_batch_closed",
                                       {"batch": _fin.get("closed_batch"),
-                                       "verdict": _verdict[:400]})
+                                       "verdict": _verdict})
         except Exception:  # noqa: BLE001
             pass
         _lines = [
@@ -5542,7 +5578,9 @@ async def _h_promote_draft(work_id: str, current_id: str,
             "全员通过，草稿已转成**正稿**（requirements_state=approved），草稿已清空。",
         ]
         if _verdict:
-            _lines += ["", "评审结论：", _verdict[:1200]]
+            # 评审结论全文进正卡会话——结论本身就是评审交付给正卡的东西，
+            # 截断＝正卡拿到的整改指引是残本（机械闸审计 2026-11-06）。
+            _lines += ["", "评审结论：", _verdict]
         await session_facade.append(work_id, target, {
             "actor": "system", "content": "\n".join(_lines)})
         # [2026-10-29 用户令「评审结束主动唤醒通知卡片」] 光写进会话不够——
@@ -5674,7 +5712,7 @@ async def _h_approve(work_id: str, current_id: str,
             if fin:
                 event_stream.emit(work_id, rid, "review_batch_closed",
                                   {"batch": fin.get("closed_batch"),
-                                   "verdict": str(fin.get("verdict") or "")[:400]})
+                                   "verdict": str(fin.get("verdict") or "")})
         except Exception:  # noqa: BLE001
             pass
         # [2026-10-29] 全员通过只是「可以写正稿了」，收口要等子卡调 promote_draft。
@@ -5872,7 +5910,7 @@ async def _h_submit_revision(work_id: str, current_id: str,
     try:
         event_stream.emit(work_id, rid, "review_target_responded", {
             "batch": st.get("batch"), "target": current_id,
-            "summary": summary[:2000], "responded_seq": seq,
+            "summary": summary, "responded_seq": seq,
             "draft": int(st.get("draft") or 1),
         })
     except Exception:  # noqa: BLE001
@@ -6443,7 +6481,8 @@ async def _h_report_up(work_id: str, current_id: str,
         _mr._spawn_tracked(_mr.deliver_now(
             work_id, parent,
             text=f"你收到一条来自 {current_id} 的汇报，正文已在上文。",
-            source={"kind": "card_msg", "from": current_id}))
+            source={"kind": "card_msg", "from": current_id}),
+            work_id=work_id, card_id=parent)
     except Exception as exc:  # noqa: BLE001 投递失败要如实回给模型
         logger.warning("[report_up] 投递失败 to=%s: %s", parent, exc)
         return err("internal", f"汇报投递失败: {exc}")
@@ -6612,13 +6651,14 @@ async def _h_continue_task(work_id: str, current_id: str,
     from . import routes as _routes
     try:
         _mr._spawn_tracked(_routes._run_message(
-            work_id, target, f"【续派任务】{task}", None, append_user=False))
+            work_id, target, f"【续派任务】{task}", None, append_user=False),
+            work_id=work_id, card_id=target)
         fired = True
     except Exception as exc:  # noqa: BLE001 点火失败不撤续派(目标已在,下轮会跑)
         logger.warning("[continue_task] 点火失败 card=%s: %s", target, exc)
         fired = False
     session_ops.ops_log("worker_continue_task", work_id, target,
-                        {"by": current_id, "task": task[:200],
+                        {"by": current_id, "task": task,
                          "goal": goal_started})
     return {"ok": True, "card_id": target, "goal": goal_started,
             "ignited": fired,
@@ -6784,7 +6824,8 @@ async def _h_scene_direct(work_id: str, current_id: str,
         work_id, target,
         text=(f"你收到一条来自 {current_id} 的指令，正文已在上文（卡间指令）。"
               f"请按其执行，完成后用 report_up 汇报。"),
-        source={"kind": "card_msg", "from": current_id}))
+        source={"kind": "card_msg", "from": current_id}),
+        work_id=work_id, card_id=target)
     return {"ok": True, "card_id": target, "msg_id": msg_id,
             "note": "指令已送达(对方被唤醒,按验收判据执行)"}
 
@@ -6896,14 +6937,14 @@ async def _h_silence_card(work_id: str, current_id: str,
     try:
         from . import event_stream
         event_stream.emit(work_id, target, "card_governance", {
-            "state": rec["state"], "reason": rec["reason"][:200],
+            "state": rec["state"], "reason": rec["reason"],
             "by": current_id,
         })
     except Exception:  # noqa: BLE001
         pass
     session_ops.ops_log("card_governance", work_id, target,
                         {"state": rec["state"], "by": current_id,
-                         "reason": rec["reason"][:200]})
+                         "reason": rec["reason"]})
     return {"ok": True, "card_id": target, "state": rec["state"],
             "note": ("已沉默:不再接收内部消息,直到被激活"
                      if action == "silence" else "已激活:恢复接收")}
@@ -6959,19 +7000,19 @@ async def _h_stop_card(work_id: str, current_id: str,
         try:
             out["goal"] = await _control.stop_auto(work_id, target)
         except Exception as exc:  # noqa: BLE001 goal 暂停失败不影响轮停止
-            out["goal"] = {"error": str(exc)[:200]}
+            out["goal"] = {"error": str(exc)}
     try:
         from . import event_stream
         event_stream.emit(work_id, current_id, "card_stopped", {
-            "target": target, "mode": mode, "reason": reason[:200],
+            "target": target, "mode": mode, "reason": reason,
         })
         event_stream.emit(work_id, target, "card_stopped_self", {
-            "mode": mode, "reason": reason[:200], "by": current_id,
+            "mode": mode, "reason": reason, "by": current_id,
         })
     except Exception:  # noqa: BLE001
         pass
     session_ops.ops_log("card_stopped", work_id, target,
-                        {"mode": mode, "by": current_id, "reason": reason[:200]})
+                        {"mode": mode, "by": current_id, "reason": reason})
     return out
 
 
@@ -7014,7 +7055,7 @@ async def _h_curate_face(work_id: str, current_id: str,
         n = requirements.count(str(old_string))
         if n == 0:
             return err("validation", "old_string 在需求文档块里找不到,未作任何修改。"
-                       "当前块前 200 字:" + requirements[:200])
+                       "当前块内容:" + requirements)
         if n > 1:
             return err("validation",
                        f"old_string 出现了 {n} 次,必须唯一才能改;请带前后文缩小范围")
@@ -7036,7 +7077,7 @@ async def _h_curate_face(work_id: str, current_id: str,
             f"策展 {target_id} 引导块{mode_label}"
             + (f"·{note}" if note else ""),
             sources=[], targets=[target_id],
-            evidence=[(new_requirements[:200])], auto=False)
+            evidence=[(new_requirements)], auto=False)
     except Exception:  # noqa: BLE001 留痕失败不挡执笔
         pass
     # [头尾介入 2026-10-25] 头事件**不在本 handler 发**——挂在底层写入路径
@@ -7061,17 +7102,17 @@ async def _h_confirm_with_user(work_id: str, current_id: str,
     for i, it in enumerate(items, 1):
         lines.append(f"  {i}. {it}")
     if arguments.get("context"):
-        lines += ["", f"背景:{str(arguments['context'])[:800]}"]
+        lines += ["", f"背景:{str(arguments['context'])}"]
     try:
         await function_store.add_verdict(
             work_id, current_id, "speak",
-            "向用户发起确认:" + (subject or ";".join(items)[:120]),
-            sources=[], targets=["user"], evidence=items[:8], auto=False)
+            "向用户发起确认:" + (subject or ";".join(items)),
+            sources=[], targets=["user"], evidence=items, auto=False)
     except Exception:  # noqa: BLE001
         pass
     from . import event_stream
     event_stream.emit(work_id, current_id, "ceo_confirm_requested", {
-        "subject": subject, "premises": items[:8],
+        "subject": subject, "premises": items,
     })
     return {"asked": True, "premises": len(items), "text": "\n".join(lines)}
 
@@ -7089,13 +7130,13 @@ async def _h_report_to_user(work_id: str, current_id: str,
     try:
         await shadow_store.append_to_section(
             work_id, current_id, "## 进度",
-            [f"- [{function_room_summary_ts()}] 汇报:{content[:400]}"])
+            [f"- [{function_room_summary_ts()}] 汇报:{content}"])
     except Exception:  # noqa: BLE001
         pass
     try:
         await function_store.add_verdict(
             work_id, current_id, "speak",
-            "向用户汇报:" + content[:120],
+            "向用户汇报:" + content,
             sources=[], targets=["user"], evidence=[], auto=False)
     except Exception:  # noqa: BLE001
         pass
@@ -7104,8 +7145,10 @@ async def _h_report_to_user(work_id: str, current_id: str,
     # 只有 content（总裁对用户的中间汇报不分 done/phase/blocked）。
     # 汇报的 kind 归 `msg_report` 事件（`_h_report_up` 发信时带 extra={"kind":…}），
     # 不在这一条上硬塞一个不存在的字段。
+    # 汇报全文进事件帧——这是汇报**唯一**的全量出口（影子进度/verdict
+    # 标签都是摘要件）。截断＝用户看不到汇报尾（机械闸审计 2026-11-06）。
     event_stream.emit(work_id, current_id, "ceo_report", {
-        "content": content[:2000],
+        "content": content,
     })
     return {"reported": True, "chars": len(content)}
 

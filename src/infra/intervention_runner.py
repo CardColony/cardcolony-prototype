@@ -68,7 +68,7 @@ def _check_review_promote(work_id: str, matter: dict[str, Any]) -> tuple[str, di
         return "open", {"batch": batch_now}
     if verdict:
         return "resolved", {"closed_batch": str(st.get("closed_batch") or ""),
-                            "verdict": verdict[:200]}
+                            "verdict": verdict}
     return "cancelled", {"reason": f"批次已不在（now={batch_now or '空'}）且无正稿"}
 
 
@@ -91,7 +91,7 @@ def _check(work_id: str, matter: dict[str, Any]) -> tuple[str, dict]:
             policy_id=str(matter.get("policy_id") or ""),
             matter_id=str(matter.get("matter_id") or ""),
             detail={"matter_kind": str(matter.get("kind") or ""),
-                    "error": str(exc)[:300]})
+                    "error": str(exc)})
         return "open", {"reason": f"check_exc:{exc}"}
 
 
@@ -173,7 +173,7 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
                             kind=type(exc).__name__, policy_id=pid,
                             card_id=str(basis.get("card") or ""),
                             detail={"where": where_expr,
-                                    "error": str(exc)[:300]})
+                                    "error": str(exc)})
             targets = []
         f["_targets"] = targets
 
@@ -319,11 +319,11 @@ def mark_receipt(work_id: str, action_id: str, result: Any) -> None:
     ok = bool(result)
     st.mark_action(work_id, action_id,
                    "delivered" if ok else "failed",
-                   receipt={"result": str(result or "")[:300]})
+                   receipt={"result": str(result or "")})
     if not ok:
         st.record_error(work_id, stage="deliver", kind="delivery_failed",
                         action_id=str(action_id or ""),
-                        detail={"result": str(result or "")[:300]})
+                        detail={"result": str(result or "")})
 
 
 def already_delivered(work_id: str, action_id: str) -> bool:
@@ -339,7 +339,7 @@ def already_delivered(work_id: str, action_id: str) -> bool:
         intervention_store.store().record_error(
             work_id, stage="deliver", kind="dedup_exc",
             action_id=str(action_id or ""),
-            detail={"error": str(exc)[:300]})
+            detail={"error": str(exc)})
         return False
 
 
@@ -404,11 +404,11 @@ async def resume(work_id: str) -> dict[str, int]:
         except Exception as exc:  # noqa: BLE001 单动作失败不拖垮其余
             logger.warning("[intervention] 重投失败 %s: %s", aid, exc)
             st.mark_action(work_id, aid, "failed",
-                           receipt={"result": f"resume_exc:{exc}"[:300]})
+                           receipt={"result": f"resume_exc:{exc}"})
             st.record_error(work_id, stage="resume",
                             kind=type(exc).__name__, action_id=aid,
                             policy_id=str(a.get("policy_id") or ""),
-                            detail={"error": str(exc)[:300]})
+                            detail={"error": str(exc)})
     return stats
 
 
