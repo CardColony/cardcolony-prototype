@@ -731,6 +731,8 @@ body.rm .skel i{animation:none;background:var(--surface2)}
         <div class="mm-item" data-mm="collapse">全部折叠<span class="mk">▸</span></div>
         <div class="mm-sep"></div>
         <div class="mm-item" data-mm="lines">关系线显示<span class="mk" id="mmLines">开</span></div>
+        <div class="mm-item" data-mm="tip">tooltip 示例（card_001）<span class="mk">◍</span></div>
+        <div class="mm-item" data-mm="drawer">对话抽屉示例（card_257）<span class="mk">◧</span></div>
         <div class="mm-item" data-mm="states">四态面板<span class="mk">▭</span></div>
         <div class="mm-item" data-mm="design">设计说明<span class="mk">◐</span></div>
         <div class="mm-sep"></div>
@@ -1657,6 +1659,9 @@ $$('.mm-item').forEach(it=>it.addEventListener('click',()=>{
   if(k==='lines'){const on=world.classList.toggle('nolines');$('#mmLines').textContent=on?'关':'开';}
   if(k==='states'){$('#fourState').classList.add('open');openSheetName='四态';apply();}
   if(k==='design')$('#dpanel').classList.add('open');
+  if(k==='tip'){const c=byId['card_001'];
+    const el=document.querySelector('.node[data-id="card_001"]')||document.body; if(c)showTip(c,el);}
+  if(k==='drawer')openDrawer('card_257');
   if(k==='rm'){const on=document.body.classList.toggle('rm');$('#mmRm').textContent=on?'开':'关';
     const c=$('#rmChk'); if(c)c.checked=on; runChecks();}
   if(k==='expand'){folded.clear();DATA.forEach(c=>c.hidden=false);relayout(true);fit();}
@@ -1700,7 +1705,7 @@ $$('.opt').forEach(o=>{
 document.addEventListener('click',e=>{
   if(!e.target.closest('#moreMenu')&&!e.target.closest('#moreBtn'))$('#moreMenu').classList.remove('open');
   if(!e.target.closest('.re-group')&&!e.target.closest('.sheet')&&!e.target.closest('.drawer'))closeAllSheets();
-  if(!e.target.closest('#tooltip')&&!e.target.closest('.node'))hideTip();
+  if(!e.target.closest('#tooltip')&&!e.target.closest('.node')&&!e.target.closest('#moreMenu'))hideTip();
 });
 document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchBtn').click();}
