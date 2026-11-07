@@ -733,6 +733,8 @@ body.rm .skel i{animation:none;background:var(--surface2)}
         <div class="mm-item" data-mm="lines">关系线显示<span class="mk" id="mmLines">开</span></div>
         <div class="mm-item" data-mm="states">四态面板<span class="mk">▭</span></div>
         <div class="mm-item" data-mm="design">设计说明<span class="mk">◐</span></div>
+        <div class="mm-sep"></div>
+        <div class="mm-item" data-mm="rm">动效降级（reduced-motion）<span class="mk" id="mmRm">关</span></div>
       </div>
 
       <div class="fourstate" id="fourState">
@@ -1655,6 +1657,8 @@ $$('.mm-item').forEach(it=>it.addEventListener('click',()=>{
   if(k==='lines'){const on=world.classList.toggle('nolines');$('#mmLines').textContent=on?'关':'开';}
   if(k==='states'){$('#fourState').classList.add('open');openSheetName='四态';apply();}
   if(k==='design')$('#dpanel').classList.add('open');
+  if(k==='rm'){const on=document.body.classList.toggle('rm');$('#mmRm').textContent=on?'开':'关';
+    const c=$('#rmChk'); if(c)c.checked=on; runChecks();}
   if(k==='expand'){folded.clear();DATA.forEach(c=>c.hidden=false);relayout(true);fit();}
   if(k==='collapse'){DATA.forEach(c=>{if(c.parent)folded.add(c.parent);});DATA.forEach(c=>{if(c.parent)c.hidden=true;});relayout(true);fit();}
 }));

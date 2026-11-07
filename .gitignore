@@ -117,8 +117,9 @@ db_quarantine/
 D*Temp*.txt
 _devin_install.ps1
 
-# 一次性排障/磁盘清理脚本（_*​.ps1、wdpid.ps1 等，非项目代码）
+# 一次性排障/磁盘清理脚本（_*​.ps1、_*​.bat、wdpid.ps1 等，非项目代码）
 /_*.ps1
+/_*.bat
 /wdpid.ps1
 # 敏感配置的本地备份（wb_exec 系本就不公开）
 config/*.bak_*
