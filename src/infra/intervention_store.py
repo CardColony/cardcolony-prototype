@@ -112,11 +112,12 @@ class InterventionStore:
 
     # ------------------------------------------------------------ 连接
     def db_path(self, work_id: str) -> Path:
-        # [库搬出施工目录 2026-11-07] harness.db 也放 data/{wid}/。
+        # [库搬出施工目录 2026-11-07] harness.db 也放 works_works_data/{wid}/。
         return self._data_dir(work_id) / DB_NAME
 
     def _data_dir(self, work_id: str) -> Path:
-        return self._root.parent / "data" / str(work_id)
+        # 与 card_store.db_root 同规则：{works根名}_data。
+        return self._root.parent / f"{self._root.name}_data" / str(work_id)
 
     def _conn(self, work_id: str) -> sqlite3.Connection:
         wid = str(work_id)

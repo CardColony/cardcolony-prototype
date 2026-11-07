@@ -457,6 +457,70 @@ const BOARD_CFG = Object.assign(
         return makeRow(t, "评审全员通过", "<span class=\"mk ok\">✓</span>通过", fmtData(d), "ok");
       case "review_batch_closed":
         return makeRow(t, "评审批次收口", "<span class=\"mk\">■</span>收口", fmtData(d), "");
+      // [类型补齐 2026-11-07] 注册表落后事件类型增长——以下原都掉 C5 兜底
+      // 刷一屏「未识别事件」。harness_message/review_round_done 是万级量，
+      // turn_end 按既有约定是运行态内部帧（live 路径 1212 已滤），此处置 null。
+      case "turn_end":
+      case "reasoning_chunk":   // 逐字增量，落盘已由合并 reasoning 承载
+      case "content_chunk":
+        return null;
+      case "harness_message":
+        return makeRow(t, "条件集消息" + fld("to", d.to) + fld("kind", d.kind),
+          '<span class="mk">⇄</span>值守', fmtData(d), "lv3");
+      case "review_round_done":
+        return makeRow(t, "评审一轮收口" + fld("batch", d.batch) +
+          fld("all_passed", d.all_passed ? "是" : "") +
+          fld("pending", (d.pending || []).length) + fld("reason", d.reason),
+          d.all_passed ? '<span class="mk ok">✓</span>收口' : '<span class="mk">◐</span>收口',
+          fmtData(d), d.all_passed ? "ok" : "lv3");
+      case "review_speaking":
+        return makeRow(t, (d.name || d.role || "") + " 评审发言中" + fld("batch", d.batch),
+          '<span class="mk">◌</span>评审', fmtData(d), "lv3");
+      case "review_target_turn_end":
+        return makeRow(t, "被评方回合收口" + fld("round", d.round),
+          '<span class="mk">◌</span>评审', fmtData(d), "lv3");
+      case "review_dispatch":
+        return makeRow(t, "评审派活" + fld("kind", d.kind) + fld("to", d.to)
+          + fld("seat", d.seat),
+          '<span class="mk">▶</span>评审', fmtData(d), "");
+      case "review_target_responded":
+        return makeRow(t, "被评方应答" + fld("kind", d.kind) + fld("seq", d.seq),
+          '<span class="mk">◀</span>评审', fmtData(d), "");
+      case "review_draft_drift":
+        return makeRow(t, "评审草稿漂移" + fld("reason", d.reason),
+          '<span class="mk">⚠</span>漂移', fmtData(d), "warn");
+      case "msg_sync":
+        return makeRow(t, "消息同步" + fld("count", d.count) + fld("to", d.to),
+          '<span class="mk">⇄</span>消息', fmtData(d), "lv3");
+      case "msg_notify":
+        return makeRow(t, "消息提醒" + fld("from", d.from) + fld("kind", d.kind),
+          '<span class="mk">✉</span>消息', fmtData(d), "");
+      case "msg_directive":
+        return makeRow(t, "消息指令" + fld("from", d.from) + fld("kind", d.kind),
+          '<span class="mk">✉</span>指令', fmtData(d), "");
+      case "msg_report":
+        return makeRow(t, "消息回报" + fld("from", d.from) + fld("kind", d.kind),
+          '<span class="mk">✉</span>回报', fmtData(d), "");
+      case "model_resume":
+        return makeRow(t, "模型续跑" + fld("attempt", d.attempt) + fld("reason", d.reason),
+          '<span class="mk">↻</span>续跑', fmtData(d), "warn");
+      case "goal/change":
+      case "goal_round":
+        return makeRow(t, "目标回合" + fld("round", d.round) + fld("state", d.state),
+          '<span class="mk">◎</span>目标', fmtData(d), "");
+      case "card_halted":
+        return makeRow(t, "卡已暂停" + fld("reason", d.reason),
+          '<span class="mk">⏸</span>暂停', fmtData(d), "warn");
+      case "card_unhalted":
+        return makeRow(t, "卡已恢复", '<span class="mk">▶</span>恢复', fmtData(d), "");
+      case "coder_done":
+        return makeRow(t, "coder 完工" + fld("summary", d.summary),
+          '<span class="mk ok">✓</span>完工', fmtData(d), "ok");
+      case "card_archived":
+        return makeRow(t, "卡已归档", '<span class="mk">▣</span>归档', fmtData(d), "void");
+      case "user_message":
+        return makeRow(t, "用户消息" + fld("chars", d.chars),
+          '<span class="mk">👤</span>用户', fmtData(d), "");
       default:
         // C5 兜底：注册表没有的类型照示出来，不丢不炸。
         return makeRow(t, "未识别事件" + fld("data", clip(JSON.stringify(d || {}), 60)),
@@ -788,12 +852,19 @@ const BOARD_CFG = Object.assign(
   }
   function renderAssistant(node) {
     const el = _msgRenderers.assistant(node);
+    if (!el) return null;  // 占位串-only 泡剥完为空 → 整泡不渲染
     // 思考块插在正文之前（位置＝数据的函数：思考属本轮 assistant）
     if (node.reasoning) {
       const md = el.querySelector(".md");
+      // [2026-11-07] 占位串剥除兜底：跨 chunk 切开的 REASONING_PLACEHOLDER
+      // 后端逐帧剥不干净，累积成串后在这里整体剥。
+      const reasoning = String(node.reasoning)
+        .split("(系统注入的消息，无模型思考记录)").join("");
       // [5715 · 性能] 走增量渲染器：直播时每帧只**追加**新增部分（不重写整块）。
-      const think = _thinkRenderer.row(node.key, node.reasoning, { done: true });
-      if (md) el.insertBefore(think, md); else el.appendChild(think);
+      if (reasoning) {
+        const think = _thinkRenderer.row(node.key, reasoning, { done: true });
+        if (md) el.insertBefore(think, md); else el.appendChild(think);
+      }
     }
     return withDate(node, el);
   }
@@ -1069,6 +1140,7 @@ const BOARD_CFG = Object.assign(
       lastUsed: Date.now(),     // [T3] 最近使用时刻（LRU/静默超时判据）
       busy: false,              // [T3] 本轮在跑（start→resync/stop 之间）——在跑卡永不释放
       asm: createAssembler(), view: null, liveRunId: "", settled: false,
+      _epochSync: false,          // [死游标 resync] 落盘重建进行中（epochResync 闸）
       /* [对话流照抄 dsh v3] 扁平节点表的分页窗口与「上一帧的 order 引用」：
          winStart      = 窗口起始**节点下标**
          renderedOrder = 上次落位时的 order 数组引用（引用未变＝结构未变）
@@ -1315,10 +1387,12 @@ const BOARD_CFG = Object.assign(
       const resp = await API.getTimeline(wid, cid, from, opts);
       const items = (resp && resp.items) || [];
       if (st && items.length) {
-        const last = items[items.length - 1];
-        if (last && typeof last.seq === "number") {
-          st.diskSeq = Math.max(st.diskSeq || 0, last.seq);
-        }
+        /* [2026-11-07 · 写乱序] items 现按 (ts,seq) 时间序排——末条是「最新」
+           但未必是最大 seq（晚写的事件拿大号）。游标语义＝「已见最大落盘号」，
+           取全表最大值，否则增量拉取会漏掉刚乱序落盘的高号记录。 */
+        let mx = 0;
+        for (const x of items) { const s = (x && x.seq) || 0; if (s > mx) mx = s; }
+        st.diskSeq = Math.max(st.diskSeq || 0, mx);
       }
       /* [对话流分页 2026-10-20] 窗口边界记在会话状态上：
            hasEarlier — 后端是否还有更早的（决定「加载更早」是否可用）
@@ -1351,10 +1425,12 @@ const BOARD_CFG = Object.assign(
       // 不再是整卡历史（P6）。6×500ms 循环保留＝SSE 断连时的对账兜底。
       const items = await fetchTimeline(st, wid, cid, st.pullSeq);
       if (items === null) return false;
-      // 游标推进：取本次 items 末条 seq（后端按 seq 升序返回）
+      // 游标推进：取本次 items 的**最大** seq（时间序排后末条未必最大号）
       if (items.length) {
-        const last = items[items.length - 1];
-        if (last && typeof last.seq === "number" && last.seq > st.pullSeq) st.pullSeq = last.seq;
+        for (const x of items) {
+          const s = (x && x.seq) || 0;
+          if (s > st.pullSeq) st.pullSeq = s;
+        }
       }
       let confirmed = false;
       for (const rec of items) {
@@ -1519,6 +1595,27 @@ const BOARD_CFG = Object.assign(
     return !!(st && st.busy);
   }
 
+  /** [死游标·跨代际 2026-11-09] 服务端 resync 帧 ⇒ 画板从落盘重建。
+      journal seq 进程代际间归零，lastSeq 记着上一代序号 ⇒ 不重锚的话
+      下次 start() 仍是死游标、再触发一次 resync，永不自愈。
+      settled 借作「重建窗口」闸：期间的 live 帧不入板（落盘已带）。 */
+  async function epochResync(st) {
+    if (st._epochSync) return;
+    st._epochSync = true;
+    const prevSettled = st.settled;
+    st.settled = true;          // 重建窗口内所有 live 帧不入板
+    st.lastSeq = 0;
+    st.lastTokenSeq = 0;
+    try {
+      const items = await fetchTimeline(st, st.wid, st.cid,
+        undefined, { tail: BOARD_CFG.initialEvents });
+      if (items) renderSnapshot(st, st.asm.rebuild(items));
+    } finally {
+      st._epochSync = false;
+      st.settled = prevSettled; // 回合原本已结算 ⇒ 保持结算（迟到帧仍不收）
+    }
+  }
+
   /** 开始跟踪新一轮：**一条** SSE（过程帧 + 逐字帧合并）。
       过程帧（ch="e"）→ 装配器 → 受影响节点 upsert；
       逐字帧（ch="t"）→ 装配器（正文/思考增量，不走过程记录）。
@@ -1561,6 +1658,11 @@ const BOARD_CFG = Object.assign(
           const frame = JSON.parse(m.data);
           // 逐字帧：走逐字上屏（**不进**过程装配器的记录通道）
           if (frame.ch === "t") { onTokenFrame(st, frame); return; }
+          /* [死游标·跨代际 2026-11-09] 服务端判本游标来自上一代进程 ⇒
+             画板走落盘重建（disk seq 跨重启单调，唯一权威历史源），
+             双游标归零重锚新代际。借 settled 闸挡住重建窗口内的 live 帧
+             （它们已在落盘尾部、重建自会带上）。 */
+          if (frame.type === "resync") { epochResync(st); return; }
           if (typeof frame.seq === "number" && frame.seq > st.lastSeq) st.lastSeq = frame.seq;
           // [5702] 旧 finish(st)（live 槽收尾）已随旁路退役；done/error 由装配器落节点。
           // [运行态单一真相源 2026-10-21] 但**运行态**必须由帧推进——否则自动续轮/

@@ -112,7 +112,8 @@ async def test_stage_close_with_archived_children(sandbox):
     # (直接测 card_store 的判定路径:通过 update_card completed 触发一次
     #  也会走,这里用内部函数等价验证)
     import sqlite3
-    con = sqlite3.connect(f"works/{wid}/cards.db")
+    from src.storage import card_db as _cdb
+    con = sqlite3.connect(str(_cdb.db_path(wid)))
     live = con.execute(
         "SELECT state FROM cards WHERE parent=?", (parent,)).fetchall()
     con.close()

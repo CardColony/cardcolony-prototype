@@ -97,8 +97,16 @@ def init_git() -> None:
 
 
 def write_pid() -> None:
-    """e. 写入 .server.pid。"""
-    (BASE_DIR / ".server.pid").write_text(str(os.getpid()), encoding="utf-8")
+    """e. 写入 .server.pid。
+
+    [多进程 2026-11-07] web/all＝5700 主进程写 .server.pid；runner-i 写
+    .server-runner{i}.pid——各进程各写各的，不互相覆盖；stop.bat 按
+    .server*.pid 通配全清。
+    """
+    name = ".server.pid"
+    if _procs.is_runner():
+        name = f".server-runner{_procs.runner_index()}.pid"
+    (BASE_DIR / name).write_text(str(os.getpid()), encoding="utf-8")
 
 
 def startup_init() -> None:
@@ -181,6 +189,22 @@ async def _start_goal_driver() -> None:
         await goal_driver.rearm_active_goals()
     except Exception as _exc:  # noqa: BLE001
         print(f"[startup] goal 驱动装载失败（不阻断启动）: {_exc}", flush=True)
+
+
+@app.on_event("startup")
+@on_main
+async def _warm_nav() -> None:
+    """[nav 快照常驻 2026-11-09] 启动即后台建第一份左栏快照——首个 /api/nav
+    请求不再同步等 4~6s 全量重建。快照缓存全局共享，A 环建的 B 环直接命中；
+    runner 没有人调 /api/nav，跳过免得启动恢复风暴里白跑四份全库扫描。"""
+    try:
+        from src.infra import procs as _procs
+        if _procs.is_runner():
+            return
+        from src.api import routes as _routes
+        _routes._nav_rebuild()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] nav 快照预热失败（不阻断启动）: {exc}", flush=True)
 
 
 @app.on_event("startup")

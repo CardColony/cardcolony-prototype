@@ -1073,6 +1073,21 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
             "type": ev_type,
             "data": data,
         })
+        # [2026-11-07] assistant_text 补一条 journal-only 帧进直播流。
+        # 病根：本函数只落盘（event_log.append）不进内存 journal ⇒ SSE 回放
+        # 里 assistant_text 一帧都没有 ⇒ 直播态「中间发言全没了」、只能刷新补。
+        # journal_only=True 防双写（落盘就是上面的 append）；anchor 用实参
+        # run_id/round——读 _anchors 当前锚是错的（user 消息先于 run_start、
+        # 卡间消息落他卡键）。前端按 stream:{run}:{round} 键与落盘记录同键
+        # 去重，直播帧与刷新后回放合成同一节点，不双份。
+        if ev_type == "assistant_text":
+            try:
+                from ..api import event_stream as _es
+                _es.emit(work_id, card_id, ev_type, data,
+                         anchor=(str(run_id or ""), int(round_ or 0)),
+                         journal_only=True)
+            except Exception:  # noqa: BLE001 展示层零阻断
+                pass
     except Exception as exc:  # noqa: BLE001 事件日志零阻断
         logger.warning("[facade] 消息事件落盘失败（不阻断）card=%s type=%s: %s",
                        card_id, ev_type, exc)

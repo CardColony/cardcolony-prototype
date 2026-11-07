@@ -450,7 +450,7 @@ def test_repo_config_shape_is_valid(monkeypatch):
     cfg = wb_config.load()
     # 2026-10-23 用户令：执行体已开闸（enabled=true）
     assert cfg.enabled is True
-    assert len(cfg.candidates) == 10
+    assert len(cfg.candidates) == 13
     weights = {f"{c.executor}:{c.model}": c.weight for c in cfg.candidates}
     prios = {f"{c.executor}:{c.model}": c.priority for c in cfg.candidates}
     # ★★ **2026-11-04 用户令：不再是「配比」，改成「优先级瀑布」**
@@ -460,8 +460,12 @@ def test_repo_config_shape_is_valid(monkeypatch):
     assert prios["wb-oc:flint-40b-free"] == 20
     assert prios["wb-cn:glm-5.3-flash"] == 30
     assert prios["wb-intl:glm-5.3-flash"] == 31
-    # ★ **Command Code 的三个免费档**（2026-11-04：逐个真调验过的）
-    assert prios["wb-cc:inclusionai/ling-3.1-flash-1019:free"] == 25
+    # ★ **2026-11-07 11:10 定时探测逐个真调 ok 的四个 oc 免费档**
+    assert prios["wb-oc:deepseek-v4.1-flash-free"] == 21
+    assert prios["wb-oc:big-pickle"] == 22
+    assert prios["wb-oc:glm-5.3-flash-free"] == 23
+    assert prios["wb-oc:mimo-v2.6-flash-free"] == 24
+    # ★ **Command Code 的两个免费档**（2026-11-07：ling 已下架，见下方断言）
     assert prios["wb-cc:reflection/beam:free"] == 26
     assert prios["wb-cc:stealth/glyph-cluster:free"] == 27
     # ★ **HY4 限时免费档**（2026-11-04 实测：cn 账号 `hy4free` x0.00、真调 13.8s 出活）
@@ -474,13 +478,19 @@ def test_repo_config_shape_is_valid(monkeypatch):
     order = sorted(prios.items(), key=lambda kv: kv[1])
     assert [k for k, _ in order] == [
         "wb-devin:swe-2-max", "wb-oc:flint-40b-free",
-        "wb-cc:inclusionai/ling-3.1-flash-1019:free",
+        "wb-oc:deepseek-v4.1-flash-free", "wb-oc:big-pickle",
+        "wb-oc:glm-5.3-flash-free", "wb-oc:mimo-v2.6-flash-free",
         "wb-cc:reflection/beam:free",
         "wb-cc:stealth/glyph-cluster:free",
         "wb-cn:hy4free",
         "wb-cn:glm-5.3-flash", "wb-intl:glm-5.3-flash",
         "wb-cn:hy3", "wb-intl:hy3",
     ]
+    # ★★ **接线守卫**：oc 候选必须同步进 `oc_models`，否则 `_run_opencode`
+    #   会把不在清单里的模型**强制换成 `oc_models[0]`**（＝flint）⇒ 新档白加。
+    oc_ex = cfg.executor("wb-oc")
+    assert {c.model for c in cfg.candidates if c.executor == "wb-oc"} <= set(
+        oc_ex.oc_models), "oc 候选漏进 oc_models ⇒ 运行时会被强制换成 flint"
     # ★ **表里不许出现付费/自定义端点**（用户明确：那些一样要花钱）
     for key in weights:
         model = key.split(":", 1)[1]
@@ -489,9 +499,16 @@ def test_repo_config_shape_is_valid(monkeypatch):
     # ★ 已下架 / 已不免费 / 已不可用的档，一律不许再在表里
     assert "wb-intl:deepseek-v4.1-flash" not in weights   # 已不免费（客户端实测扣 1462）
     assert "wb-cn:step-5-preview" not in weights          # 已不免费
+    assert "wb-cc:inclusionai/ling-3.1-flash-1019:free" not in weights  # 11-07 上游已下架
     assert "wb-intl:step-5-preview" not in weights       # 已下架
     assert "wb-oc:beam-free" not in weights               # 403 地区限制
-    assert "wb-oc:deepseek-v4.1-flash-free" not in weights  # 免费档超时零产出
+    # ★★ **2026-11-07 复测推翻 11-01 的旧定案**：11-01 记「这四档真派活
+    #   242s 超时、零正文」⇒ 当时断言不许进表；11-07 用「写文件 + 工具读回」
+    #   真派活复测，四档全部 6 次工具调用、5.6~12.6s 出活、零错误
+    #   （logs/wb_exec/oc_free_verify_result.json）⇒ 旧断言作废，允许进表。
+    for m in ("deepseek-v4.1-flash-free", "big-pickle",
+              "glm-5.3-flash-free", "mimo-v2.6-flash-free"):
+        assert f"wb-oc:{m}" in weights, f"11-07 真派活复测通过，应在表里: {m}"
     # ★ 备用端点必须在 fallback.models 里（否则降级链找不到它）
     assert cfg.fallback_models == ("hy3",)
     # ★ opencode 执行体：**多 key ⇒ 多工位**（2026-11-03 用户给了第二个 key）
@@ -499,7 +516,9 @@ def test_repo_config_shape_is_valid(monkeypatch):
     assert oc is not None
     assert oc.oc_use_builtin_provider is True
     assert oc.oc_provider_id == "opencode"
-    assert list(oc.oc_models) == ["flint-40b-free"]
+    assert list(oc.oc_models) == [
+        "flint-40b-free", "deepseek-v4.1-flash-free", "big-pickle",
+        "glm-5.3-flash-free", "mimo-v2.6-flash-free"]
     assert list(oc.oc_api_key_envs) == ["OPENCODE_API_KEY", "OPENCODE2_API_KEY"]
     assert oc.oc_pool_size == 2
     # ★ Devin 执行体：CLI + SWE-2 Max（用户套餐里免费）
@@ -517,7 +536,10 @@ def test_repo_config_shape_is_valid(monkeypatch):
     assert oc is not None
     assert oc.oc_use_builtin_provider is True
     assert oc.oc_provider_id == "opencode"
-    assert "deepseek-v4.1-flash-free" not in list(oc.oc_models)
+    # ★ 11-07 真派活复测通过 ⇒ 从「不许在 oc_models」改为「必须在」
+    #   （原断言依据 11-01 的 242s 超时零正文，已被 logs/wb_exec/
+    #    oc_free_verify_result.json 推翻）
+    assert "deepseek-v4.1-flash-free" in list(oc.oc_models)
 
     assert cfg.guards.permission_mode != "fullAccess"
     wb_config.reset_cache()

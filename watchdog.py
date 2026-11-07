@@ -8,9 +8,19 @@
 #   失败＝连接拒绝 / 超时(>10s) / 非 200。单次抖动不触发。
 # 熔断：10 分钟内重启 ≥4 次 → 停手写日志（崩溃循环比死着更糟）。
 # 用法：python watchdog.py   （建议用 start "看门狗" /min 后台跑）
+#
+# [多进程拓扑 2026-11-07] 服务＝web(5700) + runner x ECO_RUNNER_COUNT(5701+i)。
+# 看门狗逐进程探活：web 死单独拉 web，runner-i 死单独拉 runner-i——
+# 不连坐（健康进程上的在途回合不被陪葬）。runner-i 只认「应有pid文件」：
+# .server-runner{i}.pid 在才探才拉，单进程旧模式（无 runner pid 文件）
+# 不碰 runner——否则会给 all 模式的进程旁边生二胎，双驱动器抢卡。
+# 「手动停止闸」：stop.bat 立 logs/.manual_stop，看门狗见此标记不拉起；
+# start.bat 撤标记。服务在跑时陈旧标记自清。
 
+import glob
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +37,26 @@ RESTART_WINDOW = 600        # 熔断窗口（秒）
 RESTART_LIMIT = 4           # 窗口内最多重启次数
 BOOT_WAIT = 25              # 重启后等它爬起来
 
+RUNNER_COUNT = int(os.environ.get("ECO_RUNNER_COUNT") or 4)   # 与 start.bat 同口径
+BASE_PORT = int(os.environ.get("ECO_RUNNER_BASE_PORT") or 5701)
+STOP_FLAG = os.path.join(ROOT, "logs", ".manual_stop")
+WD_PID_FILE = os.path.join(ROOT, "logs", ".watchdog.pid")
+
+# [定期清理 2026-11-07] Temp 清扫：卡片测试产物、无头 Chrome 档案、Go 构建
+# 残骸在 TEMP 根下越积越多（被杀的进程不会自清）。判据＝白名单图样＋静默期
+# 超龄：活着的测试/chrome 持续写 ⇒ mtime 新鲜 ⇒ 不碰；孤儿几小时不写 ⇒ 删。
+# 间隔/龄期/目录均可经 ECO_* 覆盖；ECO_TEMP_SWEEP_S=0 关停。
+SWEEP_DIR = os.environ.get("ECO_TEMP_SWEEP_DIR") or r"D:\Temp"
+SWEEP_EVERY_S = float(os.environ.get("ECO_TEMP_SWEEP_S") or 3600)
+SWEEP_AGE_S = float(os.environ.get("ECO_TEMP_AGE_S") or 4 * 3600)
+SWEEP_GLOBS = (
+    "HeadlessChrome*", "go-build*", "workbuddy-product-spill-*",
+    "cardlo-u8-markers-*", "codebuddy-*", "dbwatch_*",
+    "chrome-probe-*", "devin_cdp_*", "pytest-*", "TestLease*",
+)
+# 只清内部老龄条目、不整删的目录（容器本身是活的）。
+SWEEP_INSIDE = ("devin.exe-overflows",)
+
 LOG = os.path.join(ROOT, "logs", "watchdog.log")
 os.makedirs(os.path.dirname(LOG), exist_ok=True)
 
@@ -41,13 +71,52 @@ def log(msg):
         pass
 
 
-def probe():
+def _probe(url):
     """True=活着；返回 (ok, 原因)"""
     try:
-        with urllib.request.urlopen(PROBE_URL, timeout=PROBE_TIMEOUT) as r:
+        with urllib.request.urlopen(url, timeout=PROBE_TIMEOUT) as r:
             return (r.status == 200, f"http {r.status}")
     except Exception as e:
         return (False, f"{type(e).__name__}: {e}")
+
+
+def probe():
+    return _probe(PROBE_URL)
+
+
+def probe_runner(i):
+    """runner-i 守 ECO_RUNNER_BASE_PORT+i 回环，白名单 GET 与 web 同面。"""
+    return _probe(f"http://127.0.0.1:{BASE_PORT + i}/api/nav/version")
+
+
+def manual_stop_flag():
+    """手动停止标记：在 ⇒ stop.bat 干的，不拉起。陈旧（>60s 且服务在跑）自清。"""
+    if not os.path.exists(STOP_FLAG):
+        return False
+    return True
+
+
+def clear_flag_if_stale(service_up):
+    """服务明明在跑而标记还在 ⇒ 有人绕过 start.bat 拉起的，标记作废。"""
+    if not service_up or not os.path.exists(STOP_FLAG):
+        return
+    try:
+        if time.time() - os.path.getmtime(STOP_FLAG) < 60:
+            return  # 刚立的：stop 正在执行中，别抢
+        os.remove(STOP_FLAG)
+        log("服务在跑，陈旧手动停止标记已清")
+    except OSError:
+        pass
+
+
+def breaker_ok(restarts):
+    """熔断：窗口内已达上限 ⇒ False（停手），否则 True。"""
+    now = time.time()
+    restarts[:] = [t for t in restarts if now - t < RESTART_WINDOW]
+    if len(restarts) >= RESTART_LIMIT:
+        log("熔断：10 分钟内已重启 %d 次，停手（人来看看）" % len(restarts))
+        return False
+    return True
 
 
 def find_pid():
@@ -68,13 +137,29 @@ def find_pid():
     r = subprocess.run(
         ["powershell", "-NoProfile", "-Command",
          "Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | "
-         "Where-Object {$_.CommandLine -like '*main.py*'} | "
+         "Where-Object {$_.CommandLine -like '*main.py*' "
+         "-and $_.CommandLine -notlike '*runner_main*'} | "
          "Select-Object -ExpandProperty ProcessId"],
         capture_output=True, text=True, timeout=15)
     for tok in (r.stdout or "").split():
         if tok.isdigit():
             return int(tok)
     return 0
+
+
+def proc_age(pid):
+    """进程已活多少秒；查不到返回 None（不把岁数不明当年轻）。"""
+    if not pid:
+        return None
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(New-TimeSpan -Start (Get-CimInstance Win32_Process -Filter "
+             f"'ProcessId={pid}').CreationDate -End (Get-Date)).TotalSeconds"],
+            capture_output=True, text=True, timeout=15)
+        return float((r.stdout or "").strip())
+    except (ValueError, subprocess.TimeoutExpired):
+        return None
 
 
 def kill(pid):
@@ -100,7 +185,7 @@ def autopsy(fail_why):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
             txt = r.stdout or ""
             if label.startswith("netstat"):
-                txt = "\n".join(l for l in txt.splitlines() if ":5700" in l) or "(5700 无任何行)"
+                txt = "\n".join(l for l in txt.splitlines() if ":570" in l) or "(570x 无任何行)"
             out.append(f"--- {label} ---\n{txt}")
         except Exception as e:
             out.append(f"--- {label} 失败: {e} ---")
@@ -121,48 +206,284 @@ def autopsy(fail_why):
         log(f"尸检写盘失败: {e}")
 
 
-def start_service():
-    """按 start.bat 同款方式拉起：venv python main.py，独立控制台、
-    不挂在本进程上（看门狗死了服务照跑）。PID 由 main.py 自己写 .server.pid"""
-    venv_py = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
-    if not os.path.exists(venv_py):
-        venv_py = "python"
-    cmd = f'start "推演agent画布" "{venv_py}" main.py'
-    log(f"拉起: {cmd}")
-    subprocess.Popen(cmd, shell=True, cwd=ROOT,
-                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+def _cluster_env(role, index=None):
+    """与 start.bat 同口径的子进程环境。"""
+    env = os.environ.copy()
+    env["ECO_ROLE"] = role
+    env["ECO_RUNNER_COUNT"] = str(RUNNER_COUNT)
+    env["ECO_RUNNER_BASE_PORT"] = str(BASE_PORT)
+    for k in ("ECO_RUNNER_URL", "ECO_RUNNER_URLS", "ECO_PORT",
+              "ECO_RUNNER_INDEX"):
+        env.pop(k, None)
+    if index is not None:
+        env["ECO_RUNNER_INDEX"] = str(index)
+    return env
+
+
+def _venv_py():
+    p = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
+    return p if os.path.exists(p) else "python"
+
+
+def spawn_web():
+    """拉起 web（5700 对外）。独立控制台、不挂在本进程上。"""
+    log("拉起 web（main.py, ECO_ROLE=web）")
+    subprocess.Popen([_venv_py(), "main.py"], cwd=ROOT,
+                     env=_cluster_env("web"),
+                     creationflags=(subprocess.CREATE_NEW_CONSOLE
+                                    | subprocess.CREATE_NEW_PROCESS_GROUP))
+
+
+def spawn_runner(i):
+    """拉起 runner-i（5701+i 回环）。无窗，stdout 落 logs\\runner{i}_stdout.log。"""
+    log(f"拉起 runner{i}（runner_main.py {i}）")
+    out = open(os.path.join(ROOT, "logs", f"runner{i}_stdout.log"), "ab")
+    try:
+        subprocess.Popen([_venv_py(), "runner_main.py", str(i)], cwd=ROOT,
+                         env=_cluster_env("runner", i), stdout=out,
+                         stderr=subprocess.STDOUT,
+                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    finally:
+        out.close()
+
+
+def kill_by_pidfile(name, tag):
+    """按 pid 文件杀进程并清文件。返回是否有进程被杀。"""
+    pf = os.path.join(ROOT, name)
+    pid = 0
+    try:
+        pid = int(open(pf).read().strip())
+    except (ValueError, OSError):
+        pass
+    if pid:
+        log(f"taskkill /F /T /PID {pid}（{tag}）")
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, timeout=30)
+        time.sleep(2)
+    try:
+        os.remove(pf)
+    except OSError:
+        pass
+    return bool(pid)
+
+
+def kill_web():
+    """只杀 web 进程本身（pid 文件优先，命令行兜底），不碰 runner。"""
+    if kill_by_pidfile(".server.pid", "web"):
+        return
+    pid = find_pid()   # 兜底：pid 文件丢了时按命令行找 main.py（不含 runner_main）
+    if pid:
+        log(f"taskkill /F /T /PID {pid}（web 兜底）")
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, timeout=30)
+        time.sleep(2)
+
+
+def kill_runner(i):
+    """只杀 runner-i。pid 文件缺失时按端口扫回环监听者兜底。"""
+    if kill_by_pidfile(f".server-runner{i}.pid", f"runner{i}"):
+        return
+    try:
+        r = subprocess.run(
+            ["cmd", "/c",
+             f"netstat -ano | findstr LISTENING | findstr /C:\":{BASE_PORT + i} \""],
+            capture_output=True, text=True, timeout=15)
+        for line in (r.stdout or "").splitlines():
+            tok = line.split()
+            if tok and tok[-1].isdigit() and int(tok[-1]) > 0:
+                log(f"taskkill /F /T /PID {tok[-1]}（runner{i} 端口兜底）")
+                subprocess.run(["taskkill", "/F", "/T", "/PID", tok[-1]],
+                               capture_output=True, timeout=30)
+                time.sleep(2)
+                break
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log(f"runner{i} 端口兜底失败: {e}")
+
+
+def _entry_newest(path):
+    """条目自身 + 直接子项的最晚 mtime——顶层 mtime 不随深层写入更新，
+    多采一层防把「还在往里写」的目录误判成孤儿。"""
+    newest = 0.0
+    try:
+        newest = os.path.getmtime(path)
+        with os.scandir(path) as it:
+            for e in it:
+                try:
+                    st = e.stat(follow_symlinks=False)
+                    if st.st_mtime > newest:
+                        newest = st.st_mtime
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return newest
+
+
+def _rm_entry(path):
+    """删一个文件或目录，返回释放字节（量不出按 0）。锁着的条目抛错由调用方计数。"""
+    freed = 0
+    if os.path.isdir(path) and not os.path.islink(path):
+        for dp, dn, fn in os.walk(path):
+            for name in fn:
+                try:
+                    freed += os.path.getsize(os.path.join(dp, name))
+                except OSError:
+                    pass
+        shutil.rmtree(path)          # 部分锁文件会抛 Error——调用方按「在写」计
+    else:
+        try:
+            freed = os.path.getsize(path)
+        except OSError:
+            pass
+        os.remove(path)
+    return freed
+
+
+def janitor():
+    """Temp 定期清理一轮。白名单图样 + 静默超龄 ⇒ 删；其余一律不碰。"""
+    if not SWEEP_DIR or not os.path.isdir(SWEEP_DIR):
+        return
+    now = time.time()
+    gone = freed = locked = 0
+    for pat in SWEEP_GLOBS:
+        for p in glob.glob(os.path.join(SWEEP_DIR, pat)):
+            try:
+                if now - _entry_newest(p) < SWEEP_AGE_S:
+                    continue
+                freed += _rm_entry(p)
+                gone += 1
+            except (OSError, shutil.Error):
+                locked += 1
+    for dname in SWEEP_INSIDE:
+        d = os.path.join(SWEEP_DIR, dname)
+        if not os.path.isdir(d):
+            continue
+        try:
+            for e in os.scandir(d):
+                try:
+                    if now - _entry_newest(e.path) < SWEEP_AGE_S:
+                        continue
+                    freed += _rm_entry(e.path)
+                    gone += 1
+                except (OSError, shutil.Error):
+                    locked += 1
+        except OSError:
+            pass
+    if gone or locked:
+        log(f"temp 清扫: 删 {gone} 项（释 ~{freed // (1 << 20)}MB），"
+            f"跳过在写/锁住 {locked} 项")
+
+
+def wait_boot(budget=180):
+    """拉起后等它监听就绪：每 5s 探一次，活了 True；超时 False。
+    大库冷启动（迁移/检查点）远超 BOOT_WAIT，期间绝不能再次拉起。"""
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        ok, _ = probe()
+        if ok:
+            return True
+        time.sleep(5)
+    return False
 
 
 def main():
-    log(f"看门狗上线：探 {PROBE_URL} 每 {INTERVAL}s，{MAX_FAILS} 连败即重启")
-    fails = 0
-    restarts = []  # 重启时刻列表（熔断用）
+    try:
+        with open(WD_PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+    log(f"看门狗上线：探 web {PROBE_URL} + runner x{RUNNER_COUNT}"
+        f"（{BASE_PORT}+i）每 {INTERVAL}s，{MAX_FAILS} 连败即重启")
+    fails = 0                      # web 连败
+    runner_fails = {}              # runner-i 连败
+    runner_seen = set()            # 见过 pid 文件的 runner——在册才探才拉
+    restarts = []                  # 重启时刻列表（熔断用）
+    last_sweep = 0.0               # temp 清扫上次时刻（0＝上线即扫一轮）
     while True:
         ok, why = probe()
+        clear_flag_if_stale(ok)
+
+        # --- temp 定期清理：与服务生死无关，手动停止期间也照扫 ---
+        if SWEEP_EVERY_S > 0 and time.time() - last_sweep >= SWEEP_EVERY_S:
+            last_sweep = time.time()
+            try:
+                janitor()
+            except Exception as e:  # noqa: BLE001 清扫失败绝不能拖死看门狗
+                log(f"temp 清扫异常（下轮照跑）: {e}")
+
+        if manual_stop_flag():
+            if fails or any(runner_fails.values()):
+                log("手动停止标记在——停摆是人为的，不拉起")
+            fails = 0
+            runner_fails.clear()
+            time.sleep(INTERVAL)
+            continue
+
+        # --- web ---
         if ok:
             if fails:
-                log(f"恢复（此前连败 {fails} 次）")
+                log(f"web 恢复（此前连败 {fails} 次）")
             fails = 0
         else:
             fails += 1
-            log(f"探活失败 {fails}/{MAX_FAILS}: {why}")
+            log(f"web 探活失败 {fails}/{MAX_FAILS}: {why}")
             if fails >= MAX_FAILS:
-                now = time.time()
-                restarts = [t for t in restarts if now - t < RESTART_WINDOW]
-                if len(restarts) >= RESTART_LIMIT:
-                    log("熔断：10 分钟内已重启 %d 次，停手（人来看看）" % len(restarts))
+                if not breaker_ok(restarts):
                     fails = 0
                     time.sleep(INTERVAL)
                     continue
                 pid = find_pid()
-                log(f"判定死亡，重启（存活进程 pid={pid or '无'}）")
+                age = proc_age(pid)
+                if pid and age is not None and age < 180:
+                    log(f"探活连败但 web pid={pid} 才起 {age:.0f}s（启动期宽限），本轮不杀")
+                    fails = 0
+                    time.sleep(INTERVAL)
+                    continue
+                log(f"web 判定死亡，单独重启（pid={pid or '无'}）")
                 autopsy(why)
-                kill(pid)
-                start_service()
+                kill_web()
+                ok2, _ = probe()
+                pid2 = find_pid()
+                if ok2 or pid2:
+                    log(f"杀后复核：probe={'ok' if ok2 else 'fail'} pid={pid2 or '无'}，已有实例，跳过拉起")
+                else:
+                    spawn_web()
                 restarts.append(time.time())
                 fails = 0
-                time.sleep(BOOT_WAIT)
+                if not wait_boot():
+                    log("BOOT 等待超时仍未就绪（下轮继续探，不重复拉起）")
+
+        # --- runners：只认「在册」的（见过 pid 文件或本狗拉起的）——
+        # 单进程 all 模式永远没有任何 runner pid 文件 ⇒ 一个都不碰，
+        # 否则会给 all 进程旁生 runner 双驱动抢卡。在册 runner 即使 pid
+        # 文件被清理/未写出也照探——拉起失败也能被熔断兜住。 ---
+        for i in range(RUNNER_COUNT):
+            if os.path.exists(f".server-runner{i}.pid"):
+                runner_seen.add(i)
+            if i not in runner_seen:
                 continue
+            rok, rwhy = probe_runner(i)
+            if rok:
+                runner_fails[i] = 0
+                continue
+            runner_fails[i] = runner_fails.get(i, 0) + 1
+            log(f"runner{i} 探活失败 {runner_fails[i]}/{MAX_FAILS}: {rwhy}")
+            if runner_fails[i] < MAX_FAILS:
+                continue
+            if not breaker_ok(restarts):
+                runner_fails[i] = 0
+                continue
+            log(f"runner{i} 判定死亡，单独重启")
+            kill_runner(i)
+            rok2, _ = probe_runner(i)
+            if rok2:
+                log(f"runner{i} 杀后复核：已活，跳过拉起")
+            else:
+                runner_seen.add(i)
+                spawn_runner(i)
+            restarts.append(time.time())
+            runner_fails[i] = 0
+
         time.sleep(INTERVAL)
 
 

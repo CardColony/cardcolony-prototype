@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """卡片 SQLite 库（卡片存储迁移 SQLite · 第一步地基）。
 
-每 work 一个库：``data/{work_id}/cards.db``（2026-11-07 起，原 ``works/``
+每 work 一个库：``works_data/{work_id}/cards.db``（2026-11-07 起，原 ``works/``
 下由 ``_ensure_db_location`` 惰性搬迁——库搬出卡的 exec 施工目录）。
 **库是卡片与影子的唯一真相**，
 不再有卡片/影子 md（方案 §0 裁定 1/2）。
@@ -762,7 +762,7 @@ _locks: dict[str, threading.RLock] = {}
 def db_path(work_id: str) -> Path:
     """库文件路径。**调用时**从 card_store.WORKS_DIR 派生（不缓存、不设常量）。
 
-    [库搬出施工目录 2026-11-07] 生产库放 ``data/{wid}/cards.db``（与 works/
+    [库搬出施工目录 2026-11-07] 生产库放 ``works_works_data/{wid}/cards.db``（与 works/
     平级）；旧位置 ``works/{wid}/cards.db`` 由 ``_ensure_db_location`` 在
     建连接前惰性搬走（只搬不判存——纯路径函数保持零副作用）。
     """
@@ -887,7 +887,7 @@ def _guard_migration(work_id: str, db: Path) -> None:
     if db.exists():
         return
     # [库搬出施工目录 2026-11-07] cards/*.md 恒在 works/{wid}/ 下，
-    # 不能再用 db.parent（库已搬到 data/{wid}/）。
+    # 不能再用 db.parent（库已搬到 works_works_data/{wid}/）。
     from . import card_store
     cards_dir = card_store.WORKS_DIR / str(work_id) / "cards"
     try:
@@ -1039,11 +1039,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     补列：见 ``_COLUMN_UPGRADES``——迁移跑在加列之前的那些库靠这一步升级。
     删列：见 ``_COLUMN_DROPS``——已加过又被用户裁掉的列（如 duty）靠这一步退役。
     """
+    conn.execute("PRAGMA journal_mode=WAL")
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cards'"
     ).fetchone()
     if row is None:
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
     _rename_columns(conn)
     _ensure_columns(conn)

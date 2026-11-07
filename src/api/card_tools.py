@@ -5557,6 +5557,49 @@ async def _h_promote_draft(work_id: str, current_id: str,
         return err("validation", f"读评审状态失败：{exc}")
     r = await _promote_requirements(work_id, target)
     if not r.get("promoted"):
+        # [幂等收口 2026-11-07 · card_061 死后重放实案]
+        # 「草稿为空」在全员通过语境下只有一解：转正早已提交——全仓只有
+        # _promote_requirements 与根卡直写会清草稿，两条都同时落 approved。
+        # 此时把本次调用当收口信号：state 不是 approved 先修齐（事故/恢复
+        # 会撕出「正稿已在、草稿已空、state=in_review」的不一致行），再走
+        # finalize 关批次；回执如实写「已是正稿」——再催多少次都是这个答案。
+        if rid:
+            try:
+                _st2 = await _rv.status(work_id, rid)
+                _card2 = await card_store.read_card(work_id, target)
+                _meta2 = _card2.get("meta") or {}
+                _req2 = str((_card2.get("body") or {}).get(
+                    "requirements") or "")
+            except Exception:  # noqa: BLE001
+                _st2, _meta2, _req2 = {}, {}, ""
+            if (_st2.get("all_passed") and _req2.strip()
+                    and not str(_meta2.get("requirements_draft") or "").strip()):
+                if str(_meta2.get("requirements_state") or "") != "approved":
+                    logger.warning(
+                        "[review] 正稿已在但 state=%s（数据不一致，修齐）card=%s",
+                        _meta2.get("requirements_state") or "(空)", target)
+                    try:
+                        await card_store.update_card(
+                            work_id, target,
+                            {"requirements_state": "approved"},
+                            "转正幂等收口：正稿已在、草稿已空，修齐状态位")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[review] state 修复失败 card=%s: %s",
+                                       target, exc)
+                try:
+                    _fin = await _rv.finalize(work_id, rid)
+                    if _fin:
+                        event_stream.emit(
+                            work_id, rid, "review_batch_closed",
+                            {"batch": _fin.get("closed_batch"),
+                             "verdict": str(_fin.get("verdict") or "")})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[review] 幂等收口 finalize 失败 rid=%s: %s",
+                                   rid, exc)
+                return {"ok": True, "data": {
+                    "card_id": target, "already_promoted": True,
+                    "requirements_state": "approved",
+                    "note": "草稿已空、正稿已在——转正早已完成；本次调用按幂等收口，批次已关。"}}
         return err("validation", str(r.get("reason") or "转正稿失败"))
     # [2026-10-29 用户令「评审结束，你得回到对话里，将结果回喂给对话」]
     # 收口＝正稿写完这一刻（不是全员通过那一刻）。落在子卡自己的会话里。

@@ -1,0 +1,1524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>对话页原型 · 事件类型全集 · card_454</title>
+<!--
+  对话页高保真交互原型 —— 只保真「结构 / 事件类型 / 交互」，不做视觉设计。
+  所有类名与事件类型码取自旧系统源码，可逐一对照：
+    esm/assembler.js   REGISTRY（kind 归类）＋ CONTROL_TYPE(revoke)
+    stream.js          sysRow / renderChain / renderTool / renderSeats / renderInjection
+                       makeRow / makeSubRow / makePlanSteps / makeSeats / dateDivider
+    flow/chat-view.js  flow-view-scroll / flow-view-column / flow-turn-status /
+                       flow-view-to-bottom / chat-empty / chat-skeleton / flow-view-older
+    flow/message-item.js    flow-user-row / flow-user-stack / flow-user-bubble
+    flow/card-msg-node.js   .msg.cmsg.<ask|answer|notify|bad> ＋ .bar/.head/.tag/.must/.dir/.txt/.replyto
+    flow/queue-dock.js      flow-queue-dock / flow-queue-panel / flow-queue-header /
+                            flow-queue-list / flow-queue-row / flow-queue-preview / flow-queue-actions
+    esm/theme.js            body.proc-collapsed（折叠态只留 tool-row 与 round_start）
+-->
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1a1a1a;background:#fff;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,textarea{font:inherit;color:inherit}
+[hidden]{display:none!important}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#d0d0d0}
+::-webkit-scrollbar-track{background:transparent}
+:focus-visible{outline:2px solid #666;outline-offset:1px}
+.mono{font-family:ui-monospace,Consolas,Menlo,monospace}
+.sp{flex:1}
+
+/* ── 布局（结构照 card.html：左栏 + 主区[顶栏 + 舞台 + 输入区]）── */
+.app{display:flex;height:100vh}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+
+/* 左栏：导航树，四类行（项目 / 卡片 / 评审批次 / 职能） */
+.sidenav{width:260px;flex:none;border-right:1px solid #e0e0e0;display:flex;flex-direction:column;background:#fafafa}
+.nav-top{padding:8px}
+.nav-search{width:100%;height:28px;border:1px solid #d0d0d0;background:#fff;padding:0 8px;outline:none}
+.nav-search:focus{border-color:#666}
+.nav-tree{flex:1;overflow:auto;padding:0 4px 12px}
+.nav-row{display:flex;align-items:center;gap:6px;height:28px;padding:0 6px;color:#333;cursor:pointer;white-space:nowrap;overflow:hidden}
+.nav-row:hover{background:#efefef}
+.nav-row.d1{padding-left:20px}
+.nav-row.d2{padding-left:38px}
+.nav-row.d3{padding-left:56px}
+.nav-phead{height:30px;font-weight:600;background:#f0f0f0;margin-top:4px}
+.nav-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.nav-name mark{background:#ffe066;color:#000}
+.nav-card.current{background:#e6e6e6;font-weight:600;box-shadow:inset 3px 0 0 #333}
+.bdg{flex:none;font:10px/1.4 ui-monospace,monospace;border:1px solid #bbb;padding:0 4px;color:#555}
+.nav-time{flex:none;font-size:11px;color:#999}
+.nav-foot{border-top:1px solid #e0e0e0;padding:6px 8px}
+.nav-foot button{width:100%;text-align:left;height:26px;padding:0 6px;color:#555}
+.nav-foot button:hover{background:#efefef}
+
+/* 顶栏 */
+.topbar{height:40px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid #e0e0e0}
+.crumb{display:flex;align-items:center;gap:4px;font-size:12px;color:#666;min-width:0;overflow:hidden}
+.crumb b{color:#1a1a1a;font-weight:600}
+.tb{height:26px;padding:0 8px;border:1px solid #d0d0d0;font-size:12px;color:#444}
+.tb:hover{background:#f0f0f0}
+.tb[aria-pressed="false"]{color:#999;border-style:dashed}
+
+/* 舞台：对话区 + 卡详情 */
+.stage{flex:1;min-height:0;display:flex;position:relative;overflow:hidden}
+.chat{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+
+/* 事件类型索引（原型辅助件，非产品形态） */
+.idx{flex:none;border-bottom:1px solid #e0e0e0;background:#fbfbfb;max-height:44vh;display:flex;flex-direction:column}
+.idx-head{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;color:#444;text-align:left;width:100%}
+.idx-head:hover{background:#f2f2f2}
+.idx-head .cnt{color:#888}
+.idx-body{overflow:auto;padding:0 10px 10px;display:flex;flex-direction:column;gap:8px}
+.idx-grp{display:flex;flex-direction:column;gap:2px}
+.idx-grp > .h{font-size:11px;color:#888;border-bottom:1px solid #eee;padding-bottom:2px;margin-bottom:2px}
+.idx-items{display:flex;flex-wrap:wrap;gap:4px}
+.idx-item{display:inline-flex;align-items:center;gap:4px;border:1px solid #ddd;background:#fff;padding:1px 6px;font-size:11px;color:#333;font-family:ui-monospace,Consolas,monospace}
+.idx-item:hover{border-color:#333;background:#f2f2f2}
+.idx-item .zh{font-family:-apple-system,"Microsoft YaHei",sans-serif;color:#777}
+.idx-item.norender{color:#999;border-style:dashed}
+
+/* 对话流 */
+.scroll{flex:1;min-height:0;overflow-y:auto;padding:12px 16px 20px}
+.col{max-width:960px;margin:0 auto;display:flex;flex-direction:column;gap:2px}
+.flow-view-older{display:flex;justify-content:center;padding:2px 0 8px}
+.flow-view-older-btn{height:24px;padding:0 12px;border:1px solid #d0d0d0;font-size:12px;color:#555;background:#fff}
+.flow-view-older-btn:hover:not(:disabled){border-color:#666;color:#1a1a1a}
+.flow-view-older-btn:disabled{color:#aaa;cursor:default}
+
+/* 日期分隔 */
+.date-divider{display:flex;justify-content:center;padding:10px 0 6px;font-size:11px;color:#999}
+.date-divider span{border:1px solid #e6e6e6;padding:0 8px;background:#fafafa}
+
+/* 过程行（makeRow 结构：.ev 类型徽标 + .txt 说明 + .sub 状态槽 + .step-detail） */
+.step-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;padding:3px 6px;border-bottom:1px solid #f4f4f4;font-size:12px}
+.step-row .ev{flex:none;width:172px;font:11px/1.6 ui-monospace,Consolas,monospace;color:#777;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.step-row .txt{flex:1;min-width:0;word-break:break-word}
+.step-row .txt b{font-weight:600}
+.step-row .sub{flex:none;font-size:11px;color:#777;white-space:nowrap}
+.step-row .f{color:#999;font-size:11px}
+.step-row .f .k{color:#aaa}
+.step-row .bt{font-size:11px;color:#666;border:1px solid #ddd;padding:0 4px}
+.step-row .mk{font-weight:700}
+.step-row.has-detail{cursor:pointer}
+.step-row.has-detail:hover{background:#fafafa}
+.step-row .step-detail{display:none;flex-basis:100%;margin:4px 0 2px;padding:8px;background:#fafafa;border:1px solid #e8e8e8;font:11px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;max-height:220px;overflow:auto}
+.step-row.open .step-detail{display:block}
+.step-row.ok .sub{color:#1a7f37}
+.step-row.fail .txt,.step-row.err .txt{color:#b42318}
+.step-row.fail .sub{color:#b42318}
+.step-row.warn .sub{color:#8a6100}
+.step-row.void{color:#aaa}
+.step-row.void .ev{color:#bbb}
+.step-row.lv2{padding-left:22px}
+.step-row.lv3{padding-left:40px;font-size:11.5px;color:#555}
+.step-row.lv3 .ev{width:172px}
+/* 折叠态：只留工具行 + 轮次分隔（ui.css:2328 口径） */
+body.proc-collapsed .step-row:not(.tool-row):not([data-ev="round_start"]){display:none}
+body.proc-collapsed .psteps{display:none}
+body.proc-collapsed .seats{display:none}
+
+/* 计划步骤清单 */
+.psteps{display:flex;flex-direction:column;gap:1px;padding:2px 6px 4px 40px}
+.pstep{display:flex;gap:8px;font-size:11px;color:#666;border-left:1px solid #e8e8e8;padding-left:8px}
+.pstep .bt{color:#555;border:1px solid #ddd;padding:0 3px}
+
+/* 工具行（renderTool：.step-row.tool-row ＋ .tool-sum ＋ .tool-body） */
+.tool-row .txt b{font-weight:600}
+.tool-row .targs{color:#888;font-size:11px;margin-left:6px}
+.tool-row .targs::before{content:" "}
+.tool-row .tool-ico{display:inline-block;width:8px;height:8px;border:1.5px solid #888;margin-right:4px;vertical-align:baseline}
+.tool-row.running .tool-ico{border-color:#b8860b}
+.tool-row.ok .tool-ico{border-color:#1a7f37}
+.tool-row.fail .tool-ico{border-color:#b42318}
+.tool-sum{flex-basis:100%;font-size:11px;color:#666;padding-left:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-row.open .tool-sum{display:none}
+.tool-body{display:none;flex-basis:100%;margin:4px 0 2px;border:1px solid #e8e8e8;background:#fafafa;max-height:260px;overflow:auto;padding:8px;font:11px/1.5 ui-monospace,Consolas,monospace}
+.tool-row.open .tool-body{display:block}
+.tool-body.err{border-color:#e6b3ae;background:#fdf6f5}
+.tr-pre{white-space:pre-wrap;word-break:break-word}
+.tr-err{color:#b42318;white-space:pre-wrap}
+.tr-kv{display:flex;gap:8px}
+.tr-kv .k{color:#999;flex:none;min-width:80px}
+.tr-files{display:flex;flex-direction:column;gap:1px}
+
+/* 消息气泡（flow-user-*；assistant .md） */
+.flow-user-row{display:flex;justify-content:flex-end;padding:4px 0}
+.flow-user-stack{position:relative;max-width:min(525px,82%);display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.flow-user-bubble{border:1px solid #d8d8d8;background:#f4f4f4;padding:6px 10px;white-space:pre-wrap;word-break:break-word}
+.flow-user-row.is-pending .flow-user-bubble{opacity:.55;border-style:dashed}
+.msg-actions{display:flex;gap:6px;font-size:11px;color:#999;opacity:0;transition:opacity .12s}
+.flow-user-row:hover .msg-actions{opacity:1}
+.msg-actions button{font-size:11px;color:#777;border:1px solid #ddd;padding:0 5px}
+.msg-actions button:hover{border-color:#666;color:#1a1a1a}
+.msg{display:flex;flex-direction:column;gap:4px;padding:6px 0}
+.msg .md{white-space:pre-wrap;word-break:break-word;line-height:1.65}
+.msg .md h1,.msg .md h2,.msg .md h3{font-size:13px;margin:6px 0 2px}
+.msg .md ul,.msg .md ol{padding-left:20px}
+.msg .md code{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:#f2f2f2;padding:0 3px}
+.msg .md pre{background:#fafafa;border:1px solid #ececec;padding:8px;overflow:auto;font-size:11.5px}
+
+/* 思考块（dsh ReasoningRow 形态：折叠单行 图标 ＋ Think ＋ 摘要 ＋ 计时，点开全文） */
+.think-row{display:flex;align-items:baseline;gap:6px;border-left:2px solid #ddd;padding:2px 0 2px 8px;font-size:12px;color:#777;cursor:pointer}
+.think-row:hover{color:#444}
+.think-row .tk-ico{font-size:11px;color:#999}
+.think-row .tk-title{font-weight:600;color:#666}
+.think-row .tk-sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#888}
+.think-row .tk-time{flex:none;font:11px ui-monospace,monospace;color:#aaa}
+.think-row .tk-full{display:none;flex-basis:100%;white-space:pre-wrap;font-style:italic;color:#777;padding:6px 0 2px 22px}
+.think-row.open .tk-full{display:block}
+
+/* 三席（makeSeats：.seats > .seat-card > .sc-head/.sc-body/.sc-foot） */
+.seats{display:flex;gap:8px;padding:4px 0 6px;flex-wrap:wrap}
+.seat-card{flex:1 1 220px;min-width:200px;border:1px solid #dedede;background:#fcfcfc;display:flex;flex-direction:column}
+.sc-head{display:flex;justify-content:space-between;gap:6px;padding:3px 8px;border-bottom:1px solid #eee;font-size:11.5px}
+.sc-head .m{font-family:ui-monospace,Consolas,monospace;color:#333}
+.sc-head .st{color:#777}
+.sc-head .st.fail{color:#b42318}
+.sc-body{padding:6px 8px;font-size:11.5px;color:#666;white-space:pre-wrap;max-height:120px;overflow:auto}
+.sc-body .ot{border-top:1px dashed #e0e0e0;margin-top:4px;padding-top:4px;color:#333}
+.sc-foot{display:flex;justify-content:space-between;gap:6px;padding:3px 8px;border-top:1px solid #eee;font:11px ui-monospace,monospace;color:#999}
+
+/* 卡间信（card-msg-node：.msg.cmsg.<cls> > .bar + .body > .head/.txt/.replyto） */
+.msg.cmsg{display:flex;gap:8px;padding:4px 0}
+.msg.cmsg > .bar{flex:none;width:3px;background:#c8c8c8}
+.msg.cmsg.ask > .bar{background:#8a6100}
+.msg.cmsg.answer > .bar{background:#1a7f37}
+.msg.cmsg.bad > .bar{background:#b42318}
+.cmsg .body{flex:1;min-width:0;border:1px solid #e4e4e4;background:#fbfbfb;padding:5px 9px}
+.cmsg .head{display:flex;align-items:baseline;gap:8px;font-size:11px;color:#777;flex-wrap:wrap}
+.cmsg .head .tag{font-family:ui-monospace,Consolas,monospace;color:#444}
+.cmsg .head .must{color:#8a6100;border:1px solid #d9c38a;padding:0 4px}
+.cmsg .head .dir{color:#999;font-family:ui-monospace,Consolas,monospace}
+.cmsg .txt{margin-top:3px;white-space:pre-wrap;word-break:break-word;font-size:12.5px}
+.cmsg .replyto{margin-top:3px;font:11px ui-monospace,monospace;color:#999}
+.cmsg.bad .body{border-color:#e6b3ae;background:#fdf6f5}
+
+/* 视图态样例区（原型分组件） */
+.proto-group{border:1px dashed #d5d5d5;margin:14px 0 8px;padding:8px 10px 10px}
+.proto-group > .pg-h{font-size:11px;color:#888;margin-bottom:6px;font-family:ui-monospace,monospace}
+.chat-skeleton{display:flex;flex-direction:column;gap:8px;padding:8px 0}
+.sk-bubble{width:60%;height:34px;background:#f0f0f0;border:1px solid #e8e8e8}
+.sk-line{height:10px;background:#f0f0f0;border:1px solid #e8e8e8}
+.sk-line.w85{width:85%}.sk-line.w70{width:70%}.sk-line.w40{width:40%}
+.chat-empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:24px 12px;border:1px dashed #dcdcdc;color:#777}
+.ce-mark{font-size:20px;color:#bbb}
+.chat-empty h3{font-size:13px;color:#444;font-weight:600}
+.chat-empty p{font-size:12px}
+.ce-hints{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:4px}
+.ce-hint{border:1px solid #d8d8d8;padding:2px 10px;font-size:12px;color:#555;background:#fff}
+.ce-hint:hover{border-color:#666;color:#1a1a1a}
+/* 运行条 */
+.flow-turn-status{display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid #ececec;font-size:12px;color:#666;background:#fafafa}
+.flow-turn-status.is-stopping{color:#8a6100}
+.flow-turn-status-clock{font:11px ui-monospace,monospace;color:#999}
+/* 回底钮 */
+.flow-view-to-bottom{position:absolute;right:20px;bottom:16px;height:28px;padding:0 10px;border:1px solid #ccc;background:#fff;font-size:12px;color:#444;z-index:5}
+.flow-view-to-bottom:hover{border-color:#666}
+.flow-view-to-bottom.has-new{border-color:#333;font-weight:600}
+
+/* 输入区 */
+.composer{flex:none;border-top:1px solid #e0e0e0;padding:8px 16px 12px}
+.composer-in{max-width:960px;margin:0 auto;display:flex;flex-direction:column;gap:6px}
+.inputcard{border:1px solid #d4d4d4;background:#fff;padding:6px 8px 4px}
+.inputcard:focus-within{border-color:#555}
+#inputBox{width:100%;min-height:38px;max-height:140px;resize:none;border:none;outline:none;background:none;line-height:1.5}
+.inputbar{display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap}
+.mini{height:24px;padding:0 8px;border:1px solid #d8d8d8;font-size:11.5px;color:#555;background:#fff}
+.mini:hover{border-color:#888;color:#1a1a1a}
+.mini.on{border-color:#555;color:#1a1a1a;font-weight:600}
+.send{height:26px;min-width:70px;padding:0 12px;border:1px solid #333;background:#333;color:#fff;font-size:12px}
+.send:hover{background:#111}
+.send.stop{background:#8a2b20;border-color:#8a2b20}
+.send.stop:hover{background:#6f231a}
+
+/* 排队条（queue-dock） */
+.flow-queue-dock{border:1px solid #dcdcdc;background:#fbfbfb}
+.flow-queue-panel{display:flex;flex-direction:column}
+.flow-queue-header{display:flex;align-items:center;gap:6px;padding:3px 8px;font-size:11.5px;color:#555;text-align:left}
+.flow-queue-header:hover{background:#f0f0f0}
+.flow-queue-list{list-style:none;padding:0 8px 4px;display:flex;flex-direction:column;gap:2px}
+.flow-queue-row{display:flex;align-items:center;gap:6px;font-size:12px;color:#444;padding:1px 0}
+.flow-queue-preview{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flow-queue-editor{flex:1;min-width:0;height:22px;border:1px solid #888;padding:0 4px;outline:none}
+.flow-queue-actions{display:flex;gap:2px;flex:none}
+.flow-queue-actions button{width:20px;height:20px;border:1px solid #ddd;font-size:11px;color:#666;line-height:1}
+.flow-queue-actions button:hover{border-color:#888;color:#1a1a1a}
+
+/* 卡详情（右栏，覆盖式，不锁主区） */
+.insp{position:absolute;top:0;right:0;bottom:0;width:340px;border-left:1px solid #dcdcdc;background:#fff;display:none;flex-direction:column}
+.insp.open{display:flex}
+.insp-head{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid #e8e8e8}
+.insp-head .t{flex:1;min-width:0}
+.insp-head .n{font-weight:600;font-size:13px}
+.insp-head .id{font:11px ui-monospace,monospace;color:#999}
+.insp-close{width:22px;height:22px;border:1px solid #ddd;color:#777}
+.insp-close:hover{border-color:#888;color:#1a1a1a}
+.insp-body{flex:1;overflow:auto;padding:8px 10px;display:flex;flex-direction:column;gap:10px}
+.isec{border:1px solid #e8e8e8}
+.isec-h{display:flex;align-items:center;gap:8px;padding:3px 8px;background:#fafafa;font-size:11.5px;color:#555;font-weight:600;border-bottom:1px solid #efefef}
+.isec-h .mini{margin-left:auto;height:20px;font-size:11px}
+.isec-b{padding:6px 8px;font-size:12px;color:#444;display:flex;flex-direction:column;gap:4px}
+.isec-b .muted{color:#999}
+
+/* 弹窗（输入型模态，带可见取消） */
+.modal{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;padding:24px}
+.modal-card{width:620px;max-width:100%;max-height:84vh;border:1px solid #ccc;background:#fff;display:flex;flex-direction:column}
+.modal-head{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #e8e8e8;font-weight:600;font-size:13px}
+.modal-x{margin-left:auto;width:22px;height:22px;border:1px solid #ddd;color:#777}
+.modal-x:hover{border-color:#888;color:#1a1a1a}
+.modal-body{padding:10px 12px;display:flex;flex-direction:column;gap:8px;overflow:auto}
+.modal-foot{display:flex;align-items:center;gap:6px;padding:8px 12px;border-top:1px solid #e8e8e8}
+.big-btn{height:26px;padding:0 14px;border:1px solid #ccc;font-size:12px;color:#444;background:#fff}
+.big-btn:hover{border-color:#888}
+.primary{background:#333;border-color:#333;color:#fff}
+.primary:hover{background:#111}
+#draftArea{min-height:180px;border:1px solid #d8d8d8;padding:8px;resize:vertical;outline:none;font-size:12px;line-height:1.6}
+#draftFeedbackInput{height:26px;border:1px solid #d8d8d8;padding:0 8px;outline:none}
+.diff-label{font:11px ui-monospace,monospace;color:#999}
+#statusDiffArea{border:1px solid #ececec;background:#fafafa;padding:8px;font-size:12px;white-space:pre-wrap;color:#555}
+#statusDiffArea .del{color:#b42318;text-decoration:line-through}
+#statusDiffArea .ins{color:#1a7f37}
+#statusEditArea{min-height:130px;border:1px solid #d8d8d8;padding:8px;font-size:12px;outline:none;resize:vertical;white-space:pre-wrap}
+
+/* 通知面板 / 评审浮窗 / toast */
+.panel{position:fixed;top:48px;right:10px;width:320px;max-height:56vh;z-index:60;border:1px solid #ccc;background:#fff;display:flex;flex-direction:column}
+.panel-head{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #e8e8e8;font-size:12px;font-weight:600;color:#444}
+.panel-list{overflow:auto;padding:4px}
+.panel-item{padding:5px 6px;font-size:12px;border-bottom:1px solid #f4f4f4}
+.panel-item:hover{background:#f7f7f7}
+.panel-item .from{font:11px ui-monospace,monospace;color:#666}
+.panel-item .txt{color:#444;margin-top:1px}
+.panel-item .tm{font-size:11px;color:#aaa}
+
+.fwin{position:absolute;top:0;right:0;bottom:0;width:340px;border-left:1px solid #d4d4d4;background:#fff;display:none;flex-direction:column;z-index:4}
+.fwin.open{display:flex}
+.fwin-head{display:flex;align-items:center;gap:6px;padding:5px 8px;border-bottom:1px solid #e8e8e8;font-size:12px}
+.fwin-title{font-weight:600;color:#333}
+.fwin-count{font:11px ui-monospace,monospace;color:#777;border:1px solid #ddd;padding:0 4px}
+.fwin-btn{width:20px;height:20px;border:1px solid #ddd;color:#777;font-size:11px}
+.fwin-btn:hover{border-color:#888;color:#1a1a1a}
+.fwin-events{flex:1;overflow:auto;padding:4px 8px;display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:#555}
+.fwin-ev{display:flex;gap:6px;border-bottom:1px solid #f6f6f6;padding:1px 0}
+.fwin-ev .ic{flex:none;width:12px;color:#888}
+.fwin-ev.pass .ic{color:#1a7f37}
+.fwin-ev.todo .ic{color:#8a6100}
+.fwin-ev .who{margin-left:auto;color:#aaa;font:10.5px ui-monospace,monospace;flex:none}
+.fwin-live{flex:none;display:flex;gap:6px;padding:4px 8px;border-top:1px solid #ececec;font-size:11.5px;color:#666}
+.fwin-live .t{color:#444}
+.fwin-frame{flex:none;height:0;border-top:1px solid #ececec}
+.fwin.expanded .fwin-frame{height:220px;background:#fafafa;display:flex;align-items:center;justify-content:center;font-size:11.5px;color:#999}
+
+.toasts{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:6px;align-items:center}
+.toast{border:1px solid #999;background:#fff;padding:4px 12px;font-size:12px;color:#333;cursor:pointer}
+.toast.ok{border-color:#1a7f37;color:#1a7f37}
+.toast.warn{border-color:#8a6100;color:#8a6100}
+.toast.err{border-color:#b42318;color:#b42318}
+</style>
+</head>
+<body
+><!-- 顶栏 / 左栏 / 主区 -->
+<div class="app">
+  <nav class="sidenav" aria-label="全树导航">
+    <div class="nav-top"><input id="navSearch" class="nav-search" type="text" placeholder="搜索卡片" aria-label="搜索卡片"></div>
+    <div class="nav-tree" id="navTree">
+      <div class="nav-row nav-phead" data-name="底层重构" data-cid="card_001"><span class="nav-name">底层重构</span><span class="nav-time">刚刚</span></div>
+      <div class="nav-row nav-card d1" data-name="产品与交互需求" data-cid="card_074"><span class="nav-name">产品与交互需求</span><span class="nav-time">2 小时前</span></div>
+      <div class="nav-row nav-card d1" data-name="页面架构及 UI/UE" data-cid="card_257"><span class="nav-name">页面架构及 UI/UE</span><span class="nav-time">刚刚</span></div>
+      <div class="nav-row nav-card d2" data-name="画布页交互规格" data-cid="card_290"><span class="nav-name">画布页交互规格</span><span class="nav-time">昨天</span></div>
+      <div class="nav-row nav-card d2" data-name="组件与状态库" data-cid="card_291"><span class="nav-name">组件与状态库</span><span class="nav-time">40 分钟前</span></div>
+      <div class="nav-row nav-card d2" data-name="高保真原型 · 画布页" data-cid="card_322"><span class="nav-name">高保真原型 · 画布页</span><span class="bdg">UI</span><span class="nav-time">5 分钟前</span></div>
+      <div class="nav-row nav-card d2 current" data-name="高保真原型 · 对话页" data-cid="card_454"><span class="nav-name">高保真原型 · 对话页</span><span class="bdg">UI</span><span class="nav-time">刚刚</span></div>
+      <div class="nav-row nav-card d2" data-name="画布页 v3 验收" data-cid="card_345"><span class="nav-name">画布页 v3 验收</span><span class="bdg">QA</span><span class="nav-time">30 分钟前</span></div>
+      <div class="nav-row nav-rvrow d3" data-name="评审批次 · 画布页 v3" data-cid="rv_345"><span class="nav-name">评审批次 · 画布页 v3</span><span class="bdg">评审</span><span class="nav-time">2/3</span></div>
+      <div class="nav-row nav-card d1" data-name="验收与证据基线" data-cid="card_091"><span class="nav-name">验收与证据基线</span><span class="nav-time">10-09</span></div>
+      <div class="nav-row nav-card d1" data-name="外部接入与联调" data-cid="card_092"><span class="nav-name">外部接入与联调</span><span class="nav-time">1 小时前</span></div>
+      <div class="nav-row nav-card d1" data-name="构建与发布（已归档）" data-cid="card_021"><span class="nav-name">构建与发布</span><span class="bdg">归档</span><span class="nav-time">10-08</span></div>
+      <div class="nav-row nav-frow d0" data-name="QA · 验收职能"><span class="nav-name">QA · 验收</span><span class="bdg">QA</span></div>
+      <div class="nav-row nav-frow d0" data-name="PM · 执笔职能"><span class="nav-name">PM · 执笔</span><span class="bdg">PM</span></div>
+    </div>
+    <div class="nav-foot"><button id="navSettings">设置</button></div>
+  </nav>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="crumb"><span>底层重构</span><span>›</span><span>页面架构及 UI/UE</span><span>›</span><b>高保真原型 · 对话页</b></div>
+      <span class="sp"></span>
+      <button id="procToggle" class="tb" aria-pressed="true" title="收起过程细节（折叠态只留工具行与轮次分隔）">过程细节</button>
+      <button id="idxToggle" class="tb" aria-pressed="true" title="事件类型索引">类型索引</button>
+      <button id="inspToggle" class="tb" title="卡详情">卡详情</button>
+      <button id="notifyBtn" class="tb" title="卡间消息">消息 <b id="notifyCount">2</b></button>
+      <button id="rvToggle" class="tb" title="评审浮窗">评审</button>
+    </header>
+
+    <div class="stage">
+      <section class="chat" aria-label="对话区">
+        <!-- 事件类型索引（原型辅助件） -->
+        <div class="idx" id="idx">
+          <button class="idx-head" id="idxHead" aria-expanded="true">
+            <span>事件类型索引</span><span class="cnt" id="idxCount">0 项</span>
+            <span class="cnt" id="selfCheck" title="JS 引用 id 与 DOM id 差集（控制台不回传，故上屏）">自检中…</span>
+            <span class="sp"></span><span id="idxChev">▾</span>
+          </button>
+          <div class="idx-body" id="idxBody"></div>
+        </div>
+
+        <div class="scroll" id="scroll">
+          <div class="col" id="col">
+
+            <div class="flow-view-older" id="olderWrap">
+              <button class="flow-view-older-btn" id="olderBtn">加载更早</button>
+            </div>
+
+            <div class="date-divider"><span>今天</span></div>
+
+            <!-- ============ 注入类（kind=injection，7 种） ============ -->
+            <div class="step-row lv3" data-type="context_preamble" data-ev="context_preamble">
+              <span class="ev">context_preamble</span>
+              <span class="txt">上下文注入·固定总领 <span class="f">· <span class="k">source_kind</span>=system_prompt</span></span>
+            </div>
+            <div class="step-row lv3" data-type="judgment_protocol" data-ev="judgment_protocol">
+              <span class="ev">judgment_protocol</span>
+              <span class="txt">判断协议（轮首注入）<span class="f">· <span class="k">source_kind</span>=builtin</span></span>
+            </div>
+            <div class="step-row lv3" data-type="context_seat_identity" data-ev="context_seat_identity">
+              <span class="ev">context_seat_identity</span>
+              <span class="txt">三席身份注入 <span class="f">· <span class="k">source_kind</span>=seats</span></span>
+            </div>
+            <div class="step-row lv3" data-type="context_injection" data-ev="context_injection">
+              <span class="ev">context_injection</span>
+              <span class="txt">上下文注入·当前步骤 计划A · step_3 <span class="f">· <span class="k">index</span>=3</span> <span class="f">· <span class="k">total</span>=7</span></span>
+            </div>
+            <div class="step-row lv3" data-type="status_update_task" data-ev="status_update_task">
+              <span class="ev">status_update_task</span>
+              <span class="txt">现状更新（轮首注入）<span class="f">· <span class="k">source_kind</span>=button</span></span>
+            </div>
+            <div class="step-row lv3" data-type="requirements_draft_task" data-ev="requirements_draft_task">
+              <span class="ev">requirements_draft_task</span>
+              <span class="txt">需求确定·拟草稿（轮首注入）<span class="f">· <span class="k">source_kind</span>=button</span></span>
+            </div>
+            <div class="step-row lv3" data-type="requirements_final_task" data-ev="requirements_final_task">
+              <span class="ev">requirements_final_task</span>
+              <span class="txt">需求确定·定正稿（轮首注入）<span class="f">· <span class="k">source_kind</span>=button</span></span>
+            </div>
+
+            <!-- ============ 运行骨架 ============ -->
+            <div class="step-row" data-type="run_start" data-ev="run_start" id="t-run_start">
+              <span class="ev">run_start</span>
+              <span class="txt">一轮开始 <span class="f">· <span class="k">pair_id</span>=8f3a21</span> <span class="f">· <span class="k">chars</span>=18420</span></span>
+            </div>
+
+            <!-- 用户气泡：普通态 + hover 操作条 -->
+            <div class="msg flow-user-row" data-type="user_message" id="t-user_message">
+              <div class="flow-user-stack">
+                <div class="flow-user-bubble">把旧系统的卡片对话页做成高保真原型，事件类型要做全。</div>
+                <div class="msg-actions">
+                  <span class="msg-time">11:20</span>
+                  <button type="button" title="复制">复制</button>
+                  <button type="button" title="重新发送">重发</button>
+                </div>
+              </div>
+            </div>
+            <!-- 用户气泡：乐观上屏未认领态（pending，无重发键） -->
+            <div class="msg flow-user-row is-pending" data-type="user_message_pending" id="t-user_message_pending">
+              <div class="flow-user-stack">
+                <div class="flow-user-bubble">再补一条：排队条也要有。</div>
+                <div class="msg-actions">
+                  <span class="msg-time">11:21</span>
+                  <button type="button" title="复制">复制</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="step-row" data-type="round_start" data-ev="round_start">
+              <span class="ev">round_start</span>
+              <span class="txt">第 1 轮 <span class="f">· <span class="k">phase</span>=main</span></span>
+            </div>
+
+            <!-- 助手正文 + 思考块 -->
+            <div class="msg" data-type="assistant_text" id="t-assistant_text">
+              <div class="think-row" id="thinkRow">
+                <span class="tk-ico">◈</span><span class="tk-title">Think</span>
+                <span class="tk-sum">先把事件类型从装配器与渲染层挖全，再决定页面怎么铺</span>
+                <span class="tk-time">3.2s</span>
+                <div class="tk-full">渲染层按 kind 分八类：user / assistant / cardmsg / tool / chain / seats / sys / injection。
+sysRow 是系统条的总闸，switch 里 50 多个 case，没登记的走 C5 兜底「未识别事件」。
+所以原型要做的不是十几条，是全部。</div>
+              </div>
+              <div class="md">明白了。核心不是视觉，是**事件类型的全集**。先按渲染层的 kind 分组铺开。</div>
+            </div>
+
+            <!-- 计划链（chain） -->
+            <div class="step-row has-detail" data-type="judgment" data-ev="judgment" id="t-judgment">
+              <span class="ev">judgment</span>
+              <span class="txt">判断：拆解上板 <span class="f">· <span class="k">verdict</span>=plan</span></span>
+              <pre class="step-detail">{"verdict":"plan","reason":"需要多步：挖类型 → 铺样例 → 验交互"}</pre>
+            </div>
+            <div class="step-row has-detail" data-type="plan_created" data-ev="plan_created" id="t-plan_created">
+              <span class="ev">plan_created</span>
+              <span class="txt">计划上板：<b>对话页事件类型全集</b> <span class="f">· <span class="k">total</span>=3</span></span>
+              <span class="sub">3 步</span>
+              <pre class="step-detail">{"name":"对话页事件类型全集","total":3,"steps":[…]}</pre>
+            </div>
+            <div class="psteps">
+              <div class="pstep"><span class="bt">思考</span><span>step_1 · 从 REGISTRY 与 sysRow 挖出全部事件类型</span><span class="f">id=step_1 criteria=清单可核对</span></div>
+              <div class="pstep"><span class="bt">执行</span><span>step_2 · 每个类型给出可见样例与交互态</span><span class="f">id=step_2 criteria=逐条在面</span></div>
+              <div class="pstep"><span class="bt">执行</span><span>step_3 · browser 实测每条交互</span><span class="f">id=step_3 criteria=操作→读数</span></div>
+            </div>
+            <div class="step-row lv2 has-detail" data-type="step_start" data-ev="step_start" id="t-step_start">
+              <span class="ev">step_start</span>
+              <span class="txt">步 1/3 <span class="bt">思考</span> · 从 REGISTRY 与 sysRow 挖出全部事件类型 <span class="f">· <span class="k">step_id</span>=step_1</span></span>
+              <pre class="step-detail">{"index":1,"total":3,"type":"think","step_id":"step_1","criteria":"清单可核对"}</pre>
+            </div>
+
+            <!-- 工具行：运行中 / 成功 / 失败 -->
+            <div class="step-row tool-row running has-detail" data-type="tool_call" data-ev="tool_call" id="t-tool_call">
+              <span class="ev">tool_call</span>
+              <span class="txt"><i class="tool-ico"></i><b>read_file</b><span class="targs">path=推演agent/static/esm/assembler.js</span></span>
+              <span class="sub"><span class="mk run">调用中</span></span>
+              <div class="tool-body"></div>
+            </div>
+            <div class="step-row tool-row ok has-detail" data-type="tool_result" data-ev="tool_result" id="t-tool_result">
+              <span class="ev">tool_result</span>
+              <span class="txt"><i class="tool-ico"></i><b>read_file</b><span class="targs">path=assembler.js</span></span>
+              <span class="sub"><span class="mk ok">✓</span> 0.4s</span>
+              <div class="tool-body"><pre class="tr-pre">580 行 · REGISTRY 含 60 余个事件类型</pre></div>
+            </div>
+            <div class="tool-sum">580 行 · REGISTRY 含 60 余个事件类型</div>
+            <div class="step-row tool-row fail has-detail" data-type="tool_result_fail" data-ev="tool_result" id="t-tool_result_fail">
+              <span class="ev">tool_result</span>
+              <span class="txt"><i class="tool-ico"></i><b>write_file</b><span class="targs">path=/history/h2.md</span></span>
+              <span class="sub"><span class="mk no">✗</span> 0.1s</span>
+              <div class="tool-body err"><div class="tr-err">[denied] 目标越出可写范围</div></div>
+            </div>
+            <div class="step-row lv2 has-detail" data-type="step_advanced" data-ev="step_advanced" id="t-step_advanced">
+              <span class="ev">step_advanced</span>
+              <span class="txt">步骤完成 <span class="f">· <span class="k">step_id</span>=step_1</span> <span class="f">· <span class="k">criteria_met</span>=true</span></span>
+              <span class="sub"><span class="mk ok">✓</span>→ 下一步</span>
+              <pre class="step-detail">{"step_id":"step_1","criteria_met":true,"next_prompt":"每个类型给出可见样例"}</pre>
+            </div>
+            <div class="step-row lv2 ok has-detail" data-type="step_advanced_done" data-ev="step_advanced" id="t-step_advanced_done">
+              <span class="ev">step_advanced</span>
+              <span class="txt">全部步骤完成，计划收口 <span class="f">· <span class="k">all_done</span>=true</span></span>
+              <span class="sub"><span class="mk ok">✓</span>收口</span>
+              <pre class="step-detail">{"all_done":true,"result":"48 个类型已铺满"}</pre>
+            </div>
+
+            <!-- 三席（seats） -->
+            <div class="step-row lv3" data-type="seats_enter" data-ev="seats_enter" id="t-seats_enter">
+              <span class="ev">seats_enter</span>
+              <span class="txt">三席进场 <span class="f">· <span class="k">tool_results</span>=3</span> <span class="f">· <span class="k">steps</span>=2</span></span>
+              <span class="sub">并行质询</span>
+            </div>
+            <div class="seats" data-type="seat_card" id="t-seat_card">
+              <div class="seat-card">
+                <div class="sc-head"><span class="m">claude-opus-4-5</span><span class="st">思考中</span></div>
+                <div class="sc-body"><span class="tk">先看事件类型覆盖，再看交互入口是否都能鼠标到达…</span></div>
+                <div class="sc-foot"><span class="ok"></span><span class="meta"></span></div>
+              </div>
+              <div class="seat-card">
+                <div class="sc-head"><span class="m">claude-sonnet-4-5</span><span class="st">✓ 已返回</span></div>
+                <div class="sc-body"><span class="tk">排队条的三态在原型里必须都在面。</span><div class="ot">同意，另注意折叠态只留工具行与轮次分隔。</div></div>
+                <div class="sc-foot"><span class="ok">ok=true</span><span class="meta">2.4s · 186 字</span></div>
+              </div>
+              <div class="seat-card">
+                <div class="sc-head"><span class="m">gpt-5.2</span><span class="st fail">✗ 已返回</span></div>
+                <div class="sc-body"><span class="tk"></span></div>
+                <div class="sc-foot"><span class="ok">ok=false</span><span class="meta">超时 30s</span></div>
+              </div>
+            </div>
+
+            <div class="step-row" data-type="context" data-ev="context" id="t-context">
+              <span class="ev">context</span>
+              <span class="txt">装配上下文 <span class="f">· <span class="k">regions</span>=system、memory、rules</span> <span class="f">· <span class="k">bytes</span>=18420</span></span>
+              <span class="sub">3 区 · 18KB</span>
+            </div>
+            <div class="step-row" data-type="deliver" data-ev="deliver" id="t-deliver">
+              <span class="ev">deliver</span>
+              <span class="txt">交付拼接 <span class="f">· <span class="k">branch</span>=main</span> <span class="f">· <span class="k">bytes</span>=9420</span></span>
+              <span class="sub">9KB</span>
+            </div>
+            <div class="step-row void" data-type="synthesize" data-ev="synthesize" id="t-synthesize">
+              <span class="ev">synthesize</span>
+              <span class="txt">综合</span>
+              <span class="sub"></span>
+            </div>
+            <div class="step-row void has-detail" data-type="synthesize_legacy" data-ev="synthesize" id="t-synthesize_legacy">
+              <span class="ev">synthesize</span>
+              <span class="txt">历史记录（旧格式）<span class="f">· <span class="k">behavior</span>=legacy</span></span>
+              <span class="sub"></span>
+              <pre class="step-detail" style="display:block">老卡迁移来的环节块只有 {content, behavior}，缺结构化字段 ⇒ 不解析自由文本去补字段，直接降级成一条「历史记录（旧格式）」＋ content 原文。</pre>
+            </div>
+
+            <!-- 建卡 / 卡面操作 -->
+            <div class="step-row ok has-detail" data-type="proposal" data-ev="proposal" id="t-proposal">
+              <span class="ev">proposal</span>
+              <span class="txt">建卡 2 张 <span class="f">· <span class="k">cards</span>=card_320、card_321</span></span>
+              <span class="sub">2 卡</span>
+              <pre class="step-detail">{"count":2,"cards":["card_320","card_321"]}</pre>
+            </div>
+            <div class="step-row ok" data-type="card_created" data-ev="card_created" id="t-card_created">
+              <span class="ev">card_created</span>
+              <span class="txt">建卡 <span class="f">· <span class="k">title</span>=事件类型盘点</span> <span class="f">· <span class="k">card_type</span>=worker</span></span>
+              <span class="sub"><span class="mk">＋</span>创建</span>
+            </div>
+            <div class="step-row" data-type="card_block_edited" data-ev="card_block_edited" id="t-card_block_edited">
+              <span class="ev">card_block_edited</span>
+              <span class="txt">卡面编辑 <span class="f">· <span class="k">block</span>=使命</span> <span class="f">· <span class="k">by</span>=card_454</span></span>
+              <span class="sub"><span class="mk">✎</span>编辑</span>
+            </div>
+
+            <div class="date-divider"><span>今天</span></div>
+
+            <!-- wb_exec 执行体委派（10 种） -->
+            <div class="step-row warn" data-type="wb_exec_queued" data-ev="wb_exec_queued" id="t-wb_exec_queued">
+              <span class="ev">wb_exec_queued</span>
+              <span class="txt">排队中（等 agent 槽）<span class="f">· <span class="k">executor</span>=wbide</span></span>
+              <span class="sub"><span class="mk">…</span>排队</span>
+            </div>
+            <div class="step-row lv3" data-type="wb_exec_start" data-ev="wb_exec_start" id="t-wb_exec_start">
+              <span class="ev">wb_exec_start</span>
+              <span class="txt">派给 WorkBuddy 执行体 <span class="f">· <span class="k">executor</span>=wbide</span> <span class="f">· <span class="k">model</span>=gpt-5.2</span></span>
+              <span class="sub"><span class="mk">WB</span>派发</span>
+            </div>
+            <div class="step-row lv3" data-type="wb_exec_model" data-ev="wb_exec_model" id="t-wb_exec_model">
+              <span class="ev">wb_exec_model</span>
+              <span class="txt">执行体已就位 <span class="f">· <span class="k">model</span>=gpt-5.2</span></span>
+              <span class="sub"><span class="mk ok">✓</span>就位</span>
+            </div>
+            <div class="step-row ok" data-type="wb_exec_done" data-ev="wb_exec_done" id="t-wb_exec_done">
+              <span class="ev">wb_exec_done</span>
+              <span class="txt">执行体完成 <span class="f">· <span class="k">tool_calls</span>=12</span> <span class="f">· <span class="k">elapsed_sec</span>=84</span></span>
+              <span class="sub"><span class="mk ok">✓</span>完成</span>
+            </div>
+            <div class="step-row warn" data-type="wb_exec_fallback" data-ev="wb_exec_fallback" id="t-wb_exec_fallback">
+              <span class="ev">wb_exec_fallback</span>
+              <span class="txt">换候选：<span class="f">claude-opus-4-5 → claude-sonnet-4-5</span> <span class="f">· <span class="k">reason</span>=槽被占</span></span>
+              <span class="sub"><span class="mk">↻</span>换候选</span>
+            </div>
+            <div class="step-row warn" data-type="wb_exec_resume" data-ev="wb_exec_resume" id="t-wb_exec_resume">
+              <span class="ev">wb_exec_resume</span>
+              <span class="txt">断线续跑 第 1 次 <span class="f">· <span class="k">error</span>=connection reset</span></span>
+              <span class="sub"><span class="mk">↻</span>续跑</span>
+            </div>
+            <div class="step-row warn" data-type="wb_exec_wait" data-ev="wb_exec_wait" id="t-wb_exec_wait">
+              <span class="ev">wb_exec_wait</span>
+              <span class="txt">等网关空闲 <span class="f">· <span class="k">waited_sec</span>=12</span></span>
+              <span class="sub"><span class="mk">…</span>等待</span>
+            </div>
+            <div class="step-row fail err" data-type="wb_exec_unavailable" data-ev="wb_exec_unavailable" id="t-wb_exec_unavailable">
+              <span class="ev">wb_exec_unavailable</span>
+              <span class="txt">执行体暂不可用 <span class="f">· <span class="k">reason</span>=网关未配置</span></span>
+              <span class="sub"><span class="mk no">✗</span>不可用</span>
+            </div>
+            <div class="step-row warn" data-type="wb_exec_interrupted" data-ev="wb_exec_interrupted" id="t-wb_exec_interrupted">
+              <span class="ev">wb_exec_interrupted</span>
+              <span class="txt">被中断 <span class="f">· <span class="k">error</span>=用户停止</span></span>
+              <span class="sub"><span class="mk no">⊘</span>中断</span>
+            </div>
+            <div class="step-row fail err" data-type="wb_exec_error" data-ev="wb_exec_error" id="t-wb_exec_error">
+              <span class="ev">wb_exec_error</span>
+              <span class="txt">执行体失败 <span class="f">· <span class="k">error</span>=exit code 1</span></span>
+              <span class="sub"><span class="mk no">✗</span>失败</span>
+            </div>
+
+            <!-- 评审（13 种） -->
+            <div class="step-row ok" data-type="review_batch_opened" data-ev="review_batch_opened" id="t-review_batch_opened">
+              <span class="ev">review_batch_opened</span>
+              <span class="txt">评审批次开启 <span class="f">· <span class="k">members</span>=3</span> <span class="f">· <span class="k">focus</span>=需求文档 v1 草稿</span></span>
+              <span class="sub"><span class="mk">◎</span>评审</span>
+            </div>
+            <div class="step-row" data-type="review_round_start" data-ev="review_round_start" id="t-review_round_start">
+              <span class="ev">review_round_start</span>
+              <span class="txt">评审开始一轮 <span class="f">· <span class="k">draft</span>=v1</span> <span class="f">· <span class="k">pending</span>=3</span></span>
+              <span class="sub"><span class="mk">▶</span>评审</span>
+            </div>
+            <div class="step-row lv3" data-type="review_speaking" data-ev="review_speaking" id="t-review_speaking">
+              <span class="ev">review_speaking</span>
+              <span class="txt">架构席 评审发言中 <span class="f">· <span class="k">batch</span>=b7</span></span>
+              <span class="sub"><span class="mk">◌</span>评审</span>
+            </div>
+            <div class="step-row ok" data-type="review_spoke" data-ev="review_spoke" id="t-review_spoke">
+              <span class="ev">review_spoke</span>
+              <span class="txt">架构席 发言 <span class="f">· <span class="k">model</span>=claude-opus-4-5</span> · 通过</span>
+              <span class="sub"><span class="mk">◆</span>评审</span>
+            </div>
+            <div class="step-row" data-type="review_spoke_no" data-ev="review_spoke" id="t-review_spoke_no">
+              <span class="ev">review_spoke</span>
+              <span class="txt">验收席 发言 <span class="f">· <span class="k">model</span>=claude-sonnet-4-5</span> <span class="f">· <span class="k">chars</span>=842</span></span>
+              <span class="sub"><span class="mk">◆</span>评审</span>
+            </div>
+            <div class="step-row ok" data-type="review_revise" data-ev="review_revise" id="t-review_revise">
+              <span class="ev">review_revise</span>
+              <span class="txt">验收席 改草稿 <span class="f">· <span class="k">changed</span>=已改</span></span>
+              <span class="sub"><span class="mk">✎</span>评审</span>
+            </div>
+            <div class="step-row warn" data-type="review_draft_drift" data-ev="review_draft_drift" id="t-review_draft_drift">
+              <span class="ev">review_draft_drift</span>
+              <span class="txt">评审草稿漂移 <span class="f">· <span class="k">reason</span>=改动超范围</span></span>
+              <span class="sub"><span class="mk">⚠</span>漂移</span>
+            </div>
+            <div class="step-row" data-type="review_dispatch" data-ev="review_dispatch" id="t-review_dispatch">
+              <span class="ev">review_dispatch</span>
+              <span class="txt">评审派活 <span class="f">· <span class="k">kind</span>=msg_ask</span> <span class="f">· <span class="k">to</span>=card_454</span> <span class="f">· <span class="k">seat</span>=验收席</span></span>
+              <span class="sub"><span class="mk">▶</span>评审</span>
+            </div>
+            <div class="step-row" data-type="review_target_responded" data-ev="review_target_responded" id="t-review_target_responded">
+              <span class="ev">review_target_responded</span>
+              <span class="txt">被评方应答 <span class="f">· <span class="k">kind</span>=msg_answer</span> <span class="f">· <span class="k">seq</span>=1841</span></span>
+              <span class="sub"><span class="mk">◀</span>评审</span>
+            </div>
+            <div class="step-row lv3" data-type="review_target_turn_end" data-ev="review_target_turn_end" id="t-review_target_turn_end">
+              <span class="ev">review_target_turn_end</span>
+              <span class="txt">被评方回合收口 <span class="f">· <span class="k">round</span>=2</span></span>
+              <span class="sub"><span class="mk">◌</span>评审</span>
+            </div>
+            <div class="step-row ok" data-type="review_round_done" data-ev="review_round_done" id="t-review_round_done">
+              <span class="ev">review_round_done</span>
+              <span class="txt">评审一轮收口 <span class="f">· <span class="k">all_passed</span>=是</span> <span class="f">· <span class="k">pending</span>=0</span></span>
+              <span class="sub"><span class="mk ok">✓</span>收口</span>
+            </div>
+            <div class="step-row ok" data-type="review_all_passed" data-ev="review_all_passed" id="t-review_all_passed">
+              <span class="ev">review_all_passed</span>
+              <span class="txt">评审全员通过</span>
+              <span class="sub"><span class="mk ok">✓</span>通过</span>
+            </div>
+            <div class="step-row" data-type="review_batch_closed" data-ev="review_batch_closed" id="t-review_batch_closed">
+              <span class="ev">review_batch_closed</span>
+              <span class="txt">评审批次收口</span>
+              <span class="sub"><span class="mk">■</span>收口</span>
+            </div>
+
+            <!-- 角色机制 -->
+            <div class="step-row ok" data-type="role_judged" data-ev="role_judged" id="t-role_judged">
+              <span class="ev">role_judged</span>
+              <span class="txt">角色巡检 <span class="f">· <span class="k">sources</span>=card_257</span> <span class="f">· <span class="k">reason</span>=出现范围变更</span></span>
+              <span class="sub">发言</span>
+            </div>
+            <div class="step-row warn" data-type="role_alarm" data-ev="role_alarm" id="t-role_alarm">
+              <span class="ev">role_alarm</span>
+              <span class="txt">角色警报：<span class="f">warn</span> · 卡面与实现不一致</span>
+              <span class="sub">warn</span>
+            </div>
+            <div class="step-row fail err" data-type="role_alarm_critical" data-ev="role_alarm" id="t-role_alarm_critical">
+              <span class="ev">role_alarm</span>
+              <span class="txt">角色警报：<span class="f">critical</span> · 误删他人文件</span>
+              <span class="sub">critical</span>
+            </div>
+
+            <!-- 卡状态 -->
+            <div class="step-row warn" data-type="card_halted" data-ev="card_halted" id="t-card_halted">
+              <span class="ev">card_halted</span>
+              <span class="txt">卡已暂停 <span class="f">· <span class="k">reason</span>=等待用户确认</span></span>
+              <span class="sub"><span class="mk">⏸</span>暂停</span>
+            </div>
+            <div class="step-row" data-type="card_unhalted" data-ev="card_unhalted" id="t-card_unhalted">
+              <span class="ev">card_unhalted</span>
+              <span class="txt">卡已恢复</span>
+              <span class="sub"><span class="mk">▶</span>恢复</span>
+            </div>
+            <div class="step-row void" data-type="card_archived" data-ev="card_archived" id="t-card_archived">
+              <span class="ev">card_archived</span>
+              <span class="txt">卡已归档</span>
+              <span class="sub"><span class="mk">▣</span>归档</span>
+            </div>
+
+            <!-- 消息类系统条 + 条件集 -->
+            <div class="step-row lv3" data-type="msg_sync" data-ev="msg_sync" id="t-msg_sync">
+              <span class="ev">msg_sync</span>
+              <span class="txt">消息同步 <span class="f">· <span class="k">count</span>=1</span> <span class="f">· <span class="k">to</span>=card_454</span></span>
+              <span class="sub"><span class="mk">⇄</span>消息</span>
+            </div>
+            <div class="step-row" data-type="msg_notify" data-ev="msg_notify" id="t-msg_notify">
+              <span class="ev">msg_notify</span>
+              <span class="txt">消息提醒 <span class="f">· <span class="k">from</span>=card_257</span> <span class="f">· <span class="k">kind</span>=notify</span></span>
+              <span class="sub"><span class="mk">✉</span>消息</span>
+            </div>
+            <div class="step-row" data-type="msg_directive" data-ev="msg_directive" id="t-msg_directive">
+              <span class="ev">msg_directive</span>
+              <span class="txt">消息指令 <span class="f">· <span class="k">from</span>=card_257</span> <span class="f">· <span class="k">kind</span>=directive</span></span>
+              <span class="sub"><span class="mk">✉</span>指令</span>
+            </div>
+            <div class="step-row" data-type="msg_report" data-ev="msg_report" id="t-msg_report">
+              <span class="ev">msg_report</span>
+              <span class="txt">消息回报 <span class="f">· <span class="k">from</span>=card_322</span> <span class="f">· <span class="k">kind</span>=report</span></span>
+              <span class="sub"><span class="mk">✉</span>回报</span>
+            </div>
+            <div class="step-row lv3" data-type="harness_message" data-ev="harness_message" id="t-harness_message">
+              <span class="ev">harness_message</span>
+              <span class="txt">条件集消息 <span class="f">· <span class="k">to</span>=card_454</span> <span class="f">· <span class="k">kind</span>=wait</span></span>
+              <span class="sub"><span class="mk">⇄</span>值守</span>
+            </div>
+            <div class="step-row lv3" data-type="card_message" data-ev="card_message" id="t-card_message">
+              <span class="ev">card_message</span>
+              <span class="txt">卡间消息：<b>汇报</b> <span class="f">· <span class="k">msg_id</span>=m_88</span> <span class="f">· <span class="k">from</span>=card_322</span></span>
+              <span class="sub">msg_report</span>
+            </div>
+
+            <div class="step-row warn" data-type="model_resume" data-ev="model_resume" id="t-model_resume">
+              <span class="ev">model_resume</span>
+              <span class="txt">模型续跑 <span class="f">· <span class="k">attempt</span>=2</span> <span class="f">· <span class="k">reason</span>=rate limited</span></span>
+              <span class="sub"><span class="mk">↻</span>续跑</span>
+            </div>
+            <div class="step-row" data-type="goal_round" data-ev="goal_round" id="t-goal_round">
+              <span class="ev">goal_round</span>
+              <span class="txt">目标回合 <span class="f">· <span class="k">round</span>=3</span> <span class="f">· <span class="k">state</span>=running</span></span>
+              <span class="sub"><span class="mk">◎</span>目标</span>
+            </div>
+            <div class="step-row ok" data-type="done" data-ev="done" id="t-done">
+              <span class="ev">done</span>
+              <span class="txt">完成 <span class="f">· <span class="k">rounds</span>=3</span> <span class="f">· <span class="k">model_calls</span>=7</span></span>
+              <span class="sub">3 轮 · 7 调用</span>
+            </div>
+            <div class="step-row" data-type="round_end" data-ev="round_end" id="t-round_end">
+              <span class="ev">round_end</span>
+              <span class="txt">轮次收口 <span class="f">· <span class="k">round</span>=3</span></span>
+              <span class="sub"></span>
+            </div>
+
+            <div class="date-divider"><span>昨天</span></div>
+
+            <!-- ============ 卡间信（9 种 + 格式异常） ============ -->
+            <div class="msg cmsg ask" data-type="msg_ask" id="t-cmsg_ask">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">msg_ask · 询问</span><span class="must">须回应</span><span class="dir">card_257 → card_454</span></div>
+                <div class="txt">左栏 272px 与任务书的 360px 冲突，按哪个实现？请回复确认口径。</div>
+              </div>
+            </div>
+            <div class="msg cmsg answer" data-type="msg_answer" id="t-cmsg_answer">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">msg_answer · 应答</span><span class="dir">card_454 → card_257</span></div>
+                <div class="txt">按盘上实测 272px 实现，并联列入改动对照供用户裁。</div>
+                <div class="replyto">回应 m_8801</div>
+              </div>
+            </div>
+            <div class="msg cmsg notify" data-type="msg_notify" id="t-cmsg_notify">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">msg_notify · 通知</span><span class="dir">card_322 → card_454</span></div>
+                <div class="txt">画布页 v3 已定版，原型结构可对照 docs/prototype-canvas-page-v3.html。</div>
+              </div>
+            </div>
+            <div class="msg cmsg notify" data-type="msg_sync" id="t-cmsg_sync">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">msg_sync · 同步</span><span class="dir">card_291 → card_454</span></div>
+                <div class="txt">组件与状态库补了两个状态：is-pending / is-stopping。</div>
+              </div>
+            </div>
+            <div class="msg cmsg notify" data-type="msg_report" id="t-cmsg_report">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">msg_report · 汇报</span><span class="dir">card_454 → card_257</span></div>
+                <div class="txt">原型已落盘：986 行，单文件零外链。</div>
+              </div>
+            </div>
+            <div class="msg cmsg notify" data-type="msg_directive" id="t-cmsg_directive">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">msg_directive · 指令</span><span class="dir">card_257 → card_454</span></div>
+                <div class="txt">剥掉视觉设计，核心是把所有事件类型全做出来。</div>
+              </div>
+            </div>
+            <div class="msg cmsg notify" data-type="coder_done" id="t-cmsg_coder_done">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">coder_done · 完工回报</span><span class="dir">card_305 → card_454</span></div>
+                <div class="txt">设计令牌两套已落盘，深/浅各 40 项。</div>
+              </div>
+            </div>
+            <div class="msg cmsg notify" data-type="worker_done" id="t-cmsg_worker_done">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">worker_done · 完工回报</span><span class="dir">card_331 → card_454</span></div>
+                <div class="txt">交互轨迹留档已生成 12 条。</div>
+              </div>
+            </div>
+            <div class="msg cmsg bad" data-type="cardmsg_bad" id="t-cmsg_bad">
+              <div class="bar"></div>
+              <div class="body">
+                <div class="head"><span class="tag">消息格式异常</span><span class="dir">card_099 → card_454</span></div>
+                <div class="txt">这条消息头行不合法（缺 type/from），按原文照示——宁可难看，不可丢话。</div>
+              </div>
+            </div>
+
+            <!-- 兜底与不渲染类型 -->
+            <div class="step-row fail err has-detail" data-type="error" data-ev="error" id="t-error">
+              <span class="ev">error</span>
+              <span class="txt">失败 <span class="f">· <span class="k">error</span>=上游 502</span> <span class="f">· <span class="k">rounds</span>=1</span></span>
+              <span class="sub"><span class="mk no">✗</span>失败</span>
+              <pre class="step-detail">{"error":"upstream 502","rounds":1}</pre>
+            </div>
+            <div class="step-row void has-detail" data-type="rescue" data-ev="rescue" id="t-rescue">
+              <span class="ev">rescue</span>
+              <span class="txt">文本抢救：截取可用片段续跑 <span class="f">· <span class="k">count</span>=842</span></span>
+              <span class="sub">842 字符</span>
+              <pre class="step-detail">{"count":842}</pre>
+            </div>
+            <div class="step-row void has-detail" data-type="triage_verdict" data-ev="triage_verdict" id="t-triage_verdict">
+              <span class="ev">triage_verdict</span>
+              <span class="txt">旧判断事件（已退役）<span class="f">· <span class="k">verdict</span>=plan</span></span>
+              <span class="sub">不会出现</span>
+              <pre class="step-detail">{"verdict":"plan"}</pre>
+            </div>
+            <div class="step-row void" data-type="reasoning_orphan" data-ev="reasoning" id="t-reasoning_orphan">
+              <span class="ev">reasoning</span>
+              <span class="txt">思考（该轮无正式回复）</span>
+              <span class="sub"></span>
+              <pre class="step-detail" style="display:block">该轮有思考却始终没有正式回复（run 以 error 收尾、或被后续轮顶替）：旧实现直接丢弃，此处照示出来，不丢。</pre>
+            </div>
+            <div class="step-row void has-detail" data-type="unrecognized" data-ev="unknown_type_xyz" id="t-unrecognized">
+              <span class="ev">unknown_type_xyz</span>
+              <span class="txt">未识别事件 <span class="f">· <span class="k">data</span>={"a":1}</span></span>
+              <span class="sub">unknown_type_xyz</span>
+              <pre class="step-detail">C5 兜底：注册表没有的类型照示出来，不丢不炸。</pre>
+            </div>
+
+            <!-- 「不产生可见行」的类型：原型说明件 -->
+            <div class="proto-group" id="pg-norender">
+              <div class="pg-h">以下类型不产生可见行（注册表认它，但渲染层 return null）</div>
+              <div class="step-row void" data-type="ping"><span class="ev">ping</span><span class="txt">SSE 保活帧 —— 不出行（不加会掉进兜底刷屏「未识别事件」）</span></div>
+              <div class="step-row void" data-type="turn_end"><span class="ev">turn_end</span><span class="txt">运行态内部帧 —— 不出行（live 路径已滤）</span></div>
+              <div class="step-row void" data-type="content_chunk"><span class="ev">content_chunk</span><span class="txt">逐字正文增量 —— 并入 assistant 节点，不单独出行</span></div>
+              <div class="step-row void" data-type="reasoning_chunk"><span class="ev">reasoning_chunk</span><span class="txt">逐字思考增量 —— 落盘已由合并 reasoning 承载</span></div>
+              <div class="step-row void" data-type="revoke"><span class="ev">revoke</span><span class="txt">控制位记录 —— 不渲染成节点，只驱动软删（撤下 seq ≥ from_seq 的节点）</span></div>
+            </div>
+
+            <!-- ============ 视图态样例区 ============ -->
+            <div class="proto-group" id="pg-view">
+              <div class="pg-h">视图态（不属于事件流，是整屏/瞬时态）</div>
+
+              <div style="font-size:11px;color:#888;margin:6px 0 2px">chat-skeleton · 首屏骨架（首次拉 timeline 期间）</div>
+              <div class="chat-skeleton">
+                <div class="sk-bubble"></div>
+                <div class="sk-line w85"></div><div class="sk-line w70"></div><div class="sk-line w40"></div>
+              </div>
+
+              <div style="font-size:11px;color:#888;margin:14px 0 2px">chat-empty · 空态（该卡一条记录都没有；建议点击只填不发）</div>
+              <div class="chat-empty" id="emptyState">
+                <div class="ce-mark">◌</div>
+                <h3>还没有对话</h3>
+                <p>在下面输入框说点什么，这张卡的对话会从这里开始。</p>
+                <div class="ce-hints">
+                  <button class="ce-hint" type="button">总结当前卡现状</button>
+                  <button class="ce-hint" type="button">列出未决事项</button>
+                  <button class="ce-hint" type="button">起草需求文档</button>
+                </div>
+              </div>
+
+              <div style="font-size:11px;color:#888;margin:14px 0 2px">flow-turn-status · 运行条两态</div>
+              <div class="flow-turn-status" id="sampleRunning">
+                <span class="flow-turn-status-label">Deep diving...</span>
+                <span class="flow-turn-status-clock" hidden>0秒</span>
+              </div>
+              <div class="flow-turn-status is-stopping" style="margin-top:4px">
+                <span class="flow-turn-status-label">正在停止…</span>
+                <span class="flow-turn-status-clock"></span>
+              </div>
+              <div class="step-row void lv3" style="border:none">
+                <span class="ev">计时口径</span>
+                <span class="txt">运行 15 秒后才显时钟（格式：N秒 / N分NN秒）</span>
+              </div>
+
+              <div style="font-size:11px;color:#888;margin:14px 0 2px">flow-view-older · 加载更早三态</div>
+              <div class="step-row lv3" style="border:none"><span class="ev">可加载</span><span class="txt">「加载更早」可点</span></div>
+              <div class="step-row lv3" style="border:none"><span class="ev">加载中</span><span class="txt">「载入历史…」按钮 disabled</span></div>
+              <div class="step-row lv3" style="border:none"><span class="ev">没有更多</span><span class="txt">整块 flow-view-older 隐藏（不是灰按钮）</span></div>
+
+              <div style="font-size:11px;color:#888;margin:14px 0 2px">flow-view-to-bottom · 回底键两态</div>
+              <div class="step-row lv3" style="border:none"><span class="ev">脱离底部</span><span class="txt">出现「↓ 回到底部」</span></div>
+              <div class="step-row lv3" style="border:none"><span class="ev">期间有新消息</span><span class="txt">加 has-new 态，文案变「新消息」</span></div>
+            </div>
+
+            <div class="proto-group" id="pg-queue">
+              <div class="pg-h">排队条（queue-dock）四态 —— 真实队列见输入区上方，这里给静态形态</div>
+              <div class="step-row lv3" style="border:none"><span class="ev">1 条</span><span class="txt">不出头部，直接一行预览 + 编辑/删除/插话发送三键</span></div>
+              <div class="step-row lv3" style="border:none"><span class="ev">多条·收起</span><span class="txt">出头部「N 条排队消息 ↑」，列表隐藏</span></div>
+              <div class="step-row lv3" style="border:none"><span class="ev">多条·展开</span><span class="txt">头部「N 条排队消息 ↓」＋ 逐行列表</span></div>
+              <div class="step-row lv3" style="border:none"><span class="ev">编辑态</span><span class="txt">行内变 input；Enter 保存 / Esc 取消；空文本「保存」禁用</span></div>
+              <div class="step-row lv3" style="border:none"><span class="ev">插话可用性</span><span class="txt">仅运行中可插话发送；非运行态该键禁用（title：仅运行中可插话发送）</span></div>
+              <div class="step-row lv3" style="border:none"><span class="ev">失败反馈</span><span class="txt">编辑/删除/插话失败 → toast（编辑失败：这条消息可能已经开始发送。）</span></div>
+            </div>
+
+          </div>
+        </div>
+
+        <button class="flow-view-to-bottom" id="toBottom" hidden>↓ 回到底部</button>
+      </section>
+
+      <!-- 卡详情（覆盖式，不锁主区） -->
+      <aside class="insp" id="insp" aria-label="卡详情">
+        <div class="insp-head">
+          <div class="t"><div class="n" id="inspName">高保真原型 · 对话页</div><div class="id" id="inspId">card_454 · UI · 已暂停</div></div>
+          <button class="insp-close" id="inspClose" title="关闭">×</button>
+        </div>
+        <div class="insp-body">
+          <div class="isec"><div class="isec-h">使命</div><div class="isec-b"><span id="inspMission">把旧系统卡片对话页做成高保真原型；剥掉视觉设计，事件类型要做全。</span></div></div>
+          <div class="isec"><div class="isec-h">现状<button class="mini" id="inspEditStatus">编辑现状</button></div><div class="isec-b"><span id="inspStatus">原型 v2 已重做：极简样式，事件类型按渲染层 kind 分组铺满。</span></div></div>
+          <div class="isec"><div class="isec-h">需求文档</div><div class="isec-b"><span class="muted">草稿 · 评审中</span></div></div>
+          <div class="isec"><div class="isec-h">关系<button class="mini" id="relAdd">＋ 添加</button></div><div class="isec-b"><div id="relList" style="display:flex;flex-wrap:wrap;gap:4px">
+            <span class="bdg">父 · card_257</span><span class="bdg">先后 · card_322</span>
+          </div></div></div>
+          <div class="isec"><div class="isec-h">修改历史</div><div class="isec-b">
+            <div>v2 · 剥视觉 + 事件类型全集</div>
+            <div>v1 · 首版（带视觉设计）</div>
+            <div>建卡</div>
+          </div></div>
+          <div class="isec"><div class="isec-h">执行体</div><div class="isec-b"><span class="muted">系统模型（本卡自跑）</span></div></div>
+          <div class="isec"><div class="isec-h">危险操作</div><div class="isec-b" style="flex-direction:row;gap:6px">
+            <button class="mini" id="dangerArchive">归档</button><button class="mini" id="dangerDelete">删除</button>
+          </div></div>
+        </div>
+      </aside>
+
+      <!-- 评审浮窗（收缩态落右侧空白带，展开态向左挤压；层级低于 inspector） -->
+      <aside class="fwin" id="rvWin" aria-label="评审浮窗">
+        <div class="fwin-head">
+          <span class="fwin-title">评审 · 画布页 v3</span>
+          <span class="fwin-count" id="rvCount">2/3</span>
+          <span class="sp"></span>
+          <button class="fwin-btn" id="rvExpand" title="展开评审卡对话">⤢</button>
+          <button class="fwin-btn" id="rvClose" title="关闭">×</button>
+        </div>
+        <div class="fwin-events" id="rvEvents">
+          <div class="fwin-ev pass"><span class="ic">✓</span><span>口径① 覆盖层不锁主视野 · 通过</span><span class="who">card_345</span></div>
+          <div class="fwin-ev pass"><span class="ic">✓</span><span>口径② 鼠标可达出口齐备 · 通过</span><span class="who">card_345</span></div>
+          <div class="fwin-ev todo"><span class="ic">…</span><span>口径③ 无动作中间态 · 复核中</span><span class="who">card_345</span></div>
+        </div>
+        <div class="fwin-live"><span class="t" id="rvLive">实时 · card_345 正在核对证据</span></div>
+        <div class="fwin-frame">评审卡 iframe 区（示意）</div>
+      </aside>
+    </div>
+
+    <!-- 输入区 -->
+    <div class="composer">
+      <div class="composer-in">
+        <div class="flow-queue-dock" id="queueDock" hidden>
+          <div class="flow-queue-panel" id="queuePanel"></div>
+        </div>
+        <div class="inputcard">
+          <textarea id="inputBox" rows="2" placeholder="输入消息 · Enter 发送 · Shift+Enter 换行 · 运行中发送将排队" aria-label="消息输入"></textarea>
+          <div class="inputbar">
+            <button id="modelBadge" class="mini" title="选择模型">GMODEL · claude-opus-4-5</button>
+            <span class="sp"></span>
+            <button id="autoToggle" class="mini" aria-pressed="false" title="自动模式开关">手动模式</button>
+            <button id="statusDraftBtn" class="mini" title="更新现状（行级 diff）">更新现状</button>
+            <button id="draftBtn" class="mini" title="需求文档起草">需求确定</button>
+            <button id="sendBtn" class="send" title="发送">发送 ↑</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 通知面板 -->
+<div class="panel" id="notifyPanel" hidden>
+  <div class="panel-head">卡间消息<span class="sp"></span><button class="insp-close" id="npClose" title="关闭">×</button></div>
+  <div class="panel-list">
+    <div class="panel-item"><div class="from">card_257 → card_454</div><div class="txt">剥掉视觉设计，核心是把所有事件类型全做出来。</div><div class="tm">刚刚</div></div>
+    <div class="panel-item"><div class="from">card_322 → card_454</div><div class="txt">画布页 v3 已定版，结构可对照。</div><div class="tm">14:02</div></div>
+  </div>
+</div>
+
+<!-- 起草弹窗（输入型模态，带可见取消） -->
+<div class="modal" id="draftModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="draftTitle">
+    <div class="modal-head"><span id="draftTitle">需求文档起草</span><button class="modal-x" id="draftModalX" title="关闭（丢弃草稿）">×</button></div>
+    <div class="modal-body">
+      <div id="draftStateLoading" class="muted" style="font-size:12px;color:#888">起草中…</div>
+      <div id="draftArea" contenteditable="false" hidden>【需求文档 · v1 草稿 · 示意】
+1. 单文件、零外链、file:// 直开。
+2. 对话流事件类型按渲染层 kind 分组铺满，每类至少一条可见样例。
+3. 每个可交互类型都要能点开验证（过程行载荷 / 工具行 IN-OUT / 思考全文 / 排队条三键）。</div>
+      <div id="draftError" class="tr-err" style="font-size:12px" hidden>起草失败：模型超时（示意）。</div>
+      <input id="draftFeedbackInput" placeholder="哪里要改？输入反馈后点「反馈」重新起草…">
+    </div>
+    <div class="modal-foot">
+      <button class="big-btn" id="draftCloseBtn">关闭</button>
+      <span class="sp"></span>
+      <button class="big-btn" id="draftFeedbackBtn">反馈</button>
+      <button class="big-btn primary" id="draftConfirmBtn">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- 现状弹窗（原/新 diff + 可编辑 + 可见取消） -->
+<div class="modal" id="statusModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="statusTitle">
+    <div class="modal-head"><span id="statusTitle">更新现状 · 原/新对比</span><button class="modal-x" id="statusModalX" title="关闭（不落盘）">×</button></div>
+    <div class="modal-body">
+      <div class="diff-label">原现状（只读）</div>
+      <div id="statusDiffArea">原型 v1 已落盘：986 行，<span class="del">带完整视觉设计（深色主题、令牌体系）</span>，事件类型只覆盖十余种。</div>
+      <div class="diff-label">可直接改（点「同意」按这里文本落盘）</div>
+      <textarea id="statusEditArea" rows="6">原型 v2 已重做：<span class="ins">剥掉视觉设计</span>，事件类型按渲染层 kind 分组铺满（<span class="ins">48 种</span>）。</textarea>
+    </div>
+    <div class="modal-foot">
+      <button class="big-btn" id="statusCloseBtn">关闭</button>
+      <span class="sp"></span>
+      <button class="big-btn primary" id="statusConfirmBtn">同意</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+  function on(id, ev, fn) { var el = $(id); if (el) el.addEventListener(ev, fn); else console.warn('[proto] missing #' + id); }
+  function toast(msg, kind) {
+    var box = $('toasts'); if (!box) return;
+    var t = document.createElement('div');
+    t.className = 'toast' + (kind ? ' ' + kind : '');
+    t.textContent = msg;
+    t.addEventListener('click', function () { t.remove(); });
+    box.appendChild(t);
+    setTimeout(function () { t.remove(); }, 2600);
+  }
+
+  /* ── 事件类型索引：从 DOM 里把所有 data-type 收齐，按 kind 分组 ── */
+  var GROUPS = [
+    { h: 'A 消息类（kind=user / assistant）', items: [
+      ['user_message', '用户气泡'], ['user_message_pending', '乐观上屏·未认领'],
+      ['assistant_text', '助手正文（含思考块）'] ] },
+    { h: 'B 卡间信（kind=cardmsg）', items: [
+      ['msg_ask', '询问·须回应'], ['msg_answer', '应答'], ['msg_notify', '通知'],
+      ['msg_sync', '同步'], ['msg_report', '汇报'], ['msg_directive', '指令'],
+      ['coder_done', '完工回报'], ['worker_done', '完工回报'], ['cardmsg_bad', '格式异常'] ] },
+    { h: 'C 工具（kind=tool）', items: [
+      ['tool_call', '调用中'], ['tool_result', '成功'], ['tool_result_fail', '失败'] ] },
+    { h: 'D 计划链（kind=chain）', items: [
+      ['judgment', '判断'], ['plan_created', '计划上板＋步骤清单'],
+      ['step_start', '步开始'], ['step_advanced', '步完成'], ['step_advanced_done', '全步收口'],
+      ['synthesize_legacy', '旧格式降级'] ] },
+    { h: 'E 三席（kind=seats）', items: [
+      ['seats_enter', '三席进场'], ['seat_card', '席卡（思考中/成功/失败）'] ] },
+    { h: 'F 系统条（kind=sys）· 运行骨架', items: [
+      ['run_start', '一轮开始'], ['round_start', '第 N 轮'], ['context', '装配上下文'],
+      ['deliver', '交付拼接'], ['synthesize', '综合'], ['proposal', '建卡 N 张'],
+      ['done', '完成'], ['error', '失败'], ['rescue', '文本抢救'],
+      ['round_end', '轮次收口'], ['reasoning_orphan', '思考·无正式回复'],
+      ['triage_verdict', '旧判断（已退役）'], ['unrecognized', '未识别事件（兜底）'] ] },
+    { h: 'F 系统条 · wb_exec 执行体委派', items: [
+      ['wb_exec_queued', '排队中'], ['wb_exec_start', '派给执行体'], ['wb_exec_model', '已就位'],
+      ['wb_exec_done', '完成'], ['wb_exec_fallback', '换候选'], ['wb_exec_resume', '断线续跑'],
+      ['wb_exec_wait', '等网关'], ['wb_exec_unavailable', '不可用'],
+      ['wb_exec_interrupted', '被中断'], ['wb_exec_error', '失败'] ] },
+    { h: 'F 系统条 · 评审（kind=sys）', items: [
+      ['review_batch_opened', '批次开启'], ['review_round_start', '开始一轮'],
+      ['review_speaking', '发言中'], ['review_spoke', '发言·通过'], ['review_spoke_no', '发言·未通过'],
+      ['review_revise', '改草稿'], ['review_draft_drift', '草稿漂移'],
+      ['review_dispatch', '派活'], ['review_target_responded', '被评方应答'],
+      ['review_target_turn_end', '被评方收口'], ['review_round_done', '一轮收口'],
+      ['review_all_passed', '全员通过'], ['review_batch_closed', '批次收口'] ] },
+    { h: 'F 系统条 · 卡与角色', items: [
+      ['card_created', '建卡'], ['card_block_edited', '卡面编辑'],
+      ['card_halted', '暂停'], ['card_unhalted', '恢复'], ['card_archived', '归档'],
+      ['role_judged', '角色巡检'], ['role_alarm', '角色警报·warn'],
+      ['role_alarm_critical', '角色警报·critical'], ['card_message', '卡间消息（系统视角）'] ] },
+    { h: 'F 系统条 · 消息与目标', items: [
+      ['msg_sync', '消息同步'], ['msg_notify', '消息提醒'], ['msg_directive', '消息指令'],
+      ['msg_report', '消息回报'], ['harness_message', '条件集消息'],
+      ['model_resume', '模型续跑'], ['goal_round', '目标回合'] ] },
+    { h: 'G 注入（kind=injection）', items: [
+      ['context_preamble', '固定总领'], ['context_injection', '当前步骤'],
+      ['judgment_protocol', '判断协议'], ['context_seat_identity', '三席身份'],
+      ['status_update_task', '现状更新'], ['requirements_draft_task', '需求确定·拟草稿'],
+      ['requirements_final_task', '需求确定·定正稿'] ] },
+    { h: 'H 不产生可见行', items: [
+      ['ping', '保活帧'], ['turn_end', '运行态内部帧'],
+      ['content_chunk', '正文增量'], ['reasoning_chunk', '思考增量'], ['revoke', '控制位·软删'] ],
+      norender: true }
+  ];
+
+  function buildIndex() {
+    var body = $('idxBody'); if (!body) return;
+    var total = 0;
+    GROUPS.forEach(function (g) {
+      var grp = document.createElement('div');
+      grp.className = 'idx-grp';
+      var h = document.createElement('div');
+      h.className = 'h';
+      h.textContent = g.h + ' · ' + g.items.length;
+      grp.appendChild(h);
+      var wrap = document.createElement('div');
+      wrap.className = 'idx-items';
+      g.items.forEach(function (it) {
+        total++;
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'idx-item' + (g.norender ? ' norender' : '');
+        b.dataset.target = it[0];
+        b.innerHTML = '<span>' + it[0] + '</span><span class="zh">' + it[1] + '</span>';
+        b.addEventListener('click', function () { locate(it[0]); });
+        wrap.appendChild(b);
+      });
+      grp.appendChild(wrap);
+      body.appendChild(grp);
+    });
+    var c = $('idxCount'); if (c) c.textContent = total + ' 项';
+  }
+
+  function locate(type) {
+    var el = document.querySelector('[data-type="' + type + '"]');
+    if (!el) { toast('未找到样例：' + type, 'warn'); return; }
+    if (document.body.classList.contains('proc-collapsed')) {
+      var row = el.closest('.step-row');
+      if (row && !row.classList.contains('tool-row') && row.dataset.ev !== 'round_start') {
+        toast('当前处于过程折叠态，该行被折叠 —— 已为你展开过程细节');
+        setProc(false);
+      }
+    }
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.style.outline = '2px solid #333';
+    setTimeout(function () { el.style.outline = ''; }, 1400);
+  }
+
+  /* ── 过程细节折叠 ── */
+  function setProc(collapsed) {
+    document.body.classList.toggle('proc-collapsed', collapsed);
+    var b = $('procToggle');
+    if (b) { b.setAttribute('aria-pressed', String(!collapsed)); b.textContent = collapsed ? '过程已收' : '过程细节'; }
+  }
+  on('procToggle', 'click', function () { setProc(!document.body.classList.contains('proc-collapsed')); });
+
+  /* ── 类型索引开合 ── */
+  on('idxHead', 'click', function () {
+    var b = $('idxBody'), chev = $('idxChev'), head = $('idxHead');
+    var nowHidden = !b.hidden;
+    b.hidden = nowHidden;
+    if (chev) chev.textContent = nowHidden ? '▸' : '▾';
+    if (head) head.setAttribute('aria-expanded', String(!nowHidden));
+  });
+  on('idxToggle', 'click', function () {
+    var idx = $('idx');
+    var hidden = idx.hidden;
+    idx.hidden = !hidden;
+    var b = $('idxToggle'); if (b) b.setAttribute('aria-pressed', String(hidden));
+  });
+
+  /* ── 过程行 / 工具行 / 思考块 展开 ── */
+  document.addEventListener('click', function (e) {
+    var th = e.target.closest('.think-row');
+    if (th) { th.classList.toggle('open'); return; }
+    var row = e.target.closest('.step-row.has-detail');
+    if (row && !e.target.closest('.step-detail')) {
+      if (row.classList.contains('tool-row')) {
+        var body = row.querySelector('.tool-body');
+        if (body && !body.dataset.built) {
+          body.dataset.built = '1';
+          if (!body.textContent.trim()) {
+            body.innerHTML = row.classList.contains('fail')
+              ? '<div class="tr-err">[denied] 目标越出可写范围</div>'
+              : '<pre class="tr-pre">IN  {"path":"推演agent/static/esm/assembler.js","para_start":1,"para_end":580}\nOUT {"ok":true,"lines":580}</pre>';
+          }
+        }
+        row.classList.toggle('open');
+        return;
+      }
+      row.classList.toggle('open');
+    }
+  });
+
+  /* ── 左栏搜索过滤 ── */
+  on('navSearch', 'input', function () {
+    var q = this.value.trim().toLowerCase();
+    var rows = document.querySelectorAll('#navTree .nav-row');
+    Array.prototype.forEach.call(rows, function (r) {
+      var name = r.dataset.name || '';
+      var hit = !q || name.toLowerCase().indexOf(q) >= 0;
+      r.style.display = hit ? '' : 'none';
+      var n = r.querySelector('.nav-name');
+      if (n) {
+        if (q && hit) {
+          var i = name.toLowerCase().indexOf(q);
+          n.innerHTML = name.slice(0, i) + '<mark>' + name.slice(i, i + q.length) + '</mark>' + name.slice(i + q.length);
+        } else { n.textContent = name; }
+      }
+    });
+  });
+  document.addEventListener('click', function (e) {
+    var r = e.target.closest('#navTree .nav-row');
+    if (!r) return;
+    document.querySelectorAll('#navTree .nav-row').forEach(function (x) { x.classList.remove('current'); });
+    r.classList.add('current');
+    var n = $('inspName'), id = $('inspId');
+    if (n) n.textContent = r.dataset.name;
+    if (id) id.textContent = (r.dataset.cid || '—') + ' · 切换到该卡';
+    toast('切到「' + r.dataset.name + '」（示意，不重载对话）');
+  });
+
+  /* ── 发送 / 停止 / 排队 ── */
+  var running = false, runTimer = null, queue = [], queueCollapsed = true;
+  function setRunning(v) {
+    running = v;
+    var b = $('sendBtn');
+    if (b) {
+      b.classList.toggle('stop', v);
+      b.textContent = v ? '停止 ■' : '发送 ↑';
+      b.title = v ? '停止' : '发送';
+    }
+    var s = $('sampleRunning');
+    if (s) s.hidden = !v;
+  }
+  function appendUser(text) {
+    var col = $('col'); if (!col) return;
+    var d = document.createElement('div');
+    d.className = 'msg flow-user-row';
+    d.dataset.type = 'user_message';
+    d.innerHTML = '<div class="flow-user-stack"><div class="flow-user-bubble"></div><div class="msg-actions"><button type="button">复制</button><button type="button">重发</button></div></div>';
+    d.querySelector('.flow-user-bubble').textContent = text;
+    col.appendChild(d);
+    scrollBottom();
+  }
+  function appendAI(text) {
+    var col = $('col'); if (!col) return;
+    var d = document.createElement('div');
+    d.className = 'msg';
+    d.dataset.type = 'assistant_text';
+    d.innerHTML = '<div class="md"></div>';
+    d.querySelector('.md').textContent = text;
+    col.appendChild(d);
+    scrollBottom();
+  }
+  function scrollBottom() {
+    var s = $('scroll'); if (s) s.scrollTop = s.scrollHeight;
+  }
+  function doSend() {
+    var box = $('inputBox'); if (!box) return;
+    var t = box.value.trim();
+    if (!t) { box.focus(); return; }
+    if (running) { queue.push(t); box.value = ''; renderQueue(); toast('已排队：当前回合结束后送达'); return; }
+    box.value = '';
+    appendUser(t);
+    setRunning(true);
+    runTimer = setTimeout(function () {
+      appendAI('（示意回复）收到「' + t + '」——原型占位，不代表真实模型输出。');
+      setRunning(false);
+      if (queue.length) {
+        var nxt = queue.shift(); renderQueue();
+        setTimeout(function () { appendUser(nxt); setRunning(true); runTimer = setTimeout(function () { appendAI('（示意回复）' ); setRunning(false); }, 2000); }, 300);
+      }
+    }, 6000);
+  }
+  on('sendBtn', 'click', function () {
+    if (running) {
+      if (runTimer) { clearTimeout(runTimer); runTimer = null; }
+      setRunning(false); toast('已停止（示意）', 'warn');
+    } else { doSend(); }
+  });
+  on('inputBox', 'keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
+  });
+
+  function renderQueue() {
+    var dock = $('queueDock'), panel = $('queuePanel');
+    if (!dock || !panel) return;
+    dock.hidden = queue.length === 0;
+    panel.innerHTML = '';
+    if (!queue.length) return;
+    var expanded = !queueCollapsed || queue.length === 1;
+    if (queue.length > 1) {
+      var h = document.createElement('button');
+      h.type = 'button'; h.className = 'flow-queue-header';
+      h.innerHTML = '<span>☰</span><span>' + queue.length + ' 条排队消息</span><span class="sp"></span><span>' + (expanded ? '▾' : '▴') + '</span>';
+      h.addEventListener('click', function () { queueCollapsed = !queueCollapsed; renderQueue(); });
+      panel.appendChild(h);
+    }
+    if (!expanded) return;
+    var ul = document.createElement('ul');
+    ul.className = 'flow-queue-list';
+    queue.forEach(function (txt, i) {
+      var li = document.createElement('li');
+      li.className = 'flow-queue-row';
+      var p = document.createElement('span');
+      p.className = 'flow-queue-preview';
+      p.textContent = txt;
+      p.title = txt;
+      li.appendChild(p);
+      var acts = document.createElement('div');
+      acts.className = 'flow-queue-actions';
+      var be = document.createElement('button'); be.type = 'button'; be.textContent = '✎'; be.title = '编辑排队消息';
+      be.addEventListener('click', function () {
+        var inp = document.createElement('input');
+        inp.className = 'flow-queue-editor'; inp.value = txt;
+        li.replaceChild(inp, p); inp.focus();
+        inp.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter') { queue[i] = inp.value; renderQueue(); toast('已保存（示意）', 'ok'); }
+          if (ev.key === 'Escape') renderQueue();
+        });
+      });
+      var bs = document.createElement('button'); bs.type = 'button'; bs.textContent = '↑'; bs.title = running ? '插话发送' : '仅运行中可插话发送';
+      bs.disabled = !running;
+      bs.addEventListener('click', function () { if (!running) return; toast('插话发送（示意）', 'ok'); });
+      var bt = document.createElement('button'); bt.type = 'button'; bt.textContent = '✕'; bt.title = '删除排队消息';
+      bt.addEventListener('click', function () { queue.splice(i, 1); renderQueue(); });
+      acts.appendChild(be); acts.appendChild(bs); acts.appendChild(bt);
+      li.appendChild(acts);
+      ul.appendChild(li);
+    });
+    panel.appendChild(ul);
+  }
+
+  /* ── 回底键 / 加载更早 ── */
+  var sc = $('scroll');
+  function updateToBottom() {
+    var b = $('toBottom'); if (!b || !sc) return;
+    b.hidden = !(sc.scrollTop + sc.clientHeight < sc.scrollHeight - 60);
+  }
+  if (sc) sc.addEventListener('scroll', updateToBottom);
+  on('toBottom', 'click', function () {
+    if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' });
+  });
+  var olderLoads = 0;
+  on('olderBtn', 'click', function () {
+    olderLoads++;
+    var col = $('col');
+    var frag = document.createElement('div');
+    frag.innerHTML = '<div class="date-divider"><span>10月10日</span></div>'
+      + '<div class="step-row lv3" data-type="round_start"><span class="ev">round_start</span><span class="txt">第 1 轮 <span class="f">· <span class="k">phase</span>=history</span></span></div>'
+      + '<div class="msg flow-user-row" data-type="user_message"><div class="flow-user-stack"><div class="flow-user-bubble">（更早的历史消息）</div></div></div>';
+    while (frag.firstChild) col.insertBefore(frag.firstChild, col.firstChild);
+    if (olderLoads >= 2) { this.disabled = true; this.textContent = '已到最早'; }
+  });
+
+  /* ── 空态建议：只填不发 ── */
+  document.addEventListener('click', function (e) {
+    var h = e.target.closest('.ce-hint');
+    if (!h) return;
+    var box = $('inputBox');
+    if (box) { box.value = h.textContent; box.focus(); }
+    toast('已填入输入框（不代发）');
+  });
+
+  /* ── 输入区三键 + 模型徽标 ── */
+  on('autoToggle', 'click', function () {
+    var b = $('autoToggle'); var onNow = !b.classList.contains('on');
+    b.classList.toggle('on', onNow);
+    b.setAttribute('aria-pressed', String(onNow));
+    b.textContent = onNow ? '自动模式' : '手动模式';
+    toast('自动模式：' + (onNow ? '开' : '关'));
+  });
+  on('modelBadge', 'click', function () { toast('模型清单（示意）：claude-opus-4-5 / claude-sonnet-4-5 / gpt-5.2'); });
+
+  /* ── 弹窗 ── */
+  function openM(id) { var m = $(id); if (m) m.hidden = false; }
+  function closeM(id) { var m = $(id); if (m) m.hidden = true; }
+  on('draftBtn', 'click', function () {
+    openM('draftModal');
+    var l = $('draftStateLoading'), a = $('draftArea');
+    if (l) l.hidden = false; if (a) a.hidden = true;
+    setTimeout(function () {
+      if (l) l.hidden = true;
+      if (a) { a.hidden = false; a.contentEditable = 'true'; }
+    }, 900);
+  });
+  on('draftModalX', 'click', function () { closeM('draftModal'); });
+  on('draftCloseBtn', 'click', function () { closeM('draftModal'); toast('草稿已丢弃'); });
+  on('draftFeedbackBtn', 'click', function () {
+    var f = $('draftFeedbackInput');
+    if (!f || !f.value.trim()) { toast('请先填写反馈内容', 'warn'); return; }
+    toast('反馈已提交，重新起草（示意）', 'ok');
+  });
+  on('draftConfirmBtn', 'click', function () { closeM('draftModal'); toast('草稿已提交评审（示意）', 'ok'); });
+
+  on('statusDraftBtn', 'click', function () { openM('statusModal'); });
+  on('statusModalX', 'click', function () { closeM('statusModal'); });
+  on('statusCloseBtn', 'click', function () { closeM('statusModal'); toast('未落盘'); });
+  on('statusConfirmBtn', 'click', function () {
+    var e = $('statusEditArea'), s = $('inspStatus');
+    if (e && s) s.textContent = e.value;
+    closeM('statusModal'); toast('现状已更新（示意）', 'ok');
+  });
+  on('inspEditStatus', 'click', function () { openM('statusModal'); });
+
+  /* ── 卡详情 / 通知 / 评审浮窗 ── */
+  on('inspToggle', 'click', function () { $('insp').classList.toggle('open'); });
+  on('inspClose', 'click', function () { $('insp').classList.remove('open'); });
+  on('notifyBtn', 'click', function () {
+    var p = $('notifyPanel'); p.hidden = !p.hidden;
+    if (!p.hidden) { var c = $('notifyCount'); if (c) c.textContent = '0'; }
+  });
+  on('npClose', 'click', function () { $('notifyPanel').hidden = true; });
+  on('rvToggle', 'click', function () { $('rvWin').classList.toggle('open'); });
+  on('rvClose', 'click', function () { $('rvWin').classList.remove('open'); });
+  on('rvExpand', 'click', function () { $('rvWin').classList.toggle('expanded'); });
+
+  /* ── Esc 加速键（每个状态都有鼠标可达出口）── */
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (!$('draftModal').hidden) { closeM('draftModal'); return; }
+    if (!$('statusModal').hidden) { closeM('statusModal'); return; }
+    if (!$('notifyPanel').hidden) { $('notifyPanel').hidden = true; return; }
+    if ($('insp').classList.contains('open')) { $('insp').classList.remove('open'); return; }
+    if ($('rvWin').classList.contains('open')) { $('rvWin').classList.remove('open'); return; }
+  });
+
+  /* ── 危险操作两段确认 ── */
+  ['dangerArchive', 'dangerDelete'].forEach(function (id) {
+    var b = $(id); if (!b) return;
+    var orig = b.textContent;
+    b.addEventListener('click', function () {
+      if (b.dataset.arm === '1') {
+        b.dataset.arm = ''; b.textContent = orig;
+        toast(id === 'dangerArchive' ? '已归档（示意）' : '已删除（示意）', id === 'dangerArchive' ? 'ok' : 'err');
+      } else {
+        b.dataset.arm = '1'; b.textContent = '再次点击确认';
+        setTimeout(function () { b.dataset.arm = ''; b.textContent = orig; }, 3000);
+      }
+    });
+  });
+
+  /* ── 自检：JS 引用 id 与 DOM id 差集 ── */
+  var JS_IDS = ['scroll','col','olderWrap','olderBtn','procToggle','idxToggle','idx','idxHead','idxBody','idxChev','idxCount',
+    'insp','inspToggle','inspClose','inspName','inspId','inspMission','inspStatus','inspEditStatus','relAdd','relList',
+    'dangerArchive','dangerDelete','notifyBtn','notifyCount','notifyPanel','npClose','rvToggle','rvWin','rvClose','rvExpand','rvCount','rvEvents','rvLive',
+    'inputBox','sendBtn','modelBadge','autoToggle','statusDraftBtn','draftBtn','queueDock','queuePanel',
+    'draftModal','draftModalX','draftTitle','draftArea','draftStateLoading','draftError','draftFeedbackInput','draftCloseBtn','draftFeedbackBtn','draftConfirmBtn',
+    'statusModal','statusModalX','statusTitle','statusDiffArea','statusEditArea','statusCloseBtn','statusConfirmBtn',
+    'toasts','toBottom','sampleRunning','navSearch','navTree','navSettings','emptyState','thinkRow','pg-norender','pg-view','pg-queue','selfCheck'];
+  function selfCheck() {
+    var missing = JS_IDS.filter(function (id) { return !$(id); });
+    var domIds = Array.prototype.map.call(document.querySelectorAll('[id]'), function (n) { return n.id; });
+    var types = Array.prototype.map.call(document.querySelectorAll('[data-type]'), function (n) { return n.dataset.type; });
+    var uniqTypes = types.filter(function (t, i) { return types.indexOf(t) === i; });
+    window.__PROTO_SELFCHECK__ = {
+      jsIds: JS_IDS.length,
+      missing: missing,
+      domIdCount: domIds.length,
+      eventTypes: uniqTypes.length,
+      typeList: uniqTypes
+    };
+    var badge = $('selfCheck');
+    if (badge) {
+      /* data-type ＝ 样例键（同一事件类型的第二种形态带后缀，如 tool_result_fail）；
+         data-ev ＝ 真实事件类型码（与源码 REGISTRY / sysRow 的 type 一致）。
+         索引 87 项 > 样例键数：因为 msg_sync / msg_notify / msg_directive / msg_report
+         在「卡间信」与「系统条」两组各列一次（同一类型两种渲染位置）。 */
+      var idxN = document.querySelectorAll('#idxBody .idx-item').length;
+      badge.textContent = 'id差集:' + missing.length + ' · JS引用' + JS_IDS.length + ' · 样例键' + uniqTypes.length + ' · 索引' + idxN;
+      badge.style.color = missing.length ? '#b42318' : '#1a7f37';
+      badge.title = missing.length
+        ? ('缺失 id：' + missing.join(', '))
+        : ('JS 引用 ' + JS_IDS.length + ' 项全部命中 DOM。样例键 ' + uniqTypes.length
+           + ' 个；索引列 ' + idxN + ' 项（多出的 4 项是 msg_sync/msg_notify/msg_directive/msg_report 在两组各列一次）。');
+    }
+    console.log('[proto] 自检', window.__PROTO_SELFCHECK__);
+  }
+
+  buildIndex();
+  selfCheck();
+  updateToBottom();
+})();
+</script>
+</body>
+</html>

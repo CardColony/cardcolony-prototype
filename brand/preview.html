@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>CardColony 品牌规范 · v1</title>
+<style>
+  :root { --ink:#1c2733; --paper:#ffffff; --gold:#c9901f; --gold-d:#e2a63d; --body-d:#e6edf3; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:44px 52px; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+         background:#eceae3; color:var(--ink); }
+  h1 { font-size:22px; margin:0 0 6px; }
+  .sub { color:#6a7280; font-size:13px; margin-bottom:30px; max-width:900px; }
+  .sec { margin:36px 0 12px; font-size:15px; font-weight:700; }
+  .note { font-size:12.5px; color:#6a7280; max-width:900px; margin-bottom:14px; line-height:1.7; }
+  .note code { font-size:11.5px; }
+  .row { display:flex; gap:20px; flex-wrap:wrap; align-items:flex-end; }
+  .cell { text-align:center; }
+  .tile { display:inline-block; border-radius:14px; box-shadow:0 1px 4px rgba(0,0,0,.14); }
+  .tile svg,.tile img { display:block; }
+  .lbl { font-size:11px; color:#8a919c; margin-top:6px; }
+  .dark { background:#10151c; }
+  table { border-collapse:collapse; font-size:13px; }
+  td,th { padding:7px 14px; border:1px solid #d8d5cc; text-align:left; }
+  th { background:#e8e5dc; font-size:12.5px; }
+  .chip { display:inline-block; width:14px; height:14px; border-radius:4px;
+          vertical-align:-2px; margin-right:7px; border:1px solid rgba(0,0,0,.15); }
+  .wm { font-weight:650; letter-spacing:.2px; white-space:nowrap; line-height:1;
+        font-family:"Segoe UI",system-ui,sans-serif; display:flex; align-items:baseline; }
+  .wm img { height:1em; width:auto; transform:translateY(.045em); margin-right:0; }
+  .s20{font-size:20px;} .s30{font-size:30px;} .s48{font-size:48px;}
+  .pad { padding:16px 22px; }
+  .dont { color:#b0493f; }
+  .ok { color:#2d7a4f; }
+</style>
+</head>
+<body>
+<h1>CardColony 品牌规范 v1 · 蜂蜜金</h1>
+<div class="sub">符号＝C 形小机器人（visor 双目＋天线），字标里顶替首字母 C。
+双色规则：<b>线色</b>＝C 笔身＋天线杆＋"ard"；<b>点色</b>＝双目＋天线珠＋"Colony"。本页全部引用 <code>brand/</code> 目录成品资产。</div>
+
+<div class="sec">1 · 符号本体</div>
+<div class="row">
+  <div class="cell"><div class="tile dark" style="padding:18px"><img src="cardcolony-mark-dark.svg" width="150" height="150"></div><div class="lbl">暗态（UI）<br>#e6edf3 / #e2a63d</div></div>
+  <div class="cell"><div class="tile" style="padding:18px"><img src="cardcolony-mark-light.svg" width="150" height="150"></div><div class="lbl">亮态（白底文档）<br>#1c2733 / #c9901f</div></div>
+  <div class="cell"><div class="tile" style="padding:18px"><img src="cardcolony-mark-mono.svg" width="150" height="150"></div><div class="lbl">单色（印刷/雕刻）<br>#1c2733</div></div>
+  <div class="cell"><div class="tile dark" style="padding:18px"><img src="cardcolony-mark-dark-sm.svg" width="150" height="150"></div><div class="lbl">加粗版（≤48px 用）</div></div>
+</div>
+
+<div class="sec">2 · 字标 —— 符号即首字母 C</div>
+<div class="row">
+  <div class="cell"><div class="tile dark pad"><img src="cardcolony-wordmark-dark.svg" width="330"></div><div class="lbl">暗态字标</div></div>
+  <div class="cell"><div class="tile pad"><img src="cardcolony-wordmark-light.svg" width="330"></div><div class="lbl">亮态字标</div></div>
+</div>
+<div class="note" style="margin-top:10px">
+<span class="ok">✓</span> 贴排零间距，ard 线色 + Colony 点色，天线探帽线　
+<span class="dont">✗</span> 不许：图标＋全称并排 / 双目换 UI 语义色 / 拉伸描边投影 / 裁掉天线</div>
+
+<div class="sec">3 · 色票</div>
+<table>
+<tr><th>态</th><th>线色（C/天线/ard）</th><th>点色（双目/珠/Colony）</th><th>底</th></tr>
+<tr><td><b>暗态 · 主</b></td><td><span class="chip" style="background:#e6edf3"></span>#e6edf3</td><td><span class="chip" style="background:#e2a63d"></span>#e2a63d 蜂蜜金</td><td><span class="chip" style="background:#10151c"></span>UI 深底</td></tr>
+<tr><td><b>亮态</b></td><td><span class="chip" style="background:#1c2733"></span>#1c2733</td><td><span class="chip" style="background:#c9901f"></span>#c9901f 深金</td><td><span class="chip" style="background:#fff"></span>白</td></tr>
+<tr><td><b>单色</b></td><td><span class="chip" style="background:#1c2733"></span>#1c2733</td><td>＝线色</td><td>—</td></tr>
+<tr><td colspan="4" style="color:#6a7280;font-size:12px">红线：点色<b>不借</b> UI 语义色——警告 #f7c163、存活 #7fd6a1、主蓝 #8fb0ff 在应用里继续当语义色；品牌金在 UI 里只表示"这是品牌"，不表示状态。</td></tr>
+</table>
+
+<div class="sec">4 · UI 内应用</div>
+<div class="row">
+  <div class="cell">
+    <div class="tile dark" style="display:flex;align-items:center;padding:0 16px;height:44px;border-radius:10px;gap:10px">
+      <span class="wm s20" style="color:#e6edf3"><img src="cardcolony-mark-dark-sm.svg"><span>ard<span style="color:#e2a63d">Colony</span></span></span>
+      <span style="flex:1"></span>
+      <span style="width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.08)"></span>
+      <span style="width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.08)"></span>
+      <span style="width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.08)"></span>
+    </div>
+    <div class="lbl">顶栏 44px · 字标 19–20px 暗态</div>
+  </div>
+  <div class="cell">
+    <div class="tile" style="display:flex;gap:10px;padding:12px 14px;align-items:flex-end">
+      <img src="favicon-16.png" width="16" height="16">
+      <img src="favicon-32.png" width="32" height="32">
+      <img src="favicon-48.png" width="48" height="48">
+      <img src="appicon-180.png" width="80" height="80" style="border-radius:14px">
+    </div>
+    <div class="lbl">favicon / appicon —— 白底圆角砖，深浅浏览器都立得住</div>
+  </div>
+</div>
+
+<div class="sec">5 · og:image 社交卡（1200×630）</div>
+<div class="cell"><div class="tile"><img src="og-image.png" width="640"></div><div class="lbl">深底字标＋一句话定位</div></div>
+
+<div class="sec">6 · 文件清单</div>
+<div class="note"><code>
+cardcolony-mark-{dark,light}.svg —— 标准符号 ≥48px<br>
+cardcolony-mark-{dark,light}-sm.svg —— 加粗符号 ≤48px<br>
+cardcolony-mark-mono.svg —— 单色<br>
+cardcolony-wordmark-{dark,light}.svg —— 字标（Segoe UI Semibold，量产前转曲）<br>
+favicon-{16,32,48}.png · appicon-{180,512}.png · og-image.png 1200×630<br>
+README.md —— 英文版规范文本
+</code></div>
+
+<footer style="margin-top:40px;font-size:12px;color:#99a0aa">推演agent/brand/ · v1 蜂蜜金定稿</footer>
+</body>
+</html>

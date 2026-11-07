@@ -164,6 +164,10 @@ def _normalize(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, 
     if data is None:
         data = {}
     ts = record.get("ts")
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        # [2026-11-07] reasoning 合并落盘把 time.time() float 原样 str() 进 ts，
+        # 与 ISO 串混写 ⇒ 前端按 ts 排/显全乱。数字一律转 ISO。
+        ts = datetime.fromtimestamp(float(ts)).astimezone().isoformat(timespec="milliseconds")
     if not ts:
         ts = datetime.now().astimezone().isoformat(timespec="milliseconds")
     out = {
@@ -582,9 +586,27 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
     except (TypeError, ValueError):
         want_tail = 0
 
+    # [2026-11-07 · 写乱序] 显示序＝**时间序 (ts, seq)**，不再是 seq 升序：
+    # 落盘是异步排任务（append_bg → create_task → 写完才取号），加上
+    # append_sync 插队与多进程同写一张卡 ⇒ 慢写的事件拿到更大 seq，seq 与
+    # 真实时刻脱钩（实测：用户消息排在它之前就开始跑的工具串上面）。
+    # ts＝事件产生时刻（落盘已带 ISO），seq 做同刻 tiebreak；无 ts 的记录全在
+    # ts 时代（2026-10-17）之前，`""` 天然排在最前——与真实老→新一致。
+    # 数字串 ts 是 reasoning 合并落盘把 epoch float 写进 ts 的老账——归一成
+    # ISO 再比，否则 "1..." < "2..." 会让它们整批跳到最前面。
+    def _chrono_key(r: dict[str, Any]) -> tuple[str, int]:
+        ts = str(r.get("ts") or "")
+        if ts and ts[0].isdigit() and "T" not in ts:
+            try:
+                ts = datetime.fromtimestamp(float(ts)).astimezone().isoformat()
+            except (ValueError, OSError, OverflowError):
+                pass
+        return (ts, int(r.get("seq") or 0))
+
     if want_tail > 0 and not before and from_seq <= 0:
         # ── 尾部窗口路径：从文件尾往前读，够 N 条就停（不再全量解析）──────
         items = _tail_records(path, spans, want_tail)
+        items.sort(key=_chrono_key)
         return items
 
     if from_seq > 0 and not before:
@@ -594,7 +616,9 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
         # ⇒ `line.strip()` 抛 MemoryError，页面直接打不开。
         # 文件序＝seq 升序，从尾往前读时 seq 单调递减，遇到 seq < from_seq 即可停，
         # 只解析真正需要的那几条。revoke 语义由 `_in_revoked`（区间并集）照旧处理。
-        return _tail_records(path, spans, want=1_000_000, min_seq=from_seq)
+        items = _tail_records(path, spans, want=1_000_000, min_seq=from_seq)
+        items.sort(key=_chrono_key)
+        return items
 
     # ── 全量路径（翻历史）：与改前逐字一致 ───────────────────────
     for rec in read(work_id, card_id):
@@ -609,13 +633,19 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
             continue
         if int(rec.get("seq") or 0) >= from_seq:
             items.append(rec)
+    items.sort(key=_chrono_key)
     if before:
         try:
             b = int(before)
         except (TypeError, ValueError):
             b = 0
         if b > 0:
-            items = [x for x in items if int(x.get("seq") or 0) < b]
+            # before 指「当前显示段首条的 seq」——按**序位**截（写乱序时段里
+            # seq 不再等于时序，比大小会把早写晚落的记录错排进旧页）。
+            idx = next((i for i, x in enumerate(items)
+                        if int(x.get("seq") or 0) == b), None)
+            items = (items[:idx] if idx is not None
+                     else [x for x in items if int(x.get("seq") or 0) < b])
     if want_tail > 0:
         items = items[-want_tail:]
     return items

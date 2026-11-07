@@ -96,6 +96,11 @@ def current_stream_context():
 # 「与既有 17 类隔离、不混合排 seq」）。
 TOKEN_EVENT_TYPES: tuple[str, ...] = ("reasoning_chunk", "content_chunk")
 
+# [2026-11-07] echo_fill 端点的 wire 兜底思考占位串——格式件不是内容，
+# 不得上屏。与 model_gateway/gateway.py 的 REASONING_PLACEHOLDER 同源
+# （就地写死不走 import：gateway 依赖链重，import 失败会让剥除静默失效）。
+_REASONING_PLACEHOLDER = "(系统注入的消息，无模型思考记录)"
+
 # 事件本体论（原 19 类 = 17 原 + 2 逐字流；V-T4-2 判据锚）。
 # [模型过程数据 2026-10-12] 主通道 +2 类 → 21 原 + 2 逐字流 = 23：
 #   judgment  —— 首轮机械推断（tool_calls 含 create_plan → plan，否则 direct）；
@@ -181,8 +186,21 @@ _anchors: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def _next_seq(key: tuple[str, str]) -> int:
-    """seq 单一取号（T097）：主通道与逐字流共用，单一分配者，帧仅携带。"""
-    _seq_counters[key] = _seq_counters.get(key, 0) + 1
+    """seq 单一取号（T097）：主通道与逐字流共用，单一分配者，帧仅携带。
+
+    [2026-11-07 · 断流复游标事故] 进程重启后计数器归零 ⇒ 新帧 seq 从头数，
+    客户端拿着旧代游标（几千/几万）把全部新帧当「已读」滤掉 ⇒ 事件流假死。
+    首次取号从事件文件尾播种（append-only、跨重启续号），让内存序大致接着
+    盘上走；seq 空洞为设计使然，续号不承诺无缝。"""
+    cur = _seq_counters.get(key)
+    if cur is None:
+        try:
+            from ..storage import event_log
+            cur = event_log.last_seq(*key)
+        except Exception:  # noqa: BLE001 播种失败不阻断取号
+            cur = 0
+        _seq_counters[key] = cur
+    _seq_counters[key] = cur + 1
     return _seq_counters[key]
 
 
@@ -496,17 +514,34 @@ def _trim_journals(key: tuple[str, str]) -> None:
             lambda e: (e.get("data") or {}).get("segment") == "run")
 
 
-def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None = None,
+         *, anchor: tuple[str, int] | None = None,
+         journal_only: bool = False) -> dict[str, Any]:
     """落一条事件：seq 单调、fanout 订阅者、兼调 progress 兼容映射。
 
     零阻塞零抛出（展示层绝不影响主流程）。
     [迭代一·A5/T092] run_start 清空 journal 制退役——旧段保留，分段标记承载
     轮界（run_start/round_start 沿用，T095）；帧附 (pair_id, seq, turn) 三锚
     （T093）；persist_process 开时主 journal 帧落盘（T099，默认 off）。
+
+    [2026-11-07] ``anchor``：显式 (pair_id, turn) 覆盖卡当前锚——调用方拿的是
+    事件自己的 run/round（如 emit_message_event 的实参），不读 ``_anchors``
+    （user_message 先于 run_start、卡间消息落他卡键上，当前锚都是错的）。
+    ``journal_only``：只进内存 journal＋SSE 扇出，**跳过 _persist_log 落盘**——
+    供「落盘已另写」的调用方补直播帧用（否则同一条事件写两遍）。
     """
     try:
         key = _key(work_id, card_id)
         d = data or {}
+        # [2026-11-07] assistant_text 正文剥占位串：echo_fill 端点的 wire 兜底
+        # REASONING_PLACEHOLDER 会被模型原样模仿成回复内容（wb-oc 免费档实弹），
+        # 它是格式件不是正文——落盘与直播帧同剥，与思考链三处过滤同语义。
+        # 常量就地写死、不走 import（gateway 依赖链 structlog，import 失败会让
+        # 剥除静默失效；前端 assembler 同样就地写死，同源常量见 gateway.py:161）。
+        if ev_type == "assistant_text" and isinstance(d.get("content"), str) \
+                and _REASONING_PLACEHOLDER in d["content"]:
+            d = dict(d)
+            d["content"] = d["content"].replace(_REASONING_PLACEHOLDER, "")
         # 轮界先落掉累积的思考文本（保证顺序：reasoning 在后续事件之前）
         _flush_reasoning(work_id, card_id)
         if ev_type == "run_start":
@@ -527,12 +562,15 @@ def emit(work_id: str, card_id: str, ev_type: str, data: dict[str, Any] | None =
             "seq": _next_seq(key),
             "ts": time.time(),
             "type": ev_type,
-            "data": _jsonable(data or {}),
+            "data": _jsonable(d),  # d 已含占位串剥除（assistant_text 分支）
         })
+        if anchor is not None:
+            evt["pair_id"], evt["turn"] = str(anchor[0] or ""), int(anchor[1] or 0)
         journal.append(evt)
         _persist_frame(work_id, card_id, evt)
         # [消息底座能力对齐 · 件2] 过程事件同步落 events jsonl（裁定 C1）
-        _persist_log(work_id, card_id, ev_type, evt["data"], ts=evt.get("ts"))
+        if not journal_only:
+            _persist_log(work_id, card_id, ev_type, evt["data"], ts=evt.get("ts"))
         # [画板四机制 T6] 每开新轮裁一次（**先落盘、后裁剪**：磁盘照落全量，内存有界）。
         # 放在 run_start 分支之外、两个 append 之后——此刻主 journal 与本轮逐字流
         # 分段帧都已入册，两个 journal 的轮数一致，窗口对齐在轮首。
@@ -573,6 +611,19 @@ async def subscribe(work_id: str, card_id: str, from_seq: int = 0) -> AsyncItera
     断连（生成器被关闭/取消）自动清理订阅者队列（A31）。
     """
     key = _key(work_id, card_id)
+    # [2026-11-07 · 死游标] 游标超过 journal 末帧 ⇒ 它来自上一代进程。
+    # [2026-11-09 · 死游标 v2 · 用户令「全部按时间/别再打补丁」] 归零整本
+    # 重放是把「补洞」做成「泄洪」：几百帧旧过程帧按到达序堆在新消息
+    # 下面（实测错序现场）。而且游标永久卡死——重放帧 seq 全小于客户端
+    # lastSeq ⇒ 游标不前进 ⇒ 每次重连再泄一遍。
+    # 真正需要补的是「画板本身」——那是落盘 timeline 的活（disk seq 跨
+    # 重启单调）。⇒ 发 resync 控制帧让前端走 disk 重建＋游标重锚；
+    # 本通道零重放、只实时跟进。在途轮的逐字正文由 token 通道自己的
+    # 「本 run 首帧起放」补（过程帧全部落盘、无需 journal 重放）。
+    if from_seq > 0 and journal_last_seq(work_id, card_id) < from_seq:
+        yield {"seq": 0, "ts": time.time(), "type": "resync",
+               "data": {"reason": "dead_cursor"}}
+        from_seq = journal_last_seq(work_id, card_id) + 1
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
     queue._es_owner_loop = asyncio.get_running_loop()  # [双循环] 烙印属主
     _subscribers.setdefault(key, set()).add(queue)
@@ -741,8 +792,14 @@ def _fanout_work_card(work_id: str, card_id: str, evt: dict[str, Any]) -> None:
     if not subs:
         return
     try:
-        frame = dict(evt)
-        frame["card"] = card_id
+        # [SSE 瘦身 2026-11-09 · 用户令] 卡级帧对画布只是「有变化了去重拉」的
+        # 触发器：canvas.js 的 onmessage 拿到卡级帧只读 ``evt.card`` 一个字段
+        # 就 scheduleWatchReload，``data`` 整个丢弃。而 tool_result 的 data
+        # 内嵌完整工具结果（read_card 一帧 20KB+、edit_status 带整卡面），
+        # 多张卡并行时浏览器每秒 JSON.parse 数 MB 只为取一个卡号 ⇒ 主线程
+        # 打满、页面卡死。⇒ 卡级帧只带触发字段：触发语义不变，载荷清零。
+        frame = {"seq": evt.get("seq"), "ts": evt.get("ts"),
+                 "type": evt.get("type"), "card": card_id}
         _fanout(subs, frame, work_id, card_id, "工作级·卡帧")
     except Exception:  # noqa: BLE001 展示层零阻断
         pass
@@ -818,6 +875,14 @@ def emit_token(work_id: str, card_id: str, ev_type: str, text: str,
         text = text or ""
         if not text:
             return {}
+        # [2026-11-07] reasoning_chunk 直播帧剥占位串——端点/模型可能把
+        # REASONING_PLACEHOLDER 原样回吐成"思考"（落盘侧已剥，直播帧同剥；
+        # 跨 chunk 切开的串由前端渲染再剥一层兜底）。常量就地写死不走 import，
+        # 与 emit 的 assistant_text 剥除同源（gateway.py:161）。
+        if ev_type == "reasoning_chunk":
+            text = text.replace(_REASONING_PLACEHOLDER, "")
+            if not text:
+                return {}
         key = _key(work_id, card_id)
         journal = _token_journals.setdefault(key, [])
         data: dict[str, Any] = {"text": text}
@@ -882,6 +947,18 @@ async def subscribe_tokens(work_id: str, card_id: str, from_seq: int = 0) -> Asy
     队列满由 ``_fanout`` 处理为「丢最旧中间帧、保最新 seq、打警告」（不静默丢）。
     """
     key = _key(work_id, card_id)
+    # [2026-11-09 · 死游标 v2 · 同主通道] 归零整本重放＝泄洪：上一代游标
+    # 把历史轮的逐字帧全倒给客户端。逐字流真正要补的只有「在途那轮的
+    # 正文」（content_chunk 不落盘、别处补不回）⇒ 只从本 run 首帧起放，
+    # 与端点 replay=1 的既有口径同一粒度；无 run_start ⇒ 不重放。
+    if from_seq > 0 and token_journal_last_seq(work_id, card_id) < from_seq:
+        _rs = 0
+        for _e in reversed(token_journal_of(work_id, card_id)):
+            if (_e.get("type") == "run_start"
+                    and (_e.get("data") or {}).get("segment") == "run"):
+                _rs = int(_e.get("seq") or 0)
+                break
+        from_seq = _rs if _rs else token_journal_last_seq(work_id, card_id) + 1
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
     queue._es_owner_loop = asyncio.get_running_loop()  # [双循环] 烙印属主
     _token_subscribers.setdefault(key, set()).add(queue)

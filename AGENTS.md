@@ -39,6 +39,11 @@
   `goal_driver.install()`（goal/changed 是本进程内监听）。
 - **新增端点先想它落在哪一侧**；所有进程都要起、都要活；重启=重启一组，
   仍是请示项。
+- 启停（2026-11-07）：`start.bat`/`stop.bat`/`restart_daily.bat` 已按拓扑
+  重写——先杀看门狗（不然它会复活服务），再起/停整组。
+  pid 文件：web/all＝`.server.pid`，runner-i＝`.server-runner{i}.pid`；
+  `stop.bat` 立 `logs\.manual_stop`，看门狗见此标记不拉起（`start.bat` 撤）。
+  看门狗逐进程探活（web 5700 + 各 runner 5701+i），谁死单独拉起谁，不连坐。
 
 ## "commit" 的含义
 

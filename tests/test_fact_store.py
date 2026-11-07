@@ -258,11 +258,15 @@ def test_rebuild_is_incremental(tmp_path):
 
 # ---------------------------------------------------------------- 边界
 def test_db_lives_under_work_dir(tmp_path):
-    """库落在 ``<works>/<work>/facts.db``——**不碰 cards.db、不碰 events**。"""
+    """库落在 ``<works根>_data/<work>/facts.db``（施工目录外）——**不碰 cards.db、不碰 events**。"""
     st = fs.FactStore(works_dir=tmp_path)
     st.ingest("work_x", _rec(1, time.time(), "done", {}))
-    assert st.db_path("work_x") == tmp_path / "work_x" / "facts.db"
+    # [库搬出施工目录 2026-11-07] facts.db 不再在 works/{wid}/ 里，
+    # 挪到平级的 {works根名}_data/{wid}/——卡 exec 摸不到。
+    assert st.db_path("work_x") == (
+        tmp_path.parent / f"{tmp_path.name}_data" / "work_x" / "facts.db")
     assert st.db_path("work_x").exists()
+    assert not (tmp_path / "work_x" / "facts.db").exists()
     assert not (tmp_path / "work_x" / "cards.db").exists()
     st.close()
 

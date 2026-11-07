@@ -109,15 +109,16 @@ async def _run_step(work_id: str, review_id: str, *,
     st_now = await review_store.status(work_id, review_id)
     spoken = set(await review_store.spoken_round(work_id, review_id))
     target = str(st.get("target") or "")
-    promoted = bool(st_now.get("all_passed")) and \
-        await _is_promoted(work_id, target)
+    facts = await _target_facts(work_id, target)
+    promoted = bool(st_now.get("all_passed")) and facts["promoted"]
     tail_seq = _tail_seq(work_id, target)
 
     # [harness 驱动 · 2026-11-01] 挑谁/挑什么动作是评审卡内部的事（成员序）；
     # harness 只判"该不该点火"（has_next）。分类与 has_next 共用同一个
     # `_classify`——事件里上报的"还有活"和这里挑的"下一个活"同源。
     action, stop_reason = _classify(st, st_now, spoken, promoted=promoted,
-                                    tail_seq=tail_seq)
+                                    tail_seq=tail_seq,
+                                    has_draft=facts["has_draft"])
 
     if action is None:
         return {"continued": False, "reason": stop_reason,
@@ -234,7 +235,8 @@ _WAKE_NUDGE_CAP = 3
 
 def _classify(st: dict[str, Any], st_now: dict[str, Any],
               spoken: set, *, promoted: bool = False,
-              tail_seq: int | None = None) -> tuple[tuple | None, str]:
+              tail_seq: int | None = None,
+              has_draft: bool = True) -> tuple[tuple | None, str]:
     """**挑下一个动作**——纯函数、全机械判据，成员序就是顺序。
 
     返回 ``(action, stop_reason)``：
@@ -276,6 +278,15 @@ def _classify(st: dict[str, Any], st_now: dict[str, Any],
             return ("seat", stale[0], "confirm"), ""
         if promoted:
             return None, "promoted"
+        if (str(st.get("type") or "requirements") == "requirements"
+                and not has_draft):
+            # [草稿已空判停 2026-11-07 · card_061←rv_3ee3fe5776 死后重放实案]
+            # 草稿是 promote_draft 的唯一原料——空了还派「请调」，每一轮都
+            # 只会吃「草稿为空」拒收；而正卡每次交回（submit_revision）又把
+            # promote_asked 清零 ⇒ 下一扫描重派 ⇒ 永动重放十几轮。判停不藏
+            # 故障：stop_reason 如实上报；草稿一旦被重新写入，has_draft 变真，
+            # 派活自然恢复（下一修订批照常走）。
+            return None, "draft_empty"
         if st.get("promote_asked"):
             # 先判更精确的诊断：ask 被回合消费掉但没转正 ⇒ consumed；
             # 都没消费过才看唤醒落没落（unread）。why 随行注入唤醒文。
@@ -336,13 +347,22 @@ def _classify(st: dict[str, Any], st_now: dict[str, Any],
     return None, "stalled"
 
 
-async def _is_promoted(work_id: str, target: str) -> bool:
-    """这张卡的正稿写了没有（`requirements_state == "approved"`）。"""
+async def _target_facts(work_id: str, target: str) -> dict[str, bool]:
+    """收口区要的两个正卡事实（一次读卡）：
+
+    - ``promoted``：正稿写了没有（``requirements_state == "approved"``）；
+    - ``has_draft``：草稿还在不在——它是 ``promote_draft`` 的唯一原料。
+      读不出按「有草稿」处理（保持旧判据偏向：宁派勿停）。
+    """
     try:
         card = await card_store.read_card(work_id, target)
-        return str((card.get("meta") or {}).get("requirements_state") or "") == "approved"
+        meta = card.get("meta") or {}
+        return {
+            "promoted": str(meta.get("requirements_state") or "") == "approved",
+            "has_draft": bool(str(meta.get("requirements_draft") or "").strip()),
+        }
     except Exception:  # noqa: BLE001
-        return False
+        return {"promoted": False, "has_draft": True}
 
 
 def _tail_seq(work_id: str, target: str) -> int | None:
@@ -764,11 +784,12 @@ async def _report(work_id: str, review_id: str,
         batch = str(st.get("batch") or "")
         if not batch:
             return                       # 批次没了没什么可报的
-        promoted = bool(st_now.get("all_passed")) and \
-            await _is_promoted(work_id, str(st.get("target") or ""))
+        _facts = await _target_facts(work_id, str(st.get("target") or ""))
+        promoted = bool(st_now.get("all_passed")) and _facts["promoted"]
         nxt, _stop = _classify(st, st_now, spoken, promoted=promoted,
                                tail_seq=_tail_seq(
-                                   work_id, str(st.get("target") or "")))
+                                   work_id, str(st.get("target") or "")),
+                               has_draft=_facts["has_draft"])
         err = str(done.get("error") or "")
         reason = str(done.get("reason") or "")
         has_next = (

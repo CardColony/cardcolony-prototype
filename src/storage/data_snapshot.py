@@ -44,9 +44,9 @@ SNAPSHOT_ROOT = (Path(_env_root) if _env_root
 
 # 受保护的数据目录（相对 BASE_DIR）
 # [库搬出施工目录 2026-11-07] 生产库（cards.db/facts.db/harness.db）已搬到
-# ``data/{wid}/``（与 works/ 平级）——快照/指纹必须连它一起保护，否则
-# 搬完库快照就再也拍不到库。
-PROTECTED_DIRS = ("works", "data")
+# ``works_data/{wid}/``（与 works/ 平级）——快照/指纹必须连它一起保护，
+# 否则搬完库快照就再也拍不到库。命名与 card_store.db_root 同源。
+PROTECTED_DIRS = ("works", "works_data")
 
 # ---------------------------------------- 快照**不拷**的东西（产出机制收窄）
 #: 〔2026-10-30 · 治「D 盘一周吃近 1T」〕
@@ -58,7 +58,8 @@ PROTECTED_DIRS = ("works", "data")
 #:   · ``cards.db``        774MB —— 真状态（这才是快照该拷的）
 #:   · ``facts.db``         95MB —— 真状态
 #: ⇒ 前两类与「卡片状态」无关 ⇒ 恢复快照时也用不上 ⇒ **快照不该拷它们**。
-_SKIP_DIR_NAMES = ("spike", "_trash", "__pycache__", ".venv", "node_modules", ".git")
+_SKIP_DIR_NAMES = ("spike", "_trash", "__pycache__", ".venv", "node_modules", ".git",
+                   "browser_sessions")
 
 #: 备份/临时副本（fnmatch 模式）。``*.bak*`` 命中 ``cards.db.bak_backfill``。
 _SKIP_FILE_PATTERNS = ("*.bak*", "*.tmp", "*.old", "*.orig")
@@ -1194,13 +1195,13 @@ def restore_from_snapshot(work_id: str, stamp: str, rel_path: str, target: Path 
     """
     src = SNAPSHOT_ROOT / work_id / stamp / rel_path
     # [库搬出施工目录 2026-11-07] *.db 的位置两朝各异：旧批次的库在
-    # ``works/{wid}/`` 下、新批次在 ``data/{wid}/`` 下。调用方按哪侧
+    # ``works/{wid}/`` 下、新批次在 ``works_data/{wid}/`` 下。调用方按哪侧
     # rel_path 问都要认得，且**落点恒为当前库位**（data/），不是照抄
     # 批次里的相对路径（否则旧批次会把库复活回施工目录）。
     import re as _re
-    _m = _re.match(r"^(works|data)/([^/]+)/(.+\.db)$", str(rel_path))
+    _m = _re.match(r"^(works|works_data|data)/([^/]+)/(.+\.db)$", str(rel_path))
     if not src.exists() and _m:
-        _alt = "data" if _m.group(1) == "works" else "works"
+        _alt = "works_data" if _m.group(1) == "works" else "works"
         _alt_src = SNAPSHOT_ROOT / work_id / stamp / f"{_alt}/{_m.group(2)}/{_m.group(3)}"
         if _alt_src.exists():
             src = _alt_src

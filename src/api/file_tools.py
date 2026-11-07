@@ -126,6 +126,14 @@ FILE_SCOPE: dict[str, list[str]] = {
     # FILE_SCOPE.get("review", []) 返空 ⇒ any([]) 恒 False ⇒ 一调就 denied。
     # 这是同一 bug 的第四次；键集由 tests/test_file_scope_keys.py 钉死。
     "review": [""],
+    # [2026-11-06] ui/qa_card/pm_card 补进来——同一 bug 第五次：UI 卡
+    # （11-02 新增卡型）与差事卡（11-01 新增）abilities 里有 write_files/
+    # read_files、工具面也照发，但本表无键 ⇒ .get 返空 ⇒ 文件读写全拒
+    # （实证 work_027/card_454：write_file 对交付物路径一律 denied，
+    # 卡面只剩影子件与 browser 可用）。
+    "ui": [""],
+    "qa_card": [""],
+    "pm_card": [""],
 }
 
 

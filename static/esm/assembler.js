@@ -124,12 +124,34 @@ export function createAssembler() {
   let snapCache = null;
   let snapCacheRev = -1;
 
+  /** [2026-11-09 · 用户令「全部按时间」] 可见序＝(ts, 到达序) 的纯函数：
+      位置由**数据自己**（事件时间戳）决定，不由送达时机决定。
+      ts 缺失的节点（本地乐观气泡、兜底思考）按 +∞ 落尾——它们本来就是
+      「最新还没定稿」的东西。同 ts 并列时后到者排后（ord 决胜）。 */
+  function tsKey(node) {
+    const t = Date.parse((node && node.ts) || "");
+    return Number.isFinite(t) ? t : Infinity;
+  }
+
+  /** 把 node.key 按 tsKey 插进 order 的时隙（从尾向前找第一个 ≤ 它的位置）。
+      无 ts 的节点锚定**当前尾部**（纯追加语义，保持服务端落盘序）——
+      乐观气泡因此锚在「现在」，而迟到的旧帧会插到它**前面**。 */
+  function place(node) {
+    let pk = tsKey(node);
+    if (pk === Infinity) {
+      pk = order.length ? tsKey(byKey.get(order[order.length - 1])) : 0;
+    }
+    let i = order.length;
+    while (i > 0 && tsKey(byKey.get(order[i - 1])) > pk) i--;
+    order = order.slice(0, i).concat([node.key], order.slice(i));
+    structRev++;
+  }
+
   function push(node) {
     node.ord = ++ord;
     node.rev = 1;
     byKey.set(node.key, node);
-    order = order.concat([node.key]);
-    structRev++;
+    place(node);
     return node;
   }
 
@@ -160,16 +182,8 @@ export function createAssembler() {
       pendingBuckets.delete(bkey);
     }
     byKey.set(skey, node);
-    order = order.concat([skey]);
-    structRev++;
+    place(node);
     return node;
-  }
-
-  /** 追加后按 ord 校正（兜底思考会插在中间）。 */
-  function resort() {
-    const keys = order.slice().sort((a, b) => (byKey.get(a).ord || 0) - (byKey.get(b).ord || 0));
-    order = keys;
-    structRev++;
   }
 
   /** 最近一条 assistant 节点（主模型思考的归属目标）。
@@ -253,7 +267,10 @@ export function createAssembler() {
     return String(runId || "") + "|" + r;
   }
 
-  /** 该轮收口：思考若始终无人认领，落一条兜底节点（不丢文本）。**每个残余桶一条**。 */
+  /** 该轮收口：思考若始终无人认领，落一条兜底节点（不丢文本）。**每个残余桶一条**。
+      [2026-11-09 · 用户令「全部按时间」] 兜底节点挂**当前尾部节点的 ts**——
+      它的真实时间就是「收口时被发现」这一刻，按 tsKey 自然落在收口处，
+      不再用旧的 ord 插队语义（resort 随此退役）。 */
   function flushPendingReasoning(runId, round) {
     if (!pendingBuckets.size) return;
     const tailKey = order[order.length - 1];
@@ -267,11 +284,11 @@ export function createAssembler() {
         key: String(ns) + ":orphan:" + toInt(seq, 0) + ":" + toInt(b.ord, 0),
         rev: 1,
         ord: b.ord,
+        ts: (tail && tail.ts) || "",
       };
-      if (!byKey.has(node.key)) { byKey.set(node.key, node); order = order.concat([node.key]); }
+      if (!byKey.has(node.key)) { byKey.set(node.key, node); place(node); }
     }
     pendingBuckets = new Map();
-    resort();
   }
 
   /** tool_result 的配对目标：tool_call_id 精确优先，其次最近未闭合调用行。

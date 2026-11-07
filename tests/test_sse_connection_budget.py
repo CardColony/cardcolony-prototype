@@ -145,8 +145,13 @@ async def test_c1b_merged_stream_two_cursors_are_independent(work):
     #   （探针见 docs 里 §P28-c1b 归因）。真正该守的是"**过程**帧不回来"。
     resp = await routes.stream_card_events(wid, cid, 10 ** 9, 1, 1, 0)
     frames = await _collect_stream(resp, 1, lambda: None, timeout=1.0)
-    assert not any(f.get("ch") == "e" for f in frames), \
-        f"过程游标在末帧之后却收到了旧过程帧：{frames}"
+    # [死游标 v2 2026-11-09] 死游标不再归零整本重放，而是发**恰好一条**
+    # resync 控制帧（前端据此走落盘重建＋游标重锚）——断言修正为：
+    # 零**重放**过程帧（旧帧一条都不回来）＋至多一条 type=resync 控制帧。
+    replays = [f for f in frames if f.get("ch") == "e" and f.get("type") != "resync"]
+    assert not replays, f"过程游标在末帧之后却收到了旧过程帧：{frames}"
+    resyncs = [f for f in frames if f.get("type") == "resync"]
+    assert len(resyncs) <= 1, f"resync 控制帧至多一条：{frames}"
 
     resp2 = await routes.stream_card_events(wid, cid, 0, 1, 1, 0)
     frames2 = await _collect_stream(resp2, 1, lambda: None, timeout=1.0)

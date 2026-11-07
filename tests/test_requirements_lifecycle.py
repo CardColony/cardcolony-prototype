@@ -182,6 +182,75 @@ async def test_all_approved_promotes_draft_to_final(sandbox, monkeypatch):
         assert t in names, f"已有正稿却仍拿不到 {t}"
 
 
+# ---------------------------------------------------------------- T7
+# [死后重放 2026-11-07 · card_061←rv_3ee3fe5776 实案] 转正完成后评审场还在
+# 无限重放「请调 promote_draft」：每次调只吃「草稿为空」，每次交回又把
+# promote_asked 清零 ⇒ 永动。两道防线：分类器「草稿已空」判停；promote_draft
+# 幂等收口（草稿空∧正稿在∧全员过 ⇒ 修齐状态位＋关批次＋如实回「已是正稿」）。
+
+@pytest.mark.asyncio
+async def test_classify_stops_when_draft_empty(sandbox, monkeypatch):
+    from src.api import review_runner
+    st = {"batch": "b1", "type": "requirements", "promote_asked": False,
+          "dispatch_fails": 0, "wake_nudges": 0, "seats": {}, "responded_seq": 0,
+          "asked_seq": 0}
+    st_now = {"all_passed": True, "members": ["m1"],
+              "votes": {"m1": {"verdict": "approve", "draft_ver": 1}},
+              "stale": [], "pending": []}
+    # 草稿还在 ⇒ 照常派「请调」
+    nxt, why = review_runner._classify(
+        st, st_now, {"m1"}, promoted=False, tail_seq=5, has_draft=True)
+    assert nxt == ("dispatch", "promote"), (nxt, why)
+    # 草稿已空（未转正口径）⇒ 判停，不再派/不再唤醒
+    nxt2, why2 = review_runner._classify(
+        st, st_now, {"m1"}, promoted=False, tail_seq=5, has_draft=False)
+    assert nxt2 is None and why2 == "draft_empty", (nxt2, why2)
+    # promote_asked 已挂也一样停（不补唤醒）
+    st2 = dict(st, promote_asked=True, promote_asked_seq=1)
+    nxt3, why3 = review_runner._classify(
+        st2, st_now, {"m1"}, promoted=False, tail_seq=5, has_draft=False)
+    assert nxt3 is None and why3 == "draft_empty", (nxt3, why3)
+
+
+@pytest.mark.asyncio
+async def test_promote_draft_idempotent_close(sandbox, monkeypatch):
+    """转正成功后再调 promote_draft：幂等收口（已是正稿）而不是「草稿为空」。"""
+    wid, root, sub = await _seed(monkeypatch)
+    cards = card_tools._collect_card_meta(wid)
+    await card_tools.execute_tool(
+        wid, sub, "edit_requirements",
+        {"old_string": "", "new_string": "R1 支持导出（判据：pytest 全绿）"}, cards)
+    cards = card_tools._collect_card_meta(wid)
+    opened = await card_tools.execute_tool(
+        wid, sub, "open_review",
+        {"focus": "需求", "brief": "评审需求草稿"}, cards)
+    assert opened.get("ok") is not False, opened
+    rid = await review_store.ensure_review_card(wid, sub, "子卡")
+    members = await review_store.members_of(wid, rid)
+    for m in members:
+        cards = card_tools._collect_card_meta(wid)
+        r = await card_tools.execute_tool(wid, m, "approve",
+                                          {"review_card_id": rid}, cards)
+        assert r.get("ok") is not False, (m, r)
+    cards = card_tools._collect_card_meta(wid)
+    first = await card_tools.execute_tool(
+        wid, sub, "promote_draft", {"card_id": sub}, cards)
+    assert first.get("ok") is not False, first
+
+    # 撕裂重演：正稿已在、草稿已空、state 被写回 in_review（事故恢复会产生这种行）
+    await card_store.update_card(wid, sub,
+                                 {"requirements_state": "in_review"}, "模拟撕裂")
+    cards = card_tools._collect_card_meta(wid)
+    again = await card_tools.execute_tool(
+        wid, sub, "promote_draft", {"card_id": sub}, cards)
+    assert again.get("ok") is not False, again
+    assert ((again.get("data") or {}).get("data") or {}).get(
+        "already_promoted") is True, again
+    meta = card_store._meta_of(wid, sub)
+    assert meta.get("requirements_state") == "approved", \
+        "幂等收口要把撕裂的 state 修回 approved"
+
+
 # ---------------------------------------------------------------- T6
 
 @pytest.mark.asyncio

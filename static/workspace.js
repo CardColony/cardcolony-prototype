@@ -1751,9 +1751,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const badge = assistantMeta(node.model || d.model, d.behavior, d.end, node.ts);
     /* [5702 · C-1] 流式节点正文在 data.text（累积），落盘节点在 data.content；
        定稿后两者并存（content 优先）。对应 dsh assistant-step 的 blocks 语义。 */
-    const bodyText = (d.content != null && String(d.content) !== "")
+    /* [2026-11-07] REASONING_PLACEHOLDER 剥除：echo_reasoning 端点的 wire
+       兜底串会被模型原样模仿成正文（wb-oc 免费档实弹）——它是格式件不是
+       正文，剥后为空即 think-only 轮（只显示徽标，不画占位文案）。 */
+    const _PH = "(系统注入的消息，无模型思考记录)";
+    const bodyText = ((d.content != null && String(d.content) !== "")
       ? String(d.content)
-      : String(d.text || "");
+      : String(d.text || "")).split(_PH).join("");
     el.innerHTML = badge +
       /* [5702 · C-1] 只有思考、没有正文的轮（工具调用前的 think-only step）
          不渲染空正文块——否则每轮多一个空气泡。dsh 的 step 视图同理。 */

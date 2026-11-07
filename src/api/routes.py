@@ -500,37 +500,45 @@ def _card_obj(m: dict, act: dict, child_count: int, wid: str,
 #: 整页切卡 20~26s。⇒ TTL 5s ＋ single-flight：窗口内直接回缓存（左栏
 #: 活跃/未读徽章滞后 ≤5s 可接受——前端本来就 60s 才探一次版本），并发
 #: miss 共享同一次构建。env: ECO_NAV_TTL_S。
+#: [nav 快照常驻 2026-11-09 · 用户令] 旧实现 miss 仍在请求内同步等 4~6s 全量
+#: 重建——首屏必等、过期必卡，与「响应只给快照、重建在后台」的既定口径相悖。
+#: ⇒ stale-while-revalidate：过期即后台异步重建（在途任务去重），请求**立刻**
+#: 回上一份快照；唯一会等的路径是「服务起后第一份快照还没建好」。
 _NAV_TTL_S = float(os.environ.get("ECO_NAV_TTL_S") or 5)
 _nav_cache: dict = {"at": 0.0, "payload": None}
-_nav_locks: dict = {}
+_nav_tasks: dict = {}
 
 
-def _nav_lock() -> "asyncio.Lock":
-    """按**当前 running loop** 取锁——asyncio.Lock 绑定首个 acquire 的 loop，
-    双循环架构下 B（服务）与 A（跑卡）各要一把；测试的临时 loop 同理。"""
+def _nav_rebuild() -> "asyncio.Task":
+    """取当前 loop 上的在途 nav 重建任务；没有在跑就起一个。"""
     lp = asyncio.get_running_loop()
-    lk = _nav_locks.get(lp)
-    if lk is None:
-        lk = _nav_locks[lp] = asyncio.Lock()
-    return lk
+    t = _nav_tasks.get(lp)
+    if t is not None and not t.done():
+        return t
+
+    async def _rebuild():
+        try:
+            payload = await _build_nav()
+            _nav_cache["at"] = time.monotonic()
+            _nav_cache["payload"] = payload
+        except Exception:  # noqa: BLE001 重建失败保旧快照，下次请求再试
+            logger.exception("[nav] 后台重建失败（快照保留旧值）")
+
+    t = asyncio.create_task(_rebuild())
+    _nav_tasks[lp] = t
+    return t
 
 
 @router.get("/nav")
 async def get_nav():
-    import time as _t
-    now = _t.monotonic()
     hit = _nav_cache["payload"]
-    if hit is not None and now - _nav_cache["at"] < _NAV_TTL_S:
+    if hit is not None and time.monotonic() - _nav_cache["at"] < _NAV_TTL_S:
         return hit
-    async with _nav_lock():
-        now = _t.monotonic()
-        hit = _nav_cache["payload"]
-        if hit is not None and now - _nav_cache["at"] < _NAV_TTL_S:
-            return hit
-        payload = await _build_nav()
-        _nav_cache["at"] = _t.monotonic()
-        _nav_cache["payload"] = payload
-        return payload
+    t = _nav_rebuild()
+    if hit is not None:
+        return hit                       # 过期：旧快照先回，新快照后台建
+    await t                              # 冷启动：唯一一次同步等
+    return _nav_cache["payload"] or {"projects": []}
 
 
 async def _build_nav():
@@ -1978,7 +1986,10 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
         "work_id": work_id,
         "card_id": card_id,
         "items": items,
-        "last_seq": items[-1]["seq"] if items else 0,
+        # [2026-11-07 · 写乱序] items 按 (ts,seq) 时间序——末条是「最新」非「最大号」。
+        # last_seq 语义＝水位游标 ⇒ 取全表最大 seq；first_seq 仍是显示段首条的 seq
+        # （前端拿它做 before 锚，后端按序位截，不用比大小）。
+        "last_seq": max(int(x.get("seq") or 0) for x in items) if items else 0,
         "first_seq": items[0]["seq"] if items else 0,
         "has_earlier": has_earlier,
     }

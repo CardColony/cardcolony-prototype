@@ -162,12 +162,14 @@ class FactStore:
 
     # ------------------------------------------------------------ 连接
     def db_path(self, work_id: str) -> Path:
-        # [库搬出施工目录 2026-11-07] facts.db 也放 data/{wid}/（与 works/
+        # [库搬出施工目录 2026-11-07] facts.db 也放 works_works_data/{wid}/（与 works/
         # 平级）——works/ 是卡的 exec 工作区，生产库不该躺在里面。
         return self._data_dir(work_id) / DB_NAME
 
     def _data_dir(self, work_id: str) -> Path:
-        return self._root.parent / "data" / str(work_id)
+        # 与 card_store.db_root 同规则：{works根名}_data（测试注入独立
+        # works_dir 时数据区也跟着独立——parent/data 会让用例间串库）。
+        return self._root.parent / f"{self._root.name}_data" / str(work_id)
 
     def _conn(self, work_id: str) -> sqlite3.Connection:
         wid = str(work_id)

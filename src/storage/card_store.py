@@ -42,19 +42,22 @@ WORKS_DIR = BASE_DIR / "works"
 
 # [库搬出施工目录 2026-11-07 · work_027 cards.db 被原地清零事故]
 # 生产库（cards.db/facts.db/harness.db）不再放 works/{wid}/ 里——那是卡的 exec
-# 工作区，任意命令/外来二进制都可能误碰。库统一放 **data/{wid}/**（与 works/
-# 平级）：卡在自己的 cwd 里摸不到，路径越界才碰得着（那是恶意，另当别论）。
+# 工作区，任意命令/外来二进制都可能误碰。库统一放 **works_data/{wid}/**（与
+# works/ 平级）：卡在自己的 cwd 里摸不到，路径越界才碰得着（那是恶意，另当别论）。
 # 派生原则与 WORKS_DIR 同纪律：调用时派生、不设路径缓存——tests/conftest.py
-# patch WORKS_DIR 后这里自动跟随沙箱（app_home/data）。**不要给 env 出口**：
-# data/ 必须在 BASE_DIR 内，data_snapshot 靠 relative_to(BASE_DIR) 拍它；
+# patch WORKS_DIR 后这里自动跟随沙箱（app_home/works_data）。**不要给 env 出口**：
+# 库根必须在 BASE_DIR 内，data_snapshot 靠 relative_to(BASE_DIR) 拍它；
 # 指到仓外＝快照静默不拍库＝备份瞎了。
+# 命名是 `{works根名}_data` 而不是裸 `data/`：FactStore/InterventionStore 的
+# 测试用独立 works_dir 注入（tmp_path），派生名跟着根名走 ⇒ 测试间不串库
+# （实测 parent/data 曾让全 pytest 用例共用一个 facts.db）。
 def db_root() -> Path:
-    """生产库根目录（``data/``，与 works/ 平级，必须在 BASE_DIR 内）。"""
-    return WORKS_DIR.parent / "data"
+    """生产库根目录（``{works根名}_data/``，与 works/ 平级，必须在 BASE_DIR 内）。"""
+    return WORKS_DIR.parent / f"{WORKS_DIR.name}_data"
 
 
 def db_dir(work_id: str) -> Path:
-    """某个 work 的库目录（``data/{wid}/``）。"""
+    """某个 work 的库目录（``works_data/{wid}/``）。"""
     return db_root() / str(work_id)
 
 

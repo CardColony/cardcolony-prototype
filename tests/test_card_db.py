@@ -94,12 +94,14 @@ async def test_has_md_without_db_raises(sandbox):
         await card_store.read_card(wid, "card_001")
     with pytest.raises(card_db.CardsNotMigratedError):
         card_store.iter_card_metas(wid)
-    # 且**不得**被读操作静默建出空库
+    # 且**不得**被读操作静默建出空库（新库位 works_data/ 也不得出现）
     assert not (wd / "cards.db").exists()
+    assert not card_db.db_path(wid).exists()
     # 写：同样明确报错（不静默建空库）
     r = await card_store.create_card(wid, "新卡", "模型生成", parent="")
     assert "error" in r and "尚未迁移" in r["error"], r
     assert not (wd / "cards.db").exists()
+    assert not card_db.db_path(wid).exists()
 
 
 async def test_no_db_and_no_md_is_empty_not_error(sandbox):

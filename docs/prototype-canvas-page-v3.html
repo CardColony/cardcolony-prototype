@@ -323,27 +323,33 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;heigh
 .rp-handle:hover{color:var(--accent);background:var(--surface3)}
 /* 规则卡入口：贴在画布右缘的竖排小标签。**它是入口，不是面板**——
    点开才出现规则卡本身（一张卡：看内容、可直接改）。 */
-.rule-entry{position:absolute;right:calc(var(--rp) + 10px);top:32%;transform:translateY(-50%);
-  display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 6px;z-index:44;
-  background:var(--surface);border:1px solid var(--line2);border-right:0;border-radius:6px 0 0 6px;
+/* ===== 右缘书签组：事件 / 规则卡 / 归档 三个入口收拢成一支 =====
+   容器只管定位（贴右缘、随 --rp 让位、浮窗开着时整组贴到浮窗左缘）；
+   段与段相接成一支书签：上下两端外圆、中缝直角，段间一条分隔线。
+   三个入口各自独立开关，同一套交互（点击展开／再点收起／点外部收回），不做两套。 */
+.re-group{position:absolute;right:calc(var(--rp) + 10px);top:32%;transform:translateY(-50%);
+  display:flex;flex-direction:column;z-index:44;
+  transition:right .2s cubic-bezier(.4,0,.2,1)}
+.stage.sheetOpen .re-group{right:calc(var(--rp) + 414px)}
+.rule-entry{position:static;transform:none;
+  display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 6px;
+  background:var(--surface);border:1px solid var(--line2);border-right:0;
   color:var(--text3);cursor:pointer;
-  transition:right .2s cubic-bezier(.4,0,.2,1),color .15s,background .15s}
+  transition:color .15s,background .15s}
+.rule-entry + .rule-entry{border-top:0} /* 段间共享分隔线：由 .re-group 画，段自身不再重复 */
+.re-group .rule-entry:first-child{border-radius:7px 0 0 0}
+.re-group .rule-entry:last-child{border-radius:0 0 0 7px}
+.re-group .rule-entry:not(:first-child):not(:last-child){border-radius:0}
+.re-group::before{content:"";position:absolute;right:0;top:-1px;bottom:-1px;width:1px;
+  background:var(--line2);pointer-events:none} /* 段间分隔线：贴着段内 border，视觉上一条贯通 */
 .rule-entry:hover,.rule-entry.on{color:var(--accent);background:var(--surface3)}
-/* 右缘浮窗（对话 392 / 规则卡 404）打开时，入口贴到浮窗左缘：
-   入口若留在原位就被压在浮窗下面，点上去落到浮窗上，开关就失灵了（实测过）。 */
-.stage.sheetOpen .rule-entry{right:calc(var(--rp) + 414px)}
 .rule-entry .re-ic{font-size:13px;line-height:1}
 .rule-entry .re-tx{font-size:10.5px;writing-mode:vertical-rl;letter-spacing:.14em;line-height:1}
 .rule-entry .re-n{font:9.5px var(--mono);color:var(--text3)}
-/* 归档入口：与规则卡入口同款竖排形态，叠放在其正下方（右缘一组两个门）。
-   各自独立开关；浮窗打开时同样贴到浮窗左缘（同 .stage.sheetOpen 规则）。 */
-.rule-entry.arch{top:calc(32% + 118px);transform:none}
 .rule-entry.arch .re-ic{color:var(--arch)}
 .rule-entry.arch:hover,.rule-entry.arch.on{color:var(--arch)}
 .arch-sheet{width:404px}
-/* ===== 全事件日志入口：与规则卡、归档同一套竖排形态，叠在这一组的最上方 =====
-   三者同一套开合（点击展开／再点收起／点外部收回／浮窗开着时贴浮窗左缘），不做两套。 */
-.rule-entry.log{top:calc(32% - 148px);transform:none}
+/* ===== 全事件日志段：书签组的上段 ===== */
 .rule-entry.log .re-ic{color:var(--accent)}
 .rule-entry.log.hasNew .re-n{color:var(--accent);font-weight:700}
 .ev-sheet{width:432px}
@@ -661,21 +667,18 @@ body.anno .anno{display:grid}
       <!-- 全事件日志入口：与规则卡、归档同一套竖排形态，叠在这一组的最上方。
            日志只记**项目级**事件（建卡／归档／回档／归属变更／模型变更／规则编辑），
            对话里的内容不进这里——那是某张卡自己的事，去卡上 ◧ 看。 -->
-      <button class="rule-entry log" id="eventEntry" title="全事件日志：项目级事件自动记录（不含对话内容）">
-        <span class="re-ic">☰</span><span class="re-tx">事件</span><span class="re-n" id="eventEntryN">0</span>
-      </button>
-
-      <!-- 规则卡入口：在画布右侧。它是「进去看/改规则」的门，不是规则本身 -->
-      <button class="rule-entry" id="ruleEntry" title="规则卡：点开看内容，可直接编辑">
-        <span class="re-ic">▤</span><span class="re-tx">规则卡</span><span class="re-n" id="ruleEntryN">5</span>
-      </button>
-
-      <!-- 归档入口：与规则卡同款竖排形态，放其正下方、交互完全同一套（点击展开／再点收起／点外部收回／
-           浮窗开着时贴浮窗左缘）。它列的是**已归档记录**、用途是回档；
-           归档的**动作**在卡面 ▣ 上——动作跟着卡走，记录汇总在右缘。 -->
-      <button class="rule-entry arch" id="archEntry" title="已归档记录：点开可回档（归档动作在卡面上）">
-        <span class="re-ic">▣</span><span class="re-tx">归档</span><span class="re-n" id="archEntryN">1</span>
-      </button>
+      <!-- 右缘书签组：事件 / 规则卡 / 归档。一支书签、三段各自独立开关、同一套交互 -->
+      <div class="re-group" id="reGroup" role="group" aria-label="右侧入口">
+        <button class="rule-entry log" id="eventEntry" title="全事件日志：项目级事件自动记录（不含对话内容）">
+          <span class="re-ic">☰</span><span class="re-tx">事件</span><span class="re-n" id="eventEntryN">0</span>
+        </button>
+        <button class="rule-entry" id="ruleEntry" title="规则卡：点开看内容，可直接编辑">
+          <span class="re-ic">▤</span><span class="re-tx">规则卡</span><span class="re-n" id="ruleEntryN">5</span>
+        </button>
+        <button class="rule-entry arch" id="archEntry" title="已归档记录：点开可回档（归档动作在卡面上）">
+          <span class="re-ic">▣</span><span class="re-tx">归档</span><span class="re-n" id="archEntryN">1</span>
+        </button>
+      </div>
 
       <aside class="drawer arch-sheet" id="archSheet" aria-label="归档">
         <div class="dr-head">
@@ -1980,6 +1983,7 @@ function toggleTheme(){
   toast(S.theme==="dark"?"已切到深色主题":"已切到浅色主题");
 }
 const DIFF=[
+  ["右缘三个入口收拢成一支书签（事件／规则卡／归档）","上一稿三个入口各自绝对定位、彼此隔开一百多像素（事件 top=32%−148、规则卡 32%、归档 32%+118），看着像三件不相干的东西贴在边上。","三个入口包进一支书签组：贴右缘竖排、段与段相接（上下两端外圆、段间一条分隔线），仍各自独立开关、同一套交互（点击展开／再点收起／点外部收回／浮窗开着时整组贴到浮窗左缘）。","它们本来就是同一类东西——「右缘的门」。散着放，用户要扫三处才能知道右缘有什么；收成一支，一眼看完、一次避让。"],
   ["模型显示端点原名，不再另配简称","上一稿卡面上显示 opus / sonnet / dsv4 这类简称，那是前端自己配的第二套名字——端点一改名两处读数就会打架，简称还得跟着维护。","卡面徽标、底栏格子、选择浮层一律显示<b>端点报的模型名原文</b>（claude-opus-4-5 / claude-sonnet-4-5 / gpt-5.2 …）。字长靠 CSS 截断、悬停给全文——截断是排版，不是改名。","一件事只有一个名字。前端替端点起小名，等于给自己加一份要同步的事实，早晚对不上。"],
   ["拖动卡片＝改归属（拖到哪张卡上就归它管）","上一稿卡片位置完全由布局算，卡片之间没有「归谁管」这个动作——想让一张卡换个父卡，界面上没有入口。","按住卡片拖起来（只有被拖的那张跟手，子孙留在原位、变淡）；落到另一张卡上，目标卡亮起并提示「松开 · 「A」归「B」管」，松手后重新排位、连线重画、记一条归属变更事件。落到自己的子孙下面当场标红拒绝（会成环），落到空白处＝放弃并走回原处。","坐标由布局算（同深度同列），手摆的位置立刻会被下一次重排抹掉——所以拖动有意义的含义不是「挪位置」，而是「改归属」。这是画布上唯一能直接操作树结构的动作。"],
   ["全事件日志（右缘入口，叠在规则卡上方）","上一稿右缘只有规则卡与归档两个门，项目里发生过什么（谁建的卡、谁归档的、谁换的模型）没有任何地方能看。","右缘最上方加「☰ 事件」入口，形态与规则卡、归档完全同一套（点击展开／点外部收回／开着时贴浮窗左缘）。浮窗按时间倒序列项目级事件：建卡、归档、回档、归属变更、模型变更、规则编辑，新事件自动进最上面；浮窗没开时入口计数 +1。","「项目这一层发生了什么」需要一处可回看的流水，否则只能靠记忆。它和卡自己的对话分开——混在一起，流水就没法读了。"],
