@@ -65,6 +65,23 @@ async def run_once(work_id: str, review_id: str, *,
     """
     if os.environ.get(ENV_NO_AUTO) == "1":
         return {"continued": False, "reason": "no_auto"}
+    # [多进程 · 场卡属主分片 2026-11-08] 评审循环只能在**场卡属主**上跑：
+    # 事件/journal/seq 按（进程×卡）分空间——循环在别处跑会把 review_* 事件
+    # 写进**那个进程的**journal，与属主的回合事件两套 seq 撞车（文件里
+    # seq 316 倒回 158 实证）；小窗/流订阅属主 ⇒ review_* 帧整组缺席，
+    # 评审进度"全错"。与 _run_message 同一模子：web/非本片 runner ⇒
+    # 透明 POST 属主 /ctl/review_step；属主收到后此处判据恒通过、不循环。
+    try:
+        from ..infra import procs as _procs
+        if (_procs.is_web()
+                or (_procs.is_runner()
+                    and _procs.owner_index_of(work_id, review_id)
+                        != _procs.runner_index())):
+            return await _procs.forward_review_step(
+                work_id, review_id, {"work_id": work_id,
+                                     "review_id": review_id, "hint": hint})
+    except Exception:  # noqa: BLE001 分片读不出⇒就地跑（旧行为）
+        pass
     key = f"{work_id}/{review_id}"
     if key in _RUNNING:
         return {"continued": False, "reason": "already_running"}
@@ -490,8 +507,10 @@ async def _seat_turn(work_id: str, review_id: str, seat: str,
         err = getattr(result, "status_code", None) and f"turn_http_{result.status_code}" \
               or "turn_non_dict_result"
     if not err and isinstance(result, dict) and result.get("error"):
-        err = str((result.get("error") or {}).get("message")
-                  or result.get("error") or "")
+        # error 两种形态：{"code","message"} 字典（halted/转发错）或裸字符串
+        # （旧 forward 返回）——只按 dict 取 .get("message") 会在字符串上崩。
+        _e = result.get("error")
+        err = str(_e.get("message") if isinstance(_e, dict) else _e or "")
     try:
         event_stream.emit(work_id, review_id, "review_spoke", {
             "batch": batch, "role": seat, "name": name, "kind": kind,

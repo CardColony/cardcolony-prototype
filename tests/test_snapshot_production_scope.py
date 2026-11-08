@@ -393,7 +393,9 @@ def test_s10_restore_rolls_back_state_and_keeps_history(sandbox):
     """
     import sqlite3
 
-    w = sandbox.works / WORK
+    # [库搬出施工目录 2026-11-07] live 库的真实位置是 works_data/{wid}/——
+    # 恢复落点也是它（restore_from_snapshot 把 *.db 一律解到当前库位）。
+    w = sandbox.base / "works_data" / WORK
     w.mkdir(parents=True, exist_ok=True)
     _rich_db(w / "cards.db")
 

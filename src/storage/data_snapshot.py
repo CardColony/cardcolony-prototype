@@ -61,6 +61,60 @@ PROTECTED_DIRS = ("works", "works_data")
 _SKIP_DIR_NAMES = ("spike", "_trash", "__pycache__", ".venv", "node_modules", ".git",
                    "browser_sessions")
 
+# ---------------------------------------- works/{wid} 的**状态白名单**（批次快照只拷这些）
+#: 〔2026-11-09 · 治「快照吃硬盘」〕黑名单制走到了头：works/{wid}/ 早已是
+#: **卡的施工区**（work_027 实测 322 个卡工作目录：qa*/card*/ev*/cXXX*/store*/
+#: bisect*/scratch*，单目录上万文件＋exe/tar/log 1300 个顶层杂物），
+#: 「除留痕目录外全拷」＝每批把施工现场整棵复印（实测单批冲到十数 GB，
+#: 快照库累计 13GB+）。
+#: ⇒ 翻成白名单：**works/{wid} 里属于卡状态的东西是一眼数得完的**——
+#:   顶层状态文件（work.json/rules.md/canvas.json…）、manuscript/（原文资料）、
+#:   以及旧位置的 *.db*（搬迁前的库）；works_data/{wid}/ 照旧全量（那里只有库）。
+#: 其余一切（含 `archive/`——那是 Cardlo 的 git 克隆，也是施工产物）不进快照。
+#: 施工目录的「过程数据」仍在活树里可公开、可恢复——快照是灾备，不是档案馆。
+_WORK_STATE_FILES = frozenset({
+    "work.json", "rules.md", "canvas.json", "canvas.dirty",
+    "card_id_seq.json", "model_config_table.json",
+})
+
+#: works/{wid} 顶层要**整个收下**的目录（原文资料等真状态）。
+_WORK_STATE_DIRS = frozenset({"manuscript"})
+
+#: 顶层 ``*.db`` 里**才算状态**的具名库（生产库搬迁前的旧位置）。
+#: 不能用裸 ``*.db`` 通配——卡会在顶层自建施工库（实测 ``c145_snap.db`` 71MB）。
+_WORK_STATE_DBS = frozenset({
+    "cards.db", "facts.db", "harness.db", "events.db",
+})
+
+
+#: 顶层**文本态**文件按扩展名照收（验收文档/回执/ledger 全在这层）：
+#: 体积杀手是施工**目录**不是这几百个文本文件——它们也是交付证据，该保。
+_WORK_STATE_EXTS = frozenset({".md", ".json", ".txt"})
+
+
+def _is_work_state_file(p: Path, work_root: Path) -> bool:
+    """``works/{wid}/`` 下的这个文件算卡状态吗？（白名单判据）
+
+    收：``_WORK_STATE_FILES`` 里的顶层文件、顶层 ``_WORK_STATE_EXTS``
+    文本文件（ACCEPT/RECEIPT/VERIFY 等验收文档）、顶层具名生产库三件套、
+    ``manuscript/`` 下任意文件。不收：exe/tar/log/py/go/sh 等施工与
+    二进制杂物、卡自建库（c145_snap.db 实测 71MB）、一切施工目录。
+    """
+    try:
+        rel = p.relative_to(work_root)
+    except ValueError:
+        return False
+    parts = rel.parts
+    if len(parts) == 1:
+        name = parts[0]
+        if name in _WORK_STATE_FILES:
+            return True
+        base = name.split("-wal")[0].split("-shm")[0]
+        if base in _WORK_STATE_DBS:
+            return True
+        return Path(name).suffix.lower() in _WORK_STATE_EXTS
+    return parts[0] in _WORK_STATE_DIRS
+
 #: 备份/临时副本（fnmatch 模式）。``*.bak*`` 命中 ``cards.db.bak_backfill``。
 _SKIP_FILE_PATTERNS = ("*.bak*", "*.tmp", "*.old", "*.orig")
 
@@ -140,10 +194,15 @@ def _iter_work_log_files(wid: str) -> list[Path]:
         root = BASE_DIR / d / wid
         if not root.exists():
             continue
-        # 〔2026-10-30〕用 os.walk 并剪掉产物目录（spike/ 等）：rglob 会把
-        # work_027 的 504 个 spike 文件也走一遍 ⇒ 白枚举。
+        # 〔2026-11-09〕留痕只长在 work 根**第一级**的具名留痕目录里——
+        # 白名单剪枝：不再把 322 个施工目录的文件全枚举一遍再按名字丢
+        # （实测 work_027 全树枚举 >4 分钟，这里只下 6 个目录）。
         for sub in os.walk(root):
-            sub[1][:] = [x for x in sub[1] if x not in _SKIP_DIR_NAMES]
+            if Path(sub[0]) == root:
+                sub[1][:] = [x for x in sub[1]
+                             if x in _LOG_DIR_NAMES and x not in _SKIP_DIR_NAMES]
+            else:
+                sub[1][:] = [x for x in sub[1] if x not in _SKIP_DIR_NAMES]
             for name in sub[2]:
                 p = Path(sub[0]) / name
                 # 〔2026-10-30〕保留设备名（nul/…）不进日备：日备缺一个文件就
@@ -217,6 +276,12 @@ def _iter_state_files(work_id: str | None = None) -> list[Path]:
     """
     out: list[Path] = []
     for d in PROTECTED_DIRS:
+        # [2026-11-09 · 治「快照吃硬盘」] works/ 树走**状态白名单**枚举——
+        # 它是卡的施工区（322 个卡工作目录/单个上万文件），黑名单剪枝救不了
+        # 「什么都往里长」；白名单连**枚举**都不进施工目录（P26 同款 IO 病）。
+        if d == "works":
+            out.extend(_iter_work_state_files(work_id))
+            continue
         root = (BASE_DIR / d / work_id) if work_id else (BASE_DIR / d)
         if not root.exists():
             continue
@@ -232,6 +297,44 @@ def _iter_state_files(work_id: str | None = None) -> list[Path]:
                 # 前者一拷就 SameFileError（把整批打成「不完整」）⇒ 保留闸永关。
                 if _skip_snapshot_file(p):
                     continue
+                out.append(p)
+    return out
+
+
+def _iter_work_state_files(work_id: str | None) -> list[Path]:
+    """枚举 works/ 树里的**卡状态**文件（白名单制，不进施工目录）。
+
+    〔2026-11-09〕work_id 给了 → 只扫 ``works/{wid}/``；没给 → 逐 work 扫。
+    收：顶层白名单文件＋顶层 ``*.db*``（旧库位置）＋ ``_WORK_STATE_DIRS``
+    目录内全部。留痕目录（events/sessions/…）照旧由 ``_iter_work_log_files``
+    按需收（日备/manifest），这里同样不枚举。
+    """
+    works_root = BASE_DIR / "works"
+    work_dirs = ([works_root / work_id] if work_id
+                 else sorted(works_root.iterdir()) if works_root.is_dir()
+                 else [])
+    out: list[Path] = []
+    for wroot in work_dirs:
+        if not wroot.is_dir():
+            continue
+        try:
+            entries = sorted(wroot.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            if p.is_dir():
+                if p.name in _WORK_STATE_DIRS:
+                    for sub in os.walk(p):
+                        sub[1][:] = [x for x in sub[1]
+                                     if x not in _SKIP_DIR_NAMES]
+                        for name in sub[2]:
+                            fp = Path(sub[0]) / name
+                            if not _skip_snapshot_file(fp):
+                                out.append(fp)
+                continue
+            if _skip_snapshot_file(p):
+                continue
+            if _is_work_state_file(p, wroot):
                 out.append(p)
     return out
 
@@ -254,7 +357,10 @@ def _is_log_file(p: Path) -> bool:
         rel = p.relative_to(BASE_DIR)
     except ValueError:
         return True
-    return any(part in _LOG_DIR_NAMES for part in rel.parts)
+    # 〔2026-11-09〕收紧到「work 根第一级才算留痕」：施工目录里自建的
+    # ``logs/``/``events/`` 子目录（qa 跑批自带）不再混进日备。
+    # 形如 works/{wid}/events/… 的 rel.parts = (works, wid, events, …)。
+    return len(rel.parts) >= 3 and rel.parts[2] in _LOG_DIR_NAMES
 
 
 def _split_state_and_log(paths: list[Path]) -> tuple[list[Path], list[Path]]:
@@ -1153,6 +1259,10 @@ def _restore_state_db(src: Path, dst: Path) -> str | None:
     列名按**两边都有**的列对齐（旧快照遇上新列不至于整表插不进去）。
     返回 ``None``＝成功；返回错误串＝失败（**不静默装成功**）。
     """
+    # [库搬出施工目录 2026-11-09] dst 现落 works_data/{wid}/——该目录可能
+    # 还没被任何 store 惰性建出来（restore 先于首次写库的场景）；sqlite 不会
+    # 自建父目录 ⇒ 先建，否则「unable to open database file」。
+    dst.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(dst), timeout=30.0)
     try:
         con.execute("ATTACH DATABASE ? AS snap", (str(src),))

@@ -350,19 +350,41 @@ async def _fanin_sse_stream(work_id: str, query: str) -> StreamingResponse:
 
 async def forward_ctl(work_id: str, card_id: str, ctl_path: str,
                       payload: dict[str, Any]) -> dict[str, Any]:
-    """把一个卡级执行请求投给属主 runner。返回对端 JSON 或 {"error": ...}。"""
-    url = runner_url(owner_index_of(work_id, card_id)) + ctl_path
+    """把一个卡级执行请求投给属主 runner。返回对端 JSON 或 {"error": ...}。
+
+    [2026-11-08 · 评审热循环实弹] 两个洞一起堵：
+    - 路径带 ``/api`` 前缀——api_router 挂的是 /api/ctl/*，裸 /ctl/* 恒 404；
+      改前全部转发请求 404 ⇒ 下游把 {"detail":"Not Found"} 当正常回包
+      （无 error 键），评审席位回合"秒完不投票"⇒ 每秒一圈热循环。
+    - 非 2xx 一律折成 ``{"error": {...}}``——错误必须长成错误的样子，
+      下游的 err 判据才能接住、防死循环闸才有刹车（404 的 {"detail"} 正是
+      靠"不像错误"蒙混过关的）。
+    """
+    url = (runner_url(owner_index_of(work_id, card_id))
+           + "/api" + str(ctl_path or ""))
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             r = await client.post(url, json=payload)
+        if r.status_code >= 400:
+            return {"error": {"code": "runner_http",
+                              "message": f"runner HTTP {r.status_code}（{url}）："
+                                         f"{(r.text or '')[:200]}"}}
         try:
             return r.json()
         except Exception:  # noqa: BLE001
-            return {"error": f"runner 回包非 JSON: {r.status_code}"}
+            return {"error": {"code": "runner_bad_json",
+                              "message": f"runner 回包非 JSON: {r.status_code}"}}
     except httpx.HTTPError as exc:
-        return {"error": f"runner 不可达（{url}）：{exc}"}
+        return {"error": {"code": "runner_unreachable",
+                          "message": f"runner 不可达（{url}）：{exc}"}}
 
 
 async def forward_run(work_id: str, card_id: str,
                       payload: dict[str, Any]) -> dict[str, Any]:
     return await forward_ctl(work_id, card_id, "/ctl/run_message", payload)
+
+
+async def forward_review_step(work_id: str, review_id: str,
+                              payload: dict[str, Any]) -> dict[str, Any]:
+    """评审一步投给场卡属主 runner——循环只在场卡属主进程跑（事件/seq 单空间）。"""
+    return await forward_ctl(work_id, review_id, "/ctl/review_step", payload)

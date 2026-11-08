@@ -11,22 +11,16 @@
    harness/envelope.go（五字段）、webface/stream.go（13 op / fact_level / resync 6 值）。
    左栏沿用旧系统 card.html + nav_render.js 的 UI 与交互（用户裁定：这一块不动）。 */
 :root{
-  --bg:#0b0d11; --s1:#101318; --s2:#151920; --s3:#1b2028; --s4:#222833;
-  --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.12); --line3:rgba(255,255,255,.18);
-  --tx:#e9ecf1; --tx2:#aab1bc; --tx3:#949ba6; --tx4:#6f7681;
-  --ac:#7d88ee; --ac-lo:rgba(125,136,238,.14); --ac-line:rgba(125,136,238,.32);
-  --ok:#4ec98a; --warn:#e0a63c; --err:#f0685f;
-  --rk:#7d88ee; --eh:#9b7de0;
+  /* 交互稿：只有黑白灰与线。配色 / 阴影 / 渐变 / 圆角 / 动效 / 深浅主题一律不做。 */
+  --bg:#fff; --s1:#fff; --s2:#fff; --s3:#f4f4f4; --s4:#e9e9e9;
+  --line:#d8d8d8; --line2:#9c9c9c; --line3:#333;
+  --tx:#000; --tx2:#1f1f1f; --tx3:#555; --tx4:#808080;
+  --ac:#000; --ac-lo:transparent; --ac-line:#000;
+  --ok:#000; --warn:#000; --err:#000; --rk:#000; --eh:#000;
   --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   --mono:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;
-  --nav-w:272px; --topbar-h:44px; --col:900px; --colpad:28px;
-}
-html[data-theme="light"]{
-  --bg:#fbfbfc; --s1:#fff; --s2:#f7f8fa; --s3:#eef0f4; --s4:#e4e7ed;
-  --line:rgba(16,19,24,.08); --line2:rgba(16,19,24,.13); --line3:rgba(16,19,24,.2);
-  --tx:#14171c; --tx2:#4d545e; --tx3:#666d78; --tx4:#8b929c;
-  --ac:#5560d8; --ac-lo:rgba(85,96,216,.10); --ac-line:rgba(85,96,216,.30);
-  --ok:#17925c; --warn:#a9721a; --err:#cf3f36; --rk:#5560d8; --eh:#6a45c0;
+  --nav-w:272px; --topbar-h:44px; --col:760px; --colpad:24px;
+  --rv-w:300px; --rv-full-w:min(560px,46vw);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -111,15 +105,18 @@ button.crumb-seg:hover{background:var(--s3);color:var(--tx)}
 .flow-view{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
 .flow-scroll{flex:1;overflow-y:auto;padding:0 var(--colpad) 24px}
 .flow-col{max-width:var(--col);margin:0 auto;display:flex;flex-direction:column;gap:10px;padding-top:14px}
+/* 时间线必须是 flex 列：用户气泡靠 align-self:flex-end 才真正靠右。
+   此前是普通 block，#timeline 无 display:flex ⇒ align-self 静默失效 ⇒
+   用户消息与助手回复同起于左缘、视觉上完全分不开（本轮真实缺陷）。 */
+#timeline{display:flex;flex-direction:column}
 .tl-older{align-self:center;padding:4px 14px;border-radius:99px;border:1px solid var(--line2);color:var(--tx3);background:var(--s1);font-size:12px}
 .tl-older:hover:not(:disabled){color:var(--tx);border-color:var(--line3);background:var(--s2)}
 .tl-older:disabled{opacity:.45;cursor:default}
 .date-sep{display:flex;align-items:center;gap:10px;color:var(--tx4);font-size:11px;margin:6px 0}
 .date-sep::before,.date-sep::after{content:'';flex:1;height:1px;background:var(--line)}
 
-/* 每条事件的公共外壳 */
+/* 每条事件的公共外壳（轨迹视图用：全密度检视行） */
 .ev{display:flex;gap:8px;align-items:flex-start}
-.ev-mark{flex:none;width:18px;height:18px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;margin-top:2px;background:var(--s3);color:var(--tx3)}
 .ev-body{flex:1;min-width:0}
 .ev-head{display:flex;align-items:center;gap:6px;margin-bottom:3px;flex-wrap:wrap}
 .ev-type{font-family:var(--mono);font-size:10.5px;color:var(--tx4)}
@@ -199,14 +196,14 @@ button.crumb-seg:hover{background:var(--s3);color:var(--tx)}
 .bl-rj{color:var(--err);background:rgba(240,104,95,.12)}
 .bl-stale{color:var(--warn);background:rgba(224,166,60,.13)}
 .bl-pend{color:var(--tx3);background:var(--s4)}
-/* ⑫ harness */
+/* ⑫ harness（组 Ⅷ） */
 .hm{border:1px solid var(--eh);border-left:3px solid var(--eh);border-radius:4px 6px 6px 4px;padding:7px 10px;background:var(--s1)}
 .hm-h{display:flex;align-items:center;gap:7px;margin-bottom:4px;flex-wrap:wrap}
 .hm-tag{font-family:var(--mono);font-size:9.5px;color:var(--eh);background:rgba(155,125,224,.13);padding:0 5px;border-radius:3px;font-weight:600}
 .hm-f{display:grid;grid-template-columns:76px 1fr;gap:2px 8px;font-size:11.5px}
 .hm-f dt{color:var(--tx4);font-family:var(--mono);font-size:10px}
 .hm-f dd{color:var(--tx2);font-family:var(--mono);word-break:break-word}
-/* ⑬ 流控制 */
+/* ⑬ 流控制（组 Ⅹ） */
 .sys{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--tx3);padding:5px 10px;border-radius:5px;background:var(--s2);border:1px solid var(--line)}
 .sys-ico{flex:none;font-weight:700;font-size:11px}
 .sys-warn{border-color:rgba(224,166,60,.3);color:var(--warn)}
@@ -220,7 +217,13 @@ button.crumb-seg:hover{background:var(--s3);color:var(--tx)}
 .proc-c{margin-left:auto;transition:transform 120ms}
 .proc.open .proc-c{transform:rotate(90deg)}
 .proc-b{padding:6px 12px 8px 24px;font-family:var(--mono);font-size:10.5px;color:var(--tx4);border-top:1px dashed var(--line2);white-space:pre-wrap}
-body.proc-hidden .proc{display:none}
+body.proc-hidden .cv-pgrp,body.proc-hidden .cv-tool{display:none}
+/* 演示聚焦：地址加 #hide=nav,tl,idx,cmp 可单独看某一块（逐处对照用） */
+body.hide-nav #appNav{display:none}
+body.hide-tl #timeline{display:none}
+body.hide-idx #idxPanel{display:none}
+body.hide-cmp #cmpPanel{display:none}
+body.hide-confirm #confirmSeat{display:none}
 
 /* 视图态 */
 .skel{display:flex;flex-direction:column;gap:12px;padding:6px 0}
@@ -242,7 +245,12 @@ body.proc-hidden .proc{display:none}
 .rb-dots i{display:inline-block;width:3px;height:3px;border-radius:50%;background:var(--tx3);margin-right:2px;animation:pl 1s infinite}
 .rb-dots i:nth-child(2){animation-delay:.15s}
 .rb-dots i:nth-child(3){animation-delay:.3s}
-.to-bottom{position:absolute;right:calc(var(--colpad) + 4px);bottom:12px;padding:5px 12px;border-radius:99px;background:var(--s3);border:1px solid var(--line2);color:var(--tx2);box-shadow:0 4px 14px rgba(0,0,0,.25);z-index:6;font-size:12px}
+.to-bottom{position:absolute;right:var(--colpad);bottom:14px;padding:5px 12px;border-radius:4px;background:#fff;border:1px solid #333;color:#000;z-index:6;font-size:11px}
+/* 回到底部钉在对话区右下角（窗口边缘），位置永远不动——不跟任何弹窗/浮层走。
+   它在这个位置本来就不碍事：收缩态评审浮窗只占上面一截，够不着它。
+   展开态/卡详情把右侧整列盖到底时，它自然被浮层压在下面（层级低），
+   不需要我再去挪它或藏它。 */
+.to-bottom:hover{background:#000!important;color:#fff!important}
 .to-bottom:hover{color:var(--tx);background:var(--s4)}
 
 /* ---------- 评审入口：顶栏胶囊（有在途批次才出现，带有效信息；≠ 卡详情） ---------- */
@@ -271,7 +279,32 @@ body.proc-hidden .proc{display:none}
 /* ---------- inspector（卡详情，右缘常驻竖条） ---------- */
 #inspTab{position:absolute;right:0;top:50%;transform:translateY(-50%);z-index:9;writing-mode:vertical-rl;padding:11px 7px;background:var(--s2);border:1px solid var(--line2);border-right:none;border-radius:6px 0 0 6px;color:var(--tx2);font-size:11px;letter-spacing:2px}
 #inspTab:hover{background:var(--s3);color:var(--tx)}
-#inspector{position:absolute;top:0;right:0;bottom:0;width:340px;z-index:20;background:var(--s1);border-left:1px solid var(--line2);display:flex;flex-direction:column}
+/* 卡详情展开时，入口竖条必须消失——面板已经在了，入口还挂在那儿就是「两个入口同一件事」 */
+body.ip-on #inspTab{display:none}
+/* ---------- 卡详情（420px 覆盖式抽屉；现状/需求文档=折叠预览＋展开全文；目标可编辑；关系全量；版本历史） ---------- */
+#inspector{position:absolute;top:0;right:0;bottom:0;width:420px;z-index:8;display:flex;flex-direction:column;background:var(--s1);border-left:1px solid var(--line2)}
+.ip-edit{margin-left:auto;font-size:10px;color:#555;border:1px solid #9c9c9c;background:none;cursor:pointer;padding:1px 6px;flex:none}
+.ip-edit:hover{background:#000!important;color:#fff!important}
+.ip-ver{font-family:var(--mono);font-size:9.5px;color:#808080;margin-left:6px}
+.ip-clamp{display:block;height:14px;background:#fff;position:relative}
+.ip-clamp::after{content:'…';position:absolute;right:0;bottom:-2px;font-style:normal}
+.ip-full{border-top:1px dashed #d8d8d8;margin-top:6px;padding-top:8px}
+/* 最简 md 渲染：标题加粗、列表圆点、代码 mono 底纹——只保结构，不加视觉设计 */
+.ip-sb.md h1,.ip-sb.md h2,.ip-sb.md h3{font-size:12px;margin:8px 0 4px}
+.ip-sb.md ul{margin:4px 0;padding-left:16px}
+.ip-sb.md li{margin:2px 0}
+.ip-sb.md code{font-family:var(--mono);font-size:10.5px;background:var(--s2);padding:0 3px}
+.ip-vers{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+.ip-ver-row{display:flex;align-items:baseline;gap:8px;font-size:11px;padding:3px 0;border-bottom:1px dotted #e8e8e8}
+.ip-ver-row:last-child{border-bottom:none}
+.ip-ver-row b{font-family:var(--mono);flex:none}
+.ip-ver-row span{flex:1;min-width:0;color:#555}
+.ip-rels{display:flex;flex-direction:column;gap:6px}
+.ip-rel{display:flex;align-items:baseline;gap:7px;font-size:11.5px}
+.ip-rel-k{font-family:var(--mono);font-size:9.5px;border:1px solid #9c9c9c;padding:0 4px;font-weight:600;flex:none}
+.ip-rel-card{color:#000;font-weight:600;text-decoration:underline;background:none;border:none;cursor:pointer;padding:0;text-align:left;font-size:11.5px}
+.ip-rel-card:hover{background:#f4f4f4!important}
+.ip-rel-n{color:#808080;font-size:10.5px;flex:1;min-width:0}
 .ip-head{flex:none;display:flex;align-items:flex-start;gap:8px;padding:11px 13px;border-bottom:1px solid var(--line)}
 .ip-tw{flex:1;min-width:0}
 #ipName{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -312,23 +345,60 @@ body.proc-hidden .proc{display:none}
 .cf-link{margin-left:auto;font-size:11px;color:var(--tx3);text-decoration:underline;text-underline-offset:2px}
 .cf-link:hover{color:var(--ac)}
 
+/* 卡间消息 / 写闸回执 / 待用户处置 */
+.cardmsg{background:var(--s2);border:1px solid var(--line2);border-left:3px solid var(--ac);border-radius:6px;padding:7px 10px}
+.cardmsg.out{border-left-color:var(--ok)}
+.cm-h{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:4px}
+.cm-route{font-family:var(--mono);font-size:10.5px;color:var(--ac);font-weight:600}
+.cardmsg.out .cm-route{color:var(--ok)}
+.cm-dom{font-family:var(--mono);font-size:9.5px;color:var(--tx4);padding:0 4px;border-radius:3px;background:var(--s3)}
+.cm-at{font-family:var(--mono);font-size:9.5px;color:var(--tx4);margin-left:auto}
+.cm-t{font-size:12px;color:var(--tx2)}
+.cm-f{margin-top:4px;font-size:10.5px;color:var(--tx4);font-family:var(--mono)}
+.wr{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 9px;border-radius:5px;background:var(--s2);border:1px solid var(--line2);font-size:11.5px}
+.wr-s{font-family:var(--mono);font-weight:700;font-size:11px}
+.wr.ok .wr-s{color:var(--ok)}
+.wr.warn .wr-s{color:var(--warn)}
+.wr.err .wr-s{color:var(--err)}
+.wr-f{font-family:var(--mono);font-size:10.5px;color:var(--tx3)}
+.wr-x{font-size:10.5px;color:var(--tx4);margin-left:auto}
+.pend{border:1px solid var(--warn);border-left-width:3px;border-radius:6px;background:var(--s1);padding:7px 10px}
+.pend.model{border-color:var(--line2);border-left-color:var(--tx4)}
+.pend-h{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:4px}
+.pend-k{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--warn)}
+.pend.model .pend-k{color:var(--tx2)}
+.pend-col{font-size:9.5px;padding:0 5px;border-radius:3px;background:rgba(224,166,60,.16);color:var(--warn)}
+.pend.model .pend-col{background:var(--s3);color:var(--tx4)}
+.pend-ev{font-family:var(--mono);font-size:9.5px;color:var(--tx4);margin-left:auto}
+.pend-b{font-size:12px;color:var(--tx2)}
+.pend-m{margin-top:4px;font-size:10.5px;color:var(--tx4);font-family:var(--mono)}
+/* 确认条：一套形态，类型可切 */
+.cf-tabs{display:flex;gap:4px;padding:7px 12px 0;flex-wrap:wrap}
+.cf-tab{font-size:10.5px;padding:2px 8px;border-radius:99px;border:1px solid var(--line2);color:var(--tx3);font-family:var(--mono)}
+.cf-tab:hover{border-color:var(--line3);color:var(--tx)}
+.cf-tab.on{background:var(--warn);border-color:var(--warn);color:#1a1206;font-weight:600}
+
 /* ---------- 输入区 ---------- */
-#composerSeat{flex:none;padding:0 var(--colpad) 14px}
+#composerSeat{flex:none;position:relative;padding:0 var(--colpad) 14px}
 .comp-stack{max-width:var(--col);margin:0 auto}
-.queue{display:flex;align-items:center;gap:7px;padding:5px 9px;margin-bottom:7px;border-radius:6px;background:var(--ac-lo);border:1px solid var(--ac-line);color:var(--tx2);font-size:11.5px;flex-wrap:wrap}
-.q-label b{color:var(--ac)}
-.q-list{display:flex;gap:5px;flex-wrap:wrap;flex:1;min-width:0}
-.q-chip{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:99px;background:var(--s2);border:1px solid var(--line2);max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
-.q-x{color:var(--tx3);font-size:11px;padding:0 1px}
-.q-x:hover{color:var(--err)}
-.q-clear{color:var(--tx3);padding:1px 7px;border-radius:4px;font-size:11px}
-.q-clear:hover{background:var(--s3);color:var(--err)}
+.queue{display:flex;flex-direction:column;gap:5px;padding:8px 10px;margin-bottom:7px;border:1px solid #333;background:#fff;font-size:11.5px}
+.q-label{font-size:11px;color:#000;font-weight:600}
+.q-label b{color:#000}
+.q-list{display:flex;flex-direction:column;gap:6px}
+.q-chip{display:flex;gap:8px;align-items:baseline;border:1px solid #bbb;padding:5px 8px;font-size:11.5px}
+.q-chip .q-txt{flex:1;min-width:0;color:#000;white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.q-chip .q-n{font-family:var(--mono);font-size:9.5px;color:#808080;flex:none}
+.q-x{font-size:12px;color:#555;border:none;background:none;cursor:pointer;padding:0 2px;flex:none}
+.q-x:hover{color:#000;font-weight:700}
+.q-clear{align-self:flex-start;color:#555;border:none;background:none;cursor:pointer;font-size:11px;padding:1px 0}
+.q-clear:hover{color:#000;text-decoration:underline}
 .comp-card{background:var(--s2);border:1px solid var(--line2);border-radius:10px;padding:9px 11px 7px}
 .comp-card:focus-within{border-color:var(--ac-line)}
 #flowInput{width:100%;min-height:38px;max-height:150px;resize:none;background:none;border:none;outline:none;color:var(--tx);line-height:1.5}
 #flowInput::placeholder{color:var(--tx4)}
-.comp-bar{display:flex;align-items:center;gap:7px;margin-top:5px}
-/* 模型选择贴发送键（用户裁定：行业通行位置） */
+.comp-bar{display:flex;align-items:center;gap:7px;margin-top:5px;justify-content:flex-end}
+.comp-sp{flex:1}
+.ctx-len{font-size:10.5px;color:var(--tx4);font-family:var(--mono);white-space:nowrap}
 .model-sel{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:99px;border:1px solid var(--line2);color:var(--tx2);font-size:11.5px;font-family:var(--mono)}
 .model-sel:hover{border-color:var(--ac-line);color:var(--tx)}
 .model-sel .mdot{width:6px;height:6px;border-radius:50%;background:var(--ac)}
@@ -336,7 +406,7 @@ body.proc-hidden .proc{display:none}
 .send-btn{min-width:72px;padding:5px 14px;border-radius:6px;background:var(--ac);color:#0b0d11;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:12px}
 .send-btn:hover{filter:brightness(1.1)}
 .send-btn.stop{background:var(--err);color:#fff}
-.model-menu{position:absolute;right:calc(var(--colpad) + 4px);bottom:62px;width:268px;background:var(--s3);border:1px solid var(--line2);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:5px;z-index:30}
+.model-menu{position:absolute;width:288px;background:#fff;border:1px solid #333;padding:5px;z-index:30}
 .mm-t{font-size:10px;color:var(--tx4);padding:4px 8px 5px;font-family:var(--mono)}
 .mm-i{width:100%;display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:4px;color:var(--tx2);text-align:left;font-size:11.5px;font-family:var(--mono)}
 .mm-i:hover{background:var(--s4);color:var(--tx)}
@@ -345,7 +415,7 @@ body.proc-hidden .proc{display:none}
 .mm-d{margin-left:auto;font-size:9.5px;color:var(--tx4);font-family:var(--font)}
 
 /* ---------- 事件类型索引 ---------- */
-#idxPanel{position:fixed;left:calc(var(--nav-w) + 12px);top:calc(var(--topbar-h) + 12px);z-index:60;width:308px;background:var(--s1);border:1px solid var(--line2);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.32);overflow:hidden}
+#idxPanel{position:fixed;left:12px;top:calc(var(--topbar-h) + 10px);z-index:60;width:308px;max-height:calc(100vh - var(--topbar-h) - 24px);overflow-y:auto;overflow-x:hidden;background:var(--s1);border:1px solid var(--line2);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.32)}
 #idxHead{width:100%;display:flex;align-items:center;gap:7px;padding:8px 11px;font-weight:600;font-size:11.5px;color:var(--tx2);text-align:left}
 #idxHead:hover{background:var(--s2)}
 #selfCheck{margin-left:auto;font-family:var(--mono);font-size:9.5px;font-weight:400;color:var(--ok);background:rgba(78,201,138,.1);padding:1px 6px;border-radius:99px}
@@ -361,19 +431,63 @@ body.proc-hidden .proc{display:none}
 .idx-i .ic{font-family:var(--mono);font-size:9px;color:var(--tx4);flex:none}
 .idx-i.np .it{color:var(--tx3)}
 
-/* ---------- 改动对照 ---------- */
-#cmpPanel{position:fixed;right:14px;bottom:14px;z-index:70;width:360px;max-width:calc(100vw - 28px);background:var(--s2);border:1px solid var(--line2);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.34);overflow:hidden}
-#cmpHead{width:100%;display:flex;align-items:center;gap:7px;padding:8px 11px;font-weight:600;font-size:11.5px;color:var(--tx2);text-align:left}
+/* ---------- 改动对照（挂在左栏底部，不覆盖任何主界面元素） ---------- */
+.nav-footer{position:relative}
+#cmpPanel{position:relative;width:100%;background:#fff;border:1px solid var(--line);overflow:hidden;margin-bottom:6px}
+#cmpHead{width:100%;display:flex;align-items:center;gap:7px;padding:6px 8px;font-weight:600;font-size:11.5px;color:var(--tx2);text-align:left}
 #cmpHead:hover{background:var(--s3)}
 .cmp-c{transition:transform 120ms;color:var(--tx4)}
+#cmpPanel.open{position:absolute;left:8px;bottom:calc(100% + 6px);width:360px;z-index:80;border:1px solid #333;box-shadow:0 8px 24px rgba(0,0,0,.14)}
 #cmpPanel.open .cmp-c{transform:rotate(90deg)}
-#cmpBody{max-height:46vh;overflow-y:auto;border-top:1px solid var(--line);padding:7px 10px 10px}
+#cmpBody{max-height:60vh;overflow-y:auto;border-top:1px solid var(--line);padding:7px 10px 10px}
 #cmpList{list-style:none;display:flex;flex-direction:column;gap:6px}
 #cmpList li{font-size:11px;color:var(--tx2);padding:6px 9px;background:var(--s1);border:1px solid var(--line);border-radius:5px;line-height:1.55}
 #cmpList li b{color:var(--tx)}
 #cmpList li .why{display:block;color:var(--tx4);font-size:10px;margin-top:2px}
 #cmpList li.und{border-left:3px solid var(--warn)}
 #cmpList li.fix{border-left:3px solid var(--ac)}
+
+/* ---------- 插话样式（Codex pending_input_preview / DSH QueueDock 口径） ----------
+   插话＝回合进行中你发的消息，不打断当前回合，排进队列、回合结束后按序送达。
+   它显示的是**你说的原文**（两行截断＋字数），不是摘要 chip——摘要会丢信息。
+   队列整体贴输入卡上沿，与输入卡同宽同列。 */
+#queueBar{margin-bottom:6px}
+.queue{display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--line2);background:var(--s2);font-size:11.5px;flex-wrap:wrap}
+.q-label{font-size:11px;color:#555;flex:none}
+.q-label b{font-family:var(--mono);color:#000}
+.q-list{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}
+.q-i{display:flex;align-items:flex-start;gap:6px;padding:3px 0}
+.q-i .q-txt{flex:1;min-width:0;font-size:12px;color:#000;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap}
+.q-i .q-n{font-family:var(--mono);font-size:10px;color:#9c9c9c;flex:none}
+.q-x{width:16px;height:16px;flex:none;color:#555;font-size:12px;line-height:14px;text-align:center}
+.q-x:hover{background:#000;color:#fff}
+.q-clear{font-size:11px;color:#555;padding:2px 7px;border:1px solid var(--line2);flex:none}
+.q-clear:hover{background:#000;color:#fff}
+
+/* ---------- 卡间信 / harness 投递：都在信息流里 ----------
+   卡间信＝别的卡对我说的话 → 与用户/助手同层（顶格），不折叠。
+   harness 投递＝规则命中后系统把我叫醒/注入/续接 → 环境事件层（缩进 16px、更小更灰）。
+   两者都不进轨迹视图以外的地方「只做记录」——它们是驱动这张卡继续干活的原因，
+   监工看不到就不知道「为什么它又开始动了」。 */
+.cv-hm{display:flex;gap:7px;align-items:baseline;font-size:11.5px;color:#8a8a8a;padding:1px 0;margin-left:16px}
+.cv-hm .hm-k{font-family:var(--mono);font-size:11px;color:#555;flex:none}
+.cv-hm .cv-t{flex:1;min-width:0}
+
+/* ---------- 动效依据（演示用；这是「动效规格」本身，不是皮肤） ----------
+   全局 animation/transition 被清成 none 是「静态交互稿」的约定；
+   这里用更高优先级的 !important 单独开回三类动效，作为交互动效的**依据**：
+     ① 入列：淡入 + 上移 8px / 220ms（新内容出现在流末尾，眼睛跟着走）
+     ② 过程推进：运行点脉冲 1.1s；工具行逐条 stagger 140ms（一条一条地干，不是一次刷出）
+     ③ 生成中：回复逐字出现 + 光标闪烁（区分「正在说」与「说完了」）
+   删掉这段，页面回到全静态——动效只在这一段里成立。 */
+.mo{animation:moIn 220ms cubic-bezier(.22,.61,.36,1) both!important}
+@keyframes moIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.mo .rb-dot{animation:moPulse 1.1s infinite!important}
+@keyframes moPulse{0%,100%{opacity:1}50%{opacity:.2}}
+.mo-cursor::after{content:'▍';font-family:var(--mono);animation:moBlink .9s step-end infinite!important}
+@keyframes moBlink{0%,100%{opacity:1}50%{opacity:0}}
+.mo-btn-flash{animation:moFlash .5s ease-out both!important}
+@keyframes moFlash{0%{background:#000;color:#fff}100%{background:#fff;color:#000}}
 
 /* ---------- 草稿弹窗 / toast ---------- */
 .modal{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:24px}
@@ -394,6 +508,203 @@ body.proc-hidden .proc{display:none}
 .toast.ok{border-color:rgba(78,201,138,.4)}
 .toast.warn{border-color:rgba(224,166,60,.4)}
 .toast.err{border-color:rgba(240,104,95,.4)}
+/* ===================================================================
+   交互稿覆盖层：把上面残留的一切视觉设计抹掉，只留结构与状态。
+   状态一律靠文字与线型区分（实线／虚线、加粗、方框标签），不靠颜色。
+   =================================================================== */
+*{border-radius:0!important;box-shadow:none!important;text-shadow:none!important;
+  animation:none!important;transition:none!important;filter:none!important}
+/* 例外：用户气泡的圆角保留。它不是装饰——22px 圆角＋右侧短宽度是「有人在说话」
+   的唯一形态信号（DSH MessageItem.module.css 原值）。抹平它，用户消息就退化成
+   一个和正文无异的矩形块，分不出是谁说的（本轮实测踩到）。 */
+.cv-u{border-radius:22px!important}
+body{background:#fff!important;color:#000}
+/* 徽标一律降格成方框文字（原来靠底色区分，现在靠字面） */
+.bdg,.lv,.np-tag,.tool-st,.st-ok,.st-failed,.st-skipped,.acc-step,.as-submitted,
+.as-rejected,.as-fixing,.as-resubmitted,.as-passed,.ballot,.bl-ap,.bl-rj,.bl-stale,
+.bl-pend,.hm-tag,.stc-f,.cm-dom,.cf-badge,.cf-ico,.pend-col,.rp-score,.chip{
+  background:none!important;color:#000!important;border:1px solid #9c9c9c!important;
+  padding:0 4px!important;font-weight:600;line-height:15px;font-size:9.5px}
+.cf-kicker,.pend-k,.cm-route,.rv-evt,.wr-s{color:#000!important;font-weight:700}
+.rp-dot,.mdot,.chip .dot,.cf-ico{background:#000!important}
+/* 主按钮反白；停止键反过来 —— 两态一眼可分 */
+.send-btn,.prim,.cf-btn.pri,.cf-tab.on{background:#000!important;color:#fff!important;border:1px solid #000!important}
+.send-btn.stop{background:#fff!important;color:#000!important;border:1px solid #000!important}
+.tb-btn:hover,.cf-btn:hover,.ghost:hover,.idx-i:hover,.nav-row:hover{background:#f4f4f4!important;color:#000!important}
+.sk-a,.sk-i{background:none!important;border:1px dashed #c9c9c9!important}
+.nav-name mark{background:none!important;color:inherit!important;text-decoration:underline;font-weight:700}
+.modal{background:rgba(0,0,0,.18)!important}
+
+/* ---------- 视图切换：对话 / 轨迹（DSH chat + trajectory 双 target 同源事件） ---------- */
+.view-tabs{display:flex;gap:0;margin-right:6px}
+.vtab{height:24px;padding:0 10px;border:1px solid var(--line2);font-size:11px;color:#000;display:flex;align-items:center;gap:5px}
+.vtab+.vtab{border-left:none}
+.vtab:hover{background:#f4f4f4!important}
+.vtab.on{background:#000!important;color:#fff!important}
+.vtab .vn{font-family:var(--mono);font-size:10px}
+body.view-traj #timeline{display:none}
+body.view-traj #trajView{display:block}
+#trajView{display:none}
+
+/* ---------- 对话视图：照 Codex scrollback / DSH chat 的最简形态 ----------
+   Codex 的 scrollback 里没有「轮」的边框、没有轮编号、没有轮标题条，就是一串 history cell 竖排：
+     › 用户输入
+       ▸ Read files, Ran commands · Worked for 12s     ← 过程组（完成后收成一行摘要）
+       • 回复正文
+   层次靠前缀、缩进、色阶，不靠框与编号（DSH chat 与 Codex 一致）。 */
+.turn{display:flex;flex-direction:column;gap:2px}
+.turn-b{display:flex;flex-direction:column;gap:2px}
+/* （旧 .pgrp 样式已随轮框一起废，过程组用 .cv-pgrp） */
+/* 单条 disclosure：工具行/过程行可单独展开（data-exp 已有） */
+/* 收尾行不单独成行（避免被误读成助手又说了句话）：
+   耗时与调用数并进过程组头的右侧，属于过程信息，折叠态自然不出现。 */
+/* 审批回执行（Codex approvals：决定后流里留一行） */
+.decision{display:flex;align-items:baseline;gap:7px;padding:2px 0;margin-top:6px;font-size:12px;color:#000}
+.decision .dk{font-family:var(--mono);font-weight:700;flex:none}
+.decision .dm{margin-left:auto;font-family:var(--mono);font-size:10px;color:#a8a8a8;flex:none}
+/* ---------- 谁在说话：对齐方向 + 容器形态（不是前缀字符） ----------
+   用户消息＝右对齐气泡。取值照 DSH MessageItem.module.css:4-29（本项目原型版
+   .msg.user 已照它移植过一次：右对齐、圆角、8/16 内距、margin 8px 0 4px）。
+   为什么是气泡：Web 页面区分「谁在说」的第一眼信号是**对齐方向**——右侧
+   20% 空档＋圆角，读起来是「插进这段对话一句话」，与正文段落一眼分开。
+   Codex 的「› 」是 Rust TUI 没有排版工具时的替代品，不是 Web 的做法。 */
+.cv-u{display:block;align-self:flex-end;max-width:min(525px,82%);background:#f4f4f4;border:1px solid #ddd;border-radius:22px;padding:10px 16px;margin:16px 0 4px;font-size:14px;line-height:1.6}
+.cv-u .txt{white-space:pre-wrap;word-break:break-word}
+/* 助手消息＝左对齐文档流、无容器（DSH / 原型版 .msg.assistant）。
+   为什么无气泡：助手回复动辄整屏，包进气泡就成了一堵墙；它是页面的主体
+   内容，应按文档排版（1.85 行高）读，不是「聊天记录」。
+   为什么底部留 16px：这一处留白就是轮与轮的分隔——不另加标题行/编号/分隔线。 */
+.cv-a{display:block;align-self:flex-start;padding:4px 0 16px;margin:4px 0;font-size:14px;line-height:1.85}
+.cv-a .txt{white-space:pre-wrap;word-break:break-word}
+
+/* ---------- 轨迹视图：分节标题（组名即信息，不设编号） ---------- */
+.sec{display:flex;align-items:center;gap:8px;margin:16px 0 2px;padding-bottom:5px;border-bottom:1px solid #333}
+.sec-t{font-size:11.5px;font-weight:700;letter-spacing:.2px}
+.sec-c{margin-left:auto;font-family:var(--mono);font-size:10px;color:#808080}
+.ev{padding:6px 0;border-bottom:1px dotted #e8e8e8}
+.ev:last-child{border-bottom:none}
+.ev-head{align-items:baseline;gap:8px;margin-bottom:4px}
+.ev-type{width:186px;flex:none;color:#555!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev-title{font-size:11.5px;color:#000!important;font-weight:700;flex:1;min-width:0}
+.ev-at{margin-left:0!important;flex:none}
+
+/* ---------- 对话视图行模板：照 Codex scrollback 的密度 ----------
+   一行一事，无框无标。层次只靠两条规则：
+     谁在说话（用户 › / 助手 • / 卡间信路由）→ 顶格
+     机器在干活（过程组 / 工具行 / 系统条 / 验收）→ 缩进 16px，字号更小、颜色更灰
+   Codex 的 scrollback 没有轮框、没有轮编号、没有轮标题条——就是一串 history cell 竖排。
+   契约字段（类型码/fact_level/action_id）只属于轨迹视图。 */
+.step{display:flex;flex-direction:column;gap:1px}
+.cv{padding:0}
+.cv-sys{font-size:11.5px;color:#8a8a8a;padding:1px 0;margin-left:16px}
+.cv-sys .cv-t{color:#8a8a8a}
+.cv-tool{display:flex;gap:7px;align-items:baseline;font-size:12px;padding:1px 0;cursor:pointer;margin-left:16px}
+.cv-tool:hover .cv-t{text-decoration:underline}
+.cv-tool .cv-nm{font-family:var(--mono);color:#000;flex:none}
+.cv-tool .cv-t{color:#666;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv-tool .cv-st{font-family:var(--mono);font-size:10.5px;color:#8a8a8a;flex:none}
+.cv-tool .cv-st.ok{color:#000}
+.cv-tool .cv-st.failed{color:#000;text-decoration:underline}
+.cv-tool-b{font-family:var(--mono);font-size:11px;color:#666;padding:2px 0 4px 9px;white-space:pre-wrap;border-left:1px solid #e4e4e4;margin-left:19px}
+/* 卡间信＝别的卡在说话。左侧竖线＋缩进，区别于「本卡回复」（顶格无框）与「用户」（右气泡）。
+   按语义分三档重量：要你动的事（指令/汇报/完工）重；只是知会（同步/通知）轻 */
+.cv-cm{border-left:2px solid #999;padding:5px 0 5px 11px;margin:10px 0 10px 8px;max-width:min(680px,92%)}
+.cv-cm .cm-route{font-family:var(--mono);font-size:11px;color:#444;display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.cv-cm .cm-type{font-family:inherit;font-size:10.5px;line-height:15px;padding:0 5px;border:1px solid #000;color:#000;flex:none;letter-spacing:.5px}
+.cv-cm .cm-dir{font-family:var(--mono);font-size:12px;color:#000;flex:none}
+.cv-cm .cm-who{color:#000}
+.cv-cm .cm-t{font-size:13px;color:#222;margin-top:3px;line-height:1.65}
+/* 指令：要照做——最重，实线粗、标签反白 */
+.cv-cm[data-mt="directive"]{border-left:3px solid #000}
+.cv-cm[data-mt="directive"] .cm-type{background:#000;color:#fff;border-color:#000}
+/* 汇报 / 完工回执：要判断——中，实线、标签描边 */
+.cv-cm[data-mt="report"],.cv-cm[data-mt="worker_done"]{border-left:2px solid #666}
+.cv-cm[data-mt="report"] .cm-type,.cv-cm[data-mt="worker_done"] .cm-type{color:#000;border-color:#666}
+/* 同步 / 通知：只是知会——最轻，虚线、灰字 */
+.cv-cm[data-mt="sync"],.cv-cm[data-mt="notify"]{border-left:1px dashed #bbb}
+.cv-cm[data-mt="sync"] .cm-type,.cv-cm[data-mt="notify"] .cm-type{color:#777;border-color:#bbb}
+.cv-cm[data-mt="sync"] .cm-t,.cv-cm[data-mt="notify"] .cm-t{color:#666;font-size:12.5px}
+/* 记要字段（指令的验收判据 / 汇报的交付物）——一行小字，紧贴正文下方 */
+.cv-cm .cm-meta{margin-top:4px;font-size:11.5px;color:#555;line-height:1.6;border-top:1px dotted #ddd;padding-top:3px}
+.cv-cm .cm-meta b{font-weight:600;color:#333}
+.cv-acc{display:flex;gap:7px;align-items:baseline;font-size:12px;padding:1px 0;margin-left:16px}
+.cv-acc .cv-k{font-family:var(--mono);font-size:11px;color:#666;flex:none}
+.cv-acc .cv-t{color:#444}
+/* 过程组（对话视图内）：组头=内容摘要（DSH「Read files, Ran commands」口径），非编号 */
+.cv-pgrp{padding:1px 0;margin-left:16px}
+.cv-pgrp-h{display:flex;gap:7px;align-items:baseline;font-size:12px;color:#555;text-align:left;padding:1px 0}
+.cv-pgrp-h:hover{color:#000}
+.cv-pgrp-h .pg-arw{font-family:var(--mono);flex:none}
+.cv-pgrp-h .pc{margin-left:auto;font-size:10.5px;color:#a8a8a8;font-family:var(--mono)}
+.cv-pgrp-b{display:none;padding-left:11px;margin-left:4px}
+.cv-pgrp.open>.cv-pgrp-b{display:block}
+.cv-pgrp-b .cv-tool,.cv-pgrp-b .cv-sys{margin-left:0}
+
+/* ---------- 评审浮窗（照原型版：收缩态只占右侧空白带，不压正文） ---------- */
+#rvWin{position:fixed;right:44px;top:calc(var(--topbar-h) + 10px);width:var(--rv-w);z-index:55;
+  background:#fff;border:1px solid #333;display:flex;flex-direction:column;overflow:hidden}
+#rvWin[data-mode="full"]{width:var(--rv-full-w);top:calc(var(--topbar-h) + 10px);bottom:14px}
+.fwin-head{flex:none;display:flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 9px;border-bottom:1px solid #d8d8d8}
+.fwin-dot{width:7px;height:7px;background:#000;flex:none}
+#rvWin.done .fwin-dot{background:#fff;border:1px solid #000}
+.fwin-title{font-size:11.5px;font-weight:700;flex:none}
+.fwin-count{font-family:var(--mono);font-size:10px;border:1px solid #9c9c9c;padding:0 4px;flex:none}
+.fwin-ttl{font-size:10.5px;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.fwin-sp{flex:1}
+.fwin-btn{width:20px;height:20px;border:1px solid #9c9c9c;display:flex;align-items:center;justify-content:center;font-size:11px;color:#000;flex:none}
+.fwin-btn:hover{background:#000!important;color:#fff!important}
+.fwin-last{flex:none;border-bottom:1px solid #d8d8d8}
+/* 展开态只留一行摘要：小窗的事件列表与实时行在展开后不重复显示
+   （它们是收缩态的替身，展开后完整会话已在下面就位） */
+#rvWin[data-mode="full"] .fwin-last{display:none}
+.fwin-events{max-height:86px;overflow-y:auto;padding:4px 8px;font-size:10.5px;color:#555;line-height:1.65}
+.fwin-ev{display:flex;gap:6px}
+.fwin-ev time{font-family:var(--mono);font-size:9.5px;color:#9c9c9c;flex:none}
+.fwin-ev .t{flex:1;min-width:0}
+.fwin-live{display:flex;gap:6px;padding:4px 8px;font-size:10.5px;border-top:1px dotted #e0e0e0}
+.fwin-live time{font-family:var(--mono);font-size:9.5px;color:#9c9c9c;flex:none}
+.fwin-live .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* ---------- 评审卡对话（展开态的主体） ----------
+   展开后不是字段表，是**评审卡自己的会话页**——和对话页同一套行模板：
+   系统条（席位动作/批次事件）、卡间信（评审卡 ↔ 席位）、回复（评审卡结论）。
+   批次事实压成顶部一行，不铺成 dl。 */
+.rv-c-head{flex:none;display:flex;align-items:center;gap:6px;padding:5px 9px;border-bottom:1px solid var(--line);font-size:10.5px;color:#555}
+.rv-c-head b{color:#000;font-weight:700}
+.rv-c-scroll{flex:1;min-height:0;overflow-y:auto;padding:8px 10px 12px;display:flex;flex-direction:column;gap:0}
+.rv-c-scroll .cv-sys,.rv-c-scroll .cv-cm{margin-left:0}
+.rv-c-scroll .cv-a{padding:2px 0 10px}
+.rv-c-date{display:flex;align-items:center;gap:6px;color:#9c9c9c;font-size:10px;margin:2px 0 6px}
+.rv-c-date::before,.rv-c-date::after{content:'';flex:1;height:1px;background:var(--line)}
+.rv-chat{display:none;flex:1;min-width:0;min-height:0}
+#rvWin[data-mode="full"] .rv-chat{display:flex;flex-direction:column}
+/* 评审在场时正文让位：收缩让出窗口宽，展开让出完整宽度（挤正文，不压字） */
+body.rv-on .flow-scroll{padding-right:calc(var(--rv-w) + 54px)}
+body.rv-on.rv-full .flow-scroll{padding-right:calc(var(--rv-full-w) + 58px)}
+/* 输入区与确认条同步让位：评审展开时是「整块正文被挤窄」，不是只挤消息列表 */
+body.rv-on #composerSeat,body.rv-on #confirmSeat{padding-right:calc(var(--rv-w) + 54px)}
+body.rv-on.rv-full #composerSeat,body.rv-on.rv-full #confirmSeat{padding-right:calc(var(--rv-full-w) + 58px)}
+/* 卡详情展开时，评审浮窗整体被推走（自适应，不是被盖住——用户裁定第 6 条） */
+body.ip-on #rvWin{right:calc(420px + 10px)}
+/* 卡详情展开时正文同步让位 */
+body.ip-on .flow-scroll,body.ip-on #composerSeat,body.ip-on #confirmSeat{padding-right:calc(420px + 34px)}
+
+/* ---------- 索引面板：从顶栏开启，打开时把正文推右，不压在内容上 ---------- */
+.idx-btn{height:24px;padding:0 9px;border:1px solid var(--line2);font-size:11px;color:#000;display:flex;align-items:center;gap:5px}
+.idx-btn:hover{background:#000!important;color:#fff!important}
+.idx-btn.on{background:#000!important;color:#fff!important}
+#idxPanel{display:none}
+#idxPanel.on{display:block}
+body.idx-on .flow-scroll,body.idx-on #composerSeat,body.idx-on #confirmSeat{padding-left:calc(308px + 24px)}
+
+/* ---------- 演示控制（只在索引面板里，不进产品界面） ---------- */
+.dev{margin-top:10px;border-top:1px solid #333;padding-top:7px}
+.dev-h{font-family:var(--mono);font-size:9.5px;color:#808080;margin-bottom:5px}
+.dev-row{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px}
+.dev-b{font-size:10px;border:1px solid #9c9c9c;padding:2px 6px;font-family:var(--mono);color:#000}
+.dev-b:hover{background:#000!important;color:#fff!important}
+.dev-b.on{background:#000!important;color:#fff!important}
+/* 展开态主体 = 评审卡自己的会话（上面 .rv-chat）。
+   旧版曾在这里铺一张批次字段表 + 空 iframe，与下面的会话重复，已删除。 */
 </style>
 </head>
 <body>
@@ -411,6 +722,10 @@ body.proc-hidden .proc{display:none}
     </div>
     <nav id="navTree"></nav>
     <div class="nav-footer">
+      <div id="cmpPanel">
+        <button id="cmpHead">改动对照 <span id="cmpCount">0</span><span class="cmp-c">▸</span></button>
+        <div id="cmpBody" hidden><ol id="cmpList"></ol></div>
+      </div>
       <button id="navSettingsBtn" title="模型设置">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6 11 5M5 11l-1.4 1.4"/></svg>
         模型设置
@@ -426,23 +741,19 @@ body.proc-hidden .proc{display:none}
       </button>
       <nav id="chatCrumb" aria-label="面包屑"></nav>
       <span class="spacer"></span>
-      <button id="reviewEntry" class="rv-pill" title="打开评审批次（只在有在途批次时出现）">
-        <span class="rp-dot"></span>
-        <span class="rv-pill-k">评审</span>
-        <b class="rv-pill-n" id="rvPillNum">2/3</b>
-        <span class="rv-pill-t" id="rvPillTitle">画布页 v3 验收</span>
-      </button>
+      <div class="view-tabs" role="tablist" aria-label="视图切换">
+        <button class="vtab on" id="vtabChat" role="tab" aria-selected="true">对话 <span class="vn">chat</span></button>
+        <button class="vtab" id="vtabTraj" role="tab" aria-selected="false">轨迹 <span class="vn">trajectory · 82</span></button>
+      </div>
+      <button id="idxToggle" class="idx-btn" title="事件类型索引（82 项）">事件类型 <b id="idxTotal">82</b></button>
       <button id="canvasEntryBtn" class="tb-btn" title="返回项目画布">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 6v7.5"/></svg>
       </button>
-      <button id="procToggleBtn" class="tb-btn" title="过程帧（显示/隐藏 fact_level=process）" aria-pressed="true">
+      <button id="procToggleBtn" class="tb-btn" title="过程细节（显示/隐藏工具调用等过程内容；事实类消息不受影响）" aria-pressed="true">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 8h3l1.5-3.5 2 7L10.5 8h3"/></svg>
       </button>
       <span class="tb-sep"></span>
-      <button id="themeToggleBtn" class="tb-btn" title="切换深浅主题">☾</button>
-      <button id="topInspBtn" class="tb-btn" title="卡详情">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5 6h6M5 8.5h6M5 11h3.5"/></svg>
-      </button>
+      <!-- 卡详情只有一个入口：右缘常驻竖条 #inspTab。顶栏不再放第二个按钮（用户裁定第 3 条） -->
     </header>
 
     <div class="workspace" id="workspace">
@@ -451,33 +762,13 @@ body.proc-hidden .proc{display:none}
           <div class="flow-col" id="flowCol">
             <button class="tl-older" id="tlOlder">加载更早</button>
             <div id="timeline" aria-live="polite"></div>
+            <div id="trajView" aria-label="轨迹视图（事件类型全集）"></div>
           </div>
         </div>
         <button class="to-bottom" id="toBottom" hidden title="回到底部">↓ 回到底部</button>
       </section>
 
-      <!-- 评审下潜面板 -->
-      <aside id="reviewPanel" aria-label="评审批次" hidden>
-        <div class="rp-head">
-          <span class="rp-title">评审 · 画布页 v3 验收</span>
-          <span class="rp-score">2 / 3</span>
-          <button class="rp-x" id="rpClose" title="收起">✕</button>
-        </div>
-        <div class="rp-body">
-          <div class="rp-sec">批次</div>
-          <div class="rp-seat"><span class="chip run" style="font-size:10px"><span class="dot"></span>in_review</span><span class="nm">rv_62fe6b9302</span></div>
-          <div class="rp-seat"><span style="font-size:10px;color:var(--tx4)">目标</span><span class="nm">card_346 · 画布页需求文档</span></div>
-          <div class="rp-seat"><span style="font-size:10px;color:var(--tx4)">草稿版本</span><span class="nm">v3（current_draft_version）</span></div>
-          <div class="rp-sec">席位投票（vote_cast）</div>
-          <div class="rp-seat"><span class="ballot bl-ap">approve</span><span class="nm">fn_004 · 产品经理</span><span class="note">v3</span></div>
-          <div class="rp-seat"><span class="ballot bl-ap">approve</span><span class="nm">fn_006 · 测试验收总监</span><span class="note">v3</span></div>
-          <div class="rp-seat"><span class="ballot bl-stale">stale</span><span class="nm">fn_005 · 技术总监</span><span class="note">投于 v2 → 已转 stale</span></div>
-          <div class="rp-sec">未投 / 已失效</div>
-          <div class="rp-seat"><span class="ballot bl-pend">pending</span><span class="nm">fn_005 · 技术总监</span><span class="note">有待投（pending_members）</span></div>
-          <div class="rp-sec">批次状态机</div>
-          <div class="rp-seat"><span class="nm">draft → in_review → approved / voided</span></div>
-        </div>
-      </aside>
+      <!-- 评审窗口已改为原型版的浮窗形态，挂在 body 末尾（见 #rvWin） -->
 
       <!-- 卡详情（右缘常驻竖条） -->
       <button id="inspTab" title="打开卡详情">ⓘ 卡详情</button>
@@ -495,10 +786,60 @@ body.proc-hidden .proc{display:none}
         </div>
         <div class="ip-body">
           <div class="ip-sec"><div class="ip-sh">使命</div><div class="ip-sb">把旧系统卡片对话页做成高保真原型 HTML，左栏全树导航是要做足的重点。</div></div>
-          <div class="ip-sec"><div class="ip-sh">现状</div><div class="ip-sb">v3 重做：事件类型改按重构版口径（10 种 item_type + 评审/执行/harness 域），左侧列表沿用旧系统形态。</div></div>
-          <div class="ip-sec"><div class="ip-sh">需求文档</div><div class="ip-sb"><span style="color:var(--tx4)">尚无正稿 · 草稿 v3</span></div></div>
-          <div class="ip-sec"><div class="ip-sh">关系</div><div class="ip-sb"><span class="mut">父 card_257 · 先后 card_322</span></div></div>
-          <div class="ip-sec"><div class="ip-sh">修改历史</div><div class="ip-sb"><span class="mut">v3 事件口径重做 · v2 极简版 · v1 作废</span></div></div>
+
+          <div class="ip-sec">
+            <div class="ip-sh">目标 <button class="ip-edit" id="goalEdit" title="编辑目标">✎ 编辑</button></div>
+            <div class="ip-sb" id="goalText">对话页高保真原型：信息流按真实时间排（Turn/过程组/回复可见），事件类型全集收进轨迹视图；用户确认项在输入框上方。</div>
+          </div>
+
+          <div class="ip-sec">
+            <div class="ip-sh">现状 <button class="ip-edit" id="stExpand" data-x="st">展开全文</button></div>
+            <div class="ip-sb md" id="stPrev">v4 信息流重设计：对话视图按真实时间排（T1–T6），罗马数字全删，契约字段只在轨迹视图…<i class="ip-clamp"></i></div>
+            <div class="ip-sb md ip-full" id="stFull" hidden>v4 信息流重设计完成：
+
+- **对话视图**按真实时间顺序排（T1–T6 示意一轮真实对话），过程组折叠、回复始终可见、轮末收尾行、审批回执行
+- **轨迹视图** 82 项事件类型按 11 组铺开，契约字段（类型码/fact_level/action_id）只在这里
+- **罗马数字全删**（组名即信息）；示意数据=本卡 2026-11-08 真实对话
+- 实测：过程组折叠/单条 disclosure/视图切换/索引定位/确认条/评审浮窗 全通过，`id差集:0 · 82 项`
+
+**如实边界**：`node --check` 待 worker 代跑；文本输入通道本轮会话失效（工具侧），发送链路逻辑零改动沿用上版实测。</div>
+          </div>
+
+          <div class="ip-sec">
+            <div class="ip-sh">需求文档 <span class="ip-ver">草稿 v3 · 评审 2/3</span> <button class="ip-edit" id="reqExpand" data-x="req">展开全文</button></div>
+            <div class="ip-sb md" id="reqPrev">对话页高保真交互原型。交付：单文件 HTML＋交互规格 md。判据：file:// 直开零外链；对话流各形态齐…<i class="ip-clamp"></i></div>
+            <div class="ip-sb md ip-full" id="reqFull" hidden>## 一、交付物
+1. `prototype-chat-page-v1.html`——单文件、零外链、file:// 直开；页内带改动对照面板
+2. `chat-page-interaction-spec-v1.md`——沿画布页规格结构，行号逐一回查
+
+## 二、验收判据
+- file:// 直开、零外链、单文件
+- 对话流各形态齐（用户/助手/卡间信/过程行/系统条/日期分隔/骨架/空态/运行条/回底键/加载更早）
+- 输入区发送/停止两态、排队条、模型选择在面
+- 卡详情可展开、评审浮窗两态、确认条带可见取消
+- 左栏树四类行样例齐、搜索过滤可用
+- 三条口径自验（覆盖层不锁主视野／鼠标可达出口／无动作中间态为零）
+
+## 三、不做什么
+不接管域内拆解；视觉＝中性交互稿，不加重皮肤。</div>
+            <div class="ip-vers">
+              <div class="ip-sh" style="border:none;padding-left:0">历史版本</div>
+              <div class="ip-ver-row"><b>v3</b><span>评审中 · 2/3 票 · 当前草稿</span><button class="ip-edit" data-view="v3">查看</button></div>
+              <div class="ip-ver-row"><b>v2</b><span>已驳回 · 反馈：事件类型要按重构版口径</span><button class="ip-edit" data-view="v2">查看</button></div>
+              <div class="ip-ver-row"><b>v1</b><span>已驳回 · 反馈：左栏宽度与顶栏高按盘上实测</span><button class="ip-edit" data-view="v1">查看</button></div>
+            </div>
+          </div>
+
+          <div class="ip-sec">
+            <div class="ip-sh">关系 <button class="ip-edit" id="relAdd" title="添加关系">＋</button></div>
+            <div class="ip-rels">
+              <div class="ip-rel"><span class="ip-rel-k">父</span><button class="ip-rel-card" data-jump-card="card_257">card_257 · 页面架构及 UI/UE</button><span class="ip-rel-n">通信线：父子</span></div>
+              <div class="ip-rel"><span class="ip-rel-k">先后</span><button class="ip-rel-card" data-jump-card="card_322">card_322 · 高保真原型 · 画布页</button><span class="ip-rel-n">画布页先行，对话页复用其令牌与数据口径</span></div>
+              <div class="ip-rel"><span class="ip-rel-k">依赖</span><button class="ip-rel-card" data-jump-card="card_310">card_310 · card.html 结构梳理</button><span class="ip-rel-n">大框架按其 §B-2 锚点</span></div>
+            </div>
+          </div>
+
+          <div class="ip-sec"><div class="ip-sh">修改历史</div><div class="ip-sb"><span class="mut">v4 信息流重设计 · v3 事件口径重做 · v2 极简版 · v1 作废</span></div></div>
         </div>
       </aside>
     </div>
@@ -508,13 +849,13 @@ body.proc-hidden .proc{display:none}
       <div class="confirm" id="confirmBar">
         <div class="cf-top">
           <span class="cf-ico">!</span>
-          <span class="cf-kicker">需要你确认</span>
-          <span class="cf-badge">根卡无评审卡</span>
+          <span class="cf-kicker" id="cfKicker">需要你确认</span>
+          <span class="cf-badge" id="cfBadge">需求草稿 · 等你定</span>
           <button class="cf-x" id="cfClose" title="关闭（Esc）">×</button>
         </div>
-        <div class="cf-body">
+        <div class="cf-body" id="cfBody">
           <strong>card_001 底层重构</strong> 的需求文档已起草 <strong>v1.2</strong>。根卡不设评审卡，这一版只有你确认后才成为正稿、其他卡才读得到。
-          <div class="cf-why">依据：promote_draft 只对「评审全员通过」放行；根卡正稿由用户当面定（write_requirements_final）。</div>
+          <div class="cf-why" id="cfWhy">你做出决定之前，这一项不会自己消失，该卡的后续工作也停在等你。</div>
         </div>
         <div class="cf-acts">
           <button class="cf-btn pri" id="cfConfirm">确认正稿</button>
@@ -536,8 +877,9 @@ body.proc-hidden .proc{display:none}
         <div class="comp-card">
           <textarea id="flowInput" rows="2" placeholder="输入消息 · Enter 发送 · Shift+Enter 换行 · 回合进行中发送将排队" aria-label="消息输入框"></textarea>
           <div class="comp-bar">
-            <span class="spacer"></span>
-            <button class="model-sel" id="modelBadgeMount" title="选择模型">
+            <span class="comp-sp"></span>
+            <span class="ctx-len" id="ctxLen" title="本对话最近一次调用的上下文占用">ctx 84.2k / 200k</span>
+            <button class="model-sel" id="modelBadgeMount" title="模型与最近一次调用上下文占用">
               <span class="mdot"></span><span id="modelName">gpt-5.2</span><span class="car">▾</span>
             </button>
             <button class="send-btn" id="flowSendBtn" title="发送">发送 ↑</button>
@@ -563,23 +905,33 @@ body.proc-hidden .proc{display:none}
     <span id="selfCheck">自检中…</span>
     <span class="idx-c">▾</span>
   </button>
-  <div id="idxBody" hidden>
-    <div class="idx-grp"><div class="idx-gh">Ⅰ 会话时间线 · 10 种 item_type（card_197 §4.4 闭合集）</div><div id="idxG1"></div></div>
-    <div class="idx-grp"><div class="idx-gh">Ⅱ 验收步骤 · acceptance_step 五种</div><div id="idxG2"></div></div>
-    <div class="idx-grp"><div class="idx-gh">Ⅲ 状态变化 · 六个 field</div><div id="idxG3"></div></div>
-    <div class="idx-grp"><div class="idx-gh">Ⅳ 运行边界 / 工具行动</div><div id="idxG4"></div></div>
-    <div class="idx-grp"><div class="idx-gh">Ⅴ 评审域 · 六事件闭合集（card_131 §3.5）</div><div id="idxG5"></div></div>
-    <div class="idx-grp"><div class="idx-gh">Ⅵ 执行域 · 十事件（executor ports.go）</div><div id="idxG6"></div></div>
-    <div class="idx-grp"><div class="idx-gh">Ⅶ harness 消息 · 五字段 envelope</div><div id="idxG7"></div></div>
-    <div class="idx-grp"><div class="idx-gh">Ⅷ 流控制与传输（stream.notice / resync）</div><div id="idxG8"></div></div>
-    <div class="idx-grp"><div class="idx-gh">Ⅸ 视图态</div><div id="idxG9"></div></div>
+  <div id="idxBody">
+    <div class="dev">
+      <div class="dev-h">演示控制（只在这里，不进产品界面）</div>
+      <div class="dev-row" id="cfTabs">
+        <button class="dev-b on" data-kind="acceptance_reply">acceptance_reply</button>
+        <button class="dev-b" data-kind="boundary_change_request">boundary_change_request</button>
+        <button class="dev-b" data-kind="reconfirm_disposition">reconfirm_disposition</button>
+        <button class="dev-b" data-kind="block_wait">block_wait</button>
+        <button class="dev-b" data-kind="budget_exhausted">budget_exhausted</button>
+      </div>
+      <div class="dev-row">
+        <button class="dev-b" id="rvShow">有在途批次 → 评审浮窗出现</button>
+        <button class="dev-b" id="rvEnd">批次转终态 → 浮窗消失</button>
+      </div>
+    </div>
+    <div class="idx-grp"><div class="idx-gh">会话时间线 · 10 种 item_type（card_197 §4.4 闭合集）</div><div id="idxG1"></div></div>
+    <div class="idx-grp"><div class="idx-gh">验收步骤 · acceptance_step 五种</div><div id="idxG2"></div></div>
+    <div class="idx-grp"><div class="idx-gh">状态变化 · 六个 field</div><div id="idxG3"></div></div>
+    <div class="idx-grp"><div class="idx-gh">运行边界 / 工具行动</div><div id="idxG4"></div></div>
+    <div class="idx-grp"><div class="idx-gh">评审域 · 六事件闭合集（card_131 §3.5）</div><div id="idxG5"></div></div>
+    <div class="idx-grp"><div class="idx-gh">执行域 · 十事件（executor ports.go）</div><div id="idxG6"></div></div>
+    <div class="idx-grp"><div class="idx-gh">卡间消息与写闸回执 · 协议 message / write_result 帧</div><div id="idxG7"></div></div>
+    <div class="idx-grp"><div class="idx-gh">harness 投递 · 五字段 envelope + deliver 七态</div><div id="idxG8"></div></div>
+    <div class="idx-grp"><div class="idx-gh">待用户处置 · 9 种（5 用户列 + 4 模型列）</div><div id="idxG9"></div></div>
+    <div class="idx-grp"><div class="idx-gh">流控制与传输（stream.notice / resync）</div><div id="idxG10"></div></div>
+    <div class="idx-grp"><div class="idx-gh">视图态</div><div id="idxG11"></div></div>
   </div>
-</div>
-
-<!-- ========== 改动对照 ========== -->
-<div id="cmpPanel">
-  <button id="cmpHead">改动对照 · <span id="cmpCount">0</span> 条<span class="cmp-c">▸</span></button>
-  <div id="cmpBody" hidden><ol id="cmpList"></ol></div>
 </div>
 
 <!-- ========== 草稿弹窗（可见取消） ========== -->
@@ -607,6 +959,40 @@ body.proc-hidden .proc{display:none}
       <span class="spacer"></span>
       <button class="ghost" id="draftBack">提出修改</button>
       <button class="prim" id="draftOk">确认正稿</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 评审浮窗（照原型版口径）==========
+     收缩态：只占对话列右侧的空白带，正文不动、不压字。
+       头部一行「评审 · 通过数 · 批次名 · ⤢ · ×」＋ 事件列表 ＋ 实时行（最近一条，动态更新）。
+     展开态：向左长、把正文挤窄（真挤压），里面是批次详情 + 评审卡对话页。
+     层级：低于卡详情抽屉（z 55 < 60）——卡详情展开时盖住它。
+     出现条件：有在途批次才存在；批次转终态（approved / voided）整窗消失。 -->
+<div id="rvWin" data-mode="compact" hidden>
+  <div class="fwin-head">
+    <span class="fwin-dot" title="批次在途"></span>
+    <span class="fwin-title">评审</span>
+    <span class="fwin-count" id="rvCount">2/3</span>
+    <span class="fwin-ttl" id="rvTtl">画布页 v3 验收</span>
+    <button class="fwin-btn" id="rvExpand" title="展开评审卡对话">⤢</button>
+    <button class="fwin-btn" id="rvClose" title="收起">×</button>
+  </div>
+  <div class="fwin-last">
+    <div class="fwin-events" id="rvEvents"></div>
+    <div class="fwin-live"><time id="rvLastTime">14:22:07</time><span class="t" id="rvLastText">等待事件…</span></div>
+  </div>
+  <div class="rv-chat">
+    <div class="rv-c-head"><b>评审卡</b>· 目标 card_346 画布页需求文档 · 草稿 v3 · <b>2/3 通过</b></div>
+    <div class="rv-c-scroll" id="rvChat">
+      <div class="rv-c-date"><span>今天 · 2026-11-08</span></div>
+      <div class="cv-sys"><span class="cv-t">评审发起 · 批次 rv_62fe6b9302 · 目标「画布页需求文档」草稿 v3 · 席位 3</span></div>
+      <div class="cv-cm"><span class="cm-route">card_345 产品经理 → 评审卡</span><div class="cm-t">草稿 v3 已读。交付物指针齐、判据可核，我投通过。</div></div>
+      <div class="cv-cm"><span class="cm-route">card_345 测试验收总监 → 评审卡</span><div class="cm-t">实测读数齐，四条验收口径逐条对得上。通过。</div></div>
+      <div class="cv-sys"><span class="cv-t">草稿改到 v3 · 技术总监原投在 v2 的票已失效，需重投</span></div>
+      <div class="cv-cm"><span class="cm-route">评审卡 → 技术总监</span><div class="cm-t">草稿已改到 v3，你在 v2 的票已失效。请在新版上重投。</div></div>
+      <div class="cv-a"><span class="txt">当前 2/3 通过，等你在 v3 上投票。投完就闭合，批次转 approved。</span></div>
+      <div class="cv-sys"><span class="cv-t">技术总监 待投</span></div>
     </div>
   </div>
 </div>
@@ -722,7 +1108,7 @@ ev(5,{id:'rv-voided',t:'review.batch_voided',ttl:'作废（E-R6）',lv:'fact',pr
    html:'<div class="sys"><span class="sys-ico" style="color:var(--tx3)">◻</span><code>'+r[0]+'</code><span style="color:var(--tx4);font-size:11px">'+r[1]+'</span><span class="sys-at">ev_'+(4000+i*7)+'</span></div>'});
 });
 
-/* ---------- Ⅶ harness 五字段 messages ---------- */
+/* ---------- harness 五字段 messages ---------- */
 ev(7,{id:'hm-msg',t:'harness · message',ttl:'干预投递 message（唤醒）',lv:'fact',produced:true,
  html:'<div class="hm"><div class="hm-h"><span class="hm-tag">harness.message</span><span style="font-size:11px;color:var(--tx3)">wake=true</span><span class="np-tag">本版此前遗漏，已补</span></div><dl class="hm-f"><dt>subject</dt><dd>harness/policy/turn_end_without_report</dd><dt>object</dt><dd>card_454</dd><dt>type</dt><dd>message</dd><dt>at</dt><dd>1762391402000</dd><dt>result</dt><dd>delivered</dd></dl><div style="margin-top:5px;font-size:11.5px;color:var(--tx2)">这条 messages 此前没带进来 —— 对话流里应可见「谁因为什么规则叫了你、依据在哪、期望什么结果」。</div></div>'});
 ev(7,{id:'hm-inject',t:'harness · inject',ttl:'注入 inject（不唤醒，整轮有效）',lv:'fact',produced:true,
@@ -758,35 +1144,249 @@ ev(9,{id:'v-run',t:'运行条',tlv:'',ttl:'回合进行中',lv:'proc',produced:t
 ev(9,{id:'v-proc',t:'过程帧折叠',ttl:'过程帧可折叠（不看也不丢）',lv:'proc',produced:true,
  html:'<div class="proc"><button class="proc-h" data-exp>◦ 过程帧 × 6（exec.text.frame / exec.run.phase …）<span class="proc-c">▸</span></button><div class="proc-b" hidden>exec.text.frame ×4<br>exec.run.phase waiting_model → waiting_tool<br>（过程帧不占事实位置，可合并可丢）</div></div>'});
 
-/* 把分组数据摊平成有序数组，渲染时间线 */
-var GROUPS=[1,2,3,4,5,6,7,8,9];
+ev(7,{id:'hm-dlv',t:'harness · deliver_attempt / deliver_done',ttl:'投递两帧（越界拒投 / 至多一次）',lv:'fact',produced:true,
+ html:'<div class="hm"><div class="hm-h"><span class="hm-tag">deliver</span><span class="ballot bl-pend">attempt</span><span class="ballot bl-ap">done</span></div><dl class="hm-f"><dt>subject</dt><dd>harness/kernel deliver</dd><dt>object</dt><dd>card_454</dd><dt>result</dt><dd>accepted</dd></dl><div style="margin-top:5px;font-size:11.5px;color:var(--tx3)">投递前先查 DeliveryScope 目标前缀闭集，越界拒投并留审计；崩溃落在 send 与 done 之间 ⇒ uncertain，恢复不重投。</div></div>'});
+ev(7,{id:'hm-dlv-skip',t:'harness · deliver_deferred / deliver_skipped',ttl:'延投 / 拒投（审计帧，不占新 seq）',lv:'fact',produced:true,
+ html:'<div class="hm"><div class="hm-h"><span class="ballot bl-pend">deferred</span><span class="ballot bl-rj">skipped</span></div><div class="hm-f" style="margin-top:5px">延投＝此刻没送达但保留义务；拒投＝目标前缀越界或条件不满足。两者都挂回触发 seq，不产业务事件。</div></div>'});
+ev(7,{id:'hm-dlv-fail',t:'harness · deliver_failed / deliver_timeout / delivery_denied',ttl:'失败 / 超时 / 越权三类落态',lv:'fact',produced:true,
+ html:'<div class="hm"><div class="hm-h"><span class="ballot bl-rj">failed</span><span class="ballot bl-stale">timeout</span><span class="ballot bl-rj">denied</span></div><div class="hm-f" style="margin-top:5px">这三类必须上屏：否则「规则命中了但没人收到」在界面上看不出来。</div></div>'});
+
+/* ---------- 卡间消息（协议 message 帧）与写闸回执 ---------- */
+ev(10,{id:'cm-in',t:'message · 卡间信（入）',ttl:'收到卡间信（address → target_address）',lv:'fact',produced:true,
+ html:'<div class="cardmsg"><div class="cm-h"><span class="cm-route">card_257 → card_454</span><span class="cm-dom">domain=persistent</span><span class="cm-at">seq 4418</span></div><div class="cm-t">派活：事件类型按重构版口径铺全，别用原型版的三席与计划板。</div><div class="cm-f">idem_key ikey_9f2 · payload_size 318 B · 回话必须填 target_address</div></div>'});
+ev(10,{id:'cm-out',t:'message · 卡间信（出）',ttl:'发出卡间信',lv:'fact',produced:true,
+ html:'<div class="cardmsg out"><div class="cm-h"><span class="cm-route">card_454 → card_257</span><span class="cm-dom">domain=persistent</span><span class="cm-at">seq 4421</span></div><div class="cm-t">事件类型清单已按重构版口径重铺，缺的补齐。</div><div class="cm-f">不广播 · 按 target_address 精确投递 · 未列出该地址则不会投给它</div></div>'});
+ev(10,{id:'cm-dom',t:'message · domain 三值',ttl:'persistent / live / policy（回话不继承）',lv:'fact',produced:true,
+ html:'<div class="cardmsg"><div class="cm-h"><span class="ballot bl-ap">persistent</span><span class="ballot bl-pend">live</span><span class="ballot bl-stale">policy</span></div><div class="cm-f" style="margin-top:5px">持久域跨重启存活并参与重建审计；活域进程丢即丢；策略域挂策略与拦截，不是事实。回话方自选域，协议不自动继承入站消息的域。</div></div>'});
+ev(10,{id:'wr-ok',t:'write_result · accepted',ttl:'写被接受（带 seq）',lv:'fact',produced:true,
+ html:'<div class="wr ok"><span class="wr-s">accepted</span><span class="wr-f">reason_code = ""（空串与 ok 同义）</span><span class="wr-x">seq 4417 · 配对凭 idem_key 不凭 seq</span></div>'});
+ev(10,{id:'wr-dup',t:'write_result · idempotent_dropped',ttl:'重复投递被幂等丢弃',lv:'fact',produced:true,
+ html:'<div class="wr warn"><span class="wr-s">idempotent_dropped</span><span class="wr-f">duplicate_idem_key</span><span class="wr-x">不带 seq</span></div>'});
+ev(10,{id:'wr-rej',t:'write_result · rejected',ttl:'被拒（七个原因码）',lv:'fact',produced:true,
+ html:'<div class="wr err"><span class="wr-s">rejected</span><span class="wr-f">write_scope_denied · namespace_denied · capability_denied · version_mismatch · payload_too_large · invalid_request</span><span class="wr-x">每笔 gate_request 必得恰好一条回执，与 accepted 真假无关</span></div>'});
+ev(10,{id:'cm-frame',t:'协议六帧',ttl:'participant / handshake_reply / message / write_result / gate_request / gate_reply',lv:'proc',produced:true,
+ html:'<div class="sys"><span class="sys-ico" style="color:var(--tx3)">⧉</span><code>顶层 type 判别六种帧</code><span style="color:var(--tx4);font-size:11px">接收方必须按 type 分派，不得假设「下一个到达的帧就是回执」；type 缺失/越界/与阶段不符一律断连</span></div>'});
+
+/* ---------- Ⅸ 待用户处置（pending_user_items / pending_model_items） ---------- */
+ev(11,{id:'pd-bc',t:'boundary_change_request',ttl:'边界变更请求（E02 等 E03 裁决）· 用户列',lv:'fact',produced:true,
+ html:'<div class="pend"><div class="pend-h"><span class="pend-k">boundary_change_request</span><span class="pend-col">用户列</span><span class="pend-ev">E02 → 等 E03</span></div><div class="pend-b">本卡想把范围扩到「画布页」之外的页面。<div class="pend-m">waiting_item 边界变更申请 · expected_action 用户裁决同意 / 驳回 · 裁决前回合不得继续</div></div></div>'});
+ev(11,{id:'pd-ar',t:'acceptance_reply',ttl:'提交验收，等应答（E11/E12 等 E13/E14）· 用户列',lv:'fact',produced:true,
+ html:'<div class="pend"><div class="pend-h"><span class="pend-k">acceptance_reply</span><span class="pend-col">用户列</span><span class="pend-ev">E11/E12 → 等 E13/E14</span></div><div class="pend-b">交付物已提交，等你判通过还是驳回。<div class="pend-m">根卡无评审卡时这条直接落到用户 → 就是输入框上方那条确认卡</div></div></div>'});
+ev(11,{id:'pd-rc',t:'reconfirm_disposition',ttl:'结论有疑，需再确认（E06 等 E20）· 用户列',lv:'fact',produced:true,
+ html:'<div class="pend"><div class="pend-h"><span class="pend-k">reconfirm_disposition</span><span class="pend-col">用户列</span><span class="pend-ev">E06 被标疑 → 等 E20</span></div><div class="pend-b">上一轮的行动结论被标「需再确认」，在 E20 置回之前一直挂着。<div class="pend-m">merge 规则：同一 kind 多事件合并成一条，anchors 列全部来源</div></div></div>'});
+ev(11,{id:'pd-bw',t:'block_wait',ttl:'受阻/停止，等用户（E16/E17 未解）· 用户列',lv:'fact',produced:true,
+ html:'<div class="pend"><div class="pend-h"><span class="pend-k">block_wait</span><span class="pend-col">用户列</span><span class="pend-ev">E16/E17 → 未解</span></div><div class="pend-b">卡在「三方签字未回」，没有你的指令不会自己恢复。<div class="pend-m">reason_class · recovery · open_blockers 都在这一条里，不需另开行</div></div></div>'});
+ev(11,{id:'pd-be',t:'budget_exhausted',ttl:'预算耗尽（§2.10(c)）· 用户列',lv:'fact',produced:true,
+ html:'<div class="pend"><div class="pend-h"><span class="pend-k">budget_exhausted</span><span class="pend-col">用户列</span><span class="pend-ev">max_rounds 用尽</span></div><div class="pend-b">轮次预算用完 —— 只有两条路：加 max_rounds，或改目标。<div class="pend-m">rounds_started / max_rounds 随行显示</div></div></div>'});
+ev(11,{id:'pd-bd',t:'boundary_decision',ttl:'边界裁决（E03）· 模型列',lv:'fact',produced:true,
+ html:'<div class="pend model"><div class="pend-h"><span class="pend-k">boundary_decision</span><span class="pend-col">模型列</span><span class="pend-ev">E03</span></div><div class="pend-b">该模型出裁决，不是用户出手。<div class="pend-m">模型列 ≠ 用户列：界面上不弹确认卡，只在待办清单里排</div></div></div>'});
+ev(11,{id:'pd-rj',t:'rejection',ttl:'驳回（E13）· 模型列',lv:'fact',produced:true,
+ html:'<div class="pend model"><div class="pend-h"><span class="pend-k">rejection</span><span class="pend-col">模型列</span><span class="pend-ev">E13</span></div><div class="pend-b">驳回已发生，等执行体自己改，不需要用户点。<div class="pend-m">跨轮时仍需人工介入 —— 那是 block_wait，不是这条</div></div></div>'});
+ev(11,{id:'pd-rs',t:'resume_directive',ttl:'恢复指令（E18）· 模型列',lv:'fact',produced:true,
+ html:'<div class="pend model"><div class="pend-h"><span class="pend-k">resume_directive</span><span class="pend-col">模型列</span><span class="pend-ev">E18</span></div><div class="pend-b">恢复指令已下达，等执行体接。<div class="pend-m">下达 ≠ 已恢复，恢复要等 state_change(flow_state)</div></div></div>'});
+ev(11,{id:'pd-iv',t:'intervention',ttl:'干预（E19）· 模型列',lv:'fact',produced:true,
+ html:'<div class="pend model"><div class="pend-h"><span class="pend-k">intervention</span><span class="pend-col">模型列</span><span class="pend-ev">E19</span></div><div class="pend-b">人工干预已记录，字段级契约未裁定 ⇒ 时间线上不单列行（见 Ⅰ 组 intervention）。<div class="pend-m">此处只作待办项存在，不作事件行</div></div></div>'});
+
+/* 把分组数据摊平成有序数组 */
+var GROUPS=[1,2,3,4,5,6,10,7,11,8,9];
+var GNAME={1:'会话时间线 · 10 种 item_type（card_197 §4.4 闭合集）',2:'验收五步 · acceptance_step',3:'状态变化 · 六个 field',4:'运行边界 / 工具行动（枚举补全）',5:'评审域 · 六事件闭合集（card_131 §3.5）',6:'执行域 · 十事件（executor ports.go）',10:'卡间消息与写闸回执 · 协议 message / write_result 帧',7:'harness 投递 · 五字段 envelope + deliver 七态',11:'待用户处置 · 9 种（5 用户列 + 4 模型列）',8:'流控制与传输（stream.notice / resync）',9:'视图态'};
 var ALL=[];
 GROUPS.forEach(function(g){(G[g]||[]).forEach(function(e){e.g=g;ALL.push(e);});});
+var EV={};ALL.forEach(function(e){EV[e.id]=e;});
 
-var timeline=$('timeline');
-function render(){
+/* ============================================================
+   视图一：轨迹 trajectory —— 82 项按来源域铺开（类型全集，供检视）
+   全密度行：类型码 / 标题 / fact_level / 样例键 都在这一层。
+   ============================================================ */
+var trajView=$('trajView');
+function renderTraj(){
   var out='';
   var curG=0;
   ALL.forEach(function(e){
     if(e.g!==curG){
-      var names={1:'Ⅰ 会话时间线 · 10 种 item_type',2:'Ⅱ 验收五步',3:'Ⅲ 状态变化六域',4:'Ⅳ 运行边界 / 工具行动',5:'Ⅴ 评审域六事件',6:'Ⅵ 执行域十事件',7:'Ⅶ harness 消息',8:'Ⅷ 流控制',9:'Ⅸ 视图态'};
-      out+='<div class="date-sep"><span>'+esc(names[e.g])+'</span></div>';
+      var cnt=(G[e.g]||[]).length;
+      var nm=GNAME[e.g];
+      out+='<div class="sec"><span class="sec-t">'+esc(nm)+'</span><span class="sec-c">'+cnt+' 项</span></div>';
       curG=e.g;
     }
     out+='<div class="ev" id="ev-'+e.id+'">'
-      +'<span class="ev-mark">'+e.g+'</span>'
       +'<div class="ev-body">'
       +'<div class="ev-head">'
-      +'<span class="ev-title">'+esc(e.ttl)+'</span>'
       +'<span class="ev-type">'+esc(e.t)+'</span>'
+      +'<span class="ev-title">'+esc(e.ttl)+'</span>'
       +'<span class="lv lv-'+e.lv+'">'+e.lv+'</span>'
       +(e.produced?'':'<span class="np-tag">定义未产出</span>')
       +'<span class="ev-at">'+esc(e.id)+'</span>'
       +'</div>'+e.html+'</div></div>';
   });
-  timeline.innerHTML=out;
+  trajView.innerHTML=out;
 }
-render();
+
+/* ============================================================
+   视图二：对话 chat —— 真实时间顺序（Codex/DSH 口径）
+   Turn = exchange（用户输入）→ 过程组（相邻过程聚组）→ 回复（始终可见）→ 轮末收尾行
+   三层折叠：整轮（turn-fold）/ 过程组（pgrp）/ 单条（data-exp）
+   事件样例从 EV 表引用同一数据源，两视图同源不重复维护。
+   ============================================================ */
+var timeline=$('timeline');
+/* ============================================================
+   对话脚本：一场真实的工作对话（按本卡这几轮实际发生的事写）。
+   行模板 = chat 密度：一行一事。类型全集在轨迹视图，不在这里。
+   k: date / u(用户) / turn{items} / tail(轮末收尾) / decision(审批回执)
+   turn.items: grp(过程组) / tool / sys / cm(卡间信) / acc / reply(回复)
+   ============================================================ */
+var CHAT=[
+ {k:'date',d:'今天 · 2026-11-08'},
+ {k:'sys',t:'新建卡 card_454 · 高保真原型 · 对话页（UI）· 父卡 card_257'},
+ {k:'cm',mt:'directive',dir:'in',route:'card_257 页面架构及 UI/UE → card_454',txt:'派活：把旧系统卡片对话页做成高保真原型 HTML。单文件、零外链、file:// 直开；左栏列表是用户点名的重点。',meta:'验收判据：单文件零外链 file:// 直开；左栏树四类行齐；browser 实测主要交互并报「操作→读数」'},
+ {k:'hm',t:'harness 投递 · 唤醒本轮（规则：任务被派发）',d:'从 harness/policy/task_assigned 到 card_454 · 结果 已送达（这是本轮为什么启动）'},
+ {k:'u',txt:'调研一下真实的 agent，codex、deepseek harness 这些产品是什么样的再说，不要脱离实际去做产品。'},
+ {k:'turn',n:'T1',title:'调研 Codex / DSH',items:[
+   {k:'grp',sum:'读取 openai/codex · deepseek-ai/deepseek-harness',items:[
+     {k:'tool',nm:'web_search',t:'「codex cli history_cell ActivityGroup」',st:'failed'},
+     {k:'tool',nm:'fetch_web',t:'github.com/openai/codex · tui/src/history_cell',st:'ok'},
+     {k:'tool',nm:'fetch_web',t:'deepseek-ai/deepseek-harness · conversation.md',st:'ok'},
+     {k:'tool',nm:'fetch_web',t:'deepseek-harness · slots.md（输入区插槽）',st:'ok'}]},
+   {k:'hm',t:'harness 投递 · 规则注入（不唤醒，本回合有效）· 评审批次规则文本',d:'从 评审批次 rv_62fe6b9302 到 card_346 · 结果 已排队（待绑定回合）'},
+   {k:'sys',t:'状态变化 card_454 · 现状更新：调研取证完毕，改动方案待用户裁'},
+   {k:'reply',txt:'调研做完了（search 通道挂了，改直取两家源码）。结论比较硬：我上一版的做法在真实产品里找不到对应物——我把 82 个事件类型按契约来源分成 11 组铺在同一根时间线里，而真实产品的时间线一律按时间排（Turn → Step → 过程组），事件类型的完整性靠别的地方保证。两家源码证据：Codex 的 ActivityGroup 把相邻工具调用聚成一个组、轮末有「Worked for 12s」收尾行、审批决定后流里留一行回执；DSH 是节点式装配，三层折叠（整轮/过程组/单条），且 chat 与 trajectory 是两个并列视图——你要的「类型全集」在真实产品里是 trajectory，不是对话流。你之前几条判断都对上了：模型选择贴发送键（DSH conversation.input.model 就在 InputBar）、确认项在输入框上方（conversation.approval.detail）。我打算：对话流改回真实时间顺序，事件类型全集移进独立的轨迹视图，确认项放输入框上方。要不要按这个动？'}]},
+ {k:'tail',t:'耗时 6 分 12 秒',m:'4 次调用（1 次失败）· 读取 2 个来源'},
+ {k:'cm',mt:'report',dir:'out',route:'card_454 → card_257',txt:'汇报：调研结论已出，请求写权限——交付物两文件 ＋ 截图目录 ＋ .bak 备份，范围外不写。',meta:'待上级：批准写范围'},
+ {k:'cm',mt:'directive',dir:'in',route:'card_257 → card_454',txt:'授权落盘：范围限定三处；推演agent 源码、templates/、static/ 一律不得写。',meta:'范围：交付物两文件 ＋ 截图目录 ＋ .bak；范围外一律不得写'},
+ {k:'u',txt:'开工。'},
+ {k:'turn',n:'T2',title:'双视图重构',items:[
+   {k:'grp',sum:'读取文件 ×1、编辑文件 ×3',items:[
+     {k:'tool',nm:'edit_file',t:'prototype-chat-page-v1.html · css 第 408-460 行',st:'ok'},
+     {k:'tool',nm:'edit_file',t:'prototype-chat-page-v1.html · js renderChat/renderTraj',st:'ok'},
+     {k:'tool',nm:'edit_file',t:'prototype-chat-page-v1.html · js CHAT 脚本',st:'ok'},
+     {k:'tool',nm:'edit_file',t:'prototype-chat-page-v1.html · 移除空态样例行',st:'ok'},
+     {k:'tool',nm:'write_file',t:'推演agent/docs/prototype-chat-page-v1.html',st:'failed'}]},
+   {k:'sys',t:'写闸回执 拒绝 · 目标路径超出授权范围'},
+   {k:'reply',txt:'重构完成：对话视图改回真实时间顺序（T1–T6 示意一轮真实对话），轨迹视图 82 项按来源域铺开，顶栏双页签切换，两视图同一数据源。实测：视图切换、过程组折叠（组头摘要＋项数）、单条 disclosure、索引面板开合+正文让位，全部通过。自检 id差集:0 · 82 项。'}]},
+ {k:'tail',t:'耗时 14 分 03 秒',m:'9 次编辑 · 4 次调用（1 次被拒）'},
+ {k:'sys',t:'回合异常中断 card_454 · 本轮未完成（end_reason stream_closed）'},
+ {k:'sys',t:'卡受阻 card_454 · browser 文本输入通道失效（fill/type 不落值）'},
+ {k:'cm',mt:'report',dir:'out',route:'card_454 → card_257',txt:'申报：写权限未落到文件系统层，三处路径全部 denied；全稿已备份在本卡笔记，任一路径落地即可交付。',meta:'阻塞：三处路径全 denied｜备选：worker 卡代跑'},
+ {k:'hm',t:'harness 投递 · 延投（目标卡正在跑，先不打断当前回合）',d:'从 card_257 的授权消息 到 card_454 · 结果 延后送达（回合结束后，不是失败）'},
+ {k:'cm',mt:'directive',dir:'in',route:'card_257 → card_454',txt:'继续执行：写权限已重新下发；若仍被拒可走 bash/python 通道，范围不变。',meta:'变更：写权限重新下发；备选通道 bash/python'},
+ {k:'u',txt:'所以为什么还要保留你那个罗马数字，有什么意义？'},
+ {k:'turn',n:'T3',title:'答：没有意义，删',items:[
+   {k:'reply',txt:'没有意义。它是上一版「图鉴式时间线」的残留：当时 82 项按我定的 11 组铺开，罗马数字是给那 11 堆排的序号。现在时间线已经改回真实时间顺序，轨迹视图里组名本身已经把信息说全了——编号不承载任何信息，不参与任何引用，纯粹是装饰。一个需要解释才能看懂的界面元素就是坏元素，删。出现处我已盘清：映射表、组标题、每行左侧小方框、索引面板、文档两处，全删。'}]},
+ {k:'u',txt:'看不懂。你是说实际信息不是按照先后顺序排序，而是按照你的分组排序？'},
+ {k:'turn',n:'T4',title:'认账：时间线被做成了图鉴',items:[
+   {k:'reply',txt:'是的，你问到根本了——我做成按分组排了，这是错的。查了盘上代码确认：GROUPS=[1,2,3,4,5,6,10,7,11,8,9]，时间线是按这 11 个组遍历渲染的。所以那 82 条不是一次真实对话的先后过程，而是「82 个事件类型，每类配一个样例，按类型聚成 11 堆」。对话页的时间线语义只有一个——按时间先后。分组是索引的职责，我把两者揉进同一根时间线，结果就是它读起来不像对话，像个事件类型图鉴。'}]},
+ {k:'u',txt:'不是对我提出的问题进行反应，而是你想清楚这个页面的信息流应该长成什么样子。你是交互设计师，不是应答机器。'},
+ {k:'turn',n:'T5',title:'信息流重设计',items:[
+   {k:'grp',sum:'读原型 · 重写对话脚本',items:[
+     {k:'tool',nm:'read_file',t:'prototype-chat-page-v1.html（1642 行全读）',st:'ok'},
+     {k:'tool',nm:'edit_file',t:'CSS：删 ev-mark / sec-n，加对话行模板',st:'ok'},
+     {k:'tool',nm:'edit_file',t:'JS：CHAT 脚本按真实对话重写',st:'ok'}]},
+   {k:'sys',t:'交付物送达 prototype-chat-page-v1.html · 指针 推演agent/docs/ · 版本 v4'},
+   {k:'reply',txt:'想清楚了。读者是监工不是聊天对象：打开页面做三件事——扫一眼（在干嘛、有没有等我）、追过程（出问题找哪步开始错）、查细节（展开看输入输出）。四条铁律：时间轴是唯一组织轴；回复永远可见；过程聚组靠内容摘要不靠编号；用户输入是节奏锚点。和 Codex/DSH 的本质差异：它们是一人一 agent，我这是一人监督多卡协作，所以流里多了卡间信（对话不属过程，过程折叠也藏不掉）、系统事件（一行小字）、待确认项（输入区上方打断，决定后流里留回执行）。类型覆盖靠索引导航器，不靠把流铺成图鉴——示意数据就是这场对话本身，类型带着语境出现。'}]},
+ {k:'tail',t:'耗时 9 分 47 秒',m:'3 次编辑 · 收到 1 条消息'},
+ {k:'sys',t:'评审发起 rv_62fe6b9302 · 画布页 v3 验收 · 席位 2/3 · 评审中'},
+ {k:'hm',t:'harness 投递 inject（不唤醒，整轮有效）· 评审批次规则文本',d:'subject review/batch rv_62fe6b9302 → object card_346 · result queued（待绑定回合）'},
+ {k:'decision',k2:'✔ 你已经批准',txt:'信息流重设计方案（对话行模板 + 索引导航器）',m:'10:02:11'},
+ {k:'cm',mt:'sync',dir:'sync',route:'card_322 高保真原型 · 画布页 → card_454',txt:'观点：单文件内联时 --ui-col 与 --ui-col-pad 六处引用要同源，否则正文列和输入卡对不齐。'},
+ {k:'cm',mt:'notify',dir:'in',route:'系统 → card_454',txt:'项目规则已更新：新增 §8「文档与对外承诺的验收准则」六条——对外指针须带可寻址证据、契约面逐行标注进程内外等。'},
+ {k:'u',txt:'继续。'},
+ {k:'turn',n:'T6',title:'收尾自验',items:[
+   {k:'grp',sum:'浏览器核验 ×12',items:[
+     {k:'tool',nm:'browser',t:'视图切换 / 过程组折叠 / disclosure / 索引定位',st:'ok'},
+     {k:'tool',nm:'browser',t:'索引点击定位（对话视图找不到自动切轨迹）',st:'ok'},
+     {k:'tool',nm:'browser',t:'发送 → 停止 ■ → 排队条 → 回发送',st:'ok'},
+     {k:'tool',nm:'browser',t:'确认条五类型切换 / 评审浮窗两态 / Esc 分层',st:'ok'}]},
+   {k:'sys',t:'评审结论 rv_62fe6b9302 · 已批准 · 2/3 票 · 验收与证据基线 已完成'},
+   {k:'acc',k:'验收项',t:'自检 id差集:0 · 82 项 · 12 条实测读数齐'},
+   {k:'reply',txt:'自验完成。对话视图现在读起来像一场对话：用户输入开轮、过程聚组折叠、回复始终可见、轮末收尾行、审批留回执行。罗马数字全删；契约字段只在轨迹视图；索引按读者心智分组，点类型滚到带语境的真实样例。如实边界：node --check 待 worker 代跑；文本输入通道本轮会话失效（工具侧），发送链路逻辑零改动沿用上版实测。'}]},
+ {k:'tail',t:'耗时 3 分 18 秒',m:'4 项自检 · 0 失败'},
+ {k:'cm',mt:'worker_done',dir:'out',route:'card_454 → card_257',txt:'完工回执：两个交付物已落盘（prototype-chat-page-v1.html、chat-page-interaction-spec-v1.md），browser 实测读数齐。',meta:'交付物：推演agent/docs/ 下两文件｜自检 id差集:0'}
+];
+function chatHtml(){
+  var h='', lastPc=-1;
+  CHAT.forEach(function(it){
+    if(it.k==='date'){h+='<div class="date-sep"><span>'+esc(it.d)+'</span></div>';lastPc=-1;return;}
+    if(it.k==='u'){h+='<div class="cv cv-u"><span class="txt">'+esc(it.txt)+'</span></div>';lastPc=-1;return;}
+    if(it.k==='sys'){h+=chatItem(it);lastPc=-1;return;}
+    if(it.k==='hm'){h+=chatItem(it);lastPc=-1;return;}
+    if(it.k==='cm'){h+=chatItem(it);lastPc=-1;return;}
+    if(it.k==='decision'){h+='<div class="decision"><span class="dk">'+esc(it.k2)+'</span><span>'+esc(it.txt)+'</span><span class="dm">'+esc(it.m)+'</span></div>';return;}
+    /* 耗时/调用数并进过程组头右侧——它是过程信息，不是助手说的话（用户裁定第 5 条） */
+    if(it.k==='tail'){
+      if(lastPc>=0){
+        var seg=h.slice(lastPc), close=seg.indexOf('</span>');
+        if(close>=0)h=h.slice(0,lastPc)+seg.slice(0,close)+' · '+esc(it.t)+' · '+esc(it.m)+seg.slice(close);
+      }
+      lastPc=-1;return;
+    }
+    if(it.k==='turn'){
+      var start=h.length;
+      it.items.forEach(function(sub){h+='<div class="step">'+chatItem(sub)+'</div>';});
+      /* 只在本轮范围内找过程组头，避免把收尾行拼到上一轮去 */
+      var pc=h.indexOf('<span class="pc">',start);
+      lastPc=pc>=0?pc:-1;
+      return;
+    }
+  });
+  return h;
+}
+function chatItem(it){
+  if(it.k==='grp'){
+    var inner='';
+    it.items.forEach(function(sub){inner+=chatItem(sub);});
+    /* 过程组：默认收起，组头只有内容摘要（Codex ActivityGroup / DSH「Read files, Ran commands」） */
+    return '<div class="cv-pgrp" data-pgrp><button class="cv-pgrp-h" data-pfold><span class="pg-arw">▸</span><span>'+esc(it.sum)+'</span><span class="pc">'+it.items.length+' 项</span></button><div class="cv-pgrp-b">'+inner+'</div></div>';
+  }
+  if(it.k==='tool'){
+    var st=it.st||'ok';
+    var mark=st==='ok'?'✓':(st==='failed'?'✗':'○');
+    return '<div class="cv-tool" data-exp><span class="cv-nm">'+esc(it.nm)+'</span><span class="cv-t">'+esc(it.t)+'</span><span class="cv-st '+st+'">'+mark+'</span></div>'
+      +'<div class="cv-tool-b" hidden>IN  { '+esc(it.nm)+' }<br>OUT { status: "'+esc(st)+'" }</div>';
+  }
+  if(it.k==='sys'){return '<div class="cv-sys"><span class="cv-t">'+esc(it.t)+'</span></div>';}
+  if(it.k==='cm'){
+    var mtL={directive:'指令',report:'汇报',worker_done:'完工回执',sync:'同步',notify:'通知'};
+    var d=it.dir==='out'?'↑':(it.dir==='sync'?'·':'↓');
+    var dlab=it.dir==='out'?'发出':(it.dir==='sync'?'同层':'收到');
+    return '<div class="cv-cm" data-mt="'+esc(it.mt||'notify')+'">'
+      +'<div class="cm-route"><span class="cm-type">'+esc(mtL[it.mt]||'消息')+'</span>'
+      +'<span class="cm-dir">'+d+' '+dlab+'</span>'
+      +'<span class="cm-who">'+esc(it.route)+'</span></div>'
+      +'<div class="cm-t">'+esc(it.txt)+'</div>'
+      +(it.meta?'<div class="cm-meta">'+esc(it.meta)+'</div>':'')
+      +'</div>';
+  }
+  if(it.k==='hm'){return '<div class="cv-hm"><span class="hm-k">'+esc(it.t||'harness')+'</span><span class="cv-t">'+esc(it.d||'')+'</span></div>';}
+  if(it.k==='acc'){return '<div class="cv-acc"><span class="cv-k">'+esc(it.k)+'</span><span class="cv-t">'+esc(it.t)+'</span></div>';}
+  if(it.k==='reply'){return '<div class="cv cv-a"><span class="txt">'+esc(it.txt)+'</span></div>';}
+  return '';
+}
+function renderChat(){timeline.innerHTML=chatHtml();}
+
+/* 渲染两个视图（都常驻 DOM，切换只动 class，滚动位置互不干扰） */
+renderChat();
+renderTraj();
+
+/* 视图切换 */
+function setView(v){
+  document.body.classList.toggle('view-traj',v==='traj');
+  $('vtabChat').classList.toggle('on',v==='chat');
+  $('vtabTraj').classList.toggle('on',v==='traj');
+  $('vtabChat').setAttribute('aria-selected',String(v==='chat'));
+  $('vtabTraj').setAttribute('aria-selected',String(v==='traj'));
+}
+on('vtabChat','click',function(){setView('chat');});
+on('vtabTraj','click',function(){setView('traj');});
+
+/* 过程组折叠（Codex ActivityGroup：点组头展开组内过程行；回复永远在组外、始终可见） */
+document.addEventListener('click',function(e){
+  var pf=e.target.closest('[data-pfold]');
+  if(!pf)return;
+  var g=pf.closest('[data-pgrp]');
+  var on=g.classList.toggle('open');
+  var a=pf.querySelector('.pg-arw');
+  if(a)a.textContent=on?'▾':'▸';
+});
 
 /* 索引：同源生成 */
 function fillIdx(el,g){
@@ -796,13 +1396,18 @@ function fillIdx(el,g){
   });
   if(el)el.innerHTML=h;
 }
-[['idxG1',1],['idxG2',2],['idxG3',3],['idxG4',4],['idxG5',5],['idxG6',6],['idxG7',7],['idxG8',8],['idxG9',9]].forEach(function(p){fillIdx($(p[0]),p[1]);});
+[['idxG1',1],['idxG2',2],['idxG3',3],['idxG4',4],['idxG5',5],['idxG6',6],['idxG7',10],['idxG8',7],['idxG9',11],['idxG10',8],['idxG11',9]].forEach(function(p){fillIdx($(p[0]),p[1]);});
 
-/* 索引点击 → 滚到样例并高亮 */
+/* 索引点击 → 跳到样例并高亮（对话视图里没有的样例自动切到轨迹视图） */
 document.addEventListener('click',function(e){
   var b=e.target.closest('[data-jump]');
   if(!b)return;
-  var el=$('ev-'+b.getAttribute('data-jump'));
+  var id=b.getAttribute('data-jump');
+  var el=$('ev-'+id)||$('cv-'+id);
+  if(!el&&document.body.classList.contains('view-traj')===false){
+    setView('traj');
+    el=$('ev-'+id);
+  }
   if(!el)return;
   el.scrollIntoView({block:'center',behavior:'smooth'});
   el.style.outline='2px solid var(--ac)';
@@ -810,11 +1415,11 @@ document.addEventListener('click',function(e){
   el.style.borderRadius='6px';
   setTimeout(function(){el.style.outline='';},1400);
 });
-/* 工具行 / 过程行展开 */
+/* 工具行 / 过程行展开（对话视图 cv-tool 与轨迹视图 tool/proc 共用） */
 document.addEventListener('click',function(e){
   var h=e.target.closest('[data-exp]');
   if(!h)return;
-  var wrap=h.parentElement, body=wrap.querySelector('.tool-b,.proc-b');
+  var wrap=h.parentElement,body=wrap.querySelector('.tool-b,.proc-b,.cv-tool-b');
   if(!body)return;
   body.hidden=!body.hidden;
   wrap.classList.toggle('open');
@@ -827,12 +1432,13 @@ document.addEventListener('click',function(e){
 
 /* ---------- 自检：JS 引用 id vs DOM ---------- */
 var JS_IDS=['appNav','navNewProject','navSearchBox','navSearchInput','navSearchClear','navTree','navSettingsBtn',
-'navDrawerBtn','chatCrumb','canvasEntryBtn','procToggleBtn','themeToggleBtn','topInspBtn','workspace','flowScroll',
-'flowCol','tlOlder','timeline','toBottom','reviewEntry','rvPillNum','rvPillTitle','reviewPanel','rpClose',
-'inspTab','inspector','ipName','ipId','ipState','ipModel','ipClose','confirmSeat','confirmBar','cfClose','cfConfirm',
+'navDrawerBtn','chatCrumb','canvasEntryBtn','procToggleBtn','idxToggle','idxTotal','workspace','flowScroll',
+'flowCol','tlOlder','timeline','trajView','vtabChat','vtabTraj','toBottom',
+'rvWin','rvCount','rvTtl','rvExpand','rvClose','rvEvents','rvLastTime','rvLastText','rvChat','rvShow','rvEnd',
+'inspTab','inspector','ipName','ipId','ipState','ipModel','ipClose','goalText','goalEdit','stExpand','stPrev','stFull','reqExpand','reqPrev','reqFull','ctxLen','confirmSeat','confirmBar','cfTabs','cfKicker','cfBadge','cfBody','cfWhy','cfClose','cfConfirm',
 'cfReject','cfLater','cfView','composerSeat','queueBar','queueCount','queueList','queueClear','flowInput','flowSendBtn',
 'modelBadgeMount','modelName','modelMenu','idxPanel','idxHead','idxBody','selfCheck','idxG1','idxG2','idxG3','idxG4',
-'idxG5','idxG6','idxG7','idxG8','idxG9','cmpPanel','cmpHead','cmpCount','cmpBody','cmpList','draftModal','draftTitle',
+'idxG5','idxG6','idxG10','idxG7','idxG11','idxG8','idxG9','cmpPanel','cmpHead','cmpCount','cmpBody','cmpList','draftModal','draftTitle',
 'draftX','draftArea','draftClose','draftBack','draftOk','toastBox'];
 function selfCheck(){
   var miss=JS_IDS.filter(function(id){return !$(id);});
@@ -843,13 +1449,45 @@ function selfCheck(){
 }
 selfCheck();
 
-/* ---------- 主题 ---------- */
-on('themeToggleBtn','click',function(){
-  var h=document.documentElement,toLight=h.getAttribute('data-theme')!=='light';
-  if(toLight)h.setAttribute('data-theme','light');else h.removeAttribute('data-theme');
-  var b=$('themeToggleBtn');
-  b.textContent=toLight?'☀':'☾';
-  b.title=toLight?'切回深色':'切换深浅主题';
+/* ---------- 评审浮窗（照原型版：收缩窄条在正文右侧空白带；展开向左挤正文） ---------- */
+var RV={events:[
+  ['14:18:52','评审开启 · 目标「画布页需求文档」· 草稿 v3'],
+  ['14:19:31','产品经理 通过（v3）'],
+  ['14:20:02','测试验收总监 通过（v3）'],
+  ['14:21:15','草稿改到 v3 · 技术总监原投的票已失效，需重投'],
+  ['14:22:07','技术总监 待投']
+],live:'等待事件…'};
+function rvRender(){
+  var box=$('rvEvents');if(!box)return;
+  box.innerHTML=RV.events.map(function(e){
+    return '<div class="fwin-ev"><time>'+esc(e[0])+'</time><span class="t">'+esc(e[1])+'</span></div>';
+  }).join('');
+  box.scrollTop=box.scrollHeight;
+  if(RV.events.length)$('rvLastTime').textContent=RV.events[RV.events.length-1][0];
+  $('rvLastText').textContent=RV.live;
+}
+function rvOpen(on){
+  var w=$('rvWin');if(!w)return;
+  w.hidden=!on;
+  document.body.classList.toggle('rv-on',!!on);
+  if(!on){rvFull(false);}
+  else rvRender();
+}
+function rvFull(on){
+  var w=$('rvWin');if(!w)return;
+  w.dataset.mode=on?'full':'compact';
+  document.body.classList.toggle('rv-full',on);
+  var b=$('rvExpand');
+  if(b){b.title=on?'收起':'展开评审卡对话';b.textContent=on?'⤡':'⤢';}
+}
+on('rvExpand','click',function(){rvFull($('rvWin').dataset.mode!=='full');});
+on('rvClose','click',function(){rvOpen(false);toast('评审浮窗已收起 · 批次仍在途，可再展开','warn');});
+on('rvShow','click',function(){rvOpen(true);toast('批次在途 → 评审浮窗出现（带批次名与最近事件）','ok');});
+on('rvEnd','click',function(){
+  var w=$('rvWin');
+  if(w)w.classList.add('done');
+  rvOpen(false);
+  toast('批次转终态（approved / voided）→ 浮窗整条消失','ok');
 });
 
 /* ---------- 左栏树（沿用旧交互：搜索 / 折叠 / 当前卡高亮） ---------- */
@@ -942,7 +1580,7 @@ on('procToggleBtn','click',function(){
   var b=$('procToggleBtn');
   b.classList.toggle('on',hide);
   b.setAttribute('aria-pressed',String(!hide));
-  toast(hide?'过程帧已隐藏（事实帧不受影响）':'过程帧已显示');
+  toast(hide?'过程细节已隐藏（回复与系统事件不受影响）':'过程细节已显示');
 });
 
 /* ---------- 面包屑 ---------- */
@@ -967,13 +1605,108 @@ function openReview(){var p=$('reviewPanel');if(p)p.hidden=false;}
 function closeReview(){var p=$('reviewPanel');if(p)p.hidden=true;}
 on('reviewEntry','click',openReview);
 on('rpClose','click',closeReview);
+on('rpEnd','click',function(){
+  closeReview();
+  var pill=$('reviewEntry');
+  if(pill)pill.hidden=true;
+  toast('批次转终态（approved / voided）· 评审入口随之消失','ok');
+});
 
 /* ---------- inspector ---------- */
-function openInsp(){var i=$('inspector');i.hidden=false;}
-function closeInsp(){var i=$('inspector');i.hidden=true;}
+function openInsp(){var i=$('inspector');i.hidden=false;document.body.classList.add('ip-on');}
+function closeInsp(){var i=$('inspector');i.hidden=true;document.body.classList.remove('ip-on');}
 on('inspTab','click',openInsp);
-on('topInspBtn','click',openInsp);
 on('ipClose','click',closeInsp);
+/* 点击卡详情外部收起（面板内点击、面板按钮本身、弹窗与评审浮窗内点击不收） */
+document.addEventListener('mousedown',function(e){
+  var i=$('inspector');
+  if(i.hidden)return;
+  if(e.target.closest('#inspector')||e.target.closest('#inspTab'))return;
+  if(e.target.closest('.modal')||e.target.closest('#rvWin'))return;
+  closeInsp();
+});
+/* 现状 / 需求文档：展开全文 / 收起（预览两行截断，全文可读不缩框） */
+function bindExpand(btnId,prevId,fullId){
+  on(btnId,'click',function(){
+    var p=$(prevId),f=$(fullId),b=$(btnId);
+    var show=f.hidden;
+    f.hidden=!show;p.hidden=show;
+    b.textContent=show?'收起':'展开全文';
+  });
+}
+bindExpand('stExpand','stPrev','stFull');
+bindExpand('reqExpand','reqPrev','reqFull');
+/* 目标可手动改：点编辑 → 就地变输入框，确认/取消 */
+on('goalEdit','click',function(){
+  var t=$('goalText');
+  if(t.querySelector('textarea'))return;
+  var old=t.textContent;
+  var ta=document.createElement('textarea');
+  ta.value=old;ta.style.cssText='width:100%;min-height:56px;font:inherit;border:1px solid #333;padding:4px';
+  var bar=document.createElement('div');
+  bar.style.cssText='display:flex;gap:6px;margin-top:4px';
+  bar.innerHTML='<button class="ip-edit" data-g="ok">保存</button><button class="ip-edit" data-g="no">取消</button>';
+  t.textContent='';t.appendChild(ta);t.appendChild(bar);
+  bar.addEventListener('click',function(e){
+    var g=e.target.getAttribute('data-g');
+    if(g==='ok'){t.textContent=ta.value;toast('目标已更新（示意）','ok');}
+    else{t.textContent=old;}
+  });
+});
+/* 需求文档历史版本：查看（示意弹内容进全文区） */
+document.querySelectorAll('[data-view]').forEach(function(b){
+  b.addEventListener('click',function(){
+    var f=$('reqFull'),p=$('reqPrev'),x=$('reqExpand');
+    p.hidden=true;f.hidden=false;x.textContent='收起';
+    f.textContent='【'+b.getAttribute('data-view')+' 全文（示意）】这一版的历史草稿原文。版本随每次「提交评审」自动留档，可回看不可改——要改就开新草稿。';
+    toast('已切换到 '+b.getAttribute('data-view')+'（示意）');
+  });
+});
+/* 关系卡可点跳转（示意：切到对应卡并 toast；真实系统=切卡） */
+document.querySelectorAll('[data-jump-card]').forEach(function(b){
+  b.addEventListener('click',function(){toast('示意：切换到 '+b.getAttribute('data-jump-card'));});
+});
+on('relAdd','click',function(){toast('示意：添加关系（选卡＋线型）');});
+
+/* ---------- 用户确认条：一套形态，五种待处置类型 ---------- */
+var CONFIRMS={
+ acceptance_reply:{kick:'需要你确认',pri:'确认正稿',rej:'驳回',view:'查看草稿全文',
+  body:'<strong>card_001 底层重构</strong> 的需求文档已起草 <strong>v1.2</strong>。根卡不设评审卡，这一版只有你确认后才成为正稿、其他卡才读得到。',
+  why:'在你做出决定之前，这一项不会自己消失，card_001 的后续工作也停在等你。'},
+ boundary_change_request:{kick:'要你裁决边界',pri:'同意变更',rej:'驳回并维持原范围',view:'查看变更申请全文',
+  body:'<strong>card_257 页面架构及 UI/UE</strong> 申请把范围扩到「画布页之外的全部页面」。边界变更不是域内自裁 —— 它会改已批范围。',
+  why:'范围变更已经不是这张卡自己能决定的事了，得你点头。你裁决之前，card_257 的回合不能继续。'},
+ reconfirm_disposition:{kick:'结论有疑，需你拍板',pri:'接受该结论',rej:'不成立，要求重做',view:'查看被标疑的行动',
+  body:'<strong>card_454</strong> 上一轮「事件类型已铺全」的结论被标了「需再确认」，在你拍板之前它一直挂着，不会自己消。',
+  why:'「事件类型已铺全」这个结论被标了疑。在你确认之前它一直挂着，不会自己消。'},
+ block_wait:{kick:'卡住了，等你',pri:'继续（给指令）',rej:'就地停止',view:'查看阻塞原因',
+  body:'<strong>card_345 画布页 v3 验收</strong> 停在「三方签字未回」。没有你的指令它不会自己恢复。',
+  why:'阻塞原因就在这条里：三方签字还没回来。没有你的指令它不会自己恢复。'},
+ budget_exhausted:{kick:'预算用尽，要你选路',pri:'加轮次上限',rej:'改目标',view:'查看轮次消耗',
+  body:'<strong>card_454</strong> 的轮次预算已用完（已跑 6 轮 / 上限 6 轮）。只有两条路：加轮次上限，或改目标。',
+  why:'只是把预算调大，不改变这张卡要做什么，所以不必再走一次范围变更。'}
+};
+var cfKind='acceptance_reply';
+var BADGES={acceptance_reply:'需求草稿 · 等你定',boundary_change_request:'范围变更 · 等你裁',reconfirm_disposition:'结论存疑 · 等你拍板',block_wait:'卡住了 · 等你指令',budget_exhausted:'预算用尽 · 等你选路'};
+function applyConfirm(kind){
+  var c=CONFIRMS[kind];if(!c)return;
+  cfKind=kind;
+  $('cfKicker').textContent=c.kick;
+  $('cfBadge').textContent=BADGES[kind]||'等你决定';
+  $('cfBody').innerHTML=c.body+'<div class="cf-why" id="cfWhy">'+c.why+'</div>';
+  $('cfConfirm').textContent=c.pri;
+  $('cfReject').textContent=c.rej;
+  $('cfView').textContent=c.view;
+  Array.prototype.forEach.call(document.querySelectorAll('#cfTabs .dev-b'),function(t){
+    t.classList.toggle('on',t.getAttribute('data-kind')===kind);
+  });
+  $('confirmBar').hidden=false;
+}
+var cfTabs=$('cfTabs');
+if(cfTabs)cfTabs.addEventListener('click',function(e){
+  var t=e.target.closest('[data-kind]');if(!t)return;
+  applyConfirm(t.getAttribute('data-kind'));
+});
 
 /* ---------- 用户确认条 ---------- */
 on('cfClose','click',function(){$('confirmBar').hidden=true;toast('已收起确认条 · 需求仍是草稿，未成为正稿','warn');});
@@ -1000,6 +1733,7 @@ function setRun(onR){
     if(!$('liveRun')){
       var d=document.createElement('div');
       d.id='liveRun';
+      d.className='mo';
       d.innerHTML='<div class="runbar"><span class="rb-dot"></span>回合进行中<span class="rb-dots"><i></i><i></i><i></i></span></div>';
       tl.appendChild(d);
       $('flowScroll').scrollTop=$('flowScroll').scrollHeight;
@@ -1010,11 +1744,59 @@ function setRun(onR){
 }
 function startRun(){
   setRun(true);
+  /* 回合推进的动效依据：用户消息入列 → 运行条出现 → 工具行逐条 stagger → 回复逐字出现 → 收尾。
+     节奏与真实 agent 一致（Codex 的 ActivityGroup 也是一条一条往上走，不是一次刷出）。
+     所有时长都在 CSS 的「动效依据」段里，改那里就整体改节奏。 */
+  var tl=$('timeline');
+  var steps=[
+    {t:0,    f:function(){
+      appendMo('<div class="cv-tool" data-exp><span class="cv-nm">web_search</span><span class="cv-t">「确认口径 · 检索」</span><span class="cv-st failed">✗</span></div>');
+    }},
+    {t:420,  f:function(){
+      appendMo('<div class="cv-tool" data-exp><span class="cv-nm">fetch_web</span><span class="cv-t">codex · history_cell</span><span class="cv-st ok">✓</span></div>');
+    }},
+    {t:420,  f:function(){
+      appendMo('<div class="cv-tool" data-exp><span class="cv-nm">fetch_web</span><span class="cv-t">dsh · conversation.md</span><span class="cv-st ok">✓</span></div>');
+    }},
+    {t:420,  f:function(){
+      appendMo('<div class="cv-sys"><span class="cv-t">状态变化 card_454 · 现状更新：查到两条真实口径（示意）</span></div>');
+    }},
+    {t:520,  f:function(){ typeReply(lastSent); }}
+  ];
+  var acc=0;
+  steps.forEach(function(s){acc+=s.t;setTimeout(function(){if(running)s.f();},acc);});
   runTimer=setTimeout(function(){
     setRun(false);
     toast('回合结束（示意）');
-    if(queue.length){var n=queue.shift();renderQ();setTimeout(function(){lastSent=n;startRun();},300);}
-  },20000);
+    if(queue.length){var n=queue.shift();renderQ();setTimeout(function(){lastSent=n;doSendFrom(n);},300);}
+  },300000);
+}
+/* 过程行逐条出现：带入列动效 */
+function appendMo(html){
+  var tl=$('timeline');
+  var d=document.createElement('div');
+  d.className='mo';
+  d.innerHTML=html;
+  tl.appendChild(d);
+  $('flowScroll').scrollTop=$('flowScroll').scrollHeight;
+}
+/* 回复逐字出现：这是「正在生成」与「已生成」的唯一视觉差别 */
+function typeReply(txt){
+  var tl=$('timeline');
+  var d=document.createElement('div');
+  d.className='cv cv-a mo';
+  var s=document.createElement('span');
+  s.className='txt mo-cursor';
+  d.appendChild(s);
+  tl.appendChild(d);
+  var body='（示意回复）已收到：「'+String(txt).slice(0,60)+'」——本条为原型占位，实际由模型生成。';
+  var i=0;
+  var iv=setInterval(function(){
+    if(!running){clearInterval(iv);s.classList.remove('mo-cursor');return;}
+    i+=2;s.textContent=body.slice(0,i);
+    $('flowScroll').scrollTop=$('flowScroll').scrollHeight;
+    if(i>=body.length){clearInterval(iv);s.classList.remove('mo-cursor');}
+  },40);
 }
 function stopRun(){
   if(runTimer){clearTimeout(runTimer);runTimer=null;}
@@ -1027,9 +1809,11 @@ function renderQ(){
   cnt.textContent=String(queue.length);
   list.innerHTML='';
   queue.forEach(function(t,i){
-    var c=document.createElement('span');
-    c.className='q-chip';
-    c.innerHTML=esc(t.length>16?t.slice(0,16)+'…':t)+' <button class="q-x" data-qi="'+i+'">×</button>';
+    var c=document.createElement('div');
+    /* 插话预览：原文（两行截断，CSS line-clamp）+ 字数——不摘要，摘要会丢信息
+       （Codex pending_input_preview / DSH QueueDock：都是原文预览） */
+    c.className='q-i';
+    c.innerHTML='<span class="q-txt">'+esc(t)+'</span><span class="q-n">'+t.length+' 字</span><button class="q-x" data-qi="'+i+'" title="移除">×</button>';
     list.appendChild(c);
   });
 }
@@ -1039,17 +1823,21 @@ function doSend(){
   if(running){queue.push(t);$('flowInput').value='';renderQ();toast('已排队 · 当前回合结束后送达');return;}
   $('flowInput').value='';
   lastSent=t;
+  doSendFrom(t);
+}
+/* 用户消息入列（带淡入上移），然后开一轮 */
+function doSendFrom(t){
   var tl=$('timeline');
   var d=document.createElement('div');
-  d.className='ev';
-  d.innerHTML='<span class="ev-mark">1</span><div class="ev-body"><div class="ev-head"><span class="ev-title">用户消息</span><span class="ev-type">user_message_or_operation</span><span class="lv lv-fact">fact</span></div><div class="u-msg"><div class="bub">'+esc(t)+'</div></div></div>';
+  d.className='cv cv-u mo';
+  d.innerHTML='<span class="txt">'+esc(t)+'</span>';
   tl.appendChild(d);
   $('flowScroll').scrollTop=$('flowScroll').scrollHeight;
   startRun();
 }
 on('flowSendBtn','click',function(){running?stopRun():doSend();});
 on('flowInput','keydown',function(e){
-  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();running?stopRun():doSend();}
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();doSend();}
 });
 on('flowInput','input',function(){
   var t=$('flowInput');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,150)+'px';
@@ -1061,7 +1849,15 @@ on('queueList','click',function(e){
 on('queueClear','click',function(){queue=[];renderQ();});
 
 /* ---------- 模型选择（贴发送键） ---------- */
-on('modelBadgeMount','click',function(e){e.stopPropagation();var m=$('modelMenu');m.hidden=!m.hidden;});
+on('modelBadgeMount','click',function(e){
+  e.stopPropagation();
+  var m=$('modelMenu');m.hidden=!m.hidden;
+  if(!m.hidden){ /* 贴着模型按钮上沿（用户裁定：选模型界面不能离按钮太远） */
+    var b=$('modelBadgeMount').getBoundingClientRect(),s=$('composerSeat').getBoundingClientRect();
+    m.style.left=Math.round(b.left-s.left)+'px';
+    m.style.top=Math.round(b.top-s.top-m.offsetHeight-8)+'px';
+  }
+});
 on('modelMenu','click',function(e){
   var it=e.target.closest('.mm-i');if(!it)return;
   this.querySelectorAll('.mm-i').forEach(function(x){
@@ -1081,27 +1877,50 @@ document.addEventListener('click',function(e){
 
 /* ---------- 回底键 / 加载更早 ---------- */
 var scrollEl=$('flowScroll');
-scrollEl.addEventListener('scroll',function(){
+function updateToBottom(){
   var far=scrollEl.scrollTop+scrollEl.clientHeight<scrollEl.scrollHeight-90;
   $('toBottom').hidden=!far;
-});
+}
+scrollEl.addEventListener('scroll',updateToBottom);
+window.addEventListener('resize',updateToBottom);
+/* 真 bug（用户第 1 条）：关掉弹窗/确认条后回底键消失——它原来只由 scroll 事件驱动，
+   而「弹窗关掉 → 输入区变矮 → 可视区变高」这个变化不触发 scroll，far 永远停在旧值。
+   修法：观察容器与内容的高度变化，任何布局变化都重算一次。 */
+if(window.ResizeObserver){
+  var _ro=new ResizeObserver(function(){updateToBottom();});
+  _ro.observe(scrollEl);
+  if($('flowCol'))_ro.observe($('flowCol'));
+  if($('composerSeat'))_ro.observe($('composerSeat'));
+  if($('confirmSeat'))_ro.observe($('confirmSeat'));
+}
 on('toBottom','click',function(){scrollEl.scrollTo({top:scrollEl.scrollHeight,behavior:'smooth'});});
+updateToBottom(); /* 初始也算一次：容器在顶/内容超屏时回底键立即可见，不等第一次滚动 */
 var olderN=0;
 on('tlOlder','click',function(){
   olderN++;
   var d=document.createElement('div');
   d.innerHTML='<div class="date-sep"><span>昨天 · 2026-11-05</span></div>'
-   +'<div class="ev"><span class="ev-mark">1</span><div class="ev-body"><div class="ev-head"><span class="ev-title">更早的用户消息</span><span class="ev-type">user_message_or_operation</span><span class="lv lv-fact">fact</span></div><div class="u-msg"><div class="bub">先按旧口径做一版看看。</div></div></div></div>';
+   +'<div class="cv cv-u"><span class="pre">›</span><span class="txt">先按旧口径做一版看看。</span></div>';
   var col=$('flowCol');
   col.insertBefore(d,col.children[1]||null);
   if(olderN>=2){this.disabled=true;this.textContent='已到最早（示意）';}
 });
 
-/* ---------- 索引 / 对照 折叠 ---------- */
+/* ---------- 索引 / 对照 ---------- */
+on('idxToggle','click',function(){
+  var p=$('idxPanel');
+  var on=!p.classList.contains('on');
+  p.classList.toggle('on',on);
+  document.body.classList.toggle('idx-on',on);
+  this.classList.toggle('on',on);
+  this.title=on?'收起事件类型索引':'事件类型索引（82 项）';
+  if(on){var b=$('idxBody');if(b)b.scrollTop=0;}
+});
 on('idxHead','click',function(){
   var p=$('idxPanel');
-  p.classList.toggle('open');
-  $('idxBody').hidden=!p.classList.contains('open');
+  p.classList.remove('on');
+  document.body.classList.remove('idx-on');
+  var t=$('idxToggle');if(t)t.classList.remove('on');
 });
 on('cmpHead','click',function(){
   var p=$('cmpPanel');
@@ -1112,6 +1931,22 @@ on('cmpHead','click',function(){
 
 /* ---------- 改动对照 ---------- */
 var CMP=[
+ ['fix','<b>时间线改回真实对话顺序（本轮核心）</b>：对话视图按 Turn 排（用户输入 → 过程组 → 回复 → 轮末收尾行「Worked for 12s · tools: 3 calls」），不再按 11 个分组铺开。上一版把 82 个类型按组铺在同一根时间线＝图鉴，不是对话。','Codex history_cell（ActivityGroup / FinalMessageSeparator）+ DSH conversation.md groupTree'],
+ ['fix','<b>事件类型全集移进独立「轨迹」视图</b>：顶栏「对话 / 轨迹」双页签切换（DSH chat + trajectory 双 target 同源事件）。轨迹视图 = 82 项按 11 组铺开（原时间线整体搬入）；对话视图 = 真实时间顺序。两视图同一数据源（EV 表），索引点击在对话视图找不到的样例自动切到轨迹视图。','DSH docs/subsystems/conversation.md：chat 与 trajectory 各自 final snapshot'],
+ ['fix','<b>对话行去掉轮框、轮编号、轮标题条</b>：上一版给每一轮套了边框＋「Tn ＋ 标题 ＋ 折叠钮」，这是自造的单位——Codex/DSH 的 scrollback 里没有它，就是一串 history cell 竖排。现在一轮内的内容直接平铺进流，层次只靠两条规则：谁在说话（用户 › / 助手 • / 卡间信路由）顶格；机器在干活（过程组/工具行/系统条/验收）缩进 16px、字更小更灰。','你的裁定：对齐 Codex / DSH，不要自造信息逻辑'],
+ ['fix','<b>用户消息＝右对齐气泡，助手＝左对齐文档流</b>：上一版抄了 Codex 终端 TUI 的「› ／ •」单列前缀，两者都左对齐顶格、只靠字重区分——网页上分不出哪句是自己说的（实测两行 x 都是 92，是同列铁证）。改为 DSH <code>MessageItem</code> 原值：用户右对齐气泡 <code>max-width:min(525px,82%)</code>、22px 圆角、10/16 内距；助手无容器、14px/1.85、左对齐。轮与轮的分界靠留白（用户气泡 margin-top 16 / 助手 padding-bottom 16），不加编号与分隔线。','DSH client/ui-chat MessageItem.module.css；旧原型 style.css .flow-user-bubble'],
+ ['fix','<b>耗时与调用数并进过程组头，不再单独成行</b>：上一版把它当作「轮末收尾行」单独一行放在回复下方（或者上方），读起来像助手又说了一句话。Codex 的 <code>FinalMessageSeparator</code> 本来就是过程统计，现在并进过程组头右侧：「4 项 · Worked for 6m 12s · 4 calls」——属于过程信息，看不到就不占位置。','你的第 5 条'],
+ ['fix','<b>这一版剥掉全部视觉层</b>：配色 / 彩色徽标 / 阴影 / 渐变 / 圆角 / 动效 / 深浅主题切换全删，只留黑白灰与线。状态靠文字与线型区分（实线／虚线、反白按钮、方框标签）。','你的口径：只要交互稿'],
+ ['fix','<b>评审改成原型版的浮窗形态</b>：收缩态只占对话列右侧空白带、不压正文，显示「评审 · 通过数 · 批次名」＋事件列表＋实时行（最近一条动态更新）；展开向左长、把正文挤窄，里面是批次详情＋评审卡对话页；层级低于卡详情。上一版做成右侧抽屉还压正文，是退步。','原型 card.html #rvWin ＋ ui.css .fwin ＋ workspace.js RV 四条口径'],
+ ['fix','<b>评审入口只在有在途批次时存在</b>：批次转终态（approved / voided）整窗消失，不是缩成一个按钮常驻。演示开关放在「事件类型」面板里，不进产品界面。','你的第 6 条'],
+ ['fix','<b>事件类型索引不再浮在正文左上角</b>：入口收到顶栏（「事件类型 82」），点开才出现面板，默认不占正文。','整齐度：浮层不该常驻正文'],
+ ['fix','<b>确认条去掉页签</b>：产品界面里只出现当前那一条待处置，五种类型切换移到索引面板的演示控制区。','你的第 4 条 + 整齐度'],
+ ['fix','<b>时间线加分组标题与统一列</b>：11 组各有节标题（编号＋名称＋项数），每行「类型码 ｜ 标题 ｜ fact/process ｜ 样例键」按列对齐，不再是一堆长短不一的块。','整齐度'],
+ ['fix','<b>卡间消息补进来</b>：重构版卡间信是协议 <code>message</code> 帧（address → target_address，不广播、精确投递），三个 domain（persistent / live / policy）行为不同且<b>回话不继承</b>入站域。上一版完全没有这一类。','protocol/message.schema.json'],
+ ['fix','<b>写闸回执补进来</b>：<code>write_result</code> 三分类 accepted / idempotent_dropped / rejected，七个非空 reason_code 全列；每笔 gate_request 必得恰好一条回执，配对凭 idem_key 不凭 seq。','protocol/message.schema.json §WriteResult'],
+ ['fix','<b>待用户处置 9 种单列一组</b>：用户列 5 种（boundary_change_request / acceptance_reply / reconfirm_disposition / block_wait / budget_exhausted）＋ 模型列 4 种（boundary_decision / rejection / resume_directive / intervention）。用户列弹确认卡，模型列不弹。','projection/task.go PendingItem 常量表 §4.7'],
+ ['fix','<b>确认条做成「一套」</b>：同一形态可切五种用户列类型，按钮文案随类型变（确认正稿 / 同意变更 / 接受该结论 / 继续 / 加轮次上限）。位置在输入框上方。','你的第 4 条'],
+ ['fix','<b>harness 投递帧补齐</b>：deliver_attempt / deliver_done / deliver_deferred / deliver_skipped / deliver_failed / deliver_timeout / delivery_denied 七态。失败与越权必须上屏，否则「规则命中但没人收到」看不出来。','harness/deliver.go、dispatch.go'],
  ['fix','<b>事件口径换成重构版</b>：原型版的三席进场 / 计划板（judgment / plan_created / step_start / step_advanced）全部删除。改按 Cardlo <code>projection/session.go</code> 的 <b>10 种 item_type</b>（card_197 §4.4 闭合集）。','口径来源：session.go 头注释与常量表'],
  ['fix','<b>harness 消息补进来</b>：五字段 envelope（subject / object / type / at / result）+ 三种投递 message / inject / continue + 干预事项六态。上一版完全没有。','依据 harness/envelope.go:Envelope、harness-智能干预迭代方案 §4.3、§5.2'],
  ['fix','<b>三种「定义未产出」单独列出并标黄</b>：plan_or_dispatch、intervention、error_diagnostic —— 形态已定但当前流上产不出，界面上明说是「报缺不造」，不拿邻近事件顶替。','session.go 头注释 THE THREE UNPRODUCED TYPES'],
@@ -1121,12 +1956,11 @@ var CMP=[
  ['fix','<b>删掉自动模式 / 手动模式开关</b>。','你的第 5 条'],
  ['fix','<b>删掉消息铃铛按钮</b>（顶栏与左栏各一个都去掉了）。','你的第 7 条'],
  ['fix','<b>新增用户确认条</b>，位置在输入框正上方：根卡无评审卡时，需求草稿只能由用户当面确认才成正文。带「确认正稿 / 驳回 / 稍后 / 查看草稿全文」四个出口。','你的第 4 条'],
- ['fix','<b>fact_level 上屏</b>：每条事件标 fact / process，顶栏「过程帧」开关只隐藏 process —— 事实帧永不因折叠而消失。','webface/stream.go fact_level 两值'],
+ ['fix','<b>过程细节开关的措辞</b>：按钮标题原写「过程帧」——那是旧系统 stream.js 的内部术语（SSE 每条事件带 <code>fact_level</code>，fact＝事实帧 / process＝过程帧），用户读不懂、读源码的人也不一定懂。界面用语改为「过程细节」，说明写「显示/隐藏工具调用等过程内容；事实类消息不受影响」；<code>fact_level</code> 只留在本文档附录，不上界面。','你的第 2 条'],
  ['fix','<b>顶栏压到 44px</b>：上一版按旧系统 ui.css 取 52px。本版是重构版页面，不继承旧系统样式表。','以重构版为准'],
  ['und','<b>左栏宽度与树形态</b>：按你的第 1 条，左侧列表沿用旧原型 UI/交互，本版未改（272px、四类行、搜索过滤、当前卡高亮）。宽度与行高是否与重构版新前端统一，待你裁。','你说不用管，故保持；如需统一请说'],
  ['und','<b>「定义未产出」的三行要不要留在原型里</b>：留着能让人看见形态边界，但也可能被误读成「已支持」。我暂时保留并标黄。','待你裁']
 ];
-on('cmpHead','click',function(){});
 (function(){
   var l=$('cmpList'),h='';
   CMP.forEach(function(c){
@@ -1136,20 +1970,41 @@ on('cmpHead','click',function(){});
   $('cmpCount').textContent=String(CMP.length);
 })();
 
-/* ---------- Esc：逐层关闭（加速键，所有出口鼠标也可达） ---------- */
+/* ---------- Esc：按层级从上往下逐层关闭（加速键，所有出口鼠标也可达） ---------- */
 document.addEventListener('keydown',function(e){
   if(e.key!=='Escape')return;
   var m;
-  if((m=$('draftModal'))&&!m.hidden){m.hidden=true;return;}
-  if((m=$('modelMenu'))&&!m.hidden){m.hidden=true;return;}
-  if((m=$('reviewPanel'))&&!m.hidden){m.hidden=true;return;}
-  if((m=$('inspector'))&&!m.hidden){m.hidden=true;return;}
+  if((m=$('draftModal'))&&!m.hidden){m.hidden=true;return;}          /* z100 输入型模态 */
+  if((m=$('modelMenu'))&&!m.hidden){m.hidden=true;return;}           /* 下拉浮层 */
+  if((m=$('inspector'))&&!m.hidden){closeInsp();return;}             /* z60 卡详情抽屉 */
+  if((m=$('rvWin'))&&!m.hidden){rvOpen(false);toast('评审浮窗已收起 · 批次仍在途','warn');return;}  /* z55 */
+  if($('idxPanel').classList.contains('on')){                        /* z20 类型索引 */
+    $('idxPanel').classList.remove('on');
+    document.body.classList.remove('idx-on');
+    $('idxToggle').classList.remove('on');
+    return;
+  }
   if((m=$('confirmBar'))&&!m.hidden){m.hidden=true;toast('确认条已收起 · 需求仍是草稿','warn');return;}
 });
 
 /* ---------- 初始化 ---------- */
 renderTree();
+rvOpen(true);          /* 有在途批次 ⇒ 评审浮窗出现 */
+setView('chat');       /* 默认对话视图（真实时间顺序）；轨迹视图顶栏切换 */
 $('flowScroll').scrollTop=0;
+/* 演示聚焦：#hide=nav,tl,idx,cmp,confirm —— 只影响显示，不改任何行为 */
+(function(){
+  var raw=(location.hash||'').replace(/^#/,'').replace(/^hide=/,'');
+  (location.search||'').replace(/^\?/,'').split('&').forEach(function(p){
+    var kv=p.split('=');
+    if(kv[0]==='hide')raw=decodeURIComponent(kv[1]||'');
+  });
+  if(!raw)return;
+  raw.split(',').forEach(function(k){
+    var m={'nav':'hide-nav','tl':'hide-tl','idx':'hide-idx','cmp':'hide-cmp','confirm':'hide-confirm'}[k.trim()];
+    if(m)document.body.classList.add(m);
+  });
+})();
 
 /* fillIdx 用到 G，需在 DOM 就绪后执行一次（脚本在 body 末尾，已就绪） */
 })();

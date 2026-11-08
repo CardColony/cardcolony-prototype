@@ -1509,9 +1509,10 @@ async def _h_report_done(work_id: str, current_id: str,
     """[worker 卡 2026-10-15] 完工回报（系统收口件，模型只报不判）。
 
     四步机械动作（§六块2）：
-      ① 判态：当前卡 card_type=="worker" 且 state=="active"，否则 denied；
-      ② 落盘：state=completed（闸4：active→completed 在册）＋ front matter
-         ``coder_final`` 原样收下 summary；
+      ① 判角色：当前卡 card_type=="worker"（角色边界，不是状态许可）；
+      ② 落盘：首次交工才写 state=completed（闸4：active→completed 在册）
+         ＋ front matter ``coder_final`` 原样收下 summary；已交过工的卡再被
+         派活时只补正文/回执，不重复写状态、不重复发状态事件；
       ③ 影子 ``## 迭代历史`` 追加完工行（时间＋summary＋write_file 调用数，
          机械统计、不判好坏）；
       ④ 系统发信：经流程专用薄壳 send_card_message（六道门槛一条不减；头部
@@ -1519,18 +1520,24 @@ async def _h_report_done(work_id: str, current_id: str,
          worker_done —— 落信即记 TRIGGERS，worker 卡回合收口时 K3 调起主卡验收
          （现有链，零改）。
 
+    [交工不是许可证 2026-11-08] 旧版这里判 ``state=="active"``，把「这条线
+    交过工」这个历史事实当成「本轮能不能交工」的许可。后果：卡一旦完工，
+    之后被父卡再派的每一轮都干完活却被拒收口，父卡收不到任何回执 ⇒ 重复派活。
+    派活了就是在岗、做完了就静默——静默由 K3 的消息类型判据与治理表管，
+    不靠这个字段；这里只管「交工」本身，且**幂等**。
+
     权限：不设新开关——工具面由 build_tool_schemas 第三段 WORKER_ONLY_TOOLS
     收敛到 worker；执行层本函数再校验 card_type（双保险）。
     """
-    # ① 判态（先用本轮 cards 字面快照，再读库内实况——state 是库内事实）
+    # ① 判角色（先用本轮 cards 字面快照，再读库内实况）
     card = (cards or {}).get(current_id) or {}
     if str(card.get("card_type", "") or "") != "worker":
         return err("denied", "report_done 仅限worker 卡调用")
     current = await card_store.read_card(work_id, current_id)
     meta = current["meta"]
     state = str(meta.get("state", "") or "")
-    if state != "active":
-        return err("denied", f"worker 卡当前状态为 {state or '未知'}，不可完工")
+    # 是不是第一次交工，只决定要不要再写一次状态列；不决定能不能交工。
+    first_completion = state != "completed"
     summary = str(arguments.get("summary", "") or "").strip()
     if not summary:
         return err("validation", "summary 不能为空")
@@ -1547,7 +1554,7 @@ async def _h_report_done(work_id: str, current_id: str,
                    f"（{_desc}）。先完成、把结果写进现状；角色复核通过即清账。")
     owner = str(meta.get("parent", "") or "") or work_store.work_card_id_of(work_id)
 
-    # ② 落盘 state=completed ＋ coder_final。
+    # ② 落盘 coder_final ＋（仅首次交工）state=completed。
     #    coder_final：「照 toolcard_final 手法」＝ front matter 键写库行——但
     #    card_store._UPDATABLE_META_KEYS / card_db._CARD_COLUMNS 属**禁改文件**
     #    （任务书 §四：card_store/card_db 只消费不改），故在本文件内经
@@ -1566,17 +1573,22 @@ async def _h_report_done(work_id: str, current_id: str,
     except Exception as exc:  # noqa: BLE001 完工留痕失败要让模型看见
         logger.error("report_done coder_final 落盘失败 card=%s: %s", current_id, exc)
         return err("internal", f"coder_final 落盘失败: {exc}")
-    upd = await card_store.update_card(
-        work_id, current_id,
-        # [goal 域 2026-10-20 · 单一写者] **不再直接写 goal_state**。
-        # 之前这里顺手把 goal_state 置 complete，等于绕开 goal 域改相位——实测
-        # card_029 因此出现「DB 说 complete、事件流说 active」，驱动照着事件流
-        # 一直续轮（跑到 43 轮才被人叫停）。目标相位只能由 GoalService 写。
-        {"state": "completed"},
-        f"worker 卡完工收口（report_done）：{summary}",
-    )
-    if isinstance(upd, dict) and upd.get("error"):
-        return err("internal", str(upd["error"]))
+    if first_completion:
+        upd = await card_store.update_card(
+            work_id, current_id,
+            # [goal 域 2026-10-20 · 单一写者] **不再直接写 goal_state**。
+            # 之前这里顺手把 goal_state 置 complete，等于绕开 goal 域改相位——实测
+            # card_029 因此出现「DB 说 complete、事件流说 active」，驱动照着事件流
+            # 一直续轮（跑到 43 轮才被人叫停）。目标相位只能由 GoalService 写。
+            {"state": "completed"},
+            f"worker 卡完工收口（report_done）：{summary}",
+        )
+        if isinstance(upd, dict) and upd.get("error"):
+            return err("internal", str(upd["error"]))
+    else:
+        # 已交过工：状态列是历史事实，不重复写（否则每轮多一条 state 事件、
+        # 且会重复触发 card_store 的完工兜底网）。本轮正文/回执照常落。
+        upd = {"meta": dict(meta)}
     # [goal 域 2026-10-20] 完工 ⇒ 走 GoalService.complete（写 goal/change 事件 +
     # 投影），不碰列。目标已不在 active 就跳过（幂等）。
     try:

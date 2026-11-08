@@ -45,7 +45,9 @@ async def test_snapshot_restore_roundtrip(work):
 
     stamp = Path(r["dir"]).name
     batch = data_snapshot.SNAPSHOT_ROOT / wid / stamp
-    rel = f"works/{wid}/cards.db"
+    # [库搬出施工目录 2026-11-07] 真库在 works_data/{wid}/——批内路径同源；
+    # restore 的 rel_path 仍传旧路径可测「两朝代回退」分支。
+    rel = f"works_data/{wid}/cards.db"
     src = batch / rel
     assert src.exists(), f"批次内缺库副本: {src}"
 
@@ -59,12 +61,12 @@ async def test_snapshot_restore_roundtrip(work):
         con.close()
     assert row is not None and "第一版正文" in (row[0] or "")
 
-    # 快照只装运行数据（PROTECTED_DIRS = works/），代码不进快照
+    # 快照只装运行数据（PROTECTED_DIRS = works/ + works_data/），代码不进快照
     tops = {
         p.relative_to(batch).parts[0]
         for p in batch.rglob("*") if p.is_file()
     }
-    assert tops == {"works"}, tops
+    assert tops <= {"works", "works_data"}, tops
 
     # 改动之后，恢复必须回到快照态（库内容逐字还原）
     await card_store.update_card(wid, root, {"conclusion": "第二版正文"}, "写入第二版")

@@ -179,6 +179,12 @@ class CtlDeliverRequest(BaseModel):
     source: Optional[dict[str, Any]] = None
 
 
+class CtlReviewStepRequest(BaseModel):
+    work_id: str
+    review_id: str
+    hint: str = ""
+
+
 class PostMessageRequest(BaseModel):
     content: str = Field(min_length=1)
     # [T10-3-3] 重发去重：前端重发时携带被重发那条提问的原 pair_id；正常提问缺省 None。
@@ -3144,6 +3150,16 @@ async def ctl_deliver(req: CtlDeliverRequest):
     delivered = await message_runner.deliver_now(
         req.work_id, req.card_id, text=req.text, source=req.source)
     return {"delivered": bool(delivered)}
+
+
+@router.post("/ctl/review_step")
+async def ctl_review_step(req: CtlReviewStepRequest):
+    """[多进程拆分] 场卡属主入口：替调用方在本进程跑评审一步。
+
+    run_once 入口自查分片：走到这里时属主已是本进程，不再转发。
+    """
+    from . import review_runner as _rr
+    return await _rr.run_once(req.work_id, req.review_id, hint=req.hint)
 
 
 @router.post("/cards/{card_id}/messages")

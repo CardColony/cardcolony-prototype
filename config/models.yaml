@@ -48,6 +48,13 @@ providers:
     api_key_env: LONGCAT_API_KEY
     note: 美团 LongCat 开放平台（OpenAI 兼容）。2026-11-06 实测 /v1/models 共 3 个模型：LongCat-2.5 /
       LongCat-2.5-Preview / LongCat-2.0。文档口径：温度开思考锁 1.0、关思考锁 0.7，传别的值会被覆盖（实测不报错）。
+  opendesign:
+    protocol: openai
+    base_url: https://amr-link.open-design.ai/v1
+    api_key_env: OPENDESIGN_API_KEY
+    note: OpenDesign（amr-link）订阅网关 · OpenAI 兼容 Chat Completions。2026-11-08 实测 /v1/models
+      共 14 个模型；另有 Anthropic Messages 端点 https://amr-link.open-design.ai（本项目不用）。key 形如
+      sk-amr-，与 Design Plan 额度共用，有 5 小时／7 天窗口。
   volcengine-coding:
     protocol: openai
     base_url: https://ark.cn-beijing.volces.com/api/coding/v3
@@ -512,11 +519,14 @@ models:
   longcat-25:
     provider: longcat
     model: LongCat-2.5
+  ds-v41-flash-eco-amr:
+    provider: opendesign
+    model: deepseek-v4.1-flash-eco
 bindings:
   execute: glm-53-flash
   think: glm-53-flash
   synthesize: glm-53-flash
-  condense: glm-53-flash
+  condense: glm-53-flash-volc
   compress: glm-53-flash
   draft: glm-53
   viewpoint:
