@@ -74,77 +74,10 @@ VIEWPOINT_TASK_NOTE = "以下是三份独立分析的参考材料，不是用户
 #
 # 两类并存时：字段类原样转发 + 内联类切分转发，同一席两个来源都汇进同一条
 # think 流（前端按 model 分桶，不区分来源）。
-_THINK_TAGS: tuple[tuple[str, str], ...] = (
-    ("<think>", "</think>"),          # minimax-m3 实测形态
-    ("<thinking>", "</thinking>"),    # 部分端点的写法，一并适配
-)
-_THINK_OPEN = tuple(p for p, _q in _THINK_TAGS)
-_THINK_CLOSE = tuple(q for _p, q in _THINK_TAGS)
-_ALL_THINK_TAGS = tuple(sorted({t for pair in _THINK_TAGS for t in pair},
-                               key=len, reverse=True))
-_MAX_TAG_LEN = max(len(t) for t in _ALL_THINK_TAGS)
-# 闭合思考块：成对整段剥离
-_THINK_BLOCK_RES = tuple(
-    re.compile(re.escape(p) + r".*?" + re.escape(q), re.DOTALL) for p, q in _THINK_TAGS
-)
-
-
-class ThinkStreamSplitter:
-    """把**内联在正文流里**的思考块按标签边界切出来（逐帧有状态，纯逻辑可单测）。
-
-    标签可能跨帧切裂（"<thi" + "nk>…"），故帧尾不足一个标签的残片留在缓冲，
-    等下一帧补齐再判；缓冲也可能是标签前缀（"</think>" 的 "</thin"），只有
-    真正补齐了才判定。in_think 期间到闭合标签之间的文本＝思考；之外＝正文。
-    """
-
-    def __init__(self) -> None:
-        self._in_think = False
-        self._buf = ""
-
-    @property
-    def in_think(self) -> bool:
-        return self._in_think
-
-    @property
-    def pending(self) -> str:
-        """尚在缓冲、不足以判定的残片长度（诊断用）。"""
-        return self._buf
-
-    def feed(self, delta: str) -> tuple[str, str]:
-        """吃一帧正文增量 → (思考增量, 正文增量)。两路都只含**标签之间的字**，不含标签本身。"""
-        buf = self._buf + (delta or "")
-        think_parts: list[str] = []
-        body_parts: list[str] = []
-        while buf:
-            idx = -1
-            tag = ""
-            for t in _ALL_THINK_TAGS:
-                i = buf.find(t)
-                if i >= 0 and (idx < 0 or i < idx):
-                    idx, tag = i, t
-            if idx < 0:
-                keep = self._partial_tag_len(buf)
-                rest, self._buf = buf[:len(buf) - keep], buf[len(buf) - keep:]
-                (think_parts if self._in_think else body_parts).append(rest)
-                break
-            before, buf = buf[:idx], buf[idx + len(tag):]
-            (think_parts if self._in_think else body_parts).append(before)
-            self._in_think = tag in _THINK_OPEN
-        return "".join(think_parts), "".join(body_parts)
-
-    def flush(self) -> tuple[str, str]:
-        """流结束：把缓冲残片按当前归属吐出（截断帧不因残片被吞字）。"""
-        rest, self._buf = self._buf, ""
-        return (rest, "") if self._in_think else ("", rest)
-
-    @staticmethod
-    def _partial_tag_len(buf: str) -> int:
-        """buf 尾部若是某个标签的真前缀，返回该前缀长度（否则 0）。"""
-        for k in range(min(len(buf), _MAX_TAG_LEN - 1), 0, -1):
-            tail = buf[-k:]
-            if any(t.startswith(tail) for t in _ALL_THINK_TAGS):
-                return k
-        return 0
+# [共享件下沉 2026-11-10] 标签表/分流器/整段剥已移到 think_strip——
+# 卡执行主路径（model_service）也靠它剥（那里原来一个字都没剥 ⇒ <think>
+# 整段泄到卡面，用户实踩）。此处保留同名导入，调用方与测试不受影响。
+from .think_strip import ThinkStreamSplitter, strip_inline_think
 
 
 def clean_viewpoint_text(text: str) -> str:
@@ -155,18 +88,7 @@ def clean_viewpoint_text(text: str) -> str:
     思考（开始标记在开头且无闭合）才返回空串（旧行为在这种情况下逐字不变，
     tests/test_proposal_parse.py 钉的就是这一条）。两种标签写法一视同仁。
     """
-    text = text or ""
-    for rx in _THINK_BLOCK_RES:
-        text = rx.sub("", text)
-    # 未闭合的思考区：取最早的开始标记，之前的正文保留、之后的思考丢掉
-    idx = -1
-    for p in _THINK_OPEN:
-        i = text.find(p)
-        if i >= 0 and (idx < 0 or i < idx):
-            idx = i
-    if idx >= 0:
-        text = text[:idx]
-    clean, _proposals = parse_proposals(text)
+    clean, _proposals = parse_proposals(strip_inline_think(text))
     return clean.strip()
 
 

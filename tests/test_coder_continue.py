@@ -139,7 +139,12 @@ async def test_pause_still_requires_human_round(work, auto_round):
 
 
 async def test_message_to_completed_worker_revives_it(work, client, monkeypatch):
-    """给完工 worker 发消息＝重新派活：不再 400，卡复位、目标重开。"""
+    """给完工 worker 发消息＝重新派活：目标重开，**不动 state 列**。
+
+    [完工不影响功能 2026-11-08] 改前会把 completed 复位成 active（理由：
+    否则 report_done / K3 调起会拦）。那两道闸已按用户裁定拆除，完工只是
+    「交付过结果」的标记，派活不需要改它。
+    """
     wid, cid = await _mk_coder(work, goal="旧目标", phase="complete", state="completed")
 
     async def _fake_run(*a, **kw):
@@ -152,7 +157,7 @@ async def test_message_to_completed_worker_revives_it(work, client, monkeypatch)
     assert r.status_code == 200, r.text
 
     meta = card_store._meta_of(wid, cid)
-    assert meta["state"] == "active", "完工标记必须复位，否则 report_done/调起还会拦"
+    assert meta["state"] == "completed", "完工是结果标记，派活不该改它"
     goal = await get_service().get(wid, cid)
     assert goal.phase == "active"
     assert goal.objective == "接着做 Y", "新派的任务就是新目标"

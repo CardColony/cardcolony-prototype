@@ -83,6 +83,12 @@ class RegionCtx:
     # 别的卡为 {}，区不出现）。取数在 context_assembler._load_role_cabinet（唯一 IO），
     # 渲染器只读它。存在理由见 render_role_cabinet_region 的 docstring。
     role_cabinet: dict[str, Any] = field(default_factory=dict)
+    # [上游需求文档 2026-11-10 · 用户令「需求文档是它们的参照物，应直接进入
+    # 上下文」] 执行/差事卡（ui/worker/qa_card/pm_card）的参照尺投影：
+    #   ui/worker → 父卡；qa/pm → 父卡（派遣方）＋对象卡（差事账 target_card）。
+    # 取数在 context_assembler._load_upstream_requirements（类型闸外零 IO），
+    # 渲染器只读。别的卡型恒空 ⇒ 区不出现。
+    upstream_requirements: list[dict[str, Any]] = field(default_factory=list)
     # [function 实体化第二步 2026-10-21 · card_031] 两个新来源，**取数在装配层**
     # （context_assembler.build_ctx），渲染器只读、绝不自己查库：
     #   function_roster ＝ 本 work 全部职能档案（function_store.list_profiles）
@@ -566,6 +572,29 @@ REGION_TABLE: list[dict[str, Any]] = [
         "render": lambda ctx: render_card_region_guide(
             str((ctx.cur_meta or {}).get("card_type") or ""), ctx.project_class),
         "count": 7,  # 正卡三块 ＋ 影子四节
+    },
+    {
+        # [上游需求文档 2026-11-10 · 用户令] order 160：紧随 155 区域说明——
+        # 「我是谁/我在追什么」之后先给「我拿什么尺干活」，再看子卡。
+        # **只对执行/差事卡（ui/worker/qa_card/pm_card）出现**（取数层类型闸，
+        # 别的卡型零 IO、区不出现）。内容＝上游需求文档正稿的**读侧投影**：
+        # 每轮装配现取卡面当前值，上游改了这区跟着变——不复制、不进会话、
+        # 不会出现"开工时塞进任务书然后过期"的残本。
+        "key": "upstream_requirements",
+        "order": 160,
+        "name": "上游需求文档",
+        "channel": "system",
+        "seats": ("main", "viewpoints"),
+        "owner": "context",
+        "source_owner": "assembler",
+        "delivery": "system",
+        "profiles": ("main", "viewpoint", "draft"),
+        "source": ("context_assembler._load_upstream_requirements：父卡（派遣方）"
+                   "＋对象卡（差事账 target_card）的需求文档正稿，"
+                   "ui/qa_card/pm_card 才取"),
+        "render": lambda ctx: render_upstream_requirements_region(
+            ctx.upstream_requirements),
+        "count": lambda ctx, text: len(ctx.upstream_requirements),
     },
     {
         # [父卡展示子卡现状 2026-10-15] order 170：紧随 155 之后、200 记忆之前——
@@ -1882,6 +1911,31 @@ def _child_mission_body(child: dict[str, Any]) -> str:
     from .card_draft import _is_placeholder  # noqa: PLC0415
     mission = str((child or {}).get("mission") or "")
     return "" if _is_placeholder(mission) else mission
+
+
+def render_upstream_requirements_region(
+        entries: list[dict[str, Any]]) -> str:
+    """上游需求文档区（order 160）：执行/差事卡的**参照尺**。
+
+    [2026-11-10 · 用户令「需求文档是它们的参照物，是应该直接进入它们上下文的」]
+    - 只对 ui/worker/qa_card/pm_card 出（取数层类型闸）；**正稿全文、不截断**——
+      需求文档就是 QA 的验收尺 / pm 的执笔底本 / UI 的界面规格，截一字＝
+      拿残本判卷（差事 kick 里刻意不截断的同款理由）；
+    - 读侧投影：每轮装配现取，上游改了这区就是新的；
+    - 父卡还没有正稿 ⇒ 该条不出（没有参照物不硬撑一行）。
+    """
+    secs: list[str] = []
+    for e in entries or []:
+        req = str(e.get("requirements") or "").strip()
+        if not req:
+            continue
+        secs.append(f"### {e.get('label')} {e.get('card_id')}"
+                    f"（{e.get('title')}）\n\n{req}")
+    if not secs:
+        return ""
+    return ("## 上游需求文档（你的参照尺）\n\n"
+            "*干活／验收都对照它。每轮装配现取——上游改了，你看到的这份就是新的；"
+            "不用为拿它去 read_card 上卡。*\n\n" + "\n\n".join(secs))
 
 
 def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:

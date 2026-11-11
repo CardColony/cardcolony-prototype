@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -56,6 +57,9 @@ async def test_devin_runner_spawns_with_cleaned_env(monkeypatch, tmp_path):
         async def communicate(self):
             return ("", "")
 
+        async def wait(self):
+            return self.returncode
+
         def kill(self):
             return None
 
@@ -74,3 +78,128 @@ async def test_devin_runner_spawns_with_cleaned_env(monkeypatch, tmp_path):
 
     assert seen.get("env") is not None, "起进程必须显式给 env"
     assert "ACP_BACKEND" not in seen["env"]
+
+
+# ---------- 收尾挂住兜底（2026-11-10 · work_027 card_637 实证） ----------
+# 现场：执行体 22:41 出最终正文，之后 27 分钟零事件、进程不退——
+# communicate() 等「进程退＋管道EOF」两件，子孙占住管道就永远吊住，
+# 卡面一直"运行中"直到用户手停。run() 改成四路竞速后这些形态都得收口。
+
+
+class _HungProc:
+    """communicate/wait 都永不返回——模拟「正文出了但进程僵死」。"""
+
+    def __init__(self):
+        self.pid = 9999
+        self.returncode = None
+        self.killed = False
+        self._dead = None  # asyncio.Event 在事件循环里建
+
+    async def communicate(self):
+        await asyncio.Event().wait()  # 永不返回：管道被子孙占住
+        return (b"", b"")
+
+    async def wait(self):
+        if self._dead is None:
+            self._dead = asyncio.Event()
+        await self._dead.wait()
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+        if self._dead is not None:
+            self._dead.set()
+
+
+def _fake_feed(events):
+    """造一个受控实时事件源：喂完给定事件就睡死（等取消）。"""
+    async def _feed(_marker, on_event):
+        for kind, payload in events:
+            on_event(kind, payload)
+        await asyncio.Event().wait()
+    return _feed
+
+
+async def _noop_tailer(_pid, _on_event):
+    await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_post_text_idle_closes_hung_run(monkeypatch, tmp_path):
+    """正文已出＋全静默 ≥阈值 ⇒ 杀进程、按已捕正文成功收口（不重做）。"""
+    monkeypatch.setattr(devin_client, "_POST_TEXT_IDLE_S", 0.2)
+    monkeypatch.setattr(devin_client, "_PIPE_DRAIN_GRACE_S", 0.05)
+    proc = _HungProc()
+
+    async def fake_exec(*argv, **kwargs):
+        return proc
+
+    monkeypatch.setattr(devin_client.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(devin_client, "_poll_live_events",
+                        _fake_feed([("text", {"content": "干完了，报告在 x.md"})]))
+    monkeypatch.setattr(devin_client, "_tail_devin_log", _noop_tailer)
+
+    r = devin_client.DevinRunner(r"C:\devin\devin.exe", model="swe-2-max",
+                                 cloud=False, timeout=60.0)
+    res = await r.run("干活", str(tmp_path), model="swe-2-max",
+                      marker="M", on_event=lambda k, p: None)
+
+    assert proc.killed, "收尾挂住必须杀进程"
+    assert res["ok"] is True, "有已捕正文＝活干完了，判失败会让上层重做"
+    assert res["text"] == "干完了，报告在 x.md"
+
+
+@pytest.mark.asyncio
+async def test_pending_tool_blocks_idle_close(monkeypatch, tmp_path):
+    """工具在途（pending>0）⇒ 静默看门不早杀，落总超时闸。"""
+    monkeypatch.setattr(devin_client, "_POST_TEXT_IDLE_S", 0.1)
+    monkeypatch.setattr(devin_client, "_PIPE_DRAIN_GRACE_S", 0.05)
+    proc = _HungProc()
+
+    async def fake_exec(*argv, **kwargs):
+        return proc
+
+    monkeypatch.setattr(devin_client.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(
+        devin_client, "_poll_live_events",
+        _fake_feed([("tool_call", {"tool": "bash"}),
+                    ("text", {"content": "中间话"})]))  # tool_result 永远不来
+    monkeypatch.setattr(devin_client, "_tail_devin_log", _noop_tailer)
+
+    r = devin_client.DevinRunner(r"C:\devin\devin.exe", model="swe-2-max",
+                                 cloud=False, timeout=0.8)
+    res = await r.run("干活", str(tmp_path), model="swe-2-max",
+                      marker="M", on_event=lambda k, p: None)
+
+    assert res["rc"] == -1 and res["ok"] is False, "在途工具期静默该走总超时"
+
+
+@pytest.mark.asyncio
+async def test_pipe_held_after_exit_recovers(monkeypatch, tmp_path):
+    """进程退了但管道被占 ⇒ 排空宽限后照样收口，不无限吊。"""
+    monkeypatch.setattr(devin_client, "_PIPE_DRAIN_GRACE_S", 0.1)
+
+    class _ExitedProc:
+        pid = 8888
+        returncode = 0
+
+        async def communicate(self):
+            await asyncio.Event().wait()  # 管道被子孙占住
+
+        async def wait(self):
+            return 0  # 进程本体已退
+
+        def kill(self):
+            pass
+
+    async def fake_exec(*argv, **kwargs):
+        return _ExitedProc()
+
+    monkeypatch.setattr(devin_client.asyncio, "create_subprocess_exec", fake_exec)
+
+    r = devin_client.DevinRunner(r"C:\devin\devin.exe", model="swe-2-max",
+                                 cloud=False, timeout=60.0)
+    res = await r.run("干活", str(tmp_path), model="swe-2-max")
+    assert res["rc"] == 0, "进程真退出码要保留"
+    assert res["ok"] is False  # 0 正文 ⇒ 上层判失败（空结果守卫）

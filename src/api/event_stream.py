@@ -358,10 +358,16 @@ def _jsonable(data: dict[str, Any]) -> dict[str, Any]:
 
     [对话流渲染 T4] 原 8KB 截断分支已删除——它是丢字闸。
     此处仅保留**非尺寸**的序列化兜底（不限制长度/体积/时间，不是闸）。
+    [2026-11-09] 先 scrub 非有限浮点：dumps 默认 ``allow_nan=True`` 对
+    inf/nan **不算**序列化失败 ⇒ 裸 ``Infinity`` 会漏进 journal/落盘/SSE
+    （card_507 的 ``"verbose": Infinity`` 实录，timeline 读回即 500）。
+    写口消毒后三处下游同净。RecursionError 一并兜——环形引用 scrub 会爆栈。
     """
     try:
+        from . import payload_cap
+        data = payload_cap.scrub_nonfinite(data)
         json.dumps(data, ensure_ascii=False)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return {"_note": "unserializable"}
     return data
 

@@ -1,6 +1,6 @@
 {
  "_meta": {
-  "version": 10,
+  "version": 11,
   "created_at": "2026-10-30",
   "updated_at": "2026-11-02 浏览器能力（MiniMax 机制移植）",
   "purpose": "系统能力清单（唯一事实源）：系统里有哪些能力、每项能力由什么实现、能挂到哪类对象上。",
@@ -26,7 +26,7 @@
   {
    "code": "read_card",
    "name": "看卡",
-   "desc": "读任意一张卡的标题、父卡和正文三块；含读已归档的卡。",
+   "desc": "读任意一张卡的标题、父卡和正文三块；含读已归档的卡；含全项目卡片花名册（画线看全图）。",
    "applies_to": [
     "function",
     "card"
@@ -35,7 +35,8 @@
     "kind": "tools",
     "tools": [
      "read_card",
-     "read_archive"
+     "read_archive",
+     "list_cards"
     ],
     "switch": "read"
    }
@@ -59,7 +60,7 @@
   {
    "code": "read_own_process",
    "name": "看自己的过程",
-   "desc": "读自己影子卡的四节过程记录、已凝练的历史条目，以及沿锚点把一条记忆展开到逐字原文。",
+   "desc": "读自己影子卡的四节过程记录、已凝练的历史条目，沿锚点把一条记忆展开到逐字原文，以及本轮原地等待（管自己这轮的节拍，不读不写）。",
    "applies_to": [
     "function",
     "card"
@@ -69,7 +70,8 @@
     "tools": [
      "read_shadow",
      "read_memory",
-     "memory_expand"
+     "memory_expand",
+     "wait"
     ],
     "switch": "read"
    }

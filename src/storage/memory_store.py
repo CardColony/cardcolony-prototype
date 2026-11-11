@@ -134,6 +134,20 @@ def condense_enabled() -> bool:
     return os.environ.get("CONDENSE_ENABLED", "").strip().lower() in ("1", "true")
 
 
+def _condense_home() -> bool:
+    """[凝练独立进程 2026-11-10 · 用户令「凝练应该独立一个runner」]
+    本进程是不是凝练的"家"：condense 进程（生产）或 all 单进程（测试/旧
+    模式）才算；runner/web 一律 False。凝练只读会话文件、只写记忆表，
+    不碰回合热态——单进程独占 ⇒ 跨进程重复凝由构造根除（runner0 扫盘
+    与 runner1 回合末同凝 card_061 的实案），不再需要文件锁。
+    procs 读不到＝旧环境/裸测试，不发明封禁（放行为旧口径）。"""
+    try:
+        from ..infra import procs
+        return procs.condense_home()
+    except Exception:  # noqa: BLE001
+        return True
+
+
 # [2026-10-10] 旧字节口径键的废弃告警（进程内只告警一次；只告警、绝不读值）
 _DEPRECATED_KEY_WARNED: set[str] = set()
 
@@ -1293,8 +1307,42 @@ def _report_to_user(work_id: str, card_id: str, what: str) -> None:
                        work_id, card_id, exc)
 
 
+def _dump_condense_call(work_id: str, card_id: str, stage: str, trace_id: str,
+                        attempt: int, model: str, request: dict | None,
+                        result: dict | None, error: str | None) -> None:
+    """[2026-11-09 全量留档] 凝练/归拢的**每一次**模型调用：请求＋思考＋正文
+    全文落盘。背景：截断跑飞（reasoning 烧满 128k、正文 0）时推理文本全链
+    不存，只能猜——以后不再猜。落 ``logs/condense_call_*.json``，与
+    ``prompt_card_*`` 同目录。留档失败绝不挡流程。"""
+    try:
+        rec = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "work_id": work_id, "card_id": card_id, "stage": stage,
+            "trace_id": trace_id, "attempt": attempt, "model": model,
+            "request": request,
+            "finish_reason": (result or {}).get("finish_reason"),
+            "truncated_tool_call": (result or {}).get("truncated_tool_call"),
+            "tokens_used": (result or {}).get("tokens_used"),
+            "reasoning_chars": len(str((result or {}).get("reasoning_content") or "")),
+            "content_chars": len(str((result or {}).get("content") or "")),
+            "reasoning_content": (result or {}).get("reasoning_content") or "",
+            "content": (result or {}).get("content") or "",
+            "tool_calls": (result or {}).get("tool_calls"),
+            "error": error,
+        }
+        _safe_stage = re.sub(r"[^\w.-]", "_", str(stage or "call"))[:80]
+        _p = Path("logs") / (
+            f"condense_call_{work_id}_{card_id}_{_safe_stage}_"
+            f"{time.strftime('%Y%m%d_%H%M%S')}_a{attempt}.json")
+        _p.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[condense_fold] 调用留档失败（不挡流程）work=%s card=%s: %s",
+                       work_id, card_id, _e)
+
+
 async def _guarded_model_call(make_call, *, work_id: str, card_id: str,
-                              stage: str, trace_id: str = "") -> dict[str, Any]:
+                              stage: str, trace_id: str = "",
+                              request: dict | None = None) -> dict[str, Any]:
     """[F8 · 2026-10-31 模型调用容错核心（对齐 dsh completeLlm），凝练/归拢共用]。
 
     `make_call(on_chunk, trace_id) -> (result, model)`：由调用方注入实际调用
@@ -1365,6 +1413,8 @@ async def _guarded_model_call(make_call, *, work_id: str, card_id: str,
                                    "work=%s card=%s", work_id, card_id)
                     call_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
                 last_err = _stall_exc
+                _dump_condense_call(work_id, card_id, stage, _trace, attempt, "",
+                                    request, None, f"[stall] {_stall_exc}")
                 consecutive_fail += 1
                 logger.warning("[condense_fold] 模型调用假活判死（attempt=%d/%d，连续失败=%d，"
                                "%.0fs 后重试换新连接）work=%s card=%s: %s",
@@ -1381,6 +1431,8 @@ async def _guarded_model_call(make_call, *, work_id: str, card_id: str,
                 raise
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
+                _dump_condense_call(work_id, card_id, stage, _trace, attempt, "",
+                                    request, None, repr(exc))
                 if not _retryable_error(exc):
                     raise                        # auth/配置类：网关已重试过，如实上抛
                 consecutive_fail += 1
@@ -1393,6 +1445,8 @@ async def _guarded_model_call(make_call, *, work_id: str, card_id: str,
                         f"连续 {consecutive_fail} 次真实失败反馈（超时/连接类），熔断本批") from exc
                 await asyncio.sleep(CONDENSE_CALL_BACKOFF_SEC)
                 continue
+            _dump_condense_call(work_id, card_id, stage, _trace, attempt,
+                                str(_model or ""), request, result, None)
             # F8a：截断识别（finish_reason=length ＝ max-tokens 掐断——端点反馈）
             if (result or {}).get("finish_reason") == "length" or (result or {}).get("truncated_tool_call"):
                 raise CondenseTruncated(
@@ -1434,7 +1488,9 @@ async def _condense_call(user_prompt: str, system: str | None = None, *,
             max_tokens=cap or None)
 
     result = await _guarded_model_call(_make, work_id=work_id, card_id=card_id,
-                                       stage=_stage, trace_id=trace_id)
+                                       stage=_stage, trace_id=trace_id,
+                                       request={"system": _system, "user_prompt": user_prompt,
+                                                "max_tokens": cap or None, "model": _model_name})
     return str(result.get("content") or "")
 
 async def _condense_one_batch(work_id: str, card_id: str,
@@ -2054,7 +2110,9 @@ async def _fold_call(system: str, user: str,
             work_id=work_id, card_id=card_id)
 
     return await _guarded_model_call(_make, work_id=work_id, card_id=card_id,
-                                     stage=_stage, trace_id=trace_id)
+                                     stage=_stage, trace_id=trace_id,
+                                     request={"system": system, "user_prompt": user,
+                                              "tools": tools, "model": _model_name})
 
 
 def _foldable_tops(state: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
@@ -2727,6 +2785,8 @@ async def condense_turn_end(work_id: str, card_id: str,
     [2026-11-02 · card_154 实案] 全局改为**有界并发**（_FLYING 位满才跳过；
     原"全局单飞"在多卡同时到线时把 card_154 饿死 70 分钟、142 万 token 撞窗）。
     """
+    if not _condense_home():       # 非凝练进程（runner/web）：直接退——凝练是
+        return                   # condense 进程的专活，跨进程互斥天然成立
     from ..infra import observe as _obs
     try:
         await ensure_watermark(work_id, card_id)
@@ -2867,7 +2927,9 @@ async def condense_sweep_once(max_cards: int = 8) -> int:
 
     纯后台：不看回合、不看前台状态，只按触发线记账。返回本轮凝过的卡数。
     """
-    if not condense_enabled():
+    if not condense_enabled() or not _condense_home():
+        # 非凝练进程连扫都别扫——全库 900+ 会话逐卡量 token 是真 IO，
+        # 五个进程每 5 分钟各扫一遍纯属互不可见的白烧。
         return 0
     works = sorted((session_store.WORKS_DIR).glob("*/sessions"))
     done = 0
@@ -2876,7 +2938,17 @@ async def condense_sweep_once(max_cards: int = 8) -> int:
         for f in sorted(sess_dir.glob("session_*.md")):
             if done >= max_cards:
                 return done
+            # 全库逐个读会话+量 token 是同步重活——每文件让一次环，
+            # 不然探针/同环协程被整个扫描堵死（condense 进程实测：首轮
+            # 全库量 ~2min 内健康探针零响应）。
+            await asyncio.sleep(0)
             card_id = _card_id_from_session_stem(f.stem)
+            # 归档卡的会话文件永留盘上、未凝量永冻 ⇒ 每轮必"命中"又必被拦截，
+            # 白占 max_cards 名额（rv_ 评审场实案：8 个名额被 7 张死卡吃掉）。
+            # 归档判据（cards 表无行）与排水闸门内 F14c 拦截同源——这里提前跳过，
+            # 不再报"命中"、不消耗 done；闸门内拦截保留作兜底。
+            if _card_is_archived(work_id, card_id):
+                continue
             try:
                 st = load_memory(work_id, card_id)
                 mark = int(st.get("mark", 0) or 0)
@@ -2896,6 +2968,8 @@ async def condense_sweep_once(max_cards: int = 8) -> int:
 def start_condense_sweeper(interval_sec: float | None = None) -> "asyncio.Task | None":
     """启动后台凝练扫描器（纯后台，与前台回合无关）。返回 Task 便于测试/停止。"""
     if not condense_enabled():
+        return None
+    if not _condense_home():       # 凝练只在 condense 进程跑（all 单进程照旧）
         return None
     if interval_sec is None:
         try:
@@ -2935,7 +3009,7 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
 
     返回是否真的跑了凝练。开关关 / 未到线 / 异常 ⇒ 一律返回 False，不阻断回合。
     """
-    if not condense_enabled():
+    if not condense_enabled() or not _condense_home():
         return False
     try:
         await ensure_watermark(work_id, card_id)
@@ -2980,7 +3054,7 @@ def maybe_schedule_turn_end(work_id: str, card_id: str,
                             request_tokens: int | None = None) -> None:
     """回合末触发调度口（routes 层唯一调用点）：开关关＝零动作零开销；
     开＝create_task 异步触发、不阻塞对话（SP-04）。调度失败仅留痕。"""
-    if not condense_enabled():
+    if not condense_enabled() or not _condense_home():
         return
     try:
         task = asyncio.get_running_loop().create_task(

@@ -4,7 +4,8 @@
 钉七件事:
 T1 归档:cards 行/影子删,coder_archive 记录在(task/final/artifacts);
    会话/事件文件原位不动
-T2 幂等与护栏:非 worker 拒;未完工拒;重复归档幂等
+T2 幂等与护栏:非 worker 拒;[完工不影响功能 2026-11-08] 不要求 completed;
+   重复归档幂等
 T3 视觉+数据折叠:nav/canvas/模型卡片清单天然不见(数据层无行,零过滤器)
 T4 read_archive 工具:按卡号取单条/按父卡列/全列
 T5 阶段收口判定:活卡全 completed+归档子卡 ⇒ 触发(归档天然算完成)
@@ -46,13 +47,17 @@ async def _complete(wid, cid):
 
 async def test_archive_and_guards(sandbox):
     wid, root, parent, worker = await _work_with_coder()
-    # 未完工拒
-    r = await coder_fold.archive_worker(wid, worker)
-    assert r.get("ok") is False and r["error"] == "not_completed"
-    # 非 worker 拒
+    # 非 worker 拒（与状态无关）
     r2 = await coder_fold.archive_worker(wid, parent)
     assert r2.get("ok") is False and r2["error"] == "only_worker"
-    # 完工 ⇒ 归档
+    # [完工不影响功能 2026-11-08] 归档是显式处置，不要求卡标过 completed
+    fresh = (await card_store.create_card(
+        wid, "未完工worker", "模型生成", parent=parent, card_type="worker",
+        charter="## 使命\n待办"))["meta"]["card_id"]
+    r0 = await coder_fold.archive_worker(wid, fresh)
+    assert r0.get("ok") is True, r0
+    assert not card_store.card_exists(wid, fresh)
+    # 完工卡归档（产物清单/正文仍进档案）
     await _complete(wid, worker)
     r3 = await coder_fold.archive_worker(wid, worker)
     assert r3.get("ok") is True

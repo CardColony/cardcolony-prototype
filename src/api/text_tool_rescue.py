@@ -51,11 +51,46 @@ _B_BLOCK = re.compile(
     re.DOTALL)
 
 # ---------------------------------------------------------------------------
+# 形态C：antml/Devin 系 XML 元素伪调用（deepseek-v4.1-flash-eco 反复发作，
+#   card_061 实录 80+ 次）——调用块整个写进正文。两变体一套正则：
+#   ① antml 命名空间（模型自述的"真格式"）：
+#      <antml:function_calls><antml:invoke name="X">
+#        <antml:parameter name="k">v</antml:parameter></antml:invoke>
+#   ② 中文壳变体（实录）：<执行><function_calls>
+#        <function name="X"><path>v</path><limit>5</limit></function>
+#   参数两形态：<ns:parameter name="k">v</ns:parameter> 或 裸元素 <k>v</k>。
+#   工具名与注册表同面（list_files/search_files/read_file 皆真名），
+#   名不符自然走标准链的未知工具路径，这里不做映射。
+# ---------------------------------------------------------------------------
+_NS = r"(?:[A-Za-z_][\w.-]*:)?"
+_C_CALL = re.compile(
+    rf"<{_NS}(?:invoke|function)\s+name=\"(?P<name>[^\"]+)\"\s*>"
+    rf"(?P<body>.*?)"
+    rf"</\s*{_NS}(?:invoke|function)\s*>",
+    re.IGNORECASE | re.DOTALL)
+_C_PARAM_NAMED = re.compile(
+    rf"<{_NS}parameter\s+name=\"(?P<key>[^\"]+)\"\s*>"
+    rf"(?P<val>.*?)"
+    rf"</\s*{_NS}parameter\s*>",
+    re.IGNORECASE | re.DOTALL)
+_C_PARAM_BARE = re.compile(
+    r"<(?P<key>[A-Za-z_][\w.-]*)>"
+    rf"(?P<val>.*?)"
+    rf"</\s*(?P=key)\s*>",
+    re.DOTALL)
+_C_WRAPPER = re.compile(
+    rf"</?\s*{_NS}function_calls\s*>|</?执行\s*>",
+    re.IGNORECASE)
+
+# ---------------------------------------------------------------------------
 # 疑似标记探测（反馈兜底用）：正文里出现了泄漏标记的痕迹但没能解析出
 # 完整调用 → 调用方应把「未识别、未执行」这个事实回注模型
+# [形态C 2026-11-09] 覆盖面同步放宽：antml:invoke/function_calls/执行 壳
+# 也计入疑似（解析不出完整调用时照样喂反馈，不开第二个黑洞）。
 # ---------------------------------------------------------------------------
 _SUSPECT = re.compile(
-    rf"<{_PIPE}\s*(?:tool_calls|invoke|parameter)", re.IGNORECASE)
+    rf"<{_PIPE}\s*(?:{_NS})?(?:tool_calls|function_calls|invoke|function|parameter|执行)",
+    re.IGNORECASE)
 
 
 def _parse_invoke_params(body: str) -> dict:
@@ -136,6 +171,46 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
                           "_origin": "textB"})
         spans.append(m.span())
 
+    # ---- 形态C：antml/function_calls XML 元素伪调用 ----
+    for m in _C_CALL.finditer(content):
+        name = (m.group("name") or "").strip()
+        if not name:
+            continue
+        body = m.group("body") or ""
+        args: dict = {}
+        named_spans: list[tuple[int, int]] = []
+        for pm in _C_PARAM_NAMED.finditer(body):
+            key = pm.group("key").strip()
+            val = pm.group("val").strip()
+            try:
+                args[key] = json.loads(val)
+            except Exception:  # noqa: BLE001
+                args[key] = val
+            named_spans.append(pm.span())
+        # 裸元素参数（<k>v</k>）：先遮罩 named 参数占区，防止
+        # <ns:parameter> 被裸元素正则二次吞入。
+        if named_spans:
+            mask = [True] * len(body)
+            for s, e in named_spans:
+                for i in range(s, e):
+                    mask[i] = False
+            rest = "".join(ch for i, ch in enumerate(body) if mask[i])
+        else:
+            rest = body
+        for bm in _C_PARAM_BARE.finditer(rest):
+            key = bm.group("key").strip()
+            val = bm.group("val").strip()
+            try:
+                args[key] = json.loads(val)
+            except Exception:  # noqa: BLE001
+                args[key] = val
+        calls.append({"name": name, "arguments": args, "_origin": "textC"})
+        spans.append(m.span())
+    # 外壳家具一并剥：function_calls 开闭壳、<执行></执行> 壳。
+    # <计划> 是模型写的正文内容，不是调用家具——留。
+    for wm in _C_WRAPPER.finditer(content):
+        spans.append(wm.span())
+
     # ---- 剥离 ----
     stripped = content
     if spans:
@@ -147,7 +222,9 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
         stripped = re.sub(r"\n{3,}", "\n\n", stripped).strip()
 
     # ---- 疑似标记但零解析（反馈兜底信号）----
-    unresolved = bool(_SUSPECT.search(stripped)) and not calls
+    # 在剥离前的原文上探：calls 为空时 stripped 里外壳标记可能已被
+    # _C_WRAPPER 剥光 ⇒ 漏报 ⇒ 等待黑洞重开。零调用时查原文更严。
+    unresolved = (not calls) and bool(_SUSPECT.search(content))
 
     return calls, unresolved, stripped
 
@@ -162,3 +239,55 @@ def feedback_note() -> str:
     return ("[系统提示] 你上一轮正文中出现了工具调用样式的标记，"
             "但未被系统识别为可执行调用，未执行。"
             "如需执行工具调用，请使用标准函数调用格式重发。")
+
+
+# ---------------------------------------------------------------------------
+# [断言检出 · harness 化 2026-11-10] 断言词表＋断言点名实体（card_NNN／绝对
+#   路径）提取——**只产机械事实**：断言词有哪些、点名对象在不在本回合
+#   调用参数串里出现过。判据与处置全部挪进 harness_policies（旧版在同一
+#   钩位强制续轮，过于敏感被用户拆掉；这版只供事件发射面取用）。
+# ---------------------------------------------------------------------------
+#: 断言词：声称「已做核实动作」的完成式表述（「我要核实」不算，「核实过」算）。
+_CLAIM_RE = re.compile(
+    r"已核实|核实过|实测|实读|已确认|确认过|核对过|核查过|验证过|"
+    r"检查过|查证过|看过了|读过了|对照过|比对过|点开过|打开过|"
+    r"跑过了|试过了|盘[上中]")
+#: 点名实体：卡号＋绝对盘符路径（相对路径/文件名不取——经由目录列举核实
+#: 会误报；卡号与绝对路径在调用参数里基本逐字出现，精度优先）。
+_ENT_CARD = re.compile(r"\bcard_\d{2,}\b")
+_ENT_PATH = re.compile(
+    r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s\"'“”‘’，。；：、（）【】《》<>\[\]]+")
+
+
+def _norm_entity(s: str) -> str:
+    """路径归一：斜杠方向/重复斜杠压平、小写——参数里 D:\\x 与正文 D:/x 同面。"""
+    return re.sub(r"[\\/]+", "/", s).lower()
+
+
+def audit_claims(content: str, args_text: str,
+                 turn_tool_calls: int) -> tuple[list[str], list[str]]:
+    """断言检出。返回 (断言词命中表, 未被调用参数触碰的实体表)。
+
+    - tokens：正文里命中的完成式断言词（命中即返，供发射面判"要不要发事实"）；
+    - strays：断言点名的实体不在本回合调用参数串里的清单（零调用时为空表——
+      "零回执"本身由策略拿 tool_calls 判，这里不重复表达）。
+    """
+    tokens = sorted(set(_CLAIM_RE.findall(content or "")))
+    if not tokens:
+        return [], []
+    if turn_tool_calls <= 0:
+        return tokens, []
+    args_norm = _norm_entity(args_text or "")
+    seen: set[str] = set()
+    strays: list[str] = []
+    for ent in (_ENT_CARD.findall(content)
+                + _ENT_PATH.findall(content)):
+        ent = ent.rstrip(".,;:!?\"'，。；：")
+        if len(ent) < 4 or ent in seen:
+            continue
+        seen.add(ent)
+        if _norm_entity(ent) not in args_norm:
+            strays.append(ent)
+        if len(strays) >= 6:
+            break
+    return tokens, strays

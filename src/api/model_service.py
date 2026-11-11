@@ -208,6 +208,15 @@ async def call_main(
     # 要照常交付（既有口径「不丢已产出的字」，test_slots_control 钉着）。
     # 故此处累计 content 增量，断流时用它合成终帧——与「立刻停」同时成立。
     _content_parts: list[str] = []
+    # [内联思考剥除 2026-11-10 · 用户实踩「think 泄露了」]
+    # 有的模型（MiniMax M 系全系实测）把思考以 <think>…</think> 标签**内联在
+    # content delta 里**——字段类 reasoning_content 归 ①路，标签内联类原来在
+    # 这条主路径**一个字都没剥**（只有三席 simple_service 剥过）⇒ 思考连标签
+    # 原样进逐字流、终帧正文、会话块，卡面整段贴出内部推理。
+    # 逐帧过 ThinkStreamSplitter（跨帧标签它能切）：思考增量归 reasoning 通道
+    # （思考面板可见、按模型配置决定是否回传），正文增量归 content。
+    from .think_strip import ThinkStreamSplitter, strip_inline_think
+    _think_sp = ThinkStreamSplitter()
     _stopped = False
     from . import control as _ctl
 
@@ -226,7 +235,11 @@ async def call_main(
                 model_name,
                 system_prompt,
                 user_prompt,
-                temperature=float(cfg.get("temperature", 0.5)),
+                # [kimi 文档口径 2026-11-10] temperature 显式 null ⇒ **不发该字段**
+                # （k3.1-pro 官方文档：temperature 不可修改、请勿显式传入）；
+                # 缺省 0.5、有值照常发——逐字不变。
+                temperature=(None if cfg.get("temperature", 0.5) is None
+                             else float(cfg.get("temperature", 0.5))),
                 # [F8b] 显式输出帽优先（凝练 computeOutputTokenCap）；None ⇒ 沿用配置
                 max_tokens=max_tokens if max_tokens is not None else cfg.get("max_tokens"),
                 timeout=cfg.get("timeout"),
@@ -255,16 +268,22 @@ async def call_main(
     try:
         async for ev in _stream:
             if "chunk_type" in ev:
-                # 逐字流增量：进独立通道，不进 content
+                # 逐字流增量：reasoning 字段类本已是思考；content 类过分流器
+                # 切内联标签——两条思考来源汇进同一条 reasoning 通道。
                 if ev["chunk_type"] == "reasoning":
-                    _reasoning_parts.append(ev.get("text") or "")   # 攒起来供回传
+                    _tk_inc, _bd_inc = str(ev.get("text") or ""), ""
                 else:
-                    _content_parts.append(ev.get("text") or "")     # 断流时合成终帧用
-                if ctx:
-                    _es.emit_token(ctx[0], ctx[1],
-                                   "reasoning_chunk" if ev["chunk_type"] == "reasoning"
-                                   else "content_chunk",
-                                   ev.get("text") or "")
+                    _tk_inc, _bd_inc = _think_sp.feed(ev.get("text") or "")
+                if _tk_inc:
+                    _reasoning_parts.append(_tk_inc)                # 攒起来供回传
+                    if ctx:
+                        _es.emit_token(ctx[0], ctx[1],
+                                       "reasoning_chunk", _tk_inc)
+                if _bd_inc:
+                    _content_parts.append(_bd_inc)                  # 断流时合成终帧用
+                    if ctx:
+                        _es.emit_token(ctx[0], ctx[1],
+                                       "content_chunk", _bd_inc)
             elif "content" in ev:
                 result = ev
             # [直接停止 2026-10-15] 停位检查放在**本帧处理之后**：这一帧已经收到、
@@ -276,6 +295,16 @@ async def call_main(
         # 消费者 break 出循环时生成器不会自动关闭 ⇒ 显式 aclose，
         # 否则 _stop_raced 的 finally 不跑、在流登记泄漏（停止判据永远为真）。
         await _stream.aclose()
+    # 分流器收尾：帧尾可能留着半个标签的残片——按当前归属吐净，不吞字。
+    _tk_tail, _bd_tail = _think_sp.flush()
+    if _tk_tail:
+        _reasoning_parts.append(_tk_tail)
+        if ctx:
+            _es.emit_token(ctx[0], ctx[1], "reasoning_chunk", _tk_tail)
+    if _bd_tail:
+        _content_parts.append(_bd_tail)
+        if ctx:
+            _es.emit_token(ctx[0], ctx[1], "content_chunk", _bd_tail)
     if _stop_ev is not None and _stop_ev.is_set() and not result:
         # 停止信号先到（流还没吐终帧）⇒ 与「帧边界停止」同一收口路径
         _stopped = True
@@ -295,6 +324,13 @@ async def call_main(
         result["content"] = "".join(_content_parts)
         logger.info("[model] 终帧 content 为空 ⇒ 用已收到的正文片段补回 %d 字",
                     len(result["content"]))
+    # [内联思考剥除 2026-11-10] 终帧 content 是网关装配的**权威全文**——
+    # 内联标签可能还在里面（分流器切的是 delta 流，终帧另是一路）⇒ 兜底剥净，
+    # 保证交付正文/会话块永不见 <think>。
+    _stripped = strip_inline_think(str(result.get("content") or ""))
+    if _stripped != str(result.get("content") or ""):
+        result = dict(result)
+        result["content"] = _stripped
     # [DeepSeek 思考回传 2026-10-15] 本轮思考随 result 返回（调用方决定是否回传）。
     # 字段名用协议名 reasoning_content；无思考时为空串（与旧行为逐字兼容——
     # 旧 result 无此键，新增键不改变既有读取）。

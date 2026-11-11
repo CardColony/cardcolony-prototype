@@ -116,6 +116,18 @@ def is_runner() -> bool:
     return _ROLE == "runner"
 
 
+def is_condense() -> bool:
+    return _ROLE == "condense"
+
+
+def condense_home() -> bool:
+    """[凝练独立进程 2026-11-10 · 用户令「凝练应该独立一个runner」]
+    凝练只发生在 condense 进程（生产）或 all 单进程（测试/旧模式）；
+    runner/web 一律 False。跨进程互斥由「只有一个进程能凝」天然成立，
+    不再需要文件锁/分片判据——memory_store 内 _CONDENSING 照旧兜同进程并发。"""
+    return _ROLE in ("all", "condense")
+
+
 def runner_side() -> bool:
     """该进程要不要跑卡域活（驱动器/回合/唤起）：all 与 runner 都跑，web 不跑。"""
     return _ROLE in ("all", "runner")

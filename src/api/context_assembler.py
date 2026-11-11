@@ -103,6 +103,66 @@ def _dep_relations_for(cards: list[dict[str, Any]], current_id: str,
     return out_entries, in_entries
 
 
+#: [上游需求文档 2026-11-10 · 用户令「UI、qa、pm、验收卡都应该看到其父卡的
+#: 需求文档，需求文档是它们的参照物，是应该直接进入它们上下文的」]
+#: [2026-11-10 · 用户补令] worker（编程卡）也要——委派执行体路径由 kick
+#: 正文带，系统回合路径靠本区罩住（两路同一事实源）。
+#: 只有这类执行/差事卡取数——别的卡型零 IO。
+_UPSTREAM_REQ_TYPES = {"ui", "worker", "qa_card", "pm_card"}
+
+
+def _load_upstream_requirements(work_id: str, current_id: str,
+                                cur_meta: dict[str, Any],
+                                cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """执行/差事卡的上游需求文档**投影**（参照尺，读侧投影＝每轮装配现取）。
+
+    - ui/worker → 父卡的需求文档；
+    - qa_card/pm_card → 父卡（派遣方）＋对象卡（差事账 ``target_card``，与父卡
+      不同才单列——target 缺省＝派遣方时会重）。
+
+    requirements 列已在 ``_load_cards_index`` 里 ⇒ 卡面事实**零额外 IO**；
+    唯一新查询是差事账（且只对 qa/pm 类型发）。读侧投影，不写第二份。
+    """
+    ctype = str((cur_meta or {}).get("card_type") or "")
+    if ctype not in _UPSTREAM_REQ_TYPES:
+        return []
+    req_of = {str(c.get("card_id") or ""):
+              (str(c.get("title") or ""), str(c.get("requirements") or ""))
+              for c in cards or []}
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add(label: str, cid: str) -> None:
+        if not cid or cid in seen:
+            return
+        title, req = req_of.get(cid, ("", ""))
+        req = str(req or "").strip()
+        # 占位模板不算正稿（新卡骨架）——「没有参照物不硬撑一行」。
+        # 判据复用 card_draft._is_placeholder（与子卡区同一口径，不另起一套）。
+        if not req:
+            return
+        from .card_draft import _is_placeholder  # noqa: PLC0415 延迟 import 破环
+        if _is_placeholder(req):
+            return
+        seen.add(cid)
+        out.append({"label": label, "card_id": cid,
+                    "title": title, "requirements": req})
+
+    parent = str((cur_meta or {}).get("parent") or "")
+    _add("父卡", parent)
+    if ctype in ("qa_card", "pm_card"):
+        try:
+            from ..storage import function_store as _fs
+            for dep in _fs.active_for_venue(work_id, current_id,
+                                          venue_kind="deploy"):
+                tgt = str(dep.get("target_card") or "")
+                if tgt and tgt != parent:
+                    _add("对象卡", tgt)
+        except Exception:  # noqa: BLE001 差事账读不到＝只给父卡那份
+            pass
+    return out
+
+
 def _load_direct_child_status(work_id: str, parent_id: str) -> list[dict[str, Any]]:
     """只取当前卡的**直接子卡** id/title/status_block/mission/card_type＋活性。
 
@@ -423,6 +483,9 @@ def build_ctx(work_id: str, current_id: str,
         dep_relations_out=dep_out,
         dep_relations_in=dep_in,
         direct_child_status=_load_direct_child_status(work_id, current_id),
+        # [上游需求文档 2026-11-10] 执行/差事卡的参照尺（类型闸外零 IO）。
+        upstream_requirements=_load_upstream_requirements(
+            work_id, current_id, cur_meta, cards),
         # [第二层区 2026-10-20] 只对根卡取数（别的卡返回 {}，区不出现）。
         role_cabinet=_load_role_cabinet(work_id, current_id, cards),
         # [function 实体化第二步 2026-10-21 · card_031] 职能两区取数一次（装配层）。

@@ -443,7 +443,7 @@ def test_block3_no_gate_in_chain():
 #: [事实分层 2026-11-01 · t27-3] _SEC_CARDMSG 语义修正 ⇒ BASE_PROMPT 文本变更，
 #: 指纹随之更新。**这条断言的意义是「片段拼装 == 整体渲染」**，不是"文本永不改"。
 #: （常量沿用原名 T22_1_* 属历史遗留；基线就是当前版本，每次升版本同步换指纹。）
-BASE_PROMPT_SHA256 = "7917deb4939987d34d21a6be5c0955ad40e6172301b94e5eb62dfe279aa5a138"
+BASE_PROMPT_SHA256 = "f3dab9d31ee16b3c12553c0f0526a75c7a1a5f8e0d7dd9f72d44d59662e80075"
 
 #: auto 版工具清单必须**逐件在册**（块0.4 硬判据 4）。
 #: [事实分层 2026-11-01] 清单与现行 _SEC_TOOLS_AUTO 实读对齐：
@@ -615,14 +615,14 @@ def test_block4_prompt_version_and_section():
     [回灌 5700 §十 版本号推进表] auto-t1＝块0.4 初版；auto-t2＝G2（自主通信
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
-    assert prompts.BASE_PROMPT_VERSION == "t27-11"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t28"
+    assert prompts.BASE_PROMPT_VERSION == "t27-16"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t33"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [2026-11-02] +browser/+create_ui_card
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
@@ -660,14 +660,14 @@ def test_rework_1_base_prompt_byte_identical_to_baseline():
         "BASE_PROMPT 与登记的基线 sha256 不符"
     assert base == prompts._join_sections(
         prompts._SEC_HEAD, prompts._SEC_ROLE, prompts._SEC_TOOLS,
-        prompts._SEC_WRITE, prompts._SEC_CODER, prompts._SEC_RULE,
-        prompts._SEC_ERR, prompts._SEC_CARDMSG,
+        prompts._SEC_CALLDISC, prompts._SEC_WRITE, prompts._SEC_WORKER,
+        prompts._SEC_RULE, prompts._SEC_ERR, prompts._SEC_CARDMSG,
     )
 
 
 def test_rework_2_versions():
     """BASE_PROMPT_VERSION 不动；AUTO_BASE_PROMPT_VERSION 存在且非空。"""
-    assert prompts.BASE_PROMPT_VERSION == "t27-11"
+    assert prompts.BASE_PROMPT_VERSION == "t27-16"
     assert isinstance(prompts.AUTO_BASE_PROMPT_VERSION, str)
     assert prompts.AUTO_BASE_PROMPT_VERSION.strip()
 
@@ -753,7 +753,8 @@ def test_rework_6_shared_sections_identical_in_both():
     """拼装表：HEAD/WORKER/RULE/ERR/CARDMSG 两版**共用、逐字不动**。"""
     base = prompts.BASE_PROMPT
     auto = prompts.AUTO_BASE_PROMPT
-    for frag in (prompts._SEC_HEAD, prompts._SEC_CODER, prompts._SEC_RULE,
+    for frag in (prompts._SEC_HEAD, prompts._SEC_CALLDISC,
+                 prompts._SEC_WORKER, prompts._SEC_RULE,
                  prompts._SEC_ERR, prompts._SEC_CARDMSG):
         assert frag in base, "共用片段不在普通版里"
         assert frag in auto, "共用片段不在自动版里"
@@ -1121,8 +1122,8 @@ def test_auto_prompt_version_after_p7():
     [事实分层 2026-11-01] 两版同批推进 ⇒ t27-3 / auto-t20。
     """
     from src.api import prompts
-    assert prompts.BASE_PROMPT_VERSION == "t27-11"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t28"
+    assert prompts.BASE_PROMPT_VERSION == "t27-16"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t33"
 
 
 async def _async_noop(*a, **kw):

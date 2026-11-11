@@ -405,3 +405,95 @@ def test_status_oversize_ignores_other_blocks():
     assert "status_block_oversize_reminder" not in \
         [f["policy"] for f in fired]
 
+def test_new_child_wire_relations_fires_on_org_child():
+    """new_child_wire_relations：建 sub_project/topic ⇒ 给父卡 inject 画线指令；
+    执行卡（worker/ui/qa_card/pm_card/tool）与场卡（review）不触发——
+    白名单只放组织型子卡。"""
+    st = ps.PolicySet()
+    assert st.load(_real_policies()) == []
+
+    fired = st.dispatch("w1", _fact(
+        "card_created", "card_010", card_type="sub_project",
+        by="card_001", cause="model"))
+    hits = [f for f in fired if f["policy"] == "new_child_wire_relations"]
+    assert hits, "sub_project 建卡没触发画线提醒"
+    assert hits[0]["then"]["target"] == "parent"
+    assert hits[0]["then"]["mode"] == "inject"
+    msg = hits[0]["then"]["message"]
+    assert "list_cards" in msg and "link_rel" in msg and "{card_id}" in msg
+
+    fired = st.dispatch("w1", _fact(
+        "card_created", "card_011", card_type="topic",
+        by="card_001", cause="model"))
+    assert "new_child_wire_relations" in [f["policy"] for f in fired]
+
+    for ctype in ("worker", "ui", "qa_card", "pm_card", "review", "tool"):
+        fired = st.dispatch("w1", _fact(
+            "card_created", "card_012", card_type=ctype,
+            by="card_001", cause="model"))
+        assert "new_child_wire_relations" not in \
+            [f["policy"] for f in fired], f"{ctype} 也触发了画线提醒"
+
+
+def test_new_child_wire_relations_target_resolves_to_parent():
+    """target=parent 的解析：作用域卡是新子卡 ⇒ 解析出它的父卡。"""
+    from src.infra import harness
+    out = harness.resolve_targets(
+        "parent", {"work_id": "w1", "card_id": "card_010",
+                   "parent": "card_001"})
+    assert out == ["card_001"]
+
+
+
+def test_claim_no_receipt_reminder_policy():
+    """claim_no_receipt_reminder（断言-回执对账 harness 化版）：
+    reply_claims 事实落进来，账对不上才 inject——零回执 或 漏检实体命中；
+    有回执且实体全被参数碰过 ⇒ 不响（机制正确时零打扰）。"""
+    st = ps.PolicySet()
+    assert st.load(_real_policies()) == []
+
+    # ① 零回执断言 ⇒ 触发，inject/self
+    fired = st.dispatch("w1", _fact(
+        "reply_claims", "c1", round=3, tool_calls=0, stray_count=0,
+        claims=["已核实"], claims_text="「已核实」", detail="本回合一条工具回执都没有"))
+    hits = [f for f in fired if f["policy"] == "claim_no_receipt_reminder"]
+    assert hits, "零回执断言没触发"
+    assert hits[0]["then"]["target"] == "self"
+    assert hits[0]["then"]["mode"] == "inject"
+    msg = hits[0]["then"]["message"]
+    assert "{event.claims_text}" in msg and "{event.detail}" in msg
+
+    # ② 有回执但断言点名的对象没被调用碰过 ⇒ 触发
+    fired = st.dispatch("w1", _fact(
+        "reply_claims", "c1", round=4, tool_calls=2, stray_count=1,
+        claims=["实读"], strays=["card_077"], detail="断言点名的对象（card_077）在本回合任何调用参数里都没出现过"))
+    assert "claim_no_receipt_reminder" in [f["policy"] for f in fired],         "漏检实体没触发"
+
+    # ③ 有回执且实体全覆盖 ⇒ 不响（机制不误伤）
+    fired = st.dispatch("w1", _fact(
+        "reply_claims", "c1", round=5, tool_calls=2, stray_count=0,
+        claims=["已核实"], claims_text="「已核实」", detail=""))
+    assert "claim_no_receipt_reminder" not in [f["policy"] for f in fired],         "有回执且实体全覆盖也触发了——误伤"
+
+
+def test_audit_claims_detector_mechanical_facts():
+    """检测器只产机械事实：断言词命中、点名实体与调用参数的对照——
+    判据不在这层（零调用时 strays 返回空表，"零回执"归策略判）。"""
+    from src.api import text_tool_rescue as tr
+
+    # 无断言词 ⇒ 零命中（发射面据此不发事件）
+    assert tr.audit_claims("随便一段没有断言的正文", "", 0) == ([], [])
+
+    # 有断言词＋零调用 ⇒ tokens 命中、strays 空（零回执由策略判）
+    toks, strays = tr.audit_claims("我已核实过结果", "", 0)
+    assert "已核实" in toks and strays == []
+
+    # 有断言词＋调用参数没碰点名的卡 ⇒ stray
+    toks, strays = tr.audit_claims(
+        "card_077 我已实读", '{"card_id": "card_001"}', 1)
+    assert "实读" in toks and "card_077" in strays
+
+    # 调用参数碰过点名的卡 ⇒ 无 stray（对得上账）
+    toks, strays = tr.audit_claims(
+        "card_077 我已实读", '{"card_id": "card_077"}', 1)
+    assert strays == []

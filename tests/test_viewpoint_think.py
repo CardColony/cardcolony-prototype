@@ -268,3 +268,62 @@ async def test_seat_without_stream_context_emits_nothing():
     meta = await _call_viewpoint(gw, "vp1", "sys", "user", None)
     assert meta["ok"] is True
     assert event_stream.token_journal_of("t_tmp", "card_tmp", "reasoning_chunk") == []
+
+
+# ------------------------------------------- 卡主路径内联思考剥除（2026-11-10）
+# 用户实踩：卡的内部推理以 <think> 整段泄到卡面——主路径（model_service →
+# message_runner → 卡面/会话）原来一个字都没剥，只有三席路径剥过。
+
+class _MainGw:
+    """model_service.call_main 的假网关：回放内联 <think> 的 content 流。"""
+
+    def __init__(self, script: list[dict[str, Any]]):
+        self.config = {"models": {"main": {"model": "fake-main",
+                                           "temperature": 0.5}}}
+        self._script = script
+
+    async def stream_call(self, model_name, system_prompt, user_prompt, **_kw):
+        import asyncio
+        await asyncio.sleep(0)
+        for ev in self._script:
+            yield ev
+
+
+async def test_main_path_strips_inline_think(monkeypatch):
+    """终帧正文剥净内联思考；思考落 reasoning_content（不丢、走思考通道）。"""
+    from src.api import model_service
+    monkeypatch.setattr(model_service, "_gateway", _MainGw([
+        {"chunk_type": "content", "text": "先说半句<thi"},
+        {"chunk_type": "content",
+         "text": "nk>内部推理不该见人</think>正文完。"},
+        {"content": "先说半句<think>内部推理不该见人</think>正文完。",
+         "tool_calls": [], "truncated_tool_call": None,
+         "finish_reason": "stop", "tokens_used": 1, "latency_ms": 1},
+    ]))
+    res, _ = await model_service.call_main("sys", "user", model_name="main")
+    assert "<think>" not in res["content"]
+    assert "内部推理不该见人" not in res["content"]
+    assert res["content"].endswith("正文完。")
+    assert "内部推理不该见人" in res["reasoning_content"]
+
+
+async def test_main_path_think_delta_goes_to_reasoning_channel(
+        card_ctx, monkeypatch):
+    """逐字流：content delta 里的思考分进 reasoning_chunk，正文通道不见标签。"""
+    wid, cid = card_ctx
+    from src.api import model_service
+    monkeypatch.setattr(model_service, "_gateway", _MainGw([
+        {"chunk_type": "content", "text": "前半句<thi"},
+        {"chunk_type": "content", "text": "nk>想一想</think>后半句"},
+        {"content": "前半句<think>想一想</think>后半句",
+         "tool_calls": [], "truncated_tool_call": None,
+         "finish_reason": "stop", "tokens_used": 1, "latency_ms": 1},
+    ]))
+    await model_service.call_main("sys", "user", model_name="main")
+    reasons = "".join(str((f.get("data") or {}).get("text") or "") for f in
+                      event_stream.token_journal_of(wid, cid, "reasoning_chunk"))
+    bodies = "".join(str((f.get("data") or {}).get("text") or "") for f in
+                     event_stream.token_journal_of(wid, cid, "content_chunk"))
+    assert "想一想" in reasons, "思考要进 reasoning 逐字流"
+    assert "<think>" not in bodies and "想一想" not in bodies, "正文通道不见思考"
+    assert "前半句" in bodies and "后半句" in bodies

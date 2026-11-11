@@ -59,6 +59,18 @@ from .llm_anthropic.adapter import (
     AnthropicMessagesAdapter,
 )
 from .llm_anthropic.adapter import DEFAULT_MAX_TOKENS as DEFAULT_ANTHROPIC_MAX_TOKENS
+from .llm_wbcli import (
+    WBCLI_PROTOCOL,
+    WbCliAdapter,
+    WbCliAdapterOptions,
+    WbCliConnectionOptions,
+)
+from .llm_devincli import (
+    DEVINCLI_PROTOCOL,
+    DevinCliAdapter,
+    DevinCliAdapterOptions,
+    DevinCliConnectionOptions,
+)
 from .mavis_lease import get_default_client
 
 logger = get_logger(__name__)
@@ -105,6 +117,10 @@ def _echo_fill_kind(model_config: dict[str, Any]) -> str:
         字段必须存在且非空，实测空串照样 400）；
       * ``"empty"``       —— 补**空串**（DeepSeek 系官方 API 生产实测口径：字段必须
         存在，空串即可）；
+      * ``"real"``        —— **有真思考才回传、没有就不带字段**（kimi-k3.1-pro
+        保留式思考口径：恒推理、文档要求「原样回传 API 返回的
+        ``reasoning_content``」——塞空串等于谎报「该轮无思考」；
+        该端点实测对「不带字段/带空串」均不报 400，故省略安全）；
       * ``""``（缺省）     —— **不补**（该端点不要求回传）。
 
     〔5715 · 模型名收口〕改前是「模型名含 deepseek / vendor ∈ {opencode,deepseek} /
@@ -124,6 +140,8 @@ def _echo_fill_kind(model_config: dict[str, Any]) -> str:
         return "empty"
     if s == "":
         return "empty"
+    if s == "real":
+        return "real"
     return ""
 
 
@@ -161,6 +179,32 @@ def reasoning_echo_fill(model_name: str, model_config: dict[str, Any]) -> Option
 REASONING_PLACEHOLDER = "(系统注入的消息，无模型思考记录)"
 
 
+def reasoning_echo_value(model_name: str, model_config: dict[str, Any],
+                         real_reasoning: str = "") -> tuple[bool, Optional[str]]:
+    """本轮 assistant 消息的 ``reasoning_content``：**带不带 + 带什么**。
+
+    ``reasoning_echo_fill`` 只回答「没有真思考时补什么」；本函数把「有真思考」
+    一并收口成单一判据（``(attach, value)``）：
+
+      * kind ``""``（端点不要这字段）⇒ ``(False, None)``——**永不带**；
+      * 有真思考（``real_reasoning`` 非空）⇒ ``(True, 真思考)``——原样回传
+        （kimi 保留式思考/DeepSeek 共同口径：回传 API 实际返回的内容）；
+      * kind ``"real"`` 且无真思考 ⇒ ``(False, None)``——**不带字段**
+        （kimi 文档：原样回传或没有，塞空串＝谎报「该轮无思考」）；
+      * kind ``"empty"``/``"placeholder"`` 且无真思考 ⇒ ``(True, 填充值)``。
+    """
+    kind = _echo_fill_kind(model_config)
+    if kind == "":
+        return (False, None)
+    if real_reasoning:
+        return (True, real_reasoning)
+    if kind == "real":
+        return (False, None)
+    if kind == "empty":
+        return (True, "")
+    return (True, REASONING_PLACEHOLDER)
+
+
 def _needs_ds_norm(model_name: str, model_config: dict[str, Any]) -> bool:
     """是否要给注入的 assistant 消息补 reasoning_content。
 
@@ -173,8 +217,11 @@ def _needs_ds_norm(model_name: str, model_config: dict[str, Any]) -> bool:
     DeepSeek 系（官方 API 生产实测：不补 ⇒ 400 "reasoning_content ... must be
     passed back"）与 commandcode 的 ``reflection/beam:free``（实测空串照样 400
     "This model needs the reasoning of every earlier assistant message"）。
+
+    ``"real"`` 档（kimi 保留式思考）**不算**：注入消息本就没有模型思考，文档
+    口径是「原样回传 API 返回的」——没有就不带字段，不编造。
     """
-    return _echo_fill_kind(model_config) != ""
+    return _echo_fill_kind(model_config) in ("empty", "placeholder")
 
 
 def _ds_norm(msgs: Optional[list[dict[str, Any]]],
@@ -359,9 +406,26 @@ class ModelGateway:
             key_by_wire = {str(mc.get("model") or k): k for k, mc in self._models.items()}
             runtime.register_adapter(list(self._by_vendor.keys()), MockAdapter(key_by_wire))
             return runtime
+        # wb-cli 路由（WorkBuddy CLI 传输）：模型 entry 的 provider=="wb-cli"
+        # （models.yaml providers 里 protocol: wb-cli 编译而来）⇒ 该 vendor
+        # 名下所有模型走 WbCliAdapter，不进 OpenAICompat。
+        wbcli_vendors = {
+            v for v, names in self._by_vendor.items()
+            if any(str(self._models[n].get("provider") or "") == WBCLI_PROTOCOL
+                   for n in names)
+        }
+        # devin-cli 路由（Devin CLI 传输）：同 wb-cli 分流判据，protocol
+        # 为 devin-cli 的 vendor 走 DevinCliAdapter。
+        devincli_vendors = {
+            v for v, names in self._by_vendor.items()
+            if any(str(self._models[n].get("provider") or "") == DEVINCLI_PROTOCOL
+                   for n in names)
+        }
         # 五家共用一个适配器实例（各厂差异进 facts/dialects），注册键 = vendor。
         runtime.register_adapter(
-            [v for v in self._by_vendor if v != MAVIS_VENDOR],
+            [v for v in self._by_vendor
+             if v != MAVIS_VENDOR and v not in wbcli_vendors
+             and v not in devincli_vendors],
             OpenAICompatAdapter(CompatAdapterOptions(options=self._facts_for)),
         )
         # mavis 路由（MiniMax Code 网关）：Anthropic Messages 协议，broker 租约鉴权。
@@ -372,7 +436,53 @@ class ModelGateway:
                     AnthropicAdapterOptions(options=self._anthropic_facts_for)
                 ),
             )
+        if wbcli_vendors:
+            runtime.register_adapter(
+                sorted(wbcli_vendors),
+                WbCliAdapter(WbCliAdapterOptions(options=self._wbcli_facts_for)),
+            )
+        if devincli_vendors:
+            runtime.register_adapter(
+                sorted(devincli_vendors),
+                DevinCliAdapter(DevinCliAdapterOptions(
+                    options=self._devincli_facts_for)),
+            )
         return runtime
+
+    def _wbcli_facts_for(self, provider: str, model: str) -> WbCliConnectionOptions:
+        """``(vendor, wire_model) -> WorkBuddy CLI 连接事实``（cli 段原样来自 provider 层）。"""
+        mc = self._lookup(provider, model)
+        cli = mc.get("cli") if isinstance(mc.get("cli"), dict) else {}
+        wsl = cli.get("wsl") if isinstance(cli.get("wsl"), dict) else None
+        config_dir = str(cli.get("config_dir") or "")
+        if not config_dir and wsl:
+            config_dir = f"{str(wsl.get('home') or '/root').rstrip('/')}/.codebuddy"
+        return WbCliConnectionOptions(
+            exe=str(cli.get("exe") or ""),
+            config_dir=config_dir,
+            work_dir=str(cli.get("work_dir") or ""),
+            wsl={str(k): str(v) for k, v in wsl.items()} if wsl else None,
+            env_extra={str(k): str(v) for k, v in cli["env"].items()}
+            if isinstance(cli.get("env"), dict) else None,
+            default_effort=str(mc.get("default_effort") or ""),
+        )
+
+    def _devincli_facts_for(self, provider: str, model: str) -> DevinCliConnectionOptions:
+        """``(vendor, wire_model) -> Devin CLI 连接事实``（cli 段原样来自 provider 层）。"""
+        mc = self._lookup(provider, model)
+        cli = mc.get("cli") if isinstance(mc.get("cli"), dict) else {}
+        try:
+            timeout = float(cli.get("timeout_seconds"))
+        except (TypeError, ValueError):
+            timeout = 1800.0
+        return DevinCliConnectionOptions(
+            exe=str(cli.get("exe") or ""),
+            work_dir=str(cli.get("work_dir") or ""),
+            permission_mode=str(cli.get("permission_mode") or "auto"),
+            env_extra={str(k): str(v) for k, v in cli["env"].items()}
+            if isinstance(cli.get("env"), dict) else None,
+            timeout=timeout,
+        )
 
     def _anthropic_facts_for(self, provider: str, model: str) -> AnthropicConnectionOptions:
         """``(provider, wire_model) -> mavis 连接事实``（含 broker 令牌提供者）。"""
@@ -710,7 +820,12 @@ class ModelGateway:
                     tool_calls=len(result.get("tool_calls") or []),
                     reasoning_chars=sum(
                         len(b.text) for b in assembler.blocks()
-                        if isinstance(b, ReasoningBlock)))
+                        if isinstance(b, ReasoningBlock)),
+                    # [kimi 思考定责 2026-11-10] 端点 usage 里的思考 token 数：
+                    # >0 而 reasoning_chars=0 ⇒ 想了但没回吐（合同允许），
+                    # =0 ⇒ 真没想——「没 think 流」两种成因从此可分。
+                    reasoning_tokens=(getattr(usage, "reasoning_tokens", None)
+                                      if usage else None))
                 _obs.call_end(_trace)
                 return result
 

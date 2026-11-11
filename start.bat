@@ -34,7 +34,7 @@ for /f "delims=" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File wd
 
 rem ---- already-running check: refuse if any pid file's process is alive ----
 set ALIVE=0
-for %%f in (.server.pid .server-runner*.pid) do (
+for %%f in (.server.pid .server-runner*.pid .server-condense.pid) do (
     if exist %%f (
         set "PID="
         set /p PID=<%%f
@@ -79,6 +79,11 @@ for /l %%t in (1,1,30) do (
 )
 echo [WARN] runner ports not all up within 60s, starting web anyway.
 :runners_up
+
+rem ---- 2b) condense dedicated process (ECO_ROLE=condense, sole owner of
+rem    condensation; bare health probe on 127.0.0.1:5710) ----
+start "CardColony-condense" /min cmd /c "set ECO_ROLE=condense&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python condense_main.py >> logs\condense_stdout.log 2>&1"
+echo starting condense (probe port 5710)...
 
 rem ---- 3) web on 5700 (visible console) ----
 start "CardColony-web" cmd /c "set ECO_ROLE=web&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python main.py"

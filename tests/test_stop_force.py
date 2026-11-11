@@ -108,6 +108,71 @@ async def test_gate_human_clears_marker(sandbox, monkeypatch):
     assert control.is_halted(wid, leaf) is None            # 标记已解除
 
 
+# ---------------------------------------------------------------- T2c
+
+async def test_gate_directive_clears_marker(sandbox, monkeypatch):
+    """[2026-11-10 · 用户令「停卡不该影响后续 direct」] direct(父卡下行指令)
+    与人类同级:到达即解停并继续——闸挡的是停止时已在途的残留唤醒,停后
+    新到的指令是新命令;report/sync 等环境流量(source_kind=internal)照旧
+    被挡、信留会话等解除。"""
+    wid, root, mid, leaf = await _tree()
+    control.halt(wid, leaf, reason="范围确认前不动作", by="user")
+
+    async def _fake_inner(*a, **k):
+        return {"ok": True, "stub": True}
+
+    monkeypatch.setattr(api_routes, "_run_message_inner", _fake_inner)
+    r = await api_routes._run_message(
+        wid, leaf, "你收到一条来自 %s 的指令" % mid, None,
+        source_kind="directive",
+        source={"kind": "card_msg", "from": mid})
+    assert isinstance(r, dict) and r.get("stub") is True   # 真的继续走了
+    assert control.is_halted(wid, leaf) is None            # 标记已解除
+    # unhalt 事件带来令卡号归因
+    from src.storage import event_log
+    evs = [e for e in event_log.read(wid, leaf)
+           if e.get("type") == "card_unhalted"]
+    assert evs and evs[-1]["data"]["by"] == mid \
+        and evs[-1]["data"]["via"] == "directive"
+    # 环境流量照旧被挡
+    control.halt(wid, leaf, reason="再停", by="user")
+    r2 = await api_routes._run_message(wid, leaf, "report", None,
+                                       source_kind="internal")
+    assert isinstance(r2, dict) and r2.get("error", {}).get("code") == "halted"
+    assert control.is_halted(wid, leaf) is not None
+
+
+async def test_deliver_now_halt_precheck(sandbox, monkeypatch):
+    """[2026-11-10] halt 前置检查:非 directive 唤醒在停卡上直接 False——
+    发送方如实拿「没送达」而非任务内部 error 被火忘吞掉;directive 放行
+    (落 _run_message 闸门里解停再跑)。"""
+    from src.api import message_runner as _mr
+    wid, root, mid, leaf = await _tree()
+    monkeypatch.setenv("ECO_NO_AUTO_DELIVER", "0")   # 放开自动投递开关
+    control.halt(wid, leaf, reason="停着", by="user")
+    # 环境流量 ⇒ 前置 False，不起轮
+    ok = await _mr.deliver_now(wid, leaf, text="内部消息",
+                             source_kind="internal",
+                             source={"kind": "card_msg", "from": mid})
+    assert ok is False
+    assert control.is_halted(wid, leaf) is not None
+    # directive ⇒ 过前置检查走起轮路径(下层换桩不真跑模型)
+    spawned: list[str] = []
+
+    async def _fake_run(*a, **k):
+        spawned.append(k.get("source_kind") or (a[8] if len(a) > 8 else ""))
+        return {"ok": True}
+
+    monkeypatch.setattr(api_routes, "_run_message", _fake_run)
+    ok2 = await _mr.deliver_now(wid, leaf, text="你收到一条指令",
+                                source_kind="directive",
+                                source={"kind": "card_msg", "from": mid})
+    assert ok2 is True
+    import asyncio
+    await asyncio.sleep(0)                     # 让 spawn 出去的桩跑一拍
+    assert spawned and spawned[-1] == "directive"
+
+
 # ---------------------------------------------------------------- T3/T5
 
 async def test_stop_card_halt_by_parent(sandbox):

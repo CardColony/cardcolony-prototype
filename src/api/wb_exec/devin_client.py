@@ -35,8 +35,11 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from ..think_strip import strip_inline_think
 
 logger = logging.getLogger("api.wb_exec.devin")
 
@@ -44,6 +47,16 @@ logger = logging.getLogger("api.wb_exec.devin")
 DEFAULT_MODEL = "swe-2-max"
 #: 权限模式：bypass（=dangerous/yolo）——否则 agent 会停下来等审批 ⇒ 卡死。
 DEFAULT_PERMISSION_MODE = "bypass"
+
+#: [收尾挂住兜底 2026-11-10 · 用户令「卡做完了却一直运行中」]
+#: 最后一条实时事件是「正文」且此后静默超过该秒数、且无在途工具 ⇒
+#: 判执行体收尾挂住（进程不退/管道被子孙占住——communicate() 等的是
+#: 进程退＋管道 EOF 两件事，缺一不可；work_027 card_637 实证：22:41 出
+#: 最终正文，23:08 用户手动停，27 分钟零事件）。**只对 post-text 静默**
+#: 收口——工具在跑/模型长思考的静默轮不早杀（那靠 self.timeout 总闸）。
+_POST_TEXT_IDLE_S = float(os.environ.get("ECO_DEVIN_POST_TEXT_IDLE_S", "300"))
+#: 进程已退但管道还有持有者时，收尾排空的短等上限（秒）。
+_PIPE_DRAIN_GRACE_S = 8.0
 
 
 class DevinError(RuntimeError):
@@ -151,35 +164,137 @@ class DevinRunner:
                 *argv, cwd=work_dir, env=_child_env(),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 limit=8 * 1024 * 1024)
-            poller = (asyncio.create_task(_poll_live_events(marker, on_event))
+            # [收尾挂住兜底 2026-11-10 · 用户令「卡做完了却一直运行中」]
+            # communicate() 等的是「进程退 ＋ 管道 EOF」**两件**——执行体退了但
+            # 子孙（dev server/chrome/watcher）占住管道、或进程产完正文僵住不退，
+            # 都会吊在这一句上（work_027 card_637 实证：22:41 出最终正文，
+            # 27 分钟零事件直到用户手停）。改成四路竞速：
+            #   ① drain=communicate()：正常收口（退＋排空都到）；
+            #   ② proc.wait()：进程退但管道被占 ⇒ 短等排空后按 ATIF/已捕正文收口；
+            #   ③ post-text 静默看门：最后实时事件是「正文」＋无在途工具＋静默
+            #      ≥_POST_TEXT_IDLE_S ⇒ 判收尾挂住，杀进程按已捕正文收口；
+            #   ④ self.timeout：总闸兜底不变。
+            _live: dict[str, Any] = {"any_ts": 0.0, "text_ts": 0.0,
+                                     "pending": 0, "emitted": 0,
+                                     "last_text": ""}
+            _raw_on_event = on_event
+
+            def _tracked(kind: str, payload: dict) -> None:
+                _live["any_ts"] = time.time()
+                _live["emitted"] += 1
+                if kind == "text":
+                    _live["text_ts"] = time.time()
+                    _t = str((payload or {}).get("content")
+                             or (payload or {}).get("text") or "")
+                    if _t:
+                        _live["last_text"] = _t
+                elif kind == "tool_call":
+                    _live["pending"] += 1
+                elif kind == "tool_result":
+                    _live["pending"] = max(0, int(_live["pending"]) - 1)
+                if _raw_on_event is not None:
+                    _raw_on_event(kind, payload)
+
+            async def _post_text_idle() -> None:
+                # 判据＝「见过正文 ＋ 无在途工具 ＋ 任何事件全静默超时」——
+                # 不挑最后一条是不是正文：正文后零星 reasoning 是常态（637 实证），
+                # 挑 last_kind==text 会把这种真挂永远漏掉。
+                if _POST_TEXT_IDLE_S <= 0:
+                    return  # 0/负数＝关掉看门（运维手段）
+                while True:
+                    await asyncio.sleep(min(5.0, _POST_TEXT_IDLE_S))
+                    if (not _live["emitted"] or not _live["text_ts"]
+                            or int(_live["pending"]) > 0):
+                        continue
+                    if time.time() - float(_live["any_ts"] or 0) \
+                            >= _POST_TEXT_IDLE_S:
+                        return
+
+            poller = (asyncio.create_task(_poll_live_events(marker, _tracked))
                       if (marker and on_event) else None)
             # ★ **日志尾随**（永远可用的实时源）：``-p`` 不落库、stdout 收工才吐
             #   ⇒ 只剩 CLI 自己的日志里有逐次工具调用 ⇒ 按 pid 精确认领。
-            tailer = (asyncio.create_task(_tail_devin_log(proc.pid, on_event))
+            tailer = (asyncio.create_task(_tail_devin_log(proc.pid, _tracked))
                       if on_event else None)
+            drain = asyncio.ensure_future(proc.communicate())
+            exit_w = asyncio.ensure_future(proc.wait())
+            timeout_w = asyncio.ensure_future(asyncio.sleep(self.timeout))
+            idle_w = (asyncio.ensure_future(_post_text_idle())
+                      if (marker and on_event) else None)
+            waiters: set = {drain, exit_w, timeout_w}
+            if idle_w is not None:
+                waiters.add(idle_w)
+            out = err = b""
+            hung: str = ""
             try:
-                out, err = await asyncio.wait_for(proc.communicate(), self.timeout)
-            except asyncio.TimeoutError:
+                done_set, _pend = await asyncio.wait(
+                    waiters, return_when=asyncio.FIRST_COMPLETED)
+                if drain in done_set:
+                    out, err = drain.result()
+                elif exit_w in done_set:
+                    # 进程已退、管道还有持有者 ⇒ 短等排空，等不到按 ATIF 收尾
+                    try:
+                        out, err = await asyncio.wait_for(
+                            drain, _PIPE_DRAIN_GRACE_S)
+                    except asyncio.TimeoutError:
+                        hung = "pipe-held"
+                elif idle_w is not None and idle_w in done_set:
+                    hung = "post-text-idle"
+                else:
+                    hung = "timeout"
+            finally:
+                for _tg in (poller, tailer, idle_w, timeout_w, exit_w):
+                    if _tg is not None:
+                        _tg.cancel()
+            if hung in ("post-text-idle", "timeout"):
                 try:
                     proc.kill()
                 except Exception:  # noqa: BLE001
                     pass
-                for _tg in (poller, tailer):
-                    if _tg is not None:
-                        _tg.cancel()
+            if hung and not drain.done():
+                # 杀了（或管道被占）→ 把 drain 里残存的 stdout 尽量收回来：
+                # post-text-idle 时正文就在 stdout/ATIF 里，别白丢。
+                # 超时收不回就让它带着任务一起死（不留悬挂 drain）。
+                try:
+                    out, err = await asyncio.wait_for(
+                        drain, _PIPE_DRAIN_GRACE_S)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    out, err = out or b"", err or b""
+                except Exception:  # noqa: BLE001
+                    pass
+            if hung == "timeout":
                 return {"ok": False, "text": "", "export_path": "",
-                        "stdout": "", "stderr": f"超时（{self.timeout}s）", "rc": -1,
-                        "session_id": ""}
-            finally:
-                for _tg in (poller, tailer):
-                    if _tg is not None:
-                        _tg.cancel()
+                        "stdout": "", "stderr": f"超时（{self.timeout}s）",
+                        "rc": -1, "session_id": ""}
+            if hung:
+                # 被杀/管道挂住时补一拍进程退出确认——rc 后面要读，别拿 None。
+                # （exit_w 已在上面的 finally 取消 ⇒ 重新 wait，幂等。）
+                try:
+                    await asyncio.wait_for(proc.wait(), 3.0)
+                except BaseException:  # noqa: BLE001
+                    pass
             stdout = (out or b"").decode("utf-8", "replace")
             stderr = (err or b"").decode("utf-8", "replace")
+            if hung:
+                # 收口方式留痕：事后能在 stderr 里认出「不是正常退出」。
+                stderr = (stderr +
+                          f"\n[wb_exec] 收尾挂住({hung})，按已捕正文强制收口"
+                          ).strip()
             rc = proc.returncode
             parsed = parse_atif(export_file) if os.path.exists(export_file) else {}
-            text = parsed.get("text") or stdout.strip()
-            ok = rc == 0 and bool(text)
+            # post-text-idle 时正文常只活在实时流里（stdout 被堵/ATIF 没写）⇒
+            # 实时捕到的末条正文当保底，别让「收口拿不到」变成「判失败重做」。
+            text = strip_inline_think(
+                parsed.get("text") or stdout.strip()
+                or str(_live.get("last_text") or ""))
+            # post-text-idle：执行体的活干完了、挂的只是收尾 ⇒ 有正文即按成功
+            # 收口——判 False 会让上层换执行体把已完成的活整遍重做（rc 是被杀
+            # 的，拿它判 ok 必然冤案）。pipe-held 的 rc 是真退出码，照原判。
+            ok = (bool(text) if hung == "post-text-idle"
+                  else rc == 0 and bool(text))
+            if hung:
+                logger.warning("[devin] 收尾挂住(%s)按已捕正文收口 ok=%s rc=%s",
+                               hung, ok, rc)
             if not ok:
                 logger.warning("[devin] 进程 rc=%s 无正文；stderr=%s",
                                rc, stderr.strip())
@@ -325,7 +440,8 @@ async def _poll_live_events(marker: str,
                             _fire(on_event, "thinking",
                                   {"text": str(th["thinking"])})
                         if content.strip():
-                            _fire(on_event, "text", {"text": content})
+                            _fire(on_event, "text",
+                                  {"text": strip_inline_think(content)})
                         for tc in (msg.get("tool_calls") or []):
                             if not isinstance(tc, dict):
                                 continue

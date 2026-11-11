@@ -147,6 +147,22 @@ def _flash_next_fields(body: dict[str, Any], spec: ThinkingSpec, requested: Opti
         body["reasoning_effort"] = effort
 
 
+def _kimi_fields(body: dict[str, Any], spec: ThinkingSpec, requested: Optional[str], purpose: Optional[str]) -> None:
+    """kimi（Kimi 官方端点 k3.1-pro）：**官方文档**（platform.kimi.com
+    「思考模型」页，2026-11-10 核）：k3.1-pro **始终推理**、保留式思考
+    （Preserved Thinking）恒开、``thinking`` 参数**不支持也不应传入**；
+    唯一旋钮是顶层 ``reasoning_effort``：``"low"/"high"/"max"``，
+    **默认已是 "max"**——无档可升，故只在显式配了档位时才发，否则不发。
+    ``temperature`` 亦不可修改（models.yaml 该档应留空 ⇒ 序列化层不发）。
+    """
+    if purpose == "session-title":
+        return
+    effort = requested if requested is not None else (
+        _specific_effort(spec.thinking) or spec.default_effort)
+    if effort in ("low", "high", "max"):
+        body["reasoning_effort"] = effort
+
+
 #: 方舟 coding 端点（volcengine-coding）接受的 reasoning_effort 全档位。
 _VOLCENGINE_EFFORTS = ("low", "medium", "high", "max")
 
@@ -226,6 +242,9 @@ DIALECTS: dict[str, Callable[[dict[str, Any], ThinkingSpec, Optional[str], Optio
     # high/max），实测依据见 _volcengine_fields docstring。只注册 coding 端点——
     # token-plan 端点未探，不冒领。
     "volcengine-coding": _volcengine_fields,
+    # [kimi 官方端点 2026-11-10] k3.1-pro 文档口径：恒推理、不收 thinking 参数、
+    # 唯一旋钮 reasoning_effort（默认 max）。见 _kimi_fields docstring。
+    "kimi": _kimi_fields,
 }
 
 

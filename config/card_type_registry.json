@@ -275,7 +275,7 @@
   }
  ],
  "state_machine": {
-  "_doc": "工具卡/子卡通用状态机（任务书 T4）。写入经闸 4 校验。[2026-10-21] completed 可回到 active（coder 卡重新派活：同一件事的后续留在同一张卡上，不再只能新建卡）。",
+  "_doc": "工具卡/子卡通用状态机（任务书 T4）。写入经闸 4 校验。[2026-11-08 用户令] completed 只是「交付过结果」的标记，不参与任何功能判定；completed→active 迁移保留仅供历史数据兼容。",
   "initial": "active",
   "terminal": [],
   "transitions": {
@@ -300,7 +300,7 @@
    "desc": "card_type == \"tool\" 时 owner_card_id 非空，且 owner 必须落在本树内且其 card_type 属于 {sub_project, project}（用户 2026-10-09 11:54 裁定逐字「子项目卡或根卡」；原口径只允许 sub_project，同批放宽）。范围严格止于此二者——topic 等其他类型仍被拒，是否开放属未裁项。判据落点：card_store._write_gate 闸 3，集合常量 TOOL_CARD_OWNER_TYPES。"
   },
   "gate_4_state_transition": {
-   "desc": "状态迁移必须在 allowed_transitions 内；completed 为终态，不可再编辑正文。"
+   "desc": "状态迁移必须在 allowed_transitions 内；completed 只是交付结果标记，不是终态、不设功能闸门（完工不影响任何功能）。"
   },
   "read_path_policy": "宽容：legacy 值原样可读，不报错（任务书 §四裁断 5）。",
   "structural_rules": [

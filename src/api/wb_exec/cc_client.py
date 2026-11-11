@@ -41,6 +41,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from ..think_strip import strip_inline_think
+
 logger = logging.getLogger("api.wb_exec.cc")
 
 #: 默认入口（npm 全局安装）。
@@ -195,9 +197,10 @@ class CcRunner:
             except Exception:  # noqa: BLE001
                 pass
 
+        state: dict[str, Any] = {}
+
         async def _read_stdout() -> None:
             assert proc.stdout is not None
-            state: dict[str, Any] = {}
             # ★ 2026-11-06 修（探针实测抓到的第二块骨牌）：不加 nonlocal ⇒
             #   下面三个赋值全是**本函数自己的局部变量** ⇒ run() 收尾读到的
             #   final_text/session_id/usage **永远是初值空** ⇒ 就算 NameError
@@ -244,7 +247,16 @@ class CcRunner:
             stdout_task.cancel()
             stderr_task.cancel()
 
-        text_all = final_text or "".join(texts)
+        # 分流器收尾＋终帧兜底剥（delta 流与 result 终帧是两路）。
+        _sp = state.get("_think_sp")
+        if _sp is not None:
+            _tk_t, _bd_t = _sp.flush()
+            if _tk_t:
+                _fire(on_event, "thinking", {"text": _tk_t})
+            if _bd_t:
+                texts.append(_bd_t)
+                _fire(on_event, "text_delta", {"text": _bd_t})
+        text_all = strip_inline_think(final_text or "".join(texts))
         kind = exit_kind(rc)
         # ★ **rc≠0 时 stdout 仍可能带着正文**（rc=8＝轮数用尽，agent 干了活
         #   但没收尾）⇒ **不许因为 rc≠0 就说"无正文"**。
@@ -274,7 +286,8 @@ async def _handle_event(obj: dict, tools: list, errors: list, texts: list,
     sub = str((ev or {}).get("type") or "")
 
     if etype == "result":
-        state["final_text"] = str(obj.get("finalText") or "")
+        state["final_text"] = strip_inline_think(
+            str(obj.get("finalText") or ""))
         state["session_id"] = str(obj.get("sessionId") or "")
         state["usage"] = obj.get("usage") or {}
         if str(obj.get("subtype") or "") == "error":
@@ -327,8 +340,18 @@ async def _handle_event(obj: dict, tools: list, errors: list, texts: list,
     if sub == "text_delta":
         d = str(ev.get("delta") or "")
         if d:
-            texts.append(d)
-            _fire(on_event, "text_delta", {"text": d})
+            # [内联思考剥除 2026-11-10] delta 可能带 <think> 内联标签 ⇒
+            # 分流：思考进 thinking 事件，正文进 text_delta（卡面永不见标签）。
+            _sp = state.get("_think_sp")
+            if _sp is None:
+                from ..think_strip import ThinkStreamSplitter
+                _sp = state["_think_sp"] = ThinkStreamSplitter()
+            _tk, _bd = _sp.feed(d)
+            if _tk:
+                _fire(on_event, "thinking", {"text": _tk})
+            if _bd:
+                texts.append(_bd)
+                _fire(on_event, "text_delta", {"text": _bd})
         return
     if sub == "thinking_end":
         t = str(ev.get("text") or "")

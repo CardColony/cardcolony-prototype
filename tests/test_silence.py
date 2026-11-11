@@ -3,7 +3,8 @@
 
 钉七件事:
 T1 silence_card 生命周期:silence ⇒ is_silenced;activate ⇒ 解除
-T2 完工限定:active 卡被拒(指向 stop_card)
+T2 [完工不影响功能 2026-11-08 改] 沉默是治理动作，不要求卡标过 completed
+   （改前「active 卡被拒、指向 stop_card」，那是拿结果标记当功能闸门）
 T3 权限:祖先可/兄弟拒/根卡不可被沉默
 T4 信路闸①:deliver_now 对沉默卡不取件不唤醒(信留 pending)
 T5 信路闸②:K3 对沉默卡跳过
@@ -57,13 +58,14 @@ async def test_silence_lifecycle(sandbox):
     assert not governance_store.is_silenced(wid, done)
 
 
-async def test_silence_requires_completed(sandbox):
+async def test_silence_no_longer_requires_completed(sandbox):
+    """[完工不影响功能] 沉默是治理动作，跟卡有没有交付过结果无关。"""
     wid, root, mid, done, active = await _tree_with_completed()
     cards = _cards(wid)
-    bad = await card_tools._h_silence_card(
-        wid, mid, {"card_id": active, "reason": "它在跑"}, cards)
-    assert bad.get("ok") is False
-    assert "stop_card" in str(bad.get("error", {}).get("message", ""))
+    ok = await card_tools._h_silence_card(
+        wid, mid, {"card_id": active, "reason": "免扰"}, cards)
+    assert ok.get("ok") is True, ok
+    assert governance_store.is_silenced(wid, active)
 
 
 async def test_silence_permissions(sandbox):

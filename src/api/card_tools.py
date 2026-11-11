@@ -259,6 +259,9 @@ TOOL_SWITCH: dict[str, str] = {
     # 不再与通信线共用 link/unlink。
     "link_rel": policy.SWITCH_LINK_REL,
     "unlink_rel": policy.SWITCH_UNLINK_REL,
+    # [画线看全图 2026-11-09 · 用户令] list_cards＝画线时的全项目花名册
+    # （id/标题/卡型/父卡/使命）——只读，挂 read。
+    "list_cards": policy.SWITCH_READ,
     # [更新现状按钮改造 2026-10-16] propose_status 挂 SWITCH_READ——**只为满足
     # 「注册表每件工具都要有开关映射」的完备性不变量**（tests/test_cardperm_readopen.py
     # ::test_tool_switch_covers_every_registered_tool），语义上「只提议不落盘」也是读性质
@@ -309,6 +312,9 @@ TOOL_SWITCH: dict[str, str] = {
     "plan_remove": policy.SWITCH_PLAN,
     "plan_modify": policy.SWITCH_PLAN,
     "step_complete": policy.SWITCH_PLAN,
+    # [等待工具 2026-11-10] wait 挂 read——零副作用的时间件（与 report 同口径：
+    # 完备性不变量要求映射，语义上「原地停」不读不写不落存储，挂最通用的开关）。
+    "wait": policy.SWITCH_READ,
 }
 
 # [T12-R3] 工具表基准版本化固化：工具集/schema 变更须递增版本号并对账基准指纹。
@@ -357,7 +363,13 @@ TOOL_SWITCH: dict[str, str] = {
 # tools-tc-25：[coder→worker 改名 2026-11-05 · 用户令] 工具集变更 ⇒ 递增：
 #   create_coder_card → create_worker_card（除 UI 外一切执行：编程/文档/命令/
 #   构建测试/查档）；完工消息类型 coder_done → worker_done；卡型值 worker。
-TOOL_TABLE_VERSION = "tools-tc-25"
+# tools-tc-26：[等待工具 2026-11-10] **工具集变更 ⇒ 递增**：新增 wait（门式
+#   等待——调研 codex/dsh/mcode 后的收敛形态：上限钳制、插话/停止提前结束、
+#   回执自报家底）。
+# tools-tc-27：[父替子画线 2026-11-09 · 用户令] **工具集+schema 变更 ⇒ 递增**：
+#   新增 list_cards（画线看全图：全项目花名册，id/标题/卡型/父卡/使命，read
+#   开关）；link_rel/unlink_rel 增可选 source_id——父卡可替直系子卡画/拆线。
+TOOL_TABLE_VERSION = "tools-tc-27"
 
 
 # ============================================================
@@ -1040,6 +1052,42 @@ async def _h_read_card(work_id: str, current_id: str,
     }
 
 
+async def _h_list_cards(work_id: str, current_id: str,
+                        arguments: dict[str, Any],
+                        cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """列全项目卡片清单：画线时看全图用的「花名册」。
+
+    [画线看全图 2026-11-09 · 用户令「父卡在画线时应该能看到全部卡片清单以及使命」]
+    card_list 上下文区只列有关系的卡（祖先＋子树——「没关系不进清单」防污染，
+    2026-10-30），但**给新卡画依赖线**时恰好要看到还没有关系的卡，旁树的卡也
+    看不到。全图按需拉：工具一次性给出 id/标题/卡型/父卡/使命，不进常驻上下文。
+    门槛：read 开关——它是只读花名册，不是正文（read_card 的「没线读不到」
+    管的是正文三块；清单给的是"有哪些卡、各自是干什么的"）。
+    """
+    if not _actor_can_switch(cards.get(current_id), policy.SWITCH_READ):
+        return err("denied", "越权：本卡没有读权限（perms 未授 read）")
+    # mission 是正文块列、不在 meta——cards 字典里读不到，整表一次 SQL 补齐。
+    missions = await card_db.run_read(
+        work_id,
+        lambda conn: {str(r[0]): str(r[1] or "") for r in conn.execute(
+            "SELECT card_id, mission FROM cards").fetchall()},
+        {})
+    out: list[dict[str, Any]] = []
+    for cid in sorted(cards or {}):
+        m = cards.get(cid) or {}
+        ctype = str(m.get("card_type") or "")
+        if ctype == "shadow":
+            continue
+        out.append({
+            "card_id": cid,
+            "title": str(m.get("title") or ""),
+            "card_type": ctype,
+            "parent": str(m.get("parent") or ""),
+            "mission": str(missions.get(cid) or "")[:200],
+        })
+    return {"ok": True, "total": len(out), "cards": out}
+
+
 async def _h_read_memory(work_id: str, current_id: str,
                          arguments: dict[str, Any],
                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1657,6 +1705,23 @@ async def _h_report_done(work_id: str, current_id: str,
     }
 
 
+def _requirements_final_of(card_result: dict[str, Any] | None) -> str:
+    """从 read_card 结果取需求文档**正稿**；空/骨架占位一律当没有。
+
+    [上游需求文档 2026-11-10] 给 worker/差事 kick 嵌尺用：占位模板不算正稿
+    （与上下文区同一 `_is_placeholder` 口径，不另起一套）。
+    """
+    req = str((((card_result or {}).get("body") or {})
+               .get("requirements")) or "").strip()
+    if not req:
+        return ""
+    try:
+        from .card_draft import _is_placeholder
+        return "" if _is_placeholder(req) else req
+    except Exception:  # noqa: BLE001 判不出来照给（多带一段模板比漏尺好）
+        return req
+
+
 async def _h_create_worker_card(work_id: str, current_id: str,
                                arguments: dict[str, Any],
                                cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1722,14 +1787,20 @@ async def _h_create_worker_card(work_id: str, current_id: str,
     try:
         from . import message_runner as _message_runner
         from . import routes as _routes
-        owner_title = str(
-            (await card_store.read_card(work_id, current_id))["meta"].get("title")
-            or current_id
-        )
+        _pc = await card_store.read_card(work_id, current_id)
+        owner_title = str(_pc["meta"].get("title") or current_id)
+        # [上游需求文档 2026-11-10 · 用户令「worker 就要把需求文档自动塞进它的
+        # 提示词里」] worker 走委派执行体——kick 正文是它唯一拿尺的通道；
+        # 正稿全文不截断（它是验收尺，残本判不了卷）。占位模板不带（没有正稿
+        # 不硬塞）。
+        _preq = _requirements_final_of(_pc)
         prompt = (
             f"卡 {current_id}（《{owner_title}》）给你发来开发任务。\n"
             f"任务内容：\n{task}"
         )
+        if _preq:
+            prompt += (f"\n\n【参照·你父卡的需求文档正稿】\n{_preq}\n"
+                       "干活与交工都以它为尺；它不写的部分按任务内容做。")
         first_run = _message_runner._spawn_tracked(
             _routes._run_message(work_id, new_id, prompt, None, append_user=False),
             work_id=work_id, card_id=new_id)
@@ -1922,6 +1993,18 @@ async def _h_create_deploy_card(work_id: str, current_id: str,
         # 不截断：需求文档**就是** QA 的验收尺——截 1500 字＝让它拿残本判卷，
         # 截掉的需求条目永远不会被验到（机械闸审计 2026-11-06 同款病）。
         _facts.append(f"需求文档：{(_req if _req else '（还没有）')}")
+        # [上游需求文档 2026-11-10 · 用户令] 对象卡≠派遣方时（如验收一张
+        # worker 卡——它没有需求文档），真正的尺子在**派遣方卡**上；执行体
+        # 路径只见这段正文，补进 kick 才拿得到（系统回合另靠 160 区投影）。
+        if target != current_id:
+            try:
+                _pc = await card_store.read_card(work_id, current_id)
+                _preq = str((_pc.get("body") or {}).get("requirements") or "")
+                _preq = _preq.strip()
+            except Exception:  # noqa: BLE001 读不到派遣方卡就不带
+                _preq = ""
+            if _preq and _preq != _req:
+                _facts.append(f"派遣方需求文档（验收的上游尺）：{_preq}")
         if code == "qa":
             _how = ("这是阶段验收：对照需求文档逐条判产物现状。"
                     "办完用 report 工具把结论回给派遣方；若你在执行体里干活，"
@@ -2013,6 +2096,7 @@ async def _h_report_deploy(work_id: str, current_id: str,
         _mr._spawn_tracked(_mr.deliver_now(
             work_id, to,
             text=f"你收到一条来自 {current_id} 的差事回执，正文已在上文。",
+            steer_text=text,
             source={"kind": "card_msg", "from": current_id}),
             work_id=work_id, card_id=to)
     except Exception as exc:  # noqa: BLE001 投递失败要如实回给模型
@@ -2075,6 +2159,7 @@ async def deploy_unreported_fallback(work_id: str, card_id: str,
     _mr._spawn_tracked(_mr.deliver_now(
         work_id, delegator,
         text=f"你收到一条来自 {fn} 的差事回执，正文已在上文。",
+        steer_text=text,
         source={"kind": "card_msg", "from": fn}),
         work_id=work_id, card_id=delegator)
     session_ops.ops_log("deploy_fallback_receipt", work_id, card_id,
@@ -2085,6 +2170,73 @@ async def deploy_unreported_fallback(work_id: str, card_id: str,
     await _fs.sweep_deployments(work_id)
     await card_store.update_card(
         work_id, card_id, {"state": "completed"}, "差事卡完工（收口兜底回执）")
+
+
+async def worker_unreported_fallback(work_id: str, card_id: str,
+                                     state: Any) -> None:
+    """[完工未报兜底 2026-11-10 · 用户令「执行卡做完不汇报太严重」]
+
+    worker 卡回合收口（含被打断/中止——收口块在 outcome 闸外调用）且本轮
+    没走 ``report_done``/``report_up`` ⇒ 末轮输出＋产物落点作
+    ``worker_done`` 补发父卡——与差事兜底同权：「干了活却没交差」不允许
+    静默（work_027 实证：card_636/637 完工即被停，report 在嘴边掐死，
+    父卡只见 halt 理由；完工兜底网 _worker_done_net 只兜「标了完工没发
+    信」，干完没标的它够不着——state 不翻转它不触发）。
+
+    - 只补「真干过活」的回合：``turn_tool_call_count>0``——纯应答/被秒停
+      的轮没有可交付内容；
+    - 判重两道：**本回合**工具事件里报告类调用成功（模型自己报了），或
+      ``_CODER_DONE_SENT_AT ≥ turn_start_ts``（兜底网/本兜底已发）；
+      补发成功也置位该账 ⇒ 兜底网 4s 复查自动跳过，绝不双发；
+    - 末轮无正文又没产物不发——静默轮不制造噪音；
+    - 如实标「系统补发·未走 report_done」，不冒充模型自己交的差；
+    - **不写 state**：补发只保证「父卡知道」，完工标记仍是 report_done 的活。
+    """
+    try:
+        meta = (await card_store.read_card(work_id, card_id)).get("meta") or {}
+    except Exception:
+        return
+    if str(meta.get("card_type") or "") != "worker":
+        return
+    for ev in getattr(state, "tool_events", None) or []:
+        if ev.get("ok") and str(ev.get("tool") or "") in (
+                "report_done", "report_up"):
+            return
+    if _CODER_DONE_SENT_AT.get(card_id, 0.0) >= float(
+            getattr(state, "turn_start_ts", 0.0) or 0.0):
+        return
+    if int(getattr(state, "turn_tool_call_count", 0) or 0) <= 0:
+        return
+    owner = str(meta.get("parent") or "") or work_store.work_card_id_of(work_id)
+    if not owner:
+        return
+    body = str(getattr(state, "clean_text", "") or
+               getattr(state, "final_only", "") or "").strip()
+    _arts, _excerpt = _collect_deliverables(work_id, card_id)
+    if not body and not _arts:
+        return
+    text = ("〔系统补发·完工知会〕本卡回合结束但未走 report_done 收口"
+            "——以下为其末轮输出（未必是最终完工形态）：\n" + body) if body \
+        else "〔系统补发·完工知会〕本卡回合结束但未走 report_done 收口，无完工正文。"
+    if _arts:
+        text += "\n\n——【验收指引】产物落点：\n" + "\n".join(_arts)
+    if _excerpt:
+        text += f"\n\n——【回执摘录】{_excerpt}"
+    rec = await session_facade.append_card_message(
+        work_id, owner, from_card=card_id, text=text, msg_type="worker_done")
+    if not rec:
+        return
+    from . import message_runner as _mr
+    await _mr.deliver_now(
+        work_id, owner,
+        text=f"你收到一条来自 {card_id} 的完工回执，正文已在上文。",
+        steer_text=text,
+        source={"kind": "card_msg", "from": card_id})
+    _CODER_DONE_SENT_AT[card_id] = datetime.now().timestamp()
+    session_ops.ops_log("worker_fallback_receipt", work_id, card_id,
+                        {"to": owner})
+    logger.info("[worker] 收口兜底回执 card=%s → %s（未走 report_done）",
+                card_id, owner)
 
 
 async def _h_draft_rule_edit(work_id: str, current_id: str,
@@ -3405,18 +3557,24 @@ async def _h_reparent_card(work_id: str, current_id: str,
 async def _h_link_rel(work_id: str, current_id: str,
                       arguments: dict[str, Any],
                       cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """建一条依赖关联线：在当前卡 ``relations`` 上追加 ``{target, kind, detail}``。
+    """建一条依赖关联线：在 ``source`` 卡 ``relations`` 上追加 ``{target, kind, detail}``。
 
-    校验：target 存在、≠自身、kind ∈ ``MODEL_DEP_KINDS``、detail 非空（必填）。
-    权限：只判**发起方**有 ``SWITCH_LINK_REL``——不看目标卡、不叠树作用域
-    （[连线不看对方 2026-10-22]；[三线拆开关 2026-10-27] 依赖线是独立开关，
-    不复用 ``SWITCH_LINK``——工具面按 ``TOOL_SWITCH["link_rel"]`` 下发，
-    执行层必须同一把闸，否则"看得见用不动/用得动看不见"）。
+    ``source_id`` 可选：缺省＝当前卡；给了必须是**当前卡的直系子卡**——
+    [父替子画线 2026-11-09 · 用户令「父卡需要可以给子卡画线」] 父卡建完
+    新子卡要替它把依赖/影响线画全，但代画范围只到自己的孩子：父替子画
+    是"管自己的卡"，不是"替全网任何卡表态"。
+    校验：target 存在、≠source、kind ∈ ``MODEL_DEP_KINDS``、detail 非空（必填）。
+    权限：只判**发起方**（调用者，不是 source）有 ``SWITCH_LINK_REL``——不看
+    目标卡、不叠树作用域（[连线不看对方 2026-10-22]；[三线拆开关 2026-10-27]
+    依赖线是独立开关，不复用 ``SWITCH_LINK``——工具面按
+    ``TOOL_SWITCH["link_rel"]`` 下发，执行层必须同一把闸，否则
+    "看得见用不动/用得动看不见"）。被代画的子卡自身有没有开关不归这次管。
     幂等：同 ``(target, kind)`` 已存在则不重复追加——detail 变化则**更新** detail。
     """
     target_id = str(arguments.get("target_id", "") or "")
     kind = str(arguments.get("kind", "") or "")
     detail = str(arguments.get("detail", "") or "").strip()
+    src_id = str(arguments.get("source_id", "") or "") or current_id
     if not target_id:
         return err("validation", "target_id 不能为空")
     if kind not in MODEL_DEP_KINDS:
@@ -3424,15 +3582,21 @@ async def _h_link_rel(work_id: str, current_id: str,
                    f"kind 非法: {kind}，只允许 {'/'.join(MODEL_DEP_KINDS)}")
     if not detail:
         return err("validation", "detail 不能为空（写清依赖什么/关联什么）")
+    if src_id not in cards:
+        return err("not_found", f"卡片不存在: {src_id}")
+    if src_id != current_id and \
+            str((cards.get(src_id) or {}).get("parent") or "") != current_id:
+        return err("denied",
+                   f"source_id 只能是自己的直系子卡（{src_id} 的父卡不是当前卡）")
     if target_id not in cards:
         return err("not_found", f"卡片不存在: {target_id}")
-    if target_id == current_id:
+    if target_id == src_id:
         return err("validation", "不能与自身建立关系")
     # 权限只判发起方（[连线不看对方 2026-10-22]）：不看目标卡 perms、不叠树作用域。
     bad = _require_wire_switch(current_id, policy.SWITCH_LINK_REL, cards, "建依赖线")
     if bad is not None:
         return bad
-    current = await card_store.read_card(work_id, current_id)
+    current = await card_store.read_card(work_id, src_id)
     existing = list(current["meta"].get("relations") or [])
     hit = next((r for r in existing
                 if isinstance(r, dict) and r.get("target") == target_id
@@ -3443,47 +3607,56 @@ async def _h_link_rel(work_id: str, current_id: str,
             return {"ok": True, "existed": True}   # 幂等：同 (target, kind, detail)
         hit["detail"] = detail                      # detail 变化 → 就地更新
         result = await card_store.update_card(
-            work_id, current_id, {"relations": existing},
+            work_id, src_id, {"relations": existing},
             f"由「{cur_title}」对话更新依赖关联：{kind} → {target_id}",
         )
         if "error" in result:
             return result
-        return {"ok": True, "updated": True, "source": current_id,
+        return {"ok": True, "updated": True, "source": src_id,
                 "target": target_id, "kind": kind, "detail": detail}
     existing.append({"target": target_id, "kind": kind, "detail": detail})
     result = await card_store.update_card(
-        work_id, current_id, {"relations": existing},
+        work_id, src_id, {"relations": existing},
         f"由「{cur_title}」对话建立依赖关联：{kind} → {target_id}",
     )
     if "error" in result:
         return result
-    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
-    return {"ok": True, "source": current_id, "target": target_id, "kind": kind}
+    cards[src_id] = {**(result.get("meta") or {}), "card_id": src_id}
+    return {"ok": True, "source": src_id, "target": target_id, "kind": kind}
 
 
 async def _h_unlink_rel(work_id: str, current_id: str,
                         arguments: dict[str, Any],
                         cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """解除依赖关联线：从当前卡 ``relations`` 移除指向 target 的条目。
+    """解除依赖关联线：从 ``source`` 卡 ``relations`` 移除指向 target 的条目。
 
+    ``source_id`` 可选：缺省＝当前卡；给了必须是**当前卡的直系子卡**——
+    与 ``link_rel`` 同一道口（[父替子画线 2026-11-09]：能替画就能替拆）。
     ``kind`` 缺省＝移除**全部**指向该 target 的条目；给了 kind 只移除对应条目。
-    权限：只判**发起方**有 ``SWITCH_UNLINK_REL``（[三线拆开关 2026-10-27]，
+    权限：只判**发起方**（调用者）有 ``SWITCH_UNLINK_REL``（[三线拆开关 2026-10-27]，
     与 ``link_rel`` 同门独立开关，不再复用 ``SWITCH_UNLINK``）；
     目标卡已删的悬空条目仍可清理（目标不存在则无卡可查，直接放行）。
     """
     target_id = str(arguments.get("target_id", "") or "")
     kind = str(arguments.get("kind", "") or "").strip()
+    src_id = str(arguments.get("source_id", "") or "") or current_id
     if not target_id:
         return err("validation", "target_id 不能为空")
     if kind and kind not in MODEL_DEP_KINDS:
         return err("validation",
                    f"kind 非法: {kind}，只允许 {'/'.join(MODEL_DEP_KINDS)}")
+    if src_id not in cards:
+        return err("not_found", f"卡片不存在: {src_id}")
+    if src_id != current_id and \
+            str((cards.get(src_id) or {}).get("parent") or "") != current_id:
+        return err("denied",
+                   f"source_id 只能是自己的直系子卡（{src_id} 的父卡不是当前卡）")
     if target_id in cards:
         # [连线不看对方 2026-10-22] 只判发起方（原来查目标卡 perms）。
         bad = _require_wire_switch(current_id, policy.SWITCH_UNLINK_REL, cards, "解依赖线")
         if bad is not None:
             return bad
-    current = await card_store.read_card(work_id, current_id)
+    current = await card_store.read_card(work_id, src_id)
     existing = list(current["meta"].get("relations") or [])
 
     def _match(rel: Any) -> bool:
@@ -3497,10 +3670,10 @@ async def _h_unlink_rel(work_id: str, current_id: str,
     removed = len(existing) - len(remaining)
     if removed == 0:
         detail = f" 的 {kind} 依赖关联" if kind else ""
-        return err("not_found", f"依赖关联不存在: 当前卡无指向 {target_id}{detail}")
+        return err("not_found", f"依赖关联不存在: {src_id} 无指向 {target_id}{detail}")
     cur_title = current["meta"].get("title", "")
     result = await card_store.update_card(
-        work_id, current_id, {"relations": remaining},
+        work_id, src_id, {"relations": remaining},
         f"由「{cur_title}」对话解除依赖关联 → {target_id}",
     )
     if "error" in result:
@@ -3508,8 +3681,8 @@ async def _h_unlink_rel(work_id: str, current_id: str,
     # [5713 通道试走] 同轮 meta 缓存同步（与 _h_create_card 同手法）：模型可以在
     # **同一轮**里先 link_cards 再 send_card_message——不做这一步，发信读到的还是
     # 本回合开始时的旧卡面（没有新线），会被「无线即拒」错杀（g2 用例实测踩到）。
-    cards[current_id] = {**(result.get("meta") or {}), "card_id": current_id}
-    return {"ok": True, "source": current_id, "target": target_id, "removed": removed}
+    cards[src_id] = {**(result.get("meta") or {}), "card_id": src_id}
+    return {"ok": True, "source": src_id, "target": target_id, "removed": removed}
 
 
 async def _h_search_manuscript(work_id: str, current_id: str,
@@ -4129,6 +4302,33 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         handler=_h_read_card,
         readonly=True,
     ),
+    # [画线看全图 2026-11-09 · 用户令] 全项目卡片花名册：常驻上下文的 card_list
+    # 区只列有关系的卡（防污染），画依赖线要看全图时按需调本工具。
+    "list_cards": ToolDef(
+        schema={
+            "name": "list_cards",
+            "description": (
+                "列出本项目**全部卡片**的清单：id、标题、卡型、父卡、使命。"
+                "给卡画依赖/影响线前先调它看全图——上下文里的「卡片清单」只列与你"
+                "有关系的卡，旁树和新卡看不见的要靠这里补。只读。"
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+        handler=_h_list_cards,
+        readonly=True,
+        doc=ToolDoc(
+            group="读卡",
+            scene="给卡画/改依赖线、想把一张新卡接进关系网之前看全图："
+                  "上下文「卡片清单」只列和你有关系的卡（祖先＋子树），"
+                  "旁树和还没连上的卡看不见——判断它依赖谁、影响谁，"
+                  "得先知道全部有哪些卡、各自是干什么的。",
+            usage="无参数，一次返回全项目每张卡的 id、标题、卡型、父卡、"
+                  "使命（使命截到 200 字）。看完用 link_rel 画线（代子卡画"
+                  "传 source_id）；要读某张卡的正文详情再用 read_card"
+                  "（正文要你俩之间有线才读得到）。",
+            effect=ToolEffect(),
+        ),
+    ),
     # [T12-R3] 记忆锚点下探（condense_fold 展开通道）：按块序号锚点取回已凝
     # 记忆条目——锚点不可用则凝练历史不可回查（方案 §七 展开工具）。只读拉取；
     # 记忆条目不是卡片正文，正文仍经 read_card。
@@ -4465,14 +4665,16 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     # [worker 卡 2026-10-15 · §六块2] 第 17 件工具：完工回报。追加在既有 16 件字面量
     # 之后 ⇒ 前 16 件的工具面顺序逐字不变。下发面：TOOL_SWITCH 挂 edit ＋
     # build_tool_schemas 第三段 WORKER_ONLY_TOOLS（只对 worker 卡下发）；执行层
-    # handler 再校验 card_type=="worker" 且 state=="active"（双保险）。
+    # handler 再校验 card_type=="worker"（角色闸）。交工幂等，不再拿 state
+    # 当「本轮能不能交工」的许可。
     "report_done": ToolDef(
         schema={
             "name": "report_done",
             "description": (
                 "任务做完时调用，调完即完工、本卡静默（worker 卡专用）。"
                 "完工回执由系统自动发给主卡并调起验收，你不需要也不能发信；"
-                "完工后本卡不再被激活、不可删除、永久留档。"
+                "完工后本卡不会被回执反复叫醒，只有新一轮派活才会再起一轮；"
+                "不可删除、永久留档。"
             ),
             "parameters": {
                 "type": "object",
@@ -4667,19 +4869,25 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "link_rel",
             "description": (
-                "在当前卡与目标卡之间建立一条**关系线**（第三种线，不用于通信）。"
-                "kind 二选一：**依赖**＝我消费它的什么（它的接口/文档我要读）；"
-                "**影响**＝我动什么会波及它（它的接口/文档它要读）。"
-                "source 固定为当前对话卡。"
+                "在 source 卡与目标卡之间建立一条**关系线**（第三种线，不用于通信）。"
+                "kind 二选一（**主语＝source 卡**）：**依赖**＝source 消费目标的什么"
+                "（它的接口/文档 source 要读）；**影响**＝source 动什么会波及目标"
+                "（它的接口/文档目标要读）。"
+                "source 默认为当前对话卡；也可传 source_id＝自己的**直系子卡** id，"
+                "替子卡画它的关系线（画线前先调 list_cards 看全图）。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target_id": {"type": "string", "description": "目标卡 id，如 card_003"},
+                    "source_id": {
+                        "type": "string",
+                        "description": "关系线的出发卡，缺省＝当前卡；只能填自己的直系子卡",
+                    },
                     "kind": {
                         "type": "string",
                         "enum": ["依赖", "影响"],
-                        "description": "依赖＝我消费它的什么；影响＝我动会波及它",
+                        "description": "依赖＝source 消费目标什么；影响＝source 动会波及目标（主语都是 source 卡）",
                     },
                     "detail": {
                         "type": "string",
@@ -4696,13 +4904,18 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "unlink_rel",
             "description": (
-                "解除当前卡上指向目标卡的依赖/关联关系线（source 固定为当前对话卡）。"
+                "解除 source 卡上指向目标卡的依赖/关联关系线（source 默认为当前对话卡，"
+                "也可传 source_id＝直系子卡）。"
                 "kind 缺省＝解除全部指向该目标的条目；给了 kind 只解对应条目。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target_id": {"type": "string", "description": "目标卡 id"},
+                    "source_id": {
+                        "type": "string",
+                        "description": "要清理关系线的卡，缺省＝当前卡；只能填自己的直系子卡",
+                    },
                     "kind": {
                         "type": "string",
                         "enum": ["依赖", "关联"],
@@ -6269,6 +6482,8 @@ async def _h_send_card_message(work_id: str, current_id: str,
         await _mr.deliver_now(
             work_id, target_id,
             text=f"你收到一条来自 {current_id} 的消息，正文已在上文（卡间消息）。",
+            steer_text=f"卡 {current_id} 给你发来一条消息：\n{content}",
+            source_kind=("directive" if mt == "msg_directive" else "internal"),
             source={"kind": "card_msg", "from": current_id})
     except Exception as exc:  # noqa: BLE001 投递失败不算发信失败（信已落库）
         logger.warning("[通信] 立即投递失败，交给收口兜底 target=%s: %s",
@@ -6533,16 +6748,27 @@ async def _h_report_up(work_id: str, current_id: str,
             work_id, parent, from_card=current_id, text=text,
             msg_type="msg_report")
         _mid = str((_rec or {}).get("msg_id") or "")
-        _mr._spawn_tracked(_mr.deliver_now(
+        # [2026-11-08] await 拿真回执（改前 _spawn_tracked 起完就走，「delivered」
+        # 是假的——deliver_now 返回 False 时照样报 delivered）。steer_text 带
+        # 汇报全文：父卡在跑时 deliver_now 走插话通道，轮槽里给的是正文
+        # 而不是「正文在上文」的指针——在跑回合的 prior 是回合首拼的，
+        # 上文里其实没有它（实测 report_up 对在跑父卡永远推不进）。
+        _ok = await _mr.deliver_now(
             work_id, parent,
             text=f"你收到一条来自 {current_id} 的汇报，正文已在上文。",
-            source={"kind": "card_msg", "from": current_id}),
-            work_id=work_id, card_id=parent)
+            steer_text=text,
+            source={"kind": "card_msg", "from": current_id})
     except Exception as exc:  # noqa: BLE001 投递失败要如实回给模型
         logger.warning("[report_up] 投递失败 to=%s: %s", parent, exc)
         return err("internal", f"汇报投递失败: {exc}")
-    return {"card_id": current_id, "delivered": [{"to": parent, "msg_id": _mid}],
-            "recipients": [parent]}
+    _item = {"to": parent, "msg_id": _mid}
+    if _ok:
+        return {"card_id": current_id, "delivered": [_item],
+                "recipients": [parent]}
+    return {"card_id": current_id, "delivered": [], "pending": [_item],
+            "recipients": [parent],
+            "note": "汇报已写入父卡会话历史，但未能唤起其回合"
+                    "（可能静音或投递通道异常）——下一回合上下文会自然带上"}
 
 
 async def _h_read_archive(work_id: str, current_id: str,
@@ -6613,49 +6839,40 @@ async def _h_continue_task(work_id: str, current_id: str,
                    f"{target} 不是worker 卡——续派只对 worker(其他卡型的任务延续"
                    "走普通消息/目标管理)")
 
-    # 复位 + 新生命周期(照 _revive_worker_card 的机械序列)
+    # 新生命周期（[完工不影响功能 2026-11-08]：不再碰 state 列）
     from ..goal.service import get_service
     from ..goal.types import CreateGoalRequest
     svc = get_service()
-    # [机制判断归harness 第3步] 生命周期分支判据走派生视图——事件流最后
-    # 一条 state 变更说了算（无覆盖回落列），不再读手写 state 列。
-    from ..infra import card_status as _cs
-    cur_state = _cs.derive(work_id, target)["delivery"]
-    if cur_state == "active":
-        # [停在中途可续派 2026-11-01 · 用户令「唤醒子卡不需要自动」]
-        # 「在干活」的判据不是 state 列：stop_card(halt) 只停 goal＋置停止
-        # 标记，**不复位 state**——被停住的 worker 永远停在 active（实测
-        # work_027/card_140：父卡更正任务下发无路）。真正表示「它在干活」
-        # 的只有两种：
-        #   ① 有在途回合（turn 互斥体被持——含等串行闸的排队回合）；
-        #   ② auto 卡且目标 active+armed（驱动随时给它续轮，续派会撞车）。
-        # 两者都不占 ⇒ 没在跑，可续派；顺手解除 halt 标记
-        # （halt 卡的内部唤醒会被拒，点火走 _run_message 会先查它）。
-        from ..storage import session_facade as _sf
-        from . import control as _control
+    # 改前按 delivery 分两支：completed 直接复位点火、active 才查护栏。
+    # 现在完工只是「交付过结果」的标记，一律按「此刻有没有在途回合」判，
+    # 与卡上写没写 completed 无关。
+    # [停在中途可续派 2026-11-01 · 用户令「唤醒子卡不需要自动」]
+    #   ① 有在途回合（turn 互斥体被持——含等串行闸的排队回合）；
+    #   ② auto 卡且目标 active+armed（驱动随时给它续轮，续派会撞车）。
+    # 两者都不占 ⇒ 没在跑，可续派；顺手解除 halt 标记。
+    from ..storage import session_facade as _sf
+    from . import control as _control
+    try:
+        _running = bool(_sf.turn_holder(work_id, target))
+    except Exception:  # noqa: BLE001 判不出来按在跑处理（宁可不派不误抢）
+        _running = True
+    _driven = False
+    if not _running and bool(meta.get("auto_mode")):
         try:
-            _running = bool(_sf.turn_holder(work_id, target))
-        except Exception:  # noqa: BLE001 判不出来按在跑处理（宁可不派不误抢）
-            _running = True
-        _driven = False
-        if not _running and bool(meta.get("auto_mode")):
-            try:
-                _g = await svc.get(work_id, target)
-                _driven = bool(_g is not None and _g.phase == "active"
-                               and _g.activation == "armed")
-            except Exception:  # noqa: BLE001 判不出来按在跑处理
-                _driven = True
-        if _running or _driven:
-            return err("validation",
-                       f"{target} 正在干活(state=active)——等它完工再续派;"
-                       "要打断用 stop_card")
-        if _control.unhalt(work_id, target, by=current_id,
-                           via="continue_task"):
-            logger.info("[continue_task] 解除强制停止并续派 card=%s by=%s",
-                        target, current_id)
+            _g = await svc.get(work_id, target)
+            _driven = bool(_g is not None and _g.phase == "active"
+                           and _g.activation == "armed")
+        except Exception:  # noqa: BLE001 判不出来按在跑处理
+            _driven = True
+    if _running or _driven:
+        return err("validation",
+                   f"{target} 正在干活——等这一轮结束再续派;要打断用 stop_card")
+    if _control.unhalt(work_id, target, by=current_id,
+                       via="continue_task"):
+        logger.info("[continue_task] 解除强制停止并续派 card=%s by=%s",
+                    target, current_id)
     upd = await card_store.update_card(
-        work_id, target, {"state": "active",
-                          "toolcard_final": ""},
+        work_id, target, {"toolcard_final": ""},
         f"由「{(cards or {}).get(current_id, {}).get('title', '')}」续派任务"
         + (f"·{note}" if note else ""))
     if isinstance(upd, dict) and upd.get("error"):
@@ -6702,11 +6919,22 @@ async def _h_continue_task(work_id: str, current_id: str,
         return err("internal", f"目标续期失败: {exc}")
 
     # 点火:唤醒该卡跑新任务(激励文=新任务文本,经既有 _run_message 链)
+    # [上游需求文档 2026-11-10] 续派 kick 同样带派遣方正稿——执行体只见这段
+    # 正文，需求若在上次开工后改过，这轮的尺就是新的。
     from . import message_runner as _mr
     from . import routes as _routes
+    _kick = f"【续派任务】{task}"
+    try:
+        _preq = _requirements_final_of(
+            await card_store.read_card(work_id, current_id))
+        if _preq:
+            _kick += (f"\n\n【参照·你父卡的需求文档正稿】\n{_preq}\n"
+                      "干活与交工都以它为尺；它不写的部分按任务内容做。")
+    except Exception:  # noqa: BLE001 尺没带不挡续派
+        pass
     try:
         _mr._spawn_tracked(_routes._run_message(
-            work_id, target, f"【续派任务】{task}", None, append_user=False),
+            work_id, target, _kick, None, append_user=False),
             work_id=work_id, card_id=target)
         fired = True
     except Exception as exc:  # noqa: BLE001 点火失败不撤续派(目标已在,下轮会跑)
@@ -6875,14 +7103,26 @@ async def _h_scene_direct(work_id: str, current_id: str,
     except Exception as exc:  # noqa: BLE001
         return err("internal", f"指令落信失败:{exc}")
     # [2026-10-26] 消息已落会话块 ⇒ 唤醒走 text 模式（不取件，只起轮）
-    _mr._spawn_tracked(_mr.deliver_now(
+    # [2026-11-10] 两处修：
+    #   · await 取代 _spawn_tracked——deliver_now 在「沉默/非 directive 停卡」上
+    #     前置返 False，回执如实区分「已唤醒」与「落会话待解」，不再谎称送达
+    #     （card_259 实证：halt 拒起发生在任务内部，火忘把 error 整个吞掉）。
+    #   · source_kind="directive"——指令是上级新命令非残留幽灵，到达即解除
+    #     强制停止再跑（report/sync 等环境流量无此豁免，照旧静默排队）。
+    _ok = await _mr.deliver_now(
         work_id, target,
         text=(f"你收到一条来自 {current_id} 的指令，正文已在上文（卡间指令）。"
               f"请按其执行，完成后用 report_up 汇报。"),
-        source={"kind": "card_msg", "from": current_id}),
-        work_id=work_id, card_id=target)
+        steer_text=f"卡 {current_id} 给你发来一条指令：\n{_body}\n请按其执行，完成后用 report_up 汇报。",
+        source_kind="directive",
+        source={"kind": "card_msg", "from": current_id})
+    if _ok:
+        _note = "指令已送达(对方被唤醒,按验收判据执行)"
+    else:
+        _note = ("指令已落对方会话但未唤醒(对方处于沉默态)——"
+                 "解冻后下一轮会看到;如需强制唤醒请先联络用户")
     return {"ok": True, "card_id": target, "msg_id": msg_id,
-            "note": "指令已送达(对方被唤醒,按验收判据执行)"}
+            "delivered": bool(_ok), "note": _note}
 
 
 async def _h_stage_open(work_id: str, current_id: str,
@@ -6972,14 +7212,9 @@ async def _h_silence_card(work_id: str, current_id: str,
                            "(总裁可管全树)")
         except Exception as exc:  # noqa: BLE001 判定失败一律拒
             return err("denied", f"子树判定失败,已拒绝: {exc}")
-    meta = (cards or {}).get(target) or card_store._meta_of(work_id, target) or {}
-    # [机制判断归harness 第3步] 完工判定走派生视图（事件权威＋列回落）。
-    from ..infra import card_status as _cs
-    _dstate = _cs.derive(work_id, target)["delivery"]
-    if _dstate != "completed":
-        return err("validation",
-                   f"{target} 尚未完工(state={_dstate or '?'})——"
-                   "沉默只用于完工卡;在跑的卡要停用 stop_card")
+    # [完工不影响功能 2026-11-08] 改前要求「必须 completed 才能沉默」——
+    # 拿交付结果标记当功能闸门。沉默是治理动作，判据只有根节点保护与
+    # 权限，跟这张卡有没有交付过结果无关。
     from ..storage import governance_store as _gov
     # [2026-10-25 · 用户裁定「worker 不能自动归档,应可续派」] worker 与其他
     # 完工卡同语义:沉默=治理标记(不折叠)。续派走 continue_task 工具。
@@ -8705,6 +8940,92 @@ TOOL_REGISTRY["set_function_duty"] = ToolDef(
     },
     handler=_h_set_function_duty,
     readonly=False,
+)
+
+
+# ============================================================
+# [等待工具 2026-11-10] wait：门式等待（gate-wait）——本轮原地停 N 秒。
+#
+# 形态照 codex `sleep` / dsh `job_output(wait)` / mcode「等」的收敛结论抄：
+#   · 上限钳制而不是拒绝（dsh-plugin-sleep：超帽按帽算、回执标 clamped）；
+#   · 可被中断——分段睡、段间看 停止置位/插话队列，有事提前返回
+#     （dsh job_output「wait 遇 user steer 提前结束」同款语义；
+#     pending_stop 只**看**不消费——消费是 check_control 的专权）；
+#   · 回执自报家底：requested/waited/clamped/ended_early/early_reason——
+#     模型按它决定「接着等还是先看那条消息」。
+# ============================================================
+_WAIT_MAX_SECONDS = 600.0
+
+
+async def _h_wait(work_id: str, current_id: str,
+                  arguments: dict[str, Any],
+                  cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    try:
+        req = float(arguments.get("seconds"))
+    except (TypeError, ValueError):
+        return err("validation", "seconds 须为数字（单位：秒）")
+    if req <= 0:
+        return err("validation", "seconds 须大于 0")
+    reason = str(arguments.get("reason") or "")[:200]
+    target = min(req, _WAIT_MAX_SECONDS)
+    from . import control as _control, steer as _steer  # 延迟导入破环（同 :4980 例）
+    import time as _time
+    start = _time.monotonic()
+    early = ""
+    while True:
+        left = target - (_time.monotonic() - start)
+        if left <= 0:
+            break
+        await asyncio.sleep(min(1.0, left))
+        if _control.pending_stop(work_id, current_id):
+            early = "stopped"
+            break
+        if _steer.pending_steer(work_id, current_id) > 0:
+            early = "steered"
+            break
+    return {
+        "requested_seconds": req,
+        "waited_seconds": round(_time.monotonic() - start, 1),
+        "clamped": req > _WAIT_MAX_SECONDS,
+        "ended_early": bool(early),
+        "early_reason": early,          # ""=睡满；"steered"=有插话；"stopped"=人工停止
+        "reason": reason,
+    }
+
+
+TOOL_REGISTRY["wait"] = ToolDef(
+    schema={
+        "name": "wait",
+        "description": (
+            "原地等待 N 秒后继续本轮（上限 600 秒，超出按 600 算并在回执标 "
+            "clamped）。需要「等」的场景用：等服务起好、退避重试、窗口期。"
+            "期间若有插话或人工停止会**提前结束**并在回执注明原因——"
+            "看到 ended_early 先处理那条消息，别接着等。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "number",
+                            "description": "等待秒数（>0，上限 600）"},
+                "reason": {"type": "string",
+                           "description": "等待原因（可选，回执回显）"},
+            },
+            "required": ["seconds"],
+        },
+    },
+    handler=_h_wait,
+    readonly=True,
+    doc=ToolDoc(
+        group="治理",
+        scene="需要原地等一段时间再动手：等外部条件成熟（服务起好、退避重试、"
+              "窗口期），或等兄弟卡跑一段再回头看。",
+        usage="wait(seconds, reason?)：本轮原地停 seconds 秒（上限 600，超出按 "
+              "600 算）。**这是「等」不是「查」**——等的是「某张卡完工」就走"
+              "通信唤醒或 await_children，别用 wait 轮询代替看结果；期间有"
+              "插话/人工停止会提前结束，回执写明原因，看到 ended_early 先处理"
+              "那条消息。",
+        effect=ToolEffect(sink="none"),
+    ),
 )
 
 # [T11-T10] 只读工具白名单（2026-10-31 起折叠已整体移除，白名单只剩

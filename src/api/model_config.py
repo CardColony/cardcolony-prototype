@@ -235,6 +235,25 @@ def reasoning_echo_fill(model_used: str = "", seat: str = "") -> Optional[str]:
     return None
 
 
+def reasoning_echo_value(model_used: str = "", seat: str = "",
+                         real_reasoning: str = "") -> tuple[bool, Optional[str]]:
+    """本轮 assistant 消息的 reasoning_content 带不带＋带什么（座位版）。
+
+    判据与 gateway.reasoning_echo_value 同源——``(attach, value)``：
+    有真思考原样回传；"real" 档（kimi 保留式思考）没真思考就不带字段。
+    找不到条目 ⇒ ``(False, None)``（不带，fail-open 同 reasoning_echo_fill）。
+    """
+    from ..model_gateway.gateway import reasoning_echo_value as _val
+
+    cfg = _gateway_config().get("models") or {}
+    for key, entry in cfg.items():
+        if not isinstance(entry, dict):
+            continue
+        if key in (seat, model_used) or entry.get("model") in (seat, model_used):
+            return _val(key, entry, real_reasoning)
+    return (False, None)
+
+
 def _gateway_config() -> dict[str, Any]:
     """取 gateway 的 config（与调用同源）。取不到返空 dict（fail-open）。
 

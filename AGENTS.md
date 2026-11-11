@@ -24,10 +24,14 @@
 ## 多进程拆分（ECO_ROLE，2026-11-06）
 
 - `python main.py`（不设 ECO_ROLE）＝旧单进程行为，测试/开发照跑。
-- 生产拓扑：web×1＋runner×K（ECO_RUNNER_COUNT）。
+- 生产拓扑：web×1＋runner×K（ECO_RUNNER_COUNT）＋condense×1。
   web＝`ECO_ROLE=web ECO_RUNNER_COUNT=K python main.py`（5700 对外）；
   runner-i＝`ECO_RUNNER_COUNT=K python runner_main.py i`
-  （5701+i 回环，ECO_RUNNER_BASE_PORT 可改基数）。
+  （5701+i 回环，ECO_RUNNER_BASE_PORT 可改基数）；
+  condense＝`python condense_main.py`（5710 裸探针，ECO_CONDENSE_PORT 可改）。
+  **凝练只在 condense 进程跑**（ECO_ROLE=condense；all 单进程照旧）——
+  runner/web 一律被 `_condense_home()` 闸退，扫盘、排水、fold 都是它的专活；
+  跨进程重复凝由「只有一个进程能凝」根除（pid 文件 `.server-condense.pid`）。
 - 卡按**子树根**稳定哈希（md5，不用内建 hash——跨进程要确定性）分到
   属主 runner；父子必同片 ⇒ 单卡单写者天然成立。串行模式全部归 0 号。
 - web：白名单只读 GET 本地答（procs.py `_WEB_LOCAL_GET_TPLS`）；带卡路径

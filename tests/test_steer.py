@@ -78,7 +78,8 @@ async def test_take_steer_consumes_once():
         await steer.request_steer(work_id, card_id, "第二句")
         assert steer.pending_steer(work_id, card_id) == 2
         got = steer.take_steer(work_id, card_id)
-        assert got == ["第一句", "第二句"]
+        # 队列里存的是 mark+body 成品（request 时拼好，apply 取走即用）
+        assert got == [steer.STEER_MARK + "第一句", steer.STEER_MARK + "第二句"]
         assert steer.pending_steer(work_id, card_id) == 0
         assert steer.take_steer(work_id, card_id) == []      # 不重放
     finally:
@@ -110,10 +111,12 @@ def test_apply_steer_inserts_into_slot():
     state = message_runner.RunState(work_id="work_steer4", card_id="card_001", content="原始问题")
     state.rounds = 2
     state.slot = _FakeSlot()
-    steer._pending[("work_steer4", "card_001")] = ["插话：改成先说结论"]
+    # 队列存 mark+body 成品（request_steer 置位时拼好）；这里直种成品件。
+    steer._pending[("work_steer4", "card_001")] = [
+        steer.STEER_MARK + "插话：改成先说结论"]
 
     n = message_runner._apply_steer(state)
-    assert n == 1
+    assert n == [steer.STEER_MARK + "插话：改成先说结论"]  # 返回被消费条目（mark+body 成品）
     assert state.slot.messages == [
         {"role": "user", "content": steer.STEER_MARK + "插话：改成先说结论"}]
     # 取走即清，不重放
@@ -127,7 +130,7 @@ def test_apply_steer_round1_goes_to_steer_tail():
     state.slot = _FakeSlot()
     steer._pending[("work_steer5", "card_001")] = ["首轮插话"]
 
-    assert message_runner._apply_steer(state) == 1
+    assert message_runner._apply_steer(state) == ["首轮插话"]  # 返回被消费条目
     assert state.slot.messages == []          # 还没进槽
     assert len(state.steer_tail) == 1
     assert state.steer_tail[0]["role"] == "user"
@@ -141,6 +144,45 @@ class _FakeSlot:
 
     def append_plain(self, msg):
         self.messages.append(msg)
+
+
+# ------------------------------------------------- 5. 忙时借插话通道投递
+@pytest.mark.asyncio
+async def test_deliver_now_busy_steers_instead_of_dropping(monkeypatch):
+    """[2026-11-08] 对方在跑 + text 模式 ⇒ 借插话通道进轮槽（返回 True），
+    不再只落 False 让消息等下一回合——「父卡在跑时 report_up 推不进」的修复。
+    插话件带 〔卡间消息〕 标、载正文（steer_text），不冒充人声。"""
+    monkeypatch.setenv("ECO_NO_AUTO_DELIVER", "0")   # 测试环境默认关自动投递
+    work_id, card_id = "work_steer6", "card_001"
+    owner = "turn:steer-test6"
+    assert session_facade.turn_try_acquire(work_id, card_id, owner) is True
+    try:
+        ok = await message_runner.deliver_now(
+            work_id, card_id,
+            text="你收到一条来自 card_009 的汇报，正文已在上文。",
+            steer_text="【汇报·子卡(card_009)】\n全部通过。",
+            source={"kind": "card_msg", "from": "card_009"})
+        assert ok is True
+        got = steer.take_steer(work_id, card_id)
+        assert got == ["〔卡间消息〕【汇报·子卡(card_009)】\n全部通过。"]
+
+        # 非卡间来源 ⇒ 〔系统消息〕 标；无 steer_text ⇒ 用 text 本体
+        ok2 = await message_runner.deliver_now(
+            work_id, card_id, text="系统给你发来一条提醒。",
+            source={"kind": "system"})
+        assert ok2 is True
+        assert steer.take_steer(work_id, card_id) == ["〔系统消息〕系统给你发来一条提醒。"]
+    finally:
+        session_facade.turn_release(work_id, card_id, owner)
+
+
+def test_discard_steer_returns_remains_for_rescue():
+    """收口清扫把残留件**还给**调用方（摘牌后补投用），不是静默吞掉。"""
+    work_id, card_id = "work_steer7", "card_001"
+    steer._pending[(work_id, card_id)] = ["〔用户插话〕来不及了"]
+    got = steer.discard_steer(work_id, card_id)
+    assert got == ["〔用户插话〕来不及了"]
+    assert steer.pending_steer(work_id, card_id) == 0
 
 
 # ---------------------------------------------------------------- 4. 事件内容覆盖

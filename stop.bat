@@ -25,7 +25,7 @@ for /f "delims=" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File wd
 )
 
 rem ---- 2) service processes by pid file ----
-for %%f in (.server.pid .server-runner*.pid) do (
+for %%f in (.server.pid .server-runner*.pid .server-condense.pid) do (
     if exist %%f (
         set "PID="
         set /p PID=<%%f
@@ -36,8 +36,8 @@ for %%f in (.server.pid .server-runner*.pid) do (
     )
 )
 
-rem ---- 3) port sweep: 5700 + 5701..5708 (covers ECO_RUNNER_COUNT up to 8) ----
-for /l %%p in (5700,1,5708) do (
+rem ---- 3) port sweep: 5700 + 5701..5710 (runners up to 8 + condense 5710) ----
+for /l %%p in (5700,1,5710) do (
     for /f "tokens=5" %%a in ('netstat -ano ^| findstr LISTENING ^| findstr ":%%p "') do (
         if not "%%a"=="0" (
             taskkill /PID %%a /F >nul 2>&1 && echo [OK] killed PID %%a on port %%p

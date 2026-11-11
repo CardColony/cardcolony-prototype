@@ -51,11 +51,19 @@ STEER_MARK = "〔用户插话〕"
 _pending: dict[tuple[str, str], list[str]] = {}
 
 
-async def request_steer(work_id: str, card_id: str, text: str) -> dict[str, Any]:
+async def request_steer(work_id: str, card_id: str, text: str, *,
+                        mark: str = STEER_MARK,
+                        emit_event: bool = True) -> dict[str, Any]:
     """投递一条插话（HTTP 端点唯一入口）。
 
     无在途回合 ⇒ **不投递**（``not_applied``）：宁可让前端回退成普通发送，
     也不假装插话成功——用户要的是「说给正在跑的那一轮听」。
+
+    [2026-11-08 · 卡间消息复用插话通道] ``mark``/``emit_event``：用户插话
+    走默认 〔用户插话〕 标＋user_message 事件；卡间消息/汇报经
+    ``deliver_now`` 忙时复用本通道时传自己的标、不发事件——其 msg_* 事件
+    在落会话块时已记，再发一条 user_message 会让前端把卡的话当用户的话。
+    队列里存的是 ``mark+body`` 成品，``_apply_steer`` 取走即用不再拼。
     """
     body = str(text or "").strip()
     if not body:
@@ -65,18 +73,20 @@ async def request_steer(work_id: str, card_id: str, text: str) -> dict[str, Any]
         return {"applied": False, "reason": "no_inflight_turn",
                 "idempotent": True, "holder": ""}
     key = (work_id, card_id)
-    _pending.setdefault(key, []).append(body)
+    item = str(mark or "") + body
+    _pending.setdefault(key, []).append(item)
     # 界面可见：插话落一条 user_message **事件**（不写会话块 ⇒ 不重复喂给模型、
     # 不污染会话历史；事件流是前端唯一数据源 ⇒ 刷新后也看得见这条插话）。
     # 落点＝用户按下的那一刻（不是被消费时）⇒ 事件时序与用户操作顺序一致。
-    try:
-        await session_facade.emit_message_event(
-            work_id, card_id, "user_message", STEER_MARK + body)
-    except Exception as exc:  # noqa: BLE001 事件落盘零阻断
-        logger.warning("[steer] 插话事件落盘失败（不阻断）card=%s: %s", card_id, exc)
+    if emit_event:
+        try:
+            await session_facade.emit_message_event(
+                work_id, card_id, "user_message", item)
+        except Exception as exc:  # noqa: BLE001 事件落盘零阻断
+            logger.warning("[steer] 插话事件落盘失败（不阻断）card=%s: %s", card_id, exc)
     session_ops.ops_log("steer", work_id, card_id,
                         {"action": "requested", "holder": holder,
-                         "chars": len(body)})
+                         "chars": len(item)})
     logger.info("[steer] 插话置位 work=%s card=%s holder=%s 待投=%d",
                 work_id, card_id, holder, len(_pending[key]))
     return {"applied": True, "reason": "steered", "holder": holder,
@@ -97,13 +107,18 @@ def pending_steer(work_id: str, card_id: str) -> int:
     return len(_pending.get((work_id, card_id), []))
 
 
-def discard_steer(work_id: str, card_id: str) -> None:
-    """回合收口清扫（对齐 ``control.discard_stop`` 的纪律）。
+def discard_steer(work_id: str, card_id: str) -> list[str]:
+    """回合收口清扫（对齐 ``control.discard_stop`` 的纪律）。返回被清件。
 
     置位只在回合窗口内有效：回合收口时未消费的插话（模型已收口、用户那句话
     来不及了）一律作废——**不能留给下一回合**，否则那句话会凭空出现在下一轮。
+
+    [2026-11-08] 但「作废」不等于「吞掉」：返回残留件（已按 mark 拼好的
+    成品），收口方可以决定摘牌后补投一轮——否则 applied=True 的那句话
+    模型从没见过，发话方却以为送达了。
     """
     key = (work_id, card_id)
-    n = len(_pending.pop(key, []) or [])
-    if n:
-        logger.info("[steer] 插话残留清扫 work=%s card=%s 条数=%d", work_id, card_id, n)
+    items = _pending.pop(key, []) or []
+    if items:
+        logger.info("[steer] 插话残留清扫 work=%s card=%s 条数=%d", work_id, card_id, len(items))
+    return items

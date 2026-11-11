@@ -48,6 +48,11 @@ providers:
     api_key_env: LONGCAT_API_KEY
     note: 美团 LongCat 开放平台（OpenAI 兼容）。2026-11-06 实测 /v1/models 共 3 个模型：LongCat-2.5 /
       LongCat-2.5-Preview / LongCat-2.0。文档口径：温度开思考锁 1.0、关思考锁 0.7，传别的值会被覆盖（实测不报错）。
+  opendesign2:
+    protocol: openai
+    base_url: https://amr-link.open-design.ai/v1
+    api_key_env: OPENDESIGN2_API_KEY
+    note: 第二份 OpenDesign（amr-link）订阅 key（2026-11-10 用户令）· 端点与第一份相同、key 独立；座椅按第一份逐字照抄。
   opendesign:
     protocol: openai
     base_url: https://amr-link.open-design.ai/v1
@@ -166,6 +171,39 @@ providers:
         · minimax/minimax-m3.1-flash:free 已下架（现只有付费档）
       本端点某些模型把思考放在 `reasoning` 字段（非 reasoning_content），
       translate.py 已双形态兼容。
+  workbuddy-cn:
+    # [2026-11-10] WorkBuddy 国内版——**CLI 传输，不是 HTTP 端点**：
+    # 本地 codebuddy.exe 已登录 cn 账号，适配器 spawn `codebuddy -p`
+    # （--tools "" 关内置工具⇒纯文本模型；stdin 喂转录文本，stdout 收
+    # stream-json 增量事件=Anthropic 具名事件形状）。
+    # 凭据＝CLI 自己的登录态（config_dir 下），不经任何 api_key/base_url。
+    protocol: wb-cli
+    auth: none
+    cli:
+      exe: 'C:\Users\user-machine\AppData\Local\codebuddy\bin\codebuddy.exe'
+      config_dir: 'C:\Users\user-machine\.codebuddy'
+    note: >-
+      WorkBuddy 国内版 CLI（模型级·本地登录态·非 OpenAI 端点·无工具调用·
+      temperature/max_tokens 无 flag 不生效·reasoning_effort→--effort）。
+  # [2026-11-10 用户令] 国际版先不接（环境在 WSL，要用时再开——cli.wsl 配法
+  # 见 git 历史 / wb_exec.json executors[wb-intl].cli_wsl）。
+  devin:
+    # [2026-11-10] Devin 桌面版捆绑 CLI——**子进程传输，不是 HTTP 端点**：
+    # 本地 devin.exe 已登录（credentials.toml），适配器 spawn
+    # `devin -p --prompt-file --export`（本地模式、不带 --cloud——云会话
+    # 看不见本地目录）。输出终态回吐（无增量流式），正文/用量优先取
+    # ATIF export。思考档写在模型名里（swe-2-high/medium/max）。
+    protocol: devin-cli
+    auth: none
+    cli:
+      exe: 'D:\Devin\resources\app\extensions\windsurf\devin\bin\devin.exe'
+      # 空白 scratch 目录：auto 档放行只读内置件，空目录让它无文件可翻。
+      work_dir: 'D:\Temp\devin-cli-scratch'
+      permission_mode: auto
+      timeout_seconds: 1800
+    note: >-
+      Devin CLI（模型级·本地登录态·非 OpenAI 端点·无增量流式·工具走
+      文本协议段·temperature/max_tokens/effort 无 flag——思考档在模型名里）。
 models:
   # [局域网 Flash-Next 2026-10-23] qwen3.8-flash-next-iq3_s（引擎不校验名字，照文档取全名）。
   # thinking: none —— 端点 reasoning_effort 档位 none/low/medium/high，重活建议 none 提速。
@@ -205,10 +243,15 @@ models:
     note: 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）
   kimi-k31-pro-volc:
     provider: volcengine-coding
-    echo_reasoning: true
     model: kimi-k3-1-pro-261024
-    reasoning_echo_fill: ""
+    # [2026-11-10] 同 k3.1-pro 保留式思考口径：有真思考才回传、没有就不带字段
+    # （原 "" 档塞空串＝谎报无思考）。
+    reasoning_echo_fill: real
     temperature: 1
+    # [2026-11-10 · 用户令「不思考就瞎编」] 强制思考：不传时端点 adaptive
+    # 会时不时不产 think 流（kimi-k3 那条 kimi.com 端点早已 thinking:'on'，
+    # 这条漏配）。volc coding 端点 10-25 实测开关为真。
+    thinking: 'on'
     note: 火山方舟 coding · kimi k3.1 pro（2026-10-25 用户令增加；方舟清单 261024 版）
   ds-flash-official:
     provider: deepseek-official
@@ -254,8 +297,13 @@ models:
     # 键名**沿用 kimi-k3**：它是本项目内部标识，被 concurrency.per_model、
     # tiers.depth_0 与卡上模型绑定引用着，改名会打断这些引用。
     model: k3.1-pro
-    temperature: 1
-    thinking: 'on'
+    # [2026-11-10 · 官方文档核查] k3.1-pro **恒推理、保留式思考恒开**：
+    #   · temperature 不可修改、文档明令「请勿显式传入」⇒ ~（null）＝不发字段；
+    #   · **不支持 thinking 参数** ⇒ 删（唯一旋钮 reasoning_effort 默认即 max）；
+    #   · 历史 assistant 须「原样回传 reasoning_content」⇒ echo 档 real：
+    #     有真思考才回传、没有就不带字段（塞空串＝谎报「该轮无思考」）。
+    temperature: ~
+    reasoning_echo_fill: real
     note: Kimi K3.1 Pro（coding plan 端点；2026-10-25 由 K3 替换）
   deepseek-pro:
     provider: opencode
@@ -508,10 +556,12 @@ models:
     note: '[第二组] 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）'
   kimi-k31-pro-volc2:
     provider: volcengine-coding2
-    echo_reasoning: true
     model: kimi-k3-1-pro-261024
-    reasoning_echo_fill: ''
+    reasoning_echo_fill: real
     temperature: 1
+    # [2026-11-10 · 用户令] 同上：强制思考。volcengine-coding2 未注册方言
+    # → 走 deepseek 兜底（顶层 thinking + reasoning_effort），线形同款。
+    thinking: 'on'
     note: '[第二组] 火山方舟 coding · kimi k3.1 pro（2026-10-25 用户令增加；方舟清单 261024 版）'
   glm-53-flash-volc2:
     provider: volcengine-coding2
@@ -522,11 +572,61 @@ models:
   ds-v41-flash-eco-amr:
     provider: opendesign
     model: deepseek-v4.1-flash-eco
+  ds-v41-flash-eco-amr2:
+    provider: opendesign2
+    model: deepseek-v4.1-flash-eco
+  # ---- WorkBuddy CLI 传输（2026-11-10）------------------------------------
+  # 用户令定档：hy3 全撤；deepseek-v4-pro / glm-5.3-flash 是**付费档**（用户
+  # 明确点名 ⇒ 登记并标注价）。CLI -p 传输：纯文本、无工具调用；
+  # temperature/max_tokens 无 flag 不生效。
+  # 「思考强度开到最高」= 每模型各自支持的最高档：hy4free 目录写明 effort
+  # 只能 high（onlyReasoning）；v4pro / glm53flash 实测接受 --effort max。
+  wb-hy4free-cn:
+    provider: workbuddy-cn
+    model: hy4free
+    default_effort: high
+    retry:
+      max_attempts: 2
+      backoff_seconds: 5
+    note: >-
+      WorkBuddy·cn·Hy4 限时免费档（x0.00·促销至 2026-11-16·onlyReasoning·
+      effort=high 已是其最高档；到期上游明确报额度错 ⇒ 从 tiers/选用里撤）。
+  wb-v4pro-cn:
+    provider: workbuddy-cn
+    model: deepseek-v4-pro
+    default_effort: max
+    retry:
+      max_attempts: 2
+      backoff_seconds: 5
+    note: WorkBuddy·cn·deepseek-v4-pro（付费 x0.51·用户 11-10 点名·effort=max）
+  wb-glm53flash-cn:
+    provider: workbuddy-cn
+    model: glm-5.3-flash
+    default_effort: max
+    retry:
+      max_attempts: 2
+      backoff_seconds: 5
+    note: WorkBuddy·cn·glm-5.3-flash（付费 x0.08·用户 11-10 点名·effort=max）
+  # ---- Devin CLI 传输（2026-11-10）------------------------------------
+  # 用户令定档：只上 swe-2-max（`devin models list` 目录标 Free 的最高档；
+  # high/medium 是同族低档、flash 是快档，均未登记——要用再添）。
+  devin-swe2-max:
+    provider: devin
+    model: swe-2-max
+    retry:
+      max_attempts: 2
+      backoff_seconds: 10
+    note: >-
+      Devin·SWE-2 Max（目录标 Free·本地 devin -p·262K 上下文·
+      终态回吐无增量·单轮端到端 ~12s 起）。工具=文本协议段实测：
+      它会先撞一次内置同名件（auto 档必拒），被拒后回落 XML 文本调用
+      ⇒ 每轮多一次被拒尝试但循环能走通；读文件它用内置只读件真读
+      （不受 FILE_SCOPE 管，慎用敏感路径）。
 bindings:
   execute: glm-53-flash
   think: glm-53-flash
   synthesize: glm-53-flash
-  condense: glm-53-flash-volc
+  condense: glm-53-flash
   compress: glm-53-flash
   draft: glm-53
   viewpoint:

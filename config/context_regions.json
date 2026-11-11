@@ -1,104 +1,108 @@
 {
-  "_meta": {
-    "version": "context-regions-v9",
-    "created_at": "2026-10-15",
-    "taskbook": "docs/上下文底座化-方案-20261015.md",
-    "purpose": "上下文统一接管控制面：上下文区与请求通道的全局启停/排序",
-    "carrier": "独立 JSON 配置，不进 DB",
-    "semantics": {
-      "enabled": "false ＝该区不参与模型请求；未配置＝按注册表默认启用",
-      "order": "覆盖注册表默认 order；未配置＝按注册表默认",
-      "fail_open": "配置缺失/坏 JSON/regions 不合法时，全部按注册表默认执行"
-    },
-    "scope": "当前全局控制；按卡/按卡类型由规则卡后续提供配置",
-    "takeover": "所有 registered region 的运行 owner 是 context base；source_owner 仅说明原始数据来源",
-    "card_ability": "2026-10-21 新增：按每张卡自己的 perms 注入「你手上有什么」＋「动手前先想清怎么拆」。能力由系统授予，不依赖上级是否把它写进子卡任务书。",
-    "function_regions": "2026-10-21 新增：93 现有职能（只给项目根卡、看已建了哪些职能 ＋ 值班/盯卡数） ＋ 145 你的职能（职能自己回合的「我是谁」，职责书全文与发言契约）。"
+ "_meta": {
+  "version": "context-regions-v9",
+  "created_at": "2026-10-15",
+  "taskbook": "docs/上下文底座化-方案-20261015.md",
+  "purpose": "上下文统一接管控制面：上下文区与请求通道的全局启停/排序",
+  "carrier": "独立 JSON 配置，不进 DB",
+  "semantics": {
+   "enabled": "false ＝该区不参与模型请求；未配置＝按注册表默认启用",
+   "order": "覆盖注册表默认 order；未配置＝按注册表默认",
+   "fail_open": "配置缺失/坏 JSON/regions 不合法时，全部按注册表默认执行"
   },
-  "regions": {
-    "instruction": {
-      "enabled": true,
-      "order": 0
-    },
-    "rule": {
-      "enabled": true,
-      "order": 85
-    },
-    "card_duty": {
-      "enabled": true,
-      "order": 90
-    },
-    "team_function_instruction": {
-      "enabled": true,
-      "order": 91
-    },
-    "card_ability": {
-      "enabled": true,
-      "order": 92
-    },
-    "function_roster": {
-      "enabled": true,
-      "order": 93
-    },
-    "type_thinking": {
-      "enabled": true,
-      "order": 95
-    },
-    "card_list": {
-      "enabled": true,
-      "order": 100
-    },
-    "function_self": {
-      "enabled": true,
-      "order": 145
-    },
-    "current_card": {
-      "enabled": true,
-      "order": 150
-    },
-    "goal": {
-      "enabled": true,
-      "order": 152
-    },
-    "region_guide": {
-      "enabled": true,
-      "order": 155
-    },
-    "child_status": {
-      "enabled": true,
-      "order": 170
-    },
-    "memory": {
-      "enabled": true,
-      "order": 200
-    },
-    "relations": {
-      "enabled": true,
-      "order": 250
-    },
-    "history": {
-      "enabled": true,
-      "order": 300
-    },
-    "tool_turn": {
-      "enabled": true,
-      "order": 900
-    },
-    "user_message": {
-      "enabled": true,
-      "order": 999
-    },
-    "judgment_protocol": {
-      "enabled": true,
-      "order": 1000
-    },
-    "context_tail": {
-      "enabled": true,
-      "order": 1010
-    },
-    "seat_identity": {
-      "enabled": true,
-      "order": 1020
-    }
+  "scope": "当前全局控制；按卡/按卡类型由规则卡后续提供配置",
+  "takeover": "所有 registered region 的运行 owner 是 context base；source_owner 仅说明原始数据来源",
+  "card_ability": "2026-10-21 新增：按每张卡自己的 perms 注入「你手上有什么」＋「动手前先想清怎么拆」。能力由系统授予，不依赖上级是否把它写进子卡任务书。",
+  "function_regions": "2026-10-21 新增：93 现有职能（只给项目根卡、看已建了哪些职能 ＋ 值班/盯卡数） ＋ 145 你的职能（职能自己回合的「我是谁」，职责书全文与发言契约）。"
+ },
+ "regions": {
+  "instruction": {
+   "enabled": true,
+   "order": 0
+  },
+  "rule": {
+   "enabled": true,
+   "order": 85
+  },
+  "card_duty": {
+   "enabled": true,
+   "order": 90
+  },
+  "team_function_instruction": {
+   "enabled": true,
+   "order": 91
+  },
+  "card_ability": {
+   "enabled": true,
+   "order": 92
+  },
+  "function_roster": {
+   "enabled": true,
+   "order": 93
+  },
+  "type_thinking": {
+   "enabled": true,
+   "order": 95
+  },
+  "card_list": {
+   "enabled": true,
+   "order": 100
+  },
+  "function_self": {
+   "enabled": true,
+   "order": 145
+  },
+  "current_card": {
+   "enabled": true,
+   "order": 150
+  },
+  "goal": {
+   "enabled": true,
+   "order": 152
+  },
+  "region_guide": {
+   "enabled": true,
+   "order": 155
+  },
+  "upstream_requirements": {
+   "enabled": true,
+   "order": 160
+  },
+  "child_status": {
+   "enabled": true,
+   "order": 170
+  },
+  "memory": {
+   "enabled": true,
+   "order": 200
+  },
+  "relations": {
+   "enabled": true,
+   "order": 250
+  },
+  "history": {
+   "enabled": true,
+   "order": 300
+  },
+  "tool_turn": {
+   "enabled": true,
+   "order": 900
+  },
+  "user_message": {
+   "enabled": true,
+   "order": 999
+  },
+  "judgment_protocol": {
+   "enabled": true,
+   "order": 1000
+  },
+  "context_tail": {
+   "enabled": true,
+   "order": 1010
+  },
+  "seat_identity": {
+   "enabled": true,
+   "order": 1020
   }
+ }
 }

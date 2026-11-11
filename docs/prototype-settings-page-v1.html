@@ -1,0 +1,1420 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CardColony · 设置页 · 交互原型 v1</title>
+<style>
+/* ============================================================
+   令牌：深/浅两套同名齐备
+   --line 是对「控件内填充／所在面板」调的，不是对页面底色调的
+   ============================================================ */
+html[data-theme="dark"]{
+  --bg:#0d1117;
+  --bg-deep:#12181f;
+  --panel:#151a21;
+  --panel-2:#1b222b;
+  --panel-3:#212a34;
+  --line:#63758a;
+  --line-soft:#26303a;
+  --text:#e6edf3;
+  --text-soft:#c3cfdb;
+  --text-mute:#9fadbb;
+  --accent:#4c9aff;
+  --accent-ink:#061019;
+  --sel:#212a34;
+  --ok:#3fb950;
+  --warn:#d29922;
+  --err:#ff7b72;
+  --focus:#7cc0ff;
+  --skel:#64748b;
+  --shadow:0 18px 48px rgba(0,0,0,.55);
+}
+html[data-theme="light"]{
+  --bg:#f2f4f7;
+  --bg-deep:#ffffff;
+  --panel:#ffffff;
+  --panel-2:#f6f8fa;
+  --panel-3:#eef2f7;
+  --line:#7b8794;
+  --line-soft:#dbe2ea;
+  --text:#10161d;
+  --text-soft:#39424d;
+  --text-mute:#4b5563;
+  --accent:#0b5cad;
+  --accent-ink:#ffffff;
+  --sel:#e8eef7;
+  --ok:#146c2e;
+  --warn:#8a5a00;
+  --err:#b3202a;
+  --focus:#0b5cad;
+  --skel:#7b8794;
+  --shadow:0 18px 48px rgba(16,22,29,.18);
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--bg);color:var(--text);
+  font:13px/1.5 ui-sans-serif,-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}
+.mute{color:var(--text-mute)}
+.grow{flex:1 1 auto}
+
+/* ---------- 顶栏：标题 / 过滤 / 主题 / 说明 ---------- */
+.topbar{
+  flex:0 0 auto;height:46px;display:flex;align-items:center;gap:8px;
+  padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);
+}
+.brand{font-weight:700;letter-spacing:.2px;display:flex;align-items:center}
+.dotmark{width:9px;height:9px;border-radius:2px;background:var(--accent);display:inline-block;margin-right:7px}
+.sep,.crumb{color:var(--text-mute);font-size:12px}
+.inp{
+  height:28px;padding:0 8px;background:var(--bg-deep);color:var(--text);
+  border:1px solid var(--line);border-radius:5px;min-width:0;
+}
+.inp::placeholder{color:var(--text-mute)}
+.filter{width:180px}
+.sel{height:28px}
+.btn{
+  min-height:30px;padding:0 10px;background:var(--panel-2);
+  border:1px solid var(--line);border-radius:5px;cursor:pointer;white-space:nowrap;
+}
+.btn:hover{background:var(--panel-3)}
+.btn.sm{min-height:28px;padding:0 8px;font-size:12px}
+.btn-pri{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn-pri:hover{background:var(--accent)}
+.btn-danger{border-color:var(--err);color:var(--err)}
+
+/* ---------- 骨架：左分区列表 + 右单列 ---------- */
+.shell{flex:1 1 auto;display:flex;min-height:0}
+.navlist{
+  width:206px;flex:0 0 auto;background:var(--panel);border-right:1px solid var(--line);
+  padding:6px;overflow:auto;
+}
+.navrow{
+  display:flex;align-items:center;gap:8px;width:100%;min-height:34px;padding:0 8px;margin:1px 0;
+  background:none;border:0;border-left:3px solid transparent;border-radius:5px;
+  color:var(--text-soft);cursor:pointer;text-align:left;
+}
+.navrow:hover{background:var(--panel-2);color:var(--text)}
+.navrow[aria-current="true"]{background:var(--sel);border-left-color:var(--accent);color:var(--accent);font-weight:650}
+.navrow .nb{margin-left:auto;font-size:11px;color:var(--text-mute)}
+.navfoot{margin:10px 8px 0;padding-top:8px;border-top:1px solid var(--line-soft);color:var(--text-mute);font-size:11px;line-height:1.55}
+
+.content{flex:1 1 auto;min-width:0;overflow:auto;outline:none}
+.crumb2{
+  position:sticky;top:0;z-index:2;height:38px;display:flex;align-items:center;gap:7px;
+  padding:0 16px;background:var(--bg);border-bottom:1px solid var(--line-soft);
+  color:var(--text-mute);font-size:12px;
+}
+.crumb2 b{color:var(--text);font-weight:600}
+.list{padding:4px 0 48px}
+
+/* ---------- 分组与行 ---------- */
+.grp{margin-top:6px}
+.grphd{
+  display:flex;align-items:center;gap:8px;width:100%;min-height:30px;padding:0 14px;
+  background:none;border:0;cursor:pointer;color:var(--text-mute);
+  font-size:11px;letter-spacing:.5px;text-align:left;
+}
+.grphd:hover{color:var(--text)}
+.caret{display:inline-block;width:10px;transition:transform .12s ease}
+.grphd[aria-expanded="false"] .caret{transform:rotate(-90deg)}
+.gtag{margin-left:auto;font-size:11px;letter-spacing:0;color:var(--text-mute)}
+
+/* 行线一律不画：pi 的列表靠名单与填充区分，不靠分隔线（1.4:1 的线既称不上边界又过不了 3:1） */
+.row{
+  display:flex;align-items:center;gap:10px;width:100%;min-height:34px;padding:0 16px;
+  background:none;border:0;color:var(--text);text-align:left;
+}
+button.row{cursor:pointer}
+button.row:hover{background:var(--panel-2)}
+.row.static{cursor:default}
+.row.first{border-top:0}
+.grpbody{padding:2px 0 6px}
+.row.model{min-height:38px}
+.rl{flex:0 0 168px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rl.wide{flex:0 0 220px}
+.rm{color:var(--text-mute);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rv{margin-left:auto;color:var(--text-soft);font-size:12px;white-space:nowrap;display:flex;align-items:center;gap:7px}
+.rc{color:var(--text-mute);font-size:13px;width:12px;text-align:center;flex:0 0 auto}
+.bold{font-weight:600}
+
+.badge{
+  display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;
+  border:1px solid var(--line);border-radius:10px;background:var(--panel-2);
+  font-size:11px;color:var(--text-soft);white-space:nowrap;
+}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.dot.ok{background:var(--ok)}
+.dot.err{background:var(--err)}
+.dot.warn{background:var(--warn)}
+.tag{
+  font-size:11px;color:var(--text-mute);border:1px dashed var(--line);
+  border-radius:4px;padding:0 5px;line-height:18px;white-space:nowrap;
+}
+.mini{height:26px;padding:0 6px;font-size:12px}
+.sw{
+  appearance:none;-webkit-appearance:none;width:40px;height:26px;border-radius:13px;
+  background:var(--panel-3);border:1px solid var(--line);position:relative;cursor:pointer;margin:0;
+}
+.sw::after{
+  content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;
+  background:var(--text-mute);transition:transform .12s ease,background .12s ease;
+}
+.sw:checked{background:var(--sel);border-color:var(--accent)}
+.sw:checked::after{transform:translateX(14px);background:var(--accent)}
+
+/* ---------- 四态 ---------- */
+.state{padding:22px 16px;max-width:720px}
+.sk{height:12px;border-radius:3px;background:var(--skel);margin:10px 0}
+.sk.w1{width:52%}
+.sk.w2{width:74%}
+.sk.w3{width:38%}
+.st-title{font-size:14px;font-weight:650;margin:0 0 6px}
+.st-note{color:var(--text-soft);font-size:12.5px;margin:0 0 6px;line-height:1.6}
+.st-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:var(--text-mute)}
+.st-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+
+/* ---------- 底部键位条 ---------- */
+.keybar{
+  flex:0 0 auto;min-height:34px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:4px 12px;background:var(--panel);border-top:1px solid var(--line);
+  color:var(--text-mute);font-size:11.5px;
+}
+.keybar kbd{
+  font:inherit;border:1px solid var(--line);border-radius:4px;padding:0 5px;
+  background:var(--panel-2);color:var(--text-soft);
+}
+.keybar .right{margin-left:auto}
+
+/* ---------- 抽屉（不遮主视野、不锁交互） ---------- */
+.drawer{
+  position:fixed;top:46px;right:0;bottom:0;width:min(600px,90vw);z-index:40;
+  background:var(--panel);border-left:1px solid var(--line);box-shadow:var(--shadow);
+  display:flex;flex-direction:column;
+}
+.drawer[hidden]{display:none}
+.dhdr{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:8px;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:4px;flex:1 1 auto;flex-wrap:wrap}
+.tab{
+  min-height:28px;padding:0 10px;background:none;border:1px solid transparent;border-radius:5px;
+  cursor:pointer;color:var(--text-mute);font-size:12px;
+}
+.tab[aria-selected="true"]{background:var(--panel-3);border-color:var(--line);color:var(--text)}
+.dbody{overflow:auto;padding:14px 16px 44px;font-size:12.5px;line-height:1.62}
+.dbody h3{font-size:13px;margin:18px 0 6px}
+.dbody h3:first-child{margin-top:0}
+.dbody p{margin:0 0 8px;color:var(--text-soft)}
+.dbody ul{margin:0 0 10px;padding-left:18px;color:var(--text-soft)}
+.dbody li{margin:2px 0}
+.dbody code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;background:var(--panel-2);padding:0 4px;border-radius:3px}
+table.t{width:100%;border-collapse:collapse;font-size:11.5px;margin:6px 0 12px}
+table.t th,table.t td{border:1px solid var(--line-soft);padding:3px 6px;text-align:left;vertical-align:top}
+table.t th{background:var(--panel-2);color:var(--text-soft);font-weight:600}
+table.t td{color:var(--text-soft)}
+table.t td.n{text-align:right;font-family:ui-monospace,monospace}
+.pass{color:var(--ok)}
+.fail{color:var(--err)}
+
+/* ---------- 输入型短层（可短暂接管，带可见取消） ---------- */
+.dlgwrap{
+  position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.45);
+}
+.dlgwrap[hidden]{display:none}
+.dlg{
+  width:min(440px,92vw);background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;box-shadow:var(--shadow);padding:16px;
+}
+.dlg h3{margin:0 0 6px;font-size:14px}
+.dlg p{margin:0 0 10px;color:var(--text-soft);font-size:12.5px;line-height:1.6}
+.dlg .field{display:flex;gap:8px;align-items:center;margin:8px 0}
+.dlg .field label{flex:0 0 92px;color:var(--text-mute);font-size:12px}
+.dlg .dfoot{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+
+.toast{
+  position:fixed;left:50%;transform:translateX(-50%);bottom:52px;z-index:70;
+  background:var(--panel-3);border:1px solid var(--line);border-radius:6px;
+  padding:6px 12px;font-size:12px;color:var(--text);max-width:70vw;
+}
+.toast[hidden]{display:none}
+
+/* ---------- reduced-motion：降级不减少可点元素 ---------- */
+.reduce-motion *{transition:none!important;animation:none!important}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important;animation:none!important}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <span class="brand"><i class="dotmark"></i>CardColony</span>
+  <span class="sep">/</span>
+  <span class="crumb" id="topCrumb">设置</span>
+  <span class="grow"></span>
+  <input id="filter" class="inp filter" placeholder="过滤当前列表" aria-label="过滤当前列表" autocomplete="off">
+  <select id="stateSel" class="inp sel" aria-label="预览状态">
+    <option value="normal">正常</option>
+    <option value="loading">加载</option>
+    <option value="empty">空</option>
+    <option value="error">错误</option>
+    <option value="denied">无权限</option>
+  </select>
+  <button class="btn sm" id="btnTheme" type="button">浅色</button>
+  <button class="btn sm" id="btnNotes" type="button">设计说明</button>
+  <button class="btn sm" id="btnSelf" type="button">自检</button>
+</header>
+
+<div class="shell">
+  <nav class="navlist" id="navlist" aria-label="设置分区"></nav>
+  <main class="content" id="content" tabindex="-1"></main>
+</div>
+
+<footer class="keybar" id="keybar"></footer>
+
+<aside class="drawer" id="drawer" hidden aria-label="设计说明与自检">
+  <div class="dhdr">
+    <div class="tabs" role="tablist">
+      <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="true">设计说明</button>
+      <button class="tab" type="button" role="tab" data-tab="diff" aria-selected="false">改动对照</button>
+      <button class="tab" type="button" role="tab" data-tab="self" aria-selected="false">自检读数</button>
+    </div>
+    <button class="btn sm" id="btnCloseDrawer" type="button">关闭</button>
+  </div>
+  <div class="dbody" id="dbody"></div>
+</aside>
+
+<div class="dlgwrap" id="dlgHost" hidden></div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   0. 运行期错误计数（自检用）
+   ============================================================ */
+var ERRCOUNT = 0;
+window.addEventListener('error', function(){ ERRCOUNT++; });
+window.addEventListener('unhandledrejection', function(){ ERRCOUNT++; });
+
+function $(s){ return document.querySelector(s); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+/* ============================================================
+   1. 示意数据（形状照 pi：provider / model / 七类卡默认）
+   ============================================================ */
+var LEVELS = ['off','minimal','low','medium','high','xhigh','max'];
+
+var DATA = {
+  default: { model:'anthropic/claude-opus-4', level:'high' },
+
+  providers: [
+    { id:'anthropic', api:'anthropic', baseUrl:'', apiKeyVar:'ANTHROPIC_API_KEY',
+      modelsUrl:'', note:'', cred:{ source:'auth.json', tail:'9f2c', updated:'2026-11-08' } },
+    { id:'openai', api:'openai-responses', baseUrl:'', apiKeyVar:'OPENAI_API_KEY',
+      modelsUrl:'', note:'', cred:{ source:'models.json apiKey', tail:'a71e', updated:'2026-11-06' } },
+    { id:'openrouter', api:'openai-completions', baseUrl:'https://openrouter.ai/api/v1', apiKeyVar:'OPENROUTER_API_KEY',
+      modelsUrl:'https://openrouter.ai/api/v1/models', note:'聚合网关', cred:{ source:'环境变量', tail:'—', updated:'—' } },
+    { id:'local', api:'openai-completions', baseUrl:'http://127.0.0.1:11434/v1', apiKeyVar:'',
+      modelsUrl:'', note:'本机 ollama', cred:null }
+  ],
+
+  models: [
+    { provider:'anthropic', model:'claude-opus-4',        reasoning:true,  ctx:200000, max:32000, cost:[15,75],  temp:1,   level:'high' },
+    { provider:'anthropic', model:'claude-sonnet-4-5',    reasoning:true,  ctx:200000, max:64000, cost:[3,15],   temp:1,   level:'medium' },
+    { provider:'anthropic', model:'claude-haiku-4',       reasoning:false, ctx:200000, max:32000, cost:[1,5],    temp:0.7, level:'off' },
+    { provider:'openai',    model:'gpt-5.1',              reasoning:true,  ctx:400000, max:128000,cost:[2.5,10], temp:1,   level:'medium' },
+    { provider:'openai',    model:'gpt-5.1-mini',         reasoning:true,  ctx:400000, max:64000, cost:[0.4,1.6],temp:0.7, level:'low' },
+    { provider:'openrouter',model:'deepseek/deepseek-v4', reasoning:true,  ctx:128000, max:32000, cost:[0.3,1.2],temp:0.9, level:'medium' },
+    { provider:'local',     model:'qwen3-coder:30b',      reasoning:false, ctx:131072, max:16384, cost:[0,0],    temp:0.6, level:'off' }
+  ],
+
+  cardTypes: [
+    { k:'master',   n:'master · 根卡',   scope:'all' },
+    { k:'manager',  n:'manager',        scope:'manager' },
+    { k:'unit',     n:'unit',           scope:'unit' },
+    { k:'worker',   n:'worker',         scope:'worker' },
+    { k:'ui',       n:'ui',             scope:'ui' },
+    { k:'qa_card',  n:'qa_card',        scope:'functional.qa' },
+    { k:'pm_card',  n:'pm_card',        scope:'functional.pm' }
+  ],
+
+  /* 按卡类型默认：未设则回落全局默认 */
+  seeds: {
+    master:{ model:'anthropic/claude-opus-4', level:'high' },
+    manager:{ model:'', level:'' },
+    unit:{ model:'', level:'' },
+    worker:{ model:'openai/gpt-5.1-mini', level:'low' },
+    ui:{ model:'', level:'' },
+    qa_card:{ model:'', level:'' },
+    pm_card:{ model:'', level:'' }
+  },
+
+  catalog: { builtin:'0.99.2', overlay:'pi.dev', updated:'2026-11-09 23:40', count:1284, offline:'命中（3 天前）' },
+
+  rules: [
+    { scope:'all',            chars:3120 },
+    { scope:'manager',        chars:640  },
+    { scope:'unit',           chars:520  },
+    { scope:'worker',         chars:1180 },
+    { scope:'ui',             chars:1640 },
+    { scope:'functional.qa',  chars:920  },
+    { scope:'functional.pm',  chars:780  }
+  ],
+
+  archives: [
+    { id:'card_301', title:'老设置页逐区清单', at:'2026-10-28', reason:'已并入 card_310' },
+    { id:'card_279', title:'密钥轮换流程',     at:'2026-10-21', reason:'被 card_310 取代' },
+    { id:'card_244', title:'模型目录刷新器',   at:'2026-10-12', reason:'实现迁入主进程' },
+    { id:'card_198', title:'备份策略草案',     at:'2026-10-02', reason:'并入备份区' },
+    { id:'card_155', title:'供应商连通性探针', at:'2026-09-19', reason:'实验作废' }
+  ],
+
+  backups: [
+    { name:'settings-2026-11-09.json', at:'2026-11-09 22:10', size:'18.4 KB', auto:true },
+    { name:'settings-2026-11-08.json', at:'2026-11-08 21:40', size:'17.9 KB', auto:true },
+    { name:'before-proxy-migration',   at:'2026-11-05 10:02', size:'16.2 KB', auto:false },
+    { name:'settings-2026-11-01.json', at:'2026-11-01 20:15', size:'15.8 KB', auto:true }
+  ]
+};
+
+var SECTIONS = [
+  { k:'models',  n:'模型',       nb:'4 供应商' },
+  { k:'rules',   n:'项目规则',   nb:'7 分区' },
+  { k:'archive', n:'归档与留痕', nb:'' },
+  { k:'backups', n:'备份与还原', nb:'自动' }
+];
+
+/* ============================================================
+   2. 视图状态
+   ============================================================ */
+var UI = {
+  section:'models',
+  page:'models',          /* models | provider | defaults | picker | rules | archive | backups */
+  arg:null,               /* provider id / 种子类型 */
+  filter:'',
+  state:'normal',         /* normal | loading | empty | error | denied */
+  collapsed:{}
+};
+
+/* ============================================================
+   3. 行 / 组 的构件
+   ============================================================ */
+function group(key, title, tag, body){
+  var open = !UI.collapsed[key];
+  return '<div class="grp">'+
+    '<button class="grphd" type="button" data-act="toggle" data-grp="'+key+'" aria-expanded="'+(open?'true':'false')+'">'+
+      '<span class="caret" aria-hidden="true">▾</span><span>'+esc(title)+'</span>'+
+      (tag?'<span class="gtag">'+esc(tag)+'</span>':'')+
+    '</button>'+
+    (open?'<div class="grpbody">'+body+'</div>':'')+
+  '</div>';
+}
+
+function rowGo(page, arg, label, meta, value, cls){
+  return '<button class="row '+(cls||'')+'" type="button" data-act="go" data-page="'+esc(page)+'" data-arg="'+esc(arg||'')+'">'+
+    '<span class="rl">'+esc(label)+'</span>'+
+    (meta?'<span class="rm">'+esc(meta)+'</span>':'')+
+    '<span class="rv">'+esc(value||'')+'</span>'+
+    '<span class="rc" aria-hidden="true">›</span>'+
+  '</button>';
+}
+
+function rowStatic(label, meta, valueHtml, cls){
+  return '<div class="row static '+(cls||'')+'">'+
+    '<span class="rl">'+esc(label)+'</span>'+
+    (meta?'<span class="rm">'+esc(meta)+'</span>':'')+
+    '<span class="rv">'+(valueHtml||'')+'</span>'+
+  '</div>';
+}
+
+function badgeCred(ok){
+  return ok
+    ? '<span class="badge"><i class="dot ok" aria-hidden="true"></i>凭证 ✓</span>'
+    : '<span class="badge"><i class="dot err" aria-hidden="true"></i>未解析</span>';
+}
+
+function fmtK(n){ return n>=1000 ? Math.round(n/1000)+'K' : String(n); }
+
+/* ============================================================
+   4. 各页面渲染
+   ============================================================ */
+function credOk(p){ return !!(p.cred && p.cred.source && p.cred.source!=='环境变量'); }
+function modelsOf(pid){ return DATA.models.filter(function(m){ return m.provider===pid; }); }
+function providerOf(pid){ for(var i=0;i<DATA.providers.length;i++) if(DATA.providers[i].id===pid) return DATA.providers[i]; return null; }
+
+function buildModels(){
+  var h = '';
+  var d = DATA.default;
+
+  h += group('g-default','默认','', 
+    rowGo('picker','__default__','默认模型', d.model, levelLabel(d.level)) +
+    rowGo('picker','__level__','思考等级', '全局缺省', d.level)
+  );
+
+  h += group('g-seeds','按卡类型默认','',
+    rowGo('defaults','','七类卡分别覆盖','未设置的卡回落全局默认','')
+  );
+
+  var provRows = DATA.providers.map(function(p){
+    var n = modelsOf(p.id).length;
+    return rowGo('provider', p.id, p.id, p.api, '', '') // placeholder replaced below
+      .replace('<span class="rv"></span>', '<span class="rv">'+badgeCred(credOk(p))+'<span class="mute">'+n+' 模型</span></span>');
+  }).join('');
+
+  h += group('g-prov','供应商','',
+    provRows +
+    '<button class="row" type="button" data-act="addProvider"><span class="rl">＋ 添加供应商</span>'+
+      '<span class="rm">从内置模板新建</span><span class="rv"></span><span class="rc" aria-hidden="true">›</span></button>'
+  );
+
+  h += group('g-cat','模型目录','',
+    rowStatic('内置目录', '随版本发布', esc(DATA.catalog.builtin)) +
+    rowStatic('叠加来源', 'pi.dev 目录', esc(DATA.catalog.count+' 个模型')) +
+    rowStatic('上次刷新', '离线缓存 '+DATA.catalog.offline, '') +
+    '<div class="row static"><span class="rl">刷新目录</span>'+
+      '<span class="rm">内置 + pi.dev 叠加</span><span class="rv">'+
+      '<button class="btn sm" type="button" data-act="refreshCatalog">刷新</button>'+
+      '<span class="tag">示意·未联网</span></span></div>'
+  );
+
+  h += group('g-adv','高级','',
+    rowStatic('simple', '简化工具调用输出', '<label class="sw-wrap"><input class="sw" type="checkbox" data-sw="simple" checked aria-label="simple"></label>') +
+    rowStatic('promptCache', '对支持的供应商复用前缀缓存', '<label class="sw-wrap"><input class="sw" type="checkbox" data-sw="promptCache" aria-label="promptCache"></label>')
+  );
+  return h;
+}
+
+function levelLabel(l){ return l ? l : '未设'; }
+
+function buildProvider(pid){
+  var p = providerOf(pid);
+  if(!p) return stateEmpty('找不到这个供应商');
+
+  var h = '<button class="row first" type="button" data-act="go" data-page="models"><span class="rl">‹ 返回</span><span class="rm">供应商列表</span><span class="rv"></span></button>';
+
+  h += group('p-conn','连接','示意·不写盘',
+    fieldRow('baseUrl', p.baseUrl, p.baseUrl?'':'留空用内置地址') +
+    apiRow(p) +
+    fieldRow('apiKey', p.apiKeyVar, '写变量名，不写值') +
+    fieldRow('models_url', p.modelsUrl, '') +
+    fieldRow('note', p.note, '') +
+    '<div class="row static"><span class="rl"></span><span class="rm">改动仅在本页内存生效</span>'+
+      '<span class="rv"><button class="btn sm btn-pri" type="button" data-act="saveProvider" data-arg="'+esc(pid)+'">保存</button>'+
+      '<span class="tag">示意·不写盘</span></span></div>'
+  );
+
+  h += group('p-cred','凭据','示意·不写盘',
+    rowStatic('生效来源', '优先级 --api-key › auth.json › models.json › 环境变量',
+      p.cred ? '<span class="badge"><i class="dot ok" aria-hidden="true"></i>'+esc(p.cred.source)+'</span>' : badgeCred(false)) +
+    rowStatic('密钥', p.cred ? '只显尾 4 位' : '未配置',
+      p.cred ? '<span class="mono">••••••••'+esc(p.cred.tail)+'</span>' : '<span class="mute">—</span>') +
+    rowStatic('最后更新', '', p.cred ? esc(p.cred.updated) : '—') +
+    '<div class="row static"><span class="rl">操作</span><span class="rm">覆盖会盖住旧的 auth.json 值</span><span class="rv">'+
+      '<button class="btn sm" type="button" data-act="setKey" data-arg="'+esc(pid)+'">设置</button>'+
+      '<button class="btn sm" type="button" data-act="setKey" data-arg="'+esc(pid)+'">覆盖</button>'+
+      '<button class="btn sm btn-danger" type="button" data-act="clearKey" data-arg="'+esc(pid)+'">清除</button>'+
+      '<span class="tag">示意·不写盘</span></span></div>'
+  );
+
+  var rows = modelsOf(pid).map(function(m){ return modelRow(m); }).join('');
+  if(!rows) rows = rowStatic('', '还没有模型', '<span class="mute">拉取或手动添加</span>');
+
+  h += group('p-models','模型 '+modelsOf(pid).length,'示意·不写盘',
+    rows +
+    '<div class="row static"><span class="rl">目录操作</span><span class="rm">拉取覆盖同名模型</span><span class="rv">'+
+      '<button class="btn sm" type="button" data-act="fetchModels">拉取</button><span class="tag">示意·未联网</span>'+
+      '<button class="btn sm" type="button" data-act="testConn">测试连接</button><span class="tag">示意·未联网</span>'+
+    '</span></div>'
+  );
+
+  h += group('p-danger','危险','',
+    '<div class="row static"><span class="rl">删除供应商</span><span class="rm">同时移除其模型，密钥保留在 auth.json</span><span class="rv">'+
+      '<button class="btn sm btn-danger" type="button" data-act="delProvider" data-arg="'+esc(pid)+'">删除</button>'+
+      '<span class="tag">示意·不写盘</span></span></div>'
+  );
+
+  return h;
+}
+
+function fieldRow(name, val, hint){
+  return '<div class="row static"><span class="rl mono">'+esc(name)+'</span>'+
+    '<input class="inp grow mono" value="'+esc(val||'')+'" data-field="'+esc(name)+'" aria-label="'+esc(name)+'" placeholder="'+esc(hint||'')+'">'+
+  '</div>';
+}
+
+function apiRow(p){
+  var opts = ['anthropic','openai-completions','openai-responses','google','google-vertex','amazon-bedrock','mistral','xai','groq','cerebras','openrouter','custom'];
+  var sel = opts.map(function(o){ return '<option'+(o===p.api?' selected':'')+'>'+o+'</option>'; }).join('');
+  return '<div class="row static"><span class="rl mono">api</span>'+
+    '<select class="inp grow mono" data-field="api" aria-label="api">'+sel+'</select></div>';
+}
+
+function modelRow(m){
+  var lv = m.reasoning
+    ? '<select class="inp mini" data-mlevel="'+esc(m.model)+'" aria-label="思考等级">'+
+        LEVELS.map(function(l){ return '<option'+(l===m.level?' selected':'')+'>'+l+'</option>'; }).join('')+
+      '</select>'
+    : '<span class="mute" style="font-size:11px">不支持 reasoning</span>';
+  return '<div class="row static model">'+
+    '<span class="rl wide mono">'+esc(m.model)+'</span>'+
+    '<span class="rm">ctx '+fmtK(m.ctx)+' · max '+fmtK(m.max)+' · $'+m.cost[0]+'/$'+m.cost[1]+'</span>'+
+    '<span class="rv">'+lv+
+      '<input class="inp mini" style="width:62px" type="number" min="0" max="2" step="0.1" value="'+m.temp+'" data-temp="'+esc(m.model)+'" aria-label="温度">'+
+    '</span>'+
+  '</div>';
+}
+
+function buildDefaults(){
+  var h = '<button class="row first" type="button" data-act="go" data-page="models"><span class="rl">‹ 返回</span><span class="rm">模型</span><span class="rv"></span></button>';
+  var body = DATA.cardTypes.map(function(t){
+    var s = DATA.seeds[t.k] || {model:'',level:''};
+    var m = s.model || DATA.default.model;
+    var l = s.level || DATA.default.level;
+    var inherits = !s.model;
+    return '<button class="row" type="button" data-act="go" data-page="picker" data-arg="'+esc(t.k)+'">'+
+      '<span class="rl">'+esc(t.k)+'</span>'+
+      '<span class="rm">规则分区 '+esc(t.scope)+'</span>'+
+      '<span class="rv">'+esc(m)+' · '+esc(l)+(inherits?' <span class="mute">(回落)</span>':'')+'</span>'+
+      '<span class="rc" aria-hidden="true">›</span></button>';
+  }).join('');
+  return h + group('d-seeds','按卡类型默认','示意·不写盘', body);
+}
+
+function buildPicker(target){
+  var isLevel = (target === '__level__');
+  var h = '<button class="row first" type="button" data-act="go" data-page="'+(target==='__default__'||isLevel?'models':'defaults')+'">'+
+    '<span class="rl">‹ 返回</span><span class="rm">'+(isLevel?'思考等级':'选择模型')+'</span><span class="rv"></span></button>';
+
+  if(isLevel){
+    var body = LEVELS.map(function(l){
+      var cur = DATA.default.level === l;
+      return '<button class="row" type="button" data-act="pickLevel" data-arg="'+l+'">'+
+        '<span class="rl mono">'+l+'</span>'+
+        '<span class="rm">'+(l==='off'?'不思考':'预算随模型能力收敛')+'</span>'+
+        '<span class="rv">'+(cur?'当前':'')+'</span><span class="rc" aria-hidden="true">'+(cur?'●':'›')+'</span></button>';
+    }).join('');
+    return h + group('k-level','思考等级（pi: off … max）','', body);
+  }
+
+  var f = UI.filter.toLowerCase();
+  var list = DATA.models.filter(function(m){
+    if(!f) return true;
+    return (m.provider+'/'+m.model).toLowerCase().indexOf(f) >= 0;
+  });
+  var rows = list.map(function(m){
+    var ok = credOk(providerOf(m.provider)||{});
+    return '<button class="row" type="button" data-act="pickModel" data-arg="'+esc(m.provider+'/'+m.model)+'" data-target="'+esc(target)+'">'+
+      '<span class="rl wide mono">'+esc(m.model)+'</span>'+
+      '<span class="rm">'+esc(m.provider)+' · ctx '+fmtK(m.ctx)+'</span>'+
+      '<span class="rv">'+badgeCred(ok)+'</span>'+
+      '<span class="rc" aria-hidden="true">›</span></button>';
+  }).join('');
+  if(!rows) rows = rowStatic('没有匹配的模型', '未配置凭证的供应商不列在这里（pi: /model 只列凭证可用）','');
+  return h + group('k-models','模型 '+list.length+' / '+DATA.models.length,'', rows);
+}
+
+function buildRules(){
+  var rows = DATA.rules.map(function(r){
+    var t = null;
+    for(var i=0;i<DATA.cardTypes.length;i++) if(DATA.cardTypes[i].scope===r.scope) t = DATA.cardTypes[i];
+    return '<button class="row" type="button" data-act="ruleHint" data-arg="'+esc(r.scope)+'">'+
+      '<span class="rl mono">'+esc(r.scope)+'</span>'+
+      '<span class="rm">'+esc(t?t.n:'—')+'</span>'+
+      '<span class="rv">'+esc(r.chars+' 字符')+'</span><span class="rc" aria-hidden="true">›</span></button>';
+  }).join('');
+  return group('r-scopes','按卡类型分区','只读·编辑在画布',
+    rows +
+    '<button class="row" type="button" data-act="ruleHint" data-arg="rule"><span class="rl">规则卡入口</span>'+
+      '<span class="rm">画布右缘 · 规则卡</span><span class="rv">不在设置页重复入口</span><span class="rc" aria-hidden="true">›</span></button>'
+  );
+}
+
+function buildArchive(){
+  var rows = DATA.archives.map(function(a){
+    return '<div class="row static"><span class="rl mono">'+esc(a.id)+'</span>'+
+      '<span class="rm">'+esc(a.title)+' · '+esc(a.reason)+'</span>'+
+      '<span class="rv">'+esc(a.at)+
+      '<button class="btn sm" type="button" data-act="restoreArchive" data-arg="'+esc(a.id)+'">回档</button>'+
+      '<span class="tag">示意·不写盘</span></span></div>';
+  }).join('');
+  return group('a-list','归档记录 '+DATA.archives.length,'', rows);
+}
+
+function buildBackups(){
+  var rows = DATA.backups.map(function(b, i){
+    return '<div class="row static"><span class="rl mono">'+esc(b.name)+'</span>'+
+      '<span class="rm">'+esc(b.at)+(b.auto?' · 自动':' · 手动')+'</span>'+
+      '<span class="rv">'+esc(b.size)+
+      '<button class="btn sm" type="button" data-act="restoreBackup" data-arg="'+i+'">还原</button>'+
+      '<span class="tag">示意·不写盘</span></span></div>';
+  }).join('');
+  return group('b-list','备份','',
+    '<div class="row static"><span class="rl">新建备份</span><span class="rm">把当前设置打包为一份快照</span><span class="rv">'+
+      '<button class="btn sm btn-pri" type="button" data-act="newBackup">新建</button><span class="tag">示意·不写盘</span></span></div>' +
+    rows
+  );
+}
+
+/* ---------- 四态 ---------- */
+function stateLoading(){
+  return '<div class="state">'+
+    '<p class="st-title">正在读取设置…</p>'+
+    '<p class="st-note">来源：models.json / auth.json / settings.json</p>'+
+    '<div class="sk w2"></div><div class="sk w1"></div><div class="sk w3"></div><div class="sk w2"></div>'+
+    '<div class="st-actions"><button class="btn" type="button" data-act="state" data-arg="normal">取消</button></div>'+
+  '</div>';
+}
+function stateEmpty(msg){
+  return '<div class="state">'+
+    '<p class="st-title">'+esc(msg||'还没有配置任何供应商')+'</p>'+
+    '<p class="st-note">这是确知为 0，不是没读到：目录已返回 0 条记录。</p>'+
+    '<div class="st-actions">'+
+      '<button class="btn btn-pri" type="button" data-act="addProvider">添加供应商</button>'+
+      '<button class="btn" type="button" data-act="state" data-arg="normal">重新读取</button>'+
+    '</div>'+
+  '</div>';
+}
+function stateError(){
+  return '<div class="state">'+
+    '<p class="st-title">读取设置失败</p>'+
+    '<p class="st-note">上游目录服务没有响应，本地配置未加载。</p>'+
+    '<p class="st-code">HTTP 502 · catalog_unavailable · 12:04:31</p>'+
+    '<div class="st-actions">'+
+      '<button class="btn btn-pri" type="button" data-act="state" data-arg="normal">重试</button>'+
+      '<button class="btn" type="button" data-act="diag">查看诊断</button>'+
+      '<button class="btn" type="button" data-act="state" data-arg="normal">用本地缓存继续</button>'+
+    '</div>'+
+  '</div>';
+}
+function stateDenied(){
+  return '<div class="state">'+
+    '<p class="st-title">无权读取设置</p>'+
+    '<p class="st-note">当前角色缺少 <span class="st-code">settings:read</span>，因此看不到任何配置项。</p>'+
+    '<p class="st-code">E403 · missing_scope · 申请路径：管理台 › 成员 › 角色 › 添加 settings:read</p>'+
+    '<div class="st-actions">'+
+      '<button class="btn btn-pri" type="button" data-act="requestAccess">申请权限</button>'+
+      '<button class="btn" type="button" data-act="state" data-arg="normal">回到可读视图</button>'+
+    '</div>'+
+  '</div>';
+}
+
+/* ============================================================
+   5. 渲染装配
+   ============================================================ */
+function crumbFor(){
+  var map = { models:'模型', rules:'项目规则', archive:'归档与留痕', backups:'备份与还原' };
+  var h = '<span>设置</span><span aria-hidden="true">/</span><b>'+esc(map[UI.section]||'')+'</b>';
+  if(UI.page === 'provider'){ h += '<span aria-hidden="true">/</span><span>供应商</span><span aria-hidden="true">/</span><b>'+esc(UI.arg)+'</b>'; }
+  if(UI.page === 'defaults'){ h += '<span aria-hidden="true">/</span><b>按卡类型默认</b>'; }
+  if(UI.page === 'picker'){ h += '<span aria-hidden="true">/</span><b>选择模型</b>'; }
+  return h;
+}
+
+function renderNav(){
+  var h = SECTIONS.map(function(s){
+    var cur = UI.section === s.k;
+    return '<button class="navrow" type="button" data-act="section" data-arg="'+s.k+'" aria-current="'+(cur?'true':'false')+'">'+
+      '<span>'+esc(s.n)+'</span>'+(s.nb?'<span class="nb">'+esc(s.nb)+'</span>':'')+'</button>';
+  }).join('');
+  $('#navlist').innerHTML = h;
+}
+
+function renderContent(){
+  var box = $('#content');
+  var crumb = '<div class="crumb2">'+crumbFor()+'</div>';
+
+  if(UI.state !== 'normal'){
+    var sv = UI.state==='loading'?stateLoading():UI.state==='empty'?stateEmpty():UI.state==='error'?stateError():stateDenied();
+    box.innerHTML = crumb + '<div class="list">'+sv+'</div>';
+    return;
+  }
+
+  var body = '';
+  if(UI.section === 'models'){
+    if(UI.page === 'provider') body = buildProvider(UI.arg);
+    else if(UI.page === 'defaults') body = buildDefaults();
+    else if(UI.page === 'picker') body = buildPicker(UI.arg);
+    else body = buildModels();
+  } else if(UI.section === 'rules'){
+    body = buildRules();
+  } else if(UI.section === 'archive'){
+    body = buildArchive();
+  } else {
+    body = buildBackups();
+  }
+  box.innerHTML = crumb + '<div class="list">'+body+'</div>';
+}
+
+function renderKeybar(){
+  var kb = $('#keybar');
+  var left = '';
+  if(UI.state !== 'normal'){
+    left = '<span>本视图为状态演示</span><span><kbd>Esc</kbd> 回到正常视图</span>';
+  } else if(UI.page === 'picker'){
+    left = '<span>单击行＝选中并设为默认</span><span><kbd>↑↓</kbd> 移动</span><span><kbd>Enter</kbd> 选</span><span><kbd>Ctrl+S</kbd> 存默认</span><span><kbd>Esc</kbd> 返回</span>';
+  } else if(UI.page === 'provider' || UI.page === 'defaults'){
+    left = '<span>单击行进入</span><span><kbd>Esc</kbd> 返回上一级</span>';
+  } else {
+    left = '<span>单击行进入</span><span>组标题可开合</span><span><kbd>/</kbd> 过滤</span>';
+  }
+  kb.innerHTML = left + '<span class="right">只读示意：本页不写盘、不联网</span>';
+}
+
+function renderAll(){
+  renderNav();
+  renderContent();
+  renderKeybar();
+  $('#topCrumb').textContent = '设置';
+  $('#stateSel').value = UI.state;
+}
+
+/* ============================================================
+   6. 交互
+   ============================================================ */
+function toast(msg){
+  var t = $('#toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function(){ t.hidden = true; }, 2600);
+}
+
+function goSection(k){
+  UI.section = k; UI.page = k; UI.arg = null; UI.filter = '';
+  $('#filter').value = '';
+  renderAll();
+}
+
+document.addEventListener('click', function(ev){
+  var el = ev.target.closest ? ev.target.closest('[data-act]') : null;
+  if(!el) return;
+  var act = el.getAttribute('data-act');
+
+  if(act === 'section'){ goSection(el.getAttribute('data-arg')); return; }
+
+  if(act === 'toggle'){
+    var g = el.getAttribute('data-grp');
+    UI.collapsed[g] = !UI.collapsed[g];
+    renderContent();
+    return;
+  }
+
+  if(act === 'go'){
+    var p = el.getAttribute('data-page'), a = el.getAttribute('data-arg');
+    UI.page = p; UI.arg = a || null; UI.filter=''; $('#filter').value='';
+    renderAll();
+    return;
+  }
+
+  if(act === 'pickModel'){
+    var val = el.getAttribute('data-arg'), tgt = el.getAttribute('data-target');
+    if(tgt === '__default__'){ DATA.default.model = val; }
+    else { if(!DATA.seeds[tgt]) DATA.seeds[tgt] = {}; DATA.seeds[tgt].model = val; }
+    toast('已设为 ' + val + '（示意·不写盘）');
+    UI.page = (tgt === '__default__') ? 'models' : 'defaults';
+    UI.arg = null;
+    renderAll();
+    return;
+  }
+
+  if(act === 'pickLevel'){
+    DATA.default.level = el.getAttribute('data-arg');
+    toast('默认思考等级 = ' + DATA.default.level + '（示意·不写盘）');
+    UI.page = 'models'; renderAll();
+    return;
+  }
+
+  if(act === 'addProvider'){ addProviderDialog(); return; }
+
+  if(act === 'setKey'){
+    var pid = el.getAttribute('data-arg');
+    keyDialog(pid);
+    return;
+  }
+
+  if(act === 'clearKey'){
+    var pid2 = el.getAttribute('data-arg');
+    var p2 = providerOf(pid2);
+    dlgConfirm('清除凭据？', '这会移除 ' + pid2 + ' 的 auth.json 记录。同名 models.json apiKey 若存在会重新生效。', '清除', function(){
+      if(p2) p2.cred = null;
+      toast('凭据已清除（示意·不写盘）');
+      renderAll();
+    });
+    return;
+  }
+
+  if(act === 'delProvider'){
+    var pid3 = el.getAttribute('data-arg');
+    dlgConfirm('删除供应商 ' + pid3 + '？', '其模型会一并移除；auth.json 中的密钥保留。', '删除', function(){
+      DATA.providers = DATA.providers.filter(function(x){ return x.id !== pid3; });
+      DATA.models = DATA.models.filter(function(m){ return m.provider !== pid3; });
+      toast('已删除（示意·不写盘）');
+      UI.page = 'models'; renderAll();
+    });
+    return;
+  }
+
+  if(act === 'saveProvider'){ toast('已保存到本页内存（示意·不写盘）'); return; }
+  if(act === 'testConn'){ toast('测试连接需要后端（示意·未联网）'); return; }
+  if(act === 'fetchModels'){ toast('拉取模型列表需要后端（示意·未联网）'); return; }
+  if(act === 'refreshCatalog'){ toast('刷新目录需要联网（示意·未联网）'); return; }
+  if(act === 'newBackup'){ toast('已新建快照（示意·不写盘）'); return; }
+
+  if(act === 'restoreBackup'){
+    var i = parseInt(el.getAttribute('data-arg'),10);
+    dlgConfirm('还原到 ' + DATA.backups[i].name + '？', '当前设置会先被自动备份，再整体替换。', '还原', function(){
+      toast('已还原（示意·不写盘）');
+    });
+    return;
+  }
+
+  if(act === 'restoreArchive'){
+    var id = el.getAttribute('data-arg');
+    dlgConfirm('回档 ' + id + '？', '归档卡会恢复为活卡，原位置关系按归档前重建。', '回档', function(){
+      toast('已回档 ' + id + '（示意·不写盘）');
+    });
+    return;
+  }
+
+  if(act === 'ruleHint'){ toast('规则编辑在画布右缘「规则卡」，设置页只读（示意）'); return; }
+
+  if(act === 'state'){
+    UI.state = el.getAttribute('data-arg');
+    renderAll();
+    return;
+  }
+
+  if(act === 'diag'){ toast('诊断：catalog 服务 12:04:31 起 502，连续 3 次（示意）'); return; }
+
+  if(act === 'requestAccess'){
+    dlgInfo('申请 settings:read', '路径：管理台 › 成员 › 角色 › 添加 settings:read。审批通过后需重载本页。', '知道了');
+    return;
+  }
+});
+
+/* 开关：真生效（视觉状态），并标注不写盘 */
+document.addEventListener('change', function(ev){
+  var t = ev.target;
+  if(t.id === 'stateSel'){ UI.state = t.value; renderAll(); return; }
+  if(t.hasAttribute && t.hasAttribute('data-sw')){
+    toast(t.getAttribute('data-sw') + ' = ' + (t.checked?'开':'关') + '（示意·不写盘）');
+    return;
+  }
+  if(t.hasAttribute && t.hasAttribute('data-mlevel')){
+    var name = t.getAttribute('data-mlevel');
+    DATA.models.forEach(function(m){ if(m.model===name) m.level = t.value; });
+    toast('思考等级 ' + name + ' = ' + t.value + '（示意·不写盘）');
+    return;
+  }
+  if(t.hasAttribute && t.hasAttribute('data-temp')){
+    var n2 = t.getAttribute('data-temp');
+    DATA.models.forEach(function(m){ if(m.model===n2) m.temp = t.value; });
+    toast('温度 ' + n2 + ' = ' + t.value + '（示意·不写盘）');
+    return;
+  }
+  if(t.hasAttribute && t.hasAttribute('data-field')){
+    return;
+  }
+});
+
+$('#filter').addEventListener('input', function(){
+  UI.filter = this.value;
+  if(UI.page === 'picker' || UI.page === 'models') renderContent();
+  else renderContent();
+});
+
+/* ---------- 抽屉 ---------- */
+function openDrawer(tab){
+  $('#drawer').hidden = false;
+  document.querySelectorAll('.tab').forEach(function(b){
+    b.setAttribute('aria-selected', b.getAttribute('data-tab')===tab?'true':'false');
+  });
+  $('#dbody').innerHTML = tab==='notes'?notesHtml():tab==='diff'?diffHtml():selfHtml();
+  $('#dbody').scrollTop = 0;
+}
+$('#btnNotes').addEventListener('click', function(){ openDrawer('notes'); });
+$('#btnSelf').addEventListener('click', function(){ openDrawer('self'); });
+$('#btnCloseDrawer').addEventListener('click', function(){ $('#drawer').hidden = true; });
+document.querySelectorAll('.tab').forEach(function(b){
+  b.addEventListener('click', function(){ openDrawer(b.getAttribute('data-tab')); });
+});
+
+/* ---------- 主题 ---------- */
+$('#btnTheme').addEventListener('click', function(){
+  var html = document.documentElement;
+  var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  this.textContent = next === 'dark' ? '浅色' : '深色';
+});
+
+/* ---------- 对话框 ---------- */
+function dlgHost(){ return $('#dlgHost'); }
+function closeDlg(){ var h = dlgHost(); h.hidden = true; h.innerHTML = ''; }
+
+function dlgConfirm(title, body, okText, onOk){
+  var h = dlgHost();
+  h.innerHTML = '<div class="dlg" role="dialog" aria-modal="true" aria-label="'+esc(title)+'">'+
+    '<h3>'+esc(title)+'</h3><p>'+esc(body)+'</p>'+
+    '<div class="dfoot"><button class="btn" type="button" data-dlg="cancel">取消</button>'+
+    '<button class="btn btn-pri" type="button" data-dlg="ok">'+esc(okText)+'</button></div></div>';
+  h.hidden = false;
+  h.querySelector('[data-dlg="cancel"]').addEventListener('click', closeDlg);
+  h.querySelector('[data-dlg="ok"]').addEventListener('click', function(){ closeDlg(); onOk(); });
+  h.querySelector('[data-dlg="cancel"]').focus();
+}
+
+function dlgInfo(title, body, okText){
+  var h = dlgHost();
+  h.innerHTML = '<div class="dlg" role="dialog" aria-modal="true" aria-label="'+esc(title)+'">'+
+    '<h3>'+esc(title)+'</h3><p>'+esc(body)+'</p>'+
+    '<div class="dfoot"><button class="btn btn-pri" type="button" data-dlg="ok">'+esc(okText)+'</button></div></div>';
+  h.hidden = false;
+  h.querySelector('[data-dlg="ok"]').addEventListener('click', closeDlg);
+  h.querySelector('[data-dlg="ok"]').focus();
+}
+
+function keyDialog(pid){
+  var h = dlgHost();
+  h.innerHTML = '<div class="dlg" role="dialog" aria-modal="true" aria-label="设置凭据">'+
+    '<h3>设置 '+esc(pid)+' 的凭据</h3>'+
+    '<p>写入 auth.json。值永不回显，读回时只显尾 4 位。</p>'+
+    '<div class="field"><label for="kval">apiKey</label>'+
+    '<input id="kval" class="inp grow mono" type="password" autocomplete="off" placeholder="sk-..."></div>'+
+    '<div class="dfoot"><button class="btn" type="button" data-dlg="cancel">取消</button>'+
+    '<button class="btn btn-pri" type="button" data-dlg="ok">写入<span class="tag" style="margin-left:6px">示意·不写盘</span></button></div></div>';
+  h.hidden = false;
+  h.querySelector('[data-dlg="cancel"]').addEventListener('click', closeDlg);
+  h.querySelector('[data-dlg="ok"]').addEventListener('click', function(){
+    var v = document.getElementById('kval').value || '';
+    var p = providerOf(pid);
+    if(p){
+      p.cred = { source:'auth.json', tail: v ? v.slice(-4) : '0000', updated:'2026-11-10' };
+    }
+    closeDlg();
+    toast('已写入（示意·不写盘），读回只显尾 4 位');
+    renderAll();
+  });
+  h.querySelector('#kval').focus();
+}
+
+function addProviderDialog(){
+  var h = dlgHost();
+  var tpl = DATA.providers.map(function(p){ return '<option value="'+esc(p.id)+'">'+esc(p.id)+'</option>'; }).join('');
+  h.innerHTML = '<div class="dlg" role="dialog" aria-modal="true" aria-label="添加供应商">'+
+    '<h3>添加供应商</h3><p>从内置模板新建一条，之后再填 baseUrl 与凭据。</p>'+
+    '<div class="field"><label for="ptpl">模板</label><select id="ptpl" class="inp grow">'+tpl+'</select></div>'+
+    '<div class="field"><label for="pid">id</label><input id="pid" class="inp grow mono" placeholder="my-provider"></div>'+
+    '<div class="dfoot"><button class="btn" type="button" data-dlg="cancel">取消</button>'+
+    '<button class="btn btn-pri" type="button" data-dlg="ok">添加<span class="tag" style="margin-left:6px">示意·不写盘</span></button></div></div>';
+  h.hidden = false;
+  h.querySelector('[data-dlg="cancel"]').addEventListener('click', closeDlg);
+  h.querySelector('[data-dlg="ok"]').addEventListener('click', function(){
+    var id = (document.getElementById('pid').value || 'new-provider').trim();
+    DATA.providers.push({ id:id, api:'openai-completions', baseUrl:'', apiKeyVar:'', modelsUrl:'', note:'', cred:null });
+    closeDlg();
+    toast('已添加 ' + id + '（示意·不写盘）');
+    UI.page = 'provider'; UI.arg = id; renderAll();
+  });
+  h.querySelector('#pid').focus();
+}
+
+/* ---------- 键盘：Esc 只是加速键 ---------- */
+document.addEventListener('keydown', function(ev){
+  if(ev.key === 'Escape'){
+    if(!dlgHost().hidden){ closeDlg(); return; }
+    if(!$('#drawer').hidden){ $('#drawer').hidden = true; return; }
+    if(UI.state !== 'normal'){ UI.state='normal'; renderAll(); return; }
+    if(UI.page === 'provider' || UI.page === 'defaults' || UI.page === 'picker'){ UI.page='models'; UI.arg=null; renderAll(); }
+  }
+  if(ev.key === '/' && document.activeElement.tagName !== 'INPUT'){
+    ev.preventDefault(); $('#filter').focus();
+  }
+});
+
+/* ============================================================
+   7. 自检引擎（页内现算）
+   ============================================================ */
+function parseColor(s){
+  s = String(s||'').trim();
+  var m = s.match(/^rgba?\(([^)]+)\)$/);
+  if(m){
+    var p = m[1].split(',').map(function(x){ return parseFloat(x); });
+    return { r:p[0], g:p[1], b:p[2], a: p.length>3 ? p[3] : 1 };
+  }
+  var h = s.match(/^#([0-9a-f]{6})$/i);
+  if(h){
+    return { r:parseInt(h[1].slice(0,2),16), g:parseInt(h[1].slice(2,4),16), b:parseInt(h[1].slice(4,6),16), a:1 };
+  }
+  return null;
+}
+function srgb(v){ v = v/255; return v <= 0.04045 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); }
+function lum(c){ return 0.2126*srgb(c.r) + 0.7152*srgb(c.g) + 0.0722*srgb(c.b); }
+function ratioA(a, b){
+  var L1 = lum(a), L2 = lum(b);
+  var hi = Math.max(L1,L2), lo = Math.min(L1,L2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+function blend(fg, bg){
+  if(!fg) return bg;
+  var a = fg.a == null ? 1 : fg.a;
+  if(a >= 1) return fg;
+  return { r: fg.r*a + bg.r*(1-a), g: fg.g*a + bg.g*(1-a), b: fg.b*a + bg.b*(1-a), a:1 };
+}
+function effBg(el){
+  var cur = el, guard = 0;
+  while(cur && guard++ < 40){
+    var c = parseColor(getComputedStyle(cur).backgroundColor);
+    if(c && c.a > 0 && cur !== document.documentElement){
+      return blend(c, parseColor(getComputedStyle(document.body).backgroundColor) || {r:0,g:0,b:0,a:1});
+    }
+    cur = cur.parentElement;
+  }
+  return parseColor(getComputedStyle(document.body).backgroundColor);
+}
+function token(name){
+  return parseColor(getComputedStyle(document.documentElement).getPropertyValue(name).trim());
+}
+function cs(el, prop){ return getComputedStyle(el)[prop]; }
+function isVisible(el){
+  var st = getComputedStyle(el);
+  if(st.display === 'none' || st.visibility === 'hidden') return false;
+  var r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+
+function checkText(){
+  var sels = ['.topbar *', '.navlist *', '.content *', '.keybar *', '.drawer *'];
+  var seen = [], min = 99, n = 0, fails = [];
+  sels.forEach(function(sel){
+    document.querySelectorAll(sel).forEach(function(el){
+      if(el.closest('[aria-hidden="true"]')) return;
+      if(!isVisible(el)) return;
+      var txt = '';
+      for(var i=0;i<el.childNodes.length;i++){
+        if(el.childNodes[i].nodeType === 3) txt += el.childNodes[i].nodeValue;
+      }
+      if(!txt.trim()) return;
+      var fg = parseColor(cs(el,'color'));
+      var bg = effBg(el);
+      if(!fg || !bg) return;
+      var r = ratioA(fg, bg);
+      n++;
+      if(r < min) min = r;
+      if(r < 4.5) fails.push({ t: txt.trim().slice(0,26), r:r, cls: el.className });
+    });
+  });
+  return { n:n, min:min, fails:fails };
+}
+
+function checkNonText(){
+  var pairs = [];
+  function add(name, fg, bg, deco){
+    if(!fg || !bg) return;
+    pairs.push({ name:name, r: ratioA(fg,bg), deco: !!deco });
+  }
+  var inp = $('.inp');
+  var btn = $('.btn');
+  var nav = $('.navlist');
+  var cur = $('.navrow[aria-current="true"]');
+  var row = $('.row');
+  var rc = $('.row .rc');
+  var okdot = $('.dot.ok');
+  var errdot = $('.dot.err');
+  var badge = $('.badge');
+  var tag = $('.tag');
+  var pri = $('.btn-pri');
+  var content = $('.content');
+
+  if(inp) add('输入框边框 / 框内填充', parseColor(cs(inp,'borderTopColor')), effBg(inp));
+  if(btn) add('按钮边框 / 按钮填充', parseColor(cs(btn,'borderTopColor')), effBg(btn));
+  if(pri && content) add('主按钮填充 / 内容底', parseColor(cs(pri,'backgroundColor')), effBg(content));
+  if(nav) add('导航右边框 / 导航填充', parseColor(cs(nav,'borderRightColor')), effBg(nav));
+  if(cur) add('当前分区左条 / 选中行填充', parseColor(cs(cur,'borderLeftColor')), effBg(cur));
+  if(rc && row) add('下钻箭头 / 行填充', parseColor(cs(rc,'color')), effBg(row));
+  if(okdot) add('凭证 ✓ 点 / 相邻行填充', parseColor(cs(okdot,'backgroundColor')), effBg(okdot.parentElement));
+  if(errdot) add('未解析 ✗ 点 / 相邻行填充', parseColor(cs(errdot,'backgroundColor')), effBg(errdot.parentElement));
+  if(badge) add('徽标边框 / 徽标填充', parseColor(cs(badge,'borderTopColor')), effBg(badge));
+  if(tag) add('标签虚线框 / 面板填充', parseColor(cs(tag,'borderTopColor')), token('--panel'));
+  add('焦点环 / 面板填充', token('--focus'), token('--panel'));
+  add('骨架条 / 面板填充', token('--skel'), token('--panel'));
+  if(row) add('行内箭头列 / 面板填充', parseColor(cs(rc,'color')), token('--panel'));
+  var top = $('.topbar');
+  if(top) add('顶栏分隔线 / 顶栏填充', parseColor(cs(top,'borderBottomColor')), effBg(top));
+
+  var counted = pairs.filter(function(p){ return !p.deco; });
+  var min = 99, fails = [];
+  counted.forEach(function(p){ if(p.r < min) min = p.r; if(p.r < 3) fails.push(p.name); });
+  return { pairs:pairs, counted:counted, min:min, fails:fails };
+}
+
+function clickables(){
+  var sel = 'button, a[href], input, select, textarea, [role="button"]';
+  return Array.prototype.slice.call(document.querySelectorAll(sel));
+}
+
+function checkHit(){
+  var els = clickables();
+  var n = 0, min = 999, bad = [];
+  els.forEach(function(el){
+    if(!isVisible(el)) return;
+    var r = el.getBoundingClientRect();
+    n++;
+    var m = Math.min(r.width, r.height);
+    if(m < min) min = m;
+    if(m < 24) bad.push({ tag: el.tagName.toLowerCase(), cls: String(el.className).slice(0,24), m: Math.round(m*10)/10 });
+  });
+  return { n:n, min: min === 999 ? 0 : Math.round(min*10)/10, bad:bad };
+}
+
+function checkRm(){
+  var a = clickables().filter(isVisible).length;
+  document.documentElement.classList.add('reduce-motion');
+  var b = clickables().filter(isVisible).length;
+  document.documentElement.classList.remove('reduce-motion');
+  return { a:a, b:b };
+}
+
+function checkExt(){
+  var html = document.documentElement.outerHTML;
+  var needles = [ 's'+'rc=', '<'+'link', '@'+'import', 'url('+'http', 'href="'+'http' ];
+  var hits = [];
+  needles.forEach(function(nd){
+    var i = html.indexOf(nd);
+    if(i >= 0) hits.push(nd + ' @' + i);
+  });
+  return { hits:hits };
+}
+
+function measure(){
+  var t = checkText();
+  var nt = checkNonText();
+  var hit = checkHit();
+  var rm = checkRm();
+  var ext = checkExt();
+  return { text:t, non:nt, hit:hit, rm:rm, ext:ext, err:ERRCOUNT, theme: document.documentElement.getAttribute('data-theme') };
+}
+
+function recalcBoth(){
+  var out = {};
+  var html = document.documentElement;
+  var cur = html.getAttribute('data-theme');
+  out[cur] = measure();
+  var other = cur === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', other);
+  out[other] = measure();
+  html.setAttribute('data-theme', cur);
+  return out;
+}
+
+/* ============================================================
+   8. 抽屉内容：设计说明 / 改动对照 / 自检
+   ============================================================ */
+function notesHtml(){
+  return ''+
+  '<h3>本版是什么</h3>'+
+  '<p>设置页的交互原型。这一版先把 <b>pi 的屏幕布局</b>搬过来，再往里放本产品的配置项；不是先画分区再塞字段。</p>'+
+
+  '<h3>布局：从 pi 搬了什么</h3>'+
+  '<p>pi 的 <code>/settings</code> 与 <code>/model</code> 是同一副骨架：全屏、单列、一行一个项目、顶部过滤、底部键位条、选中项进入子菜单。本页照此落位：</p>'+
+  '<table class="t"><tr><th>pi 界面元素</th><th>本页落点</th><th>说明</th></tr>'+
+  '<tr><td><code>/settings</code> 的项目列表</td><td>左侧分区列表</td><td>四项，一行一项，当前项反显</td></tr>'+
+  '<tr><td>单行项目：名称 + 当前值</td><td>右侧列表的行</td><td>一行一个设置，值贴右，句子里不放解释</td></tr>'+
+  '<tr><td>进入子菜单（<code>/settings → Thinking level</code>）</td><td>行尾 ›，下钻到子页</td><td>面包屑 + 首行「‹ 返回」</td></tr>'+
+  '<tr><td><code>/model</code> 顶部过滤</td><td>顶栏「过滤当前列表」</td><td>真过滤，输入即筛</td></tr>'+
+  '<tr><td><code>/model</code> 只列凭证可用模型</td><td>模型行右侧「凭证 ✓ / 未解析」</td><td>偏差：本页是管理面，未配凭证的也列出来（否则看不见缺什么），另在未裁定里登记</td></tr>'+
+  '<tr><td><code>Ctrl+S</code> 存默认、<code>Esc</code> 返回</td><td>底部键位条；每个键都有鼠标等价动作</td><td>Esc 只是加速键</td></tr>'+
+  '<tr><td>分组标题（Providers / Models）</td><td>可开合组标题</td><td>默认开，收起后内容整块消失</td></tr>'+
+  '</table>'+
+
+  '<h3>为什么先搬布局</h3>'+
+  '<p>上一版把 pi 的字段塞进我自造的五组卡片里：字段密度高、解释文字夹在行间、每块都在抢注意力，结果是在这个页面上没法继续改需求。布局是骨架，需求是肉——骨架先对齐，之后每条需求只变成「某个位置放哪个字段」，改动才是局部的。</p>'+
+
+  '<h3>分区为什么是这四个</h3>'+
+  '<ul>'+
+  '<li><b>模型</b>：供应商、凭据、模型、默认与思考等级都在这一页。它们配的是同一个对象（模型运行时），只是不同面。</li>'+
+  '<li><b>项目规则</b>：权威载体在画布右缘的规则卡，这里只读并列分区，不重复入口。</li>'+
+  '<li><b>归档与留痕</b>：卡的历史与回档，对象是卡不是配置。</li>'+
+  '<li><b>备份与还原</b>：整份配置的版本快照，不是字段编辑；与逐字段改动相邻误触代价高，所以独立。</li>'+
+  '</ul>'+
+
+  '<h3>调研依据（外部产品怎么组织）</h3>'+
+  '<p><b>代码 agent 类</b></p>'+
+  '<ul>'+
+  '<li>Claude Code：文件为权威（<code>~/.claude/settings.json</code> 用户级 / 项目级 / 本地级三层），界面只覆盖常用项；供应商靠环境变量与登录态。</li>'+
+  '<li>Cursor：图形设置与 JSON 并存，模型配置集中在设置里的 Models 一节，API Key 行内填。</li>'+
+  '<li>Codex CLI：单一 <code>config.toml</code>，provider 是表，profile 做切换；没有图形设置页。</li>'+
+  '<li>Cline：纯图形面板，provider 列表 + 行内 API Key + 模型勾选。</li>'+
+  '</ul>'+
+  '<p><b>agent 平台类</b></p>'+
+  '<ul>'+
+  '<li>Dify：工作区 → 模型供应商（凭据）→ 系统模型默认，三层递进。</li>'+
+  '<li>Coze：空间 / 成员 / 角色权限 / 额度，重组织与计费。</li>'+
+  '<li>n8n：凭据独立管理，节点按引用选凭据。</li>'+
+  '</ul>'+
+  '<p><b>pi（本案基座，不是参考项）</b></p>'+
+  '<ul>'+
+  '<li>凭证是 provider 的属性，优先级 <code>--api-key › auth.json › models.json apiKey › 环境变量</code>；<code>/login</code> 存过的旧值会盖住新写的 apiKey。</li>'+
+  '<li>模型行字段 <code>id/name/reasoning/input/contextWindow/maxTokens/cost</code>；缺省值会静默出错（cost 全 0 显示 $0、ctx 128000、max 16384）。</li>'+
+  '<li>思考等级 <code>off/minimal/low/medium/high/xhigh/max</code>，按模型能力收敛；<code>/model</code> 只列凭证可用的模型，<code>Ctrl+S</code> 存默认。</li>'+
+  '<li>目录 = 内置 + pi.dev 叠加 + 离线缓存，<code>pi update --models</code> 刷新。</li>'+
+  '<li>没有「分层 / 兜底」这套机制——它只有默认模型 + 思考等级，其余交给目录与 models.json。所以那套设置已整套删除。</li>'+
+  '</ul>'+
+  '<p><b>共性</b>：左分区 + 右行列表；凭据与供应商同处；默认模型只是一行值；列表顶部有过滤；未配置项在列表里可见并带状态。</p>'+
+  '<p><b>类特有</b>：平台的成员 / 角色 / 额度（本轮不属设置页范围）；代码 agent 的用户级 / 项目级双层（本产品用「按卡类型默认」替代，不做双层）。</p>'+
+  '<p><b>不适用</b>：OAuth 登录流与浏览器回调（pi 的 <code>/login</code>），本轮不做。</p>'+
+
+  '<h3>约定</h3>'+
+  '<ul>'+
+  '<li>凡声称落盘的按钮，就近标 <b>示意·不写盘</b>；凡需联网的，标 <b>示意·未联网</b>。界面内切换（分区、开合、过滤、主题、选中、状态）都真生效。</li>'+
+  '<li>四态在顶栏可切：加载（骨架）/ 空（确知为 0）/ 错误（带重试）/ 无权限（带原因码与申请路径），四者互异且各有鼠标可达出口。</li>'+
+  '<li>本轮只做交互形态，数据全为示意；数据面归属待裁。</li>'+
+  '</ul>';
+}
+
+function diffHtml(){
+  var rows = [
+    ['页面骨架','每个分组一张卡片，卡片里嵌说明文字','全屏单列列表：一行一个设置项，解释移入本抽屉','信息密度过高、无法在其上继续改，逐行修改成本最低'],
+    ['左侧导航','四分区','四分区（不变）','分区对象已确认：模型 / 规则 / 归档 / 备份'],
+    ['模型内部','五个分组（A 供应商与凭据 / B 目录 / C 默认 / D 高级 / E 说明）','默认 · 按卡类型默认 · 供应商 · 模型目录 · 高级','按「对象」而非「风险等级」分组'],
+    ['密钥','独立「密钥与凭据」分区','并入供应商详情 + 模型行标凭证 ✓ / 未解析','pi 里凭证就是 provider 的属性'],
+    ['分层与兜底','四层 depth_0/1/2/default，可上下移增删','已整套删除','pi 无此机制，用户裁定取消'],
+    ['默认模型','按卡类型一张张卡片','「默认」一行下钻 → 七类卡一张表 → 选择器','默认是一个值，不该占一屏'],
+    ['模型详情','展开式编辑面板','行内：思考等级下拉 + 温度输入；连接字段在下钻页','pi 的模型行是扁平的'],
+    ['测试连接 / 拉取模型','按钮直接给结论','按钮 + 示意·未联网；不给假结论','无后端时不得伪造成功'],
+    ['校验横幅','页面顶部横幅','保留（toast 与错误态）','需要即时反馈；不写盘时只报示意'],
+    ['四态','仅文字描述','顶栏可切实视图：骨架 / 空 / 错误 / 无权限','验收要能当场看'],
+    ['主题','深浅可切','不变，顶栏一个按钮','取证用'],
+    ['布局依据','无','pi 的骨架逐元素映射（设计说明 §布局）','先搬布局再改需求']
+  ];
+  var t = '<h3>改动对照（老原型 → 本图 → 为什么）</h3><table class="t"><tr><th>项</th><th>老原型</th><th>本图</th><th>为什么</th></tr>';
+  rows.forEach(function(r){ t += '<tr><td>'+esc(r[0])+'</td><td>'+esc(r[1])+'</td><td>'+esc(r[2])+'</td><td>'+esc(r[3])+'</td></tr>'; });
+  t += '</table>';
+
+  var old = [
+    ['供应商增删改','模型 › 供应商 行 / 详情页删除'],
+    ['连接字段（协议 / 密钥变量 / models_url / base_url）','供应商详情 › 连接 组'],
+    ['测试连接','供应商详情 › 模型 组尾'],
+    ['拉取模型列表','供应商详情 › 模型 组尾 + 模型目录 › 刷新'],
+    ['修改密钥（不回显、只显尾 4 位）','供应商详情 › 凭据 组'],
+    ['模型行 · 思考档位','供应商详情 › 模型 行内下拉（按 reasoning 收敛）'],
+    ['模型行 · 温度','供应商详情 › 模型 行内输入 0–2'],
+    ['按卡类型默认模型','模型 › 按卡类型默认 › 七类卡表'],
+    ['分层设置','已删除（用户裁定），页内保留去向说明'],
+    ['备份与还原','备份与还原 分区'],
+    ['新建备份','备份与还原 › 新建'],
+    ['还原（含确认）','备份行 › 还原 → 短层确认'],
+    ['删除供应商（含确认）','供应商详情 › 危险 → 短层确认'],
+    ['清除凭据（含确认）','供应商详情 › 凭据 → 短层确认'],
+    ['校验横幅','toast / 错误态'],
+    ['连接失败提示','错误态（带重试与诊断）'],
+    ['模型目录刷新','模型 › 模型目录 › 刷新'],
+    ['默认模型切换','模型 › 默认模型 → 选择器'],
+    ['思考等级切换','模型 › 思考等级 / 模型行下拉'],
+    ['主题切换','顶栏']
+  ];
+  var t2 = '<h3>老能力 → 新位置</h3><table class="t"><tr><th>老原型能力</th><th>本图位置</th></tr>';
+  old.forEach(function(r){ t2 += '<tr><td>'+esc(r[0])+'</td><td>'+esc(r[1])+'</td></tr>'; });
+  t2 += '</table>';
+
+  var pending = [
+    '备份与还原是否并入「模型」页（当前独立，理由是整份快照 ≠ 字段编辑）',
+    '模型选择器是否照 pi 只列凭证可用模型（当前全列出并标 未解析，属管理面取舍）',
+    '模型行的能力字段（ctx / max / cost）是可改还是只读展示',
+    '模型二级编辑详情面板是否保留（本轮折成行内 + 下钻）',
+    '按卡类型默认未设置时回落全局默认，是否要给「显式未设」单独状态',
+    '设置页数据面归属（card_197 契约 E-6 ⑦ 待裁）'
+  ];
+  var t3 = '<h3>未裁定（留用户裁）</h3><ul>';
+  pending.forEach(function(p){ t3 += '<li>'+esc(p)+'</li>'; });
+  t3 += '</ul>';
+  return t + t2 + t3;
+}
+
+function selfHtml(){
+  return ''+
+  '<h3>自检读数</h3>'+
+  '<p>下面全部在图内现算：切一遍两套主题各测一次，再切回当前主题。</p>'+
+  '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px">'+
+    '<button class="btn sm btn-pri" type="button" id="runSelf">现算一遍</button>'+
+    '<button class="btn sm" type="button" id="toggleRm">切 reduced-motion</button>'+
+  '</div>'+
+  '<div id="selfOut"><p class="mute">点「现算一遍」。读数按当前页面的真实 DOM 量，不是写死的数字。</p></div>';
+}
+
+function bindSelf(){
+  var run = document.getElementById('runSelf');
+  if(run) run.addEventListener('click', function(){
+    var out = document.getElementById('selfOut');
+    out.innerHTML = '<p class="mute">测量中…</p>';
+    setTimeout(function(){
+      var m = recalcBoth();
+      function block(theme){
+        var d = m[theme];
+        var t = d.text, nt = d.non, hit = d.hit, rm = d.rm, ext = d.ext;
+        var s = '<h3>'+(theme==='dark'?'深色':'浅色')+'主题</h3>';
+        s += '<table class="t"><tr><th>项</th><th>读数</th><th>判定</th></tr>';
+        s += '<tr><td>文字对比度</td><td class="n">'+t.n+' 节点 / 最小 '+t.min.toFixed(2)+':1</td><td class="'+(t.fails.length?'fail':'pass')+'">'+(t.fails.length? t.fails.length+' 处 <4.5' : '0 不合格')+'</td></tr>';
+        s += '<tr><td>非文本对比度</td><td class="n">'+nt.counted.length+' 对 / 最小 '+nt.min.toFixed(2)+':1</td><td class="'+(nt.fails.length?'fail':'pass')+'">'+(nt.fails.length? nt.fails.join('、') : '0 不合格（另 '+ (nt.pairs.length-nt.counted.length) +' 对装饰线豁免）')+'</td></tr>';
+        s += '<tr><td>命中区</td><td class="n">'+hit.n+' 个可点 / 最小 '+hit.min+'px</td><td class="'+(hit.bad.length?'fail':'pass')+'">'+(hit.bad.length? '有 '+hit.bad.length+' 个 <24px' : '<24px 清单为空')+'</td></tr>';
+        s += '<tr><td>reduced-motion</td><td class="n">'+rm.a+' → '+rm.b+'</td><td class="'+(rm.a===rm.b?'pass':'fail')+'">'+(rm.a===rm.b?'可点元素不减少':'功能缺失')+'</td></tr>';
+        s += '<tr><td>外部链接检索</td><td class="n">外链特征串 / 五项</td><td class="'+(ext.hits.length?'fail':'pass')+'">'+(ext.hits.length? ext.hits.join('、') : '0 命中')+'</td></tr>';
+        s += '<tr><td>脚本错误</td><td class="n">'+d.err+'</td><td class="'+(d.err?'fail':'pass')+'">'+(d.err?'有错误':'0 条')+'</td></tr>';
+        s += '</table>';
+
+        s += '<table class="t"><tr><th>非文本对（对真实相邻填充）</th><th>比值</th><th>判定</th></tr>';
+        nt.pairs.forEach(function(p){
+          s += '<tr><td>'+esc(p.name)+'</td><td class="n">'+p.r.toFixed(2)+':1</td><td class="'+(p.deco?'':(p.r>=3?'pass':'fail'))+'">'+(p.deco?'装饰·豁免':(p.r>=3?'过':'不足'))+'</td></tr>';
+        });
+        s += '</table>';
+
+        if(t.fails.length){
+          s += '<p class="fail">文字不合格：'+t.fails.map(function(f){ return esc(f.t)+' '+f.r.toFixed(2); }).join('；')+'</p>';
+        }
+        if(hit.bad.length){
+          s += '<p class="fail">命中区不足：'+hit.bad.map(function(b){ return b.tag+'.'+b.cls+' '+b.m+'px'; }).join('；')+'</p>';
+        }
+        return s;
+      }
+      out.innerHTML = block('dark') + block('light') +
+        '<h3>测量口径</h3><ul>'+
+        '<li>文字：逐元素取其直接文本节点的 <code>color</code>，背景取最近的实色祖先填充（<code>effBg</code>），算 WCAG 比值。</li>'+
+        '<li>非文本：按对给定前景/背景，<b>背景取该控件自身的填充或其所在面板</b>，不是页面底色（圆点这类自身即填充的，取相邻行填充）。本版已取消行间分隔线，所以没有「装饰线豁免」的项。</li>'+
+        '<li>命中区：<code>button / a / input / select / [role=button]</code> 的 <code>min(width,height)</code>，只算可见元素。</li>'+
+        '<li>reduced-motion：加 <code>.reduce-motion</code> 前后数可点元素个数。</li>'+
+        '</ul>';
+    }, 30);
+  });
+
+  var rm = document.getElementById('toggleRm');
+  if(rm) rm.addEventListener('click', function(){
+    var on = document.documentElement.classList.toggle('reduce-motion');
+    toast('reduced-motion ' + (on?'开':'关') + '（可点元素数不变）');
+  });
+}
+
+/* ============================================================
+   9. 启动
+   ============================================================ */
+renderAll();
+
+/* 抽屉内容里带按钮，需要重新绑定 */
+var _openDrawer = openDrawer;
+openDrawer = function(tab){
+  _openDrawer(tab);
+  if(tab === 'self') bindSelf();
+};
+
+})();
+</script>
+</body>
+</html>

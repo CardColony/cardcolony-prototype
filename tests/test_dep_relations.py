@@ -179,9 +179,9 @@ def test_b2_tool_table_and_versions():
     列 OP_ONLY_TOOLS、不进常规工具面）；TOOL_TABLE_VERSION tools-tc-7 → tools-tc-8。
     """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    assert src.count('": ToolDef(') == 35  # [2026-11-02 UI 卡] 34→35（+create_ui_card）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] 新增 create_ui_card
-    assert prompts.BASE_PROMPT_VERSION == "t27-11"  # [2026-11-01] 随现配置对齐（事实分层 t27-2→t27-3）
+    assert src.count('": ToolDef(') == 36  # [2026-11-09 画线看全图] 35→36（+list_cards）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [2026-11-02] 新增 create_ui_card
+    assert prompts.BASE_PROMPT_VERSION == "t27-16"  # [2026-11-01] 随现配置对齐（事实分层 t27-2→t27-3）
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY
     # [2026-11-01] 开关词汇表扩列后 link_rel/unlink_rel 已是独立开关
@@ -417,9 +417,10 @@ def test_b3_region_table_16_regions_with_250():
     orders = [r["order"] for r in context_regions.REGION_TABLE]
     # [2026-10-21] 配置演进至 v9：新增 91/92/93/145/175 五区，17→22 同步快照。
     # [2026-11-01] 22→23：新增 order 88 区（类型思考等），快照随行。
-    assert len(context_regions.REGION_TABLE) == 23
+    # [2026-11-10] 23→24：新增 order 160「上游需求文档」（执行/差事卡参照尺）。
+    assert len(context_regions.REGION_TABLE) == 24
     assert orders == [0, 88, 85, 90, 91, 92, 93, 95, 100, 145, 150, 152, 155,
-                      170, 175, 200, 250, 300, 900, 999, 1000, 1010, 1020]
+                      160, 170, 175, 200, 250, 300, 900, 999, 1000, 1010, 1020]
     by_key = {r["key"]: r for r in context_regions.REGION_TABLE}
     assert by_key["goal"]["name"] == "自动模式·目标"
     assert by_key["relations"]["name"] == "依赖关联"
@@ -551,3 +552,85 @@ async def test_b3_canvas_store_projection_key_is_links(sandbox):
     assert "links" in data and "relations" not in data
     assert any(l["source"] == "card_002" and l["target"] == "card_004"
                for l in data["links"])
+
+# ════════════════════════════════════════════════════════════════════
+# [父替子画线 2026-11-09 · 用户令] link_rel/unlink_rel 增 source_id＋list_cards
+# ════════════════════════════════════════════════════════════════════
+
+async def test_link_rel_source_id_parent_draws_for_child(sandbox):
+    """父卡传 source_id=直系子卡 ⇒ 线落在**子卡** relations 上，父卡自己的
+    relations 不动。树：001 根 → 002 子卡A → 004 孙卡A1。"""
+    wid = (await work_store.create_work("父替子画线"))["work_id"]
+    cards = await _tree(wid)
+    r = await card_tools._h_link_rel(
+        wid, "card_001",
+        {"source_id": "card_002", "target_id": "card_004",
+         "kind": "依赖", "detail": "子卡A 依赖孙卡的接口文档"}, cards)
+    assert r.get("ok") and r.get("source") == "card_002", r
+    child = (await card_store.read_card(wid, "card_002"))["meta"]
+    assert child["relations"] == [
+        {"target": "card_004", "kind": "依赖",
+         "detail": "子卡A 依赖孙卡的接口文档"}]
+    parent = (await card_store.read_card(wid, "card_001"))["meta"]
+    assert not (parent.get("relations") or []), "代画的线落在了父卡自己面上"
+
+
+async def test_link_rel_source_id_rejects_non_direct_child(sandbox):
+    """source_id 只能填直系子卡：孙卡（父是 002 不是 001）、不存在的卡都拒。"""
+    wid = (await work_store.create_work("代画越界"))["work_id"]
+    cards = await _tree(wid)
+    # 孙卡不是 card_001 的直系子卡
+    r = await card_tools._h_link_rel(
+        wid, "card_001",
+        {"source_id": "card_004", "target_id": "card_002",
+         "kind": "影响", "detail": "x"}, cards)
+    assert r.get("error") and r["error"]["code"] == "denied", r
+    # 不存在的卡
+    r2 = await card_tools._h_link_rel(
+        wid, "card_001",
+        {"source_id": "card_999", "target_id": "card_002",
+         "kind": "影响", "detail": "x"}, cards)
+    assert r2.get("error") and r2["error"]["code"] == "not_found", r2
+    # source 与 target 相同（父替子画子卡自己）——仍禁自指
+    r3 = await card_tools._h_link_rel(
+        wid, "card_001",
+        {"source_id": "card_002", "target_id": "card_002",
+         "kind": "影响", "detail": "x"}, cards)
+    assert r3.get("error"), r3
+
+
+async def test_unlink_rel_source_id_parent_removes_for_child(sandbox):
+    """父卡传 source_id ⇒ 从子卡 relations 拆线（能替画就能替拆）。"""
+    wid = (await work_store.create_work("父替子拆线"))["work_id"]
+    cards = await _tree(wid)
+    await card_tools._h_link_rel(
+        wid, "card_001",
+        {"source_id": "card_002", "target_id": "card_004",
+         "kind": "依赖", "detail": "x"}, cards)
+    r = await card_tools._h_unlink_rel(
+        wid, "card_001",
+        {"source_id": "card_002", "target_id": "card_004"}, cards)
+    assert r.get("ok") and r.get("source") == "card_002"         and r.get("removed") == 1, r
+    assert not ((await card_store.read_card(wid, "card_002"))["meta"]
+                .get("relations") or [])
+
+
+async def test_list_cards_returns_roster_with_mission(sandbox):
+    """list_cards：全项目花名册——每张卡 id/标题/卡型/父卡/使命都有；
+    旁树的卡也在列（画线看全图）；只读、走 read 开关。"""
+    wid = (await work_store.create_work("花名册"))["work_id"]
+    cards = await _tree(wid)
+    await card_store.update_card(
+        wid, "card_002", {"mission": "负责接口文档整备"}, "立使命")
+    cards = card_store.iter_card_metas(wid)   # 刷新缓存
+    r = await card_tools._h_list_cards(wid, "card_001", {}, cards)
+    assert r.get("ok") and r["total"] == len(r["cards"]), r
+    by_id = {c["card_id"]: c for c in r["cards"]}
+    assert {"card_001", "card_002", "card_004"} <= set(by_id)
+    c2 = by_id["card_002"]
+    assert c2["title"] == "子卡A" and c2["parent"] == "card_001"
+    assert c2["card_type"] == "sub_project"
+    assert c2["mission"] == "负责接口文档整备"
+    # 孙卡在列＝跨子树（旁树）也看得见——这正是它的用途
+    assert by_id["card_004"]["parent"] == "card_002"
+

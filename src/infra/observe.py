@@ -70,16 +70,24 @@ def log_model_call(*, trace_id: str = "", caller: str = "",
                    model: str = "", prompt_tokens: int | None = None,
                    completion_tokens: int | None = None,
                    tokens_used: int | None = None, reasoning_chars: int | None = None,
+                   reasoning_tokens: int | None = None,
                    latency_ms: int | None = None, finish_reason: str = "",
                    text_len: int | None = None, tool_calls: int | None = None,
                    error: str = "") -> None:
-    """每次模型调用一条（原版 recordUsage 同位；字段比原版多 caller/trace 对账键）。"""
+    """每次模型调用一条（原版 recordUsage 同位；字段比原版多 caller/trace 对账键）。
+
+    ``reasoning_tokens``＝端点 usage 报的思考 token 数（区别于
+    ``reasoning_chars``＝回吐给我们的思考正文字符数）：>0 且 chars=0 ⇒
+    模型想了但没给你看（kimi「可能返回 reasoning_content」合同）；
+    =0 ⇒ 真没推理——「没 think 流」的定责键（2026-11-10 文档核查后补）。
+    """
     _write({"kind": "model_call", "trace_id": str(trace_id or ""),
             "caller": str(caller or ""), "work_id": str(work_id or ""),
             "card_id": str(card_id or ""), "seat": str(seat or ""),
             "model": str(model or ""), "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens, "tokens_used": tokens_used,
-            "reasoning_chars": reasoning_chars, "latency_ms": latency_ms,
+            "reasoning_chars": reasoning_chars, "reasoning_tokens": reasoning_tokens,
+            "latency_ms": latency_ms,
             "finish_reason": str(finish_reason or ""), "text_len": text_len,
             "tool_calls": tool_calls, "error": str(error or "")})
 

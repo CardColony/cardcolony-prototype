@@ -176,6 +176,8 @@ class CtlDeliverRequest(BaseModel):
     work_id: str
     card_id: str
     text: str = ""
+    steer_text: str = ""
+    source_kind: str = "internal"
     source: Optional[dict[str, Any]] = None
 
 
@@ -1654,9 +1656,14 @@ async def get_work_session(work_id: str, card_id: str):
     # jsonable_encoder＋dumps 对巨结构是同步 CPU ~15s，跑在服务循环 B 上
     # ＝全站冻结（实测一波 4 请求齐卡 15s、整页 57s）。⇒ dumps 挪线程池、
     # 直接回预编码字节——响应契约逐字节不变（同 dumps 默认参数）。
+    # [2026-11-09] 非有限浮点消毒（allow_nan=False 撞 inf 直接 ValueError 500，
+    # 与下方 timeline 同病同治——card_507 events 已落盘裸 Infinity 实录）。
+    # scrub 放线程内做：session 载荷实测 294MB，走服务循环又是秒级冻结。
+    from . import payload_cap
     body = await asyncio.to_thread(
-        json.dumps, payload, ensure_ascii=False, allow_nan=False,
-        indent=None, separators=(",", ":"))
+        lambda: json.dumps(payload_cap.scrub_nonfinite(payload),
+                           ensure_ascii=False, allow_nan=False,
+                           indent=None, separators=(",", ":")))
     return Response(content=body.encode("utf-8"), media_type="application/json")
 
 
@@ -2001,9 +2008,13 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
     }
     # [双循环 2026-11-04] 大卡 timeline 响应实测 190MB——dumps 在服务
     # 循环 B 上＝秒级冻结。⇒ 预编码挪线程池（契约与 JSONResponse 逐字节同）。
+    # [2026-11-09] 非有限浮点随 dumps 同线程消毒：模型吐进事件的 JS 字面量
+    # （如 card_507 的 ``"verbose": Infinity``）落盘宽容读回后在此
+    # allow_nan=False 炸 500——整页取不到对话。响应层消毒，落盘不动。
     body = await asyncio.to_thread(
-        json.dumps, payload, ensure_ascii=False, allow_nan=False,
-        indent=None, separators=(",", ":"))
+        lambda: json.dumps(payload_cap.scrub_nonfinite(payload),
+                           ensure_ascii=False, allow_nan=False,
+                           indent=None, separators=(",", ":")))
     return Response(content=body.encode("utf-8"), media_type="application/json")
 
 
@@ -2308,19 +2319,17 @@ async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, ali
 
 
 async def _revive_worker_card(work_id: str, card_id: str, content: str) -> None:
-    """完工的worker 卡**重新派活**：卡复位 active ＋ 目标重新激活。
+    """worker 卡「再发一条消息」＝重新派活：只开目标新生命周期，不动状态列。
 
-    [worker 卡可继续派活 2026-10-21 · 用户令] 改前完工卡收到消息直接 400
-    「不再激活；新任务请新建worker 卡」⇒ 同一件事的后续、同一处返工，只能另开
-    一张卡，上下文与留痕全断（用户原话：「明明是继续的任务，它也只能新开卡执行」）。
-    现在把「再发一条消息」当作**重新派活**：
-      · ``state: completed → active``（否则 report_done 判态、K3 调起都会拦）；
+    [2026-10-21 用户令] 同一件事的后续、同一处返工，不再另开卡，
+    上下文与留痕留在同一张卡上。
+    [完工不影响功能 2026-11-08 用户令] 完工只是「交付过结果」的标记，
+    不影响任何功能 ⇒ **删掉 state: completed→active 的复位**（函数名沿用）。
+    派活就是派活，卡上写没写 completed 跟这一轮能不能跑、能不能交工无关。
       · 目标是 complete ⇒ 用这条消息开**新生命周期**（create 是唯一合法入口），
         消息内容就是新目标——它本来就是「接下来要干什么」；
       · paused/blocked ⇒ resume（清等待位与活锁计数）。
     """
-    await card_store.update_card(
-        work_id, card_id, {"state": "active"}, "重新派活：完工worker 卡复位为 active")
     meta = card_store._meta_of(work_id, card_id) or {}
     if not bool(meta.get("auto_mode")):
         return
@@ -2374,12 +2383,10 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
                 except Exception:  # noqa: BLE001
                     _meta = {}
     _revive_owner = ""
-    # [机制判断归harness 第3步] 完工判定走派生视图（事件流最后一条 state
-    # 变更说了算；无事件覆盖回落列）——不再直接读手写 state 列。
-    from ..infra import card_status as _cs
-    _derived_delivery = _cs.derive(work_id, card_id)["delivery"]
-    if str(_meta.get("card_type") or "") == "worker" \
-            and _derived_delivery == "completed":
+    # [完工不影响功能 2026-11-08] 改前只对「worker + completed」走这段，
+    # 目的之一是把它复位成 active。现在完工只是「交付过结果」的标记，
+    # 发消息就是派活，一律走目标新生命周期，不动 state 列。
+    if str(_meta.get("card_type") or "") == "worker":
         # [重新派活竞态 2026-10-21] 改目标会 emit goal/changed ⇒ 驱动器立刻
         # request_drive 抢一轮，把互斥体占掉 ⇒ 用户这条消息反而撞 409。
         # 所以在改目标期间**先占住互斥体**（临时 owner），让驱动器这一跳被跳过；
@@ -3148,7 +3155,8 @@ async def ctl_run_message(req: CtlRunMessageRequest):
 async def ctl_deliver(req: CtlDeliverRequest):
     """[多进程拆分] 属主 runner 入口：替调用方在本进程判 pending/起回合。"""
     delivered = await message_runner.deliver_now(
-        req.work_id, req.card_id, text=req.text, source=req.source)
+        req.work_id, req.card_id, text=req.text, steer_text=req.steer_text,
+        source_kind=req.source_kind, source=req.source)
     return {"delivered": bool(delivered)}
 
 
@@ -3213,11 +3221,18 @@ async def _run_message(work_id: str, card_id: str, content: str,
     # [强制停止 2026-10-24] 停止标记闸:halted 的卡拒绝一切**内部**唤醒
     # (goal 续轮已被 pause 治住;这里治收件箱调起/汇聚/巡检这些旁路)。
     # 用户直接发话(source_kind="human")= 解除停止并继续——人是最高权威。
+    # [2026-11-10] direct(父卡下行指令)同级豁免:闸挡的是「停止时已在途的
+    # 残留唤醒」,停后新到的指令是新命令不是幽灵——停≠焊死,环境流量
+    # (report/sync/巡检)照旧被挡、信留会话等解除。
     _halt = control.is_halted(work_id, card_id)
     if _halt is not None:
-        if source_kind == "human":
-            control.unhalt(work_id, card_id, by="user", via="human_message")
-            logger.info("[control] 用户直接发话,解除强制停止 card=%s", card_id)
+        if source_kind in ("human", "directive"):
+            control.unhalt(work_id, card_id,
+                           by=("user" if source_kind == "human"
+                               else str((source or {}).get("from") or "card")),
+                           via=source_kind)
+            logger.info("[control] %s 到达,解除强制停止 card=%s",
+                        source_kind, card_id)
         else:
             session_ops.ops_log("card_halted_reject", work_id, card_id,
                                 {"reason": _halt.get("reason"),
@@ -3362,7 +3377,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
         control.discard_stop(work_id, card_id)
         # [5715] 插话残留清扫（对齐 control.discard_stop 的纪律）：回合窗口外
         # 的插话一律作废——不能留给下一回合，否则那句话会凭空出现在下一轮。
-        steer.discard_steer(work_id, card_id)
+        # 残留件先收着：applied 却没被模型看见的话不算送达，摘牌后下面补投。
+        _steer_remains = steer.discard_steer(work_id, card_id)
         session_facade.turn_release(work_id, card_id, turn_owner)
         # [立刻停止 2026-10-21] 解登记本轮协程（传 task 只解自己，防误删后续回合）
         control.unbind_turn_task(work_id, card_id, _turn_task)
@@ -3412,6 +3428,23 @@ async def _run_message(work_id: str, card_id: str, content: str,
                                 card_id)
             except Exception as exc:  # noqa: BLE001 接续失败不影响本回合返回
                 logger.warning("[排队] 摘牌后接续队列失败 card=%s: %s", card_id, exc)
+            # [5715 · 补投 2026-11-08] 插话残留：在「模型已收口」判定之后、
+            # discard_steer 之前到达的插话是 applied=True 却从没进过模型上下文
+            # 的话——静默丢＝吞消息。摘牌后补投：若上面队列接续起了轮，这里
+            # deliver_now 走忙分支把残留插话插进那一轮；没起轮就自起一轮，
+            # 插话原文（含 〔用户插话〕/〔卡间消息〕 标）作 prompt 直接进。
+            if _steer_remains:
+                try:
+                    _rt = await message_runner.deliver_now(
+                        work_id, card_id,
+                        text="\n\n".join(_steer_remains),
+                        source={"kind": "steer_remains"})
+                    if _rt:
+                        logger.info("[steer] 残留插话补投 card=%s 条数=%d",
+                                    card_id, len(_steer_remains))
+                except Exception as exc:  # noqa: BLE001 补投失败不影响本回合返回
+                    logger.warning("[steer] 残留插话补投失败 card=%s: %s",
+                                   card_id, exc)
         # [2026-10-25 · 用户裁定「worker 不能自动归档,应可续派任务延续」]
         # 自动归档撤除:完工 worker 保持活卡形态(上下文连续,天然可续派)。
         # 折叠只走显式通道:silence_card(silence)由上级决定。
@@ -3430,6 +3463,18 @@ async def _run_message(work_id: str, card_id: str, content: str,
         keep = False
     if not keep:
         serial_gate.release(work_id, card_id)
+    # [worker 完工未报兜底 2026-11-10 · 用户令「执行卡做完不汇报太严重」]
+    # 闸「这卡真安静下来了」才补：will_continue 判否（不续跑）＋本轮没起
+    # 接续回合（队列/残留插话接管了它——下一回合自带收口评估）；
+    # outcome 不设限——被停/中止正是主漏报形态（完工即被杀 636/637 实证）。
+    try:
+        _wst = _stats.get("state")
+        _continued = bool(locals().get("_picked")) or bool(locals().get("_rt"))
+        if _wst is not None and not keep and not _continued:
+            await card_tools.worker_unreported_fallback(
+                work_id, card_id, _wst)
+    except Exception as exc:  # noqa: BLE001 兜底失败不阻断本回合返回
+        logger.warning("[worker] 收口兜底回执失败 card=%s: %s", card_id, exc)
     # [goal 域 2026-10-20] 旧 `auto_driver.after_turn` 的续轮职责已整体移交
     # `src/goal/driver.py`（idle 事件驱动，见上方 finally）；父卡唤醒改由
     # `notify_parent_idle` 承担。此处不再调 after_turn——两套并存会双起点火。
@@ -3469,6 +3514,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     """
     # 段① 读卡 ＋ pair_id 去重追加（详见旧 L524-564，逻辑逐字迁移）
     state = message_runner.RunState(work_id=work_id, card_id=card_id, content=content)
+    state.turn_start_ts = time.time()
     if stats is not None:
         stats["state"] = state
     # [更新现状按钮改造 2026-10-16] 本轮操作标记：op 回合触发专用注入与专用工具，

@@ -33,7 +33,7 @@ for /f "delims=" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File wd
 )
 
 rem ---- 1) stop service group: pid files, then port sweep 5700-5708 ----
-for %%f in (.server.pid .server-runner*.pid) do (
+for %%f in (.server.pid .server-runner*.pid .server-condense.pid) do (
     if exist %%f (
         set "PID="
         set /p PID=<%%f
@@ -47,7 +47,7 @@ for %%f in (.server.pid .server-runner*.pid) do (
         del %%f >nul 2>&1
     )
 )
-for /l %%p in (5700,1,5708) do (
+for /l %%p in (5700,1,5710) do (
     for /f "tokens=5" %%a in ('netstat -ano ^| findstr LISTENING ^| findstr ":%%p "') do (
         if not "%%a"=="0" (
             taskkill /PID %%a /F >> %LOG% 2>&1
@@ -78,6 +78,10 @@ for /l %%t in (1,1,30) do (
 )
 echo [%date% %time%] WARN: runner ports not all up, continuing >> %LOG%
 :runners_up
+
+rem condense dedicated process: sole owner of condensation (probe 5710)
+start "CardColony-condense" /min cmd /c "set ECO_ROLE=condense&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python condense_main.py >> logs\condense_stdout.log 2>&1"
+echo started condense >> %LOG%
 
 start "CardColony-web" /min cmd /c "set ECO_ROLE=web&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python main.py >> logs\service_stdout.log 2>&1"
 

@@ -24,12 +24,8 @@ async def archive_worker(work_id: str, card_id: str) -> dict[str, Any]:
     if str(meta.get("card_type") or "") != "worker":
         return {"ok": False, "error": "only_worker",
                 "message": "归档只作用于worker 卡"}
-    # [机制判断归harness 第3步] 完工判定走派生视图（事件权威＋列回落）。
-    from ..infra import card_status as _cs
-    _dstate = _cs.derive(work_id, card_id)["delivery"]
-    if _dstate != "completed":
-        return {"ok": False, "error": "not_completed",
-                "message": f"worker 卡尚未完工(state={_dstate or '?'})"}
+    # [完工不影响功能 2026-11-08] 归档是显式处置（「任何卡都能归档，不看
+    # 状态」），不要求卡标过 completed；完工只是交付结果标记，不是归档闸门。
 
     # 产物清单从影子提取(路径指针);影子随卡行一起退役
     artifacts: list[str] = []

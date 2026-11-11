@@ -392,6 +392,63 @@
         "message": "（提醒）你的「现状」块已经超 1 万字（{event.new_len} 字）。核实一下：现状应该是**当前快照**——别的卡靠它知道你现在到哪了，不是记事本。请把笔记、历史流水账等不需要共享给其他卡片的信息挪出（过程记录在影子卡）。注意：压缩的完成标准**不是「压回 1 万字以下」**，而是**清到没有不符合的内容为止**——不要踩着线压：该挪走的内容，不管压完还剩多少字都要清干净。"
       },
       "window": "1h"
+    },
+    {
+      "id": "new_child_wire_relations",
+      "active": true,
+      "desc": "建非执行子卡（sub_project/topic）⇒ 插话提醒**父卡**给新卡画依赖/影响线：list_cards 看全图（含使命），link_rel(source_id=新卡) 替它标出依赖谁/影响谁。执行卡（worker/ui/qa_card/pm_card）与场卡/离树卡不触发——白名单只放组织型子卡。插话模式：父卡多半正在回合里（它刚调的建卡），steer 落进同一轮；不在跑就排队等它下一轮。",
+      "scope": {
+        "kind": "card"
+      },
+      "watch": [
+        "card_created"
+      ],
+      "when": {
+        "all": [
+          {
+            "field": "trigger_data.card_type",
+            "cmp": "in",
+            "value": ["sub_project", "topic"]
+          }
+        ]
+      },
+      "then": {
+        "target": "parent",
+        "mode": "inject",
+        "message": "（指令）你刚建了子卡 {card_id}——给它画好关系线再往下走：先调 list_cards 看全部卡片（每张带使命），想清楚它**依赖谁**（它要消费谁的接口/文档）、**影响谁**（它动会波及谁），然后逐条调 link_rel(source_id=\"{card_id}\", target_id=卡号, kind=依赖或影响, detail=写清具体依赖/影响什么) 替它标上。画错的用 unlink_rel(source_id=\"{card_id}\", target_id=卡号) 拆。"
+      },
+      "window": "1h"
+    },
+    {
+      "id": "claim_no_receipt_reminder",
+      "active": true,
+      "desc": "回复断言检出（reply_claims）且账对不上 ⇒ 插话提醒本卡。判据两种：①本回合零工具回执却有断言词；②断言点名的对象没在任何调用参数里出现过。发射侧只产机械事实（message_runner 收口时扫断言词落事件），判据与文本全在这——敏感度随时可调可关。inject 模式：进下一轮上下文、不叫醒、不落历史——误报成本趋近零（旧版强制续轮才敏感烧钱）。",
+      "scope": {
+        "kind": "card"
+      },
+      "watch": [
+        "reply_claims"
+      ],
+      "when": {
+        "any": [
+          {
+            "field": "trigger_data.tool_calls",
+            "cmp": "==",
+            "value": 0
+          },
+          {
+            "field": "trigger_data.stray_count",
+            "cmp": ">=",
+            "value": 1
+          }
+        ]
+      },
+      "then": {
+        "target": "self",
+        "mode": "inject",
+        "message": "（提醒）你上一轮的回复有断言式表述（{event.claims_text}），但{event.detail}。断言要有当轮工具返回作证据——写「已核实／实测／确认过」这类词前请先用工具真实核实；没核到就如实写明「未核」，不要凭印象断言。"
+      },
+      "window": "1h"
     }
   ]
 }

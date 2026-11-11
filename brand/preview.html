@@ -1,105 +1,303 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>CardColony 品牌规范 · v1</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardColony — Brand Spec v1 · Honey Gold</title>
 <style>
-  :root { --ink:#1c2733; --paper:#ffffff; --gold:#c9901f; --gold-d:#e2a63d; --body-d:#e6edf3; }
-  * { box-sizing:border-box; }
-  body { margin:0; padding:44px 52px; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
-         background:#eceae3; color:var(--ink); }
-  h1 { font-size:22px; margin:0 0 6px; }
-  .sub { color:#6a7280; font-size:13px; margin-bottom:30px; max-width:900px; }
-  .sec { margin:36px 0 12px; font-size:15px; font-weight:700; }
-  .note { font-size:12.5px; color:#6a7280; max-width:900px; margin-bottom:14px; line-height:1.7; }
-  .note code { font-size:11.5px; }
-  .row { display:flex; gap:20px; flex-wrap:wrap; align-items:flex-end; }
-  .cell { text-align:center; }
-  .tile { display:inline-block; border-radius:14px; box-shadow:0 1px 4px rgba(0,0,0,.14); }
-  .tile svg,.tile img { display:block; }
-  .lbl { font-size:11px; color:#8a919c; margin-top:6px; }
-  .dark { background:#10151c; }
-  table { border-collapse:collapse; font-size:13px; }
-  td,th { padding:7px 14px; border:1px solid #d8d5cc; text-align:left; }
-  th { background:#e8e5dc; font-size:12.5px; }
-  .chip { display:inline-block; width:14px; height:14px; border-radius:4px;
-          vertical-align:-2px; margin-right:7px; border:1px solid rgba(0,0,0,.15); }
-  .wm { font-weight:650; letter-spacing:.2px; white-space:nowrap; line-height:1;
-        font-family:"Segoe UI",system-ui,sans-serif; display:flex; align-items:baseline; }
-  .wm img { height:1em; width:auto; transform:translateY(.045em); margin-right:0; }
-  .s20{font-size:20px;} .s30{font-size:30px;} .s48{font-size:48px;}
-  .pad { padding:16px 22px; }
-  .dont { color:#b0493f; }
-  .ok { color:#2d7a4f; }
+  :root{
+    --ink:#1c2733; --ink2:#5c6a76; --ink3:#8a919c; --paper:#ffffff;
+    --shell:#eceae3; --card:#f7f6f1; --line:#d8d5cc; --line2:#e6e3da;
+    --gold-l:#c9901f; --gold-d:#e2a63d; --ink-d:#e6edf3;
+    --ui-bg:#0c1015; --ui-surface:#12171e; --ui-raised:#1f2731;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:44px 52px 72px;background:var(--shell);color:var(--ink);
+       font:14px/1.62 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  header{border-bottom:2px solid var(--ink);padding-bottom:16px;margin-bottom:8px}
+  h1{font-size:23px;margin:0 0 6px;letter-spacing:.2px}
+  .tag{font-size:13px;color:var(--ink2);max-width:860px}
+  .tag b{color:var(--ink)}
+  h2{font-size:15px;margin:38px 0 4px;letter-spacing:.3px;text-transform:uppercase}
+  .hint{font-size:12.5px;color:var(--ink2);max-width:880px;margin:0 0 16px}
+  .hint code{font-family:var(--mono);font-size:11.5px;background:#e3e0d6;padding:1px 5px;border-radius:3px}
+  .row{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end}
+  .cell{text-align:center}
+  .tile{border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.13);display:inline-block;background:var(--paper)}
+  .tile svg,.tile img{display:block}
+  .dark{background:var(--ui-bg)}
+  .surf{background:var(--ui-surface)}
+  .lbl{font-size:11px;color:var(--ink3);margin-top:7px;line-height:1.5}
+  .lbl b{color:var(--ink2);font-weight:600}
+  table{border-collapse:collapse;font-size:12.5px;margin:2px 0 4px}
+  th,td{padding:7px 12px;border:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#e6e3d971;font-size:11.5px;letter-spacing:.2px;text-transform:uppercase;color:#46525e}
+  td code{font-family:var(--mono);font-size:11.5px}
+  .chip{display:inline-block;width:13px;height:13px;border-radius:3px;vertical-align:-2px;
+        margin-right:7px;border:1px solid rgba(0,0,0,.16)}
+  .swatch{border:1px solid var(--line);border-radius:10px;overflow:hidden;width:150px}
+  .swatch .cap{height:64px}
+  .swatch .txt{padding:8px 10px;font-size:11.5px;line-height:1.5;background:var(--paper)}
+  .swatch .txt b{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.3px}
+  .note{font-size:12.5px;color:var(--ink2);max-width:900px;background:var(--card);
+        border-left:3px solid var(--gold-l);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:14px}
+  .note b{color:var(--ink)}
+  .ok{color:#2d7a4f;font-weight:700}
+  .no{color:#b0493f;font-weight:700}
+  .donts{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;max-width:1080px}
+  .dcard{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:12.5px;color:var(--ink2)}
+  .dcard .t{color:var(--ink);font-weight:600;margin-bottom:4px}
+  .bar{display:flex;align-items:center;gap:10px;padding:0 16px;height:44px;border-radius:10px;width:390px}
+  .bar .wm{display:flex;align-items:baseline;font-size:19px;font-weight:650;letter-spacing:.2px;line-height:1;color:var(--ink-d)}
+  .bar .wm img{height:1em;width:auto;transform:translateY(.045em)}
+  .bar .sp{flex:1}
+  .bar i{width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.08)}
+  footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);font-size:11.5px;color:var(--ink3)}
+  .two{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
 </style>
 </head>
 <body>
-<h1>CardColony 品牌规范 v1 · 蜂蜜金</h1>
-<div class="sub">符号＝C 形小机器人（visor 双目＋天线），字标里顶替首字母 C。
-双色规则：<b>线色</b>＝C 笔身＋天线杆＋"ard"；<b>点色</b>＝双目＋天线珠＋"Colony"。本页全部引用 <code>brand/</code> 目录成品资产。</div>
+<div class="wrap">
 
-<div class="sec">1 · 符号本体</div>
-<div class="row">
-  <div class="cell"><div class="tile dark" style="padding:18px"><img src="cardcolony-mark-dark.svg" width="150" height="150"></div><div class="lbl">暗态（UI）<br>#e6edf3 / #e2a63d</div></div>
-  <div class="cell"><div class="tile" style="padding:18px"><img src="cardcolony-mark-light.svg" width="150" height="150"></div><div class="lbl">亮态（白底文档）<br>#1c2733 / #c9901f</div></div>
-  <div class="cell"><div class="tile" style="padding:18px"><img src="cardcolony-mark-mono.svg" width="150" height="150"></div><div class="lbl">单色（印刷/雕刻）<br>#1c2733</div></div>
-  <div class="cell"><div class="tile dark" style="padding:18px"><img src="cardcolony-mark-dark-sm.svg" width="150" height="150"></div><div class="lbl">加粗版（≤48px 用）</div></div>
+<header>
+  <h1>CardColony — Brand Spec v1</h1>
+  <p class="tag">The mark is a <b>C-shaped agent</b>: the letter C with a visor band — two eyes in its hollow,
+  an antenna on top. <b>Two colors only</b>: <b>line color</b> (C stroke · antenna stem · <code>ard</code>) and
+  <b>point color</b> (eyes · antenna bead · <code>Colony</code>). The three point-colored elements always match.</p>
+</header>
+
+<h2>1 · Anatomy</h2>
+<p class="hint">Master grid <b>240 × 240</b>. Stroke <b>26</b> with round caps; eye radius <b>11</b>, eye centres at
+(102,112) and (142,112) — <b>40 apart</b>; antenna stem from y46 to y30, bead r<b>7</b> at (120,24).
+The C body spans y48→192, so the antenna rises above cap height like a diacritic.</p>
+<div class="two">
+  <div class="cell">
+    <div class="tile dark" style="padding:14px">
+      <svg width="264" height="264" viewBox="0 0 240 240" aria-label="mark anatomy with construction guides">
+        <g stroke="#2b3a4a" stroke-width=".6" stroke-dasharray="3 3">
+          <line x1="0" y1="24" x2="240" y2="24"/><line x1="0" y1="48" x2="240" y2="48"/>
+          <line x1="0" y1="112" x2="240" y2="112"/><line x1="0" y1="192" x2="240" y2="192"/>
+          <line x1="120" y1="0" x2="120" y2="240"/>
+        </g>
+        <g fill="none" stroke="#3d5064" stroke-width=".6">
+          <circle cx="102" cy="112" r="11" stroke-dasharray="2 3"/>
+          <circle cx="142" cy="112" r="11" stroke-dasharray="2 3"/>
+          <rect x="37" y="35" width="156" height="170" rx="6" stroke-dasharray="4 4"/>
+        </g>
+        <path d="M120 46 V30" stroke="#e6edf3" stroke-width="6" stroke-linecap="round"/>
+        <circle cx="120" cy="24" r="7" fill="#e2a63d"/>
+        <path d="M180 82 C180 62 164 48 144 48 H96 C70 48 50 68 50 94 V146 C50 172 70 192 96 192 H144 C164 192 180 178 180 158"
+              stroke="#e6edf3" stroke-width="26" stroke-linecap="round" fill="none"/>
+        <circle cx="102" cy="112" r="11" fill="#e2a63d"/>
+        <circle cx="142" cy="112" r="11" fill="#e2a63d"/>
+      </svg>
+    </div>
+    <div class="lbl"><b>Construction</b><br>dashed = guides, not geometry</div>
+  </div>
+  <div class="cell">
+    <div class="tile dark" style="padding:14px">
+      <svg width="264" height="264" viewBox="0 0 240 240" aria-label="clearspace">
+        <rect x="13" y="11" width="204" height="206" fill="none" stroke="#e2a63d" stroke-width="1" stroke-dasharray="5 4" opacity=".85"/>
+        <rect x="37" y="35" width="156" height="170" fill="none" stroke="#5b6b7d" stroke-width=".8" stroke-dasharray="3 3"/>
+        <path d="M120 46 V30" stroke="#e6edf3" stroke-width="6" stroke-linecap="round"/>
+        <circle cx="120" cy="24" r="7" fill="#e2a63d"/>
+        <path d="M180 82 C180 62 164 48 144 48 H96 C70 48 50 68 50 94 V146 C50 172 70 192 96 192 H144 C164 192 180 178 180 158"
+              stroke="#e6edf3" stroke-width="26" stroke-linecap="round" fill="none"/>
+        <circle cx="102" cy="112" r="11" fill="#e2a63d"/>
+        <circle cx="142" cy="112" r="11" fill="#e2a63d"/>
+      </svg>
+    </div>
+    <div class="lbl"><b>Clearspace = 1 eye Ø</b><br>22 u = 9.2 % of mark width, all sides</div>
+  </div>
+  <div style="max-width:340px">
+    <table>
+      <tr><th>Property</th><th>Value</th></tr>
+      <tr><td>Master viewBox</td><td><code>0 0 240 240</code></td></tr>
+      <tr><td>C stroke</td><td>26 u, round cap/join</td></tr>
+      <tr><td>Eye radius / spacing</td><td>11 u / 40 u</td></tr>
+      <tr><td>Antenna stem</td><td>6 u, y46→y30</td></tr>
+      <tr><td>Antenna bead</td><td>r 7 u @ (120,24)</td></tr>
+      <tr><td>Clearspace</td><td>22 u (1 eye Ø)</td></tr>
+      <tr><td>Min size</td><td>mark 16 px · wordmark 90 px wide</td></tr>
+      <tr><td>&lt;48 px</td><td>switch to <code>-sm</code> (stroke 30, eye r 14, bead r 9)</td></tr>
+    </table>
+  </div>
 </div>
 
-<div class="sec">2 · 字标 —— 符号即首字母 C</div>
+<h2>2 · Variants</h2>
+<p class="hint">Same geometry in all four. At ≤48 px the bold <code>-sm</code> weight keeps the eyes readable;
+the wordmark drops to <code>-sm</code> below 32 px text.</p>
 <div class="row">
-  <div class="cell"><div class="tile dark pad"><img src="cardcolony-wordmark-dark.svg" width="330"></div><div class="lbl">暗态字标</div></div>
-  <div class="cell"><div class="tile pad"><img src="cardcolony-wordmark-light.svg" width="330"></div><div class="lbl">亮态字标</div></div>
+  <div class="cell"><div class="tile dark" style="padding:16px"><img src="cardcolony-mark-dark.svg" width="120" height="120" alt="dark mark"></div>
+    <div class="lbl"><b>Dark · primary</b><br>#e6edf3 / #e2a63d</div></div>
+  <div class="cell"><div class="tile" style="padding:16px"><img src="cardcolony-mark-light.svg" width="120" height="120" alt="light mark"></div>
+    <div class="lbl"><b>Light</b><br>#1c2733 / #c9901f</div></div>
+  <div class="cell"><div class="tile" style="padding:16px"><img src="cardcolony-mark-mono.svg" width="120" height="120" alt="mono mark"></div>
+    <div class="lbl"><b>Mono</b><br>#1c2733 only</div></div>
+  <div class="cell"><div class="tile dark" style="padding:16px"><img src="cardcolony-mark-dark-sm.svg" width="120" height="120" alt="bold mark"></div>
+    <div class="lbl"><b>Bold (-sm)</b><br>≤ 48 px</div></div>
 </div>
-<div class="note" style="margin-top:10px">
-<span class="ok">✓</span> 贴排零间距，ard 线色 + Colony 点色，天线探帽线　
-<span class="dont">✗</span> 不许：图标＋全称并排 / 双目换 UI 语义色 / 拉伸描边投影 / 裁掉天线</div>
+<div class="row" style="margin-top:18px">
+  <div class="cell"><div class="tile dark" style="padding:10px"><img src="cardcolony-mark-dark.svg" width="48" height="48" alt="48"></div><div class="lbl">48 px</div></div>
+  <div class="cell"><div class="tile dark" style="padding:10px"><img src="cardcolony-mark-dark-sm.svg" width="32" height="32" alt="32"></div><div class="lbl">32 px · sm</div></div>
+  <div class="cell"><div class="tile dark" style="padding:10px"><img src="cardcolony-mark-dark-sm.svg" width="16" height="16" alt="16"></div><div class="lbl">16 px · sm (floor)</div></div>
+  <div class="cell"><div class="tile" style="padding:10px"><img src="cardcolony-mark-light.svg" width="32" height="32" alt="light 32"></div><div class="lbl">light 32 px — <span class="no">✗</span> use <code>-sm</code></div></div>
+</div>
 
-<div class="sec">3 · 色票</div>
+<h2>3 · Color tokens</h2>
+<p class="hint">The identity is a strict two-color system. The honey gold is <b>brand-owned</b> — never borrowed from
+the product UI's semantic palette, and never used as a status signal.</p>
+<div class="row" style="margin-bottom:16px">
+  <div class="swatch"><div class="cap" style="background:#0c1015"></div><div class="txt"><b>#0c1015</b>UI bg · dark</div></div>
+  <div class="swatch"><div class="cap" style="background:#12171e"></div><div class="txt"><b>#12171e</b>UI surface · dark</div></div>
+  <div class="swatch"><div class="cap" style="background:#e6edf3"></div><div class="txt"><b>#e6edf3</b>line · dark</div></div>
+  <div class="swatch"><div class="cap" style="background:#e2a63d"></div><div class="txt"><b>#e2a63d</b>point · dark</div></div>
+  <div class="swatch"><div class="cap" style="background:#c9901f"></div><div class="txt"><b>#c9901f</b>point · light</div></div>
+  <div class="swatch"><div class="cap" style="background:#1c2733"></div><div class="txt"><b>#1c2733</b>line · light</div></div>
+</div>
 <table>
-<tr><th>态</th><th>线色（C/天线/ard）</th><th>点色（双目/珠/Colony）</th><th>底</th></tr>
-<tr><td><b>暗态 · 主</b></td><td><span class="chip" style="background:#e6edf3"></span>#e6edf3</td><td><span class="chip" style="background:#e2a63d"></span>#e2a63d 蜂蜜金</td><td><span class="chip" style="background:#10151c"></span>UI 深底</td></tr>
-<tr><td><b>亮态</b></td><td><span class="chip" style="background:#1c2733"></span>#1c2733</td><td><span class="chip" style="background:#c9901f"></span>#c9901f 深金</td><td><span class="chip" style="background:#fff"></span>白</td></tr>
-<tr><td><b>单色</b></td><td><span class="chip" style="background:#1c2733"></span>#1c2733</td><td>＝线色</td><td>—</td></tr>
-<tr><td colspan="4" style="color:#6a7280;font-size:12px">红线：点色<b>不借</b> UI 语义色——警告 #f7c163、存活 #7fd6a1、主蓝 #8fb0ff 在应用里继续当语义色；品牌金在 UI 里只表示"这是品牌"，不表示状态。</td></tr>
+  <tr><th>State</th><th>Line color</th><th>Point color</th><th>UI token</th><th>Use on</th></tr>
+  <tr><td><b>Dark · primary</b></td><td><span class="chip" style="background:#e6edf3"></span><code>#e6edf3</code></td>
+      <td><span class="chip" style="background:#e2a63d"></span><code>#e2a63d</code></td>
+      <td><code>--brand-line</code> · <code>--brand-gold</code></td><td>the product UI, dark surfaces</td></tr>
+  <tr><td><b>Light</b></td><td><span class="chip" style="background:#1c2733"></span><code>#1c2733</code></td>
+      <td><span class="chip" style="background:#c9901f"></span><code>#c9901f</code></td>
+      <td>same, light theme</td><td>white docs, README, print</td></tr>
+  <tr><td><b>Mono</b></td><td><span class="chip" style="background:#1c2733"></span><code>#1c2733</code></td>
+      <td>= line color</td><td>—</td><td>single-color print, engraving</td></tr>
 </table>
 
-<div class="sec">4 · UI 内应用</div>
+<h2>4 · Contrast (computed live on this page)</h2>
+<p class="hint">WCAG 2.x relative-luminance formula, run in this page from the hex tokens above — not transcribed by hand.
+Logotypes are exempt from WCAG 1.4.3 / 1.4.11 contrast minimums; the readings below are for placement decisions,
+and the light point color is the one that needs care.</p>
+<table>
+  <thead><tr><th>Pair</th><th>Foreground</th><th>Background</th><th>Ratio</th><th>Reading</th></tr></thead>
+  <tbody id="crBody"><tr><td colspan="5">computing…</td></tr></tbody>
+</table>
+
+<div class="note"><b>Semantic colors are off-limits.</b> Warning amber <code>#f7c163</code>-family, alive green
+<code>#35d0a0</code>, primary blue <code>#4d9fff</code> and the state set (<code>--st-run</code> …
+<code>--st-arch</code>) keep their meanings inside the app. The brand gold sits next to the warm family but carries
+its own equity, so the logo is never mistaken for a status cue — and gold must never appear on buttons, badges or
+state indicators.</div>
+
+<h2>5 · Wordmark — the symbol is the first C</h2>
+<p class="hint">Lockup viewBox <code>0 0 716 196</code>; mark occupies x16→121, text starts at x125 with
+<b>zero gap</b>; baseline y140, size 120, weight 650, letter-spacing 1. <code>ard</code> = line color,
+<code>Colony</code> = point color. Typeface Segoe UI Semibold (fallback <code>system-ui</code>, weight 650) —
+<b>outline the text before mass distribution</b>.</p>
 <div class="row">
-  <div class="cell">
-    <div class="tile dark" style="display:flex;align-items:center;padding:0 16px;height:44px;border-radius:10px;gap:10px">
-      <span class="wm s20" style="color:#e6edf3"><img src="cardcolony-mark-dark-sm.svg"><span>ard<span style="color:#e2a63d">Colony</span></span></span>
-      <span style="flex:1"></span>
-      <span style="width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.08)"></span>
-      <span style="width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.08)"></span>
-      <span style="width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.08)"></span>
-    </div>
-    <div class="lbl">顶栏 44px · 字标 19–20px 暗态</div>
-  </div>
-  <div class="cell">
-    <div class="tile" style="display:flex;gap:10px;padding:12px 14px;align-items:flex-end">
-      <img src="favicon-16.png" width="16" height="16">
-      <img src="favicon-32.png" width="32" height="32">
-      <img src="favicon-48.png" width="48" height="48">
-      <img src="appicon-180.png" width="80" height="80" style="border-radius:14px">
-    </div>
-    <div class="lbl">favicon / appicon —— 白底圆角砖，深浅浏览器都立得住</div>
-  </div>
+  <div class="cell"><div class="tile dark" style="padding:18px 22px"><img src="cardcolony-wordmark-dark.svg" width="330" alt="dark wordmark"></div>
+    <div class="lbl"><b>Dark wordmark</b> · 19–20 px text in the top bar</div></div>
+  <div class="cell"><div class="tile" style="padding:18px 22px"><img src="cardcolony-wordmark-light.svg" width="330" alt="light wordmark"></div>
+    <div class="lbl"><b>Light wordmark</b> · docs, print</div></div>
+</div>
+<div class="row" style="margin-top:16px">
+  <div class="cell"><div class="tile dark" style="padding:12px 14px;display:flex;align-items:baseline;gap:8px">
+      <img src="cardcolony-mark-dark.svg" width="30" alt=""><span style="font-size:20px;font-weight:650;color:#e8edf3">CardColony</span>
+    </div><div class="lbl"><span class="no">✗</span> icon + full name side by side</div></div>
+  <div class="cell"><div class="tile dark" style="padding:12px 14px;display:flex;align-items:baseline">
+      <img src="cardcolony-mark-dark.svg" width="30" alt=""><span style="font-size:20px;font-weight:650;color:#e8edf3;margin-left:9px">ard<span style="color:#e2a63d">Colony</span></span>
+    </div><div class="lbl"><span class="no">✗</span> gap between mark and <code>ard</code></div></div>
+  <div class="cell"><div class="tile dark" style="padding:12px 14px;display:flex;align-items:baseline">
+      <img src="cardcolony-mark-dark-sm.svg" style="height:1em;transform:translateY(.045em)" alt=""><span style="font-size:20px;font-weight:650;color:#e8edf3">ard<span style="color:#e2a63d">Colony</span></span>
+    </div><div class="lbl"><span class="ok">✓</span> symbol-as-C, zero gap</div></div>
 </div>
 
-<div class="sec">5 · og:image 社交卡（1200×630）</div>
-<div class="cell"><div class="tile"><img src="og-image.png" width="640"></div><div class="lbl">深底字标＋一句话定位</div></div>
+<h2>6 · In the product UI</h2>
+<div class="row">
+  <div class="cell">
+    <div class="tile bar dark">
+      <span class="wm"><img src="cardcolony-mark-dark-sm.svg" alt=""><span>ard<span style="color:#e2a63d">Colony</span></span></span>
+      <span class="sp"></span><i></i><i></i><i></i>
+    </div>
+    <div class="lbl">Top bar 44 px · wordmark 19–20 px · dark state</div>
+  </div>
+  <div class="cell">
+    <div class="tile" style="padding:12px 16px;display:flex;align-items:flex-end;gap:12px">
+      <img src="favicon-16.png" width="16" height="16" alt="16">
+      <img src="favicon-32.png" width="32" height="32" alt="32">
+      <img src="favicon-48.png" width="48" height="48" alt="48">
+      <img src="appicon-180.png" width="76" height="76" style="border-radius:15px" alt="app icon">
+    </div>
+    <div class="lbl">favicon 16/32/48 · appicon 180 — white rounded tile,<br>holds on light and dark browser chrome</div>
+  </div>
+</div>
+<p class="hint" style="margin-top:12px">Elsewhere in the app (nav tree, card chrome, loading states, empty states):
+mark only, dark state. The gold never encodes anything — if a user can get information from the color, it is not
+this gold.</p>
 
-<div class="sec">6 · 文件清单</div>
-<div class="note"><code>
-cardcolony-mark-{dark,light}.svg —— 标准符号 ≥48px<br>
-cardcolony-mark-{dark,light}-sm.svg —— 加粗符号 ≤48px<br>
-cardcolony-mark-mono.svg —— 单色<br>
-cardcolony-wordmark-{dark,light}.svg —— 字标（Segoe UI Semibold，量产前转曲）<br>
-favicon-{16,32,48}.png · appicon-{180,512}.png · og-image.png 1200×630<br>
-README.md —— 英文版规范文本
-</code></div>
+<h2>7 · og:image</h2>
+<div class="cell"><div class="tile" style="overflow:hidden"><img src="og-image.png" width="560" alt="og image"></div>
+  <div class="lbl">1200 × 630 social card — dark wordmark + one-line positioning</div></div>
 
-<footer style="margin-top:40px;font-size:12px;color:#99a0aa">推演agent/brand/ · v1 蜂蜜金定稿</footer>
+<h2>8 · Don'ts</h2>
+<div class="donts">
+  <div class="dcard"><div class="t">Color</div>Don't tint the eyes, bead or <code>Colony</code> with UI semantic colors. The point color is brand-owned.</div>
+  <div class="dcard"><div class="t">Lockup</div>Don't put a gap before <code>ard</code>, and don't build icon + full name. Pick one lockup; symbol-as-C is primary.</div>
+  <div class="dcard"><div class="t">Form</div>Don't outline, shadow, gradient, box or rotate the mark. Don't crop or shorten the antenna.</div>
+  <div class="dcard"><div class="t">Ground</div>Don't use the light state on dark grounds or the dark state on light. Don't set the mark on amber-tinted fills.</div>
+  <div class="dcard"><div class="t">Stretch</div>Don't scale non-uniformly or rebuild the mark with a different stroke weight — only the <code>-sm</code> variant differs.</div>
+  <div class="dcard"><div class="t">Size</div>Don't ship the standard weight below 48 px, and don't go below 16 px.</div>
+</div>
+
+<h2>9 · Files</h2>
+<table>
+  <tr><th>File</th><th>Use</th></tr>
+  <tr><td><code>cardcolony-mark-{dark,light}.svg</code></td><td>standard mark, ≥ 48 px</td></tr>
+  <tr><td><code>cardcolony-mark-{dark,light}-sm.svg</code></td><td>bold mark, ≤ 48 px</td></tr>
+  <tr><td><code>cardcolony-mark-mono.svg</code></td><td>single-color contexts</td></tr>
+  <tr><td><code>cardcolony-wordmark-{dark,light}.svg</code></td><td>symbol-as-C lockup (outline text before mass distribution)</td></tr>
+  <tr><td><code>favicon-{16,32,48}.png</code></td><td>white rounded tile</td></tr>
+  <tr><td><code>appicon-{180,512}.png</code></td><td>white rounded-square app icon</td></tr>
+  <tr><td><code>og-image.png</code></td><td>1200 × 630 social preview</td></tr>
+  <tr><td><code>README.md</code></td><td>the written spec (English, same rules as this page)</td></tr>
+</table>
+
+<footer>
+  <b>How to read the numbers here.</b> Contrast ratios: computed live by this page from the hex tokens (WCAG 2.x formula) — see §4.
+  Geometry figures: read from the asset <code>viewBox</code> attributes.
+  PNG pixel dimensions: as produced with the icon set, not re-measured here.
+  This page is a spec page, not the product UI — it is not shipped inside the app.
+</footer>
+
+</div>
+
+<script>
+(function(){
+  var lin = function(c){ c = c/255; return c <= 0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4); };
+  var lum = function(h){
+    h = h.replace('#','');
+    var r = parseInt(h.slice(0,2),16), g = parseInt(h.slice(2,4),16), b = parseInt(h.slice(4,6),16);
+    return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b);
+  };
+  var ratio = function(a,b){
+    var x = lum(a), y = lum(b), hi = Math.max(x,y), lo = Math.min(x,y);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  var pairs = [
+    ['#e6edf3','#0c1015','Line color','UI bg (dark)','ok'],
+    ['#e2a63d','#0c1015','Point color','UI bg (dark)','ok'],
+    ['#e6edf3','#12171e','Line color','UI surface (dark)','ok'],
+    ['#e2a63d','#12171e','Point color','UI surface (dark)','ok'],
+    ['#1c2733','#ffffff','Line color (light)','white','ok'],
+    ['#c9901f','#ffffff','Point color (light)','white','care']
+  ];
+  var tb = document.getElementById('crBody');
+  var rows = pairs.map(function(p){
+    var r = ratio(p[0], p[1]).toFixed(2);
+    var verdict = p[4] === 'ok'
+      ? '<span class="ok">✓</span> clears 3:1 for graphics'
+      : '<span class="no">!</span> 2.8:1 — logo-exempt, but never rely on the gold alone at small size';
+    return '<tr><td>'+p[2]+'</td><td><span class="chip" style="background:'+p[0]+'"></span><code>'+p[0]+'</code></td>'
+         + '<td><span class="chip" style="background:'+p[1]+'"></span><code>'+p[1]+'</code></td>'
+         + '<td><b>'+r+':1</b></td><td>'+verdict+'</td></tr>';
+  });
+  tb.innerHTML = rows.join('');
+})();
+</script>
 </body>
 </html>

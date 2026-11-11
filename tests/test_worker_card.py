@@ -90,14 +90,14 @@ def test_toolset_fingerprints_and_switch_bindings():
     # [规则卡 2026-10-15] 18 → 19（第 19 件 draft_rule_edit，§六块3 硬判据 1）。
     # [依赖关联线 2026-10-16] 19 → 21（第 20/21 件 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] 21 → 22（第 22 件 propose_status，列 OP_ONLY_TOOLS）。
-    assert src.count('": ToolDef(') == 35  # [2026-11-02 UI卡] 34→35（+create_ui_card）
+    assert src.count('": ToolDef(') == 36  # [2026-11-09 画线看全图] 35→36（+list_cards）
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-25"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [2026-11-02] +browser/+create_ui_card
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t27-11"          # [2026-11-01] 随现配置对齐
+    assert prompts.BASE_PROMPT_VERSION == "t27-16"          # [2026-11-01] 随现配置对齐
     # 挂接（§六块2 · v1.1 修订：report_done 挂 tools_file，不设新开关；
     # 挂 edit 会让 readopen:287/:252 零翻新下无法同时成立——见 card_tools 注释）
     assert card_tools.TOOL_SWITCH["report_done"] == policy.SWITCH_TOOLS_FILE
@@ -194,3 +194,133 @@ async def test_worker_cannot_delete(worker_registry, work):
                                       {"card_id": c}, cards)
     assert r["ok"] is False and r["error"]["code"] == "denied", r
     assert card_store.card_exists(wid, c)
+
+
+# ══════════ 交工不是许可证（2026-11-08 线上回归） ══════════
+
+async def test_report_done_on_completed_worker_still_delivers(
+        worker_registry, work, monkeypatch):
+    """已完工 worker 再被派活 ⇒ 仍能交工、仍能发 worker_done 回执。
+
+    线上实况（11-07/11-08 共 86 条收口日志）：父卡 send_directive 走
+    deliver_now(text) 直接起轮，不经过 _revive_worker_card，卡停在 completed；
+    旧版 report_done 拿 state 当「本轮能不能交工」的许可，把这类轮全拒收口
+    ⇒ 父卡零回执、重复派活。交工本身是幂等动作：状态列只记「交过工」，
+    不该拦本轮交付，也不该重复写状态/重复发状态事件。
+    """
+    import sqlite3
+    from src.storage import card_db as _cdb, event_log as _elog
+
+    wid, _a, c = await _tree(worker_registry, work)
+    await card_store.update_card(wid, c, {"state": "completed"}, "上一轮已交工")
+    await _elog.drain()
+    ev_path = _elog.event_path(wid, c)
+
+    def _state_events() -> int:
+        if not ev_path.is_file():
+            return 0
+        return sum(1 for ln in ev_path.read_text(encoding="utf-8").splitlines()
+                   if '"block": "state"' in ln or '"block":"state"' in ln)
+
+    before = _state_events()
+    sent: list[dict] = []
+
+    async def _fake_send(w, from_id, *, target_id, msg_type, content, **kw):
+        sent.append({"target": target_id, "type": msg_type, "content": content})
+        return {"ok": True, "msg_id": "fake-1"}
+
+    monkeypatch.setattr(card_tools, "send_card_message", _fake_send)
+    meta = (await card_store.read_card(wid, c))["meta"]
+    res = await card_tools._h_report_done(
+        wid, c, {"summary": "第二轮交付正文"}, {c: dict(meta)})
+
+    assert isinstance(res, dict) and res.get("ok") is True, res
+    assert res.get("state") == "completed"
+    assert len(sent) == 1 and sent[0]["type"] == "worker_done", sent
+    assert "第二轮交付正文" in sent[0]["content"]
+    # 本轮正文确实落库（coder_final 不走 read_card 的 meta 投影）
+    with sqlite3.connect(_cdb.db_path(wid)) as conn:
+        row = conn.execute("SELECT coder_final FROM cards WHERE card_id=?",
+                           (c,)).fetchone()
+    assert row and "第二轮交付正文" in str(row[0])
+    # 幂等：不重复写状态 ⇒ 不重复发 state 事件、不重复挂完工兜底网
+    await _elog.drain()
+    assert _state_events() == before
+    after = await card_store.read_card(wid, c)
+    assert after["meta"]["state"] == "completed"
+
+
+# ══════════════ 完工未报兜底（2026-11-10 · worker_unreported_fallback）══════════════
+# worker 干了活（turn_tool_call_count>0）但回合结束没走 report_done/report_up ⇒
+# 末轮输出＋产物落点作 worker_done 补发父卡——「干了活却没交差」不允许静默。
+# 判重：模型本回合报过 / _CODER_DONE_SENT_AT ≥ turn_start（兜底网已发）→ 不双发。
+
+async def _fb_tree(worker_registry, work):
+    return await _tree(worker_registry, work)
+
+
+def _fb_state(**kw):
+    from types import SimpleNamespace
+    base = dict(tool_events=[], turn_tool_call_count=3, turn_start_ts=1.0,
+                clean_text="已把 LOD 双轨并成单源，产物见落点。", final_only="")
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _capture_append(monkeypatch):
+    sent = []
+
+    async def _fake(w, target, *, from_card, text, msg_type, **kw):
+        sent.append({"to": target, "from": from_card, "type": msg_type,
+                     "text": text})
+        return {"seq": 1}
+
+    monkeypatch.setattr(session_facade, "append_card_message", _fake)
+    return sent
+
+
+async def test_unreported_fallback_sends_receipt(worker_registry, work,
+                                                 monkeypatch):
+    wid, a, c = await _tree(worker_registry, work)
+    sent = _capture_append(monkeypatch)
+    card_tools._CODER_DONE_SENT_AT.pop(c, None)
+    await card_tools.worker_unreported_fallback(wid, c, _fb_state())
+    assert len(sent) == 1 and sent[0]["to"] == a, sent
+    assert sent[0]["type"] == "worker_done" and sent[0]["from"] == c
+    assert "未走 report_done" in sent[0]["text"] and "LOD" in sent[0]["text"]
+    # 置位 ⇒ 完工兜底网 4s 复查见「已发」跳过，绝不双发
+    assert card_tools._CODER_DONE_SENT_AT.get(c, 0) > 0
+    card_tools._CODER_DONE_SENT_AT.pop(c, None)
+
+
+async def test_unreported_fallback_skips_reported(worker_registry, work,
+                                                  monkeypatch):
+    wid, a, c = await _tree(worker_registry, work)
+    sent = _capture_append(monkeypatch)
+    # 模型本回合自己调过 report_done ⇒ 不补
+    st = _fb_state(tool_events=[{"tool": "report_done", "ok": True}])
+    await card_tools.worker_unreported_fallback(wid, c, st)
+    assert sent == []
+    # report_up 同理（父卡已收到回执，不交差但不算静默）
+    st = _fb_state(tool_events=[{"tool": "report_up", "ok": True}])
+    await card_tools.worker_unreported_fallback(wid, c, st)
+    assert sent == []
+
+
+async def test_unreported_fallback_skips_no_work(worker_registry, work,
+                                                 monkeypatch):
+    wid, a, c = await _tree(worker_registry, work)
+    sent = _capture_append(monkeypatch)
+    # 零工具回合（纯应答/被秒停）⇒ 没有可交付内容不补
+    await card_tools.worker_unreported_fallback(
+        wid, c, _fb_state(turn_tool_call_count=0))
+    assert sent == []
+    # 兜底网已发过（_CODER_DONE_SENT_AT ≥ turn_start）⇒ 不双发
+    card_tools._CODER_DONE_SENT_AT[c] = 999.0
+    await card_tools.worker_unreported_fallback(wid, c, _fb_state())
+    assert sent == []
+    card_tools._CODER_DONE_SENT_AT.pop(c, None)
+    # 空正文且无产物 ⇒ 没啥可报
+    await card_tools.worker_unreported_fallback(
+        wid, c, _fb_state(clean_text="", final_only=""))
+    assert sent == []

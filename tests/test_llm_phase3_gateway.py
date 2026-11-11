@@ -44,15 +44,23 @@ def test_only_one_concrete_adapter_class():
     Anthropic Messages 协议**（chat/completions 形状实测 400），无法由
     OpenAICompatAdapter 承担，故按「**每个协议至多一个具体适配器**」的目的
     口径扩容：OpenAI 协议包一个、Anthropic 协议包一个。
+    [2026-11-10 wb-cli 接入] 同口径再扩一席：**子进程 NDJSON 传输**
+    （``codebuddy -p`` 的 stream-json），不是 HTTP wire 协议，OpenAI/Anthropic
+    两个包都无法承担 ⇒ 每协议至多一个具体适配器 ⇒ 进程包一个。
+    [2026-11-10 devin-cli 接入] 同口径再扩一席：**子进程缓冲传输**
+    （``devin -p --export``，stdout 终态回吐 + ATIF 文件，非 NDJSON
+    增量流）⇒ 与 wb-cli 是两个独立进程包、各一个具体适配器。
     """
     names = []
     for path in (_ROOT / "src" / "model_gateway").rglob("*.py"):
         names += re.findall(r"^class (\w+Adapter)\(", path.read_text(encoding="utf-8"), re.M)
     assert sorted(names) == [
         "AnthropicMessagesAdapter",
+        "DevinCliAdapter",
         "LlmAdapter",
         "MockAdapter",
         "OpenAICompatAdapter",
+        "WbCliAdapter",
     ]
     # 目的口径的加强版：任何协议包内不得出现两个以上具体适配器（防换皮 duplication）
     by_package: dict[str, list[str]] = {}

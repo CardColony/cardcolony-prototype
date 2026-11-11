@@ -39,6 +39,8 @@ BOOT_WAIT = 25              # 重启后等它爬起来
 
 RUNNER_COUNT = int(os.environ.get("ECO_RUNNER_COUNT") or 4)   # 与 start.bat 同口径
 BASE_PORT = int(os.environ.get("ECO_RUNNER_BASE_PORT") or 5701)
+# [凝练独立进程 2026-11-10] condense 进程裸探针口（condense_main.py 供）。
+CONDENSE_PORT = int(os.environ.get("ECO_CONDENSE_PORT") or 5710)
 STOP_FLAG = os.path.join(ROOT, "logs", ".manual_stop")
 WD_PID_FILE = os.path.join(ROOT, "logs", ".watchdog.pid")
 
@@ -87,6 +89,11 @@ def probe():
 def probe_runner(i):
     """runner-i 守 ECO_RUNNER_BASE_PORT+i 回环，白名单 GET 与 web 同面。"""
     return _probe(f"http://127.0.0.1:{BASE_PORT + i}/api/nav/version")
+
+
+def probe_condense():
+    """condense 进程守 5710 回环裸探针（condense_main.py 的 _health_server）。"""
+    return _probe(f"http://127.0.0.1:{CONDENSE_PORT}/health")
 
 
 def manual_stop_flag():
@@ -247,6 +254,19 @@ def spawn_runner(i):
         out.close()
 
 
+def spawn_condense():
+    """拉起凝练独立进程（5710 探针）。无窗，stdout 落 logs\\condense_stdout.log。"""
+    log("拉起 condense（condense_main.py）")
+    out = open(os.path.join(ROOT, "logs", "condense_stdout.log"), "ab")
+    try:
+        subprocess.Popen([_venv_py(), "condense_main.py"], cwd=ROOT,
+                         env=_cluster_env("condense"), stdout=out,
+                         stderr=subprocess.STDOUT,
+                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    finally:
+        out.close()
+
+
 def kill_by_pidfile(name, tag):
     """按 pid 文件杀进程并清文件。返回是否有进程被杀。"""
     pf = os.path.join(ROOT, name)
@@ -298,6 +318,27 @@ def kill_runner(i):
                 break
     except (subprocess.TimeoutExpired, OSError) as e:
         log(f"runner{i} 端口兜底失败: {e}")
+
+
+def kill_condense():
+    """只杀凝练进程。pid 文件缺失时按 5710 端口扫回环监听者兜底。"""
+    if kill_by_pidfile(".server-condense.pid", "condense"):
+        return
+    try:
+        r = subprocess.run(
+            ["cmd", "/c",
+             f"netstat -ano | findstr LISTENING | findstr /C:\":{CONDENSE_PORT} \""],
+            capture_output=True, text=True, timeout=15)
+        for line in (r.stdout or "").splitlines():
+            tok = line.split()
+            if tok and tok[-1].isdigit() and int(tok[-1]) > 0:
+                log(f"taskkill /F /T /PID {tok[-1]}（condense 端口兜底）")
+                subprocess.run(["taskkill", "/F", "/T", "/PID", tok[-1]],
+                               capture_output=True, timeout=30)
+                time.sleep(2)
+                break
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log(f"condense 端口兜底失败: {e}")
 
 
 def _entry_newest(path):
@@ -393,10 +434,13 @@ def main():
     except OSError:
         pass
     log(f"看门狗上线：探 web {PROBE_URL} + runner x{RUNNER_COUNT}"
-        f"（{BASE_PORT}+i）每 {INTERVAL}s，{MAX_FAILS} 连败即重启")
+        f"（{BASE_PORT}+i）+ condense（{CONDENSE_PORT}）"
+        f"每 {INTERVAL}s，{MAX_FAILS} 连败即重启")
     fails = 0                      # web 连败
     runner_fails = {}              # runner-i 连败
     runner_seen = set()            # 见过 pid 文件的 runner——在册才探才拉
+    condense_fails = 0             # condense 连败
+    condense_seen = False          # 见过 .server-condense.pid 才探才拉（旧模式没有它）
     restarts = []                  # 重启时刻列表（熔断用）
     last_sweep = 0.0               # temp 清扫上次时刻（0＝上线即扫一轮）
     while True:
@@ -483,6 +527,30 @@ def main():
                 spawn_runner(i)
             restarts.append(time.time())
             runner_fails[i] = 0
+
+        # --- condense：与 runner 同则——在册（见过 pid 文件）才探才拉 ---
+        if os.path.exists(".server-condense.pid"):
+            condense_seen = True
+        if condense_seen:
+            cok, cwhy = probe_condense()
+            if cok:
+                condense_fails = 0
+            else:
+                condense_fails += 1
+                log(f"condense 探活失败 {condense_fails}/{MAX_FAILS}: {cwhy}")
+                if condense_fails >= MAX_FAILS:
+                    if not breaker_ok(restarts):
+                        condense_fails = 0
+                    else:
+                        log("condense 判定死亡，单独重启")
+                        kill_condense()
+                        cok2, _ = probe_condense()
+                        if cok2:
+                            log("condense 杀后复核：已活，跳过拉起")
+                        else:
+                            spawn_condense()
+                        restarts.append(time.time())
+                        condense_fails = 0
 
         time.sleep(INTERVAL)
 

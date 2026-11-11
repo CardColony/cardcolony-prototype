@@ -229,6 +229,28 @@
     "payload": []
    }
   },
+  "reply_claims": {
+   "label": "回复断言检出",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "round",
+     "tool_calls",
+     "stray_count"
+    ],
+    "optional": [
+     "claims",
+     "claims_text",
+     "strays",
+     "strays_text",
+     "detail"
+    ],
+    "payload": []
+   }
+  },
   "model_resume": {
    "label": "模型恢复",
    "group": "回合",

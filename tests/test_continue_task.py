@@ -3,7 +3,8 @@
 
 钉六件事:
 T1 自动归档已撤:worker 完工后保持活卡(不再有收口即折叠)
-T2 continue_task:完工卡续派 ⇒ 复位 active+目标新生命周期+点火
+T2 continue_task:完工卡续派 ⇒ 目标新生命周期+点火,不动 state 列
+   ([完工不影响功能 2026-11-08] 改前会复位 active)
 T3 护栏:真在跑的卡拒续派(在途回合判据,非 state 列);非 worker 拒;非祖先拒;给自己拒
 T4 沉默语义统一:worker 沉默=治理标记(不折叠)
 T5 工具面:父卡/根卡有 continue_task;治理段说明在
@@ -61,7 +62,7 @@ async def test_continue_task_reactivates_with_new_goal(sandbox):
                       "task": "迭代 X:补错误处理与单元测试"}, cards)
     assert out.get("ok") is True, out
     meta = card_store._meta_of(wid, worker) or {}
-    assert meta.get("state") == "active"                   # 复位
+    assert meta.get("state") == "completed", "完工是结果标记，续派不该改它"
     # 上下文延续:会话文件与卡史都在(没删卡重建)
     assert card_store.card_exists(wid, worker)
 
@@ -95,7 +96,7 @@ async def test_continue_task_guards(sandbox):
         cards = _cards(wid)
         d4 = await card_tools._h_continue_task(
             wid, parent, {"card_id": active, "task": "x"}, cards)
-        assert d4.get("ok") is False and "active" in d4["error"]["message"]
+        assert d4.get("ok") is False and "正在干活" in d4["error"]["message"]
     finally:
         session_facade.turn_release(wid, active, "turn:test")
 

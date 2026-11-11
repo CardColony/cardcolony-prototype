@@ -39,7 +39,41 @@
 """
 from __future__ import annotations
 
+import math
 from typing import Any
+
+
+def scrub_nonfinite(o: Any) -> Any:
+    """递归把非有限浮点（inf/-inf/nan）换成同名字符串，返回 JSON 安全结构。
+
+    模型会吐 JS 字面量（card_507 实录：``"verbose": Infinity`` 的 tool_call
+    arguments）——Python ``json.loads`` 宽容读成 ``float('inf')``，落盘
+    ``dumps`` 默认 ``allow_nan=True`` 又宽容写回裸 ``Infinity``，到响应层
+    ``allow_nan=False`` 才炸成 ``ValueError``（card_507 timeline 500）。
+    换**同名字符串**而非 None：值本身是模型垃圾，但「这里原本是个 Infinity」
+    这个事实留着，排障有据。
+    """
+    if isinstance(o, float):
+        if math.isnan(o):
+            return "NaN"
+        if math.isinf(o):
+            return "Infinity" if o > 0 else "-Infinity"
+        return o
+    if isinstance(o, dict):
+        for k, v in o.items():
+            nv = scrub_nonfinite(v)
+            if nv is not v:
+                o[k] = nv
+        return o
+    if isinstance(o, list):
+        for i, v in enumerate(o):
+            nv = scrub_nonfinite(v)
+            if nv is not v:
+                o[i] = nv
+        return o
+    if isinstance(o, tuple):
+        return [scrub_nonfinite(v) for v in o]
+    return o
 
 #: 单个字符串的上限（64KB）——远大于前端摘要/展开的实际需要（摘要只要第一行）。
 DEFAULT_CAP = 64 * 1024

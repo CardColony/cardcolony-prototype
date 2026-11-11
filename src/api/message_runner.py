@@ -134,6 +134,18 @@ class RunState:
     # 只做调用链内部传递：拿到 result 后立刻写入、存 assistant 条时立刻取用并清空。
     # **不进对话内容、不进前端渲染**（展示走 emit_token 独立通道）。
     turn_reasoning: str = ""
+    # [断言检出 · harness 化 2026-11-10] 发射面两本账（只产机械事实，
+    # 判据/处置全在 harness_policies）：turn_tool_call_count＝本回合已执行
+    # 调用总数（"零回执"判据的事实源）；turn_call_args_text＝本回合全部
+    # 调用参数拼串（"点名对象有没有被调用碰过"的对照面）。
+    turn_tool_call_count: int = 0
+    turn_call_args_text: str = ""
+    #: [worker 完工未报兜底 2026-11-10] 回合开始时刻（epoch 秒）——判重锚：
+    #: _CODER_DONE_SENT_AT ≥ 它 ⇒ 本回合已有回执发出，兜底跳过。
+    turn_start_ts: float = 0.0
+    # [正文伪调用抢救捎话] rescue_note_pending＝正文伪调用被替执行 ⇒
+    # 首条工具结果前附纠正句（让它知道自己写歪了，防复发）。
+    rescue_note_pending: bool = False
     error: Optional[str] = None
     # [phase9-E] 观点元信息（含内部text）
     viewpoints_meta: list[dict[str, Any]] = field(default_factory=list)
@@ -672,7 +684,7 @@ def _engage_slot(state: RunState) -> None:
     state.steer_tail = []
 
 
-def _apply_steer(state: RunState, into_slot: bool = False) -> int:
+def _apply_steer(state: RunState, into_slot: bool = False) -> list[str]:
     """取走本卡的待投插话并**插进轮槽**——下一次模型调用即可见。
 
     [5715] 落点纪律：
@@ -682,11 +694,16 @@ def _apply_steer(state: RunState, into_slot: bool = False) -> int:
     - 轮首调用（默认）：rounds==1 ⇒ 暂存 ``steer_tail``，随 ``_engage_slot`` 固化
       （**在用户原文之后**，顺序与语义都对）；rounds>=2 ⇒ 直接进轮槽（续跳轮的
       ``wire_messages`` 直接带上它，tool 之后跟 user 是合法形态）。
+
+    返回被消费的原始条目（mark+body 成品）——调用方据此如实提示来源
+    （〔用户插话〕／〔卡间消息〕／〔系统消息〕），不冒充人声。
     """
     msgs = steer.take_steer(state.work_id, state.card_id)
     if not msgs:
-        return 0
-    prepared = [{"role": "user", "content": steer.STEER_MARK + t} for t in msgs]
+        return []
+    # 队列里存的是 mark+body 成品（request_steer 置位时拼好——用户插话带
+    # 〔用户插话〕、卡间消息带 〔卡间消息〕），这里取走即用不再拼标。
+    prepared = [{"role": "user", "content": t} for t in msgs]
     if into_slot or state.rounds > 1:
         if state.slot is not None:
             for m in prepared:
@@ -695,7 +712,7 @@ def _apply_steer(state: RunState, into_slot: bool = False) -> int:
         state.steer_tail.extend(prepared)
     logger.info("[steer] 插话入槽 card=%s round=%s 条数=%s into_slot=%s",
                 state.card_id, state.rounds, len(prepared), into_slot)
-    return len(prepared)
+    return msgs
 
 
 def _board_all_steps_done(work_id: str, card_id: str) -> bool:
@@ -979,6 +996,9 @@ async def step(state: RunState) -> StepOutcome:
                               # 问不出来。
                               {"count": len(rescue_calls),
                                "names": [str(c.get("name") or "") for c in rescue_calls]})
+            # [正文伪调用抢救 2026-11-09] 捎话挂点：替它执行了伪调用这件事
+            # 得让它知道，否则它永远不知道自己写歪了（复发治不了）。
+            state.rescue_note_pending = True
         elif unresolved:
             text_rescue_note = text_tool_rescue.feedback_note()
 
@@ -1019,8 +1039,16 @@ async def step(state: RunState) -> StepOutcome:
         # 但用户在模型跑的时候插了话 ⇒ 不收口，把插话插进轮槽、继续下一轮。
         # 否则那句话会被丢掉（回合收口即清扫残留）——用户说了话，却没人听见。
         if steer.pending_steer(state.work_id, state.card_id) > 0:
-            _apply_steer(state, into_slot=True)
-            state.user_prompt = "用户在你回答时插了话。先读那条插话，再继续。"
+            _steer_items = _apply_steer(state, into_slot=True)
+            # [插话如实报名 2026-11-10] 队列里不一定是用户——卡间消息、
+            # 系统提醒忙时都走这条通道（mark 在条目首）。提示照实报名，
+            # 别让模型去找一条不存在的「用户插话」（card_061 实踩：
+            # 三轮系统超限提醒被报成用户插话，模型烧两轮做无头侦察）。
+            _marks = sorted({t.split("〕", 1)[0] + "〕" for t in _steer_items
+                             if t.startswith("〔")}) or ["〔消息〕"]
+            state.user_prompt = ("你在回答时有新消息插进来（"
+                                 + "、".join(_marks)
+                                 + "）。先读那条，再继续。")
             return StepOutcome("continue", "steered")
         state.final_reply = assistant_content
         # [5715] 末轮也落一条（每轮一条 ⇒ disk 与 live 同构）。
@@ -1035,6 +1063,35 @@ async def step(state: RunState) -> StepOutcome:
             })
             state.user_prompt = text_rescue_note
             return StepOutcome("continue", "text_rescue")
+        # [断言检出 · harness 化 2026-11-10] 只产机械事实：收口前扫一次断言词，
+        # 命中就把账（断言词表、未被调用参数碰过的实体、本回合调用数）落成
+        # reply_claims 事件——判据与处置全部在 harness_policies（inject 提醒，
+        # 零额外回合；旧版在此强制续轮，过于敏感被拆）。无断言词零事件。
+        if assistant_content:
+            _claim_tokens, _claim_strays = text_tool_rescue.audit_claims(
+                assistant_content, state.turn_call_args_text,
+                state.turn_tool_call_count)
+            if _claim_tokens:
+                _claims_txt = "、".join(f"「{t}」" for t in _claim_tokens[:4])
+                if state.turn_tool_call_count <= 0:
+                    _claim_detail = "本回合一条工具回执都没有"
+                elif _claim_strays:
+                    _claim_detail = ("断言点名的对象（"
+                                     + "、".join(_claim_strays[:3])
+                                     + "）在本回合任何调用参数里都没出现过")
+                else:
+                    _claim_detail = ""
+                event_stream.emit(state.work_id, state.card_id,
+                                  "reply_claims", {
+                                      "round": state.rounds,
+                                      "claims": _claim_tokens[:6],
+                                      "claims_text": _claims_txt,
+                                      "strays": _claim_strays[:6],
+                                      "strays_text": "、".join(
+                                          _claim_strays[:3]),
+                                      "stray_count": len(_claim_strays),
+                                      "tool_calls": state.turn_tool_call_count,
+                                      "detail": _claim_detail})
         # [思维链真实落地 2026-10-11] 提交轮三席统合（C6）：board 全部步骤
         # done（收口）后、交付前，固定触发三席质询＋统合交付。空手轮旁路
         # （旧「无工具即三席」）退役——直答回合零三席。
@@ -1061,6 +1118,12 @@ async def step(state: RunState) -> StepOutcome:
         return StepOutcome("deliver", "chain_done" if state.chain_completed else "direct")
 
     # —— 有工具调用：本轮执行工具，续跳 ——
+    # [断言检出 2026-11-10] 事实账：本回合累计调用数与参数拼串——
+    # 收口时只把这两个机械事实写进 reply_claims 事件，不做任何处置。
+    state.turn_tool_call_count += len(tool_calls)
+    for _tc in tool_calls:
+        state.turn_call_args_text += json.dumps(
+            _tc.get("arguments"), ensure_ascii=False, default=str)
     # [phase8.2] 第一次进入工具轮时，把用户原文固化进 prior，
     # 否则后续跳的 user_prompt 被替换后原文会从对话中消失
     # [T11] 经轮槽 append_plain 入槽（首轮用户原文固化＝不折红线之一）
@@ -1103,12 +1166,15 @@ async def step(state: RunState) -> StepOutcome:
     # reflection/beam:free 漏在外面：它的思考字段叫 reasoning（不叫
     # reasoning_content，适配器当时也不认），于是既收不到思考、也不回传，
     # 带工具面的第二轮起必 400、重试 3 次后整轮判死（用户实测「跑不通」）。
-    # ★ 无思考可回传时补什么（不加字段 / 空串 / 非空占位）由 gateway 统一判据
-    #   决定：DeepSeek 系空串（官方生产口径），beam 系必须非空（空串照样 400）。
-    _echo_fill = model_config.reasoning_echo_fill(
-        state.model_used or "", state.model_requested or "")
-    if _echo_fill is not None:
-        _asst_msg["reasoning_content"] = state.turn_reasoning or _echo_fill
+    # ★ 带不带＋带什么由 gateway 统一判据（reasoning_echo_value）：有真思考
+    #   原样回传；"real" 档（kimi 保留式思考）没真思考就**不带字段**——塞空串
+    #   等于谎报「该轮无思考」（它恒在推理，官方文档口径）；DeepSeek 系空串
+    #   （官方生产口径），beam 系必须非空（空串照样 400）。
+    _att, _rv = model_config.reasoning_echo_value(
+        state.model_used or "", state.model_requested or "",
+        state.turn_reasoning)
+    if _att:
+        _asst_msg["reasoning_content"] = _rv
     state.slot.begin_round(_asst_msg)
     # [T14-1-2] 只读采集：带工具轮的 assistant_content（含 L459 抢救处理后
     # 的正文）同步留一份进交付采集列表。不改 begin_round 入参、不额外入槽
@@ -1269,6 +1335,16 @@ async def step(state: RunState) -> StepOutcome:
             # 否则失败信封的 {"code","message"} 会被当数据喂进模型上下文
             _tool_call_id = f"call_{_run_tag}_{state.rounds}_{i}"
             _rendered_result = card_tools.render_tool_result(tool_result)
+            if state.rescue_note_pending:
+                # [正文伪调用抢救 2026-11-09] 捎话：伪调用被替执行时
+                # 把「你写歪了、系统替你执行了」捎给它——不然它永远不知道，
+                # 下一轮照写（Cline 式纠正，点到即止）。
+                _rendered_result = (
+                    "[系统提示] 你上一轮的调用写在正文里（形似调用的文本），"
+                    "系统已按参数原样替你执行——结果如下。今后请走 tool_calls "
+                    "通道真发调用；正文伪块不执行、等不到回执。\n\n"
+                    + _rendered_result)
+                state.rescue_note_pending = False
             state.slot.append_tool_result({
                 "role": "tool",
                 "tool_call_id": _tool_call_id,
@@ -1671,6 +1747,17 @@ async def finish(state: RunState) -> dict[str, Any]:
         "model": state.model_used, "pair_id": state.pair_id,
         "end": state.end_reason or "model_done",
     }
+    # [保留式思考跨轮回传 2026-11-10] kimi-k3.1-pro 文档口径：多轮对话必须把
+    # API 返回的完整 assistant message（含 reasoning_content）原样回传。
+    # 会话块是次回合历史的唯一载体——不落这里，投影层（context_regions:857）
+    # 就没东西可保，跨回合思考链全断。只落**真思考**（空串/占位是发送期兜底，
+    # 不进档案）；登记过回传需求的端点才带（kind="" 的不引字段）。
+    if state.turn_reasoning:
+        _att, _rv = model_config.reasoning_echo_value(
+            state.model_used or "", state.model_requested or "",
+            state.turn_reasoning)
+        if _att:
+            _reply_blk["reasoning_content"] = _rv
     # [venue] 席位回合的回复块带 from：页面/审计能认出"这句话是谁说的"，
     # 普通回合不带（行为逐字不变）。
     if state.act_as:
@@ -2031,17 +2118,24 @@ _SELF_REQUEUE: dict[tuple[str, str], int] = {}
 
 async def deliver_now(work_id: str, card_id: str, *,
                       text: str = "",
+                      steer_text: str = "",
+                      source_kind: str = "internal",
                       source: dict[str, Any] | None = None) -> bool:
-    """**立即**把该卡未处理的消息投递成一轮。返回是否真的起了新回合。
+    """**立即**把该卡未处理的消息投递成一轮。返回是否真的送达（起轮或插话）。
 
     [发消息即唤醒 2026-10-22 · D20/D24/D25] 这是「通信」与「投递」的分界线：
       · 无未处理消息 ⇒ 什么都不做，返回 False
-      · 对方**正在跑** ⇒ 不打断、不起新回合，返回 False
-        （它本轮收口时会调 `schedule_card_message_triggers`，那里有自查续轮兜底）
+      · 对方**正在跑** ⇒ text 模式借 steer 通道把 ``steer_text``（缺省=text）
+        插进在跑回合的轮槽——下一次模型调用即见，返回 True；
+        无 text 的旧收件箱路径维持不打断、返回 False。
       · 对方**空闲** ⇒ 立刻起一轮，返回 True
 
-    为什么对方在跑时不自续轮：收回合锁会 409，硬起只会消耗一次尝试。
-    交给它自己的收口钩子是更可靠的路径——那条路不依赖「谁还记得这封信」。
+    [2026-11-08 · 修「父卡在跑时 report_up 推不进」] 旧路在对方忙时只落
+    False 就走——设计指望「收口时 schedule_card_message_triggers 自查续轮」，
+    但那条链只认 TRIGGERS/收件箱，而 10-26 起消息改落会话块后两者都是空的
+    ⇒ 兜底是死路；且在跑回合的 prior 是回合首拼的，本会话块要等**下一个
+    回合**的 build_context 才进上下文 ⇒ 对整个在跑回合不可见。插话通道
+    本来就是为此造的，直接用。
     """
     # [测试环境开关 2026-10-22] 既有测试大量是同步时序写的，自动投递会在发信
     # 瞬间起异步回合，与它们冲突并放大 Windows 会话文件锁抖动。测试里模型是 fake，
@@ -2055,8 +2149,9 @@ async def deliver_now(work_id: str, card_id: str, *,
             and _procs.owner_index_of(work_id, card_id)
             != _procs.runner_index()):
         _r = await _procs.forward_ctl(work_id, card_id, "/ctl/deliver", {
-            "work_id": work_id, "card_id": card_id,
-            "text": text, "source": source})
+            "work_id": work_id, "card_id": card_id, "text": text,
+            "steer_text": steer_text, "source_kind": source_kind,
+            "source": source})
         return bool(_r.get("delivered"))
     # [增量投递 2026-10-23 · 用户令「读过的信息就从 box 里清掉」]
     # 用 **take_pending**（读 + 推水位同一事务）而不是 list_pending：投递即消费。
@@ -2070,13 +2165,51 @@ async def deliver_now(work_id: str, card_id: str, *,
             return False
     except Exception:  # noqa: BLE001 治理表读不出 ⇒ 不挡投递(旧行为)
         pass
+    # [停止前置 2026-11-10] halt 闸原在 _run_message 内部——起轮任务里返回
+    # error dict，发送方永远只看见「已 spawn」的假回执（card_259 实证：direct
+    # 落会话后被 halted_reject 静默吞掉）。前置检查后：非 directive 唤醒在
+    # 停卡上直接 False——发送方如实拿到「没送达」；directive 放行，落到
+    # _run_message 闸门里解除停止再跑（豁免判定唯一收口在闸门）。
+    try:
+        from . import control as _ctl
+        if (source_kind != "directive"
+                and _ctl.is_halted(work_id, card_id) is not None):
+            session_ops.ops_log("card_halted_reject", work_id, card_id,
+                                {"wake": str(source_kind), "via": "deliver_now"})
+            return False
+    except Exception:  # noqa: BLE001 停止表读不出 ⇒ 不挡投递(旧行为)
+        pass
     # [忙判定前置 2026-10-25] 收件卡在跑 ⇒ **先不取件**——改前 take_pending
     # (消费)在忙判定之前,B 忙时信被取走但投递 409 ⇒ 信既不在收件箱也不在
     # 任何人上下文。取走=承诺投递,投不出去就不该取;B 本轮收口的自查续轮
     # 会再走这里,信不丢。
     try:
         if session_facade.turn_holder(work_id, card_id):
-            return False
+            # [轮内复投 2026-11-08] 对方在跑：text 模式的消息正文已在会话历史
+            # （append_card_message 落块），但在跑回合的 prior 是回合首拼的——
+            # 只落库，模型要等下一个回合才看得见（实测：父卡在跑时 report_up
+            # 永远推不进）。借 steer 通道把通知插进轮槽：下一次模型调用即见，
+            # 且不冒充人声（mark 标卡间/系统来源、不发 user_message 事件）。
+            if not text:
+                return False
+            try:
+                _st = await steer.request_steer(
+                    work_id, card_id, str(steer_text or text),
+                    mark=("〔卡间消息〕"
+                          if (source or {}).get("kind") == "card_msg"
+                          else "" if (source or {}).get("kind") == "steer_remains"
+                          else "〔系统消息〕"),
+                    emit_event=False)
+            except Exception as exc:  # noqa: BLE001 插话通道故障不升级（信在库）
+                logger.warning("[通信] 忙时插话失败 card=%s: %s", card_id, exc)
+                return False
+            if _st.get("applied"):
+                session_ops.ops_log(
+                    "card_msg_steered", work_id, card_id,
+                    {"from": str((source or {}).get("from") or ""),
+                     "kind": str((source or {}).get("kind") or "")})
+                return True
+            # 竞态：判忙后对方恰摘牌 ⇒ 不落 False 走人，回下方正常起轮路径。
     except Exception:  # noqa: BLE001
         pass
     # [2026-10-26 · 消息改落会话块后修唤醒] ``text`` 模式：消息已经写进
@@ -2115,7 +2248,8 @@ async def deliver_now(work_id: str, card_id: str, *,
                              .get("from_card") or "")})
         task = _spawn_tracked(
             _routes._run_message(work_id, card_id, prompt, None,
-                                 append_user=False, source=_src),
+                                 append_user=False, source=_src,
+                                 source_kind=source_kind),
             work_id=work_id, card_id=card_id)
         task._card_msg_target = card_id  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)
@@ -2182,17 +2316,15 @@ async def schedule_card_message_triggers(state: RunState) -> None:
         # ＋目标重开）再正常调起，而不是另建一张卡。纯回执类（worker_done 等）
         # 仍然跳过：否则完工回执会把它自己再叫起来一遍。
         # [机制判断归harness 第3步] 完工判定走派生视图（事件权威＋列回落）。
-        from ..infra import card_status as _cs
-        if str(_tmeta.get("card_type") or "") == "worker" \
-                and _cs.derive(work_id, target_id)["delivery"] == "completed":
-            _is_dispatch = any(
-                str((m or {}).get("type") or "") == "msg_ask" for m in pending)
-            if not _is_dispatch:
-                continue
-            try:
-                await _routes._revive_worker_card(work_id, target_id, "")
-            except Exception as exc:  # noqa: BLE001 复位失败就不调起，信留 pending
-                logger.error("[K3] 完工worker 卡复位失败 target=%s: %s", target_id, exc)
+        # [完工不影响功能 2026-11-08] 改前用 derive(delivery)==completed 把
+        # 完工卡整段挡在门外，且只放行 msg_ask（该类型已退役 ⇒ 永不放行）。
+        # 现在只按「这封信是派活还是纯回执」判：纯回执不叫醒（防完工回执
+        # 自唤醒），其余照常调起；完工标记不参与判定。
+        if str(_tmeta.get("card_type") or "") == "worker" and pending:
+            _RECEIPT_ONLY = {"worker_done", "coder_done", "msg_report",
+                             "msg_answer", "msg_notify", "msg_sync"}
+            _types = {str((m or {}).get("type") or "") for m in pending}
+            if _types and _types <= _RECEIPT_ONLY:
                 continue
         session_ops.ops_log("card_msg_deliver", work_id, target_id,
                             {"msg_id": str(pending[-1].get("msg_id") or ""),

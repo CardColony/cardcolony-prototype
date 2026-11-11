@@ -1309,9 +1309,70 @@ const BOARD_CFG = Object.assign(
     if (st.asm.dropLocal()) renderSnapshot(st, st.asm.snapshot());
   }
 
-  /** 刷新/换卡恢复：GET /timeline → rebuild → renderSnapshot。
-      ★ 断 timeline 即会话区空——单源单通道的代价与证据（判据2）：
-      这里**不做任何第二数据源兜底**，也不保留上一轮的 DOM。 */
+  /* ==================================================================
+     [刷新快照 2026-11-09 · 用户令「加载进内存的东西不要轻易释放」]
+     —— sessionStorage 存每卡的尾部窗口快照（刷新生效、关标签页才清）。
+        刷新时先贴快照（秒出、无骨架等待），**后台仍拉 tail 权威窗口**：
+        · timeline 永不回传 revoke 记录 ⇒ 增量追新会漏掉改史，快照追新不可信；
+        · 所以快照只做「第一帧」，权威数据到手后有差异才重渲——
+          正确性不变、网络成本不变，消掉的只是「白等」体感。
+        · 拉取失败：保留快照画面（同一数据源的旧态），不再落空屏。
+     ================================================================== */
+  const SNAP_PREFIX = "flowsnap.v1:";
+  const SNAP_BUDGET = 2.5 * 1024 * 1024;   // 单卡快照字节预算（tool_result 单条可达数 MB）
+
+  function _snapKey(wid, cid) { return SNAP_PREFIX + wid + ":" + cid; }
+
+  function _snapLoad(wid, cid) {
+    try {
+      const raw = sessionStorage.getItem(_snapKey(wid, cid));
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      return (o && Array.isArray(o.items) && o.items.length) ? o : null;
+    } catch (e) { return null; }
+  }
+
+  function _snapSave(st, wid, cid, items) {
+    try {
+      if (!items || !items.length) return;
+      // 从尾部往前收，收满字节预算为止——宁可少存，也不塞爆 sessionStorage
+      const kept = [];
+      let bytes = 0;
+      for (let i = items.length - 1; i >= 0; i--) {
+        let s;
+        try { s = JSON.stringify(items[i]); } catch (e) { continue; }
+        bytes += s.length;
+        if (bytes > SNAP_BUDGET) break;
+        kept.push(items[i]);
+      }
+      if (!kept.length) return;
+      kept.reverse();
+      const trimmed = kept.length < items.length;
+      // first_seq 锚定留存片的**首条**（before= 翻页从它往更早走，不重不漏）；
+      // 截过 ⇒ 前方必有内容 ⇒ has_earlier 强制真。
+      const firstSeq = trimmed ? (kept[0].seq || 0) : (st.firstSeq || kept[0].seq || 0);
+      const payload = JSON.stringify({
+        v: 1, first_seq: firstSeq,
+        has_earlier: trimmed || !!st.hasEarlier,
+        items: kept,
+      });
+      try {
+        sessionStorage.setItem(_snapKey(wid, cid), payload);
+      } catch (e) {
+        // 配额爆 → 清掉其他卡的快照（本卡的算最新的一页）再写一次
+        for (let i = sessionStorage.length - 1; i >= 0; i--) {
+          const k = sessionStorage.key(i);
+          if (k && k.indexOf(SNAP_PREFIX) === 0 && k !== _snapKey(wid, cid)) {
+            try { sessionStorage.removeItem(k); } catch (e2) {}
+          }
+        }
+        try { sessionStorage.setItem(_snapKey(wid, cid), payload); } catch (e3) {}
+      }
+    } catch (e) {}
+  }
+
+  /** 刷新/换卡恢复：快照先贴 → 后台 tail 权威窗口 → 有差异才重渲。
+      ★ 断 timeline 时保留快照画面（同源旧态），不落空屏。 */
   async function replayTrace(wid, cid) {
     // [T1] 前台「打开/换卡恢复」＝激活该卡画板（open() 已先行同步 activate，此处幂等）。
     // 后台结算回流走 resync()——**不激活**，结果落该卡自己的（可能游离的）画板（§五.5）。
@@ -1320,14 +1381,31 @@ const BOARD_CFG = Object.assign(
     /* [5715 · 修] 骨架必须在**任何**结局下收起：原来 markLoaded 只在末尾调，
        fetchTimeline 抛错 ⇒ 骨架永久停留（用户看到"一直在加载"却什么也没发生）。 */
     try {
+      const saved = _snapLoad(wid, cid);
+      if (saved) {
+        st.firstSeq = saved.first_seq || 0;
+        st.hasEarlier = !!saved.has_earlier;
+        st.loadedItems = saved.items;
+        st.loadedOnce = true;
+        renderSnapshot(st, st.asm.rebuild(saved.items));
+        if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
+      }
       // [对话流分页 2026-10-20] 首次只拉尾部 initialEvents 条（不是全量）。
       // 全量时 card_004 要装配 1185 个节点、打开耗 2.8 秒 CPU；尾部 400 条约 200 节点。
       const items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
-      st.loadedItems = items || [];
+      if (items === null) return;   // 拉不到：有快照留快照，没快照如实空屏
+      st.loadedItems = items;
       /* [切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」] 成功加载一次就打标记：
          切回这张卡时直接用内存里的画板（零网络、零装配），不再重拉 400 条事件。 */
       st.loadedOnce = true;
-      renderSnapshot(st, st.asm.rebuild(items || []));
+      // 快照已上屏时：末条 seq 与条数都没变 ⇒ 权威窗口与快照同貌 ⇒ 不重渲（零闪烁）
+      let sameView = false;
+      if (saved && saved.items.length === items.length && items.length) {
+        const a = saved.items[saved.items.length - 1], b = items[items.length - 1];
+        sameView = (a && a.seq) === (b && b.seq);
+      }
+      if (!saved || !sameView) renderSnapshot(st, st.asm.rebuild(items));
+      _snapSave(st, wid, cid, items);
     } finally {
       if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
     }
@@ -1365,6 +1443,7 @@ const BOARD_CFG = Object.assign(
       // 实时没送全 ⇒ 去落盘取**尾部窗口**（与打开卡同款），不拉全量。
       items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
       snap = st.asm.rebuild(items || []);
+      if (items && items.length) _snapSave(st, wid, cid, items);
     }
     st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
     renderSnapshot(st, snap);

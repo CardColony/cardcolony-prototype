@@ -175,11 +175,13 @@ async def test_i1_event_order_is_run_round_tool_reply(client, sandbox):
     assert pos("user_message") < pos("round_start")
     assert pos("round_start") < pos("tool_call")
     assert pos("tool_call") < pos("tool_result")
-    # 该轮正文必须在工具之后
+    # [2026-11-05 修2] 该轮正文在**工具之前**落盘——模型一次产出
+    # （思考→正文→工具调用），节点位置＝产出处，与 live 路径同序；
+    # 原先在循环尾落 ⇒ 无思考的轮刷新后正文/工具节点倒挂。
     ats = _texts(items, "assistant_text")
     assert ats, "应有 assistant_text"
-    assert seq.index("tool_result") < seq.index("assistant_text"), (
-        "工具结果必须早于正文落盘（否则刷新后正文被推到工具之前）")
+    assert pos("round_start") < seq.index("assistant_text") < pos("tool_call"), (
+        "本轮正文须落在 round_start 之后、tool_call 之前（产出序＝事件序）")
 
 
 # ================================================================ I2 逐轮正文
@@ -300,7 +302,9 @@ async def test_i7_steer_lands_in_next_model_call_prior(client, sandbox):
     st.rounds = 2
     st.slot = _FakeSlot()
     steer._pending[(wid, "card_001")] = ["插话：先说结论，别写报告"]
-    assert message_runner._apply_steer(st) == 1
+    # _apply_steer 现在返回**被消费的原文消息列表**（不再是计数）——
+    # 下轮提示词要按真实来源报名（〔用户插话〕/〔卡间消息〕/〔系统消息〕）。
+    assert message_runner._apply_steer(st) == ["插话：先说结论，别写报告"]
     assert any("先说结论" in str(m.get("content"))
                for m in st.slot.messages), "插话必须进轮槽（下一轮模型即可见）"
     assert steer.pending_steer(wid, "card_001") == 0, "插话取走即清（不重放）"

@@ -740,6 +740,7 @@ async def _dispatch_child(work_id: str, review_id: str,
     return await _mr.deliver_now(
         work_id, target,
         text="你收到评审场的一条指令（见上一条消息），请按它执行。",
+        steer_text=text,
         source={"kind": "review_dispatch", "from": review_id,
                 "batch": batch, "step": kind})
 
