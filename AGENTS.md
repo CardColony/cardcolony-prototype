@@ -75,7 +75,7 @@
 1. 本地 `git add -A && git commit`（排除 `D?Temp*`、`_devin_install.ps1` 等杂物）
 2. 克隆到 `D:\Temp\prototype-pushN` → `git-filter-repo` 按既定规则清洗
    （剥 `config/wb_exec*.json`、`docs/workbuddy*`、`docs/opencode*`、
-   `docs/*交接*`——交接/内部文档类不进开源仓、
+   `docs/*wb_exec*`——wb_exec 交接/路由内部文档不进开源仓、
    `docs/release-prep/宣发主导方案-v1.md`；`--replace-text` 抹机器指纹，
    规则存 `D:\Temp\prototype-push-replacements.txt`）
    ★ 规则一动，全部历史指纹即变 ⇒ 与远端分叉只能强推。规则要稳定。
