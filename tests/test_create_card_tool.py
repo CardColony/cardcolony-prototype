@@ -82,7 +82,7 @@ def test_tool_table_version_bumped():
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status，op 专用）。
     # [自动模式 2026-10-17 · 回灌 5700 块0.4] tc-8 → tc-9（新增 update_goal，
     # auto 卡工具面件数变化；常规面仍不含它——AUTO_ONLY_TOOLS 机制）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [2026-11-14] 委办线：三件工具描述更新
 
 
 def test_base_prompt_declares_tool_and_drops_text_protocol():
@@ -103,7 +103,7 @@ def test_base_prompt_declares_tool_and_drops_text_protocol():
     # draft_rule_edit 起草＋用户审批落盘）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1（通信线 relations→links；新增
     # 依赖关联线工具两行）。
-    assert prompts.BASE_PROMPT_VERSION == "t27-16"  # [2026-11-01] 随现配置对齐
+    assert prompts.BASE_PROMPT_VERSION == "t27-19"  # [2026-11-01] 随现配置对齐
     assert "## 卡间消息处理" in prompts.BASE_PROMPT
     assert "create_card(title, parent?, content?)" in prompts.BASE_PROMPT
     assert "card-proposal" not in prompts.BASE_PROMPT

@@ -123,6 +123,8 @@ export function createNavRenderer(deps) {
     if (row.kind === "function") return buildFunctionEl(row);
     // [评审入口 2026-10-29] 评审卡也不是卡（离树、不进 cards 表）。
     if (row.kind === "review") return buildReviewEl(row);
+    // [对齐场入口 2026-11-11] 对齐行同评审行：场务入口、不是普通卡行。
+    if (row.kind === "align") return buildAlignEl(row);
     // [静默执行卡折叠 2026-11-04] 折叠头也不是卡（伪卡 id __quiet__*）。
     if (row.kind === "quietfold") return buildQuietfoldEl(row);
     return buildCardEl(row);
@@ -379,6 +381,44 @@ export function createNavRenderer(deps) {
     return el;
   }
 
+  /* [对齐场入口 2026-11-11 · 用户令「对齐卡要在左侧列表，职能卡上方」]
+     开着的对齐场在左栏占一行（散场即消失，不留常驻入口），
+     形式照评审行：徽标「对齐」＋成员名＋`已结束/总数`计数。
+     · 不可展开、无 ⋯ 菜单（场务行，不是普通卡行）；
+     · 点击＝打开对齐卡对话页（data-align 交给 nav_system 委托）。 */
+  function buildAlignEl(row) {
+    const a = row.card;
+    const el = document.createElement("div");
+    el.className = "nav-alrow";
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.dataset.align = a.align_card_id || "";
+    el.dataset.rwid = row.wid || "";
+    const names = (a.participants || []).map(p => p.title || p.card_id).join("、");
+    el.title = `对齐 · ${a.topic || names}（${a.ended || 0}/${a.total || 0}）· 点击进入`;
+    el.style.paddingLeft = indentOf(row.depth) + "px";
+    const segs = document.createElement("div");
+    segs.className = "nav-segs";
+    el.appendChild(segs);
+    const ico = document.createElement("span");
+    ico.className = "nav-ico al";
+    ico.innerHTML = SVG_DOC;
+    el.appendChild(ico);
+    const badge = document.createElement("span");
+    badge.className = "nav-al-badge";
+    badge.textContent = "对齐";
+    el.appendChild(badge);
+    const title = document.createElement("span");
+    title.className = "nav-ctitle";
+    title.textContent = a.topic || names || "对齐";
+    el.appendChild(title);
+    const cnt = document.createElement("span");
+    cnt.className = "nav-al-count";
+    cnt.textContent = `${a.ended || 0}/${a.total || 0}`;
+    el.appendChild(cnt);
+    return el;
+  }
+
   /* [静默执行卡折叠 2026-11-04 · 用户令「左侧列表，静默不动的 worker 卡、qa卡、
      产品经理卡，都折叠显示」] 折叠头行：挂在每个兄弟段的末尾，伪卡
      card_id="__quiet__<父id>"——展开态照常走 prefs.getExpanded/toggleCard
@@ -480,6 +520,13 @@ export function createNavRenderer(deps) {
        父卡行消失、评审少几条——全是同一个断点）。这里同职能行一样跳过 patch，
        只同步两个类。 */
     if (row.kind === "review") {
+      el.classList.toggle("current", false);
+      el.classList.toggle("nav-last", !!row.lastInProject);
+      return true;
+    }
+    // [对齐场入口 2026-11-11] 对齐行同评审行：自有结构（无 __chev/__tail），
+    // patch 会抛 TypeError ⇒ 跳过，只同步两个类。
+    if (row.kind === "align") {
       el.classList.toggle("current", false);
       el.classList.toggle("nav-last", !!row.lastInProject);
       return true;
@@ -704,6 +751,14 @@ export function createNavRenderer(deps) {
         if (!r || !r.review_card_id) continue;
         rows.push(createRowModel(r, store, {
           kind: "review", depth: 0, wid: p.work_id,
+        }));
+      }
+      // [对齐场入口 2026-11-11 · 用户令「职能卡上方」] 开着的对齐场——
+      // 散场即消失的临时入口。排评审行之后、职能之前：都是"跟着事走"的场务行。
+      for (const a of (p.aligns || [])) {
+        if (!a || !a.align_card_id) continue;
+        rows.push(createRowModel(a, store, {
+          kind: "align", depth: 0, wid: p.work_id,
         }));
       }
       // [职能入口 2026-10-22] 职能不进 cards 表 ⇒ 单独一段，排在全部卡之后。

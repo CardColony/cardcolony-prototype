@@ -198,16 +198,23 @@ async def draft(
         if memory_store.condense_enabled() else None
     )
     # 完整对话历史（不截断；投影由 context base 统一处理，卡片原始块不改）。
-    try:
-        blocks = await session_facade.read(work_id, card_id)
-    except Exception:  # noqa: BLE001
-        blocks = []
-    # [评审流量治理 2026-11-02] 同 _render_prior_for 口径：评审过程消息
-    # 只留最新数条——起草投影不吃过期派单快照。
-    from ..storage import review_scope as _rs
-    prior = context_regions.project_history_messages(
-        _rs.drop_stale_review(work_id, card_id, blocks),
-        allowed_roles={"user", "assistant"})
+    from ..storage import context_board as _cb, review_scope as _rs
+    if _cb.enabled():
+        # [缓存板 2026-11-12] 视野归板——板上已是过闸可见块，
+        # 起草只按角色再取 user/assistant 子集。
+        blocks = _cb.read_board(work_id, card_id)
+        prior = context_regions.project_history_messages(
+            blocks, allowed_roles={"user", "assistant"})
+    else:
+        try:
+            blocks = await session_facade.read(work_id, card_id)
+        except Exception:  # noqa: BLE001
+            blocks = []
+        # [评审流量治理 2026-11-02] 同 _render_prior_for 口径：评审过程消息
+        # 只留最新数条——起草投影不吃过期派单快照。
+        prior = context_regions.project_history_messages(
+            _rs.drop_stale_review(work_id, card_id, blocks),
+            allowed_roles={"user", "assistant"})
 
     # 区块上下文从统一注册表取；起草助手的任务说明作为 system_prefix 注入同一帧。
     context_ctx = context_assembler.build_ctx(
@@ -277,7 +284,9 @@ async def commit(
     # 整块替换：requirements 经 requirements 键落盘（第三块存储键）、status 经 status_block。
     # card_store.update_card 签名不变；使命键不在 updates 内。
     if kind == "requirements":
-        updates = {"requirements": draft}
+        # [定稿后只补不改 2026-11-14] 用户按钮是主权通道——带 ``_req_via``
+        # 来源标记过 update_card 的定稿写闸（用户的改动不受评审约束）。
+        updates = {"requirements": draft, "_req_via": "user"}
     else:
         updates = {"status_block": draft}
     history_note = f"用户确认写入{kind_label}块（draft→commit）"

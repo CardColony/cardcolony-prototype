@@ -318,6 +318,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       // [评审浮窗 2026-10-29] 这张卡有进行中的评审批次 ⇒ 右侧浮窗出现；
       // 没有就什么都不多。**不 await**：浮窗晚到几十毫秒没关系，切卡不能等它。
       rvRefresh(cardId);
+      // [对齐场浮窗 2026-11-11] 这张卡是某场对齐的成员且场还开着 ⇒
+      // 对齐浮窗出现（评审窗下方）；同样不 await。
+      alRefresh(cardId);
       // [会话渲染单源化 2026-10-15 · C1] 刷新/换卡恢复走**唯一一条路**：
       // GET /timeline → 装配器 → 节点快照 → 渲染。原「先 renderChat 读 /session
       // 上屏消息、再 replayTrace 补过程行」两通道已合并成这一次调用。
@@ -1646,6 +1649,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
             navSystem.probeVersion();
             navSystem.probeRunning();
             navSystem.refreshBadge();
+            if (window.__checkRulePending) window.__checkRulePending();   // 断线窗内的规则草案
           } catch (e) { /* 补齐失败零阻断 */ }
         }
       };
@@ -1677,6 +1681,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
           } else if (t === "card_running") {
             // 运行态变了（开始跑/收口）⇒ 「谁在跑」转圈立刻跟上（不再等 10s 轮询）
             navSystem.probeRunning();
+          } else if (t === "rule_draft_pending") {
+            // [2026-11-14 待决草案表] 根卡起草了规则修改 ⇒ 待决表有它 ⇒
+            // 查表弹审批窗（跟看哪张卡、发没发消息无关——项目级待办）。
+            if (window.__checkRulePending) window.__checkRulePending();
           }
         } catch (e) { /* 零阻断 */ }
       };
@@ -2079,8 +2087,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       await EventFlow.resync(WORK_ID, cardId);
       // 对账后再收流：resync 置 settled，此后的残帧不入装配。留 1.5s 让 done 帧到齐。
       setTimeout(() => EventFlow.stop(WORK_ID, cardId), 1500);
-      // [更新现状按钮改造] 先等规则审批窗（同 DOM，防叠开），再按 op 开现状对比窗。
-      if (window.__maybeOpenRuleEditModal) await window.__maybeOpenRuleEditModal(cardId);
+      // [更新现状按钮改造] 按 op 开现状对比窗。（规则审批窗 2026-11-14 起走
+      // 待决表＋工作级 SSE，不再押对话收口。）
       if (statusOp && window.__maybeOpenStatusModal) window.__maybeOpenStatusModal(cardId);
 
       // created_cards 绿条
@@ -2180,7 +2188,6 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
         note.className = "sys-tools";
         note.textContent = "⚠ 响应连接中断，已从事件流恢复回复（若有新卡片，返回画布后可见）";
         ensureMsgs(cardId).appendChild(note);
-        if (window.__maybeOpenRuleEditModal) await window.__maybeOpenRuleEditModal(cardId);
         return true;
       }
     } catch (e2) { /* 静默：交给上层的错误条 */ }
@@ -2249,7 +2256,6 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // 2.5s 就收流＝中间过程全丢，只剩事后一次性全量上屏。对账之后再收。
       await EventFlow.resync(WORK_ID, cardId);
       setTimeout(() => EventFlow.stop(WORK_ID, cardId), 1500);
-      if (window.__maybeOpenRuleEditModal) window.__maybeOpenRuleEditModal(cardId);
     } catch (e) {
       const err = document.createElement("div");
       err.className = "sys-error";
@@ -2872,18 +2878,18 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 显示的卡）。正文按 ## {区名} 分六区（project/sub_project/tool/worker/topic/
   // rule＝card_type code），存 mission 列。直改即存：textarea blur → PATCH
   // /rule/sections/{section}（带 base_hash，不符→409 提示刷新）。
-  // 审批：仅根卡可调 draft_rule_edit 提议（工具自身不落盘）；回合后扫 timeline 的
-  // tool_result（data.tool=="draft_rule_edit"）→ 开弹窗，「同意」→ POST /rule/commit 落盘。
+  // 审批：仅根卡可调 draft_rule_edit 提议（工具自身不落盘）。
+  // [2026-11-14 待决草案表] 触发链＝草案落库即记 rule_drafts.json＋工作级广播
+  // rule_draft_pending → GET /rule 的 pending 非空即弹 → 处置（commit/dismiss）
+  // 即从表删、永不再弹。不扫 timeline、不借事件 seq、不押对话收口。
   {
-    const ruleSeen = new Set();   // 已弹过审批的 draft_rule_edit 去重（tool_result 的 seq）
-
     // 常驻卡：页面加载即渲染（不分画布态/聊天态，始终吸附右侧）
     loadRulePanel();
 
     // [2026-10-16 归位] rule 卡＝普通卡：导航/画布点它走正常 gotoCard（对话+inspector
     // 分区编辑），原「点规则卡开右栏面板」的拦截已随面板形态删除。
 
-    // ─── 根卡提议审批弹窗：扫 timeline 的 draft_rule_edit 成功 tool_result ───
+    // ─── 根卡提议审批弹窗：待决表（GET /rule 的 pending）是唯一真相源 ───
     // 复用既有 draftModal 的 DOM，走独立 dmRule 状态机（与块3起草弹窗互不干扰）。
     const dmRuleModal = document.getElementById("draftModal");
     const dmRuleOverlay = document.getElementById("draftOverlay");
@@ -2896,9 +2902,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const dmRuleFeedback = document.getElementById("draftFeedbackBtn");
     const dmRuleClose = document.getElementById("draftCloseBtn");
     const dmRuleX = document.getElementById("draftModalX");
-    // cardId+seq＝这条草案在时间线里的身份（驳回落痕要用）；commitAttempted/
+    // draftId＝这条草案在待决表里的身份（处置要传）；commitAttempted/
     // committed 区分关窗语义：拒绝＝驳回通知起草卡；落盘成功/已试过＝不再通知。
-    let dmRule = null;   // { sections: [{section, old, draft, baseHash}], busy, cardId, seq, commitAttempted, committed }
+    let dmRule = null;   // { draftId, cardId, sections: [{section, old, draft, baseHash}], busy, commitAttempted, committed }
 
     function setRuleModalError(msg) {
       if (!dmRuleErr) return;
@@ -2906,12 +2912,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       else { dmRuleErr.textContent = ""; dmRuleErr.style.display = "none"; }
     }
 
-    function openRuleEditModal(payload, cardId, seq) {
-      // [2026-11-01 多区起草] 规范形 payload.sections=[{section,old,draft,base_hash}]；
-      // 兼容旧单区形 {section, old, draft, base_hash}。
-      const secs = payload.sections ||
-        (payload.section !== undefined ? [payload] : []);
+    function openRuleEditModal(draft) {
+      // [2026-11-14 待决草案表] 入参＝GET /rule 的 pending 条目：
+      // {draft_id, card_id, sections:[{section,old,draft,base_hash}]}。
+      const secs = draft.sections || [];
       dmRule = {
+        draftId: draft.draft_id || "",
+        cardId: draft.card_id || "",
         sections: secs.map(s => ({
           section: s.section || "",
           old: s.old || "",
@@ -2919,8 +2926,6 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           baseHash: s.base_hash || "",
         })),
         busy: false,
-        cardId: cardId || "",
-        seq: seq || 0,
         commitAttempted: false,
         committed: false,
       };
@@ -2948,6 +2953,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       try {
         await ensurePersisted();   // [D3] 规则落盘即数据动作（草稿态先建项目）
         await API.call("POST", `/api/works/${WORK_ID}/rule/commit`, {
+          draft_id: dmRule.draftId,
           sections: dmRule.sections.map(s => ({
             section: s.section, content: s.draft, base_hash: s.baseHash,
           })),
@@ -2969,24 +2975,25 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       }
     }
 
-    // [2026-11-03 草案驳回落痕] 驳回＝把该草案 card_id:seq 记进服务端驳回表
-    // （rule_dismissals.json）——此前驳回只活在页面内存 Set 里，刷新即丢，
-    // 同一条历史 tool_result 在每次收口重扫、每次刷新后反复弹审批窗。
-    // notify=false＝静默落痕：落盘失败（提交闸已通知根卡）或已落盘的关窗
-    // 不再重复打扰起草卡。失败静默：记不上最多下次再弹一次，不拦关窗。
-    function dismissRuleDraft(notify) {
+    // [2026-11-14 待决草案表] 驳回＝服务端把该草案从待决表删——它不在表里，
+    // GET /rule 的 pending 就没它 ⇒ 审批窗永不再弹。起草卡与区名服务端从表
+    // 内记录自取，前端只传 draft_id。notify=false＝静默：落盘失败（提交闸已
+    // 通知根卡）或已落盘的关窗不再重复打扰起草卡。
+    async function dismissRuleDraft(notify) {
       const r = dmRule;
-      if (!r || !r.cardId || !r.seq) return;
-      API.call("POST", `/api/works/${WORK_ID}/rule/dismiss`, {
-        card_id: r.cardId, seq: r.seq, notify: !!notify,
-        sections: r.sections.map(s => s.section),
-      }).catch(() => {});
+      if (!r || !r.draftId) return;
+      try {
+        await API.call("POST", `/api/works/${WORK_ID}/rule/dismiss`, {
+          draft_id: r.draftId, notify: !!notify,
+        });
+      } catch (e) { /* 零阻断：最多下次再查一次 */ }
     }
 
-    function closeRuleModal() {
-      if (dmRule && !dmRule.committed) {
-        // commitAttempted=true ⇒ 提交闸已把原因通知根卡，关窗静默落痕即可
-        dismissRuleDraft(!dmRule.commitAttempted);
+    async function closeRuleModal() {
+      const r = dmRule;
+      if (r && !r.committed) {
+        // commitAttempted=true ⇒ 提交闸已把原因通知根卡，关窗静默处置即可
+        await dismissRuleDraft(!r.commitAttempted);
       }
       dmRule = null;
       dmRuleModal.classList.remove("open");
@@ -2994,6 +3001,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       dmRuleFbBox.classList.remove("open");
       setRuleModalError("");
       dmRuleFeedback.style.display = "";
+      checkRulePending();   // 处置完接着查：多条待决逐个批
     }
 
     if (dmRuleConfirm) dmRuleConfirm.onclick = () => { if (dmRule) submitRuleCommit(); };
@@ -3001,50 +3009,24 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     if (dmRuleX) dmRuleX.onclick = closeRuleModal;
     if (dmRuleOverlay) dmRuleOverlay.onclick = closeRuleModal;
 
-    // 回合收口（send/resend/tryRecover 的 resync 之后）扫 timeline 开审批弹窗。
-    // [2026-11-03 反复弹出修复] 扫到候选后先拉一次 /rule 快照做三重过滤：
-    //   ① 驳回表命中（card_id:seq 已被用户拒绝/处置）→ 不再弹；
-    //   ② 已落盘（所有提议区现状==草案，同意写入或面板手改成一致）→ 不再弹；
-    //   ③ 基底过期（任一区 base_hash≠现状 hash，commit 必 409 的死草案）→ 不再弹。
-    // 只有"还在等审批"的草案才开弹窗——历史拒绝过/处理过的不再反复弹。
-    async function maybeOpenRuleEditModal(cardId) {
-      if (dmRule) return;   // 已有审批弹窗在，不叠开
+    // ─── 触发链 [2026-11-14 待决草案表] ───
+    // 待决表是唯一真相源：draft_rule_edit 落库即记；commit/dismiss 处置即删。
+    // 弹窗条件＝GET /rule 的 pending 非空。触发点三处，全是「查表」：
+    //   ① 页面加载（下面这行——刷新/重开照样弹，这是正确行为不是 bug）；
+    //   ② 工作级 SSE rule_draft_pending＋断线重连补齐（subscribeWorkEvents
+    //     里调 window.__checkRulePending）；
+    //   ③ 处置收口（closeRuleModal/submitRuleCommit 之后接着查——多条待决
+    //     逐个批，不叠开）。
+    async function checkRulePending() {
+      if (dmRule) return;   // 弹窗开着/正处置——处置完自会再查
       try {
-        const tl = await API.getTimeline(WORK_ID, cardId, undefined, { tail: 400 });
-        const items = (tl && tl.items) || [];
-        let ruleSnap = null;   // 惰性：扫到候选才拉快照（含 sections/hashes/dismissed）
-        for (let i = items.length - 1; i >= 0; i--) {
-          const it = items[i];
-          if (!it || it.type !== "tool_result") continue;
-          const d = it.data || {};
-          if (d.tool !== "draft_rule_edit" || !d.ok) continue;
-          const seq = it.seq || 0;
-          if (ruleSeen.has(seq)) continue;
-          const res = (d.result && d.result.data) || {};
-          const secs = res.sections ||
-            (res.section !== undefined ? [res] : []);
-          if (!secs.length) continue;
-          if (ruleSnap === null) {
-            try { ruleSnap = await API.call("GET", `/api/works/${WORK_ID}/rule`); }
-            catch (e) { ruleSnap = {}; }
-          }
-          const key = cardId + ":" + seq;
-          if ((ruleSnap.dismissed || []).indexOf(key) >= 0) { ruleSeen.add(seq); continue; }
-          const curSecs = ruleSnap.sections || {};
-          const curHash = ruleSnap.hashes || {};
-          const landed = secs.every(
-            s => String(curSecs[s.section] || "") === String(s.draft || ""));
-          const stale = secs.some(
-            s => String(curHash[s.section] || "") !== String(s.base_hash || ""));
-          if (landed || stale) { ruleSeen.add(seq); continue; }
-          ruleSeen.add(seq);
-          openRuleEditModal(res, cardId, seq);
-          return;   // 每次收口最多开一个
-        }
+        const data = await API.call("GET", `/api/works/${WORK_ID}/rule`);
+        const p = ((data && data.pending) || [])[0];
+        if (p && p.draft_id) openRuleEditModal(p);
       } catch (e) { /* 零阻断 */ }
     }
-    // 暴露给 send/resend/tryRecover 在 resync 后调用
-    window.__maybeOpenRuleEditModal = maybeOpenRuleEditModal;
+    window.__checkRulePending = checkRulePending;
+    checkRulePending();
   }
 
 /* ============================================================
@@ -3436,5 +3418,334 @@ async function rvRefresh(cid) {
   window.addEventListener("resize", () => { rvPlace(); });
 })();
 
-// 启动放最后：RV 与 rv* 全部就位之后再跑（避免 TDZ）。
+/* ============================================================
+   [对齐场浮窗 2026-11-11 · 用户令「在对齐方的卡片右侧评审卡的位置显示入口，
+     评审卡在跑就排在它下方，形式对齐评审卡的样子」]
+   与评审浮窗同构（同一套 .fwin DOM/CSS、同一条 SSE 管线手法）：
+   1. **出现判据**：本卡是某场开着对齐的成员（/align-status active）；
+      散场即消失（一次性场，不留常驻入口）。
+   2. **位置**：与评审窗同一横锚；评审窗也开着 ⇒ 顶到它底缘之下。
+   3. **头部**：`对齐 · 话题 · 已结束/总数`；展开 ⇒ iframe 装对齐卡对话页。
+   4. **事件**：订场卡 SSE——发言开始/成员说完/散场＋工具与逐字流，
+      滚动列表只渲染尾部一页（数据不删）。
+   ============================================================ */
+const AL = {
+  aid: "", es: null, mode: "compact", target: "",
+  closedAid: "", needCatchup: false, subscribed: "",
+  who: "", buf: "", at: 0,
+  events: [], shown: 60,
+};
+
+const al$ = rv$;                 // 同一个 $ 助手（id 直取）
+const alEsc = rvEsc;
+const alTime = rvTime;
+
+function alStop() {
+  if (AL.es) { try { AL.es.close(); } catch (e) { /* 零阻断 */ } AL.es = null; }
+}
+
+function alReset() {
+  alStop();
+  AL.aid = ""; AL.who = ""; AL.buf = ""; AL.subscribed = "";
+  const t = al$("alLastTime"); if (t) t.textContent = "";
+  const s = al$("alLastText"); if (s) s.textContent = "等待事件…";
+  AL.events = []; AL.shown = 60;
+  const ev = al$("alEvents"); if (ev) ev.innerHTML = "";
+  const cnt = al$("alCount"); if (cnt) cnt.textContent = "0/0";
+  const el = al$("alWin"); if (el) el.classList.remove("done");
+  alSetMode("compact");
+}
+
+/** 收缩态横锚与评审窗同套；纵向：评审窗也开着就顶到它底缘之下。 */
+function alPlace() {
+  const el = al$("alWin");
+  if (!el || el.hidden) return;
+  if (AL.mode === "full") {
+    document.body.classList.add("al-full");
+    el.style.left = ""; el.style.right = "";
+    el.style.top = ""; el.style.bottom = "";
+    el.style.width = ""; el.style.height = "";
+    return;
+  }
+  document.body.classList.remove("al-full");
+  el.style.bottom = ""; el.style.height = "";
+  const col = document.querySelector(".flow-view-column");
+  if (!col) return;
+  const r = col.getBoundingClientRect();
+  if (!r.width) return;
+  const gap = 14, edge = 10;
+  const avail = window.innerWidth - r.right - gap - edge;
+  const w = Math.max(240, Math.min(380, avail));
+  const left = Math.min(r.right + gap, window.innerWidth - w - edge);
+  el.style.right = "auto";
+  el.style.left = Math.round(Math.max(edge, left)) + "px";
+  el.style.width = Math.round(w) + "px";
+  // 纵向错位：评审浮窗可见 ⇒ 顶到它下缘 +10px；否则回默认位（CSS 的 88px）。
+  const rv = rv$("rvWin");
+  if (rv && !rv.hidden) {
+    const rb = rv.getBoundingClientRect();
+    el.style.top = Math.round(rb.bottom + 10) + "px";
+  } else {
+    el.style.top = "";
+  }
+}
+
+function alSetOn(on) {
+  const el = al$("alWin"); if (!el) return;
+  if (!on) { el.hidden = true; alStop(); document.body.classList.remove("al-full"); return; }
+  if (AL.closedAid && AL.closedAid === AL.aid) return;
+  if (el.hidden) { el.hidden = false; alPlace(); }
+}
+
+function alSetMode(mode) {
+  AL.mode = mode;
+  const el = al$("alWin"); if (!el) return;
+  el.dataset.mode = mode;
+  const btn = al$("alExpandBtn");
+  if (btn) btn.title = mode === "full" ? "收起" : "展开对齐卡对话";
+  const fr = al$("alFrame");
+  if (fr) {
+    if (mode === "full" && AL.aid) {
+      fr.onload = () => {
+        try {
+          const d = fr.contentDocument;
+          if (!d) return;
+          const st = d.createElement("style");
+          st.textContent = ".app-nav{display:none!important}";
+          d.head.appendChild(st);
+        } catch (e) { /* 跨源就保持原样 */ }
+      };
+      fr.src = `/work/${WORK_ID}/card/${AL.aid}`;
+    } else {
+      fr.onload = null;
+      fr.src = "about:blank";
+    }
+  }
+  alPlace();
+}
+
+function alSetLast(html, ts, live) {
+  const t = al$("alLastTime"); if (t) t.textContent = alTime(ts);
+  const s = al$("alLastText"); if (s) s.innerHTML = html;
+  const box = al$("alLive"); if (box) box.classList.toggle("live", !!live);
+}
+
+function alRow(ev) {
+  const row = document.createElement("div");
+  row.className = "fwin-ev" + (ev.cls ? " is-" + ev.cls : "");
+  const tm = document.createElement("time");
+  tm.textContent = alTime(ev.ts);
+  const sp = document.createElement("span");
+  sp.className = "t";
+  sp.innerHTML = ev.html;
+  row.appendChild(tm); row.appendChild(sp);
+  return row;
+}
+
+function alRenderTail(keepScroll) {
+  const box = al$("alEvents"); if (!box) return;
+  const from = Math.max(0, AL.events.length - AL.shown);
+  const prevH = box.scrollHeight, prevTop = box.scrollTop;
+  box.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  for (let i = from; i < AL.events.length; i++) frag.appendChild(alRow(AL.events[i]));
+  if (from > 0) {
+    const more = document.createElement("div");
+    more.className = "fwin-more";
+    more.textContent = `↑ 上面还有 ${from} 条（上滑加载）`;
+    frag.insertBefore(more, frag.firstChild);
+  }
+  box.appendChild(frag);
+  if (keepScroll) box.scrollTop = prevTop + (box.scrollHeight - prevH);
+  return from;
+}
+
+function alPush(html, ts, cls) {
+  AL.events.push({ html: html, ts: ts, cls: cls || "" });
+  const box = al$("alEvents");
+  if (!box) return;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+  if (atBottom) {
+    AL.shown = 60;
+    alRenderTail(false);
+    box.scrollTop = box.scrollHeight;
+  } else {
+    alRenderTail(true);
+  }
+  const lt = al$("alLastText"); if (lt) lt.textContent = "";
+}
+
+function alPaint(t, d, ts) {
+  let html;
+  switch (t) {
+    case "align_speaking":
+      AL.who = String(d.name || d.seat || ""); AL.buf = "";
+      html = `<b>${alEsc(AL.who)}</b> ${d.opener ? "开场发言" : "轮到它发言"}`;
+      break;
+    case "align_open":
+      html = `对齐场开 · ${alEsc(d.topic || "")}`;
+      break;
+    case "align_created":
+      html = `对齐场建起 · ${alEsc(d.topic || "")}${d.initiator ? ` · ${alEsc(d.initiator)} 发起` : ""}`;
+      break;
+    case "align_ended":
+      html = `<b>${alEsc(d.seat || "")}</b> 宣布说完 · 还差 ${(d.remaining || []).length} 人`
+           + (d.has_conclusion ? " · 留了结论" : "");
+      break;
+    case "align_closed": {
+      const _nc = Object.keys(d.conclusions || {}).length;
+      html = `对齐场散场${d.reason ? ` · ${alEsc(d.reason)}` : ""}`
+           + ` · 结论 ${_nc} 份已回投成员`;
+      break;
+    }
+    case "tool_call":
+      html = `⚙ ${alEsc(d.tool || "")} ${alEsc(rvArgs(d.arguments))}`;
+      break;
+    case "tool_result":
+      html = `← ${alEsc(d.tool || "")} ${d.ok ? "完成" : "失败"} ${alEsc(rvArgs(d.summary))}`;
+      break;
+    case "error":
+      html = `错误 ${alEsc(d.message || d.error || "")}`;
+      break;
+    default:
+      html = alEsc(t);          // 没单独排版的照示类型名（所有事件都要看得见）
+      break;
+  }
+  const _cls = (t === "tool_call" || t === "tool_result") ? "tool"
+             : (t === "align_speaking" || t === "align_ended") ? "speak"
+             : (t === "error") ? "error" : "";
+  alPush(html, ts, _cls);
+}
+
+function alTyping(kind, d) {
+  const txt = String(d.text || "");
+  if (!txt) return;
+  AL.buf = (AL.buf + txt).slice(-200);
+  const now = Date.now();
+  if (now - AL.at < 100) return;
+  AL.at = now;
+  const who = AL.who ? `<b>${alEsc(AL.who)}</b> ` : "";
+  alSetLast(who + (kind === "reasoning_chunk" ? "思考中 " : "输出 ")
+    + alEsc(AL.buf.slice(-56).replace(/\s+/g, " ")),
+    Math.floor(now / 1000), true);
+}
+
+function alOnFrame(f) {
+  const t = String(f.type || "");
+  const d = f.data || {};
+  if (t === "reasoning_chunk" || t === "content_chunk") { alTyping(t, d); return; }
+  alPaint(t, d, f.ts);
+  if (t === "align_ended" || t === "align_closed" || t === "align_open") {
+    alRefresh(AL.target);      // 结束数/场态变了，重拉头部
+  }
+}
+
+async function alLoadHistory() {
+  let tl = null;
+  try {
+    tl = await API.getTimeline(WORK_ID, AL.aid, undefined, { tail: 40 });
+  } catch (e) { return; }
+  const items = (tl && tl.items) || [];
+  const rows = [];
+  for (const it of items) {
+    if (!it || !it.type) continue;
+    const t = String(it.type);
+    if (t === "reasoning_chunk" || t === "content_chunk") continue;
+    rows.push(it);
+  }
+  AL.events = []; AL.shown = 60;
+  const box = al$("alEvents");
+  if (box) box.innerHTML = "";
+  for (const it of rows) alPaint(String(it.type), it.data || {}, it.ts);
+  if (box) box.scrollTop = box.scrollHeight;
+}
+
+function alSubscribe() {
+  if (AL.es) { try { AL.es.close(); } catch (e) { /* 零阻断 */ } AL.es = null; }
+  let es;
+  try {
+    es = new EventSource(`/api/works/${WORK_ID}/cards/${AL.aid}/stream?from=0&tokens=1`);
+  } catch (e) { return; }
+  AL.es = es;
+  es.onerror = () => { AL.needCatchup = true; };
+  es.onopen = () => {
+    if (AL.needCatchup) { AL.needCatchup = false; alLoadHistory(); }
+  };
+  es.onmessage = (m) => {
+    let f = null;
+    try { f = JSON.parse(m.data); } catch (e) { return; }
+    if (f && f.type) alOnFrame(f);
+  };
+}
+
+async function alRefresh(cid) {
+  if (!cid) return;
+  if (cid !== AL.target) {
+    AL.closedAid = "";
+    alReset();
+    AL.target = cid;
+  }
+  let st = null;
+  try {
+    st = await API.getAlignStatus(WORK_ID, cid, { silent: true });
+  } catch (e) {
+    return;                     // 拉不到就维持现状，不误收
+  }
+  if (!st || !st.has_align || !st.active) { alSetOn(false); return; }
+  AL.aid = String(st.align_card_id || "");
+  alSetOn(true);
+  const win = al$("alWin");
+  if (win && win.hidden) return;          // 用户关过这场
+  const title = al$("alTitle");
+  if (title) title.textContent = "对齐 · " + (st.topic || "");
+  const cnt = al$("alCount");
+  if (cnt) cnt.textContent = `${(st.ended || []).length}/${st.total || 0}`;
+  if (win) win.classList.toggle("done", (st.ended || []).length >= (st.total || 0) && st.total > 0);
+  if (AL.subscribed !== AL.aid) {
+    AL.subscribed = AL.aid;
+    await alLoadHistory();
+    alSubscribe();
+  }
+  alPlace();
+}
+
+/* ---- 交互：点头部/那一行 = 展开；再点收起；× 关掉这场（散场前不再弹） ---- */
+(function alBind() {
+  const head = al$("alHead");
+  const last = al$("alLast");
+  const toggle = () => alSetMode(AL.mode === "full" ? "compact" : "full");
+  if (head) head.addEventListener("click", (e) => {
+    if (e.target.closest(".fwin-btn")) return;
+    toggle();
+  });
+  if (last) last.addEventListener("click", toggle);
+
+  const evBox = al$("alEvents");
+  if (evBox) evBox.addEventListener("scroll", () => {
+    if (evBox.scrollTop > 0) return;
+    if (AL.shown >= AL.events.length) return;
+    AL.shown += 60;
+    alRenderTail(true);
+  });
+
+  const exp = al$("alExpandBtn");
+  if (exp) exp.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
+
+  const cls = al$("alCloseBtn");
+  if (cls) cls.addEventListener("click", (e) => {
+    e.stopPropagation();
+    AL.closedAid = AL.aid || "1";
+    alSetOn(false);
+  });
+
+  window.addEventListener("resize", () => { alPlace(); });
+  // 评审窗出现/收起/换模式 ⇒ 重算错位（它在上面，对齐窗要让）。
+  const rv = rv$("rvWin");
+  if (rv && window.MutationObserver) {
+    new MutationObserver(() => alPlace()).observe(
+      rv, { attributes: true, attributeFilter: ["hidden", "data-mode", "style"] });
+  }
+})();
+
+// 启动放最后：RV 与 rv*、AL 与 al* 全部就位之后再跑（避免 TDZ）。
 bootRestore();

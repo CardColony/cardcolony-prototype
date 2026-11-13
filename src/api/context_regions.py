@@ -66,6 +66,16 @@ class RegionCtx:
     controls: dict[str, Any] = field(default_factory=dict)
     history_source: list[dict[str, Any]] = field(default_factory=list)
     history_mark: int = 0
+    #: [缓存板 2026-11-12] 运行时附加块（prior_extra，评审现场发言）——
+    #: 它们是**别的卡的会话块**（带真 seq，不能靠 seqless 与 history_source
+    #: 区分），独立通道传入；不属于原文库、不进板、不受水位约束，
+    #: 板路照旧接在板行之后（旧路混在 history_source 里语义不变）。
+    history_extra: list[dict[str, Any]] = field(default_factory=list)
+    #: [本轮消息双重计数 2026-11-14 · 用户实录] 本轮 user 块的 pair_id。
+    #: 写钩在落盘瞬间已把它放进板 ⇒ 装配读板时会把它当**历史**又端一遍，
+    #: 同一条消息在 prior 与 user_prompt 各出现一次（"你粘贴了两遍"）。
+    #: 板路按它滤掉本轮已落块的行；空串＝无本轮块可滤（评审/草稿路）。
+    current_pair_id: str = ""
     request_prior: Optional[list[dict[str, Any]]] = None
     request_prior_key: str = "history"
     request_user: Optional[str] = None
@@ -802,13 +812,123 @@ def _heal_tool_pairs(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# [调用对存根回灌 2026-11-14 · 用户令「试下方案1」]
+# 背景：工具结果**不进上下文**（2026-10-23 裁定，card_005 实测结果占 92% token），
+# enters_context 把 actor=tool 与配对的 assistant(tool_calls) 成对剥掉——历史里
+# 的调用通道示范为零，而失败伪调用文本（<confirm> 等）干净留存、逐轮累积，
+# flash 级模型出现"正文写调用壳"漂移（card_021 17:44–17:52 实录）。
+# 修法：**只放最近 _TOOL_PAIR_STUB_KEEP 组完整调用对，且结果体折成一行存根**——
+# 恢复"调用→回执"的协议形态示范，代价每对几十字符而非几千。谓词
+# enters_context 语义不动（token 计量/凝练池/板写闸仍按"工具块不进"算）；
+# 存根纯投影层产物，真相源（会话文件/板）不变。
+_TOOL_PAIR_STUB_KEEP = 24
+
+
+def _is_toolish(b: dict[str, Any]) -> bool:
+    """工具对块：actor=tool（结果）或 actor=assistant 且带 tool_calls（调用壳）。"""
+    actor = str(b.get("actor") or "")
+    return actor == "tool" or (actor == "assistant" and bool(b.get("tool_calls")))
+
+
+def _seq_key(b: dict[str, Any]) -> int:
+    s = b.get("seq")
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return 1 << 60
+
+
+def _merge_toolish_into(
+    rows: list[dict[str, Any]], source_blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把 source 里的工具对块按 seq 合进 rows（板行永不含工具块 ⇒ 无重复）。"""
+    toolish = [b for b in source_blocks if _is_toolish(b)]
+    if not toolish:
+        return list(rows)
+    return sorted(list(rows) + toolish, key=_seq_key)
+
+
+def _collect_tool_stub_ids(
+    source: list[dict[str, Any]],
+) -> tuple[set[int], dict[str, str]]:
+    """倒扫 source 取最近 _TOOL_PAIR_STUB_KEEP 组**完整**调用对。
+
+    一组＝一个 assistant(tool_calls) 头块 ＋ 紧随其后的连续 actor=tool 块。
+    孤儿 tool 块（头不是调用壳、或头部被水位切走）不救、不凑——不完整的对
+    没有示范价值。返回 (保留块 id 集, tool_call_id → 工具名)。
+    """
+    keep: set[int] = set()
+    names: dict[str, str] = {}
+    kept = 0
+    i = len(source) - 1
+    while i >= 0 and kept < _TOOL_PAIR_STUB_KEEP:
+        if str(source[i].get("actor") or "") != "tool":
+            i -= 1
+            continue
+        j = i
+        while j >= 0 and str(source[j].get("actor") or "") == "tool":
+            j -= 1
+        head = source[j] if j >= 0 else None
+        if (head is not None and str(head.get("actor") or "") == "assistant"
+                and head.get("tool_calls")):
+            for t in range(j, i + 1):
+                keep.add(id(source[t]))
+            for tc in head.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                cid = str(tc.get("id") or "")
+                if cid:
+                    names[cid] = str(fn.get("name") or tc.get("name") or "")
+            kept += 1
+        i = j - 1
+    return keep, names
+
+
+_TOOL_STUB_ARGS_CAP = 240
+
+
+def _tool_stub_wire(m: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
+    """工具对块的存根投影：调用壳原样留（长参数折叠），结果折成一行回执。"""
+    actor = str(m.get("actor") or "")
+    if actor == "assistant":
+        tcs: list[dict[str, Any]] = []
+        for tc in m.get("tool_calls") or []:
+            tc2 = dict(tc)
+            fn = dict(tc2.get("function") or {})
+            args = str(fn.get("arguments") or "")
+            if len(args) > _TOOL_STUB_ARGS_CAP:
+                fn["arguments"] = args[:_TOOL_STUB_ARGS_CAP] + "…[参数已折叠]"
+            tc2["function"] = fn
+            tcs.append(tc2)
+        item = {"role": "assistant",
+                "content": str(m.get("content") or ""),
+                "tool_calls": tcs}
+        if m.get("reasoning_content"):
+            item["reasoning_content"] = m["reasoning_content"]
+        return item
+    cid = str(m.get("tool_call_id") or "")
+    raw = str(m.get("content") or "")
+    failed = ('"ok": false' in raw) or ('"ok":false' in raw)
+    nm = names.get(cid) or "?"
+    return {"role": "tool", "tool_call_id": cid,
+            "content": (f"工具回执已折叠：{nm} · {'error' if failed else 'ok'}"
+                        f" · 原文 {len(raw)} 字符")}
+
+
 def project_history_messages(
     blocks: list[dict[str, Any]], mark: int | None = None,
     allowed_roles: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """历史区的统一投影：按凝练水位切片、滤过程块、转 card-msg 头，保留思考回传。
 
-    这是纯函数；卡片会话文件不改。mark 越界时回退全量，与旧投影口径一致。
+    这是纯函数；卡片会话文件不改。
+
+    [mark 是 seq 水位 · 2026-11-12] mark=已凝最后一块 seq+1（memory_store 口径），
+    **不是列表下标**：按 ``seq >= mark`` 过滤。改前 ``source[mark:]`` 按下标切——
+    seq 有空洞即错位；更致命的是先经 ``drop_stale_review`` 蒸发后列表短于 mark
+    时 ``0 <= mark <= len`` 不成立 → 回退**全量**（水位静默失效，card_021 实案：
+    mark=20236、过滤后 20215 → 2828 条全量历史进上下文）。无 seq 的运行时附加块
+    （prior_extra）不属于原文库、不受水位约束，保留。
 
     [工具结果落会话 2026-10-17] 放行工具块（对齐通用 agent 的对话形态）：
     - actor=assistant 且带 tool_calls → {"role":"assistant","content":…,"tool_calls":[…]}
@@ -821,7 +941,11 @@ def project_history_messages(
     """
     source = blocks or []
     if mark is not None:
-        source = source[mark:] if 0 <= mark <= len(source) else source
+        source = [m for m in source
+                  if m.get("seq") is None or int(m.get("seq") or 0) >= int(mark)]
+    # [调用对存根 2026-11-14] 先对 source 尾部的完整调用对建存根白名单——
+    # 它们在下方 enters_context 闸前优先放行（以存根形态），谓词语义不变。
+    _stub_ids, _stub_names = _collect_tool_stub_ids(source)
     out: list[dict[str, Any]] = []
     from . import card_msg
     for m in source:
@@ -832,6 +956,9 @@ def project_history_messages(
         if allowed_roles is not None and role not in allowed_roles:
             continue
         actor = str(m.get("actor") or "")
+        if id(m) in _stub_ids:
+            out.append(_tool_stub_wire(m, _stub_names))
+            continue
         # [历史去工具结果 2026-10-23 · 用户需求] 工具结果**不进上下文**：
         # 留着的代价太大（实测 card_005：工具结果占 92% 的 token——104 万里 98 万），
         # 而模型真正需要的是它自己的结论（assistant 正文）＋记忆条目。
@@ -869,12 +996,34 @@ def _render_prior_for(ctx: RegionCtx, key: str) -> list[dict[str, Any]]:
     if ctx.request_prior is not None:
         return ctx.request_prior if ctx.request_prior_key == key else []
     if key == "history":
+        from ..storage import context_board as _cb
+        if _cb.enabled():
+            # [缓存板 2026-11-12] 视野在写时已算好：板=「过闸 且 seq>=水位 且
+            # 评审 keep-N」的物化答案，这里只做机械投影、零筛选。
+            # prior_extra（运行时追加块）不属于板，走独立通道照旧接在板后。
+            # [调用对存根 2026-11-14] 板行永不含工具块（写时过闸剥掉）——从
+            # history_source 原文把工具对块按 seq 合回，投影层才能见到它们
+            # 并落存根；mark 照传，水位下旧对不进、extras 走独立通道。
+            rows = _cb.read_board(ctx.work_id, ctx.card_id)
+            if ctx.current_pair_id:
+                # [本轮消息双重计数 2026-11-14] 本轮 user 块落盘瞬间已进板；
+                # 它归 user 通道，不归历史——按 pair_id 从板行滤掉。
+                rows = [r for r in rows
+                        if str(r.get("pair_id") or "") != ctx.current_pair_id]
+            merged = _merge_toolish_into(rows, ctx.history_source)
+            return project_history_messages(
+                merged, ctx.history_mark) + project_history_messages(
+                ctx.history_extra)
         # [评审流量治理 2026-11-02 · 用户裁定] 评审过程消息只留最新数条在场，
         # 更早的蒸发——评审持久记录归 review_store，会话流量不需要记忆。
         from ..storage import review_scope as _rs
+        # prior_extra 是别的卡的会话块（seq 相对它自己，恒小于本卡水位）——
+        # seq 水位过滤会把它误杀；拆出 extras（按对象身份，不猜位置）单独投影接尾。
+        _ext_ids = {id(m) for m in ctx.history_extra}
+        _head = [m for m in ctx.history_source if id(m) not in _ext_ids]
         return project_history_messages(
-            _rs.drop_stale_review(ctx.work_id, ctx.card_id, ctx.history_source),
-            ctx.history_mark)
+            _rs.drop_stale_review(ctx.work_id, ctx.card_id, _head),
+            ctx.history_mark) + project_history_messages(ctx.history_extra)
     return []
 
 

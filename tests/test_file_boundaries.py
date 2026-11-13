@@ -13,18 +13,25 @@ from src.api import file_tools
 
 # ---------------------------------------------------------------- 路径校验
 
-def test_resolve_blocks_escape(sandbox):
+def test_resolve_no_folder_gate_per_2026_11_15_ruling(sandbox):
+    """[2026-11-15 用户令「取消文件夹访问的机械闸，读写都不限文件夹」]
+    _resolve 不再判边界：相对路径锚 BASE_DIR、绝对路径任意、.. 逃逸不拒。
+    权限只剩卡型开关＋凭证文件名黑名单（check_file_access）。"""
     base = sandbox.base
 
+    # .. 逃逸不再被拒（resolve 后即真实路径，无边界判定）
     p, err = file_tools._resolve("trading-workspace/../../escaped.txt")
-    assert p is None and "越界" in err["error"]
+    assert err is None and p == (base.parent / "escaped.txt").resolve()
 
+    # 基准目录外的绝对路径同样放行
     p, err = file_tools._resolve(str(sandbox.tmp / "outside.txt"))
-    assert p is None and "越界" in err["error"]
+    assert err is None and p == (sandbox.tmp / "outside.txt").resolve()
 
+    # 空路径仍校验（参数合法性，不是权限）
     p, err = file_tools._resolve("")
     assert p is None and "不能为空" in err["error"]
 
+    # 相对路径仍以 BASE_DIR 为锚
     p, err = file_tools._resolve("trading-workspace/a.txt")
     assert err is None
     assert p == (base / "trading-workspace" / "a.txt").resolve()
@@ -154,7 +161,7 @@ def test_read_only_switch_allows_read_but_not_write():
     from src.api import file_tools
 
     meta = {"card_type": "sub_project", "perms": ["read", "tools_read_file"]}
-    target = str(file_tools.BASE_DIR / "推演agent")   # 沙箱 ALLOWED_ROOTS 下
+    target = str(file_tools.BASE_DIR / "推演agent")   # 沙箱锚点下（无边界语义）
     assert file_tools.check_file_access(target, meta) is True, "读必须放行"
     assert file_tools.check_file_access(target, meta, write=True) is False, \
         "只读卡不许写"
@@ -193,7 +200,7 @@ def test_read_only_switch_allows_read_but_not_write():
     from src.api import file_tools
 
     meta = {"card_type": "sub_project", "perms": ["read", "tools_read_file"]}
-    target = str(file_tools.BASE_DIR / "推演agent")   # 沙箱 ALLOWED_ROOTS 下
+    target = str(file_tools.BASE_DIR / "推演agent")   # 沙箱锚点下（无边界语义）
     assert file_tools.check_file_access(target, meta) is True, "读必须放行"
     assert file_tools.check_file_access(target, meta, write=True) is False, \
         "只读卡不许写"

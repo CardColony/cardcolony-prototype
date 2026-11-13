@@ -35,7 +35,7 @@ async def _make_work():
 
 def test_header_replaced_by_fixed_head():
     out = card_msg.render_for_context(_RAW)
-    assert out == "〔卡间消息〕\n数字是多少？"
+    assert out == "卡间消息：\n数字是多少？"
     assert "[[card-msg" not in out
     assert "card_001" not in out, "头不承担归属：不得带出任何卡号"
 
@@ -69,7 +69,7 @@ async def test_actor_card_maps_to_user_role(sandbox):
     # 块本身不改：原始头行仍在（find_pending 的锚）
     assert "[[card-msg" in cm[0]["content"]
     # 投影才换头
-    assert card_msg.render_for_context(cm[0]["content"]).startswith("〔卡间消息〕")
+    assert card_msg.render_for_context(cm[0]["content"]).startswith("卡间消息：")
 
 
 async def test_projection_does_not_touch_block(sandbox):

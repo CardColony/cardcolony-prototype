@@ -164,14 +164,14 @@ async def test_deliver_now_busy_steers_instead_of_dropping(monkeypatch):
             source={"kind": "card_msg", "from": "card_009"})
         assert ok is True
         got = steer.take_steer(work_id, card_id)
-        assert got == ["〔卡间消息〕【汇报·子卡(card_009)】\n全部通过。"]
+        assert got == ["卡间消息：【汇报·子卡(card_009)】\n全部通过。"]
 
         # 非卡间来源 ⇒ 〔系统消息〕 标；无 steer_text ⇒ 用 text 本体
         ok2 = await message_runner.deliver_now(
             work_id, card_id, text="系统给你发来一条提醒。",
             source={"kind": "system"})
         assert ok2 is True
-        assert steer.take_steer(work_id, card_id) == ["〔系统消息〕系统给你发来一条提醒。"]
+        assert steer.take_steer(work_id, card_id) == ["系统消息：系统给你发来一条提醒。"]
     finally:
         session_facade.turn_release(work_id, card_id, owner)
 

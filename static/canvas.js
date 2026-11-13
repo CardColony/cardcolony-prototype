@@ -1690,6 +1690,7 @@ const WORK_ID = window.__WORK_ID__;
   const TYPE_LABEL = {
     project: "项目", sub_project: "子项目", topic: "课题",
     tool: "工具卡", worker: "worker 卡", rule: "规则卡",
+    align: "对齐场",
   };
 
   function updateExpandBadge(node, childCount, isExpanded) {
@@ -1998,6 +1999,7 @@ const WORK_ID = window.__WORK_ID__;
       <div class="cv-card-row">
         ${wsBadge}
         ${card.card_type === "worker" ? '<span class="cv-tchip coder" title="worker 卡：执行体，一张卡一件执行任务">worker</span>' : ""}
+        ${card.card_type === "align" ? '<span class="cv-tchip align" title="对齐场：一次性的对齐对话场，全员说完即散场">对齐</span>' : ""}
         <div class="tname">${escapeHtml(card.title)}</div>
         ${runChip}
         ${Number(card.decision_count || 0) > 0 ? `<span class="cv-dec" title="已形成 ${card.decision_count} 条定论（D01…）——这条线已经收敛过 ${card.decision_count} 次">定${card.decision_count}</span>` : ""}

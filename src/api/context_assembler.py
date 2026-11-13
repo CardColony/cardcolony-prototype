@@ -448,7 +448,9 @@ def _load_function_roster(work_id: str, current_id: str) -> list[dict[str, Any]]
 def build_ctx(work_id: str, current_id: str,
               memory_state: dict[str, Any] | None = None,
               history_source: list[dict[str, Any]] | None = None,
-              function_meta: dict[str, Any] | None = None) -> context_regions.RegionCtx:
+              function_meta: dict[str, Any] | None = None,
+              history_extra: list[dict[str, Any]] | None = None,
+              current_pair_id: str = "") -> context_regions.RegionCtx:
     """取数一次（**装配链上唯一的 IO 处**）：卡片索引／当前卡／树类／类型注册表／凝练态。
 
     渲染器（`context_regions`）保持纯函数——它们只读这个 ctx，不自己取数。
@@ -510,6 +512,8 @@ def build_ctx(work_id: str, current_id: str,
         rule_sections=_load_rule_sections(work_id),
         history_source=history_source or [],
         history_mark=int((state or {}).get("mark", 0) or 0),
+        history_extra=list(history_extra or []),
+        current_pair_id=str(current_pair_id or ""),
         # [harness 提示词注入 2026-10-28 · 第三道接口] 取走并清空注入队列。
         # 一次装配取一次 ⇒ 这些提示只出现在**这一轮**的 system 里：
         # 整轮共用（system 每轮只组一次）、不进会话历史、下一轮不再出现。
@@ -536,10 +540,13 @@ def build_context_regions(work_id: str, current_id: str,
 def build_context_bundle(work_id: str, current_id: str,
                          memory_state: dict[str, Any] | None = None,
                          history_source: list[dict[str, Any]] | None = None,
-                         function_meta: dict[str, Any] | None = None) -> dict[str, Any]:
+                         function_meta: dict[str, Any] | None = None,
+                         history_extra: list[dict[str, Any]] | None = None,
+                         current_pair_id: str = "") -> dict[str, Any]:
     """一次建好主模型/三席上下文帧；system、history 均由同一注册表渲染。"""
     ctx = build_ctx(work_id, current_id, memory_state, history_source,
-                    function_meta=function_meta)
+                    function_meta=function_meta, history_extra=history_extra,
+                    current_pair_id=current_pair_id)
     main = context_regions.compose_model_context(ctx, profile="main")
     viewpoints = context_regions.compose_model_context(ctx, profile="viewpoint")
     return {

@@ -75,8 +75,11 @@ async def test_report_up_only_to_parent(sandbox, monkeypatch):
     out = await card_tools._h_report_up(
         wid, cid, {"content": "完成A,证据:文件x"}, cards)
     assert out.get("ok") is not False, out
-    assert [d["to"] for d in out["delivered"]] == [root_id], out
-    assert all(d.get("msg_id") for d in out["delivered"])
+    # [2026-11-14] delivered 是真回执（deliver_now 的返回值）；测试环境
+    # ECO_NO_AUTO_DELIVER=1 ⇒ 全部落 pending——收件人语义看两边合计。
+    _reached = out["delivered"] + out.get("pending", [])
+    assert [d["to"] for d in _reached] == [root_id], out
+    assert all(d.get("msg_id") for d in _reached)
     # 职能一条都收不到
     fn_ids = [p["function_id"] for p in function_store.list_profiles(wid)
               if function_room.catalog_code_of(p) != "ceo"]
@@ -280,7 +283,10 @@ async def test_mechanical_phase_close_on_all_children_done(sandbox, monkeypatch)
     cards = card_tools._collect_card_meta(wid)      # 建卡后必须重取（父卡从 meta 算）
     r = await card_tools._h_report_up(
         wid, c2, {"content": "阶段收口:两卡完成"}, cards)
-    assert [d["to"] for d in r["delivered"]] == [root_id], r
+    # [2026-11-14] delivered 是真回执；测试环境 ECO_NO_AUTO_DELIVER=1 ⇒
+    # 落 pending——收件人语义看两边合计。
+    assert [d["to"] for d in r["delivered"] + r.get("pending", [])] \
+        == [root_id], r
     fn_ids = [p["function_id"] for p in function_store.list_profiles(wid)
               if function_room.catalog_code_of(p) != "ceo"]
     msgs_all = {f: await _card_msgs(wid, f) for f in fn_ids}

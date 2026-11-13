@@ -28,6 +28,7 @@
    "manuscript",
    "notify",
    "open_review",
+   "align",
    "open_stage",
    "project_rules",
    "read_card",
@@ -62,6 +63,7 @@
    "manuscript",
    "notify",
    "open_review",
+   "align",
    "open_stage",
    "read_card",
    "read_files",
@@ -89,6 +91,7 @@
   ],
   "function": [
    "create_child",
+   "dispose_card",
    "finalize",
    "instruct",
    "link",
@@ -96,6 +99,7 @@
    "manuscript",
    "notify",
    "open_review",
+   "align",
    "open_stage",
    "read_card",
    "read_files",
@@ -123,6 +127,7 @@
    "manuscript",
    "notify",
    "open_review",
+   "align",
    "open_stage",
    "read_card",
    "read_files",
@@ -146,6 +151,7 @@
    "link",
    "link_rel",
    "open_review",
+   "align",
    "open_stage",
    "read_card",
    "read_files",
@@ -197,7 +203,8 @@
    "report_up_chain",
    "web",
    "write_own_face",
-   "write_process"
+   "write_process",
+   "align"
   ],
   "worker": [
    "edit_other_face",
@@ -214,7 +221,8 @@
    "write_files",
    "write_own_face",
    "write_process",
-   "manuscript"
+   "manuscript",
+   "align"
   ]
  }
 }

@@ -2,7 +2,7 @@
 
 A **general-purpose agent for complex projects**. Decompose work into a tree of cards, advance it layer by layer, let multiple models converge on conclusions — every step leaves an auditable trail.
 
-> **Status note**: this repository is the pre-launch prototype exploration record of the CardColony project, preserving the full evolution from "single-playbook reasoning" to "general complex-project handling". Early commit authors in history (e.g. `zhuge`) are development placeholder identities, not real authors. The production product is being rewritten on a separate Go base — not in this repository.
+> **Status note**: this repository is the pre-launch prototype exploration record of the CardColony project, preserving the full evolution from "single-playbook reasoning" to "general complex-project handling". Early commit authors in history (e.g. `zhuge`) are development placeholder identities, not real authors. The production product is being rebuilt as **CardColony** — an earlier Go-base refactor line drifted off-course and was stopped — so this repository stays the exploration record, not the product.
 >
 > The name 推演agent ("reasoning agent") is kept, but the scope has generalized: what it handles depends on the card tree you build and the tasks you assign — the system itself binds no domain.
 

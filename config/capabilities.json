@@ -79,7 +79,7 @@
   {
    "code": "write_own_face",
    "name": "写自己的卡面",
-   "desc": "改自己的现状块与需求草稿。",
+   "desc": "改自己的现状块与需求草稿；定稿后块内补充需求文档。",
    "applies_to": [
     "function",
     "card"
@@ -88,7 +88,8 @@
     "kind": "tools",
     "tools": [
      "edit_status",
-     "edit_requirements"
+     "edit_requirements",
+     "append_requirement"
     ],
     "switch": "edit"
    }
@@ -142,6 +143,23 @@
      "create_ui_card"
     ],
     "switch": "create_child"
+   }
+  },
+  {
+   "code": "align",
+   "name": "开对齐场",
+   "desc": "建一张一次性对齐卡，让卡树内 2-3 张卡在里面对话对齐消息（根卡发起时自己做开场席；子卡发起时自己是首个发言的轮转成员）。",
+   "applies_to": [
+    "function",
+    "card"
+   ],
+   "impl": {
+    "kind": "tools",
+    "tools": [
+     "create_align",
+     "align_end"
+    ],
+    "switch": "read"
    }
   },
   {

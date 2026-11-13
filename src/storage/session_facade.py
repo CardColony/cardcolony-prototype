@@ -99,7 +99,11 @@ HEADER_FIELDS = (
 # （actor=tool，带 tool_call_id）成对落会话，成为对话的一部分（对齐通用 agent）。
 # 存量会话旧块无这两字段 → 解析为零迁移（缺字段＝空）。
 BLOCK_FIELDS = ("seq", "actor", "from", "turn", "pair", "model", "behavior", "end", "ts",
-                "tool_calls", "tool_call_id")
+                "tool_calls", "tool_call_id",
+                # [保留式思考 2026-11-12] Kimi k3.1-pro 恒推理且要求历史 assistant
+                # 原样回传 reasoning_content——字段必须落会话块，否则跨回合思考
+                # 全蒸发（改前只挂在 _reply_blk 入参上，白名单重建时被剥掉）。
+                "reasoning_content")
 BLOCK_REQUIRED = ("seq", "actor", "turn")
 END_VALUES = ("model_done", "policy_stop", "human_stop", "error")
 ACTOR_HUMAN = "human"
@@ -391,6 +395,16 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
             logger.warning("[facade] tool_calls 字段解析失败（视同无）seq=%s: %r",
                            kv.get("seq", "?"), tool_calls_raw)
     legacy_pair_id = kv.get("pair_id", "")  # V1 uuid 经前向兼容通道保留（见模块头 S6b 衔接桥）
+    # [保留式思考 2026-11-12] reasoning_content 是 JSON 单行字符串；缺字段＝空
+    # （存量旧块零迁移），解析失败退化为原文串（不丢内容）。
+    _rc_raw = kv.get("reasoning_content", "")
+    reasoning_content = ""
+    if _rc_raw:
+        try:
+            _rc = json.loads(_rc_raw)
+            reasoning_content = _rc if isinstance(_rc, str) else str(_rc)
+        except (ValueError, TypeError):
+            reasoning_content = _rc_raw
     pair_id_out = legacy_pair_id if legacy_pair_id != "" else (str(pair_raw) if pair_raw != "" else "")
     blk: dict[str, Any] = {
         # 五键（legacy 契约键）
@@ -411,6 +425,7 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
         # 工具块两字段（缺＝None/空串；存量旧块零迁移）
         "tool_calls": tool_calls,
         "tool_call_id": kv.get("tool_call_id", "") or "",
+        "reasoning_content": reasoning_content,
         "format": "v2",
     }
     damaged = bool(missing) or not header_closed or not closed
@@ -935,6 +950,10 @@ def _render_v2_block(b: dict[str, Any]) -> str:
     if b.get("tool_call_id"):
         # [工具结果落会话 2026-10-17] 工具结果块（actor=tool）：与上面调用一一配对的 id
         lines.append(f"tool_call_id: {b['tool_call_id']}")
+    if b.get("reasoning_content"):
+        # [保留式思考 2026-11-12] JSON 单行（同 tool_calls 规则：换行转义保单行）
+        lines.append("reasoning_content: " +
+                     json.dumps(b["reasoning_content"], ensure_ascii=False))
     if b.get("end"):
         lines.append(f"end: {b['end']}")
     lines.append(f"ts: {b.get('ts') or session_store._now_iso()}")
@@ -1191,6 +1210,7 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
         "behavior": block.get("behavior", ""),
         "tool_calls": tool_calls,
         "tool_call_id": block.get("tool_call_id", "") or "",
+        "reasoning_content": block.get("reasoning_content") or "",
         "ts": now,
         "format": "v2",
     }

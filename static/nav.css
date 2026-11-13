@@ -664,6 +664,37 @@ mark { background: #3d3413; color: #ffe9a8; border-radius: 2px; }
   color: var(--text-dim, rgba(160, 168, 180, 0.9));
 }
 
+/* [对齐场入口 2026-11-11] 对齐行＝评审行同构（临时出入口），
+   青色区分评审紫——它是"对话场"不是"表决场"。 */
+.nav-alrow {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  box-sizing: border-box;
+  height: 30px;                 /* ＝ NAV_ROW_HEIGHT，与卡行同高 */
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding-right: 10px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  background: var(--panel);
+}
+.nav-alrow:hover { box-shadow: inset 0 0 0 999px var(--panel-hover); }
+.nav-alrow .nav-ico.al { color: #5cc8d8; }
+.nav-al-badge {
+  flex: none; font-size: 9px; line-height: 14px; padding: 0 4px;
+  margin-right: 4px; border-radius: 4px; color: #5cc8d8;
+  border: 1px solid rgba(92, 200, 216, 0.45);
+}
+.nav-al-count {
+  flex: none; margin-left: auto; padding-left: 8px;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+  color: var(--text-dim, rgba(160, 168, 180, 0.9));
+}
+
 /* ============================================================
    [静默执行卡折叠 2026-11-04 · 用户令「静默不动的编程卡、qa卡、
    产品经理卡，都折叠显示」]

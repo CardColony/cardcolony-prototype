@@ -247,7 +247,6 @@ class FactStore:
         except sqlite3.Error as exc:  # noqa: BLE001 零阻断
             logger.warning("[fact_store] 写入失败 work=%s type=%s seq=%s: %s",
                            work_id, ev_type, seq, exc)
-            return None
         return fact
 
     def sort(self, work_id: str) -> int:

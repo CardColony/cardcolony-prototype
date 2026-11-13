@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardColony 画布 · 卡面信息设计 v2</title>
+<style>
+/* ================= 令牌 ================= */
+.root{
+  --bg:#0b0d10; --panel:#141920; --surface:#161d26;
+  --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+  --tx:#dfe6f0; --tx2:#9aa6b6; --tx3:#5f6a78;
+  --gold:#e2a63d;
+  --run:#7fd6a1; --blk:#f85149; --pau:#f7c163; --qed:#8fb0ff; --done:#5c6674;
+  --worker:#f5a65b; --ui:#56c8d8; --qa:#7ec97e; --pm:#dd8ab4;
+  --chipbg:rgba(255,255,255,.05); --wire:#39434f; --region:rgba(255,255,255,.022);
+}
+.root[data-theme="light"]{
+  --bg:#f3f4f6; --panel:#ffffff; --surface:#ffffff;
+  --line:rgba(20,30,45,.10); --line2:rgba(20,30,45,.18);
+  --tx:#1c2733; --tx2:#5b6774; --tx3:#8b95a1; --gold:#c9901f;
+  --wire:#c9d1dc; --chipbg:rgba(20,30,45,.05); --region:rgba(20,30,45,.025);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font:13px/1.5 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  background:var(--bg);color:var(--tx);-webkit-font-smoothing:antialiased}
+.root{height:100%;display:flex;flex-direction:column;background:var(--bg)}
+.mono{font-family:"Cascadia Mono",Consolas,monospace}
+
+/* ================= 顶栏 ================= */
+.top{height:44px;flex:none;display:flex;align-items:center;gap:14px;padding:0 14px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;font-weight:600;font-size:15px}
+.brand .b3{color:var(--gold)}
+.crumb{color:var(--tx3);font-size:12px}
+.stat{color:var(--tx2);font-size:12px}
+.stat b{color:var(--tx)} .stat .warn{color:var(--blk)}
+.topsp{flex:1}
+.tbtn{height:28px;min-width:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;
+  background:transparent;color:var(--tx2);font-size:12px;cursor:pointer}
+.tbtn:hover{color:var(--tx);border-color:var(--line2)}
+.zpct{width:42px;text-align:center;color:var(--tx2);font-size:12px;cursor:pointer}
+input[type=range]{width:90px;accent-color:var(--gold)}
+
+/* ================= 画布 ================= */
+.main{flex:1;position:relative;overflow:hidden;
+  background-image:radial-gradient(circle,var(--line) 1px,transparent 1px);
+  background-size:28px 28px}
+.stage{position:absolute;inset:0;transform-origin:0 0}
+#wires{position:absolute;inset:0;overflow:visible;pointer-events:none}
+
+/* 子树街区：manager 的地盘有一片极淡的底，读"群落分区"不靠线 */
+.region{position:absolute;border-radius:10px;background:var(--region);
+  border:1px solid var(--line)}
+
+/* ---- 结构卡：体量即层级 ---- */
+.card{position:absolute;background:var(--surface);border:1px solid var(--line2);
+  border-radius:7px;padding:10px 12px 10px 14px;cursor:pointer;
+  border-left:4px solid var(--sc,var(--line2));transition:border-color .15s}
+.card:hover{border-color:var(--line2)}
+.card.d-master{width:340px;min-height:74px;border-width:1.5px;border-left-width:5px}
+.card.d-manager{width:310px}
+.card.d-unit{width:290px}
+.c-head{display:flex;align-items:center;gap:8px;min-width:0}
+.c-icon{flex:none;width:16px;height:16px;display:grid;place-items:center;color:var(--tx2)}
+.d-master .c-icon{width:20px;height:20px}
+.c-t{flex:1;min-width:0;font-size:14px;font-weight:600;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.d-master .c-t{font-size:16px}
+.c-n{flex:none;font-size:10.5px;color:var(--tx2);background:var(--chipbg);
+  border-radius:4px;padding:1px 6px}
+.c-s{margin-top:4px;font-size:11.5px;color:var(--tx2);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.c-meta{position:absolute;right:10px;bottom:7px;display:flex;gap:6px;align-items:center}
+.c-id{font-size:9.5px;color:var(--tx3)}
+.c-sub{font-size:9.5px;color:var(--blk);background:rgba(248,81,73,.13);
+  border-radius:4px;padding:0 6px;font-weight:600}
+.c-mdl{font-size:9.5px;color:var(--tx3);background:var(--chipbg);border-radius:4px;
+  padding:0 5px}
+
+/* ---- 执行卡：一行 token，不是盒子 ---- */
+.tok{position:absolute;height:34px;min-width:230px;max-width:330px;display:flex;
+  align-items:center;gap:7px;padding:0 10px 0 0;border-radius:5px;cursor:pointer;
+  border:1px dashed var(--line2);border-left:3px solid var(--sc,var(--line2));
+  background:var(--surface)}
+.tok:hover{border-color:var(--tx3)}
+.tok .ticon{flex:none;width:14px;height:14px;margin-left:9px;display:grid;place-items:center;color:var(--tc,var(--tx2))}
+.tok .t-t{flex:none;font-size:12.5px;font-weight:500;color:var(--tx);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:130px}
+.tok .t-s{flex:1;min-width:0;font-size:11px;color:var(--tx2);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.tok .t-s::before{content:"· "}
+.tok .t-n{flex:none;font-size:9.5px;color:var(--tx2);background:var(--chipbg);
+  border-radius:4px;padding:0 5px}
+
+/* ---- 状态即表面（脊色+微底，不再靠"圆点"这个图标） ---- */
+.s-run{--sc:var(--run)}
+.card.s-run{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--run) 12%,transparent),
+  0 0 10px -4px color-mix(in srgb,var(--run) 30%,transparent)}
+.tok.s-run{animation:edgep 2.6s ease-in-out infinite}
+.s-blk{--sc:var(--blk)}
+.card.s-blk,.tok.s-blk{background:color-mix(in srgb,var(--blk) 8%,var(--surface))}
+.s-blk .c-t,.s-blk .t-t{color:var(--blk)}
+.s-pau{--sc:var(--pau)}
+.s-qed{--sc:var(--qed)}
+.tok.s-qed{animation:edgep 1.2s ease-in-out infinite}
+.s-done{--sc:var(--done)}
+.s-done{opacity:.45}
+@keyframes edgep{50%{border-left-color:color-mix(in srgb,var(--sc) 45%,transparent)}}
+
+/* 受阻路径：父链逐级泛红 */
+.wire{fill:none;stroke:var(--wire);stroke-width:1.2}
+.wire-blk{stroke:var(--blk)!important;stroke-opacity:.55;stroke-width:1.6}
+
+/* LOD：文字死、骨架活 */
+.stage.far .c-s,.stage.far .t-s,.stage.far .c-mdl,.stage.far .c-id{display:none}
+.stage.far .tok{height:26px}
+.stage.far .tok .t-t{max-width:170px}
+
+/* 右缘 + 底栏 */
+.bm{position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:5;
+  display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;overflow:hidden}
+.bm button{width:34px;height:42px;border:0;background:transparent;color:var(--tx3);
+  cursor:pointer;display:grid;place-items:center}
+.bm button+button{border-top:1px solid var(--line)}
+.bm button:hover{color:var(--tx);background:var(--chipbg)}
+.mbar{height:44px;flex:none;display:flex;align-items:stretch;background:var(--panel);
+  border-top:1px solid var(--line)}
+.mslot{display:flex;flex-direction:column;justify-content:center;gap:1px;padding:0 16px;
+  border-right:1px solid var(--line);min-width:140px}
+.mslot .t{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--tx2)}
+.mslot .t i{width:12px;height:12px;display:grid;place-items:center}
+.mslot .m{font-size:11px;color:var(--tx3);font-family:"Cascadia Mono",Consolas,monospace}
+.note{position:absolute;left:14px;bottom:14px;z-index:5;max-width:400px;background:var(--panel);
+  border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:11.5px;color:var(--tx2)}
+.note b{color:var(--tx)}
+</style>
+</head>
+<body>
+<div class="root" id="root" data-theme="dark">
+  <div class="top">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="margin-right:2px">
+        <path class="csvg" d="M19.5 7.2A9 9 0 1 0 19.5 16.8" stroke="#dfe6f0" stroke-width="3.4" stroke-linecap="round"/>
+        <circle cx="12.4" cy="10.6" r="1.35" fill="#e2a63d"/><circle cx="16" cy="10.6" r="1.35" fill="#e2a63d"/>
+        <line class="csvg" x1="14.2" y1="5.4" x2="14.2" y2="3.4" stroke="#dfe6f0" stroke-width="1.6" stroke-linecap="round"/>
+        <circle cx="14.2" cy="2.6" r="1.05" fill="#e2a63d"/>
+      </svg><span class="b2">ard</span><span class="b3">Colony</span>
+    </div>
+    <span class="crumb">全景</span>
+    <span class="stat"><b>24</b> 卡 · <b>8</b> 运行中 · <span class="warn"><b>1</b> 受阻</span></span>
+    <span class="topsp"></span>
+    <input type="range" id="zoom" min="35" max="130" value="78">
+    <span class="zpct" id="zpct">78%</span>
+    <button class="tbtn" id="themeb">☾</button>
+  </div>
+
+  <div class="main" id="main">
+    <div class="stage" id="stage"><svg id="wires"></svg></div>
+    <div class="bm">
+      <button><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.8 10.8 14 14"/></svg></button>
+      <button><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 4.5h12M2 8h9M2 11.5h12"/></svg></button>
+      <button><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="2" width="10" height="12" rx="1.6"/><path d="M5.5 6h5M5.5 9h5M5.5 12h3"/></svg></button>
+      <button><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4" width="11" height="9" rx="1.4"/><path d="M2.5 7h11M6 10h4"/></svg></button>
+    </div>
+    <div class="note"><b>这次的出发点不是"换个长相"，是三个真问题：</b>①300 卡的密度下，层级靠体量读不是徽标；②状态写成表面（脊色+微底），不靠小圆点；③执行卡是一行 token 不是盒子——树的 80% 是它们，省下的像素都是扫描效率。</div>
+  </div>
+  <div class="mbar" id="mbar"></div>
+</div>
+
+<script>
+const TYPES={
+ master:{c:"var(--tx)",icon:'<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 17l2.5-9L12 12l5.5-4L20 17H4z" stroke-linejoin="round"/><path d="M6 20h12"/></svg>'},
+ manager:{c:"var(--tx)",icon:'<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M12 9v3m0 0-4 3m4-3 4 3"/></svg>'},
+ unit:{c:"var(--tx)",icon:'<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>'},
+ worker:{c:"var(--worker)",icon:'<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M8 6 3 12l5 6m8-12 5 6-5 6" stroke-linecap="round" stroke-linejoin="round"/></svg>'},
+ qa:{c:"var(--qa)",icon:'<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5" stroke-linecap="round" stroke-linejoin="round"/></svg>'},
+ pm:{c:"var(--pm)",icon:'<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 4.5 19.5 10 9 20.5l-5.7.7.7-5.7L14 4.5z" stroke-linejoin="round"/></svg>'},
+ ui:{c:"var(--ui)",icon:'<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M3 9h18"/></svg>'},
+};
+/* 树形数据（p=父），位置由布局算法算——真树的密度不靠手摆 */
+const CARDS=[
+ {id:"card_001",t:"底层重构",k:"master",s:"run",p:null,st:"收口核验中 · 本周已合 21 支",sub:1},
+ {id:"card_021",t:"底座与存储",k:"manager",s:"run",p:"card_001",st:"写路径收口 · 剩背压一件"},
+ {id:"card_201",t:"事件日志与投影",k:"unit",s:"run",p:"card_021",st:"第 12 轮 · 写放大计量落表"},
+ {id:"card_211",t:"点查改造",k:"worker",s:"done",p:"card_201",st:"索引点查已上线 · R14 绿"},
+ {id:"card_212",t:"计量落表",k:"worker",s:"run",p:"card_201",st:"写入路径计量中"},
+ {id:"card_202",t:"判重点查改造",k:"worker",s:"done",p:"card_021",st:"已交付"},
+ {id:"card_203",t:"磁盘水位背压",k:"worker",s:"pau",p:"card_021",st:"等水位表定稿 · 已停 3 天"},
+ {id:"card_209",t:"快照域重构",k:"unit",s:"run",p:"card_021",st:"routes/procs 配套收尾"},
+ {id:"card_213",t:"快照路由配套",k:"worker",s:"qed",p:"card_209",st:"排队中"},
+ {id:"card_214",t:"存储复验",k:"qa",s:"done",p:"card_021",st:"判据全绿"},
+ {id:"card_041",t:"执行与派发",k:"manager",s:"run",p:"card_001",st:"B1 派发缝联调中",sub:1},
+ {id:"card_204",t:"派发缝 B1",k:"unit",s:"run",p:"card_041",st:"dispatch 意图已接线"},
+ {id:"card_301",t:"系统壳界面",k:"ui",s:"run",p:"card_204",st:"首屏线框 v2 · 在画"},
+ {id:"card_302",t:"联调探针",k:"worker",s:"qed",p:"card_204",st:"等 SSE 通道空位"},
+ {id:"card_205",t:"停止链 E17",k:"unit",s:"run",p:"card_041",st:"hStop 已发布 · 验收收尾",sub:1},
+ {id:"card_206",t:"停止链验收",k:"qa",s:"blk",p:"card_205",st:"缺 card_497 反例件 · 已等 2 天"},
+ {id:"card_303",t:"停止链收尾",k:"worker",s:"done",p:"card_205",st:"复验绿"},
+ {id:"card_207",t:"转发控制",k:"unit",s:"run",p:"card_041",st:"ctl 入口分片自查完成"},
+ {id:"card_061",t:"规则与评审",k:"manager",s:"run",p:"card_001",st:"待决草案表已上线"},
+ {id:"card_215",t:"判据表定稿",k:"pm",s:"run",p:"card_061",st:"42 条已裁 38 · 剩执行域"},
+ {id:"card_216",t:"契约冻结复查",k:"qa",s:"done",p:"card_061",st:"十二契约归档"},
+ {id:"card_217",t:"草案表上线",k:"worker",s:"done",p:"card_061",st:"已交付"},
+ {id:"card_081",t:"文档与宣发",k:"worker",s:"done",p:"card_001",st:"发布矩阵 v1 已交付"},
+ {id:"card_082",t:"巡检脚本",k:"worker",s:"done",p:"card_001",st:"已交付"},
+];
+const byId={},kids={};CARDS.forEach(c=>{byId[c.id]=c;c.ch=[]});
+CARDS.forEach(c=>{if(c.p){byId[c.p].ch.push(c);kids[c.p]=1}});
+
+/* 真正的树布局：叶子拿行高，父带子树重心居中——密度是算出来的 */
+const X=d=>60+d*400, HP={exec:46,unit:76,struct:86};
+const kind=c=>TYPES[c.k].icon===TYPES.worker.icon||["worker","qa","pm","ui"].includes(c.k)?"exec":c.k;
+const rowH=c=>kind(c)==="exec"?34:60;
+function lay(c,top){if(!c.ch.length){c.y=top+rowH(c)/2;c.x=X(dep(c));return top+rowH(c)+12}
+ let t=top;for(const k of c.ch)t=lay(k,t)+14;t-=14;
+ c.y=(c.ch[0].y+c.ch[c.ch.length-1].y)/2;c.x=X(dep(c));
+ /* 父若比子带矮则带子整体上移居中——此处子带天然>=父高，直接居中即可 */
+ return t;}
+function dep(c){let d=0,p=c.p;while(p){d++;p=byId[p].p}return d}
+lay(byId["card_001"],30);
+
+/* ---- 渲染 ---- */
+const st=document.getElementById("stage"),W=document.getElementById("wires"),NS="http://www.w3.org/2000/svg";
+W.setAttribute("width","1700");W.setAttribute("height",Math.max(900,CARDS.reduce((m,c)=>Math.max(m,c.y),0)+60));
+/* 子树街区：每个 manager 的地盘一片淡底（含自身到最远后代） */
+function bbox(c){let x1=c.x-14,y1=c.y-46,x2=c.x+320,y2=c.y+46;
+ for(const k of c.ch){const b=bbox(k);x1=Math.min(x1,b.x1);y1=Math.min(y1,b.y1);
+  x2=Math.max(x2,b.x2);y2=Math.max(y2,b.y2)}return{x1,y1,x2,y2}}
+for(const c of CARDS)if(c.k==="manager"){const b=bbox(c),d=document.createElement("div");
+ d.className="region";d.style.cssText=`left:${b.x1-16}px;top:${b.y1-14}px;width:${b.x2-b.x1+40}px;height:${b.y2-b.y1+28}px`;
+ st.appendChild(d);}
+/* 连线：正交肘线——纯树不需要贝塞尔，横平竖直读得快 */
+for(const c of CARDS)if(c.p){const A=byId[c.p];
+ const aw=A.k==="master"?340:330, midx=(A.x+aw+c.x)/2;
+ const p=document.createElementNS(NS,"path");
+ p.setAttribute("d",`M${A.x+aw} ${A.y} H${midx} V${c.y} H${c.x}`);
+ p.setAttribute("class","wire"+(c.s==="blk"?" wire-blk":""));W.appendChild(p);}
+for(const c of CARDS){const T=TYPES[c.k],ex=kind(c)==="exec",el=document.createElement("div");
+ if(ex){el.className=`tok s-${c.s}`;
+  el.style.cssText=`left:${c.x}px;top:${c.y-17}px;--sc:var(--${{run:'run',blk:'blk',pau:'pau',qed:'qed',done:'done'}[c.s]});--tc:${T.c}`;
+  el.innerHTML=`<span class="ticon">${T.icon}</span><span class="t-t">${c.t}</span><span class="t-s">${c.st}</span>`;
+ }else{el.className=`card d-${c.k} s-${c.s}`;
+  el.style.cssText=`left:${c.x}px;top:${c.y-30}px`;
+  const n=c.ch.length;
+  el.innerHTML=`<div class="c-head"><span class="c-icon">${T.icon}</span><span class="c-t">${c.t}</span>${n?`<span class="c-n">▾ ${n}</span>`:""}</div>
+   <div class="c-s">${c.st}</div>
+   <div class="c-meta">${c.sub?`<span class="c-sub">▼受阻${c.sub}</span>`:""}<span class="c-mdl mono">sonnet-4.5</span><span class="c-id mono">${c.id}</span></div>`;
+ }
+ st.appendChild(el);}
+
+/* ================= 交互 ================= */
+const zoom=document.getElementById("zoom"),zpct=document.getElementById("zpct"),main=document.getElementById("main");
+function apply(){const z=+zoom.value/100;zpct.textContent=Math.round(z*100)+"%";
+ st.style.transform=`translate(24px,${Math.max(16,(main.clientHeight-860*z)/2)}px) scale(${z})`;
+ st.classList.toggle("far",z<0.55);}
+zoom.addEventListener("input",apply);
+zpct.onclick=()=>{zoom.value=100;apply()};
+document.getElementById("themeb").onclick=e=>{const r=document.getElementById("root");
+ const l=r.dataset.theme!=="light";r.dataset.theme=l?"light":"dark";
+ e.target.textContent=l?"☀":"☾";
+ document.querySelectorAll(".csvg").forEach(s=>s.setAttribute("stroke",l?"#1c2733":"#dfe6f0"));};
+const mbar=document.getElementById("mbar");
+for(const [k,n,m] of [["master","Master","opus-4.5"],["manager","Manager","opus-4.5"],["unit","Unit","sonnet-4.5"],
+ ["worker","worker","sonnet-4.5"],["qa","QA","sonnet-4.5"],["pm","PM","sonnet-4.5"],["ui","UI","gpt-5.2"]]){
+ const d=document.createElement("div");d.className="mslot";
+ d.innerHTML=`<span class="t"><i style="color:${TYPES[k].c}">${TYPES[k].icon}</i>${n}</span><span class="m">${m}</span>`;mbar.appendChild(d);}
+apply();
+</script>
+</body>
+</html>

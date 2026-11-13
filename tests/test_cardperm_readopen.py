@@ -221,7 +221,8 @@ def _visible(card_meta: dict) -> set[str]:
     pool = [n for n in card_tools.TOOL_SWITCH
             if n not in card_tools.OP_ONLY_TOOLS
             and n not in card_tools.AUTO_ONLY_TOOLS
-            and n not in card_tools.ROLE_ONLY_TOOLS]
+            and n not in card_tools.ROLE_ONLY_TOOLS
+            and n not in card_tools.VENUE_ONLY_TOOLS]
     tools = [{"name": n} for n in pool]
     cards = {"card_x": card_meta}
     return {t["name"] for t in
@@ -257,7 +258,7 @@ def test_no_permission_means_tool_invisible_not_just_denied():
     base = {"card_id": "card_x", "card_type": "sub_project", "perms": full}
 
     # 基线：全权限时每件工具都可见
-    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS - card_tools.ROLE_ONLY_TOOLS, "全权限不该有工具被藏（非卡片内挂件除外）"  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除；[角色机制5710] ROLE_ONLY 同
+    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS - card_tools.ROLE_ONLY_TOOLS - card_tools.VENUE_ONLY_TOOLS, "全权限不该有工具被藏（非卡片内挂件除外）"  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除；[角色机制5710] ROLE_ONLY 同；[对齐场2026-11-11] VENUE_ONLY 场授件同口径排除
 
     # 逐个开关摘掉 → 对应工具必须从可见集合里消失
     for switch, tool_name in (
@@ -340,6 +341,10 @@ def test_tool_card_toolface_matches_its_perms():
                               # ⇒ 分类层镜头里可见；真实下发面被末段⑦按卡类型摘掉
                               # （tool 卡没有「需求文档→评审→正稿」这条流程）。
                               "edit_requirements",
+                              # [两轮评审 2026-11-14] append_requirement 挂
+                              # write_own_face ⇒ edit ⇒ 分类层可见；自己闸
+                              # 「只限本卡＋已定稿」，没正稿的卡调了必被拒。
+                              "append_requirement",
                               "reparent_card",
                               # [归档 2026-10-25] archive/unarchive 挂 delete；
                               # [归档读口/stage_open 2026-10-26] read_archive 与
@@ -370,6 +375,14 @@ def test_tool_card_toolface_matches_its_perms():
                               # 分类层镜头里可见（tool 有 tools_web）；真实下发面
                               # 再被能力挂载闸收窄（tool 卡默认不挂 browser）。
                               "browser",
+                              # [对齐场 2026-11-11] create_align 挂 read ⇒ 分类层
+                              # 镜头里可见；tool 卡型没挂 align 能力 ⇒ 真实下发面
+                              # 被能力层摘掉（本测试只跑 _filter_by_category）。
+                              "create_align",
+                              # [2026-11-09/11 追加件期望补登] list_cards（画线看全图，
+                              # 挂 read）、wait（挂 read）——注册时间早于此断言
+                              # 上次翻新，此前漏进期望集之外。
+                              "list_cards", "wait",
                               "web_search", "fetch_web"}
     # [worker 卡 2026-10-15 · C2 裁定] search 回归词表＝**预留机关**（worker 行占位码；
     # 仍无独立 search 工具、搜索由 web_search/fetch_web 承担，暂无消费方——
@@ -442,7 +455,7 @@ async def test_plan_switch_controls_toolface():
     # 不再拿 sub_project（管理卡已无执行权，见 _FULL_SWITCHES 说明）
     full = sorted(policy.SWITCHES)
     base = {"card_id": "card_x", "card_type": "sub_project", "perms": full}
-    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS - card_tools.ROLE_ONLY_TOOLS  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除；[角色机制5710] ROLE_ONLY 同
+    assert _visible(base) == set(card_tools.TOOL_SWITCH) - card_tools.OP_ONLY_TOOLS - card_tools.AUTO_ONLY_TOOLS - card_tools.ROLE_ONLY_TOOLS - card_tools.VENUE_ONLY_TOOLS  # [自动模式块0.4] AUTO_ONLY 同 OP_ONLY 口径排除；[角色机制5710] ROLE_ONLY 同；[对齐场2026-11-11] VENUE_ONLY 同口径排除
 
     card = dict(base, perms=[p for p in full if p != "plan"])
     vis = _visible(card)

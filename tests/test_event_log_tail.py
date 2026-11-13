@@ -172,3 +172,16 @@ def test_routes_must_call_timeline_in_a_thread():
     assert re.search(r"asyncio\.to_thread\(\s*event_log\.timeline", src), (
         "routes.get_card_timeline 必须用 asyncio.to_thread 调 event_log.timeline"
         "（同步调用会堵死事件循环 ⇒ 切卡时所有请求排队 ⇒ 页面像死了）")
+
+
+def test_tail_reads_last_line_without_trailing_newline(tmp_path, monkeypatch):
+    """[2026-11-15 · mmap 倒读] 文件**末行不带 \\n**（写入中途被看到的样子）——
+    倒逐行必须把末行也收进去，不能把它当成「不完整的尾巴」丢掉。"""
+    records = [{"seq": i, "type": "assistant_text", "data": {"content": f"第{i}句"}}
+               for i in range(1, 11)]
+    p = tmp_path / "card_x.jsonl"
+    p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records),
+                 encoding="utf-8")          # 注意：结尾**没有**换行
+    monkeypatch.setattr(event_log, "event_path", lambda w, c: p)
+    got = event_log.timeline("w", "c", tail=3)
+    assert [int(x["seq"]) for x in got] == [8, 9, 10], got

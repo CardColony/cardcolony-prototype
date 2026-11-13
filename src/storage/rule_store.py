@@ -52,6 +52,7 @@ SECTION_LABELS: dict[str, str] = {
     "qa_card": "验收卡",
     "pm_card": "执笔卡",
     "function": "全体职能",
+    "align": "对齐场卡",
     "review": "评审卡",
     "rule": "规则节点自身",
     "topic": "课题卡",
@@ -347,3 +348,108 @@ def add_dismissal(work_id: str, card_id: str, seq: int,
     data["dismissed"] = dismissed
     _atomic_write(p, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     return True
+
+
+# ---------------------------------------------------------------------------
+# [2026-11-14 待决草案表] rule_drafts.json：draft_rule_edit 产物**落库即记、
+# 处置即删**。「在表里」＝待用户审批——这是审批弹窗的唯一真相源：
+# 同意（commit 落盘）或拒绝/关闭（dismiss）都从表里删 ⇒ 删了永不再弹。
+# 取代 timeline 扫描＋驳回表过滤那套：草案不再借事件 seq 当身份。
+# ---------------------------------------------------------------------------
+
+PENDING_FILENAME = "rule_drafts.json"
+
+
+def pending_path(work_id: str) -> Path:
+    """本项目待决草案表路径。与 rules.md、驳回表同目录。"""
+    from . import work_store  # noqa: PLC0415 局部 import 取当前 WORKS_DIR
+
+    return Path(work_store.WORKS_DIR) / work_id / PENDING_FILENAME
+
+
+def _read_pending(work_id: str) -> dict[str, dict[str, Any]]:
+    """读待决表 → {draft_id: {card_id, sections, ts}}。缺失/坏掉 ⇒ {}。"""
+    p = pending_path(work_id)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 读坏了当作没有
+        logger.warning("读待决草案表失败 %s: %s", p, exc)
+        return {}
+    drafts = data.get("drafts") if isinstance(data, dict) else None
+    return {str(k): (v if isinstance(v, dict) else {})
+            for k, v in drafts.items()} if isinstance(drafts, dict) else {}
+
+
+def _write_pending(work_id: str, drafts: dict[str, dict[str, Any]]) -> bool:
+    p = pending_path(work_id)
+    try:
+        _atomic_write(p, json.dumps(
+            {"drafts": drafts}, ensure_ascii=False, indent=2) + "\n")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("写待决草案表失败 %s: %s", p, exc)
+        return False
+
+
+def record_draft(work_id: str, draft_id: str, card_id: str,
+                 sections: list[dict[str, Any]]) -> bool:
+    """草案落库即记：draft_id → {card_id, sections, ts}。"""
+    if not str(draft_id or "").strip():
+        return False
+    drafts = _read_pending(work_id)
+    drafts[str(draft_id)] = {
+        "card_id": str(card_id or ""),
+        "sections": list(sections or []),
+        "ts": time.time(),
+    }
+    return _write_pending(work_id, drafts)
+
+
+def get_draft(work_id: str, draft_id: str) -> dict[str, Any] | None:
+    return _read_pending(work_id).get(str(draft_id or ""))
+
+
+def drop_draft(work_id: str, draft_id: str) -> bool:
+    """处置即删。返回 True＝它确实在表里（驳回通知的幂等判据）。"""
+    drafts = _read_pending(work_id)
+    if str(draft_id or "") not in drafts:
+        return False
+    drafts.pop(str(draft_id), None)
+    _write_pending(work_id, drafts)
+    return True
+
+
+def actionable_drafts(work_id: str, sections: dict[str, str],
+                      hashes: dict[str, str]) -> list[dict[str, Any]]:
+    """GET /rule 下发口径：在表且还没死的草案（按起草 ts 升序）。
+
+    死草案两类，读到即顺手清出表：
+      · landed——所有提议区的现状==草案内容（别处已落盘/面板手改成一致）；
+      · stale——任一区 base_hash≠现状 hash（commit 必 409，永远批不下去）。
+    """
+    drafts = _read_pending(work_id)
+    if not drafts:
+        return []
+    alive: dict[str, dict[str, Any]] = {}
+    out: list[dict[str, Any]] = []
+    for did, rec in drafts.items():
+        secs = rec.get("sections")
+        if not isinstance(secs, list) or not secs:
+            continue   # 残缺记录直接弃
+        landed = all(str(sections.get(s.get("section"), "") or "")
+                     == str(s.get("draft") or "") for s in secs)
+        stale = any(str(hashes.get(s.get("section"), "") or "")
+                    != str(s.get("base_hash") or "") for s in secs)
+        if landed or stale:
+            continue
+        alive[did] = rec
+        out.append({"draft_id": did,
+                    "card_id": str(rec.get("card_id") or ""),
+                    "sections": secs})
+    if len(alive) != len(drafts):
+        _write_pending(work_id, alive)
+    out.sort(key=lambda d: float(
+        (drafts.get(d["draft_id"]) or {}).get("ts") or 0))
+    return out

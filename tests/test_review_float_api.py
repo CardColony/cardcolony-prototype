@@ -14,7 +14,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from src.api import card_tools
+from src.api import card_tools, review_runner
 from src.storage import card_store, function_store, review_store, work_store
 
 
@@ -41,7 +41,13 @@ async def _work_with_review(n: int = 2):
     cards = card_store.iter_card_metas(wid)
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
-    return wid, cid, fids, str(out["data"]["review_card_id"])
+    # [两轮评审 2026-11-14] 过掉对齐批：总裁 approve＋一步 advance ⇒
+    # 浮窗进度按第二轮三席批算（本文件钉的是三席批的进度展示）。
+    rid = str(out["data"]["review_card_id"])
+    root = str(work_store.work_card_id_of(wid) or "")
+    await card_tools._h_approve(wid, root, {"review_card_id": rid}, cards)
+    await review_runner._run_step(wid, rid)
+    return wid, cid, fids, rid
 
 
 async def test_active_batch_shows_float_with_progress(sandbox, app):
@@ -106,6 +112,10 @@ async def test_nav_lists_active_reviews_and_drops_them_after_close(sandbox, app)
     # [2026-10-29] 全员通过只是「可以定稿」；写完正稿才收口，左栏入口才消失
     await card_tools._h_promote_draft(wid, cid, {"card_id": cid}, cards)
 
+    # nav 有 5s 缓存（ECO_NAV_TTL_S）——清掉再读，不然拿到的是收口前的快照
+    from src.api import routes as _routes
+    _routes._nav_cache["payload"] = None
+    _routes._nav_cache["at"] = 0.0
     async with _client(app) as client:
         r2 = await client.get("/api/nav")
     proj2 = [p for p in r2.json()["projects"] if p["work_id"] == wid][0]

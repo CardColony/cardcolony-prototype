@@ -325,11 +325,12 @@ models:
     default_effort: high
   qwen-max:
     provider: aliyun
-    model: qwen3.8-max
+    model: qwen4-max-preview
     use: search
     temperature: 0.7
     thinking: 'on'
-    note: 思考席② qwen3.8-max（阿里云 token-plan）。thinking=off：qwen enable_thinking:false
+    note: 思考席② qwen4-max-preview（阿里云 token-plan；2026-11-11 由 qwen3.8-max 换型号）。
+      以下为旧 qwen3.8-max 的实测结论，新型号未重测：thinking=off：qwen enable_thinking:false
       —— 思考模式下正文为空（实测）。思考本身走 delta.reasoning_content，由 stream_call 双路解包取回做 think 流；待
       ALIYUN key 就位可实测后再考虑开 on（开 on 的风险＝正文空＝观点空）
     retry:

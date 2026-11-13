@@ -113,6 +113,17 @@
      ]
     },
     {
+     "code": "align",
+     "label": "对齐卡",
+     "description": "一次性对话场（2026-11-11 用户令）：根卡拉卡树内 2-3 张卡（根卡做开场席，说一次即退场）；子卡邀卡树内另外 1-2 张卡（发起方先发言）。成员轮流发言、各自以 act_as 身份在场里说话；各调一次 align_end 收场，全员调完场退役。同样几张卡再对齐须另开新场。",
+     "can_have_children": false,
+     "requires_owner": false,
+     "allowed_transitions": [
+      "active",
+      "completed"
+     ]
+    },
+    {
      "code": "rule",
      "label": "规则卡",
      "description": "全局行为准则卡，按卡类型分区，注入对应卡上下文；模型只读。",
@@ -194,6 +205,17 @@
      "can_have_children": false,
      "requires_owner": false,
      "off_tree": true
+    },
+    {
+     "code": "align",
+     "label": "对齐卡",
+     "description": "一次性对话场（2026-11-11 用户令）：根卡拉卡树内 2-3 张卡（根卡做开场席，说一次即退场）；子卡邀卡树内另外 1-2 张卡（发起方先发言）。成员轮流发言、各自以 act_as 身份在场里说话；各调一次 align_end 收场，全员调完场退役。同样几张卡再对齐须另开新场。",
+     "can_have_children": false,
+     "requires_owner": false,
+     "allowed_transitions": [
+      "active",
+      "completed"
+     ]
     }
    ]
   },

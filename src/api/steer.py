@@ -45,7 +45,7 @@ logger = logging.getLogger("api.steer")
 
 #: 插话消息的前置标记（与 current_turn 的〔工作规范〕〔当前流程〕同族）：
 #: 让模型一眼认出「这是用户在跑的过程中插进来的话」，不是系统注入、也不是新任务。
-STEER_MARK = "〔用户插话〕"
+STEER_MARK = "用户插话："
 
 #: 待投递插话：(work_id, card_id) → [文本, ...]（进程内；回合收口清扫）
 _pending: dict[tuple[str, str], list[str]] = {}

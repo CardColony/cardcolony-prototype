@@ -36,6 +36,11 @@ from .hash_utils import (
 
 logger = logging.getLogger("storage.card")
 
+# [需求文档两轮评审 2026-11-14] 定稿后 requirements 列的合法写入来源（_req_via）。
+# 判定在 update_card：requirements_state=="approved" 时改 requirements
+# 必须带下列其一，否则拒。
+_REQ_WRITE_VIA = frozenset({"promote", "append", "user", "final"})
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 WORKS_DIR = BASE_DIR / "works"
 
@@ -1102,6 +1107,10 @@ async def create_card(
                 # [卡片分类基座 T1] 新分类字段：非空才落库（空串＝不写，存量兼容）
                 **({"project_class": project_class} if project_class else {}),
                 **({"owner_card_id": owner_card_id} if owner_card_id else {}),
+                # [委办线 2026-11-14] 建卡方落列（组织线的第二种：委办上级
+                # 可删它/收它的 report_up 抄送/对它天然有通信线）。空＝系统
+                # 或用户建的，不落（读侧 NULL＝无委办记录，与存量卡同口径）。
+                **({"created_by": created_by} if created_by else {}),
                 # [S1·R-04] 新卡默认 active（与注册表 state_machine.initial 对齐）
                 "state": "active",
                 # [自动模式 2026-10-17 · 回灌 5700 块0.1] 四列：开关恒落 0/1、
@@ -1147,6 +1156,14 @@ async def create_card(
                 card_db.upsert_parent(conn, card_id, _pid, now)
                 card_db.upsert_link(conn, card_id, _pid, "关联",
                                     "父子默认通信线", now)
+            # [委办线 2026-11-14] 创建者默认通信线：创建者≠父卡时另落一条
+            # card→creator 边（_linked_between 任一向即成立 ⇒ 创建者对它建的卡
+            # 天然可 direct，与父子默认线同构）。created_by==parent 已被父子线
+            # 覆盖；创建者卡须真实存在（核验不过宁可无线，不造假边）。
+            _cb = str(created_by or "")
+            if _cb and _cb != _pid and card_db.get_card_row(conn, _cb) is not None:
+                card_db.upsert_link(conn, card_id, _cb, "关联",
+                                    "创建者默认通信线", now)
             card_db.append_history(conn, card_id, history_line, now)
             card_db.set_meta_value(conn, "seq", str(seq))
             _append_issued(conn, card_id)
@@ -1387,6 +1404,10 @@ async def update_card(
     #   _cause self|parent|tool|system（主动/被动/系统）
     _ev_by = str(updates.pop("_by", "") or _ACTOR.get() or "")
     _ev_cause = str(updates.pop("_cause", "") or "")
+    # [需求文档两轮评审 2026-11-14 · 用户令「定稿后只能补充不能修改」]
+    # ``_req_via``：调用方声明的 requirements 写入来源，先摘出来不进库；
+    # 闸在下方 cur_meta 落位后判。
+    _req_via = str(updates.pop("_req_via", "") or "")
     updates = _normalize_update_keys(updates)
 
     if not card_exists(work_id, card_id):
@@ -1395,6 +1416,21 @@ async def update_card(
     # 先读现状（用于防环/根卡保护判定）
     current = await read_card(work_id, card_id)
     cur_meta = current["meta"]
+    # [需求文档定稿后只补不改 2026-11-14] requirements_state=="approved" 的卡，
+    # requirements 列只放四条通道进：
+    #   promote＝评审全员通过转正；append＝块内补充（append_requirement）；
+    #   user＝用户按钮 commit；final＝根卡「需求确定」。
+    # 其余一切写入（含 curate_face 总裁执笔——它的裁决通道是 direct/砍卡，
+    # 不是替子卡改稿）在这里统一拒，带错来源标记同拒。
+    _new_req = updates.get("requirements")
+    if (_new_req is not None
+            and str(_new_req or "") != str(
+                (current.get("body") or {}).get("requirements") or "")
+            and str(cur_meta.get("requirements_state") or "") == "approved"
+            and _req_via not in _REQ_WRITE_VIA):
+        return {"error": "需求文档已定稿：只许评审转正(promote)/块内追加(append)/"
+                         "用户按钮(user)/根卡定稿(final) 四条通道改，"
+                         "其余写法一律拒——要改请先起草稿重走评审"}
     cur_type = str(cur_meta.get("card_type", "") or "")
     # [T07-1-4 + 底座收口 T2.c] 根卡保护判据统一为 card_id==work_card_id
     # （原 is_work_card 双轨「剧本」判据随类型退役删除）。
@@ -1539,13 +1575,8 @@ async def update_card(
     # 「现状告知 2026-10-25 修」那条坑）。
     _old_body: dict[str, str] = {}
     _new_body: dict[str, str] = {}
-    # [2026-10-29] 草稿列（requirements_draft）走 meta 通道、不在 body_patch 里，
-    # 但它是**评审的唯一材料** ⇒ 它的变化必须能触发重评。单独带一份新旧值。
-    _old_draft = ""
-    _new_draft = ""
-
     def _fn(conn: Any) -> Optional[str]:
-        nonlocal _old_body, _new_body, _old_draft, _new_draft
+        nonlocal _old_body, _new_body
         row = card_db.get_card_row(conn, card_id)
         if row is None:
             return None
@@ -1559,9 +1590,6 @@ async def update_card(
         }
         _old_body = {b: str(row[b] or "") for b in ("mission", "status_block", "requirements")}
         _new_body = dict(body_patch)
-        _old_draft = str(row["requirements_draft"] or "") \
-            if "requirements_draft" in row.keys() else ""
-        _new_draft = str(meta_patch.get("requirements_draft", _old_draft) or "")
         # [卡面版本 2026-10-24 · 用户令] 写前把**被改动块的旧值**存成新版本——
         # 模型误操作（如一次 edit_card 把 64KB 需求块覆盖成一句占位）后能自己找回。
         # 同一事务：版本记录与正文写入同生共死，不会出现「改了但没版本」。
@@ -1664,18 +1692,12 @@ async def update_card(
     # 装配**全文、当前值**——「先被告知、再去读」与 edge_notify 同一条
     # 形式主义，整个撤掉。变更事实仍在 card_block_edited 事件里，要查有据。
 
-    # [伴生评审卡 2026-10-27 · P7] **子卡卡面变了 ⇒ 伴生评审卡按新版本重评一轮**。
-    # 挂在唯一写入口之后：工具路径与 HTTP 路径都覆盖（同 role-sync 的接线理由）。
-    # 评审卡自己没有伴生卡，所以评审卡自身的写入（现状块系统渲染）不会自激。
-    # [2026-10-29] 触发条件收窄到**草稿列**：评审对象是 requirements_draft，
-    # 改使命/现状/正稿都不再触发（sync_draft 内部也只认草稿指纹，这里是省一次读库）。
-    try:
-        _rv_changed = _old_draft != _new_draft
-        if _rv_changed:
-            from ..api import review_runner as _rr
-            await _rr.maybe_rerun(work_id, card_id)
-    except Exception as exc:  # noqa: BLE001 触发失败不影响写入
-        logger.warning("[review] 卡面变更触发重评失败 card=%s: %s", card_id, exc)
+    # [草稿版本轮粒度化 2026-11-14 · 用户令「模型在轮内不论编辑多少次草稿，
+    # 都是同一批次同一版本；轮结束草稿才定版本，然后触发评审卡评审该版本」]
+    # 写口不再推进草稿版本——版本推进只发生在正卡回合收口那一刻
+    # （review_runner.report_target_turn_end 里 sync_draft 对指纹），
+    # 轮内 N 次编辑＝一版；点火照旧由 review_target_turn_end 经 harness 发出。
+    # 评审卡自己没有伴生卡，场侧写件永不触此径。
 
     # [依赖变更通知 2026-11-01 · 用户令「接口改了应该通过关系线自动更新，
     # 不需要通知」] 推送式通知整个撤掉：依赖方的上下文本来就经 250 区

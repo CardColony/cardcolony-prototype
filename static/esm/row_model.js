@@ -36,6 +36,8 @@ export function createRowModel(card, store, ctx = {}) {
       if (this.kind === "function") return "f:" + this.wid + ":" + this.card.function_id;
       // [评审入口 2026-10-29] 评审卡也不进 cards 表（离树），键用 review_card_id。
       if (this.kind === "review") return "r:" + this.wid + ":" + this.card.review_card_id;
+      // [对齐场入口 2026-11-11] 对齐行同评审行：键用 align_card_id。
+      if (this.kind === "align") return "a:" + this.wid + ":" + this.card.align_card_id;
       return "c:" + this.wid + ":" + this.card.card_id;
     },
 
@@ -66,6 +68,20 @@ export function createRowModel(card, store, ctx = {}) {
           loaded: true,
           selected: !!selR && selR.cid === this.card.review_card_id
             && selR.wid === this.wid,
+        };
+      }
+      // [对齐场入口 2026-11-11] 对齐行同评审行：无展开/加载语义；
+      // 选中态按 align_card_id 判（进对齐卡时左栏这一行高亮）。
+      if (this.kind === "align") {
+        const selA = s2.select.get();
+        return {
+          expanded: false,
+          source: null,
+          loading: false,
+          error: null,
+          loaded: true,
+          selected: !!selA && selA.cid === this.card.align_card_id
+            && selA.wid === this.wid,
         };
       }
       const cid = this.card.card_id;

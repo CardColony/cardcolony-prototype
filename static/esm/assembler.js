@@ -49,8 +49,10 @@ export const REGISTRY = {
 
   synthesize: { kind: "sys" }, deliver: { kind: "sys" }, proposal: { kind: "sys" },
   done: { kind: "sys" }, error: { kind: "sys" }, rescue: { kind: "sys" },
+  rescue_refused: { kind: "sys" }, pseudo_call_unparsed: { kind: "sys" },
+  card_idle: { kind: "sys" },
   // [断言检出 harness 化 2026-11-10] 回复断言检出的机械事实行（频次可见性）
-  reply_claims: { kind: "sys" },
+
   card_op: { kind: "sys" }, context: { kind: "sys" }, round_start: { kind: "sys" },
   round_end: { kind: "sys" }, run_start: { kind: "sys" },
   // [角色机制 5710] 角色巡检判词 / 警报

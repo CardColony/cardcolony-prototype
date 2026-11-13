@@ -2446,6 +2446,13 @@ body.page-chat .fwin {
 body.page-chat .fwin[hidden] { display: none; }
 body.page-chat .fwin.dragging { transition: none; user-select: none; }
 
+/* [对齐场浮窗 2026-11-11] 对齐窗与评审窗同构同位：
+   · 单开时顶在 88px（与评审窗同一个默认位）；
+   · 评审窗也开着 ⇒ JS 把它顶到评审窗底缘之下（alPlace）；
+   · 评审窗全幅展开（.rv-full）时本窗藏起——那块地方归评审窗用。 */
+body.page-chat.rv-full .fwin-al { display: none; }
+body.page-chat .fwin-al .fwin-dot { background: #5cc8d8; }
+
 /* 展开：**向左长、把正卡挤窄**，但正卡信息流**还在**（不是换页、不是隐藏）。
    用户：「点击它展开不是向右展开，是向左展开，挤压卡片本身的信息流，给它留出空间，
    而且是充分展开」＋「不要这么极端好吗？……你现在完全换了一个页面」
@@ -2470,6 +2477,11 @@ body.page-chat .fwin[data-mode="full"] {
   border-radius: 12px;
 }
 body.page-chat.rv-full .ws-right {
+  padding-right: calc(var(--rv-full-w) + 32px);
+  transition: padding-right var(--ui-mid, 0.18s) var(--ui-ease, ease);
+}
+/* [对齐场浮窗 2026-11-11] 对齐窗全幅展开时同款让位（与 rv-full 同口径）。 */
+body.page-chat.al-full .ws-right {
   padding-right: calc(var(--rv-full-w) + 32px);
   transition: padding-right var(--ui-mid, 0.18s) var(--ui-ease, ease);
 }

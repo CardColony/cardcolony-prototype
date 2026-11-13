@@ -265,6 +265,22 @@ async def _start_goal_driver() -> None:
     except Exception as exc:  # noqa: BLE001 装载失败不阻断主服务
         print(f"[startup] goal 驱动装载失败（不阻断）: {exc}", flush=True)
 
+
+@app.on_event("startup")
+@on_main
+async def _start_idle_sweeper() -> None:
+    """[执行卡静默自动归档 2026-11-12 · 用户令] 装静默清扫器。
+
+    每个 runner 各扫自己属主的卡（单卡单写者）——非 0 号 runner 的
+    startup 表被 _runner_local_startup 整个换掉，那边另装；web 角色
+    钩子早被清空，根本到不了这里。
+    """
+    try:
+        from src.infra import idle_sweeper
+        idle_sweeper.install()
+    except Exception as exc:  # noqa: BLE001 装载失败不阻断主服务
+        print(f"[startup] 静默清扫器装载失败（不阻断）: {exc}", flush=True)
+
 @app.on_event("startup")
 @on_main
 async def _resume_reviews() -> None:
@@ -726,6 +742,13 @@ if __name__ == "__main__":
             try:
                 from src.goal import driver as goal_driver
                 goal_driver.install()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                # [执行卡静默自动归档 2026-11-12] 非 0 号 runner 也装——
+                # 每个 runner 只扫自己属主的卡（单卡单写者）。
+                from src.infra import idle_sweeper
+                idle_sweeper.install()
             except Exception:  # noqa: BLE001
                 pass
         app.router.on_startup[:] = [_runner_local_startup]

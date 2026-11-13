@@ -141,6 +141,11 @@ async def _run_step(work_id: str, review_id: str, *,
         return {"continued": False, "reason": stop_reason,
                 "_done": {"reason": stop_reason, "continued": False}}
 
+    if action[0] == "advance":
+        return await _advance_from_align(work_id, review_id, st)
+    if action[0] == "veto":
+        return await _terminate_align(work_id, review_id, st)
+
     if action[0] == "seat":
         _, seat, kind = action
         r = await _seat_turn(work_id, review_id, seat, st,
@@ -267,6 +272,19 @@ def _classify(st: dict[str, Any], st_now: dict[str, Any],
     members = [str(x) for x in (st_now.get("members") or [])]
     votes = dict(st_now.get("votes") or {})
     seats = dict(st.get("seats") or {})
+
+    # [两轮评审 2026-11-14] 对齐批＝生死闸：总裁一席，通过直接晋级第二轮
+    # 三席批、否决直接终局（问题退回正卡，不走修订循环）。它的票＝全场。
+    # 拦截整个对齐型：关批后 status 的 all_passed 是「收口过」不是「通过」，
+    # 掉给正常流程会被当成全员通过去派 promote——否决终局态必须静默。
+    if str(st.get("type") or "") == "requirements_align":
+        if not str(st_now.get("batch") or ""):
+            return None, ""
+        if st_now.get("all_passed"):
+            return ("advance",), ""
+        if any(str((votes.get(m) or {}).get("verdict") or "") == "reject"
+               for m in members):
+            return ("veto",), ""
     responded = int(st.get("responded_seq") or 0)
     asked = int(st.get("asked_seq") or 0)
     dispatch_fails = int(st.get("dispatch_fails") or 0)
@@ -561,6 +579,10 @@ async def _seat_mandate(work_id: str, review_id: str, seat: str,
         tgt_title = ""
     tgt = f"{target}" + (f"（{tgt_title}）" if tgt_title else "")
 
+    if str(st.get("type") or "") == "requirements_align":
+        return await _align_mandate(work_id, review_id, seat, st,
+                                    tgt=tgt, name=name, kind=kind)
+
     if kind == "confirm":
         # [drift 收窄口径] 只评增量：你批的那份（快照）→ 现稿的条目级 diff。
         st_now = await review_store.status(work_id, review_id)
@@ -613,6 +635,67 @@ async def _seat_mandate(work_id: str, review_id: str, seat: str,
         "都已在场）；下面只有两样是它卡面之外的：发起方的评审要求、"
         "和它那份不进任何上下文的**草稿本体**。",
         materials,
+        task,
+    ])
+
+
+async def _align_mandate(work_id: str, review_id: str, seat: str,
+                         st: dict[str, Any], *, tgt: str, name: str,
+                         kind: str) -> str:
+    """[两轮评审 2026-11-14] 对齐批 mandate：总裁一席，判「偏离不偏离」。
+
+    判据材料＝根卡需求正稿（最高）＋父卡需求正稿＋被评草稿——两份正稿
+    不在被评卡 ctx 里（ctx 锚是子卡），由 mandate 直接注入；父卡＝根卡
+    或父卡未定稿时如实标注，不让它脑补不存在的约束。
+    """
+    target = str(st.get("target") or "")
+    draft_ver = int(st.get("draft") or 1)
+    draft = await _draft_of(work_id, target)
+    brief = str(st.get("brief") or "").strip()
+    root_id = ""
+    try:
+        from ..storage import work_store as _ws
+        root_id = str(_ws.work_card_id_of(work_id) or "")
+    except Exception:  # noqa: BLE001
+        root_id = ""
+    parent_id = ""
+    try:
+        parent_id = str((await card_store.read_card(
+            work_id, target)).get("meta", {}).get("parent") or "")
+    except Exception:  # noqa: BLE001
+        parent_id = ""
+    root_req = await _requirements_of(work_id, root_id) if root_id else ""
+    if parent_id and parent_id != root_id:
+        parent_req = await _requirements_of(work_id, parent_id)
+        parent_sec = (f"【父卡（{parent_id}）的需求文档正稿】\n"
+                      f"{parent_req or '（父卡未定稿——判据以根卡为准）'}")
+    else:
+        parent_sec = "（本卡是根卡的直接子卡——父卡就是根卡，判据同上）"
+    if kind == "vote_nudge":
+        task = ("## 这一轮的差事（补表态）\n"
+                "对齐闸还没落票——发言说不说过随你，票必须落："
+                "不偏离调 `approve`，偏离调 `reject`（每条偏离写进发言、"
+                "指向具体条目）。")
+    else:
+        task = ("## 这一轮的差事（对齐闸·一轮定生死）\n"
+                f"你只对 **{tgt}** 的需求文档草稿（第 {draft_ver} 版）判一件事："
+                "**偏不偏离**根卡/父卡的需求文档。\n"
+                "- 范围越权、方向冲突、越级承诺、与上位条款打架＝偏离；"
+                "措辞细节、格式、实现选择不算偏离。\n"
+                "- **先发言再表态**：意见写正文（每条偏离指向具体条目——"
+                "否决后这份清单会原样退回子卡）；然后调 `approve` 放行进入"
+                "三席详评，或调 `reject` 终局（评审当场结束、问题退回子卡，"
+                "由它向上汇报等裁定或自己改方向重提）。")
+    return "\n\n".join([
+        "## 你是谁\n"
+        f"你是本批次唯一的评审席：{name}（{seat}）——**总裁**。评审卡 id = "
+        f"{review_id}。\n这一批是**对齐轮**：你是唯一一票，你的否决就是终局。",
+        "## 根卡的需求文档正稿（最高判据）\n" + (root_req or "（根卡未定稿）"),
+        parent_sec,
+        ("## 发起方填写：任务背景／要评审的内容（原文）\n" + brief
+         ) if brief else "",
+        "## 待评审的需求文档草稿（评审对象就是这一份）\n"
+        + (draft or "（草稿为空）"),
         task,
     ])
 
@@ -745,6 +828,198 @@ async def _dispatch_child(work_id: str, review_id: str,
                 "batch": batch, "step": kind})
 
 
+# -------------------------------------------------- 两轮评审：对齐批收口动作
+async def seat_deployments(work_id: str, review_id: str, batch: str,
+                           batch_type: str, target: str,
+                           members: list[str], delegator: str) -> None:
+    """[职能底座 2026-10-31] 每席位一条差事：部署账与评审生命周期绑死。
+
+    exit=verdict：本批次投出一张立着的票（revoked=0）即算办完；
+    revoke 撤票 ⇒ 惰性核对自动让它回到在派。单席建账失败不卡开门。
+    [两轮评审 2026-11-14] 从 _h_open_review 提成共用件：对齐批开时建
+    总裁一席的账，晋级第二轮时本函数再为三席各建一条（batch_id 各自）。
+    """
+    from ..storage import function_store as _fs
+    from . import function_room as _fr
+    for _f in members:
+        try:
+            await _fs.create_deployment(
+                work_id, _f, venue_kind="review", venue_ref=review_id,
+                venue_label=f"{batch_type} 评审 · {target} 批次 {batch}",
+                mandate=_fr.render_mandate(
+                    "review", function=_f, review_card_id=review_id,
+                    batch=str(batch), target=target)
+                or f"本批次 {batch} 评审席（{target}）",
+                delegator=delegator, batch_id=str(batch),
+                target_card=target, exit_kind="verdict",
+                tools=_fr.grant_for(work_id, _f, "review"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[差事] 评审席位建账失败 seat=%s: %s", _f, exc)
+
+
+async def _requirements_of(work_id: str, card_id: str) -> str:
+    """读卡的需求文档**正稿**（requirements 列）。读不到返回空串。"""
+    try:
+        card = await card_store.read_card(work_id, card_id)
+        return str((card.get("body") or {}).get("requirements") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def _advance_from_align(work_id: str, review_id: str,
+                              st: dict[str, Any]) -> dict[str, Any]:
+    """[两轮评审 2026-11-14] 对齐批通过 ⇒ 关批＋同评审卡自动开第二轮三席批。
+
+    第二轮成员＝开批时存进 ``next_members`` 的既定名单（open_review 时已按
+    点名/目录默认/职责书/作者排除过滤过）；名单空着兜底用场默认再决议一次。
+    """
+    batch = str(st.get("batch") or "")
+    target = str(st.get("target") or "")
+    nxt = [str(m) for m in (st.get("next_members") or []) if str(m)]
+    if not nxt:
+        # 兜底（旧批态/异常路径）：场默认 code 过职能表再决议一次成 fn id——
+        # 直接拿 code 进 members 会谁都投不了票（投票闸认 fn id）。
+        try:
+            from . import card_tools as _ct
+            from . import function_room as _fr
+            wanted = set(_ct._venue_default_codes("requirements"))
+            for p in function_store.list_profiles(work_id):
+                fid = str(p.get("function_id") or "")
+                if not fid or str((p.get("duty") or {}).get("state")
+                                  or "active") != "active":
+                    continue
+                if fid in wanted or _fr.catalog_code_of(p) in wanted:
+                    nxt.append(fid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[review] 第二轮名单决议失败: %s", exc)
+    if not nxt:
+        # 没席可开：不开空场（谁也投不了票＝永久卡批）。批次要关掉——
+        # 留着会让 classify 每步都返回 advance 空转。
+        logger.warning("[review] 对齐通过但第二轮无席可用 review=%s", review_id)
+        await review_store.close_batch(
+            work_id, review_id,
+            verdict="对齐通过但第二轮无席可用（批次已关，重新 open_review）")
+        return {"continued": False, "reason": "advance_no_members",
+                "_done": {"reason": "advance_no_members", "continued": False}}
+    # verdict 传空＝链条上的旧 prev_verdict 原样带进下一轮（open_batch
+    # 读 old.verdict or old.prev_verdict），不被「对齐通过」占位顶掉。
+    await review_store.close_batch(work_id, review_id, verdict="")
+    st2 = await review_store.open_batch(
+        work_id, review_id, str(st.get("focus") or ""),
+        members=nxt, target=target, brief=str(st.get("brief") or ""),
+        batch_type="requirements")
+    # 第二轮各席的差事账（batch_id 用新批次）——失败不卡开门。
+    try:
+        await seat_deployments(work_id, review_id, str(st2.get("batch") or ""),
+                               "requirements", target, nxt, target)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        event_stream.emit(work_id, review_id, "review_align_passed",
+                          {"batch": batch, "target": target,
+                           "next_batch": str(st2.get("batch") or ""),
+                           "members": nxt})
+    except Exception:  # noqa: BLE001 展示层零阻断
+        pass
+    # 续跑不在此点火：run_once 收尾的 round_done 按新批态重算 has_next=True，
+    # 由 harness 续点第二轮第一席（在步内 spawn 会撞 _RUNNING 锁白死）。
+    return {"continued": False, "reason": "align_passed",
+            "_done": {"reason": "align_passed", "continued": True,
+                      "next_batch": str(st2.get("batch") or "")}}
+
+
+async def _terminate_align(work_id: str, review_id: str,
+                           st: dict[str, Any]) -> dict[str, Any]:
+    """[两轮评审 2026-11-14] 对齐批否决 ⇒ 终局：关批＋否决通知投正卡会话。
+
+    用户裁定「退回对话，让它自己向上汇报等裁定，或者自己改方向」——
+    通知落正卡会话（含总裁发言原样）并唤醒一次，评审不自动重开、
+    不派修订循环；``requirements_state`` 标 ``vetoed``（草稿不清）。
+    """
+    batch = str(st.get("batch") or "")
+    target = str(st.get("target") or "")
+    draft_ver = int(st.get("draft") or 1)
+    said = await _batch_transcript(work_id, review_id, batch)
+    await review_store.close_batch(
+        work_id, review_id,
+        verdict=f"对齐轮否决（批次 {batch}，意见已退回 {target}）")
+    try:
+        await card_store.update_card(
+            work_id, target, {"requirements_state": "vetoed"},
+            f"对齐评审否决（批次 {batch}）")
+    except Exception as exc:  # noqa: BLE001 状态位落不上不阻断终局
+        logger.warning("[review] vetoed 状态落不上 target=%s: %s", target, exc)
+    text = (f"〔评审场 · {review_id} · 对齐轮否决 · 草稿 v{draft_ver}〕\n"
+            "总裁否决了你的需求文档草稿——它与根卡/父卡的需求文档对不上。\n\n"
+            f"{said}\n\n"
+            "评审已经结束，不会自动重开。你的两条路：\n"
+            "1. `report_up` 向上汇报，等上面的裁定；\n"
+            "2. 自己改方向：`edit_requirements` 重写草稿后重新 `open_review`。")
+    delivered = False
+    try:
+        rec = await session_facade.append_card_message(
+            work_id, target, from_card=review_id, text=text,
+            msg_type="msg_directive", event_type="review_align_vetoed",
+            extra={"batch": batch, "kind": "veto"})
+        if rec:
+            from . import message_runner as _mr
+            delivered = bool(await _mr.deliver_now(
+                work_id, target,
+                text="你收到评审场的一条终局通知（见上一条消息）。",
+                steer_text=text,
+                source={"kind": "review_dispatch", "from": review_id,
+                        "batch": batch, "step": "veto"}))
+    except Exception as exc:  # noqa: BLE001 通知没落＝如实报，终局不变
+        logger.warning("[review] 否决通知投递失败 target=%s: %s", target, exc)
+    # [两轮评审 2026-11-14 · 用户口径「评审问题和结果发回给总裁裁决」]
+    # 否决是总裁席上的人格判的，但裁决活在总裁**本体会话**——问题清单
+    # （它自己的发言原样）＋结果回投根卡，裁决手段是它的既有工具：
+    # direct 令它改稿重提 / dispose 砍卡 / confirm_with_user 上报用户。
+    try:
+        from ..storage import work_store as _ws
+        _root = str(_ws.work_card_id_of(work_id) or "")
+    except Exception:  # noqa: BLE001
+        _root = ""
+    ceo_delivered = False
+    if _root and _root != target:
+        ceo_text = (f"〔评审场 · {review_id} · 对齐轮终局 · {target} 草稿 "
+                    f"v{draft_ver}〕\n"
+                    "你在对齐轮否决了它的需求文档草稿——评审已结束（不会"
+                    "自动重开）。你在评审席上的意见原样如下：\n\n"
+                    f"{said}\n\n"
+                    f"{target} 已收到否决通知（state=vetoed），它可能向上"
+                    "汇报等裁定、也可能自己改方向重提。要现在裁决，手段在"
+                    "你手上：direct 给它指示 / delete_card 砍掉 / "
+                    "confirm_with_user 上报用户。")
+        try:
+            crec = await session_facade.append_card_message(
+                work_id, _root, from_card=review_id, text=ceo_text,
+                msg_type="msg_directive", event_type="review_align_vetoed",
+                extra={"batch": batch, "kind": "veto_ruling",
+                       "target": target})
+            if crec:
+                from . import message_runner as _mr
+                ceo_delivered = bool(await _mr.deliver_now(
+                    work_id, _root,
+                    text=f"评审场的一份对齐轮终局裁决请求（{target}，见上一条）。",
+                    steer_text=ceo_text,
+                    source={"kind": "review_dispatch", "from": review_id,
+                            "batch": batch, "step": "veto_ruling"}))
+        except Exception as exc:  # noqa: BLE001 回投失败不挡终局
+            logger.warning("[review] 否决回投总裁失败 root=%s: %s", _root, exc)
+    try:
+        event_stream.emit(work_id, review_id, "review_align_vetoed",
+                          {"batch": batch, "target": target,
+                           "draft": draft_ver, "delivered": delivered,
+                           "ceo_delivered": ceo_delivered})
+    except Exception:  # noqa: BLE001 展示层零阻断
+        pass
+    return {"continued": False, "reason": "align_vetoed",
+            "_done": {"reason": "align_vetoed", "continued": False,
+                      "delivered": delivered,
+                      "ceo_delivered": ceo_delivered}}
+
+
 async def _batch_transcript(work_id: str, review_id: str,
                             batch: str) -> str:
     """本批次评审现场的**席位发言**，按会话里的原始顺序排列（给正卡看的意见）。
@@ -852,6 +1127,14 @@ async def report_target_turn_end(work_id: str, child_id: str,
             return False
         if str(st.get("target") or "") != child_id:
             return False             # 场卡换过目标 ⇒ 这卡不再是本批正卡
+        # [草稿版本轮粒度化 2026-11-14 · 用户令] 版本在回合收口这一刻才推：
+        # 写钩不再随写 bump——轮内 N 次编辑＝一版；指纹变了才 +1。
+        # 版本落定早于事件发射，harness 拿到的 draft 就是本轮定稿版。
+        try:
+            if await review_store.sync_draft(work_id, rid):
+                st = await review_store.state_of(work_id, rid)
+        except Exception as exc:  # noqa: BLE001 推版失败不阻断：水位比对照样报
+            logger.warning("[review] 轮末推版失败 rid=%s: %s", rid, exc)
         pending = bool(st.get("promote_asked")) or \
             int(st.get("asked_seq") or 0) > int(st.get("responded_seq") or 0)
         # [turn_end 激活 2026-11-04 · 用户令「修改草稿的那一轮结束再激活评审卡」]
@@ -868,6 +1151,8 @@ async def report_target_turn_end(work_id: str, child_id: str,
             "pending_ask": pending,
             "progress": progress,
             "outcome": outcome,
+            # [轮末定版] 本轮落定的草稿版——点火后席位评的就是它。
+            "draft": cur_draft,
         })
         # 回写水位——下一轮再比。写失败不阻断：无非是 progress 多记一轮旧账。
         try:
@@ -888,23 +1173,6 @@ async def report_target_turn_end(work_id: str, child_id: str,
 
 
 # ---------------------------------------------------------------- 触发
-async def maybe_rerun(work_id: str, child_id: str) -> bool:
-    """**子卡卡面变了** ⇒ 只推进草稿版本，**不起轮**。
-
-    [2026-10-30 用户令「谁让你做这么多独立的起轮口子」]
-    写卡不是起轮的时机：正在跑的那一步自己会收尾并发事件接力。
-    这里只做一件事：把草稿版本推进（下一步据此知道"第几版"）。
-    """
-    try:
-        rid = await review_store.review_card_of(work_id, child_id)
-        if not rid:
-            return False
-        return await review_store.sync_draft(work_id, rid)
-    except Exception as exc:  # noqa: BLE001 触发失败不影响写卡
-        logger.warning("[review] 重评触发失败 child=%s: %s", child_id, exc)
-        return False
-
-
 async def rerun_if_pending(work_id: str, review_id: str) -> bool:
     """版本已被别处推进（撤销通过等）后，起一步重评。"""
     try:

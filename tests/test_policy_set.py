@@ -444,56 +444,71 @@ def test_new_child_wire_relations_target_resolves_to_parent():
     assert out == ["card_001"]
 
 
-
-def test_claim_no_receipt_reminder_policy():
-    """claim_no_receipt_reminder（断言-回执对账 harness 化版）：
-    reply_claims 事实落进来，账对不上才 inject——零回执 或 漏检实体命中；
-    有回执且实体全被参数碰过 ⇒ 不响（机制正确时零打扰）。"""
+def test_pseudo_call_reinvoke_policy():
+    """pseudo_call_reinvoke（伪调用重调起 · harness 化 2026-11-12 用户令）：
+    pseudo_call_unparsed 事实 ⇒ message+wake 把卡叫醒重发；节流靠事实
+    内的 recent（发射侧近 1h 计数随事件走——点火撕本子抹状态窗累计，
+    只有事实里的数算数）：recent<=3 放，第 4 次起闭嘴防死循环。"""
     st = ps.PolicySet()
     assert st.load(_real_policies()) == []
 
-    # ① 零回执断言 ⇒ 触发，inject/self
+    # ① 伪调用未解析 ⇒ 触发：self + message + wake（叫醒＋落历史提醒）
     fired = st.dispatch("w1", _fact(
-        "reply_claims", "c1", round=3, tool_calls=0, stray_count=0,
-        claims=["已核实"], claims_text="「已核实」", detail="本回合一条工具回执都没有"))
-    hits = [f for f in fired if f["policy"] == "claim_no_receipt_reminder"]
-    assert hits, "零回执断言没触发"
+        "pseudo_call_unparsed", "c1", round=2, chars=340, recent=1,
+        head="tool_callread_file<arg_key:6124c78e>path</arg_key>"))
+    hits = [f for f in fired if f["policy"] == "pseudo_call_reinvoke"]
+    assert hits, "伪调用未解析没触发重调起"
     assert hits[0]["then"]["target"] == "self"
-    assert hits[0]["then"]["mode"] == "inject"
-    msg = hits[0]["then"]["message"]
-    assert "{event.claims_text}" in msg and "{event.detail}" in msg
+    assert hits[0]["then"]["mode"] == "message"
+    assert hits[0]["then"]["wake"] is True
 
-    # ② 有回执但断言点名的对象没被调用碰过 ⇒ 触发
+    # ② 额度边上（recent=3）仍放
     fired = st.dispatch("w1", _fact(
-        "reply_claims", "c1", round=4, tool_calls=2, stray_count=1,
-        claims=["实读"], strays=["card_077"], detail="断言点名的对象（card_077）在本回合任何调用参数里都没出现过"))
-    assert "claim_no_receipt_reminder" in [f["policy"] for f in fired],         "漏检实体没触发"
+        "pseudo_call_unparsed", "c1", round=3, chars=120, recent=3,
+        head="x"))
+    assert "pseudo_call_reinvoke" in [f["policy"] for f in fired]
 
-    # ③ 有回执且实体全覆盖 ⇒ 不响（机制不误伤）
+    # ③ recent=4 ⇒ 闭嘴（死循环刹车生效）
     fired = st.dispatch("w1", _fact(
-        "reply_claims", "c1", round=5, tool_calls=2, stray_count=0,
-        claims=["已核实"], claims_text="「已核实」", detail=""))
-    assert "claim_no_receipt_reminder" not in [f["policy"] for f in fired],         "有回执且实体全覆盖也触发了——误伤"
+        "pseudo_call_unparsed", "c1", round=4, chars=120, recent=4,
+        head="x"))
+    assert "pseudo_call_reinvoke" not in [f["policy"] for f in fired],         "recent>3 还触发——节流没生效"
+
+    # ④ 别卡互不占额度（scope=card）：c2 第 1 次 ⇒ 照常放
+    fired = st.dispatch("w1", _fact(
+        "pseudo_call_unparsed", "c2", round=1, chars=60, recent=1,
+        head="y"))
+    assert "pseudo_call_reinvoke" in [f["policy"] for f in fired]
 
 
-def test_audit_claims_detector_mechanical_facts():
-    """检测器只产机械事实：断言词命中、点名实体与调用参数的对照——
-    判据不在这层（零调用时 strays 返回空表，"零回执"归策略判）。"""
-    from src.api import text_tool_rescue as tr
+def test_idle_exec_auto_archive_policy():
+    """idle_exec_auto_archive（执行卡静默12h自动归档 · 2026-11-12 用户令）：
+    card_idle 事实（idle_sweeper 每 6h 对静默过地板线的卡发射）⇒
+    判「执行卡型 × silent_sec≥43200」⇒ then.archive 机械归档。
+    组织卡/非执行卡不归；静默不足 12h 不归。"""
+    st = ps.PolicySet()
+    assert st.load(_real_policies()) == []
 
-    # 无断言词 ⇒ 零命中（发射面据此不发事件）
-    assert tr.audit_claims("随便一段没有断言的正文", "", 0) == ([], [])
+    # ① 执行卡静默 12h+ ⇒ 触发 then.archive（target=self）
+    for ctype in ("worker", "ui", "qa_card", "pm_card"):
+        fired = st.dispatch("w1", _fact(
+            "card_idle", "c1", silent_sec=45000, card_type=ctype,
+            card_state="active"))
+        hits = [f for f in fired if f["policy"] == "idle_exec_auto_archive"]
+        assert hits, f"{ctype} 静默 12h 没触发归档"
+        th = hits[0]["then"]
+        assert th["target"] == "self"
+        assert isinstance(th.get("archive"), dict) and "reason" in th["archive"]
 
-    # 有断言词＋零调用 ⇒ tokens 命中、strays 空（零回执由策略判）
-    toks, strays = tr.audit_claims("我已核实过结果", "", 0)
-    assert "已核实" in toks and strays == []
+    # ② 组织卡静默再久也不归（卡型白名单只放执行卡）
+    for ctype in ("project", "sub_project", "topic", "review", "role"):
+        fired = st.dispatch("w1", _fact(
+            "card_idle", "c2", silent_sec=90000, card_type=ctype,
+            card_state="active"))
+        assert "idle_exec_auto_archive" not in             [f["policy"] for f in fired], f"{ctype} 也触发归档了"
 
-    # 有断言词＋调用参数没碰点名的卡 ⇒ stray
-    toks, strays = tr.audit_claims(
-        "card_077 我已实读", '{"card_id": "card_001"}', 1)
-    assert "实读" in toks and "card_077" in strays
-
-    # 调用参数碰过点名的卡 ⇒ 无 stray（对得上账）
-    toks, strays = tr.audit_claims(
-        "card_077 我已实读", '{"card_id": "card_077"}', 1)
-    assert strays == []
+    # ③ 静默不足 12h ⇒ 不归
+    fired = st.dispatch("w1", _fact(
+        "card_idle", "c3", silent_sec=40000, card_type="worker",
+        card_state="active"))
+    assert "idle_exec_auto_archive" not in [f["policy"] for f in fired]

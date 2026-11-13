@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.api import card_tools, function_room
+from src.api import card_tools, function_room, review_runner
 from src.storage import card_db, card_store, function_store, work_store
 from src.storage import review_store
 
@@ -50,6 +50,16 @@ async def _mk_target(wid: str) -> str:
         wid, cid, {"requirements_draft": "D1 用户需求一条\nD2 另一条",
                    "requirements_state": "draft"}, "测试前置：写草稿")
     return cid
+
+
+async def _advance_to_main_round(wid: str, rid: str) -> None:
+    """[两轮评审 2026-11-14] 过掉第一轮对齐批：总裁（根卡）approve +
+    runner 一步 advance ⇒ 开第二轮三席批。本文件钉的差事语义都在第二轮。"""
+    root = str(work_store.work_card_id_of(wid) or "")
+    await card_tools._h_approve(
+        wid, root, {"review_card_id": rid},
+        card_store.iter_card_metas(wid))
+    await review_runner._run_step(wid, rid)
 
 
 # ---------------------------------------------------------------- T1 CRUD/幂等
@@ -113,6 +123,7 @@ async def test_verdict_lazy_close_and_reopen(sandbox, monkeypatch):
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     assert out.get("ok"), out
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
     seat = fids["pm"]
 
     assert function_store.active_for_function(wid, seat, "review")
@@ -148,7 +159,10 @@ async def test_author_excluded_from_review_members(sandbox, monkeypatch):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     assert out.get("ok"), out
-    members = out["data"]["members"]
+    # [两轮评审] 首轮成员恒为总裁（根卡）；三席名单在批态 next_members——
+    # 作者排除作用于第二轮名单。
+    st0 = await review_store.state_of(wid, str(out["data"]["review_card_id"]))
+    members = st0["next_members"]
     assert pm not in members, "作者只能答辩，不能当评委"
     assert fids["ceo"] in members and fids["cto"] in members
 
@@ -159,7 +173,8 @@ async def test_author_excluded_from_review_members(sandbox, monkeypatch):
         mandate="被撤的执笔", status="withdrawn")
     out2 = await card_tools._h_open_review(
         wid2, cid, {"card_id": cid, "brief": "再开一批"}, cards)
-    assert fids["cto"] in out2["data"]["members"]
+    st1 = await review_store.state_of(wid2, str(out2["data"]["review_card_id"]))
+    assert fids["cto"] in st1["next_members"]
 
 
 # ---------------------------------------------------------------- T5 面块
@@ -250,6 +265,8 @@ async def test_open_review_creates_seat_deployments(sandbox, monkeypatch):
     rid = out["data"]["review_card_id"]
     batch = out["data"]["batch"]
 
+    # [两轮评审] 开批时只建对齐批一席（总裁=根卡）的差事；
+    # 三席的差事由晋级动作在第二轮批次上各建一条。
     for f in out["data"]["members"]:
         deps = function_store.active_for_function(wid, f, "review")
         assert len(deps) == 1, f"席位 {f} 应有一条评审差事"
@@ -259,6 +276,18 @@ async def test_open_review_creates_seat_deployments(sandbox, monkeypatch):
         assert d["delegator"] == cid
         # 授面落账：评审场函数侧上限（发言+票，不私记台账）
         assert "approve" in d["tools"] and "write_ledger" not in d["tools"]
+
+    await _advance_to_main_round(wid, rid)
+    batch2 = (await review_store.state_of(wid, rid))["batch"]
+    assert batch2 and batch2 != batch
+    for f in (fids["ceo"], fids["pm"], fids["cto"]):
+        deps = function_store.active_for_function(wid, f, "review")
+        # 总裁（根卡）两轮都在席上：对齐批一条＋三席批一条——按批次找，
+        # 不钉总数。
+        hit = [d for d in deps
+               if d["venue_ref"] == rid and d["batch_id"] == batch2]
+        assert len(hit) == 1, f"二轮席位 {f} 应在批 {batch2} 上有一条差事"
+        assert hit[0]["exit_kind"] == "verdict"
 
     # 非成员（qa/emergence 不在默认名单）⇒ 没有差事
     assert not function_store.active_for_function(wid, fids["qa"], "review")
@@ -291,7 +320,9 @@ async def test_open_review_rejects_keeper_seat(sandbox, monkeypatch):
         wid, cid, {"card_id": cid, "brief": "x",
                    "members": [fids["qa"], fids["emergence_keeper"]]}, cards)
     assert out2.get("ok"), out2
-    assert out2["data"]["members"] == [fids["qa"]]
+    # [两轮评审] 点名名单落在批态 next_members（首轮成员恒为总裁根卡）
+    st2 = await review_store.state_of(wid, str(out2["data"]["review_card_id"]))
+    assert st2["next_members"] == [fids["qa"]]
 
 
 # ---------------------------------------------------------------- T9 deliverable/sweep

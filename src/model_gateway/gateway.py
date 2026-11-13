@@ -1020,7 +1020,12 @@ class ModelGateway:
                     tokens_used=result["tokens_used"], latency_ms=result["latency_ms"],
                     finish_reason=str(result.get("finish_reason") or ""),
                     text_len=len(result.get("content") or ""),
-                    tool_calls=len(result.get("tool_calls") or []))
+                    tool_calls=len(result.get("tool_calls") or []),
+                    reasoning_chars=sum(
+                        len(b.text) for b in assembler.blocks()
+                        if isinstance(b, ReasoningBlock)),
+                    reasoning_tokens=(getattr(usage, "reasoning_tokens", None)
+                                      if usage else None))
                 yield result
                 _obs.call_end(_trace)
                 return

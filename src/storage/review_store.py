@@ -172,7 +172,8 @@ async def state_of(work_id: str, review_id: str) -> dict[str, Any]:
 async def open_batch(work_id: str, review_id: str, focus: str,
                      members: Optional[list[str]] = None,
                      target: str = "", brief: str = "",
-                     batch_type: str = "requirements") -> dict[str, Any]:
+                     batch_type: str = "requirements",
+                     next_members: Optional[list[str]] = None) -> dict[str, Any]:
     """开一个批次：写 review_state（含本批临时邀请名单），不建立卡间关系线。
 
     [P6 换上下文不压缩] 上一批次的正稿**原文**带进来（`prev_verdict`），
@@ -206,6 +207,13 @@ async def open_batch(work_id: str, review_id: str, focus: str,
           # [venue] 席位机械状态：{role: {"response_seen": n}}——
           # 否决席被叫时看到的正卡回应水位，re_eval 只在有新回应时才重叫。
           "seats": {},
+          # [两轮评审 2026-11-14] 对齐批带下一轮的既定名单：本批通过时
+          # _advance 照此开正式批，不再走点名/默认决议（名单在开批时已过滤）。
+          "next_members": [str(m) for m in (next_members or []) if str(m)],
+          # [两轮评审 2026-11-14] 上一批号随新批带走（审计用）——对齐批
+          # 晋级时这里留的是刚收口的对齐批，语义同 prev_verdict 之于正稿。
+          "closed_batch": str(old.get("batch") or
+                              old.get("closed_batch") or ""),
           # 邀请名单只在这次进行中的批次有效；它不是 relations，也不是职能的永久成员关系。
           "members": invited}
 
@@ -304,11 +312,13 @@ async def _clear_review_session(work_id: str, review_id: str) -> None:
 
 
 async def sync_draft(work_id: str, review_id: str) -> bool:
-    """子卡卡面变了 ⇒ **草稿版本 +1**（返回是否变了）。
+    """正卡回合收口 ⇒ 草稿指纹变了就**版本 +1**（返回是否变了）。
 
     [P3 通过绑版本] 版本一变，`review_approvals` 里旧 `draft_ver` 全部失效，
     不需要逐个 revoke——失效是**版本比较的结果**，不是一次批量改写。
 
+    [轮粒度 2026-11-14] 唯一调用点是回合收口的 report_target_turn_end——
+    写钩不再随写推版，轮内 N 次编辑只落一版。
     只在 `content_hash` 真变时推进；没有进行中批次时不动（返回 False）。
     """
     st = await state_of(work_id, review_id)
@@ -710,6 +720,7 @@ async def status(work_id: str, review_id: str) -> dict[str, Any]:
         # 收口后的状态以**正稿**为准。
         closed = str(st.get("closed_batch") or "")
         return {"batch": "", "closed_batch": closed,
+                "type": str(st.get("type") or ""),
                 "draft": int(st.get("draft") or 1),
                 "members": await members_of(work_id, review_id),
                 "passed": [], "pending": [], "rejected": [],
@@ -769,6 +780,7 @@ async def status(work_id: str, review_id: str) -> dict[str, Any]:
             pending.append(m)
 
     return {"batch": batch, "draft": draft,
+            "type": str(st.get("type") or ""),
             # [venue] 收口校验要拿目标卡（finalize 读它判「正稿写了没」）
             "target": tgt,
             "members": members, "passed": passed, "pending": pending,

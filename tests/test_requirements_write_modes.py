@@ -39,8 +39,13 @@ async def test_precise_edit_replaces_only_that_span(work):
         {"old_string": "R2 要支持批量", "new_string": "R2 要支持批量（上限 500 条）"},
         await _cards(wid))
     assert res.get("ok") is True, res
-    got = await _req(wid, cid)
-    assert got == "R1 要支持导出\nR2 要支持批量（上限 500 条）\nR3 界面要暗色模式", got
+    # [2026-10-28 草稿列] edit_requirements 写 meta.requirements_draft
+    # （草稿空时以正稿为底）；正稿列不被它动——判据落到草稿列上。
+    card = await card_store.read_card(wid, cid)
+    draft = str((card.get("meta") or {}).get("requirements_draft") or "")
+    assert draft == "R1 要支持导出\nR2 要支持批量（上限 500 条）\nR3 界面要暗色模式", draft
+    assert await _req(wid, cid) == "R1 要支持导出\nR2 要支持批量\nR3 界面要暗色模式", \
+        "正稿列不被草稿编辑动"
 
 
 # ---------------------------------------------------------------- R2
@@ -180,9 +185,10 @@ async def test_read_card_block_range_returns_lines(work):
 
 
 @pytest.mark.asyncio
-async def test_read_card_big_block_is_capped_with_continuation(work, monkeypatch):
-    """大块不带区间也封顶：回头段＋续读指引——不再整块回（8万token实案）。"""
-    monkeypatch.setenv("READ_CARD_BLOCK_CAP", "400")
+async def test_read_card_big_block_returns_full_text(work):
+    """[截断裁定撤销] 大块不带区间回**全文**——READ_CARD_BLOCK_CAP 已删
+    （_cap_block_text 恒透传，截断制造沟通断层）；导航靠模型自选
+    para_start/para_end 区间读。"""
     wid, cid = work["work_id"], work["work_card_id"]
     doc = "\n".join(f"第{i:03d}条需求内容" for i in range(1, 201))
     await card_store.update_card(wid, cid, {"requirements": doc}, "预置")
@@ -190,10 +196,8 @@ async def test_read_card_big_block_is_capped_with_continuation(work, monkeypatch
         wid, cid, "read_card", {"card_id": cid}, await _cards(wid))
     assert res.get("ok") is True, res
     text = res["data"]["需求文档"]
-    assert len(text) < 800                      # 封顶生效
-    assert "本块共 200 行" in text                # 明示总行数
-    assert "para_start=" in text                  # 给出续读入口
-    # 续读真能拿到后段
+    assert text == doc                          # 全文回，不截断
+    # 区间读仍能拿后段（导航参数保留）
     res2 = await card_tools.execute_tool(
         wid, cid, "read_card",
         {"card_id": cid, "block": "需求文档", "para_start": 199},
@@ -217,3 +221,87 @@ async def test_read_card_block_range_out_of_bounds(work):
         wid, cid, "read_card", {"card_id": cid, "block": "不存在的块"},
         await _cards(wid))
     assert res2.get("ok") is False
+
+
+# ---------------------------------------------------------------------------
+# 草稿编辑回执：改前轮内一次、改后只给触及块（2026-11-14 用户裁定）
+# ---------------------------------------------------------------------------
+
+async def _seed_draft(wid: str, cid: str) -> str:
+    doc = ("### 甲块\n甲行1\n甲行2\n"
+           "### 乙块\n乙行1\n乙行2\n"
+           "### 丙块\n丙行1\n丙行2")
+    await card_store.update_card(wid, cid, {"requirements_draft": doc}, "预置")
+    return doc
+
+
+@pytest.mark.asyncio
+async def test_draft_receipt_baseline_once_per_run_then_touched(work):
+    """同轮第二次编辑不再回吐全行号稿；改后回执＝触及块带行号正文＋全稿块目。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    await _seed_draft(wid, cid)
+    cards = await _cards(wid)
+    card_tools.set_tool_run_id("run-once-A")
+    try:
+        r1 = await card_tools.execute_tool(
+            wid, cid, "edit_requirements",
+            {"old_string": "甲行1", "new_string": "甲行1改"}, cards)
+        assert r1.get("ok") is True, r1
+        d1 = r1["data"]
+        assert "1│ ### 甲块" in (d1.get("需求文档·草稿（行号）") or ""), \
+            "本轮首次编辑给全行号基线"
+
+        r2 = await card_tools.execute_tool(
+            wid, cid, "edit_requirements",
+            {"old_string": "乙行1", "new_string": "乙行1改"}, cards)
+        assert r2.get("ok") is True, r2
+        d2 = r2["data"]
+        assert "需求文档·草稿（行号）" not in d2, "同轮第二次不再给全行号稿"
+        assert "需求文档" not in (d2.get("blocks") or {}), \
+            "不再往 blocks 塞草稿全文副本"
+        touched = d2["需求文档·草稿·改动块"]
+        assert "乙行1改" in touched and "甲行1改" not in touched, \
+            "改动块只回触及的那一 `### ` 节"
+        assert "4│" in touched, "行号是全稿坐标（乙块起于第 4 行）"
+        toc = d2["需求文档·草稿·块目"]
+        assert "甲块" in toc and "乙块" in toc and "丙块" in toc, \
+            "块目覆盖全稿给导航"
+    finally:
+        card_tools.set_tool_run_id("")
+
+
+@pytest.mark.asyncio
+async def test_draft_receipt_baseline_resets_next_run(work):
+    """换一轮（新 pair_id）基线重新给。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    await _seed_draft(wid, cid)
+    cards = await _cards(wid)
+    try:
+        card_tools.set_tool_run_id("run-reset-1")
+        r1 = await card_tools.execute_tool(
+            wid, cid, "edit_requirements",
+            {"old_string": "甲行1", "new_string": "甲行1改"}, cards)
+        assert "需求文档·草稿（行号）" in r1["data"]
+        card_tools.set_tool_run_id("run-reset-2")
+        r2 = await card_tools.execute_tool(
+            wid, cid, "edit_requirements",
+            {"old_string": "乙行1", "new_string": "乙行1改"}, cards)
+        assert "需求文档·草稿（行号）" in r2["data"], "新一轮基线重新给"
+    finally:
+        card_tools.set_tool_run_id("")
+
+
+@pytest.mark.asyncio
+async def test_draft_receipt_no_run_marker_keeps_baseline(work):
+    """无轮标记的调用路（测试直调等）保守兜底：每次都给全行号稿。"""
+    wid, cid = work["work_id"], work["work_card_id"]
+    await _seed_draft(wid, cid)
+    cards = await _cards(wid)
+    card_tools.set_tool_run_id("")
+    for old, new in (("甲行1", "甲行壹"), ("甲行2", "甲行贰")):
+        r = await card_tools.execute_tool(
+            wid, cid, "edit_requirements",
+            {"old_string": old, "new_string": new}, cards)
+        assert r.get("ok") is True, r
+        assert "需求文档·草稿（行号）" in r["data"], \
+            "无轮标记时不省基线"

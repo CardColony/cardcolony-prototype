@@ -229,8 +229,24 @@
     "payload": []
    }
   },
-  "reply_claims": {
-   "label": "回复断言检出",
+  "rescue_refused": {
+   "label": "抢救超配额拒执行",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "count"
+    ],
+    "optional": [
+     "names"
+    ],
+    "payload": []
+   }
+  },
+  "pseudo_call_unparsed": {
+   "label": "伪调用未解析",
    "group": "回合",
    "source": "message_runner",
    "channel": "card",
@@ -238,15 +254,28 @@
    "fields": {
     "part": [
      "round",
-     "tool_calls",
-     "stray_count"
+     "chars",
+     "recent"
     ],
     "optional": [
-     "claims",
-     "claims_text",
-     "strays",
-     "strays_text",
-     "detail"
+     "head"
+    ],
+    "payload": []
+   }
+  },
+  "card_idle": {
+   "label": "卡静默超时检出",
+   "group": "回合",
+   "source": "idle_sweeper",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "silent_sec",
+     "card_type"
+    ],
+    "optional": [
+     "card_state"
     ],
     "payload": []
    }
@@ -692,6 +721,21 @@
     "optional": [
      "detail"
     ],
+    "payload": []
+   }
+  },
+  "rule_draft_pending": {
+   "label": "规则草案待审批",
+   "group": "卡",
+   "source": "card_tools",
+   "channel": "work",
+   "triggerable": false,
+   "fields": {
+    "part": [
+     "draft_id",
+     "card_id"
+    ],
+    "optional": [],
     "payload": []
    }
   },
@@ -1406,6 +1450,42 @@
     "payload": []
    }
   },
+  "review_align_passed": {
+   "label": "对齐轮通过晋级三席批",
+   "group": "评审",
+   "source": "api/review_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "target"
+    ],
+    "optional": [
+     "next_batch",
+     "members"
+    ],
+    "payload": []
+   }
+  },
+  "review_align_vetoed": {
+   "label": "对齐轮否决终局",
+   "group": "评审",
+   "source": "api/review_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "batch",
+     "target"
+    ],
+    "optional": [
+     "draft",
+     "delivered"
+    ],
+    "payload": []
+   }
+  },
   "review_target_responded": {
    "label": "被评卡交回本轮回应",
    "group": "评审",
@@ -1439,7 +1519,9 @@
      "progress",
      "outcome"
     ],
-    "optional": [],
+    "optional": [
+     "draft"
+    ],
     "payload": []
    }
   },
@@ -1523,6 +1605,91 @@
     "payload": [
      "content"
     ]
+   }
+  },
+  "align_created": {
+   "label": "对齐场建场",
+   "group": "对齐",
+   "source": "api/card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "topic",
+     "initiator"
+    ],
+    "optional": [
+     "participants",
+     "opener"
+    ],
+    "payload": []
+   }
+  },
+  "align_open": {
+   "label": "对齐场驱动启动",
+   "group": "对齐",
+   "source": "api/align_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "topic"
+    ],
+    "optional": [
+     "participants",
+     "initiator",
+     "opener"
+    ],
+    "payload": []
+   }
+  },
+  "align_speaking": {
+   "label": "对齐席位发言开始",
+   "group": "对齐",
+   "source": "api/align_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "seat"
+    ],
+    "optional": [
+     "name",
+     "opener"
+    ],
+    "payload": []
+   }
+  },
+  "align_ended": {
+   "label": "对齐成员宣布说完",
+   "group": "对齐",
+   "source": "api/card_tools",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "seat"
+    ],
+    "optional": [
+     "remaining"
+    ],
+    "payload": []
+   }
+  },
+  "align_closed": {
+   "label": "对齐场散场",
+   "group": "对齐",
+   "source": "api/align_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "reason"
+    ],
+    "optional": [
+     "turns"
+    ],
+    "payload": []
    }
   }
  }

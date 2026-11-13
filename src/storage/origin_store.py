@@ -128,6 +128,16 @@ def write_blocks_sync(work_id: str, card_id: str,
 
     def _fn(conn: Any) -> int:
         conn.executemany(sql, rows)
+        # [缓存板 2026-11-12] 同事务进板：enters_context 过闸的块同步物化进
+        # context_board——板与原文同一事务落账，不可能脱节。钩子内部自闸
+        # （不过闸的块不进板）。**包一层 try**：板是衍生视图，钩子失败宁可
+        # 漂移（rebuild 一键重算）也不能回滚掉原文写。
+        try:
+            from . import context_board  # 延迟：避免 storage 内部循环
+            context_board.upsert_blocks_tx(conn, work_id, card_id, blocks)
+        except Exception as _cb_exc:  # noqa: BLE001 板漂移可重建，原文写不能赔
+            logger.error("[board] 进板失败（漂移待重建）card=%s: %s",
+                         card_id, _cb_exc)
         return len(rows)
 
     try:
@@ -271,8 +281,13 @@ def read_blocks(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str,
     `type` 是事件型。`event_type` 一并放回，`predicates` 判原文时优先用它。
     """
     span = read_origin_span(work_id, card_id, int(from_seq or 0))
+    return _events_to_blocks(span.get("events") or [])
+
+
+def _events_to_blocks(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """span events → block 形态（read_blocks / read_recent_blocks 共用转换）。"""
     out: list[dict[str, Any]] = []
-    for r in (span.get("events") or []):
+    for r in events:
         # 注意：`read_origin_span` 已经把 data 列解析成 dict 了，别再 json.loads
         # （对 dict 调 json.loads 会抛，被下面 except 吞成空块——实测踩过）。
         raw = r.get("data")
@@ -295,3 +310,38 @@ def read_blocks(work_id: str, card_id: str, from_seq: int = 0) -> list[dict[str,
             b["actor"] = b["role"]
         out.append(b)
     return out
+
+
+def read_recent_blocks(work_id: str, card_id: str,
+                       limit: int = 400) -> list[dict[str, Any]]:
+    """读**末尾 N 块**（seq 升序返回）——给「只看尾部」的消费方用。
+
+    [缓存板 2026-11-12] pair_id 判重这类「重发必在近窗」的扫描不再需要
+    全量读；全量消费方（凝练/旧投影路）继续走 read_blocks。
+    """
+    n = max(1, int(limit or 1))
+
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for r in conn.execute(
+                "SELECT seq, type, time, content, data FROM session_blocks "
+                "WHERE card_id = ? ORDER BY seq DESC LIMIT ?",
+                (card_id, n)).fetchall():
+            ev: dict[str, Any] = {"seq": int(r["seq"]),
+                                  "type": str(r["type"] or ""),
+                                  "content": r["content"] or ""}
+            raw = r["data"] or ""
+            if raw:
+                try:
+                    ev["data"] = json.loads(raw)
+                except (ValueError, TypeError):
+                    pass
+            events.append(ev)
+        events.reverse()
+        return events
+
+    try:
+        events = card_db.read_sync(work_id, _fn, []) or []
+    except Exception:  # noqa: BLE001 取不到＝空，与 read_blocks 同口径
+        events = []
+    return _events_to_blocks(events)

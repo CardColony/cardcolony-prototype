@@ -103,7 +103,7 @@ def test_rule_section_names_all_plus_type_codes():
     assert names[0] == "all", "总规则必须排第一"
     assert names == ["all", "project", "function", "sub_project",
                      "tool", "worker", "ui", "qa_card", "pm_card",
-                     "rule", "review", "topic"]
+                     "align", "rule", "review", "topic"]
     # 词表缺失 ⇒ 至少保留总规则（总规则与词表无关）
     assert context_regions.rule_section_names({}) == ["all"]
 
@@ -543,41 +543,46 @@ async def test_draft_then_reject_zero_write(client, sandbox):
 
 def test_frontend_rule_approval_modal_wiring():
     """块3前端守卫（源码级，照 test_msg_baseclose_frontend 先例）：
-    同意 → POST /rule/commit；拒绝/关闭 → POST /rule/dismiss 驳回落痕；
-    弹窗数据取 draft_rule_edit 成功 tool_result 的 {section, old, draft, base_hash}；
-    回合收口经 window.__maybeOpenRuleEditModal 扫 timeline 开弹窗，
-    且按驳回表/已落盘/基底过期三重过滤（[2026-11-03 反复弹出修复]）。"""
+
+    [2026-11-14 待决草案表] 触发链重造——弹窗不再押对话收口/timeline 扫描：
+    真相源＝GET /rule 的 pending（服务端待决表，落库即记、处置即删）；
+    触发＝工作级 SSE rule_draft_pending ＋ 页面加载查表 ＋ 处置完链下一条；
+    处置＝同意 → POST /rule/commit 带 draft_id；拒绝/关闭 → POST /rule/dismiss
+    带 draft_id。"""
     ws = (_ROOT / "static" / "workspace.js").read_text(encoding="utf-8")
     body = _strip_js_comments(ws)
     dbl = body.replace("'", '"')
-    # 同意 → commit
+    # 同意 → commit（带草案身份 draft_id，服务端据此清待决表）
     assert "/rule/commit" in body and "submitRuleCommit" in body
-    # [2026-11-03 驳回落痕] 拒绝/关闭＝POST /rule/dismiss（持久化，防刷新重扫重弹），
-    # 但绝不打 commit（不写规则）。dismiss 请求在 closeRuleModal 的 dismissRuleDraft 里。
+    assert "draft_id" in body
+    # 拒绝/关闭＝POST /rule/dismiss（待决表删除⇒永不再弹），但绝不打 commit
     assert "/rule/dismiss" in body and "dismissRuleDraft" in body
     i = body.index("function closeRuleModal()")
     j = body.index("dmRuleConfirm.onclick", i)
     close_body = body[i:j]
-    assert "dismissRuleDraft" in close_body, "关窗须走驳回落痕"
+    assert "dismissRuleDraft" in close_body, "关窗须走处置"
     assert "/rule/commit" not in close_body, "关闭不得落盘规则"
     # 驳回要通知起草卡但不唤起；已试过落盘的关窗静默（commitAttempted→notify=false），
-    # 落盘成功的关窗（committed）不得再记驳回
-    assert "dismissRuleDraft(!dmRule.commitAttempted)" in close_body
-    assert "notify" in body and "dmRule.committed" in body
+    # 落盘成功的关窗（committed）不再处置
+    assert "dismissRuleDraft(!r.commitAttempted)" in close_body
+    assert "notify" in body and "r.committed" in close_body
     # 审批弹窗只留 同意/拒绝（无反馈重起草），标题为规则修改审批
     assert 'dmRuleFeedback.style.display = "none"' in dbl
     assert "规则修改审批" in body
-    # 弹窗数据源：[2026-11-01 多区起草] 规范形 payload.sections（旧单区形兼容兜底）
-    for k in ("payload.sections", "s.section", "s.old", "s.draft", "s.base_hash"):
+    # 弹窗数据源＝待决表 pending 条目：{draft_id, card_id, sections:[…]}
+    for k in ("draft.sections", "draft.draft_id", "draft.card_id",
+              "s.section", "s.old", "s.draft", "s.base_hash"):
         assert k in body, f"缺 {k}"
-    # timeline 扫描（tool=="draft_rule_edit" 成功结果）＋ seq 去重＋收口后调用点
-    assert '__maybeOpenRuleEditModal' in body
-    assert 'd.tool !== "draft_rule_edit"' in dbl
-    assert "ruleSeen" in body
-    assert body.count("window.__maybeOpenRuleEditModal(cardId)") >= 3, "send/resend/tryRecover 三处收口后调用"
-    # [2026-11-03] 扫描三重过滤：拉 /rule 快照 → dismissed 表 / 已落盘 / 基底过期
-    assert "/rule" in body and "dismissed" in body and "cardId + \":\" + seq" in body
-    assert "landed" in body and "stale" in body and "base_hash" in body
+    # 新触发链：查待决表的 checkRulePending＋工作级 SSE 事件名
+    assert "checkRulePending" in body
+    assert '"rule_draft_pending"' in dbl
+    assert "data.pending" in body
+    # 旧机制全拆：无 timeline 扫描、无 seq 去重、无收口钩子
+    assert "__maybeOpenRuleEditModal" not in body
+    assert "ruleSeen" not in body
+    assert 'd.tool !== "draft_rule_edit"' not in dbl
+    # 处置链下一条：关窗/落盘后接着查（多条待决逐个批）
+    assert "checkRulePending();" in close_body
 
 
 async def test_rule_dismiss_records_and_notifies(client, sandbox, monkeypatch):
@@ -628,7 +633,7 @@ async def test_rule_dismiss_records_and_notifies(client, sandbox, monkeypatch):
 
 async def test_rule_dismiss_silent_and_gates(client, sandbox, monkeypatch):
     """notify=false ⇒ 只落痕不落信（落盘失败后的关窗走这条）；
-    坏 work → 404；缺 card_id → 422。"""
+    坏 work → 404；缺草案身份（draft_id 与 card_id 都无）→ 400。"""
     wid = await _mk_rd_work()
     root = work_store.work_card_id_of(wid)
     wakes: list = []
@@ -652,7 +657,7 @@ async def test_rule_dismiss_silent_and_gates(client, sandbox, monkeypatch):
     assert r.status_code == 404
     r = await client.post(f"/api/works/{wid}/rule/dismiss",
                           json={"seq": 1})
-    assert r.status_code == 422
+    assert r.status_code == 400
 
 
 async def test_rule_dismissal_store_roundtrip(sandbox):
@@ -675,6 +680,69 @@ async def test_rule_dismissal_store_roundtrip(sandbox):
     p.write_text("{不是json", encoding="utf-8")
     assert rule_store.add_dismissal(wid, "card_z", 1) is False
     assert rule_store.list_dismissals(wid) == []
+
+
+async def test_pending_draft_lifecycle(client, sandbox):
+    """[2026-11-14 待决草案表] 审批弹窗唯一真相源——
+    ① draft_rule_edit 落库即记 ⇒ GET /rule 的 pending 带 draft_id+sections；
+    ② dismiss(draft_id) ⇒ 删表＋起草卡收回执，pending 空；再驳幂等不落信；
+    ③ commit(draft_id) ⇒ 落盘＋清 pending；
+    ④ 基底过期（规则被别处改过）⇒ 死草案自动清出表、不进 pending。"""
+    wid = await _mk_rd_work()
+    root = work_store.work_card_id_of(wid)
+    await _seed_sections(wid, {"sub_project": "旧规则"})
+    cards = card_tools._collect_card_meta(wid)
+    from src.storage import rule_store, work_store as _ws
+
+    # ① 起草 ⇒ pending
+    d1 = await card_tools.execute_tool(
+        wid, root, "draft_rule_edit",
+        {"section": "sub_project", "content": "提议A"}, cards)
+    assert d1["ok"] is True, d1
+    did1 = d1["data"]["draft_id"]
+    g = (await client.get(f"/api/works/{wid}/rule")).json()
+    pend = g["pending"]
+    assert len(pend) == 1, f"应有一条待决，实际 {pend}"
+    assert pend[0]["draft_id"] == did1 and pend[0]["card_id"] == root
+    assert pend[0]["sections"][0]["draft"] == "提议A"
+
+    # ② dismiss(draft_id) ⇒ 删表＋回执；再驳幂等
+    r = await client.post(f"/api/works/{wid}/rule/dismiss",
+                          json={"draft_id": did1})
+    assert r.status_code == 200 and r.json()["resolved"] is True
+    assert r.json()["notified"] is True
+    g = (await client.get(f"/api/works/{wid}/rule")).json()
+    assert g["pending"] == []
+    r2 = await client.post(f"/api/works/{wid}/rule/dismiss",
+                           json={"draft_id": did1})
+    assert r2.json()["resolved"] is False and r2.json()["notified"] is False
+
+    # ③ 再起草 ⇒ commit(draft_id) 落盘 ⇒ pending 清
+    d2 = await card_tools.execute_tool(
+        wid, root, "draft_rule_edit",
+        {"section": "sub_project", "content": "提议B"}, cards)
+    did2 = d2["data"]["draft_id"]
+    s = d2["data"]["sections"][0]
+    r = await client.post(f"/api/works/{wid}/rule/commit",
+                          json={"draft_id": did2, "section": s["section"],
+                                "content": s["draft"],
+                                "base_hash": s["base_hash"]})
+    assert r.status_code == 200, r.text
+    g = (await client.get(f"/api/works/{wid}/rule")).json()
+    assert g["pending"] == []
+    assert g["sections"]["sub_project"] == "提议B"
+
+    # ④ 基底过期：起草后规则被别处改 ⇒ 死草案自动死、顺手清出表
+    d3 = await card_tools.execute_tool(
+        wid, root, "draft_rule_edit",
+        {"section": "sub_project", "content": "提议C"}, cards)
+    did3 = d3["data"]["draft_id"]
+    rules = dict(_ws.get_rules(wid))
+    rules["sub_project"] = "被别处改了"
+    _ws.set_rules(wid, rules)
+    g = (await client.get(f"/api/works/{wid}/rule")).json()
+    assert g["pending"] == [], "stale 草案不得进 pending"
+    assert rule_store.get_draft(wid, did3) is None, "死草案应被清出待决表"
 
 
 # ---------------------------------------------------------------------------

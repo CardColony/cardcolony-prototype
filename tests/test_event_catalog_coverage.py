@@ -105,6 +105,8 @@ _CARD_STORE_TYPES = ("sub_project", "worker", "rule", "qa_card", "pm_card", "ui"
 _COVERAGE_EXEMPT: dict[str, str] = {
     "review": "评审卡由 review_store 派生（离树、不进画布），"
               "其事件在 test_review_* 里覆盖，不在本文件的建卡分支内",
+    "align": "对齐场卡由 align_store 派生（一次性对话场，成员在场外各自会话、"
+             "不经场卡写块），其事件在 test_align.py 覆盖，不在本文件的建卡分支内",
 }
 
 

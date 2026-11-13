@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.api import card_tools, function_room
+from src.api import card_tools, function_room, review_runner
 from src.storage import card_store, function_store, review_store, work_store
 
 GATED = ("create_card", "create_worker_card")
@@ -153,6 +153,15 @@ async def test_all_approved_promotes_draft_to_final(sandbox, monkeypatch):
     assert card_store._meta_of(wid, sub).get("requirements_state") == "in_review"
 
     rid = await review_store.ensure_review_card(wid, sub, "子卡")
+
+    # [两轮评审 2026-11-14] 第一轮对齐批＝总裁（根卡）一席：
+    # 它过了才开第二轮三席批。
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(
+        wid, root, "approve", {"review_card_id": rid}, cards)
+    assert r.get("ok") is not False, r
+    await review_runner._run_step(wid, rid)
+
     members = await review_store.members_of(wid, rid)
     assert members, "评审要有在职职能成员"
 
@@ -226,6 +235,12 @@ async def test_promote_draft_idempotent_close(sandbox, monkeypatch):
         {"focus": "需求", "brief": "评审需求草稿"}, cards)
     assert opened.get("ok") is not False, opened
     rid = await review_store.ensure_review_card(wid, sub, "子卡")
+    # [两轮评审 2026-11-14] 先过对齐批（总裁＝根卡一席）
+    cards = card_tools._collect_card_meta(wid)
+    r = await card_tools.execute_tool(
+        wid, root, "approve", {"review_card_id": rid}, cards)
+    assert r.get("ok") is not False, r
+    await review_runner._run_step(wid, rid)
     members = await review_store.members_of(wid, rid)
     for m in members:
         cards = card_tools._collect_card_meta(wid)

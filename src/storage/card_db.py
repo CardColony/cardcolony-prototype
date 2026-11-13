@@ -88,6 +88,9 @@ _CARD_COLUMNS: tuple[str, ...] = (
     # 直接查的缓存（原版 sessionProjections 的 goal 单元同一定位）。
     "goal_id", "goal_revision", "goal_max_rounds", "goal_created_at",
     "goal_updated_at", "goal_blocked_code", "goal_blocked_message",
+    # [委办线 2026-11-14] 建卡方 card_id（委办上级：可删/收汇报/可 direct）。
+    # 进 meta 管线 ⇒ row_to_meta 自动带上，工具层 cards[cid]["created_by"] 直接读。
+    "created_by",
 )
 
 # 以小 JSON 文本存的列（短列表 / 小字典，不拆表——方案 §1.3.4）
@@ -157,7 +160,11 @@ CREATE TABLE IF NOT EXISTS cards (
     review_of        TEXT,
     -- [伴生评审卡 2026-10-27] 当前批次状态（JSON：batch/draft/criteria/focus/opened_at）。
     -- 只是"当前态"，历史批次在事件流与 review_approvals 里。
-    review_state     TEXT
+    review_state     TEXT,
+    -- [委办线 2026-11-14] 这张卡是谁建的（卡间建卡＝建卡方 card_id；
+    -- UI/系统建的为空）。权属带三权：创建者可删它（离树卡的唯一删域）、
+    -- 它的 report_up 抄送创建者、创建者对它天然有通信线（可 direct）。
+    created_by       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent);
 CREATE INDEX IF NOT EXISTS idx_cards_type   ON cards(card_type);
@@ -275,6 +282,31 @@ _MEMORY_DDL: tuple[str, ...] = (
     doc_refs  TEXT,
     PRIMARY KEY (card_id, seq, role)
 )""",
+)
+
+# ===========================================================================
+# 上下文缓存板（context_board —— [缓存板 2026-11-12] 对齐 dsh projection-board
+# 的「写时维护」思想：哪些历史在模型视野内，写侧增量算好，装配只投影）
+#
+# 板上只存「已过闸的可见块」：enters_context 为真 且 seq>=凝练水位。
+# 三个写口维护：会话块落库追加（enters_context 过闸才进）、凝练 mark 推进
+# （同事务 DELETE seq<mark）、评审流量逐出（写时 keep-N）。
+# 板是 session_blocks 的衍生视图——原文账永远是真相，板脏了整份重建。
+# ===========================================================================
+
+_CONTEXT_BOARD_DDL: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS context_board (
+    card_id           TEXT NOT NULL,
+    seq               INTEGER NOT NULL,
+    role              TEXT,
+    actor             TEXT,
+    content           TEXT,
+    reasoning_content TEXT,
+    pair_id           TEXT,
+    is_review         INTEGER DEFAULT 0,
+    PRIMARY KEY (card_id, seq)
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_cb_card ON context_board(card_id, seq)",
 )
 
 _INBOX_COLUMNS: tuple[str, ...] = (
@@ -981,6 +1013,9 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     # ⇒ 读侧归一成空串 ⇒ 非评审卡）。评审卡不设 parent，靠本列与子卡一对一配对。
     ("cards", "review_of", "review_of TEXT"),
     ("cards", "review_state", "review_state TEXT"),
+    # [对齐场 2026-11-11] 对齐卡的场态（JSON：topic/participants/initiator/
+    # opener/ended/status/turns/max_turns）。场是一次性的，列只在对齐卡上有值。
+    ("cards", "align_state", "align_state TEXT"),
     # [评审真票 2026-10-31 · venue 对齐] verdict=票型（approve/reject，upsert 后票
     # 覆盖前票——先通过又不通过＝不通过）；draft_snapshot=批准时草稿原文
     # （promote 版本闸的 stale 判据与「只评增量」diff 的原料）。
@@ -990,6 +1025,9 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     ("review_approvals", "draft_snapshot", "draft_snapshot TEXT"),
     # [卡片笔记 2026-10-27] 影子第五列：卡自己的私密笔记。
     ("shadows", "note", "note TEXT"),
+    # [委办线 2026-11-14] 不带 DEFAULT：存量卡 NULL＝没记录（系统/用户/建卡
+    # 事件早于本列 ⇒ 无法确证创建者，保守留空——职能对它们无权属，删不掉）。
+    ("cards", "created_by", "created_by TEXT"),
 )
 
 
@@ -1124,6 +1162,9 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
     for ddl in _REVIEW_DDL:
         conn.execute(ddl)
+    # [缓存板 2026-11-12] 上下文可见历史物化板
+    for ddl in _CONTEXT_BOARD_DDL:
+        conn.execute(ddl)
     # [三线边表 2026-10-27] 建三张线表 + 从 cards 字段幂等搬迁（只读字段、只写新表）
     for ddl in _EDGES_DDL:
         conn.execute(ddl)
@@ -1136,6 +1177,13 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     # [worker 改名 2026-11-05] 存量卡 card_type coder→worker＋abilities 补
     # manuscript（worker 新权限行带查档三件套）
     _ensure_worker_card_type(conn)
+    # [对齐场 2026-11-11] 存量卡补 align 能力（create_align 的挂载件；
+    # 该能力晚于一大批卡的建卡时刻注册，显式清单里没有就永远看不见工具）
+    _ensure_align_perm(conn)
+    # [委办线 2026-11-14] ① 职能卡补 dispose_card（委办线的删域挂载件）；
+    # ② work_events.card_created.data.by 回填 cards.created_by＋创建者通信线。
+    _ensure_dispose_perm(conn)
+    _backfill_created_by(conn)
     _migrate_inbox_to_messages(conn)
     _ensure_role_columns(conn)
     _ensure_function_columns(conn)
@@ -2310,3 +2358,143 @@ def _ensure_respond_review_perm(conn: sqlite3.Connection) -> None:
         conn.execute(
             "UPDATE cards SET abilities=? WHERE card_id=?",
             (json.dumps(ab, ensure_ascii=False), r["card_id"]))
+
+
+def _ensure_align_perm(conn: sqlite3.Connection) -> None:
+    """存量卡补 `align` 能力（create_align 的挂载件，对齐场 2026-11-11）。
+
+    `align` 注册时 modes 表各作业卡型上限已带它——**新卡**由
+    ``abilities_for`` 正常挂载；但存量卡的 ``abilities`` 列是建卡时刻的
+    显式清单，早于该能力注册 ⇒ ``_abilities_of`` 照清单原样返回 ⇒
+    老卡永远看不见 create_align。
+
+    **只加不减**的锚（按「本来就该能开场的卡群」对位）：
+    - ``open_review``：project/sub_project/topic/function/role——能开评
+      的卡就是能张罗事的卡；
+    - ``report_done``：worker——它是子卡，按用户令「子卡也可发起」；
+    - ``report_up_chain``：ui——同 worker 口径的执行体子卡。
+    tool/rule/场务卡（review/qa/pm/align）不补：不跑普通回合或不该开场
+    （仍可被邀为成员——成员身份不看能力清单）。
+    """
+    anchors = ("open_review", "report_done", "report_up_chain")
+    for table, key_col in (("cards", "card_id"),
+                           ("function_profiles", "function_id")):
+        try:
+            cols = {r["name"] for r in conn.execute(
+                f"PRAGMA table_info({table})")}
+            if "abilities" not in cols:
+                continue
+            rows = list(conn.execute(
+                f"SELECT {key_col}, abilities FROM {table} "
+                "WHERE abilities IS NOT NULL AND abilities <> ''"))
+        except sqlite3.Error:
+            continue
+        for r in rows:
+            try:
+                ab = json.loads(r["abilities"])
+            except Exception:  # noqa: BLE001 坏 abilities 跳过，不动它
+                continue
+            if not isinstance(ab, list) or "align" in ab:
+                continue
+            if not any(a in ab for a in anchors):
+                continue
+            ab.append("align")
+            conn.execute(
+                f"UPDATE {table} SET abilities=? WHERE {key_col}=?",
+                (json.dumps(ab, ensure_ascii=False), r[key_col]))
+
+
+def _ensure_dispose_perm(conn: sqlite3.Connection) -> None:
+    """存量职能卡补 `dispose_card` 能力（委办线·组织线的第二种 2026-11-14）。
+
+    委办关系给了职能「删自己建的卡」的管辖权——但 ``dispose_card`` 晚于一大批
+    职能卡的建卡时刻才进模式清单，它们的显式 abilities 里没有 ⇒
+    ``_abilities_of`` 照清单原样返回 ⇒ ``delete_card`` 永远不在工具面。
+
+    作用域收窄在 ``_h_delete_card``（离树卡只能删 ``created_by==自己`` 的卡）——
+    这里补的是「工具面可见」那半；范围只到 function，不外溢到树内卡
+    （树内卡的删域本来就是子树，不受委办关系影响）。
+
+    ``function_profiles.abilities`` 同口径补（席位场授面按档案清单算）。
+    """
+    for table, key_col, where in (
+            ("cards", "card_id", "card_type='function'"),
+            ("function_profiles", "function_id", "1=1")):
+        try:
+            cols = {r["name"] for r in conn.execute(
+                f"PRAGMA table_info({table})")}
+            if "abilities" not in cols:
+                continue
+            rows = list(conn.execute(
+                f"SELECT {key_col}, abilities FROM {table} "
+                f"WHERE {where} AND abilities IS NOT NULL AND abilities <> ''"))
+        except sqlite3.Error:
+            continue
+        for r in rows:
+            try:
+                ab = json.loads(r["abilities"])
+            except Exception:  # noqa: BLE001 坏 abilities 跳过，不动它
+                continue
+            if not isinstance(ab, list) or "dispose_card" in ab:
+                continue
+            ab.append("dispose_card")
+            conn.execute(
+                f"UPDATE {table} SET abilities=? WHERE {key_col}=?",
+                (json.dumps(ab, ensure_ascii=False), r[key_col]))
+
+
+def _backfill_created_by(conn: sqlite3.Connection) -> None:
+    """从 ``work_events`` 的 ``card_created`` 事件回填 ``cards.created_by``
+    ＋补**创建者默认通信线**（委办线 2026-11-14）。
+
+    建卡事件的 ``data.by`` 一直记着建卡方（``_notify_card_changed(by=created_by)``），
+    只是此前没落列。本迁移把这份既有事实补成委办关系：
+
+      ① ``cards.created_by``：空则填 ``by``（已有值不动——幂等、不覆盖人工修正）；
+      ② ``card_links``：补 ``card→creator`` 的创建者默认通信线
+         （``_linked_between`` 任一向即成立 ⇒ 创建者对它建的卡天然可 direct，
+         与父子默认线同构）。created_by==parent 时父子线已覆盖，不重复写。
+
+    ``by`` 为空 / ``by`` 不是现存卡（已删）⇒ 整行跳过（列与线都不落）——
+    权属认不准就不给，保守方向与「没记录⇒无权属」一致。
+    """
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(cards)")}
+        if "created_by" not in cols:
+            return
+        rows = list(conn.execute(
+            "SELECT card_id, data, ts FROM work_events "
+            "WHERE type='card_created' ORDER BY seq"))
+    except sqlite3.Error:
+        return                                # 老库没 work_events 表 ⇒ 无源可回
+    creators: dict[str, tuple[str, str]] = {}  # card_id → (by, ts)
+    for r in rows:
+        cid = str(r["card_id"] or "")
+        if not cid or cid in creators:
+            continue                          # 重复建卡事件取最早一条为准
+        try:
+            by = str((json.loads(r["data"] or "{}") or {}).get("by") or "")
+        except (TypeError, ValueError):
+            continue
+        if by:
+            creators[cid] = (by, str(r["ts"] or ""))
+    for cid, (by, ts) in creators.items():
+        if by == cid:
+            continue
+        if conn.execute("SELECT 1 FROM cards WHERE card_id=?",
+                        (by,)).fetchone() is None:
+            continue                          # 创建者已不在 ⇒ 不落权属不造假边
+        prow = conn.execute(
+            "SELECT created_by, parent FROM cards WHERE card_id=?",
+            (cid,)).fetchone()
+        if prow is None:
+            continue
+        if not prow["created_by"]:
+            conn.execute("UPDATE cards SET created_by=? WHERE card_id=?",
+                         (by, cid))
+        if str(prow["parent"] or "") != by:
+            conn.execute(
+                "INSERT INTO card_links(from_card,to_card,type,note,created_at) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(from_card,to_card,type) DO NOTHING",
+                (cid, by, "关联", "创建者默认通信线",
+                 ts or _now_iso()))

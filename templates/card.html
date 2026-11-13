@@ -234,6 +234,30 @@
   </div>
   <iframe id="rvFrame" class="fwin-frame" src="about:blank" title="评审卡对话"></iframe>
 </div>
+<!-- [对齐场浮窗 2026-11-11 · 用户令「在对齐方的卡片右侧评审卡的位置显示入口」]
+     与评审浮窗同构（同一套 .fwin 样式）：
+     ⇒ 本卡是某场对齐的**成员**且场还开着 ⇒ 出现；散场即消失；
+     ⇒ 评审浮窗同时开着时，本窗排在它**下方**（alPlace 按 rvWin 底缘错位）；
+     ⇒ 收缩态：头部（对齐 0/3）＋滚动事件列表（rvEvents 同构）；
+     ⇒ 展开态：iframe 装对齐卡对话页。 -->
+<div id="alWin" class="fwin fwin-al" data-mode="compact" hidden>
+  <div class="fwin-head" id="alHead">
+    <span class="fwin-dot" id="alDot"></span>
+    <span class="fwin-title" id="alTitle">对齐</span>
+    <span class="fwin-count" id="alCount">0/0</span>
+    <span class="fwin-sp"></span>
+    <button class="fwin-btn" id="alExpandBtn" title="展开对齐卡对话" aria-label="展开对齐卡对话">⤢</button>
+    <button class="fwin-btn" id="alCloseBtn" title="关闭" aria-label="关闭对齐浮窗">×</button>
+  </div>
+  <div class="fwin-last" id="alLast">
+    <div class="fwin-events" id="alEvents"></div>
+    <div class="fwin-live" id="alLive">
+      <time id="alLastTime"></time>
+      <span class="t" id="alLastText">等待事件…</span>
+    </div>
+  </div>
+  <iframe id="alFrame" class="fwin-frame" src="about:blank" title="对齐卡对话"></iframe>
+</div>
 <div id="toastContainer" class="toast-container"></div>
 <!-- [迭代四 F4②] 通知面板（浮层）：列表项「时间·发件卡名→收件卡名·类型·摘要」；
      点击跳收件卡；format_ok:false 归「格式异常」分组 -->

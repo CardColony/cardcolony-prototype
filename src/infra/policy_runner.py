@@ -256,6 +256,48 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                                       kind="deploy_failed", policy_id=pid,
                                       action_id=aid, detail=res)
                 continue
+            # [idle 自动归档 2026-11-12 · 用户令] 归档动作：与 deploy 同族的
+            # 系统侧动作——直接调 card_store.archive_card 机械执行，不进送话
+            # 管线。失败记台账（failed），静默事实下一波再触发即重试。
+            if isinstance(then.get("archive"), dict):
+                from . import intervention_runner, intervention_store
+                from ..storage import card_store as _cs
+                _st = intervention_store.store()
+                spec_a = then.get("archive") or {}
+                reason = harness.render_message(
+                    {"message": spec_a.get("reason") or ""}, ctx) \
+                    or "静默超阈值自动归档"
+                for t in targets:
+                    aid = str(actions.get(t) or "")
+                    if aid:
+                        try:
+                            if intervention_runner.action_skip(work_id, aid):
+                                continue  # 已送过/事项已关 ⇒ 不重做
+                        except Exception as exc:  # noqa: BLE001 查不了不拦投递
+                            logger.warning("[policy_runner] 投前复核失败 %s: %s",
+                                           aid, exc)
+                            _record_error(work_id, stage="deliver",
+                                          kind="skip_check_exc", exc=exc,
+                                          policy_id=pid, action_id=aid)
+                    try:
+                        res = await _cs.archive_card(
+                            work_id, t, reason=reason,
+                            by=f"harness:{pid}")
+                    except Exception as exc:  # noqa: BLE001 抛当失败回执
+                        res = {"error": str(exc)}
+                    ok = bool((res or {}).get("ok"))
+                    if aid:
+                        _st.mark_action(
+                            work_id, aid,
+                            "delivered" if ok else "failed",
+                            receipt=res)
+                    if ok:
+                        n += 1
+                    else:
+                        _record_error(work_id, stage="deliver",
+                                      kind="archive_failed", policy_id=pid,
+                                      action_id=aid, detail=res)
+                continue
             text = harness.render_message({"message": then.get("message") or ""}, ctx)
             wake = bool(then.get("wake", True))
             # [harness 三手段 2026-10-28] message＝进历史（永久）；inject＝只进下一轮

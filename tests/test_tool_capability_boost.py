@@ -65,7 +65,7 @@ def test_seven_new_tools_registered():
     # ★ 本条在 5718 之前就已陈旧（断言 50、实际 51）——一并对齐，恢复指纹作用。
     # [职能实体化 2026-10-21] role 五件改名+新增 set_child_mission ⇒ 52 → 53
     # [统一唤醒 2026-10-22] 新增 wake_card ⇒ 53 → 54
-    assert len(card_tools.TOOL_REGISTRY) == 75  # [UI 卡 2026-11-02] +browser +create_ui_card
+    assert len(card_tools.TOOL_REGISTRY) == 78  # [UI 卡 2026-11-02] +browser +create_ui_card
 
 
 def test_seven_schemas_have_required_params():
@@ -317,12 +317,13 @@ async def test_glob_files_empty_pattern_and_out_of_scope(sandbox):
     r = await card_tools._h_glob_files("w", "c1", {"pattern": "  "}, {})
     assert _code(r) == "validation"
 
+    # [2026-11-15] 文件夹闸已撤——基准目录外的起始目录照走（原断言「越界」退役）
     outside = sandbox.tmp / "outside"
     outside.mkdir(exist_ok=True)
     (outside / "x.py").write_text("x", encoding="utf-8")
     r = await card_tools._h_glob_files(
         "w", "c1", {"pattern": "*.py", "path": str(outside)}, {})
-    assert _code(r) == "validation" and "越界" in _msg(r), r
+    assert r["matches"] and r["scope"] == str(outside), r
 
 
 # ---------------------------------------------------------------- 删 / 移 / 改名
@@ -349,12 +350,13 @@ async def test_delete_file_ok_and_guards(sandbox):
         "w", "c1", {"path": "trading-workspace/nope.txt"}, {})
     assert _code(r) == "not_found"
 
-    # 越界
+    # [2026-11-15] 文件夹闸已撤——基准目录外路径可删（原断言「越界拒」退役；
+    # delete 无备份兜底，与闸撤前口径一致）
     outside = sandbox.tmp / "out.txt"
     outside.write_text("x", encoding="utf-8")
     r = await card_tools._h_delete_file("w", "c1", {"path": str(outside)}, {})
-    assert _code(r) == "validation" and "越界" in _msg(r)
-    assert outside.exists()
+    assert r.get("deleted") is True, r
+    assert not outside.exists()
 
     # 空路径
     r = await card_tools._h_delete_file("w", "c1", {}, {})
@@ -389,11 +391,12 @@ async def test_move_file_ok_and_guards(sandbox):
                     "dst": "trading-workspace/drop/x.txt"}, {})
     assert _code(r) == "not_found"
 
-    # dst 越界
+    # [2026-11-15] 文件夹闸已撤——dst 落基准目录外照走（原断言「越界拒」退役）
     r = await card_tools._h_move_file(
         "w", "c1", {"src": "trading-workspace/drop/m1.txt",
                     "dst": str(sandbox.tmp / "stolen.txt")}, {})
-    assert _code(r) == "validation" and "越界" in _msg(r)
+    assert r["path"] == str(sandbox.tmp / "stolen.txt"), r
+    assert (sandbox.tmp / "stolen.txt").exists()
 
 
 async def test_rename_file_ok_and_guards(sandbox):
@@ -588,8 +591,8 @@ async def test_edit_file_missing_file_and_dir(sandbox):
 
 def test_edit_file_version_and_switch():
     """版本 tc-9 / t23-1；edit_file 与 write_file 同开关（tools_file）、写工具。"""
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [2026-11-02] 新增 create_ui_card
-    assert prompts.BASE_PROMPT_VERSION == "t27-16"          # [2026-11-01] 随现配置对齐
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [2026-11-02] 新增 create_ui_card
+    assert prompts.BASE_PROMPT_VERSION == "t27-19"          # [2026-11-01] 随现配置对齐
     assert card_tools.TOOL_SWITCH["edit_file"] == policy.SWITCH_TOOLS_FILE
     assert card_tools.TOOL_SWITCH["edit_file"] == \
         card_tools.TOOL_SWITCH["write_file"]

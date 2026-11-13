@@ -94,10 +94,10 @@ def test_toolset_fingerprints_and_switch_bindings():
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [2026-11-14] 委办线三件工具描述
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
-    assert prompts.BASE_PROMPT_VERSION == "t27-16"          # [2026-11-01] 随现配置对齐
+    assert prompts.BASE_PROMPT_VERSION == "t27-19"          # [2026-11-01] 随现配置对齐
     # 挂接（§六块2 · v1.1 修订：report_done 挂 tools_file，不设新开关；
     # 挂 edit 会让 readopen:287/:252 零翻新下无法同时成立——见 card_tools 注释）
     assert card_tools.TOOL_SWITCH["report_done"] == policy.SWITCH_TOOLS_FILE

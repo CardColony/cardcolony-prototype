@@ -46,7 +46,13 @@ async def _setup(n: int = 2):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "focus": "R1 收尾",
                    "brief": "背景X\n现状Y\n评审Z"}, cards)
-    return wid, cid, fids, str(out["data"]["review_card_id"])
+    # [两轮评审 2026-11-14] 过掉对齐批：总裁 approve＋一步 advance ⇒
+    # 本文件用例测的都是第二轮三席批的机制。
+    rid = str(out["data"]["review_card_id"])
+    root = str(work_store.work_card_id_of(wid) or "")
+    await card_tools._h_approve(wid, root, {"review_card_id": rid}, cards)
+    await review_runner._run_step(wid, rid)
+    return wid, cid, fids, rid
 
 
 async def _child_turn(wid: str, cid: str) -> dict:
@@ -234,8 +240,9 @@ async def test_no_submit_revision_means_still_waiting(sandbox, monkeypatch):
 
 
 async def test_dispatch_does_not_interrupt_running_child(sandbox, monkeypatch):
-    """正卡自己的回合在跑 ⇒ 不打断（deliver_now 忙判定），消息落会话等它
-    本轮收口接上——信不丢，也绝不并发跑两个模型改同一张卡。"""
+    """正卡自己的回合在跑 ⇒ 不另起新回合——deliver_now 忙时走 steer 插话
+    （[2026-11-08] 语义：在跑≠不送达，插话进在跑回合返回 True；模型
+    绝不被二次调用，不并发跑两个回合改同一张卡）。"""
     wid, cid, fids, rid = await _setup()
     for f in fids:
         await _rejecting_seat(wid, rid, f)
@@ -256,8 +263,8 @@ async def test_dispatch_does_not_interrupt_running_child(sandbox, monkeypatch):
     finally:
         session_facade.turn_release(wid, cid, "user-turn")
 
-    assert ok is False, "对方在跑 ⇒ 不起新回合（不打断、信留在会话里）"
-    assert called["n"] == 0, "抢不到互斥体就不该调模型"
+    assert ok is True, "忙时走 steer 插话——送达＝True（旧语义返回 False 已废）"
+    assert called["n"] == 0, "不另起回合就不该调模型"
     # 消息与 mark_asked 仍落了：它本轮收口的自查续轮会接上
     blocks = await session_facade.read(wid, cid) or []
     assert any("submit_revision" in str(b.get("content") or "") for b in blocks)
@@ -285,11 +292,15 @@ async def test_full_loop_via_steps_then_promote(sandbox, monkeypatch):
     async def fake_dispatch(work_id, review_id, st, *, kind):
         if kind == "revise":
             await review_store.mark_asked(work_id, review_id)
-            # 模拟正卡自己回合的产物：改稿＋交回
+            # 模拟正卡自己回合的产物：改稿＋交回＋**轮末定版**
+            # （[轮粒度 2026-11-14] 版本只在回合收口推进——真回合靠
+            # report_target_turn_end，替身也一样）。
             await card_store.update_card(
                 wid, cid, {"requirements_draft": "R2 最终稿（按意见改完）"},
                 "子卡改草稿")
             await review_store.mark_responded(work_id, review_id)
+            await review_runner.report_target_turn_end(
+                work_id, cid, "ok")
         else:
             await review_store.mark_promote_asked(work_id, review_id)
         return True

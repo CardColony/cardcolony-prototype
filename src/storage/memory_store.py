@@ -316,6 +316,14 @@ def _save_to_db(work_id: str, card_id: str, data: dict[str, Any]) -> None:
              json.dumps(_extra, ensure_ascii=False),
              datetime.now().isoformat(timespec="seconds")),
         )
+        # [缓存板 2026-11-12] 本函数也写 condense_mark（唯一事实源表的另一
+        # 写口）——同事务裁板，与 memory_domain.save_chain 同钩。
+        try:
+            from . import context_board  # 延迟：避免 storage 内部循环
+            context_board.trim_below_tx(conn, card_id, int(data.get("mark") or 0))
+        except Exception as _cb_exc:  # noqa: BLE001 板漂移可重建，不赔水位
+            logging.getLogger("storage.memory").error(
+                "[board] 裁板失败（漂移待重建）card=%s: %s", card_id, _cb_exc)
 
     card_db._write_sync(work_id, _fn)  # noqa: SLF001 同包内复用写事务边界
 

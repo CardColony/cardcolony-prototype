@@ -102,7 +102,8 @@
     "shadow_write",
     "read_linked",
     "send_card_message",
-    "tools_web"
+    "tools_web",
+    "delete"
    ],
    "ui": [
     "read",
@@ -197,7 +198,8 @@
     "shadow_write",
     "read_linked",
     "send_card_message",
-    "tools_web"
+    "tools_web",
+    "delete"
    ]
   }
  }

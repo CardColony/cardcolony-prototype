@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardColony 画布页 · UI 设计稿 devin-v1</title>
+<style>
+/* ============ 令牌 ============ */
+.root{
+  --bg:#0b0d10; --bg2:#0e1116; --panel:#141920; --surface:#161d26; --surface2:#1a212a;
+  --line:rgba(255,255,255,.075); --line2:rgba(255,255,255,.13);
+  --tx:#dfe6f0; --tx2:#9aa6b6; --tx3:#5f6a78;
+  --gold:#e2a63d;
+  --spine:#6d7c8f;
+  --run:#7fd6a1; --blk:#f85149; --pau:#f7c163; --qed:#8fb0ff; --done:#5c6674;
+  --worker:#f5a65b; --ui:#56c8d8; --qa:#7ec97e; --pm:#dd8ab4;
+  --chipbg:rgba(255,255,255,.05);
+  --wire:#3a4552; --wireHot:#5a6b82;
+  --shadow:0 6px 24px rgba(0,0,0,.45);
+}
+.root[data-theme="light"]{
+  --bg:#f4f5f7; --bg2:#eceef1; --panel:#ffffff; --surface:#ffffff; --surface2:#f7f8fa;
+  --line:rgba(20,30,45,.10); --line2:rgba(20,30,45,.18);
+  --tx:#1c2733; --tx2:#5b6774; --tx3:#8b95a1;
+  --gold:#c9901f;
+  --spine:#9aa8ba;
+  --wire:#c3ccd7; --wireHot:#8fa0b6;
+  --chipbg:rgba(20,30,45,.045);
+  --shadow:0 6px 22px rgba(30,40,60,.12);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font:13px/1.5 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  background:var(--bg);color:var(--tx);-webkit-font-smoothing:antialiased}
+.root{height:100%;display:flex;flex-direction:column;background:var(--bg)}
+.mono{font-family:"Cascadia Mono","JetBrains Mono",Consolas,monospace}
+
+/* ============ 顶栏 ============ */
+.top{height:44px;flex:none;display:flex;align-items:center;gap:14px;padding:0 14px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:0;font-weight:600;font-size:15px;letter-spacing:.2px}
+.brand svg{display:block;margin-right:2px}
+.brand .b2{color:var(--tx)} .brand .b3{color:var(--gold)}
+.crumb{color:var(--tx3);font-size:12px}
+.stat{color:var(--tx2);font-size:12px;display:flex;gap:10px}
+.stat b{color:var(--tx);font-weight:600}
+.stat .warn{color:var(--blk)}
+.topsp{flex:1}
+.tbtn{height:28px;min-width:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;
+  background:transparent;color:var(--tx2);font-size:12px;display:inline-flex;align-items:center;
+  gap:5px;cursor:pointer}
+.tbtn:hover{color:var(--tx);border-color:var(--line2)}
+.tbtn.on{color:var(--gold);border-color:var(--gold)}
+.zpct{width:44px;text-align:center;color:var(--tx2);font-size:12px;cursor:pointer}
+input[type=range]{width:96px;accent-color:var(--gold);height:3px}
+
+/* ============ 主区 ============ */
+.main{flex:1;position:relative;overflow:hidden;
+  background-image:radial-gradient(circle, var(--line) 1px, transparent 1px);
+  background-size:28px 28px;background-position:center}
+.stage{position:absolute;inset:0;transform-origin:0 0}
+#wires{position:absolute;inset:0;overflow:visible;pointer-events:none}
+
+/* ============ 卡片 ============ */
+.card{position:absolute;width:300px;background:var(--surface);
+  border:1px solid var(--line);border-radius:10px;padding:9px 12px 8px;
+  box-shadow:0 2px 8px rgba(0,0,0,.18)}
+.root[data-theme="light"] .card{box-shadow:0 1px 4px rgba(30,40,60,.08)}
+/* 结构卡：实线框 + 左脊（4/3/2px 由层级定），图标无文字 */
+.card.struct{border-color:var(--line2)}
+.card.struct::before{content:"";position:absolute;left:-1px;top:8px;bottom:8px;
+  width:var(--sp,3px);border-radius:2px;background:var(--spine)}
+.card.k-master{--sp:4px} .card.k-manager{--sp:3px} .card.k-unit{--sp:2px}
+/* 执行卡：虚线框，无脊 */
+.card.exec{border-style:dashed;border-color:var(--line2)}
+/* 受阻卡：红描边 + 微红底 */
+.card.is-blocked{border-color:rgba(248,81,73,.55);border-style:solid;
+  background:color-mix(in srgb,var(--surface) 92%,var(--blk) 8%)}
+/* 已完工：整体降饱和 */
+.card.is-done{filter:saturate(.5);opacity:.82}
+/* 排队中：虚线更淡 */
+.card.is-queued{opacity:.6}
+
+.chd{display:flex;align-items:center;gap:7px;min-width:0}
+.caret{flex:none;width:16px;height:16px;display:grid;place-items:center;color:var(--tx3);
+  font-size:10px;cursor:pointer;border-radius:4px}
+.caret:hover{background:var(--chipbg);color:var(--tx)}
+.caret .n{font-size:10px;margin-left:1px;font-style:normal}
+.ticon{flex:none;width:18px;height:18px;display:grid;place-items:center;color:var(--tx3)}
+.exec .ticon{color:var(--tc)}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--done)}
+.dot.run{background:var(--run);animation:bre 2s ease-in-out infinite}
+.dot.blk{background:var(--blk)}
+.dot.pau{background:var(--pau)}
+.dot.qed{background:var(--qed);animation:bre 1.2s ease-in-out infinite}
+@keyframes bre{50%{opacity:.35}}
+.title{flex:1;min-width:0;font-size:14.5px;font-weight:600;color:var(--tx);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exec .title{font-weight:500;font-size:13.5px}
+.cid{flex:none;font-size:10px;color:var(--tx3)}
+/* 现状一句话：卡自己汇报的，没汇报过就不渲染 */
+.status{margin-top:5px;font-size:12px;color:var(--tx2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status::before{content:"· ";color:var(--tx3)}
+.is-blocked .status{color:#f0a19d}
+.cfoot{margin-top:7px;display:flex;align-items:center;gap:8px;min-height:16px}
+.mchip{font-size:10px;color:var(--tx3);background:var(--chipbg);border-radius:4px;
+  padding:1px 6px;font-family:"Cascadia Mono",Consolas,monospace}
+.mchip.ovr{color:var(--gold)}
+.subflag{margin-left:auto;font-size:10px;color:var(--blk);background:rgba(248,81,73,.12);
+  border-radius:4px;padding:1px 7px;display:flex;align-items:center;gap:4px}
+.root[data-theme="light"] .is-blocked .status{color:#c93c34}
+.root[data-theme="light"] .subflag{background:rgba(220,60,50,.10)}
+
+/* far 档：只剩 图标+标题+点+折叠数 */
+.stage.far .status,.stage.far .cfoot,.stage.far .cid{display:none}
+.stage.far .card{padding-top:7px;padding-bottom:7px}
+.stage.far .title{font-size:15px}
+
+/* ============ 右缘书签 ============ */
+.bm{position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:5;
+  display:flex;flex-direction:column;background:var(--panel);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.bm button{width:34px;height:42px;border:0;background:transparent;color:var(--tx3);
+  cursor:pointer;display:grid;place-items:center}
+.bm button+button{border-top:1px solid var(--line)}
+.bm button:hover{color:var(--tx);background:var(--chipbg)}
+.bm button em{position:absolute;right:36px;background:var(--panel);border:1px solid var(--line);
+  border-radius:5px;padding:2px 8px;font-size:11px;font-style:normal;color:var(--tx2);
+  white-space:nowrap;display:none}
+.bm button:hover em{display:block}
+
+/* ============ 底部模型条 ============ */
+.mbar{height:44px;flex:none;display:flex;align-items:stretch;background:var(--panel);
+  border-top:1px solid var(--line)}
+.mslot{display:flex;flex-direction:column;justify-content:center;gap:1px;
+  padding:0 16px;border-right:1px solid var(--line);min-width:150px;cursor:pointer}
+.mslot:hover{background:var(--chipbg)}
+.mslot .t{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--tx2)}
+.mslot .t i{width:12px;height:12px;display:grid;place-items:center}
+.mslot .m{font-size:11px;color:var(--tx3);font-family:"Cascadia Mono",Consolas,monospace}
+.mslot.dim{opacity:.4;cursor:default}
+
+/* 悬浮说明牌（设计稿标注用） */
+.note{position:absolute;left:14px;bottom:14px;z-index:5;max-width:340px;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:10px 12px;font-size:11.5px;color:var(--tx2)}
+.note b{color:var(--tx)}
+.note .kbd{border:1px solid var(--line);border-radius:3px;padding:0 4px;font-size:10px}
+</style>
+</head>
+<body>
+<div class="root" id="root" data-theme="dark">
+
+  <!-- ===== 顶栏 ===== -->
+  <div class="top">
+    <div class="brand" title="CardColony">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <path d="M19.5 7.2A9 9 0 1 0 19.5 16.8" stroke="#dfe6f0" stroke-width="3.4" stroke-linecap="round" class="csvg"/>
+        <circle cx="12.4" cy="10.6" r="1.35" fill="#e2a63d"/><circle cx="16" cy="10.6" r="1.35" fill="#e2a63d"/>
+        <line x1="14.2" y1="5.4" x2="14.2" y2="3.4" stroke="#dfe6f0" stroke-width="1.6" stroke-linecap="round" class="csvg"/>
+        <circle cx="14.2" cy="2.6" r="1.05" fill="#e2a63d"/>
+      </svg>
+      <span class="b2">ard</span><span class="b3">Colony</span>
+    </div>
+    <span class="crumb">全景</span>
+    <span class="stat"><b>13</b> 卡 · <b>4</b> 运行中 · <span class="warn"><b>1</b> 受阻</span> · 归档 <b>0</b></span>
+    <span class="topsp"></span>
+    <input type="range" id="zoom" min="40" max="130" value="72">
+    <span class="zpct" id="zpct">72%</span>
+    <button class="tbtn" id="fitb">适配</button>
+    <button class="tbtn">⌕</button>
+    <button class="tbtn" id="themeb">☾</button>
+    <button class="tbtn">EN</button>
+  </div>
+
+  <!-- ===== 画布 ===== -->
+  <div class="main" id="main">
+    <div class="stage" id="stage">
+      <svg id="wires"></svg>
+      <!-- 卡片由 JS 落位 -->
+    </div>
+
+    <div class="bm">
+      <button title="搜索"><em>搜索</em><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.8 10.8 14 14"/></svg></button>
+      <button title="事件"><em>事件日志</em><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 4.5h12M2 8h9M2 11.5h12"/></svg></button>
+      <button title="规则卡"><em>规则卡</em><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="2" width="10" height="12" rx="1.6"/><path d="M5.5 6h5M5.5 9h5M5.5 12h3"/></svg></button>
+      <button title="归档"><em>归档</em><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4" width="11" height="9" rx="1.4"/><path d="M2.5 7h11M6 10h4"/></svg></button>
+    </div>
+
+    <div class="note" id="note">
+      <b>信息架构判决（对照 v3）</b><br>
+      卡面只留：标题 · 状态点 · 类型图标 · 折叠数 · <b>卡自述现状行</b> · <b>▼受阻下沉</b>。<br>
+      逐出：事实行（轮次/阶段/条目）、模型全名、归档码、类型文字。<br>
+      <span class="kbd">缩放 ≤58%</span> 进 far 档只剩雷达五件。
+    </div>
+  </div>
+
+  <!-- ===== 底部模型条 ===== -->
+  <div class="mbar" id="mbar"></div>
+</div>
+
+<script>
+/* ================= 数据（镜像 v3 演示树，状态行=卡自述现状） ================= */
+const TYPES = {
+  master:  {cls:"struct", icon:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 17l2.5-9L12 12l5.5-4L20 17H4z" stroke-linejoin="round"/><path d="M6 20h12"/></svg>'},
+  manager: {cls:"struct", icon:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M12 9v3m0 0-4 3m4-3 4 3"/></svg>'},
+  unit:    {cls:"struct", icon:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>'},
+  worker:  {cls:"exec", c:"var(--worker)", icon:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6 3 12l5 6m8-12 5 6-5 6" stroke-linecap="round" stroke-linejoin="round"/></svg>'},
+  qa:      {cls:"exec", c:"var(--qa)", icon:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5" stroke-linecap="round" stroke-linejoin="round"/></svg>'},
+  pm:      {cls:"exec", c:"var(--pm)", icon:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 4.5 19.5 10 9 20.5l-5.7.7.7-5.7L14 4.5z" stroke-linejoin="round"/><path d="m13 6.5 4.5 4.5"/></svg>'},
+  ui:      {cls:"exec", c:"var(--ui)", icon:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M3 9h18M6 7h.01M8.5 7h.01"/></svg>'},
+};
+/* x,y 为世界坐标（未缩放）。status=卡自述现状；subblk=子树受阻数 */
+const CARDS = [
+ {id:"card_001", t:"底层重构",              k:"master",  s:"run",  x:60,  y:352, n:4, st:"收口核验中 · 本周已合 21 支", m:"opus-4.5",  sub:1},
+ {id:"card_021", t:"底座与存储",            k:"manager", s:"run",  x:440, y:120, n:3, st:"写路径硬化收口 · 剩背压一件", m:"opus-4.5"},
+ {id:"card_201", t:"事件日志与投影",        k:"unit",    s:"run",  x:820, y:40,      st:"第 12 轮 · 写放大计量落表",    m:"sonnet-4.5"},
+ {id:"card_202", t:"判重点查改造",          k:"worker",  s:"done", x:820, y:150,     st:"索引点查已上线 · R14 计量绿",  m:"sonnet-4.5"},
+ {id:"card_203", t:"磁盘水位背压",          k:"worker",  s:"pau",  x:820, y:260,     st:"等水位表定稿 · 已停 3 天",     m:"sonnet-4.5"},
+ {id:"card_041", t:"执行与派发",            k:"manager", s:"run",  x:440, y:330, n:3, st:"B1 派发缝联调中",             m:"opus-4.5", sub:1},
+ {id:"card_204", t:"派发缝 B1",             k:"unit",    s:"run",  x:820, y:330,     st:"dispatch 意图已接线",          m:"sonnet-4.5"},
+ {id:"card_205", t:"停止链 E17",            k:"unit",    s:"done", x:820, y:420,     st:"hStop 经端口发布 · 复验绿",    m:"sonnet-4.5"},
+ {id:"card_206", t:"停止链验收",            k:"qa",      s:"blk",  x:820, y:510,     st:"缺 card_497 反例件 · 已等 2 天", m:"sonnet-4.5"},
+ {id:"card_061", t:"规则与评审",            k:"manager", s:"run",  x:440, y:540, n:2, st:"待决草案表已上线",            m:"opus-4.5"},
+ {id:"card_207", t:"判据表定稿",            k:"pm",      s:"run",  x:820, y:600,     st:"42 条已裁 38 · 剩执行域",      m:"sonnet-4.5"},
+ {id:"card_208", t:"契约冻结复查",          k:"qa",      s:"done", x:820, y:690,     st:"十二契约 · 有红有绿已归档",    m:"sonnet-4.5"},
+ {id:"card_081", t:"文档与宣发",            k:"worker",  s:"done", x:440, y:700,     st:"发布矩阵 v1 已交付",           m:"sonnet-4.5"},
+ {id:"card_301", t:"系统壳界面",            k:"ui",      s:"run",  x:1200,y:380,     st:"首屏线框 v2 · 在画",           m:"gpt-5.2"},
+ {id:"card_302", t:"联调探针",              k:"worker",  s:"qed",  x:1200,y:490,     st:"排队中 · 等 SSE 通道空位",     m:"sonnet-4.5"},
+];
+const WIRES = [
+ ["card_001","card_021"],["card_001","card_041"],["card_001","card_061"],["card_001","card_081"],
+ ["card_021","card_201"],["card_021","card_202"],["card_021","card_203"],
+ ["card_041","card_204"],["card_041","card_205"],["card_041","card_206"],
+ ["card_061","card_207"],["card_061","card_208"],
+ ["card_204","card_301"],["card_204","card_302"],
+];
+const MBAR = [
+ ["master","Master","opus-4.5",1],["manager","Manager","opus-4.5",3],
+ ["unit","Unit","sonnet-4.5",4],["worker","worker","sonnet-4.5",4],
+ ["qa","QA","sonnet-4.5",2],["pm","PM","sonnet-4.5",1],["ui","UI","gpt-5.2",1],
+];
+
+/* ================= 渲染 ================= */
+const stage = document.getElementById("stage");
+const NS = "http://www.w3.org/2000/svg";
+const byId = {}; const CW=300, CH=76;
+for (const c of CARDS){ byId[c.id]=c; c._h = c.st ? CH : CH-16; }
+
+for (const c of CARDS){
+  const T = TYPES[c.k];
+  const el = document.createElement("div");
+  el.className = `card ${T.cls} k-${c.k}` +
+    (c.s==="blk" ? " is-blocked" : "") + (c.s==="done" ? " is-done" : "") +
+    (c.s==="qed" ? " is-queued" : "");
+  el.style.cssText = `left:${c.x}px;top:${c.y}px;--tc:${T.c||"var(--tx3)"}`;
+  el.innerHTML = `
+    <div class="chd">
+      ${c.n ? `<span class="caret">▾<i class="n">${c.n}</i></span>` : `<span style="width:16px"></span>`}
+      <span class="ticon">${T.icon}</span>
+      <span class="dot ${c.s}"></span>
+      <span class="title">${c.t}</span>
+      <span class="cid mono">${c.id}</span>
+    </div>
+    ${c.st ? `<div class="status">${c.st}</div>` : ``}
+    <div class="cfoot">
+      <span class="mchip">${c.m||""}</span>
+      ${c.sub ? `<span class="subflag">▼ 受阻 ${c.sub}</span>` : ``}
+    </div>`;
+  stage.appendChild(el); c._el = el;
+}
+
+/* 连线：父右缘 → 子左缘，受阻路径染红 */
+const wires = document.getElementById("wires");
+function drawWires(){
+  wires.innerHTML = "";
+  const z = +document.getElementById("zoom").value/100;
+  for (const [a,b] of WIRES){
+    const A=byId[a], B=byId[b]; if(!A||!B) continue;
+    const x1=A.x+CW, y1=A.y+A._h/2, x2=B.x, y2=B.y+B._h/2;
+    const p=document.createElementNS(NS,"path");
+    p.setAttribute("d",`M${x1} ${y1} C ${x1+70} ${y1} ${x2-70} ${y2} ${x2} ${y2}`);
+    p.setAttribute("fill","none");
+    p.setAttribute("stroke", B.s==="blk" ? "var(--blk)" : "var(--wire)");
+    p.setAttribute("stroke-width", B.s==="blk" ? 1.4 : 1.2);
+    p.setAttribute("stroke-opacity", B.s==="blk" ? .55 : 1);
+    wires.appendChild(p);
+  }
+}
+drawWires();
+wires.setAttribute("width","1600");wires.setAttribute("height","1000");
+
+/* ================= 缩放 + LOD ================= */
+const main=document.getElementById("main"), zoom=document.getElementById("zoom"),
+      zpct=document.getElementById("zpct");
+function apply(){
+  const z=+zoom.value/100;
+  zpct.textContent = Math.round(z*100)+"%";
+  /* 世界→屏幕：以 (0,0) 为原点缩放，再整体平移到留左边距 */
+  stage.style.transform = `translate(40px,${Math.max(20,(main.clientHeight-1000*z)/2)}px) scale(${z})`;
+  stage.classList.toggle("far", z<0.58);
+}
+zoom.addEventListener("input", apply);
+zpct.onclick = ()=>{zoom.value=100;apply()};
+document.getElementById("fitb").onclick=()=>{zoom.value=54;apply()};
+apply();
+
+/* 主题 */
+document.getElementById("themeb").onclick = (e)=>{
+  const r=document.getElementById("root");
+  const light = r.dataset.theme!=="light";
+  r.dataset.theme = light?"light":"dark";
+  e.target.textContent = light?"☀":"☾";
+  document.querySelectorAll(".csvg").forEach(s=>s.setAttribute("stroke", light?"#1c2733":"#dfe6f0"));
+};
+
+/* 模型条 */
+const mbar=document.getElementById("mbar");
+for(const [k,name,model,n] of MBAR){
+  const T=TYPES[k];
+  const d=document.createElement("div");
+  d.className="mslot"+(n?"":" dim");
+  d.innerHTML=`<span class="t"><i style="color:${T.c||"var(--tx3)"}">${T.icon}</i>${name} · ${n||"—"}</span><span class="m">${model}</span>`;
+  mbar.appendChild(d);
+}
+</script>
+</body>
+</html>

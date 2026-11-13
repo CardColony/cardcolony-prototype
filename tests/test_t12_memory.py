@@ -452,13 +452,13 @@ async def test_tool_table_has_read_memory_and_version(sandbox):
     # [2026-10-31 F19] tc-18＝memory_expand 入表递增
     # [2026-11-01] tc-19＝sync schema 文案（事实分层）
     # [2026-11-02] tc-20＝read_card 分段读入参（block/para_start/para_end）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [钉翻新 2026-11-05] 历史漂移
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [钉翻新 2026-11-05] 历史漂移
     # [判断协议改注入 2026-10-14] t17-1 → t18-1（判断协议摘出 BASE_PROMPT）。
     # [卡片区域语义 v3 2026-10-14] t18-1 → t19-1（read_shadow 只读本卡自己的影子）。
     # [worker 卡 2026-10-15] t19-1 → t20-1（增两工具行＋「## worker 卡」节）。
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
     # [2026-10-22] dev 合并后提示词版本已推进，按实际值同步
-    assert prompts.BASE_PROMPT_VERSION == "t27-16"  # [2026-11-01] 随现配置对齐
+    assert prompts.BASE_PROMPT_VERSION == "t27-19"  # [2026-11-01] 随现配置对齐
     # BASE_PROMPT 工具行在案
     assert "read_memory(card_id?, from_seq?, to_seq?)" in BASE_PROMPT

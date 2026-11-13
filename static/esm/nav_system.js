@@ -545,6 +545,15 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       if (rid) gotoCard(rid, rwid, false);
       return;
     }
+    // [对齐场入口 2026-11-11] 左栏对齐行（临时入口）⇒ 直接进对齐卡对话页。
+    // 同评审行：不是卡（没有 data-cid），必须在 .nav-card 分支之前拦。
+    const alRow = e.target.closest("[data-align]");
+    if (alRow) {
+      const aid = alRow.dataset.align || "";
+      const awid = alRow.dataset.rwid || WID();
+      if (aid) gotoCard(aid, awid, false);
+      return;
+    }
     /* [静默执行卡折叠 2026-11-04] 折叠头不是卡——整行点击＝开合（不能落到
        .nav-card 分支去 gotoCard("__quiet__*")）。箭头热区走上面 data-twist
        同一条 toggleCard 路径。 */

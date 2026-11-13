@@ -187,6 +187,11 @@ class CtlReviewStepRequest(BaseModel):
     hint: str = ""
 
 
+class CtlAlignKickRequest(BaseModel):
+    work_id: str
+    align_card_id: str
+
+
 class PostMessageRequest(BaseModel):
     content: str = Field(min_length=1)
     # [T10-3-3] 重发去重：前端重发时携带被重发那条提问的原 pair_id；正常提问缺省 None。
@@ -240,13 +245,18 @@ class RuleCommitRequest(BaseModel):
     content: str = ""
     base_hash: str = Field(min_length=0, default="")
     sections: list[RuleCommitSection] | None = None
+    # [2026-11-14 待决草案表] 批准的是哪条草案——落盘成功即从待决表删（不删
+    # 它就一直当待审批弹）。不带＝直发 commit 的兼容调用，没有草案可清。
+    draft_id: str = ""
 
 
 class RuleDismissRequest(BaseModel):
-    # [2026-11-03 草案驳回落痕] 用户在审批弹窗「拒绝/关闭」一条草案——该草案
-    # 的 card_id:seq 记进 rule_dismissals.json，从此不再被重扫成「待审批」。
+    # [2026-11-14 待决草案表] 新口径 draft_id：处置＝从待决表删（起草卡、
+    # 区名从表内记录取，前端不用回传）。card_id:seq 旧口径保留兼容——
+    # pending 表建立前的旧草案没有 draft_id，驳回表挡重弹。
     # notify=true ⇒ 给起草卡留一封驳回回执（**只落信不唤起**，用户令「通知不唤起」）。
-    card_id: str = Field(min_length=1)
+    draft_id: str = ""
+    card_id: str = ""
     seq: int = 0
     notify: bool = True
     sections: list[str] | None = None
@@ -658,6 +668,35 @@ async def _build_nav():
         except Exception as exc:  # noqa: BLE001 评审入口读不到不影响左栏
             logger.warning("[nav] 读评审入口失败 work=%s: %s", wid, exc)
             _reviews = []
+        # [对齐场入口 2026-11-11 · 用户令「对齐卡要在左侧列表，职能卡上方」]
+        # 开着的对齐场——散场即消失（一次性场）。成员名带出去，左栏一眼看到谁在对齐。
+        _aligns: list[dict[str, Any]] = []
+        try:
+            from ..storage import align_store as _al
+            _meta_by_id = {str(m.get("card_id") or ""): m for m in metas}
+            for _a in await _al.list_active(wid):
+                _aid = str(_a.get("align_card_id") or "")
+                if not _aid:
+                    continue
+                _parts = []
+                for _pid in (_a.get("participants") or []):
+                    _pm = _meta_by_id.get(_pid) or {}
+                    _parts.append({
+                        "card_id": _pid,
+                        "title": str(_pm.get("title") or _pid),
+                        "ended": _pid in (_a.get("ended") or []),
+                    })
+                _aligns.append({
+                    "align_card_id": _aid,
+                    "topic": str(_a.get("topic") or ""),
+                    "participants": _parts,
+                    "ended": len(_a.get("ended") or []),
+                    "total": len(_a.get("participants") or []),
+                    "initiator": str(_a.get("initiator") or ""),
+                })
+        except Exception as exc:  # noqa: BLE001 对齐入口读不到不影响左栏
+            logger.warning("[nav] 读对齐入口失败 work=%s: %s", wid, exc)
+            _aligns = []
         projects.append({
             "work_id": wid,
             "title": w.get("title", ""),
@@ -671,6 +710,8 @@ async def _build_nav():
             "functions": _functions,
             # [评审入口 2026-10-29] 有进行中批次的评审卡（临时入口）
             "reviews": _reviews,
+            # [对齐场入口 2026-11-11] 开着的对齐场（临时入口，职能上方）
+            "aligns": _aligns,
         })
     return {"projects": projects}
 
@@ -1409,6 +1450,52 @@ async def get_review_status(work_id: str, card_id: str):
     }
 
 
+@router.get("/works/{work_id}/cards/{card_id}/align-status")
+async def get_align_status(work_id: str, card_id: str):
+    """这张卡当前作为成员参与的开着对齐场（卡侧浮窗判据，同 review-status 口径）。
+
+    ``has_align=False`` ⇒ 不在任何开着的场里（浮窗不出现）；
+    散场 ⇒ active=False ⇒ 前端把浮窗收掉（"散场就消失"）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    from ..storage import align_store as _al
+
+    try:
+        it = await _al.active_of(work_id, card_id)
+    except Exception as exc:  # noqa: BLE001 读不到＝没有对齐场，不报错
+        logger.warning("[align-status] 读取失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        return {"ok": True, "has_align": False, "active": False}
+    if not it:
+        return {"ok": True, "has_align": False, "active": False}
+
+    # 成员 id → 卡标题（浮窗名单用）
+    names: dict[str, str] = {}
+    for m in card_store.iter_card_metas(work_id) or []:
+        cid = str(m.get("card_id") or "")
+        if cid:
+            names[cid] = str(m.get("title") or cid)
+    ended = [str(x) for x in (it.get("ended") or [])]
+    parts = [{
+        "card_id": pid,
+        "title": names.get(pid, pid),
+        "ended": pid in ended,
+    } for pid in (it.get("participants") or [])]
+    return {
+        "ok": True,
+        "has_align": True,
+        "active": True,
+        "align_card_id": str(it.get("align_card_id") or ""),
+        "topic": str(it.get("topic") or ""),
+        "participants": parts,
+        "ended": ended,
+        "total": len(parts),
+        "initiator": str(it.get("initiator") or ""),
+        "opener": str(it.get("opener") or ""),
+    }
+
+
 # ============================================================
 # [wb_exec 2026-10-23] worker 卡的**执行体选择**（谁干活：WorkBuddy 还是系统自己的模型）
 #
@@ -1797,6 +1884,11 @@ async def get_work_rule(work_id: str):
             # [2026-11-03 草案驳回落痕] 已驳回草案的 card_id:seq 列表——前端扫
             # timeline 时用它过滤，被驳回的历史 tool_result 不再弹审批窗。
             "dismissed": rule_store.list_dismissals(work_id),
+            # [2026-11-14 待决草案表] 待审批草案（带全量 sections）——审批弹窗
+            # 唯一真相源：非空即弹；处置（commit/dismiss）即从表删，永不再弹。
+            # stale/landed 死草案在本函数内顺手清出表。
+            "pending": rule_store.actionable_drafts(
+                work_id, out_sections, hashes),
             "inject_type_counts": {n: counts.get(n, 0) for n in names}}
 
 
@@ -1901,6 +1993,10 @@ async def post_work_rule_commit(work_id: str, req: RuleCommitRequest):
         results.append({"section": it["section"], "old_hash": old_hash,
                         "new_hash": _rule_section_hash(it["content"])})
     work_store.set_rules(work_id, new_rules)
+    # [2026-11-14 待决草案表] 落盘成功＝这条草案已处置——从待决表删，
+    # 审批窗永不再弹。静默：草案表丢失/重复提交都不挡落盘返回。
+    if str(req.draft_id or "").strip():
+        rule_store.drop_draft(work_id, req.draft_id)
     out = {"ok": True, "sections": results}
     if len(results) == 1:
         out.update(results[0])
@@ -1935,25 +2031,45 @@ async def _notify_rule_draft_dismissed(work_id: str, card_id: str,
 
 @router.post("/works/{work_id}/rule/dismiss")
 async def post_work_rule_dismiss(work_id: str, req: RuleDismissRequest):
-    """审批弹窗「拒绝/关闭」的落痕口：草案 card_id:seq 记进驳回表（持久化，
-    前端重扫不再把它当「待审批」），notify=true 时给起草卡留回执（不唤起）。
+    """审批弹窗「拒绝/关闭」的处置口。
 
-    [2026-11-03 反复弹出修复] 此前驳回只存在页面内存 Set 里，刷新即丢——
-    同一条历史 tool_result 在每次收口重扫、每次刷新后反复弹审批窗。
-    幂等：同 key 重复驳回只记一次、不重复落信。
+    [2026-11-14 待决草案表] 新口径 draft_id：处置＝从待决表删——它不在表
+    里，GET /rule 的 pending 就没它 ⇒ 审批窗永不再弹。起草卡与区名从表内
+    记录取，前端只传 draft_id。幂等：已在表外 ⇒ resolved=False、不落信。
+
+    card_id:seq 旧口径兼容：pending 表建立前的历史草案没有 draft_id，
+    照写驳回表挡 timeline 重扫重弹（scan 退役后主要当审计痕）。
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    key = f"{req.card_id}:{int(req.seq)}"
-    already = rule_store.is_dismissed(work_id, req.card_id, req.seq)
-    if not rule_store.add_dismissal(work_id, req.card_id, req.seq,
-                                    sections=req.sections):
-        return _err(500, "驳回表写入失败")
+    card_id = str(req.card_id or "")
+    sec_names = [str(s) for s in (req.sections or []) if str(s).strip()]
+    resolved = False
+    if str(req.draft_id or "").strip():
+        draft = rule_store.get_draft(work_id, req.draft_id) or {}
+        resolved = rule_store.drop_draft(work_id, req.draft_id)
+        card_id = card_id or str(draft.get("card_id") or "")
+        if not sec_names:
+            sec_names = [str(s.get("section") or "")
+                         for s in (draft.get("sections") or [])
+                         if isinstance(s, dict)
+                         and str(s.get("section") or "")]
+        key = f"draft:{req.draft_id}"
+    elif card_id:
+        key = f"{card_id}:{int(req.seq)}"
+        already = rule_store.is_dismissed(work_id, card_id, req.seq)
+        if not rule_store.add_dismissal(work_id, card_id, req.seq,
+                                        sections=sec_names):
+            return _err(500, "驳回表写入失败")
+        resolved = not already
+    else:
+        return _err(400, "缺 draft_id 或 card_id")
     notified = False
-    if req.notify and not already:
+    if req.notify and resolved and card_id:
         notified = await _notify_rule_draft_dismissed(
-            work_id, req.card_id, [str(s) for s in (req.sections or [])])
-    return {"ok": True, "key": key, "notified": notified}
+            work_id, card_id, sec_names)
+    return {"ok": True, "key": key, "resolved": resolved,
+            "notified": notified}
 
 
 @router.get("/works/{work_id}/cards/{card_id}/timeline")
@@ -3170,6 +3286,16 @@ async def ctl_review_step(req: CtlReviewStepRequest):
     return await _rr.run_once(req.work_id, req.review_id, hint=req.hint)
 
 
+@router.post("/ctl/align_kick")
+async def ctl_align_kick(req: CtlAlignKickRequest):
+    """[多进程拆分] 对齐场属主入口：替调用方在本进程唤起场驱动。
+
+    kick 入口自查分片：走到这里时属主已是本进程，本地 spawn 不再转发。
+    """
+    from . import align_runner as _ar
+    return {"kicked": _ar.kick(req.work_id, req.align_card_id)}
+
+
 @router.post("/cards/{card_id}/messages")
 async def post_message_compat(card_id: str, req: PostMessageRequest):
     return await message_runner.await_spawned(message_runner._spawn_tracked(
@@ -3577,8 +3703,16 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 投影层又按同一 mark 切一次 ⇒ mark>0 后历史区恒空（同一把尺用了两遍）。
     # 现在读全量、切片只归投影一层。
     from ..storage import origin_store as _origin
-    # [venue] 历史按**上下文锚**取（评审席拿的是被评子卡的历史），追加块排在其后。
-    prior = _origin.read_blocks(work_id, state.ctx_card or card_id, 0)
+    from ..storage import context_board as _cb
+    _ctx_card = state.ctx_card or card_id
+    if _cb.enabled():
+        # [缓存板 2026-11-12] 历史视图归板（写时维护）；这里的 prior 只服务
+        # pair_id 判重等尾部扫描——重发必在近窗，读末尾 400 块即够，
+        # 不再把全量原文扛进回合。
+        prior = _origin.read_recent_blocks(work_id, _ctx_card, 400)
+    else:
+        # [venue] 历史按**上下文锚**取（评审席拿的是被评子卡的历史），追加块排在其后。
+        prior = _origin.read_blocks(work_id, _ctx_card, 0)
     if state.prior_extra:
         prior = list(prior) + list(state.prior_extra)
     state.prior = prior
@@ -3597,17 +3731,30 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
         # 判据（存量卡未迁移／无事件文件）→ 回落既有会话块口径，逐字不变。
         ev_verdict = _has_valid_reply(work_id, card_id, client_pair_id)
         if ev_verdict is None:
-            for idx in range(len(prior) - 1, -1, -1):
-                if prior[idx].get("pair_id") == client_pair_id:
-                    # [工具结果落会话 2026-10-17] 「已有回复」判据＝**不带 tool_calls
-                    # 的 assistant 块**（真正的回复块）。工具调用块（actor=assistant
-                    # 但带 tool_calls）不是回复——否则一次中断在工具轮的回合会被误判
-                    # 「已回复」而不复用 pair_id，导致用户条重复落盘。
-                    reuse_client_pair = not any(
-                        m.get("role") == "assistant" and not m.get("tool_calls")
-                        for m in prior[idx + 1:]
-                    )
-                    break
+            def _pair_scan(scan_list: list) -> bool:
+                """倒扫 pair_id 命中+其后无回复 ⇒ True（复用口径逐字不变）。"""
+                for idx in range(len(scan_list) - 1, -1, -1):
+                    if scan_list[idx].get("pair_id") == client_pair_id:
+                        # [工具结果落会话 2026-10-17] 「已有回复」判据＝**不带 tool_calls
+                        # 的 assistant 块**（真正的回复块）。工具调用块（actor=assistant
+                        # 但带 tool_calls）不是回复——否则一次中断在工具轮的回合会被误判
+                        # 「已回复」而不复用 pair_id，导致用户条重复落盘。
+                        return not any(
+                            m.get("role") == "assistant" and not m.get("tool_calls")
+                            for m in scan_list[idx + 1:]
+                        )
+                return False
+            reuse_client_pair = _pair_scan(prior)
+            if not reuse_client_pair and _cb.enabled():
+                # [缓存板 2026-11-12] 板模式下 prior 只有近 400 块——旧 pair
+                # 重发（罕见）会漏判 ⇒ 全量补扫一次兜底，判据不变。
+                _full = _origin.read_blocks(work_id, _ctx_card, 0)
+                if state.prior_extra:
+                    _full = list(_full) + list(state.prior_extra)
+                if len(_full) > len(prior):
+                    prior = _full
+                    state.prior = prior
+                    reuse_client_pair = _pair_scan(prior)
         else:
             reuse_client_pair = not ev_verdict
     if reuse_client_pair:

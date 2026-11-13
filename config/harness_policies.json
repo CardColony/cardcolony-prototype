@@ -420,35 +420,64 @@
       "window": "1h"
     },
     {
-      "id": "claim_no_receipt_reminder",
+      "id": "pseudo_call_reinvoke",
       "active": true,
-      "desc": "回复断言检出（reply_claims）且账对不上 ⇒ 插话提醒本卡。判据两种：①本回合零工具回执却有断言词；②断言点名的对象没在任何调用参数里出现过。发射侧只产机械事实（message_runner 收口时扫断言词落事件），判据与文本全在这——敏感度随时可调可关。inject 模式：进下一轮上下文、不叫醒、不落历史——误报成本趋近零（旧版强制续轮才敏感烧钱）。",
+      "desc": "伪调用未解析（pseudo_call_unparsed）⇒ 把卡叫醒让它走真通道重发。[2026-11-12 用户令] 「中途解析文本」方向撤——新方言层出不穷追不完；已知方言照执行，解析不出来的（arg_key/未知标签对/将来任何新写法）不再同轮回注，落事实后由本策略 message+wake 重调起，措辞与节流全在这。节流靠事实内的 recent（发射侧记的近 1h 伪调用次数）：策略点火即撕本子，状态窗累计的回执/事件都会被抹，只有随事件走的计数算数——第 4 次起闭嘴，防「学不会就无限叫醒」死循环；事件照落，人能看见它一直在写。已知方言（形态C 等）仍走 rescue 执行链——纯文本通道卡（CLI 执行体）的正文协议就是那条，砍了它 CLI 卡永远变不出正常调用。",
       "scope": {
         "kind": "card"
       },
       "watch": [
-        "reply_claims"
+        "pseudo_call_unparsed"
       ],
       "when": {
-        "any": [
+        "field": "trigger_data.recent",
+        "cmp": "<=",
+        "value": 3
+      },
+      "then": {
+        "target": "self",
+        "mode": "message",
+        "wake": true,
+        "message": "（提醒）你上一轮的回复里有形似工具调用的文本——那不是一次真实调用，系统没有执行，也不会有工具结果回来。要执行工具：你的通道有 tool_calls 字段的，用它重发同一个调用；你的通道是纯文本协议的，按系统给你的工具协议段格式重写后发送。换别的写法也不会被执行。"
+      },
+      "window": "1h"
+    },
+    {
+      "id": "idle_exec_auto_archive",
+      "active": true,
+      "desc": "执行卡（worker/ui/qa_card/pm_card）静默 12 小时 ⇒ 自动归档。[2026-11-12 用户令] idle_sweeper 每 6 小时把静默过地板线（11h）的卡落成 card_idle 事实（silent_sec/card_type 随事实走）；本策略只判「执行卡型 × silent_sec≥43200」，then.archive 机械执行 card_store.archive_card（by=harness:本策略）。归档是折叠不是删除：三块/历史/影子进档案、会话与事件原位，unarchive_card 可恢复。卡型名单与阈值都在这里——要加卡型、改时长，只动本文件。归档成功的卡不再产 idle 事实（清扫器跳过 archived），天然停火；归档失败则下一波 card_idle 再触发重试。",
+      "scope": {
+        "kind": "card"
+      },
+      "watch": [
+        "card_idle"
+      ],
+      "when": {
+        "all": [
           {
-            "field": "trigger_data.tool_calls",
-            "cmp": "==",
-            "value": 0
+            "field": "trigger_data.card_type",
+            "cmp": "in",
+            "value": [
+              "worker",
+              "ui",
+              "qa_card",
+              "pm_card"
+            ]
           },
           {
-            "field": "trigger_data.stray_count",
+            "field": "trigger_data.silent_sec",
             "cmp": ">=",
-            "value": 1
+            "value": 43200
           }
         ]
       },
       "then": {
         "target": "self",
-        "mode": "inject",
-        "message": "（提醒）你上一轮的回复有断言式表述（{event.claims_text}），但{event.detail}。断言要有当轮工具返回作证据——写「已核实／实测／确认过」这类词前请先用工具真实核实；没核到就如实写明「未核」，不要凭印象断言。"
+        "archive": {
+          "reason": "执行卡静默超 12 小时，自动归档（harness:idle_exec_auto_archive）。归档非删除——unarchive_card 可恢复。"
+        }
       },
-      "window": "1h"
+      "window": "24h"
     }
   ]
 }

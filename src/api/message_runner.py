@@ -36,6 +36,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -134,18 +135,19 @@ class RunState:
     # 只做调用链内部传递：拿到 result 后立刻写入、存 assistant 条时立刻取用并清空。
     # **不进对话内容、不进前端渲染**（展示走 emit_token 独立通道）。
     turn_reasoning: str = ""
-    # [断言检出 · harness 化 2026-11-10] 发射面两本账（只产机械事实，
-    # 判据/处置全在 harness_policies）：turn_tool_call_count＝本回合已执行
-    # 调用总数（"零回执"判据的事实源）；turn_call_args_text＝本回合全部
-    # 调用参数拼串（"点名对象有没有被调用碰过"的对照面）。
+    # [worker 完工未报兜底 2026-11-10] 本回合已执行调用总数——card_tools
+    # 的完工回执补发判据用它（纯应答回合不补）。
     turn_tool_call_count: int = 0
-    turn_call_args_text: str = ""
     #: [worker 完工未报兜底 2026-11-10] 回合开始时刻（epoch 秒）——判重锚：
     #: _CODER_DONE_SENT_AT ≥ 它 ⇒ 本回合已有回执发出，兜底跳过。
     turn_start_ts: float = 0.0
     # [正文伪调用抢救捎话] rescue_note_pending＝正文伪调用被替执行 ⇒
     # 首条工具结果前附纠正句（让它知道自己写歪了，防复发）。
     rescue_note_pending: bool = False
+    # [抢救升惩罚 2026-11-11] 本回合已替执行正文伪调用的次数——达
+    # _RESCUE_EVENT_CAP 后不再代执行，转回注「非法形式不执行」让惩罚
+    # 真实落地（否则伪调用拿真结果＝正奖励，格式漂移永远治不了）。
+    rescue_events: int = 0
     error: Optional[str] = None
     # [phase9-E] 观点元信息（含内部text）
     viewpoints_meta: list[dict[str, Any]] = field(default_factory=list)
@@ -306,7 +308,11 @@ def build_context(state: RunState) -> None:
         state.work_id, _ctx_id,
         memory_state=state.condense_state,
         history_source=state.prior,
+        history_extra=state.prior_extra,
         function_meta=_function_meta,
+        # [本轮消息双重计数 2026-11-14] 本轮 user 块落盘即进板；按本回合
+        # pair_id 从板行滤掉——它走 user 通道，不该再当历史投影一遍。
+        current_pair_id=state.pair_id,
     )
     state.context_ctx = bundle["context"]
     state.ctx_regions = bundle["regions"]
@@ -340,6 +346,15 @@ def build_context(state: RunState) -> None:
             if str((t.get("function") or {}).get("name") or t.get("name") or "")
             in _allow
         ]
+        # [对齐场 2026-11-11] 场授专用件补回：align_end 这类不进常规工具面
+        # （VENUE_ONLY_TOOLS），唯一的下发通道就是场授名单点了名——收窄把
+        # 它们连同别的件一起滤掉了，这里把名单里的场授件补回面里。
+        _have = {str((t.get("function") or {}).get("name") or t.get("name") or "")
+                 for t in state.tools}
+        for _vn in sorted(_allow & card_tools.VENUE_ONLY_TOOLS):
+            _def = card_tools.TOOL_REGISTRY.get(_vn)
+            if _def is not None and _vn not in _have:
+                state.tools.append(card_tools._schema_of(_def))
     # history_len 是注册表统一投影出来的历史条数快照；轮槽之后会就地追加。
     state.history_len = len(state.prior_for_gateway)
 
@@ -759,6 +774,30 @@ def _board_all_steps_done(work_id: str, card_id: str) -> bool:
 #: 中断后同一位置最多再试几次（含首次＝总次数）。按次数计，不设墙钟。
 _RESUME_MAX_ATTEMPTS = 3
 
+# [抢救升惩罚 2026-11-11] 每回合代执行正文伪调用的上限——纠偏捎话给
+# _RESCUE_EVENT_CAP 次机会，此后不再兑现（伪调用拿真结果＝正奖励）。
+_RESCUE_EVENT_CAP = 3
+
+# [伪调用重调起 · harness 化 2026-11-12 · 用户令] 每卡一条伪调用发射
+# 时间账（deque）：节流计数**装进事实本体**（recent 字段）——策略
+# 点火即撕本子，回执/事件累计都会被抹，只有随事件走的计数算数。
+# 内存账即可：重启清零只是重放额度，上限照样兜住（防的就是死循环）。
+_PSEUDO_RECENT: dict[tuple[str, str], "collections.deque[float]"] = {}
+_PSEUDO_RECENT_WINDOW = 3600.0   # 近 1 小时
+
+
+def _pseudo_recent(work_id: str, card_id: str) -> int:
+    """记一笔并返回本卡近 _PSEUDO_RECENT_WINDOW 秒内的伪调用发射次数（含本次）。"""
+    import collections
+    import time as _time
+    key = (work_id, card_id)
+    dq = _PSEUDO_RECENT.setdefault(key, collections.deque())
+    now = _time.time()
+    while dq and dq[0] < now - _PSEUDO_RECENT_WINDOW:
+        dq.popleft()
+    dq.append(now)
+    return len(dq)
+
 
 async def _call_model_resumable(state: "RunState | None" = None, **kwargs: Any):
     """``model_service.call_main`` 的中断续跑包装。
@@ -844,6 +883,9 @@ async def step(state: RunState) -> StepOutcome:
       deliver  —— final_reply 已定，可交付
       error    —— 本轮出错（error 字段已填，走错误返回）
     """
+    # [草稿回执减肥 2026-11-14] 本轮标记进 contextvar——工具派发的唯一收口，
+    # edit_requirements 据此判「本轮草稿基线给没给过」（改前轮内一次）。
+    card_tools.set_tool_run_id(state.pair_id)
     verdict = check_control(state)   # 中止缝：入口挂点（[A8/R3] 控制三态）
     if verdict == control.STOP:
         # 人工停止：回合就地闭合（不落半截轮——assistant 块 end=human_stop）
@@ -979,6 +1021,23 @@ async def step(state: RunState) -> StepOutcome:
     if not tool_calls and assistant_content:
         rescue_calls, unresolved, stripped = \
             text_tool_rescue.extract_text_tool_calls(assistant_content)
+        if rescue_calls and state.rescue_events >= _RESCUE_EVENT_CAP:
+            # [抢救升惩罚 2026-11-11] 代执行有配额：纠偏捎话已给过
+            # _RESCUE_EVENT_CAP 次机会，此后伪调用不再兑现——回注事实
+            # 让它走标准通道重发（伪调用拿真结果＝正奖励，是漂移的温床）。
+            logger.warning(
+                "text_tool_calls_over_cap count=%s names=%s（不再代执行）",
+                len(rescue_calls), [c["name"] for c in rescue_calls],
+            )
+            event_stream.emit(state.work_id, state.card_id, "rescue_refused",
+                              {"count": len(rescue_calls),
+                               "names": [str(c.get("name") or "") for c in rescue_calls]})
+            rescue_calls = []
+            text_rescue_note = (
+                f"[系统提示] 你本轮正文中又出现工具调用样式的标记"
+                f"（本回合第 {state.rescue_events + 1} 次），"
+                "系统不再代为执行正文形态的调用。"
+                "如需执行，请用标准 tool_calls 通道重发同样的调用。")
         if rescue_calls:
             tool_calls = rescue_calls
             assistant_content = stripped or assistant_content
@@ -999,8 +1058,21 @@ async def step(state: RunState) -> StepOutcome:
             # [正文伪调用抢救 2026-11-09] 捎话挂点：替它执行了伪调用这件事
             # 得让它知道，否则它永远不知道自己写歪了（复发治不了）。
             state.rescue_note_pending = True
+            state.rescue_events += 1
         elif unresolved:
-            text_rescue_note = text_tool_rescue.feedback_note()
+            # [伪调用重调起 · harness 化 2026-11-12 · 用户令] 「写了形似调用
+            # 的文本但没解析出来」只落机械事实（pseudo_call_unparsed），
+            # 不再在同轮回注纠正——正文原样交付（藏起来反而遮了真相）。
+            # 再调起、纠偏措辞、节流全在 harness_policies：策略收事实后
+            # 把卡叫醒让它走真通道重发。新方言层出不穷，"中途解析文本"
+            # 这条方向本身撤了——已知方言照执行，未知方言走重调起。
+            event_stream.emit(state.work_id, state.card_id,
+                              "pseudo_call_unparsed",
+                              {"round": state.rounds,
+                               "chars": len(assistant_content),
+                               "recent": _pseudo_recent(
+                                   state.work_id, state.card_id),
+                               "head": (assistant_content or "")[:160]})
 
     # [模型过程数据 2026-10-12] 判断事件（新增）：**首轮机械推断**——tool_calls
     # 含 create_plan → plan，否则 direct。只读 tool_calls 事实（含抢救并入的
@@ -1044,8 +1116,10 @@ async def step(state: RunState) -> StepOutcome:
             # 系统提醒忙时都走这条通道（mark 在条目首）。提示照实报名，
             # 别让模型去找一条不存在的「用户插话」（card_061 实踩：
             # 三轮系统超限提醒被报成用户插话，模型烧两轮做无头侦察）。
-            _marks = sorted({t.split("〕", 1)[0] + "〕" for t in _steer_items
-                             if t.startswith("〔")}) or ["〔消息〕"]
+            _marks = sorted({m.group(0) for t in _steer_items
+                             for m in [re.match(
+                                 r"^(?:用户插话|卡间消息|系统消息)：", t)]
+                             if m}) or ["消息："]
             state.user_prompt = ("你在回答时有新消息插进来（"
                                  + "、".join(_marks)
                                  + "）。先读那条，再继续。")
@@ -1063,35 +1137,6 @@ async def step(state: RunState) -> StepOutcome:
             })
             state.user_prompt = text_rescue_note
             return StepOutcome("continue", "text_rescue")
-        # [断言检出 · harness 化 2026-11-10] 只产机械事实：收口前扫一次断言词，
-        # 命中就把账（断言词表、未被调用参数碰过的实体、本回合调用数）落成
-        # reply_claims 事件——判据与处置全部在 harness_policies（inject 提醒，
-        # 零额外回合；旧版在此强制续轮，过于敏感被拆）。无断言词零事件。
-        if assistant_content:
-            _claim_tokens, _claim_strays = text_tool_rescue.audit_claims(
-                assistant_content, state.turn_call_args_text,
-                state.turn_tool_call_count)
-            if _claim_tokens:
-                _claims_txt = "、".join(f"「{t}」" for t in _claim_tokens[:4])
-                if state.turn_tool_call_count <= 0:
-                    _claim_detail = "本回合一条工具回执都没有"
-                elif _claim_strays:
-                    _claim_detail = ("断言点名的对象（"
-                                     + "、".join(_claim_strays[:3])
-                                     + "）在本回合任何调用参数里都没出现过")
-                else:
-                    _claim_detail = ""
-                event_stream.emit(state.work_id, state.card_id,
-                                  "reply_claims", {
-                                      "round": state.rounds,
-                                      "claims": _claim_tokens[:6],
-                                      "claims_text": _claims_txt,
-                                      "strays": _claim_strays[:6],
-                                      "strays_text": "、".join(
-                                          _claim_strays[:3]),
-                                      "stray_count": len(_claim_strays),
-                                      "tool_calls": state.turn_tool_call_count,
-                                      "detail": _claim_detail})
         # [思维链真实落地 2026-10-11] 提交轮三席统合（C6）：board 全部步骤
         # done（收口）后、交付前，固定触发三席质询＋统合交付。空手轮旁路
         # （旧「无工具即三席」）退役——直答回合零三席。
@@ -1118,12 +1163,8 @@ async def step(state: RunState) -> StepOutcome:
         return StepOutcome("deliver", "chain_done" if state.chain_completed else "direct")
 
     # —— 有工具调用：本轮执行工具，续跳 ——
-    # [断言检出 2026-11-10] 事实账：本回合累计调用数与参数拼串——
-    # 收口时只把这两个机械事实写进 reply_claims 事件，不做任何处置。
+    # [worker 完工未报兜底] 本回合调用计数——card_tools 完工回执判据用。
     state.turn_tool_call_count += len(tool_calls)
-    for _tc in tool_calls:
-        state.turn_call_args_text += json.dumps(
-            _tc.get("arguments"), ensure_ascii=False, default=str)
     # [phase8.2] 第一次进入工具轮时，把用户原文固化进 prior，
     # 否则后续跳的 user_prompt 被替换后原文会从对话中消失
     # [T11] 经轮槽 append_plain 入槽（首轮用户原文固化＝不折红线之一）
@@ -2195,10 +2236,10 @@ async def deliver_now(work_id: str, card_id: str, *,
             try:
                 _st = await steer.request_steer(
                     work_id, card_id, str(steer_text or text),
-                    mark=("〔卡间消息〕"
+                    mark=("卡间消息："
                           if (source or {}).get("kind") == "card_msg"
                           else "" if (source or {}).get("kind") == "steer_remains"
-                          else "〔系统消息〕"),
+                          else "系统消息："),
                     emit_event=False)
             except Exception as exc:  # noqa: BLE001 插话通道故障不升级（信在库）
                 logger.warning("[通信] 忙时插话失败 card=%s: %s", card_id, exc)

@@ -57,7 +57,8 @@ python -m pytest
    而真实批次落在 `SNAPSHOT_ROOT/<work_id>/<stamp>`——字段与真实路径不一致。
 3. `restore_from_snapshot` 的默认 `target = BASE_DIR / rel_path`，`rel_path`
    必须自带 `works/<work_id>/` 前缀才落得到原处，否则会写出一个平行的 `works/` 树。
-4. `file_tools.BASE_DIR / ALLOWED_ROOTS / BACKUP_DIR` 是模块级常量（其中 `BASE_DIR`
+4. `file_tools.BASE_DIR / BACKUP_DIR` 是模块级常量（`ALLOWED_ROOTS` 已于
+   2026-11-15 随文件夹闸退役；其中 `BASE_DIR`
    是硬编码绝对路径 `D:\AI_station`）→ 测试只能 monkeypatch。步骤二改成注入后，
    `conftest.sandbox` 可相应简化，断言不动。
 5. 快照是**全量拷贝**（每次写卡都复制整个 `works/` 下全部文件）——步骤二的增量与加锁项。

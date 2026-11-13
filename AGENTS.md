@@ -1,5 +1,11 @@
 # 项目规则
 
+## 状态（重构重启）
+
+- **之前的重构版本（Cardlo 仓的卡分支施工线）做偏离了，已停止，不再延续。**
+- 现以 **CardColony** 重新开始重构。本仓（推演agent）仍是原型探索记录，
+  画布交互稿/视觉稿继续作为新实现的参照。
+
 ## 本线文档
 
 - **执行体路由（wb_exec）交接文档**：`docs/执行体路由(wb_exec)-交接文档-20261106.md`
@@ -48,6 +54,19 @@
   pid 文件：web/all＝`.server.pid`，runner-i＝`.server-runner{i}.pid`；
   `stop.bat` 立 `logs\.manual_stop`，看门狗见此标记不拉起（`start.bat` 撤）。
   看门狗逐进程探活（web 5700 + 各 runner 5701+i），谁死单独拉起谁，不连坐。
+
+## 上下文缓存板（context_board，2026-11-12）
+
+- 历史区不再从全量原文现算——`context_board` 表（每 work 库内）物化
+  「过闸 且 seq>=凝练 mark 且评审 keep-N」的可见块，装配只做机械投影。
+- 维护挂在写口：块落库（`write_blocks_sync` 同事务过闸进板）、
+  mark 推进（`save_chain`/`_save_to_db` 同事务 `DELETE seq<mark`）、
+  评审流量写时逐出。原文账（session_blocks）永远是真相，
+  板漂移一键 `context_board.rebuild_board` 重算；读侧有懒自愈
+  （板空有货/落后原文 → 就地重建，60s 节流）。
+- 开关：`CONTEXT_BOARD=0` 回退旧四层筛路（排障用，默认开）。
+- `session_facade.BLOCK_FIELDS` 已含 `reasoning_content`（Kimi 保留式
+  思考持久化依赖它落盘）。
 
 ## "commit" 的含义
 

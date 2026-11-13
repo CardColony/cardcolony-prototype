@@ -83,6 +83,133 @@ _C_WRAPPER = re.compile(
     re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
+# 形态D：根元素即工具名的 XML 伪调用（2026-11-11 card_061 实录——模型把
+#   调用写成 <read_card><card_id>…</card_id></read_card> 这种裸块，常跟在
+#   </think> 泄漏后面）。
+#   判别唯一依据：根标签名 ∈ TOOL_REGISTRY——注册表是权威名单，不在册的
+#   标签不是调用（正文中出现 <计划>/<思考> 之类不会被误收）。
+#   body 里须含 ≥1 个 <k>v</k> 参数对、或是空壳（<x></x> / <x/>）才算完整
+#   调用；夹叙述正文的 body 不算——防「讨论格式」的正文被当调用剥走。
+#   </?think> 是 DeepSeek 系思维标签泄漏，纯家具：剥掉，但**不**计入
+#   suspect（它不是调用标记，不该触发「未识别调用」反馈）。
+# ---------------------------------------------------------------------------
+_THINK_TAG = re.compile(r"</?\s*think\s*>|</?\s*antml:thinking\s*>",
+                        re.IGNORECASE)
+_D_CACHE: dict = {}
+
+
+def _d_names() -> frozenset:
+    """注册表工具名集合（延迟导入破环；空集＝注册表读不到）。"""
+    if "names" in _D_CACHE:
+        return _D_CACHE["names"]
+    names: frozenset = frozenset()
+    try:
+        from . import card_tools  # 延迟导入：模块级 import 会撞环
+        names = frozenset(card_tools.TOOL_REGISTRY)
+    except Exception:  # noqa: BLE001
+        pass
+    _D_CACHE["names"] = names
+    return names
+
+
+def _d_patterns():
+    """(call_re, selfclose_re, suspect_re)，按注册表现建现缓存。
+
+    注册表读不到 ⇒ 三个 None（本形态关闭，不阻断其他形态）。
+    """
+    if "call" in _D_CACHE:
+        return _D_CACHE["call"], _D_CACHE["self"], _D_CACHE["suspect"]
+    call = self = suspect = None
+    try:
+        names = sorted(_d_names(), key=len, reverse=True)
+        if names:
+            alt = "|".join(re.escape(n) for n in names)
+            call = re.compile(
+                rf"<(?P<name>{alt})(?:\s[^>]*)?>"
+                rf"(?P<body>.*?)"
+                rf"</\s*(?P=name)\s*>",
+                re.IGNORECASE | re.DOTALL)
+            self = re.compile(rf"<(?P<name>{alt})\s*/>", re.IGNORECASE)
+            suspect = re.compile(rf"</?(?:{alt})\b", re.IGNORECASE)
+    except Exception:  # noqa: BLE001
+        call = self = suspect = None
+    _D_CACHE["call"], _D_CACHE["self"], _D_CACHE["suspect"] = call, self, suspect
+    return call, self, suspect
+
+
+# ---------------------------------------------------------------------------
+# 兜底网（2026-11-11 · <confirm> 实录）：伪调用格式空间不可枚举——模型
+# 还能自造「意图标签」：<confirm>先确认目录里有什么文件</confirm> 这种
+# 块里连工具名/参数都没有，任何方言解析器都无 call 可救。兜底规则只判
+# 机械事实：**成对**出现的未知标签（非工具名、非良性标签）＝疑似未执行，
+# 由调用方回注「未识别、未执行」——不开第二个等待黑洞。
+#   · 只看成对标签：正文里单个 <div> 提及不算（讨论 HTML 是 UI 卡日常）；
+#   · 含 '-' 的标签不算：连字符是 Web Components 自定义元素约定，UI 卡
+#     正文里成对出现自定义元素是合法的；
+#   · 良性标签清单＝HTML/排版全集，模型正文里成对写它们是正常排版。
+# ---------------------------------------------------------------------------
+_E_PAIR = re.compile(
+    r"<([A-Za-z][A-Za-z0-9_.]{2,})\b[^>]*>(.*?)</\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL)
+_E_BENIGN = frozenset("""
+    html head body title meta link script style base
+    div span p br hr wbr
+    h1 h2 h3 h4 h5 h6
+    ul ol li dl dt dd
+    table thead tbody tfoot tr td th caption colgroup col
+    form input button select option optgroup label textarea fieldset legend datalist output
+    a img picture source figure figcaption video audio track map area
+    code pre em strong b i u s small sub sup mark abbr cite q blockquote kbd samp var time data
+    section article header footer main nav aside address
+    details summary dialog template slot
+    iframe embed object param
+    svg path circle rect line polyline polygon ellipse g defs use text tspan
+    math mi mn mo ms mrow msup msub mfrac msqrt
+    ruby rt rp bdi bdo
+    """.split())
+
+
+def _e_unknown_pair(content: str, tool_names: frozenset) -> bool:
+    """正文里有无成对未知标签（既非工具名、也非良性 HTML/排版标签）。"""
+    for m in _E_PAIR.finditer(content or ""):
+        tag = m.group(1).lower()
+        if tag in _E_BENIGN or tag in tool_names:
+            continue
+        if ":" in tag or "-" in tag:
+            continue          # 命名空间形态 A/C 已判；连字符＝自定义元素约定
+        return True
+    return False
+
+
+def _d_params(body: str) -> dict:
+    """形态D参数：命名 <ns:parameter name=k> 优先，裸元素 <k>v</k> 兜底。"""
+    args: dict = {}
+    named_spans: list[tuple[int, int]] = []
+    for pm in _C_PARAM_NAMED.finditer(body):
+        val = pm.group("val").strip()
+        try:
+            args[pm.group("key").strip()] = json.loads(val)
+        except Exception:  # noqa: BLE001
+            args[pm.group("key").strip()] = val
+        named_spans.append(pm.span())
+    if named_spans:
+        mask = [True] * len(body)
+        for s, e in named_spans:
+            for i in range(s, e):
+                mask[i] = False
+        rest = "".join(ch for i, ch in enumerate(body) if mask[i])
+    else:
+        rest = body
+    for bm in _C_PARAM_BARE.finditer(rest):
+        val = bm.group("val").strip()
+        try:
+            args[bm.group("key").strip()] = json.loads(val)
+        except Exception:  # noqa: BLE001
+            args[bm.group("key").strip()] = val
+    return args
+
+
+# ---------------------------------------------------------------------------
 # 疑似标记探测（反馈兜底用）：正文里出现了泄漏标记的痕迹但没能解析出
 # 完整调用 → 调用方应把「未识别、未执行」这个事实回注模型
 # [形态C 2026-11-09] 覆盖面同步放宽：antml:invoke/function_calls/执行 壳
@@ -211,6 +338,33 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
     for wm in _C_WRAPPER.finditer(content):
         spans.append(wm.span())
 
+    # ---- 形态D：根元素即工具名（<read_card><card_id>…</read_card>）----
+    _d_call, _d_self, _d_sus = _d_patterns()
+    if _d_call is not None:
+        for m in _d_call.finditer(content):
+            if any(m.start() < e and m.end() > s for s, e in spans):
+                continue          # 与已收编的调用块重叠 ⇒ 不二次吞
+            body = m.group("body") or ""
+            args = _d_params(body)
+            # 空壳 ⇒ 零参数调用（全可选工具合法，缺参走标准链报 validation，
+            # 也是闭环反馈）；夹叙述的 body 零参数对 ⇒ 当正文跳过、不剥。
+            if body.strip() and not args:
+                continue
+            calls.append({"name": (m.group("name") or "").strip(),
+                          "arguments": args, "_origin": "textD"})
+            spans.append(m.span())
+        if _d_self is not None:
+            for m in _d_self.finditer(content):
+                if any(m.start() < e and m.end() > s for s, e in spans):
+                    continue
+                calls.append({"name": (m.group("name") or "").strip(),
+                              "arguments": {}, "_origin": "textD"})
+                spans.append(m.span())
+
+    # ---- 思维标签家具：泄漏的 </think>/<antml:thinking> 纯噪声，剥 ----
+    for tm in _THINK_TAG.finditer(content):
+        spans.append(tm.span())
+
     # ---- 剥离 ----
     stripped = content
     if spans:
@@ -224,70 +378,9 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
     # ---- 疑似标记但零解析（反馈兜底信号）----
     # 在剥离前的原文上探：calls 为空时 stripped 里外壳标记可能已被
     # _C_WRAPPER 剥光 ⇒ 漏报 ⇒ 等待黑洞重开。零调用时查原文更严。
-    unresolved = (not calls) and bool(_SUSPECT.search(content))
+    unresolved = (not calls) and (
+        bool(_SUSPECT.search(content))
+        or (_d_sus is not None and bool(_d_sus.search(content)))
+        or _e_unknown_pair(content, _d_names()))
 
     return calls, unresolved, stripped
-
-
-def feedback_note() -> str:
-    """生成回注模型的机械事实句（不含任何方向性引导）。
-
-    调用方已用 unresolved 守卫；本函数无条件返回反馈句。
-    （修复记录：初版带 n_unresolved=0 默认参数，0 时返回空串，
-    回归测试抓到该 bug——反馈兜底将永不触发，等于没修。）
-    """
-    return ("[系统提示] 你上一轮正文中出现了工具调用样式的标记，"
-            "但未被系统识别为可执行调用，未执行。"
-            "如需执行工具调用，请使用标准函数调用格式重发。")
-
-
-# ---------------------------------------------------------------------------
-# [断言检出 · harness 化 2026-11-10] 断言词表＋断言点名实体（card_NNN／绝对
-#   路径）提取——**只产机械事实**：断言词有哪些、点名对象在不在本回合
-#   调用参数串里出现过。判据与处置全部挪进 harness_policies（旧版在同一
-#   钩位强制续轮，过于敏感被用户拆掉；这版只供事件发射面取用）。
-# ---------------------------------------------------------------------------
-#: 断言词：声称「已做核实动作」的完成式表述（「我要核实」不算，「核实过」算）。
-_CLAIM_RE = re.compile(
-    r"已核实|核实过|实测|实读|已确认|确认过|核对过|核查过|验证过|"
-    r"检查过|查证过|看过了|读过了|对照过|比对过|点开过|打开过|"
-    r"跑过了|试过了|盘[上中]")
-#: 点名实体：卡号＋绝对盘符路径（相对路径/文件名不取——经由目录列举核实
-#: 会误报；卡号与绝对路径在调用参数里基本逐字出现，精度优先）。
-_ENT_CARD = re.compile(r"\bcard_\d{2,}\b")
-_ENT_PATH = re.compile(
-    r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s\"'“”‘’，。；：、（）【】《》<>\[\]]+")
-
-
-def _norm_entity(s: str) -> str:
-    """路径归一：斜杠方向/重复斜杠压平、小写——参数里 D:\\x 与正文 D:/x 同面。"""
-    return re.sub(r"[\\/]+", "/", s).lower()
-
-
-def audit_claims(content: str, args_text: str,
-                 turn_tool_calls: int) -> tuple[list[str], list[str]]:
-    """断言检出。返回 (断言词命中表, 未被调用参数触碰的实体表)。
-
-    - tokens：正文里命中的完成式断言词（命中即返，供发射面判"要不要发事实"）；
-    - strays：断言点名的实体不在本回合调用参数串里的清单（零调用时为空表——
-      "零回执"本身由策略拿 tool_calls 判，这里不重复表达）。
-    """
-    tokens = sorted(set(_CLAIM_RE.findall(content or "")))
-    if not tokens:
-        return [], []
-    if turn_tool_calls <= 0:
-        return tokens, []
-    args_norm = _norm_entity(args_text or "")
-    seen: set[str] = set()
-    strays: list[str] = []
-    for ent in (_ENT_CARD.findall(content)
-                + _ENT_PATH.findall(content)):
-        ent = ent.rstrip(".,;:!?\"'，。；：")
-        if len(ent) < 4 or ent in seen:
-            continue
-        seen.add(ent)
-        if _norm_entity(ent) not in args_norm:
-            strays.append(ent)
-        if len(strays) >= 6:
-            break
-    return tokens, strays

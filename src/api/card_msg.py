@@ -175,7 +175,7 @@ def make_msg_id(from_card: str) -> str:
 # 头**不承担归属**：不提发件卡、不提类型、不加处理指示（用户 23:09/23:25）。
 # ---------------------------------------------------------------------------
 
-CONTEXT_HEAD = "〔卡间消息〕"
+CONTEXT_HEAD = "卡间消息："
 
 
 def render_for_context(content: str) -> str:

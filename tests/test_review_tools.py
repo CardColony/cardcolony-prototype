@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.api import card_tools
+from src.api import card_tools, review_runner
 from src.storage import card_store, function_store, review_store, work_store
 
 
@@ -49,6 +49,17 @@ async def _seated(wid: str, rid: str, *fids: str) -> None:
         await review_store.mark_spoken(wid, rid, f)
 
 
+async def _advance_to_main_round(wid: str, rid: str) -> None:
+    """[两轮评审 2026-11-14] 过掉第一轮对齐批：总裁（根卡）approve +
+    runner 一步 advance ⇒ 开第二轮三席批。本文件多数用例测的是第二轮
+    机制本身，先在 opener 后快进到三席批。"""
+    root = str(work_store.work_card_id_of(wid) or "")
+    await card_tools._h_approve(
+        wid, root, {"review_card_id": rid},
+        card_store.iter_card_metas(wid))
+    await review_runner._run_step(wid, rid)
+
+
 async def test_open_review_creates_batch_with_members(sandbox):
     wid, cid, fids = await _make_work_with_functions()
     cards = card_store.iter_card_metas(wid)
@@ -56,9 +67,16 @@ async def test_open_review_creates_batch_with_members(sandbox):
         wid, cid, {"card_id": cid, "focus": "R1 收尾", "brief": "背景X\n现状Y\n评审Z"}, cards)
     assert out.get("ok"), out
     rid = out["data"]["review_card_id"]
-    assert out["data"]["members"] == fids
+    root = str(work_store.work_card_id_of(wid) or "")
+    # [两轮评审] 开的是对齐批：总裁一席，三席名单存 next_members 备晋级。
+    assert out["data"]["members"] == [root]
+    st0 = await review_store.state_of(wid, rid)
+    assert st0["type"] == "requirements_align"
+    assert st0["next_members"] == fids
+    await _advance_to_main_round(wid, rid)
     st = await review_store.status(wid, rid)
     assert st["batch"].startswith("rv_")
+    assert st["type"] == "requirements"
     assert set(st["pending"]) == set(fids), "默认全员未通过"
 
 
@@ -146,8 +164,13 @@ async def test_open_review_invites_only_ceo_pm_cto(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
     assert out.get("ok") is True, out
-    assert out["data"]["members"] == fids[:3]
-    assert fids[3] not in out["data"]["members"]
+    # [两轮评审] 第一轮成员恒为总裁（根卡）；三席名单在批态 next_members。
+    root = str(work_store.work_card_id_of(wid) or "")
+    assert out["data"]["members"] == [root]
+    st0 = await review_store.state_of(
+        wid, str(out["data"]["review_card_id"]))
+    assert st0["next_members"] == fids[:3]
+    assert fids[3] not in st0["next_members"]
 
 
 async def test_approve_rejects_non_member(sandbox):
@@ -167,6 +190,7 @@ async def test_all_approve_closes_only_when_everyone_passed(sandbox):
     cards = card_store.iter_card_metas(wid)
     out = await card_tools._h_open_review(wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     await _seated(wid, rid, *fids)
     a = await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
@@ -183,6 +207,7 @@ async def test_status_block_is_rendered_by_system(sandbox):
     cards = card_store.iter_card_metas(wid)
     out = await card_tools._h_open_review(wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
     await _seated(wid, rid, fids[0])
     await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
     body = (await card_store.read_card(wid, rid))["body"]
@@ -247,6 +272,7 @@ async def test_verdict_visible_on_card_after_close(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
     await _seated(wid, rid, fids[0])
     await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
     sb = str((await card_store.read_card(wid, rid))["body"].get("status_block") or "")
@@ -271,6 +297,7 @@ async def test_draft_edit_advances_version_but_keeps_votes(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
     await _seated(wid, rid, fids[0])
     await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
     st = await review_store.status(wid, rid)
@@ -283,19 +310,24 @@ async def test_draft_edit_advances_version_but_keeps_votes(sandbox):
     assert st1["draft"] == 1, "现状块不是评审材料，不该推进草稿版本"
     assert st1["passed"] == [fids[0]]
 
-    # 改草稿：推进版本，但票仍在
+    # [轮粒度 2026-11-14] 写草稿**不再随写推版**——版本在回合收口
+    # （report_target_turn_end）那一刻才落定。
     await card_store.update_card(wid, cid,
                                  {"requirements_draft": "R2 按意见改过"},
                                  "改草稿")
+    st_wip = await review_store.status(wid, rid)
+    assert st_wip["draft"] == 1, "轮内写卡不推版——版本等轮末定"
+    assert await review_runner.report_target_turn_end(wid, cid, "ok") is True
     st2 = await review_store.status(wid, rid)
-    assert st2["draft"] == 2, "改草稿 ⇒ 草稿版本必须推进"
+    assert st2["draft"] == 2, "轮末定版：草稿指纹变了 ⇒ 版本 +1"
     assert st2["passed"] == [fids[0]], "已通过的票不因草稿改版而作废"
     assert fids[1] in st2["pending"]
     assert st2["all_passed"] is False
 
 
-async def test_maybe_rerun_is_noop_without_change(sandbox):
-    """卡面没变就不推进版本（否则每写一次都空转一轮）。"""
+async def test_in_turn_multi_edit_is_one_version(sandbox):
+    """[轮粒度 2026-11-14 · 用户令] 同一轮里不论编辑多少次草稿，收口只落一版。
+    轮末定版幂等：指纹没变则一次也不推。"""
     from src.api import review_runner
 
     wid, cid, fids = await _make_work_with_functions(2)
@@ -303,11 +335,23 @@ async def test_maybe_rerun_is_noop_without_change(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
-    assert await review_runner.maybe_rerun(wid, cid) is False
-    assert (await review_store.status(wid, rid))["draft"] == 1
 
-    # 没有伴生评审卡的卡（评审卡自身）不触发
-    assert await review_runner.maybe_rerun(wid, rid) is False
+    # 同一轮连改三次草稿 + 一次现状——收口时只应算一次版本。
+    await card_store.update_card(
+        wid, cid, {"requirements_draft": "R2-a"}, "第一笔")
+    await card_store.update_card(
+        wid, cid, {"requirements_draft": "R2-b"}, "第二笔")
+    await card_store.update_card(
+        wid, cid, {"requirements_draft": "R2-c 最终"}, "第三笔")
+    await card_store.update_card(wid, cid, {"status_block": "顺手改现状"}, "附带")
+    assert (await review_store.status(wid, rid))["draft"] == 1
+    assert await review_runner.report_target_turn_end(wid, cid, "ok") is True
+    st = await review_store.status(wid, rid)
+    assert st["draft"] == 2, f"一轮多笔编辑＝一版，实际 {st['draft']}"
+
+    # 下一轮没动草稿 ⇒ 轮末比对指纹没变 ⇒ 不推版。
+    assert await review_runner.report_target_turn_end(wid, cid, "ok") is True
+    assert (await review_store.status(wid, rid))["draft"] == 2
 
 
 async def test_step_flow_revises_draft_then_reviews_again(sandbox, monkeypatch):
@@ -324,6 +368,7 @@ async def test_step_flow_revises_draft_then_reviews_again(sandbox, monkeypatch):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     seats: list[tuple[str, str]] = []
     dispatched: list[str] = []
@@ -346,6 +391,9 @@ async def test_step_flow_revises_draft_then_reviews_again(sandbox, monkeypatch):
             await card_store.update_card(
                 wid, cid, {"requirements_draft": "R2 按意见改过"}, "子卡改草稿")
             await review_store.mark_responded(work_id, review_id)
+            # [轮粒度 2026-11-14] 替身＝正卡自己一轮——轮末定版（真回合
+            # 收口走 report_target_turn_end，这里照做）。
+            await review_runner.report_target_turn_end(work_id, cid, "ok")
         else:
             # 照真件 _dispatch_child：派过定稿要落 promote_asked，
             # 否则每次唤醒都会重复派（harness 续跑是真接力的）。
@@ -383,6 +431,7 @@ async def test_step_stops_when_child_turn_is_pending(sandbox, monkeypatch):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     # 两席都已落座且否掉（机械状态直接落，不跑回合）。
     for f in fids:
@@ -507,6 +556,7 @@ async def test_all_passed_inside_failed_turn_still_promotes(
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     dispatched: list[str] = []
     n_calls = {"n": 0}
@@ -529,8 +579,10 @@ async def test_all_passed_inside_failed_turn_still_promotes(
                           "error": err}}
 
     async def fake_dispatch(work_id, review_id, st, *, kind):
-        dispatched.append(kind)
+        # 先落机械事实再亮 dispatched——append 在前会让 wait_until 抢在
+        # mark_promote_asked 落库前返回（竞态，实弹抓到一次）。
         await review_store.mark_promote_asked(work_id, review_id)
+        dispatched.append(kind)
         return True
 
     monkeypatch.setattr(review_runner, "_seat_turn", fake_seat)
@@ -553,15 +605,16 @@ async def test_all_passed_inside_failed_turn_still_promotes(
 # ---------------------------------------------------------------- 重评触发器（端到端接线）
 
 
-async def test_card_write_only_bumps_draft_never_spawns(sandbox, monkeypatch):
-    """子卡写卡面**只推进草稿版本，不起轮**（[2026-10-30 用户令]）。
+async def test_card_write_neither_bumps_nor_spawns(sandbox, monkeypatch):
+    """子卡写卡面**既不推版也不起轮**——版本在回合收口一刻才落
+    （[2026-10-30「谁让你做这么多独立的起轮口子」+ 2026-11-14 轮粒度令]）。
 
-    「谁让你做这么多独立的起轮口子」——写卡原来会顺手起一轮重评，而一次改稿里
-    子卡会写十几次卡面 ⇒ 十几次起轮全撞在改稿那把锁上、秒回 busy、又被当成
-    "还没跑完"继续叫 ⇒ 空转。写卡不是起轮的时机。
+    写卡原来会顺手起一轮重评，而一次改稿里子卡会写十几次卡面 ⇒ 十几次起轮
+    全撞在改稿那把锁上、秒回 busy、又被当成"还没跑完"继续叫 ⇒ 空转。
+    后又演化出「写一次涨一版」——轮内十几版、席位评的多半是中间稿。
+    写卡既不是起轮的时机、也不是定版的时机。
     """
     import asyncio
-    from src.api import review_runner
 
     wid, cid, fids = await _make_work_with_functions(2)
     cards = card_store.iter_card_metas(wid)
@@ -594,7 +647,13 @@ async def test_card_write_only_bumps_draft_never_spawns(sandbox, monkeypatch):
 
     assert tasks == [], f"写卡不该起轮，实际起了 {len(tasks)} 轮"
     after = (await review_store.status(wid, rid))["draft"]
-    assert after > before, f"草稿版本要推进：{before} → {after}"
+    assert after == before, f"轮内写卡不推版：{before} → {after}（轮末才定版）"
+
+    # 回合收口：版本落定（sync 在 report 内部），点火是 harness 的事——
+    # ECO_POLICY_OFF 下不投递，只验版本落定这一件机械事实。
+    assert await review_runner.report_target_turn_end(wid, cid, "ok") is True
+    after2 = (await review_store.status(wid, rid))["draft"]
+    assert after2 == before + 1, f"轮末定版：{before} → {after2}"
 
 
 # ---------------------------------------------------------------- 工具面归属
@@ -642,6 +701,7 @@ async def test_seat_turn_accepts_flat_tool_calls(sandbox, monkeypatch):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
     st = await review_store.state_of(wid, rid)
 
     n1 = {"c": 0}
@@ -684,6 +744,7 @@ async def test_status_after_close_reports_passed(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
     await _seated(wid, rid, fids[0])
     await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
 
@@ -708,6 +769,7 @@ async def test_status_after_close_reports_passed(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
     await _seated(wid, rid, fids[0])
     await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
 
@@ -737,6 +799,7 @@ async def test_full_approve_promotes_draft_to_final(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     before = (await card_store.read_card(wid, cid))
     final_before = str(before["body"].get("requirements") or "")
@@ -774,6 +837,7 @@ async def test_full_approve_promotes_draft_to_final(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     before = (await card_store.read_card(wid, cid))
     final_before = str(before["body"].get("requirements") or "")
@@ -859,6 +923,7 @@ async def test_closeout_feeds_back_to_child_conversation(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     await _seated(wid, rid, *fids)
     for f in fids:
@@ -886,6 +951,7 @@ async def test_closeout_feeds_back_to_child_conversation(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审内容"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     await _seated(wid, rid, *fids)
     for f in fids:
@@ -974,6 +1040,7 @@ async def test_run_once_does_not_revise_when_member_approved(sandbox, monkeypatc
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     dispatched: list[str] = []
 
@@ -1009,6 +1076,7 @@ async def test_vote_gate_member_only(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     # 没落座也能投——先不先发言是席位自己的分寸，机制不闸
     ok = await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
@@ -1028,6 +1096,7 @@ async def test_reject_overwrites_approve_same_seat(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     await _seated(wid, rid, fids[0])
     await card_tools._h_approve(wid, fids[0], {"review_card_id": rid}, cards)
@@ -1049,6 +1118,7 @@ async def test_repeated_reject_is_just_a_vote(sandbox):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     await _seated(wid, rid, fids[0])
     r1 = await card_tools._h_reject(wid, fids[0], {"review_card_id": rid}, cards)
@@ -1074,6 +1144,7 @@ async def test_rejected_seat_dispatches_revise_not_deadlock(sandbox, monkeypatch
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     # 两席连拒两次（用户令：重复否决不设机制结局）
     await _seated(wid, rid, *fids)
@@ -1108,13 +1179,15 @@ async def test_promote_version_gate_stale_approver(sandbox, monkeypatch):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     await _seated(wid, rid, *fids)
     for f in fids:
         await card_tools._h_approve(wid, f, {"review_card_id": rid}, cards)
-    # 全过的是 v1；之后草稿又改成 v2（迭代中不打扰任何人）。
+    # 全过的是 v1；之后草稿又改、回合收口落定为 v2（迭代中不打扰任何人）。
     await card_store.update_card(
         wid, cid, {"requirements_draft": "R2 全过之后改的"}, "漂移")
+    await review_runner.report_target_turn_end(wid, cid, "ok")   # [轮末定版]
     st = await review_store.status(wid, rid)
     assert st["draft"] == 2 and set(st["stale"]) == set(fids), st
 
@@ -1149,6 +1222,7 @@ async def test_step_dispatches_promote_when_all_passed(sandbox, monkeypatch):
     out = await card_tools._h_open_review(
         wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
     rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
 
     await _seated(wid, rid, *fids)
     for f in fids:

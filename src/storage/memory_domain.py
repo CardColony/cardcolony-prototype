@@ -462,6 +462,15 @@ def save_chain(work_id: str, card_id: str, chain: list[dict[str, Any]], *,
             "fold_mark=COALESCE(excluded.fold_mark, memory.fold_mark), "
             "updated_at=excluded.updated_at",
             (card_id, payload, condense_mark, fold_mark, now))
+        # [缓存板 2026-11-12] mark 推进**同事务**裁板——水位与板同生共死，
+        # seq 比较永不错位（card_021 下标错位旧坑在结构上不存在）。
+        if condense_mark is not None:
+            try:
+                from . import context_board  # 延迟：避免 storage 内部循环
+                context_board.trim_below_tx(conn, card_id, int(condense_mark))
+            except Exception as _cb_exc:  # noqa: BLE001 板漂移可重建，不赔水位
+                log.error("[board] 裁板失败（漂移待重建）card=%s: %s",
+                          card_id, _cb_exc)
         return 1
 
     try:

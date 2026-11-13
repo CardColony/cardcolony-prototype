@@ -57,6 +57,7 @@
   --cv-t-qa: #7ec97e;
   --cv-t-pm: #dd8ab4;
   --cv-t-rule: #8b96a8;
+  --cv-t-align: #5cc8d8;
 
   /* ---- 形状与节奏 ---- */
   --cv-r-sm: 6px;
@@ -972,6 +973,7 @@
 .page-canvas .cv-palette-dot[data-type="ui"] { background: var(--cv-t-ui); }
 .page-canvas .cv-palette-dot[data-type="qa_card"] { background: var(--cv-t-qa); }
 .page-canvas .cv-palette-dot[data-type="pm_card"] { background: var(--cv-t-pm); }
+.page-canvas .cv-palette-dot[data-type="align"] { background: var(--cv-t-align); }
 .page-canvas .cv-palette-title {
   font-size: 13px;
   font-weight: 550;
@@ -2657,6 +2659,13 @@
 .page-canvas .card-node[data-type="role"] {
   border-left: 3px solid #c9a227;
 }
+/* [对齐场 2026-11-11] 一次性场卡：同色左缘（与左栏/浮窗同源）＋虚线外框——
+   虚线即"临时"的视觉签名，用完即散。 */
+.page-canvas .card-node[data-type="align"] {
+  border-left: 3px solid var(--cv-t-align);
+  outline: 1px dashed rgba(92, 200, 216, 0.45);
+  outline-offset: 2px;
+}
 .page-canvas .cv-tchip {
   flex: none;
   padding: 0 5px;
@@ -2670,6 +2679,11 @@
   color: #f5a65b;
   background: rgba(245, 166, 91, 0.16);
   border: 1px solid rgba(245, 166, 91, 0.4);
+}
+.page-canvas .cv-tchip.align {
+  color: var(--cv-t-align);
+  background: rgba(92, 200, 216, 0.14);
+  border: 1px solid rgba(92, 200, 216, 0.4);
 }
 
 .page-canvas .card-tooltip .tt-decs {

@@ -2,13 +2,10 @@
 """本地文件工具（2026-10-03）。
 
 给主模型的四件文件能力：list_files / read_file / search_files / write_file。
-边界＝全盘（用户 2026-10-03 11:23 裁定）：基准目录 D:\\AI_station，全部子目录可读可写；
-路径规范化后校验前缀，只防 ../ 逃逸（越出 D:\\AI_station 仍拒）。
-
-【修订记录 2026-10-04 21:31】此前本行写「边界＝A 档（用户 2026-10-03 11:33 裁决）」有误。
-用户 10-03 11:23 的裁定是「全盘可读可写」；A 档（两目录白名单）是诸葛报代价后自行推荐的档位、
-用户以「就按你说的做」一句概括同意——把范围缩小后，诸葛又把缩小结果记成了用户的裁决。
-此举属越权（替用户做了选择），现按用户 10-04 21:24 当场指正恢复为全盘。
+**路径不设限**（用户 2026-11-15 令「取消文件夹访问的机械闸，读写都不限
+文件夹」）：卡的文件读写权限由卡型开关（tools_file/tools_read_file）管住，
+路径任意——本机全盘可达。BASE_DIR 只是相对路径的锚点与缺省列举根。
+（沿革：10-03 裁定 D:\AI_station 全盘 → 10-04 指正恢复 → 11-15 撤边界本体。）
 
 四道机械兜底：
 1. 写前强制备份——覆盖已有文件前，原文副本先落 _backups/{相对路径}/{时间戳}（不依赖 git）
@@ -34,9 +31,10 @@ logger = logging.getLogger("api.file_tools")
 from ..permissions import policy
 from . import prompt_log
 
-# 基准目录与允许范围（用户裁定：全盘可读可写）
+# 基准目录＝相对路径的锚点与缺省列举根（不是边界——[2026-11-15 用户令]
+# 「取消文件夹访问的机械闸，读写都不限文件夹」：卡的文件读写权限已由卡型
+# 开关（tools_file/tools_read_file）管住，路径不再设目录边界）。
 BASE_DIR = Path(r"D:\AI_station")
-ALLOWED_ROOTS = (BASE_DIR.resolve(),)
 
 
 def _default_root() -> str:
@@ -84,57 +82,11 @@ BACKUP_DIR = BASE_DIR / "推演agent" / "_backups"
 
 # ---------------------------------------------------------------- 路径与校验
 
-# [THINK-ECO-permgmt T6 · 2026-10-09 → 权限底座重做 2026-10-12] 分类路径锁：
-# card_type → 可访问路径前缀（相对 BASE_DIR，
-# 正斜杠比较；"" 哨兵＝不另设前缀限制）。
-# 值现状＝全放行哨兵——10-03/10-04 用户裁定「全盘可读可写」的保持现状档
-# （与交办单定夺 1 对 SHADOW_WRITE 的「保持现状」同款原则）；真实前缀属部署
-# 配置、待用户给值（Open Item）。
-# **注意**：本表只是 perms 之后再加的一层路径前缀约束，**不是权限本身**——
-# tools_file 开关已经先挡一道。tool 行不可达（该类型无 tools_file 开关），
-# 随表补齐只为键位完整。
-# [FILE_SCOPE 键位修复 2026-10-15] **键必须是 card_type（card_store._collect_card_meta
-# 与 policy.has_perm 传进来的那个值），不是 project_class 工牌码**。原表误抄权限
-# 表的五键（rd_project/research_project/sub_project/topic/tool），其中两个工牌码永
-# 不可能作为 card_type 查到（＝死键），而根卡真实 card_type=`project` 根本不在表内
-# → `FILE_SCOPE.get("project", [])` 返空列表 → `any([])` 恒 False → **11 张 project
-# 根卡的 tools_file 开关明明已授却被第三段拒死**（实证：work_009/card_001 调
-# list_files 报「越权：无权访问 D:\AI_station\推演agent」）。全仓无任何裁定写过
-# 根卡不可访问文件——纯漏抄。该错 10-08 在另一张 POLICY 表上已被预判上报
-# （THINK-ECO-permgmt-p1 调研纪要 T2「project 根卡不在表内、落默认全拒」），
-# 本表未复核故漏至今。
-# 键集由 tests/test_file_scope_keys.py 钉死 ＝ card_type_registry 的 card_type 全集，
-# 以后新增卡类型不会再撞这个坑。
-FILE_SCOPE: dict[str, list[str]] = {
-    "project": [""],      # 项目根卡（root scope）——10-15 补回，此前漏抄致根卡全被拒
-    "sub_project": [""],
-    "topic": [""],
-    "worker": [""],        # worker 卡——10-15 补（同因漏抄）
-    "tool": [""],
-    # [只读档 2026-10-22] role 补进来：2026-10-21 给职能角色配了 tools_read_file
-    # （「能核实交付物，但不给它写权和执行权」），但本表没有 role 键 ⇒
-    # FILE_SCOPE.get("role", []) 返空 ⇒ any([]) 恒 False ⇒ 那份只读权限等于没给。
-    "role": [""],
-    # [2026-10-26] function 补进来——**同一 bug 第三次**：职能卡（fn_NNN）的
-    # perms 里配了 tools_read_file，工具面也下发了 read_file/list_files/
-    # search_files/glob_files，但本表无 "function" 键 ⇒ 一调就 denied。
-    # 沿革：10-15 补 project/worker、10-22 补 role、10-26 补 function。
-    # 护栏见 tests/test_file_scope_coverage.py（配了文件权限就必须有键）。
-    "function": [""],
-    # [2026-10-27] review 补进来——评审卡是 sub_project/topic 的伴生卡，
-    # 角色在评审现场要能 read_file 查证（"证据区可见"）。没有本键 ⇒
-    # FILE_SCOPE.get("review", []) 返空 ⇒ any([]) 恒 False ⇒ 一调就 denied。
-    # 这是同一 bug 的第四次；键集由 tests/test_file_scope_keys.py 钉死。
-    "review": [""],
-    # [2026-11-06] ui/qa_card/pm_card 补进来——同一 bug 第五次：UI 卡
-    # （11-02 新增卡型）与差事卡（11-01 新增）abilities 里有 write_files/
-    # read_files、工具面也照发，但本表无键 ⇒ .get 返空 ⇒ 文件读写全拒
-    # （实证 work_027/card_454：write_file 对交付物路径一律 denied，
-    # 卡面只剩影子件与 browser 可用）。
-    "ui": [""],
-    "qa_card": [""],
-    "pm_card": [""],
-}
+# [2026-11-15 用户令「取消文件夹访问的机械闸」] FILE_SCOPE（card_type→路径
+# 前缀表）与 ALLOWED_ROOTS（D:\AI_station 边界）一并退役——
+# 卡的文件读写权限由卡型开关（tools_file/tools_read_file）管住，路径不设限。
+# 原 FILE_SCOPE 值全是 [""] 全放行哨兵，唯一实际效果是「新卡型漏抄键就全拒」
+# ——同一 bug 犯过六次（project/worker/role/function/review/ui·qa·pm/align）。
 
 
 def _credential_excluded(path: Path) -> bool:
@@ -154,28 +106,19 @@ def _credential_excluded(path: Path) -> bool:
     return False
 
 
-def _prefix_hit(target: Path, prefix: str) -> bool:
-    """FILE_SCOPE 前缀判定："" 哨兵匹配一切；其余按 BASE_DIR 相对路径比较。"""
-    if prefix == "":
-        return True
-    try:
-        rel = target.relative_to(BASE_DIR)
-    except ValueError:
-        return False
-    return str(rel).replace("\\", "/").startswith(prefix)
-
-
 def check_file_access(path: str, card_meta: Any = None, *,
                       write: bool = False) -> bool:
-    """[T6 路径锁 2026-10-09 → 重做 2026-10-12] 文件路径锁：机械三层判定。
+    """[2026-11-15 重做] 文件访问判定：能力闸＋凭证排除，**路径不设限**。
 
     ① 权限（**读写分档**）：``write=True`` ⇒ 须授 ``tools_file``；
        ``write=False``（读类）⇒ ``tools_file`` **或** ``tools_read_file`` 任一即可。
-    ② 全盘边界：与 _resolve 同判据（resolve 后须落 ALLOWED_ROOTS 之下）；
-    ③ 内部凭证排除＋FILE_SCOPE 前缀（FILE_SCOPE 值现状＝全放行哨兵，
-       见上方表注；真实前缀待用户提供，属 Open Item）。
+    ② 内部凭证排除（文件名黑名单，非文件夹边界）。
     空路径非权限问题（下游既有「path 不能为空」校验负责），放行交下游。
     T7 打点在唯一出口，两态同记（不做二次判定、无任何闸）。
+
+    [2026-11-15 用户令「取消文件夹访问的机械闸，读写都不限文件夹」]
+    原 ②全盘边界（ALLOWED_ROOTS）与 ③FILE_SCOPE 卡型前缀表一并退役——
+    文件读写权限由卡型开关管住，文件夹不再设闸。
 
     [只读档 2026-10-22 · 用户令「它把查找文件、读文件也屏蔽了，这显然不行」]
     原来这里只认 ``tools_file``。而 2026-10-21 给 role / 根卡 / 子卡配的是
@@ -231,16 +174,15 @@ def check_file_access(path: str, card_meta: Any = None, *,
     if _credential_excluded(target):
         _log(False, "credential")
         return False
-    hit = any(_prefix_hit(target, p) for p in FILE_SCOPE.get(card_type, []))
-    _log(hit, "" if hit else None)
-    return hit
+    _log(True, "")
+    return True
 
 
 def _resolve(raw: str) -> tuple[Path | None, dict[str, Any] | None]:
-    """把入参解析为绝对路径并校验边界。
+    """把入参解析为绝对路径。**不设目录边界**（2026-11-15 用户令）。
 
     返回 (path, None) 成功；(None, error) 失败。
-    规则：相对路径以 BASE_DIR 为基准；resolve 后必须落在 ALLOWED_ROOTS 之下。
+    规则：相对路径以 BASE_DIR 为基准锚点；绝对路径原样解析。
     """
     if not raw or not str(raw).strip():
         return None, {"error": "path 不能为空"}
@@ -251,15 +193,7 @@ def _resolve(raw: str) -> tuple[Path | None, dict[str, Any] | None]:
         rp = p.resolve()
     except (OSError, RuntimeError) as exc:
         return None, {"error": f"路径无法解析: {exc}"}
-
-    for root in ALLOWED_ROOTS:
-        try:
-            rp.relative_to(root)
-        except ValueError:
-            continue
-        return rp, None
-    allowed = "、".join(str(r) for r in ALLOWED_ROOTS)
-    return None, {"error": f"路径越界：只允许访问 {allowed}，收到 {rp}"}
+    return rp, None
 
 
 def _rel(p: Path) -> str:
@@ -522,7 +456,14 @@ def _backup_existing(target: Path, old: bytes) -> tuple[str, dict[str, Any] | No
     """
     try:
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        bdir = BACKUP_DIR / target.parent.relative_to(BASE_DIR) / stamp
+        try:
+            rel_parent = target.parent.relative_to(BASE_DIR)
+        except ValueError:
+            # [2026-11-15] 工作根外路径（文件夹闸已撤）：盘符镜像
+            # D:\Temp\x → _backups\D_\Temp\{stamp}\x，落点可逆可查
+            drive = (target.drive or "").replace(":", "_") or "no_drive"
+            rel_parent = Path(drive, *target.parent.parts[1:])
+        bdir = BACKUP_DIR / rel_parent / stamp
         bdir.mkdir(parents=True, exist_ok=True)
         bfile = bdir / target.name
         bfile.write_bytes(old)
@@ -635,7 +576,8 @@ def edit_file(path: str, old_string: str, new_string: str) -> dict[str, Any]:
 
     [基础工具找回 2026-10-17 · 逐字搬自 toolfold] 契约逐条：
 
-    1. ``path`` 过 ``_resolve``（与 read_file / write_file 同一道越界边界）；
+    1. ``path`` 过 ``_resolve``（与 read_file / write_file 同一道解析；2026-11-15
+       起只解析不设边界）；
     2. 全文 ``read_bytes`` + ``decode("utf-8")``——二进制拒（判据同 read_file）。
        凭证拦截口径也与 read_file / write_file 逐字同：工具层已按 2026-10-04 用户
        裁定撤掉，关卡在 ``check_file_access``（handler）；
@@ -712,7 +654,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
         {
             "name": "list_files",
             "description": (
-                f"列出一个目录下的条目（一层，不进子目录）。范围：{'、'.join(str(r) for r in ALLOWED_ROOTS)}。"
+                "列出一个目录下的条目（一层，不进子目录）。范围：本机任意路径（不限目录）。"
                 "按文件名找文件请用 glob_files（不读内容、不受条数上限）；"
                 "按内容找行用 search_files。返回 truncated=true 表示目录没列完——"
                 "换检索工具按模式取，不要盲目调大 limit。"
@@ -720,7 +662,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "目录路径（相对 D:\\AI_station 或绝对）；缺省列 trading-workspace"},
+                    "path": {"type": "string", "description": "目录路径（相对路径以 D:\\AI_station 为基准，绝对路径任意）；缺省列 trading-workspace"},
                     "limit": {"type": "integer", "description": "最多返回条目数，缺省 200（上限 1000）"},
                 },
                 "required": [],
@@ -732,7 +674,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "文件路径（相对 D:\\AI_station 或绝对）"},
+                    "path": {"type": "string", "description": "文件路径（相对路径以 D:\\AI_station 为基准，绝对路径任意）"},
                     "para_start": {"type": "integer", "description": "起始行号（1 起），缺省 1"},
                     "para_end": {"type": "integer", "description": "结束行号，缺省到文件末尾"},
                 },
@@ -769,7 +711,7 @@ def build_file_tool_schemas() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "文件路径（相对 D:\\AI_station 或绝对）"},
+                    "path": {"type": "string", "description": "文件路径（相对路径以 D:\\AI_station 为基准，绝对路径任意）"},
                     "content": {"type": "string", "description": "写入的完整文本内容"},
                 },
                 "required": ["path", "content"],

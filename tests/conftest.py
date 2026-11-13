@@ -90,12 +90,10 @@ def sandbox(tmp_path, monkeypatch):
     # prompt 日志（审计双通道之一）
     monkeypatch.setattr(prompt_log, "LOGS_DIR", logs)
 
-    # 文件工具边界：源码里 BASE_DIR 是硬编码绝对路径 D:\\AI_station
+    # 文件工具锚点：源码里 BASE_DIR 是硬编码绝对路径 D:\\AI_station。
+    # [2026-11-15] ALLOWED_ROOTS（文件夹闸）已退役，不再 monkeypatch——
+    # 沙箱隔离现在只锚 BASE_DIR（相对路径基准/缺省根/备份根），无边界语义。
     monkeypatch.setattr(file_tools, "BASE_DIR", base)
-    monkeypatch.setattr(
-        file_tools, "ALLOWED_ROOTS",
-        ((base / "trading-workspace").resolve(), (base / "推演agent").resolve()),
-    )
     monkeypatch.setattr(file_tools, "BACKUP_DIR", base / "推演agent" / "_backups")
 
     # 模型层：清掉全局单例，除非用例自己设；MOCK_LLM 默认不设

@@ -443,7 +443,7 @@ def test_block3_no_gate_in_chain():
 #: [事实分层 2026-11-01 · t27-3] _SEC_CARDMSG 语义修正 ⇒ BASE_PROMPT 文本变更，
 #: 指纹随之更新。**这条断言的意义是「片段拼装 == 整体渲染」**，不是"文本永不改"。
 #: （常量沿用原名 T22_1_* 属历史遗留；基线就是当前版本，每次升版本同步换指纹。）
-BASE_PROMPT_SHA256 = "f3dab9d31ee16b3c12553c0f0526a75c7a1a5f8e0d7dd9f72d44d59662e80075"
+BASE_PROMPT_SHA256 = "9650dcfecf56782ddc94d3d62999d939f4a3a75df5b8a24d3e987ecb7d2c7094"
 
 #: auto 版工具清单必须**逐件在册**（块0.4 硬判据 4）。
 #: [事实分层 2026-11-01] 清单与现行 _SEC_TOOLS_AUTO 实读对齐：
@@ -615,14 +615,14 @@ def test_block4_prompt_version_and_section():
     [回灌 5700 §十 版本号推进表] auto-t1＝块0.4 初版；auto-t2＝G2（自主通信
     两件进 auto 面）；auto-t3＝G4（协作协议两条义务式规则）。
     """
-    assert prompts.BASE_PROMPT_VERSION == "t27-16"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t33"
+    assert prompts.BASE_PROMPT_VERSION == "t27-19"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t36"
     assert "## 自动模式" not in prompts.BASE_PROMPT
     assert "## 自动模式" in prompts.AUTO_BASE_PROMPT
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [2026-11-02] +browser/+create_ui_card
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
@@ -667,7 +667,7 @@ def test_rework_1_base_prompt_byte_identical_to_baseline():
 
 def test_rework_2_versions():
     """BASE_PROMPT_VERSION 不动；AUTO_BASE_PROMPT_VERSION 存在且非空。"""
-    assert prompts.BASE_PROMPT_VERSION == "t27-16"
+    assert prompts.BASE_PROMPT_VERSION == "t27-19"
     assert isinstance(prompts.AUTO_BASE_PROMPT_VERSION, str)
     assert prompts.AUTO_BASE_PROMPT_VERSION.strip()
 
@@ -1122,8 +1122,8 @@ def test_auto_prompt_version_after_p7():
     [事实分层 2026-11-01] 两版同批推进 ⇒ t27-3 / auto-t20。
     """
     from src.api import prompts
-    assert prompts.BASE_PROMPT_VERSION == "t27-16"
-    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t33"
+    assert prompts.BASE_PROMPT_VERSION == "t27-19"
+    assert prompts.AUTO_BASE_PROMPT_VERSION == "auto-t36"
 
 
 async def _async_noop(*a, **kw):

@@ -22,13 +22,14 @@ const rulePanelBody = document.getElementById("rulePanelBody");
  * ★ 本镜像必须与后端一致，tests/test_rule_card.py 有一条断言比对两边。 */
 const DRAFT_RULE_SECTIONS = ["all", "project", "function", "sub_project",
                              "tool", "worker", "ui", "qa_card", "pm_card",
-                             "rule", "review", "topic"];
+                             "align", "rule", "review", "topic"];
 
 /* 分区显示名（与后端 rule_store.SECTION_LABELS 同口径；缺失按 code 原样显示）。 */
 const SECTION_LABELS = {
   all: "总规则（所有卡）", project: "根卡", sub_project: "子项目卡",
   tool: "工具卡", worker: "worker 卡", ui: "UI卡", qa_card: "验收卡", pm_card: "执笔卡",
   function: "全体职能",
+  align: "对齐场卡",
   review: "评审卡", rule: "规则节点自身", topic: "课题卡",
 };
 const labelOf = (n) => SECTION_LABELS[n] || n;

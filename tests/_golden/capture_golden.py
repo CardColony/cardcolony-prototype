@@ -249,9 +249,7 @@ def build_sandbox(tmp: Path, monkey: dict) -> dict[str, Path]:
     prompt_log.LOGS_DIR = logs
     monkey["ft_base"] = file_tools.BASE_DIR
     file_tools.BASE_DIR = base
-    monkey["ft_roots"] = file_tools.ALLOWED_ROOTS
-    file_tools.ALLOWED_ROOTS = ((base / "trading-workspace").resolve(),
-                                (base / "推演agent").resolve())
+    # [2026-11-15] ALLOWED_ROOTS（文件夹闸）已退役，无需再改
     monkey["ft_backup"] = file_tools.BACKUP_DIR
     file_tools.BACKUP_DIR = base / "推演agent" / "_backups"
     monkey["gw"] = model_service._gateway
@@ -273,7 +271,6 @@ def _restore_all(restore: dict[str, Any]) -> None:
     data_snapshot._FINGERPRINT_FILE = restore["ds_fp"]
     prompt_log.LOGS_DIR = restore["pl_logs"]
     file_tools.BASE_DIR = restore["ft_base"]
-    file_tools.ALLOWED_ROOTS = restore["ft_roots"]
     file_tools.BACKUP_DIR = restore["ft_backup"]
 
 

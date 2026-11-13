@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CardColony 画布 · 两个设计方向</title>
+<style>
+/* ================= 令牌 ================= */
+.root{
+  --bg:#0b0d10; --panel:#141920; --surface:#161d26;
+  --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+  --tx:#dfe6f0; --tx2:#9aa6b6; --tx3:#5f6a78;
+  --gold:#e2a63d;
+  --run:#7fd6a1; --blk:#f85149; --pau:#f7c163; --qed:#8fb0ff; --done:#5c6674;
+  --worker:#f5a65b; --ui:#56c8d8; --qa:#7ec97e; --pm:#dd8ab4;
+  --chipbg:rgba(255,255,255,.05); --wire:#3a4552;
+}
+.root[data-theme="light"]{
+  --bg:#f4f5f7; --panel:#ffffff; --surface:#ffffff;
+  --line:rgba(20,30,45,.10); --line2:rgba(20,30,45,.18);
+  --tx:#1c2733; --tx2:#5b6774; --tx3:#8b95a1; --gold:#c9901f;
+  --wire:#c3ccd7; --chipbg:rgba(20,30,45,.05);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font:13px/1.5 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  background:var(--bg);color:var(--tx);-webkit-font-smoothing:antialiased}
+.root{height:100%;display:flex;flex-direction:column;background:var(--bg)}
+.mono{font-family:"Cascadia Mono",Consolas,monospace}
+svg text{user-select:none}
+
+/* ================= 顶栏 ================= */
+.top{height:44px;flex:none;display:flex;align-items:center;gap:14px;padding:0 14px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;font-weight:600;font-size:15px}
+.brand .b3{color:var(--gold)}
+.crumb{color:var(--tx3);font-size:12px}
+.stat{color:var(--tx2);font-size:12px}
+.stat b{color:var(--tx)} .stat .warn{color:var(--blk)}
+/* 方向切换：主控件 */
+.seg{display:flex;border:1px solid var(--line2);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:transparent;color:var(--tx2);font-size:12px;
+  padding:5px 14px;cursor:pointer}
+.seg button.on{background:var(--gold);color:#161310;font-weight:600}
+.topsp{flex:1}
+.tbtn{height:28px;min-width:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;
+  background:transparent;color:var(--tx2);font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.tbtn:hover{color:var(--tx);border-color:var(--line2)}
+.zpct{width:42px;text-align:center;color:var(--tx2);font-size:12px;cursor:pointer}
+input[type=range]{width:90px;accent-color:var(--gold)}
+
+/* ================= 画布 ================= */
+.main{flex:1;position:relative;overflow:hidden}
+.stage{position:absolute;inset:0;transform-origin:0 0}
+#wires{position:absolute;inset:0;overflow:visible;pointer-events:none}
+
+/* ---- 方向一「生长体」 ---- */
+.dir-a{background:radial-gradient(ellipse at 30% 45%, var(--bg2,#0e1116) 0%, var(--bg) 70%)}
+.node{position:absolute;transform:translate(-50%,-50%);border-radius:50%;
+  display:grid;place-items:center;cursor:pointer}
+.node .core{position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--line2);
+  background:var(--surface)}
+.node.exec .core{border-style:dashed}
+.node .lbl{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);
+  white-space:nowrap;pointer-events:none}
+.node .lbl b{display:block;font-size:13px;font-weight:600;color:var(--tx)}
+.node .lbl span{display:block;font-size:11px;color:var(--tx2)}
+/* 体量即层级 */
+.r-master{width:76px;height:76px} .r-manager{width:46px;height:46px}
+.r-unit{width:28px;height:28px} .r-exec{width:16px;height:16px}
+/* 光即生命 */
+.node.s-run .core{border-color:var(--run);
+  box-shadow:0 0 18px 2px color-mix(in srgb,var(--run) 45%,transparent);animation:bre 2.4s ease-in-out infinite}
+.node.s-blk .core{border-color:var(--blk);
+  box-shadow:0 0 20px 3px color-mix(in srgb,var(--blk) 55%,transparent);animation:bre 1.4s ease-in-out infinite}
+.node.s-pau .core{border-color:var(--pau)}
+.node.s-qed .core{border-color:var(--qed);animation:bre 1.1s ease-in-out infinite}
+.node.s-done .core{border-color:var(--done);background:var(--surface);opacity:.55}
+@keyframes bre{50%{filter:brightness(1.35)}}
+.node .ticon{color:var(--tc,var(--tx2));display:grid;place-items:center;position:relative;z-index:1}
+/* 受阻路径：父链逐级染红微光 */
+.wire-blk{stroke:var(--blk)!important;stroke-opacity:.5;stroke-width:2!important;
+  filter:drop-shadow(0 0 4px var(--blk))}
+.stage.a-far .lbl span{display:none}
+.stage.a-far .r-unit .lbl,.stage.a-far .r-exec .lbl{display:none}
+
+/* ---- 方向二「仪表林」 ---- */
+.dir-b{background-image:radial-gradient(circle,var(--line) 1px,transparent 1px);
+  background-size:28px 28px}
+.dial-card{position:absolute;display:flex;align-items:center;gap:10px;width:290px;cursor:pointer}
+.dial{flex:none;width:44px;height:44px;position:relative}
+.dial svg{width:44px;height:44px;transform:rotate(-90deg)}
+.dial .base{fill:none;stroke:var(--line2);stroke-width:2.5}
+.dial .arc{fill:none;stroke-width:3;stroke-linecap:round}
+.dial .cicon{position:absolute;inset:0;display:grid;place-items:center;color:var(--tc,var(--tx2))}
+.dial.s-run .arc{stroke:var(--run);stroke-dasharray:64 40;animation:spin 3s linear infinite}
+.dial.s-blk .arc{stroke:var(--blk);stroke-dasharray:44 8 8 8 8 8}
+.dial.s-pau .arc{stroke:var(--pau);stroke-dasharray:55 49}
+.dial.s-qed .arc{stroke:var(--qed);stroke-dasharray:4 7;animation:spin 2.2s linear infinite}
+.dial.s-done .arc{stroke:var(--done);stroke-dasharray:104 0;stroke-width:2}
+@keyframes spin{to{transform:rotate(270deg)}}
+.dial.s-blk{animation:bre 1.4s ease-in-out infinite}
+.dc-body{flex:1;min-width:0}
+.dc-t{font-size:14px;font-weight:600;color:var(--tx);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.exec .dc-t{font-weight:500;font-size:13px}
+.dc-s{font-size:11.5px;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dc-id{font-size:9.5px;color:var(--tx3)}
+.dial-card .subflag{font-size:9.5px;color:var(--blk);background:rgba(248,81,73,.13);
+  border-radius:4px;padding:0 6px;margin-left:4px}
+.stage.b-far .dc-s,.stage.b-far .dc-id{display:none}
+.stage.b-far .dial{width:34px;height:34px}
+.stage.b-far .dial svg{width:34px;height:34px}
+
+/* 右缘 + 底栏（两方向共用） */
+.bm{position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:5;
+  display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;overflow:hidden}
+.bm button{width:34px;height:42px;border:0;background:transparent;color:var(--tx3);
+  cursor:pointer;display:grid;place-items:center}
+.bm button+button{border-top:1px solid var(--line)}
+.bm button:hover{color:var(--tx);background:var(--chipbg)}
+.mbar{height:44px;flex:none;display:flex;align-items:stretch;background:var(--panel);
+  border-top:1px solid var(--line)}
+.mslot{display:flex;flex-direction:column;justify-content:center;gap:1px;padding:0 16px;
+  border-right:1px solid var(--line);min-width:140px}
+.mslot .t{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--tx2)}
+.mslot .t i{width:12px;height:12px;display:grid;place-items:center}
+.mslot .m{font-size:11px;color:var(--tx3);font-family:"Cascadia Mono",Consolas,monospace}
+.note{position:absolute;left:14px;bottom:14px;z-index:5;max-width:360px;background:var(--panel);
+  border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:11.5px;color:var(--tx2)}
+.note b{color:var(--tx)}
+</style>
+</head>
+<body>
+<div class="root" id="root" data-theme="dark">
+  <div class="top">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="margin-right:2px">
+        <path class="csvg" d="M19.5 7.2A9 9 0 1 0 19.5 16.8" stroke="#dfe6f0" stroke-width="3.4" stroke-linecap="round"/>
+        <circle cx="12.4" cy="10.6" r="1.35" fill="#e2a63d"/><circle cx="16" cy="10.6" r="1.35" fill="#e2a63d"/>
+        <line class="csvg" x1="14.2" y1="5.4" x2="14.2" y2="3.4" stroke="#dfe6f0" stroke-width="1.6" stroke-linecap="round"/>
+        <circle cx="14.2" cy="2.6" r="1.05" fill="#e2a63d"/>
+      </svg><span class="b2">ard</span><span class="b3">Colony</span>
+    </div>
+    <span class="crumb">全景</span>
+    <span class="stat"><b>15</b> 卡 · <b>5</b> 运行中 · <span class="warn"><b>1</b> 受阻</span></span>
+    <span style="width:16px"></span>
+    <div class="seg">
+      <button id="dirA" class="on">一 · 生长体</button>
+      <button id="dirB">二 · 仪表林</button>
+    </div>
+    <span class="topsp"></span>
+    <input type="range" id="zoom" min="35" max="130" value="80">
+    <span class="zpct" id="zpct">80%</span>
+    <button class="tbtn" id="themeb">☾</button>
+  </div>
+
+  <div class="main" id="main">
+    <div class="stage dir-a" id="stageA"><svg id="wiresA"></svg></div>
+    <div class="stage dir-b" id="stageB" style="display:none"><svg id="wiresB"></svg></div>
+
+    <div class="bm">
+      <button><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.8 10.8 14 14"/></svg></button>
+      <button><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 4.5h12M2 8h9M2 11.5h12"/></svg></button>
+      <button><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="2" width="10" height="12" rx="1.6"/><path d="M5.5 6h5M5.5 9h5M5.5 12h3"/></svg></button>
+      <button><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4" width="11" height="9" rx="1.4"/><path d="M2.5 7h11M6 10h4"/></svg></button>
+    </div>
+    <div class="note" id="note"></div>
+  </div>
+  <div class="mbar" id="mbar"></div>
+</div>
+
+<script>
+const TYPES={
+ master:{r:76,c:"var(--tx)",icon:'<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 17l2.5-9L12 12l5.5-4L20 17H4z" stroke-linejoin="round"/><path d="M6 20h12"/></svg>'},
+ manager:{r:46,c:"var(--tx)",icon:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M12 9v3m0 0-4 3m4-3 4 3"/></svg>'},
+ unit:{r:28,c:"var(--tx)",icon:'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>'},
+ worker:{r:16,c:"var(--worker)",icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M8 6 3 12l5 6m8-12 5 6-5 6" stroke-linecap="round" stroke-linejoin="round"/></svg>'},
+ qa:{r:16,c:"var(--qa)",icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5" stroke-linecap="round" stroke-linejoin="round"/></svg>'},
+ pm:{r:16,c:"var(--pm)",icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 4.5 19.5 10 9 20.5l-5.7.7.7-5.7L14 4.5z" stroke-linejoin="round"/></svg>'},
+ ui:{r:16,c:"var(--ui)",icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M3 9h18"/></svg>'},
+};
+/* ax/ay=生长体坐标（自由布局）；bx/by=仪表林坐标（列式） */
+const CARDS=[
+ {id:"card_001",t:"底层重构",     k:"master", s:"run", ax:120,ay:430, bx:30, by:360, st:"收口核验中 · 本周已合 21 支",sub:1},
+ {id:"card_021",t:"底座与存储",   k:"manager",s:"run", ax:360,ay:200, bx:390,by:120, st:"写路径硬化收口 · 剩背压一件"},
+ {id:"card_201",t:"事件日志与投影",k:"unit",  s:"run", ax:560,ay:110, bx:760,by:40,  st:"第 12 轮 · 写放大计量落表"},
+ {id:"card_202",t:"判重点查改造", k:"worker", s:"done",ax:585,ay:195, bx:760,by:150, st:"索引点查已上线 · R14 计量绿"},
+ {id:"card_203",t:"磁盘水位背压", k:"worker", s:"pau", ax:545,ay:280, bx:760,by:260, st:"等水位表定稿 · 已停 3 天"},
+ {id:"card_041",t:"执行与派发",   k:"manager",s:"run", ax:380,ay:430, bx:390,by:330, st:"B1 派发缝联调中",sub:1},
+ {id:"card_204",t:"派发缝 B1",    k:"unit",   s:"run", ax:590,ay:350, bx:760,by:330, st:"dispatch 意图已接线"},
+ {id:"card_205",t:"停止链 E17",   k:"unit",   s:"done",ax:600,ay:455, bx:760,by:420, st:"hStop 经端口发布 · 复验绿"},
+ {id:"card_206",t:"停止链验收",   k:"qa",     s:"blk", ax:585,ay:535, bx:760,by:510, st:"缺 card_497 反例件 · 已等 2 天"},
+ {id:"card_301",t:"系统壳界面",   k:"ui",     s:"run", ax:760,ay:350, bx:1130,by:300,st:"首屏线框 v2 · 在画"},
+ {id:"card_302",t:"联调探针",     k:"worker", s:"qed", ax:770,ay:440, bx:1130,by:420,st:"排队中 · 等 SSE 通道空位"},
+ {id:"card_061",t:"规则与评审",   k:"manager",s:"run", ax:360,ay:640, bx:390,by:540, st:"待决草案表已上线"},
+ {id:"card_207",t:"判据表定稿",   k:"pm",     s:"run", ax:545,ay:605, bx:760,by:600, st:"42 条已裁 38 · 剩执行域"},
+ {id:"card_208",t:"契约冻结复查", k:"qa",     s:"done",ax:550,ay:700, bx:760,by:690, st:"十二契约 · 有红有绿已归档"},
+ {id:"card_081",t:"文档与宣发",   k:"worker", s:"done",ax:170,ay:640, bx:390,by:700, st:"发布矩阵 v1 已交付"},
+];
+const WIRES=[["card_001","card_021"],["card_001","card_041"],["card_001","card_061"],["card_001","card_081"],
+ ["card_021","card_201"],["card_021","card_202"],["card_021","card_203"],
+ ["card_041","card_204"],["card_041","card_205"],["card_041","card_206"],
+ ["card_204","card_301"],["card_204","card_302"],
+ ["card_061","card_207"],["card_061","card_208"]];
+const MBAR=[["master","Master","opus-4.5"],["manager","Manager","opus-4.5"],["unit","Unit","sonnet-4.5"],
+ ["worker","worker","sonnet-4.5"],["qa","QA","sonnet-4.5"],["pm","PM","sonnet-4.5"],["ui","UI","gpt-5.2"]];
+const NS="http://www.w3.org/2000/svg"; const byId={}; CARDS.forEach(c=>byId[c.id]=c);
+const isExec=k=>TYPES[k].r===16;
+
+/* ---- 方向一：生长体 ---- */
+(function(){
+ const st=document.getElementById("stageA"), W=document.getElementById("wiresA");
+ W.setAttribute("width","1600");W.setAttribute("height","900");
+ for(const [a,b] of WIRES){const A=byId[a],B=byId[b];
+   const blocked=B.s==="blk";
+   const p=document.createElementNS(NS,"path");
+   p.setAttribute("d",`M${A.ax} ${A.ay} Q ${(A.ax+B.ax)/2} ${A.ay+((B.ay-A.ay)*.35)} ${B.ax} ${B.ay}`);
+   p.setAttribute("fill","none");p.setAttribute("stroke","var(--wire)");
+   p.setAttribute("stroke-width",A.k==="master"?2.2:1.4);
+   p.setAttribute("class",blocked?"wire-blk":"");
+   if(blocked)p.setAttribute("style","stroke:var(--blk)");
+   W.appendChild(p);}
+ for(const c of CARDS){const T=TYPES[c.k];
+   const el=document.createElement("div");
+   el.className=`node ${isExec(c.k)?"exec":""} r-${isExec(c.k)?"exec":c.k} s-${c.s}`;
+   el.style.cssText=`left:${c.ax}px;top:${c.ay}px;--tc:${T.c}`;
+   el.innerHTML=`<i class="core"></i><span class="ticon">${T.icon}</span>
+     ${isExec(c.k)?"":`<span class="lbl"><b>${c.t}</b><span>${c.st}${c.sub?` · <b style="color:var(--blk)">▼受阻${c.sub}</b>`:""}</span></span>`}`;
+   st.appendChild(el);}
+})();
+
+/* ---- 方向二：仪表林 ---- */
+(function(){
+ const st=document.getElementById("stageB"), W=document.getElementById("wiresB");
+ W.setAttribute("width","1600");W.setAttribute("height","900");
+ for(const [a,b] of WIRES){const A=byId[a],B=byId[b];
+   const p=document.createElementNS(NS,"path");
+   p.setAttribute("d",`M${A.bx+330} ${A.by+22} C ${A.bx+400} ${A.by+22} ${B.bx-70} ${B.by+22} ${B.bx} ${B.by+22}`);
+   p.setAttribute("fill","none");p.setAttribute("stroke",B.s==="blk"?"var(--blk)":"var(--wire)");
+   p.setAttribute("stroke-width",B.s==="blk"?1.5:1.2);
+   if(B.s==="blk")p.setAttribute("stroke-opacity",".55");
+   W.appendChild(p);}
+ for(const c of CARDS){const T=TYPES[c.k];
+   const el=document.createElement("div");
+   el.className=`dial-card ${isExec(c.k)?"exec":"struct"}`;
+   el.style.cssText=`left:${c.bx}px;top:${c.by}px;--tc:${T.c}`;
+   el.innerHTML=`<div class="dial s-${c.s}">
+      <svg viewBox="0 0 44 44"><circle class="base" cx="22" cy="22" r="16.5"/><circle class="arc" cx="22" cy="22" r="16.5"/></svg>
+      <span class="cicon">${T.icon}</span></div>
+    <div class="dc-body">
+      <div class="dc-t">${c.t}${c.sub?`<span class="subflag">▼受阻${c.sub}</span>`:""}</div>
+      <div class="dc-s">${c.st}</div>
+      <div class="dc-id mono">${c.id}</div>
+    </div>`;
+   st.appendChild(el);}
+})();
+
+/* ================= 交互 ================= */
+const zoom=document.getElementById("zoom"),zpct=document.getElementById("zpct"),main=document.getElementById("main");
+let dir="a";
+function apply(){const z=+zoom.value/100;zpct.textContent=Math.round(z*100)+"%";
+ for(const [id,w] of [["stageA",900],["stageB",900]]){
+   const st=document.getElementById(id);
+   st.style.transform=`translate(30px,${Math.max(16,(main.clientHeight-w*z)/2)}px) scale(${z})`;}
+ document.getElementById("stageA").classList.toggle("a-far",z<0.55);
+ document.getElementById("stageB").classList.toggle("b-far",z<0.55);}
+zoom.addEventListener("input",apply);
+zpct.onclick=()=>{zoom.value=100;apply()};
+const NOTES={a:`<b>方向一 · 生长体</b>——体量＝层级，光＝生命。远看是一株发光的群落（受阻沿链路泛红），层级靠体积读，文字按需出现。执行卡缩成光点，结构卡才配名字。<br><i>争议点：美但信息靠逼近/悬停，监控效率待验。</i>`,
+ b:`<b>方向二 · 仪表林</b>——每张卡是一只表：环形色即状态（转=跑、断红=卡、虚环=排队、满灰=完），<b>缩到 40% 文字死光了状态仍可读</b>——远观是一片健康度星图。标题/现状行永远贴着表。<br><i>争议点：放弃了"卡"的方块语义，更像仪表盘。</i>`};
+function setDir(d){dir=d;
+ document.getElementById("dirA").classList.toggle("on",d==="a");
+ document.getElementById("dirB").classList.toggle("on",d==="b");
+ document.getElementById("stageA").style.display=d==="a"?"":"none";
+ document.getElementById("stageB").style.display=d==="b"?"":"none";
+ document.getElementById("note").innerHTML=NOTES[d];apply();}
+document.getElementById("dirA").onclick=()=>setDir("a");
+document.getElementById("dirB").onclick=()=>setDir("b");
+document.getElementById("themeb").onclick=e=>{const r=document.getElementById("root");
+ const l=r.dataset.theme!=="light";r.dataset.theme=l?"light":"dark";
+ e.target.textContent=l?"☀":"☾";
+ document.querySelectorAll(".csvg").forEach(s=>s.setAttribute("stroke",l?"#1c2733":"#dfe6f0"));};
+const mbar=document.getElementById("mbar");
+for(const [k,n,m] of MBAR){const T=TYPES[k];const d=document.createElement("div");d.className="mslot";
+ d.innerHTML=`<span class="t"><i style="color:${T.c}">${T.icon}</i>${n}</span><span class="m">${m}</span>`;mbar.appendChild(d);}
+setDir("a");
+</script>
+</body>
+</html>

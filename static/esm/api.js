@@ -320,6 +320,9 @@ export const API = {
   // [评审浮窗 2026-10-29] 这张卡的评审过程状态（有批次 ⇒ 右侧浮窗弹出）。
   getReviewStatus: (wid, cid, opts) =>
     call("GET", `/api/works/${wid}/cards/${cid}/review-status`, undefined, opts),
+  // [对齐场浮窗 2026-11-11] 这张卡参与的对齐场状态（开着 ⇒ 右侧浮窗弹出）。
+  getAlignStatus: (wid, cid, opts) =>
+    call("GET", `/api/works/${wid}/cards/${cid}/align-status`, undefined, opts),
   // [wb_exec 2026-10-23] coder 卡的执行体选择（谁干活：WorkBuddy 还是系统自己的模型）
   // 读：当前设置 + 上次实际路由到的 + 候选项
   // 写：**只改 exec_backend**（不碰该卡原有的模型覆盖），下一回合生效

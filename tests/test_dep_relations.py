@@ -180,8 +180,8 @@ def test_b2_tool_table_and_versions():
     """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
     assert src.count('": ToolDef(') == 36  # [2026-11-09 画线看全图] 35→36（+list_cards）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-27"  # [2026-11-02] 新增 create_ui_card
-    assert prompts.BASE_PROMPT_VERSION == "t27-16"  # [2026-11-01] 随现配置对齐（事实分层 t27-2→t27-3）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [2026-11-02] 新增 create_ui_card
+    assert prompts.BASE_PROMPT_VERSION == "t27-19"  # [2026-11-01] 随现配置对齐（事实分层 t27-2→t27-3）
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY
     # [2026-11-01] 开关词汇表扩列后 link_rel/unlink_rel 已是独立开关

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mmap
 
 #: json.loads 的**模块内别名**：测试可数「解析了多少行」，
 #: 用来钉住「尾部窗口不许退回全量解析」这条性能契约（不碰全局 json）。
@@ -351,6 +352,29 @@ async def drain() -> int:
 
 
 # ---------------------------------------------------------------- 读
+def _mmap_ro(path: Path) -> mmap.mmap | None:
+    """事件文件的只读 mmap 视图（找不到/打不开/空文件 → ``None``）。
+
+    〔2026-11-15 · card_007 事件文件 152MB〕为什么不再 ``read_bytes()``：
+    整文件一份 bytes 是一次 **152MB 的连续分配**，再 ``split(b"\\n")`` 又翻
+    2–4 倍 ⇒ 页面请求直接 ``MemoryError``。mmap 只占虚拟地址，find/rfind/
+    切片与 bytes 同接口、切片才产生真实拷贝；文件关掉后视图仍有效
+    （fd 已被 mmap 内部 dup/映射持有）。**调用方负责 ``close()``**。"""
+    try:
+        f = open(path, "rb")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.warning("[event_log] 事件文件读取失败 file=%s: %s", path.name, exc)
+        return None
+    try:
+        return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    except (ValueError, OSError):
+        return None
+    finally:
+        f.close()
+
+
 def _iter_lines(path: Path) -> Iterable[str]:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -399,8 +423,11 @@ def _tail_records(path: Path, spans: list[tuple[int, int]],
     tool_result**（seq 递增但条数 ≫ 调用数）⇒「行数」与「记录数」不成比例，
     多取固定条数不能保证「窗口内记录数 ≥ want」⇒ 会与原实现差几条。
 
-    本实现：**整文件按字节读一次**（十几 MB 约 20ms——慢的是 json.loads，不是
-    IO）⇒ 切行 ⇒ **只解析尾部需要的那些** ⇒ 收够 want 条就停。
+    本实现：mmap 只读视图 ⇒ 从尾 ``rfind(b"\\n")`` **倒逐行** ⇒ **只解析
+    尾部需要的那些** ⇒ 收够 want 条就停。为什么不再「整文件读一次再切行」：
+    切行本身才是内存炸弹——``152MB × split`` 产出数万 bytes 对象 ≈ 2–4 倍
+    原文（card_007 2026-11-12 实测 ``MemoryError``）；mmap 切片只拷**单行**，
+    峰值为「一条最大行」级（card_061 单行曾 4.6MB）。
     撤销语义与改前**逐字同构**：revoke{from_seq:N} 撤掉「N ≤ seq < revoke 自身
     seq」的记录（升序处理时区间天然重叠 ⇒ 等价于区间并集）⇒ 这里用区间并集判定。
 
@@ -412,37 +439,40 @@ def _tail_records(path: Path, spans: list[tuple[int, int]],
     """
     if want <= 0:
         return []
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return []
-    if not data:
+    raw = _mmap_ro(path)
+    if raw is None:
         return []
     out: list[dict[str, Any]] = []
-    for ln in reversed(data.split(b"\n")):
-        if not ln.strip():
-            continue
-        try:
-            rec = _loads(ln)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(rec, dict):
-            continue
-        s = rec.get("seq")
-        s = int(s) if isinstance(s, int) and not isinstance(s, bool) else (
-            int(s) if isinstance(s, str) and s.isdigit() else None)
-        if s is None:
-            continue
-        rec["seq"] = s
-        if s < min_seq:
-            break                       # 再往前 seq 只会更小 ⇒ 后面的都不用要了
-        if str(rec.get("type") or "") in CONTROL_TYPES:
-            continue                    # 控制记录不进渲染面（与改前一致）
-        if _in_revoked(s, spans):
-            continue                    # 被 revoke 覆盖的段（区间并集）
-        out.append(rec)
-        if len(out) >= want:
-            break
+    try:
+        end = len(raw)
+        while end > 0:
+            nl = raw.rfind(b"\n", 0, end)
+            ls = nl + 1                    # 无 \n ⇒ ls=0＝文件首行
+            ln = raw[ls:end]
+            end = nl                       # 下一轮行尾＝这枚 \n 的位置
+            if ln.strip():
+                try:
+                    rec = _loads(ln)
+                except (ValueError, TypeError):
+                    rec = None
+                if isinstance(rec, dict):
+                    s = rec.get("seq")
+                    s = int(s) if isinstance(s, int) and not isinstance(s, bool) else (
+                        int(s) if isinstance(s, str) and s.isdigit() else None)
+                    if s is not None:
+                        rec["seq"] = s
+                        if s < min_seq:
+                            break           # 再往前 seq 只会更小 ⇒ 后面的都不用要了
+                        if str(rec.get("type") or "") in CONTROL_TYPES:
+                            pass            # 控制记录不进渲染面（与改前一致）
+                        elif not _in_revoked(s, spans):
+                            out.append(rec) # 被 revoke 覆盖的段（区间并集）跳过
+                            if len(out) >= want:
+                                break
+            if ls == 0:
+                break                       # 已处理到文件首行
+    finally:
+        raw.close()
     out.reverse()                        # 收集是「新→旧」⇒ 反转成 seq 升序
     out.sort(key=lambda r: int(r.get("seq") or 0))
     return out
@@ -495,47 +525,47 @@ def _revoke_spans(path: Path) -> list[tuple[int, int]]:
         return cached[2]
 
     spans: list[tuple[int, int]] = []
+    raw = _mmap_ro(path)
+    if raw is None:
+        return spans
     try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return spans
-    except OSError as exc:
-        logger.warning("[event_log] 事件文件读取失败 file=%s: %s", path.name, exc)
-        return spans
-    if b"revoke" in raw:
-        pos = 0
-        while True:
-            i = raw.find(b"revoke", pos)
-            if i < 0:
-                break
-            pos = i + 6
-            # 回溯到行首、顺延到行尾（只把这**一行**送去判）
-            s = raw.rfind(b"\n", 0, i) + 1
-            e = raw.find(b"\n", i)
-            if e < 0:
-                e = len(raw)
-            # 〔P24〕行首已明确写着别的 type ⇒ 铁定不是控制记录 ⇒ 不必整行解析
-            head = raw[s:min(e, s + _REVOKE_HEAD_BYTES)]
-            mt = _REVOKE_TYPE_RE.search(head)
-            if mt is not None and mt.group(1) != b"revoke":
-                continue
-            try:
-                rec = _loads(raw[s:e].decode("utf-8", errors="replace"))
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(rec, dict) or str(rec.get("type") or "") not in CONTROL_TYPES:
-                continue
-            data = rec.get("data") or {}
-            try:
-                fseq = int(data.get("from_seq"))
-            except (TypeError, ValueError):
-                continue
-            s2 = rec.get("seq")
-            try:
-                rseq = int(s2)
-            except (TypeError, ValueError):
-                rseq = fseq
-            spans.append((fseq, rseq))
+        # mmap 的 ``in`` 是单字节语义（恒 False）——子串探测必须走 ``find``。
+        if raw.find(b"revoke") >= 0:
+            pos = 0
+            while True:
+                i = raw.find(b"revoke", pos)
+                if i < 0:
+                    break
+                pos = i + 6
+                # 回溯到行首、顺延到行尾（只把这**一行**送去判）
+                s = raw.rfind(b"\n", 0, i) + 1
+                e = raw.find(b"\n", i)
+                if e < 0:
+                    e = len(raw)
+                # 〔P24〕行首已明确写着别的 type ⇒ 铁定不是控制记录 ⇒ 不必整行解析
+                head = raw[s:min(e, s + _REVOKE_HEAD_BYTES)]
+                mt = _REVOKE_TYPE_RE.search(head)
+                if mt is not None and mt.group(1) != b"revoke":
+                    continue
+                try:
+                    rec = _loads(raw[s:e].decode("utf-8", errors="replace"))
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(rec, dict) or str(rec.get("type") or "") not in CONTROL_TYPES:
+                    continue
+                data = rec.get("data") or {}
+                try:
+                    fseq = int(data.get("from_seq"))
+                except (TypeError, ValueError):
+                    continue
+                s2 = rec.get("seq")
+                try:
+                    rseq = int(s2)
+                except (TypeError, ValueError):
+                    rseq = fseq
+                spans.append((fseq, rseq))
+    finally:
+        raw.close()
     try:
         # 〔P25 补〕内存封顶：超上限就丢最旧的（**不按时间**淘汰——用户明令不许按时间释放）。
         if len(_REVOKE_CACHE) >= _REVOKE_CACHE_MAX and key not in _REVOKE_CACHE:
