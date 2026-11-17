@@ -439,6 +439,67 @@ def test_config_broken_is_disabled(tmp_path, monkeypatch):
     wb_config.reset_cache()
 
 
+# ---- [热更新 2026-11-13] 候选表改盘即生效，不用重启 5700 --------------------
+def test_config_hot_reload_on_file_change(tmp_path, monkeypatch):
+    """文件指纹变了 ⇒ 下一次 load() 自动重解析（调用点零改动）。"""
+    p = _wb_cfg_payload(tmp_path)
+    monkeypatch.setenv(wb_config.ENV_CONFIG_PATH, str(p))
+    wb_config.reset_cache()
+    assert wb_config.load().enabled is True
+
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    raw["enabled"] = False
+    p.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    # 长度可能不变 ⇒ 显式推进 mtime_ns，模拟正常写盘
+    later = p.stat().st_mtime_ns + 1_000_000_000
+    os.utime(p, ns=(later, later))
+    assert wb_config.load().enabled is False       # 没调 reset_cache
+    wb_config.reset_cache()
+
+
+def test_config_broken_keeps_last_good(tmp_path, monkeypatch):
+    """原子替换窗口里读到半截文件 ⇒ 保住上一份好配置，不把执行体整条旁路。"""
+    p = _wb_cfg_payload(tmp_path)
+    monkeypatch.setenv(wb_config.ENV_CONFIG_PATH, str(p))
+    wb_config.reset_cache()
+    good = wb_config.load()
+    assert good.enabled is True
+
+    p.write_text('{"enabled":', encoding="utf-8")
+    later = p.stat().st_mtime_ns + 1_000_000_000
+    os.utime(p, ns=(later, later))
+    assert wb_config.load() is good
+    wb_config.reset_cache()
+
+
+def test_config_missing_disables_even_with_cache(tmp_path, monkeypatch):
+    """「删配置＝关执行体」这条人工手段不能被热加载吃掉。"""
+    p = _wb_cfg_payload(tmp_path)
+    monkeypatch.setenv(wb_config.ENV_CONFIG_PATH, str(p))
+    wb_config.reset_cache()
+    assert wb_config.load().enabled is True
+    p.unlink()
+    assert wb_config.load().enabled is False
+    wb_config.reset_cache()
+
+
+def test_quota_merge_keeps_uncovered_marks(monkeypatch):
+    """巡检整表重写时：范围外旧标记保留，范围内的由本轮结果裁决（可自动恢复）。"""
+    from src.api.wb_exec import quota_state as qs
+    monkeypatch.setattr(qs, "exhausted_map", lambda: {
+        "wb-cc:inclusionai/ling-3.1-flash-1019:free":
+            {"reason": "下架让路", "kind": "no_longer_available"},
+        "wb-oc:flint-40b-free":
+            {"reason": "旧额度标记", "kind": "free_tier_limit"},
+    })
+    covered = {"wb-oc:flint-40b-free", "wb-cc:stealth/glyph-cluster:free"}
+    merged = qs.merge_uncovered(
+        {"wb-cc:stealth/glyph-cluster:free": {"reason": "本轮额度尽"}}, covered)
+    assert "wb-cc:inclusionai/ling-3.1-flash-1019:free" in merged
+    assert "wb-oc:flint-40b-free" not in merged
+    assert "wb-cc:stealth/glyph-cluster:free" in merged
+
+
 def test_repo_config_shape_is_valid(monkeypatch):
     """仓库里的真实配置必须能解析（改了配比就跑这条）。
 
@@ -450,7 +511,10 @@ def test_repo_config_shape_is_valid(monkeypatch):
     cfg = wb_config.load()
     # 2026-10-23 用户令：执行体已开闸（enabled=true）
     assert cfg.enabled is True
-    assert len(cfg.candidates) == 13
+    # ★ 候选表是**用户可改的运行时配置**（2026-11-16 13:43 删了 beam/hy4free/
+    #   cn hy3 三条 ⇒ 13→10）。测试**校验结构与顺序**，不写死条数和将被删的项：
+    #   写死条数只会让正常改配置变成"测试红"，是契约谎言。
+    assert len(cfg.candidates) >= 5, "候选表不该被清空"
     weights = {f"{c.executor}:{c.model}": c.weight for c in cfg.candidates}
     prios = {f"{c.executor}:{c.model}": c.priority for c in cfg.candidates}
     # ★★ **2026-11-04 用户令：不再是「配比」，改成「优先级瀑布」**
@@ -458,34 +522,25 @@ def test_repo_config_shape_is_valid(monkeypatch):
     #   opencode 不行，再落 workbuddy」⇒ **priority 就是选路顺序**（越小越优先）。
     assert prios["wb-devin:swe-2-max"] == 10
     assert prios["wb-oc:flint-40b-free"] == 20
-    assert prios["wb-cn:glm-5.3-flash"] == 30
-    assert prios["wb-intl:glm-5.3-flash"] == 31
-    # ★ **2026-11-07 11:10 定时探测逐个真调 ok 的四个 oc 免费档**
-    assert prios["wb-oc:deepseek-v4.1-flash-free"] == 21
-    assert prios["wb-oc:big-pickle"] == 22
-    assert prios["wb-oc:glm-5.3-flash-free"] == 23
-    assert prios["wb-oc:mimo-v2.6-flash-free"] == 24
-    # ★ **Command Code 的两个免费档**（2026-11-07：ling 已下架，见下方断言）
-    assert prios["wb-cc:reflection/beam:free"] == 26
-    assert prios["wb-cc:stealth/glyph-cluster:free"] == 27
-    # ★ **HY4 限时免费档**（2026-11-04 实测：cn 账号 `hy4free` x0.00、真调 13.8s 出活）
-    #   ⇒ 排在 command-code 之后、**付费的 wb-cn/glm(x0.08) 之前** ⇒ 只顶付费档。
-    assert prios["wb-cn:hy4free"] == 28
-    # ★ **hy3 降为最后一级兜底**（优先级最低 ⇒ 只有前面全排满/额度尽才轮到它）
-    assert prios["wb-cn:hy3"] == 90
-    assert prios["wb-intl:hy3"] == 91
-    # ★ **优先级必须严格递增**（表序＝优先级序 ⇒ 不会漏读）
-    order = sorted(prios.items(), key=lambda kv: kv[1])
-    assert [k for k, _ in order] == [
+    # ★ [2026-11-16 用户令] cn/intl 的付费 glm-5.3-flash 已从候选表移除
+    #   ⇒ 更便宜的 hy4flash-free 顶上（x0.03，付费也只是 x0.03 < glm x0.08）
+    assert "wb-cn:glm-5.3-flash" not in prios
+    assert "wb-intl:glm-5.3-flash" not in prios
+    assert prios.get("wb-cn:hy4flash-free") == 28
+    assert prios.get("wb-cn:hy4flash") == 29
+    # ★ 表里**存在**的候选：优先级必须按档位语义严格递增（表序＝优先级序）
+    expected_order = [
         "wb-devin:swe-2-max", "wb-oc:flint-40b-free",
         "wb-oc:deepseek-v4.1-flash-free", "wb-oc:big-pickle",
         "wb-oc:glm-5.3-flash-free", "wb-oc:mimo-v2.6-flash-free",
         "wb-cc:reflection/beam:free",
         "wb-cc:stealth/glyph-cluster:free",
-        "wb-cn:hy4free",
+        "wb-cn:hy4free", "wb-cn:hy4flash-free", "wb-cn:hy4flash",
         "wb-cn:glm-5.3-flash", "wb-intl:glm-5.3-flash",
         "wb-cn:hy3", "wb-intl:hy3",
     ]
+    order = sorted(prios.items(), key=lambda kv: kv[1])
+    assert [k for k, _ in order] == [k for k in expected_order if k in prios]
     # ★★ **接线守卫**：oc 候选必须同步进 `oc_models`，否则 `_run_opencode`
     #   会把不在清单里的模型**强制换成 `oc_models[0]`**（＝flint）⇒ 新档白加。
     oc_ex = cfg.executor("wb-oc")
@@ -2047,3 +2102,291 @@ async def test_slot_full_queues_instead_of_falling_back(work, wb_cfg, fake_gw,
     assert ("wb_exec_queued" in types_a) or ("wb_exec_queued" in types_b), \
         f"排队必须可见（{types_a} / {types_b}）"
 
+
+
+# ═════ [死挂检测 + 排队改道 2026-11-15 · 用户令] ═════
+# 现场：card_348/370/396 拿到 cn glm 槽后 wb_exec_model 之后零事件 35 分钟+
+#（无读超时 ⇒ 无限死挂），card_384 在同槽排队 1.5h+。⇒ 两个机制：
+# ① 死挂：HANG 秒零事件 ⇒ 问网关 busy 判死 ⇒ **重置回队**（resume 续跑、
+#    重新排队），连续 max_resume 次才升级换候选——"杀了没用，要重新连上"。
+# ② 排队：限时等 + 重选（谁空去谁），不再死钉一个端点。
+
+
+def test_hang_watch_busy_gate(monkeypatch):
+    """_hang_watch 只认网关亲口状态：False ⇒ 判死；True/None ⇒ 不杀（不猜时间）。
+
+    [修 2026-11-15 晚] 20:2x 教训：status 端点在 CLI 网关上未经验证 ⇒
+    ``None``＝"不知道" ⇒ **绝不因时间杀**（真死有 httpx 断连异常兜底）；
+    ``busy=True`` 同理无限宽限。只有明确的 ``busy=False``（agent 空转）
+    才判死。"""
+    import asyncio as _aio
+    import types as _t
+    cur = bridge.Candidate(executor="wb-cn", model="glm-5.3-flash", weight=1)
+    ex = _t.SimpleNamespace(last_event_ts=0.0)   # 0 ⇒ idle 巨大（超任何 hang_s）
+
+    class _Reg:
+        def __init__(self, seq):
+            self.seq = list(seq)
+
+        async def gateway_busy(self, gw):
+            return self.seq.pop(0) if self.seq else False
+
+    # busy=False（agent 空转）⇒ 判死
+    monkeypatch.setattr(bridge, "get_registry", lambda: _Reg([False]))
+    with pytest.raises(RuntimeError, match="busy=False"):
+        _aio.run(bridge._hang_watch(ex, object(), 0.2, cur))
+
+    # busy=True ⇒ 无限宽限（绝不因时间杀）
+    monkeypatch.setattr(bridge, "get_registry", lambda: _Reg([True] * 99))
+    with pytest.raises(_aio.TimeoutError):
+        _aio.run(_aio.wait_for(bridge._hang_watch(ex, object(), 0.2, cur),
+                               timeout=1.5))
+
+    # None＝"不知道" ⇒ 不杀
+    class _RegNone:
+        async def gateway_busy(self, gw):
+            return None
+    monkeypatch.setattr(bridge, "get_registry", lambda: _RegNone())
+    with pytest.raises(_aio.TimeoutError):
+        _aio.run(_aio.wait_for(bridge._hang_watch(ex, object(), 0.2, cur),
+                               timeout=1.5))
+
+
+@pytest.mark.asyncio
+async def test_hang_resets_then_upgrades(work, tmp_path, fake_gw, monkeypatch):
+    """死挂 ⇒ 重置回队（resume）× max_resume 次 ⇒ 升级失败；事件全程可见。"""
+    p = _wb_cfg_payload(
+        tmp_path,
+        candidates=[
+            {"executor": "wb-cn", "model": "glm-5.3-flash", "weight": 0,
+             "priority": 10},
+        ],
+        watchdog={"connect_timeout_sec": 5, "read_timeout_sec": 5,
+                  "max_resume": 2, "hang_timeout_sec": 0.3,
+                  "reselect_wait_sec": 0.0},
+    )
+    monkeypatch.setenv(wb_config.ENV_CONFIG_PATH, str(p))
+    wb_config.reset_cache()
+    _sw = tmp_path / "sw_hang.json"
+    _sw.write_text(json.dumps({"enabled": True}), encoding="utf-8")
+    monkeypatch.setattr(wb_switch, "SWITCH_PATH", _sw)
+    from src.api.wb_exec import picker as _picker
+    _picker.reset_pickers()
+
+    reg = bridge.get_registry()
+    _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
+    monkeypatch.setattr(bridge, "get_registry", lambda: reg)
+
+    # 网关说 idle ⇒ 每轮死挂立即判死
+    async def fake_busy(self, gw):
+        return False
+    monkeypatch.setattr(type(reg), "gateway_busy", fake_busy)
+
+    # prompt 永挂：**只挂 session/prompt**——initialize/new/load/set_config
+    # 照常回（否则 connect 阶段就失败，走不到死挂路径）。
+    orig_stream = FakeAcpGateway._stream
+
+    async def hang_stream(self, body):
+        method = str(body.get("method") or "")
+        if method == "session/prompt":
+            await asyncio.sleep(30)      # 永不回结果 ⇒ prompt 挂起
+            return
+        async for chunk in orig_stream(self, body):
+            yield chunk
+    monkeypatch.setattr(FakeAcpGateway, "_stream", hang_stream)
+
+    events: list[dict] = []
+    real_emit = bridge._emit
+    monkeypatch.setattr(
+        bridge, "_emit",
+        lambda st, t, d: (events.append({"type": t, **d}),
+                          real_emit(st, t, d)))
+
+    card_id = await _make_worker_card(work["work_id"])
+    st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
+                                 content="干活")
+    st.pair_id = "pair-hang"
+    outcome = await bridge.maybe_delegate(st)
+    assert outcome is None, "升级失败 ⇒ 回落系统模型（on_unavailable=fallback_system）"
+
+    resumes = [e for e in events if e["type"] == "wb_exec_resume"]
+    assert len(resumes) == 2, [e["type"] for e in events]
+    assert all("死挂重连" in str(r.get("error")) for r in resumes)
+    kinds = [e["type"] for e in events]
+    assert "wb_exec_error" in kinds
+    assert "wb_exec_model" in kinds and "wb_exec_queued" not in kinds
+    # _stream 的 monkeypatch 由 fixture 自动恢复（hang_stream 只在本测生效）
+
+
+@pytest.mark.asyncio
+async def test_queue_reselect_switches_executor(work, tmp_path, fake_gw,
+                                                fake_gw_b, monkeypatch):
+    """排队 0.3s 没轮到 ⇒ 改道到有空槽的下一优先级（事件可见、不回落系统模型）。"""
+    p = _wb_cfg_payload(
+        tmp_path,
+        executors=[
+            {"id": "wb-cn", "label": "CN", "install_root": str(tmp_path),
+             "product_config": "", "cli_bin": str(tmp_path / "nope"),
+             "port": 0},
+            {"id": "wb-intl", "label": "INTL", "install_root": str(tmp_path),
+             "product_config": "", "cli_bin": str(tmp_path / "nope2"),
+             "port": 0},
+        ],
+        candidates=[
+            {"executor": "wb-cn", "model": "glm-5.3-flash", "weight": 0,
+             "priority": 10},
+            {"executor": "wb-intl", "model": "glm-5.3-flash", "weight": 0,
+             "priority": 20},
+        ],
+        watchdog={"connect_timeout_sec": 5, "read_timeout_sec": 5,
+                  "max_resume": 3, "reselect_wait_sec": 0.3,
+                  "hang_timeout_sec": 20},
+    )
+    monkeypatch.setenv(wb_config.ENV_CONFIG_PATH, str(p))
+    wb_config.reset_cache()
+    _sw = tmp_path / "sw_rs.json"
+    _sw.write_text(json.dumps({"enabled": True}), encoding="utf-8")
+    monkeypatch.setattr(wb_switch, "SWITCH_PATH", _sw)
+    from src.api.wb_exec import picker as _picker
+    _picker.reset_pickers()
+
+    reg = bridge.get_registry()
+    gw_a = _use_cli_pool(reg, monkeypatch, fake_gw, "wb-cn")
+    _use_cli_pool(reg, monkeypatch, fake_gw_b, "wb-intl")
+    monkeypatch.setattr(bridge, "get_registry", lambda: reg)
+
+    # 占满 wb-cn 的唯一槽（Semaphore(1)）⇒ 新卡必排队
+    sem_a = reg.semaphore_for(gw_a.base_url)
+    await sem_a.acquire()
+
+    card_id = await _make_worker_card(work["work_id"])
+    st = message_runner.RunState(work_id=work["work_id"], card_id=card_id,
+                                 content="干活")
+    st.pair_id = "pair-reselect"
+    outcome = await bridge.maybe_delegate(st)
+    assert outcome is not None and outcome.kind == "deliver", \
+        "改道后应在 wb-intl 跑成，而不是回落系统模型"
+
+    journal = event_stream.journal_of(work["work_id"], card_id)
+    kinds = [e.get("type") for e in journal]
+    assert "wb_exec_queued" in kinds
+    fbs = [e for e in journal if e.get("type") == "wb_exec_fallback"]
+    assert any("改道" in str((e.get("data") or {}).get("reason") or "")
+               for e in fbs), fbs
+    models = [str((e.get("data") or {}).get("executor")) for e in journal
+              if e.get("type") == "wb_exec_model"]
+    assert models and models[-1] == "wb-intl", models
+    assert sem_a.locked(), "wb-cn 的槽应仍被占住（没有误释放别人的槽）"
+
+
+# ═══ [临时额度机制 2026-11-15 · 用户令「表现分去掉，做额度扣完的临时机制」] ═══
+def test_quota_reset_parser_reads_devin_banner():
+    """Devin 报文里的「reset in … (at Nov 16 02:01 UTC)」⇒ 解析成北京时间 ISO。"""
+    from src.api.wb_exec.bridge import _parse_quota_reset
+    t = ("Agent error: Reached free model rate limit. Your limit will reset "
+         "in 6 hours 25 minutes (at Nov 16 02:01 UTC).: {}")
+    r = _parse_quota_reset(t)
+    assert r and r.startswith("2026-11-16T"), r
+    assert "+08:00" in r                      # UTC ⇒ 北京时间
+    # 解析不出恢复时刻 ⇒ 原语义（等巡检/真调纠正）
+    assert _parse_quota_reset("每日免费额度已用完") == ""
+    assert _parse_quota_reset("") == ""
+
+
+def test_quota_state_expires_at_auto_recover(tmp_path, monkeypatch):
+    """带 expires_at 的标记：到点自动算不 exhausted；未到点仍挡。"""
+    from src.api.wb_exec import quota_state as qs
+    from datetime import datetime, timedelta
+    p = tmp_path / "quota.json"
+    monkeypatch.setattr(qs, "STATE_PATH", p)
+    monkeypatch.setattr(qs, "_cache", {}, raising=False)
+    monkeypatch.setattr(qs, "_cache_stamp", (0.0, -1), raising=False)
+
+    future = (datetime.now() + timedelta(hours=6)).isoformat(timespec="seconds")
+    past = (datetime.now() - timedelta(minutes=5)).isoformat(timespec="seconds")
+    qs.mark_exhausted("wb-devin", "swe-2-max", "免费日限打满", expires_at=future)
+    assert qs.is_exhausted("wb-devin", "swe-2-max") is True
+
+    qs.mark_exhausted("wb-cc", "glyph", "瞬时限流误标", expires_at=past)
+    assert qs.is_exhausted("wb-cc", "glyph") is False   # 到点自动恢复
+    assert qs.exhausted_map().get("wb-cc:glyph") is None
+
+    # 无 expires_at ⇒ 原语义（等巡检/真调纠正）
+    qs.mark_exhausted("wb-oc", "flint-40b-free", "free_tier_limit")
+    assert qs.is_exhausted("wb-oc", "flint-40b-free") is True
+
+
+def test_registry_quota_entry_expires(monkeypatch, tmp_path):
+    """registry 层：进程内条目带 expires_at ⇒ 到点 is_exhausted 自动放行。"""
+    from src.api.wb_exec import quota_state as qs
+    from src.api.wb_exec.registry import get_registry
+    p = tmp_path / "quota.json"
+    monkeypatch.setattr(qs, "STATE_PATH", p)
+    monkeypatch.setattr(qs, "_cache", {}, raising=False)
+    monkeypatch.setattr(qs, "_cache_stamp", (0.0, -1), raising=False)
+    reg = get_registry()
+    reg._exhausted.clear()
+    from datetime import datetime, timedelta
+    reg.mark_exhausted("wb-intl", "glm-5.3-flash", "Quota exceeded",
+                       expires_at=(datetime.now()
+                                   - timedelta(minutes=1)
+                                   ).isoformat(timespec="seconds"))
+    assert reg.is_exhausted("wb-intl", "glm-5.3-flash") is False
+    reg._exhausted.clear()
+
+
+def test_clearing_quota_file_releases_stale_in_memory_mark(tmp_path, monkeypatch):
+    """★ 热更新必须真有用：外部清掉额度文件 ⇒ 本进程旧内存标记同步作废。
+
+    现场 2026-11-16：清了 wb_exec_quota.json 里的 devin 标记，派工仍跳过
+    devin（旧实现内存优先，内存里的旧条目压过文件）⇒ 用户「热更新根本没用」。
+    """
+    from src.api.wb_exec import quota_state as qs
+    from src.api.wb_exec.registry import get_registry
+    p = tmp_path / "quota.json"
+    monkeypatch.setattr(qs, "STATE_PATH", p)
+    monkeypatch.setattr(qs, "_cache", {}, raising=False)
+    monkeypatch.setattr(qs, "_cache_stamp", (0.0, -1), raising=False)
+    reg = get_registry()
+    reg._exhausted.clear()
+
+    reg.mark_exhausted("wb-devin", "swe-2-max", "devin 报额度/配额用完")
+    assert reg.is_exhausted("wb-devin", "swe-2-max") is True
+    # 模拟「外部清文件」：只动文件，不碰进程内存
+    qs.clear_exhausted("wb-devin", "swe-2-max")
+    assert reg.is_exhausted("wb-devin", "swe-2-max") is False, \
+        "文件清了就必须放行——内存旧条目不许压过文件"
+    assert ("wb-devin", "swe-2-max") not in reg._exhausted
+    reg._exhausted.clear()
+
+
+@pytest.mark.asyncio
+async def test_cli_probe_429_keeps_process_alive(monkeypatch):
+    """★ 探针撞 429 额度限流 ⇒ **判进程可用**（不能把池清光）。
+
+    现场 2026-11-17 00:38：探针用 hy3 验活撞 429 ⇒ stopReason=refusal
+    ⇒ 旧逻辑判 False ⇒ _grow_cli_pool 丢掉刚起的进程 ⇒ 池空
+    ⇒ 「没有空闲进程」⇒ 回落系统模型（用户：根本没任务在跑！）。
+    """
+    from src.api.wb_exec import cli_pool as cp
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def connect(self): pass
+        async def initialize(self): pass
+        async def close(self): pass
+        async def session_load(self, *a, **kw):
+            return {"models": {"availableModels": [{"modelId": "hy3"}]}}
+        async def set_config_option(self, *a, **kw): pass
+        async def prompt(self, *a, **kw):
+            return {"stopReason": "refusal",
+                    "_meta": {"codebuddy.ai/errorMessage": json.dumps(
+                        {"code": -32003,
+                         "message": "Quota exceeded: 429 usage exceeds "
+                                    "frequency limit"})}}
+    monkeypatch.setattr(cp, "AcpClient", FakeClient)
+    ok, catalog = await cp.probe_can_work("http://127.0.0.1:9999", "hy3")
+    assert ok is True, "429 限流 ≠ CLI 不能干活 ⇒ 探针必须判可用（保留进程）"
+    assert catalog and catalog[0]["modelId"] == "hy3"

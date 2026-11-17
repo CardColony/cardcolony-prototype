@@ -48,6 +48,13 @@ ENV_NO_AUTO = "ECO_NO_AUTO_REVIEW"
 #: 不私记台账（卡面是唯一权威事实源）。
 VENUE_GRANT: frozenset[str] = frozenset({"approve", "reject"})
 
+#: 只读但**席位绝不需要**的件——从场授面剔除。
+#: ``wait``：等下一席/等正卡交回是**场自己的事**（席位一个一个叫）；
+#: 席位要等的东西只有它离席后才会发生，它等＝占住整场空转
+#: （11-14 实案：fn_001 投完票原地 wait 烧 11 轮 20 分钟，等一个
+#: 被它自己占住的空位）。
+_SEAT_DENY: frozenset[str] = frozenset({"wait"})
+
 _RUNNING: set[str] = set()
 
 
@@ -160,12 +167,10 @@ async def _run_step(work_id: str, review_id: str, *,
         _, kind, why = action
         target = str(st.get("target") or "")
         ok = False
-        busy = False
-        try:
-            busy = bool(session_facade.turn_holder(work_id, target))
-        except Exception:  # noqa: BLE001 读不出按空闲处理
-            pass
-        if busy:
+        # 停/缄默/在跑＝策略性唤不醒：信已在正卡会话，它解停/解冻/收口
+        # 自查自然读到——与「送达」同待遇，不算失败也不烧 nudge 预算。
+        refused = _wake_refusal(work_id, target)
+        if refused:
             ok = True
         else:
             try:
@@ -184,7 +189,7 @@ async def _run_step(work_id: str, review_id: str, *,
                 await review_store.clear_dispatch_fails(work_id, review_id)
             except Exception:  # noqa: BLE001
                 pass
-            if not busy:
+            if not refused:
                 # 唤醒发出去＝记一次 nudge 并把 ask 锚重锚到此刻会话尾：
                 # 下一次补唤醒只在「这之后又起过回合」时才发（一次唤醒对应
                 # 一段新活动；anchor 不重锚会把同一段静默重复炸）。
@@ -194,10 +199,9 @@ async def _run_step(work_id: str, review_id: str, *,
                         at_seq=_tail_seq(work_id, target))
                 except Exception:  # noqa: BLE001
                     pass
-            return {"continued": False,
-                    "reason": "awaiting_busy" if busy else "wake_delivered",
-                    "_done": {"reason": "awaiting_busy" if busy
-                              else "wake_delivered", "continued": False}}
+            reason = f"awaiting_{refused}" if refused else "wake_delivered"
+            return {"continued": False, "reason": reason,
+                    "_done": {"reason": reason, "continued": False}}
         try:
             await review_store.mark_dispatch_failed(work_id, review_id)
         except Exception:  # noqa: BLE001
@@ -209,6 +213,7 @@ async def _run_step(work_id: str, review_id: str, *,
 
     # action[0] == "dispatch"
     _, kind = action
+    target = str(st.get("target") or "")
     try:
         ok = await _dispatch_child(work_id, review_id, st, kind=kind)
     except Exception as exc:  # noqa: BLE001 派活异常＝一次没落，照计数闸走
@@ -218,8 +223,29 @@ async def _run_step(work_id: str, review_id: str, *,
     if ok:
         return {"continued": False, "reason": f"dispatch_{kind}",
                 "_done": {"reason": f"dispatch_{kind}", "continued": False}}
-    # 派活没落（消息没进正卡会话／正卡在跑没唤起）：落一次失败计数，
-    # has_next 仍会让它再醒——`dispatch_fails` 封顶后 classify 收口到站。
+    # 没落分两种，判据＝**ask 记没记上账**（append+mark 在唤醒之前，
+    # mark 动了 ⇒ 信已落正卡会话）：
+    #   · 信落了但撞停/缄默/在跑 ⇒ 已送达未唤醒——它解停/收口自查自然
+    #     读到，不算失败（[停卡不算失败 2026-11-15] 见 _wake_refusal）；
+    #   · 信没进会话（append 没落／连信带唤醒整段异常）⇒ 真失败计数。
+    try:
+        st2 = await review_store.state_of(work_id, review_id)
+        if kind == "promote":
+            appended = (bool(st2.get("promote_asked"))
+                        and not st.get("promote_asked"))
+        else:
+            appended = st2.get("asked_at_seq") != st.get("asked_at_seq")
+    except Exception:  # noqa: BLE001 状态读不出按没落处理
+        appended = False
+    if appended:
+        refused = _wake_refusal(work_id, target)
+        if refused:
+            return {"continued": False, "reason": "delivered_quiet",
+                    "why": refused,
+                    "_done": {"reason": "delivered_quiet", "why": refused,
+                              "continued": False}}
+    # 真没落（含信落了但空闲卡唤醒信道失败——后者仍计数，``unread``
+    # 补唤醒链靠 ``dispatch_fails>0`` 驱动重试）。
     try:
         await review_store.mark_dispatch_failed(work_id, review_id)
     except Exception:  # noqa: BLE001 计数失败不阻断
@@ -412,6 +438,39 @@ def _tail_seq(work_id: str, target: str) -> int | None:
         return None
 
 
+def _wake_refusal(work_id: str, target: str) -> str:
+    """正卡此刻**唤不醒的策略原因**：``"halted"``（用户停）／``"silenced"``
+    （治理缄默）／``"busy"``（在跑）。这些都不是派活失败——信已在正卡
+    会话里（append 先于唤醒），它解停/解冻/收口自查自然读到。
+
+    [停卡不算失败 2026-11-15 · work_073 实案] card_007 被用户停 16 秒
+    （12:17:06–22）正好罩住首次派活：信落库成功但 deliver_now 被 halt
+    闸拒 False ⇒ 当失败计；随后 5 次补唤醒全撞停 ⇒ 6 连败封顶
+    dispatch_capped，此后三轮否决（草稿 v4/v6/v8）一条都没再派——
+    一次瞬时停卡永久杀死了该批的派送通道。读不出按 ""（可唤醒方向）。
+    """
+    if not target:
+        return ""
+    try:
+        from . import control as _ctl
+        if _ctl.is_halted(work_id, target) is not None:
+            return "halted"
+    except Exception:  # noqa: BLE001 停表读不出按未停
+        pass
+    try:
+        from ..storage import governance_store as _gov
+        if _gov.is_silenced(work_id, target):
+            return "silenced"
+    except Exception:  # noqa: BLE001 治理表读不出不挡
+        pass
+    try:
+        if session_facade.turn_holder(work_id, target):
+            return "busy"
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 def _wake_kickoff(kind: str, why: str, st: dict[str, Any]) -> str:
     """补唤醒的**起跑文**——按 classify 的诊断点破状况（不落会话、
     只做本轮激励文）：``consumed``＝「你上一轮读过了但没调」；
@@ -546,7 +605,7 @@ async def _seat_turn(work_id: str, review_id: str, seat: str,
 
 
 def _seat_toolface() -> set[str]:
-    """场授面＝**全部只读件** ∪ {approve, reject}。
+    """场授面＝**全部只读件** ∪ {approve, reject} − _SEAT_DENY。
 
     「席位自己的能力上限」已由 `build_tool_schemas(act_as)` 收窄——这个集合
     只是场的**许可上限**：在场内，读+表态；写产物/通信/建卡一律不在场。
@@ -556,7 +615,7 @@ def _seat_toolface() -> set[str]:
 
     readonly = {n for n, d in card_tools.TOOL_REGISTRY.items()
                 if getattr(d, "readonly", False)}
-    return set(readonly) | set(VENUE_GRANT)
+    return (set(readonly) - _SEAT_DENY) | set(VENUE_GRANT)
 
 
 async def _seat_mandate(work_id: str, review_id: str, seat: str,

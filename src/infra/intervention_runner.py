@@ -154,9 +154,17 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
         scope_key = _scope_str(ctx.get("scope"))
         basis = f.get("basis") or {}
         trigger = ctx.get("trigger_data") or {}
-        fire_key = "%s|%s|%s:%s" % (
+        # [fire_key 带事实时刻 2026-11-15 · card_008 seq 复用实案] journal seq
+        # 是卡内水位不是全局唯一——新批归档旧会话后计数器重走，跨天必然撞号：
+        # 11-14 fn_002 的 round_done 拿到 seq 2428，fire_key 与 11-13 一条已
+        # 投递动作撞键 ⇒ record_action 去重命中旧行 ⇒ action_skip 见
+        # delivered 直接跳过 ⇒ 那次续跑义务无声蒸发，场冻 1.5h。触发事实的
+        # ts 进键：同一事实重放（重启接责）⇒ 同 ts ⇒ 照旧去重；seq 复用的
+        # 不同事实 ⇒ 不同 ts ⇒ 不再误去重。
+        fire_key = "%s|%s|%s:%s|%s" % (
             pid, scope_key,
-            str(basis.get("card") or ""), str(basis.get("seq") or 0))
+            str(basis.get("card") or ""), str(basis.get("seq") or 0),
+            str(basis.get("ts") or ""))
 
         from . import harness
         dep = then.get("deploy") if isinstance(then.get("deploy"), dict) else None
@@ -297,6 +305,8 @@ def action_skip(work_id: str, action_id: str) -> bool:
     if not a:
         return True
     if a.get("state") in ("delivered", "stale"):
+        logger.info("[intervention] 动作跳过 aid=%s state=%s",
+                    action_id, a.get("state"))
         return True
     mid = str(a.get("matter_id") or "")
     if not mid:

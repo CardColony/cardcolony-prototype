@@ -116,6 +116,25 @@ async def test_review_read_tools_follow_each_function_abilities(sandbox):
     assert normal_face_after == normal_face_before, "评审场景筛选不得改变被评子卡的常规工具面"
 
 
+def test_seat_toolface_denies_wait():
+    """[席位面梳理 2026-11-15] ``wait`` 不在场授面：等下一席/等正卡交回
+    是**场自己的事**（席位一个一个叫），席位等＝占住整场空转
+    （11-14 实案：fn_001 投完票原地 wait 烧 11 轮 20 分钟，等一个
+    被它自己占住的空位）。
+
+    剔法＝只读件 − _SEAT_DENY：新注册的只读工具仍自动入场，
+    deny 只摘点名的件。"""
+    venue = review_runner._seat_toolface()
+    assert "wait" not in venue
+    reg = card_tools.TOOL_REGISTRY.get("wait")
+    assert reg is not None and getattr(reg, "readonly", False), \
+        "wait 本身仍是只读件——只是不在场授面"
+    # 其余只读件照常在场（白名单不手写）
+    assert all(n in venue for n, d in card_tools.TOOL_REGISTRY.items()
+               if getattr(d, "readonly", False) and n != "wait")
+    assert {"approve", "reject"} <= venue
+
+
 async def test_seat_turn_passes_venue_toolface_and_anchors(sandbox, monkeypatch):
     """席位回合＝普通 `_run_message` 的三向锚点装配（[venue 2026-10-31]）。
 

@@ -3655,6 +3655,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     state.tool_allow = tool_allow
     state.profile = str(profile or "")
     state.prior_extra = list(prior_extra or [])
+    state.source = source
 
     # a. 确认卡片存在
     try:

@@ -230,6 +230,12 @@ class RunState:
     tool_allow: Optional[set] = None
     profile: str = ""
     prior_extra: list[dict[str, Any]] = field(default_factory=list)
+    # [票落＝回合止 2026-11-15 · 用户令「approve/reject 之后最多一次调用」]
+    #   · source        —— 本回合来源标记（_run_message 透传，判 review_step）；
+    #   · seat_voted_end—— 本回合内票已落账：下一次模型调用是**最后一次**
+    #                     （空工具面只够写收尾正文；它吐出什么都不再执行）。
+    source: Optional[dict[str, Any]] = None
+    seat_voted_end: bool = False
 
 
 @dataclass(frozen=True)
@@ -874,6 +880,15 @@ def _norm_tool_calls(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _seat_voted_this_turn(state: RunState) -> bool:
+    """本回合内 approve/reject 有**执行成功**的（tool_events 里 ok=True）＝
+    本席的票已落账。只读本回合的执行记录：旧批次的票、被闸拒掉的票
+    （ok=False）都不算——判据天然是回合域。"""
+    return any(str(e.get("tool") or "") in ("approve", "reject")
+               and e.get("ok") is True
+               for e in (state.tool_events or []))
+
+
 async def step(state: RunState) -> StepOutcome:
     """一次状态推进＝工具循环的一个显式状态点。
 
@@ -930,6 +945,16 @@ async def step(state: RunState) -> StepOutcome:
     # 有来源才发；round1 暂存 turn_tail，后续轮直接进轮槽。放在 round_start 之前，
     # 使事件序＝user_message → preamble → injection → round_start/judgment/…
     _sync_injection(state)
+    # [票落＝回合止 2026-11-15 · 用户令「approve/reject 之后最多一次调用」]
+    # 席位回合里本回合的票已落账（tool_events 里 approve/reject ok）⇒
+    # 这次调用是**最后一次**：空工具面只够写收尾正文；它若仍吐 tool_calls，
+    # 下方 seat_voted_end 闸直接收口不执行——回合止，下一席由场叫
+    # （实案：fn_001 投完票原地 wait 烧 11 轮 20 分钟等一个被自己占住的空位）。
+    if (state.act_as and not state.seat_voted_end
+            and str((state.source or {}).get("kind") or "") == "review_step"
+            and _seat_voted_this_turn(state)):
+        state.seat_voted_end = True
+        state.tools = []
     if state.rounds == 1:
         # [E-探针制 2026-10-07] 首轮＝纯主模型带工具查证（原 call_simple
         # 观点前置编排退役；三席改在工具循环收尾处进场）。
@@ -1105,6 +1130,13 @@ async def step(state: RunState) -> StepOutcome:
             )
             _engage_slot(state)   # 注入消息随轮槽带入后续轮
             return StepOutcome("continue", "await_step_tool")
+
+    # [票落＝回合止 2026-11-15] 限调轮里模型仍吐调用 ⇒ 不执行——票已落账，
+    # 回合到此为止（它的正文照常落盘当收尾）。
+    if tool_calls and state.seat_voted_end:
+        state.final_reply = assistant_content
+        await _land_round_reply(state, assistant_content)
+        return StepOutcome("deliver", "seat_voted")
 
     if not tool_calls:
         # [5715] 插话优先于收口：模型这一轮没调工具、正文已定（**正要收口**），

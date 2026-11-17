@@ -527,6 +527,7 @@ class PolicySet:
                         # 重启重演同一触发 ⇒ 同一 fire_key ⇒ 动作去重。
                         "basis": {"card": str(fact.get("card") or ""),
                                   "seq": int(fact.get("seq") or 0),
+                                  "ts": str(fact.get("ts") or ""),
                                   "type": ev_type},
                     })
                     st.clear(now)      # 撕本子重记：只清这一本
@@ -581,6 +582,7 @@ class PolicySet:
                     _e = st.entries[-1]   # entries 升序 ⇒ 尾＝最新（同 dispatch 触发位）
                     _basis = {"card": str(_e.get("card") or ""),
                               "seq": int(_e.get("seq") or 0),
+                              "ts": str(_e.get("ts") or ""),
                               "type": str(_e.get("type") or "")}
                 out.append({"policy": pid, "scope": list(key),
                             "desc": p.desc, "then": dict(p.then),

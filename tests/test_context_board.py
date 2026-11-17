@@ -186,14 +186,34 @@ def test_stub_drops_orphan_tool_and_old_pairs(monkeypatch):
 
 
 def test_stub_args_and_error_folded():
+    """[腾讯 400001] 折叠产出恒为合法 JSON——history 里 tool_call.arguments
+    会被严格校验，盲截文本必出坏单。残串走 _raw 兜底，真 JSON 走值截断。"""
     long_args = "x" * 900
     msgs = [dict(b, seq=i) for i, b in enumerate(
         _pair("c9", args=long_args, ok=False))]
     out = context_regions.project_history_messages(msgs)
     args = out[0]["tool_calls"][0]["function"]["arguments"]
-    assert len(args) <= context_regions._TOOL_STUB_ARGS_CAP + 10
+    json.loads(args)          # 合法 JSON（腾讯逐条校验的契约）
     assert "…[参数已折叠]" in args
     assert "error" in out[1]["content"]
+
+
+def test_stub_args_folded_inside_json():
+    """真 JSON 长参数 ⇒ 结构保留、长值截断——键名与短参数照样可见（教学）。"""
+    real_args = json.dumps(
+        {"card_id": "card_007", "note": "短参数",
+         "old_string": "旧文本" * 200, "new_string": "新文本" * 200},
+        ensure_ascii=False)
+    msgs = [dict(b, seq=i) for i, b in enumerate(
+        _pair("c10", args=real_args))]
+    out = context_regions.project_history_messages(msgs)
+    args = out[0]["tool_calls"][0]["function"]["arguments"]
+    folded = json.loads(args)
+    assert folded["card_id"] == "card_007"
+    assert folded["note"] == "短参数"               # 短值原样留
+    assert folded["old_string"].endswith("…[参数已折叠]")
+    assert len(folded["old_string"]) <= 90          # 长值截断不是全删
+    assert "新文本" in folded["new_string"]
 
 
 def test_stub_no_pairs_no_change():

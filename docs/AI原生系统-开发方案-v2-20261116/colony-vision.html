@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Colony OS · 终局愿景全景图</title>
+<style>
+  :root{
+    --bg:#0e1117; --panel:#161b26; --panel2:#1c2333; --line:#2a3350;
+    --txt:#e8ecf4; --dim:#9aa4ba; --faint:#6b7590;
+    --c-kernel:#e8b45a; --c-l1:#e06c75; --c-l2:#56b6c2; --c-l3:#c678dd;
+    --c-l4:#98c379; --c-l5:#61afef; --c-gate:#e8b45a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;line-height:1.65;padding:32px 20px 80px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:34px;text-align:center;letter-spacing:2px}
+  .pillars{display:flex;justify-content:center;gap:14px;margin:18px 0 6px;flex-wrap:wrap}
+  .pillar{padding:8px 22px;border-radius:999px;font-size:16px;font-weight:700;border:1.5px solid}
+  .p1{color:var(--c-l3);border-color:var(--c-l3)}
+  .p2{color:var(--c-l1);border-color:var(--c-l1)}
+  .p3{color:var(--c-l5);border-color:var(--c-l5)}
+  .sub{text-align:center;color:var(--dim);margin-bottom:40px;font-size:14px}
+  section{margin-top:56px}
+  h2{font-size:23px;margin-bottom:6px;display:flex;align-items:center;gap:10px}
+  h2 .num{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:2px 10px;font-size:15px;color:var(--c-kernel)}
+  .lead{color:var(--dim);margin-bottom:18px;font-size:15px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .small{font-size:13px;color:var(--dim)}
+  .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:4px;background:var(--panel2);border:1px solid var(--line);color:var(--faint);margin-right:6px}
+  /* ── §1 世界两半场 ── */
+  .commons{background:linear-gradient(180deg,#141c2e,#12182a);border:1px solid #33406b;border-radius:14px;padding:18px}
+  .commons h3{text-align:center;color:#8fb3ff;font-size:16px;margin-bottom:14px;letter-spacing:1px}
+  .creators{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-bottom:14px}
+  .creator{background:#1a2440;border:1px solid #3a4a7a;border-radius:10px;padding:10px 16px;text-align:center;font-size:13px;min-width:150px}
+  .creator b{display:block;font-size:14px;margin-bottom:2px}
+  .mesh{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .mesh div{background:#101a30;border:1px dashed #3a4a7a;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#b9c8ea}
+  .gate{margin:0 auto;max-width:760px;background:#221a10;border:1.5px solid var(--c-gate);border-radius:10px;padding:10px 18px;text-align:center;position:relative}
+  .gate b{color:var(--c-gate)}
+  .gate .arrow{color:var(--c-gate);font-size:20px;line-height:1}
+  .territory{background:linear-gradient(180deg,#1a1520,#161226);border:1px solid #4a3a6b;border-radius:14px;padding:18px;margin-top:0}
+  .territory h3{text-align:center;color:#cba6f7;font-size:16px;margin-bottom:14px;letter-spacing:1px}
+  .devrow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-bottom:14px}
+  .dev{background:#241d38;border:1px solid #54407a;border-radius:10px;padding:10px 14px;text-align:center;font-size:13px;min-width:120px}
+  .dev b{display:block}
+  .fabric{background:#1d1630;border:1px solid #54407a;border-radius:10px;padding:12px 16px;font-size:13.5px}
+  .fabric li{margin:4px 0 4px 18px}
+  .flow-arrow{text-align:center;color:var(--faint);font-size:22px;margin:6px 0}
+  /* ── §2 六层 ── */
+  .layer{display:flex;gap:14px;border-radius:12px;padding:14px 18px;margin-bottom:8px;border:1px solid var(--line);background:var(--panel)}
+  .layer .lb{flex:0 0 86px;font-weight:800;font-size:15px;display:flex;flex-direction:column;justify-content:center}
+  .layer .body{flex:1}
+  .layer .body .t{font-weight:700;font-size:15px}
+  .L0{border-color:var(--c-kernel);background:#1d1812}.L0 .lb{color:var(--c-kernel)}
+  .L1{border-color:var(--c-l1);background:#1e1417}.L1 .lb{color:var(--c-l1)}
+  .L2{border-color:var(--c-l2);background:#122022}.L2 .lb{color:var(--c-l2)}
+  .L3{border-color:var(--c-l3);background:#1d1428}.L3 .lb{color:var(--c-l3)}
+  .L4{border-color:var(--c-l4);background:#161f12}.L4 .lb{color:var(--c-l4)}
+  .L5{border-color:var(--c-l5);background:#121c2b}.L5 .lb{color:var(--c-l5)}
+  /* ── §3 内核 ── */
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  .kcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .kcard b{display:block;margin-bottom:4px;font-size:14px}
+  .kcard .em{color:var(--c-kernel)}
+  .balance{border-left:3px solid var(--c-kernel);background:var(--panel);border-radius:0 10px 10px 0;padding:12px 16px;margin-top:10px}
+  .balance b{color:var(--c-kernel)}
+  /* ── §4 发动机流水线 ── */
+  .pipe{display:flex;flex-direction:column;gap:0;align-items:stretch}
+  .pstage{background:var(--panel2);border:1px solid var(--c-l3);border-radius:10px;padding:10px 16px}
+  .pstage b{color:#d9a9ec}
+  .parrow{text-align:center;color:var(--c-l3);font-size:18px;line-height:1.3}
+  .lanes{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+  .lane{border-radius:8px;padding:6px 10px;font-size:12.5px;border:1px solid var(--line)}
+  /* ── §5 闭环 ── */
+  .loop{display:flex;flex-direction:column;gap:6px}
+  .loopstep{background:var(--panel);border:1px solid var(--c-l2);border-radius:10px;padding:10px 16px}
+  .loopstep b{color:var(--c-l2)}
+  .looparrow{text-align:center;color:var(--c-l2);font-size:16px;line-height:1.1}
+  .fix3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+  .fix{background:#0f1e21;border:1px solid #2c5157;border-radius:10px;padding:12px 14px;font-size:13px}
+  .fix b{color:#7fd4de;display:block;margin-bottom:4px}
+  /* ── §6 居民 ── */
+  .residents{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .resident{background:var(--panel);border:1px solid var(--c-l4);border-radius:12px;padding:14px}
+  .resident h4{color:var(--c-l4);margin-bottom:6px;font-size:15px}
+  .game{margin-top:14px;background:#171421;border:1px solid #6a4f9e;border-radius:12px;padding:16px}
+  .game h4{color:#b794f6;margin-bottom:10px}
+  .gamegrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .gamegrid div{background:#1e1830;border:1px solid #4a3a6b;border-radius:8px;padding:8px 12px;font-size:12.5px}
+  .gamefoot{margin-top:10px;background:#241d38;border:1px solid #6a4f9e;border-radius:8px;padding:10px 14px;font-size:13px;color:#d4c6f0}
+  /* ── §7 铁律 ── */
+  .rules{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .rule{background:var(--panel);border:1px solid var(--c-l5);border-radius:10px;padding:12px 16px}
+  .rule b{color:#8fc1f0}
+  /* ── §8 三步 ── */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;position:relative}
+  .step .n{position:absolute;top:-13px;left:14px;background:var(--c-kernel);color:#141414;font-weight:800;border-radius:8px;padding:1px 10px;font-size:14px}
+  .step h4{margin:6px 0 8px;font-size:15px}
+  footer{margin-top:64px;text-align:center;color:var(--faint);font-size:12.5px}
+  @media (max-width:820px){
+    .grid3,.residents,.steps,.fix3,.gamegrid{grid-template-columns:1fr}
+    .grid2,.rules,.mesh{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Colony OS · 终局愿景全景图</h1>
+<div class="pillars">
+  <span class="pillar p1">原生 AI</span>
+  <span class="pillar p2">数据主权</span>
+  <span class="pillar p3">去平台化</span>
+</div>
+<p class="sub">一句话：你的所有设备合成「一台」主权计算机，AI 是它的水电煤，全世界的独立作品由你自己家里的过滤闸决定什么能进来。</p>
+
+<!-- ══════════ §1 ══════════ -->
+<section>
+<h2><span class="num">§1</span>世界总图：两个半场</h2>
+<p class="lead">今天的数字世界是「设备孤岛 ＋ 平台庄园」。Colony 把它重构为：对内是<b>个人主权领地</b>，对外是<b>无中心自由公海</b>——中间隔着一道只有你能控制的城门。</p>
+
+<div class="commons">
+  <h3>外界 · 全球自由公海（没有平台收租）</h3>
+  <div class="creators">
+    <div class="creator"><b>独立游戏制作人</b>发游戏＋自述画像</div>
+    <div class="creator"><b>独立影音创作者</b>发作品＋自述画像</div>
+    <div class="creator"><b>节点/蓝图造物者</b>发功能模组</div>
+  </div>
+  <div class="mesh">
+    <div>① 开放作品索引网——无热搜榜、无买量竞价、防单点封杀</div>
+    <div>② 开放匹配网络——任何人可跑 PSN 粗筛节点，作品托管在哪都行</div>
+    <div>③ 体验画像公信层——真实受众口碑 AI 凝炼，戳穿标题党与货不对板</div>
+    <div>④ 价值直达——买断/打赏直接到创作者，0 抽成<br><span class="small" style="color:#7d8db3">＋大文件取件可选内容寻址分块加速（传输层优化）</span></div>
+  </div>
+</div>
+
+<div class="flow-arrow">▼</div>
+
+<div class="gate">
+  <b>领地边界 · 三道本地过滤城门</b><br>
+  <span class="small">① 硬避雷红线一票否决 → ② 个人画像语义匹配 → ③ 剥掉噱头只留事实＋闲时预载</span><br>
+  <span class="small" style="color:var(--c-gate)">★ 没有任何平台管道能绕过这道门往你屏幕上推一个字</span>
+</div>
+
+<div class="flow-arrow">▼</div>
+
+<div class="territory">
+  <h3>内界 · 你的个人主权领地（一个身份统御全设备）</h3>
+  <div class="devrow">
+    <div class="dev"><b>路由器</b>网络器官</div>
+    <div class="dev"><b>智能音箱</b>语音器官</div>
+    <div class="dev"><b>Kindle 墨水屏</b>纸感器官</div>
+    <div class="dev"><b>掌机/客厅主机</b>游戏交互</div>
+    <div class="dev"><b>家用 NAS/PC</b>主库＋重算力</div>
+  </div>
+  <div class="fabric">
+    <b>织体神经网：看起来是五台硬件，用起来是同一台机器</b>
+    <ul>
+      <li><b>共享一颗心脏</b>：同一份可读可改的人话画像、记忆与个人资产库</li>
+      <li><b>共享一池算力</b>：音箱/墨水屏/掌机随时无感借家里主机的大模型显卡</li>
+      <li><b>共享一盘积木</b>：所有设备的屏幕、麦克风、按键、网口自由连线组合</li>
+    </ul>
+  </div>
+</div>
+</section>
+
+<!-- ══════════ §2 ══════════ -->
+<section>
+<h2><span class="num">§2</span>纵向六层：从地契内核到交互面</h2>
+<p class="lead">底部一层全设备通用的微内核地基，上面五层按需挂载的增量大厦——轻设备只装下面几层，重设备全装。</p>
+
+<div class="layer L5"><div class="lb">L5<br><span class="small">体验壳</span></div><div class="body"><div class="t">多形态体验层（旗舰＝超级交互入口）</div><div class="small">电脑面板｜掌机游戏台｜墨水屏早报｜音箱纯语音｜车机座舱。铁律：正面永远毫秒级直读本地预算结果；屏幕上每一项必有你自己接的线。</div></div></div>
+<div class="layer L4"><div class="lb">L4<br><span class="small">生态居民</span></div><div class="body"><div class="t">三类居民共守同一套主权法</div><div class="small">① 模组蓝图（散装可拆改） ② 去平台化应用与原生 AI 游戏（无数据封地/推送/围墙账号） ③ CardColony 造物工作台（多智能体帮你造世界）</div></div></div>
+<div class="layer L3"><div class="lb">L3<br><span class="small">AI 发动机</span></div><div class="body"><div class="t">织体级原生 AI 与节点调度</div><div class="small">四大公共模型池（文本/向量/语音/视觉小模型）＋四级算力车道＋零更新守门＋波次攒批＋休眠零内存＋跨设备借算力。</div></div></div>
+<div class="layer L2"><div class="lb">L2<br><span class="small">公海闸门</span></div><div class="body"><div class="t">去中心化公海连接 ＋ 三道本地过滤城门</div><div class="small">人人可发、分块加速、创作者自述＋受众口碑防伪、硬避雷→精排→剥离事实。</div></div></div>
+<div class="layer L1"><div class="lb">L1<br><span class="small">主权心脏</span></div><div class="body"><div class="t">个人主权库 ＋ 人话画像 ＋ 切片同步</div><div class="small">行为与存档全留本地；画像纯人话可翻可改；主落点握全量，分设备按角色拿最小切片。</div></div></div>
+<div class="layer L0"><div class="lb">L0<br><span class="small">内核地基</span></div><div class="body"><div class="t">Colony 全光谱内核（所有设备必装）</div><div class="small">双态入驻｜统一账号三层信任环｜契约锚总线（传话/搬货分离）｜双备份自愈｜内容寻址块地基｜封闭笼子＋电量帧率呼吸闸。只定自然法则，不装具体楼房。</div></div></div>
+</section>
+
+<!-- ══════════ §3 ══════════ -->
+<section>
+<h2><span class="num">§3</span>L0 内核：六个机制 ＋ 四个平衡</h2>
+<p class="lead">内核是最不能返工的部分——百元路由跑得动的才许进，但未来十年所有场景需要的底层法则一次立齐。</p>
+
+<div class="grid3">
+  <div class="kcard"><b>① 双态栖息＋收养</b><span class="small">新主机裸机直刷；Kindle/老路由「附体」入住保原厂驱动；传感器单片机被就近设备收养为末梢。</span></div>
+  <div class="kcard"><b>② 一个账号＋三层信任环</b><span class="small">本我环：自家设备互借算力；亲友环：只开你点名的联机房；公海环：陌生人只换加密块，内网零暴露。</span></div>
+  <div class="kcard"><b>③ 契约锚总线</b><span class="small">传话道走极轻指令（本机跨机同口）；搬货道验权后递钥匙零拷贝直通显卡/内存，内核不抄数据。</span></div>
+  <div class="kcard"><b>④ 内容寻址块地基</b><span class="small">系统包、GB 级模型、几十 GB 游戏共用分块指纹——天然支持边下边玩、防篡改、跨包去重省盘。</span></div>
+  <div class="kcard"><b>⑤ 授权线＋剪线瞬断＋不死双槽</b><span class="small">默认全封闭没线寸步难行；剪线秒掐连接收编子任务；升级双槽轮换，断电崩溃自动退回。</span></div>
+  <div class="kcard"><b>⑥ 保底＋电量帧率呼吸闸</b><span class="small">系统控制资源焊死保底；低电/打游戏冰封无关杂活——但给「这局游戏自己的 AI」盖亲和章开绿灯。</span></div>
+</div>
+
+<div class="balance"><b>平衡一：老设备 vs 新主机</b> —— 双态栖息让 Kindle 与游戏 PC 跑同一颗内核；硬件能力自动探测分档，代码里不许写死「如果是 Kindle」。</div>
+<div class="balance"><b>平衡二：傻瓜体验 vs 绝对主权</b> —— 同一个账号短码入圈即可；但根私钥只锁在主设备，其他设备只拿可吊销的「工作证」。</div>
+<div class="balance"><b>平衡三：轻省电 vs 120 帧/50GB</b> —— 内核只做接线员和法官，数据面直通不经过它，所以塞得进小机器也拖不慢游戏机。</div>
+<div class="balance"><b>平衡四：全球互通 vs 家门安全</b> —— 三层信任环在网口底层物理隔离：陌生人连你有几台设备都看不见。</div>
+</section>
+
+<!-- ══════════ §4 ══════════ -->
+<section>
+<h2><span class="num">§4</span>心脏与大脑：L1 主权库 × L3 算力发动机</h2>
+<div class="grid2">
+  <div class="card">
+    <b style="color:var(--c-l1)">L1 · 个人主权心脏</b>
+    <ul class="small" style="margin:8px 0 0 18px">
+      <li><b>资产归拢</b>：阅读批注、歌单、游戏存档、好恶反馈全在你库里——应用只是雇来的工具，卸载不损分毫。</li>
+      <li><b>人话画像</b>：后台把轨迹凝炼成<b>你能翻开看懂、能动手改的自然语言档案</b>（含硬避雷红线）；你手写一句压过机器猜一百次。</li>
+      <li><b>切片流动</b>：主设备/NAS 存全量；路由只拿避雷黑名单，掌机只拿游戏偏好与存档。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <b style="color:var(--c-l3)">L3 · 织体算力发动机</b>
+    <div class="pipe" style="margin-top:8px">
+      <div class="pstage"><b>入口</b> <span class="small">音箱提问｜面板点选｜游戏 NPC｜半夜淘金</span></div>
+      <div class="parrow">▼</div>
+      <div class="pstage"><b>① 零更新守门</b> <span class="small">输入没变？0 算力秒回缓存</span></div>
+      <div class="parrow">▼</div>
+      <div class="pstage"><b>② 织体算力路由</b> <span class="small">音箱/Kindle 无算力→借 PC；掌机跑游戏→甩书房显卡；<b>异步任务拆撒多台闲机并行，结果汇聚回主权库</b></span></div>
+      <div class="parrow">▼</div>
+      <div class="pstage"><b>③ 四级车道＋波次攒批</b>
+        <div class="lanes">
+          <div class="lane" style="border-color:#e06c75">0 硬实时：急停/音频流</div>
+          <div class="lane" style="border-color:#61afef">1 当面交互：开口对话/面前 NPC</div>
+          <div class="lane" style="border-color:#98c379">2 波次吞吐：多智能体/全镇 NPC/批量过筛</div>
+          <div class="lane" style="border-color:#6b7590">3 闲时冷道：画像凝炼/重建索引</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="small" style="margin-top:10px">配套法则：上百个节点<b>没事时进程退出占 0 内存</b>，事件来了毫秒唤醒；模型显存＋任务沙箱共管一本总账，满了有序排队绝不撑崩。</p>
+</section>
+
+<!-- ══════════ §5 ══════════ -->
+<section>
+<h2><span class="num">§5</span>去平台化闭环：独立作品怎么到达你</h2>
+<p class="lead"><b>两层都去中心化</b>：管道无主——作品登记进开放索引、托管在哪都行、分块传输谁都能帮；曝光无主——没有热搜的世界里，「被看见」由每个用户自己领地里的匹配闸决定（这正是项目 B 要解的命题）。</p>
+
+<div class="loop">
+  <div class="loopstep"><b>创作者端</b>　作品托管在哪都行（自建站/任何渠道）＋ 签名「自述画像」登记进开放索引——发表零门槛，管道不归任何平台</div>
+  <div class="looparrow">▼</div>
+  <div class="loopstep"><b>公信层</b>　真实受众口碑 AI 凝炼成多维「体验画像」（strong/weak signals）——作品真相来自人群，不来自作者自夸，也不来自平台评分</div>
+  <div class="looparrow">▼</div>
+  <div class="loopstep"><b>开放匹配网络</b>　任何人可跑 PSN（个人资料服务节点）：存画像、响应粗筛、中继日志——你家 NAS 就是你自己的 PSN</div>
+  <div class="looparrow">▼ ── 主权分界线：完整画像永远不出门 ──</div>
+  <div class="loopstep"><b>你的设备发「受限查询描述符」给 PSN 粗筛</b>（只要/不要的标签，不含画像权重）→ 候选集回来后<b>本地终审</b>：① avoid_for 硬避雷 ② 全量画像语义精排 ③ 发现三道门（质量好/近期/不踩雷，防茧房）④ 剥成事实呈现</div>
+  <div class="looparrow">▼</div>
+  <div class="loopstep"><b>看上了</b>　分块取件（验哈希，谁传都一样）→ 一键点对点直付创作者</div>
+</div>
+
+<div class="fix3">
+  <div class="fix"><b>没热搜，作品怎么有曝光？</b>靠匹配不靠榜：自述画像＋受众凝炼的体验画像进索引，每个用户的设备在本地决定它浮不浮现——「被曝光」不再是平台卖的资源，而是匹配的自然结果。</div>
+  <div class="fix"><b>垃圾与标题党怎么防？</b>体验画像由真实受众口碑凝炼而非作者自填；avoid_for 一票否决；发现机制用「质量好+近期+不踩雷」防茧房。无全局榜可刷。</div>
+  <div class="fix"><b>弱设备与创作者成本？</b>家里 NAS 就是你的 PSN 替你巡航，闲时预载命中作品；取件验哈希分块拉，谁传都一样——发表零门槛，爆款不破产。</div>
+</div>
+</section>
+
+<!-- ══════════ §6 ══════════ -->
+<section>
+<h2><span class="num">§6</span>三类生态居民 ＋ 原生 AI 游戏完全体</h2>
+<div class="residents">
+  <div class="resident"><h4>① 模组蓝图</h4><span class="small">日常信息流/自动化＝几个节点＋器官连线＋正面卡片。<b>跨设备成精</b>：音箱听你说→路由抓资料→电脑洗稿排版→Kindle 刷出早报。永远散装可拆改。</span></div>
+  <div class="resident"><h4>② 去平台化应用/游戏</h4><span class="small">音乐、导航、车机、游戏＝完整功能体，享原生显卡/手柄性能；但数据归你、无推送特权、无围墙账号。</span></div>
+  <div class="resident"><h4>③ CardColony 造物台</h4><span class="small">人给目标做验收，多智能体组织拆卡、并行造节点/蓝图/游戏——甚至迭代 Colony OS 自己。</span></div>
+</div>
+
+<div class="game">
+  <h4>未来「原生 AI 游戏」在 Colony 上的完全体 —— 传统系统造不出的形态</h4>
+  <div class="small" style="margin-bottom:10px">几十 MB 游戏包＋20MB 世界观风格包，0 大模型赘肉</div>
+  <div class="gamegrid">
+    <div><b>面前角色实时交互</b><br>真口语对话、毫秒级语音听说、结构化动作输出</div>
+    <div><b>屏幕外活体世界</b><br>全镇几十个 NPC 各自盘算，走系统波次攒批引擎</div>
+    <div><b>持久世界记忆＋动态导演</b><br>NPC 记得你几十小时前的抉择；授权后按你口味编排节奏</div>
+  </div>
+  <div class="gamefoot">内核帧率护栏＋织体双机分流：掌机芯片 100% 保画质帧率，AI 大脑甩给家里电脑算；出门断网自动切回本机轻量模型/NPU——<b>0 云账单，永不停服</b>。</div>
+</div>
+</section>
+
+<!-- ══════════ §7 ══════════ -->
+<section>
+<h2><span class="num">§7</span>体验层四条铁律</h2>
+<div class="rules">
+  <div class="rule"><b>有且只有你要的</b>　无商城横幅、无红点海；每个元素 100% 源自你激活的蓝图与你的过滤门。</div>
+  <div class="rule"><b>只摆事实不表功</b>　呈现可信事实与就绪内容帮你决策，不演「推荐理由」。</div>
+  <div class="rule"><b>前台永远秒开</b>　抓取/过筛/凝炼/预载全在后台做完，亮屏毫秒直读。</div>
+  <div class="rule"><b>多端如一随境变形</b>　书房是指挥台、掌机是游戏世界、墨水屏是纸感阅读、车机是领航舱。</div>
+</div>
+</section>
+
+<!-- ══════════ §8 ══════════ -->
+<section>
+<h2><span class="num">§8</span>生长路径：先浇筑地基，再插积木</h2>
+<p class="lead">不是先盖草棚拆了重盖——L0 地契内核一次到位，往上逐格插增量。</p>
+<div class="steps">
+  <div class="step"><span class="n">第一步</span><h4>最小起跑点</h4><span class="small">L0 内核＋最薄跨设备模型调用与器官连线。<b>CardColony 驱动大模型全自动写出来并全程录屏</b>；现场演示 PC/NAS/路由/音箱/Kindle 同账号组网红互借算力——引爆极客圈铺常驻节点。</span></div>
+  <div class="step"><span class="n">第二步</span><h4>轰开围墙主战役</h4><span class="small">不改内核，插齐 L1 主权库、L2 分发与避雷城门、L3 波次攒批与游戏 AI、掌机/客厅壳——独立游戏上打响「零平台税分发＋原生 AI 游戏母体」第一炮。</span></div>
+  <div class="step"><span class="n">第三步</span><h4>百花齐放</h4><span class="small">同套公海与主权底座铺开音乐/视频/图文全品类，接入车机与更多硬件，CardColony 驻留机上——进入社区与 AI 组织自我繁衍正循环。</span></div>
+</div>
+</section>
+
+<footer>Colony OS · 终局愿景架构图 ｜ 源文档：01-Colony系统架构设计.md（v2）｜ 实现级字节规范另见 02-内核专册</footer>
+</div>
+</body>
+</html>

@@ -412,6 +412,24 @@ def err(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error": {"code": code, "message": message}, "data": None}
 
 
+# [2026-11-16 · 用户令「卡间通信的工具面禁止折叠占位提交」]
+# 上下文装配的存根投影把长参数折成 `…[参数已折叠]` 占位（合法 JSON 的值内
+# 标记）。模型把它当原文照抄进卡间消息 ⇒ 收件卡拿到残缺参数，指令不可执行
+# 且污染沿通信传播（card_564→card_596 实例）。判断归模型（怎么改写它定，
+# 禁令同时写进 direct/sync/report_up/report 的参数说明），执行归代码
+# （四类发信 handler 在落信前统一机械拒）。
+FOLDED_PLACEHOLDER = "…[参数已折叠]"
+
+
+def reject_folded_placeholder(text: str) -> str | None:
+    """卡间通信提交正文含折叠占位 ⇒ 返回拒绝文案；干净 ⇒ None。"""
+    if FOLDED_PLACEHOLDER in str(text):
+        return ("禁止提交：正文含「…[参数已折叠]」——那是上下文装配的存根占位，"
+                "不是原文。请先用 read_card / read_file 取回完整原文，"
+                "用自己的话完整表述后再发送。")
+    return None
+
+
 def ok_(data: dict[str, Any]) -> dict[str, Any]:
     """成功信封：既有成功返回 dict（含 card_id/title 等键）**原样**进 data。"""
     return {"ok": True, "error": None, "data": data}
@@ -2141,6 +2159,10 @@ async def _h_report_deploy(work_id: str, current_id: str,
     content = str(arguments.get("content") or "").strip()
     if not content:
         return err("validation", "content 不能为空")
+    # [2026-11-16 · 用户令] 差事回执也是卡间通信面（职能→派遣方），同拦。
+    _bad_fold = reject_folded_placeholder(content)
+    if _bad_fold:
+        return err("validation", _bad_fold)
     from ..storage import function_store as _fs
     deps = _fs.active_for_function(work_id, current_id)
     if not deps:
@@ -6971,6 +6993,12 @@ async def _h_send_card_message(work_id: str, current_id: str,
     content = str(arguments.get("content", "")).strip()
     if not content:
         return err("invalid", "消息正文不得为空")
+    # ⑥ [2026-11-16 · 用户令「卡间通信的工具面禁止折叠占位提交」]
+    # send_card_message（系统侧完工回执等）+ 职能/角色指令全汇聚于此；
+    # 机械拦截归 reject_folded_placeholder（详见其定义处注释）。
+    _bad_fold = reject_folded_placeholder(content)
+    if _bad_fold:
+        return err("validation", _bad_fold)
     # 权限＝只判**发起方**有发信开关（``require_switch``；系统通道跳过）。
     # [通信不看对方 2026-10-22 · 用户令] 原来这里是
     # ``policy.check(current_id, target_id, SWITCH_READ, cards)``——查**目标卡**有没有
@@ -7296,6 +7324,11 @@ async def _h_report_up(work_id: str, current_id: str,
     content = str(arguments.get("content") or "").strip()
     if not content:
         return err("validation", "content 不能为空")
+    # [2026-11-16 · 用户令] report_up 直落 append_card_message 不经 _h_send_card_message，
+    # 兜底在此单独拦（工具面禁令见 report_up 参数说明）。
+    _bad_fold = reject_folded_placeholder(content)
+    if _bad_fold:
+        return err("validation", _bad_fold)
     if current_id == work_store.work_card_id_of(work_id):
         return err("denied", "总裁不汇报——总裁用 report_to_user 对用户汇报")
 
@@ -7577,6 +7610,11 @@ async def _h_scene_sync(work_id: str, current_id: str,
     content = str(arguments.get("content") or "").strip()
     if not content:
         return err("validation", "content 不能为空(你要同步的事是什么)")
+    # [2026-11-16 · 用户令] sync 直落 append_card_message 不经 _h_send_card_message，
+    # 兜底在此单独拦（工具面禁令见 sync 参数说明）。
+    _bad_fold = reject_folded_placeholder(content)
+    if _bad_fold:
+        return err("validation", _bad_fold)
     targets = [str(x).strip() for x in (arguments.get("card_ids") or [])
                if str(x).strip()]
     if not targets:
@@ -8066,7 +8104,9 @@ TOOL_REGISTRY["report_up"] = ToolDef(
         "parameters": {
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "汇报正文(非空,写事实与证据)"},
+                "content": {"type": "string", "description":
+                            "汇报正文(非空,写事实与证据)。禁止填「…[参数已折叠]」"
+                            "等折叠占位——那是装配存根不是原文，要引用先取完整原文"},
             },
             "required": ["content"],
         },
@@ -8100,7 +8140,9 @@ TOOL_REGISTRY["report"] = ToolDef(
             "type": "object",
             "properties": {
                 "content": {"type": "string",
-                            "description": "回执正文（非空：结论＋证据）"},
+                            "description": "回执正文（非空：结论＋证据）。"
+                            "禁止填「…[参数已折叠]」等折叠占位——那是装配存根"
+                            "不是原文，要引用先取完整原文"},
             },
             "required": ["content"],
         },
@@ -8201,7 +8243,9 @@ TOOL_REGISTRY["sync"] = ToolDef(
         "parameters": {
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "要同步的事(常是你卡面的变化；非空)"},
+                "content": {"type": "string", "description":
+                            "要同步的事(常是你卡面的变化；非空)。禁止填「…[参数已折叠]」"
+                            "等折叠占位——那是装配存根不是原文，要引用先取完整原文"},
                 "card_ids": {"type": "array", "items": {"type": "string"},
                              "description": "收件人(缺省＝沿你的通信线全部送达)"},
             },
@@ -8236,8 +8280,13 @@ TOOL_REGISTRY["direct"] = ToolDef(
             "type": "object",
             "properties": {
                 "card_id": {"type": "string", "description": "收令的卡"},
-                "instruction": {"type": "string", "description": "要它做什么(非空,可执行)"},
-                "acceptance": {"type": "string", "description": "验收判据(怎么算做到)"},
+                "instruction": {"type": "string", "description":
+                                "要它做什么(非空,可执行)。禁止填「…[参数已折叠]」"
+                                "等折叠占位——那是上下文装配的存根标记不是原文；"
+                                "要引用长参数，先 read_card/read_file 取回完整原文再表述"},
+                "acceptance": {"type": "string", "description":
+                               "验收判据(怎么算做到)。禁止填「…[参数已折叠]」"
+                               "等折叠占位——判据必须是核实过的完整事实"},
             },
             "required": ["card_id", "instruction", "acceptance"],
         },

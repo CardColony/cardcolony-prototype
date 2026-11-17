@@ -69,17 +69,50 @@ def load() -> dict[str, Any]:
         return data
 
 
+def _expired(entry: Any, now: float) -> bool:
+    """[临时额度机制 2026-11-15 · 用户令] 这条标记**过期了吗**？
+
+    ``expires_at``＝额度预计恢复时刻（从上游报文解析，如 Devin 的
+    「limit will reset in 6 hours 25 minutes (at … UTC)」）。到点 ⇒
+    **自动算不 exhausted**（让路结束、该档回池）；没写 ⇒ 永久（等巡检
+    真调纠正）。**读侧过滤，不写盘**——物理清除交给巡检/下次 write_state。
+    """
+    if not isinstance(entry, dict):
+        return False
+    exp = str(entry.get("expires_at") or "").strip()
+    if not exp:
+        return False
+    try:
+        from datetime import datetime
+        t = datetime.fromisoformat(exp)
+        return t.timestamp() <= now
+    except Exception:  # noqa: BLE001 解析不了＝当没写过过期时间
+        return False
+
+
 def exhausted_map() -> dict[str, dict]:
-    """``{key: {reason, at}}``；key 形如 ``executor:model``（模型级）或 ``executor``（端点级）。"""
+    """``{key: {reason, at, expires_at?}}``；key 形如 ``executor:model``（模型级）或 ``executor``（端点级）。
+
+    [临时额度机制 2026-11-15] **过期条目在这里被过滤**（读侧）——
+    额度到点自动恢复，不需要任何人守着清。
+    """
     raw = (load() or {}).get("exhausted") or {}
     out: dict[str, dict] = {}
+    now = _now_ts()
     if isinstance(raw, dict):
         for k, v in raw.items():
+            if _expired(v, now):
+                continue
             if isinstance(v, dict):
                 out[str(k)] = v
             else:
                 out[str(k)] = {"reason": str(v)}
     return out
+
+
+def _now_ts() -> float:
+    from datetime import datetime
+    return datetime.now().timestamp()
 
 
 def is_exhausted(executor_id: str, model: str = "") -> bool:
@@ -119,7 +152,30 @@ def write_state(exhausted: dict[str, Any], *, extra: dict[str, Any] | None = Non
     return str(path)
 
 
-def mark_exhausted(executor_id: str, model: str, reason: str) -> str:
+def merge_uncovered(exhausted: dict[str, Any],
+                    covered: set[str]) -> dict[str, Any]:
+    """巡检脚本整表重写前，**把「本轮没探测到」的旧标记并回来**。
+
+    [热更新 2026-11-13] ``check_exec_quota.py`` 每轮用本轮探测结果整表覆盖
+    ``exhausted``（这样"额度恢复"能自动清掉旧标记），但它**只探测清单里的
+    模型** ⇒ 清单外的条目（人工让路、已下架档）会被悄悄冲空（线上第 22 次
+    巡检复现）。语义分工：
+
+    - ``covered``＝本轮真调过的 ``executor:model`` ⇒ 由本轮结果裁决，旧标记不保留；
+    - 不在 ``covered`` ⇒ 原样保留（人工登记不该被定时脚本抹掉）。
+
+    只读旧状态、不写盘；返回合并后的新字典，交给 ``write_state``。
+    """
+    out: dict[str, Any] = dict(exhausted or {})
+    keys = {str(k) for k in (covered or set())}
+    for k, v in exhausted_map().items():
+        if k not in keys:
+            out.setdefault(k, v)
+    return out
+
+
+def mark_exhausted(executor_id: str, model: str, reason: str,
+                   expires_at: str | None = None) -> str:
     """**登记一条"额度耗尽"并落盘**（2026-11-04 加）。
 
     ★ **为什么要落盘**：``registry.mark_exhausted`` 原来只记**进程内存**
@@ -127,11 +183,20 @@ def mark_exhausted(executor_id: str, model: str, reason: str) -> str:
     进程重启 ⇒ 又去试它 ⇒ 白跑一轮）⇒ 落盘后**跨重启生效**。
 
     ⇒ **合并写入**（不覆盖别人写的条目，例如脚本登记的"促销到期"）。
+
+    [临时额度机制 2026-11-15 · 用户令] ``expires_at``＝额度预计恢复时刻
+    （ISO 本地时间，由上游报文里的「limit will reset … (at …)」解析）。
+    写了 ⇒ 到点自动算不 exhausted（``exhausted_map`` 读侧过滤）；
+    不写 ⇒ 原语义（等巡检真调纠正）。
     """
     key = f"{executor_id}:{model}" if model else str(executor_id)
     current = dict(exhausted_map())
-    current[key] = {"reason": str(reason or "额度耗尽"), "at": _now_iso(),
-                    "kind": "free_tier_limit"}
+    entry: dict[str, Any] = {"reason": str(reason or "额度耗尽"),
+                             "at": _now_iso(),
+                             "kind": "free_tier_limit"}
+    if expires_at:
+        entry["expires_at"] = str(expires_at)
+    current[key] = entry
     path = Path(STATE_PATH)
     extra: dict[str, Any] = {}
     if path.exists():

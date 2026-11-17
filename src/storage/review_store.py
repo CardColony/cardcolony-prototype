@@ -483,6 +483,14 @@ async def _vote(work_id: str, review_id: str, role_id: str,
             " verdict=excluded.verdict,"
             " draft_snapshot=excluded.draft_snapshot",
             (work_id, batch, role_id, draft_ver, _now(), verdict, snapshot))
+        # 新票落账＝新事实——尤其新否决，它就是要求重派的事件：把瞬时
+        # 故障攒下的 dispatch_fails 清位，封顶不做单向棘轮
+        # （[解棘轮 2026-11-15] 否则封顶后席位再怎么否也派不出去）。
+        if int(st.get("dispatch_fails") or 0):
+            st2 = dict(st)
+            st2["dispatch_fails"] = 0
+            conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
+                         (json.dumps(st2, ensure_ascii=False), review_id))
 
     await card_db.run_write(work_id, _fn)
     return {"ok": True, "batch": batch, "role": role_id,
@@ -550,6 +558,9 @@ async def mark_responded(work_id: str, review_id: str) -> int:
     seq = int(st.get("responded_seq") or 0) + 1
     st2["responded_seq"] = seq
     st2["promote_asked"] = False
+    # 正卡真交回了 ⇒ 双向信道活着——派活失败计数清位，封顶不再单向
+    # 锁死（[解棘轮 2026-11-15] 瞬时停卡攒的 fails 曾让一批永久拒派）。
+    st2["dispatch_fails"] = 0
 
     def _fn(conn: Any) -> None:
         conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -244,6 +245,18 @@ class Watchdog:
     #: 一个网关**忙**时的等待上限（秒）——**按 busy 状态排队等**，
     #: 这是"排队"的上限，不是"猜死活"。
     busy_wait_sec: float = 900.0
+    #: [死挂检测 2026-11-15] prompt 发出后「零事件」（连 keepalive 都没有）持续
+    #: 这么多秒 ⇒ 主动问 CLI 网关 ``/api/v1/status``：进程死 / busy=False ⇒ 判死；
+    #: busy=True（真在跑大 bash，本就不发帧）⇒ 宽限一轮；两轮仍零事件 ⇒ 判死。
+    #: 判死**不是失败**：释放槽、resume 续跑、重新排队（用户令 2026-11-15
+    #: 「死挂杀了有什么用，要让它重新连上或者排队」）；连续重置超过
+    #: ``max_resume`` 次才升级为换候选。env: ECO_WB_EXEC_HANG_S
+    hang_timeout_sec: float = 600.0
+    #: [排队改道 2026-11-15] 排队等槽的窗口：等满这个秒数还没轮到 ⇒ 沿优先级链
+    #: 重新选一次路（谁空去谁；都没有 ⇒ 回本槽继续等）。现场 card_384 在
+    #: cn glm 死等 1.5h+ 而 intl glm 有空槽 ⇒ 死钉一个端点的排队没有意义。
+    #: 0 = 关闭（退回死等）。env: ECO_WB_EXEC_RESELECT_S
+    reselect_wait_sec: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -308,6 +321,10 @@ class WbExecConfig:
 _EMPTY = WbExecConfig()
 
 _cache: Optional[WbExecConfig] = None
+#: 缓存对应的文件指纹 ``(mtime_ns, size)``。与 quota_state 同一套口径：
+#: **文件一变，下一次读取就重解析 ⇒ 改候选表不用重启 5700**。
+_cache_stamp: tuple[int, int] = (-1, -1)
+_lock = threading.Lock()
 
 
 def config_path() -> Path:
@@ -317,34 +334,54 @@ def config_path() -> Path:
     return CONFIG_PATH
 
 
+def _stamp(path: Path) -> tuple[int, int]:
+    try:
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0, -1)
+
+
 def load(force: bool = False) -> WbExecConfig:
-    """读配置（带进程内缓存）。**任何异常都返回"关闭态"，不抛。**"""
-    global _cache
-    if _cache is not None and not force:
-        return _cache
+    """读配置（按文件指纹缓存）。**任何异常都不抛，不拖垮主链路。**
+
+    [热更新 2026-11-13] 原实现只要 ``_cache`` 非空就永远不读盘 ⇒ 巡检发现
+    新免费档、人工改候选表，都**要重启才生效**。现在按 ``(mtime_ns, size)``
+    判定：文件一变，下一次 ``load()`` 自动重解析，所有调用点零改动。
+
+    异常策略（比原实现更保守）：
+    - **文件不存在** ⇒ 关闭态（保留「删配置＝关执行体」这条人工手段）；
+    - **读到半截 / 解析失败** ⇒ **保住上一份好配置**（原子替换的窗口里
+      不该把整条执行体旁路掉）；从没读到过好的 ⇒ 关闭态。
+    """
+    global _cache, _cache_stamp
     path = config_path()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        logger.info("[wb_exec] 配置不存在（%s）⇒ 执行体旁路", path)
-        _cache = _EMPTY
+    with _lock:
+        stamp = _stamp(path)
+        if _cache is not None and not force and stamp == _cache_stamp:
+            return _cache
+        if stamp == (0, -1):
+            logger.info("[wb_exec] 配置不存在（%s）⇒ 执行体旁路", path)
+            _cache, _cache_stamp = _EMPTY, stamp
+            return _cache
+        try:
+            parsed = _parse(json.loads(path.read_text(encoding="utf-8")))
+        except Exception as exc:  # noqa: BLE001 配置坏了不拖垮主链路
+            logger.warning("[wb_exec] 配置读取/解析失败（%s）: %s ⇒ %s",
+                           path, exc, "保留上一份好配置" if _cache else "执行体旁路")
+            if _cache is None:
+                _cache = _EMPTY
+            _cache_stamp = stamp
+            return _cache
+        _cache, _cache_stamp = parsed, stamp
         return _cache
-    except Exception as exc:  # noqa: BLE001 配置坏了不拖垮主链路
-        logger.warning("[wb_exec] 配置读取失败（%s）⇒ 执行体旁路: %s", path, exc)
-        _cache = _EMPTY
-        return _cache
-    try:
-        _cache = _parse(raw)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[wb_exec] 配置解析失败 ⇒ 执行体旁路: %s", exc)
-        _cache = _EMPTY
-    return _cache
 
 
 def reset_cache() -> None:
-    """测试用：清缓存。"""
-    global _cache
-    _cache = None
+    """测试用：清缓存（连文件指纹一起清，免得 tmp 文件复用误命中）。"""
+    global _cache, _cache_stamp
+    with _lock:
+        _cache, _cache_stamp = None, (-1, -1)
 
 
 def _parse(raw: dict[str, Any]) -> WbExecConfig:
@@ -450,6 +487,10 @@ def _parse(raw: dict[str, Any]) -> WbExecConfig:
             read_timeout_sec=float(wd.get("read_timeout_sec") or 600.0),
             max_resume=int(wd.get("max_resume") or 3),
             busy_wait_sec=float(wd.get("busy_wait_sec") or 900.0),
+            hang_timeout_sec=float(os.environ.get("ECO_WB_EXEC_HANG_S")
+                                   or wd.get("hang_timeout_sec") or 600.0),
+            reselect_wait_sec=float(os.environ.get("ECO_WB_EXEC_RESELECT_S")
+                                    or wd.get("reselect_wait_sec") or 120.0),
         ),
         on_unavailable=str(on_unavailable.get("mode") or "fallback_system"),
         task=TaskSpec(

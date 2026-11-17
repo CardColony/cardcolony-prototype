@@ -216,6 +216,24 @@ async def probe_gateway(base_url: str,
 
 
 # ===================================================================== 注册表
+def _entry_expired(entry: Any) -> bool:
+    """[临时额度机制 2026-11-15 · 用户令] 进程内额度条目**到点了吗**？
+
+    与 ``quota_state.exhausted_map`` 读侧同款逻辑：带 ``expires_at``
+    （额度预计恢复时刻，由上游报文解析）⇒ 到点自动算不 exhausted。
+    """
+    if not isinstance(entry, dict):
+        return False
+    exp = str(entry.get("expires_at") or "").strip()
+    if not exp:
+        return False
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(exp).timestamp() <= datetime.now().timestamp()
+    except Exception:  # noqa: BLE001 解析不了＝当没写过
+        return False
+
+
 class ExecutorRegistry:
     """执行器 ↔ 网关的注册表（进程内单例）。
 
@@ -284,8 +302,10 @@ class ExecutorRegistry:
         self._cli_unusable: set[str] = set()
         #: **额度耗尽的 (执行体, 模型)**（``{(executor, model): 原因}``）——
         #: 2026-11-01 加：**上游明确报出来的**配额状态 ⇒ 之后不让它吃流量。
-        #: **没有时间窗**（不是"熔断 60 秒"）⇒ 恢复只靠"真调成功一次"。
-        self._exhausted: dict[tuple[str, str], str] = {}
+        #: ~~没有时间窗~~ → [临时额度机制 2026-11-15] 值改 ``{reason, expires_at}``：
+        #: 带恢复时刻 ⇒ 到点自动算不 exhausted（读侧过滤）；没解析出恢复时刻
+        #: ⇒ 原语义（恢复靠真调成功一次/巡检纠正）。
+        self._exhausted: dict[tuple[str, str], dict] = {}
         #: **槽位预留**（``{executor_id: {holder: 模型}}``）——
         #: **优先级瀑布的核心**（2026-11-04 用户令：「先全部排 devin，它排满了或
         #: 额度用完了，就落 opencode」）。
@@ -325,7 +345,8 @@ class ExecutorRegistry:
         return str(model) in self._model_unavailable.get(executor_id, set())
 
     # ---------------------------------------------------------------- 额度态
-    def mark_exhausted(self, executor_id: str, model: str, reason: str) -> None:
+    def mark_exhausted(self, executor_id: str, model: str, reason: str,
+                       expires_at: str = "") -> None:
         """**实测**这个执行体的这个模型额度/配额用完了 ⇒ 记下来（之后不让它再吃流量）。
 
         **按状态判定**（不是猜、不是时间闸）：只有**上游明确报出来**才记。
@@ -334,52 +355,82 @@ class ExecutorRegistry:
             ⇒ 也就是 "Free usage limit reached"（实测 2026-11-01 22:16，card_143 就是这个）
           - WorkBuddy ACP：``_meta['codebuddy.ai/errorMessage'].category == "quota"``
 
-        **★ 没有时间窗**：不会"过 X 分钟自动恢复" ⇒ 恢复只靠**真调成功一次**
-        （:meth:`clear_exhausted`）⇒ 纯状态驱动。
+        ★ ~~没有时间窗~~ → [临时额度机制 2026-11-15 · 用户令] **带 ``expires_at``
+        （额度预计恢复时刻，由上游报文解析）⇒ 到点自动算不 exhausted**；
+        没解析出恢复时刻 ⇒ 原语义（恢复只靠真调成功一次/巡检纠正）。
         """
         key = (str(executor_id), str(model))
-        if key in self._exhausted:
+        prev = self._exhausted.get(key)
+        prev_exp = (prev or {}).get("expires_at") if isinstance(prev, dict) else ""
+        if prev and not _entry_expired(prev) and prev_exp == str(expires_at or ""):
             return
-        self._exhausted[key] = str(reason or "额度耗尽")
+        self._exhausted[key] = {"reason": str(reason or "额度耗尽"),
+                                "expires_at": str(expires_at or "")}
         logger.warning("[wb_exec] 执行体 %s 的模型 %s 额度耗尽（%s）⇒ 记下"
-                       "（之后不让它吃流量，直到真调成功一次）",
-                       executor_id, model, self._exhausted[key])
+                       "%s",
+                       executor_id, model, self._exhausted[key]["reason"],
+                       f"；预计 {expires_at} 自动恢复" if expires_at else
+                       "（之后不让它吃流量，直到真调成功一次）")
         # ★ **同时落盘**（2026-11-04）：原来只记进程内存 ⇒ **重启就忘了**
         #   （实测 opencode 免费档用完后重启 ⇒ 又去试它 ⇒ 白跑一轮）。
         try:
             from . import quota_state
             quota_state.mark_exhausted(str(executor_id), str(model),
-                                       self._exhausted[key])
+                                       self._exhausted[key]["reason"],
+                                       expires_at=str(expires_at or "") or None)
         except Exception as exc:  # noqa: BLE001 落盘失败不阻断（内存态仍生效）
             logger.warning("[wb_exec] 额度状态落盘失败（不影响本进程）：%s", exc)
 
     def is_exhausted(self, executor_id: str, model: str) -> bool:
         """这个执行体的这个模型**实测**额度用完了吗？（**没实测过 ⇒ False**，不猜）
 
-        **两个来源**（2026-11-03）：
-        ① **进程内**：本进程**调用失败并回报** quota/free_tier_limit 时登记的；
-        ② **状态文件** ``config/wb_exec_quota.json``：**定期探测**写进来的
-           ⇒ **不等它失败就知道**，而且**跨进程、跨重启**都还在。
-           支持**模型级**（``executor:model``）与**端点级**（``executor``）两种。
+        ★ [2026-11-16 · 用户令「热更新必须真的有用」] **状态文件是唯一权威**。
+        原实现「进程内存优先」⇒ 外部清掉 ``wb_exec_quota.json`` 里的标记后，
+        本进程内存里的旧条目**还照样挡**（现场：清完额度文件，派工仍跳过
+        devin ⇒ 所谓热更新形同虚设）。现在：
+
+        - 先读**文件**（quota_state 按 mtime+size 热读，跨进程/跨重启）；
+        - 文件说没标记 ⇒ **顺手清掉本进程旧条目**（内存只是写后又读的快取，
+          永远不能反过来压过文件）⇒ 外部一清文件，下一次选路立即放行；
+        - 文件读不了 ⇒ 才退回进程内条目（fail-open 方向：不让配置故障
+          把整个执行体旁路）。
+
+        [临时额度机制 2026-11-15] 带 ``expires_at`` 的条目**到点自动不算**
+        （读侧过滤，见 :func:`quota_state.exhausted_map`）。
         """
-        if (str(executor_id), str(model)) in self._exhausted:
-            return True
+        key = (str(executor_id), str(model))
         try:
             from . import quota_state
-            return quota_state.is_exhausted(executor_id, model)
-        except Exception:  # noqa: BLE001 读不到状态文件＝没状态，不阻断
+            file_says_exhausted = quota_state.is_exhausted(executor_id, model)
+        except Exception:  # noqa: BLE001 文件读不了 ⇒ 退回进程内条目
+            file_says_exhausted = False
+            entry = self._exhausted.get(key)
+            if entry and not _entry_expired(entry):
+                return True
+        if not file_says_exhausted:
+            # 文件已清/已过期 ⇒ 内存旧条目同步作废（这就是热更新的落点）
+            if key in self._exhausted:
+                logger.info("[wb_exec] %s/%s 额度状态文件已放行 ⇒ 清掉本进程旧标记",
+                            executor_id, model)
+                self._exhausted.pop(key, None)
             return False
+        return True
 
     def exhausted_reason(self, executor_id: str, model: str) -> str:
-        """额度用完的原因（进程内优先，其次状态文件）。"""
-        r = self._exhausted.get((str(executor_id), str(model)))
-        if r:
-            return str(r)
+        """额度用完的原因（**文件优先**，与 :meth:`is_exhausted` 同一口径）。"""
+        key = (str(executor_id), str(model))
         try:
             from . import quota_state
-            return quota_state.reason_of(executor_id, model)
+            if quota_state.is_exhausted(executor_id, model):
+                return quota_state.reason_of(executor_id, model)
         except Exception:  # noqa: BLE001
-            return ""
+            pass
+        entry = self._exhausted.get(key)
+        if entry and not _entry_expired(entry):
+            r = str((entry or {}).get("reason") or "")
+            exp = str((entry or {}).get("expires_at") or "")
+            return f"{r}（预计 {exp} 自动恢复）" if exp else r
+        return ""
 
     def clear_exhausted(self, executor_id: str, model: str) -> None:
         """**真调成功一次** ⇒ 额度回来了 ⇒ 清掉标记（**状态驱动，不是时间到期**）。
@@ -838,14 +889,15 @@ class ExecutorRegistry:
         pool = self._cli_pool.get(key) or []
         alive = [g for g in pool
                  if g.cli_worker is not None and g.cli_worker.alive()]
-        # ★ **池要补足满编**（2026-11-03 修）。
+        # ★ **池要补足满编**。
         #   早先这里是「只要还有 ≥1 个活的就直接用」⇒ **池只减不增**：
         #   CLI 进程自己退出后**没人补** ⇒ 实测 wb-cn 池从 **3 个掉到 1 个**
         #   ⇒ 那一侧的并发从 3 变 1 ⇒ 后面全排队
         #   （用户 11-03 当场指出：「现在根本就没有 6 个槽并发」）。
-        # ⇒ 现在：**活着的数量 < cli_pool_size ⇒ 补到满编**。
-        #   **状态驱动**（看"活着几个 vs 配置要几个"），**不是时间闸**。
-        if alive and len(alive) < max(1, int(ex.cli_pool_size)):
+        # [2026-11-17 修] 去掉 `if alive` 前置：**池全空时更要补**。
+        #   现场：探针撞 429 ⇒ 起一个丢一个 ⇒ alive=[] ⇒ 旧逻辑跳过补编
+        #   ⇒ 报「没有空闲进程」（其实是一个都没有）⇒ 回落系统模型。
+        if len(alive) < max(1, int(ex.cli_pool_size)):
             grown = await self._grow_cli_pool(cfg, ex, key, work_dir)
             alive = grown or alive
         if alive:

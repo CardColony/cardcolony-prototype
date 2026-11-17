@@ -572,14 +572,31 @@ def main() -> int:
     if not dv.get("models"):
         print(f"  （未探测：{dv.get('error') or dv.get('note') or '无模型'}）")
 
-    path = quota_state.write_state(exhausted, extra={
+    # [热更新 2026-11-13] 本轮**真调过**的 (executor:model) 范围。
+    # 范围内的旧标记由本轮结果裁决（额度恢复 ⇒ 自然消失）；范围外的
+    # （人工让路 / 已从清单下架的档）原样保留 ⇒ 不再被定时巡检整表冲空。
+    covered: set[str] = set()
+    for tag in ("wb-cn", "wb-intl", "wb-oc", "wb-cc", "wb-devin"):
+        rep = reports.get(tag) or {}
+        for m in (rep.get("models") or {}):
+            covered.add(f"{tag}:{m}")
+        for m in (rep.get("free_models") or []):
+            covered.add(f"{tag}:{m}")
+        for pm in (rep.get("free_promotions") or []):
+            for m in (pm.get("modelIds") or []):
+                covered.add(f"{tag}:{m}")
+    merged = quota_state.merge_uncovered(exhausted, covered)
+    kept = sorted(set(merged) - set(exhausted))
+
+    path = quota_state.write_state(merged, extra={
         "free_models": free_models,
         "reports": reports,
         "note": "本文件由 scripts/check_exec_quota.py 生成（每 12 小时自动跑）。"
                 "bridge 读它 ⇒ 额度/免费状态一变，后续就不再调那些档。",
     })
     print(f"\n★ 状态已写入 {path}")
-    print(f"  标记为不可用：{list(exhausted)}")
+    print(f"  标记为不可用：{list(merged)}")
+    print(f"  保留探测范围外的旧标记：{kept}")
     print(f"  各端点当前免费档：{free_models}")
     return 0
 

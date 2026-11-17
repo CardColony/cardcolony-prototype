@@ -885,6 +885,36 @@ def _collect_tool_stub_ids(
 
 
 _TOOL_STUB_ARGS_CAP = 240
+_TOOL_STUB_VAL_CAP = 80
+
+
+def _fold_tool_args(args: str) -> str:
+    """长参数折叠——产出**恒为合法 JSON**。
+
+    [腾讯 400001 · 2026-11-15] 原实现按字符盲截 JSON 文本再拼标记，
+    引号/括号必不闭 ⇒ 坏 JSON；腾讯逐条校验 history 里 tool_call.
+    arguments 可 parse ⇒ 一条污染历史整单拒（其他厂商不校验，潜伏至今）。
+    改法：能 parse ⇒ 结构不动、只截长字符串值（键名与短参数全留，
+    存根的教学目的不变）；parse 不了（原本就是残串）⇒ 包进
+    ``{"_raw": …}``。无论进什么，产出永远是合法 JSON。
+    """
+    try:
+        parsed = json.loads(args)
+    except (ValueError, TypeError):
+        return json.dumps({"_raw": args[:200] + "…[参数已折叠]"},
+                          ensure_ascii=False)
+
+    def _fold(v: Any) -> Any:
+        if isinstance(v, str):
+            return (v[:_TOOL_STUB_VAL_CAP] + "…[参数已折叠]"
+                    if len(v) > _TOOL_STUB_VAL_CAP else v)
+        if isinstance(v, dict):
+            return {k: _fold(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [_fold(x) for x in v]
+        return v
+
+    return json.dumps(_fold(parsed), ensure_ascii=False)
 
 
 def _tool_stub_wire(m: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
@@ -897,7 +927,7 @@ def _tool_stub_wire(m: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
             fn = dict(tc2.get("function") or {})
             args = str(fn.get("arguments") or "")
             if len(args) > _TOOL_STUB_ARGS_CAP:
-                fn["arguments"] = args[:_TOOL_STUB_ARGS_CAP] + "…[参数已折叠]"
+                fn["arguments"] = _fold_tool_args(args)
             tc2["function"] = fn
             tcs.append(tc2)
         item = {"role": "assistant",

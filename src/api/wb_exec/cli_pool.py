@@ -302,6 +302,21 @@ async def probe_can_work(base_url: str, model: str,
         meta = (res or {}).get("_meta") or {}
         err = str(meta.get("codebuddy.ai/errorMessage") or "")
         ok = stop == "end_turn"
+        if not ok and err:
+            # ★ [2026-11-17 修] **429/额度限流 ≠ 这个 CLI 不能干活**。
+            #   现场：探针用 `cli_probe_model`(hy3) 验活，hy3 此刻撞 429 频率限制
+            #   ⇒ stopReason=refusal ⇒ 旧逻辑判 False ⇒ _grow_cli_pool 把**刚起的
+            #   进程全丢掉** + break ⇒ 池空 ⇒ 报「没有空闲进程」⇒ 换候选/回落
+            #   系统模型（花钱）。但用户现场根本没有任务在跑——是探针自己把池清了。
+            #   ⇒ 额度类错误（429/quota/exceeded/frequency limit）算**进程可用**：
+            #     会话能建、模型能切、prompt 能发出去、上游有正常应答 ⇒ CLI 活着；
+            #     额度由 quota_state 临时标记接管（让路，不杀进程）。
+            from .acp_client import looks_quota_exhausted
+            if looks_quota_exhausted(err) or "frequency limit" in err.lower():
+                ok = True
+                logger.info(
+                    "[wb_exec] CLI 探针 %s：上游报额度/限流（%s）⇒ 判进程可用"
+                    "（额度交给临时标记，不丢进程）", base_url, err[:100])
         logger.info("[wb_exec] CLI 探针 %s：stop=%s %s", base_url, stop, err)
         return ok, catalog
     finally:

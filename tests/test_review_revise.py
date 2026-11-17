@@ -723,3 +723,99 @@ async def test_review_target_responded_policy_retired(sandbox):
     pol = next(p for p in pols.get("policies", pols)
                if p.get("id") == "review_target_responded")
     assert pol.get("active") is False
+
+
+async def test_dispatch_to_halted_child_delivers_quiet_no_fail(sandbox,
+                                                                 monkeypatch):
+    """[停卡不算失败 2026-11-15 · work_073 实案回归] 正卡被用户停住时
+    派活：信照常落会话＋ask 记账，唤醒撞 halt 闸被拒 ⇒ delivered_quiet
+    而不是失败计数。旧账：16 秒停卡攒 6 连败封顶 dispatch_capped，此后
+    三轮否决一条都没派——halt 拒唤醒从此与 busy 同待遇（信已在会话，
+    它解停后自然读到）。"""
+    from src.api import control
+    wid, cid, fids, rid = await _setup()
+    members = (await review_store.status(wid, rid)).get("members") or []
+    for m in members:
+        await _rejecting_seat(wid, rid, m)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+
+    control.halt(wid, cid, reason="用户停止", by="user")
+    try:
+        r = await review_runner.run_once(wid, rid)
+    finally:
+        control.unhalt(wid, cid, by="t", via="test")
+
+    assert r["reason"] == "delivered_quiet" and r.get("why") == "halted", r
+    st2 = await review_store.state_of(wid, rid)
+    assert int(st2.get("asked_seq") or 0) == 1, "ask 照常记账"
+    assert int(st2.get("dispatch_fails") or 0) == 0, "停卡拒唤醒不计失败"
+    blocks = await session_facade.read(wid, cid) or []
+    assert any("submit_revision" in str(b.get("content") or "")
+               for b in blocks), "信已落正卡会话（停卡只挡唤醒不挡落信）"
+
+    # 停住期间反复点火：一直 delivered_quiet，封顶永远攒不到
+    control.halt(wid, cid, reason="用户停止", by="user")
+    try:
+        for _ in range(8):
+            await review_runner.run_once(wid, rid)
+    finally:
+        control.unhalt(wid, cid, by="t", via="test")
+    st3 = await review_store.state_of(wid, rid)
+    assert int(st3.get("dispatch_fails") or 0) == 0
+
+
+async def test_vote_rearms_dispatch_fails(sandbox):
+    """[解棘轮 2026-11-15] 瞬时故障攒满的 dispatch_fails 在新票落账时
+    清位——封顶不再单向锁死：新否决就是要求重派的事件。正卡真交回
+    （mark_responded）同样清位（双向信道活着的证明）。"""
+    wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
+    for _ in range(6):
+        await review_store.mark_dispatch_failed(wid, rid)
+    assert int((await review_store.state_of(wid, rid)
+                ).get("dispatch_fails") or 0) == 6
+    await review_store.reject(wid, rid, fids[0])
+    assert int((await review_store.state_of(wid, rid)
+                ).get("dispatch_fails") or 0) == 0, "新票落账清位"
+
+    for _ in range(6):
+        await review_store.mark_dispatch_failed(wid, rid)
+    await review_store.mark_responded(wid, rid)
+    assert int((await review_store.state_of(wid, rid)
+                ).get("dispatch_fails") or 0) == 0, "交回清位"
+
+
+async def test_seat_turn_ends_one_call_after_vote(sandbox, monkeypatch):
+    """[票落＝回合止 2026-11-15 · 用户令] approve/reject 落账后席位回合
+    最多再续一次调用：那次调用拿**空工具面**（只够写收尾正文）；它仍吐
+    tool_calls 也不执行——回合收口，下一席由场叫
+    （实案：fn_001 投完票原地 wait 烧 11 轮 20 分钟）。"""
+    wid, cid, fids, rid = await _setup()
+    st = await review_store.state_of(wid, rid)
+
+    calls: list[dict] = []
+
+    async def fake(**kw):
+        calls.append({"tools": [
+            str((t.get("function") or t).get("name") or "")
+            for t in (kw.get("tools") or [])]})
+        if len(calls) == 1:
+            return ({"content": "我的意见：第三条不满足",
+                     "tool_calls": [{"name": "reject",
+                                     "arguments": {"review_card_id": rid}}]},
+                    "fake-model")
+        # 限调轮：工具面应已空；模型仍吐调用 ⇒ 不执行、直接收口
+        return ({"content": "收尾",
+                 "tool_calls": [{"name": "wait",
+                                 "arguments": {"seconds": 30}}]},
+                "fake-model")
+
+    monkeypatch.setattr(model_service, "call_main", fake)
+    r = await review_runner._seat_turn(wid, rid, fids[0], st, kind="speak")
+
+    assert len(calls) == 2, f"票后只该再续一次调用，实际 {len(calls)} 次"
+    assert calls[1]["tools"] == [], "限调轮必须拿空工具面"
+    assert r.get("voted") is True, r
+    st2 = await review_store.status(wid, rid)
+    assert str((st2.get("votes") or {}).get(
+        fids[0], {}).get("verdict") or "") == "reject", "票真落账"

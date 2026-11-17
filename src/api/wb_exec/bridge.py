@@ -26,8 +26,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -37,7 +40,6 @@ from .acp_client import (AcpClient, AcpNotification, CATEGORY_QUOTA,
                          WbAcpError, WbExecutorUnavailable, WbModelUnavailable)
 from .config import Candidate, WbExecConfig, load as load_config
 from .picker import Picker  # noqa: F401  （保留直引：类型标注与外部调用方用）
-from . import scoring
 from .registry import get_registry
 from .watchdog import Watchdog
 
@@ -71,6 +73,10 @@ class _Exec:
     session_id: str = ""
     resumed: int = 0
     fallback_used: list[str] = field(default_factory=list)
+    #: [死挂检测 2026-11-15] 最近一次"执行体有动静"的时刻（epoch 秒）。
+    #: 刷新点：wb_exec_model 发出、每条 ACP 通知（_on_notification）、keepalive。
+    #: 监控协程用它判「零事件多久了」。
+    last_event_ts: float = 0.0
     _tool_seen: dict[str, str] = field(default_factory=dict)
     #: 每个工具调用**自己的**步号（一条工具会连发多条 update ⇒ 不能用当前步）。
     _tool_step: dict[str, int] = field(default_factory=dict)
@@ -314,8 +320,8 @@ async def run_delegated(state: Any, cfg: WbExecConfig, backend: str) -> Any:
     holder = _holder_id(state)
     try:
         await _run_with_fallback(state, cfg, ex, cand, cwd)
-        # ★ 真跑成一次 ⇒ 表现分回一点（已被除名的不解禁，只能人工加回）
-        scoring.note_success(ex.executor_id, ex.model)
+        # [表现分 2026-11-15 · 用户令「把表现分去掉，误杀太多」] note_success
+        #   已随表现分整套停用（额度尽改成带 expires_at 的临时标记，见 quota_state）。
         # 记下**实际**路由到的（优先级瀑布选的 / 降级换过的）⇒
         # 卡面 UI 开工后显示的就是它。
         await _record_routed(state, ex)
@@ -394,12 +400,10 @@ async def _select_candidate(cfg: WbExecConfig, state: Any,
     notes: list[dict] = []
     wait_target: Optional[Candidate] = None
     for c in order:
-        if scoring.is_banned(c.executor, c.model):
-            # ★ 2026-11-06 用户令：表现分过低 ⇒ 永久除名，只有人工能加回
-            notes.append({"executor": c.executor, "model": c.model,
-                          "kind": "banned",
-                          "reason": "表现分过低，已永久除名（需人工加回）"})
-            continue
+        # [表现分 2026-11-15 · 用户令「把表现分去掉，误杀太多」] 原第一道闸
+        #   ``scoring.is_banned``（低分永久除名）**整套停用**——今晚实锤它把
+        #   额度耗尽期的空结果失败记成「执行体表现差」，连锁 ban 掉 cn glm/
+        #   hy3/hy4free。额度问题由带 expires_at 的临时标记接管（见 quota_state）。
         if reg.is_exhausted(c.executor, c.model):
             why = reg.exhausted_reason(c.executor, c.model) or "额度耗尽"
             logger.info("[wb_exec] %s/%s 额度耗尽（%s）⇒ 跳到下一优先级",
@@ -436,6 +440,39 @@ async def _select_candidate(cfg: WbExecConfig, state: Any,
     return None, notes
 
 
+async def _hang_watch(ex: _Exec, gw: Any, hang_s: float,
+                      current: Candidate) -> None:
+    """[死挂检测 2026-11-15] 零事件超限 ⇒ **问 CLI 网关进程本身**判死。
+
+    为什么不恢复有限读超时：agent 跑大 bash 时**本来就不发帧**（连 keepalive
+    都没有，11-03 实测 hy3 最大 3351s）⇒ 「无帧」不能判死。
+    ⇒ 判据**只认网关亲口说的状态**（20:2x 教训：status 端点在 CLI 网关上
+    未经验证 ⇒ ``None``＝"不知道" ⇒ **绝不因时间杀**）：
+    - ``busy=False``（agent 明明 idle 却没有我们的事件）⇒ **判死**；
+    - ``busy=True``（真在干活）⇒ **无限宽限**——网关亲口说的，不猜；
+    - ``None`` / 探活异常 ⇒ **不杀**（真死有 httpx 断连异常兜底，
+      11-03 既定判据「process 死了连接一定断」）；只记日志可观测。
+    判死抛 RuntimeError，由竞争方（prompt task）转成「死挂重置回队」。
+    """
+    while True:
+        await asyncio.sleep(min(float(hang_s), 30.0))
+        idle = time.time() - float(ex.last_event_ts or 0.0)
+        if idle < float(hang_s):
+            continue
+        try:
+            st = await get_registry().gateway_busy(gw)
+        except Exception as exc:  # noqa: BLE001 探活异常＝不知道 ⇒ 不杀
+            logger.info("[wb_exec] 死挂探活异常（不杀）%s/%s: %s",
+                        current.executor, current.model, exc)
+            continue
+        if st is False:
+            raise RuntimeError(
+                f"挂死 {idle:.0f}s 零事件，网关 busy=False（agent 空转）"
+                f"（{current.executor}/{current.model}）")
+        logger.info("[wb_exec] 死挂检查 %s/%s：%us 零事件，busy=%s ⇒ 不杀",
+                    current.executor, current.model, int(idle), st)
+
+
 async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                              cand: Optional[Candidate], cwd: str) -> None:
     """跑任务；quota ⇒ 切 hy3 重试；连接类失败 ⇒ 重连续跑（上限 ``max_resume``）。
@@ -457,6 +494,9 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
     attempt = 0
     tried: set[tuple[str, str]] = set()
     holder = _holder_id(state)
+    #: [死挂检测 2026-11-15] 同一候选的连续「死挂重置」计数（换候选清零）。
+    _last_hang: tuple[str, str] = ("", "")
+    _hang_resets = 0
 
     async def _advance(failed: Candidate) -> Optional[Candidate]:
         """★ 链**不是一次性的**：走完一轮回到链头再扫 ⇒ 一直换到能干成为止。
@@ -483,8 +523,6 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                 nxt = chain[chain_idx]
                 chain_idx += 1
                 if (nxt.executor, nxt.model) in tried:
-                    continue
-                if scoring.is_banned(nxt.executor, nxt.model):
                     continue
                 if sweep == 0 and registry.is_exhausted(nxt.executor, nxt.model):
                     continue
@@ -523,7 +561,8 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                 gw.base_url, timeout=float(cfg.watchdog.read_timeout_sec),
                 connect_timeout=float(cfg.watchdog.connect_timeout_sec),
                 on_notification=lambda n: _on_notification(ex, n),
-                on_keepalive=ex.watchdog.note_keepalive,
+                on_keepalive=lambda: (ex.watchdog.note_keepalive(),
+                                      setattr(ex, "last_event_ts", time.time())),
                 extra_headers=gw.headers(),
             )
             # [槽位 2026-10-24] **占槽，不排队**：
@@ -536,22 +575,68 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
             #     「**自动批准权限请求**」，不在这里。
             holder = _holder_id(state)
             sem = registry.semaphore_for(gw.base_url)
-            # ★ **先登记等待者再判断**（2026-11-03 修竞态）：
-            #   早先只看 ``sem.locked()`` ⇒ 两张卡都可能在对方 acquire **之前**
-            #   检查到"没锁" ⇒ 实际排了队（串行跑完）但**没人发过"排队中"**
-            #   ⇒ 卡面上看不见它在等（看着像"卡住"）。
-            # ⇒ 现在：「槽被占」**或**「已经有人在等」⇒ 我就得排队 ⇒ 发"排队中"。
-            _n_wait = registry.note_waiter(gw.base_url)
-            try:
-                if sem.locked() or _n_wait > 1:
-                    _emit(state, "wb_exec_queued", {
-                        "executor": current.executor,
-                        "model": current.model,
-                        "waiting_for": registry.slot_holder(gw.base_url),
-                    })
-                await sem.acquire()
-            finally:
-                registry.clear_waiter(gw.base_url)
+            _reselect = float(getattr(cfg.watchdog, "reselect_wait_sec",
+                                      120.0) or 0.0)
+            _switched: Optional[Candidate] = None
+            while True:
+                # ★ **先登记等待者再判断**（2026-11-03 修竞态）：
+                #   早先只看 ``sem.locked()`` ⇒ 两张卡都可能在对方 acquire **之前**
+                #   检查到"没锁" ⇒ 实际排了队（串行跑完）但**没人发过"排队中"**
+                #   ⇒ 卡面上看不见它在等（看着像"卡住"）。
+                # ⇒ 现在：「槽被占」**或**「已经有人在等」⇒ 我就得排队 ⇒ 发"排队中"。
+                _n_wait = registry.note_waiter(gw.base_url)
+                try:
+                    if sem.locked() or _n_wait > 1:
+                        _emit(state, "wb_exec_queued", {
+                            "executor": current.executor,
+                            "model": current.model,
+                            "waiting_for": registry.slot_holder(gw.base_url),
+                        })
+                    if _reselect <= 0:
+                        await sem.acquire()          # 关闭改道 ⇒ 原死等语义
+                    else:
+                        # [排队改道 2026-11-15 · 用户令] **死等改「限时等 + 重选」**：
+                        # 等满 RESELECT 秒还没轮到 ⇒ 释放预留、沿优先级链重选一次
+                        # （谁空去谁；都没有 ⇒ 回本槽继续等）。现场 card_384 在
+                        # cn glm 死等 1.5h+ 而 intl glm 有空槽 ⇒ 死钉一个端点的
+                        # 排队在多执行体下没有意义。改道**不是失败**：不扣分、
+                        # 不进 tried，attempt 预算不动。
+                        try:
+                            await asyncio.wait_for(sem.acquire(),
+                                                   timeout=_reselect)
+                        except asyncio.TimeoutError:
+                            registry.release_reserve(current.executor, holder)
+                            # [排队改道·修 2026-11-15] **不烧 sweep**：改道借用
+                            #   _advance，而 _advance 的 sweep=1 会放宽额度闸
+                            #   （额度尽的档不再跳过）⇒ 今晚现场改道到已被标
+                            #   quota 的 oc 档，白烧调用。改道前后保存/还原
+                            #   sweep ⇒ 改道永远只去「额度闸也放行」的候选。
+                            _sweep0 = sweep
+                            nxt = await _advance(current)
+                            sweep = _sweep0
+                            if nxt is not None and (
+                                    nxt.executor, nxt.model) != (
+                                    current.executor, current.model):
+                                _emit(state, "wb_exec_fallback", {
+                                    "from": f"{current.executor}:{current.model}",
+                                    "to": f"{nxt.executor}:{nxt.model}",
+                                    "reason": (f"排队 {_reselect:.0f}s 未轮到"
+                                               " ⇒ 改道重选"),
+                                })
+                                logger.warning(
+                                    "[wb_exec] 排队 %.0fs 未轮到 ⇒ 改道 %s/%s",
+                                    _reselect, nxt.executor, nxt.model)
+                                ex.fallback_used.append(
+                                    f"{nxt.executor}:{nxt.model}")
+                                _switched = nxt
+                                break            # 跳出排队循环（waiter 由 finally 清）
+                            # 链上没有别的空槽 ⇒ 回本槽继续等（再等一轮）
+                finally:
+                    registry.clear_waiter(gw.base_url)
+                break
+            if _switched is not None:
+                current = _switched
+                continue                          # 回主循环按新候选重走传输分支
             registry.mark_slot(gw.base_url, holder)
             # ★ **运行时已经占上槽了** ⇒ **释放选择期的预留**
             #   （否则占用数被算两遍 ⇒ 这个执行体会被误判成"排满"一倍）。
@@ -592,22 +677,55 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                     await _apply_guards(client, sid, cfg, gw.source)
                     await client.set_config_option(sid, "model", current.model)
                     ex.model = current.model
+                    ex.last_event_ts = time.time()   # 以 model 帧为活跃起点
                     _emit(state, "wb_exec_model", {
                         "executor": current.executor, "model": current.model,
                         "session_id": sid,
                     })
-                    result = await client.prompt(
-                        sid, task_text,
-                        # ★ **不设读超时**（2026-11-03）：ACP 的 prompt 响应是
-                        #   **SSE 流**，httpx 的 read timeout 判的是「两帧之间多久
-                        #   没数据」——agent 跑大 bash 时**本来就不发帧** ⇒ 有限读
-                        #   超时会把**正在干活的长任务**误判成「连接断了」⇒ 续跑
-                        #   （重发整段 prompt）⇒ 又超时 ⇒ 30 分钟没动静。
-                        #   实测 wb-cn/hy3 总耗时中位 373.8s、最大 3351s ⇒ 必然踩。
-                        # ⇒ **判死活只靠状态与连接事件**（agentPhase / 在途工具 /
-                        #   吐字 / SSE 结束 / httpx 异常）。
-                        read_timeout=None,
-                    )
+                    # ★ [死挂检测 2026-11-15 · 用户令「死挂杀了有什么用，要让它
+                    #   重新连上或者排队」] prompt 包 task，与「活跃性监控」竞争。
+                    #   背景（今天现场 card_348/370/396）：wb_exec_model 发出后上游
+                    #   不响应、连 keepalive 都没有 ⇒ 旧机制无读超时 ⇒ 无限死挂，
+                    #   cn 3 槽被占 35 分钟+，后面的卡永远排不上。
+                    #   判据（**不恢复有限读超时**——11-03 实测跑大 bash 本来就不
+                    #   发帧，会误杀）：HANG 秒零事件 ⇒ 问 CLI 网关 busy：进程死/
+                    #   idle 判死；busy=True 再宽限一轮；两轮仍零事件也判死。
+                    #   判死 ⇒ **重置回队**：cancel prompt、attempt+1 走 resume 续跑、
+                    #   释放槽、回主循环重新选路/排队（排队改道逻辑生效）；同一候选
+                    #   连续重置超过 max_resume 次 ⇒ 才升级为换候选。
+                    prompt_t = asyncio.create_task(client.prompt(
+                        sid, task_text, read_timeout=None))
+                    mon_t = asyncio.create_task(_hang_watch(
+                        ex, gw,
+                        float(getattr(cfg.watchdog, "hang_timeout_sec",
+                                      600.0) or 600.0), current))
+                    _hang: Optional[str] = None
+                    try:
+                        _done, _pend = await asyncio.wait(
+                            {prompt_t, mon_t},
+                            return_when=asyncio.FIRST_COMPLETED)
+                        if mon_t in _done and not prompt_t.done():
+                            _hang = str(mon_t.exception() or "零事件超限")
+                            prompt_t.cancel()
+                    finally:
+                        mon_t.cancel()
+                    if _hang is not None:
+                        if _last_hang != (current.executor, current.model):
+                            _last_hang = (current.executor, current.model)
+                            _hang_resets = 0
+                        _hang_resets += 1
+                        if _hang_resets > int(cfg.watchdog.max_resume):
+                            raise WbAcpError(
+                                f"死挂重连 {_hang_resets - 1} 次仍零事件: {_hang}")
+                        attempt += 1              # attempt>0 ⇒ 下轮 _resume_session
+                        ex.resumed = attempt
+                        _emit(state, "wb_exec_resume", {
+                            "attempt": attempt, "error": f"死挂重连: {_hang}"})
+                        logger.warning(
+                            "[wb_exec] %s/%s 死挂 ⇒ 重置回队（第 %s 次）: %s",
+                            current.executor, current.model, attempt, _hang)
+                        continue        # finally 释放槽 → 主循环重新选路/排队
+                    result = prompt_t.result()
                     # ★ **失败藏在返回体里**（2026-10-23 18:10 实测）：
                     #   WorkBuddy 把鉴权失败**不抛异常**，而是返回
                     #   ``{"stopReason":"refusal", "_meta":{"codebuddy.ai/errorMessage":
@@ -716,7 +834,9 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
                 #   ``_meta['codebuddy.ai/errorMessage'].category == "quota"``）
                 #   ⇒ 记进额度状态表 ⇒ **这个候选之后让路**（跳到下一优先级）
                 #   ⇒ 不用每次都先失败一轮才换（那会白花一次请求 + 一段时间）。
-                registry.mark_exhausted(current.executor, current.model, "quota")
+                registry.mark_exhausted(
+                    current.executor, current.model, "quota",
+                    expires_at=_parse_quota_reset(str(exc)))
                 _emit(state, "wb_exec_unavailable", {
                     "executor": current.executor, "model": current.model,
                     "reason": "额度耗尽，已让路给下一优先级",
@@ -749,8 +869,6 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
             # ★ 明确标了"重试没用"的失败（如 rc=8 轮数用尽）⇒ **不重试同一路，
             #   但要继续让路**（2026-11-04 用户现场指出：不该在这里就回落系统模型）
             if getattr(exc, "no_retry", False):
-                scoring.note_interrupt(current.executor, current.model,
-                                       reason=f"轮数用尽: {str(exc)}")
                 nxt = await _advance(current)
                 if nxt is not None:
                     registry.release_reserve(current.executor, holder)
@@ -763,10 +881,11 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
             #   结束、不换人」⇒ 由 :func:`_advance` 的回头重扫解决。
             attempt += 1
             if attempt > cfg.watchdog.max_resume:
-                # ★ 这一路最终没干成 ⇒ 记一次「中断表现」（按路计，不是按每次重试计）
-                scoring.note_interrupt(
-                    current.executor, current.model,
-                    reason=f"续跑 {attempt - 1} 次仍未成功: {str(exc)}")
+                # ★ 这一路最终没干成 ⇒ 记一次「中断表现」——[表现分 2026-11-15
+                #   · 用户令「把表现分去掉，误杀太多」] note_interrupt **停用**：
+                #   今晚实锤额度耗尽期的空结果/限流失败被记成「执行体表现差」，
+                #   连锁 ban 掉 cn glm/hy3/hy4free。额度尽由带 expires_at 的
+                #   临时标记接管。
                 # ★ **续跑用尽 ⇒ 让路下一优先级**（不是直接抛 ⇒ 落系统模型＝花钱）
                 nxt = await _advance(current)
                 if nxt is not None:
@@ -818,6 +937,58 @@ async def _run_with_fallback(state: Any, cfg: WbExecConfig, ex: _Exec,
             continue
 
 
+# ===================================================================== 临时额度
+#: [2026-11-15 · 用户令] 额度扣完的**临时**机制：从上游报文解析**额度恢复时刻**
+#: ⇒ 标记带 ``expires_at`` ⇒ 到点自动放行（不用任何人守着清）。
+_RESET_ABS_RE = re.compile(
+    r"reset[^\d]*?(\d+)\s*hours?\s*(?:(\d+)\s*minutes?)?\s*\(at\s+"
+    r"([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{1,2}):(\d{2})", re.IGNORECASE)
+_RESET_REL_RE = re.compile(
+    r"reset\s+(?:in\s+)?(\d+)\s*hours?\s*(?:(\d+)\s*minutes?)?", re.IGNORECASE)
+_MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+
+def _parse_quota_reset(text: str) -> str:
+    """从上游报文解析**额度恢复时刻** ⇒ ISO 本地时间（解析不出 ⇒ ""）。
+
+    实测来源（Devin）：``Your limit will reset in 6 hours 25 minutes
+    (at Nov 15 02:01 UTC)``。优先取 ``(at …)`` 绝对时刻（按 UTC 解析 ⇒
+    转 +08:00 本地）；取不到 ⇒ 用 ``in N hours M minutes`` 相对时长；
+    都没有 ⇒ 原语义（等巡检真调纠正）。
+    """
+    s = str(text or "")
+    if not s:
+        return ""
+    now = datetime.now().astimezone()
+    m = _RESET_ABS_RE.search(s)
+    if m:
+        mon = _MONTHS.get(str(m.group(3)).lower())
+        if mon:
+            try:
+                day, hh, mm = int(m.group(4)), int(m.group(5)), int(m.group(6))
+                dt = datetime(now.year, mon, day, hh, mm,
+                              tzinfo=timezone.utc).astimezone()
+                # ★ [2026-11-17 修] 跨年只认**真跨年**：报文月份距现在**早半年
+                #   以上** ⇒ 那其实是明年（12 月报 1 月）。原判据「早于 now 超过
+                #   1 天 ⇒ 算明年」会把**昨天的报文**解析成明年（今天实测踩到）；
+                #   已过期的恢复时刻就该是过去时间（表示额度已经回来了）。
+                if (now - dt).days > 180:
+                    dt = datetime(now.year + 1, mon, day, hh, mm,
+                                  tzinfo=timezone.utc).astimezone()
+                return dt.isoformat(timespec="seconds")
+            except ValueError:
+                pass
+    m = _RESET_REL_RE.search(s)
+    if m:
+        hrs, mins = int(m.group(1) or 0), int(m.group(2) or 0)
+        if hrs or mins:
+            return (now + timedelta(hours=hrs, minutes=mins)
+                    ).isoformat(timespec="seconds")
+    return ""
+
+
 def _raise_if_prompt_failed(result: Any) -> None:
     """**prompt 返回体里的失败 ⇒ 抛异常**（别把失败当成功）。
 
@@ -850,6 +1021,20 @@ def _raise_if_prompt_failed(result: Any) -> None:
     if not raw:
         return
     low = raw.lower()
+    # ★ [分类顺序 2026-11-15 修] **quota 判据必须最先**。今晚实锤：上游对
+    #   ``wb-intl/hy3`` 返回 ``{"code":-32003,"message":"Quota exceeded…,
+    #   switch models…"}``——quota 文案里带"换模型"建议字样 ⇒ 被下面的
+    #   「model unavailable / please switch models」分支**抢先**归成
+    #   ``WbModelUnavailable`` ⇒ ``note_model_unavailable`` **永久登记**
+    #   （quota 标记巡检能清，这个登记重启才清）⇒ 该档从此每轮被跳过，
+    #   静默回落系统模型。⇒ quota 是最明确的信号，永远先判。
+    if '"category":"quota"' in low or "quota" in low or _looks_exhausted(raw):
+        # ★ **中文措辞也认**（2026-11-04）：``hy4free`` 是「每日赠送免费额度」的限时档
+        #   ⇒ 当天赠送额度用完时上游报中文（"每日免费额度已用完"之类）
+        #   ⇒ 只认 ``category=="quota"`` 会漏判 ⇒ 这一档不会立刻让路
+        #   ⇒ 每张卡先白跑一轮失败才换人 ⇒ 改认明确措辞。
+        raise WbAcpError(f"额度/过载: {raw}", code=-32000,
+                         category=acp_client.CATEGORY_QUOTA)
     # **模型不可用**（含中英文文案）⇒ 换候选
     if ("model unavailable" in low or "当前模型不可" in raw
             or "please switch models" in low):
@@ -858,13 +1043,6 @@ def _raise_if_prompt_failed(result: Any) -> None:
             or "not logged in" in low or "please use /login" in low):
         raise WbAcpError(f"鉴权失败（桌面端登录态失效）: {raw}",
                          code=-32000, category="auth")
-    if '"category":"quota"' in low or "quota" in low or _looks_exhausted(raw):
-        # ★ **中文措辞也认**（2026-11-04）：``hy4free`` 是「每日赠送免费额度」的限时档
-        #   ⇒ 当天赠送额度用完时上游报中文（"每日免费额度已用完"之类）
-        #   ⇒ 只认 ``category=="quota"`` 会漏判 ⇒ 这一档不会立刻让路
-        #   ⇒ 每张卡先白跑一轮失败才换人 ⇒ 改认明确措辞。
-        raise WbAcpError(f"额度/过载: {raw}", code=-32000,
-                         category=acp_client.CATEGORY_QUOTA)
     # 其它失败（如 FAILED_MODEL_REQUEST 的别的原因）⇒ 如实抛，别静默
     raise WbAcpError(f"WorkBuddy 执行体返回失败: {raw}", code=-32000)
 
@@ -994,16 +1172,19 @@ async def _run_cc(state: Any, cfg: WbExecConfig, ex: "_Exec",
     #     ⇒ 如实报"达到轮数上限"，但**不重复重试**（重试只能从头再来）
     if kind in ("rate_limit", "insufficient_credits"):
         why = "限流" if kind == "rate_limit" else "额度不足"
-        registry.mark_exhausted(current.executor, current.model,
-                                f"command-code 报{why}（rc={rc}）")
+        registry.mark_exhausted(
+            current.executor, current.model, f"command-code 报{why}（rc={rc}）",
+            expires_at=_parse_quota_reset(stderr_tail + " " + " | ".join(errs)))
         raise WbAcpError(
             f"Command Code {why}（rc={rc}）："
             f"{(stderr_tail or ' | '.join(errs) or '上游未给原文')}",
             category=acp_client.CATEGORY_QUOTA)
     for e in errs:
         if _looks_exhausted(e):
-            registry.mark_exhausted(current.executor, current.model,
-                                    "command-code 报额度/配额用完")
+            registry.mark_exhausted(
+                current.executor, current.model,
+                "command-code 报额度/配额用完",
+                expires_at=_parse_quota_reset(e))
             break
     if not res.get("ok"):
         detail = (stderr_tail or " | ".join(errs) or "无正文")
@@ -1129,8 +1310,9 @@ async def _run_devin(state: Any, cfg: WbExecConfig, ex: "_Exec",
     #   只是它在谈这件事，不是"额度用完"（2026-11-04 生产教训）。
     _err_text = str(res.get("stderr") or "")
     if _looks_exhausted(_err_text):
-        registry.mark_exhausted(current.executor, current.model,
-                                "devin 报额度/配额用完")
+        registry.mark_exhausted(
+            current.executor, current.model, "devin 报额度/配额用完",
+            expires_at=_parse_quota_reset(_err_text))
     # ★ **用完就清**：在 **Devin 自己的客户端**里删掉**我们这一条**会话
     #   （红线：只按精确 id 删我们自己刚建的那一条；用户自己的对话一个不碰
     #   —— 见 cleanup.py 的六条纪律）。**清理失败不影响卡片结果**。
@@ -1584,6 +1766,7 @@ def _on_notification(ex: _Exec, note: AcpNotification) -> None:
     （它的 ``agent_message_chunk`` / ``tool_call``）会混进我们的流里。
     不过滤 ⇒ 卡面会显示别人的对话与工具调用。
     """
+    ex.last_event_ts = time.time()     # [死挂检测 2026-11-15] 任何通知都算"有动静"
     state = ex.state
     kind = note.update_kind
     if note.is_keepalive:
@@ -1851,7 +2034,19 @@ async def _record_fallback(state: Any, reason: str, kind: str = "") -> None:
     卡面显示"本轮实际走系统自己的模型（原因…）"。
 
     ``kind="slot_full"`` ⇒ 这一轮是**因并发槽已满**回落
+
+    [可见性 2026-11-15 · 用户困惑「执行卡怎么路由到卡面模型」] 原先只写
+    ``model_override`` 覆盖行 ⇒ **事件流里一条记录都没有**，用户在画布上
+    根本看不出为什么任务落到卡面模型。⇒ 补一条 ``wb_exec_unavailable``
+    事件（静默回落也可见，不刷屏：每轮最多一条）。
     """
+    try:
+        _emit(state, "wb_exec_unavailable", {
+            "executor": "", "model": "",
+            "reason": f"本轮实际走系统自己的模型（{reason}）",
+        })
+    except Exception:  # noqa: BLE001 可见性零阻断
+        pass
     try:
         from ...storage import model_override
         cur = dict(model_override.get_row(state.work_id, state.card_id) or {})

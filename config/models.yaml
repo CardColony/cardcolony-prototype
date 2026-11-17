@@ -48,6 +48,11 @@ providers:
     api_key_env: LONGCAT_API_KEY
     note: 美团 LongCat 开放平台（OpenAI 兼容）。2026-11-06 实测 /v1/models 共 3 个模型：LongCat-2.5 /
       LongCat-2.5-Preview / LongCat-2.0。文档口径：温度开思考锁 1.0、关思考锁 0.7，传别的值会被覆盖（实测不报错）。
+  opendesign3:
+    protocol: openai
+    base_url: https://amr-link.open-design.ai/v1
+    api_key_env: OPENDESIGN3_API_KEY
+    note: 第三份 OpenDesign（amr-link）订阅 key（2026-11-16 用户令）· 端点与第一份相同、key 独立；座椅按第一份逐字照抄。
   opendesign2:
     protocol: openai
     base_url: https://amr-link.open-design.ai/v1
@@ -623,6 +628,9 @@ models:
       它会先撞一次内置同名件（auto 档必拒），被拒后回落 XML 文本调用
       ⇒ 每轮多一次被拒尝试但循环能走通；读文件它用内置只读件真读
       （不受 FILE_SCOPE 管，慎用敏感路径）。
+  ds-v41-flash-eco-amr3:
+    provider: opendesign3
+    model: deepseek-v4.1-flash-eco
 bindings:
   execute: glm-53-flash
   think: glm-53-flash

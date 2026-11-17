@@ -103,6 +103,42 @@ def test_record_fired_without_matter_spec(wired):
     assert len(s.pending_actions("w1")) == 1
 
 
+def _fired_no_matter(**kw) -> dict:
+    f = _fired()
+    f["then"] = {"target": "self", "mode": "continue", "wake": True,
+                 "message": "（续接）评审还没结束，继续跑下一步。"}
+    f["policy"] = "review_step_not_finished"
+    f.update(kw)
+    return f
+
+
+def test_record_fired_seq_reuse_different_ts_no_false_dedup(wired):
+    """[card_008 seq 复用实案 2026-11-14] journal seq 跨天复用时，fire_key
+    撞已投递旧动作 ⇒ 续跑被去重吞掉。ts 进键后：同 seq 不同 ts ⇒ 两条动作。"""
+    s, _ = wired
+    f1 = _fired_no_matter()
+    f1["basis"] = {"card": "r1", "seq": 2428, "type": "review_round_done",
+                   "ts": "2026-11-13T12:10:41+08:00"}
+    ir.record_fired("w1", [f1])
+    aid1 = f1["_actions"]["r1"]
+    s.mark_action("w1", aid1, "delivered", receipt={"result": "continue:1"})
+
+    f2 = _fired_no_matter()
+    f2["basis"] = {"card": "r1", "seq": 2428, "type": "review_round_done",
+                   "ts": "2026-11-14T20:11:11+08:00"}
+    ir.record_fired("w1", [f2])
+    aid2 = f2["_actions"]["r1"]
+    assert aid2 and aid2 != aid1
+    assert s.get_action("w1", aid2)["state"] == "pending"
+    assert not ir.action_skip("w1", aid2)          # 新义务不被旧回执吞掉
+    # 重演同一事实（重启回放）：同 seq 同 ts ⇒ 照旧去重不重复登记
+    ir.record_fired("w1", [_fired_no_matter(
+        basis={"card": "r1", "seq": 2428, "type": "review_round_done",
+               "ts": "2026-11-14T20:11:11+08:00"})])
+    pend = [a for a in s.pending_actions("w1") if a["target"] == "r1"]
+    assert len(pend) == 1 and pend[0]["action_id"] == aid2
+
+
 # ---------------------------------------------------------- 解除检查
 def test_on_fact_resolves_matter(wired, monkeypatch):
     s, _ = wired

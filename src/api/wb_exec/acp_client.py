@@ -69,6 +69,13 @@ QUOTA_PHRASES = (
     "insufficient quota",
     "insufficient_credits",
     "insufficient credits",
+    # [2026-11-15 · 用户令「额度扣完的临时机制」] Devin 免费日限原文：
+    #   "Reached free model rate limit … Your limit will reset in 6 hours 25
+    #    minutes (at Nov 15 02:01 UTC)"——此前不在词表 ⇒ 每张卡白撞 3 次续跑
+    #   才换人、且从不进额度标记通道（带 expires_at 的临时标记）。
+    "free model rate limit",
+    "reached free model rate limit",
+    "rate limit exceeded",
     "rate limit exceeded",
     "rate_limit_exceeded",
     "you've used all",
