@@ -145,6 +145,16 @@ providers:
       GoUsageLimitError「Go usage limit exceeded」（limitName: weekly）——
       **周额度用尽，不是 key 失效**（/models 会回 401 Invalid credential，别误判）。
       已下架：minimax-m3.1-flash-free（410）、deepseek-v4.1-flash-free（400）。
+  opencode3:
+    protocol: openai
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: OPENCODE3_API_KEY
+    extra_headers:
+      x-opencode-session: zhuge-3080-c
+      User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+        like Gecko) Chrome/131.0.0.0 Safari/537.36
+    note: 第三份 opencode **Go 订阅**（2026-11-18 用户令增加）· key 独立、端点与纪律同前两份：x-opencode-session
+      必带、必须浏览器 UA。
   opencode2:
     protocol: openai
     base_url: https://opencode.ai/zen/go/v1
@@ -631,6 +641,28 @@ models:
   ds-v41-flash-eco-amr3:
     provider: opendesign3
     model: deepseek-v4.1-flash-eco
+  glm-53-oc1:
+    provider: opencode
+    model: glm-5.3
+  glm-53-oc2:
+    provider: opencode2
+    model: glm-5.3
+  glm-53-oc3:
+    provider: opencode3
+    model: glm-5.3
+  ds-v41-flash-oc3:
+    provider: opencode3
+    echo_reasoning: true
+    model: deepseek-v4.1-flash
+    reasoning_echo_fill: ''
+    temperature: 0.7
+    thinking: 'on'
+    note: 第三份 opencode Go · deepseek v4.1 flash（2026-11-18 用户令增加，只此一把）
+    reasoning_efforts:
+    - low
+    - high
+    - max
+    default_effort: high
 bindings:
   execute: glm-53-flash
   think: glm-53-flash

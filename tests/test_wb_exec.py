@@ -536,7 +536,7 @@ def test_repo_config_shape_is_valid(monkeypatch):
         "wb-cc:reflection/beam:free",
         "wb-cc:stealth/glyph-cluster:free",
         "wb-cn:hy4free", "wb-cn:hy4flash-free", "wb-cn:hy4flash",
-        "wb-cn:glm-5.3-flash", "wb-intl:glm-5.3-flash",
+        "wb-cn:glm-5.3", "wb-intl:glm-5.3",
         "wb-cn:hy3", "wb-intl:hy3",
     ]
     order = sorted(prios.items(), key=lambda kv: kv[1])
@@ -574,8 +574,9 @@ def test_repo_config_shape_is_valid(monkeypatch):
     assert list(oc.oc_models) == [
         "flint-40b-free", "deepseek-v4.1-flash-free", "big-pickle",
         "glm-5.3-flash-free", "mimo-v2.6-flash-free"]
-    assert list(oc.oc_api_key_envs) == ["OPENCODE_API_KEY", "OPENCODE2_API_KEY"]
-    assert oc.oc_pool_size == 2
+    assert list(oc.oc_api_key_envs) == ["OPENCODE_API_KEY", "OPENCODE2_API_KEY",
+                                        "OPENCODE3_API_KEY"]
+    assert oc.oc_pool_size == 3
     # ★ Devin 执行体：CLI + SWE-2 Max（用户套餐里免费）
     dv = cfg.executor("wb-devin")
     assert dv is not None
