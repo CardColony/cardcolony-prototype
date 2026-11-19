@@ -38,7 +38,7 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=55";
+import { API } from "./esm/api.js?v=56";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
@@ -1463,7 +1463,11 @@ const BOARD_CFG = Object.assign(
       这是增量游标唯一的播种源；**绝不与 `st.lastSeq`（内存 journal seq）互写**。 */
   async function fetchTimeline(st, wid, cid, from, opts) {
     try {
-      const resp = await API.getTimeline(wid, cid, from, opts);
+      /* [席位会话] cid＝会话键（card 或 card@N）：URL 路径取真卡号、
+         时序按 session 参数分账。 */
+      const real = String(cid).split("@")[0];
+      const o = Object.assign({}, opts || {}, { session: cid });
+      const resp = await API.getTimeline(wid, real, from, o);
       const items = (resp && resp.items) || [];
       if (st && items.length) {
         /* [2026-11-07 · 写乱序] items 现按 (ts,seq) 时间序排——末条是「最新」
@@ -1727,8 +1731,11 @@ const BOARD_CFG = Object.assign(
          语义与改前**逐字一致**（不因合并而丢帧）。 */
       const sFrom = st.lastSeq > 0 ? st.lastSeq + 1 : 0;
       const tFrom = replayTokens ? 0 : (st.lastTokenSeq > 0 ? st.lastTokenSeq + 1 : 0);
+      /* [席位会话] cid＝会话键：URL 路径取真卡号、流按 session 参数分账。 */
+      const real = String(cid).split("@")[0];
       const es = new EventSource(
-        `/api/works/${wid}/cards/${cid}/stream?from=${sFrom}&fromT=${tFrom}&tokens=1`
+        `/api/works/${wid}/cards/${real}/stream?from=${sFrom}&fromT=${tFrom}&tokens=1`
+        + `&session=${encodeURIComponent(cid)}`
         + `${replayTokens ? "&replay=1" : ""}`);
       st.es = es;
       es.onopen = () => { st.esDead = false; };

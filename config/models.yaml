@@ -145,6 +145,14 @@ providers:
       GoUsageLimitError「Go usage limit exceeded」（limitName: weekly）——
       **周额度用尽，不是 key 失效**（/models 会回 401 Invalid credential，别误判）。
       已下架：minimax-m3.1-flash-free（410）、deepseek-v4.1-flash-free（400）。
+  openai-siwc:
+    protocol: responses-siwc
+    base_url: https://api.openai.com/v1
+    note: Sign in with ChatGPT（SIWC）通道（2026-11-19 用户令接入）· **不是 API key**：用 ChatGPT 套餐额度，凭据在
+      config/siwc_tokens.json（scripts/siwc_login.py 授权生成，已 gitignore），access 1h/refresh
+      30d 自动续。实测硬约束：只支持 GPT-6 系（gpt-6.2-sol / gpt-6.1-terra / gpt-6.2-astra）；input 必须数组、store
+      必须 false、stream 必须 true；出站必须走本机代理 127.0.0.1:7890（api.openai.com 直连不通）。账号 ＝ Plus（$20/月），有
+      5 小时共享限额，不并发跑。
   opencode3:
     protocol: openai
     base_url: https://opencode.ai/zen/go/v1
@@ -167,6 +175,13 @@ providers:
     note: >-
       第二份 opencode **Go 订阅**（2026-11-03 用户令增加；key 与第一份独立）。
       同端点同纪律：x-opencode-session 必带（MissingSessionID 拒单）、必须浏览器 UA。
+  commandcode3:
+    protocol: openai
+    base_url: https://api.commandcode.ai/provider/v1
+    api_key_env: COMMAND_CODE3_API_KEY
+    note: 第三份 Command Code 套餐（2026-11-19 用户令）· 端点与前两份相同、key 独立；座椅按第二份逐字照抄（deepseek v4.1
+      flash / glm 5.3 flash）。**必须走代理**（api.commandcode.ai 直连不通；走 127.0.0.1:7890，实测两个模型均
+      200）。
   commandcode2:
     protocol: openai
     base_url: https://api.commandcode.ai/provider/v1
@@ -220,10 +235,6 @@ providers:
       Devin CLI（模型级·本地登录态·非 OpenAI 端点·无增量流式·工具走
       文本协议段·temperature/max_tokens/effort 无 flag——思考档在模型名里）。
 models:
-  # [局域网 Flash-Next 2026-10-23] qwen3.8-flash-next-iq3_s（引擎不校验名字，照文档取全名）。
-  # thinking: none —— 端点 reasoning_effort 档位 none/low/medium/high，重活建议 none 提速。
-  # ★ 不设 timeout / max_tokens：2026-10-02 拆闸裁定（墙钟类闸与任意 max_tokens 全禁）。
-  #   端点自身有 fit_max_tokens，不传 max_tokens 时超长 prompt 自动压缩生成配额。
   qwen38-flash-next:
     provider: flash-next
     model: qwen3.8-flash-next-iq3_s
@@ -241,58 +252,44 @@ models:
     note: MiniMax M3.1-Flash（mavis 网关·订阅限免·思考强制开·512K 上下文）
   ds-v4-flash-volc:
     provider: volcengine-coding
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: deepseek-v4-flash
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 1
     note: 火山方舟 coding · deepseek v4 flash
   ds-v41-flash-eco-volc:
     provider: volcengine-coding
-    # 同端点同纪律：assistant 带 tool_calls 必须回传 reasoning_content。
     echo_reasoning: true
     model: deepseek-v4-1-flash-economy-261017
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 1
     note: 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）
   kimi-k31-pro-volc:
     provider: volcengine-coding
     model: kimi-k3-1-pro-261024
-    # [2026-11-10] 同 k3.1-pro 保留式思考口径：有真思考才回传、没有就不带字段
-    # （原 "" 档塞空串＝谎报无思考）。
     reasoning_echo_fill: real
     temperature: 1
-    # [2026-11-10 · 用户令「不思考就瞎编」] 强制思考：不传时端点 adaptive
-    # 会时不时不产 think 流（kimi-k3 那条 kimi.com 端点早已 thinking:'on'，
-    # 这条漏配）。volc coding 端点 10-25 实测开关为真。
     thinking: 'on'
     note: 火山方舟 coding · kimi k3.1 pro（2026-10-25 用户令增加；方舟清单 261024 版）
   ds-flash-official:
     provider: deepseek-official
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: deepseek-flash
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 1
     note: DeepSeek 官方 flash（用户给的 key）
   ds-v41-flash-aliyun:
     provider: aliyun
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: deepseek-v4.1-flash-1017
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 1
     note: 阿里云 token plan · deepseek v4.1 flash 1017（第一层用）
   ds-v4-flash-aliyun:
     provider: aliyun
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: deepseek-v4-flash-0731
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 1
     note: 阿里云 token plan · deepseek v4 flash
   ark-code-latest:
@@ -307,26 +304,15 @@ models:
     note: MiniMax M3.1 Flash（M3 已下架）
   kimi-k3:
     provider: kimi
-    # [2026-10-25 · 用户令「kimi 的 k3 换成 k3.1 pro」] 上游真实 id 由 k3 换成
-    # k3.1-pro（Kimi coding 端点 /models 实查存在，另有 k3.1-pro-highspeed）。
-    # 键名**沿用 kimi-k3**：它是本项目内部标识，被 concurrency.per_model、
-    # tiers.depth_0 与卡上模型绑定引用着，改名会打断这些引用。
     model: k3.1-pro
-    # [2026-11-10 · 官方文档核查] k3.1-pro **恒推理、保留式思考恒开**：
-    #   · temperature 不可修改、文档明令「请勿显式传入」⇒ ~（null）＝不发字段；
-    #   · **不支持 thinking 参数** ⇒ 删（唯一旋钮 reasoning_effort 默认即 max）；
-    #   · 历史 assistant 须「原样回传 reasoning_content」⇒ echo 档 real：
-    #     有真思考才回传、没有就不带字段（塞空串＝谎报「该轮无思考」）。
-    temperature: ~
+    temperature: null
     reasoning_echo_fill: real
     note: Kimi K3.1 Pro（coding plan 端点；2026-10-25 由 K3 替换）
   deepseek-pro:
     provider: opencode
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: deepseek-v4-pro
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 0.3
     thinking: 'on'
     note: DeepSeek V4 Pro（按需选用；[2026-10-19 裁定] 已无降级模型概念）
@@ -344,10 +330,10 @@ models:
     use: search
     temperature: 0.7
     thinking: 'on'
-    note: 思考席② qwen4-max-preview（阿里云 token-plan；2026-11-11 由 qwen3.8-max 换型号）。
-      以下为旧 qwen3.8-max 的实测结论，新型号未重测：thinking=off：qwen enable_thinking:false
-      —— 思考模式下正文为空（实测）。思考本身走 delta.reasoning_content，由 stream_call 双路解包取回做 think 流；待
-      ALIYUN key 就位可实测后再考虑开 on（开 on 的风险＝正文空＝观点空）
+    note: 思考席② qwen4-max-preview（阿里云 token-plan；2026-11-11 由 qwen3.8-max 换型号）。 以下为旧
+      qwen3.8-max 的实测结论，新型号未重测：thinking=off：qwen enable_thinking:false —— 思考模式下正文为空（实测）。思考本身走
+      delta.reasoning_content，由 stream_call 双路解包取回做 think 流；待 ALIYUN key 就位可实测后再考虑开
+      on（开 on 的风险＝正文空＝观点空）
     retry:
       max_attempts: 2
   anthropic-claude-haiku-55:
@@ -384,11 +370,9 @@ models:
     note: ''
   deepseek-v41-flash:
     provider: opencode
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: deepseek-v4.1-flash
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 0.7
     thinking: 'on'
     note: ''
@@ -399,10 +383,9 @@ models:
     default_effort: high
   ds-v41-flash-oc2:
     provider: opencode2
-    # 同第一份 opencode 席位纪律：assistant 带 tool_calls 必须回传 reasoning_content。
     echo_reasoning: true
     model: deepseek-v4.1-flash
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 0.7
     thinking: 'on'
     note: 第二份 opencode Go · deepseek v4.1 flash（2026-11-03 用户令增加，只此一把）
@@ -416,11 +399,9 @@ models:
     model: glm-5.3-flash
   deepseek-v4-flash:
     provider: opencode
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: deepseek-v4-flash
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 0.7
     thinking: 'on'
     note: ''
@@ -432,76 +413,58 @@ models:
   beam-free:
     provider: opencode
     model: beam-free
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 0.7
-    note: >-
-      cost=0 名义免费（2026-11-04 /models 复核）；但 ⚠ 实测 403 RegionError
-      「This model is not available in your country」，且该账号 Go 周额度已用尽
-      （429 GoUsageLimitError）⇒ 当前实际调不通。保留座椅（仍免费，未删除）待额度/地区处理。
+    note: cost=0 名义免费（2026-11-04 /models 复核）；但 ⚠ 实测 403 RegionError 「This model is
+      not available in your country」，且该账号 Go 周额度已用尽 （429 GoUsageLimitError）⇒ 当前实际调不通。保留座椅（仍免费，未删除）待额度/地区处理。
   glm-53-flash-oc1:
     provider: opencode
     model: glm-5.3-flash
-  # [2026-10-22 · Command Code Provider API] 厂商前缀是官方 id 的一部分，不可省
   cmd-ds-v41-flash:
     provider: commandcode
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: deepseek/deepseek-v4.1-flash
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 1
-    note: Command Code · DeepSeek V4.1 Flash（context_length=1,000,000；2026-10-22 实调 200）
+    note: Command Code · DeepSeek V4.1 Flash（context_length=1,000,000；2026-10-22 实调
+      200）
   cmd-beam-free:
     provider: commandcode
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: reflection/beam:free
     reasoning_echo_fill: placeholder
     temperature: 0.7
-    note: Command Code · Beam 1.0 免费（context_length=1,048,576，带 reasoning；2026-10-22 实调 200）
+    note: Command Code · Beam 1.0 免费（context_length=1,048,576，带 reasoning；2026-10-22
+      实调 200）
   cmd-glyph-free:
     provider: commandcode
-    # [多轮思考回传 2026-10-23] 该端点强制要求 assistant 消息
-    # 带 tool_calls 时回传本轮 reasoning_content，否则 400。
     echo_reasoning: true
     model: stealth/glyph-cluster:free
     reasoning_echo_fill: placeholder
     temperature: 0.7
-    note: >-
-      Command Code · Glyph Cluster 免费（context_length=256,000；2026-11-04 实调 200）。
-      思考字段为 `reasoning`（非 reasoning_content），translate.py 已兼容。
-      ⚠ 重思考模型：两字回答实测烧 154 个 reasoning token，工具/长链路上很贵（不扣额度但吃上下文）。
-  # [2026-10-23 实测] 原 `minimax/minimax-m3.1-flash:free` 免费档已关闭：
-  #   端点 GET /models 的 92 条清单里已无该 id；调用返回 403
-  #   「The free MiniMax M3.1 Flash window has ended」。
-  #   ⇒ 改为付费档 `minimax/minimax-m3.1-flash`（同日实测：裸调 200、带真实工具面
-  #   200 且 tool_calls 正确解析）。**这会消耗额度**，不想要就删掉这一段。
+    note: Command Code · Glyph Cluster 免费（context_length=256,000；2026-11-04 实调 200）。
+      思考字段为 `reasoning`（非 reasoning_content），translate.py 已兼容。 ⚠ 重思考模型：两字回答实测烧 154
+      个 reasoning token，工具/长链路上很贵（不扣额度但吃上下文）。
   cmd-minimax-flash:
     provider: commandcode
     model: minimax/minimax-m3.1-flash
     temperature: 1
-    note: >-
-      Command Code · MiniMax M3.1 Flash（付费档；原 :free 免费窗口 2026-10-23 已结束，
-      context_length=1,000,000）
+    note: Command Code · MiniMax M3.1 Flash（付费档；原 :free 免费窗口 2026-10-23 已结束， context_length=1,000,000）
   cmd-ds-v4-flash:
     provider: commandcode
-    # 同端点纪律：assistant 带 tool_calls 必须回传 reasoning_content。
     echo_reasoning: true
     model: deepseek/deepseek-v4-flash
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 1
-    note: >-
-      Command Code · DeepSeek V4 Flash（context_length=1,000,000；2026-11-04 实调 200）。
-      与已有 cmd-ds-v41-flash 是**不同型号**（v4-flash vs v4.1-flash）。
+    note: Command Code · DeepSeek V4 Flash（context_length=1,000,000；2026-11-04 实调
+      200）。 与已有 cmd-ds-v41-flash 是**不同型号**（v4-flash vs v4.1-flash）。
   cmd-glm-53-flash:
     provider: commandcode
     echo_reasoning: true
     model: z-ai/glm-5.3-flash
-    reasoning_echo_fill: ""
+    reasoning_echo_fill: ''
     temperature: 1
-    note: >-
-      Command Code · GLM 5.3 Flash（context_length=1,000,000；2026-11-04 实调 200）。
+    note: Command Code · GLM 5.3 Flash（context_length=1,000,000；2026-11-04 实调 200）。
       ⚠ 推理型：64 token 上限时正文为空（全被 reasoning 吃掉），工具链路上注意配额。
   glm-53-flash-volc:
     provider: volcengine-coding
@@ -575,8 +538,6 @@ models:
     model: kimi-k3-1-pro-261024
     reasoning_echo_fill: real
     temperature: 1
-    # [2026-11-10 · 用户令] 同上：强制思考。volcengine-coding2 未注册方言
-    # → 走 deepseek 兜底（顶层 thinking + reasoning_effort），线形同款。
     thinking: 'on'
     note: '[第二组] 火山方舟 coding · kimi k3.1 pro（2026-10-25 用户令增加；方舟清单 261024 版）'
   glm-53-flash-volc2:
@@ -591,12 +552,6 @@ models:
   ds-v41-flash-eco-amr2:
     provider: opendesign2
     model: deepseek-v4.1-flash-eco
-  # ---- WorkBuddy CLI 传输（2026-11-10）------------------------------------
-  # 用户令定档：hy3 全撤；deepseek-v4-pro / glm-5.3-flash 是**付费档**（用户
-  # 明确点名 ⇒ 登记并标注价）。CLI -p 传输：纯文本、无工具调用；
-  # temperature/max_tokens 无 flag 不生效。
-  # 「思考强度开到最高」= 每模型各自支持的最高档：hy4free 目录写明 effort
-  # 只能 high（onlyReasoning）；v4pro / glm53flash 实测接受 --effort max。
   wb-hy4free-cn:
     provider: workbuddy-cn
     model: hy4free
@@ -604,9 +559,8 @@ models:
     retry:
       max_attempts: 2
       backoff_seconds: 5
-    note: >-
-      WorkBuddy·cn·Hy4 限时免费档（x0.00·促销至 2026-11-16·onlyReasoning·
-      effort=high 已是其最高档；到期上游明确报额度错 ⇒ 从 tiers/选用里撤）。
+    note: WorkBuddy·cn·Hy4 限时免费档（x0.00·促销至 2026-11-16·onlyReasoning· effort=high 已是其最高档；到期上游明确报额度错
+      ⇒ 从 tiers/选用里撤）。
   wb-v4pro-cn:
     provider: workbuddy-cn
     model: deepseek-v4-pro
@@ -623,21 +577,15 @@ models:
       max_attempts: 2
       backoff_seconds: 5
     note: WorkBuddy·cn·glm-5.3-flash（付费 x0.08·用户 11-10 点名·effort=max）
-  # ---- Devin CLI 传输（2026-11-10）------------------------------------
-  # 用户令定档：只上 swe-2-max（`devin models list` 目录标 Free 的最高档；
-  # high/medium 是同族低档、flash 是快档，均未登记——要用再添）。
   devin-swe2-max:
     provider: devin
     model: swe-2-max
     retry:
       max_attempts: 2
       backoff_seconds: 10
-    note: >-
-      Devin·SWE-2 Max（目录标 Free·本地 devin -p·262K 上下文·
-      终态回吐无增量·单轮端到端 ~12s 起）。工具=文本协议段实测：
-      它会先撞一次内置同名件（auto 档必拒），被拒后回落 XML 文本调用
-      ⇒ 每轮多一次被拒尝试但循环能走通；读文件它用内置只读件真读
-      （不受 FILE_SCOPE 管，慎用敏感路径）。
+    note: Devin·SWE-2 Max（目录标 Free·本地 devin -p·262K 上下文· 终态回吐无增量·单轮端到端 ~12s 起）。工具=文本协议段实测：
+      它会先撞一次内置同名件（auto 档必拒），被拒后回落 XML 文本调用 ⇒ 每轮多一次被拒尝试但循环能走通；读文件它用内置只读件真读 （不受 FILE_SCOPE
+      管，慎用敏感路径）。
   ds-v41-flash-eco-amr3:
     provider: opendesign3
     model: deepseek-v4.1-flash-eco
@@ -663,6 +611,60 @@ models:
     - high
     - max
     default_effort: high
+  gpt-62-sol-siwc:
+    provider: openai-siwc
+    model: gpt-6.2-sol
+    reasoning_efforts: &id001
+    - low
+    - medium
+    - high
+    - xhigh
+    default_effort: xhigh
+  gpt-61-terra-siwc:
+    provider: openai-siwc
+    model: gpt-6.1-terra
+    reasoning_efforts: *id001
+    default_effort: xhigh
+  gpt-62-astra-siwc:
+    provider: openai-siwc
+    model: gpt-6.2-astra
+    reasoning_efforts: *id001
+    default_effort: xhigh
+  gpt-6-astra-siwc:
+    provider: openai-siwc
+    model: gpt-6-astra
+    reasoning_efforts: *id001
+    default_effort: xhigh
+  gpt-61-sol-siwc:
+    provider: openai-siwc
+    model: gpt-6.1-sol
+    reasoning_efforts: *id001
+    default_effort: xhigh
+  gpt-6-sol-siwc:
+    provider: openai-siwc
+    model: gpt-6-sol
+    reasoning_efforts: *id001
+    default_effort: xhigh
+  gpt-6-luna-siwc:
+    provider: openai-siwc
+    model: gpt-6-luna
+    reasoning_efforts: *id001
+    default_effort: xhigh
+  cmd3-ds-v41-flash:
+    provider: commandcode3
+    echo_reasoning: true
+    model: deepseek/deepseek-v4.1-flash
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第三份套餐] Command Code · DeepSeek V4.1 Flash（2026-11-19 实调 200，走 7890 代理）'
+  cmd3-glm-53-flash:
+    provider: commandcode3
+    echo_reasoning: true
+    model: z-ai/glm-5.3-flash
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第三份套餐] Command Code · GLM 5.3 Flash（2026-11-19 实调 200，走 7890 代理）。⚠ 推理型：小
+      token 上限时正文可能为空（被 reasoning 吃掉）。'
 bindings:
   execute: glm-53-flash
   think: glm-53-flash

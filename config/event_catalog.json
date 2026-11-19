@@ -263,6 +263,64 @@
     "payload": []
    }
   },
+  "pseudo_call_refused": {
+   "label": "正文伪调用拒执行",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "count",
+     "endpoint_protocol"
+    ],
+    "optional": [
+     "names",
+     "round",
+     "via"
+    ],
+    "payload": []
+   }
+  },
+  "native_protocol_error": {
+   "label": "原生协议错误",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "endpoint_protocol",
+     "finish_reason",
+     "native_dropped",
+     "native_truncated"
+    ],
+    "optional": [
+     "round",
+     "truncated_tool_call"
+    ],
+    "payload": []
+   }
+  },
+  "action_not_executed": {
+   "label": "绑定动作未执行",
+   "group": "回合",
+   "source": "message_runner",
+   "channel": "card",
+   "triggerable": true,
+   "fields": {
+    "part": [
+     "bound",
+     "dispatched",
+     "ok"
+    ],
+    "optional": [
+     "rounds",
+     "detail"
+    ],
+    "payload": []
+   }
+  },
   "card_idle": {
    "label": "卡静默超时检出",
    "group": "回合",

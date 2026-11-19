@@ -91,13 +91,18 @@ _CARD_COLUMNS: tuple[str, ...] = (
     # [委办线 2026-11-14] 建卡方 card_id（委办上级：可删/收汇报/可 direct）。
     # 进 meta 管线 ⇒ row_to_meta 自动带上，工具层 cards[cid]["created_by"] 直接读。
     "created_by",
+    # [席位会话 2026-11-18 · 一卡多会话] 附加会话登记处（JSON 数组：
+    # [{session_id, persona, label, created_at}]）。主会话＝card_id 不入表。
+    "sessions",
 )
 
 # 以小 JSON 文本存的列（短列表 / 小字典，不拆表——方案 §1.3.4）
 _JSON_COLUMNS: frozenset[str] = frozenset(
     {"tags", "links", "relations", "toolcard_final", "thinkchain_final",
      # [能力底座 2026-10-30] 挂载的能力 code 数组
-     "abilities"}
+     "abilities",
+     # [席位会话 2026-11-18] 附加会话登记处
+     "sessions"}
 )
 
 # 正文块（不进 meta）
@@ -164,7 +169,10 @@ CREATE TABLE IF NOT EXISTS cards (
     -- [委办线 2026-11-14] 这张卡是谁建的（卡间建卡＝建卡方 card_id；
     -- UI/系统建的为空）。权属带三权：创建者可删它（离树卡的唯一删域）、
     -- 它的 report_up 抄送创建者、创建者对它天然有通信线（可 direct）。
-    created_by       TEXT
+    created_by       TEXT,
+    -- [席位会话 2026-11-18 · 一卡多会话] 附加会话登记处（JSON 数组：
+    -- [{session_id, persona, label, created_at}]，主会话＝card_id 不入表）。
+    sessions         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent);
 CREATE INDEX IF NOT EXISTS idx_cards_type   ON cards(card_type);
@@ -1028,6 +1036,9 @@ _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     # [委办线 2026-11-14] 不带 DEFAULT：存量卡 NULL＝没记录（系统/用户/建卡
     # 事件早于本列 ⇒ 无法确证创建者，保守留空——职能对它们无权属，删不掉）。
     ("cards", "created_by", "created_by TEXT"),
+    # [席位会话 2026-11-18] 附加会话登记处。不带 DEFAULT：存量卡 NULL＝
+    # 没有附加会话，读侧按空列表归一。
+    ("cards", "sessions", "sessions TEXT"),
 )
 
 
@@ -1539,6 +1550,22 @@ def delete_card_row(conn: sqlite3.Connection, card_id: str) -> int:
 
 def get_card_row(conn: sqlite3.Connection, card_id: str) -> Optional[sqlite3.Row]:
     return conn.execute("SELECT * FROM cards WHERE card_id = ?", (card_id,)).fetchone()
+
+
+def get_card_row_cols(conn: sqlite3.Connection, card_id: str,
+                      cols: "tuple[str, ...]") -> Optional[sqlite3.Row]:
+    """窄投影（2026-11-19 性能批次二）：只取指定列。
+
+    会话标签/存在性检查这类轻读口不需要 mission/status/requirements 等
+    正文大列——全行 SELECT 在大卡上白付 IO 与解析。列名只接受字面量
+    （白名单过滤，不做外部拼接）。
+    """
+    safe = [c for c in cols if c in _CARD_COLUMNS]
+    if not safe:
+        return None
+    q = ", ".join(safe)
+    return conn.execute(
+        f"SELECT {q} FROM cards WHERE card_id = ?", (card_id,)).fetchone()
 
 
 def get_history(conn: sqlite3.Connection, card_id: str) -> list[str]:

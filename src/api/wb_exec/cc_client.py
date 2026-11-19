@@ -103,12 +103,19 @@ class CcRunner:
 
     def __init__(self, entry: str, *, node_exe: str = "node",
                  api_key_env: str = "COMMAND_CODE_API_KEY",
+                 api_key_envs: tuple[str, ...] | list[str] = (),
                  model: str = DEFAULT_MODEL,
                  max_turns: int = DEFAULT_MAX_TURNS,
                  timeout: float = 3600.0) -> None:
         self.entry = str(entry or "")
         self.node_exe = str(node_exe or "node")
         self.api_key_env = str(api_key_env or "COMMAND_CODE_API_KEY")
+        # ★ [2026-11-19 用户令「cc 也要支持多 key」] 一个 key 一个额度池
+        #   ⇒ **起进程按序轮转** ⇒ 免费额度 ×N（同 opencode 的多 key 模式）。
+        #   空列表 ⇒ 回退单值（老配置不变）。
+        envs = tuple(str(k) for k in (api_key_envs or ()) if str(k))
+        self.api_key_envs = envs or (self.api_key_env,)
+        self._key_cursor = 0
         self.model = str(model or DEFAULT_MODEL)
         # ★ 0 ＝ **不限轮数**（原来 `or 8` 会把 0 变成 8 ⇒ 表达不了"不限"）
         self.max_turns = int(max_turns or 0)
@@ -148,14 +155,23 @@ class CcRunner:
         """
         work_dir = str(work_dir)
         os.makedirs(work_dir, exist_ok=True)
-        key = os.environ.get(self.api_key_env, "")
+        env_name = self.api_key_envs[self._key_cursor % len(self.api_key_envs)]
+        self._key_cursor += 1
+        key = os.environ.get(env_name, "")
+        if not key:
+            # 这个 env 没有 key ⇒ **顺序试下一个**（多 key 池里个别空位不打断轮转）
+            for _n in self.api_key_envs:
+                key = os.environ.get(_n, "")
+                if key:
+                    env_name = _n
+                    break
         if not key:
             return {"ok": False, "text": "", "tools": [], "errors": [
-                f"没有 {self.api_key_env}（.env 或环境变量都没有）"],
+                f"没有 {env_name}（.env 或环境变量都没有）"],
                 "rc": -1, "session_id": "", "usage": {}}
         argv = self.build_argv(prompt, model, max_turns)
         env = dict(os.environ)
-        env[self.api_key_env] = key
+        env[env_name] = key
         env["NO_COLOR"] = "1"
         logger.info("[cc] 起进程 model=%s cwd=%s", model or self.model, work_dir)
         try:

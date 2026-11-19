@@ -918,7 +918,19 @@ def _fold_tool_args(args: str) -> str:
 
 
 def _tool_stub_wire(m: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
-    """工具对块的存根投影：调用壳原样留（长参数折叠），结果折成一行回执。"""
+    """工具对块的存根投影：调用壳原样留（长参数折叠），结果折成一行回执。
+
+    [调用来源 2026-11-19 · 存根三态修正] 回执状态改按**结构化状态**生成：
+      1. 新块带 ``status`` 字段（执行时写入，ok/error）⇒ 照它渲染——
+         这是执行时的结构化事实，最可信；
+      2. 旧块无 status ⇒ 按内容判：``[tool_error code=…]`` 开头（错误信封
+         的标准渲染形态）或 ``"ok": false`` ⇒ 失败；content 为空/残缺 ⇒
+         未知；其余（成功信封的 json.dumps(data) 渲染产物）⇒ ok。
+      改前只认 ``"ok": false`` 子串——而 render_tool_result 的错误渲染是
+      ``[tool_error code=not_found] target missing``，不含该子串 ⇒ 标准
+      错误被历史投影成 ok（模型看到旧调用「成功」，重复踩同一个坑）。
+      状态三值：ok / error / unknown。
+    """
     actor = str(m.get("actor") or "")
     if actor == "assistant":
         tcs: list[dict[str, Any]] = []
@@ -938,10 +950,20 @@ def _tool_stub_wire(m: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
         return item
     cid = str(m.get("tool_call_id") or "")
     raw = str(m.get("content") or "")
-    failed = ('"ok": false' in raw) or ('"ok":false' in raw)
+    status = str(m.get("status") or "").strip().lower()
+    if status in ("ok", "error"):
+        state_s = status
+    elif ("[tool_error" in raw) or ('"ok": false' in raw) or ('"ok":false' in raw):
+        state_s = "error"
+    elif not raw.strip():
+        state_s = "unknown"   # 空结果/残缺块：无法核实，如实显示未知
+    else:
+        # 旧块无结构化状态：tool 块内容由系统渲染管道写入（成功信封的
+        # json.dumps(data)），形态可判定 ⇒ ok；这不是模型自述。
+        state_s = "ok"
     nm = names.get(cid) or "?"
     return {"role": "tool", "tool_call_id": cid,
-            "content": (f"工具回执已折叠：{nm} · {'error' if failed else 'ok'}"
+            "content": (f"工具回执已折叠：{nm} · {state_s}"
                         f" · 原文 {len(raw)} 字符")}
 
 

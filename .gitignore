@@ -123,3 +123,8 @@ _devin_install.ps1
 /wdpid.ps1
 # 敏感配置的本地备份（wb_exec 系本就不公开）
 config/*.bak_*
+
+# SIWC（Sign in with ChatGPT）凭据——绝不入库
+config/siwc_tokens.json
+config/siwc_host_id.txt
+config/siwc_tokens.lock

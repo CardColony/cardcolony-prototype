@@ -30,13 +30,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
+import time
+import weakref
 from typing import Any
 
 import httpx
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
+
+logger = logging.getLogger("infra.procs")
 
 #: web 进程本地答的 GET 模板（{} ＝一段路径参数）——全部是「读文件/DB」
 #: 的无锁读口。凡不在此列的请求一律转发。
@@ -56,6 +61,10 @@ _WEB_LOCAL_GET_TPLS: tuple[str, ...] = (
     "/api/works/{}/cards/{}/timeline",
     "/api/card/{}/timeline",
     "/api/works/{}/cards/{}/session",
+    # [席位会话 2026-11-18] 复数端点＝对话顶部 tab 数据源，与上条同族——
+    # 读 cards.sessions 列的本地无锁读。不进白名单就会被逐请求转发（基线
+    # 2026-11-19：会话标签列表中位 1.01s 全耗在转发层现建客户端上）。
+    "/api/works/{}/cards/{}/sessions",
     "/api/works/{}/card-messages/unread",
     "/api/works/{}/cards/{}/exec-backend",
     "/api/works/{}/cards/{}/review-status",
@@ -211,6 +220,110 @@ def _fanin_sse(path: str) -> "re.Match | None":
     return None
 
 
+# ---------------------------------------------------------------
+# [回环连接复用 2026-11-19 · 性能批次一]
+# 病：_forward / _fanin_get_merge / _fanin_sse_stream / forward_ctl 四个入口
+# **逐请求现建** httpx.AsyncClient。本机实测默认构造 ~1.0s/次（Windows CA
+# 装载，进程内不缓存：连建 3 次 = 1453/953/1000ms）；2026-11-19 18:00–20:26
+# 访问日志 nav/running 中位 1.21s、会话标签 1.01s、进度 0.92s 的主体就是它。
+# 药：每**事件循环**一套回环客户端族（web 服务循环 B／runner 主环与分槽环
+# 各自一份，首用即建、随循环存续）——客户端创建次数只随「进程、循环、用途」
+# 变化，连续请求稳定复用：
+#   short  ＝ 状态扇入短查询（30s 超时语义照旧；池容量按 runner 数配，
+#            SSE/长跑占满 stream 池也挤不着它）；
+#   stream ＝ 请求转发中继 + SSE 扇入泵（timeout=None 长流语义照旧）；
+#   ctl    ＝ runner 控制转发（可能承载完整模型回合，timeout=None）。
+# 回环目标全部来自 _URLS 且是 http:// 明文 ⇒ 构造传 verify=False 跳过 CA
+# 装载（实测 1453ms → 2.6ms）。verify 只作用于 https 握手，对纯 http 回环
+# 零安全影响；若未来 _URLS 配了 https 目标则自动回退默认校验。
+# keepalive_expiry=25s < uvicorn timeout_keep_alive=30s：空闲连接由**我们**
+# 先关，不在服务端 30s 关闭的竞态窗口里捡到死连接。
+# ---------------------------------------------------------------
+
+_LOOP_CLIENTS: "dict[int, tuple[weakref.ref, dict[str, httpx.AsyncClient]]]" = {}
+_LOOP_CLIENTS_GUARD = __import__("threading").Lock()
+
+_LOOPBACK_PLAIN = all(str(u).lower().startswith("http://") for u in _URLS)
+
+
+def _new_loop_client(kind: str) -> httpx.AsyncClient:
+    """按用途建一份回环客户端（容量按短查询/长流分池）。"""
+    kw: dict[str, Any]
+    if kind == "short":
+        n = max(2 * _RUNNER_COUNT, 8)
+        kw = dict(timeout=httpx.Timeout(30.0),
+                  limits=httpx.Limits(max_connections=n,
+                                      max_keepalive_connections=n,
+                                      keepalive_expiry=25.0))
+    elif kind == "ctl":
+        n = max(_RUNNER_COUNT + 2, 6)
+        kw = dict(timeout=None,
+                  limits=httpx.Limits(max_connections=max(n, 16),
+                                      max_keepalive_connections=n,
+                                      keepalive_expiry=25.0))
+    else:  # stream：浏览器转发中继 + SSE 扇入泵
+        kw = dict(timeout=None,
+                  limits=httpx.Limits(max_connections=64,
+                                      max_keepalive_connections=16,
+                                      keepalive_expiry=25.0))
+    if _LOOPBACK_PLAIN:
+        kw["verify"] = False
+    # [2026-11-19 · 502 根因] 回环调用**永不读代理配置**：
+    # httpx 默认 trust_env=True 会读注册表系统代理 / HTTP(S)_PROXY，连
+    # 127.0.0.1 也塞给代理 ⇒ 代理拒转发本地地址就回 502 Bad Gateway
+    # （实测：直连 200 / 走代理 502）。内部调用与代理无关，硬关。
+    kw["trust_env"] = False
+    return httpx.AsyncClient(**kw)
+
+
+def _loop_clients() -> "dict[str, httpx.AsyncClient]":
+    """当前事件循环名下的回环客户端族（每循环一份，逐请求零创建）。"""
+    loop = asyncio.get_running_loop()
+    key = id(loop)
+    with _LOOP_CLIENTS_GUARD:
+        ent = _LOOP_CLIENTS.get(key)
+        if ent is not None and ent[0]() is loop:
+            return ent[1]
+        for dead in [k for k, (r, _f) in _LOOP_CLIENTS.items() if r() is None]:
+            _LOOP_CLIENTS.pop(dead, None)   # 循环已死的旧族：引用清掉
+        fam = {kind: _new_loop_client(kind)
+               for kind in ("short", "stream", "ctl")}
+        _LOOP_CLIENTS[key] = (weakref.ref(loop), fam)
+        logger.info("[procs] 回环客户端族已建 loop=0x%x role=%s "
+                    "kinds=short/stream/ctl verify_bypass=%s",
+                    key, _ROLE, _LOOPBACK_PLAIN)
+        return fam
+
+
+def close_all_loop_clients(timeout: float = 3.0) -> int:
+    """优雅关停：关掉全部循环名下的回环客户端族（尽力而为，不抛）。"""
+    with _LOOP_CLIENTS_GUARD:
+        entries = list(_LOOP_CLIENTS.items())
+        _LOOP_CLIENTS.clear()
+
+    async def _aclose(fam: "dict[str, httpx.AsyncClient]") -> None:
+        for c in fam.values():
+            try:
+                await c.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+
+    closed = 0
+    for _key, (ref, fam) in entries:
+        lp = ref()
+        try:
+            if lp is None or lp.is_closed():
+                pass        # 循环已死：socket 随进程回收
+            elif lp.is_running():
+                asyncio.run_coroutine_threadsafe(_aclose(fam), lp).result(timeout)
+            else:
+                lp.run_until_complete(_aclose(fam))
+        except Exception:  # noqa: BLE001 关停路径零阻断
+            pass
+        closed += 1
+    return closed
+
+
 def install_web_proxy(app: Any) -> None:
     """web 角色专用：中间件路由——本地口放行，扇入口合并，其余按卡转发。
 
@@ -246,24 +359,36 @@ async def _forward(request: Request, base: str = "") -> Response:
         if k.lower() not in ("host", "content-length", "connection",
                              "transfer-encoding")
     }
-    client = httpx.AsyncClient(timeout=None)
+    client = _loop_clients()["stream"]
     upstream = client.build_request(
         request.method, url, content=body, headers=headers)
-    try:
-        resp = await client.send(upstream, stream=True)
-    except httpx.HTTPError as exc:
-        await client.aclose()
-        return Response(
-            f"runner 不可达（{url}）：{exc}", status_code=502,
-            media_type="text/plain; charset=utf-8")
+    # [启动窗口 2026-11-19] 整组重启时 runner 可能还在建索引/绑端口，此刻
+    # 转发会 ConnectError ⇒ 一次 502 把前端打断。内部转发是幂等的（请求体已
+    # 备好），对**连接类**错误重试一次（0.6s）即可跨过启动窗口；业务错误不重试。
+    for attempt in range(2):
+        try:
+            resp = await client.send(upstream, stream=True)
+            break
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            if attempt == 0:
+                await asyncio.sleep(0.6)
+                continue
+            return Response(
+                f"runner 不可达（{url}）：{exc}", status_code=502,
+                media_type="text/plain; charset=utf-8")
+        except httpx.HTTPError as exc:
+            return Response(
+                f"runner 不可达（{url}）：{exc}", status_code=502,
+                media_type="text/plain; charset=utf-8")
 
     async def _relay():
         try:
             async for chunk in resp.aiter_raw():
                 yield chunk
         finally:
+            # 客户端取消/流断开 ⇒ 归还当次上游连接（连接回池复用；
+            # 客户端本身随事件循环存续，这里绝不关它）
             await resp.aclose()
-            await client.aclose()
 
     return StreamingResponse(
         _relay(),
@@ -275,17 +400,47 @@ async def _forward(request: Request, base: str = "") -> Response:
     )
 
 
+async def _fanin_get_one(client: "httpx.AsyncClient", url: str) -> tuple:
+    """一片 runner 的短查询（带耗时）。幂等 GET 遇传输层错误单次重试——
+    兜「池内空闲连接恰被对端关闭」的竞态（keepalive_expiry 25s < 服务端
+    30s 已把窗口压到极小，这里再兜一层，可用性与逐请求建客户端时期一致）。"""
+    t0 = time.perf_counter()
+    for attempt in (0, 1):
+        try:
+            r = await client.get(url)
+            return r, (time.perf_counter() - t0) * 1000.0, None
+        except httpx.TransportError as exc:
+            if attempt:     # 第二次仍失败：如实上抛语义
+                return None, (time.perf_counter() - t0) * 1000.0, exc
+    return None, (time.perf_counter() - t0) * 1000.0, RuntimeError("unreachable")
+
+
 async def _fanin_get_merge(path: str, query: str) -> Response:
-    """GET 扇入：并发问全部 runner，JSON 合并（list 去重并、dict 逐键并）。"""
+    """GET 扇入：并发问全部 runner，JSON 合并（list 去重并、dict 逐键并）。
+
+    [2026-11-19 性能批次一] 复用循环名下 short 客户端（原来每次现建
+    AsyncClient，~1s 全花在构造上）；逐片计时入日志——慢 runner/部分失败
+    时能指出是哪一片、各自等了多久。
+    """
     url = lambda i: runner_url(i) + path + (("?" + query) if query else "")
-    async with httpx.AsyncClient(timeout=30) as client:
-        results = await asyncio.gather(
-            *(client.get(url(i)) for i in range(_RUNNER_COUNT)),
-            return_exceptions=True)
-    payloads = [r.json() for r in results
-                if isinstance(r, httpx.Response)
-                and r.status_code == 200
+    client = _loop_clients()["short"]
+    t0 = time.perf_counter()
+    results = await asyncio.gather(
+        *(_fanin_get_one(client, url(i)) for i in range(_RUNNER_COUNT)))
+    total_ms = (time.perf_counter() - t0) * 1000.0
+    per_ms = [round(ms, 1) for _r, ms, _e in results]
+    errs = [f"runner{i}:{type(e).__name__}" for i, (_r, _ms, e) in enumerate(results)
+            if e is not None]
+    payloads = [r.json() for (r, _ms, _e) in results
+                if r is not None and r.status_code == 200
                 and "application/json" in r.headers.get("content-type", "")]
+    if errs or total_ms > 1000.0:
+        logger.warning("[procs] fanin GET %s total=%.1fms per_runner_ms=%s "
+                       "ok=%d/%d err=%s", path, total_ms, per_ms,
+                       len(payloads), _RUNNER_COUNT, errs or "-")
+    else:
+        logger.debug("[procs] fanin GET %s total=%.1fms per_runner_ms=%s ok=%d/%d",
+                     path, total_ms, per_ms, len(payloads), _RUNNER_COUNT)
     if not payloads:
         return Response("全部 runner 不可达", status_code=502,
                         media_type="text/plain; charset=utf-8")
@@ -322,22 +477,27 @@ def _merge_payloads(payloads: list) -> Any:
 
 
 async def _fanin_sse_stream(work_id: str, query: str) -> StreamingResponse:
-    """工作级 SSE 扇入：向全部 runner 各开一条 /events 流，行级合并转发。"""
+    """工作级 SSE 扇入：向全部 runner 各开一条 /events 流，行级合并转发。
+
+    [2026-11-19 性能批次一] 泵复用循环名下 stream 客户端（原来每泵一个
+    新客户端）；退出时只 cancel 泵任务（async with 退出即归还连接），
+    客户端随事件循环存续。
+    """
     url = lambda i: (runner_url(i)
                      + f"/api/works/{work_id}/events"
                      + (("?" + query) if query else ""))
+    stream_cli = _loop_clients()["stream"]
 
     async def _merged():
         q: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        clients: list[httpx.AsyncClient] = []
 
         async def _pump(i: int) -> None:
-            c = httpx.AsyncClient(timeout=None)
-            clients.append(c)
             try:
-                async with c.stream("GET", url(i)) as resp:
+                async with stream_cli.stream("GET", url(i)) as resp:
                     async for line in resp.aiter_lines():
                         await q.put(line)
+            except asyncio.CancelledError:
+                raise
             except Exception:  # noqa: BLE001 单 runner 断流不影响其他
                 pass
 
@@ -350,8 +510,6 @@ async def _fanin_sse_stream(work_id: str, query: str) -> StreamingResponse:
         finally:
             for t in tasks:
                 t.cancel()
-            for c in clients:
-                await c.aclose()
 
     return StreamingResponse(_merged(), media_type="text/event-stream")
 
@@ -375,8 +533,10 @@ async def forward_ctl(work_id: str, card_id: str, ctl_path: str,
     url = (runner_url(owner_index_of(work_id, card_id))
            + "/api" + str(ctl_path or ""))
     try:
-        async with httpx.AsyncClient(timeout=None) as client:
-            r = await client.post(url, json=payload)
+        # [2026-11-19 性能批次一] ctl 客户端随循环复用（每调用现建 ~1s）；
+        # timeout=None 照旧——控制调用可能承载完整模型回合，不套短查询超时。
+        client = _loop_clients()["ctl"]
+        r = await client.post(url, json=payload)
         if r.status_code >= 400:
             return {"error": {"code": "runner_http",
                               "message": f"runner HTTP {r.status_code}（{url}）："

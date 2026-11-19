@@ -185,6 +185,11 @@ def _parse_pinned(backend: str) -> Optional[tuple[str, str]]:
 async def maybe_delegate(state: Any) -> Optional[Any]:
     """``step()`` 的委派钩子。**不委派 ⇒ 返回 None**（调用方照常走原路径）。"""
     cfg = load_config()
+    # [席位会话 2026-11-18 · 一卡多会话] 附加会话（session_id ≠ card_id）
+    # 一律不委派——seat 是「卡面＋职能人格」的会话，用的是卡的系统模型
+    # 工具面；执行体没有 card_tools，委派过去连卡都写不了。
+    if getattr(state, "session_id", "") and state.session_id != state.card_id:
+        return None
     # [轮号] 记住**进 bridge 之前**的轮号 —— 任何回落路径都要原样还回去
     # （回落后系统路径会做 ``state.rounds += 1``；我要是动过它，卡面就"满屏 round 1"）。
     _orig_rounds = state.rounds

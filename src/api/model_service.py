@@ -144,6 +144,15 @@ def _parse_text_tool_calls(text: str) -> list[dict[str, Any]]:
     return out
 
 
+def _endpoint_protocol_of(model_name: str) -> str:
+    """模型名 → 实际端点协议（网关单点判据；异常回落 native）。"""
+    try:
+        from . import tool_receipt  # noqa: PLC0415 延迟破环
+        return tool_receipt.endpoint_protocol_of(model_name)
+    except Exception:  # noqa: BLE001
+        return "native"
+
+
 async def call_main(
     system_prompt: str,
     user_prompt: str,
@@ -312,10 +321,26 @@ async def call_main(
         # 人停断流：把已产出的正文照常交付（工具轮未走完 ⇒ 不产生 tool_calls）。
         result = {"content": "".join(_content_parts), "tool_calls": [],
                   "truncated_tool_call": None, "finish_reason": "stop",
-                  "tokens_used": 0, "latency_ms": 0}
+                  "tokens_used": 0, "latency_ms": 0,
+                  # [调用来源 2026-11-19] 断流收口也带协议元数据（本轮零调用的
+                  # 停止原因如实是 stop，不是协议失败）。
+                  "protocol_meta": {
+                      "endpoint_protocol": _endpoint_protocol_of(model_name),
+                      "declared_text": _endpoint_protocol_of(model_name) == "declared_text",
+                      "native_calls": 0, "native_dropped": 0,
+                      "native_truncated": 0,
+                      "native_finish_tool_calls": False,
+                      "finish_reason": "stop"}}
     if not result:
         result = {"content": "", "tool_calls": [], "truncated_tool_call": None,
-                  "finish_reason": "stop", "tokens_used": 0, "latency_ms": 0}
+                  "finish_reason": "stop", "tokens_used": 0, "latency_ms": 0,
+                  "protocol_meta": {
+                      "endpoint_protocol": _endpoint_protocol_of(model_name),
+                      "declared_text": _endpoint_protocol_of(model_name) == "declared_text",
+                      "native_calls": 0, "native_dropped": 0,
+                      "native_truncated": 0,
+                      "native_finish_tool_calls": False,
+                      "finish_reason": "stop"}}
     # result：正文片段明明已经攒进 `_content_parts`，终帧 content 为空时就被覆盖成空串
     # ⇒ 上层读到 chars=0，误判"模型没发言"（实测真模型：正文有、reasoning 也有，
     #   content 却是空的）。这里用**已经收到的正文片段**补回，不拿思考当回复。
@@ -346,13 +371,22 @@ async def call_main(
     # 下一轮又挑同样问题（实弹里因此跑到第 23 版）。
     # 这里做兼容：结构化 tool_calls 为空时，把正文里的 tool_call 块解析出来，
     # 只接受**本回合确实给了的工具名**（不在 tools 里的当正文，不当调用）。
+    # [调用来源与真实回执 2026-11-19] 这条流终帧解析链产出的调用**不是原生
+    # 调用**——按实际端点协议打来源标（declared_text＝宿主声明协议端点的
+    # 合法通道；pseudo_compat＝原生端点的正文伪调用），循环侧的派发台账与
+    # 事件据此单列，不再冒充 native。
     if not (result.get("tool_calls") or []):
         parsed = _parse_text_tool_calls(str(result.get("content") or ""))
         allowed = {str(((t or {}).get("function") or t).get("name") or "")
                    for t in (tools or [])}
         parsed = [c for c in parsed if not allowed or c["name"] in allowed]
         if parsed:
+            _ep = _endpoint_protocol_of(model_name)
+            _origin = "declared_text" if _ep == "declared_text" else "pseudo_compat"
+            for _c in parsed:
+                _c["_src_origin"] = _origin
             result["tool_calls"] = parsed
+            result["pseudo_stream_parsed"] = True
     if is_mock():
         model_used = "mock"
     else:

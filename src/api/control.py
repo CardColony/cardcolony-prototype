@@ -120,7 +120,21 @@ def halt(work_id: str, card_id: str, reason: str = "", by: str = "") -> dict[str
         "ts": datetime.now(timezone(timedelta(hours=8))).isoformat(),
     }
     _emit_halt(work_id, card_id, "card_halted", dict(_HALTED[(work_id, card_id)]))
-    return request_stop(work_id, card_id)
+    # [席位会话 2026-11-18 · 一卡多会话] 卡级停＝所有会话一起停：附加会话
+    # （card@N）有独立回合锁/停止登记，逐个 request_stop；返回形状保持
+    # 单会话契约，附加停的会话键进 sessions_stopped（附加键不破坏既有）。
+    res = request_stop(work_id, card_id)
+    stopped_extra: list[str] = []
+    for sk in session_facade.turn_sessions_for_card(work_id, card_id):
+        if sk == card_id:
+            continue
+        if request_stop(work_id, sk).get("stopped"):
+            stopped_extra.append(sk)
+    if stopped_extra:
+        res = dict(res)
+        res["stopped"] = True
+        res["sessions_stopped"] = stopped_extra
+    return res
 
 
 def unhalt(work_id: str, card_id: str, by: str = "", via: str = "") -> bool:

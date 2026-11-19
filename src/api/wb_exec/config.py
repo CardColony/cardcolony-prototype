@@ -143,6 +143,9 @@ class Executor:
     cc_node_exe: str = "node"
     #: **key 的环境变量名**（``COMMAND_CODE_API_KEY``；**只写名字，不写明文**）。
     cc_api_key_env: str = "COMMAND_CODE_API_KEY"
+    #: **key 环境变量名列表**（2026-11-19 用户令加多 key：一个 key 一个额度池
+    #:   ⇒ 起进程按序轮转 ⇒ 免费额度 ×N。空 ⇒ 回退 :attr:`cc_api_key_env` 单值）。
+    cc_api_key_envs: tuple[str, ...] = ()
     #: **可用模型**（候选表里指定具体档位；这里是兜底默认）。
     cc_models: tuple[str, ...] = ()
     #: **同时跑几个**（一个进程 = 一个槽）。
@@ -438,6 +441,8 @@ def _parse(raw: dict[str, Any]) -> WbExecConfig:
             cc_node_exe=str(e.get("cc_node_exe") or "node"),
             cc_api_key_env=str(e.get("cc_api_key_env")
                                or "COMMAND_CODE_API_KEY"),
+            cc_api_key_envs=tuple(str(k) for k in (e.get("cc_api_key_envs") or ())
+                                  if str(k)),
             cc_models=tuple(str(m) for m in (e.get("cc_models") or ()) if str(m)),
             cc_max_concurrent=max(0, int(e.get("cc_max_concurrent") or 0)),
             cc_timeout_sec=float(e.get("cc_timeout_sec") or 3600.0),

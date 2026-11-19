@@ -568,6 +568,27 @@ async def test_model(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"ok": False, "error": "缺少端点地址"})
     if not model_id:
         return JSONResponse(status_code=400, content={"ok": False, "error": "缺少模型型号"})
+    # [2026-11-19 · SIWC 接入] 该协议没有 api_key（用 ChatGPT 套餐 OAuth token）、
+    # 也不走 chat/completions（Responses API）⇒ 不能走下面的裸 httpx 路径，
+    # 改为构造真实网关打一发，与生产同一条链路。
+    if protocol == "responses-siwc":
+        try:
+            from ..model_gateway.gateway import ModelGateway  # noqa: PLC0415
+            # 两个分支的变量名不同（model→mname / provider→pname），统一取一次
+            _seat = str(payload.get("model_name") or payload.get("provider") or "")
+            _cfg = model_config.compile(raw)
+            _gw = ModelGateway(_cfg)
+            _t0 = time.time()
+            _res = await _gw.call(_seat, "你是连通性测试助手。", "回复两个字：收到")
+            return JSONResponse({
+                "ok": True,
+                "reply": str(_res.get("content") or "")[:200],
+                "model_used": _res.get("model_used"),
+                "latency_ms": int((time.time() - _t0) * 1000),
+            })
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(status_code=502, content={
+                "ok": False, "error": f"{type(exc).__name__}: {str(exc)[:280]}"})
     if not api_key:
         return JSONResponse(status_code=400, content={
             "ok": False, "error": f"缺少密钥（配置环境变量 {api_key_env or '(未指定)'} 或直接填入）"})

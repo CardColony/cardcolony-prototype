@@ -84,6 +84,12 @@ _QUOTA_PATTERNS = (
     re.compile(r"\bexceed(?:ed|s)?[\s_-]+(?:(?:your|the)[\s_-]+)?(?:current[\s_-]+)?quota\b", re.IGNORECASE),
     re.compile(r"\b(?:balance|credits?)[\s_-]+(?:exhausted|depleted)\b", re.IGNORECASE),
     re.compile(r"\bout[\s_-]+of[\s_-]+(?:credits?|budget)\b", re.IGNORECASE),
+    # [2026-11-19 · SIWC] ChatGPT 套餐「共享用量」上限：错误码是
+    # ``subscription_sharing_usage_limit_exceeded``——下划线相连，上面带 ``\b``
+    # 的规则在 ``_`` 前不成立 ⇒ 原来漏判成普通 400 ⇒ 白重试 3 次还不让路。
+    # 命中后归 QUOTA（不在可重试码集里）⇒ 一次失败立即上抛。
+    re.compile(r"subscription[\s_-]+sharing[\s_-]+usage[\s_-]+limit", re.IGNORECASE),
+    re.compile(r"usage[\s_-]+limit[\s_-]+exceeded", re.IGNORECASE),
 )
 
 

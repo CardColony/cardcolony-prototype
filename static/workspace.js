@@ -4,12 +4,12 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=55";
+import { API } from "./esm/api.js?v=56";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=79";
+import { EventFlow } from "./stream.js?v=80";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=55";
+import { notify, postStop } from "./esm/api.js?v=56";
 // [wb_exec 2026-10-23] 执行体块（纯函数，单独成模块以便单测）
 import { buildExecBackendHtml as buildExecBackendHtmlPure } from "./esm/exec_backend.js?v=4";
 // [5715 · 抽模块] 卡间信的解析/剥头行与呈现都搬进 esm/flow/card-msg-node.js
@@ -107,8 +107,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   try {
     EventFlow.onRunChange((wid, cid, running) => {
       if (wid !== WORK_ID) return;
-      // [当前卡单源 2026-10-21] 与左栏早退、高亮、面包屑用同一个判断口
-      if (!navStore.select.is(WORK_ID, cid)) return;
+      // [席位会话] 帧的 cid 是会话键（card 或 card@N）：只对「当前卡当前
+      // 选中的会话」回写运行态——seat 帧不驱动主会话按钮（并行语义）。
+      const selCid = (navStore.select.get() || {}).cid || "";
+      if (!selCid || cid !== sessionKeyOf(selCid)) return;
       applyRunState(running, cid);
     });
   } catch (e) { /* 旧版 stream 无此口：零阻断 */ }
@@ -117,8 +119,149 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
      每张卡一个 InputMachine ＋ 一份前端权威队列；DOM 仍是单实例（dsh「一次建好」），
      切卡只**换绑**。此前是「全页一个 machine/queue」⇒ 切卡时草稿、排队消息、
      运行态全部跟着走（用户报的「输入框文字被带走」）。 */
-  const composerSessions = new Map();   // cardId -> { machine, queue }
+  const composerSessions = new Map();   // sessionKey -> { machine, queue }
   let activeComposer = null;            // { key, session }
+
+  /* [席位会话 2026-11-18 · 一卡多会话] 每张卡当前选中的会话：
+     主会话＝card_id，附加会话＝card@N（人格＝职能，权力＝卡本身）。
+     画板/事件流/回合锁全按会话键分账；HTTP 路径用真卡号＋session 参数。 */
+  const sessionSel = new Map();         // cardId -> sessionKey
+  const sessionRegistry = new Map();    // cardId -> [{session_id, persona, label, main}]
+  /** 当前选中会话键（EventFlow 一切调用都用它——它就是"这张卡正在看的对话"）。 */
+  function sessionKeyOf(cardId) {
+    return sessionSel.get(String(cardId || "")) || String(cardId || "");
+  }
+  /** POST 体里的 session 参数：主会话＝空（后端缺省即主会话）。 */
+  function sessionParamOf(cardId) {
+    const k = sessionSel.get(String(cardId || ""));
+    return (k && k !== String(cardId || "")) ? k : "";
+  }
+
+  /* ── 会话切换栏（对话顶部 tab ＋「+」职能选择器）────────────────── */
+  const sessionTabsEl = document.getElementById("sessionTabs");
+  let _sessionMenuEl = null;         // 开着的职能选择器（同时只开一个）
+
+  function closeSessionMenu() {
+    if (_sessionMenuEl) { try { _sessionMenuEl.remove(); } catch (e) { /* noop */ } _sessionMenuEl = null; }
+    try { document.removeEventListener("click", _sessionMenuAway, true); } catch (e) { /* noop */ }
+  }
+  function _sessionMenuAway(e) {
+    if (_sessionMenuEl && !_sessionMenuEl.contains(e.target) && e.target.id !== "sessionAddBtn") closeSessionMenu();
+  }
+
+  /** 拉会话登记处并画 tab 栏（open 时＋建会话后调用）。 */
+  async function refreshSessions(cardId) {
+    if (!sessionTabsEl) return;
+    if (!cardId || cardId === "draft") { sessionTabsEl.hidden = true; return; }
+    let list = null;
+    try {
+      const r = await API.getSessions(WORK_ID, cardId);
+      list = (r && r.sessions) || [];
+    } catch (e) {
+      list = [{ session_id: cardId, persona: "", label: "主会话", main: true }];
+    }
+    sessionRegistry.set(cardId, list);
+    // 选中键失效（会话没了）⇒ 回落主会话
+    const sel = sessionSel.get(cardId);
+    if (sel && sel !== cardId && !list.some(s => s.session_id === sel)) {
+      sessionSel.delete(cardId);
+    }
+    paintSessionTabs(cardId);
+  }
+
+  function paintSessionTabs(cardId) {
+    if (!sessionTabsEl) return;
+    const list = sessionRegistry.get(cardId) || [];
+    // 只有主会话时栏可显可隐——「+」入口需要常显，只有一条也显示（入口在右上）
+    sessionTabsEl.hidden = false;
+    sessionTabsEl.innerHTML = "";
+    const sel = sessionKeyOf(cardId);
+    for (const s of list) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "session-tab" + (s.session_id === sel ? " on" : "");
+      b.textContent = s.main ? "主会话" : (s.label || s.session_id);
+      if (!s.main && s.persona) {
+        const tag = document.createElement("span");
+        tag.className = "st-persona";
+        tag.textContent = s.persona;
+        b.appendChild(tag);
+      }
+      b.title = s.main ? "卡自身的会话" : `职能会话 · ${s.persona || ""}`;
+      b.onclick = () => { selectSession(cardId, s.session_id).catch(() => {}); };
+      sessionTabsEl.appendChild(b);
+    }
+    const add = document.createElement("button");
+    add.type = "button";
+    add.id = "sessionAddBtn";
+    add.className = "session-add";
+    add.textContent = "+";
+    add.title = "新建职能会话（卡面＋所选职能的人格）";
+    add.onclick = (e) => { e.stopPropagation(); openSessionPicker(cardId, add); };
+    sessionTabsEl.appendChild(add);
+  }
+
+  /** 切会话：换选中键 → 挂板 → 换输入会话 → 按需拉时序 → 接运行态。 */
+  async function selectSession(cardId, sk) {
+    closeSessionMenu();
+    sessionSel.set(cardId, sk);
+    paintSessionTabs(cardId);
+    bindBoard(WORK_ID, cardId);          // 内部按 sessionKeyOf → 挂会话板
+    switchComposer(sk);
+    try {
+      const loaded = EventFlow.isLoaded(WORK_ID, sk);
+      if (!loaded) await EventFlow.replayTrace(WORK_ID, sk);
+      else try { EventFlow.activate(WORK_ID, sk); } catch (e) { /* 零阻断 */ }
+    } catch (e) { /* 拉取失败空屏即可 */ }
+    attachRunningState(sk).catch(() => {});
+  }
+
+  /** 「+」：职能选择器（GET /functions → 点职能 → POST 建会话 → 选中）。 */
+  async function openSessionPicker(cardId, anchorBtn) {
+    if (_sessionMenuEl) { closeSessionMenu(); return; }
+    const menu = document.createElement("div");
+    menu.className = "session-menu";
+    menu.innerHTML = '<div class="sm-empty">加载职能…</div>';
+    document.body.appendChild(menu);
+    _sessionMenuEl = menu;
+    // 定位在 + 按钮下方右对齐
+    try {
+      const r = anchorBtn.getBoundingClientRect();
+      menu.style.top = (r.bottom + 4) + "px";
+      menu.style.left = Math.max(8, r.right - 200) + "px";
+    } catch (e) { /* noop */ }
+    document.addEventListener("click", _sessionMenuAway, true);
+    let fns = [];
+    try {
+      const r = await API.listFunctions(WORK_ID);
+      fns = (r && r.functions) || [];
+    } catch (e) { /* 拉不到按空处理 */ }
+    menu.innerHTML = "";
+    if (!fns.length) {
+      menu.innerHTML = '<div class="sm-empty">还没有职能卡</div>';
+      return;
+    }
+    for (const f of fns) {
+      const it = document.createElement("button");
+      it.type = "button";
+      it.className = "sm-item";
+      const name = document.createElement("span");
+      name.textContent = f.function_name || f.function_id;
+      const id = document.createElement("span");
+      id.className = "sm-id";
+      id.textContent = f.function_id;
+      it.appendChild(name); it.appendChild(id);
+      it.onclick = async () => {
+        closeSessionMenu();
+        try {
+          const r = await API.createSession(WORK_ID, cardId, f.function_id);
+          await refreshSessions(cardId);
+          if (r && r.session_id) selectSession(cardId, r.session_id).catch(() => {});
+        } catch (e2) { notify("建会话失败：" + String((e2 && e2.message) || e2), "error"); }
+      };
+      menu.appendChild(it);
+    }
+  }
 
   function composerOf(cardId) {
     const key = String(cardId || "draft");
@@ -261,7 +404,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       从 open() 抽出——草稿落库后要**先换绑显示板、再走原发送路径**，
       两处必须是同一份实现，否则「写的板 ≠ 看的板」会再次分裂（病根②）。 */
   function bindBoard(wid, cid) {
-    try { EventFlow.activate(wid, cid); } catch (e) { /* 零阻断 */ }
+    // [席位会话] 画板按**会话键**挂——附加会话（card@N）有自己独立的板。
+    try { EventFlow.activate(wid, sessionKeyOf(cid)); } catch (e) { /* 零阻断 */ }
   }
 
   async function open(cardId, switchWid) {
@@ -288,7 +432,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // #chatArea，不等 getCard/inspector/timeline 任一 await——否则旧卡内容滞留，
     // 且快速连点时后到的 await 会把旧卡写进新卡（P4 串卡的界面侧表现）。
     bindBoard(WORK_ID, cardId);
-    switchComposer(cardId);   // [5702] 输入会话同步换绑：点下去草稿立刻按卡切换
+    switchComposer(sessionKeyOf(cardId));   // [5702] 输入会话按**会话键**换绑（草稿/运行态各会话独立）
     /* [当前卡单源 2026-10-21] 身份在「点下去」这一刻就写进路径——它是 select.is()
        的唯一来源。原来拖到 open 末尾才写，中途任何判断（早退/高亮/徽标）看到的
        都还是上一张卡。取卡失败要把身份**回滚**（否则地址栏指着打不开的卡）。 */
@@ -315,6 +459,8 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       }
       if (inputBar) inputBar.refresh();   // 会话面到场 ⇒ 输入卡解除 inert
       applyEmptyState(card);
+      // [席位会话] 会话 tab 栏：登记处拉取＋画 tab（不 await，与浮窗同口径）。
+      refreshSessions(cardId).catch(() => {});
       // [评审浮窗 2026-10-29] 这张卡有进行中的评审批次 ⇒ 右侧浮窗出现；
       // 没有就什么都不多。**不 await**：浮窗晚到几十毫秒没关系，切卡不能等它。
       rvRefresh(cardId);
@@ -335,13 +481,14 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
            画板已在内存（开头 bindBoard 已把它挂上）⇒ **零网络、零装配**，
            对话立刻可见。改前每次切卡都重拉 400 条事件 + 重建整张装配表，
            200 个节点重新渲染——这就是「慢得要死、根本不是即时响应」的来源。 */
+        const sKey = sessionKeyOf(cardId);
         const cached = (() => {
-          try { return EventFlow.isLoaded(WORK_ID, cardId); } catch (e) { return false; }
+          try { return EventFlow.isLoaded(WORK_ID, sKey); } catch (e) { return false; }
         })();
         if (cached) {
-          try { EventFlow.activate(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
+          try { EventFlow.activate(WORK_ID, sKey); } catch (e) { /* 零阻断 */ }
         } else {
-          await EventFlow.replayTrace(WORK_ID, cardId);
+          await EventFlow.replayTrace(WORK_ID, sKey);
           if (stale()) return;
         }
       }
@@ -350,7 +497,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       /* [5702 · 治「切到在跑的卡不再更新」] replayTrace 内部会 stopES 关流；
          恢复完再按后端真实运行态接流——此前只有页面加载（bootRestore）会接，
          页内切卡后只能刷新才动。 */
-      attachRunningState(cardId).catch(() => {});
+      attachRunningState(sessionKeyOf(cardId)).catch(() => {});
       /* [5715 · 修] 选中态写**路径**（页面身份即选中态）。
        * 原写法：先 select.set() 写 hash、再 replaceState 写路径 ⇒ hash 被后写者抹掉
        * ⇒ select.get() 恒 null ⇒ **侧栏从不高亮当前卡**、面包屑/定位/收起全部全失准。
@@ -1964,7 +2111,10 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   async function attachRunningState(cardId) {
     if (!cardId) return false;
     try {
-      const st = await API.getProgress(WORK_ID, cardId);
+      // [席位会话] 入参是会话键（card 或 card@N）：进度按会话键问，
+      // 事件流也接会话键——seat 的运行态只认它自己那一轮。
+      const real = String(cardId).split("@")[0];
+      const st = await API.getProgress(WORK_ID, real, { session: cardId });
       if (!st) return false;
       const alive = (typeof st.active === "boolean")
         ? st.active
@@ -1973,7 +2123,9 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // [刷新后能暂停 2026-10-14 · 用户令 ②] 关键补丁：刷新型恢复了流、却没恢复**运行态**，
       // 于是卡还在跑、按钮却是「发送」，点下去发新消息而不是停——用户没法暂停。
       // 查到后端 active=true ⇒ 前端运行态同步置位：按钮转停止态、输入框锁住。
-      setRunState(true);
+      // [席位会话] 运行态写会话键（cardId 入参本身就是会话键）——seat 恢复的回合
+      // 不得写到主会话键上（否则 seat 轮把主会话按钮顶成停止态）。
+      setRunState(true, cardId);
       // [对话流照抄 dsh v3] 刷新恢复只做两件事：置运行态（主键变停止键）＋ 接上事件流。
       // 等待气泡已退役——运行条由 chat-view 出（"Deep diving..."，15s 后显时钟）。
       if (EventFlow) EventFlow.start(WORK_ID, cardId, null, { replayTokens: true });
@@ -1996,12 +2148,13 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     if (!sessionState.running) { _idleProbeHits = 0; return; }
     const cid = currentCard ? currentCard.meta.card_id : "";
     if (!cid) return;
-    try { if (!EventFlow.streamDead(WORK_ID, cid)) { _idleProbeHits = 0; return; } }
+    const sk = sessionKeyOf(cid);   // [席位会话] 探的是当前选中会话的回合
+    try { if (!EventFlow.streamDead(WORK_ID, sk)) { _idleProbeHits = 0; return; } }
     catch (e) { /* 查不到断流状态就照常探一次 */ }
     if (_idleProbeInFlight) return;
     _idleProbeInFlight = true;
     let st = null;
-    try { st = await API.getProgress(WORK_ID, cid, { silent: true }); }
+    try { st = await API.getProgress(WORK_ID, cid, { silent: true, session: sk }); }
     catch (e) { st = null; }
     finally { _idleProbeInFlight = false; }
     if (!st) { _idleProbeHits = 0; return; }
@@ -2014,8 +2167,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     _idleProbeHits = 0;
     if (!sessionState.running) return;
     if (!currentCard || currentCard.meta.card_id !== cid) return;
-    setRunState(false, cid);
-    try { EventFlow.stop(WORK_ID, cid); } catch (e) { /* 零阻断 */ }
+    setRunState(false, sk);
+    try { EventFlow.stop(WORK_ID, sk); } catch (e) { /* 零阻断 */ }
   }, 3000);
 
   // [更新现状按钮改造 2026-10-16] `op` 缺省＝普通发送（逐字不变）；传专用 op
@@ -2059,13 +2212,16 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     if (!isOp) lastSentContent = content;
     const cardId = currentCard.meta.card_id;
+    /* [席位会话] 本条消息进当前选中会话（主会话＝card_id 本身）：
+       画板/事件流/回合锁全按 sk 分账。 */
+    const sk = sessionKeyOf(cardId);
 
     /* [T1 乐观上屏] 点发送瞬间先落用户气泡——不等 POST、不等 timeline 回流。
        否则 run_start/context/judgment_protocol 会抢在用户提问之前出现（P1）。 */
-    try { EventFlow.optimisticUser(WORK_ID, cardId, content); } catch (e) { /* 零阻断 */ }
-    EventFlow.start(WORK_ID, cardId, null);
+    try { EventFlow.optimisticUser(WORK_ID, sk, content); } catch (e) { /* 零阻断 */ }
+    EventFlow.start(WORK_ID, sk, null);
     // timeline 回流对账：真实 user_message 到达时按内容原地升级（补 seq），不出双气泡
-    try { EventFlow.pullUserBubble(WORK_ID, cardId).catch(() => {}); } catch (e) { /* 零阻断 */ }
+    try { EventFlow.pullUserBubble(WORK_ID, sk).catch(() => {}); } catch (e) { /* 零阻断 */ }
 
     /* [发送被接受] 清草稿并清撤销栈（machine.ts:544-553：已发内容不得被撤销复活）。
        专用回合（更新现状）不占输入框。 */
@@ -2073,20 +2229,21 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
 
     // 本轮回复基线：异常恢复判据＝「resync 后是否多出一条 assistant」，不是「有没有 assistant」
     const asstBefore = (() => {
-      try { return EventFlow.assistantSeq(WORK_ID, cardId); } catch (e) { return 0; }
+      try { return EventFlow.assistantSeq(WORK_ID, sk); } catch (e) { return 0; }
     })();
 
     setRunState(true);   // 运行条起、主键转停止键、输入条照常可打字
 
     try {
-      const resp = await API.postMessage(WORK_ID, cardId, content, op);
+      const resp = await API.postMessage(WORK_ID, cardId, content, op,
+        { session: sessionParamOf(cardId) });
       // [对话界面商业化 2026-10-17] 流与整轮同寿：POST 是同步的（等整轮结束），
       // 2.5s 就收流＝把中间过程全丢在自己手里，只剩事后一次性全量上屏。
       // 改为 resync 对账之后再收（见下方）。
       // [C1 单源] 回复正文走 timeline 回流（与刷新同一条渲染路）
-      await EventFlow.resync(WORK_ID, cardId);
+      await EventFlow.resync(WORK_ID, sk);
       // 对账后再收流：resync 置 settled，此后的残帧不入装配。留 1.5s 让 done 帧到齐。
-      setTimeout(() => EventFlow.stop(WORK_ID, cardId), 1500);
+      setTimeout(() => EventFlow.stop(WORK_ID, sk), 1500);
       // [更新现状按钮改造] 按 op 开现状对比窗。（规则审批窗 2026-11-14 起走
       // 待决表＋工作级 SSE，不再押对话收口。）
       if (statusOp && window.__maybeOpenStatusModal) window.__maybeOpenStatusModal(cardId);
@@ -2099,7 +2256,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           `<span class="nc-item" data-cid="${escapeHtml(c.card_id)}">${escapeHtml(c.title)}</span>`
         ).join("");
         card.innerHTML = `<b>已创建 ${resp.created_cards.length} 张卡片</b>：${items}`;
-        ensureMsgs(cardId).appendChild(card);
+        ensureMsgs(sk).appendChild(card);
         card.querySelectorAll(".nc-item").forEach(it => {
           it.onclick = () => open(it.dataset.cid);
         });
@@ -2114,7 +2271,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           `<span class="te-item ${t.ok ? "" : "fail"}">${escapeHtml(t.tool)}(${escapeHtml(t.card_id)}) ${t.ok ? "✓" : "✗"}</span>`
         ).join("");
         tool.innerHTML = items;
-        ensureMsgs(cardId).appendChild(tool);
+        ensureMsgs(sk).appendChild(tool);
       }
 
       // [phase9-F] 观点元信息灰条（simple 多模型；有 viewpoints_meta 才显示）
@@ -2127,12 +2284,12 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
           return `<span class="te-item ${v.ok ? "" : "fail"}">${escapeHtml(v.model)} ${status}</span>`;
         }).join(" ｜ ");
         vp.innerHTML = `观点：${items}`;
-        ensureMsgs(cardId).appendChild(vp);
+        ensureMsgs(sk).appendChild(vp);
       }
     } catch (e) {
       // [hotfix] 报错前先探一次会话：后端可能已完成，只是响应没送回来。
       // ★ 这不是「15 秒自愈轮询」（那条已按任务书 §三 删除）——只在**异常路径**探一次。
-      if (await recoverIfDone(cardId, asstBefore)) return;
+      if (await recoverIfDone(cardId, sk, asstBefore)) return;
       // [发送失败] 草稿保住（不丢字）＋ 红条；未被认领的本地气泡撤下（不留幽灵消息）
       if (!statusOp && inputBar) {
         inputBar.setDraft(content);
@@ -2140,11 +2297,11 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
            两处都写一遍原因＝同一个错误报两次，用户只会觉得吵。 */
         inputBar.failSend("发送失败，内容已保留");
       }
-      try { EventFlow.dropOptimisticUser(WORK_ID, cardId); } catch (e0) { /* 零阻断 */ }
+      try { EventFlow.dropOptimisticUser(WORK_ID, sk); } catch (e0) { /* 零阻断 */ }
       const err = document.createElement("div");
       err.className = "sys-error";
       err.innerHTML = `请求失败：${escapeHtml(e.message || "")} <button class="retry-btn">重发</button>`;
-      ensureMsgs(cardId).appendChild(err);
+      ensureMsgs(sk).appendChild(err);
       err.querySelector(".retry-btn").onclick = () => {
         err.remove();
         resend(content);
@@ -2155,8 +2312,8 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
          这里若无脑置 false，就会把刚开始的下一轮运行态抹掉——正是「自动模式
          页面状态乱跳」的来源。stillBusy 读的就是真相源，只有它确实不在跑才收。 */
       let stillBusy = false;
-      try { stillBusy = EventFlow.sessionRunning(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
-      if (!stillBusy) setRunState(false, cardId);
+      try { stillBusy = EventFlow.sessionRunning(WORK_ID, sk); } catch (e) { /* 零阻断 */ }
+      if (!stillBusy) setRunState(false, sk);
       /* [5702] 只给「还在看的这张卡」出队：切走了就不替别的卡发消息
          （队列留在那张卡自己的 store 里，切回时仍在）。 */
       if (!currentCard || currentCard.meta.card_id === cardId) drainQueue(sendingQueue);
@@ -2166,28 +2323,28 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   /** 异常路径的兜底探测：后端可能已完成、只是响应没送回来。
       在跑（且流没断）⇒ 什么都不做；否则按 timeline 结算一次。
       返回 true＝已结算（调用方不再报错）。 */
-  async function recoverIfDone(cardId, asstBefore) {
+  async function recoverIfDone(cardId, sk, asstBefore) {
     try {
-      const p = await API.getProgress(WORK_ID, cardId);
+      const p = await API.getProgress(WORK_ID, cardId, { session: sk });
       const alive = p && ((typeof p.active === "boolean")
         ? p.active
         : ACTIVE_STAGES.includes(p.stage));
-      if (alive && !EventFlow.streamDead(WORK_ID, cardId)) return false;
+      if (alive && !EventFlow.streamDead(WORK_ID, sk)) return false;
     } catch (e0) { return false; }
     try {
-      const r = await EventFlow.resync(WORK_ID, cardId);
+      const r = await EventFlow.resync(WORK_ID, sk);
       // 只有「本轮确实多了一条 assistant」才算后端已完成；否则一律按发送失败处理
       // （保住草稿、出错误条、撤乐观气泡）——历史卡不会再把失败吞成成功。
       const grew = (() => {
-        try { return EventFlow.assistantSeq(WORK_ID, cardId) > Number(asstBefore || 0); }
+        try { return EventFlow.assistantSeq(WORK_ID, sk) > Number(asstBefore || 0); }
         catch (e) { return false; }
       })();
       if (r && r.ok && r.done && grew) {
-        setTimeout(() => EventFlow.stop(WORK_ID, cardId), 1500);
+        setTimeout(() => EventFlow.stop(WORK_ID, sk), 1500);
         const note = document.createElement("div");
         note.className = "sys-tools";
         note.textContent = "⚠ 响应连接中断，已从事件流恢复回复（若有新卡片，返回画布后可见）";
-        ensureMsgs(cardId).appendChild(note);
+        ensureMsgs(sk).appendChild(note);
         return true;
       }
     } catch (e2) { /* 静默：交给上层的错误条 */ }
@@ -2216,6 +2373,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   async function resend(content) {
     if (sessionState.running) return;   // 同 send 的重入守卫
     const cardId = currentCard ? currentCard.meta.card_id : "";
+    const sk = sessionKeyOf(cardId);   // [席位会话] 重发进当前会话
     let pairId = null;
     try {
       // [C1 单源] pair_id 也从 timeline 取：落盘记录的 run_id **就是** pair_id
@@ -2224,7 +2382,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       // 〔P24 · 2026-10-26〕**带 tail 窗口**：这里只倒序找**最近一条** user_message，
       // 全量是浪费（大卡事件文件 109.5MB ⇒ 生产实测 20~32 秒 ⇒ 15 秒超时
       // ⇒ 弹「请求超时」＋内存态建不起来 ⇒ 看起来像被释放）。窗口与打开卡同口径。
-      const tl = await API.getTimeline(WORK_ID, cardId, undefined, { tail: 400 });
+      const tl = await API.getTimeline(WORK_ID, cardId, undefined, { tail: 400, session: sk });
       const items = (tl && tl.items) || [];
       for (let i = items.length - 1; i >= 0; i--) {
         if (items[i] && items[i].type === "user_message" && String(items[i].run_id || "")) {
@@ -2239,13 +2397,16 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       }
     } catch (e) { /* 取事件流失败按未持有 pair_id 处理，不阻断重发 */ }
     // [对话流照抄 dsh v3] 重发同样走事件流；等待气泡已退役（运行条取代）
-    if (EventFlow) EventFlow.start(WORK_ID, cardId, null);
+    if (EventFlow) EventFlow.start(WORK_ID, sk, null);
     setRunState(true);
     try {
+      const sp = sessionParamOf(cardId);
       const httpResp = await fetch(`/api/works/${WORK_ID}/cards/${cardId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pairId ? { content, pair_id: pairId } : { content }),
+        body: JSON.stringify(Object.assign(
+          pairId ? { content, pair_id: pairId } : { content },
+          sp ? { session: sp } : {})),
       });
       if (!httpResp.ok) {
         const errText = await httpResp.json().catch(() => ({}));
@@ -2254,19 +2415,19 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       await httpResp.json();
       // [对话界面商业化 2026-10-17] 同 send()：流跟整轮同寿（POST 同步返回），
       // 2.5s 就收流＝中间过程全丢，只剩事后一次性全量上屏。对账之后再收。
-      await EventFlow.resync(WORK_ID, cardId);
-      setTimeout(() => EventFlow.stop(WORK_ID, cardId), 1500);
+      await EventFlow.resync(WORK_ID, sk);
+      setTimeout(() => EventFlow.stop(WORK_ID, sk), 1500);
     } catch (e) {
       const err = document.createElement("div");
       err.className = "sys-error";
       err.innerHTML = `重发失败：${escapeHtml(e.message || "")} <button class="retry-btn">再试</button>`;
-      ensureMsgs(cardId).appendChild(err);
+      ensureMsgs(sk).appendChild(err);
       err.querySelector(".retry-btn").onclick = () => { err.remove(); resend(content); };
     } finally {
       // [运行态单一真相源 2026-10-21] 同 send()：以事件流真相为准，别抹掉已起跑的下一轮
       let stillBusy = false;
-      try { stillBusy = EventFlow.sessionRunning(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
-      if (!stillBusy) setRunState(false, cardId);
+      try { stillBusy = EventFlow.sessionRunning(WORK_ID, sk); } catch (e) { /* 零阻断 */ }
+      if (!stillBusy) setRunState(false, sk);
       drainQueue();
     }
   }
@@ -2279,18 +2440,21 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     const cardId = currentCard ? currentCard.meta.card_id
       : ((navStore.select.get() || {}).cid || "");
     if (!cardId) { notify("没有正在查看的卡", "warn"); return; }
+    // [席位会话] 停的是**当前选中会话**的回合——seat 停 seat、主停主，
+    // 不置卡级 halt（要停整卡另有卡级入口）。
+    const sk = sessionKeyOf(cardId);
     try {
       /* 先置过渡态再发请求：中止缝在 step 边界，从「点下」到「真正停住」
          有一段真实等待，这段必须表达出来（否则用户会重复点、以为坏了）。 */
-      try { EventFlow.setStopping(WORK_ID, cardId, true); } catch (e0) { /* 零阻断 */ }
-      await postStop(WORK_ID, cardId);
+      try { EventFlow.setStopping(WORK_ID, sk, true); } catch (e0) { /* 零阻断 */ }
+      await postStop(WORK_ID, cardId, sessionParamOf(cardId) || undefined);
       notify("正在停止…", "info");
       // 兜底：8 秒仍未收口则撤掉过渡态（避免卡在「正在停止」）
       setTimeout(() => {
-        try { EventFlow.setStopping(WORK_ID, cardId, false); } catch (e0) { /* 零阻断 */ }
+        try { EventFlow.setStopping(WORK_ID, sk, false); } catch (e0) { /* 零阻断 */ }
       }, 8000);
     } catch (e) {
-      try { EventFlow.setStopping(WORK_ID, cardId, false); } catch (e0) { /* 零阻断 */ }
+      try { EventFlow.setStopping(WORK_ID, sk, false); } catch (e0) { /* 零阻断 */ }
       notify("停止指令失败", "error");
     }
   }

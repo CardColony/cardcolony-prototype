@@ -1310,6 +1310,54 @@ async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
     return result
 
 
+async def read_card_sessions_light(work_id: str,
+                                   card_id: str) -> Optional[dict[str, Any]]:
+    """窄读（2026-11-19 性能批次二）：只取会话登记所需列（sessions/created_at）。
+
+    会话标签列表（/sessions）与时序端点（/timeline）的存在性＋附加会话校验
+    只需要这两列——全行 read_card 会把 mission/status_block/requirements/goal
+    等正文大列一并捞出，大卡上每次轮询白付 IO 与解析（基线：会话标签列表
+    中位 1.01s 的服务端部分主要就是它＋转发层）。
+    返回 ``{"created_at", "sessions"}``；None ⇒ 卡不存在（与 read_card 的
+    CardNotFoundError 同语义，由调用方折 404）。
+    sessions 已过滤为合法登记项 [{session_id, persona, label, created_at}]。
+    """
+    def _fn(conn: Any) -> Optional[dict[str, Any]]:
+        row = card_db.get_card_row_cols(conn, card_id,
+                                        ("sessions", "created_at"))
+        if row is None:
+            return None
+        try:
+            sessions = json.loads(row["sessions"]) if row["sessions"] else []
+        except (TypeError, ValueError):
+            sessions = []
+        if not isinstance(sessions, list):
+            sessions = []
+        return {
+            "created_at": str(row["created_at"] or ""),
+            "sessions": [dict(e) for e in sessions
+                         if isinstance(e, dict)
+                         and str(e.get("session_id") or "")],
+        }
+
+    return await card_db.run_read(work_id, _fn, None)
+
+
+def iter_card_titles(work_id: str) -> dict[str, str]:
+    """窄投影（2026-11-19 性能批次二）：{card_id: title} 全表轻读。
+
+    浮窗名单（align-status）这类调用方只要 id→标题映射——原来走
+    ``iter_card_metas``（SELECT * ＋ 边表叠算），一屏几十张卡的轮询面上
+    每次都全表捞正文列。这里只取两列。
+    """
+    def _fn(conn: Any) -> dict[str, str]:
+        return {row["card_id"]: str(row["title"] or row["card_id"])
+                for row in conn.execute(
+                    "SELECT card_id, title FROM cards ORDER BY card_id")}
+
+    return card_db.read_sync(work_id, _fn, {}) or {}
+
+
 #: 父子默认通信线的标记（建卡时自动建，换父时迁到新父）。
 #: 用 note 而不是新增字段：线表里"这条线是怎么来的"本来就该写清楚。
 _DEFAULT_LINK_NOTE = "父子默认通信线"
@@ -1564,6 +1612,9 @@ async def update_card(
         "goal_await_wakes",
         # [需求文档生命周期 2026-10-28] 草稿（私有）与定稿状态（draft/in_review/approved）
         "requirements_draft", "requirements_state",
+        # [席位会话 2026-11-18 · 一卡多会话] 会话登记处归卡面权威：
+        # meta.sessions=[{session_id, persona, label, created_at}]
+        "sessions",
     )
 
     # [现状告知 2026-10-25 · 修] ``body_patch`` 是在 ``_fn`` **里面**定义的局部变量，

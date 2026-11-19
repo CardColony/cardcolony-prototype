@@ -261,8 +261,9 @@ export function toastCompat(msg, kind) {
   notify(msg, kind || "info");
 }
 
-export async function postStop(wid, cid) {
-  return call("POST", `/api/works/${wid}/cards/${cid}/stop`);
+export async function postStop(wid, cid, session) {
+  const q = session ? `?session=${encodeURIComponent(session)}` : "";
+  return call("POST", `/api/works/${wid}/cards/${cid}/stop${q}`);
 }
 
 /* [5715] 插话：把一条用户消息投递进**正在跑**的这一轮。
@@ -379,15 +380,31 @@ export const API = {
     if (typeof from === "number" && from > 0) q.push("from=" + from);
     if (opts && opts.tail > 0) q.push("tail=" + opts.tail);
     if (opts && opts.before > 0) q.push("before=" + opts.before);
+    // [席位会话] session=card@N ⇒ 取该会话的时序
+    if (opts && opts.session) q.push("session=" + encodeURIComponent(opts.session));
     return call("GET", `/api/works/${wid}/cards/${cid}/timeline${q.length ? "?" + q.join("&") : ""}`);
   },
   // [更新现状按钮改造 2026-10-16] op 缺省不带到请求体 ⇒ 普通发送与改前逐字等价；
   // 传 op（如 "update_status"）⇒ 本轮走专用通道（后端认它注入专用任务 + 追加专用工具）。
-  postMessage: (wid, cid, content, op) => call("POST",
-    `/api/works/${wid}/cards/${cid}/messages`, op ? { content, op } : { content }),
-  getProgress: (wid, cid, opts) => call("GET", `/api/works/${wid}/cards/${cid}/progress`, undefined, opts),
-  // [迭代四 F3①] 停止按钮（U-7）
-  postStop: (wid, cid) => postStop(wid, cid),
+  // [席位会话] opts.session=card@N ⇒ 本条消息进该会话（主会话缺省不带）。
+  postMessage: (wid, cid, content, op, opts) => {
+    const body = { content };
+    if (op) body.op = op;
+    if (opts && opts.session) body.session = opts.session;
+    return call("POST", `/api/works/${wid}/cards/${cid}/messages`, body);
+  },
+  getProgress: (wid, cid, opts) => {
+    const q = (opts && opts.session) ? `?session=${encodeURIComponent(opts.session)}` : "";
+    return call("GET", `/api/works/${wid}/cards/${cid}/progress${q}`, undefined, opts);
+  },
+  // [席位会话 2026-11-18 · 一卡多会话] 会话登记处：主会话＋各职能会话。
+  getSessions: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/sessions`),
+  createSession: (wid, cid, persona, label) =>
+    call("POST", `/api/works/${wid}/cards/${cid}/sessions`, label ? { persona, label } : { persona }),
+  // 职能选择器数据源：本 work 的职能清单（function_id/function_name）。
+  listFunctions: (wid) => call("GET", `/api/works/${wid}/functions`),
+  // [迭代四 F3①] 停止按钮（U-7）。session=card@N ⇒ 只停该会话的回合（不置卡级 halt）。
+  postStop: (wid, cid, session) => postStop(wid, cid, session),
   // [5715] 插话（投递进正在跑的这一轮）
   postSteer: (wid, cid, content) => postSteer(wid, cid, content),
   // [迭代四 F4] 卡间消息端点

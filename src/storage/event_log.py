@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -488,92 +489,295 @@ _REVOKE_TYPE_RE = re.compile(rb'"type"\s*:\s*"([A-Za-z_]+)"')
 #: 行首多少字节内判 type（超出就保守整行解析——正确性优先）。
 _REVOKE_HEAD_BYTES = 2048
 
+# ═══════════════════════════════════════════════════════════════════════════
+# [增量撤销/索引扫描 2026-11-19 · 性能批次二]
+#
+# 病：撤销区间缓存按 (mtime_ns, size) 整体键控——事件文件**每追加一行**键就变，
+# 下一次 timeline 全文件重扫（card_007 实测 747MB ⇒ 每次追加重付秒级）。
+# ``before`` 翻页更是一直走全量 ``read()``（整文件逐行 json.loads，109MB 实测
+# ~360ms、内存翻 2-4 倍）。
+#
+# 药：**读侧可重建的增量扫描器**——
+#   · 状态按路径记：已扫到的**完整记录边界** ``size_scanned``、撤销区间
+#     ``spans``、可选的行位置索引 ``index``（seq/ts/offset，供翻页免全量）；
+#   · 文件**只增**（追加）⇒ 只扫 ``[size_scanned, 最后一个 \n 边界)`` 的新增
+#     完整行——「并发追加时只发布对应完整记录边界的结果，未写完整的行由
+#     下次补读」；前缀一致性用头 64 字节指纹确认；
+#   · 文件**被替换/截断/前缀无法确认/同长改写**（mtime 变而长度未增）⇒ 从
+#     现有原文**安全重建**；
+#   · 条目上限沿用 ``_REVOKE_CACHE_MAX``（按路径条数淘汰最旧，不按时间）；
+#     单路径索引行数超 ``_INDEX_MAX_ENTRIES`` 时弃用索引、翻页回退全量路径。
+# 巨型行零整行拷贝：行定位与 "revoke" 子串探测全走 ``mmap.find``（C 层），
+# seq/ts 抽取只切行首/行尾小片；抽取失败才整行解析兜底（正确性优先）。
+# ═══════════════════════════════════════════════════════════════════════════
+
 #: (mtime_ns, size) → spans 的缓存（撤区间只随文件变化而变）。
 #: 〔P24〕没有它：**同一次切卡**会多次调 timeline（打开 + 结算回流 + 增量对账）
 #: ⇒ 每次都重扫一遍 109MB ⇒ 「切卡卡死」的成本被乘以次数。
 #: 〔P25 补〕**必须有上限**（内存封顶原则：只按容量淘汰，**不按时间**）。
 #: 每条 = 一个卡的事件文件的撤区间列表 ⇒ 条数 ≈ 卡数；不封顶的话卡越多越涨。
-_REVOKE_CACHE: dict[str, tuple[int, int, list[tuple[int, int]]]] = {}
+_SCAN_STATE: dict[str, dict[str, Any]] = {}
 #: 撤区间缓存的条目上限（超出按插入顺序丢最旧）。
 _REVOKE_CACHE_MAX = 512
+#: 单路径索引的行数上限（超过就弃用索引，翻页回退全量路径）。
+_INDEX_MAX_ENTRIES = 200_000
+#: 「小行」阈值：以内整行 json.loads 抽 seq/ts，超过走行首/行尾正则。
+_INDEX_PARSE_MAX = 64 * 1024
+
+#: 索引行条目：(归一化 ts, seq, 行起偏移, 行止偏移, 是否控制记录)。
+#: ts 归一化与 ``_chrono_key`` 同一函数 ⇒ 排序语义逐字一致。
+_SCAN_LOCKS: dict[str, threading.Lock] = {}
+_SCAN_LOCKS_GUARD = threading.Lock()
+_SCAN_STATS: dict[str, int] = {"full_rebuilds": 0, "delta_scans": 0,
+                               "cache_hits": 0, "bytes_scanned": 0,
+                               "bytes_skipped": 0, "index_lines": 0}
+_PREFIX_FP_BYTES = 64
+
+
+def scan_stats() -> dict[str, int]:
+    """扫描器累计读数（观测：触及/跳过的历史字节量、重建与增量次数）。"""
+    return dict(_SCAN_STATS)
+
+
+def _norm_ts(ts: Any) -> str:
+    """ts 归一化（与 ``_chrono_key`` 同口径）：数字/数字串 epoch → ISO；其余 str 化。"""
+    ts = str(ts or "")
+    if ts and ts[0].isdigit() and "T" not in ts:
+        try:
+            ts = datetime.fromtimestamp(float(ts)).astimezone().isoformat()
+        except (ValueError, OSError, OverflowError):
+            pass
+    return ts
+
+
+def _seq_of(rec: Any) -> Optional[int]:
+    s = rec.get("seq") if isinstance(rec, dict) else None
+    return int(s) if isinstance(s, int) and not isinstance(s, bool) else (
+        int(s) if isinstance(s, str) and s.isdigit() else None)
+
+
+_SEQ_HEAD_RE = re.compile(rb'"seq"\s*:\s*(\d+)')
+_TS_TAIL_RE = re.compile(rb'"ts"\s*:\s*("([^"]*)"|\d+(?:\.\d+)?)')
+
+
+def _index_key_of(raw: "mmap.mmap", pos: int, end: int) -> "tuple[str, int] | None":
+    """行 [pos,end) 的 (归一化 ts, seq)。小行整行解析；巨型行只切头尾小片，
+    抽取失败（畸形/极端结构）才整行解析兜底——正确性优先于速度。
+    返回 None ⇒ 该行无可解析 seq（与 read() 一样不进时序面）。"""
+    n = end - pos
+    if n <= _INDEX_PARSE_MAX:
+        try:
+            rec = _loads(raw[pos:end].decode("utf-8", errors="replace"))
+        except (ValueError, TypeError):
+            return None
+        seq = _seq_of(rec)
+        if seq is None:
+            return None
+        return _norm_ts(rec.get("ts")), seq
+    # 巨型行：seq 是骨架第一个键（行首）、ts 是最后一个键（行尾）。
+    head = raw[pos:min(end, pos + 256)]
+    m = _SEQ_HEAD_RE.search(head)
+    if m is None:
+        return None
+    seq = int(m.group(1))
+    tail = raw[max(pos, end - 1024):end]
+    mt = _TS_TAIL_RE.search(tail)
+    if mt is None:
+        # 兜底：整行解析（巨型行一次 ~200ms，只在极端结构时发生）
+        try:
+            rec = _loads(raw[pos:end].decode("utf-8", errors="replace"))
+        except (ValueError, TypeError):
+            return None
+        seq2 = _seq_of(rec)
+        if seq2 is None:
+            return None
+        return _norm_ts(rec.get("ts")), seq2
+    val = mt.group(1)
+    ts = val[1:-1].decode("utf-8", errors="replace") if val.startswith(b'"') \
+        else val.decode("ascii", errors="replace")
+    return _norm_ts(ts), seq
+
+
+def _prefix_ok(path: Path, s: dict) -> bool:
+    """头 ``fp_len`` 字节指纹一致 ⇒ 已扫前缀可信任（追加场景的廉价确认）。"""
+    try:
+        with open(path, "rb") as f:
+            return _md5(f.read(s["fp_len"])) == s["fp"]
+    except OSError:
+        return False
+
+
+def _md5(b: bytes) -> str:
+    import hashlib
+    return hashlib.md5(b).hexdigest()
+
+
+def _scan_state(path: Path, want_index: bool) -> "tuple[list, list | None]":
+    """撤销区间（+可选行索引）的增量扫描入口。返回 (spans, index|None)。
+
+    · (mtime, size) 未变 ⇒ 直接命中缓存（O(stat)，零扫描）；
+    · 只增（size 变大且前缀指纹一致）⇒ 只扫新增完整行；
+    · 其余（替换/截断/同长改写/前缀不确认/索引缺口）⇒ 全量重建。
+    """
+    key = str(path)
+    try:
+        st = path.stat()
+    except OSError:
+        return [], None
+    size, mtime = st.st_size, st.st_mtime_ns
+    lock = _SCAN_LOCKS.get(key)
+    if lock is None:
+        with _SCAN_LOCKS_GUARD:
+            lock = _SCAN_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        s = _SCAN_STATE.get(key)
+        if (s is not None and s["mtime_ns"] == mtime and s["size"] == size
+                and (not want_index or s["has_index"] or s["index_dropped"])):
+            _SCAN_STATS["cache_hits"] += 1
+            return s["spans"], (s["index"] if want_index and s["has_index"]
+                                else None)
+
+        need_full = (s is None or size < s["size_scanned"]
+                     or (mtime != s["mtime_ns"] and size <= s["size_scanned"])
+                     or (not _prefix_ok(path, s))
+                     or (want_index and not s["has_index"]
+                         and not s["index_dropped"]))
+        raw = _mmap_ro(path)
+        if raw is None:
+            return [], None
+        t0 = time.perf_counter()
+        spans: list[tuple[int, int]] = [] if need_full or s is None \
+            else list(s["spans"])
+        # 索引携带规则：增量路径把旧索引一并延伸（只解析新增行——否则
+        # spans-only 的增量扫描会把索引打丢，每次翻页都退化成全量重建）；
+        # 全量重建只在 want_index 时建索引（tail 契约：禁止 eager 全量解析）。
+        prev_index: list | None = None
+        if (s is not None and s["has_index"] and not s["index_dropped"]
+                and not need_full):
+            prev_index = s["index"]
+        index: list | None
+        if need_full:
+            index = [] if want_index else None
+        elif prev_index is not None:
+            index = list(prev_index)
+        elif want_index:
+            index = []
+        else:
+            index = None
+        index_dropped = False
+        try:
+            start = 0 if need_full else min(s["size_scanned"], size)
+            # 完整记录边界＝最后一个 \n 之后（半行留给下次补读）
+            last_nl = raw.rfind(b"\n")
+            boundary = (last_nl + 1) if last_nl >= 0 else 0
+            if boundary <= start:
+                # 没有新的完整行：只刷新水位（mtime/size），缓存语义不变
+                if s is not None and not need_full:
+                    s["mtime_ns"], s["size"] = mtime, size
+                    _SCAN_STATE[key] = s
+                    return spans, (s["index"] if want_index and s["has_index"]
+                                   else None)
+                return spans, (index if want_index and index else None)
+            pos = start
+            while pos < boundary:
+                nl = raw.find(b"\n", pos, boundary)
+                end = nl if nl >= 0 else boundary
+                if end > pos:
+                    # —— 撤销判定（与 P24 语义逐字一致：行首 2KB 判 type）——
+                    if raw.find(b"revoke", pos, end) >= 0:
+                        head = raw[pos:min(end, pos + _REVOKE_HEAD_BYTES)]
+                        mt = _REVOKE_TYPE_RE.search(head)
+                        if mt is None or mt.group(1) == b"revoke":
+                            try:
+                                rec = _loads(raw[pos:end].decode(
+                                    "utf-8", errors="replace"))
+                            except (ValueError, TypeError):
+                                rec = None
+                            if isinstance(rec, dict) and \
+                                    str(rec.get("type") or "") in CONTROL_TYPES:
+                                data = rec.get("data") or {}
+                                try:
+                                    fseq = int(data.get("from_seq"))
+                                except (TypeError, ValueError):
+                                    fseq = None
+                                if fseq is not None:
+                                    try:
+                                        rseq = int(rec.get("seq"))
+                                    except (TypeError, ValueError):
+                                        rseq = fseq
+                                    spans.append((fseq, rseq))
+                    # —— 行索引（翻页免全量）——
+                    if index is not None and (end - pos) > 0:
+                        ik = _index_key_of(raw, pos, end)
+                        if ik is not None:
+                            head = raw[pos:min(end, pos + _REVOKE_HEAD_BYTES)]
+                            mt = _REVOKE_TYPE_RE.search(head)
+                            ctrl = (mt is not None
+                                    and mt.group(1) == b"revoke")
+                            index.append((ik[0], ik[1], pos, end, ctrl))
+                            if len(index) > _INDEX_MAX_ENTRIES:
+                                # 弃用索引：**继续**扫完 spans（不许因索引
+                                # 超限截断撤销区间），仅索引永久停用
+                                index = None
+                                index_dropped = True
+                pos = end + 1
+            scanned = boundary
+            fp_len = min(_PREFIX_FP_BYTES, scanned)
+            fp = _md5(raw[:fp_len]) if fp_len > 0 else ""
+            dt = (time.perf_counter() - t0) * 1000.0
+            if need_full:
+                _SCAN_STATS["full_rebuilds"] += 1
+                _SCAN_STATS["bytes_scanned"] += scanned
+                logger.info("[event_log] 撤销/索引全量重建 file=%s "
+                            "scanned=%.1fMB spans=%d index=%s took=%.0fms",
+                            path.name, scanned / 1e6, len(spans),
+                            "no" if index is None else len(index), dt)
+            else:
+                _SCAN_STATS["delta_scans"] += 1
+                _SCAN_STATS["bytes_scanned"] += scanned - start
+                _SCAN_STATS["bytes_skipped"] += start
+                logger.info("[event_log] 撤销增量扫描 file=%s new=%.1fKB "
+                            "skipped=%.1fMB spans=%d took=%.1fms",
+                            path.name, (scanned - start) / 1e3,
+                            start / 1e6, len(spans), dt)
+            if index is not None:
+                _SCAN_STATS["index_lines"] = max(_SCAN_STATS["index_lines"],
+                                                 len(index))
+            _SCAN_STATE[key] = {"mtime_ns": mtime, "size": size,
+                                "size_scanned": scanned, "spans": spans,
+                                "index": index, "has_index": index is not None,
+                                "index_dropped": index_dropped,
+                                "fp": fp, "fp_len": fp_len}
+            _prune_scan_state(key)
+            return spans, index
+        finally:
+            raw.close()
+
+
+def _prune_scan_state(key: str) -> None:
+    """〔P25 口径沿用〕超上限丢最旧（按插入序，不按时间）。"""
+    if len(_SCAN_STATE) >= _REVOKE_CACHE_MAX and key not in _SCAN_STATE:
+        for old in list(_SCAN_STATE.keys())[:len(_SCAN_STATE)
+                                            - _REVOKE_CACHE_MAX + 1]:
+            _SCAN_STATE.pop(old, None)
 
 
 def _revoke_spans(path: Path) -> list[tuple[int, int]]:
-    """扫出所有 revoke 的作废区间 ``(from_seq, revoke_seq)``（**字节级**扫描）。
+    """扫出所有 revoke 的作废区间 ``(from_seq, revoke_seq)``。
 
     〔5715 · 治「切卡卡死」〕原来的 :func:`timeline` 为了让 revoke 生效，
     对**全文件**逐行 ``json.loads``（47492 行 ⇒ 秒级）——而这个函数是
     **同步**调用、跑在 async 端点里 ⇒ **堵死事件循环** ⇒ 期间所有请求排队
     ⇒ 页面「没反应」。
 
-    这里只做**子串命中**（``"revoke"``）才 json.loads 那一行。
-
-    〔P24 · 2026-10-26〕三重提速（实测 card_021：109.5MB / 8277 行 / 平均 13KB 每行）：
+    〔P24 · 2026-10-26〕三重提速（实测 card_021：109.5MB / 8277 行）：
       ① 定位命中处用 ``bytes.find``（C 层）而不是 Python 逐行迭代；
-      ② **先在行首 2KB 内判 type**——不是 revoke 就不必**整行** json.loads
-         （巨型内容行整行解析要 ~285ms；旧实现那 1.1 秒里 855ms 就在这）；
-      ③ 按 (mtime_ns, size) **缓存**撤区间（同一次切卡会多次调 timeline）。
-    实测：旧 930ms → 新 **106ms**（语义等价：只有行首明确写着别的 type 才跳过整行解析）。
+      ② **先在行首 2KB 内判 type**——不是 revoke 就不必**整行** json.loads；
+      ③ 缓存撤区间（同一次切卡会多次调 timeline）。
+    〔2026-11-19 性能批次二〕④ **增量**：追加只扫新增完整行，不再每追加一次
+    就全文件重扫（旧缓存键 (mtime,size) 追加即失效——card_007 747MB 每次重付秒级）。
     """
-    try:
-        st = path.stat()
-    except OSError:
-        return []
-    key = str(path)
-    cached = _REVOKE_CACHE.get(key)
-    if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
-        return cached[2]
-
-    spans: list[tuple[int, int]] = []
-    raw = _mmap_ro(path)
-    if raw is None:
-        return spans
-    try:
-        # mmap 的 ``in`` 是单字节语义（恒 False）——子串探测必须走 ``find``。
-        if raw.find(b"revoke") >= 0:
-            pos = 0
-            while True:
-                i = raw.find(b"revoke", pos)
-                if i < 0:
-                    break
-                pos = i + 6
-                # 回溯到行首、顺延到行尾（只把这**一行**送去判）
-                s = raw.rfind(b"\n", 0, i) + 1
-                e = raw.find(b"\n", i)
-                if e < 0:
-                    e = len(raw)
-                # 〔P24〕行首已明确写着别的 type ⇒ 铁定不是控制记录 ⇒ 不必整行解析
-                head = raw[s:min(e, s + _REVOKE_HEAD_BYTES)]
-                mt = _REVOKE_TYPE_RE.search(head)
-                if mt is not None and mt.group(1) != b"revoke":
-                    continue
-                try:
-                    rec = _loads(raw[s:e].decode("utf-8", errors="replace"))
-                except (ValueError, TypeError):
-                    continue
-                if not isinstance(rec, dict) or str(rec.get("type") or "") not in CONTROL_TYPES:
-                    continue
-                data = rec.get("data") or {}
-                try:
-                    fseq = int(data.get("from_seq"))
-                except (TypeError, ValueError):
-                    continue
-                s2 = rec.get("seq")
-                try:
-                    rseq = int(s2)
-                except (TypeError, ValueError):
-                    rseq = fseq
-                spans.append((fseq, rseq))
-    finally:
-        raw.close()
-    try:
-        # 〔P25 补〕内存封顶：超上限就丢最旧的（**不按时间**淘汰——用户明令不许按时间释放）。
-        if len(_REVOKE_CACHE) >= _REVOKE_CACHE_MAX and key not in _REVOKE_CACHE:
-            for old in list(_REVOKE_CACHE.keys())[:len(_REVOKE_CACHE) - _REVOKE_CACHE_MAX + 1]:
-                _REVOKE_CACHE.pop(old, None)
-        _REVOKE_CACHE[key] = (st.st_mtime_ns, st.st_size, spans)
-    except Exception:  # noqa: BLE001 缓存失败不影响主流程
-        pass
+    spans, _idx = _scan_state(path, want_index=False)
     return spans
 
 
@@ -625,13 +829,7 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
     # 数字串 ts 是 reasoning 合并落盘把 epoch float 写进 ts 的老账——归一成
     # ISO 再比，否则 "1..." < "2..." 会让它们整批跳到最前面。
     def _chrono_key(r: dict[str, Any]) -> tuple[str, int]:
-        ts = str(r.get("ts") or "")
-        if ts and ts[0].isdigit() and "T" not in ts:
-            try:
-                ts = datetime.fromtimestamp(float(ts)).astimezone().isoformat()
-            except (ValueError, OSError, OverflowError):
-                pass
-        return (ts, int(r.get("seq") or 0))
+        return (_norm_ts(r.get("ts")), int(r.get("seq") or 0))
 
     if want_tail > 0 and not before and from_seq <= 0:
         # ── 尾部窗口路径：从文件尾往前读，够 N 条就停（不再全量解析）──────
@@ -650,7 +848,52 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
         items.sort(key=_chrono_key)
         return items
 
-    # ── 全量路径（翻历史）：与改前逐字一致 ───────────────────────
+    if before:
+        # ── 翻历史·索引路径（2026-11-19 性能批次二）────────────────────
+        # 旧实现走全量 read()（整文件逐行 json.loads：109MB 实测 ~360ms、
+        # 内存翻 2-4 倍，747MB 真卡即 MemoryError 高危）。改用行位置索引：
+        # 可见集合按 (ts, seq) 排序后按**序位**截窗口，只解析窗口内那些行。
+        spans, index = _scan_state(path, want_index=True)
+        if index is not None:
+            try:
+                b = int(before)
+            except (TypeError, ValueError):
+                b = 0
+            vis = [(ts, seq, off, end)
+                   for (ts, seq, off, end, ctrl) in index
+                   if not ctrl and seq >= from_seq
+                   and not _in_revoked(seq, spans)]
+            vis.sort(key=lambda x: (x[0], x[1]))   # 稳定排序：同键保持文件序
+            window = vis
+            if b > 0:
+                # before 指「当前显示段首条的 seq」——按**序位**截（与全量
+                # 路径逐字同语义：写乱序时段里 seq ≠ 时序，比大小会错排）。
+                idx = next((i for i, x in enumerate(vis) if x[1] == b), None)
+                window = (vis[:idx] if idx is not None
+                          else [x for x in vis if x[1] < b])
+            if want_tail > 0:
+                window = window[-want_tail:]
+            raw = _mmap_ro(path)
+            if raw is None:
+                return []
+            try:
+                items = []
+                for _ts, seq, off, end in window:
+                    try:
+                        rec = _loads(raw[off:end].decode("utf-8",
+                                                         errors="replace"))
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(rec, dict):
+                        rec["seq"] = seq      # 与 read() 同口径：seq int 化
+                        items.append(rec)
+            finally:
+                raw.close()
+            items.sort(key=_chrono_key)
+            return items
+        # 索引不可用（超行数上限/极端文件）⇒ 落到下面的全量路径（原语义兜底）
+
+    # ── 全量路径（翻历史兜底）：与改前逐字一致 ───────────────────────
     for rec in read(work_id, card_id):
         if str(rec.get("type") or "") in CONTROL_TYPES:
             data = rec.get("data") or {}

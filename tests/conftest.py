@@ -90,6 +90,10 @@ def sandbox(tmp_path, monkeypatch):
     # prompt 日志（审计双通道之一）
     monkeypatch.setattr(prompt_log, "LOGS_DIR", logs)
 
+    # [调用来源与真实回执 2026-11-19] 派发台账随沙箱（铁律一：不写真实仓库）
+    from src.api import tool_receipt as _tr
+    monkeypatch.setattr(_tr, "_LEDGER_PATH", logs / "tool_dispatch_ledger.jsonl")
+
     # 文件工具锚点：源码里 BASE_DIR 是硬编码绝对路径 D:\\AI_station。
     # [2026-11-15] ALLOWED_ROOTS（文件夹闸）已退役，不再 monkeypatch——
     # 沙箱隔离现在只锚 BASE_DIR（相对路径基准/缺省根/备份根），无边界语义。

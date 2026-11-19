@@ -520,24 +520,25 @@ def test_repo_config_shape_is_valid(monkeypatch):
     # ★★ **2026-11-04 用户令：不再是「配比」，改成「优先级瀑布」**
     #   原话：「先全部排 devin，它排满了或额度用完了，就落 opencode，
     #   opencode 不行，再落 workbuddy」⇒ **priority 就是选路顺序**（越小越优先）。
-    assert prios["wb-devin:swe-2-max"] == 10
+    assert prios["wb-devin:swe-2-flash-max"] == 10
     assert prios["wb-oc:flint-40b-free"] == 20
     # ★ [2026-11-16 用户令] cn/intl 的付费 glm-5.3-flash 已从候选表移除
     #   ⇒ 更便宜的 hy4flash-free 顶上（x0.03，付费也只是 x0.03 < glm x0.08）
     assert "wb-cn:glm-5.3-flash" not in prios
     assert "wb-intl:glm-5.3-flash" not in prios
-    assert prios.get("wb-cn:hy4flash-free") == 28
-    assert prios.get("wb-cn:hy4flash") == 29
+    assert prios.get("wb-cn:hy4flash-free") == 29
+    assert prios.get("wb-cn:hy4flash") == 30
     # ★ 表里**存在**的候选：优先级必须按档位语义严格递增（表序＝优先级序）
     expected_order = [
-        "wb-devin:swe-2-max", "wb-oc:flint-40b-free",
+        "wb-devin:swe-2-flash-max", "wb-oc:flint-40b-free",
         "wb-oc:deepseek-v4.1-flash-free", "wb-oc:big-pickle",
         "wb-oc:glm-5.3-flash-free", "wb-oc:mimo-v2.6-flash-free",
+        "wb-cc:thinkingmachines/inkling-2-small:free",
+        "wb-cc:recursive/flint-v1.0:free",
         "wb-cc:reflection/beam:free",
         "wb-cc:stealth/glyph-cluster:free",
-        "wb-cn:hy4free", "wb-cn:hy4flash-free", "wb-cn:hy4flash",
-        "wb-cn:glm-5.3", "wb-intl:glm-5.3",
-        "wb-cn:hy3", "wb-intl:hy3",
+        "wb-cn:hy4flash-free", "wb-cn:hy4flash",
+        "wb-intl:hy4flash-free", "wb-intl:hy3",
     ]
     order = sorted(prios.items(), key=lambda kv: kv[1])
     assert [k for k, _ in order] == [k for k in expected_order if k in prios]
@@ -581,7 +582,7 @@ def test_repo_config_shape_is_valid(monkeypatch):
     dv = cfg.executor("wb-devin")
     assert dv is not None
     assert dv.devin_cli_exe.endswith("devin.exe")
-    assert dv.devin_model == "swe-2-max"
+    assert dv.devin_model == "swe-2-flash-max"
     assert dv.devin_permission_mode == "bypass"
     assert dv.devin_max_concurrent >= 1
     # ★★ **2026-11-04：Devin 必须走「本地 agent」**（`devin_cloud=false`）
@@ -2391,3 +2392,24 @@ async def test_cli_probe_429_keeps_process_alive(monkeypatch):
     ok, catalog = await cp.probe_can_work("http://127.0.0.1:9999", "hy3")
     assert ok is True, "429 限流 ≠ CLI 不能干活 ⇒ 探针必须判可用（保留进程）"
     assert catalog and catalog[0]["modelId"] == "hy3"
+
+
+def test_cc_runner_multi_key_rotation(monkeypatch):
+    """cc 多 key 轮转（2026-11-19 用户令）：起进程按序轮换 env，额度 xN。"""
+    from src.api.wb_exec import cc_client
+    r = cc_client.CcRunner("x.js", api_key_env="COMMAND_CODE_API_KEY",
+                           api_key_envs=("COMMAND_CODE_API_KEY",
+                                         "COMMAND_CODE2_API_KEY"))
+    assert r.api_key_envs == ("COMMAND_CODE_API_KEY", "COMMAND_CODE2_API_KEY")
+    monkeypatch.setenv('COMMAND_CODE_API_KEY', 'k1')
+    monkeypatch.setenv('COMMAND_CODE2_API_KEY', 'k2')
+    seen = []
+    for _ in range(4):
+        name = r.api_key_envs[r._key_cursor % len(r.api_key_envs)]
+        seen.append(name)
+        assert os.environ.get(name), name
+        r._key_cursor += 1
+    assert seen[0] != seen[1] and seen[0] == seen[2]
+    # 单值回退：不传列表，老配置行为不变
+    r2 = cc_client.CcRunner("x.js", api_key_env="COMMAND_CODE_API_KEY")
+    assert r2.api_key_envs == ("COMMAND_CODE_API_KEY",)

@@ -52,6 +52,11 @@ from .llm_openai_compat.adapter import (
     CompatConnectionOptions,
     OpenAICompatAdapter,
 )
+from .llm_siwc import (
+    SIWC_PROTOCOL,
+    SiwcAdapter,
+    SiwcAdapterOptions,
+)
 from .llm_openai_compat.serialize import RequestDefaults
 from .llm_anthropic.adapter import (
     AnthropicAdapterOptions,
@@ -421,13 +426,26 @@ class ModelGateway:
             if any(str(self._models[n].get("provider") or "") == DEVINCLI_PROTOCOL
                    for n in names)
         }
-        # 五家共用一个适配器实例（各厂差异进 facts/dialects），注册键 = vendor。
+        # [SIWC 2026-11-19 · 用户令] Sign in with ChatGPT：protocol
+        # responses-siwc ⇒ 走 SiwcAdapter（Responses API + 套餐额度）。
+        siwc_vendors = {
+            v for v, names in self._by_vendor.items()
+            if any(str(self._models[n].get("provider") or "") == SIWC_PROTOCOL
+                   for n in names)
+        }
+        # 其余共用一个适配器实例（各厂差异进 facts/dialects），注册键 = vendor。
         runtime.register_adapter(
             [v for v in self._by_vendor
              if v != MAVIS_VENDOR and v not in wbcli_vendors
-             and v not in devincli_vendors],
+             and v not in devincli_vendors and v not in siwc_vendors],
             OpenAICompatAdapter(CompatAdapterOptions(options=self._facts_for)),
         )
+        # [调用来源 2026-11-19] 声明文本协议的 vendor 集（wb-cli/devin-cli）：
+        # 这些端点没有原生 tool_calls 字段，宿主在系统提示词里声明了正文
+        # 调用协议（serialize.tool_protocol_section）⇒ 该端点正文里的
+        # <antml:invoke> 块是**声明通道的合法调用**，与原生端点的正文伪
+        # 调用（pseudo）来源不同。循环侧按它分类来源（tool_receipt）。
+        self._declared_text_vendors: set[str] = wbcli_vendors | devincli_vendors
         # mavis 路由（MiniMax Code 网关）：Anthropic Messages 协议，broker 租约鉴权。
         if MAVIS_VENDOR in self._by_vendor:
             runtime.register_adapter(
@@ -446,6 +464,11 @@ class ModelGateway:
                 sorted(devincli_vendors),
                 DevinCliAdapter(DevinCliAdapterOptions(
                     options=self._devincli_facts_for)),
+            )
+        if siwc_vendors:
+            runtime.register_adapter(
+                sorted(siwc_vendors),
+                SiwcAdapter(SiwcAdapterOptions(options=self._facts_for)),
             )
         return runtime
 
@@ -601,8 +624,20 @@ class ModelGateway:
     # ------------------------------------------------------------------
     # 结果装配
     # ------------------------------------------------------------------
-    @staticmethod
-    def _result_from(assembler: BlockAssembler, model_name: str, started: float,
+    def _endpoint_protocol(self, model_name: str) -> str:
+        """该模型端点的调用协议（[调用来源 2026-11-19]）。
+
+        - ``"declared_text"``——宿主声明的纯文本协议端点（wb-cli/devin-cli）；
+        - ``"mock"``——MOCK_LLM 离线替身；
+        - ``"native"``——原生 tool_calls 通道（OpenAI 兼容/Anthropic/SIWC）。
+        """
+        if os.environ.get("MOCK_LLM") == "1":
+            return "mock"
+        mc = self._models.get(model_name) or {}
+        provider = str(mc.get("provider") or _vendor_of(mc))
+        return "declared_text" if provider in self._declared_text_vendors else "native"
+
+    def _result_from(self, assembler: BlockAssembler, model_name: str, started: float,
                      tools: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
         blocks = assembler.blocks()
         content = "".join(b.text for b in blocks if isinstance(b, TextBlock))
@@ -623,11 +658,16 @@ class ModelGateway:
             _t = tools[0] or {}
             _fn = _t.get("function") if isinstance(_t.get("function"), dict) else _t
             single_tool_name = str((_fn or {}).get("name") or "")
+        # [调用来源 2026-11-19] 缺名分片不再静默消失——计数留证。
+        # 改前 `if not name: continue` 直接丢，网关侧零痕迹；循环侧只看到
+        # tool_calls=[]，无法区分「模型没调」和「端点报了调用但分片损坏」。
+        native_dropped = 0
         for b in blocks:
             if not isinstance(b, ToolCallBlock):
                 continue
             name = b.name or single_tool_name
             if not name:
+                native_dropped += 1
                 continue
             raw_args = b.arguments
             try:
@@ -644,6 +684,16 @@ class ModelGateway:
         usage = assembler.usage
         tokens = (usage.input_tokens + usage.output_tokens) if usage is not None else len(content) // 4
         latency = int((time.monotonic() - started) * 1000)
+        # [调用来源 2026-11-19] 协议元数据：网关进入循环的交界处，把本次
+        # 实际模型尝试的端点协议、原生停止原因与分片诊断一次性带出。
+        #   · endpoint_protocol   —— native / declared_text / mock
+        #   · native_calls        —— 进入可执行列表的原生调用数
+        #   · native_dropped      —— 缺名被丢弃的分片数（不可执行）
+        #   · native_truncated    —— 参数损坏（JSON 截断）的调用数
+        #   · native_finish_tool_calls —— 端点**声称**调了工具（finish=tool_calls）
+        #     但可执行列表为空 ⇒ 「模型调了、网关没拿到有效调用」的协议失败信号，
+        #     与「模型根本没调」（finish=stop）在循环侧分开处置。
+        endpoint_protocol = self._endpoint_protocol(model_name)
         return {
             "content": content,
             "tool_calls": tool_calls,
@@ -652,6 +702,15 @@ class ModelGateway:
             "finish_reason": finish_reason or "stop",
             "tokens_used": tokens,
             "latency_ms": latency,
+            "protocol_meta": {
+                "endpoint_protocol": endpoint_protocol,
+                "declared_text": endpoint_protocol == "declared_text",
+                "native_calls": len(tool_calls),
+                "native_dropped": native_dropped,
+                "native_truncated": 1 if truncated_tool_call else 0,
+                "native_finish_tool_calls": (finish_reason or "") == "tool_calls",
+                "finish_reason": finish_reason or "stop",
+            },
         }
 
     # ------------------------------------------------------------------
@@ -708,6 +767,7 @@ class ModelGateway:
         prior_messages: list[dict[str, Any]] | None = None,
         turn_tail: list[dict[str, Any]] | None = None,
         turn_once: list[dict[str, Any]] | None = None,
+        reasoning_effort: Optional[str] = None,
         *,
         trace_id: Optional[str] = None,
         caller: str = "",
@@ -754,6 +814,7 @@ class ModelGateway:
                 options = self._build_options(
                     model_name, system_prompt, user_prompt, temperature, max_tokens,
                     tools, prior_messages, turn_tail, turn_once, stream=False,
+                    reasoning_effort=reasoning_effort,
                 )
                 assembler = BlockAssembler()
                 emitted: list[str] = []
@@ -777,6 +838,17 @@ class ModelGateway:
                             "truncated_reply": None,
                             "finish_reason": salvaged.get("finish_reason", "length"),
                             "tokens_used": 0, "latency_ms": 0,
+                            # [调用来源 2026-11-19] 抢救出的截断调用也带协议元数据：
+                            # native_truncated=1 ⇒ 循环侧按「参数损坏、未派发」处置。
+                            "protocol_meta": {
+                                "endpoint_protocol": self._endpoint_protocol(model_name),
+                                "declared_text": self._endpoint_protocol(model_name) == "declared_text",
+                                "native_calls": 0,
+                                "native_dropped": 0,
+                                "native_truncated": 1,
+                                "native_finish_tool_calls": True,
+                                "finish_reason": salvaged.get("finish_reason", "length"),
+                            },
                         }
                     raise ModelCallFailure(failure.message, _classify(failure))
 

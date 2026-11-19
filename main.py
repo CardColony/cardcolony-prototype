@@ -778,6 +778,12 @@ if __name__ == "__main__":
         try:
             loop_b.run_until_complete(server.serve())
         finally:
+            # [2026-11-19 性能批次一] 回环客户端随服务循环关闭（还差 lane/A
+            # 上的族由主线程 finally 兜底再收一次）。关停路径零阻断。
+            try:
+                _procs.close_all_loop_clients()
+            except Exception:  # noqa: BLE001
+                pass
             loop_b.close()
 
     _serve_thread = _threading.Thread(
@@ -794,4 +800,9 @@ if __name__ == "__main__":
             _srv.should_exit = True
             _serve_thread.join(timeout=5)
         _loops.stop_runner_lanes()
+        # [2026-11-19 性能批次一] 分槽环停了再收主环/lane 名下的回环客户端族。
+        try:
+            _procs.close_all_loop_clients()
+        except Exception:  # noqa: BLE001
+            pass
         _main_loop.close()

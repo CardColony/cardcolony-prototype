@@ -818,6 +818,7 @@ class ExecutorRegistry:
             r = cc_client.CcRunner(
                 ex.cc_cli_entry, node_exe=ex.cc_node_exe,
                 api_key_env=ex.cc_api_key_env,
+                api_key_envs=tuple(ex.cc_api_key_envs or ()),
                 model=(list(ex.cc_models) or [cc_client.DEFAULT_MODEL])[0],
                 max_turns=ex.cc_max_turns, timeout=ex.cc_timeout_sec)
             self._cc_runners[executor_id] = r

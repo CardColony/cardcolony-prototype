@@ -2606,3 +2606,88 @@ body.page-chat .fwin-frame {
   border: 0; background: var(--ui-bg);
 }
 body.page-chat .fwin[data-mode="compact"] .fwin-frame { display: none; }
+
+/* ══════════════════════════════════════════════════════════════════
+   [席位会话 2026-11-18 · 一卡多会话] 会话切换栏
+   主会话＋各职能会话横排（tab），右侧「+」职能选择器建新会话。
+   ══════════════════════════════════════════════════════════════════ */
+body.page-chat .session-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+body.page-chat .session-tabs::-webkit-scrollbar { display: none; }
+body.page-chat .session-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border: 1px solid var(--ui-line-soft, rgba(255,255,255,0.08));
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  background: transparent;
+  color: var(--ui-fg-mute, rgba(255,255,255,0.55));
+  font-size: 11.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+body.page-chat .session-tab:hover { color: var(--ui-fg, #e8e8e8); }
+body.page-chat .session-tab.on {
+  color: var(--ui-fg, #e8e8e8);
+  background: var(--ui-bg-soft, rgba(255,255,255,0.05));
+  border-color: var(--ui-line, rgba(255,255,255,0.14));
+}
+body.page-chat .session-tab .st-persona {
+  font-size: 10px;
+  opacity: 0.65;
+}
+body.page-chat .session-add {
+  flex: none;
+  width: 22px; height: 22px;
+  margin-left: 2px;
+  border: 1px dashed var(--ui-line, rgba(255,255,255,0.16));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-fg-mute, rgba(255,255,255,0.6));
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+body.page-chat .session-add:hover { color: var(--ui-fg, #e8e8e8); }
+body.page-chat .session-menu {
+  position: absolute;
+  z-index: 900;
+  min-width: 168px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--ui-line, rgba(255,255,255,0.12));
+  border-radius: 8px;
+  background: var(--ui-panel, #1c1c20);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+}
+body.page-chat .session-menu .sm-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ui-fg, #e8e8e8);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+body.page-chat .session-menu .sm-item:hover { background: rgba(255,255,255,0.06); }
+body.page-chat .session-menu .sm-item .sm-id { font-size: 10px; opacity: 0.55; margin-left: auto; }
+body.page-chat .session-menu .sm-empty {
+  padding: 10px; font-size: 11.5px; opacity: 0.55; text-align: center;
+}

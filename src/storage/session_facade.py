@@ -103,7 +103,12 @@ BLOCK_FIELDS = ("seq", "actor", "from", "turn", "pair", "model", "behavior", "en
                 # [保留式思考 2026-11-12] Kimi k3.1-pro 恒推理且要求历史 assistant
                 # 原样回传 reasoning_content——字段必须落会话块，否则跨回合思考
                 # 全蒸发（改前只挂在 _reply_blk 入参上，白名单重建时被剥掉）。
-                "reasoning_content")
+                "reasoning_content",
+                # [调用来源与真实回执 2026-11-19] 工具结果块的执行时结构化状态
+                # （ok/error——存根三态投影的数据源）与调用来源标记
+                # （native/declared_text/pseudo_compat——来源面在块上可审计）。
+                # 存量旧块无这两字段 → 解析为零迁移（缺字段＝空）。
+                "status", "origin")
 BLOCK_REQUIRED = ("seq", "actor", "turn")
 END_VALUES = ("model_done", "policy_stop", "human_stop", "error")
 ACTOR_HUMAN = "human"
@@ -425,6 +430,10 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
         # 工具块两字段（缺＝None/空串；存量旧块零迁移）
         "tool_calls": tool_calls,
         "tool_call_id": kv.get("tool_call_id", "") or "",
+        # [调用来源与真实回执 2026-11-19] 工具结果块的执行状态与来源标记
+        # （缺＝空串；存量旧块零迁移——存根投影按内容判三态）
+        "status": kv.get("status", "") or "",
+        "origin": kv.get("origin", "") or "",
         "reasoning_content": reasoning_content,
         "format": "v2",
     }
@@ -950,6 +959,12 @@ def _render_v2_block(b: dict[str, Any]) -> str:
     if b.get("tool_call_id"):
         # [工具结果落会话 2026-10-17] 工具结果块（actor=tool）：与上面调用一一配对的 id
         lines.append(f"tool_call_id: {b['tool_call_id']}")
+    if b.get("status"):
+        # [调用来源与真实回执 2026-11-19] 工具结果块执行时结构化状态（ok/error）
+        lines.append(f"status: {b['status']}")
+    if b.get("origin"):
+        # [调用来源与真实回执 2026-11-19] 调用来源标记（native/declared_text/pseudo_compat）
+        lines.append(f"origin: {b['origin']}")
     if b.get("reasoning_content"):
         # [保留式思考 2026-11-12] JSON 单行（同 tool_calls 规则：换行转义保单行）
         lines.append("reasoning_content: " +
@@ -1210,6 +1225,10 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
         "behavior": block.get("behavior", ""),
         "tool_calls": tool_calls,
         "tool_call_id": block.get("tool_call_id", "") or "",
+        # [调用来源与真实回执 2026-11-19] 工具结果块执行状态与来源标记随块落盘
+        # （空值不落行——渲染侧有值才写；存量旧块零迁移）。
+        "status": block.get("status", "") or "",
+        "origin": block.get("origin", "") or "",
         "reasoning_content": block.get("reasoning_content") or "",
         "ts": now,
         "format": "v2",
@@ -1698,6 +1717,17 @@ def turn_release(work_id: str, card_id: str, owner: str) -> None:
 def turn_holder(work_id: str, card_id: str) -> str:
     """当前在途 owner（诊断/幂等判定用）；无在途返回空串。"""
     return _active_turns.get((work_id, card_id), "")
+
+
+def turn_sessions_for_card(work_id: str, card_id: str) -> list[str]:
+    """本卡**含附加会话**的在途会话键（主＝card_id 本身，附加＝card@N）。
+
+    [席位会话 2026-11-18 · 一卡多会话] 会话锁按 card@N 键（允许并行）；
+    卡级动作（停止/诊断）要扫全树——键前缀 ``card@`` 即附加会话。
+    """
+    prefix = str(card_id) + "@"
+    return [cid for (w, cid) in _active_turns
+            if w == work_id and (cid == card_id or cid.startswith(prefix))]
 
 
 # ============================================================

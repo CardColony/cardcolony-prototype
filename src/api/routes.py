@@ -20,7 +20,7 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
@@ -200,6 +200,8 @@ class PostMessageRequest(BaseModel):
     # 缺省 None/"" ⇒ 普通回合，行为逐字不变；"update_status" ⇒ 「更新现状」专用回合
     # （轮首注入专用任务 + 工具面临时追加 propose_status）。
     op: Optional[str] = None
+    # [席位会话 2026-11-18] 目标会话键（card@N）；缺省＝主会话。
+    session: Optional[str] = None
 
 
 # [wb_exec 2026-10-23] 执行体选择（谁干活：WorkBuddy 还是系统自己的模型）
@@ -1471,11 +1473,9 @@ async def get_align_status(work_id: str, card_id: str):
         return {"ok": True, "has_align": False, "active": False}
 
     # 成员 id → 卡标题（浮窗名单用）
-    names: dict[str, str] = {}
-    for m in card_store.iter_card_metas(work_id) or []:
-        cid = str(m.get("card_id") or "")
-        if cid:
-            names[cid] = str(m.get("title") or cid)
+    # [2026-11-19 性能批次二] 窄投影：只要 id→标题映射，不再全表捞 meta
+    # （iter_card_metas SELECT * ＋ 边表叠算——轮询面上每次白付）。
+    names: dict[str, str] = card_store.iter_card_titles(work_id) or {}
     ended = [str(x) for x in (it.get("ended") or [])]
     parts = [{
         "card_id": pid,
@@ -2074,8 +2074,11 @@ async def post_work_rule_dismiss(work_id: str, req: RuleDismissRequest):
 
 @router.get("/works/{work_id}/cards/{card_id}/timeline")
 async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from"),
-                            tail: int = Query(0), before: int = Query(0)):
+                            tail: int = Query(0), before: int = Query(0),
+                            session: str = Query("")):
     """[消息底座能力对齐 · 件4] 恢复唯一入口（C3/C4）：合并时序表。
+
+    [席位会话] ``session=card@N`` 时取该会话的时序（事件流按会话键分账）。
 
     items＝消息块（user_message/assistant_text/msg_*）＋过程事件（tool_call/
     tool_result/judgment/step_*/seat_*/…）＋思考（reasoning），按 seq 升序、
@@ -2087,14 +2090,21 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    try:
-        await card_store.read_card(work_id, card_id)
-    except CardNotFoundError:
+    # [2026-11-19 性能批次二] 存在性检查＋附加会话校验走窄读（原 read_card
+    # 全行捞正文大列——开卡每次轮询白付 IO）。指定附加会话时读权威会话登记
+    # （cards.sessions 列），校验语义与 read_card 路径一致。
+    _light = await card_store.read_card_sessions_light(work_id, card_id)
+    if _light is None:
         return _err(404, f"卡片不存在: {card_id}")
-    except CardLockedError:
-        return _err(423, "卡片被占用，请稍后重试")
+    _tkey = card_id
+    if session:
+        try:
+            _tkey, _ = _resolve_session({"sessions": _light["sessions"]},
+                                        card_id, str(session))
+        except ValueError as exc:
+            return _err(404, str(exc))
     items = await asyncio.to_thread(
-        event_log.timeline, work_id, card_id, from_seq=frm, tail=tail, before=before)
+        event_log.timeline, work_id, _tkey, from_seq=frm, tail=tail, before=before)
     # 〔2026-10-26 · 治「切卡卡死」〕**响应层载荷裁剪**（落盘不动）：
     # 实测打开一张大卡的 `timeline?tail=400` 响应体 **36.9MB**（其中 31.8MB 是
     # 一条 `tool_result`——read_linked 把整张卡的内容回灌进了事件日志）
@@ -2114,6 +2124,7 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
     payload = {
         "work_id": work_id,
         "card_id": card_id,
+        "session": _tkey,
         "items": items,
         # [2026-11-07 · 写乱序] items 按 (ts,seq) 时间序——末条是「最新」非「最大号」。
         # last_seq 语义＝水位游标 ⇒ 取全表最大 seq；first_seq 仍是显示段首条的 seq
@@ -2214,7 +2225,8 @@ async def _merged_sse(sources: list[tuple[str, Any]], timeout: float = 10.0):
 @router.get("/works/{work_id}/cards/{card_id}/stream")
 async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, alias="from"),
                              from_t: int = Query(0, alias="fromT"),
-                             tokens: int = Query(0), replay: int = Query(0)):
+                             tokens: int = Query(0), replay: int = Query(0),
+                             session: str = Query("")):
     """[信息流 Task3] SSE 过程通道：内存事件日志（event_stream）按 seq 跟进。
 
     [消息底座能力对齐 · 件4] **from=0 整卡重放退役**（C4）：起流游标落在当前
@@ -2237,6 +2249,14 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
+    # [席位会话] 过程/逐字流都按会话键分账——seat 会话订自己的流。
+    _skey = card_id
+    if session:
+        try:
+            _meta = (await card_store.read_card(work_id, card_id)).get("meta") or {}
+            _skey, _ = _resolve_session(_meta, card_id, str(session))
+        except (ValueError, CardNotFoundError) as exc:
+            return _err(404, str(exc))
 
     if not tokens:
         async def gen():
@@ -2244,8 +2264,8 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
             # [5702 · C-1 2026-10-20] 真推送：订阅 journal（先补 from 之后的存量，再随
             # emit 的 fanout 实时送达），不再每 0.4s 全量拷贝一次 journal。
             # from=0 → 游标落在末帧（零重放）；from>0 → 断点续传（语义不变）。
-            start = frm if frm > 0 else event_stream.journal_last_seq(work_id, card_id) + 1
-            it = event_stream.subscribe(work_id, card_id, from_seq=start)
+            start = frm if frm > 0 else event_stream.journal_last_seq(work_id, _skey) + 1
+            it = event_stream.subscribe(work_id, _skey, from_seq=start)
             nxt = None
             try:
                 while True:
@@ -2276,7 +2296,7 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
         )
 
     # ---- 合并模式：过程帧(e) + 逐字帧(t) 共用一条连接 ----
-    start_e = frm if frm > 0 else event_stream.journal_last_seq(work_id, card_id) + 1
+    start_e = frm if frm > 0 else event_stream.journal_last_seq(work_id, _skey) + 1
     # 逐字游标：fromT > 0 用它；否则退回 from（同一 seq 轴）；都没有 ⇒
     # replay=1 从本 run 首帧回放，否则落在末帧（不重放）——与原 /tokens 同口径。
     if from_t > 0:
@@ -2287,19 +2307,19 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
         # 打开**正在跑**的卡：从本 run 的首帧回放，补出已经吐过的字
         # （dsh 的 host 快照自带当前 blocks；本机没有快照，用 journal 回放等价）。
         start_t = 1
-        for _e in reversed(event_stream.token_journal_of(work_id, card_id)):
+        for _e in reversed(event_stream.token_journal_of(work_id, _skey)):
             if (_e.get("type") == "run_start"
                     and (_e.get("data") or {}).get("segment") == "run"):
                 start_t = int(_e.get("seq") or 1)
                 break
     else:
-        start_t = event_stream.token_journal_last_seq(work_id, card_id) + 1
+        start_t = event_stream.token_journal_last_seq(work_id, _skey) + 1
 
     async def gen_merged():
         yield "retry: 3000\n\n"
         sources = [
-            ("e", event_stream.subscribe(work_id, card_id, from_seq=start_e)),
-            ("t", event_stream.subscribe_tokens(work_id, card_id, from_seq=start_t)),
+            ("e", event_stream.subscribe(work_id, _skey, from_seq=start_e)),
+            ("t", event_stream.subscribe_tokens(work_id, _skey, from_seq=start_t)),
         ]
         async for tag, frame in _merged_sse(sources, timeout=10.0):
             if tag == "__ping__":
@@ -2472,6 +2492,97 @@ async def _revive_worker_card(work_id: str, card_id: str, content: str) -> None:
         logger.warning("[worker] 重新派活后撤销 arm 失败 card=%s: %s", card_id, exc)
 
 
+# ============================================================
+# [席位会话 2026-11-18 · 一卡多会话] 会话登记处
+#   主会话＝card_id 本身；附加会话＝card@N，人格＝所选职能（persona 只借
+#   身份——145 区职责书与回复 from；工具面/模型层仍归本卡）。
+#   登记处归卡面权威（meta.sessions），卡间消息只进主会话。
+# ============================================================
+
+def _session_entries_of(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    """meta.sessions 归一为 [{session_id, persona, label, created_at}] 列表。"""
+    raw = meta.get("sessions")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for e in raw:
+        if isinstance(e, dict) and str(e.get("session_id") or ""):
+            out.append(e)
+    return out
+
+
+def _resolve_session(meta: dict[str, Any], card_id: str,
+                     session: str) -> tuple[str, str]:
+    """session 参数 → (会话键, persona)。主会话/缺省 → (card_id, "")；
+    不在登记处 ⇒ ValueError。"""
+    sk = str(session or "")
+    if not sk or sk == card_id:
+        return card_id, ""
+    for e in _session_entries_of(meta):
+        if str(e.get("session_id") or "") == sk:
+            return sk, str(e.get("persona") or "")
+    raise ValueError(f"会话不存在: {sk}")
+
+
+@router.get("/works/{work_id}/cards/{card_id}/sessions")
+async def get_card_sessions(work_id: str, card_id: str):
+    """会话登记处（对话顶部 tab 栏的数据源）：主会话＋全部附加会话。
+
+    [2026-11-19 性能批次二] 走窄读（sessions/created_at 两列）——原 read_card
+    全行读只为拿这两个字段（基线：会话标签列表中位 1.01s / P95 8.86s）。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    light = await card_store.read_card_sessions_light(work_id, card_id)
+    if light is None:
+        return _err(404, f"卡片不存在: {card_id}")
+    sessions = [{"session_id": card_id, "persona": "",
+                 "label": "主会话", "main": True,
+                 "created_at": light["created_at"]}]
+    sessions += [dict(e, main=False) for e in light["sessions"]]
+    return {"work_id": work_id, "card_id": card_id, "sessions": sessions}
+
+
+@router.post("/works/{work_id}/cards/{card_id}/sessions")
+async def post_card_session(work_id: str, card_id: str, req: dict):
+    """开附加会话：``{"persona": "qa", "label": "验收视角"}`` ⇒ ``card@N``。
+
+    同职能可开多个（N 递增分配）；新会话零历史零记忆、继承卡面事实、
+    用本卡工具面与本卡模型层——人格只借职能的 145 区身份与回复归因。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    try:
+        card = await card_store.read_card(work_id, card_id)
+    except CardNotFoundError:
+        return _err(404, f"卡片不存在: {card_id}")
+    meta = card.get("meta") or {}
+    persona = str(req.get("persona") or req.get("function") or "").strip()
+    if not persona:
+        return _err(400, "persona 必填（附加会话的人格＝职能）")
+    from ..storage import function_store as _fs
+    if not _fs.function_exists(work_id, persona):
+        return _err(400, f"职能不存在: {persona}")
+    entries = _session_entries_of(meta)
+    used = {str(e.get("session_id") or "") for e in entries}
+    n = 1
+    while f"{card_id}@{n}" in used:
+        n += 1
+    entry = {
+        "session_id": f"{card_id}@{n}",
+        "persona": persona,
+        "label": str(req.get("label") or "").strip() or f"{persona} 会话",
+        "created_at": datetime.now(
+            timezone(timedelta(hours=8))).isoformat(),
+    }
+    res = await card_store.update_card(
+        work_id, card_id, {"sessions": entries + [entry]},
+        f"[席位会话] 新建附加会话 {entry['session_id']}（人格 {persona}）")
+    if res.get("error"):
+        return _err(500, str(res.get("error")))
+    return {"ok": True, **entry}
+
+
 @router.post("/works/{work_id}/cards/{card_id}/messages")
 async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest):
     """对话主链路（模块 H2）。"""
@@ -2499,10 +2610,21 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
                 except Exception:  # noqa: BLE001
                     _meta = {}
     _revive_owner = ""
+    # [席位会话] session 参数先解析（seat 会话是人与职能人格的私聊）：
+    # 下方 worker 重派活/auto 首条消息设目标这些是**主会话专属**的
+    # 卡级语义——seat 里发话不复活卡、不设目标，回合归会话、事实归卡面。
+    _sid_param, _persona = card_id, ""
+    if req.session:
+        try:
+            _sid_param, _persona = _resolve_session(
+                _meta, card_id, str(req.session))
+        except ValueError as exc:
+            return _err(404, str(exc))
+    _is_seat = _sid_param != card_id
     # [完工不影响功能 2026-11-08] 改前只对「worker + completed」走这段，
     # 目的之一是把它复位成 active。现在完工只是「交付过结果」的标记，
     # 发消息就是派活，一律走目标新生命周期，不动 state 列。
-    if str(_meta.get("card_type") or "") == "worker":
+    if not _is_seat and str(_meta.get("card_type") or "") == "worker":
         # [重新派活竞态 2026-10-21] 改目标会 emit goal/changed ⇒ 驱动器立刻
         # request_drive 抢一轮，把互斥体占掉 ⇒ 用户这条消息反而撞 409。
         # 所以在改目标期间**先占住互斥体**（临时 owner），让驱动器这一跳被跳过；
@@ -2521,18 +2643,23 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
     # 该消息成为 goal、goal_state=active（起跑条件齐备；本轮跑完后驱动器自动
     # 续轮）。已有目标 ⇒ 不动（中途引导，目标不变——方案 §3.4）。非 auto 卡
     # ⇒ no-op（红线 2：非 auto 卡零变化）。
-    try:
-        await auto_driver.ensure_goal_from_message(work_id, card_id, req.content)
-    except Exception as exc:  # noqa: BLE001 目标设定失败不阻断本次消息
-        logger.warning("[auto] 首条消息设定目标失败 work=%s card=%s: %s",
-                       work_id, card_id, exc)
-    finally:
-        if _revive_owner:
-            session_facade.turn_release(work_id, card_id, _revive_owner)
+    if not _is_seat:
+        try:
+            await auto_driver.ensure_goal_from_message(
+                work_id, card_id, req.content)
+        except Exception as exc:  # noqa: BLE001 目标设定失败不阻断本次消息
+            logger.warning("[auto] 首条消息设定目标失败 work=%s card=%s: %s",
+                           work_id, card_id, exc)
+        finally:
+            if _revive_owner:
+                session_facade.turn_release(work_id, card_id, _revive_owner)
+    elif _revive_owner:
+        session_facade.turn_release(work_id, card_id, _revive_owner)
     _res = await message_runner.await_spawned(message_runner._spawn_tracked(
         _run_message(
         work_id, card_id, req.content, req.pair_id,
         op=req.op or "",
+        session_id=_sid_param, persona=_persona,
         # [venue_clerk 2026-10-31] 用户在评审卡上发言＝跟**场**说话：
         # 接话的是场务人格（不占席位、不产出评审事件、无表态权），
         # source 标记让事件流/R 规则能把它跟席位回合（review_step）区分开。
@@ -2687,9 +2814,16 @@ async def resend_work_message(work_id: str, card_id: str, seq: int):
 # [A8/R3-T119-T123] 人停端点：置位控制面（consume-once，接口被消费才算数）；
 # 无在途回合＝幂等 no-op（不报错、不造轮）。
 @router.post("/works/{work_id}/cards/{card_id}/stop")
-async def post_work_stop(work_id: str, card_id: str):
+async def post_work_stop(work_id: str, card_id: str, session: str = ""):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
+    # [席位会话] 会话级停：只停那一个会话的在途回合——不置卡级 halt
+    # 标记、不级联子卡（seat 是人的私聊通道，停它不等于停卡）。
+    if session:
+        sk = str(session)
+        if sk != card_id and not sk.startswith(card_id + "@"):
+            return _err(400, "session 不属于本卡")
+        return control.request_stop(work_id, sk)
     # [自动模式 2026-10-17 · 回灌 5700 块0.3] 停止三件：①停当轮（request_stop，
     # consume-once）②关自动继续＋级联子卡＋释放执行锁（stop_auto）。非 auto 卡
     # ⇒ stop_auto 全 no-op，停止行为逐字不变（红线 2）。合并返回（前端一次拿到
@@ -2801,10 +2935,11 @@ async def post_goal_command(work_id: str, card_id: str, req: dict):
 # [实时反馈 2026-10-02] 调用进度查询：纯展示层，前端轮询用。
 # 只读内存态，不进任何模型输入，不拦截任何调用——不是闸。
 @router.get("/works/{work_id}/cards/{card_id}/progress")
-async def get_work_progress(work_id: str, card_id: str):
+async def get_work_progress(work_id: str, card_id: str, session: str = Query("")):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    st = progress.get_stage(work_id, card_id)
+    # [席位会话] 进度按会话键记——问 seat（card@N）只报它自己的回合。
+    st = progress.get_stage(work_id, str(session or "") or card_id)
     return st if st is not None else {"stage": "idle", "detail": "", "ts": 0.0}
 
 
@@ -3319,7 +3454,9 @@ async def _run_message(work_id: str, card_id: str, content: str,
                        ctx_card: str = "",
                        tool_allow: Optional[set] = None,
                        profile: str = "",
-                       prior_extra: Optional[list] = None) -> Any:
+                       prior_extra: Optional[list] = None,
+                       session_id: str = "",
+                       persona: str = "") -> Any:
     from ..infra import procs as _procs
     if (_procs.is_runner()
             and _procs.owner_index_of(work_id, card_id)
@@ -3331,7 +3468,12 @@ async def _run_message(work_id: str, card_id: str, content: str,
             "op": op, "source": source, "source_kind": source_kind,
             "act_as": act_as, "act_meta": act_meta, "ctx_card": ctx_card,
             "tool_allow": sorted(tool_allow) if tool_allow else None,
-            "profile": profile, "prior_extra": prior_extra})
+            "profile": profile, "prior_extra": prior_extra,
+            "session_id": session_id, "persona": persona})
+    # [席位会话 2026-11-18 · 一卡多会话] 会话锚：附加会话＝card@N，
+    # 会话文件/历史/事件流/回合锁/停止登记全部按它寻址——与主会话并行
+    # （锁在会话键上不在卡键上），卡面事实仍归卡。
+    sid = str(session_id or "") or card_id
     """完整 messages 链路，新旧路由共用。
 
     顺序：读卡 → 取历史 → 追加用户消息 → context_assembler 组装 →
@@ -3383,13 +3525,14 @@ async def _run_message(work_id: str, card_id: str, content: str,
     # [信息流重出 Task4] 标记本请求的逐字流归属卡。model_service.call_main 经
     # contextvar 取到它，才把增量落到 /tokens 独立流；函数退出时还原，
     # 避免污染同进程后续请求（凝练/归拢等无卡调用自然无逐字流）。
-    _stream_ctx_token = event_stream.set_stream_context(work_id, card_id)
+    _stream_ctx_token = event_stream.set_stream_context(work_id, sid)
     # [A4/S4-T083-T084] 主线回合登记逻辑互斥体：同卡已有在途（主线回合或凝练
     # 支线共用一登记处，T086）→ 409 拒绝、不排队（10-08 口径；排队策略归迭代二
     # T085）。owner=turn:{uuid 前 8 位}；拒绝经 ops 通道留痕。
+    # [席位会话] 锁按**会话键**——一卡多会话允许并行（用户令 2026-11-18）。
     turn_owner = f"turn:{uuid.uuid4().hex[:8]}"
-    if not session_facade.turn_try_acquire(work_id, card_id, turn_owner):
-        holder = session_facade.turn_holder(work_id, card_id)
+    if not session_facade.turn_try_acquire(work_id, sid, turn_owner):
+        holder = session_facade.turn_holder(work_id, sid)
         session_ops.ops_log("mutex_reject", work_id, card_id,
                             {"owner": turn_owner, "holder": holder})
         logger.warning("[A4] 同卡在途拒绝 409 work=%s card=%s holder=%s",
@@ -3402,17 +3545,17 @@ async def _run_message(work_id: str, card_id: str, content: str,
     # cancel 它，**不再「置位等步边界」**——一轮模型调用可能跑几分钟，步边界
     # 恰恰在最需要停的时候等不到（实测 card_031 卡在流里 9 分钟，停止无效）。
     _turn_task = asyncio.current_task()
-    control.bind_turn_task(work_id, card_id, _turn_task)
+    control.bind_turn_task(work_id, sid, _turn_task)
     # [自动模式 2026-10-17 · 回灌 5700 块0.3 · 方案 §3.8] 起回合前经**执行闸**：
     # 串行模式下拿不到锁＝**排队等待**（await，不是 409——这是与上面卡互斥体的
     # 关键差别）；并行模式直接过；同卡已持有（＝本卡目标生命周期内继续跑）⇒
     # no-op。取在互斥体之后：同卡重入被互斥体挡在前面，闸上不会出现同卡双取。
     try:
-        await serial_gate.acquire(work_id, card_id)
+        await serial_gate.acquire(work_id, sid)
     except asyncio.CancelledError:
         # 停在「等执行闸」这一瞬间：互斥体已登记，必须在这里放掉（还没进下面的 try）
-        session_facade.turn_release(work_id, card_id, turn_owner)
-        control.unbind_turn_task(work_id, card_id, _turn_task)
+        session_facade.turn_release(work_id, sid, turn_owner)
+        control.unbind_turn_task(work_id, sid, _turn_task)
         event_stream.reset_stream_context(_stream_ctx_token)
         raise
     failed = False
@@ -3433,10 +3576,15 @@ async def _run_message(work_id: str, card_id: str, content: str,
     try:
         result = await _run_message_inner(work_id, card_id, content, client_pair_id,
                                           append_user=append_user, op=op,
-                                          source=turn_source, stats=_stats,
+                                          source=turn_source,
+                                          # [调用来源与真实回执 2026-11-19] 透传来源
+                                          # 标记——绑定动作回执闸判「指令唤醒回合」用它。
+                                          source_kind=source_kind,
+                                          stats=_stats,
                                           act_as=act_as, act_meta=act_meta,
                                           ctx_card=ctx_card, tool_allow=tool_allow,
-                                          profile=profile, prior_extra=prior_extra)
+                                          profile=profile, prior_extra=prior_extra,
+                                          session_id=sid, persona=persona)
     except asyncio.CancelledError:
         # 取消 ⇒ 已预留/已接纳的那一轮必须 pause 目标，绝不能自动重启（原版
         # turn/end reason=aborted 的 idle 检查点语义）。
@@ -3464,7 +3612,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
         # 才合并落一条的；万一这一轮**没走到任何轮界事件**（异常/中断/直退），
         # 缓冲里的思考会**随回合一起丢掉**（刷新后看不到这段思考）。
         # ⇒ 收口时无条件 flush 一次（空缓冲是 no-op）。
-        event_stream.flush_pending_reasoning(work_id, card_id)
+        event_stream.flush_pending_reasoning(work_id, sid)
         # [运行态单一真相源 2026-10-21] 回合终止的**权威帧**：成功 / 异常 / 取消
         # 三条路径都必然发一次。前端运行态据此收口——此前只认 done/error，而它们由
         # compose_delivery / handle_error 发，若链路在两者之前抛（context 组装、
@@ -3478,7 +3626,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
             # 现在从出参槽里取（异常/取消路径同样有值），条件面才问得出
             # 「这轮是不是跑了很多轮才出错」。
             _st = _stats.get("state")
-            event_stream.emit(work_id, card_id, "turn_end", {
+            event_stream.emit(work_id, sid, "turn_end", {
                 "outcome": outcome,
                 "rounds": int(getattr(_st, "rounds", 0) or 0),
                 "model_calls": int(getattr(_st, "model_calls", 0) or 0),
@@ -3500,17 +3648,17 @@ async def _run_message(work_id: str, card_id: str, content: str,
             pass
         # [A8 清扫位] 回合内未被步边界消费的残留停止置位（典型：无工具轮，
         # 调用返回后直接交付）——收口清扫，防误伤下一回合（T124）。
-        control.discard_stop(work_id, card_id)
+        control.discard_stop(work_id, sid)
         # [5715] 插话残留清扫（对齐 control.discard_stop 的纪律）：回合窗口外
         # 的插话一律作废——不能留给下一回合，否则那句话会凭空出现在下一轮。
         # 残留件先收着：applied 却没被模型看见的话不算送达，摘牌后下面补投。
         _steer_remains = steer.discard_steer(work_id, card_id)
-        session_facade.turn_release(work_id, card_id, turn_owner)
+        session_facade.turn_release(work_id, sid, turn_owner)
         # [立刻停止 2026-10-21] 解登记本轮协程（传 task 只解自己，防误删后续回合）
-        control.unbind_turn_task(work_id, card_id, _turn_task)
+        control.unbind_turn_task(work_id, sid, _turn_task)
         event_stream.reset_stream_context(_stream_ctx_token)
         if failed:
-            serial_gate.release(work_id, card_id)
+            serial_gate.release(work_id, sid)
         # [goal 域 2026-10-20 · 照抄 dsh] **idle 事件**：成功/异常/取消三条路径
         # 都报一次。这就是「自动模式会不断唤醒」的落点——不再依赖回合尾部的
         # 顺序调用（原版 ctx.on('agent/status', idle)）。
@@ -3588,7 +3736,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
                        work_id, card_id, exc)
         keep = False
     if not keep:
-        serial_gate.release(work_id, card_id)
+        serial_gate.release(work_id, sid)
     # [worker 完工未报兜底 2026-11-10 · 用户令「执行卡做完不汇报太严重」]
     # 闸「这卡真安静下来了」才补：will_continue 判否（不续跑）＋本轮没起
     # 接续回合（队列/残留插话接管了它——下一回合自带收口评估）；
@@ -3620,13 +3768,16 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
                              append_user: bool = True,
                              op: str = "",
                              source: Optional[dict[str, Any]] = None,
+                             source_kind: str = "",
                              stats: Optional[dict[str, Any]] = None,
                              act_as: str = "",
                              act_meta: Optional[dict[str, Any]] = None,
                              ctx_card: str = "",
                              tool_allow: Optional[set] = None,
                              profile: str = "",
-                             prior_extra: Optional[list] = None) -> Any:
+                             prior_extra: Optional[list] = None,
+                             session_id: str = "",
+                             persona: str = "") -> Any:
     """_run_message 的实际链路体（外层只负责逐字流 contextvar 的设/还原）。
 
     [T-0009 拆分] 本函数**只做三件事**：① 装配（读卡/pair 去重/上下文）
@@ -3656,6 +3807,17 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     state.profile = str(profile or "")
     state.prior_extra = list(prior_extra or [])
     state.source = source
+    # [调用来源与真实回执 2026-11-19] 来源标记进 state——绑定动作回执闸
+    # 判「指令唤醒的回合」用它（direct 落信唤醒 ≠ 普通插话）。
+    state.source_kind = str(source_kind or "")
+    # [席位会话 2026-11-18 · 一卡多会话] 会话锚＋人格锚：session_id 决定
+    # 会话文件/历史/事件流/锁的寻址（空＝主会话＝card_id）；persona 只借
+    # 职能身份（145区＋回复 from），工具面/模型层仍归本卡。
+    state.session_id = str(session_id or "")
+    state.persona = str(persona or "")
+    # 本会话键（与 _run_message 外层的 sid 同口径）——历史读/会话写/事件
+    # 流/进度点全部按它寻址。
+    sid = state.session_id or card_id
 
     # a. 确认卡片存在
     try:
@@ -3705,15 +3867,18 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 现在读全量、切片只归投影一层。
     from ..storage import origin_store as _origin
     from ..storage import context_board as _cb
+    # [席位会话] 历史按**会话锚**取——附加会话的历史就是它自己的 session
+    # 文件（空起步），不读主会话的上下文；venue 席位仍走 ctx_card。
     _ctx_card = state.ctx_card or card_id
+    _hist_card = state.session_id or _ctx_card
     if _cb.enabled():
         # [缓存板 2026-11-12] 历史视图归板（写时维护）；这里的 prior 只服务
         # pair_id 判重等尾部扫描——重发必在近窗，读末尾 400 块即够，
         # 不再把全量原文扛进回合。
-        prior = _origin.read_recent_blocks(work_id, _ctx_card, 400)
+        prior = _origin.read_recent_blocks(work_id, _hist_card, 400)
     else:
         # [venue] 历史按**上下文锚**取（评审席拿的是被评子卡的历史），追加块排在其后。
-        prior = _origin.read_blocks(work_id, _ctx_card, 0)
+        prior = _origin.read_blocks(work_id, _hist_card, 0)
     if state.prior_extra:
         prior = list(prior) + list(state.prior_extra)
     state.prior = prior
@@ -3730,7 +3895,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
         # [消息底座能力对齐 · 件5] 事件流有判据时**以事件流为准**：被 revoke 的
         # 旧回复不算回复 ⇒ 重发可复用原 pair_id 而不重复追加提问块。事件流无
         # 判据（存量卡未迁移／无事件文件）→ 回落既有会话块口径，逐字不变。
-        ev_verdict = _has_valid_reply(work_id, card_id, client_pair_id)
+        ev_verdict = _has_valid_reply(work_id, sid, client_pair_id)
         if ev_verdict is None:
             def _pair_scan(scan_list: list) -> bool:
                 """倒扫 pair_id 命中+其后无回复 ⇒ True（复用口径逐字不变）。"""
@@ -3749,7 +3914,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
             if not reuse_client_pair and _cb.enabled():
                 # [缓存板 2026-11-12] 板模式下 prior 只有近 400 块——旧 pair
                 # 重发（罕见）会漏判 ⇒ 全量补扫一次兜底，判据不变。
-                _full = _origin.read_blocks(work_id, _ctx_card, 0)
+                _full = _origin.read_blocks(work_id, _hist_card, 0)
                 if state.prior_extra:
                     _full = list(_full) + list(state.prior_extra)
                 if len(_full) > len(prior):
@@ -3772,7 +3937,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
             if source and source.get("kind") == "goal":
                 # 续轮消息：带 GoalMessageSource，这是 roundsStarted 的唯一推进口
                 _block["source"] = dict(source)
-            await session_facade.append(work_id, card_id, _block)
+            await session_facade.append(work_id, sid, _block)
             if source and source.get("kind") == "goal":
                 from ..goal import driver as _goal_driver
                 from ..goal.service import get_service as _goal_service
@@ -3783,7 +3948,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
 
     # [信息流 Task3] run_start：清该卡 journal 重放（A45）＋过程卡秒现（V1）。
     # 位置＝落盘之后、装配之前——先清后写，context 埋点才能留在 journal 里。
-    event_stream.emit(work_id, card_id, "run_start",
+    event_stream.emit(work_id, sid, "run_start",
                       {"pair_id": pair_id, "chars": len(content),
                        # [2026-10-26 · 记录补全] 这一轮**是谁叫醒的**：
                        # {"kind":"user"|"card_msg"|"goal"|"wake", "from": 卡号}
@@ -3802,7 +3967,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 段③ 工具循环：**单步推进**（每轮一个显式状态点）
     # [无闸改造 2026-10-02] 工具循环不设轮次封顶：模型停止调用工具即自然结束
     try:
-        progress.set_stage(work_id, card_id, "started", "已提交")
+        progress.set_stage(work_id, sid, "started", "已提交")
         while True:
             outcome = await message_runner.step(state)
             if outcome.kind == "seats":

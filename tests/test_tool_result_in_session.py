@@ -86,13 +86,15 @@ async def test_v2_tool_blocks_in_history_projection(sandbox, work):
     blocks = await session_facade.read(wid, cid)
 
     proj = context_regions.project_history_messages(blocks)
-    # [契约变更 2026-10-23 · 用户需求] 工具结果**不再进上下文**：
-    # 投影只剩有正文的 user / assistant；带 tool_calls 的 A 块与 role=tool 成对丢弃
-    # （只丢一半会留孤立调用 ⇒ 端点 400）。
-    assert [m["role"] for m in proj] == ["user", "assistant"]
-    assert proj[1]["content"] == "完成"
-    assert sum(1 for m in proj if m["role"] == "tool") == 0
-    assert all(not m.get("tool_calls") for m in proj)
+    # [契约变更 2026-10-23 · 用户需求] 工具结果**不再进上下文**；
+    # [调用对存根 2026-11-14] 最近 _TOOL_PAIR_STUB_KEEP 组**完整**调用对
+    # 以存根形态放行（结果折成一行回执）——本用例的工具轮是完整对 ⇒ 存根在。
+    assert [m["role"] for m in proj] == ["user", "assistant", "tool", "tool", "assistant"]
+    assert proj[-1]["content"] == "完成"
+    # 原始结果体不进上下文——只剩折叠回执
+    assert all("结果" not in str(m.get("content") or "") for m in proj if m["role"] == "tool")
+    assert all("工具回执已折叠" in str(m.get("content") or "")
+               for m in proj if m["role"] == "tool")
 
 
 async def test_v7_projection_tool_pairs_complete(sandbox, work):
@@ -318,10 +320,12 @@ def test_n1_heal_drops_orphan_tool(sandbox):
     assert all(m["role"] != "tool" for m in proj), "孤立 tool 块必须丢弃"
     assert all(not m.get("tool_calls") for m in proj)
 
-    # mark=1（从 A 起）⇒ 配对完整 → 保留
+    # mark=1（从 A 起）⇒ 配对完整 → 以存根形态保留（2026-11-14 契约）
     proj2 = context_regions.project_history_messages(blocks, mark=1)
-    # [契约变更 2026-10-23] mark 落在工具段 ⇒ 剩下的全是 A 块与工具块，一律不进上下文
-    assert proj2 == []
+    assert [m["role"] for m in proj2] == ["assistant", "tool", "tool"]
+    assert proj2[0].get("tool_calls"), "存根保留调用壳"
+    assert all("工具回执已折叠" in str(m.get("content") or "")
+               for m in proj2 if m["role"] == "tool")
 
 
 def test_n1b_heal_strips_tool_calls_when_tool_filtered(sandbox):
@@ -448,6 +452,6 @@ async def test_evidence_context_size_before_after(sandbox, work):
         rows.append((cid, len(before.encode()), len(after.encode())))
     for cid, b, a in rows:
         print(f"[§3.1] {cid}: 改前(不含工具)={b}B 改后(含工具)={a}B")
-    # [契约变更 2026-10-23] 工具结果已不进上下文 ⇒ 含工具与不含工具**一样大**
-    # （旧断言 a > b 编码的是"工具结果会撑大上下文"的旧契约）
-    assert len(rows) >= 3 and all(a == b for _, b, a in rows)
+    # [调用对存根 2026-11-14] 完整调用对以存根形态进上下文：每轮多出的只是
+    # 一行折叠回执＋调用壳（原始 400 字结果体不进）——有界增量，不再一样大。
+    assert len(rows) >= 3 and all(0 < a - b <= 800 for _, b, a in rows)
